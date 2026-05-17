@@ -79,6 +79,10 @@ GET  /tasks/{id}
 GET  /tasks/{id}:subscribe
 POST /tasks/{id}:subscribe
 POST /tasks/{id}:cancel
+POST /tasks/{id}/pushNotificationConfigs
+GET  /tasks/{id}/pushNotificationConfigs
+GET  /tasks/{id}/pushNotificationConfigs/{configId}
+DELETE /tasks/{id}/pushNotificationConfigs/{configId}
 ```
 
 `GET /tasks` accepts the spec-shaped fleet filters `contextId`, `status`,
@@ -96,9 +100,54 @@ default; `historyLength=0` suppresses history in list responses.
 payloads (`task`, `statusUpdate`, and `artifactUpdate`). Subscribe is for
 nonterminal work; terminal tasks should be read with `GET /tasks/{id}` and must
 not be treated as a replayable subscription stream. The public Agent Card
-advertises `capabilities.streaming=true` plus authenticated extended-card
-support, and the extended card declares Maestro's EvalOps operating-plane
-extension for workspace/session/trace/retention correlation metadata.
+advertises `capabilities.streaming=true`, `capabilities.pushNotifications=true`,
+and authenticated extended-card support. The extended card declares Maestro's
+EvalOps operating-plane extension for workspace/session/trace/retention
+correlation metadata.
+
+`A2A-Extensions` and `message.extensions` are accepted for the EvalOps
+operating-plane extension URI:
+
+```text
+https://evalops.com/a2a/extensions/operating-plane/v1
+```
+
+Requests that ask Maestro to use unknown extensions fail before a task is
+created. That keeps mixed fleets explicit: peers can detect when they are using
+only core A2A versus EvalOps-specific workspace, trace, approval, and retention
+correlation.
+
+Push notification configs are stored with the task metadata in the same durable
+ledger. Maestro POSTs A2A `StreamResponse` payloads to each configured callback
+whenever a task state is published: a `statusUpdate` for every state publish,
+plus terminal `artifactUpdate` and final `task` payloads when artifacts/final
+state are available. Production callbacks should use HTTPS and public addresses;
+local development can opt into insecure/private callback URLs with
+`MAESTRO_A2A_PUSH_ALLOW_INSECURE=1` and
+`MAESTRO_A2A_PUSH_ALLOW_PRIVATE=1`. `MAESTRO_A2A_PUSH_TIMEOUT_MS` bounds callback
+delivery, and `MAESTRO_A2A_PUSH_DISABLE_DELIVERY=1` leaves configs stored without
+dispatching callbacks.
+
+## EvalOps Suite Integration
+
+The current suite split is deliberate:
+
+- Maestro owns the operator-native A2A peer surface: pairing, delegation, task
+  transcript, streaming, push callback dispatch, and extension negotiation.
+- Platform owns hosted AgentRuntime, AgentRun/Objective identity, task
+  projection, workspace auth, and CloudEvents/trace joins.
+- Deploy owns release-smoke and observability gates for the hosted A2A path:
+  dashboards, alerts, smoke agents, and promotion checks.
+- Cerebro should consume the same low-cardinality Platform events for analytics
+  rather than reading Maestro's local ledger directly.
+- Conductor remains a browser-control capability behind Maestro/Platform
+  receipts; it should surface as task artifacts and tool evidence, not as a
+  separate A2A peer protocol.
+
+The next cross-repo integration should project Maestro peer tasks into Platform
+work graph records with the same `contextId`, `taskId`, trace, workspace, and
+artifact metadata. Push callbacks then become the async wakeup path for clients
+that cannot keep SSE subscriptions open.
 
 ## Files
 
