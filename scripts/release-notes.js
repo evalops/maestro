@@ -269,11 +269,11 @@ export function extractChangelogEntry(content, version) {
 	return rest.slice(0, start[0].length + nextHeading.index).trim();
 }
 
-export function getLatestReachableReleaseTag() {
+export function getLatestReachableReleaseTag(ref = "HEAD") {
 	try {
 		return execFileSync(
 			"git",
-			["describe", "--tags", "--abbrev=0", "--match", "v[0-9]*", "HEAD"],
+			["describe", "--tags", "--abbrev=0", "--match", "v[0-9]*", ref],
 			{ encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] },
 		).trim();
 	} catch {
@@ -283,11 +283,13 @@ export function getLatestReachableReleaseTag() {
 
 /**
  * @param {string} [fromRef]
+ * @param {string} [toRef]
  */
 export function collectReleaseNoteSubjects(
 	fromRef = getLatestReachableReleaseTag(),
+	toRef = "HEAD",
 ) {
-	const range = fromRef ? `${fromRef}..HEAD` : "HEAD";
+	const range = fromRef ? `${fromRef}..${toRef}` : toRef;
 	const output = execFileSync("git", ["log", "--no-merges", "--format=%s", range], {
 		encoding: "utf8",
 	});
@@ -299,11 +301,16 @@ export function collectReleaseNoteSubjects(
 
 /**
  * @param {string} version
+ * @param {{ toRef?: string }} [options]
  */
-export function buildChangelogEntryFromGit(version) {
+export function buildChangelogEntryFromGit(version, options = {}) {
+	const toRef = options.toRef ?? "HEAD";
 	let subjects = [];
 	try {
-		subjects = collectReleaseNoteSubjects();
+		subjects = collectReleaseNoteSubjects(
+			getLatestReachableReleaseTag(toRef),
+			toRef,
+		);
 	} catch (error) {
 		console.warn(
 			`Unable to collect release notes from git: ${

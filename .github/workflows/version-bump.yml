@@ -96,7 +96,7 @@ jobs:
             git switch -C "$RELEASE_BRANCH" "origin/$RELEASE_BRANCH"
             git branch --set-upstream-to="origin/$RELEASE_BRANCH" "$RELEASE_BRANCH"
             git merge --no-edit "origin/${RELEASE_BASE_REF}"
-            node scripts/version.js set "$RELEASE_VERSION"
+            node scripts/version.js set "$RELEASE_VERSION" --release-notes-ref "origin/${RELEASE_BASE_REF}"
           else
             npm run "version:${RELEASE_BUMP_TYPE}"
             git switch -c "$RELEASE_BRANCH"

@@ -42,11 +42,16 @@ function bumpVersion(currentVersion, type) {
 	}
 }
 
-function updateChangelog(newVersion, { replaceExisting = false } = {}) {
+function updateChangelog(
+	newVersion,
+	{ releaseNotesRef = "HEAD", replaceExisting = false } = {},
+) {
 	const changelogPath = join(process.cwd(), "CHANGELOG.md");
 	try {
 		const content = readFileSync(changelogPath, "utf-8");
-		const newEntry = buildChangelogEntryFromGit(newVersion);
+		const newEntry = buildChangelogEntryFromGit(newVersion, {
+			toRef: releaseNotesRef,
+		});
 		const nextContent = replaceExisting
 			? mergeOrInsertChangelogEntry(content, newVersion, newEntry)
 			: insertChangelogEntry(content, newEntry);
@@ -98,7 +103,10 @@ function restoreBackups(backups) {
 	}
 }
 
-async function updateVersionedFiles(newVersion, { replaceChangelog = false } = {}) {
+async function updateVersionedFiles(
+	newVersion,
+	{ releaseNotesRef = "HEAD", replaceChangelog = false } = {},
+) {
 	const rootPkg = loadRootPackage();
 	const workspacePkgs = await getWorkspacePackages(rootPkg);
 	const internalNames = new Set(workspacePkgs.map((pkg) => pkg.name));
@@ -137,7 +145,10 @@ async function updateVersionedFiles(newVersion, { replaceChangelog = false } = {
 		console.log("✅ Updated package.json files");
 
 		// Update changelog
-		updateChangelog(newVersion, { replaceExisting: replaceChangelog });
+			updateChangelog(newVersion, {
+				releaseNotesRef,
+				replaceExisting: replaceChangelog,
+			});
 
 		if (hasScript(rootPkg, "openapi:generate")) {
 			updateOpenApiSpec();
@@ -194,18 +205,36 @@ async function main() {
 		return;
 	}
 
-	if (command === "set") {
-		const requestedVersion = process.argv[3];
-		if (
-			!requestedVersion ||
-			!/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(requestedVersion)
-		) {
-			console.error("Usage: node version.js set <semver>");
-			process.exit(1);
+		if (command === "set") {
+			const requestedVersion = process.argv[3];
+			let releaseNotesRef = "HEAD";
+			for (let index = 4; index < process.argv.length; index += 1) {
+				const arg = process.argv[index];
+				switch (arg) {
+					case "--release-notes-ref":
+						releaseNotesRef = process.argv[++index] ?? "";
+						break;
+					default:
+						console.error(`Unknown argument: ${arg}`);
+						process.exit(1);
+				}
+			}
+			if (
+				!requestedVersion ||
+				!/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(requestedVersion) ||
+				!releaseNotesRef
+			) {
+				console.error(
+					"Usage: node version.js set <semver> [--release-notes-ref <ref>]",
+				);
+				process.exit(1);
+			}
+			await updateVersionedFiles(requestedVersion, {
+				releaseNotesRef,
+				replaceChangelog: true,
+			});
+			return;
 		}
-		await updateVersionedFiles(requestedVersion, { replaceChangelog: true });
-		return;
-	}
 
 	if (!command || !["patch", "minor", "major"].includes(command)) {
 		console.error(
