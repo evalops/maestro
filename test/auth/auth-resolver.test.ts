@@ -33,6 +33,7 @@ describe("auth resolver", () => {
 		"MAESTRO_AGENT_RUN_ID",
 		"MAESTRO_AGENT_RUN_STEP_ID",
 		"MAESTRO_EVALOPS_AGENT_ID",
+		"MAESTRO_EVALOPS_AGENT_RUN_ID",
 		"MAESTRO_EVALOPS_AGENT_RUN_STEP_ID",
 		"MAESTRO_EVALOPS_OBJECTIVE_ID",
 		"MAESTRO_EVALOPS_RUN_ID",
@@ -450,7 +451,7 @@ describe("auth resolver", () => {
 		const mockedGetToken = vi.mocked(getOAuthToken);
 		const mockedLoadCreds = vi.mocked(loadOAuthCredentials);
 		process.env.MAESTRO_AGENT_ID = "agent_cli";
-		process.env.MAESTRO_AGENT_RUN_ID = "generic_run_should_not_win";
+		process.env.MAESTRO_AGENT_RUN_ID = "agent_run_123";
 		process.env.MAESTRO_EVALOPS_RUN_ID = "run_123";
 		process.env.MAESTRO_EVALOPS_WORKSPACE_ID = "workspace_123";
 		process.env.MAESTRO_OBJECTIVE_ID = "objective_123";
@@ -485,7 +486,7 @@ describe("auth resolver", () => {
 				workspace_id: "workspace_123",
 				objective_id: "objective_123",
 				run_id: "run_123",
-				agent_run_id: "run_123",
+				agent_run_id: "agent_run_123",
 				agent_run_step_id: "step_123",
 				session_id: "session_456",
 				maestro_session_id: "session_456",
@@ -498,6 +499,43 @@ describe("auth resolver", () => {
 			provider_ref: {
 				provider: "openai",
 				environment: "prod",
+			},
+		});
+		mockedGetToken.mockReset();
+		mockedLoadCreds.mockReset();
+	});
+
+	it("preserves distinct EvalOps ledger run and session metadata", async () => {
+		const mockedGetToken = vi.mocked(getOAuthToken);
+		const mockedLoadCreds = vi.mocked(loadOAuthCredentials);
+		mockedGetToken.mockResolvedValue("evalops-token");
+		mockedLoadCreds.mockReturnValue({
+			type: "oauth",
+			access: "evalops-token",
+			refresh: "",
+			expires: Date.now() + 60_000,
+			metadata: {
+				agentRunId: "agent_run_platform",
+				maestroSessionId: "session_maestro",
+				organizationId: "org_evalops",
+				providerRef: {
+					provider: "openai",
+					environment: "prod",
+				},
+				runId: "run_legacy",
+				sessionId: "session_platform",
+			},
+		});
+
+		const resolver = createAuthResolver({ mode: "auto" });
+		const credential = await resolver("evalops");
+
+		expect(credential?.requestBody).toMatchObject({
+			metadata: {
+				agent_run_id: "agent_run_platform",
+				maestro_session_id: "session_maestro",
+				run_id: "run_legacy",
+				session_id: "session_platform",
 			},
 		});
 		mockedGetToken.mockReset();
