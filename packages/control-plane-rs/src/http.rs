@@ -258,6 +258,7 @@ pub(crate) fn response_with_extra_headers_and_length(
     );
     let reason = match status {
         200 => "OK",
+        202 => "Accepted",
         204 => "No Content",
         400 => "Bad Request",
         401 => "Unauthorized",
@@ -270,6 +271,7 @@ pub(crate) fn response_with_extra_headers_and_length(
         429 => "Too Many Requests",
         500 => "Internal Server Error",
         501 => "Not Implemented",
+        503 => "Service Unavailable",
         _ => "OK",
     };
     let cors_origin = response_cors_origin();

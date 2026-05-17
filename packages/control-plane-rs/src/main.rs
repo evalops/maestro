@@ -71,6 +71,7 @@ const A2A_LEDGER_LOCK_HEARTBEAT_FILE: &str = "heartbeat";
 const EVALOPS_A2A_EXTENSION_URI: &str = "https://evalops.com/a2a/extensions/operating-plane/v1";
 const A2A_CONTROL_PLANE_LEDGER_PEER: &str = "maestro-control-plane";
 const A2A_CONTROL_PLANE_LEDGER_DISPLAY_NAME: &str = "Maestro Control Plane";
+const PLATFORM_A2A_PUSH_PATH: &str = "/api/platform/a2a/push";
 const CODEX_SUBAGENT_WORK_GRAPH_SCHEMA: &str = "evalops.maestro.codex.subagent-workgraph.v1";
 static CODEX_BRIDGE_TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 static CODEX_HEADLESS_RUN_COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -455,6 +456,17 @@ async fn handle_connection(mut stream: TcpStream, state: AppState) -> Result<(),
             return Ok(());
         }
 
+        if is_platform_a2a_push_endpoint(&head) {
+            let response =
+                handle_platform_a2a_push_endpoint(&mut stream, &mut initial, head, &state).await;
+            stream
+                .write_all(&response)
+                .await
+                .map_err(|error| error.to_string())?;
+            let _ = stream.shutdown().await;
+            return Ok(());
+        }
+
         if is_local_endpoint(&head) {
             let response = handle_local_endpoint(&mut stream, &mut initial, head, &state).await;
             stream
@@ -509,6 +521,10 @@ fn is_chat_endpoint(head: &RequestHead) -> bool {
 
 fn is_chat_websocket_endpoint(head: &RequestHead) -> bool {
     head.method == "GET" && head.path == "/api/chat/ws"
+}
+
+fn is_platform_a2a_push_endpoint(head: &RequestHead) -> bool {
+    head.path == PLATFORM_A2A_PUSH_PATH
 }
 
 fn is_local_endpoint(head: &RequestHead) -> bool {
@@ -1403,6 +1419,313 @@ fn a2a_push_notification_secret_key(key: &str) -> bool {
             | "secret"
             | "password"
     )
+}
+
+async fn handle_platform_a2a_push_endpoint(
+    stream: &mut TcpStream,
+    initial: &mut Vec<u8>,
+    head: RequestHead,
+    state: &AppState,
+) -> Vec<u8> {
+    if head.method == "OPTIONS" {
+        return response_with_extra_headers(
+            204,
+            "text/plain; charset=utf-8",
+            &[],
+            "Allow: POST, OPTIONS\r\n",
+        );
+    }
+    if head.method != "POST" {
+        return response_with_extra_headers(
+            405,
+            "application/json",
+            br#"{"error":{"code":"METHOD_NOT_ALLOWED","message":"A2A push callbacks require POST"}}"#,
+            "Allow: POST, OPTIONS\r\n",
+        );
+    }
+    if let Err(response) = validate_platform_a2a_push_callback_auth(&head) {
+        return response;
+    }
+    let body = match read_request_body(stream, initial, &head).await {
+        Ok(body) => body,
+        Err(error) => return a2a_error_response(400, "INVALID_REQUEST", &error),
+    };
+    let payload: Value = match serde_json::from_slice(&body) {
+        Ok(payload) => payload,
+        Err(error) => {
+            return a2a_error_response(
+                400,
+                "INVALID_REQUEST",
+                &format!("invalid A2A push payload: {error}"),
+            );
+        }
+    };
+    match record_platform_a2a_push_payload(state, payload).await {
+        Ok(accepted) => json_response(202, &accepted),
+        Err(message) => a2a_error_response(400, "INVALID_REQUEST", &message),
+    }
+}
+
+fn validate_platform_a2a_push_callback_auth(head: &RequestHead) -> Result<(), Vec<u8>> {
+    let Some(expected) = platform_a2a_push_callback_token() else {
+        if prod_profile() {
+            return Err(json_response(
+                503,
+                &serde_json::json!({
+                    "error": {
+                        "code": "CALLBACK_TOKEN_NOT_CONFIGURED",
+                        "message": "A2A push callback token is not configured"
+                    }
+                }),
+            ));
+        }
+        return Ok(());
+    };
+    let provided = platform_a2a_push_request_token(head);
+    if provided.as_deref() == Some(expected.as_str()) {
+        Ok(())
+    } else {
+        Err(json_response(
+            401,
+            &serde_json::json!({
+                "error": {
+                    "code": "UNAUTHORIZED",
+                    "message": "A2A push callback token is invalid"
+                }
+            }),
+        ))
+    }
+}
+
+fn platform_a2a_push_callback_token() -> Option<String> {
+    trimmed_env("MAESTRO_PLATFORM_A2A_CALLBACK_TOKEN")
+        .or_else(|| trimmed_env("MAESTRO_A2A_CALLBACK_TOKEN"))
+}
+
+fn platform_a2a_push_request_token(head: &RequestHead) -> Option<String> {
+    head.headers
+        .get("x-a2a-notification-token")
+        .map(String::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+        .or_else(|| {
+            head.headers
+                .get("authorization")
+                .and_then(|value| value.strip_prefix("Bearer "))
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(str::to_string)
+        })
+}
+
+async fn record_platform_a2a_push_payload(
+    state: &AppState,
+    payload: Value,
+) -> Result<Value, String> {
+    let object = payload
+        .as_object()
+        .ok_or_else(|| "A2A push payload must be a JSON object".to_string())?;
+    if let Some(task) = object.get("task") {
+        let task_id = task_id_from_task(task)?;
+        let task = task.clone();
+        {
+            let mut tasks = state.a2a_tasks.lock().await;
+            tasks.insert(task_id.clone(), task.clone());
+        }
+        publish_a2a_task_update(state, &task).await;
+        persist_a2a_tasks(state).await;
+        return Ok(serde_json::json!({
+            "accepted": true,
+            "kind": "task",
+            "taskId": task_id
+        }));
+    }
+    if let Some(status_update) = object.get("statusUpdate") {
+        let task = apply_platform_a2a_status_update(state, status_update).await?;
+        publish_a2a_task_update(state, &task).await;
+        persist_a2a_tasks(state).await;
+        return Ok(serde_json::json!({
+            "accepted": true,
+            "kind": "statusUpdate",
+            "taskId": task.get("id").and_then(Value::as_str).unwrap_or_default()
+        }));
+    }
+    if let Some(artifact_update) = object.get("artifactUpdate") {
+        let task = apply_platform_a2a_artifact_update(state, artifact_update).await?;
+        publish_a2a_task_update(state, &task).await;
+        persist_a2a_tasks(state).await;
+        return Ok(serde_json::json!({
+            "accepted": true,
+            "kind": "artifactUpdate",
+            "taskId": task.get("id").and_then(Value::as_str).unwrap_or_default()
+        }));
+    }
+    Err("A2A push payload must include statusUpdate, artifactUpdate, or task".to_string())
+}
+
+async fn apply_platform_a2a_status_update(
+    state: &AppState,
+    status_update: &Value,
+) -> Result<Value, String> {
+    let object = status_update
+        .as_object()
+        .ok_or_else(|| "A2A statusUpdate must be an object".to_string())?;
+    let task_id = required_string_field(object, "taskId", "A2A statusUpdate taskId is required")?;
+    let context_id = optional_string_field(object, "contextId")
+        .or_else(|| existing_task_context_id(state, &task_id))
+        .unwrap_or_else(|| task_id.clone());
+    let status = object
+        .get("status")
+        .filter(|status| status.is_object())
+        .cloned()
+        .ok_or_else(|| "A2A statusUpdate status is required".to_string())?;
+    let mut task = {
+        let tasks = state.a2a_tasks.lock().await;
+        tasks
+            .get(&task_id)
+            .cloned()
+            .unwrap_or_else(|| empty_platform_a2a_task(&task_id, &context_id))
+    };
+    task["id"] = Value::String(task_id.clone());
+    task["contextId"] = Value::String(context_id);
+    task["status"] = status;
+    if let Some(metadata) = object.get("metadata") {
+        upsert_task_metadata_field(&mut task, "lastPlatformStatusUpdate", metadata.clone());
+    }
+    {
+        let mut tasks = state.a2a_tasks.lock().await;
+        tasks.insert(task_id, task.clone());
+    }
+    Ok(task)
+}
+
+async fn apply_platform_a2a_artifact_update(
+    state: &AppState,
+    artifact_update: &Value,
+) -> Result<Value, String> {
+    let object = artifact_update
+        .as_object()
+        .ok_or_else(|| "A2A artifactUpdate must be an object".to_string())?;
+    let task_id = required_string_field(object, "taskId", "A2A artifactUpdate taskId is required")?;
+    let context_id = optional_string_field(object, "contextId")
+        .or_else(|| existing_task_context_id(state, &task_id))
+        .unwrap_or_else(|| task_id.clone());
+    let artifact = object
+        .get("artifact")
+        .filter(|artifact| artifact.is_object())
+        .cloned()
+        .ok_or_else(|| "A2A artifactUpdate artifact is required".to_string())?;
+    let mut task = {
+        let tasks = state.a2a_tasks.lock().await;
+        tasks
+            .get(&task_id)
+            .cloned()
+            .unwrap_or_else(|| empty_platform_a2a_task(&task_id, &context_id))
+    };
+    task["id"] = Value::String(task_id.clone());
+    task["contextId"] = Value::String(context_id);
+    append_task_artifact(&mut task, artifact);
+    if let Some(metadata) = object.get("metadata") {
+        upsert_task_metadata_field(&mut task, "lastPlatformArtifactUpdate", metadata.clone());
+    }
+    {
+        let mut tasks = state.a2a_tasks.lock().await;
+        tasks.insert(task_id, task.clone());
+    }
+    Ok(task)
+}
+
+fn task_id_from_task(task: &Value) -> Result<String, String> {
+    task.get("id")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+        .ok_or_else(|| "A2A task payload id is required".to_string())
+}
+
+fn existing_task_context_id(state: &AppState, task_id: &str) -> Option<String> {
+    state.a2a_tasks.try_lock().ok().and_then(|tasks| {
+        tasks
+            .get(task_id)
+            .and_then(|task| task.get("contextId"))
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string)
+    })
+}
+
+fn empty_platform_a2a_task(task_id: &str, context_id: &str) -> Value {
+    serde_json::json!({
+        "id": task_id,
+        "contextId": context_id,
+        "status": {
+            "state": "TASK_STATE_WORKING",
+            "message": a2a_agent_message(context_id, "Platform AgentRuntime push update received."),
+            "timestamp": now_rfc3339()
+        },
+        "history": [],
+        "artifacts": [],
+        "metadata": {
+            "runtime": "platform-agent-runtime",
+            "surface": "platform-a2a-push"
+        }
+    })
+}
+
+fn optional_string_field(object: &Map<String, Value>, key: &str) -> Option<String> {
+    object
+        .get(key)
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+}
+
+fn required_string_field(
+    object: &Map<String, Value>,
+    key: &str,
+    message: &str,
+) -> Result<String, String> {
+    optional_string_field(object, key).ok_or_else(|| message.to_string())
+}
+
+fn upsert_task_metadata_field(task: &mut Value, key: &str, value: Value) {
+    if !task.get("metadata").is_some_and(Value::is_object) {
+        task["metadata"] = serde_json::json!({});
+    }
+    if let Some(metadata) = task.get_mut("metadata").and_then(Value::as_object_mut) {
+        metadata.insert(key.to_string(), value);
+    }
+}
+
+fn append_task_artifact(task: &mut Value, artifact: Value) {
+    if !task.get("artifacts").is_some_and(Value::is_array) {
+        task["artifacts"] = Value::Array(Vec::new());
+    }
+    let artifact_id = artifact
+        .get("artifactId")
+        .or_else(|| artifact.get("artifact_id"))
+        .and_then(Value::as_str)
+        .map(str::to_string);
+    let Some(artifacts) = task.get_mut("artifacts").and_then(Value::as_array_mut) else {
+        return;
+    };
+    if let Some(artifact_id) = artifact_id {
+        if let Some(existing) = artifacts.iter_mut().find(|existing| {
+            existing
+                .get("artifactId")
+                .or_else(|| existing.get("artifact_id"))
+                .and_then(Value::as_str)
+                == Some(artifact_id.as_str())
+        }) {
+            *existing = artifact;
+            return;
+        }
+    }
+    artifacts.push(artifact);
 }
 
 async fn cancel_a2a_task(
@@ -12054,6 +12377,18 @@ setTimeout(() => {
         serde_json::from_slice(body).expect("response body should be json")
     }
 
+    fn response_status(response: &[u8]) -> u16 {
+        let text = std::str::from_utf8(response).expect("response should be utf-8");
+        let status = text
+            .lines()
+            .next()
+            .expect("response should include status line")
+            .split_whitespace()
+            .nth(1)
+            .expect("status line should include code");
+        status.parse().expect("status code should parse")
+    }
+
     fn response_body_text(response: &str) -> &str {
         let separator = response
             .find("\r\n\r\n")
@@ -12391,6 +12726,16 @@ setTimeout(() => {
                 "{request} should not be handled by non-streaming A2A routing"
             );
         }
+    }
+
+    #[test]
+    fn detects_platform_a2a_push_callback_route() {
+        let head =
+            parse_request_head(b"POST /api/platform/a2a/push HTTP/1.1\r\nHost: localhost\r\n\r\n")
+                .expect("request should parse");
+
+        assert!(is_platform_a2a_push_endpoint(&head));
+        assert!(!is_a2a_endpoint(&head));
     }
 
     #[test]
@@ -12877,6 +13222,153 @@ setTimeout(() => {
             );
         } else {
             env::remove_var("MAESTRO_A2A_PUSH_DISABLE_DELIVERY");
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn platform_a2a_push_callback_accepts_status_updates() {
+        let _guard = ENV_LOCK.lock().expect("env lock should not be poisoned");
+        let previous_token = env::var_os("MAESTRO_PLATFORM_A2A_CALLBACK_TOKEN");
+        env::set_var("MAESTRO_PLATFORM_A2A_CALLBACK_TOKEN", "callback-token");
+
+        let state = test_app_state_with_sessions(HashMap::new());
+        let body = r#"{
+            "statusUpdate": {
+                "taskId": "platform-run-1",
+                "contextId": "ctx-platform-1",
+                "status": {
+                    "state": "TASK_STATE_COMPLETED",
+                    "message": {
+                        "messageId": "status-platform-run-1",
+                        "contextId": "ctx-platform-1",
+                        "role": "ROLE_AGENT",
+                        "parts": [{"text": "Platform run completed", "mediaType": "text/plain"}]
+                    },
+                    "timestamp": "2026-05-17T00:00:00Z"
+                },
+                "metadata": {
+                    "runtimeEventId": "event-1",
+                    "runtimeEventType": "RUNTIME_EVENT_TYPE_RUN_SUCCEEDED"
+                }
+            }
+        }"#;
+        let request = format!(
+            "POST /api/platform/a2a/push HTTP/1.1\r\nHost: localhost\r\nX-A2a-Notification-Token: callback-token\r\nContent-Type: application/a2a+json\r\nContent-Length: {}\r\n\r\n{body}",
+            body.len()
+        );
+        let (mut client, server) = tcp_stream_pair().await;
+        let state_for_server = state.clone();
+        let server_task =
+            tokio::spawn(async move { handle_connection(server, state_for_server).await });
+
+        client
+            .write_all(request.as_bytes())
+            .await
+            .expect("request should write");
+        client.shutdown().await.expect("client should shutdown");
+        let mut response = Vec::new();
+        client
+            .read_to_end(&mut response)
+            .await
+            .expect("response should read");
+        server_task
+            .await
+            .expect("server task should join")
+            .expect("server should handle request");
+
+        assert_eq!(response_status(&response), 202);
+        let parsed = response_json(response);
+        assert_eq!(parsed["accepted"], true);
+        assert_eq!(parsed["taskId"], "platform-run-1");
+        let tasks = state.a2a_tasks.lock().await;
+        let task = tasks
+            .get("platform-run-1")
+            .expect("platform task should be recorded");
+        assert_eq!(task["contextId"], "ctx-platform-1");
+        assert_eq!(task["status"]["state"], "TASK_STATE_COMPLETED");
+        assert_eq!(
+            task["metadata"]["lastPlatformStatusUpdate"]["runtimeEventType"],
+            "RUNTIME_EVENT_TYPE_RUN_SUCCEEDED"
+        );
+
+        if let Some(previous_token) = previous_token {
+            env::set_var("MAESTRO_PLATFORM_A2A_CALLBACK_TOKEN", previous_token);
+        } else {
+            env::remove_var("MAESTRO_PLATFORM_A2A_CALLBACK_TOKEN");
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn platform_a2a_push_callback_rejects_invalid_token() {
+        let _guard = ENV_LOCK.lock().expect("env lock should not be poisoned");
+        let previous_token = env::var_os("MAESTRO_PLATFORM_A2A_CALLBACK_TOKEN");
+        env::set_var("MAESTRO_PLATFORM_A2A_CALLBACK_TOKEN", "callback-token");
+
+        let body = r#"{"statusUpdate":{"taskId":"platform-run-1","status":{"state":"TASK_STATE_WORKING"}}}"#;
+        let request = format!(
+            "POST /api/platform/a2a/push HTTP/1.1\r\nHost: localhost\r\nX-A2a-Notification-Token: wrong-token\r\nContent-Type: application/a2a+json\r\nContent-Length: {}\r\n\r\n{body}",
+            body.len()
+        );
+        let mut initial = request.into_bytes();
+        let head = parse_request_head(&initial).expect("request should parse");
+        let (_client, mut server) = tcp_stream_pair().await;
+        let state = test_app_state_with_sessions(HashMap::new());
+
+        let response =
+            handle_platform_a2a_push_endpoint(&mut server, &mut initial, head, &state).await;
+
+        assert_eq!(response_status(&response), 401);
+        assert!(state.a2a_tasks.lock().await.is_empty());
+
+        if let Some(previous_token) = previous_token {
+            env::set_var("MAESTRO_PLATFORM_A2A_CALLBACK_TOKEN", previous_token);
+        } else {
+            env::remove_var("MAESTRO_PLATFORM_A2A_CALLBACK_TOKEN");
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn platform_a2a_push_callback_records_artifact_updates() {
+        let _guard = ENV_LOCK.lock().expect("env lock should not be poisoned");
+        let previous_token = env::var_os("MAESTRO_PLATFORM_A2A_CALLBACK_TOKEN");
+        env::set_var("MAESTRO_PLATFORM_A2A_CALLBACK_TOKEN", "callback-token");
+
+        let state = test_app_state_with_sessions(HashMap::new());
+        let body = r#"{
+            "artifactUpdate": {
+                "taskId": "platform-run-2",
+                "contextId": "ctx-platform-2",
+                "artifact": {
+                    "artifactId": "artifact-1",
+                    "name": "result",
+                    "parts": [{"text": "artifact text", "mediaType": "text/plain"}]
+                },
+                "lastChunk": true
+            }
+        }"#;
+        let request = format!(
+            "POST /api/platform/a2a/push HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer callback-token\r\nContent-Type: application/a2a+json\r\nContent-Length: {}\r\n\r\n{body}",
+            body.len()
+        );
+        let mut initial = request.into_bytes();
+        let head = parse_request_head(&initial).expect("request should parse");
+        let (_client, mut server) = tcp_stream_pair().await;
+
+        let response =
+            handle_platform_a2a_push_endpoint(&mut server, &mut initial, head, &state).await;
+
+        assert_eq!(response_status(&response), 202);
+        let tasks = state.a2a_tasks.lock().await;
+        let task = tasks
+            .get("platform-run-2")
+            .expect("platform artifact task should be recorded");
+        assert_eq!(task["artifacts"][0]["artifactId"], "artifact-1");
+        assert_eq!(task["artifacts"][0]["parts"][0]["text"], "artifact text");
+
+        if let Some(previous_token) = previous_token {
+            env::set_var("MAESTRO_PLATFORM_A2A_CALLBACK_TOKEN", previous_token);
+        } else {
+            env::remove_var("MAESTRO_PLATFORM_A2A_CALLBACK_TOKEN");
         }
     }
 
