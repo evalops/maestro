@@ -236,8 +236,10 @@ export interface A2ATraceContext {
 }
 
 export interface A2ATaskPushNotificationAuthentication {
-	scheme: string;
+	schemes: string[];
 	credentials?: string;
+	/** @deprecated Use schemes. Accepted only for older Maestro peers. */
+	scheme?: string;
 }
 
 export interface A2ATaskPushNotificationConfig {

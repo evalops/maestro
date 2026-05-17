@@ -76,6 +76,7 @@ static CODEX_BRIDGE_TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 static CODEX_HEADLESS_RUN_COUNTER: AtomicU64 = AtomicU64::new(0);
 static ATTACHMENT_TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 static SESSION_COUNTER: AtomicU64 = AtomicU64::new(0);
+static A2A_ID_FALLBACK_COUNTER: AtomicU64 = AtomicU64::new(0);
 type PendingToolResponseSender = mpsc::UnboundedSender<(String, bool, Option<ToolResult>)>;
 type A2ACancelSender = watch::Sender<bool>;
 type A2ACancelReceiver = watch::Receiver<bool>;
@@ -2771,7 +2772,13 @@ fn normalize_a2a_push_notification_config(
     config: Value,
     require_task_match: bool,
 ) -> Result<Value, String> {
-    normalize_a2a_push_notification_config_inner(task_id, config, require_task_match, true)
+    normalize_a2a_push_notification_config_inner(
+        task_id,
+        config,
+        require_task_match,
+        true,
+        A2APushConfigIdPolicy::Generate,
+    )
 }
 
 fn normalize_a2a_push_notification_config_without_dns(
@@ -2779,7 +2786,18 @@ fn normalize_a2a_push_notification_config_without_dns(
     config: Value,
     require_task_match: bool,
 ) -> Result<Value, String> {
-    normalize_a2a_push_notification_config_inner(task_id, config, require_task_match, false)
+    normalize_a2a_push_notification_config_inner(
+        task_id,
+        config,
+        require_task_match,
+        false,
+        A2APushConfigIdPolicy::LegacyTaskFallback,
+    )
+}
+
+enum A2APushConfigIdPolicy {
+    Generate,
+    LegacyTaskFallback,
 }
 
 fn normalize_a2a_push_notification_config_inner(
@@ -2787,6 +2805,7 @@ fn normalize_a2a_push_notification_config_inner(
     config: Value,
     require_task_match: bool,
     resolve_dns: bool,
+    id_policy: A2APushConfigIdPolicy,
 ) -> Result<Value, String> {
     let mut object = config
         .as_object()
@@ -2819,7 +2838,10 @@ fn normalize_a2a_push_notification_config_inner(
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .map(str::to_string)
-        .unwrap_or_else(|| task_id.to_string());
+        .unwrap_or_else(|| match id_policy {
+            A2APushConfigIdPolicy::Generate => generate_a2a_id("pushcfg"),
+            A2APushConfigIdPolicy::LegacyTaskFallback => task_id.to_string(),
+        });
     if id.contains('/') || id.contains(':') {
         return Err("A2A push notification config id must not contain '/' or ':'".to_string());
     }
@@ -3958,7 +3980,8 @@ fn generate_a2a_id(prefix: &str) -> String {
     if getrandom::fill(&mut bytes).is_ok() {
         return format!("{prefix}-{}", URL_SAFE_NO_PAD.encode(bytes));
     }
-    format!("{prefix}-{}-{}", now_millis(), process::id())
+    let counter = A2A_ID_FALLBACK_COUNTER.fetch_add(1, Ordering::Relaxed);
+    format!("{prefix}-{}-{}-{counter}", now_millis(), process::id())
 }
 
 fn a2a_error_response(status: u16, code: &str, message: &str) -> Vec<u8> {
@@ -12799,7 +12822,7 @@ setTimeout(() => {
                         "url": "https://hooks.example/a2a",
                         "token": "notify-token",
                         "authentication": {{
-                            "scheme": "Bearer",
+                            "schemes": ["Bearer"],
                             "credentials": "auth-token"
                         }}
                     }}
@@ -12896,7 +12919,7 @@ setTimeout(() => {
                     "url": "https://hooks.example/a2a",
                     "token": "notify-token",
                     "authentication": {
-                        "scheme": "Bearer",
+                        "schemes": ["Bearer"],
                         "credentials": "secret"
                     }
                 }]
@@ -12957,6 +12980,36 @@ setTimeout(() => {
 
             assert!(result.is_err(), "expected {id} to be rejected");
         }
+    }
+
+    #[test]
+    fn a2a_push_notification_config_generates_distinct_ids_when_missing() {
+        let first = normalize_a2a_push_notification_config(
+            "task-push",
+            serde_json::json!({
+                "taskId": "task-push",
+                "url": "https://hooks.example/a2a"
+            }),
+            true,
+        )
+        .expect("first config should normalize");
+        let second = normalize_a2a_push_notification_config(
+            "task-push",
+            serde_json::json!({
+                "taskId": "task-push",
+                "url": "https://hooks.example/a2a"
+            }),
+            true,
+        )
+        .expect("second config should normalize");
+
+        let first_id = first["id"].as_str().expect("first id should exist");
+        let second_id = second["id"].as_str().expect("second id should exist");
+        assert_ne!(first_id, "task-push");
+        assert_ne!(second_id, "task-push");
+        assert_ne!(first_id, second_id);
+        assert!(first_id.starts_with("pushcfg-"));
+        assert!(second_id.starts_with("pushcfg-"));
     }
 
     #[test]
