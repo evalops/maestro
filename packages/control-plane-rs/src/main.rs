@@ -7991,40 +7991,77 @@ fn codex_collab_child_run_ids_from_item(item: &Value) -> Value {
     Value::Array(child_run_ids)
 }
 
+fn string_array_from_json_value(value: Option<&Value>) -> Vec<String> {
+    value
+        .and_then(Value::as_array)
+        .map(|ids| {
+            ids.iter()
+                .filter_map(Value::as_str)
+                .map(str::trim)
+                .filter(|id| !id.is_empty())
+                .map(str::to_string)
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default()
+}
+
+fn string_array_from_object_aliases(object: &Map<String, Value>, keys: &[&str]) -> Vec<String> {
+    keys.iter()
+        .find_map(|key| {
+            let values = string_array_from_json_value(object.get(*key));
+            (!values.is_empty()).then_some(values)
+        })
+        .unwrap_or_default()
+}
+
+fn copy_string_array_alias(object: &mut Map<String, Value>, canonical_key: &str, aliases: &[&str]) {
+    if !string_array_from_json_value(object.get(canonical_key)).is_empty() {
+        return;
+    }
+    let values = string_array_from_object_aliases(object, aliases);
+    if values.is_empty() {
+        return;
+    }
+    object.insert(
+        canonical_key.to_string(),
+        Value::Array(values.into_iter().map(Value::String).collect()),
+    );
+}
+
+fn copy_value_alias(object: &mut Map<String, Value>, canonical_key: &str, aliases: &[&str]) {
+    if object.get(canonical_key).is_some() {
+        return;
+    }
+    if let Some(value) = aliases.iter().find_map(|key| object.get(*key).cloned()) {
+        object.insert(canonical_key.to_string(), value);
+    }
+}
+
+fn normalize_codex_subagent_args_aliases(object: &mut Map<String, Value>) {
+    copy_value_alias(object, "threadId", &["thread_id"]);
+    copy_value_alias(object, "turnId", &["turn_id"]);
+    copy_value_alias(object, "senderThreadId", &["sender_thread_id"]);
+    copy_string_array_alias(object, "receiverThreadIds", &["receiver_thread_ids"]);
+    copy_string_array_alias(object, "childRunIds", &["child_run_ids"]);
+    copy_value_alias(object, "agentsStates", &["agents_states"]);
+}
+
 fn codex_collab_work_graph_from_jsonl_item(
     item: &Value,
     canonical_tool: &str,
     child_run_ids: &Value,
 ) -> Value {
-    let receiver_thread_ids = item
-        .get("receiver_thread_ids")
-        .and_then(Value::as_array)
-        .map(|ids| {
-            ids.iter()
-                .filter_map(Value::as_str)
-                .filter(|id| !id.is_empty())
-                .map(str::to_string)
-                .collect::<Vec<_>>()
-        })
-        .unwrap_or_default();
-    let child_run_ids = child_run_ids
-        .as_array()
-        .map(|ids| {
-            ids.iter()
-                .filter_map(Value::as_str)
-                .filter(|id| !id.is_empty())
-                .map(str::to_string)
-                .collect::<Vec<_>>()
-        })
-        .unwrap_or_default();
-    let child_runs = receiver_thread_ids
-        .iter()
-        .enumerate()
-        .map(|(index, thread_id)| {
+    let receiver_thread_ids = string_array_from_json_value(item.get("receiver_thread_ids"));
+    let child_run_ids = string_array_from_json_value(Some(child_run_ids));
+    let target_count = receiver_thread_ids.len().max(child_run_ids.len());
+    let child_runs = (0..target_count)
+        .map(|index| {
+            let thread_id = receiver_thread_ids.get(index).cloned();
             let child_run_id = child_run_ids
                 .get(index)
                 .cloned()
-                .unwrap_or_else(|| format!("codex-thread:{thread_id}"));
+                .or_else(|| thread_id.as_ref().map(|id| format!("codex-thread:{id}")))
+                .unwrap_or_else(|| format!("unknown-child-run-{index}"));
             let mut child_run = serde_json::json!({
                 "edgeId": codex_collab_edge_id(
                     item.get("id").and_then(Value::as_str),
@@ -8033,11 +8070,17 @@ fn codex_collab_work_graph_from_jsonl_item(
                     canonical_tool,
                 ),
                 "targetIndex": index,
-                "threadId": thread_id,
                 "childRunId": child_run_id,
                 "operation": canonical_tool,
             });
-            if let Some(status) = codex_collab_child_status_from_jsonl_item(item, thread_id) {
+            if let (Some(object), Some(thread_id)) = (child_run.as_object_mut(), thread_id.as_ref())
+            {
+                object.insert("threadId".to_string(), Value::String(thread_id.clone()));
+            }
+            if let Some(status) = thread_id
+                .as_ref()
+                .and_then(|id| codex_collab_child_status_from_jsonl_item(item, id))
+            {
                 if let Some(object) = child_run.as_object_mut() {
                     object.insert("status".to_string(), Value::String(status));
                 }
@@ -8089,6 +8132,7 @@ fn codex_bridge_tool_args(tool_name: &str, args: Value, tool_call_id: Option<&st
         Value::Object(object) => object,
         other => return other,
     };
+    normalize_codex_subagent_args_aliases(&mut object);
     if let Some(tool_call_id) = tool_call_id.filter(|id| !id.is_empty()) {
         let has_tool_call_id = object
             .get("toolCallId")
@@ -8173,36 +8217,18 @@ fn codex_collab_work_graph_from_args_object(tool_name: &str, object: &Map<String
             .or_else(|| tool_name.strip_prefix("codex.subagent."))
             .unwrap_or(tool_name),
     );
-    let receiver_thread_ids = object
-        .get("receiverThreadIds")
-        .and_then(Value::as_array)
-        .map(|ids| {
-            ids.iter()
-                .filter_map(Value::as_str)
-                .filter(|id| !id.is_empty())
-                .map(str::to_string)
-                .collect::<Vec<_>>()
-        })
-        .unwrap_or_default();
-    let child_run_ids = object
-        .get("childRunIds")
-        .and_then(Value::as_array)
-        .map(|ids| {
-            ids.iter()
-                .filter_map(Value::as_str)
-                .filter(|id| !id.is_empty())
-                .map(str::to_string)
-                .collect::<Vec<_>>()
-        })
-        .unwrap_or_default();
-    let child_runs = receiver_thread_ids
-        .iter()
-        .enumerate()
-        .map(|(index, thread_id)| {
+    let receiver_thread_ids =
+        string_array_from_object_aliases(object, &["receiverThreadIds", "receiver_thread_ids"]);
+    let child_run_ids = string_array_from_object_aliases(object, &["childRunIds", "child_run_ids"]);
+    let target_count = receiver_thread_ids.len().max(child_run_ids.len());
+    let child_runs = (0..target_count)
+        .map(|index| {
+            let thread_id = receiver_thread_ids.get(index).cloned();
             let child_run_id = child_run_ids
                 .get(index)
                 .cloned()
-                .unwrap_or_else(|| format!("codex-thread:{thread_id}"));
+                .or_else(|| thread_id.as_ref().map(|id| format!("codex-thread:{id}")))
+                .unwrap_or_else(|| format!("unknown-child-run-{index}"));
             let mut child_run = serde_json::json!({
                 "edgeId": codex_collab_edge_id(
                     object.get("toolCallId").and_then(Value::as_str),
@@ -8211,11 +8237,17 @@ fn codex_collab_work_graph_from_args_object(tool_name: &str, object: &Map<String
                     &canonical_tool,
                 ),
                 "targetIndex": index,
-                "threadId": thread_id,
                 "childRunId": child_run_id,
                 "operation": canonical_tool,
             });
-            if let Some(status) = codex_collab_child_status_from_args_object(object, thread_id) {
+            if let (Some(object), Some(thread_id)) = (child_run.as_object_mut(), thread_id.as_ref())
+            {
+                object.insert("threadId".to_string(), Value::String(thread_id.clone()));
+            }
+            if let Some(status) = thread_id
+                .as_ref()
+                .and_then(|id| codex_collab_child_status_from_args_object(object, id))
+            {
                 if let Some(object) = child_run.as_object_mut() {
                     object.insert("status".to_string(), Value::String(status));
                 }
@@ -8229,9 +8261,9 @@ fn codex_collab_work_graph_from_args_object(tool_name: &str, object: &Map<String
         "tool": canonical_tool,
         "status": object.get("status").cloned().unwrap_or(Value::Null),
         "parent": {
-            "threadId": object.get("threadId").cloned().unwrap_or(Value::Null),
-            "turnId": object.get("turnId").cloned().unwrap_or(Value::Null),
-            "senderThreadId": object.get("senderThreadId").cloned().unwrap_or(Value::Null),
+            "threadId": object.get("threadId").or_else(|| object.get("thread_id")).cloned().unwrap_or(Value::Null),
+            "turnId": object.get("turnId").or_else(|| object.get("turn_id")).cloned().unwrap_or(Value::Null),
+            "senderThreadId": object.get("senderThreadId").or_else(|| object.get("sender_thread_id")).cloned().unwrap_or(Value::Null),
         },
         "childRuns": child_runs,
     })
@@ -11697,6 +11729,76 @@ mod tests {
             end.result["content"][0]["text"],
             "codex.subagent.sendInput failed"
         );
+    }
+
+    #[test]
+    fn codex_headless_tool_events_normalize_snake_case_subagent_targets() {
+        let start = codex_headless_tool_event_from_json(&serde_json::json!({
+            "type": "tool_call",
+            "call_id": "collab-call-snake",
+            "tool": "codex.subagent.send_input",
+            "args": {
+                "codex_tool": "send_input",
+                "sender_thread_id": "thread-parent",
+                "receiver_thread_ids": ["thread-child"],
+                "child_run_ids": ["agent-run-child-1"],
+                "agents_states": {
+                    "thread-child": { "status": "acknowledged" }
+                }
+            }
+        }))
+        .expect("start event");
+
+        assert_eq!(start.tool_name, "codex.subagent.sendInput");
+        assert_eq!(start.args["codexTool"], serde_json::json!("sendInput"));
+        assert_eq!(
+            start.args["receiverThreadIds"],
+            serde_json::json!(["thread-child"])
+        );
+        assert_eq!(
+            start.args["childRunIds"],
+            serde_json::json!(["agent-run-child-1"])
+        );
+        assert_eq!(start.args["senderThreadId"], "thread-parent");
+        assert_eq!(
+            start.args["codexWorkGraph"]["parent"]["senderThreadId"],
+            "thread-parent"
+        );
+        assert_eq!(
+            start.args["codexWorkGraph"]["childRuns"][0]["threadId"],
+            "thread-child"
+        );
+        assert_eq!(
+            start.args["codexWorkGraph"]["childRuns"][0]["childRunId"],
+            "agent-run-child-1"
+        );
+        assert_eq!(
+            start.args["codexWorkGraph"]["childRuns"][0]["status"],
+            "acknowledged"
+        );
+        assert_eq!(
+            start.args["codexWorkGraph"]["childRuns"][0]["edgeId"],
+            "collab-call-snake:0:sendInput:agent-run-child-1"
+        );
+    }
+
+    #[test]
+    fn codex_headless_tool_events_build_work_graph_from_child_run_ids_only() {
+        let start = codex_headless_tool_event_from_json(&serde_json::json!({
+            "type": "tool_call",
+            "call_id": "collab-call-child-only",
+            "tool": "codex.subagent.wait",
+            "args": {
+                "child_run_ids": ["agent-run-child-only"]
+            }
+        }))
+        .expect("start event");
+
+        assert_eq!(
+            start.args["codexWorkGraph"]["childRuns"][0]["childRunId"],
+            "agent-run-child-only"
+        );
+        assert!(start.args["codexWorkGraph"]["childRuns"][0]["threadId"].is_null());
     }
 
     #[test]
