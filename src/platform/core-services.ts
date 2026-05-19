@@ -79,6 +79,14 @@ export const PLATFORM_CONNECT_METHODS = {
 		},
 	},
 	agents: {
+		heartbeat: {
+			service: PLATFORM_CONNECT_SERVICES.agents,
+			method: "Heartbeat",
+		},
+		register: {
+			service: PLATFORM_CONNECT_SERVICES.agents,
+			method: "Register",
+		},
 		delegate: {
 			service: PLATFORM_CONNECT_SERVICES.agents,
 			method: "Delegate",
@@ -90,6 +98,10 @@ export const PLATFORM_CONNECT_METHODS = {
 		resolveDelegation: {
 			service: PLATFORM_CONNECT_SERVICES.agents,
 			method: "ResolveDelegation",
+		},
+		update: {
+			service: PLATFORM_CONNECT_SERVICES.agents,
+			method: "Update",
 		},
 	},
 	approvals: {

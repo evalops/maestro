@@ -15,6 +15,7 @@ import {
 	failAgentRuntimeRun,
 	getAgentRuntimeRun,
 	listAgentRuntimeRunEvents,
+	recordAgentRuntimeRunCost,
 	recordAgentRuntimeRunEvent,
 	recordAgentRuntimeRunStep,
 	recordMaestroSessionRuntimeTrigger,
@@ -380,6 +381,49 @@ describe("agent runtime service client", () => {
 					});
 				}
 
+				if (url.endsWith("/RecordRunCost")) {
+					expect(body).toMatchObject({
+						runId: "run_1",
+						leaseToken: "lease-token-1",
+						cost: {
+							id: "cost_1",
+							stepId: "step_tool_1",
+							meterRef: "meter://maestro/model-usage/cost_1",
+							provider: "openai",
+							model: "gpt-5.3-codex",
+							inputTokens: 10,
+							outputTokens: 5,
+							totalTokens: 18,
+							currency: "USD",
+							estimatedCostMicros: 330,
+						},
+					});
+					return Response.json({
+						run: {
+							id: "run_1",
+							state: PlatformAgentRunStateValue.Running,
+						},
+						cost: {
+							id: "cost_1",
+							stepId: "step_tool_1",
+							meterRef: "meter://maestro/model-usage/cost_1",
+							provider: "openai",
+							model: "gpt-5.3-codex",
+							inputTokens: 10,
+							outputTokens: 5,
+							totalTokens: 18,
+							currency: "USD",
+							estimatedCostMicros: 330,
+						},
+						event: {
+							id: "event_cost",
+							runId: "run_1",
+							type: "RUNTIME_EVENT_TYPE_COST_RECORDED",
+							costId: "cost_1",
+						},
+					});
+				}
+
 				if (url.endsWith("/WaitRun")) {
 					expect(body).toMatchObject({
 						runId: "run_1",
@@ -546,6 +590,36 @@ describe("agent runtime service client", () => {
 		});
 
 		await expect(
+			recordAgentRuntimeRunCost(
+				{
+					runId: "run_1",
+					leaseToken: "lease-token-1",
+					cost: {
+						id: "cost_1",
+						stepId: "step_tool_1",
+						meterRef: "meter://maestro/model-usage/cost_1",
+						provider: "openai",
+						model: "gpt-5.3-codex",
+						inputTokens: 10,
+						outputTokens: 5,
+						totalTokens: 18,
+						currency: "USD",
+						estimatedCostMicros: 330,
+					},
+				},
+				{ config },
+			),
+		).resolves.toMatchObject({
+			cost: {
+				id: "cost_1",
+				meterRef: "meter://maestro/model-usage/cost_1",
+				totalTokens: 18,
+				estimatedCostMicros: 330,
+			},
+			event: { costId: "cost_1" },
+		});
+
+		await expect(
 			waitAgentRuntimeRun(
 				{
 					runId: "run_1",
@@ -615,6 +689,7 @@ describe("agent runtime service client", () => {
 			"https://runtime.test/agentruntime.v1.AgentRuntimeService/ClaimNextRun",
 			"https://runtime.test/agentruntime.v1.AgentRuntimeService/RecordRunStep",
 			"https://runtime.test/agentruntime.v1.AgentRuntimeService/RecordRunEvent",
+			"https://runtime.test/agentruntime.v1.AgentRuntimeService/RecordRunCost",
 			"https://runtime.test/agentruntime.v1.AgentRuntimeService/WaitRun",
 			"https://runtime.test/agentruntime.v1.AgentRuntimeService/ResumeRun",
 			"https://runtime.test/agentruntime.v1.AgentRuntimeService/CompleteRun",

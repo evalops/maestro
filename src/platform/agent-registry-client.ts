@@ -20,6 +20,12 @@ import {
 const DEFAULT_TIMEOUT_MS = 2_500;
 const DEFAULT_MAX_ATTEMPTS = 2;
 
+const HEARTBEAT_PATH = platformConnectMethodPath(
+	PLATFORM_CONNECT_METHODS.agents.heartbeat,
+);
+const REGISTER_PATH = platformConnectMethodPath(
+	PLATFORM_CONNECT_METHODS.agents.register,
+);
 const DELEGATE_PATH = platformConnectMethodPath(
 	PLATFORM_CONNECT_METHODS.agents.delegate,
 );
@@ -28,6 +34,9 @@ const LIST_AGENTS_PATH = platformConnectMethodPath(
 );
 const RESOLVE_DELEGATION_PATH = platformConnectMethodPath(
 	PLATFORM_CONNECT_METHODS.agents.resolveDelegation,
+);
+const UPDATE_PATH = platformConnectMethodPath(
+	PLATFORM_CONNECT_METHODS.agents.update,
 );
 
 const AGENT_REGISTRY_BASE_URL_ENV_VARS = [
@@ -71,11 +80,23 @@ const AGENT_REGISTRY_MAX_ATTEMPTS_ENV_VARS = [
 ] as const;
 
 const AGENT_REGISTRY_BASE_URL_SUFFIXES = [
+	HEARTBEAT_PATH,
+	REGISTER_PATH,
 	DELEGATE_PATH,
 	LIST_AGENTS_PATH,
 	RESOLVE_DELEGATION_PATH,
+	UPDATE_PATH,
 	platformConnectServicePath(PLATFORM_CONNECT_SERVICES.agents),
 ] as const;
+
+export enum PlatformAgentStatusValue {
+	Active = "AGENT_STATUS_ACTIVE",
+	Idle = "AGENT_STATUS_IDLE",
+	Busy = "AGENT_STATUS_BUSY",
+	Offline = "AGENT_STATUS_OFFLINE",
+	Degraded = "AGENT_STATUS_DEGRADED",
+	Suspended = "AGENT_STATUS_SUSPENDED",
+}
 
 export enum PlatformDelegationStatusValue {
 	Pending = "DELEGATION_STATUS_PENDING",
@@ -137,6 +158,40 @@ export interface PlatformAgentRegistryListAgentsInput {
 	offset?: number;
 }
 
+export interface PlatformAgentRegistryRegisterInput {
+	workspaceId?: string;
+	id?: string;
+	name: string;
+	description?: string;
+	agentType: string;
+	capabilities: string[];
+	surfaces?: string[];
+	surfaceTypes?: string[];
+	ownerId?: string;
+	a2a?: PlatformAgentA2APeerProjection;
+}
+
+export interface PlatformAgentRegistryUpdateInput {
+	workspaceId?: string;
+	id: string;
+	name?: string;
+	description?: string;
+	capabilities?: string[];
+	surfaces?: string[];
+	surfaceTypes?: string[];
+	a2a?: PlatformAgentA2APeerProjection;
+}
+
+export interface PlatformAgentRegistryHeartbeatInput {
+	workspaceId?: string;
+	agentId: string;
+	status?: PlatformAgentStatusValue | string;
+	currentObjectiveIds?: string[];
+	surface?: string;
+	surfaceType?: string;
+	a2a?: PlatformAgentA2APeerProjection;
+}
+
 export interface PlatformAgentA2ASkill {
 	id: string;
 	name?: string;
@@ -174,11 +229,27 @@ export interface PlatformAgentRegistryAgent {
 	id?: string;
 	workspaceId?: string;
 	name?: string;
+	description?: string;
 	agentType?: string;
 	capabilities?: string[];
 	surfaces?: string[];
+	surfaceTypes?: string[];
 	status?: string;
+	ownerId?: string;
+	lastHeartbeatAt?: string;
 	a2a?: PlatformAgentA2APeerProjection;
+}
+
+export interface PlatformAgentRegistryRegisterResult {
+	agent?: PlatformAgentRegistryAgent;
+}
+
+export interface PlatformAgentRegistryUpdateResult {
+	agent?: PlatformAgentRegistryAgent;
+}
+
+export interface PlatformAgentRegistryHeartbeatResult {
+	nextHeartbeatBy?: string;
 }
 
 export interface PlatformAgentRegistryDelegateResult {
@@ -440,7 +511,12 @@ function normalizeA2APeerProjection(
 		),
 		skills: skills && skills.length > 0 ? skills : undefined,
 		securitySchemes: stringList(record, "securitySchemes", "security_schemes"),
-		agentCardETag: firstString(record, "agentCardETag", "agent_card_etag"),
+		agentCardETag: firstString(
+			record,
+			"agentCardETag",
+			"agentCardEtag",
+			"agent_card_etag",
+		),
 		agentCardHash: firstString(record, "agentCardHash", "agent_card_hash"),
 		pushNotifications: firstBoolean(
 			record,
@@ -462,12 +538,61 @@ function normalizeAgent(
 		id: firstString(record, "id"),
 		workspaceId: firstString(record, "workspaceId", "workspace_id"),
 		name: firstString(record, "name"),
+		description: firstString(record, "description"),
 		agentType: firstString(record, "agentType", "agent_type"),
 		capabilities: stringList(record, "capabilities"),
 		surfaces: stringList(record, "surfaces"),
+		surfaceTypes: stringList(record, "surfaceTypes", "surface_types"),
 		status: firstString(record, "status"),
+		ownerId: firstString(record, "ownerId", "owner_id"),
+		lastHeartbeatAt: firstString(
+			record,
+			"lastHeartbeatAt",
+			"last_heartbeat_at",
+		),
 		a2a,
 	}) as PlatformAgentRegistryAgent;
+}
+
+function encodeA2ASkill(skill: PlatformAgentA2ASkill): Record<string, unknown> {
+	return stripUndefinedValues({
+		id: skill.id,
+		name: skill.name,
+		description: skill.description,
+		tags: skill.tags,
+		inputModes: skill.inputModes,
+		outputModes: skill.outputModes,
+		requiredContextGrants: skill.requiredContextGrants,
+		approvalPolicyRef: skill.approvalPolicyRef,
+		maxAutonomy: skill.maxAutonomy,
+		requiredArtifactKinds: skill.requiredArtifactKinds,
+		optionalArtifactKinds: skill.optionalArtifactKinds,
+		allowedTaskClasses: skill.allowedTaskClasses,
+		deniedTaskClasses: skill.deniedTaskClasses,
+		attributes: skill.attributes,
+	});
+}
+
+function encodeA2APeerProjection(
+	a2a: PlatformAgentA2APeerProjection | undefined,
+): Record<string, unknown> | undefined {
+	if (!a2a) {
+		return undefined;
+	}
+	return stripUndefinedValues({
+		publicEndpointUrl: a2a.publicEndpointUrl,
+		internalEndpointUrl: a2a.internalEndpointUrl,
+		agentCardUrl: a2a.agentCardUrl,
+		protocolBinding: a2a.protocolBinding,
+		protocolVersion: a2a.protocolVersion,
+		supportedExtensions: a2a.supportedExtensions,
+		skills: a2a.skills?.map(encodeA2ASkill),
+		securitySchemes: a2a.securitySchemes,
+		agentCardEtag: a2a.agentCardETag,
+		agentCardHash: a2a.agentCardHash,
+		pushNotifications: a2a.pushNotifications,
+		attributes: a2a.attributes,
+	});
 }
 
 function encodeJsonBytes(
@@ -594,6 +719,11 @@ export async function resolveAgentRegistryServiceConfig(): Promise<PlatformServi
 	};
 }
 
+export function isAgentAlreadyExistsError(error: unknown): boolean {
+	const message = error instanceof Error ? error.message : String(error);
+	return /\b409\b|already exists|already_exists/i.test(message);
+}
+
 async function resolveAgentRegistryListServiceConfig(
 	workspaceId?: string,
 ): Promise<PlatformServiceConfig | null> {
@@ -618,6 +748,121 @@ async function resolveAgentRegistryListServiceConfig(
 		...config,
 		baseUrl: trimString(config.baseUrl) ?? config.baseUrl,
 		workspaceId: resolvedWorkspaceId,
+	};
+}
+
+export async function registerAgentWithPlatform(
+	input: PlatformAgentRegistryRegisterInput,
+	options?: {
+		config?: PlatformServiceConfig;
+		signal?: AbortSignal;
+	},
+): Promise<PlatformAgentRegistryRegisterResult | null> {
+	const explicitWorkspaceId = trimString(input.workspaceId);
+	const resolvedConfig = options?.config
+		? explicitWorkspaceId && explicitWorkspaceId !== options.config.workspaceId
+			? { ...options.config, workspaceId: explicitWorkspaceId }
+			: options.config
+		: await resolveAgentRegistryListServiceConfig(explicitWorkspaceId);
+	if (!resolvedConfig) {
+		return null;
+	}
+	const payload = await postAgentRegistryOperation(
+		REGISTER_PATH,
+		stripUndefinedValues({
+			workspaceId: explicitWorkspaceId ?? resolvedConfig.workspaceId,
+			id: input.id,
+			name: input.name,
+			description: input.description,
+			agentType: input.agentType,
+			capabilities: input.capabilities,
+			surfaces: input.surfaces,
+			surfaceTypes: input.surfaceTypes,
+			ownerId: input.ownerId,
+			a2a: encodeA2APeerProjection(input.a2a),
+		}),
+		{ ...options, config: resolvedConfig },
+	);
+	if (!payload) {
+		return null;
+	}
+	return {
+		agent: normalizeAgent(objectValue(payload, "agent")),
+	};
+}
+
+export async function updateAgentWithPlatform(
+	input: PlatformAgentRegistryUpdateInput,
+	options?: {
+		config?: PlatformServiceConfig;
+		signal?: AbortSignal;
+	},
+): Promise<PlatformAgentRegistryUpdateResult | null> {
+	const explicitWorkspaceId = trimString(input.workspaceId);
+	const resolvedConfig = options?.config
+		? explicitWorkspaceId && explicitWorkspaceId !== options.config.workspaceId
+			? { ...options.config, workspaceId: explicitWorkspaceId }
+			: options.config
+		: explicitWorkspaceId
+			? await resolveAgentRegistryListServiceConfig(explicitWorkspaceId)
+			: undefined;
+	const payload = await postAgentRegistryOperation(
+		UPDATE_PATH,
+		stripUndefinedValues({
+			id: input.id,
+			name: input.name,
+			description: input.description,
+			capabilities: input.capabilities,
+			surfaces: input.surfaces,
+			surfaceTypes: input.surfaceTypes,
+			a2a: encodeA2APeerProjection(input.a2a),
+		}),
+		resolvedConfig ? { ...options, config: resolvedConfig } : options,
+	);
+	if (!payload) {
+		return null;
+	}
+	return {
+		agent: normalizeAgent(objectValue(payload, "agent")),
+	};
+}
+
+export async function heartbeatAgentWithPlatform(
+	input: PlatformAgentRegistryHeartbeatInput,
+	options?: {
+		config?: PlatformServiceConfig;
+		signal?: AbortSignal;
+	},
+): Promise<PlatformAgentRegistryHeartbeatResult | null> {
+	const explicitWorkspaceId = trimString(input.workspaceId);
+	const resolvedConfig = options?.config
+		? explicitWorkspaceId && explicitWorkspaceId !== options.config.workspaceId
+			? { ...options.config, workspaceId: explicitWorkspaceId }
+			: options.config
+		: explicitWorkspaceId
+			? await resolveAgentRegistryListServiceConfig(explicitWorkspaceId)
+			: undefined;
+	const payload = await postAgentRegistryOperation(
+		HEARTBEAT_PATH,
+		stripUndefinedValues({
+			agentId: input.agentId,
+			status: input.status,
+			currentObjectiveIds: input.currentObjectiveIds,
+			surface: input.surface,
+			surfaceType: input.surfaceType,
+			a2a: encodeA2APeerProjection(input.a2a),
+		}),
+		resolvedConfig ? { ...options, config: resolvedConfig } : options,
+	);
+	if (!payload) {
+		return null;
+	}
+	return {
+		nextHeartbeatBy: firstString(
+			payload,
+			"nextHeartbeatBy",
+			"next_heartbeat_by",
+		),
 	};
 }
 

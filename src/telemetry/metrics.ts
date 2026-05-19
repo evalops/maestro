@@ -46,6 +46,20 @@ export const MAESTRO_OTEL_METRIC_DEFINITIONS = [
 		unit: "ms",
 	},
 	{
+		key: "subagentDispatchCount",
+		name: "agent.subagent.dispatch_count",
+		kind: "counter",
+		description:
+			"Subagent dispatch decisions by mode, type, provider, and outcome",
+	},
+	{
+		key: "subagentDispatchLatency",
+		name: "agent.subagent.dispatch_latency",
+		kind: "histogram",
+		description: "Latency of subagent dispatch resolution",
+		unit: "ms",
+	},
+	{
 		key: "compactionTriggered",
 		name: "compaction.triggered",
 		kind: "counter",
@@ -102,6 +116,8 @@ export const maestroOtelMetrics = {
 	skillInvocationCount: counter("skillInvocationCount"),
 	agentTurnCount: counter("agentTurnCount"),
 	agentTurnLatency: histogram("agentTurnLatency"),
+	subagentDispatchCount: counter("subagentDispatchCount"),
+	subagentDispatchLatency: histogram("subagentDispatchLatency"),
 	compactionTriggered: counter("compactionTriggered"),
 	llmRequestCount: counter("llmRequestCount"),
 	llmTokenUsage: counter("llmTokenUsage"),
@@ -176,6 +192,36 @@ export function recordAgentTurnMetric(input: {
 		Number.isFinite(input.durationMs)
 	) {
 		maestroOtelMetrics.agentTurnLatency.record(input.durationMs, attributes);
+	}
+}
+
+export function recordSubagentDispatchMetric(input: {
+	mode: string;
+	subagentType: string;
+	provider: string;
+	model: string;
+	reasoningEffort: string;
+	source?: string;
+	success: boolean;
+	latencyMs?: number;
+	agentRunId?: string;
+}): void {
+	const attributes = compactAttributes({
+		"maestro.subagent.mode": input.mode,
+		"maestro.subagent.type": input.subagentType,
+		"maestro.subagent.reasoning_effort": input.reasoningEffort,
+		"maestro.subagent.source": input.source,
+		"maestro.subagent.success": input.success,
+		"llm.model.provider": input.provider,
+		"llm.model.id": input.model,
+		"maestro.agent_run_id": input.agentRunId,
+	});
+	maestroOtelMetrics.subagentDispatchCount.add(1, attributes);
+	if (typeof input.latencyMs === "number" && Number.isFinite(input.latencyMs)) {
+		maestroOtelMetrics.subagentDispatchLatency.record(
+			input.latencyMs,
+			attributes,
+		);
 	}
 }
 

@@ -21,6 +21,7 @@ export {
 	recordCost,
 	recordCompaction,
 	recordModelSwitch,
+	recordSubagentDispatch,
 	recordSandboxViolation,
 	getTelemetryStatus,
 	setTelemetryRuntimeOverride,
@@ -34,6 +35,7 @@ export {
 	type BackgroundTaskTelemetry,
 	type BusinessMetricTelemetry,
 	type SandboxViolationTelemetry,
+	type SubagentDispatchTelemetry,
 } from "../telemetry.js";
 
 // Maestro event bus catalog shared with the public mirror.
@@ -63,6 +65,7 @@ export {
 	recordMaestroSessionEvent,
 	recordMaestroSkillInvoked,
 	recordMaestroSkillOutcome,
+	recordMaestroSubagentDispatch,
 	recordMaestroToolCallAttempt,
 	recordMaestroToolCallCompleted,
 	resolveMaestroEventBusConfig,
@@ -96,11 +99,13 @@ export {
 	type PromptVariantSelectedEventData,
 	type RecordMaestroSkillInvokedInput,
 	type RecordMaestroSkillOutcomeInput,
+	type RecordMaestroSubagentDispatchInput,
 	type RecordMaestroToolCallAttemptInput,
 	type RecordMaestroToolCallCompletedInput,
 	type SandboxViolationEventData,
 	type SkillInvocationEventData,
 	type SkillOutcomeEventData,
+	type SubagentDispatchEventData,
 	type ToolCallAttemptEventData,
 	type ToolCallResultEventData,
 } from "./maestro-event-bus.js";

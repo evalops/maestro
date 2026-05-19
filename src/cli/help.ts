@@ -156,6 +156,9 @@ export function printHelp(
   # Confirm managed mode sinks and EvalOps org identity
   maestro status
 
+  # Inspect mode-level subagent model dispatch before running a swarm
+  maestro modes describe smart
+
   # Explain which instruction files and MCP context sources are visible
   maestro context explain
 
@@ -251,13 +254,21 @@ export function printHelp(
 	)}`;
 	const portabilitySection = `${sectionHeading("Session Portability")}${muted(
 		`  maestro export <session-id> [output-path] --format json|jsonl [--redact-secrets]
-  maestro import <file.json|file.jsonl>
+ maestro import <file.json|file.jsonl>
 
   Notes:
     - json preserves the full session in a portable wrapper object
     - jsonl preserves the append-only session log verbatim unless redaction is requested
     - --redact-secrets scrubs detected credentials from exported payloads
     - import restores the session into the current workspace session directory`,
+	)}`;
+	const modesSection = `${sectionHeading("maestro modes")}${muted(
+		`  maestro modes list
+  maestro modes describe <mode> [--provider <provider>] [--json]
+
+  Prints the mode primary/fallback model policy and resolved subagent dispatch
+  table, including cross-provider overrides such as smart-mode coder lanes
+  routed to openai-codex/gpt-5.5.`,
 	)}`;
 	const memorySection = `${sectionHeading("maestro memory")}${muted(
 		`  maestro memory [status]         Show shared memory service status
@@ -357,6 +368,7 @@ export function printHelp(
 			execSection,
 			webSection,
 			portabilitySection,
+			modesSection,
 			memorySection,
 			skillSection,
 			initSection,

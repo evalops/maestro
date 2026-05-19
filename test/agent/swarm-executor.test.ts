@@ -7,10 +7,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 const {
 	buildEvalOpsDelegationEnvironmentMock,
 	issueEvalOpsDelegationTokenMock,
+	recordSubagentDispatchMock,
 	spawnMock,
 } = vi.hoisted(() => ({
 	buildEvalOpsDelegationEnvironmentMock: vi.fn(),
 	issueEvalOpsDelegationTokenMock: vi.fn(),
+	recordSubagentDispatchMock: vi.fn(),
 	spawnMock: vi.fn(),
 }));
 
@@ -21,6 +23,10 @@ vi.mock("node:child_process", () => ({
 vi.mock("../../src/oauth/index.js", () => ({
 	buildEvalOpsDelegationEnvironment: buildEvalOpsDelegationEnvironmentMock,
 	issueEvalOpsDelegationToken: issueEvalOpsDelegationTokenMock,
+}));
+
+vi.mock("../../src/telemetry.js", () => ({
+	recordSubagentDispatch: recordSubagentDispatchMock,
 }));
 
 import { MODEL_BY_TIER } from "../../src/agent/modes.js";
@@ -34,6 +40,7 @@ function createMockChildProcess(
 	output: string,
 	closeCode = 0,
 	closeMode: "microtask" | "timer" | "manual" = "microtask",
+	emitSpawn = true,
 ) {
 	const proc = new EventEmitter() as EventEmitter & {
 		stdout: EventEmitter;
@@ -50,11 +57,24 @@ function createMockChildProcess(
 		proc.stdout.emit("data", Buffer.from(output));
 		proc.emit("close", closeCode);
 	};
+	const emitSpawnEvent = () => {
+		proc.emit("spawn");
+	};
 
 	if (closeMode === "timer") {
+		if (emitSpawn) {
+			queueMicrotask(emitSpawnEvent);
+		}
 		setTimeout(emitClose, 0);
 	} else if (closeMode === "microtask") {
-		queueMicrotask(emitClose);
+		queueMicrotask(() => {
+			if (emitSpawn) {
+				emitSpawnEvent();
+			}
+			emitClose();
+		});
+	} else if (emitSpawn) {
+		queueMicrotask(emitSpawnEvent);
 	}
 
 	return proc;
@@ -128,6 +148,7 @@ describe("SwarmExecutor", () => {
 				"EvalOps delegation requires a valid access token. Run /login evalops first.",
 			),
 		);
+		recordSubagentDispatchMock.mockReset();
 		spawnMock.mockReset();
 	});
 
@@ -173,6 +194,7 @@ describe("SwarmExecutor", () => {
 				}),
 			}),
 		);
+		expect(recordSubagentDispatchMock).not.toHaveBeenCalled();
 	});
 
 	it("completes when a teammate finishes successfully", async () => {
@@ -213,8 +235,71 @@ describe("SwarmExecutor", () => {
 		);
 	});
 
+	it("reports task-level model overrides while preserving the dispatch decision", async () => {
+		spawnMock.mockImplementation(() => createMockChildProcess("done"));
+
+		const executor = new SwarmExecutor({
+			...createConfig({
+				model: "openai/gpt-4.1",
+				subagentType: "coder",
+			}),
+			mode: "smart",
+			modelProvider: "anthropic",
+		});
+		void executor.execute();
+		await waitForSpawn();
+
+		const [, args, options] = spawnMock.mock.calls.at(-1) as [
+			string,
+			string[],
+			{ env: Record<string, string> },
+		];
+		expect(args).toEqual(
+			expect.arrayContaining([
+				"--no-session",
+				"--model",
+				"openai/gpt-4.1",
+				"exec",
+				expect.stringContaining("swarm-task-task-1.md"),
+			]),
+		);
+		expect(args).not.toContain("--provider");
+		expect(options.env).toEqual(
+			expect.objectContaining({
+				MAESTRO_SWARM_SUBAGENT_TYPE: "coder",
+				MAESTRO_SWARM_MODEL: "openai/gpt-4.1",
+				MAESTRO_SWARM_MODEL_PROVIDER: "openai",
+				MAESTRO_SWARM_DISPATCH_SOURCE: "override",
+			}),
+		);
+		await vi.waitFor(() => {
+			expect(recordSubagentDispatchMock).toHaveBeenCalledWith(
+				expect.objectContaining({
+					mode: "smart",
+					subagentType: "coder",
+					provider: "openai",
+					model: "openai/gpt-4.1",
+					reasoningEffort: "medium",
+					source: "override",
+					success: true,
+					latencyMs: expect.any(Number),
+					metadata: expect.objectContaining({
+						taskId: "task-1",
+						teammateId: expect.any(String),
+						parentMode: "smart",
+						parentModelProvider: "anthropic",
+						dispatchModel: "gpt-5.5",
+						dispatchProvider: "openai-codex",
+						dispatchSource: "mode",
+						modelOverride: "task",
+					}),
+				}),
+			);
+		});
+	});
+
 	it("resolves teammate model from mode subagent dispatch when task has no model override", async () => {
-		spawnMock.mockReturnValue(createMockChildProcess("done"));
+		spawnMock.mockImplementation(() => createMockChildProcess("done"));
 
 		const executor = new SwarmExecutor({
 			...createConfig({
@@ -239,6 +324,112 @@ describe("SwarmExecutor", () => {
 					MAESTRO_SWARM_SUBAGENT_TYPE: "coder",
 					MAESTRO_SWARM_MODEL_PROVIDER: "openai-codex",
 					MAESTRO_SWARM_REASONING_EFFORT: "medium",
+				}),
+			}),
+		);
+		await vi.waitFor(() => {
+			expect(recordSubagentDispatchMock).toHaveBeenCalledWith(
+				expect.objectContaining({
+					mode: "smart",
+					subagentType: "coder",
+					provider: "openai-codex",
+					model: "gpt-5.5",
+					reasoningEffort: "medium",
+					source: "mode",
+					success: true,
+					latencyMs: expect.any(Number),
+					metadata: expect.objectContaining({
+						taskId: "task-1",
+						teammateId: expect.any(String),
+						parentMode: "smart",
+						parentModelProvider: "anthropic",
+					}),
+				}),
+			);
+		});
+	});
+
+	it("does not report dispatch success when cancelled before teammate spawn", async () => {
+		const delegation = createDeferredPromise<{
+			agentId: string;
+			expiresAt: number;
+			organizationId: string;
+			providerRef: { provider: string; environment: string };
+			runId: string;
+			scopesDenied: string[];
+			scopesGranted: string[];
+			scopesRequested: string[];
+			token: string;
+			tokenType: string;
+		}>();
+		issueEvalOpsDelegationTokenMock.mockReturnValue(delegation.promise);
+		vi.stubEnv("MAESTRO_EVALOPS_ACCESS_TOKEN", PARENT_ACCESS_VALUE);
+		spawnMock.mockReturnValue(createMockChildProcess("done"));
+
+		const executor = new SwarmExecutor({
+			...createConfig({ subagentType: "coder" }),
+			mode: "smart",
+			modelProvider: "anthropic",
+		});
+		const execution = executor.execute();
+
+		await vi.waitFor(() => {
+			expect(issueEvalOpsDelegationTokenMock).toHaveBeenCalled();
+		});
+		executor.cancel();
+		delegation.resolve({
+			agentId: "agent-1",
+			expiresAt: Date.now() + 60_000,
+			organizationId: "org_evalops",
+			providerRef: {
+				provider: "gateway",
+				environment: "prod",
+			},
+			runId: "swarm-1:task-1",
+			scopesDenied: [],
+			scopesGranted: ["models:invoke"],
+			scopesRequested: [],
+			token: "child-1",
+			tokenType: "Bearer",
+		});
+
+		const result = await execution;
+		expect(result.status).toBe("cancelled");
+		expect(spawnMock).not.toHaveBeenCalled();
+		expect(recordSubagentDispatchMock).not.toHaveBeenCalled();
+	});
+
+	it("reports dispatch failure when teammate process fails before spawning", async () => {
+		const proc = createMockChildProcess("", 1, "manual", false);
+		spawnMock.mockReturnValue(proc);
+
+		const executor = new SwarmExecutor({
+			...createConfig({ subagentType: "coder" }),
+			mode: "smart",
+			modelProvider: "anthropic",
+		});
+		const execution = executor.execute();
+		await waitForSpawn();
+
+		proc.emit("error", new Error("spawn ENOENT"));
+
+		const result = await execution;
+		expect(result.status).toBe("failed");
+		expect(recordSubagentDispatchMock).toHaveBeenCalledWith(
+			expect.objectContaining({
+				mode: "smart",
+				subagentType: "coder",
+				provider: "openai-codex",
+				model: "gpt-5.5",
+				source: "mode",
+				success: false,
+				latencyMs: expect.any(Number),
+				metadata: expect.objectContaining({
+					taskId: "task-1",
+					teammateId: expect.any(String),
+					parentMode: "smart",
+					parentModelProvider: "anthropic",
+					reason: "spawn_error",
 				}),
 			}),
 		);
@@ -328,6 +519,81 @@ describe("SwarmExecutor", () => {
 				expect.stringContaining("swarm-task-task-1.md"),
 			]),
 		);
+		expect(recordSubagentDispatchMock).toHaveBeenCalledWith(
+			expect.objectContaining({
+				mode: "smart",
+				subagentType: "researcher",
+				provider: "anthropic",
+				model: MODEL_BY_TIER.sonnet.anthropic,
+				reasoningEffort: "medium",
+				source: "mode",
+				success: false,
+				latencyMs: expect.any(Number),
+				metadata: expect.objectContaining({
+					taskId: "task-1",
+					teammateId: expect.any(String),
+					parentMode: "smart",
+					modelTier: "sonnet",
+					reason: "missing_parent_model_provider",
+				}),
+			}),
+		);
+	});
+
+	it("allows task model overrides when tier-routed parent provider is unknown", async () => {
+		spawnMock.mockImplementation(() => createMockChildProcess("done"));
+
+		const executor = new SwarmExecutor({
+			...createConfig({
+				model: "openai/gpt-4.1",
+				subagentType: "researcher",
+			}),
+			mode: "smart",
+		});
+		void executor.execute();
+		await waitForSpawn();
+
+		const [, args, options] = spawnMock.mock.calls.at(-1) as [
+			string,
+			string[],
+			{ env: Record<string, string> },
+		];
+		expect(args).toEqual(
+			expect.arrayContaining([
+				"--no-session",
+				"--model",
+				"openai/gpt-4.1",
+				"exec",
+				expect.stringContaining("swarm-task-task-1.md"),
+			]),
+		);
+		expect(args).not.toContain("--provider");
+		expect(options.env).toEqual(
+			expect.objectContaining({
+				MAESTRO_SWARM_MODEL: "openai/gpt-4.1",
+				MAESTRO_SWARM_MODEL_PROVIDER: "openai",
+				MAESTRO_SWARM_DISPATCH_SOURCE: "override",
+			}),
+		);
+		await vi.waitFor(() => {
+			expect(recordSubagentDispatchMock).toHaveBeenCalledWith(
+				expect.objectContaining({
+					mode: "smart",
+					subagentType: "researcher",
+					provider: "openai",
+					model: "openai/gpt-4.1",
+					source: "override",
+					success: true,
+					metadata: expect.objectContaining({
+						dispatchModel: MODEL_BY_TIER.sonnet.anthropic,
+						dispatchProvider: "anthropic",
+						modelOverride: "task",
+						modelTier: "sonnet",
+					}),
+				}),
+			);
+		});
+		expect(recordSubagentDispatchMock).toHaveBeenCalledTimes(1);
 	});
 
 	it("injects delegated EvalOps auth into teammate subprocesses when available", async () => {

@@ -83,6 +83,9 @@ const RECORD_RUN_STEP_PATH = platformConnectMethodPath(
 const RECORD_RUN_EVENT_PATH = platformConnectMethodPath(
 	PLATFORM_CONNECT_METHODS.agentRuntime.recordRunEvent,
 );
+const RECORD_RUN_COST_PATH = platformConnectMethodPath(
+	PLATFORM_CONNECT_METHODS.agentRuntime.recordRunCost,
+);
 const RECORD_RUN_WORK_ITEM_PATH = platformConnectMethodPath(
 	PLATFORM_CONNECT_METHODS.agentRuntime.recordRunWorkItem,
 );
@@ -170,6 +173,8 @@ export enum PlatformRuntimeEventTypeValue {
 	RunSucceeded = "RUNTIME_EVENT_TYPE_RUN_SUCCEEDED",
 	RunFailed = "RUNTIME_EVENT_TYPE_RUN_FAILED",
 	AgentProgressRecorded = "RUNTIME_EVENT_TYPE_AGENT_PROGRESS_RECORDED",
+	ModelResponseRecorded = "RUNTIME_EVENT_TYPE_MODEL_RESPONSE_RECORDED",
+	ApprovalRequested = "RUNTIME_EVENT_TYPE_APPROVAL_REQUESTED",
 }
 
 export enum PlatformAgentRunStateValue {
@@ -286,6 +291,7 @@ export interface PlatformRuntimeEvent {
 	checkpointId?: string;
 	attributes?: Record<string, unknown>;
 	occurredAt?: string;
+	costId?: string;
 }
 
 export interface PlatformAgentRuntimeHandleTriggerResult {
@@ -316,6 +322,21 @@ export interface PlatformAgentRunStep {
 	startedAt?: string;
 	endedAt?: string;
 	linkage?: PlatformAgentRun["linkage"];
+}
+
+export interface PlatformAgentRunCost {
+	id?: string;
+	linkage?: PlatformAgentRun["linkage"];
+	stepId?: string;
+	meterRef?: string;
+	provider?: string;
+	model?: string;
+	inputTokens?: number;
+	outputTokens?: number;
+	totalTokens?: number;
+	currency?: string;
+	estimatedCostMicros?: number;
+	recordedAt?: string;
 }
 
 export interface PlatformAgentRunCheckpoint {
@@ -409,6 +430,18 @@ export interface PlatformAgentRuntimeRecordRunEventInput {
 
 export interface PlatformAgentRuntimeRecordRunEventResult {
 	run: PlatformAgentRun;
+	event?: PlatformRuntimeEvent;
+}
+
+export interface PlatformAgentRuntimeRecordRunCostInput {
+	runId: string;
+	leaseToken: string;
+	cost: PlatformAgentRunCost;
+}
+
+export interface PlatformAgentRuntimeRecordRunCostResult {
+	run: PlatformAgentRun;
+	cost?: PlatformAgentRunCost;
 	event?: PlatformRuntimeEvent;
 }
 
@@ -651,6 +684,35 @@ function normalizeStep(value: unknown): PlatformAgentRunStep | undefined {
 	};
 }
 
+function normalizeCost(value: unknown): PlatformAgentRunCost | undefined {
+	if (!value || typeof value !== "object" || Array.isArray(value)) {
+		return undefined;
+	}
+	const record = value as Record<string, unknown>;
+	const id = pickString(record, "id");
+	if (!id) {
+		return undefined;
+	}
+	return {
+		id,
+		linkage: normalizeLinkage(record.linkage),
+		stepId: pickString(record, "stepId", "step_id"),
+		meterRef: pickString(record, "meterRef", "meter_ref"),
+		provider: pickString(record, "provider"),
+		model: pickString(record, "model"),
+		inputTokens: pickNumber(record, "inputTokens", "input_tokens"),
+		outputTokens: pickNumber(record, "outputTokens", "output_tokens"),
+		totalTokens: pickNumber(record, "totalTokens", "total_tokens"),
+		currency: pickString(record, "currency"),
+		estimatedCostMicros: pickNumber(
+			record,
+			"estimatedCostMicros",
+			"estimated_cost_micros",
+		),
+		recordedAt: pickString(record, "recordedAt", "recorded_at"),
+	};
+}
+
 function normalizeCheckpoint(
 	value: unknown,
 ): PlatformAgentRunCheckpoint | undefined {
@@ -797,6 +859,7 @@ function normalizeEvent(value: unknown): PlatformRuntimeEvent | undefined {
 		stepId: pickString(record, "stepId", "step_id"),
 		waitId: pickString(record, "waitId", "wait_id"),
 		checkpointId: pickString(record, "checkpointId", "checkpoint_id"),
+		costId: pickString(record, "costId", "cost_id"),
 		attributes: pickRecord(record, "attributes"),
 		occurredAt: pickString(record, "occurredAt", "occurred_at"),
 	};
@@ -1021,6 +1084,29 @@ export async function recordAgentRuntimeRunEvent(
 	);
 	return {
 		run: normalizeRequiredRun(payload),
+		event: normalizeEvent(payload.event),
+	};
+}
+
+export async function recordAgentRuntimeRunCost(
+	input: PlatformAgentRuntimeRecordRunCostInput,
+	options?: {
+		config?: PlatformServiceConfig;
+		signal?: AbortSignal;
+	},
+): Promise<PlatformAgentRuntimeRecordRunCostResult> {
+	const payload = await postAgentRuntimeOperation(
+		RECORD_RUN_COST_PATH,
+		{
+			runId: input.runId,
+			leaseToken: input.leaseToken,
+			cost: input.cost,
+		},
+		options,
+	);
+	return {
+		run: normalizeRequiredRun(payload),
+		cost: normalizeCost(payload.cost),
 		event: normalizeEvent(payload.event),
 	};
 }

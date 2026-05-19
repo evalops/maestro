@@ -1,10 +1,79 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
+	handleA2ACommand,
 	isA2AWaitCompletionState,
 	parseA2AArgs,
 } from "../../../src/cli/commands/a2a.js";
 
+interface AgentRegistryCall {
+	operation: string;
+	body: Record<string, unknown>;
+}
+
+function parseRequestBody(
+	body: BodyInit | null | undefined,
+): Record<string, unknown> {
+	if (typeof body !== "string") {
+		return {};
+	}
+	return JSON.parse(body) as Record<string, unknown>;
+}
+
+function stubAgentRegistryEnv(): void {
+	vi.stubEnv("AGENT_REGISTRY_SERVICE_URL", "https://registry.test/");
+	vi.stubEnv("AGENT_REGISTRY_SERVICE_TOKEN", "registry-token");
+	vi.stubEnv("AGENT_REGISTRY_ORGANIZATION_ID", "org_1");
+	vi.stubEnv("AGENT_REGISTRY_WORKSPACE_ID", "ws_1");
+}
+
+function muteConsole(): void {
+	vi.spyOn(console, "log").mockImplementation(() => {});
+	vi.spyOn(console, "error").mockImplementation(() => {});
+}
+
+function mockAgentRegistryFetch(): AgentRegistryCall[] {
+	const calls: AgentRegistryCall[] = [];
+	vi.stubGlobal(
+		"fetch",
+		vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+			const url = String(input);
+			const operation = url.split("/").pop() ?? "";
+			const body = parseRequestBody(init?.body);
+			calls.push({ operation, body });
+			if (operation === "Register" || operation === "Update") {
+				return new Response(
+					JSON.stringify({
+						agent: {
+							id: body.id ?? "maestro-peer-1",
+							name: body.name ?? "Maestro Peer",
+							a2a: body.a2a,
+						},
+					}),
+					{ status: 200, headers: { "Content-Type": "application/json" } },
+				);
+			}
+			if (operation === "Heartbeat") {
+				return new Response(
+					JSON.stringify({ nextHeartbeatBy: "2026-05-19T10:05:00Z" }),
+					{ status: 200, headers: { "Content-Type": "application/json" } },
+				);
+			}
+			return new Response(JSON.stringify({ code: "not_found" }), {
+				status: 404,
+				headers: { "Content-Type": "application/json" },
+			});
+		}),
+	);
+	return calls;
+}
+
 describe("A2A CLI command helpers", () => {
+	afterEach(() => {
+		vi.restoreAllMocks();
+		vi.unstubAllEnvs();
+		vi.unstubAllGlobals();
+	});
+
 	it("preserves unknown -- tokens as message text", () => {
 		const parsed = parseA2AArgs([
 			"send",
@@ -72,6 +141,8 @@ describe("A2A CLI command helpers", () => {
 			"code:review",
 			"--workspace-id",
 			"ws_1",
+			"--surface",
+			"maestro",
 			"--prefer-internal",
 			"review",
 			"the",
@@ -84,6 +155,7 @@ describe("A2A CLI command helpers", () => {
 		expect(parsed.flags.get("--skill")).toBe("maestro.subagent.code-review");
 		expect(parsed.flags.get("--capability")).toBe("code:review");
 		expect(parsed.flags.get("--workspace-id")).toBe("ws_1");
+		expect(parsed.flags.get("--surface")).toBe("maestro");
 		expect(parsed.flags.get("--prefer-internal")).toBe(true);
 		expect(parsed.flags.get("--wait")).toBe(true);
 	});
@@ -120,6 +192,121 @@ describe("A2A CLI command helpers", () => {
 		expect(parsed.flags.get("--default")).toBe(true);
 		expect(parsed.flags.get("--prefer-internal")).toBe(true);
 		expect(parsed.flags.get("--json")).toBe(true);
+	});
+
+	it("parses Platform A2A peer registration flags", () => {
+		const parsed = parseA2AArgs([
+			"register",
+			"--url",
+			"https://maestro.example/a2a",
+			"--internal-url",
+			"http://maestro.evalops.svc/a2a",
+			"--agent-card-url",
+			"https://maestro.example/.well-known/agent-card.json",
+			"--agent-id",
+			"maestro-peer-1",
+			"--workspace-id",
+			"ws_1",
+			"--capabilities",
+			"maestro:a2a,code:review",
+			"--surface-types",
+			"SURFACE_MAESTRO",
+			"--status",
+			"AGENT_STATUS_IDLE",
+			"--json",
+		]);
+
+		expect(parsed.positionals).toEqual(["register"]);
+		expect(parsed.flags.get("--url")).toBe("https://maestro.example/a2a");
+		expect(parsed.flags.get("--internal-url")).toBe(
+			"http://maestro.evalops.svc/a2a",
+		);
+		expect(parsed.flags.get("--agent-card-url")).toBe(
+			"https://maestro.example/.well-known/agent-card.json",
+		);
+		expect(parsed.flags.get("--agent-id")).toBe("maestro-peer-1");
+		expect(parsed.flags.get("--workspace-id")).toBe("ws_1");
+		expect(parsed.flags.get("--capabilities")).toBe("maestro:a2a,code:review");
+		expect(parsed.flags.get("--surface-types")).toBe("SURFACE_MAESTRO");
+		expect(parsed.flags.get("--status")).toBe("AGENT_STATUS_IDLE");
+		expect(parsed.flags.get("--json")).toBe(true);
+	});
+
+	it("routes the Platform A2A publish alias through registration", async () => {
+		stubAgentRegistryEnv();
+		muteConsole();
+		const calls = mockAgentRegistryFetch();
+
+		await handleA2ACommand([
+			"publish",
+			"--url",
+			"https://maestro.example/a2a",
+			"--agent-id",
+			"maestro-peer-1",
+			"--name",
+			"Maestro Peer",
+			"--json",
+		]);
+
+		expect(calls.map((call) => call.operation)).toEqual([
+			"Register",
+			"Heartbeat",
+		]);
+		expect(calls[0]?.body).toMatchObject({
+			id: "maestro-peer-1",
+			name: "Maestro Peer",
+			surfaces: ["a2a", "maestro"],
+			surfaceTypes: ["SURFACE_MAESTRO"],
+			a2a: expect.objectContaining({
+				publicEndpointUrl: "https://maestro.example/a2a",
+			}),
+		});
+		expect(calls[1]?.body).toMatchObject({
+			agentId: "maestro-peer-1",
+			status: "AGENT_STATUS_IDLE",
+			surface: "a2a",
+			surfaceType: "SURFACE_MAESTRO",
+		});
+	});
+
+	it("allows heartbeat-only Platform A2A registration without a public URL", async () => {
+		stubAgentRegistryEnv();
+		muteConsole();
+		const calls = mockAgentRegistryFetch();
+
+		await handleA2ACommand([
+			"register",
+			"--heartbeat-only",
+			"--agent-id",
+			"maestro-peer-1",
+			"--json",
+		]);
+
+		expect(calls).toHaveLength(1);
+		expect(calls[0]).toMatchObject({
+			operation: "Heartbeat",
+			body: {
+				agentId: "maestro-peer-1",
+				status: "AGENT_STATUS_IDLE",
+				surface: "a2a",
+				surfaceType: "SURFACE_MAESTRO",
+			},
+		});
+		expect(calls[0]?.body).not.toHaveProperty("a2a");
+	});
+
+	it("rejects heartbeat-only registration when heartbeat is disabled", async () => {
+		await expect(
+			handleA2ACommand([
+				"register",
+				"--heartbeat-only",
+				"--no-heartbeat",
+				"--agent-id",
+				"maestro-peer-1",
+			]),
+		).rejects.toThrow(
+			"--heartbeat-only cannot be combined with --no-heartbeat",
+		);
 	});
 
 	it("parses direct task output work graph flags", () => {

@@ -9,6 +9,7 @@ back.
 
 ```sh
 maestro a2a fleet [--json] [--registry <path>] [--tasks <path>]
+maestro a2a register --url <base-url> [--agent-id <id>] [--workspace-id <id>] [--json]
 maestro a2a delegate <peer> <text> [--role <role>] [--cwd <path>] [--wait] [--work-graph]
 maestro a2a reply <peer> <task-id> <text> [--wait] [--work-graph]
 maestro a2a tasks [peer] [--json] [--refresh] [--work-graph]
@@ -20,6 +21,17 @@ maestro a2a wait <peer> <task-id> [--work-graph]
 reachable, and joins the result with the local task ledger. It never prints
 bearer token values. Peers that cannot be reached are still shown with their
 registry URL and a bounded error.
+
+`register` publishes the current Maestro instance to Platform Agent Registry as
+an A2A peer. The registration includes the Rust control-plane Agent Card URL,
+HTTP+JSON 1.0 binding, EvalOps operating-plane extension, and the versioned
+Codex subagent dispatch lanes (`code-writer`, `code-review`, `test-runner`,
+`repo-explorer`, and `release-shepherd`). The command is idempotent when
+`--agent-id` is supplied: an existing peer is updated, then heartbeated as
+`AGENT_STATUS_IDLE` on the `a2a` surface, so Platform discovery and
+capability-based delegation can route work to the peer without extra flags.
+Operators can run `--heartbeat-only --agent-id <id>` without a public URL when
+they only need to refresh presence for an already registered peer.
 
 `delegate` sends a normal A2A `message:send` request with Maestro delegation
 metadata: origin, peer name, role, and working directory. The resulting task is
@@ -133,7 +145,8 @@ dispatching callbacks.
 The current suite split is deliberate:
 
 - Maestro owns the operator-native A2A peer surface: pairing, delegation, task
-  transcript, streaming, push callback dispatch, and extension negotiation.
+  transcript, streaming, push callback dispatch, extension negotiation, and
+  publishing its Codex subagent lanes into Platform Agent Registry.
 - Platform owns hosted AgentRuntime, AgentRun/Objective identity, task
   projection, workspace auth, and CloudEvents/trace joins.
 - Deploy owns release-smoke and observability gates for the hosted A2A path:
@@ -144,9 +157,12 @@ The current suite split is deliberate:
   receipts; it should surface as task artifacts and tool evidence, not as a
   separate A2A peer protocol.
 
-The next cross-repo integration should project Maestro peer tasks into Platform
-work graph records with the same `contextId`, `taskId`, trace, workspace, and
-artifact metadata. Push callbacks then become the async wakeup path for clients
+The next cross-repo integration should promote registry-published Maestro peers
+into fully remote work envelopes: Platform work graph records should share the
+same `contextId`, `taskId`, trace, workspace, and artifact metadata as the A2A
+task, while Deploy smokes prove two production-like Maestro instances can
+register, discover, delegate, resume/wait, and expose child-agent work after
+target restart. Push callbacks then become the async wakeup path for clients
 that cannot keep SSE subscriptions open.
 
 ## Files
@@ -177,6 +193,13 @@ CONTEXT_ID=<context-id-from-task-detail>
 
 curl -fsS "$BASE_URL/.well-known/agent-card.json" \
   | node -e 'let s="";process.stdin.on("data",d=>s+=d);process.stdin.on("end",()=>{const j=JSON.parse(s);if(j.capabilities?.streaming!==true)process.exit(1);})'
+
+maestro a2a register \
+  --url "$BASE_URL" \
+  --agent-id local-maestro-a2a-smoke \
+  --workspace-id "$EVALOPS_WORKSPACE_ID" \
+  --json \
+  | node -e 'let s="";process.stdin.on("data",d=>s+=d);process.stdin.on("end",()=>{const j=JSON.parse(s);if(!j.a2a?.skills?.some(s=>s.id==="maestro.subagent.code-review"))process.exit(1);})'
 
 curl -fsS "$BASE_URL/tasks?status=TASK_STATE_COMPLETED&pageSize=1&pageToken=0&historyLength=1&includeArtifacts=false"
 curl -fsS "$BASE_URL/tasks?contextId=$CONTEXT_ID&pageSize=1&includeArtifacts=false"
@@ -222,6 +245,6 @@ After implementation, they must pass and prove:
   leaking token values.
 - `maestro a2a tasks --json` reads the ledger and can be used as a fleet task
   view with the normalized `workGraph` object when a peer exposes it.
-- TypeScript and Rust TUIs both recognize `/a2a fleet`, `/a2a tasks`,
-  `/a2a tasks --work-graph`, `/a2a delegate`, `/a2a reply`, and
+- TypeScript and Rust TUIs both recognize `/a2a fleet`, `/a2a register`,
+  `/a2a tasks`, `/a2a tasks --work-graph`, `/a2a delegate`, `/a2a reply`, and
   `/a2a coordinate --work-graph`.

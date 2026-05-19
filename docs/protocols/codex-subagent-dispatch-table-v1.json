@@ -1,0 +1,192 @@
+{
+	"schemaVersion": "evalops.maestro.codex.subagent-dispatch-table.v1",
+	"description": "Versioned Codex subagent dispatch contract shared by Maestro's TypeScript hosted runtime, Rust control plane, and Rust swarm runtime.",
+	"defaultCapability": "code:write",
+	"modelProviders": ["anthropic", "openai", "openai-codex", "google"],
+	"modelTiers": {
+		"opus": {
+			"anthropic": "claude-opus-4-6",
+			"openai": "gpt-5.2",
+			"openai-codex": "gpt-5.5",
+			"google": "gemini-2.0-flash-thinking-exp"
+		},
+		"sonnet": {
+			"anthropic": "claude-sonnet-4-5-20250929",
+			"openai": "gpt-4o",
+			"openai-codex": "gpt-5.4",
+			"google": "gemini-2.0-flash-exp"
+		},
+		"haiku": {
+			"anthropic": "claude-haiku-4-5-20251001",
+			"openai": "gpt-4o-mini",
+			"openai-codex": "gpt-5.4-mini",
+			"google": "gemini-2.0-flash-lite-exp"
+		}
+	},
+	"a2aSkillLanes": [
+		{
+			"laneId": "code-writer",
+			"skillId": "maestro.subagent.code-writer",
+			"displayName": "Maestro code writer subagent",
+			"description": "Delegate bounded implementation work to a target-owned Maestro coding child agent.",
+			"tags": ["maestro", "subagent", "code", "write"],
+			"typeAliases": ["worker", "coder", "code", "code-writer", "default"],
+			"capabilityAliases": [
+				"code:write",
+				"code-write",
+				"code:edit",
+				"code-edit",
+				"code:implement",
+				"code-implement"
+			]
+		},
+		{
+			"laneId": "code-review",
+			"skillId": "maestro.subagent.code-review",
+			"displayName": "Maestro code review subagent",
+			"description": "Delegate code review and risk analysis to a target-owned Maestro review child agent.",
+			"tags": ["maestro", "subagent", "code", "review"],
+			"typeAliases": [
+				"pr-review",
+				"review",
+				"reviewer",
+				"code-review",
+				"code-reviewer"
+			],
+			"capabilityAliases": ["code:review", "code-review"]
+		},
+		{
+			"laneId": "test-runner",
+			"skillId": "maestro.subagent.test-runner",
+			"displayName": "Maestro test runner subagent",
+			"description": "Delegate test execution, failure triage, and verification evidence capture to a target-owned Maestro child agent.",
+			"tags": ["maestro", "subagent", "test", "ci"],
+			"typeAliases": ["test", "qa", "ci", "ci-monitor", "test-runner"],
+			"capabilityAliases": [
+				"code:test",
+				"code-test",
+				"test:run",
+				"test-run",
+				"test-runner"
+			]
+		},
+		{
+			"laneId": "repo-explorer",
+			"skillId": "maestro.subagent.repo-explorer",
+			"displayName": "Maestro repo explorer subagent",
+			"description": "Delegate repository inspection and context gathering to a target-owned Maestro exploration child agent.",
+			"tags": ["maestro", "subagent", "repo", "explore"],
+			"typeAliases": [
+				"explore",
+				"explorer",
+				"repo-explorer",
+				"research",
+				"competitive-intel",
+				"people-research"
+			],
+			"capabilityAliases": [
+				"repo:explore",
+				"repo-explore",
+				"repo-explorer",
+				"code:search",
+				"code-search"
+			]
+		},
+		{
+			"laneId": "release-shepherd",
+			"skillId": "maestro.subagent.release-shepherd",
+			"displayName": "Maestro release shepherd subagent",
+			"description": "Delegate release, rollout, and merge-follow-through work to a target-owned Maestro child agent.",
+			"tags": ["maestro", "subagent", "release", "deploy"],
+			"typeAliases": ["release", "release-shepherd"],
+			"capabilityAliases": [
+				"release:shepherd",
+				"release-shepherd",
+				"release:manage",
+				"release-manage"
+			]
+		}
+	],
+	"modeDispatch": {
+		"smart": {
+			"primaryTier": "opus",
+			"reasoningEffort": "medium",
+			"fallbackSubagent": "custom",
+			"subagents": {
+				"explorer": { "model": "haiku", "reasoningEffort": "low" },
+				"planner": { "model": "opus", "reasoningEffort": "high" },
+				"coder": {
+					"model": "openai-codex/gpt-5.5",
+					"reasoningEffort": "medium"
+				},
+				"reviewer": { "model": "sonnet", "reasoningEffort": "medium" },
+				"researcher": { "model": "sonnet", "reasoningEffort": "medium" },
+				"minimal": { "model": "haiku", "reasoningEffort": "low" }
+			}
+		},
+		"rush": {
+			"primaryTier": "sonnet",
+			"reasoningEffort": "low",
+			"fallbackSubagent": "custom",
+			"subagents": {
+				"explorer": { "model": "haiku", "reasoningEffort": "low" },
+				"planner": { "model": "sonnet", "reasoningEffort": "low" },
+				"coder": { "model": "sonnet", "reasoningEffort": "low" },
+				"reviewer": { "model": "haiku", "reasoningEffort": "low" },
+				"researcher": { "model": "haiku", "reasoningEffort": "low" },
+				"minimal": { "model": "haiku", "reasoningEffort": "low" }
+			}
+		},
+		"free": {
+			"primaryTier": "haiku",
+			"reasoningEffort": "low",
+			"fallbackSubagent": "custom",
+			"subagents": {
+				"explorer": { "model": "haiku", "reasoningEffort": "low" },
+				"planner": { "model": "haiku", "reasoningEffort": "low" },
+				"coder": { "model": "haiku", "reasoningEffort": "low" },
+				"reviewer": { "model": "haiku", "reasoningEffort": "low" },
+				"researcher": { "model": "haiku", "reasoningEffort": "low" },
+				"minimal": { "model": "haiku", "reasoningEffort": "low" }
+			}
+		},
+		"custom": {
+			"primaryTier": "sonnet",
+			"reasoningEffort": "medium",
+			"fallbackSubagent": "researcher",
+			"subagents": {}
+		},
+		"frontier": {
+			"primaryTier": "opus",
+			"reasoningEffort": "high",
+			"fallbackSubagent": "custom",
+			"subagents": {
+				"explorer": { "model": "sonnet", "reasoningEffort": "medium" },
+				"planner": { "model": "opus", "reasoningEffort": "xhigh" },
+				"coder": {
+					"model": "openai-codex/gpt-5.5",
+					"reasoningEffort": "high"
+				},
+				"reviewer": {
+					"model": "openai-codex/gpt-5.5",
+					"reasoningEffort": "medium"
+				},
+				"researcher": { "model": "sonnet", "reasoningEffort": "medium" },
+				"minimal": { "model": "haiku", "reasoningEffort": "low" }
+			}
+		},
+		"replay": {
+			"primaryTier": "haiku",
+			"reasoningEffort": "low",
+			"fallbackSubagent": "custom",
+			"subagents": {
+				"explorer": { "model": "haiku", "reasoningEffort": "low" },
+				"planner": { "model": "haiku", "reasoningEffort": "low" },
+				"coder": { "model": "haiku", "reasoningEffort": "low" },
+				"reviewer": { "model": "haiku", "reasoningEffort": "low" },
+				"researcher": { "model": "haiku", "reasoningEffort": "low" },
+				"minimal": { "model": "haiku", "reasoningEffort": "low" }
+			}
+		}
+	}
+}

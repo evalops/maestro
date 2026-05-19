@@ -17,6 +17,7 @@ export {
 } from "./tools/index.js";
 export {
 	recordEvaluationResult,
+	recordSubagentDispatch,
 	recordToolExecution,
 } from "./telemetry.js";
 

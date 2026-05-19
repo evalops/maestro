@@ -10,6 +10,7 @@ import {
 	buildMaestroCloudEvent,
 	closeMaestroEventBusTransport,
 	getMaestroEventBusStatus,
+	mirrorTelemetryToMaestroEventBus,
 	publishMaestroCloudEvent,
 	publishMaestroCloudEventStrict,
 	recordMaestroEvalScored,
@@ -17,6 +18,7 @@ import {
 	recordMaestroPromptVariantSelected,
 	recordMaestroSkillInvoked,
 	recordMaestroSkillOutcome,
+	recordMaestroSubagentDispatch,
 	recordMaestroToolCallCompleted,
 	resolveMaestroEventBusConfig,
 	setMaestroEventBusTransportForTests,
@@ -766,6 +768,104 @@ describe("maestro event bus", () => {
 					artifactId: "skill_remote_1",
 					source: "service",
 				},
+			},
+		});
+	});
+
+	it("publishes subagent dispatch CloudEvents for audit replay", async () => {
+		const published: Array<{ subject: string; payload: string }> = [];
+		setMaestroEventBusTransportForTests({
+			async publish(subject, payload) {
+				published.push({ subject, payload });
+			},
+		});
+
+		recordMaestroSubagentDispatch({
+			dispatch_id: "dispatch_1",
+			mode: "smart",
+			subagent_type: "coder",
+			model: "gpt-5.5",
+			provider: "openai-codex",
+			reasoning_effort: "medium",
+			source: "mode",
+			success: true,
+			latency_ms: 7,
+			parent_mode: "smart",
+			parent_model_provider: "anthropic",
+			swarm_id: "swarm_1",
+			task_id: "task_1",
+			teammate_id: "teammate_1",
+			dispatched_at: "2026-05-19T17:00:00.000Z",
+			env: { MAESTRO_EVENT_BUS_URL: "nats://bus.example:4222" },
+		});
+
+		await Promise.resolve();
+
+		expect(published).toHaveLength(1);
+		expect(published[0]?.subject).toBe("maestro.events.subagent.dispatched");
+		expect(JSON.parse(published[0]?.payload ?? "{}")).toMatchObject({
+			type: "maestro.events.subagent.dispatched",
+			data: {
+				"@type": "type.googleapis.com/maestro.v1.SubagentDispatch",
+				dispatch_id: "dispatch_1",
+				mode: "smart",
+				subagent_type: "coder",
+				model: "gpt-5.5",
+				provider: "openai-codex",
+				reasoning_effort: "medium",
+				source: "mode",
+				success: true,
+				latency_ms: 7,
+				parent_mode: "smart",
+				parent_model_provider: "anthropic",
+				swarm_id: "swarm_1",
+				task_id: "task_1",
+				teammate_id: "teammate_1",
+				dispatched_at: "2026-05-19T17:00:00.000Z",
+			},
+		});
+	});
+
+	it("mirrors subagent dispatch telemetry into audit CloudEvents", async () => {
+		const published: Array<{ subject: string; payload: string }> = [];
+		setMaestroEventBusTransportForTests({
+			async publish(subject, payload) {
+				published.push({ subject, payload });
+			},
+		});
+
+		const telemetryEvent = {
+			type: "subagent-dispatch",
+			timestamp: "2026-05-19T17:01:00.000Z",
+			mode: "smart",
+			subagentType: "planner",
+			model: "claude-sonnet-4-5",
+			provider: "anthropic",
+			reasoningEffort: "medium",
+			source: "tier",
+			success: false,
+			latencyMs: 3,
+			metadata: {
+				dispatchId: "dispatch_2",
+				swarmId: "swarm_2",
+				taskId: "task_2",
+				reason: "missing_parent_model_provider",
+			},
+		} as Parameters<typeof mirrorTelemetryToMaestroEventBus>[0] &
+			Record<string, unknown>;
+		await mirrorTelemetryToMaestroEventBus(telemetryEvent);
+
+		expect(published).toHaveLength(1);
+		expect(JSON.parse(published[0]?.payload ?? "{}")).toMatchObject({
+			type: "maestro.events.subagent.dispatched",
+			data: {
+				dispatch_id: "dispatch_2",
+				subagent_type: "planner",
+				success: false,
+				latency_ms: 3,
+				swarm_id: "swarm_2",
+				task_id: "task_2",
+				reason: "missing_parent_model_provider",
 			},
 		});
 	});

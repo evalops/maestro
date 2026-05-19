@@ -1,4 +1,4 @@
-import type { AgentEvent } from "../agent/types.js";
+import type { AgentEvent, AppMessage, Usage } from "../agent/types.js";
 import {
 	PlatformDelegationStatusValue,
 	delegateAgentWithPlatform,
@@ -16,6 +16,7 @@ import {
 	PlatformRuntimeEventTypeValue,
 	completeAgentRuntimeRun,
 	failAgentRuntimeRun,
+	recordAgentRuntimeRunCost,
 	recordAgentRuntimeRunEvent,
 	recordAgentRuntimeRunStep,
 	recordAgentRuntimeRunWorkItem,
@@ -71,6 +72,7 @@ type ProgressOperation = () => Promise<unknown>;
 export interface HostedAgentRuntimeProgressRecorderOperations {
 	recordStep?: typeof recordAgentRuntimeRunStep;
 	recordEvent?: typeof recordAgentRuntimeRunEvent;
+	recordCost?: typeof recordAgentRuntimeRunCost;
 	recordWorkItem?: typeof recordAgentRuntimeRunWorkItem;
 	updateWorkItem?: typeof updateAgentRuntimeRunWorkItem;
 	waitRun?: typeof waitAgentRuntimeRun;
@@ -134,6 +136,10 @@ function objectKeys(value: unknown): string[] | undefined {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
 	return Boolean(value && typeof value === "object" && !Array.isArray(value));
+}
+
+function finiteNumber(value: unknown): number {
+	return typeof value === "number" && Number.isFinite(value) ? value : 0;
 }
 
 function stringArray(value: unknown): string[] {
@@ -528,6 +534,7 @@ export class HostedAgentRuntimeProgressRecorder {
 		string,
 		string
 	>();
+	private readonly recordedModelUsageTurnIds = new Set<string>();
 	private pending: Promise<void> = Promise.resolve();
 	private turnIndex = 0;
 	private terminalRecorded = false;
@@ -540,6 +547,7 @@ export class HostedAgentRuntimeProgressRecorder {
 			recordStep: options.operations?.recordStep ?? recordAgentRuntimeRunStep,
 			recordEvent:
 				options.operations?.recordEvent ?? recordAgentRuntimeRunEvent,
+			recordCost: options.operations?.recordCost ?? recordAgentRuntimeRunCost,
 			recordWorkItem:
 				options.operations?.recordWorkItem ?? recordAgentRuntimeRunWorkItem,
 			updateWorkItem:
@@ -610,6 +618,7 @@ export class HostedAgentRuntimeProgressRecorder {
 						tool_result_count: event.toolResults.length,
 					}),
 				});
+				this.recordModelUsageEvent(event.message);
 				return;
 			case "tool_execution_start":
 				this.recordStep({
@@ -919,6 +928,72 @@ export class HostedAgentRuntimeProgressRecorder {
 		});
 	}
 
+	private recordModelUsageEvent(message: AppMessage): void {
+		if (message.role !== "assistant") {
+			return;
+		}
+		const usage = message.usage as Usage | undefined;
+		if (!usage) {
+			return;
+		}
+		const inputTokens = finiteNumber(usage.input);
+		const outputTokens = finiteNumber(usage.output);
+		const cacheReadTokens = finiteNumber(usage.cacheRead);
+		const cacheWriteTokens = finiteNumber(usage.cacheWrite);
+		const totalTokens =
+			inputTokens + outputTokens + cacheReadTokens + cacheWriteTokens;
+		const estimatedCostMicros = Math.max(
+			0,
+			Math.round(finiteNumber(usage.cost?.total) * 1_000_000),
+		);
+		if (totalTokens <= 0 && estimatedCostMicros <= 0) {
+			return;
+		}
+		const turnId = String(this.turnIndex);
+		if (this.recordedModelUsageTurnIds.has(turnId)) {
+			return;
+		}
+		this.recordedModelUsageTurnIds.add(turnId);
+		const modelCallId = this.stepId("model", turnId);
+		const costId = this.costId(turnId);
+		const stepId = this.stepId("turn", turnId);
+		const meterRef = this.meterRef(costId);
+		this.recordEvent({
+			type: PlatformRuntimeEventTypeValue.ModelResponseRecorded,
+			message: "Maestro model response usage recorded",
+			stepId,
+			costId,
+			attributes: this.basePayload({
+				event_type: "model_response_recorded",
+				session_kind: "codex",
+				session_provider: "maestro",
+				model_call_id: modelCallId,
+				cost_id: costId,
+				provider: message.provider,
+				model: message.model,
+				input_tokens: inputTokens,
+				output_tokens: outputTokens,
+				cache_read_tokens: cacheReadTokens,
+				cache_write_tokens: cacheWriteTokens,
+				total_tokens: totalTokens,
+				estimated_cost_micros: estimatedCostMicros,
+				currency: "USD",
+			}),
+		});
+		this.recordCost({
+			id: costId,
+			stepId,
+			meterRef,
+			provider: message.provider,
+			model: message.model,
+			inputTokens,
+			outputTokens,
+			totalTokens,
+			currency: estimatedCostMicros > 0 ? "USD" : undefined,
+			estimatedCostMicros,
+		});
+	}
+
 	private recordDrainManifestEvent(input: HostedAgentRuntimeDrainInput): void {
 		this.recordEvent({
 			type: PlatformRuntimeEventTypeValue.AgentProgressRecorded,
@@ -950,6 +1025,25 @@ export class HostedAgentRuntimeProgressRecorder {
 			await this.operations.recordEvent({
 				runId,
 				...event,
+			});
+		});
+	}
+
+	private recordCost(
+		cost: Parameters<typeof recordAgentRuntimeRunCost>[0]["cost"],
+	): void {
+		this.enqueue(async () => {
+			const runId = nonEmptyString(this.hostedRunner?.agentRunId);
+			const leaseToken = nonEmptyString(
+				this.hostedRunner?.agentRuntimeLeaseToken,
+			);
+			if (!this.hostedRunner?.enabled || !runId || !leaseToken) {
+				return;
+			}
+			await this.operations.recordCost({
+				runId,
+				leaseToken,
+				cost,
 			});
 		});
 	}
@@ -1439,6 +1533,14 @@ export class HostedAgentRuntimeProgressRecorder {
 
 	private resumeEventId(requestId: string): string {
 		return this.stepId("resume", requestId);
+	}
+
+	private costId(turnId: string): string {
+		return this.stepId("cost", turnId);
+	}
+
+	private meterRef(costId: string): string {
+		return `meter://maestro/model-usage/${safeIdPart(costId)}`;
 	}
 }
 

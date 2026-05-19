@@ -333,6 +333,27 @@ export interface EvalScoredEventData extends Record<string, unknown> {
 	scored_at: string;
 }
 
+export interface SubagentDispatchEventData extends Record<string, unknown> {
+	correlation: MaestroCorrelation;
+	dispatch_id: string;
+	mode: string;
+	subagent_type: string;
+	model: string;
+	provider: string;
+	reasoning_effort: string;
+	source?: string;
+	success: boolean;
+	latency_ms: number;
+	parent_mode?: string;
+	parent_model_provider?: string;
+	swarm_id?: string;
+	task_id?: string;
+	teammate_id?: string;
+	reason?: string;
+	metadata?: Record<string, unknown>;
+	dispatched_at: string;
+}
+
 export interface MaestroEventBusTransport {
 	publish(subject: string, payload: string): Promise<void>;
 	close?(): Promise<void>;
@@ -511,6 +532,29 @@ export interface RecordMaestroEvalScoredInput {
 	assertion_count?: number;
 	correlation?: Partial<MaestroCorrelation>;
 	scored_at?: string;
+	env?: Env;
+}
+
+export interface RecordMaestroSubagentDispatchInput {
+	event_id?: string;
+	dispatch_id?: string;
+	mode: string;
+	subagent_type: string;
+	model: string;
+	provider: string;
+	reasoning_effort: string;
+	source?: string;
+	success: boolean;
+	latency_ms?: number;
+	parent_mode?: string;
+	parent_model_provider?: string;
+	swarm_id?: string;
+	task_id?: string;
+	teammate_id?: string;
+	reason?: string;
+	metadata?: Record<string, unknown>;
+	correlation?: Partial<MaestroCorrelation>;
+	dispatched_at?: string;
 	env?: Env;
 }
 
@@ -1169,6 +1213,34 @@ function stringMetadata(metadata: unknown, name: string): string | undefined {
 		: undefined;
 }
 
+function stringField(
+	fields: Record<string, unknown>,
+	name: string,
+): string | undefined {
+	const value = fields[name];
+	return typeof value === "string" && value.trim().length > 0
+		? value
+		: undefined;
+}
+
+function numberField(
+	fields: Record<string, unknown>,
+	name: string,
+): number | undefined {
+	const value = fields[name];
+	return typeof value === "number" && Number.isFinite(value)
+		? value
+		: undefined;
+}
+
+function booleanField(
+	fields: Record<string, unknown>,
+	name: string,
+): boolean | undefined {
+	const value = fields[name];
+	return typeof value === "boolean" ? value : undefined;
+}
+
 function closeReasonFromMetadata(
 	metadata: unknown,
 ): MaestroCloseReason | undefined {
@@ -1504,6 +1576,41 @@ export function recordMaestroSkillOutcome(
 	);
 }
 
+export function recordMaestroSubagentDispatch(
+	event: RecordMaestroSubagentDispatchInput,
+): void {
+	const dispatchedAt = event.dispatched_at ?? new Date().toISOString();
+	void publishMaestroCloudEvent<SubagentDispatchEventData>(
+		MaestroBusEventType.SubagentDispatched,
+		{
+			correlation: mergeCorrelation(
+				resolveMaestroEventBusConfig(event.env).defaultCorrelation,
+				event.correlation,
+			),
+			dispatch_id:
+				event.dispatch_id ??
+				`${event.mode}:${event.subagent_type}:${dispatchedAt}`,
+			mode: event.mode,
+			subagent_type: event.subagent_type,
+			model: event.model,
+			provider: event.provider,
+			reasoning_effort: event.reasoning_effort,
+			source: event.source,
+			success: event.success,
+			latency_ms: event.latency_ms ?? 0,
+			parent_mode: event.parent_mode,
+			parent_model_provider: event.parent_model_provider,
+			swarm_id: event.swarm_id,
+			task_id: event.task_id,
+			teammate_id: event.teammate_id,
+			reason: event.reason,
+			metadata: event.metadata,
+			dispatched_at: dispatchedAt,
+		},
+		{ env: event.env, eventId: event.event_id, time: dispatchedAt },
+	);
+}
+
 export function recordMaestroEvalScored(
 	event: RecordMaestroEvalScoredInput,
 ): void {
@@ -1567,6 +1674,61 @@ export async function mirrorTelemetryToMaestroEventBus(
 				occurred_at: event.timestamp,
 			},
 			{ time: event.timestamp },
+		);
+		return;
+	}
+
+	if (event.type === "subagent-dispatch") {
+		const metadata = fields.metadata;
+		const mode = stringField(fields, "mode") ?? "unknown";
+		const subagentType =
+			stringField(fields, "subagentType") ??
+			stringMetadata(metadata, "subagent_type") ??
+			stringMetadata(metadata, "subagentType") ??
+			"unknown";
+		const dispatchedAt = event.timestamp;
+		await publishMaestroCloudEvent<SubagentDispatchEventData>(
+			MaestroBusEventType.SubagentDispatched,
+			{
+				correlation: mergeCorrelation(
+					resolveMaestroEventBusConfig().defaultCorrelation,
+					correlationFromMetadata(metadata),
+				),
+				dispatch_id:
+					stringMetadata(metadata, "dispatchId") ??
+					stringMetadata(metadata, "dispatch_id") ??
+					`${mode}:${subagentType}:${dispatchedAt}`,
+				mode,
+				subagent_type: subagentType,
+				model: stringField(fields, "model") ?? "unknown",
+				provider: stringField(fields, "provider") ?? "unknown",
+				reasoning_effort: stringField(fields, "reasoningEffort") ?? "unknown",
+				source: stringField(fields, "source"),
+				success: booleanField(fields, "success") ?? false,
+				latency_ms: numberField(fields, "latencyMs") ?? 0,
+				parent_mode:
+					stringMetadata(metadata, "parentMode") ??
+					stringMetadata(metadata, "parent_mode"),
+				parent_model_provider:
+					stringMetadata(metadata, "parentModelProvider") ??
+					stringMetadata(metadata, "parent_model_provider"),
+				swarm_id:
+					stringMetadata(metadata, "swarmId") ??
+					stringMetadata(metadata, "swarm_id"),
+				task_id:
+					stringMetadata(metadata, "taskId") ??
+					stringMetadata(metadata, "task_id"),
+				teammate_id:
+					stringMetadata(metadata, "teammateId") ??
+					stringMetadata(metadata, "teammate_id"),
+				reason:
+					stringMetadata(metadata, "reason") ??
+					stringMetadata(metadata, "failureReason") ??
+					stringMetadata(metadata, "failure_reason"),
+				metadata: contextFromMetadata(metadata),
+				dispatched_at: dispatchedAt,
+			},
+			{ time: dispatchedAt },
 		);
 		return;
 	}

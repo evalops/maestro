@@ -575,7 +575,7 @@ describe("A2A fleet delegation CLI", () => {
 						workspaceId: "ws_1",
 						capability: "code:review",
 						surface: "a2a",
-						status: "AGENT_STATUS_ONLINE",
+						status: "AGENT_STATUS_IDLE",
 						limit: 10,
 					});
 					return new Response(
@@ -586,7 +586,7 @@ describe("A2A fleet delegation CLI", () => {
 									workspaceId: "ws_1",
 									name: "Remote Maestro Reviewer",
 									agentType: "maestro",
-									status: "AGENT_STATUS_ONLINE",
+									status: "AGENT_STATUS_IDLE",
 									a2a: {
 										publicEndpointUrl: baseUrl,
 										agentCardUrl: `${baseUrl}/.well-known/agent-card.json`,

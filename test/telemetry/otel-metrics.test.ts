@@ -43,6 +43,8 @@ describe("Maestro OTel metrics catalog", () => {
 			"tool_service.skill.invocation_count",
 			"agent.turn_count",
 			"agent.turn_latency",
+			"agent.subagent.dispatch_count",
+			"agent.subagent.dispatch_latency",
 			"compaction.triggered",
 			"llm.request_count",
 			"llm.tokens_used",
@@ -117,6 +119,16 @@ describe("Maestro OTel metrics catalog", () => {
 			modelProvider: "anthropic",
 		});
 		metrics.recordCompactionMetric({ "maestro.session_id": "session_1" });
+		metrics.recordSubagentDispatchMetric({
+			mode: "smart",
+			subagentType: "coder",
+			provider: "openai-codex",
+			model: "gpt-5.5",
+			reasoningEffort: "medium",
+			source: "mode",
+			success: true,
+			latencyMs: 7,
+		});
 		metrics.recordLlmRequestMetric({
 			provider: "anthropic",
 			modelId: "claude-opus-4-6",
@@ -157,6 +169,22 @@ describe("Maestro OTel metrics catalog", () => {
 		expect(counters.get("compaction.triggered")?.add).toHaveBeenCalledWith(
 			1,
 			expect.objectContaining({ "maestro.session_id": "session_1" }),
+		);
+		expect(
+			counters.get("agent.subagent.dispatch_count")?.add,
+		).toHaveBeenCalledWith(
+			1,
+			expect.objectContaining({
+				"maestro.subagent.mode": "smart",
+				"maestro.subagent.type": "coder",
+				"llm.model.provider": "openai-codex",
+			}),
+		);
+		expect(
+			histograms.get("agent.subagent.dispatch_latency")?.record,
+		).toHaveBeenCalledWith(
+			7,
+			expect.objectContaining({ "maestro.subagent.success": true }),
 		);
 		expect(counters.get("llm.request_count")?.add).toHaveBeenCalledWith(
 			1,
