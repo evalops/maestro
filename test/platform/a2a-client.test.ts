@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
 	buildA2AUserMessage,
+	cancelA2ATask,
 	createA2ATaskPushNotificationConfig,
 	deleteA2ATaskPushNotificationConfig,
 	discoverA2AAgentCard,
@@ -185,6 +186,14 @@ describe("platform A2A client", () => {
 						id: "run_1",
 						contextId: "session_1",
 						status: { state: "TASK_STATE_COMPLETED" },
+					});
+				}
+
+				if (parsed.pathname === "/tasks/run_1:cancel") {
+					return Response.json({
+						id: "run_1",
+						contextId: "session_1",
+						status: { state: "TASK_STATE_CANCELLED" },
 					});
 				}
 
@@ -824,6 +833,28 @@ describe("platform A2A client", () => {
 			status: { state: "TASK_STATE_COMPLETED" },
 		});
 		expect(requests[0]?.url).toBe("https://platform.test/tasks/run_1");
+	});
+
+	it("cancels an A2A task by run id", async () => {
+		const config = await resolveA2AServiceConfig();
+		if (!config) {
+			throw new Error("expected config");
+		}
+
+		await expect(cancelA2ATask(config, "run_1")).resolves.toMatchObject({
+			id: "run_1",
+			status: { state: "TASK_STATE_CANCELLED" },
+		});
+		expect(requests[0]).toMatchObject({
+			url: "https://platform.test/tasks/run_1:cancel",
+			method: "POST",
+			headers: expect.objectContaining({
+				authorization: "Bearer a2a-token",
+				"x-evalops-actor-id": "user_1",
+				"x-evalops-agent-id": "agent_maestro",
+				"x-evalops-workspace-id": "ws_1",
+			}),
+		});
 	});
 
 	it("subscribes to A2A task SSE updates with explicit trace headers", async () => {

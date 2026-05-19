@@ -12,10 +12,37 @@ import { existsSync, mkdirSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { type DelegationPrompt, formatDelegation } from "@evalops/contracts";
+import { codexSubagentTypeA2ASkillID } from "../../codex/subagent-dispatch-table.js";
 import {
 	buildEvalOpsDelegationEnvironment,
 	issueEvalOpsDelegationToken,
 } from "../../oauth/index.js";
+import {
+	type A2AServiceConfig,
+	type A2ATask,
+	buildA2AUserMessage,
+	cancelA2ATask,
+	getA2ATask,
+	normalizeA2ABaseUrl,
+	sendA2AMessage,
+} from "../../platform/a2a-client.js";
+import {
+	type ResolvedA2APeer,
+	resolveA2APeer,
+} from "../../platform/a2a-peer-registry.js";
+import {
+	extractA2ATaskText,
+	isTerminalA2AState,
+	recordA2ATaskStart,
+	updateA2ATaskInLedger,
+} from "../../platform/a2a-task-ledger.js";
+import {
+	type PlatformAgentRegistryA2APeerCandidate,
+	PlatformAgentStatusValue,
+	listA2APeerCandidatesWithPlatform,
+	resolveAgentRegistryServiceConfig,
+} from "../../platform/agent-registry-client.js";
+import { getEnvValue, trimString } from "../../platform/client.js";
 import { recordSubagentDispatch } from "../../telemetry.js";
 import { createLogger } from "../../utils/logger.js";
 import {
@@ -27,6 +54,7 @@ import {
 } from "../modes.js";
 import { publishSwarmRuntimeEvent } from "./runtime-events.js";
 import type {
+	SwarmA2AConfig,
 	SwarmConfig,
 	SwarmEvent,
 	SwarmEventHandler,
@@ -44,6 +72,7 @@ const DEFAULT_TASK_TIMEOUT_MS = 5 * 60 * 1000;
 
 /** Maximum concurrent teammates */
 const MAX_TEAMMATES = 10;
+const DEFAULT_A2A_POLL_INTERVAL_MS = 2_000;
 
 /** Teammate name prefixes for friendly identification */
 const TEAMMATE_NAMES = [
@@ -88,12 +117,19 @@ function cloneTeammate(teammate: SwarmTeammate): SwarmTeammate {
 			? cloneTask(teammate.currentTask)
 			: undefined,
 		completedTasks: [...teammate.completedTasks],
+		a2a: teammate.a2a ? { ...teammate.a2a } : undefined,
 	};
 }
 
 function cloneConfig(config: SwarmConfig): SwarmConfig {
 	return {
 		...config,
+		a2a: config.a2a
+			? {
+					...config.a2a,
+					peers: config.a2a.peers ? [...config.a2a.peers] : undefined,
+				}
+			: undefined,
 		tasks: config.tasks.map(cloneTask),
 	};
 }
@@ -140,6 +176,54 @@ function providerFromPrefixedModel(
 	return parseModelProvider(model.slice(0, slashIndex));
 }
 
+function parseBooleanEnv(value: string | undefined): boolean | undefined {
+	const normalized = value?.trim().toLowerCase();
+	if (!normalized) {
+		return undefined;
+	}
+	if (["1", "true", "yes", "on"].includes(normalized)) {
+		return true;
+	}
+	if (["0", "false", "no", "off"].includes(normalized)) {
+		return false;
+	}
+	return undefined;
+}
+
+function parsePositiveIntEnv(value: string | undefined): number | undefined {
+	const parsed = Number.parseInt(value ?? "", 10);
+	return Number.isFinite(parsed) && parsed > 0 ? parsed : undefined;
+}
+
+function parseCSVEnv(value: string | undefined): string[] | undefined {
+	const parsed = value
+		?.split(",")
+		.map((item) => item.trim())
+		.filter(Boolean);
+	return parsed && parsed.length > 0 ? parsed : undefined;
+}
+
+function a2aStateCompleted(state: string | undefined): boolean {
+	return /COMPLETED/u.test(
+		(state ?? "").toUpperCase().replace(/[\s-]+/gu, "_"),
+	);
+}
+
+type A2ATeammateRoute = {
+	name: string;
+	displayName?: string;
+	config: A2AServiceConfig;
+	skillId?: string;
+	role?: string;
+	tasksPath?: string;
+	source: "registry" | "platform-agent-registry";
+};
+
+type RemoteA2ARunningTask = {
+	route: A2ATeammateRoute;
+	taskId: string;
+};
+
 function buildDispatchEnv(
 	dispatch: ResolvedSubagentDispatch | null,
 	reasoningEffortOverride?: string,
@@ -182,6 +266,8 @@ type TaskDispatchResolution = {
 export class SwarmExecutor {
 	private state: SwarmState;
 	private processes: Map<string, ChildProcess> = new Map();
+	private remoteA2ATasks: Map<string, RemoteA2ARunningTask> = new Map();
+	private a2aRouteCursor = 0;
 	private eventHandlers: Set<SwarmEventHandler> = new Set();
 	private abortController: AbortController;
 
@@ -266,6 +352,11 @@ export class SwarmExecutor {
 	 * Cancel the swarm execution.
 	 */
 	cancel(): void {
+		const remoteTasks = [...this.remoteA2ATasks.entries()];
+		for (const [teammateId, remoteTask] of remoteTasks) {
+			void this.cancelRemoteA2ATask(teammateId, remoteTask);
+		}
+
 		this.abortController.abort();
 		this.state.status = "cancelled";
 
@@ -296,6 +387,29 @@ export class SwarmExecutor {
 		logger.info("Swarm cancelled", { swarmId: this.state.id });
 	}
 
+	private async cancelRemoteA2ATask(
+		teammateId: string,
+		remoteTask: RemoteA2ARunningTask,
+	): Promise<void> {
+		try {
+			const cancelledTask = await cancelA2ATask(
+				remoteTask.route.config,
+				remoteTask.taskId,
+			);
+			await this.updateA2ASwarmTaskLedger(remoteTask.route, cancelledTask);
+		} catch (error) {
+			logger.warn("Failed to cancel remote A2A swarm task", {
+				error: error instanceof Error ? error.message : String(error),
+				swarmId: this.state.id,
+				teammateId,
+				remoteTaskId: remoteTask.taskId,
+				peer: remoteTask.route.name,
+			});
+		} finally {
+			this.remoteA2ATasks.delete(teammateId);
+		}
+	}
+
 	/**
 	 * Execute the swarm - runs all tasks with available teammates.
 	 */
@@ -318,6 +432,8 @@ export class SwarmExecutor {
 				this.state.status === "running" &&
 				(this.state.pendingTasks.length > 0 || this.state.activeTasks.size > 0)
 			) {
+				this.skipTasksBlockedByFailedDependencies();
+
 				// Assign tasks to idle teammates
 				await this.assignTasks();
 
@@ -418,16 +534,43 @@ export class SwarmExecutor {
 		for (const task of this.state.pendingTasks) {
 			// Check dependencies
 			if (task.dependsOn && task.dependsOn.length > 0) {
-				const allDepsCompleted = task.dependsOn.every(
-					(depId) =>
-						this.state.completedTasks.has(depId) ||
-						this.state.failedTasks.has(depId),
+				const allDepsCompleted = task.dependsOn.every((depId) =>
+					this.state.completedTasks.has(depId),
 				);
 				if (!allDepsCompleted) continue;
 			}
 			return task;
 		}
 		return null;
+	}
+
+	private skipTasksBlockedByFailedDependencies(): void {
+		const blockedTasks = this.state.pendingTasks.filter((task) =>
+			task.dependsOn?.some((depId) => this.state.failedTasks.has(depId)),
+		);
+		for (const task of blockedTasks) {
+			const pendingIndex = this.state.pendingTasks.findIndex(
+				(candidate) => candidate.id === task.id,
+			);
+			if (pendingIndex >= 0) {
+				this.state.pendingTasks.splice(pendingIndex, 1);
+			}
+			this.state.failedTasks.add(task.id);
+			const failedDependency = task.dependsOn?.find((depId) =>
+				this.state.failedTasks.has(depId),
+			);
+			const error = `Dependency ${failedDependency ?? "unknown"} failed`;
+			this.emit({
+				type: "task_fail",
+				swarmId: this.state.id,
+				teammateId: "dependency",
+				taskId: task.id,
+				error,
+			});
+			if (!this.state.config.continueOnFailure) {
+				this.state.status = "failed";
+			}
+		}
 	}
 
 	/**
@@ -596,6 +739,228 @@ export class SwarmExecutor {
 		);
 	}
 
+	private resolveA2AConfig(): SwarmA2AConfig | null {
+		const transport =
+			this.state.config.transport ??
+			trimString(process.env.MAESTRO_SWARM_TRANSPORT);
+		if (transport !== "a2a") {
+			return null;
+		}
+		const configured = this.state.config.a2a ?? {};
+		const peers =
+			configured.peers ?? parseCSVEnv(getEnvValue(["MAESTRO_SWARM_A2A_PEERS"]));
+		return {
+			...configured,
+			...(peers ? { peers } : {}),
+			registryPath:
+				configured.registryPath ??
+				trimString(process.env.MAESTRO_SWARM_A2A_REGISTRY),
+			tasksPath:
+				configured.tasksPath ?? trimString(process.env.MAESTRO_SWARM_A2A_TASKS),
+			skillId:
+				configured.skillId ??
+				trimString(process.env.MAESTRO_SWARM_A2A_SKILL_ID),
+			role: configured.role ?? trimString(process.env.MAESTRO_SWARM_A2A_ROLE),
+			discover:
+				configured.discover ??
+				parseBooleanEnv(process.env.MAESTRO_SWARM_A2A_DISCOVER),
+			workspaceId:
+				configured.workspaceId ??
+				trimString(process.env.MAESTRO_SWARM_A2A_WORKSPACE_ID),
+			capability:
+				configured.capability ??
+				trimString(process.env.MAESTRO_SWARM_A2A_CAPABILITY),
+			surface:
+				configured.surface ?? trimString(process.env.MAESTRO_SWARM_A2A_SURFACE),
+			preferInternalEndpoint:
+				configured.preferInternalEndpoint ??
+				parseBooleanEnv(process.env.MAESTRO_SWARM_A2A_PREFER_INTERNAL),
+			limit:
+				configured.limit ??
+				parsePositiveIntEnv(process.env.MAESTRO_SWARM_A2A_LIMIT),
+			timeoutMs:
+				configured.timeoutMs ??
+				parsePositiveIntEnv(process.env.MAESTRO_SWARM_A2A_TIMEOUT_MS),
+			maxAttempts:
+				configured.maxAttempts ??
+				parsePositiveIntEnv(process.env.MAESTRO_SWARM_A2A_MAX_ATTEMPTS),
+			maxWaitMs:
+				configured.maxWaitMs ??
+				parsePositiveIntEnv(process.env.MAESTRO_SWARM_A2A_MAX_WAIT_MS),
+			pollIntervalMs:
+				configured.pollIntervalMs ??
+				parsePositiveIntEnv(process.env.MAESTRO_SWARM_A2A_POLL_INTERVAL_MS),
+		};
+	}
+
+	private async resolveA2ATeammateRoute(
+		teammate: SwarmTeammate,
+		task: SwarmTask,
+		options: SwarmA2AConfig,
+	): Promise<A2ATeammateRoute> {
+		if (options.discover) {
+			return this.resolvePlatformDiscoveredA2ATeammateRoute(
+				teammate,
+				task,
+				options,
+			);
+		}
+		const peerName = this.selectA2APeerName(teammate, task, options);
+		const peer = await resolveA2APeer(peerName, {
+			path: options.registryPath,
+			timeoutMs: options.timeoutMs,
+			maxAttempts: options.maxAttempts,
+		});
+		return {
+			name: peer.name,
+			displayName: peer.entry.displayName,
+			config: peer.config,
+			skillId: this.resolveA2ASkillId(task, options, peer),
+			role: options.role ?? task.subagentType,
+			tasksPath: options.tasksPath,
+			source: "registry",
+		};
+	}
+
+	private async resolvePlatformDiscoveredA2ATeammateRoute(
+		teammate: SwarmTeammate,
+		task: SwarmTask,
+		options: SwarmA2AConfig,
+	): Promise<A2ATeammateRoute> {
+		const skillId = this.resolveA2ASkillId(task, options);
+		const pinnedPeer = trimString(task.a2aPeer);
+		const routeIndex = pinnedPeer ? 0 : this.nextA2ARouteIndex();
+		const candidates = await listA2APeerCandidatesWithPlatform({
+			workspaceId: options.workspaceId,
+			capability: options.capability,
+			surface: options.surface ?? "a2a",
+			status: PlatformAgentStatusValue.Idle,
+			limit:
+				options.limit ??
+				(pinnedPeer ? undefined : this.defaultA2ADiscoveryLimit()),
+			skillId,
+			preferInternalEndpoint: options.preferInternalEndpoint,
+		});
+		if (!candidates || candidates.length === 0) {
+			throw new Error(
+				`No Platform A2A peers available for swarm task ${task.id}${
+					skillId ? ` with skill ${skillId}` : ""
+				}`,
+			);
+		}
+		const candidatePool = pinnedPeer
+			? candidates.filter((candidate) =>
+					platformA2ACandidateMatchesPeer(candidate, pinnedPeer),
+				)
+			: candidates;
+		if (candidatePool.length === 0) {
+			throw new Error(
+				`No Platform A2A peer matched task ${task.id} a2aPeer ${pinnedPeer}`,
+			);
+		}
+		const candidateIndex = pinnedPeer ? 0 : routeIndex % candidatePool.length;
+		const candidate = candidatePool[candidateIndex];
+		if (!candidate) {
+			throw new Error(
+				"Platform A2A peer discovery returned an invalid candidate",
+			);
+		}
+		const config = await this.a2aConfigForPlatformCandidate(candidate, options);
+		return {
+			name: candidate.agent.name ?? candidate.agent.id ?? candidate.endpointUrl,
+			displayName: candidate.agent.name,
+			config,
+			skillId,
+			role: options.role ?? task.subagentType,
+			tasksPath: options.tasksPath,
+			source: "platform-agent-registry",
+		};
+	}
+
+	private async a2aConfigForPlatformCandidate(
+		candidate: PlatformAgentRegistryA2APeerCandidate,
+		options: SwarmA2AConfig,
+	): Promise<A2AServiceConfig> {
+		const platformConfig = await resolveAgentRegistryServiceConfig();
+		if (!platformConfig) {
+			throw new Error(
+				"Platform Agent Registry service is not configured for A2A swarm discovery",
+			);
+		}
+		return {
+			baseUrl: normalizeA2ABaseUrl(candidate.endpointUrl),
+			...(platformConfig.token ? { token: platformConfig.token } : {}),
+			...(platformConfig.organizationId
+				? { organizationId: platformConfig.organizationId }
+				: {}),
+			workspaceId:
+				candidate.agent.workspaceId ??
+				options.workspaceId ??
+				platformConfig.workspaceId,
+			...(candidate.agent.id ? { agentId: candidate.agent.id } : {}),
+			actorId: "maestro-swarm",
+			timeoutMs: options.timeoutMs ?? platformConfig.timeoutMs,
+			maxAttempts: options.maxAttempts ?? platformConfig.maxAttempts,
+		};
+	}
+
+	private selectA2APeerName(
+		teammate: SwarmTeammate,
+		task: SwarmTask,
+		options: SwarmA2AConfig,
+	): string {
+		const peerName = trimString(task.a2aPeer);
+		if (peerName) {
+			return peerName;
+		}
+		const peers = options.peers ?? [];
+		const selected = peers[this.nextA2ARouteIndex() % peers.length];
+		if (!selected) {
+			throw new Error(
+				"Remote A2A swarm transport requires a task a2aPeer, a2a.peers, MAESTRO_SWARM_A2A_PEERS, or a2a.discover=true",
+			);
+		}
+		return selected;
+	}
+
+	private resolveA2ASkillId(
+		task: SwarmTask,
+		options: SwarmA2AConfig,
+		peer?: ResolvedA2APeer,
+	): string | undefined {
+		const configured =
+			trimString(task.a2aSkillId) ??
+			trimString(options.skillId) ??
+			codexSubagentTypeA2ASkillID(
+				task.subagentType ?? this.state.config.subagentType,
+			);
+		if (configured) {
+			return configured;
+		}
+		return peer?.entry.skills?.[0]?.id;
+	}
+
+	private teammateIndex(teammate: SwarmTeammate): number {
+		const index = this.state.teammates.findIndex(
+			(item) => item.id === teammate.id,
+		);
+		return index >= 0 ? index : 0;
+	}
+
+	private nextA2ARouteIndex(): number {
+		const index = this.a2aRouteCursor;
+		this.a2aRouteCursor += 1;
+		return index;
+	}
+
+	private defaultA2ADiscoveryLimit(): number {
+		return Math.max(
+			1,
+			this.state.config.teammateCount,
+			this.state.config.tasks.length,
+		);
+	}
+
 	private async spawnTeammate(
 		teammate: SwarmTeammate,
 		task: SwarmTask,
@@ -620,6 +985,12 @@ export class SwarmExecutor {
 		const prompt = formatDelegation(delegationPrompt);
 
 		writeFileSync(tmpFile, prompt);
+
+		const a2aConfig = this.resolveA2AConfig();
+		if (a2aConfig) {
+			void this.spawnA2ATeammate(teammate, task, prompt, tmpFile, a2aConfig);
+			return;
+		}
 
 		const modelOverride =
 			task.model !== undefined
@@ -883,6 +1254,342 @@ export class SwarmExecutor {
 		});
 	}
 
+	private async spawnA2ATeammate(
+		teammate: SwarmTeammate,
+		task: SwarmTask,
+		prompt: string,
+		tmpFile: string,
+		options: SwarmA2AConfig,
+	): Promise<void> {
+		try {
+			const route = await this.resolveA2ATeammateRoute(teammate, task, options);
+			const messageId = `maestro-swarm-message-${randomUUID()}`;
+			const contextId = `maestro-swarm:${this.state.id}:${task.id}`;
+			const sent = await sendA2AMessage(route.config, {
+				message: buildA2AUserMessage({
+					messageId,
+					contextId,
+					text: prompt,
+					metadata: this.buildA2ASwarmMessageMetadata(teammate, task, route),
+				}),
+				configuration: {
+					returnImmediately: true,
+					acceptedOutputModes: ["text/plain", "application/json"],
+				},
+				metadata: {
+					route: "maestro_swarm",
+					transport: "a2a",
+					swarmId: this.state.id,
+					taskId: task.id,
+					teammateId: teammate.id,
+					peer: route.name,
+					source: route.source,
+				},
+			});
+			teammate.a2a = {
+				peer: route.name,
+				peerDisplayName: route.displayName,
+				source: route.source,
+				taskId: sent.task.id,
+				contextId: sent.task.contextId ?? contextId,
+				messageId,
+				skillId: route.skillId,
+				role: route.role,
+			};
+			this.remoteA2ATasks.set(teammate.id, {
+				route,
+				taskId: sent.task.id,
+			});
+			await this.recordA2ASwarmTaskStart(route, task, sent.task, {
+				messageId,
+				contextId,
+			});
+			if (
+				this.state.status === "cancelled" ||
+				this.abortController.signal.aborted
+			) {
+				await this.cancelRemoteA2ATask(teammate.id, {
+					route,
+					taskId: sent.task.id,
+				});
+				return;
+			}
+			const remoteTask = await this.waitForA2ASwarmTask(
+				route.config,
+				sent.task,
+				options,
+			);
+			await this.updateA2ASwarmTaskLedger(route, remoteTask);
+			this.completeA2ATeammate(teammate, task, remoteTask, route);
+		} catch (error) {
+			if (
+				this.state.status !== "cancelled" &&
+				!this.abortController.signal.aborted
+			) {
+				const remoteTask = this.remoteA2ATasks.get(teammate.id);
+				if (remoteTask) {
+					await this.cancelRemoteA2ATask(teammate.id, remoteTask);
+				}
+			}
+			this.failA2ATeammate(teammate, task, error);
+		} finally {
+			this.remoteA2ATasks.delete(teammate.id);
+			try {
+				unlinkSync(tmpFile);
+			} catch {
+				// Ignore cleanup errors
+			}
+		}
+	}
+
+	private buildA2ASwarmMessageMetadata(
+		teammate: SwarmTeammate,
+		task: SwarmTask,
+		route: A2ATeammateRoute,
+	): Record<string, unknown> {
+		const currentDelegationId = `${this.state.id}:${task.id}`;
+		const lineage = {
+			rootDelegationId: this.state.id,
+			...(this.state.config.parentSessionId
+				? { parentDelegationId: this.state.config.parentSessionId }
+				: {}),
+			currentDelegationId,
+			delegationChain: [this.state.id, currentDelegationId],
+			delegationChainDepth: 1,
+			maxDelegationChainDepth: 1,
+		};
+		const subagentRequest = route.skillId
+			? {
+					skillId: route.skillId,
+					role: route.role,
+					cwd: this.state.config.cwd,
+					taskId: task.id,
+					swarmId: this.state.id,
+				}
+			: undefined;
+		return {
+			requestKind: "maestro-swarm-task",
+			transport: "a2a",
+			relayPeer: route.name,
+			swarmId: this.state.id,
+			teammateId: teammate.id,
+			teammateName: teammate.name,
+			taskId: task.id,
+			...(route.skillId ? { a2aSkillId: route.skillId } : {}),
+			...(task.files?.length ? { files: task.files } : {}),
+			swarm: lineage,
+			evalops: {
+				swarm: lineage,
+				transport: "a2a",
+				peer: route.name,
+			},
+			...(subagentRequest
+				? { "evalops.subagentRequest": subagentRequest }
+				: {}),
+		};
+	}
+
+	private async waitForA2ASwarmTask(
+		config: A2AServiceConfig,
+		initialTask: A2ATask,
+		options: SwarmA2AConfig,
+	): Promise<A2ATask> {
+		const maxWaitMs =
+			options.maxWaitMs ??
+			this.state.config.taskTimeout ??
+			DEFAULT_TASK_TIMEOUT_MS;
+		const pollIntervalMs =
+			options.pollIntervalMs ?? DEFAULT_A2A_POLL_INTERVAL_MS;
+		const deadline = Date.now() + maxWaitMs;
+		let task = initialTask;
+		while (
+			!isTerminalA2AState(task.status.state) &&
+			Date.now() < deadline &&
+			!this.abortController.signal.aborted
+		) {
+			await new Promise((resolve) => setTimeout(resolve, pollIntervalMs));
+			task = await getA2ATask(config, task.id, {
+				signal: this.abortController.signal,
+			});
+		}
+		if (!isTerminalA2AState(task.status.state)) {
+			throw new Error(
+				`Timed out waiting for remote A2A task ${task.id}; last state ${task.status.state}`,
+			);
+		}
+		return task;
+	}
+
+	private completeA2ATeammate(
+		teammate: SwarmTeammate,
+		task: SwarmTask,
+		remoteTask: A2ATask,
+		route: A2ATeammateRoute,
+	): void {
+		this.state.activeTasks.delete(task.id);
+		teammate.completedAt = Date.now();
+		teammate.currentTask = undefined;
+		teammate.output =
+			extractA2ATaskText(remoteTask) ??
+			`Remote A2A task ${remoteTask.id} finished with ${remoteTask.status.state}`;
+		if (this.state.status === "cancelled" || teammate.status === "cancelled") {
+			teammate.status = "cancelled";
+			this.emit({
+				type: "teammate_complete",
+				swarmId: this.state.id,
+				teammate,
+			});
+			return;
+		}
+		if (a2aStateCompleted(remoteTask.status.state)) {
+			teammate.status = "completed";
+			teammate.completedTasks.push(task.id);
+			this.state.completedTasks.add(task.id);
+			this.emit({
+				type: "task_complete",
+				swarmId: this.state.id,
+				teammateId: teammate.id,
+				taskId: task.id,
+				output: teammate.output,
+			});
+		} else {
+			teammate.status = "failed";
+			teammate.error = `Remote A2A task ${remoteTask.id} on ${route.name} ended in ${remoteTask.status.state}`;
+			this.state.failedTasks.add(task.id);
+			this.emit({
+				type: "task_fail",
+				swarmId: this.state.id,
+				teammateId: teammate.id,
+				taskId: task.id,
+				error: teammate.error,
+			});
+			if (!this.state.config.continueOnFailure) {
+				this.state.status = "failed";
+			}
+		}
+		this.emit({
+			type: "teammate_complete",
+			swarmId: this.state.id,
+			teammate,
+		});
+		if (
+			this.state.status === "running" &&
+			(this.state.pendingTasks.length > 0 || this.state.activeTasks.size > 0) &&
+			(teammate.status === "completed" || this.state.config.continueOnFailure)
+		) {
+			teammate.status = "pending";
+			teammate.error = undefined;
+		}
+	}
+
+	private failA2ATeammate(
+		teammate: SwarmTeammate,
+		task: SwarmTask,
+		error: unknown,
+	): void {
+		this.state.activeTasks.delete(task.id);
+		teammate.completedAt = Date.now();
+		teammate.currentTask = undefined;
+		if (this.state.status === "cancelled" || teammate.status === "cancelled") {
+			teammate.status = "cancelled";
+			this.emit({
+				type: "teammate_complete",
+				swarmId: this.state.id,
+				teammate,
+			});
+			return;
+		}
+		if (teammate.a2a && !this.remoteA2ATasks.has(teammate.id)) {
+			teammate.a2a = undefined;
+		}
+		teammate.status = "failed";
+		teammate.error = error instanceof Error ? error.message : String(error);
+		this.state.failedTasks.add(task.id);
+		this.emit({
+			type: "task_fail",
+			swarmId: this.state.id,
+			teammateId: teammate.id,
+			taskId: task.id,
+			error: teammate.error,
+		});
+		if (!this.state.config.continueOnFailure) {
+			this.state.status = "failed";
+		}
+		this.emit({
+			type: "teammate_complete",
+			swarmId: this.state.id,
+			teammate,
+		});
+
+		if (
+			this.state.status === "running" &&
+			(this.state.pendingTasks.length > 0 || this.state.activeTasks.size > 0) &&
+			this.state.config.continueOnFailure
+		) {
+			teammate.status = "pending";
+			teammate.error = undefined;
+			teammate.a2a = undefined;
+		}
+	}
+
+	private async recordA2ASwarmTaskStart(
+		route: A2ATeammateRoute,
+		task: SwarmTask,
+		remoteTask: A2ATask,
+		ids: { messageId: string; contextId: string },
+	): Promise<void> {
+		try {
+			await recordA2ATaskStart({
+				path: route.tasksPath,
+				peer: route.name,
+				peerDisplayName: route.displayName,
+				task: remoteTask,
+				text: task.prompt,
+				messageId: ids.messageId,
+				contextId: remoteTask.contextId ?? ids.contextId,
+				kind: "delegation",
+				role: route.role,
+				cwd: this.state.config.cwd,
+				metadata: {
+					requestKind: "maestro-swarm-task",
+					relayPeer: route.name,
+					swarmId: this.state.id,
+					taskId: task.id,
+					transport: "a2a",
+					source: route.source,
+					a2aSkillId: route.skillId,
+				},
+			});
+		} catch (error) {
+			logger.warn("Failed to record remote A2A swarm task in local ledger", {
+				error: error instanceof Error ? error.message : String(error),
+				swarmId: this.state.id,
+				taskId: task.id,
+				peer: route.name,
+			});
+		}
+	}
+
+	private async updateA2ASwarmTaskLedger(
+		route: A2ATeammateRoute,
+		remoteTask: A2ATask,
+	): Promise<void> {
+		try {
+			await updateA2ATaskInLedger({
+				path: route.tasksPath,
+				peer: route.name,
+				task: remoteTask,
+			});
+		} catch (error) {
+			logger.warn("Failed to update remote A2A swarm task in local ledger", {
+				error: error instanceof Error ? error.message : String(error),
+				swarmId: this.state.id,
+				remoteTaskId: remoteTask.id,
+				peer: route.name,
+			});
+		}
+	}
+
 	/**
 	 * Wait for any active task to complete.
 	 */
@@ -901,6 +1608,44 @@ export class SwarmExecutor {
 			}, 100);
 		});
 	}
+}
+
+function platformA2ACandidateMatchesPeer(
+	candidate: PlatformAgentRegistryA2APeerCandidate,
+	peer: string,
+): boolean {
+	const selector = normalizePeerSelector(peer);
+	const selectorBaseUrl = normalizePeerBaseUrl(peer);
+	if (!selector) {
+		return false;
+	}
+	const values = [
+		candidate.agent.id,
+		candidate.agent.name,
+		candidate.endpointUrl,
+		candidate.agentCardUrl,
+	];
+	return values.some((value) => {
+		const candidateSelector = normalizePeerSelector(value);
+		if (candidateSelector && candidateSelector === selector) {
+			return true;
+		}
+		const candidateBaseUrl = normalizePeerBaseUrl(value);
+		return Boolean(
+			selectorBaseUrl &&
+				candidateBaseUrl &&
+				candidateBaseUrl === selectorBaseUrl,
+		);
+	});
+}
+
+function normalizePeerSelector(value: string | undefined): string | undefined {
+	return trimString(value)?.toLowerCase();
+}
+
+function normalizePeerBaseUrl(value: string | undefined): string | undefined {
+	const trimmed = trimString(value);
+	return trimmed ? normalizeA2ABaseUrl(trimmed).toLowerCase() : undefined;
 }
 
 /**
