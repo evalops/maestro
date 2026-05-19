@@ -66,6 +66,60 @@ the task moved forward or still needs operator input. If more than one actionabl
 task matches the requested scope, use `maestro a2a reply <peer> <task-id> <text>`
 to choose the task explicitly.
 
+## Remote Swarm Transport
+
+Maestro swarm execution can now use A2A as the teammate transport instead of
+spawning every teammate as a local subprocess. Set `transport: "a2a"` in the
+swarm config or export `MAESTRO_SWARM_TRANSPORT=a2a`. The coordinator formats
+the same delegation prompt used for local teammates, sends it through
+`message:send` with `returnImmediately=true`, records the remote task in the
+local A2A ledger, polls `GET /tasks/{id}` until the peer reaches a terminal A2A
+state, then maps the final artifact text back into the swarm task result.
+
+Static peer routing uses the local A2A peer registry:
+
+```sh
+MAESTRO_SWARM_TRANSPORT=a2a \
+MAESTRO_SWARM_A2A_PEERS=mac-mini,dev-desktop \
+MAESTRO_SWARM_A2A_TASKS=~/.maestro/a2a/tasks.json \
+maestro swarm run plan.md
+```
+
+Platform discovery uses Agent Registry candidates instead of a local peer list:
+
+```sh
+MAESTRO_SWARM_TRANSPORT=a2a \
+MAESTRO_SWARM_A2A_DISCOVER=1 \
+MAESTRO_SWARM_A2A_WORKSPACE_ID="$EVALOPS_WORKSPACE_ID" \
+MAESTRO_SWARM_A2A_SKILL_ID=maestro.subagent.code-review \
+MAESTRO_SWARM_A2A_PREFER_INTERNAL=1 \
+maestro swarm run plan.md
+```
+
+Task-level overrides let the planner pin a specific peer or A2A skill with
+`a2aPeer` and `a2aSkillId`. With Platform discovery, `a2aPeer` matches the
+candidate agent id, agent name, A2A endpoint, or Agent Card URL before the
+round-robin fallback. Otherwise Maestro round-robins across configured or
+discovered peers and maps Codex subagent lanes to advertised A2A skill ids such
+as `maestro.subagent.code-writer`, `maestro.subagent.code-review`,
+`maestro.subagent.test-runner`, `maestro.subagent.repo-explorer`, and
+`maestro.subagent.release-shepherd`.
+
+Every remote swarm task carries native A2A plus EvalOps operating-plane
+metadata: `requestKind=maestro-swarm-task`, `transport=a2a`, `swarmId`,
+`teammateId`, `taskId`, `relayPeer`, `a2aSkillId`, `evalops.swarm` lineage, and
+`evalops.subagentRequest`. This gives Platform enough correlation to show a
+root swarm, child delegations, remote task ids, and artifacts as one fleet-scale
+work graph rather than disconnected peer transcripts. Terminal states other
+than `TASK_STATE_COMPLETED`, including `INPUT_REQUIRED` or `AUTH_REQUIRED`, are
+kept as failed swarm tasks so the coordinator/operator can follow up instead of
+treating blocked remote work as successful.
+
+When a swarm is cancelled after a remote task has been accepted, Maestro keeps
+the non-secret peer/task/message correlation on the teammate state and sends the
+spec-native `POST /tasks/{id}:cancel` request to the remote peer before clearing
+local active-task bookkeeping.
+
 ## Native Control-Plane Surface
 
 The Rust control-plane A2A server uses the same task ledger path as the CLI. On

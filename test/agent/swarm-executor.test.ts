@@ -6,14 +6,30 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const {
 	buildEvalOpsDelegationEnvironmentMock,
+	cancelA2ATaskMock,
+	getA2ATaskMock,
 	issueEvalOpsDelegationTokenMock,
+	listA2APeerCandidatesWithPlatformMock,
 	recordSubagentDispatchMock,
+	recordA2ATaskStartMock,
+	resolveA2APeerMock,
+	resolveAgentRegistryServiceConfigMock,
 	spawnMock,
+	sendA2AMessageMock,
+	updateA2ATaskInLedgerMock,
 } = vi.hoisted(() => ({
 	buildEvalOpsDelegationEnvironmentMock: vi.fn(),
+	cancelA2ATaskMock: vi.fn(),
+	getA2ATaskMock: vi.fn(),
 	issueEvalOpsDelegationTokenMock: vi.fn(),
+	listA2APeerCandidatesWithPlatformMock: vi.fn(),
 	recordSubagentDispatchMock: vi.fn(),
+	recordA2ATaskStartMock: vi.fn(),
+	resolveA2APeerMock: vi.fn(),
+	resolveAgentRegistryServiceConfigMock: vi.fn(),
 	spawnMock: vi.fn(),
+	sendA2AMessageMock: vi.fn(),
+	updateA2ATaskInLedgerMock: vi.fn(),
 }));
 
 vi.mock("node:child_process", () => ({
@@ -24,6 +40,50 @@ vi.mock("../../src/oauth/index.js", () => ({
 	buildEvalOpsDelegationEnvironment: buildEvalOpsDelegationEnvironmentMock,
 	issueEvalOpsDelegationToken: issueEvalOpsDelegationTokenMock,
 }));
+
+vi.mock("../../src/platform/a2a-client.js", async () => {
+	const actual = await vi.importActual<
+		typeof import("../../src/platform/a2a-client.js")
+	>("../../src/platform/a2a-client.js");
+	return {
+		...actual,
+		cancelA2ATask: cancelA2ATaskMock,
+		getA2ATask: getA2ATaskMock,
+		sendA2AMessage: sendA2AMessageMock,
+	};
+});
+
+vi.mock("../../src/platform/a2a-peer-registry.js", async () => {
+	const actual = await vi.importActual<
+		typeof import("../../src/platform/a2a-peer-registry.js")
+	>("../../src/platform/a2a-peer-registry.js");
+	return {
+		...actual,
+		resolveA2APeer: resolveA2APeerMock,
+	};
+});
+
+vi.mock("../../src/platform/a2a-task-ledger.js", async () => {
+	const actual = await vi.importActual<
+		typeof import("../../src/platform/a2a-task-ledger.js")
+	>("../../src/platform/a2a-task-ledger.js");
+	return {
+		...actual,
+		recordA2ATaskStart: recordA2ATaskStartMock,
+		updateA2ATaskInLedger: updateA2ATaskInLedgerMock,
+	};
+});
+
+vi.mock("../../src/platform/agent-registry-client.js", async () => {
+	const actual = await vi.importActual<
+		typeof import("../../src/platform/agent-registry-client.js")
+	>("../../src/platform/agent-registry-client.js");
+	return {
+		...actual,
+		listA2APeerCandidatesWithPlatform: listA2APeerCandidatesWithPlatformMock,
+		resolveAgentRegistryServiceConfig: resolveAgentRegistryServiceConfigMock,
+	};
+});
 
 vi.mock("../../src/telemetry.js", () => ({
 	recordSubagentDispatch: recordSubagentDispatchMock,
@@ -133,6 +193,21 @@ function getSpawnedTempFile(): string {
 	return args.at(-1)!;
 }
 
+async function executeWithTimeout(
+	executor: SwarmExecutor,
+	timeoutMs = 500,
+): Promise<Awaited<ReturnType<SwarmExecutor["execute"]>>> {
+	return Promise.race([
+		executor.execute(),
+		new Promise<never>((_, reject) => {
+			setTimeout(
+				() => reject(new Error("swarm execution timed out")),
+				timeoutMs,
+			);
+		}),
+	]);
+}
+
 describe("SwarmExecutor", () => {
 	beforeEach(() => {
 		buildEvalOpsDelegationEnvironmentMock.mockReset();
@@ -149,6 +224,67 @@ describe("SwarmExecutor", () => {
 			),
 		);
 		recordSubagentDispatchMock.mockReset();
+		resolveA2APeerMock.mockReset();
+		resolveA2APeerMock.mockResolvedValue({
+			name: "remote-a",
+			entry: {
+				url: "https://remote-a.example/a2a",
+				displayName: "Remote A",
+				skills: [
+					{
+						id: "maestro.subagent.code-writer",
+						name: "Code Writer",
+					},
+				],
+			},
+			config: {
+				baseUrl: "https://remote-a.example/a2a",
+				agentId: "remote-a",
+				timeoutMs: 25,
+				maxAttempts: 1,
+			},
+		});
+		cancelA2ATaskMock.mockReset();
+		cancelA2ATaskMock.mockResolvedValue({
+			id: "remote-task-1",
+			contextId: "remote-context-1",
+			status: { state: "TASK_STATE_CANCELLED" },
+		});
+		sendA2AMessageMock.mockReset();
+		sendA2AMessageMock.mockResolvedValue({
+			task: {
+				id: "remote-task-1",
+				contextId: "remote-context-1",
+				status: { state: "TASK_STATE_WORKING" },
+			},
+		});
+		getA2ATaskMock.mockReset();
+		getA2ATaskMock.mockResolvedValue({
+			id: "remote-task-1",
+			contextId: "remote-context-1",
+			status: { state: "TASK_STATE_COMPLETED" },
+			artifacts: [
+				{
+					artifactId: "remote-result",
+					parts: [{ text: "remote done", mediaType: "text/plain" }],
+				},
+			],
+		});
+		recordA2ATaskStartMock.mockReset();
+		recordA2ATaskStartMock.mockResolvedValue(undefined);
+		updateA2ATaskInLedgerMock.mockReset();
+		updateA2ATaskInLedgerMock.mockResolvedValue(undefined);
+		listA2APeerCandidatesWithPlatformMock.mockReset();
+		listA2APeerCandidatesWithPlatformMock.mockResolvedValue([]);
+		resolveAgentRegistryServiceConfigMock.mockReset();
+		resolveAgentRegistryServiceConfigMock.mockResolvedValue({
+			baseUrl: "https://platform.example",
+			token: "platform-token",
+			organizationId: "org_evalops",
+			workspaceId: "workspace-default",
+			timeoutMs: 25,
+			maxAttempts: 1,
+		});
 		spawnMock.mockReset();
 	});
 
@@ -195,6 +331,638 @@ describe("SwarmExecutor", () => {
 			}),
 		);
 		expect(recordSubagentDispatchMock).not.toHaveBeenCalled();
+	});
+
+	it("dispatches swarm teammate tasks to configured A2A peers", async () => {
+		const executor = new SwarmExecutor({
+			...createConfig({
+				files: ["src/agent/swarm/executor.ts"],
+				subagentType: "coder",
+			}),
+			transport: "a2a",
+			a2a: {
+				peers: ["remote-a"],
+				role: "code-writer",
+				tasksPath: "/tmp/maestro-a2a-tasks.json",
+				maxWaitMs: 50,
+				pollIntervalMs: 1,
+			},
+			mode: "smart",
+			modelProvider: "anthropic",
+		});
+
+		const result = await executeWithTimeout(executor);
+
+		expect(result.status).toBe("completed");
+		expect(Array.from(result.completedTasks)).toContain("task-1");
+		expect(result.teammates[0]!.output).toBe("remote done");
+		expect(result.teammates[0]!.a2a).toEqual(
+			expect.objectContaining({
+				peer: "remote-a",
+				peerDisplayName: "Remote A",
+				source: "registry",
+				taskId: "remote-task-1",
+				contextId: "remote-context-1",
+				messageId: expect.stringContaining("maestro-swarm-message-"),
+				skillId: "maestro.subagent.code-writer",
+				role: "code-writer",
+			}),
+		);
+		expect(spawnMock).not.toHaveBeenCalled();
+		expect(resolveA2APeerMock).toHaveBeenCalledWith(
+			"remote-a",
+			expect.objectContaining({
+				path: undefined,
+				timeoutMs: undefined,
+				maxAttempts: undefined,
+			}),
+		);
+		const [serviceConfig, input] = sendA2AMessageMock.mock.calls[0] as [
+			{ baseUrl: string },
+			{
+				message: {
+					contextId?: string;
+					metadata?: Record<string, unknown>;
+					parts: Array<{ text?: string }>;
+				};
+				metadata?: Record<string, unknown>;
+			},
+		];
+		expect(serviceConfig).toEqual(
+			expect.objectContaining({
+				baseUrl: "https://remote-a.example/a2a",
+				agentId: "remote-a",
+			}),
+		);
+		expect(input.message.contextId).toBe(`maestro-swarm:${result.id}:task-1`);
+		expect(input.message.parts[0]!.text).toContain(
+			"## Task\nUpdate the implementation",
+		);
+		expect(input.message.metadata).toEqual(
+			expect.objectContaining({
+				requestKind: "maestro-swarm-task",
+				transport: "a2a",
+				relayPeer: "remote-a",
+				a2aSkillId: "maestro.subagent.code-writer",
+				files: ["src/agent/swarm/executor.ts"],
+				swarm: expect.objectContaining({
+					rootDelegationId: result.id,
+					currentDelegationId: `${result.id}:task-1`,
+				}),
+				evalops: expect.objectContaining({
+					transport: "a2a",
+					peer: "remote-a",
+				}),
+				"evalops.subagentRequest": expect.objectContaining({
+					skillId: "maestro.subagent.code-writer",
+					role: "code-writer",
+					taskId: "task-1",
+					swarmId: result.id,
+				}),
+			}),
+		);
+		expect(input.metadata).toEqual(
+			expect.objectContaining({
+				route: "maestro_swarm",
+				transport: "a2a",
+				swarmId: result.id,
+				taskId: "task-1",
+				peer: "remote-a",
+				source: "registry",
+			}),
+		);
+		expect(recordA2ATaskStartMock).toHaveBeenCalledWith(
+			expect.objectContaining({
+				path: "/tmp/maestro-a2a-tasks.json",
+				peer: "remote-a",
+				peerDisplayName: "Remote A",
+				kind: "delegation",
+				role: "code-writer",
+				contextId: "remote-context-1",
+				metadata: expect.objectContaining({
+					requestKind: "maestro-swarm-task",
+					a2aSkillId: "maestro.subagent.code-writer",
+				}),
+			}),
+		);
+		expect(updateA2ATaskInLedgerMock).toHaveBeenCalledWith(
+			expect.objectContaining({
+				path: "/tmp/maestro-a2a-tasks.json",
+				peer: "remote-a",
+				task: expect.objectContaining({
+					id: "remote-task-1",
+					status: { state: "TASK_STATE_COMPLETED" },
+				}),
+			}),
+		);
+	});
+
+	it("rotates configured A2A peers across successive tasks", async () => {
+		const executor = new SwarmExecutor(
+			createMultiTaskConfig(
+				[
+					{ id: "task-1", prompt: "First remote task" },
+					{ id: "task-2", prompt: "Second remote task" },
+					{ id: "task-3", prompt: "Third remote task" },
+				],
+				{
+					transport: "a2a",
+					a2a: {
+						peers: ["remote-a", "remote-b"],
+						maxWaitMs: 50,
+						pollIntervalMs: 1,
+					},
+				},
+			),
+		);
+
+		const result = await executeWithTimeout(executor);
+
+		expect(result.status).toBe("completed");
+		expect(resolveA2APeerMock.mock.calls.map((call) => call[0])).toEqual([
+			"remote-a",
+			"remote-b",
+			"remote-a",
+		]);
+	});
+
+	it("discovers A2A swarm peers through Platform Agent Registry", async () => {
+		listA2APeerCandidatesWithPlatformMock.mockResolvedValue([
+			{
+				agent: {
+					id: "agent-target",
+					name: "Target Maestro",
+					workspaceId: "workspace-1",
+					status: "AGENT_STATUS_IDLE",
+				},
+				endpointUrl: "https://target.internal/a2a",
+				endpointKind: "internal",
+				skills: [
+					{
+						id: "maestro.subagent.code-review",
+						name: "Code Review",
+					},
+				],
+			},
+		]);
+		const executor = new SwarmExecutor({
+			...createConfig({ subagentType: "review" }),
+			transport: "a2a",
+			a2a: {
+				discover: true,
+				skillId: "maestro.subagent.code-review",
+				workspaceId: "workspace-1",
+				capability: "code-review",
+				preferInternalEndpoint: true,
+				limit: 3,
+				maxWaitMs: 50,
+				pollIntervalMs: 1,
+			},
+			mode: "smart",
+			modelProvider: "anthropic",
+		});
+
+		const result = await executeWithTimeout(executor);
+
+		expect(result.status).toBe("completed");
+		expect(resolveA2APeerMock).not.toHaveBeenCalled();
+		expect(listA2APeerCandidatesWithPlatformMock).toHaveBeenCalledWith(
+			expect.objectContaining({
+				workspaceId: "workspace-1",
+				capability: "code-review",
+				surface: "a2a",
+				status: "AGENT_STATUS_IDLE",
+				limit: 3,
+				skillId: "maestro.subagent.code-review",
+				preferInternalEndpoint: true,
+			}),
+		);
+		const [serviceConfig, input] = sendA2AMessageMock.mock.calls[0] as [
+			{
+				baseUrl: string;
+				token?: string;
+				organizationId?: string;
+				agentId?: string;
+			},
+			{
+				message: { metadata?: Record<string, unknown> };
+				metadata?: Record<string, unknown>;
+			},
+		];
+		expect(serviceConfig).toEqual(
+			expect.objectContaining({
+				baseUrl: "https://target.internal/a2a",
+				token: "platform-token",
+				organizationId: "org_evalops",
+				workspaceId: "workspace-1",
+				agentId: "agent-target",
+				actorId: "maestro-swarm",
+			}),
+		);
+		expect(input.message.metadata).toEqual(
+			expect.objectContaining({
+				relayPeer: "Target Maestro",
+				a2aSkillId: "maestro.subagent.code-review",
+			}),
+		);
+		expect(input.metadata).toEqual(
+			expect.objectContaining({
+				source: "platform-agent-registry",
+				peer: "Target Maestro",
+			}),
+		);
+	});
+
+	it("honors task A2A peer pins during Platform discovery", async () => {
+		listA2APeerCandidatesWithPlatformMock.mockResolvedValue([
+			{
+				agent: {
+					id: "agent-round-robin-first",
+					name: "Wrong Maestro",
+					workspaceId: "workspace-1",
+					status: "AGENT_STATUS_IDLE",
+				},
+				endpointUrl: "https://wrong.internal/a2a",
+				endpointKind: "internal",
+				skills: [{ id: "maestro.subagent.code-review", name: "Code Review" }],
+			},
+			{
+				agent: {
+					id: "agent-pinned",
+					name: "Pinned Maestro",
+					workspaceId: "workspace-1",
+					status: "AGENT_STATUS_IDLE",
+				},
+				endpointUrl: "https://pinned.internal/a2a",
+				endpointKind: "internal",
+				skills: [{ id: "maestro.subagent.code-review", name: "Code Review" }],
+			},
+		]);
+		const executor = new SwarmExecutor({
+			...createConfig({
+				a2aPeer: "agent-pinned",
+				subagentType: "review",
+			}),
+			transport: "a2a",
+			a2a: {
+				discover: true,
+				skillId: "maestro.subagent.code-review",
+				workspaceId: "workspace-1",
+				capability: "code-review",
+				preferInternalEndpoint: true,
+				maxWaitMs: 50,
+				pollIntervalMs: 1,
+			},
+			mode: "smart",
+			modelProvider: "anthropic",
+		});
+
+		const result = await executeWithTimeout(executor);
+
+		expect(result.status).toBe("completed");
+		expect(listA2APeerCandidatesWithPlatformMock).toHaveBeenCalledWith(
+			expect.objectContaining({
+				limit: undefined,
+				skillId: "maestro.subagent.code-review",
+			}),
+		);
+		expect(sendA2AMessageMock.mock.calls[0]?.[0]).toEqual(
+			expect.objectContaining({
+				baseUrl: "https://pinned.internal/a2a",
+				agentId: "agent-pinned",
+			}),
+		);
+		expect(sendA2AMessageMock.mock.calls[0]?.[1].message.metadata).toEqual(
+			expect.objectContaining({
+				relayPeer: "Pinned Maestro",
+			}),
+		);
+	});
+
+	it("rotates discovered A2A candidates across successive tasks", async () => {
+		listA2APeerCandidatesWithPlatformMock.mockResolvedValue([
+			{
+				agent: {
+					id: "agent-a",
+					name: "Agent A",
+					workspaceId: "workspace-1",
+					status: "AGENT_STATUS_IDLE",
+				},
+				endpointUrl: "https://agent-a.internal/a2a",
+				endpointKind: "internal",
+				skills: [{ id: "maestro.subagent.code-review", name: "Code Review" }],
+			},
+			{
+				agent: {
+					id: "agent-b",
+					name: "Agent B",
+					workspaceId: "workspace-1",
+					status: "AGENT_STATUS_IDLE",
+				},
+				endpointUrl: "https://agent-b.internal/a2a",
+				endpointKind: "internal",
+				skills: [{ id: "maestro.subagent.code-review", name: "Code Review" }],
+			},
+		]);
+		const executor = new SwarmExecutor(
+			createMultiTaskConfig(
+				[
+					{
+						id: "task-1",
+						prompt: "First remote review",
+						subagentType: "review",
+					},
+					{
+						id: "task-2",
+						prompt: "Second remote review",
+						subagentType: "review",
+					},
+				],
+				{
+					transport: "a2a",
+					a2a: {
+						discover: true,
+						skillId: "maestro.subagent.code-review",
+						workspaceId: "workspace-1",
+						capability: "code-review",
+						preferInternalEndpoint: true,
+						maxWaitMs: 50,
+						pollIntervalMs: 1,
+					},
+					mode: "smart",
+					modelProvider: "anthropic",
+				},
+			),
+		);
+
+		const result = await executeWithTimeout(executor);
+
+		expect(result.status).toBe("completed");
+		expect(listA2APeerCandidatesWithPlatformMock).toHaveBeenCalledWith(
+			expect.objectContaining({
+				limit: 2,
+			}),
+		);
+		expect(
+			sendA2AMessageMock.mock.calls.map((call) => call[0].baseUrl),
+		).toEqual(["https://agent-a.internal/a2a", "https://agent-b.internal/a2a"]);
+	});
+
+	it("fails remote A2A tasks that finish in an action-required state", async () => {
+		getA2ATaskMock.mockResolvedValue({
+			id: "remote-task-1",
+			contextId: "remote-context-1",
+			status: {
+				state: "TASK_STATE_INPUT_REQUIRED",
+				message: {
+					messageId: "need-input",
+					role: "ROLE_AGENT",
+					parts: [{ text: "Need credentials", mediaType: "text/plain" }],
+				},
+			},
+		});
+		const executor = new SwarmExecutor({
+			...createConfig(),
+			transport: "a2a",
+			a2a: {
+				peers: ["remote-a"],
+				maxWaitMs: 50,
+				pollIntervalMs: 1,
+			},
+		});
+
+		const result = await executeWithTimeout(executor);
+
+		expect(result.status).toBe("failed");
+		expect(result.failedTasks.has("task-1")).toBe(true);
+		expect(result.teammates[0]!.status).toBe("failed");
+		expect(result.teammates[0]!.output).toBe("Need credentials");
+		expect(result.teammates[0]!.error).toContain("TASK_STATE_INPUT_REQUIRED");
+		expect(updateA2ATaskInLedgerMock).toHaveBeenCalledWith(
+			expect.objectContaining({
+				task: expect.objectContaining({
+					status: expect.objectContaining({
+						state: "TASK_STATE_INPUT_REQUIRED",
+					}),
+				}),
+			}),
+		);
+	});
+
+	it("recycles a remote A2A teammate after a dispatch error when continueOnFailure is enabled", async () => {
+		resolveA2APeerMock.mockRejectedValueOnce(new Error("peer unavailable"));
+		const executor = new SwarmExecutor(
+			createMultiTaskConfig(
+				[
+					{ id: "task-1", prompt: "First remote task" },
+					{ id: "task-2", prompt: "Second remote task" },
+				],
+				{
+					continueOnFailure: true,
+					transport: "a2a",
+					a2a: {
+						peers: ["remote-a"],
+						maxWaitMs: 50,
+						pollIntervalMs: 1,
+					},
+				},
+			),
+		);
+
+		const result = await executeWithTimeout(executor);
+
+		expect(resolveA2APeerMock).toHaveBeenCalledTimes(2);
+		expect(sendA2AMessageMock).toHaveBeenCalledTimes(1);
+		expect(result.failedTasks.has("task-1")).toBe(true);
+		expect(result.completedTasks.has("task-2")).toBe(true);
+		expect(result.teammates[0]!.status).toBe("completed");
+		expect(result.teammates[0]!.completedTasks).toEqual(["task-2"]);
+	});
+
+	it("clears stale A2A metadata when a recycled teammate later fails before dispatch", async () => {
+		resolveA2APeerMock
+			.mockResolvedValueOnce({
+				name: "remote-a",
+				entry: {
+					url: "https://remote-a.example/a2a",
+					displayName: "Remote A",
+					skills: [{ id: "maestro.subagent.code-writer", name: "Code Writer" }],
+				},
+				config: {
+					baseUrl: "https://remote-a.example/a2a",
+					agentId: "remote-a",
+					timeoutMs: 25,
+					maxAttempts: 1,
+				},
+			})
+			.mockRejectedValueOnce(new Error("peer unavailable"));
+		const executor = new SwarmExecutor(
+			createMultiTaskConfig(
+				[
+					{ id: "task-1", prompt: "First remote task" },
+					{ id: "task-2", prompt: "Second remote task" },
+				],
+				{
+					continueOnFailure: true,
+					transport: "a2a",
+					a2a: {
+						peers: ["remote-a"],
+						maxWaitMs: 50,
+						pollIntervalMs: 1,
+					},
+				},
+			),
+		);
+
+		const result = await executeWithTimeout(executor);
+
+		expect(result.status).toBe("completed");
+		expect(result.completedTasks.has("task-1")).toBe(true);
+		expect(result.failedTasks.has("task-2")).toBe(true);
+		expect(result.teammates[0]!.status).toBe("failed");
+		expect(result.teammates[0]!.a2a).toBeUndefined();
+	});
+
+	it("cancels remote A2A tasks when the swarm is cancelled", async () => {
+		const remotePoll = createDeferredPromise<{
+			id: string;
+			contextId: string;
+			status: { state: string };
+		}>();
+		getA2ATaskMock.mockReturnValue(remotePoll.promise);
+		const executor = new SwarmExecutor({
+			...createConfig(),
+			transport: "a2a",
+			a2a: {
+				peers: ["remote-a"],
+				maxWaitMs: 5_000,
+				pollIntervalMs: 1,
+			},
+		});
+
+		const execution = executor.execute();
+		await vi.waitFor(() => {
+			expect(getA2ATaskMock).toHaveBeenCalled();
+		});
+
+		executor.cancel();
+		remotePoll.resolve({
+			id: "remote-task-1",
+			contextId: "remote-context-1",
+			status: { state: "TASK_STATE_CANCELLED" },
+		});
+		const result = await execution;
+
+		expect(result.status).toBe("cancelled");
+		expect(result.teammates[0]!.status).toBe("cancelled");
+		expect(result.teammates[0]!.a2a).toEqual(
+			expect.objectContaining({
+				peer: "remote-a",
+				taskId: "remote-task-1",
+				contextId: "remote-context-1",
+			}),
+		);
+		await vi.waitFor(() => {
+			expect(cancelA2ATaskMock).toHaveBeenCalledWith(
+				expect.objectContaining({
+					baseUrl: "https://remote-a.example/a2a",
+				}),
+				"remote-task-1",
+			);
+		});
+		expect(updateA2ATaskInLedgerMock).toHaveBeenCalledWith(
+			expect.objectContaining({
+				peer: "remote-a",
+				task: expect.objectContaining({
+					status: { state: "TASK_STATE_CANCELLED" },
+				}),
+			}),
+		);
+	});
+
+	it("cancels a remote A2A task accepted during a cancel-send race", async () => {
+		const remoteSend = createDeferredPromise<{
+			task: {
+				id: string;
+				contextId: string;
+				status: { state: string };
+			};
+		}>();
+		sendA2AMessageMock.mockReturnValueOnce(remoteSend.promise);
+		const executor = new SwarmExecutor({
+			...createConfig(),
+			transport: "a2a",
+			a2a: {
+				peers: ["remote-a"],
+				maxWaitMs: 5_000,
+				pollIntervalMs: 1,
+			},
+		});
+
+		const execution = executor.execute();
+		await vi.waitFor(() => {
+			expect(sendA2AMessageMock).toHaveBeenCalled();
+		});
+		expect(sendA2AMessageMock.mock.calls[0]?.[2]).toBeUndefined();
+
+		executor.cancel();
+		remoteSend.resolve({
+			task: {
+				id: "remote-task-1",
+				contextId: "remote-context-1",
+				status: { state: "TASK_STATE_WORKING" },
+			},
+		});
+		const result = await execution;
+
+		expect(result.status).toBe("cancelled");
+		await vi.waitFor(() => {
+			expect(cancelA2ATaskMock).toHaveBeenCalledWith(
+				expect.objectContaining({
+					baseUrl: "https://remote-a.example/a2a",
+				}),
+				"remote-task-1",
+			);
+		});
+	});
+
+	it("cancels remote A2A tasks when polling times out", async () => {
+		getA2ATaskMock.mockResolvedValue({
+			id: "remote-task-1",
+			contextId: "remote-context-1",
+			status: { state: "TASK_STATE_WORKING" },
+		});
+		const executor = new SwarmExecutor({
+			...createConfig(),
+			transport: "a2a",
+			a2a: {
+				peers: ["remote-a"],
+				maxWaitMs: 5,
+				pollIntervalMs: 1,
+			},
+		});
+
+		const result = await executeWithTimeout(executor);
+
+		expect(result.status).toBe("failed");
+		expect(result.failedTasks.has("task-1")).toBe(true);
+		expect(result.teammates[0]!.error).toContain(
+			"Timed out waiting for remote A2A task remote-task-1",
+		);
+		expect(cancelA2ATaskMock).toHaveBeenCalledWith(
+			expect.objectContaining({
+				baseUrl: "https://remote-a.example/a2a",
+			}),
+			"remote-task-1",
+		);
+		expect(updateA2ATaskInLedgerMock).toHaveBeenCalledWith(
+			expect.objectContaining({
+				peer: "remote-a",
+				task: expect.objectContaining({
+					status: { state: "TASK_STATE_CANCELLED" },
+				}),
+			}),
+		);
 	});
 
 	it("completes when a teammate finishes successfully", async () => {
@@ -835,6 +1603,44 @@ describe("SwarmExecutor", () => {
 		expect(result.teammates[0]!.status).toBe("failed");
 		expect(result.teammates[0]!.currentTask).toBeUndefined();
 		expect(existsSync(tempFile)).toBe(false);
+	});
+
+	it("does not run tasks whose dependencies failed", async () => {
+		const events: Array<{
+			type: string;
+			taskId?: string;
+			error?: string;
+		}> = [];
+		spawnMock.mockReturnValue(createMockChildProcess("", 1, "timer"));
+
+		const executor = new SwarmExecutor(
+			createMultiTaskConfig(
+				[
+					{ id: "task-1", prompt: "First task" },
+					{
+						id: "task-2",
+						prompt: "Second task",
+						dependsOn: ["task-1"],
+					},
+				],
+				{ continueOnFailure: true },
+			),
+		);
+		executor.onEvent((event) => events.push(event));
+
+		const result = await executeWithTimeout(executor);
+
+		expect(spawnMock).toHaveBeenCalledTimes(1);
+		expect(result.failedTasks.has("task-1")).toBe(true);
+		expect(result.failedTasks.has("task-2")).toBe(true);
+		expect(result.completedTasks.has("task-2")).toBe(false);
+		expect(events).toContainEqual(
+			expect.objectContaining({
+				type: "task_fail",
+				taskId: "task-2",
+				error: "Dependency task-1 failed",
+			}),
+		);
 	});
 
 	it("recycles a teammate after a subprocess error when continueOnFailure is enabled", async () => {
