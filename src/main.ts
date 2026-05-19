@@ -556,6 +556,16 @@ export async function main(args: string[]) {
 		process.exit(1);
 	}
 
+	if (parsed.command === "modes") {
+		const { handleModesCommand } = await import("./cli/commands/modes.js");
+		await handleModesCommand(parsed.subcommand, parsed.messages, {
+			provider: parsed.provider,
+			json: parsed.execJson,
+		});
+		await waitForStartupTelemetryForImmediateExit(startupTelemetry);
+		return;
+	}
+
 	const isHeadlessMode = isHeadlessModeRequested(parsed);
 	const willDispatchHeadlessMode = willDispatchHeadlessRuntime(parsed);
 

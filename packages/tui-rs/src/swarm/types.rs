@@ -735,6 +735,93 @@ impl SwarmState {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde::Deserialize;
+    use std::collections::BTreeMap;
+
+    #[derive(Debug, Deserialize)]
+    struct DispatchFixture {
+        #[serde(rename = "modelTiers")]
+        model_tiers: BTreeMap<String, BTreeMap<String, String>>,
+        #[serde(rename = "modeDispatch")]
+        mode_dispatch: BTreeMap<String, DispatchFixtureMode>,
+    }
+
+    #[derive(Debug, Deserialize)]
+    struct DispatchFixtureMode {
+        #[serde(rename = "primaryTier")]
+        primary_tier: String,
+        #[serde(rename = "reasoningEffort")]
+        reasoning_effort: String,
+        #[serde(rename = "fallbackSubagent")]
+        fallback_subagent: String,
+        subagents: BTreeMap<String, DispatchFixtureRule>,
+    }
+
+    #[derive(Debug, Deserialize)]
+    struct DispatchFixtureRule {
+        model: String,
+        #[serde(rename = "reasoningEffort")]
+        reasoning_effort: String,
+    }
+
+    fn parse_agent_mode(value: &str) -> AgentMode {
+        match value {
+            "smart" => AgentMode::Smart,
+            "rush" => AgentMode::Rush,
+            "free" => AgentMode::Free,
+            "custom" => AgentMode::Custom,
+            "frontier" => AgentMode::Frontier,
+            "replay" => AgentMode::Replay,
+            _ => panic!("unexpected mode {value}"),
+        }
+    }
+
+    fn parse_model_provider(value: &str) -> ModelProvider {
+        match value {
+            "anthropic" => ModelProvider::Anthropic,
+            "openai" => ModelProvider::OpenAi,
+            "openai-codex" => ModelProvider::OpenAiCodex,
+            "google" => ModelProvider::Google,
+            _ => panic!("unexpected model provider {value}"),
+        }
+    }
+
+    fn parse_model_tier(value: &str) -> ModelTier {
+        match value {
+            "opus" => ModelTier::Opus,
+            "sonnet" => ModelTier::Sonnet,
+            "haiku" => ModelTier::Haiku,
+            _ => panic!("unexpected model tier {value}"),
+        }
+    }
+
+    fn parse_reasoning_effort(value: &str) -> ReasoningEffort {
+        match value {
+            "low" => ReasoningEffort::Low,
+            "medium" => ReasoningEffort::Medium,
+            "high" => ReasoningEffort::High,
+            "xhigh" => ReasoningEffort::XHigh,
+            _ => panic!("unexpected reasoning effort {value}"),
+        }
+    }
+
+    fn parse_subagent_type(value: &str) -> SubagentType {
+        match value {
+            "explorer" => SubagentType::Explorer,
+            "planner" => SubagentType::Planner,
+            "coder" => SubagentType::Coder,
+            "reviewer" => SubagentType::Reviewer,
+            "researcher" => SubagentType::Researcher,
+            "minimal" => SubagentType::Minimal,
+            "custom" => SubagentType::Custom,
+            _ => panic!("unexpected subagent type {value}"),
+        }
+    }
+
+    fn split_explicit_model(model: &str) -> Option<(ModelProvider, &str)> {
+        let (provider, model_id) = model.split_once('/')?;
+        Some((parse_model_provider(provider), model_id))
+    }
 
     #[test]
     fn test_task_can_start() {
@@ -1044,6 +1131,79 @@ mod tests {
         assert_eq!(dispatch.model_tier, Some(ModelTier::Sonnet));
         assert_eq!(dispatch.reasoning_effort, ReasoningEffort::Medium);
         assert_eq!(dispatch.source, DispatchSource::Fallback);
+    }
+
+    #[test]
+    fn test_subagent_dispatch_matches_protocol_fixture() {
+        let fixture: DispatchFixture = serde_json::from_str(include_str!(
+            "../../../../docs/protocols/codex-subagent-dispatch-table-v1.json"
+        ))
+        .expect("dispatch fixture should parse");
+
+        for (tier_id, providers) in &fixture.model_tiers {
+            let tier = parse_model_tier(tier_id);
+            for (provider_id, expected_model) in providers {
+                assert_eq!(
+                    model_for_tier(tier, parse_model_provider(provider_id)),
+                    expected_model
+                );
+            }
+        }
+
+        for (mode_id, mode_fixture) in &fixture.mode_dispatch {
+            let mode = parse_agent_mode(mode_id);
+            assert_eq!(
+                mode_primary_tier(mode),
+                parse_model_tier(&mode_fixture.primary_tier)
+            );
+            assert_eq!(
+                mode_reasoning_effort(mode),
+                parse_reasoning_effort(&mode_fixture.reasoning_effort)
+            );
+
+            for (subagent_id, rule) in &mode_fixture.subagents {
+                let subagent_type = parse_subagent_type(subagent_id);
+                let dispatch =
+                    resolve_subagent_dispatch(mode, subagent_type, ModelProvider::Anthropic);
+                assert_eq!(dispatch.source, DispatchSource::Mode);
+                assert_eq!(
+                    dispatch.reasoning_effort,
+                    parse_reasoning_effort(&rule.reasoning_effort)
+                );
+
+                if let Some((provider, model)) = split_explicit_model(&rule.model) {
+                    assert_eq!(dispatch.provider, provider);
+                    assert_eq!(dispatch.model, model);
+                    assert_eq!(dispatch.model_tier, None);
+                } else {
+                    let tier = parse_model_tier(&rule.model);
+                    assert_eq!(dispatch.provider, ModelProvider::Anthropic);
+                    assert_eq!(dispatch.model_tier, Some(tier));
+                    assert_eq!(
+                        dispatch.model,
+                        model_for_tier(tier, ModelProvider::Anthropic)
+                    );
+                }
+            }
+
+            let fallback = resolve_subagent_dispatch(
+                mode,
+                parse_subagent_type(&mode_fixture.fallback_subagent),
+                ModelProvider::Google,
+            );
+            let fallback_tier = parse_model_tier(&mode_fixture.primary_tier);
+            assert_eq!(fallback.source, DispatchSource::Fallback);
+            assert_eq!(fallback.provider, ModelProvider::Google);
+            assert_eq!(fallback.model_tier, Some(fallback_tier));
+            assert_eq!(
+                fallback.model,
+                model_for_tier(fallback_tier, ModelProvider::Google)
+            );
+            assert_eq!(
+                fallback.reasoning_effort,
+                parse_reasoning_effort(&mode_fixture.reasoning_effort)
+            );
+        }
     }
 
     // ========== SwarmEvent Tests ==========

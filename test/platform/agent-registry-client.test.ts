@@ -1,12 +1,16 @@
 import { Buffer } from "node:buffer";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
+	PlatformAgentStatusValue,
 	PlatformDelegationStatusValue,
 	delegateAgentWithPlatform,
+	heartbeatAgentWithPlatform,
 	listA2APeerCandidatesWithPlatform,
 	listAgentsWithPlatform,
+	registerAgentWithPlatform,
 	resolveAgentDelegationWithPlatform,
 	resolveAgentRegistryServiceConfig,
+	updateAgentWithPlatform,
 } from "../../src/platform/agent-registry-client.js";
 
 function headersToRecord(
@@ -281,6 +285,184 @@ describe("agent registry service client", () => {
 			}),
 		]);
 		expect(fetchMock).toHaveBeenCalledTimes(2);
+	});
+
+	it("registers, updates, and heartbeats a governed A2A Maestro peer", async () => {
+		vi.stubEnv("AGENT_REGISTRY_SERVICE_URL", "https://registry.test/");
+		vi.stubEnv("AGENT_REGISTRY_SERVICE_TOKEN", "registry-token");
+		vi.stubEnv("AGENT_REGISTRY_ORGANIZATION_ID", "org_1");
+
+		const a2a = {
+			publicEndpointUrl: "https://maestro.example/a2a",
+			internalEndpointUrl: "http://maestro.evalops.svc/a2a",
+			agentCardUrl: "https://maestro.example/a2a/.well-known/agent-card.json",
+			protocolBinding: "HTTP+JSON",
+			protocolVersion: "1.0",
+			supportedExtensions: [
+				"https://evalops.com/a2a/extensions/operating-plane/v1",
+			],
+			skills: [
+				{
+					id: "maestro.subagent.code-review",
+					name: "Maestro code review subagent",
+					tags: ["maestro", "subagent", "review"],
+					requiredContextGrants: ["repo:read"],
+					approvalPolicyRef: "maestro.subagent.code-review.target-policy",
+					metadata: {
+						requestMetadataPath: "evalops.subagentRequest",
+					},
+				},
+			],
+			securitySchemes: ["evalops-agent-token"],
+			pushNotifications: true,
+			attributes: { runtime: "maestro" },
+		};
+		const fetchMock = vi.fn(
+			async (input: RequestInfo | URL, init?: RequestInit) => {
+				expect(init?.method).toBe("POST");
+				expect(headersToRecord(init?.headers)).toEqual(
+					expect.objectContaining({
+						authorization: "Bearer registry-token",
+						"connect-protocol-version": "1",
+						"content-type": "application/json",
+						"x-organization-id": "org_1",
+						"x-workspace-id": "ws_1",
+					}),
+				);
+				const body = parseRequestBody(init?.body);
+				if (
+					String(input) ===
+					"https://registry.test/agents.v1.AgentService/Register"
+				) {
+					expect(body).toMatchObject({
+						workspaceId: "ws_1",
+						id: "maestro-peer-1",
+						name: "Maestro Peer",
+						agentType: "maestro",
+						capabilities: ["maestro:a2a", "code:review"],
+						surfaces: ["maestro"],
+						surfaceTypes: ["SURFACE_MAESTRO"],
+						a2a: expect.objectContaining({
+							publicEndpointUrl: "https://maestro.example/a2a",
+							skills: [
+								expect.objectContaining({
+									id: "maestro.subagent.code-review",
+									requiredContextGrants: ["repo:read"],
+									approvalPolicyRef:
+										"maestro.subagent.code-review.target-policy",
+								}),
+							],
+						}),
+					});
+					expect(
+						(body?.a2a as { skills?: Array<Record<string, unknown>> })
+							.skills?.[0]?.metadata,
+					).toBeUndefined();
+					return new Response(
+						JSON.stringify({
+							agent: {
+								id: "maestro-peer-1",
+								workspaceId: "ws_1",
+								name: "Maestro Peer",
+								agentType: "maestro",
+								capabilities: ["maestro:a2a", "code:review"],
+								surfaces: ["maestro"],
+								surfaceTypes: ["SURFACE_MAESTRO"],
+								a2a,
+							},
+						}),
+						{ status: 200, headers: { "Content-Type": "application/json" } },
+					);
+				}
+				if (
+					String(input) ===
+					"https://registry.test/agents.v1.AgentService/Update"
+				) {
+					expect(body).toMatchObject({
+						id: "maestro-peer-1",
+						name: "Maestro Peer Updated",
+						capabilities: ["maestro:a2a", "code:review"],
+						a2a: expect.objectContaining({
+							internalEndpointUrl: "http://maestro.evalops.svc/a2a",
+						}),
+					});
+					return new Response(
+						JSON.stringify({
+							agent: {
+								id: "maestro-peer-1",
+								name: "Maestro Peer Updated",
+								a2a,
+							},
+						}),
+						{ status: 200, headers: { "Content-Type": "application/json" } },
+					);
+				}
+				expect(String(input)).toBe(
+					"https://registry.test/agents.v1.AgentService/Heartbeat",
+				);
+				expect(body).toMatchObject({
+					agentId: "maestro-peer-1",
+					status: PlatformAgentStatusValue.Idle,
+					surface: "maestro",
+					surfaceType: "SURFACE_MAESTRO",
+					a2a: expect.objectContaining({
+						protocolVersion: "1.0",
+					}),
+				});
+				return new Response(
+					JSON.stringify({ nextHeartbeatBy: "2026-05-19T10:05:00Z" }),
+					{ status: 200, headers: { "Content-Type": "application/json" } },
+				);
+			},
+		);
+		vi.stubGlobal("fetch", fetchMock);
+
+		await expect(
+			registerAgentWithPlatform({
+				workspaceId: "ws_1",
+				id: "maestro-peer-1",
+				name: "Maestro Peer",
+				agentType: "maestro",
+				capabilities: ["maestro:a2a", "code:review"],
+				surfaces: ["maestro"],
+				surfaceTypes: ["SURFACE_MAESTRO"],
+				a2a,
+			}),
+		).resolves.toMatchObject({
+			agent: {
+				id: "maestro-peer-1",
+				workspaceId: "ws_1",
+				name: "Maestro Peer",
+				a2a: expect.objectContaining({
+					publicEndpointUrl: "https://maestro.example/a2a",
+				}),
+			},
+		});
+		await expect(
+			updateAgentWithPlatform({
+				workspaceId: "ws_1",
+				id: "maestro-peer-1",
+				name: "Maestro Peer Updated",
+				capabilities: ["maestro:a2a", "code:review"],
+				a2a,
+			}),
+		).resolves.toMatchObject({
+			agent: {
+				id: "maestro-peer-1",
+				name: "Maestro Peer Updated",
+			},
+		});
+		await expect(
+			heartbeatAgentWithPlatform({
+				workspaceId: "ws_1",
+				agentId: "maestro-peer-1",
+				status: PlatformAgentStatusValue.Idle,
+				surface: "maestro",
+				surfaceType: "SURFACE_MAESTRO",
+				a2a,
+			}),
+		).resolves.toEqual({ nextHeartbeatBy: "2026-05-19T10:05:00Z" });
+		expect(fetchMock).toHaveBeenCalledTimes(3);
 	});
 
 	it("delegates and resolves Codex child work through Platform Connect", async () => {

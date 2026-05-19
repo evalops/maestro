@@ -556,6 +556,12 @@ fn parse_a2a_action(raw: &str) -> Result<A2aAction, CommandError> {
                 .ok_or_else(|| CommandError::new("Usage: /a2a accept <pairing-code>"))?;
             Ok(A2aAction::Accept { code: code.clone() })
         }
+        "register" | "publish" => Ok(A2aAction::Register {
+            agent_id: a2a_flag_value(&tokens, "--agent-id"),
+            public_url: a2a_flag_value(&tokens, "--url")
+                .or_else(|| a2a_flag_value(&tokens, "--public-url")),
+            heartbeat_only: has_a2a_flag(&tokens, "--heartbeat-only"),
+        }),
         "delegate" => {
             let peer = tokens
                 .get(1)
@@ -600,7 +606,7 @@ fn parse_a2a_action(raw: &str) -> Result<A2aAction, CommandError> {
             })
         }
         _ => Err(CommandError::new(format!("Unknown A2A subcommand: {subcommand}")).with_hint(
-            "Usage: /a2a [fleet|peers|tasks [--work-graph]|coordinate [--work-graph]|accept <code>|delegate <peer> <text>|reply <peer> <task-id> <text>|send <peer> <text>]",
+            "Usage: /a2a [fleet|peers|tasks [--work-graph]|coordinate [--work-graph]|accept <code>|register --url <base-url>|delegate <peer> <text>|reply <peer> <task-id> <text>|send <peer> <text>]",
         )),
     }
 }
@@ -626,6 +632,22 @@ fn first_a2a_positional(tokens: &[String], start: usize) -> Option<String> {
     None
 }
 
+fn a2a_flag_value(tokens: &[String], flag: &str) -> Option<String> {
+    for (index, token) in tokens.iter().enumerate() {
+        if let Some((token_flag, value)) = token.split_once('=') {
+            if token_flag == flag {
+                let value = value.trim();
+                return (!value.is_empty()).then(|| value.to_string());
+            }
+        }
+        if token == flag {
+            let value = tokens.get(index + 1)?.trim();
+            return (!value.is_empty() && !value.starts_with("--")).then(|| value.to_string());
+        }
+    }
+    None
+}
+
 fn a2a_value_flag(token: &str) -> bool {
     matches!(
         token,
@@ -636,6 +658,22 @@ fn a2a_value_flag(token: &str) -> bool {
             | "--max-wait-ms"
             | "--role"
             | "--cwd"
+            | "--agent-card-url"
+            | "--agent-id"
+            | "--capabilities"
+            | "--description"
+            | "--internal-url"
+            | "--name"
+            | "--owner-id"
+            | "--protocol-version"
+            | "--public-url"
+            | "--security-schemes"
+            | "--status"
+            | "--surface"
+            | "--surface-types"
+            | "--type"
+            | "--url"
+            | "--workspace-id"
     )
 }
 
@@ -863,7 +901,7 @@ pub fn build_command_registry() -> CommandRegistry {
                 )?)))
             }),
         )
-        .usage("/a2a [fleet|peers|tasks [--work-graph]|coordinate [--work-graph]|accept <code>|delegate <peer> <text>|reply <peer> <task-id> <text>|send <peer> <text>]"),
+        .usage("/a2a [fleet|peers|tasks [--work-graph]|coordinate [--work-graph]|accept <code>|register --url <base-url>|delegate <peer> <text>|reply <peer> <task-id> <text>|send <peer> <text>]"),
     );
 
     // Queue command
@@ -2112,6 +2150,48 @@ mod tests {
                 assert_eq!(code, "maestro-pair-v1.payload.checksum");
             }
             other => panic!("expected a2a accept action, got {other:?}"),
+        }
+
+        match registry
+            .execute(
+                "/a2a register --agent-id maestro-peer-1 --url https://maestro.example/a2a",
+                "/tmp",
+                None,
+                None,
+            )
+            .expect("a2a register should parse")
+        {
+            CommandOutput::Action(CommandAction::A2a(A2aAction::Register {
+                agent_id,
+                public_url,
+                heartbeat_only,
+            })) => {
+                assert_eq!(agent_id.as_deref(), Some("maestro-peer-1"));
+                assert_eq!(public_url.as_deref(), Some("https://maestro.example/a2a"));
+                assert!(!heartbeat_only);
+            }
+            other => panic!("expected a2a register action, got {other:?}"),
+        }
+
+        match registry
+            .execute(
+                "/a2a publish --heartbeat-only --agent-id maestro-peer-1",
+                "/tmp",
+                None,
+                None,
+            )
+            .expect("a2a heartbeat-only publish should parse")
+        {
+            CommandOutput::Action(CommandAction::A2a(A2aAction::Register {
+                agent_id,
+                public_url,
+                heartbeat_only,
+            })) => {
+                assert_eq!(agent_id.as_deref(), Some("maestro-peer-1"));
+                assert!(public_url.is_none());
+                assert!(heartbeat_only);
+            }
+            other => panic!("expected a2a register heartbeat action, got {other:?}"),
         }
 
         match registry

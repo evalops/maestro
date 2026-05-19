@@ -55,6 +55,25 @@ describe("parseArgs", () => {
 		});
 	});
 
+	it("parses modes describe commands", () => {
+		expect(
+			parseArgs([
+				"modes",
+				"describe",
+				"smart",
+				"--provider",
+				"openai",
+				"--json",
+			]),
+		).toMatchObject({
+			command: "modes",
+			subcommand: "describe",
+			messages: ["smart"],
+			provider: "openai",
+			execJson: true,
+		});
+	});
+
 	it("rejects unknown CLI flags before they become support surfaces", () => {
 		expect(parseArgs(["--headless", "--legacy-runtime"])).toMatchObject({
 			headless: true,

@@ -63,6 +63,7 @@ export interface Args {
 const COMMANDS = new Set([
 	"config",
 	"context",
+	"modes",
 	"models",
 	"cost",
 	"stats",
@@ -90,6 +91,7 @@ const COMMANDS = new Set([
 const SUBCOMMAND_COMMANDS = new Set([
 	"config",
 	"context",
+	"modes",
 	"models",
 	"cost",
 	"stats",

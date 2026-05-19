@@ -200,6 +200,38 @@
 			]
 		},
 		{
+			"area": "subagents",
+			"evidenceType": "fixture",
+			"path": "docs/protocols/codex-subagent-dispatch-table-v1.json",
+			"anchors": [
+				"evalops.maestro.codex.subagent-dispatch-table.v1",
+				"maestro.subagent.code-writer",
+				"openai-codex/gpt-5.5",
+				"modeDispatch"
+			]
+		},
+		{
+			"area": "subagents",
+			"evidenceType": "source",
+			"path": "src/codex/subagent-dispatch-table.ts",
+			"anchors": [
+				"CODEX_SUBAGENT_DISPATCH_TABLE",
+				"DEFAULT_CODEX_SUBAGENT_DELEGATION_CAPABILITY",
+				"codexSubagentTypeA2ASkillID",
+				"codexSubagentCapabilityA2ASkillID"
+			]
+		},
+		{
+			"area": "subagents",
+			"evidenceType": "test",
+			"path": "test/codex/subagent-dispatch-table.test.ts",
+			"anchors": [
+				"tracks the versioned A2A subagent lane fixture",
+				"keeps TypeScript mode dispatch aligned with the protocol fixture",
+				"release_manage"
+			]
+		},
+		{
 			"area": "multi-agent-workgraph",
 			"evidenceType": "source",
 			"path": "src/platform/core-services.ts",
@@ -419,6 +451,26 @@
 				"codex_app_server_builtin_models",
 				"openai-codex",
 				"openai-codex-app-server"
+			]
+		},
+		{
+			"area": "rust-control-plane",
+			"evidenceType": "source",
+			"path": "packages/control-plane-rs/src/codex_subagent_dispatch.rs",
+			"anchors": [
+				"CODEX_SUBAGENT_DISPATCH_LANES",
+				"codex_subagent_dispatch_lanes_match_protocol_fixture",
+				"maestro.subagent.release-shepherd"
+			]
+		},
+		{
+			"area": "rust-control-plane",
+			"evidenceType": "test",
+			"path": "packages/tui-rs/src/swarm/types.rs",
+			"anchors": [
+				"test_subagent_dispatch_matches_protocol_fixture",
+				"resolve_subagent_dispatch",
+				"ModelProvider::OpenAiCodex"
 			]
 		},
 		{

@@ -21,6 +21,7 @@ import {
 } from "./telemetry/meter-service-client.js";
 import {
 	recordCompactionMetric,
+	recordSubagentDispatchMetric,
 	recordToolInvocationMetric,
 } from "./telemetry/metrics.js";
 import {
@@ -45,7 +46,8 @@ type BaseTelemetryEvent = {
 		| "api-request"
 		| "business-metric"
 		| "staged-rollout-surface"
-		| "sandbox-violation";
+		| "sandbox-violation"
+		| "subagent-dispatch";
 	timestamp: string;
 	sensitiveMetadata?: Record<string, unknown>;
 };
@@ -181,6 +183,23 @@ export interface SandboxViolationTelemetry extends BaseTelemetryEvent {
 }
 
 /**
+ * Subagent dispatch tracking for multi-agent routing and audit.
+ */
+export interface SubagentDispatchTelemetry extends BaseTelemetryEvent {
+	type: "subagent-dispatch";
+	event: "subagent_dispatched";
+	mode: string;
+	subagentType: string;
+	model: string;
+	provider: string;
+	reasoningEffort: string;
+	latencyMs: number;
+	success: boolean;
+	source?: string;
+	metadata?: Record<string, unknown>;
+}
+
+/**
  * Canonical Turn Event - Wide event emitted once per agent turn.
  * Re-exported from telemetry/wide-events.ts for type union.
  */
@@ -203,6 +222,7 @@ type TelemetryEvent =
 	| BusinessMetricTelemetry
 	| StagedRolloutSurfaceTelemetry
 	| SandboxViolationTelemetry
+	| SubagentDispatchTelemetry
 	| CanonicalTurnEventBase
 	| CanonicalTurnEvent;
 
@@ -498,6 +518,22 @@ function recordOpenTelemetrySpan(event: TelemetryEvent): void {
 								: SpanStatusCode.OK,
 					});
 					break;
+				case "subagent-dispatch":
+					span.setAttributes({
+						"maestro.subagent.event": event.event,
+						"maestro.subagent.mode": event.mode,
+						"maestro.subagent.type": event.subagentType,
+						"maestro.subagent.reasoning_effort": event.reasoningEffort,
+						"maestro.subagent.source": event.source ?? "unknown",
+						"maestro.subagent.success": event.success,
+						"maestro.subagent.latency_ms": event.latencyMs,
+						"llm.model.id": event.model,
+						"llm.model.provider": event.provider,
+					});
+					span.setStatus({
+						code: event.success ? SpanStatusCode.OK : SpanStatusCode.ERROR,
+					});
+					break;
 				case "canonical-turn": {
 					const canonicalTurn = isCanonicalTurnTelemetryEvent(event)
 						? event
@@ -580,6 +616,22 @@ function recordOpenTelemetryMetric(event: TelemetryEvent): void {
 						"llm.model.provider": event.metadata?.provider,
 					});
 				}
+				break;
+			case "subagent-dispatch":
+				recordSubagentDispatchMetric({
+					mode: event.mode,
+					subagentType: event.subagentType,
+					provider: event.provider,
+					model: event.model,
+					reasoningEffort: event.reasoningEffort,
+					source: event.source,
+					success: event.success,
+					latencyMs: event.latencyMs,
+					agentRunId: metadataString(event.metadata, [
+						"agentRunId",
+						"agent_run_id",
+					]),
+				});
 				break;
 			default:
 				break;
@@ -1057,6 +1109,17 @@ export function recordStagedRolloutSurfaceUsage(
 			owner: options.owner,
 			source: options.source,
 		},
+	});
+}
+
+export function recordSubagentDispatch(
+	event: Omit<SubagentDispatchTelemetry, "type" | "timestamp" | "event">,
+): void {
+	void recordTelemetry({
+		...event,
+		type: "subagent-dispatch",
+		event: "subagent_dispatched",
+		timestamp: new Date().toISOString(),
 	});
 }
 

@@ -32,10 +32,26 @@ describe("maestro event catalog", () => {
 				"skills.maestro-tool-call-completed",
 			],
 		});
+		expect(
+			getMaestroBusEventCatalogEntry(MaestroBusEventType.SubagentDispatched),
+		).toMatchObject({
+			category: "agent",
+			dataSchema: "buf.build/evalops/proto/maestro.v1.SubagentDispatch",
+			protoAnyType: "type.googleapis.com/maestro.v1.SubagentDispatch",
+			subject: "maestro.events.subagent.dispatched",
+			platformConsumers: [
+				"agents.maestro-subagent-dispatches",
+				"audit.maestro-events",
+				"meter.maestro-subagent-dispatches",
+			],
+		});
 	});
 
 	it("recognizes only cataloged Maestro bus event types", () => {
 		expect(isMaestroBusEventType("maestro.events.eval.scored")).toBe(true);
+		expect(isMaestroBusEventType("maestro.events.subagent.dispatched")).toBe(
+			true,
+		);
 		expect(isMaestroBusEventType("maestro.events.unknown")).toBe(false);
 	});
 });

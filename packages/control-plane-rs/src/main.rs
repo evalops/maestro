@@ -22,11 +22,13 @@ use tokio::sync::{broadcast, mpsc, watch, Mutex};
 
 mod auth;
 mod codex_compat;
+mod codex_subagent_dispatch;
 mod http;
 mod model_catalog;
 mod runtime_assets;
 
 use auth::*;
+use codex_subagent_dispatch::CODEX_SUBAGENT_DISPATCH_LANES;
 #[cfg(test)]
 use http::parse_request_head;
 pub(crate) use http::MAX_JSON_BODY_BYTES;
@@ -3838,44 +3840,18 @@ fn a2a_agent_skills() -> Value {
     if let Some(model) = trimmed_env("MAESTRO_A2A_MODEL") {
         skill["metadata"] = serde_json::json!({ "defaultModel": model });
     }
-    Value::Array(vec![
-        skill,
+    let mut skills = Vec::with_capacity(1 + CODEX_SUBAGENT_DISPATCH_LANES.len());
+    skills.push(skill);
+    skills.extend(CODEX_SUBAGENT_DISPATCH_LANES.iter().map(|lane| {
         a2a_subagent_skill(
-            "maestro.subagent.code-writer",
-            "Maestro code writer subagent",
-            "Delegate bounded implementation work to a target-owned Maestro coding child agent.",
-            &["maestro", "subagent", "code", "write"],
-            "code-writer",
-        ),
-        a2a_subagent_skill(
-            "maestro.subagent.code-review",
-            "Maestro code review subagent",
-            "Delegate code review and risk analysis to a target-owned Maestro review child agent.",
-            &["maestro", "subagent", "code", "review"],
-            "code-review",
-        ),
-        a2a_subagent_skill(
-            "maestro.subagent.test-runner",
-            "Maestro test runner subagent",
-            "Delegate test execution, failure triage, and verification evidence capture to a target-owned Maestro child agent.",
-            &["maestro", "subagent", "test", "ci"],
-            "test-runner",
-        ),
-        a2a_subagent_skill(
-            "maestro.subagent.repo-explorer",
-            "Maestro repo explorer subagent",
-            "Delegate repository inspection and context gathering to a target-owned Maestro exploration child agent.",
-            &["maestro", "subagent", "repo", "explore"],
-            "repo-explorer",
-        ),
-        a2a_subagent_skill(
-            "maestro.subagent.release-shepherd",
-            "Maestro release shepherd subagent",
-            "Delegate release, rollout, and merge-follow-through work to a target-owned Maestro child agent.",
-            &["maestro", "subagent", "release", "deploy"],
-            "release-shepherd",
-        ),
-    ])
+            lane.skill_id,
+            lane.display_name,
+            lane.description,
+            lane.tags,
+            lane.lane_id,
+        )
+    }));
+    Value::Array(skills)
 }
 
 fn a2a_subagent_skill(

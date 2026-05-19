@@ -374,6 +374,12 @@ pub enum A2aAction {
     },
     /// Accept a pairing code.
     Accept { code: String },
+    /// Publish this Maestro instance as a Platform A2A peer.
+    Register {
+        agent_id: Option<String>,
+        public_url: Option<String>,
+        heartbeat_only: bool,
+    },
     /// Delegate work to a peer.
     Delegate { peer: String, text: String },
     /// Continue an existing A2A task.

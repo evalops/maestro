@@ -3376,6 +3376,7 @@ Add the required fields and retry.",
                         "/a2a tasks [peer] [--work-graph]",
                         "/a2a coordinate [peer] [--reply <text>] [--work-graph]",
                         "/a2a accept <pairing-code>",
+                        "/a2a register --url <base-url> [--agent-id <id>]",
                         "/a2a delegate <peer> <text>",
                         "/a2a reply <peer> <task-id> <text>",
                         "/a2a send <peer> <text>",
@@ -3444,6 +3445,33 @@ Add the required fields and retry.",
                 self.state.add_system_message(format!(
                     "A2A pairing code captured ({} chars). Run `maestro a2a accept <code>` or use the TypeScript TUI `/a2a accept <code>` to persist it in the shared registry.",
                     code.len()
+                ));
+            }
+            A2aAction::Register {
+                agent_id,
+                public_url,
+                heartbeat_only,
+            } => {
+                let agent_hint = agent_id
+                    .as_deref()
+                    .map(|value| format!(" for `{value}`"))
+                    .unwrap_or_default();
+                let url_hint = public_url
+                    .as_deref()
+                    .map(|value| format!(" at `{value}`"))
+                    .unwrap_or_default();
+                let command_hint = if heartbeat_only {
+                    "maestro a2a register --heartbeat-only --agent-id <id>"
+                } else {
+                    "maestro a2a register --url <base-url> [--agent-id <id>]"
+                };
+                let action_hint = if heartbeat_only {
+                    "refresh the existing Platform heartbeat without requiring a public A2A URL"
+                } else {
+                    "publish the Rust Agent Card, Codex subagent lanes, and heartbeat to Agent Registry"
+                };
+                self.state.add_system_message(format!(
+                    "Platform A2A peer registration prepared{agent_hint}{url_hint}. Run `{command_hint}` to {action_hint}."
                 ));
             }
             A2aAction::Delegate { peer, text } => {

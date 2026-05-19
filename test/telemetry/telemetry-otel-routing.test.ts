@@ -40,6 +40,7 @@ describe("telemetry OTel metric routing", () => {
 		const recordCompactionMetric = vi.fn();
 		const recordLlmRequestMetric = vi.fn();
 		const recordLlmTokenUsageMetric = vi.fn();
+		const recordSubagentDispatchMetric = vi.fn();
 		const recordToolInvocationMetric = vi.fn();
 
 		vi.doMock("../../src/opentelemetry.js", () => ({
@@ -69,6 +70,7 @@ describe("telemetry OTel metric routing", () => {
 			recordCompactionMetric,
 			recordLlmRequestMetric,
 			recordLlmTokenUsageMetric,
+			recordSubagentDispatchMetric,
 			recordToolInvocationMetric,
 		}));
 		vi.doMock("../../src/telemetry/maestro-event-bus.js", () => ({
@@ -112,6 +114,7 @@ describe("telemetry OTel metric routing", () => {
 		vi.stubEnv("MAESTRO_TELEMETRY", "1");
 
 		const recordCompactionMetric = vi.fn();
+		const recordSubagentDispatchMetric = vi.fn();
 		const recordToolInvocationMetric = vi.fn();
 		const mirrorTelemetryToMaestroEventBus = vi.fn(() => Promise.resolve());
 
@@ -124,6 +127,7 @@ describe("telemetry OTel metric routing", () => {
 		}));
 		vi.doMock("../../src/telemetry/metrics.js", () => ({
 			recordCompactionMetric,
+			recordSubagentDispatchMetric,
 			recordToolInvocationMetric,
 		}));
 		vi.doMock("../../src/telemetry/maestro-event-bus.js", () => ({
@@ -159,6 +163,7 @@ describe("telemetry OTel metric routing", () => {
 		const recordCompactionMetric = vi.fn();
 		const recordLlmRequestMetric = vi.fn();
 		const recordLlmTokenUsageMetric = vi.fn();
+		const recordSubagentDispatchMetric = vi.fn();
 		const recordToolInvocationMetric = vi.fn();
 
 		vi.doMock("../../src/opentelemetry.js", () => ({
@@ -188,6 +193,7 @@ describe("telemetry OTel metric routing", () => {
 			recordCompactionMetric,
 			recordLlmRequestMetric,
 			recordLlmTokenUsageMetric,
+			recordSubagentDispatchMetric,
 			recordToolInvocationMetric,
 		}));
 		vi.doMock("../../src/telemetry/maestro-event-bus.js", () => ({
@@ -232,5 +238,104 @@ describe("telemetry OTel metric routing", () => {
 		expect(recordLlmRequestMetric).not.toHaveBeenCalled();
 		expect(recordLlmTokenUsageMetric).not.toHaveBeenCalled();
 		expect(recordCompactionMetric).not.toHaveBeenCalled();
+	});
+
+	it("routes subagent dispatch telemetry to first-class OTel metrics", async () => {
+		const spanAttributes: Record<string, unknown> = {};
+		const spanStatuses: Record<string, unknown>[] = [];
+		const recordAgentTurnMetric = vi.fn();
+		const recordCompactionMetric = vi.fn();
+		const recordLlmRequestMetric = vi.fn();
+		const recordLlmTokenUsageMetric = vi.fn();
+		const recordSubagentDispatchMetric = vi.fn();
+		const recordToolInvocationMetric = vi.fn();
+
+		vi.doMock("../../src/opentelemetry.js", () => ({
+			getTelemetryTracer: () => ({
+				startActiveSpan: (
+					_name: string,
+					callback: (span: {
+						setAttributes(attributes: Record<string, unknown>): void;
+						setAttribute(name: string, value: unknown): void;
+						setStatus(status: Record<string, unknown>): void;
+						end(): void;
+					}) => void,
+				) => {
+					callback({
+						setAttributes(attributes) {
+							Object.assign(spanAttributes, attributes);
+						},
+						setAttribute(name, value) {
+							spanAttributes[name] = value;
+						},
+						setStatus(status) {
+							spanStatuses.push(status);
+						},
+						end() {},
+					});
+				},
+			}),
+			initOpenTelemetry: vi.fn(),
+			isOpenTelemetryEnabled: () => true,
+		}));
+		vi.doMock("../../src/telemetry/metrics.js", () => ({
+			recordAgentTurnMetric,
+			recordCompactionMetric,
+			recordLlmRequestMetric,
+			recordLlmTokenUsageMetric,
+			recordSubagentDispatchMetric,
+			recordToolInvocationMetric,
+		}));
+		vi.doMock("../../src/telemetry/maestro-event-bus.js", () => ({
+			mirrorTelemetryToMaestroEventBus: vi.fn(() => Promise.resolve()),
+			resolveMaestroEventBusConfig: () => ({
+				defaultCorrelation: {},
+				defaultPrincipal: undefined,
+				defaultSurface: "cli",
+			}),
+		}));
+		vi.doMock("../../src/telemetry/meter-service-client.js", () => ({
+			hasRemoteMeterDestination: () => false,
+			mirrorCanonicalTurnEventToMeter: vi.fn(() => Promise.resolve()),
+		}));
+
+		const { recordTelemetry } = await import("../../src/telemetry.js");
+
+		await recordTelemetry({
+			type: "subagent-dispatch",
+			event: "subagent_dispatched",
+			timestamp: "2026-05-19T17:05:00.000Z",
+			mode: "smart",
+			subagentType: "coder",
+			model: "gpt-5.5",
+			provider: "openai-codex",
+			reasoningEffort: "medium",
+			latencyMs: 7,
+			success: true,
+			source: "mode",
+			metadata: {
+				agentRunId: "run_123",
+			},
+		});
+
+		expect(recordSubagentDispatchMetric).toHaveBeenCalledWith({
+			mode: "smart",
+			subagentType: "coder",
+			provider: "openai-codex",
+			model: "gpt-5.5",
+			reasoningEffort: "medium",
+			source: "mode",
+			success: true,
+			latencyMs: 7,
+			agentRunId: "run_123",
+		});
+		expect(spanAttributes).toMatchObject({
+			"maestro.subagent.event": "subagent_dispatched",
+			"maestro.subagent.mode": "smart",
+			"maestro.subagent.type": "coder",
+			"llm.model.provider": "openai-codex",
+			"llm.model.id": "gpt-5.5",
+		});
+		expect(spanStatuses).toHaveLength(1);
 	});
 });

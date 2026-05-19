@@ -16,6 +16,7 @@ import {
 	buildEvalOpsDelegationEnvironment,
 	issueEvalOpsDelegationToken,
 } from "../../oauth/index.js";
+import { recordSubagentDispatch } from "../../telemetry.js";
 import { createLogger } from "../../utils/logger.js";
 import {
 	type AgentMode,
@@ -141,21 +142,38 @@ function providerFromPrefixedModel(
 function buildDispatchEnv(
 	dispatch: ResolvedSubagentDispatch | null,
 	reasoningEffortOverride?: string,
+	runtimeSelection?: {
+		model?: string;
+		provider?: string;
+		source?: string;
+	},
 ): Record<string, string> {
 	if (!dispatch) {
 		return {};
 	}
 
-	return {
+	const env: Record<string, string> = {
 		MAESTRO_SWARM_MODE_NAME: dispatch.mode,
 		MAESTRO_SWARM_SUBAGENT_TYPE: dispatch.type,
-		MAESTRO_SWARM_MODEL_PROVIDER: dispatch.provider,
-		MAESTRO_SWARM_MODEL: dispatch.model,
+		MAESTRO_SWARM_MODEL: runtimeSelection?.model ?? dispatch.model,
 		MAESTRO_SWARM_REASONING_EFFORT:
 			reasoningEffortOverride ?? dispatch.reasoningEffort,
-		MAESTRO_SWARM_DISPATCH_SOURCE: dispatch.source,
+		MAESTRO_SWARM_DISPATCH_SOURCE: runtimeSelection?.source ?? dispatch.source,
 	};
+	const provider = runtimeSelection?.provider ?? dispatch.provider;
+	if (provider) {
+		env.MAESTRO_SWARM_MODEL_PROVIDER = provider;
+	}
+	return env;
 }
+
+type TaskDispatchResolution = {
+	dispatch: ResolvedSubagentDispatch;
+	startedAt: number;
+	latencyMs: number;
+	parentMode: AgentMode;
+	parentModelProvider?: ModelProvider;
+};
 
 /**
  * SwarmExecutor manages a swarm of parallel agent instances.
@@ -412,13 +430,22 @@ export class SwarmExecutor {
 		teammate: SwarmTeammate,
 		task: SwarmTask,
 		dispatch: ResolvedSubagentDispatch | null,
+		runtimeSelection?: {
+			model?: string;
+			provider?: string;
+			source?: string;
+		},
 	): Promise<Record<string, string>> {
 		const baseEnv: Record<string, string> = {
 			...process.env,
 			MAESTRO_SWARM_MODE: "1",
 			MAESTRO_SWARM_ID: this.state.id,
 			MAESTRO_TEAMMATE_ID: teammate.id,
-			...buildDispatchEnv(dispatch, this.state.config.reasoningEffort),
+			...buildDispatchEnv(
+				dispatch,
+				this.state.config.reasoningEffort,
+				runtimeSelection,
+			),
 		};
 
 		try {
@@ -463,23 +490,87 @@ export class SwarmExecutor {
 
 	private resolveTaskDispatch(
 		task: SwarmTask,
-	): ResolvedSubagentDispatch | null {
+		teammate: SwarmTeammate,
+		options: { hasModelOverride?: boolean } = {},
+	): TaskDispatchResolution | null {
+		const startedAt = Date.now();
 		const subagentType = task.subagentType ?? this.state.config.subagentType;
 		if (!subagentType) {
 			return null;
 		}
 
+		const mode = this.resolveParentMode();
 		const parentProvider = this.resolveParentModelProvider();
 		const dispatch = resolveSubagentDispatch(
-			this.resolveParentMode(),
+			mode,
 			subagentType,
 			parentProvider ?? "anthropic",
 		);
-		if (!parentProvider && dispatch.modelTier) {
+		if (!parentProvider && dispatch.modelTier && !options.hasModelOverride) {
+			this.recordTaskDispatch(
+				task,
+				dispatch,
+				Math.max(0, Date.now() - startedAt),
+				false,
+				{
+					parentMode: mode,
+					parentModelProvider: parentProvider,
+					teammateId: teammate.id,
+					reason: "missing_parent_model_provider",
+				},
+			);
 			return null;
 		}
 
-		return dispatch;
+		return {
+			dispatch,
+			startedAt,
+			latencyMs: Math.max(0, Date.now() - startedAt),
+			parentMode: mode,
+			parentModelProvider: parentProvider,
+		};
+	}
+
+	private recordTaskDispatch(
+		task: SwarmTask,
+		dispatch: ResolvedSubagentDispatch,
+		latencyMs: number,
+		success: boolean,
+		options: {
+			parentMode: AgentMode;
+			parentModelProvider?: ModelProvider;
+			teammateId?: string;
+			model?: string;
+			provider?: string;
+			source?: string;
+			modelOverride?: "task" | "config";
+			reason?: string;
+		},
+	): void {
+		recordSubagentDispatch({
+			mode: dispatch.mode,
+			subagentType: dispatch.type,
+			model: options.model ?? dispatch.model,
+			provider: options.provider ?? dispatch.provider,
+			reasoningEffort:
+				this.state.config.reasoningEffort ?? dispatch.reasoningEffort,
+			latencyMs,
+			success,
+			source: options.source ?? dispatch.source,
+			metadata: {
+				swarmId: this.state.id,
+				teammateId: options.teammateId,
+				taskId: task.id,
+				parentMode: options.parentMode,
+				parentModelProvider: options.parentModelProvider,
+				dispatchModel: dispatch.model,
+				dispatchProvider: dispatch.provider,
+				dispatchSource: dispatch.source,
+				modelTier: dispatch.modelTier,
+				modelOverride: options.modelOverride,
+				reason: options.reason,
+			},
+		});
 	}
 
 	private resolveParentMode(): AgentMode {
@@ -523,9 +614,24 @@ export class SwarmExecutor {
 
 		writeFileSync(tmpFile, prompt);
 
-		const dispatch = this.resolveTaskDispatch(task);
+		const modelOverride =
+			task.model !== undefined
+				? "task"
+				: this.state.config.model !== undefined
+					? "config"
+					: undefined;
+		const hasModelOverride = Boolean(modelOverride);
+		const dispatchResolution = this.resolveTaskDispatch(task, teammate, {
+			hasModelOverride,
+		});
+		const dispatch = dispatchResolution?.dispatch ?? null;
 		const model = task.model ?? this.state.config.model ?? dispatch?.model;
-		const hasModelOverride = Boolean(task.model ?? this.state.config.model);
+		const overrideProvider = hasModelOverride
+			? (providerFromPrefixedModel(model) ?? "unknown")
+			: undefined;
+		const telemetryProvider =
+			overrideProvider ?? (hasModelOverride ? "unknown" : dispatch?.provider);
+		const dispatchSource = hasModelOverride ? "override" : dispatch?.source;
 		const provider = hasModelOverride ? undefined : dispatch?.provider;
 		const args = [
 			"--no-session",
@@ -534,7 +640,18 @@ export class SwarmExecutor {
 			"exec",
 			tmpFile,
 		];
-		const env = await this.buildTeammateEnv(teammate, task, dispatch);
+		const env = await this.buildTeammateEnv(
+			teammate,
+			task,
+			dispatch,
+			dispatch
+				? {
+						model,
+						provider: telemetryProvider,
+						source: dispatchSource,
+					}
+				: undefined,
+		);
 
 		if (
 			this.state.status !== "running" ||
@@ -571,6 +688,34 @@ export class SwarmExecutor {
 
 		teammate.pid = proc.pid;
 		this.processes.set(teammate.id, proc);
+
+		let dispatchRecorded = false;
+		const recordDispatchOutcome = (success: boolean, reason?: string): void => {
+			if (!dispatch || !dispatchResolution || dispatchRecorded) {
+				return;
+			}
+			dispatchRecorded = true;
+			this.recordTaskDispatch(
+				task,
+				dispatch,
+				Math.max(0, Date.now() - dispatchResolution.startedAt),
+				success,
+				{
+					parentMode: dispatchResolution.parentMode,
+					parentModelProvider: dispatchResolution.parentModelProvider,
+					teammateId: teammate.id,
+					model,
+					provider: telemetryProvider,
+					source: dispatchSource,
+					modelOverride,
+					reason,
+				},
+			);
+		};
+
+		proc.once("spawn", () => {
+			recordDispatchOutcome(true);
+		});
 
 		let output = "";
 		let errorOutput = "";
@@ -668,6 +813,7 @@ export class SwarmExecutor {
 		});
 
 		proc.on("error", (err) => {
+			recordDispatchOutcome(false, "spawn_error");
 			clearTimeout(timeoutHandle);
 			this.processes.delete(teammate.id);
 			this.state.activeTasks.delete(task.id);

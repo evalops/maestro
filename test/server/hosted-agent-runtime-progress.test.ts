@@ -23,6 +23,7 @@ function createRecorder(overrides?: {
 	agentId?: string;
 	recordStep?: ReturnType<typeof vi.fn>;
 	recordEvent?: ReturnType<typeof vi.fn>;
+	recordCost?: ReturnType<typeof vi.fn>;
 	recordWorkItem?: ReturnType<typeof vi.fn>;
 	updateWorkItem?: ReturnType<typeof vi.fn>;
 	waitRun?: ReturnType<typeof vi.fn>;
@@ -36,6 +37,8 @@ function createRecorder(overrides?: {
 		overrides?.recordStep ?? vi.fn(async () => ({ run: { id: "run_1" } }));
 	const recordEvent =
 		overrides?.recordEvent ?? vi.fn(async () => ({ run: { id: "run_1" } }));
+	const recordCost =
+		overrides?.recordCost ?? vi.fn(async () => ({ run: { id: "run_1" } }));
 	const recordWorkItem =
 		overrides?.recordWorkItem ?? vi.fn(async () => ({ run: { id: "run_1" } }));
 	const updateWorkItem =
@@ -68,6 +71,7 @@ function createRecorder(overrides?: {
 		operations: {
 			recordStep,
 			recordEvent,
+			recordCost,
 			recordWorkItem,
 			updateWorkItem,
 			waitRun,
@@ -82,6 +86,7 @@ function createRecorder(overrides?: {
 		recorder,
 		recordStep,
 		recordEvent,
+		recordCost,
 		recordWorkItem,
 		updateWorkItem,
 		waitRun,
@@ -159,6 +164,122 @@ describe("hosted AgentRuntime progress recorder", () => {
 				}),
 			}),
 		);
+	});
+
+	it("records assistant usage as AgentRuntime model response evidence", async () => {
+		const { recorder, recordEvent, recordCost } = createRecorder();
+
+		recorder.recordAgentEvent({ type: "turn_start" });
+		recorder.recordAgentEvent({
+			type: "turn_end",
+			message: {
+				role: "assistant",
+				content: [],
+				api: "responses",
+				provider: "openai",
+				model: "gpt-5.3-codex",
+				usage: {
+					input: 10,
+					output: 5,
+					cacheRead: 2,
+					cacheWrite: 1,
+					cost: {
+						input: 0.0001,
+						output: 0.0002,
+						cacheRead: 0.00001,
+						cacheWrite: 0.00002,
+						total: 0.00033,
+					},
+				},
+				stopReason: "stop",
+				timestamp: 1,
+			},
+			toolResults: [],
+		} as AgentEvent);
+
+		await recorder.flush();
+
+		expect(recordEvent).toHaveBeenCalledWith(
+			expect.objectContaining({
+				runId: "run_1",
+				type: PlatformRuntimeEventTypeValue.ModelResponseRecorded,
+				message: "Maestro model response usage recorded",
+				stepId: "maestro:session_1:turn:1",
+				costId: "maestro:session_1:cost:1",
+				attributes: expect.objectContaining({
+					event_type: "model_response_recorded",
+					session_kind: "codex",
+					session_provider: "maestro",
+					model_call_id: "maestro:session_1:model:1",
+					cost_id: "maestro:session_1:cost:1",
+					provider: "openai",
+					model: "gpt-5.3-codex",
+					input_tokens: 10,
+					output_tokens: 5,
+					cache_read_tokens: 2,
+					cache_write_tokens: 1,
+					total_tokens: 18,
+					estimated_cost_micros: 330,
+					currency: "USD",
+					maestro_session_id: "session_1",
+				}),
+			}),
+		);
+		expect(recordCost).toHaveBeenCalledWith(
+			expect.objectContaining({
+				runId: "run_1",
+				leaseToken: "lease-token-1",
+				cost: expect.objectContaining({
+					id: "maestro:session_1:cost:1",
+					stepId: "maestro:session_1:turn:1",
+					meterRef: "meter://maestro/model-usage/maestro:session_1:cost:1",
+					provider: "openai",
+					model: "gpt-5.3-codex",
+					inputTokens: 10,
+					outputTokens: 5,
+					totalTokens: 18,
+					currency: "USD",
+					estimatedCostMicros: 330,
+				}),
+			}),
+		);
+	});
+
+	it("does not record model response evidence for empty usage", async () => {
+		const { recorder, recordEvent, recordCost } = createRecorder();
+
+		recorder.recordAgentEvent({ type: "turn_start" });
+		recorder.recordAgentEvent({
+			type: "turn_end",
+			message: {
+				role: "assistant",
+				content: [],
+				api: "responses",
+				provider: "openai",
+				model: "gpt-5.3-codex",
+				usage: {
+					input: 0,
+					output: 0,
+					cacheRead: 0,
+					cacheWrite: 0,
+					cost: {
+						input: 0,
+						output: 0,
+						cacheRead: 0,
+						cacheWrite: 0,
+						total: 0,
+					},
+				},
+				stopReason: "stop",
+				timestamp: 1,
+			},
+			toolResults: [],
+		} as AgentEvent);
+
+		await recorder.flush();
+
+		expect(recordEvent).not.toHaveBeenCalled();
+		expect(recordCost).not.toHaveBeenCalled();
 	});
 
 	it("records Codex subagent collaboration as durable Platform work items", async () => {

@@ -11,6 +11,10 @@ import {
 } from "../../platform/a2a-client.js";
 import { inspectA2AFleet } from "../../platform/a2a-fleet.js";
 import {
+	buildMaestroA2APeerProjection,
+	defaultMaestroA2ACapabilities,
+} from "../../platform/a2a-maestro-peer.js";
+import {
 	createA2APeerPairingPayload,
 	createA2APeerPairingPayloadFromAgentCard,
 	decodeA2APeerPairingCode,
@@ -46,7 +50,13 @@ import {
 } from "../../platform/a2a-work-graph.js";
 import {
 	type PlatformAgentRegistryA2APeerCandidate,
+	type PlatformAgentRegistryAgent,
+	PlatformAgentStatusValue,
+	heartbeatAgentWithPlatform,
+	isAgentAlreadyExistsError,
 	listA2APeerCandidatesWithPlatform,
+	registerAgentWithPlatform,
+	updateAgentWithPlatform,
 } from "../../platform/agent-registry-client.js";
 import { getEnvValue } from "../../platform/client.js";
 import { isAbortError } from "../../utils/abort-error.js";
@@ -84,6 +94,7 @@ const A2A_VALUE_FLAGS_BY_SUBCOMMAND: Record<string, readonly string[]> = {
 		"--role",
 		"--skill",
 		"--status",
+		"--surface",
 		"--tasks",
 		"--timeout-ms",
 		"--workspace-id",
@@ -106,6 +117,26 @@ const A2A_VALUE_FLAGS_BY_SUBCOMMAND: Record<string, readonly string[]> = {
 		"--url",
 	],
 	peers: ["--registry"],
+	register: [
+		"--agent-card-etag",
+		"--agent-card-hash",
+		"--agent-card-url",
+		"--agent-id",
+		"--capabilities",
+		"--description",
+		"--internal-url",
+		"--name",
+		"--owner-id",
+		"--protocol-version",
+		"--public-url",
+		"--security-schemes",
+		"--status",
+		"--surface",
+		"--surface-types",
+		"--type",
+		"--url",
+		"--workspace-id",
+	],
 	reply: [
 		"--interval-ms",
 		"--max-wait-ms",
@@ -129,6 +160,7 @@ const A2A_BOOLEAN_FLAGS_BY_SUBCOMMAND: Record<string, readonly string[]> = {
 	delegate: ["--discover", "--prefer-internal", "--wait", "--work-graph"],
 	discover: ["--default", "--import", "--json", "--prefer-internal"],
 	fleet: ["--json"],
+	register: ["--heartbeat-only", "--json", "--no-heartbeat", "--update-only"],
 	reply: ["--wait", "--work-graph"],
 	send: ["--wait", "--work-graph"],
 	tasks: ["--json", "--refresh", "--work-graph"],
@@ -152,7 +184,7 @@ export interface ParsedA2AArgs {
 
 export async function handleA2ACommand(args: string[]): Promise<void> {
 	const parsed = parseA2AArgs(args);
-	const subcommand = parsed.positionals.shift()?.toLowerCase() ?? "help";
+	const subcommand = canonicalA2ASubcommand(parsed.positionals.shift());
 	switch (subcommand) {
 		case "offer":
 		case "pair":
@@ -168,6 +200,9 @@ export async function handleA2ACommand(args: string[]): Promise<void> {
 			return;
 		case "discover":
 			await handleA2ADiscover(parsed);
+			return;
+		case "register":
+			await handleA2ARegister(parsed);
 			return;
 		case "fleet":
 			await handleA2AFleet(parsed);
@@ -337,6 +372,8 @@ function canonicalA2ASubcommand(input: string | undefined): string {
 			return "delegate";
 		case "continue":
 			return "reply";
+		case "publish":
+			return "register";
 		default:
 			return input?.toLowerCase() ?? "help";
 	}
@@ -523,6 +560,193 @@ async function handleA2ADiscover(parsed: ParsedA2AArgs): Promise<void> {
 	if (imported.length > 0) {
 		console.log(chalk.dim(`Imported ${imported.length} peer(s).`));
 		console.log(chalk.dim(`Registry: ${imported[0]?.path}`));
+	}
+}
+
+async function handleA2ARegister(parsed: ParsedA2AArgs): Promise<void> {
+	const heartbeatOnly = booleanFlag(parsed, "--heartbeat-only");
+	const agentId =
+		stringFlag(parsed, "--agent-id") ??
+		getEnvValue([
+			"MAESTRO_A2A_AGENT_ID",
+			"MAESTRO_AGENT_ID",
+			"EVALOPS_AGENT_ID",
+		]);
+	const name =
+		stringFlag(parsed, "--name") ??
+		getEnvValue(["MAESTRO_A2A_AGENT_NAME", "MAESTRO_AGENT_NAME"]) ??
+		"Maestro A2A Peer";
+	const description =
+		stringFlag(parsed, "--description") ??
+		getEnvValue([
+			"MAESTRO_A2A_AGENT_DESCRIPTION",
+			"MAESTRO_AGENT_DESCRIPTION",
+		]) ??
+		"Maestro peer exposing governed Codex subagent lanes through A2A.";
+	const workspaceId = stringFlag(parsed, "--workspace-id");
+	const capabilities = stringListFlag(
+		parsed,
+		"--capabilities",
+		defaultMaestroA2ACapabilities(),
+	);
+	const surfaces = stringListFlag(parsed, "--surface", ["a2a", "maestro"]);
+	const surfaceTypes = stringListFlag(parsed, "--surface-types", [
+		"SURFACE_MAESTRO",
+	]);
+	const publicEndpointUrl = heartbeatOnly
+		? undefined
+		: (stringFlag(parsed, "--public-url") ??
+			stringFlag(parsed, "--url") ??
+			getEnvValue([
+				"MAESTRO_A2A_PUBLIC_URL",
+				"MAESTRO_CONTROL_PUBLIC_URL",
+				"MAESTRO_A2A_URL",
+				"MAESTRO_CONTROL_URL",
+			]) ??
+			fail("Provide --url or set MAESTRO_A2A_PUBLIC_URL."));
+	const a2a = publicEndpointUrl
+		? buildMaestroA2APeerProjection({
+				publicEndpointUrl,
+				internalEndpointUrl:
+					stringFlag(parsed, "--internal-url") ??
+					getEnvValue([
+						"MAESTRO_A2A_INTERNAL_URL",
+						"MAESTRO_CONTROL_INTERNAL_URL",
+					]),
+				agentCardUrl: stringFlag(parsed, "--agent-card-url"),
+				protocolVersion: stringFlag(parsed, "--protocol-version"),
+				agentCardETag: stringFlag(parsed, "--agent-card-etag"),
+				agentCardHash: stringFlag(parsed, "--agent-card-hash"),
+				securitySchemes: stringListFlag(parsed, "--security-schemes", [
+					"evalops-agent-token",
+				]),
+				attributes: {
+					publishedBy: "maestro a2a register",
+				},
+			})
+		: undefined;
+	const updateOnly = booleanFlag(parsed, "--update-only");
+	const shouldHeartbeat = !booleanFlag(parsed, "--no-heartbeat");
+	if (heartbeatOnly && !shouldHeartbeat) {
+		fail("--heartbeat-only cannot be combined with --no-heartbeat.");
+	}
+	let operation: "registered" | "updated" | "heartbeat" = "registered";
+	let agent: PlatformAgentRegistryAgent | undefined;
+
+	if (heartbeatOnly) {
+		if (!agentId) {
+			fail("Usage: maestro a2a register --heartbeat-only --agent-id <id>");
+		}
+		operation = "heartbeat";
+	} else if (updateOnly) {
+		if (!agentId) {
+			fail(
+				"Usage: maestro a2a register --update-only --agent-id <id> --url <base-url>",
+			);
+		}
+		const updated = await updateAgentWithPlatform({
+			workspaceId,
+			id: agentId,
+			name,
+			description,
+			capabilities,
+			surfaces,
+			surfaceTypes,
+			a2a,
+		});
+		if (!updated) {
+			fail(agentRegistryNotConfiguredMessage());
+		}
+		operation = "updated";
+		agent = updated.agent;
+	} else {
+		try {
+			const registered = await registerAgentWithPlatform({
+				workspaceId,
+				id: agentId,
+				name,
+				description,
+				agentType: stringFlag(parsed, "--type") ?? "maestro",
+				capabilities,
+				surfaces,
+				surfaceTypes,
+				ownerId: stringFlag(parsed, "--owner-id"),
+				a2a,
+			});
+			if (!registered) {
+				fail(agentRegistryNotConfiguredMessage());
+			}
+			agent = registered.agent;
+		} catch (error) {
+			if (!agentId || !isAgentAlreadyExistsError(error)) {
+				throw error;
+			}
+			const updated = await updateAgentWithPlatform({
+				workspaceId,
+				id: agentId,
+				name,
+				description,
+				capabilities,
+				surfaces,
+				surfaceTypes,
+				a2a,
+			});
+			if (!updated) {
+				fail(agentRegistryNotConfiguredMessage());
+			}
+			operation = "updated";
+			agent = updated.agent;
+		}
+	}
+
+	const resolvedAgentId =
+		agent?.id ?? agentId ?? fail("Agent Registry did not return an agent id.");
+	const heartbeat = shouldHeartbeat
+		? await heartbeatAgentWithPlatform({
+				workspaceId,
+				agentId: resolvedAgentId,
+				status: stringFlag(parsed, "--status") ?? PlatformAgentStatusValue.Idle,
+				surface: surfaces[0],
+				surfaceType: surfaceTypes[0],
+				a2a,
+			})
+		: null;
+	if (shouldHeartbeat && !heartbeat) {
+		fail(agentRegistryNotConfiguredMessage());
+	}
+
+	if (booleanFlag(parsed, "--json")) {
+		console.log(
+			JSON.stringify(
+				{
+					operation,
+					agentId: resolvedAgentId,
+					agent,
+					heartbeat,
+					a2a,
+				},
+				null,
+				2,
+			),
+		);
+		return;
+	}
+
+	const verb = operation === "registered" ? "Registered" : "Updated";
+	console.log(
+		operation === "heartbeat"
+			? `Sent Platform A2A heartbeat for ${chalk.bold(resolvedAgentId)}${a2a ? ` at ${a2a.publicEndpointUrl}` : ""}`
+			: `${verb} Platform A2A peer ${chalk.bold(resolvedAgentId)} at ${
+					a2a?.publicEndpointUrl ?? publicEndpointUrl
+				}`,
+	);
+	console.log(
+		chalk.dim(
+			`Skills: ${a2a?.skills?.map((skill) => skill.id).join(", ") ?? "none"}`,
+		),
+	);
+	if (heartbeat?.nextHeartbeatBy) {
+		console.log(chalk.dim(`Next heartbeat by: ${heartbeat.nextHeartbeatBy}`));
 	}
 }
 
@@ -818,8 +1042,8 @@ async function resolveDiscoveredA2ADelegatePeer(
 	const candidates = await listA2APeerCandidatesWithPlatform({
 		workspaceId: stringFlag(parsed, "--workspace-id"),
 		capability: stringFlag(parsed, "--capability"),
-		surface: "a2a",
-		status: stringFlag(parsed, "--status") ?? "AGENT_STATUS_ONLINE",
+		surface: stringFlag(parsed, "--surface") ?? "a2a",
+		status: stringFlag(parsed, "--status") ?? PlatformAgentStatusValue.Idle,
 		limit: numberFlag(parsed, "--limit") ?? 10,
 		offset: nonNegativeNumberFlag(parsed, "--offset"),
 		skillId,
@@ -1531,6 +1755,22 @@ function stringFlag(parsed: ParsedA2AArgs, name: string): string | undefined {
 	return typeof value === "string" && value.trim() ? value.trim() : undefined;
 }
 
+function stringListFlag(
+	parsed: ParsedA2AArgs,
+	name: string,
+	fallback: string[],
+): string[] {
+	const value = stringFlag(parsed, name);
+	if (!value) {
+		return fallback;
+	}
+	const parsedValues = value
+		.split(",")
+		.map((item) => item.trim())
+		.filter(Boolean);
+	return parsedValues.length > 0 ? parsedValues : fallback;
+}
+
 function numberFlag(parsed: ParsedA2AArgs, name: string): number | undefined {
 	const value = stringFlag(parsed, name);
 	if (!value) {
@@ -1597,12 +1837,17 @@ function errorMessage(error: unknown): string {
 	return error instanceof Error ? error.message : String(error);
 }
 
+function agentRegistryNotConfiguredMessage(): string {
+	return "Agent Registry service is not configured. Set AGENT_REGISTRY_SERVICE_URL, AGENT_REGISTRY_SERVICE_TOKEN, AGENT_REGISTRY_ORGANIZATION_ID, and AGENT_REGISTRY_WORKSPACE_ID, or pass --workspace-id with shared EvalOps credentials.";
+}
+
 function printA2AHelp(): void {
 	console.log(`Usage:
   maestro a2a offer --url <base-url> [--name <display-name>] [--peer-id <id>]
   maestro a2a accept <pairing-code> [--name <peer>] [--default] [--token-env ENV]
   maestro a2a peers
   maestro a2a discover [--capability <capability>] [--skill <skill-id>] [--import]
+  maestro a2a register --url <base-url> [--agent-id <id>] [--workspace-id <id>] [--json]
   maestro a2a fleet [--json]
   maestro a2a card <peer>
   maestro a2a coordinate [peer] [--reply <text>] [--wait] [--json] [--work-graph]
