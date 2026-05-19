@@ -224,14 +224,18 @@ problem in `last_status`, `last_error`, and `last_error_type`. It does not
 hydrate files from cloud storage; the provider must mount or download workspace
 artifacts before starting Maestro.
 
-The Rust surface now has an opt-in hosted conformance adapter. The adapter
-spawns a deterministic fixture binary, attaches over HTTP/SSE, and exercises the
-same shared scenarios as the TypeScript in-process host while the Rust server
-owns leases, replay, snapshots, workspace utilities, heartbeat, and disconnect
-behavior. The required hosted adapter also covers the drain handoff shape:
-manifest response, persisted snapshot file, export-path recording, and
-post-drain mutation rejection. It is not yet the final `maestro hosted-runner`
-CLI wrapper.
+The Rust surface now has both an opt-in hosted conformance adapter and a real
+hosted-runner CLI wrapper. `maestro-tui hosted-runner` and the
+`maestro-hosted-runner` binary parse the same Platform contract names, bind the
+Rust hosted HTTP/SSE server, and forward headless traffic through an
+`AgentSupervisor` to the configured Maestro headless executable. The wrapper
+honors `MAESTRO_HEADLESS_CLI_PATH` or `MAESTRO_AGENT_SCRIPT` when the runtime
+image needs to point at a packaged CLI, while leaving the default production
+entrypoint as `maestro --headless`.
+
+The required hosted adapter also covers the drain handoff shape: manifest
+response, persisted snapshot file, export-path recording, and post-drain
+mutation rejection.
 
 ## Error Vocabulary
 

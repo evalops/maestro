@@ -9,6 +9,10 @@ description = "Native terminal UI renderer for Maestro"
 name = "maestro-tui"
 path = "src/main.rs"
 
+[[bin]]
+name = "maestro-hosted-runner"
+path = "src/bin/maestro_hosted_runner.rs"
+
 [lib]
 name = "maestro_tui"
 path = "src/lib.rs"

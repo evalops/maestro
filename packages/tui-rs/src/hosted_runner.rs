@@ -376,9 +376,9 @@ fn non_empty(value: String, field: &str) -> Result<String, HostedRunnerConfigErr
     Ok(value)
 }
 
-#[derive(Debug)]
 pub struct HostedRunnerHandle {
     local_addr: SocketAddr,
+    shared: SharedRunner,
     shutdown: CancellationToken,
     task: JoinHandle<()>,
 }
@@ -392,6 +392,32 @@ impl HostedRunnerHandle {
     #[must_use]
     pub fn base_url(&self) -> String {
         format!("http://{}", self.local_addr)
+    }
+
+    pub async fn drain_for_shutdown(
+        &self,
+        reason: impl Into<String>,
+        requested_by: impl Into<String>,
+    ) -> io::Result<serde_json::Value> {
+        let response = handle_drain(
+            self.shared.clone(),
+            DrainRequest {
+                reason: Some(reason.into()),
+                requested_by: Some(requested_by.into()),
+                export_paths: Some(vec![".".to_string()]),
+            },
+        )
+        .await
+        .map_err(|error| io::Error::other(error.message))?;
+        match response {
+            ResponseBody::Json { status, body } if status < 400 => Ok(body),
+            ResponseBody::Json { status, body } => Err(io::Error::other(format!(
+                "hosted runner drain returned status {status}: {body}"
+            ))),
+            ResponseBody::Sse { .. } => Err(io::Error::other(
+                "hosted runner drain returned an unexpected stream response",
+            )),
+        }
     }
 
     pub async fn shutdown(self) {
@@ -1508,12 +1534,14 @@ pub async fn start_hosted_runner_with_message_executor(
         message_executor,
         restore_manifest,
     );
+    let server_shared = shared.clone();
     let task = tokio::spawn(async move {
-        serve(listener, shared, server_shutdown).await;
+        serve(listener, server_shared, server_shutdown).await;
     });
 
     Ok(HostedRunnerHandle {
         local_addr,
+        shared,
         shutdown,
         task,
     })

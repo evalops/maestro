@@ -38,8 +38,8 @@ npm run check:codex-operating-layer
   edge lifecycle state, so spawn/send/resume/wait/close edges survive drain and
   restore.
 - Rust can expose the same Codex models through the control plane, bridge
-  Codex headless runs, stream SSE/WebSocket events, handle approval requests,
-  and preserve sandbox policy.
+  Codex headless runs, run the hosted remote-runner entrypoint, stream
+  SSE/WebSocket events, handle approval requests, and preserve sandbox policy.
 - Durable thread metadata covers goals and memory linkage instead of treating
   Codex runs as disposable one-off calls.
 - Eval telemetry and trajectory fixtures can score approvals, child runs,
@@ -58,7 +58,7 @@ npm run check:codex-operating-layer
 | approvals and sandbox policy | `approvals-sandbox-policy` | `src/agent/transport.ts`, `test/agent/provider-transport-provider-tools.test.ts`, `packages/control-plane-rs/src/main.rs`, `docs/protocols/pending-requests.md` |
 | subagents | `subagents` | `src/agent/providers/codex-app-server.ts`, `test/agent/provider-transport-provider-tools.test.ts` |
 | multi-agent work graph | `multi-agent-workgraph` | `src/platform/agent-runtime-client.ts`, `src/platform/agent-registry-client.ts`, `src/agent/providers/codex-app-server.ts`, `packages/control-plane-rs/src/main.rs`, `src/server/hosted-agent-runtime-progress.ts`, `test/server/hosted-agent-runtime-progress.test.ts` |
-| remote runner continuity | `remote-runner-continuity` | `src/server/handlers/hosted-runner-drain.ts`, `packages/tui-rs/src/hosted_runner.rs`, `packages/tui-rs/src/headless/messages.rs`, `test/server/hosted-runner-drain.test.ts` |
+| remote runner continuity | `remote-runner-continuity` | `src/server/handlers/hosted-runner-drain.ts`, `packages/tui-rs/src/hosted_runner.rs`, `packages/tui-rs/src/hosted_runner_cli.rs`, `packages/tui-rs/src/headless/messages.rs`, `test/server/hosted-runner-drain.test.ts` |
 | realtime streaming | `realtime-streaming` | `src/server/handlers/runtime-app-server-ws.ts`, `test/server/runtime-app-server-ws.test.ts` |
 | TypeScript runtime | `typescript-runtime` | `src/agent/providers/codex-app-server.ts`, `test/agent/codex-app-server.test.ts` |
 | Rust runtime | `rust-control-plane` | `packages/control-plane-rs/src/model_catalog.rs`, `packages/control-plane-rs/src/main.rs` |
