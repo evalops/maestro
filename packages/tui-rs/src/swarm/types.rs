@@ -338,6 +338,263 @@ impl SwarmPlan {
     }
 }
 
+/// Agent modes used to resolve subagent dispatch.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum AgentMode {
+    Smart,
+    Rush,
+    Free,
+    Custom,
+    Frontier,
+    Replay,
+}
+
+/// Logical model tiers that map to provider-specific model IDs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ModelTier {
+    Opus,
+    Sonnet,
+    Haiku,
+}
+
+/// Supported model providers for mode and subagent dispatch.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ModelProvider {
+    Anthropic,
+    #[serde(rename = "openai")]
+    OpenAi,
+    #[serde(rename = "openai-codex")]
+    OpenAiCodex,
+    Google,
+}
+
+/// Reasoning budget hint for child agents that support it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ReasoningEffort {
+    Low,
+    Medium,
+    High,
+    #[serde(rename = "xhigh")]
+    XHigh,
+}
+
+/// Where a resolved subagent dispatch came from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum DispatchSource {
+    Mode,
+    Fallback,
+}
+
+/// Available subagent roles shared with the TypeScript runtime.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SubagentType {
+    Explorer,
+    Planner,
+    Coder,
+    Reviewer,
+    Researcher,
+    Minimal,
+    Custom,
+}
+
+/// Fully resolved routing for one subagent invocation.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ResolvedSubagentDispatch {
+    pub mode: AgentMode,
+    pub subagent_type: SubagentType,
+    pub provider: ModelProvider,
+    pub model: String,
+    pub model_tier: Option<ModelTier>,
+    pub reasoning_effort: ReasoningEffort,
+    pub source: DispatchSource,
+}
+
+enum DispatchModelRef {
+    Tier(ModelTier),
+    Explicit {
+        provider: Option<ModelProvider>,
+        model: &'static str,
+    },
+}
+
+struct SubagentDispatchRule {
+    model: DispatchModelRef,
+    reasoning_effort: ReasoningEffort,
+}
+
+impl SubagentDispatchRule {
+    fn tier(model: ModelTier, reasoning_effort: ReasoningEffort) -> Self {
+        Self {
+            model: DispatchModelRef::Tier(model),
+            reasoning_effort,
+        }
+    }
+
+    fn explicit(
+        provider: ModelProvider,
+        model: &'static str,
+        reasoning_effort: ReasoningEffort,
+    ) -> Self {
+        Self {
+            model: DispatchModelRef::Explicit {
+                provider: Some(provider),
+                model,
+            },
+            reasoning_effort,
+        }
+    }
+}
+
+fn model_for_tier(tier: ModelTier, provider: ModelProvider) -> &'static str {
+    match (tier, provider) {
+        (ModelTier::Opus, ModelProvider::Anthropic) => "claude-opus-4-6",
+        (ModelTier::Opus, ModelProvider::OpenAi) => "gpt-5.2",
+        (ModelTier::Opus, ModelProvider::OpenAiCodex) => "gpt-5.5",
+        (ModelTier::Opus, ModelProvider::Google) => "gemini-2.0-flash-thinking-exp",
+        (ModelTier::Sonnet, ModelProvider::Anthropic) => "claude-sonnet-4-5-20250929",
+        (ModelTier::Sonnet, ModelProvider::OpenAi) => "gpt-4o",
+        (ModelTier::Sonnet, ModelProvider::OpenAiCodex) => "gpt-5.4",
+        (ModelTier::Sonnet, ModelProvider::Google) => "gemini-2.0-flash-exp",
+        (ModelTier::Haiku, ModelProvider::Anthropic) => "claude-haiku-4-5-20251001",
+        (ModelTier::Haiku, ModelProvider::OpenAi) => "gpt-4o-mini",
+        (ModelTier::Haiku, ModelProvider::OpenAiCodex) => "gpt-5.4-mini",
+        (ModelTier::Haiku, ModelProvider::Google) => "gemini-2.0-flash-lite-exp",
+    }
+}
+
+fn mode_primary_tier(mode: AgentMode) -> ModelTier {
+    match mode {
+        AgentMode::Smart | AgentMode::Frontier => ModelTier::Opus,
+        AgentMode::Rush | AgentMode::Custom => ModelTier::Sonnet,
+        AgentMode::Free | AgentMode::Replay => ModelTier::Haiku,
+    }
+}
+
+fn mode_reasoning_effort(mode: AgentMode) -> ReasoningEffort {
+    match mode {
+        AgentMode::Smart | AgentMode::Custom => ReasoningEffort::Medium,
+        AgentMode::Frontier => ReasoningEffort::High,
+        AgentMode::Rush | AgentMode::Free | AgentMode::Replay => ReasoningEffort::Low,
+    }
+}
+
+fn subagent_dispatch_rule(
+    mode: AgentMode,
+    subagent_type: SubagentType,
+) -> Option<SubagentDispatchRule> {
+    let rule = match mode {
+        AgentMode::Smart => match subagent_type {
+            SubagentType::Explorer | SubagentType::Minimal => {
+                SubagentDispatchRule::tier(ModelTier::Haiku, ReasoningEffort::Low)
+            }
+            SubagentType::Planner => {
+                SubagentDispatchRule::tier(ModelTier::Opus, ReasoningEffort::High)
+            }
+            SubagentType::Coder => SubagentDispatchRule::explicit(
+                ModelProvider::OpenAiCodex,
+                "gpt-5.5",
+                ReasoningEffort::Medium,
+            ),
+            SubagentType::Reviewer | SubagentType::Researcher => {
+                SubagentDispatchRule::tier(ModelTier::Sonnet, ReasoningEffort::Medium)
+            }
+            SubagentType::Custom => return None,
+        },
+        AgentMode::Rush => match subagent_type {
+            SubagentType::Explorer
+            | SubagentType::Reviewer
+            | SubagentType::Researcher
+            | SubagentType::Minimal => {
+                SubagentDispatchRule::tier(ModelTier::Haiku, ReasoningEffort::Low)
+            }
+            SubagentType::Planner | SubagentType::Coder => {
+                SubagentDispatchRule::tier(ModelTier::Sonnet, ReasoningEffort::Low)
+            }
+            SubagentType::Custom => return None,
+        },
+        AgentMode::Free | AgentMode::Replay => match subagent_type {
+            SubagentType::Custom => return None,
+            _ => SubagentDispatchRule::tier(ModelTier::Haiku, ReasoningEffort::Low),
+        },
+        AgentMode::Frontier => match subagent_type {
+            SubagentType::Explorer | SubagentType::Researcher => {
+                SubagentDispatchRule::tier(ModelTier::Sonnet, ReasoningEffort::Medium)
+            }
+            SubagentType::Planner => {
+                SubagentDispatchRule::tier(ModelTier::Opus, ReasoningEffort::XHigh)
+            }
+            SubagentType::Coder => SubagentDispatchRule::explicit(
+                ModelProvider::OpenAiCodex,
+                "gpt-5.5",
+                ReasoningEffort::High,
+            ),
+            SubagentType::Reviewer => SubagentDispatchRule::explicit(
+                ModelProvider::OpenAiCodex,
+                "gpt-5.5",
+                ReasoningEffort::Medium,
+            ),
+            SubagentType::Minimal => {
+                SubagentDispatchRule::tier(ModelTier::Haiku, ReasoningEffort::Low)
+            }
+            SubagentType::Custom => return None,
+        },
+        AgentMode::Custom => return None,
+    };
+
+    Some(rule)
+}
+
+/// Resolve the concrete model/provider a subagent should use in a mode.
+#[must_use]
+pub fn resolve_subagent_dispatch(
+    mode: AgentMode,
+    subagent_type: SubagentType,
+    provider: ModelProvider,
+) -> ResolvedSubagentDispatch {
+    if let Some(rule) = subagent_dispatch_rule(mode, subagent_type) {
+        return match rule.model {
+            DispatchModelRef::Tier(tier) => ResolvedSubagentDispatch {
+                mode,
+                subagent_type,
+                provider,
+                model: model_for_tier(tier, provider).to_string(),
+                model_tier: Some(tier),
+                reasoning_effort: rule.reasoning_effort,
+                source: DispatchSource::Mode,
+            },
+            DispatchModelRef::Explicit {
+                provider: explicit_provider,
+                model,
+            } => ResolvedSubagentDispatch {
+                mode,
+                subagent_type,
+                provider: explicit_provider.unwrap_or(provider),
+                model: model.to_string(),
+                model_tier: None,
+                reasoning_effort: rule.reasoning_effort,
+                source: DispatchSource::Mode,
+            },
+        };
+    }
+
+    let tier = mode_primary_tier(mode);
+    ResolvedSubagentDispatch {
+        mode,
+        subagent_type,
+        provider,
+        model: model_for_tier(tier, provider).to_string(),
+        model_tier: Some(tier),
+        reasoning_effort: mode_reasoning_effort(mode),
+        source: DispatchSource::Fallback,
+    }
+}
+
 /// Configuration for swarm execution
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SwarmConfig {
@@ -351,6 +608,18 @@ pub struct SwarmConfig {
     pub model: Option<String>,
     /// System prompt override for agents
     pub system_prompt: Option<String>,
+    /// Agent mode used to resolve subagent model dispatch
+    #[serde(default)]
+    pub mode: Option<AgentMode>,
+    /// Parent model provider used when dispatch falls back to a model tier
+    #[serde(default)]
+    pub model_provider: Option<ModelProvider>,
+    /// Default subagent type for teammate tasks
+    #[serde(default)]
+    pub subagent_type: Option<SubagentType>,
+    /// Default reasoning hint for teammate tasks
+    #[serde(default)]
+    pub reasoning_effort: Option<ReasoningEffort>,
 }
 
 impl Default for SwarmConfig {
@@ -361,6 +630,10 @@ impl Default for SwarmConfig {
             task_timeout_ms: Some(300_000), // 5 minutes
             model: None,
             system_prompt: None,
+            mode: None,
+            model_provider: None,
+            subagent_type: None,
+            reasoning_effort: None,
         }
     }
 }
@@ -734,6 +1007,43 @@ mod tests {
         assert_eq!(config.task_timeout_ms, Some(300_000));
         assert!(config.model.is_none());
         assert!(config.system_prompt.is_none());
+        assert!(config.mode.is_none());
+        assert!(config.model_provider.is_none());
+        assert!(config.subagent_type.is_none());
+        assert!(config.reasoning_effort.is_none());
+    }
+
+    #[test]
+    fn test_smart_coder_subagent_dispatch_uses_openai_codex_model() {
+        let dispatch = resolve_subagent_dispatch(
+            AgentMode::Smart,
+            SubagentType::Coder,
+            ModelProvider::Anthropic,
+        );
+
+        assert_eq!(dispatch.mode, AgentMode::Smart);
+        assert_eq!(dispatch.subagent_type, SubagentType::Coder);
+        assert_eq!(dispatch.provider, ModelProvider::OpenAiCodex);
+        assert_eq!(dispatch.model, "gpt-5.5");
+        assert_eq!(dispatch.reasoning_effort, ReasoningEffort::Medium);
+        assert_eq!(dispatch.source, DispatchSource::Mode);
+    }
+
+    #[test]
+    fn test_custom_researcher_subagent_dispatch_falls_back_to_mode_tier() {
+        let dispatch = resolve_subagent_dispatch(
+            AgentMode::Custom,
+            SubagentType::Researcher,
+            ModelProvider::Google,
+        );
+
+        assert_eq!(dispatch.mode, AgentMode::Custom);
+        assert_eq!(dispatch.subagent_type, SubagentType::Researcher);
+        assert_eq!(dispatch.provider, ModelProvider::Google);
+        assert_eq!(dispatch.model, "gemini-2.0-flash-exp");
+        assert_eq!(dispatch.model_tier, Some(ModelTier::Sonnet));
+        assert_eq!(dispatch.reasoning_effort, ReasoningEffort::Medium);
+        assert_eq!(dispatch.source, DispatchSource::Fallback);
     }
 
     // ========== SwarmEvent Tests ==========
@@ -1240,6 +1550,7 @@ mod tests {
             task_timeout_ms: Some(600_000),
             model: Some("claude-3-opus".to_string()),
             system_prompt: Some("Custom prompt".to_string()),
+            ..Default::default()
         };
 
         assert_eq!(config.max_concurrency, 10);
@@ -1268,6 +1579,7 @@ mod tests {
             task_timeout_ms: Some(100_000),
             model: Some("test-model".to_string()),
             system_prompt: Some("test".to_string()),
+            ..Default::default()
         };
 
         let cloned = config.clone();
@@ -1873,6 +2185,7 @@ mod tests {
             task_timeout_ms: Some(u64::MAX),
             model: None,
             system_prompt: None,
+            ..Default::default()
         };
 
         let json = serde_json::to_string(&config).unwrap();

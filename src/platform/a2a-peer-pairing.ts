@@ -23,7 +23,20 @@ export interface A2APeerPairingCapabilities {
 export interface A2APeerPairingSkillSummary {
 	id: string;
 	name: string;
+	description?: string;
 	tags?: string[];
+	examples?: string[];
+	inputModes?: string[];
+	outputModes?: string[];
+	requiredContextGrants?: string[];
+	approvalPolicyRef?: string;
+	maxAutonomy?: string;
+	requiredArtifactKinds?: string[];
+	optionalArtifactKinds?: string[];
+	allowedTaskClasses?: string[];
+	deniedTaskClasses?: string[];
+	attributes?: Record<string, string>;
+	metadata?: Record<string, string | number | boolean>;
 }
 
 export interface A2APeerPairingProvider {
@@ -172,11 +185,7 @@ export function createA2APeerPairingPayloadFromAgentCard(
 		peerId: input.peerId,
 		provider: input.agentCard.provider,
 		capabilities: input.agentCard.capabilities,
-		skills: input.agentCard.skills.map((skill) => ({
-			id: skill.id,
-			name: skill.name,
-			tags: skill.tags,
-		})),
+		skills: normalizeSkills(input.agentCard.skills),
 		keyFingerprint: input.keyFingerprint,
 		relayHints: input.relayHints,
 		metadata: input.metadata,
@@ -189,11 +198,56 @@ export function encodeA2APeerPairingCode(
 ): string {
 	const normalized = normalizeDecodedPayload(payload, { allowExpired: true });
 	rejectSecretBearingFields(normalized);
-	const encoded = Buffer.from(JSON.stringify(normalized), "utf8").toString(
+	for (const candidate of pairingCodeSizeCandidates(normalized)) {
+		const code = encodeNormalizedPairingCode(candidate);
+		if (code.length <= MAX_PAIRING_CODE_LENGTH) {
+			return code;
+		}
+	}
+	throw new Error("A2A pairing payload is too large");
+}
+
+function encodeNormalizedPairingCode(payload: A2APeerPairingPayload): string {
+	const encoded = Buffer.from(JSON.stringify(payload), "utf8").toString(
 		"base64url",
 	);
 	const checksum = pairingChecksum(encoded);
 	return `${A2A_PEER_PAIRING_CODE_PREFIX}.${encoded}.${checksum}`;
+}
+
+function pairingCodeSizeCandidates(
+	payload: A2APeerPairingPayload,
+): A2APeerPairingPayload[] {
+	if (!payload.skills || payload.skills.length === 0) {
+		return [payload];
+	}
+	return [
+		payload,
+		{
+			...payload,
+			skills: payload.skills.map(compactSkillForPairingCode),
+		},
+		omitPairingCodeSkills(payload),
+	];
+}
+
+function compactSkillForPairingCode(
+	skill: A2APeerPairingSkillSummary,
+): A2APeerPairingSkillSummary {
+	return {
+		id: skill.id,
+		name: skill.name,
+		...(skill.tags && skill.tags.length > 0
+			? { tags: skill.tags.slice(0, MAX_SKILL_TAGS_IN_PAIRING_CODE) }
+			: {}),
+	};
+}
+
+function omitPairingCodeSkills(
+	payload: A2APeerPairingPayload,
+): A2APeerPairingPayload {
+	const { skills: _skills, ...withoutSkills } = payload;
+	return withoutSkills;
 }
 
 export function decodeA2APeerPairingCode(
@@ -459,19 +513,98 @@ function normalizeSkills(
 		if (!isRecord(skill)) {
 			throw new Error(`skills[${index}] must be an object`);
 		}
-		const tags = Array.isArray(skill.tags)
-			? skill.tags
-					.filter((tag): tag is string => typeof tag === "string")
-					.map((tag) => tag.trim())
-					.filter(Boolean)
-					.slice(0, MAX_SKILL_TAGS_IN_PAIRING_CODE)
-			: undefined;
 		return {
 			id: requireNonEmptyString(skill.id, `skills[${index}].id`),
 			name: requireNonEmptyString(skill.name, `skills[${index}].name`),
-			...(tags && tags.length > 0 ? { tags } : {}),
+			...copyOptionalString(skill, "description"),
+			...copyStringList(skill, "tags", MAX_SKILL_TAGS_IN_PAIRING_CODE),
+			...copyStringList(skill, "examples"),
+			...copyStringList(skill, "inputModes"),
+			...copyStringList(skill, "outputModes"),
+			...copyStringList(skill, "requiredContextGrants"),
+			...copyOptionalString(skill, "approvalPolicyRef"),
+			...copyOptionalString(skill, "maxAutonomy"),
+			...copyStringList(skill, "requiredArtifactKinds"),
+			...copyStringList(skill, "optionalArtifactKinds"),
+			...copyStringList(skill, "allowedTaskClasses"),
+			...copyStringList(skill, "deniedTaskClasses"),
+			...copyStringRecord(skill, "attributes"),
+			...copyPrimitiveRecord(skill, "metadata"),
 		};
 	});
+}
+
+function copyOptionalString(
+	input: Record<string, unknown>,
+	key: string,
+): Record<string, string> {
+	const value = input[key];
+	return typeof value === "string" && value.trim()
+		? { [key]: value.trim() }
+		: {};
+}
+
+function copyStringList(
+	input: Record<string, unknown>,
+	key: string,
+	limit = Number.POSITIVE_INFINITY,
+): Record<string, string[]> {
+	const value = input[key];
+	if (!Array.isArray(value)) {
+		return {};
+	}
+	const strings = value
+		.filter((item): item is string => typeof item === "string")
+		.map((item) => item.trim())
+		.filter(Boolean)
+		.slice(0, limit);
+	return strings.length > 0 ? { [key]: strings } : {};
+}
+
+function copyStringRecord(
+	input: Record<string, unknown>,
+	key: string,
+): Record<string, Record<string, string>> {
+	const value = input[key];
+	if (!isRecord(value)) {
+		return {};
+	}
+	const entries = Object.entries(value)
+		.map(([entryKey, entryValue]) => [
+			entryKey.trim(),
+			typeof entryValue === "string" ? entryValue.trim() : "",
+		])
+		.filter(
+			(entry): entry is [string, string] =>
+				Boolean(entry[0]) && Boolean(entry[1]),
+		);
+	return entries.length > 0 ? { [key]: Object.fromEntries(entries) } : {};
+}
+
+function copyPrimitiveRecord(
+	input: Record<string, unknown>,
+	key: string,
+): Record<string, Record<string, string | number | boolean>> {
+	const value = input[key];
+	if (!isRecord(value)) {
+		return {};
+	}
+	const output: Record<string, string | number | boolean> = {};
+	for (const [entryKey, entryValue] of Object.entries(value)) {
+		const normalizedKey = entryKey.trim();
+		if (!normalizedKey) {
+			continue;
+		}
+		if (
+			typeof entryValue === "string" ||
+			typeof entryValue === "number" ||
+			typeof entryValue === "boolean"
+		) {
+			output[normalizedKey] =
+				typeof entryValue === "string" ? entryValue.trim() : entryValue;
+		}
+	}
+	return Object.keys(output).length > 0 ? { [key]: output } : {};
 }
 
 function normalizeRelayHints(

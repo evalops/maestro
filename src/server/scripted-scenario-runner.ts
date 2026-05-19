@@ -291,21 +291,40 @@ export function evaluateScriptedScenario(
 export function scriptedScenarioResultToJunit(
 	result: ScriptedScenarioRunResult,
 ): string {
+	const outcomeMatches =
+		result.scenario.observedOutcome === result.scenario.expectedOutcome;
 	const failures = result.assertions.filter(
 		(assertion) => assertion.status === "fail",
 	);
 	const testcases = result.assertions
 		.map((assertion) => {
 			const failure =
-				assertion.status === "fail"
+				!outcomeMatches && assertion.status === "fail"
 					? `\n\t\t<failure message="${escapeXml(assertion.message)}">${escapeXml(
 							JSON.stringify(assertion.evidence),
 						)}</failure>\n\t`
 					: "";
-			return `\t<testcase classname="${escapeXml(result.scenario.id)}" name="${escapeXml(assertion.id)}">${failure}</testcase>`;
+			const expectedFailureOutput =
+				outcomeMatches && assertion.status === "fail"
+					? `\n\t\t<system-out>${escapeXml(
+							[
+								`Expected failing assertion observed: ${assertion.message}`,
+								JSON.stringify(assertion.evidence),
+							].join("\n"),
+						)}</system-out>\n\t`
+					: "";
+			return `\t<testcase classname="${escapeXml(result.scenario.id)}" name="${escapeXml(assertion.id)}">${failure}${expectedFailureOutput}</testcase>`;
 		})
 		.join("\n");
+	const outcomeFailure =
+		!outcomeMatches && failures.length === 0
+			? `\t<testcase classname="${escapeXml(result.scenario.id)}" name="scenario-outcome">\n\t\t<failure message="${escapeXml(
+					`Observed outcome ${result.scenario.observedOutcome}; expected ${result.scenario.expectedOutcome}.`,
+				)}"></failure>\n\t</testcase>\n`
+			: "";
+	const failureCount = outcomeMatches ? 0 : Math.max(1, failures.length);
+	const testCount = result.counts.assertions + (outcomeFailure ? 1 : 0);
 	return `<?xml version="1.0" encoding="UTF-8"?>\n<testsuite name="${escapeXml(
 		result.scenario.id,
-	)}" tests="${result.counts.assertions}" failures="${failures.length}" warnings="${result.counts.warnings}">\n${testcases}\n</testsuite>\n`;
+	)}" tests="${testCount}" failures="${failureCount}" warnings="${result.counts.warnings}">\n${outcomeFailure}${testcases}\n</testsuite>\n`;
 }

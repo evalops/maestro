@@ -53,6 +53,10 @@ export const PLATFORM_CONNECT_METHODS = {
 			service: PLATFORM_CONNECT_SERVICES.agentRuntime,
 			method: "RecordRunCost",
 		},
+		recordRunEvent: {
+			service: PLATFORM_CONNECT_SERVICES.agentRuntime,
+			method: "RecordRunEvent",
+		},
 		recordRunStep: {
 			service: PLATFORM_CONNECT_SERVICES.agentRuntime,
 			method: "RecordRunStep",
@@ -78,6 +82,10 @@ export const PLATFORM_CONNECT_METHODS = {
 		delegate: {
 			service: PLATFORM_CONNECT_SERVICES.agents,
 			method: "Delegate",
+		},
+		list: {
+			service: PLATFORM_CONNECT_SERVICES.agents,
+			method: "List",
 		},
 		resolveDelegation: {
 			service: PLATFORM_CONNECT_SERVICES.agents,

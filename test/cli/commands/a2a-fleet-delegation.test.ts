@@ -161,7 +161,549 @@ describe("A2A fleet delegation CLI", () => {
 
 	afterEach(async () => {
 		vi.restoreAllMocks();
+		vi.unstubAllEnvs();
+		vi.unstubAllGlobals();
 		await new Promise<void>((resolve) => server.close(() => resolve()));
+	});
+
+	it("imports Platform-discovered A2A peers into the local registry", async () => {
+		const dir = await mkdtemp(join(tmpdir(), "maestro-a2a-discover-"));
+		const registryPath = join(dir, "peers.json");
+		vi.stubEnv("AGENT_REGISTRY_SERVICE_URL", "https://registry.test/");
+		vi.stubEnv("AGENT_REGISTRY_SERVICE_TOKEN", "registry-token");
+		vi.stubEnv("AGENT_REGISTRY_ORGANIZATION_ID", "org_1");
+		vi.stubEnv("AGENT_REGISTRY_WORKSPACE_ID", "ws_from_env");
+		const fetchMock = vi.fn(
+			async (input: RequestInfo | URL, init?: RequestInit) => {
+				expect(String(input)).toBe(
+					"https://registry.test/agents.v1.AgentService/List",
+				);
+				expect(init?.method).toBe("POST");
+				expect(
+					Object.fromEntries(new Headers(init?.headers).entries()),
+				).toEqual(
+					expect.objectContaining({
+						"x-workspace-id": "ws_1",
+					}),
+				);
+				expect(JSON.parse(String(init?.body))).toMatchObject({
+					workspaceId: "ws_1",
+					capability: "code:review",
+					status: "AGENT_STATUS_ONLINE",
+					limit: 10,
+					offset: 0,
+				});
+				return new Response(
+					JSON.stringify({
+						agents: [
+							{
+								id: "maestro-reviewer",
+								workspaceId: "ws_1",
+								name: "Remote Maestro Reviewer",
+								agentType: "maestro",
+								status: "AGENT_STATUS_ONLINE",
+								a2a: {
+									publicEndpointUrl: "https://reviewer.test/a2a",
+									internalEndpointUrl: "http://reviewer.mesh/a2a",
+									agentCardUrl:
+										"https://reviewer.test/.well-known/agent-card.json",
+									protocolBinding: "HTTP+JSON",
+									protocolVersion: "1.0",
+									pushNotifications: true,
+									skills: [
+										{
+											id: "maestro.subagent.code-review",
+											name: "Maestro code review subagent",
+											description: "Review a delegated patch safely",
+											tags: ["maestro", "subagent", "review"],
+											requiredContextGrants: ["repo:read"],
+											approvalPolicyRef: "target-maestro-policy",
+											maxAutonomy: "bounded",
+											requiredArtifactKinds: ["review.summary"],
+											allowedTaskClasses: ["code.review"],
+											deniedTaskClasses: ["secret.exfiltration"],
+											attributes: {
+												subagentLaneId: "code-review",
+											},
+											metadata: {
+												requestMetadataPath: "evalops.subagentRequest",
+											},
+										},
+									],
+								},
+							},
+							{
+								id: "maestro-reviewer-secondary",
+								workspaceId: "ws_1",
+								name: "Secondary Maestro Reviewer",
+								agentType: "maestro",
+								status: "AGENT_STATUS_ONLINE",
+								a2a: {
+									publicEndpointUrl: "https://secondary-reviewer.test/a2a",
+									agentCardUrl:
+										"https://secondary-reviewer.test/.well-known/agent-card.json",
+									protocolBinding: "HTTP+JSON",
+									protocolVersion: "1.0",
+									pushNotifications: true,
+									skills: [
+										{
+											id: "maestro.subagent.code-review",
+											name: "Maestro code review subagent",
+											tags: ["maestro", "subagent", "review"],
+										},
+									],
+								},
+							},
+							{
+								workspaceId: "ws_1",
+								name: "Twin Reviewer",
+								agentType: "maestro",
+								status: "AGENT_STATUS_ONLINE",
+								a2a: {
+									publicEndpointUrl: "https://twin-one.test/a2a",
+									agentCardUrl:
+										"https://twin-one.test/.well-known/agent-card.json",
+									protocolBinding: "HTTP+JSON",
+									protocolVersion: "1.0",
+									skills: [
+										{
+											id: "maestro.subagent.code-review",
+											name: "Maestro code review subagent",
+											tags: ["maestro", "subagent", "review"],
+										},
+									],
+								},
+							},
+							{
+								workspaceId: "ws_1",
+								name: "Twin/Reviewer",
+								agentType: "maestro",
+								status: "AGENT_STATUS_ONLINE",
+								a2a: {
+									publicEndpointUrl: "https://twin-two.test/a2a",
+									agentCardUrl:
+										"https://twin-two.test/.well-known/agent-card.json",
+									protocolBinding: "HTTP+JSON",
+									protocolVersion: "1.0",
+									skills: [
+										{
+											id: "maestro.subagent.code-review",
+											name: "Maestro code review subagent",
+											tags: ["maestro", "subagent", "review"],
+										},
+									],
+								},
+							},
+						],
+					}),
+					{ status: 200, headers: { "Content-Type": "application/json" } },
+				);
+			},
+		);
+		vi.stubGlobal("fetch", fetchMock);
+
+		await handleA2ACommand([
+			"discover",
+			"--capability",
+			"code:review",
+			"--skill",
+			"maestro.subagent.code-review",
+			"--status",
+			"AGENT_STATUS_ONLINE",
+			"--workspace-id",
+			"ws_1",
+			"--limit",
+			"10",
+			"--offset",
+			"0",
+			"--prefer-internal",
+			"--import",
+			"--default",
+			"--json",
+			"--registry",
+			registryPath,
+		]);
+
+		const output = JSON.parse(logs.join("\n")) as {
+			peers: Array<{ endpointUrl: string; agentId?: string; name?: string }>;
+			imported: Array<{ name: string; url: string; path: string }>;
+		};
+		expect(output.peers).toEqual([
+			expect.objectContaining({
+				agentId: "maestro-reviewer",
+				endpointUrl: "http://reviewer.mesh/a2a",
+				endpointKind: "internal",
+			}),
+			expect.objectContaining({
+				agentId: "maestro-reviewer-secondary",
+				endpointUrl: "https://secondary-reviewer.test/a2a",
+				endpointKind: "public",
+			}),
+			expect.objectContaining({
+				name: "Twin Reviewer",
+				endpointUrl: "https://twin-one.test/a2a",
+			}),
+			expect.objectContaining({
+				name: "Twin/Reviewer",
+				endpointUrl: "https://twin-two.test/a2a",
+			}),
+		]);
+		expect(output.imported).toEqual([
+			expect.objectContaining({
+				name: "maestro-reviewer",
+				path: registryPath,
+				url: "http://reviewer.mesh/a2a",
+			}),
+			expect.objectContaining({
+				name: "maestro-reviewer-secondary",
+				path: registryPath,
+				url: "https://secondary-reviewer.test/a2a",
+			}),
+			expect.objectContaining({
+				name: "Twin-Reviewer",
+				path: registryPath,
+				url: "https://twin-one.test/a2a",
+			}),
+			expect.objectContaining({
+				name: "Twin-Reviewer-2",
+				path: registryPath,
+				url: "https://twin-two.test/a2a",
+			}),
+		]);
+		const registryRaw = await readFile(registryPath, "utf8");
+		expect(registryRaw).not.toContain("registry-token");
+		const registry = JSON.parse(registryRaw) as {
+			defaultPeer?: string;
+			peers: Record<
+				string,
+				{
+					url: string;
+					displayName?: string;
+					agentCardUrl?: string;
+					protocolBinding?: string;
+					protocolVersion?: string;
+					workspaceId?: string;
+					agentId?: string;
+					capabilities?: { pushNotifications?: boolean };
+					skills?: Array<{
+						id: string;
+						name: string;
+						description?: string;
+						tags?: string[];
+						requiredContextGrants?: string[];
+						approvalPolicyRef?: string;
+						maxAutonomy?: string;
+						requiredArtifactKinds?: string[];
+						allowedTaskClasses?: string[];
+						deniedTaskClasses?: string[];
+						attributes?: Record<string, string>;
+						metadata?: Record<string, string | number | boolean>;
+					}>;
+					metadata?: Record<string, string | number | boolean>;
+				}
+			>;
+		};
+		expect(registry.defaultPeer).toBe("maestro-reviewer");
+		expect(registry.peers["maestro-reviewer"]).toMatchObject({
+			url: "http://reviewer.mesh/a2a",
+			displayName: "Remote Maestro Reviewer",
+			agentCardUrl: "https://reviewer.test/.well-known/agent-card.json",
+			protocolBinding: "HTTP+JSON",
+			protocolVersion: "1.0",
+			workspaceId: "ws_1",
+			agentId: "maestro-reviewer",
+			capabilities: { pushNotifications: true },
+			skills: [
+				{
+					id: "maestro.subagent.code-review",
+					name: "Maestro code review subagent",
+					description: "Review a delegated patch safely",
+					tags: ["maestro", "subagent", "review"],
+					requiredContextGrants: ["repo:read"],
+					approvalPolicyRef: "target-maestro-policy",
+					maxAutonomy: "bounded",
+					requiredArtifactKinds: ["review.summary"],
+					allowedTaskClasses: ["code.review"],
+					deniedTaskClasses: ["secret.exfiltration"],
+					attributes: {
+						subagentLaneId: "code-review",
+					},
+					metadata: {
+						requestMetadataPath: "evalops.subagentRequest",
+					},
+				},
+			],
+			metadata: {
+				source: "platform-agent-registry",
+				platformAgentId: "maestro-reviewer",
+				platformAgentType: "maestro",
+				platformAgentStatus: "AGENT_STATUS_ONLINE",
+				selectedEndpoint: "internal",
+				a2aPushNotifications: true,
+			},
+		});
+		expect(registry.peers["maestro-reviewer-secondary"]).toMatchObject({
+			url: "https://secondary-reviewer.test/a2a",
+			displayName: "Secondary Maestro Reviewer",
+			agentId: "maestro-reviewer-secondary",
+			metadata: {
+				source: "platform-agent-registry",
+				platformAgentId: "maestro-reviewer-secondary",
+				selectedEndpoint: "public",
+			},
+		});
+		expect(registry.peers["Twin-Reviewer"]).toMatchObject({
+			url: "https://twin-one.test/a2a",
+			displayName: "Twin Reviewer",
+		});
+		expect(registry.peers["Twin-Reviewer-2"]).toMatchObject({
+			url: "https://twin-two.test/a2a",
+			displayName: "Twin/Reviewer",
+		});
+		expect(fetchMock).toHaveBeenCalledTimes(1);
+	});
+
+	it("suffixes imported peer names when existing no-id peers point at different endpoints", async () => {
+		const dir = await mkdtemp(join(tmpdir(), "maestro-a2a-discover-"));
+		const registryPath = join(dir, "peers.json");
+		await writeFile(
+			registryPath,
+			`${JSON.stringify(
+				{
+					defaultPeer: "Twin-Reviewer",
+					peers: {
+						"Twin-Reviewer": {
+							url: "https://existing-twin.test/a2a",
+							displayName: "Twin Reviewer",
+							createdAt: "2026-05-01T00:00:00.000Z",
+							updatedAt: "2026-05-01T00:00:00.000Z",
+						},
+					},
+				},
+				null,
+				2,
+			)}\n`,
+		);
+		vi.stubEnv("AGENT_REGISTRY_SERVICE_URL", "https://registry.test/");
+		vi.stubEnv("AGENT_REGISTRY_SERVICE_TOKEN", "registry-token");
+		vi.stubEnv("AGENT_REGISTRY_ORGANIZATION_ID", "org_1");
+		vi.stubEnv("AGENT_REGISTRY_WORKSPACE_ID", "ws_1");
+		const fetchMock = vi.fn(async () => {
+			return new Response(
+				JSON.stringify({
+					agents: [
+						{
+							workspaceId: "ws_1",
+							name: "Twin Reviewer",
+							agentType: "maestro",
+							status: "AGENT_STATUS_ONLINE",
+							a2a: {
+								publicEndpointUrl: "https://new-twin.test/a2a",
+								agentCardUrl:
+									"https://new-twin.test/.well-known/agent-card.json",
+								protocolBinding: "HTTP+JSON",
+								protocolVersion: "1.0",
+								skills: [
+									{
+										id: "maestro.subagent.code-review",
+										name: "Maestro code review subagent",
+									},
+								],
+							},
+						},
+					],
+				}),
+				{ status: 200, headers: { "Content-Type": "application/json" } },
+			);
+		});
+		vi.stubGlobal("fetch", fetchMock);
+
+		await handleA2ACommand([
+			"discover",
+			"--workspace-id",
+			"ws_1",
+			"--skill",
+			"maestro.subagent.code-review",
+			"--import",
+			"--json",
+			"--registry",
+			registryPath,
+		]);
+
+		const output = JSON.parse(logs.join("\n")) as {
+			imported: Array<{ name: string; url: string; path: string }>;
+		};
+		expect(output.imported).toEqual([
+			expect.objectContaining({
+				name: "Twin-Reviewer-2",
+				path: registryPath,
+				url: "https://new-twin.test/a2a",
+			}),
+		]);
+		const registry = JSON.parse(await readFile(registryPath, "utf8")) as {
+			defaultPeer?: string;
+			peers: Record<string, { url: string; displayName?: string }>;
+		};
+		expect(registry.defaultPeer).toBe("Twin-Reviewer");
+		expect(registry.peers["Twin-Reviewer"]).toMatchObject({
+			url: "https://existing-twin.test/a2a",
+			displayName: "Twin Reviewer",
+		});
+		expect(registry.peers["Twin-Reviewer-2"]).toMatchObject({
+			url: "https://new-twin.test/a2a",
+			displayName: "Twin Reviewer",
+		});
+		expect(fetchMock).toHaveBeenCalledTimes(1);
+	});
+
+	it("delegates directly to a Platform-discovered subagent skill", async () => {
+		const dir = await mkdtemp(join(tmpdir(), "maestro-a2a-discover-delegate-"));
+		const registryPath = join(dir, "peers.json");
+		const tasksPath = join(dir, "tasks.json");
+		vi.stubEnv("AGENT_REGISTRY_SERVICE_URL", "https://registry.test/");
+		vi.stubEnv("AGENT_REGISTRY_SERVICE_TOKEN", "registry-token");
+		vi.stubEnv("AGENT_REGISTRY_ORGANIZATION_ID", "org_1");
+		vi.stubEnv("AGENT_REGISTRY_WORKSPACE_ID", "ws_from_env");
+		const realFetch = globalThis.fetch;
+		const fetchMock = vi.fn(
+			async (input: RequestInfo | URL, init?: RequestInit) => {
+				if (String(input).startsWith("https://registry.test/")) {
+					expect(String(input)).toBe(
+						"https://registry.test/agents.v1.AgentService/List",
+					);
+					expect(JSON.parse(String(init?.body))).toMatchObject({
+						workspaceId: "ws_1",
+						capability: "code:review",
+						surface: "a2a",
+						status: "AGENT_STATUS_ONLINE",
+						limit: 10,
+					});
+					return new Response(
+						JSON.stringify({
+							agents: [
+								{
+									id: "maestro-reviewer",
+									workspaceId: "ws_1",
+									name: "Remote Maestro Reviewer",
+									agentType: "maestro",
+									status: "AGENT_STATUS_ONLINE",
+									a2a: {
+										publicEndpointUrl: baseUrl,
+										agentCardUrl: `${baseUrl}/.well-known/agent-card.json`,
+										protocolBinding: "HTTP+JSON",
+										protocolVersion: "1.0",
+										pushNotifications: true,
+										skills: [
+											{
+												id: "maestro.subagent.code-review",
+												name: "Maestro code review subagent",
+												description: "Review a delegated patch safely",
+												tags: ["maestro", "subagent", "review"],
+												requiredContextGrants: ["repo:read"],
+												approvalPolicyRef: "target-maestro-policy",
+												maxAutonomy: "bounded",
+												requiredArtifactKinds: ["review.summary"],
+												optionalArtifactKinds: ["risk.finding"],
+												allowedTaskClasses: ["code.review"],
+												deniedTaskClasses: ["secret.exfiltration"],
+												attributes: {
+													subagentLaneId: "code-review",
+													requestMetadataPath:
+														"evalops.attributeSubagentRequest",
+												},
+												metadata: {
+													requestMetadataPath: "evalops.customSubagentRequest",
+													resultPolicy: "summary-and-artifacts",
+												},
+											},
+										],
+									},
+								},
+							],
+						}),
+						{ status: 200, headers: { "Content-Type": "application/json" } },
+					);
+				}
+				return realFetch(input, init);
+			},
+		);
+		vi.stubGlobal("fetch", fetchMock);
+
+		await handleA2ACommand([
+			"delegate",
+			"--discover",
+			"--skill",
+			"maestro.subagent.code-review",
+			"--capability",
+			"code:review",
+			"--workspace-id",
+			"ws_1",
+			"review",
+			"the",
+			"patch",
+			"--role",
+			"reviewer",
+			"--cwd",
+			"/repo",
+			"--wait",
+			"--registry",
+			registryPath,
+			"--tasks",
+			tasksPath,
+			"--max-wait-ms",
+			"1000",
+			"--interval-ms",
+			"10",
+			"--timeout-ms",
+			"1000",
+		]);
+
+		expect(requests).toHaveLength(1);
+		const metadata = recordValue(requests[0]!.body, "message.metadata") as
+			| Record<string, unknown>
+			| undefined;
+		expect(metadata).toMatchObject({
+			requestKind: "maestro-peer-delegation",
+			relayPeer: "maestro-reviewer",
+			delegationRole: "reviewer",
+			delegationCwd: "/repo",
+			discoverySource: "platform-agent-registry",
+			a2aSkillId: "maestro.subagent.code-review",
+		});
+		expect(metadata?.["evalops.subagentRequest"]).toBeUndefined();
+		expect(metadata?.["evalops.attributeSubagentRequest"]).toBeUndefined();
+		expect(metadata?.["evalops.customSubagentRequest"]).toMatchObject({
+			skillId: "maestro.subagent.code-review",
+			skillName: "Maestro code review subagent",
+			role: "reviewer",
+			cwd: "/repo",
+			requiredContextGrants: ["repo:read"],
+			approvalPolicyRef: "target-maestro-policy",
+			maxAutonomy: "bounded",
+			requiredArtifactKinds: ["review.summary"],
+			optionalArtifactKinds: ["risk.finding"],
+			allowedTaskClasses: ["code.review"],
+			deniedTaskClasses: ["secret.exfiltration"],
+			attributes: {
+				subagentLaneId: "code-review",
+				requestMetadataPath: "evalops.attributeSubagentRequest",
+			},
+			metadata: {
+				requestMetadataPath: "evalops.customSubagentRequest",
+				resultPolicy: "summary-and-artifacts",
+			},
+		});
+		expect(plainLogs(logs)).toContain(
+			"Selected Platform A2A peer maestro-reviewer",
+		);
+		expect(plainLogs(logs)).toContain("Delegated to maestro-reviewer");
+		expect(plainLogs(logs)).toContain("mac mini finished the smoke plan");
+
+		const registryRaw = await readFile(registryPath, "utf8");
+		expect(registryRaw).toContain("target-maestro-policy");
+		expect(registryRaw).toContain("summary-and-artifacts");
+		expect(registryRaw).not.toContain("registry-token");
+		expect(errors.join("\n")).toBe("");
 	});
 
 	it("delegates work, records a transcript, and reports fleet health", async () => {

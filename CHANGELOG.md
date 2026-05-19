@@ -4,7 +4,18 @@ All notable changes to this project will be documented here. The format loosely
 follows [Keep a Changelog](https://keepachangelog.com/) and adheres to semantic
 versioning when releases are cut.
 
+## Unreleased
 
+### Added
+
+- Added a weekly internal patch-release cadence that opens or refreshes release
+  PRs with generated changelog entries from commits since the latest semver tag.
+
+### Changed
+
+- Release version bumps now include the generated changelog entry in the PR body
+  and keep scheduled public runs inert so public publishing stays downstream of
+  the internal source-of-truth release.
 
 
 ## [0.10.18] - 2026-05-06
@@ -179,7 +190,7 @@ versioning when releases are cut.
 - Replaced published `workspace:*` internal dependency specifiers with concrete package versions in release manifests.
 - Removed the need for a stored GitHub Actions npm token during package publication.
 
-## Unreleased
+## Legacy Unreleased Notes
 
 ### Added
 

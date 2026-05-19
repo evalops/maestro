@@ -80,6 +80,9 @@ const CLAIM_NEXT_RUN_PATH = platformConnectMethodPath(
 const RECORD_RUN_STEP_PATH = platformConnectMethodPath(
 	PLATFORM_CONNECT_METHODS.agentRuntime.recordRunStep,
 );
+const RECORD_RUN_EVENT_PATH = platformConnectMethodPath(
+	PLATFORM_CONNECT_METHODS.agentRuntime.recordRunEvent,
+);
 const RECORD_RUN_WORK_ITEM_PATH = platformConnectMethodPath(
 	PLATFORM_CONNECT_METHODS.agentRuntime.recordRunWorkItem,
 );
@@ -166,6 +169,7 @@ export enum PlatformRuntimeEventTypeValue {
 	RunResumed = "RUNTIME_EVENT_TYPE_RUN_RESUMED",
 	RunSucceeded = "RUNTIME_EVENT_TYPE_RUN_SUCCEEDED",
 	RunFailed = "RUNTIME_EVENT_TYPE_RUN_FAILED",
+	AgentProgressRecorded = "RUNTIME_EVENT_TYPE_AGENT_PROGRESS_RECORDED",
 }
 
 export enum PlatformAgentRunStateValue {
@@ -387,6 +391,24 @@ export interface PlatformAgentRuntimeRecordRunStepInput {
 export interface PlatformAgentRuntimeRecordRunStepResult {
 	run: PlatformAgentRun;
 	step?: PlatformAgentRunStep;
+	event?: PlatformRuntimeEvent;
+}
+
+export interface PlatformAgentRuntimeRecordRunEventInput {
+	runId: string;
+	type: PlatformRuntimeEventTypeValue | string;
+	message: string;
+	attributes?: Record<string, unknown>;
+	stepId?: string;
+	checkpointId?: string;
+	artifactId?: string;
+	costId?: string;
+	waitId?: string;
+	visibility?: Record<string, unknown>;
+}
+
+export interface PlatformAgentRuntimeRecordRunEventResult {
+	run: PlatformAgentRun;
 	event?: PlatformRuntimeEvent;
 }
 
@@ -970,6 +992,35 @@ export async function recordAgentRuntimeRunStep(
 	return {
 		run: normalizeRequiredRun(payload),
 		step: normalizeStep(payload.step),
+		event: normalizeEvent(payload.event),
+	};
+}
+
+export async function recordAgentRuntimeRunEvent(
+	input: PlatformAgentRuntimeRecordRunEventInput,
+	options?: {
+		config?: PlatformServiceConfig;
+		signal?: AbortSignal;
+	},
+): Promise<PlatformAgentRuntimeRecordRunEventResult> {
+	const payload = await postAgentRuntimeOperation(
+		RECORD_RUN_EVENT_PATH,
+		{
+			runId: input.runId,
+			type: input.type,
+			message: input.message,
+			...(input.attributes ? { attributes: input.attributes } : {}),
+			...(input.stepId ? { stepId: input.stepId } : {}),
+			...(input.checkpointId ? { checkpointId: input.checkpointId } : {}),
+			...(input.artifactId ? { artifactId: input.artifactId } : {}),
+			...(input.costId ? { costId: input.costId } : {}),
+			...(input.waitId ? { waitId: input.waitId } : {}),
+			...(input.visibility ? { visibility: input.visibility } : {}),
+		},
+		options,
+	);
+	return {
+		run: normalizeRequiredRun(payload),
 		event: normalizeEvent(payload.event),
 	};
 }

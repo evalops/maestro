@@ -348,15 +348,83 @@ function normalizeRegistrySkills(
 		.map((skill) => ({
 			id: typeof skill.id === "string" ? skill.id : "",
 			name: typeof skill.name === "string" ? skill.name : "",
-			...(Array.isArray(skill.tags)
-				? {
-						tags: skill.tags.filter(
-							(tag): tag is string => typeof tag === "string",
-						),
-					}
-				: {}),
+			...copyString(skill, "description"),
+			...copyStringList(skill, "tags"),
+			...copyStringList(skill, "examples"),
+			...copyStringList(skill, "inputModes"),
+			...copyStringList(skill, "outputModes"),
+			...copyStringList(skill, "requiredContextGrants"),
+			...copyString(skill, "approvalPolicyRef"),
+			...copyString(skill, "maxAutonomy"),
+			...copyStringList(skill, "requiredArtifactKinds"),
+			...copyStringList(skill, "optionalArtifactKinds"),
+			...copyStringList(skill, "allowedTaskClasses"),
+			...copyStringList(skill, "deniedTaskClasses"),
+			...copyStringRecord(skill, "attributes"),
+			...copyPrimitiveRecord(skill, "metadata"),
 		}))
 		.filter((skill) => skill.id.trim() && skill.name.trim());
+}
+
+function copyStringList(
+	input: Record<string, unknown>,
+	key: string,
+): Record<string, string[]> {
+	const value = input[key];
+	if (!Array.isArray(value)) {
+		return {};
+	}
+	const strings = value
+		.filter((item): item is string => typeof item === "string")
+		.map((item) => item.trim())
+		.filter(Boolean);
+	return strings.length > 0 ? { [key]: strings } : {};
+}
+
+function copyStringRecord(
+	input: Record<string, unknown>,
+	key: string,
+): Record<string, Record<string, string>> {
+	const value = input[key];
+	if (!isRecord(value)) {
+		return {};
+	}
+	const entries = Object.entries(value)
+		.map(([entryKey, entryValue]) => [
+			entryKey.trim(),
+			typeof entryValue === "string" ? entryValue.trim() : "",
+		])
+		.filter(
+			(entry): entry is [string, string] =>
+				Boolean(entry[0]) && Boolean(entry[1]),
+		);
+	return entries.length > 0 ? { [key]: Object.fromEntries(entries) } : {};
+}
+
+function copyPrimitiveRecord(
+	input: Record<string, unknown>,
+	key: string,
+): Record<string, Record<string, string | number | boolean>> {
+	const value = input[key];
+	if (!isRecord(value)) {
+		return {};
+	}
+	const output: Record<string, string | number | boolean> = {};
+	for (const [entryKey, entryValue] of Object.entries(value)) {
+		const normalizedKey = entryKey.trim();
+		if (!normalizedKey) {
+			continue;
+		}
+		if (
+			typeof entryValue === "string" ||
+			typeof entryValue === "number" ||
+			typeof entryValue === "boolean"
+		) {
+			output[normalizedKey] =
+				typeof entryValue === "string" ? entryValue.trim() : entryValue;
+		}
+	}
+	return Object.keys(output).length > 0 ? { [key]: output } : {};
 }
 
 function copyString(

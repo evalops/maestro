@@ -1,0 +1,643 @@
+{
+	"schemaVersion": "evalops.maestro.agent-trajectory-scenario-result.v1",
+	"scenarioSchemaVersion": "evalops.maestro.scenario.v1",
+	"scenario": {
+		"id": "slack-contract-progress-outcome",
+		"title": "Slack teammate progress and evidence outcome stays replayable",
+		"expectedOutcome": "pass",
+		"observedOutcome": "pass",
+		"reviewLabels": ["accepted", "platform_promotion_ready"]
+	},
+	"externalRefs": {
+		"ensembleTranscriptIds": ["slack-contract-lab/dev/thread-redacted-0007"],
+		"platformTraceIds": ["trace-slack-contract-dev-0007"],
+		"platformWorkEnvelopeIds": ["we-slack-contract-dev-0007"],
+		"slackThreadRefs": [
+			"slack://T_REDACTED_DEV/C_REDACTED_SUPPORT/1778242500.000700"
+		],
+		"evidenceArtifactIds": ["vfs-artifact-slack-contract-dev-0007"]
+	},
+	"run": {
+		"id": "slack-contract-progress-outcome-0007",
+		"sessionId": "slack-contract-progress-outcome-0007",
+		"source": "platform",
+		"platformBacked": true,
+		"scenarioId": "slack-contract-progress-outcome",
+		"replay": true,
+		"generatedAt": "<redacted>"
+	},
+	"counts": {
+		"assertions": 10,
+		"passed": 10,
+		"failed": 0,
+		"warnings": 0,
+		"events": 11,
+		"toolCalls": 1,
+		"replayDeltas": 0,
+		"scoreFailures": 0,
+		"scoreWarnings": 0
+	},
+	"platform": {
+		"primitive": "event_bus",
+		"eventType": "maestro.events.eval.scored",
+		"traceJoinKeys": [
+			"sessionId",
+			"scenarioId",
+			"ensemble_transcript_id",
+			"platform_trace_id",
+			"work_envelope_id",
+			"agent_run",
+			"tool_call",
+			"artifact"
+		],
+		"rationale": "Slack contract-lab scenarios must join Ensemble transcript replay with Platform trace and work-envelope evidence before becoming release gates.",
+		"evidenceEventType": "maestro.events.eval.scored"
+	},
+	"assumptions": {
+		"workflow": "A Slack teammate receives a redacted customer thread, posts progress in-thread, recalls scoped memory, gathers safe evidence, proposes/accepts memory, and posts the final outcome in the same thread.",
+		"correctnessModel": "The scenario is correct only when the trace contains same-thread continuity, one progress reply, one final reply, accepted memory lifecycle, safe evidence artifact, and zero replay deltas.",
+		"threatModel": "Raw Slack text, customer identifiers, tool arguments, model responses, connector payloads, and VFS bytes must stay behind permissioned Ensemble and Platform sources.",
+		"researchBasis": [
+			"Existing trajectory replay already gives Maestro deterministic event, score, inspection, and JUnit artifacts.",
+			"Slack contract-lab fixtures need real cross-system IDs rather than synthetic-only local session IDs.",
+			"Long-horizon Slack teammate evals should score progress, memory lifecycle, evidence handling, and final answer quality together."
+		]
+	},
+	"assertions": [
+		{
+			"id": "external-refs-present",
+			"kind": "external.refs",
+			"status": "pass",
+			"severity": "error",
+			"message": "External refs present for ensembleTranscriptIds, platformTraceIds, platformWorkEnvelopeIds, slackThreadRefs, evidenceArtifactIds.",
+			"evidence": [
+				{
+					"kind": "scenario",
+					"id": "slack-contract-progress-outcome",
+					"source": "scenario",
+					"label": "external-refs"
+				}
+			]
+		},
+		{
+			"id": "slack-ingress-present",
+			"kind": "event.exists",
+			"status": "pass",
+			"severity": "error",
+			"message": "Matched 1 trajectory event(s).",
+			"evidence": [
+				{
+					"kind": "trajectory_event",
+					"id": "trajectory:slack-ingress:thread-redacted-0007",
+					"source": "trajectory",
+					"label": "slack.ingress:trajectory:slack-ingress:thread-redacted-0007"
+				},
+				{
+					"kind": "timeline_item",
+					"id": "slack-ingress:thread-redacted-0007",
+					"source": "trajectory",
+					"label": "timeline_item:slack-ingress:thread-redacted-0007"
+				}
+			]
+		},
+		{
+			"id": "progress-reply-present",
+			"kind": "event.exists",
+			"status": "pass",
+			"severity": "error",
+			"message": "Matched 1 trajectory event(s).",
+			"evidence": [
+				{
+					"kind": "trajectory_event",
+					"id": "trajectory:slack-progress-reply:thread-redacted-0007",
+					"source": "trajectory",
+					"label": "slack.progress_reply:trajectory:slack-progress-reply:thread-redacted-0007"
+				},
+				{
+					"kind": "timeline_item",
+					"id": "slack-progress-reply:thread-redacted-0007",
+					"source": "trajectory",
+					"label": "timeline_item:slack-progress-reply:thread-redacted-0007"
+				}
+			]
+		},
+		{
+			"id": "replay-clean",
+			"kind": "replay.deltas",
+			"status": "pass",
+			"severity": "error",
+			"message": "Replay stayed within delta and error budgets (0 deltas, 0 errors).",
+			"evidence": []
+		},
+		{
+			"id": "memory-lifecycle-accepted",
+			"kind": "score.finding",
+			"status": "pass",
+			"severity": "error",
+			"message": "Score finding slack-memory-lifecycle-accepted matched pass.",
+			"evidence": [
+				{
+					"kind": "agent_run",
+					"id": "agent-run-slack-progress-0007",
+					"source": "trajectory",
+					"label": "agent_run:agent-run-slack-progress-0007"
+				},
+				{
+					"kind": "trajectory_event",
+					"id": "trajectory:memory-recall:thread-redacted-0007",
+					"source": "trajectory",
+					"label": "memory.recall:trajectory:memory-recall:thread-redacted-0007"
+				},
+				{
+					"kind": "trajectory_event",
+					"id": "trajectory:memory-store-accepted:thread-redacted-0007",
+					"source": "trajectory",
+					"label": "memory.store.accepted:trajectory:memory-store-accepted:thread-redacted-0007"
+				},
+				{
+					"kind": "trajectory_event",
+					"id": "trajectory:memory-store-proposed:thread-redacted-0007",
+					"source": "trajectory",
+					"label": "memory.store.proposed:trajectory:memory-store-proposed:thread-redacted-0007"
+				},
+				{
+					"kind": "timeline_item",
+					"id": "memory-recall:thread-redacted-0007",
+					"source": "trajectory",
+					"label": "timeline_item:memory-recall:thread-redacted-0007"
+				},
+				{
+					"kind": "timeline_item",
+					"id": "memory-store-accepted:thread-redacted-0007",
+					"source": "trajectory",
+					"label": "timeline_item:memory-store-accepted:thread-redacted-0007"
+				},
+				{
+					"kind": "timeline_item",
+					"id": "memory-store-proposed:thread-redacted-0007",
+					"source": "trajectory",
+					"label": "timeline_item:memory-store-proposed:thread-redacted-0007"
+				}
+			]
+		},
+		{
+			"id": "safe-evidence-linked",
+			"kind": "score.finding",
+			"status": "pass",
+			"severity": "error",
+			"message": "Score finding slack-evidence-artifact-linked matched pass.",
+			"evidence": [
+				{
+					"kind": "agent_run",
+					"id": "agent-run-slack-progress-0007",
+					"source": "trajectory",
+					"label": "agent_run:agent-run-slack-progress-0007"
+				},
+				{
+					"kind": "artifact",
+					"id": "vfs-artifact-slack-contract-dev-0007",
+					"source": "trajectory",
+					"label": "artifact:vfs-artifact-slack-contract-dev-0007"
+				},
+				{
+					"kind": "trajectory_event",
+					"id": "trajectory:artifact-linked:slack-evidence-0007",
+					"source": "trajectory",
+					"label": "artifact.linked:trajectory:artifact-linked:slack-evidence-0007"
+				},
+				{
+					"kind": "trajectory_event",
+					"id": "trajectory:slack-final-reply:thread-redacted-0007",
+					"source": "trajectory",
+					"label": "slack.final_reply:trajectory:slack-final-reply:thread-redacted-0007"
+				},
+				{
+					"kind": "timeline_item",
+					"id": "artifact-linked:slack-evidence-0007",
+					"source": "trajectory",
+					"label": "timeline_item:artifact-linked:slack-evidence-0007"
+				},
+				{
+					"kind": "timeline_item",
+					"id": "slack-final-reply:thread-redacted-0007",
+					"source": "trajectory",
+					"label": "timeline_item:slack-final-reply:thread-redacted-0007"
+				},
+				{
+					"kind": "tool_call",
+					"id": "call-evidence-lookup-0007",
+					"source": "trajectory",
+					"label": "tool_call:call-evidence-lookup-0007"
+				}
+			]
+		},
+		{
+			"id": "final-answer-quality",
+			"kind": "score.finding",
+			"status": "pass",
+			"severity": "error",
+			"message": "Score finding slack-final-answer-quality matched pass.",
+			"evidence": [
+				{
+					"kind": "agent_run",
+					"id": "agent-run-slack-progress-0007",
+					"source": "trajectory",
+					"label": "agent_run:agent-run-slack-progress-0007"
+				},
+				{
+					"kind": "artifact",
+					"id": "vfs-artifact-slack-contract-dev-0007",
+					"source": "trajectory",
+					"label": "artifact:vfs-artifact-slack-contract-dev-0007"
+				},
+				{
+					"kind": "trajectory_event",
+					"id": "trajectory:slack-final-reply:thread-redacted-0007",
+					"source": "trajectory",
+					"label": "slack.final_reply:trajectory:slack-final-reply:thread-redacted-0007"
+				},
+				{
+					"kind": "timeline_item",
+					"id": "slack-final-reply:thread-redacted-0007",
+					"source": "trajectory",
+					"label": "timeline_item:slack-final-reply:thread-redacted-0007"
+				}
+			]
+		},
+		{
+			"id": "inspection-redacted",
+			"kind": "inspection.redaction",
+			"status": "pass",
+			"severity": "error",
+			"message": "Inspection artifact stayed redacted and omitted forbidden terms.",
+			"evidence": [
+				{
+					"kind": "scenario",
+					"id": "slack-contract-progress-outcome-0007",
+					"source": "scenario",
+					"label": "inspection:redaction"
+				}
+			]
+		},
+		{
+			"id": "final-reply-provenance",
+			"kind": "provenance.chain",
+			"status": "pass",
+			"severity": "error",
+			"message": "Event trajectory:slack-final-reply:thread-redacted-0007 includes required provenance anchors.",
+			"evidence": [
+				{
+					"kind": "agent_run",
+					"id": "agent-run-slack-progress-0007",
+					"source": "trajectory",
+					"label": "agent_run:agent-run-slack-progress-0007"
+				},
+				{
+					"kind": "artifact",
+					"id": "vfs-artifact-slack-contract-dev-0007",
+					"source": "trajectory",
+					"label": "artifact:vfs-artifact-slack-contract-dev-0007"
+				},
+				{
+					"kind": "trajectory_event",
+					"id": "trajectory:slack-final-reply:thread-redacted-0007",
+					"source": "trajectory",
+					"label": "slack.final_reply:trajectory:slack-final-reply:thread-redacted-0007"
+				},
+				{
+					"kind": "timeline_item",
+					"id": "slack-final-reply:thread-redacted-0007",
+					"source": "trajectory",
+					"label": "timeline_item:slack-final-reply:thread-redacted-0007"
+				}
+			]
+		},
+		{
+			"id": "human-labels-present",
+			"kind": "human.review",
+			"status": "pass",
+			"severity": "error",
+			"message": "Human review labels present: accepted, platform_promotion_ready.",
+			"evidence": [
+				{
+					"kind": "scenario",
+					"id": "slack-contract-progress-outcome",
+					"source": "scenario",
+					"label": "human-review:labels"
+				}
+			]
+		}
+	],
+	"provenance": [
+		{
+			"eventId": "trajectory:session-started:slack-contract-progress-outcome-0007",
+			"eventType": "session.started",
+			"phase": "setup",
+			"actor": "platform",
+			"evidence": [
+				{
+					"kind": "agent_run",
+					"id": "agent-run-slack-progress-0007",
+					"source": "trajectory",
+					"label": "agent_run:agent-run-slack-progress-0007"
+				},
+				{
+					"kind": "trajectory_event",
+					"id": "trajectory:session-started:slack-contract-progress-outcome-0007",
+					"source": "trajectory",
+					"label": "session.started:trajectory:session-started:slack-contract-progress-outcome-0007"
+				},
+				{
+					"kind": "timeline_item",
+					"id": "session-started:slack-contract-progress-outcome-0007",
+					"source": "trajectory",
+					"label": "timeline_item:session-started:slack-contract-progress-outcome-0007"
+				}
+			]
+		},
+		{
+			"eventId": "trajectory:slack-ingress:thread-redacted-0007",
+			"eventType": "slack.ingress",
+			"phase": "observe",
+			"actor": "user",
+			"evidence": [
+				{
+					"kind": "trajectory_event",
+					"id": "trajectory:slack-ingress:thread-redacted-0007",
+					"source": "trajectory",
+					"label": "slack.ingress:trajectory:slack-ingress:thread-redacted-0007"
+				},
+				{
+					"kind": "timeline_item",
+					"id": "slack-ingress:thread-redacted-0007",
+					"source": "trajectory",
+					"label": "timeline_item:slack-ingress:thread-redacted-0007"
+				}
+			]
+		},
+		{
+			"eventId": "trajectory:slack-progress-reply:thread-redacted-0007",
+			"eventType": "slack.progress_reply",
+			"phase": "think",
+			"actor": "assistant",
+			"evidence": [
+				{
+					"kind": "trajectory_event",
+					"id": "trajectory:slack-progress-reply:thread-redacted-0007",
+					"source": "trajectory",
+					"label": "slack.progress_reply:trajectory:slack-progress-reply:thread-redacted-0007"
+				},
+				{
+					"kind": "timeline_item",
+					"id": "slack-progress-reply:thread-redacted-0007",
+					"source": "trajectory",
+					"label": "timeline_item:slack-progress-reply:thread-redacted-0007"
+				}
+			]
+		},
+		{
+			"eventId": "trajectory:memory-recall:thread-redacted-0007",
+			"eventType": "memory.recall",
+			"phase": "observe",
+			"actor": "runtime",
+			"evidence": [
+				{
+					"kind": "agent_run",
+					"id": "agent-run-slack-progress-0007",
+					"source": "trajectory",
+					"label": "agent_run:agent-run-slack-progress-0007"
+				},
+				{
+					"kind": "trajectory_event",
+					"id": "trajectory:memory-recall:thread-redacted-0007",
+					"source": "trajectory",
+					"label": "memory.recall:trajectory:memory-recall:thread-redacted-0007"
+				},
+				{
+					"kind": "timeline_item",
+					"id": "memory-recall:thread-redacted-0007",
+					"source": "trajectory",
+					"label": "timeline_item:memory-recall:thread-redacted-0007"
+				}
+			]
+		},
+		{
+			"eventId": "trajectory:tool-requested:evidence-lookup-0007",
+			"eventType": "tool.requested",
+			"phase": "act",
+			"actor": "assistant",
+			"evidence": [
+				{
+					"kind": "agent_run",
+					"id": "agent-run-slack-progress-0007",
+					"source": "trajectory",
+					"label": "agent_run:agent-run-slack-progress-0007"
+				},
+				{
+					"kind": "timeline_item",
+					"id": "tool-requested:evidence-lookup-0007",
+					"source": "trajectory",
+					"label": "timeline_item:tool-requested:evidence-lookup-0007"
+				},
+				{
+					"kind": "tool_call",
+					"id": "call-evidence-lookup-0007",
+					"source": "trajectory",
+					"label": "tool_call:call-evidence-lookup-0007"
+				},
+				{
+					"kind": "trajectory_event",
+					"id": "trajectory:tool-requested:evidence-lookup-0007",
+					"source": "trajectory",
+					"label": "tool.requested:trajectory:tool-requested:evidence-lookup-0007"
+				}
+			]
+		},
+		{
+			"eventId": "trajectory:tool-result:evidence-lookup-0007",
+			"eventType": "tool.completed",
+			"phase": "verify",
+			"actor": "tool",
+			"evidence": [
+				{
+					"kind": "agent_run",
+					"id": "agent-run-slack-progress-0007",
+					"source": "trajectory",
+					"label": "agent_run:agent-run-slack-progress-0007"
+				},
+				{
+					"kind": "timeline_item",
+					"id": "tool-result:evidence-lookup-0007",
+					"source": "trajectory",
+					"label": "timeline_item:tool-result:evidence-lookup-0007"
+				},
+				{
+					"kind": "tool_call",
+					"id": "call-evidence-lookup-0007",
+					"source": "trajectory",
+					"label": "tool_call:call-evidence-lookup-0007"
+				},
+				{
+					"kind": "tool_execution",
+					"id": "tool-exec-evidence-lookup-0007",
+					"source": "trajectory",
+					"label": "tool_execution:tool-exec-evidence-lookup-0007"
+				},
+				{
+					"kind": "trajectory_event",
+					"id": "trajectory:tool-result:evidence-lookup-0007",
+					"source": "trajectory",
+					"label": "tool.completed:trajectory:tool-result:evidence-lookup-0007"
+				}
+			]
+		},
+		{
+			"eventId": "trajectory:artifact-linked:slack-evidence-0007",
+			"eventType": "artifact.linked",
+			"phase": "verify",
+			"actor": "runtime",
+			"evidence": [
+				{
+					"kind": "agent_run",
+					"id": "agent-run-slack-progress-0007",
+					"source": "trajectory",
+					"label": "agent_run:agent-run-slack-progress-0007"
+				},
+				{
+					"kind": "artifact",
+					"id": "vfs-artifact-slack-contract-dev-0007",
+					"source": "trajectory",
+					"label": "artifact:vfs-artifact-slack-contract-dev-0007"
+				},
+				{
+					"kind": "trajectory_event",
+					"id": "trajectory:artifact-linked:slack-evidence-0007",
+					"source": "trajectory",
+					"label": "artifact.linked:trajectory:artifact-linked:slack-evidence-0007"
+				},
+				{
+					"kind": "timeline_item",
+					"id": "artifact-linked:slack-evidence-0007",
+					"source": "trajectory",
+					"label": "timeline_item:artifact-linked:slack-evidence-0007"
+				},
+				{
+					"kind": "tool_call",
+					"id": "call-evidence-lookup-0007",
+					"source": "trajectory",
+					"label": "tool_call:call-evidence-lookup-0007"
+				}
+			]
+		},
+		{
+			"eventId": "trajectory:memory-store-proposed:thread-redacted-0007",
+			"eventType": "memory.store.proposed",
+			"phase": "govern",
+			"actor": "runtime",
+			"evidence": [
+				{
+					"kind": "agent_run",
+					"id": "agent-run-slack-progress-0007",
+					"source": "trajectory",
+					"label": "agent_run:agent-run-slack-progress-0007"
+				},
+				{
+					"kind": "trajectory_event",
+					"id": "trajectory:memory-store-proposed:thread-redacted-0007",
+					"source": "trajectory",
+					"label": "memory.store.proposed:trajectory:memory-store-proposed:thread-redacted-0007"
+				},
+				{
+					"kind": "timeline_item",
+					"id": "memory-store-proposed:thread-redacted-0007",
+					"source": "trajectory",
+					"label": "timeline_item:memory-store-proposed:thread-redacted-0007"
+				}
+			]
+		},
+		{
+			"eventId": "trajectory:memory-store-accepted:thread-redacted-0007",
+			"eventType": "memory.store.accepted",
+			"phase": "govern",
+			"actor": "user",
+			"evidence": [
+				{
+					"kind": "agent_run",
+					"id": "agent-run-slack-progress-0007",
+					"source": "trajectory",
+					"label": "agent_run:agent-run-slack-progress-0007"
+				},
+				{
+					"kind": "trajectory_event",
+					"id": "trajectory:memory-store-accepted:thread-redacted-0007",
+					"source": "trajectory",
+					"label": "memory.store.accepted:trajectory:memory-store-accepted:thread-redacted-0007"
+				},
+				{
+					"kind": "timeline_item",
+					"id": "memory-store-accepted:thread-redacted-0007",
+					"source": "trajectory",
+					"label": "timeline_item:memory-store-accepted:thread-redacted-0007"
+				}
+			]
+		},
+		{
+			"eventId": "trajectory:slack-final-reply:thread-redacted-0007",
+			"eventType": "slack.final_reply",
+			"phase": "finish",
+			"actor": "assistant",
+			"evidence": [
+				{
+					"kind": "agent_run",
+					"id": "agent-run-slack-progress-0007",
+					"source": "trajectory",
+					"label": "agent_run:agent-run-slack-progress-0007"
+				},
+				{
+					"kind": "artifact",
+					"id": "vfs-artifact-slack-contract-dev-0007",
+					"source": "trajectory",
+					"label": "artifact:vfs-artifact-slack-contract-dev-0007"
+				},
+				{
+					"kind": "trajectory_event",
+					"id": "trajectory:slack-final-reply:thread-redacted-0007",
+					"source": "trajectory",
+					"label": "slack.final_reply:trajectory:slack-final-reply:thread-redacted-0007"
+				},
+				{
+					"kind": "timeline_item",
+					"id": "slack-final-reply:thread-redacted-0007",
+					"source": "trajectory",
+					"label": "timeline_item:slack-final-reply:thread-redacted-0007"
+				}
+			]
+		},
+		{
+			"eventId": "trajectory:runtime-finished:slack-contract-progress-outcome-0007",
+			"eventType": "runtime.finished",
+			"phase": "finish",
+			"actor": "platform",
+			"evidence": [
+				{
+					"kind": "agent_run",
+					"id": "agent-run-slack-progress-0007",
+					"source": "trajectory",
+					"label": "agent_run:agent-run-slack-progress-0007"
+				},
+				{
+					"kind": "trajectory_event",
+					"id": "trajectory:runtime-finished:slack-contract-progress-outcome-0007",
+					"source": "trajectory",
+					"label": "runtime.finished:trajectory:runtime-finished:slack-contract-progress-outcome-0007"
+				},
+				{
+					"kind": "timeline_item",
+					"id": "runtime-finished:slack-contract-progress-outcome-0007",
+					"source": "trajectory",
+					"label": "timeline_item:runtime-finished:slack-contract-progress-outcome-0007"
+				}
+			]
+		}
+	]
+}

@@ -274,6 +274,20 @@ function assertCodexWorkGraph(
 				throw new Error(`${label} childRuns[${index}] is missing ${key}`);
 			}
 		}
+		if (typeof childRun.edgeId !== "string" || childRun.edgeId.length === 0) {
+			throw new Error(`${label} childRuns[${index}] is missing edgeId`);
+		}
+		if (childRun.targetIndex !== index) {
+			throw new Error(
+				`${label} childRuns[${index}] targetIndex ${JSON.stringify(childRun.targetIndex)} does not match its array position`,
+			);
+		}
+		if (
+			childRun.status !== undefined &&
+			(typeof childRun.status !== "string" || childRun.status.length === 0)
+		) {
+			throw new Error(`${label} childRuns[${index}] has invalid status`);
+		}
 	}
 	return graph.childRuns;
 }

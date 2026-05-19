@@ -37,6 +37,9 @@ export const HOSTED_RUNNER_RETENTION_POLICY_VERSION =
 export const HOSTED_RUNNER_WORK_CONTINUITY_VERSION =
 	"evalops.remote-runner.work-continuity.v1";
 
+export const HOSTED_RUNNER_PLATFORM_EVIDENCE_VERSION =
+	"evalops.remote-runner.platform-evidence.v1";
+
 export enum HostedRunnerDrainStatusValue {
 	Drained = "drained",
 	Interrupted = "interrupted",
@@ -115,6 +118,9 @@ export interface HostedRunnerRuntimeDrainResult {
 	protocolVersion?: string;
 	cursor?: number;
 	snapshot?: HeadlessRuntimeSnapshot;
+	recordPlatformDrain?: (
+		input: HostedRunnerPlatformDrainRecordInput,
+	) => Promise<void>;
 }
 
 class HostedRunnerRuntimeDrainError extends Error {
@@ -123,6 +129,9 @@ class HostedRunnerRuntimeDrainError extends Error {
 	readonly protocolVersion?: string;
 	readonly cursor?: number;
 	readonly snapshot?: HeadlessRuntimeSnapshot;
+	readonly recordPlatformDrain?: (
+		input: HostedRunnerPlatformDrainRecordInput,
+	) => Promise<void>;
 
 	constructor(message: string, runtime: HostedRunnerRuntimeDrainResult) {
 		super(message);
@@ -132,6 +141,7 @@ class HostedRunnerRuntimeDrainError extends Error {
 		this.protocolVersion = runtime.protocolVersion;
 		this.cursor = runtime.cursor;
 		this.snapshot = runtime.snapshot;
+		this.recordPlatformDrain = runtime.recordPlatformDrain;
 	}
 }
 
@@ -165,6 +175,7 @@ export interface HostedRunnerSnapshotManifest {
 		paths: HostedRunnerWorkspaceExportPath[];
 	};
 	work_continuity: HostedRunnerWorkContinuity;
+	platform_evidence: HostedRunnerPlatformEvidence;
 	snapshot: HeadlessRuntimeSnapshot;
 	retention_policy: HostedRunnerRetentionPolicy;
 	git?: {
@@ -183,6 +194,55 @@ export interface HostedRunnerWorkContinuity {
 	codex_subagent_child_run_ids: string[];
 	codex_subagent_thread_ids: string[];
 	codex_subagent_edges?: HeadlessCodexSubagentContinuityEdge[];
+}
+
+export interface HostedRunnerPlatformEvidence {
+	protocol_version: typeof HOSTED_RUNNER_PLATFORM_EVIDENCE_VERSION;
+	event_type: "hosted_runner_drain_manifest_recorded";
+	runner_session_id: string;
+	workspace_id?: string;
+	agent_run_id?: string;
+	maestro_session_id: string;
+	status: HostedRunnerDrainStatus;
+	runtime_flush_status: HostedRunnerRuntimeFlushStatus;
+	manifest_path: string;
+	manifest_protocol_version: typeof HOSTED_RUNNER_SNAPSHOT_MANIFEST_VERSION;
+	created_at: string;
+	reason?: string;
+	requested_by?: string;
+	work_continuity: {
+		protocol_version: typeof HOSTED_RUNNER_WORK_CONTINUITY_VERSION;
+		active_tool_count: number;
+		tracked_tool_count: number;
+		pending_request_count: number;
+		codex_subagent_tool_call_count: number;
+		codex_subagent_child_run_count: number;
+		codex_subagent_thread_count: number;
+		codex_subagent_edge_count: number;
+		codex_subagent_tool_call_ids: string[];
+		codex_subagent_child_run_ids: string[];
+		codex_subagent_thread_ids: string[];
+		codex_subagent_edges?: HeadlessCodexSubagentContinuityEdge[];
+	};
+	retention: {
+		policy_version: typeof HOSTED_RUNNER_RETENTION_POLICY_VERSION;
+		control_plane_metadata_visibility: "operator";
+		runtime_snapshot_visibility: "internal";
+		redaction_required_before_external_persistence: Array<
+			"runtime_snapshot" | "runtime_logs"
+		>;
+	};
+	evidence_refs: string[];
+}
+
+export interface HostedRunnerPlatformDrainRecordInput {
+	status: HostedRunnerDrainStatus;
+	reason?: string;
+	requestedBy?: string;
+	flushStatus: HostedRunnerRuntimeFlushStatus;
+	manifestPath: string;
+	platformEvidence: HostedRunnerPlatformEvidence;
+	errorMessage?: string;
 }
 
 export interface HostedRunnerDrainResult {
@@ -220,6 +280,7 @@ export interface DrainHostedRunnerForShutdownOptions {
 interface HostedRunnerRuntimeTerminalInput {
 	reason?: HostedRunnerDrainReason;
 	requestedBy?: HostedRunnerDrainRequestedBy;
+	manifestPath?: string;
 }
 
 function getString(value: unknown, field: string): string | undefined {
@@ -454,6 +515,75 @@ function buildHostedRunnerRetentionPolicy(): HostedRunnerRetentionPolicy {
 	};
 }
 
+function buildHostedRunnerPlatformEvidence(input: {
+	hostedRunner: HostedRunnerContext;
+	status: HostedRunnerDrainStatus;
+	maestroSessionId: string;
+	createdAt: string;
+	manifestPath: string;
+	runtime: HostedRunnerSnapshotManifest["runtime"];
+	workContinuity: HostedRunnerWorkContinuity;
+	retentionPolicy: HostedRunnerRetentionPolicy;
+	reason?: string;
+	requestedBy?: string;
+}): HostedRunnerPlatformEvidence {
+	const edges = input.workContinuity.codex_subagent_edges ?? [];
+	return {
+		protocol_version: HOSTED_RUNNER_PLATFORM_EVIDENCE_VERSION,
+		event_type: "hosted_runner_drain_manifest_recorded",
+		runner_session_id: input.hostedRunner.runnerSessionId,
+		...(input.hostedRunner.workspaceId
+			? { workspace_id: input.hostedRunner.workspaceId }
+			: {}),
+		...(input.hostedRunner.agentRunId
+			? { agent_run_id: input.hostedRunner.agentRunId }
+			: {}),
+		maestro_session_id: input.maestroSessionId,
+		status: input.status,
+		runtime_flush_status: input.runtime.flush_status,
+		manifest_path: input.manifestPath,
+		manifest_protocol_version: HOSTED_RUNNER_SNAPSHOT_MANIFEST_VERSION,
+		created_at: input.createdAt,
+		...(input.reason ? { reason: input.reason } : {}),
+		...(input.requestedBy ? { requested_by: input.requestedBy } : {}),
+		work_continuity: {
+			protocol_version: input.workContinuity.protocol_version,
+			active_tool_count: input.workContinuity.active_tool_count,
+			tracked_tool_count: input.workContinuity.tracked_tool_count,
+			pending_request_count: input.workContinuity.pending_request_count,
+			codex_subagent_tool_call_count:
+				input.workContinuity.codex_subagent_tool_call_ids.length,
+			codex_subagent_child_run_count:
+				input.workContinuity.codex_subagent_child_run_ids.length,
+			codex_subagent_thread_count:
+				input.workContinuity.codex_subagent_thread_ids.length,
+			codex_subagent_edge_count: edges.length,
+			codex_subagent_tool_call_ids:
+				input.workContinuity.codex_subagent_tool_call_ids,
+			codex_subagent_child_run_ids:
+				input.workContinuity.codex_subagent_child_run_ids,
+			codex_subagent_thread_ids: input.workContinuity.codex_subagent_thread_ids,
+			...(edges.length > 0 ? { codex_subagent_edges: edges } : {}),
+		},
+		retention: {
+			policy_version: input.retentionPolicy.policy_version,
+			control_plane_metadata_visibility:
+				input.retentionPolicy.visibility.control_plane_metadata,
+			runtime_snapshot_visibility:
+				input.retentionPolicy.visibility.runtime_snapshot,
+			redaction_required_before_external_persistence:
+				input.retentionPolicy.redaction.required_before_external_persistence,
+		},
+		evidence_refs: [
+			`remote-runner://sessions/${input.hostedRunner.runnerSessionId}/drain#manifest`,
+			`maestro://headless/sessions/${input.maestroSessionId}#drain`,
+			...(input.hostedRunner.agentRunId
+				? [`platform-agent-run:${input.hostedRunner.agentRunId}`]
+				: []),
+		],
+	};
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
 	return Boolean(value && typeof value === "object" && !Array.isArray(value));
 }
@@ -642,6 +772,11 @@ export async function drainHostedRunner(
 		workspaceRoot,
 		hostedRunner.snapshotRoot ?? ".maestro/runner-snapshots",
 	);
+	await mkdir(snapshotRoot, { recursive: true });
+	const snapshotPath = join(
+		snapshotRoot,
+		safeManifestFileName(hostedRunner.runnerSessionId, requestedAt),
+	);
 	const exportPaths = await resolveWorkspaceExportPaths(
 		workspaceRoot,
 		input.exportPaths,
@@ -657,12 +792,16 @@ export async function drainHostedRunner(
 		session_id: maestroSessionId,
 	};
 	let runtimeSnapshot: HeadlessRuntimeSnapshot | undefined;
+	let recordPlatformDrain:
+		| ((input: HostedRunnerPlatformDrainRecordInput) => Promise<void>)
+		| undefined;
 
 	if (activeSessionId && options.drainRuntime) {
 		try {
 			const runtimeResult = await options.drainRuntime(activeSessionId, {
 				reason: input.reason,
 				requestedBy: input.requestedBy,
+				manifestPath: snapshotPath,
 			});
 			const runtimeProtocolVersion =
 				runtimeResult?.protocolVersion ??
@@ -686,11 +825,13 @@ export async function drainHostedRunner(
 						session_id: activeSessionId,
 					};
 			runtimeSnapshot = runtimeResult?.snapshot;
+			recordPlatformDrain = runtimeResult?.recordPlatformDrain;
 		} catch (error) {
 			status = HostedRunnerDrainStatusValue.Interrupted;
 			const interruptedRuntime =
 				error instanceof HostedRunnerRuntimeDrainError ? error : undefined;
 			runtimeSnapshot = interruptedRuntime?.snapshot;
+			recordPlatformDrain = interruptedRuntime?.recordPlatformDrain;
 			runtime = {
 				flush_status: HostedRunnerRuntimeFlushStatusValue.Failed,
 				session_id: interruptedRuntime?.sessionId ?? activeSessionId,
@@ -708,15 +849,24 @@ export async function drainHostedRunner(
 		}
 	}
 
-	await mkdir(snapshotRoot, { recursive: true });
-	const snapshotPath = join(
-		snapshotRoot,
-		safeManifestFileName(hostedRunner.runnerSessionId, requestedAt),
-	);
 	const git = await collectGitState(workspaceRoot);
 	const snapshot =
 		runtimeSnapshot ??
 		buildHostedRunnerSnapshot(maestroSessionId, workspaceRoot, runtime);
+	const workContinuity = collectHostedRunnerWorkContinuity(snapshot);
+	const retentionPolicy = buildHostedRunnerRetentionPolicy();
+	const platformEvidence = buildHostedRunnerPlatformEvidence({
+		hostedRunner,
+		status,
+		maestroSessionId,
+		createdAt: requestedAt,
+		manifestPath: snapshotPath,
+		runtime,
+		workContinuity,
+		retentionPolicy,
+		reason: input.reason,
+		requestedBy: input.requestedBy,
+	});
 	const manifest: HostedRunnerSnapshotManifest = {
 		protocol_version: HOSTED_RUNNER_SNAPSHOT_MANIFEST_VERSION,
 		runner_session_id: hostedRunner.runnerSessionId,
@@ -736,24 +886,61 @@ export async function drainHostedRunner(
 			mode: HostedRunnerWorkspaceExportModeValue.LocalPathContract,
 			paths: exportPaths,
 		},
-		work_continuity: collectHostedRunnerWorkContinuity(snapshot),
+		work_continuity: workContinuity,
+		platform_evidence: platformEvidence,
 		snapshot,
-		retention_policy: buildHostedRunnerRetentionPolicy(),
+		retention_policy: retentionPolicy,
 		...(git ? { git } : {}),
 	};
 
-	await writeFile(
-		snapshotPath,
-		`${JSON.stringify(manifest, null, 2)}\n`,
-		"utf8",
-	);
-	hostedRunner.lastDrain = {
+	try {
+		await writeFile(
+			snapshotPath,
+			`${JSON.stringify(manifest, null, 2)}\n`,
+			"utf8",
+		);
+		hostedRunner.lastDrain = {
+			status,
+			manifestPath: snapshotPath,
+			drainedAt: requestedAt,
+			...(input.reason ? { reason: input.reason } : {}),
+			...(input.requestedBy ? { requestedBy: input.requestedBy } : {}),
+		};
+	} catch (error) {
+		const errorMessage = `Hosted runner drain manifest persistence failed: ${
+			error instanceof Error ? error.message : String(error)
+		}`;
+		await recordPlatformDrain?.({
+			status: HostedRunnerDrainStatusValue.Interrupted,
+			reason: input.reason,
+			requestedBy: input.requestedBy,
+			flushStatus: runtime.flush_status,
+			manifestPath: snapshotPath,
+			platformEvidence: buildHostedRunnerPlatformEvidence({
+				hostedRunner,
+				status: HostedRunnerDrainStatusValue.Interrupted,
+				maestroSessionId,
+				createdAt: requestedAt,
+				manifestPath: snapshotPath,
+				runtime,
+				workContinuity,
+				retentionPolicy,
+				reason: input.reason,
+				requestedBy: input.requestedBy,
+			}),
+			errorMessage,
+		});
+		throw error;
+	}
+	await recordPlatformDrain?.({
 		status,
+		reason: input.reason,
+		requestedBy: input.requestedBy,
+		flushStatus: runtime.flush_status,
 		manifestPath: snapshotPath,
-		drainedAt: requestedAt,
-		...(input.reason ? { reason: input.reason } : {}),
-		...(input.requestedBy ? { requestedBy: input.requestedBy } : {}),
-	};
+		platformEvidence,
+		errorMessage: runtime.error,
+	});
 
 	return {
 		status,
@@ -768,7 +955,7 @@ export async function drainHostedRunner(
 async function drainActiveRuntime(
 	context: HostedRunnerDrainRuntimeContext,
 	sessionId: string,
-	terminal: HostedRunnerRuntimeTerminalInput,
+	_terminal: HostedRunnerRuntimeTerminalInput,
 ): Promise<HostedRunnerRuntimeDrainResult | null> {
 	const runtime =
 		context.headlessRuntimeService.getRuntimeBySessionId(sessionId);
@@ -777,22 +964,24 @@ async function drainActiveRuntime(
 	}
 	const snapshot = runtime.getSnapshot();
 	const sessionFile = runtime.getSessionFile();
+	const recordPlatformDrain = async (
+		input: HostedRunnerPlatformDrainRecordInput,
+	) => {
+		await runtime.recordHostedAgentRuntimeDrain({
+			status: input.status,
+			reason: input.reason,
+			requestedBy: input.requestedBy,
+			flushStatus: input.flushStatus,
+			manifestPath: input.manifestPath,
+			platformEvidence: input.platformEvidence,
+			errorMessage: input.errorMessage
+				? `Hosted runner drain failed: ${input.errorMessage}`
+				: undefined,
+		});
+	};
 	try {
 		await runtime.dispose();
-		await runtime.completeHostedAgentRuntimeRun({
-			reason: terminal.reason,
-			requestedBy: terminal.requestedBy,
-			flushStatus: HostedRunnerRuntimeFlushStatusValue.Completed,
-		});
 	} catch (error) {
-		await runtime.failHostedAgentRuntimeRun({
-			errorMessage: `Hosted runner drain failed: ${
-				error instanceof Error ? error.message : String(error)
-			}`,
-			reason: terminal.reason,
-			requestedBy: terminal.requestedBy,
-			retryable: false,
-		});
 		throw new HostedRunnerRuntimeDrainError(
 			error instanceof Error ? error.message : String(error),
 			{
@@ -801,6 +990,7 @@ async function drainActiveRuntime(
 				protocolVersion: snapshot.protocolVersion,
 				cursor: snapshot.cursor,
 				snapshot,
+				recordPlatformDrain,
 			},
 		);
 	}
@@ -810,6 +1000,7 @@ async function drainActiveRuntime(
 		protocolVersion: snapshot.protocolVersion,
 		cursor: snapshot.cursor,
 		snapshot,
+		recordPlatformDrain,
 	};
 }
 

@@ -364,6 +364,9 @@ describe("Codex app-server provider", () => {
 							},
 							childRuns: [
 								{
+									edgeId:
+										"collab-call-1:0:spawnAgent:codex-thread:child-thread-1",
+									targetIndex: 0,
 									threadId: "child-thread-1",
 									childRunId: "codex-thread:child-thread-1",
 									operation: "spawnAgent",
@@ -398,8 +401,12 @@ describe("Codex app-server provider", () => {
 								status: "completed",
 								childRuns: [
 									expect.objectContaining({
+										edgeId:
+											"collab-call-1:0:spawnAgent:codex-thread:child-thread-1",
+										targetIndex: 0,
 										threadId: "child-thread-1",
 										childRunId: "codex-thread:child-thread-1",
+										status: "completed",
 									}),
 								],
 							}),

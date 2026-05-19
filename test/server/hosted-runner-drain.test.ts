@@ -15,6 +15,7 @@ import {
 } from "../../src/cli/headless-protocol.js";
 import type { HostedRunnerContext } from "../../src/server/app-context.js";
 import {
+	HOSTED_RUNNER_PLATFORM_EVIDENCE_VERSION,
 	HOSTED_RUNNER_RETENTION_POLICY_VERSION,
 	HOSTED_RUNNER_SNAPSHOT_MANIFEST_VERSION,
 	HOSTED_RUNNER_WORK_CONTINUITY_VERSION,
@@ -87,12 +88,14 @@ describe("hosted runner drain", () => {
 		const workspaceRoot = await createTempWorkspace();
 		const context = hostedRunnerContext(workspaceRoot);
 		const snapshot = runtimeSnapshot(workspaceRoot);
+		const recordPlatformDrain = vi.fn().mockResolvedValue(undefined);
 		const drainRuntime = vi.fn().mockResolvedValue({
 			sessionId: "session_123",
 			sessionFile: join(workspaceRoot, ".maestro", "sessions", "session.jsonl"),
 			protocolVersion: HEADLESS_PROTOCOL_VERSION,
 			cursor: 7,
 			snapshot,
+			recordPlatformDrain,
 		});
 
 		const result = await drainHostedRunner(
@@ -123,6 +126,7 @@ describe("hosted runner drain", () => {
 		expect(drainRuntime).toHaveBeenCalledWith("session_123", {
 			reason: "ttl_expired",
 			requestedBy: "platform",
+			manifestPath: result?.manifest_path,
 		});
 		expect(result?.manifest).toMatchObject({
 			protocol_version: HOSTED_RUNNER_SNAPSHOT_MANIFEST_VERSION,
@@ -148,6 +152,48 @@ describe("hosted runner drain", () => {
 				codex_subagent_tool_call_ids: [],
 				codex_subagent_child_run_ids: [],
 				codex_subagent_thread_ids: [],
+			},
+			platform_evidence: {
+				protocol_version: HOSTED_RUNNER_PLATFORM_EVIDENCE_VERSION,
+				event_type: "hosted_runner_drain_manifest_recorded",
+				runner_session_id: "mrs_123",
+				workspace_id: "ws_123",
+				agent_run_id: "ar_123",
+				maestro_session_id: "session_123",
+				status: HostedRunnerDrainStatusValue.Drained,
+				runtime_flush_status: HostedRunnerRuntimeFlushStatusValue.Completed,
+				manifest_path: result?.manifest_path,
+				manifest_protocol_version: HOSTED_RUNNER_SNAPSHOT_MANIFEST_VERSION,
+				created_at: "2026-04-23T00:00:00.000Z",
+				reason: "ttl_expired",
+				requested_by: "platform",
+				work_continuity: {
+					protocol_version: HOSTED_RUNNER_WORK_CONTINUITY_VERSION,
+					active_tool_count: 0,
+					tracked_tool_count: 0,
+					pending_request_count: 0,
+					codex_subagent_tool_call_count: 0,
+					codex_subagent_child_run_count: 0,
+					codex_subagent_thread_count: 0,
+					codex_subagent_edge_count: 0,
+					codex_subagent_tool_call_ids: [],
+					codex_subagent_child_run_ids: [],
+					codex_subagent_thread_ids: [],
+				},
+				retention: {
+					policy_version: HOSTED_RUNNER_RETENTION_POLICY_VERSION,
+					control_plane_metadata_visibility: "operator",
+					runtime_snapshot_visibility: "internal",
+					redaction_required_before_external_persistence: [
+						"runtime_snapshot",
+						"runtime_logs",
+					],
+				},
+				evidence_refs: [
+					"remote-runner://sessions/mrs_123/drain#manifest",
+					"maestro://headless/sessions/session_123#drain",
+					"platform-agent-run:ar_123",
+				],
 			},
 			retention_policy: {
 				policy_version: HOSTED_RUNNER_RETENTION_POLICY_VERSION,
@@ -198,6 +244,72 @@ describe("hosted runner drain", () => {
 			await readFile(result!.manifest_path, "utf8"),
 		) as unknown;
 		expect(persisted).toEqual(result?.manifest);
+		expect(recordPlatformDrain).toHaveBeenCalledWith(
+			expect.objectContaining({
+				status: HostedRunnerDrainStatusValue.Drained,
+				reason: "ttl_expired",
+				requestedBy: "platform",
+				flushStatus: HostedRunnerRuntimeFlushStatusValue.Completed,
+				manifestPath: result?.manifest_path,
+				platformEvidence: result?.manifest.platform_evidence,
+			}),
+		);
+	});
+
+	it("fails the Platform run if manifest persistence fails after runtime drain", async () => {
+		const workspaceRoot = await createTempWorkspace();
+		const context = hostedRunnerContext(workspaceRoot);
+		const snapshot = runtimeSnapshot(workspaceRoot);
+		const recordPlatformDrain = vi.fn().mockResolvedValue(undefined);
+		const requestedAt = new Date("2026-04-23T00:00:00.000Z");
+		const manifestPath = join(
+			context.snapshotRoot,
+			"mrs_123-2026-04-23T00_00_00.000Z.json",
+		);
+		await mkdir(manifestPath, { recursive: true });
+		const drainRuntime = vi.fn().mockResolvedValue({
+			sessionId: "session_123",
+			sessionFile: join(workspaceRoot, ".maestro", "sessions", "session.jsonl"),
+			protocolVersion: HEADLESS_PROTOCOL_VERSION,
+			cursor: 7,
+			snapshot,
+			recordPlatformDrain,
+		});
+
+		await expect(
+			drainHostedRunner(
+				{
+					reason: "ttl_expired",
+					requestedBy: "platform",
+					exportPaths: ["."],
+				},
+				{
+					hostedRunner: context,
+					drainRuntime,
+					now: () => requestedAt,
+				},
+			),
+		).rejects.toThrow();
+
+		expect(context.lastDrain).toBeUndefined();
+		expect(recordPlatformDrain).toHaveBeenCalledWith(
+			expect.objectContaining({
+				status: HostedRunnerDrainStatusValue.Interrupted,
+				reason: "ttl_expired",
+				requestedBy: "platform",
+				flushStatus: HostedRunnerRuntimeFlushStatusValue.Completed,
+				manifestPath,
+				errorMessage: expect.stringContaining(
+					"Hosted runner drain manifest persistence failed:",
+				),
+				platformEvidence: expect.objectContaining({
+					protocol_version: HOSTED_RUNNER_PLATFORM_EVIDENCE_VERSION,
+					status: HostedRunnerDrainStatusValue.Interrupted,
+					runtime_flush_status: HostedRunnerRuntimeFlushStatusValue.Completed,
+					manifest_path: manifestPath,
+				}),
+			}),
+		);
 	});
 
 	it("counts pending requests from source arrays when the derived list is stale", async () => {
@@ -301,9 +413,12 @@ describe("hosted runner drain", () => {
 						status: "inProgress",
 						child_runs: [
 							{
+								edge_id: "collab-spawn-1:0:spawnAgent:agent-run-child-1",
+								target_index: 0,
 								thread_id: "child-thread-1",
 								child_run_id: "agent-run-child-1",
 								operation: "spawnAgent",
+								status: "running",
 							},
 						],
 					},
@@ -337,7 +452,7 @@ describe("hosted runner drain", () => {
 					child_run_id: "agent-run-child-1",
 					thread_id: "child-thread-1",
 					operation: "spawn_agent",
-					status: "waiting_for_restore",
+					status: "running",
 				},
 			],
 		});
@@ -614,6 +729,7 @@ describe("hosted runner drain", () => {
 			dispose: vi.fn().mockResolvedValue(undefined),
 			completeHostedAgentRuntimeRun: vi.fn().mockResolvedValue(undefined),
 			failHostedAgentRuntimeRun: vi.fn().mockResolvedValue(undefined),
+			recordHostedAgentRuntimeDrain: vi.fn().mockResolvedValue(undefined),
 		};
 		const headlessRuntimeService = {
 			getRuntimeBySessionId: vi.fn(() => runtime),
@@ -639,11 +755,16 @@ describe("hosted runner drain", () => {
 			"session_123",
 		);
 		expect(runtime.dispose).toHaveBeenCalled();
-		expect(runtime.completeHostedAgentRuntimeRun).toHaveBeenCalledWith({
+		expect(runtime.recordHostedAgentRuntimeDrain).toHaveBeenCalledWith({
+			status: HostedRunnerDrainStatusValue.Drained,
 			reason: HostedRunnerDrainReasonValue.ProcessShutdown,
 			requestedBy: HostedRunnerDrainRequestedByValue.MaestroWebServer,
 			flushStatus: HostedRunnerRuntimeFlushStatusValue.Completed,
+			manifestPath: result?.manifest_path,
+			platformEvidence: result?.manifest.platform_evidence,
+			errorMessage: undefined,
 		});
+		expect(runtime.completeHostedAgentRuntimeRun).not.toHaveBeenCalled();
 		expect(runtime.failHostedAgentRuntimeRun).not.toHaveBeenCalled();
 		expect(result?.manifest).toMatchObject({
 			maestro_session_id: "session_123",
@@ -695,6 +816,7 @@ describe("hosted runner drain", () => {
 			dispose: vi.fn().mockRejectedValue(new Error("flush timed out")),
 			completeHostedAgentRuntimeRun: vi.fn().mockResolvedValue(undefined),
 			failHostedAgentRuntimeRun: vi.fn().mockResolvedValue(undefined),
+			recordHostedAgentRuntimeDrain: vi.fn().mockResolvedValue(undefined),
 		};
 		const headlessRuntimeService = {
 			getRuntimeBySessionId: vi.fn(() => runtime),
@@ -714,11 +836,15 @@ describe("hosted runner drain", () => {
 
 		expect(result?.status).toBe(HostedRunnerDrainStatusValue.Interrupted);
 		expect(runtime.completeHostedAgentRuntimeRun).not.toHaveBeenCalled();
-		expect(runtime.failHostedAgentRuntimeRun).toHaveBeenCalledWith({
+		expect(runtime.failHostedAgentRuntimeRun).not.toHaveBeenCalled();
+		expect(runtime.recordHostedAgentRuntimeDrain).toHaveBeenCalledWith({
+			status: HostedRunnerDrainStatusValue.Interrupted,
 			errorMessage: "Hosted runner drain failed: flush timed out",
 			reason: HostedRunnerDrainReasonValue.KubernetesPreStop,
 			requestedBy: HostedRunnerDrainRequestedByValue.KubernetesPreStop,
-			retryable: false,
+			flushStatus: HostedRunnerRuntimeFlushStatusValue.Failed,
+			manifestPath: result?.manifest_path,
+			platformEvidence: result?.manifest.platform_evidence,
 		});
 		expect(result?.manifest.runtime).toMatchObject({
 			flush_status: HostedRunnerRuntimeFlushStatusValue.Failed,

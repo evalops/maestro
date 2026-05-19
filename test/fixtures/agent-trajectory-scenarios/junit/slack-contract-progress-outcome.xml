@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="slack-contract-progress-outcome" tests="10" failures="0" warnings="0">
+	<testcase classname="slack-contract-progress-outcome" name="external-refs-present"></testcase>
+	<testcase classname="slack-contract-progress-outcome" name="slack-ingress-present"></testcase>
+	<testcase classname="slack-contract-progress-outcome" name="progress-reply-present"></testcase>
+	<testcase classname="slack-contract-progress-outcome" name="replay-clean"></testcase>
+	<testcase classname="slack-contract-progress-outcome" name="memory-lifecycle-accepted"></testcase>
+	<testcase classname="slack-contract-progress-outcome" name="safe-evidence-linked"></testcase>
+	<testcase classname="slack-contract-progress-outcome" name="final-answer-quality"></testcase>
+	<testcase classname="slack-contract-progress-outcome" name="inspection-redacted"></testcase>
+	<testcase classname="slack-contract-progress-outcome" name="final-reply-provenance"></testcase>
+	<testcase classname="slack-contract-progress-outcome" name="human-labels-present"></testcase>
+</testsuite>

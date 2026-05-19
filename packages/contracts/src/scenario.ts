@@ -37,6 +37,14 @@ export interface MaestroScenarioPlatformLink {
 	rationale?: string;
 }
 
+export interface MaestroScenarioExternalRefs {
+	ensembleTranscriptIds?: string[];
+	platformTraceIds?: string[];
+	platformWorkEnvelopeIds?: string[];
+	slackThreadRefs?: string[];
+	evidenceArtifactIds?: string[];
+}
+
 export interface MaestroScenarioAssertion {
 	id: string;
 	kind:
@@ -48,6 +56,7 @@ export interface MaestroScenarioAssertion {
 		| "efficiency.budget"
 		| "provenance.chain"
 		| "human.review"
+		| "external.refs"
 		| "trajectory.diff";
 	severity?: MaestroScenarioSeverity;
 	selector?: {
@@ -74,6 +83,8 @@ export interface MaestroScenarioAssertion {
 	eventId?: string;
 	requiredEvidenceKinds?: string[];
 	requiredLabels?: MaestroScenarioReviewLabel[];
+	requiredExternalRefKinds?: (keyof MaestroScenarioExternalRefs)[];
+	requiredExternalRefs?: string[];
 	note?: string;
 }
 
@@ -86,6 +97,7 @@ export interface MaestroScenario {
 	source: MaestroScenarioSource;
 	reviewLabels: MaestroScenarioReviewLabel[];
 	platform: MaestroScenarioPlatformLink;
+	externalRefs?: MaestroScenarioExternalRefs;
 	assumptions: {
 		workflow: string;
 		correctnessModel: string;

@@ -1157,9 +1157,16 @@ fn has_codex_work_graph(args: Option<&serde_json::Value>) -> bool {
         == Some(CODEX_SUBAGENT_WORK_GRAPH_SCHEMA)
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct CodexSubagentChildRun {
+    pub child_run_id: Option<String>,
+    pub thread_id: Option<String>,
+    pub status: Option<String>,
+}
+
 pub(crate) fn codex_subagent_child_runs(
     args: Option<&serde_json::Value>,
-) -> Vec<(Option<String>, Option<String>)> {
+) -> Vec<CodexSubagentChildRun> {
     let Some(args) = args.and_then(serde_json::Value::as_object) else {
         return Vec::new();
     };
@@ -1180,10 +1187,17 @@ pub(crate) fn codex_subagent_child_runs(
                 let Some(child_run) = child_run.as_object() else {
                     continue;
                 };
-                graph_runs.push((
-                    json_string_from_object(child_run, &["childRunId", "child_run_id"]),
-                    json_string_from_object(child_run, &["threadId", "thread_id"]),
-                ));
+                graph_runs.push(CodexSubagentChildRun {
+                    child_run_id: json_string_from_object(
+                        child_run,
+                        &["childRunId", "child_run_id"],
+                    ),
+                    thread_id: json_string_from_object(child_run, &["threadId", "thread_id"]),
+                    status: json_string_from_object(
+                        child_run,
+                        &["status", "targetStatus", "target_status"],
+                    ),
+                });
             }
         }
     }
@@ -1194,19 +1208,41 @@ pub(crate) fn codex_subagent_child_runs(
         .max(1);
     let mut runs = Vec::new();
     for index in 0..count {
-        let child_run_id = child_run_ids
-            .get(index)
-            .cloned()
-            .or_else(|| graph_runs.get(index).and_then(|run| run.0.clone()));
         let thread_id = thread_ids
             .get(index)
             .cloned()
-            .or_else(|| graph_runs.get(index).and_then(|run| run.1.clone()));
+            .or_else(|| graph_runs.get(index).and_then(|run| run.thread_id.clone()));
+        let status = graph_runs
+            .get(index)
+            .and_then(|run| run.status.clone())
+            .or_else(|| codex_agent_state_status(args, thread_id.as_deref()));
+        let child_run_id = child_run_ids.get(index).cloned().or_else(|| {
+            graph_runs
+                .get(index)
+                .and_then(|run| run.child_run_id.clone())
+        });
         if child_run_id.is_some() || thread_id.is_some() {
-            runs.push((child_run_id, thread_id));
+            runs.push(CodexSubagentChildRun {
+                child_run_id,
+                thread_id,
+                status,
+            });
         }
     }
     runs
+}
+
+fn codex_agent_state_status(
+    args: &serde_json::Map<String, serde_json::Value>,
+    thread_id: Option<&str>,
+) -> Option<String> {
+    let thread_id = thread_id?;
+    let agent_states = args
+        .get("agentsStates")
+        .or_else(|| args.get("agents_states"))?
+        .as_object()?;
+    let agent_state = agent_states.get(thread_id)?.as_object()?;
+    json_string_from_object(agent_state, &["status"])
 }
 
 fn has_codex_subagent_args(args: &serde_json::Value) -> bool {
@@ -1290,14 +1326,14 @@ impl AgentState {
                 status: status.to_string(),
             });
         } else {
-            for (child_run_id, thread_id) in child_runs {
+            for child_run in child_runs {
                 edges.push(CodexSubagentContinuityEdge {
                     spawn_tool_call_id: (operation == "spawn_agent").then(|| call_id.to_string()),
                     wait_tool_call_id: (operation != "spawn_agent").then(|| call_id.to_string()),
-                    child_run_id,
-                    thread_id,
+                    child_run_id: child_run.child_run_id,
+                    thread_id: child_run.thread_id,
                     operation: operation.to_string(),
-                    status: status.to_string(),
+                    status: child_run.status.unwrap_or_else(|| status.to_string()),
                 });
             }
         }
@@ -3414,6 +3450,45 @@ mod tests {
                 thread_id: Some("child-thread-complete".to_string()),
                 operation: "spawn_agent".to_string(),
                 status: "spawned".to_string(),
+            }]
+        );
+        let encoded = serde_json::to_string(&state.codex_subagent_edges).unwrap();
+        assert!(!encoded.contains("Sensitive child task prompt"));
+    }
+
+    #[test]
+    fn state_preserves_codex_subagent_child_target_status_from_work_graph_edges() {
+        let mut state = AgentState::default();
+
+        state.handle_message(FromAgentMessage::ToolCall {
+            call_id: "collab-spawn-status".to_string(),
+            tool: "codex.subagent.spawnAgent".to_string(),
+            args: serde_json::json!({
+                "codexWorkGraph": {
+                    "schemaVersion": CODEX_SUBAGENT_WORK_GRAPH_SCHEMA,
+                    "childRuns": [{
+                        "edgeId": "collab-spawn-status:0:spawnAgent:agent-run-child-status",
+                        "targetIndex": 0,
+                        "threadId": "child-thread-status",
+                        "childRunId": "agent-run-child-status",
+                        "operation": "spawnAgent",
+                        "status": "running"
+                    }]
+                },
+                "prompt": "Sensitive child task prompt"
+            }),
+            requires_approval: false,
+        });
+
+        assert_eq!(
+            state.codex_subagent_edges,
+            vec![CodexSubagentContinuityEdge {
+                spawn_tool_call_id: Some("collab-spawn-status".to_string()),
+                wait_tool_call_id: None,
+                child_run_id: Some("agent-run-child-status".to_string()),
+                thread_id: Some("child-thread-status".to_string()),
+                operation: "spawn_agent".to_string(),
+                status: "running".to_string(),
             }]
         );
         let encoded = serde_json::to_string(&state.codex_subagent_edges).unwrap();

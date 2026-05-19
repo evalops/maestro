@@ -1,0 +1,47 @@
+{
+	"schemaVersion": "evalops.maestro.agent-trajectory-replay.v1",
+	"trajectorySchemaVersion": "evalops.maestro.agent-trajectory.v1",
+	"run": {
+		"id": "slack-contract-progress-outcome-0007",
+		"sessionId": "slack-contract-progress-outcome-0007",
+		"source": "platform",
+		"platformBacked": true
+	},
+	"deterministic": true,
+	"counts": {
+		"events": 11,
+		"deltas": 0,
+		"errors": 0,
+		"warnings": 0,
+		"toolCalls": 1,
+		"phases": 7
+	},
+	"phases": [
+		{ "phase": "setup", "events": 1, "firstSequence": 1, "lastSequence": 1 },
+		{ "phase": "observe", "events": 2, "firstSequence": 2, "lastSequence": 4 },
+		{ "phase": "think", "events": 1, "firstSequence": 3, "lastSequence": 3 },
+		{ "phase": "act", "events": 1, "firstSequence": 5, "lastSequence": 5 },
+		{ "phase": "verify", "events": 2, "firstSequence": 6, "lastSequence": 7 },
+		{ "phase": "govern", "events": 2, "firstSequence": 8, "lastSequence": 9 },
+		{ "phase": "finish", "events": 2, "firstSequence": 10, "lastSequence": 11 }
+	],
+	"toolCalls": [
+		{
+			"toolCallId": "call-evidence-lookup-0007",
+			"toolName": "platform.evidence.lookup",
+			"requestedSequence": 5,
+			"resultSequences": [6],
+			"terminalStatus": "completed",
+			"evidence": [
+				{
+					"kind": "timeline_item",
+					"id": "tool-requested:evidence-lookup-0007"
+				},
+				{ "kind": "timeline_item", "id": "tool-result:evidence-lookup-0007" },
+				{ "kind": "tool_call", "id": "call-evidence-lookup-0007" },
+				{ "kind": "tool_execution", "id": "tool-exec-evidence-lookup-0007" }
+			]
+		}
+	],
+	"deltas": []
+}

@@ -133,6 +133,46 @@ snapshot manifest. The manifest directory comes from `--snapshot-root`,
       "codex_subagent_child_run_ids": [],
       "codex_subagent_thread_ids": []
     },
+    "platform_evidence": {
+      "protocol_version": "evalops.remote-runner.platform-evidence.v1",
+      "event_type": "hosted_runner_drain_manifest_recorded",
+      "runner_session_id": "mrs_123",
+      "workspace_id": "workspace_123",
+      "agent_run_id": "run_123",
+      "maestro_session_id": "session_123",
+      "status": "drained",
+      "runtime_flush_status": "completed",
+      "manifest_path": "/workspace/.maestro/runner-snapshots/mrs_123-2026-04-23T00_00_00_000Z.json",
+      "manifest_protocol_version": "evalops.remote-runner.snapshot-manifest.v1",
+      "created_at": "2026-04-23T00:00:00.000Z",
+      "work_continuity": {
+        "protocol_version": "evalops.remote-runner.work-continuity.v1",
+        "active_tool_count": 0,
+        "tracked_tool_count": 0,
+        "pending_request_count": 0,
+        "codex_subagent_tool_call_count": 0,
+        "codex_subagent_child_run_count": 0,
+        "codex_subagent_thread_count": 0,
+        "codex_subagent_edge_count": 0,
+        "codex_subagent_tool_call_ids": [],
+        "codex_subagent_child_run_ids": [],
+        "codex_subagent_thread_ids": []
+      },
+      "retention": {
+        "policy_version": "evalops.remote-runner.retention.v1",
+        "control_plane_metadata_visibility": "operator",
+        "runtime_snapshot_visibility": "internal",
+        "redaction_required_before_external_persistence": [
+          "runtime_snapshot",
+          "runtime_logs"
+        ]
+      },
+      "evidence_refs": [
+        "remote-runner://sessions/mrs_123/drain#manifest",
+        "maestro://headless/sessions/session_123#drain",
+        "platform-agent-run:run_123"
+      ]
+    },
     "retention_policy": {
       "policy_version": "evalops.remote-runner.retention.v1",
       "managed_by": "platform",

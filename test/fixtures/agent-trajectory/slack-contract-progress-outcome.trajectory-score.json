@@ -1,0 +1,137 @@
+{
+	"schemaVersion": "evalops.maestro.agent-trajectory-score.v1",
+	"trajectorySchemaVersion": "evalops.maestro.agent-trajectory.v1",
+	"run": {
+		"id": "slack-contract-progress-outcome-0007",
+		"sessionId": "slack-contract-progress-outcome-0007",
+		"source": "platform",
+		"platformBacked": true
+	},
+	"counts": {
+		"rules": 6,
+		"passed": 6,
+		"failed": 0,
+		"warnings": 0
+	},
+	"findings": [
+		{
+			"ruleId": "slack-same-thread-continuity",
+			"status": "pass",
+			"severity": "error",
+			"message": "Progress and final replies stayed attached to the originating redacted Slack thread.",
+			"eventIds": [
+				"trajectory:slack-progress-reply:thread-redacted-0007",
+				"trajectory:slack-final-reply:thread-redacted-0007"
+			],
+			"evidence": [
+				{
+					"kind": "timeline_item",
+					"id": "slack-progress-reply:thread-redacted-0007"
+				},
+				{
+					"kind": "timeline_item",
+					"id": "slack-final-reply:thread-redacted-0007"
+				}
+			],
+			"remediation": "No action required."
+		},
+		{
+			"ruleId": "slack-evidence-artifact-linked",
+			"status": "pass",
+			"severity": "error",
+			"message": "The final answer cites a safe evidence artifact instead of raw Slack or tool payloads.",
+			"eventIds": [
+				"trajectory:artifact-linked:slack-evidence-0007",
+				"trajectory:slack-final-reply:thread-redacted-0007"
+			],
+			"evidence": [
+				{ "kind": "artifact", "id": "vfs-artifact-slack-contract-dev-0007" },
+				{
+					"kind": "timeline_item",
+					"id": "artifact-linked:slack-evidence-0007"
+				},
+				{
+					"kind": "timeline_item",
+					"id": "slack-final-reply:thread-redacted-0007"
+				}
+			],
+			"remediation": "No action required."
+		},
+		{
+			"ruleId": "slack-memory-lifecycle-accepted",
+			"status": "pass",
+			"severity": "error",
+			"message": "Slack memory was recalled, proposed, and accepted within the originating scope.",
+			"eventIds": [
+				"trajectory:memory-recall:thread-redacted-0007",
+				"trajectory:memory-store-proposed:thread-redacted-0007",
+				"trajectory:memory-store-accepted:thread-redacted-0007"
+			],
+			"evidence": [
+				{ "kind": "timeline_item", "id": "memory-recall:thread-redacted-0007" },
+				{
+					"kind": "timeline_item",
+					"id": "memory-store-proposed:thread-redacted-0007"
+				},
+				{
+					"kind": "timeline_item",
+					"id": "memory-store-accepted:thread-redacted-0007"
+				}
+			],
+			"remediation": "No action required."
+		},
+		{
+			"ruleId": "slack-final-answer-quality",
+			"status": "pass",
+			"severity": "error",
+			"message": "Final answer includes the outcome, safe evidence reference, and a useful next action.",
+			"eventIds": ["trajectory:slack-final-reply:thread-redacted-0007"],
+			"evidence": [
+				{
+					"kind": "timeline_item",
+					"id": "slack-final-reply:thread-redacted-0007"
+				},
+				{ "kind": "artifact", "id": "vfs-artifact-slack-contract-dev-0007" }
+			],
+			"remediation": "No action required."
+		},
+		{
+			"ruleId": "slack-no-duplicate-bot-reply",
+			"status": "pass",
+			"severity": "error",
+			"message": "The fixture contains one progress reply and one final reply for the thread.",
+			"eventIds": [
+				"trajectory:slack-progress-reply:thread-redacted-0007",
+				"trajectory:slack-final-reply:thread-redacted-0007"
+			],
+			"evidence": [
+				{
+					"kind": "timeline_item",
+					"id": "slack-progress-reply:thread-redacted-0007"
+				},
+				{
+					"kind": "timeline_item",
+					"id": "slack-final-reply:thread-redacted-0007"
+				}
+			],
+			"remediation": "No action required."
+		},
+		{
+			"ruleId": "final-event-has-evidence",
+			"status": "pass",
+			"severity": "error",
+			"message": "Final runtime event has evidence anchors.",
+			"eventIds": [
+				"trajectory:runtime-finished:slack-contract-progress-outcome-0007"
+			],
+			"evidence": [
+				{
+					"kind": "timeline_item",
+					"id": "runtime-finished:slack-contract-progress-outcome-0007"
+				},
+				{ "kind": "agent_run", "id": "agent-run-slack-progress-0007" }
+			],
+			"remediation": "No action required."
+		}
+	]
+}

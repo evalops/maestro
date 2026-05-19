@@ -272,7 +272,7 @@ if [[ -z "$TASK_ID" ]]; then
 	echo "could not parse task id from peer-b -> peer-a send output" >&2
 	exit 1
 fi
-WAIT_B_TO_A="$(a2a_cli "$REGISTRY_B" wait peer-a "$TASK_ID" --max-wait-ms 30000 --interval-ms 250 --timeout-ms 3000)"
+WAIT_B_TO_A="$(a2a_cli "$REGISTRY_B" wait peer-a "$TASK_ID" --tasks "$TASKS_B" --max-wait-ms 30000 --interval-ms 250 --timeout-ms 3000)"
 echo "$WAIT_B_TO_A"
 if ! grep -q "tmux peer A received the A2A message" <<<"$WAIT_B_TO_A"; then
 	echo "peer-b -> peer-a wait output did not include expected peer A text" >&2

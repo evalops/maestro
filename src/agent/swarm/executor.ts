@@ -17,6 +17,13 @@ import {
 	issueEvalOpsDelegationToken,
 } from "../../oauth/index.js";
 import { createLogger } from "../../utils/logger.js";
+import {
+	type AgentMode,
+	type ModelProvider,
+	type ResolvedSubagentDispatch,
+	parseMode,
+	resolveSubagentDispatch,
+} from "../modes.js";
 import type {
 	SwarmConfig,
 	SwarmEvent,
@@ -48,6 +55,13 @@ const TEAMMATE_NAMES = [
 	"Theta",
 	"Iota",
 	"Kappa",
+];
+
+const MODEL_PROVIDERS: ModelProvider[] = [
+	"anthropic",
+	"openai",
+	"openai-codex",
+	"google",
 ];
 
 function toSafeTaskTempBasename(taskId: string): string {
@@ -91,6 +105,55 @@ function cloneState(state: SwarmState): SwarmState {
 		activeTasks: new Map(state.activeTasks),
 		completedTasks: new Set(state.completedTasks),
 		failedTasks: new Set(state.failedTasks),
+	};
+}
+
+function parseModelProvider(
+	value: string | undefined,
+): ModelProvider | undefined {
+	const provider = value?.trim();
+	if (!provider) {
+		return undefined;
+	}
+	return MODEL_PROVIDERS.includes(provider as ModelProvider)
+		? (provider as ModelProvider)
+		: undefined;
+}
+
+function parseAgentMode(value: string | undefined): AgentMode | undefined {
+	const mode = value?.trim();
+	if (!mode) {
+		return undefined;
+	}
+	return parseMode(mode) ?? undefined;
+}
+
+function providerFromPrefixedModel(
+	model: string | undefined,
+): ModelProvider | undefined {
+	const slashIndex = model?.indexOf("/") ?? -1;
+	if (!model || slashIndex <= 0) {
+		return undefined;
+	}
+	return parseModelProvider(model.slice(0, slashIndex));
+}
+
+function buildDispatchEnv(
+	dispatch: ResolvedSubagentDispatch | null,
+	reasoningEffortOverride?: string,
+): Record<string, string> {
+	if (!dispatch) {
+		return {};
+	}
+
+	return {
+		MAESTRO_SWARM_MODE_NAME: dispatch.mode,
+		MAESTRO_SWARM_SUBAGENT_TYPE: dispatch.type,
+		MAESTRO_SWARM_MODEL_PROVIDER: dispatch.provider,
+		MAESTRO_SWARM_MODEL: dispatch.model,
+		MAESTRO_SWARM_REASONING_EFFORT:
+			reasoningEffortOverride ?? dispatch.reasoningEffort,
+		MAESTRO_SWARM_DISPATCH_SOURCE: dispatch.source,
 	};
 }
 
@@ -348,12 +411,14 @@ export class SwarmExecutor {
 	private async buildTeammateEnv(
 		teammate: SwarmTeammate,
 		task: SwarmTask,
+		dispatch: ResolvedSubagentDispatch | null,
 	): Promise<Record<string, string>> {
 		const baseEnv: Record<string, string> = {
 			...process.env,
 			MAESTRO_SWARM_MODE: "1",
 			MAESTRO_SWARM_ID: this.state.id,
 			MAESTRO_TEAMMATE_ID: teammate.id,
+			...buildDispatchEnv(dispatch, this.state.config.reasoningEffort),
 		};
 
 		try {
@@ -396,6 +461,43 @@ export class SwarmExecutor {
 		}
 	}
 
+	private resolveTaskDispatch(
+		task: SwarmTask,
+	): ResolvedSubagentDispatch | null {
+		const subagentType = task.subagentType ?? this.state.config.subagentType;
+		if (!subagentType) {
+			return null;
+		}
+
+		const parentProvider = this.resolveParentModelProvider();
+		const dispatch = resolveSubagentDispatch(
+			this.resolveParentMode(),
+			subagentType,
+			parentProvider ?? "anthropic",
+		);
+		if (!parentProvider && dispatch.modelTier) {
+			return null;
+		}
+
+		return dispatch;
+	}
+
+	private resolveParentMode(): AgentMode {
+		return (
+			this.state.config.mode ??
+			parseAgentMode(process.env.MAESTRO_MODE) ??
+			"smart"
+		);
+	}
+
+	private resolveParentModelProvider(): ModelProvider | undefined {
+		return (
+			this.state.config.modelProvider ??
+			parseModelProvider(process.env.MAESTRO_MODEL_PROVIDER) ??
+			providerFromPrefixedModel(process.env.MAESTRO_MODEL)
+		);
+	}
+
 	private async spawnTeammate(
 		teammate: SwarmTeammate,
 		task: SwarmTask,
@@ -421,17 +523,18 @@ export class SwarmExecutor {
 
 		writeFileSync(tmpFile, prompt);
 
+		const dispatch = this.resolveTaskDispatch(task);
+		const model = task.model ?? this.state.config.model ?? dispatch?.model;
+		const hasModelOverride = Boolean(task.model ?? this.state.config.model);
+		const provider = hasModelOverride ? undefined : dispatch?.provider;
 		const args = [
 			"--no-session",
-			...(task.model
-				? ["--model", task.model]
-				: this.state.config.model
-					? ["--model", this.state.config.model]
-					: []),
+			...(provider ? ["--provider", provider] : []),
+			...(model ? ["--model", model] : []),
 			"exec",
 			tmpFile,
 		];
-		const env = await this.buildTeammateEnv(teammate, task);
+		const env = await this.buildTeammateEnv(teammate, task, dispatch);
 
 		if (
 			this.state.status !== "running" ||

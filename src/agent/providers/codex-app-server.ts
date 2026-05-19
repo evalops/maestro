@@ -122,9 +122,12 @@ type CodexSubagentWorkGraph = {
 		senderThreadId: string;
 	};
 	childRuns: Array<{
+		edgeId: string;
+		targetIndex: number;
 		threadId: string;
 		childRunId: string;
 		operation: string;
+		status?: string;
 	}>;
 };
 
@@ -581,13 +584,40 @@ function codexCollabWorkGraph(
 			turnId: scope.turnId,
 			senderThreadId: item.senderThreadId,
 		},
-		childRuns: item.receiverThreadIds.map((threadId, index) => ({
-			threadId,
-			childRunId:
-				childRunIds[index] ?? `${CODEX_THREAD_CHILD_RUN_PREFIX}${threadId}`,
-			operation: tool,
-		})),
+		childRuns: item.receiverThreadIds.map((threadId, index) => {
+			const childRunId =
+				childRunIds[index] ?? `${CODEX_THREAD_CHILD_RUN_PREFIX}${threadId}`;
+			return {
+				edgeId: codexCollabEdgeId(item.id, childRunId, index, tool),
+				targetIndex: index,
+				threadId,
+				childRunId,
+				operation: tool,
+				...codexCollabChildStatus(item, threadId),
+			};
+		}),
 	};
+}
+
+function codexCollabEdgeId(
+	toolCallId: string,
+	childRunId: string,
+	index: number,
+	tool: string,
+): string {
+	return `${toolCallId}:${index}:${tool}:${childRunId}`;
+}
+
+function codexCollabChildStatus(
+	item: CodexCollabAgentToolCallItem,
+	threadId: string,
+): { status: string } | Record<string, never> {
+	const agentState = item.agentsStates[threadId];
+	if (!isRecord(agentState) || typeof agentState.status !== "string") {
+		return {};
+	}
+	const status = agentState.status.trim();
+	return status ? { status } : {};
 }
 
 function codexCollabChildRunIds(item: CodexCollabAgentToolCallItem): string[] {

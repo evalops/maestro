@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="slack-contract-unsafe-degraded" tests="10" failures="0" warnings="0">
+	<testcase classname="slack-contract-unsafe-degraded" name="external-refs-present"></testcase>
+	<testcase classname="slack-contract-unsafe-degraded" name="slack-ingress-present"></testcase>
+	<testcase classname="slack-contract-unsafe-degraded" name="evidence-lookup-failed-closed"></testcase>
+	<testcase classname="slack-contract-unsafe-degraded" name="unsafe-action-blocked"></testcase>
+	<testcase classname="slack-contract-unsafe-degraded" name="missing-evidence-degraded"></testcase>
+	<testcase classname="slack-contract-unsafe-degraded" name="useful-degraded-next-action"></testcase>
+	<testcase classname="slack-contract-unsafe-degraded" name="no-unsafe-tool-execution"></testcase>
+	<testcase classname="slack-contract-unsafe-degraded" name="inspection-redacted"></testcase>
+	<testcase classname="slack-contract-unsafe-degraded" name="blocked-reply-provenance"></testcase>
+	<testcase classname="slack-contract-unsafe-degraded" name="degraded-labels-present"></testcase>
+</testsuite>

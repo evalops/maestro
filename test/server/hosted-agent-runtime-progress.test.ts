@@ -12,6 +12,7 @@ import {
 	PlatformAgentRunWaitTypeValue,
 	PlatformAgentWorkItemKindValue,
 	PlatformAgentWorkItemStateValue,
+	PlatformRuntimeEventTypeValue,
 } from "../../src/platform/agent-runtime-client.js";
 import { HostedAgentRuntimeProgressRecorder } from "../../src/server/hosted-agent-runtime-progress.js";
 import type { ServerRequestLifecycleEvent } from "../../src/server/server-request-manager.js";
@@ -21,6 +22,7 @@ function createRecorder(overrides?: {
 	agentRuntimeLeaseToken?: string;
 	agentId?: string;
 	recordStep?: ReturnType<typeof vi.fn>;
+	recordEvent?: ReturnType<typeof vi.fn>;
 	recordWorkItem?: ReturnType<typeof vi.fn>;
 	updateWorkItem?: ReturnType<typeof vi.fn>;
 	waitRun?: ReturnType<typeof vi.fn>;
@@ -32,6 +34,8 @@ function createRecorder(overrides?: {
 }) {
 	const recordStep =
 		overrides?.recordStep ?? vi.fn(async () => ({ run: { id: "run_1" } }));
+	const recordEvent =
+		overrides?.recordEvent ?? vi.fn(async () => ({ run: { id: "run_1" } }));
 	const recordWorkItem =
 		overrides?.recordWorkItem ?? vi.fn(async () => ({ run: { id: "run_1" } }));
 	const updateWorkItem =
@@ -63,6 +67,7 @@ function createRecorder(overrides?: {
 		},
 		operations: {
 			recordStep,
+			recordEvent,
 			recordWorkItem,
 			updateWorkItem,
 			waitRun,
@@ -76,6 +81,7 @@ function createRecorder(overrides?: {
 	return {
 		recorder,
 		recordStep,
+		recordEvent,
 		recordWorkItem,
 		updateWorkItem,
 		waitRun,
@@ -1476,6 +1482,53 @@ describe("hosted AgentRuntime progress recorder", () => {
 		);
 	});
 
+	it("records hosted drain manifest evidence before terminal completion", async () => {
+		const { recorder, recordEvent, completeRun } = createRecorder();
+
+		await recorder.recordHostedRunnerDrain({
+			status: "drained",
+			reason: "process_shutdown",
+			requestedBy: "maestro_web_server",
+			flushStatus: "completed",
+			manifestPath: "/workspace/.maestro/runner-snapshots/mrs.json",
+			platformEvidence: {
+				protocol_version: "evalops.remote-runner.platform-evidence.v1",
+				work_continuity: {
+					codex_subagent_edge_count: 1,
+				},
+			},
+		});
+
+		expect(recordEvent).toHaveBeenCalledWith(
+			expect.objectContaining({
+				runId: "run_1",
+				type: PlatformRuntimeEventTypeValue.AgentProgressRecorded,
+				message: "hosted runner drain manifest recorded",
+				attributes: expect.objectContaining({
+					event_type: "hosted_runner_drain_manifest_recorded",
+					status: "drained",
+					flush_status: "completed",
+					manifest_path: "/workspace/.maestro/runner-snapshots/mrs.json",
+					platform_evidence: expect.objectContaining({
+						protocol_version: "evalops.remote-runner.platform-evidence.v1",
+					}),
+				}),
+			}),
+		);
+		expect(completeRun).toHaveBeenCalledWith(
+			expect.objectContaining({
+				runId: "run_1",
+				result: expect.objectContaining({
+					event_type: "hosted_runner_drained",
+					manifest_path: "/workspace/.maestro/runner-snapshots/mrs.json",
+				}),
+			}),
+		);
+		expect(recordEvent.mock.invocationCallOrder[0]).toBeLessThan(
+			completeRun.mock.invocationCallOrder[0],
+		);
+	});
+
 	it("fails the Platform run once when hosted drain is interrupted", async () => {
 		const { recorder, recordStep, failRun } = createRecorder();
 
@@ -1483,6 +1536,8 @@ describe("hosted AgentRuntime progress recorder", () => {
 			errorMessage: "Hosted runner drain failed: flush timed out",
 			reason: "kubernetes_prestop",
 			requestedBy: "kubernetes_prestop",
+			flushStatus: "failed",
+			manifestPath: "/workspace/.maestro/runner-snapshots/mrs.json",
 		});
 		await recorder.failRun({ errorMessage: "duplicate failure" });
 
@@ -1497,6 +1552,8 @@ describe("hosted AgentRuntime progress recorder", () => {
 						event_type: "hosted_runner_drain_failed",
 						reason: "kubernetes_prestop",
 						requested_by: "kubernetes_prestop",
+						flush_status: "failed",
+						manifest_path: "/workspace/.maestro/runner-snapshots/mrs.json",
 					}),
 				}),
 			}),

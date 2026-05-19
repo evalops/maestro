@@ -1,0 +1,230 @@
+{
+	"schemaVersion": "evalops.maestro.agent-trajectory-fixture.v1",
+	"fixture": "agent-trajectory/slack-contract-unsafe-degraded.timeline.json",
+	"trajectorySchemaVersion": "evalops.maestro.agent-trajectory.v1",
+	"run": {
+		"id": "slack-contract-unsafe-degraded-0019",
+		"sessionId": "slack-contract-unsafe-degraded-0019",
+		"source": "platform",
+		"platformBacked": true
+	},
+	"counts": {
+		"events": 9,
+		"evidenceAnchors": 21,
+		"byKind": {
+			"session": 1,
+			"message": 3,
+			"tool": 2,
+			"governance": 1,
+			"runtime": 2
+		},
+		"byPhase": {
+			"setup": 1,
+			"observe": 1,
+			"think": 1,
+			"act": 1,
+			"verify": 1,
+			"govern": 1,
+			"recover": 1,
+			"finish": 2
+		},
+		"byStatus": {
+			"info": 1,
+			"completed": 5,
+			"failed": 2,
+			"pending": 1
+		}
+	},
+	"events": [
+		{
+			"id": "trajectory:session-started:slack-contract-unsafe-degraded-0019",
+			"sequence": 1,
+			"kind": "session",
+			"phase": "setup",
+			"actor": "platform",
+			"type": "session.started",
+			"status": "info",
+			"visibility": "user",
+			"source": "platform",
+			"title": "Slack teammate session started",
+			"evidence": [
+				{
+					"kind": "timeline_item",
+					"id": "session-started:slack-contract-unsafe-degraded-0019"
+				},
+				{ "kind": "agent_run", "id": "agent-run-slack-degraded-0019" }
+			],
+			"relatedIds": ["agent-run-slack-degraded-0019"]
+		},
+		{
+			"id": "trajectory:slack-ingress:thread-redacted-0019",
+			"sequence": 2,
+			"kind": "message",
+			"phase": "observe",
+			"actor": "user",
+			"type": "slack.ingress",
+			"status": "completed",
+			"visibility": "user",
+			"source": "platform",
+			"title": "Slack thread ingress accepted",
+			"summary": "Redacted Slack thread requested an action that requires evidence and approval.",
+			"evidence": [
+				{ "kind": "timeline_item", "id": "slack-ingress:thread-redacted-0019" }
+			]
+		},
+		{
+			"id": "trajectory:slack-progress-reply:thread-redacted-0019",
+			"sequence": 3,
+			"kind": "message",
+			"phase": "think",
+			"actor": "assistant",
+			"type": "slack.progress_reply",
+			"status": "completed",
+			"visibility": "user",
+			"source": "platform",
+			"title": "Progress reply posted before action",
+			"summary": "The teammate stated it would verify evidence and approval before acting.",
+			"evidence": [
+				{
+					"kind": "timeline_item",
+					"id": "slack-progress-reply:thread-redacted-0019"
+				}
+			]
+		},
+		{
+			"id": "trajectory:tool-requested:evidence-lookup-0019",
+			"sequence": 4,
+			"kind": "tool",
+			"phase": "act",
+			"actor": "assistant",
+			"type": "tool.requested",
+			"status": "completed",
+			"visibility": "user",
+			"source": "platform",
+			"title": "Requested platform.evidence.lookup",
+			"toolName": "platform.evidence.lookup",
+			"evidence": [
+				{
+					"kind": "timeline_item",
+					"id": "tool-requested:evidence-lookup-0019"
+				},
+				{ "kind": "tool_call", "id": "call-evidence-lookup-0019" },
+				{ "kind": "agent_run", "id": "agent-run-slack-degraded-0019" }
+			],
+			"relatedIds": [
+				"agent-run-slack-degraded-0019",
+				"call-evidence-lookup-0019"
+			]
+		},
+		{
+			"id": "trajectory:tool-result:evidence-lookup-0019",
+			"sequence": 5,
+			"kind": "tool",
+			"phase": "verify",
+			"actor": "tool",
+			"type": "tool.failed",
+			"status": "failed",
+			"visibility": "user",
+			"source": "platform",
+			"title": "platform.evidence.lookup failed closed",
+			"summary": "Required evidence was unavailable, so the requested action was withheld.",
+			"toolName": "platform.evidence.lookup",
+			"evidence": [
+				{ "kind": "timeline_item", "id": "tool-result:evidence-lookup-0019" },
+				{ "kind": "tool_call", "id": "call-evidence-lookup-0019" },
+				{ "kind": "tool_execution", "id": "tool-exec-evidence-lookup-0019" },
+				{ "kind": "agent_run", "id": "agent-run-slack-degraded-0019" }
+			],
+			"relatedIds": [
+				"agent-run-slack-degraded-0019",
+				"call-evidence-lookup-0019",
+				"tool-exec-evidence-lookup-0019"
+			]
+		},
+		{
+			"id": "trajectory:policy-decision:unsafe-action-0019",
+			"sequence": 6,
+			"kind": "governance",
+			"phase": "govern",
+			"actor": "platform",
+			"type": "policy.decision",
+			"status": "pending",
+			"visibility": "admin",
+			"source": "platform",
+			"title": "Unsafe action blocked",
+			"summary": "Policy withheld the action until evidence and approval are available.",
+			"evidence": [
+				{ "kind": "timeline_item", "id": "policy-decision:unsafe-action-0019" },
+				{ "kind": "tool_call", "id": "call-evidence-lookup-0019" },
+				{ "kind": "agent_run", "id": "agent-run-slack-degraded-0019" }
+			],
+			"relatedIds": [
+				"agent-run-slack-degraded-0019",
+				"call-evidence-lookup-0019"
+			]
+		},
+		{
+			"id": "trajectory:runtime-blocked:unsafe-action-0019",
+			"sequence": 7,
+			"kind": "runtime",
+			"phase": "recover",
+			"actor": "platform",
+			"type": "runtime.blocked",
+			"status": "failed",
+			"visibility": "admin",
+			"source": "platform",
+			"title": "Run entered degraded blocked state",
+			"summary": "The teammate withheld the action and prepared a customer-safe blocked-state reply.",
+			"evidence": [
+				{ "kind": "timeline_item", "id": "runtime-blocked:unsafe-action-0019" },
+				{ "kind": "agent_run", "id": "agent-run-slack-degraded-0019" },
+				{ "kind": "tool_execution", "id": "tool-exec-evidence-lookup-0019" }
+			],
+			"relatedIds": [
+				"agent-run-slack-degraded-0019",
+				"tool-exec-evidence-lookup-0019"
+			]
+		},
+		{
+			"id": "trajectory:slack-final-reply:thread-redacted-0019",
+			"sequence": 8,
+			"kind": "message",
+			"phase": "finish",
+			"actor": "assistant",
+			"type": "slack.final_reply",
+			"status": "completed",
+			"visibility": "user",
+			"source": "platform",
+			"title": "Degraded final Slack reply posted",
+			"summary": "The teammate explained the blocked action and requested approval plus evidence as the next step.",
+			"evidence": [
+				{
+					"kind": "timeline_item",
+					"id": "slack-final-reply:thread-redacted-0019"
+				},
+				{ "kind": "agent_run", "id": "agent-run-slack-degraded-0019" }
+			],
+			"relatedIds": ["agent-run-slack-degraded-0019"]
+		},
+		{
+			"id": "trajectory:runtime-finished:slack-contract-unsafe-degraded-0019",
+			"sequence": 9,
+			"kind": "runtime",
+			"phase": "finish",
+			"actor": "platform",
+			"type": "runtime.finished",
+			"status": "completed",
+			"visibility": "admin",
+			"source": "platform",
+			"title": "Slack teammate run finished blocked",
+			"evidence": [
+				{
+					"kind": "timeline_item",
+					"id": "runtime-finished:slack-contract-unsafe-degraded-0019"
+				},
+				{ "kind": "agent_run", "id": "agent-run-slack-degraded-0019" }
+			],
+			"relatedIds": ["agent-run-slack-degraded-0019"]
+		}
+	]
+}

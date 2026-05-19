@@ -15,6 +15,7 @@ import {
 	failAgentRuntimeRun,
 	getAgentRuntimeRun,
 	listAgentRuntimeRunEvents,
+	recordAgentRuntimeRunEvent,
 	recordAgentRuntimeRunStep,
 	recordMaestroSessionRuntimeTrigger,
 	resolveAgentRuntimeServiceConfig,
@@ -356,6 +357,29 @@ describe("agent runtime service client", () => {
 					});
 				}
 
+				if (url.endsWith("/RecordRunEvent")) {
+					expect(body).toMatchObject({
+						runId: "run_1",
+						type: PlatformRuntimeEventTypeValue.AgentProgressRecorded,
+						message: "hosted runner drain manifest recorded",
+						attributes: {
+							event_type: "hosted_runner_drain_manifest_recorded",
+							manifest_path: "/tmp/manifest.json",
+						},
+					});
+					return Response.json({
+						run: {
+							id: "run_1",
+							state: PlatformAgentRunStateValue.Running,
+						},
+						event: {
+							id: "event_progress",
+							runId: "run_1",
+							type: PlatformRuntimeEventTypeValue.AgentProgressRecorded,
+						},
+					});
+				}
+
 				if (url.endsWith("/WaitRun")) {
 					expect(body).toMatchObject({
 						runId: "run_1",
@@ -505,6 +529,23 @@ describe("agent runtime service client", () => {
 		});
 
 		await expect(
+			recordAgentRuntimeRunEvent(
+				{
+					runId: "run_1",
+					type: PlatformRuntimeEventTypeValue.AgentProgressRecorded,
+					message: "hosted runner drain manifest recorded",
+					attributes: {
+						event_type: "hosted_runner_drain_manifest_recorded",
+						manifest_path: "/tmp/manifest.json",
+					},
+				},
+				{ config },
+			),
+		).resolves.toMatchObject({
+			event: { type: PlatformRuntimeEventTypeValue.AgentProgressRecorded },
+		});
+
+		await expect(
 			waitAgentRuntimeRun(
 				{
 					runId: "run_1",
@@ -573,6 +614,7 @@ describe("agent runtime service client", () => {
 		expect(requests.map((request) => request.url)).toEqual([
 			"https://runtime.test/agentruntime.v1.AgentRuntimeService/ClaimNextRun",
 			"https://runtime.test/agentruntime.v1.AgentRuntimeService/RecordRunStep",
+			"https://runtime.test/agentruntime.v1.AgentRuntimeService/RecordRunEvent",
 			"https://runtime.test/agentruntime.v1.AgentRuntimeService/WaitRun",
 			"https://runtime.test/agentruntime.v1.AgentRuntimeService/ResumeRun",
 			"https://runtime.test/agentruntime.v1.AgentRuntimeService/CompleteRun",
