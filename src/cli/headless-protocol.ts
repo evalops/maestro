@@ -34,6 +34,13 @@ import type {
 	AssistantMessageEvent,
 	Attachment,
 } from "../agent/types.js";
+import {
+	CODEX_SUBAGENT_TOOL_PREFIX,
+	CODEX_SUBAGENT_WORK_GRAPH_SCHEMA,
+	codexSubagentActiveStatus,
+	codexSubagentOperationName,
+	codexSubagentTerminalSuccessStatus,
+} from "../codex/subagent-workgraph.js";
 import { appendHeadlessOutput } from "../headless/output-buffer.js";
 import type { SessionManager } from "../session/manager.js";
 import { isSupportedImageFormat } from "../tools/image-processor.js";
@@ -734,9 +741,7 @@ export function syncHeadlessPendingRequests(
 	return state.pending_requests;
 }
 
-export const CODEX_SUBAGENT_TOOL_PREFIX = "codex.subagent.";
-export const CODEX_SUBAGENT_WORK_GRAPH_SCHEMA =
-	"evalops.maestro.codex.subagent-workgraph.v1";
+export { CODEX_SUBAGENT_TOOL_PREFIX, CODEX_SUBAGENT_WORK_GRAPH_SCHEMA };
 
 function isRecord(value: unknown): value is Record<string, unknown> {
 	return Boolean(value && typeof value === "object" && !Array.isArray(value));
@@ -755,44 +760,11 @@ export function stringArray(value: unknown): string[] {
 }
 
 export function codexSubagentOperation(tool: string): string | undefined {
-	const suffix = tool.startsWith(CODEX_SUBAGENT_TOOL_PREFIX)
-		? tool.slice(CODEX_SUBAGENT_TOOL_PREFIX.length)
-		: tool;
-	switch (suffix) {
-		case "spawnAgent":
-		case "spawn_agent":
-			return "spawn_agent";
-		case "sendInput":
-		case "send_input":
-			return "send_input";
-		case "resumeAgent":
-		case "resume_agent":
-			return "resume_agent";
-		case "wait":
-		case "waitAgent":
-		case "wait_agent":
-			return "wait_agent";
-		case "closeAgent":
-		case "close_agent":
-			return "close_agent";
-		default:
-			return undefined;
-	}
+	return codexSubagentOperationName(tool);
 }
 
 export function activeCodexSubagentStatus(operation: string): string {
-	switch (operation) {
-		case "send_input":
-			return "waiting_for_input_ack";
-		case "wait_agent":
-			return "wait_pending";
-		case "close_agent":
-			return "waiting_for_close";
-		case "resume_agent":
-			return "restoring";
-		default:
-			return "waiting_for_restore";
-	}
+	return codexSubagentActiveStatus(operation) ?? "waiting_for_restore";
 }
 
 export function codexSubagentStatusIsTerminal(
@@ -825,18 +797,7 @@ function terminalCodexSubagentStatus(
 	if (!success) {
 		return "failed";
 	}
-	switch (operation) {
-		case "spawn_agent":
-			return "spawned";
-		case "send_input":
-			return "acknowledged";
-		case "resume_agent":
-			return "resumed";
-		case "close_agent":
-			return "closed";
-		default:
-			return "completed";
-	}
+	return codexSubagentTerminalSuccessStatus(operation) ?? "completed";
 }
 
 export function collectCodexChildRuns(args: unknown): Array<{

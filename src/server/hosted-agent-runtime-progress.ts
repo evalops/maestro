@@ -2,6 +2,14 @@ import { createHash } from "node:crypto";
 import type { SwarmEvent, SwarmTask } from "../agent/swarm/types.js";
 import type { AgentEvent, AppMessage, Usage } from "../agent/types.js";
 import {
+	CODEX_SUBAGENT_TOOL_PREFIX,
+	canonicalCodexSubagentTool,
+	codexSubagentActiveStatus,
+	codexSubagentNextAction as codexSubagentContractNextAction,
+	codexSubagentOperationName,
+	codexSubagentTerminalSuccessStatus,
+} from "../codex/subagent-workgraph.js";
+import {
 	PlatformDelegationStatusValue,
 	delegateAgentWithPlatform,
 	resolveAgentDelegationWithPlatform,
@@ -30,16 +38,8 @@ import { createLogger } from "../utils/logger.js";
 import type { ServerRequestLifecycleEvent } from "./server-request-manager.js";
 
 const logger = createLogger("server:hosted-agent-runtime-progress");
-const CODEX_SUBAGENT_TOOL_PREFIX = "codex.subagent.";
 const CODEX_THREAD_CHILD_RUN_PREFIX = "codex-thread:";
 const DEFAULT_CODEX_SUBAGENT_DELEGATION_CAPABILITY = "code:write";
-
-type CodexSubagentTool =
-	| "spawnAgent"
-	| "sendInput"
-	| "resumeAgent"
-	| "wait"
-	| "closeAgent";
 
 type HostedAgentRuntimeTaskSource =
 	| "todo"
@@ -77,22 +77,6 @@ export interface HostedAgentRuntimeTaskProgressEvent {
 	payload?: Record<string, unknown>;
 	recordStep?: boolean;
 }
-
-const CODEX_SUBAGENT_TOOL_ALIASES = new Map<string, CodexSubagentTool>([
-	["spawnAgent", "spawnAgent"],
-	["spawn_agent", "spawnAgent"],
-	["sendInput", "sendInput"],
-	["send_input", "sendInput"],
-	["resumeAgent", "resumeAgent"],
-	["resumeSubagent", "resumeAgent"],
-	["resume_agent", "resumeAgent"],
-	["resume_subagent", "resumeAgent"],
-	["wait", "wait"],
-	["waitAgent", "wait"],
-	["wait_agent", "wait"],
-	["closeAgent", "closeAgent"],
-	["close_agent", "closeAgent"],
-]);
 
 export interface HostedAgentRuntimeProgressContext {
 	enabled: true;
@@ -182,6 +166,13 @@ function compactString(value: unknown, maxLength = 256): string | undefined {
 	return `${text.slice(0, maxLength - 3)}...`;
 }
 
+function isExistingWorkItemCreateError(error: unknown): boolean {
+	const message = error instanceof Error ? error.message : String(error);
+	return /\b409\b|already exists|already_exists|duplicate|unique constraint/i.test(
+		message,
+	);
+}
+
 function stableShortHash(value: string): string {
 	return createHash("sha256").update(value).digest("hex").slice(0, 12);
 }
@@ -245,7 +236,7 @@ function codexSubagentToolName(toolName: string): string | undefined {
 	const tool = toolName.startsWith(CODEX_SUBAGENT_TOOL_PREFIX)
 		? toolName.slice(CODEX_SUBAGENT_TOOL_PREFIX.length)
 		: undefined;
-	return tool ? (CODEX_SUBAGENT_TOOL_ALIASES.get(tool) ?? tool) : undefined;
+	return tool ? (canonicalCodexSubagentTool(tool) ?? tool) : undefined;
 }
 
 function codexThreadChildRunId(threadId: string): string {
@@ -319,20 +310,10 @@ function codexSubagentChildRunIds(
 }
 
 function codexSubagentNextAction(tool: string): string {
-	switch (tool) {
-		case "spawnAgent":
-			return "wait for child agent initialization or completion";
-		case "sendInput":
-			return "wait for child agent response";
-		case "resumeAgent":
-			return "wait for resumed child agent response";
-		case "wait":
-			return "wait for selected child agents";
-		case "closeAgent":
-			return "confirm child agent shutdown";
-		default:
-			return "track Codex subagent collaboration";
-	}
+	return (
+		codexSubagentContractNextAction(tool) ??
+		"track Codex subagent collaboration"
+	);
 }
 
 function codexSubagentDelegationTargetAgentId(
@@ -478,37 +459,11 @@ function codexSubagentDelegationReason(prompt: string | undefined): string {
 }
 
 function codexSubagentOperation(tool: string): string | undefined {
-	switch (tool) {
-		case "spawnAgent":
-			return "spawn_agent";
-		case "sendInput":
-			return "send_input";
-		case "resumeAgent":
-			return "resume_agent";
-		case "wait":
-			return "wait_agent";
-		case "closeAgent":
-			return "close_agent";
-		default:
-			return undefined;
-	}
+	return codexSubagentOperationName(tool);
 }
 
 function activeCodexSubagentEdgeStatus(tool: string): string | undefined {
-	switch (codexSubagentOperation(tool)) {
-		case "send_input":
-			return "waiting_for_input_ack";
-		case "wait_agent":
-			return "wait_pending";
-		case "close_agent":
-			return "waiting_for_close";
-		case "resume_agent":
-			return "restoring";
-		case "spawn_agent":
-			return "waiting_for_restore";
-		default:
-			return undefined;
-	}
+	return codexSubagentActiveStatus(tool);
 }
 
 function terminalCodexSubagentEdgeStatus(
@@ -518,20 +473,7 @@ function terminalCodexSubagentEdgeStatus(
 	if (isError) {
 		return "failed";
 	}
-	switch (codexSubagentOperation(tool)) {
-		case "spawn_agent":
-			return "spawned";
-		case "send_input":
-			return "acknowledged";
-		case "resume_agent":
-			return "resumed";
-		case "close_agent":
-			return "closed";
-		case "wait_agent":
-			return "completed";
-		default:
-			return undefined;
-	}
+	return codexSubagentTerminalSuccessStatus(tool);
 }
 
 function shouldResolveCodexSubagentDelegation(
@@ -978,9 +920,8 @@ export class HostedAgentRuntimeProgressRecorder {
 			...event.payload,
 		});
 		this.enqueue(async () => {
-			const wasRecorded = this.recordedTaskWorkItemIds.has(taskId);
-			if (wasRecorded) {
-				await this.operations.updateWorkItem({
+			const updateWorkItem = () =>
+				this.operations.updateWorkItem({
 					runId,
 					workItemId: taskId,
 					state,
@@ -996,34 +937,44 @@ export class HostedAgentRuntimeProgressRecorder {
 						event.completionGate ?? "maestro_task_progress_recorded",
 					payload,
 				});
+			if (this.recordedTaskWorkItemIds.has(taskId)) {
+				await updateWorkItem();
 				return;
 			}
-			await this.operations.recordWorkItem({
+			const workItem = {
+				id: taskId,
 				runId,
-				workItem: {
-					id: taskId,
+				...(parentWorkItemId ? { parentWorkItemId } : {}),
+				...(event.ownerChildRunId
+					? { ownerChildRunId: event.ownerChildRunId }
+					: {}),
+				kind: event.workItemKind ?? defaultTaskWorkItemKind(event.source),
+				state,
+				title: compactString(event.title),
+				...(event.goal ? { goal: compactString(event.goal, 512) } : {}),
+				...(event.nextAction
+					? { nextAction: compactString(event.nextAction) }
+					: {}),
+				...(event.blocker ? { blocker: compactString(event.blocker) } : {}),
+				...(event.toolExecutionId
+					? { toolExecutionId: event.toolExecutionId }
+					: {}),
+				evidenceRefs,
+				completionGate:
+					event.completionGate ?? "maestro_task_progress_recorded",
+				payload,
+			};
+			try {
+				await this.operations.recordWorkItem({
 					runId,
-					...(parentWorkItemId ? { parentWorkItemId } : {}),
-					...(event.ownerChildRunId
-						? { ownerChildRunId: event.ownerChildRunId }
-						: {}),
-					kind: event.workItemKind ?? defaultTaskWorkItemKind(event.source),
-					state,
-					title: compactString(event.title),
-					...(event.goal ? { goal: compactString(event.goal, 512) } : {}),
-					...(event.nextAction
-						? { nextAction: compactString(event.nextAction) }
-						: {}),
-					...(event.blocker ? { blocker: compactString(event.blocker) } : {}),
-					...(event.toolExecutionId
-						? { toolExecutionId: event.toolExecutionId }
-						: {}),
-					evidenceRefs,
-					completionGate:
-						event.completionGate ?? "maestro_task_progress_recorded",
-					payload,
-				},
-			});
+					workItem,
+				});
+			} catch (error) {
+				if (!isExistingWorkItemCreateError(error)) {
+					throw error;
+				}
+				await updateWorkItem();
+			}
 			this.recordedTaskWorkItemIds.add(taskId);
 		});
 		this.recordEvent({

@@ -212,6 +212,22 @@
 		},
 		{
 			"area": "subagents",
+			"evidenceType": "fixture",
+			"path": "docs/protocols/codex-subagent-workgraph-v1.json",
+			"anchors": [
+				"evalops.maestro.codex.subagent-workgraph.v1",
+				"codex.subagent.",
+				"spawnAgent",
+				"sendInput",
+				"resumeAgent",
+				"wait",
+				"closeAgent",
+				"waiting_for_restore",
+				"resolved_from_child_terminal_edge"
+			]
+		},
+		{
+			"area": "subagents",
 			"evidenceType": "source",
 			"path": "src/codex/subagent-dispatch-table.ts",
 			"anchors": [
@@ -219,6 +235,18 @@
 				"DEFAULT_CODEX_SUBAGENT_DELEGATION_CAPABILITY",
 				"codexSubagentTypeA2ASkillID",
 				"codexSubagentCapabilityA2ASkillID"
+			]
+		},
+		{
+			"area": "subagents",
+			"evidenceType": "source",
+			"path": "src/codex/subagent-workgraph.ts",
+			"anchors": [
+				"CODEX_SUBAGENT_LIFECYCLE_OPERATIONS",
+				"CODEX_SUBAGENT_WORK_GRAPH_SCHEMA",
+				"canonicalCodexSubagentTool",
+				"codexSubagentOperationName",
+				"codexSubagentTerminalSuccessStatus"
 			]
 		},
 		{
@@ -298,7 +326,7 @@
 			"anchors": [
 				"childRunIds",
 				"codexWorkGraph",
-				"evalops.maestro.codex.subagent-workgraph.v1",
+				"CODEX_SUBAGENT_WORK_GRAPH_SCHEMA",
 				"codexCollabWorkGraph",
 				"codexCollabChildRunIds"
 			]
@@ -338,6 +366,16 @@
 			]
 		},
 		{
+			"area": "multi-agent-workgraph",
+			"evidenceType": "test",
+			"path": "test/codex/subagent-workgraph.test.ts",
+			"anchors": [
+				"keeps the TypeScript lifecycle operation table aligned with the fixture",
+				"normalizes every canonical, snake-case, and fully qualified lifecycle alias",
+				"builds remote-runner continuity edges for the complete subagent lifecycle"
+			]
+		},
+		{
 			"area": "remote-runner-continuity",
 			"evidenceType": "source",
 			"path": "src/server/handlers/hosted-runner-drain.ts",
@@ -359,11 +397,9 @@
 				"HeadlessCodexSubagentContinuityEdge",
 				"buildCodexSubagentContinuityEdges",
 				"codexSubagentOperation",
-				"spawn_agent",
-				"send_input",
-				"resume_agent",
-				"wait_agent",
-				"close_agent"
+				"codexSubagentOperationName",
+				"codexSubagentActiveStatus",
+				"codexSubagentTerminalSuccessStatus"
 			]
 		},
 		{
@@ -520,6 +556,7 @@
 				"codex_headless_bridge_round_trips_prompt_approval",
 				"codex_headless_bridge_streams_tool_events_over_websocket",
 				"codex_headless_bridge_bounds_shutdown_wait_after_valid_output",
+				"codex_headless_subagent_lifecycle_matches_workgraph_fixture",
 				"codex_app_server_timeout_kills_child_process"
 			]
 		},

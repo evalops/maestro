@@ -57,6 +57,9 @@ describe("Codex operating-layer conformance", () => {
 			"manifest is missing required area rust-control-plane",
 		);
 		expect(failures).toContain(
+			"manifest is missing required area remote-runner-continuity",
+		);
+		expect(failures).toContain(
 			"manifest is missing required area live-verification",
 		);
 	});

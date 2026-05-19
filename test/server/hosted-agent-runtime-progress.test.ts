@@ -2258,6 +2258,62 @@ describe("hosted AgentRuntime progress recorder", () => {
 		);
 	});
 
+	it("falls back to update when task work item already exists in Platform", async () => {
+		const recordWorkItem = vi
+			.fn()
+			.mockRejectedValueOnce(
+				new Error(
+					"agent runtime service returned 409: work item already exists",
+				),
+			)
+			.mockResolvedValue({ run: { id: "run_1" } });
+		const updateWorkItem = vi.fn(async () => ({ run: { id: "run_1" } }));
+		const { recorder } = createRecorder({ recordWorkItem, updateWorkItem });
+
+		recorder.recordTaskProgressEvent({
+			source: "swarm",
+			id: "task-after-restart",
+			status: "succeeded",
+			title: "Restarted task",
+			nextAction: "terminal state from restored runner",
+			toolExecutionId: "tool_exec_1",
+		});
+		await recorder.flush();
+
+		expect(recordWorkItem).toHaveBeenCalledTimes(1);
+		expect(updateWorkItem).toHaveBeenCalledWith(
+			expect.objectContaining({
+				runId: "run_1",
+				workItemId: "maestro:session_1:swarm:task-after-restart",
+				state: PlatformAgentWorkItemStateValue.Succeeded,
+				nextAction: "terminal state from restored runner",
+				toolExecutionId: "tool_exec_1",
+				payload: expect.objectContaining({
+					task_status: "succeeded",
+				}),
+			}),
+		);
+
+		recorder.recordTaskProgressEvent({
+			source: "swarm",
+			id: "task-after-restart",
+			status: "running",
+			title: "Restarted task",
+			nextAction: "follow-up progress",
+		});
+		await recorder.flush();
+
+		expect(recordWorkItem).toHaveBeenCalledTimes(1);
+		expect(updateWorkItem).toHaveBeenCalledTimes(2);
+		expect(updateWorkItem).toHaveBeenLastCalledWith(
+			expect.objectContaining({
+				workItemId: "maestro:session_1:swarm:task-after-restart",
+				state: PlatformAgentWorkItemStateValue.Running,
+				nextAction: "follow-up progress",
+			}),
+		);
+	});
+
 	it("keeps later progress flowing after a Platform write failure", async () => {
 		const recordStep = vi
 			.fn()
