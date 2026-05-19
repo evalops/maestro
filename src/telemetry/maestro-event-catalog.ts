@@ -13,11 +13,13 @@ export enum MaestroBusEventType {
 	SkillInvoked = "maestro.events.skill.invoked",
 	SkillSucceeded = "maestro.events.skill.succeeded",
 	SkillFailed = "maestro.events.skill.failed",
+	SubagentDispatched = "maestro.events.subagent.dispatched",
 	EvalScored = "maestro.events.eval.scored",
 }
 
 export type MaestroBusEventCategory =
 	| "session"
+	| "agent"
 	| "approval"
 	| "safety"
 	| "tool"
@@ -149,6 +151,12 @@ export const MAESTRO_BUS_EVENT_CATALOG = {
 		"skill",
 		"SkillOutcome",
 		["skills.maestro-skill-events"],
+	),
+	[MaestroBusEventType.SubagentDispatched]: entry(
+		MaestroBusEventType.SubagentDispatched,
+		"agent",
+		"SubagentDispatch",
+		["agents.maestro-subagent-dispatches", "meter.maestro-subagent-dispatches"],
 	),
 	[MaestroBusEventType.EvalScored]: entry(
 		MaestroBusEventType.EvalScored,
