@@ -767,6 +767,36 @@ describe("headless protocol helpers", () => {
 		);
 	});
 
+	it("normalizes snake_case Codex subagent targets in headless events", () => {
+		const state = createHeadlessRuntimeState();
+
+		applyIncomingHeadlessMessage(state, {
+			type: "tool_call",
+			call_id: "collab-snake-1",
+			tool: "codex.subagent.send_input",
+			args: {
+				receiver_thread_ids: ["child-thread-snake"],
+				child_run_ids: ["agent-run-child-snake"],
+				agents_states: {
+					"child-thread-snake": {
+						status: "acknowledged",
+					},
+				},
+			},
+			requires_approval: false,
+		});
+
+		expect(state.codex_subagent_edges).toEqual([
+			{
+				wait_tool_call_id: "collab-snake-1",
+				child_run_id: "agent-run-child-snake",
+				thread_id: "child-thread-snake",
+				operation: "send_input",
+				status: "acknowledged",
+			},
+		]);
+	});
+
 	it("uses Codex subagent completion details when start args omit child targets", () => {
 		const state = createHeadlessRuntimeState();
 
