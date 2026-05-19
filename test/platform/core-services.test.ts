@@ -33,6 +33,11 @@ describe("Platform core service contract names", () => {
 			),
 		).toBe("/agentruntime.v1.AgentRuntimeService/RecordRunStep");
 		expect(
+			platformConnectMethodPath(
+				PLATFORM_CONNECT_METHODS.agentRuntime.recordRunEvent,
+			),
+		).toBe("/agentruntime.v1.AgentRuntimeService/RecordRunEvent");
+		expect(
 			platformConnectMethodPath(PLATFORM_CONNECT_METHODS.agentRuntime.waitRun),
 		).toBe("/agentruntime.v1.AgentRuntimeService/WaitRun");
 		expect(platformConnectServicePath(PLATFORM_CONNECT_SERVICES.prompts)).toBe(

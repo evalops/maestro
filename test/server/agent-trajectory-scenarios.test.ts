@@ -65,6 +65,11 @@ describe("agent trajectory scenarios", () => {
 				status: "fail",
 			}),
 		);
+
+		const junit = scenarioResultToJunit(result);
+		expect(junit).toContain('failures="0"');
+		expect(junit).toContain("Expected failing assertion observed");
+		expect(junit).not.toContain("<failure");
 	});
 
 	it("renders JUnit for CI annotations", () => {
@@ -84,6 +89,48 @@ describe("agent trajectory scenarios", () => {
 				"utf8",
 			),
 		).toContain('"observedOutcome": "pass"');
+	});
+
+	it("carries external transcript and trace refs through Slack contract scenarios", () => {
+		const fixturePath = join(
+			fixturesDir,
+			"slack-contract-progress-outcome.json",
+		);
+		const scenario = loadAgentTrajectoryScenario(fixturePath);
+		const result = runAgentTrajectoryScenarioFile(fixturePath, {
+			baseDir: fixturesDir,
+		});
+
+		expect(scenario.externalRefs?.ensembleTranscriptIds).toContain(
+			"slack-contract-lab/dev/thread-redacted-0007",
+		);
+		expect(result.externalRefs?.platformWorkEnvelopeIds).toContain(
+			"we-slack-contract-dev-0007",
+		);
+		expect(result.assertions).toContainEqual(
+			expect.objectContaining({
+				id: "external-refs-present",
+				status: "pass",
+			}),
+		);
+	});
+
+	it("renders outcome mismatches as JUnit failures", () => {
+		const fixturePath = join(fixturesDir, "local-diagnostic-success.json");
+		const result = runAgentTrajectoryScenarioFile(fixturePath, {
+			baseDir: fixturesDir,
+		});
+		const junit = scenarioResultToJunit({
+			...result,
+			scenario: {
+				...result.scenario,
+				expectedOutcome: "fail",
+			},
+		});
+
+		expect(junit).toContain('name="scenario-outcome"');
+		expect(junit).toContain('failures="1"');
+		expect(junit).toContain("Observed outcome pass; expected fail.");
 	});
 
 	it("rejects unknown assertion kinds during validation", () => {
@@ -140,6 +187,63 @@ describe("agent trajectory scenarios", () => {
 			validateAgentTrajectoryScenario(scenario, "missing-score-diff-inputs"),
 		).toThrow(
 			"missing-score-diff-inputs.assertions[].maxAddedScoreFailures requires baselineScorePath and candidateScorePath",
+		);
+	});
+
+	it("rejects external ref assertions without required ref kinds", () => {
+		const fixturePath = join(fixturesDir, "local-diagnostic-success.json");
+		const scenario = JSON.parse(readFileSync(fixturePath, "utf8"));
+		scenario.externalRefs = {
+			ensembleTranscriptIds: ["slack-contract-lab/dev/thread-redacted-0001"],
+		};
+		scenario.assertions.push({
+			id: "external-refs-present",
+			kind: "external.refs",
+		});
+
+		expect(() =>
+			validateAgentTrajectoryScenario(scenario, "missing-external-ref-kinds"),
+		).toThrow(
+			"missing-external-ref-kinds.assertions[].requiredExternalRefKinds must not be empty for external.refs",
+		);
+	});
+
+	it("rejects unknown external ref assertion kinds", () => {
+		const fixturePath = join(fixturesDir, "local-diagnostic-success.json");
+		const scenario = JSON.parse(readFileSync(fixturePath, "utf8"));
+		scenario.externalRefs = {
+			ensembleTranscriptIds: ["slack-contract-lab/dev/thread-redacted-0001"],
+		};
+		scenario.assertions.push({
+			id: "external-refs-present",
+			kind: "external.refs",
+			requiredExternalRefKinds: ["unknownTraceIds"],
+		});
+
+		expect(() =>
+			validateAgentTrajectoryScenario(scenario, "unknown-external-ref-kind"),
+		).toThrow(
+			"unknown-external-ref-kind.assertions[].requiredExternalRefKinds contains unknown external ref kind(s): unknownTraceIds",
+		);
+	});
+
+	it("rejects malformed required external refs before evaluation", () => {
+		const fixturePath = join(fixturesDir, "local-diagnostic-success.json");
+		const scenario = JSON.parse(readFileSync(fixturePath, "utf8"));
+		scenario.externalRefs = {
+			ensembleTranscriptIds: ["slack-contract-lab/dev/thread-redacted-0001"],
+		};
+		scenario.assertions.push({
+			id: "external-refs-present",
+			kind: "external.refs",
+			requiredExternalRefKinds: ["ensembleTranscriptIds"],
+			requiredExternalRefs: "slack-contract-lab/dev/thread-redacted-0001",
+		});
+
+		expect(() =>
+			validateAgentTrajectoryScenario(scenario, "malformed-external-refs"),
+		).toThrow(
+			"malformed-external-refs.assertions[].requiredExternalRefs must contain non-empty strings for external.refs",
 		);
 	});
 });

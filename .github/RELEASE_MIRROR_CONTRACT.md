@@ -15,6 +15,10 @@ only shared release infrastructure and public runtime surfaces belong here.
   `sync-public-release-mirror` workflow keeps the narrow manifest synchronized
   on push, and can prepare the sanitized public tree in manual `public-tree`
   mode once public-only work has been migrated back into internal.
+- Shared release cadence helpers belong in the manifest when both repos can
+  invoke the same manual release recovery path. Scheduled cadence triggers must
+  guard themselves so only `evalops/maestro-internal` creates weekly release
+  PRs.
 - Use direct public-first changes only for emergency release recovery, then
   backport them to internal before the next mirror sync.
 - Remove a file from the manifest when the repos need intentional divergence.

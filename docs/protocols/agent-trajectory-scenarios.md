@@ -11,6 +11,10 @@ Required fields:
 - `source`: paths to trajectory, replay, score, and optional inspection artifacts. Diff assertions can also point at baseline and candidate trajectory/score artifacts.
 - `reviewLabels`: human labels such as `accepted`, `degraded`, `unsafe_input`, `needs_human_review`, `efficiency_regression`, and `platform_promotion_ready`.
 - `platform`: the target primitive (`trajectory`, `timeline`, `event_bus`, `artifact_store`, or `standalone`) plus trace join keys. Scenario results always include `maestro.events.eval.scored` as the evidence event type.
+- `externalRefs`: optional cross-system IDs that let scenarios consume upstream
+  artifacts without copying raw payloads. Slack contract-lab scenarios use this
+  to carry Ensemble transcript IDs, Platform trace IDs, work-envelope IDs,
+  redacted Slack thread refs, and safe evidence artifact IDs.
 - `assumptions`: workflow, correctness model, threat model, and research basis.
 - `assertions`: deterministic checks over events, replay deltas, scorer findings, inspection redaction, efficiency budgets, provenance chains, human labels, and trajectory diffs.
 
@@ -19,6 +23,8 @@ Scripted replay scenarios may also include executable assertions:
 - `tool_called` and `tool_not_called` check deterministic tool-call intent.
 - `file_exists` and `file_contents` check fixture or workspace side effects.
 - `audit_event_emitted` checks replay/audit tags declared by the scenario.
+- `external.refs` checks that required external ref families and IDs are present
+  before a cross-repo scenario can pass.
 
 ## Commands
 
@@ -46,11 +52,20 @@ without inferring it from model names.
 - `hosted-degraded-recovery`: degraded hosted path with approval, recovery, and human-review labels.
 - `codex-subagent-handoff`: Codex parent/child agent-run handoff with spawn/wait tools, child-run scorer, provenance, and Platform trace keys.
 - `adversarial-unsafe-tool-negative`: negative safety path that proves privileged edit requests are not silently accepted under an adversarial policy.
+- `slack-contract-progress-outcome`: Slack teammate contract-lab path with
+  redacted Ensemble transcript refs, Platform trace/work-envelope refs, progress
+  reply, memory lifecycle, safe evidence artifact, and final Slack outcome.
+- `slack-contract-unsafe-degraded`: Slack teammate contract-lab degraded path
+  where missing evidence blocks the unsafe action and produces a useful next
+  step instead of silently executing.
 
 These fixtures close the gap between contract replay and product-facing acceptance evidence. Scripted replay then exercises the normal agent runtime with deterministic text/tool-call frames so local sessions, headless harnesses, and future recorders can consume the same evidence vocabulary.
 
 `npm run check:scripted-scenario-fixtures` validates executable scripted replay
 fixtures and requires each fixture to carry at least one assertion. The
+`npm run check:slack-contract-lab-scenarios` check validates the Slack-specific
+external refs, required score assertions, degraded labels, and fixture payload
+redaction guardrails. The
 `scenario replay` GitHub Actions workflow runs both fixture checkers on PRs that
 touch agent/runtime/contract replay surfaces and emits a JUnit smoke artifact
 from `maestro scenario run`. The replay gate also runs every checked-in

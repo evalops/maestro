@@ -32,6 +32,26 @@ describe("A2A peer registry", () => {
 			agentCardUrl: "http://mac-mini.ts.net:18787/.well-known/agent-card.json",
 			transportUrl: "http://mac-mini.ts.net:18787",
 			peerId: "mac-mini",
+			skills: [
+				{
+					id: "maestro.subagent.code-review",
+					name: "Maestro code review subagent",
+					description: "Review a delegated patch safely",
+					tags: ["maestro", "review"],
+					requiredContextGrants: ["repo:read"],
+					approvalPolicyRef: "target-maestro-policy",
+					maxAutonomy: "bounded",
+					requiredArtifactKinds: ["review.summary"],
+					allowedTaskClasses: ["code.review"],
+					deniedTaskClasses: ["secret.exfiltration"],
+					attributes: {
+						subagentLaneId: "code-review",
+					},
+					metadata: {
+						requestMetadataPath: "evalops.subagentRequest",
+					},
+				},
+			],
 			now: NOW,
 		});
 
@@ -51,6 +71,26 @@ describe("A2A peer registry", () => {
 					agentCardUrl:
 						"http://mac-mini.ts.net:18787/.well-known/agent-card.json",
 					tokenEnv: "MAC_MINI_A2A_TOKEN",
+					skills: [
+						{
+							id: "maestro.subagent.code-review",
+							name: "Maestro code review subagent",
+							description: "Review a delegated patch safely",
+							tags: ["maestro", "review"],
+							requiredContextGrants: ["repo:read"],
+							approvalPolicyRef: "target-maestro-policy",
+							maxAutonomy: "bounded",
+							requiredArtifactKinds: ["review.summary"],
+							allowedTaskClasses: ["code.review"],
+							deniedTaskClasses: ["secret.exfiltration"],
+							attributes: {
+								subagentLaneId: "code-review",
+							},
+							metadata: {
+								requestMetadataPath: "evalops.subagentRequest",
+							},
+						},
+					],
 					createdAt: NOW.toISOString(),
 					updatedAt: NOW.toISOString(),
 				},

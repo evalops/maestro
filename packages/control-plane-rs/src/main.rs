@@ -3885,6 +3885,54 @@ fn a2a_subagent_skill(
     tags: &[&str],
     lane_id: &str,
 ) -> Value {
+    let (
+        required_context_grants,
+        required_artifact_kinds,
+        optional_artifact_kinds,
+        allowed_task_classes,
+    ) = match lane_id {
+        "code-writer" => (
+            vec!["repo:read", "repo:write-scoped", "tool:execute-tests"],
+            vec!["patch.summary"],
+            vec!["test.report", "review.summary"],
+            vec!["code.implementation", "code.refactor"],
+        ),
+        "code-review" => (
+            vec!["repo:read", "pull-request:read", "evidence:read"],
+            vec!["review.summary"],
+            vec!["risk.finding", "test.plan"],
+            vec!["code.review", "risk.analysis"],
+        ),
+        "test-runner" => (
+            vec!["repo:read", "tool:execute-tests", "evidence:write"],
+            vec!["test.report"],
+            vec!["failure.triage", "coverage.summary"],
+            vec!["test.execution", "ci.triage"],
+        ),
+        "repo-explorer" => (
+            vec!["repo:read", "evidence:write"],
+            vec!["repo.map"],
+            vec!["evidence.index"],
+            vec!["repo.inspect", "context.gathering"],
+        ),
+        "release-shepherd" => (
+            vec![
+                "repo:read",
+                "pull-request:write",
+                "deploy:read",
+                "evidence:write",
+            ],
+            vec!["release.evidence"],
+            vec!["ci.summary", "deploy.status"],
+            vec!["release.follow-through", "deployment.smoke"],
+        ),
+        _ => (
+            vec!["repo:read"],
+            vec!["subagent.summary"],
+            vec!["evidence.index"],
+            vec!["agent.delegation"],
+        ),
+    };
     serde_json::json!({
         "id": id,
         "name": name,
@@ -3892,6 +3940,23 @@ fn a2a_subagent_skill(
         "tags": tags,
         "inputModes": ["text/plain", "application/json"],
         "outputModes": ["text/plain", "application/json"],
+        "requiredContextGrants": required_context_grants,
+        "approvalPolicyRef": format!("maestro.subagent.{lane_id}.target-policy"),
+        "maxAutonomy": "bounded",
+        "requiredArtifactKinds": required_artifact_kinds,
+        "optionalArtifactKinds": optional_artifact_kinds,
+        "allowedTaskClasses": allowed_task_classes,
+        "deniedTaskClasses": [
+            "credential.materialization",
+            "secret.exfiltration",
+            "unbounded.repository.write"
+        ],
+        "attributes": {
+            "evalopsSkillKind": "maestro-subagent",
+            "subagentLaneId": lane_id,
+            "requestMetadataPath": "evalops.subagentRequest",
+            "operatingPlaneExtension": EVALOPS_A2A_EXTENSION_URI
+        },
         "metadata": {
             "evalopsSkillKind": "maestro-subagent",
             "subagentLaneId": lane_id,
@@ -7984,11 +8049,24 @@ fn codex_collab_work_graph_from_jsonl_item(
                 .get(index)
                 .cloned()
                 .unwrap_or_else(|| format!("codex-thread:{thread_id}"));
-            serde_json::json!({
+            let mut child_run = serde_json::json!({
+                "edgeId": codex_collab_edge_id(
+                    item.get("id").and_then(Value::as_str),
+                    &child_run_id,
+                    index,
+                    canonical_tool,
+                ),
+                "targetIndex": index,
                 "threadId": thread_id,
                 "childRunId": child_run_id,
                 "operation": canonical_tool,
-            })
+            });
+            if let Some(status) = codex_collab_child_status_from_jsonl_item(item, thread_id) {
+                if let Some(object) = child_run.as_object_mut() {
+                    object.insert("status".to_string(), Value::String(status));
+                }
+            }
+            child_run
         })
         .collect::<Vec<_>>();
     let sender_thread_id = item.get("sender_thread_id").cloned().unwrap_or(Value::Null);
@@ -8006,7 +8084,28 @@ fn codex_collab_work_graph_from_jsonl_item(
     })
 }
 
-fn codex_bridge_tool_args(tool_name: &str, args: Value) -> Value {
+fn codex_collab_edge_id(
+    tool_call_id: Option<&str>,
+    child_run_id: &str,
+    index: usize,
+    canonical_tool: &str,
+) -> String {
+    format!(
+        "{}:{index}:{canonical_tool}:{child_run_id}",
+        tool_call_id.unwrap_or("unknown-tool-call")
+    )
+}
+
+fn codex_collab_child_status_from_jsonl_item(item: &Value, thread_id: &str) -> Option<String> {
+    let agent_states = item
+        .get("agents_states")
+        .or_else(|| item.get("agentsStates"))?
+        .as_object()?;
+    let agent_state = agent_states.get(thread_id)?.as_object()?;
+    json_string_from_object(agent_state, &["status"])
+}
+
+fn codex_bridge_tool_args(tool_name: &str, args: Value, tool_call_id: Option<&str>) -> Value {
     if !tool_name.starts_with("codex.subagent.") {
         return args;
     }
@@ -8014,6 +8113,19 @@ fn codex_bridge_tool_args(tool_name: &str, args: Value) -> Value {
         Value::Object(object) => object,
         other => return other,
     };
+    if let Some(tool_call_id) = tool_call_id.filter(|id| !id.is_empty()) {
+        let has_tool_call_id = object
+            .get("toolCallId")
+            .or_else(|| object.get("tool_call_id"))
+            .and_then(Value::as_str)
+            .is_some_and(|id| !id.is_empty());
+        if !has_tool_call_id {
+            object.insert(
+                "toolCallId".to_string(),
+                Value::String(tool_call_id.to_string()),
+            );
+        }
+    }
     let canonical_tool = object
         .get("codexTool")
         .and_then(Value::as_str)
@@ -8115,11 +8227,24 @@ fn codex_collab_work_graph_from_args_object(tool_name: &str, object: &Map<String
                 .get(index)
                 .cloned()
                 .unwrap_or_else(|| format!("codex-thread:{thread_id}"));
-            serde_json::json!({
+            let mut child_run = serde_json::json!({
+                "edgeId": codex_collab_edge_id(
+                    object.get("toolCallId").and_then(Value::as_str),
+                    &child_run_id,
+                    index,
+                    &canonical_tool,
+                ),
+                "targetIndex": index,
                 "threadId": thread_id,
                 "childRunId": child_run_id,
                 "operation": canonical_tool,
-            })
+            });
+            if let Some(status) = codex_collab_child_status_from_args_object(object, thread_id) {
+                if let Some(object) = child_run.as_object_mut() {
+                    object.insert("status".to_string(), Value::String(status));
+                }
+            }
+            child_run
         })
         .collect::<Vec<_>>();
     serde_json::json!({
@@ -8134,6 +8259,26 @@ fn codex_collab_work_graph_from_args_object(tool_name: &str, object: &Map<String
         },
         "childRuns": child_runs,
     })
+}
+
+fn codex_collab_child_status_from_args_object(
+    object: &Map<String, Value>,
+    thread_id: &str,
+) -> Option<String> {
+    let agent_states = object
+        .get("agentsStates")
+        .or_else(|| object.get("agents_states"))?
+        .as_object()?;
+    let agent_state = agent_states.get(thread_id)?.as_object()?;
+    json_string_from_object(agent_state, &["status"])
+}
+
+fn json_string_from_object(object: &Map<String, Value>, keys: &[&str]) -> Option<String> {
+    keys.iter()
+        .find_map(|key| object.get(*key).and_then(Value::as_str))
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
 }
 
 fn codex_canonical_collab_tool(tool: &str) -> String {
@@ -8161,7 +8306,7 @@ fn codex_bridge_tool_start_event(
     tool_name: &str,
     args: Value,
 ) -> CodexBridgeToolEvent {
-    let args = codex_bridge_tool_args(tool_name, args);
+    let args = codex_bridge_tool_args(tool_name, args, Some(tool_call_id));
     CodexBridgeToolEvent {
         event_type: "tool_execution_start",
         tool_call_id: tool_call_id.to_string(),
@@ -11385,10 +11530,23 @@ mod tests {
             output.tool_events[0].args["codexWorkGraph"]["childRuns"][0]["childRunId"],
             "codex-thread:thread-child"
         );
+        assert_eq!(
+            output.tool_events[0].args["codexWorkGraph"]["childRuns"][0]["edgeId"],
+            "collab-call-1:0:spawnAgent:codex-thread:thread-child"
+        );
+        assert_eq!(
+            output.tool_events[0].args["codexWorkGraph"]["childRuns"][0]["targetIndex"],
+            serde_json::json!(0)
+        );
+        assert!(output.tool_events[0].args["codexWorkGraph"]["childRuns"][0]["status"].is_null());
         assert_eq!(output.tool_events[1].event_type, "tool_execution_end");
         assert_eq!(output.tool_events[1].is_error, Some(false));
         assert_eq!(
             output.tool_events[1].result["details"]["codexWorkGraph"]["status"],
+            "completed"
+        );
+        assert_eq!(
+            output.tool_events[1].result["details"]["codexWorkGraph"]["childRuns"][0]["status"],
             "completed"
         );
         assert_eq!(
@@ -11475,6 +11633,14 @@ mod tests {
             output.tool_events[0].args["codexWorkGraph"]["childRuns"][0]["childRunId"],
             "codex-thread:thread-child"
         );
+        assert_eq!(
+            output.tool_events[0].args["codexWorkGraph"]["toolCallId"],
+            "collab-call-2"
+        );
+        assert_eq!(
+            output.tool_events[0].args["codexWorkGraph"]["childRuns"][0]["edgeId"],
+            "collab-call-2:0:wait:codex-thread:thread-child"
+        );
         assert_eq!(output.tool_events[1].is_error, Some(false));
         assert_eq!(
             output.tool_events[1].result["content"][0]["text"],
@@ -11529,6 +11695,12 @@ mod tests {
         assert_eq!(start.event_type, "tool_execution_start");
         assert_eq!(start.tool_name, "codex.subagent.sendInput");
         assert_eq!(start.args["prompt"], "Please continue");
+        assert_eq!(start.args["toolCallId"], "collab-call-3");
+        assert_eq!(start.args["codexWorkGraph"]["toolCallId"], "collab-call-3");
+        assert_eq!(
+            start.args["codexWorkGraph"]["childRuns"][0]["edgeId"],
+            "collab-call-3:0:sendInput:codex-thread:thread-child"
+        );
         assert_eq!(end.event_type, "tool_execution_end");
         assert_eq!(end.tool_call_id, "collab-call-3");
         assert_eq!(end.is_error, Some(true));
@@ -12977,6 +13149,39 @@ setTimeout(() => {
         assert_eq!(
             code_review_skill["metadata"]["requestMetadataPath"],
             "evalops.subagentRequest"
+        );
+        assert_eq!(
+            code_review_skill["attributes"]["subagentLaneId"],
+            "code-review"
+        );
+        assert_eq!(
+            code_review_skill["attributes"]["requestMetadataPath"],
+            "evalops.subagentRequest"
+        );
+        assert_eq!(
+            code_review_skill["requiredContextGrants"],
+            serde_json::json!(["repo:read", "pull-request:read", "evidence:read"])
+        );
+        assert_eq!(
+            code_review_skill["approvalPolicyRef"],
+            "maestro.subagent.code-review.target-policy"
+        );
+        assert_eq!(code_review_skill["maxAutonomy"], "bounded");
+        assert_eq!(
+            code_review_skill["requiredArtifactKinds"],
+            serde_json::json!(["review.summary"])
+        );
+        assert_eq!(
+            code_review_skill["allowedTaskClasses"],
+            serde_json::json!(["code.review", "risk.analysis"])
+        );
+        assert_eq!(
+            code_review_skill["deniedTaskClasses"],
+            serde_json::json!([
+                "credential.materialization",
+                "secret.exfiltration",
+                "unbounded.repository.write"
+            ])
         );
         if let Some(previous_a2a_url) = previous_a2a_url {
             env::set_var("MAESTRO_A2A_PUBLIC_URL", previous_a2a_url);

@@ -62,6 +62,66 @@ describe("A2A CLI command helpers", () => {
 		expect(parsed.flags.get("--timeout-ms")).toBe("1000");
 	});
 
+	it("parses Platform-discovered delegate flags without swallowing task text", () => {
+		const parsed = parseA2AArgs([
+			"delegate",
+			"--discover",
+			"--skill",
+			"maestro.subagent.code-review",
+			"--capability",
+			"code:review",
+			"--workspace-id",
+			"ws_1",
+			"--prefer-internal",
+			"review",
+			"the",
+			"patch",
+			"--wait",
+		]);
+
+		expect(parsed.positionals).toEqual(["delegate", "review", "the", "patch"]);
+		expect(parsed.flags.get("--discover")).toBe(true);
+		expect(parsed.flags.get("--skill")).toBe("maestro.subagent.code-review");
+		expect(parsed.flags.get("--capability")).toBe("code:review");
+		expect(parsed.flags.get("--workspace-id")).toBe("ws_1");
+		expect(parsed.flags.get("--prefer-internal")).toBe(true);
+		expect(parsed.flags.get("--wait")).toBe(true);
+	});
+
+	it("parses Platform-backed peer discovery flags", () => {
+		const parsed = parseA2AArgs([
+			"discover",
+			"--capability",
+			"code:review",
+			"--skill",
+			"maestro.subagent.code-review",
+			"--status",
+			"AGENT_STATUS_ONLINE",
+			"--workspace-id",
+			"ws_1",
+			"--limit",
+			"25",
+			"--offset",
+			"0",
+			"--import",
+			"--default",
+			"--prefer-internal",
+			"--json",
+		]);
+
+		expect(parsed.positionals).toEqual(["discover"]);
+		expect(parsed.flags.get("--capability")).toBe("code:review");
+		expect(parsed.flags.get("--skill")).toBe("maestro.subagent.code-review");
+		expect(parsed.flags.get("--status")).toBe("AGENT_STATUS_ONLINE");
+		expect(parsed.flags.get("--workspace-id")).toBe("ws_1");
+		expect(parsed.flags.get("--limit")).toBe("25");
+		expect(parsed.flags.get("--offset")).toBe("0");
+		expect(parsed.flags.get("--import")).toBe(true);
+		expect(parsed.flags.get("--default")).toBe(true);
+		expect(parsed.flags.get("--prefer-internal")).toBe(true);
+		expect(parsed.flags.get("--json")).toBe(true);
+	});
+
 	it("parses direct task output work graph flags", () => {
 		const reply = parseA2AArgs([
 			"reply",

@@ -9,11 +9,14 @@ import {
 	PlatformAgentRunStepKindValue,
 	PlatformAgentRunStepStateValue,
 	PlatformAgentRunWaitTypeValue,
+	type PlatformAgentRuntimeRecordRunEventInput,
 	type PlatformAgentWorkItem,
 	PlatformAgentWorkItemKindValue,
 	PlatformAgentWorkItemStateValue,
+	PlatformRuntimeEventTypeValue,
 	completeAgentRuntimeRun,
 	failAgentRuntimeRun,
+	recordAgentRuntimeRunEvent,
 	recordAgentRuntimeRunStep,
 	recordAgentRuntimeRunWorkItem,
 	resumeAgentRuntimeRun,
@@ -67,6 +70,7 @@ type ProgressOperation = () => Promise<unknown>;
 
 export interface HostedAgentRuntimeProgressRecorderOperations {
 	recordStep?: typeof recordAgentRuntimeRunStep;
+	recordEvent?: typeof recordAgentRuntimeRunEvent;
 	recordWorkItem?: typeof recordAgentRuntimeRunWorkItem;
 	updateWorkItem?: typeof updateAgentRuntimeRunWorkItem;
 	waitRun?: typeof waitAgentRuntimeRun;
@@ -96,6 +100,18 @@ export interface HostedAgentRuntimeFailInput {
 	reason?: string;
 	requestedBy?: string;
 	retryable?: boolean;
+	manifestPath?: string;
+	flushStatus?: string;
+}
+
+export interface HostedAgentRuntimeDrainInput {
+	status: "drained" | "interrupted" | string;
+	reason?: string;
+	requestedBy?: string;
+	flushStatus?: string;
+	manifestPath?: string;
+	platformEvidence?: unknown;
+	errorMessage?: string;
 }
 
 function safeIdPart(value: string): string {
@@ -510,6 +526,8 @@ export class HostedAgentRuntimeProgressRecorder {
 		this.workspaceRoot = options.workspaceRoot;
 		this.operations = {
 			recordStep: options.operations?.recordStep ?? recordAgentRuntimeRunStep,
+			recordEvent:
+				options.operations?.recordEvent ?? recordAgentRuntimeRunEvent,
 			recordWorkItem:
 				options.operations?.recordWorkItem ?? recordAgentRuntimeRunWorkItem,
 			updateWorkItem:
@@ -743,6 +761,8 @@ export class HostedAgentRuntimeProgressRecorder {
 				event_type: "hosted_runner_drain_failed",
 				reason: input.reason,
 				requested_by: input.requestedBy,
+				flush_status: input.flushStatus,
+				manifest_path: input.manifestPath,
 			}),
 		});
 		this.enqueue(async () => {
@@ -758,6 +778,30 @@ export class HostedAgentRuntimeProgressRecorder {
 			});
 		});
 		await this.flush();
+	}
+
+	async recordHostedRunnerDrain(
+		input: HostedAgentRuntimeDrainInput,
+	): Promise<void> {
+		this.recordDrainManifestEvent(input);
+		if (input.status === "drained") {
+			await this.completeRun({
+				reason: input.reason,
+				requestedBy: input.requestedBy,
+				flushStatus: input.flushStatus,
+				manifestPath: input.manifestPath,
+			});
+			return;
+		}
+		await this.failRun({
+			errorMessage:
+				input.errorMessage ?? "Hosted runner drain did not complete cleanly",
+			reason: input.reason,
+			requestedBy: input.requestedBy,
+			retryable: false,
+			flushStatus: input.flushStatus,
+			manifestPath: input.manifestPath,
+		});
 	}
 
 	private recordApprovalWait(input: {
@@ -859,6 +903,41 @@ export class HostedAgentRuntimeProgressRecorder {
 				runId: handles.runId,
 				leaseToken: handles.leaseToken,
 				step,
+			});
+		});
+	}
+
+	private recordDrainManifestEvent(input: HostedAgentRuntimeDrainInput): void {
+		this.recordEvent({
+			type: PlatformRuntimeEventTypeValue.AgentProgressRecorded,
+			message:
+				input.status === "drained"
+					? "hosted runner drain manifest recorded"
+					: "hosted runner interrupted drain manifest recorded",
+			attributes: this.basePayload({
+				event_type: "hosted_runner_drain_manifest_recorded",
+				status: input.status,
+				flush_status: input.flushStatus,
+				reason: input.reason,
+				requested_by: input.requestedBy,
+				manifest_path: input.manifestPath,
+				error: input.errorMessage,
+				platform_evidence: input.platformEvidence,
+			}),
+		});
+	}
+
+	private recordEvent(
+		event: Omit<PlatformAgentRuntimeRecordRunEventInput, "runId">,
+	): void {
+		this.enqueue(async () => {
+			const runId = nonEmptyString(this.hostedRunner?.agentRunId);
+			if (!this.hostedRunner?.enabled || !runId) {
+				return;
+			}
+			await this.operations.recordEvent({
+				runId,
+				...event,
 			});
 		});
 	}

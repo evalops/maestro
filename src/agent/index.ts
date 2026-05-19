@@ -99,12 +99,17 @@ export {
 	getModelForMode,
 	getModelForTier,
 	parseMode,
+	resolveSubagentDispatch,
 	setCurrentMode,
 	suggestMode,
 	type AgentMode,
+	type DispatchSource,
 	type ModeConfig,
 	type ModelMapping,
+	type ModelProvider,
 	type ModelTier,
+	type ResolvedSubagentDispatch,
+	type SubagentDispatch,
 } from "./modes.js";
 export {
 	ContextHandoffManager,

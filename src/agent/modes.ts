@@ -47,6 +47,7 @@
 
 import { recordStagedRolloutSurfaceUsage } from "../telemetry.js";
 import { createLogger } from "../utils/logger.js";
+import type { SubagentType } from "./subagent-specs.js";
 
 // Logger scoped to agent modes for debugging mode transitions
 const logger = createLogger("agent:modes");
@@ -77,6 +78,47 @@ export type AgentMode =
  */
 export type ModelTier = "opus" | "sonnet" | "haiku";
 
+/** Supported model providers for tier and subagent dispatch. */
+export type ModelProvider = "anthropic" | "openai" | "openai-codex" | "google";
+
+/** Reasoning budget hint passed to subagents that support it. */
+export type ReasoningEffort = "low" | "medium" | "high" | "xhigh";
+
+/** Where the resolved subagent dispatch came from. */
+export type DispatchSource = "mode" | "fallback";
+
+/**
+ * Per-subagent model routing override.
+ *
+ * `model` can be a logical model tier (`opus`, `sonnet`, `haiku`) or an
+ * explicit model ID. Explicit model IDs may be provider-prefixed, for example
+ * `openai-codex/gpt-5.5`.
+ */
+export interface SubagentDispatch {
+	model: ModelTier | string;
+	provider?: ModelProvider;
+	reasoningEffort?: ReasoningEffort;
+	maxTokens?: number;
+	temperature?: number;
+	timeoutMs?: number;
+	promptTemplate?: string;
+}
+
+/** Fully resolved model routing for one subagent invocation. */
+export interface ResolvedSubagentDispatch {
+	mode: AgentMode;
+	type: SubagentType;
+	provider: ModelProvider;
+	model: string;
+	modelTier?: ModelTier;
+	reasoningEffort: ReasoningEffort;
+	maxTokens?: number;
+	temperature?: number;
+	timeoutMs?: number;
+	promptTemplate?: string;
+	source: DispatchSource;
+}
+
 /**
  * Mode configuration that determines model selection and behavior.
  *
@@ -97,6 +139,8 @@ export interface ModeConfig {
 	fallbackTier: ModelTier;
 	/** Whether to enable thinking/reasoning */
 	enableThinking: boolean;
+	/** Default reasoning effort for mode-level and fallback subagent routing. */
+	reasoningEffort?: ReasoningEffort;
 	/** Maximum thinking budget (tokens) */
 	thinkingBudget: number;
 	/** Whether to use extended context */
@@ -109,6 +153,8 @@ export interface ModeConfig {
 	speedHint: number;
 	/** Whether this mode is shown in default user-facing mode lists. */
 	visible: boolean;
+	/** Optional dispatch table for mode-specific subagent routing. */
+	subagents?: Partial<Record<SubagentType, SubagentDispatch>>;
 	/** Owner responsible for promotion or removal when hidden. */
 	rolloutOwner?: string;
 }
@@ -119,8 +165,16 @@ export interface ModeConfig {
 export interface ModelMapping {
 	anthropic: string;
 	openai?: string;
+	"openai-codex"?: string;
 	google?: string;
 }
+
+const PROVIDERS: ModelProvider[] = [
+	"anthropic",
+	"openai",
+	"openai-codex",
+	"google",
+];
 
 /**
  * Default mode configurations defining the behavior of each agent mode.
@@ -142,12 +196,21 @@ export const MODE_CONFIGS: Record<AgentMode, ModeConfig> = {
 		primaryTier: "opus",
 		fallbackTier: "sonnet",
 		enableThinking: true,
+		reasoningEffort: "medium",
 		thinkingBudget: 16000,
 		useExtendedContext: true,
 		maxRetries: 3,
 		costMultiplier: 1.0,
 		speedHint: 5,
 		visible: true,
+		subagents: {
+			explorer: { model: "haiku", reasoningEffort: "low" },
+			planner: { model: "opus", reasoningEffort: "high" },
+			coder: { model: "openai-codex/gpt-5.5", reasoningEffort: "medium" },
+			reviewer: { model: "sonnet", reasoningEffort: "medium" },
+			researcher: { model: "sonnet", reasoningEffort: "medium" },
+			minimal: { model: "haiku", reasoningEffort: "low" },
+		},
 	},
 	// Rush mode: Speed-optimized for quick iterations
 	rush: {
@@ -156,12 +219,21 @@ export const MODE_CONFIGS: Record<AgentMode, ModeConfig> = {
 		primaryTier: "sonnet",
 		fallbackTier: "haiku",
 		enableThinking: false,
+		reasoningEffort: "low",
 		thinkingBudget: 4000,
 		useExtendedContext: false,
 		maxRetries: 2,
 		costMultiplier: 0.5,
 		speedHint: 8,
 		visible: true,
+		subagents: {
+			explorer: { model: "haiku", reasoningEffort: "low" },
+			planner: { model: "sonnet", reasoningEffort: "low" },
+			coder: { model: "sonnet", reasoningEffort: "low" },
+			reviewer: { model: "haiku", reasoningEffort: "low" },
+			researcher: { model: "haiku", reasoningEffort: "low" },
+			minimal: { model: "haiku", reasoningEffort: "low" },
+		},
 	},
 	// Free mode: Cost-optimized for simple tasks
 	free: {
@@ -170,12 +242,21 @@ export const MODE_CONFIGS: Record<AgentMode, ModeConfig> = {
 		primaryTier: "haiku",
 		fallbackTier: "haiku",
 		enableThinking: false,
+		reasoningEffort: "low",
 		thinkingBudget: 2000,
 		useExtendedContext: false,
 		maxRetries: 1,
 		costMultiplier: 0.1,
 		speedHint: 10,
 		visible: true,
+		subagents: {
+			explorer: { model: "haiku", reasoningEffort: "low" },
+			planner: { model: "haiku", reasoningEffort: "low" },
+			coder: { model: "haiku", reasoningEffort: "low" },
+			reviewer: { model: "haiku", reasoningEffort: "low" },
+			researcher: { model: "haiku", reasoningEffort: "low" },
+			minimal: { model: "haiku", reasoningEffort: "low" },
+		},
 	},
 	// Custom mode: User-configurable defaults (can be overridden at runtime)
 	custom: {
@@ -184,6 +265,7 @@ export const MODE_CONFIGS: Record<AgentMode, ModeConfig> = {
 		primaryTier: "sonnet",
 		fallbackTier: "haiku",
 		enableThinking: true,
+		reasoningEffort: "medium",
 		thinkingBudget: 8000,
 		useExtendedContext: true,
 		maxRetries: 2,
@@ -197,12 +279,21 @@ export const MODE_CONFIGS: Record<AgentMode, ModeConfig> = {
 		primaryTier: "opus",
 		fallbackTier: "sonnet",
 		enableThinking: true,
+		reasoningEffort: "high",
 		thinkingBudget: 20000,
 		useExtendedContext: true,
 		maxRetries: 3,
 		costMultiplier: 1.25,
 		speedHint: 4,
 		visible: false,
+		subagents: {
+			explorer: { model: "sonnet", reasoningEffort: "medium" },
+			planner: { model: "opus", reasoningEffort: "xhigh" },
+			coder: { model: "openai-codex/gpt-5.5", reasoningEffort: "high" },
+			reviewer: { model: "openai-codex/gpt-5.5", reasoningEffort: "medium" },
+			researcher: { model: "sonnet", reasoningEffort: "medium" },
+			minimal: { model: "haiku", reasoningEffort: "low" },
+		},
 		rolloutOwner: "agent-runtime",
 	},
 	replay: {
@@ -211,12 +302,21 @@ export const MODE_CONFIGS: Record<AgentMode, ModeConfig> = {
 		primaryTier: "haiku",
 		fallbackTier: "haiku",
 		enableThinking: false,
+		reasoningEffort: "low",
 		thinkingBudget: 0,
 		useExtendedContext: false,
 		maxRetries: 0,
 		costMultiplier: 0,
 		speedHint: 10,
 		visible: false,
+		subagents: {
+			explorer: { model: "haiku", reasoningEffort: "low" },
+			planner: { model: "haiku", reasoningEffort: "low" },
+			coder: { model: "haiku", reasoningEffort: "low" },
+			reviewer: { model: "haiku", reasoningEffort: "low" },
+			researcher: { model: "haiku", reasoningEffort: "low" },
+			minimal: { model: "haiku", reasoningEffort: "low" },
+		},
 		rolloutOwner: "agent-evals",
 	},
 };
@@ -236,18 +336,21 @@ export const MODEL_BY_TIER: Record<ModelTier, ModelMapping> = {
 	opus: {
 		anthropic: "claude-opus-4-6",
 		openai: "gpt-5.2",
+		"openai-codex": "gpt-5.5",
 		google: "gemini-2.0-flash-thinking-exp",
 	},
 	// Sonnet tier: Balanced performance models for general use
 	sonnet: {
 		anthropic: "claude-sonnet-4-5-20250929",
 		openai: "gpt-4o",
+		"openai-codex": "gpt-5.4",
 		google: "gemini-2.0-flash-exp",
 	},
 	// Haiku tier: Fast, efficient models for simple tasks
 	haiku: {
 		anthropic: "claude-haiku-4-5-20251001",
 		openai: "gpt-4o-mini",
+		"openai-codex": "gpt-5.4-mini",
 		google: "gemini-2.0-flash-lite-exp",
 	},
 };
@@ -264,11 +367,91 @@ export const MODEL_BY_TIER: Record<ModelTier, ModelMapping> = {
  */
 export function getModelForTier(
 	tier: ModelTier,
-	provider: "anthropic" | "openai" | "google" = "anthropic",
+	provider: ModelProvider = "anthropic",
 ): string {
 	const mapping = MODEL_BY_TIER[tier];
 	// Fall back to Anthropic if provider doesn't have a mapping
 	return mapping[provider] ?? mapping.anthropic;
+}
+
+function isModelTier(model: string): model is ModelTier {
+	return model in MODEL_BY_TIER;
+}
+
+function isModelProvider(provider: string): provider is ModelProvider {
+	return PROVIDERS.includes(provider as ModelProvider);
+}
+
+function splitExplicitModel(model: string): {
+	provider?: ModelProvider;
+	model: string;
+} {
+	const slashIndex = model.indexOf("/");
+	if (slashIndex <= 0) {
+		return { model };
+	}
+
+	const provider = model.slice(0, slashIndex);
+	if (!isModelProvider(provider)) {
+		return { model };
+	}
+
+	return {
+		provider,
+		model: model.slice(slashIndex + 1),
+	};
+}
+
+function defaultReasoningEffort(config: ModeConfig): ReasoningEffort {
+	return config.reasoningEffort ?? (config.enableThinking ? "medium" : "low");
+}
+
+/**
+ * Resolve the concrete model/provider a subagent should use in a mode.
+ */
+export function resolveSubagentDispatch(
+	mode: AgentMode,
+	type: SubagentType,
+	provider: ModelProvider = "anthropic",
+): ResolvedSubagentDispatch {
+	const config = getModeConfig(mode);
+	const dispatch = config.subagents?.[type];
+	const source: DispatchSource = dispatch ? "mode" : "fallback";
+	const requestedModel = dispatch?.model ?? config.primaryTier;
+	const reasoningEffort =
+		dispatch?.reasoningEffort ?? defaultReasoningEffort(config);
+
+	if (isModelTier(requestedModel)) {
+		const resolvedProvider = dispatch?.provider ?? provider;
+		return {
+			mode,
+			type,
+			provider: resolvedProvider,
+			model: getModelForTier(requestedModel, resolvedProvider),
+			modelTier: requestedModel,
+			reasoningEffort,
+			maxTokens: dispatch?.maxTokens,
+			temperature: dispatch?.temperature,
+			timeoutMs: dispatch?.timeoutMs,
+			promptTemplate: dispatch?.promptTemplate,
+			source,
+		};
+	}
+
+	const explicit = splitExplicitModel(requestedModel);
+	const resolvedProvider = dispatch?.provider ?? explicit.provider ?? provider;
+	return {
+		mode,
+		type,
+		provider: resolvedProvider,
+		model: explicit.model,
+		reasoningEffort,
+		maxTokens: dispatch?.maxTokens,
+		temperature: dispatch?.temperature,
+		timeoutMs: dispatch?.timeoutMs,
+		promptTemplate: dispatch?.promptTemplate,
+		source,
+	};
 }
 
 /**
@@ -283,7 +466,7 @@ export function getModeConfig(mode: AgentMode): ModeConfig {
  */
 export function getModelForMode(
 	mode: AgentMode,
-	provider: "anthropic" | "openai" | "google" = "anthropic",
+	provider: ModelProvider = "anthropic",
 ): string {
 	const config = getModeConfig(mode);
 	return getModelForTier(config.primaryTier, provider);

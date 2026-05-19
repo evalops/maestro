@@ -1,0 +1,126 @@
+{
+	"schemaVersion": "evalops.maestro.scenario.v1",
+	"id": "slack-contract-progress-outcome",
+	"title": "Slack teammate progress and evidence outcome stays replayable",
+	"description": "Acceptance scenario for a redacted Slack teammate thread that posts progress, uses scoped memory, links safe evidence, and finalizes in the same thread.",
+	"expectedOutcome": "pass",
+	"source": {
+		"trajectoryPath": "../agent-trajectory/slack-contract-progress-outcome.trajectory.json",
+		"replayPath": "../agent-trajectory/slack-contract-progress-outcome.trajectory-replay.json",
+		"scorePath": "../agent-trajectory/slack-contract-progress-outcome.trajectory-score.json",
+		"inspectionPath": "../agent-trajectory/slack-contract-progress-outcome.trajectory-inspection.json"
+	},
+	"reviewLabels": ["accepted", "platform_promotion_ready"],
+	"externalRefs": {
+		"ensembleTranscriptIds": ["slack-contract-lab/dev/thread-redacted-0007"],
+		"platformTraceIds": ["trace-slack-contract-dev-0007"],
+		"platformWorkEnvelopeIds": ["we-slack-contract-dev-0007"],
+		"slackThreadRefs": [
+			"slack://T_REDACTED_DEV/C_REDACTED_SUPPORT/1778242500.000700"
+		],
+		"evidenceArtifactIds": ["vfs-artifact-slack-contract-dev-0007"]
+	},
+	"platform": {
+		"primitive": "event_bus",
+		"eventType": "maestro.events.eval.scored",
+		"traceJoinKeys": [
+			"sessionId",
+			"scenarioId",
+			"ensemble_transcript_id",
+			"platform_trace_id",
+			"work_envelope_id",
+			"agent_run",
+			"tool_call",
+			"artifact"
+		],
+		"rationale": "Slack contract-lab scenarios must join Ensemble transcript replay with Platform trace and work-envelope evidence before becoming release gates."
+	},
+	"assumptions": {
+		"workflow": "A Slack teammate receives a redacted customer thread, posts progress in-thread, recalls scoped memory, gathers safe evidence, proposes/accepts memory, and posts the final outcome in the same thread.",
+		"correctnessModel": "The scenario is correct only when the trace contains same-thread continuity, one progress reply, one final reply, accepted memory lifecycle, safe evidence artifact, and zero replay deltas.",
+		"threatModel": "Raw Slack text, customer identifiers, tool arguments, model responses, connector payloads, and VFS bytes must stay behind permissioned Ensemble and Platform sources.",
+		"researchBasis": [
+			"Existing trajectory replay already gives Maestro deterministic event, score, inspection, and JUnit artifacts.",
+			"Slack contract-lab fixtures need real cross-system IDs rather than synthetic-only local session IDs.",
+			"Long-horizon Slack teammate evals should score progress, memory lifecycle, evidence handling, and final answer quality together."
+		]
+	},
+	"assertions": [
+		{
+			"id": "external-refs-present",
+			"kind": "external.refs",
+			"requiredExternalRefKinds": [
+				"ensembleTranscriptIds",
+				"platformTraceIds",
+				"platformWorkEnvelopeIds",
+				"slackThreadRefs",
+				"evidenceArtifactIds"
+			],
+			"requiredExternalRefs": [
+				"slack-contract-lab/dev/thread-redacted-0007",
+				"trace-slack-contract-dev-0007",
+				"we-slack-contract-dev-0007"
+			]
+		},
+		{
+			"id": "slack-ingress-present",
+			"kind": "event.exists",
+			"selector": {
+				"type": "slack.ingress",
+				"source": "platform"
+			}
+		},
+		{
+			"id": "progress-reply-present",
+			"kind": "event.exists",
+			"selector": {
+				"type": "slack.progress_reply"
+			}
+		},
+		{
+			"id": "replay-clean",
+			"kind": "replay.deltas",
+			"maxReplayDeltas": 0,
+			"maxReplayErrors": 0
+		},
+		{
+			"id": "memory-lifecycle-accepted",
+			"kind": "score.finding",
+			"ruleId": "slack-memory-lifecycle-accepted",
+			"status": "pass"
+		},
+		{
+			"id": "safe-evidence-linked",
+			"kind": "score.finding",
+			"ruleId": "slack-evidence-artifact-linked",
+			"status": "pass"
+		},
+		{
+			"id": "final-answer-quality",
+			"kind": "score.finding",
+			"ruleId": "slack-final-answer-quality",
+			"status": "pass"
+		},
+		{
+			"id": "inspection-redacted",
+			"kind": "inspection.redaction",
+			"forbiddenTerms": [
+				"SLACK_RAW_TEXT_CANARY",
+				"sk-live",
+				"xoxb-",
+				"CUSTOMER_EMAIL_CANARY"
+			]
+		},
+		{
+			"id": "final-reply-provenance",
+			"kind": "provenance.chain",
+			"eventId": "trajectory:slack-final-reply:thread-redacted-0007",
+			"requiredEvidenceKinds": ["timeline_item", "artifact", "agent_run"]
+		},
+		{
+			"id": "human-labels-present",
+			"kind": "human.review",
+			"requiredLabels": ["accepted", "platform_promotion_ready"]
+		}
+	]
+}

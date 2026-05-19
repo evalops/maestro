@@ -815,6 +815,46 @@ describe("headless protocol helpers", () => {
 		);
 	});
 
+	it("preserves Codex subagent child target status from work graph edges", () => {
+		const state = createHeadlessRuntimeState();
+
+		applyIncomingHeadlessMessage(state, {
+			type: "tool_call",
+			call_id: "collab-spawn-status",
+			tool: "codex.subagent.spawnAgent",
+			args: {
+				codexWorkGraph: {
+					schemaVersion: "evalops.maestro.codex.subagent-workgraph.v1",
+					childRuns: [
+						{
+							edgeId: "collab-spawn-status:0:spawnAgent:agent-run-child-status",
+							targetIndex: 0,
+							threadId: "child-thread-status",
+							childRunId: "agent-run-child-status",
+							operation: "spawnAgent",
+							status: "running",
+						},
+					],
+				},
+				prompt: "Sensitive child task prompt",
+			},
+			requires_approval: false,
+		});
+
+		expect(state.codex_subagent_edges).toEqual([
+			{
+				spawn_tool_call_id: "collab-spawn-status",
+				child_run_id: "agent-run-child-status",
+				thread_id: "child-thread-status",
+				operation: "spawn_agent",
+				status: "running",
+			},
+		]);
+		expect(JSON.stringify(state.codex_subagent_edges)).not.toContain(
+			"Sensitive child task prompt",
+		);
+	});
+
 	it("keeps durable Codex subagent edges across runtime reset messages", () => {
 		const state = createHeadlessRuntimeState();
 		const edge = {

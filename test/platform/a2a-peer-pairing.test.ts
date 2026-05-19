@@ -37,6 +37,23 @@ function agentCard(): A2AAgentCard {
 				name: "Maestro Codex",
 				description: "Collaborate on code",
 				tags: ["maestro", "codex", "a2a"],
+				inputModes: ["text/plain", "application/json"],
+				outputModes: ["text/plain", "application/json"],
+				requiredContextGrants: ["repo:read", "evidence:read"],
+				approvalPolicyRef: "maestro.subagent.code-review.target-policy",
+				maxAutonomy: "bounded",
+				requiredArtifactKinds: ["review.summary"],
+				optionalArtifactKinds: ["risk.finding"],
+				allowedTaskClasses: ["code.review"],
+				deniedTaskClasses: ["secret.exfiltration"],
+				attributes: {
+					subagentLaneId: "code-review",
+					requestMetadataPath: "evalops.subagentRequest",
+				},
+				metadata: {
+					evalopsSkillKind: "maestro-subagent",
+					resultPolicy: "summary-and-artifacts",
+				},
 			},
 		],
 	};
@@ -68,9 +85,101 @@ describe("A2A peer pairing codes", () => {
 				{
 					id: "maestro-codex",
 					name: "Maestro Codex",
+					description: "Collaborate on code",
 					tags: ["maestro", "codex", "a2a"],
+					requiredContextGrants: ["repo:read", "evidence:read"],
+					approvalPolicyRef: "maestro.subagent.code-review.target-policy",
+					maxAutonomy: "bounded",
+					requiredArtifactKinds: ["review.summary"],
+					optionalArtifactKinds: ["risk.finding"],
+					allowedTaskClasses: ["code.review"],
+					deniedTaskClasses: ["secret.exfiltration"],
+					attributes: {
+						subagentLaneId: "code-review",
+						requestMetadataPath: "evalops.subagentRequest",
+					},
+					metadata: {
+						evalopsSkillKind: "maestro-subagent",
+						resultPolicy: "summary-and-artifacts",
+					},
 				},
 			],
+		});
+	});
+
+	it("compacts oversized skill descriptors when encoding pairing codes", () => {
+		const baseCard = agentCard();
+		const baseSkill = baseCard.skills[0]!;
+		const richCard: A2AAgentCard = {
+			...baseCard,
+			skills: Array.from({ length: 8 }, (_, index) => ({
+				...baseSkill,
+				id: `maestro.subagent.rich-${index}`,
+				name: `Maestro rich subagent ${index}`,
+				description: `Long policy descriptor ${index}: ${"x".repeat(900)}`,
+				examples: [
+					`Inspect the full repository context for lane ${index}. ${"y".repeat(240)}`,
+				],
+				requiredContextGrants: [
+					"repo:read",
+					"pull-request:read",
+					"evidence:write",
+					`tenant:grant:${index}`,
+				],
+				requiredArtifactKinds: [
+					"review.summary",
+					"risk.finding",
+					"test.plan",
+					`artifact.kind.${index}`,
+				],
+				optionalArtifactKinds: [
+					"trace.summary",
+					"coverage.summary",
+					`optional.kind.${index}`,
+				],
+				allowedTaskClasses: [
+					"code.review",
+					"repo.inspect",
+					`allowed.task.${index}`,
+				],
+				deniedTaskClasses: [
+					"secret.exfiltration",
+					"credential.materialization",
+					`denied.task.${index}`,
+				],
+				attributes: {
+					subagentLaneId: `rich-${index}`,
+					requestMetadataPath: "evalops.subagentRequest",
+					descriptor: "z".repeat(200),
+				},
+				metadata: {
+					evalopsSkillKind: "maestro-subagent",
+					resultPolicy: "summary-and-artifacts",
+					largeDescriptor: "m".repeat(400),
+					index,
+				},
+			})),
+		};
+		const payload = createA2APeerPairingPayloadFromAgentCard({
+			agentCard: richCard,
+			agentCardUrl:
+				"http://mac-mini.tailnet.ts.net:18787/.well-known/agent-card.json",
+			peerId: "mac-mini",
+			now: NOW,
+		});
+
+		expect(payload.skills?.[0]).toMatchObject({
+			approvalPolicyRef: "maestro.subagent.code-review.target-policy",
+			metadata: { largeDescriptor: "m".repeat(400) },
+		});
+		const code = encodeA2APeerPairingCode(payload);
+		expect(code.length).toBeLessThanOrEqual(8192);
+		const decoded = decodeA2APeerPairingCode(code, { now: NOW });
+		expect(decoded.skills).toHaveLength(8);
+		expect(decoded.skills?.[0]).toEqual({
+			id: "maestro.subagent.rich-0",
+			name: "Maestro rich subagent 0",
+			tags: ["maestro", "codex", "a2a"],
 		});
 	});
 

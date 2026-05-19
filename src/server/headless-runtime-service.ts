@@ -64,6 +64,7 @@ import { getAgentCircuitBreaker } from "./circuit-breaker.js";
 import { clientToolService } from "./client-tools-service.js";
 import {
 	type HostedAgentRuntimeCompleteInput,
+	type HostedAgentRuntimeDrainInput,
 	type HostedAgentRuntimeFailInput,
 	type HostedAgentRuntimeProgressRecorder,
 	createHostedAgentRuntimeProgressRecorder,
@@ -914,6 +915,12 @@ export class HeadlessSessionRuntime {
 		input: HostedAgentRuntimeFailInput,
 	): Promise<void> {
 		await this.agentRuntimeProgress?.failRun(input);
+	}
+
+	async recordHostedAgentRuntimeDrain(
+		input: HostedAgentRuntimeDrainInput,
+	): Promise<void> {
+		await this.agentRuntimeProgress?.recordHostedRunnerDrain(input);
 	}
 
 	disposeBestEffort(reason: string): void {

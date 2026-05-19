@@ -5,6 +5,9 @@
  * parallel agent execution for implementing plans.
  */
 
+import type { AgentMode, ModelProvider, ReasoningEffort } from "../modes.js";
+import type { SubagentType } from "../subagent-specs.js";
+
 /**
  * Status of a swarm teammate.
  */
@@ -29,6 +32,8 @@ export interface SwarmTask {
 	dependsOn?: string[];
 	/** Optional model override for this task */
 	model?: string;
+	/** Optional subagent type used for mode-level model dispatch */
+	subagentType?: SubagentType;
 	/** Priority (higher = earlier execution when no dependencies) */
 	priority?: number;
 }
@@ -75,6 +80,14 @@ export interface SwarmConfig {
 	parentSessionId?: string;
 	/** Model to use for teammates (defaults to parent's model) */
 	model?: string;
+	/** Agent mode used to resolve subagent model dispatch */
+	mode?: AgentMode;
+	/** Parent model provider used when dispatch falls back to a model tier */
+	modelProvider?: ModelProvider;
+	/** Default subagent type for teammate tasks without their own type */
+	subagentType?: SubagentType;
+	/** Default reasoning hint for teammate tasks */
+	reasoningEffort?: ReasoningEffort;
 	/** Maximum time per task in milliseconds */
 	taskTimeout?: number;
 	/** Whether to continue on individual task failures */

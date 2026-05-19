@@ -842,6 +842,7 @@ function terminalCodexSubagentStatus(
 export function collectCodexChildRuns(args: unknown): Array<{
 	child_run_id?: string;
 	thread_id?: string;
+	status?: string;
 }> {
 	if (!isRecord(args)) {
 		return [];
@@ -851,7 +852,11 @@ export function collectCodexChildRuns(args: unknown): Array<{
 		args.receiverThreadIds ?? args.receiver_thread_ids,
 	);
 	const graph = args.codexWorkGraph ?? args.codex_work_graph;
-	const graphRuns: Array<{ child_run_id?: string; thread_id?: string }> = [];
+	const graphRuns: Array<{
+		child_run_id?: string;
+		thread_id?: string;
+		status?: string;
+	}> = [];
 	if (isRecord(graph)) {
 		const graphChildRuns = graph.childRuns ?? graph.child_runs;
 		for (const childRun of Array.isArray(graphChildRuns)
@@ -865,6 +870,9 @@ export function collectCodexChildRuns(args: unknown): Array<{
 					childRun.childRunId ?? childRun.child_run_id,
 				),
 				thread_id: nonEmptyString(childRun.threadId ?? childRun.thread_id),
+				status: nonEmptyString(
+					childRun.status ?? childRun.targetStatus ?? childRun.target_status,
+				),
 			});
 		}
 	}
@@ -874,14 +882,40 @@ export function collectCodexChildRuns(args: unknown): Array<{
 		graphRuns.length,
 		1,
 	);
-	const runs: Array<{ child_run_id?: string; thread_id?: string }> = [];
+	const runs: Array<{
+		child_run_id?: string;
+		thread_id?: string;
+		status?: string;
+	}> = [];
 	for (let index = 0; index < count; index += 1) {
+		const threadId = threadIds[index] ?? graphRuns[index]?.thread_id;
+		const status =
+			graphRuns[index]?.status ?? codexAgentStateStatus(args, threadId);
 		runs.push({
 			child_run_id: childRunIds[index] ?? graphRuns[index]?.child_run_id,
-			thread_id: threadIds[index] ?? graphRuns[index]?.thread_id,
+			thread_id: threadId,
+			...(status ? { status } : {}),
 		});
 	}
 	return runs.filter((run) => run.child_run_id || run.thread_id);
+}
+
+function codexAgentStateStatus(
+	args: Record<string, unknown>,
+	threadId: string | undefined,
+): string | undefined {
+	if (!threadId) {
+		return undefined;
+	}
+	const agentsStates = args.agentsStates ?? args.agents_states;
+	if (!isRecord(agentsStates)) {
+		return undefined;
+	}
+	const agentState = agentsStates[threadId];
+	if (!isRecord(agentState)) {
+		return undefined;
+	}
+	return nonEmptyString(agentState.status);
 }
 
 function hasCodexSubagentArgs(value: unknown): boolean {
@@ -1034,6 +1068,7 @@ export function buildCodexSubagentContinuityEdges(input: {
 					? { child_run_id: childRun.child_run_id }
 					: {}),
 				...(childRun.thread_id ? { thread_id: childRun.thread_id } : {}),
+				status: childRun.status ?? base.status,
 			}))
 		: [base];
 }

@@ -23,6 +23,7 @@ vi.mock("../../src/oauth/index.js", () => ({
 	issueEvalOpsDelegationToken: issueEvalOpsDelegationTokenMock,
 }));
 
+import { MODEL_BY_TIER } from "../../src/agent/modes.js";
 import { SwarmExecutor } from "../../src/agent/swarm/executor.js";
 import type { SwarmConfig } from "../../src/agent/swarm/types.js";
 
@@ -209,6 +210,123 @@ describe("SwarmExecutor", () => {
 				expect.stringContaining("swarm-task-task-1.md"),
 			]),
 			expect.any(Object),
+		);
+	});
+
+	it("resolves teammate model from mode subagent dispatch when task has no model override", async () => {
+		spawnMock.mockReturnValue(createMockChildProcess("done"));
+
+		const executor = new SwarmExecutor({
+			...createConfig({
+				subagentType: "coder",
+			}),
+			mode: "smart",
+			modelProvider: "anthropic",
+		});
+		void executor.execute();
+		await waitForSpawn();
+
+		expect(spawnMock).toHaveBeenCalledWith(
+			"maestro",
+			expect.arrayContaining([
+				"--provider",
+				"openai-codex",
+				"--model",
+				"gpt-5.5",
+			]),
+			expect.objectContaining({
+				env: expect.objectContaining({
+					MAESTRO_SWARM_SUBAGENT_TYPE: "coder",
+					MAESTRO_SWARM_MODEL_PROVIDER: "openai-codex",
+					MAESTRO_SWARM_REASONING_EFFORT: "medium",
+				}),
+			}),
+		);
+	});
+
+	it("inherits the parent provider from env for tier-routed subagents", async () => {
+		spawnMock.mockReturnValue(createMockChildProcess("done"));
+		vi.stubEnv("MAESTRO_MODEL_PROVIDER", "google");
+
+		const executor = new SwarmExecutor({
+			...createConfig({
+				subagentType: "researcher",
+			}),
+			mode: "smart",
+		});
+		void executor.execute();
+		await waitForSpawn();
+
+		expect(spawnMock).toHaveBeenCalledWith(
+			"maestro",
+			expect.arrayContaining([
+				"--provider",
+				"google",
+				"--model",
+				MODEL_BY_TIER.sonnet.google,
+			]),
+			expect.objectContaining({
+				env: expect.objectContaining({
+					MAESTRO_SWARM_SUBAGENT_TYPE: "researcher",
+					MAESTRO_SWARM_MODEL_PROVIDER: "google",
+					MAESTRO_SWARM_REASONING_EFFORT: "medium",
+				}),
+			}),
+		);
+	});
+
+	it("inherits the parent mode from env for subagent dispatch", async () => {
+		spawnMock.mockReturnValue(createMockChildProcess("done"));
+		vi.stubEnv("MAESTRO_MODE", "rush");
+		vi.stubEnv("MAESTRO_MODEL_PROVIDER", "google");
+
+		const executor = new SwarmExecutor(
+			createConfig({
+				subagentType: "planner",
+			}),
+		);
+		void executor.execute();
+		await waitForSpawn();
+
+		expect(spawnMock).toHaveBeenCalledWith(
+			"maestro",
+			expect.arrayContaining([
+				"--provider",
+				"google",
+				"--model",
+				MODEL_BY_TIER.sonnet.google,
+			]),
+			expect.objectContaining({
+				env: expect.objectContaining({
+					MAESTRO_SWARM_MODE_NAME: "rush",
+					MAESTRO_SWARM_SUBAGENT_TYPE: "planner",
+					MAESTRO_SWARM_MODEL_PROVIDER: "google",
+				}),
+			}),
+		);
+	});
+
+	it("keeps tier-routed subagents provider-neutral when parent provider is unknown", async () => {
+		spawnMock.mockReturnValue(createMockChildProcess("done"));
+
+		const executor = new SwarmExecutor({
+			...createConfig({
+				subagentType: "researcher",
+			}),
+			mode: "smart",
+		});
+		void executor.execute();
+		await waitForSpawn();
+
+		const [, args] = spawnMock.mock.calls.at(-1) as [string, string[]];
+		expect(args).not.toContain("--provider");
+		expect(args).not.toContain("--model");
+		expect(args).toEqual(
+			expect.arrayContaining([
+				"--no-session",
+				"exec",
+				expect.stringContaining("swarm-task-task-1.md"),
+			]),
 		);
 	});
 

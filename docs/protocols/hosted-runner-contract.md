@@ -188,7 +188,10 @@ The manifest protocol is
 TypeScript-hosted drain paths write this same local manifest envelope, including
 the runtime flush status, workspace export contract, headless runtime snapshot,
 `work_continuity` metadata for active/pending Codex subagent child runs, and
-`retention_policy` metadata describing visibility and redaction classes.
+`retention_policy` metadata describing visibility and redaction classes. Managed
+drains also include `platform_evidence`, a compact operator-safe record that
+Platform can store as AgentRuntime progress before the run is completed or
+failed.
 Maestro does not upload to GCS, S3, Modal storage, Daytona storage, or any
 other provider store. Upload, retention, workspace artifact hydration, and
 choosing which manifest should be restored are Platform responsibilities. See

@@ -43,6 +43,8 @@ pub const HOSTED_RUNNER_SNAPSHOT_MANIFEST_VERSION: &str =
     "evalops.remote-runner.snapshot-manifest.v1";
 pub const HOSTED_RUNNER_RETENTION_POLICY_VERSION: &str = "evalops.remote-runner.retention.v1";
 pub const HOSTED_RUNNER_WORK_CONTINUITY_VERSION: &str = "evalops.remote-runner.work-continuity.v1";
+pub const HOSTED_RUNNER_PLATFORM_EVIDENCE_VERSION: &str =
+    "evalops.remote-runner.platform-evidence.v1";
 
 const DEFAULT_LISTEN_HOST: &str = "0.0.0.0";
 const DEFAULT_LISTEN_PORT: u16 = 8080;
@@ -581,6 +583,8 @@ struct SnapshotManifest {
     workspace_export: WorkspaceExportManifest,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     work_continuity: Option<WorkContinuityManifest>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    platform_evidence: Option<PlatformEvidenceManifest>,
     snapshot: RuntimeSnapshot,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     retention_policy: Option<RetentionPolicyManifest>,
@@ -625,6 +629,55 @@ struct WorkContinuityManifest {
     codex_subagent_thread_ids: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     codex_subagent_edges: Vec<CodexSubagentContinuityEdge>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct PlatformEvidenceManifest {
+    protocol_version: String,
+    event_type: String,
+    runner_session_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    workspace_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    agent_run_id: Option<String>,
+    maestro_session_id: String,
+    status: String,
+    runtime_flush_status: String,
+    manifest_path: String,
+    manifest_protocol_version: String,
+    created_at: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    reason: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    requested_by: Option<String>,
+    work_continuity: PlatformEvidenceWorkContinuityManifest,
+    retention: PlatformEvidenceRetentionManifest,
+    evidence_refs: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct PlatformEvidenceWorkContinuityManifest {
+    protocol_version: String,
+    active_tool_count: usize,
+    tracked_tool_count: usize,
+    pending_request_count: usize,
+    codex_subagent_tool_call_count: usize,
+    codex_subagent_child_run_count: usize,
+    codex_subagent_thread_count: usize,
+    codex_subagent_edge_count: usize,
+    codex_subagent_tool_call_ids: Vec<String>,
+    codex_subagent_child_run_ids: Vec<String>,
+    codex_subagent_thread_ids: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    codex_subagent_edges: Vec<CodexSubagentContinuityEdge>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct PlatformEvidenceRetentionManifest {
+    policy_version: String,
+    control_plane_metadata_visibility: String,
+    runtime_snapshot_visibility: String,
+    redaction_required_before_external_persistence: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -675,6 +728,102 @@ fn default_retention_policy_manifest() -> RetentionPolicyManifest {
     }
 }
 
+fn runtime_flush_status_label(status: RuntimeFlushStatus) -> &'static str {
+    match status {
+        RuntimeFlushStatus::Completed => "completed",
+        RuntimeFlushStatus::Failed => "failed",
+        RuntimeFlushStatus::Skipped => "skipped",
+    }
+}
+
+struct PlatformEvidenceManifestInput<'a> {
+    config: &'a HostedRunnerConfig,
+    maestro_session_id: &'a str,
+    created_at: &'a str,
+    manifest_path: &'a Path,
+    runtime: &'a RuntimeFlushManifest,
+    work_continuity: &'a WorkContinuityManifest,
+    retention_policy: &'a RetentionPolicyManifest,
+    reason: Option<&'a str>,
+    requested_by: Option<&'a str>,
+}
+
+fn default_platform_evidence_manifest(
+    input: PlatformEvidenceManifestInput<'_>,
+) -> PlatformEvidenceManifest {
+    PlatformEvidenceManifest {
+        protocol_version: HOSTED_RUNNER_PLATFORM_EVIDENCE_VERSION.to_string(),
+        event_type: "hosted_runner_drain_manifest_recorded".to_string(),
+        runner_session_id: input.config.runner_session_id.clone(),
+        workspace_id: input.config.workspace_id.clone(),
+        agent_run_id: input.config.agent_run_id.clone(),
+        maestro_session_id: input.maestro_session_id.to_string(),
+        status: "drained".to_string(),
+        runtime_flush_status: runtime_flush_status_label(input.runtime.flush_status).to_string(),
+        manifest_path: input.manifest_path.to_string_lossy().to_string(),
+        manifest_protocol_version: HOSTED_RUNNER_SNAPSHOT_MANIFEST_VERSION.to_string(),
+        created_at: input.created_at.to_string(),
+        reason: input.reason.map(ToOwned::to_owned),
+        requested_by: input.requested_by.map(ToOwned::to_owned),
+        work_continuity: PlatformEvidenceWorkContinuityManifest {
+            protocol_version: input.work_continuity.protocol_version.clone(),
+            active_tool_count: input.work_continuity.active_tool_count,
+            tracked_tool_count: input.work_continuity.tracked_tool_count,
+            pending_request_count: input.work_continuity.pending_request_count,
+            codex_subagent_tool_call_count: input
+                .work_continuity
+                .codex_subagent_tool_call_ids
+                .len(),
+            codex_subagent_child_run_count: input
+                .work_continuity
+                .codex_subagent_child_run_ids
+                .len(),
+            codex_subagent_thread_count: input.work_continuity.codex_subagent_thread_ids.len(),
+            codex_subagent_edge_count: input.work_continuity.codex_subagent_edges.len(),
+            codex_subagent_tool_call_ids: input
+                .work_continuity
+                .codex_subagent_tool_call_ids
+                .clone(),
+            codex_subagent_child_run_ids: input
+                .work_continuity
+                .codex_subagent_child_run_ids
+                .clone(),
+            codex_subagent_thread_ids: input.work_continuity.codex_subagent_thread_ids.clone(),
+            codex_subagent_edges: input.work_continuity.codex_subagent_edges.clone(),
+        },
+        retention: PlatformEvidenceRetentionManifest {
+            policy_version: input.retention_policy.policy_version.clone(),
+            control_plane_metadata_visibility: input
+                .retention_policy
+                .visibility
+                .control_plane_metadata
+                .clone(),
+            runtime_snapshot_visibility: input.retention_policy.visibility.runtime_snapshot.clone(),
+            redaction_required_before_external_persistence: input
+                .retention_policy
+                .redaction
+                .required_before_external_persistence
+                .clone(),
+        },
+        evidence_refs: {
+            let mut refs = vec![
+                format!(
+                    "remote-runner://sessions/{}/drain#manifest",
+                    input.config.runner_session_id
+                ),
+                format!(
+                    "maestro://headless/sessions/{}#drain",
+                    input.maestro_session_id
+                ),
+            ];
+            if let Some(agent_run_id) = input.config.agent_run_id.as_ref() {
+                refs.push(format!("platform-agent-run:{agent_run_id}"));
+            }
+            refs
+        },
+    }
+}
+
 fn add_codex_subagent_edge(
     edges: &mut BTreeSet<CodexSubagentContinuityEdge>,
     edge: CodexSubagentContinuityEdge,
@@ -712,16 +861,19 @@ fn collect_codex_subagent_edges_from_source(
         );
         return;
     }
-    for (child_run_id, thread_id) in child_runs {
+    for child_run in child_runs {
+        let edge_status = child_run
+            .status
+            .unwrap_or_else(|| active_codex_subagent_status(operation).to_string());
         add_codex_subagent_edge(
             edges,
             CodexSubagentContinuityEdge {
                 spawn_tool_call_id: (operation == "spawn_agent").then(|| call_id.clone()),
                 wait_tool_call_id: (operation != "spawn_agent").then(|| call_id.clone()),
-                child_run_id,
-                thread_id,
+                child_run_id: child_run.child_run_id,
+                thread_id: child_run.thread_id,
                 operation: operation.to_string(),
-                status: active_codex_subagent_status(operation).to_string(),
+                status: edge_status,
             },
         );
     }
@@ -2997,6 +3149,32 @@ async fn write_snapshot_manifest(
             path_type: path_type.to_string(),
         });
     }
+    let created_at = Utc::now().to_rfc3339();
+    let runtime = RuntimeFlushManifest {
+        flush_status: if has_runtime_activity {
+            RuntimeFlushStatus::Completed
+        } else {
+            RuntimeFlushStatus::Skipped
+        },
+        error: None,
+        session_id: maestro_session_id.clone(),
+        session_file: None,
+        protocol_version: has_runtime_activity.then(|| HEADLESS_PROTOCOL_VERSION.to_string()),
+        cursor: has_runtime_activity.then_some(snapshot.cursor),
+    };
+    let work_continuity = default_work_continuity_manifest(&snapshot);
+    let retention_policy = default_retention_policy_manifest();
+    let platform_evidence = default_platform_evidence_manifest(PlatformEvidenceManifestInput {
+        config: &shared.config,
+        maestro_session_id: &maestro_session_id,
+        created_at: &created_at,
+        manifest_path: &path,
+        runtime: &runtime,
+        work_continuity: &work_continuity,
+        retention_policy: &retention_policy,
+        reason: input.reason.as_deref(),
+        requested_by: input.requested_by.as_deref(),
+    });
     let manifest = SnapshotManifest {
         protocol_version: HOSTED_RUNNER_SNAPSHOT_MANIFEST_VERSION.to_string(),
         runner_session_id: shared.config.runner_session_id.clone(),
@@ -3005,27 +3183,17 @@ async fn write_snapshot_manifest(
         maestro_session_id: maestro_session_id.clone(),
         reason: input.reason.clone(),
         requested_by: input.requested_by.clone(),
-        created_at: Utc::now().to_rfc3339(),
+        created_at,
         workspace_root: shared.config.workspace_root.clone(),
-        runtime: RuntimeFlushManifest {
-            flush_status: if has_runtime_activity {
-                RuntimeFlushStatus::Completed
-            } else {
-                RuntimeFlushStatus::Skipped
-            },
-            error: None,
-            session_id: maestro_session_id,
-            session_file: None,
-            protocol_version: has_runtime_activity.then(|| HEADLESS_PROTOCOL_VERSION.to_string()),
-            cursor: has_runtime_activity.then_some(snapshot.cursor),
-        },
+        runtime,
         workspace_export: WorkspaceExportManifest {
             mode: "local_path_contract".to_string(),
             paths: workspace_export_paths,
         },
-        work_continuity: Some(default_work_continuity_manifest(&snapshot)),
+        work_continuity: Some(work_continuity),
+        platform_evidence: Some(platform_evidence),
         snapshot,
-        retention_policy: Some(default_retention_policy_manifest()),
+        retention_policy: Some(retention_policy),
     };
     let body_bytes = serde_json::to_vec_pretty(&manifest).map_err(|error| {
         HostedError::new(HostedRunnerErrorCode::RuntimeFailed, error.to_string())
@@ -3932,6 +4100,18 @@ mod tests {
             manifest["retention_policy"]["visibility"]["runtime_snapshot"],
             "internal"
         );
+        assert_eq!(
+            manifest["platform_evidence"]["protocol_version"],
+            HOSTED_RUNNER_PLATFORM_EVIDENCE_VERSION
+        );
+        assert_eq!(
+            manifest["platform_evidence"]["runtime_flush_status"],
+            "skipped"
+        );
+        assert_eq!(
+            manifest["platform_evidence"]["manifest_path"],
+            manifest_path
+        );
 
         let post_drain_identity: HostedRunnerIdentity = client
             .get(format!(
@@ -4242,6 +4422,48 @@ mod tests {
                 "codex_subagent_child_run_ids": ["agent-run-child-ts"],
                 "codex_subagent_thread_ids": ["child-thread-ts"]
             },
+            "platform_evidence": {
+                "protocol_version": HOSTED_RUNNER_PLATFORM_EVIDENCE_VERSION,
+                "event_type": "hosted_runner_drain_manifest_recorded",
+                "runner_session_id": "mrs_ts",
+                "workspace_id": "ws_ts",
+                "agent_run_id": "run_ts",
+                "maestro_session_id": "session_ts",
+                "status": "drained",
+                "runtime_flush_status": "completed",
+                "manifest_path": workspace.path().join(".maestro/runner-snapshots/mrs_ts.json"),
+                "manifest_protocol_version": HOSTED_RUNNER_SNAPSHOT_MANIFEST_VERSION,
+                "created_at": "2026-04-23T00:00:00.000Z",
+                "reason": "ttl_expired",
+                "requested_by": "platform",
+                "work_continuity": {
+                    "protocol_version": HOSTED_RUNNER_WORK_CONTINUITY_VERSION,
+                    "active_tool_count": 1,
+                    "tracked_tool_count": 1,
+                    "pending_request_count": 0,
+                    "codex_subagent_tool_call_count": 1,
+                    "codex_subagent_child_run_count": 1,
+                    "codex_subagent_thread_count": 1,
+                    "codex_subagent_edge_count": 0,
+                    "codex_subagent_tool_call_ids": ["collab-spawn-ts"],
+                    "codex_subagent_child_run_ids": ["agent-run-child-ts"],
+                    "codex_subagent_thread_ids": ["child-thread-ts"]
+                },
+                "retention": {
+                    "policy_version": HOSTED_RUNNER_RETENTION_POLICY_VERSION,
+                    "control_plane_metadata_visibility": "operator",
+                    "runtime_snapshot_visibility": "internal",
+                    "redaction_required_before_external_persistence": [
+                        "runtime_snapshot",
+                        "runtime_logs"
+                    ]
+                },
+                "evidence_refs": [
+                    "remote-runner://sessions/mrs_ts/drain#manifest",
+                    "maestro://headless/sessions/session_ts#drain",
+                    "platform-agent-run:run_ts"
+                ]
+            },
             "retention_policy": {
                 "policy_version": HOSTED_RUNNER_RETENTION_POLICY_VERSION,
                 "managed_by": "platform",
@@ -4319,6 +4541,14 @@ mod tests {
         assert_eq!(
             work_continuity.codex_subagent_child_run_ids,
             vec!["agent-run-child-ts".to_string()]
+        );
+        assert_eq!(
+            parsed
+                .platform_evidence
+                .as_ref()
+                .expect("platform evidence")
+                .protocol_version,
+            HOSTED_RUNNER_PLATFORM_EVIDENCE_VERSION
         );
         assert_eq!(parsed.snapshot.session_id, "session_ts");
         assert_eq!(parsed.snapshot.cursor, 7);
@@ -4414,8 +4644,11 @@ mod tests {
                         "codex_work_graph": {
                             "schema_version": "evalops.maestro.codex.subagent-workgraph.v1",
                             "child_runs": [{
+                                "edge_id": "collab-spawn-rust:0:spawnAgent:agent-run-child-rust",
+                                "target_index": 0,
                                 "thread_id": "child-thread-rust",
-                                "child_run_id": "agent-run-child-rust"
+                                "child_run_id": "agent-run-child-rust",
+                                "status": "running"
                             }]
                         }
                     }
@@ -4462,7 +4695,7 @@ mod tests {
                 child_run_id: Some("agent-run-child-rust".to_string()),
                 thread_id: Some("child-thread-rust".to_string()),
                 operation: "spawn_agent".to_string(),
-                status: "waiting_for_restore".to_string(),
+                status: "running".to_string(),
             }]
         );
         let continuity_json = serde_json::to_string(&continuity).expect("continuity json");

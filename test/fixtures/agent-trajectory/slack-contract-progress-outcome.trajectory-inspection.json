@@ -1,0 +1,155 @@
+{
+	"schemaVersion": "evalops.maestro.agent-trajectory-inspection.v1",
+	"trajectorySchemaVersion": "evalops.maestro.agent-trajectory.v1",
+	"replaySchemaVersion": "evalops.maestro.agent-trajectory-replay.v1",
+	"scoreSchemaVersion": "evalops.maestro.agent-trajectory-score.v1",
+	"run": {
+		"id": "slack-contract-progress-outcome-0007",
+		"sessionId": "slack-contract-progress-outcome-0007",
+		"source": "platform",
+		"platformBacked": true
+	},
+	"redaction": {
+		"default": "redacted",
+		"omitted": [
+			"raw Slack text",
+			"raw prompts",
+			"raw model responses",
+			"raw tool arguments",
+			"raw tool outputs",
+			"connector payloads",
+			"secrets"
+		]
+	},
+	"counts": {
+		"timelineItems": 11,
+		"events": 11,
+		"replayDeltas": 0,
+		"scoreFindings": 6,
+		"scoreFailures": 0,
+		"scoreWarnings": 0,
+		"jumpTargets": 17
+	},
+	"finalAnswer": {
+		"eventId": "trajectory:slack-final-reply:thread-redacted-0007",
+		"timelineItemIds": ["slack-final-reply:thread-redacted-0007"],
+		"title": "Final Slack answer posted",
+		"summary": "Final answer stayed in-thread, cited the redacted evidence artifact, and named the next action.",
+		"redacted": true
+	},
+	"timelineItems": [
+		{
+			"id": "slack-ingress:thread-redacted-0007",
+			"timestamp": "2026-05-18T00:00:02.000Z",
+			"type": "slack.ingress",
+			"status": "completed",
+			"visibility": "user",
+			"source": "platform",
+			"title": "Slack thread ingress accepted",
+			"summary": "Redacted customer thread requested a repo-backed teammate answer.",
+			"metadataKeys": [
+				"ensemble_transcript_id",
+				"platform_trace_id",
+				"work_envelope_id"
+			],
+			"redacted": true
+		},
+		{
+			"id": "slack-final-reply:thread-redacted-0007",
+			"timestamp": "2026-05-18T00:00:10.000Z",
+			"type": "slack.final_reply",
+			"status": "completed",
+			"visibility": "user",
+			"source": "platform",
+			"title": "Final Slack answer posted",
+			"summary": "Final answer stayed in-thread, cited the redacted evidence artifact, and named the next action.",
+			"metadataKeys": ["safe_evidence_artifact_id"],
+			"redacted": true
+		}
+	],
+	"events": [
+		{
+			"id": "trajectory:slack-ingress:thread-redacted-0007",
+			"sequence": 2,
+			"timestamp": "2026-05-18T00:00:02.000Z",
+			"kind": "message",
+			"phase": "observe",
+			"actor": "user",
+			"type": "slack.ingress",
+			"status": "completed",
+			"visibility": "user",
+			"source": "platform",
+			"title": "Slack thread ingress accepted",
+			"summary": "Redacted customer thread requested a repo-backed teammate answer.",
+			"relatedIds": [],
+			"timelineItemIds": ["slack-ingress:thread-redacted-0007"],
+			"evidence": [
+				{
+					"kind": "timeline_item",
+					"id": "slack-ingress:thread-redacted-0007",
+					"redacted": true,
+					"label": "timeline_item:slack-ingress:thread-redacted-0007"
+				}
+			]
+		},
+		{
+			"id": "trajectory:slack-final-reply:thread-redacted-0007",
+			"sequence": 10,
+			"timestamp": "2026-05-18T00:00:10.000Z",
+			"kind": "message",
+			"phase": "finish",
+			"actor": "assistant",
+			"type": "slack.final_reply",
+			"status": "completed",
+			"visibility": "user",
+			"source": "platform",
+			"title": "Final Slack answer posted",
+			"summary": "Final answer stayed in-thread, cited the redacted evidence artifact, and named the next action.",
+			"relatedIds": [
+				"agent-run-slack-progress-0007",
+				"vfs-artifact-slack-contract-dev-0007"
+			],
+			"timelineItemIds": ["slack-final-reply:thread-redacted-0007"],
+			"evidence": [
+				{
+					"kind": "timeline_item",
+					"id": "slack-final-reply:thread-redacted-0007",
+					"redacted": true,
+					"label": "timeline_item:slack-final-reply:thread-redacted-0007"
+				},
+				{
+					"kind": "artifact",
+					"id": "vfs-artifact-slack-contract-dev-0007",
+					"redacted": true,
+					"label": "artifact:vfs-artifact-slack-contract-dev-0007"
+				},
+				{
+					"kind": "agent_run",
+					"id": "agent-run-slack-progress-0007",
+					"redacted": true,
+					"label": "agent_run:agent-run-slack-progress-0007"
+				}
+			]
+		}
+	],
+	"replayDeltas": [],
+	"scoreFindings": [
+		{
+			"ruleId": "slack-final-answer-quality",
+			"status": "pass",
+			"severity": "error",
+			"message": "Final answer includes the outcome, safe evidence reference, and a useful next action.",
+			"eventIds": ["trajectory:slack-final-reply:thread-redacted-0007"],
+			"timelineItemIds": ["slack-final-reply:thread-redacted-0007"],
+			"evidence": [
+				{
+					"kind": "artifact",
+					"id": "vfs-artifact-slack-contract-dev-0007",
+					"redacted": true,
+					"label": "artifact:vfs-artifact-slack-contract-dev-0007"
+				}
+			],
+			"remediation": "No action required."
+		}
+	]
+}

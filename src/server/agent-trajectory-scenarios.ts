@@ -4,6 +4,7 @@ import {
 	MAESTRO_SCENARIO_SCHEMA,
 	type MaestroScenario,
 	type MaestroScenarioAssertion,
+	type MaestroScenarioExternalRefs,
 	type MaestroScenarioOutcome,
 	type MaestroScenarioPlatformLink,
 	type MaestroScenarioReviewLabel,
@@ -24,6 +25,7 @@ export {
 	MAESTRO_SCENARIO_SCHEMA,
 	type MaestroScenario,
 	type MaestroScenarioAssertion,
+	type MaestroScenarioExternalRefs,
 	type MaestroScenarioOutcome,
 	type MaestroScenarioPlatformLink,
 	type MaestroScenarioReviewLabel,
@@ -74,6 +76,7 @@ export interface AgentTrajectoryScenarioResult {
 		observedOutcome: MaestroScenarioOutcome;
 		reviewLabels: MaestroScenarioReviewLabel[];
 	};
+	externalRefs?: MaestroScenarioExternalRefs;
 	run: AgentTrajectoryReport["run"] & {
 		scenarioId: string;
 		replay: true;
@@ -120,8 +123,17 @@ const AGENT_TRAJECTORY_SCENARIO_ASSERTION_KINDS = new Set<
 	"efficiency.budget",
 	"provenance.chain",
 	"human.review",
+	"external.refs",
 	"trajectory.diff",
 ]);
+
+const EXTERNAL_REF_FIELDS = [
+	"ensembleTranscriptIds",
+	"platformTraceIds",
+	"platformWorkEnvelopeIds",
+	"slackThreadRefs",
+	"evidenceArtifactIds",
+] as const satisfies readonly (keyof MaestroScenarioExternalRefs)[];
 
 function isObject(value: unknown): value is Record<string, unknown> {
 	return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -293,6 +305,28 @@ export function validateAgentTrajectoryScenario(
 	) {
 		throw new Error(`${label}.platform.traceJoinKeys must not be empty`);
 	}
+	if (scenario.externalRefs !== undefined) {
+		if (!isObject(scenario.externalRefs)) {
+			throw new Error(`${label}.externalRefs must be an object`);
+		}
+		let refs = 0;
+		for (const field of EXTERNAL_REF_FIELDS) {
+			const values = scenario.externalRefs[field];
+			if (values === undefined) continue;
+			if (
+				!Array.isArray(values) ||
+				values.some((value) => typeof value !== "string" || value.length === 0)
+			) {
+				throw new Error(
+					`${label}.externalRefs.${field} must contain non-empty strings`,
+				);
+			}
+			refs += values.length;
+		}
+		if (refs === 0) {
+			throw new Error(`${label}.externalRefs must contain at least one ref`);
+		}
+	}
 	if (!isObject(scenario.assumptions)) {
 		throw new Error(`${label}.assumptions must be an object`);
 	}
@@ -334,6 +368,36 @@ export function validateAgentTrajectoryScenario(
 			throw new Error(
 				`${label}.assertions[].maxAddedScoreFailures requires baselineScorePath and candidateScorePath`,
 			);
+		}
+		if (
+			kind === "external.refs" &&
+			(!Array.isArray(assertion.requiredExternalRefKinds) ||
+				assertion.requiredExternalRefKinds.length === 0)
+		) {
+			throw new Error(
+				`${label}.assertions[].requiredExternalRefKinds must not be empty for external.refs`,
+			);
+		}
+		if (kind === "external.refs") {
+			const unknownKinds = (assertion.requiredExternalRefKinds ?? []).filter(
+				(refKind) => !EXTERNAL_REF_FIELDS.includes(refKind),
+			);
+			if (unknownKinds.length > 0) {
+				throw new Error(
+					`${label}.assertions[].requiredExternalRefKinds contains unknown external ref kind(s): ${unknownKinds.join(", ")}`,
+				);
+			}
+			if (
+				assertion.requiredExternalRefs !== undefined &&
+				(!Array.isArray(assertion.requiredExternalRefs) ||
+					assertion.requiredExternalRefs.some(
+						(ref) => typeof ref !== "string" || ref.length === 0,
+					))
+			) {
+				throw new Error(
+					`${label}.assertions[].requiredExternalRefs must contain non-empty strings for external.refs`,
+				);
+			}
 		}
 	}
 }
@@ -646,6 +710,37 @@ function evaluateAssertion(
 						scenarioEvidence(scenario.id, "human-review:labels"),
 					);
 		}
+		case "external.refs": {
+			const externalRefs = scenario.externalRefs;
+			if (!externalRefs) {
+				return fail(assertion, "external.refs requires scenario.externalRefs.");
+			}
+			const missingKinds = (assertion.requiredExternalRefKinds ?? []).filter(
+				(kind) => {
+					const values = externalRefs[kind];
+					return !Array.isArray(values) || values.length === 0;
+				},
+			);
+			const flattenedRefs = new Set(
+				EXTERNAL_REF_FIELDS.flatMap((field) => externalRefs[field] ?? []),
+			);
+			const missingRefs = (assertion.requiredExternalRefs ?? []).filter(
+				(ref) => !flattenedRefs.has(ref),
+			);
+			const missing = [...missingKinds, ...missingRefs];
+			return missing.length === 0
+				? result(
+						assertion,
+						"pass",
+						`External refs present for ${(assertion.requiredExternalRefKinds ?? []).join(", ")}.`,
+						scenarioEvidence(scenario.id, "external-refs"),
+					)
+				: fail(
+						assertion,
+						`Missing external refs: ${missing.join(", ")}.`,
+						scenarioEvidence(scenario.id, "external-refs"),
+					);
+		}
 		case "trajectory.diff": {
 			if (!diff) {
 				return fail(
@@ -712,6 +807,7 @@ export function evaluateAgentTrajectoryScenario(
 			observedOutcome,
 			reviewLabels: scenario.reviewLabels,
 		},
+		...(scenario.externalRefs ? { externalRefs: scenario.externalRefs } : {}),
 		run: {
 			...inputs.trajectory.run,
 			scenarioId: scenario.id,
@@ -743,23 +839,42 @@ export function evaluateAgentTrajectoryScenario(
 export function scenarioResultToJunit(
 	result: AgentTrajectoryScenarioResult,
 ): string {
+	const outcomeMatches =
+		result.scenario.observedOutcome === result.scenario.expectedOutcome;
 	const failures = result.assertions.filter(
 		(assertion) => assertion.status === "fail",
 	);
 	const testcases = result.assertions
 		.map((assertion) => {
 			const failure =
-				assertion.status === "fail"
+				!outcomeMatches && assertion.status === "fail"
 					? `\n\t\t<failure message="${escapeXml(assertion.message)}">${escapeXml(
 							JSON.stringify(assertion.evidence),
 						)}</failure>\n\t`
 					: "";
-			return `\t<testcase classname="${escapeXml(result.scenario.id)}" name="${escapeXml(assertion.id)}">${failure}</testcase>`;
+			const expectedFailureOutput =
+				outcomeMatches && assertion.status === "fail"
+					? `\n\t\t<system-out>${escapeXml(
+							[
+								`Expected failing assertion observed: ${assertion.message}`,
+								JSON.stringify(assertion.evidence),
+							].join("\n"),
+						)}</system-out>\n\t`
+					: "";
+			return `\t<testcase classname="${escapeXml(result.scenario.id)}" name="${escapeXml(assertion.id)}">${failure}${expectedFailureOutput}</testcase>`;
 		})
 		.join("\n");
+	const outcomeFailure =
+		!outcomeMatches && failures.length === 0
+			? `\t<testcase classname="${escapeXml(result.scenario.id)}" name="scenario-outcome">\n\t\t<failure message="${escapeXml(
+					`Observed outcome ${result.scenario.observedOutcome}; expected ${result.scenario.expectedOutcome}.`,
+				)}"></failure>\n\t</testcase>\n`
+			: "";
+	const failureCount = outcomeMatches ? 0 : Math.max(1, failures.length);
+	const testCount = result.counts.assertions + (outcomeFailure ? 1 : 0);
 	return `<?xml version="1.0" encoding="UTF-8"?>\n<testsuite name="${escapeXml(
 		result.scenario.id,
-	)}" tests="${result.counts.assertions}" failures="${failures.length}" warnings="${result.counts.warnings}">\n${testcases}\n</testsuite>\n`;
+	)}" tests="${testCount}" failures="${failureCount}" warnings="${result.counts.warnings}">\n${outcomeFailure}${testcases}\n</testsuite>\n`;
 }
 
 export function runAgentTrajectoryScenarioFile(

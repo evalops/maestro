@@ -66,6 +66,8 @@ function codexWorkGraph(
 			? []
 			: [
 					{
+						edgeId: `${toolCallId}:0:${tool}:${childRunId}`,
+						targetIndex: 0,
 						threadId,
 						childRunId,
 						operation: tool,

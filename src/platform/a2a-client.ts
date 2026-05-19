@@ -119,6 +119,15 @@ export interface A2AAgentSkill {
 	examples?: string[];
 	inputModes?: string[];
 	outputModes?: string[];
+	requiredContextGrants?: string[];
+	approvalPolicyRef?: string;
+	maxAutonomy?: string;
+	requiredArtifactKinds?: string[];
+	optionalArtifactKinds?: string[];
+	allowedTaskClasses?: string[];
+	deniedTaskClasses?: string[];
+	attributes?: Record<string, string>;
+	metadata?: Record<string, unknown>;
 }
 
 export interface A2AAgentExtension {

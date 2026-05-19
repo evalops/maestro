@@ -1,0 +1,275 @@
+{
+	"schemaVersion": "evalops.maestro.agent-trajectory-fixture.v1",
+	"fixture": "agent-trajectory/slack-contract-progress-outcome.timeline.json",
+	"trajectorySchemaVersion": "evalops.maestro.agent-trajectory.v1",
+	"run": {
+		"id": "slack-contract-progress-outcome-0007",
+		"sessionId": "slack-contract-progress-outcome-0007",
+		"source": "platform",
+		"platformBacked": true
+	},
+	"counts": {
+		"events": 11,
+		"evidenceAnchors": 26,
+		"byKind": {
+			"session": 1,
+			"message": 3,
+			"context": 1,
+			"tool": 2,
+			"artifact": 1,
+			"governance": 2,
+			"runtime": 1
+		},
+		"byPhase": {
+			"setup": 1,
+			"observe": 2,
+			"think": 1,
+			"act": 1,
+			"verify": 2,
+			"govern": 2,
+			"finish": 2
+		},
+		"byStatus": {
+			"info": 1,
+			"completed": 10
+		}
+	},
+	"events": [
+		{
+			"id": "trajectory:session-started:slack-contract-progress-outcome-0007",
+			"sequence": 1,
+			"kind": "session",
+			"phase": "setup",
+			"actor": "platform",
+			"type": "session.started",
+			"status": "info",
+			"visibility": "user",
+			"source": "platform",
+			"title": "Slack teammate session started",
+			"evidence": [
+				{
+					"kind": "timeline_item",
+					"id": "session-started:slack-contract-progress-outcome-0007"
+				},
+				{ "kind": "agent_run", "id": "agent-run-slack-progress-0007" }
+			],
+			"relatedIds": ["agent-run-slack-progress-0007"]
+		},
+		{
+			"id": "trajectory:slack-ingress:thread-redacted-0007",
+			"sequence": 2,
+			"kind": "message",
+			"phase": "observe",
+			"actor": "user",
+			"type": "slack.ingress",
+			"status": "completed",
+			"visibility": "user",
+			"source": "platform",
+			"title": "Slack thread ingress accepted",
+			"summary": "Redacted customer thread requested a repo-backed teammate answer.",
+			"evidence": [
+				{ "kind": "timeline_item", "id": "slack-ingress:thread-redacted-0007" }
+			]
+		},
+		{
+			"id": "trajectory:slack-progress-reply:thread-redacted-0007",
+			"sequence": 3,
+			"kind": "message",
+			"phase": "think",
+			"actor": "assistant",
+			"type": "slack.progress_reply",
+			"status": "completed",
+			"visibility": "user",
+			"source": "platform",
+			"title": "Progress reply posted in the same thread",
+			"summary": "The teammate acknowledged the request and named the next evidence-gathering step.",
+			"evidence": [
+				{
+					"kind": "timeline_item",
+					"id": "slack-progress-reply:thread-redacted-0007"
+				}
+			]
+		},
+		{
+			"id": "trajectory:memory-recall:thread-redacted-0007",
+			"sequence": 4,
+			"kind": "context",
+			"phase": "observe",
+			"actor": "runtime",
+			"type": "memory.recall",
+			"status": "completed",
+			"visibility": "admin",
+			"source": "platform",
+			"title": "Scoped Slack memory recalled",
+			"summary": "Thread-scoped preference memory was recalled for this workspace and user scope.",
+			"evidence": [
+				{ "kind": "timeline_item", "id": "memory-recall:thread-redacted-0007" },
+				{ "kind": "agent_run", "id": "agent-run-slack-progress-0007" }
+			],
+			"relatedIds": ["agent-run-slack-progress-0007"]
+		},
+		{
+			"id": "trajectory:tool-requested:evidence-lookup-0007",
+			"sequence": 5,
+			"kind": "tool",
+			"phase": "act",
+			"actor": "assistant",
+			"type": "tool.requested",
+			"status": "completed",
+			"visibility": "user",
+			"source": "platform",
+			"title": "Requested platform.evidence.lookup",
+			"toolName": "platform.evidence.lookup",
+			"evidence": [
+				{
+					"kind": "timeline_item",
+					"id": "tool-requested:evidence-lookup-0007"
+				},
+				{ "kind": "tool_call", "id": "call-evidence-lookup-0007" },
+				{ "kind": "agent_run", "id": "agent-run-slack-progress-0007" }
+			],
+			"relatedIds": [
+				"agent-run-slack-progress-0007",
+				"call-evidence-lookup-0007"
+			]
+		},
+		{
+			"id": "trajectory:tool-result:evidence-lookup-0007",
+			"sequence": 6,
+			"kind": "tool",
+			"phase": "verify",
+			"actor": "tool",
+			"type": "tool.completed",
+			"status": "completed",
+			"visibility": "user",
+			"source": "platform",
+			"title": "platform.evidence.lookup completed",
+			"toolName": "platform.evidence.lookup",
+			"evidence": [
+				{ "kind": "timeline_item", "id": "tool-result:evidence-lookup-0007" },
+				{ "kind": "tool_call", "id": "call-evidence-lookup-0007" },
+				{ "kind": "tool_execution", "id": "tool-exec-evidence-lookup-0007" },
+				{ "kind": "agent_run", "id": "agent-run-slack-progress-0007" }
+			],
+			"relatedIds": [
+				"agent-run-slack-progress-0007",
+				"call-evidence-lookup-0007",
+				"tool-exec-evidence-lookup-0007"
+			]
+		},
+		{
+			"id": "trajectory:artifact-linked:slack-evidence-0007",
+			"sequence": 7,
+			"kind": "artifact",
+			"phase": "verify",
+			"actor": "runtime",
+			"type": "artifact.linked",
+			"status": "completed",
+			"visibility": "user",
+			"source": "platform",
+			"title": "Safe evidence artifact linked",
+			"summary": "A redacted evidence bundle was attached for the final Slack answer.",
+			"evidence": [
+				{
+					"kind": "timeline_item",
+					"id": "artifact-linked:slack-evidence-0007"
+				},
+				{ "kind": "tool_call", "id": "call-evidence-lookup-0007" },
+				{ "kind": "artifact", "id": "vfs-artifact-slack-contract-dev-0007" },
+				{ "kind": "agent_run", "id": "agent-run-slack-progress-0007" }
+			],
+			"relatedIds": [
+				"agent-run-slack-progress-0007",
+				"call-evidence-lookup-0007",
+				"vfs-artifact-slack-contract-dev-0007"
+			]
+		},
+		{
+			"id": "trajectory:memory-store-proposed:thread-redacted-0007",
+			"sequence": 8,
+			"kind": "governance",
+			"phase": "govern",
+			"actor": "runtime",
+			"type": "memory.store.proposed",
+			"status": "completed",
+			"visibility": "admin",
+			"source": "platform",
+			"title": "Slack memory update proposed",
+			"summary": "A bounded teammate preference was proposed for Slack approval.",
+			"evidence": [
+				{
+					"kind": "timeline_item",
+					"id": "memory-store-proposed:thread-redacted-0007"
+				},
+				{ "kind": "agent_run", "id": "agent-run-slack-progress-0007" }
+			],
+			"relatedIds": ["agent-run-slack-progress-0007"]
+		},
+		{
+			"id": "trajectory:memory-store-accepted:thread-redacted-0007",
+			"sequence": 9,
+			"kind": "governance",
+			"phase": "govern",
+			"actor": "user",
+			"type": "memory.store.accepted",
+			"status": "completed",
+			"visibility": "admin",
+			"source": "platform",
+			"title": "Slack memory update accepted",
+			"summary": "The proposed memory was accepted from the originating Slack thread scope.",
+			"evidence": [
+				{
+					"kind": "timeline_item",
+					"id": "memory-store-accepted:thread-redacted-0007"
+				},
+				{ "kind": "agent_run", "id": "agent-run-slack-progress-0007" }
+			],
+			"relatedIds": ["agent-run-slack-progress-0007"]
+		},
+		{
+			"id": "trajectory:slack-final-reply:thread-redacted-0007",
+			"sequence": 10,
+			"kind": "message",
+			"phase": "finish",
+			"actor": "assistant",
+			"type": "slack.final_reply",
+			"status": "completed",
+			"visibility": "user",
+			"source": "platform",
+			"title": "Final Slack answer posted",
+			"summary": "Final answer stayed in-thread, cited the redacted evidence artifact, and named the next action.",
+			"evidence": [
+				{
+					"kind": "timeline_item",
+					"id": "slack-final-reply:thread-redacted-0007"
+				},
+				{ "kind": "artifact", "id": "vfs-artifact-slack-contract-dev-0007" },
+				{ "kind": "agent_run", "id": "agent-run-slack-progress-0007" }
+			],
+			"relatedIds": [
+				"agent-run-slack-progress-0007",
+				"vfs-artifact-slack-contract-dev-0007"
+			]
+		},
+		{
+			"id": "trajectory:runtime-finished:slack-contract-progress-outcome-0007",
+			"sequence": 11,
+			"kind": "runtime",
+			"phase": "finish",
+			"actor": "platform",
+			"type": "runtime.finished",
+			"status": "completed",
+			"visibility": "admin",
+			"source": "platform",
+			"title": "Slack teammate run finished",
+			"evidence": [
+				{
+					"kind": "timeline_item",
+					"id": "runtime-finished:slack-contract-progress-outcome-0007"
+				},
+				{ "kind": "agent_run", "id": "agent-run-slack-progress-0007" }
+			],
+			"relatedIds": ["agent-run-slack-progress-0007"]
+		}
+	]
+}

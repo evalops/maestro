@@ -11,6 +11,7 @@ import {
 	getModelForMode,
 	getModelForTier,
 	parseMode,
+	resolveSubagentDispatch,
 	setCurrentMode,
 	suggestMode,
 } from "../../src/agent/modes.js";
@@ -93,6 +94,39 @@ describe("agent/modes", () => {
 		it("returns haiku model for free mode", () => {
 			const model = getModelForMode("free");
 			expect(model).toContain("haiku");
+		});
+	});
+
+	describe("resolveSubagentDispatch", () => {
+		it("routes smart coder subagents to an explicit OpenAI Codex model", () => {
+			const dispatch = resolveSubagentDispatch("smart", "coder", "anthropic");
+
+			expect(dispatch).toMatchObject({
+				mode: "smart",
+				type: "coder",
+				provider: "openai-codex",
+				model: "gpt-5.5",
+				reasoningEffort: "medium",
+				source: "mode",
+			});
+		});
+
+		it("falls back to the mode primary tier when a subagent type is undeclared", () => {
+			const dispatch = resolveSubagentDispatch(
+				"custom",
+				"researcher",
+				"google",
+			);
+
+			expect(dispatch).toMatchObject({
+				mode: "custom",
+				type: "researcher",
+				provider: "google",
+				model: MODEL_BY_TIER.sonnet.google,
+				modelTier: "sonnet",
+				reasoningEffort: "medium",
+				source: "fallback",
+			});
 		});
 	});
 
