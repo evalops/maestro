@@ -37,6 +37,11 @@ recorder boundary in `src/server/hosted-agent-runtime-progress.ts`. It should
 not let Platform mutate the live Maestro runtime, and it should no-op for local
 or uncorrelated sessions.
 
+The hosted recorder now exposes `recordTaskProgressEvent` and
+`recordSwarmEvent`, and it derives initial todo/background task projections
+from tool results during hosted runs. That gives Platform deterministic task
+work item ids before any task state becomes Platform-authoritative.
+
 ## Mapping Table
 
 | Maestro concept | Current local owner | Platform object | Write-through phase | Notes |
@@ -116,9 +121,8 @@ plan for existing local todo stores.
 0. Expose saved sessions as a local AgentRuntime ledger through
    `maestro run ledger|replay|promote`, giving harnesses an inspectable dry-run
    promotion contract before live Platform write-through is enabled.
-1. Add a small `HostedAgentRuntimeTaskProgressRecorder` adapter beside the
-   existing hosted progress recorder, or extend the existing recorder with
-   methods that accept normalized task events.
+1. Extend the existing hosted progress recorder with methods that accept
+   normalized task events.
 2. Emit normalized task events from the `todo`, background task, checkpoint, and
    swarm boundaries without importing Platform client code into those tools.
 3. Use deterministic ids:

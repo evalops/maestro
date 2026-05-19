@@ -25,6 +25,7 @@ import {
 	parseMode,
 	resolveSubagentDispatch,
 } from "../modes.js";
+import { publishSwarmRuntimeEvent } from "./runtime-events.js";
 import type {
 	SwarmConfig,
 	SwarmEvent,
@@ -236,6 +237,12 @@ export class SwarmExecutor {
 	 * Emit an event to all handlers.
 	 */
 	private emit(event: SwarmEvent): void {
+		publishSwarmRuntimeEvent({
+			event,
+			parentSessionId: this.state.config.parentSessionId,
+			cwd: this.state.config.cwd,
+			planFile: this.state.config.planFile,
+		});
 		for (const handler of this.eventHandlers) {
 			try {
 				handler(event);

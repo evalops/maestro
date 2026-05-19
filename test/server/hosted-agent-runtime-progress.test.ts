@@ -1702,6 +1702,562 @@ describe("hosted AgentRuntime progress recorder", () => {
 		);
 	});
 
+	it("projects todo tool results into deterministic AgentRuntime task work items", async () => {
+		const { recorder, recordWorkItem, recordStep, recordEvent } =
+			createRecorder();
+
+		recorder.recordAgentEvent({
+			type: "tool_execution_start",
+			toolCallId: "todo-call-1",
+			toolName: "todo",
+			displayName: "todo",
+			args: {
+				goal: "Ship Codex Mesh task projection",
+				items: [
+					{
+						id: "task-1",
+						content: "Plan the bridge",
+						status: "completed",
+						priority: "high",
+					},
+					{
+						id: "task-2",
+						content: "Wire hosted progress",
+						status: "in_progress",
+						priority: "high",
+						blockedBy: ["platform lease"],
+					},
+				],
+			},
+		});
+		recorder.recordAgentEvent({
+			type: "tool_execution_end",
+			toolCallId: "todo-call-1",
+			toolExecutionId: "texec-todo-1",
+			toolName: "todo",
+			displayName: "todo",
+			result: {
+				role: "toolResult",
+				toolCallId: "todo-call-1",
+				toolName: "todo",
+				content: [{ type: "text", text: "updated" }],
+				details: {
+					items: [
+						{
+							id: "task-1",
+							content: "Plan the bridge",
+							status: "completed",
+							priority: "high",
+						},
+						{
+							id: "task-2",
+							content: "Wire hosted progress",
+							status: "in_progress",
+							priority: "high",
+							blockedBy: ["platform lease"],
+						},
+					],
+				},
+				isError: false,
+				timestamp: 10,
+			},
+			isError: false,
+		} satisfies AgentEvent);
+
+		await recorder.flush();
+		const task1WorkItem = recordWorkItem.mock.calls.find(
+			(call) => call[0]?.workItem?.payload?.todo_id === "task-1",
+		)?.[0]?.workItem;
+		const task2WorkItem = recordWorkItem.mock.calls.find(
+			(call) => call[0]?.workItem?.payload?.todo_id === "task-2",
+		)?.[0]?.workItem;
+
+		expect(task1WorkItem?.id).toEqual(
+			expect.stringMatching(
+				/^maestro:session_1:todo:goal-[a-f0-9]{12}:task-1$/,
+			),
+		);
+		expect(task2WorkItem?.id).toEqual(
+			expect.stringMatching(
+				/^maestro:session_1:todo:goal-[a-f0-9]{12}:task-2$/,
+			),
+		);
+
+		expect(recordWorkItem).toHaveBeenCalledWith({
+			runId: "run_1",
+			workItem: expect.objectContaining({
+				id: task1WorkItem?.id,
+				kind: PlatformAgentWorkItemKindValue.Followup,
+				state: PlatformAgentWorkItemStateValue.Succeeded,
+				title: "Plan the bridge",
+				goal: "Ship Codex Mesh task projection",
+				toolExecutionId: "texec-todo-1",
+				evidenceRefs: [
+					`maestro-task:todo:${String(task1WorkItem?.id).split(":todo:")[1]}`,
+					"tool-call:todo-call-1",
+					"tool-execution:texec-todo-1",
+				],
+				payload: expect.objectContaining({
+					event_type: "maestro_task_progress",
+					task_source: "todo",
+					task_id: "task-1",
+					task_status: "succeeded",
+					todo_goal_hash: expect.stringMatching(/^[a-f0-9]{12}$/),
+					todo_scope: "goal",
+					todo_status: "completed",
+					maestro_session_id: "session_1",
+				}),
+			}),
+		});
+		expect(recordWorkItem).toHaveBeenCalledWith({
+			runId: "run_1",
+			workItem: expect.objectContaining({
+				id: task2WorkItem?.id,
+				state: PlatformAgentWorkItemStateValue.Running,
+				blocker: "platform lease",
+				payload: expect.objectContaining({
+					task_status: "running",
+					blocked_by: ["platform lease"],
+				}),
+			}),
+		});
+		expect(recordStep).toHaveBeenCalledWith(
+			expect.objectContaining({
+				step: expect.objectContaining({
+					id: task2WorkItem?.id,
+					stepKind: PlatformAgentRunStepKindValue.System,
+					state: PlatformAgentRunStepStateValue.Running,
+					input: expect.objectContaining({
+						task_source: "todo",
+						task_id: "task-2",
+					}),
+				}),
+			}),
+		);
+		expect(recordEvent).toHaveBeenCalledWith(
+			expect.objectContaining({
+				type: PlatformRuntimeEventTypeValue.AgentProgressRecorded,
+				message: "Maestro todo task running",
+				stepId: task2WorkItem?.id,
+			}),
+		);
+	});
+
+	it("keeps todo work items distinct when goals reuse task ids", async () => {
+		const { recorder, recordWorkItem } = createRecorder();
+		for (const [toolCallId, goal] of [
+			["todo-call-a", "Ship hosted swarm progress"],
+			["todo-call-b", "Prepare deploy rollout"],
+		]) {
+			recorder.recordAgentEvent({
+				type: "tool_execution_start",
+				toolCallId,
+				toolName: "todo",
+				args: {
+					goal,
+				},
+			});
+			recorder.recordAgentEvent({
+				type: "tool_execution_end",
+				toolCallId,
+				toolExecutionId: `${toolCallId}-exec`,
+				toolName: "todo",
+				result: {
+					role: "toolResult",
+					toolCallId,
+					toolName: "todo",
+					content: [{ type: "text", text: "updated" }],
+					details: {
+						items: [
+							{
+								id: "task-1",
+								content: `Shared task id for ${goal}`,
+								status: "pending",
+							},
+						],
+					},
+					isError: false,
+					timestamp: 10,
+				},
+				isError: false,
+			} satisfies AgentEvent);
+		}
+
+		await recorder.flush();
+
+		const ids = recordWorkItem.mock.calls
+			.map((call) => call[0]?.workItem?.id)
+			.filter((id): id is string => typeof id === "string");
+		expect(ids).toHaveLength(2);
+		expect(new Set(ids).size).toBe(2);
+		expect(ids).toEqual([
+			expect.stringMatching(
+				/^maestro:session_1:todo:goal-[a-f0-9]{12}:task-1$/,
+			),
+			expect.stringMatching(
+				/^maestro:session_1:todo:goal-[a-f0-9]{12}:task-1$/,
+			),
+		]);
+	});
+
+	it("hashes full todo goals before truncating projected goal text", async () => {
+		const { recorder, recordWorkItem } = createRecorder();
+		const sharedPrefix = "same long hosted goal prefix ".repeat(30);
+		const goals = [
+			`${sharedPrefix}finish the Maestro projection alpha`,
+			`${sharedPrefix}finish the Deploy rollout beta`,
+		];
+		expect(goals[0]?.slice(0, 512)).toBe(goals[1]?.slice(0, 512));
+
+		for (const [index, goal] of goals.entries()) {
+			const toolCallId = `todo-long-goal-${index}`;
+			recorder.recordAgentEvent({
+				type: "tool_execution_start",
+				toolCallId,
+				toolName: "todo",
+				args: { goal },
+			});
+			recorder.recordAgentEvent({
+				type: "tool_execution_end",
+				toolCallId,
+				toolExecutionId: `${toolCallId}-exec`,
+				toolName: "todo",
+				result: {
+					role: "toolResult",
+					toolCallId,
+					toolName: "todo",
+					content: [{ type: "text", text: "updated" }],
+					details: {
+						items: [
+							{
+								id: "task-1",
+								content: "Shared todo id under a long goal",
+								status: "pending",
+							},
+						],
+					},
+					isError: false,
+					timestamp: 10,
+				},
+				isError: false,
+			} satisfies AgentEvent);
+		}
+
+		await recorder.flush();
+
+		const workItems = recordWorkItem.mock.calls
+			.map((call) => call[0]?.workItem)
+			.filter((item): item is NonNullable<typeof item> => Boolean(item));
+		const ids = workItems.map((item) => item.id);
+		const goalHashes = workItems.map((item) => item.payload?.todo_goal_hash);
+		expect(workItems).toHaveLength(2);
+		expect(new Set(ids).size).toBe(2);
+		expect(new Set(goalHashes).size).toBe(2);
+		expect(workItems[0]?.goal).toBe(workItems[1]?.goal);
+		expect(ids).toEqual([
+			expect.stringMatching(
+				/^maestro:session_1:todo:goal-[a-f0-9]{12}:task-1$/,
+			),
+			expect.stringMatching(
+				/^maestro:session_1:todo:goal-[a-f0-9]{12}:task-1$/,
+			),
+		]);
+	});
+
+	it("projects background task details without copying env or log paths", async () => {
+		const { recorder, recordWorkItem, recordStep } = createRecorder();
+
+		recorder.recordAgentEvent({
+			type: "tool_execution_start",
+			toolCallId: "bash-bg-1",
+			toolName: "bash",
+			args: {
+				command: "npm run dev",
+				env: { SECRET_TOKEN: "do-not-copy" },
+				runInBackground: true,
+			},
+		});
+		recorder.recordAgentEvent({
+			type: "tool_execution_end",
+			toolCallId: "bash-bg-1",
+			toolExecutionId: "texec-bg-1",
+			toolName: "bash",
+			result: {
+				role: "toolResult",
+				toolCallId: "bash-bg-1",
+				toolName: "bash",
+				content: [{ type: "text", text: "started" }],
+				details: {
+					taskId: "bg_1",
+					status: "running",
+					command: "npm run dev",
+					cwd: "/workspace/app",
+					logPath: "/workspace/.maestro/logs/bg_1.log",
+				},
+				isError: false,
+				timestamp: 11,
+			},
+			isError: false,
+		} satisfies AgentEvent);
+
+		await recorder.flush();
+
+		expect(recordWorkItem).toHaveBeenCalledWith({
+			runId: "run_1",
+			workItem: expect.objectContaining({
+				id: "maestro:session_1:background:bg_1",
+				kind: PlatformAgentWorkItemKindValue.ToolCall,
+				state: PlatformAgentWorkItemStateValue.Running,
+				title: "Background task: npm run dev",
+				toolExecutionId: "texec-bg-1",
+				payload: expect.objectContaining({
+					task_source: "background",
+					background_task_id: "bg_1",
+					command_summary: "npm run dev",
+					cwd: "/workspace/app",
+				}),
+			}),
+		});
+		const payload = recordWorkItem.mock.calls.find(
+			(call) => call[0]?.workItem?.id === "maestro:session_1:background:bg_1",
+		)?.[0]?.workItem?.payload;
+		expect(payload).not.toHaveProperty("env");
+		expect(payload).not.toHaveProperty("logPath");
+		expect(payload).not.toHaveProperty("log_path");
+		expect(recordStep).toHaveBeenCalledWith(
+			expect.objectContaining({
+				step: expect.objectContaining({
+					id: "maestro:session_1:background:bg_1",
+					stepKind: PlatformAgentRunStepKindValue.ToolCallIntent,
+					state: PlatformAgentRunStepStateValue.Running,
+				}),
+			}),
+		);
+	});
+
+	it("records swarm events as parent and child AgentRuntime work items", async () => {
+		const { recorder, recordWorkItem, updateWorkItem, recordStep } =
+			createRecorder();
+
+		recorder.recordSwarmEvent({
+			type: "swarm_start",
+			swarmId: "swarm_1",
+			config: {
+				teammateCount: 2,
+				planFile: "/workspace/plan.md",
+				tasks: [
+					{
+						id: "task-a",
+						prompt: "Implement remote runner profile support",
+						dependsOn: ["task-prep"],
+						subagentType: "coder",
+						priority: 10,
+					},
+				],
+				cwd: "/workspace",
+				model: "gpt-5.3-codex",
+			},
+		});
+		recorder.recordSwarmEvent({
+			type: "task_start",
+			swarmId: "swarm_1",
+			teammateId: "mate_1",
+			task: {
+				id: "task-a",
+				prompt: "Implement remote runner profile support",
+				dependsOn: ["task-prep"],
+				subagentType: "coder",
+				priority: 10,
+			},
+		});
+		recorder.recordSwarmEvent({
+			type: "task_complete",
+			swarmId: "swarm_1",
+			teammateId: "mate_1",
+			taskId: "task-a",
+			output: "done but do not copy this raw teammate output",
+		});
+
+		await recorder.flush();
+
+		expect(recordWorkItem).toHaveBeenCalledWith({
+			runId: "run_1",
+			workItem: expect.objectContaining({
+				id: "maestro:session_1:swarm:swarm_1",
+				kind: PlatformAgentWorkItemKindValue.Root,
+				state: PlatformAgentWorkItemStateValue.Running,
+				payload: expect.objectContaining({
+					swarm_id: "swarm_1",
+					teammate_count: 2,
+					task_count: 1,
+				}),
+			}),
+		});
+		expect(recordWorkItem).toHaveBeenCalledWith({
+			runId: "run_1",
+			workItem: expect.objectContaining({
+				id: "maestro:session_1:swarm:swarm_1:task:task-a",
+				parentWorkItemId: "maestro:session_1:swarm:swarm_1",
+				ownerChildRunId: "swarm:swarm_1:teammate:mate_1",
+				kind: PlatformAgentWorkItemKindValue.ChildRun,
+				state: PlatformAgentWorkItemStateValue.Running,
+			}),
+		});
+		expect(updateWorkItem).toHaveBeenCalledWith(
+			expect.objectContaining({
+				runId: "run_1",
+				workItemId: "maestro:session_1:swarm:swarm_1:task:task-a",
+				state: PlatformAgentWorkItemStateValue.Succeeded,
+				payload: expect.objectContaining({
+					output_bytes: 45,
+				}),
+			}),
+		);
+		const completePayload = updateWorkItem.mock.calls.find(
+			(call) =>
+				call[0]?.workItemId === "maestro:session_1:swarm:swarm_1:task:task-a" &&
+				call[0]?.state === PlatformAgentWorkItemStateValue.Succeeded,
+		)?.[0]?.payload;
+		expect(JSON.stringify(completePayload)).not.toContain(
+			"do not copy this raw teammate output",
+		);
+		expect(recordStep).toHaveBeenCalledWith(
+			expect.objectContaining({
+				step: expect.objectContaining({
+					id: "maestro:session_1:swarm:swarm_1:task:task-a",
+					state: PlatformAgentRunStepStateValue.Succeeded,
+				}),
+			}),
+		);
+	});
+
+	it("preserves failed swarm state when swarm_complete follows a failure", async () => {
+		const { recorder, updateWorkItem } = createRecorder();
+
+		recorder.recordSwarmEvent({
+			type: "swarm_start",
+			swarmId: "swarm_failed",
+			config: {
+				teammateCount: 1,
+				planFile: "/workspace/plan.md",
+				tasks: [{ id: "task-a", prompt: "Fail this task" }],
+				cwd: "/workspace",
+			},
+		});
+		recorder.recordSwarmEvent({
+			type: "swarm_complete",
+			swarmId: "swarm_failed",
+			state: {
+				id: "swarm_failed",
+				status: "failed",
+				config: {
+					teammateCount: 1,
+					planFile: "/workspace/plan.md",
+					tasks: [{ id: "task-a", prompt: "Fail this task" }],
+					cwd: "/workspace",
+				},
+				teammates: [],
+				pendingTasks: [],
+				activeTasks: new Map(),
+				completedTasks: new Set(),
+				failedTasks: new Set(["task-a"]),
+				startedAt: 1,
+				completedAt: 2,
+				error: "task-a failed",
+			},
+		});
+
+		await recorder.flush();
+
+		expect(updateWorkItem).toHaveBeenCalledWith(
+			expect.objectContaining({
+				workItemId: "maestro:session_1:swarm:swarm_failed",
+				state: PlatformAgentWorkItemStateValue.Failed,
+				payload: expect.objectContaining({
+					swarm_status: "failed",
+					failed_task_count: 1,
+					error: "task-a failed",
+				}),
+			}),
+		);
+	});
+
+	it("bounds projected task strings to their configured limits", async () => {
+		const { recorder, recordWorkItem } = createRecorder();
+		const longTitle = "title ".repeat(80);
+		const longGoal = "goal ".repeat(140);
+
+		recorder.recordTaskProgressEvent({
+			source: "checkpoint",
+			id: "long_projection",
+			status: "running",
+			title: longTitle,
+			goal: longGoal,
+		});
+		await recorder.flush();
+
+		const workItem = recordWorkItem.mock.calls[0]?.[0]?.workItem;
+		expect(workItem?.title).toHaveLength(256);
+		expect(workItem?.title).toMatch(/\.\.\.$/);
+		expect(workItem?.goal).toHaveLength(512);
+		expect(workItem?.goal).toMatch(/\.\.\.$/);
+		expect(workItem?.payload?.title).toHaveLength(256);
+		expect(workItem?.payload?.goal).toHaveLength(512);
+	});
+
+	it("retries task work item creation after an initial Platform write failure", async () => {
+		const recordWorkItem = vi
+			.fn()
+			.mockRejectedValueOnce(new Error("Platform unavailable"))
+			.mockResolvedValue({ run: { id: "run_1" } });
+		const updateWorkItem = vi.fn(async () => ({ run: { id: "run_1" } }));
+		const { recorder } = createRecorder({ recordWorkItem, updateWorkItem });
+
+		recorder.recordTaskProgressEvent({
+			source: "todo",
+			id: "task-retry",
+			status: "running",
+			title: "Retry task",
+		});
+		await recorder.flush();
+
+		recorder.recordTaskProgressEvent({
+			source: "todo",
+			id: "task-retry",
+			status: "succeeded",
+			title: "Retry task",
+		});
+		await recorder.flush();
+
+		recorder.recordTaskProgressEvent({
+			source: "todo",
+			id: "task-retry",
+			status: "running",
+			title: "Retry task",
+			nextAction: "verify follow-up update",
+		});
+		await recorder.flush();
+
+		expect(recordWorkItem).toHaveBeenCalledTimes(2);
+		expect(recordWorkItem).toHaveBeenNthCalledWith(
+			2,
+			expect.objectContaining({
+				workItem: expect.objectContaining({
+					id: "maestro:session_1:todo:task-retry",
+					state: PlatformAgentWorkItemStateValue.Succeeded,
+				}),
+			}),
+		);
+		expect(updateWorkItem).toHaveBeenCalledTimes(1);
+		expect(updateWorkItem).toHaveBeenCalledWith(
+			expect.objectContaining({
+				workItemId: "maestro:session_1:todo:task-retry",
+				state: PlatformAgentWorkItemStateValue.Running,
+				nextAction: "verify follow-up update",
+			}),
+		);
+	});
+
 	it("keeps later progress flowing after a Platform write failure", async () => {
 		const recordStep = vi
 			.fn()

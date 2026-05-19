@@ -14,6 +14,7 @@ import {
 import { Value } from "@sinclair/typebox/value";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+import { publishSwarmRuntimeEvent } from "../../src/agent/swarm/runtime-events.js";
 import type {
 	AgentEvent,
 	AppMessage,
@@ -28,6 +29,7 @@ import type { RegisteredModel } from "../../src/models/registry.js";
 import {
 	MaestroAgentRuntimeSourceEventType,
 	PlatformAgentRunStateValue,
+	PlatformAgentWorkItemStateValue,
 	PlatformRuntimeChannelKindValue,
 	PlatformRuntimeTriggerKindValue,
 	PlatformSurfaceValue,
@@ -361,6 +363,110 @@ describe("headless session runtime", () => {
 					entry.type === "message" ? entry.message.type : entry.type,
 				),
 			).toEqual(["ready", "session_info", "status", "status"]);
+		} finally {
+			await rm(tempDir, { recursive: true, force: true });
+		}
+	});
+
+	it("projects same-session swarm runtime events into hosted AgentRuntime progress", async () => {
+		const fakeAgent = new FakeAgent();
+		const tempDir = await mkdtemp(
+			join(tmpdir(), "maestro-headless-runtime-swarm-progress-"),
+		);
+		const requests: Array<{ url: string; body: Record<string, unknown> }> = [];
+		const fetchMock = vi.fn(
+			async (input: RequestInfo | URL, init?: RequestInit) => {
+				const body =
+					typeof init?.body === "string"
+						? (JSON.parse(init.body) as Record<string, unknown>)
+						: {};
+				requests.push({ url: String(input), body });
+				return Response.json({
+					run: { id: "run_1" },
+					workItem:
+						(body.workItem as Record<string, unknown> | undefined) ??
+						(body.workItemId
+							? { id: body.workItemId, state: body.state }
+							: undefined),
+					step: body.step,
+					event: { id: `event_${requests.length}`, runId: "run_1" },
+				});
+			},
+		);
+		try {
+			vi.stubEnv("MAESTRO_AGENT_RUNTIME_SERVICE_URL", "https://runtime.test");
+			vi.stubEnv("MAESTRO_AGENT_RUNTIME_SERVICE_TOKEN", "runtime-token");
+			vi.stubEnv("MAESTRO_AGENT_RUNTIME_ORG_ID", "org_1");
+			vi.stubEnv("MAESTRO_AGENT_RUNTIME_WORKSPACE_ID", "ws_1");
+			vi.stubGlobal("fetch", fetchMock);
+			const sessionManager = new SessionManager(false, undefined, {
+				sessionDir: tempDir,
+			});
+			const context = createContext({
+				createAgent: vi.fn().mockResolvedValue(fakeAgent),
+				hostedRunner: {
+					enabled: true,
+					agentRunId: "run_1",
+					workspaceId: "ws_1",
+					runnerSessionId: "mrs_1",
+					ownerInstanceId: "pod-a",
+				},
+			});
+			const runtime = await context.headlessRuntimeService.ensureRuntime({
+				scope_key: "anon",
+				registeredModel: TEST_MODEL,
+				thinkingLevel: "off",
+				approvalMode: "prompt",
+				context,
+				sessionManager,
+			});
+
+			publishSwarmRuntimeEvent({
+				parentSessionId: runtime.id(),
+				cwd: tempDir,
+				planFile: join(tempDir, "plan.md"),
+				event: {
+					type: "swarm_start",
+					swarmId: "swarm_1",
+					config: {
+						teammateCount: 2,
+						planFile: join(tempDir, "plan.md"),
+						tasks: [{ id: "task-a", prompt: "Implement the bridge" }],
+						cwd: tempDir,
+						parentSessionId: runtime.id(),
+					},
+				},
+			});
+			publishSwarmRuntimeEvent({
+				parentSessionId: "other_session",
+				cwd: tempDir,
+				planFile: join(tempDir, "plan.md"),
+				event: {
+					type: "task_start",
+					swarmId: "swarm_ignored",
+					teammateId: "mate_ignored",
+					task: { id: "task-ignored", prompt: "Do not project" },
+				},
+			});
+			await runtime.dispose();
+
+			const workItems = requests
+				.map((request) => request.body.workItem)
+				.filter((workItem): workItem is Record<string, unknown> =>
+					Boolean(workItem && typeof workItem === "object"),
+				);
+			expect(workItems).toHaveLength(1);
+			expect(workItems[0]).toMatchObject({
+				id: `maestro:${runtime.id()}:swarm:swarm_1`,
+				runId: "run_1",
+				state: PlatformAgentWorkItemStateValue.Running,
+				payload: expect.objectContaining({
+					event_type: "maestro_task_progress",
+					swarm_id: "swarm_1",
+					task_source: "swarm",
+				}),
+			});
+			expect(JSON.stringify(requests)).not.toContain("swarm_ignored");
 		} finally {
 			await rm(tempDir, { recursive: true, force: true });
 		}
