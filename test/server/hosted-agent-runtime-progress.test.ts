@@ -171,6 +171,7 @@ describe("hosted AgentRuntime progress recorder", () => {
 			toolName: "codex.subagent.spawnAgent",
 			displayName: "Codex subagent: spawn agent",
 			summaryLabel: "spawn agent 1 agent",
+			toolExecutionId: "collab-call-1",
 			args: {
 				codexTool: "spawnAgent",
 				senderThreadId: "parent-thread",
@@ -204,6 +205,7 @@ describe("hosted AgentRuntime progress recorder", () => {
 			toolName: "codex.subagent.spawnAgent",
 			displayName: "Codex subagent: spawn agent",
 			summaryLabel: "spawn agent 1 agent",
+			toolExecutionId: "texec-collab-call-1",
 			result: {
 				role: "toolResult",
 				toolCallId: "collab-call-1",
@@ -221,6 +223,13 @@ describe("hosted AgentRuntime progress recorder", () => {
 		await recorder.flush();
 
 		expect(recordStep).toHaveBeenCalledTimes(2);
+		const startStepInput = recordStep.mock.calls[0]?.[0]?.step?.input;
+		expect(startStepInput).not.toHaveProperty("tool_execution_id");
+		const endStepOutput = recordStep.mock.calls[1]?.[0]?.step?.output;
+		expect(endStepOutput).toHaveProperty(
+			"tool_execution_id",
+			"texec-collab-call-1",
+		);
 		expect(recordWorkItem).toHaveBeenCalledWith({
 			runId: "run_1",
 			workItem: expect.objectContaining({
@@ -263,10 +272,13 @@ describe("hosted AgentRuntime progress recorder", () => {
 				}),
 			}),
 		});
+		const recordedWorkItem = recordWorkItem.mock.calls[0]?.[0]?.workItem;
+		expect(recordedWorkItem).not.toHaveProperty("toolExecutionId");
 		expect(updateWorkItem).toHaveBeenCalledWith({
 			runId: "run_1",
 			workItemId: "maestro:session_1:work:collab-call-1",
 			state: PlatformAgentWorkItemStateValue.Succeeded,
+			toolExecutionId: "texec-collab-call-1",
 			evidenceRefs: [
 				"codex-tool-call:collab-call-1",
 				"codex-thread:child-thread-1",

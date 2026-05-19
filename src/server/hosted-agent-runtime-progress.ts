@@ -479,6 +479,18 @@ function toolDisplayName(event: {
 	return event.displayName ?? event.summaryLabel ?? event.toolName;
 }
 
+function materializedToolExecutionId(event: {
+	toolCallId: string;
+	toolExecutionId?: string;
+}): string | undefined {
+	const toolExecutionId = nonEmptyString(event.toolExecutionId)?.trim();
+	const toolCallId = nonEmptyString(event.toolCallId)?.trim();
+	if (!toolExecutionId || toolExecutionId === toolCallId) {
+		return undefined;
+	}
+	return toolExecutionId;
+}
+
 function waitTypeForRequest(
 	kind: ServerRequestLifecycleEvent["request"]["kind"],
 ): PlatformAgentRunWaitTypeValue {
@@ -608,7 +620,7 @@ export class HostedAgentRuntimeProgressRecorder {
 					input: this.basePayload({
 						event_type: event.type,
 						tool_call_id: event.toolCallId,
-						tool_execution_id: event.toolExecutionId,
+						tool_execution_id: materializedToolExecutionId(event),
 						tool_name: event.toolName,
 						display_name: event.displayName,
 						summary_label: event.summaryLabel,
@@ -633,7 +645,7 @@ export class HostedAgentRuntimeProgressRecorder {
 					output: this.basePayload({
 						event_type: event.type,
 						tool_call_id: event.toolCallId,
-						tool_execution_id: event.toolExecutionId,
+						tool_execution_id: materializedToolExecutionId(event),
 						approval_request_id: event.approvalRequestId,
 						tool_name: event.toolName,
 						display_name: event.displayName,
@@ -975,6 +987,7 @@ export class HostedAgentRuntimeProgressRecorder {
 				this.codexSubagentThreadWorkItemIds.set(threadId, workItemId);
 			}
 		}
+		const toolExecutionId = materializedToolExecutionId(event);
 		const prompt = nonEmptyString(event.args.prompt);
 		const model = nonEmptyString(event.args.model);
 		const reasoningEffort = nonEmptyString(event.args.reasoningEffort);
@@ -995,9 +1008,7 @@ export class HostedAgentRuntimeProgressRecorder {
 			title: toolDisplayName(event),
 			...(prompt ? { goal: prompt } : {}),
 			nextAction: codexSubagentNextAction(codexTool),
-			...(event.toolExecutionId
-				? { toolExecutionId: event.toolExecutionId }
-				: {}),
+			...(toolExecutionId ? { toolExecutionId } : {}),
 			evidenceRefs: [
 				`codex-tool-call:${event.toolCallId}`,
 				...receiverThreadIds.map((id) => `codex-thread:${id}`),
@@ -1177,6 +1188,7 @@ export class HostedAgentRuntimeProgressRecorder {
 			const shouldResolveDelegation =
 				delegationIds.length > 0 &&
 				shouldResolveCodexSubagentDelegation(codexTool, event.isError);
+			const toolExecutionId = materializedToolExecutionId(event);
 			let updateError: unknown;
 			try {
 				await this.operations.updateWorkItem({
@@ -1185,9 +1197,7 @@ export class HostedAgentRuntimeProgressRecorder {
 					state: event.isError
 						? PlatformAgentWorkItemStateValue.Failed
 						: PlatformAgentWorkItemStateValue.Succeeded,
-					...(event.toolExecutionId
-						? { toolExecutionId: event.toolExecutionId }
-						: {}),
+					...(toolExecutionId ? { toolExecutionId } : {}),
 					evidenceRefs: [
 						`codex-tool-call:${event.toolCallId}`,
 						...receiverThreadIds.map((id) => `codex-thread:${id}`),
