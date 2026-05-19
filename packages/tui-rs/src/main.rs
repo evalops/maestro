@@ -40,6 +40,8 @@ use maestro_tui::App;
 use maestro_tui::tools::cleanup_background_processes;
 // Import the process cleanup function for signal handlers.
 
+use maestro_tui::hosted_runner_cli::run_hosted_runner_cli_from_env;
+
 // ─────────────────────────────────────────────────────────────────────────────
 // HELPER FUNCTIONS
 // ─────────────────────────────────────────────────────────────────────────────
@@ -213,6 +215,18 @@ async fn main() -> Result<()> {
         default_hook(panic_info);
     }));
 
+    let raw_args = std::env::args_os().collect::<Vec<_>>();
+    if raw_args
+        .get(1)
+        .and_then(|arg| arg.to_str())
+        .is_some_and(|arg| arg == "hosted-runner")
+    {
+        let mut hosted_args = vec![std::ffi::OsString::from("maestro-tui hosted-runner")];
+        hosted_args.extend(raw_args.into_iter().skip(2));
+        run_hosted_runner_cli_from_env(hosted_args).await?;
+        return Ok(());
+    }
+
     // Parse command-line arguments using clap.
     // `Args::parse()` reads from std::env::args() and returns our Args struct.
     // If parsing fails (e.g., unknown flag), clap prints help and exits.
@@ -303,6 +317,20 @@ mod tests {
         assert_eq!(
             command.get_about().map(|about| about.to_string()),
             Some("Native terminal interface for Maestro".to_string())
+        );
+    }
+
+    #[test]
+    fn hosted_runner_subcommand_is_reserved_before_prompt_capture() {
+        let raw_args = [
+            std::ffi::OsString::from("maestro-tui"),
+            std::ffi::OsString::from("hosted-runner"),
+            std::ffi::OsString::from("--runner-session-id"),
+            std::ffi::OsString::from("mrs_test"),
+        ];
+        assert_eq!(
+            raw_args.get(1).and_then(|arg| arg.to_str()),
+            Some("hosted-runner")
         );
     }
 }

@@ -374,6 +374,24 @@
 		{
 			"area": "remote-runner-continuity",
 			"evidenceType": "source",
+			"path": "packages/tui-rs/src/hosted_runner_cli.rs",
+			"anchors": [
+				"start_hosted_runner_cli_runtime",
+				"AgentSupervisorHostedRunnerMessageExecutor",
+				"MAESTRO_HEADLESS_CLI_PATH",
+				"MAESTRO_AGENT_SCRIPT",
+				"MAESTRO_REMOTE_RUNNER_AGENT_ID"
+			]
+		},
+		{
+			"area": "remote-runner-continuity",
+			"evidenceType": "source",
+			"path": "packages/tui-rs/Cargo.toml",
+			"anchors": ["maestro-hosted-runner", "src/bin/maestro_hosted_runner.rs"]
+		},
+		{
+			"area": "remote-runner-continuity",
+			"evidenceType": "source",
 			"path": "packages/tui-rs/src/headless/messages.rs",
 			"anchors": [
 				"CodexSubagentContinuityEdge",
@@ -382,6 +400,21 @@
 				"resume_agent",
 				"close_agent"
 			]
+		},
+		{
+			"area": "remote-runner-continuity",
+			"evidenceType": "test",
+			"path": "packages/tui-rs/src/hosted_runner_cli.rs",
+			"anchors": [
+				"resolves_cli_flags_into_runner_and_supervisor_config",
+				"starts_real_hosted_runner_with_supervised_headless_child"
+			]
+		},
+		{
+			"area": "remote-runner-continuity",
+			"evidenceType": "test",
+			"path": "packages/tui-rs/src/main.rs",
+			"anchors": ["hosted_runner_subcommand_is_reserved_before_prompt_capture"]
 		},
 		{
 			"area": "remote-runner-continuity",

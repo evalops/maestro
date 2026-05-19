@@ -87,6 +87,9 @@ pub mod headless;
 /// Hosted runner contract primitives for Platform-managed Maestro runtimes.
 pub mod hosted_runner;
 
+/// Rust hosted runner command-line entrypoints.
+pub mod hosted_runner_cli;
+
 /// Message protocol definitions.
 /// Type definitions for messages exchanged between Rust and Node.js.
 pub mod protocol;
