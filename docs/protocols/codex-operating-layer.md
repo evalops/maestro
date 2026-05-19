@@ -60,7 +60,7 @@ npm run check:codex-operating-layer
 | durable threads, goals, memory | `durable-threads-goals-memory` | `src/session/types.ts`, `packages/contracts/src/maestro-app-server.ts`, `test/app-server/session-api.test.ts` |
 | approvals and sandbox policy | `approvals-sandbox-policy` | `src/agent/transport.ts`, `test/agent/provider-transport-provider-tools.test.ts`, `packages/control-plane-rs/src/main.rs`, `docs/protocols/pending-requests.md` |
 | subagents | `subagents` | `src/agent/providers/codex-app-server.ts`, `test/agent/provider-transport-provider-tools.test.ts` |
-| multi-agent work graph | `multi-agent-workgraph` | `src/platform/agent-runtime-client.ts`, `src/platform/agent-registry-client.ts`, `src/agent/providers/codex-app-server.ts`, `packages/control-plane-rs/src/main.rs`, `src/server/hosted-agent-runtime-progress.ts`, `test/server/hosted-agent-runtime-progress.test.ts` |
+| multi-agent work graph | `multi-agent-workgraph` | `docs/protocols/codex-subagent-workgraph-v1.json`, `src/platform/agent-runtime-client.ts`, `src/platform/agent-registry-client.ts`, `src/agent/providers/codex-app-server.ts`, `packages/control-plane-rs/src/main.rs`, `src/server/hosted-agent-runtime-progress.ts`, `test/server/hosted-agent-runtime-progress.test.ts` |
 | remote runner continuity | `remote-runner-continuity` | `src/server/handlers/hosted-runner-drain.ts`, `packages/tui-rs/src/hosted_runner.rs`, `packages/tui-rs/src/hosted_runner_cli.rs`, `packages/tui-rs/src/headless/messages.rs`, `test/server/hosted-runner-drain.test.ts` |
 | realtime streaming | `realtime-streaming` | `src/server/handlers/runtime-app-server-ws.ts`, `test/server/runtime-app-server-ws.test.ts` |
 | TypeScript runtime | `typescript-runtime` | `src/agent/providers/codex-app-server.ts`, `test/agent/codex-app-server.test.ts` |
@@ -93,9 +93,11 @@ temporary workspace, and enforces bounded dynamic tool calls with
 `MAESTRO_CODEX_LIVE_SMOKE_MAX_TOTAL_TOOL_CALLS` and
 `MAESTRO_CODEX_LIVE_SMOKE_MAX_IDENTICAL_TOOL_CALLS`. It also runs real Codex
 subagent spawn/wait inference and requires `codexWorkGraph` evidence on both
-`codex.subagent.spawnAgent` and `codex.subagent.wait`; the remote-runner drain
-tests then require lifecycle-edge continuity for spawn/send/resume/wait/close
-without copying child prompts into manifest metadata.
+`codex.subagent.spawnAgent` and `codex.subagent.wait`; the versioned
+`codex-subagent-workgraph-v1.json` fixture pins the full
+spawn/send/resume/wait/close lifecycle for TypeScript and Rust conformance, and
+the remote-runner drain tests require lifecycle-edge continuity without copying
+child prompts into manifest metadata.
 
 ## Completion Bar
 

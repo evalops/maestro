@@ -187,6 +187,7 @@ export interface HostedRunnerSnapshotManifest {
 
 export interface HostedRunnerWorkContinuity {
 	protocol_version: typeof HOSTED_RUNNER_WORK_CONTINUITY_VERSION;
+	codex_subagent_schema_version: typeof CODEX_SUBAGENT_WORK_GRAPH_SCHEMA;
 	active_tool_count: number;
 	tracked_tool_count: number;
 	pending_request_count: number;
@@ -212,6 +213,7 @@ export interface HostedRunnerPlatformEvidence {
 	requested_by?: string;
 	work_continuity: {
 		protocol_version: typeof HOSTED_RUNNER_WORK_CONTINUITY_VERSION;
+		codex_subagent_schema_version: typeof CODEX_SUBAGENT_WORK_GRAPH_SCHEMA;
 		active_tool_count: number;
 		tracked_tool_count: number;
 		pending_request_count: number;
@@ -548,6 +550,8 @@ function buildHostedRunnerPlatformEvidence(input: {
 		...(input.requestedBy ? { requested_by: input.requestedBy } : {}),
 		work_continuity: {
 			protocol_version: input.workContinuity.protocol_version,
+			codex_subagent_schema_version:
+				input.workContinuity.codex_subagent_schema_version,
 			active_tool_count: input.workContinuity.active_tool_count,
 			tracked_tool_count: input.workContinuity.tracked_tool_count,
 			pending_request_count: input.workContinuity.pending_request_count,
@@ -735,6 +739,7 @@ function collectHostedRunnerWorkContinuity(
 	);
 	return {
 		protocol_version: HOSTED_RUNNER_WORK_CONTINUITY_VERSION,
+		codex_subagent_schema_version: CODEX_SUBAGENT_WORK_GRAPH_SCHEMA,
 		active_tool_count:
 			sortedEdges.length > 0
 				? nonCodexActiveToolCount + activeCodexSubagentEdgeCount

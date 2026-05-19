@@ -17,6 +17,7 @@ const requiredAreas = [
 	"approvals-sandbox-policy",
 	"subagents",
 	"multi-agent-workgraph",
+	"remote-runner-continuity",
 	"realtime-streaming",
 	"typescript-runtime",
 	"rust-control-plane",

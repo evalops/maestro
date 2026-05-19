@@ -10,6 +10,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
+	CODEX_SUBAGENT_WORK_GRAPH_SCHEMA,
 	HEADLESS_PROTOCOL_VERSION,
 	createHeadlessRuntimeState,
 } from "../../src/cli/headless-protocol.js";
@@ -146,6 +147,7 @@ describe("hosted runner drain", () => {
 			},
 			work_continuity: {
 				protocol_version: HOSTED_RUNNER_WORK_CONTINUITY_VERSION,
+				codex_subagent_schema_version: CODEX_SUBAGENT_WORK_GRAPH_SCHEMA,
 				active_tool_count: 0,
 				tracked_tool_count: 0,
 				pending_request_count: 0,
@@ -169,6 +171,7 @@ describe("hosted runner drain", () => {
 				requested_by: "platform",
 				work_continuity: {
 					protocol_version: HOSTED_RUNNER_WORK_CONTINUITY_VERSION,
+					codex_subagent_schema_version: CODEX_SUBAGENT_WORK_GRAPH_SCHEMA,
 					active_tool_count: 0,
 					tracked_tool_count: 0,
 					pending_request_count: 0,
@@ -407,7 +410,7 @@ describe("hosted runner drain", () => {
 				args: {
 					prompt: "Sensitive child task prompt must stay in snapshot only",
 					codex_work_graph: {
-						schema_version: "evalops.maestro.codex.subagent-workgraph.v1",
+						schema_version: CODEX_SUBAGENT_WORK_GRAPH_SCHEMA,
 						tool_call_id: "collab-spawn-1",
 						tool: "spawnAgent",
 						status: "inProgress",
@@ -440,6 +443,7 @@ describe("hosted runner drain", () => {
 
 		expect(result?.manifest.work_continuity).toEqual({
 			protocol_version: HOSTED_RUNNER_WORK_CONTINUITY_VERSION,
+			codex_subagent_schema_version: CODEX_SUBAGENT_WORK_GRAPH_SCHEMA,
 			active_tool_count: 1,
 			tracked_tool_count: 1,
 			pending_request_count: 0,
@@ -483,7 +487,7 @@ describe("hosted runner drain", () => {
 				args: {
 					prompt: "Sensitive child task prompt must stay in snapshot only",
 					codex_work_graph: {
-						schema_version: "evalops.maestro.codex.subagent-workgraph.v1",
+						schema_version: CODEX_SUBAGENT_WORK_GRAPH_SCHEMA,
 						toolCallId: "collab-spawn-2",
 						tool: "spawnAgent",
 						status: "inProgress",
@@ -513,6 +517,7 @@ describe("hosted runner drain", () => {
 
 		expect(result?.manifest.work_continuity).toEqual({
 			protocol_version: HOSTED_RUNNER_WORK_CONTINUITY_VERSION,
+			codex_subagent_schema_version: CODEX_SUBAGENT_WORK_GRAPH_SCHEMA,
 			active_tool_count: 1,
 			tracked_tool_count: 1,
 			pending_request_count: 0,
@@ -566,6 +571,7 @@ describe("hosted runner drain", () => {
 
 		expect(result?.manifest.work_continuity).toEqual({
 			protocol_version: HOSTED_RUNNER_WORK_CONTINUITY_VERSION,
+			codex_subagent_schema_version: CODEX_SUBAGENT_WORK_GRAPH_SCHEMA,
 			active_tool_count: 0,
 			tracked_tool_count: 2,
 			pending_request_count: 0,
@@ -635,6 +641,7 @@ describe("hosted runner drain", () => {
 		);
 
 		expect(result?.manifest.work_continuity).toMatchObject({
+			codex_subagent_schema_version: CODEX_SUBAGENT_WORK_GRAPH_SCHEMA,
 			active_tool_count: 2,
 			tracked_tool_count: 2,
 			codex_subagent_tool_call_ids: ["collab-spawn-restored"],
@@ -670,6 +677,7 @@ describe("hosted runner drain", () => {
 		);
 
 		expect(result?.manifest.work_continuity).toMatchObject({
+			codex_subagent_schema_version: CODEX_SUBAGENT_WORK_GRAPH_SCHEMA,
 			active_tool_count: 0,
 			tracked_tool_count: 1,
 			codex_subagent_tool_call_ids: ["collab-send-ack"],
@@ -797,7 +805,7 @@ describe("hosted runner drain", () => {
 				args: {
 					prompt: "Sensitive interrupted child task prompt",
 					codex_work_graph: {
-						schema_version: "evalops.maestro.codex.subagent-workgraph.v1",
+						schema_version: CODEX_SUBAGENT_WORK_GRAPH_SCHEMA,
 						child_runs: [
 							{
 								thread_id: "child-thread-interrupted",
@@ -854,6 +862,7 @@ describe("hosted runner drain", () => {
 		expect(result?.manifest.snapshot).toEqual(snapshot);
 		expect(result?.manifest.work_continuity).toEqual({
 			protocol_version: HOSTED_RUNNER_WORK_CONTINUITY_VERSION,
+			codex_subagent_schema_version: CODEX_SUBAGENT_WORK_GRAPH_SCHEMA,
 			active_tool_count: 1,
 			tracked_tool_count: 1,
 			pending_request_count: 0,

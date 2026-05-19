@@ -1982,7 +1982,7 @@ async fn persist_a2a_tasks_locked(state: &AppState) -> Result<(), String> {
         .collect::<Vec<_>>();
     let existing_control_plane_entries = existing_entries
         .into_iter()
-        .filter(|entry| a2a_ledger_entry_is_control_plane(entry))
+        .filter(a2a_ledger_entry_is_control_plane)
         .filter_map(|entry| {
             let task_id = entry.get("taskId").and_then(Value::as_str)?.to_string();
             Some((task_id, entry))
@@ -2247,11 +2247,11 @@ fn dispatch_a2a_push_notifications(task: &Value) {
     let payloads = a2a_push_notification_payloads(task);
     for config in configs {
         let payloads = payloads.clone();
-        let _ = tokio::task::spawn_blocking(move || {
+        std::mem::drop(tokio::task::spawn_blocking(move || {
             for payload in payloads {
                 send_a2a_push_notification(&payload, &config);
             }
-        });
+        }));
     }
 }
 
@@ -8829,6 +8829,7 @@ fn codex_headless_pending_request_id(
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn handle_codex_headless_approval_request(
     stream: &mut TcpStream,
     transport: CodexBridgeTransport,
@@ -8914,6 +8915,7 @@ async fn cleanup_codex_headless_approvals(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn run_codex_app_server_headless_cli(
     stream: &mut TcpStream,
     transport: CodexBridgeTransport,
@@ -9036,15 +9038,14 @@ async fn run_codex_app_server_headless_cli(
                 continue;
             };
             match event.get("type").and_then(Value::as_str) {
-                Some("response_chunk") => {
+                Some("response_chunk")
                     if !event
                         .get("is_thinking")
                         .and_then(Value::as_bool)
-                        .unwrap_or(false)
-                    {
-                        if let Some(content) = event.get("content").and_then(Value::as_str) {
-                            assistant_text.push_str(content);
-                        }
+                        .unwrap_or(false) =>
+                {
+                    if let Some(content) = event.get("content").and_then(Value::as_str) {
+                        assistant_text.push_str(content);
                     }
                 }
                 Some("response_end") => {
@@ -11375,7 +11376,7 @@ mod tests {
     use super::*;
     use std::fs;
 
-    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    static ENV_LOCK: Mutex<()> = Mutex::const_new(());
 
     #[test]
     fn cli_args_default_to_serving() {
@@ -11840,6 +11841,81 @@ mod tests {
     }
 
     #[test]
+    fn codex_headless_subagent_lifecycle_matches_workgraph_fixture() {
+        let fixture: Value = serde_json::from_str(include_str!(
+            "../../../docs/protocols/codex-subagent-workgraph-v1.json"
+        ))
+        .expect("work graph fixture should parse");
+        assert_eq!(
+            fixture["schemaVersion"],
+            serde_json::json!(CODEX_SUBAGENT_WORK_GRAPH_SCHEMA)
+        );
+        assert_eq!(fixture["toolPrefix"], "codex.subagent.");
+        assert_eq!(fixture["threadChildRunPrefix"], "codex-thread:");
+
+        let operations = fixture["operations"]
+            .as_array()
+            .expect("fixture operations should be an array");
+        let mut seen_tools = Vec::new();
+        for operation in operations {
+            let tool = operation["tool"].as_str().expect("tool");
+            let operation_name = operation["operation"].as_str().expect("operation");
+            let aliases = operation["aliases"].as_array().expect("aliases");
+            assert_eq!(codex_canonical_collab_tool(tool), tool);
+            assert_eq!(codex_canonical_collab_tool(operation_name), tool);
+            seen_tools.push(tool.to_string());
+
+            for alias in aliases {
+                let alias = alias.as_str().expect("alias");
+                assert_eq!(codex_canonical_collab_tool(alias), tool);
+                let start = codex_headless_tool_event_from_json(&serde_json::json!({
+                    "type": "tool_call",
+                    "call_id": format!("collab-{operation_name}"),
+                    "tool": format!("codex.subagent.{alias}"),
+                    "args": {
+                        "codexTool": alias,
+                        "senderThreadId": "thread-parent",
+                        "receiverThreadIds": ["thread-child"],
+                        "childRunIds": ["agent-run-child-1"]
+                    }
+                }))
+                .expect("start event");
+
+                assert_eq!(start.tool_name, format!("codex.subagent.{tool}"));
+                assert_eq!(start.args["codexTool"], serde_json::json!(tool));
+                assert_eq!(start.args["senderThreadId"], "thread-parent");
+                assert_eq!(
+                    start.args["codexWorkGraph"]["schemaVersion"],
+                    serde_json::json!(CODEX_SUBAGENT_WORK_GRAPH_SCHEMA)
+                );
+                assert_eq!(
+                    start.args["codexWorkGraph"]["tool"],
+                    serde_json::json!(tool)
+                );
+                assert_eq!(
+                    start.args["codexWorkGraph"]["childRuns"][0]["operation"],
+                    serde_json::json!(tool)
+                );
+                assert_eq!(
+                    start.args["codexWorkGraph"]["childRuns"][0]["childRunId"],
+                    "agent-run-child-1"
+                );
+            }
+        }
+
+        assert_eq!(
+            seen_tools,
+            vec![
+                "spawnAgent",
+                "sendInput",
+                "resumeAgent",
+                "wait",
+                "closeAgent"
+            ]
+        );
+    }
+
+    #[test]
     fn codex_headless_tool_end_uses_start_context_when_end_omits_tool_name() {
         let mut contexts = HashMap::new();
         let _ = codex_headless_tool_event_from_json_with_context(
@@ -11902,7 +11978,7 @@ mod tests {
 
     #[test]
     fn codex_bridge_temp_dirs_are_unique_per_request() {
-        let _guard = ENV_LOCK.lock().expect("env lock should not be poisoned");
+        let _guard = ENV_LOCK.blocking_lock();
         let previous_bridge = env::var_os("MAESTRO_CODEX_APP_SERVER_SANDBOX");
         let previous_sandbox = env::var_os("MAESTRO_SANDBOX_MODE");
         env::remove_var("MAESTRO_CODEX_APP_SERVER_SANDBOX");
@@ -11930,7 +12006,7 @@ mod tests {
 
     #[test]
     fn codex_bridge_temp_dir_uses_workspace_for_docker_sandbox() {
-        let _guard = ENV_LOCK.lock().expect("env lock should not be poisoned");
+        let _guard = ENV_LOCK.blocking_lock();
         let cwd = TestDir::new("codex-bridge-docker-cwd");
         let previous_bridge = env::var_os("MAESTRO_CODEX_APP_SERVER_SANDBOX");
         let previous_sandbox = env::var_os("MAESTRO_SANDBOX_MODE");
@@ -12009,7 +12085,7 @@ mod tests {
 
     #[tokio::test]
     async fn codex_app_server_cli_isolates_child_usage_file() {
-        let _guard = ENV_LOCK.lock().expect("env lock should not be poisoned");
+        let _guard = ENV_LOCK.lock().await;
         let root = TestDir::new("codex-isolated-usage");
         let cli_path = root.path().join("cli.js");
         let marker_path = root.path().join("child-usage-file.txt");
@@ -12059,7 +12135,7 @@ console.log(JSON.stringify({ type: "item", subtype: "message_complete", data: { 
 
     #[tokio::test]
     async fn codex_headless_bridge_round_trips_prompt_approval() {
-        let _guard = ENV_LOCK.lock().expect("env lock should not be poisoned");
+        let _guard = ENV_LOCK.lock().await;
         let root = TestDir::new("codex-headless-approval");
         let cli_path = root.path().join("cli.js");
         let marker_path = root.path().join("approval-response.json");
@@ -12193,7 +12269,7 @@ rl.on("line", (line) => {
 
     #[tokio::test]
     async fn codex_headless_bridge_streams_tool_events_over_websocket() {
-        let _guard = ENV_LOCK.lock().expect("env lock should not be poisoned");
+        let _guard = ENV_LOCK.lock().await;
         let root = TestDir::new("codex-headless-ws-tools");
         let cli_path = root.path().join("cli.js");
         fs::write(
@@ -12302,7 +12378,7 @@ rl.on("line", (line) => {
 
     #[tokio::test]
     async fn codex_headless_approval_wait_does_not_consume_request_timeout() {
-        let _guard = ENV_LOCK.lock().expect("env lock should not be poisoned");
+        let _guard = ENV_LOCK.lock().await;
         let root = TestDir::new("codex-headless-approval-timeout");
         let cli_path = root.path().join("cli.js");
         fs::write(
@@ -12416,7 +12492,7 @@ rl.on("line", (line) => {
 
     #[tokio::test]
     async fn codex_headless_bridge_keeps_valid_output_after_nonzero_shutdown() {
-        let _guard = ENV_LOCK.lock().expect("env lock should not be poisoned");
+        let _guard = ENV_LOCK.lock().await;
         let root = TestDir::new("codex-headless-nonzero-shutdown");
         let cli_path = root.path().join("cli.js");
         fs::write(
@@ -12492,7 +12568,7 @@ rl.on("line", (line) => {
 
     #[tokio::test]
     async fn codex_headless_bridge_keeps_valid_output_after_broken_pipe_shutdown() {
-        let _guard = ENV_LOCK.lock().expect("env lock should not be poisoned");
+        let _guard = ENV_LOCK.lock().await;
         let root = TestDir::new("codex-headless-broken-pipe-shutdown");
         let cli_path = root.path().join("cli.js");
         fs::write(
@@ -12557,7 +12633,7 @@ rl.on("line", (line) => {
 
     #[tokio::test]
     async fn codex_headless_bridge_bounds_shutdown_wait_after_valid_output() {
-        let _guard = ENV_LOCK.lock().expect("env lock should not be poisoned");
+        let _guard = ENV_LOCK.lock().await;
         let root = TestDir::new("codex-headless-hung-shutdown");
         let cli_path = root.path().join("cli.js");
         fs::write(
@@ -12632,7 +12708,7 @@ rl.on("line", (line) => {
 
     #[tokio::test]
     async fn codex_app_server_timeout_kills_child_process() {
-        let _guard = ENV_LOCK.lock().expect("env lock should not be poisoned");
+        let _guard = ENV_LOCK.lock().await;
         let root = TestDir::new("codex-timeout");
         let cli_path = root.path().join("cli.js");
         let marker_path = root.path().join("still-running.txt");
@@ -12956,7 +13032,7 @@ setTimeout(() => {
 
     #[test]
     fn authorizes_shared_secret_bearer_token() {
-        let _guard = ENV_LOCK.lock().expect("env lock should not be poisoned");
+        let _guard = ENV_LOCK.blocking_lock();
         let previous = env::var_os("MAESTRO_AUTH_SHARED_SECRET");
         env::set_var("MAESTRO_AUTH_SHARED_SECRET", "shared-secret");
 
@@ -13034,7 +13110,7 @@ setTimeout(() => {
 
     #[test]
     fn authorizes_hs256_jwt_bearer_token() {
-        let _guard = ENV_LOCK.lock().expect("env lock should not be poisoned");
+        let _guard = ENV_LOCK.blocking_lock();
         let previous_secret = env::var_os("MAESTRO_JWT_SECRET");
         let previous_alg = env::var_os("MAESTRO_JWT_ALG");
         let previous_aud = env::var_os("MAESTRO_JWT_AUD");
@@ -13079,7 +13155,7 @@ setTimeout(() => {
 
     #[tokio::test]
     async fn jwks_auth_check_does_not_panic_inside_tokio_runtime() {
-        let _guard = ENV_LOCK.lock().expect("env lock should not be poisoned");
+        let _guard = ENV_LOCK.lock().await;
         let previous_url = env::var_os("MAESTRO_JWT_JWKS_URL");
         let previous_alg = env::var_os("MAESTRO_JWT_ALG");
         let previous_secret = env::var_os("MAESTRO_JWT_SECRET");
@@ -13175,7 +13251,7 @@ setTimeout(() => {
 
     #[test]
     fn a2a_agent_card_advertises_http_json_interface() {
-        let _guard = ENV_LOCK.lock().expect("env lock should not be poisoned");
+        let _guard = ENV_LOCK.blocking_lock();
         let previous_a2a_url = env::var_os("MAESTRO_A2A_PUBLIC_URL");
         let previous_a2a_host = env::var_os("MAESTRO_A2A_PUBLIC_HOST");
         let previous_control_url = env::var_os("MAESTRO_CONTROL_PUBLIC_URL");
@@ -13285,7 +13361,7 @@ setTimeout(() => {
 
     #[test]
     fn a2a_agent_card_uses_configured_public_host_for_wildcard_binds() {
-        let _guard = ENV_LOCK.lock().expect("env lock should not be poisoned");
+        let _guard = ENV_LOCK.blocking_lock();
         let previous_a2a_host = env::var_os("MAESTRO_A2A_PUBLIC_HOST");
         let previous_a2a_url = env::var_os("MAESTRO_A2A_PUBLIC_URL");
         let previous_control_url = env::var_os("MAESTRO_CONTROL_PUBLIC_URL");
@@ -13326,7 +13402,7 @@ setTimeout(() => {
 
     #[test]
     fn a2a_agent_card_formats_ipv6_listen_hosts() {
-        let _guard = ENV_LOCK.lock().expect("env lock should not be poisoned");
+        let _guard = ENV_LOCK.blocking_lock();
         let previous_hostname = env::var_os("HOSTNAME");
         let previous_computername = env::var_os("COMPUTERNAME");
         let previous_a2a_url = env::var_os("MAESTRO_A2A_PUBLIC_URL");
@@ -13385,7 +13461,7 @@ setTimeout(() => {
 
     #[test]
     fn a2a_agent_card_formats_configured_ipv6_public_host() {
-        let _guard = ENV_LOCK.lock().expect("env lock should not be poisoned");
+        let _guard = ENV_LOCK.blocking_lock();
         let previous_a2a_host = env::var_os("MAESTRO_A2A_PUBLIC_HOST");
         let previous_a2a_url = env::var_os("MAESTRO_A2A_PUBLIC_URL");
         let previous_control_url = env::var_os("MAESTRO_CONTROL_PUBLIC_URL");
@@ -13430,7 +13506,7 @@ setTimeout(() => {
 
     #[test]
     fn a2a_agent_card_percent_encodes_scoped_ipv6_public_host() {
-        let _guard = ENV_LOCK.lock().expect("env lock should not be poisoned");
+        let _guard = ENV_LOCK.blocking_lock();
         let previous_a2a_host = env::var_os("MAESTRO_A2A_PUBLIC_HOST");
         let previous_a2a_url = env::var_os("MAESTRO_A2A_PUBLIC_URL");
         let previous_control_url = env::var_os("MAESTRO_CONTROL_PUBLIC_URL");
@@ -13597,7 +13673,7 @@ setTimeout(() => {
 
     #[tokio::test(flavor = "current_thread")]
     async fn a2a_message_send_runs_fake_turn_and_records_task() {
-        let _guard = ENV_LOCK.lock().expect("env lock should not be poisoned");
+        let _guard = ENV_LOCK.lock().await;
         let previous_fake = env::var("MAESTRO_A2A_FAKE_RESPONSE").ok();
         env::set_var("MAESTRO_A2A_FAKE_RESPONSE", "hello from fake native turn");
 
@@ -13633,7 +13709,7 @@ setTimeout(() => {
 
     #[tokio::test(flavor = "current_thread")]
     async fn a2a_message_send_records_extensions_and_push_config() {
-        let _guard = ENV_LOCK.lock().expect("env lock should not be poisoned");
+        let _guard = ENV_LOCK.lock().await;
         let previous_fake = env::var("MAESTRO_A2A_FAKE_RESPONSE").ok();
         let previous_disable_delivery = env::var("MAESTRO_A2A_PUSH_DISABLE_DELIVERY").ok();
         env::set_var("MAESTRO_A2A_FAKE_RESPONSE", "hello with push config");
@@ -13714,7 +13790,7 @@ setTimeout(() => {
 
     #[tokio::test(flavor = "current_thread")]
     async fn platform_a2a_push_callback_accepts_status_updates() {
-        let _guard = ENV_LOCK.lock().expect("env lock should not be poisoned");
+        let _guard = ENV_LOCK.lock().await;
         let previous_token = env::var_os("MAESTRO_PLATFORM_A2A_CALLBACK_TOKEN");
         env::set_var("MAESTRO_PLATFORM_A2A_CALLBACK_TOKEN", "callback-token");
 
@@ -13787,7 +13863,7 @@ setTimeout(() => {
 
     #[tokio::test(flavor = "current_thread")]
     async fn platform_a2a_push_callback_rejects_invalid_token() {
-        let _guard = ENV_LOCK.lock().expect("env lock should not be poisoned");
+        let _guard = ENV_LOCK.lock().await;
         let previous_token = env::var_os("MAESTRO_PLATFORM_A2A_CALLBACK_TOKEN");
         env::set_var("MAESTRO_PLATFORM_A2A_CALLBACK_TOKEN", "callback-token");
 
@@ -13816,7 +13892,7 @@ setTimeout(() => {
 
     #[tokio::test(flavor = "current_thread")]
     async fn platform_a2a_push_callback_requires_configured_token() {
-        let _guard = ENV_LOCK.lock().expect("env lock should not be poisoned");
+        let _guard = ENV_LOCK.lock().await;
         let previous_primary = env::var_os("MAESTRO_PLATFORM_A2A_CALLBACK_TOKEN");
         let previous_legacy = env::var_os("MAESTRO_A2A_CALLBACK_TOKEN");
         env::remove_var("MAESTRO_PLATFORM_A2A_CALLBACK_TOKEN");
@@ -13854,7 +13930,7 @@ setTimeout(() => {
 
     #[tokio::test(flavor = "current_thread")]
     async fn platform_a2a_push_callback_records_artifact_updates() {
-        let _guard = ENV_LOCK.lock().expect("env lock should not be poisoned");
+        let _guard = ENV_LOCK.lock().await;
         let previous_token = env::var_os("MAESTRO_PLATFORM_A2A_CALLBACK_TOKEN");
         env::set_var("MAESTRO_PLATFORM_A2A_CALLBACK_TOKEN", "callback-token");
 
@@ -14091,7 +14167,7 @@ setTimeout(() => {
 
     #[tokio::test(flavor = "current_thread")]
     async fn a2a_message_send_ignores_push_config_metadata_smuggling() {
-        let _guard = ENV_LOCK.lock().expect("env lock should not be poisoned");
+        let _guard = ENV_LOCK.lock().await;
         let previous_fake = env::var("MAESTRO_A2A_FAKE_RESPONSE").ok();
         let previous_disable_delivery = env::var("MAESTRO_A2A_PUSH_DISABLE_DELIVERY").ok();
         env::set_var("MAESTRO_A2A_FAKE_RESPONSE", "hello without smuggled push");
@@ -14148,7 +14224,7 @@ setTimeout(() => {
 
     #[tokio::test(flavor = "current_thread")]
     async fn a2a_push_notification_config_crud_updates_task_metadata() {
-        let _guard = ENV_LOCK.lock().expect("env lock should not be poisoned");
+        let _guard = ENV_LOCK.lock().await;
         let previous_disable_delivery = env::var("MAESTRO_A2A_PUSH_DISABLE_DELIVERY").ok();
         env::set_var("MAESTRO_A2A_PUSH_DISABLE_DELIVERY", "1");
         let state = test_app_state_with_sessions(HashMap::new());
@@ -14329,7 +14405,7 @@ setTimeout(() => {
 
     #[tokio::test(flavor = "current_thread")]
     async fn a2a_tasks_list_only_returns_tasks_owned_by_subject() {
-        let _guard = ENV_LOCK.lock().expect("env lock should not be poisoned");
+        let _guard = ENV_LOCK.lock().await;
         let previous_secret = env::var_os("MAESTRO_AUTH_SHARED_SECRET");
         env::set_var("MAESTRO_AUTH_SHARED_SECRET", "shared-secret");
         let state = test_app_state_with_sessions(HashMap::new());
@@ -14697,10 +14773,9 @@ setTimeout(() => {
 
         tokio::time::sleep(Duration::from_millis(A2A_LEDGER_LOCK_RETRY_MS * 3)).await;
         assert!(
-            tokio::fs::try_exists(&state.config.a2a_tasks_file_path)
+            !tokio::fs::try_exists(&state.config.a2a_tasks_file_path)
                 .await
-                .expect("ledger existence should be checkable")
-                == false,
+                .expect("ledger existence should be checkable"),
             "persist should wait for the shared TS ledger lock before writing"
         );
         tokio::fs::remove_dir_all(&lock_path)
@@ -14894,7 +14969,7 @@ setTimeout(() => {
 
     #[tokio::test(flavor = "current_thread")]
     async fn a2a_message_stream_emits_task_status_and_artifact_events() {
-        let _guard = ENV_LOCK.lock().expect("env lock should not be poisoned");
+        let _guard = ENV_LOCK.lock().await;
         let previous_fake = env::var("MAESTRO_A2A_FAKE_RESPONSE").ok();
         env::set_var("MAESTRO_A2A_FAKE_RESPONSE", "streamed fake response");
         let body = r#"{"message":{"messageId":"msg-1","contextId":"ctx-stream","role":"ROLE_USER","parts":[{"text":"hello","mediaType":"text/plain"}]}}"#;
@@ -14983,7 +15058,7 @@ setTimeout(() => {
 
     #[tokio::test(flavor = "current_thread")]
     async fn a2a_task_subscribe_streams_active_task_until_terminal_update() {
-        let _guard = ENV_LOCK.lock().expect("env lock should not be poisoned");
+        let _guard = ENV_LOCK.lock().await;
         let previous_timeout = env::var("MAESTRO_A2A_SUBSCRIBE_TIMEOUT_MS").ok();
         let previous_heartbeat = env::var("MAESTRO_A2A_SUBSCRIBE_HEARTBEAT_MS").ok();
         env::set_var("MAESTRO_A2A_SUBSCRIBE_TIMEOUT_MS", "250");
@@ -15072,7 +15147,7 @@ setTimeout(() => {
 
     #[tokio::test(flavor = "current_thread")]
     async fn a2a_task_subscribe_times_out_active_stream() {
-        let _guard = ENV_LOCK.lock().expect("env lock should not be poisoned");
+        let _guard = ENV_LOCK.lock().await;
         let previous_timeout = env::var("MAESTRO_A2A_SUBSCRIBE_TIMEOUT_MS").ok();
         let previous_heartbeat = env::var("MAESTRO_A2A_SUBSCRIBE_HEARTBEAT_MS").ok();
         env::set_var("MAESTRO_A2A_SUBSCRIBE_TIMEOUT_MS", "40");
@@ -15234,7 +15309,7 @@ setTimeout(() => {
 
     #[tokio::test(flavor = "current_thread")]
     async fn a2a_message_send_rejects_task_follow_up_from_other_subject() {
-        let _guard = ENV_LOCK.lock().expect("env lock should not be poisoned");
+        let _guard = ENV_LOCK.lock().await;
         let previous_secret = env::var_os("MAESTRO_AUTH_SHARED_SECRET");
         let previous_fake = env::var("MAESTRO_A2A_FAKE_RESPONSE").ok();
         env::set_var("MAESTRO_AUTH_SHARED_SECRET", "shared-secret");
@@ -15288,7 +15363,7 @@ setTimeout(() => {
 
     #[tokio::test(flavor = "current_thread")]
     async fn a2a_message_send_preserves_owner_metadata_on_unrestricted_follow_up() {
-        let _guard = ENV_LOCK.lock().expect("env lock should not be poisoned");
+        let _guard = ENV_LOCK.lock().await;
         let previous_fake = env::var("MAESTRO_A2A_FAKE_RESPONSE").ok();
         env::set_var("MAESTRO_A2A_FAKE_RESPONSE", "follow-up response");
         let state = test_app_state_with_sessions(HashMap::new());
@@ -15340,7 +15415,7 @@ setTimeout(() => {
 
     #[tokio::test(flavor = "current_thread")]
     async fn a2a_message_send_rejects_unknown_task_id() {
-        let _guard = ENV_LOCK.lock().expect("env lock should not be poisoned");
+        let _guard = ENV_LOCK.lock().await;
         let previous_fake = env::var("MAESTRO_A2A_FAKE_RESPONSE").ok();
         env::set_var("MAESTRO_A2A_FAKE_RESPONSE", "should not run");
 
@@ -15369,7 +15444,7 @@ setTimeout(() => {
 
     #[tokio::test(flavor = "current_thread")]
     async fn a2a_message_send_reuses_existing_task_id_and_history() {
-        let _guard = ENV_LOCK.lock().expect("env lock should not be poisoned");
+        let _guard = ENV_LOCK.lock().await;
         let previous_fake = env::var("MAESTRO_A2A_FAKE_RESPONSE").ok();
         env::set_var("MAESTRO_A2A_FAKE_RESPONSE", "follow-up response");
 
@@ -15700,7 +15775,7 @@ setTimeout(() => {
 
     #[tokio::test(flavor = "current_thread")]
     async fn a2a_async_completion_preserves_canceled_task_state() {
-        let _guard = ENV_LOCK.lock().expect("env lock should not be poisoned");
+        let _guard = ENV_LOCK.lock().await;
         let previous_fake = env::var("MAESTRO_A2A_FAKE_RESPONSE").ok();
         env::set_var("MAESTRO_A2A_FAKE_RESPONSE", "late response");
 
@@ -15768,7 +15843,7 @@ setTimeout(() => {
 
     #[tokio::test(flavor = "current_thread")]
     async fn a2a_cancel_signals_return_immediately_worker() {
-        let _guard = ENV_LOCK.lock().expect("env lock should not be poisoned");
+        let _guard = ENV_LOCK.lock().await;
         let previous_fake = env::var("MAESTRO_A2A_FAKE_RESPONSE").ok();
         let previous_delay = env::var("MAESTRO_A2A_FAKE_RESPONSE_DELAY_MS").ok();
         env::set_var("MAESTRO_A2A_FAKE_RESPONSE", "late response");
@@ -17113,7 +17188,7 @@ setTimeout(() => {
 
     #[test]
     fn wildcard_web_origin_allows_websocket_origins() {
-        let _guard = ENV_LOCK.lock().expect("env lock should not be poisoned");
+        let _guard = ENV_LOCK.blocking_lock();
         let previous = env::var_os("MAESTRO_WEB_ORIGIN");
         env::set_var("MAESTRO_WEB_ORIGIN", "*");
         let head = parse_request_head(
@@ -17132,7 +17207,7 @@ setTimeout(() => {
 
     #[test]
     fn openrouter_catalog_requires_explicit_configuration() {
-        let _guard = ENV_LOCK.lock().expect("env lock should not be poisoned");
+        let _guard = ENV_LOCK.blocking_lock();
         let vars = [
             "MAESTRO_LLM_GATEWAY_MODELS_URL",
             "MAESTRO_LLM_GATEWAY_URL",
@@ -17314,7 +17389,7 @@ setTimeout(() => {
 
     #[test]
     fn bearer_token_identity_wins_over_runtime_session_cookie() {
-        let _guard = ENV_LOCK.lock().expect("env lock should not be poisoned");
+        let _guard = ENV_LOCK.blocking_lock();
         let previous = env::var_os("MAESTRO_AUTH_SHARED_SECRET");
         env::set_var("MAESTRO_AUTH_SHARED_SECRET", "shared-secret");
         let config = auth_test_config();
@@ -17393,7 +17468,7 @@ setTimeout(() => {
 
     #[test]
     fn trusted_proxy_auth_requires_shared_proxy_token() {
-        let _guard = ENV_LOCK.lock().expect("env lock should not be poisoned");
+        let _guard = ENV_LOCK.blocking_lock();
         let previous = env::var_os("MAESTRO_WEB_TRUST_PROXY_AUTH_TOKEN");
         env::set_var("MAESTRO_WEB_TRUST_PROXY_AUTH_TOKEN", "proxy-secret");
         let config = auth_test_config();
@@ -17436,7 +17511,7 @@ setTimeout(() => {
 
     #[test]
     fn trusted_proxy_token_counts_as_configured_auth() {
-        let _guard = ENV_LOCK.lock().expect("env lock should not be poisoned");
+        let _guard = ENV_LOCK.blocking_lock();
         let previous = env::var_os("MAESTRO_WEB_TRUST_PROXY_AUTH_TOKEN");
         env::set_var("MAESTRO_WEB_TRUST_PROXY_AUTH_TOKEN", "proxy-secret");
         let mut config = auth_test_config();
@@ -17460,7 +17535,7 @@ setTimeout(() => {
 
     #[test]
     fn web_auth_mode_matrix_pins_control_plane_access() {
-        let _guard = ENV_LOCK.lock().expect("env lock should not be poisoned");
+        let _guard = ENV_LOCK.blocking_lock();
         let preserved_env: Vec<_> = [
             "MAESTRO_WEB_TRUST_PROXY_AUTH_TOKEN",
             "MAESTRO_AUTH_SHARED_SECRET",
@@ -17925,7 +18000,7 @@ setTimeout(() => {
 
     #[tokio::test]
     async fn prepared_attachments_use_workspace_for_docker_sandbox() {
-        let _guard = ENV_LOCK.lock().expect("env lock should not be poisoned");
+        let _guard = ENV_LOCK.lock().await;
         let cwd = TestDir::new("attachment-docker-cwd");
         let previous_bridge = env::var_os("MAESTRO_CODEX_APP_SERVER_SANDBOX");
         let previous_sandbox = env::var_os("MAESTRO_SANDBOX_MODE");
