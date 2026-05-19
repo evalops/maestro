@@ -13,6 +13,10 @@ import type {
 } from "../agent/action-approval.js";
 import type { Agent } from "../agent/index.js";
 import { buildCompactionEvent } from "../agent/prompt-recovery.js";
+import {
+	type SwarmRuntimeEvent,
+	subscribeSwarmRuntimeEvents,
+} from "../agent/swarm/runtime-events.js";
 import type { ToolRetryService } from "../agent/tool-retry.js";
 import type { AgentEvent, Attachment, ThinkingLevel } from "../agent/types.js";
 import { runUserPromptWithRecovery } from "../agent/user-prompt-runtime.js";
@@ -643,6 +647,7 @@ export class HeadlessSessionRuntime {
 	private readonly connections = new Map<string, HeadlessConnectionRecord>();
 	private controllerConnectionId: string | null = null;
 	private lastInit: HeadlessInitMessage | null = null;
+	private readonly unsubscribeSwarmRuntimeEvents: () => void;
 	private running = false;
 	private disposed = false;
 	private disposePromise: Promise<void> | null = null;
@@ -780,6 +785,11 @@ export class HeadlessSessionRuntime {
 		this.unsubscribeServerRequestEvents = serverRequestManager.subscribe(
 			(event) => {
 				this.handleServerRequestEvent(event);
+			},
+		);
+		this.unsubscribeSwarmRuntimeEvents = subscribeSwarmRuntimeEvents(
+			(event) => {
+				this.handleSwarmRuntimeEvent(event);
 			},
 		);
 	}
@@ -2379,6 +2389,7 @@ export class HeadlessSessionRuntime {
 		this.disposed = true;
 		this.running = false;
 		this.unsubscribeServerRequestEvents();
+		this.unsubscribeSwarmRuntimeEvents();
 	}
 
 	private handleServerRequestEvent(event: ServerRequestLifecycleEvent): void {
@@ -2433,6 +2444,13 @@ export class HeadlessSessionRuntime {
 				? { resolved_at_ms: event.resolvedAtMs }
 				: {}),
 		});
+	}
+
+	private handleSwarmRuntimeEvent(event: SwarmRuntimeEvent): void {
+		if (event.parentSessionId !== this.sessionId) {
+			return;
+		}
+		this.agentRuntimeProgress?.recordSwarmEvent(event.event);
 	}
 
 	private resolveLegacyToolResponse(

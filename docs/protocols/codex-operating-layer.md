@@ -36,7 +36,10 @@ npm run check:codex-operating-layer
   spawn only opens the delegation, while wait/close or child restore failure
   resolves it. TS and Rust both normalize child run ids and persist subagent
   edge lifecycle state, so spawn/send/resume/wait/close edges survive drain and
-  restore.
+  restore. Hosted local task progress also projects todo, background-task, and
+  swarm state into deterministic Platform AgentRuntime work items/steps so
+  multi-agent coordination is visible without copying raw logs, env, diffs, or
+  teammate output.
 - Rust can expose the same Codex models through the control plane, bridge
   Codex headless runs, run the hosted remote-runner entrypoint, stream
   SSE/WebSocket events, handle approval requests, and preserve sandbox policy.
