@@ -15,8 +15,8 @@ permissions:
 jobs:
   unresolved-review-threads:
     if: ${{ github.event.pull_request.draft == false }}
-    uses: evalops/.github/.github/workflows/review-thread-guard.yml@ff729846a97fd802242b9e24c738794b7c9b389c
+    uses: evalops/.github/.github/workflows/review-thread-guard.yml@7c84584083404b2f9da1b08c20d208db84b70040
     with:
       pr_number: ${{ github.event.pull_request.number }}
       min_severity: high
-      guard_ref: ff729846a97fd802242b9e24c738794b7c9b389c
+      guard_ref: 7c84584083404b2f9da1b08c20d208db84b70040
