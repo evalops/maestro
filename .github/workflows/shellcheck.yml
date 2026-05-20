@@ -24,7 +24,7 @@ env:
 
 jobs:
   shellcheck:
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: evalops-private-ci
     timeout-minutes: 10
 
     steps:
