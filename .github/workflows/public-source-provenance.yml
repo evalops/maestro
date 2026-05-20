@@ -83,6 +83,7 @@ jobs:
           mirrored_files=()
           for file_path in "${changed_files[@]}"; do
             case "$file_path" in
+              .github/actionlint.yaml|\
               .github/workflows/*|\
               .github/release-mirror-manifest.json|\
               .github/public-release-mirror.exclude|\
