@@ -872,13 +872,24 @@ fn collect_codex_subagent_edges_from_source(
     if call_id.is_empty() {
         return;
     }
+    let tool_execution_id = json_string_field(source, &["tool_execution_id", "toolExecutionId"]);
     let child_runs = codex_subagent_child_runs(source.get("args"));
     if child_runs.is_empty() {
         add_codex_subagent_edge(
             edges,
             CodexSubagentContinuityEdge {
                 spawn_tool_call_id: (operation == "spawn_agent").then(|| call_id.clone()),
+                spawn_tool_execution_id: if operation == "spawn_agent" {
+                    tool_execution_id.clone()
+                } else {
+                    None
+                },
                 wait_tool_call_id: (operation != "spawn_agent").then(|| call_id.clone()),
+                wait_tool_execution_id: if operation != "spawn_agent" {
+                    tool_execution_id.clone()
+                } else {
+                    None
+                },
                 child_run_id: None,
                 thread_id: None,
                 operation: operation.to_string(),
@@ -895,7 +906,17 @@ fn collect_codex_subagent_edges_from_source(
             edges,
             CodexSubagentContinuityEdge {
                 spawn_tool_call_id: (operation == "spawn_agent").then(|| call_id.clone()),
+                spawn_tool_execution_id: if operation == "spawn_agent" {
+                    tool_execution_id.clone()
+                } else {
+                    None
+                },
                 wait_tool_call_id: (operation != "spawn_agent").then(|| call_id.clone()),
+                wait_tool_execution_id: if operation != "spawn_agent" {
+                    tool_execution_id.clone()
+                } else {
+                    None
+                },
                 child_run_id: child_run.child_run_id,
                 thread_id: child_run.thread_id,
                 operation: operation.to_string(),
@@ -4664,9 +4685,10 @@ mod tests {
                     "prompt": "continue?"
                 }],
                 "pending_tool_retries": [],
-                "tracked_tools": [{
-                    "call_id": "collab-spawn-rust",
-                    "tool": "codex.subagent.spawnAgent",
+                    "tracked_tools": [{
+                        "call_id": "collab-spawn-rust",
+                        "tool_execution_id": "texec-collab-spawn-rust",
+                        "tool": "codex.subagent.spawnAgent",
                     "args": {
                         "prompt": "Sensitive Rust subagent prompt",
                         "codex_work_graph": {
@@ -4719,7 +4741,9 @@ mod tests {
             continuity.codex_subagent_edges,
             vec![CodexSubagentContinuityEdge {
                 spawn_tool_call_id: Some("collab-spawn-rust".to_string()),
+                spawn_tool_execution_id: Some("texec-collab-spawn-rust".to_string()),
                 wait_tool_call_id: None,
+                wait_tool_execution_id: None,
                 child_run_id: Some("agent-run-child-rust".to_string()),
                 thread_id: Some("child-thread-rust".to_string()),
                 operation: "spawn_agent".to_string(),
@@ -4801,7 +4825,9 @@ mod tests {
             vec![
                 CodexSubagentContinuityEdge {
                     spawn_tool_call_id: None,
+                    spawn_tool_execution_id: None,
                     wait_tool_call_id: Some("collab-close-rust-restored".to_string()),
+                    wait_tool_execution_id: None,
                     child_run_id: Some("agent-run-child-rust-restored".to_string()),
                     thread_id: Some("child-thread-rust-restored".to_string()),
                     operation: "close_agent".to_string(),
@@ -4809,7 +4835,9 @@ mod tests {
                 },
                 CodexSubagentContinuityEdge {
                     spawn_tool_call_id: Some("collab-spawn-rust-restored".to_string()),
+                    spawn_tool_execution_id: None,
                     wait_tool_call_id: None,
+                    wait_tool_execution_id: None,
                     child_run_id: Some("agent-run-child-rust-restored".to_string()),
                     thread_id: Some("child-thread-rust-restored".to_string()),
                     operation: "spawn_agent".to_string(),
@@ -5290,6 +5318,7 @@ mod tests {
             current_response: Some(current_response),
             pending_approvals: vec![crate::headless::PendingApproval {
                 call_id: "call-1".to_string(),
+                tool_execution_id: None,
                 request_id: Some("approval-1".to_string()),
                 tool: "bash".to_string(),
                 args: json!({"cmd": "cargo test"}),

@@ -1239,6 +1239,7 @@ pub fn agent_event_to_message(event: &AgentEvent) -> FromAgentMessage {
             args,
         } => FromAgentMessage::ToolCall {
             call_id: call_id.clone(),
+            tool_execution_id: None,
             tool: tool.clone(),
             args: args.clone(),
             requires_approval: false,
@@ -1249,6 +1250,7 @@ pub fn agent_event_to_message(event: &AgentEvent) -> FromAgentMessage {
             args,
         } => FromAgentMessage::ToolCall {
             call_id: call_id.clone(),
+            tool_execution_id: None,
             tool: tool.clone(),
             args: args.clone(),
             requires_approval: true,
@@ -1264,6 +1266,7 @@ pub fn agent_event_to_message(event: &AgentEvent) -> FromAgentMessage {
             call_id, success, ..
         } => FromAgentMessage::ToolEnd {
             call_id: call_id.clone(),
+            tool_execution_id: None,
             success: *success,
             tool: None,
             details: None,
@@ -1804,6 +1807,7 @@ mod tests {
         supervisor.state.is_responding = true;
         let approval = PendingApproval {
             call_id: "call_disconnect".to_string(),
+            tool_execution_id: None,
             request_id: Some("req_disconnect".to_string()),
             tool: "bash".to_string(),
             args: serde_json::json!({ "command": "git push" }),
@@ -1811,6 +1815,7 @@ mod tests {
         };
         let client_tool = PendingApproval {
             call_id: "call_client_disconnect".to_string(),
+            tool_execution_id: None,
             request_id: Some("req_client_disconnect".to_string()),
             tool: "client_tool".to_string(),
             args: serde_json::json!({ "name": "artifacts" }),
@@ -1818,6 +1823,7 @@ mod tests {
         };
         let user_input = PendingApproval {
             call_id: "call_user_disconnect".to_string(),
+            tool_execution_id: None,
             request_id: Some("req_user_disconnect".to_string()),
             tool: "ask_user".to_string(),
             args: serde_json::json!({ "question": "continue?" }),
@@ -1825,6 +1831,7 @@ mod tests {
         };
         let tool_retry = PendingApproval {
             call_id: "call_retry_disconnect".to_string(),
+            tool_execution_id: None,
             request_id: Some("req_retry_disconnect".to_string()),
             tool: "bash".to_string(),
             args: serde_json::json!({ "command": "retry" }),
@@ -1922,6 +1929,7 @@ mod tests {
         supervisor.state.is_responding = true;
         let approval = PendingApproval {
             call_id: "call_manual".to_string(),
+            tool_execution_id: None,
             request_id: Some("req_manual".to_string()),
             tool: "bash".to_string(),
             args: serde_json::json!({ "command": "git push" }),
@@ -1929,6 +1937,7 @@ mod tests {
         };
         let client_tool = PendingApproval {
             call_id: "call_client_manual".to_string(),
+            tool_execution_id: None,
             request_id: Some("req_client_manual".to_string()),
             tool: "client_tool".to_string(),
             args: serde_json::json!({ "name": "artifacts" }),
@@ -1936,6 +1945,7 @@ mod tests {
         };
         let user_input = PendingApproval {
             call_id: "call_user_manual".to_string(),
+            tool_execution_id: None,
             request_id: Some("req_user_manual".to_string()),
             tool: "ask_user".to_string(),
             args: serde_json::json!({ "question": "continue?" }),
@@ -1943,6 +1953,7 @@ mod tests {
         };
         let tool_retry = PendingApproval {
             call_id: "call_retry_manual".to_string(),
+            tool_execution_id: None,
             request_id: Some("req_retry_manual".to_string()),
             tool: "bash".to_string(),
             args: serde_json::json!({ "command": "retry" }),
@@ -2317,6 +2328,7 @@ mod tests {
             AgentSupervisor::new(SupervisorConfig::default()).with_session_recorder(recorder);
         let approval = PendingApproval {
             call_id: "call_disconnect".to_string(),
+            tool_execution_id: None,
             request_id: Some("req_disconnect".to_string()),
             tool: "bash".to_string(),
             args: serde_json::json!({ "command": "git push" }),
@@ -3839,6 +3851,7 @@ done
         supervisor.state.is_responding = true;
         let approval = PendingApproval {
             call_id: "call_silence".to_string(),
+            tool_execution_id: None,
             request_id: Some("req_silence".to_string()),
             tool: "bash".to_string(),
             args: serde_json::json!({ "command": "git push" }),
@@ -3846,6 +3859,7 @@ done
         };
         let client_tool = PendingApproval {
             call_id: "call_client_silence".to_string(),
+            tool_execution_id: None,
             request_id: Some("req_client_silence".to_string()),
             tool: "client_tool".to_string(),
             args: serde_json::json!({ "name": "artifacts" }),
@@ -3853,6 +3867,7 @@ done
         };
         let user_input = PendingApproval {
             call_id: "call_user_silence".to_string(),
+            tool_execution_id: None,
             request_id: Some("req_user_silence".to_string()),
             tool: "ask_user".to_string(),
             args: serde_json::json!({ "question": "continue?" }),
@@ -3860,6 +3875,7 @@ done
         };
         let tool_retry = PendingApproval {
             call_id: "call_retry_silence".to_string(),
+            tool_execution_id: None,
             request_id: Some("req_retry_silence".to_string()),
             tool: "bash".to_string(),
             args: serde_json::json!({ "command": "retry" }),

@@ -395,6 +395,7 @@ export const HeadlessToolCallMessageSchema = Type.Object(
 	{
 		type: Type.Literal("tool_call"),
 		call_id: Type.String(),
+		tool_execution_id: Type.Optional(Type.String()),
 		tool: Type.String(),
 		args: Type.Unknown(),
 		requires_approval: Type.Boolean(),
@@ -423,6 +424,7 @@ export const HeadlessToolEndMessageSchema = Type.Object(
 	{
 		type: Type.Literal("tool_end"),
 		call_id: Type.String(),
+		tool_execution_id: Type.Optional(Type.String()),
 		success: Type.Boolean(),
 		tool: Type.Optional(Type.String()),
 		details: Type.Optional(Type.Unknown()),
@@ -437,6 +439,7 @@ export const HeadlessClientToolRequestMessageSchema = Type.Object(
 	{
 		type: Type.Literal("client_tool_request"),
 		call_id: Type.String(),
+		tool_execution_id: Type.Optional(Type.String()),
 		tool: Type.String(),
 		args: Type.Unknown(),
 	},
@@ -449,6 +452,7 @@ export const HeadlessServerRequestMessageSchema = Type.Object(
 		request_id: Type.String(),
 		request_type: stringLiteralUnion(headlessServerRequestTypes),
 		call_id: Type.String(),
+		tool_execution_id: Type.Optional(Type.String()),
 		tool: Type.String(),
 		display_name: Type.Optional(Type.String()),
 		summary_label: Type.Optional(Type.String()),
@@ -775,6 +779,7 @@ export type HeadlessFromAgentMessageInput = Static<
 export const HeadlessPendingToolStateSchema = Type.Object(
 	{
 		call_id: Type.String(),
+		tool_execution_id: Type.Optional(Type.String()),
 		request_id: Type.Optional(Type.String()),
 		tool: Type.String(),
 		display_name: Type.Optional(Type.String()),
@@ -795,6 +800,7 @@ export const HeadlessPendingRequestStateSchema = Type.Object(
 		session_id: Type.Optional(Type.Union([Type.String(), Type.Null()])),
 		tool_call_id: Type.String(),
 		call_id: Type.String(),
+		tool_execution_id: Type.Optional(Type.String()),
 		request_id: Type.Optional(Type.String()),
 		tool_name: Type.String(),
 		tool: Type.String(),
@@ -821,7 +827,9 @@ export const HeadlessActiveToolStateSchema = Type.Object(
 export const HeadlessCodexSubagentContinuityEdgeSchema = Type.Object(
 	{
 		spawn_tool_call_id: Type.Optional(Type.String()),
+		spawn_tool_execution_id: Type.Optional(Type.String()),
 		wait_tool_call_id: Type.Optional(Type.String()),
+		wait_tool_execution_id: Type.Optional(Type.String()),
 		child_run_id: Type.Optional(Type.String()),
 		thread_id: Type.Optional(Type.String()),
 		operation: Type.String(),

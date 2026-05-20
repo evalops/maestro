@@ -548,6 +548,8 @@ pub enum FromAgentMessage {
     /// Tool call (may require approval)
     ToolCall {
         call_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        tool_execution_id: Option<String>,
         tool: String,
         args: serde_json::Value,
         requires_approval: bool,
@@ -559,6 +561,8 @@ pub enum FromAgentMessage {
     /// Tool execution ended
     ToolEnd {
         call_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        tool_execution_id: Option<String>,
         success: bool,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         tool: Option<String>,
@@ -568,6 +572,8 @@ pub enum FromAgentMessage {
     /// Client-side tool execution requested
     ClientToolRequest {
         call_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        tool_execution_id: Option<String>,
         tool: String,
         args: serde_json::Value,
     },
@@ -576,6 +582,8 @@ pub enum FromAgentMessage {
         request_id: String,
         request_type: ServerRequestType,
         call_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        tool_execution_id: Option<String>,
         tool: String,
         args: serde_json::Value,
         reason: String,
@@ -991,6 +999,8 @@ impl StreamingResponse {
 pub struct PendingApproval {
     pub call_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_execution_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub request_id: Option<String>,
     pub tool: String,
     pub args: serde_json::Value,
@@ -1004,7 +1014,11 @@ pub struct CodexSubagentContinuityEdge {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub spawn_tool_call_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub spawn_tool_execution_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub wait_tool_call_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wait_tool_execution_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub child_run_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1304,6 +1318,7 @@ impl AgentState {
     fn upsert_codex_subagent_edges(
         &mut self,
         call_id: &str,
+        tool_execution_id: Option<&str>,
         tool: &str,
         args: Option<&serde_json::Value>,
         status: &str,
@@ -1319,7 +1334,17 @@ impl AgentState {
         if child_runs.is_empty() {
             edges.push(CodexSubagentContinuityEdge {
                 spawn_tool_call_id: (operation == "spawn_agent").then(|| call_id.to_string()),
+                spawn_tool_execution_id: if operation == "spawn_agent" {
+                    tool_execution_id.map(str::to_string)
+                } else {
+                    None
+                },
                 wait_tool_call_id: (operation != "spawn_agent").then(|| call_id.to_string()),
+                wait_tool_execution_id: if operation != "spawn_agent" {
+                    tool_execution_id.map(str::to_string)
+                } else {
+                    None
+                },
                 child_run_id: None,
                 thread_id: None,
                 operation: operation.to_string(),
@@ -1329,7 +1354,17 @@ impl AgentState {
             for child_run in child_runs {
                 edges.push(CodexSubagentContinuityEdge {
                     spawn_tool_call_id: (operation == "spawn_agent").then(|| call_id.to_string()),
+                    spawn_tool_execution_id: if operation == "spawn_agent" {
+                        tool_execution_id.map(str::to_string)
+                    } else {
+                        None
+                    },
                     wait_tool_call_id: (operation != "spawn_agent").then(|| call_id.to_string()),
+                    wait_tool_execution_id: if operation != "spawn_agent" {
+                        tool_execution_id.map(str::to_string)
+                    } else {
+                        None
+                    },
                     child_run_id: child_run.child_run_id,
                     thread_id: child_run.thread_id,
                     operation: operation.to_string(),
@@ -1413,6 +1448,7 @@ impl AgentState {
             if let Some(operation) = codex_subagent_operation(&source.tool) {
                 self.upsert_codex_subagent_edges(
                     call_id,
+                    source.tool_execution_id.as_deref(),
                     &source.tool,
                     Some(&source.args),
                     terminal_codex_subagent_status(operation, false),
@@ -1785,6 +1821,7 @@ impl AgentState {
 
             FromAgentMessage::ToolCall {
                 call_id,
+                tool_execution_id,
                 tool,
                 args,
                 requires_approval,
@@ -1793,6 +1830,7 @@ impl AgentState {
                     call_id.clone(),
                     PendingApproval {
                         call_id: call_id.clone(),
+                        tool_execution_id: tool_execution_id.clone(),
                         request_id: None,
                         tool: tool.clone(),
                         args: args.clone(),
@@ -1802,6 +1840,7 @@ impl AgentState {
                 if let Some(operation) = codex_subagent_operation(&tool) {
                     self.upsert_codex_subagent_edges(
                         &call_id,
+                        tool_execution_id.as_deref(),
                         &tool,
                         Some(&args),
                         active_codex_subagent_status(operation),
@@ -1810,6 +1849,7 @@ impl AgentState {
                 if requires_approval {
                     self.pending_approvals.push(PendingApproval {
                         call_id: call_id.clone(),
+                        tool_execution_id: tool_execution_id.clone(),
                         request_id: None,
                         tool: tool.clone(),
                         args: args.clone(),
@@ -1856,6 +1896,7 @@ impl AgentState {
 
             FromAgentMessage::ToolEnd {
                 call_id,
+                tool_execution_id,
                 success,
                 tool,
                 details,
@@ -1874,6 +1915,9 @@ impl AgentState {
                         );
                         self.upsert_codex_subagent_edges(
                             &call_id,
+                            tool_execution_id
+                                .as_deref()
+                                .or_else(|| tracked_tool.as_ref()?.tool_execution_id.as_deref()),
                             tool,
                             args.as_ref(),
                             terminal_codex_subagent_status(operation, success),
@@ -1893,6 +1937,7 @@ impl AgentState {
 
             FromAgentMessage::ClientToolRequest {
                 call_id,
+                tool_execution_id,
                 tool,
                 args,
             } => {
@@ -1900,6 +1945,7 @@ impl AgentState {
                     call_id.clone(),
                     PendingApproval {
                         call_id: call_id.clone(),
+                        tool_execution_id: tool_execution_id.clone(),
                         request_id: None,
                         tool: tool.clone(),
                         args: args.clone(),
@@ -1909,6 +1955,7 @@ impl AgentState {
                 if let Some(operation) = codex_subagent_operation(&tool) {
                     self.upsert_codex_subagent_edges(
                         &call_id,
+                        tool_execution_id.as_deref(),
                         &tool,
                         Some(&args),
                         active_codex_subagent_status(operation),
@@ -1918,6 +1965,7 @@ impl AgentState {
                     self.pending_user_inputs.retain(|p| p.call_id != call_id);
                     self.pending_user_inputs.push(PendingApproval {
                         call_id,
+                        tool_execution_id,
                         request_id: None,
                         tool,
                         args,
@@ -1927,6 +1975,7 @@ impl AgentState {
                     self.pending_client_tools.retain(|p| p.call_id != call_id);
                     self.pending_client_tools.push(PendingApproval {
                         call_id,
+                        tool_execution_id,
                         request_id: None,
                         tool,
                         args,
@@ -1940,18 +1989,30 @@ impl AgentState {
                 request_id,
                 call_id,
                 request_type,
+                tool_execution_id,
                 tool,
                 args,
                 started_at_ms,
                 ..
             } => {
-                if request_type != ServerRequestType::ToolRetry
-                    || !self.tracked_tools.contains_key(&call_id)
-                {
+                let tracked_tool_execution_id = self
+                    .tracked_tools
+                    .get(&call_id)
+                    .and_then(|source| source.tool_execution_id.clone());
+                let effective_tool_execution_id = tool_execution_id
+                    .clone()
+                    .or(tracked_tool_execution_id.clone());
+                let has_tracked_tool = self.tracked_tools.contains_key(&call_id);
+                let should_track_request = request_type != ServerRequestType::ToolRetry
+                    || !has_tracked_tool
+                    || tracked_tool_execution_id.as_deref()
+                        != effective_tool_execution_id.as_deref();
+                if should_track_request {
                     self.tracked_tools.insert(
                         call_id.clone(),
                         PendingApproval {
                             call_id: call_id.clone(),
+                            tool_execution_id: effective_tool_execution_id.clone(),
                             request_id: None,
                             tool: tool.clone(),
                             args: args.clone(),
@@ -1962,6 +2023,7 @@ impl AgentState {
                 if let Some(operation) = codex_subagent_operation(&tool) {
                     self.upsert_codex_subagent_edges(
                         &call_id,
+                        effective_tool_execution_id.as_deref(),
                         &tool,
                         Some(&args),
                         active_codex_subagent_status(operation),
@@ -1977,6 +2039,7 @@ impl AgentState {
                         self.pending_approvals.retain(|p| p.call_id != call_id);
                         self.pending_approvals.push(PendingApproval {
                             call_id,
+                            tool_execution_id: effective_tool_execution_id,
                             request_id,
                             tool,
                             args,
@@ -1987,6 +2050,7 @@ impl AgentState {
                         self.pending_client_tools.retain(|p| p.call_id != call_id);
                         self.pending_client_tools.push(PendingApproval {
                             call_id,
+                            tool_execution_id: effective_tool_execution_id,
                             request_id,
                             tool,
                             args,
@@ -1997,6 +2061,7 @@ impl AgentState {
                         self.pending_user_inputs.retain(|p| p.call_id != call_id);
                         self.pending_user_inputs.push(PendingApproval {
                             call_id,
+                            tool_execution_id: effective_tool_execution_id,
                             request_id,
                             tool,
                             args,
@@ -2007,6 +2072,7 @@ impl AgentState {
                         self.pending_tool_retries.retain(|p| p.call_id != call_id);
                         self.pending_tool_retries.push(PendingApproval {
                             call_id,
+                            tool_execution_id: effective_tool_execution_id,
                             request_id,
                             tool,
                             args,
@@ -2364,6 +2430,7 @@ mod tests {
                 call_id,
                 tool,
                 args,
+                ..
             } => {
                 assert_eq!(call_id, "call_client");
                 assert_eq!(tool, "artifacts");
@@ -2903,6 +2970,7 @@ mod tests {
 
         let tool_call = state.handle_message(FromAgentMessage::ToolCall {
             call_id: "call_read".to_string(),
+            tool_execution_id: None,
             tool: "read".to_string(),
             args: serde_json::json!({ "file_path": "package.json" }),
             requires_approval: false,
@@ -2936,6 +3004,7 @@ mod tests {
             request_id: "call_approval".to_string(),
             request_type: ServerRequestType::Approval,
             call_id: "call_approval".to_string(),
+            tool_execution_id: None,
             tool: "bash".to_string(),
             args: serde_json::json!({ "command": "git push --force" }),
             reason: "Force push requires approval".to_string(),
@@ -3124,6 +3193,7 @@ mod tests {
 
         let event = state.handle_message(FromAgentMessage::ClientToolRequest {
             call_id: "call_client".to_string(),
+            tool_execution_id: None,
             tool: "artifacts".to_string(),
             args: serde_json::json!({ "command": "create", "filename": "report.txt" }),
         });
@@ -3153,6 +3223,7 @@ mod tests {
             request_id: "call_client".to_string(),
             request_type: ServerRequestType::ClientTool,
             call_id: "call_client".to_string(),
+            tool_execution_id: None,
             tool: "artifacts".to_string(),
             args: serde_json::json!({ "command": "create", "filename": "report.txt" }),
             reason: "Client tool artifacts requires local execution".to_string(),
@@ -3186,6 +3257,7 @@ mod tests {
 
         let event = state.handle_message(FromAgentMessage::ClientToolRequest {
             call_id: "call_user_input".to_string(),
+            tool_execution_id: None,
             tool: "ask_user".to_string(),
             args: serde_json::json!({
                 "questions": [{
@@ -3228,6 +3300,7 @@ mod tests {
             request_id: "call_user_input".to_string(),
             request_type: ServerRequestType::UserInput,
             call_id: "call_user_input".to_string(),
+            tool_execution_id: None,
             tool: "ask_user".to_string(),
             args: serde_json::json!({
                 "questions": [{
@@ -3266,6 +3339,7 @@ mod tests {
 
         state.handle_message(FromAgentMessage::ToolCall {
             call_id: "call_bash".to_string(),
+            tool_execution_id: None,
             tool: "bash".to_string(),
             args: serde_json::json!({ "command": "ls" }),
             requires_approval: false,
@@ -3275,6 +3349,7 @@ mod tests {
             request_id: "retry_1".to_string(),
             request_type: ServerRequestType::ToolRetry,
             call_id: "call_bash".to_string(),
+            tool_execution_id: None,
             tool: "bash".to_string(),
             args: serde_json::json!({
                 "tool_call_id": "call_bash",
@@ -3325,6 +3400,7 @@ mod tests {
             request_id: "call_client".to_string(),
             request_type: ServerRequestType::ClientTool,
             call_id: "call_client".to_string(),
+            tool_execution_id: None,
             tool: "artifacts".to_string(),
             args: serde_json::json!({ "command": "create", "filename": "report.txt" }),
             reason: "Client tool artifacts requires local execution".to_string(),
@@ -3352,7 +3428,9 @@ mod tests {
         let mut state = AgentState::default();
         let edge = CodexSubagentContinuityEdge {
             spawn_tool_call_id: Some("collab-spawn-reset".to_string()),
+            spawn_tool_execution_id: None,
             wait_tool_call_id: None,
+            wait_tool_execution_id: None,
             child_run_id: Some("agent-run-child-reset".to_string()),
             thread_id: Some("child-thread-reset".to_string()),
             operation: "spawn_agent".to_string(),
@@ -3378,7 +3456,9 @@ mod tests {
         let mut state = AgentState {
             codex_subagent_edges: vec![CodexSubagentContinuityEdge {
                 spawn_tool_call_id: Some("collab-spawn-denied".to_string()),
+                spawn_tool_execution_id: None,
                 wait_tool_call_id: None,
+                wait_tool_execution_id: None,
                 child_run_id: Some("agent-run-child-denied".to_string()),
                 thread_id: Some("child-thread-denied".to_string()),
                 operation: "spawn_agent".to_string(),
@@ -3403,7 +3483,9 @@ mod tests {
             state.codex_subagent_edges,
             vec![CodexSubagentContinuityEdge {
                 spawn_tool_call_id: Some("collab-spawn-denied".to_string()),
+                spawn_tool_execution_id: None,
                 wait_tool_call_id: None,
+                wait_tool_execution_id: None,
                 child_run_id: Some("agent-run-child-denied".to_string()),
                 thread_id: Some("child-thread-denied".to_string()),
                 operation: "spawn_agent".to_string(),
@@ -3418,12 +3500,14 @@ mod tests {
 
         state.handle_message(FromAgentMessage::ToolCall {
             call_id: "collab-spawn-complete".to_string(),
+            tool_execution_id: Some("texec-collab-spawn-complete".to_string()),
             tool: "codex.subagent.spawnAgent".to_string(),
             args: serde_json::json!({ "receiverThreadIds": [] }),
             requires_approval: false,
         });
         state.handle_message(FromAgentMessage::ToolEnd {
             call_id: "collab-spawn-complete".to_string(),
+            tool_execution_id: None,
             success: true,
             tool: Some("codex.subagent.spawnAgent".to_string()),
             details: Some(serde_json::json!({
@@ -3445,7 +3529,9 @@ mod tests {
             state.codex_subagent_edges,
             vec![CodexSubagentContinuityEdge {
                 spawn_tool_call_id: Some("collab-spawn-complete".to_string()),
+                spawn_tool_execution_id: Some("texec-collab-spawn-complete".to_string()),
                 wait_tool_call_id: None,
+                wait_tool_execution_id: None,
                 child_run_id: Some("agent-run-child-complete".to_string()),
                 thread_id: Some("child-thread-complete".to_string()),
                 operation: "spawn_agent".to_string(),
@@ -3457,11 +3543,129 @@ mod tests {
     }
 
     #[test]
+    fn state_keeps_governed_codex_subagent_id_on_partial_server_request_update() {
+        let mut state = AgentState::default();
+        let args = serde_json::json!({
+            "codexWorkGraph": {
+                "schemaVersion": CODEX_SUBAGENT_WORK_GRAPH_SCHEMA,
+                "childRuns": [{
+                    "threadId": "child-thread-governed",
+                    "childRunId": "agent-run-child-governed",
+                    "operation": "spawnAgent"
+                }]
+            }
+        });
+
+        state.handle_message(FromAgentMessage::ToolCall {
+            call_id: "collab-spawn-governed".to_string(),
+            tool_execution_id: Some("texec-spawn-governed".to_string()),
+            tool: "codex.subagent.spawnAgent".to_string(),
+            args: args.clone(),
+            requires_approval: false,
+        });
+        state.handle_message(FromAgentMessage::ServerRequest {
+            request_id: "approval-spawn-governed".to_string(),
+            request_type: ServerRequestType::Approval,
+            call_id: "collab-spawn-governed".to_string(),
+            tool_execution_id: None,
+            tool: "codex.subagent.spawnAgent".to_string(),
+            args,
+            reason: "Policy approval required".to_string(),
+            started_at_ms: None,
+        });
+
+        assert_eq!(
+            state.codex_subagent_edges,
+            vec![CodexSubagentContinuityEdge {
+                spawn_tool_call_id: Some("collab-spawn-governed".to_string()),
+                spawn_tool_execution_id: Some("texec-spawn-governed".to_string()),
+                wait_tool_call_id: None,
+                wait_tool_execution_id: None,
+                child_run_id: Some("agent-run-child-governed".to_string()),
+                thread_id: Some("child-thread-governed".to_string()),
+                operation: "spawn_agent".to_string(),
+                status: "waiting_for_restore".to_string(),
+            }]
+        );
+        assert_eq!(
+            state
+                .pending_approvals
+                .first()
+                .and_then(|pending| pending.tool_execution_id.as_deref()),
+            Some("texec-spawn-governed")
+        );
+    }
+
+    #[test]
+    fn state_persists_governed_codex_subagent_id_from_retry_request() {
+        let mut state = AgentState::default();
+        let args = serde_json::json!({
+            "codexWorkGraph": {
+                "schemaVersion": CODEX_SUBAGENT_WORK_GRAPH_SCHEMA,
+                "childRuns": [{
+                    "threadId": "child-thread-retry-governed",
+                    "childRunId": "agent-run-child-retry-governed",
+                    "operation": "spawnAgent"
+                }]
+            }
+        });
+
+        state.handle_message(FromAgentMessage::ToolCall {
+            call_id: "collab-spawn-retry-governed".to_string(),
+            tool_execution_id: None,
+            tool: "codex.subagent.spawnAgent".to_string(),
+            args: args.clone(),
+            requires_approval: false,
+        });
+        state.handle_message(FromAgentMessage::ServerRequest {
+            request_id: "retry-spawn-governed".to_string(),
+            request_type: ServerRequestType::ToolRetry,
+            call_id: "collab-spawn-retry-governed".to_string(),
+            tool_execution_id: Some("texec-spawn-retry-governed".to_string()),
+            tool: "codex.subagent.spawnAgent".to_string(),
+            args,
+            reason: "Retry governed spawn".to_string(),
+            started_at_ms: None,
+        });
+
+        assert_eq!(
+            state
+                .tracked_tools
+                .get("collab-spawn-retry-governed")
+                .and_then(|pending| pending.tool_execution_id.as_deref()),
+            Some("texec-spawn-retry-governed")
+        );
+
+        state.handle_message(FromAgentMessage::ToolEnd {
+            call_id: "collab-spawn-retry-governed".to_string(),
+            tool_execution_id: None,
+            success: true,
+            tool: None,
+            details: None,
+        });
+
+        assert_eq!(
+            state.codex_subagent_edges,
+            vec![CodexSubagentContinuityEdge {
+                spawn_tool_call_id: Some("collab-spawn-retry-governed".to_string()),
+                spawn_tool_execution_id: Some("texec-spawn-retry-governed".to_string()),
+                wait_tool_call_id: None,
+                wait_tool_execution_id: None,
+                child_run_id: Some("agent-run-child-retry-governed".to_string()),
+                thread_id: Some("child-thread-retry-governed".to_string()),
+                operation: "spawn_agent".to_string(),
+                status: "spawned".to_string(),
+            }]
+        );
+    }
+
+    #[test]
     fn state_preserves_codex_subagent_child_target_status_from_work_graph_edges() {
         let mut state = AgentState::default();
 
         state.handle_message(FromAgentMessage::ToolCall {
             call_id: "collab-spawn-status".to_string(),
+            tool_execution_id: None,
             tool: "codex.subagent.spawnAgent".to_string(),
             args: serde_json::json!({
                 "codexWorkGraph": {
@@ -3484,7 +3688,9 @@ mod tests {
             state.codex_subagent_edges,
             vec![CodexSubagentContinuityEdge {
                 spawn_tool_call_id: Some("collab-spawn-status".to_string()),
+                spawn_tool_execution_id: None,
                 wait_tool_call_id: None,
+                wait_tool_execution_id: None,
                 child_run_id: Some("agent-run-child-status".to_string()),
                 thread_id: Some("child-thread-status".to_string()),
                 operation: "spawn_agent".to_string(),
