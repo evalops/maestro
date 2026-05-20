@@ -5,11 +5,17 @@ on:
     paths:
       - "AGENTS.md"
       - "**/AGENTS.md"
+      - "labels.yml"
+      - "services.yaml"
       - ".agents/skills/**"
+      - ".github/actionlint.yaml"
       - ".github/CODEOWNERS"
+      - ".github/codex/**"
+      - ".github/contracts/**"
       - ".github/ISSUE_TEMPLATE/**"
       - ".github/pull_request_template.md"
-      - ".github/workflows/codex-rails-check.yml"
+      - ".github/workflows/**"
+      - ".github/workflow-templates/**"
 
 permissions:
   contents: read
