@@ -861,6 +861,22 @@ export class GitHubApiClient {
 		return { number: data.number, url: data.html_url };
 	}
 
+	async updatePullRequest(input: {
+		pullNumber: number;
+		title?: string;
+		body?: string;
+		base?: string;
+	}): Promise<void> {
+		await this.request("PATCH /repos/{owner}/{repo}/pulls/{pull_number}", {
+			owner: this.owner,
+			repo: this.repo,
+			pull_number: input.pullNumber,
+			title: input.title,
+			body: input.body,
+			base: input.base,
+		});
+	}
+
 	async requestReviewers(input: {
 		pullNumber: number;
 		reviewers?: string[];

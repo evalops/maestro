@@ -127,10 +127,35 @@ export interface TaskResult {
 	success: boolean;
 	prNumber?: number;
 	prUrl?: string;
+	branch?: string;
+	headSha?: string;
+	checkRunId?: number;
+	evidence?: GitHubAgentEvidence;
 	error?: string;
 	duration: number;
 	tokensUsed?: number;
 	cost?: number;
+}
+
+export interface GitHubAgentEvidence {
+	schemaVersion: "evalops.github-agent.pr-evidence.v1";
+	taskId: string;
+	taskType: Task["type"];
+	repository: string;
+	baseBranch: string;
+	branch: string;
+	headSha: string;
+	prNumber: number;
+	prUrl: string;
+	checkRunId?: number;
+	durationMs: number;
+	tokensUsed?: number;
+	cost?: number;
+	verifier: {
+		name: "deploy/scripts/check-agent-action-pr-lane.py";
+		requiredOutput: "pull_request";
+		prOnly: true;
+	};
 }
 
 /**
