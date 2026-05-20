@@ -2,3 +2,4 @@ self-hosted-runner:
   labels:
     - blacksmith-*
     - evalops-maestro-internal-rbe
+    - evalops-maestro-rbe
