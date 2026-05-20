@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import type { GitHubApiClient } from "../github/client.js";
 import type { TaskProgress } from "../github/reporter.js";
 import type { MemoryStore } from "../memory/store.js";
 import type { AgentConfig, Task } from "../types.js";
@@ -57,6 +58,19 @@ class TestableExecutor extends TaskExecutor {
 			pr,
 			progress,
 		);
+	}
+
+	public async testRefreshExistingPrBody(
+		pr: { number: number; url: string },
+		body: string,
+	): Promise<void> {
+		type PrivateMethods = {
+			refreshExistingPrBody: (
+				p: { number: number; url: string },
+				b: string,
+			) => Promise<void>;
+		};
+		return (this as unknown as PrivateMethods).refreshExistingPrBody(pr, body);
 	}
 }
 
@@ -332,6 +346,27 @@ describe("TaskExecutor", () => {
 					requiredOutput: "pull_request",
 					prOnly: true,
 				},
+			});
+		});
+	});
+
+	describe("refreshExistingPrBody", () => {
+		it("updates reused PR bodies so verifier evidence is not stale", async () => {
+			const updatePullRequest = vi.fn().mockResolvedValue(undefined);
+			const executorWithClient = new TestableExecutor({
+				config: mockConfig,
+				memory: mockMemory as unknown as MemoryStore,
+				githubClient: { updatePullRequest } as unknown as GitHubApiClient,
+			});
+
+			await executorWithClient.testRefreshExistingPrBody(
+				{ number: 99, url: "https://github.com/testowner/testrepo/pull/99" },
+				"## EvalOps Agent Evidence",
+			);
+
+			expect(updatePullRequest).toHaveBeenCalledWith({
+				pullNumber: 99,
+				body: "## EvalOps Agent Evidence",
 			});
 		});
 	});

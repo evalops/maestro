@@ -479,6 +479,7 @@ ${diff}
 				this.log(
 					`[executor] Reusing existing PR #${existing.number} for ${branchName}`,
 				);
+				await this.refreshExistingPrBody(existing, body);
 				return existing;
 			}
 			try {
@@ -495,6 +496,7 @@ ${diff}
 					this.log(
 						`[executor] Found existing PR #${existingAfterError.number} after create failure`,
 					);
+					await this.refreshExistingPrBody(existingAfterError, body);
 					return existingAfterError;
 				}
 				this.log(
@@ -516,6 +518,7 @@ ${diff}
 			this.log(
 				`[executor] Reusing existing PR #${existing.number} for ${branchName}`,
 			);
+			await this.refreshExistingPrBodyViaGh(existing, body);
 			return existing;
 		}
 		const draftFlag = this.config.draftPullRequests ? ["--draft"] : [];
@@ -545,6 +548,42 @@ ${diff}
 		}
 
 		return { number: prNumber, url: prUrl };
+	}
+
+	private async refreshExistingPrBody(
+		pr: { number: number; url: string },
+		body: string,
+	): Promise<void> {
+		if (!this.githubClient) return;
+		try {
+			await this.githubClient.updatePullRequest({
+				pullNumber: pr.number,
+				body,
+			});
+		} catch (err) {
+			this.log(
+				`[executor] Failed to refresh existing PR body: ${err instanceof Error ? err.message : err}`,
+			);
+		}
+	}
+
+	private async refreshExistingPrBodyViaGh(
+		pr: { number: number; url: string },
+		body: string,
+	): Promise<void> {
+		try {
+			await this.runCommand("gh", [
+				"pr",
+				"edit",
+				String(pr.number),
+				"--body",
+				body,
+			]);
+		} catch (err) {
+			this.log(
+				`[executor] Failed to refresh existing PR body via gh: ${err instanceof Error ? err.message : err}`,
+			);
+		}
 	}
 
 	private async findExistingPr(
