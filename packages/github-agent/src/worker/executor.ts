@@ -15,7 +15,12 @@ import { type DelegationPrompt, formatDelegation } from "@evalops/contracts";
 import type { GitHubApiClient } from "../github/client.js";
 import type { GitHubReporter, TaskProgress } from "../github/reporter.js";
 import type { MemoryStore } from "../memory/store.js";
-import type { AgentConfig, Task, TaskResult } from "../types.js";
+import type {
+	AgentConfig,
+	GitHubAgentEvidence,
+	Task,
+	TaskResult,
+} from "../types.js";
 import {
 	buildGitHubTaskEnvironment,
 	recordGitHubTaskSessionClosed,
@@ -123,26 +128,42 @@ export class TaskExecutor {
 			const pr: PrResult = prTemp;
 			progress.prUrl = pr.url;
 
+			const headSha = await this.resolveHeadSha(branchName);
 			await this.applyPrMetadata(pr.number);
 			await this.applyMergePolicy(pr.number, branchName);
 			await this.publishCheckRun(task, progress, branchName, pr);
 
 			progress.status = "completed";
 			progress.durationMs = Date.now() - startTime;
+			const evidence = this.buildGitHubAgentEvidence(
+				task,
+				branchName,
+				headSha,
+				pr,
+				progress,
+			);
 			await this.reportProgress(task, progress);
 			recordGitHubTaskSessionClosed(task, {
 				status: "completed",
 				branch: progress.branch,
+				headSha,
 				prUrl: progress.prUrl,
+				prNumber: pr.number,
+				checkRunId: task.checkRunId,
 				durationMs: progress.durationMs,
 				tokensUsed: progress.tokensUsed,
 				cost: progress.cost,
+				evidence,
 			});
 
 			return {
 				success: true,
 				prNumber: pr.number,
 				prUrl: pr.url,
+				branch: branchName,
+				headSha,
+				checkRunId: task.checkRunId,
+				evidence,
 				duration: Date.now() - startTime,
 				tokensUsed: composerResult.tokensUsed,
 				cost: composerResult.cost,
@@ -450,7 +471,7 @@ ${diff}
 			? `[composer] ${sanitizedTaskTitle} (fixes #${task.sourceIssue})`
 			: `[composer] ${sanitizedTaskTitle}`;
 
-		const body = this.buildPRBody(task);
+		const body = this.buildPRBody(task, branchName);
 
 		if (this.githubClient) {
 			const existing = await this.findExistingPr(branchName);
@@ -658,7 +679,7 @@ ${diff}
 		}
 	}
 
-	private buildPRBody(task: Task): string {
+	private buildPRBody(task: Task, branchName?: string): string {
 		const lines: string[] = [
 			"## Summary",
 			"",
@@ -679,12 +700,63 @@ ${diff}
 			"- [ ] Type check passes",
 			"- [ ] Manual verification (if applicable)",
 			"",
+			"## EvalOps Agent Evidence",
+			"",
+			`- Task ID: \`${task.id}\``,
+			"- Action lane: `code_change_via_pr`",
+			...(branchName ? [`- Branch: \`${branchName}\``] : []),
+			"- Independent verifier: `deploy/scripts/check-agent-action-pr-lane.py`",
+			"",
 			"---",
 			"",
 			"_This PR was generated autonomously by the GitHub Agent (Composer building Composer)._",
 		);
 
 		return lines.join("\n");
+	}
+
+	private async resolveHeadSha(branchName: string): Promise<string> {
+		if (this.githubClient) {
+			try {
+				return await this.githubClient.getBranchHeadSha(branchName);
+			} catch (err) {
+				this.log(
+					`[executor] Failed to resolve branch SHA through GitHub API: ${err instanceof Error ? err.message : err}`,
+				);
+			}
+		}
+		return (await this.runCommand("git", ["rev-parse", "HEAD"])).trim();
+	}
+
+	private buildGitHubAgentEvidence(
+		task: Task,
+		branchName: string,
+		headSha: string,
+		pr: { number: number; url: string },
+		progress: TaskProgress,
+	): GitHubAgentEvidence {
+		return {
+			schemaVersion: "evalops.github-agent.pr-evidence.v1",
+			taskId: task.id,
+			taskType: task.type,
+			repository: `${this.config.owner}/${this.config.repo}`,
+			baseBranch: this.config.baseBranch,
+			branch: branchName,
+			headSha,
+			prNumber: pr.number,
+			prUrl: pr.url,
+			...(task.checkRunId ? { checkRunId: task.checkRunId } : {}),
+			durationMs: progress.durationMs ?? 0,
+			...(typeof progress.tokensUsed === "number"
+				? { tokensUsed: progress.tokensUsed }
+				: {}),
+			...(typeof progress.cost === "number" ? { cost: progress.cost } : {}),
+			verifier: {
+				name: "deploy/scripts/check-agent-action-pr-lane.py",
+				requiredOutput: "pull_request",
+				prOnly: true,
+			},
+		};
 	}
 
 	private buildInitialProgress(task: Task, startTime: number): TaskProgress {

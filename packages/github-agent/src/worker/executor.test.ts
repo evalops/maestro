@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import type { TaskProgress } from "../github/reporter.js";
 import type { MemoryStore } from "../memory/store.js";
 import type { AgentConfig, Task } from "../types.js";
 import { TaskExecutor } from "./executor.js";
@@ -26,6 +27,36 @@ class TestableExecutor extends TaskExecutor {
 	public testBuildPRBody(task: Task): string {
 		type PrivateMethods = { buildPRBody: (t: Task) => string };
 		return (this as unknown as PrivateMethods).buildPRBody(task);
+	}
+
+	public testBuildPRBodyWithBranch(task: Task, branchName: string): string {
+		type PrivateMethods = { buildPRBody: (t: Task, b?: string) => string };
+		return (this as unknown as PrivateMethods).buildPRBody(task, branchName);
+	}
+
+	public testBuildGitHubAgentEvidence(
+		task: Task,
+		branchName: string,
+		headSha: string,
+		pr: { number: number; url: string },
+		progress: TaskProgress,
+	) {
+		type PrivateMethods = {
+			buildGitHubAgentEvidence: (
+				t: Task,
+				b: string,
+				h: string,
+				p: { number: number; url: string },
+				progress: TaskProgress,
+			) => unknown;
+		};
+		return (this as unknown as PrivateMethods).buildGitHubAgentEvidence(
+			task,
+			branchName,
+			headSha,
+			pr,
+			progress,
+		);
 	}
 }
 
@@ -247,6 +278,61 @@ describe("TaskExecutor", () => {
 
 			expect(body).toContain("generated autonomously");
 			expect(body).toContain("GitHub Agent");
+		});
+
+		it("should include EvalOps verifier evidence", () => {
+			const task = createTask({ id: "task-123" });
+			const body = executor.testBuildPRBodyWithBranch(
+				task,
+				"fix/refresh-receipt-42",
+			);
+
+			expect(body).toContain("## EvalOps Agent Evidence");
+			expect(body).toContain("Task ID: `task-123`");
+			expect(body).toContain("Action lane: `code_change_via_pr`");
+			expect(body).toContain("Branch: `fix/refresh-receipt-42`");
+			expect(body).toContain(
+				"Independent verifier: `deploy/scripts/check-agent-action-pr-lane.py`",
+			);
+		});
+	});
+
+	describe("buildGitHubAgentEvidence", () => {
+		it("should produce verifier-ready PR evidence", () => {
+			const task = createTask({ id: "task-123", type: "issue" });
+			const evidence = executor.testBuildGitHubAgentEvidence(
+				task,
+				"fix/refresh-receipt-42",
+				"abc123",
+				{ number: 99, url: "https://github.com/testowner/testrepo/pull/99" },
+				{
+					status: "completed",
+					steps: {},
+					durationMs: 12_000,
+					tokensUsed: 1234,
+					cost: 0.42,
+				},
+			);
+
+			expect(evidence).toMatchObject({
+				schemaVersion: "evalops.github-agent.pr-evidence.v1",
+				taskId: "task-123",
+				taskType: "issue",
+				repository: "testowner/testrepo",
+				baseBranch: "main",
+				branch: "fix/refresh-receipt-42",
+				headSha: "abc123",
+				prNumber: 99,
+				prUrl: "https://github.com/testowner/testrepo/pull/99",
+				durationMs: 12_000,
+				tokensUsed: 1234,
+				cost: 0.42,
+				verifier: {
+					name: "deploy/scripts/check-agent-action-pr-lane.py",
+					requiredOutput: "pull_request",
+					prOnly: true,
+				},
+			});
 		});
 	});
 });
