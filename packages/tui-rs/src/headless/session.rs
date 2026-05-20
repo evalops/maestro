@@ -1218,6 +1218,7 @@ mod tests {
         recorder
             .record_received(&FromAgentMessage::ToolCall {
                 call_id: "call_1".to_string(),
+                tool_execution_id: None,
                 tool: "bash".to_string(),
                 args: serde_json::json!({ "cmd": "git status" }),
                 requires_approval: true,

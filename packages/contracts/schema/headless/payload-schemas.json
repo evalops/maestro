@@ -773,6 +773,10 @@
 				"call_id": {
 					"kind": "string"
 				},
+				"tool_execution_id": {
+					"kind": "string",
+					"optional": true
+				},
 				"tool": {
 					"kind": "string"
 				},
@@ -824,6 +828,10 @@
 				"call_id": {
 					"kind": "string"
 				},
+				"tool_execution_id": {
+					"kind": "string",
+					"optional": true
+				},
 				"success": {
 					"kind": "boolean"
 				},
@@ -860,6 +868,10 @@
 				"call_id": {
 					"kind": "string"
 				},
+				"tool_execution_id": {
+					"kind": "string",
+					"optional": true
+				},
 				"tool": {
 					"kind": "string"
 				},
@@ -885,6 +897,10 @@
 				},
 				"call_id": {
 					"kind": "string"
+				},
+				"tool_execution_id": {
+					"kind": "string",
+					"optional": true
 				},
 				"tool": {
 					"kind": "string"
@@ -1507,6 +1523,10 @@
 				"call_id": {
 					"kind": "string"
 				},
+				"tool_execution_id": {
+					"kind": "string",
+					"optional": true
+				},
 				"request_id": {
 					"kind": "string",
 					"optional": true
@@ -1572,6 +1592,10 @@
 				},
 				"call_id": {
 					"kind": "string"
+				},
+				"tool_execution_id": {
+					"kind": "string",
+					"optional": true
 				},
 				"request_id": {
 					"kind": "string",
@@ -1644,7 +1668,15 @@
 					"kind": "string",
 					"optional": true
 				},
+				"spawn_tool_execution_id": {
+					"kind": "string",
+					"optional": true
+				},
 				"wait_tool_call_id": {
+					"kind": "string",
+					"optional": true
+				},
+				"wait_tool_execution_id": {
 					"kind": "string",
 					"optional": true
 				},

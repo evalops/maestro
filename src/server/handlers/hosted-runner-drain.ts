@@ -593,7 +593,12 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 function collectCodexSubagentEdgesFromSource(
-	source: { call_id: string; tool: string; args?: unknown },
+	source: {
+		call_id: string;
+		tool_execution_id?: string;
+		tool: string;
+		args?: unknown;
+	},
 	edges: Map<string, HeadlessCodexSubagentContinuityEdge>,
 ): void {
 	const operation = codexSubagentOperation(source.tool);
@@ -603,6 +608,7 @@ function collectCodexSubagentEdgesFromSource(
 	const status = activeCodexSubagentStatus(operation);
 	for (const edge of buildCodexSubagentContinuityEdges({
 		call_id: source.call_id,
+		tool_execution_id: source.tool_execution_id,
 		tool: source.tool,
 		args: source.args,
 		status,

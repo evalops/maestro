@@ -14,6 +14,7 @@ import { describe, expect, it, vi } from "vitest";
 import type { Agent } from "../../src/agent/index.js";
 import type { AssistantMessage } from "../../src/agent/types.js";
 import {
+	CODEX_SUBAGENT_WORK_GRAPH_SCHEMA,
 	HEADLESS_PROTOCOL_VERSION,
 	HEADLESS_SERVER_CAPABILITIES,
 	HeadlessProtocolTranslator,
@@ -91,6 +92,25 @@ describe("headless protocol helpers", () => {
 			"utf-8",
 		);
 		expect(doc).toContain(`Current version: \`${HEADLESS_PROTOCOL_VERSION}\``);
+	});
+
+	it("documents the Codex subagent workgraph schema in restore continuity examples", async () => {
+		const headlessDoc = await readFile(
+			new URL("../../docs/protocols/headless.md", import.meta.url),
+			"utf-8",
+		);
+		const hostedContract = await readFile(
+			new URL(
+				"../../docs/protocols/hosted-runner-contract.md",
+				import.meta.url,
+			),
+			"utf-8",
+		);
+
+		expect(headlessDoc).toContain(
+			`"codex_subagent_schema_version": "${CODEX_SUBAGENT_WORK_GRAPH_SCHEMA}"`,
+		);
+		expect(hostedContract).toContain("schema-versioned `work_continuity`");
 	});
 
 	it("classifies cancellation-like errors", () => {
@@ -711,6 +731,7 @@ describe("headless protocol helpers", () => {
 		applyIncomingHeadlessMessage(state, {
 			type: "tool_call",
 			call_id: "collab-spawn-1",
+			tool_execution_id: "texec-spawn-1",
 			tool: "codex.subagent.spawnAgent",
 			args: spawnArgs,
 			requires_approval: false,
@@ -718,6 +739,7 @@ describe("headless protocol helpers", () => {
 		expect(state.codex_subagent_edges).toEqual([
 			{
 				spawn_tool_call_id: "collab-spawn-1",
+				spawn_tool_execution_id: "texec-spawn-1",
 				child_run_id: "agent-run-child-1",
 				thread_id: "child-thread-1",
 				operation: "spawn_agent",
@@ -733,6 +755,7 @@ describe("headless protocol helpers", () => {
 		applyIncomingHeadlessMessage(state, {
 			type: "tool_call",
 			call_id: "collab-close-1",
+			tool_execution_id: "texec-close-1",
 			tool: "codex.subagent.closeAgent",
 			args: {
 				receiverThreadIds: ["child-thread-1"],
@@ -749,6 +772,7 @@ describe("headless protocol helpers", () => {
 		expect(state.codex_subagent_edges).toEqual([
 			{
 				wait_tool_call_id: "collab-close-1",
+				wait_tool_execution_id: "texec-close-1",
 				child_run_id: "agent-run-child-1",
 				thread_id: "child-thread-1",
 				operation: "close_agent",
@@ -756,6 +780,7 @@ describe("headless protocol helpers", () => {
 			},
 			{
 				spawn_tool_call_id: "collab-spawn-1",
+				spawn_tool_execution_id: "texec-spawn-1",
 				child_run_id: "agent-run-child-1",
 				thread_id: "child-thread-1",
 				operation: "spawn_agent",
@@ -765,6 +790,111 @@ describe("headless protocol helpers", () => {
 		expect(JSON.stringify(state.codex_subagent_edges)).not.toContain(
 			"Sensitive child task prompt",
 		);
+	});
+
+	it("keeps governed Codex subagent IDs on partial server_request updates", () => {
+		const state = createHeadlessRuntimeState();
+		const spawnArgs = {
+			codexWorkGraph: {
+				schemaVersion: "evalops.maestro.codex.subagent-workgraph.v1",
+				childRuns: [
+					{
+						threadId: "child-thread-governed",
+						childRunId: "agent-run-child-governed",
+						operation: "spawnAgent",
+					},
+				],
+			},
+		};
+
+		applyIncomingHeadlessMessage(state, {
+			type: "tool_call",
+			call_id: "collab-spawn-governed",
+			tool_execution_id: "texec-spawn-governed",
+			tool: "codex.subagent.spawnAgent",
+			args: spawnArgs,
+			requires_approval: false,
+		});
+		applyIncomingHeadlessMessage(state, {
+			type: "server_request",
+			request_id: "approval-spawn-governed",
+			request_type: "approval",
+			call_id: "collab-spawn-governed",
+			tool: "codex.subagent.spawnAgent",
+			args: spawnArgs,
+			reason: "Policy approval required",
+		});
+
+		expect(state.codex_subagent_edges).toEqual([
+			{
+				spawn_tool_call_id: "collab-spawn-governed",
+				spawn_tool_execution_id: "texec-spawn-governed",
+				child_run_id: "agent-run-child-governed",
+				thread_id: "child-thread-governed",
+				operation: "spawn_agent",
+				status: "waiting_for_restore",
+			},
+		]);
+		expect(state.pending_approvals[0]?.tool_execution_id).toBe(
+			"texec-spawn-governed",
+		);
+	});
+
+	it("persists governed Codex subagent IDs introduced by retry requests", () => {
+		const state = createHeadlessRuntimeState();
+		const spawnArgs = {
+			codexWorkGraph: {
+				schemaVersion: "evalops.maestro.codex.subagent-workgraph.v1",
+				childRuns: [
+					{
+						threadId: "child-thread-retry-governed",
+						childRunId: "agent-run-child-retry-governed",
+						operation: "spawnAgent",
+					},
+				],
+			},
+		};
+
+		applyIncomingHeadlessMessage(state, {
+			type: "tool_call",
+			call_id: "collab-spawn-retry-governed",
+			tool: "codex.subagent.spawnAgent",
+			args: spawnArgs,
+			requires_approval: false,
+		});
+		applyIncomingHeadlessMessage(state, {
+			type: "server_request",
+			request_id: "retry-spawn-governed",
+			request_type: "tool_retry",
+			call_id: "collab-spawn-retry-governed",
+			tool_execution_id: "texec-spawn-retry-governed",
+			tool: "codex.subagent.spawnAgent",
+			args: spawnArgs,
+			reason: "Retry governed spawn",
+		});
+
+		expect(
+			state.tracked_tools.find(
+				(tool) => tool.call_id === "collab-spawn-retry-governed",
+			)?.tool_execution_id,
+		).toBe("texec-spawn-retry-governed");
+
+		applyIncomingHeadlessMessage(state, {
+			type: "tool_end",
+			call_id: "collab-spawn-retry-governed",
+			success: true,
+		});
+
+		expect(state.codex_subagent_edges).toEqual([
+			{
+				spawn_tool_call_id: "collab-spawn-retry-governed",
+				spawn_tool_execution_id: "texec-spawn-retry-governed",
+				child_run_id: "agent-run-child-retry-governed",
+				thread_id: "child-thread-retry-governed",
+				operation: "spawn_agent",
+				status: "spawned",
+			},
+		]);
 	});
 
 	it("normalizes snake_case Codex subagent targets in headless events", () => {

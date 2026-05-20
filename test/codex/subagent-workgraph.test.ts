@@ -95,6 +95,7 @@ describe("Codex subagent work graph contract", () => {
 			const [alias] = operation.aliases;
 			const edges = buildCodexSubagentContinuityEdges({
 				call_id: `collab-${operation.operation}`,
+				tool_execution_id: `tool-exec-${operation.operation}`,
 				tool: `${fixture.toolPrefix}${alias}`,
 				status: operation.activeStatus,
 				args: {
@@ -109,6 +110,9 @@ describe("Codex subagent work graph contract", () => {
 					status: operation.activeStatus,
 					child_run_id: `agent-run-${operation.operation}`,
 					thread_id: `thread-${operation.operation}`,
+					...(operation.operation === "spawn_agent"
+						? { spawn_tool_execution_id: `tool-exec-${operation.operation}` }
+						: { wait_tool_execution_id: `tool-exec-${operation.operation}` }),
 				}),
 			]);
 		}

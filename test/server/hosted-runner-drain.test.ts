@@ -406,6 +406,7 @@ describe("hosted runner drain", () => {
 		snapshot.state.tracked_tools = [
 			{
 				call_id: "collab-spawn-1",
+				tool_execution_id: "texec-spawn-1",
 				tool: "codex.subagent.spawnAgent",
 				args: {
 					prompt: "Sensitive child task prompt must stay in snapshot only",
@@ -453,6 +454,7 @@ describe("hosted runner drain", () => {
 			codex_subagent_edges: [
 				{
 					spawn_tool_call_id: "collab-spawn-1",
+					spawn_tool_execution_id: "texec-spawn-1",
 					child_run_id: "agent-run-child-1",
 					thread_id: "child-thread-1",
 					operation: "spawn_agent",

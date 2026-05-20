@@ -1930,6 +1930,7 @@ mod tests {
             }),
             pending_approvals: vec![PendingApproval {
                 call_id: "call-1".to_string(),
+                tool_execution_id: None,
                 request_id: None,
                 tool: "bash".to_string(),
                 args: serde_json::json!({"cmd": "ls"}),
@@ -1937,6 +1938,7 @@ mod tests {
             }],
             pending_client_tools: vec![PendingApproval {
                 call_id: "call-client".to_string(),
+                tool_execution_id: None,
                 request_id: None,
                 tool: "artifacts".to_string(),
                 args: serde_json::json!({"command": "create", "filename": "report.txt"}),
@@ -1944,6 +1946,7 @@ mod tests {
             }],
             pending_user_inputs: vec![PendingApproval {
                 call_id: "call-user-input".to_string(),
+                tool_execution_id: None,
                 request_id: None,
                 tool: "ask_user".to_string(),
                 args: serde_json::json!({
@@ -1960,6 +1963,7 @@ mod tests {
             }],
             pending_tool_retries: vec![PendingApproval {
                 call_id: "call-retry".to_string(),
+                tool_execution_id: None,
                 request_id: Some("req-retry".to_string()),
                 tool: "bash".to_string(),
                 args: serde_json::json!({
@@ -1972,6 +1976,7 @@ mod tests {
             }],
             tracked_tools: vec![PendingApproval {
                 call_id: "call-2".to_string(),
+                tool_execution_id: None,
                 request_id: None,
                 tool: "read".to_string(),
                 args: serde_json::json!({"path": "package.json"}),
@@ -1984,7 +1989,9 @@ mod tests {
             }],
             codex_subagent_edges: vec![CodexSubagentContinuityEdge {
                 spawn_tool_call_id: Some("collab-spawn-remote".to_string()),
+                spawn_tool_execution_id: None,
                 wait_tool_call_id: None,
+                wait_tool_execution_id: None,
                 child_run_id: Some("agent-run-child-remote".to_string()),
                 thread_id: Some("child-thread-remote".to_string()),
                 operation: "spawn_agent".to_string(),
