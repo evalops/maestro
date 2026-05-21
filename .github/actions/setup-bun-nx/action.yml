@@ -19,9 +19,9 @@ inputs:
     required: false
     default: "true"
   cache-bun:
-    description: Whether to enable Bun cache
+    description: Whether to enable the optional Bun package cache
     required: false
-    default: "true"
+    default: "false"
   cache-nx:
     description: Whether to enable Nx cache
     required: false
