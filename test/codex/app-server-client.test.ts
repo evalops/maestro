@@ -2,6 +2,7 @@ import { createInterface } from "node:readline";
 import { PassThrough } from "node:stream";
 import { describe, expect, it, vi } from "vitest";
 import { CodexAppServerRpcClient } from "../../src/codex/app-server-client.js";
+import { readPackageVersion } from "../../src/package-version.js";
 
 interface HarnessMessage {
 	id?: number | string;
@@ -100,7 +101,7 @@ describe("Codex app-server RPC client", () => {
 				clientInfo: {
 					name: "maestro",
 					title: "Maestro",
-					version: "0.10.18",
+					version: readPackageVersion(),
 				},
 			},
 		});

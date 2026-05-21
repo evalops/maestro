@@ -14,12 +14,14 @@ use std::path::{Path, PathBuf};
 use std::process::{self, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::process::Command;
 use tokio::sync::{broadcast, mpsc, watch, Mutex};
 
+mod a2a_skill_catalog;
 mod auth;
 mod codex_compat;
 mod codex_subagent_dispatch;
@@ -27,8 +29,8 @@ mod http;
 mod model_catalog;
 mod runtime_assets;
 
+use a2a_skill_catalog::a2a_subagent_skills;
 use auth::*;
-use codex_subagent_dispatch::CODEX_SUBAGENT_DISPATCH_LANES;
 #[cfg(test)]
 use http::parse_request_head;
 pub(crate) use http::MAX_JSON_BODY_BYTES;
@@ -74,6 +76,11 @@ const EVALOPS_A2A_EXTENSION_URI: &str = "https://evalops.com/a2a/extensions/oper
 const A2A_CONTROL_PLANE_LEDGER_PEER: &str = "maestro-control-plane";
 const A2A_CONTROL_PLANE_LEDGER_DISPLAY_NAME: &str = "Maestro Control Plane";
 const PLATFORM_A2A_PUSH_PATH: &str = "/api/platform/a2a/push";
+const PLATFORM_AGENT_REGISTER_PATH: &str = "/agents.v1.AgentService/Register";
+const PLATFORM_AGENT_UPDATE_PATH: &str = "/agents.v1.AgentService/Update";
+const PLATFORM_AGENT_HEARTBEAT_PATH: &str = "/agents.v1.AgentService/Heartbeat";
+const A2A_PLATFORM_DEFAULT_HEARTBEAT_INTERVAL_MS: u64 = 60_000;
+const A2A_PLATFORM_DEFAULT_TIMEOUT_MS: u64 = 2_500;
 const CODEX_SUBAGENT_WORK_GRAPH_SCHEMA: &str = "evalops.maestro.codex.subagent-workgraph.v1";
 static CODEX_BRIDGE_TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 static CODEX_HEADLESS_RUN_COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -205,6 +212,626 @@ impl Config {
 
     fn listen_addr(&self) -> String {
         format!("{}:{}", self.listen_host, self.listen_port)
+    }
+}
+
+#[derive(Debug, Clone)]
+struct A2APlatformRegistrationConfig {
+    base_url: String,
+    token: String,
+    organization_id: String,
+    workspace_id: String,
+    agent_id: String,
+    name: String,
+    description: String,
+    agent_type: String,
+    owner_id: Option<String>,
+    public_endpoint_url: String,
+    internal_endpoint_url: Option<String>,
+    agent_card_url: Option<String>,
+    heartbeat_interval_ms: u64,
+    timeout_ms: u64,
+    current_objective_ids: Vec<String>,
+    max_concurrent_objectives: String,
+    surface: String,
+    surface_type: String,
+}
+
+fn maybe_spawn_a2a_platform_registration_loop(config: Arc<Config>) {
+    let registration = match resolve_a2a_platform_registration_config(&config) {
+        Ok(Some(registration)) => registration,
+        Ok(None) => return,
+        Err(error) => {
+            eprintln!("maestro A2A Platform registration disabled: {error}");
+            return;
+        }
+    };
+    println!(
+        "maestro A2A Platform registration loop enabled for {} at {}",
+        registration.agent_id, registration.public_endpoint_url
+    );
+    thread::spawn(move || {
+        let mut registered = false;
+        loop {
+            let result = if registered {
+                send_a2a_platform_heartbeat(&registration, &config)
+            } else {
+                register_or_update_a2a_platform_agent(&registration, &config)
+                    .and_then(|_| send_a2a_platform_heartbeat(&registration, &config))
+            };
+            match result {
+                Ok(()) => registered = true,
+                Err(error) => {
+                    registered = false;
+                    eprintln!(
+                        "maestro A2A Platform registration/heartbeat failed for {}: {error}",
+                        registration.agent_id
+                    );
+                }
+            }
+            thread::sleep(Duration::from_millis(registration.heartbeat_interval_ms));
+        }
+    });
+}
+
+fn resolve_a2a_platform_registration_config(
+    config: &Config,
+) -> Result<Option<A2APlatformRegistrationConfig>, String> {
+    if !a2a_platform_registration_enabled() {
+        return Ok(None);
+    }
+
+    let base_url = first_trimmed_env(&[
+        "MAESTRO_AGENT_REGISTRY_SERVICE_URL",
+        "AGENT_REGISTRY_SERVICE_URL",
+        "MAESTRO_AGENT_REGISTRY_URL",
+        "AGENT_REGISTRY_BASE_URL",
+        "PLATFORM_AGENT_REGISTRY_URL",
+        "MAESTRO_PLATFORM_BASE_URL",
+        "MAESTRO_EVALOPS_BASE_URL",
+        "EVALOPS_BASE_URL",
+    ]);
+    let token = first_trimmed_env(&[
+        "MAESTRO_AGENT_REGISTRY_SERVICE_TOKEN",
+        "AGENT_REGISTRY_SERVICE_TOKEN",
+        "MAESTRO_AGENT_REGISTRY_TOKEN",
+        "AGENT_REGISTRY_TOKEN",
+        "MAESTRO_EVALOPS_ACCESS_TOKEN",
+        "EVALOPS_TOKEN",
+    ]);
+    let organization_id = first_trimmed_env(&[
+        "MAESTRO_AGENT_REGISTRY_ORG_ID",
+        "AGENT_REGISTRY_ORGANIZATION_ID",
+        "AGENT_REGISTRY_ORG_ID",
+        "MAESTRO_EVALOPS_ORG_ID",
+        "EVALOPS_ORGANIZATION_ID",
+        "EVALOPS_ORG_ID",
+        "MAESTRO_ENTERPRISE_ORG_ID",
+    ]);
+    let workspace_id = first_trimmed_env(&[
+        "MAESTRO_AGENT_REGISTRY_WORKSPACE_ID",
+        "AGENT_REGISTRY_WORKSPACE_ID",
+        "MAESTRO_REMOTE_RUNNER_WORKSPACE_ID",
+        "MAESTRO_EVALOPS_WORKSPACE_ID",
+        "EVALOPS_WORKSPACE_ID",
+        "MAESTRO_WORKSPACE_ID",
+    ])
+    .or_else(|| organization_id.clone());
+    let explicit_public_endpoint_url = first_trimmed_env(&[
+        "MAESTRO_A2A_PUBLIC_URL",
+        "MAESTRO_CONTROL_PUBLIC_URL",
+        "MAESTRO_A2A_URL",
+        "MAESTRO_CONTROL_URL",
+    ]);
+    let public_host_hint =
+        first_trimmed_env(&["MAESTRO_A2A_PUBLIC_HOST", "MAESTRO_CONTROL_PUBLIC_HOST"]).is_some();
+
+    let mut missing = Vec::new();
+    if base_url.is_none() {
+        missing.push("Platform Agent Registry base URL");
+    }
+    if token.is_none() {
+        missing.push("Platform Agent Registry token");
+    }
+    if organization_id.is_none() {
+        missing.push("EvalOps organization id");
+    }
+    if a2a_platform_registration_enabled_by_hosted_default()
+        && explicit_public_endpoint_url.is_none()
+        && !public_host_hint
+    {
+        missing.push("routable A2A public URL or public host");
+    }
+    if !missing.is_empty() {
+        return Err(format!(
+            "missing {}; set MAESTRO_A2A_PLATFORM_REGISTER=0 to disable auto-registration",
+            missing.join(", ")
+        ));
+    }
+
+    let public_endpoint_url =
+        explicit_public_endpoint_url.unwrap_or_else(|| a2a_public_base_url_for_config(config));
+    let agent_id = first_trimmed_env(&[
+        "MAESTRO_A2A_AGENT_ID",
+        "MAESTRO_AGENT_ID",
+        "EVALOPS_AGENT_ID",
+    ])
+    .unwrap_or_else(|| default_a2a_platform_agent_id(config));
+
+    Ok(Some(A2APlatformRegistrationConfig {
+        base_url: normalize_platform_base_url(&base_url.expect("base URL presence checked above")),
+        token: token.expect("token presence checked above"),
+        organization_id: organization_id.expect("organization id presence checked above"),
+        workspace_id: workspace_id.expect("workspace id presence checked above"),
+        agent_id,
+        name: first_trimmed_env(&["MAESTRO_A2A_AGENT_NAME", "MAESTRO_AGENT_NAME"])
+            .unwrap_or_else(|| "Maestro A2A Peer".to_string()),
+        description: first_trimmed_env(&[
+            "MAESTRO_A2A_AGENT_DESCRIPTION",
+            "MAESTRO_AGENT_DESCRIPTION",
+        ])
+        .unwrap_or_else(|| {
+            "Maestro peer exposing governed Codex subagent lanes through A2A.".to_string()
+        }),
+        agent_type: trimmed_env("MAESTRO_A2A_AGENT_TYPE").unwrap_or_else(|| "maestro".to_string()),
+        owner_id: first_trimmed_env(&["MAESTRO_A2A_OWNER_ID", "EVALOPS_USER_ID"]),
+        public_endpoint_url,
+        internal_endpoint_url: first_trimmed_env(&[
+            "MAESTRO_A2A_INTERNAL_URL",
+            "MAESTRO_CONTROL_INTERNAL_URL",
+        ]),
+        agent_card_url: trimmed_env("MAESTRO_A2A_AGENT_CARD_URL"),
+        heartbeat_interval_ms: env_u64_from_names(
+            &[
+                "MAESTRO_A2A_PLATFORM_HEARTBEAT_INTERVAL_MS",
+                "MAESTRO_AGENT_REGISTRY_HEARTBEAT_INTERVAL_MS",
+            ],
+            A2A_PLATFORM_DEFAULT_HEARTBEAT_INTERVAL_MS,
+        ),
+        timeout_ms: env_u64_from_names(
+            &[
+                "MAESTRO_AGENT_REGISTRY_TIMEOUT_MS",
+                "AGENT_REGISTRY_SERVICE_TIMEOUT_MS",
+            ],
+            A2A_PLATFORM_DEFAULT_TIMEOUT_MS,
+        ),
+        current_objective_ids: csv_env("MAESTRO_A2A_CURRENT_OBJECTIVE_IDS"),
+        max_concurrent_objectives: first_trimmed_env(&[
+            "MAESTRO_A2A_MAX_CONCURRENT_OBJECTIVES",
+            "MAESTRO_SWARM_MAX_TEAMMATES",
+        ])
+        .unwrap_or_else(|| "10".to_string()),
+        surface: trimmed_env("MAESTRO_A2A_PLATFORM_SURFACE").unwrap_or_else(|| "a2a".to_string()),
+        surface_type: trimmed_env("MAESTRO_A2A_PLATFORM_SURFACE_TYPE")
+            .unwrap_or_else(|| "SURFACE_MAESTRO".to_string()),
+    }))
+}
+
+fn a2a_platform_registration_enabled() -> bool {
+    if let Some(value) = explicit_a2a_platform_registration_enabled() {
+        return value;
+    }
+    truthy_env("MAESTRO_HOSTED_RUNNER_MODE") || truthy_env("MAESTRO_HOSTED_RUNNER")
+}
+
+fn explicit_a2a_platform_registration_enabled() -> Option<bool> {
+    if let Some(value) = env_bool("MAESTRO_A2A_PLATFORM_REGISTER")
+        .or_else(|| env_bool("MAESTRO_A2A_PLATFORM_AUTO_REGISTER"))
+    {
+        return Some(value);
+    }
+    None
+}
+
+fn a2a_platform_registration_enabled_by_hosted_default() -> bool {
+    explicit_a2a_platform_registration_enabled().is_none()
+        && (truthy_env("MAESTRO_HOSTED_RUNNER_MODE") || truthy_env("MAESTRO_HOSTED_RUNNER"))
+}
+
+fn register_or_update_a2a_platform_agent(
+    registration: &A2APlatformRegistrationConfig,
+    config: &Config,
+) -> Result<(), String> {
+    match post_platform_connect_json(
+        registration,
+        PLATFORM_AGENT_REGISTER_PATH,
+        &a2a_platform_register_payload(registration, config),
+    ) {
+        Ok(_) => Ok(()),
+        Err(error) if platform_error_is_conflict(&error) => post_platform_connect_json(
+            registration,
+            PLATFORM_AGENT_UPDATE_PATH,
+            &a2a_platform_update_payload(registration, config),
+        )
+        .map(|_| ()),
+        Err(error) => Err(error),
+    }
+}
+
+fn send_a2a_platform_heartbeat(
+    registration: &A2APlatformRegistrationConfig,
+    config: &Config,
+) -> Result<(), String> {
+    post_platform_connect_json(
+        registration,
+        PLATFORM_AGENT_HEARTBEAT_PATH,
+        &a2a_platform_heartbeat_payload(registration, config),
+    )
+    .map(|_| ())
+}
+
+fn post_platform_connect_json(
+    registration: &A2APlatformRegistrationConfig,
+    path: &str,
+    body: &Value,
+) -> Result<Value, String> {
+    let client = reqwest::blocking::Client::builder()
+        .timeout(Duration::from_millis(registration.timeout_ms))
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .map_err(|error| format!("failed to build Platform client: {error}"))?;
+    let url = format!("{}{}", registration.base_url, path);
+    let response = client
+        .post(&url)
+        .bearer_auth(&registration.token)
+        .header("Content-Type", "application/json")
+        .header("Connect-Protocol-Version", "1")
+        .header("X-Organization-ID", &registration.organization_id)
+        .header("X-Workspace-ID", &registration.workspace_id)
+        .json(body)
+        .send()
+        .map_err(|error| format!("POST {url} failed: {error}"))?;
+    let status = response.status();
+    let text = response
+        .text()
+        .map_err(|error| format!("POST {url} response read failed: {error}"))?;
+    if !status.is_success() {
+        return Err(format!("POST {url} returned {}: {}", status.as_u16(), text));
+    }
+    if text.trim().is_empty() {
+        return Ok(serde_json::json!({}));
+    }
+    serde_json::from_str(&text)
+        .map_err(|error| format!("POST {url} returned invalid JSON: {error}"))
+}
+
+fn a2a_platform_register_payload(
+    registration: &A2APlatformRegistrationConfig,
+    config: &Config,
+) -> Value {
+    let mut payload = Map::new();
+    insert_string(
+        &mut payload,
+        "workspaceId",
+        Some(&registration.workspace_id),
+    );
+    insert_string(&mut payload, "id", Some(&registration.agent_id));
+    insert_string(&mut payload, "name", Some(&registration.name));
+    insert_string(&mut payload, "description", Some(&registration.description));
+    insert_string(&mut payload, "agentType", Some(&registration.agent_type));
+    insert_string(&mut payload, "ownerId", registration.owner_id.as_deref());
+    payload.insert(
+        "capabilities".to_string(),
+        Value::Array(
+            a2a_platform_capabilities()
+                .into_iter()
+                .map(Value::String)
+                .collect(),
+        ),
+    );
+    payload.insert(
+        "surfaces".to_string(),
+        Value::Array(
+            vec![registration.surface.clone(), "maestro".to_string()]
+                .into_iter()
+                .map(Value::String)
+                .collect(),
+        ),
+    );
+    payload.insert(
+        "surfaceTypes".to_string(),
+        Value::Array(vec![Value::String(registration.surface_type.clone())]),
+    );
+    payload.insert(
+        "a2a".to_string(),
+        a2a_platform_peer_projection(registration, config),
+    );
+    Value::Object(payload)
+}
+
+fn a2a_platform_update_payload(
+    registration: &A2APlatformRegistrationConfig,
+    config: &Config,
+) -> Value {
+    let mut payload = match a2a_platform_register_payload(registration, config) {
+        Value::Object(payload) => payload,
+        _ => Map::new(),
+    };
+    payload.remove("workspaceId");
+    payload.remove("agentType");
+    payload.remove("ownerId");
+    Value::Object(payload)
+}
+
+fn a2a_platform_heartbeat_payload(
+    registration: &A2APlatformRegistrationConfig,
+    config: &Config,
+) -> Value {
+    let mut payload = Map::new();
+    insert_string(&mut payload, "agentId", Some(&registration.agent_id));
+    insert_string(
+        &mut payload,
+        "status",
+        Some(
+            trimmed_env("MAESTRO_A2A_PLATFORM_STATUS")
+                .as_deref()
+                .unwrap_or("AGENT_STATUS_IDLE"),
+        ),
+    );
+    if !registration.current_objective_ids.is_empty() {
+        payload.insert(
+            "currentObjectiveIds".to_string(),
+            Value::Array(
+                registration
+                    .current_objective_ids
+                    .iter()
+                    .cloned()
+                    .map(Value::String)
+                    .collect(),
+            ),
+        );
+    }
+    insert_string(&mut payload, "surface", Some(&registration.surface));
+    insert_string(
+        &mut payload,
+        "surfaceType",
+        Some(&registration.surface_type),
+    );
+    payload.insert(
+        "a2a".to_string(),
+        a2a_platform_peer_projection(registration, config),
+    );
+    Value::Object(payload)
+}
+
+fn a2a_platform_peer_projection(
+    registration: &A2APlatformRegistrationConfig,
+    config: &Config,
+) -> Value {
+    let public_endpoint_url = registration.public_endpoint_url.trim_end_matches('/');
+    let agent_card_url = registration
+        .agent_card_url
+        .clone()
+        .unwrap_or_else(|| format!("{public_endpoint_url}/.well-known/agent-card.json"));
+    let mut attributes = Map::new();
+    insert_string(&mut attributes, "runtime", Some("maestro"));
+    insert_string(&mut attributes, "controlPlane", Some("rust-control-plane"));
+    insert_string(
+        &mut attributes,
+        "operatingPlaneExtension",
+        Some(EVALOPS_A2A_EXTENSION_URI),
+    );
+    insert_string(
+        &mut attributes,
+        "maxConcurrentObjectives",
+        Some(&registration.max_concurrent_objectives),
+    );
+    insert_string(
+        &mut attributes,
+        "taskStorePath",
+        config.a2a_tasks_file_path.to_str(),
+    );
+    insert_string(
+        &mut attributes,
+        "publishedBy",
+        Some("maestro-control-plane-auto-registration"),
+    );
+
+    let mut projection = Map::new();
+    insert_string(
+        &mut projection,
+        "publicEndpointUrl",
+        Some(public_endpoint_url),
+    );
+    insert_string(
+        &mut projection,
+        "internalEndpointUrl",
+        registration.internal_endpoint_url.as_deref(),
+    );
+    insert_string(&mut projection, "agentCardUrl", Some(&agent_card_url));
+    insert_string(&mut projection, "protocolBinding", Some("HTTP+JSON"));
+    insert_string(
+        &mut projection,
+        "protocolVersion",
+        Some(A2A_PROTOCOL_VERSION),
+    );
+    projection.insert(
+        "supportedExtensions".to_string(),
+        Value::Array(vec![Value::String(EVALOPS_A2A_EXTENSION_URI.to_string())]),
+    );
+    projection.insert(
+        "skills".to_string(),
+        Value::Array(a2a_platform_agent_skills()),
+    );
+    projection.insert(
+        "securitySchemes".to_string(),
+        Value::Array(vec![Value::String("evalops-agent-token".to_string())]),
+    );
+    projection.insert("pushNotifications".to_string(), Value::Bool(true));
+    projection.insert("attributes".to_string(), Value::Object(attributes));
+    Value::Object(projection)
+}
+
+fn a2a_platform_agent_skills() -> Vec<Value> {
+    match a2a_agent_skills() {
+        Value::Array(skills) => skills
+            .into_iter()
+            .filter_map(|skill| match skill {
+                Value::Object(skill) => Some(a2a_platform_agent_skill(skill)),
+                _ => None,
+            })
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
+fn a2a_platform_agent_skill(skill: Map<String, Value>) -> Value {
+    let mut projected = Map::new();
+    for key in [
+        "id",
+        "name",
+        "description",
+        "tags",
+        "inputModes",
+        "outputModes",
+        "requiredContextGrants",
+        "approvalPolicyRef",
+        "maxAutonomy",
+        "requiredArtifactKinds",
+        "optionalArtifactKinds",
+        "allowedTaskClasses",
+        "deniedTaskClasses",
+        "attributes",
+    ] {
+        if let Some(value) = skill.get(key) {
+            projected.insert(key.to_string(), value.clone());
+        }
+    }
+    Value::Object(projected)
+}
+
+fn a2a_platform_capabilities() -> Vec<String> {
+    let mut capabilities = vec![
+        "maestro:a2a".to_string(),
+        "maestro:cli".to_string(),
+        "maestro:subagents".to_string(),
+    ];
+    for lane in codex_subagent_dispatch::CODEX_SUBAGENT_DISPATCH_LANES {
+        capabilities.push(format!("maestro:{}", lane.lane_id));
+        capabilities.extend(
+            match lane.lane_id {
+                "code-writer" => ["code:write", "code:edit", "code:implement"].as_slice(),
+                "code-review" => ["code:review"].as_slice(),
+                "test-runner" => ["code:test", "test:run"].as_slice(),
+                "repo-explorer" => ["repo:explore", "code:search"].as_slice(),
+                "release-shepherd" => ["release:shepherd", "release:manage"].as_slice(),
+                _ => ["agent:delegate"].as_slice(),
+            }
+            .iter()
+            .map(|value| (*value).to_string()),
+        );
+    }
+    dedupe_strings(capabilities)
+}
+
+fn platform_error_is_conflict(error: &str) -> bool {
+    let lower = error.to_ascii_lowercase();
+    lower
+        .split(|ch: char| !ch.is_ascii_alphanumeric() && ch != '_')
+        .any(|part| part == "409")
+        || lower.contains("already exists")
+        || lower.contains("already_exists")
+}
+
+fn default_a2a_platform_agent_id(config: &Config) -> String {
+    let host = first_trimmed_env(&["HOSTNAME", "COMPUTERNAME"])
+        .unwrap_or_else(|| config.listen_host.clone());
+    format!(
+        "maestro-a2a-{}-{}",
+        sanitize_agent_id_component(&host),
+        config.listen_port
+    )
+}
+
+fn sanitize_agent_id_component(value: &str) -> String {
+    let sanitized = value
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' {
+                ch.to_ascii_lowercase()
+            } else {
+                '-'
+            }
+        })
+        .collect::<String>()
+        .trim_matches('-')
+        .to_string();
+    if sanitized.is_empty() {
+        "local".to_string()
+    } else {
+        sanitized
+    }
+}
+
+fn normalize_platform_base_url(base_url: &str) -> String {
+    let mut normalized = base_url.trim().trim_end_matches('/').to_string();
+    if let Some(index) = normalized.find("/agents.v1.AgentService") {
+        normalized.truncate(index);
+        return normalized.trim_end_matches('/').to_string();
+    }
+    for suffix in [
+        PLATFORM_AGENT_REGISTER_PATH,
+        PLATFORM_AGENT_UPDATE_PATH,
+        PLATFORM_AGENT_HEARTBEAT_PATH,
+        "/agents.v1.AgentService",
+    ] {
+        if normalized.ends_with(suffix) {
+            normalized = normalized
+                .trim_end_matches(suffix)
+                .trim_end_matches('/')
+                .to_string();
+        }
+    }
+    normalized
+}
+
+fn first_trimmed_env(names: &[&str]) -> Option<String> {
+    names.iter().find_map(|name| trimmed_env(name))
+}
+
+fn env_bool(name: &str) -> Option<bool> {
+    trimmed_env(name).and_then(|value| match value.to_ascii_lowercase().as_str() {
+        "1" | "true" | "yes" | "on" => Some(true),
+        "0" | "false" | "no" | "off" => Some(false),
+        _ => None,
+    })
+}
+
+fn env_u64_from_names(names: &[&str], default: u64) -> u64 {
+    names
+        .iter()
+        .find_map(|name| trimmed_env(name))
+        .and_then(|value| value.parse::<u64>().ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(default)
+}
+
+fn csv_env(name: &str) -> Vec<String> {
+    trimmed_env(name)
+        .map(|value| {
+            value
+                .split(',')
+                .map(str::trim)
+                .filter(|item| !item.is_empty())
+                .map(str::to_string)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn dedupe_strings(values: Vec<String>) -> Vec<String> {
+    let mut output = Vec::new();
+    for value in values {
+        if !output.contains(&value) {
+            output.push(value);
+        }
+    }
+    output
+}
+
+fn insert_string(map: &mut Map<String, Value>, key: &str, value: Option<&str>) {
+    if let Some(value) = value.map(str::trim).filter(|value| !value.is_empty()) {
+        map.insert(key.to_string(), Value::String(value.to_string()));
     }
 }
 
@@ -378,7 +1005,7 @@ async fn main() -> anyhow::Result<()> {
 
     let config = Arc::new(Config::from_env());
     let listener = TcpListener::bind(config.listen_addr()).await?;
-    eprintln!(
+    println!(
         "maestro rust server listening on http://{}",
         config.listen_addr()
     );
@@ -411,6 +1038,7 @@ async fn main() -> anyhow::Result<()> {
         a2a_task_event_history: Arc::new(Mutex::new(HashMap::new())),
         a2a_cancel_senders: Arc::new(Mutex::new(HashMap::new())),
     };
+    maybe_spawn_a2a_platform_registration_loop(config.clone());
 
     loop {
         let (stream, _) = match listener.accept().await {
@@ -3840,113 +4468,18 @@ fn a2a_agent_skills() -> Value {
     if let Some(model) = trimmed_env("MAESTRO_A2A_MODEL") {
         skill["metadata"] = serde_json::json!({ "defaultModel": model });
     }
-    let mut skills = Vec::with_capacity(1 + CODEX_SUBAGENT_DISPATCH_LANES.len());
+    let subagent_skills = a2a_subagent_skills(EVALOPS_A2A_EXTENSION_URI);
+    let mut skills = Vec::with_capacity(1 + subagent_skills.len());
     skills.push(skill);
-    skills.extend(CODEX_SUBAGENT_DISPATCH_LANES.iter().map(|lane| {
-        a2a_subagent_skill(
-            lane.skill_id,
-            lane.display_name,
-            lane.description,
-            lane.tags,
-            lane.lane_id,
-        )
-    }));
+    skills.extend(subagent_skills);
     Value::Array(skills)
 }
 
-fn a2a_subagent_skill(
-    id: &str,
-    name: &str,
-    description: &str,
-    tags: &[&str],
-    lane_id: &str,
-) -> Value {
-    let (
-        required_context_grants,
-        required_artifact_kinds,
-        optional_artifact_kinds,
-        allowed_task_classes,
-    ) = match lane_id {
-        "code-writer" => (
-            vec!["repo:read", "repo:write-scoped", "tool:execute-tests"],
-            vec!["patch.summary"],
-            vec!["test.report", "review.summary"],
-            vec!["code.implementation", "code.refactor"],
-        ),
-        "code-review" => (
-            vec!["repo:read", "pull-request:read", "evidence:read"],
-            vec!["review.summary"],
-            vec!["risk.finding", "test.plan"],
-            vec!["code.review", "risk.analysis"],
-        ),
-        "test-runner" => (
-            vec!["repo:read", "tool:execute-tests", "evidence:write"],
-            vec!["test.report"],
-            vec!["failure.triage", "coverage.summary"],
-            vec!["test.execution", "ci.triage"],
-        ),
-        "repo-explorer" => (
-            vec!["repo:read", "evidence:write"],
-            vec!["repo.map"],
-            vec!["evidence.index"],
-            vec!["repo.inspect", "context.gathering"],
-        ),
-        "release-shepherd" => (
-            vec![
-                "repo:read",
-                "pull-request:write",
-                "deploy:read",
-                "evidence:write",
-            ],
-            vec!["release.evidence"],
-            vec!["ci.summary", "deploy.status"],
-            vec!["release.follow-through", "deployment.smoke"],
-        ),
-        _ => (
-            vec!["repo:read"],
-            vec!["subagent.summary"],
-            vec!["evidence.index"],
-            vec!["agent.delegation"],
-        ),
-    };
-    serde_json::json!({
-        "id": id,
-        "name": name,
-        "description": description,
-        "tags": tags,
-        "inputModes": ["text/plain", "application/json"],
-        "outputModes": ["text/plain", "application/json"],
-        "requiredContextGrants": required_context_grants,
-        "approvalPolicyRef": format!("maestro.subagent.{lane_id}.target-policy"),
-        "maxAutonomy": "bounded",
-        "requiredArtifactKinds": required_artifact_kinds,
-        "optionalArtifactKinds": optional_artifact_kinds,
-        "allowedTaskClasses": allowed_task_classes,
-        "deniedTaskClasses": [
-            "credential.materialization",
-            "secret.exfiltration",
-            "unbounded.repository.write"
-        ],
-        "attributes": {
-            "evalopsSkillKind": "maestro-subagent",
-            "subagentLaneId": lane_id,
-            "requestMetadataPath": "evalops.subagentRequest",
-            "operatingPlaneExtension": EVALOPS_A2A_EXTENSION_URI
-        },
-        "metadata": {
-            "evalopsSkillKind": "maestro-subagent",
-            "subagentLaneId": lane_id,
-            "operatingPlaneExtension": EVALOPS_A2A_EXTENSION_URI,
-            "requestMetadataPath": "evalops.subagentRequest",
-            "approvalPolicy": "target-maestro-policy",
-            "contextGrantPolicy": "bounded-policy-grants",
-            "resultPolicy": "summary-and-artifacts",
-            "workGraph": "target AgentRun child-agent work items"
-        }
-    })
+fn a2a_public_base_url(_head: &RequestHead, config: &Config) -> String {
+    a2a_public_base_url_for_config(config)
 }
 
-fn a2a_public_base_url(_head: &RequestHead, config: &Config) -> String {
+fn a2a_public_base_url_for_config(config: &Config) -> String {
     if let Some(url) =
         trimmed_env("MAESTRO_A2A_PUBLIC_URL").or_else(|| trimmed_env("MAESTRO_CONTROL_PUBLIC_URL"))
     {
@@ -11375,8 +11908,167 @@ fn is_openrouter_models_url(url: &str) -> bool {
 mod tests {
     use super::*;
     use std::fs;
+    use std::io::{Read, Write};
+    use std::net::TcpListener as StdTcpListener;
 
     static ENV_LOCK: Mutex<()> = Mutex::const_new(());
+    const A2A_PLATFORM_ENV_NAMES: &[&str] = &[
+        "MAESTRO_A2A_PLATFORM_REGISTER",
+        "MAESTRO_A2A_PLATFORM_AUTO_REGISTER",
+        "MAESTRO_HOSTED_RUNNER_MODE",
+        "MAESTRO_HOSTED_RUNNER",
+        "MAESTRO_AGENT_REGISTRY_SERVICE_URL",
+        "AGENT_REGISTRY_SERVICE_URL",
+        "MAESTRO_AGENT_REGISTRY_URL",
+        "AGENT_REGISTRY_BASE_URL",
+        "PLATFORM_AGENT_REGISTRY_URL",
+        "MAESTRO_PLATFORM_BASE_URL",
+        "MAESTRO_EVALOPS_BASE_URL",
+        "EVALOPS_BASE_URL",
+        "MAESTRO_AGENT_REGISTRY_SERVICE_TOKEN",
+        "AGENT_REGISTRY_SERVICE_TOKEN",
+        "MAESTRO_AGENT_REGISTRY_TOKEN",
+        "AGENT_REGISTRY_TOKEN",
+        "MAESTRO_EVALOPS_ACCESS_TOKEN",
+        "EVALOPS_TOKEN",
+        "MAESTRO_AGENT_REGISTRY_ORG_ID",
+        "AGENT_REGISTRY_ORGANIZATION_ID",
+        "AGENT_REGISTRY_ORG_ID",
+        "MAESTRO_EVALOPS_ORG_ID",
+        "EVALOPS_ORGANIZATION_ID",
+        "EVALOPS_ORG_ID",
+        "MAESTRO_ENTERPRISE_ORG_ID",
+        "MAESTRO_AGENT_REGISTRY_WORKSPACE_ID",
+        "AGENT_REGISTRY_WORKSPACE_ID",
+        "MAESTRO_REMOTE_RUNNER_WORKSPACE_ID",
+        "MAESTRO_EVALOPS_WORKSPACE_ID",
+        "EVALOPS_WORKSPACE_ID",
+        "MAESTRO_WORKSPACE_ID",
+        "MAESTRO_A2A_PUBLIC_URL",
+        "MAESTRO_CONTROL_PUBLIC_URL",
+        "MAESTRO_A2A_URL",
+        "MAESTRO_CONTROL_URL",
+        "MAESTRO_A2A_AGENT_ID",
+        "MAESTRO_AGENT_ID",
+        "EVALOPS_AGENT_ID",
+        "MAESTRO_A2A_AGENT_NAME",
+        "MAESTRO_AGENT_NAME",
+        "MAESTRO_A2A_AGENT_DESCRIPTION",
+        "MAESTRO_AGENT_DESCRIPTION",
+        "MAESTRO_A2A_AGENT_TYPE",
+        "MAESTRO_A2A_OWNER_ID",
+        "EVALOPS_USER_ID",
+        "MAESTRO_A2A_INTERNAL_URL",
+        "MAESTRO_CONTROL_INTERNAL_URL",
+        "MAESTRO_A2A_AGENT_CARD_URL",
+        "MAESTRO_A2A_PLATFORM_HEARTBEAT_INTERVAL_MS",
+        "MAESTRO_AGENT_REGISTRY_HEARTBEAT_INTERVAL_MS",
+        "MAESTRO_AGENT_REGISTRY_TIMEOUT_MS",
+        "AGENT_REGISTRY_SERVICE_TIMEOUT_MS",
+        "MAESTRO_A2A_CURRENT_OBJECTIVE_IDS",
+        "MAESTRO_A2A_MAX_CONCURRENT_OBJECTIVES",
+        "MAESTRO_SWARM_MAX_TEAMMATES",
+        "MAESTRO_A2A_PLATFORM_SURFACE",
+        "MAESTRO_A2A_PLATFORM_SURFACE_TYPE",
+        "MAESTRO_A2A_PLATFORM_STATUS",
+        "PORT",
+        "MAESTRO_CONTROL_HOST",
+    ];
+
+    fn snapshot_env(
+        names: &'static [&'static str],
+    ) -> Vec<(&'static str, Option<std::ffi::OsString>)> {
+        names
+            .iter()
+            .map(|name| (*name, env::var_os(name)))
+            .collect()
+    }
+
+    fn restore_env(snapshot: Vec<(&'static str, Option<std::ffi::OsString>)>) {
+        for (name, value) in snapshot {
+            if let Some(value) = value {
+                env::set_var(name, value);
+            } else {
+                env::remove_var(name);
+            }
+        }
+    }
+
+    fn clear_env(names: &[&str]) {
+        for name in names {
+            env::remove_var(name);
+        }
+    }
+
+    #[derive(Debug)]
+    struct CapturedHttpRequest {
+        request_line: String,
+        headers: HashMap<String, String>,
+        body: Value,
+    }
+
+    fn capture_http_request(
+        listener: &StdTcpListener,
+        status_line: &str,
+        response_body: &str,
+    ) -> CapturedHttpRequest {
+        let (mut stream, _) = listener
+            .accept()
+            .expect("test server should accept request");
+        let mut buffer = Vec::new();
+        let mut chunk = [0u8; 1024];
+        let header_end = loop {
+            let read = stream
+                .read(&mut chunk)
+                .expect("test server should read request");
+            assert!(read > 0, "client closed before request headers");
+            buffer.extend_from_slice(&chunk[..read]);
+            if let Some(index) = buffer.windows(4).position(|window| window == b"\r\n\r\n") {
+                break index + 4;
+            }
+        };
+        let header_text = String::from_utf8_lossy(&buffer[..header_end]).to_string();
+        let mut lines = header_text.split("\r\n").filter(|line| !line.is_empty());
+        let request_line = lines
+            .next()
+            .expect("request should include request line")
+            .to_string();
+        let headers = lines
+            .filter_map(|line| {
+                let (name, value) = line.split_once(':')?;
+                Some((name.trim().to_ascii_lowercase(), value.trim().to_string()))
+            })
+            .collect::<HashMap<_, _>>();
+        let content_length = headers
+            .get("content-length")
+            .and_then(|value| value.parse::<usize>().ok())
+            .unwrap_or(0);
+        while buffer.len() < header_end + content_length {
+            let read = stream
+                .read(&mut chunk)
+                .expect("test server should read request body");
+            assert!(read > 0, "client closed before request body");
+            buffer.extend_from_slice(&chunk[..read]);
+        }
+        let body = if content_length == 0 {
+            serde_json::json!({})
+        } else {
+            serde_json::from_slice(&buffer[header_end..header_end + content_length])
+                .expect("request body should be JSON")
+        };
+        let response = format!(
+            "HTTP/1.1 {status_line}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{response_body}",
+            response_body.len()
+        );
+        stream
+            .write_all(response.as_bytes())
+            .expect("test server should write response");
+        CapturedHttpRequest {
+            request_line,
+            headers,
+            body,
+        }
+    }
 
     #[test]
     fn cli_args_default_to_serving() {
@@ -11398,6 +12090,305 @@ mod tests {
     fn cli_args_reject_unknown_values() {
         let error = parse_cli_action(["--wat"]).unwrap_err();
         assert!(error.contains("--wat"));
+    }
+
+    #[test]
+    fn a2a_platform_registration_defaults_to_hosted_mode() {
+        let _guard = ENV_LOCK.blocking_lock();
+        let snapshot = snapshot_env(A2A_PLATFORM_ENV_NAMES);
+        clear_env(A2A_PLATFORM_ENV_NAMES);
+
+        assert!(!a2a_platform_registration_enabled());
+        env::set_var("MAESTRO_HOSTED_RUNNER_MODE", "1");
+        assert!(a2a_platform_registration_enabled());
+        env::set_var("MAESTRO_A2A_PLATFORM_REGISTER", "0");
+        assert!(!a2a_platform_registration_enabled());
+        env::set_var("MAESTRO_A2A_PLATFORM_REGISTER", "1");
+        assert!(a2a_platform_registration_enabled());
+
+        restore_env(snapshot);
+    }
+
+    #[test]
+    fn a2a_platform_registration_config_uses_platform_env_and_stable_endpoint() {
+        let _guard = ENV_LOCK.blocking_lock();
+        let snapshot = snapshot_env(A2A_PLATFORM_ENV_NAMES);
+        clear_env(A2A_PLATFORM_ENV_NAMES);
+
+        env::set_var("MAESTRO_HOSTED_RUNNER_MODE", "1");
+        env::set_var(
+            "AGENT_REGISTRY_SERVICE_URL",
+            "https://platform.test/agents.v1.AgentService/Register",
+        );
+        env::set_var("AGENT_REGISTRY_SERVICE_TOKEN", "registry-token");
+        env::set_var("AGENT_REGISTRY_ORGANIZATION_ID", "org_1");
+        env::set_var("AGENT_REGISTRY_WORKSPACE_ID", "ws_1");
+        env::set_var("MAESTRO_A2A_PUBLIC_URL", "https://maestro.example/a2a/");
+        env::set_var("MAESTRO_A2A_INTERNAL_URL", "http://maestro.mesh/a2a");
+        env::set_var("MAESTRO_A2A_AGENT_ID", "maestro-peer-1");
+        env::set_var("MAESTRO_A2A_CURRENT_OBJECTIVE_IDS", "obj_1, obj_2");
+        env::set_var("MAESTRO_A2A_PLATFORM_HEARTBEAT_INTERVAL_MS", "1234");
+        env::set_var("PORT", "18787");
+
+        let config = Config::from_env();
+        let registration = resolve_a2a_platform_registration_config(&config)
+            .expect("registration config should resolve")
+            .expect("hosted mode should enable registration");
+
+        assert_eq!(registration.base_url, "https://platform.test");
+        assert_eq!(registration.token, "registry-token");
+        assert_eq!(registration.organization_id, "org_1");
+        assert_eq!(registration.workspace_id, "ws_1");
+        assert_eq!(registration.agent_id, "maestro-peer-1");
+        assert_eq!(
+            registration.public_endpoint_url,
+            "https://maestro.example/a2a/"
+        );
+        assert_eq!(
+            registration.internal_endpoint_url.as_deref(),
+            Some("http://maestro.mesh/a2a")
+        );
+        assert_eq!(
+            registration.current_objective_ids,
+            vec!["obj_1".to_string(), "obj_2".to_string()]
+        );
+        assert_eq!(registration.heartbeat_interval_ms, 1234);
+
+        restore_env(snapshot);
+    }
+
+    #[test]
+    fn a2a_platform_registration_requires_routable_endpoint_in_hosted_default() {
+        let _guard = ENV_LOCK.blocking_lock();
+        let snapshot = snapshot_env(A2A_PLATFORM_ENV_NAMES);
+        clear_env(A2A_PLATFORM_ENV_NAMES);
+
+        env::set_var("MAESTRO_HOSTED_RUNNER_MODE", "1");
+        env::set_var("AGENT_REGISTRY_SERVICE_URL", "https://platform.test");
+        env::set_var("AGENT_REGISTRY_SERVICE_TOKEN", "registry-token");
+        env::set_var("AGENT_REGISTRY_ORGANIZATION_ID", "org_1");
+        env::set_var("AGENT_REGISTRY_WORKSPACE_ID", "ws_1");
+
+        let config = Config::from_env();
+        let error = resolve_a2a_platform_registration_config(&config)
+            .expect_err("hosted default should require a routable public endpoint");
+        assert!(error.contains("routable A2A public URL or public host"));
+
+        env::set_var("MAESTRO_A2A_PLATFORM_REGISTER", "1");
+        assert!(resolve_a2a_platform_registration_config(&config)
+            .expect("explicit local registration should resolve")
+            .is_some());
+
+        restore_env(snapshot);
+    }
+
+    #[test]
+    fn a2a_platform_registration_falls_back_to_org_scoped_workspace() {
+        let _guard = ENV_LOCK.blocking_lock();
+        let snapshot = snapshot_env(A2A_PLATFORM_ENV_NAMES);
+        clear_env(A2A_PLATFORM_ENV_NAMES);
+
+        env::set_var("MAESTRO_HOSTED_RUNNER_MODE", "1");
+        env::set_var("AGENT_REGISTRY_SERVICE_URL", "https://platform.test");
+        env::set_var("AGENT_REGISTRY_SERVICE_TOKEN", "registry-token");
+        env::set_var("AGENT_REGISTRY_ORGANIZATION_ID", "org_1");
+        env::set_var("MAESTRO_A2A_PUBLIC_URL", "https://maestro.example/a2a");
+
+        let config = Config::from_env();
+        let registration = resolve_a2a_platform_registration_config(&config)
+            .expect("registration should resolve")
+            .expect("hosted mode should enable registration");
+        assert_eq!(registration.workspace_id, "org_1");
+
+        restore_env(snapshot);
+    }
+
+    #[test]
+    fn a2a_platform_payload_projects_governed_agent_card_without_drift_fields() {
+        let _guard = ENV_LOCK.blocking_lock();
+        let snapshot = snapshot_env(A2A_PLATFORM_ENV_NAMES);
+        clear_env(A2A_PLATFORM_ENV_NAMES);
+
+        let config = Config::from_env();
+        let registration = A2APlatformRegistrationConfig {
+            base_url: "https://platform.test".to_string(),
+            token: "registry-token".to_string(),
+            organization_id: "org_1".to_string(),
+            workspace_id: "ws_1".to_string(),
+            agent_id: "maestro-peer-1".to_string(),
+            name: "Maestro Peer".to_string(),
+            description: "Peer".to_string(),
+            agent_type: "maestro".to_string(),
+            owner_id: None,
+            public_endpoint_url: "https://maestro.example/a2a".to_string(),
+            internal_endpoint_url: Some("http://maestro.mesh/a2a".to_string()),
+            agent_card_url: None,
+            heartbeat_interval_ms: 60_000,
+            timeout_ms: 2_500,
+            current_objective_ids: vec!["obj_1".to_string()],
+            max_concurrent_objectives: "4".to_string(),
+            surface: "a2a".to_string(),
+            surface_type: "SURFACE_MAESTRO".to_string(),
+        };
+
+        let payload = a2a_platform_register_payload(&registration, &config);
+        assert_eq!(payload["id"], "maestro-peer-1");
+        assert_eq!(
+            payload["a2a"]["publicEndpointUrl"],
+            "https://maestro.example/a2a"
+        );
+        assert_eq!(
+            payload["a2a"]["agentCardUrl"],
+            "https://maestro.example/a2a/.well-known/agent-card.json"
+        );
+        assert_eq!(payload["a2a"]["attributes"]["maxConcurrentObjectives"], "4");
+        assert!(payload["capabilities"]
+            .as_array()
+            .expect("capabilities")
+            .contains(&Value::String("code:review".to_string())));
+
+        let skills = payload["a2a"]["skills"].as_array().expect("skills");
+        let review = skills
+            .iter()
+            .find(|skill| skill["id"] == "maestro.subagent.code-review")
+            .expect("review skill should be advertised");
+        assert_eq!(review["requiredContextGrants"][0], "repo:read");
+        assert_eq!(review["allowedTaskClasses"][0], "code.review");
+        assert!(review.get("metadata").is_none());
+        assert!(review.get("examples").is_none());
+
+        let heartbeat = a2a_platform_heartbeat_payload(&registration, &config);
+        assert_eq!(heartbeat["agentId"], "maestro-peer-1");
+        assert_eq!(heartbeat["currentObjectiveIds"][0], "obj_1");
+        assert_eq!(heartbeat["surface"], "a2a");
+        assert_eq!(heartbeat["surfaceType"], "SURFACE_MAESTRO");
+
+        restore_env(snapshot);
+    }
+
+    #[test]
+    fn a2a_platform_registration_posts_update_after_conflict_and_heartbeat() {
+        let _guard = ENV_LOCK.blocking_lock();
+        let snapshot = snapshot_env(A2A_PLATFORM_ENV_NAMES);
+        clear_env(A2A_PLATFORM_ENV_NAMES);
+
+        let listener = StdTcpListener::bind("127.0.0.1:0").expect("bind test server");
+        let addr = listener.local_addr().expect("test server addr");
+        let server = thread::spawn(move || {
+            let register =
+                capture_http_request(&listener, "409 Conflict", r#"{"message":"already exists"}"#);
+            let update =
+                capture_http_request(&listener, "200 OK", r#"{"agent":{"id":"maestro-peer-1"}}"#);
+            let heartbeat = capture_http_request(
+                &listener,
+                "200 OK",
+                r#"{"nextHeartbeatBy":"2026-05-20T10:05:00Z"}"#,
+            );
+            vec![register, update, heartbeat]
+        });
+
+        let config = Config::from_env();
+        let registration = A2APlatformRegistrationConfig {
+            base_url: format!("http://{addr}"),
+            token: "registry-token".to_string(),
+            organization_id: "org_1".to_string(),
+            workspace_id: "ws_1".to_string(),
+            agent_id: "maestro-peer-1".to_string(),
+            name: "Maestro Peer".to_string(),
+            description: "Peer".to_string(),
+            agent_type: "maestro".to_string(),
+            owner_id: Some("user_1".to_string()),
+            public_endpoint_url: "https://maestro.example/a2a".to_string(),
+            internal_endpoint_url: Some("http://maestro.mesh/a2a".to_string()),
+            agent_card_url: None,
+            heartbeat_interval_ms: 60_000,
+            timeout_ms: 2_500,
+            current_objective_ids: vec!["obj_1".to_string()],
+            max_concurrent_objectives: "4".to_string(),
+            surface: "a2a".to_string(),
+            surface_type: "SURFACE_MAESTRO".to_string(),
+        };
+
+        register_or_update_a2a_platform_agent(&registration, &config)
+            .expect("conflict should fall back to update");
+        send_a2a_platform_heartbeat(&registration, &config)
+            .expect("heartbeat should post after update");
+
+        let requests = server.join().expect("test server should finish");
+        assert_eq!(
+            requests
+                .iter()
+                .map(|request| request.request_line.as_str())
+                .collect::<Vec<_>>(),
+            vec![
+                "POST /agents.v1.AgentService/Register HTTP/1.1",
+                "POST /agents.v1.AgentService/Update HTTP/1.1",
+                "POST /agents.v1.AgentService/Heartbeat HTTP/1.1"
+            ]
+        );
+        for request in &requests {
+            assert_eq!(
+                request.headers.get("authorization").map(String::as_str),
+                Some("Bearer registry-token")
+            );
+            assert_eq!(
+                request
+                    .headers
+                    .get("connect-protocol-version")
+                    .map(String::as_str),
+                Some("1")
+            );
+            assert_eq!(
+                request.headers.get("x-organization-id").map(String::as_str),
+                Some("org_1")
+            );
+            assert_eq!(
+                request.headers.get("x-workspace-id").map(String::as_str),
+                Some("ws_1")
+            );
+        }
+        assert_eq!(requests[0].body["workspaceId"], "ws_1");
+        assert_eq!(requests[0].body["ownerId"], "user_1");
+        assert_eq!(
+            requests[0].body["a2a"]["publicEndpointUrl"],
+            "https://maestro.example/a2a"
+        );
+        assert!(requests[1].body.get("workspaceId").is_none());
+        assert_eq!(requests[1].body["id"], "maestro-peer-1");
+        assert_eq!(requests[2].body["agentId"], "maestro-peer-1");
+        assert_eq!(requests[2].body["currentObjectiveIds"][0], "obj_1");
+
+        restore_env(snapshot);
+    }
+
+    #[test]
+    fn a2a_platform_conflict_detection_requires_bounded_status() {
+        assert!(platform_error_is_conflict(
+            "POST /Register returned 409: already exists"
+        ));
+        assert!(platform_error_is_conflict("agent already_exists"));
+        assert!(!platform_error_is_conflict(
+            "POST http://127.0.0.1:4090/Register failed: connection refused"
+        ));
+        assert!(!platform_error_is_conflict(
+            "POST /Register returned 500: trace id 4090"
+        ));
+    }
+
+    #[test]
+    fn a2a_platform_base_url_strips_any_agent_service_method_suffix() {
+        assert_eq!(
+            normalize_platform_base_url("https://platform.test/agents.v1.AgentService/Register"),
+            "https://platform.test"
+        );
+        assert_eq!(
+            normalize_platform_base_url("https://platform.test/agents.v1.AgentService/Delegate"),
+            "https://platform.test"
+        );
+        assert_eq!(
+            normalize_platform_base_url("https://platform.test/prefix/agents.v1.AgentService/List"),
+            "https://platform.test/prefix"
+        );
     }
 
     #[test]

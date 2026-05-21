@@ -3,6 +3,7 @@ import type { ChildProcessWithoutNullStreams } from "node:child_process";
 import { createInterface } from "node:readline";
 import type { Interface as ReadlineInterface } from "node:readline";
 import type { Readable, Writable } from "node:stream";
+import { readPackageVersion } from "../package-version.js";
 
 type JsonRpcId = number | string;
 
@@ -149,7 +150,7 @@ const MAX_NOTIFICATION_HISTORY = 100;
 const DEFAULT_CLIENT_INFO: CodexAppServerClientInfo = {
 	name: "maestro",
 	title: "Maestro",
-	version: "0.10.18",
+	version: readPackageVersion(),
 };
 
 export class CodexAppServerRpcClient implements CodexAppServerClientLike {

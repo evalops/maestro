@@ -10,6 +10,7 @@ import type { ThinkingLevel } from "../agent/types.js";
 import type { RegisteredModel } from "../models/registry.js";
 import type { AuthCredential } from "../providers/auth.js";
 import type { HeadlessRuntimeService } from "./headless-runtime-service.js";
+import type { HostedRunnerLeaseSnapshot } from "./hosted-runner-lease.js";
 
 export interface WebServerConfig {
 	corsHeaders: Record<string, string>;
@@ -49,6 +50,7 @@ export interface HostedRunnerContext {
 	attachAudience?: string;
 	configuredMaestroSessionId?: string;
 	activeMaestroSessionId?: string;
+	runtimeLease?: HostedRunnerLeaseSnapshot;
 	draining?: boolean;
 	lastDrain?: {
 		status: string;

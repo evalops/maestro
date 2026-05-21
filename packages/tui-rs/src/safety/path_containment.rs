@@ -174,6 +174,20 @@ pub fn is_path_contained(
         }
     }
 
+    // Resolve workspace path
+    let workspace_resolved = workspace
+        .canonicalize()
+        .unwrap_or_else(|_| workspace.to_path_buf());
+
+    // Check if contained in the configured workspace before system paths.
+    // Self-hosted CI workspaces commonly live under /opt/actions-runner/_work;
+    // the workspace itself is still the trusted editing zone.
+    if path_starts_with(&resolved, &workspace_resolved) {
+        return PathContainment::Contained {
+            zone: "workspace".to_string(),
+        };
+    }
+
     // Check against system-protected paths
     for sys_path in system_paths() {
         if path_starts_with(&resolved, &sys_path) {
@@ -181,18 +195,6 @@ pub fn is_path_contained(
                 protected_path: sys_path.display().to_string(),
             };
         }
-    }
-
-    // Resolve workspace path
-    let workspace_resolved = workspace
-        .canonicalize()
-        .unwrap_or_else(|_| workspace.to_path_buf());
-
-    // Check if contained in workspace
-    if path_starts_with(&resolved, &workspace_resolved) {
-        return PathContainment::Contained {
-            zone: "workspace".to_string(),
-        };
     }
 
     // Check additional safe zones
@@ -448,6 +450,16 @@ mod tests {
     #[test]
     fn test_workspace_containment() {
         let workspace = workspace_root();
+        let target = workspace.join("src/file.rs");
+
+        let result = is_path_contained(&target, &workspace, &[]);
+        assert!(matches!(result, PathContainment::Contained { zone } if zone == "workspace"));
+    }
+
+    #[test]
+    fn test_owned_runner_workspace_under_opt_is_contained() {
+        let workspace =
+            PathBuf::from("/opt/actions-runner/_work/maestro-internal/maestro-internal");
         let target = workspace.join("src/file.rs");
 
         let result = is_path_contained(&target, &workspace, &[]);

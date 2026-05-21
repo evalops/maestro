@@ -29,6 +29,11 @@ import type {
 	HeadlessRuntimeStreamEnvelope,
 	HeadlessSessionRuntime,
 } from "../headless-runtime-service.js";
+import {
+	bindHostedRunnerPlatformLease,
+	claimHostedRunnerLease,
+	evaluateHostedRunnerLeaseUse,
+} from "../hosted-runner-lease.js";
 import { getTraceParentHeader } from "../request-context.js";
 import {
 	ApiError,
@@ -356,42 +361,26 @@ function ensureHostedRunnerCanUseSession(
 	if (!hostedRunner) {
 		return;
 	}
-	const activeSessionId =
-		hostedRunner.activeMaestroSessionId ??
-		hostedRunner.configuredMaestroSessionId;
-	if (hostedRunner.draining) {
-		throw hostedRunnerNotReadyError(
-			context,
-			"Hosted runner is draining and not accepting headless session traffic",
-			{
-				draining: "true",
-				maestro_session_id: activeSessionId,
-				requested_maestro_session_id: requestedSessionId,
-			},
-		);
-	}
-	if (!activeSessionId) {
+	const decision = evaluateHostedRunnerLeaseUse(
+		hostedRunner,
+		requestedSessionId,
+	);
+	if (decision.ok) {
 		return;
 	}
-	if (!requestedSessionId) {
-		throw hostedRunnerOwnershipError(
-			context,
-			`Hosted runner is already bound to Maestro session ${activeSessionId}`,
-			{
-				maestro_session_id: activeSessionId,
-			},
-		);
+	if (decision.reason === "runtime_draining") {
+		throw hostedRunnerNotReadyError(context, decision.message, {
+			draining: "true",
+			maestro_session_id: decision.activeSessionId,
+			requested_maestro_session_id: requestedSessionId,
+			lease_generation: String(decision.snapshot.generation),
+		});
 	}
-	if (requestedSessionId !== activeSessionId) {
-		throw hostedRunnerOwnershipError(
-			context,
-			`Hosted runner is bound to Maestro session ${activeSessionId}`,
-			{
-				maestro_session_id: activeSessionId,
-				requested_maestro_session_id: requestedSessionId,
-			},
-		);
-	}
+	throw hostedRunnerOwnershipError(context, decision.message, {
+		maestro_session_id: decision.activeSessionId,
+		requested_maestro_session_id: decision.requestedSessionId,
+		lease_generation: String(decision.snapshot.generation),
+	});
 }
 
 function claimHostedRunnerSession(
@@ -402,20 +391,22 @@ function claimHostedRunnerSession(
 	if (!hostedRunner) {
 		return;
 	}
-	const activeSessionId =
-		hostedRunner.activeMaestroSessionId ??
-		hostedRunner.configuredMaestroSessionId;
-	if (activeSessionId && activeSessionId !== sessionId) {
-		throw hostedRunnerOwnershipError(
-			context,
-			`Hosted runner is bound to Maestro session ${activeSessionId}`,
-			{
-				maestro_session_id: activeSessionId,
-				requested_maestro_session_id: sessionId,
-			},
-		);
+	const decision = claimHostedRunnerLease(hostedRunner, sessionId);
+	if (!decision.ok) {
+		if (decision.reason === "runtime_draining") {
+			throw hostedRunnerNotReadyError(context, decision.message, {
+				draining: "true",
+				maestro_session_id: decision.activeSessionId,
+				requested_maestro_session_id: decision.requestedSessionId ?? sessionId,
+				lease_generation: String(decision.snapshot.generation),
+			});
+		}
+		throw hostedRunnerOwnershipError(context, decision.message, {
+			maestro_session_id: decision.activeSessionId,
+			requested_maestro_session_id: decision.requestedSessionId ?? sessionId,
+			lease_generation: String(decision.snapshot.generation),
+		});
 	}
-	hostedRunner.activeMaestroSessionId = sessionId;
 }
 
 function resolveRuntimeWorkspaceRoot(
@@ -652,13 +643,11 @@ async function recordPlatformAgentRuntimeSessionStart(options: {
 	const a2aCorrelation = result.events.find(
 		(event) => event.type === "maestro.platform_runtime.a2a_correlated",
 	)?.attributes;
-	if (result.run.id) {
-		hostedRunner.agentRunId = result.run.id;
-	}
-	if (result.run.linkage?.agentId) {
-		hostedRunner.agentId = result.run.linkage.agentId;
-	}
-	hostedRunner.agentRuntimeLeaseToken = result.run.lease?.token;
+	bindHostedRunnerPlatformLease(hostedRunner, {
+		agentRunId: result.run.id,
+		agentId: result.run.linkage?.agentId,
+		leaseToken: result.run.lease?.token,
+	});
 	// Store only support-grade handles on the hosted runner. The full run/task
 	// state stays in Platform; health and identity endpoints expose these ids
 	// for operators without making Platform a session-state dependency.

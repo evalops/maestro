@@ -26,7 +26,9 @@
 		"toolCalls": 1,
 		"replayDeltas": 0,
 		"scoreFailures": 0,
-		"scoreWarnings": 0
+		"scoreWarnings": 0,
+		"workspaceFiles": 0,
+		"toolAdapters": 0
 	},
 	"platform": {
 		"primitive": "standalone",

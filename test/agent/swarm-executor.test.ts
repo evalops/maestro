@@ -486,21 +486,45 @@ describe("SwarmExecutor", () => {
 		]);
 	});
 
-	it("discovers A2A swarm peers through Platform Agent Registry", async () => {
+	it("discovers and ranks A2A swarm peers through Platform Agent Registry", async () => {
 		listA2APeerCandidatesWithPlatformMock.mockResolvedValue([
+			{
+				agent: {
+					id: "agent-stale",
+					name: "Stale Maestro",
+					workspaceId: "workspace-1",
+					status: "AGENT_STATUS_BUSY",
+					lastHeartbeatAt: "2026-05-20T11:40:00.000Z",
+				},
+				endpointUrl: "https://stale.public/a2a",
+				endpointKind: "public",
+				pushNotifications: false,
+				skills: [
+					{
+						id: "maestro.subagent.code-review",
+						name: "Code Review",
+						allowedTaskClasses: ["code.review"],
+					},
+				],
+			},
 			{
 				agent: {
 					id: "agent-target",
 					name: "Target Maestro",
 					workspaceId: "workspace-1",
 					status: "AGENT_STATUS_IDLE",
+					lastHeartbeatAt: new Date().toISOString(),
 				},
 				endpointUrl: "https://target.internal/a2a",
 				endpointKind: "internal",
+				pushNotifications: true,
 				skills: [
 					{
 						id: "maestro.subagent.code-review",
 						name: "Code Review",
+						allowedTaskClasses: ["code.review"],
+						approvalPolicyRef: "policy:code-review",
+						requiredArtifactKinds: ["review.summary"],
 					},
 				],
 			},
@@ -569,6 +593,126 @@ describe("SwarmExecutor", () => {
 			expect.objectContaining({
 				source: "platform-agent-registry",
 				peer: "Target Maestro",
+			}),
+		);
+	});
+
+	it("normalizes swarm subagent types before capability policy filtering", async () => {
+		listA2APeerCandidatesWithPlatformMock.mockResolvedValue([
+			{
+				agent: {
+					id: "agent-denied",
+					name: "Denied Maestro",
+					workspaceId: "workspace-1",
+					status: "AGENT_STATUS_IDLE",
+					lastHeartbeatAt: new Date().toISOString(),
+				},
+				endpointUrl: "https://denied.internal/a2a",
+				endpointKind: "internal",
+				pushNotifications: true,
+				skills: [
+					{
+						id: "maestro.subagent.code-review",
+						name: "Code Review",
+						deniedTaskClasses: ["code.review"],
+					},
+				],
+			},
+			{
+				agent: {
+					id: "agent-allowed",
+					name: "Allowed Maestro",
+					workspaceId: "workspace-1",
+					status: "AGENT_STATUS_BUSY",
+				},
+				endpointUrl: "https://allowed.public/a2a",
+				endpointKind: "public",
+				skills: [
+					{
+						id: "maestro.subagent.code-review",
+						name: "Code Review",
+						allowedTaskClasses: ["code.review"],
+					},
+				],
+			},
+		]);
+		const executor = new SwarmExecutor({
+			...createConfig({ subagentType: "reviewer" }),
+			transport: "a2a",
+			a2a: {
+				discover: true,
+				workspaceId: "workspace-1",
+				capability: "code-review",
+				preferInternalEndpoint: true,
+				maxWaitMs: 50,
+				pollIntervalMs: 1,
+			},
+			mode: "smart",
+			modelProvider: "anthropic",
+		});
+
+		const result = await executeWithTimeout(executor);
+
+		expect(result.status).toBe("completed");
+		expect(sendA2AMessageMock.mock.calls[0]?.[0]).toEqual(
+			expect.objectContaining({
+				baseUrl: "https://allowed.public/a2a",
+				agentId: "agent-allowed",
+			}),
+		);
+	});
+
+	it("does not infer a Maestro task class for explicit custom A2A skills", async () => {
+		listA2APeerCandidatesWithPlatformMock.mockResolvedValue([
+			{
+				agent: {
+					id: "agent-custom",
+					name: "Custom Reviewer",
+					workspaceId: "workspace-1",
+					status: "AGENT_STATUS_IDLE",
+					lastHeartbeatAt: new Date().toISOString(),
+				},
+				endpointUrl: "https://custom.internal/a2a",
+				endpointKind: "internal",
+				skills: [
+					{
+						id: "vendor.custom.review",
+						name: "Vendor Review",
+						allowedTaskClasses: ["vendor.review"],
+					},
+				],
+			},
+		]);
+		const executor = new SwarmExecutor({
+			...createConfig({
+				a2aSkillId: "vendor.custom.review",
+				subagentType: "coder",
+			}),
+			transport: "a2a",
+			a2a: {
+				discover: true,
+				workspaceId: "workspace-1",
+				capability: "vendor-review",
+				preferInternalEndpoint: true,
+				maxWaitMs: 50,
+				pollIntervalMs: 1,
+			},
+			mode: "smart",
+			modelProvider: "anthropic",
+		});
+
+		const result = await executeWithTimeout(executor);
+
+		expect(result.status).toBe("completed");
+		expect(listA2APeerCandidatesWithPlatformMock).toHaveBeenCalledWith(
+			expect.objectContaining({
+				skillId: "vendor.custom.review",
+			}),
+		);
+		expect(sendA2AMessageMock.mock.calls[0]?.[0]).toEqual(
+			expect.objectContaining({
+				baseUrl: "https://custom.internal/a2a",
+				agentId: "agent-custom",
 			}),
 		);
 	});

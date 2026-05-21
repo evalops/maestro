@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import chalk from "chalk";
+import { selectA2ACapabilityPeer } from "../../platform/a2a-capability-market.js";
 import {
 	type A2AAgentCard,
 	type A2AServiceConfig,
@@ -1057,8 +1058,12 @@ async function resolveDiscoveredA2ADelegatePeer(
 	if (candidates.length === 0) {
 		fail(`No Platform A2A peers advertise skill ${skillId}.`);
 	}
-	const candidate = candidates[0];
-	if (!candidate) {
+	const selected = selectA2ACapabilityPeer(candidates, {
+		skillId,
+		preferInternalEndpoint: booleanFlag(parsed, "--prefer-internal"),
+	});
+	const candidate = selected?.candidate;
+	if (!candidate || !selected) {
 		fail(`No Platform A2A peers advertise skill ${skillId}.`);
 	}
 	const imported = await importDiscoveredA2APeers(parsed, [candidate]);
@@ -1069,6 +1074,11 @@ async function resolveDiscoveredA2ADelegatePeer(
 	console.log(
 		chalk.dim(
 			`Selected Platform A2A peer ${importedPeer.name} (${importedPeer.url}) for ${skillId}`,
+		),
+	);
+	console.log(
+		chalk.dim(
+			`Capability score: ${selected.score} (${selected.reasons.join(", ")})`,
 		),
 	);
 	return resolveA2APeer(importedPeer.name, {

@@ -33,6 +33,20 @@ capability-based delegation can route work to the peer without extra flags.
 Operators can run `--heartbeat-only --agent-id <id>` without a public URL when
 they only need to refresh presence for an already registered peer.
 
+Hosted Rust control-plane instances also auto-register when
+`MAESTRO_HOSTED_RUNNER_MODE=1` and Platform Agent Registry environment is
+present. `MAESTRO_A2A_PLATFORM_REGISTER=0` disables the loop, while
+`MAESTRO_A2A_PLATFORM_REGISTER=1` enables it outside hosted mode. The loop uses
+the same A2A projection as `maestro a2a register`, updates an existing
+`MAESTRO_A2A_AGENT_ID` on conflict, and heartbeats the Agent Card, governed
+child-agent skills, current objective IDs, capacity hint, and endpoint URLs on a
+bounded interval. Hosted default registration requires `MAESTRO_A2A_PUBLIC_URL`
+or `MAESTRO_A2A_PUBLIC_HOST`/`MAESTRO_CONTROL_PUBLIC_HOST` so Platform does not
+publish an unroutable local bind address; explicit opt-in can still use local
+fallbacks for development. When no workspace ID is configured, the loop falls
+back to the organization ID, matching the rest of the Platform client behavior.
+Missing Platform configuration leaves local/offline Maestro unchanged.
+
 `delegate` sends a normal A2A `message:send` request with Maestro delegation
 metadata: origin, peer name, role, and working directory. The resulting task is
 recorded in the local ledger before optional waiting begins. Treat the A2A task
@@ -96,12 +110,21 @@ MAESTRO_SWARM_A2A_PREFER_INTERNAL=1 \
 maestro swarm run plan.md
 ```
 
+Platform-discovered peers are ranked by the A2A capability market
+(`evalops.maestro.a2a-capability-market.v1`) before selection. The ranking
+prefers exact skill matches, idle/online and freshly heartbeated agents,
+internal endpoints when requested, push-notification support, declared approval
+policies, and required artifact contracts. Peers whose advertised skills deny
+the requested task class or cannot satisfy required context/artifact grants are
+excluded before round-robin selection. `maestro a2a delegate --discover` uses
+the same selector and prints the score reasons beside the imported peer.
+
 Task-level overrides let the planner pin a specific peer or A2A skill with
 `a2aPeer` and `a2aSkillId`. With Platform discovery, `a2aPeer` matches the
 candidate agent id, agent name, A2A endpoint, or Agent Card URL before the
-round-robin fallback. Otherwise Maestro round-robins across configured or
-discovered peers and maps Codex subagent lanes to advertised A2A skill ids such
-as `maestro.subagent.code-writer`, `maestro.subagent.code-review`,
+capability-market ranking. Otherwise Maestro round-robins across configured or
+ranked discovered peers and maps Codex subagent lanes to advertised A2A skill
+ids such as `maestro.subagent.code-writer`, `maestro.subagent.code-review`,
 `maestro.subagent.test-runner`, `maestro.subagent.repo-explorer`, and
 `maestro.subagent.release-shepherd`.
 
