@@ -179,11 +179,18 @@ export const PRIMARY_COMMAND_CATALOG: readonly CommandCatalogEntry[] = [
 		tags: ["session", "automation"],
 	}),
 	withArgs("a2a", "a2a", {
-		description: "Pair and inspect A2A peer agents",
-		usage: "/a2a [accept <code>|peers|send <peer> <text>]",
+		description: "Pair, inspect, and delegate to A2A peer agents",
+		usage:
+			"/a2a [accept <code>|fleet|peers|tasks [--work-graph]|coordinate [--work-graph]|delegate <peer> <text>|reply <peer> <task-id> <text>]",
 		tags: ["tools", "agents"],
 		examples: [
+			"/a2a fleet",
 			"/a2a peers",
+			"/a2a tasks --work-graph",
+			"/a2a coordinate",
+			"/a2a coordinate mac-mini --work-graph --reply use the short smoke",
+			"/a2a delegate mac-mini run workspace smoke",
+			"/a2a reply mac-mini task-123 use the short smoke",
 			"/a2a accept maestro-pair-v1.payload.checksum --name mac-mini",
 		],
 	}),
