@@ -22,7 +22,7 @@ env:
 
 jobs:
   validate-trigger:
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: ${{ vars.PUBLIC_PR_VALIDATION_RUNNER || 'ubuntu-latest' }}
     timeout-minutes: 5
     outputs:
       should_run: ${{ steps.check.outputs.should_run }}
@@ -51,7 +51,7 @@ jobs:
   skip-when-no-tag:
     if: ${{ needs.validate-trigger.outputs.should_run == 'false' }}
     needs: validate-trigger
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: ${{ vars.PUBLIC_PR_VALIDATION_RUNNER || 'ubuntu-latest' }}
     timeout-minutes: 2
     steps:
       - name: Skip release workflow
@@ -61,7 +61,7 @@ jobs:
   prepare:
     if: ${{ needs.validate-trigger.outputs.should_run == 'true' }}
     needs: validate-trigger
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: ${{ vars.PUBLIC_PR_VALIDATION_RUNNER || 'ubuntu-latest' }}
     timeout-minutes: 15
     outputs:
       release_tag: ${{ steps.release.outputs.release_tag }}
@@ -87,9 +87,9 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: blacksmith-4vcpu-ubuntu-2404
+          - os: ${{ vars.PUBLIC_PR_VALIDATION_RUNNER || 'ubuntu-latest' }}
             chunkIndex: 1
-          - os: blacksmith-4vcpu-ubuntu-2404
+          - os: ${{ vars.PUBLIC_PR_VALIDATION_RUNNER || 'ubuntu-latest' }}
             chunkIndex: 2
     runs-on: ${{ matrix.os }}
     timeout-minutes: 90

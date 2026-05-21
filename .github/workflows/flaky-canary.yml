@@ -21,7 +21,7 @@ env:
 jobs:
   canary:
     if: ${{ github.ref == 'refs/heads/main' }}
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: ${{ vars.PUBLIC_PR_VALIDATION_RUNNER || 'ubuntu-latest' }}
     timeout-minutes: 20
 
     steps:
