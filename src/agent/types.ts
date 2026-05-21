@@ -517,11 +517,22 @@ export interface ToolAnnotations {
 	readOnlyHint?: boolean;
 	/** If true, the tool may perform destructive/irreversible updates */
 	destructiveHint?: boolean;
+	/** If true, mutating calls are scoped to explicit path arguments */
+	pathScopedMutationHint?: boolean;
 	/** If true, calling repeatedly with same args has no additional effect */
 	idempotentHint?: boolean;
 	/** If true, the tool interacts with external systems (network, APIs) */
 	openWorldHint?: boolean;
 }
+
+export interface McpToolSourceMetadata {
+	type: "mcp";
+	server: string;
+	tool: string;
+	supportsParallelToolCalls?: boolean;
+}
+
+export type ToolSourceMetadata = McpToolSourceMetadata;
 
 /**
  * Complete tool definition with execute function.
@@ -563,6 +574,8 @@ export interface AgentTool<
 	parameters: TParameters;
 	/** Tool behavior hints from MCP annotations */
 	annotations?: ToolAnnotations;
+	/** Exact runtime provenance for bridged or remote tool sources */
+	source?: ToolSourceMetadata;
 	/** Optional categorization (e.g., "file", "shell", "web") */
 	toolType?: string;
 	/**

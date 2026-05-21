@@ -369,6 +369,29 @@ describe("TaskExecutor", () => {
 				body: "## EvalOps Agent Evidence",
 			});
 		});
+
+		it("fails reused PR execution when evidence refresh fails", async () => {
+			const updatePullRequest = vi
+				.fn()
+				.mockRejectedValue(new Error("GitHub API timeout"));
+			const executorWithClient = new TestableExecutor({
+				config: mockConfig,
+				memory: mockMemory as unknown as MemoryStore,
+				githubClient: { updatePullRequest } as unknown as GitHubApiClient,
+			});
+
+			await expect(
+				executorWithClient.testRefreshExistingPrBody(
+					{
+						number: 99,
+						url: "https://github.com/testowner/testrepo/pull/99",
+					},
+					"## EvalOps Agent Evidence",
+				),
+			).rejects.toThrow(
+				"Failed to refresh existing PR body: GitHub API timeout",
+			);
+		});
 	});
 });
 

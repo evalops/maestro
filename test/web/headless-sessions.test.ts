@@ -3453,6 +3453,92 @@ describe("headless session handlers", () => {
 		}
 	});
 
+	it("preserves runtime-not-ready when a hosted runner starts draining before lease claim", async () => {
+		const workspaceRoot = await mkdtemp(
+			join(tmpdir(), "maestro-headless-hosted-draining-claim-"),
+		);
+		try {
+			const fakeAgent = new FakeAgent();
+			const context = createContext({
+				createAgent: vi.fn().mockResolvedValue(fakeAgent),
+				hostedRunner: {
+					enabled: true,
+					runnerSessionId: "mrs_test",
+					ownerInstanceId: "pod-a",
+					workspaceRoot,
+				},
+			});
+			const ensureRuntime = context.headlessRuntimeService.ensureRuntime.bind(
+				context.headlessRuntimeService,
+			);
+			vi.spyOn(
+				context.headlessRuntimeService,
+				"ensureRuntime",
+			).mockImplementation(async (options) => {
+				const runtime = await ensureRuntime(options);
+				if (context.hostedRunner) {
+					context.hostedRunner.draining = true;
+				}
+				return runtime;
+			});
+			const req = createJsonRequest("POST", "/api/headless/sessions", {
+				model: TEST_MODEL.id,
+			});
+			const res = new MockResponse();
+			res.req = req;
+
+			let caught: unknown;
+			try {
+				await handleHeadlessSessionCreate(
+					req,
+					res as unknown as ServerResponse,
+					context,
+				);
+			} catch (error) {
+				caught = error;
+			}
+
+			expect(caught).toBeInstanceOf(ApiError);
+			expect({
+				errorType: (caught as ApiError).errorType,
+				message: (caught as ApiError).message,
+				statusCode: (caught as ApiError).statusCode,
+			}).toEqual({
+				errorType: HostedRunnerErrorType.RuntimeNotReady,
+				message:
+					"Hosted runner is draining and not accepting headless session traffic",
+				statusCode: 503,
+			});
+
+			const errorRes = new MockResponse();
+			errorRes.req = req;
+			respondWithApiError(
+				errorRes as unknown as ServerResponse,
+				caught,
+				500,
+				{},
+				req,
+			);
+
+			expect(errorRes.statusCode).toBe(503);
+			expect(JSON.parse(errorRes.body)).toMatchObject({
+				error_type: HostedRunnerErrorType.RuntimeNotReady,
+				details: [
+					{
+						reason: HostedRunnerErrorType.RuntimeNotReady,
+						metadata: {
+							owner_instance_id: "pod-a",
+							requested_maestro_session_id: expect.any(String),
+							draining: "true",
+						},
+					},
+				],
+			});
+		} finally {
+			await rm(workspaceRoot, { recursive: true, force: true });
+		}
+	});
+
 	it("returns structured runtime owner errors for hosted session mismatches", async () => {
 		const workspaceRoot = await mkdtemp(
 			join(tmpdir(), "maestro-headless-hosted-owner-"),

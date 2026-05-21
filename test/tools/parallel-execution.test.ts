@@ -1,14 +1,18 @@
+import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 import type { AgentTool } from "../../src/agent/types.js";
 import {
 	READ_ONLY_TOOLS,
 	WRITE_TOOLS,
 	getOptimalConcurrency,
+	getPathScopedMutation,
+	isParallelSafeTool,
 	isReadOnlyTool,
 	isWriteTool,
 	markDestructive,
 	markReadOnly,
 	partitionToolCalls,
+	pathScopesOverlap,
 } from "../../src/tools/parallel-execution.js";
 
 describe("parallel-execution", () => {
@@ -57,6 +61,50 @@ describe("parallel-execution", () => {
 
 		it("returns false for unknown tools without annotation", () => {
 			expect(isReadOnlyTool("unknown_tool")).toBe(false);
+		});
+
+		it("does not infer read-only status from MCP server parallel support", () => {
+			expect(
+				isReadOnlyTool("mcp__workspace__mutate_state", undefined, {
+					type: "mcp",
+					server: "workspace",
+					tool: "mutate_state",
+					supportsParallelToolCalls: true,
+				}),
+			).toBe(false);
+		});
+	});
+
+	describe("isParallelSafeTool", () => {
+		it("allows server-opted MCP tools to run in parallel without marking them read-only", () => {
+			const source = {
+				type: "mcp" as const,
+				server: "workspace",
+				tool: "mutate_state",
+				supportsParallelToolCalls: true,
+			};
+
+			expect(
+				isReadOnlyTool("mcp__workspace__mutate_state", undefined, source),
+			).toBe(false);
+			expect(
+				isParallelSafeTool("mcp__workspace__mutate_state", undefined, source),
+			).toBe(true);
+		});
+
+		it("does not allow destructive MCP tools into parallel-safe waves", () => {
+			expect(
+				isParallelSafeTool(
+					"mcp__workspace__delete",
+					{ destructiveHint: true },
+					{
+						type: "mcp",
+						server: "workspace",
+						tool: "delete",
+						supportsParallelToolCalls: true,
+					},
+				),
+			).toBe(false);
 		});
 	});
 
@@ -196,6 +244,88 @@ describe("parallel-execution", () => {
 			} as AgentTool;
 			const marked = markDestructive(tool);
 			expect(marked.annotations?.destructiveHint).toBe(true);
+		});
+	});
+
+	describe("path-scoped mutations", () => {
+		it("canonicalizes relative and absolute paths before overlap checks", () => {
+			const cwd = resolve("/tmp/maestro-path-scope");
+			const tool = {
+				name: "path_write",
+				description: "",
+				parameters: {},
+				annotations: {
+					destructiveHint: true,
+					pathScopedMutationHint: true,
+				},
+			} as AgentTool;
+
+			const relativeScope = getPathScopedMutation(
+				{
+					name: "path_write",
+					arguments: { path: "src/a.ts" },
+				},
+				tool,
+				cwd,
+			);
+			const absoluteScope = getPathScopedMutation(
+				{
+					name: "path_write",
+					arguments: { path: resolve(cwd, "src/a.ts") },
+				},
+				tool,
+				cwd,
+			);
+			const siblingScope = getPathScopedMutation(
+				{
+					name: "path_write",
+					arguments: { path: "src/b.ts" },
+				},
+				tool,
+				cwd,
+			);
+
+			expect(relativeScope).toBeDefined();
+			expect(absoluteScope).toBeDefined();
+			expect(siblingScope).toBeDefined();
+			expect(relativeScope?.paths).toEqual(absoluteScope?.paths);
+			expect(pathScopesOverlap(relativeScope!, absoluteScope!)).toBe(true);
+			expect(pathScopesOverlap(relativeScope!, siblingScope!)).toBe(false);
+		});
+
+		it("case-folds mutation paths before overlap checks", () => {
+			const cwd = resolve("/tmp/Maestro-Path-Scope");
+			const tool = {
+				name: "path_write",
+				description: "",
+				parameters: {},
+				annotations: {
+					destructiveHint: true,
+					pathScopedMutationHint: true,
+				},
+			} as AgentTool;
+
+			const mixedCaseScope = getPathScopedMutation(
+				{
+					name: "path_write",
+					arguments: { path: "Src/A.ts" },
+				},
+				tool,
+				cwd,
+			);
+			const lowerCaseScope = getPathScopedMutation(
+				{
+					name: "path_write",
+					arguments: { path: resolve("/tmp/maestro-path-scope/src/a.ts") },
+				},
+				tool,
+				cwd,
+			);
+
+			expect(mixedCaseScope).toBeDefined();
+			expect(lowerCaseScope).toBeDefined();
+			expect(mixedCaseScope?.paths).toEqual(lowerCaseScope?.paths);
+			expect(pathScopesOverlap(mixedCaseScope!, lowerCaseScope!)).toBe(true);
 		});
 	});
 });

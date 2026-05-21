@@ -1,0 +1,99 @@
+name: tool-call-next-wave
+description: >
+  Ship the next plateau of Maestro tool-call latency improvements after
+  read-only waves: exact MCP provenance opt-in, path-scoped mutation islands,
+  scheduler hot-path metadata caching, zero-sleep overhead measurement, prompt
+  nudges for batched independent tool calls, Rust read-only executor reuse, and
+  immediate post-mutation verification waves.
+metric:
+  primary:
+    type: hard
+    name: zero_sleep_tool_phase_ms
+    direction: minimize
+    target: 55
+  degenerate_gates:
+    - name: assertions_passed
+      check: "== 1"
+      description: "All preconditions and postconditions for the complex goal must pass."
+    - name: unsafe_overlap_count
+      check: "== 0"
+      description: "No read-only call may overlap a mutation, and no path mutations may overlap a shared path."
+    - name: untrusted_mcp_parallel_count
+      check: "== 0"
+      description: "MCP tools without explicit server provenance opt-in must not be treated as server-parallel."
+  diagnostics:
+    - name: tool_phase_ms
+    - name: zero_sleep_tool_phase_ms
+    - name: path_mutation_island_ms
+    - name: post_mutation_verify_gap_ms
+    - name: metadata_lookup_count
+    - name: mcp_trusted_parallel_count
+    - name: prompt_batching_instruction_present
+    - name: rust_client_read_only_wave_elapsed_ms
+measurement:
+  command: bunx tsx scripts/measure-tool-call-next-wave.ts
+  timeout_seconds: 60
+  output_format: json
+  working_directory: "."
+  stability:
+    mode: repeat
+    repeat_count: 5
+    aggregation: median
+scope:
+  mutable:
+    - src/agent/transport.ts
+    - src/agent/types.ts
+    - src/tools/parallel-execution.ts
+    - src/mcp/
+    - src/cli/system-prompt.ts
+    - packages/tui-rs/src/tools/batch.rs
+    - packages/tui-rs/src/agent/native.rs
+    - test/agent/provider-transport-tool-concurrency.test.ts
+    - test/agent/mcp.test.ts
+    - test/cli/system-prompt.test.ts
+    - scripts/measure-tool-call-next-wave.ts
+    - .context/compound-engineering/ce-optimize/tool-call-next-wave/
+  immutable:
+    - packages/web/
+    - src/agent/providers/
+preconditions:
+  - A single complex provider turn emits trusted MCP read-only calls, untrusted
+    MCP read-like calls, two disjoint path-scoped mutations, one overlapping
+    path mutation, and post-mutation read-only verification calls.
+  - Trusted MCP calls carry exact server/tool provenance and the server config
+    explicitly opts into parallel tool calls; untrusted MCP calls do not.
+  - Path-scoped mutations expose concrete file paths through their arguments;
+    the scheduler canonicalizes and case-folds paths before proving
+    disjointness and allowing any mutation overlap.
+  - Read-only verification calls are already present in the provider turn after
+    the mutation segment, making speculative post-mutation verification
+    measurable without asking the model for another turn.
+  - The zero-sleep variant sets all tool latencies to zero so scheduler overhead
+    and metadata lookup churn are visible independently from artificial sleeps.
+  - The Rust client read-only wave exercises native tool execution without
+    constructing a fresh ToolExecutor for every parallel batch task.
+postconditions:
+  - Trusted MCP calls may join parallel-safe MCP waves only when their exact
+    server config opts into parallel tool calls; server opt-in alone never marks
+    a tool read-only or eligible for reusable-result caching.
+  - Disjoint path-scoped mutations run as a bounded mutation island, while
+    overlapping or unknown-scope mutations wait until the island drains.
+  - Read-only verification calls after a mutation start in the next available
+    wave immediately after the mutation island drains, with no extra model turn.
+  - Scheduler tool metadata and reusable-result keys are resolved through a
+    stable per-batch lookup cache instead of repeatedly scanning the tool list.
+  - The bundled system prompt tells capable models to emit independent safe
+    tool calls together, including read-only inspections and disjoint file
+    mutations when the paths are known.
+  - Rust read-only waves reuse the BatchExecutor's cached ToolExecutor across
+    parallel tasks and preserve ordered batch results.
+  - The benchmark reports all diagnostics above and the hard gates pass.
+execution:
+  mode: iterative
+  max_concurrent: 1
+stopping:
+  max_iterations: 5
+  max_hours: 2
+  plateau:
+    minimum_improvement_ms: 3
+    consecutive_iterations: 2

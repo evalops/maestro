@@ -46,6 +46,7 @@ const DEFAULT_EXCLUDES = [
 
 const PUBLIC_INCLUDE_OVERRIDES = new Set([
 	".env.example",
+	".github/workflows/review-thread-guard.yml",
 ]);
 
 function parseArgs(argv) {
@@ -181,6 +182,14 @@ function createMatcher(patterns) {
 	};
 }
 
+function hasPublicIncludeOverrideDescendant(relativePath) {
+	const normalized = normalizePath(relativePath).replace(/^\.?\//u, "");
+	if (!normalized) return false;
+	return [...PUBLIC_INCLUDE_OVERRIDES].some((overridePath) =>
+		overridePath.startsWith(`${normalized}/`),
+	);
+}
+
 function walkFiles(root, shouldExclude) {
 	const files = [];
 
@@ -189,7 +198,9 @@ function walkFiles(root, shouldExclude) {
 			const absolute = join(dir, entry.name);
 			const relativePath = normalizePath(relative(root, absolute));
 			if (shouldExclude(relativePath)) {
-				continue;
+				if (!entry.isDirectory() || !hasPublicIncludeOverrideDescendant(relativePath)) {
+					continue;
+				}
 			}
 			if (entry.isDirectory()) {
 				visit(absolute);
@@ -255,6 +266,20 @@ function resolvePublicPackageJson(
 	};
 }
 
+function resolvePublicFileContent(sourceRoot, relativePath) {
+	const sourcePath = resolve(sourceRoot, relativePath);
+	if (relativePath === ".github/workflows/review-thread-guard.yml") {
+		return Buffer.from(
+			readFileSync(sourcePath, "utf8").replace(
+				/^\s{6}runner_label: evalops-private-ci\r?\n/mu,
+				"",
+			),
+			"utf8",
+		);
+	}
+	return readFileSync(sourcePath);
+}
+
 function buildMirrorPlan(sourceRoot, targetRoot, shouldExclude, packageName) {
 	const sourceFiles = new Set(walkFiles(sourceRoot, shouldExclude));
 	const targetFiles = new Set(walkFiles(targetRoot, shouldExclude));
@@ -264,11 +289,10 @@ function buildMirrorPlan(sourceRoot, targetRoot, shouldExclude, packageName) {
 	const deletedPaths = [];
 
 	for (const relativePath of [...sourceFiles].sort()) {
-		const sourcePath = resolve(sourceRoot, relativePath);
 		const sourceContent =
 			relativePath === "package.json"
 				? Buffer.from(packageJsonContent, "utf8")
-				: readFileSync(sourcePath);
+				: resolvePublicFileContent(sourceRoot, relativePath);
 		const targetPath = resolve(targetRoot, relativePath);
 		const targetContent = existsSync(targetPath) ? readFileSync(targetPath) : null;
 		if (!targetContent || !sourceContent.equals(targetContent)) {
@@ -302,6 +326,8 @@ function applyMirrorPlan(sourceRoot, targetRoot, plan) {
 		mkdirSync(dirname(targetPath), { recursive: true });
 		if (relativePath === "package.json") {
 			writeFileSync(targetPath, plan.packageJsonContent);
+		} else if (relativePath === ".github/workflows/review-thread-guard.yml") {
+			writeFileSync(targetPath, resolvePublicFileContent(sourceRoot, relativePath));
 		} else {
 			copyFileSync(sourcePath, targetPath);
 		}

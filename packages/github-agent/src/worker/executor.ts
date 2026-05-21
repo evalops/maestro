@@ -561,8 +561,8 @@ ${diff}
 				body,
 			});
 		} catch (err) {
-			this.log(
-				`[executor] Failed to refresh existing PR body: ${err instanceof Error ? err.message : err}`,
+			throw new Error(
+				`Failed to refresh existing PR body: ${err instanceof Error ? err.message : err}`,
 			);
 		}
 	}
@@ -580,8 +580,8 @@ ${diff}
 				body,
 			]);
 		} catch (err) {
-			this.log(
-				`[executor] Failed to refresh existing PR body via gh: ${err instanceof Error ? err.message : err}`,
+			throw new Error(
+				`Failed to refresh existing PR body via gh: ${err instanceof Error ? err.message : err}`,
 			);
 		}
 	}

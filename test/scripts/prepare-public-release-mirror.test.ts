@@ -63,6 +63,18 @@ describe("prepare-public-release-mirror", () => {
 		write(join(source, "README.md"), "public readme\n");
 		write(join(source, "src/index.ts"), "export const value = 1;\n");
 		write(join(source, ".github/workflows/ci.yml"), "internal ci\n");
+		write(
+			join(source, ".github/workflows/review-thread-guard.yml"),
+			[
+				"jobs:",
+				"  unresolved-review-threads:",
+				"    with:",
+				"      pr_number: ${{ github.event.pull_request.number }}",
+				"      runner_label: evalops-private-ci",
+				"      guard_ref: d45c0bca2cf2ccea6786c57c9b5e84df09009fc8",
+				"",
+			].join("\n"),
+		);
 		write(join(source, ".husky/_/husky.sh"), "generated husky helper\n");
 		write(
 			join(source, "packages/contracts/dist/index.js"),
@@ -90,6 +102,10 @@ describe("prepare-public-release-mirror", () => {
 
 		write(join(target, "old.txt"), "stale\n");
 		write(join(target, ".github/workflows/ci.yml"), "public ci\n");
+		write(
+			join(target, ".github/workflows/review-thread-guard.yml"),
+			"stale guard\n",
+		);
 		write(
 			join(target, ".github/workflows/public-release-mirror.yml"),
 			"public workflow\n",
@@ -155,6 +171,21 @@ describe("prepare-public-release-mirror", () => {
 		expect(
 			existsSync(join(target, "packages/core/node_modules/pkg/index.js")),
 		).toBe(false);
+		expect(
+			readFileSync(
+				join(target, ".github/workflows/review-thread-guard.yml"),
+				"utf8",
+			),
+		).toBe(
+			[
+				"jobs:",
+				"  unresolved-review-threads:",
+				"    with:",
+				"      pr_number: ${{ github.event.pull_request.number }}",
+				"      guard_ref: d45c0bca2cf2ccea6786c57c9b5e84df09009fc8",
+				"",
+			].join("\n"),
+		);
 		expect(
 			readFileSync(
 				join(target, ".github/workflows/public-release-mirror.yml"),

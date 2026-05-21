@@ -266,6 +266,9 @@ function buildGuidelines(toolNames: Set<string>, currentYear: number): string {
 	guidelines.push(
 		"You can emit multiple tool calls in a single turn; the runtime will execute independent calls in parallel. No batch tool is needed—just include separate tool calls when parallelism helps.",
 	);
+	guidelines.push(
+		"Emit independent safe tool calls together when their inputs are known, including read-only inspections, trusted MCP reads, and disjoint file mutations with explicit paths.",
+	);
 	guidelines.push(...buildSearchGuidelines(toolNames, currentYear));
 
 	if (toolNames.has("bash")) {

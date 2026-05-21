@@ -822,6 +822,8 @@ function normalizeServer(
 		transport,
 		scope,
 		enabled: validated.data.enabled ?? validated.data.disabled !== true,
+		supportsParallelToolCalls:
+			validated.data.supportsParallelToolCalls === true,
 	};
 }
 
@@ -904,6 +906,7 @@ function buildPersistedServerConfig(
 		timeout: server.timeout,
 		enabled: server.enabled,
 		disabled: server.disabled,
+		supportsParallelToolCalls: server.supportsParallelToolCalls,
 	};
 }
 

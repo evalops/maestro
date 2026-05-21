@@ -35,6 +35,10 @@ function isAllowedOutside(filePath, resolvedPath, allowedOutside) {
 	});
 }
 
+function packageOwnedRuleForFile(filePath, packageOwned) {
+	return packageOwned.find((rule) => filePath.startsWith(rule.filePrefix));
+}
+
 function resolveImportPath(fromFile, specifier) {
 	let resolved = resolve(dirname(fromFile), specifier);
 	if (existsSync(resolved)) {
@@ -135,6 +139,43 @@ function boundaryRulesForPackage(repoRoot, packageRoot, packageJson, errors) {
 			allowedPrefixes,
 		},
 	];
+}
+
+function packageOwnedRulesForPackage(repoRoot, packageRoot, packageJson, errors) {
+	const config = packageBoundaryConfig(packageJson);
+	if (!config?.packageOwnedSourceRoots) {
+		return [];
+	}
+	const packageName =
+		typeof packageJson.name === "string"
+			? packageJson.name
+			: relative(repoRoot, packageRoot);
+	if (!Array.isArray(config.packageOwnedSourceRoots)) {
+		errors.push(
+			`${packageName} declares packageOwnedSourceRoots but it is not an array`,
+		);
+		return [];
+	}
+	const rules = [];
+	for (const root of config.packageOwnedSourceRoots) {
+		if (typeof root !== "string" || root.trim() === "") {
+			errors.push(`${packageName} has an invalid packageOwnedSourceRoots entry`);
+			continue;
+		}
+		const resolved = resolve(packageRoot, root);
+		if (!isSubpath(packageRoot, resolved)) {
+			errors.push(
+				`${packageName} package-owned source root ${root} must stay inside the package`,
+			);
+			continue;
+		}
+		rules.push({
+			filePrefix: withTrailingSep(resolved),
+			packageRoot,
+			label: `${relative(repoRoot, packageRoot)}:${root}`,
+		});
+	}
+	return rules;
 }
 
 function walk(dir, files = []) {
@@ -242,9 +283,13 @@ export function validatePackageBoundaries(root = repoRoot) {
 		]),
 	);
 	const allowedOutside = [];
+	const packageOwned = [];
 	for (const [packageRoot, packageJson] of packageJsonByRoot) {
 		allowedOutside.push(
 			...boundaryRulesForPackage(root, packageRoot, packageJson, errors),
+		);
+		packageOwned.push(
+			...packageOwnedRulesForPackage(root, packageRoot, packageJson, errors),
 		);
 	}
 
@@ -260,6 +305,13 @@ export function validatePackageBoundaries(root = repoRoot) {
 				if (specifier.startsWith(".")) {
 					const resolved = resolveImportPath(filePath, specifier);
 					if (isSubpath(packageRoot, resolved)) {
+						continue;
+					}
+					const ownedRule = packageOwnedRuleForFile(filePath, packageOwned);
+					if (ownedRule) {
+						errors.push(
+							`${relative(root, filePath)} imports ${specifier} which resolves outside package-owned root ${ownedRule.label}`,
+						);
 						continue;
 					}
 					if (isAllowedOutside(filePath, resolved, allowedOutside)) {

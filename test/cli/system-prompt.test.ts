@@ -59,6 +59,18 @@ describe("buildSystemPrompt", () => {
 		);
 	});
 
+	it("nudges models to batch safe independent tool calls", () => {
+		const prompt = buildSystemPrompt(undefined, [
+			"read",
+			"write",
+			"mcp__trusted_fs__probe",
+		]);
+
+		expect(prompt).toContain(
+			"Emit independent safe tool calls together when their inputs are known, including read-only inspections, trusted MCP reads, and disjoint file mutations with explicit paths.",
+		);
+	});
+
 	it("injects file citation guidance into bundled and custom prompts", () => {
 		const projectDir = join(testDir, "citation-project");
 		mkdirSync(projectDir, { recursive: true });

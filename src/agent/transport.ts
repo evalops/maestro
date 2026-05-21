@@ -73,8 +73,11 @@ import {
 	getSkillArtifactMetadataFromDetails,
 } from "../skills/artifact-metadata.js";
 import {
-	getOptimalConcurrency,
+	type PathScopedMutation,
+	getPathScopedMutation,
+	isParallelSafeTool,
 	isReadOnlyTool,
+	pathScopesOverlap,
 } from "../tools/parallel-execution.js";
 import { trackUsage } from "../tracking/cost-tracker.js";
 import { getTrainingHeaders } from "../training.js";
@@ -136,15 +139,45 @@ type ReusableToolResultCacheGeneration = {
 	value: number;
 };
 
+type ToolDefinitionLookup = ReadonlyMap<string, AgentTool> | AgentTool[];
+
+type ToolMetadataCache = {
+	readonly definitions: ReadonlyMap<string, AgentTool>;
+	lookupCount: number;
+	get(toolName: string): AgentTool | undefined;
+};
+
+function createToolMetadataCache(tools: AgentTool[]): ToolMetadataCache {
+	const definitions = new Map(tools.map((tool) => [tool.name, tool]));
+	return {
+		definitions,
+		lookupCount: 0,
+		get(toolName: string): AgentTool | undefined {
+			this.lookupCount += 1;
+			return definitions.get(toolName);
+		},
+	};
+}
+
+function getToolDefinition(
+	lookup: ToolDefinitionLookup | ToolMetadataCache,
+	toolName: string,
+): AgentTool | undefined {
+	if ("get" in lookup && !Array.isArray(lookup)) {
+		return lookup.get(toolName);
+	}
+	return lookup.find((candidate) => candidate.name === toolName);
+}
+
 function getReusableToolResultCacheKey(
 	toolCall: ToolCall,
-	tools: AgentTool[],
+	tools: ToolDefinitionLookup | ToolMetadataCache,
 ): string | undefined {
-	const tool = tools.find((candidate) => candidate.name === toolCall.name);
+	const tool = getToolDefinition(tools, toolCall.name);
 	if (!tool || tool.annotations?.destructiveHint === true) {
 		return undefined;
 	}
-	if (!isReadOnlyTool(tool.name, tool.annotations)) {
+	if (!isReadOnlyTool(tool.name, tool.annotations, tool.source)) {
 		return undefined;
 	}
 	return `${toolCall.name}:${stableStringify(toolCall.arguments)}`;
@@ -283,7 +316,7 @@ function clearReusableToolResultState(
 
 function invalidateReusableToolResultsAfterMutation(
 	toolCall: ToolCall,
-	tools: AgentTool[],
+	tools: ToolDefinitionLookup | ToolMetadataCache,
 	cache: Map<string, ReusableToolResultEntry>,
 	pending: Map<string, Promise<ToolExecutionOutcome>>,
 	policyCheckedKeys: Set<string>,
@@ -304,7 +337,7 @@ function invalidateReusableToolResultsAfterMutation(
 
 function hasPendingMutatingToolExecution(
 	pendingExecutions: readonly PendingExecution[],
-	tools: AgentTool[],
+	tools: ToolDefinitionLookup | ToolMetadataCache,
 ): boolean {
 	return pendingExecutions.some(
 		(execution) =>
@@ -723,6 +756,7 @@ export class ProviderTransport implements AgentTransport {
 		}
 
 		const dynamicToolEventQueue = new AgentEventQueue();
+		const toolMetadataCache = createToolMetadataCache(tools);
 		const reusableToolResults = new Map<string, ReusableToolResultEntry>();
 		const pendingReusableToolResults = new Map<
 			string,
@@ -820,7 +854,7 @@ export class ProviderTransport implements AgentTransport {
 			try {
 				const reusableToolResultKey = getReusableToolResultCacheKey(
 					toolCall,
-					tools,
+					toolMetadataCache,
 				);
 				const alreadyHadReusableToolResultState =
 					reusableToolResultKey !== undefined &&
@@ -840,7 +874,7 @@ export class ProviderTransport implements AgentTransport {
 				): boolean => {
 					const candidateKey = getReusableToolResultCacheKey(
 						candidateToolCall,
-						tools,
+						toolMetadataCache,
 					);
 					return (
 						candidateKey !== undefined &&
@@ -848,7 +882,7 @@ export class ProviderTransport implements AgentTransport {
 						alreadyHadReusableToolResultState &&
 						!hasPendingMutatingToolExecution(
 							pendingDynamicToolExecutions,
-							tools,
+							toolMetadataCache,
 						) &&
 						hasReusableToolResultState(
 							candidateKey,
@@ -926,7 +960,7 @@ export class ProviderTransport implements AgentTransport {
 					);
 				}
 				const policyCheckedReusableToolResultKey =
-					getReusableToolResultCacheKey(effectiveToolCall, tools);
+					getReusableToolResultCacheKey(effectiveToolCall, toolMetadataCache);
 				const canReuseToolResult =
 					reusableToolResultKey !== undefined &&
 					policyCheckedReusableToolResultKey === reusableToolResultKey;
@@ -935,7 +969,10 @@ export class ProviderTransport implements AgentTransport {
 				}
 				const canServeReusableToolResult =
 					canReuseToolResult &&
-					!hasPendingMutatingToolExecution(pendingDynamicToolExecutions, tools);
+					!hasPendingMutatingToolExecution(
+						pendingDynamicToolExecutions,
+						toolMetadataCache,
+					);
 				if (canServeReusableToolResult) {
 					const cachedEntry = reusableToolResults.get(reusableToolResultKey);
 					if (cachedEntry) {
@@ -1070,7 +1107,7 @@ export class ProviderTransport implements AgentTransport {
 				}
 				invalidateReusableToolResultsAfterMutation(
 					effectiveToolCall,
-					tools,
+					toolMetadataCache,
 					reusableToolResults,
 					pendingReusableToolResults,
 					policyCheckedReusableToolResultKeys,
@@ -1471,16 +1508,91 @@ export class ProviderTransport implements AgentTransport {
 				const requiresSerializedTurn =
 					hasWorkflowTrackedTool && toolCallsToExecute.length > 1;
 
-				// Calculate optimal concurrency - higher for read-only batches
-				let concurrencyLimit = getOptimalConcurrency(
-					toolCallsToExecute,
-					tools,
-					{
-						baseConcurrency: configuredConcurrency,
-						maxReadOnlyConcurrency: 8, // Allow up to 8x parallel for read-only
-						enabled: true,
-					},
+				const toolDefinitionsByName = toolMetadataCache.definitions;
+				const isReadOnlyToolCall = (toolCall: ToolCall): boolean => {
+					const toolDef = toolDefinitionsByName.get(toolCall.name);
+					return toolDef
+						? isReadOnlyTool(toolDef.name, toolDef.annotations, toolDef.source)
+						: false;
+				};
+				const isParallelSafeToolCall = (toolCall: ToolCall): boolean => {
+					const toolDef = toolDefinitionsByName.get(toolCall.name);
+					return toolDef
+						? isParallelSafeTool(
+								toolDef.name,
+								toolDef.annotations,
+								toolDef.source,
+							)
+						: false;
+				};
+				const parallelSafeToolCalls = toolCallsToExecute.filter(
+					isParallelSafeToolCall,
 				);
+				const parallelSafeConcurrencyLimit =
+					parallelSafeToolCalls.length > 0
+						? Math.min(
+								8,
+								Math.max(configuredConcurrency, parallelSafeToolCalls.length),
+							)
+						: configuredConcurrency;
+				let concurrencyLimit = configuredConcurrency;
+				const pendingMutationScopes = new Map<
+					PendingExecution,
+					PathScopedMutation
+				>();
+				const mutationPathBase = this.options.cwd ?? process.cwd();
+
+				const getMutationScope = (
+					toolCall: ToolCall,
+					toolDef = toolMetadataCache.get(toolCall.name),
+				): PathScopedMutation | undefined =>
+					getPathScopedMutation(toolCall, toolDef, mutationPathBase);
+
+				const isPendingParallelSafeMutation = (
+					execution: PendingExecution,
+				): boolean => {
+					const toolDef = toolMetadataCache.get(execution.toolCall.name);
+					return (
+						!!toolDef &&
+						!isReadOnlyTool(
+							toolDef.name,
+							toolDef.annotations,
+							toolDef.source,
+						) &&
+						isParallelSafeTool(
+							toolDef.name,
+							toolDef.annotations,
+							toolDef.source,
+						) &&
+						!pendingMutationScopes.has(execution)
+					);
+				};
+
+				const canJoinParallelSafeMutationWave = (
+					toolCall: ToolCall,
+					toolDef = toolMetadataCache.get(toolCall.name),
+				): boolean =>
+					!!toolDef &&
+					!isReadOnlyTool(toolDef.name, toolDef.annotations, toolDef.source) &&
+					isParallelSafeTool(
+						toolDef.name,
+						toolDef.annotations,
+						toolDef.source,
+					) &&
+					pendingExecutions.length > 0 &&
+					pendingExecutions.every(isPendingParallelSafeMutation);
+
+				const canJoinPathScopedMutationIsland = (
+					scope: PathScopedMutation | undefined,
+				): scope is PathScopedMutation =>
+					!!scope &&
+					pendingExecutions.length > 0 &&
+					pendingExecutions.every((execution) => {
+						const pendingScope = pendingMutationScopes.get(execution);
+						return pendingScope
+							? !pathScopesOverlap(scope, pendingScope)
+							: false;
+					});
 
 				// Override: workflow-tracked tools require serialization
 				if (configuredConcurrency > 1 && requiresSerializedTurn) {
@@ -1495,6 +1607,7 @@ export class ProviderTransport implements AgentTransport {
 
 				let steeringTriggered = false;
 				let remainingToolCalls: ToolCall[] = [];
+				let mutatingToolCompletedInCurrentBatch = false;
 
 				const checkSteering = async (): Promise<void> => {
 					if (steeringTriggered || !getSteeringMessages) {
@@ -1607,12 +1720,9 @@ export class ProviderTransport implements AgentTransport {
 						...emitToolResult(skippedResult, toolCall, true),
 					];
 				};
-				const scheduleResolveIfNeeded = async (): Promise<AgentEvent[]> => {
-					if (pendingExecutions.length < concurrencyLimit) {
-						return [];
-					}
+				const resolveNextPendingExecution = async (): Promise<AgentEvent[]> => {
 					const events: AgentEvent[] = [];
-					while (pendingExecutions.length >= concurrencyLimit) {
+					while (true) {
 						const next = await waitForNextExecutionOrUpdate(
 							pendingExecutions,
 							toolUpdateQueue,
@@ -1622,15 +1732,22 @@ export class ProviderTransport implements AgentTransport {
 							continue;
 						}
 						const outcome = next.outcome;
+						pendingMutationScopes.delete(next.execution);
+						const completedToolWasMutating =
+							getReusableToolResultCacheKey(
+								next.execution.toolCall,
+								toolMetadataCache,
+							) === undefined;
 						invalidateReusableToolResultsAfterMutation(
 							next.execution.toolCall,
-							tools,
+							toolMetadataCache,
 							reusableToolResults,
 							pendingReusableToolResults,
 							policyCheckedReusableToolResultKeys,
 							pendingReusableToolSafetyChecks,
 							reusableToolResultCacheGeneration,
 						);
+						mutatingToolCompletedInCurrentBatch ||= completedToolWasMutating;
 						events.push(
 							...emitToolResult(
 								outcome.message,
@@ -1643,9 +1760,23 @@ export class ProviderTransport implements AgentTransport {
 							),
 						);
 						await checkSteering();
-						break;
+						return events;
+					}
+				};
+				const drainPendingExecutions = async (
+					targetPendingCount = 0,
+				): Promise<AgentEvent[]> => {
+					const events: AgentEvent[] = [];
+					while (pendingExecutions.length > targetPendingCount) {
+						events.push(...(await resolveNextPendingExecution()));
 					}
 					return events;
+				};
+				const scheduleResolveIfNeeded = async (): Promise<AgentEvent[]> => {
+					if (pendingExecutions.length < concurrencyLimit) {
+						return [];
+					}
+					return drainPendingExecutions(concurrencyLimit - 1);
 				};
 
 				for (
@@ -1659,9 +1790,31 @@ export class ProviderTransport implements AgentTransport {
 					}
 					const toolCall = toolCallsToExecute[toolIndex];
 					if (!toolCall) continue;
+					const originalToolCallReadOnly = isReadOnlyToolCall(toolCall);
+					const originalMutationScope = originalToolCallReadOnly
+						? undefined
+						: getMutationScope(toolCall);
+					const originalJoinsParallelSafeMutationWave =
+						!originalToolCallReadOnly &&
+						canJoinParallelSafeMutationWave(toolCall);
+					if (
+						!originalToolCallReadOnly &&
+						pendingExecutions.length > 0 &&
+						!canJoinPathScopedMutationIsland(originalMutationScope) &&
+						!originalJoinsParallelSafeMutationWave
+					) {
+						const events = await drainPendingExecutions();
+						for (const event of events) {
+							yield event;
+						}
+						if (steeringTriggered) {
+							remainingToolCalls = toolCallsToExecute.slice(toolIndex);
+							break;
+						}
+					}
 					const reusableToolResultKey = getReusableToolResultCacheKey(
 						toolCall,
-						tools,
+						toolMetadataCache,
 					);
 					const alreadyHadReusableToolResultState =
 						reusableToolResultKey !== undefined &&
@@ -1681,13 +1834,17 @@ export class ProviderTransport implements AgentTransport {
 					): boolean => {
 						const candidateKey = getReusableToolResultCacheKey(
 							candidateToolCall,
-							tools,
+							toolMetadataCache,
 						);
 						return (
 							candidateKey !== undefined &&
 							candidateKey === reusableToolResultKey &&
 							alreadyHadReusableToolResultState &&
-							!hasPendingMutatingToolExecution(pendingExecutions, tools) &&
+							!hasPendingMutatingToolExecution(
+								pendingExecutions,
+								toolMetadataCache,
+							) &&
+							!mutatingToolCompletedInCurrentBatch &&
 							hasReusableToolResultState(
 								candidateKey,
 								reusableToolResults,
@@ -1767,9 +1924,67 @@ export class ProviderTransport implements AgentTransport {
 						toolDef: tool,
 						sanitizedExecutionArgs,
 					} = safetyVerdict;
+					const effectiveToolCallReadOnly =
+						isReadOnlyTool(tool.name, tool.annotations, tool.source) &&
+						tool.annotations?.destructiveHint !== true;
+					const effectiveToolCallParallelSafe = isParallelSafeTool(
+						tool.name,
+						tool.annotations,
+						tool.source,
+					);
+					if (
+						effectiveToolCallReadOnly &&
+						hasPendingMutatingToolExecution(
+							pendingExecutions,
+							toolMetadataCache,
+						)
+					) {
+						const events = await drainPendingExecutions();
+						for (const event of events) {
+							yield event;
+						}
+						if (steeringTriggered) {
+							remainingToolCalls = toolCallsToExecute.slice(toolIndex);
+							break;
+						}
+					}
+					const effectiveMutationScope = effectiveToolCallReadOnly
+						? undefined
+						: getMutationScope(effectiveToolCall, tool);
+					const joinsPathScopedMutationIsland =
+						!requiresSerializedTurn &&
+						canJoinPathScopedMutationIsland(effectiveMutationScope);
+					const joinsParallelSafeMutationWave =
+						!requiresSerializedTurn &&
+						!effectiveToolCallReadOnly &&
+						canJoinParallelSafeMutationWave(effectiveToolCall, tool);
+					if (
+						!effectiveToolCallReadOnly &&
+						pendingExecutions.length > 0 &&
+						!joinsPathScopedMutationIsland &&
+						!joinsParallelSafeMutationWave
+					) {
+						const events = await drainPendingExecutions();
+						for (const event of events) {
+							yield event;
+						}
+						if (steeringTriggered) {
+							remainingToolCalls = toolCallsToExecute.slice(toolIndex);
+							break;
+						}
+					}
+					concurrencyLimit = requiresSerializedTurn
+						? 1
+						: effectiveToolCallReadOnly
+							? parallelSafeConcurrencyLimit
+							: effectiveMutationScope
+								? configuredConcurrency
+								: effectiveToolCallParallelSafe
+									? parallelSafeConcurrencyLimit
+									: 1;
 					// Use hook-modified (pre-validation) args for hook inputs
 					const policyCheckedReusableToolResultKey =
-						getReusableToolResultCacheKey(effectiveToolCall, tools);
+						getReusableToolResultCacheKey(effectiveToolCall, toolMetadataCache);
 					const canReuseToolResult =
 						reusableToolResultKey !== undefined &&
 						policyCheckedReusableToolResultKey === reusableToolResultKey;
@@ -1778,7 +1993,11 @@ export class ProviderTransport implements AgentTransport {
 					}
 					const canServeReusableToolResult =
 						canReuseToolResult &&
-						!hasPendingMutatingToolExecution(pendingExecutions, tools);
+						!hasPendingMutatingToolExecution(
+							pendingExecutions,
+							toolMetadataCache,
+						) &&
+						!mutatingToolCompletedInCurrentBatch;
 					if (canServeReusableToolResult) {
 						const cachedEntry = reusableToolResults.get(reusableToolResultKey);
 						if (cachedEntry) {
@@ -1912,10 +2131,14 @@ export class ProviderTransport implements AgentTransport {
 								)
 							: executionPromise;
 
-					pendingExecutions.push({
+					const pendingExecution: PendingExecution = {
 						toolCall,
 						promise: trackedExecutionPromise,
-					});
+					};
+					pendingExecutions.push(pendingExecution);
+					if (effectiveMutationScope) {
+						pendingMutationScopes.set(pendingExecution, effectiveMutationScope);
+					}
 					const events = await scheduleResolveIfNeeded();
 					for (const event of events) {
 						yield event;
@@ -1927,36 +2150,9 @@ export class ProviderTransport implements AgentTransport {
 				}
 
 				while (pendingExecutions.length > 0) {
-					const next = await waitForNextExecutionOrUpdate(
-						pendingExecutions,
-						toolUpdateQueue,
-					);
-					if (next.kind === "update") {
-						yield next.event;
-						continue;
-					}
-					const outcome = next.outcome;
-					invalidateReusableToolResultsAfterMutation(
-						next.execution.toolCall,
-						tools,
-						reusableToolResults,
-						pendingReusableToolResults,
-						policyCheckedReusableToolResultKeys,
-						pendingReusableToolSafetyChecks,
-						reusableToolResultCacheGeneration,
-					);
-					for (const event of emitToolResult(
-						outcome.message,
-						next.execution.toolCall,
-						outcome.isError,
-						{
-							toolExecutionId: outcome.toolExecutionId,
-							approvalRequestId: outcome.approvalRequestId,
-						},
-					)) {
+					for (const event of await resolveNextPendingExecution()) {
 						yield event;
 					}
-					await checkSteering();
 				}
 
 				this.safetyMiddleware.clearCredentials();

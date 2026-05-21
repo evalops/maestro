@@ -72,6 +72,32 @@ describe("validatePackageBoundaries", () => {
 		expect(validatePackageBoundaries(root)).toEqual([]);
 	});
 
+	it("rejects root imports from package-owned source roots even in facades", () => {
+		const root = makeRoot();
+		mkdirSync(join(root, "packages", "facade", "src", "kernel"), {
+			recursive: true,
+		});
+		writeFileSync(
+			join(root, "packages", "facade", "src", "kernel", "index.ts"),
+			"export { shared } from '../../../../src/shared.js';\n",
+		);
+		writePackageJson(root, {
+			maestro: {
+				packageBoundary: {
+					mode: "internal-facade",
+					allowedExternalSourceRoots: ["../../src"],
+					packageOwnedSourceRoots: ["src/kernel"],
+					rationale:
+						"Stable package entrypoint while the root kernel is extracted.",
+				},
+			},
+		});
+
+		expect(validatePackageBoundaries(root)).toContain(
+			"packages/facade/src/kernel/index.ts imports ../../../../src/shared.js which resolves outside package-owned root packages/facade:src/kernel",
+		);
+	});
+
 	it("rejects facade source roots outside the repository", () => {
 		const root = makeRoot();
 		writePackageJson(root, {

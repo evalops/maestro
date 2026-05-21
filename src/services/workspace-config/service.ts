@@ -3,6 +3,10 @@ import { type DbClient, getDb, isDatabaseConfigured } from "../../db/client.js";
 import { workspaceConfig } from "../../db/schema.js";
 import { createLogger } from "../../utils/logger.js";
 import {
+	type ServiceAuthorityResolution,
+	resolveServiceAuthority,
+} from "../service-authority.js";
+import {
 	normalizeModelPreferences,
 	normalizeRateLimits,
 	normalizeSafetyRules,
@@ -66,6 +70,10 @@ export class WorkspaceConfigService {
 
 	isConfigured(): boolean {
 		return this.databaseConfigured();
+	}
+
+	getAuthority(): ServiceAuthorityResolution {
+		return resolveServiceAuthority("workspace_config");
 	}
 
 	private requireDatabase(): DbClient {

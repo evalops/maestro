@@ -18,6 +18,7 @@ import {
 } from "../../cli/headless-protocol.js";
 import type { HostedRunnerContext, WebServerContext } from "../app-context.js";
 import type { HeadlessRuntimeSnapshot } from "../headless-runtime-service.js";
+import { markHostedRunnerLeaseDraining } from "../hosted-runner-lease.js";
 import { ApiError, readJsonBody, sendJson } from "../server-utils.js";
 
 const execFileAsync = promisify(execFile);
@@ -776,8 +777,9 @@ export async function drainHostedRunner(
 		return null;
 	}
 
-	hostedRunner.draining = true;
-	const requestedAt = (options.now?.() ?? new Date()).toISOString();
+	const requestedAtDate = options.now?.() ?? new Date();
+	markHostedRunnerLeaseDraining(hostedRunner, requestedAtDate);
+	const requestedAt = requestedAtDate.toISOString();
 	const workspaceRoot = await resolveWorkspaceRoot(hostedRunner);
 	const snapshotRoot = resolve(
 		workspaceRoot,

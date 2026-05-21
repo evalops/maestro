@@ -54,11 +54,13 @@ export {
 	canRestart,
 	computeRestartDelay,
 	incrementAttempts,
-} from "../../../src/tools/background/restart-policy.js";
+	shouldNotifyRestart,
+	updateNotifyThreshold,
+} from "./background/restart-policy.js";
 export type {
 	RestartPolicy,
 	RestartPolicyOptions,
-} from "../../../src/tools/background/restart-policy.js";
+} from "./background/restart-policy.js";
 export type {
 	BackgroundTaskStatus,
 	BackgroundTaskNotification,

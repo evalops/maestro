@@ -17,7 +17,11 @@ vi.mock("../../src/telemetry/security-events.js", () => ({
 }));
 
 import { mcpManager } from "../../src/mcp/manager.js";
-import { createMcpToolWrapper } from "../../src/mcp/tool-bridge.js";
+import {
+	MCP_GOVERNED_TOOL_EXECUTION_SCHEMA,
+	createMcpToolWrapper,
+	normalizeMcpGovernedToolExecution,
+} from "../../src/mcp/tool-bridge.js";
 import {
 	trackToolApprovalRequired,
 	trackToolBlocked,
@@ -67,6 +71,9 @@ describe("MCP governed result handling", () => {
 		expect(result.content[0]?.type).toBe("text");
 		expect(result.content[0]?.text).toContain("Approval required.");
 		expect(result.content[0]?.text).toContain("Approval request: apr_123");
+		expect(result.content[0]?.text).toContain(
+			"ToolExecution state: waiting_approval (mcp_result_adapter).",
+		);
 		expect(result.details).toMatchObject({
 			server: "evalops",
 			tool: "governed_tool",
@@ -75,6 +82,13 @@ describe("MCP governed result handling", () => {
 				approvalRequestId: "apr_123",
 				riskLevel: "high",
 				reasons: ["Needs signoff"],
+			},
+			toolExecutionState: {
+				schemaVersion: MCP_GOVERNED_TOOL_EXECUTION_SCHEMA,
+				authority: "mcp_result_adapter",
+				state: "waiting_approval",
+				terminal: false,
+				approvalRequestId: "apr_123",
 			},
 		});
 		expect(trackToolApprovalRequired).toHaveBeenCalledWith({
@@ -110,12 +124,20 @@ describe("MCP governed result handling", () => {
 
 		expect(result.isError).toBe(true);
 		expect(result.content[0]?.text).toContain("Action denied.");
+		expect(result.content[0]?.text).toContain(
+			"ToolExecution state: denied (mcp_result_adapter).",
+		);
 		expect(result.content[0]?.text).toContain("Blocked by governance policy");
 		expect(result.details).toMatchObject({
 			governedOutcome: {
 				classification: "denied",
 				code: "governance_denied",
 				reasons: ["External network is disabled"],
+			},
+			toolExecutionState: {
+				state: "denied",
+				terminal: true,
+				code: "governance_denied",
 			},
 		});
 		expect(trackToolBlocked).toHaveBeenCalledWith({
@@ -153,12 +175,41 @@ describe("MCP governed result handling", () => {
 				code: "rate_limit_exceeded",
 				retryAfterSeconds: 30,
 			},
+			toolExecutionState: {
+				state: "blocked_retry_later",
+				retryAfterMs: 30000,
+			},
 		});
 		expect(trackToolBlocked).toHaveBeenCalledWith({
 			toolName: "governed_tool",
 			reason: "Too many requests",
 			source: "policy",
 			severity: "high",
+		});
+	});
+
+	it("normalizes governed results into compatibility ToolExecution states", () => {
+		expect(
+			normalizeMcpGovernedToolExecution({
+				classification: "approval_pending",
+				approvalRequestId: "apr_pending",
+			}),
+		).toMatchObject({
+			schemaVersion: MCP_GOVERNED_TOOL_EXECUTION_SCHEMA,
+			authority: "mcp_result_adapter",
+			state: "waiting_approval",
+			terminal: false,
+			approvalRequestId: "apr_pending",
+		});
+		expect(
+			normalizeMcpGovernedToolExecution({
+				classification: "authentication_required",
+				message: "Connect account",
+			}),
+		).toMatchObject({
+			state: "blocked_authentication",
+			terminal: true,
+			message: "Connect account",
 		});
 	});
 });

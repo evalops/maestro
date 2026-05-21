@@ -38,7 +38,7 @@ describe("hosted runner identity", () => {
 				agentRuntimeCorrelationPath:
 					"maestro_message_id=maestro-session:ws_123:session_123 a2a_task_id=agent_run_123 platform_agent_run_id=agent_run_123 worker_queue=agent-runtime.production",
 			}),
-		).resolves.toEqual({
+		).resolves.toMatchObject({
 			protocol_version: HOSTED_RUNNER_IDENTITY_PROTOCOL_VERSION,
 			runner_session_id: "mrs_123",
 			owner_instance_id: "pod_123",
@@ -50,6 +50,14 @@ describe("hosted runner identity", () => {
 			agent_runtime_worker_queue: "agent-runtime.production",
 			agent_runtime_correlation_path:
 				"maestro_message_id=maestro-session:ws_123:session_123 a2a_task_id=agent_run_123 platform_agent_run_id=agent_run_123 worker_queue=agent-runtime.production",
+			runtime_lease: {
+				protocol_version: "evalops.maestro.hosted-runner-lease.v1",
+				state: "unbound",
+				generation: 0,
+				lease_token_present: false,
+				updated_at: expect.any(String),
+				heartbeat_at: expect.any(String),
+			},
 		});
 	});
 
