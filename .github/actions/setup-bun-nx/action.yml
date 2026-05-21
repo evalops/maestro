@@ -53,12 +53,21 @@ runs:
       with:
         bun-version: ${{ inputs.bun-version }}
 
+    - name: Configure workspace Bun cache
+      if: ${{ inputs.cache-bun == 'true' }}
+      shell: bash
+      run: |
+        set -euo pipefail
+        cache_dir="${GITHUB_WORKSPACE:-$PWD}/.bun/install/cache"
+        mkdir -p "$cache_dir"
+        echo "BUN_INSTALL_CACHE_DIR=$cache_dir" >> "$GITHUB_ENV"
+
     - name: Cache Bun
       if: ${{ inputs.cache-bun == 'true' }}
       uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
       with:
-        path: ~/.bun/install/cache
-        key: ${{ runner.os }}-bun-v2-${{ inputs.bun-version }}-${{ hashFiles('bun.lockb') }}
+        path: .bun/install/cache
+        key: ${{ runner.os }}-bun-v3-${{ inputs.bun-version }}-${{ hashFiles('bun.lockb') }}
 
     - name: Cache Nx
       if: ${{ inputs.cache-nx == 'true' }}
