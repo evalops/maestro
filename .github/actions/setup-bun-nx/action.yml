@@ -30,6 +30,10 @@ inputs:
     description: Whether to install ripgrep if missing
     required: false
     default: "false"
+  ensure-rustfmt:
+    description: Whether to install rustfmt before bun install/codegen.
+    required: false
+    default: "true"
 runs:
   using: composite
   steps:
@@ -91,6 +95,13 @@ runs:
           sudo apt-get update
           sudo apt-get install -y ripgrep
         fi
+
+    - name: Ensure rustfmt
+      if: ${{ inputs.ensure-rustfmt == 'true' && inputs.install == 'true' }}
+      uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
+      with:
+        toolchain: stable
+        components: rustfmt
 
     - name: Install dependencies
       if: ${{ inputs.install == 'true' }}
