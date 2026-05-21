@@ -108,6 +108,6 @@ runs:
             exit 1
           fi
           echo "bun install failed on attempt ${attempt}; clearing Bun download cache before retry."
-          rm -rf "$HOME/.bun/install/cache"
+          rm -rf "${BUN_INSTALL_CACHE_DIR:-$HOME/.bun/install/cache}" "$HOME/.bun/install/cache"
           sleep $((attempt * 5))
         done
