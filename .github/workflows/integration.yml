@@ -34,7 +34,7 @@ env:
 jobs:
   integration-tests:
     if: ${{ github.event_name != 'pull_request' || !contains(github.event.pull_request.labels.*.name, 'skip-integration') }}
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: ${{ vars.PUBLIC_PR_VALIDATION_RUNNER || 'ubuntu-latest' }}
     timeout-minutes: 45
     services:
       redis:
