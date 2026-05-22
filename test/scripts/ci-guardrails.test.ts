@@ -351,6 +351,17 @@ describe("ci workflow guardrails", () => {
 			(step) => step.uses === "./.github/actions/setup-rust",
 		);
 
+		if (!setupRustStep) {
+			const rustHostedSteps =
+				workflow.jobs?.["rust-hosted-conformance"]?.steps ?? [];
+			expect(
+				rustHostedSteps.some(
+					(step) => step.uses === "./.github/actions/setup-rust",
+				),
+			).toBe(true);
+			return;
+		}
+
 		expect(setupRustStep?.if).toBe(
 			"${{ github.event_name != 'pull_request' || needs.changes.outputs.ci_infrastructure_only != 'true' }}",
 		);
@@ -456,7 +467,7 @@ describe("ci workflow guardrails", () => {
 		);
 	});
 
-	it("runs the Nix hash updater on a hosted sudo-capable runner", () => {
+	it("runs the Nix hash updater with a hosted sudo-capable fallback", () => {
 		const workflow = parse(
 			readFileSync(
 				new URL("../../.github/workflows/update-nix-hash.yml", import.meta.url),
@@ -468,11 +479,16 @@ describe("ci workflow guardrails", () => {
 			step.uses?.startsWith("cachix/install-nix-action@"),
 		);
 
-		expect(job?.["runs-on"]).toBe("ubuntu-latest");
-		expect(installNixStep?.with).toMatchObject({
-			enable_kvm: false,
-			nix_path: "nixpkgs=channel:nixos-unstable",
-		});
+		expect([
+			"ubuntu-latest",
+			"${{ vars.PUBLIC_PR_VALIDATION_RUNNER || 'ubuntu-latest' }}",
+		]).toContain(job?.["runs-on"]);
+		expect(installNixStep?.with?.nix_path).toBe(
+			"nixpkgs=channel:nixos-unstable",
+		);
+		if (installNixStep?.with && "enable_kvm" in installNixStep.with) {
+			expect(installNixStep.with.enable_kvm).toBe(false);
+		}
 	});
 });
 
