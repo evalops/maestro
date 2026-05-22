@@ -260,6 +260,9 @@ const REPO_PATH_ARGUMENTS_BY_TOOL = new Map<string, string[]>([
 	["status", ["path", "paths", "cwd"]],
 ]);
 
+const GIT_SCOPED_REUSABLE_TOOL_RESULT_KEY_PREFIX = "git:";
+const RUN_SCOPED_REUSABLE_TOOL_RESULT_KEY_PREFIX = "run:";
+
 const REQUIRED_REPO_PATH_ARGUMENT_TOOLS = new Set(["read", "ls", "list"]);
 
 function collectStringValues(value: unknown): string[] {
@@ -468,10 +471,23 @@ function getReusableToolResultCacheKey(
 		"reusableToolResultCwd" in tools
 			? tools.reusableToolResultCwd
 			: process.cwd();
-	if (!tool || !isGitSnapshotReusableToolCall(tool, toolCall, cwd)) {
+	if (!tool || tool.annotations?.destructiveHint === true) {
 		return undefined;
 	}
-	return `${toolCall.name}:${stableStringify(toolCall.arguments)}`;
+	if (!isReadOnlyTool(tool.name, tool.annotations, tool.source)) {
+		return undefined;
+	}
+	const cacheKey = `${toolCall.name}:${stableStringify(toolCall.arguments)}`;
+	if (isGitSnapshotReusableToolCall(tool, toolCall, cwd)) {
+		return `${GIT_SCOPED_REUSABLE_TOOL_RESULT_KEY_PREFIX}${cacheKey}`;
+	}
+	if (
+		tool.annotations?.openWorldHint === true ||
+		tool.executionLocation === "client"
+	) {
+		return undefined;
+	}
+	return `${RUN_SCOPED_REUSABLE_TOOL_RESULT_KEY_PREFIX}${cacheKey}`;
 }
 
 function isReadOnlyToolCallForCacheInvalidation(
@@ -613,6 +629,43 @@ function clearReusableToolResultState(
 	policyCheckedKeys.clear();
 	pendingSafetyChecks.clear();
 	cacheGeneration.value += 1;
+}
+
+function clearRunScopedReusableToolResultState(
+	cache: Map<string, ReusableToolResultEntry>,
+	pending: Map<string, Promise<ToolExecutionOutcome>>,
+	policyCheckedKeys: Set<string>,
+	pendingSafetyChecks: Map<string, number>,
+	cacheGeneration: ReusableToolResultCacheGeneration,
+): void {
+	let cleared = false;
+	for (const key of cache.keys()) {
+		if (key.startsWith(RUN_SCOPED_REUSABLE_TOOL_RESULT_KEY_PREFIX)) {
+			cache.delete(key);
+			cleared = true;
+		}
+	}
+	for (const key of pending.keys()) {
+		if (key.startsWith(RUN_SCOPED_REUSABLE_TOOL_RESULT_KEY_PREFIX)) {
+			pending.delete(key);
+			cleared = true;
+		}
+	}
+	for (const key of policyCheckedKeys) {
+		if (key.startsWith(RUN_SCOPED_REUSABLE_TOOL_RESULT_KEY_PREFIX)) {
+			policyCheckedKeys.delete(key);
+			cleared = true;
+		}
+	}
+	for (const key of pendingSafetyChecks.keys()) {
+		if (key.startsWith(RUN_SCOPED_REUSABLE_TOOL_RESULT_KEY_PREFIX)) {
+			pendingSafetyChecks.delete(key);
+			cleared = true;
+		}
+	}
+	if (cleared) {
+		cacheGeneration.value += 1;
+	}
 }
 
 function invalidateReusableToolResultsAfterMutation(
@@ -1120,6 +1173,13 @@ export class ProviderTransport implements AgentTransport {
 			this.pendingReusableToolSafetyChecks;
 		const reusableToolResultCacheGeneration =
 			this.reusableToolResultCacheGeneration;
+		clearRunScopedReusableToolResultState(
+			reusableToolResults,
+			pendingReusableToolResults,
+			policyCheckedReusableToolResultKeys,
+			pendingReusableToolSafetyChecks,
+			reusableToolResultCacheGeneration,
+		);
 		const pendingDynamicToolExecutions: PendingExecution[] = [];
 		const platformToolExecutionBridge = resolvePlatformToolExecutionBridge(
 			this.options.platformToolExecutionBridge,
