@@ -200,7 +200,6 @@ function buildAgentFromRegister(body: Record<string, unknown>): MockAgent {
 		surfaceTypes: stringList(body, "surfaceTypes"),
 		ownerId: stringValue(body, "ownerId"),
 		status: "AGENT_STATUS_IDLE",
-		lastHeartbeatAt: now,
 		createdAt: now,
 		updatedAt: now,
 		a2a: a2a as MockAgent["a2a"],
