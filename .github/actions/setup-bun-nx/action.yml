@@ -19,9 +19,9 @@ inputs:
     required: false
     default: "true"
   cache-bun:
-    description: Whether to enable Bun cache
+    description: Whether to enable the optional Bun package cache
     required: false
-    default: "true"
+    default: "false"
   cache-nx:
     description: Whether to enable Nx cache
     required: false
@@ -53,12 +53,21 @@ runs:
       with:
         bun-version: ${{ inputs.bun-version }}
 
+    - name: Configure workspace Bun cache
+      if: ${{ inputs.cache-bun == 'true' }}
+      shell: bash
+      run: |
+        set -euo pipefail
+        cache_dir="${GITHUB_WORKSPACE:-$PWD}/.bun/install/cache"
+        mkdir -p "$cache_dir"
+        echo "BUN_INSTALL_CACHE_DIR=$cache_dir" >> "$GITHUB_ENV"
+
     - name: Cache Bun
       if: ${{ inputs.cache-bun == 'true' }}
       uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
       with:
-        path: ${{ runner.temp }}/bun-install-cache
-        key: ${{ runner.os }}-bun-v2-${{ inputs.bun-version }}-${{ hashFiles('bun.lockb') }}
+        path: .bun/install/cache
+        key: ${{ runner.os }}-bun-v3-${{ inputs.bun-version }}-${{ hashFiles('bun.lockb') }}
 
     - name: Cache Nx
       if: ${{ inputs.cache-nx == 'true' }}
@@ -79,6 +88,35 @@ runs:
           sudo apt-get install -y ripgrep
         fi
 
+    - name: Configure isolated Rust toolchain home
+      if: ${{ inputs.ensure-rustfmt == 'true' && inputs.install == 'true' }}
+      shell: bash
+      run: |
+        set -euo pipefail
+        safe_repo="${GITHUB_REPOSITORY:-repo}"
+        safe_repo="${safe_repo//[^A-Za-z0-9_.-]/-}"
+        safe_job="${GITHUB_JOB:-job}"
+        safe_job="${safe_job//[^A-Za-z0-9_.-]/-}"
+        root="${RUNNER_TEMP:-${GITHUB_WORKSPACE:-$PWD}/.tmp}/maestro-rust/${safe_repo}/${safe_job}/stable-rustfmt"
+        cargo_home="${CARGO_HOME:-$root/cargo}"
+        rustup_home="${RUSTUP_HOME:-$root/rustup}"
+        mkdir -p "$cargo_home/bin" "$rustup_home"
+
+        export CARGO_HOME="$cargo_home"
+        export RUSTUP_HOME="$rustup_home"
+        export PATH="$cargo_home/bin:$PATH"
+
+        if ! command -v rustup >/dev/null 2>&1; then
+          echo "No rustup binary found before rustfmt setup; rust-toolchain action will install one."
+        elif [[ "$(command -v rustup)" != "$cargo_home/bin/rustup" ]]; then
+          cp "$(command -v rustup)" "$cargo_home/bin/rustup"
+          chmod +x "$cargo_home/bin/rustup"
+        fi
+
+        echo "CARGO_HOME=$cargo_home" >> "$GITHUB_ENV"
+        echo "RUSTUP_HOME=$rustup_home" >> "$GITHUB_ENV"
+        echo "$cargo_home/bin" >> "$GITHUB_PATH"
+
     - name: Ensure rustfmt
       if: ${{ inputs.ensure-rustfmt == 'true' && inputs.install == 'true' }}
       uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
@@ -91,17 +129,14 @@ runs:
       shell: bash
       run: |
         set -euo pipefail
-        bun_cache_dir="${RUNNER_TEMP:-$GITHUB_WORKSPACE/.tmp}/bun-install-cache"
-        mkdir -p "${bun_cache_dir}"
         for attempt in 1 2 3; do
-          if bun install --cache-dir "${bun_cache_dir}" --frozen-lockfile; then
+          if bun install --frozen-lockfile; then
             exit 0
           fi
           if [[ "$attempt" -eq 3 ]]; then
             exit 1
           fi
           echo "bun install failed on attempt ${attempt}; clearing Bun download cache before retry."
-          rm -rf "${bun_cache_dir}"
-          mkdir -p "${bun_cache_dir}"
+          rm -rf "${BUN_INSTALL_CACHE_DIR:-$HOME/.bun/install/cache}" "$HOME/.bun/install/cache"
           sleep $((attempt * 5))
         done

@@ -38,6 +38,12 @@ const RESOLVE_DELEGATION_PATH = platformConnectMethodPath(
 const UPDATE_PATH = platformConnectMethodPath(
 	PLATFORM_CONNECT_METHODS.agents.update,
 );
+const CONTROL_A2A_DELEGATION_TASK_PATH = platformConnectMethodPath(
+	PLATFORM_CONNECT_METHODS.agents.controlA2ADelegationTask,
+);
+const GET_A2A_DELEGATION_GRAPH_PATH = platformConnectMethodPath(
+	PLATFORM_CONNECT_METHODS.agents.getA2ADelegationGraph,
+);
 
 const AGENT_REGISTRY_BASE_URL_ENV_VARS = [
 	"MAESTRO_AGENT_REGISTRY_SERVICE_URL",
@@ -86,6 +92,8 @@ const AGENT_REGISTRY_BASE_URL_SUFFIXES = [
 	LIST_AGENTS_PATH,
 	RESOLVE_DELEGATION_PATH,
 	UPDATE_PATH,
+	CONTROL_A2A_DELEGATION_TASK_PATH,
+	GET_A2A_DELEGATION_GRAPH_PATH,
 	platformConnectServicePath(PLATFORM_CONNECT_SERVICES.agents),
 ] as const;
 
@@ -105,6 +113,14 @@ export enum PlatformDelegationStatusValue {
 	Completed = "DELEGATION_STATUS_COMPLETED",
 	Failed = "DELEGATION_STATUS_FAILED",
 	TimedOut = "DELEGATION_STATUS_TIMED_OUT",
+}
+
+export enum PlatformA2ADelegationTaskControlModeValue {
+	Steer = "A2A_DELEGATION_TASK_CONTROL_MODE_STEER",
+	Followup = "A2A_DELEGATION_TASK_CONTROL_MODE_FOLLOWUP",
+	Collect = "A2A_DELEGATION_TASK_CONTROL_MODE_COLLECT",
+	Interrupt = "A2A_DELEGATION_TASK_CONTROL_MODE_INTERRUPT",
+	Cancel = "A2A_DELEGATION_TASK_CONTROL_MODE_CANCEL",
 }
 
 export interface PlatformDelegationRecord {
@@ -127,6 +143,12 @@ export interface PlatformDelegationRecord {
 	a2aDispatchStatus?: string;
 	a2aDispatchError?: string;
 	a2aSkillId?: string;
+	a2aDispatchedAt?: string;
+	a2aLeaseRenewedAt?: string;
+	a2aResumeWaitContracts?: Record<string, unknown>[];
+	a2aRootDelegationId?: string;
+	a2aParentDelegationId?: string;
+	a2aDelegationChain?: string[];
 }
 
 export interface PlatformAgentRegistryDelegateInput {
@@ -148,6 +170,28 @@ export interface PlatformAgentRegistryResolveDelegationInput {
 	errorMessage?: string;
 }
 
+export interface PlatformAgentRegistryControlA2ADelegationTaskInput {
+	workspaceId?: string;
+	delegationId: string;
+	mode: PlatformA2ADelegationTaskControlModeValue | string;
+	message?: string;
+	idempotencyKey?: string;
+	targetRunId?: string;
+	childRunId?: string;
+	subagentLaneId?: string;
+	workItemId?: string;
+	payload?: Record<string, unknown>;
+	metadata?: Record<string, unknown>;
+}
+
+export interface PlatformAgentRegistryGetA2ADelegationGraphInput {
+	workspaceId?: string;
+	rootDelegationId?: string;
+	delegationId?: string;
+	maxDepth?: number;
+	limit?: number;
+}
+
 export interface PlatformAgentRegistryListAgentsInput {
 	workspaceId?: string;
 	agentType?: string;
@@ -156,6 +200,10 @@ export interface PlatformAgentRegistryListAgentsInput {
 	status?: string;
 	limit?: number;
 	offset?: number;
+	a2aSkillId?: string;
+	taskClass?: string;
+	requireA2ADispatch?: boolean;
+	eligibleForDelegation?: boolean;
 }
 
 export interface PlatformAgentRegistryRegisterInput {
@@ -219,10 +267,18 @@ export interface PlatformAgentA2APeerProjection {
 	supportedExtensions?: string[];
 	skills?: PlatformAgentA2ASkill[];
 	securitySchemes?: string[];
+	agentCardObservedAt?: string;
 	agentCardETag?: string;
 	agentCardHash?: string;
 	pushNotifications?: boolean;
 	attributes?: Record<string, string>;
+}
+
+export interface PlatformAgentCapacity {
+	current?: number;
+	max?: number;
+	remaining?: number;
+	reservedDelegationCount?: number;
 }
 
 export interface PlatformAgentRegistryAgent {
@@ -235,9 +291,13 @@ export interface PlatformAgentRegistryAgent {
 	surfaces?: string[];
 	surfaceTypes?: string[];
 	status?: string;
+	activeConfigVersion?: number;
 	ownerId?: string;
 	lastHeartbeatAt?: string;
+	createdAt?: string;
+	updatedAt?: string;
 	a2a?: PlatformAgentA2APeerProjection;
+	capacity?: PlatformAgentCapacity;
 }
 
 export interface PlatformAgentRegistryRegisterResult {
@@ -260,9 +320,81 @@ export interface PlatformAgentRegistryResolveDelegationResult {
 	delegation?: PlatformDelegationRecord;
 }
 
+export interface PlatformAgentDiscoveryEvidence {
+	schema?: string;
+	decision?: string;
+	reason?: string;
+	workspaceId?: string;
+	capability?: string;
+	capabilities?: string[];
+	agentType?: string;
+	a2aSkillId?: string;
+	taskClass?: string;
+	requireA2ADispatch?: boolean;
+	surface?: string;
+	status?: string;
+	candidateCount?: number;
+	matchedCount?: number;
+	exclusions?: PlatformAgentDiscoveryExclusion[];
+}
+
+export interface PlatformAgentDiscoveryExclusion {
+	reason?: string;
+	count?: number;
+	sampleAgentIds?: string[];
+	policyReasons?: string[];
+	policyScopes?: string[];
+	allowedTaskClasses?: string[];
+	deniedTaskClasses?: string[];
+}
+
 export interface PlatformAgentRegistryListAgentsResult {
 	agents: PlatformAgentRegistryAgent[];
 	total?: number;
+	discoveryEvidence?: PlatformAgentDiscoveryEvidence;
+}
+
+export interface PlatformA2ADelegationTaskControlResult {
+	taskId?: string;
+	state?: string;
+	controlId?: string;
+	controlMode?: string;
+	cancelled?: boolean;
+	queuedForWorker?: boolean;
+	parentTaskId?: string;
+	targetRunId?: string;
+	appliedRunId?: string;
+	targetExternal?: boolean;
+	subagentLaneId?: string;
+	workItemId?: string;
+	observedAt?: string;
+	rawPayloadWithheld?: boolean;
+}
+
+export interface PlatformAgentRegistryControlA2ADelegationTaskResult {
+	delegation?: PlatformDelegationRecord;
+	remoteTask?: PlatformA2ADelegationTaskControlResult;
+}
+
+export interface PlatformA2ADelegationGraphNode {
+	delegation?: PlatformDelegationRecord;
+	depth?: number;
+	childCount?: number;
+	terminal?: boolean;
+}
+
+export interface PlatformA2ADelegationGraphEdge {
+	parentDelegationId?: string;
+	childDelegationId?: string;
+}
+
+export interface PlatformAgentRegistryGetA2ADelegationGraphResult {
+	rootDelegationId?: string;
+	nodes: PlatformA2ADelegationGraphNode[];
+	edges: PlatformA2ADelegationGraphEdge[];
+	total?: number;
+	truncated?: boolean;
+	missingParentDelegationIds?: string[];
 }
 
 export interface PlatformAgentRegistryA2APeerCandidate {
@@ -415,6 +547,29 @@ function objectValue(
 	return undefined;
 }
 
+function objectList(
+	record: Record<string, unknown> | undefined,
+	...keys: string[]
+): Record<string, unknown>[] | undefined {
+	if (!record) {
+		return undefined;
+	}
+	for (const key of keys) {
+		const value = record[key];
+		if (!Array.isArray(value)) {
+			continue;
+		}
+		const objects = value.filter(
+			(item): item is Record<string, unknown> =>
+				Boolean(item) && typeof item === "object" && !Array.isArray(item),
+		);
+		if (objects.length > 0) {
+			return objects;
+		}
+	}
+	return undefined;
+}
+
 function stripUndefinedValues(
 	record: Record<string, unknown>,
 ): Record<string, unknown> {
@@ -511,6 +666,11 @@ function normalizeA2APeerProjection(
 		),
 		skills: skills && skills.length > 0 ? skills : undefined,
 		securitySchemes: stringList(record, "securitySchemes", "security_schemes"),
+		agentCardObservedAt: firstString(
+			record,
+			"agentCardObservedAt",
+			"agent_card_observed_at",
+		),
 		agentCardETag: firstString(
 			record,
 			"agentCardETag",
@@ -525,6 +685,27 @@ function normalizeA2APeerProjection(
 		),
 		attributes: stringRecord(record, "attributes"),
 	}) as PlatformAgentA2APeerProjection;
+}
+
+function normalizeAgentCapacity(
+	record: Record<string, unknown> | undefined,
+): PlatformAgentCapacity | undefined {
+	if (!record) {
+		return undefined;
+	}
+	const capacity = stripUndefinedValues({
+		current: firstNumber(record, "current"),
+		max: firstNumber(record, "max"),
+		remaining: firstNumber(record, "remaining"),
+		reservedDelegationCount: firstNumber(
+			record,
+			"reservedDelegationCount",
+			"reserved_delegation_count",
+		),
+	});
+	return Object.keys(capacity).length > 0
+		? (capacity as PlatformAgentCapacity)
+		: undefined;
 }
 
 function normalizeAgent(
@@ -544,13 +725,21 @@ function normalizeAgent(
 		surfaces: stringList(record, "surfaces"),
 		surfaceTypes: stringList(record, "surfaceTypes", "surface_types"),
 		status: firstString(record, "status"),
+		activeConfigVersion: firstNumber(
+			record,
+			"activeConfigVersion",
+			"active_config_version",
+		),
 		ownerId: firstString(record, "ownerId", "owner_id"),
 		lastHeartbeatAt: firstString(
 			record,
 			"lastHeartbeatAt",
 			"last_heartbeat_at",
 		),
+		createdAt: firstString(record, "createdAt", "created_at"),
+		updatedAt: firstString(record, "updatedAt", "updated_at"),
 		a2a,
+		capacity: normalizeAgentCapacity(objectValue(record, "capacity")),
 	}) as PlatformAgentRegistryAgent;
 }
 
@@ -588,6 +777,7 @@ function encodeA2APeerProjection(
 		supportedExtensions: a2a.supportedExtensions,
 		skills: a2a.skills?.map(encodeA2ASkill),
 		securitySchemes: a2a.securitySchemes,
+		agentCardObservedAt: a2a.agentCardObservedAt,
 		agentCardEtag: a2a.agentCardETag,
 		agentCardHash: a2a.agentCardHash,
 		pushNotifications: a2a.pushNotifications,
@@ -647,7 +837,172 @@ function normalizeDelegation(
 			"a2a_dispatch_error",
 		),
 		a2aSkillId: firstString(record, "a2aSkillId", "a2a_skill_id"),
+		a2aDispatchedAt: firstString(
+			record,
+			"a2aDispatchedAt",
+			"a2a_dispatched_at",
+		),
+		a2aLeaseRenewedAt: firstString(
+			record,
+			"a2aLeaseRenewedAt",
+			"a2a_lease_renewed_at",
+		),
+		a2aResumeWaitContracts: objectList(
+			record,
+			"a2aResumeWaitContracts",
+			"a2a_resume_wait_contracts",
+		),
+		a2aRootDelegationId: firstString(
+			record,
+			"a2aRootDelegationId",
+			"a2a_root_delegation_id",
+		),
+		a2aParentDelegationId: firstString(
+			record,
+			"a2aParentDelegationId",
+			"a2a_parent_delegation_id",
+		),
+		a2aDelegationChain: stringList(
+			record,
+			"a2aDelegationChain",
+			"a2a_delegation_chain",
+		),
 	}) as PlatformDelegationRecord;
+}
+
+function normalizeDiscoveryExclusion(
+	record: Record<string, unknown> | undefined,
+): PlatformAgentDiscoveryExclusion | undefined {
+	if (!record) {
+		return undefined;
+	}
+	const exclusion = stripUndefinedValues({
+		reason: firstString(record, "reason"),
+		count: firstNumber(record, "count"),
+		sampleAgentIds: stringList(record, "sampleAgentIds", "sample_agent_ids"),
+		policyReasons: stringList(record, "policyReasons", "policy_reasons"),
+		policyScopes: stringList(record, "policyScopes", "policy_scopes"),
+		allowedTaskClasses: stringList(
+			record,
+			"allowedTaskClasses",
+			"allowed_task_classes",
+		),
+		deniedTaskClasses: stringList(
+			record,
+			"deniedTaskClasses",
+			"denied_task_classes",
+		),
+	});
+	return Object.keys(exclusion).length > 0
+		? (exclusion as PlatformAgentDiscoveryExclusion)
+		: undefined;
+}
+
+function normalizeDiscoveryEvidence(
+	record: Record<string, unknown> | undefined,
+): PlatformAgentDiscoveryEvidence | undefined {
+	if (!record) {
+		return undefined;
+	}
+	return stripUndefinedValues({
+		schema: firstString(record, "schema"),
+		decision: firstString(record, "decision"),
+		reason: firstString(record, "reason"),
+		workspaceId: firstString(record, "workspaceId", "workspace_id"),
+		capability: firstString(record, "capability"),
+		capabilities: stringList(record, "capabilities"),
+		agentType: firstString(record, "agentType", "agent_type"),
+		a2aSkillId: firstString(record, "a2aSkillId", "a2a_skill_id"),
+		taskClass: firstString(record, "taskClass", "task_class"),
+		requireA2ADispatch: firstBoolean(
+			record,
+			"requireA2aDispatch",
+			"requireA2ADispatch",
+			"require_a2a_dispatch",
+		),
+		surface: firstString(record, "surface"),
+		status: firstString(record, "status"),
+		candidateCount: firstNumber(record, "candidateCount", "candidate_count"),
+		matchedCount: firstNumber(record, "matchedCount", "matched_count"),
+		exclusions: objectList(record, "exclusions")
+			?.map((exclusion) => normalizeDiscoveryExclusion(exclusion))
+			.filter(
+				(exclusion): exclusion is PlatformAgentDiscoveryExclusion =>
+					exclusion !== undefined,
+			),
+	}) as PlatformAgentDiscoveryEvidence;
+}
+
+function normalizeA2ADelegationGraphNode(
+	record: Record<string, unknown> | undefined,
+): PlatformA2ADelegationGraphNode | undefined {
+	if (!record) {
+		return undefined;
+	}
+	const node = stripUndefinedValues({
+		delegation: normalizeDelegation(objectValue(record, "delegation")),
+		depth: firstNumber(record, "depth"),
+		childCount: firstNumber(record, "childCount", "child_count"),
+		terminal: firstBoolean(record, "terminal"),
+	});
+	return Object.keys(node).length > 0
+		? (node as PlatformA2ADelegationGraphNode)
+		: undefined;
+}
+
+function normalizeA2ADelegationGraphEdge(
+	record: Record<string, unknown> | undefined,
+): PlatformA2ADelegationGraphEdge | undefined {
+	if (!record) {
+		return undefined;
+	}
+	const edge = stripUndefinedValues({
+		parentDelegationId: firstString(
+			record,
+			"parentDelegationId",
+			"parent_delegation_id",
+		),
+		childDelegationId: firstString(
+			record,
+			"childDelegationId",
+			"child_delegation_id",
+		),
+	});
+	return Object.keys(edge).length > 0
+		? (edge as PlatformA2ADelegationGraphEdge)
+		: undefined;
+}
+
+function normalizeA2ADelegationTaskControlResult(
+	record: Record<string, unknown> | undefined,
+): PlatformA2ADelegationTaskControlResult | undefined {
+	if (!record) {
+		return undefined;
+	}
+	return stripUndefinedValues({
+		taskId: firstString(record, "taskId", "task_id"),
+		state: firstString(record, "state"),
+		controlId: firstString(record, "controlId", "control_id"),
+		controlMode: firstString(record, "controlMode", "control_mode"),
+		cancelled: firstBoolean(record, "cancelled"),
+		queuedForWorker: firstBoolean(
+			record,
+			"queuedForWorker",
+			"queued_for_worker",
+		),
+		parentTaskId: firstString(record, "parentTaskId", "parent_task_id"),
+		targetRunId: firstString(record, "targetRunId", "target_run_id"),
+		appliedRunId: firstString(record, "appliedRunId", "applied_run_id"),
+		targetExternal: firstBoolean(record, "targetExternal", "target_external"),
+		subagentLaneId: firstString(record, "subagentLaneId", "subagent_lane_id"),
+		workItemId: firstString(record, "workItemId", "work_item_id"),
+		observedAt: firstString(record, "observedAt", "observed_at"),
+		rawPayloadWithheld: firstBoolean(
+			record,
+			"rawPayloadWithheld",
+			"raw_payload_withheld",
+		),
+	}) as PlatformA2ADelegationTaskControlResult;
 }
 
 async function parseJsonResponse(
@@ -892,6 +1247,10 @@ export async function listAgentsWithPlatform(
 			status: input.status,
 			limit: input.limit,
 			offset: input.offset,
+			a2aSkillId: input.a2aSkillId,
+			taskClass: input.taskClass,
+			requireA2aDispatch: input.requireA2ADispatch,
+			eligibleForDelegation: input.eligibleForDelegation,
 		}),
 		{ ...options, config: resolvedConfig },
 	);
@@ -914,6 +1273,9 @@ export async function listAgentsWithPlatform(
 	return {
 		agents,
 		total: firstNumber(payload, "total", "totalSize", "total_size"),
+		discoveryEvidence: normalizeDiscoveryEvidence(
+			objectValue(payload, "discoveryEvidence", "discovery_evidence"),
+		),
 	};
 }
 
@@ -924,7 +1286,15 @@ export async function listA2APeerCandidatesWithPlatform(
 		signal?: AbortSignal;
 	},
 ): Promise<PlatformAgentRegistryA2APeerCandidate[] | null> {
-	const result = await listAgentsWithPlatform(input, options);
+	const result = await listAgentsWithPlatform(
+		{
+			...input,
+			a2aSkillId: input.a2aSkillId ?? input.skillId,
+			requireA2ADispatch: input.requireA2ADispatch ?? true,
+			eligibleForDelegation: input.eligibleForDelegation ?? true,
+		},
+		options,
+	);
 	if (!result) {
 		return null;
 	}
@@ -1022,5 +1392,106 @@ export async function resolveAgentDelegationWithPlatform(
 	}
 	return {
 		delegation: normalizeDelegation(objectValue(payload, "delegation")),
+	};
+}
+
+export async function getA2ADelegationGraphWithPlatform(
+	input: PlatformAgentRegistryGetA2ADelegationGraphInput,
+	options?: {
+		config?: PlatformServiceConfig;
+		signal?: AbortSignal;
+	},
+): Promise<PlatformAgentRegistryGetA2ADelegationGraphResult | null> {
+	const explicitWorkspaceId = trimString(input.workspaceId);
+	const resolvedConfig = options?.config
+		? explicitWorkspaceId && explicitWorkspaceId !== options.config.workspaceId
+			? { ...options.config, workspaceId: explicitWorkspaceId }
+			: options.config
+		: explicitWorkspaceId
+			? await resolveAgentRegistryListServiceConfig(explicitWorkspaceId)
+			: undefined;
+	const payload = await postAgentRegistryOperation(
+		GET_A2A_DELEGATION_GRAPH_PATH,
+		stripUndefinedValues({
+			workspaceId: explicitWorkspaceId ?? resolvedConfig?.workspaceId,
+			rootDelegationId: input.rootDelegationId,
+			delegationId: input.delegationId,
+			maxDepth: input.maxDepth,
+			limit: input.limit,
+		}),
+		resolvedConfig ? { ...options, config: resolvedConfig } : options,
+	);
+	if (!payload) {
+		return null;
+	}
+	const nodes =
+		objectList(payload, "nodes")
+			?.map((node) => normalizeA2ADelegationGraphNode(node))
+			.filter(
+				(node): node is PlatformA2ADelegationGraphNode => node !== undefined,
+			) ?? [];
+	const edges =
+		objectList(payload, "edges")
+			?.map((edge) => normalizeA2ADelegationGraphEdge(edge))
+			.filter(
+				(edge): edge is PlatformA2ADelegationGraphEdge => edge !== undefined,
+			) ?? [];
+	return {
+		rootDelegationId: firstString(
+			payload,
+			"rootDelegationId",
+			"root_delegation_id",
+		),
+		nodes,
+		edges,
+		total: firstNumber(payload, "total"),
+		truncated: firstBoolean(payload, "truncated"),
+		missingParentDelegationIds: stringList(
+			payload,
+			"missingParentDelegationIds",
+			"missing_parent_delegation_ids",
+		),
+	};
+}
+
+export async function controlA2ADelegationTaskWithPlatform(
+	input: PlatformAgentRegistryControlA2ADelegationTaskInput,
+	options?: {
+		config?: PlatformServiceConfig;
+		signal?: AbortSignal;
+	},
+): Promise<PlatformAgentRegistryControlA2ADelegationTaskResult | null> {
+	const explicitWorkspaceId = trimString(input.workspaceId);
+	const resolvedConfig = options?.config
+		? explicitWorkspaceId && explicitWorkspaceId !== options.config.workspaceId
+			? { ...options.config, workspaceId: explicitWorkspaceId }
+			: options.config
+		: explicitWorkspaceId
+			? await resolveAgentRegistryListServiceConfig(explicitWorkspaceId)
+			: undefined;
+	const payload = await postAgentRegistryOperation(
+		CONTROL_A2A_DELEGATION_TASK_PATH,
+		stripUndefinedValues({
+			delegationId: input.delegationId,
+			mode: input.mode,
+			message: input.message,
+			idempotencyKey: input.idempotencyKey,
+			targetRunId: input.targetRunId,
+			childRunId: input.childRunId,
+			subagentLaneId: input.subagentLaneId,
+			workItemId: input.workItemId,
+			payload: input.payload,
+			metadata: input.metadata,
+		}),
+		resolvedConfig ? { ...options, config: resolvedConfig } : options,
+	);
+	if (!payload) {
+		return null;
+	}
+	return {
+		delegation: normalizeDelegation(objectValue(payload, "delegation")),
+		remoteTask: normalizeA2ADelegationTaskControlResult(
+			objectValue(payload, "remoteTask", "remote_task"),
+		),
 	};
 }

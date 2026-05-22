@@ -46,6 +46,73 @@ task ledger, then verifies `fleet`, `tasks`, `send`, and explicit `wait`. See
 [A2A tmux smoke](./a2a-tmux-smoke.md) for the harness contract and
 troubleshooting knobs.
 
+The smoke proves local A2A transport and registry behavior only. It is not
+production evidence that two remote Maestro instances communicated through
+Platform.
+
+## Platform Agent Registry
+
+Fleet-scale Maestro A2A uses Platform as the shared control plane. Each remote
+Maestro publishes its Agent Card projection to `agents.v1.AgentService`, keeps
+presence fresh with heartbeats, discovers eligible peers through Platform, and
+can receive fenced task-control commands through the same registry surface.
+
+Configure the Platform Agent Registry client with:
+
+```sh
+export MAESTRO_AGENT_REGISTRY_SERVICE_URL=https://platform.example.com
+export MAESTRO_AGENT_REGISTRY_SERVICE_TOKEN=...
+export MAESTRO_AGENT_REGISTRY_ORG_ID=org_...
+export MAESTRO_AGENT_REGISTRY_WORKSPACE_ID=ws_...
+```
+
+Publish a Maestro instance from its reachable A2A endpoint:
+
+```sh
+maestro a2a register \
+  --url https://worker-a.example.com \
+  --agent-id maestro-worker-a \
+  --capabilities code:write,code:review,a2a:task \
+  --surface maestro,a2a
+```
+
+Discover eligible remote peers for a skill:
+
+```sh
+maestro a2a discover \
+  --capability code:review \
+  --skill maestro.subagent.code-review \
+  --import
+```
+
+Delegate through the discovered Platform peer:
+
+```sh
+maestro a2a delegate \
+  --discover \
+  --skill maestro.subagent.code-review \
+  "Review this branch and return the highest-risk finding"
+```
+
+Control a remote Platform A2A delegation task or one of its child/subagent
+lanes:
+
+```sh
+maestro a2a control delegation_123 \
+  --mode interrupt \
+  --target-run-id run_remote_123 \
+  --child-run-id run_child_456 \
+  --subagent-lane-id lane_review \
+  "Pause, re-plan, and continue with the narrower test target"
+```
+
+Production proof requires dereferenceable Platform evidence: registered agent
+ids, heartbeat timestamps, discovery evidence, delegation id, remote A2A task
+id, trace/span ids, returned artifacts, and any downstream GitHub or
+deploy-verifier identifiers must resolve to live systems. Deterministic replay
+fixtures can prove the schema and message contract, but they must not be
+presented as proof of a production run.
+
 ## TUI Surface
 
 The TypeScript TUI exposes:

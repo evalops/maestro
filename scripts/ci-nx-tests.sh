@@ -15,6 +15,17 @@ ensure_sha() {
 ensure_sha "$NX_BASE"
 ensure_sha "$NX_HEAD"
 
+NX_TEST_HEARTBEAT_SECONDS="${NX_TEST_HEARTBEAT_SECONDS:-300}"
+NX_TEST_ATTEMPT_TIMEOUT_SECONDS="${NX_TEST_ATTEMPT_TIMEOUT_SECONDS:-3300}"
+
+echo "Nx base: $NX_BASE"
+echo "Nx head: $NX_HEAD"
+
+changed_files_log="nx-changed-files.log"
+affected_projects_log="nx-affected-projects.log"
+
+git diff --name-only "$NX_BASE" "$NX_HEAD" | tee "$changed_files_log"
+
 run_shared_memory_tests() {
 	if git diff --name-only "$NX_BASE" "$NX_HEAD" | grep -qE '^(src/shared-memory/|test/shared-memory/|src/config/env-vars\.ts|src/cli/commands/memory\.ts|src/cli/help\.ts|src/session/manager\.ts)'; then
 		echo "Running shared memory tests..."
@@ -22,45 +33,48 @@ run_shared_memory_tests() {
 	fi
 }
 
-project_json_only_removes_root_test_self_build() {
-	local changed_lines
-	changed_lines="$(git diff --unified=0 "$NX_BASE" "$NX_HEAD" -- project.json | grep -E '^[-+][^-+]' || true)"
-
-	if [[ -z "$changed_lines" ]]; then
-		return 1
-	fi
-
-	local unexpected_lines
-	unexpected_lines="$(printf '%s\n' "$changed_lines" | grep -Ev '^-[[:space:]]*"dependsOn": \["build"\],?$' || true)"
-	[[ -z "$unexpected_lines" ]]
-}
-
-full_test_fanout_required() {
-	local changed_files
-	changed_files="$(git diff --name-only "$NX_BASE" "$NX_HEAD")"
-
-	if printf '%s\n' "$changed_files" | grep -qE '^(nx\.json|tsconfig\.base\.json|package\.json|bun\.lockb|package-lock\.json|packages/.*/project\.json)$'; then
-		return 0
-	fi
-
-	if printf '%s\n' "$changed_files" | grep -qx 'project.json'; then
-		if project_json_only_removes_root_test_self_build; then
-			return 1
-		fi
-
-		return 0
-	fi
-
-	return 1
-}
-
 node scripts/ensure-deps.js --no-install --workspace @evalops/contracts --workspace @evalops/tui
 
-if full_test_fanout_required; then
-	cmd=(npx nx run-many -t test --all --parallel=3)
-else
-	cmd=(npx nx affected -t test --base="$NX_BASE" --head="$NX_HEAD" --parallel=3)
+nx_plan="$(node scripts/plan-nx-test-command.mjs --base "$NX_BASE" --head "$NX_HEAD")"
+nx_mode="$(printf '%s\n' "$nx_plan" | sed -n '1p')"
+nx_files="$(printf '%s\n' "$nx_plan" | sed -n '2p')"
+
+echo "Nx test plan: $nx_mode"
+if [[ -n "$nx_files" ]]; then
+	echo "Nx test files: $nx_files"
 fi
+
+case "$nx_mode" in
+	all)
+		cmd=(npx nx run-many -t test --all --parallel=3)
+		;;
+	affected-files)
+		cmd=(npx nx affected -t test --files="$nx_files" --parallel=3)
+		;;
+	none)
+		echo "No Nx project tests are required for this change set."
+		run_shared_memory_tests
+		exit 0
+		;;
+	*)
+		echo "::error::Unknown Nx test plan mode: $nx_mode"
+		exit 1
+		;;
+esac
+
+echo "Affected Nx projects:"
+case "$nx_mode" in
+	all)
+		if ! npx nx show projects --affected --base="$NX_BASE" --head="$NX_HEAD" | tee "$affected_projects_log"; then
+			echo "::warning::Unable to list affected Nx projects before test execution"
+		fi
+		;;
+	affected-files)
+		if ! npx nx show projects --affected --files="$nx_files" | tee "$affected_projects_log"; then
+			echo "::warning::Unable to list affected Nx projects before test execution"
+		fi
+		;;
+esac
 
 run_attempt() {
 	local attempt="$1"
@@ -68,13 +82,46 @@ run_attempt() {
 
 	echo "Running: ${cmd[*]}"
 	echo "Attempt ${attempt}..."
+	echo "Heartbeat interval: ${NX_TEST_HEARTBEAT_SECONDS}s"
+	echo "Attempt timeout: ${NX_TEST_ATTEMPT_TIMEOUT_SECONDS}s"
 
 	set +e
-	"${cmd[@]}" 2>&1 | tee "$logfile"
-	local status="${PIPESTATUS[0]}"
+	node scripts/run-command-with-heartbeat.mjs \
+		--label "Nx tests attempt ${attempt}" \
+		--logfile "$logfile" \
+		--heartbeat-seconds "$NX_TEST_HEARTBEAT_SECONDS" \
+		--timeout-seconds "$NX_TEST_ATTEMPT_TIMEOUT_SECONDS" \
+		-- "${cmd[@]}"
+	local status="$?"
 	set -e
 
 	return "$status"
+}
+
+append_ci_context_summary() {
+	if [[ -z "${GITHUB_STEP_SUMMARY:-}" ]]; then
+		return 0
+	fi
+
+	{
+		echo ""
+		echo "### Nx CI context"
+		echo ""
+		echo "- Base: \`${NX_BASE}\`"
+		echo "- Head: \`${NX_HEAD}\`"
+		echo "- Heartbeat interval: ${NX_TEST_HEARTBEAT_SECONDS}s"
+		echo "- Attempt timeout: ${NX_TEST_ATTEMPT_TIMEOUT_SECONDS}s"
+		echo ""
+		echo "#### Changed files"
+		echo '```text'
+		sed -n '1,120p' "$changed_files_log"
+		echo '```'
+		echo ""
+		echo "#### Affected projects"
+		echo '```text'
+		sed -n '1,120p' "$affected_projects_log" 2>/dev/null || true
+		echo '```'
+	} >>"$GITHUB_STEP_SUMMARY" 2>/dev/null || true
 }
 
 append_failed_tasks_summary() {
@@ -123,6 +170,7 @@ append_unhandled_error_summary() {
 
 if run_attempt 1; then
 	rm -f nx-tests-attempt-1.log || true
+	append_ci_context_summary
 	run_shared_memory_tests
 	exit 0
 fi
@@ -135,6 +183,7 @@ if run_attempt 2; then
 		echo ""
 		echo "- Attempt 1: failed"
 		echo "- Attempt 2: passed"
+		append_ci_context_summary
 		append_failed_tasks_summary "nx-tests-attempt-1.log"
 		append_unhandled_error_summary "nx-tests-attempt-1.log"
 		echo ""
@@ -150,6 +199,7 @@ fi
 	echo ""
 	echo "- Attempt 1: failed"
 	echo "- Attempt 2: failed"
+	append_ci_context_summary
 	append_failed_tasks_summary "nx-tests-attempt-2.log"
 	append_unhandled_error_summary "nx-tests-attempt-2.log"
 } >>"${GITHUB_STEP_SUMMARY:-/dev/null}" 2>/dev/null || true

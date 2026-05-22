@@ -8,6 +8,7 @@ import {
 interface AgentRegistryCall {
 	operation: string;
 	body: Record<string, unknown>;
+	headers: Record<string, string>;
 }
 
 function parseRequestBody(
@@ -17,6 +18,12 @@ function parseRequestBody(
 		return {};
 	}
 	return JSON.parse(body) as Record<string, unknown>;
+}
+
+function headersToRecord(
+	headers: HeadersInit | undefined,
+): Record<string, string> {
+	return Object.fromEntries(new Headers(headers).entries());
 }
 
 function stubAgentRegistryEnv(): void {
@@ -39,7 +46,7 @@ function mockAgentRegistryFetch(): AgentRegistryCall[] {
 			const url = String(input);
 			const operation = url.split("/").pop() ?? "";
 			const body = parseRequestBody(init?.body);
-			calls.push({ operation, body });
+			calls.push({ operation, body, headers: headersToRecord(init?.headers) });
 			if (operation === "Register" || operation === "Update") {
 				return new Response(
 					JSON.stringify({
@@ -55,6 +62,45 @@ function mockAgentRegistryFetch(): AgentRegistryCall[] {
 			if (operation === "Heartbeat") {
 				return new Response(
 					JSON.stringify({ nextHeartbeatBy: "2026-05-19T10:05:00Z" }),
+					{ status: 200, headers: { "Content-Type": "application/json" } },
+				);
+			}
+			if (operation === "ControlA2ADelegationTask") {
+				return new Response(
+					JSON.stringify({
+						delegation: { id: body.delegationId },
+						remoteTask: {
+							taskId: "task_1",
+							state: "working",
+							controlId: body.idempotencyKey ?? "control_1",
+						},
+					}),
+					{ status: 200, headers: { "Content-Type": "application/json" } },
+				);
+			}
+			if (operation === "GetA2ADelegationGraph") {
+				return new Response(
+					JSON.stringify({
+						rootDelegationId: body.rootDelegationId ?? body.delegationId,
+						nodes: [
+							{
+								delegation: {
+									id: body.delegationId ?? body.rootDelegationId,
+									status: "DELEGATION_STATUS_ACCEPTED",
+									a2aTaskId: "task_1",
+									a2aDelegationChain: [
+										body.rootDelegationId ?? body.delegationId,
+									],
+								},
+								depth: 0,
+								childCount: 0,
+								terminal: false,
+							},
+						],
+						edges: [],
+						total: 1,
+						truncated: false,
+					}),
 					{ status: 200, headers: { "Content-Type": "application/json" } },
 				);
 			}
@@ -232,6 +278,62 @@ describe("A2A CLI command helpers", () => {
 		expect(parsed.flags.get("--json")).toBe(true);
 	});
 
+	it("parses Platform A2A remote control flags", () => {
+		const parsed = parseA2AArgs([
+			"control",
+			"delegation_1",
+			"--mode",
+			"interrupt",
+			"--idempotency-key",
+			"control_1",
+			"--target-run-id",
+			"run_remote",
+			"--child-run-id",
+			"run_child",
+			"--subagent-lane-id",
+			"lane_review",
+			"--work-item-id",
+			"work_item_1",
+			"--workspace-id",
+			"ws_control",
+			"pause",
+			"now",
+		]);
+
+		expect(parsed.positionals).toEqual([
+			"control",
+			"delegation_1",
+			"pause",
+			"now",
+		]);
+		expect(parsed.flags.get("--mode")).toBe("interrupt");
+		expect(parsed.flags.get("--idempotency-key")).toBe("control_1");
+		expect(parsed.flags.get("--target-run-id")).toBe("run_remote");
+		expect(parsed.flags.get("--child-run-id")).toBe("run_child");
+		expect(parsed.flags.get("--subagent-lane-id")).toBe("lane_review");
+		expect(parsed.flags.get("--work-item-id")).toBe("work_item_1");
+		expect(parsed.flags.get("--workspace-id")).toBe("ws_control");
+	});
+
+	it("preserves unquoted --message text for Platform A2A remote control", () => {
+		const parsed = parseA2AArgs([
+			"control",
+			"delegation_1",
+			"--mode",
+			"interrupt",
+			"--message",
+			"pause",
+			"now",
+			"--workspace-id",
+			"ws_control",
+		]);
+
+		expect(parsed.positionals).toEqual(["control", "delegation_1"]);
+		expect(parsed.flags.get("--mode")).toBe("interrupt");
+		expect(parsed.flags.get("--message")).toBe("pause now");
+		expect(parsed.flags.get("--workspace-id")).toBe("ws_control");
+	});
+
 	it("routes the Platform A2A publish alias through registration", async () => {
 		stubAgentRegistryEnv();
 		muteConsole();
@@ -293,6 +395,123 @@ describe("A2A CLI command helpers", () => {
 			},
 		});
 		expect(calls[0]?.body).not.toHaveProperty("a2a");
+	});
+
+	it("routes Platform A2A remote control through AgentService", async () => {
+		stubAgentRegistryEnv();
+		muteConsole();
+		const calls = mockAgentRegistryFetch();
+
+		await handleA2ACommand([
+			"control",
+			"delegation_1",
+			"--mode",
+			"interrupt",
+			"--idempotency-key",
+			"control_1",
+			"--target-run-id",
+			"run_remote",
+			"--child-run-id",
+			"run_child",
+			"--subagent-lane-id",
+			"lane_review",
+			"--work-item-id",
+			"work_item_1",
+			"--workspace-id",
+			"ws_control",
+			"pause",
+			"now",
+		]);
+
+		expect(calls).toHaveLength(1);
+		expect(calls[0]).toMatchObject({
+			operation: "ControlA2ADelegationTask",
+			body: {
+				delegationId: "delegation_1",
+				mode: "A2A_DELEGATION_TASK_CONTROL_MODE_INTERRUPT",
+				message: "pause now",
+				idempotencyKey: "control_1",
+				targetRunId: "run_remote",
+				childRunId: "run_child",
+				subagentLaneId: "lane_review",
+				workItemId: "work_item_1",
+			},
+		});
+		expect(calls[0]?.headers).toEqual(
+			expect.objectContaining({
+				"x-workspace-id": "ws_control",
+			}),
+		);
+	});
+
+	it("routes unquoted --message text for Platform A2A remote control", async () => {
+		stubAgentRegistryEnv();
+		muteConsole();
+		const calls = mockAgentRegistryFetch();
+
+		await handleA2ACommand([
+			"control",
+			"delegation_1",
+			"--mode",
+			"interrupt",
+			"--message",
+			"pause",
+			"now",
+			"--workspace-id",
+			"ws_control",
+		]);
+
+		expect(calls).toHaveLength(1);
+		expect(calls[0]).toMatchObject({
+			operation: "ControlA2ADelegationTask",
+			body: {
+				delegationId: "delegation_1",
+				mode: "A2A_DELEGATION_TASK_CONTROL_MODE_INTERRUPT",
+				message: "pause now",
+			},
+		});
+		expect(calls[0]?.headers).toEqual(
+			expect.objectContaining({
+				"x-workspace-id": "ws_control",
+			}),
+		);
+	});
+
+	it("reads Platform A2A delegation graphs through AgentService", async () => {
+		stubAgentRegistryEnv();
+		muteConsole();
+		const calls = mockAgentRegistryFetch();
+
+		await handleA2ACommand([
+			"graph",
+			"delegation_child",
+			"--root",
+			"delegation_root",
+			"--workspace-id",
+			"ws_graph",
+			"--max-depth",
+			"3",
+			"--limit",
+			"25",
+			"--json",
+		]);
+
+		expect(calls).toHaveLength(1);
+		expect(calls[0]).toMatchObject({
+			operation: "GetA2ADelegationGraph",
+			body: {
+				workspaceId: "ws_graph",
+				delegationId: "delegation_child",
+				rootDelegationId: "delegation_root",
+				maxDepth: 3,
+				limit: 25,
+			},
+		});
+		expect(calls[0]?.headers).toEqual(
+			expect.objectContaining({
+				"x-workspace-id": "ws_graph",
+			}),
+		);
 	});
 
 	it("rejects heartbeat-only registration when heartbeat is disabled", async () => {

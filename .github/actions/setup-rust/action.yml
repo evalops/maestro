@@ -26,6 +26,38 @@ inputs:
 runs:
   using: composite
   steps:
+    - name: Configure isolated Rust toolchain home
+      shell: bash
+      env:
+        TOOLCHAIN_INPUT: ${{ inputs.toolchain }}
+      run: |
+        set -euo pipefail
+        safe_repo="${GITHUB_REPOSITORY:-repo}"
+        safe_repo="${safe_repo//[^A-Za-z0-9_.-]/-}"
+        safe_job="${GITHUB_JOB:-job}"
+        safe_job="${safe_job//[^A-Za-z0-9_.-]/-}"
+        safe_toolchain="${TOOLCHAIN_INPUT:-stable}"
+        safe_toolchain="${safe_toolchain//[^A-Za-z0-9_.-]/-}"
+        root="${RUNNER_TEMP:-${GITHUB_WORKSPACE:-$PWD}/.tmp}/maestro-rust/${safe_repo}/${safe_job}/${safe_toolchain}"
+        cargo_home="$root/cargo"
+        rustup_home="$root/rustup"
+        mkdir -p "$cargo_home/bin" "$rustup_home"
+
+        export CARGO_HOME="$cargo_home"
+        export RUSTUP_HOME="$rustup_home"
+        export PATH="$cargo_home/bin:$PATH"
+
+        if ! command -v rustup >/dev/null 2>&1; then
+          echo "No rustup binary found before toolchain setup; rust-toolchain action will install one."
+        elif [[ "$(command -v rustup)" != "$cargo_home/bin/rustup" ]]; then
+          cp "$(command -v rustup)" "$cargo_home/bin/rustup"
+          chmod +x "$cargo_home/bin/rustup"
+        fi
+
+        echo "CARGO_HOME=$cargo_home" >> "$GITHUB_ENV"
+        echo "RUSTUP_HOME=$rustup_home" >> "$GITHUB_ENV"
+        echo "$cargo_home/bin" >> "$GITHUB_PATH"
+
     - name: Install Rust toolchain (toolchain only)
       if: ${{ inputs.components == '' && inputs.targets == '' }}
       uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1

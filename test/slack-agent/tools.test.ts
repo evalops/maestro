@@ -13,6 +13,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
+	type Executor,
 	type SandboxConfig,
 	createExecutor,
 } from "../../packages/slack-agent/src/sandbox.js";
@@ -711,6 +712,38 @@ describe("slack-agent tools", () => {
 			expect(result.content[0]!.type).toBe("text");
 			const text = (result.content[0] as { text: string }).text;
 			expect(text).toContain("Environment: host");
+		});
+
+		it("bounds workspace status probes for host executor", async () => {
+			const execCalls: Array<{ command: string; timeout?: number }> = [];
+			const timeoutAwareExecutor = {
+				exec: async (command, options) => {
+					execCalls.push({ command, timeout: options?.timeout });
+					return { stdout: "0 .", stderr: "", code: 0 };
+				},
+				getWorkspacePath: (hostPath) => hostPath,
+				getContainerName: () => undefined,
+				dispose: async () => {},
+			} satisfies Executor;
+
+			const tool = createStatusTool(timeoutAwareExecutor);
+			const result = await tool.execute("test-id", {
+				label: "Check status",
+			});
+
+			expect((result.content[0] as { text: string }).text).toContain(
+				"Environment: host",
+			);
+			expect(execCalls).toEqual([
+				expect.objectContaining({
+					command: expect.stringContaining("du -sb"),
+					timeout: 5,
+				}),
+				expect.objectContaining({
+					command: expect.stringContaining("find"),
+					timeout: 5,
+				}),
+			]);
 		});
 
 		it("returns workspace information", async () => {
