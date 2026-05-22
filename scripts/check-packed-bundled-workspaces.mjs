@@ -5,23 +5,14 @@ import { spawnSync } from "node:child_process";
 import { mkdtempSync, readdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import {
-	getWorkspacePackages,
-	loadRootPackage,
-} from "./workspace-utils.js";
+import { loadRootPackage } from "./workspace-utils.js";
+import { getRuntimeWorkspaceNames } from "./runtime-workspaces.mjs";
 
 const rootPackage = loadRootPackage();
-const bundled = Array.isArray(rootPackage.bundleDependencies)
-	? rootPackage.bundleDependencies
-	: [];
-const workspacePackages = await getWorkspacePackages(rootPackage);
-const workspaceNames = new Set(
-	workspacePackages.map((workspacePackage) => workspacePackage.name),
-);
-const bundledWorkspaceNames = bundled.filter((name) => workspaceNames.has(name));
+const runtimeWorkspaceNames = getRuntimeWorkspaceNames(rootPackage);
 
-if (bundledWorkspaceNames.length === 0) {
-	console.log("No bundled workspace packages declared.");
+if (runtimeWorkspaceNames.length === 0) {
+	console.log("No runtime workspace packages declared.");
 	process.exit(0);
 }
 
@@ -64,19 +55,67 @@ try {
 	}
 
 	const entries = new Set(listing.stdout.split(/\r?\n/).filter(Boolean));
-	const missing = bundledWorkspaceNames.filter(
-		(name) => !entries.has(`package/node_modules/${name}/package.json`),
+	const missing = runtimeWorkspaceNames.filter(
+		(name) => !entries.has(`package/dist/node_modules/${name}/package.json`),
 	);
 	if (missing.length > 0) {
-		console.error("Packed tarball is missing bundled workspace packages:");
+		console.error("Packed tarball is missing vendored runtime workspace packages:");
 		for (const name of missing.sort()) {
 			console.error(`- ${name}`);
 		}
 		process.exit(1);
 	}
 
+	const manifest = spawnSync("tar", ["-xOf", tarballPath, "package/package.json"], {
+		encoding: "utf-8",
+		stdio: ["ignore", "pipe", "pipe"],
+	});
+	if (manifest.status !== 0) {
+		console.error(`Failed to read package.json from packed tarball ${tarballs[0]}.`);
+		if (manifest.stderr) console.error(manifest.stderr.trim());
+		process.exit(manifest.status ?? 1);
+	}
+
+	const packedPackage = JSON.parse(manifest.stdout);
+	const dependencySections = [
+		"dependencies",
+		"optionalDependencies",
+		"peerDependencies",
+	];
+	const metadataOffenders = [];
+	for (const section of dependencySections) {
+		const deps = packedPackage[section];
+		if (!deps || typeof deps !== "object" || Array.isArray(deps)) {
+			continue;
+		}
+		for (const name of runtimeWorkspaceNames) {
+			if (Object.hasOwn(deps, name)) {
+				metadataOffenders.push(`${section}.${name}`);
+			}
+		}
+	}
+	for (const section of ["bundleDependencies", "bundledDependencies"]) {
+		const values = Array.isArray(packedPackage[section])
+			? packedPackage[section]
+			: [];
+		for (const name of runtimeWorkspaceNames) {
+			if (values.includes(name)) {
+				metadataOffenders.push(`${section}.${name}`);
+			}
+		}
+	}
+	if (metadataOffenders.length > 0) {
+		console.error(
+			"Packed package metadata still exposes vendored runtime workspaces as registry dependencies:",
+		);
+		for (const offender of metadataOffenders.sort()) {
+			console.error(`- ${offender}`);
+		}
+		process.exit(1);
+	}
+
 	console.log(
-		`Verified packed tarball includes bundled workspaces: ${bundledWorkspaceNames
+		`Verified packed tarball vendors runtime workspaces without registry dependency metadata: ${runtimeWorkspaceNames
 			.slice()
 			.sort()
 			.join(", ")}.`,

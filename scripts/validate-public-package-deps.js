@@ -5,6 +5,7 @@ import {
 	getWorkspacePackages,
 	loadRootPackage,
 } from "./workspace-utils.js";
+import { getRuntimeWorkspaceNames } from "./runtime-workspaces.mjs";
 
 const rootPackage = loadRootPackage();
 const rootName = typeof rootPackage.name === "string" ? rootPackage.name : "root";
@@ -23,12 +24,7 @@ const privateWorkspaceNames = new Set(
 		.filter((workspacePackage) => workspacePackage.data.private === true)
 		.map((workspacePackage) => workspacePackage.name),
 );
-const bundled = Array.isArray(rootPackage.bundleDependencies)
-	? rootPackage.bundleDependencies
-	: [];
-const bundledWorkspaceNames = new Set(
-	bundled.filter((name) => workspaceNames.has(name)),
-);
+const runtimeWorkspaceNames = new Set(getRuntimeWorkspaceNames(rootPackage));
 
 const dependencySections = [
 	"dependencies",
@@ -37,7 +33,7 @@ const dependencySections = [
 ];
 
 const offenders = [];
-const bundledDependencyOffenders = [];
+const runtimeDependencyOffenders = [];
 
 for (const section of dependencySections) {
 	const deps = rootPackage[section];
@@ -48,10 +44,10 @@ for (const section of dependencySections) {
 		if (privateWorkspaceNames.has(name)) {
 			offenders.push(`${section}.${name}`);
 		}
-		if (!bundledWorkspaceNames.has(name)) {
+		if (!runtimeWorkspaceNames.has(name)) {
 			continue;
 		}
-		bundledDependencyOffenders.push(`${section}.${name}`);
+		runtimeDependencyOffenders.push(`${section}.${name}`);
 	}
 }
 
@@ -68,15 +64,15 @@ if (offenders.length > 0) {
 	process.exit(1);
 }
 
-if (bundledDependencyOffenders.length > 0) {
+if (runtimeDependencyOffenders.length > 0) {
 	console.error(
-		`${rootName} is public but declares bundled workspace packages as install-time dependencies:`,
+		`${rootName} is public but declares vendored runtime workspace packages as install-time dependencies:`,
 	);
-	for (const offender of bundledDependencyOffenders.sort()) {
+	for (const offender of runtimeDependencyOffenders.sort()) {
 		console.error(`- ${offender}`);
 	}
 	console.error(
-		"Keep bundled workspace packages in bundleDependencies only so package managers do not resolve them from the registry; check-packed-bundled-workspaces verifies npm still packs them under node_modules.",
+		"Keep runtime workspace packages vendored under dist/node_modules only so package managers do not resolve them from the registry.",
 	);
 	process.exit(1);
 }

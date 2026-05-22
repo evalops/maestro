@@ -17,6 +17,14 @@ versioning when releases are cut.
   and keep scheduled public runs inert so public publishing stays downstream of
   the internal source-of-truth release.
 
+## [0.10.21] - 2026-05-22
+
+### Fixed
+
+- Vendor runtime workspaces under `dist/node_modules` so Bun and npm installs of
+  `@evalops/maestro` do not resolve unpublished `@evalops/contracts` or
+  `@evalops/tui` packages from the registry.
+
 ## [0.10.20] - 2026-05-22
 
 ### Changed
