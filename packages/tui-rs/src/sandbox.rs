@@ -1096,7 +1096,7 @@ mod linux {
             .map_err(|_| SandboxError::LandlockRestrict)?
             .add_rules(landlock::path_beneath_rules(&["/dev/null"], access_rw))
             .map_err(|_| SandboxError::LandlockRestrict)?
-            .set_no_new_privs(true);
+            .no_new_privs(true);
 
         if !writable_roots.is_empty() {
             ruleset = ruleset
