@@ -262,6 +262,8 @@ const REPO_PATH_ARGUMENTS_BY_TOOL = new Map<string, string[]>([
 
 const GIT_SCOPED_REUSABLE_TOOL_RESULT_KEY_PREFIX = "git:";
 const RUN_SCOPED_REUSABLE_TOOL_RESULT_KEY_PREFIX = "run:";
+// Keep network-backed READ_ONLY_TOOLS out of reusable caches even if metadata is absent.
+const NETWORK_BACKED_REUSABLE_TOOL_DENYLIST = new Set(["extract_document"]);
 
 const REQUIRED_REPO_PATH_ARGUMENT_TOOLS = new Set(["read", "ls", "list"]);
 
@@ -483,6 +485,9 @@ function getReusableToolResultCacheKey(
 	}
 	const toolName = tool.name.toLowerCase();
 	const cacheKey = `${toolCall.name}:${stableStringify(toolCall.arguments)}`;
+	if (NETWORK_BACKED_REUSABLE_TOOL_DENYLIST.has(toolName)) {
+		return undefined;
+	}
 	if (isGitSnapshotReusableToolCall(tool, toolCall, cwd)) {
 		return `${GIT_SCOPED_REUSABLE_TOOL_RESULT_KEY_PREFIX}${cacheKey}`;
 	}

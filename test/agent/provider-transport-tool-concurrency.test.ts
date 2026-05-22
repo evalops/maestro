@@ -3692,6 +3692,155 @@ describe("ProviderTransport tool scheduling", () => {
 		}
 	});
 
+	for (const toolName of ["search", "parallel_ripgrep"] as const) {
+		it(`does not reuse ${toolName} results when gitignore is bypassed`, async () => {
+			const tempDir = mkdtempSync(`${tmpdir()}/maestro-cache-no-ignore-`);
+			try {
+				execFileSync("git", ["init"], { cwd: tempDir, stdio: "ignore" });
+				writeFileSync(resolve(tempDir, ".gitignore"), "*.log\n");
+				execFileSync("git", ["add", ".gitignore"], {
+					cwd: tempDir,
+					stdio: "ignore",
+				});
+				execFileSync(
+					"git",
+					[
+						"-c",
+						"user.name=Maestro Test",
+						"-c",
+						"user.email=maestro@example.com",
+						"commit",
+						"-m",
+						"init",
+					],
+					{ cwd: tempDir, stdio: "ignore" },
+				);
+
+				let searchExecutionCount = 0;
+				const searchTool: AgentTool = {
+					name: toolName,
+					description: "Search probe that can include ignored files.",
+					parameters: Type.Object({
+						path: Type.String(),
+						useGitIgnore: Type.Boolean(),
+					}),
+					annotations: {
+						readOnlyHint: true,
+					},
+					execute: async (_toolCallId, args) => {
+						searchExecutionCount += 1;
+						return {
+							content: [
+								{
+									type: "text",
+									text: `${toolName}:${String(args.useGitIgnore)}:${searchExecutionCount}`,
+								},
+							],
+						};
+					},
+				};
+
+				let streamCount = 0;
+				mocks.createProviderStream.mockImplementation(async function* () {
+					streamCount += 1;
+					const call =
+						streamCount === 1
+							? {
+									id: `${toolName}-no-ignore-1`,
+									arguments: { path: ".", useGitIgnore: false },
+								}
+							: streamCount === 3
+								? {
+										id: `${toolName}-no-ignore-2`,
+										arguments: { path: ".", useGitIgnore: false },
+									}
+								: undefined;
+					if (call) {
+						const assistant = assistantMessage([], "toolUse");
+						yield {
+							type: "start",
+							partial: assistant,
+						} satisfies AssistantMessageEvent;
+						yield {
+							type: "toolcall_end",
+							toolCall: {
+								type: "toolCall",
+								id: call.id,
+								name: toolName,
+								arguments: call.arguments,
+							},
+							partial: assistant,
+						} satisfies AssistantMessageEvent;
+						yield {
+							type: "done",
+							reason: "toolUse",
+							message: assistant,
+						} satisfies AssistantMessageEvent;
+						return;
+					}
+
+					const assistant = assistantMessage(
+						[{ type: "text", text: `${toolName} no-ignore complete` }],
+						"stop",
+					);
+					yield {
+						type: "start",
+						partial: assistant,
+					} satisfies AssistantMessageEvent;
+					yield {
+						type: "done",
+						reason: "stop",
+						message: assistant,
+					} satisfies AssistantMessageEvent;
+				});
+
+				const transport = new ProviderTransport({
+					cwd: tempDir,
+					maxConcurrentToolExecutions: 4,
+					platformToolExecutionBridge: false,
+				});
+				const runTurn = (content: string) => {
+					const userMessage: Message = {
+						role: "user",
+						content,
+						timestamp: Date.now(),
+					};
+					return drain(
+						transport.run([userMessage], userMessage, {
+							systemPrompt: "Use the requested tools.",
+							tools: [searchTool],
+							model,
+						}),
+					);
+				};
+
+				const firstEvents = await runTurn("Search ignored files.");
+				writeFileSync(resolve(tempDir, "app.log"), "ignored\n");
+				const secondEvents = await runTurn("Search ignored files again.");
+				const toolResultsById = new Map(
+					[...firstEvents, ...secondEvents]
+						.filter(
+							(
+								event,
+							): event is Extract<AgentEvent, { type: "tool_execution_end" }> =>
+								event.type === "tool_execution_end",
+						)
+						.map((event) => [event.toolCallId, event]),
+				);
+
+				expect(searchExecutionCount).toBe(2);
+				expect(
+					toolResultsById.get(`${toolName}-no-ignore-1`)?.scheduling?.cache,
+				).toBe("disabled");
+				expect(
+					toolResultsById.get(`${toolName}-no-ignore-2`)?.scheduling?.cache,
+				).toBe("disabled");
+			} finally {
+				rmSync(tempDir, { recursive: true, force: true });
+			}
+		});
+	}
+
 	it("reuses adjacent-turn read results for visible repo paths", async () => {
 		const tempDir = mkdtempSync(`${tmpdir()}/maestro-cache-visible-`);
 		try {
@@ -4478,6 +4627,107 @@ describe("ProviderTransport tool scheduling", () => {
 			"disabled",
 		);
 		expect(toolResultsById.get("api-read-2")?.scheduling?.cache).toBe(
+			"disabled",
+		);
+	});
+
+	it("does not reuse network-backed built-in read-only results inside a run", async () => {
+		let extractExecutionCount = 0;
+		const extractDocumentTool = {
+			name: "extract_document",
+			description: "Fetch a remote document and extract text.",
+			parameters: Type.Object({ url: Type.String() }),
+			execute: async (_toolCallId: string, args: Record<string, unknown>) => {
+				extractExecutionCount += 1;
+				return {
+					content: [
+						{
+							type: "text" as const,
+							text: `document:${String(args.url)}:${extractExecutionCount}`,
+						},
+					],
+				};
+			},
+		} satisfies AgentTool;
+
+		let streamCount = 0;
+		mocks.createProviderStream.mockImplementation(async function* () {
+			streamCount += 1;
+			if (streamCount === 1) {
+				const assistant = assistantMessage([], "toolUse");
+				yield {
+					type: "start",
+					partial: assistant,
+				} satisfies AssistantMessageEvent;
+				for (const id of ["extract-1", "extract-2"]) {
+					yield {
+						type: "toolcall_end",
+						toolCall: {
+							type: "toolCall",
+							id,
+							name: "extract_document",
+							arguments: { url: "https://example.test/doc.pdf" },
+						},
+						partial: assistant,
+					} satisfies AssistantMessageEvent;
+				}
+				yield {
+					type: "done",
+					reason: "toolUse",
+					message: assistant,
+				} satisfies AssistantMessageEvent;
+				return;
+			}
+
+			const assistant = assistantMessage(
+				[{ type: "text", text: "documents complete" }],
+				"stop",
+			);
+			yield {
+				type: "start",
+				partial: assistant,
+			} satisfies AssistantMessageEvent;
+			yield {
+				type: "done",
+				reason: "stop",
+				message: assistant,
+			} satisfies AssistantMessageEvent;
+		});
+
+		const userMessage: Message = {
+			role: "user",
+			content: "Extract the same remote document twice.",
+			timestamp: Date.now(),
+		};
+		const transport = new ProviderTransport({
+			maxConcurrentToolExecutions: 4,
+			platformToolExecutionBridge: false,
+		});
+
+		const events = await drain(
+			transport.run([userMessage], userMessage, {
+				systemPrompt: "Use the requested tools.",
+				tools: [extractDocumentTool],
+				model,
+			}),
+		);
+
+		const toolResultsById = new Map(
+			events
+				.filter(
+					(
+						event,
+					): event is Extract<AgentEvent, { type: "tool_execution_end" }> =>
+						event.type === "tool_execution_end",
+				)
+				.map((event) => [event.toolCallId, event]),
+		);
+
+		expect(extractExecutionCount).toBe(2);
+		expect(toolResultsById.get("extract-1")?.scheduling?.cache).toBe(
+			"disabled",
+		);
+		expect(toolResultsById.get("extract-2")?.scheduling?.cache).toBe(
 			"disabled",
 		);
 	});

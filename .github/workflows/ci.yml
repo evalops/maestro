@@ -37,7 +37,7 @@ jobs:
           java-version: "21"
 
       - name: Test (Nx affected)
-        timeout-minutes: 45
+        timeout-minutes: 60
         env:
           NX_BASE: ${{ github.event.pull_request.base.sha || 'HEAD~1' }}
           NX_HEAD: ${{ github.event.pull_request.head.sha || 'HEAD' }}

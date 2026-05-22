@@ -81,12 +81,14 @@ describe("CLI command telemetry aggregator", () => {
 			clientVersion: "0.10.18",
 			bufferMs: 10_000,
 			bufferFile,
+			lockTimeoutMs: 0,
 			now: () => now,
 		});
 		const second = new CliCommandAggregator({
 			clientVersion: "0.10.18",
 			bufferMs: 10_000,
 			bufferFile,
+			lockTimeoutMs: 0,
 			now: () => now,
 		});
 

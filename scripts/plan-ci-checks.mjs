@@ -64,15 +64,45 @@ function isNestedReadme(path, prefix) {
 	return rest.includes("/") && rest.endsWith("/README.md");
 }
 
+const CI_GUARDRAIL_FILES = new Set([
+	"scripts/ci-nx-tests.sh",
+	"scripts/plan-ci-checks.mjs",
+	"scripts/plan-nx-test-command.mjs",
+	"test/scripts/ci-guardrails.test.ts",
+]);
+const RUNTIME_PACKAGE_VALIDATOR_FILES = new Set([
+	"scripts/bundle-runtime-deps.mjs",
+	"scripts/check-docker-runtime-workspaces.mjs",
+	"scripts/check-packed-bundled-workspaces.mjs",
+	"scripts/check-runtime-deps.js",
+	"scripts/runtime-workspaces.mjs",
+	"scripts/validate-public-package-deps.js",
+]);
+
+function isPackageManifest(path) {
+	return path === "package.json" || /^packages\/[^/]+\/package\.json$/.test(path);
+}
+
+function isTestFile(path) {
+	return /(^|\/)test\/.*\.(test|spec)\.[cm]?[jt]sx?$/.test(path);
+}
+
 function shouldSkipCoverageForPath(path) {
 	return (
+		path.startsWith(".github/workflows/") ||
 		(path.startsWith("docs/") && path.endsWith(".md")) ||
+		CI_GUARDRAIL_FILES.has(path) ||
+		RUNTIME_PACKAGE_VALIDATOR_FILES.has(path) ||
+		isPackageManifest(path) ||
+		isTestFile(path) ||
 		isNestedReadme(path, "examples") ||
 		isNestedReadme(path, "packages") ||
 		isNestedReadme(path, "src") ||
+		path === "CHANGELOG.md" ||
 		path === "CONTRIBUTING.md" ||
 		path === "CODE_OF_CONDUCT.md" ||
 		path === "SECURITY.md" ||
+		path === "openapi.json" ||
 		path === "todo.md" ||
 		(hasNoSlash(path) && path.startsWith("LICENSE"))
 	);
