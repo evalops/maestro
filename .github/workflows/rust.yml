@@ -45,19 +45,26 @@ jobs:
         run: cargo fmt --all -- --check
 
       - name: Run clippy
+        timeout-minutes: 30
         run: cargo clippy --all-targets --all-features -- -D warnings
 
       - name: Build
-        run: cargo build --release
+        timeout-minutes: 45
+        run: |
+          cargo clean --release
+          cargo build --release
 
       - name: Run all tests
+        timeout-minutes: 30
         run: cargo test --all-features -- --nocapture
 
       - name: Run hook integration tests
+        timeout-minutes: 15
         run: cargo test --test hooks_integration --all-features -- --nocapture
 
       - name: Test summary
         if: always()
+        timeout-minutes: 5
         run: |
           echo "## Test Results" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
