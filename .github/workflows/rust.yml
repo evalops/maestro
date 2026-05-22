@@ -51,12 +51,29 @@ jobs:
       - name: Build
         timeout-minutes: 45
         run: |
-          cargo clean --release
-          cargo build --release
+          cargo_bin="${CARGO_HOME:-$HOME/.cargo}/bin/cargo"
+          build_log="$(mktemp)"
+          status=0
+          set +e
+          set -o pipefail
+          "$cargo_bin" build --release 2>&1 | tee "$build_log"
+          status="$?"
+          set +o pipefail
+          if [ "$status" -ne 0 ] && grep -q "could not parse/generate dep info" "$build_log"; then
+            echo "::warning title=Rust release cache repair::cargo reported stale dep-info; cleaning release target and retrying once"
+            "$cargo_bin" clean --release
+            "$cargo_bin" build --release
+            status="$?"
+          fi
+          set -e
+          rm -f "$build_log"
+          exit "$status"
 
       - name: Run all tests
         timeout-minutes: 30
-        run: cargo test --all-features -- --nocapture
+        run: |
+          cargo_bin="${CARGO_HOME:-$HOME/.cargo}/bin/cargo"
+          "$cargo_bin" test --all-features -- --nocapture
 
       - name: Run hook integration tests
         timeout-minutes: 15
