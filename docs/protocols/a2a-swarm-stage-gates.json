@@ -1,0 +1,397 @@
+{
+	"protocolVersion": "evalops.maestro.a2a-swarm-stage-gates.v1",
+	"objective": "Deliver production-verifiable Platform-backed Maestro A2A swarm support with durable remote identity, discovery, delegation, task control, subagent routing, observability, signed evidence, and live external dereferencing.",
+	"globalInvariants": [
+		"Replay fixtures prove schema compatibility only and cannot satisfy exit evidence for production stages.",
+		"Every production claim must name the authoritative system of record and the command, query, or verifier that resolves it.",
+		"Live evidence must redact raw tokens and payloads while preserving enough stable identifiers for independent verification.",
+		"Stages advance in order; later stages may add evidence but cannot weaken prior-stage gates."
+	],
+	"stages": [
+		{
+			"id": "stage-0-integrity-foundation",
+			"title": "Integrity foundation",
+			"purpose": "Prevent local contract artifacts from being promoted as production proof and make live A2A evidence independently checkable.",
+			"dependsOn": [],
+			"entryEvidence": [
+				{
+					"id": "contract-fixture-gap-identified",
+					"proofClass": "gap-analysis",
+					"description": "Existing replay artifacts can emit the expected evidence shape but do not prove real GitHub, Platform, or deploy activity.",
+					"authoritativeSource": "Repository fixtures and PR review notes",
+					"verification": "Run npm run check:evidence-integrity and inspect flagged production-looking local identifiers before promotion."
+				},
+				{
+					"id": "live-proof-branch-open",
+					"proofClass": "pr-state",
+					"description": "The live-proof PR stack is open and scoped to evidence hardening rather than unrelated product changes.",
+					"authoritativeSource": "GitHub pull request state",
+					"verification": "gh pr view 2070 --repo evalops/maestro-internal --json headRefOid,baseRefName,statusCheckRollup"
+				}
+			],
+			"exitEvidence": [
+				{
+					"id": "guardian-blocks-synthetic-production-ids",
+					"proofClass": "precommit-guardrail",
+					"description": "Precommit and CI reject production-looking evidence that uses constructed SHAs, slug PR refs, local run ids, or replay-only proof ids.",
+					"authoritativeSource": "Maestro guardian hook and CI evidence-integrity check",
+					"verification": "npm run check:evidence-integrity && npm run test -- test/guardian/evidence-integrity.test.ts"
+				},
+				{
+					"id": "github-identifiers-dereference",
+					"proofClass": "live-identifier-dereference",
+					"description": "Live evidence verification can require GitHub Actions run ids and pull request numbers to resolve through the GitHub API.",
+					"authoritativeSource": "GitHub REST API",
+					"verification": "GITHUB_TOKEN=$GITHUB_TOKEN npm run platform:a2a-evidence-verify -- <evidence.json> --require-github-dereference"
+				},
+				{
+					"id": "evidence-bundle-signature",
+					"proofClass": "signed-evidence",
+					"description": "Live evidence bundles can be bound to an Ed25519 detached signature and trusted public-key fingerprint.",
+					"authoritativeSource": "Signed evidence sidecar and verifier output",
+					"verification": "MAESTRO_A2A_LIVE_EVIDENCE_VERIFY_PUBLIC_KEY_FILE=<public-key.pem> npm run platform:a2a-evidence-verify -- <evidence.json> --require-signature"
+				},
+				{
+					"id": "invalid-token-rejection",
+					"proofClass": "negative-auth",
+					"description": "The live smoke proves Platform Agent Registry peer discovery rejects an invalid token before happy-path delegation evidence is written.",
+					"authoritativeSource": "Platform Agent Registry authorization response",
+					"verification": "MAESTRO_A2A_LIVE_REQUIRE_INVALID_TOKEN_PROBE=true npm run platform:a2a-delegation-live"
+				}
+			]
+		},
+		{
+			"id": "stage-1-platform-identity-topology",
+			"title": "Platform identity and topology",
+			"purpose": "Make Platform the durable source of truth for two remote Maestro peers and their advertised A2A capabilities.",
+			"dependsOn": ["stage-0-integrity-foundation"],
+			"entryEvidence": [
+				{
+					"id": "integrity-gates-merged",
+					"proofClass": "prior-stage",
+					"description": "Stage 0 guardrails are merged, green, and active in CI before live topology evidence is trusted.",
+					"authoritativeSource": "GitHub PR merge state and CI checks",
+					"verification": "gh pr view 2070 --repo evalops/maestro-internal --json mergedAt,mergeCommit,statusCheckRollup"
+				},
+				{
+					"id": "two-remote-endpoints-ready",
+					"proofClass": "environment",
+					"description": "Two reachable Maestro A2A endpoints exist outside the local replay harness with distinct agent ids.",
+					"authoritativeSource": "Platform runner inventory and A2A Agent Card endpoints",
+					"verification": "maestro a2a discover --capability a2a:task --import && maestro a2a peers"
+				}
+			],
+			"exitEvidence": [
+				{
+					"id": "durable-agent-identities",
+					"proofClass": "identity",
+					"description": "Both remote Maestro instances register durable Platform agent ids with workspace, organization, endpoint, and capability metadata.",
+					"authoritativeSource": "Platform Agent Registry",
+					"verification": "maestro a2a discover --capability a2a:task --skill maestro.subagent.code-review --import"
+				},
+				{
+					"id": "eligible-peer-discovery",
+					"proofClass": "peer-discovery",
+					"description": "Platform discovery returns both peers only when capability, workspace, organization, and A2A dispatch filters match.",
+					"authoritativeSource": "Platform Agent Registry discovery API",
+					"verification": "npm run platform:a2a-delegation-live with MAESTRO_A2A_LIVE_FROM_AGENT_ID and MAESTRO_A2A_LIVE_TO_AGENT_ID set"
+				},
+				{
+					"id": "fresh-heartbeats",
+					"proofClass": "heartbeat",
+					"description": "Both peers expose fresh heartbeat timestamps and Agent Card observation timestamps within the configured freshness window.",
+					"authoritativeSource": "Platform Agent Registry heartbeat state",
+					"verification": "MAESTRO_A2A_LIVE_MAX_HEARTBEAT_AGE_MS=900000 npm run platform:a2a-delegation-live"
+				},
+				{
+					"id": "topology-audit-visible",
+					"proofClass": "audit",
+					"description": "Operator-visible topology shows peer identity, capabilities, endpoint kind, capacity, and last-seen state without exposing tokens.",
+					"authoritativeSource": "Platform audit or operator topology surface",
+					"verification": "Capture the Platform topology/audit record ids in the signed evidence bundle and verify the redaction fields."
+				}
+			]
+		},
+		{
+			"id": "stage-2-remote-delegation-task-control",
+			"title": "Remote delegation and task control",
+			"purpose": "Prove Maestro A can delegate work to Maestro B through Platform and control the resulting task lifecycle.",
+			"dependsOn": ["stage-1-platform-identity-topology"],
+			"entryEvidence": [
+				{
+					"id": "registered-peers-fresh",
+					"proofClass": "prior-stage",
+					"description": "Stage 1 identity, discovery, heartbeat, and audit evidence is current for the two participating peers.",
+					"authoritativeSource": "Signed Stage 1 evidence bundle",
+					"verification": "npm run platform:a2a-evidence-verify -- <stage-1-evidence.json> --require-signature --require-negative-auth-probe"
+				},
+				{
+					"id": "delegation-skill-declared",
+					"proofClass": "capability",
+					"description": "The target peer advertises the required skill or capability before Platform accepts a delegation.",
+					"authoritativeSource": "Platform Agent Registry capability metadata",
+					"verification": "maestro a2a discover --skill maestro.subagent.code-review --capability code:review"
+				}
+			],
+			"exitEvidence": [
+				{
+					"id": "platform-delegation-created",
+					"proofClass": "delegation",
+					"description": "Platform creates a durable delegation id that links from-agent id, to-agent id, workspace, skill, prompt hash, and remote task id.",
+					"authoritativeSource": "Platform Agent Registry Delegate response",
+					"verification": "npm run platform:a2a-delegation-live and inspect evidence.delegation.id plus evidence.delegation.a2aTaskId"
+				},
+				{
+					"id": "task-lifecycle-observed",
+					"proofClass": "task-lifecycle",
+					"description": "The remote A2A task is fetched from the target peer and reaches a terminal or explicitly configured nonterminal observation state.",
+					"authoritativeSource": "Target Maestro A2A task endpoint",
+					"verification": "npm run platform:a2a-delegation-live with MAESTRO_A2A_LIVE_REQUIRE_TERMINAL_TASK=true"
+				},
+				{
+					"id": "control-command-recorded",
+					"proofClass": "task-control",
+					"description": "A Platform-owned control probe records mode, task id, optional control id, queue state, and observed task state.",
+					"authoritativeSource": "Platform A2A delegation task-control API",
+					"verification": "Inspect evidence.control.mode, evidence.control.taskId, and evidence.control.observedAt in the signed bundle."
+				},
+				{
+					"id": "platform-only-routing",
+					"proofClass": "no-side-channel",
+					"description": "The proof path uses Platform discovery, delegate, graph, control, and task observations rather than a hand-edited peer registry or private relay.",
+					"authoritativeSource": "Smoke command environment and trace spans",
+					"verification": "Verify the evidence.platformEndpoint, graph nodes, trace spans, and absence of local peer-registry-only proof in the bundle."
+				}
+			]
+		},
+		{
+			"id": "stage-3-subagent-federation",
+			"title": "Subagent federation",
+			"purpose": "Let a remote Maestro expose governed subagent lanes that another Maestro can invoke through the Platform A2A boundary.",
+			"dependsOn": ["stage-2-remote-delegation-task-control"],
+			"entryEvidence": [
+				{
+					"id": "remote-delegation-green",
+					"proofClass": "prior-stage",
+					"description": "A signed Stage 2 bundle proves remote delegation and task control for the same workspace.",
+					"authoritativeSource": "Signed Stage 2 evidence bundle",
+					"verification": "npm run platform:a2a-evidence-verify -- <stage-2-evidence.json> --require-signature --require-github-dereference --require-negative-auth-probe"
+				},
+				{
+					"id": "subagent-lanes-declared",
+					"proofClass": "capability",
+					"description": "The target Maestro advertises subagent lanes with stable ids, skill ids, input schema, policy, and ownership semantics.",
+					"authoritativeSource": "Platform capability market or Agent Registry metadata",
+					"verification": "maestro a2a discover --skill maestro.subagent.code-review --capability subagent:invoke"
+				}
+			],
+			"exitEvidence": [
+				{
+					"id": "remote-subagent-invoked",
+					"proofClass": "subagent-routing",
+					"description": "The origin Maestro invokes a named subagent lane on the target Maestro through Platform and receives a child-run handle.",
+					"authoritativeSource": "Platform AgentRuntime child-run or delegation graph",
+					"verification": "Inspect graph child nodes for childRunId, subagentLaneId, parentDelegationId, and rootDelegationId."
+				},
+				{
+					"id": "capabilities-negotiated",
+					"proofClass": "capability-negotiation",
+					"description": "The subagent call records requested capability, granted capability, fallback decision, and rejected unsupported modes.",
+					"authoritativeSource": "Platform capability negotiation record",
+					"verification": "Verify capability negotiation fields in the signed evidence bundle and targeted negative test output."
+				},
+				{
+					"id": "subagent-authorization-enforced",
+					"proofClass": "authorization",
+					"description": "Cross-peer subagent invocation fails closed when the origin lacks the required workspace, capability, or policy grant.",
+					"authoritativeSource": "Platform authorization response and negative auth trace",
+					"verification": "Run the subagent federation negative-auth smoke and verify the denial trace id is present."
+				},
+				{
+					"id": "subagent-provenance-preserved",
+					"proofClass": "provenance",
+					"description": "Every child result includes parent task, remote peer, subagent lane, tool/evidence refs, and redaction-safe artifact ids.",
+					"authoritativeSource": "Platform AgentRuntime provenance chain",
+					"verification": "Verify the child-run provenance chain from root delegation to final artifact in Platform traces."
+				}
+			]
+		},
+		{
+			"id": "stage-4-swarm-coordination",
+			"title": "Swarm coordination",
+			"purpose": "Coordinate multiple Maestro instances so work can be split, owned, recovered, and reconciled into one coherent outcome.",
+			"dependsOn": ["stage-3-subagent-federation"],
+			"entryEvidence": [
+				{
+					"id": "subagent-federation-green",
+					"proofClass": "prior-stage",
+					"description": "Stage 3 proves remote subagent invocation, negotiation, authZ, and provenance for the swarm participants.",
+					"authoritativeSource": "Signed Stage 3 evidence bundle",
+					"verification": "Verify Stage 3 evidence signature, trace ids, child-run ids, and authorization denial ids."
+				},
+				{
+					"id": "shared-work-graph-enabled",
+					"proofClass": "environment",
+					"description": "Platform can store a shared work graph with root task, child tasks, ownership claims, dependencies, and outcome refs.",
+					"authoritativeSource": "Platform AgentRuntime work graph API",
+					"verification": "Create a dry-run work graph and verify the returned root work id and child lane ids resolve through Platform."
+				}
+			],
+			"exitEvidence": [
+				{
+					"id": "work-split-recorded",
+					"proofClass": "swarm-planning",
+					"description": "The root Maestro records a plan that splits a real task into remote child lanes with dependencies and acceptance gates.",
+					"authoritativeSource": "Platform AgentRuntime work graph",
+					"verification": "Inspect the root work graph for split decisions, child assignments, dependency edges, and acceptance gates."
+				},
+				{
+					"id": "exclusive-ownership-enforced",
+					"proofClass": "ownership",
+					"description": "Each file, task, external action, or PR lane has a single active owner or an explicit handoff record.",
+					"authoritativeSource": "Platform ownership ledger",
+					"verification": "Query ownership claims and verify no active overlapping claims exist for the same protected resource."
+				},
+				{
+					"id": "worker-failure-recovered",
+					"proofClass": "failure-recovery",
+					"description": "A remote worker failure, timeout, or drain produces reassignment or graceful degradation with preserved evidence.",
+					"authoritativeSource": "Platform AgentRuntime recovery events",
+					"verification": "Run the swarm failure smoke and verify reassignment, terminal state, and recovered artifact refs."
+				},
+				{
+					"id": "final-outcome-reconciled",
+					"proofClass": "outcome-reconciliation",
+					"description": "The root Maestro reconciles child outputs into one final answer, branch, PR, or deploy decision with traceable sources.",
+					"authoritativeSource": "Platform outcome ledger and GitHub PR state",
+					"verification": "Inspect final outcome refs, merged child artifact ids, root trace id, and linked GitHub PR or deploy verifier ids."
+				}
+			]
+		},
+		{
+			"id": "stage-5-production-proof-operations",
+			"title": "Production proof and operations",
+			"purpose": "Run the full Platform-backed swarm path against live repos and deploy lanes with independently resolvable operational evidence.",
+			"dependsOn": ["stage-4-swarm-coordination"],
+			"entryEvidence": [
+				{
+					"id": "swarm-coordination-green",
+					"proofClass": "prior-stage",
+					"description": "Stage 4 proves multi-peer work split, ownership, recovery, and reconciliation with signed Platform evidence.",
+					"authoritativeSource": "Signed Stage 4 evidence bundle",
+					"verification": "Verify Stage 4 evidence signature, Platform trace ids, ownership ledger ids, and final outcome refs."
+				},
+				{
+					"id": "production-lane-selected",
+					"proofClass": "environment",
+					"description": "A real repository or deploy lane is selected with safe blast radius, review path, rollback path, and operator approval.",
+					"authoritativeSource": "GitHub issue or PR and deployment plan",
+					"verification": "Inspect the linked GitHub issue or PR body for scope, test plan, rollback plan, and approval state."
+				}
+			],
+			"exitEvidence": [
+				{
+					"id": "real-commit-sha",
+					"proofClass": "git-sha",
+					"description": "The evidence names a 40-hex commit SHA returned by git rev-parse for the branch that produced the PR.",
+					"authoritativeSource": "Git repository",
+					"verification": "git rev-parse HEAD && gh pr view <number> --repo <owner/repo> --json headRefOid"
+				},
+				{
+					"id": "real-github-pr",
+					"proofClass": "github-pr",
+					"description": "The proof links to a real integer GitHub pull request with review state, base/head refs, and merge status.",
+					"authoritativeSource": "GitHub Pull Requests API",
+					"verification": "gh pr view <number> --repo <owner/repo> --json number,url,state,mergedAt,reviewDecision"
+				},
+				{
+					"id": "real-actions-run",
+					"proofClass": "github-actions",
+					"description": "The proof links to a real GitHub Actions run id with job logs for required checks.",
+					"authoritativeSource": "GitHub Actions API",
+					"verification": "gh run view <run-id> --repo <owner/repo> --json databaseId,status,conclusion,jobs,url"
+				},
+				{
+					"id": "signed-production-evidence",
+					"proofClass": "signed-evidence",
+					"description": "The complete production evidence bundle is hash-linked, signed, and verifies with the trusted public key.",
+					"authoritativeSource": "Signed evidence sidecar and verifier output",
+					"verification": "npm run platform:a2a-evidence-verify -- <evidence.json> --require-signature --require-github-dereference --require-negative-auth-probe"
+				},
+				{
+					"id": "deploy-verifier-outcome",
+					"proofClass": "deploy-verifier",
+					"description": "If the task touches deployment, the deploy verifier records the observed revision, rollout status, and rollback evidence.",
+					"authoritativeSource": "Deploy verifier and GitOps repository state",
+					"verification": "Run the deploy verifier for the target lane and attach its dereferenceable outcome id to the evidence bundle."
+				},
+				{
+					"id": "operator-visible-traces",
+					"proofClass": "traces",
+					"description": "Operators can inspect root trace, child traces, task lifecycle, control events, GitHub refs, and deploy refs from the Platform UI or API.",
+					"authoritativeSource": "Platform trace store and operator UI",
+					"verification": "Open the root trace id and verify every child run and external ref resolves from the operator surface."
+				}
+			]
+		},
+		{
+			"id": "stage-6-fleet-hardening",
+			"title": "Fleet hardening",
+			"purpose": "Turn the proven end-to-end path into a durable fleet service with load, chaos, SLO, quota, retention, and incident evidence.",
+			"dependsOn": ["stage-5-production-proof-operations"],
+			"entryEvidence": [
+				{
+					"id": "production-proof-green",
+					"proofClass": "prior-stage",
+					"description": "Stage 5 proves a complete live repo or deploy-lane workflow with signed, dereferenceable evidence.",
+					"authoritativeSource": "Signed Stage 5 evidence bundle",
+					"verification": "Verify Stage 5 evidence signature, GitHub dereference, deploy-verifier output, and root Platform trace id."
+				},
+				{
+					"id": "fleet-capacity-targets-declared",
+					"proofClass": "environment",
+					"description": "Target concurrency, latency, failure budgets, data retention, and operator ownership are declared before hardening starts.",
+					"authoritativeSource": "Platform SLO document or service config",
+					"verification": "Inspect the service config or SLO document for concrete fleet-scale thresholds and owners."
+				}
+			],
+			"exitEvidence": [
+				{
+					"id": "load-soak-passes",
+					"proofClass": "load-soak",
+					"description": "A bounded load and soak test exercises concurrent peer discovery, delegation, subagent routing, control, and evidence writes.",
+					"authoritativeSource": "Load test report and Platform metrics",
+					"verification": "Run the fleet soak harness and verify p95 latency, error rate, and evidence-write success rate against SLO."
+				},
+				{
+					"id": "chaos-cases-pass",
+					"proofClass": "chaos",
+					"description": "Peer loss, stale heartbeat, auth failure, Platform transient failure, GitHub failure, and deploy verifier failure have tested recovery behavior.",
+					"authoritativeSource": "Chaos test report and recovery traces",
+					"verification": "Run the A2A swarm chaos suite and verify each injected fault has a terminal recovery or degraded outcome."
+				},
+				{
+					"id": "slos-alerts-dashboards",
+					"proofClass": "slo",
+					"description": "Fleet dashboards and alerts cover registration freshness, delegation latency, task terminal rate, auth failures, evidence verification failures, and queue depth.",
+					"authoritativeSource": "Platform observability dashboard and alert config",
+					"verification": "Inspect dashboard panels and alert rules, then attach their stable ids to the release evidence."
+				},
+				{
+					"id": "operator-playbook-ready",
+					"proofClass": "operator-runbook",
+					"description": "Operators have a playbook for stuck delegations, poisoned peers, key rotation, bad evidence, failed deploy verification, and rollback.",
+					"authoritativeSource": "Operator runbook repository",
+					"verification": "Run the playbook checklist against a staging incident and link the checklist result to the hardening evidence."
+				},
+				{
+					"id": "quota-retention-enforced",
+					"proofClass": "quota-retention",
+					"description": "Workspace quotas, per-peer limits, evidence retention, signature key rotation, and redaction retention policies are enforced.",
+					"authoritativeSource": "Platform policy engine and retention jobs",
+					"verification": "Run policy probes for over-quota delegation, expired evidence lookup, and retired signature key verification."
+				}
+			]
+		}
+	]
+}

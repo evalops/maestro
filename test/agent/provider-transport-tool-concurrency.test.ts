@@ -1,3 +1,6 @@
+import { execFileSync } from "node:child_process";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { performance } from "node:perf_hooks";
 import { Type } from "@sinclair/typebox";
@@ -1182,6 +1185,144 @@ describe("ProviderTransport tool scheduling", () => {
 		expect(mutationOverlapCount).toBe(0);
 		expect(earliestVerifyStart).toBeGreaterThanOrEqual(commitRecord.endedAt);
 		expectStartedBeforeFirstEnd(verifyRecords, "verify");
+	});
+
+	it("does not reuse read-only MCP results across adjacent user turns", async () => {
+		let readExecutionCount = 0;
+		const remoteReadTool = {
+			name: "mcp__remote__read",
+			description: "Remote read-only probe.",
+			parameters: Type.Object({ key: Type.String() }),
+			annotations: {
+				readOnlyHint: true,
+			},
+			source: {
+				type: "mcp",
+				server: "remote",
+				tool: "read",
+				supportsParallelToolCalls: true,
+			},
+			execute: async (_toolCallId: string, args: Record<string, unknown>) => {
+				readExecutionCount += 1;
+				return {
+					content: [
+						{
+							type: "text",
+							text: `remote:${String(args.key)}:${readExecutionCount}`,
+						},
+					],
+				};
+			},
+		} satisfies AgentTool & {
+			source: {
+				type: "mcp";
+				server: string;
+				tool: string;
+				supportsParallelToolCalls: boolean;
+			};
+		};
+
+		let streamCount = 0;
+		mocks.createProviderStream.mockImplementation(async function* () {
+			streamCount += 1;
+			const calls =
+				streamCount === 1
+					? [
+							{
+								id: "remote-read-1",
+								name: "mcp__remote__read",
+								arguments: { key: "same" },
+							},
+						]
+					: streamCount === 3
+						? [
+								{
+									id: "remote-read-2",
+									name: "mcp__remote__read",
+									arguments: { key: "same" },
+								},
+							]
+						: undefined;
+			if (calls) {
+				const assistant = assistantMessage([], "toolUse");
+				yield {
+					type: "start",
+					partial: assistant,
+				} satisfies AssistantMessageEvent;
+				for (const call of calls) {
+					yield {
+						type: "toolcall_end",
+						toolCall: {
+							type: "toolCall",
+							id: call.id,
+							name: call.name,
+							arguments: call.arguments,
+						},
+						partial: assistant,
+					} satisfies AssistantMessageEvent;
+				}
+				yield {
+					type: "done",
+					reason: "toolUse",
+					message: assistant,
+				} satisfies AssistantMessageEvent;
+				return;
+			}
+
+			const assistant = assistantMessage(
+				[{ type: "text", text: "remote read turn complete" }],
+				"stop",
+			);
+			yield {
+				type: "start",
+				partial: assistant,
+			} satisfies AssistantMessageEvent;
+			yield {
+				type: "done",
+				reason: "stop",
+				message: assistant,
+			} satisfies AssistantMessageEvent;
+		});
+
+		const transport = new ProviderTransport({
+			maxConcurrentToolExecutions: 4,
+			platformToolExecutionBridge: false,
+		});
+		const runTurn = (content: string) => {
+			const userMessage: Message = {
+				role: "user",
+				content,
+				timestamp: Date.now(),
+			};
+			return drain(
+				transport.run([userMessage], userMessage, {
+					systemPrompt: "Use the requested tools.",
+					tools: [remoteReadTool],
+					model,
+				}),
+			);
+		};
+
+		const firstEvents = await runTurn("Read remote state.");
+		const secondEvents = await runTurn("Read remote state again.");
+		const toolResultsById = new Map(
+			[...firstEvents, ...secondEvents]
+				.filter(
+					(
+						event,
+					): event is Extract<AgentEvent, { type: "tool_execution_end" }> =>
+						event.type === "tool_execution_end",
+				)
+				.map((event) => [event.toolCallId, event]),
+		);
+
+		expect(readExecutionCount).toBe(2);
+		expect(toolResultsById.get("remote-read-1")?.scheduling?.cache).toBe(
+			"disabled",
+		);
+		expect(toolResultsById.get("remote-read-2")?.scheduling?.cache).toBe(
+			"disabled",
+		);
 	});
 
 	it("preserves configured concurrency cap for parallel-safe MCP mutations", async () => {
@@ -2768,9 +2909,9 @@ describe("ProviderTransport tool scheduling", () => {
 		let writeExecutionCount = 0;
 
 		const readProbeTool: AgentTool = {
-			name: "cacheable_read_probe",
-			description: "Cacheable read-only probe.",
-			parameters: Type.Object({ key: Type.String() }),
+			name: "read",
+			description: "Cacheable repo read probe.",
+			parameters: Type.Object({ path: Type.String() }),
 			annotations: {
 				readOnlyHint: true,
 			},
@@ -2781,7 +2922,7 @@ describe("ProviderTransport tool scheduling", () => {
 					content: [
 						{
 							type: "text",
-							text: `read:${String(args.key)}:${readExecutionCount}`,
+							text: `read:${String(args.path)}:${readExecutionCount}`,
 						},
 					],
 				};
@@ -2818,15 +2959,15 @@ describe("ProviderTransport tool scheduling", () => {
 				1: [
 					{
 						id: "read-1",
-						name: "cacheable_read_probe",
-						arguments: { key: "same" },
+						name: "read",
+						arguments: { path: "same.txt" },
 					},
 				],
 				2: [
 					{
 						id: "read-2",
-						name: "cacheable_read_probe",
-						arguments: { key: "same" },
+						name: "read",
+						arguments: { path: "same.txt" },
 					},
 				],
 				3: [
@@ -2837,15 +2978,15 @@ describe("ProviderTransport tool scheduling", () => {
 					},
 					{
 						id: "read-3",
-						name: "cacheable_read_probe",
-						arguments: { key: "same" },
+						name: "read",
+						arguments: { path: "same.txt" },
 					},
 				],
 				4: [
 					{
 						id: "read-4",
-						name: "cacheable_read_probe",
-						arguments: { key: "same" },
+						name: "read",
+						arguments: { path: "same.txt" },
 					},
 				],
 			};
@@ -2925,6 +3066,1680 @@ describe("ProviderTransport tool scheduling", () => {
 		expect(toolResultsById.get("read-2")?.scheduling?.reason).toBe("cache_hit");
 		expect(toolResultsById.get("read-3")?.scheduling?.cache).toBe("miss");
 		expect(toolResultsById.get("read-4")?.scheduling?.cache).toBe("hit");
+	});
+
+	it("reuses read-only results across adjacent user turns and invalidates after mutation", async () => {
+		let readExecutionCount = 0;
+		let writeExecutionCount = 0;
+		const readProbeTool: AgentTool = {
+			name: "read",
+			description: "Adjacent-turn cacheable repo read probe.",
+			parameters: Type.Object({ path: Type.String() }),
+			annotations: {
+				readOnlyHint: true,
+			},
+			execute: async (_toolCallId, args) => {
+				readExecutionCount += 1;
+				return {
+					content: [
+						{
+							type: "text",
+							text: `read:${String(args.path)}:${readExecutionCount}`,
+						},
+					],
+				};
+			},
+		};
+		const writeProbeTool: AgentTool = {
+			name: "adjacent_cache_write",
+			description: "Mutation probe that invalidates adjacent-turn cache.",
+			parameters: Type.Object({ label: Type.String() }),
+			annotations: {
+				readOnlyHint: false,
+				destructiveHint: true,
+			},
+			execute: async (_toolCallId, args) => {
+				writeExecutionCount += 1;
+				return {
+					content: [{ type: "text", text: `write:${String(args.label)}` }],
+				};
+			},
+		};
+
+		let streamCount = 0;
+		mocks.createProviderStream.mockImplementation(async function* () {
+			streamCount += 1;
+			const toolUseTurns: Record<
+				number,
+				Array<{
+					id: string;
+					name: string;
+					arguments: Record<string, unknown>;
+				}>
+			> = {
+				1: [
+					{
+						id: "adjacent-read-1",
+						name: "read",
+						arguments: { path: "same.txt" },
+					},
+				],
+				3: [
+					{
+						id: "adjacent-read-2",
+						name: "read",
+						arguments: { path: "same.txt" },
+					},
+				],
+				5: [
+					{
+						id: "adjacent-write-1",
+						name: "adjacent_cache_write",
+						arguments: { label: "invalidate" },
+					},
+				],
+				7: [
+					{
+						id: "adjacent-read-3",
+						name: "read",
+						arguments: { path: "same.txt" },
+					},
+				],
+			};
+			const calls = toolUseTurns[streamCount];
+			if (calls) {
+				const assistant = assistantMessage([], "toolUse");
+				yield {
+					type: "start",
+					partial: assistant,
+				} satisfies AssistantMessageEvent;
+				for (const call of calls) {
+					yield {
+						type: "toolcall_end",
+						toolCall: {
+							type: "toolCall",
+							id: call.id,
+							name: call.name,
+							arguments: call.arguments,
+						},
+						partial: assistant,
+					} satisfies AssistantMessageEvent;
+				}
+				yield {
+					type: "done",
+					reason: "toolUse",
+					message: assistant,
+				} satisfies AssistantMessageEvent;
+				return;
+			}
+
+			const assistant = assistantMessage(
+				[{ type: "text", text: "adjacent cache turn complete" }],
+				"stop",
+			);
+			yield {
+				type: "start",
+				partial: assistant,
+			} satisfies AssistantMessageEvent;
+			yield {
+				type: "done",
+				reason: "stop",
+				message: assistant,
+			} satisfies AssistantMessageEvent;
+		});
+
+		const transport = new ProviderTransport({
+			maxConcurrentToolExecutions: 4,
+			platformToolExecutionBridge: false,
+		});
+		const tools = [readProbeTool, writeProbeTool];
+		const runTurn = (content: string) => {
+			const userMessage: Message = {
+				role: "user",
+				content,
+				timestamp: Date.now(),
+			};
+			return drain(
+				transport.run([userMessage], userMessage, {
+					systemPrompt: "Use the requested tools.",
+					tools,
+					model,
+				}),
+			);
+		};
+
+		const firstEvents = await runTurn("Read the same key.");
+		const secondEvents = await runTurn("Read the same key again.");
+		const mutationEvents = await runTurn("Mutate state.");
+		const thirdReadEvents = await runTurn("Read the same key after mutation.");
+
+		const toolResultsById = new Map(
+			[...firstEvents, ...secondEvents, ...mutationEvents, ...thirdReadEvents]
+				.filter(
+					(
+						event,
+					): event is Extract<AgentEvent, { type: "tool_execution_end" }> =>
+						event.type === "tool_execution_end",
+				)
+				.map((event) => [event.toolCallId, event]),
+		);
+
+		expect(readExecutionCount).toBe(2);
+		expect(writeExecutionCount).toBe(1);
+		expect(toolResultsById.get("adjacent-read-1")?.scheduling?.cache).toBe(
+			"miss",
+		);
+		expect(toolResultsById.get("adjacent-read-2")?.scheduling?.cache).toBe(
+			"hit",
+		);
+		expect(toolResultsById.get("adjacent-read-2")?.scheduling?.reason).toBe(
+			"cache_hit",
+		);
+		expect(toolResultsById.get("adjacent-write-1")?.scheduling?.cache).toBe(
+			"disabled",
+		);
+		expect(toolResultsById.get("adjacent-read-3")?.scheduling?.cache).toBe(
+			"miss",
+		);
+	});
+
+	it("clears adjacent-turn cache when the tool registry changes", async () => {
+		let firstReadExecutionCount = 0;
+		let secondReadExecutionCount = 0;
+		const makeReadProbeTool = (
+			label: string,
+			onExecute: () => number,
+		): AgentTool => ({
+			name: "read",
+			description: `Registry-sensitive ${label} read probe.`,
+			parameters: Type.Object({ path: Type.String() }),
+			annotations: {
+				readOnlyHint: true,
+			},
+			execute: async (_toolCallId, args) => {
+				const count = onExecute();
+				return {
+					content: [
+						{
+							type: "text",
+							text: `${label}:${String(args.path)}:${count}`,
+						},
+					],
+				};
+			},
+		});
+		const firstReadProbeTool = makeReadProbeTool("first", () => {
+			firstReadExecutionCount += 1;
+			return firstReadExecutionCount;
+		});
+		const secondReadProbeTool = makeReadProbeTool("second", () => {
+			secondReadExecutionCount += 1;
+			return secondReadExecutionCount;
+		});
+
+		let streamCount = 0;
+		mocks.createProviderStream.mockImplementation(async function* () {
+			streamCount += 1;
+			const toolUseTurns: Record<
+				number,
+				Array<{
+					id: string;
+					name: string;
+					arguments: Record<string, unknown>;
+				}>
+			> = {
+				1: [
+					{
+						id: "registry-read-1",
+						name: "read",
+						arguments: { path: "same.txt" },
+					},
+				],
+				3: [
+					{
+						id: "registry-read-2",
+						name: "read",
+						arguments: { path: "same.txt" },
+					},
+				],
+			};
+			const calls = toolUseTurns[streamCount];
+			if (calls) {
+				const assistant = assistantMessage([], "toolUse");
+				yield {
+					type: "start",
+					partial: assistant,
+				} satisfies AssistantMessageEvent;
+				for (const call of calls) {
+					yield {
+						type: "toolcall_end",
+						toolCall: {
+							type: "toolCall",
+							id: call.id,
+							name: call.name,
+							arguments: call.arguments,
+						},
+						partial: assistant,
+					} satisfies AssistantMessageEvent;
+				}
+				yield {
+					type: "done",
+					reason: "toolUse",
+					message: assistant,
+				} satisfies AssistantMessageEvent;
+				return;
+			}
+
+			const assistant = assistantMessage(
+				[{ type: "text", text: "registry cache turn complete" }],
+				"stop",
+			);
+			yield {
+				type: "start",
+				partial: assistant,
+			} satisfies AssistantMessageEvent;
+			yield {
+				type: "done",
+				reason: "stop",
+				message: assistant,
+			} satisfies AssistantMessageEvent;
+		});
+
+		const transport = new ProviderTransport({
+			maxConcurrentToolExecutions: 4,
+			platformToolExecutionBridge: false,
+		});
+		const runTurn = (tool: AgentTool, content: string) => {
+			const userMessage: Message = {
+				role: "user",
+				content,
+				timestamp: Date.now(),
+			};
+			return drain(
+				transport.run([userMessage], userMessage, {
+					systemPrompt: "Use the requested tool.",
+					tools: [tool],
+					model,
+				}),
+			);
+		};
+
+		const firstEvents = await runTurn(firstReadProbeTool, "Read the same key.");
+		const secondEvents = await runTurn(
+			secondReadProbeTool,
+			"Read the same key with a new tool definition.",
+		);
+
+		const toolResultsById = new Map(
+			[...firstEvents, ...secondEvents]
+				.filter(
+					(
+						event,
+					): event is Extract<AgentEvent, { type: "tool_execution_end" }> =>
+						event.type === "tool_execution_end",
+				)
+				.map((event) => [event.toolCallId, event]),
+		);
+
+		expect(firstReadExecutionCount).toBe(1);
+		expect(secondReadExecutionCount).toBe(1);
+		expect(toolResultsById.get("registry-read-1")?.scheduling?.cache).toBe(
+			"miss",
+		);
+		expect(toolResultsById.get("registry-read-2")?.scheduling?.cache).toBe(
+			"miss",
+		);
+		expect(toolResultsById.get("registry-read-2")?.result.content).toEqual([
+			{ type: "text", text: "second:same.txt:1" },
+		]);
+	});
+
+	it("does not reuse adjacent-turn read results for git-ignored paths", async () => {
+		const tempDir = mkdtempSync(`${tmpdir()}/maestro-cache-ignored-`);
+		try {
+			execFileSync("git", ["init"], { cwd: tempDir, stdio: "ignore" });
+			writeFileSync(resolve(tempDir, ".gitignore"), ".env\n");
+			execFileSync("git", ["add", ".gitignore"], {
+				cwd: tempDir,
+				stdio: "ignore",
+			});
+			execFileSync(
+				"git",
+				[
+					"-c",
+					"user.name=Maestro Test",
+					"-c",
+					"user.email=maestro@example.com",
+					"commit",
+					"-m",
+					"init",
+				],
+				{ cwd: tempDir, stdio: "ignore" },
+			);
+			writeFileSync(resolve(tempDir, ".env"), "first");
+
+			let readExecutionCount = 0;
+			const readProbeTool: AgentTool = {
+				name: "read",
+				description: "Adjacent-turn ignored repo read probe.",
+				parameters: Type.Object({ path: Type.String() }),
+				annotations: {
+					readOnlyHint: true,
+				},
+				execute: async (_toolCallId, args) => {
+					readExecutionCount += 1;
+					return {
+						content: [
+							{
+								type: "text",
+								text: `ignored:${String(args.path)}:${readExecutionCount}`,
+							},
+						],
+					};
+				},
+			};
+
+			let streamCount = 0;
+			mocks.createProviderStream.mockImplementation(async function* () {
+				streamCount += 1;
+				const call =
+					streamCount === 1
+						? {
+								id: "ignored-read-1",
+								name: "read",
+								arguments: { path: ".env" },
+							}
+						: streamCount === 3
+							? {
+									id: "ignored-read-2",
+									name: "read",
+									arguments: { path: ".env" },
+								}
+							: undefined;
+				if (call) {
+					const assistant = assistantMessage([], "toolUse");
+					yield {
+						type: "start",
+						partial: assistant,
+					} satisfies AssistantMessageEvent;
+					yield {
+						type: "toolcall_end",
+						toolCall: {
+							type: "toolCall",
+							id: call.id,
+							name: call.name,
+							arguments: call.arguments,
+						},
+						partial: assistant,
+					} satisfies AssistantMessageEvent;
+					yield {
+						type: "done",
+						reason: "toolUse",
+						message: assistant,
+					} satisfies AssistantMessageEvent;
+					return;
+				}
+
+				const assistant = assistantMessage(
+					[{ type: "text", text: "ignored cache turn complete" }],
+					"stop",
+				);
+				yield {
+					type: "start",
+					partial: assistant,
+				} satisfies AssistantMessageEvent;
+				yield {
+					type: "done",
+					reason: "stop",
+					message: assistant,
+				} satisfies AssistantMessageEvent;
+			});
+
+			const transport = new ProviderTransport({
+				cwd: tempDir,
+				maxConcurrentToolExecutions: 4,
+				platformToolExecutionBridge: false,
+			});
+			const runTurn = (content: string) => {
+				const userMessage: Message = {
+					role: "user",
+					content,
+					timestamp: Date.now(),
+				};
+				return drain(
+					transport.run([userMessage], userMessage, {
+						systemPrompt: "Use the requested tools.",
+						tools: [readProbeTool],
+						model,
+					}),
+				);
+			};
+
+			const firstEvents = await runTurn("Read the ignored file.");
+			writeFileSync(resolve(tempDir, ".env"), "second");
+			const secondEvents = await runTurn("Read the ignored file again.");
+
+			const toolResultsById = new Map(
+				[...firstEvents, ...secondEvents]
+					.filter(
+						(
+							event,
+						): event is Extract<AgentEvent, { type: "tool_execution_end" }> =>
+							event.type === "tool_execution_end",
+					)
+					.map((event) => [event.toolCallId, event]),
+			);
+
+			expect(readExecutionCount).toBe(2);
+			expect(toolResultsById.get("ignored-read-1")?.scheduling?.cache).toBe(
+				"disabled",
+			);
+			expect(toolResultsById.get("ignored-read-2")?.scheduling?.cache).toBe(
+				"disabled",
+			);
+		} finally {
+			rmSync(tempDir, { recursive: true, force: true });
+		}
+	});
+
+	it("does not reuse status results when ignored entries are requested", async () => {
+		const tempDir = mkdtempSync(`${tmpdir()}/maestro-cache-status-ignored-`);
+		try {
+			execFileSync("git", ["init"], { cwd: tempDir, stdio: "ignore" });
+			writeFileSync(resolve(tempDir, ".gitignore"), "*.log\n");
+			execFileSync("git", ["add", ".gitignore"], {
+				cwd: tempDir,
+				stdio: "ignore",
+			});
+			execFileSync(
+				"git",
+				[
+					"-c",
+					"user.name=Maestro Test",
+					"-c",
+					"user.email=maestro@example.com",
+					"commit",
+					"-m",
+					"init",
+				],
+				{ cwd: tempDir, stdio: "ignore" },
+			);
+
+			let statusExecutionCount = 0;
+			const statusTool: AgentTool = {
+				name: "status",
+				description: "Status probe that can include ignored entries.",
+				parameters: Type.Object({ includeIgnored: Type.Boolean() }),
+				annotations: {
+					readOnlyHint: true,
+				},
+				execute: async (_toolCallId, args) => {
+					statusExecutionCount += 1;
+					return {
+						content: [
+							{
+								type: "text",
+								text: `status:${String(args.includeIgnored)}:${statusExecutionCount}`,
+							},
+						],
+					};
+				},
+			};
+
+			let streamCount = 0;
+			mocks.createProviderStream.mockImplementation(async function* () {
+				streamCount += 1;
+				const call =
+					streamCount === 1
+						? {
+								id: "status-ignored-1",
+								name: "status",
+								arguments: { includeIgnored: true },
+							}
+						: streamCount === 3
+							? {
+									id: "status-ignored-2",
+									name: "status",
+									arguments: { includeIgnored: true },
+								}
+							: undefined;
+				if (call) {
+					const assistant = assistantMessage([], "toolUse");
+					yield {
+						type: "start",
+						partial: assistant,
+					} satisfies AssistantMessageEvent;
+					yield {
+						type: "toolcall_end",
+						toolCall: {
+							type: "toolCall",
+							id: call.id,
+							name: call.name,
+							arguments: call.arguments,
+						},
+						partial: assistant,
+					} satisfies AssistantMessageEvent;
+					yield {
+						type: "done",
+						reason: "toolUse",
+						message: assistant,
+					} satisfies AssistantMessageEvent;
+					return;
+				}
+
+				const assistant = assistantMessage(
+					[{ type: "text", text: "status ignored cache turn complete" }],
+					"stop",
+				);
+				yield {
+					type: "start",
+					partial: assistant,
+				} satisfies AssistantMessageEvent;
+				yield {
+					type: "done",
+					reason: "stop",
+					message: assistant,
+				} satisfies AssistantMessageEvent;
+			});
+
+			const transport = new ProviderTransport({
+				cwd: tempDir,
+				maxConcurrentToolExecutions: 4,
+				platformToolExecutionBridge: false,
+			});
+			const runTurn = (content: string) => {
+				const userMessage: Message = {
+					role: "user",
+					content,
+					timestamp: Date.now(),
+				};
+				return drain(
+					transport.run([userMessage], userMessage, {
+						systemPrompt: "Use the requested tools.",
+						tools: [statusTool],
+						model,
+					}),
+				);
+			};
+
+			const firstEvents = await runTurn("Show ignored status.");
+			writeFileSync(resolve(tempDir, "app.log"), "ignored\n");
+			const secondEvents = await runTurn("Show ignored status again.");
+
+			const toolResultsById = new Map(
+				[...firstEvents, ...secondEvents]
+					.filter(
+						(
+							event,
+						): event is Extract<AgentEvent, { type: "tool_execution_end" }> =>
+							event.type === "tool_execution_end",
+					)
+					.map((event) => [event.toolCallId, event]),
+			);
+
+			expect(statusExecutionCount).toBe(2);
+			expect(toolResultsById.get("status-ignored-1")?.scheduling?.cache).toBe(
+				"disabled",
+			);
+			expect(toolResultsById.get("status-ignored-2")?.scheduling?.cache).toBe(
+				"disabled",
+			);
+			expect(toolResultsById.get("status-ignored-2")?.result.content).toEqual([
+				{ type: "text", text: "status:true:2" },
+			]);
+		} finally {
+			rmSync(tempDir, { recursive: true, force: true });
+		}
+	});
+
+	it("reuses adjacent-turn read results for visible repo paths", async () => {
+		const tempDir = mkdtempSync(`${tmpdir()}/maestro-cache-visible-`);
+		try {
+			execFileSync("git", ["init"], { cwd: tempDir, stdio: "ignore" });
+			writeFileSync(resolve(tempDir, "tracked.txt"), "tracked");
+			execFileSync("git", ["add", "tracked.txt"], {
+				cwd: tempDir,
+				stdio: "ignore",
+			});
+			execFileSync(
+				"git",
+				[
+					"-c",
+					"user.name=Maestro Test",
+					"-c",
+					"user.email=maestro@example.com",
+					"commit",
+					"-m",
+					"init",
+				],
+				{ cwd: tempDir, stdio: "ignore" },
+			);
+
+			let readExecutionCount = 0;
+			const readProbeTool: AgentTool = {
+				name: "read",
+				description: "Adjacent-turn visible repo read probe.",
+				parameters: Type.Object({ path: Type.String() }),
+				annotations: {
+					readOnlyHint: true,
+				},
+				execute: async (_toolCallId, args) => {
+					readExecutionCount += 1;
+					return {
+						content: [
+							{
+								type: "text",
+								text: `visible:${String(args.path)}:${readExecutionCount}`,
+							},
+						],
+					};
+				},
+			};
+
+			let streamCount = 0;
+			mocks.createProviderStream.mockImplementation(async function* () {
+				streamCount += 1;
+				const call =
+					streamCount === 1
+						? {
+								id: "visible-read-1",
+								name: "read",
+								arguments: { path: "tracked.txt" },
+							}
+						: streamCount === 3
+							? {
+									id: "visible-read-2",
+									name: "read",
+									arguments: { path: "tracked.txt" },
+								}
+							: undefined;
+				if (call) {
+					const assistant = assistantMessage([], "toolUse");
+					yield {
+						type: "start",
+						partial: assistant,
+					} satisfies AssistantMessageEvent;
+					yield {
+						type: "toolcall_end",
+						toolCall: {
+							type: "toolCall",
+							id: call.id,
+							name: call.name,
+							arguments: call.arguments,
+						},
+						partial: assistant,
+					} satisfies AssistantMessageEvent;
+					yield {
+						type: "done",
+						reason: "toolUse",
+						message: assistant,
+					} satisfies AssistantMessageEvent;
+					return;
+				}
+
+				const assistant = assistantMessage(
+					[{ type: "text", text: "visible cache turn complete" }],
+					"stop",
+				);
+				yield {
+					type: "start",
+					partial: assistant,
+				} satisfies AssistantMessageEvent;
+				yield {
+					type: "done",
+					reason: "stop",
+					message: assistant,
+				} satisfies AssistantMessageEvent;
+			});
+
+			const transport = new ProviderTransport({
+				cwd: tempDir,
+				maxConcurrentToolExecutions: 4,
+				platformToolExecutionBridge: false,
+			});
+			const runTurn = (content: string) => {
+				const userMessage: Message = {
+					role: "user",
+					content,
+					timestamp: Date.now(),
+				};
+				return drain(
+					transport.run([userMessage], userMessage, {
+						systemPrompt: "Use the requested tools.",
+						tools: [readProbeTool],
+						model,
+					}),
+				);
+			};
+
+			const firstEvents = await runTurn("Read the visible file.");
+			const secondEvents = await runTurn("Read the visible file again.");
+
+			const toolResultsById = new Map(
+				[...firstEvents, ...secondEvents]
+					.filter(
+						(
+							event,
+						): event is Extract<AgentEvent, { type: "tool_execution_end" }> =>
+							event.type === "tool_execution_end",
+					)
+					.map((event) => [event.toolCallId, event]),
+			);
+
+			expect(readExecutionCount).toBe(1);
+			expect(toolResultsById.get("visible-read-1")?.scheduling?.cache).toBe(
+				"miss",
+			);
+			expect(toolResultsById.get("visible-read-2")?.scheduling?.cache).toBe(
+				"hit",
+			);
+		} finally {
+			rmSync(tempDir, { recursive: true, force: true });
+		}
+	});
+
+	it("invalidates adjacent-turn read results when dirty file contents change", async () => {
+		const tempDir = mkdtempSync(`${tmpdir()}/maestro-cache-dirty-`);
+		try {
+			execFileSync("git", ["init"], { cwd: tempDir, stdio: "ignore" });
+			writeFileSync(resolve(tempDir, "tracked.txt"), "base");
+			execFileSync("git", ["add", "tracked.txt"], {
+				cwd: tempDir,
+				stdio: "ignore",
+			});
+			execFileSync(
+				"git",
+				[
+					"-c",
+					"user.name=Maestro Test",
+					"-c",
+					"user.email=maestro@example.com",
+					"commit",
+					"-m",
+					"init",
+				],
+				{ cwd: tempDir, stdio: "ignore" },
+			);
+			writeFileSync(resolve(tempDir, "tracked.txt"), "dirty-one");
+
+			let readExecutionCount = 0;
+			const readProbeTool: AgentTool = {
+				name: "read",
+				description: "Adjacent-turn dirty repo read probe.",
+				parameters: Type.Object({ path: Type.String() }),
+				annotations: {
+					readOnlyHint: true,
+				},
+				execute: async (_toolCallId, args) => {
+					readExecutionCount += 1;
+					return {
+						content: [
+							{
+								type: "text",
+								text: `dirty:${String(args.path)}:${readExecutionCount}`,
+							},
+						],
+					};
+				},
+			};
+
+			let streamCount = 0;
+			mocks.createProviderStream.mockImplementation(async function* () {
+				streamCount += 1;
+				const call =
+					streamCount === 1
+						? {
+								id: "dirty-read-1",
+								name: "read",
+								arguments: { path: "tracked.txt" },
+							}
+						: streamCount === 3
+							? {
+									id: "dirty-read-2",
+									name: "read",
+									arguments: { path: "tracked.txt" },
+								}
+							: undefined;
+				if (call) {
+					const assistant = assistantMessage([], "toolUse");
+					yield {
+						type: "start",
+						partial: assistant,
+					} satisfies AssistantMessageEvent;
+					yield {
+						type: "toolcall_end",
+						toolCall: {
+							type: "toolCall",
+							id: call.id,
+							name: call.name,
+							arguments: call.arguments,
+						},
+						partial: assistant,
+					} satisfies AssistantMessageEvent;
+					yield {
+						type: "done",
+						reason: "toolUse",
+						message: assistant,
+					} satisfies AssistantMessageEvent;
+					return;
+				}
+
+				const assistant = assistantMessage(
+					[{ type: "text", text: "dirty cache turn complete" }],
+					"stop",
+				);
+				yield {
+					type: "start",
+					partial: assistant,
+				} satisfies AssistantMessageEvent;
+				yield {
+					type: "done",
+					reason: "stop",
+					message: assistant,
+				} satisfies AssistantMessageEvent;
+			});
+
+			const transport = new ProviderTransport({
+				cwd: tempDir,
+				maxConcurrentToolExecutions: 4,
+				platformToolExecutionBridge: false,
+			});
+			const runTurn = (content: string) => {
+				const userMessage: Message = {
+					role: "user",
+					content,
+					timestamp: Date.now(),
+				};
+				return drain(
+					transport.run([userMessage], userMessage, {
+						systemPrompt: "Use the requested tools.",
+						tools: [readProbeTool],
+						model,
+					}),
+				);
+			};
+
+			const firstEvents = await runTurn("Read the dirty file.");
+			writeFileSync(resolve(tempDir, "tracked.txt"), "dirty-two");
+			const secondEvents = await runTurn("Read the dirty file again.");
+
+			const toolResultsById = new Map(
+				[...firstEvents, ...secondEvents]
+					.filter(
+						(
+							event,
+						): event is Extract<AgentEvent, { type: "tool_execution_end" }> =>
+							event.type === "tool_execution_end",
+					)
+					.map((event) => [event.toolCallId, event]),
+			);
+
+			expect(readExecutionCount).toBe(2);
+			expect(toolResultsById.get("dirty-read-1")?.scheduling?.cache).toBe(
+				"miss",
+			);
+			expect(toolResultsById.get("dirty-read-2")?.scheduling?.cache).toBe(
+				"miss",
+			);
+		} finally {
+			rmSync(tempDir, { recursive: true, force: true });
+		}
+	});
+
+	it("does not reuse adjacent-turn results while a submodule worktree is dirty", async () => {
+		const tempDir = mkdtempSync(`${tmpdir()}/maestro-cache-submodule-`);
+		try {
+			const submoduleSourceDir = resolve(tempDir, "submodule-source");
+			const rootDir = resolve(tempDir, "root");
+			mkdirSync(submoduleSourceDir);
+			mkdirSync(rootDir);
+			execFileSync("git", ["init"], {
+				cwd: submoduleSourceDir,
+				stdio: "ignore",
+			});
+			writeFileSync(resolve(submoduleSourceDir, "tracked.txt"), "base");
+			execFileSync("git", ["add", "tracked.txt"], {
+				cwd: submoduleSourceDir,
+				stdio: "ignore",
+			});
+			execFileSync(
+				"git",
+				[
+					"-c",
+					"user.name=Maestro Test",
+					"-c",
+					"user.email=maestro@example.com",
+					"commit",
+					"-m",
+					"init",
+				],
+				{ cwd: submoduleSourceDir, stdio: "ignore" },
+			);
+
+			execFileSync("git", ["init"], { cwd: rootDir, stdio: "ignore" });
+			execFileSync(
+				"git",
+				[
+					"-c",
+					"protocol.file.allow=always",
+					"submodule",
+					"add",
+					submoduleSourceDir,
+					"vendor/lib",
+				],
+				{ cwd: rootDir, stdio: "ignore" },
+			);
+			execFileSync(
+				"git",
+				[
+					"-c",
+					"user.name=Maestro Test",
+					"-c",
+					"user.email=maestro@example.com",
+					"commit",
+					"-m",
+					"add submodule",
+				],
+				{ cwd: rootDir, stdio: "ignore" },
+			);
+			writeFileSync(resolve(rootDir, "vendor/lib/tracked.txt"), "dirty-one");
+
+			let readExecutionCount = 0;
+			const readProbeTool: AgentTool = {
+				name: "read",
+				description: "Adjacent-turn submodule read probe.",
+				parameters: Type.Object({ path: Type.String() }),
+				annotations: {
+					readOnlyHint: true,
+				},
+				execute: async (_toolCallId, args) => {
+					readExecutionCount += 1;
+					return {
+						content: [
+							{
+								type: "text",
+								text: `submodule:${String(args.path)}:${readExecutionCount}`,
+							},
+						],
+					};
+				},
+			};
+
+			let streamCount = 0;
+			mocks.createProviderStream.mockImplementation(async function* () {
+				streamCount += 1;
+				const call =
+					streamCount === 1
+						? {
+								id: "submodule-read-1",
+								name: "read",
+								arguments: { path: "vendor/lib/tracked.txt" },
+							}
+						: streamCount === 3
+							? {
+									id: "submodule-read-2",
+									name: "read",
+									arguments: { path: "vendor/lib/tracked.txt" },
+								}
+							: undefined;
+				if (call) {
+					const assistant = assistantMessage([], "toolUse");
+					yield {
+						type: "start",
+						partial: assistant,
+					} satisfies AssistantMessageEvent;
+					yield {
+						type: "toolcall_end",
+						toolCall: {
+							type: "toolCall",
+							id: call.id,
+							name: call.name,
+							arguments: call.arguments,
+						},
+						partial: assistant,
+					} satisfies AssistantMessageEvent;
+					yield {
+						type: "done",
+						reason: "toolUse",
+						message: assistant,
+					} satisfies AssistantMessageEvent;
+					return;
+				}
+
+				const assistant = assistantMessage(
+					[{ type: "text", text: "submodule cache turn complete" }],
+					"stop",
+				);
+				yield {
+					type: "start",
+					partial: assistant,
+				} satisfies AssistantMessageEvent;
+				yield {
+					type: "done",
+					reason: "stop",
+					message: assistant,
+				} satisfies AssistantMessageEvent;
+			});
+
+			const transport = new ProviderTransport({
+				cwd: rootDir,
+				maxConcurrentToolExecutions: 4,
+				platformToolExecutionBridge: false,
+			});
+			const runTurn = (content: string) => {
+				const userMessage: Message = {
+					role: "user",
+					content,
+					timestamp: Date.now(),
+				};
+				return drain(
+					transport.run([userMessage], userMessage, {
+						systemPrompt: "Use the requested tools.",
+						tools: [readProbeTool],
+						model,
+					}),
+				);
+			};
+
+			const firstEvents = await runTurn("Read the dirty submodule file.");
+			writeFileSync(resolve(rootDir, "vendor/lib/tracked.txt"), "dirty-two");
+			const secondEvents = await runTurn(
+				"Read the dirty submodule file again.",
+			);
+
+			const toolResultsById = new Map(
+				[...firstEvents, ...secondEvents]
+					.filter(
+						(
+							event,
+						): event is Extract<AgentEvent, { type: "tool_execution_end" }> =>
+							event.type === "tool_execution_end",
+					)
+					.map((event) => [event.toolCallId, event]),
+			);
+
+			expect(readExecutionCount).toBe(2);
+			expect(toolResultsById.get("submodule-read-1")?.scheduling?.cache).toBe(
+				"disabled",
+			);
+			expect(toolResultsById.get("submodule-read-2")?.scheduling?.cache).toBe(
+				"disabled",
+			);
+		} finally {
+			rmSync(tempDir, { recursive: true, force: true });
+		}
+	});
+
+	it("does not reuse diff results when a custom cwd is outside the repo snapshot", async () => {
+		let diffExecutionCount = 0;
+		const diffTool: AgentTool = {
+			name: "diff",
+			description: "Diff probe with an optional custom working directory.",
+			parameters: Type.Object({
+				cwd: Type.Optional(Type.String()),
+				path: Type.String(),
+			}),
+			annotations: {
+				readOnlyHint: true,
+			},
+			execute: async (_toolCallId, args) => {
+				diffExecutionCount += 1;
+				return {
+					content: [
+						{
+							type: "text",
+							text: `diff:${String(args.cwd)}:${String(args.path)}:${diffExecutionCount}`,
+						},
+					],
+				};
+			},
+		};
+		const externalCwd = resolve(tmpdir(), "maestro-other-repo");
+
+		let streamCount = 0;
+		mocks.createProviderStream.mockImplementation(async function* () {
+			streamCount += 1;
+			const toolUseTurns: Record<
+				number,
+				Array<{
+					id: string;
+					name: string;
+					arguments: Record<string, unknown>;
+				}>
+			> = {
+				1: [
+					{
+						id: "diff-read-1",
+						name: "diff",
+						arguments: { cwd: externalCwd, path: "same.txt" },
+					},
+				],
+				3: [
+					{
+						id: "diff-read-2",
+						name: "diff",
+						arguments: { cwd: externalCwd, path: "same.txt" },
+					},
+				],
+			};
+			const calls = toolUseTurns[streamCount];
+			if (calls) {
+				const assistant = assistantMessage([], "toolUse");
+				yield {
+					type: "start",
+					partial: assistant,
+				} satisfies AssistantMessageEvent;
+				for (const call of calls) {
+					yield {
+						type: "toolcall_end",
+						toolCall: {
+							type: "toolCall",
+							id: call.id,
+							name: call.name,
+							arguments: call.arguments,
+						},
+						partial: assistant,
+					} satisfies AssistantMessageEvent;
+				}
+				yield {
+					type: "done",
+					reason: "toolUse",
+					message: assistant,
+				} satisfies AssistantMessageEvent;
+				return;
+			}
+
+			const assistant = assistantMessage(
+				[{ type: "text", text: "diff reads complete" }],
+				"stop",
+			);
+			yield {
+				type: "start",
+				partial: assistant,
+			} satisfies AssistantMessageEvent;
+			yield {
+				type: "done",
+				reason: "stop",
+				message: assistant,
+			} satisfies AssistantMessageEvent;
+		});
+
+		const transport = new ProviderTransport({
+			maxConcurrentToolExecutions: 4,
+			platformToolExecutionBridge: false,
+		});
+		const runTurn = (content: string) => {
+			const userMessage: Message = {
+				role: "user",
+				content,
+				timestamp: Date.now(),
+			};
+			return drain(
+				transport.run([userMessage], userMessage, {
+					systemPrompt: "Use the requested tools.",
+					tools: [diffTool],
+					model,
+				}),
+			);
+		};
+
+		const firstEvents = await runTurn("Read external diff.");
+		const secondEvents = await runTurn("Read external diff again.");
+		const toolResultsById = new Map(
+			[...firstEvents, ...secondEvents]
+				.filter(
+					(
+						event,
+					): event is Extract<AgentEvent, { type: "tool_execution_end" }> =>
+						event.type === "tool_execution_end",
+				)
+				.map((event) => [event.toolCallId, event]),
+		);
+
+		expect(diffExecutionCount).toBe(2);
+		expect(toolResultsById.get("diff-read-1")?.scheduling?.cache).toBe(
+			"disabled",
+		);
+		expect(toolResultsById.get("diff-read-2")?.scheduling?.cache).toBe(
+			"disabled",
+		);
+	});
+
+	it("does not reuse external read-only results across adjacent user turns", async () => {
+		let mcpReadExecutionCount = 0;
+		let apiReadExecutionCount = 0;
+		const mcpReadTool = {
+			name: "mcp__remote_service__read",
+			description: "Read-only MCP probe with remote freshness.",
+			parameters: Type.Object({ key: Type.String() }),
+			annotations: {
+				readOnlyHint: true,
+			},
+			source: {
+				type: "mcp",
+				server: "remote-service",
+				tool: "read",
+				supportsParallelToolCalls: true,
+			},
+			execute: async (_toolCallId: string, args: Record<string, unknown>) => {
+				mcpReadExecutionCount += 1;
+				return {
+					content: [
+						{
+							type: "text" as const,
+							text: `mcp:${String(args.key)}:${mcpReadExecutionCount}`,
+						},
+					],
+				};
+			},
+		} satisfies AgentTool;
+		const apiReadTool = {
+			name: "open_world_read_probe",
+			description: "Read-only API probe with open-world freshness.",
+			parameters: Type.Object({ key: Type.String() }),
+			annotations: {
+				readOnlyHint: true,
+				openWorldHint: true,
+			},
+			execute: async (_toolCallId: string, args: Record<string, unknown>) => {
+				apiReadExecutionCount += 1;
+				return {
+					content: [
+						{
+							type: "text" as const,
+							text: `api:${String(args.key)}:${apiReadExecutionCount}`,
+						},
+					],
+				};
+			},
+		} satisfies AgentTool;
+
+		let streamCount = 0;
+		mocks.createProviderStream.mockImplementation(async function* () {
+			streamCount += 1;
+			const toolUseTurns: Record<
+				number,
+				Array<{
+					id: string;
+					name: string;
+					arguments: Record<string, unknown>;
+				}>
+			> = {
+				1: [
+					{
+						id: "mcp-read-1",
+						name: "mcp__remote_service__read",
+						arguments: { key: "same" },
+					},
+					{
+						id: "api-read-1",
+						name: "open_world_read_probe",
+						arguments: { key: "same" },
+					},
+				],
+				3: [
+					{
+						id: "mcp-read-2",
+						name: "mcp__remote_service__read",
+						arguments: { key: "same" },
+					},
+					{
+						id: "api-read-2",
+						name: "open_world_read_probe",
+						arguments: { key: "same" },
+					},
+				],
+			};
+			const calls = toolUseTurns[streamCount];
+			if (calls) {
+				const assistant = assistantMessage([], "toolUse");
+				yield {
+					type: "start",
+					partial: assistant,
+				} satisfies AssistantMessageEvent;
+				for (const call of calls) {
+					yield {
+						type: "toolcall_end",
+						toolCall: {
+							type: "toolCall",
+							id: call.id,
+							name: call.name,
+							arguments: call.arguments,
+						},
+						partial: assistant,
+					} satisfies AssistantMessageEvent;
+				}
+				yield {
+					type: "done",
+					reason: "toolUse",
+					message: assistant,
+				} satisfies AssistantMessageEvent;
+				return;
+			}
+
+			const assistant = assistantMessage(
+				[{ type: "text", text: "external reads complete" }],
+				"stop",
+			);
+			yield {
+				type: "start",
+				partial: assistant,
+			} satisfies AssistantMessageEvent;
+			yield {
+				type: "done",
+				reason: "stop",
+				message: assistant,
+			} satisfies AssistantMessageEvent;
+		});
+
+		const transport = new ProviderTransport({
+			maxConcurrentToolExecutions: 4,
+			platformToolExecutionBridge: false,
+		});
+		const tools = [mcpReadTool, apiReadTool];
+		const runTurn = (content: string) => {
+			const userMessage: Message = {
+				role: "user",
+				content,
+				timestamp: Date.now(),
+			};
+			return drain(
+				transport.run([userMessage], userMessage, {
+					systemPrompt: "Use the requested tools.",
+					tools,
+					model,
+				}),
+			);
+		};
+
+		const firstEvents = await runTurn("Read external state.");
+		const secondEvents = await runTurn("Read external state again.");
+
+		const toolResultsById = new Map(
+			[...firstEvents, ...secondEvents]
+				.filter(
+					(
+						event,
+					): event is Extract<AgentEvent, { type: "tool_execution_end" }> =>
+						event.type === "tool_execution_end",
+				)
+				.map((event) => [event.toolCallId, event]),
+		);
+
+		expect(mcpReadExecutionCount).toBe(2);
+		expect(apiReadExecutionCount).toBe(2);
+		expect(toolResultsById.get("mcp-read-1")?.scheduling?.cache).toBe(
+			"disabled",
+		);
+		expect(toolResultsById.get("mcp-read-2")?.scheduling?.cache).toBe(
+			"disabled",
+		);
+		expect(toolResultsById.get("api-read-1")?.scheduling?.cache).toBe(
+			"disabled",
+		);
+		expect(toolResultsById.get("api-read-2")?.scheduling?.cache).toBe(
+			"disabled",
+		);
+	});
+
+	it("does not reuse diff results with a custom cwd across adjacent user turns", async () => {
+		let diffExecutionCount = 0;
+		const diffTool: AgentTool = {
+			name: "diff",
+			description: "Diff probe with a caller-selected working tree.",
+			parameters: Type.Object({ cwd: Type.String() }),
+			annotations: {
+				readOnlyHint: true,
+			},
+			execute: async (_toolCallId, args) => {
+				diffExecutionCount += 1;
+				return {
+					content: [
+						{
+							type: "text",
+							text: `diff:${String(args.cwd)}:${diffExecutionCount}`,
+						},
+					],
+				};
+			},
+		};
+
+		let streamCount = 0;
+		mocks.createProviderStream.mockImplementation(async function* () {
+			streamCount += 1;
+			const calls =
+				streamCount === 1
+					? [
+							{
+								id: "diff-1",
+								name: "diff",
+								arguments: { cwd: "/tmp/other-repo" },
+							},
+						]
+					: streamCount === 3
+						? [
+								{
+									id: "diff-2",
+									name: "diff",
+									arguments: { cwd: "/tmp/other-repo" },
+								},
+							]
+						: undefined;
+			if (calls) {
+				const assistant = assistantMessage([], "toolUse");
+				yield {
+					type: "start",
+					partial: assistant,
+				} satisfies AssistantMessageEvent;
+				for (const call of calls) {
+					yield {
+						type: "toolcall_end",
+						toolCall: {
+							type: "toolCall",
+							id: call.id,
+							name: call.name,
+							arguments: call.arguments,
+						},
+						partial: assistant,
+					} satisfies AssistantMessageEvent;
+				}
+				yield {
+					type: "done",
+					reason: "toolUse",
+					message: assistant,
+				} satisfies AssistantMessageEvent;
+				return;
+			}
+
+			const assistant = assistantMessage(
+				[{ type: "text", text: "diff turn complete" }],
+				"stop",
+			);
+			yield {
+				type: "start",
+				partial: assistant,
+			} satisfies AssistantMessageEvent;
+			yield {
+				type: "done",
+				reason: "stop",
+				message: assistant,
+			} satisfies AssistantMessageEvent;
+		});
+
+		const transport = new ProviderTransport({
+			maxConcurrentToolExecutions: 4,
+			platformToolExecutionBridge: false,
+		});
+		const runTurn = (content: string) => {
+			const userMessage: Message = {
+				role: "user",
+				content,
+				timestamp: Date.now(),
+			};
+			return drain(
+				transport.run([userMessage], userMessage, {
+					systemPrompt: "Use the requested tools.",
+					tools: [diffTool],
+					model,
+				}),
+			);
+		};
+
+		const firstEvents = await runTurn("Diff another repo.");
+		const secondEvents = await runTurn("Diff another repo again.");
+		const toolResultsById = new Map(
+			[...firstEvents, ...secondEvents]
+				.filter(
+					(
+						event,
+					): event is Extract<AgentEvent, { type: "tool_execution_end" }> =>
+						event.type === "tool_execution_end",
+				)
+				.map((event) => [event.toolCallId, event]),
+		);
+
+		expect(diffExecutionCount).toBe(2);
+		expect(toolResultsById.get("diff-1")?.scheduling?.cache).toBe("disabled");
+		expect(toolResultsById.get("diff-2")?.scheduling?.cache).toBe("disabled");
+	});
+
+	it("does not reuse adjacent-turn results when git snapshot probing fails", async () => {
+		const tempDir = mkdtempSync(`${tmpdir()}/maestro-cache-no-git-`);
+		try {
+			let readExecutionCount = 0;
+			const readProbeTool: AgentTool = {
+				name: "read",
+				description: "Repo read probe for non-git cache fallback.",
+				parameters: Type.Object({ path: Type.String() }),
+				annotations: {
+					readOnlyHint: true,
+				},
+				execute: async (_toolCallId, args) => {
+					readExecutionCount += 1;
+					return {
+						content: [
+							{
+								type: "text",
+								text: `read:${String(args.path)}:${readExecutionCount}`,
+							},
+						],
+					};
+				},
+			};
+
+			let streamCount = 0;
+			mocks.createProviderStream.mockImplementation(async function* () {
+				streamCount += 1;
+				const toolUseTurns: Record<
+					number,
+					Array<{
+						id: string;
+						name: string;
+						arguments: Record<string, unknown>;
+					}>
+				> = {
+					1: [
+						{
+							id: "snapshotless-read-1",
+							name: "read",
+							arguments: { path: "same.txt" },
+						},
+					],
+					3: [
+						{
+							id: "snapshotless-read-2",
+							name: "read",
+							arguments: { path: "same.txt" },
+						},
+					],
+				};
+				const calls = toolUseTurns[streamCount];
+				if (calls) {
+					const assistant = assistantMessage([], "toolUse");
+					yield {
+						type: "start",
+						partial: assistant,
+					} satisfies AssistantMessageEvent;
+					for (const call of calls) {
+						yield {
+							type: "toolcall_end",
+							toolCall: {
+								type: "toolCall",
+								id: call.id,
+								name: call.name,
+								arguments: call.arguments,
+							},
+							partial: assistant,
+						} satisfies AssistantMessageEvent;
+					}
+					yield {
+						type: "done",
+						reason: "toolUse",
+						message: assistant,
+					} satisfies AssistantMessageEvent;
+					return;
+				}
+
+				const assistant = assistantMessage(
+					[{ type: "text", text: "snapshotless cache turn complete" }],
+					"stop",
+				);
+				yield {
+					type: "start",
+					partial: assistant,
+				} satisfies AssistantMessageEvent;
+				yield {
+					type: "done",
+					reason: "stop",
+					message: assistant,
+				} satisfies AssistantMessageEvent;
+			});
+
+			const transport = new ProviderTransport({
+				maxConcurrentToolExecutions: 4,
+				platformToolExecutionBridge: false,
+				cwd: tempDir,
+			});
+			const tools = [readProbeTool];
+			const runTurn = (content: string) => {
+				const userMessage: Message = {
+					role: "user",
+					content,
+					timestamp: Date.now(),
+				};
+				return drain(
+					transport.run([userMessage], userMessage, {
+						systemPrompt: "Use the requested tools.",
+						tools,
+						model,
+					}),
+				);
+			};
+
+			const firstEvents = await runTurn("Read the same key.");
+			const secondEvents = await runTurn("Read the same key again.");
+
+			const toolResultsById = new Map(
+				[...firstEvents, ...secondEvents]
+					.filter(
+						(
+							event,
+						): event is Extract<AgentEvent, { type: "tool_execution_end" }> =>
+							event.type === "tool_execution_end",
+					)
+					.map((event) => [event.toolCallId, event]),
+			);
+
+			expect(readExecutionCount).toBe(2);
+			expect(
+				toolResultsById.get("snapshotless-read-1")?.scheduling?.cache,
+			).toBe("disabled");
+			expect(
+				toolResultsById.get("snapshotless-read-2")?.scheduling?.cache,
+			).toBe("disabled");
+		} finally {
+			rmSync(tempDir, { recursive: true, force: true });
+		}
 	});
 
 	it("preserves configured concurrency cap for parallel-safe MCP mutations", async () => {
@@ -3042,6 +4857,139 @@ describe("ProviderTransport tool scheduling", () => {
 		expect(maxActiveMutations).toBe(1);
 		expect(records[1]?.startedAt).toBeGreaterThanOrEqual(
 			records[0]?.endedAt ?? 0,
+		);
+	});
+
+	it("applies MCP max concurrency cap to read-only lanes", async () => {
+		const records: TimedToolRecord[] = [];
+		let activeReads = 0;
+		let maxActiveReads = 0;
+
+		const readOnlyTool = {
+			name: "mcp__limited_remote__read",
+			description: "Read-only remote probe with a narrow server-side cap.",
+			parameters: Type.Object({ slot: Type.Integer() }),
+			annotations: {
+				readOnlyHint: true,
+			},
+			source: {
+				type: "mcp",
+				server: "limited-remote",
+				tool: "read",
+				supportsParallelToolCalls: true,
+				parallelSafetyProvenance: "server_capability",
+				parallelMaxConcurrency: 1,
+			},
+			execute: async (toolCallId: string, args: Record<string, unknown>) => {
+				activeReads += 1;
+				maxActiveReads = Math.max(maxActiveReads, activeReads);
+				const record: TimedToolRecord = {
+					id: toolCallId,
+					phase: "inspect",
+					startedAt: performance.now(),
+				};
+				records.push(record);
+				await sleep(60);
+				record.endedAt = performance.now();
+				activeReads -= 1;
+				return {
+					content: [{ type: "text", text: `read:${String(args.slot)}` }],
+				};
+			},
+		} satisfies AgentTool;
+
+		let streamCount = 0;
+		mocks.createProviderStream.mockImplementation(async function* () {
+			streamCount += 1;
+			if (streamCount === 1) {
+				const assistant = assistantMessage([], "toolUse");
+				yield {
+					type: "start",
+					partial: assistant,
+				} satisfies AssistantMessageEvent;
+				for (const slot of [1, 2, 3]) {
+					yield {
+						type: "toolcall_end",
+						toolCall: {
+							type: "toolCall",
+							id: `read-${slot}`,
+							name: "mcp__limited_remote__read",
+							arguments: { slot },
+						},
+						partial: assistant,
+					} satisfies AssistantMessageEvent;
+				}
+				yield {
+					type: "done",
+					reason: "toolUse",
+					message: assistant,
+				} satisfies AssistantMessageEvent;
+				return;
+			}
+
+			const assistant = assistantMessage(
+				[{ type: "text", text: "reads complete" }],
+				"stop",
+			);
+			yield {
+				type: "start",
+				partial: assistant,
+			} satisfies AssistantMessageEvent;
+			yield {
+				type: "done",
+				reason: "stop",
+				message: assistant,
+			} satisfies AssistantMessageEvent;
+		});
+
+		const userMessage: Message = {
+			role: "user",
+			content: "Run three capped read-only probes.",
+			timestamp: Date.now(),
+		};
+		const transport = new ProviderTransport({
+			maxConcurrentToolExecutions: 4,
+			platformToolExecutionBridge: false,
+		});
+
+		const events = await drain(
+			transport.run([userMessage], userMessage, {
+				systemPrompt: "Use the requested tools.",
+				tools: [readOnlyTool],
+				model,
+			}),
+		);
+
+		const toolStartsById = new Map(
+			events
+				.filter(
+					(
+						event,
+					): event is Extract<AgentEvent, { type: "tool_execution_start" }> =>
+						event.type === "tool_execution_start",
+				)
+				.map((event) => [event.toolCallId, event]),
+		);
+		const toolResults = events.filter(
+			(event): event is Extract<AgentEvent, { type: "tool_execution_end" }> =>
+				event.type === "tool_execution_end",
+		);
+
+		expect(toolResults).toHaveLength(3);
+		expect(records).toHaveLength(3);
+		expect(maxActiveReads).toBe(1);
+		for (const slot of [1, 2, 3]) {
+			expect(toolStartsById.get(`read-${slot}`)?.scheduling).toMatchObject({
+				classification: "read_only",
+				reason: "read_only_tool",
+				concurrencyLimit: 1,
+			});
+		}
+		expect(records[1]?.startedAt).toBeGreaterThanOrEqual(
+			records[0]?.endedAt ?? 0,
+		);
+		expect(records[2]?.startedAt).toBeGreaterThanOrEqual(
+			records[1]?.endedAt ?? 0,
 		);
 	});
 });

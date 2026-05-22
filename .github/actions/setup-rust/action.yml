@@ -96,16 +96,17 @@ runs:
           rustup_bin="$(command -v rustup || true)"
         fi
         if [ -z "$rustup_bin" ] || [ ! -x "$rustup_bin" ]; then
-          echo "rustup is required to create Cargo tool proxies" >&2
+          echo "::error::rustup is required to create Cargo tool proxies"
           exit 1
         fi
 
         mkdir -p "$cargo_bin"
         for proxy in cargo rustc rustdoc rustfmt cargo-fmt cargo-clippy clippy-driver; do
-          if [ ! -e "$cargo_bin/$proxy" ] && [ ! -L "$cargo_bin/$proxy" ]; then
-            ln -s "$rustup_bin" "$cargo_bin/$proxy"
+          if [ ! -x "$cargo_bin/$proxy" ]; then
+            ln -sf "$rustup_bin" "$cargo_bin/$proxy"
           fi
         done
+        "$cargo_bin/cargo" --version
 
     - name: Cache Cargo
       uses: Swatinem/rust-cache@779680da715d629ac1d338a641029a2f4372abb5 # v2.8.2

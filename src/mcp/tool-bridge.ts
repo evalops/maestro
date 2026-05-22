@@ -1,6 +1,10 @@
 import type { Tool as McpTool } from "@modelcontextprotocol/sdk/types.js";
 import { type TSchema, Type } from "@sinclair/typebox";
-import type { AgentTool } from "../agent/types.js";
+import type {
+	AgentTool,
+	ToolAnnotations,
+	ToolSourceMetadata,
+} from "../agent/types.js";
 import {
 	trackToolApprovalRequired,
 	trackToolBlocked,
@@ -10,6 +14,7 @@ import { promptSafeText } from "../utils/prompt-safe-text.js";
 import { mcpManager } from "./manager.js";
 import type { McpToolCallResult } from "./manager.js";
 import { buildMcpToolName } from "./names.js";
+import type { McpToolParallelSafety } from "./types.js";
 
 interface McpToolDetails {
 	server: string;
@@ -412,7 +417,10 @@ function convertJsonSchemaToTypebox(schema: unknown): TSchema {
 export function createMcpToolWrapper(
 	serverName: string,
 	mcpTool: McpTool,
-	options?: { supportsParallelToolCalls?: boolean },
+	options?: {
+		supportsParallelToolCalls?: boolean;
+		parallelSafety?: McpToolParallelSafety;
+	},
 ) {
 	const toolName = buildMcpToolName(serverName, mcpTool.name);
 	const schema = mcpTool.inputSchema
@@ -428,7 +436,34 @@ export function createMcpToolWrapper(
 				openWorldHint?: boolean;
 		  }
 		| undefined;
-	const supportsParallelToolCalls = options?.supportsParallelToolCalls === true;
+	const supportsParallelToolCalls =
+		options?.parallelSafety?.supportsParallelToolCalls === true ||
+		options?.supportsParallelToolCalls === true;
+	const parallelSafetyProvenance =
+		options?.parallelSafety?.provenance ??
+		(options?.supportsParallelToolCalls === true ? "static_config" : "none");
+	const parallelMaxConcurrency = options?.parallelSafety?.maxConcurrency;
+	const advertisedParallelReadOnly =
+		supportsParallelToolCalls && options?.parallelSafety?.readOnlyHint === true;
+	const annotations: ToolAnnotations | undefined =
+		mcpAnnotations || advertisedParallelReadOnly
+			? {
+					readOnlyHint:
+						mcpAnnotations?.readOnlyHint ??
+						(advertisedParallelReadOnly ? true : undefined),
+					destructiveHint: mcpAnnotations?.destructiveHint,
+					idempotentHint: mcpAnnotations?.idempotentHint,
+					openWorldHint: mcpAnnotations?.openWorldHint,
+				}
+			: undefined;
+	const source: ToolSourceMetadata = {
+		type: "mcp",
+		server: serverName,
+		tool: mcpTool.name,
+		supportsParallelToolCalls,
+		parallelSafetyProvenance,
+		...(parallelMaxConcurrency ? { parallelMaxConcurrency } : {}),
+	};
 
 	return createTool<typeof schema, McpToolDetails>({
 		name: toolName,
@@ -437,20 +472,8 @@ export function createMcpToolWrapper(
 			promptSafeText(mcpTool.description) ??
 			`MCP tool from ${serverName}: ${mcpTool.name}`,
 		schema,
-		annotations: mcpAnnotations
-			? {
-					readOnlyHint: mcpAnnotations.readOnlyHint,
-					destructiveHint: mcpAnnotations.destructiveHint,
-					idempotentHint: mcpAnnotations.idempotentHint,
-					openWorldHint: mcpAnnotations.openWorldHint,
-				}
-			: undefined,
-		source: {
-			type: "mcp",
-			server: serverName,
-			tool: mcpTool.name,
-			supportsParallelToolCalls,
-		},
+		annotations,
+		source,
 		async run(params, { respond }) {
 			const result = await mcpManager.callTool(
 				serverName,
@@ -488,8 +511,12 @@ export function createMcpToolWrapper(
 export function getAllMcpTools(): AgentTool[] {
 	const mcpTools = mcpManager.getAllTools();
 	return [
-		...mcpTools.map(({ server, tool, supportsParallelToolCalls }) =>
-			createMcpToolWrapper(server, tool, { supportsParallelToolCalls }),
+		...mcpTools.map(
+			({ server, tool, supportsParallelToolCalls, parallelSafety }) =>
+				createMcpToolWrapper(server, tool, {
+					supportsParallelToolCalls,
+					parallelSafety,
+				}),
 		),
 		...getMcpHelperTools(),
 	];
@@ -503,9 +530,15 @@ export function getMcpToolMap(): Map<string, AgentTool> {
 		map.set(tool.name, tool);
 	}
 
-	for (const { server, tool, supportsParallelToolCalls } of mcpTools) {
+	for (const {
+		server,
+		tool,
+		supportsParallelToolCalls,
+		parallelSafety,
+	} of mcpTools) {
 		const wrapper = createMcpToolWrapper(server, tool, {
 			supportsParallelToolCalls,
+			parallelSafety,
 		});
 		map.set(wrapper.name, wrapper);
 	}

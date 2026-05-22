@@ -51,6 +51,7 @@ import {
 	ProgressNotificationSchema,
 	PromptListChangedNotificationSchema,
 	ResourceListChangedNotificationSchema,
+	type ServerCapabilities,
 	ToolListChangedNotificationSchema,
 } from "@modelcontextprotocol/sdk/types.js";
 import { getPackageVersion } from "../package-metadata.js";
@@ -81,6 +82,7 @@ import type {
 	McpPromptDefinition,
 	McpServerConfig,
 	McpServerStatus,
+	McpToolParallelSafety,
 } from "./types.js";
 import { ensureMcpWorkspaceTrusted } from "./workspace-trust.js";
 
@@ -110,6 +112,142 @@ const DEFAULT_RECONNECT_DELAY_MS = 5000;
 
 // Maximum number of automatic reconnection attempts
 const MAX_RECONNECT_ATTEMPTS = 3;
+const PARALLEL_SAFETY_EXPERIMENTAL_KEYS = [
+	"evalops.maestro.parallelSafety",
+	"evalops.maestro/parallelSafety",
+	"maestro.parallelSafety",
+];
+
+function asRecord(value: unknown): Record<string, unknown> | undefined {
+	return value && typeof value === "object" && !Array.isArray(value)
+		? (value as Record<string, unknown>)
+		: undefined;
+}
+
+function positiveInteger(value: unknown): number | undefined {
+	return typeof value === "number" && Number.isFinite(value) && value > 0
+		? Math.floor(value)
+		: undefined;
+}
+
+function serverParallelSafetyAdvertisement(
+	capabilities: ServerCapabilities | undefined,
+): Record<string, unknown> | undefined {
+	const experimental = asRecord(capabilities?.experimental);
+	if (!experimental) {
+		return undefined;
+	}
+	for (const key of PARALLEL_SAFETY_EXPERIMENTAL_KEYS) {
+		const advertisement = asRecord(experimental[key]);
+		if (advertisement) {
+			return advertisement;
+		}
+	}
+	return undefined;
+}
+
+function resolveToolParallelSafety({
+	config,
+	serverCapabilities,
+	tool,
+}: {
+	config: McpServerConfig;
+	serverCapabilities?: ServerCapabilities;
+	tool: McpTool;
+}): McpToolParallelSafety {
+	const advertisement = serverParallelSafetyAdvertisement(serverCapabilities);
+	const advertisedTools = asRecord(advertisement?.tools);
+	const advertisedTool =
+		asRecord(advertisedTools?.[tool.name]) ?? asRecord(advertisedTools?.["*"]);
+	const toolSupportsParallel = advertisedTool?.supportsParallelToolCalls;
+	const advertisedSupports =
+		toolSupportsParallel === true ||
+		(toolSupportsParallel !== false &&
+			advertisement?.supportsParallelToolCalls === true);
+	const maxConcurrency =
+		positiveInteger(advertisedTool?.maxConcurrency) ??
+		positiveInteger(advertisement?.maxConcurrency);
+
+	if (config.supportsParallelToolCalls === true) {
+		return {
+			supportsParallelToolCalls: true,
+			provenance: "static_config",
+			...(maxConcurrency ? { maxConcurrency } : {}),
+			...(advertisedTool?.readOnlyHint === true ? { readOnlyHint: true } : {}),
+		};
+	}
+	if (advertisedSupports) {
+		return {
+			supportsParallelToolCalls: true,
+			provenance: "server_capability",
+			...(maxConcurrency ? { maxConcurrency } : {}),
+			...(advertisedTool?.readOnlyHint === true ? { readOnlyHint: true } : {}),
+		};
+	}
+	return {
+		supportsParallelToolCalls: false,
+		provenance: "none",
+		...(advertisedTool?.readOnlyHint === true ? { readOnlyHint: true } : {}),
+	};
+}
+
+function resolveParallelSafetyByTool({
+	config,
+	serverCapabilities,
+	tools,
+}: {
+	config: McpServerConfig;
+	serverCapabilities?: ServerCapabilities;
+	tools: McpTool[];
+}): Map<string, McpToolParallelSafety> {
+	return new Map(
+		tools.map((tool) => [
+			tool.name,
+			resolveToolParallelSafety({
+				config,
+				serverCapabilities,
+				tool,
+			}),
+		]),
+	);
+}
+
+function summarizeServerParallelSafety(
+	config: McpServerConfig,
+	connected: ConnectedServer | undefined,
+): McpServerStatus["parallelSafety"] {
+	if (!connected) {
+		return {
+			supportsParallelToolCalls: config.supportsParallelToolCalls === true,
+			provenance:
+				config.supportsParallelToolCalls === true ? "static_config" : "none",
+		};
+	}
+	const values = [...connected.parallelSafetyByTool.values()];
+	const supportsParallelToolCalls = values.some(
+		(value) => value.supportsParallelToolCalls === true,
+	);
+	const staticConfig = values.some(
+		(value) => value.provenance === "static_config",
+	);
+	const serverCapability = values.some(
+		(value) => value.provenance === "server_capability",
+	);
+	const maxConcurrencyValues = values
+		.map((value) => value.maxConcurrency)
+		.filter((value): value is number => typeof value === "number");
+	return {
+		supportsParallelToolCalls,
+		provenance: staticConfig
+			? "static_config"
+			: serverCapability
+				? "server_capability"
+				: "none",
+		...(maxConcurrencyValues.length > 0
+			? { maxConcurrency: Math.min(...maxConcurrencyValues) }
+			: {}),
+	};
+}
 
 function arraysEqual(
 	left: readonly string[] | undefined,
@@ -381,6 +519,8 @@ interface ConnectedServer {
 	prompts: string[];
 	/** Cached prompt metadata for structured prompt UIs */
 	promptDetails: McpPromptDefinition[];
+	/** Per-tool parallel safety resolved from static config or server handshake. */
+	parallelSafetyByTool: ReadonlyMap<string, McpToolParallelSafety>;
 	/** Counter for reconnection attempts */
 	reconnectAttempts: number;
 }
@@ -689,6 +829,12 @@ export class McpClientManager extends EventEmitter {
 			const resources = await this.fetchResources(client);
 			const promptDetails = await this.fetchPrompts(client);
 			const prompts = getPromptNames(promptDetails);
+			const serverCapabilities = client.getServerCapabilities();
+			const parallelSafetyByTool = resolveParallelSafetyByTool({
+				config,
+				serverCapabilities,
+				tools,
+			});
 
 			this.servers.set(name, {
 				config,
@@ -698,6 +844,7 @@ export class McpClientManager extends EventEmitter {
 				resources,
 				prompts,
 				promptDetails,
+				parallelSafetyByTool,
 				reconnectAttempts: 0,
 			});
 			this.lastErrors.delete(name);
@@ -843,6 +990,11 @@ export class McpClientManager extends EventEmitter {
 					const server = this.servers.get(serverName);
 					if (server) {
 						server.tools = await this.fetchTools(client);
+						server.parallelSafetyByTool = resolveParallelSafetyByTool({
+							config: server.config,
+							serverCapabilities: client.getServerCapabilities(),
+							tools: server.tools,
+						});
 						this.emit("tools_changed", {
 							name: serverName,
 							tools: server.tools,
@@ -1025,19 +1177,29 @@ export class McpClientManager extends EventEmitter {
 		server: string;
 		tool: McpTool;
 		supportsParallelToolCalls: boolean;
+		parallelSafety: McpToolParallelSafety;
 	}> {
 		const tools: Array<{
 			server: string;
 			tool: McpTool;
 			supportsParallelToolCalls: boolean;
+			parallelSafety: McpToolParallelSafety;
 		}> = [];
 		for (const [serverName, server] of this.servers) {
 			for (const tool of server.tools) {
+				const parallelSafety =
+					server.parallelSafetyByTool.get(tool.name) ??
+					resolveToolParallelSafety({
+						config: server.config,
+						serverCapabilities: server.client.getServerCapabilities(),
+						tool,
+					});
 				tools.push({
 					server: serverName,
 					tool,
 					supportsParallelToolCalls:
-						server.config.supportsParallelToolCalls === true,
+						parallelSafety.supportsParallelToolCalls === true,
+					parallelSafety,
 				});
 			}
 		}
@@ -1101,6 +1263,7 @@ export class McpClientManager extends EventEmitter {
 				authPreset: config.authPreset,
 				timeout: config.timeout,
 				supportsParallelToolCalls: config.supportsParallelToolCalls === true,
+				parallelSafety: summarizeServerParallelSafety(config, connected),
 				remoteTrust: remoteRegistryMatch?.trust,
 				officialRegistry: remoteRegistryMatch?.info,
 				projectApproval,

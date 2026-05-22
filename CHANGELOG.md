@@ -17,6 +17,33 @@ versioning when releases are cut.
   and keep scheduled public runs inert so public publishing stays downstream of
   the internal source-of-truth release.
 
+## [0.10.20] - 2026-05-22
+
+### Changed
+
+- Add Platform A2A control and evidence guardrails (#2065). <!-- maestro-release-note:a174de22308e -->
+- Skip TS checks for Rust-only PRs (#2078). <!-- maestro-release-note:de04550846b8 -->
+- Fix public mirror review blockers (#2074). <!-- maestro-release-note:5075220752bf -->
+- Expose tool scheduling diagnostics (#2072). <!-- maestro-release-note:3613ab6e7a64 -->
+- Report avoidable tool serialization (#2071). <!-- maestro-release-note:c1ffa9e1f331 -->
+- Recognize EvalOps platform base URL aliases (#2063). <!-- maestro-release-note:341c3e6ae5ed -->
+- Skip rust setup for workflow-only tui checks (#2069). <!-- maestro-release-note:6ae0842947a7 -->
+- Scope rust hook coverage (#2066). <!-- maestro-release-note:5e5d9cf3e02b -->
+- Add next wave tool scheduling gates (#2064). <!-- maestro-release-note:5b3b061e2b3d -->
+- Log control-plane startup on stdout (#2062). <!-- maestro-release-note:cd1f81614933 -->
+- Parallelize read-only tool waves (#2061). <!-- maestro-release-note:03f8a287b9c1 -->
+- Run authorship labeler on owned ci (#2059). <!-- maestro-release-note:3b71c588b1b8 -->
+
+### Fixed
+
+- Publish Maestro's runtime workspace packages before the public root package so
+  Bun and npm resolvers can install `@evalops/maestro` without registry 404s.
+- Run nix hash updater on hosted runner (#2082). <!-- maestro-release-note:2ae7fb184dfc -->
+- Support Anthropic Opus 4.7 runtime (#2076). <!-- maestro-release-note:d047c05f1a4d -->
+- Reject unsafe trusted runner roots (#2077). <!-- maestro-release-note:caa544bc2dae -->
+- Preserve tool concurrency cap (#2073). <!-- maestro-release-note:c5811f2dc910 -->
+- Support split-stream structured logs (#2060). <!-- maestro-release-note:4ab6fac8eb1d -->
+
 ## [0.10.19] - 2026-05-18
 
 ### Added

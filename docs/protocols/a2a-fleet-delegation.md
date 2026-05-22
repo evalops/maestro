@@ -11,6 +11,7 @@ back.
 maestro a2a fleet [--json] [--registry <path>] [--tasks <path>]
 maestro a2a register --url <base-url> [--agent-id <id>] [--workspace-id <id>] [--json]
 maestro a2a delegate <peer> <text> [--role <role>] [--cwd <path>] [--wait] [--work-graph]
+maestro a2a delegate --platform --from-agent-id <agent-id> [--to-agent-id <agent-id>|--capability <capability>] --skill <skill-id> <text> [--json]
 maestro a2a reply <peer> <task-id> <text> [--wait] [--work-graph]
 maestro a2a tasks [peer] [--json] [--refresh] [--work-graph]
 maestro a2a coordinate [peer] [--json] [--refresh] [--reply <text>] [--wait] [--work-graph]
@@ -54,6 +55,16 @@ as an operator projection over durable agent/objective/run state rather than as
 the run itself: the task id is the protocol handle, `contextId` is the durable
 conversation/work envelope, and Maestro stores the peer-local transcript needed
 to resume, reply, audit, or wait later.
+
+`delegate --platform` is the production-verifiable path for remote Maestro
+work. It submits `agents.v1.AgentService/Delegate` with the coordinator agent,
+target agent or capability, A2A skill id, workspace, prompt, role, cwd, and
+workflow/objective correlation. Platform returns the delegation record and, when
+dispatch is enabled, the remote A2A task id and resume-wait contract. Operators
+then use the Platform delegation id with `maestro a2a control` and
+`maestro a2a graph`, so the same durable handle joins registry discovery,
+remote task control, subagent lineage, trace spans, artifacts, and later signed
+evidence bundles.
 
 `reply` continues an existing remote A2A task by sending `message.taskId` and
 the durable ledger `contextId` when available. It appends the operator's reply

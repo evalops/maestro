@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { parse } from "yaml";
 import {
@@ -347,11 +347,21 @@ describe("ci workflow guardrails", () => {
 				encoding: "utf8",
 			}),
 		) as Workflow;
-		const setupRustStep = workflow.jobs?.["pr-checks"]?.steps?.find(
+		const isInternalReleaseMirrorSource = existsSync(
+			new URL("../../.github/release-mirror-manifest.json", import.meta.url),
+		);
+		const prChecksJob = workflow.jobs?.["pr-checks"];
+		const setupRustStep = prChecksJob?.steps?.find(
 			(step) => step.uses === "./.github/actions/setup-rust",
 		);
+		const isPublicMirrorPrChecks =
+			workflow.jobs?.changes === undefined &&
+			workflow.jobs?.["public-release-mirror"] === undefined &&
+			prChecksJob?.["runs-on"] ===
+				"${{ vars.PUBLIC_PR_VALIDATION_RUNNER || 'ubuntu-latest' }}";
 
 		if (!setupRustStep) {
+			expect(isPublicMirrorPrChecks).toBe(true);
 			const rustHostedSteps =
 				workflow.jobs?.["rust-hosted-conformance"]?.steps ?? [];
 			expect(
@@ -362,6 +372,10 @@ describe("ci workflow guardrails", () => {
 			return;
 		}
 
+		if (isInternalReleaseMirrorSource) {
+			expect(workflow.jobs?.changes).toBeDefined();
+			expect(workflow.jobs?.["public-release-mirror"]).toBeDefined();
+		}
 		expect(setupRustStep?.if).toBe(
 			"${{ github.event_name != 'pull_request' || needs.changes.outputs.ci_infrastructure_only != 'true' }}",
 		);
@@ -467,7 +481,7 @@ describe("ci workflow guardrails", () => {
 		);
 	});
 
-	it("runs the Nix hash updater with a hosted sudo-capable fallback", () => {
+	it("runs the Nix hash updater on a hosted sudo-capable runner", () => {
 		const workflow = parse(
 			readFileSync(
 				new URL("../../.github/workflows/update-nix-hash.yml", import.meta.url),
@@ -483,12 +497,10 @@ describe("ci workflow guardrails", () => {
 			"ubuntu-latest",
 			"${{ vars.PUBLIC_PR_VALIDATION_RUNNER || 'ubuntu-latest' }}",
 		]).toContain(job?.["runs-on"]);
-		expect(installNixStep?.with?.nix_path).toBe(
-			"nixpkgs=channel:nixos-unstable",
-		);
-		if (installNixStep?.with && "enable_kvm" in installNixStep.with) {
-			expect(installNixStep.with.enable_kvm).toBe(false);
-		}
+		expect(installNixStep?.with).toMatchObject({
+			enable_kvm: false,
+			nix_path: "nixpkgs=channel:nixos-unstable",
+		});
 	});
 });
 

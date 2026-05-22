@@ -272,6 +272,7 @@ async fn execute_native_read_only_tool_wave(
     cwd: &str,
     event_tx: &mpsc::UnboundedSender<FromAgent>,
     pending: &[QueuedReadOnlyToolExecution],
+    cancel_token: Option<CancellationToken>,
 ) -> HashMap<String, ToolResult> {
     let calls = pending
         .iter()
@@ -285,9 +286,15 @@ async fn execute_native_read_only_tool_wave(
         .collect();
     let batch_executor =
         BatchExecutor::with_config(cwd.to_string(), native_read_only_batch_config());
-    batch_executor
-        .execute(calls, Some(event_tx.clone()))
-        .await
+    let results = if let Some(cancel_token) = cancel_token {
+        batch_executor
+            .execute_with_cancel(calls, Some(event_tx.clone()), cancel_token)
+            .await
+    } else {
+        batch_executor.execute(calls, Some(event_tx.clone())).await
+    };
+
+    results
         .into_iter()
         .map(|result| (result.call_id, result.result))
         .collect()
@@ -2537,9 +2544,14 @@ impl NativeAgentRunner {
         }
 
         let pending_calls = std::mem::take(pending);
-        let mut results_by_call_id =
-            execute_native_read_only_tool_wave(&self.config.cwd, &self.event_tx, &pending_calls)
-                .await;
+        let cancel_token = self.cancel_token.clone();
+        let mut results_by_call_id = execute_native_read_only_tool_wave(
+            &self.config.cwd,
+            &self.event_tx,
+            &pending_calls,
+            cancel_token,
+        )
+        .await;
 
         for call in pending_calls {
             let result = results_by_call_id
@@ -2904,7 +2916,8 @@ mod tests {
 
         let (tx, mut rx) = mpsc::unbounded_channel();
         let results =
-            execute_native_read_only_tool_wave(temp.path().to_str().unwrap(), &tx, &pending).await;
+            execute_native_read_only_tool_wave(temp.path().to_str().unwrap(), &tx, &pending, None)
+                .await;
 
         assert_eq!(results.len(), 4);
         assert!(results.values().all(|result| result.success));

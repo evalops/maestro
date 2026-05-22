@@ -152,6 +152,7 @@ export interface PlatformDelegationRecord {
 }
 
 export interface PlatformAgentRegistryDelegateInput {
+	workspaceId?: string;
 	fromAgentId: string;
 	toAgentId?: string;
 	requiredCapability?: string;
@@ -1347,9 +1348,18 @@ export async function delegateAgentWithPlatform(
 		signal?: AbortSignal;
 	},
 ): Promise<PlatformAgentRegistryDelegateResult | null> {
+	const explicitWorkspaceId = trimString(input.workspaceId);
+	const resolvedConfig = options?.config
+		? explicitWorkspaceId && explicitWorkspaceId !== options.config.workspaceId
+			? { ...options.config, workspaceId: explicitWorkspaceId }
+			: options.config
+		: explicitWorkspaceId
+			? await resolveAgentRegistryListServiceConfig(explicitWorkspaceId)
+			: undefined;
 	const payload = await postAgentRegistryOperation(
 		DELEGATE_PATH,
 		stripUndefinedValues({
+			workspaceId: explicitWorkspaceId,
 			fromAgentId: input.fromAgentId,
 			toAgentId: input.toAgentId,
 			requiredCapability: input.requiredCapability,
@@ -1360,7 +1370,7 @@ export async function delegateAgentWithPlatform(
 			contextPayload: encodeJsonBytes(input.contextPayload),
 			reason: input.reason,
 		}),
-		options,
+		resolvedConfig ? { ...options, config: resolvedConfig } : options,
 	);
 	if (!payload) {
 		return null;
