@@ -124,7 +124,8 @@ pub struct Executor {
 struct AnthropicRequest {
     model: String,
     max_tokens: u32,
-    temperature: f64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    temperature: Option<f64>,
     messages: Vec<Message>,
     system: String,
 }
@@ -499,7 +500,7 @@ impl Executor {
         let request = AnthropicRequest {
             model: model.to_string(),
             max_tokens: self.config.max_tokens,
-            temperature: self.config.temperature,
+            temperature: supports_anthropic_temperature(model).then_some(self.config.temperature),
             system: system_prompt.to_string(),
             messages: vec![Message {
                 role: "user".to_string(),
@@ -822,6 +823,23 @@ impl Executor {
     }
 }
 
+fn supports_anthropic_temperature(model: &str) -> bool {
+    let model = model
+        .strip_prefix("~anthropic/")
+        .or_else(|| model.strip_prefix("anthropic/"))
+        .unwrap_or(model);
+    let model = model.to_ascii_lowercase();
+
+    !(is_anthropic_opus_4_family(&model) || model == "claude-opus-latest")
+}
+
+fn is_anthropic_opus_4_family(model: &str) -> bool {
+    model == "claude-opus-4"
+        || model
+            .strip_prefix("claude-opus-4")
+            .is_some_and(|suffix| suffix.starts_with(['-', '.']))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -934,6 +952,80 @@ fn main() {
         assert!(!fixture.decision.is_blocking());
     }
 
+    #[test]
+    fn anthropic_temperature_support_matches_opus_4_family() {
+        assert!(!supports_anthropic_temperature("claude-opus-4"));
+        assert!(!supports_anthropic_temperature("claude-opus-4-7"));
+        assert!(!supports_anthropic_temperature("claude-opus-4.7"));
+        assert!(!supports_anthropic_temperature("claude-opus-4-1-20250805"));
+        assert!(!supports_anthropic_temperature("anthropic/claude-opus-4-7"));
+        assert!(!supports_anthropic_temperature(
+            "~anthropic/claude-opus-4-7"
+        ));
+        assert!(!supports_anthropic_temperature("claude-opus-latest"));
+        assert!(supports_anthropic_temperature("claude-3-opus-20240229"));
+        assert!(supports_anthropic_temperature("claude-sonnet-4-5"));
+        assert!(supports_anthropic_temperature("claude-haiku-3-5"));
+    }
+
+    #[tokio::test]
+    async fn call_llm_omits_temperature_for_anthropic_opus_4_7() {
+        let (api_base_url, request_rx) = spawn_anthropic_messages_fixture();
+        let executor = Executor::new(ExecutorConfig {
+            api_key: "ant-test-key".to_string(),
+            api_base_url,
+            api_provider: LlmApiProvider::AnthropicMessages,
+            temperature: 0.7,
+            max_retries: 1,
+            ..ExecutorConfig::default()
+        });
+
+        let response = executor
+            .call_llm("claude-opus-4-7", "system prompt", "user prompt")
+            .await
+            .unwrap();
+
+        let request = request_rx.recv().unwrap();
+        let lowercase_request = request.to_ascii_lowercase();
+        assert!(request.starts_with("POST /messages HTTP/1.1"));
+        assert!(lowercase_request.contains("x-api-key: ant-test-key"));
+        assert!(request.contains("\"model\":\"claude-opus-4-7\""));
+        assert!(request.contains("\"system\":\"system prompt\""));
+        assert!(request.contains("\"role\":\"user\""));
+        assert!(request.contains("\"content\":\"user prompt\""));
+        assert!(!request.contains("\"temperature\""));
+        assert_eq!(response.usage.input_tokens, 3);
+        assert_eq!(response.usage.output_tokens, 2);
+        assert_eq!(response.content[0].text.as_deref(), Some("ok"));
+    }
+
+    #[tokio::test]
+    async fn call_llm_keeps_temperature_for_anthropic_sonnet() {
+        let (api_base_url, request_rx) = spawn_anthropic_messages_fixture();
+        let executor = Executor::new(ExecutorConfig {
+            api_key: "ant-test-key".to_string(),
+            api_base_url,
+            api_provider: LlmApiProvider::AnthropicMessages,
+            temperature: 0.7,
+            max_retries: 1,
+            ..ExecutorConfig::default()
+        });
+
+        let response = executor
+            .call_llm("claude-sonnet-4-5", "system prompt", "user prompt")
+            .await
+            .unwrap();
+
+        let request = request_rx.recv().unwrap();
+        let lowercase_request = request.to_ascii_lowercase();
+        assert!(request.starts_with("POST /messages HTTP/1.1"));
+        assert!(lowercase_request.contains("x-api-key: ant-test-key"));
+        assert!(request.contains("\"model\":\"claude-sonnet-4-5\""));
+        assert!(request.contains("\"temperature\":0.7"));
+        assert_eq!(response.usage.input_tokens, 3);
+        assert_eq!(response.usage.output_tokens, 2);
+    }
+
     #[tokio::test]
     async fn call_llm_uses_openrouter_chat_completions() {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
@@ -983,6 +1075,27 @@ fn main() {
             response.content[0].text.as_deref(),
             Some("<file_change><action>modify</action><path>README.md</path><content>ok</content></file_change>")
         );
+    }
+
+    fn spawn_anthropic_messages_fixture() -> (String, mpsc::Receiver<String>) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let (request_tx, request_rx) = mpsc::channel();
+        std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let request = read_http_request(&mut stream);
+            request_tx.send(request).unwrap();
+            let body =
+                "{\"content\":[{\"type\":\"text\",\"text\":\"ok\"}],\"usage\":{\"input_tokens\":3,\"output_tokens\":2}}";
+            let response = format!(
+                "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            stream.write_all(response.as_bytes()).unwrap();
+        });
+
+        (format!("http://{}", addr), request_rx)
     }
 
     fn read_http_request(stream: &mut TcpStream) -> String {

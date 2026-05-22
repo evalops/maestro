@@ -31,6 +31,7 @@ jobs:
 
       - uses: cachix/install-nix-action@8aa03977d8d733052d78f4e008a241fd1dbf36b3 # v31.10.6
         with:
+          enable_kvm: false
           nix_path: nixpkgs=channel:nixos-unstable
 
       - name: Calculate new hash

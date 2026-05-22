@@ -100,7 +100,14 @@ const ANTHROPIC_VERSION: &str = "2023-06-01";
 
 fn anthropic_model_accepts_temperature(model: &str) -> bool {
     let normalized = model.to_ascii_lowercase();
-    !(normalized == "claude-opus-4-7" || normalized.starts_with("claude-opus-4-7-"))
+    !(is_anthropic_opus_4_family(&normalized) || normalized == "claude-opus-latest")
+}
+
+fn is_anthropic_opus_4_family(model: &str) -> bool {
+    model == "claude-opus-4"
+        || model
+            .strip_prefix("claude-opus-4")
+            .is_some_and(|suffix| suffix.starts_with(['-', '.']))
 }
 
 /// Anthropic API client for Claude models
@@ -766,6 +773,48 @@ data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text
         let body = client.build_request_body(&[], &config).unwrap();
 
         assert!(body.get("temperature").is_none());
+    }
+
+    #[test]
+    fn test_build_request_body_omits_temperature_for_opus_4_family() {
+        let client = AnthropicClient::new("test-key").unwrap();
+
+        for model in [
+            "claude-opus-4",
+            "claude-opus-4-1-20250805",
+            "claude-opus-4-6",
+            "claude-opus-4.7",
+            "anthropic/claude-opus-4.7",
+            "claude-opus-latest",
+        ] {
+            let config = RequestConfig {
+                model: model.to_string(),
+                temperature: Some(0.7),
+                ..Default::default()
+            };
+
+            let body = client.build_request_body(&[], &config).unwrap();
+
+            assert!(
+                body.get("temperature").is_none(),
+                "{model} should omit temperature"
+            );
+        }
+    }
+
+    #[test]
+    fn test_build_request_body_keeps_temperature_for_older_opus() {
+        let client = AnthropicClient::new("test-key").unwrap();
+        let config = RequestConfig {
+            model: "claude-3-opus-20240229".to_string(),
+            temperature: Some(0.7),
+            ..Default::default()
+        };
+
+        let body = client.build_request_body(&[], &config).unwrap();
+
+        let temperature = body["temperature"].as_f64().unwrap();
+        assert!((temperature - 0.7).abs() < 0.000_001);
     }
 
     #[test]
