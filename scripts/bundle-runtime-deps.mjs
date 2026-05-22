@@ -1,8 +1,13 @@
 #!/usr/bin/env node
 
-import { chmodSync } from "node:fs";
+import { chmodSync, cpSync, existsSync, mkdirSync, rmSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { build } from "esbuild";
 import { loadRootPackage } from "./workspace-utils.js";
+import {
+	getRuntimeWorkspaceNames,
+	getRuntimeWorkspacePackages,
+} from "./runtime-workspaces.mjs";
 
 const bundledPackages = new Set(["@google/genai", "google-auth-library"]);
 const entryPoints = [
@@ -13,13 +18,12 @@ const entryPoints = [
 ];
 
 const rootPackage = loadRootPackage();
+const runtimeWorkspaceNames = new Set(getRuntimeWorkspaceNames(rootPackage));
 const declaredPackages = new Set([
 	...Object.keys(rootPackage.dependencies ?? {}),
 	...Object.keys(rootPackage.optionalDependencies ?? {}),
 	...Object.keys(rootPackage.peerDependencies ?? {}),
-	...((Array.isArray(rootPackage.bundleDependencies)
-		? rootPackage.bundleDependencies
-		: []) ?? []),
+	...runtimeWorkspaceNames,
 ]);
 
 const external = Array.from(declaredPackages)
@@ -42,6 +46,22 @@ for (const entryPoint of entryPoints) {
 		platform: "node",
 		target: "node20",
 	});
+}
+
+const runtimeWorkspacePackages = await getRuntimeWorkspacePackages(rootPackage);
+for (const workspacePackage of runtimeWorkspacePackages) {
+	const sourceDir = dirname(workspacePackage.path);
+	const sourceDist = join(sourceDir, "dist");
+	if (!existsSync(sourceDist)) {
+		throw new Error(`Runtime workspace is missing dist output: ${sourceDist}`);
+	}
+
+	const targetDir = join("dist", "node_modules", ...workspacePackage.name.split("/"));
+	rmSync(targetDir, { recursive: true, force: true });
+	mkdirSync(targetDir, { recursive: true });
+	cpSync(workspacePackage.path, join(targetDir, "package.json"));
+	cpSync(sourceDist, join(targetDir, "dist"), { recursive: true });
+	rmSync(join(targetDir, "dist", "testing"), { recursive: true, force: true });
 }
 
 chmodSync("dist/cli.js", 0o755);
