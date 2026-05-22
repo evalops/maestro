@@ -954,7 +954,7 @@ describe("ProviderTransport provider-owned tool events", () => {
 		expect(endEvent?.result).not.toHaveProperty("approvalRequestId");
 	});
 
-	it("returns workflow-state errors from cached dynamic callbacks", async () => {
+	it("returns workflow-state errors from repeated dynamic callbacks", async () => {
 		const { bridge, recordObservation } = createObservingPlatformBridge();
 		const toolExecute = vi.fn(async () => ({
 			content: [{ type: "text" as const, text: "redacted" }],
@@ -1123,14 +1123,14 @@ describe("ProviderTransport provider-owned tool events", () => {
 					toolName: "read",
 					displayName: "Codex dynamic tool: read",
 					summaryLabel: "read",
-					args: { file_path: "workspace/project/guarded.txt" },
+					args: { file_path: "fixtures/guarded.txt" },
 					partial: assistant,
 				} satisfies AssistantMessageEvent;
 				const result = await options.executeDynamicTool({
 					type: "toolCall",
 					id: toolCallId,
 					name: "read",
-					arguments: { file_path: "workspace/project/guarded.txt" },
+					arguments: { file_path: "fixtures/guarded.txt" },
 				});
 				dynamicResults.push(result);
 				yield {
@@ -1202,16 +1202,12 @@ describe("ProviderTransport provider-owned tool events", () => {
 		).toHaveLength(2);
 		expect(dynamicResults).toEqual([
 			{
-				content: [
-					{ type: "text", text: "dynamic:workspace/project/guarded.txt:1" },
-				],
+				content: [{ type: "text", text: "dynamic:fixtures/guarded.txt:1" }],
 				isError: false,
 				details: undefined,
 			},
 			{
-				content: [
-					{ type: "text", text: "dynamic:workspace/project/guarded.txt:1" },
-				],
+				content: [{ type: "text", text: "dynamic:fixtures/guarded.txt:1" }],
 				isError: false,
 				details: undefined,
 			},
@@ -1262,7 +1258,7 @@ describe("ProviderTransport provider-owned tool events", () => {
 					toolName: "read",
 					displayName: "Codex dynamic tool: read",
 					summaryLabel: "read",
-					args: { path: "docs/evalops.txt" },
+					args: { path: "package.json" },
 					partial: assistant,
 				} satisfies AssistantMessageEvent;
 				resultPromises.push(
@@ -1270,7 +1266,7 @@ describe("ProviderTransport provider-owned tool events", () => {
 						type: "toolCall",
 						id: toolCallId,
 						name: "read",
-						arguments: { path: "docs/evalops.txt" },
+						arguments: { path: "package.json" },
 					}),
 				);
 			}
@@ -1332,7 +1328,7 @@ describe("ProviderTransport provider-owned tool events", () => {
 		expect(toolExecute).toHaveBeenCalledTimes(1);
 		expect(dynamicResults).toEqual(
 			Array.from({ length: repeatedToolCalls }, () => ({
-				content: [{ type: "text", text: "dynamic:docs/evalops.txt:1" }],
+				content: [{ type: "text", text: "dynamic:package.json:1" }],
 				isError: false,
 				details: undefined,
 			})),
@@ -1405,7 +1401,7 @@ describe("ProviderTransport provider-owned tool events", () => {
 					type: "toolCall",
 					id: "dynamic-read-before-write",
 					name: "read",
-					arguments: { path: "/tmp/evalops.txt" },
+					arguments: { path: "package.json" },
 				}),
 			);
 			const writePromise = options.executeDynamicTool({
@@ -1413,7 +1409,7 @@ describe("ProviderTransport provider-owned tool events", () => {
 				id: "dynamic-write",
 				name: "write",
 				arguments: {
-					path: "/tmp/evalops.txt",
+					path: "package.json",
 					content: "new content",
 				},
 			});
@@ -1423,7 +1419,7 @@ describe("ProviderTransport provider-owned tool events", () => {
 					type: "toolCall",
 					id: "dynamic-read-during-write",
 					name: "read",
-					arguments: { path: "/tmp/evalops.txt" },
+					arguments: { path: "package.json" },
 				}),
 			);
 			resolveWrite?.();
@@ -1458,12 +1454,12 @@ describe("ProviderTransport provider-owned tool events", () => {
 		expect(writeToolExecute).toHaveBeenCalledTimes(1);
 		expect(dynamicResults).toEqual([
 			{
-				content: [{ type: "text", text: "dynamic:/tmp/evalops.txt:1" }],
+				content: [{ type: "text", text: "dynamic:package.json:1" }],
 				isError: false,
 				details: undefined,
 			},
 			{
-				content: [{ type: "text", text: "dynamic:/tmp/evalops.txt:2" }],
+				content: [{ type: "text", text: "dynamic:package.json:2" }],
 				isError: false,
 				details: undefined,
 			},
@@ -1515,7 +1511,7 @@ describe("ProviderTransport provider-owned tool events", () => {
 					type: "toolCall",
 					id: toolCallId,
 					name: "read",
-					arguments: { path: "docs/evalops.txt" },
+					arguments: { path: "package.json" },
 				});
 				yield {
 					type: "provider_tool_execution_end",
@@ -1629,7 +1625,7 @@ describe("ProviderTransport provider-owned tool events", () => {
 					toolCall: {
 						id: `read-call-${streamCount}`,
 						name: "read",
-						arguments: { file_path: "docs/evalops.txt" },
+						arguments: { file_path: "package.json" },
 					},
 					partial: assistant,
 				} satisfies AssistantMessageEvent;
@@ -1671,7 +1667,7 @@ describe("ProviderTransport provider-owned tool events", () => {
 					.map((item) => (item.type === "text" ? item.text : ""))
 					.join(""),
 			),
-		).toEqual(Array(repeatedToolCalls).fill("read:docs/evalops.txt:1"));
+		).toEqual(Array(repeatedToolCalls).fill("read:package.json:1"));
 		expect(readResults.every((event) => event.isError === false)).toBe(true);
 	});
 
@@ -1716,7 +1712,7 @@ describe("ProviderTransport provider-owned tool events", () => {
 					toolCall: {
 						id: `observed-read-call-${streamCount}`,
 						name: "read",
-						arguments: { file_path: "docs/evalops.txt" },
+						arguments: { file_path: "package.json" },
 					},
 					partial: assistant,
 				} satisfies AssistantMessageEvent;
@@ -2181,7 +2177,7 @@ describe("ProviderTransport provider-owned tool events", () => {
 					toolCall: {
 						id: `guarded-read-call-${streamCount}`,
 						name: "read",
-						arguments: { file_path: "workspace/project/guarded.txt" },
+						arguments: { file_path: "fixtures/guarded.txt" },
 					},
 					partial: assistant,
 				} satisfies AssistantMessageEvent;
@@ -2239,8 +2235,8 @@ describe("ProviderTransport provider-owned tool events", () => {
 					.join(""),
 			),
 		).toEqual([
-			"guarded:workspace/project/guarded.txt:1",
-			"guarded:workspace/project/guarded.txt:1",
+			"guarded:fixtures/guarded.txt:1",
+			"guarded:fixtures/guarded.txt:1",
 		]);
 	});
 

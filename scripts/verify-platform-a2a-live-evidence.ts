@@ -399,9 +399,15 @@ function verifyGithubEvidence(
 		integerStringField(github, "actionsRunId") ??
 		integerStringField(github, "ghaRunId");
 	const runUrl = optionalString(github, "runUrl");
-	if (runUrl && !/\/actions\/runs\/[1-9]\d*(?:$|[/?#])/u.test(runUrl)) {
+	const runUrlId = runUrl ? githubActionsRunIdFromUrl(runUrl) : undefined;
+	if (runUrl && !runUrlId) {
 		throw new Error(
 			`Platform A2A evidence GitHub run URL is not dereferenceable: ${runUrl}`,
+		);
+	}
+	if (runId && runUrlId && runUrlId !== runId) {
+		throw new Error(
+			`Platform A2A evidence GitHub run URL id ${runUrlId} does not match runId ${runId}`,
 		);
 	}
 	const pullRequestNumber =
@@ -441,6 +447,7 @@ async function verifyDereferenceableGithubEvidence(
 			"Platform A2A evidence requires dereferenceable GitHub metadata but has no Actions run id",
 		);
 	}
+	requireHttpsGithubServerUrl(github.serverUrl);
 	const env = options.env ?? process.env;
 	const apiClient = options.githubApiClient ?? defaultGithubApiClient;
 	const run = requireRecord(
@@ -474,6 +481,22 @@ async function verifyDereferenceableGithubEvidence(
 		}
 	}
 	return true;
+}
+
+function githubActionsRunIdFromUrl(value: string): string | undefined {
+	return /\/actions\/runs\/([1-9]\d*)(?:$|[/?#])/u.exec(value)?.[1];
+}
+
+function requireHttpsGithubServerUrl(serverUrl: string | undefined): void {
+	if (!serverUrl) {
+		return;
+	}
+	const url = new URL(serverUrl);
+	if (url.protocol !== "https:") {
+		throw new Error(
+			`Platform A2A evidence GitHub server URL must use HTTPS when dereference is required: ${serverUrl}`,
+		);
+	}
 }
 
 function githubServerUrl(value: string | undefined): string | undefined {

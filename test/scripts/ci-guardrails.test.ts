@@ -12,7 +12,10 @@ import {
 	summarizeChecks,
 } from "../../scripts/maestro-merge-queue-status.mjs";
 import { planCiChecks } from "../../scripts/plan-ci-checks.mjs";
-import { planNxTestCommand } from "../../scripts/plan-nx-test-command.mjs";
+import {
+	packageManifestReleaseMetadataOnlyChanged,
+	planNxTestCommand,
+} from "../../scripts/plan-nx-test-command.mjs";
 import {
 	collectFeedbackAuditTargets,
 	parseFeedbackAuditArgs,
@@ -193,6 +196,37 @@ describe("planCiChecks", () => {
 		).toBe(true);
 	});
 
+	it("skips coverage for runtime package metadata and test-only changes", () => {
+		expect(
+			planCiChecks({
+				eventName: "pull_request",
+				changedFiles: [
+					".github/workflows/ci.yml",
+					"CHANGELOG.md",
+					"openapi.json",
+					"package.json",
+					"packages/contracts/package.json",
+					"packages/slack-agent/test/tools-status.test.ts",
+					"scripts/bundle-runtime-deps.mjs",
+					"scripts/check-docker-runtime-workspaces.mjs",
+					"scripts/check-packed-bundled-workspaces.mjs",
+					"scripts/check-runtime-deps.js",
+					"scripts/ci-nx-tests.sh",
+					"scripts/plan-nx-test-command.mjs",
+					"scripts/runtime-workspaces.mjs",
+					"scripts/validate-public-package-deps.js",
+					"test/scripts/ci-guardrails.test.ts",
+				],
+			}),
+		).toMatchObject({
+			ciInfrastructureOnly: false,
+			coverage: false,
+			prChecks: true,
+			publicMirror: true,
+			rustHostedConformance: true,
+		});
+	});
+
 	it("runs public mirror checks for mirror config inputs", () => {
 		expect(
 			planCiChecks({
@@ -240,6 +274,37 @@ describe("planCiChecks", () => {
 });
 
 describe("ci workflow guardrails", () => {
+	it("runs shell CI guardrails for workflow file changes", () => {
+		const script = readFileSync(
+			new URL("../../scripts/ci-nx-tests.sh", import.meta.url),
+			{ encoding: "utf8" },
+		);
+		const triggerPattern = script.match(
+			/run_ci_guardrail_tests\(\) \{[\s\S]*?changed_files_match '([^']+)'/,
+		)?.[1];
+
+		expect(triggerPattern).toBeDefined();
+		const regex = new RegExp(triggerPattern ?? "");
+		expect(regex.test(".github/workflows/ci.yml")).toBe(true);
+		expect(regex.test("scripts/ci-nx-tests.sh")).toBe(true);
+	});
+
+	it("builds dist before the runtime dependency validator", () => {
+		const script = readFileSync(
+			new URL("../../scripts/ci-nx-tests.sh", import.meta.url),
+			{ encoding: "utf8" },
+		);
+		const runtimeValidatorBody =
+			script.match(
+				/run_runtime_package_validators\(\) \{([\s\S]*?)\n\}/,
+			)?.[1] ?? "";
+
+		expect(runtimeValidatorBody).not.toBe("");
+		expect(runtimeValidatorBody.indexOf("npm run build")).toBeLessThan(
+			runtimeValidatorBody.indexOf("node scripts/check-runtime-deps.js"),
+		);
+	});
+
 	it("hard-bounds long-running Nx and coverage phases", () => {
 		const workflow = parse(
 			readFileSync(new URL("../../.github/workflows/ci.yml", import.meta.url), {
@@ -259,7 +324,7 @@ describe("ci workflow guardrails", () => {
 			]),
 		);
 
-		expect(prCheckTimeouts.get("Test (Nx affected)")).toBe(45);
+		expect(prCheckTimeouts.get("Test (Nx affected)")).toBe(60);
 		expect(workflow.jobs?.coverage?.["timeout-minutes"]).toBe(75);
 		expect(coverageTimeouts.get("Run tests with coverage")).toBe(60);
 	});
@@ -625,6 +690,47 @@ describe("planNxTestCommand", () => {
 		});
 	});
 
+	it("filters release metadata package manifests from affected files", () => {
+		expect(
+			planNxTestCommand({
+				basePackage,
+				changedFiles: [
+					".github/workflows/ci.yml",
+					"CHANGELOG.md",
+					"openapi.json",
+					"package.json",
+					"packages/contracts/package.json",
+					"packages/slack-agent/test/tools-status.test.ts",
+					"scripts/ci-nx-tests.sh",
+					"scripts/check-runtime-deps.js",
+					"scripts/plan-nx-test-command.mjs",
+					"scripts/runtime-workspaces.mjs",
+					"test/scripts/ci-guardrails.test.ts",
+				],
+				handledOutsideNxFiles: [
+					".github/workflows/ci.yml",
+					"scripts/ci-nx-tests.sh",
+					"scripts/check-runtime-deps.js",
+					"scripts/plan-nx-test-command.mjs",
+					"scripts/runtime-workspaces.mjs",
+					"test/scripts/ci-guardrails.test.ts",
+				],
+				headPackage: {
+					...basePackage,
+					version: "1.0.1",
+				},
+				packageJsonMetadataOnlyFiles: [
+					"package.json",
+					"packages/contracts/package.json",
+				],
+				releaseMetadataOnlyFiles: ["CHANGELOG.md", "openapi.json"],
+			}),
+		).toEqual({
+			files: ["packages/slack-agent/test/tools-status.test.ts"],
+			mode: "affected-files",
+		});
+	});
+
 	it("skips Nx when package scripts are the only changed files", () => {
 		expect(
 			planNxTestCommand({
@@ -640,6 +746,46 @@ describe("planNxTestCommand", () => {
 				},
 			}),
 		).toEqual({ files: [], mode: "none" });
+	});
+
+	it("treats runtime workspace package metadata as release metadata", () => {
+		expect(
+			packageManifestReleaseMetadataOnlyChanged({
+				allowedRootDependencyNames: ["@bufbuild/protobuf"],
+				basePackage: {
+					...basePackage,
+					bundleDependencies: ["@evalops/contracts"],
+					version: "1.0.0",
+				},
+				headPackage: {
+					...basePackage,
+					dependencies: {
+						...basePackage.dependencies,
+						"@bufbuild/protobuf": "^2.11.0",
+					},
+					maestroRuntimeWorkspaces: ["@evalops/contracts"],
+					version: "1.0.1",
+				},
+				isRootPackage: true,
+			}),
+		).toBe(true);
+	});
+
+	it("keeps non-runtime root dependency additions on the full matrix", () => {
+		expect(
+			packageManifestReleaseMetadataOnlyChanged({
+				allowedRootDependencyNames: ["@bufbuild/protobuf"],
+				basePackage,
+				headPackage: {
+					...basePackage,
+					dependencies: {
+						...basePackage.dependencies,
+						"left-pad": "^1.3.0",
+					},
+				},
+				isRootPackage: true,
+			}),
+		).toBe(false);
 	});
 });
 

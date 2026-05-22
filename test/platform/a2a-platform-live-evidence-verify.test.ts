@@ -342,6 +342,67 @@ describe("Platform A2A live evidence verifier", () => {
 		}
 	});
 
+	it("rejects non-HTTPS GitHub server URLs before dereferencing", async () => {
+		const dir = await mkdtemp(join(tmpdir(), "maestro-a2a-evidence-"));
+		const paths: string[] = [];
+		try {
+			const path = await writeEvidenceBundle(
+				dir,
+				evidence({
+					github: {
+						repository: "evalops/maestro-internal",
+						serverUrl: "http://github.example.com",
+						runId: "26252628231",
+						runUrl:
+							"http://github.example.com/evalops/maestro-internal/actions/runs/26252628231",
+						sha: "1234567890abcdef1234567890abcdef12345678",
+						pullRequestNumber: 2070,
+						pullRequestUrl:
+							"http://github.example.com/evalops/maestro-internal/pull/2070",
+					},
+				}),
+			);
+			await expect(
+				verifyPlatformA2ALiveEvidenceFile(path, {
+					requireDereferenceableGithub: true,
+					githubApiClient: async (apiPath) => {
+						paths.push(apiPath);
+						throw new Error("GitHub API client should not be called");
+					},
+				}),
+			).rejects.toThrow(/server URL must use HTTPS/);
+			expect(paths).toEqual([]);
+		} finally {
+			await rm(dir, { force: true, recursive: true });
+		}
+	});
+
+	it("rejects GitHub run URLs that do not match the run id", async () => {
+		const dir = await mkdtemp(join(tmpdir(), "maestro-a2a-evidence-"));
+		try {
+			const path = await writeEvidenceBundle(
+				dir,
+				evidence({
+					github: {
+						repository: "evalops/maestro-internal",
+						runId: "26252628231",
+						runUrl:
+							"https://github.com/evalops/maestro-internal/actions/runs/26252628232",
+						sha: "1234567890abcdef1234567890abcdef12345678",
+						pullRequestNumber: 2070,
+						pullRequestUrl:
+							"https://github.com/evalops/maestro-internal/pull/2070",
+					},
+				}),
+			);
+			await expect(verifyPlatformA2ALiveEvidenceFile(path)).rejects.toThrow(
+				/run URL id 26252628232 does not match runId 26252628231/,
+			);
+		} finally {
+			await rm(dir, { force: true, recursive: true });
+		}
+	});
+
 	it("accepts invalid-token rejection evidence when required", async () => {
 		const dir = await mkdtemp(join(tmpdir(), "maestro-a2a-evidence-"));
 		try {

@@ -155,7 +155,7 @@
 				"records Platform observations for cached dynamic read callbacks",
 				"lets Codex dynamic tool callbacks wait for user approval instead of auto-denying",
 				"preserves Platform joins for denied Codex dynamic callbacks",
-				"returns workflow-state errors from cached dynamic callbacks",
+				"returns workflow-state errors from repeated dynamic callbacks",
 				"withTimeout",
 				"action_approval_required",
 				"ActionApprovalService(\"prompt\")",

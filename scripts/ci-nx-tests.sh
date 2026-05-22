@@ -26,6 +26,33 @@ affected_projects_log="nx-affected-projects.log"
 
 git diff --name-only "$NX_BASE" "$NX_HEAD" | tee "$changed_files_log"
 
+changed_files_match() {
+	local pattern="$1"
+	grep -qE "$pattern" "$changed_files_log"
+}
+
+run_ci_guardrail_tests() {
+	if ! changed_files_match '^(\.github/workflows/.*|scripts/ci-nx-tests\.sh|scripts/(plan-ci-checks|plan-nx-test-command)\.mjs|test/scripts/ci-guardrails\.test\.ts)$'; then
+		return 0
+	fi
+
+	echo "Running CI guardrail tests for workflow/planner changes..."
+	node ./scripts/run-vitest.js --run test/scripts/ci-guardrails.test.ts
+}
+
+run_runtime_package_validators() {
+	if ! changed_files_match '^(package\.json|packages/[^/]+/package\.json|scripts/(bundle-runtime-deps|check-docker-runtime-workspaces|check-packed-bundled-workspaces|runtime-workspaces)\.mjs|scripts/(check-runtime-deps|validate-public-package-deps)\.js)$'; then
+		return 0
+	fi
+
+	echo "Running runtime package validators..."
+	node scripts/validate-public-package-deps.js
+	npm run build
+	node scripts/check-runtime-deps.js
+	node scripts/check-docker-runtime-workspaces.mjs
+	node scripts/check-packed-bundled-workspaces.mjs
+}
+
 run_shared_memory_tests() {
 	if git diff --name-only "$NX_BASE" "$NX_HEAD" | grep -qE '^(src/shared-memory/|test/shared-memory/|src/config/env-vars\.ts|src/cli/commands/memory\.ts|src/cli/help\.ts|src/session/manager\.ts)'; then
 		echo "Running shared memory tests..."
@@ -34,6 +61,8 @@ run_shared_memory_tests() {
 }
 
 node scripts/ensure-deps.js --no-install --workspace @evalops/contracts --workspace @evalops/tui
+run_ci_guardrail_tests
+run_runtime_package_validators
 
 nx_plan="$(node scripts/plan-nx-test-command.mjs --base "$NX_BASE" --head "$NX_HEAD")"
 nx_mode="$(printf '%s\n' "$nx_plan" | sed -n '1p')"

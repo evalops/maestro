@@ -19,11 +19,17 @@ versioning when releases are cut.
 
 ## [0.10.21] - 2026-05-22
 
+### Changed
+
+- Add Platform-owned A2A delegation (#2080). <!-- maestro-release-note:f30599cbae56 -->
+- Reduce avoidable tool serialization (#2079). <!-- maestro-release-note:cde1f5c1a424 -->
+
 ### Fixed
 
 - Vendor runtime workspaces under `dist/node_modules` so Bun and npm installs of
   `@evalops/maestro` do not resolve unpublished `@evalops/contracts` or
-  `@evalops/tui` packages from the registry.
+  `@evalops/tui` packages from the registry. <!-- maestro-release-note:449e0b2ad97f -->
+- Allow public mirror ci guardrail shape (#2092). <!-- maestro-release-note:e5749b2d000b -->
 
 ## [0.10.20] - 2026-05-22
 

@@ -27,6 +27,7 @@ const LOCK_RETRY_MS = 5;
 const DEFAULT_LOCK_TIMEOUT_MS = 5_000;
 const LOCK_STALE_GRACE_MS = 1_000;
 let globalAggregator: CliCommandAggregator | null = null;
+const inProcessBufferLockQueues = new Map<string, Promise<void>>();
 
 export class CliCommandAggregator {
 	private readonly bufferMs: number;
@@ -149,6 +150,15 @@ export class CliCommandAggregator {
 
 	private async withBufferLock(operation: () => Promise<void>): Promise<void> {
 		const lockFile = `${this.bufferFile}.lock`;
+		await runWithInProcessBufferLock(lockFile, () =>
+			this.withBufferFileLock(lockFile, operation),
+		);
+	}
+
+	private async withBufferFileLock(
+		lockFile: string,
+		operation: () => Promise<void>,
+	): Promise<void> {
 		const deadline = Date.now() + this.lockTimeoutMs;
 		let handle: Awaited<ReturnType<typeof open>> | undefined;
 		while (!handle) {
@@ -270,6 +280,28 @@ export class CliCommandAggregator {
 
 	private async clearBuffer(): Promise<void> {
 		await rm(this.bufferFile, { force: true });
+	}
+}
+
+async function runWithInProcessBufferLock(
+	lockFile: string,
+	operation: () => Promise<void>,
+): Promise<void> {
+	const previous = inProcessBufferLockQueues.get(lockFile) ?? Promise.resolve();
+	let releaseCurrent: () => void = () => undefined;
+	const current = new Promise<void>((resolve) => {
+		releaseCurrent = resolve;
+	});
+	const queued = previous.catch(() => undefined).then(() => current);
+	inProcessBufferLockQueues.set(lockFile, queued);
+	await previous.catch(() => undefined);
+	try {
+		await operation();
+	} finally {
+		releaseCurrent();
+		if (inProcessBufferLockQueues.get(lockFile) === queued) {
+			inProcessBufferLockQueues.delete(lockFile);
+		}
 	}
 }
 
