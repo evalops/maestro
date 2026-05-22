@@ -1022,6 +1022,10 @@ pub struct BatchDetails {
     /// Individual tool durations in milliseconds (keyed by `call_id`)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tool_durations: Option<std::collections::HashMap<String, u64>>,
+
+    /// Number of parallel tasks that reused the batch executor's cached ToolExecutor
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub executor_reuse_count: Option<usize>,
 }
 
 impl BatchDetails {
@@ -1064,6 +1068,12 @@ impl BatchDetails {
         durations: std::collections::HashMap<String, u64>,
     ) -> Self {
         self.tool_durations = Some(durations);
+        self
+    }
+
+    #[must_use]
+    pub fn with_executor_reuse_count(mut self, count: usize) -> Self {
+        self.executor_reuse_count = Some(count);
         self
     }
 

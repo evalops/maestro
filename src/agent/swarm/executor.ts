@@ -17,6 +17,7 @@ import {
 	buildEvalOpsDelegationEnvironment,
 	issueEvalOpsDelegationToken,
 } from "../../oauth/index.js";
+import { rankA2ACapabilityPeers } from "../../platform/a2a-capability-market.js";
 import {
 	type A2AServiceConfig,
 	type A2ATask,
@@ -73,6 +74,29 @@ const DEFAULT_TASK_TIMEOUT_MS = 5 * 60 * 1000;
 /** Maximum concurrent teammates */
 const MAX_TEAMMATES = 10;
 const DEFAULT_A2A_POLL_INTERVAL_MS = 2_000;
+const A2A_SKILL_PRIMARY_TASK_CLASSES = new Map<string, string>([
+	["maestro.subagent.code-writer", "code.implementation"],
+	["maestro.subagent.code-review", "code.review"],
+	["maestro.subagent.test-runner", "test.execution"],
+	["maestro.subagent.repo-explorer", "repo.inspect"],
+	["maestro.subagent.release-shepherd", "release.follow-through"],
+]);
+const SWARM_SUBAGENT_TASK_CLASSES = new Map<string, string>([
+	["coder", "code.implementation"],
+	["worker", "code.implementation"],
+	["review", "code.review"],
+	["reviewer", "code.review"],
+	["explore", "repo.inspect"],
+	["explorer", "repo.inspect"],
+	["research", "repo.inspect"],
+	["researcher", "repo.inspect"],
+	["test", "test.execution"],
+	["ci", "test.execution"],
+	["ci-monitor", "test.execution"],
+	["planner", "agent.delegation"],
+	["minimal", "agent.delegation"],
+	["custom", "agent.delegation"],
+]);
 
 /** Teammate name prefixes for friendly identification */
 const TEAMMATE_NAMES = [
@@ -858,13 +882,36 @@ export class SwarmExecutor {
 				`No Platform A2A peer matched task ${task.id} a2aPeer ${pinnedPeer}`,
 			);
 		}
-		const candidateIndex = pinnedPeer ? 0 : routeIndex % candidatePool.length;
-		const candidate = candidatePool[candidateIndex];
-		if (!candidate) {
+		const rankedCandidates = rankA2ACapabilityPeers(candidatePool, {
+			skillId,
+			taskClass: this.resolveA2ATaskClass(task, options, skillId),
+			preferInternalEndpoint: options.preferInternalEndpoint,
+		});
+		if (rankedCandidates.length === 0) {
+			throw new Error(
+				`No Platform A2A peer satisfied capability policy for swarm task ${task.id}${
+					skillId ? ` with skill ${skillId}` : ""
+				}`,
+			);
+		}
+		const candidateIndex = pinnedPeer
+			? 0
+			: routeIndex % rankedCandidates.length;
+		const ranked = rankedCandidates[candidateIndex];
+		const candidate = ranked?.candidate;
+		if (!candidate || !ranked) {
 			throw new Error(
 				"Platform A2A peer discovery returned an invalid candidate",
 			);
 		}
+		logger.info("Selected Platform A2A peer through capability market", {
+			swarmId: this.state.id,
+			taskId: task.id,
+			agentId: candidate.agent.id,
+			score: ranked.score,
+			reasons: ranked.reasons,
+			skillId,
+		});
 		const config = await this.a2aConfigForPlatformCandidate(candidate, options);
 		return {
 			name: candidate.agent.name ?? candidate.agent.id ?? candidate.endpointUrl,
@@ -938,6 +985,33 @@ export class SwarmExecutor {
 			return configured;
 		}
 		return peer?.entry.skills?.[0]?.id;
+	}
+
+	private resolveA2ATaskClass(
+		task: SwarmTask,
+		options: SwarmA2AConfig,
+		skillId: string | undefined,
+	): string | undefined {
+		const mappedSkillTaskClass = skillId
+			? A2A_SKILL_PRIMARY_TASK_CLASSES.get(skillId)
+			: undefined;
+		if (mappedSkillTaskClass) {
+			return mappedSkillTaskClass;
+		}
+		if (
+			skillId &&
+			(trimString(task.a2aSkillId) || trimString(options.skillId))
+		) {
+			return undefined;
+		}
+		const subagentType = trimString(
+			task.subagentType ?? this.state.config.subagentType,
+		);
+		return (
+			(subagentType
+				? SWARM_SUBAGENT_TASK_CLASSES.get(subagentType)
+				: undefined) ?? subagentType
+		);
 	}
 
 	private teammateIndex(teammate: SwarmTeammate): number {

@@ -116,6 +116,7 @@ export interface McpServerConfig {
 	enabled?: boolean;
 	disabled?: boolean;
 	timeout?: number;
+	supportsParallelToolCalls?: boolean;
 	scope?: McpScope;
 }
 
@@ -151,6 +152,7 @@ export interface McpServerStatus {
 	headersHelper?: string;
 	authPreset?: string;
 	timeout?: number;
+	supportsParallelToolCalls?: boolean;
 	remoteTrust?: McpRemoteTrust;
 	officialRegistry?: McpOfficialRegistryInfo;
 	projectApproval?: McpProjectApprovalStatus;

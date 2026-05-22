@@ -1,5 +1,9 @@
 import { createHash } from "node:crypto";
 import {
+	type ServiceAuthorityResolution,
+	resolveServiceAuthority,
+} from "../service-authority.js";
+import {
 	IntelligentRouterValidationError,
 	normalizePerformanceMetricInput,
 	normalizeRoutingOverrideInput,
@@ -230,6 +234,10 @@ export class IntelligentRouterService {
 		private readonly defaultModels: () => RoutingModelCandidate[] = () => [],
 		private readonly now: () => Date = () => new Date(),
 	) {}
+
+	getAuthority(): ServiceAuthorityResolution {
+		return resolveServiceAuthority("intelligent_router");
+	}
 
 	recordPerformanceMetric(
 		input: ModelPerformanceMetricInput,

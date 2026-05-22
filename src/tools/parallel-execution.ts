@@ -27,7 +27,12 @@
  * @module tools/parallel-execution
  */
 
-import type { AgentTool, ToolAnnotations } from "../agent/types.js";
+import { isAbsolute, resolve } from "node:path";
+import type {
+	AgentTool,
+	ToolAnnotations,
+	ToolSourceMetadata,
+} from "../agent/types.js";
 
 /**
  * Set of known read-only tool names.
@@ -101,6 +106,7 @@ export const WRITE_TOOLS = new Set([
 export function isReadOnlyTool(
 	toolName: string,
 	annotations?: ToolAnnotations,
+	_source?: ToolSourceMetadata,
 ): boolean {
 	// Check explicit annotation first
 	if (annotations?.readOnlyHint === true) {
@@ -112,6 +118,20 @@ export function isReadOnlyTool(
 
 	// Fall back to known tool lists
 	return READ_ONLY_TOOLS.has(toolName);
+}
+
+export function isParallelSafeTool(
+	toolName: string,
+	annotations?: ToolAnnotations,
+	source?: ToolSourceMetadata,
+): boolean {
+	if (isReadOnlyTool(toolName, annotations, source)) {
+		return true;
+	}
+	if (annotations?.destructiveHint === true) {
+		return false;
+	}
+	return source?.type === "mcp" && source.supportsParallelToolCalls === true;
 }
 
 /**
@@ -170,15 +190,22 @@ export function getOptimalConcurrency(
 	}
 
 	// Build a map of tool names to annotations
-	const toolAnnotations = new Map<string, ToolAnnotations | undefined>();
+	const toolMetadata = new Map<
+		string,
+		{ annotations?: ToolAnnotations; source?: ToolSourceMetadata }
+	>();
 	for (const tool of tools) {
-		toolAnnotations.set(tool.name, tool.annotations);
+		toolMetadata.set(tool.name, {
+			annotations: tool.annotations,
+			source: tool.source,
+		});
 	}
 
 	// Check if all tools are read-only
-	const allReadOnly = toolCalls.every((call) =>
-		isReadOnlyTool(call.name, toolAnnotations.get(call.name)),
-	);
+	const allReadOnly = toolCalls.every((call) => {
+		const metadata = toolMetadata.get(call.name);
+		return isReadOnlyTool(call.name, metadata?.annotations, metadata?.source);
+	});
 
 	if (allReadOnly) {
 		// Safe to use higher concurrency
@@ -203,16 +230,23 @@ export function partitionToolCalls<T extends { name: string }>(
 	toolCalls: T[],
 	tools: AgentTool[],
 ): { readOnly: T[]; write: T[] } {
-	const toolAnnotations = new Map<string, ToolAnnotations | undefined>();
+	const toolMetadata = new Map<
+		string,
+		{ annotations?: ToolAnnotations; source?: ToolSourceMetadata }
+	>();
 	for (const tool of tools) {
-		toolAnnotations.set(tool.name, tool.annotations);
+		toolMetadata.set(tool.name, {
+			annotations: tool.annotations,
+			source: tool.source,
+		});
 	}
 
 	const readOnly: T[] = [];
 	const write: T[] = [];
 
 	for (const call of toolCalls) {
-		if (isReadOnlyTool(call.name, toolAnnotations.get(call.name))) {
+		const metadata = toolMetadata.get(call.name);
+		if (isReadOnlyTool(call.name, metadata?.annotations, metadata?.source)) {
 			readOnly.push(call);
 		} else {
 			write.push(call);
@@ -220,6 +254,111 @@ export function partitionToolCalls<T extends { name: string }>(
 	}
 
 	return { readOnly, write };
+}
+
+export interface PathScopedMutation {
+	paths: string[];
+}
+
+const PATH_SCOPED_MUTATION_TOOLS = new Set([
+	"write",
+	"Write",
+	"edit",
+	"Edit",
+	"MultiEdit",
+	"notebook_edit",
+	"NotebookEdit",
+]);
+
+const PATH_ARGUMENT_KEYS = [
+	"file_path",
+	"filePath",
+	"path",
+	"notebook_path",
+	"notebookPath",
+];
+
+function normalizeMutationPath(
+	value: string,
+	cwd = process.cwd(),
+): string | undefined {
+	const input = value.trim().replace(/\\/g, "/");
+	if (!input || /[*?[\]{}]/u.test(input)) {
+		return undefined;
+	}
+	const basePath = cwd.replace(/\\/g, "/");
+	let normalized = (
+		isAbsolute(input) ? resolve(input) : resolve(basePath, input)
+	)
+		.replace(/\\/g, "/")
+		.replace(/\/+/g, "/");
+	normalized = normalized.toLowerCase();
+	if (normalized.length > 1) {
+		normalized = normalized.replace(/\/$/u, "");
+	}
+	return normalized || undefined;
+}
+
+function collectPathArgumentValues(
+	value: unknown,
+	paths: string[],
+	cwd: string,
+): void {
+	if (typeof value === "string") {
+		const path = normalizeMutationPath(value, cwd);
+		if (path) {
+			paths.push(path);
+		}
+		return;
+	}
+	if (Array.isArray(value)) {
+		for (const entry of value) {
+			collectPathArgumentValues(entry, paths, cwd);
+		}
+	}
+}
+
+export function getPathScopedMutation(
+	toolCall: { name: string; arguments?: unknown },
+	tool?: AgentTool,
+	cwd = process.cwd(),
+): PathScopedMutation | undefined {
+	const annotations = tool?.annotations;
+	const isPathScopedTool =
+		annotations?.pathScopedMutationHint === true ||
+		PATH_SCOPED_MUTATION_TOOLS.has(tool?.name ?? toolCall.name);
+	if (!isPathScopedTool || annotations?.readOnlyHint === true) {
+		return undefined;
+	}
+	const args =
+		toolCall.arguments &&
+		typeof toolCall.arguments === "object" &&
+		!Array.isArray(toolCall.arguments)
+			? (toolCall.arguments as Record<string, unknown>)
+			: undefined;
+	if (!args) {
+		return undefined;
+	}
+	const paths: string[] = [];
+	for (const key of PATH_ARGUMENT_KEYS) {
+		collectPathArgumentValues(args[key], paths, cwd);
+	}
+	const uniquePaths = [...new Set(paths)];
+	return uniquePaths.length > 0 ? { paths: uniquePaths } : undefined;
+}
+
+export function pathScopesOverlap(
+	left: PathScopedMutation,
+	right: PathScopedMutation,
+): boolean {
+	return left.paths.some((leftPath) =>
+		right.paths.some(
+			(rightPath) =>
+				leftPath === rightPath ||
+				leftPath.startsWith(`${rightPath}/`) ||
+				rightPath.startsWith(`${leftPath}/`),
+		),
+	);
 }
 
 /**

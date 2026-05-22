@@ -17,6 +17,52 @@ versioning when releases are cut.
   and keep scheduled public runs inert so public publishing stays downstream of
   the internal source-of-truth release.
 
+## [0.10.19] - 2026-05-18
+
+### Added
+
+- Enrich Codex subagent work graph edges. <!-- maestro-release-note:59b55a277ef8 -->
+- Route swarm subagents by mode (#2015). <!-- maestro-release-note:d0b8837d307a -->
+- Render codex subagent edge metadata (#1990). <!-- maestro-release-note:0cca67ca6d7d -->
+- Add agent operating plane telemetry context (#1987). <!-- maestro-release-note:4d878c0f2b26 -->
+- Add OSS skill publish install contract (#1984). <!-- maestro-release-note:e46cde8187e7 -->
+- Add first-party operational skill packages (#1982). <!-- maestro-release-note:e1493a309a14 -->
+- Add local AgentRuntime ledger projection (#1974). <!-- maestro-release-note:972982cfe11c -->
+- Continue actionable A2A tasks. <!-- maestro-release-note:7654da2213df -->
+- Record subagent delegations (#1954). <!-- maestro-release-note:87787f61a321 -->
+- Enroll Maestro runtime errors in Sentry (#1923). <!-- maestro-release-note:e703acc96af6 -->
+- Add Fermata LLM rubric suite option (#1919). <!-- maestro-release-note:aa71028c5b73 -->
+- Enforce staged rollout surfaces (#1883). <!-- maestro-release-note:6065a68afc07 -->
+
+### Changed
+
+- Add Platform-backed A2A peer discovery (#2019). <!-- maestro-release-note:6d3578ea6a9a -->
+- [maestro] Add regular release cadence (#2016). <!-- maestro-release-note:12093787b18e -->
+- Record Platform drain evidence for hosted runners (#2018). <!-- maestro-release-note:761c4b2a09db -->
+- A2a: advertise governed subagent skills (#2013). <!-- maestro-release-note:722ef3cd5a07 -->
+- Dispatch Maestro image sync after publish (#2011). <!-- maestro-release-note:02f18d7976f9 -->
+- A2a: ack Platform push callbacks in Rust control plane (#2008). <!-- maestro-release-note:7472e65f26bd -->
+- Expose operating-plane value proof in CLI (#2007). <!-- maestro-release-note:2d67d5abe37a -->
+- Summarize operating plane value proof (#2006). <!-- maestro-release-note:e3c41b9e6755 -->
+- Add operating plane lookup client (#2005). <!-- maestro-release-note:d64692df1988 -->
+- A2a: receive Platform push callbacks (#2003). <!-- maestro-release-note:a3e9b6e79333 -->
+- Managed gateway: emit AgentRuntime ledger metadata (#2002). <!-- maestro-release-note:0f40f79bf4d6 -->
+- Fix A2A push config identity (#2001). <!-- maestro-release-note:fbff816deb01 -->
+
+### Fixed
+
+- Preserve distinct request metadata ids (#2014). <!-- maestro-release-note:432f3080cfaa -->
+- Forward managed gateway thread metadata (#2012). <!-- maestro-release-note:f21816d1134f -->
+- Keep spawned subagent work active (#2010). <!-- maestro-release-note:54efa3fb9373 -->
+- Accept platform A2A push callbacks (#2009). <!-- maestro-release-note:19a53943d816 -->
+- Redact A2A push secrets in task responses (#2000). <!-- maestro-release-note:3e37808837fc -->
+- Share codex subagent protocol constants (#1993). <!-- maestro-release-note:d4e8036240e6 -->
+- Unwrap A2A JSON-RPC stream envelopes (#1991). <!-- maestro-release-note:b3cfc7d93a6c -->
+- Avoid CRLF SSE boundary backtracking (#1992). <!-- maestro-release-note:544634f0f393 -->
+- Propagate A2A ledger aborts (#1983). <!-- maestro-release-note:0172f46663e0 -->
+- Recover stale A2A ledger locks within one attempt (#1981). <!-- maestro-release-note:bb0e5e8cca80 -->
+- Preserve repeated A2A reply turns. <!-- maestro-release-note:21c8e17c0fe0 -->
+- Skip terminal A2A refreshes (#1976). <!-- maestro-release-note:2e0eed9390f5 -->
 
 ## [0.10.18] - 2026-05-06
 

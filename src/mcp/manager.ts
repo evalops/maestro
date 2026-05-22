@@ -1021,11 +1021,24 @@ export class McpClientManager extends EventEmitter {
 		};
 	}
 
-	getAllTools(): Array<{ server: string; tool: McpTool }> {
-		const tools: Array<{ server: string; tool: McpTool }> = [];
+	getAllTools(): Array<{
+		server: string;
+		tool: McpTool;
+		supportsParallelToolCalls: boolean;
+	}> {
+		const tools: Array<{
+			server: string;
+			tool: McpTool;
+			supportsParallelToolCalls: boolean;
+		}> = [];
 		for (const [serverName, server] of this.servers) {
 			for (const tool of server.tools) {
-				tools.push({ server: serverName, tool });
+				tools.push({
+					server: serverName,
+					tool,
+					supportsParallelToolCalls:
+						server.config.supportsParallelToolCalls === true,
+				});
 			}
 		}
 		return tools;
@@ -1087,6 +1100,7 @@ export class McpClientManager extends EventEmitter {
 				headersHelper: resolvedAuth.headersHelper,
 				authPreset: config.authPreset,
 				timeout: config.timeout,
+				supportsParallelToolCalls: config.supportsParallelToolCalls === true,
 				remoteTrust: remoteRegistryMatch?.trust,
 				officialRegistry: remoteRegistryMatch?.info,
 				projectApproval,

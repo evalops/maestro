@@ -91,6 +91,7 @@ const AGENT_TRAJECTORY_SOURCE_PATH_FIELDS = [
 	"replayPath",
 	"scorePath",
 	"inspectionPath",
+	"workspaceManifestPath",
 	"baselineTrajectoryPath",
 	"candidateTrajectoryPath",
 	"baselineScorePath",

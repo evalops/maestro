@@ -92,6 +92,27 @@ The response is intentionally sparse:
 If Platform expects an owner generation, it must compare
 `owner_instance_id` before proxying attach traffic.
 
+The identity response also exposes the local runtime lease projection:
+
+```json
+{
+  "runtime_lease": {
+    "protocol_version": "evalops.maestro.hosted-runner-lease.v1",
+    "state": "bound",
+    "generation": 3,
+    "maestro_session_id": "maestro-session-123",
+    "lease_token_present": true,
+    "heartbeat_at": "2026-05-20T04:00:00.000Z",
+    "updated_at": "2026-05-20T04:00:01.000Z"
+  }
+}
+```
+
+This projection is intentionally compact. It is the TypeScript runtime's local
+fencing contract until Platform owns a durable runner-lease table. Gateways and
+operators can distinguish `unbound`, `bound`, and `draining` without reading
+process memory or scraping logs.
+
 The Maestro Helm chart defaults to `replicaCount=1` with
 `headlessRuntime.routing.mode=single-replica` because the TypeScript
 web/headless runtime keeps session ownership, connection leases, event replay,
@@ -132,6 +153,13 @@ Connections negotiate:
 
 Viewers are read-only. Controllers hold the mutation lease. Controller takeover
 must be explicit and visible in heartbeat/subscription snapshots.
+
+Headless session creation must also pass the hosted-runner lease check. A bound
+runner only accepts the already-bound Maestro session id; a new or different
+session receives `runtime_owned_elsewhere` with the active and requested session
+ids plus the lease generation. A draining runner receives `runtime_not_ready`.
+Those error reasons are stable so Platform can map them to stale-session,
+drain, and retry policies.
 
 ## Workspace Rules
 

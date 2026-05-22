@@ -1,5 +1,9 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import type { HostedRunnerContext } from "../app-context.js";
+import {
+	type HOSTED_RUNNER_LEASE_PROTOCOL_VERSION,
+	hostedRunnerLeaseSnapshot,
+} from "../hosted-runner-lease.js";
 import { sendJson } from "../server-utils.js";
 import { checkHostedRunnerReadiness } from "./health.js";
 
@@ -21,6 +25,15 @@ export interface HostedRunnerIdentity {
 	a2a_task_id?: string;
 	agent_runtime_worker_queue?: string;
 	agent_runtime_correlation_path?: string;
+	runtime_lease?: {
+		protocol_version: typeof HOSTED_RUNNER_LEASE_PROTOCOL_VERSION;
+		state: string;
+		generation: number;
+		maestro_session_id?: string;
+		lease_token_present: boolean;
+		heartbeat_at: string;
+		updated_at: string;
+	};
 	drain_status?: string;
 	drain_manifest_path?: string;
 	drained_at?: string;
@@ -35,6 +48,7 @@ export async function buildHostedRunnerIdentity(
 
 	const readiness = await checkHostedRunnerReadiness(hostedRunner);
 	const draining = readiness.status === "draining";
+	const lease = hostedRunnerLeaseSnapshot(hostedRunner);
 
 	return {
 		protocol_version: HOSTED_RUNNER_IDENTITY_PROTOCOL_VERSION,
@@ -74,6 +88,17 @@ export async function buildHostedRunnerIdentity(
 						hostedRunner.agentRuntimeCorrelationPath,
 				}
 			: {}),
+		runtime_lease: {
+			protocol_version: lease.protocolVersion,
+			state: lease.state,
+			generation: lease.generation,
+			...(lease.maestroSessionId
+				? { maestro_session_id: lease.maestroSessionId }
+				: {}),
+			lease_token_present: Boolean(lease.leaseToken),
+			heartbeat_at: lease.heartbeatAt,
+			updated_at: lease.updatedAt,
+		},
 		...(hostedRunner.lastDrain?.status
 			? { drain_status: hostedRunner.lastDrain.status }
 			: {}),

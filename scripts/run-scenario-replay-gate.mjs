@@ -72,17 +72,42 @@ function runScenario(group, fixtureName) {
 		};
 	}
 	const parsed = JSON.parse(result.stdout.trim());
+	const releaseGate = parsed.releaseGate;
+	const gateFailed =
+		releaseGate?.releaseBlocking === true && releaseGate.satisfied !== true;
+	const gateFailureMessage = gateFailed
+		? [
+				"Release-blocking scenario gate failed.",
+				releaseGate.missingArtifacts?.length
+					? `Missing artifacts: ${releaseGate.missingArtifacts.join(", ")}.`
+					: undefined,
+				releaseGate.budgetViolations?.length
+					? `Budget violations: ${releaseGate.budgetViolations.join(", ")}.`
+					: undefined,
+				releaseGate.policyViolations?.length
+					? `Policy violations: ${releaseGate.policyViolations.join(", ")}.`
+					: undefined,
+			]
+				.filter(Boolean)
+				.join(" ")
+		: undefined;
 	return {
 		group: group.name,
 		fixture: fixtureName,
 		junitPath: relative(repoRoot, junitPath),
-		status: "pass",
+		status: gateFailed ? "fail" : "pass",
 		scenarioId: parsed.scenario?.id,
 		expectedOutcome: parsed.scenario?.expectedOutcome,
 		observedOutcome: parsed.scenario?.observedOutcome,
+		releaseGateTier: releaseGate?.tier,
+		releaseBlocking: releaseGate?.releaseBlocking === true,
+		releaseGateSatisfied: releaseGate?.satisfied,
+		workspaceManifestId: parsed.workspace?.manifestId,
+		hydrationMode: parsed.workspace?.hydrationMode,
 		assertions: parsed.counts?.assertions,
 		failed: parsed.counts?.failed,
 		warnings: parsed.counts?.warnings,
+		stderr: gateFailureMessage,
 	};
 }
 
@@ -97,6 +122,12 @@ async function main() {
 	const summary = {
 		generatedAt: new Date().toISOString(),
 		fixtures: results.length,
+		releaseBlockingFixtures: results.filter(
+			(result) => result.releaseBlocking === true,
+		).length,
+		workspaceManifests: results.filter(
+			(result) => result.workspaceManifestId,
+		).length,
 		results,
 	};
 	const failures = results.filter((result) => result.status !== "pass");
@@ -110,12 +141,13 @@ async function main() {
 			"# Scenario Replay Gate",
 			"",
 			`Ran ${results.length} fixture(s) through \`maestro scenario run\`.`,
+			`Release-blocking fixtures: ${summary.releaseBlockingFixtures}; workspace manifests: ${summary.workspaceManifests}.`,
 			"",
-			"| Group | Fixture | Outcome | Assertions | JUnit |",
-			"| --- | --- | --- | ---: | --- |",
+			"| Group | Fixture | Outcome | Gate | Workspace | Assertions | JUnit |",
+			"| --- | --- | --- | --- | --- | ---: | --- |",
 			...results.map(
 				(result) =>
-					`| ${result.group} | ${result.fixture} | ${result.status === "pass" ? `${result.observedOutcome}/${result.expectedOutcome}` : `failed (${result.exitCode ?? "unknown"})`} | ${result.assertions ?? ""} | ${result.junitPath} |`,
+					`| ${result.group} | ${result.fixture} | ${result.status === "pass" ? `${result.observedOutcome}/${result.expectedOutcome}` : `failed (${result.exitCode ?? "gate"})`} | ${result.releaseBlocking ? `${result.releaseGateTier}:${result.releaseGateSatisfied ? "pass" : "fail"}` : "not-blocking"} | ${result.workspaceManifestId ? `${result.workspaceManifestId} (${result.hydrationMode ?? "unknown"})` : ""} | ${result.assertions ?? ""} | ${result.junitPath} |`,
 			),
 			failures.length > 0 ? "" : undefined,
 			...failures.flatMap((result) => [

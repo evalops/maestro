@@ -31,6 +31,10 @@ unless that metadata and rationale are present.
 New runtime primitives should be added under `packages/core/src`. When an
 existing export is moved into package-owned source, remove the facade import
 rather than broadening the exception.
+Package-owned roots listed in `maestro.packageBoundary.packageOwnedSourceRoots`
+are stricter than facade roots and may not import back into root `src`. The
+first extracted kernel is
+`@evalops/maestro-core/background/restart-policy`.
 
 ## Usage
 

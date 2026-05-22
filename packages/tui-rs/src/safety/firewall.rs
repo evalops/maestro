@@ -316,14 +316,8 @@ impl ActionFirewall {
             return FirewallVerdict::Block { reason };
         }
 
-        // Check if path is in a system-protected directory
-        if is_system_path(path) {
-            return FirewallVerdict::Block {
-                reason: format!("Cannot write to system path: {}", path.display()),
-            };
-        }
-
-        // Check path containment
+        // Check path containment before raw system-path classification. Known CI
+        // runner workspaces under system roots remain trusted.
         match is_path_contained(
             path,
             &self.config.workspace,
@@ -391,9 +385,23 @@ impl ActionFirewall {
             };
         }
 
-        // Check if it's a system path
+        // Prefer explicit workspace/safe-zone containment over raw system-path
+        // classification so owned CI workspaces under /opt remain readable.
+        match is_path_contained(
+            path,
+            &self.config.workspace,
+            &self.config.additional_safe_zones,
+        ) {
+            PathContainment::Contained { .. } => return FirewallVerdict::Allow,
+            PathContainment::SystemProtected { .. } => {
+                return FirewallVerdict::RequireApproval {
+                    reason: format!("Reading system file: {}", path.display()),
+                }
+            }
+            PathContainment::Escaped { .. } => {}
+        }
+
         if is_system_path(path) {
-            // Allow reading system files with approval
             return FirewallVerdict::RequireApproval {
                 reason: format!("Reading system file: {}", path.display()),
             };
@@ -949,6 +957,27 @@ mod tests {
         }
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn test_write_to_system_path_remains_blocked_when_workspace_is_system_path() {
+        let fw = ActionFirewall::new("/etc");
+
+        let verdict = fw.check_file_write("/etc/maestro-write-test", "malicious");
+
+        assert!(
+            verdict.is_blocked(),
+            "Expected system-rooted workspace write to be blocked, got {:?}",
+            verdict
+        );
+        assert!(
+            verdict
+                .reason()
+                .is_some_and(|reason| reason.contains("system-protected path")),
+            "Expected system-protected reason, got {:?}",
+            verdict.reason()
+        );
+    }
+
     #[test]
     fn test_write_outside_workspace_is_not_allowed() {
         let fw = test_firewall();
@@ -1042,6 +1071,85 @@ mod tests {
                 verdict
             );
         }
+    }
+
+    #[test]
+    fn test_owned_runner_workspace_under_opt_is_trusted() {
+        let workspace =
+            PathBuf::from("/opt/actions-runner/_work/maestro-internal/maestro-internal");
+        let fw = ActionFirewall::new(&workspace);
+        let readme = workspace.join("packages/tui-rs/README.md");
+        let source = workspace.join("packages/tui-rs/src/main.rs");
+        let readme_arg = readme.to_string_lossy();
+        let source_arg = source.to_string_lossy();
+
+        assert!(fw.check_file_read(readme_arg.as_ref()).is_allowed());
+        assert!(fw
+            .check_file_write(source_arg.as_ref(), "fn main() {}")
+            .is_allowed());
+        assert!(fw
+            .check_tool("read", &json!({ "file_path": readme_arg.as_ref() }))
+            .is_allowed());
+        assert!(fw
+            .check_tool(
+                "write",
+                &json!({
+                    "file_path": source_arg.as_ref(),
+                    "content": "fn main() {}",
+                }),
+            )
+            .is_allowed());
+        assert!(fw
+            .check_tool(
+                "list",
+                &json!({ "path": workspace.to_string_lossy().as_ref() })
+            )
+            .is_allowed());
+
+        let outside_opt = "/opt/actions-runner/_work/other/repo/src/main.rs";
+        assert!(fw.check_file_write(outside_opt, "malicious").is_blocked());
+        #[cfg(target_os = "linux")]
+        assert!(fw.check_file_read(outside_opt).requires_approval());
+        #[cfg(not(target_os = "linux"))]
+        assert!(fw.check_file_read(outside_opt).is_allowed());
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn test_runner_workspaces_under_system_roots_are_trusted() {
+        for workspace in [
+            PathBuf::from("/usr/local/actions-runner/_work/maestro-internal/maestro-internal"),
+            PathBuf::from(
+                "/opt/actions-runner/listener-03/_work/maestro-internal/maestro-internal",
+            ),
+        ] {
+            let fw = ActionFirewall::new(&workspace);
+            let source = workspace.join("packages/tui-rs/src/main.rs");
+            let source_arg = source.to_string_lossy();
+
+            assert!(
+                fw.check_file_write(source_arg.as_ref(), "fn main() {}")
+                    .is_allowed(),
+                "Expected writes under {:?} to be allowed",
+                workspace
+            );
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn test_spoofed_runner_workspace_under_opt_is_not_trusted() {
+        let workspace = PathBuf::from(
+            "/opt/not-really-runner-malicious/_work/maestro-internal/maestro-internal",
+        );
+        let fw = ActionFirewall::new(&workspace);
+        let source = workspace.join("packages/tui-rs/src/main.rs");
+        let source_arg = source.to_string_lossy();
+
+        assert!(fw
+            .check_file_write(source_arg.as_ref(), "fn main() {}")
+            .is_blocked());
+        assert!(fw.check_file_read(source_arg.as_ref()).requires_approval());
     }
 
     // ========================================================================

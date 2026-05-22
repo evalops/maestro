@@ -24,14 +24,21 @@ remain public-only.
 ### Public CI and publishing workflows
 
 - `.github/workflows/**`
+- except `.github/workflows/review-thread-guard.yml`, which is generated from
+  internal so the public mirror uses the same shared review-debt guard version;
+  the mirror strips the internal-only runner override so public validation uses
+  the reusable guard workflow's default runner
 - `.github/workflows/public-release-mirror.yml`
 - `.github/workflows/sync-public-release-mirror.yml`
 - `.github/release-mirror-manifest.json`
 - `.github/public-release-mirror.exclude`
 
 These remain public-owned because `evalops/maestro` still controls its own CI,
-registry verification, and trusted-publishing rollout. The sanitizer must not
-wipe those files while the public repo continues to publish independently.
+registry verification, and trusted-publishing rollout. The review-thread guard
+is the narrow exception because stale public pins can block generated mirror PRs
+after internal review debt has already been resolved. The sanitizer must not wipe
+the remaining public-owned files while the public repo continues to publish
+independently.
 
 ### Public-only release and registry helpers
 

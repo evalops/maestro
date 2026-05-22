@@ -18,15 +18,17 @@
 		"generatedAt": "<redacted>"
 	},
 	"counts": {
-		"assertions": 8,
-		"passed": 8,
+		"assertions": 9,
+		"passed": 9,
 		"failed": 0,
 		"warnings": 0,
 		"events": 10,
 		"toolCalls": 1,
 		"replayDeltas": 0,
 		"scoreFailures": 0,
-		"scoreWarnings": 0
+		"scoreWarnings": 0,
+		"workspaceFiles": 3,
+		"toolAdapters": 1
 	},
 	"platform": {
 		"primitive": "trajectory",
@@ -34,6 +36,35 @@
 		"traceJoinKeys": ["sessionId", "scenarioId", "tool_call"],
 		"rationale": "The local scenario is stored as a redacted trajectory plus replay, scorer, and inspection artifacts until Platform owns cross-run storage.",
 		"evidenceEventType": "maestro.events.eval.scored"
+	},
+	"releaseGate": {
+		"releaseBlocking": true,
+		"tier": "smoke",
+		"requiredArtifacts": [
+			"trajectory",
+			"replay",
+			"score",
+			"inspection",
+			"workspace_manifest"
+		],
+		"maxEvents": 12,
+		"maxToolCalls": 1,
+		"maxReplayDeltas": 0,
+		"maxScoreFailures": 0,
+		"maxScoreWarnings": 0,
+		"rationale": "Local edit replay is the smallest release-blocking proof that Maestro can preserve workspace, tool, score, inspection, and provenance evidence.",
+		"satisfied": true,
+		"missingArtifacts": [],
+		"budgetViolations": [],
+		"policyViolations": []
+	},
+	"workspace": {
+		"manifestId": "workspace-local-diagnostic-artifact-1",
+		"source": "fixture",
+		"recordedAt": "2026-05-20T04:00:00.000Z",
+		"hydrationMode": "fixture_workspace",
+		"files": 3,
+		"toolAdapters": 1
 	},
 	"assumptions": {
 		"workflow": "Agent performs one local edit, links a skill artifact, records diagnostics, emits governance, and finishes with cited evidence.",
@@ -126,6 +157,27 @@
 					"id": "replay-local-diagnostic-artifact-1",
 					"source": "scenario",
 					"label": "inspection:redaction"
+				}
+			]
+		},
+		{
+			"id": "workspace-manifest-ready",
+			"kind": "workspace.manifest",
+			"status": "pass",
+			"severity": "error",
+			"message": "Workspace manifest workspace-local-diagnostic-artifact-1 is release-gate ready (3 file(s), 1 tool adapter(s), fixture_workspace).",
+			"evidence": [
+				{
+					"kind": "workspace_manifest",
+					"id": "workspace-local-diagnostic-artifact-1",
+					"source": "scenario",
+					"label": "workspace_manifest:workspace-local-diagnostic-artifact-1"
+				},
+				{
+					"kind": "tool_adapter",
+					"id": "edit",
+					"source": "scenario",
+					"label": "tool_adapter:edit:recorded"
 				}
 			]
 		},

@@ -93,6 +93,38 @@ describe("MCP config loader", () => {
 		expect(config.servers[0]!.command).toBe("node");
 	});
 
+	it("loads explicit MCP server parallel tool-call opt-in", () => {
+		const configDir = join(testDir, ".maestro");
+		mkdirSync(configDir, { recursive: true });
+		writeFileSync(
+			join(configDir, "mcp.json"),
+			JSON.stringify({
+				mcpServers: {
+					"trusted-fs": {
+						command: "npx",
+						args: ["-y", "@example/mcp-server"],
+						supportsParallelToolCalls: true,
+					},
+					"plain-fs": {
+						command: "npx",
+						args: ["-y", "@example/plain-server"],
+					},
+				},
+			}),
+		);
+
+		const config = loadMcpConfig(testDir);
+		expect(config.servers).toHaveLength(2);
+		expect(
+			config.servers.find((server) => server.name === "trusted-fs")
+				?.supportsParallelToolCalls,
+		).toBe(true);
+		expect(
+			config.servers.find((server) => server.name === "plain-fs")
+				?.supportsParallelToolCalls,
+		).toBe(false);
+	});
+
 	it("loads servers from mcpServers format (Claude Desktop style)", () => {
 		const configDir = join(testDir, ".maestro");
 		mkdirSync(configDir, { recursive: true });

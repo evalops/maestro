@@ -112,6 +112,34 @@ describe("scenario command", () => {
 		);
 	});
 
+	it("rejects remote trajectory scenarios with relative workspace manifests", async () => {
+		const fixture = JSON.parse(
+			readFileSync(
+				join(
+					fixturesDir,
+					"agent-trajectory-scenarios",
+					"local-diagnostic-success.json",
+				),
+				"utf8",
+			),
+		);
+		fixture.source = {
+			...fixture.source,
+			trajectoryPath: "/tmp/trajectory.json",
+			replayPath: "/tmp/replay.json",
+			scorePath: "/tmp/score.json",
+			inspectionPath: "/tmp/inspection.json",
+			workspaceManifestPath: "workspace-manifest.json",
+		};
+		const url = await serveFixture(fixture);
+
+		await expect(
+			handleScenarioCommand("validate", [url], { json: true }),
+		).rejects.toThrow(
+			`Remote scenario ${url} source.workspaceManifestPath must use an absolute path`,
+		);
+	});
+
 	it("writes junit output from explicit options when flags are stripped", async () => {
 		const tempDir = mkdtempSync(join(tmpdir(), "maestro-scenario-"));
 		const junitPath = join(tempDir, "nested", "scenario.xml");

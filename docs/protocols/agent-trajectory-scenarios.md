@@ -9,6 +9,15 @@ Offline acceptance scenario files use `evalops.maestro.scenario.v1` from `packag
 Required fields:
 
 - `source`: paths to trajectory, replay, score, and optional inspection artifacts. Diff assertions can also point at baseline and candidate trajectory/score artifacts.
+- `source.workspaceManifestPath`: optional frozen-workspace manifest using
+  `evalops.maestro.scenario-workspace-manifest.v1`. Release-blocking scenarios
+  must provide it so replay evidence can prove which redacted workspace files
+  and tool adapters are safe to hydrate.
+- `releaseGate`: optional release policy with a `smoke`, `regression`, or
+  `gauntlet` tier, required artifacts, and SLO-style budgets. When
+  `releaseBlocking` is true, `workspace_manifest` is mandatory and the replay
+  gate fails if any required artifact, budget, or workspace redaction policy is
+  missing.
 - `reviewLabels`: human labels such as `accepted`, `degraded`, `unsafe_input`, `needs_human_review`, `efficiency_regression`, and `platform_promotion_ready`.
 - `platform`: the target primitive (`trajectory`, `timeline`, `event_bus`, `artifact_store`, or `standalone`) plus trace join keys. Scenario results always include `maestro.events.eval.scored` as the evidence event type.
 - `externalRefs`: optional cross-system IDs that let scenarios consume upstream
@@ -16,7 +25,10 @@ Required fields:
   to carry Ensemble transcript IDs, Platform trace IDs, work-envelope IDs,
   redacted Slack thread refs, and safe evidence artifact IDs.
 - `assumptions`: workflow, correctness model, threat model, and research basis.
-- `assertions`: deterministic checks over events, replay deltas, scorer findings, inspection redaction, efficiency budgets, provenance chains, human labels, and trajectory diffs.
+- `assertions`: deterministic checks over events, replay deltas, scorer findings, inspection redaction, workspace manifests, efficiency budgets, provenance chains, human labels, and trajectory diffs.
+- `workspace.manifest` assertions verify frozen workspace files, tool adapters,
+  hydration mode, redaction flags, and release-gate tier before a scenario can
+  become production-derived release evidence.
 
 Scripted replay scenarios may also include executable assertions:
 
@@ -72,13 +84,19 @@ from `maestro scenario run`. The replay gate also runs every checked-in
 agent-trajectory and scripted-replay fixture through the public CLI via
 `npm run check:scenario-replay-gate -- --junit-dir tmp/scenario-replay`, writes a
 summary, and uploads the resulting JUnit XML as the `scenario-replay-*` workflow
-artifact.
+artifact. The summary reports release-blocking fixture count, workspace manifest
+coverage, release tier, hydration mode, and gate satisfaction.
 
 ## Platform Promotion
 
 Until Platform owns cross-run storage, Maestro keeps local scenario result artifacts beside the golden trajectory fixtures. The result shape is intentionally Platform-ready:
 
 - `run.scenarioId` and `run.replay: true` mark deterministic replay sessions.
+- `releaseGate` records whether the scenario was release-blocking, which
+  artifacts were required, which artifacts were missing, which budgets were
+  violated, and which workspace redaction policies blocked promotion.
+- `workspace` summarizes the manifest id, source, hydration mode, file count,
+  and tool-adapter count without copying raw workspace contents.
 - `platform.traceJoinKeys` declares the join keys needed for Timeline, ToolExecution, and future trace storage.
 - `provenance` enumerates source, decision, and output evidence anchors without exposing raw secrets.
 - `counts` carries SLO-style success, failure, latency-adjacent, and efficiency gates.

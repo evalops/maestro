@@ -1,0 +1,107 @@
+name: tool-call-speed
+status: plateau
+baseline:
+  source: red_regression_test
+  command: bunx vitest --run test/agent/provider-transport-tool-concurrency.test.ts
+  observed:
+    assertions_passed: 0
+    first_read_wave_ms: 82.248
+    failure: "expected first read wave spread to be less than 40ms"
+experiments:
+  - id: exp-001-mixed-turn-read-waves
+    hypothesis: >
+      Mixed turns should run contiguous read-only tool waves at the read-only
+      concurrency limit while draining before and after mutating tools.
+    changes:
+      - "Use read-only concurrency for read-only calls even when the turn also contains a mutation."
+      - "Drain pending executions before a mutating tool starts."
+      - "Run mutating tools with concurrency 1 so later reads wait until mutation completion."
+    command: bunx vitest --run test/agent/provider-transport-tool-concurrency.test.ts
+    result:
+      assertions_passed: 1
+      test_files_passed: 1
+      tests_passed: 1
+  - id: exp-002-live-complex-goal
+    hypothesis: >
+      The real scripted-replay provider path should satisfy the same
+      preconditions and postconditions with a stable tool-phase latency near
+      the theoretical 180ms floor.
+    command: bunx tsx scripts/measure-tool-call-speed.ts
+    repeated_runs:
+      - { tool_phase_ms: 188.898, elapsed_ms: 233.965, first_read_wave_ms: 1.841, verify_read_wave_ms: 1.443 }
+      - { tool_phase_ms: 188.981, elapsed_ms: 231.959, first_read_wave_ms: 2.216, verify_read_wave_ms: 1.856 }
+      - { tool_phase_ms: 189.501, elapsed_ms: 234.821, first_read_wave_ms: 1.701, verify_read_wave_ms: 2.799 }
+      - { tool_phase_ms: 189.070, elapsed_ms: 234.659, first_read_wave_ms: 1.714, verify_read_wave_ms: 2.353 }
+      - { tool_phase_ms: 186.830, elapsed_ms: 231.858, first_read_wave_ms: 1.890, verify_read_wave_ms: 1.958 }
+      - { tool_phase_ms: 187.864, elapsed_ms: 231.189, first_read_wave_ms: 1.730, verify_read_wave_ms: 1.449 }
+    result:
+      assertions_passed: 1
+      mutation_overlap_count: 0
+      total_tool_calls: 9
+      median_tool_phase_ms: 188.535
+      median_elapsed_ms: 233.462
+      plateau_delta_ms: 2.671
+  - id: exp-003-rust-client-read-only-wave
+    hypothesis: >
+      The Rust client should use bounded parallel execution for auto-approved
+      read-only tool waves rather than serializing every native tool call.
+    changes:
+      - "Classify auto-approved native read-only calls as parallel-wave eligible."
+      - "Drain read-only waves through the Rust BatchExecutor."
+      - "Keep approval-required, mutating, bash, and workflow-sensitive tools serialized."
+      - "Apply post hooks, workflow hooks, safety recording, and tool-result ordering after the wave completes."
+    command: cargo test read_only
+    result:
+      assertions_passed: 1
+      tests_passed: 3
+      rust_client_live_wave_threshold_ms: 300
+  - id: exp-004-final-plateau
+    hypothesis: >
+      After formatting and Rust-client inclusion, the TypeScript live complex
+      goal should remain at the same scheduler plateau.
+    command: bunx tsx scripts/measure-tool-call-speed.ts
+    repeated_runs:
+      - { tool_phase_ms: 187.462, elapsed_ms: 230.659, first_read_wave_ms: 1.743, verify_read_wave_ms: 1.503 }
+      - { tool_phase_ms: 187.229, elapsed_ms: 230.094, first_read_wave_ms: 2.933, verify_read_wave_ms: 1.214 }
+      - { tool_phase_ms: 187.474, elapsed_ms: 228.416, first_read_wave_ms: 1.878, verify_read_wave_ms: 1.314 }
+      - { tool_phase_ms: 187.592, elapsed_ms: 227.766, first_read_wave_ms: 1.886, verify_read_wave_ms: 1.264 }
+      - { tool_phase_ms: 188.631, elapsed_ms: 232.973, first_read_wave_ms: 1.957, verify_read_wave_ms: 1.514 }
+      - { tool_phase_ms: 188.422, elapsed_ms: 228.562, first_read_wave_ms: 1.972, verify_read_wave_ms: 1.552 }
+    result:
+      assertions_passed: 1
+      mutation_overlap_count: 0
+      total_tool_calls: 9
+      median_tool_phase_ms: 187.533
+      median_elapsed_ms: 229.328
+      plateau_delta_ms: 1.402
+  - id: exp-005-hermes-safety-regression
+    hypothesis: >
+      Hermes-style fast paths must still run guardrails after mutations in the
+      same provider batch; cached read reuse should be disabled until the next
+      provider turn.
+    trigger:
+      command: npx nx run maestro:test --skip-nx-cache
+      failure: "ProviderTransport provider-owned tool events > does not skip loop detection when cached reads run behind pending mutations"
+    changes:
+      - "Track when a mutating tool has completed in the current provider batch."
+      - "Do not skip loop detection after such a mutation."
+      - "Do not serve reusable read results after such a mutation until the next provider turn."
+    command: bunx vitest --run test/agent/provider-transport-provider-tools.test.ts -t "does not skip loop detection when cached reads run behind pending mutations"
+    result:
+      assertions_passed: 1
+      test_files_passed: 1
+      tests_passed: 1
+best:
+  experiment_id: exp-004-final-plateau
+  metric:
+    name: tool_phase_ms
+    median: 187.533
+    direction: minimize
+  gates:
+    assertions_passed: 1
+    mutation_overlap_count: 0
+plateau:
+  reason: >
+    Repeated live runs vary by less than 2ms and the measured tool phase is
+    already close to the harness floor of two 80ms read waves plus one 20ms
+    mutation. The Rust client now has matching bounded read-only wave coverage.

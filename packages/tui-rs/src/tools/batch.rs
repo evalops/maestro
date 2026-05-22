@@ -98,15 +98,14 @@ impl BatchConfig {
 
 /// Batch executor for running multiple tools in parallel
 ///
-/// Note: The `BatchExecutor` caches a `ToolExecutor` for validation operations.
-/// For parallel execution, it spawns independent executors per task.
+/// Note: The `BatchExecutor` shares one cached `ToolExecutor` across
+/// validation and parallel execution tasks to avoid rebuilding registries on
+/// every read-only wave member.
 pub struct BatchExecutor {
-    /// Working directory for tool execution
-    cwd: String,
     /// Configuration
     config: BatchConfig,
     /// Cached executor for validation (avoids repeated registry building)
-    executor: ToolExecutor,
+    executor: Arc<ToolExecutor>,
 }
 
 impl BatchExecutor {
@@ -114,8 +113,7 @@ impl BatchExecutor {
     pub fn new(cwd: impl Into<String>) -> Self {
         let cwd = cwd.into();
         Self {
-            executor: ToolExecutor::new(&cwd),
-            cwd,
+            executor: Arc::new(ToolExecutor::new(&cwd)),
             config: BatchConfig::default(),
         }
     }
@@ -124,8 +122,7 @@ impl BatchExecutor {
     pub fn with_config(cwd: impl Into<String>, config: BatchConfig) -> Self {
         let cwd = cwd.into();
         Self {
-            executor: ToolExecutor::new(&cwd),
-            cwd,
+            executor: Arc::new(ToolExecutor::new(&cwd)),
             config,
         }
     }
@@ -215,7 +212,7 @@ impl BatchExecutor {
 
         for call in calls {
             let permit = semaphore.clone().acquire_owned().await.unwrap();
-            let cwd = self.cwd.clone();
+            let executor = Arc::clone(&self.executor);
             let event_tx_clone = event_tx.clone();
             let emit_events = self.config.emit_events;
 
@@ -224,8 +221,6 @@ impl BatchExecutor {
             let args = call.args.clone();
 
             handles.push(tokio::spawn(async move {
-                // Each task creates its own executor
-                let executor = ToolExecutor::new(&cwd);
                 let result = executor
                     .execute(
                         &tool_name,
@@ -378,7 +373,7 @@ impl BatchExecutor {
 
         for call in calls {
             let permit = semaphore.clone().acquire_owned().await.unwrap();
-            let cwd = self.cwd.clone();
+            let executor = Arc::clone(&self.executor);
             let event_tx_clone = event_tx.clone();
             let emit_events = self.config.emit_events;
 
@@ -388,8 +383,6 @@ impl BatchExecutor {
 
             handles.push(tokio::spawn(async move {
                 let tool_start = Instant::now();
-                // Each task creates its own executor
-                let executor = ToolExecutor::new(&cwd);
                 let result = executor
                     .execute(
                         &tool_name,
@@ -428,6 +421,7 @@ impl BatchExecutor {
             .collect();
 
         // Separate results from durations
+        let executor_reuse_count = task_results.len();
         let mut results = Vec::with_capacity(task_results.len());
         let mut tool_durations = HashMap::new();
 
@@ -446,7 +440,8 @@ impl BatchExecutor {
             .with_results(successes, failures)
             .with_duration(duration_ms)
             .with_concurrency(self.config.max_concurrency)
-            .with_tool_durations(tool_durations);
+            .with_tool_durations(tool_durations)
+            .with_executor_reuse_count(executor_reuse_count);
 
         if self.config.continue_on_error {
             details = details.with_continue_on_error();
@@ -674,6 +669,25 @@ mod tests {
         // Should have tool durations
         let tool_durations = details.tool_durations.as_ref().unwrap();
         assert!(tool_durations.contains_key("1"));
+    }
+
+    #[tokio::test]
+    async fn test_batch_executor_reuses_cached_executor_for_parallel_tasks() {
+        let config = BatchConfig::default()
+            .with_concurrency(2)
+            .emit_events(false);
+        let batch = BatchExecutor::with_config("/tmp", config);
+        let calls = vec![
+            BatchToolCall::new("1", "glob", json!({"pattern": "*.rs"})),
+            BatchToolCall::new("2", "glob", json!({"pattern": "*.toml"})),
+        ];
+
+        let (results, details) = batch.execute_with_details(calls, None).await;
+
+        assert_eq!(results.len(), 2);
+        assert_eq!(results[0].call_id, "1");
+        assert_eq!(results[1].call_id, "2");
+        assert_eq!(details.executor_reuse_count, Some(2));
     }
 
     #[tokio::test]

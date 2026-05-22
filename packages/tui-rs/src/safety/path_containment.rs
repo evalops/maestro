@@ -61,6 +61,8 @@ const SYSTEM_PATHS: &[&str] = &[
 #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
 const SYSTEM_PATHS: &[&str] = &["/etc", "/usr", "/var", "/bin", "/sbin"];
 
+const TRUSTED_RUNNER_WORKSPACE_ROOTS_ENV: &str = "MAESTRO_TRUSTED_RUNNER_WORKSPACE_ROOTS";
+
 fn system_paths() -> Vec<PathBuf> {
     #[cfg(windows)]
     {
@@ -88,6 +90,124 @@ fn system_paths() -> Vec<PathBuf> {
     #[cfg(not(windows))]
     {
         SYSTEM_PATHS.iter().map(PathBuf::from).collect()
+    }
+}
+
+fn system_protected_path(path: &Path) -> Option<PathBuf> {
+    system_paths()
+        .into_iter()
+        .find(|sys_path| path_starts_with(path, sys_path))
+}
+
+fn configured_trusted_runner_workspace_roots() -> Vec<PathBuf> {
+    std::env::var_os(TRUSTED_RUNNER_WORKSPACE_ROOTS_ENV)
+        .map(|roots| std::env::split_paths(&roots).collect())
+        .unwrap_or_default()
+}
+
+fn is_trusted_system_workspace(path: &Path) -> bool {
+    is_trusted_system_workspace_with_roots(path, &configured_trusted_runner_workspace_roots())
+}
+
+fn is_trusted_system_workspace_with_roots(path: &Path, configured_roots: &[PathBuf]) -> bool {
+    let normalized = normalize_path(path);
+    if configured_roots
+        .iter()
+        .filter_map(|root| normalize_configured_runner_root(root))
+        .any(|root| path_starts_with(&normalized, &root))
+    {
+        return true;
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        has_trusted_linux_runner_workspace_shape(&normalized)
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    false
+}
+
+fn normalize_configured_runner_root(root: &Path) -> Option<PathBuf> {
+    if !root.is_absolute() {
+        return None;
+    }
+
+    let normalized = normalize_path(root);
+    if normalized
+        .components()
+        .any(|component| matches!(component, std::path::Component::Normal(_)))
+    {
+        Some(normalized)
+    } else {
+        None
+    }
+}
+
+#[cfg(any(target_os = "linux", test))]
+fn has_trusted_linux_runner_workspace_shape(path: &Path) -> bool {
+    let components: Vec<String> = path
+        .components()
+        .filter_map(|component| match component {
+            std::path::Component::Normal(value) => value.to_str().map(str::to_owned),
+            _ => None,
+        })
+        .collect();
+
+    for (index, component) in components.iter().enumerate() {
+        if component != "_work" || components.len() < index + 3 {
+            continue;
+        }
+
+        if index == 0 {
+            continue;
+        }
+
+        if has_verified_actions_runner_root(&components[..index]) {
+            return true;
+        }
+    }
+
+    false
+}
+
+#[cfg(any(target_os = "linux", test))]
+fn has_verified_actions_runner_root(prefix_before_work: &[String]) -> bool {
+    if !has_allowed_actions_runner_base(prefix_before_work) {
+        return false;
+    }
+
+    if prefix_before_work
+        .last()
+        .is_some_and(|component| component == "actions-runner")
+    {
+        return true;
+    }
+
+    let Some(listener) = prefix_before_work.last() else {
+        return false;
+    };
+    if !listener.starts_with("listener-") {
+        return false;
+    }
+
+    prefix_before_work
+        .iter()
+        .rev()
+        .nth(1)
+        .is_some_and(|component| component == "actions-runner")
+}
+
+#[cfg(any(target_os = "linux", test))]
+fn has_allowed_actions_runner_base(prefix_before_work: &[String]) -> bool {
+    match prefix_before_work {
+        [first, second, ..] if first == "opt" && second == "actions-runner" => true,
+        [first, second, third, ..]
+            if first == "usr" && second == "local" && third == "actions-runner" =>
+        {
+            true
+        }
+        _ => false,
     }
 }
 
@@ -174,22 +294,29 @@ pub fn is_path_contained(
         }
     }
 
-    // Check against system-protected paths
-    for sys_path in system_paths() {
-        if path_starts_with(&resolved, &sys_path) {
-            return PathContainment::SystemProtected {
-                protected_path: sys_path.display().to_string(),
-            };
-        }
-    }
-
     // Resolve workspace path
     let workspace_resolved = workspace
         .canonicalize()
         .unwrap_or_else(|_| workspace.to_path_buf());
 
-    // Check if contained in workspace
-    if path_starts_with(&resolved, &workspace_resolved) {
+    let target_in_workspace = path_starts_with(&resolved, &workspace_resolved);
+
+    if let Some(sys_path) = system_protected_path(&resolved) {
+        // Self-hosted CI workspaces can live under system-owned roots. Trust only
+        // recognizable runner workspaces (or operator-configured runner roots)
+        // while keeping arbitrary /etc, /usr, /opt, etc. workspaces blocked.
+        if target_in_workspace && is_trusted_system_workspace(&workspace_resolved) {
+            return PathContainment::Contained {
+                zone: "workspace".to_string(),
+            };
+        }
+
+        return PathContainment::SystemProtected {
+            protected_path: sys_path.display().to_string(),
+        };
+    }
+
+    if target_in_workspace {
         return PathContainment::Contained {
             zone: "workspace".to_string(),
         };
@@ -398,9 +525,7 @@ pub fn is_system_path(path: &Path) -> bool {
         }
     }
 
-    system_paths()
-        .iter()
-        .any(|sys_path| path_starts_with(&resolved, sys_path))
+    system_protected_path(&resolved).is_some()
 }
 
 /// Check for path traversal attempts in a path string
@@ -417,7 +542,15 @@ mod tests {
     use std::path::PathBuf;
 
     fn workspace_root() -> PathBuf {
-        std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir().join("composer-workspace"))
+        #[cfg(windows)]
+        {
+            std::env::current_dir()
+                .unwrap_or_else(|_| std::env::temp_dir().join("composer-workspace"))
+        }
+        #[cfg(not(windows))]
+        {
+            PathBuf::from("/workspace/composer-workspace")
+        }
     }
 
     fn system_path_sample() -> PathBuf {
@@ -452,6 +585,130 @@ mod tests {
 
         let result = is_path_contained(&target, &workspace, &[]);
         assert!(matches!(result, PathContainment::Contained { zone } if zone == "workspace"));
+    }
+
+    #[test]
+    fn test_owned_runner_workspace_under_opt_is_contained() {
+        let workspace =
+            PathBuf::from("/opt/actions-runner/_work/maestro-internal/maestro-internal");
+        let target = workspace.join("src/file.rs");
+
+        let result = is_path_contained(&target, &workspace, &[]);
+        assert!(matches!(result, PathContainment::Contained { zone } if zone == "workspace"));
+    }
+
+    #[test]
+    fn test_github_actions_runner_workspace_shape_is_verified() {
+        assert!(has_trusted_linux_runner_workspace_shape(Path::new(
+            "/usr/local/actions-runner/_work/maestro-internal/maestro-internal",
+        )));
+        assert!(has_trusted_linux_runner_workspace_shape(Path::new(
+            "/opt/actions-runner/listener-03/_work/maestro-internal/maestro-internal",
+        )));
+        assert!(!has_trusted_linux_runner_workspace_shape(Path::new(
+            "/opt/not-really-runner-malicious/_work/maestro-internal/maestro-internal",
+        )));
+        assert!(!has_trusted_linux_runner_workspace_shape(Path::new(
+            "/opt/evalops-private-heavy-runner-01/_work/maestro-internal/maestro-internal",
+        )));
+        assert!(has_trusted_linux_runner_workspace_shape(Path::new(
+            "/opt/actions-runner/_work/maestro-internal/other-repo",
+        )));
+        assert!(!has_trusted_linux_runner_workspace_shape(Path::new(
+            "/etc/actions-runner/_work/maestro-internal/maestro-internal",
+        )));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn test_actions_runner_workspace_under_usr_local_is_contained() {
+        let workspace =
+            PathBuf::from("/usr/local/actions-runner/_work/maestro-internal/maestro-internal");
+        let target = workspace.join("src/file.rs");
+
+        let result = is_path_contained(&target, &workspace, &[]);
+        assert!(matches!(result, PathContainment::Contained { zone } if zone == "workspace"));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn test_actions_runner_listener_workspace_under_opt_is_contained() {
+        let workspace = PathBuf::from(
+            "/opt/actions-runner/listener-03/_work/maestro-internal/maestro-internal",
+        );
+        let target = workspace.join("src/file.rs");
+
+        let result = is_path_contained(&target, &workspace, &[]);
+        assert!(matches!(result, PathContainment::Contained { zone } if zone == "workspace"));
+    }
+
+    #[test]
+    fn test_configured_runner_workspace_root_is_trusted() {
+        let workspace = PathBuf::from("/opt/evalops-ci/_work/maestro-internal/maestro-internal");
+        let configured_roots = [PathBuf::from("/opt/evalops-ci/_work")];
+
+        assert!(is_trusted_system_workspace_with_roots(
+            &workspace,
+            &configured_roots
+        ));
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn test_configured_runner_workspace_roots_ignore_relative_and_root_paths() {
+        let workspace =
+            PathBuf::from("/etc/actions-runner/_work/maestro-internal/maestro-internal");
+        let configured_roots = [
+            PathBuf::from("."),
+            PathBuf::from("relative/_work"),
+            PathBuf::from(std::path::MAIN_SEPARATOR_STR),
+        ];
+
+        assert!(!is_trusted_system_workspace_with_roots(
+            &workspace,
+            &configured_roots
+        ));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn test_non_runner_opt_work_directory_requires_configuration() {
+        for workspace in [
+            PathBuf::from("/opt/evalops-ci/_work/maestro-internal/maestro-internal"),
+            PathBuf::from("/opt/notreallyrunner/_work/maestro-internal/maestro-internal"),
+            PathBuf::from(
+                "/opt/evalops-private-heavy-runner-01/_work/maestro-internal/maestro-internal",
+            ),
+            PathBuf::from(
+                "/opt/not-really-runner-malicious/_work/maestro-internal/maestro-internal",
+            ),
+            PathBuf::from("/etc/actions-runner/_work/maestro-internal/maestro-internal"),
+        ] {
+            let target = workspace.join("src/file.rs");
+
+            let result = is_path_contained(&target, &workspace, &[]);
+            assert!(
+                matches!(result, PathContainment::SystemProtected { .. }),
+                "Expected unconfigured {:?} to remain system protected, got {:?}",
+                workspace,
+                result
+            );
+        }
+    }
+
+    #[test]
+    fn test_system_workspace_root_does_not_override_system_protection() {
+        let workspace = system_path_sample();
+        let target = workspace.join("maestro-write-test");
+
+        let result = is_path_contained(&target, &workspace, &[]);
+        assert!(
+            matches!(result, PathContainment::SystemProtected { .. }),
+            "Expected {:?} rooted at {:?} to remain system protected, got {:?}",
+            target,
+            workspace,
+            result
+        );
     }
 
     #[test]
