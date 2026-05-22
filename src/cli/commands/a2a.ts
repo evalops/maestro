@@ -50,9 +50,12 @@ import {
 	formatA2AWorkGraphSummary,
 } from "../../platform/a2a-work-graph.js";
 import {
+	PlatformA2ADelegationTaskControlModeValue,
 	type PlatformAgentRegistryA2APeerCandidate,
 	type PlatformAgentRegistryAgent,
 	PlatformAgentStatusValue,
+	controlA2ADelegationTaskWithPlatform,
+	getA2ADelegationGraphWithPlatform,
 	heartbeatAgentWithPlatform,
 	isAgentAlreadyExistsError,
 	listA2APeerCandidatesWithPlatform,
@@ -108,7 +111,26 @@ const A2A_VALUE_FLAGS_BY_SUBCOMMAND: Record<string, readonly string[]> = {
 		"--tasks",
 		"--timeout-ms",
 	],
+	control: [
+		"--child-run-id",
+		"--delegation-id",
+		"--idempotency-key",
+		"--message",
+		"--mode",
+		"--subagent-lane-id",
+		"--target-run-id",
+		"--work-item-id",
+		"--workspace-id",
+	],
 	fleet: ["--registry", "--tasks", "--timeout-ms"],
+	graph: [
+		"--delegation-id",
+		"--limit",
+		"--max-depth",
+		"--root",
+		"--root-delegation-id",
+		"--workspace-id",
+	],
 	offer: [
 		"--agent-card-url",
 		"--base-url",
@@ -161,6 +183,7 @@ const A2A_BOOLEAN_FLAGS_BY_SUBCOMMAND: Record<string, readonly string[]> = {
 	delegate: ["--discover", "--prefer-internal", "--wait", "--work-graph"],
 	discover: ["--default", "--import", "--json", "--prefer-internal"],
 	fleet: ["--json"],
+	graph: ["--json"],
 	register: ["--heartbeat-only", "--json", "--no-heartbeat", "--update-only"],
 	reply: ["--wait", "--work-graph"],
 	send: ["--wait", "--work-graph"],
@@ -170,6 +193,7 @@ const A2A_BOOLEAN_FLAGS_BY_SUBCOMMAND: Record<string, readonly string[]> = {
 const A2A_COLLECT_VALUE_FLAGS_BY_SUBCOMMAND: Record<string, readonly string[]> =
 	{
 		coordinate: ["--reply"],
+		control: ["--message"],
 	};
 const A2A_LEADING_VALUE_FLAGS = new Set(
 	Object.values(A2A_VALUE_FLAGS_BY_SUBCOMMAND).flat(),
@@ -217,6 +241,12 @@ export async function handleA2ACommand(args: string[]): Promise<void> {
 		case "delegate":
 		case "delegation":
 			await handleA2ADelegate(parsed);
+			return;
+		case "control":
+			await handleA2AControl(parsed);
+			return;
+		case "graph":
+			await handleA2AGraph(parsed);
 			return;
 		case "reply":
 		case "continue":
@@ -1031,6 +1061,135 @@ async function handleA2ADelegate(parsed: ParsedA2AArgs): Promise<void> {
 	printTask(task, {
 		includeWorkGraphDetails: booleanFlag(parsed, "--work-graph"),
 	});
+}
+
+async function handleA2AControl(parsed: ParsedA2AArgs): Promise<void> {
+	const delegationId =
+		stringFlag(parsed, "--delegation-id") ??
+		parsed.positionals.shift() ??
+		fail("Usage: maestro a2a control <delegation-id> --mode <mode> [message]");
+	const mode = normalizeA2AControlMode(
+		stringFlag(parsed, "--mode") ??
+			parsed.positionals.shift() ??
+			fail("Provide --mode steer|followup|collect|interrupt|cancel"),
+	);
+	const message =
+		stringFlag(parsed, "--message") ?? parsed.positionals.join(" ").trim();
+	const result = await controlA2ADelegationTaskWithPlatform({
+		delegationId,
+		mode,
+		message: message || undefined,
+		idempotencyKey: stringFlag(parsed, "--idempotency-key"),
+		targetRunId: stringFlag(parsed, "--target-run-id"),
+		childRunId: stringFlag(parsed, "--child-run-id"),
+		subagentLaneId: stringFlag(parsed, "--subagent-lane-id"),
+		workItemId: stringFlag(parsed, "--work-item-id"),
+		workspaceId: stringFlag(parsed, "--workspace-id"),
+		metadata: {
+			source: "maestro-cli",
+			requestedAt: new Date().toISOString(),
+		},
+	});
+	if (!result) {
+		fail(agentRegistryNotConfiguredMessage());
+	}
+	console.log(
+		`Control ${chalk.bold(result.remoteTask?.controlId ?? "(queued)")}: ${
+			result.remoteTask?.state ?? "submitted"
+		}`,
+	);
+	if (result.remoteTask?.taskId) {
+		console.log(chalk.dim(`Task: ${result.remoteTask.taskId}`));
+	}
+	if (result.delegation?.id) {
+		console.log(chalk.dim(`Delegation: ${result.delegation.id}`));
+	}
+}
+
+async function handleA2AGraph(parsed: ParsedA2AArgs): Promise<void> {
+	const delegationId =
+		stringFlag(parsed, "--delegation-id") ?? parsed.positionals.shift();
+	const rootDelegationId =
+		stringFlag(parsed, "--root-delegation-id") ?? stringFlag(parsed, "--root");
+	if (!delegationId && !rootDelegationId) {
+		fail(
+			"Usage: maestro a2a graph <delegation-id> [--root <root-delegation-id>] [--json]",
+		);
+	}
+	const result = await getA2ADelegationGraphWithPlatform({
+		workspaceId: stringFlag(parsed, "--workspace-id"),
+		delegationId,
+		rootDelegationId,
+		maxDepth: nonNegativeNumberFlag(parsed, "--max-depth"),
+		limit: nonNegativeNumberFlag(parsed, "--limit"),
+	});
+	if (!result) {
+		fail(agentRegistryNotConfiguredMessage());
+	}
+	if (booleanFlag(parsed, "--json")) {
+		console.log(JSON.stringify(result, null, 2));
+		return;
+	}
+	console.log(
+		`Platform A2A delegation graph ${
+			result.rootDelegationId ? chalk.dim(result.rootDelegationId) : ""
+		}`.trim(),
+	);
+	const summary = [
+		result.total !== undefined ? `total=${result.total}` : undefined,
+		result.truncated !== undefined
+			? `truncated=${result.truncated}`
+			: undefined,
+		result.missingParentDelegationIds?.length
+			? `missing_parents=${result.missingParentDelegationIds.length}`
+			: undefined,
+	]
+		.filter(Boolean)
+		.join(" ");
+	if (summary) {
+		console.log(chalk.dim(`  ${summary}`));
+	}
+	if (result.nodes.length === 0) {
+		console.log(chalk.dim("  No delegation graph nodes returned."));
+		return;
+	}
+	for (const node of result.nodes) {
+		const delegation = node.delegation;
+		const label =
+			delegation?.id ??
+			(node.depth !== undefined ? `depth-${node.depth}` : "delegation");
+		console.log(
+			`${chalk.bold(label)} ${chalk.dim(
+				[
+					node.depth !== undefined ? `depth=${node.depth}` : undefined,
+					delegation?.status,
+					node.terminal ? "terminal" : undefined,
+					node.childCount !== undefined
+						? `children=${node.childCount}`
+						: undefined,
+				]
+					.filter(Boolean)
+					.join(" "),
+			)}`,
+		);
+		const lineage = delegation?.a2aDelegationChain?.join(" -> ");
+		const taskId = delegation?.a2aTaskId;
+		if (taskId || lineage) {
+			console.log(
+				chalk.dim(
+					`  ${[
+						taskId ? `task=${taskId}` : undefined,
+						lineage ? `lineage=${lineage}` : undefined,
+					]
+						.filter(Boolean)
+						.join(" ")}`,
+				),
+			);
+		}
+	}
+	if (result.edges.length > 0) {
+		console.log(chalk.dim(`  edges=${result.edges.length}`));
+	}
 }
 
 async function resolveDiscoveredA2ADelegatePeer(
@@ -1851,6 +2010,26 @@ function agentRegistryNotConfiguredMessage(): string {
 	return "Agent Registry service is not configured. Set AGENT_REGISTRY_SERVICE_URL, AGENT_REGISTRY_SERVICE_TOKEN, AGENT_REGISTRY_ORGANIZATION_ID, and AGENT_REGISTRY_WORKSPACE_ID, or pass --workspace-id with shared EvalOps credentials.";
 }
 
+function normalizeA2AControlMode(
+	value: string,
+): PlatformA2ADelegationTaskControlModeValue {
+	switch (value.toLowerCase()) {
+		case "steer":
+			return PlatformA2ADelegationTaskControlModeValue.Steer;
+		case "followup":
+		case "follow-up":
+			return PlatformA2ADelegationTaskControlModeValue.Followup;
+		case "collect":
+			return PlatformA2ADelegationTaskControlModeValue.Collect;
+		case "interrupt":
+			return PlatformA2ADelegationTaskControlModeValue.Interrupt;
+		case "cancel":
+			return PlatformA2ADelegationTaskControlModeValue.Cancel;
+		default:
+			throw new Error(`Unsupported A2A control mode: ${value}`);
+	}
+}
+
 function printA2AHelp(): void {
 	console.log(`Usage:
   maestro a2a offer --url <base-url> [--name <display-name>] [--peer-id <id>]
@@ -1863,6 +2042,8 @@ function printA2AHelp(): void {
   maestro a2a coordinate [peer] [--reply <text>] [--wait] [--json] [--work-graph]
   maestro a2a delegate <peer> <text> [--role <role>] [--cwd <path>] [--wait] [--work-graph]
   maestro a2a delegate --discover --skill <skill-id> <text> [--capability <capability>] [--prefer-internal]
+  maestro a2a control <delegation-id> --mode steer|followup|collect|interrupt|cancel [--workspace-id <id>] [message]
+  maestro a2a graph <delegation-id> [--workspace-id <id>] [--json]
   maestro a2a reply <peer> <task-id> <text> [--wait] [--work-graph]
   maestro a2a send <peer> <text> [--wait] [--work-graph]
   maestro a2a tasks [peer] [--json] [--refresh] [--work-graph]

@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import type { Executor } from "../src/sandbox.js";
+import type { ExecOptions, Executor } from "../src/sandbox.js";
 import { type ContainerHealth, createStatusTool } from "../src/tools/status.js";
 
 // Mock executor factory
@@ -35,6 +35,35 @@ describe("createStatusTool", () => {
 
 			expect(result.content[0]!.text).toContain("Environment: host");
 			expect(result.content[0]!.text).toContain("Workspace:");
+		});
+
+		it("bounds workspace status probes", async () => {
+			const execCalls: Array<{ command: string; timeout?: number }> = [];
+			const executor = {
+				exec: vi
+					.fn()
+					.mockImplementation(async (cmd: string, options?: ExecOptions) => {
+						execCalls.push({ command: cmd, timeout: options?.timeout });
+						return { code: 0, stdout: "0 /workspace", stderr: "" };
+					}),
+				getWorkspacePath: vi.fn().mockImplementation((p: string) => p),
+				getContainerName: vi.fn().mockReturnValue(undefined),
+				dispose: vi.fn().mockResolvedValue(undefined),
+			} satisfies Executor;
+			const tool = createStatusTool(executor);
+
+			await tool.execute("call1", { label: "check status" });
+
+			expect(execCalls).toEqual([
+				expect.objectContaining({
+					command: expect.stringContaining("du -sb"),
+					timeout: 5,
+				}),
+				expect.objectContaining({
+					command: expect.stringContaining("find"),
+					timeout: 5,
+				}),
+			]);
 		});
 
 		it("formats bytes correctly", async () => {

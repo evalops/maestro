@@ -56,6 +56,18 @@ The local peers use `MAESTRO_A2A_FAKE_RESPONSE` so the smoke validates A2A
 transport, task storage, registry lookup, and CLI orchestration without spending
 model tokens or requiring external provider credentials.
 
+## What it does not prove
+
+The tmux smoke does not prove Platform-backed fleet behavior. It does not call
+`agents.v1.AgentService`, does not register or heartbeat remote Maestro
+instances, does not produce Platform discovery evidence, and does not create a
+real Platform delegation or remote subagent control command.
+
+Use the smoke as a local regression gate before testing the Platform path. A
+production evidence bundle still needs live, dereferenceable identifiers for the
+Platform agent ids, discovery evidence, delegation id, A2A task id, trace spans,
+GitHub objects, Actions run logs, deploy-verifier result, and bundle signature.
+
 ## Useful knobs
 
 ```sh

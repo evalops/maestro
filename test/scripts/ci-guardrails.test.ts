@@ -5,7 +5,14 @@ import {
 	evaluatePublicMirrorReviewDebt,
 	parsePublicMirrorPulls,
 } from "../../scripts/check-public-mirror-review-debt.mjs";
+import {
+	autoMergeText,
+	markdownChecklist,
+	nextAction,
+	summarizeChecks,
+} from "../../scripts/maestro-merge-queue-status.mjs";
 import { planCiChecks } from "../../scripts/plan-ci-checks.mjs";
+import { planNxTestCommand } from "../../scripts/plan-nx-test-command.mjs";
 import {
 	collectFeedbackAuditTargets,
 	parseFeedbackAuditArgs,
@@ -17,8 +24,13 @@ import {
 	parseRepoSpec,
 	prNumberFromInput,
 } from "../../scripts/pr-ready-to-merge.mjs";
+import {
+	publicMirrorRefCandidates,
+	resolvePublicMirrorRef,
+} from "../../scripts/resolve-public-mirror-ref.mjs";
 
 type WorkflowStep = {
+	if?: string;
 	name?: string;
 	uses?: string;
 	run?: string;
@@ -27,6 +39,10 @@ type WorkflowStep = {
 };
 
 type Workflow = {
+	concurrency?: {
+		"cancel-in-progress"?: boolean | string;
+		group?: string;
+	};
 	jobs?: Record<string, { steps?: WorkflowStep[]; "timeout-minutes"?: number }>;
 };
 
@@ -289,6 +305,109 @@ describe("ci workflow guardrails", () => {
 		expect(project.targets?.test?.dependsOn ?? []).not.toContain("build");
 	});
 
+	it("skips Rust setup for CI-infrastructure-only PR checks", () => {
+		const workflow = parse(
+			readFileSync(new URL("../../.github/workflows/ci.yml", import.meta.url), {
+				encoding: "utf8",
+			}),
+		) as Workflow;
+		const setupRustStep = workflow.jobs?.["pr-checks"]?.steps?.find(
+			(step) => step.uses === "./.github/actions/setup-rust",
+		);
+
+		if (!setupRustStep) {
+			const rustHostedSteps =
+				workflow.jobs?.["rust-hosted-conformance"]?.steps ?? [];
+			expect(
+				rustHostedSteps.some(
+					(step) => step.uses === "./.github/actions/setup-rust",
+				),
+			).toBe(true);
+			return;
+		}
+
+		expect(setupRustStep?.if).toBe(
+			"${{ github.event_name != 'pull_request' || needs.changes.outputs.ci_infrastructure_only != 'true' }}",
+		);
+	});
+
+	it("keeps the Rust toolchain home stable across workflow runs", () => {
+		const action = readFileSync(
+			new URL("../../.github/actions/setup-rust/action.yml", import.meta.url),
+			{
+				encoding: "utf8",
+			},
+		);
+
+		expect(action).toContain(
+			"/maestro-rust/${safe_repo}/${safe_job}/${safe_toolchain}",
+		);
+		expect(action).not.toContain("GITHUB_RUN_ID");
+	});
+
+	it("keeps setup-bun-nx rustfmt home stable across workflow runs", () => {
+		const action = readFileSync(
+			new URL("../../.github/actions/setup-bun-nx/action.yml", import.meta.url),
+			{
+				encoding: "utf8",
+			},
+		);
+
+		expect(action).toContain(
+			"/maestro-rust/${safe_repo}/${safe_job}/stable-rustfmt",
+		);
+		expect(action).not.toContain("GITHUB_RUN_ID");
+	});
+
+	it("sets up Java exactly once before Nx tests", () => {
+		const workflow = parse(
+			readFileSync(new URL("../../.github/workflows/ci.yml", import.meta.url), {
+				encoding: "utf8",
+			}),
+		) as Workflow;
+		const steps = workflow.jobs?.["pr-checks"]?.steps ?? [];
+		const javaSteps = steps.filter((step) =>
+			step.uses?.startsWith("actions/setup-java@"),
+		);
+		const setupBunIndex = steps.findIndex(
+			(step) => step.uses === "./.github/actions/setup-bun-nx",
+		);
+		const javaIndex = steps.findIndex(
+			(step) => step.name === "Setup Java for Gradle Nx tasks",
+		);
+		const nxTestIndex = steps.findIndex(
+			(step) => step.name === "Test (Nx affected)",
+		);
+
+		expect(javaSteps).toHaveLength(1);
+		expect(javaSteps[0]?.with).toMatchObject({
+			distribution: "temurin",
+			"java-version": "21",
+		});
+		expect(javaSteps[0]?.with).not.toHaveProperty("cache");
+		expect(javaIndex).toBeGreaterThan(setupBunIndex);
+		expect(javaIndex).toBeLessThan(nxTestIndex);
+	});
+
+	it("cancels stale review-thread guard runs for the same PR", () => {
+		const workflow = parse(
+			readFileSync(
+				new URL(
+					"../../.github/workflows/review-thread-guard.yml",
+					import.meta.url,
+				),
+				{
+					encoding: "utf8",
+				},
+			),
+		) as Workflow;
+
+		expect(workflow.concurrency?.group).toBe(
+			"${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}",
+		);
+		expect(workflow.concurrency?.["cancel-in-progress"]).toBe(true);
+	});
+
 	it("keeps the Rust release cache unless repairing dep-info corruption", () => {
 		const workflow = parse(
 			readFileSync(
@@ -368,6 +487,378 @@ describe("shellcheck workflow guardrails", () => {
 		expect(installStep?.run).toContain("sudo apt-get install -y shellcheck");
 		expect(installStep?.run).toContain(
 			"Unsupported ShellCheck install platform",
+		);
+	});
+});
+
+describe("planNxTestCommand", () => {
+	const basePackage = {
+		dependencies: { "@evalops/contracts": "1.0.0" },
+		name: "@example/root",
+		scripts: { test: "vitest" },
+	};
+
+	it("keeps dependency-affecting package changes on the full test matrix", () => {
+		expect(
+			planNxTestCommand({
+				basePackage,
+				changedFiles: ["package.json", "src/index.ts"],
+				headPackage: {
+					...basePackage,
+					dependencies: { "@evalops/contracts": "1.0.1" },
+				},
+			}),
+		).toEqual({ files: [], mode: "all" });
+	});
+
+	it("uses affected files when root project only removes self-build", () => {
+		expect(
+			planNxTestCommand({
+				basePackage,
+				changedFiles: ["project.json"],
+				headPackage: basePackage,
+				rootProjectJsonOnlyRemovesTestSelfBuild: true,
+			}),
+		).toEqual({ files: ["project.json"], mode: "affected-files" });
+	});
+
+	it("uses explicit affected files for root package script-only changes", () => {
+		expect(
+			planNxTestCommand({
+				basePackage,
+				changedFiles: [
+					"package.json",
+					"scripts/smoke-platform-a2a-delegation-live.ts",
+					"test/platform/a2a-platform-delegation-live.test.ts",
+				],
+				headPackage: {
+					...basePackage,
+					scripts: {
+						...basePackage.scripts,
+						"platform:a2a-delegation-live":
+							"tsx scripts/smoke-platform-a2a-delegation-live.ts",
+					},
+				},
+			}),
+		).toEqual({
+			files: [
+				"scripts/smoke-platform-a2a-delegation-live.ts",
+				"test/platform/a2a-platform-delegation-live.test.ts",
+			],
+			mode: "affected-files",
+		});
+	});
+
+	it("skips Nx when package scripts are the only changed files", () => {
+		expect(
+			planNxTestCommand({
+				basePackage,
+				changedFiles: ["package.json"],
+				headPackage: {
+					...basePackage,
+					scripts: {
+						...basePackage.scripts,
+						"platform:a2a-evidence-verify":
+							"tsx scripts/verify-platform-a2a-live-evidence.ts",
+					},
+				},
+			}),
+		).toEqual({ files: [], mode: "none" });
+	});
+});
+
+describe("public mirror ref resolution", () => {
+	it("tries internal branch aliases before falling back to main", () => {
+		expect(publicMirrorRefCandidates("codex/internal-release-foo")).toEqual([
+			"codex/internal-release-foo",
+			"codex/release-foo",
+		]);
+		expect(publicMirrorRefCandidates("internal-release-foo")).toEqual([
+			"internal-release-foo",
+			"release-foo",
+		]);
+	});
+
+	it("reports the matched public branch source", () => {
+		const resolved = resolvePublicMirrorRef({
+			headExistsFn: (_repo, ref) => ref === "codex/release-foo",
+			internalRef: "codex/internal-release-foo",
+			publicRepo: "https://github.com/evalops/maestro.git",
+		});
+
+		expect(resolved).toMatchObject({
+			ref: "codex/release-foo",
+			source: "matched-public-branch",
+		});
+	});
+});
+
+describe("maestro merge queue status", () => {
+	it("summarizes pending and failing checks", () => {
+		expect(
+			summarizeChecks([
+				{
+					__typename: "CheckRun",
+					conclusion: "SUCCESS",
+					name: "coverage",
+					status: "COMPLETED",
+				},
+				{
+					__typename: "CheckRun",
+					conclusion: "",
+					name: "pr-checks",
+					status: "IN_PROGRESS",
+				},
+				{
+					__typename: "StatusContext",
+					context: "external/review",
+					state: "FAILURE",
+				},
+				{
+					__typename: "StatusContext",
+					context: "external/pending-review",
+					state: "PENDING",
+				},
+				{
+					__typename: "StatusContext",
+					context: "external/expected-review",
+					state: "EXPECTED",
+				},
+			]),
+		).toMatchObject({
+			failing: ["external/review (FAILURE)"],
+			passing: 1,
+			pending: [
+				"pr-checks",
+				"external/pending-review",
+				"external/expected-review",
+			],
+			total: 5,
+		});
+	});
+
+	it("ignores superseded duplicate status checks", () => {
+		expect(
+			summarizeChecks([
+				{
+					__typename: "CheckRun",
+					completedAt: "2026-05-22T13:38:45Z",
+					conclusion: "CANCELLED",
+					name: "build-and-publish",
+					startedAt: "2026-05-22T13:38:44Z",
+					status: "COMPLETED",
+				},
+				{
+					__typename: "CheckRun",
+					completedAt: "2026-05-22T13:38:59Z",
+					conclusion: "SUCCESS",
+					name: "build-and-publish",
+					startedAt: "2026-05-22T13:38:48Z",
+					status: "COMPLETED",
+				},
+				{
+					__typename: "CheckRun",
+					completedAt: "2026-05-22T13:35:14Z",
+					conclusion: "CANCELLED",
+					name: "unresolved-review-threads / unresolved-review-threads",
+					startedAt: "2026-05-22T13:34:50Z",
+					status: "COMPLETED",
+				},
+				{
+					__typename: "CheckRun",
+					completedAt: "0001-01-01T00:00:00Z",
+					conclusion: "",
+					name: "unresolved-review-threads / unresolved-review-threads",
+					startedAt: "2026-05-22T13:38:47Z",
+					status: "IN_PROGRESS",
+				},
+				{
+					__typename: "StatusContext",
+					context: "evalops-pr-lens/meta-review",
+					startedAt: "2026-05-22T13:16:49Z",
+					state: "FAILURE",
+				},
+				{
+					__typename: "StatusContext",
+					context: "evalops-pr-lens/meta-review",
+					startedAt: "2026-05-22T13:39:07Z",
+					state: "SUCCESS",
+				},
+			]),
+		).toMatchObject({
+			failing: [],
+			passing: 2,
+			pending: ["unresolved-review-threads / unresolved-review-threads"],
+			total: 3,
+		});
+	});
+
+	it("keeps same-named checks from different workflows", () => {
+		expect(
+			summarizeChecks([
+				{
+					__typename: "CheckRun",
+					completedAt: "2026-05-22T13:38:59Z",
+					conclusion: "SUCCESS",
+					name: "build",
+					startedAt: "2026-05-22T13:38:48Z",
+					status: "COMPLETED",
+					workflowName: "release",
+				},
+				{
+					__typename: "CheckRun",
+					completedAt: "2026-05-22T13:39:04Z",
+					conclusion: "FAILURE",
+					name: "build",
+					startedAt: "2026-05-22T13:38:49Z",
+					status: "COMPLETED",
+					workflowName: "ci",
+				},
+			]),
+		).toMatchObject({
+			failing: ["build (FAILURE)"],
+			passing: 1,
+			pending: [],
+			total: 2,
+		});
+	});
+
+	it("uses createdAt for status context supersession", () => {
+		expect(
+			summarizeChecks([
+				{
+					__typename: "StatusContext",
+					context: "external/review",
+					createdAt: "2026-05-22T13:16:49Z",
+					state: "FAILURE",
+				},
+				{
+					__typename: "StatusContext",
+					context: "external/review",
+					createdAt: "2026-05-22T13:39:07Z",
+					state: "SUCCESS",
+				},
+			]),
+		).toMatchObject({
+			failing: [],
+			passing: 1,
+			pending: [],
+			total: 1,
+		});
+	});
+
+	it("uses rollup order when duplicate checks have no timestamps", () => {
+		expect(
+			summarizeChecks([
+				{
+					__typename: "CheckRun",
+					conclusion: "FAILURE",
+					name: "metadata",
+					status: "COMPLETED",
+					workflowName: "ci",
+				},
+				{
+					__typename: "CheckRun",
+					conclusion: "SUCCESS",
+					name: "metadata",
+					status: "COMPLETED",
+					workflowName: "ci",
+				},
+			]),
+		).toMatchObject({
+			failing: [],
+			passing: 1,
+			pending: [],
+			total: 1,
+		});
+	});
+
+	it("reports merged PRs as terminal instead of actionable", () => {
+		const mergedPr = {
+			autoMergeRequest: {},
+			baseRefName: "main",
+			isDraft: false,
+			state: "MERGED",
+		};
+		const checkSummary = {
+			failing: [],
+			passing: 0,
+			pending: ["coverage"],
+			total: 1,
+		};
+
+		expect(autoMergeText(mergedPr)).toBe("merged");
+		expect(
+			nextAction({
+				checkSummary,
+				pr: mergedPr,
+				unresolvedThreads: [{ id: "thread-1" }],
+			}),
+		).toBe("merged");
+	});
+
+	it("does not recommend auto-merge for stacked pull requests", () => {
+		const stackedPr = {
+			autoMergeRequest: null,
+			baseRefName: "codex/native-a2a-pairing-20260515",
+			isDraft: false,
+			state: "OPEN",
+		};
+		const checkSummary = {
+			failing: [],
+			passing: 12,
+			pending: [],
+			total: 12,
+		};
+
+		expect(
+			nextAction({
+				checkSummary,
+				pr: stackedPr,
+				unresolvedThreads: [],
+			}),
+		).toBe(
+			"stacked on codex/native-a2a-pairing-20260515: wait for parent or retarget",
+		);
+	});
+
+	it("prioritizes stale branch updates before pending checks", () => {
+		const stalePr = {
+			autoMergeRequest: {},
+			baseRefName: "main",
+			isDraft: false,
+			mergeStateStatus: "BEHIND",
+			state: "OPEN",
+		};
+		const checkSummary = {
+			failing: [],
+			passing: 8,
+			pending: ["coverage"],
+			total: 9,
+		};
+
+		expect(
+			nextAction({
+				checkSummary,
+				pr: stalePr,
+				unresolvedThreads: [],
+			}),
+		).toBe("update branch from base");
+	});
+
+	it("renders a compact action checklist", () => {
+		expect(
+			markdownChecklist([
+				{ nextAction: "merged", number: 1 },
+				{ nextAction: "auto-merge armed", number: 2 },
+				{ nextAction: "update branch from base", number: 3 },
+				{ nextAction: "resolve review threads", number: 4 },
+			]),
+		).toBe(
+			[
+				"- [ ] #3: update branch from base",
+				"- [ ] #4: resolve review threads",
+			].join("\n"),
 		);
 	});
 });

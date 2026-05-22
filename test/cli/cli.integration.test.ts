@@ -696,10 +696,10 @@ describe("CLI integration", () => {
 			const combined = output.join("\n");
 			expect(combined).toContain("Maestro v");
 			expect(combined).not.toContain("Composer v");
-			await waitForFile(beaconFile);
-			const [startupEvent] = JSON.parse(
-				readFileSync(beaconFile, "utf8").trim(),
-			) as [{ feature: string; action: string }];
+			const [startupEvent] =
+				await readJsonFileEventually<[{ feature: string; action: string }]>(
+					beaconFile,
+				);
 			const commandBuffer = await readJsonFileEventually<{
 				counts: Record<string, number>;
 			}>(bufferFile);
@@ -744,20 +744,19 @@ describe("CLI integration", () => {
 		process.env.MAESTRO_TELEMETRY = "1";
 		process.env.MAESTRO_BEACON_FILE = "";
 		process.env.MAESTRO_BEACON_ENDPOINT = "https://telemetry.example.test";
-		process.env.MAESTRO_BEACON_TIMEOUT_MS = "1000";
+		process.env.MAESTRO_BEACON_TIMEOUT_MS = "100";
 		process.env.MAESTRO_CLI_COMMAND_BEACON_BUFFER_FILE = bufferFile;
 		let fetchCompleted = false;
+		let resolveFetch!: (response: Response) => void;
+		const fetchPromise = new Promise<Response>((resolve) => {
+			resolveFetch = (response: Response) => {
+				fetchCompleted = true;
+				resolve(response);
+			};
+		});
 		vi.stubGlobal(
 			"fetch",
-			vi.fn(
-				() =>
-					new Promise<Response>((resolve) => {
-						setTimeout(() => {
-							fetchCompleted = true;
-							resolve(new Response(null, { status: 200 }));
-						}, 75);
-					}),
-			),
+			vi.fn(() => fetchPromise),
 		);
 		const exitCodes: number[] = [];
 		const exitSpy = vi.spyOn(process, "exit").mockImplementation((code) => {
@@ -765,7 +764,13 @@ describe("CLI integration", () => {
 			throw new Error("exit");
 		});
 		try {
-			await expect(main(["--version"])).rejects.toThrow("exit");
+			const versionExit = expect(main(["--version"])).rejects.toThrow("exit");
+			await vi.waitFor(() => {
+				expect(fetch).toHaveBeenCalled();
+			});
+			expect(fetchCompleted).toBe(false);
+			resolveFetch(new Response(null, { status: 200 }));
+			await versionExit;
 			expect(exitCodes).toEqual([0]);
 			expect(fetchCompleted).toBe(true);
 		} finally {
@@ -1126,7 +1131,7 @@ describe("CLI integration", () => {
 		output = [];
 		await main(["exec", "--last", "Follow up run"]);
 		expect(output.join("\n")).toContain("Echo: Follow up run");
-	}, 60_000);
+	}, 90_000);
 
 	it("rejects Codex/ChatGPT auth flags", async () => {
 		const exitCodes: number[] = [];

@@ -24,6 +24,7 @@ export const DEFAULT_GUARDIAN_CONFIG: Required<GuardianConfig> = {
 	customSecretPatterns: [],
 	excludePatterns: [],
 	tools: {
+		evidenceIntegrity: true,
 		semgrep: true,
 		gitSecrets: true,
 		trufflehog: true,

@@ -697,6 +697,42 @@ describe("runStreamingShellCommand", () => {
 		expect(result.stderr).toBe("err");
 	});
 
+	it("loads shell startup files outside GitHub Actions", async () => {
+		const home = mkdtempSync(join(tmpdir(), "composer-shell-home-"));
+		try {
+			writeFileSync(
+				join(home, ".bash_profile"),
+				"export MAESTRO_PROFILE_MARK=stream-profile\n",
+			);
+
+			const result = await runStreamingShellCommand(
+				"printf '%s' \"$MAESTRO_PROFILE_MARK\"",
+				{
+					env: { ...process.env, GITHUB_ACTIONS: "false", HOME: home },
+				},
+			);
+
+			expect(result.stdout).toBe("stream-profile");
+		} finally {
+			rmSync(home, { force: true, recursive: true });
+		}
+	});
+
+	it("does not source shell startup files in GitHub Actions", async () => {
+		const home = mkdtempSync(join(tmpdir(), "composer-shell-home-"));
+		try {
+			writeFileSync(join(home, ".bash_profile"), "echo profile-noise >&2\n");
+
+			const result = await runStreamingShellCommand("echo err >&2", {
+				env: { ...process.env, GITHUB_ACTIONS: "true", HOME: home },
+			});
+
+			expect(result.stderr).toBe("err");
+		} finally {
+			rmSync(home, { force: true, recursive: true });
+		}
+	});
+
 	it("streams stdout via callback", async () => {
 		const chunks: string[] = [];
 		const result = await runStreamingShellCommand(

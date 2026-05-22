@@ -87,6 +87,22 @@ function spread(records: Array<{ startedAt: number }>): number {
 	);
 }
 
+function expectStartedBeforeFirstEnd(
+	records: Array<{ startedAt: number; endedAt?: number }>,
+	label: string,
+): void {
+	if (records.length === 0) {
+		throw new Error(`Missing ${label} timing records`);
+	}
+	const latestStart = Math.max(...records.map((record) => record.startedAt));
+	const earliestEnd = Math.min(
+		...records.map((record) => record.endedAt ?? Number.POSITIVE_INFINITY),
+	);
+	expect(latestStart, `${label} records should overlap`).toBeLessThan(
+		earliestEnd,
+	);
+}
+
 describe("ProviderTransport tool scheduling", () => {
 	it("emits tool phase telemetry with parallelization and serialization reasons", async () => {
 		const readProbeTool: AgentTool = {
@@ -1140,12 +1156,6 @@ describe("ProviderTransport tool scheduling", () => {
 			throw new Error("Missing commit tool timing record");
 		}
 
-		const inspectStartSpread =
-			Math.max(...inspectRecords.map((record) => record.startedAt)) -
-			Math.min(...inspectRecords.map((record) => record.startedAt));
-		const verifyStartSpread =
-			Math.max(...verifyRecords.map((record) => record.startedAt)) -
-			Math.min(...verifyRecords.map((record) => record.startedAt));
 		const latestInspectEnd = Math.max(
 			...inspectRecords.map((record) => record.endedAt ?? 0),
 		);
@@ -1167,11 +1177,11 @@ describe("ProviderTransport tool scheduling", () => {
 			reason: "mutating_tool",
 			pendingMutations: 0,
 		});
-		expect(inspectStartSpread).toBeLessThan(40);
+		expectStartedBeforeFirstEnd(inspectRecords, "inspect");
 		expect(commitRecord.startedAt).toBeGreaterThanOrEqual(latestInspectEnd);
 		expect(mutationOverlapCount).toBe(0);
 		expect(earliestVerifyStart).toBeGreaterThanOrEqual(commitRecord.endedAt);
-		expect(verifyStartSpread).toBeLessThan(40);
+		expectStartedBeforeFirstEnd(verifyRecords, "verify");
 	});
 
 	it("preserves configured concurrency cap for parallel-safe MCP mutations", async () => {

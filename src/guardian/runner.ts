@@ -388,6 +388,13 @@ export type HeuristicFindingName =
 	| "Database URL with credentials"
 	| "JWT token";
 
+export type EvidenceIntegrityFindingName =
+	| "Synthetic production commit SHA"
+	| "Synthetic production PR reference"
+	| "Synthetic local GitHub Actions run ID"
+	| "Local proof identifier"
+	| "Replay artifact claimed as production evidence";
+
 const HEURISTIC_PATTERNS: Array<{ name: HeuristicFindingName; regex: RegExp }> =
 	[
 		// AWS credentials
@@ -480,6 +487,51 @@ const HEURISTIC_PATTERNS: Array<{ name: HeuristicFindingName; regex: RegExp }> =
 		},
 	];
 
+const EVIDENCE_CONTEXT_REGEX =
+	/(?<![A-Za-z0-9_-])(?:production[\s_-]+evidence|productionEvidence|production[\s_-]+proof|productionProof|live[\s_-]+evidence|liveEvidence|live[\s_-]+proof|liveProof|dereferenceable|evidence[\s_-]+bundle|evidenceBundle|deploy-verifier|hard[_-]identifiers|hardIdentifiers)(?![A-Za-z0-9_-])/i;
+
+const REPLAY_EVIDENCE_MARKER_PATTERN = String.raw`(?:\bdeterministic_replay\b|(?<![A-Za-z0-9_])["']?replay["']?\s*:\s*true)`;
+const PRODUCTION_EVIDENCE_CLAIM_PATTERN = String.raw`(?<![A-Za-z0-9_-])["']?(?:production[_-]?evidence|live[_-]?proof)["']?\s*:\s*["']?(?:true|verified)["']?(?![A-Za-z0-9_-])`;
+
+const EVIDENCE_PATTERNS: Array<{
+	name: EvidenceIntegrityFindingName;
+	regex?: RegExp;
+	matches?: (contents: string) => boolean;
+	requiresEvidenceContext?: boolean;
+}> = [
+	{
+		name: "Synthetic production commit SHA",
+		// A 40-hex "SHA" containing an embedded UTC timestamp plus cutesy marker
+		// text is a fixture identifier, not dereferenceable git evidence.
+		regex:
+			/\b[0-9a-f]{4,12}20\d{12}[0-9a-f]{0,16}(?:c0de|cafe|5afe)[0-9a-f]{0,20}\b/i,
+		requiresEvidenceContext: true,
+	},
+	{
+		name: "Synthetic production PR reference",
+		regex:
+			/\b[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+#(?!\d+\b)[A-Za-z][A-Za-z0-9_.:-]*(?:local|prod-pr-lane)[A-Za-z0-9_.:-]*\b/i,
+		requiresEvidenceContext: true,
+	},
+	{
+		name: "Synthetic local GitHub Actions run ID",
+		regex: /\bgha-run-[A-Za-z0-9_.:-]*-local\b/i,
+		requiresEvidenceContext: true,
+	},
+	{
+		name: "Local proof identifier",
+		regex:
+			/\bproof(?:[_-]?id|Id)?\b["']?\s*[:=]\s*["']?[A-Za-z0-9_.:-]+-local\b/i,
+		requiresEvidenceContext: true,
+	},
+	{
+		name: "Replay artifact claimed as production evidence",
+		matches: (contents) =>
+			new RegExp(REPLAY_EVIDENCE_MARKER_PATTERN, "i").test(contents) &&
+			new RegExp(PRODUCTION_EVIDENCE_CLAIM_PATTERN, "i").test(contents),
+	},
+];
+
 export function detectHeuristicFindings(
 	contents: string,
 ): HeuristicFindingName[] {
@@ -490,6 +542,74 @@ export function detectHeuristicFindings(
 		}
 	}
 	return matches;
+}
+
+export function detectEvidenceIntegrityFindings(
+	contents: string,
+): EvidenceIntegrityFindingName[] {
+	const matches: EvidenceIntegrityFindingName[] = [];
+	const hasEvidenceContext = EVIDENCE_CONTEXT_REGEX.test(contents);
+	for (const pattern of EVIDENCE_PATTERNS) {
+		if (pattern.requiresEvidenceContext && !hasEvidenceContext) {
+			continue;
+		}
+		if (pattern.matches?.(contents) ?? pattern.regex?.test(contents)) {
+			matches.push(pattern.name);
+		}
+	}
+	return matches;
+}
+
+function runEvidenceIntegrityScan(
+	files: string[],
+	root: string,
+): GuardianToolResult {
+	const started = Date.now();
+	const findings: string[] = [];
+	const ignorePatterns = [
+		/test\/guardian\/evidence-integrity\.test\.ts$/,
+		/src\/guardian\/runner\.ts$/,
+	];
+
+	for (const relative of files) {
+		if (ignorePatterns.some((pattern) => pattern.test(relative))) {
+			continue;
+		}
+		const fullPath = resolve(root, relative);
+		if (!existsSync(fullPath)) continue;
+		let contents: string;
+		try {
+			const stats = statSync(fullPath);
+			if (stats.size > 2 * 1024 * 1024) {
+				continue;
+			}
+			contents = readFileSync(fullPath, "utf-8");
+		} catch {
+			continue;
+		}
+		if (contents.includes("\0")) continue;
+		for (const match of detectEvidenceIntegrityFindings(contents)) {
+			findings.push(`${match}: ${relative}`);
+		}
+	}
+
+	if (!findings.length) {
+		return {
+			tool: "evidence-integrity",
+			exitCode: 0,
+			stdout: "",
+			stderr: "",
+			durationMs: Date.now() - started,
+		};
+	}
+	return {
+		tool: "evidence-integrity",
+		exitCode: 1,
+		stdout: findings.join("\n"),
+		stderr:
+			"Live-production claims must use dereferenceable git, PR, Actions, deploy, and signature identifiers. Mark deterministic fixtures as replay evidence instead.",
+		durationMs: Date.now() - started,
+	};
 }
 
 function runHeuristicScan(files: string[], root: string): GuardianToolResult {
@@ -743,6 +863,10 @@ export async function runGuardian(
 	});
 
 	const toolResults: GuardianToolResult[] = [];
+
+	if (config.tools.evidenceIntegrity) {
+		toolResults.push(runEvidenceIntegrityScan(files, scanRoot));
+	}
 
 	if (config.tools.semgrep) {
 		toolResults.push(runSemgrep(files, scanRoot));

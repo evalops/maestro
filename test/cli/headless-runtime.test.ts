@@ -1,7 +1,7 @@
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ActionApprovalService } from "../../src/agent/action-approval.js";
 import type { AgentEvent } from "../../src/agent/types.js";
 import { HEADLESS_PROTOCOL_VERSION } from "../../src/cli/headless-protocol.js";
@@ -23,6 +23,12 @@ const supportsPty =
 	})();
 
 describe("runHeadlessMode", () => {
+	beforeEach(() => {
+		vi.resetModules();
+		vi.doUnmock("node:readline");
+		vi.doUnmock("@evalops/contracts");
+	});
+
 	afterEach(() => {
 		for (const request of serverRequestManager.listPending()) {
 			serverRequestManager.cancel(request.id, "test cleanup");

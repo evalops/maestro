@@ -1,9 +1,12 @@
 import { Buffer } from "node:buffer";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
+	PlatformA2ADelegationTaskControlModeValue,
 	PlatformAgentStatusValue,
 	PlatformDelegationStatusValue,
+	controlA2ADelegationTaskWithPlatform,
 	delegateAgentWithPlatform,
+	getA2ADelegationGraphWithPlatform,
 	heartbeatAgentWithPlatform,
 	listA2APeerCandidatesWithPlatform,
 	listAgentsWithPlatform,
@@ -121,11 +124,37 @@ describe("agent registry service client", () => {
 				expect(parseRequestBody(init?.body)).toMatchObject({
 					workspaceId: "ws_1",
 					limit: 5,
+					a2aSkillId: "maestro.subagent.code-review",
+					taskClass: "code.review",
+					requireA2aDispatch: true,
+					eligibleForDelegation: true,
 				});
-				return new Response(JSON.stringify({ agents: [], total: 0 }), {
-					status: 200,
-					headers: { "Content-Type": "application/json" },
-				});
+				return new Response(
+					JSON.stringify({
+						agents: [],
+						total: 0,
+						discoveryEvidence: {
+							schema: "agents.v1.discovery-evidence",
+							decision: "no_match",
+							requireA2aDispatch: true,
+							candidateCount: 2,
+							matchedCount: 0,
+							exclusions: [
+								{
+									reason: "skill_policy",
+									count: 1,
+									sample_agent_ids: ["maestro-offline"],
+									policy_reasons: ["denied_task_class"],
+									denied_task_classes: ["code.review"],
+								},
+							],
+						},
+					}),
+					{
+						status: 200,
+						headers: { "Content-Type": "application/json" },
+					},
+				);
 			},
 		);
 		vi.stubGlobal("fetch", fetchMock);
@@ -134,8 +163,31 @@ describe("agent registry service client", () => {
 			listAgentsWithPlatform({
 				workspaceId: "ws_1",
 				limit: 5,
+				a2aSkillId: "maestro.subagent.code-review",
+				taskClass: "code.review",
+				requireA2ADispatch: true,
+				eligibleForDelegation: true,
 			}),
-		).resolves.toEqual({ agents: [], total: 0 });
+		).resolves.toEqual({
+			agents: [],
+			total: 0,
+			discoveryEvidence: {
+				schema: "agents.v1.discovery-evidence",
+				decision: "no_match",
+				requireA2ADispatch: true,
+				candidateCount: 2,
+				matchedCount: 0,
+				exclusions: [
+					{
+						reason: "skill_policy",
+						count: 1,
+						sampleAgentIds: ["maestro-offline"],
+						policyReasons: ["denied_task_class"],
+						deniedTaskClasses: ["code.review"],
+					},
+				],
+			},
+		});
 		expect(fetchMock).toHaveBeenCalledTimes(1);
 	});
 
@@ -175,11 +227,22 @@ describe("agent registry service client", () => {
 								agentType: "maestro",
 								capabilities: ["code:review"],
 								status: "AGENT_STATUS_ONLINE",
+								active_config_version: 7,
+								last_heartbeat_at: "2026-05-21T18:00:00Z",
+								created_at: "2026-05-20T18:00:00Z",
+								updated_at: "2026-05-21T18:05:00Z",
+								capacity: {
+									current: 2,
+									max: 5,
+									remaining: 3,
+									reserved_delegation_count: 1,
+								},
 								a2a: {
 									public_endpoint_url: "https://reviewer.test/a2a",
 									internalEndpointUrl: "http://reviewer.mesh/a2a",
 									agent_card_url:
 										"https://reviewer.test/.well-known/agent-card.json",
+									agent_card_observed_at: "2026-05-21T18:04:00Z",
 									protocol_binding: "HTTP+JSON",
 									protocolVersion: "1.0",
 									push_notifications: true,
@@ -231,9 +294,20 @@ describe("agent registry service client", () => {
 			agents: [
 				expect.objectContaining({
 					id: "maestro-reviewer",
+					activeConfigVersion: 7,
+					lastHeartbeatAt: "2026-05-21T18:00:00Z",
+					createdAt: "2026-05-20T18:00:00Z",
+					updatedAt: "2026-05-21T18:05:00Z",
+					capacity: {
+						current: 2,
+						max: 5,
+						remaining: 3,
+						reservedDelegationCount: 1,
+					},
 					a2a: expect.objectContaining({
 						publicEndpointUrl: "https://reviewer.test/a2a",
 						internalEndpointUrl: "http://reviewer.mesh/a2a",
+						agentCardObservedAt: "2026-05-21T18:04:00Z",
 						pushNotifications: true,
 						skills: [
 							expect.objectContaining({
@@ -272,7 +346,15 @@ describe("agent registry service client", () => {
 				protocolBinding: "HTTP+JSON",
 				protocolVersion: "1.0",
 				pushNotifications: true,
-				agent: expect.objectContaining({ id: "maestro-reviewer" }),
+				agent: expect.objectContaining({
+					id: "maestro-reviewer",
+					capacity: {
+						current: 2,
+						max: 5,
+						remaining: 3,
+						reservedDelegationCount: 1,
+					},
+				}),
 				skills: [
 					expect.objectContaining({
 						id: "maestro.subagent.code-review",
@@ -511,6 +593,14 @@ describe("agent registry service client", () => {
 								a2aEndpointUrl: "https://peer.test/a2a/message:send",
 								a2aDispatchStatus: "submitted",
 								a2aSkillId: "maestro.subagent.code-review",
+								a2aDispatchedAt: "2026-05-21T18:10:00Z",
+								a2aLeaseRenewedAt: "2026-05-21T18:11:00Z",
+								a2aResumeWaitContracts: [
+									{
+										type: "a2a.task.completed",
+										delegation_id: "delegation_1",
+									},
+								],
 							},
 						}),
 						{ status: 200, headers: { "Content-Type": "application/json" } },
@@ -562,6 +652,14 @@ describe("agent registry service client", () => {
 				a2aEndpointUrl: "https://peer.test/a2a/message:send",
 				a2aDispatchStatus: "submitted",
 				a2aSkillId: "maestro.subagent.code-review",
+				a2aDispatchedAt: "2026-05-21T18:10:00Z",
+				a2aLeaseRenewedAt: "2026-05-21T18:11:00Z",
+				a2aResumeWaitContracts: [
+					{
+						type: "a2a.task.completed",
+						delegation_id: "delegation_1",
+					},
+				],
 			},
 		});
 		await expect(
@@ -579,5 +677,269 @@ describe("agent registry service client", () => {
 			},
 		});
 		expect(fetchMock).toHaveBeenCalledTimes(2);
+	});
+
+	it("controls remote A2A delegation tasks with fenced subagent selectors", async () => {
+		vi.stubEnv("AGENT_REGISTRY_SERVICE_URL", "https://registry.test/");
+		vi.stubEnv("AGENT_REGISTRY_SERVICE_TOKEN", "registry-token");
+		vi.stubEnv("AGENT_REGISTRY_ORGANIZATION_ID", "org_1");
+		vi.stubEnv("AGENT_REGISTRY_WORKSPACE_ID", "ws_1");
+
+		const fetchMock = vi.fn(
+			async (input: RequestInfo | URL, init?: RequestInit) => {
+				expect(String(input)).toBe(
+					"https://registry.test/agents.v1.AgentService/ControlA2ADelegationTask",
+				);
+				expect(parseRequestBody(init?.body)).toEqual({
+					delegationId: "delegation_1",
+					mode: PlatformA2ADelegationTaskControlModeValue.Interrupt,
+					message: "pause and re-plan",
+					idempotencyKey: "control_1",
+					targetRunId: "run_remote",
+					childRunId: "run_child",
+					subagentLaneId: "lane_review",
+					workItemId: "work_item_1",
+					payload: {
+						priority: "high",
+					},
+					metadata: {
+						source: "test",
+					},
+				});
+				return new Response(
+					JSON.stringify({
+						delegation: {
+							id: "delegation_1",
+							status: PlatformDelegationStatusValue.Accepted,
+							a2aTaskId: "task_1",
+							a2aRootDelegationId: "delegation_root",
+							a2aParentDelegationId: "delegation_parent",
+							a2aDelegationChain: ["delegation_root", "delegation_1"],
+						},
+						remoteTask: {
+							taskId: "task_1",
+							state: "working",
+							controlId: "control_1",
+							controlMode: PlatformA2ADelegationTaskControlModeValue.Interrupt,
+							queuedForWorker: true,
+							targetRunId: "run_remote",
+							appliedRunId: "run_child",
+							targetExternal: false,
+							subagentLaneId: "lane_review",
+							workItemId: "work_item_1",
+							observedAt: "2026-05-21T23:01:00Z",
+							rawPayloadWithheld: true,
+						},
+					}),
+					{ status: 200, headers: { "Content-Type": "application/json" } },
+				);
+			},
+		);
+		vi.stubGlobal("fetch", fetchMock);
+
+		await expect(
+			controlA2ADelegationTaskWithPlatform({
+				delegationId: "delegation_1",
+				mode: PlatformA2ADelegationTaskControlModeValue.Interrupt,
+				message: "pause and re-plan",
+				idempotencyKey: "control_1",
+				targetRunId: "run_remote",
+				childRunId: "run_child",
+				subagentLaneId: "lane_review",
+				workItemId: "work_item_1",
+				payload: {
+					priority: "high",
+				},
+				metadata: {
+					source: "test",
+				},
+			}),
+		).resolves.toEqual({
+			delegation: {
+				id: "delegation_1",
+				status: PlatformDelegationStatusValue.Accepted,
+				a2aTaskId: "task_1",
+				a2aRootDelegationId: "delegation_root",
+				a2aParentDelegationId: "delegation_parent",
+				a2aDelegationChain: ["delegation_root", "delegation_1"],
+			},
+			remoteTask: {
+				taskId: "task_1",
+				state: "working",
+				controlId: "control_1",
+				controlMode: PlatformA2ADelegationTaskControlModeValue.Interrupt,
+				queuedForWorker: true,
+				targetRunId: "run_remote",
+				appliedRunId: "run_child",
+				targetExternal: false,
+				subagentLaneId: "lane_review",
+				workItemId: "work_item_1",
+				observedAt: "2026-05-21T23:01:00Z",
+				rawPayloadWithheld: true,
+			},
+		});
+	});
+
+	it("reads Platform-owned A2A delegation graphs for swarm observation", async () => {
+		vi.stubEnv("AGENT_REGISTRY_SERVICE_URL", "https://registry.test/");
+		vi.stubEnv("AGENT_REGISTRY_SERVICE_TOKEN", "registry-token");
+		vi.stubEnv("AGENT_REGISTRY_ORGANIZATION_ID", "org_1");
+
+		const fetchMock = vi.fn(
+			async (input: RequestInfo | URL, init?: RequestInit) => {
+				expect(String(input)).toBe(
+					"https://registry.test/agents.v1.AgentService/GetA2ADelegationGraph",
+				);
+				expect(headersToRecord(init?.headers)).toEqual(
+					expect.objectContaining({
+						authorization: "Bearer registry-token",
+						"x-organization-id": "org_1",
+						"x-workspace-id": "ws_graph",
+					}),
+				);
+				expect(parseRequestBody(init?.body)).toEqual({
+					workspaceId: "ws_graph",
+					delegationId: "delegation_child",
+					maxDepth: 5,
+					limit: 50,
+				});
+				return new Response(
+					JSON.stringify({
+						rootDelegationId: "delegation_root",
+						nodes: [
+							{
+								delegation: {
+									id: "delegation_root",
+									status: PlatformDelegationStatusValue.Accepted,
+									a2aTaskId: "task_root",
+									a2aRootDelegationId: "delegation_root",
+									a2aDelegationChain: ["delegation_root"],
+								},
+								depth: 0,
+								childCount: 1,
+								terminal: false,
+							},
+							{
+								delegation: {
+									id: "delegation_child",
+									status: PlatformDelegationStatusValue.Completed,
+									a2aTaskId: "task_child",
+									a2aParentDelegationId: "delegation_root",
+									a2aRootDelegationId: "delegation_root",
+									a2aDelegationChain: ["delegation_root", "delegation_child"],
+								},
+								depth: 1,
+								childCount: 0,
+								terminal: true,
+							},
+						],
+						edges: [
+							{
+								parentDelegationId: "delegation_root",
+								childDelegationId: "delegation_child",
+							},
+						],
+						total: 2,
+						truncated: false,
+						missingParentDelegationIds: ["delegation_missing"],
+					}),
+					{ status: 200, headers: { "Content-Type": "application/json" } },
+				);
+			},
+		);
+		vi.stubGlobal("fetch", fetchMock);
+
+		await expect(
+			getA2ADelegationGraphWithPlatform({
+				workspaceId: "ws_graph",
+				delegationId: "delegation_child",
+				maxDepth: 5,
+				limit: 50,
+			}),
+		).resolves.toEqual({
+			rootDelegationId: "delegation_root",
+			nodes: [
+				{
+					delegation: {
+						id: "delegation_root",
+						status: PlatformDelegationStatusValue.Accepted,
+						a2aTaskId: "task_root",
+						a2aRootDelegationId: "delegation_root",
+						a2aDelegationChain: ["delegation_root"],
+					},
+					depth: 0,
+					childCount: 1,
+					terminal: false,
+				},
+				{
+					delegation: {
+						id: "delegation_child",
+						status: PlatformDelegationStatusValue.Completed,
+						a2aTaskId: "task_child",
+						a2aRootDelegationId: "delegation_root",
+						a2aParentDelegationId: "delegation_root",
+						a2aDelegationChain: ["delegation_root", "delegation_child"],
+					},
+					depth: 1,
+					childCount: 0,
+					terminal: true,
+				},
+			],
+			edges: [
+				{
+					parentDelegationId: "delegation_root",
+					childDelegationId: "delegation_child",
+				},
+			],
+			total: 2,
+			truncated: false,
+			missingParentDelegationIds: ["delegation_missing"],
+		});
+		expect(fetchMock).toHaveBeenCalledTimes(1);
+	});
+
+	it("controls remote A2A delegation tasks using an explicit workspace when env workspace is unset", async () => {
+		vi.stubEnv("AGENT_REGISTRY_SERVICE_URL", "https://registry.test/");
+		vi.stubEnv("AGENT_REGISTRY_SERVICE_TOKEN", "registry-token");
+		vi.stubEnv("AGENT_REGISTRY_ORGANIZATION_ID", "org_1");
+
+		const fetchMock = vi.fn(
+			async (input: RequestInfo | URL, init?: RequestInit) => {
+				expect(String(input)).toBe(
+					"https://registry.test/agents.v1.AgentService/ControlA2ADelegationTask",
+				);
+				expect(headersToRecord(init?.headers)).toEqual(
+					expect.objectContaining({
+						authorization: "Bearer registry-token",
+						"x-organization-id": "org_1",
+						"x-workspace-id": "ws_control",
+					}),
+				);
+				expect(parseRequestBody(init?.body)).toEqual({
+					delegationId: "delegation_1",
+					mode: PlatformA2ADelegationTaskControlModeValue.Interrupt,
+				});
+				return new Response(
+					JSON.stringify({
+						delegation: { id: "delegation_1" },
+						remoteTask: { taskId: "task_1", state: "working" },
+					}),
+					{ status: 200, headers: { "Content-Type": "application/json" } },
+				);
+			},
+		);
+		vi.stubGlobal("fetch", fetchMock);
+
+		await expect(
+			controlA2ADelegationTaskWithPlatform({
+				workspaceId: "ws_control",
+				delegationId: "delegation_1",
+				mode: PlatformA2ADelegationTaskControlModeValue.Interrupt,
+			}),
+		).resolves.toMatchObject({
+			delegation: { id: "delegation_1" },
+			remoteTask: { taskId: "task_1", state: "working" },
+		});
+		expect(fetchMock).toHaveBeenCalledTimes(1);
 	});
 });
