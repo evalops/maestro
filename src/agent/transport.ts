@@ -308,16 +308,20 @@ function isGitIgnoredRepoPath(cwd: string, repoPath: string): boolean {
 	}
 }
 
-function isStatusCallIncludingIgnored(toolCall: ToolCall): boolean {
-	if (toolCall.name.toLowerCase() !== "status") {
-		return false;
-	}
+function isToolCallIncludingIgnoredPaths(toolCall: ToolCall): boolean {
+	const toolName = toolCall.name.toLowerCase();
 	const args = toolCall.arguments;
 	if (!args || typeof args !== "object" || Array.isArray(args)) {
 		return false;
 	}
 	const record = args as Record<string, unknown>;
-	return record.includeIgnored === true || record.include_ignored === true;
+	if (toolName === "status") {
+		return record.includeIgnored === true || record.include_ignored === true;
+	}
+	if (toolName === "search" || toolName === "parallel_ripgrep") {
+		return record.useGitIgnore === false || record.use_git_ignore === false;
+	}
+	return false;
 }
 
 function hasRepoScopedReusableArguments(
@@ -325,7 +329,7 @@ function hasRepoScopedReusableArguments(
 	cwd: string,
 ): boolean {
 	const toolName = toolCall.name.toLowerCase();
-	if (isStatusCallIncludingIgnored(toolCall)) {
+	if (isToolCallIncludingIgnoredPaths(toolCall)) {
 		return false;
 	}
 	const argumentNames = REPO_PATH_ARGUMENTS_BY_TOOL.get(toolName) ?? [];
@@ -477,11 +481,14 @@ function getReusableToolResultCacheKey(
 	if (!isReadOnlyTool(tool.name, tool.annotations, tool.source)) {
 		return undefined;
 	}
+	const toolName = tool.name.toLowerCase();
 	const cacheKey = `${toolCall.name}:${stableStringify(toolCall.arguments)}`;
 	if (isGitSnapshotReusableToolCall(tool, toolCall, cwd)) {
 		return `${GIT_SCOPED_REUSABLE_TOOL_RESULT_KEY_PREFIX}${cacheKey}`;
 	}
 	if (
+		tool.source !== undefined ||
+		GIT_SNAPSHOT_REUSABLE_TOOL_NAMES.has(toolName) ||
 		tool.annotations?.openWorldHint === true ||
 		tool.executionLocation === "client"
 	) {
