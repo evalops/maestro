@@ -568,4 +568,122 @@ describe("ProviderTransport tool scheduling", () => {
 		expect(verifyStartGap).toBeLessThan(25);
 		expect(unsafeOverlapCount).toBe(0);
 	});
+
+	it("preserves configured concurrency cap for parallel-safe MCP mutations", async () => {
+		const records: TimedToolRecord[] = [];
+		let activeMutations = 0;
+		let maxActiveMutations = 0;
+
+		const parallelSafeMutationTool = {
+			name: "mcp__trusted_remote__mutate",
+			description: "Parallel-safe remote mutation probe.",
+			parameters: Type.Object({ slot: Type.Integer() }),
+			annotations: {
+				readOnlyHint: false,
+			},
+			source: {
+				type: "mcp",
+				server: "trusted-remote",
+				tool: "mutate",
+				supportsParallelToolCalls: true,
+			},
+			execute: async (toolCallId: string, args: Record<string, unknown>) => {
+				activeMutations += 1;
+				maxActiveMutations = Math.max(maxActiveMutations, activeMutations);
+				const record: TimedToolRecord = {
+					id: toolCallId,
+					phase: "commit",
+					startedAt: performance.now(),
+				};
+				records.push(record);
+				await sleep(60);
+				activeMutations -= 1;
+				record.endedAt = performance.now();
+				return {
+					content: [{ type: "text", text: `mutate:${String(args.slot)}` }],
+				};
+			},
+		} satisfies AgentTool & {
+			source: {
+				type: "mcp";
+				server: string;
+				tool: string;
+				supportsParallelToolCalls: boolean;
+			};
+		};
+
+		let streamCount = 0;
+		mocks.createProviderStream.mockImplementation(async function* () {
+			streamCount += 1;
+			if (streamCount === 1) {
+				const assistant = assistantMessage([], "toolUse");
+				yield {
+					type: "start",
+					partial: assistant,
+				} satisfies AssistantMessageEvent;
+				for (const slot of [1, 2]) {
+					yield {
+						type: "toolcall_end",
+						toolCall: {
+							type: "toolCall",
+							id: `mutate-${slot}`,
+							name: "mcp__trusted_remote__mutate",
+							arguments: { slot },
+						},
+						partial: assistant,
+					} satisfies AssistantMessageEvent;
+				}
+				yield {
+					type: "done",
+					reason: "toolUse",
+					message: assistant,
+				} satisfies AssistantMessageEvent;
+				return;
+			}
+
+			const assistant = assistantMessage(
+				[{ type: "text", text: "mutations complete" }],
+				"stop",
+			);
+			yield {
+				type: "start",
+				partial: assistant,
+			} satisfies AssistantMessageEvent;
+			yield {
+				type: "done",
+				reason: "stop",
+				message: assistant,
+			} satisfies AssistantMessageEvent;
+		});
+
+		const userMessage: Message = {
+			role: "user",
+			content: "Run two trusted remote mutations.",
+			timestamp: Date.now(),
+		};
+		const transport = new ProviderTransport({
+			maxConcurrentToolExecutions: 1,
+			platformToolExecutionBridge: false,
+		});
+
+		const events = await drain(
+			transport.run([userMessage], userMessage, {
+				systemPrompt: "Use the requested tools.",
+				tools: [parallelSafeMutationTool],
+				model,
+			}),
+		);
+
+		const toolResults = events.filter(
+			(event): event is Extract<AgentEvent, { type: "tool_execution_end" }> =>
+				event.type === "tool_execution_end",
+		);
+
+		expect(toolResults).toHaveLength(2);
+		expect(records).toHaveLength(2);
+		expect(maxActiveMutations).toBe(1);
+		expect(records[1]?.startedAt).toBeGreaterThanOrEqual(
+			records[0]?.endedAt ?? 0,
+		);
+	});
 });

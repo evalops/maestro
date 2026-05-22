@@ -1515,26 +1515,18 @@ export class ProviderTransport implements AgentTransport {
 						? isReadOnlyTool(toolDef.name, toolDef.annotations, toolDef.source)
 						: false;
 				};
-				const isParallelSafeToolCall = (toolCall: ToolCall): boolean => {
-					const toolDef = toolDefinitionsByName.get(toolCall.name);
-					return toolDef
-						? isParallelSafeTool(
-								toolDef.name,
-								toolDef.annotations,
-								toolDef.source,
-							)
-						: false;
-				};
-				const parallelSafeToolCalls = toolCallsToExecute.filter(
-					isParallelSafeToolCall,
-				);
-				const parallelSafeConcurrencyLimit =
-					parallelSafeToolCalls.length > 0
+				const readOnlyToolCalls = toolCallsToExecute.filter(isReadOnlyToolCall);
+				const readOnlyConcurrencyLimit =
+					readOnlyToolCalls.length > 0
 						? Math.min(
 								8,
-								Math.max(configuredConcurrency, parallelSafeToolCalls.length),
+								Math.max(configuredConcurrency, readOnlyToolCalls.length),
 							)
 						: configuredConcurrency;
+				const parallelSafeMutationConcurrencyLimit = Math.min(
+					8,
+					configuredConcurrency,
+				);
 				let concurrencyLimit = configuredConcurrency;
 				const pendingMutationScopes = new Map<
 					PendingExecution,
@@ -1976,11 +1968,11 @@ export class ProviderTransport implements AgentTransport {
 					concurrencyLimit = requiresSerializedTurn
 						? 1
 						: effectiveToolCallReadOnly
-							? parallelSafeConcurrencyLimit
+							? readOnlyConcurrencyLimit
 							: effectiveMutationScope
 								? configuredConcurrency
 								: effectiveToolCallParallelSafe
-									? parallelSafeConcurrencyLimit
+									? parallelSafeMutationConcurrencyLimit
 									: 1;
 					// Use hook-modified (pre-validation) args for hook inputs
 					const policyCheckedReusableToolResultKey =
