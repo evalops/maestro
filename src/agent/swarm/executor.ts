@@ -910,14 +910,14 @@ export class SwarmExecutor {
 			agentId: candidate.agent.id,
 			score: ranked.score,
 			reasons: ranked.reasons,
-			skillId,
+			skillId: ranked.selectedSkill?.id ?? skillId,
 		});
 		const config = await this.a2aConfigForPlatformCandidate(candidate, options);
 		return {
 			name: candidate.agent.name ?? candidate.agent.id ?? candidate.endpointUrl,
 			displayName: candidate.agent.name,
 			config,
-			skillId,
+			skillId: ranked.selectedSkill?.id ?? skillId,
 			role: options.role ?? task.subagentType,
 			tasksPath: options.tasksPath,
 			source: "platform-agent-registry",

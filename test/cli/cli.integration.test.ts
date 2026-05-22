@@ -696,6 +696,7 @@ describe("CLI integration", () => {
 			const combined = output.join("\n");
 			expect(combined).toContain("Maestro v");
 			expect(combined).not.toContain("Composer v");
+			await waitForFile(beaconFile);
 			const [startupEvent] = JSON.parse(
 				readFileSync(beaconFile, "utf8").trim(),
 			) as [{ feature: string; action: string }];
@@ -743,7 +744,7 @@ describe("CLI integration", () => {
 		process.env.MAESTRO_TELEMETRY = "1";
 		process.env.MAESTRO_BEACON_FILE = "";
 		process.env.MAESTRO_BEACON_ENDPOINT = "https://telemetry.example.test";
-		process.env.MAESTRO_BEACON_TIMEOUT_MS = "100";
+		process.env.MAESTRO_BEACON_TIMEOUT_MS = "1000";
 		process.env.MAESTRO_CLI_COMMAND_BEACON_BUFFER_FILE = bufferFile;
 		let fetchCompleted = false;
 		vi.stubGlobal(
@@ -1125,7 +1126,7 @@ describe("CLI integration", () => {
 		output = [];
 		await main(["exec", "--last", "Follow up run"]);
 		expect(output.join("\n")).toContain("Echo: Follow up run");
-	});
+	}, 60_000);
 
 	it("rejects Codex/ChatGPT auth flags", async () => {
 		const exitCodes: number[] = [];

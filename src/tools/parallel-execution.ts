@@ -258,9 +258,12 @@ export function partitionToolCalls<T extends { name: string }>(
 
 export interface PathScopedMutation {
 	paths: string[];
+	source: "annotation" | "known_tool";
+	argumentKeys?: string[];
 }
 
 const PATH_SCOPED_MUTATION_TOOLS = new Set([
+	"apply_patch",
 	"write",
 	"Write",
 	"edit",
@@ -270,13 +273,30 @@ const PATH_SCOPED_MUTATION_TOOLS = new Set([
 	"NotebookEdit",
 ]);
 
-const PATH_ARGUMENT_KEYS = [
+const PATH_ARGUMENT_KEYS = new Set([
+	"file",
 	"file_path",
 	"filePath",
+	"files",
 	"path",
+	"paths",
+	"target",
+	"targets",
+	"target_path",
+	"targetPath",
 	"notebook_path",
 	"notebookPath",
-];
+	"output_path",
+	"outputPath",
+]);
+
+const PATH_ARGUMENT_CONTAINER_KEYS = new Set([
+	"edits",
+	"operations",
+	"patches",
+]);
+
+const PATCH_ARGUMENT_KEYS = new Set(["patch", "patch_text", "patchText"]);
 
 function normalizeMutationPath(
 	value: string,
@@ -303,18 +323,74 @@ function collectPathArgumentValues(
 	value: unknown,
 	paths: string[],
 	cwd: string,
+	matchedKeys: Set<string>,
+	stringIsPath: boolean,
 ): void {
 	if (typeof value === "string") {
-		const path = normalizeMutationPath(value, cwd);
-		if (path) {
-			paths.push(path);
+		if (stringIsPath) {
+			const path = normalizeMutationPath(value, cwd);
+			if (path) {
+				paths.push(path);
+			}
 		}
 		return;
 	}
 	if (Array.isArray(value)) {
 		for (const entry of value) {
-			collectPathArgumentValues(entry, paths, cwd);
+			collectPathArgumentValues(entry, paths, cwd, matchedKeys, stringIsPath);
 		}
+		return;
+	}
+	if (value && typeof value === "object") {
+		for (const [key, nested] of Object.entries(
+			value as Record<string, unknown>,
+		)) {
+			if (PATH_ARGUMENT_KEYS.has(key)) {
+				matchedKeys.add(key);
+				collectPathArgumentValues(nested, paths, cwd, matchedKeys, true);
+				continue;
+			}
+			if (PATCH_ARGUMENT_KEYS.has(key)) {
+				matchedKeys.add(key);
+				collectPatchHeaderPaths(nested, paths, cwd, matchedKeys);
+				continue;
+			}
+			if (PATH_ARGUMENT_CONTAINER_KEYS.has(key)) {
+				matchedKeys.add(key);
+				collectPathArgumentValues(nested, paths, cwd, matchedKeys, false);
+			}
+		}
+	}
+}
+
+function collectPatchHeaderPaths(
+	value: unknown,
+	paths: string[],
+	cwd: string,
+	matchedKeys: Set<string>,
+): void {
+	if (typeof value === "string") {
+		for (const match of value.matchAll(
+			/^\*\*\* (?:Update File|Add File|Delete File|Move to):\s+(.+)$/gmu,
+		)) {
+			const rawPath = match[1]?.trim();
+			if (!rawPath) continue;
+			const path = normalizeMutationPath(rawPath, cwd);
+			if (path) {
+				paths.push(path);
+				matchedKeys.add("patch");
+			}
+		}
+		return;
+	}
+	if (Array.isArray(value)) {
+		for (const entry of value) {
+			collectPatchHeaderPaths(entry, paths, cwd, matchedKeys);
+		}
+		return;
+	}
+	if (value && typeof value === "object") {
+		collectPathArgumentValues(value, paths, cwd, matchedKeys, false);
 	}
 }
 
@@ -324,6 +400,8 @@ export function getPathScopedMutation(
 	cwd = process.cwd(),
 ): PathScopedMutation | undefined {
 	const annotations = tool?.annotations;
+	const source =
+		annotations?.pathScopedMutationHint === true ? "annotation" : "known_tool";
 	const isPathScopedTool =
 		annotations?.pathScopedMutationHint === true ||
 		PATH_SCOPED_MUTATION_TOOLS.has(tool?.name ?? toolCall.name);
@@ -340,11 +418,27 @@ export function getPathScopedMutation(
 		return undefined;
 	}
 	const paths: string[] = [];
-	for (const key of PATH_ARGUMENT_KEYS) {
-		collectPathArgumentValues(args[key], paths, cwd);
+	const matchedKeys = new Set<string>();
+	for (const [key, value] of Object.entries(args)) {
+		if (PATH_ARGUMENT_KEYS.has(key)) {
+			matchedKeys.add(key);
+			collectPathArgumentValues(value, paths, cwd, matchedKeys, true);
+			continue;
+		}
+		if (PATCH_ARGUMENT_KEYS.has(key)) {
+			matchedKeys.add(key);
+			collectPatchHeaderPaths(value, paths, cwd, matchedKeys);
+			continue;
+		}
+		if (PATH_ARGUMENT_CONTAINER_KEYS.has(key)) {
+			matchedKeys.add(key);
+			collectPathArgumentValues(value, paths, cwd, matchedKeys, false);
+		}
 	}
 	const uniquePaths = [...new Set(paths)];
-	return uniquePaths.length > 0 ? { paths: uniquePaths } : undefined;
+	return uniquePaths.length > 0
+		? { paths: uniquePaths, source, argumentKeys: [...matchedKeys].sort() }
+		: undefined;
 }
 
 export function pathScopesOverlap(

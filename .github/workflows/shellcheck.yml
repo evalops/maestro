@@ -98,8 +98,54 @@ jobs:
         if: ${{ steps.targets.outputs.has_files == 'true' }}
         run: |
           set -euo pipefail
-          sudo apt-get update
-          sudo apt-get install -y shellcheck
+
+          if command -v shellcheck >/dev/null 2>&1; then
+            shellcheck --version
+            exit 0
+          fi
+
+          install_with_apt() {
+            if ! command -v apt-get >/dev/null 2>&1; then
+              return 1
+            fi
+
+            if command -v sudo >/dev/null 2>&1; then
+              sudo apt-get update
+              sudo apt-get install -y shellcheck
+            else
+              apt-get update
+              apt-get install -y shellcheck
+            fi
+          }
+
+          shellcheck_platform=""
+          case "$(uname -s)-$(uname -m)" in
+            Linux-x86_64) shellcheck_platform="linux.x86_64" ;;
+            Linux-aarch64 | Linux-arm64) shellcheck_platform="linux.aarch64" ;;
+            Linux-armv6l) shellcheck_platform="linux.armv6hf" ;;
+            Linux-riscv64) shellcheck_platform="linux.riscv64" ;;
+            Darwin-x86_64) shellcheck_platform="darwin.x86_64" ;;
+            Darwin-arm64 | Darwin-aarch64) shellcheck_platform="darwin.aarch64" ;;
+          esac
+
+          if [[ -z "$shellcheck_platform" ]]; then
+            if [[ "$(uname -s)" == "Linux" ]] && install_with_apt; then
+              shellcheck --version
+              exit 0
+            fi
+
+            echo "Unsupported ShellCheck install platform: $(uname -s)-$(uname -m)" >&2
+            exit 1
+          fi
+
+          shellcheck_version="0.11.0"
+          shellcheck_dir="$RUNNER_TEMP/shellcheck"
+          mkdir -p "$shellcheck_dir"
+          curl -fsSL \
+            "https://github.com/koalaman/shellcheck/releases/download/v${shellcheck_version}/shellcheck-v${shellcheck_version}.${shellcheck_platform}.tar.xz" \
+            | tar -xJ -C "$shellcheck_dir" --strip-components=1
+          echo "$shellcheck_dir" >> "$GITHUB_PATH"
+          "$shellcheck_dir/shellcheck" --version
 
       - name: Run shellcheck
         if: ${{ steps.targets.outputs.has_files == 'true' }}

@@ -363,6 +363,19 @@ function buildPromptOnlyToolBatchSummaryMessage(
 	};
 }
 
+function buildPromptOnlyBatchShapingFeedbackMessage(hint: string): UserMessage {
+	return {
+		role: "user",
+		content: [
+			{
+				type: "text",
+				text: `The following is transient tool batching feedback for the next assistant turn:\n- ${hint}`,
+			},
+		],
+		timestamp: Date.now(),
+	};
+}
+
 /**
  * Ensures prior assistant messages remain provider-compatible when switching models mid-session.
  *
@@ -1733,6 +1746,9 @@ export class Agent {
 					this.handleToolExecutionUpdate(event);
 				} else if (event.type === "tool_execution_end") {
 					this.handleToolExecutionEnd(event);
+				} else if (event.type === "tool_phase_summary") {
+					this.handleToolPhaseSummary(event);
+					this.emit(event);
 				} else if (event.type === "turn_end") {
 					if (
 						this.shouldWithholdRecoverableOverflowError(
@@ -1954,6 +1970,9 @@ export class Agent {
 					this.handleToolExecutionUpdate(event);
 				} else if (event.type === "tool_execution_end") {
 					this.handleToolExecutionEnd(event);
+				} else if (event.type === "tool_phase_summary") {
+					this.handleToolPhaseSummary(event);
+					this.emit(event);
 				} else if (event.type === "turn_end") {
 					if (
 						this.shouldWithholdRecoverableOverflowError(
@@ -2462,6 +2481,17 @@ export class Agent {
 		if (summaryLabels.length > 0) {
 			this.promptOnlyQueue.push(
 				buildPromptOnlyToolBatchSummaryMessage(summaryLabels),
+			);
+		}
+	}
+
+	private handleToolPhaseSummary(
+		event: Extract<AgentEvent, { type: "tool_phase_summary" }>,
+	): void {
+		const feedback = event.batchShapingFeedback;
+		if (feedback?.avoidableSingleton && feedback.hint.trim().length > 0) {
+			this.promptOnlyQueue.push(
+				buildPromptOnlyBatchShapingFeedbackMessage(feedback.hint.trim()),
 			);
 		}
 	}

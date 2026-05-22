@@ -327,5 +327,60 @@ describe("parallel-execution", () => {
 			expect(mixedCaseScope?.paths).toEqual(lowerCaseScope?.paths);
 			expect(pathScopesOverlap(mixedCaseScope!, lowerCaseScope!)).toBe(true);
 		});
+
+		it("infers paths from nested multi-edit argument envelopes", () => {
+			const cwd = resolve("/tmp/maestro-nested-path-scope");
+			const scope = getPathScopedMutation(
+				{
+					name: "MultiEdit",
+					arguments: {
+						edits: [
+							{ file_path: "src/a.ts", old_string: "a", new_string: "b" },
+							{ targetPath: "src/b.ts", old_string: "c", new_string: "d" },
+						],
+					},
+				},
+				undefined,
+				cwd,
+			);
+
+			expect(scope?.source).toBe("known_tool");
+			expect(scope?.argumentKeys).toContain("edits");
+			expect(scope?.argumentKeys).toContain("file_path");
+			expect(scope?.argumentKeys).toContain("targetPath");
+			expect(scope?.paths).toEqual([
+				resolve(cwd, "src/a.ts").toLowerCase(),
+				resolve(cwd, "src/b.ts").toLowerCase(),
+			]);
+		});
+
+		it("infers apply_patch targets from patch headers", () => {
+			const cwd = resolve("/tmp/maestro-patch-path-scope");
+			const scope = getPathScopedMutation(
+				{
+					name: "apply_patch",
+					arguments: {
+						patch: [
+							"*** Begin Patch",
+							"*** Update File: src/a.ts",
+							"@@",
+							"-old",
+							"+new",
+							"*** Add File: src/b.ts",
+							"+created",
+							"*** End Patch",
+						].join("\n"),
+					},
+				},
+				undefined,
+				cwd,
+			);
+
+			expect(scope?.argumentKeys).toContain("patch");
+			expect(scope?.paths).toEqual([
+				resolve(cwd, "src/a.ts").toLowerCase(),
+				resolve(cwd, "src/b.ts").toLowerCase(),
+			]);
+		});
 	});
 });

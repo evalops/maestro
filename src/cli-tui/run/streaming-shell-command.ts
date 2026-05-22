@@ -19,6 +19,19 @@ function shellEscape(value: string): string {
 	return `'${value.replaceAll("'", "'\\''")}'`;
 }
 
+function createShellEnv(
+	baseEnv: NodeJS.ProcessEnv | undefined,
+	cwd: string,
+): NodeJS.ProcessEnv {
+	const env = { ...(baseEnv ?? process.env), PWD: cwd };
+	Reflect.deleteProperty(env, "BASH_ENV");
+	return env;
+}
+
+function shouldSkipBashStartupFiles(env: NodeJS.ProcessEnv): boolean {
+	return env.GITHUB_ACTIONS === "true";
+}
+
 /**
  * Run a shell command with streaming output callbacks.
  * Calls onStdout/onStderr for each chunk received, enabling real-time display.
@@ -30,12 +43,13 @@ export async function runStreamingShellCommand(
 	return await new Promise((resolve) => {
 		const cwd = options.cwd ?? process.cwd();
 		const shellCommand = `cd -- ${shellEscape(cwd)} && ${command}`;
-		const child: ChildProcess = spawn("bash", ["-lc", shellCommand], {
+		const env = createShellEnv(options.env, cwd);
+		const bashArgs = shouldSkipBashStartupFiles(env)
+			? ["--noprofile", "--norc", "-lc", shellCommand]
+			: ["-lc", shellCommand];
+		const child: ChildProcess = spawn("bash", bashArgs, {
 			cwd,
-			env: {
-				...(options.env ?? process.env),
-				PWD: cwd,
-			},
+			env,
 		});
 
 		let stdout = "";

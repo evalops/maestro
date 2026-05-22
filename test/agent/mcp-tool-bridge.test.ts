@@ -63,6 +63,36 @@ describe("MCP tool bridge schema conversion", () => {
 		expect(tool.parameters.description).toBe("Query input");
 		expect(tool.parameters.properties?.query?.description).toBe("Search query");
 	});
+
+	it("uses local MCP server config as the only parallel capability source", () => {
+		const fromServer = createMcpToolWrapper(
+			"trusted-server",
+			{
+				name: "search",
+				inputSchema: { type: "object" },
+			} satisfies McpTool,
+			{ supportsParallelToolCalls: true },
+		);
+		const fromToolMeta = createMcpToolWrapper("meta-server", {
+			name: "search",
+			inputSchema: { type: "object" },
+			annotations: {
+				supportsParallelToolCalls: true,
+			},
+			_meta: {
+				supportsParallelToolCalls: true,
+				"evalops.maestro/supportsParallelToolCalls": true,
+			},
+		} satisfies McpTool);
+		const plain = createMcpToolWrapper("plain-server", {
+			name: "search",
+			inputSchema: { type: "object" },
+		} satisfies McpTool);
+
+		expect(fromServer.source?.supportsParallelToolCalls).toBe(true);
+		expect(fromToolMeta.source?.supportsParallelToolCalls).toBe(false);
+		expect(plain.source?.supportsParallelToolCalls).toBe(false);
+	});
 });
 
 // Type for MCP content items

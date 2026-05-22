@@ -374,6 +374,111 @@ describe("tool batch summary events", () => {
 		).toBe(false);
 	});
 
+	it("queues transient batch-shaping feedback for avoidable singleton tool phases", async () => {
+		class BatchFeedbackCaptureTransport implements AgentTransport {
+			public promptOnlyMessages: Message[] = [];
+
+			async *continue(): AsyncGenerator<AgentEvent, void, unknown> {}
+
+			async *run(
+				_messages: Message[],
+				userMessage: Message,
+				config: AgentRunConfig,
+			): AsyncGenerator<AgentEvent, void, unknown> {
+				yield { type: "message_start", message: userMessage };
+				yield { type: "message_end", message: userMessage };
+				yield {
+					type: "tool_phase_summary",
+					modelToolCallCount: 1,
+					schedulableWaveCount: 1,
+					parallelizedCallCount: 0,
+					serializedCallCount: 1,
+					delayedCallCount: 0,
+					blockedByMutationCount: 0,
+					mcpOptInCallCount: 0,
+					cacheHitCount: 0,
+					totalToolWaitMs: 0,
+					decisions: [
+						{
+							toolCallId: "tool_0",
+							toolName: "read",
+							outcome: "serialized",
+							reason: "single_read_only_call",
+							waveIndex: 0,
+							waitMs: 0,
+						},
+					],
+					batchShapingFeedback: {
+						avoidableSingleton: true,
+						reason: "single_read_only_call",
+						hint: "When you need several independent reads or searches, emit them together in one assistant message so Maestro can batch them safely.",
+					},
+				} as unknown as AgentEvent;
+
+				this.promptOnlyMessages =
+					(await config.getPromptOnlyMessages?.()) ?? [];
+
+				const finalAssistant: AssistantMessage = {
+					role: "assistant",
+					content: [{ type: "text", text: "Done" }],
+					api: "openai-completions",
+					provider: "mock",
+					model: "mock-model",
+					usage: {
+						input: 0,
+						output: 0,
+						cacheRead: 0,
+						cacheWrite: 0,
+						cost: {
+							input: 0,
+							output: 0,
+							cacheRead: 0,
+							cacheWrite: 0,
+							total: 0,
+						},
+					},
+					stopReason: "stop",
+					timestamp: Date.now(),
+				};
+				yield { type: "message_start", message: finalAssistant };
+				yield { type: "message_end", message: finalAssistant };
+			}
+		}
+
+		const transport = new BatchFeedbackCaptureTransport();
+		const agent = new Agent({
+			transport,
+			initialState: { model: mockModel, tools: [] },
+		});
+
+		await agent.prompt("read several files");
+
+		expect(transport.promptOnlyMessages).toHaveLength(1);
+		expect(transport.promptOnlyMessages[0]).toMatchObject({
+			role: "user",
+			content: [
+				{
+					type: "text",
+					text:
+						"The following is transient tool batching feedback for the next assistant turn:\n" +
+						"- When you need several independent reads or searches, emit them together in one assistant message so Maestro can batch them safely.",
+				},
+			],
+		});
+		expect(
+			agent.state.messages.some(
+				(message) =>
+					message.role === "user" &&
+					Array.isArray(message.content) &&
+					message.content.some(
+						(block) =>
+							block.type === "text" &&
+							block.text.includes("transient tool batching feedback"),
+					),
+			),
+		).toBe(false);
+	});
+
 	it("clears batch tracking state in transient and full resets", () => {
 		const transport: AgentTransport = {
 			async *run(): AsyncGenerator<AgentEvent, void, unknown> {},

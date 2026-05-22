@@ -662,6 +662,72 @@ describe("SwarmExecutor", () => {
 		);
 	});
 
+	it("propagates the selected Platform skill when discovery had no explicit skill", async () => {
+		listA2APeerCandidatesWithPlatformMock.mockResolvedValue([
+			{
+				agent: {
+					id: "agent-multi-skill",
+					name: "Multi Skill Maestro",
+					workspaceId: "workspace-1",
+					status: "AGENT_STATUS_IDLE",
+					lastHeartbeatAt: new Date().toISOString(),
+				},
+				endpointUrl: "https://multi-skill.internal/a2a",
+				endpointKind: "internal",
+				pushNotifications: true,
+				skills: [
+					{
+						id: "maestro.subagent.refactor",
+						name: "Refactor",
+						allowedTaskClasses: ["code.refactor"],
+					},
+					{
+						id: "maestro.subagent.review",
+						name: "Review",
+						allowedTaskClasses: ["code.review"],
+						approvalPolicyRef: "policy:code-review",
+					},
+				],
+			},
+		]);
+		const executor = new SwarmExecutor({
+			...createConfig(),
+			transport: "a2a",
+			a2a: {
+				discover: true,
+				workspaceId: "workspace-1",
+				capability: "code",
+				preferInternalEndpoint: true,
+				maxWaitMs: 50,
+				pollIntervalMs: 1,
+			},
+			mode: "smart",
+			modelProvider: "anthropic",
+		});
+
+		const result = await executeWithTimeout(executor);
+
+		expect(result.status).toBe("completed");
+		expect(listA2APeerCandidatesWithPlatformMock).toHaveBeenCalledWith(
+			expect.objectContaining({
+				skillId: undefined,
+			}),
+		);
+		expect(result.teammates[0]!.a2a).toEqual(
+			expect.objectContaining({
+				skillId: "maestro.subagent.review",
+			}),
+		);
+		expect(sendA2AMessageMock.mock.calls[0]?.[1].message.metadata).toEqual(
+			expect.objectContaining({
+				a2aSkillId: "maestro.subagent.review",
+				"evalops.subagentRequest": expect.objectContaining({
+					skillId: "maestro.subagent.review",
+				}),
+			}),
+		);
+	});
+
 	it("does not infer a Maestro task class for explicit custom A2A skills", async () => {
 		listA2APeerCandidatesWithPlatformMock.mockResolvedValue([
 			{

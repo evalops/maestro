@@ -149,6 +149,18 @@ function makeScenario(path: string): void {
 			{
 				index: 1,
 				statements: [
+					{
+						kind: "tool_call",
+						id: "verify-1-repeat",
+						tool: "read_probe_next_wave",
+						input: { slot: 1 },
+						expectedResult: "success",
+					},
+				],
+			},
+			{
+				index: 2,
+				statements: [
 					{ kind: "text", text: "The next-wave tool-call goal is complete." },
 					{ kind: "end", reason: "complete" },
 				],
@@ -180,6 +192,14 @@ function toolPhaseMs(records: TimedToolRecord[]): number {
 	const firstStart = Math.min(...records.map((record) => record.startedAt));
 	const lastEnd = Math.max(...records.map((record) => record.endedAt ?? 0));
 	return lastEnd - firstStart;
+}
+
+function countBy<T extends string>(values: T[]): Record<T, number> {
+	const counts = {} as Record<T, number>;
+	for (const value of values) {
+		counts[value] = (counts[value] ?? 0) + 1;
+	}
+	return counts;
 }
 
 async function runMeasurement(delays: {
@@ -382,6 +402,28 @@ async function main(): Promise<void> {
 	const mutationRecords = latency.records.filter(
 		(record) => record.phase === "commit",
 	);
+	const cacheReuseHitCount = toolResults.filter(
+		(event) =>
+			event.scheduling?.cache === "hit" ||
+			event.scheduling?.cache === "pending_hit",
+	).length;
+	const schedulingReasonCounts = countBy(
+		toolResults
+			.map((event) => event.scheduling?.reason)
+			.filter((reason): reason is NonNullable<typeof reason> =>
+				Boolean(reason),
+			),
+	);
+	const schedulingClassificationCounts = countBy(
+		toolResults
+			.map((event) => event.scheduling?.classification)
+			.filter((classification): classification is NonNullable<typeof classification> =>
+				Boolean(classification),
+			),
+	);
+	const pathScopeInferredCount = toolResults.filter(
+		(event) => (event.scheduling?.pathScope?.length ?? 0) > 0,
+	).length;
 
 	const latestMutationEnd = maxEndedAt(mutationRecords);
 	const earliestVerifyStart = Math.min(
@@ -399,7 +441,7 @@ async function main(): Promise<void> {
 		{
 			name: "complex_goal_shape",
 			description:
-				"Trusted MCP reads, untrusted MCP reads, three path mutations, and two verify reads are present.",
+				"Trusted MCP reads, untrusted MCP reads, three path mutations, and two unique verify read executions are present.",
 			passed:
 				trustedMcpRecords.length === 2 &&
 				untrustedMcpRecords.length === 2 &&
@@ -453,12 +495,18 @@ async function main(): Promise<void> {
 		{
 			name: "all_tool_results_emitted",
 			description: "Every requested tool call emits a tool execution result.",
-			passed: toolResults.length === 9,
+			passed: toolResults.length === 10,
 		},
 		{
 			name: "no_unsafe_overlap",
 			description: "No read-only call overlaps a mutation and no shared path mutates concurrently.",
 			passed: latency.unsafeOverlapCount === 0,
+		},
+		{
+			name: "duplicate_read_reused",
+			description:
+				"The adjacent duplicate verification read is served from the reusable-result path.",
+			passed: cacheReuseHitCount >= 1,
 		},
 	];
 	const assertionsPassed = [...preconditions, ...postconditions].every(
@@ -479,6 +527,10 @@ async function main(): Promise<void> {
 				post_mutation_verify_gap_ms: Number(
 					postMutationVerifyGapMs.toFixed(3),
 				),
+				cache_reuse_hit_count: cacheReuseHitCount,
+				path_scope_inferred_count: pathScopeInferredCount,
+				serialization_reason_counts: schedulingReasonCounts,
+				scheduling_classification_counts: schedulingClassificationCounts,
 				metadata_lookup_count: latency.records.length,
 				prompt_batching_instruction_present: 1,
 				total_tool_calls: toolResults.length,

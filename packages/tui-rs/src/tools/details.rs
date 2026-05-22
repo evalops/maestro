@@ -1026,6 +1026,10 @@ pub struct BatchDetails {
     /// Number of parallel tasks that reused the batch executor's cached ToolExecutor
     #[serde(skip_serializing_if = "Option::is_none")]
     pub executor_reuse_count: Option<usize>,
+
+    /// Number of calls that had to wait behind the configured concurrency limit
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub backpressure_count: Option<usize>,
 }
 
 impl BatchDetails {
@@ -1074,6 +1078,12 @@ impl BatchDetails {
     #[must_use]
     pub fn with_executor_reuse_count(mut self, count: usize) -> Self {
         self.executor_reuse_count = Some(count);
+        self
+    }
+
+    #[must_use]
+    pub fn with_backpressure_count(mut self, count: usize) -> Self {
+        self.backpressure_count = Some(count);
         self
     }
 
@@ -1674,6 +1684,7 @@ mod tests {
         assert_eq!(details.duration_ms, Some(1500));
         assert_eq!(details.max_concurrency, Some(4));
         assert!(!details.continued_on_error);
+        assert_eq!(details.backpressure_count, None);
     }
 
     #[test]
@@ -1716,7 +1727,8 @@ mod tests {
         let details = BatchDetails::new(4)
             .with_results(3, 1)
             .with_duration(500)
-            .with_concurrency(2);
+            .with_concurrency(2)
+            .with_backpressure_count(2);
 
         let json = details.to_json();
         assert_eq!(json["total"], 4);
@@ -1724,6 +1736,7 @@ mod tests {
         assert_eq!(json["failures"], 1);
         assert_eq!(json["duration_ms"], 500);
         assert_eq!(json["max_concurrency"], 2);
+        assert_eq!(json["backpressure_count"], 2);
     }
 
     #[test]
@@ -1734,6 +1747,7 @@ mod tests {
             "failures": 1,
             "duration_ms": 1000,
             "max_concurrency": 4,
+            "backpressure_count": 1,
             "continued_on_error": true
         });
 
@@ -1742,6 +1756,7 @@ mod tests {
         assert_eq!(details.successes, 4);
         assert_eq!(details.failures, 1);
         assert_eq!(details.duration_ms, Some(1000));
+        assert_eq!(details.backpressure_count, Some(1));
         assert!(details.continued_on_error);
     }
 

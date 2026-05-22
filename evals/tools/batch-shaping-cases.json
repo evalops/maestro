@@ -1,0 +1,82 @@
+[
+	{
+		"name": "read-only repo orientation nudges into one batch",
+		"userIntent": "Inspect the manifest, telemetry report, and private customer notes before choosing a follow-up.",
+		"replays": {
+			"baseline": {
+				"promptMessages": [
+					"Inspect the manifest, telemetry report, and private customer notes before choosing a follow-up."
+				],
+				"emittedToolCalls": [
+					{
+						"toolName": "read",
+						"args": {
+							"file_path": "package.json"
+						}
+					}
+				]
+			},
+			"nudged": {
+				"promptMessages": [
+					"Inspect the manifest, telemetry report, and private customer notes before choosing a follow-up.",
+					"When you need several independent reads or searches, emit them together in one assistant message so Maestro can batch them safely."
+				],
+				"emittedToolCalls": [
+					{
+						"toolName": "read",
+						"args": {
+							"file_path": "package.json"
+						}
+					},
+					{
+						"toolName": "read",
+						"args": {
+							"file_path": "scripts/telemetry-report.js"
+						}
+					},
+					{
+						"toolName": "search",
+						"args": {
+							"pattern": "SECRET_TOKEN_SHOULD_NOT_LEAK",
+							"path": "src/private/customer-alpha"
+						}
+					}
+				]
+			}
+		},
+		"sensitiveSubstrings": [
+			"SECRET_TOKEN_SHOULD_NOT_LEAK",
+			"src/private/customer-alpha"
+		],
+		"expected": {
+			"baseline": {
+				"modelToolCallCount": 1,
+				"multiCallTurns": 0,
+				"topSerializationReasons": [
+					{
+						"reason": "single_read_only_call",
+						"count": 1
+					}
+				]
+			},
+			"nudged": {
+				"modelToolCallCount": 3,
+				"multiCallTurns": 1,
+				"topSerializationReasons": []
+			},
+			"improvement": {
+				"modelToolCallCountDelta": 2,
+				"multiCallTurnDelta": 1,
+				"increasedMultiCallTurns": true
+			},
+			"privacy": {
+				"safe": true,
+				"disallowedSubstringCount": 2
+			},
+			"runtime": {
+				"exercisedAgentToolPhaseSummary": true,
+				"promptOnlyFeedbackDelivered": true
+			}
+		}
+	}
+]

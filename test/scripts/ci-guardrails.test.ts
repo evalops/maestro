@@ -1,4 +1,6 @@
+import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
+import { parse } from "yaml";
 import {
 	evaluatePublicMirrorReviewDebt,
 	parsePublicMirrorPulls,
@@ -15,6 +17,22 @@ import {
 	parseRepoSpec,
 	prNumberFromInput,
 } from "../../scripts/pr-ready-to-merge.mjs";
+
+type WorkflowStep = {
+	name?: string;
+	uses?: string;
+	run?: string;
+	with?: Record<string, unknown>;
+	"timeout-minutes"?: number;
+};
+
+type Workflow = {
+	jobs?: Record<string, { steps?: WorkflowStep[]; "timeout-minutes"?: number }>;
+};
+
+type ProjectConfig = {
+	targets?: Record<string, { dependsOn?: string[] }>;
+};
 
 describe("planCiChecks", () => {
 	it("runs expensive checks on non-PR events", () => {
@@ -33,7 +51,87 @@ describe("planCiChecks", () => {
 				labels: ["full-ci"],
 				changedFiles: ["docs/release-ops.md"],
 			}),
-		).toMatchObject({ coverage: true, publicMirror: true });
+		).toMatchObject({
+			coverage: true,
+			publicMirror: true,
+			rustHostedConformance: true,
+		});
+	});
+
+	it("skips expensive app checks for workflow-only pull requests", () => {
+		expect(
+			planCiChecks({
+				eventName: "pull_request",
+				changedFiles: [
+					".github/workflows/actionlint.yml",
+					".github/workflows/ci.yml",
+					".github/workflows/rust.yml",
+				],
+			}),
+		).toMatchObject({
+			ciInfrastructureOnly: true,
+			coverage: false,
+			prChecks: true,
+			publicMirror: false,
+			rustHostedConformance: false,
+		});
+		expect(
+			planCiChecks({
+				eventName: "pull_request",
+				changedFiles: [
+					".github/workflows/ci.yml",
+					"scripts/plan-ci-checks.mjs",
+					"test/scripts/ci-guardrails.test.ts",
+				],
+			}),
+		).toMatchObject({
+			ciInfrastructureOnly: true,
+			coverage: false,
+			prChecks: true,
+			publicMirror: false,
+			rustHostedConformance: false,
+		});
+		expect(
+			planCiChecks({
+				eventName: "pull_request",
+				changedFiles: [
+					".github/workflows/rust.yml",
+					"packages/tui-rs/src/tools/batch.rs",
+				],
+			}),
+		).toMatchObject({
+			ciInfrastructureOnly: false,
+			coverage: true,
+			prChecks: true,
+			rustHostedConformance: true,
+		});
+	});
+
+	it("skips TS/Nx checks for Rust-only pull requests", () => {
+		expect(
+			planCiChecks({
+				eventName: "pull_request",
+				changedFiles: ["packages/tui-rs/src/safety/path_containment.rs"],
+			}),
+		).toMatchObject({
+			ciInfrastructureOnly: false,
+			coverage: false,
+			prChecks: false,
+			publicMirror: true,
+			rustHostedConformance: true,
+		});
+
+		expect(
+			planCiChecks({
+				eventName: "pull_request",
+				labels: "run-pr-checks,run-coverage",
+				changedFiles: ["packages/tui-rs/src/safety/path_containment.rs"],
+			}),
+		).toMatchObject({
+			coverage: true,
+			prChecks: true,
+			rustHostedConformance: true,
+		});
 	});
 
 	it("skips nested docs/readme-only coverage but not root README coverage", () => {
@@ -104,6 +202,151 @@ describe("planCiChecks", () => {
 				changedFiles: ["docs/release-ops.md"],
 			}),
 		).toMatchObject({ coverage: false, publicMirror: true });
+	});
+});
+
+describe("ci workflow guardrails", () => {
+	it("hard-bounds long-running Nx and coverage phases", () => {
+		const workflow = parse(
+			readFileSync(new URL("../../.github/workflows/ci.yml", import.meta.url), {
+				encoding: "utf8",
+			}),
+		) as Workflow;
+		const prCheckTimeouts = new Map(
+			(workflow.jobs?.["pr-checks"]?.steps ?? []).map((step) => [
+				step.name,
+				step["timeout-minutes"],
+			]),
+		);
+		const coverageTimeouts = new Map(
+			(workflow.jobs?.coverage?.steps ?? []).map((step) => [
+				step.name,
+				step["timeout-minutes"],
+			]),
+		);
+
+		expect(prCheckTimeouts.get("Test (Nx affected)")).toBe(45);
+		expect(workflow.jobs?.coverage?.["timeout-minutes"]).toBe(75);
+		expect(coverageTimeouts.get("Run tests with coverage")).toBe(60);
+	});
+
+	it("sets up Java before Nx can run Gradle-backed tests", () => {
+		const workflow = parse(
+			readFileSync(new URL("../../.github/workflows/ci.yml", import.meta.url), {
+				encoding: "utf8",
+			}),
+		) as Workflow;
+		const steps = workflow.jobs?.["pr-checks"]?.steps ?? [];
+		const setupJavaIndex = steps.findIndex(
+			(step) =>
+				step.name === "Setup Java for Gradle Nx tasks" &&
+				step.uses?.startsWith("actions/setup-java@"),
+		);
+		const nxTestIndex = steps.findIndex(
+			(step) => step.name === "Test (Nx affected)",
+		);
+
+		expect(setupJavaIndex).toBeGreaterThanOrEqual(0);
+		expect(nxTestIndex).toBeGreaterThan(setupJavaIndex);
+		expect(steps[setupJavaIndex]?.with).toMatchObject({
+			distribution: "temurin",
+			"java-version": "21",
+		});
+		expect(steps[setupJavaIndex]?.with).not.toHaveProperty("cache");
+	});
+
+	it("keeps dedicated JetBrains Java setup lightweight", () => {
+		const workflow = parse(
+			readFileSync(
+				new URL(
+					"../../.github/workflows/jetbrains-plugin.yml",
+					import.meta.url,
+				),
+				{
+					encoding: "utf8",
+				},
+			),
+		) as Workflow;
+		const steps = workflow.jobs?.check?.steps ?? [];
+		const setupJava = steps.find((step) =>
+			step.uses?.startsWith("actions/setup-java@"),
+		);
+
+		expect(setupJava?.with).toMatchObject({
+			distribution: "temurin",
+			"java-version": "21",
+		});
+		expect(setupJava?.with).not.toHaveProperty("cache");
+	});
+
+	it("does not self-build the root project before PR tests", () => {
+		const project = JSON.parse(
+			readFileSync(new URL("../../project.json", import.meta.url), {
+				encoding: "utf8",
+			}),
+		) as ProjectConfig;
+
+		expect(project.targets?.test?.dependsOn ?? []).not.toContain("build");
+	});
+});
+
+describe("rust workflow guardrails", () => {
+	it("gives hosted Rust conformance enough time for cold private runners", () => {
+		const workflow = parse(
+			readFileSync(new URL("../../.github/workflows/ci.yml", import.meta.url), {
+				encoding: "utf8",
+			}),
+		) as Workflow;
+
+		expect(
+			workflow.jobs?.["rust-hosted-conformance"]?.["timeout-minutes"],
+		).toBe(60);
+	});
+
+	it("hard-bounds expensive Rust TUI phases", () => {
+		const workflow = parse(
+			readFileSync(
+				new URL("../../.github/workflows/rust.yml", import.meta.url),
+				{
+					encoding: "utf8",
+				},
+			),
+		) as Workflow;
+		const steps = workflow.jobs?.build?.steps ?? [];
+		const timeoutByStep = new Map(
+			steps.map((step) => [step.name, step["timeout-minutes"]]),
+		);
+
+		expect(timeoutByStep.get("Run clippy")).toBe(30);
+		expect(timeoutByStep.get("Build")).toBe(45);
+		expect(timeoutByStep.get("Run all tests")).toBe(30);
+		expect(timeoutByStep.get("Run hook integration tests")).toBe(15);
+		expect(timeoutByStep.get("Test summary")).toBe(5);
+		expect(steps.find((step) => step.name === "Build")?.run).toContain(
+			"cargo clean --release",
+		);
+	});
+});
+
+describe("shellcheck workflow guardrails", () => {
+	it("keeps ShellCheck install portable across runner architectures", () => {
+		const workflow = parse(
+			readFileSync(
+				new URL("../../.github/workflows/shellcheck.yml", import.meta.url),
+				{ encoding: "utf8" },
+			),
+		) as Workflow;
+		const installStep = workflow.jobs?.shellcheck?.steps?.find(
+			(step) => step.name === "Install shellcheck",
+		);
+
+		expect(installStep?.run).toContain(
+			'Linux-aarch64 | Linux-arm64) shellcheck_platform="linux.aarch64"',
+		);
+		expect(installStep?.run).toContain("sudo apt-get install -y shellcheck");
+		expect(installStep?.run).toContain(
+			"Unsupported ShellCheck install platform",
+		);
 	});
 });
 

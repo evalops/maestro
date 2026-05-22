@@ -428,6 +428,7 @@ export function createMcpToolWrapper(
 				openWorldHint?: boolean;
 		  }
 		| undefined;
+	const supportsParallelToolCalls = options?.supportsParallelToolCalls === true;
 
 	return createTool<typeof schema, McpToolDetails>({
 		name: toolName,
@@ -448,7 +449,7 @@ export function createMcpToolWrapper(
 			type: "mcp",
 			server: serverName,
 			tool: mcpTool.name,
-			supportsParallelToolCalls: options?.supportsParallelToolCalls === true,
+			supportsParallelToolCalls,
 		},
 		async run(params, { respond }) {
 			const result = await mcpManager.callTool(

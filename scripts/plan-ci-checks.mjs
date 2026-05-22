@@ -98,6 +98,27 @@ function shouldSkipPublicMirrorForPath(path) {
 	);
 }
 
+function isWorkflowFile(path) {
+	return path.startsWith(".github/workflows/") && /\.ya?ml$/.test(path);
+}
+
+function isCiInfrastructureOnlyPath(path) {
+	return (
+		isWorkflowFile(path) ||
+		path === "scripts/plan-ci-checks.mjs" ||
+		path === "test/scripts/ci-guardrails.test.ts"
+	);
+}
+
+function isRustOnlySourcePath(path) {
+	return (
+		path.startsWith("packages/ambient-agent-rs/") ||
+		path.startsWith("packages/control-plane-rs/") ||
+		path.startsWith("packages/tui-rs/") ||
+		path.startsWith("examples/hooks/wasm-plugin/")
+	);
+}
+
 export function planCiChecks({ eventName, labels = [], changedFiles = [] }) {
 	const normalizedLabels = normalizeLabels(labels);
 	const labelSet = new Set(normalizedLabels);
@@ -105,31 +126,53 @@ export function planCiChecks({ eventName, labels = [], changedFiles = [] }) {
 
 	if (!isPullRequest) {
 		return {
+			ciInfrastructureOnly: false,
 			coverage: true,
+			prChecks: true,
 			publicMirror: true,
+			rustHostedConformance: true,
 			reason: "non_pull_request",
 		};
 	}
 
 	if (labelSet.has("full-ci")) {
 		return {
+			ciInfrastructureOnly: false,
 			coverage: true,
+			prChecks: true,
 			publicMirror: true,
+			rustHostedConformance: true,
 			reason: "full_ci_label",
 		};
 	}
 
 	const files = changedFiles.map(String).map((path) => path.trim()).filter(Boolean);
+	const ciInfrastructureOnly =
+		files.length > 0 && files.every(isCiInfrastructureOnlyPath);
+	const rustOnlySource =
+		files.length > 0 && files.every((path) => isRustOnlySourcePath(path));
 	const coverage =
 		labelSet.has("run-coverage") ||
-		files.some((path) => !shouldSkipCoverageForPath(path));
+		(!ciInfrastructureOnly &&
+			!rustOnlySource &&
+			files.some((path) => !shouldSkipCoverageForPath(path)));
+	const prChecks =
+		labelSet.has("run-pr-checks") || ciInfrastructureOnly || !rustOnlySource;
 	const publicMirror =
 		labelSet.has("run-public-mirror") ||
-		files.some((path) => !shouldSkipPublicMirrorForPath(path));
+		files.some(
+			(path) =>
+				!isCiInfrastructureOnlyPath(path) && !shouldSkipPublicMirrorForPath(path),
+		);
+	const rustHostedConformance =
+		labelSet.has("run-rust-hosted-conformance") || !ciInfrastructureOnly;
 
 	return {
+		ciInfrastructureOnly,
 		coverage,
+		prChecks,
 		publicMirror,
+		rustHostedConformance,
 		reason: "changed_files",
 	};
 }
@@ -164,7 +207,14 @@ function writeGitHubOutputs(plan) {
 	}
 	appendFileSync(
 		process.env.GITHUB_OUTPUT,
-		`coverage=${plan.coverage}\npublic_mirror=${plan.publicMirror}\n`,
+		[
+			`coverage=${plan.coverage}`,
+			`ci_infrastructure_only=${plan.ciInfrastructureOnly ?? false}`,
+			`pr_checks=${plan.prChecks}`,
+			`public_mirror=${plan.publicMirror}`,
+			`rust_hosted_conformance=${plan.rustHostedConformance}`,
+			"",
+		].join("\n"),
 	);
 }
 
@@ -175,8 +225,11 @@ function writeGitHubSummary(plan, changedFiles) {
 	const lines = [
 		"## Expensive check plan",
 		"",
+		`- CI infrastructure only: \`${plan.ciInfrastructureOnly ?? false}\``,
 		`- coverage: \`${plan.coverage}\``,
+		`- pr checks: \`${plan.prChecks}\``,
 		`- public release mirror: \`${plan.publicMirror}\``,
+		`- rust hosted conformance: \`${plan.rustHostedConformance}\``,
 		`- reason: \`${plan.reason}\``,
 	];
 	if (changedFiles.length > 0) {
@@ -201,7 +254,13 @@ async function main() {
 		process.stdout.write(`${JSON.stringify({ ...plan, changedFiles }, null, 2)}\n`);
 	} else {
 		process.stdout.write(
-			`coverage=${plan.coverage}\npublic_mirror=${plan.publicMirror}\n`,
+			[
+				`coverage=${plan.coverage}`,
+				`pr_checks=${plan.prChecks}`,
+				`public_mirror=${plan.publicMirror}`,
+				`rust_hosted_conformance=${plan.rustHostedConformance}`,
+				"",
+			].join("\n"),
 		);
 	}
 }

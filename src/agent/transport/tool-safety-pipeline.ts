@@ -48,6 +48,7 @@ import type {
 	Message,
 	ToolCall,
 	ToolResultMessage,
+	ToolSchedulingMetadata,
 } from "../types.js";
 import type {
 	PlatformToolExecutionBridge,
@@ -123,6 +124,8 @@ export interface ToolSafetyContext {
 	};
 	/** Suppress loop warnings for a transport-managed read-only duplicate while preserving other policy checks. */
 	shouldSkipLoopDetection?: (toolCall: ToolCall) => boolean;
+	/** Scheduler diagnostics captured before safety hooks mutate the call. */
+	schedulingMetadata?: ToolSchedulingMetadata;
 	// Emit helpers
 	emitToolResult: (
 		message: ToolResultMessage,
@@ -439,6 +442,7 @@ export async function* evaluateToolSafety(
 		toolCallId: toolCall.id,
 		toolName: toolCall.name,
 		args: sanitizedStartArgs,
+		scheduling: ctx.schedulingMetadata,
 	});
 
 	// 2. PreToolUse hooks

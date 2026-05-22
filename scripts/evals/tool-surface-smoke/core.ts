@@ -189,6 +189,8 @@ async function evaluateFindCase(): Promise<unknown> {
 		await writeFile(join(dir, "alpha.ts"), "export const alpha = 1;\n", "utf8");
 		await mkdir(join(dir, "nested"), { recursive: true });
 		await writeFile(join(dir, "nested", "beta.ts"), "export const beta = 2;\n", "utf8");
+		await writeFile(join(dir, "nested", "ignored.ts"), "export const ignored = 3;\n", "utf8");
+		await writeFile(join(dir, ".gitignore"), "nested/*.ts\n!nested/beta.ts\n", "utf8");
 
 		const result = await findTool.execute("tool-surface-find", {
 			pattern: "**/*.ts",

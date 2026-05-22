@@ -70,7 +70,7 @@ describe("prepare-public-release-mirror", () => {
 				"  unresolved-review-threads:",
 				"    with:",
 				"      pr_number: ${{ github.event.pull_request.number }}",
-				"      runner_label: evalops-private-ci",
+				"      runner_label: evalops-private-ci-runner-02",
 				"      guard_ref: d45c0bca2cf2ccea6786c57c9b5e84df09009fc8",
 				"",
 			].join("\n"),
@@ -253,6 +253,61 @@ describe("prepare-public-release-mirror", () => {
 			"public readme\n",
 		);
 		expect(existsSync(join(target, "public-mirror"))).toBe(false);
+	});
+
+	it("strips review guard runner labels regardless of indentation or trailing newline", () => {
+		const { source, target } = makeFixture();
+		write(
+			join(source, "package.json"),
+			JSON.stringify(
+				{
+					name: internalPackageName,
+					version: "1.2.3",
+					maestro: {
+						canonicalPackageName: publicPackageName,
+					},
+				},
+				null,
+				2,
+			),
+		);
+		write(
+			join(source, ".github/workflows/review-thread-guard.yml"),
+			[
+				"jobs:",
+				"  unresolved-review-threads:",
+				"    with:",
+				"      pr_number: ${{ github.event.pull_request.number }}",
+				"        runner_label: private-runner-overridden",
+			].join("\n"),
+		);
+
+		execFileSync(
+			process.execPath,
+			[
+				"scripts/prepare-public-release-mirror.mjs",
+				"--source",
+				source,
+				"--target",
+				target,
+			],
+			{ cwd: process.cwd(), stdio: "pipe" },
+		);
+
+		expect(
+			readFileSync(
+				join(target, ".github/workflows/review-thread-guard.yml"),
+				"utf8",
+			),
+		).toBe(
+			[
+				"jobs:",
+				"  unresolved-review-threads:",
+				"    with:",
+				"      pr_number: ${{ github.event.pull_request.number }}",
+				"",
+			].join("\n"),
+		);
 	});
 
 	it("lets explicit excludes remove public include override files", () => {

@@ -49,10 +49,17 @@
  */
 
 import { spawnSync } from "node:child_process";
-import { existsSync } from "node:fs";
-import { relative, resolve as resolvePath, sep } from "node:path";
+import { existsSync, readFileSync, statSync } from "node:fs";
+import {
+	dirname,
+	isAbsolute,
+	relative,
+	resolve as resolvePath,
+	sep,
+} from "node:path";
 import { Type } from "@sinclair/typebox";
 import { globSync } from "glob";
+import { minimatch } from "minimatch";
 import { getGitRoot } from "../utils/git.js";
 import { expandTildePath } from "../utils/path-expansion.js";
 import { createTool } from "./tool-dsl.js";
@@ -81,6 +88,7 @@ const findSchema = Type.Object({
 });
 
 const DEFAULT_LIMIT = 1000;
+const FD_IGNORE_FILE_NAMES = [".gitignore", ".ignore", ".fdignore"] as const;
 
 type FindToolDetails = {
 	command: string;
@@ -89,29 +97,273 @@ type FindToolDetails = {
 	truncated: boolean;
 };
 
+/** @internal */
+export type GitignoreRule = {
+	pattern: string;
+	negated: boolean;
+	directoryOnly: boolean;
+	matchPrefix?: string;
+};
+
 function collectGitignoreFiles(searchPath: string): string[] {
 	const gitignoreFiles = new Set<string>();
+	const ancestorDirs: string[] = [];
+	let currentDir = searchPath;
+	while (true) {
+		ancestorDirs.push(currentDir);
+		const parentDir = dirname(currentDir);
+		if (parentDir === currentDir) {
+			break;
+		}
+		currentDir = parentDir;
+	}
 
-	const rootGitignore = resolvePath(searchPath, ".gitignore");
-	if (existsSync(rootGitignore)) {
-		gitignoreFiles.add(rootGitignore);
+	for (const dir of ancestorDirs.reverse()) {
+		for (const fileName of FD_IGNORE_FILE_NAMES) {
+			const ignoreFile = resolvePath(dir, fileName);
+			if (existsSync(ignoreFile)) {
+				gitignoreFiles.add(ignoreFile);
+			}
+		}
 	}
 
 	try {
-		const nestedGitignores = globSync("**/.gitignore", {
-			cwd: searchPath,
-			dot: true,
-			absolute: true,
-			ignore: ["**/node_modules/**", "**/.git/**"],
-		});
-		for (const file of nestedGitignores) {
-			gitignoreFiles.add(file);
+		for (const fileName of FD_IGNORE_FILE_NAMES) {
+			const nestedGitignores = globSync(`**/${fileName}`, {
+				cwd: searchPath,
+				dot: true,
+				absolute: true,
+				ignore: ["**/node_modules/**", "**/.git/**"],
+			});
+			for (const file of nestedGitignores) {
+				gitignoreFiles.add(file);
+			}
 		}
 	} catch {
 		// Ignore glob errors
 	}
 
 	return [...gitignoreFiles];
+}
+
+function toGlobPath(path: string): string {
+	return path.split(sep).join("/");
+}
+
+function relativePathStaysInside(path: string): boolean {
+	return (
+		path === "" ||
+		(path !== ".." && !path.startsWith(`..${sep}`) && !isAbsolute(path))
+	);
+}
+
+function scopeGitignorePattern(
+	searchPath: string,
+	ignoreDir: string,
+	pattern: string,
+	anchored: boolean,
+): { matchPrefix?: string; pattern: string } | undefined {
+	const ignoreDirFromSearch = relative(searchPath, ignoreDir);
+	if (relativePathStaysInside(ignoreDirFromSearch)) {
+		const relativeDir = toGlobPath(ignoreDirFromSearch);
+		const prefix = relativeDir && relativeDir !== "." ? `${relativeDir}/` : "";
+		return { pattern: `${prefix}${pattern}` };
+	}
+
+	const searchPathFromIgnoreDir = relative(ignoreDir, searchPath);
+	if (!relativePathStaysInside(searchPathFromIgnoreDir)) {
+		return undefined;
+	}
+
+	if (!anchored && !pattern.includes("/")) {
+		return { pattern: `**/${pattern}` };
+	}
+	if (!anchored && pattern.startsWith("**/")) {
+		return { pattern };
+	}
+
+	const searchPrefix = toGlobPath(searchPathFromIgnoreDir);
+	if (!searchPrefix || searchPrefix === ".") {
+		return { pattern };
+	}
+	const prefix = `${searchPrefix}/`;
+	return pattern.startsWith(prefix)
+		? { pattern: pattern.slice(prefix.length) }
+		: { matchPrefix: searchPrefix, pattern };
+}
+
+function stripUnescapedTrailingWhitespace(line: string): string {
+	let end = line.length;
+	while (end > 0 && /\s/.test(line[end - 1] ?? "")) {
+		let slashCount = 0;
+		for (let index = end - 2; index >= 0 && line[index] === "\\"; index -= 1) {
+			slashCount += 1;
+		}
+		if (slashCount % 2 === 1) {
+			break;
+		}
+		end -= 1;
+	}
+	return line.slice(0, end);
+}
+
+function unescapeGitignorePattern(pattern: string): string {
+	return pattern.replace(/\\([#!\t ])/g, "$1");
+}
+
+function collectGitignoreRules(
+	searchPath: string,
+	gitignoreFiles: string[],
+): GitignoreRule[] {
+	const rules: GitignoreRule[] = [];
+
+	for (const gitignorePath of gitignoreFiles) {
+		const ignoreDir = dirname(gitignorePath);
+
+		let contents: string;
+		try {
+			contents = readFileSync(gitignorePath, "utf8");
+		} catch {
+			continue;
+		}
+
+		for (const rawLine of contents.split(/\r?\n/)) {
+			let line = stripUnescapedTrailingWhitespace(rawLine);
+			if (!line || line.startsWith("#")) {
+				continue;
+			}
+
+			const negated = line.startsWith("!");
+			if (negated) {
+				line = line.slice(1);
+				if (!line) {
+					continue;
+				}
+			}
+			const anchored = line.startsWith("/");
+			const directoryOnly = line.endsWith("/");
+			let pattern = unescapeGitignorePattern(
+				line.replace(/^\/+/, "").replace(/\/+$/, ""),
+			);
+			if (!pattern) {
+				continue;
+			}
+
+			if (!anchored && !pattern.includes("/")) {
+				pattern = `**/${pattern}`;
+			}
+
+			const scopedPattern = scopeGitignorePattern(
+				searchPath,
+				ignoreDir,
+				pattern,
+				anchored,
+			);
+			if (!scopedPattern) {
+				continue;
+			}
+			rules.push({
+				pattern: scopedPattern.pattern,
+				matchPrefix: scopedPattern.matchPrefix,
+				negated,
+				directoryOnly,
+			});
+		}
+	}
+
+	return rules;
+}
+
+function pathIsDirectory(path: string): boolean {
+	try {
+		return statSync(path).isDirectory();
+	} catch {
+		return false;
+	}
+}
+
+function pathAncestors(path: string): string[] {
+	const parts = path.split("/").filter(Boolean);
+	const ancestors: string[] = [];
+	for (let index = 1; index < parts.length; index += 1) {
+		ancestors.push(parts.slice(0, index).join("/"));
+	}
+	return ancestors;
+}
+
+function gitignoreRuleMatchPath(path: string, rule: GitignoreRule): string {
+	return rule.matchPrefix
+		? path === "."
+			? rule.matchPrefix
+			: `${rule.matchPrefix}/${path}`
+		: path;
+}
+
+function matchesGitignoreSubject(
+	path: string,
+	rule: GitignoreRule,
+	isDirectory: boolean,
+): boolean {
+	const matchPath = gitignoreRuleMatchPath(path, rule);
+	const options = { dot: true, nonegate: true };
+	if (rule.directoryOnly) {
+		return isDirectory && minimatch(matchPath, rule.pattern, options);
+	}
+	return minimatch(matchPath, rule.pattern, options);
+}
+
+function evaluateGitignoreSubject(
+	path: string,
+	rules: GitignoreRule[],
+	isDirectory: boolean,
+): boolean {
+	let ignored = false;
+	for (const rule of rules) {
+		if (matchesGitignoreSubject(path, rule, isDirectory)) {
+			ignored = !rule.negated;
+		}
+	}
+	return ignored;
+}
+
+/** @internal */
+export function isIgnoredByGitignoreRules(
+	relativePath: string,
+	rules: GitignoreRule[],
+	isDirectory = false,
+): boolean {
+	const normalizedPath = toGlobPath(relativePath);
+	for (const ancestor of pathAncestors(normalizedPath)) {
+		if (evaluateGitignoreSubject(ancestor, rules, true)) {
+			return true;
+		}
+	}
+	return evaluateGitignoreSubject(normalizedPath, rules, isDirectory);
+}
+
+function constrainGlobMatches(
+	matches: string[],
+	searchPath: string,
+	rules: GitignoreRule[],
+): string[] {
+	const searchRoot = searchPath.endsWith(sep)
+		? searchPath
+		: `${searchPath}${sep}`;
+	const constrained: string[] = [];
+	for (const match of matches) {
+		const resolved = resolvePath(match);
+		if (resolved !== searchPath && !resolved.startsWith(searchRoot)) {
+			continue;
+		}
+		const relativeMatch = relative(searchPath, resolved) || ".";
+		if (
+			isIgnoredByGitignoreRules(relativeMatch, rules, pathIsDirectory(resolved))
+		) {
+			continue;
+		}
+		constrained.push(resolved);
+	}
+	return constrained;
 }
 
 export const findTool = createTool<typeof findSchema, FindToolDetails>({
@@ -158,14 +410,17 @@ export const findTool = createTool<typeof findSchema, FindToolDetails>({
 			args.push("--hidden");
 		}
 
-		if (getGitRoot(searchPath)) {
+		const gitRoot = getGitRoot(searchPath);
+		const gitignoreFiles = gitRoot ? [] : collectGitignoreFiles(searchPath);
+		const gitignoreRules = collectGitignoreRules(searchPath, gitignoreFiles);
+		if (gitRoot) {
 			// Force fd to honor repo-native ignore rules even if user config disables
 			// VCS ignores, while keeping anchored patterns scoped to the repo root.
 			args.push("--ignore-vcs");
 		} else {
-			for (const gitignorePath of collectGitignoreFiles(searchPath)) {
-				args.push("--ignore-file", gitignorePath);
-			}
+			// Let fd discover .gitignore files in their native directories instead of
+			// re-scoping them as current-directory --ignore-file inputs.
+			args.push("--no-require-git");
 		}
 
 		args.push(pattern);
@@ -188,7 +443,7 @@ export const findTool = createTool<typeof findSchema, FindToolDetails>({
 				.detail({ command, cwd: searchPath, fileCount: 0, truncated: false });
 		}
 
-		let output = result.stdout?.trim() || "";
+		let output = result.stdout ?? "";
 
 		if (result.status !== 0 && !output) {
 			const errorMsg =
@@ -206,13 +461,11 @@ export const findTool = createTool<typeof findSchema, FindToolDetails>({
 				nodir: false,
 				absolute: true,
 			});
-			const searchRoot = searchPath.endsWith(sep)
-				? searchPath
-				: `${searchPath}${sep}`;
-			const constrained = globMatches.filter((match) => {
-				const resolved = resolvePath(match);
-				return resolved === searchPath || resolved.startsWith(searchRoot);
-			});
+			const constrained = constrainGlobMatches(
+				globMatches,
+				searchPath,
+				gitignoreRules,
+			);
 
 			if (constrained.length > 0) {
 				const limited = constrained.slice(0, effectiveLimit);
@@ -243,7 +496,7 @@ export const findTool = createTool<typeof findSchema, FindToolDetails>({
 		const relativized: string[] = [];
 
 		for (const rawLine of lines) {
-			const line = rawLine.replace(/\r$/, "").trim();
+			const line = rawLine.replace(/\r$/, "");
 			if (!line) {
 				continue;
 			}
@@ -255,12 +508,54 @@ export const findTool = createTool<typeof findSchema, FindToolDetails>({
 			}
 
 			if (relativePath) {
+				if (
+					!gitRoot &&
+					isIgnoredByGitignoreRules(
+						relativePath,
+						gitignoreRules,
+						pathIsDirectory(resolvePath(searchPath, relativePath)),
+					)
+				) {
+					continue;
+				}
 				relativized.push(relativePath);
 			}
 		}
 
-		output = relativized.join("\n");
+		if (!gitRoot && pattern.includes("**/")) {
+			const searchRoot = searchPath.endsWith(sep)
+				? searchPath
+				: `${searchPath}${sep}`;
+			const seen = new Set(relativized);
+			for (const match of globSync(pattern, {
+				cwd: searchPath,
+				dot: includeHidden,
+				nodir: false,
+				absolute: true,
+			})) {
+				const resolved = resolvePath(match);
+				if (resolved !== searchPath && !resolved.startsWith(searchRoot)) {
+					continue;
+				}
+				const relativeMatch = relative(searchPath, resolved) || ".";
+				if (
+					isIgnoredByGitignoreRules(
+						relativeMatch,
+						gitignoreRules,
+						pathIsDirectory(resolved),
+					)
+				) {
+					continue;
+				}
+				if (!seen.has(relativeMatch)) {
+					seen.add(relativeMatch);
+					relativized.push(relativeMatch);
+				}
+			}
+		}
 
+		relativized.sort();
+		output = relativized.slice(0, effectiveLimit).join("\n");
 		const count = relativized.length;
 		const truncated = count >= effectiveLimit;
 		if (truncated) {
