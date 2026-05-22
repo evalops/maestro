@@ -104,7 +104,7 @@
     "ci:plan": "node scripts/plan-ci-checks.mjs",
     "pr:ready": "node scripts/pr-ready-to-merge.mjs",
     "pr:feedback": "node scripts/pr-feedback-audit.mjs",
-    "verify:runtime-deps": "node scripts/check-runtime-deps.js && node scripts/check-docker-runtime-workspaces.mjs",
+    "verify:runtime-deps": "node scripts/check-runtime-deps.js && node scripts/check-docker-runtime-workspaces.mjs && node scripts/check-packed-bundled-workspaces.mjs",
     "tui": "npm run cli",
     "verify": "npm run format && npm run lint && npm run test && npm run build && npm run smoke && npm run telemetry:report",
     "smoke": "node scripts/smoke-cli.js",

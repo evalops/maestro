@@ -48,9 +48,10 @@ for (const section of dependencySections) {
 		if (privateWorkspaceNames.has(name)) {
 			offenders.push(`${section}.${name}`);
 		}
-		if (bundledWorkspaceNames.has(name)) {
-			bundledDependencyOffenders.push(`${section}.${name}`);
+		if (!bundledWorkspaceNames.has(name)) {
+			continue;
 		}
+		bundledDependencyOffenders.push(`${section}.${name}`);
 	}
 }
 
@@ -75,7 +76,7 @@ if (bundledDependencyOffenders.length > 0) {
 		console.error(`- ${offender}`);
 	}
 	console.error(
-		"Keep bundled workspace packages in bundleDependencies only so package managers do not resolve them from the registry.",
+		"Keep bundled workspace packages in bundleDependencies only so package managers do not resolve them from the registry; check-packed-bundled-workspaces verifies npm still packs them under node_modules.",
 	);
 	process.exit(1);
 }
