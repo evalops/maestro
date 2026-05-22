@@ -86,6 +86,27 @@ runs:
         components: ${{ inputs.components }}
         targets: ${{ inputs.targets }}
 
+    - name: Ensure Rustup tool proxies
+      shell: bash
+      run: |
+        set -euo pipefail
+        cargo_bin="${CARGO_HOME:-$HOME/.cargo}/bin"
+        rustup_bin="$cargo_bin/rustup"
+        if [ ! -x "$rustup_bin" ]; then
+          rustup_bin="$(command -v rustup || true)"
+        fi
+        if [ -z "$rustup_bin" ] || [ ! -x "$rustup_bin" ]; then
+          echo "rustup is required to create Cargo tool proxies" >&2
+          exit 1
+        fi
+
+        mkdir -p "$cargo_bin"
+        for proxy in cargo rustc rustdoc rustfmt cargo-fmt cargo-clippy clippy-driver; do
+          if [ ! -e "$cargo_bin/$proxy" ] && [ ! -L "$cargo_bin/$proxy" ]; then
+            ln -s "$rustup_bin" "$cargo_bin/$proxy"
+          fi
+        done
+
     - name: Cache Cargo
       uses: Swatinem/rust-cache@779680da715d629ac1d338a641029a2f4372abb5 # v2.8.2
       with:

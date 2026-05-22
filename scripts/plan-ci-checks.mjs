@@ -110,6 +110,14 @@ function isCiInfrastructureOnlyPath(path) {
 	);
 }
 
+function isRustSetupActionPath(path) {
+	return path.startsWith(".github/actions/setup-rust/");
+}
+
+function isFastPrChecksInfrastructurePath(path) {
+	return isCiInfrastructureOnlyPath(path) || isRustSetupActionPath(path);
+}
+
 function isRustOnlySourcePath(path) {
 	return (
 		path.startsWith("packages/ambient-agent-rs/") ||
@@ -148,7 +156,8 @@ export function planCiChecks({ eventName, labels = [], changedFiles = [] }) {
 
 	const files = changedFiles.map(String).map((path) => path.trim()).filter(Boolean);
 	const ciInfrastructureOnly =
-		files.length > 0 && files.every(isCiInfrastructureOnlyPath);
+		files.length > 0 && files.every(isFastPrChecksInfrastructurePath);
+	const rustSetupActionChanged = files.some(isRustSetupActionPath);
 	const rustOnlySource =
 		files.length > 0 && files.every((path) => isRustOnlySourcePath(path));
 	const coverage =
@@ -165,7 +174,9 @@ export function planCiChecks({ eventName, labels = [], changedFiles = [] }) {
 				!isCiInfrastructureOnlyPath(path) && !shouldSkipPublicMirrorForPath(path),
 		);
 	const rustHostedConformance =
-		labelSet.has("run-rust-hosted-conformance") || !ciInfrastructureOnly;
+		labelSet.has("run-rust-hosted-conformance") ||
+		rustSetupActionChanged ||
+		!ciInfrastructureOnly;
 
 	return {
 		ciInfrastructureOnly,

@@ -43,7 +43,10 @@ type Workflow = {
 		"cancel-in-progress"?: boolean | string;
 		group?: string;
 	};
-	jobs?: Record<string, { steps?: WorkflowStep[]; "timeout-minutes"?: number }>;
+	jobs?: Record<
+		string,
+		{ steps?: WorkflowStep[]; "timeout-minutes"?: number; "runs-on"?: unknown }
+	>;
 };
 
 type ProjectConfig = {
@@ -106,6 +109,21 @@ describe("planCiChecks", () => {
 			prChecks: true,
 			publicMirror: false,
 			rustHostedConformance: false,
+		});
+		expect(
+			planCiChecks({
+				eventName: "pull_request",
+				changedFiles: [
+					".github/actions/setup-rust/action.yml",
+					"test/scripts/ci-guardrails.test.ts",
+				],
+			}),
+		).toMatchObject({
+			ciInfrastructureOnly: true,
+			coverage: false,
+			prChecks: true,
+			publicMirror: true,
+			rustHostedConformance: true,
 		});
 		expect(
 			planCiChecks({
@@ -246,6 +264,24 @@ describe("ci workflow guardrails", () => {
 		expect(coverageTimeouts.get("Run tests with coverage")).toBe(60);
 	});
 
+	it("gives evals workflow test shards enough time to finish", () => {
+		const workflow = parse(
+			readFileSync(
+				new URL("../../.github/workflows/evals.yml", import.meta.url),
+				{
+					encoding: "utf8",
+				},
+			),
+		) as Workflow;
+		const steps = workflow.jobs?.["run-evals"]?.steps ?? [];
+		const timeouts = new Map(
+			steps.map((step) => [step.name, step["timeout-minutes"]]),
+		);
+
+		expect(timeouts.get("Run tests")).toBeGreaterThanOrEqual(10);
+		expect(timeouts.get("Run evals chunk")).toBe(45);
+	});
+
 	it("sets up Java before Nx can run Gradle-backed tests", () => {
 		const workflow = parse(
 			readFileSync(new URL("../../.github/workflows/ci.yml", import.meta.url), {
@@ -315,17 +351,6 @@ describe("ci workflow guardrails", () => {
 			(step) => step.uses === "./.github/actions/setup-rust",
 		);
 
-		if (!setupRustStep) {
-			const rustHostedSteps =
-				workflow.jobs?.["rust-hosted-conformance"]?.steps ?? [];
-			expect(
-				rustHostedSteps.some(
-					(step) => step.uses === "./.github/actions/setup-rust",
-				),
-			).toBe(true);
-			return;
-		}
-
 		expect(setupRustStep?.if).toBe(
 			"${{ github.event_name != 'pull_request' || needs.changes.outputs.ci_infrastructure_only != 'true' }}",
 		);
@@ -341,6 +366,10 @@ describe("ci workflow guardrails", () => {
 
 		expect(action).toContain(
 			"/maestro-rust/${safe_repo}/${safe_job}/${safe_toolchain}",
+		);
+		expect(action).toContain("Ensure Rustup tool proxies");
+		expect(action).toContain(
+			"for proxy in cargo rustc rustdoc rustfmt cargo-fmt cargo-clippy clippy-driver",
 		);
 		expect(action).not.toContain("GITHUB_RUN_ID");
 	});
@@ -425,6 +454,25 @@ describe("ci workflow guardrails", () => {
 		expect(buildScript.indexOf('"$cargo_bin" clean --release')).toBeGreaterThan(
 			buildScript.indexOf('"$cargo_bin" build --release'),
 		);
+	});
+
+	it("runs the Nix hash updater on a hosted sudo-capable runner", () => {
+		const workflow = parse(
+			readFileSync(
+				new URL("../../.github/workflows/update-nix-hash.yml", import.meta.url),
+				{ encoding: "utf8" },
+			),
+		) as Workflow;
+		const job = workflow.jobs?.["update-hash"];
+		const installNixStep = job?.steps?.find((step) =>
+			step.uses?.startsWith("cachix/install-nix-action@"),
+		);
+
+		expect(job?.["runs-on"]).toBe("ubuntu-latest");
+		expect(installNixStep?.with).toMatchObject({
+			enable_kvm: false,
+			nix_path: "nixpkgs=channel:nixos-unstable",
+		});
 	});
 });
 
