@@ -29,6 +29,7 @@ const RESUME_TASK_ID = "local-swarm-resume-task";
 
 type MockAgent = PlatformAgentRegistryAgent & {
 	currentObjectiveIds?: string[];
+	heartbeatReceived?: boolean;
 };
 
 type CapturedRequest = {
@@ -200,6 +201,7 @@ function buildAgentFromRegister(body: Record<string, unknown>): MockAgent {
 		surfaceTypes: stringList(body, "surfaceTypes"),
 		ownerId: stringValue(body, "ownerId"),
 		status: "AGENT_STATUS_IDLE",
+		heartbeatReceived: false,
 		createdAt: now,
 		updatedAt: now,
 		a2a: a2a as MockAgent["a2a"],
@@ -219,6 +221,7 @@ function applyHeartbeat(agent: MockAgent, body: Record<string, unknown>): MockAg
 		...agent,
 		status: stringValue(body, "status") ?? agent.status,
 		lastHeartbeatAt: now,
+		heartbeatReceived: true,
 		updatedAt: now,
 		currentObjectiveIds: stringList(body, "currentObjectiveIds"),
 		surfaces: stringValue(body, "surface")
@@ -367,7 +370,7 @@ async function startMockRegistry(): Promise<MockRegistry> {
 			const deadline = Date.now() + REGISTRY_READY_TIMEOUT_MS;
 			while (Date.now() < deadline) {
 				const heartbeated = [...agents.values()].filter(
-					(agent) => agent.lastHeartbeatAt && agent.a2a?.publicEndpointUrl,
+					(agent) => agent.heartbeatReceived && agent.a2a?.publicEndpointUrl,
 				);
 				if (heartbeated.length >= count) {
 					return;
@@ -764,6 +767,9 @@ async function main(): Promise<void> {
 						).length,
 						heartbeatCount: registry.requests.filter((request) =>
 							request.url?.endsWith("/Heartbeat"),
+						).length,
+						heartbeatReceivedAgents: [...registry.agents.values()].filter(
+							(agent) => agent.heartbeatReceived,
 						).length,
 						listCount: registry.requests.filter((request) =>
 							request.url?.endsWith("/List"),
