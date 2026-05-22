@@ -288,6 +288,25 @@ describe("ci workflow guardrails", () => {
 
 		expect(project.targets?.test?.dependsOn ?? []).not.toContain("build");
 	});
+
+	it("keeps the Rust release cache unless repairing dep-info corruption", () => {
+		const workflow = parse(
+			readFileSync(
+				new URL("../../.github/workflows/rust.yml", import.meta.url),
+				{ encoding: "utf8" },
+			),
+		) as Workflow;
+		const buildStep = workflow.jobs?.build?.steps?.find(
+			(step) => step.name === "Build",
+		);
+		const buildScript = buildStep?.run ?? "";
+
+		expect(buildScript).toContain("could not parse/generate dep info");
+		expect(buildScript).toContain('"$cargo_bin" build --release 2>&1 | tee');
+		expect(buildScript.indexOf('"$cargo_bin" clean --release')).toBeGreaterThan(
+			buildScript.indexOf('"$cargo_bin" build --release'),
+		);
+	});
 });
 
 describe("rust workflow guardrails", () => {
@@ -323,7 +342,10 @@ describe("rust workflow guardrails", () => {
 		expect(timeoutByStep.get("Run hook integration tests")).toBe(15);
 		expect(timeoutByStep.get("Test summary")).toBe(5);
 		expect(steps.find((step) => step.name === "Build")?.run).toContain(
-			"cargo clean --release",
+			'"$cargo_bin" clean --release',
+		);
+		expect(steps.find((step) => step.name === "Run all tests")?.run).toContain(
+			'cargo_bin="${CARGO_HOME:-$HOME/.cargo}/bin/cargo"',
 		);
 	});
 });
