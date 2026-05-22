@@ -112,6 +112,7 @@
 		"smoke:codex-app-server-live": "node scripts/smoke-codex-app-server-live.mjs",
 		"smoke:event-bus": "tsx scripts/smoke-maestro-event-bus.ts",
 		"smoke:a2a-local": "tsx scripts/smoke-maestro-a2a-local.ts",
+		"smoke:a2a-local-swarm": "tsx scripts/smoke-maestro-a2a-local-swarm.ts",
 		"smoke:a2a-input-required": "tsx scripts/smoke-maestro-a2a-input-required.ts",
 		"smoke:a2a-tmux": "bash scripts/smoke-maestro-a2a-tmux.sh",
 		"a2a": "tsx src/cli.ts a2a",
