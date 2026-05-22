@@ -64,7 +64,7 @@ describe("MCP tool bridge schema conversion", () => {
 		expect(tool.parameters.properties?.query?.description).toBe("Search query");
 	});
 
-	it("uses local MCP server config as the only parallel capability source", () => {
+	it("uses trusted MCP config or server capabilities as parallel capability sources", () => {
 		const fromServer = createMcpToolWrapper(
 			"trusted-server",
 			{
@@ -72,6 +72,21 @@ describe("MCP tool bridge schema conversion", () => {
 				inputSchema: { type: "object" },
 			} satisfies McpTool,
 			{ supportsParallelToolCalls: true },
+		);
+		const fromServerCapability = createMcpToolWrapper(
+			"advertising-server",
+			{
+				name: "search",
+				inputSchema: { type: "object" },
+			} satisfies McpTool,
+			{
+				parallelSafety: {
+					supportsParallelToolCalls: true,
+					provenance: "server_capability",
+					maxConcurrency: 3,
+					readOnlyHint: true,
+				},
+			},
 		);
 		const fromToolMeta = createMcpToolWrapper("meta-server", {
 			name: "search",
@@ -88,10 +103,38 @@ describe("MCP tool bridge schema conversion", () => {
 			name: "search",
 			inputSchema: { type: "object" },
 		} satisfies McpTool);
+		const readOnlyWithoutParallelOptIn = createMcpToolWrapper(
+			"serial-read-server",
+			{
+				name: "search",
+				inputSchema: { type: "object" },
+			} satisfies McpTool,
+			{
+				parallelSafety: {
+					supportsParallelToolCalls: false,
+					provenance: "server_capability",
+					readOnlyHint: true,
+				},
+			},
+		);
 
 		expect(fromServer.source?.supportsParallelToolCalls).toBe(true);
+		expect(fromServer.source?.parallelSafetyProvenance).toBe("static_config");
+		expect(fromServerCapability.source).toMatchObject({
+			supportsParallelToolCalls: true,
+			parallelSafetyProvenance: "server_capability",
+			parallelMaxConcurrency: 3,
+		});
+		expect(fromServerCapability.annotations?.readOnlyHint).toBe(true);
 		expect(fromToolMeta.source?.supportsParallelToolCalls).toBe(false);
+		expect(fromToolMeta.source?.parallelSafetyProvenance).toBe("none");
 		expect(plain.source?.supportsParallelToolCalls).toBe(false);
+		expect(readOnlyWithoutParallelOptIn.source?.supportsParallelToolCalls).toBe(
+			false,
+		);
+		expect(readOnlyWithoutParallelOptIn.annotations?.readOnlyHint).toBe(
+			undefined,
+		);
 	});
 });
 

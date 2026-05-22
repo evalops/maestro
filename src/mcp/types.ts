@@ -120,6 +120,18 @@ export interface McpServerConfig {
 	scope?: McpScope;
 }
 
+export type McpParallelSafetyProvenance =
+	| "static_config"
+	| "server_capability"
+	| "none";
+
+export interface McpToolParallelSafety {
+	supportsParallelToolCalls: boolean;
+	provenance: McpParallelSafetyProvenance;
+	maxConcurrency?: number;
+	readOnlyHint?: boolean;
+}
+
 export interface McpConfig {
 	servers: McpServerConfig[];
 	authPresets: McpAuthPresetConfig[];
@@ -153,6 +165,11 @@ export interface McpServerStatus {
 	authPreset?: string;
 	timeout?: number;
 	supportsParallelToolCalls?: boolean;
+	parallelSafety?: {
+		supportsParallelToolCalls: boolean;
+		provenance: McpParallelSafetyProvenance;
+		maxConcurrency?: number;
+	};
 	remoteTrust?: McpRemoteTrust;
 	officialRegistry?: McpOfficialRegistryInfo;
 	projectApproval?: McpProjectApprovalStatus;

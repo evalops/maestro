@@ -94,6 +94,25 @@ maestro a2a delegate \
   "Review this branch and return the highest-risk finding"
 ```
 
+Create a Platform-owned A2A delegation when the delegation record itself must be
+the durable control/evidence handle:
+
+```sh
+maestro a2a delegate \
+  --platform \
+  --from-agent-id maestro-coordinator-a \
+  --to-agent-id maestro-worker-b \
+  --skill maestro.subagent.code-review \
+  --workspace-id "$EVALOPS_WORKSPACE_ID" \
+  "Review this branch and return the highest-risk finding"
+```
+
+`--platform` submits `agents.v1.AgentService/Delegate` and returns a Platform
+delegation id plus any remote A2A task id that Platform dispatches. Use that
+delegation id for `maestro a2a control` and `maestro a2a graph`; this is the
+production path when the proof needs to show work moved through Platform rather
+than only through a peer endpoint imported from Platform discovery.
+
 Control a remote Platform A2A delegation task or one of its child/subagent
 lanes:
 
@@ -112,6 +131,77 @@ id, trace/span ids, returned artifacts, and any downstream GitHub or
 deploy-verifier identifiers must resolve to live systems. Deterministic replay
 fixtures can prove the schema and message contract, but they must not be
 presented as proof of a production run.
+
+The full Platform-backed swarm goal is tracked as executable stage gates in
+[A2A swarm stage gates](./a2a-swarm-stage-gates.md). The JSON manifest behind
+that document is validated by `npm run check:evidence-integrity`, so each stage
+must retain concrete entry and exit evidence rather than drifting back into a
+checklist of claims.
+
+## Live Platform Proof Smoke
+
+Use the live smoke when the question is whether two remote Maestro instances can
+actually communicate through Platform. The command validates required
+environment before network calls, discovers both registered peers, checks fresh
+heartbeats and Agent Card observations, creates a Platform-owned delegation,
+observes the graph/task id, sends a control probe, fetches the remote A2A task,
+and writes redacted evidence plus a SHA-256 sidecar. Set
+`MAESTRO_A2A_LIVE_REQUIRE_INVALID_TOKEN_PROBE=true` to require a negative
+Agent Registry peer-discovery probe before the happy path; the smoke refuses to
+write evidence if Platform accepts the invalid token. When
+`MAESTRO_A2A_LIVE_EVIDENCE_SIGNING_PRIVATE_KEY` or
+`MAESTRO_A2A_LIVE_EVIDENCE_SIGNING_PRIVATE_KEY_FILE` is configured, the smoke
+also writes an Ed25519 detached signature sidecar bound to the evidence digest.
+
+```sh
+MAESTRO_AGENT_REGISTRY_SERVICE_URL="$EVALOPS_BASE_URL" \
+MAESTRO_AGENT_REGISTRY_SERVICE_TOKEN="$EVALOPS_TOKEN" \
+MAESTRO_AGENT_REGISTRY_ORG_ID="$EVALOPS_ORGANIZATION_ID" \
+MAESTRO_AGENT_REGISTRY_WORKSPACE_ID="$EVALOPS_WORKSPACE_ID" \
+MAESTRO_A2A_LIVE_FROM_AGENT_ID=maestro-coordinator-a \
+MAESTRO_A2A_LIVE_TO_AGENT_ID=maestro-worker-b \
+MAESTRO_A2A_LIVE_SKILL_ID=maestro.subagent.code-review \
+MAESTRO_A2A_LIVE_REQUIRE_INVALID_TOKEN_PROBE=true \
+npm run platform:a2a-delegation-live
+```
+
+Verify the emitted bundle before attaching it to a PR, release, or diligence
+packet:
+
+```sh
+npm run platform:a2a-evidence-verify -- tmp/platform-a2a-delegation-live/<run>/evidence.json
+```
+
+Require a trusted detached signature for diligence-grade packets:
+
+```sh
+MAESTRO_A2A_LIVE_EVIDENCE_VERIFY_PUBLIC_KEY_FILE=./platform-a2a-live.pub.pem \
+npm run platform:a2a-evidence-verify -- \
+  tmp/platform-a2a-delegation-live/<run>/evidence.json \
+  --require-signature
+```
+
+Require both trusted signatures and live GitHub API dereferencing for PR-ready
+evidence:
+
+```sh
+GITHUB_TOKEN="$GH_TOKEN" \
+MAESTRO_A2A_LIVE_EVIDENCE_VERIFY_PUBLIC_KEY_FILE=./platform-a2a-live.pub.pem \
+npm run platform:a2a-evidence-verify -- \
+  tmp/platform-a2a-delegation-live/<run>/evidence.json \
+  --require-signature \
+  --require-github-dereference \
+  --require-negative-auth-probe
+```
+
+The verifier checks the evidence digest sidecar, live marker, protocol version,
+40-hex Maestro git SHA, optional GitHub run/PR identifiers, optional Ed25519
+detached signature, optional GitHub API dereference, Platform delegation id,
+remote A2A task id, peer ids, graph nodes, control mode, task id, and optional
+invalid-token rejection evidence. It rejects digest mismatches,
+production-looking synthetic SHAs, slug-style PR refs, fake GHA run ids,
+unresolved required Actions/PR metadata, local proof ids, missing required
+signatures, key-fingerprint mismatches, and invalid detached signatures.
 
 ## TUI Surface
 

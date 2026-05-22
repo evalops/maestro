@@ -55,6 +55,7 @@ import {
 	type PlatformAgentRegistryAgent,
 	PlatformAgentStatusValue,
 	controlA2ADelegationTaskWithPlatform,
+	delegateAgentWithPlatform,
 	getA2ADelegationGraphWithPlatform,
 	heartbeatAgentWithPlatform,
 	isAgentAlreadyExistsError,
@@ -90,18 +91,24 @@ const A2A_VALUE_FLAGS_BY_SUBCOMMAND: Record<string, readonly string[]> = {
 	delegate: [
 		"--capability",
 		"--cwd",
+		"--from-agent-id",
 		"--interval-ms",
 		"--limit",
 		"--max-wait-ms",
+		"--objective-id",
 		"--offset",
 		"--registry",
+		"--reason",
 		"--role",
 		"--skill",
 		"--status",
 		"--surface",
 		"--tasks",
 		"--timeout-ms",
+		"--to-agent-id",
 		"--workspace-id",
+		"--workflow-run-id",
+		"--workflow-step-id",
 	],
 	coordinate: [
 		"--interval-ms",
@@ -180,7 +187,13 @@ const A2A_VALUE_FLAGS_BY_SUBCOMMAND: Record<string, readonly string[]> = {
 const A2A_BOOLEAN_FLAGS_BY_SUBCOMMAND: Record<string, readonly string[]> = {
 	accept: ["--default"],
 	coordinate: ["--json", "--refresh", "--wait", "--work-graph"],
-	delegate: ["--discover", "--prefer-internal", "--wait", "--work-graph"],
+	delegate: [
+		"--discover",
+		"--platform",
+		"--prefer-internal",
+		"--wait",
+		"--work-graph",
+	],
 	discover: ["--default", "--import", "--json", "--prefer-internal"],
 	fleet: ["--json"],
 	graph: ["--json"],
@@ -278,6 +291,9 @@ export function parseA2AArgs(args: string[]): ParsedA2AArgs {
 	const booleanFlags = new Set(
 		A2A_BOOLEAN_FLAGS_BY_SUBCOMMAND[subcommand] ?? [],
 	);
+	if (subcommand === "delegate" && args.includes("--platform")) {
+		booleanFlags.add("--json");
+	}
 	const collectValueFlags = new Set(
 		A2A_COLLECT_VALUE_FLAGS_BY_SUBCOMMAND[subcommand] ?? [],
 	);
@@ -980,6 +996,10 @@ async function handleA2ASend(parsed: ParsedA2AArgs): Promise<void> {
 }
 
 async function handleA2ADelegate(parsed: ParsedA2AArgs): Promise<void> {
+	if (booleanFlag(parsed, "--platform")) {
+		await handleA2APlatformDelegate(parsed);
+		return;
+	}
 	const discover = booleanFlag(parsed, "--discover");
 	const peerName = discover
 		? undefined
@@ -1061,6 +1081,102 @@ async function handleA2ADelegate(parsed: ParsedA2AArgs): Promise<void> {
 	printTask(task, {
 		includeWorkGraphDetails: booleanFlag(parsed, "--work-graph"),
 	});
+}
+
+async function handleA2APlatformDelegate(parsed: ParsedA2AArgs): Promise<void> {
+	const text = parsed.positionals.join(" ").trim();
+	if (!text) {
+		fail(
+			"Usage: maestro a2a delegate --platform --from-agent-id <agent-id> [--to-agent-id <agent-id>|--capability <capability>] --skill <skill-id> <text>",
+		);
+	}
+	const fromAgentId =
+		stringFlag(parsed, "--from-agent-id") ??
+		getEnvValue([
+			"MAESTRO_A2A_AGENT_ID",
+			"MAESTRO_AGENT_ID",
+			"MAESTRO_EVALOPS_AGENT_ID",
+			"EVALOPS_AGENT_ID",
+		]) ??
+		fail(
+			"Provide --from-agent-id or set MAESTRO_A2A_AGENT_ID/MAESTRO_AGENT_ID.",
+		);
+	const toAgentId = stringFlag(parsed, "--to-agent-id");
+	const requiredCapability = stringFlag(parsed, "--capability");
+	const skillId = stringFlag(parsed, "--skill");
+	if (!toAgentId && !requiredCapability && !skillId) {
+		fail(
+			"Provide --to-agent-id, --capability, or --skill for Platform routing.",
+		);
+	}
+	const role = stringFlag(parsed, "--role");
+	const cwd = stringFlag(parsed, "--cwd") ?? process.cwd();
+	const requestedAt = new Date().toISOString();
+	const result = await delegateAgentWithPlatform({
+		workspaceId: stringFlag(parsed, "--workspace-id"),
+		fromAgentId,
+		toAgentId,
+		requiredCapability,
+		a2aSkillId: skillId,
+		objectiveId: stringFlag(parsed, "--objective-id"),
+		workflowRunId: stringFlag(parsed, "--workflow-run-id"),
+		workflowStepId: stringFlag(parsed, "--workflow-step-id"),
+		contextPayload: {
+			requestKind: "maestro-peer-delegation",
+			transport: "platform-a2a",
+			prompt: text,
+			source: "maestro-cli",
+			requestedAt,
+			...(role ? { role } : {}),
+			...(cwd ? { cwd } : {}),
+			...(skillId ? { a2aSkillId: skillId } : {}),
+			...(requiredCapability ? { requiredCapability } : {}),
+		},
+		reason:
+			stringFlag(parsed, "--reason") ??
+			platformDelegationReason(text, skillId, requiredCapability),
+	});
+	if (!result) {
+		fail(agentRegistryNotConfiguredMessage());
+	}
+	if (booleanFlag(parsed, "--json")) {
+		console.log(JSON.stringify(result, null, 2));
+		return;
+	}
+	const delegation = result.delegation;
+	console.log(
+		`Platform A2A delegation ${chalk.bold(delegation?.id ?? "(submitted)")}: ${
+			delegation?.status ?? "submitted"
+		}`,
+	);
+	console.log(chalk.dim(`From: ${fromAgentId}`));
+	if (delegation?.toAgentId ?? toAgentId) {
+		console.log(chalk.dim(`To: ${delegation?.toAgentId ?? toAgentId}`));
+	}
+	if (delegation?.a2aTaskId) {
+		console.log(chalk.dim(`Remote task: ${delegation.a2aTaskId}`));
+	}
+	if (delegation?.a2aEndpointUrl) {
+		console.log(chalk.dim(`Endpoint: ${delegation.a2aEndpointUrl}`));
+	}
+	if (delegation?.a2aDispatchStatus) {
+		console.log(chalk.dim(`Dispatch: ${delegation.a2aDispatchStatus}`));
+	}
+	if (delegation?.a2aResumeWaitContracts?.length) {
+		console.log(
+			chalk.dim(`Resume waits: ${delegation.a2aResumeWaitContracts.length}`),
+		);
+	}
+}
+
+function platformDelegationReason(
+	text: string,
+	skillId: string | undefined,
+	requiredCapability: string | undefined,
+): string {
+	const target = skillId ?? requiredCapability ?? "a2a peer";
+	const compact = text.replace(/\s+/g, " ").trim();
+	return `maestro a2a delegate ${target}: ${compact.slice(0, 120)}`;
 }
 
 async function handleA2AControl(parsed: ParsedA2AArgs): Promise<void> {
@@ -2042,6 +2158,7 @@ function printA2AHelp(): void {
   maestro a2a coordinate [peer] [--reply <text>] [--wait] [--json] [--work-graph]
   maestro a2a delegate <peer> <text> [--role <role>] [--cwd <path>] [--wait] [--work-graph]
   maestro a2a delegate --discover --skill <skill-id> <text> [--capability <capability>] [--prefer-internal]
+  maestro a2a delegate --platform --from-agent-id <agent-id> [--to-agent-id <agent-id>|--capability <capability>] --skill <skill-id> <text> [--json]
   maestro a2a control <delegation-id> --mode steer|followup|collect|interrupt|cancel [--workspace-id <id>] [message]
   maestro a2a graph <delegation-id> [--workspace-id <id>] [--json]
   maestro a2a reply <peer> <task-id> <text> [--wait] [--work-graph]

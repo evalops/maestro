@@ -184,4 +184,51 @@ describe("guardian runner", () => {
 		const toolNames = result.toolResults.map((t) => t.tool);
 		expect(toolNames).not.toContain("semgrep");
 	});
+
+	it("runs semgrep with bounded concurrency and metrics disabled", async () => {
+		process.env.MAESTRO_GUARDIAN = "1";
+		const calls: Array<{
+			cmd: string;
+			args: readonly string[];
+			env?: NodeJS.ProcessEnv;
+		}> = [];
+		mockSpawn.mockImplementation(
+			(
+				cmd: string,
+				args?: ReadonlyArray<string>,
+				options?: { env?: NodeJS.ProcessEnv },
+			) => {
+				const normalizedArgs = args ?? [];
+				calls.push({ cmd, args: normalizedArgs, env: options?.env });
+				const joined = normalizedArgs.join(" ");
+				if (cmd === "git" && joined.includes("diff --name-only --cached")) {
+					return { status: 0, stdout: "src/index.ts\n", stderr: "" };
+				}
+				if (cmd === "git" && joined.includes("show :")) {
+					return { status: 0, stdout: "export const x = 1;\n", stderr: "" };
+				}
+				if (cmd === "semgrep" && joined.includes("--version")) {
+					return { status: 0, stdout: "1.145.0\n", stderr: "" };
+				}
+				if (cmd === "semgrep" && joined.includes("scan")) {
+					return { status: 0, stdout: "{}", stderr: "" };
+				}
+				return { status: 1, stdout: "", stderr: "" };
+			},
+		);
+
+		const result = await runGuardian({
+			target: "staged",
+			trigger: "test",
+		});
+
+		expect(result.status).toBe("passed");
+		const semgrepScan = calls.find(
+			(call) => call.cmd === "semgrep" && call.args.includes("scan"),
+		);
+		expect(semgrepScan?.args).toEqual(
+			expect.arrayContaining(["--jobs", "1", "--metrics=off"]),
+		);
+		expect(semgrepScan?.env?.SEMGREP_SEND_METRICS).toBe("off");
+	});
 });

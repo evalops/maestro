@@ -1,3 +1,4 @@
+import { Buffer } from "node:buffer";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
 	handleA2ACommand,
@@ -24,6 +25,16 @@ function headersToRecord(
 	headers: HeadersInit | undefined,
 ): Record<string, string> {
 	return Object.fromEntries(new Headers(headers).entries());
+}
+
+function decodePayload(encoded: unknown): Record<string, unknown> {
+	if (typeof encoded !== "string") {
+		return {};
+	}
+	return JSON.parse(Buffer.from(encoded, "base64").toString("utf8")) as Record<
+		string,
+		unknown
+	>;
 }
 
 function stubAgentRegistryEnv(): void {
@@ -73,6 +84,32 @@ function mockAgentRegistryFetch(): AgentRegistryCall[] {
 							taskId: "task_1",
 							state: "working",
 							controlId: body.idempotencyKey ?? "control_1",
+						},
+					}),
+					{ status: 200, headers: { "Content-Type": "application/json" } },
+				);
+			}
+			if (operation === "Delegate") {
+				return new Response(
+					JSON.stringify({
+						delegation: {
+							id: "delegation_1",
+							workspaceId: body.workspaceId,
+							fromAgentId: body.fromAgentId,
+							toAgentId: body.toAgentId ?? "maestro-child",
+							requiredCapability: body.requiredCapability,
+							status: "DELEGATION_STATUS_PENDING",
+							a2aTaskId: "remote_task_1",
+							a2aMessageId: "a2a-delegation_1",
+							a2aEndpointUrl: "https://worker-b.test/message:send",
+							a2aDispatchStatus: "submitted",
+							a2aSkillId: body.a2aSkillId,
+							a2aResumeWaitContracts: [
+								{
+									type: "a2a.task.completed",
+									delegation_id: "delegation_1",
+								},
+							],
 						},
 					}),
 					{ status: 200, headers: { "Content-Type": "application/json" } },
@@ -334,6 +371,48 @@ describe("A2A CLI command helpers", () => {
 		expect(parsed.flags.get("--workspace-id")).toBe("ws_control");
 	});
 
+	it("parses Platform-owned A2A delegation flags", () => {
+		const parsed = parseA2AArgs([
+			"delegate",
+			"--platform",
+			"--from-agent-id",
+			"maestro-parent",
+			"--to-agent-id",
+			"maestro-child",
+			"--capability",
+			"code:review",
+			"--skill",
+			"maestro.subagent.code-review",
+			"--workspace-id",
+			"ws_delegate",
+			"--objective-id",
+			"objective_1",
+			"--workflow-run-id",
+			"run_1",
+			"--workflow-step-id",
+			"step_1",
+			"--reason",
+			"review requested",
+			"--json",
+			"review",
+			"the",
+			"patch",
+		]);
+
+		expect(parsed.positionals).toEqual(["delegate", "review", "the", "patch"]);
+		expect(parsed.flags.get("--platform")).toBe(true);
+		expect(parsed.flags.get("--from-agent-id")).toBe("maestro-parent");
+		expect(parsed.flags.get("--to-agent-id")).toBe("maestro-child");
+		expect(parsed.flags.get("--capability")).toBe("code:review");
+		expect(parsed.flags.get("--skill")).toBe("maestro.subagent.code-review");
+		expect(parsed.flags.get("--workspace-id")).toBe("ws_delegate");
+		expect(parsed.flags.get("--objective-id")).toBe("objective_1");
+		expect(parsed.flags.get("--workflow-run-id")).toBe("run_1");
+		expect(parsed.flags.get("--workflow-step-id")).toBe("step_1");
+		expect(parsed.flags.get("--reason")).toBe("review requested");
+		expect(parsed.flags.get("--json")).toBe(true);
+	});
+
 	it("routes the Platform A2A publish alias through registration", async () => {
 		stubAgentRegistryEnv();
 		muteConsole();
@@ -475,6 +554,74 @@ describe("A2A CLI command helpers", () => {
 				"x-workspace-id": "ws_control",
 			}),
 		);
+	});
+
+	it("routes Platform-owned A2A delegation through AgentService", async () => {
+		stubAgentRegistryEnv();
+		muteConsole();
+		const calls = mockAgentRegistryFetch();
+
+		await handleA2ACommand([
+			"delegate",
+			"--platform",
+			"--from-agent-id",
+			"maestro-parent",
+			"--to-agent-id",
+			"maestro-child",
+			"--capability",
+			"code:review",
+			"--skill",
+			"maestro.subagent.code-review",
+			"--workspace-id",
+			"ws_delegate",
+			"--objective-id",
+			"objective_1",
+			"--workflow-run-id",
+			"run_1",
+			"--workflow-step-id",
+			"step_1",
+			"--reason",
+			"review requested",
+			"--role",
+			"reviewer",
+			"--cwd",
+			"/repo",
+			"--json",
+			"review",
+			"the",
+			"patch",
+		]);
+
+		expect(calls).toHaveLength(1);
+		expect(calls[0]).toMatchObject({
+			operation: "Delegate",
+			body: {
+				workspaceId: "ws_delegate",
+				fromAgentId: "maestro-parent",
+				toAgentId: "maestro-child",
+				requiredCapability: "code:review",
+				a2aSkillId: "maestro.subagent.code-review",
+				objectiveId: "objective_1",
+				workflowRunId: "run_1",
+				workflowStepId: "step_1",
+				reason: "review requested",
+			},
+		});
+		expect(calls[0]?.headers).toEqual(
+			expect.objectContaining({
+				"x-workspace-id": "ws_delegate",
+			}),
+		);
+		expect(decodePayload(calls[0]?.body.contextPayload)).toMatchObject({
+			requestKind: "maestro-peer-delegation",
+			transport: "platform-a2a",
+			prompt: "review the patch",
+			source: "maestro-cli",
+			role: "reviewer",
+			cwd: "/repo",
+			a2aSkillId: "maestro.subagent.code-review",
+			requiredCapability: "code:review",
+		});
 	});
 
 	it("reads Platform A2A delegation graphs through AgentService", async () => {

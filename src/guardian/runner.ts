@@ -52,12 +52,14 @@ function runCommand(
 	args: string[],
 	cwd: string,
 	timeoutMs = DEFAULT_TIMEOUT_MS,
+	env?: NodeJS.ProcessEnv,
 ): CommandResult {
 	const started = Date.now();
 	try {
 		const result = spawnSync(command, args, {
 			cwd,
 			encoding: "utf-8",
+			env: env ? { ...process.env, ...env } : process.env,
 			maxBuffer: 8 * 1024 * 1024,
 			timeout: timeoutMs,
 		});
@@ -212,13 +214,17 @@ function runSemgrep(files: string[], root: string): GuardianToolResult {
 		"--error",
 		"--timeout",
 		"7",
+		"--jobs",
+		"1",
 		"--metrics=off",
 		"--disable-version-check",
 		...includeArgs,
 		".",
 	];
 	// Semgrep can take longer on larger workspaces; allow up to 2 minutes before timing out
-	const result = runCommand(cmd.command, args, root, 120_000);
+	const result = runCommand(cmd.command, args, root, 120_000, {
+		SEMGREP_SEND_METRICS: "off",
+	});
 	return {
 		tool: "semgrep",
 		exitCode: result.exitCode,

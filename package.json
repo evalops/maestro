@@ -1,7 +1,7 @@
 {
   "name": "@evalops/maestro",
   "description": "Maestro by EvalOps - Deterministic coding agent with TUI/CLI and Web UI for AI-assisted development",
-  "version": "0.10.19",
+  "version": "0.10.20",
   "private": false,
   "type": "module",
   "workspaces": [
@@ -58,6 +58,8 @@
     "platform:sdk-smoke": "tsx scripts/check-platform-sdk-contract.ts",
     "platform:agentruntime-e2e": "tsx scripts/smoke-platform-agentruntime-lifecycle.ts",
     "platform:timeline-e2e": "tsx scripts/smoke-platform-timeline-e2e.ts",
+    "platform:a2a-delegation-live": "tsx scripts/smoke-platform-a2a-delegation-live.ts",
+    "platform:a2a-evidence-verify": "tsx scripts/verify-platform-a2a-live-evidence.ts",
     "developer-surface:check": "node scripts/check-developer-surface.mjs",
     "format": "biome format .",
     "check": "npm run lint && npm run check --workspaces --if-present && tsc -p tsconfig.build.json --noEmit",
@@ -159,8 +161,8 @@
     "@aws-sdk/client-bedrock-runtime": "^3.1020.0",
     "@crosscopy/clipboard": "^0.2.8",
     "@daytonaio/sdk": "^0.155.0",
-    "@evalops/contracts": "^0.10.19",
-    "@evalops/tui": "^0.10.19",
+    "@evalops/contracts": "^0.10.20",
+    "@evalops/tui": "^0.10.20",
     "@modelcontextprotocol/sdk": "^1.29.0",
     "@opentelemetry/api": "^1.9.1",
     "@opentelemetry/auto-instrumentations-node": "^0.75.0",

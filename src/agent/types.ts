@@ -609,6 +609,8 @@ export interface McpToolSourceMetadata {
 	server: string;
 	tool: string;
 	supportsParallelToolCalls?: boolean;
+	parallelSafetyProvenance?: "static_config" | "server_capability" | "none";
+	parallelMaxConcurrency?: number;
 }
 
 export type ToolSourceMetadata = McpToolSourceMetadata;

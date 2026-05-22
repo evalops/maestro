@@ -78,5 +78,82 @@
 				"promptOnlyFeedbackDelivered": true
 			}
 		}
+	},
+	{
+		"name": "repo triage singleton becomes schedulable inspection batch",
+		"userIntent": "Before editing, inspect the scheduler transport, telemetry tests, and eval scenario registry.",
+		"replays": {
+			"baseline": {
+				"promptMessages": [
+					"Before editing, inspect the scheduler transport, telemetry tests, and eval scenario registry."
+				],
+				"emittedToolCalls": [
+					{
+						"toolName": "search",
+						"args": {
+							"pattern": "tool_phase_summary",
+							"path": "src/agent"
+						}
+					}
+				]
+			},
+			"nudged": {
+				"promptMessages": [
+					"Before editing, inspect the scheduler transport, telemetry tests, and eval scenario registry.",
+					"When you need several independent reads or searches, emit them together in one assistant message so Maestro can batch them safely."
+				],
+				"emittedToolCalls": [
+					{
+						"toolName": "search",
+						"args": {
+							"pattern": "tool_phase_summary",
+							"path": "src/agent"
+						}
+					},
+					{
+						"toolName": "read",
+						"args": {
+							"file_path": "test/telemetry/telemetry-report.test.ts"
+						}
+					},
+					{
+						"toolName": "read",
+						"args": {
+							"file_path": "evals/scenarios.json"
+						}
+					}
+				]
+			}
+		},
+		"expected": {
+			"baseline": {
+				"modelToolCallCount": 1,
+				"multiCallTurns": 0,
+				"topSerializationReasons": [
+					{
+						"reason": "single_read_only_call",
+						"count": 1
+					}
+				]
+			},
+			"nudged": {
+				"modelToolCallCount": 3,
+				"multiCallTurns": 1,
+				"topSerializationReasons": []
+			},
+			"improvement": {
+				"modelToolCallCountDelta": 2,
+				"multiCallTurnDelta": 1,
+				"increasedMultiCallTurns": true
+			},
+			"privacy": {
+				"safe": true,
+				"disallowedSubstringCount": 0
+			},
+			"runtime": {
+				"exercisedAgentToolPhaseSummary": true,
+				"promptOnlyFeedbackDelivered": true
+			}
+		}
 	}
 ]

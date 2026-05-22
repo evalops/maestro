@@ -1,6 +1,6 @@
 {
 	"name": "@evalops/consumer",
-	"version": "0.10.19",
+	"version": "0.10.20",
 	"description": "Unified EvalOps consumer SDK for Maestro service integrations",
 	"type": "module",
 	"main": "./dist/index.js",
@@ -28,7 +28,7 @@
 		"directory": "packages/consumer-sdk"
 	},
 	"dependencies": {
-		"@evalops/contracts": "^0.10.19"
+		"@evalops/contracts": "^0.10.20"
 	},
 	"devDependencies": {
 		"@types/node": "^24.10.7",

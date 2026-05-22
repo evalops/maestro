@@ -601,6 +601,142 @@ describe("MCP client manager", () => {
 		expect(tools).toEqual([]);
 	});
 
+	it("refreshes parallel safety when a server tool list changes", async () => {
+		const manager = createManager();
+		type NotificationHandler = () => void | Promise<void>;
+		const notificationHandlers: NotificationHandler[] = [];
+		let maxConcurrency = 1;
+		const listedTools = [{ name: "search", inputSchema: { type: "object" } }];
+		const client = {
+			close: vi.fn(async () => undefined),
+			getServerCapabilities: () => ({
+				tools: {},
+				experimental: {
+					"evalops.maestro.parallelSafety": {
+						tools: {
+							search: {
+								supportsParallelToolCalls: true,
+								maxConcurrency,
+							},
+						},
+					},
+				},
+			}),
+			listTools: vi.fn(async () => ({ tools: listedTools })),
+			setNotificationHandler: vi.fn(
+				(_schema: unknown, handler: NotificationHandler) => {
+					notificationHandlers.push(handler);
+				},
+			),
+		};
+		const transport = {
+			close: vi.fn(async () => undefined),
+		};
+		const testManager = manager as unknown as {
+			servers: Map<string, unknown>;
+			setupNotificationHandlers(client: unknown, serverName: string): void;
+		};
+		testManager.servers.set("server", {
+			config: { name: "server", transport: "stdio", command: "server-cmd" },
+			client,
+			transport,
+			tools: listedTools,
+			resources: [],
+			prompts: [],
+			promptDetails: [],
+			parallelSafetyByTool: new Map([
+				[
+					"search",
+					{
+						supportsParallelToolCalls: true,
+						provenance: "server_capability",
+						maxConcurrency,
+					},
+				],
+			]),
+			reconnectAttempts: 0,
+		});
+		testManager.setupNotificationHandlers(client, "server");
+		maxConcurrency = 5;
+
+		await notificationHandlers[0]?.();
+
+		expect(client.listTools).toHaveBeenCalledTimes(1);
+		expect(manager.getAllTools()[0]?.parallelSafety).toMatchObject({
+			supportsParallelToolCalls: true,
+			provenance: "server_capability",
+			maxConcurrency: 5,
+		});
+	});
+
+	it("honors a per-tool parallel opt-out over the server default", async () => {
+		const manager = createManager();
+		type NotificationHandler = () => void | Promise<void>;
+		const notificationHandlers: NotificationHandler[] = [];
+		const listedTools = [
+			{ name: "parallel_search", inputSchema: { type: "object" } },
+			{ name: "serial_status", inputSchema: { type: "object" } },
+		];
+		const client = {
+			close: vi.fn(async () => undefined),
+			getServerCapabilities: () => ({
+				tools: {},
+				experimental: {
+					"evalops.maestro.parallelSafety": {
+						supportsParallelToolCalls: true,
+						tools: {
+							serial_status: {
+								supportsParallelToolCalls: false,
+							},
+						},
+					},
+				},
+			}),
+			listTools: vi.fn(async () => ({ tools: listedTools })),
+			setNotificationHandler: vi.fn(
+				(_schema: unknown, handler: NotificationHandler) => {
+					notificationHandlers.push(handler);
+				},
+			),
+		};
+		const transport = {
+			close: vi.fn(async () => undefined),
+		};
+		const testManager = manager as unknown as {
+			servers: Map<string, unknown>;
+			setupNotificationHandlers(client: unknown, serverName: string): void;
+		};
+		testManager.servers.set("server", {
+			config: { name: "server", transport: "stdio", command: "server-cmd" },
+			client,
+			transport,
+			tools: listedTools,
+			resources: [],
+			prompts: [],
+			promptDetails: [],
+			parallelSafetyByTool: new Map(),
+			reconnectAttempts: 0,
+		});
+		testManager.setupNotificationHandlers(client, "server");
+
+		await notificationHandlers[0]?.();
+
+		const tools = manager.getAllTools();
+		expect(
+			tools.find((tool) => tool.tool.name === "parallel_search")
+				?.parallelSafety,
+		).toMatchObject({
+			supportsParallelToolCalls: true,
+			provenance: "server_capability",
+		});
+		expect(
+			tools.find((tool) => tool.tool.name === "serial_status")?.parallelSafety,
+		).toMatchObject({
+			supportsParallelToolCalls: false,
+			provenance: "none",
+		});
+	});
+
 	it("isConnected returns false for unknown server", () => {
 		const manager = createManager();
 		expect(manager.isConnected("unknown")).toBe(false);

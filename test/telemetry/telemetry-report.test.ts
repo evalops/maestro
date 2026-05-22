@@ -10,6 +10,34 @@ const execFileAsync = promisify(execFile);
 const repoRoot = fileURLToPath(new URL("../..", import.meta.url));
 
 describe("telemetry-report", () => {
+	it("resolves relative telemetry env paths from the process cwd", async () => {
+		const dir = await mkdtemp(join(tmpdir(), "maestro-telemetry-report-"));
+		await writeFile(
+			join(dir, "relative-env.log"),
+			JSON.stringify({ type: "tool_phase_summary" }),
+		);
+
+		const { stdout } = await execFileAsync(
+			process.execPath,
+			[join(repoRoot, "scripts/telemetry-report.js"), "--json"],
+			{
+				cwd: dir,
+				env: {
+					...process.env,
+					MAESTRO_TELEMETRY_FILE: "relative-env.log",
+				},
+			},
+		);
+		const report = JSON.parse(stdout);
+
+		expect(report).toMatchObject({
+			logPath: "relative-env.log",
+			sourceCount: 1,
+			lineCount: 1,
+			parsedEventCount: 1,
+		});
+	});
+
 	it("prefers canonical tool scheduling over raw phase summaries", async () => {
 		const dir = await mkdtemp(join(tmpdir(), "maestro-telemetry-report-"));
 		const logPath = join(dir, "telemetry.log");
@@ -33,6 +61,23 @@ describe("telemetry-report", () => {
 							blocked_by_mutation: 1,
 						},
 					},
+					tools: [
+						{
+							name: "write",
+							callId: "call-1",
+							durationMs: 9,
+							success: true,
+							scheduling: {
+								callId: "call-1",
+								toolName: "write",
+								emittedIndex: 0,
+								decision: "delayed",
+								reason: "blocked_by_mutation",
+								schedulerWaitMs: 7,
+								blockedByMutation: true,
+							},
+						},
+					],
 				}),
 				JSON.stringify({
 					type: "tool_phase_summary",
@@ -86,6 +131,16 @@ describe("telemetry-report", () => {
 		expect(report.toolScheduling.topSerializationReasons).toEqual([
 			{ reason: "blocked_by_mutation", count: 1 },
 		]);
+		expect(report.toolScheduling.serializationReasonTiming).toEqual([
+			{
+				reason: "blocked_by_mutation",
+				count: 1,
+				totalWaitMs: 7,
+				averageWaitMs: 7,
+			},
+		]);
+		expect(report.toolScheduling.dedupedRawToolPhaseSummaryCount).toBe(1);
+		expect(JSON.stringify(report)).not.toContain("src/private.ts");
 	});
 
 	it("keeps unscoped raw phase summaries alongside canonical scheduling rollups", async () => {
@@ -330,5 +385,133 @@ describe("telemetry-report", () => {
 		expect(report.toolScheduling.topSerializationReasons).toEqual([
 			{ reason: "single_read_only_call", count: 1 },
 		]);
+	});
+
+	it("reports no-scheduling telemetry as a collection gap", async () => {
+		const dir = await mkdtemp(join(tmpdir(), "maestro-telemetry-report-"));
+		const logPath = join(dir, "telemetry.log");
+		await writeFile(
+			logPath,
+			[
+				JSON.stringify({
+					type: "canonical-turn",
+					turnId: "turn-1",
+					tools: [],
+				}),
+				JSON.stringify({
+					type: "tool-execution",
+					success: true,
+					durationMs: 25,
+				}),
+			].join("\n"),
+		);
+
+		const { stdout } = await execFileAsync(
+			process.execPath,
+			["scripts/telemetry-report.js", logPath, "--json"],
+			{ cwd: repoRoot },
+		);
+		const report = JSON.parse(stdout);
+
+		expect(report.toolScheduling).toMatchObject({
+			hasSchedulingData: false,
+			schedulingCoverageRatio: 0,
+		});
+		expect(report.toolScheduling.nextActions).toEqual([
+			{
+				id: "collect_real_tool_phase_telemetry",
+				reason:
+					"No canonical toolScheduling or raw tool_phase_summary events were found.",
+			},
+		]);
+	});
+
+	it("aggregates telemetry directories without leaking tool args", async () => {
+		const dir = await mkdtemp(join(tmpdir(), "maestro-telemetry-report-"));
+		await writeFile(
+			join(dir, "a.log"),
+			[
+				JSON.stringify({
+					type: "tool_phase_summary",
+					modelToolCallCount: 1,
+					modelEmittedToolCallCount: 1,
+					schedulableWaveCount: 1,
+					parallelizedCallCount: 0,
+					actuallyParallelizedCallCount: 0,
+					serializedCallCount: 1,
+					delayedCallCount: 0,
+					blockedByMutationCount: 0,
+					mcpOptInCallCount: 0,
+					mcpOptInUseCount: 0,
+					cacheHitCount: 0,
+					totalToolWaitMs: 0,
+					toolWaitTimeMs: 0,
+					serializationReasons: {
+						single_read_only_call: 1,
+					},
+					decisions: [
+						{
+							toolCallId: "call-1",
+							toolName: "read",
+							emittedIndex: 0,
+							outcome: "serialized",
+							decision: "serialized",
+							reason: "single_read_only_call",
+							waitMs: 0,
+							schedulerWaitMs: 0,
+							args: { file_path: "src/private.ts" },
+						},
+					],
+				}),
+			].join("\n"),
+		);
+		await writeFile(
+			join(dir, "b.jsonl"),
+			[
+				JSON.stringify({
+					type: "tool_phase_summary",
+					modelToolCallCount: 2,
+					modelEmittedToolCallCount: 2,
+					schedulableWaveCount: 1,
+					parallelizedCallCount: 2,
+					actuallyParallelizedCallCount: 2,
+					serializedCallCount: 0,
+					delayedCallCount: 0,
+					blockedByMutationCount: 0,
+					mcpOptInCallCount: 0,
+					mcpOptInUseCount: 0,
+					cacheHitCount: 1,
+					totalToolWaitMs: 0,
+					toolWaitTimeMs: 0,
+					serializationReasons: {},
+					decisions: [],
+				}),
+			].join("\n"),
+		);
+
+		const { stdout } = await execFileAsync(
+			process.execPath,
+			["scripts/telemetry-report.js", dir, "--json"],
+			{ cwd: repoRoot },
+		);
+		const report = JSON.parse(stdout);
+
+		expect(report).toMatchObject({
+			sourceCount: 2,
+			lineCount: 2,
+			parsedEventCount: 2,
+		});
+		expect(report.toolScheduling).toMatchObject({
+			modelToolCallCount: 3,
+			modelSingletonTurnCount: 1,
+			modelMultiCallTurnCount: 1,
+			avoidableSingletonCount: 1,
+			cacheHitCount: 1,
+		});
+		expect(report.toolScheduling.nextActions[0]).toMatchObject({
+			id: "batch_shaping_feedback",
+		});
+		expect(JSON.stringify(report)).not.toContain("file_path");
+		expect(JSON.stringify(report)).not.toContain("src/private.ts");
 	});
 });

@@ -45,6 +45,10 @@
  * @module agent/transport
  */
 
+import { execFileSync } from "node:child_process";
+import { createHash } from "node:crypto";
+import { readFileSync } from "node:fs";
+import { resolve as resolvePath } from "node:path";
 import { isContextFirewallBlockingEnabled } from "../config/env-vars.js";
 import { type ToolHookService, createToolHookService } from "../hooks/index.js";
 import { getProviderNetworkConfig } from "../providers/network-config.js";
@@ -141,18 +145,302 @@ type ReusableToolResultCacheGeneration = {
 	value: number;
 };
 
+function hashReusableToolResultSnapshot(value: string | Buffer): string {
+	return createHash("sha256").update(value).digest("hex");
+}
+
+function readGitSnapshotBuffer(cwd: string, args: string[]): Buffer {
+	return execFileSync("git", args, {
+		cwd,
+		stdio: ["ignore", "pipe", "ignore"],
+		timeout: 1_000,
+	});
+}
+
+function readGitSnapshotPart(cwd: string, args: string[]): string {
+	return readGitSnapshotBuffer(cwd, args).toString("utf8").trim();
+}
+
+function hashGitSnapshotPart(cwd: string, args: string[]): string {
+	return hashReusableToolResultSnapshot(readGitSnapshotBuffer(cwd, args));
+}
+
+function hashUntrackedGitFiles(root: string): string {
+	const files = readGitSnapshotBuffer(root, [
+		"ls-files",
+		"--others",
+		"--exclude-standard",
+		"-z",
+	])
+		.toString("utf8")
+		.split("\0")
+		.filter(Boolean)
+		.sort();
+	const hash = createHash("sha256");
+	for (const file of files) {
+		hash.update(file);
+		hash.update("\0");
+		hash.update(readFileSync(resolvePath(root, file)));
+		hash.update("\0");
+	}
+	return hash.digest("hex");
+}
+
+function hasDirtyGitSubmodules(root: string): boolean {
+	try {
+		return (
+			readGitSnapshotPart(root, [
+				"submodule",
+				"foreach",
+				"--recursive",
+				"--quiet",
+				"git status --porcelain=v1 --untracked-files=all",
+			]).length > 0
+		);
+	} catch {
+		return true;
+	}
+}
+
+function computeReusableToolResultSnapshot(cwd: string): string | undefined {
+	try {
+		const root = readGitSnapshotPart(cwd, ["rev-parse", "--show-toplevel"]);
+		const head = readGitSnapshotPart(cwd, ["rev-parse", "--verify", "HEAD"]);
+		const status = readGitSnapshotPart(root, [
+			"status",
+			"--porcelain=v1",
+			"--untracked-files=all",
+		]);
+		if (hasDirtyGitSubmodules(root)) {
+			return undefined;
+		}
+		const unstagedDiff = hashGitSnapshotPart(root, [
+			"diff",
+			"--no-ext-diff",
+			"--binary",
+		]);
+		const stagedDiff = hashGitSnapshotPart(root, [
+			"diff",
+			"--cached",
+			"--no-ext-diff",
+			"--binary",
+		]);
+		const untracked = hashUntrackedGitFiles(root);
+		return `git:${hashReusableToolResultSnapshot(
+			`${root}\n${head}\n${status}\n${unstagedDiff}\n${stagedDiff}\n${untracked}`,
+		)}`;
+	} catch {
+		return undefined;
+	}
+}
+
+const GIT_SNAPSHOT_REUSABLE_TOOL_NAMES = new Set([
+	"read",
+	"ls",
+	"list",
+	"glob",
+	"find",
+	"grep",
+	"search",
+	"parallel_ripgrep",
+	"diff",
+	"status",
+]);
+
+const REPO_PATH_ARGUMENTS_BY_TOOL = new Map<string, string[]>([
+	["read", ["path", "file_path"]],
+	["ls", ["path", "dir", "directory"]],
+	["list", ["path", "dir", "directory"]],
+	["glob", ["path", "cwd", "root", "glob"]],
+	["find", ["path", "cwd", "root", "glob"]],
+	["grep", ["path", "paths", "glob"]],
+	["search", ["path", "paths", "glob"]],
+	["parallel_ripgrep", ["path", "paths", "glob"]],
+	["diff", ["path", "paths", "cwd"]],
+	["status", ["path", "paths", "cwd"]],
+]);
+
+const REQUIRED_REPO_PATH_ARGUMENT_TOOLS = new Set(["read", "ls", "list"]);
+
+function collectStringValues(value: unknown): string[] {
+	if (typeof value === "string") {
+		return [value];
+	}
+	if (Array.isArray(value)) {
+		return value.flatMap((item) => collectStringValues(item));
+	}
+	return [];
+}
+
+function isRepoRelativePathArgument(value: string): boolean {
+	const trimmed = value.trim();
+	if (trimmed.length === 0) {
+		return false;
+	}
+	if (
+		trimmed.startsWith("/") ||
+		trimmed.startsWith("~") ||
+		trimmed.startsWith("\\\\") ||
+		/^[A-Za-z]:[\\/]/.test(trimmed)
+	) {
+		return false;
+	}
+	return !trimmed.split(/[\\/]+/).includes("..");
+}
+
+function isGitIgnoredRepoPath(cwd: string, repoPath: string): boolean {
+	try {
+		readGitSnapshotPart(cwd, ["check-ignore", "--quiet", "--", repoPath]);
+		return true;
+	} catch (error) {
+		if (
+			typeof error === "object" &&
+			error !== null &&
+			"status" in error &&
+			error.status === 1
+		) {
+			return false;
+		}
+		return true;
+	}
+}
+
+function isStatusCallIncludingIgnored(toolCall: ToolCall): boolean {
+	if (toolCall.name.toLowerCase() !== "status") {
+		return false;
+	}
+	const args = toolCall.arguments;
+	if (!args || typeof args !== "object" || Array.isArray(args)) {
+		return false;
+	}
+	const record = args as Record<string, unknown>;
+	return record.includeIgnored === true || record.include_ignored === true;
+}
+
+function hasRepoScopedReusableArguments(
+	toolCall: ToolCall,
+	cwd: string,
+): boolean {
+	const toolName = toolCall.name.toLowerCase();
+	if (isStatusCallIncludingIgnored(toolCall)) {
+		return false;
+	}
+	const argumentNames = REPO_PATH_ARGUMENTS_BY_TOOL.get(toolName) ?? [];
+	if (argumentNames.length === 0) {
+		return true;
+	}
+	const args = toolCall.arguments;
+	if (!args || typeof args !== "object" || Array.isArray(args)) {
+		return !REQUIRED_REPO_PATH_ARGUMENT_TOOLS.has(toolName);
+	}
+	const pathValues = argumentNames.flatMap((name) =>
+		collectStringValues((args as Record<string, unknown>)[name]),
+	);
+	if (
+		pathValues.length === 0 &&
+		REQUIRED_REPO_PATH_ARGUMENT_TOOLS.has(toolName)
+	) {
+		return false;
+	}
+	return pathValues.every(
+		(pathValue) =>
+			isRepoRelativePathArgument(pathValue) &&
+			!isGitIgnoredRepoPath(cwd, pathValue),
+	);
+}
+
+function isGitSnapshotReusableToolCall(
+	tool: AgentTool,
+	toolCall: ToolCall,
+	cwd: string,
+): boolean {
+	if (
+		tool.source !== undefined ||
+		tool.annotations?.openWorldHint === true ||
+		tool.executionLocation === "client"
+	) {
+		return false;
+	}
+	if (!GIT_SNAPSHOT_REUSABLE_TOOL_NAMES.has(tool.name.toLowerCase())) {
+		return false;
+	}
+	if (!isReadOnlyTool(tool.name, tool.annotations, tool.source)) {
+		return false;
+	}
+	return hasRepoScopedReusableArguments(toolCall, cwd);
+}
+
 type ToolDefinitionLookup = ReadonlyMap<string, AgentTool> | AgentTool[];
 
 type ToolMetadataCache = {
 	readonly definitions: ReadonlyMap<string, AgentTool>;
+	readonly reusableToolResultCwd: string;
 	lookupCount: number;
 	get(toolName: string): AgentTool | undefined;
 };
 
-function createToolMetadataCache(tools: AgentTool[]): ToolMetadataCache {
+const reusableToolDefinitionIdentities = new WeakMap<object, number>();
+let reusableToolDefinitionIdentityCounter = 0;
+
+function getReusableToolDefinitionIdentity(value: object): number {
+	const existing = reusableToolDefinitionIdentities.get(value);
+	if (existing !== undefined) {
+		return existing;
+	}
+	reusableToolDefinitionIdentityCounter += 1;
+	reusableToolDefinitionIdentities.set(
+		value,
+		reusableToolDefinitionIdentityCounter,
+	);
+	return reusableToolDefinitionIdentityCounter;
+}
+
+function getReusableToolFunctionIdentity(value: unknown): number | undefined {
+	return typeof value === "function"
+		? getReusableToolDefinitionIdentity(value)
+		: undefined;
+}
+
+function getReusableToolRegistrySignature(tools: readonly AgentTool[]): string {
+	return stableStringify(
+		tools.map((tool) => ({
+			allowedCallers: tool.allowedCallers,
+			annotations: tool.annotations,
+			deferApiDefinition: tool.deferApiDefinition,
+			description: tool.description,
+			executeIdentity: getReusableToolFunctionIdentity(tool.execute),
+			executionLocation: tool.executionLocation,
+			getActivityDescriptionIdentity: getReusableToolFunctionIdentity(
+				tool.getActivityDescription,
+			),
+			getDisplayNameIdentity: getReusableToolFunctionIdentity(
+				tool.getDisplayName,
+			),
+			getToolUseSummaryIdentity: getReusableToolFunctionIdentity(
+				tool.getToolUseSummary,
+			),
+			inputExamples: tool.inputExamples,
+			label: tool.label,
+			maxRetries: tool.maxRetries,
+			name: tool.name,
+			parameters: tool.parameters,
+			retryDelayMs: tool.retryDelayMs,
+			shouldRetryIdentity: getReusableToolFunctionIdentity(tool.shouldRetry),
+			source: tool.source,
+			toolIdentity: getReusableToolDefinitionIdentity(tool),
+			toolType: tool.toolType,
+		})),
+	);
+}
+
+function createToolMetadataCache(
+	tools: AgentTool[],
+	reusableToolResultCwd = process.cwd(),
+): ToolMetadataCache {
 	const definitions = new Map(tools.map((tool) => [tool.name, tool]));
 	return {
 		definitions,
+		reusableToolResultCwd,
 		lookupCount: 0,
 		get(toolName: string): AgentTool | undefined {
 			this.lookupCount += 1;
@@ -176,13 +464,24 @@ function getReusableToolResultCacheKey(
 	tools: ToolDefinitionLookup | ToolMetadataCache,
 ): string | undefined {
 	const tool = getToolDefinition(tools, toolCall.name);
-	if (!tool || tool.annotations?.destructiveHint === true) {
-		return undefined;
-	}
-	if (!isReadOnlyTool(tool.name, tool.annotations, tool.source)) {
+	const cwd =
+		"reusableToolResultCwd" in tools
+			? tools.reusableToolResultCwd
+			: process.cwd();
+	if (!tool || !isGitSnapshotReusableToolCall(tool, toolCall, cwd)) {
 		return undefined;
 	}
 	return `${toolCall.name}:${stableStringify(toolCall.arguments)}`;
+}
+
+function isReadOnlyToolCallForCacheInvalidation(
+	toolCall: ToolCall,
+	tools: ToolDefinitionLookup | ToolMetadataCache,
+): boolean {
+	const tool = getToolDefinition(tools, toolCall.name);
+	return tool
+		? isReadOnlyTool(tool.name, tool.annotations, tool.source)
+		: false;
 }
 
 function cloneToolResultForCache(
@@ -325,7 +624,7 @@ function invalidateReusableToolResultsAfterMutation(
 	pendingSafetyChecks: Map<string, number>,
 	cacheGeneration: ReusableToolResultCacheGeneration,
 ): void {
-	if (getReusableToolResultCacheKey(toolCall, tools) !== undefined) {
+	if (isReadOnlyToolCallForCacheInvalidation(toolCall, tools)) {
 		return;
 	}
 	clearReusableToolResultState(
@@ -343,7 +642,7 @@ function hasPendingMutatingToolExecution(
 ): boolean {
 	return pendingExecutions.some(
 		(execution) =>
-			getReusableToolResultCacheKey(execution.toolCall, tools) === undefined,
+			!isReadOnlyToolCallForCacheInvalidation(execution.toolCall, tools),
 	);
 }
 
@@ -564,6 +863,20 @@ export class ProviderTransport implements AgentTransport {
 	private readonly clock: Clock;
 	private readonly sessionTokenCounter?: SessionTokenCounter;
 	private readonly auditLogger?: ToolAuditLogger;
+	private readonly reusableToolResults = new Map<
+		string,
+		ReusableToolResultEntry
+	>();
+	private readonly pendingReusableToolResults = new Map<
+		string,
+		Promise<ToolExecutionOutcome>
+	>();
+	private readonly policyCheckedReusableToolResultKeys = new Set<string>();
+	private readonly pendingReusableToolSafetyChecks = new Map<string, number>();
+	private readonly reusableToolResultCacheGeneration: ReusableToolResultCacheGeneration =
+		{ value: 0 };
+	private reusableToolResultSnapshot?: string;
+	private reusableToolRegistrySignature?: string;
 
 	/**
 	 * Rate Limit Window - time window for counting tool invocations
@@ -612,6 +925,41 @@ export class ProviderTransport implements AgentTransport {
 				},
 			},
 		});
+	}
+
+	private refreshReusableToolResultState(
+		tools: readonly AgentTool[],
+		cwd: string,
+	): void {
+		const registrySignature = getReusableToolRegistrySignature(tools);
+		const snapshot = computeReusableToolResultSnapshot(cwd);
+		if (snapshot === undefined) {
+			clearReusableToolResultState(
+				this.reusableToolResults,
+				this.pendingReusableToolResults,
+				this.policyCheckedReusableToolResultKeys,
+				this.pendingReusableToolSafetyChecks,
+				this.reusableToolResultCacheGeneration,
+			);
+			this.reusableToolResultSnapshot = undefined;
+			this.reusableToolRegistrySignature = registrySignature;
+			return;
+		}
+		if (
+			this.reusableToolResultSnapshot !== snapshot ||
+			(this.reusableToolRegistrySignature !== undefined &&
+				this.reusableToolRegistrySignature !== registrySignature)
+		) {
+			clearReusableToolResultState(
+				this.reusableToolResults,
+				this.pendingReusableToolResults,
+				this.policyCheckedReusableToolResultKeys,
+				this.pendingReusableToolSafetyChecks,
+				this.reusableToolResultCacheGeneration,
+			);
+		}
+		this.reusableToolResultSnapshot = snapshot;
+		this.reusableToolRegistrySignature = registrySignature;
 	}
 
 	/**
@@ -758,18 +1106,20 @@ export class ProviderTransport implements AgentTransport {
 		}
 
 		const dynamicToolEventQueue = new AgentEventQueue();
-		const toolMetadataCache = createToolMetadataCache(tools);
-		const reusableToolResults = new Map<string, ReusableToolResultEntry>();
-		const pendingReusableToolResults = new Map<
-			string,
-			Promise<ToolExecutionOutcome>
-		>();
-		const policyCheckedReusableToolResultKeys = new Set<string>();
-		const pendingReusableToolSafetyChecks = new Map<string, number>();
-		const reusableToolResultCacheGeneration: ReusableToolResultCacheGeneration =
-			{
-				value: 0,
-			};
+		const reusableToolResultCwd = this.options.cwd ?? process.cwd();
+		const toolMetadataCache = createToolMetadataCache(
+			tools,
+			reusableToolResultCwd,
+		);
+		this.refreshReusableToolResultState(tools, reusableToolResultCwd);
+		const reusableToolResults = this.reusableToolResults;
+		const pendingReusableToolResults = this.pendingReusableToolResults;
+		const policyCheckedReusableToolResultKeys =
+			this.policyCheckedReusableToolResultKeys;
+		const pendingReusableToolSafetyChecks =
+			this.pendingReusableToolSafetyChecks;
+		const reusableToolResultCacheGeneration =
+			this.reusableToolResultCacheGeneration;
 		const pendingDynamicToolExecutions: PendingExecution[] = [];
 		const platformToolExecutionBridge = resolvePlatformToolExecutionBridge(
 			this.options.platformToolExecutionBridge,
@@ -1540,6 +1890,32 @@ export class ProviderTransport implements AgentTransport {
 					8,
 					configuredConcurrency,
 				);
+				const concurrencyLimitForTool = (
+					defaultLimit: number,
+					toolDef?: AgentTool,
+				): number => {
+					const sourceMaxConcurrency =
+						toolDef?.source?.type === "mcp"
+							? toolDef.source.parallelMaxConcurrency
+							: undefined;
+					return Math.min(
+						defaultLimit,
+						typeof sourceMaxConcurrency === "number" &&
+							Number.isFinite(sourceMaxConcurrency) &&
+							sourceMaxConcurrency > 0
+							? Math.floor(sourceMaxConcurrency)
+							: defaultLimit,
+					);
+				};
+				const readOnlyConcurrencyLimitForTool = (toolDef?: AgentTool): number =>
+					concurrencyLimitForTool(readOnlyConcurrencyLimit, toolDef);
+				const parallelSafeMutationConcurrencyLimitForTool = (
+					toolDef?: AgentTool,
+				): number =>
+					concurrencyLimitForTool(
+						parallelSafeMutationConcurrencyLimit,
+						toolDef,
+					);
 				let concurrencyLimit = configuredConcurrency;
 				const pendingMutationScopes = new Map<
 					PendingExecution,
@@ -1937,19 +2313,21 @@ export class ProviderTransport implements AgentTransport {
 					readOnly,
 					scope,
 					parallelSafe,
+					toolDef,
 				}: {
 					readOnly: boolean;
 					scope?: PathScopedMutation;
 					parallelSafe: boolean;
+					toolDef?: AgentTool;
 				}): number =>
 					requiresSerializedTurn
 						? 1
 						: readOnly
-							? readOnlyConcurrencyLimit
+							? readOnlyConcurrencyLimitForTool(toolDef)
 							: scope
 								? configuredConcurrency
 								: parallelSafe
-									? parallelSafeMutationConcurrencyLimit
+									? parallelSafeMutationConcurrencyLimitForTool(toolDef)
 									: 1;
 
 				// Override: workflow-tracked tools require serialization
@@ -2092,6 +2470,7 @@ export class ProviderTransport implements AgentTransport {
 									readOnly: skippedToolCallReadOnly,
 									parallelSafe: skippedToolCallParallelSafe,
 									scope: mutationScope,
+									toolDef,
 								}),
 							}),
 					);
@@ -2272,6 +2651,7 @@ export class ProviderTransport implements AgentTransport {
 								readOnly: originalToolCallReadOnly,
 								parallelSafe: originalToolCallParallelSafe,
 								scope: originalMutationScope,
+								toolDef: originalToolDef,
 							}),
 						});
 						if (
@@ -2357,6 +2737,7 @@ export class ProviderTransport implements AgentTransport {
 							readOnly: originalToolCallReadOnly,
 							parallelSafe: originalToolCallParallelSafe,
 							scope: originalMutationScope,
+							toolDef: originalToolDef,
 						}),
 					});
 					const initialSchedulingMetadata = mergeToolSchedulingMetadata(
@@ -2503,11 +2884,11 @@ export class ProviderTransport implements AgentTransport {
 					concurrencyLimit = requiresSerializedTurn
 						? 1
 						: effectiveToolCallReadOnly
-							? readOnlyConcurrencyLimit
+							? readOnlyConcurrencyLimitForTool(tool)
 							: effectiveMutationScope
 								? configuredConcurrency
 								: effectiveToolCallParallelSafe
-									? parallelSafeMutationConcurrencyLimit
+									? parallelSafeMutationConcurrencyLimitForTool(tool)
 									: 1;
 					const effectiveSchedulingMetadata = buildToolSchedulingMetadata({
 						toolDef: tool,
@@ -2521,6 +2902,12 @@ export class ProviderTransport implements AgentTransport {
 									? "candidate"
 									: "miss",
 						canJoinPathScope: joinsPathScopedMutationIsland,
+						laneConcurrencyLimit: laneConcurrencyLimit({
+							readOnly: effectiveToolCallReadOnly,
+							parallelSafe: effectiveToolCallParallelSafe,
+							scope: effectiveMutationScope,
+							toolDef: tool,
+						}),
 					});
 					const previousSchedulingMetadata = toolSchedulingMetadata.get(
 						toolCall.id,
