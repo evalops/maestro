@@ -113,8 +113,8 @@ fn is_trusted_system_workspace_with_roots(path: &Path, configured_roots: &[PathB
     let normalized = normalize_path(path);
     if configured_roots
         .iter()
-        .filter(|root| !root.as_os_str().is_empty())
-        .any(|root| path_starts_with(&normalized, root))
+        .filter_map(|root| normalize_configured_runner_root(root))
+        .any(|root| path_starts_with(&normalized, &root))
     {
         return true;
     }
@@ -126,6 +126,22 @@ fn is_trusted_system_workspace_with_roots(path: &Path, configured_roots: &[PathB
 
     #[cfg(not(target_os = "linux"))]
     false
+}
+
+fn normalize_configured_runner_root(root: &Path) -> Option<PathBuf> {
+    if !root.is_absolute() {
+        return None;
+    }
+
+    let normalized = normalize_path(root);
+    if normalized
+        .components()
+        .any(|component| matches!(component, std::path::Component::Normal(_)))
+    {
+        Some(normalized)
+    } else {
+        None
+    }
 }
 
 #[cfg(any(target_os = "linux", test))]
@@ -632,6 +648,23 @@ mod tests {
         let configured_roots = [PathBuf::from("/opt/evalops-ci/_work")];
 
         assert!(is_trusted_system_workspace_with_roots(
+            &workspace,
+            &configured_roots
+        ));
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn test_configured_runner_workspace_roots_ignore_relative_and_root_paths() {
+        let workspace =
+            PathBuf::from("/etc/actions-runner/_work/maestro-internal/maestro-internal");
+        let configured_roots = [
+            PathBuf::from("."),
+            PathBuf::from("relative/_work"),
+            PathBuf::from(std::path::MAIN_SEPARATOR_STR),
+        ];
+
+        assert!(!is_trusted_system_workspace_with_roots(
             &workspace,
             &configured_roots
         ));
