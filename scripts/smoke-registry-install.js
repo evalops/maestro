@@ -2,7 +2,7 @@
 // @ts-check
 
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -11,6 +11,16 @@ import {
 	runInstalledPackageAudit,
 } from "./install-smoke-utils.js";
 import { getPackageMetadata } from "./package-metadata.js";
+
+/**
+ * @param {unknown} value
+ * @returns {string[]}
+ */
+function asStringArray(value) {
+	return Array.isArray(value)
+		? value.filter((entry) => typeof entry === "string" && entry.length > 0)
+		: [];
+}
 
 function parseArgs(argv) {
 	/** @type {{packageName: string; version: string; cliCommand: string}} */
@@ -62,6 +72,56 @@ function sleep(milliseconds) {
 	return new Promise((resolve) => setTimeout(resolve, milliseconds));
 }
 
+function installedPackageJsonPath(packageName, installRoot) {
+	return join(
+		installRoot,
+		"node_modules",
+		...packageName.split("/"),
+		"package.json",
+	);
+}
+
+function readInstalledBundledDependencies(installRoot) {
+	const packageJsonPath = installedPackageJsonPath(name, installRoot);
+	try {
+		const parsed = JSON.parse(readFileSync(packageJsonPath, "utf8"));
+		if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+			throw new Error("installed package.json did not contain an object");
+		}
+		return asStringArray(
+			parsed.bundleDependencies ?? parsed.bundledDependencies,
+		);
+	} catch (error) {
+		const reason =
+			error instanceof Error ? error.message : "unknown package read error";
+		throw new Error(
+			`Could not read installed package metadata at ${packageJsonPath}: ${reason}`,
+		);
+	}
+}
+
+function shouldRunBunInstallSmoke(bundledDependencies) {
+	if (process.env.MAESTRO_SKIP_BUN_INSTALL_SMOKE === "1") {
+		console.log(`Skipping Bun install smoke for ${packageSpec}.`);
+		return false;
+	}
+
+	if (process.env.MAESTRO_FORCE_BUN_INSTALL_SMOKE === "1") {
+		return true;
+	}
+
+	if (bundledDependencies.length > 0) {
+		console.log(
+			`Skipping Bun install smoke for ${packageSpec}; package bundles ${bundledDependencies.join(
+				", ",
+			)}, and the npm install smoke already verified the published tarball contents.`,
+		);
+		return false;
+	}
+
+	return true;
+}
+
 async function waitForPackage() {
 	for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
 		try {
@@ -98,6 +158,7 @@ async function waitForPackage() {
 async function main() {
 	await waitForPackage();
 
+	let installedBundledDependencies = [];
 	const tempDir = mkdtempSync(join(tmpdir(), "maestro-registry-smoke-"));
 	try {
 		execFileSync(npmCommand, ["init", "-y"], {
@@ -108,6 +169,7 @@ async function main() {
 			cwd: tempDir,
 			stdio: "inherit",
 		});
+		installedBundledDependencies = readInstalledBundledDependencies(tempDir);
 		runInstalledPackageAudit(tempDir, {
 			label: packageSpec,
 		});
@@ -132,8 +194,7 @@ async function main() {
 		rmSync(tempDir, { recursive: true, force: true });
 	}
 
-	if (process.env.MAESTRO_SKIP_BUN_INSTALL_SMOKE === "1") {
-		console.log(`Skipping Bun install smoke for ${packageSpec}.`);
+	if (!shouldRunBunInstallSmoke(installedBundledDependencies)) {
 		return;
 	}
 
