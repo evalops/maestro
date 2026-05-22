@@ -48,6 +48,7 @@ const version = overrides.version || defaults.version;
 const packageSpec = `${name}@${version}`;
 const npmCommand = getNpmCommand();
 const npxCommand = getNpxCommand();
+const bunCommand = process.platform === "win32" ? "bun.exe" : "bun";
 const maxAttempts = Number.parseInt(
 	process.env.MAESTRO_REGISTRY_POLL_ATTEMPTS ?? "120",
 	10,
@@ -129,6 +130,41 @@ async function main() {
 		console.log(`Smoke-tested ${packageSpec} from npm.`);
 	} finally {
 		rmSync(tempDir, { recursive: true, force: true });
+	}
+
+	if (process.env.MAESTRO_SKIP_BUN_INSTALL_SMOKE === "1") {
+		console.log(`Skipping Bun install smoke for ${packageSpec}.`);
+		return;
+	}
+
+	const bunTempDir = mkdtempSync(join(tmpdir(), "maestro-bun-registry-smoke-"));
+	try {
+		execFileSync(bunCommand, ["init", "-y"], {
+			cwd: bunTempDir,
+			stdio: "ignore",
+		});
+		execFileSync(bunCommand, ["add", packageSpec], {
+			cwd: bunTempDir,
+			stdio: "inherit",
+		});
+
+		const binPath =
+			process.platform === "win32"
+				? join(bunTempDir, "node_modules", ".bin", `${cliCommand}.cmd`)
+				: join(bunTempDir, "node_modules", ".bin", cliCommand);
+		const versionOutput = execFileSync(binPath, ["--version"], {
+			cwd: bunTempDir,
+			encoding: "utf8",
+		});
+		if (!versionOutput.includes(version)) {
+			throw new Error(
+				`Expected Bun-installed ${cliCommand} --version output to include ${version}, received: ${versionOutput.trim()}`,
+			);
+		}
+
+		console.log(`Smoke-tested ${packageSpec} from Bun.`);
+	} finally {
+		rmSync(bunTempDir, { recursive: true, force: true });
 	}
 }
 
