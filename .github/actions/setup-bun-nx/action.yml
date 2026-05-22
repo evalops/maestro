@@ -93,9 +93,11 @@ runs:
       shell: bash
       run: |
         set -euo pipefail
+        safe_repo="${GITHUB_REPOSITORY:-repo}"
+        safe_repo="${safe_repo//[^A-Za-z0-9_.-]/-}"
         safe_job="${GITHUB_JOB:-job}"
         safe_job="${safe_job//[^A-Za-z0-9_.-]/-}"
-        root="${RUNNER_TEMP:-${GITHUB_WORKSPACE:-$PWD}/.tmp}/rust-${GITHUB_RUN_ID:-local}-${safe_job}"
+        root="${RUNNER_TEMP:-${GITHUB_WORKSPACE:-$PWD}/.tmp}/maestro-rust/${safe_repo}/${safe_job}/stable-rustfmt"
         cargo_home="${CARGO_HOME:-$root/cargo}"
         rustup_home="${RUSTUP_HOME:-$root/rustup}"
         mkdir -p "$cargo_home/bin" "$rustup_home"
