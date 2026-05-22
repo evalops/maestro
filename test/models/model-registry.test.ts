@@ -68,6 +68,15 @@ describe("Built-in model registry", () => {
 		expect(model?.maxTokens).toBe(128000);
 	});
 
+	it("overlays Claude Opus 4.7 for direct Anthropic runtime use", () => {
+		const model = getModel("anthropic", "claude-opus-4-7");
+		expect(model).toBeTruthy();
+		expect(model?.api).toBe("anthropic-messages");
+		expect(model?.baseUrl).toContain("https://api.anthropic.com/v1/messages");
+		expect(model?.reasoning).toBe(true);
+		expect(model?.toolUse).toBe(true);
+	});
+
 	it("includes Groq responses overlay models normalized to /responses", () => {
 		const model = getModel("groq", "openai/gpt-oss-20b");
 		expect(model).toBeTruthy();

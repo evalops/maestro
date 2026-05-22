@@ -61,12 +61,30 @@ function cloneManagedGatewayModelsForApis(
 	);
 }
 
-// Manual overlay for Claude Opus 4.6 (not yet in models.dev registry)
-const ANTHROPIC_OPUS_46_OVERLAY = {
+// Manual overlay for current Claude Opus 4.x models not yet in models.dev.
+const ANTHROPIC_OPUS_4_OVERLAY = {
 	anthropic: {
 		"claude-opus-4-6": {
 			id: "claude-opus-4-6",
 			name: "Claude Opus 4.6",
+			api: "anthropic-messages",
+			provider: "anthropic",
+			baseUrl: "https://api.anthropic.com",
+			reasoning: true,
+			toolUse: true,
+			input: ["text", "image"],
+			cost: {
+				input: 5,
+				output: 25,
+				cacheRead: 0.5,
+				cacheWrite: 6.25,
+			},
+			contextWindow: 1000000,
+			maxTokens: 128000,
+		} as Model<"anthropic-messages">,
+		"claude-opus-4-7": {
+			id: "claude-opus-4-7",
+			name: "Claude Opus 4.7",
 			api: "anthropic-messages",
 			provider: "anthropic",
 			baseUrl: "https://api.anthropic.com",
@@ -1840,7 +1858,7 @@ function convertGeneratedModels(): Record<string, Model<Api>[]> {
 
 	// Apply overlay additions
 	const overlays: Record<string, Record<string, Model<Api>>>[] = [
-		ANTHROPIC_OPUS_46_OVERLAY,
+		ANTHROPIC_OPUS_4_OVERLAY,
 		OPENROUTER_RESPONSES_OVERLAY,
 		GROQ_RESPONSES_OVERLAY,
 		OPENAI_CODEX_OVERLAY,
