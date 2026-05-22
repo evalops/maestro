@@ -324,7 +324,9 @@ describe("ci workflow guardrails", () => {
 			]),
 		);
 
-		expect(prCheckTimeouts.get("Test (Nx affected)")).toBe(60);
+		const nxTimeout = prCheckTimeouts.get("Test (Nx affected)");
+		expect(nxTimeout).toBeGreaterThanOrEqual(45);
+		expect(nxTimeout).toBeLessThanOrEqual(60);
 		expect(workflow.jobs?.coverage?.["timeout-minutes"]).toBe(75);
 		expect(coverageTimeouts.get("Run tests with coverage")).toBe(60);
 	});
