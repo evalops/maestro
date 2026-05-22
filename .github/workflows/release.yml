@@ -148,94 +148,6 @@ jobs:
           node-version: 24
           registry-url: https://registry.npmjs.org
 
-      - name: Publish runtime workspace packages to npm
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-          NPM_PUBLISH_AUTH_MODE: ${{ vars.NPM_PUBLISH_AUTH_MODE || 'auto' }}
-        run: |
-          set -euo pipefail
-          NPM_TOKEN_FALLBACK="${NODE_AUTH_TOKEN:-}"
-
-          package_name() {
-            node -p "require('./$1/package.json').name"
-          }
-
-          package_version() {
-            node -p "require('./$1/package.json').version"
-          }
-
-          package_is_published() {
-            local package_dir="$1"
-            local name version
-            name="$(package_name "$package_dir")"
-            version="$(package_version "$package_dir")"
-            npm view "${name}@${version}" version --json >/dev/null 2>&1
-          }
-
-          publish_with_token() {
-            local package_dir="$1"
-            if [ -z "${NPM_TOKEN_FALLBACK:-}" ]; then
-              echo "::error::NPM_PUBLISH_AUTH_MODE=token requires the NPM_TOKEN secret."
-              exit 1
-            fi
-
-            echo "Publishing $(package_name "$package_dir") with NPM_TOKEN fallback."
-            printf "//registry.npmjs.org/:_authToken=%s\n" "$NPM_TOKEN_FALLBACK" > ~/.npmrc
-            NODE_AUTH_TOKEN="$NPM_TOKEN_FALLBACK" npm publish "./$package_dir" --access public --provenance
-          }
-
-          publish_with_trusted_publisher() {
-            local package_dir="$1"
-            echo "Publishing $(package_name "$package_dir") with npm trusted publishing."
-            unset NODE_AUTH_TOKEN
-            rm -f ~/.npmrc
-            npm publish "./$package_dir" --access public
-          }
-
-          publish_package_dir() {
-            local package_dir="$1"
-            local name version
-            name="$(package_name "$package_dir")"
-            version="$(package_version "$package_dir")"
-
-            if package_is_published "$package_dir"; then
-              echo "${name}@${version} is already published; skipping."
-              return
-            fi
-
-            case "${NPM_PUBLISH_AUTH_MODE}" in
-              auto|"")
-                echo "Attempting trusted publishing for ${name}@${version}; NPM_TOKEN is only a fallback."
-                trusted_status=0
-                publish_with_trusted_publisher "$package_dir" || trusted_status=$?
-                if [ "$trusted_status" -eq 0 ]; then
-                  return
-                fi
-
-                if [ -z "${NPM_TOKEN_FALLBACK:-}" ]; then
-                  echo "::error::Trusted publishing failed for ${name}@${version} and no NPM_TOKEN fallback is configured."
-                  exit "$trusted_status"
-                fi
-
-                echo "::warning::Trusted publishing failed for ${name}@${version}; falling back to NPM_TOKEN."
-                publish_with_token "$package_dir"
-                ;;
-              token)
-                publish_with_token "$package_dir"
-                ;;
-              trusted)
-                publish_with_trusted_publisher "$package_dir"
-                ;;
-              *)
-                echo "::error::Unsupported NPM_PUBLISH_AUTH_MODE '${NPM_PUBLISH_AUTH_MODE}'. Use auto, token, or trusted."
-                exit 1
-                ;;
-            esac
-          }
-
-          publish_package_dir packages/contracts
-          publish_package_dir packages/tui
-
       - id: pack
         run: |
           set -euo pipefail
@@ -245,6 +157,8 @@ jobs:
           echo "tarball=$FILE" >> "$GITHUB_OUTPUT"
 
       - name: Smoke-test packed CLI
+        env:
+          MAESTRO_INSTALL_AUDIT_LEVEL: critical
         run: node scripts/smoke-packed-cli.js "${{ steps.pack.outputs.tarball }}"
 
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -393,6 +307,7 @@ jobs:
 
       - name: Verify published package from npm
         env:
+          MAESTRO_INSTALL_AUDIT_LEVEL: critical
           MAESTRO_REGISTRY_POLL_ATTEMPTS: "120"
           MAESTRO_REGISTRY_POLL_DELAY_MS: "5000"
         run: node scripts/smoke-registry-install.js

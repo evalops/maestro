@@ -15,10 +15,19 @@ if (rootPackage.private === true) {
 }
 
 const workspacePackages = await getWorkspacePackages(rootPackage);
+const workspaceNames = new Set(
+	workspacePackages.map((workspacePackage) => workspacePackage.name),
+);
 const privateWorkspaceNames = new Set(
 	workspacePackages
 		.filter((workspacePackage) => workspacePackage.data.private === true)
 		.map((workspacePackage) => workspacePackage.name),
+);
+const bundled = Array.isArray(rootPackage.bundleDependencies)
+	? rootPackage.bundleDependencies
+	: [];
+const bundledWorkspaceNames = new Set(
+	bundled.filter((name) => workspaceNames.has(name)),
 );
 
 const dependencySections = [
@@ -28,6 +37,7 @@ const dependencySections = [
 ];
 
 const offenders = [];
+const bundledDependencyOffenders = [];
 
 for (const section of dependencySections) {
 	const deps = rootPackage[section];
@@ -38,15 +48,9 @@ for (const section of dependencySections) {
 		if (privateWorkspaceNames.has(name)) {
 			offenders.push(`${section}.${name}`);
 		}
-	}
-}
-
-const bundled = Array.isArray(rootPackage.bundleDependencies)
-	? rootPackage.bundleDependencies
-	: [];
-for (const name of bundled) {
-	if (privateWorkspaceNames.has(name)) {
-		offenders.push(`bundleDependencies[].${name}`);
+		if (bundledWorkspaceNames.has(name)) {
+			bundledDependencyOffenders.push(`${section}.${name}`);
+		}
 	}
 }
 
@@ -63,6 +67,19 @@ if (offenders.length > 0) {
 	process.exit(1);
 }
 
+if (bundledDependencyOffenders.length > 0) {
+	console.error(
+		`${rootName} is public but declares bundled workspace packages as install-time dependencies:`,
+	);
+	for (const offender of bundledDependencyOffenders.sort()) {
+		console.error(`- ${offender}`);
+	}
+	console.error(
+		"Keep bundled workspace packages in bundleDependencies only so package managers do not resolve them from the registry.",
+	);
+	process.exit(1);
+}
+
 console.log(
-	`${rootName} does not reference private workspace packages in public dependency metadata.`,
+	`${rootName} does not reference forbidden workspace package dependency metadata.`,
 );
