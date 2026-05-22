@@ -315,6 +315,17 @@ describe("ci workflow guardrails", () => {
 			(step) => step.uses === "./.github/actions/setup-rust",
 		);
 
+		if (!setupRustStep) {
+			const rustHostedSteps =
+				workflow.jobs?.["rust-hosted-conformance"]?.steps ?? [];
+			expect(
+				rustHostedSteps.some(
+					(step) => step.uses === "./.github/actions/setup-rust",
+				),
+			).toBe(true);
+			return;
+		}
+
 		expect(setupRustStep?.if).toBe(
 			"${{ github.event_name != 'pull_request' || needs.changes.outputs.ci_infrastructure_only != 'true' }}",
 		);
