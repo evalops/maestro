@@ -22,9 +22,41 @@ run_shared_memory_tests() {
 	fi
 }
 
+project_json_only_removes_root_test_self_build() {
+	local changed_lines
+	changed_lines="$(git diff --unified=0 "$NX_BASE" "$NX_HEAD" -- project.json | grep -E '^[-+][^-+]' || true)"
+
+	if [[ -z "$changed_lines" ]]; then
+		return 1
+	fi
+
+	local unexpected_lines
+	unexpected_lines="$(printf '%s\n' "$changed_lines" | grep -Ev '^-[[:space:]]*"dependsOn": \["build"\],?$' || true)"
+	[[ -z "$unexpected_lines" ]]
+}
+
+full_test_fanout_required() {
+	local changed_files
+	changed_files="$(git diff --name-only "$NX_BASE" "$NX_HEAD")"
+
+	if printf '%s\n' "$changed_files" | grep -qE '^(nx\.json|tsconfig\.base\.json|package\.json|bun\.lockb|package-lock\.json|packages/.*/project\.json)$'; then
+		return 0
+	fi
+
+	if printf '%s\n' "$changed_files" | grep -qx 'project.json'; then
+		if project_json_only_removes_root_test_self_build; then
+			return 1
+		fi
+
+		return 0
+	fi
+
+	return 1
+}
+
 node scripts/ensure-deps.js --no-install --workspace @evalops/contracts --workspace @evalops/tui
 
-if git diff --name-only "$NX_BASE" "$NX_HEAD" | grep -qE '^(nx\.json|project\.json|tsconfig\.base\.json|package\.json|bun\.lockb|package-lock\.json|packages/.*/project\.json)$'; then
+if full_test_fanout_required; then
 	cmd=(npx nx run-many -t test --all --parallel=3)
 else
 	cmd=(npx nx affected -t test --base="$NX_BASE" --head="$NX_HEAD" --parallel=3)

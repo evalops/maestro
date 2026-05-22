@@ -122,6 +122,8 @@ import type {
 	QueuedMessage,
 	ToolCall,
 	ToolResultMessage,
+	ToolSchedulingDecision,
+	ToolSchedulingMetadata,
 } from "./types.js";
 
 type GovernedToolOutcome =
@@ -1515,6 +1517,17 @@ export class ProviderTransport implements AgentTransport {
 						? isReadOnlyTool(toolDef.name, toolDef.annotations, toolDef.source)
 						: false;
 				};
+				const isParallelSafeToolCall = (
+					toolCall: ToolCall,
+					toolDef = toolDefinitionsByName.get(toolCall.name),
+				): boolean =>
+					toolDef
+						? isParallelSafeTool(
+								toolDef.name,
+								toolDef.annotations,
+								toolDef.source,
+							)
+						: false;
 				const readOnlyToolCalls = toolCallsToExecute.filter(isReadOnlyToolCall);
 				const readOnlyConcurrencyLimit =
 					readOnlyToolCalls.length > 0
@@ -1532,13 +1545,348 @@ export class ProviderTransport implements AgentTransport {
 					PendingExecution,
 					PathScopedMutation
 				>();
+				const pendingExecutionWaveIndexes = new Map<PendingExecution, number>();
+				const pendingExecutionScheduling = new Map<
+					PendingExecution,
+					ToolSchedulingDecision
+				>();
+				const toolSchedulingDecisions = new Map<
+					string,
+					ToolSchedulingDecision
+				>();
+				const toolPhaseStartMs = this.clock.now();
+				let currentWaveIndex = 0;
 				const mutationPathBase = this.options.cwd ?? process.cwd();
+				const toolSchedulingMetadata = new Map<
+					string,
+					ToolSchedulingMetadata
+				>();
+
+				const nextWaveIndex = (): number => {
+					currentWaveIndex += 1;
+					return currentWaveIndex;
+				};
+
+				const pendingWaveIndex = (): number =>
+					pendingExecutions.length > 0
+						? (pendingExecutionWaveIndexes.get(pendingExecutions[0]!) ??
+							currentWaveIndex)
+						: nextWaveIndex();
+
+				const schedulerWaitMs = (): number =>
+					Math.max(0, this.clock.now() - toolPhaseStartMs);
+
+				const isMcpParallelOptIn = (toolDef: AgentTool): boolean =>
+					toolDef.source?.type === "mcp" &&
+					toolDef.source.supportsParallelToolCalls === true &&
+					toolDef.annotations?.destructiveHint !== true;
+
+				const buildToolPhaseSummary = ():
+					| Extract<AgentEvent, { type: "tool_phase_summary" }>
+					| undefined => {
+					const rawDecisions = [...toolSchedulingDecisions.values()].sort(
+						(left, right) => left.emittedIndex - right.emittedIndex,
+					);
+					if (rawDecisions.length === 0) {
+						return undefined;
+					}
+					const waveCounts = new Map<number, number>();
+					for (const decision of rawDecisions) {
+						if (decision.waveIndex !== undefined) {
+							waveCounts.set(
+								decision.waveIndex,
+								(waveCounts.get(decision.waveIndex) ?? 0) + 1,
+							);
+						}
+					}
+					const decisions: Extract<
+						AgentEvent,
+						{ type: "tool_phase_summary" }
+					>["decisions"] = rawDecisions.map((decision) => {
+						const isSingleModelToolCall = rawDecisions.length === 1;
+						const waveSize =
+							decision.waveIndex !== undefined
+								? (waveCounts.get(decision.waveIndex) ?? 1)
+								: 1;
+						const outcome =
+							decision.cacheHit === true
+								? "cached"
+								: decision.decision === "skipped"
+									? "skipped"
+									: decision.decision === "delayed" ||
+											decision.blockedByMutation === true
+										? "delayed"
+										: decision.decision === "parallelized" ||
+												(waveSize > 1 && decision.decision === "scheduled")
+											? "parallelized"
+											: "serialized";
+						const reason =
+							outcome === "cached"
+								? "cache_hit"
+								: decision.blockedByMutation === true
+									? decision.reason
+									: decision.reason === "workflow_state_serialized"
+										? "workflow_state_serialized"
+										: decision.mcpOptIn === true
+											? "mcp_parallel_opt_in"
+											: decision.reason.startsWith("read_only")
+												? outcome === "parallelized"
+													? "read_only_parallel_safe"
+													: isSingleModelToolCall
+														? "single_read_only_call"
+														: decision.reason
+												: decision.reason.startsWith("path_scoped_mutation")
+													? "path_scoped_mutation"
+													: decision.reason;
+						return {
+							toolCallId: decision.callId,
+							toolName: decision.toolName,
+							emittedIndex: decision.emittedIndex,
+							outcome,
+							decision: outcome,
+							reason,
+							waveIndex:
+								decision.waveIndex !== undefined
+									? Math.max(0, decision.waveIndex - 1)
+									: undefined,
+							waitMs: Math.max(0, Math.round(decision.schedulerWaitMs ?? 0)),
+							schedulerWaitMs: Math.max(
+								0,
+								Math.round(decision.schedulerWaitMs ?? 0),
+							),
+							mcpOptIn: decision.mcpOptIn,
+							cacheHit: decision.cacheHit,
+							blockedByMutation: decision.blockedByMutation,
+						};
+					});
+					const parallelizedCallCount = decisions.filter(
+						(decision) => decision.outcome === "parallelized",
+					).length;
+					const delayedCallCount = decisions.filter(
+						(decision) => decision.outcome === "delayed",
+					).length;
+					const batchShapingFeedback =
+						decisions.length === 1 &&
+						decisions[0]?.reason === "single_read_only_call"
+							? {
+									avoidableSingleton: true,
+									reason: "single_read_only_call",
+									hint: "When you need several independent reads or searches, emit them together in one assistant message so Maestro can batch them safely.",
+								}
+							: undefined;
+					const serializationReasons = Object.fromEntries(
+						[...decisions]
+							.filter(
+								(decision) =>
+									decision.outcome === "serialized" ||
+									decision.outcome === "delayed",
+							)
+							.reduce((counts, decision) => {
+								counts.set(
+									decision.reason,
+									(counts.get(decision.reason) ?? 0) + 1,
+								);
+								return counts;
+							}, new Map<string, number>()),
+					);
+
+					return {
+						type: "tool_phase_summary",
+						modelToolCallCount: rawDecisions.length,
+						modelEmittedToolCallCount: rawDecisions.length,
+						schedulableWaveCount: waveCounts.size,
+						parallelizedCallCount,
+						actuallyParallelizedCallCount: parallelizedCallCount,
+						serializedCallCount: decisions.filter(
+							(decision) =>
+								decision.outcome === "serialized" ||
+								decision.outcome === "delayed",
+						).length,
+						delayedCallCount,
+						blockedByMutationCount: decisions.filter(
+							(decision) => decision.blockedByMutation === true,
+						).length,
+						mcpOptInCallCount: decisions.filter(
+							(decision) => decision.mcpOptIn === true,
+						).length,
+						mcpOptInUseCount: decisions.filter(
+							(decision) => decision.mcpOptIn === true,
+						).length,
+						cacheHitCount: decisions.filter(
+							(decision) => decision.cacheHit === true,
+						).length,
+						totalToolWaitMs: decisions.reduce(
+							(total, decision) => total + decision.waitMs,
+							0,
+						),
+						toolWaitTimeMs: decisions.reduce(
+							(total, decision) => total + decision.waitMs,
+							0,
+						),
+						serializationReasons,
+						decisions,
+						batchShapingFeedback,
+					};
+				};
 
 				const getMutationScope = (
 					toolCall: ToolCall,
 					toolDef = toolMetadataCache.get(toolCall.name),
 				): PathScopedMutation | undefined =>
 					getPathScopedMutation(toolCall, toolDef, mutationPathBase);
+
+				const sameMutationScope = (
+					left: PathScopedMutation | undefined,
+					right: PathScopedMutation | undefined,
+				): boolean => {
+					if (!left || !right) {
+						return left === right;
+					}
+					const leftArgumentKeys = left.argumentKeys ?? [];
+					const rightArgumentKeys = right.argumentKeys ?? [];
+					return (
+						left.source === right.source &&
+						left.paths.length === right.paths.length &&
+						left.paths.every((path, index) => path === right.paths[index]) &&
+						leftArgumentKeys.length === rightArgumentKeys.length &&
+						leftArgumentKeys.every(
+							(argumentKey, index) => argumentKey === rightArgumentKeys[index],
+						)
+					);
+				};
+
+				const pendingMutationCount = (): number =>
+					pendingExecutions.filter((execution) => {
+						const toolDef = toolMetadataCache.definitions.get(
+							execution.toolCall.name,
+						);
+						return (
+							!!toolDef &&
+							!isReadOnlyTool(toolDef.name, toolDef.annotations, toolDef.source)
+						);
+					}).length;
+
+				const mergeToolSchedulingMetadata = (
+					toolCallId: string,
+					metadata: ToolSchedulingMetadata,
+				): ToolSchedulingMetadata => {
+					toolSchedulingMetadata.set(toolCallId, metadata);
+					return metadata;
+				};
+
+				const pathScopeSchedulingReason = (
+					scope: PathScopedMutation,
+					canJoinPathScope: boolean,
+				): ToolSchedulingMetadata["reason"] => {
+					if (pendingExecutions.length === 0 || pendingMutationCount() === 0) {
+						return "path_scope_available";
+					}
+					if (canJoinPathScope) {
+						return "path_scope_disjoint";
+					}
+					const hasPathOverlap = pendingExecutions.some((execution) => {
+						const pendingScope = pendingMutationScopes.get(execution);
+						return pendingScope
+							? pathScopesOverlap(scope, pendingScope)
+							: false;
+					});
+					return hasPathOverlap ? "path_scope_overlap" : "pending_mutation";
+				};
+
+				const buildToolSchedulingMetadata = ({
+					toolDef,
+					readOnly,
+					parallelSafe,
+					scope,
+					cache,
+					canJoinPathScope,
+					laneConcurrencyLimit = concurrencyLimit,
+				}: {
+					toolDef?: AgentTool;
+					readOnly: boolean;
+					parallelSafe: boolean;
+					scope?: PathScopedMutation;
+					cache: ToolSchedulingMetadata["cache"];
+					canJoinPathScope: boolean;
+					laneConcurrencyLimit?: number;
+				}): ToolSchedulingMetadata => {
+					const pendingMutations = pendingMutationCount();
+					const base: ToolSchedulingMetadata = {
+						classification: "unknown",
+						reason: "unknown_tool",
+						concurrencyLimit: laneConcurrencyLimit,
+						queueDepth: pendingExecutions.length,
+						pendingMutations,
+						cache,
+					};
+					if (!toolDef) {
+						return base;
+					}
+					if (requiresSerializedTurn) {
+						return {
+							...base,
+							classification: "workflow_serialized",
+							reason: "workflow_state_tracker",
+						};
+					}
+					if (readOnly) {
+						return {
+							...base,
+							classification: "read_only",
+							reason: "read_only_tool",
+						};
+					}
+					if (scope) {
+						return {
+							...base,
+							classification: "path_scoped_mutation",
+							reason: pathScopeSchedulingReason(scope, canJoinPathScope),
+							pathScope: scope.paths,
+							pathScopeSource: scope.source,
+							pathArgumentKeys: scope.argumentKeys,
+						};
+					}
+					if (parallelSafe && !readOnly) {
+						return {
+							...base,
+							classification: "parallel_safe_mutation",
+							reason: "mcp_parallel_opt_in",
+						};
+					}
+					if (pendingMutations > 0) {
+						return {
+							...base,
+							classification: "serialized_mutation",
+							reason: "pending_mutation",
+						};
+					}
+					return {
+						...base,
+						classification: "serialized_mutation",
+						reason: "mutating_tool",
+					};
+				};
+
+				const hasPendingUnscopedMutation = (): boolean =>
+					pendingExecutions.some((execution) => {
+						const toolDef = toolMetadataCache.get(execution.toolCall.name);
+						return (
+							!!toolDef &&
+							!isReadOnlyTool(
+								toolDef.name,
+								toolDef.annotations,
+								toolDef.source,
+							) &&
+							!pendingMutationScopes.has(execution)
+						);
+					});
+
+				const mutationBlockReason = (
+					scope: PathScopedMutation | undefined,
+				): string =>
+					scope && !hasPendingUnscopedMutation()
+						? "mutation_scope_overlap"
+						: "mutation_unknown_write_set";
 
 				const isPendingParallelSafeMutation = (
 					execution: PendingExecution,
@@ -1585,6 +1933,24 @@ export class ProviderTransport implements AgentTransport {
 							? !pathScopesOverlap(scope, pendingScope)
 							: false;
 					});
+				const laneConcurrencyLimit = ({
+					readOnly,
+					scope,
+					parallelSafe,
+				}: {
+					readOnly: boolean;
+					scope?: PathScopedMutation;
+					parallelSafe: boolean;
+				}): number =>
+					requiresSerializedTurn
+						? 1
+						: readOnly
+							? readOnlyConcurrencyLimit
+							: scope
+								? configuredConcurrency
+								: parallelSafe
+									? parallelSafeMutationConcurrencyLimit
+									: 1;
 
 				// Override: workflow-tracked tools require serialization
 				if (configuredConcurrency > 1 && requiresSerializedTurn) {
@@ -1643,6 +2009,7 @@ export class ProviderTransport implements AgentTransport {
 							toolName: toolCall.name,
 							result: message,
 							isError,
+							scheduling: toolSchedulingMetadata.get(toolCall.id),
 						} as AgentEvent,
 					];
 				};
@@ -1685,10 +2052,58 @@ export class ProviderTransport implements AgentTransport {
 						throw error;
 					}
 				};
+				const emittedIndexForToolCall = (toolCall: ToolCall): number => {
+					const emittedIndex = toolCallsToExecute.findIndex(
+						(candidate) => candidate.id === toolCall.id,
+					);
+					return emittedIndex >= 0
+						? emittedIndex
+						: toolSchedulingDecisions.size;
+				};
 				const emitSkippedToolCall = (toolCall: ToolCall): AgentEvent[] => {
 					const sanitizedSkippedArgs = this.safetyMiddleware.sanitizeForLogging(
 						toolCall.arguments as Record<string, unknown>,
 					);
+					const existingScheduling = toolSchedulingMetadata.get(toolCall.id);
+					const toolDef = toolMetadataCache.get(toolCall.name);
+					const skippedToolCallReadOnly = isReadOnlyToolCall(toolCall);
+					const skippedToolCallParallelSafe = isParallelSafeToolCall(
+						toolCall,
+						toolDef,
+					);
+					const mutationScope = getMutationScope(toolCall, toolDef);
+					const reusableToolResultKey = getReusableToolResultCacheKey(
+						toolCall,
+						toolMetadataCache,
+					);
+					const schedulingMetadata = mergeToolSchedulingMetadata(
+						toolCall.id,
+						existingScheduling ??
+							buildToolSchedulingMetadata({
+								toolDef,
+								readOnly: skippedToolCallReadOnly,
+								parallelSafe: skippedToolCallParallelSafe,
+								scope: mutationScope,
+								cache:
+									reusableToolResultKey === undefined ? "disabled" : "miss",
+								canJoinPathScope:
+									canJoinPathScopedMutationIsland(mutationScope),
+								laneConcurrencyLimit: laneConcurrencyLimit({
+									readOnly: skippedToolCallReadOnly,
+									parallelSafe: skippedToolCallParallelSafe,
+									scope: mutationScope,
+								}),
+							}),
+					);
+					const schedulingDecision: ToolSchedulingDecision = {
+						callId: toolCall.id,
+						toolName: toolCall.name,
+						emittedIndex: emittedIndexForToolCall(toolCall),
+						decision: "skipped",
+						reason: "steering_interrupted",
+						schedulerWaitMs: schedulerWaitMs(),
+					};
+					toolSchedulingDecisions.set(toolCall.id, schedulingDecision);
 					const skippedResult: ToolResultMessage = {
 						role: "toolResult",
 						toolCallId: toolCall.id,
@@ -1708,9 +2123,42 @@ export class ProviderTransport implements AgentTransport {
 							toolCallId: toolCall.id,
 							toolName: toolCall.name,
 							args: sanitizedSkippedArgs,
+							scheduling: schedulingMetadata,
 						} as AgentEvent,
 						...emitToolResult(skippedResult, toolCall, true),
 					];
+				};
+				const recordSafetyBlockedToolCall = (
+					toolCall: ToolCall,
+				): ToolSchedulingDecision => {
+					const existing = toolSchedulingDecisions.get(toolCall.id);
+					if (existing) {
+						return existing;
+					}
+					const scheduling: ToolSchedulingDecision = {
+						callId: toolCall.id,
+						toolName: toolCall.name,
+						emittedIndex: emittedIndexForToolCall(toolCall),
+						decision: "skipped",
+						reason: "safety_blocked",
+						schedulerWaitMs: schedulerWaitMs(),
+					};
+					toolSchedulingDecisions.set(toolCall.id, scheduling);
+					return scheduling;
+				};
+				const emitSafetyPipelineToolResult = (
+					message: ToolResultMessage,
+					toolCall: ToolCall,
+					isError: boolean,
+					metadata?: {
+						toolExecutionId?: string;
+						approvalRequestId?: string;
+					},
+				): AgentEvent[] => {
+					if (isError) {
+						recordSafetyBlockedToolCall(toolCall);
+					}
+					return emitToolResult(message, toolCall, isError, metadata);
 				};
 				const resolveNextPendingExecution = async (): Promise<AgentEvent[]> => {
 					const events: AgentEvent[] = [];
@@ -1725,6 +2173,8 @@ export class ProviderTransport implements AgentTransport {
 						}
 						const outcome = next.outcome;
 						pendingMutationScopes.delete(next.execution);
+						pendingExecutionWaveIndexes.delete(next.execution);
+						pendingExecutionScheduling.delete(next.execution);
 						const completedToolWasMutating =
 							getReusableToolResultCacheKey(
 								next.execution.toolCall,
@@ -1782,24 +2232,67 @@ export class ProviderTransport implements AgentTransport {
 					}
 					const toolCall = toolCallsToExecute[toolIndex];
 					if (!toolCall) continue;
+					let schedulingDelayReason: string | undefined;
+					let blockedByMutation = false;
+					const noteMutationDelay = (reason: string): void => {
+						schedulingDelayReason ??= reason;
+						blockedByMutation = true;
+					};
 					const originalToolCallReadOnly = isReadOnlyToolCall(toolCall);
 					const originalMutationScope = originalToolCallReadOnly
 						? undefined
 						: getMutationScope(toolCall);
+					const originalToolDef = toolDefinitionsByName.get(toolCall.name);
+					const originalToolCallParallelSafe = isParallelSafeToolCall(
+						toolCall,
+						originalToolDef,
+					);
+					const originalCanJoinPathScope = canJoinPathScopedMutationIsland(
+						originalMutationScope,
+					);
 					const originalJoinsParallelSafeMutationWave =
 						!originalToolCallReadOnly &&
 						canJoinParallelSafeMutationWave(toolCall);
+					let preDrainSchedulingMetadata: ToolSchedulingMetadata | undefined;
 					if (
 						!originalToolCallReadOnly &&
 						pendingExecutions.length > 0 &&
-						!canJoinPathScopedMutationIsland(originalMutationScope) &&
+						pendingMutationCount() > 0 &&
+						!originalCanJoinPathScope &&
 						!originalJoinsParallelSafeMutationWave
 					) {
+						preDrainSchedulingMetadata = buildToolSchedulingMetadata({
+							toolDef: originalToolDef,
+							readOnly: originalToolCallReadOnly,
+							parallelSafe: originalToolCallParallelSafe,
+							scope: originalMutationScope,
+							cache: "disabled",
+							canJoinPathScope: originalCanJoinPathScope,
+							laneConcurrencyLimit: laneConcurrencyLimit({
+								readOnly: originalToolCallReadOnly,
+								parallelSafe: originalToolCallParallelSafe,
+								scope: originalMutationScope,
+							}),
+						});
+						if (
+							hasPendingMutatingToolExecution(
+								pendingExecutions,
+								toolMetadataCache,
+							)
+						) {
+							noteMutationDelay(mutationBlockReason(originalMutationScope));
+						}
 						const events = await drainPendingExecutions();
 						for (const event of events) {
 							yield event;
 						}
 						if (steeringTriggered) {
+							if (preDrainSchedulingMetadata) {
+								mergeToolSchedulingMetadata(
+									toolCall.id,
+									preDrainSchedulingMetadata,
+								);
+							}
 							remainingToolCalls = toolCallsToExecute.slice(toolIndex);
 							break;
 						}
@@ -1846,6 +2339,38 @@ export class ProviderTransport implements AgentTransport {
 							)
 						);
 					};
+					const nextInitialSchedulingMetadata = buildToolSchedulingMetadata({
+						toolDef: originalToolDef,
+						readOnly: originalToolCallReadOnly,
+						parallelSafe: originalToolCallParallelSafe,
+						scope: originalMutationScope,
+						cache:
+							reusableToolResultKey === undefined
+								? "disabled"
+								: alreadyHadReusableToolResultState
+									? "candidate"
+									: "miss",
+						canJoinPathScope: canJoinPathScopedMutationIsland(
+							originalMutationScope,
+						),
+						laneConcurrencyLimit: laneConcurrencyLimit({
+							readOnly: originalToolCallReadOnly,
+							parallelSafe: originalToolCallParallelSafe,
+							scope: originalMutationScope,
+						}),
+					});
+					const initialSchedulingMetadata = mergeToolSchedulingMetadata(
+						toolCall.id,
+						preDrainSchedulingMetadata
+							? {
+									...nextInitialSchedulingMetadata,
+									classification: preDrainSchedulingMetadata.classification,
+									reason: preDrainSchedulingMetadata.reason,
+									queueDepth: preDrainSchedulingMetadata.queueDepth,
+									pendingMutations: preDrainSchedulingMetadata.pendingMutations,
+								}
+							: nextInitialSchedulingMetadata,
+					);
 
 					// Run safety pipeline (rate limiting, hooks, firewall, approval, validation)
 					let safetyVerdict: ToolSafetyVerdict | undefined;
@@ -1876,7 +2401,8 @@ export class ProviderTransport implements AgentTransport {
 								rateLimit: ProviderTransport.TOOL_RATE_LIMIT,
 							},
 							shouldSkipLoopDetection,
-							emitToolResult,
+							schedulingMetadata: initialSchedulingMetadata,
+							emitToolResult: emitSafetyPipelineToolResult,
 						});
 						while (true) {
 							const safetyStep = await safetyIterator.next();
@@ -1931,6 +2457,7 @@ export class ProviderTransport implements AgentTransport {
 							toolMetadataCache,
 						)
 					) {
+						noteMutationDelay("pending_mutation");
 						const events = await drainPendingExecutions();
 						for (const event of events) {
 							yield event;
@@ -1956,6 +2483,14 @@ export class ProviderTransport implements AgentTransport {
 						!joinsPathScopedMutationIsland &&
 						!joinsParallelSafeMutationWave
 					) {
+						if (
+							hasPendingMutatingToolExecution(
+								pendingExecutions,
+								toolMetadataCache,
+							)
+						) {
+							noteMutationDelay(mutationBlockReason(effectiveMutationScope));
+						}
 						const events = await drainPendingExecutions();
 						for (const event of events) {
 							yield event;
@@ -1974,6 +2509,38 @@ export class ProviderTransport implements AgentTransport {
 								: effectiveToolCallParallelSafe
 									? parallelSafeMutationConcurrencyLimit
 									: 1;
+					const effectiveSchedulingMetadata = buildToolSchedulingMetadata({
+						toolDef: tool,
+						readOnly: effectiveToolCallReadOnly,
+						parallelSafe: effectiveToolCallParallelSafe,
+						scope: effectiveMutationScope,
+						cache:
+							reusableToolResultKey === undefined
+								? "disabled"
+								: alreadyHadReusableToolResultState
+									? "candidate"
+									: "miss",
+						canJoinPathScope: joinsPathScopedMutationIsland,
+					});
+					const previousSchedulingMetadata = toolSchedulingMetadata.get(
+						toolCall.id,
+					);
+					const preservePreHookBlockedSchedulingReason =
+						(previousSchedulingMetadata?.reason === "path_scope_overlap" ||
+							previousSchedulingMetadata?.reason === "pending_mutation") &&
+						sameMutationScope(originalMutationScope, effectiveMutationScope);
+					mergeToolSchedulingMetadata(
+						toolCall.id,
+						preservePreHookBlockedSchedulingReason
+							? {
+									...effectiveSchedulingMetadata,
+									classification: previousSchedulingMetadata.classification,
+									reason: previousSchedulingMetadata.reason,
+									queueDepth: previousSchedulingMetadata.queueDepth,
+									pendingMutations: previousSchedulingMetadata.pendingMutations,
+								}
+							: effectiveSchedulingMetadata,
+					);
 					// Use hook-modified (pre-validation) args for hook inputs
 					const policyCheckedReusableToolResultKey =
 						getReusableToolResultCacheKey(effectiveToolCall, toolMetadataCache);
@@ -1993,6 +2560,16 @@ export class ProviderTransport implements AgentTransport {
 					if (canServeReusableToolResult) {
 						const cachedEntry = reusableToolResults.get(reusableToolResultKey);
 						if (cachedEntry) {
+							const scheduling: ToolSchedulingDecision = {
+								callId: toolCall.id,
+								toolName: toolCall.name,
+								emittedIndex: toolIndex,
+								decision: "cached",
+								reason: "reusable_tool_result_ready",
+								schedulerWaitMs: schedulerWaitMs(),
+								cacheHit: true,
+							};
+							toolSchedulingDecisions.set(toolCall.id, scheduling);
 							const cacheHitStart = this.clock.now();
 							const cachedOutcome =
 								await recordReusableToolExecutionBridgeOutput({
@@ -2013,6 +2590,14 @@ export class ProviderTransport implements AgentTransport {
 									durationMs: this.clock.now() - cacheHitStart,
 									signal,
 								});
+							mergeToolSchedulingMetadata(toolCall.id, {
+								classification: "cache_reuse",
+								reason: "cache_hit",
+								concurrencyLimit,
+								queueDepth: pendingExecutions.length,
+								pendingMutations: pendingMutationCount(),
+								cache: "hit",
+							});
 							for (const event of emitToolResult(
 								cachedOutcome.message,
 								toolCall,
@@ -2035,7 +2620,27 @@ export class ProviderTransport implements AgentTransport {
 							reusableToolResultKey,
 						);
 						if (pendingReusable) {
-							pendingExecutions.push({
+							mergeToolSchedulingMetadata(toolCall.id, {
+								classification: "cache_reuse",
+								reason: "cache_pending",
+								concurrencyLimit,
+								queueDepth: pendingExecutions.length,
+								pendingMutations: pendingMutationCount(),
+								cache: "pending_hit",
+							});
+							const waveIndex = pendingWaveIndex();
+							const scheduling: ToolSchedulingDecision = {
+								callId: toolCall.id,
+								toolName: toolCall.name,
+								emittedIndex: toolIndex,
+								waveIndex,
+								decision: "cached",
+								reason: "reusable_tool_result_pending",
+								schedulerWaitMs: schedulerWaitMs(),
+								cacheHit: true,
+							};
+							toolSchedulingDecisions.set(toolCall.id, scheduling);
+							const pendingExecution: PendingExecution = {
 								toolCall,
 								promise: (async () => {
 									const cacheHitStart = this.clock.now();
@@ -2051,7 +2656,10 @@ export class ProviderTransport implements AgentTransport {
 										signal,
 									});
 								})(),
-							});
+							};
+							pendingExecutions.push(pendingExecution);
+							pendingExecutionWaveIndexes.set(pendingExecution, waveIndex);
+							pendingExecutionScheduling.set(pendingExecution, scheduling);
 							const events = await scheduleResolveIfNeeded();
 							for (const event of events) {
 								yield event;
@@ -2063,6 +2671,58 @@ export class ProviderTransport implements AgentTransport {
 							continue;
 						}
 					}
+
+					const pendingBeforeSchedule = pendingExecutions.length;
+					const waveIndex =
+						pendingBeforeSchedule > 0 ? pendingWaveIndex() : nextWaveIndex();
+					const mcpOptIn =
+						isMcpParallelOptIn(tool) && !effectiveToolCallReadOnly;
+					const decision =
+						schedulingDelayReason !== undefined
+							? "delayed"
+							: pendingBeforeSchedule > 0
+								? "parallelized"
+								: requiresSerializedTurn ||
+										(!effectiveToolCallReadOnly &&
+											!effectiveMutationScope &&
+											!effectiveToolCallParallelSafe)
+									? "serialized"
+									: "scheduled";
+					const reason =
+						schedulingDelayReason ??
+						(effectiveToolCallReadOnly
+							? requiresSerializedTurn
+								? "workflow_state_serialized"
+								: pendingBeforeSchedule > 0
+									? "read_only_wave"
+									: "read_only_wave_start"
+							: requiresSerializedTurn
+								? "workflow_state_serialized"
+								: joinsPathScopedMutationIsland
+									? "path_scoped_mutation_disjoint"
+									: joinsParallelSafeMutationWave && mcpOptIn
+										? "mcp_parallel_opt_in"
+										: joinsParallelSafeMutationWave
+											? "parallel_safe_mutation_wave"
+											: mcpOptIn
+												? pendingBeforeSchedule > 0
+													? "mcp_parallel_opt_in"
+													: "mcp_parallel_opt_in_wave_start"
+												: effectiveMutationScope
+													? "path_scoped_mutation_wave_start"
+													: "serialized_tool");
+					const scheduling: ToolSchedulingDecision = {
+						callId: toolCall.id,
+						toolName: toolCall.name,
+						emittedIndex: toolIndex,
+						waveIndex,
+						decision,
+						reason,
+						schedulerWaitMs: schedulerWaitMs(),
+						mcpOptIn,
+						blockedByMutation,
+					};
+					toolSchedulingDecisions.set(toolCall.id, scheduling);
 
 					// For client tools, set up the execution promise first, then emit event
 					// This prevents race conditions where the client responds before we're listening
@@ -2128,6 +2788,8 @@ export class ProviderTransport implements AgentTransport {
 						promise: trackedExecutionPromise,
 					};
 					pendingExecutions.push(pendingExecution);
+					pendingExecutionWaveIndexes.set(pendingExecution, waveIndex);
+					pendingExecutionScheduling.set(pendingExecution, scheduling);
 					if (effectiveMutationScope) {
 						pendingMutationScopes.set(pendingExecution, effectiveMutationScope);
 					}
@@ -2147,8 +2809,6 @@ export class ProviderTransport implements AgentTransport {
 					}
 				}
 
-				this.safetyMiddleware.clearCredentials();
-
 				if (steeringTriggered && remainingToolCalls.length > 0) {
 					for (const toolCall of remainingToolCalls) {
 						for (const event of emitSkippedToolCall(toolCall)) {
@@ -2156,6 +2816,13 @@ export class ProviderTransport implements AgentTransport {
 						}
 					}
 				}
+
+				const toolPhaseSummary = buildToolPhaseSummary();
+				if (toolPhaseSummary) {
+					yield toolPhaseSummary;
+				}
+
+				this.safetyMiddleware.clearCredentials();
 
 				if (!steeringTriggered && getSteeringMessages) {
 					const steering = await getSteeringMessages<AppMessage>();

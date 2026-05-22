@@ -69,6 +69,9 @@ describe("buildSystemPrompt", () => {
 		expect(prompt).toContain(
 			"Emit independent safe tool calls together when their inputs are known, including read-only inspections, trusted MCP reads, and disjoint file mutations with explicit paths.",
 		);
+		expect(prompt).toContain(
+			"Avoid one-tool-per-turn inspection chains: when the next few read/list/search calls are already known and independent, emit them together.",
+		);
 	});
 
 	it("injects file citation guidance into bundled and custom prompts", () => {

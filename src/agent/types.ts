@@ -228,6 +228,85 @@ export interface ToolCall {
 	thoughtSignature?: string;
 }
 
+export type ToolSchedulingDecisionKind =
+	| "scheduled"
+	| "parallelized"
+	| "delayed"
+	| "serialized"
+	| "cached"
+	| "skipped";
+
+export interface ToolSchedulingDecision {
+	/** Tool call identifier; duplicated here for standalone telemetry use. */
+	callId: string;
+	/** Tool name, never arguments. */
+	toolName: string;
+	/** Zero-based order from the model-emitted tool-call list. */
+	emittedIndex: number;
+	/** Scheduler wave number when the call entered an execution wave. */
+	waveIndex?: number;
+	/** Scheduler outcome for this call. */
+	decision: ToolSchedulingDecisionKind;
+	/** Stable reason code; intentionally avoids raw paths and arguments. */
+	reason: string;
+	/** Time spent waiting inside the scheduler after model emission. */
+	schedulerWaitMs?: number;
+	/** True when an MCP server opt-in made the call parallel-safe. */
+	mcpOptIn?: boolean;
+	/** True when execution was served from reusable tool-result state. */
+	cacheHit?: boolean;
+	/** True when an in-flight mutation forced a wait or serialization. */
+	blockedByMutation?: boolean;
+}
+
+export type ToolPhaseDecisionOutcome =
+	| "parallelized"
+	| "serialized"
+	| "delayed"
+	| "cached"
+	| "skipped";
+
+export interface ToolPhaseDecision {
+	toolCallId: string;
+	toolName: string;
+	emittedIndex: number;
+	outcome: ToolPhaseDecisionOutcome;
+	decision: ToolPhaseDecisionOutcome;
+	reason: string;
+	waveIndex?: number;
+	waitMs: number;
+	schedulerWaitMs: number;
+	mcpOptIn?: boolean;
+	cacheHit?: boolean;
+	blockedByMutation?: boolean;
+}
+
+export interface ToolPhaseBatchShapingFeedback {
+	avoidableSingleton: boolean;
+	reason: string;
+	hint: string;
+}
+
+export interface ToolPhaseSummary {
+	type: "tool_phase_summary";
+	modelToolCallCount: number;
+	modelEmittedToolCallCount: number;
+	schedulableWaveCount: number;
+	parallelizedCallCount: number;
+	actuallyParallelizedCallCount: number;
+	serializedCallCount: number;
+	delayedCallCount: number;
+	blockedByMutationCount: number;
+	mcpOptInCallCount: number;
+	mcpOptInUseCount: number;
+	cacheHitCount: number;
+	totalToolWaitMs: number;
+	toolWaitTimeMs: number;
+	serializationReasons: Record<string, number>;
+	decisions: ToolPhaseDecision[];
+	batchShapingFeedback?: ToolPhaseBatchShapingFeedback;
+}
+
 /**
  * Token usage and cost information for a message or request.
  *
@@ -1125,6 +1204,36 @@ export interface AgentState {
  * - `error` - Error occurred
  * - `compaction` - Context was compacted
  */
+export interface ToolSchedulingMetadata {
+	classification:
+		| "read_only"
+		| "path_scoped_mutation"
+		| "parallel_safe_mutation"
+		| "serialized_mutation"
+		| "workflow_serialized"
+		| "cache_reuse"
+		| "unknown";
+	reason:
+		| "read_only_tool"
+		| "mcp_parallel_opt_in"
+		| "path_scope_available"
+		| "path_scope_disjoint"
+		| "path_scope_overlap"
+		| "pending_mutation"
+		| "mutating_tool"
+		| "workflow_state_tracker"
+		| "cache_hit"
+		| "cache_pending"
+		| "unknown_tool";
+	concurrencyLimit?: number;
+	queueDepth?: number;
+	pendingMutations?: number;
+	pathScope?: string[];
+	pathScopeSource?: "annotation" | "known_tool";
+	pathArgumentKeys?: string[];
+	cache?: "disabled" | "miss" | "candidate" | "pending_hit" | "hit";
+}
+
 export type AgentEvent =
 	| {
 			/** Agent execution started */
@@ -1205,6 +1314,8 @@ export type AgentEvent =
 			summaryLabel?: string;
 			/** Arguments passed to the tool */
 			args: Record<string, unknown>;
+			/** Scheduler classification and serialization reason for this call */
+			scheduling?: ToolSchedulingMetadata;
 	  }
 	| {
 			/** Tool execution completed */
@@ -1236,6 +1347,8 @@ export type AgentEvent =
 			result: ToolResultMessage;
 			/** Whether the tool returned an error */
 			isError: boolean;
+			/** Scheduler classification and final reuse/serialization reason */
+			scheduling?: ToolSchedulingMetadata;
 	  }
 	| {
 			/** LSP diagnostic delta produced by an edit/write tool call */
@@ -1283,6 +1396,7 @@ export type AgentEvent =
 			/** Failed tool calls in the batch */
 			callsFailed: number;
 	  }
+	| ToolPhaseSummary
 	| {
 			/** Tool execution produced partial output */
 			type: "tool_execution_update";

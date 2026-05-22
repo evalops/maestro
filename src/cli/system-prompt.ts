@@ -269,6 +269,9 @@ function buildGuidelines(toolNames: Set<string>, currentYear: number): string {
 	guidelines.push(
 		"Emit independent safe tool calls together when their inputs are known, including read-only inspections, trusted MCP reads, and disjoint file mutations with explicit paths.",
 	);
+	guidelines.push(
+		"Avoid one-tool-per-turn inspection chains: when the next few read/list/search calls are already known and independent, emit them together.",
+	);
 	guidelines.push(...buildSearchGuidelines(toolNames, currentYear));
 
 	if (toolNames.has("bash")) {

@@ -636,6 +636,60 @@ describe("runStreamingShellCommand", () => {
 		expect(result.stderr).toBe("error");
 	});
 
+	it("loads shell startup files outside GitHub Actions", async () => {
+		const tempHome = mkdtempSync(join(tmpdir(), "composer-stream-shell-home-"));
+		try {
+			const bashEnvPath = join(tempHome, "bash-env");
+			writeFileSync(
+				join(tempHome, ".bash_profile"),
+				"export MAESTRO_PROFILE_MARK=stream-profile\n",
+			);
+			writeFileSync(bashEnvPath, "echo bash-env-noise >&2\n");
+
+			const result = await runStreamingShellCommand(
+				"printf '%s' \"$MAESTRO_PROFILE_MARK\"",
+				{
+					env: {
+						...process.env,
+						GITHUB_ACTIONS: "false",
+						HOME: tempHome,
+						BASH_ENV: bashEnvPath,
+					},
+				},
+			);
+
+			expect(result.stdout).toBe("stream-profile");
+			expect(result.stderr).toBe("");
+		} finally {
+			rmSync(tempHome, { recursive: true, force: true });
+		}
+	});
+
+	it("does not source shell startup files in GitHub Actions", async () => {
+		const tempHome = mkdtempSync(join(tmpdir(), "composer-stream-shell-home-"));
+		try {
+			const bashEnvPath = join(tempHome, "bash-env");
+			writeFileSync(
+				join(tempHome, ".bash_profile"),
+				"echo startup-noise >&2\n",
+			);
+			writeFileSync(bashEnvPath, "echo bash-env-noise >&2\n");
+
+			const result = await runStreamingShellCommand("echo error >&2", {
+				env: {
+					...process.env,
+					GITHUB_ACTIONS: "true",
+					HOME: tempHome,
+					BASH_ENV: bashEnvPath,
+				},
+			});
+
+			expect(result.stderr).toBe("error");
+		} finally {
+			rmSync(tempHome, { recursive: true, force: true });
+		}
+	});
+
 	it("captures both stdout and stderr", async () => {
 		const result = await runStreamingShellCommand("echo out; echo err >&2");
 
@@ -681,6 +735,50 @@ describe("runStreamingShellCommand", () => {
 		});
 
 		expect(result.stdout).toBe("custom_value");
+	});
+
+	it("loads bash profile files outside GitHub Actions", async () => {
+		const tempHome = mkdtempSync(join(tmpdir(), "composer-bash-profile-"));
+		try {
+			writeFileSync(
+				join(tempHome, ".bash_profile"),
+				"export STREAMING_PROFILE_MARKER=loaded\n",
+				"utf-8",
+			);
+			const env = { ...process.env, HOME: tempHome };
+			Reflect.deleteProperty(env, "GITHUB_ACTIONS");
+
+			const result = await runStreamingShellCommand(
+				'printf "%s" "$STREAMING_PROFILE_MARKER"',
+				{ env },
+			);
+
+			expect(result.stdout).toBe("loaded");
+		} finally {
+			rmSync(tempHome, { recursive: true, force: true });
+		}
+	});
+
+	it("skips bash profile files on GitHub Actions", async () => {
+		const tempHome = mkdtempSync(join(tmpdir(), "composer-bash-profile-"));
+		try {
+			writeFileSync(
+				join(tempHome, ".bash_profile"),
+				"export STREAMING_PROFILE_MARKER=loaded\n",
+				"utf-8",
+			);
+
+			const result = await runStreamingShellCommand(
+				'printf "%s" "${STREAMING_PROFILE_MARKER:-unset}"',
+				{
+					env: { ...process.env, GITHUB_ACTIONS: "true", HOME: tempHome },
+				},
+			);
+
+			expect(result.stdout).toBe("unset");
+		} finally {
+			rmSync(tempHome, { recursive: true, force: true });
+		}
 	});
 
 	it("reports non-zero exit codes", async () => {
@@ -752,6 +850,60 @@ describe("runShellCommand", () => {
 		});
 
 		expect(result.stdout).toMatch(/^\/tmp|^\/private\/tmp/);
+	});
+
+	it("loads shell startup files outside GitHub Actions", async () => {
+		const tempHome = mkdtempSync(join(tmpdir(), "composer-run-shell-home-"));
+		try {
+			const bashEnvPath = join(tempHome, "bash-env");
+			writeFileSync(
+				join(tempHome, ".bash_profile"),
+				"export MAESTRO_PROFILE_MARK=run-profile\n",
+			);
+			writeFileSync(bashEnvPath, "echo bash-env-noise >&2\n");
+
+			const result = await runShellCommand(
+				"printf '%s' \"$MAESTRO_PROFILE_MARK\"",
+				{
+					env: {
+						...process.env,
+						GITHUB_ACTIONS: "false",
+						HOME: tempHome,
+						BASH_ENV: bashEnvPath,
+					},
+				},
+			);
+
+			expect(result.stdout).toBe("run-profile");
+			expect(result.stderr).toBe("");
+		} finally {
+			rmSync(tempHome, { recursive: true, force: true });
+		}
+	});
+
+	it("does not source shell startup files in GitHub Actions", async () => {
+		const tempHome = mkdtempSync(join(tmpdir(), "composer-run-shell-home-"));
+		try {
+			const bashEnvPath = join(tempHome, "bash-env");
+			writeFileSync(
+				join(tempHome, ".bash_profile"),
+				"echo startup-noise >&2\n",
+			);
+			writeFileSync(bashEnvPath, "echo bash-env-noise >&2\n");
+
+			const result = await runShellCommand("echo error >&2", {
+				env: {
+					...process.env,
+					GITHUB_ACTIONS: "true",
+					HOME: tempHome,
+					BASH_ENV: bashEnvPath,
+				},
+			});
+
+			expect(result.stderr).toBe("error");
+		} finally {
+			rmSync(tempHome, { recursive: true, force: true });
+		}
 	});
 });
 

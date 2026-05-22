@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { AgentToolResult } from "../../src/agent/types.js";
-import { findTool } from "../../src/tools/find.js";
+import { findTool, isIgnoredByGitignoreRules } from "../../src/tools/find.js";
 
 // Helper to extract text from content blocks
 function getTextOutput(result: AgentToolResult<unknown>): string {
@@ -126,6 +126,194 @@ describe("find tool", () => {
 
 			const output = getTextOutput(result);
 			expect(output).toContain("code.test.ts");
+		});
+
+		it("preserves gitignore negations in subdirectory glob fallback", async () => {
+			mkdirSync(join(testDir, "test"));
+			writeFileSync(join(testDir, "test", "ignored.ts"), "");
+			writeFileSync(join(testDir, "test", "keep.ts"), "");
+			writeFileSync(join(testDir, ".gitignore"), "test/*\n!test/keep.ts\n");
+
+			const result = await findTool.execute("find-5b", {
+				pattern: "test/**/*.ts",
+				path: testDir,
+			});
+
+			expect(result.isError).toBeFalsy();
+			const output = getTextOutput(result);
+			expect(output).toContain("test/keep.ts");
+			expect(output).not.toContain("test/ignored.ts");
+		});
+
+		it("propagates ignored parent directory matches to descendants", async () => {
+			mkdirSync(join(testDir, "dist", "generated"), { recursive: true });
+			writeFileSync(join(testDir, "dist", "generated", "ignored.ts"), "");
+			writeFileSync(join(testDir, "dist", "generated", "allowed.ts"), "");
+			writeFileSync(join(testDir, "dist", "keep.ts"), "");
+			writeFileSync(
+				join(testDir, ".gitignore"),
+				"dist/*\n!dist/keep.ts\n!dist/generated/allowed.ts\n",
+			);
+
+			const rules = [
+				{ pattern: "dist/*", negated: false, directoryOnly: false },
+				{
+					pattern: "dist/generated/allowed.ts",
+					negated: true,
+					directoryOnly: false,
+				},
+			];
+			expect(
+				isIgnoredByGitignoreRules("dist/generated/ignored.ts", rules, false),
+			).toBe(true);
+			expect(
+				isIgnoredByGitignoreRules("dist/generated/allowed.ts", rules, false),
+			).toBe(true);
+
+			const result = await findTool.execute("find-5c", {
+				pattern: "dist/**/*.ts",
+				path: testDir,
+			});
+
+			expect(result.isError).toBeFalsy();
+			const output = getTextOutput(result);
+			expect(output).toContain("dist/keep.ts");
+			expect(output).not.toContain("dist/generated/ignored.ts");
+			expect(output).not.toContain("dist/generated/allowed.ts");
+		});
+
+		it("preserves escaped and leading whitespace in gitignore patterns", async () => {
+			writeFileSync(join(testDir, "build "), "");
+			writeFileSync(join(testDir, " leading.ts"), "");
+			writeFileSync(join(testDir, "leading.ts"), "");
+			writeFileSync(join(testDir, "keep.ts"), "");
+			writeFileSync(join(testDir, ".gitignore"), "build\\ \n leading.ts\n");
+
+			const result = await findTool.execute("find-5d", {
+				pattern: "**/*",
+				path: testDir,
+			});
+
+			expect(result.isError).toBeFalsy();
+			const lines = getTextOutput(result).split("\n");
+			expect(lines).toContain("keep.ts");
+			expect(lines).toContain("leading.ts");
+			expect(lines).not.toContain("build ");
+			expect(lines).not.toContain(" leading.ts");
+		});
+
+		it("applies .ignore and .fdignore rules to glob augmentation", async () => {
+			mkdirSync(join(testDir, "src"));
+			writeFileSync(join(testDir, "src", "visible.ts"), "");
+			writeFileSync(join(testDir, "src", "ignored-by-ignore.ts"), "");
+			writeFileSync(join(testDir, "src", "ignored-by-fdignore.ts"), "");
+			writeFileSync(join(testDir, ".ignore"), "src/ignored-by-ignore.ts\n");
+			writeFileSync(join(testDir, ".fdignore"), "src/ignored-by-fdignore.ts\n");
+
+			const result = await findTool.execute("find-5d-ignore-files", {
+				pattern: "src/**/*.ts",
+				path: testDir,
+			});
+
+			expect(result.isError).toBeFalsy();
+			const output = getTextOutput(result);
+			expect(output).toContain("src/visible.ts");
+			expect(output).not.toContain("src/ignored-by-ignore.ts");
+			expect(output).not.toContain("src/ignored-by-fdignore.ts");
+		});
+
+		it("treats escaped leading bang gitignore patterns as literals", async () => {
+			mkdirSync(join(testDir, "!dir"), { recursive: true });
+			mkdirSync(join(testDir, "dir"), { recursive: true });
+			writeFileSync(join(testDir, "!dir", "file.ts"), "");
+			writeFileSync(join(testDir, "dir", "file.ts"), "");
+			writeFileSync(join(testDir, "keep.ts"), "");
+			writeFileSync(join(testDir, ".gitignore"), "\\!dir/file.ts\n");
+
+			const result = await findTool.execute("find-5d-literal-bang", {
+				pattern: "**/*.ts",
+				path: testDir,
+			});
+
+			expect(result.isError).toBeFalsy();
+			const output = getTextOutput(result);
+			expect(output).toContain("dir/file.ts");
+			expect(output).toContain("keep.ts");
+			expect(output).not.toContain("!dir/file.ts");
+		});
+
+		it("does not pass ancestor ignore files to fd with search-root scoping", async () => {
+			mkdirSync(join(testDir, "src"));
+			writeFileSync(join(testDir, "src", "root-only.ts"), "");
+			writeFileSync(join(testDir, "src", "secret.ts"), "");
+			writeFileSync(
+				join(testDir, ".gitignore"),
+				"/root-only.ts\nsrc/secret.ts\n",
+			);
+
+			const result = await findTool.execute("find-5d-ancestor-ignore", {
+				pattern: "*.ts",
+				path: join(testDir, "src"),
+			});
+
+			expect(result.isError).toBeFalsy();
+			const output = getTextOutput(result);
+			expect(output).toContain("root-only.ts");
+			expect(output).not.toContain("secret.ts");
+		});
+
+		it("preserves kept filenames with leading and trailing whitespace", async () => {
+			const leadingDir = join(testDir, "leading-case");
+			const trailingDir = join(testDir, "trailing-case");
+			mkdirSync(leadingDir);
+			mkdirSync(trailingDir);
+			writeFileSync(join(leadingDir, " leading.ts"), "");
+			writeFileSync(join(trailingDir, "trailing.ts "), "");
+
+			const leadingResult = await findTool.execute("find-5e-leading", {
+				pattern: "*",
+				path: leadingDir,
+			});
+			const trailingResult = await findTool.execute("find-5e-trailing", {
+				pattern: "*",
+				path: trailingDir,
+			});
+
+			expect(leadingResult.isError).toBeFalsy();
+			expect(trailingResult.isError).toBeFalsy();
+			expect(getTextOutput(leadingResult).split("\n")).toContain(" leading.ts");
+			expect(getTextOutput(trailingResult).split("\n")).toContain(
+				"trailing.ts ",
+			);
+		});
+
+		it("scopes wildcard ancestor gitignore rules to subdirectory searches", async () => {
+			mkdirSync(join(testDir, "src", "app"), { recursive: true });
+			writeFileSync(join(testDir, "src", "app", "secret.ts"), "");
+			writeFileSync(join(testDir, "src", "app", "visible.ts"), "");
+			writeFileSync(join(testDir, ".gitignore"), "src/**/secret.ts\n");
+
+			const result = await findTool.execute("find-5e", {
+				pattern: "**/*.ts",
+				path: join(testDir, "src", "app"),
+			});
+
+			expect(result.isError).toBeFalsy();
+			const lines = getTextOutput(result).split("\n");
+			expect(lines).toContain("visible.ts");
+			expect(lines).not.toContain("secret.ts");
+		});
+
+		it("does not treat directory-only gitignore rules as file matches", () => {
+			const rules = [
+				{ pattern: "**/foo", negated: false, directoryOnly: true },
+			];
+
+			expect(isIgnoredByGitignoreRules("foo", rules, false)).toBe(false);
+			expect(isIgnoredByGitignoreRules("foo", rules, true)).toBe(true);
+			expect(isIgnoredByGitignoreRules("foo/child.ts", rules, false)).toBe(
+				true,
+			);
 		});
 	});
 
@@ -308,6 +496,62 @@ describe("find tool", () => {
 				expect(output).toContain("kept.txt");
 				expect(output).not.toContain("ignored.txt");
 				expect((result.details as { command: string }).command).toContain(
+					"--no-require-git",
+				);
+				expect((result.details as { command: string }).command).not.toContain(
+					"--ignore-file",
+				);
+			},
+		);
+
+		it.skipIf(!hasFd)(
+			"scopes ancestor .gitignore rules to subdirectory searches",
+			async () => {
+				const srcDir = join(testDir, "src");
+				mkdirSync(srcDir);
+				writeFileSync(join(testDir, ".gitignore"), "**/secret.ts\n");
+				writeFileSync(join(srcDir, "secret.ts"), "");
+				writeFileSync(join(srcDir, "kept.ts"), "");
+
+				const result = await findTool.execute("find-14d", {
+					pattern: "**/*.ts",
+					path: srcDir,
+				});
+
+				expect(result.isError).toBeFalsy();
+				const output = getTextOutput(result);
+				expect(output).toContain("kept.ts");
+				expect(output).not.toContain("secret.ts");
+				expect((result.details as { command: string }).command).toContain(
+					"--no-require-git",
+				);
+				expect((result.details as { command: string }).command).not.toContain(
+					"--ignore-file",
+				);
+			},
+		);
+
+		it.skipIf(!hasFd)(
+			"does not rescope anchored ancestor gitignore rules as search-root rules",
+			async () => {
+				const srcDir = join(testDir, "src");
+				mkdirSync(srcDir);
+				writeFileSync(join(testDir, ".gitignore"), "/root-only.ts\n");
+				writeFileSync(join(testDir, "root-only.ts"), "");
+				writeFileSync(join(srcDir, "root-only.ts"), "");
+
+				const result = await findTool.execute("find-14e", {
+					pattern: "*.ts",
+					path: srcDir,
+				});
+
+				expect(result.isError).toBeFalsy();
+				const output = getTextOutput(result);
+				expect(output).toContain("root-only.ts");
+				expect((result.details as { command: string }).command).toContain(
+					"--no-require-git",
+				);
+				expect((result.details as { command: string }).command).not.toContain(
 					"--ignore-file",
 				);
 			},

@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import type { ToolPhaseSummary } from "../../src/agent/types.js";
 import {
 	type CanonicalTurnEvent,
 	TurnCollector,
@@ -62,6 +63,354 @@ describe("TurnCollector", () => {
 		expect(event.tools[1]?.name).toBe("read");
 		expect(event.tools[1]?.success).toBe(false);
 		expect(event.tools[1]?.errorCode).toBe("permission_denied");
+	});
+
+	it("summarizes tool scheduling decisions without recording tool arguments", () => {
+		const collector = new TurnCollector("session-123", 1);
+
+		collector.recordToolStart("read", "call-1", 100);
+		collector.recordToolSchedulingDecision({
+			callId: "call-1",
+			toolName: "read",
+			emittedIndex: 0,
+			waveIndex: 1,
+			decision: "scheduled",
+			reason: "read_only_wave_start",
+			schedulerWaitMs: 3,
+		});
+		collector.recordToolEnd("call-1", true, 50);
+
+		collector.recordToolStart("mcp__trusted_fs__probe", "call-2", 100);
+		collector.recordToolSchedulingDecision({
+			callId: "call-2",
+			toolName: "mcp__trusted_fs__probe",
+			emittedIndex: 1,
+			waveIndex: 1,
+			decision: "parallelized",
+			reason: "mcp_parallel_opt_in",
+			schedulerWaitMs: 4,
+			mcpOptIn: true,
+		});
+		collector.recordToolEnd("call-2", true, 50);
+
+		collector.recordToolStart("write", "call-3", 100);
+		collector.recordToolSchedulingDecision({
+			callId: "call-3",
+			toolName: "write",
+			emittedIndex: 2,
+			waveIndex: 2,
+			decision: "delayed",
+			reason: "mutation_unknown_write_set",
+			schedulerWaitMs: 23,
+			blockedByMutation: true,
+		});
+		collector.recordToolEnd("call-3", true, 50);
+
+		collector.recordToolStart("read", "call-4", 100);
+		collector.recordToolSchedulingDecision({
+			callId: "call-4",
+			toolName: "read",
+			emittedIndex: 3,
+			decision: "cached",
+			reason: "reusable_tool_result_ready",
+			schedulerWaitMs: 1,
+			cacheHit: true,
+		});
+		collector.recordToolEnd("call-4", true, 50);
+
+		const event = collector.complete(
+			"success",
+			{ input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+			0,
+		);
+
+		expect(event.toolScheduling).toMatchObject({
+			modelToolCallCount: 4,
+			schedulableWaveCount: 2,
+			parallelizedCallCount: 2,
+			serializedCallCount: 1,
+			blockedByMutationCount: 1,
+			mcpOptInCallCount: 1,
+			cacheHitCount: 1,
+			totalToolWaitMs: 31,
+			topSerializationReasons: [
+				{ reason: "mutation_unknown_write_set", count: 1 },
+			],
+		});
+		expect(event.tools[1]?.scheduling).toMatchObject({
+			decision: "parallelized",
+			reason: "mcp_parallel_opt_in",
+		});
+		expect(event.tools[2]?.scheduling).toMatchObject({
+			decision: "delayed",
+			reason: "mutation_unknown_write_set",
+		});
+		expect(JSON.stringify(event.toolScheduling)).not.toContain("file_path");
+		expect(JSON.stringify(event.toolScheduling)).not.toContain(
+			"src/private.ts",
+		);
+	});
+
+	it("classifies scheduled fallback decisions before rollup", () => {
+		const collector = new TurnCollector("session-123", 1);
+
+		collector.recordToolSchedulingDecision({
+			callId: "read-1",
+			toolName: "read",
+			emittedIndex: 0,
+			waveIndex: 1,
+			decision: "scheduled",
+			reason: "read_only_wave_start",
+			schedulerWaitMs: 5,
+		});
+		collector.recordToolSchedulingDecision({
+			callId: "write-1",
+			toolName: "write",
+			emittedIndex: 1,
+			waveIndex: 2,
+			decision: "delayed",
+			reason: "mutation_unknown_write_set",
+			schedulerWaitMs: 10,
+			blockedByMutation: true,
+		});
+
+		const event = collector.complete(
+			"success",
+			{ input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+			0,
+		);
+
+		expect(event.toolScheduling).toMatchObject({
+			modelToolCallCount: 2,
+			modelEmittedToolCallCount: 2,
+			schedulableWaveCount: 2,
+			parallelizedCallCount: 0,
+			serializedCallCount: 2,
+			delayedCallCount: 1,
+			totalToolWaitMs: 15,
+			serializationReasons: {
+				read_only_wave_start: 1,
+				mutation_unknown_write_set: 1,
+			},
+			topSerializationReasons: [
+				{ reason: "read_only_wave_start", count: 1 },
+				{ reason: "mutation_unknown_write_set", count: 1 },
+			],
+		});
+	});
+
+	it("preserves workflow fallback reasons for MCP opt-in calls", () => {
+		const collector = new TurnCollector("session-123", 1);
+
+		collector.recordToolSchedulingDecision({
+			callId: "mcp-1",
+			toolName: "mcp__trusted_remote__mutate",
+			emittedIndex: 0,
+			waveIndex: 1,
+			decision: "serialized",
+			reason: "workflow_state_serialized",
+			schedulerWaitMs: 4,
+			mcpOptIn: true,
+		});
+
+		const event = collector.complete(
+			"success",
+			{ input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+			0,
+		);
+
+		expect(event.toolScheduling).toMatchObject({
+			modelToolCallCount: 1,
+			serializedCallCount: 1,
+			mcpOptInCallCount: 1,
+			serializationReasons: {
+				workflow_state_serialized: 1,
+			},
+			topSerializationReasons: [
+				{ reason: "workflow_state_serialized", count: 1 },
+			],
+		});
+		expect(event.toolScheduling?.serializationReasons).not.toHaveProperty(
+			"mcp_parallel_opt_in",
+		);
+	});
+
+	it("aggregates tool phase summaries across the full turn", () => {
+		const collector = new TurnCollector("session-123", 1);
+		const firstPhase: ToolPhaseSummary = {
+			type: "tool_phase_summary",
+			modelToolCallCount: 2,
+			modelEmittedToolCallCount: 2,
+			schedulableWaveCount: 1,
+			parallelizedCallCount: 2,
+			actuallyParallelizedCallCount: 2,
+			serializedCallCount: 0,
+			delayedCallCount: 0,
+			blockedByMutationCount: 0,
+			mcpOptInCallCount: 0,
+			mcpOptInUseCount: 0,
+			cacheHitCount: 0,
+			totalToolWaitMs: 3,
+			toolWaitTimeMs: 3,
+			serializationReasons: {},
+			decisions: [
+				{
+					toolCallId: "read-1",
+					toolName: "read",
+					emittedIndex: 0,
+					outcome: "parallelized",
+					decision: "parallelized",
+					reason: "read_only_parallel_safe",
+					waveIndex: 0,
+					waitMs: 1,
+					schedulerWaitMs: 1,
+				},
+				{
+					toolCallId: "read-2",
+					toolName: "read",
+					emittedIndex: 1,
+					outcome: "parallelized",
+					decision: "parallelized",
+					reason: "read_only_parallel_safe",
+					waveIndex: 0,
+					waitMs: 2,
+					schedulerWaitMs: 2,
+				},
+			],
+		};
+		const secondPhase: ToolPhaseSummary = {
+			type: "tool_phase_summary",
+			modelToolCallCount: 2,
+			modelEmittedToolCallCount: 2,
+			schedulableWaveCount: 1,
+			parallelizedCallCount: 0,
+			actuallyParallelizedCallCount: 0,
+			serializedCallCount: 1,
+			delayedCallCount: 0,
+			blockedByMutationCount: 0,
+			mcpOptInCallCount: 0,
+			mcpOptInUseCount: 0,
+			cacheHitCount: 0,
+			totalToolWaitMs: 7,
+			toolWaitTimeMs: 7,
+			serializationReasons: {
+				single_read_only_call: 1,
+			},
+			decisions: [
+				{
+					toolCallId: "read-3",
+					toolName: "read",
+					emittedIndex: 0,
+					outcome: "serialized",
+					decision: "serialized",
+					reason: "single_read_only_call",
+					waveIndex: 0,
+					waitMs: 7,
+					schedulerWaitMs: 7,
+				},
+				{
+					toolCallId: "write-blocked",
+					toolName: "write",
+					emittedIndex: 1,
+					outcome: "skipped",
+					decision: "skipped",
+					reason: "safety_blocked",
+					waitMs: 0,
+					schedulerWaitMs: 0,
+				},
+			],
+		};
+
+		collector.recordToolPhaseSummary(firstPhase);
+		collector.recordToolPhaseSummary(secondPhase);
+
+		const event = collector.complete(
+			"success",
+			{ input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+			0,
+		);
+
+		expect(event.toolScheduling).toMatchObject({
+			modelToolCallCount: 4,
+			modelEmittedToolCallCount: 4,
+			schedulableWaveCount: 2,
+			parallelizedCallCount: 2,
+			actuallyParallelizedCallCount: 2,
+			serializedCallCount: 1,
+			totalToolWaitMs: 10,
+			toolWaitTimeMs: 10,
+			serializationReasons: {
+				single_read_only_call: 1,
+			},
+			topSerializationReasons: [{ reason: "single_read_only_call", count: 1 }],
+		});
+	});
+
+	it("merges per-call scheduling decisions missing from emitted phase summaries", () => {
+		const collector = new TurnCollector("session-123", 1);
+
+		collector.recordToolPhaseSummary({
+			type: "tool_phase_summary",
+			modelToolCallCount: 1,
+			modelEmittedToolCallCount: 1,
+			schedulableWaveCount: 1,
+			parallelizedCallCount: 0,
+			actuallyParallelizedCallCount: 0,
+			serializedCallCount: 1,
+			delayedCallCount: 0,
+			blockedByMutationCount: 0,
+			mcpOptInCallCount: 0,
+			mcpOptInUseCount: 0,
+			cacheHitCount: 0,
+			totalToolWaitMs: 2,
+			toolWaitTimeMs: 2,
+			serializationReasons: {
+				single_read_only_call: 1,
+			},
+			decisions: [
+				{
+					toolCallId: "read-1",
+					toolName: "read",
+					emittedIndex: 0,
+					outcome: "serialized",
+					decision: "serialized",
+					reason: "single_read_only_call",
+					waveIndex: 0,
+					waitMs: 2,
+					schedulerWaitMs: 2,
+				},
+			],
+		});
+		collector.recordToolSchedulingDecision({
+			callId: "write-1",
+			toolName: "write",
+			emittedIndex: 1,
+			waveIndex: 2,
+			decision: "delayed",
+			reason: "mutation_unknown_write_set",
+			schedulerWaitMs: 13,
+			blockedByMutation: true,
+		});
+
+		const event = collector.complete(
+			"success",
+			{ input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+			0,
+		);
+
+		expect(event.toolScheduling).toMatchObject({
+			modelToolCallCount: 2,
+			modelEmittedToolCallCount: 2,
+			schedulableWaveCount: 2,
+			serializedCallCount: 2,
+			delayedCallCount: 1,
+			blockedByMutationCount: 1,
+			totalToolWaitMs: 15,
+			serializationReasons: {
+				single_read_only_call: 1,
+				mutation_unknown_write_set: 1,
+			},
+		});
 	});
 
 	it("sets business context fields", () => {

@@ -346,7 +346,8 @@ impl BatchExecutor {
                 .with_results(successes, failures)
                 .with_duration(duration_ms)
                 .with_concurrency(self.config.max_concurrency)
-                .with_tool_durations(tool_durations);
+                .with_tool_durations(tool_durations)
+                .with_backpressure_count(0);
 
             if let Some(ref tx) = event_tx {
                 if self.config.emit_events {
@@ -434,6 +435,7 @@ impl BatchExecutor {
         let duration_ms = start_time.elapsed().as_millis() as u64;
         let successes = results.iter().filter(|r| r.result.success).count();
         let failures = results.len() - successes;
+        let backpressure_count = total.saturating_sub(self.config.max_concurrency);
 
         // Build details
         let mut details = BatchDetails::new(total)
@@ -441,7 +443,8 @@ impl BatchExecutor {
             .with_duration(duration_ms)
             .with_concurrency(self.config.max_concurrency)
             .with_tool_durations(tool_durations)
-            .with_executor_reuse_count(executor_reuse_count);
+            .with_executor_reuse_count(executor_reuse_count)
+            .with_backpressure_count(backpressure_count);
 
         if self.config.continue_on_error {
             details = details.with_continue_on_error();
@@ -688,6 +691,27 @@ mod tests {
         assert_eq!(results[0].call_id, "1");
         assert_eq!(results[1].call_id, "2");
         assert_eq!(details.executor_reuse_count, Some(2));
+        assert_eq!(details.backpressure_count, Some(0));
+    }
+
+    #[tokio::test]
+    async fn test_batch_executor_reports_backpressure_count() {
+        let config = BatchConfig::default()
+            .with_concurrency(2)
+            .emit_events(false);
+        let batch = BatchExecutor::with_config("/tmp", config);
+        let calls = vec![
+            BatchToolCall::new("1", "glob", json!({"pattern": "*.rs"})),
+            BatchToolCall::new("2", "glob", json!({"pattern": "*.toml"})),
+            BatchToolCall::new("3", "glob", json!({"pattern": "*.md"})),
+            BatchToolCall::new("4", "glob", json!({"pattern": "*.json"})),
+        ];
+
+        let (results, details) = batch.execute_with_details(calls, None).await;
+
+        assert_eq!(results.len(), 4);
+        assert_eq!(details.max_concurrency, Some(2));
+        assert_eq!(details.backpressure_count, Some(2));
     }
 
     #[tokio::test]

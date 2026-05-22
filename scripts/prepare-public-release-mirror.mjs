@@ -271,7 +271,7 @@ function resolvePublicFileContent(sourceRoot, relativePath) {
 	if (relativePath === ".github/workflows/review-thread-guard.yml") {
 		return Buffer.from(
 			readFileSync(sourcePath, "utf8").replace(
-				/^\s{6}runner_label: evalops-private-ci\r?\n/mu,
+				/^[^\S\r\n]*runner_label:.*(?:\r?\n|$)/gmu,
 				"",
 			),
 			"utf8",
