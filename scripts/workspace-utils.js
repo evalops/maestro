@@ -98,10 +98,34 @@ function getWorkspaceGlobs(rootPackage) {
 	throw new Error("Unsupported workspace configuration in package.json");
 }
 
+function escapeRegExp(value) {
+	return value.replace(/[.+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function segmentHasPatternSyntax(segment) {
+	return segment.includes("*") || /\{[^{}]+,[^{}]*\}/u.test(segment);
+}
+
 function segmentPatternToRegExp(segment) {
-	return new RegExp(
-		`^${segment.replace(/[.+?^${}()|[\]\\]/g, "\\$&").replace(/\*/g, "[^/]*")}$`,
-	);
+	let pattern = "";
+	for (let index = 0; index < segment.length; index += 1) {
+		const char = segment[index];
+		if (char === "*") {
+			pattern += "[^/]*";
+			continue;
+		}
+		if (char === "{") {
+			const end = segment.indexOf("}", index + 1);
+			const body = end === -1 ? "" : segment.slice(index + 1, end);
+			if (body.includes(",")) {
+				pattern += `(?:${body.split(",").map(escapeRegExp).join("|")})`;
+				index = end;
+				continue;
+			}
+		}
+		pattern += escapeRegExp(char);
+	}
+	return new RegExp(`^${pattern}$`);
 }
 
 function listDirectories(path) {
@@ -120,7 +144,7 @@ function expandWorkspacePattern(rootDir, pattern) {
 
 	for (const segment of segments) {
 		if (segment === "**") {
-			const descendants = [];
+			const descendants = [...directories];
 			const visit = (dir) => {
 				for (const child of listDirectories(dir)) {
 					descendants.push(child);
@@ -130,11 +154,11 @@ function expandWorkspacePattern(rootDir, pattern) {
 			for (const dir of directories) {
 				visit(dir);
 			}
-			directories = descendants;
+			directories = Array.from(new Set(descendants));
 			continue;
 		}
 
-		if (segment.includes("*")) {
+		if (segmentHasPatternSyntax(segment)) {
 			const regexp = segmentPatternToRegExp(segment);
 			directories = directories.flatMap((dir) =>
 				listDirectories(dir).filter((child) =>
