@@ -602,6 +602,7 @@ describe("ci workflow guardrails", () => {
 		const uploadLogsStep = prCheckSteps.find(
 			(step) => step.name === "Upload Nx test logs (if any)",
 		);
+		const isPublicWorkflow = isPublicValidationWorkflow(workflow);
 		const script = readFileSync(
 			new URL("../../scripts/ci-nx-tests.sh", import.meta.url),
 			{ encoding: "utf8" },
@@ -610,6 +611,13 @@ describe("ci workflow guardrails", () => {
 		expect(script).toContain("--summary-json");
 		expect(script).toContain("nx-tests-attempt-${attempt}.json");
 		expect(script).toContain("#### Attempt summaries");
+		if (isPublicWorkflow) {
+			expect(String(uploadLogsStep?.if ?? "")).toContain(
+				"nx-tests-attempt-*.log",
+			);
+			expect(uploadLogsStep?.with?.path).toContain("nx-tests-attempt-*.log");
+			return;
+		}
 		expect(String(uploadLogsStep?.if ?? "")).toContain(
 			"nx-tests-attempt-*.json",
 		);
@@ -891,11 +899,21 @@ describe("ci workflow guardrails", () => {
 	});
 
 	it("embeds and validates public mirror source metadata before opening PRs", () => {
+		const workflowPath = new URL(
+			"../../.github/workflows/sync-public-release-mirror.yml",
+			import.meta.url,
+		);
+		if (!existsSync(workflowPath)) {
+			const ciWorkflow = parse(
+				readFileSync(new URL("../../.github/workflows/ci.yml", import.meta.url), {
+					encoding: "utf8",
+				}),
+			) as Workflow;
+			expect(isPublicValidationWorkflow(ciWorkflow)).toBe(true);
+			return;
+		}
 		const workflow = readFileSync(
-			new URL(
-				"../../.github/workflows/sync-public-release-mirror.yml",
-				import.meta.url,
-			),
+			workflowPath,
 			{ encoding: "utf8" },
 		);
 
