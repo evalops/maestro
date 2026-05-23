@@ -3,9 +3,10 @@
  *
  * Loads configuration from (in order of precedence):
  * 1. Programmatic options passed to runGuardian()
- * 2. Project-level: .maestro/guardian.json
- * 3. User-level: ~/.maestro/guardian.json
- * 4. Default configuration
+ * 2. Environment variables
+ * 3. Project-level: .maestro/guardian.json
+ * 4. User-level: ~/.maestro/guardian.json
+ * 5. Default configuration
  */
 
 import { existsSync, readFileSync } from "node:fs";
@@ -15,6 +16,7 @@ import { createLogger } from "../utils/logger.js";
 import type { GuardianConfig } from "./types.js";
 
 const logger = createLogger("guardian:config");
+const TOOL_TIMEOUT_ENV = "MAESTRO_GUARDIAN_TOOL_TIMEOUT_MS";
 
 /** Default Guardian configuration */
 export const DEFAULT_GUARDIAN_CONFIG: Required<GuardianConfig> = {
@@ -54,6 +56,32 @@ function loadConfigFile(path: string): GuardianConfig | null {
 		});
 		return null;
 	}
+}
+
+function parsePositiveIntegerEnv(name: string): number | undefined {
+	const raw = process.env[name];
+	if (typeof raw !== "string" || raw.trim().length === 0) {
+		return undefined;
+	}
+
+	const parsed = Number(raw.trim());
+	if (!Number.isSafeInteger(parsed) || parsed <= 0) {
+		logger.warn("Ignoring invalid Guardian numeric environment override", {
+			name,
+			value: raw,
+		});
+		return undefined;
+	}
+
+	return parsed;
+}
+
+function loadEnvConfig(): GuardianConfig | null {
+	const toolTimeoutMs = parsePositiveIntegerEnv(TOOL_TIMEOUT_ENV);
+	if (toolTimeoutMs === undefined) {
+		return null;
+	}
+	return { toolTimeoutMs };
 }
 
 /**
@@ -122,9 +150,10 @@ function mergeConfigs(...configs: (GuardianConfig | null)[]): GuardianConfig {
  *
  * Order of precedence (highest to lowest):
  * 1. Programmatic options
- * 2. Project-level config (.maestro/guardian.json)
- * 3. User-level config (~/.maestro/guardian.json)
- * 4. Default config
+ * 2. Environment variables
+ * 3. Project-level config (.maestro/guardian.json)
+ * 4. User-level config (~/.maestro/guardian.json)
+ * 5. Default config
  */
 export function resolveGuardianConfig(options?: {
 	root?: string;
@@ -132,11 +161,13 @@ export function resolveGuardianConfig(options?: {
 }): Required<GuardianConfig> {
 	const userConfig = loadConfigFile(getUserConfigPath());
 	const projectConfig = loadConfigFile(getProjectConfigPath(options?.root));
+	const envConfig = loadEnvConfig();
 
 	const merged = mergeConfigs(
 		DEFAULT_GUARDIAN_CONFIG,
 		userConfig,
 		projectConfig,
+		envConfig,
 		options?.config ?? null,
 	);
 

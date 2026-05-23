@@ -45,24 +45,39 @@ export function formatTsWithBiome(
 	}
 }
 
+const RUSTFMT_DISABLE_VALUES = new Set([
+	"0",
+	"false",
+	"no",
+	"none",
+	"off",
+	"skip",
+	"disabled",
+]);
+
+function resolveRustfmtCommand(command) {
+	if (typeof command !== "string") {
+		return undefined;
+	}
+	const trimmed = command.trim();
+	if (!trimmed) {
+		return undefined;
+	}
+	if (RUSTFMT_DISABLE_VALUES.has(trimmed.toLowerCase())) {
+		return null;
+	}
+	return trimmed;
+}
+
 function resolveRustfmt(envNames) {
 	for (const envName of envNames) {
-		const command = process.env[envName];
-		if (command) {
-			if (isRustfmtDisabled(command)) {
-				return null;
-			}
+		const command = resolveRustfmtCommand(process.env[envName]);
+		if (command !== undefined) {
 			return command;
 		}
 	}
-	const command = process.env.MAESTRO_RUSTFMT ?? "rustfmt";
-	return isRustfmtDisabled(command) ? null : command;
-}
-
-function isRustfmtDisabled(command) {
-	return ["0", "false", "none", "off", "skip", "disabled"].includes(
-		command.trim().toLowerCase(),
-	);
+	const defaultCommand = resolveRustfmtCommand(process.env.MAESTRO_RUSTFMT);
+	return defaultCommand === undefined ? "rustfmt" : defaultCommand;
 }
 
 export function formatRustWithRustfmt(

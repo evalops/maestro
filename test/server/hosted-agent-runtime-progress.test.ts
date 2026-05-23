@@ -1816,7 +1816,7 @@ describe("hosted AgentRuntime progress recorder", () => {
 		expect(recordStep).toHaveBeenCalledWith(
 			expect.objectContaining({
 				step: expect.objectContaining({
-					id: "maestro:session_1:retry:auto-2",
+					id: "maestro:session_1:retry:auto-1-attempt-2",
 					stepKind: PlatformAgentRunStepKindValue.System,
 					state: PlatformAgentRunStepStateValue.Waiting,
 					input: expect.objectContaining({
@@ -1829,7 +1829,7 @@ describe("hosted AgentRuntime progress recorder", () => {
 		expect(recordStep).toHaveBeenCalledWith(
 			expect.objectContaining({
 				step: expect.objectContaining({
-					id: "maestro:session_1:retry:auto-2",
+					id: "maestro:session_1:retry:auto-1-attempt-2",
 					state: PlatformAgentRunStepStateValue.Succeeded,
 					output: expect.objectContaining({
 						event_type: "auto_retry_end",
@@ -1838,6 +1838,47 @@ describe("hosted AgentRuntime progress recorder", () => {
 				}),
 			}),
 		);
+	});
+
+	it("records unique auto-retry step IDs for separate retry sequences", async () => {
+		const { recorder, recordStep } = createRecorder();
+
+		recorder.recordAgentEvent({
+			type: "auto_retry_start",
+			attempt: 1,
+			maxAttempts: 3,
+			delayMs: 100,
+			errorMessage: "rate limited once",
+		});
+		recorder.recordAgentEvent({
+			type: "auto_retry_end",
+			success: true,
+			attempt: 1,
+		});
+		recorder.recordAgentEvent({
+			type: "auto_retry_start",
+			attempt: 1,
+			maxAttempts: 3,
+			delayMs: 200,
+			errorMessage: "rate limited again",
+		});
+		recorder.recordAgentEvent({
+			type: "auto_retry_end",
+			success: true,
+			attempt: 1,
+		});
+		await recorder.flush();
+
+		const retryStepIds = recordStep.mock.calls
+			.map(([input]) => input.step.id)
+			.filter((id) => id.includes(":retry:"));
+
+		expect(retryStepIds).toEqual([
+			"maestro:session_1:retry:auto-1-attempt-1",
+			"maestro:session_1:retry:auto-1-attempt-1",
+			"maestro:session_1:retry:auto-2-attempt-1",
+			"maestro:session_1:retry:auto-2-attempt-1",
+		]);
 	});
 
 	it("no-ops when hosted Platform lease handles are absent", async () => {

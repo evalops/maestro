@@ -88,6 +88,10 @@ describe("prepare-public-release-mirror", () => {
 			join(source, "scripts/smoke-registry-install.js"),
 			"internal smoke\n",
 		);
+		write(
+			join(source, "scripts/smoke-published-replay-e2e.js"),
+			"internal replay\n",
+		);
 		write(join(source, ".env"), "SECRET=value\n");
 		write(join(source, ".env.local"), "LOCAL_SECRET=value\n");
 		write(
@@ -118,6 +122,10 @@ describe("prepare-public-release-mirror", () => {
 		write(join(target, "src/cli/commands/scenario.ts"), "export {};\n");
 		write(join(target, "test/scenario-pack.test.ts"), "stale\n");
 		write(join(target, "scripts/smoke-registry-install.js"), "public smoke\n");
+		write(
+			join(target, "scripts/smoke-published-replay-e2e.js"),
+			"public replay\n",
+		);
 		write(join(target, ".git/config"), '[remote "origin"]\n');
 
 		execFileSync(
@@ -198,6 +206,12 @@ describe("prepare-public-release-mirror", () => {
 		expect(
 			readFileSync(join(target, "scripts/smoke-registry-install.js"), "utf8"),
 		).toBe("public smoke\n");
+		expect(
+			readFileSync(
+				join(target, "scripts/smoke-published-replay-e2e.js"),
+				"utf8",
+			),
+		).toBe("public replay\n");
 		expect(readFileSync(join(target, ".git/config"), "utf8")).toBe(
 			'[remote "origin"]\n',
 		);
@@ -206,6 +220,8 @@ describe("prepare-public-release-mirror", () => {
 		expect(pkg.name).toBe(publicPackageName);
 		expect(pkg.scripts).toMatchObject({
 			"release:verify:published": "node scripts/smoke-registry-install.js",
+			"release:verify:published:e2e":
+				"node scripts/smoke-published-replay-e2e.js",
 			"release:deprecate": "node scripts/deprecate-release.js",
 		});
 		expect(pkg.maestro).toMatchObject({
