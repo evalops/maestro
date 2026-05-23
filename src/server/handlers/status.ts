@@ -180,7 +180,7 @@ export async function handleStatus(
 	res: ServerResponse,
 	cors: Record<string, string>,
 	options: { staticCacheMaxAge?: number } = {},
-) {
+): Promise<void> {
 	try {
 		const method = (req.method ?? "GET").toUpperCase();
 		const url = new URL(req.url ?? "/api/status", "http://localhost");

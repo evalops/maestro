@@ -57,6 +57,7 @@ import { type Clock, systemClock } from "../utils/clock.js";
 import { createLogger } from "../utils/logger.js";
 
 const logger = createLogger("transport");
+const REUSABLE_TOOL_RESULT_GIT_SNAPSHOT_TIMEOUT_MS = 5_000;
 import type { AuthCredential } from "../providers/auth.js";
 import { defaultActionFirewall } from "../safety/action-firewall.js";
 import { AdaptiveThresholds } from "../safety/adaptive-thresholds.js";
@@ -153,7 +154,7 @@ function readGitSnapshotBuffer(cwd: string, args: string[]): Buffer {
 	return execFileSync("git", args, {
 		cwd,
 		stdio: ["ignore", "pipe", "ignore"],
-		timeout: 1_000,
+		timeout: REUSABLE_TOOL_RESULT_GIT_SNAPSHOT_TIMEOUT_MS,
 	});
 }
 

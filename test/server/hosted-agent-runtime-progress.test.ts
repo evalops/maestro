@@ -1761,6 +1761,116 @@ describe("hosted AgentRuntime progress recorder", () => {
 		);
 	});
 
+	it("coalesces tool retry AgentEvents with server-request lifecycle waits", async () => {
+		const { recorder, waitRun, resumeRun, recordEvent } = createRecorder();
+		const retryRequest = {
+			id: "retry_dupe",
+			toolCallId: "call_dupe",
+			toolName: "shell",
+			args: { command: "npm test" },
+			errorMessage: "exit code 1",
+			attempt: 2,
+			maxAttempts: 3,
+			summary: "shell failed again",
+		};
+		const registered: ServerRequestLifecycleEvent = {
+			type: "registered",
+			request: {
+				id: retryRequest.id,
+				kind: "tool_retry",
+				sessionId: "session_1",
+				callId: retryRequest.toolCallId,
+				toolName: retryRequest.toolName,
+				args: {
+					tool_call_id: retryRequest.toolCallId,
+					args: retryRequest.args,
+					error_message: retryRequest.errorMessage,
+					attempt: retryRequest.attempt,
+					max_attempts: retryRequest.maxAttempts,
+					summary: retryRequest.summary,
+				},
+				reason: retryRequest.summary,
+				timestamp: Date.now(),
+				startedAtMs: 4_000,
+				timeoutMs: 60_000,
+			},
+		};
+		const resolved: ServerRequestLifecycleEvent = {
+			type: "resolved",
+			request: registered.request,
+			resolution: "retried",
+			resolvedBy: "user",
+			reason: "transient",
+			resolvedAtMs: 5_000,
+		};
+
+		recorder.recordServerRequestEvent(registered);
+		recorder.recordAgentEvent({
+			type: "tool_retry_required",
+			request: retryRequest,
+		} satisfies AgentEvent);
+		recorder.recordServerRequestEvent(resolved);
+		recorder.recordAgentEvent({
+			type: "tool_retry_resolved",
+			request: retryRequest,
+			decision: {
+				action: "retry",
+				reason: "transient",
+				resolvedBy: "user",
+			},
+		} satisfies AgentEvent);
+		await recorder.flush();
+
+		expect(waitRun).toHaveBeenCalledTimes(1);
+		expect(waitRun).toHaveBeenCalledWith(
+			expect.objectContaining({
+				wait: expect.objectContaining({
+					id: "maestro:session_1:wait:retry_dupe",
+					stepId: "maestro:session_1:tool:call_dupe",
+					type: PlatformAgentRunWaitTypeValue.Approval,
+					payload: expect.objectContaining({
+						request_type: "tool_retry",
+						started_at_ms: 4_000,
+					}),
+				}),
+			}),
+		);
+		expect(resumeRun).toHaveBeenCalledTimes(1);
+		expect(resumeRun).toHaveBeenCalledWith(
+			expect.objectContaining({
+				waitId: "maestro:session_1:wait:retry_dupe",
+				payload: expect.objectContaining({
+					request_type: "tool_retry",
+					resolution: "retried",
+					resolved_by: "user",
+					resolved_at_ms: 5_000,
+				}),
+			}),
+		);
+		expect(recordEvent).toHaveBeenCalledWith(
+			expect.objectContaining({
+				message: "Maestro tool retry required",
+				waitId: "maestro:session_1:wait:retry_dupe",
+				attributes: expect.objectContaining({
+					event_type: "tool_retry_required",
+					attempt: 2,
+					max_attempts: 3,
+				}),
+			}),
+		);
+		expect(recordEvent).toHaveBeenCalledWith(
+			expect.objectContaining({
+				message: "Maestro tool retry resolved",
+				waitId: "maestro:session_1:wait:retry_dupe",
+				attributes: expect.objectContaining({
+					event_type: "tool_retry_resolved",
+					resolution: "retry",
+					reason: "transient",
+				}),
+			}),
+		);
+	});
+
 	it("records recovery breadcrumbs for status, compaction, and auto retry", async () => {
 		const { recorder, recordEvent, recordStep } = createRecorder();
 
@@ -1879,6 +1989,7 @@ describe("hosted AgentRuntime progress recorder", () => {
 			"maestro:session_1:retry:auto-2-attempt-1",
 			"maestro:session_1:retry:auto-2-attempt-1",
 		]);
+		expect(new Set(retryStepIds).size).toBe(2);
 	});
 
 	it("no-ops when hosted Platform lease handles are absent", async () => {

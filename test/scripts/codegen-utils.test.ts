@@ -5,11 +5,21 @@ import { afterEach, describe, expect, it } from "vitest";
 import { formatRustWithRustfmt } from "../../scripts/codegen-utils.mjs";
 
 const envName = "HEADLESS_PROTOCOL_RUSTFMT";
+const managedEnvNames = [
+	envName,
+	"SESSION_WIRE_FORMAT_RUSTFMT",
+	"MAESTRO_RUSTFMT",
+	"MAESTRO_TEST_RUSTFMT",
+];
+const previousEnv = new Map(
+	managedEnvNames.map((name) => [name, process.env[name]]),
+);
 const tempDirs: string[] = [];
 
 afterEach(() => {
-	delete process.env[envName];
-	delete process.env.MAESTRO_RUSTFMT;
+	for (const name of managedEnvNames) {
+		restoreEnv(name, previousEnv.get(name));
+	}
 	while (tempDirs.length > 0) {
 		rmSync(tempDirs.pop()!, { force: true, recursive: true });
 	}
@@ -59,4 +69,51 @@ describe("formatRustWithRustfmt", () => {
 
 		expect(result).toEqual({ content: source, rustfmtAvailable: false });
 	});
+
+	it("treats per-script rustfmt off values as an explicit formatter opt-out", () => {
+		const tempDir = makeTempDir();
+		process.env.HEADLESS_PROTOCOL_RUSTFMT = "off";
+		const source = "pub fn generated(){}\n";
+		const result = formatRustWithRustfmt(
+			source,
+			join(tempDir, "generated.rs"),
+			{
+				rootDir: tempDir,
+				label: "generated Rust fixture",
+				envNames: ["HEADLESS_PROTOCOL_RUSTFMT"],
+			},
+		);
+
+		expect(result).toEqual({
+			content: source,
+			rustfmtAvailable: false,
+		});
+	});
+
+	it("treats MAESTRO_RUSTFMT off values as an explicit formatter opt-out", () => {
+		const tempDir = makeTempDir();
+		process.env.MAESTRO_RUSTFMT = "off";
+		const source = "pub fn generated(){}\n";
+		const result = formatRustWithRustfmt(
+			source,
+			join(tempDir, "generated.rs"),
+			{
+				rootDir: tempDir,
+				label: "generated Rust fixture",
+			},
+		);
+
+		expect(result).toEqual({
+			content: source,
+			rustfmtAvailable: false,
+		});
+	});
 });
+
+function restoreEnv(name: string, value: string | undefined): void {
+	if (value === undefined) {
+		Reflect.deleteProperty(process.env, name);
+		return;
+	}
+	process.env[name] = value;
+}
