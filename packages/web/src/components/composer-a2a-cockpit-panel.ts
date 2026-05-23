@@ -19,7 +19,8 @@ function formatTimestamp(timestamp: string): string {
 }
 
 function statusTone(status: string): string {
-	if (status === "waiting" || status === "unreachable") return "warning";
+	if (status === "waiting" || status === "unreachable" || status === "warning")
+		return "warning";
 	if (status === "failed") return "failed";
 	if (status === "completed" || status === "online") return "success";
 	if (status === "running") return "running";

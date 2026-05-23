@@ -81,6 +81,15 @@ describe("ComposerA2ACockpitPanel", () => {
 					taskId: "task-1",
 					reason: "Peer needs input.",
 				},
+				{
+					id: "refresh:mac-mini:task-3",
+					label: "Refresh degraded task task-3",
+					command: "maestro a2a tasks mac-mini --refresh",
+					severity: "warning",
+					peer: "mac-mini",
+					taskId: "task-3",
+					reason: "Peer is degraded.",
+				},
 			],
 		});
 		const apiClient = { getA2ACockpit } as unknown as ApiClient;
@@ -100,10 +109,15 @@ describe("ComposerA2ACockpitPanel", () => {
 		expect(text).toContain("A2A cockpit");
 		expect(text).toContain("Peers online");
 		expect(text).toContain("Reply to mac-mini task task-1");
+		expect(text).toContain("Refresh degraded task task-3");
 		expect(text).toContain("maestro a2a reply mac-mini task-1");
 		expect(text).toContain("Need operator input");
 		expect(text).toContain("retired-peer (orphaned peer)");
 		expect(text).toContain("Failed after peer rename");
+		const warningAction = [
+			...(element.shadowRoot?.querySelectorAll(".row.warning") ?? []),
+		].find((row) => row.textContent?.includes("Refresh degraded task task-3"));
+		expect(warningAction).toBeTruthy();
 	});
 
 	it("does not fetch without an API client", async () => {
