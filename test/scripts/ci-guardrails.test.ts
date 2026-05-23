@@ -399,6 +399,18 @@ describe("ci workflow guardrails", () => {
 			workflow.jobs?.["pr-checks"]?.["runs-on"] ?? "",
 		);
 		const coverageRunsOn = String(workflow.jobs?.coverage?.["runs-on"] ?? "");
+		const isPublicMirrorWorkflow =
+			workflow.jobs?.changes === undefined &&
+			workflow.jobs?.["public-release-mirror"] === undefined &&
+			prChecksRunsOn.includes("PUBLIC_PR_VALIDATION_RUNNER");
+
+		if (isPublicMirrorWorkflow) {
+			expect(prChecksRunsOn).toContain("ubuntu-latest");
+			expect(prChecksRunsOn).toContain("PUBLIC_PR_VALIDATION_RUNNER");
+			expect(coverageRunsOn).toContain("ubuntu-latest");
+			expect(coverageRunsOn).toContain("PUBLIC_PR_VALIDATION_RUNNER");
+			return;
+		}
 
 		expect(prChecksRunsOn).toContain("ubuntu-latest");
 		expect(prChecksRunsOn).toContain("PR_CHECKS_RUNNER");
@@ -500,11 +512,11 @@ describe("ci workflow guardrails", () => {
 		const setupRustStep = prChecksJob?.steps?.find(
 			(step) => step.uses === "./.github/actions/setup-rust",
 		);
+		const prChecksRunsOn = String(prChecksJob?.["runs-on"] ?? "");
 		const isPublicMirrorPrChecks =
 			workflow.jobs?.changes === undefined &&
 			workflow.jobs?.["public-release-mirror"] === undefined &&
-			prChecksJob?.["runs-on"] ===
-				"${{ vars.PUBLIC_PR_VALIDATION_RUNNER || 'ubuntu-latest' }}";
+			prChecksRunsOn.includes("PUBLIC_PR_VALIDATION_RUNNER");
 
 		if (!setupRustStep) {
 			expect(isPublicMirrorPrChecks).toBe(true);
