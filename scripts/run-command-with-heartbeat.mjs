@@ -1,7 +1,13 @@
 #!/usr/bin/env node
 
 import { spawn } from "node:child_process";
-import { appendFileSync, createWriteStream } from "node:fs";
+import {
+	appendFileSync,
+	createWriteStream,
+	mkdirSync,
+	writeFileSync,
+} from "node:fs";
+import { dirname } from "node:path";
 import process from "node:process";
 import { pathToFileURL } from "node:url";
 
@@ -24,6 +30,7 @@ export function parseArgs(argv) {
 		heartbeatSeconds: DEFAULT_HEARTBEAT_SECONDS,
 		label: "command",
 		logfile: "",
+		summaryJson: "",
 		timingFile: "",
 		timeoutSeconds: 0,
 	};
@@ -46,6 +53,9 @@ export function parseArgs(argv) {
 			case "--logfile":
 				options.logfile = argv[++index] ?? "";
 				break;
+			case "--summary-json":
+				options.summaryJson = argv[++index] ?? "";
+				break;
 			case "--timing-file":
 				options.timingFile = argv[++index] ?? "";
 				break;
@@ -61,7 +71,7 @@ export function parseArgs(argv) {
 
 	if (options.command.length === 0) {
 		throw new Error(
-			"Usage: node scripts/run-command-with-heartbeat.mjs [--label name] [--logfile path] [--timing-file path] [--timeout-seconds seconds] [--heartbeat-seconds seconds] -- <command> [args...]",
+			"Usage: node scripts/run-command-with-heartbeat.mjs [--label name] [--logfile path] [--timing-file path] [--summary-json path] [--timeout-seconds seconds] [--heartbeat-seconds seconds] -- <command> [args...]",
 		);
 	}
 
@@ -116,8 +126,8 @@ function appendTiming(options, result) {
 		startedAt: new Date(result.startedAtMs).toISOString(),
 		endedAt: new Date(result.endedAtMs).toISOString(),
 		durationMs: result.endedAtMs - result.startedAtMs,
-		status: result.timedOut ? "timed_out" : result.code === 0 ? "passed" : "failed",
-		exitCode: result.code,
+		status: result.timedOut ? "timed_out" : result.exitCode === 0 ? "passed" : "failed",
+		exitCode: result.exitCode,
 		signal: result.signal,
 		timedOut: result.timedOut,
 	};
@@ -135,9 +145,18 @@ function appendTiming(options, result) {
 	}
 }
 
+function writeSummaryJson(options, summary) {
+	if (!options.summaryJson) {
+		return;
+	}
+	mkdirSync(dirname(options.summaryJson), { recursive: true });
+	writeFileSync(options.summaryJson, `${JSON.stringify(summary, null, 2)}\n`);
+}
+
 export async function runCommandWithHeartbeat(options) {
 	const [command, ...args] = options.command;
 	const startedAt = Date.now();
+	const startedAtIso = new Date(startedAt).toISOString();
 	const logStream = options.logfile
 		? createWriteStream(options.logfile, { flags: "w" })
 		: null;
@@ -196,12 +215,21 @@ export async function runCommandWithHeartbeat(options) {
 
 	const result = await new Promise((resolve) => {
 		child.on("error", (error) => {
-			console.error(annotation("error", `${options.label} failed to start: ${error.message}`));
+			console.error(
+				annotation("error", `${options.label} failed to start: ${error.message}`),
+			);
 			resolve({ code: 127, signal: null });
 		});
 		child.on("close", (code, signal) => resolve({ code, signal }));
 	});
 	const endedAt = Date.now();
+	const exitCode = timedOut
+		? 124
+		: typeof result.code === "number"
+			? result.code
+			: result.signal
+				? 1
+				: 0;
 
 	if (heartbeatTimer) {
 		clearInterval(heartbeatTimer);
@@ -220,9 +248,21 @@ export async function runCommandWithHeartbeat(options) {
 	appendTiming(options, {
 		startedAtMs: startedAt,
 		endedAtMs: endedAt,
-		code: typeof result.code === "number" ? result.code : null,
+		exitCode,
 		signal: result.signal ?? null,
 		timedOut,
+	});
+	writeSummaryJson(options, {
+		command: options.command,
+		elapsedMs: Math.max(0, endedAt - startedAt),
+		exitCode,
+		finishedAt: new Date(endedAt).toISOString(),
+		label: options.label,
+		logfile: options.logfile || undefined,
+		signal: result.signal ?? null,
+		startedAt: startedAtIso,
+		timedOut,
+		timeoutSeconds: options.timeoutSeconds,
 	});
 
 	if (timedOut) {

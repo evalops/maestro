@@ -211,6 +211,7 @@ function isLightPrChecksPath(path) {
 function isReleaseHelperOnlyPath(path) {
 	return (
 		isCiInfrastructureOnlyPath(path) ||
+		path === "scripts/plan-nx-test-command.mjs" ||
 		CI_GUARDRAIL_FILES.has(path) ||
 		RELEASE_HELPER_PACKAGE_FILES.has(path) ||
 		RELEASE_HELPER_TEST_FILES.has(path)

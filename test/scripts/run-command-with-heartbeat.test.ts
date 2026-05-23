@@ -33,6 +33,8 @@ describe("run-command-with-heartbeat", () => {
 				"nx.log",
 				"--timing-file",
 				"timing.jsonl",
+				"--summary-json",
+				"nx.json",
 				"--timeout-seconds",
 				"10",
 				"--heartbeat-seconds",
@@ -48,6 +50,7 @@ describe("run-command-with-heartbeat", () => {
 			label: "Nx",
 			logfile: "nx.log",
 			timingFile: "timing.jsonl",
+			summaryJson: "nx.json",
 			timeoutSeconds: 10,
 		});
 	});
@@ -119,13 +122,83 @@ describe("run-command-with-heartbeat", () => {
 		expect(timing.command?.[0]).toBe(process.execPath);
 	});
 
+	it("writes a summary JSON file for successful commands", () => {
+		const root = makeRoot();
+		const summaryJson = join(root, "summary.json");
+		const result = spawnSync(
+			process.execPath,
+			[
+				scriptPath,
+				"--label",
+				"quick command",
+				"--summary-json",
+				summaryJson,
+				"--timeout-seconds",
+				"5",
+				"--heartbeat-seconds",
+				"0",
+				"--",
+				process.execPath,
+				"-e",
+				"console.log('ok')",
+			],
+			{ encoding: "utf8" },
+		);
+
+		expect(result.status).toBe(0);
+		const summary = JSON.parse(readFileSync(summaryJson, "utf8"));
+		expect(summary).toMatchObject({
+			command: [process.execPath, "-e", "console.log('ok')"],
+			exitCode: 0,
+			label: "quick command",
+			timedOut: false,
+		});
+		expect(summary.elapsedMs).toBeGreaterThanOrEqual(0);
+		expect(summary.startedAt).toEqual(expect.any(String));
+		expect(summary.finishedAt).toEqual(expect.any(String));
+	});
+
+	it("records failed command exit codes in summary JSON", () => {
+		const root = makeRoot();
+		const summaryJson = join(root, "failed-summary.json");
+		const result = spawnSync(
+			process.execPath,
+			[
+				scriptPath,
+				"--label",
+				"failing command",
+				"--summary-json",
+				summaryJson,
+				"--heartbeat-seconds",
+				"0",
+				"--",
+				process.execPath,
+				"-e",
+				"process.exit(7)",
+			],
+			{ encoding: "utf8" },
+		);
+
+		expect(result.status).toBe(7);
+		expect(JSON.parse(readFileSync(summaryJson, "utf8"))).toMatchObject({
+			exitCode: 7,
+			label: "failing command",
+			signal: null,
+			timedOut: false,
+		});
+	});
+
 	it("returns 124 when the command exceeds the timeout", () => {
+		const root = makeRoot();
+		const summaryJson = join(root, "timeout-summary.json");
 		const result = spawnSync(
 			process.execPath,
 			[
 				scriptPath,
 				"--label",
 				"slow command",
+				"--summary-json",
+				summaryJson,
 				"--timeout-seconds",
 				"1",
 				"--heartbeat-seconds",
@@ -140,5 +213,10 @@ describe("run-command-with-heartbeat", () => {
 
 		expect(result.status).toBe(124);
 		expect(result.stderr).toContain("slow command timed out after 1s");
+		expect(JSON.parse(readFileSync(summaryJson, "utf8"))).toMatchObject({
+			exitCode: 124,
+			label: "slow command",
+			timedOut: true,
+		});
 	});
 });

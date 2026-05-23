@@ -301,6 +301,18 @@ describe("planCiChecks", () => {
 			releaseHelperOnly: true,
 			rustHostedConformance: false,
 		});
+		expect(
+			planCiChecks({
+				eventName: "pull_request",
+				changedFiles: ["test/scripts/workspace-utils.test.ts"],
+			}),
+		).toMatchObject({
+			coverage: false,
+			lightPrChecks: true,
+			prChecks: true,
+			releaseHelperOnly: true,
+			rustHostedConformance: false,
+		});
 	});
 
 	it("keeps release helper workflow smoke changes off the light runner lane", () => {
@@ -599,6 +611,30 @@ describe("ci workflow guardrails", () => {
 		expect(coverageTimeouts.get("Run tests with coverage")).toBe(60);
 	});
 
+	it("uploads machine-readable Nx attempt summaries with test logs", () => {
+		const workflow = parse(
+			readFileSync(new URL("../../.github/workflows/ci.yml", import.meta.url), {
+				encoding: "utf8",
+			}),
+		) as Workflow;
+		const prCheckSteps = workflow.jobs?.["pr-checks"]?.steps ?? [];
+		const uploadLogsStep = prCheckSteps.find(
+			(step) => step.name === "Upload Nx test logs (if any)",
+		);
+		const script = readFileSync(
+			new URL("../../scripts/ci-nx-tests.sh", import.meta.url),
+			{ encoding: "utf8" },
+		);
+
+		expect(script).toContain("--summary-json");
+		expect(script).toContain("nx-tests-attempt-${attempt}.json");
+		expect(script).toContain("#### Attempt summaries");
+		expect(String(uploadLogsStep?.if ?? "")).toContain(
+			"nx-tests-attempt-*.json",
+		);
+		expect(uploadLogsStep?.with?.path).toContain("nx-tests-attempt-*.json");
+	});
+
 	it("routes expensive pull-request jobs to the intended runner lanes", () => {
 		const workflow = parse(
 			readFileSync(new URL("../../.github/workflows/ci.yml", import.meta.url), {
@@ -719,9 +755,12 @@ describe("ci workflow guardrails", () => {
 			"node ./scripts/run-vitest.js --run test/scripts/workspace-utils.test.ts",
 		);
 		expect(helperSmokeStep?.run).toContain(
+			"MAESTRO_SKIP_INSTALL_AUDIT=1 MAESTRO_SKIP_BUN_INSTALL_SMOKE=1",
+		);
+		expect(helperSmokeStep?.run).toContain(
 			"node scripts/release-readiness.js pack-smoke",
 		);
-		expect(helperSmokeStep?.run).not.toContain("npm run build");
+		expect(helperSmokeStep?.run).toContain("npm run build");
 		expect(releaseReadinessStep?.if).toContain("release_helper_only != 'true'");
 	});
 
@@ -946,6 +985,31 @@ describe("ci workflow guardrails", () => {
 			"for proxy in cargo rustc rustdoc rustfmt cargo-fmt cargo-clippy clippy-driver",
 		);
 		expect(action).not.toContain("GITHUB_RUN_ID");
+	});
+
+	it("embeds and validates public mirror source metadata before opening PRs", () => {
+		const workflowPath = new URL(
+			"../../.github/workflows/sync-public-release-mirror.yml",
+			import.meta.url,
+		);
+		if (!existsSync(workflowPath)) {
+			const ciWorkflow = parse(
+				readFileSync(
+					new URL("../../.github/workflows/ci.yml", import.meta.url),
+					{
+						encoding: "utf8",
+					},
+				),
+			) as Workflow;
+			expect(isPublicValidationWorkflow(ciWorkflow)).toBe(true);
+			return;
+		}
+		const workflow = readFileSync(workflowPath, { encoding: "utf8" });
+
+		expect(workflow).toContain("scripts/public-mirror-source.mjs marker");
+		expect(workflow).toContain("scripts/public-mirror-source.mjs validate");
+		expect(workflow).toContain("source_marker");
+		expect(workflow).toContain("${source_marker}");
 	});
 
 	it("keeps setup-bun-nx rustfmt home stable across workflow runs", () => {
@@ -1347,23 +1411,22 @@ describe("planNxTestCommand", () => {
 		).toBe(false);
 	});
 
-	it("skips runtime package validators for release helper only changes", () => {
+	it("skips runtime package validators for release helper test and CI-only changes", () => {
 		expect(
 			runtimePackageValidatorsRequired({
 				basePackage,
 				changedFiles: [
-					"scripts/install-smoke-utils.js",
 					"scripts/plan-ci-checks.mjs",
 					"scripts/plan-nx-test-command.mjs",
-					"scripts/release-readiness.js",
-					"scripts/smoke-packed-cli.js",
-					"scripts/workspace-utils.js",
 					"test/scripts/ci-guardrails.test.ts",
 					"test/scripts/workspace-utils.test.ts",
 				],
 				headPackage: basePackage,
 			}),
 		).toBe(false);
+	});
+
+	it("requires runtime package validators for release helper script changes", () => {
 		expect(
 			runtimePackageValidatorsRequired({
 				basePackage,
@@ -1375,7 +1438,7 @@ describe("planNxTestCommand", () => {
 				],
 				headPackage: basePackage,
 			}),
-		).toBe(false);
+		).toBe(true);
 	});
 
 	it("requires runtime package validators for dependency-affecting changes", () => {

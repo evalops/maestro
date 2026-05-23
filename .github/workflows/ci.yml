@@ -75,12 +75,14 @@ jobs:
         run: npm run release:check:ci
 
       - name: Upload Nx test logs (if any)
-        if: ${{ always() && hashFiles('nx-tests-attempt-*.log') != '' }}
+        if: ${{ always() && hashFiles('nx-tests-attempt-*.log', 'nx-tests-attempt-*.json') != '' }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           retention-days: 14
           name: nx-tests-logs-${{ github.run_id }}
-          path: nx-tests-attempt-*.log
+          path: |
+            nx-tests-attempt-*.log
+            nx-tests-attempt-*.json
           if-no-files-found: ignore
 
       - name: Upload CI timing data (if any)
