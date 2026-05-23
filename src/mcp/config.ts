@@ -64,6 +64,7 @@ import { createLogger } from "../utils/logger.js";
 import { getHomeDir, resolveEnvPath } from "../utils/path-expansion.js";
 import { uniquePaths } from "../utils/path-utils.js";
 import { defaultEnvValidators, evaluateEnvValidators } from "./env-limits.js";
+import { getFathomCuaPluginServers } from "./fathom-cua.js";
 import { getPlatformMcpPluginServers } from "./platform-plugin.js";
 import {
 	type McpAuthPresetInput,
@@ -221,6 +222,7 @@ export function loadMcpConfig(
 	const pluginCfg: ParsedConfig = {
 		servers: [
 			...getPlatformMcpPluginServers(),
+			...getFathomCuaPluginServers(),
 			...(options.pluginServers ?? []),
 		],
 		authPresets: [],

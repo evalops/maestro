@@ -27,8 +27,12 @@ const RUNTIME_PACKAGE_VALIDATOR_FILES = new Set([
 	"scripts/check-docker-runtime-workspaces.mjs",
 	"scripts/check-packed-bundled-workspaces.mjs",
 	"scripts/check-runtime-deps.js",
+	"scripts/install-smoke-utils.js",
+	"scripts/release-readiness.js",
 	"scripts/runtime-workspaces.mjs",
+	"scripts/smoke-packed-cli.js",
 	"scripts/validate-public-package-deps.js",
+	"scripts/workspace-utils.js",
 ]);
 const SMOKE_SCRIPT_PATTERN = /^scripts\/smoke-[^/]+\.[cm]?[jt]sx?$/;
 
