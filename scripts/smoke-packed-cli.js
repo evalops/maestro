@@ -5,12 +5,20 @@ import { execFileSync } from "node:child_process";
 import { mkdtempSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { getRuntimeWorkspaceNames } from "./runtime-workspaces.mjs";
 import {
+	assertInstallablePackageMetadata,
+	getBunCommand,
 	getNpmCommand,
-	getNpxCommand,
+	readInstalledPackageJson,
+	runInstalledCliSmoke,
 	runInstalledPackageAudit,
 } from "./install-smoke-utils.js";
 import { getPackageMetadata } from "./package-metadata.js";
+import {
+	getWorkspacePackages,
+	loadRootPackage,
+} from "./workspace-utils.js";
 
 const tarballArg = process.argv[2];
 if (!tarballArg) {
@@ -37,37 +45,88 @@ if (tarballSizeBytes > maxTarballSizeBytes) {
 	process.exit(1);
 }
 
-const { version, cliCommand } = getPackageMetadata();
-const tempDir = mkdtempSync(join(tmpdir(), "maestro-pack-smoke-"));
+const rootPackage = loadRootPackage();
+const { name, version, cliCommand } = getPackageMetadata();
+const runtimeWorkspaceNames = getRuntimeWorkspaceNames(rootPackage);
+const workspacePackages = await getWorkspacePackages(rootPackage);
+const forbiddenWorkspaceNames = Array.from(
+	new Set([
+		...runtimeWorkspaceNames,
+		...workspacePackages
+			.filter((workspacePackage) => workspacePackage.data.private === true)
+			.map((workspacePackage) => workspacePackage.name),
+	]),
+).sort();
 const npmCommand = getNpmCommand();
-const npxCommand = getNpxCommand();
+const bunCommand = getBunCommand();
 
-try {
-	execFileSync(npmCommand, ["init", "-y"], {
-		cwd: tempDir,
-		stdio: "ignore",
+function assertInstalledMetadata(installRoot, label) {
+	const installedPackage = readInstalledPackageJson(name, installRoot);
+	assertInstallablePackageMetadata(installedPackage, {
+		label,
+		forbiddenWorkspaceNames,
 	});
-	execFileSync(npmCommand, ["install", tarballPath], {
-		cwd: tempDir,
-		stdio: "inherit",
-	});
-	runInstalledPackageAudit(tempDir, {
-		label: tarballPath,
-	});
-	const output = execFileSync(npxCommand, [cliCommand, "--version"], {
-		cwd: tempDir,
-		encoding: "utf-8",
-	});
+}
 
-	if (!output.includes(version)) {
-		throw new Error(
-			`Expected ${cliCommand} --version output to include ${version}, received: ${output.trim()}`,
+function runNpmInstallSmoke() {
+	const tempDir = mkdtempSync(join(tmpdir(), "maestro-pack-smoke-npm-"));
+	try {
+		execFileSync(npmCommand, ["init", "-y"], {
+			cwd: tempDir,
+			stdio: "ignore",
+		});
+		execFileSync(npmCommand, ["install", tarballPath], {
+			cwd: tempDir,
+			stdio: "inherit",
+		});
+		assertInstalledMetadata(tempDir, `${tarballPath} via npm`);
+		runInstalledPackageAudit(tempDir, {
+			label: tarballPath,
+		});
+		runInstalledCliSmoke(tempDir, {
+			cliCommand,
+			expectedVersion: version,
+			label: "npm-installed packed CLI",
+		});
+
+		console.log(
+			`Smoke-tested ${cliCommand} from ${tarballPath} with npm (${tarballSizeBytes} bytes).`,
 		);
+	} finally {
+		rmSync(tempDir, { recursive: true, force: true });
+	}
+}
+
+function runBunInstallSmoke() {
+	if (process.env.MAESTRO_SKIP_BUN_INSTALL_SMOKE === "1") {
+		console.log(`Skipping Bun packed install smoke for ${tarballPath}.`);
+		return;
 	}
 
-	console.log(
-		`Smoke-tested ${cliCommand} from ${tarballPath} (${tarballSizeBytes} bytes).`,
-	);
-} finally {
-	rmSync(tempDir, { recursive: true, force: true });
+	const tempDir = mkdtempSync(join(tmpdir(), "maestro-pack-smoke-bun-"));
+	try {
+		execFileSync(bunCommand, ["init", "-y"], {
+			cwd: tempDir,
+			stdio: "ignore",
+		});
+		execFileSync(bunCommand, ["add", tarballPath], {
+			cwd: tempDir,
+			stdio: "inherit",
+		});
+		assertInstalledMetadata(tempDir, `${tarballPath} via Bun`);
+		runInstalledCliSmoke(tempDir, {
+			cliCommand,
+			expectedVersion: version,
+			label: "Bun-installed packed CLI",
+		});
+
+		console.log(
+			`Smoke-tested ${cliCommand} from ${tarballPath} with Bun (${tarballSizeBytes} bytes).`,
+		);
+	} finally {
+		rmSync(tempDir, { recursive: true, force: true });
+	}
 }
+
+runNpmInstallSmoke();
+runBunInstallSmoke();

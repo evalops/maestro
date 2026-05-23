@@ -8,9 +8,9 @@ import { loadRootPackage, shouldManagePackageLock } from "./workspace-utils.js";
 const mode = process.argv[2] ?? "release";
 const rootPackage = loadRootPackage();
 
-function run(command) {
+function run(command, env = {}) {
 	console.log(`$ ${command}`);
-	execSync(command, { stdio: "inherit" });
+	execSync(command, { stdio: "inherit", env: { ...process.env, ...env } });
 }
 
 function hasScript(name) {
@@ -26,19 +26,20 @@ function maybeRunScript(name) {
 	run(`npm run ${name}`);
 }
 
+function removeStandaloneBinaryArtifacts() {
+	for (const artifact of ["dist/maestro-bun", "dist/maestro-bun-bytecode"]) {
+		rmSync(resolve(process.cwd(), artifact), { force: true });
+	}
+}
+
 function runPackSmoke() {
 	const smokeScriptPath = resolve(process.cwd(), "scripts/smoke-packed-cli.js");
 	if (!existsSync(smokeScriptPath)) {
 		console.log("Skipping packed CLI smoke test (script missing)");
 		return;
 	}
-	if (!shouldManagePackageLock(rootPackage)) {
-		console.log(
-			"Skipping packed CLI smoke test (package is not npm-installable from a tarball in this repo)",
-		);
-		return;
-	}
 
+	removeStandaloneBinaryArtifacts();
 	const tarball = execSync("npm pack --silent", { encoding: "utf8" })
 		.trim()
 		.split("\n")
@@ -49,7 +50,10 @@ function runPackSmoke() {
 	}
 
 	try {
-		run(`node scripts/smoke-packed-cli.js "${tarball}"`);
+		run(`node scripts/smoke-packed-cli.js "${tarball}"`, {
+			MAESTRO_INSTALL_AUDIT_LEVEL:
+				process.env.MAESTRO_INSTALL_AUDIT_LEVEL ?? "critical",
+		});
 	} finally {
 		rmSync(resolve(process.cwd(), tarball), { force: true });
 	}
@@ -61,6 +65,8 @@ function runCiChecks() {
 	run("bun run bun:lint");
 	run("npm run build");
 	run("npm run verify:runtime-deps");
+	runPackSmoke();
+	maybeRunScript("smoke:exec-replay-e2e");
 	maybeRunScript("openapi:check");
 }
 
@@ -78,9 +84,13 @@ function runReleaseChecks() {
 		console.log("Skipping npm audit (package-lock not managed in this repo)");
 	}
 	runPackSmoke();
+	maybeRunScript("smoke:exec-replay-e2e");
 }
 
 switch (mode) {
+	case "pack-smoke":
+		runPackSmoke();
+		break;
 	case "ci":
 		runCiChecks();
 		break;
