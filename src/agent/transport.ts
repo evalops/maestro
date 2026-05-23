@@ -145,6 +145,8 @@ type ReusableToolResultCacheGeneration = {
 	value: number;
 };
 
+const GIT_SNAPSHOT_COMMAND_TIMEOUT_MS = 5_000;
+
 function hashReusableToolResultSnapshot(value: string | Buffer): string {
 	return createHash("sha256").update(value).digest("hex");
 }
@@ -153,7 +155,7 @@ function readGitSnapshotBuffer(cwd: string, args: string[]): Buffer {
 	return execFileSync("git", args, {
 		cwd,
 		stdio: ["ignore", "pipe", "ignore"],
-		timeout: 1_000,
+		timeout: GIT_SNAPSHOT_COMMAND_TIMEOUT_MS,
 	});
 }
 
