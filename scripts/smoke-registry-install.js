@@ -186,6 +186,11 @@ async function main() {
 			expectedVersion: version,
 			label: "Bun-installed registry CLI",
 		});
+		await runPublishedReplayE2E({
+			cliCommand,
+			installRoot: bunTempDir,
+			packageSpec,
+		});
 
 		console.log(`Smoke-tested ${packageSpec} from Bun.`);
 	} finally {
