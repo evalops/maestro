@@ -22,6 +22,28 @@ export interface A2AOwnershipRecord {
 	metadata?: Record<string, string | number | boolean>;
 }
 
+const A2A_OWNERSHIP_RECORD_KEYS = [
+	"scopeKey",
+	"sessionScope",
+	"workspaceId",
+	"workspace_id",
+	"organizationId",
+	"organization_id",
+	"orgId",
+	"teamId",
+	"team_id",
+	"ownerSubject",
+	"owner_subject",
+	"ownerId",
+	"owner_id",
+	"userId",
+	"user_id",
+	"actorId",
+	"actor_id",
+	"keyId",
+	"key_id",
+] as const;
+
 export function hasA2AOwnershipScope(
 	scope: A2AOwnershipScope | undefined,
 ): scope is A2AOwnershipScope {
@@ -31,6 +53,12 @@ export function hasA2AOwnershipScope(
 				(value) => typeof value === "string" && value.trim().length > 0,
 			),
 	);
+}
+
+export function hasA2AOwnershipRecordMarkers(
+	record: A2AOwnershipRecord,
+): boolean {
+	return metadataValues(record, A2A_OWNERSHIP_RECORD_KEYS).length > 0;
 }
 
 export function matchesA2AOwnershipScope(

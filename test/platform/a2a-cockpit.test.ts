@@ -229,6 +229,14 @@ describe("A2A cockpit", () => {
 			},
 			ledger: ledger([
 				task({
+					id: "markerless-ledger",
+					peer: "tenant-a",
+					taskId: "task-markerless",
+					state: "TASK_STATE_INPUT_REQUIRED",
+					text: "legacy current-caller task without ownership markers",
+					updatedAt: "2026-05-16T00:00:11.000Z",
+				}),
+				task({
 					id: "owned-ledger",
 					peer: "tenant-a",
 					taskId: "task-owned",
@@ -288,17 +296,19 @@ describe("A2A cockpit", () => {
 			"tenant-a-legacy-peer",
 		]);
 		expect(summary.tasks.map((task) => task.taskId)).toEqual([
+			"task-markerless",
 			"task-owned",
 			"task-legacy-workspace",
 		]);
 		expect(summary.nextActions.map((action) => action.peer)).toEqual([
 			"tenant-a",
+			"tenant-a",
 			"tenant-a-legacy-peer",
 		]);
 		expect(summary.counts).toMatchObject({
 			peers: 2,
-			tasks: 2,
-			actionRequiredTasks: 2,
+			tasks: 3,
+			actionRequiredTasks: 3,
 		});
 	});
 });

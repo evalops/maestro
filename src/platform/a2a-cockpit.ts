@@ -1,6 +1,7 @@
 import { type A2AFleetSummary, inspectA2AFleet } from "./a2a-fleet.js";
 import {
 	type A2AOwnershipScope,
+	hasA2AOwnershipRecordMarkers,
 	hasA2AOwnershipScope,
 	matchesA2AOwnershipScope,
 } from "./a2a-ownership.js";
@@ -206,7 +207,9 @@ function filterLedgerForOwnership(
 ): A2ATaskLedgerFile {
 	return {
 		tasks: ledger.tasks.filter((entry) =>
-			matchesA2AOwnershipScope(entry, scope),
+			hasA2AOwnershipRecordMarkers(entry)
+				? matchesA2AOwnershipScope(entry, scope)
+				: true,
 		),
 	};
 }
