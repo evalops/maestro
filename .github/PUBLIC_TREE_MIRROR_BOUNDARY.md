@@ -50,6 +50,11 @@ independently.
 These scripts support public-package publishing and registry checks that do not
 yet have a single shared home in internal.
 
+The public `package.json` is still generated from internal, so
+`scripts/prepare-public-release-mirror.mjs` injects the public-only
+`release:verify:published` and `release:deprecate` npm script aliases while
+leaving the helper implementations public-owned.
+
 ### Internal-only docs that should not leak into the public repo
 
 - `docs/release-ops.md`

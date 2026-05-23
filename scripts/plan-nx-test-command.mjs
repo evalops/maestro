@@ -20,6 +20,7 @@ const CI_GUARDRAIL_FILES = new Set([
 	"scripts/ci-nx-tests.sh",
 	"scripts/plan-ci-checks.mjs",
 	"scripts/plan-nx-test-command.mjs",
+	"scripts/summarize-nx-profile.mjs",
 	"test/scripts/ci-guardrails.test.ts",
 ]);
 const RUNTIME_PACKAGE_VALIDATOR_FILES = new Set([

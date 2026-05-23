@@ -69,6 +69,7 @@ const CI_GUARDRAIL_FILES = new Set([
 	"scripts/ci-nx-tests.sh",
 	"scripts/plan-ci-checks.mjs",
 	"scripts/plan-nx-test-command.mjs",
+	"scripts/summarize-nx-profile.mjs",
 	"test/scripts/ci-guardrails.test.ts",
 ]);
 const RUNTIME_PACKAGE_VALIDATOR_FILES = new Set([
@@ -101,12 +102,17 @@ function isSmokeScript(path) {
 	return /^scripts\/smoke-[^/]+\.[cm]?[jt]sx?$/.test(path);
 }
 
+function isLeafIdeExtensionPath(path) {
+	return path.startsWith("packages/vscode-extension/") && !isPackageManifest(path);
+}
+
 function shouldSkipCoverageForPath(path) {
 	return (
 		path.startsWith(".github/workflows/") ||
 		(path.startsWith("docs/") && path.endsWith(".md")) ||
 		CI_GUARDRAIL_FILES.has(path) ||
 		RUNTIME_PACKAGE_VALIDATOR_FILES.has(path) ||
+		isLeafIdeExtensionPath(path) ||
 		isSmokeScript(path) ||
 		isPackageManifest(path) ||
 		isTestFile(path) ||
