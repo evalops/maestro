@@ -8,21 +8,34 @@ import { pathToFileURL } from "node:url";
 export function publicMirrorRefCandidates(internalRef) {
 	const ref = String(internalRef ?? "").trim();
 	const candidates = [];
+	const pushCandidate = (candidate) => {
+		if (candidate && !candidates.includes(candidate)) {
+			candidates.push(candidate);
+		}
+	};
 	if (!ref) {
 		return candidates;
 	}
 
-	candidates.push(ref);
-	if (ref.includes("/internal-")) {
-		const prefix = ref.slice(0, ref.indexOf("/internal-"));
-		const suffix = ref.slice(ref.indexOf("/internal-") + "/internal-".length);
-		candidates.push(`${prefix}/${suffix}`);
-	}
-	if (ref.startsWith("internal-")) {
-		candidates.push(ref.slice("internal-".length));
+	pushCandidate(ref);
+	if (ref.startsWith("codex/")) {
+		pushCandidate(ref.slice("codex/".length));
 	}
 
-	return Array.from(new Set(candidates.filter(Boolean)));
+	for (const candidate of [...candidates]) {
+		if (candidate.includes("/internal-")) {
+			const prefix = candidate.slice(0, candidate.indexOf("/internal-"));
+			const suffix = candidate.slice(
+				candidate.indexOf("/internal-") + "/internal-".length,
+			);
+			pushCandidate(`${prefix}/${suffix}`);
+		}
+		if (candidate.startsWith("internal-")) {
+			pushCandidate(candidate.slice("internal-".length));
+		}
+	}
+
+	return candidates;
 }
 
 function parseArgs(argv) {

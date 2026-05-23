@@ -190,7 +190,15 @@ export class ArtifactsRuntimeProvider implements SandboxRuntimeProvider {
 				return;
 			}
 			const content = typeof m.content === "string" ? m.content : "";
-			await this.opts.createOrUpdate(filename, content);
+			try {
+				await this.opts.createOrUpdate(filename, content);
+			} catch (error) {
+				respond({
+					success: false,
+					error: error instanceof Error ? error.message : String(error),
+				});
+				return;
+			}
 			respond({ success: true });
 			return;
 		}
@@ -205,7 +213,15 @@ export class ArtifactsRuntimeProvider implements SandboxRuntimeProvider {
 				respond({ success: false, error: "filename is required" });
 				return;
 			}
-			await this.opts.delete(filename);
+			try {
+				await this.opts.delete(filename);
+			} catch (error) {
+				respond({
+					success: false,
+					error: error instanceof Error ? error.message : String(error),
+				});
+				return;
+			}
 			respond({ success: true });
 			return;
 		}

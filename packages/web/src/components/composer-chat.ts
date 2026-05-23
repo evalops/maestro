@@ -1850,6 +1850,20 @@ export class ComposerChat extends LitElement {
 
 		if (toolName === "artifacts") {
 			const argsRecord = coerceArtifactsArgs(args);
+			if (argsRecord.command === "logs") {
+				const validation = applyArtifactsCommand(
+					this.artifactsState,
+					argsRecord,
+				);
+				if (validation.isError) {
+					await this.apiClient.sendClientToolResult({
+						toolCallId,
+						content: [{ type: "text", text: validation.output }],
+						isError: true,
+					});
+					return;
+				}
+			}
 			if (argsRecord.command === "logs" && argsRecord.filename) {
 				const sandboxId = `artifact:${argsRecord.filename}`;
 				const snap = getSandboxConsoleSnapshot(sandboxId);
@@ -3569,6 +3583,8 @@ export class ComposerChat extends LitElement {
 					this.artifactsState = res.state;
 					if (!res.isError) {
 						this.setActiveArtifact(filename);
+					} else {
+						throw new Error(res.output);
 					}
 				},
 				delete: async (filename) => {
@@ -3577,6 +3593,9 @@ export class ComposerChat extends LitElement {
 						filename,
 					});
 					this.artifactsState = res.state;
+					if (res.isError) {
+						throw new Error(res.output);
+					}
 					if (this.activeArtifact === filename) {
 						this.activeArtifact = null;
 					}

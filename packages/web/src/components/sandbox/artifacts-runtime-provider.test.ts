@@ -79,4 +79,30 @@ describe("ArtifactsRuntimeProvider", () => {
 			{ success: false, error: expect.stringContaining("filename") },
 		]);
 	});
+
+	it("responds with callback errors for rejected artifact writes", async () => {
+		const provider = new ArtifactsRuntimeProvider(() => [], {
+			createOrUpdate: vi
+				.fn()
+				.mockRejectedValue(new Error("Error [artifact.filename_invalid]")),
+		});
+		const responses: unknown[] = [];
+
+		await provider.handleMessage(
+			{
+				type: "artifact-operation",
+				action: "createOrUpdate",
+				filename: "../secret.txt",
+				content: "hidden",
+			},
+			(response) => responses.push(response),
+		);
+
+		expect(responses).toEqual([
+			{
+				success: false,
+				error: expect.stringContaining("artifact.filename_invalid"),
+			},
+		]);
+	});
 });
