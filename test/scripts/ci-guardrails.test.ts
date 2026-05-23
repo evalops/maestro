@@ -34,6 +34,7 @@ import {
 } from "../../scripts/resolve-public-mirror-ref.mjs";
 
 type WorkflowStep = {
+	env?: Record<string, unknown>;
 	if?: string;
 	name?: string;
 	uses?: string;
@@ -51,6 +52,7 @@ type Workflow = {
 		string,
 		{
 			outputs?: Record<string, unknown>;
+			services?: Record<string, { ports?: Array<number | string> }>;
 			steps?: WorkflowStep[];
 			"timeout-minutes"?: number;
 			"runs-on"?: unknown;
@@ -936,6 +938,31 @@ describe("ci workflow guardrails", () => {
 			"/maestro-rust/${safe_repo}/${safe_job}/stable-rustfmt",
 		);
 		expect(action).not.toContain("GITHUB_RUN_ID");
+	});
+
+	it("uses dynamic host ports for integration service containers", () => {
+		const workflowText = readFileSync(
+			new URL("../../.github/workflows/integration.yml", import.meta.url),
+			{
+				encoding: "utf8",
+			},
+		);
+		const workflow = parse(workflowText) as Workflow;
+		const job = workflow.jobs?.["integration-tests"];
+		const runStep = job?.steps?.find(
+			(step) => step.name === "Run integration tests",
+		);
+
+		expect(job?.services?.redis?.ports).toEqual(["6379/tcp"]);
+		expect(job?.services?.postgres?.ports).toEqual(["5432/tcp"]);
+		expect(workflowText).not.toContain("6379:6379");
+		expect(workflowText).not.toContain("5432:5432");
+		expect(runStep?.env?.MAESTRO_REDIS_URL).toBe(
+			"redis://localhost:${{ job.services.redis.ports['6379'] }}",
+		);
+		expect(runStep?.env?.MAESTRO_DATABASE_URL).toBe(
+			"postgresql://maestro@localhost:${{ job.services.postgres.ports['5432'] }}/maestro",
+		);
 	});
 
 	it("sets up Java exactly once before Nx tests", () => {
