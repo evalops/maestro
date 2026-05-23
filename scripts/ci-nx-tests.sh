@@ -43,6 +43,7 @@ run_ci_guardrail_tests() {
 run_smoke_script_static_checks() {
 	local smoke_scripts=()
 	while IFS= read -r file; do
+		[[ -f "$file" ]] || continue
 		smoke_scripts+=("$file")
 	done < <(grep -E '^scripts/smoke-[^/]+\.[cm]?[jt]sx?$' "$changed_files_log" || true)
 	if [[ "${#smoke_scripts[@]}" -eq 0 ]]; then

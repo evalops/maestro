@@ -76,8 +76,17 @@ const RUNTIME_PACKAGE_VALIDATOR_FILES = new Set([
 	"scripts/check-docker-runtime-workspaces.mjs",
 	"scripts/check-packed-bundled-workspaces.mjs",
 	"scripts/check-runtime-deps.js",
+	"scripts/install-smoke-utils.js",
+	"scripts/release-readiness.js",
 	"scripts/runtime-workspaces.mjs",
 	"scripts/validate-public-package-deps.js",
+	"scripts/workspace-utils.js",
+]);
+const RELEASE_HELPER_PACKAGE_FILES = new Set([
+	"scripts/install-smoke-utils.js",
+	"scripts/release-readiness.js",
+	"scripts/smoke-packed-cli.js",
+	"scripts/workspace-utils.js",
 ]);
 
 function isPackageManifest(path) {
@@ -159,7 +168,6 @@ function isProofHarnessPath(path) {
 		CI_GUARDRAIL_FILES.has(path) ||
 		isFastPrChecksInfrastructurePath(path) ||
 		(path.startsWith("docs/") && path.endsWith(".md")) ||
-		isPackageManifest(path) ||
 		isSmokeScript(path)
 	);
 }
@@ -177,6 +185,23 @@ function isRustHostedConformancePath(path) {
 	return isRustSetupActionPath(path) || isRustOnlySourcePath(path);
 }
 
+function isLightPrChecksPath(path) {
+	return (
+		isCiInfrastructureOnlyPath(path) ||
+		CI_GUARDRAIL_FILES.has(path) ||
+		RUNTIME_PACKAGE_VALIDATOR_FILES.has(path) ||
+		isSmokeScript(path)
+	);
+}
+
+function isReleaseHelperOnlyPath(path) {
+	return (
+		isCiInfrastructureOnlyPath(path) ||
+		path === "scripts/plan-nx-test-command.mjs" ||
+		RELEASE_HELPER_PACKAGE_FILES.has(path)
+	);
+}
+
 export function planCiChecks({ eventName, labels = [], changedFiles = [] }) {
 	const normalizedLabels = normalizeLabels(labels);
 	const labelSet = new Set(normalizedLabels);
@@ -186,6 +211,8 @@ export function planCiChecks({ eventName, labels = [], changedFiles = [] }) {
 		return {
 			ciInfrastructureOnly: false,
 			coverage: true,
+			lightPrChecks: false,
+			releaseHelperOnly: false,
 			prChecks: true,
 			publicMirror: true,
 			rustHostedConformance: true,
@@ -197,6 +224,8 @@ export function planCiChecks({ eventName, labels = [], changedFiles = [] }) {
 		return {
 			ciInfrastructureOnly: false,
 			coverage: true,
+			lightPrChecks: false,
+			releaseHelperOnly: false,
 			prChecks: true,
 			publicMirror: true,
 			rustHostedConformance: true,
@@ -229,11 +258,24 @@ export function planCiChecks({ eventName, labels = [], changedFiles = [] }) {
 		labelSet.has("run-rust-hosted-conformance") ||
 		rustSetupActionChanged ||
 		files.some(isRustHostedConformancePath);
+	const lightPrChecks =
+		!coverage &&
+		!rustHostedConformance &&
+		files.length > 0 &&
+		files.every((path) => isLightPrChecksPath(path));
+	const releaseHelperOnly =
+		!coverage &&
+		!rustHostedConformance &&
+		files.length > 0 &&
+		files.some((path) => RELEASE_HELPER_PACKAGE_FILES.has(path)) &&
+		files.every((path) => isReleaseHelperOnlyPath(path));
 
 	return {
 		ciInfrastructureOnly,
 		coverage,
+		lightPrChecks,
 		proofHarnessOnly,
+		releaseHelperOnly,
 		prChecks,
 		publicMirror,
 		rustHostedConformance,
@@ -274,7 +316,9 @@ function writeGitHubOutputs(plan) {
 		[
 			`coverage=${plan.coverage}`,
 			`ci_infrastructure_only=${plan.ciInfrastructureOnly ?? false}`,
+			`light_pr_checks=${plan.lightPrChecks ?? false}`,
 			`proof_harness_only=${plan.proofHarnessOnly ?? false}`,
+			`release_helper_only=${plan.releaseHelperOnly ?? false}`,
 			`pr_checks=${plan.prChecks}`,
 			`public_mirror=${plan.publicMirror}`,
 			`rust_hosted_conformance=${plan.rustHostedConformance}`,
@@ -292,6 +336,8 @@ function writeGitHubSummary(plan, changedFiles) {
 		"",
 		`- CI infrastructure only: \`${plan.ciInfrastructureOnly ?? false}\``,
 		`- coverage: \`${plan.coverage}\``,
+		`- light PR checks: \`${plan.lightPrChecks ?? false}\``,
+		`- release helper only: \`${plan.releaseHelperOnly ?? false}\``,
 		`- pr checks: \`${plan.prChecks}\``,
 		`- public release mirror: \`${plan.publicMirror}\``,
 		`- rust hosted conformance: \`${plan.rustHostedConformance}\``,
@@ -321,6 +367,7 @@ async function main() {
 		process.stdout.write(
 			[
 				`coverage=${plan.coverage}`,
+				`release_helper_only=${plan.releaseHelperOnly ?? false}`,
 				`pr_checks=${plan.prChecks}`,
 				`public_mirror=${plan.publicMirror}`,
 				`rust_hosted_conformance=${plan.rustHostedConformance}`,
