@@ -77,7 +77,7 @@ describe("getWorkspacePackagePaths", () => {
 		]);
 	});
 
-	it("treats brace segments as alternatives without glob installed", () => {
+	it("treats brace segments as alternatives with wildcards without glob installed", () => {
 		const root = makeFixture();
 		copyScript(root, "workspace-utils.js");
 		writeFileSync(
@@ -85,14 +85,14 @@ describe("getWorkspacePackagePaths", () => {
 			JSON.stringify({
 				name: "fixture",
 				type: "module",
-				workspaces: ["{packages,apps}/*"],
+				workspaces: ["{packages,apps-*}/*"],
 			}),
 		);
-		writePackage(root, "apps/app-a");
+		writePackage(root, "apps-web/app-a");
 		writePackage(root, "packages/pkg-a");
 
 		expect(readWorkspacePaths(root)).toEqual([
-			realpathSync(resolve(root, "apps/app-a/package.json")),
+			realpathSync(resolve(root, "apps-web/app-a/package.json")),
 			realpathSync(resolve(root, "packages/pkg-a/package.json")),
 		]);
 	});
