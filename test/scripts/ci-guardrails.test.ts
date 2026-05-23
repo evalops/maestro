@@ -1,4 +1,4 @@
-import { existsSync, readFileSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { parse } from "yaml";
 import {
@@ -436,12 +436,9 @@ describe("ci workflow guardrails", () => {
 			workflow.jobs?.["pr-checks"]?.["runs-on"] ?? "",
 		);
 		const coverageRunsOn = String(workflow.jobs?.coverage?.["runs-on"] ?? "");
-		const isInternalReleaseMirrorSource = existsSync(
-			new URL("../../.github/release-mirror-manifest.json", import.meta.url),
+		const isPublicMirrorWorkflow = prChecksRunsOn.includes(
+			"PUBLIC_PR_VALIDATION_RUNNER",
 		);
-		const isPublicMirrorWorkflow =
-			!isInternalReleaseMirrorSource &&
-			prChecksRunsOn.includes("PUBLIC_PR_VALIDATION_RUNNER");
 
 		if (isPublicMirrorWorkflow) {
 			expect(prChecksRunsOn).toContain("ubuntu-latest");
@@ -471,12 +468,24 @@ describe("ci workflow guardrails", () => {
 		) as Workflow;
 		const changesOutputs = workflow.jobs?.changes?.outputs ?? {};
 		const prCheckSteps = workflow.jobs?.["pr-checks"]?.steps ?? [];
+		const prChecksRunsOn = String(
+			workflow.jobs?.["pr-checks"]?.["runs-on"] ?? "",
+		);
+		const isPublicMirrorWorkflow = prChecksRunsOn.includes(
+			"PUBLIC_PR_VALIDATION_RUNNER",
+		);
 		const helperSmokeStep = prCheckSteps.find(
 			(step) => step.name === "Release helper package smoke",
 		);
 		const releaseReadinessStep = prCheckSteps.find(
 			(step) => step.name === "Release readiness (CI mode)",
 		);
+
+		if (isPublicMirrorWorkflow) {
+			expect(helperSmokeStep).toBeUndefined();
+			expect(releaseReadinessStep?.if).not.toContain("release_helper_only");
+			return;
+		}
 
 		expect(changesOutputs).toHaveProperty("release_helper_only");
 		expect(helperSmokeStep?.if).toContain("release_helper_only == 'true'");
@@ -629,17 +638,14 @@ describe("ci workflow guardrails", () => {
 				encoding: "utf8",
 			}),
 		) as Workflow;
-		const isInternalReleaseMirrorSource = existsSync(
-			new URL("../../.github/release-mirror-manifest.json", import.meta.url),
-		);
 		const prChecksJob = workflow.jobs?.["pr-checks"];
 		const setupRustStep = prChecksJob?.steps?.find(
 			(step) => step.uses === "./.github/actions/setup-rust",
 		);
 		const prChecksRunsOn = String(prChecksJob?.["runs-on"] ?? "");
-		const isPublicMirrorPrChecks =
-			!isInternalReleaseMirrorSource &&
-			prChecksRunsOn.includes("PUBLIC_PR_VALIDATION_RUNNER");
+		const isPublicMirrorPrChecks = prChecksRunsOn.includes(
+			"PUBLIC_PR_VALIDATION_RUNNER",
+		);
 
 		if (!setupRustStep) {
 			expect(isPublicMirrorPrChecks).toBe(true);
@@ -653,7 +659,7 @@ describe("ci workflow guardrails", () => {
 			return;
 		}
 
-		if (isInternalReleaseMirrorSource) {
+		if (!isPublicMirrorPrChecks) {
 			expect(workflow.jobs?.changes).toBeDefined();
 			expect(workflow.jobs?.["public-release-mirror"]).toBeDefined();
 		}
