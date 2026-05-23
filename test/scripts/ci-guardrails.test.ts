@@ -793,6 +793,27 @@ describe("ci workflow guardrails", () => {
 		expect(releaseReadinessStep?.if).toContain("release_helper_only != 'true'");
 	});
 
+	it("formats version-generated package manifests before release checks", () => {
+		const script = readFileSync(
+			new URL("../../scripts/version.js", import.meta.url),
+			{ encoding: "utf8" },
+		);
+		const formatCall = "formatPackageJsonFiles([";
+
+		expect(script).toContain("execFileSync");
+		expect(script).toContain('"bunx"');
+		expect(script).toContain('"biome"');
+		expect(script).toContain('"format"');
+		expect(script).toContain('"--write"');
+		expect(script).toContain(formatCall);
+		expect(script.indexOf(formatCall)).toBeGreaterThan(
+			script.indexOf("writePackageJson(pkg.path, pkg.data);"),
+		);
+		expect(script.indexOf(formatCall)).toBeLessThan(
+			script.indexOf("updateChangelog(newVersion"),
+		);
+	});
+
 	it("keeps public registry smoke install helper exports", async () => {
 		const helpers = (await import(
 			"../../scripts/install-smoke-utils.js"
