@@ -1,3 +1,4 @@
+import { existsSync } from "node:fs";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import {
 	type HeadlessConnectionRole,
@@ -29,6 +30,7 @@ import type {
 	HeadlessRuntimeStreamEnvelope,
 	HeadlessSessionRuntime,
 } from "../headless-runtime-service.js";
+import { loadHostedRunnerRestoreManifest } from "../headless-runtime-service.js";
 import {
 	bindHostedRunnerPlatformLease,
 	claimHostedRunnerLease,
@@ -501,14 +503,31 @@ async function ensureRuntime(
 ) {
 	const sessionManager = createSessionManagerForRequest(req, false);
 	const role = getHeadlessRole(req, input.role);
-	const requestedSessionId = input.sessionId?.trim() || undefined;
+	const hostedRestoreSessionId = context.hostedRunner?.restoreManifestPath
+		? (context.hostedRunner.activeMaestroSessionId ??
+			context.hostedRunner.configuredMaestroSessionId)
+		: undefined;
+	const requestedSessionId =
+		input.sessionId?.trim() || hostedRestoreSessionId || undefined;
 	const workspaceRoot = resolveRuntimeWorkspaceRoot(
 		context,
 		input.workspaceRoot,
 	);
 	ensureHostedRunnerCanUseSession(context, requestedSessionId);
 	if (requestedSessionId) {
-		const sessionFile = sessionManager.getSessionFileById(requestedSessionId);
+		let sessionFile = sessionManager.getSessionFileById(requestedSessionId);
+		if (!sessionFile && context.hostedRunner?.restoreManifestPath) {
+			const restoreManifest = await loadHostedRunnerRestoreManifest(
+				context.hostedRunner.restoreManifestPath,
+			);
+			const restoreSessionFile =
+				restoreManifest?.maestro_session_id === requestedSessionId
+					? restoreManifest.runtime.session_file
+					: undefined;
+			if (restoreSessionFile && existsSync(restoreSessionFile)) {
+				sessionFile = restoreSessionFile;
+			}
+		}
 		if (!sessionFile) {
 			throw new ApiError(404, "Session not found");
 		}

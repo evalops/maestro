@@ -11,6 +11,7 @@ Tools are discrete operations the LLM can request during a conversation. The too
 - **Execution**: Async execution with abort support
 - **Caching**: LRU cache with git-aware invalidation
 - **Error Handling**: Structured errors with retry support
+- **Profiles**: Curated model-visible subsets layered over the full registry
 
 ## Architecture
 
@@ -44,6 +45,22 @@ Tools are discrete operations the LLM can request during a conversation. The too
                     │  - Details/metadata│
                     └────────────────────┘
 ```
+
+## Model-visible profiles
+
+The full registry remains the dispatch and explicit-selection surface. Provider
+adapters can expose a smaller model-visible subset when a runtime benefits from a
+focused tool vocabulary. The OpenAI Codex app-server adapter currently exposes
+the `lean` profile by default, accepts `MAESTRO_CODEX_TOOL_PROFILE=read-only` or
+`MAESTRO_CODEX_TOOL_PROFILE=extended`, and still lets `--tools` override the
+profile entirely.
+
+File mutation tools are intentionally not grouped behind one generic tool:
+`apply_patch`, `edit`, and `write` stay separate so policy classification,
+approval copy, receipts, and model planning can distinguish patch application,
+structured find/replace, and whole-file creation or overwrite. This mirrors the
+small explicit-tool pattern used by coding-agent systems such as Pi while
+preserving Maestro's richer registry for opt-in flows.
 
 ## Tool Definition DSL
 

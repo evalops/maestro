@@ -10,7 +10,6 @@ import {
 	getA2ATask,
 	sendA2AMessage,
 } from "../../platform/a2a-client.js";
-import { buildA2ACockpit } from "../../platform/a2a-cockpit.js";
 import { inspectA2AFleet } from "../../platform/a2a-fleet.js";
 import {
 	buildMaestroA2APeerProjection,
@@ -79,7 +78,6 @@ const A2A_VALUE_FLAGS_BY_SUBCOMMAND: Record<string, readonly string[]> = {
 		"--workspace-id",
 	],
 	card: ["--registry", "--timeout-ms"],
-	cockpit: ["--registry", "--tasks", "--timeout-ms", "--peer", "--limit"],
 	discover: [
 		"--capability",
 		"--limit",
@@ -176,7 +174,13 @@ const A2A_VALUE_FLAGS_BY_SUBCOMMAND: Record<string, readonly string[]> = {
 		"--tasks",
 		"--timeout-ms",
 	],
-	send: ["--interval-ms", "--max-wait-ms", "--registry", "--timeout-ms"],
+	send: [
+		"--interval-ms",
+		"--max-wait-ms",
+		"--registry",
+		"--tasks",
+		"--timeout-ms",
+	],
 	tasks: ["--registry", "--tasks", "--timeout-ms"],
 	wait: [
 		"--interval-ms",
@@ -188,7 +192,6 @@ const A2A_VALUE_FLAGS_BY_SUBCOMMAND: Record<string, readonly string[]> = {
 };
 const A2A_BOOLEAN_FLAGS_BY_SUBCOMMAND: Record<string, readonly string[]> = {
 	accept: ["--default"],
-	cockpit: ["--json"],
 	coordinate: ["--json", "--refresh", "--wait", "--work-graph"],
 	delegate: [
 		"--discover",
@@ -247,10 +250,6 @@ export async function handleA2ACommand(args: string[]): Promise<void> {
 			return;
 		case "fleet":
 			await handleA2AFleet(parsed);
-			return;
-		case "cockpit":
-		case "dashboard":
-			await handleA2ACockpit(parsed);
 			return;
 		case "card":
 			await handleA2ACard(parsed);
@@ -422,8 +421,6 @@ function canonicalA2ASubcommand(input: string | undefined): string {
 			return "offer";
 		case "list":
 			return "peers";
-		case "dashboard":
-			return "cockpit";
 		case "delegation":
 			return "delegate";
 		case "continue":
@@ -972,99 +969,6 @@ async function handleA2AFleet(parsed: ParsedA2AArgs): Promise<void> {
 	}
 }
 
-async function handleA2ACockpit(parsed: ParsedA2AArgs): Promise<void> {
-	const cockpit = await buildA2ACockpit({
-		registryPath: stringFlag(parsed, "--registry"),
-		tasksPath: stringFlag(parsed, "--tasks"),
-		timeoutMs: numberFlag(parsed, "--timeout-ms"),
-		peer: stringFlag(parsed, "--peer"),
-		limit: numberFlag(parsed, "--limit"),
-	});
-	if (booleanFlag(parsed, "--json")) {
-		console.log(JSON.stringify(cockpit, null, 2));
-		return;
-	}
-
-	console.log(`A2A cockpit (${cockpit.registryPath})`);
-	console.log(chalk.dim(`  tasks=${cockpit.tasksPath}`));
-	console.log(
-		[
-			`${cockpit.counts.onlinePeers}/${cockpit.counts.peers} peers online`,
-			`${cockpit.counts.runningTasks} running`,
-			`${cockpit.counts.actionRequiredTasks} waiting`,
-			`${cockpit.counts.failedTasks} failed`,
-			`${cockpit.counts.completedTasks} completed`,
-		].join(" · "),
-	);
-	console.log(chalk.bold("\nPeers"));
-	if (cockpit.peers.length === 0) {
-		console.log(
-			chalk.dim("  No peers registered. Run maestro a2a accept <code>."),
-		);
-	} else {
-		for (const peer of cockpit.peers) {
-			const status =
-				peer.status === "online" ? chalk.green("online") : chalk.yellow("down");
-			const waiting = peer.taskCounts.actionRequiredTasks;
-			const failed = peer.taskCounts.failedTasks;
-			const taskSummary = [
-				peer.taskCounts.runningTasks
-					? `${peer.taskCounts.runningTasks} running`
-					: "",
-				waiting ? chalk.yellow(`${waiting} waiting`) : "",
-				failed ? chalk.red(`${failed} failed`) : "",
-			]
-				.filter(Boolean)
-				.join(", ");
-			console.log(
-				`${status} ${chalk.bold(peer.name)} ${chalk.dim(peer.url)}${
-					taskSummary ? ` ${chalk.dim(`(${taskSummary})`)}` : ""
-				}`,
-			);
-			if (peer.lastTask) {
-				console.log(
-					chalk.dim(
-						`  last=${peer.lastTask.id} ${peer.lastTask.state} ${peer.lastTask.text}`,
-					),
-				);
-			}
-			if (peer.error) {
-				console.log(chalk.dim(`  error=${peer.error}`));
-			}
-		}
-	}
-
-	console.log(chalk.bold("\nTasks"));
-	if (cockpit.tasks.length === 0) {
-		console.log(chalk.dim("  No delegated tasks recorded yet."));
-	} else {
-		for (const task of cockpit.tasks) {
-			const peerLabel = task.orphanedPeer
-				? `${task.peer} ${chalk.yellow("(orphaned peer)")}`
-				: task.peer;
-			console.log(
-				`${peerLabel} ${chalk.bold(task.taskId)} ${formatCockpitTaskStatus(
-					task.status,
-				)} ${chalk.dim(task.updatedAt)}`,
-			);
-			console.log(chalk.dim(`  ${task.text}`));
-			if (task.nextCommand) {
-				console.log(chalk.dim(`  next: ${task.nextCommand}`));
-			}
-		}
-	}
-
-	if (cockpit.nextActions.length > 0) {
-		console.log(chalk.bold("\nNext actions"));
-		for (const action of cockpit.nextActions) {
-			console.log(
-				`${formatCockpitActionSeverity(action.severity)} ${action.label}`,
-			);
-			console.log(chalk.dim(`  ${action.command}`));
-		}
-	}
-}
-
 async function handleA2ASend(parsed: ParsedA2AArgs): Promise<void> {
 	const peerName =
 		parsed.positionals.shift() ?? fail("Usage: maestro a2a send <peer> <text>");
@@ -1077,21 +981,46 @@ async function handleA2ASend(parsed: ParsedA2AArgs): Promise<void> {
 		timeoutMs: numberFlag(parsed, "--timeout-ms"),
 	});
 	const wait = booleanFlag(parsed, "--wait");
+	const messageId = `maestro-a2a-message-${randomUUID()}`;
+	const contextId = `maestro-a2a-context-${randomUUID()}`;
+	const metadata = {
+		requestKind: "maestro-peer-message",
+		relayPeer: peer.name,
+	};
 	const sent = await sendA2AMessage(peer.config, {
 		message: buildA2AUserMessage({
-			messageId: `maestro-a2a-message-${randomUUID()}`,
-			contextId: `maestro-a2a-context-${randomUUID()}`,
+			messageId,
+			contextId,
 			text,
-			metadata: {
-				requestKind: "maestro-peer-message",
-				relayPeer: peer.name,
-			},
+			metadata,
 		}),
 		...(wait ? { configuration: { returnImmediately: true } } : {}),
 	});
+	await persistA2ALedgerBestEffort("record sent task locally", () =>
+		recordA2ATaskStart({
+			path: stringFlag(parsed, "--tasks"),
+			peer: peer.name,
+			peerDisplayName: peer.entry.displayName,
+			task: sent.task,
+			text,
+			messageId,
+			contextId,
+			kind: "message",
+			metadata,
+		}),
+	);
 	const task = wait
 		? await waitForA2ATask(peer.config, sent.task.id, parsed)
 		: sent.task;
+	if (wait) {
+		await persistA2ALedgerBestEffort("sync sent task result locally", () =>
+			updateA2ATaskInLedger({
+				path: stringFlag(parsed, "--tasks"),
+				peer: peer.name,
+				task,
+			}),
+		);
+	}
 	printTask(task, {
 		includeWorkGraphDetails: booleanFlag(parsed, "--work-graph"),
 	});
@@ -2194,32 +2123,6 @@ function booleanFlag(parsed: ParsedA2AArgs, name: string): boolean {
 	return parsed.flags.get(name) === true;
 }
 
-function formatCockpitTaskStatus(status: string): string {
-	switch (status) {
-		case "waiting":
-			return chalk.yellow(status);
-		case "failed":
-			return chalk.red(status);
-		case "completed":
-			return chalk.green(status);
-		case "running":
-			return chalk.cyan(status);
-		default:
-			return chalk.dim(status);
-	}
-}
-
-function formatCockpitActionSeverity(severity: string): string {
-	switch (severity) {
-		case "critical":
-			return chalk.red("!");
-		case "warning":
-			return chalk.yellow("!");
-		default:
-			return chalk.cyan(">");
-	}
-}
-
 async function persistA2ALedgerBestEffort(
 	description: string,
 	action: () => Promise<unknown>,
@@ -2282,7 +2185,6 @@ function printA2AHelp(): void {
   maestro a2a discover [--capability <capability>] [--skill <skill-id>] [--import]
   maestro a2a register --url <base-url> [--agent-id <id>] [--workspace-id <id>] [--json]
   maestro a2a fleet [--json]
-  maestro a2a cockpit [--peer <peer>] [--json]
   maestro a2a card <peer>
   maestro a2a coordinate [peer] [--reply <text>] [--wait] [--json] [--work-graph]
   maestro a2a delegate <peer> <text> [--role <role>] [--cwd <path>] [--wait] [--work-graph]
@@ -2291,7 +2193,7 @@ function printA2AHelp(): void {
   maestro a2a control <delegation-id> --mode steer|followup|collect|interrupt|cancel [--workspace-id <id>] [message]
   maestro a2a graph <delegation-id> [--workspace-id <id>] [--json]
   maestro a2a reply <peer> <task-id> <text> [--wait] [--work-graph]
-  maestro a2a send <peer> <text> [--wait] [--work-graph]
+  maestro a2a send <peer> <text> [--wait] [--tasks <path>] [--work-graph]
   maestro a2a tasks [peer] [--json] [--refresh] [--work-graph]
   maestro a2a wait <peer> <task-id> [--work-graph]
 

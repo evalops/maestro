@@ -132,16 +132,13 @@ For a host-local proof of the full Maestro loop, run:
 npm run smoke:a2a-local-swarm
 ```
 
-The smoke starts a mock Agent Registry plus five real Rust control-plane
-instances, waits for every peer to auto-register and heartbeat, injects
-saturated, busy, no-dispatch, policy-denied, and stale registry peers, runs the
-swarm executor through Platform-style discovery, verifies the five healthy peers
-complete remote A2A tasks, receives push status/artifact/task callbacks for each
-remote task, checks the durable ledger captured normalized subagent work graphs,
-resumes one task by `message.taskId`, and checks that a denied task class
-returns zero eligible candidates before dispatch. The emitted summary uses
-`evalops.maestro.local-a2a-multipeer-swarm.v1` so CI, release gates, and later
-staging probes can archive the same evidence shape.
+The smoke starts a mock Agent Registry plus two real Rust control-plane
+instances, waits for both peers to auto-register and heartbeat, runs the swarm
+executor through Platform-style discovery, verifies both peers complete remote
+A2A tasks, receives push status/artifact/task callbacks for both remote tasks,
+checks the durable ledger captured normalized subagent work graphs, resumes one
+task by `message.taskId`, and checks that a denied task class returns zero
+eligible candidates before dispatch.
 
 Platform-discovered peers are ranked by the A2A capability market
 (`evalops.maestro.a2a-capability-market.v1`) before selection. The ranking
@@ -163,17 +160,13 @@ ids such as `maestro.subagent.code-writer`, `maestro.subagent.code-review`,
 
 Every remote swarm task carries native A2A plus EvalOps operating-plane
 metadata: `requestKind=maestro-swarm-task`, `transport=a2a`, `swarmId`,
-`teammateId`, `taskId`, `relayPeer`, `a2aSkillId`, `evalops.swarm` lineage,
-`evalops.peerControl`, and `evalops.subagentRequest`. The peer-control block is
-versioned as `evalops.maestro.a2a-peer-control.v1` and advertises the child lane,
-context id, supported follow-up/steer/interrupt/cancel modes, and expected
-status/artifact/task/work-graph evidence. This gives Platform enough correlation
-to show a root swarm, child delegations, remote task ids, control affordances,
-and artifacts as one fleet-scale work graph rather than disconnected peer
-transcripts. Terminal states other than `TASK_STATE_COMPLETED`, including
-`INPUT_REQUIRED` or `AUTH_REQUIRED`, are kept as failed swarm tasks so the
-coordinator/operator can follow up instead of treating blocked remote work as
-successful.
+`teammateId`, `taskId`, `relayPeer`, `a2aSkillId`, `evalops.swarm` lineage, and
+`evalops.subagentRequest`. This gives Platform enough correlation to show a
+root swarm, child delegations, remote task ids, and artifacts as one fleet-scale
+work graph rather than disconnected peer transcripts. Terminal states other
+than `TASK_STATE_COMPLETED`, including `INPUT_REQUIRED` or `AUTH_REQUIRED`, are
+kept as failed swarm tasks so the coordinator/operator can follow up instead of
+treating blocked remote work as successful.
 
 When a swarm is cancelled after a remote task has been accepted, Maestro keeps
 the non-secret peer/task/message correlation on the teammate state and sends the

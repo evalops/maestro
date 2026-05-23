@@ -172,6 +172,58 @@ describe("A2A task ledger", () => {
 		]);
 	});
 
+	it("keeps safe task metadata across task refreshes without token-like fields", async () => {
+		const path = join(
+			await mkdtemp(join(tmpdir(), "maestro-a2a-ledger-metadata-")),
+			"tasks.json",
+		);
+
+		await recordA2ATaskStart({
+			path,
+			peer: "mac-mini",
+			task: {
+				id: "task-metadata-1",
+				status: { state: "TASK_STATE_SUBMITTED" },
+				metadata: {
+					agentRunId: "run_1",
+					traceparent:
+						"00-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-bbbbbbbbbbbbbbbb-01",
+					apiToken: "do-not-write",
+					nested: { ignored: true },
+				},
+			},
+			text: "run the traceable smoke",
+			metadata: {
+				requestKind: "maestro-peer-message",
+			},
+			now: NOW,
+		});
+		await updateA2ATaskInLedger({
+			path,
+			peer: "mac-mini",
+			task: {
+				id: "task-metadata-1",
+				status: { state: "TASK_STATE_COMPLETED" },
+				metadata: {
+					worker: "mac-mini",
+					bearer: "do-not-write",
+				},
+			},
+			now: LATER,
+		});
+
+		const ledger = await loadA2ATaskLedger({ path });
+		expect(ledger.tasks[0]?.metadata).toMatchObject({
+			agentRunId: "run_1",
+			traceparent: "00-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-bbbbbbbbbbbbbbbb-01",
+			requestKind: "maestro-peer-message",
+			worker: "mac-mini",
+		});
+		expect(ledger.tasks[0]?.metadata).not.toHaveProperty("apiToken");
+		expect(ledger.tasks[0]?.metadata).not.toHaveProperty("bearer");
+		expect(JSON.stringify(ledger.tasks[0])).not.toContain("do-not-write");
+	});
+
 	it("records task replies without marking action-required states completed", async () => {
 		const path = join(
 			await mkdtemp(join(tmpdir(), "maestro-a2a-ledger-reply-")),

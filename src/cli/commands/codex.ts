@@ -5,7 +5,8 @@ import {
 } from "../../codex/app-server-client.js";
 import {
 	compileCodexDynamicToolSpecs,
-	selectCodexDefaultTools,
+	resolveCodexToolProfileName,
+	selectCodexToolProfile,
 } from "../../codex/compatibility.js";
 import { codingTools } from "../../tools/index.js";
 
@@ -133,11 +134,14 @@ async function handleDoctor(): Promise<void> {
 			);
 		}
 
-		const selectedTools = selectCodexDefaultTools(codingTools);
+		const profileName = resolveCodexToolProfileName(
+			process.env.MAESTRO_CODEX_TOOL_PROFILE,
+		);
+		const selectedTools = selectCodexToolProfile(codingTools, profileName);
 		const compiled = compileCodexDynamicToolSpecs(selectedTools);
 		console.log(
 			chalk.green(
-				`Default Codex tool profile: ${selectedTools.length} tools (${selectedTools
+				`Codex tool profile (${profileName}): ${selectedTools.length} tools (${selectedTools
 					.map((tool) => tool.name)
 					.join(", ")})`,
 			),

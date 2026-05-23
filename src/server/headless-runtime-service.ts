@@ -1,3 +1,4 @@
+import { readFile } from "node:fs/promises";
 import {
 	type HeadlessConnectionRole,
 	type HeadlessNotificationType,
@@ -111,6 +112,8 @@ const MAX_RUNTIME_CLEANUP_FAILURES =
 		10,
 	) || 3;
 const AMBIENT_ROUTING_SUBJECT = "maestro.ambient_agent.routing.selected";
+const HOSTED_RUNNER_SNAPSHOT_MANIFEST_VERSION =
+	"evalops.remote-runner.snapshot-manifest.v1";
 
 export function inferFleetModelTier(
 	provider: string,
@@ -198,6 +201,123 @@ export interface HeadlessRuntimeSnapshot {
 	cursor: number;
 	last_init: HeadlessInitMessage | null;
 	state: HeadlessRuntimeState;
+}
+
+export type HostedRunnerRestoreFlushStatus = "completed" | "failed" | "skipped";
+
+export interface HostedRunnerRestoreManifest {
+	protocol_version: typeof HOSTED_RUNNER_SNAPSHOT_MANIFEST_VERSION;
+	maestro_session_id: string;
+	runtime: {
+		flush_status: HostedRunnerRestoreFlushStatus;
+		error?: string;
+		session_id?: string;
+		session_file?: string;
+		cursor?: number;
+	};
+	snapshot: HeadlessRuntimeSnapshot;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+	return Boolean(value && typeof value === "object" && !Array.isArray(value));
+}
+
+function restoreFlushStatus(value: unknown): HostedRunnerRestoreFlushStatus {
+	switch (value) {
+		case "completed":
+			return "completed";
+		case "failed":
+		case "interrupted":
+			return "failed";
+		case "skipped":
+			return "skipped";
+		default:
+			throw new Error(
+				`Unsupported hosted runner restore flush status: ${value}`,
+			);
+	}
+}
+
+function restoreLastStatus(status: HostedRunnerRestoreFlushStatus): string {
+	switch (status) {
+		case "completed":
+			return "Restored from snapshot";
+		case "failed":
+			return "Restore interrupted before runtime flush completed";
+		case "skipped":
+			return "Restore incomplete: runtime flush skipped";
+	}
+}
+
+function restoreLastError(
+	status: HostedRunnerRestoreFlushStatus,
+	error: unknown,
+): string | undefined {
+	if (status === "completed") {
+		return undefined;
+	}
+	const message = typeof error === "string" ? error.trim() : "";
+	if (message) {
+		return message;
+	}
+	return status === "failed"
+		? "runtime flush failed before restore"
+		: "runtime flush was skipped; no runtime activity was persisted";
+}
+
+export async function loadHostedRunnerRestoreManifest(
+	path: string | undefined,
+): Promise<HostedRunnerRestoreManifest | undefined> {
+	if (!path) {
+		return undefined;
+	}
+	const manifest = JSON.parse(await readFile(path, "utf8")) as unknown;
+	if (!isRecord(manifest)) {
+		throw new Error("Hosted runner restore manifest must be a JSON object");
+	}
+	if (manifest.protocol_version !== HOSTED_RUNNER_SNAPSHOT_MANIFEST_VERSION) {
+		throw new Error(
+			`Unsupported hosted runner restore manifest protocol version: ${String(
+				manifest.protocol_version,
+			)}`,
+		);
+	}
+	const runtime = isRecord(manifest.runtime) ? manifest.runtime : undefined;
+	const snapshot = isRecord(manifest.snapshot)
+		? (manifest.snapshot as unknown as HeadlessRuntimeSnapshot)
+		: undefined;
+	const maestroSessionId =
+		typeof manifest.maestro_session_id === "string"
+			? manifest.maestro_session_id.trim()
+			: "";
+	if (!runtime || !snapshot || !maestroSessionId) {
+		throw new Error(
+			"Hosted runner restore manifest is missing runtime, snapshot, or maestro_session_id",
+		);
+	}
+	const restore: HostedRunnerRestoreManifest = {
+		protocol_version: HOSTED_RUNNER_SNAPSHOT_MANIFEST_VERSION,
+		maestro_session_id: maestroSessionId,
+		runtime: {
+			flush_status: restoreFlushStatus(runtime.flush_status),
+			...(typeof runtime.error === "string" ? { error: runtime.error } : {}),
+			...(typeof runtime.session_id === "string"
+				? { session_id: runtime.session_id }
+				: {}),
+			...(typeof runtime.session_file === "string"
+				? { session_file: runtime.session_file }
+				: {}),
+			...(typeof runtime.cursor === "number" && Number.isFinite(runtime.cursor)
+				? { cursor: runtime.cursor }
+				: {}),
+		},
+		snapshot,
+	};
+	assertHeadlessRuntimeSnapshot(
+		restore.snapshot,
+		"hosted runner restore snapshot",
+	);
+	return restore;
 }
 
 export type FleetAgentHealth = "healthy" | "degraded" | "unhealthy" | "idle";
@@ -566,12 +686,34 @@ class HeadlessRuntimeBroker {
 		return this.nextCursor - 1;
 	}
 
+	restoreFromSnapshot(snapshot: HeadlessRuntimeSnapshot): void {
+		const envelope: HeadlessRuntimeResetEnvelope = {
+			type: "reset",
+			reason: "restored_from_snapshot",
+			snapshot,
+		};
+		assertHeadlessRuntimeStreamEnvelope(
+			envelope,
+			"headless runtime restore envelope",
+		);
+		this.events.length = 0;
+		this.events.push(envelope);
+		this.nextCursor = Math.max(1, snapshot.cursor + 1);
+	}
+
 	replayFrom(cursor: number): HeadlessRuntimeStreamEnvelope[] | null {
 		if (this.events.length === 0) {
 			return [];
 		}
-		const earliest = this.getEnvelopeCursor(this.events[0]) ?? this.nextCursor;
+		const first = this.events[0];
+		const earliest = this.getEnvelopeCursor(first) ?? this.nextCursor;
 		if (cursor < earliest - 1) {
+			if (
+				first?.type === "reset" &&
+				first.reason === "restored_from_snapshot"
+			) {
+				return [...this.events];
+			}
 			return null;
 		}
 		return this.events.filter(
@@ -618,6 +760,7 @@ type RuntimeOptions = {
 	approvalMode: ApprovalMode;
 	enableClientTools?: boolean;
 	client?: "vscode" | "jetbrains" | "conductor" | "generic";
+	restoreManifest?: HostedRunnerRestoreManifest;
 	context: Pick<
 		WebServerContext,
 		"createAgent" | "createBackgroundAgent" | "hostedRunner"
@@ -773,15 +916,19 @@ export class HeadlessSessionRuntime {
 			this.handleAgentEvent(event);
 		});
 
-		this.publish(
-			this.translator.buildReadyMessage(this.agent, this.sessionManager),
-		);
-		this.publish(
-			this.translator.buildSessionInfoMessage(
-				this.sessionManager,
-				this.workspaceRoot ?? process.cwd(),
-			),
-		);
+		if (options.restoreManifest) {
+			this.restoreFromManifest(options.restoreManifest);
+		} else {
+			this.publish(
+				this.translator.buildReadyMessage(this.agent, this.sessionManager),
+			);
+			this.publish(
+				this.translator.buildSessionInfoMessage(
+					this.sessionManager,
+					this.workspaceRoot ?? process.cwd(),
+				),
+			);
+		}
 		this.unsubscribeServerRequestEvents = serverRequestManager.subscribe(
 			(event) => {
 				this.handleServerRequestEvent(event);
@@ -792,6 +939,43 @@ export class HeadlessSessionRuntime {
 				this.handleSwarmRuntimeEvent(event);
 			},
 		);
+	}
+
+	private restoreFromManifest(manifest: HostedRunnerRestoreManifest): void {
+		const restoredState = structuredClone(
+			manifest.snapshot.state ?? createHeadlessRuntimeState(),
+		);
+		Object.assign(this.state, restoredState);
+		this.state.protocol_version = HEADLESS_PROTOCOL_VERSION;
+		this.state.session_id = this.sessionId;
+		this.state.cwd ??= this.workspaceRoot ?? process.cwd();
+		this.state.is_ready = manifest.runtime.flush_status === "completed";
+		this.state.is_responding = false;
+		this.state.last_status = restoreLastStatus(manifest.runtime.flush_status);
+		const restoreError = restoreLastError(
+			manifest.runtime.flush_status,
+			manifest.runtime.error,
+		);
+		if (restoreError) {
+			this.state.last_error = restoreError;
+			this.state.last_error_type = "protocol";
+		} else {
+			delete this.state.last_error;
+			delete this.state.last_error_type;
+		}
+		this.lastInit = manifest.snapshot.last_init
+			? structuredClone(manifest.snapshot.last_init)
+			: null;
+		const cursor = manifest.runtime.cursor ?? manifest.snapshot.cursor;
+		const snapshot: HeadlessRuntimeSnapshot = {
+			protocolVersion: HEADLESS_PROTOCOL_VERSION,
+			session_id: this.sessionId,
+			cursor,
+			last_init: this.lastInit ? structuredClone(this.lastInit) : null,
+			state: structuredClone(this.state),
+		};
+		assertHeadlessRuntimeSnapshot(snapshot, "hosted runner restored snapshot");
+		this.broker.restoreFromSnapshot(snapshot);
 	}
 
 	static async create(
@@ -2586,6 +2770,14 @@ export class HeadlessRuntimeService {
 		}
 
 		const sessionId = options.sessionManager.getSessionId();
+		const restoreManifest = await loadHostedRunnerRestoreManifest(
+			options.context.hostedRunner?.restoreManifestPath,
+		);
+		if (restoreManifest && restoreManifest.maestro_session_id !== sessionId) {
+			throw new Error(
+				`Hosted runner restore manifest is for Maestro session ${restoreManifest.maestro_session_id}, not ${sessionId}`,
+			);
+		}
 		const runtime = await HeadlessSessionRuntime.create({
 			scope_key: options.scope_key,
 			session_id: sessionId,
@@ -2600,6 +2792,7 @@ export class HeadlessRuntimeService {
 			approvalMode: options.approvalMode,
 			enableClientTools: options.enableClientTools,
 			client: options.client,
+			restoreManifest,
 			context: options.context,
 			sessionManager: options.sessionManager,
 		});

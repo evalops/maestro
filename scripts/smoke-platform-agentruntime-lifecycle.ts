@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { join } from "node:path";
 import {
 	PlatformAgentRunStateValue,
 	PlatformAgentRunStepKindValue,
@@ -17,6 +17,7 @@ import {
 	resumeAgentRuntimeRun,
 	waitAgentRuntimeRun,
 } from "../src/platform/agent-runtime-client.js";
+import { resolvePlatformRepo } from "./platform-smoke-repo.js";
 
 const GO_SERVER = String.raw`
 package main
@@ -99,16 +100,6 @@ func main() {
 	must(http.Serve(listener, mux))
 }
 `;
-
-function resolvePlatformRepo(): string {
-	const configured =
-		process.env.MAESTRO_PLATFORM_REPO?.trim() ||
-		process.env.PLATFORM_REPO?.trim();
-	if (configured) {
-		return resolve(configured);
-	}
-	return resolve(process.cwd(), "..", "platform");
-}
 
 async function waitForServer(child: ReturnType<typeof spawn>): Promise<string> {
 	return await new Promise((resolveUrl, reject) => {

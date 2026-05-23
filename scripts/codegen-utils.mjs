@@ -49,16 +49,18 @@ function resolveRustfmt(envNames) {
 	for (const envName of envNames) {
 		const command = process.env[envName];
 		if (command) {
+			if (isRustfmtDisabled(command)) {
+				return null;
+			}
 			return command;
 		}
 	}
-	return process.env.MAESTRO_RUSTFMT ?? "rustfmt";
+	const command = process.env.MAESTRO_RUSTFMT ?? "rustfmt";
+	return isRustfmtDisabled(command) ? null : command;
 }
 
-const RUSTFMT_DISABLED_VALUES = new Set(["0", "false", "none", "off", "skip"]);
-
-function rustfmtDisabled(command) {
-	return RUSTFMT_DISABLED_VALUES.has(command.trim().toLowerCase());
+function isRustfmtDisabled(command) {
+	return ["0", "false", "none", "off"].includes(command.trim().toLowerCase());
 }
 
 export function formatRustWithRustfmt(
@@ -72,16 +74,15 @@ export function formatRustWithRustfmt(
 		tempPrefix = ".codegen-",
 	} = {},
 ) {
-	const rustfmt = resolveRustfmt(envNames);
-	if (rustfmtDisabled(rustfmt)) {
-		return { content: source, rustfmtAvailable: false };
-	}
-
 	mkdirSync(dirname(outputPath), { recursive: true });
 	const tempDir = mkdtempSync(join(dirname(outputPath), tempPrefix));
 	const tempPath = join(tempDir, basename(outputPath));
 	try {
 		writeFileSync(tempPath, source, "utf8");
+		const rustfmt = resolveRustfmt(envNames);
+		if (!rustfmt) {
+			return { content: source, rustfmtAvailable: false };
+		}
 		const result = spawnSync(rustfmt, [tempPath], {
 			cwd: rootDir,
 			encoding: "utf8",

@@ -179,9 +179,13 @@ permission granted:
 MAESTRO_RUN_LIVE_FATHOM_CUA_MCP=1 npm run smoke:fathom-cua-mcp
 ```
 
-The smoke opens Fathom's local AppKit dogfood target, connects `fathom-cua`
-through Maestro's MCP manager, calls `get_app_state`, executes `set_value`, and
-verifies the application state changed without printing the raw typed value.
+The smoke opens focused Fathom AppKit dogfood targets, connects `fathom-cua`
+through Maestro's MCP manager, proves `list_apps`, then calls `get_app_state`
+and a distinct action on separate app bundles: `set_value`,
+`set_toggle_state`, `set_slider_value`, and `select_menu_option`. It verifies
+each application state change without printing raw typed values and briefly
+waits after state capture before each mutating action so Fathom's helper-side
+`user_active` guard can observe an idle desktop.
 
 ## Creating a Custom MCP Server
 

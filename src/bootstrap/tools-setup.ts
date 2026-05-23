@@ -10,7 +10,8 @@ import chalk from "chalk";
 import type { AgentTool, Api } from "../agent/types.js";
 import {
 	isCodexAppServerApi,
-	selectCodexDefaultTools,
+	resolveCodexToolProfileName,
+	selectCodexToolProfile,
 } from "../codex/compatibility.js";
 import {
 	type SandboxMode,
@@ -65,7 +66,10 @@ export async function createToolsAndSandbox(params: {
 			),
 		);
 	} else if (isCodexAppServerApi(modelApi)) {
-		baseTools = selectCodexDefaultTools(codingTools);
+		const profileName = resolveCodexToolProfileName(
+			process.env.MAESTRO_CODEX_TOOL_PROFILE,
+		);
+		baseTools = selectCodexToolProfile(codingTools, profileName);
 	}
 
 	// Load inline tools from .maestro/tools.json and ~/.maestro/tools.json

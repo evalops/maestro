@@ -51,7 +51,7 @@ describe("handler compression forwarding", () => {
 			.spyOn(serverUtils, "respondWithApiError")
 			.mockImplementation(() => true);
 
-		await handleStatus(
+		handleStatus(
 			req as unknown as IncomingMessage,
 			res as unknown as ServerResponse,
 			cors,

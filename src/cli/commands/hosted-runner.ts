@@ -1,4 +1,4 @@
-import { realpath, stat } from "node:fs/promises";
+import { readFile, realpath, stat } from "node:fs/promises";
 import { resolve } from "node:path";
 import chalk from "chalk";
 import type { HostedRunnerContext } from "../../server/app-context.js";
@@ -15,6 +15,7 @@ export interface HostedRunnerConfig {
 	ownerInstanceId?: string;
 	workspaceRoot: string;
 	snapshotRoot: string;
+	restoreManifestPath?: string;
 	host?: string;
 	port: number;
 	workspaceId?: string;
@@ -35,6 +36,7 @@ Options:
   --owner-instance-id <id>  Platform runtime owner generation for attach fencing
   --workspace-root <path>   Workspace root mounted into the runtime pod (required)
   --snapshot-root <path>    Directory for drain snapshot manifests
+  --restore-manifest <path> Restore runtime state from a prior drain manifest
   --listen <host:port>      Address to bind, for example 0.0.0.0:8080
   --host <host>             Bind host when --listen is not used
   --port <port>             Bind port when --listen is not used
@@ -50,6 +52,7 @@ Environment:
   MAESTRO_REMOTE_RUNNER_OWNER_INSTANCE_ID, REMOTE_RUNNER_OWNER_INSTANCE_ID
   MAESTRO_WORKSPACE_ROOT
   MAESTRO_REMOTE_RUNNER_SNAPSHOT_ROOT, REMOTE_RUNNER_SNAPSHOT_ROOT
+  MAESTRO_REMOTE_RUNNER_RESTORE_MANIFEST, REMOTE_RUNNER_RESTORE_MANIFEST
   MAESTRO_HOSTED_RUNNER_LISTEN, MAESTRO_HOSTED_RUNNER_HOST, MAESTRO_HOSTED_RUNNER_PORT, PORT
   MAESTRO_REMOTE_RUNNER_WORKSPACE_ID, MAESTRO_AGENT_ID, MAESTRO_AGENT_RUN_ID, MAESTRO_SESSION_ID
   MAESTRO_ATTACH_AUDIENCE`;
@@ -183,6 +186,29 @@ function resolveSnapshotRoot(
 	return resolve(workspaceRoot, path);
 }
 
+function resolveRestoreManifestPath(
+	path: string | undefined,
+	workspaceRoot: string,
+): string | undefined {
+	return path ? resolve(workspaceRoot, path) : undefined;
+}
+
+async function readRestoreManifestSessionId(
+	path: string | undefined,
+): Promise<string | undefined> {
+	if (!path) {
+		return undefined;
+	}
+	const raw = JSON.parse(await readFile(path, "utf8")) as {
+		maestro_session_id?: unknown;
+	};
+	const sessionId =
+		typeof raw.maestro_session_id === "string"
+			? raw.maestro_session_id.trim()
+			: "";
+	return sessionId || undefined;
+}
+
 export function formatHostedRunnerUsage(): string {
 	return HOSTED_RUNNER_USAGE;
 }
@@ -222,6 +248,16 @@ export async function resolveHostedRunnerConfig(
 		getLastFlag(parsed, "workspace-root") ??
 			getEnvValue(env, ["MAESTRO_WORKSPACE_ROOT", "WORKSPACE_ROOT"]),
 	);
+	const restoreManifestPath = resolveRestoreManifestPath(
+		getLastFlag(parsed, "restore-manifest") ??
+			getEnvValue(env, [
+				"MAESTRO_REMOTE_RUNNER_RESTORE_MANIFEST",
+				"REMOTE_RUNNER_RESTORE_MANIFEST",
+			]),
+		workspaceRoot,
+	);
+	const restoreManifestSessionId =
+		await readRestoreManifestSessionId(restoreManifestPath);
 
 	return {
 		runnerSessionId,
@@ -240,6 +276,7 @@ export async function resolveHostedRunnerConfig(
 				]),
 			workspaceRoot,
 		),
+		...(restoreManifestPath ? { restoreManifestPath } : {}),
 		host:
 			listen.host ??
 			getLastFlag(parsed, "host") ??
@@ -256,7 +293,9 @@ export async function resolveHostedRunnerConfig(
 			getEnvValue(env, ["MAESTRO_REMOTE_RUNNER_AGENT_ID", "MAESTRO_AGENT_ID"]),
 		agentRunId: getLastFlag(parsed, "agent-run-id") ?? env.MAESTRO_AGENT_RUN_ID,
 		maestroSessionId:
-			getLastFlag(parsed, "maestro-session-id") ?? env.MAESTRO_SESSION_ID,
+			getLastFlag(parsed, "maestro-session-id") ??
+			env.MAESTRO_SESSION_ID ??
+			restoreManifestSessionId,
 		attachAudience:
 			getLastFlag(parsed, "attach-audience") ?? env.MAESTRO_ATTACH_AUDIENCE,
 	};
@@ -267,6 +306,10 @@ export function applyHostedRunnerEnvironment(config: HostedRunnerConfig): void {
 	process.env.MAESTRO_RUNNER_SESSION_ID = config.runnerSessionId;
 	process.env.MAESTRO_WORKSPACE_ROOT = config.workspaceRoot;
 	process.env.MAESTRO_REMOTE_RUNNER_SNAPSHOT_ROOT = config.snapshotRoot;
+	if (config.restoreManifestPath) {
+		process.env.MAESTRO_REMOTE_RUNNER_RESTORE_MANIFEST =
+			config.restoreManifestPath;
+	}
 	if (config.ownerInstanceId) {
 		process.env.MAESTRO_REMOTE_RUNNER_OWNER_INSTANCE_ID =
 			config.ownerInstanceId;
@@ -309,6 +352,7 @@ export function toHostedRunnerContext(
 		ownerInstanceId: config.ownerInstanceId,
 		workspaceRoot: config.workspaceRoot,
 		snapshotRoot: config.snapshotRoot,
+		restoreManifestPath: config.restoreManifestPath,
 		listenHost: config.host,
 		listenPort: config.port,
 		workspaceId: config.workspaceId,

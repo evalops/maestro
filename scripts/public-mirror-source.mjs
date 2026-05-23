@@ -48,20 +48,34 @@ export function evaluatePublicMirrorSource({
 	expectedSourceRepo = DEFAULT_SOURCE_REPO,
 	expectedSourceSha,
 }) {
+	const normalizedExpectedScope = String(expectedScope ?? "").trim();
+	if (!normalizedExpectedScope) {
+		return { ok: false, reason: "missing_expected_scope" };
+	}
+	const normalizedExpectedSourceRepo = String(expectedSourceRepo ?? "").trim();
+	if (!normalizedExpectedSourceRepo) {
+		return { ok: false, reason: "missing_expected_source_repo" };
+	}
+	const normalizedExpectedSourceSha = String(expectedSourceSha ?? "")
+		.trim()
+		.toLowerCase();
+	if (!normalizedExpectedSourceSha) {
+		return { ok: false, reason: "missing_expected_source_sha" };
+	}
+	if (!SHA_PATTERN.test(normalizedExpectedSourceSha)) {
+		return { ok: false, reason: "invalid_expected_source_sha" };
+	}
 	const marker = parsePublicMirrorSourceMarker(body);
 	if (!marker) {
 		return { ok: false, reason: "missing_marker" };
 	}
-	if (expectedScope && marker.scope !== expectedScope) {
+	if (marker.scope !== normalizedExpectedScope) {
 		return { marker, ok: false, reason: "scope_mismatch" };
 	}
-	if (expectedSourceRepo && marker.sourceRepo !== expectedSourceRepo) {
+	if (marker.sourceRepo !== normalizedExpectedSourceRepo) {
 		return { marker, ok: false, reason: "source_repo_mismatch" };
 	}
-	if (
-		expectedSourceSha &&
-		marker.sourceSha !== String(expectedSourceSha).trim().toLowerCase()
-	) {
+	if (marker.sourceSha !== normalizedExpectedSourceSha) {
 		return { marker, ok: false, reason: "source_sha_mismatch" };
 	}
 	return { marker, ok: true, reason: "matched" };

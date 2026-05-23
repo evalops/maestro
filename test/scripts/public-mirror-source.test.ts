@@ -41,4 +41,54 @@ describe("public mirror source metadata", () => {
 			reason: "source_sha_mismatch",
 		});
 	});
+
+	it("rejects validation without an expected source SHA", () => {
+		const body = buildPublicMirrorSourceMarker({
+			scope: "public-tree",
+			sourceRepo: "evalops/maestro-internal",
+			sourceSha: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+		});
+
+		expect(
+			evaluatePublicMirrorSource({
+				body,
+				expectedScope: "public-tree",
+				expectedSourceRepo: "evalops/maestro-internal",
+			}),
+		).toMatchObject({
+			ok: false,
+			reason: "missing_expected_source_sha",
+		});
+	});
+
+	it("rejects validation without required provenance expectations", () => {
+		const body = buildPublicMirrorSourceMarker({
+			scope: "public-tree",
+			sourceRepo: "evalops/maestro-internal",
+			sourceSha: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+		});
+
+		expect(
+			evaluatePublicMirrorSource({
+				body,
+				expectedSourceRepo: "evalops/maestro-internal",
+				expectedSourceSha: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			}),
+		).toMatchObject({
+			ok: false,
+			reason: "missing_expected_scope",
+		});
+
+		expect(
+			evaluatePublicMirrorSource({
+				body,
+				expectedScope: "public-tree",
+				expectedSourceRepo: "",
+				expectedSourceSha: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			}),
+		).toMatchObject({
+			ok: false,
+			reason: "missing_expected_source_repo",
+		});
+	});
 });
