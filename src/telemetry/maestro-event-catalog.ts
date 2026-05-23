@@ -3,15 +3,11 @@ export enum MaestroBusEventType {
 	SessionSuspended = "maestro.sessions.session.suspended",
 	SessionResumed = "maestro.sessions.session.resumed",
 	SessionClosed = "maestro.sessions.session.closed",
-	InstallCheckCompleted = "maestro.events.install_check.completed",
 	ApprovalHit = "maestro.events.approval_hit",
 	SandboxViolation = "maestro.events.sandbox_violation",
 	FirewallBlock = "maestro.events.firewall_block",
 	ToolCallAttempted = "maestro.events.tool_call.attempted",
 	ToolCallCompleted = "maestro.events.tool_call.completed",
-	ErrorCaptured = "maestro.events.error.captured",
-	ArtifactCreated = "maestro.events.artifact.created",
-	FinalStatusReported = "maestro.events.final_status.reported",
 	PromptVariantSelected = "maestro.events.prompt_variant.selected",
 	ContextLearned = "maestro.events.context.learned",
 	SkillInvoked = "maestro.events.skill.invoked",
@@ -23,14 +19,10 @@ export enum MaestroBusEventType {
 
 export type MaestroBusEventCategory =
 	| "session"
-	| "install"
 	| "agent"
 	| "approval"
 	| "safety"
 	| "tool"
-	| "error"
-	| "artifact"
-	| "final-status"
 	| "prompt"
 	| "knowledge"
 	| "skill"
@@ -100,12 +92,6 @@ export const MAESTRO_BUS_EVENT_CATALOG = {
 			"meter.maestro-session-lifecycle",
 		],
 	),
-	[MaestroBusEventType.InstallCheckCompleted]: entry(
-		MaestroBusEventType.InstallCheckCompleted,
-		"install",
-		"PackageInstallCheck",
-		["meter.maestro-install-checks", "release.maestro-install-smoke"],
-	),
 	[MaestroBusEventType.ApprovalHit]: entry(
 		MaestroBusEventType.ApprovalHit,
 		"approval",
@@ -135,24 +121,6 @@ export const MAESTRO_BUS_EVENT_CATALOG = {
 		"tool",
 		"ToolCallResult",
 		["meter.maestro-tool-call-events", "skills.maestro-tool-call-completed"],
-	),
-	[MaestroBusEventType.ErrorCaptured]: entry(
-		MaestroBusEventType.ErrorCaptured,
-		"error",
-		"MaestroError",
-		["audit.maestro-errors", "meter.maestro-errors"],
-	),
-	[MaestroBusEventType.ArtifactCreated]: entry(
-		MaestroBusEventType.ArtifactCreated,
-		"artifact",
-		"MaestroArtifact",
-		["fermata.maestro-artifacts", "meter.maestro-artifacts"],
-	),
-	[MaestroBusEventType.FinalStatusReported]: entry(
-		MaestroBusEventType.FinalStatusReported,
-		"final-status",
-		"MaestroFinalStatus",
-		["fermata.maestro-final-status", "meter.maestro-final-status"],
 	),
 	[MaestroBusEventType.PromptVariantSelected]: entry(
 		MaestroBusEventType.PromptVariantSelected,
@@ -200,19 +168,6 @@ export const MAESTRO_BUS_EVENT_CATALOG = {
 
 export const MAESTRO_BUS_EVENT_TYPES = Object.values(MaestroBusEventType);
 
-export const MAESTRO_RELEASE_GATE_EVENT_CATEGORIES = [
-	"install",
-	"session",
-	"tool",
-	"approval",
-	"error",
-	"artifact",
-	"final-status",
-] as const satisfies readonly MaestroBusEventCategory[];
-
-export type MaestroReleaseGateEventCategory =
-	(typeof MAESTRO_RELEASE_GATE_EVENT_CATEGORIES)[number];
-
 export function isMaestroBusEventType(
 	value: string,
 ): value is MaestroBusEventType {
@@ -227,21 +182,4 @@ export function getMaestroBusEventCatalogEntry(
 
 export function listMaestroBusEventCatalog(): readonly MaestroBusEventCatalogEntry[] {
 	return MAESTRO_BUS_EVENT_TYPES.map(getMaestroBusEventCatalogEntry);
-}
-
-export function listMaestroBusEventCatalogByCategory(
-	category: MaestroBusEventCategory,
-): readonly MaestroBusEventCatalogEntry[] {
-	return listMaestroBusEventCatalog().filter(
-		(entry) => entry.category === category,
-	);
-}
-
-export function getMissingMaestroReleaseGateEventCategories(
-	catalog: readonly MaestroBusEventCatalogEntry[] = listMaestroBusEventCatalog(),
-): readonly MaestroReleaseGateEventCategory[] {
-	const coveredCategories = new Set(catalog.map((entry) => entry.category));
-	return MAESTRO_RELEASE_GATE_EVENT_CATEGORIES.filter(
-		(category) => !coveredCategories.has(category),
-	);
 }

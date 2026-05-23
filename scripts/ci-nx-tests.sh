@@ -203,6 +203,7 @@ run_attempt() {
 	local logfile="nx-tests-attempt-${attempt}.log"
 	local profile_file="nx-profile-attempt-${attempt}.json"
 	local timing_file="nx-target-timings-attempt-${attempt}.log"
+	local summary_json="nx-tests-attempt-${attempt}.json"
 
 	echo "Running: ${cmd[*]}"
 	echo "Attempt ${attempt}..."
@@ -215,6 +216,7 @@ run_attempt() {
 	NX_PROFILE="$profile_file" node scripts/run-command-with-heartbeat.mjs \
 		--label "Nx tests attempt ${attempt}" \
 		--logfile "$logfile" \
+		--summary-json "$summary_json" \
 		--heartbeat-seconds "$NX_TEST_HEARTBEAT_SECONDS" \
 		--timeout-seconds "$NX_TEST_ATTEMPT_TIMEOUT_SECONDS" \
 		-- "${cmd[@]}"
@@ -224,6 +226,25 @@ run_attempt() {
 	summarize_attempt_profile "$profile_file" "$timing_file"
 
 	return "$status"
+}
+
+append_attempt_summaries() {
+	if [[ -z "${GITHUB_STEP_SUMMARY:-}" ]]; then
+		return 0
+	fi
+
+	{
+		echo ""
+		echo "#### Attempt summaries"
+		for summary_json in nx-tests-attempt-*.json; do
+			[[ -f "$summary_json" ]] || continue
+			echo ""
+			echo "\`${summary_json}\`"
+			echo '```json'
+			node -e 'const fs=require("node:fs"); const path=process.argv[1]; const summary=JSON.parse(fs.readFileSync(path, "utf8")); console.log(JSON.stringify(summary, null, 2));' "$summary_json"
+			echo '```'
+		done
+	} >>"$GITHUB_STEP_SUMMARY" 2>/dev/null || true
 }
 
 append_ci_context_summary() {
@@ -264,6 +285,7 @@ append_ci_context_summary() {
 			done
 		fi
 	} >>"$GITHUB_STEP_SUMMARY" 2>/dev/null || true
+	append_attempt_summaries
 }
 
 append_failed_tasks_summary() {

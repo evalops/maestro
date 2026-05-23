@@ -457,6 +457,77 @@ describe("SwarmExecutor", () => {
 		);
 	});
 
+	it("passes A2A task push config without exposing callback secrets in swarm state", async () => {
+		const events: unknown[] = [];
+		const executor = new SwarmExecutor({
+			...createConfig({
+				subagentType: "reviewer",
+			}),
+			transport: "a2a",
+			a2a: {
+				peers: ["remote-a"],
+				tasksPath: "/tmp/maestro-a2a-tasks.json",
+				maxWaitMs: 50,
+				pollIntervalMs: 1,
+				pushNotificationConfig: {
+					id: "push-cfg-1",
+					url: "https://callback.example/a2a/push",
+					token: "push-secret-token",
+					authentication: {
+						schemes: ["bearer"],
+						credentials: "push-auth-secret",
+					},
+				},
+			},
+		});
+		executor.onEvent((event) => events.push(event));
+		executor.onEvent((event) => {
+			if (event.type !== "swarm_start") {
+				return;
+			}
+			const schemes = (
+				event.config.a2a?.pushNotificationConfig?.authentication as
+					| { schemes?: string[] }
+					| undefined
+			)?.schemes;
+			schemes?.push("mutated-from-snapshot");
+		});
+
+		const result = await executeWithTimeout(executor);
+
+		expect(result.status).toBe("completed");
+		expect(sendA2AMessageMock.mock.calls[0]?.[1].configuration).toEqual(
+			expect.objectContaining({
+				taskPushNotificationConfig: expect.objectContaining({
+					id: "push-cfg-1",
+					url: "https://callback.example/a2a/push",
+					token: "push-secret-token",
+					authentication: expect.objectContaining({
+						schemes: ["bearer"],
+						credentials: "push-auth-secret",
+					}),
+				}),
+			}),
+		);
+		expect(result.config.a2a?.pushNotificationConfig).toEqual(
+			expect.objectContaining({
+				id: "push-cfg-1",
+				url: "https://callback.example/a2a/push",
+				token: "<redacted>",
+				authentication: expect.objectContaining({
+					schemes: ["bearer"],
+					credentials: "<redacted>",
+				}),
+			}),
+		);
+		expect(result.teammates[0]!.a2a).not.toHaveProperty(
+			"pushNotificationConfig",
+		);
+		const eventJson = JSON.stringify(events);
+		expect(eventJson).not.toContain("push-secret-token");
+		expect(eventJson).not.toContain("push-auth-secret");
+	});
+
 	it("rotates configured A2A peers across successive tasks", async () => {
 		const executor = new SwarmExecutor(
 			createMultiTaskConfig(

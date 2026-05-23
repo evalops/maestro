@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 
-import { createWriteStream } from "node:fs";
+import { createWriteStream, mkdirSync, writeFileSync } from "node:fs";
 import { spawn } from "node:child_process";
+import { dirname } from "node:path";
 import process from "node:process";
 import { pathToFileURL } from "node:url";
 
@@ -24,6 +25,7 @@ export function parseArgs(argv) {
 		heartbeatSeconds: DEFAULT_HEARTBEAT_SECONDS,
 		label: "command",
 		logfile: "",
+		summaryJson: "",
 		timeoutSeconds: 0,
 	};
 
@@ -44,6 +46,9 @@ export function parseArgs(argv) {
 				break;
 			case "--logfile":
 				options.logfile = argv[++index] ?? "";
+				break;
+			case "--summary-json":
+				options.summaryJson = argv[++index] ?? "";
 				break;
 			case "--timeout-seconds":
 				options.timeoutSeconds = parseSeconds(argv[++index], arg, {
@@ -102,9 +107,18 @@ function formatElapsed(startedAt) {
 	return minutes > 0 ? `${minutes}m ${seconds}s` : `${seconds}s`;
 }
 
+function writeSummaryJson(options, summary) {
+	if (!options.summaryJson) {
+		return;
+	}
+	mkdirSync(dirname(options.summaryJson), { recursive: true });
+	writeFileSync(options.summaryJson, `${JSON.stringify(summary, null, 2)}\n`);
+}
+
 export async function runCommandWithHeartbeat(options) {
 	const [command, ...args] = options.command;
 	const startedAt = Date.now();
+	const startedAtIso = new Date(startedAt).toISOString();
 	const logStream = options.logfile
 		? createWriteStream(options.logfile, { flags: "w" })
 		: null;
@@ -182,6 +196,27 @@ export async function runCommandWithHeartbeat(options) {
 	if (logStream) {
 		await new Promise((resolve) => logStream.end(resolve));
 	}
+
+	const finishedAt = Date.now();
+	const exitCode = timedOut
+		? 124
+		: typeof result.code === "number"
+			? result.code
+			: result.signal
+				? 1
+				: 0;
+	writeSummaryJson(options, {
+		command: options.command,
+		elapsedMs: Math.max(0, finishedAt - startedAt),
+		exitCode,
+		finishedAt: new Date(finishedAt).toISOString(),
+		label: options.label,
+		logfile: options.logfile || undefined,
+		signal: result.signal ?? null,
+		startedAt: startedAtIso,
+		timedOut,
+		timeoutSeconds: options.timeoutSeconds,
+	});
 
 	if (timedOut) {
 		return 124;

@@ -29,7 +29,7 @@ mod http;
 mod model_catalog;
 mod runtime_assets;
 
-use a2a_skill_catalog::a2a_subagent_skills;
+use a2a_skill_catalog::{a2a_subagent_skills, A2A_SUBAGENT_REQUEST_METADATA_PATH};
 use auth::*;
 #[cfg(test)]
 use http::parse_request_head;
@@ -4288,6 +4288,7 @@ async fn complete_a2a_task(
             "cost": usage.cost.unwrap_or(0.0)
         });
     }
+    maybe_attach_a2a_subagent_work_graph(&mut metadata, &task_id, &context_id);
     let task = a2a_task_value(
         &task_id,
         &context_id,
@@ -4307,6 +4308,72 @@ async fn complete_a2a_task(
     let task = store_a2a_task_unless_canceled(state, &task_id, task).await;
     state.a2a_cancel_senders.lock().await.remove(&task_id);
     task
+}
+
+fn maybe_attach_a2a_subagent_work_graph(metadata: &mut Value, task_id: &str, context_id: &str) {
+    let Some(metadata_object) = metadata.as_object_mut() else {
+        return;
+    };
+    if metadata_object.get("workGraph").is_some() {
+        return;
+    }
+    let Some(subagent_request) = metadata_object
+        .get(A2A_SUBAGENT_REQUEST_METADATA_PATH)
+        .and_then(Value::as_object)
+    else {
+        return;
+    };
+    let skill_id = json_string_from_object(subagent_request, &["skillId", "skill_id"]);
+    let role = json_string_from_object(subagent_request, &["role"]);
+    let swarm_id = json_string_from_object(subagent_request, &["swarmId", "swarm_id"]);
+    let work_item_id = json_string_from_object(subagent_request, &["taskId", "task_id"])
+        .unwrap_or_else(|| task_id.to_string());
+    let child_run_id = format!("a2a-task:{task_id}");
+    let tool_call_id = format!("a2a-subagent-dispatch:{task_id}");
+    let correlation_path = if let Some(swarm_id) = swarm_id.as_deref() {
+        format!("maestro-swarm/{swarm_id}/{work_item_id}/a2a/{task_id}")
+    } else {
+        format!("a2a/{context_id}/{task_id}")
+    };
+
+    metadata_object.insert(
+        "workGraph".to_string(),
+        serde_json::json!({
+            "schemaVersion": CODEX_SUBAGENT_WORK_GRAPH_SCHEMA,
+            "state": "completed",
+            "itemCount": 1,
+            "activeItemCount": 0,
+            "blockedItemCount": 0,
+            "waitingItemCount": 0,
+            "childRunCount": 1,
+            "childRunIds": [child_run_id],
+            "toolCallCount": 1,
+            "pendingToolCallCount": 0,
+            "toolExecutionIds": [tool_call_id],
+            "waitItemCount": 0,
+            "waitIds": [],
+            "stateCounts": { "completed": 1 },
+            "correlationPath": correlation_path,
+            "rawPayloadWithheld": true,
+            "codexSubagents": {
+                "edgeCount": 1,
+                "toolCallIds": [tool_call_id],
+                "childRunIds": [child_run_id],
+                "threadIds": [],
+                "edges": [{
+                    "spawnToolCallId": tool_call_id,
+                    "childRunId": child_run_id,
+                    "operation": "a2a.subagent.dispatch",
+                    "status": "completed",
+                    "role": role,
+                    "workItemState": "completed",
+                    "completionGate": "terminal-task",
+                    "workItemId": work_item_id,
+                    "skillId": skill_id
+                }]
+            }
+        }),
+    );
 }
 
 fn a2a_agent_card(head: &RequestHead, config: &Config) -> Value {
@@ -16762,6 +16829,81 @@ setTimeout(() => {
                 .len(),
             0
         );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn a2a_completion_attaches_subagent_work_graph_metadata() {
+        let _guard = ENV_LOCK.lock().await;
+        let previous_fake = env::var("MAESTRO_A2A_FAKE_RESPONSE").ok();
+        env::set_var("MAESTRO_A2A_FAKE_RESPONSE", "review complete");
+        let state = test_app_state_with_sessions(HashMap::new());
+        let user_message = a2a_user_message_value(
+            &A2AMessageBody {
+                message_id: Some("msg-1".to_string()),
+                context_id: Some("ctx-1".to_string()),
+                task_id: None,
+                role: Some("ROLE_USER".to_string()),
+                parts: vec![A2APartBody {
+                    text: Some("review this".to_string()),
+                    url: None,
+                    data: None,
+                    metadata: None,
+                    filename: None,
+                    media_type: Some("text/plain".to_string()),
+                }],
+                metadata: None,
+                extensions: None,
+                reference_task_ids: None,
+            },
+            "ctx-1",
+        );
+        let (_cancel_tx, cancel_rx) = watch::channel(false);
+        let mut metadata = Map::new();
+        metadata.insert(
+            A2A_SUBAGENT_REQUEST_METADATA_PATH.to_string(),
+            serde_json::json!({
+                "skillId": "maestro.subagent.code-review",
+                "role": "reviewer",
+                "taskId": "alpha-review",
+                "swarmId": "swarm-1"
+            }),
+        );
+
+        let task = complete_a2a_task(
+            &state,
+            "review this".to_string(),
+            "maestro-task-1".to_string(),
+            "ctx-1".to_string(),
+            vec![user_message],
+            Value::Object(metadata),
+            cancel_rx,
+        )
+        .await;
+
+        assert_eq!(task["status"]["state"], "TASK_STATE_COMPLETED");
+        assert_eq!(
+            task["metadata"]["workGraph"]["schemaVersion"],
+            CODEX_SUBAGENT_WORK_GRAPH_SCHEMA
+        );
+        assert_eq!(task["metadata"]["workGraph"]["childRunCount"], 1);
+        assert_eq!(
+            task["metadata"]["workGraph"]["toolExecutionIds"][0],
+            "a2a-subagent-dispatch:maestro-task-1"
+        );
+        assert_eq!(
+            task["metadata"]["workGraph"]["codexSubagents"]["edges"][0]["role"],
+            "reviewer"
+        );
+        assert_eq!(
+            task["metadata"]["workGraph"]["correlationPath"],
+            "maestro-swarm/swarm-1/alpha-review/a2a/maestro-task-1"
+        );
+
+        if let Some(previous_fake) = previous_fake {
+            env::set_var("MAESTRO_A2A_FAKE_RESPONSE", previous_fake);
+        } else {
+            env::remove_var("MAESTRO_A2A_FAKE_RESPONSE");
+        }
     }
 
     #[tokio::test(flavor = "current_thread")]
