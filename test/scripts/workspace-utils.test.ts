@@ -97,6 +97,26 @@ describe("getWorkspacePackagePaths", () => {
 		]);
 	});
 
+	it("preserves wildcard semantics inside brace alternatives without glob installed", () => {
+		const root = makeFixture();
+		copyScript(root, "workspace-utils.js");
+		writeFileSync(
+			join(root, "package.json"),
+			JSON.stringify({
+				name: "fixture",
+				type: "module",
+				workspaces: ["{packages,pkg-*}/*"],
+			}),
+		);
+		writePackage(root, "packages/pkg-a");
+		writePackage(root, "pkg-tools/tool-a");
+
+		expect(readWorkspacePaths(root)).toEqual([
+			realpathSync(resolve(root, "packages/pkg-a/package.json")),
+			realpathSync(resolve(root, "pkg-tools/tool-a/package.json")),
+		]);
+	});
+
 	it("treats brace segments as alternatives with wildcards without glob installed", () => {
 		const root = makeFixture();
 		copyScript(root, "workspace-utils.js");

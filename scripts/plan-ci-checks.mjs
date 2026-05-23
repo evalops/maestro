@@ -89,6 +89,11 @@ const RELEASE_HELPER_PACKAGE_FILES = new Set([
 	"scripts/smoke-packed-cli.js",
 	"scripts/workspace-utils.js",
 ]);
+const RELEASE_HELPER_TEST_FILES = new Set([
+	"test/scripts/install-smoke-utils.test.ts",
+	"test/scripts/release-context-deps.test.ts",
+	"test/scripts/workspace-utils.test.ts",
+]);
 
 function isPackageManifest(path) {
 	return path === "package.json" || /^packages\/[^/]+\/package\.json$/.test(path);
@@ -138,7 +143,6 @@ function shouldSkipPublicMirrorForPath(path) {
 		path.startsWith("docs/internal/") ||
 		path === "scripts/configure-npm-trusted-publisher.mjs" ||
 		path === "scripts/deprecate-release.js" ||
-		path === "scripts/plan-ci-checks.mjs" ||
 		path === "scripts/run-scenario-replay-gate.mjs" ||
 		path === "scripts/scenario-replay-governance.mjs" ||
 		path === "scripts/scenario-replay-governance.test.mjs" ||
@@ -196,6 +200,7 @@ function isLightPrChecksPath(path) {
 		isCiInfrastructureOnlyPath(path) ||
 		CI_GUARDRAIL_FILES.has(path) ||
 		RUNTIME_PACKAGE_VALIDATOR_FILES.has(path) ||
+		RELEASE_HELPER_TEST_FILES.has(path) ||
 		isSmokeScript(path)
 	);
 }
@@ -203,8 +208,9 @@ function isLightPrChecksPath(path) {
 function isReleaseHelperOnlyPath(path) {
 	return (
 		isCiInfrastructureOnlyPath(path) ||
-		path === "scripts/plan-nx-test-command.mjs" ||
-		RELEASE_HELPER_PACKAGE_FILES.has(path)
+		CI_GUARDRAIL_FILES.has(path) ||
+		RELEASE_HELPER_PACKAGE_FILES.has(path) ||
+		RELEASE_HELPER_TEST_FILES.has(path)
 	);
 }
 
@@ -264,8 +270,12 @@ export function planCiChecks({ eventName, labels = [], changedFiles = [] }) {
 		labelSet.has("run-rust-hosted-conformance") ||
 		rustSetupActionChanged ||
 		files.some(isRustHostedConformancePath);
+	const releaseHelperWorkflowChanged =
+		files.some(isWorkflowFile) &&
+		files.some((path) => RELEASE_HELPER_PACKAGE_FILES.has(path));
 	const lightPrChecks =
 		!coverage &&
+		!releaseHelperWorkflowChanged &&
 		!rustHostedConformance &&
 		files.length > 0 &&
 		files.every((path) => isLightPrChecksPath(path));
@@ -273,7 +283,11 @@ export function planCiChecks({ eventName, labels = [], changedFiles = [] }) {
 		!coverage &&
 		!rustHostedConformance &&
 		files.length > 0 &&
-		files.some((path) => RELEASE_HELPER_PACKAGE_FILES.has(path)) &&
+		files.some(
+			(path) =>
+				RELEASE_HELPER_PACKAGE_FILES.has(path) ||
+				RELEASE_HELPER_TEST_FILES.has(path),
+		) &&
 		files.every((path) => isReleaseHelperOnlyPath(path));
 
 	return {
