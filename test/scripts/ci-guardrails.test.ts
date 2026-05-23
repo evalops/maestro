@@ -49,7 +49,12 @@ type Workflow = {
 	};
 	jobs?: Record<
 		string,
-		{ steps?: WorkflowStep[]; "timeout-minutes"?: number; "runs-on"?: unknown }
+		{
+			outputs?: Record<string, unknown>;
+			steps?: WorkflowStep[];
+			"timeout-minutes"?: number;
+			"runs-on"?: unknown;
+		}
 	>;
 };
 
@@ -94,6 +99,7 @@ describe("planCiChecks", () => {
 		).toMatchObject({
 			ciInfrastructureOnly: true,
 			coverage: false,
+			lightPrChecks: true,
 			prChecks: true,
 			publicMirror: false,
 			rustHostedConformance: false,
@@ -110,6 +116,7 @@ describe("planCiChecks", () => {
 		).toMatchObject({
 			ciInfrastructureOnly: true,
 			coverage: false,
+			lightPrChecks: true,
 			prChecks: true,
 			publicMirror: false,
 			rustHostedConformance: false,
@@ -125,6 +132,7 @@ describe("planCiChecks", () => {
 		).toMatchObject({
 			ciInfrastructureOnly: true,
 			coverage: false,
+			lightPrChecks: false,
 			prChecks: true,
 			publicMirror: true,
 			rustHostedConformance: true,
@@ -213,15 +221,19 @@ describe("planCiChecks", () => {
 					"scripts/check-packed-bundled-workspaces.mjs",
 					"scripts/check-runtime-deps.js",
 					"scripts/ci-nx-tests.sh",
+					"scripts/install-smoke-utils.js",
 					"scripts/plan-nx-test-command.mjs",
+					"scripts/release-readiness.js",
 					"scripts/runtime-workspaces.mjs",
 					"scripts/validate-public-package-deps.js",
+					"scripts/workspace-utils.js",
 					"test/scripts/ci-guardrails.test.ts",
 				],
 			}),
 		).toMatchObject({
 			ciInfrastructureOnly: false,
 			coverage: false,
+			lightPrChecks: false,
 			proofHarnessOnly: false,
 			prChecks: true,
 			publicMirror: true,
@@ -229,7 +241,50 @@ describe("planCiChecks", () => {
 		});
 	});
 
+	it("routes release helper-only PR checks to the light runner lane", () => {
+		expect(
+			planCiChecks({
+				eventName: "pull_request",
+				changedFiles: [
+					"scripts/install-smoke-utils.js",
+					"scripts/plan-ci-checks.mjs",
+					"scripts/plan-nx-test-command.mjs",
+					"scripts/release-readiness.js",
+					"scripts/smoke-packed-cli.js",
+					"scripts/workspace-utils.js",
+					"test/scripts/ci-guardrails.test.ts",
+				],
+			}),
+		).toMatchObject({
+			coverage: false,
+			lightPrChecks: true,
+			prChecks: true,
+			releaseHelperOnly: true,
+			rustHostedConformance: false,
+		});
+	});
+
 	it("skips coverage and Rust conformance for proof-harness-only changes", () => {
+		expect(
+			planCiChecks({
+				eventName: "pull_request",
+				changedFiles: [
+					"docs/protocols/a2a-fleet-delegation.md",
+					"scripts/smoke-maestro-a2a-local-swarm.ts",
+				],
+			}),
+		).toMatchObject({
+			ciInfrastructureOnly: false,
+			coverage: false,
+			lightPrChecks: false,
+			proofHarnessOnly: true,
+			prChecks: true,
+			publicMirror: true,
+			rustHostedConformance: false,
+		});
+	});
+
+	it("keeps package manifests out of proof-harness-only skips", () => {
 		expect(
 			planCiChecks({
 				eventName: "pull_request",
@@ -242,7 +297,8 @@ describe("planCiChecks", () => {
 		).toMatchObject({
 			ciInfrastructureOnly: false,
 			coverage: false,
-			proofHarnessOnly: true,
+			lightPrChecks: false,
+			proofHarnessOnly: false,
 			prChecks: true,
 			publicMirror: true,
 			rustHostedConformance: false,
@@ -329,6 +385,23 @@ describe("ci workflow guardrails", () => {
 		);
 	});
 
+	it("filters deleted smoke scripts before static checks", () => {
+		const script = readFileSync(
+			new URL("../../scripts/ci-nx-tests.sh", import.meta.url),
+			{ encoding: "utf8" },
+		);
+		const smokeStaticChecksBody =
+			script.match(
+				/run_smoke_script_static_checks\(\) \{([\s\S]*?)\n\}/,
+			)?.[1] ?? "";
+
+		expect(smokeStaticChecksBody).not.toBe("");
+		expect(smokeStaticChecksBody).toContain('[[ -f "$file" ]] || continue');
+		expect(
+			smokeStaticChecksBody.indexOf('[[ -f "$file" ]] || continue'),
+		).toBeLessThan(smokeStaticChecksBody.indexOf('smoke_scripts+=("$file")'));
+	});
+
 	it("hard-bounds long-running Nx and coverage phases", () => {
 		const workflow = parse(
 			readFileSync(new URL("../../.github/workflows/ci.yml", import.meta.url), {
@@ -351,6 +424,126 @@ describe("ci workflow guardrails", () => {
 		expect(prCheckTimeouts.get("Test (Nx affected)")).toBe(60);
 		expect(workflow.jobs?.coverage?.["timeout-minutes"]).toBe(75);
 		expect(coverageTimeouts.get("Run tests with coverage")).toBe(60);
+	});
+
+	it("routes expensive pull-request jobs to the private heavy runner lane", () => {
+		const workflow = parse(
+			readFileSync(new URL("../../.github/workflows/ci.yml", import.meta.url), {
+				encoding: "utf8",
+			}),
+		) as Workflow;
+		const prChecksRunsOn = String(
+			workflow.jobs?.["pr-checks"]?.["runs-on"] ?? "",
+		);
+		const coverageRunsOn = String(workflow.jobs?.coverage?.["runs-on"] ?? "");
+		const isInternalReleaseMirrorSource = existsSync(
+			new URL("../../.github/release-mirror-manifest.json", import.meta.url),
+		);
+		const isPublicMirrorWorkflow =
+			!isInternalReleaseMirrorSource &&
+			prChecksRunsOn.includes("PUBLIC_PR_VALIDATION_RUNNER");
+
+		if (isPublicMirrorWorkflow) {
+			expect(prChecksRunsOn).toContain("ubuntu-latest");
+			expect(prChecksRunsOn).toContain("PUBLIC_PR_VALIDATION_RUNNER");
+			expect(coverageRunsOn).toContain("ubuntu-latest");
+			expect(coverageRunsOn).toContain("PUBLIC_PR_VALIDATION_RUNNER");
+			return;
+		}
+
+		expect(prChecksRunsOn).toContain("ubuntu-latest");
+		expect(prChecksRunsOn).toContain("light_pr_checks");
+		expect(prChecksRunsOn).toContain("evalops-private-ci");
+		expect(prChecksRunsOn).toContain("PR_CHECKS_RUNNER");
+		expect(prChecksRunsOn).toContain("evalops-private-heavy");
+		expect(prChecksRunsOn).toContain("INTERNAL_CONFIRMATION_RUNNER");
+		expect(coverageRunsOn).toContain("ubuntu-latest");
+		expect(coverageRunsOn).toContain("PR_COVERAGE_RUNNER");
+		expect(coverageRunsOn).toContain("evalops-private-heavy");
+		expect(coverageRunsOn).toContain("INTERNAL_CONFIRMATION_RUNNER");
+	});
+
+	it("uses targeted release helper package smoke instead of duplicate release readiness", () => {
+		const workflow = parse(
+			readFileSync(new URL("../../.github/workflows/ci.yml", import.meta.url), {
+				encoding: "utf8",
+			}),
+		) as Workflow;
+		const changesOutputs = workflow.jobs?.changes?.outputs ?? {};
+		const prCheckSteps = workflow.jobs?.["pr-checks"]?.steps ?? [];
+		const helperSmokeStep = prCheckSteps.find(
+			(step) => step.name === "Release helper package smoke",
+		);
+		const releaseReadinessStep = prCheckSteps.find(
+			(step) => step.name === "Release readiness (CI mode)",
+		);
+
+		expect(changesOutputs).toHaveProperty("release_helper_only");
+		expect(helperSmokeStep?.if).toContain("release_helper_only == 'true'");
+		expect(helperSmokeStep?.run).toContain(
+			"node --check scripts/release-readiness.js",
+		);
+		expect(helperSmokeStep?.run).toContain(
+			"node scripts/release-readiness.js pack-smoke",
+		);
+		expect(helperSmokeStep?.run).not.toContain("npm run build");
+		expect(releaseReadinessStep?.if).toContain("release_helper_only != 'true'");
+	});
+
+	it("keeps public registry smoke install helper exports", async () => {
+		const helpers = (await import(
+			"../../scripts/install-smoke-utils.js"
+		)) as Record<string, unknown>;
+
+		for (const exportName of [
+			"assertInstallablePackageMetadata",
+			"getBunCommand",
+			"getNpmCommand",
+			"getNpxCommand",
+			"readInstalledPackageJson",
+			"runInstalledCliSmoke",
+			"runInstalledPackageAudit",
+		]) {
+			expect(helpers[exportName]).toEqual(expect.any(Function));
+		}
+	});
+
+	it("keeps packed CLI smoke aligned with registry install validation", () => {
+		const script = readFileSync(
+			new URL("../../scripts/smoke-packed-cli.js", import.meta.url),
+			{ encoding: "utf8" },
+		);
+
+		expect(script).toContain("assertInstallablePackageMetadata");
+		expect(script).toContain("runInstalledCliSmoke");
+		expect(script).toContain("getBunCommand");
+		expect(script).toContain("runNpmInstallSmoke();");
+		expect(script).toContain("runBunInstallSmoke();");
+	});
+
+	it("keeps packed CLI smoke enabled independently of package-lock management", () => {
+		const script = readFileSync(
+			new URL("../../scripts/release-readiness.js", import.meta.url),
+			{ encoding: "utf8" },
+		);
+		const ciChecksIndex = script.indexOf("function runCiChecks()");
+		const releaseChecksIndex = script.indexOf("function runReleaseChecks()");
+
+		expect(script).not.toContain(
+			"Skipping packed CLI smoke test (package is not npm-installable from a tarball in this repo)",
+		);
+		expect(script.indexOf("runPackSmoke();", ciChecksIndex)).toBeGreaterThan(
+			ciChecksIndex,
+		);
+		expect(
+			script.indexOf("runPackSmoke();", releaseChecksIndex),
+		).toBeGreaterThan(releaseChecksIndex);
+		expect(script).toContain("MAESTRO_INSTALL_AUDIT_LEVEL");
+		expect(script).toContain(
+			'process.env.MAESTRO_INSTALL_AUDIT_LEVEL ?? "critical"',
+		);
+		expect(script).toContain("removeStandaloneBinaryArtifacts();");
+		expect(script).toContain('case "pack-smoke":');
 	});
 
 	it("gives evals workflow test shards enough time to finish", () => {
@@ -443,17 +636,13 @@ describe("ci workflow guardrails", () => {
 		const setupRustStep = prChecksJob?.steps?.find(
 			(step) => step.uses === "./.github/actions/setup-rust",
 		);
+		const prChecksRunsOn = String(prChecksJob?.["runs-on"] ?? "");
 		const isPublicMirrorPrChecks =
-			workflow.jobs?.["public-release-mirror"] === undefined &&
-			prChecksJob?.["runs-on"] ===
-				"${{ vars.PUBLIC_PR_VALIDATION_RUNNER || 'ubuntu-latest' }}";
+			!isInternalReleaseMirrorSource &&
+			prChecksRunsOn.includes("PUBLIC_PR_VALIDATION_RUNNER");
 
 		if (!setupRustStep) {
 			expect(isPublicMirrorPrChecks).toBe(true);
-			expect(workflow.jobs?.changes).toBeDefined();
-			expect(workflow.jobs?.["rust-hosted-conformance"]?.if).toBe(
-				"${{ github.event_name != 'pull_request' || needs.changes.outputs.rust_hosted_conformance == 'true' }}",
-			);
 			const rustHostedSteps =
 				workflow.jobs?.["rust-hosted-conformance"]?.steps ?? [];
 			expect(
@@ -469,7 +658,7 @@ describe("ci workflow guardrails", () => {
 			expect(workflow.jobs?.["public-release-mirror"]).toBeDefined();
 		}
 		const proofHarnessSkipCondition =
-			"${{ github.event_name != 'pull_request' || (needs.changes.outputs.ci_infrastructure_only != 'true' && needs.changes.outputs.proof_harness_only != 'true') }}";
+			"${{ github.event_name != 'pull_request' || (needs.changes.outputs.ci_infrastructure_only != 'true' && needs.changes.outputs.proof_harness_only != 'true' && needs.changes.outputs.release_helper_only != 'true') }}";
 		expect(setupRustStep?.if).toBe(proofHarnessSkipCondition);
 		expect(
 			prChecksJob?.steps?.find(
@@ -786,6 +975,23 @@ describe("planNxTestCommand", () => {
 		});
 	});
 
+	it("keeps release package helper changes out of Nx affected tests", () => {
+		expect(
+			planNxTestCommand({
+				basePackage,
+				changedFiles: [
+					"scripts/install-smoke-utils.js",
+					"scripts/plan-ci-checks.mjs",
+					"scripts/release-readiness.js",
+					"scripts/smoke-packed-cli.js",
+					"scripts/workspace-utils.js",
+					"test/scripts/ci-guardrails.test.ts",
+				],
+				headPackage: basePackage,
+			}),
+		).toEqual({ files: [], mode: "none" });
+	});
+
 	it("skips Nx when package scripts are the only changed files", () => {
 		expect(
 			planNxTestCommand({
@@ -841,6 +1047,18 @@ describe("planNxTestCommand", () => {
 			runtimePackageValidatorsRequired({
 				basePackage,
 				changedFiles: ["scripts/check-runtime-deps.js"],
+				headPackage: basePackage,
+			}),
+		).toBe(true);
+		expect(
+			runtimePackageValidatorsRequired({
+				basePackage,
+				changedFiles: [
+					"scripts/install-smoke-utils.js",
+					"scripts/release-readiness.js",
+					"scripts/smoke-packed-cli.js",
+					"scripts/workspace-utils.js",
+				],
 				headPackage: basePackage,
 			}),
 		).toBe(true);
