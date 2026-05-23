@@ -43,6 +43,7 @@ export function matchesA2AOwnershipScope(
 	let sawMarker = false;
 	let matched = false;
 	let matchedIdentity = false;
+	let sawIdentityMarker = false;
 
 	const scopedIds = normalizedValues(scope.scopeKey);
 	if (
@@ -119,6 +120,7 @@ export function matchesA2AOwnershipScope(
 			identities,
 			(next) => {
 				sawMarker = true;
+				sawIdentityMarker = true;
 				matched ||= next;
 				matchedIdentity ||= next;
 			},
@@ -127,7 +129,7 @@ export function matchesA2AOwnershipScope(
 		return false;
 	}
 
-	if (identities.size > 0 && !matchedIdentity) {
+	if (identities.size > 0 && sawIdentityMarker && !matchedIdentity) {
 		return false;
 	}
 	return sawMarker && matched;

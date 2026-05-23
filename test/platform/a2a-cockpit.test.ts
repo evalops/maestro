@@ -200,6 +200,13 @@ describe("A2A cockpit", () => {
 						url: "http://127.0.0.1:4333",
 						status: "online",
 						workspaceId: "ws-1",
+						ownerSubject: "user:u-2",
+					},
+					{
+						name: "tenant-a-legacy-peer",
+						url: "http://127.0.0.1:4444",
+						status: "online",
+						workspaceId: "ws-1",
 					},
 				],
 			},
@@ -229,6 +236,17 @@ describe("A2A cockpit", () => {
 					},
 				}),
 				task({
+					id: "legacy-workspace-ledger",
+					peer: "tenant-a-legacy-peer",
+					taskId: "task-legacy-workspace",
+					state: "TASK_STATE_INPUT_REQUIRED",
+					text: "legacy workspace-scoped task",
+					updatedAt: "2026-05-16T00:00:07.000Z",
+					metadata: {
+						workspaceId: "ws-1",
+					},
+				}),
+				task({
 					id: "other-user-ledger",
 					peer: "tenant-a-other-user",
 					taskId: "task-other-user",
@@ -248,15 +266,22 @@ describe("A2A cockpit", () => {
 			},
 		});
 
-		expect(summary.peers.map((peer) => peer.name)).toEqual(["tenant-a"]);
-		expect(summary.tasks.map((task) => task.taskId)).toEqual(["task-owned"]);
+		expect(summary.peers.map((peer) => peer.name)).toEqual([
+			"tenant-a",
+			"tenant-a-legacy-peer",
+		]);
+		expect(summary.tasks.map((task) => task.taskId)).toEqual([
+			"task-owned",
+			"task-legacy-workspace",
+		]);
 		expect(summary.nextActions.map((action) => action.peer)).toEqual([
 			"tenant-a",
+			"tenant-a-legacy-peer",
 		]);
 		expect(summary.counts).toMatchObject({
-			peers: 1,
-			tasks: 1,
-			actionRequiredTasks: 1,
+			peers: 2,
+			tasks: 2,
+			actionRequiredTasks: 2,
 		});
 	});
 });
