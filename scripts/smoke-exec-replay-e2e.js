@@ -328,6 +328,8 @@ function runRpcMode() {
 		let stdoutBuffer = "";
 		let stderr = "";
 		let finished = false;
+		let settled = false;
+		let forceKillTimer;
 		const timer = setTimeout(() => {
 			finish(new Error("RPC replay smoke timed out."));
 		}, timeoutMs);
@@ -336,10 +338,27 @@ function runRpcMode() {
 			if (finished) return;
 			finished = true;
 			clearTimeout(timer);
-			child.kill("SIGTERM");
-			rmSync(context.runDir, { recursive: true, force: true });
-			if (error) reject(error);
-			else resolve();
+			const settle = () => {
+				if (settled) return;
+				settled = true;
+				if (forceKillTimer) clearTimeout(forceKillTimer);
+				rmSync(context.runDir, { recursive: true, force: true });
+				if (error) reject(error);
+				else resolve();
+			};
+			if (child.exitCode !== null || child.signalCode !== null) {
+				settle();
+				return;
+			}
+			child.once("exit", settle);
+			if (!child.kill("SIGTERM")) {
+				settle();
+				return;
+			}
+			forceKillTimer = setTimeout(() => {
+				child.kill("SIGKILL");
+			}, 2000);
+			forceKillTimer.unref?.();
 		}
 
 		function handleEvent(event) {
