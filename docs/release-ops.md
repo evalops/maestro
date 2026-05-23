@@ -56,5 +56,6 @@
 
 - Verify a published package manually with `npm run release:verify:published -- --package <name> --version <version>`.
 - Deprecate a bad version or temporary package path from a logged-in machine with `npm run release:deprecate -- --range <version-or-range>`.
+- For the broken `@evalops/maestro@0.10.20` package, run `npm run release:deprecate -- --range 0.10.20 --message "Broken release: install @evalops/maestro@0.10.21 or newer."` from an npm-authenticated machine.
 - Add `--replacement-package @evalops/maestro` when retiring the temporary namespace, or provide `--message` for a custom rollback notice.
 - Use `--dry-run` first to inspect the exact `npm deprecate` command before making registry changes.
