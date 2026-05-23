@@ -61,6 +61,8 @@ if (list) {
 		config.workflowFile,
 		"--env",
 		config.environment,
+		"--allow-publish",
+		"--allow-stage-publish",
 		"--json",
 	);
 	if (!apply) {
