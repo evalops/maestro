@@ -39,11 +39,13 @@ export async function handleA2ACockpit(
 function ownershipScopeForRequest(
 	req: IncomingMessage,
 ): A2AOwnershipScope | undefined {
-	const scopeKey = resolveSessionScope(req);
+	const principal = getVerifiedRequestPrincipal(req);
+	const scopeKey =
+		resolveSessionScope(req) ??
+		(principal?.authMethod !== "anon" ? principal?.scopeKey : undefined);
 	if (!scopeKey) {
 		return undefined;
 	}
-	const principal = getVerifiedRequestPrincipal(req);
 	return {
 		scopeKey,
 		...(principal?.subject ? { subject: principal.subject } : {}),

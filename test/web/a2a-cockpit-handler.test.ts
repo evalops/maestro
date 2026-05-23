@@ -183,6 +183,58 @@ describe("handleA2ACockpit", () => {
 		expect(res.statusCode).toBe(200);
 	});
 
+	it("derives hosted A2A ownership from the authenticated principal without session scope mode", async () => {
+		vi.mocked(resolveSessionScope).mockReturnValue(null);
+		vi.mocked(getVerifiedRequestPrincipal).mockReturnValue({
+			authMethod: "api_key",
+			subject: "key:key-1",
+			scopeKey: "key_key-1",
+			keyId: "key-1",
+			roles: [],
+			scopes: [],
+		});
+		vi.mocked(buildA2ACockpit).mockResolvedValueOnce({
+			generatedAt: "2026-05-16T00:00:00.000Z",
+			registryPath: "/Users/test/.maestro/a2a/peers.json",
+			tasksPath: "/Users/test/.maestro/a2a/tasks.json",
+			counts: {
+				peers: 0,
+				onlinePeers: 0,
+				unreachablePeers: 0,
+				tasks: 0,
+				runningTasks: 0,
+				actionRequiredTasks: 0,
+				failedTasks: 0,
+				completedTasks: 0,
+			},
+			peers: [],
+			tasks: [],
+			nextActions: [],
+		});
+		const req = makeReq("/api/a2a/cockpit");
+		const res = makeRes();
+
+		await handleA2ACockpit(
+			req as unknown as IncomingMessage,
+			res as unknown as ServerResponse,
+			corsHeaders,
+		);
+
+		expect(buildA2ACockpit).toHaveBeenCalledWith({
+			registryPath: undefined,
+			tasksPath: undefined,
+			timeoutMs: 2500,
+			peer: undefined,
+			limit: undefined,
+			ownershipScope: {
+				scopeKey: "key_key-1",
+				subject: "key:key-1",
+				keyId: "key-1",
+			},
+		});
+		expect(res.statusCode).toBe(200);
+	});
+
 	it.each([
 		["registry", "/etc/passwd"],
 		["tasks", "../../a2a-tasks.json"],
