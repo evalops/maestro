@@ -102,6 +102,14 @@ function escapeRegExp(value) {
 	return value.replace(/[.+?^${}()|[\]\\]/g, "\\$&");
 }
 
+function globTokenPattern(value) {
+	let pattern = "";
+	for (const char of value) {
+		pattern += char === "*" ? "[^/]*" : escapeRegExp(char);
+	}
+	return pattern;
+}
+
 function segmentHasPatternSyntax(segment) {
 	return segment.includes("*") || /\{[^{}]+,[^{}]*\}/u.test(segment);
 }
@@ -118,7 +126,7 @@ function segmentPatternToRegExp(segment) {
 			const end = segment.indexOf("}", index + 1);
 			const body = end === -1 ? "" : segment.slice(index + 1, end);
 			if (body.includes(",")) {
-				pattern += `(?:${body.split(",").map(escapeRegExp).join("|")})`;
+				pattern += `(?:${body.split(",").map(globTokenPattern).join("|")})`;
 				index = end;
 				continue;
 			}
