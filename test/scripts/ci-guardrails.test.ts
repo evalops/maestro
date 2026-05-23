@@ -840,10 +840,9 @@ describe("ci workflow guardrails", () => {
 				{ encoding: "utf8" },
 			),
 		) as Workflow;
-		const releaseCanaryJob = releaseWorkflow.jobs?.["post-publish-canary"];
-		const canaryStep = releaseWorkflow.jobs?.[
-			"post-publish-canary"
-		]?.steps?.find((step) => step.name === "Verify published package from npm");
+			const canaryStep = releaseWorkflow.jobs?.[
+				"post-publish-canary"
+			]?.steps?.find((step) => step.name === "Verify published package from npm");
 		const verifyWorkflowPath = new URL(
 			"../../.github/workflows/verify-published-package.yml",
 			import.meta.url,
@@ -860,15 +859,11 @@ describe("ci workflow guardrails", () => {
 		expect(script).toContain("replaySandboxMode");
 		expect(sandboxArgs.length).toBeGreaterThanOrEqual(2);
 		expect(script).not.toMatch(/"--sandbox",\s*"workspace-write"/);
-		if (releaseCanaryJob) {
 			expect(canaryStep).toBeDefined();
 			expect(canaryStep?.env).toMatchObject({
 				MAESTRO_PUBLISHED_REPLAY_SANDBOX_MODE: "local",
 			});
-		} else {
-			expect(canaryStep).toBeUndefined();
-		}
-		if (existsSync(verifyWorkflowPath)) {
+			if (existsSync(verifyWorkflowPath)) {
 			const verifyWorkflow = parse(
 				readFileSync(verifyWorkflowPath, { encoding: "utf8" }),
 			) as Workflow;
