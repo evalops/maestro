@@ -15,6 +15,7 @@ import { planCiChecks } from "../../scripts/plan-ci-checks.mjs";
 import {
 	packageManifestReleaseMetadataOnlyChanged,
 	planNxTestCommand,
+	runtimePackageValidatorsRequired,
 } from "../../scripts/plan-nx-test-command.mjs";
 import {
 	collectFeedbackAuditTargets,
@@ -223,7 +224,26 @@ describe("planCiChecks", () => {
 			coverage: false,
 			prChecks: true,
 			publicMirror: true,
-			rustHostedConformance: true,
+			rustHostedConformance: false,
+		});
+	});
+
+	it("skips coverage and Rust conformance for proof-harness-only changes", () => {
+		expect(
+			planCiChecks({
+				eventName: "pull_request",
+				changedFiles: [
+					"docs/protocols/a2a-fleet-delegation.md",
+					"package.json",
+					"scripts/smoke-maestro-a2a-local-swarm.ts",
+				],
+			}),
+		).toMatchObject({
+			ciInfrastructureOnly: false,
+			coverage: false,
+			prChecks: true,
+			publicMirror: true,
+			rustHostedConformance: false,
 		});
 	});
 
@@ -287,6 +307,7 @@ describe("ci workflow guardrails", () => {
 		const regex = new RegExp(triggerPattern ?? "");
 		expect(regex.test(".github/workflows/ci.yml")).toBe(true);
 		expect(regex.test("scripts/ci-nx-tests.sh")).toBe(true);
+		expect(regex.test("scripts/check-smoke-scripts.mjs")).toBe(true);
 	});
 
 	it("builds dist before the runtime dependency validator", () => {
@@ -300,6 +321,7 @@ describe("ci workflow guardrails", () => {
 			)?.[1] ?? "";
 
 		expect(runtimeValidatorBody).not.toBe("");
+		expect(runtimeValidatorBody).toContain("--runtime-package-validators");
 		expect(runtimeValidatorBody.indexOf("npm run build")).toBeLessThan(
 			runtimeValidatorBody.indexOf("node scripts/check-runtime-deps.js"),
 		);
@@ -324,9 +346,7 @@ describe("ci workflow guardrails", () => {
 			]),
 		);
 
-		const nxTimeout = prCheckTimeouts.get("Test (Nx affected)");
-		expect(nxTimeout).toBeGreaterThanOrEqual(45);
-		expect(nxTimeout).toBeLessThanOrEqual(60);
+		expect(prCheckTimeouts.get("Test (Nx affected)")).toBe(60);
 		expect(workflow.jobs?.coverage?.["timeout-minutes"]).toBe(75);
 		expect(coverageTimeouts.get("Run tests with coverage")).toBe(60);
 	});
@@ -684,12 +704,30 @@ describe("planNxTestCommand", () => {
 				},
 			}),
 		).toEqual({
-			files: [
-				"scripts/smoke-platform-a2a-delegation-live.ts",
-				"test/platform/a2a-platform-delegation-live.test.ts",
-			],
+			files: ["test/platform/a2a-platform-delegation-live.test.ts"],
 			mode: "affected-files",
 		});
+	});
+
+	it("skips Nx for docs plus proof smoke script changes", () => {
+		expect(
+			planNxTestCommand({
+				basePackage,
+				changedFiles: [
+					"docs/protocols/a2a-fleet-delegation.md",
+					"package.json",
+					"scripts/smoke-maestro-a2a-local-swarm.ts",
+				],
+				headPackage: {
+					...basePackage,
+					scripts: {
+						...basePackage.scripts,
+						"smoke:a2a-local-swarm":
+							"tsx scripts/smoke-maestro-a2a-local-swarm.ts",
+					},
+				},
+			}),
+		).toEqual({ files: [], mode: "none" });
 	});
 
 	it("filters release metadata package manifests from affected files", () => {
@@ -748,6 +786,49 @@ describe("planNxTestCommand", () => {
 				},
 			}),
 		).toEqual({ files: [], mode: "none" });
+	});
+
+	it("skips runtime package validators for script-only package changes", () => {
+		expect(
+			runtimePackageValidatorsRequired({
+				basePackage,
+				changedFiles: [
+					"package.json",
+					"scripts/smoke-platform-a2a-delegation-live.ts",
+				],
+				headPackage: {
+					...basePackage,
+					scripts: {
+						...basePackage.scripts,
+						"platform:a2a-delegation-live":
+							"tsx scripts/smoke-platform-a2a-delegation-live.ts",
+					},
+				},
+			}),
+		).toBe(false);
+	});
+
+	it("requires runtime package validators for dependency-affecting changes", () => {
+		expect(
+			runtimePackageValidatorsRequired({
+				basePackage,
+				changedFiles: ["package.json"],
+				headPackage: {
+					...basePackage,
+					dependencies: {
+						...basePackage.dependencies,
+						"left-pad": "^1.3.0",
+					},
+				},
+			}),
+		).toBe(true);
+		expect(
+			runtimePackageValidatorsRequired({
+				basePackage,
+				changedFiles: ["scripts/check-runtime-deps.js"],
+				headPackage: basePackage,
+			}),
+		).toBe(true);
 	});
 
 	it("treats runtime workspace package metadata as release metadata", () => {

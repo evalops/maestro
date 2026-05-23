@@ -16,6 +16,7 @@ const FORCE_ALL_PATTERNS = [
 const PACKAGE_MANIFEST_PATTERN = /^packages\/[^/]+\/package\.json$/;
 const RELEASE_METADATA_FILES = new Set(["CHANGELOG.md"]);
 const CI_GUARDRAIL_FILES = new Set([
+	"scripts/check-smoke-scripts.mjs",
 	"scripts/ci-nx-tests.sh",
 	"scripts/plan-ci-checks.mjs",
 	"scripts/plan-nx-test-command.mjs",
@@ -29,11 +30,13 @@ const RUNTIME_PACKAGE_VALIDATOR_FILES = new Set([
 	"scripts/runtime-workspaces.mjs",
 	"scripts/validate-public-package-deps.js",
 ]);
+const SMOKE_SCRIPT_PATTERN = /^scripts\/smoke-[^/]+\.[cm]?[jt]sx?$/;
 
 function parseArgs(argv) {
 	const args = {
 		base: "",
 		head: "",
+		runtimePackageValidators: false,
 	};
 
 	for (let index = 0; index < argv.length; index += 1) {
@@ -44,6 +47,9 @@ function parseArgs(argv) {
 				break;
 			case "--head":
 				args.head = argv[++index] ?? "";
+				break;
+			case "--runtime-package-validators":
+				args.runtimePackageValidators = true;
 				break;
 			default:
 				throw new Error(`Unknown argument: ${arg}`);
@@ -238,6 +244,8 @@ function isHandledOutsideNx(file) {
 	return (
 		CI_GUARDRAIL_FILES.has(file) ||
 		RUNTIME_PACKAGE_VALIDATOR_FILES.has(file) ||
+		SMOKE_SCRIPT_PATTERN.test(file) ||
+		(file.startsWith("docs/") && file.endsWith(".md")) ||
 		file.startsWith(".github/workflows/")
 	);
 }
@@ -246,14 +254,16 @@ export function planNxTestCommand({
 	basePackage,
 	changedFiles,
 	headPackage,
-	handledOutsideNxFiles = [],
+	handledOutsideNxFiles,
 	packageJsonMetadataOnlyFiles = [],
 	releaseMetadataOnlyFiles = [],
 	rootProjectJsonOnlyRemovesTestSelfBuild = false,
 }) {
 	const normalizedChangedFiles = normalizeChangedFiles(changedFiles);
 	const hasPackageJsonChange = normalizedChangedFiles.includes("package.json");
-	const handledOutsideNxSet = new Set(handledOutsideNxFiles);
+	const handledOutsideNxSet = new Set(
+		handledOutsideNxFiles ?? normalizedChangedFiles.filter(isHandledOutsideNx),
+	);
 	const packageJsonMetadataOnlySet = new Set(packageJsonMetadataOnlyFiles);
 	const releaseMetadataOnlySet = new Set(releaseMetadataOnlyFiles);
 	const packageJsonIsScriptsOnly =
@@ -293,6 +303,32 @@ export function planNxTestCommand({
 	}
 
 	return { files: affectedFiles, mode: "affected-files" };
+}
+
+export function runtimePackageValidatorsRequired({
+	basePackage,
+	changedFiles,
+	headPackage,
+	packageJsonMetadataOnlyFiles = [],
+}) {
+	const normalizedChangedFiles = normalizeChangedFiles(changedFiles);
+	const packageJsonMetadataOnlySet = new Set(packageJsonMetadataOnlyFiles);
+	const packageJsonIsScriptsOnly =
+		normalizedChangedFiles.includes("package.json") &&
+		packageJsonScriptsOnlyChanged(basePackage, headPackage);
+
+	return normalizedChangedFiles.some((file) => {
+		if (RUNTIME_PACKAGE_VALIDATOR_FILES.has(file)) {
+			return true;
+		}
+		if (file === "package.json") {
+			return !(packageJsonIsScriptsOnly || packageJsonMetadataOnlySet.has(file));
+		}
+		if (PACKAGE_MANIFEST_PATTERN.test(file)) {
+			return !packageJsonMetadataOnlySet.has(file);
+		}
+		return false;
+	});
 }
 
 function git(args) {
@@ -424,17 +460,28 @@ async function main() {
 		.split("\n")
 		.filter(Boolean);
 	const headPackage = readPackageAt(args.head);
+	const packageJsonMetadataOnlyFiles = await metadataOnlyPackageFiles(
+		args.base,
+		args.head,
+		changedFiles,
+		headPackage,
+	);
+	if (args.runtimePackageValidators) {
+		const required = runtimePackageValidatorsRequired({
+			basePackage: readPackageAt(args.base),
+			changedFiles,
+			headPackage,
+			packageJsonMetadataOnlyFiles,
+		});
+		process.stdout.write(required ? "required\n" : "skipped\n");
+		return;
+	}
 	const plan = planNxTestCommand({
 		basePackage: readPackageAt(args.base),
 		changedFiles,
 		handledOutsideNxFiles: handledOutsideNxFiles(changedFiles),
 		headPackage,
-		packageJsonMetadataOnlyFiles: await metadataOnlyPackageFiles(
-			args.base,
-			args.head,
-			changedFiles,
-			headPackage,
-		),
+		packageJsonMetadataOnlyFiles,
 		releaseMetadataOnlyFiles: metadataOnlyReleaseFiles(
 			args.base,
 			args.head,

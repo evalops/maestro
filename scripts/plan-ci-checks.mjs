@@ -65,6 +65,7 @@ function isNestedReadme(path, prefix) {
 }
 
 const CI_GUARDRAIL_FILES = new Set([
+	"scripts/check-smoke-scripts.mjs",
 	"scripts/ci-nx-tests.sh",
 	"scripts/plan-ci-checks.mjs",
 	"scripts/plan-nx-test-command.mjs",
@@ -87,12 +88,17 @@ function isTestFile(path) {
 	return /(^|\/)test\/.*\.(test|spec)\.[cm]?[jt]sx?$/.test(path);
 }
 
+function isSmokeScript(path) {
+	return /^scripts\/smoke-[^/]+\.[cm]?[jt]sx?$/.test(path);
+}
+
 function shouldSkipCoverageForPath(path) {
 	return (
 		path.startsWith(".github/workflows/") ||
 		(path.startsWith("docs/") && path.endsWith(".md")) ||
 		CI_GUARDRAIL_FILES.has(path) ||
 		RUNTIME_PACKAGE_VALIDATOR_FILES.has(path) ||
+		isSmokeScript(path) ||
 		isPackageManifest(path) ||
 		isTestFile(path) ||
 		isNestedReadme(path, "examples") ||
@@ -157,6 +163,10 @@ function isRustOnlySourcePath(path) {
 	);
 }
 
+function isRustHostedConformancePath(path) {
+	return isRustSetupActionPath(path) || isRustOnlySourcePath(path);
+}
+
 export function planCiChecks({ eventName, labels = [], changedFiles = [] }) {
 	const normalizedLabels = normalizeLabels(labels);
 	const labelSet = new Set(normalizedLabels);
@@ -206,7 +216,7 @@ export function planCiChecks({ eventName, labels = [], changedFiles = [] }) {
 	const rustHostedConformance =
 		labelSet.has("run-rust-hosted-conformance") ||
 		rustSetupActionChanged ||
-		!ciInfrastructureOnly;
+		files.some(isRustHostedConformancePath);
 
 	return {
 		ciInfrastructureOnly,

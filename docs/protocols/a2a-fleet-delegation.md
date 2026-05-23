@@ -121,6 +121,18 @@ MAESTRO_SWARM_A2A_PREFER_INTERNAL=1 \
 maestro swarm run plan.md
 ```
 
+For a host-local proof of the full Maestro loop, run:
+
+```sh
+npm run smoke:a2a-local-swarm
+```
+
+The smoke starts a mock Agent Registry plus two real Rust control-plane
+instances, waits for both peers to auto-register and heartbeat, runs the swarm
+executor through Platform-style discovery, verifies both peers complete remote
+A2A tasks, resumes one task by `message.taskId`, and checks that a denied task
+class returns zero eligible candidates before dispatch.
+
 Platform-discovered peers are ranked by the A2A capability market
 (`evalops.maestro.a2a-capability-market.v1`) before selection. The ranking
 prefers exact skill matches, idle/online and freshly heartbeated agents,

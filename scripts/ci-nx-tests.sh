@@ -32,7 +32,7 @@ changed_files_match() {
 }
 
 run_ci_guardrail_tests() {
-	if ! changed_files_match '^(\.github/workflows/.*|scripts/ci-nx-tests\.sh|scripts/(plan-ci-checks|plan-nx-test-command)\.mjs|test/scripts/ci-guardrails\.test\.ts)$'; then
+	if ! changed_files_match '^(\.github/workflows/.*|scripts/(check-smoke-scripts|ci-nx-tests|plan-ci-checks|plan-nx-test-command)\.mjs|scripts/ci-nx-tests\.sh|test/scripts/ci-guardrails\.test\.ts)$'; then
 		return 0
 	fi
 
@@ -40,8 +40,29 @@ run_ci_guardrail_tests() {
 	node ./scripts/run-vitest.js --run test/scripts/ci-guardrails.test.ts
 }
 
+run_smoke_script_static_checks() {
+	local smoke_scripts=()
+	while IFS= read -r file; do
+		smoke_scripts+=("$file")
+	done < <(grep -E '^scripts/smoke-[^/]+\.[cm]?[jt]sx?$' "$changed_files_log" || true)
+	if [[ "${#smoke_scripts[@]}" -eq 0 ]]; then
+		return 0
+	fi
+
+	echo "Checking changed smoke scripts..."
+	node scripts/check-smoke-scripts.mjs "${smoke_scripts[@]}"
+}
+
 run_runtime_package_validators() {
-	if ! changed_files_match '^(package\.json|packages/[^/]+/package\.json|scripts/(bundle-runtime-deps|check-docker-runtime-workspaces|check-packed-bundled-workspaces|runtime-workspaces)\.mjs|scripts/(check-runtime-deps|validate-public-package-deps)\.js)$'; then
+	local runtime_validator_plan
+	runtime_validator_plan="$(
+		node scripts/plan-nx-test-command.mjs \
+			--base "$NX_BASE" \
+			--head "$NX_HEAD" \
+			--runtime-package-validators
+	)"
+	if [[ "$runtime_validator_plan" != "required" ]]; then
+		echo "Skipping runtime package validators; package manifest changes are script-only, metadata-only, or absent."
 		return 0
 	fi
 
@@ -63,6 +84,7 @@ run_shared_memory_tests() {
 node scripts/ensure-deps.js --no-install --workspace @evalops/contracts --workspace @evalops/tui
 run_ci_guardrail_tests
 run_runtime_package_validators
+run_smoke_script_static_checks
 
 nx_plan="$(node scripts/plan-nx-test-command.mjs --base "$NX_BASE" --head "$NX_HEAD")"
 nx_mode="$(printf '%s\n' "$nx_plan" | sed -n '1p')"
