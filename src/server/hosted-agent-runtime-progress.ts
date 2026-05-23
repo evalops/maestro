@@ -742,6 +742,9 @@ export class HostedAgentRuntimeProgressRecorder {
 	private readonly recordedTaskWorkItemIds = new Set<string>();
 	private pending: Promise<void> = Promise.resolve();
 	private turnIndex = 0;
+	private autoRetrySequence = 0;
+	private activeAutoRetrySequence: number | null = null;
+	private lastAutoRetryAttempt = 0;
 	private terminalRecorded = false;
 
 	constructor(options: HostedAgentRuntimeProgressRecorderOptions) {
@@ -1007,8 +1010,9 @@ export class HostedAgentRuntimeProgressRecorder {
 	private recordAutoRetryStart(
 		event: Extract<AgentEvent, { type: "auto_retry_start" }>,
 	): void {
+		const sequence = this.resolveAutoRetryStartSequence(event.attempt);
 		this.recordStep({
-			id: this.autoRetryStepId(event.attempt),
+			id: this.autoRetryStepId(event.attempt, sequence),
 			name: `Auto retry ${event.attempt}`,
 			stepKind: PlatformAgentRunStepKindValue.System,
 			state: PlatformAgentRunStepStateValue.Waiting,
@@ -1025,8 +1029,9 @@ export class HostedAgentRuntimeProgressRecorder {
 	private recordAutoRetryEnd(
 		event: Extract<AgentEvent, { type: "auto_retry_end" }>,
 	): void {
+		const sequence = this.resolveAutoRetryEndSequence();
 		this.recordStep({
-			id: this.autoRetryStepId(event.attempt),
+			id: this.autoRetryStepId(event.attempt, sequence),
 			name: `Auto retry ${event.attempt}`,
 			stepKind: event.success
 				? PlatformAgentRunStepKindValue.System
@@ -2429,8 +2434,31 @@ export class HostedAgentRuntimeProgressRecorder {
 		return this.stepId("work", toolCallId);
 	}
 
-	private autoRetryStepId(attempt: number): string {
-		return this.stepId("retry", `auto-${attempt}`);
+	private resolveAutoRetryStartSequence(attempt: number): number {
+		if (
+			this.activeAutoRetrySequence === null ||
+			attempt <= this.lastAutoRetryAttempt
+		) {
+			this.autoRetrySequence += 1;
+			this.activeAutoRetrySequence = this.autoRetrySequence;
+		}
+		this.lastAutoRetryAttempt = attempt;
+		return this.activeAutoRetrySequence;
+	}
+
+	private resolveAutoRetryEndSequence(): number {
+		if (this.activeAutoRetrySequence === null) {
+			this.autoRetrySequence += 1;
+			this.activeAutoRetrySequence = this.autoRetrySequence;
+		}
+		const sequence = this.activeAutoRetrySequence;
+		this.activeAutoRetrySequence = null;
+		this.lastAutoRetryAttempt = 0;
+		return sequence;
+	}
+
+	private autoRetryStepId(attempt: number, sequence: number): string {
+		return this.stepId("retry", `auto-${sequence}-attempt-${attempt}`);
 	}
 
 	private waitId(requestId: string): string {

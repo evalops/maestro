@@ -44,6 +44,8 @@ function writePackage(
 					scripts: {
 						"release:verify:published":
 							"node scripts/smoke-registry-install.js",
+						"release:verify:published:e2e":
+							"node scripts/smoke-published-replay-e2e.js",
 						"release:deprecate": "node scripts/deprecate-release.js",
 					},
 				}

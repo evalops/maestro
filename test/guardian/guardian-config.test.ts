@@ -21,6 +21,7 @@ const joinParts = (...parts: string[]) => parts.join("");
 describe("Guardian Config", () => {
 	let testDir: string;
 	let originalHome: string | undefined;
+	let originalToolTimeout: string | undefined;
 
 	beforeEach(() => {
 		testDir = join(
@@ -32,12 +33,18 @@ describe("Guardian Config", () => {
 
 		// Save original HOME
 		originalHome = process.env.HOME;
+		originalToolTimeout = process.env.MAESTRO_GUARDIAN_TOOL_TIMEOUT_MS;
 	});
 
 	afterEach(() => {
 		// Restore original HOME
 		if (originalHome !== undefined) {
 			process.env.HOME = originalHome;
+		}
+		if (originalToolTimeout !== undefined) {
+			process.env.MAESTRO_GUARDIAN_TOOL_TIMEOUT_MS = originalToolTimeout;
+		} else {
+			Reflect.deleteProperty(process.env, "MAESTRO_GUARDIAN_TOOL_TIMEOUT_MS");
 		}
 
 		// Clean up
@@ -159,6 +166,42 @@ describe("Guardian Config", () => {
 
 			expect(config.enabled).toBe(true);
 			expect(config.toolTimeoutMs).toBe(60_000); // Still from file
+		});
+
+		it("should allow environment to override file tool timeout", () => {
+			const fileConfig: GuardianConfig = {
+				toolTimeoutMs: 60_000,
+			};
+			writeFileSync(
+				join(testDir, ".maestro", "guardian.json"),
+				JSON.stringify(fileConfig),
+			);
+			process.env.MAESTRO_GUARDIAN_TOOL_TIMEOUT_MS = "600000";
+
+			const config = resolveGuardianConfig({ root: testDir });
+
+			expect(config.toolTimeoutMs).toBe(600_000);
+		});
+
+		it("should allow programmatic config to override environment tool timeout", () => {
+			process.env.MAESTRO_GUARDIAN_TOOL_TIMEOUT_MS = "600000";
+
+			const config = resolveGuardianConfig({
+				root: testDir,
+				config: {
+					toolTimeoutMs: 45_000,
+				},
+			});
+
+			expect(config.toolTimeoutMs).toBe(45_000);
+		});
+
+		it("should ignore invalid environment tool timeout values", () => {
+			process.env.MAESTRO_GUARDIAN_TOOL_TIMEOUT_MS = "0";
+
+			const config = resolveGuardianConfig({ root: testDir });
+
+			expect(config.toolTimeoutMs).toBe(DEFAULT_GUARDIAN_CONFIG.toolTimeoutMs);
 		});
 
 		it("should handle malformed config files gracefully", () => {

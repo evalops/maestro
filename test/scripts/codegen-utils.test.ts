@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { formatRustWithRustfmt } from "../../scripts/codegen-utils.mjs";
 
-const envName = "TEST_RUSTFMT";
+const envName = "HEADLESS_PROTOCOL_RUSTFMT";
 const tempDirs: string[] = [];
 
 afterEach(() => {
@@ -22,8 +22,8 @@ function makeTempDir() {
 }
 
 describe("formatRustWithRustfmt", () => {
-	it.each(["0", "false", "off", "none", "skip", "disabled"])(
-		"allows rustfmt to be explicitly disabled with %s in write mode",
+	it.each(["0", "false", "no", "off", "none", "skip", "disabled"])(
+		"treats %s as an explicit formatter opt-out",
 		(value) => {
 			const rootDir = makeTempDir();
 			process.env[envName] = value;
@@ -33,9 +33,9 @@ describe("formatRustWithRustfmt", () => {
 				source,
 				join(rootDir, "generated.rs"),
 				{
-					envNames: [envName],
-					label: "generated Rust test file",
 					rootDir,
+					label: "generated Rust fixture",
+					envNames: [envName],
 				},
 			);
 
@@ -52,8 +52,8 @@ describe("formatRustWithRustfmt", () => {
 			source,
 			join(rootDir, "generated.rs"),
 			{
-				label: "generated Rust test file",
 				rootDir,
+				label: "generated Rust fixture",
 			},
 		);
 

@@ -25,6 +25,7 @@ import type {
 const GUARDIAN_DISABLE_VALUES = ["0", "false", "off", "no"];
 const GUARDIAN_ENABLE_VALUES = ["1", "true", "on"];
 const DEFAULT_TIMEOUT_MS = 10_000;
+const DEFAULT_SEMGREP_TIMEOUT_MS = 120_000;
 
 type FileListResult =
 	| { ok: true; files: string[] }
@@ -99,7 +100,7 @@ function runCommand(
 			exitCode: exitCodeForSpawnResult(
 				result.status,
 				result.error,
-				result.signal,
+				result.signal ?? null,
 			),
 			stdout: result.stdout ?? "",
 			stderr,
@@ -107,11 +108,13 @@ function runCommand(
 			durationMs: Date.now() - started,
 		};
 	} catch (error) {
+		const thrownError =
+			error instanceof Error ? error : new Error(String(error));
 		return {
-			exitCode: 1,
+			exitCode: exitCodeForSpawnResult(null, thrownError, null),
 			stdout: "",
-			stderr: error instanceof Error ? error.message : String(error),
-			error: error instanceof Error ? error.message : String(error),
+			stderr: thrownError.message,
+			error: thrownError.message,
 			durationMs: Date.now() - started,
 		};
 	}
@@ -227,7 +230,7 @@ function locateSemgrep(
 function runSemgrep(
 	files: string[],
 	root: string,
-	timeoutMs: number,
+	timeoutMs = DEFAULT_SEMGREP_TIMEOUT_MS,
 ): GuardianToolResult {
 	const started = Date.now();
 	const cmd = locateSemgrep(root);

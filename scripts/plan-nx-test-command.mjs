@@ -36,9 +36,13 @@ const RUNTIME_PACKAGE_VALIDATOR_FILES = new Set([
 	"scripts/workspace-utils.js",
 ]);
 const RELEASE_HELPER_PACKAGE_FILES = new Set([
+	"scripts/configure-npm-trusted-publisher.mjs",
+	"scripts/deprecate-release.js",
 	"scripts/install-smoke-utils.js",
 	"scripts/release-readiness.js",
 	"scripts/smoke-packed-cli.js",
+	"scripts/smoke-published-replay-e2e.js",
+	"scripts/smoke-registry-install.js",
 	"scripts/workspace-utils.js",
 ]);
 const RELEASE_HELPER_TEST_FILES = new Set([
@@ -259,6 +263,7 @@ function normalizeChangedFiles(changedFiles) {
 function isHandledOutsideNx(file) {
 	return (
 		CI_GUARDRAIL_FILES.has(file) ||
+		RELEASE_HELPER_PACKAGE_FILES.has(file) ||
 		RUNTIME_PACKAGE_VALIDATOR_FILES.has(file) ||
 		SMOKE_SCRIPT_PATTERN.test(file) ||
 		(file.startsWith("docs/") && file.endsWith(".md")) ||

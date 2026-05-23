@@ -84,9 +84,13 @@ const RUNTIME_PACKAGE_VALIDATOR_FILES = new Set([
 	"scripts/workspace-utils.js",
 ]);
 const RELEASE_HELPER_PACKAGE_FILES = new Set([
+	"scripts/configure-npm-trusted-publisher.mjs",
+	"scripts/deprecate-release.js",
 	"scripts/install-smoke-utils.js",
 	"scripts/release-readiness.js",
 	"scripts/smoke-packed-cli.js",
+	"scripts/smoke-published-replay-e2e.js",
+	"scripts/smoke-registry-install.js",
 	"scripts/workspace-utils.js",
 ]);
 const RELEASE_HELPER_TEST_FILES = new Set([
@@ -116,6 +120,7 @@ function shouldSkipCoverageForPath(path) {
 		path.startsWith(".github/workflows/") ||
 		(path.startsWith("docs/") && path.endsWith(".md")) ||
 		CI_GUARDRAIL_FILES.has(path) ||
+		RELEASE_HELPER_PACKAGE_FILES.has(path) ||
 		RUNTIME_PACKAGE_VALIDATOR_FILES.has(path) ||
 		isLeafIdeExtensionPath(path) ||
 		isSmokeScript(path) ||
@@ -141,12 +146,9 @@ function shouldSkipPublicMirrorForPath(path) {
 		path === ".github/RELEASE_MIRROR_CONTRACT.md" ||
 		path === "docs/release-ops.md" ||
 		path.startsWith("docs/internal/") ||
-		path === "scripts/configure-npm-trusted-publisher.mjs" ||
-		path === "scripts/deprecate-release.js" ||
 		path === "scripts/run-scenario-replay-gate.mjs" ||
 		path === "scripts/scenario-replay-governance.mjs" ||
 		path === "scripts/scenario-replay-governance.test.mjs" ||
-		path === "scripts/smoke-registry-install.js" ||
 		path === "scripts/validate-public-package-deps.js" ||
 		path === "AGENTS.md" ||
 		path === "CLAUDE.md"
@@ -199,6 +201,7 @@ function isLightPrChecksPath(path) {
 	return (
 		isCiInfrastructureOnlyPath(path) ||
 		CI_GUARDRAIL_FILES.has(path) ||
+		RELEASE_HELPER_PACKAGE_FILES.has(path) ||
 		RUNTIME_PACKAGE_VALIDATOR_FILES.has(path) ||
 		RELEASE_HELPER_TEST_FILES.has(path) ||
 		isSmokeScript(path)
