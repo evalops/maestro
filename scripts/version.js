@@ -101,6 +101,7 @@ function formatPackageJsonFiles(packageJsonPaths) {
 	try {
 		execFileSync("bunx", ["biome", "format", "--write", ...packageJsonPaths], {
 			stdio: "inherit",
+			shell: process.platform === "win32",
 		});
 		console.log("🧹 Formatted package.json files");
 	} catch (error) {
