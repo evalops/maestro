@@ -41,7 +41,8 @@ const replaySandboxModes = [
 ];
 // Hosted Linux release runners do not always expose Maestro's native sandbox.
 const replaySandboxMode =
-	process.env.MAESTRO_PUBLISHED_REPLAY_SANDBOX_MODE?.trim() || "local";
+	process.env.MAESTRO_PUBLISHED_REPLAY_SANDBOX_MODE?.trim() ||
+	"workspace-write";
 
 function fail(message, details) {
 	console.error(message);
