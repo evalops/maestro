@@ -2,6 +2,8 @@
 // @ts-check
 
 import { execFileSync } from "node:child_process";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 
 export function getNpmCommand() {
 	return process.platform === "win32" ? "npm.cmd" : "npm";
@@ -9,6 +11,113 @@ export function getNpmCommand() {
 
 export function getNpxCommand() {
 	return process.platform === "win32" ? "npx.cmd" : "npx";
+}
+
+export function getBunCommand() {
+	return process.platform === "win32" ? "bun.exe" : "bun";
+}
+
+export function installedPackageJsonPath(packageName, installRoot) {
+	return join(
+		installRoot,
+		"node_modules",
+		...packageName.split("/"),
+		"package.json",
+	);
+}
+
+export function installedBinPath(installRoot, cliCommand) {
+	return process.platform === "win32"
+		? join(installRoot, "node_modules", ".bin", `${cliCommand}.cmd`)
+		: join(installRoot, "node_modules", ".bin", cliCommand);
+}
+
+export function readInstalledPackageJson(packageName, installRoot) {
+	const packageJsonPath = installedPackageJsonPath(packageName, installRoot);
+	try {
+		const parsed = JSON.parse(readFileSync(packageJsonPath, "utf8"));
+		if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+			throw new Error("installed package.json did not contain an object");
+		}
+		return parsed;
+	} catch (error) {
+		const reason =
+			error instanceof Error ? error.message : "unknown package read error";
+		throw new Error(
+			`Could not read installed package metadata at ${packageJsonPath}: ${reason}`,
+		);
+	}
+}
+
+function arrayValues(value) {
+	return Array.isArray(value)
+		? value.filter((entry) => typeof entry === "string" && entry.length > 0)
+		: [];
+}
+
+function objectEntries(value) {
+	return value && typeof value === "object" && !Array.isArray(value)
+		? Object.entries(value)
+		: [];
+}
+
+export function assertInstallablePackageMetadata(
+	installedPackage,
+	{ label, forbiddenWorkspaceNames = [] },
+) {
+	const forbiddenNames = new Set(forbiddenWorkspaceNames);
+	const offenders = [];
+	for (const section of [
+		"dependencies",
+		"optionalDependencies",
+		"peerDependencies",
+	]) {
+		for (const [name, spec] of objectEntries(installedPackage[section])) {
+			if (forbiddenNames.has(name)) {
+				offenders.push(`${section}.${name}`);
+			}
+			if (typeof spec === "string" && spec.startsWith("workspace:")) {
+				offenders.push(`${section}.${name}=workspace:`);
+			}
+		}
+	}
+
+	for (const section of ["bundleDependencies", "bundledDependencies"]) {
+		for (const name of arrayValues(installedPackage[section])) {
+			if (forbiddenNames.has(name)) {
+				offenders.push(`${section}.${name}`);
+			}
+		}
+	}
+
+	if (offenders.length > 0) {
+		throw new Error(
+			`${label} exposes non-registry workspace metadata: ${offenders
+				.sort()
+				.join(", ")}`,
+		);
+	}
+}
+
+export function runInstalledCliSmoke(
+	cwd,
+	{ cliCommand, expectedVersion, label },
+) {
+	const binPath = installedBinPath(cwd, cliCommand);
+	const versionOutput = execFileSync(binPath, ["--version"], {
+		cwd,
+		encoding: "utf8",
+	});
+	if (!versionOutput.includes(expectedVersion)) {
+		throw new Error(
+			`Expected ${label} ${cliCommand} --version output to include ${expectedVersion}, received: ${versionOutput.trim()}`,
+		);
+	}
+
+	execFileSync(binPath, ["--help"], {
+		cwd,
+		stdio: "ignore",
+	});
 }
 
 function parseAuditJson(output) {

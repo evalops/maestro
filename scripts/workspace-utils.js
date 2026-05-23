@@ -6,7 +6,12 @@
  * Plain JS for direct Node execution; typed via JSDoc for safety.
  */
 
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import {
+	existsSync,
+	readFileSync,
+	readdirSync,
+	writeFileSync,
+} from "node:fs";
 import { dirname, join, resolve as resolvePath } from "node:path";
 
 /**
@@ -93,21 +98,85 @@ function getWorkspaceGlobs(rootPackage) {
 	throw new Error("Unsupported workspace configuration in package.json");
 }
 
+function segmentPatternToRegExp(segment) {
+	return new RegExp(
+		`^${segment.replace(/[.+?^${}()|[\]\\]/g, "\\$&").replace(/\*/g, "[^/]*")}$`,
+	);
+}
+
+function listDirectories(path) {
+	try {
+		return readdirSync(path, { withFileTypes: true })
+			.filter((entry) => entry.isDirectory())
+			.map((entry) => join(path, entry.name));
+	} catch {
+		return [];
+	}
+}
+
+function expandWorkspacePattern(rootDir, pattern) {
+	const segments = pattern.split(/[\\/]+/u).filter(Boolean);
+	let directories = [rootDir];
+
+	for (const segment of segments) {
+		if (segment === "**") {
+			const descendants = [];
+			const visit = (dir) => {
+				for (const child of listDirectories(dir)) {
+					descendants.push(child);
+					visit(child);
+				}
+			};
+			for (const dir of directories) {
+				visit(dir);
+			}
+			directories = descendants;
+			continue;
+		}
+
+		if (segment.includes("*")) {
+			const regexp = segmentPatternToRegExp(segment);
+			directories = directories.flatMap((dir) =>
+				listDirectories(dir).filter((child) =>
+					regexp.test(child.split(/[\\/]/u).pop() ?? ""),
+				),
+			);
+			continue;
+		}
+
+		directories = directories
+			.map((dir) => join(dir, segment))
+			.filter((dir) => existsSync(dir));
+	}
+
+	return directories
+		.map((dir) => join(dir, "package.json"))
+		.filter((path) => existsSync(path))
+		.map((path) => resolvePath(path));
+}
+
+async function resolveWorkspacePackagePathsWithGlob(rootDir, globs) {
+	try {
+		const { globSync } = await import("glob");
+		return globs.flatMap((pattern) =>
+			globSync(join(pattern, "package.json"), {
+				cwd: rootDir,
+				absolute: true,
+				nodir: true,
+			}).map((p) => resolvePath(p)),
+		);
+	} catch {
+		return globs.flatMap((pattern) => expandWorkspacePattern(rootDir, pattern));
+	}
+}
+
 /**
  * @param {Record<string, unknown>} rootPackage
  */
 export async function getWorkspacePackagePaths(rootPackage) {
-	const { globSync } = await import("glob");
 	const globs = getWorkspaceGlobs(rootPackage);
-	const paths = new Set(
-		globs.flatMap((pattern) =>
-			globSync(join(pattern, "package.json"), {
-				cwd: getRootContext().rootDir,
-				absolute: true,
-				nodir: true,
-			}).map((p) => resolvePath(p)),
-		),
-	);
+	const { rootDir } = getRootContext();
+	const paths = new Set(await resolveWorkspacePackagePathsWithGlob(rootDir, globs));
 
 	if (paths.size === 0) {
 		throw new Error("No workspace package.json files found");
