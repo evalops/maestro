@@ -72,6 +72,16 @@ const CI_GUARDRAIL_FILES = new Set([
 	"scripts/summarize-nx-profile.mjs",
 	"test/scripts/ci-guardrails.test.ts",
 ]);
+const CODEGEN_UTILITY_FILES = new Set([
+	"scripts/codegen-utils.mjs",
+	"test/scripts/codegen-utils.test.ts",
+]);
+const CODEGEN_UTILITY_LANE_FILES = new Set([
+	...CODEGEN_UTILITY_FILES,
+	".github/workflows/ci.yml",
+	"scripts/plan-ci-checks.mjs",
+	"test/scripts/ci-guardrails.test.ts",
+]);
 const RUNTIME_PACKAGE_VALIDATOR_FILES = new Set([
 	"scripts/bundle-runtime-deps.mjs",
 	"scripts/check-docker-runtime-workspaces.mjs",
@@ -119,6 +129,7 @@ function shouldSkipCoverageForPath(path) {
 	return (
 		path.startsWith(".github/workflows/") ||
 		(path.startsWith("docs/") && path.endsWith(".md")) ||
+		CODEGEN_UTILITY_FILES.has(path) ||
 		CI_GUARDRAIL_FILES.has(path) ||
 		RELEASE_HELPER_PACKAGE_FILES.has(path) ||
 		RUNTIME_PACKAGE_VALIDATOR_FILES.has(path) ||
@@ -200,6 +211,7 @@ function isRustHostedConformancePath(path) {
 function isLightPrChecksPath(path) {
 	return (
 		isCiInfrastructureOnlyPath(path) ||
+		CODEGEN_UTILITY_FILES.has(path) ||
 		CI_GUARDRAIL_FILES.has(path) ||
 		RELEASE_HELPER_PACKAGE_FILES.has(path) ||
 		RUNTIME_PACKAGE_VALIDATOR_FILES.has(path) ||
@@ -226,6 +238,7 @@ export function planCiChecks({ eventName, labels = [], changedFiles = [] }) {
 	if (!isPullRequest) {
 		return {
 			ciInfrastructureOnly: false,
+			codegenUtilityOnly: false,
 			coverage: true,
 			lightPrChecks: false,
 			releaseHelperOnly: false,
@@ -239,6 +252,7 @@ export function planCiChecks({ eventName, labels = [], changedFiles = [] }) {
 	if (labelSet.has("full-ci")) {
 		return {
 			ciInfrastructureOnly: false,
+			codegenUtilityOnly: false,
 			coverage: true,
 			lightPrChecks: false,
 			releaseHelperOnly: false,
@@ -252,6 +266,9 @@ export function planCiChecks({ eventName, labels = [], changedFiles = [] }) {
 	const files = changedFiles.map(String).map((path) => path.trim()).filter(Boolean);
 	const ciInfrastructureOnly =
 		files.length > 0 && files.every(isFastPrChecksInfrastructurePath);
+	const codegenUtilityOnly =
+		files.some((path) => CODEGEN_UTILITY_FILES.has(path)) &&
+		files.every((path) => CODEGEN_UTILITY_LANE_FILES.has(path));
 	const proofHarnessOnly =
 		files.length > 0 && files.every((path) => isProofHarnessPath(path));
 	const rustSetupActionChanged = files.some(isRustSetupActionPath);
@@ -296,6 +313,7 @@ export function planCiChecks({ eventName, labels = [], changedFiles = [] }) {
 
 	return {
 		ciInfrastructureOnly,
+		codegenUtilityOnly,
 		coverage,
 		lightPrChecks,
 		proofHarnessOnly,
@@ -340,6 +358,7 @@ function writeGitHubOutputs(plan) {
 		[
 			`coverage=${plan.coverage}`,
 			`ci_infrastructure_only=${plan.ciInfrastructureOnly ?? false}`,
+			`codegen_utility_only=${plan.codegenUtilityOnly ?? false}`,
 			`light_pr_checks=${plan.lightPrChecks ?? false}`,
 			`proof_harness_only=${plan.proofHarnessOnly ?? false}`,
 			`release_helper_only=${plan.releaseHelperOnly ?? false}`,
@@ -359,6 +378,7 @@ function writeGitHubSummary(plan, changedFiles) {
 		"## Expensive check plan",
 		"",
 		`- CI infrastructure only: \`${plan.ciInfrastructureOnly ?? false}\``,
+		`- codegen utility only: \`${plan.codegenUtilityOnly ?? false}\``,
 		`- coverage: \`${plan.coverage}\``,
 		`- light PR checks: \`${plan.lightPrChecks ?? false}\``,
 		`- release helper only: \`${plan.releaseHelperOnly ?? false}\``,
