@@ -17,6 +17,38 @@ versioning when releases are cut.
   and keep scheduled public runs inert so public publishing stays downstream of
   the internal source-of-truth release.
 
+## [0.10.22] - 2026-05-23
+
+### Added
+
+- Prove A2A swarm push work graph (#2099). <!-- maestro-release-note:b1f0e8e9a42f -->
+
+### Changed
+
+- Keep public ci timeout guardrail portable (#2132). <!-- maestro-release-note:a8d4b09d27ff -->
+- Harden Bun registry replay smoke (#2131). <!-- maestro-release-note:c60a4b76f31e -->
+- Add Maestro operator control-plane improvements (#2102). <!-- maestro-release-note:e02197f75adc -->
+- Expand A2A local swarm proof (#2117). <!-- maestro-release-note:0b0c9af887a0 -->
+- Guard hosted retry wait coalescing (#2129). <!-- maestro-release-note:a2f32058d0db -->
+- Tolerate public ci workflow in codegen guardrail (#2130). <!-- maestro-release-note:630b9a817f7f -->
+- Add failed tool-call event catalog subject (#2127). <!-- maestro-release-note:5ed2ebb69cf7 -->
+- Harden registry release smoke and Guardian runtime proof (#2122). <!-- maestro-release-note:11e0bad42535 -->
+- Normalize integration service port guardrail (#2125). <!-- maestro-release-note:2da12d21b445 -->
+- Preserve Guardian timeout exit codes (#2121). <!-- maestro-release-note:737cff3aa0a2 -->
+- Codex tool profiles and focused Fathom CUA proof matrix (#2112). <!-- maestro-release-note:a89b36b414a4 -->
+- Record hosted runtime evidence events (#2101). <!-- maestro-release-note:7b94cbac2fde -->
+
+### Fixed
+
+- Treat blank rustfmt overrides as disabled (#2128). <!-- maestro-release-note:4befad9e79b9 -->
+- Harden artifact runtime reconstruction (#2124). <!-- maestro-release-note:00b306b4f90f -->
+- Recover status database probes after timeout (#2123). <!-- maestro-release-note:e203b1621f5b -->
+- Require public mirror source sha (#2113). <!-- maestro-release-note:50b1a534330e -->
+- Require fresh Fathom CUA action proof state (#2120). <!-- maestro-release-note:dd5d851a1573 -->
+- Reduce avoidable tool serialization (#2108). <!-- maestro-release-note:6bda4a5d45e4 -->
+- Reconcile public workspace glob fallback (#2107). <!-- maestro-release-note:582542106f95 -->
+- Preserve public release smoke parity (#2104). <!-- maestro-release-note:9b155949bcf8 -->
+
 ## [0.10.21] - 2026-05-22
 
 ### Changed
