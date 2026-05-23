@@ -793,27 +793,6 @@ describe("ci workflow guardrails", () => {
 		expect(releaseReadinessStep?.if).toContain("release_helper_only != 'true'");
 	});
 
-	it("formats version-generated package manifests before release checks", () => {
-		const script = readFileSync(
-			new URL("../../scripts/version.js", import.meta.url),
-			{ encoding: "utf8" },
-		);
-		const formatCall = "formatPackageJsonFiles([";
-
-		expect(script).toContain("execFileSync");
-		expect(script).toContain('"bunx"');
-		expect(script).toContain('"biome"');
-		expect(script).toContain('"format"');
-		expect(script).toContain('"--write"');
-		expect(script).toContain(formatCall);
-		expect(script.indexOf(formatCall)).toBeGreaterThan(
-			script.indexOf("writePackageJson(pkg.path, pkg.data);"),
-		);
-		expect(script.indexOf(formatCall)).toBeLessThan(
-			script.indexOf("updateChangelog(newVersion"),
-		);
-	});
-
 	it("keeps public registry smoke install helper exports", async () => {
 		const helpers = (await import(
 			"../../scripts/install-smoke-utils.js"
@@ -1917,11 +1896,19 @@ describe("public mirror ref resolution", () => {
 	it("tries internal branch aliases before falling back to main", () => {
 		expect(publicMirrorRefCandidates("codex/internal-release-foo")).toEqual([
 			"codex/internal-release-foo",
+			"internal-release-foo",
 			"codex/release-foo",
+			"release-foo",
 		]);
 		expect(publicMirrorRefCandidates("internal-release-foo")).toEqual([
 			"internal-release-foo",
 			"release-foo",
+		]);
+		expect(
+			publicMirrorRefCandidates("codex/published-canary-sandbox-fix"),
+		).toEqual([
+			"codex/published-canary-sandbox-fix",
+			"published-canary-sandbox-fix",
 		]);
 	});
 

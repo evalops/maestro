@@ -1,5 +1,10 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
-import type { ComposerMessage } from "@evalops/contracts";
+import {
+	type ComposerMessage,
+	artifactContentsByFilename,
+	isValidArtifactFilename,
+	reconstructArtifactsFromMessages as reconstructArtifactStateFromMessages,
+} from "@evalops/contracts";
 import { lookup as lookupMimeType } from "mime-types";
 import { createLogger } from "../../utils/logger.js";
 import {
@@ -161,95 +166,22 @@ function injectArtifactsSnapshotRuntime(
 	return `${html}\n${runtime}`;
 }
 
-type ArtifactsCommand =
-	| "create"
-	| "update"
-	| "rewrite"
-	| "get"
-	| "delete"
-	| "logs";
-
-function asString(value: unknown): string | undefined {
-	return typeof value === "string" ? value : undefined;
-}
-
-function hasControlCharacter(value: string): boolean {
-	for (let index = 0; index < value.length; index += 1) {
-		const code = value.charCodeAt(index);
-		if (code < 32 || code === 127) return true;
-	}
-	return false;
-}
-
-function isValidArtifactFilename(filename: string): boolean {
-	return (
-		filename.length > 0 &&
-		!filename.includes("..") &&
-		!filename.includes("/") &&
-		!filename.includes("\\") &&
-		!hasControlCharacter(filename)
-	);
-}
-
 function reconstructArtifactsFromMessages(
 	messages: ComposerMessage[],
 ): Map<string, string> {
-	const byFilename = new Map<string, string>();
-
-	for (const msg of messages) {
-		const tools = msg.tools ?? [];
-		for (const tool of tools) {
-			if (tool.name !== "artifacts") continue;
-			if (tool.status !== "completed") continue;
-			if (tool.result && typeof tool.result === "object") {
-				const maybeErr = tool.result as { isError?: boolean };
-				if (maybeErr.isError) continue;
-			}
-
-			const args = (
-				tool.args && typeof tool.args === "object"
-					? (tool.args as Record<string, unknown>)
-					: {}
-			) as Record<string, unknown>;
-
-			const command = asString(args.command) as ArtifactsCommand | undefined;
-			const filename = asString(args.filename)?.trim();
-
-			if (!command || !filename) continue;
-			if (!isValidArtifactFilename(filename)) continue;
-			if (command === "get" || command === "logs") continue;
-
-			if (command === "create") {
-				if (byFilename.has(filename)) continue;
-				byFilename.set(filename, asString(args.content) ?? "");
-				continue;
-			}
-
-			if (command === "rewrite") {
-				if (!byFilename.has(filename)) continue;
-				byFilename.set(filename, asString(args.content) ?? "");
-				continue;
-			}
-
-			if (command === "update") {
-				const current = byFilename.get(filename);
-				if (current === undefined) continue;
-				const oldStr = asString(args.old_str);
-				const newStr = asString(args.new_str);
-				if (oldStr === undefined || newStr === undefined) continue;
-				if (oldStr.length === 0) continue;
-				if (!current.includes(oldStr)) continue;
-				byFilename.set(filename, current.replace(oldStr, newStr));
-				continue;
-			}
-
-			if (command === "delete") {
-				byFilename.delete(filename);
-			}
-		}
+	const diagnostics: string[] = [];
+	const state = reconstructArtifactStateFromMessages(messages, {
+		onDiagnostic: (diagnostic) => {
+			diagnostics.push(diagnostic.code);
+		},
+	});
+	if (diagnostics.length > 0) {
+		logger.warn("Skipped invalid persisted artifact commands", {
+			count: diagnostics.length,
+			codes: diagnostics,
+		});
 	}
-
-	return byFilename;
+	return artifactContentsByFilename(state);
 }
 
 async function loadComposerMessages(

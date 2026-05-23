@@ -16,10 +16,12 @@ describe("artifact command state", () => {
 		});
 
 		expect(result).toMatchObject({
+			code: "artifact.command_unknown",
 			state,
 			isError: true,
 			output: expect.stringContaining("unknown command"),
 		});
+		expect(result.output).toContain("[artifact.command_unknown]");
 		expect(state.byFilename.size).toBe(0);
 	});
 
