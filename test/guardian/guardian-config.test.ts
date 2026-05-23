@@ -34,6 +34,7 @@ describe("Guardian Config", () => {
 		// Save original HOME
 		originalHome = process.env.HOME;
 		originalToolTimeout = process.env.MAESTRO_GUARDIAN_TOOL_TIMEOUT_MS;
+		Reflect.deleteProperty(process.env, "MAESTRO_GUARDIAN_TOOL_TIMEOUT_MS");
 	});
 
 	afterEach(() => {

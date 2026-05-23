@@ -93,6 +93,8 @@ describe("handleStatus", () => {
 	let originalMaestroHome: string | undefined;
 
 	beforeEach(() => {
+		vi.mocked(isDatabaseConfigured).mockReturnValue(false);
+		vi.mocked(testConnection).mockResolvedValue(false);
 		tempRoot = mkdtempSync(join(tmpdir(), "maestro-status-handler-"));
 		originalCwd = process.cwd();
 		originalMaestroHome = process.env.MAESTRO_HOME;
@@ -139,6 +141,21 @@ describe("handleStatus", () => {
 						isEnabled: true,
 					},
 				],
+			},
+		});
+	});
+
+	it("checks configured database reachability in status snapshots", async () => {
+		vi.mocked(isDatabaseConfigured).mockReturnValue(true);
+		vi.mocked(testConnection).mockResolvedValue(false);
+
+		const status = await readStatus();
+
+		expect(testConnection).toHaveBeenCalledTimes(1);
+		expect(status).toMatchObject({
+			database: {
+				configured: true,
+				connected: false,
 			},
 		});
 	});

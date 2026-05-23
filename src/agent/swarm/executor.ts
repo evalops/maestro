@@ -1491,6 +1491,7 @@ export class SwarmExecutor {
 		route: A2ATeammateRoute,
 	): Record<string, unknown> {
 		const currentDelegationId = `${this.state.id}:${task.id}`;
+		const contextId = `maestro-swarm:${this.state.id}:${task.id}`;
 		const lineage = {
 			rootDelegationId: this.state.id,
 			...(this.state.config.parentSessionId
@@ -1510,6 +1511,15 @@ export class SwarmExecutor {
 					swarmId: this.state.id,
 				}
 			: undefined;
+		const peerControl = {
+			schema: "evalops.maestro.a2a-peer-control.v1",
+			parentSwarmId: this.state.id,
+			laneId: teammate.id,
+			taskId: task.id,
+			contextId,
+			controlModes: ["followup", "steer", "interrupt", "cancel"],
+			evidenceRequired: ["status", "artifact", "task", "workGraph"],
+		};
 		return {
 			requestKind: "maestro-swarm-task",
 			transport: "a2a",
@@ -1525,7 +1535,9 @@ export class SwarmExecutor {
 				swarm: lineage,
 				transport: "a2a",
 				peer: route.name,
+				peerControl,
 			},
+			"evalops.peerControl": peerControl,
 			...(subagentRequest
 				? { "evalops.subagentRequest": subagentRequest }
 				: {}),

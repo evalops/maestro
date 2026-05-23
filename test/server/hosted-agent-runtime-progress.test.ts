@@ -1989,6 +1989,7 @@ describe("hosted AgentRuntime progress recorder", () => {
 			"maestro:session_1:retry:auto-2-attempt-1",
 			"maestro:session_1:retry:auto-2-attempt-1",
 		]);
+		expect(new Set(retryStepIds).size).toBe(2);
 	});
 
 	it("no-ops when hosted Platform lease handles are absent", async () => {
