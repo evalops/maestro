@@ -120,7 +120,7 @@ function expandWorkspacePattern(rootDir, pattern) {
 
 	for (const segment of segments) {
 		if (segment === "**") {
-			const descendants = [];
+			const descendants = [...directories];
 			const visit = (dir) => {
 				for (const child of listDirectories(dir)) {
 					descendants.push(child);
@@ -130,7 +130,7 @@ function expandWorkspacePattern(rootDir, pattern) {
 			for (const dir of directories) {
 				visit(dir);
 			}
-			directories = descendants;
+			directories = Array.from(new Set(descendants));
 			continue;
 		}
 
