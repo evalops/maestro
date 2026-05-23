@@ -851,10 +851,13 @@ describe("ci workflow guardrails", () => {
 		const sandboxArgs = [
 			...script.matchAll(/"--sandbox",\s*replaySandboxMode/g),
 		];
-		expect(script).toContain("MAESTRO_PUBLISHED_REPLAY_SANDBOX_MODE");
-		expect(script).toContain("Invalid MAESTRO_PUBLISHED_REPLAY_SANDBOX_MODE");
-		expect(script).toContain('"workspace-write"');
-		expect(script).toContain('"local"');
+			expect(script).toContain("MAESTRO_PUBLISHED_REPLAY_SANDBOX_MODE");
+			expect(script).toContain("Invalid MAESTRO_PUBLISHED_REPLAY_SANDBOX_MODE");
+			expect(script).toMatch(
+				/const replaySandboxMode =\s*process\.env\.MAESTRO_PUBLISHED_REPLAY_SANDBOX_MODE\?\.trim\(\)\s*\|\|\s*"workspace-write";/,
+			);
+			expect(script).toContain('"workspace-write"');
+			expect(script).toContain('"local"');
 		expect(script).toContain("replaySandboxModes");
 		expect(script).toContain("replaySandboxMode");
 		expect(sandboxArgs.length).toBeGreaterThanOrEqual(2);
@@ -863,10 +866,14 @@ describe("ci workflow guardrails", () => {
 			expect(canaryStep?.env).toMatchObject({
 				MAESTRO_PUBLISHED_REPLAY_SANDBOX_MODE: "local",
 			});
-			if (existsSync(verifyWorkflowPath)) {
-			const verifyWorkflow = parse(
-				readFileSync(verifyWorkflowPath, { encoding: "utf8" }),
-			) as Workflow;
+			const requiresVerifyWorkflow =
+				process.env.GITHUB_REPOSITORY === "evalops/maestro" ||
+				existsSync(verifyWorkflowPath);
+			if (requiresVerifyWorkflow) {
+				expect(existsSync(verifyWorkflowPath)).toBe(true);
+				const verifyWorkflow = parse(
+					readFileSync(verifyWorkflowPath, { encoding: "utf8" }),
+				) as Workflow;
 			const verifyStep = verifyWorkflow.jobs?.verify?.steps?.find(
 				(step) => step.name === "Verify published package from npm",
 			);
