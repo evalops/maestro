@@ -67,8 +67,11 @@ function isNestedReadme(path, prefix) {
 const CI_GUARDRAIL_FILES = new Set([
 	"scripts/check-smoke-scripts.mjs",
 	"scripts/ci-nx-tests.sh",
+	"scripts/maestro-merge-queue-status.mjs",
 	"scripts/plan-ci-checks.mjs",
 	"scripts/plan-nx-test-command.mjs",
+	"scripts/pr-latest-head-checks.mjs",
+	"scripts/run-prepared-public-mirror-guardrails.mjs",
 	"scripts/summarize-nx-profile.mjs",
 	"test/scripts/ci-guardrails.test.ts",
 ]);
@@ -186,7 +189,12 @@ function isRustSetupActionPath(path) {
 }
 
 function isFastPrChecksInfrastructurePath(path) {
-	return isCiInfrastructureOnlyPath(path) || isRustSetupActionPath(path);
+	return (
+		isCiInfrastructureOnlyPath(path) ||
+		CI_GUARDRAIL_FILES.has(path) ||
+		isRustSetupActionPath(path) ||
+		path === "docs/release-ops.md"
+	);
 }
 
 function isProofHarnessPath(path) {
