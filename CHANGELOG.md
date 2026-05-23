@@ -17,6 +17,20 @@ versioning when releases are cut.
   and keep scheduled public runs inert so public publishing stays downstream of
   the internal source-of-truth release.
 
+## [0.10.23] - 2026-05-23
+
+### Changed
+
+- Keep published replay canary portable. <!-- maestro-release-note:85b028901cd7 -->
+- Fix Fathom CUA smoke proof state (#2137). <!-- maestro-release-note:68edd64c02f8 -->
+- Tighten published replay sandbox guardrail. <!-- maestro-release-note:80472c301963 -->
+- Assert published replay sandbox default. <!-- maestro-release-note:ccd4b73fe8c1 -->
+- Require release canary guardrail. <!-- maestro-release-note:3f8dd44ebd6b -->
+- Keep published replay sandbox default covered. <!-- maestro-release-note:142c634875cf -->
+- Harden release and public mirror automation (#2136). <!-- maestro-release-note:18c790c79014 -->
+- Harden artifact replay contracts. <!-- maestro-release-note:c096cfde59ed -->
+- Automate public parity branch upkeep. <!-- maestro-release-note:144de48afba8 -->
+
 ## [0.10.22] - 2026-05-23
 
 ### Added
