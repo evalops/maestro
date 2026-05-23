@@ -35,6 +35,17 @@ const RUNTIME_PACKAGE_VALIDATOR_FILES = new Set([
 	"scripts/validate-public-package-deps.js",
 	"scripts/workspace-utils.js",
 ]);
+const RELEASE_HELPER_PACKAGE_FILES = new Set([
+	"scripts/install-smoke-utils.js",
+	"scripts/release-readiness.js",
+	"scripts/smoke-packed-cli.js",
+	"scripts/workspace-utils.js",
+]);
+const RELEASE_HELPER_TEST_FILES = new Set([
+	"test/scripts/install-smoke-utils.test.ts",
+	"test/scripts/release-context-deps.test.ts",
+	"test/scripts/workspace-utils.test.ts",
+]);
 const SMOKE_SCRIPT_PATTERN = /^scripts\/smoke-[^/]+\.[cm]?[jt]sx?$/;
 
 function parseArgs(argv) {
@@ -321,6 +332,18 @@ export function runtimePackageValidatorsRequired({
 	const packageJsonIsScriptsOnly =
 		normalizedChangedFiles.includes("package.json") &&
 		packageJsonScriptsOnlyChanged(basePackage, headPackage);
+	const releaseHelperOnly =
+		normalizedChangedFiles.length > 0 &&
+		normalizedChangedFiles.every(
+			(file) =>
+				CI_GUARDRAIL_FILES.has(file) ||
+				RELEASE_HELPER_PACKAGE_FILES.has(file) ||
+				RELEASE_HELPER_TEST_FILES.has(file),
+		);
+
+	if (releaseHelperOnly) {
+		return false;
+	}
 
 	return normalizedChangedFiles.some((file) => {
 		if (RUNTIME_PACKAGE_VALIDATOR_FILES.has(file)) {

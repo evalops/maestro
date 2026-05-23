@@ -83,6 +83,33 @@ run_shared_memory_tests() {
 	fi
 }
 
+direct_vitest_files=()
+release_helper_script_tests_only() {
+	local mode="$1"
+	local files_csv="$2"
+	if [[ "$mode" != "affected-files" || -z "$files_csv" ]]; then
+		return 1
+	fi
+
+	IFS=',' read -r -a direct_vitest_files <<<"$files_csv"
+	if [[ "${#direct_vitest_files[@]}" -eq 0 ]]; then
+		return 1
+	fi
+
+	local file
+	for file in "${direct_vitest_files[@]}"; do
+		case "$file" in
+			test/scripts/install-smoke-utils.test.ts | test/scripts/release-context-deps.test.ts | test/scripts/workspace-utils.test.ts)
+				;;
+			*)
+				return 1
+				;;
+		esac
+	done
+
+	return 0
+}
+
 node scripts/ensure-deps.js --no-install --workspace @evalops/contracts --workspace @evalops/tui
 run_ci_guardrail_tests
 run_runtime_package_validators
@@ -102,7 +129,12 @@ case "$nx_mode" in
 		cmd=(npx nx run-many -t test --all --parallel=3)
 		;;
 	affected-files)
-		cmd=(npx nx affected -t test --files="$nx_files" --parallel=3)
+		if release_helper_script_tests_only "$nx_mode" "$nx_files"; then
+			echo "Release helper script tests are handled directly by Vitest."
+			cmd=(node ./scripts/run-vitest.js --run "${direct_vitest_files[@]}")
+		else
+			cmd=(npx nx affected -t test --files="$nx_files" --parallel=3)
+		fi
 		;;
 	none)
 		echo "No Nx project tests are required for this change set."
@@ -116,18 +148,22 @@ case "$nx_mode" in
 esac
 
 echo "Affected Nx projects:"
-case "$nx_mode" in
-	all)
-		if ! npx nx show projects --affected --base="$NX_BASE" --head="$NX_HEAD" | tee "$affected_projects_log"; then
-			echo "::warning::Unable to list affected Nx projects before test execution"
-		fi
-		;;
-	affected-files)
-		if ! npx nx show projects --affected --files="$nx_files" | tee "$affected_projects_log"; then
-			echo "::warning::Unable to list affected Nx projects before test execution"
-		fi
-		;;
-esac
+if [[ "${cmd[0]}" == "node" && "${cmd[1]}" == "./scripts/run-vitest.js" ]]; then
+	printf '%s\n' "direct-vitest" "${direct_vitest_files[@]}" | tee "$affected_projects_log"
+else
+	case "$nx_mode" in
+		all)
+			if ! npx nx show projects --affected --base="$NX_BASE" --head="$NX_HEAD" | tee "$affected_projects_log"; then
+				echo "::warning::Unable to list affected Nx projects before test execution"
+			fi
+			;;
+		affected-files)
+			if ! npx nx show projects --affected --files="$nx_files" | tee "$affected_projects_log"; then
+				echo "::warning::Unable to list affected Nx projects before test execution"
+			fi
+			;;
+	esac
+fi
 
 write_resolved_targets() {
 	case "$nx_mode" in
