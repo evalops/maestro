@@ -75,6 +75,7 @@ const pollDelayMs = Number.parseInt(
 	process.env.MAESTRO_REGISTRY_POLL_DELAY_MS ?? "5000",
 	10,
 );
+const installAuditLevel = process.env.MAESTRO_INSTALL_AUDIT_LEVEL ?? "critical";
 
 function sleep(milliseconds) {
 	return new Promise((resolve) => setTimeout(resolve, milliseconds));
@@ -145,6 +146,7 @@ async function main() {
 		});
 		assertInstalledMetadata(tempDir, `${packageSpec} via npm`);
 		runInstalledPackageAudit(tempDir, {
+			auditLevel: installAuditLevel,
 			label: packageSpec,
 		});
 		runInstalledCliSmoke(tempDir, {
