@@ -127,13 +127,12 @@ export async function buildA2ACockpit(
 		return buildA2ACockpitUnscoped(options);
 	}
 	const ledger = await loadA2ATaskLedger({ path: options.tasksPath });
-	const scopedLedger = filterLedgerForOwnership(ledger, options.ownershipScope);
 	const fleet = await inspectA2AFleet({
 		registryPath: options.registryPath,
 		tasksPath: options.tasksPath,
 		timeoutMs: options.timeoutMs,
 		ownershipScope: options.ownershipScope,
-		includePeerNames: scopedLedger.tasks.map((task) => task.peer),
+		includePeerNames: scopedLedgerPeerNames(ledger, options.ownershipScope),
 	});
 	return summarizeA2ACockpit({
 		fleet,
@@ -168,15 +167,20 @@ export function summarizeA2ACockpit(
 ): A2ACockpitSummary {
 	const peerFilter = cleanPeer(input.peer);
 	const limit = normalizeLimit(input.limit);
-	const markerlessPeerNames = new Set(
-		input.fleet.peers
-			.filter((peer) => matchesA2AOwnershipScope(peer, input.ownershipScope))
-			.map((peer) => peer.name),
+	const hasOwnershipScope = hasA2AOwnershipScope(input.ownershipScope);
+	const scopedOwnedPeerNames = new Set(
+		hasOwnershipScope
+			? input.fleet.peers
+					.filter((peer) =>
+						matchesA2AOwnershipScope(peer, input.ownershipScope),
+					)
+					.map((peer) => peer.name)
+			: [],
 	);
 	const scopedLedger = filterLedgerForOwnership(
 		input.ledger,
 		input.ownershipScope,
-		markerlessPeerNames,
+		scopedOwnedPeerNames,
 	);
 	const scopedTaskPeerNames = new Set(
 		scopedLedger.tasks.map((task) => task.peer),
@@ -184,7 +188,8 @@ export function summarizeA2ACockpit(
 	const peers = input.fleet.peers
 		.filter(
 			(peer) =>
-				matchesA2AOwnershipScope(peer, input.ownershipScope) ||
+				!hasOwnershipScope ||
+				scopedOwnedPeerNames.has(peer.name) ||
 				scopedTaskPeerNames.has(peer.name),
 		)
 		.filter((peer) => !peerFilter || peer.name === peerFilter)
@@ -210,7 +215,7 @@ export function summarizeA2ACockpit(
 function filterLedgerForOwnership(
 	ledger: A2ATaskLedgerFile,
 	scope: A2AOwnershipScope | undefined,
-	markerlessPeerNames?: ReadonlySet<string>,
+	ownedPeerNames: ReadonlySet<string> = new Set(),
 ): A2ATaskLedgerFile {
 	if (!hasA2AOwnershipScope(scope)) {
 		return ledger;
@@ -219,9 +224,26 @@ function filterLedgerForOwnership(
 		tasks: ledger.tasks.filter((entry) =>
 			hasA2AOwnershipRecordMarkers(entry)
 				? matchesA2AOwnershipScope(entry, scope)
-				: Boolean(markerlessPeerNames?.has(entry.peer)),
+				: ownedPeerNames.has(entry.peer),
 		),
 	};
+}
+
+function scopedLedgerPeerNames(
+	ledger: A2ATaskLedgerFile,
+	scope: A2AOwnershipScope,
+): string[] {
+	return [
+		...new Set(
+			ledger.tasks
+				.filter(
+					(entry) =>
+						hasA2AOwnershipRecordMarkers(entry) &&
+						matchesA2AOwnershipScope(entry, scope),
+				)
+				.map((entry) => entry.peer),
+		),
+	];
 }
 
 function summarizePeer(

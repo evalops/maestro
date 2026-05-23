@@ -249,6 +249,14 @@ describe("A2A cockpit", () => {
 					updatedAt: "2026-05-16T00:00:12.000Z",
 				}),
 				task({
+					id: "markerless-other-peer-ledger",
+					peer: "tenant-b",
+					taskId: "task-markerless-other-peer",
+					state: "TASK_STATE_INPUT_REQUIRED",
+					text: "markerless task on an unowned peer",
+					updatedAt: "2026-05-16T00:00:13.000Z",
+				}),
+				task({
 					id: "owned-ledger",
 					peer: "tenant-a",
 					taskId: "task-owned",
@@ -312,6 +320,12 @@ describe("A2A cockpit", () => {
 			"task-owned",
 			"task-legacy-workspace",
 		]);
+		expect(summary.tasks.map((task) => task.taskId)).not.toContain(
+			"task-markerless-other-peer",
+		);
+		expect(summary.tasks.map((task) => task.taskId)).not.toContain(
+			"task-markerless-other-user",
+		);
 		expect(summary.nextActions.map((action) => action.peer)).toEqual([
 			"tenant-a",
 			"tenant-a",
