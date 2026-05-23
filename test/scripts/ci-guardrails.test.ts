@@ -634,6 +634,9 @@ describe("ci workflow guardrails", () => {
 		);
 
 		expect(prCheckTimeouts.get("Test (Nx affected)")).toBe(60);
+		if (!isPublicValidationWorkflow(workflow)) {
+			expect(prCheckTimeouts.get("Release helper package smoke")).toBe(15);
+		}
 		expect(workflow.jobs?.coverage?.["timeout-minutes"]).toBe(75);
 		expect(coverageTimeouts.get("Run tests with coverage")).toBe(60);
 	});
@@ -724,6 +727,7 @@ describe("ci workflow guardrails", () => {
 
 		expect(changesOutputs).toHaveProperty("release_helper_only");
 		expect(helperSmokeStep?.if).toContain("release_helper_only == 'true'");
+		expect(helperSmokeStep?.["timeout-minutes"]).toBe(15);
 		expect(helperSmokeStep?.run).toContain(
 			"node --check scripts/release-readiness.js",
 		);
@@ -807,6 +811,22 @@ describe("ci workflow guardrails", () => {
 		expect(script).toContain("getBunCommand");
 		expect(script).toContain("runNpmInstallSmoke();");
 		expect(script).toContain("runBunInstallSmoke();");
+	});
+
+	it("runs published replay E2E for npm and Bun registry installs", () => {
+		const script = readFileSync(
+			new URL("../../scripts/smoke-registry-install.js", import.meta.url),
+			{ encoding: "utf8" },
+		);
+
+		const replayCalls = [...script.matchAll(/runPublishedReplayE2E\(/g)];
+		expect(replayCalls).toHaveLength(2);
+		expect(script.indexOf("await runPublishedReplayE2E({")).toBeGreaterThan(
+			script.indexOf('npmCommand, ["install", packageSpec]'),
+		);
+		expect(script.lastIndexOf("await runPublishedReplayE2E({")).toBeGreaterThan(
+			script.indexOf('bunCommand, ["add", packageSpec]'),
+		);
 	});
 
 	it("keeps packed CLI smoke enabled independently of package-lock management", () => {
