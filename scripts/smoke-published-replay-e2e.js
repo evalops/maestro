@@ -30,18 +30,6 @@ const timeoutMs = Number.parseInt(
 	process.env.MAESTRO_PUBLISHED_REPLAY_E2E_TIMEOUT_MS ?? "45000",
 	10,
 );
-const replaySandboxModes = [
-	"read-only",
-	"workspace-write",
-	"danger-full-access",
-	"native",
-	"docker",
-	"local",
-	"none",
-];
-// Hosted Linux release runners do not always expose Maestro's native sandbox.
-const replaySandboxMode =
-	process.env.MAESTRO_PUBLISHED_REPLAY_SANDBOX_MODE?.trim() || "local";
 
 function fail(message, details) {
 	console.error(message);
@@ -49,13 +37,6 @@ function fail(message, details) {
 		console.error(details);
 	}
 	process.exit(1);
-}
-
-if (!replaySandboxModes.includes(replaySandboxMode)) {
-	fail(
-		`Invalid MAESTRO_PUBLISHED_REPLAY_SANDBOX_MODE: "${replaySandboxMode}"`,
-		`Allowed values: ${replaySandboxModes.join(", ")}`,
-	);
 }
 
 function parseArgs(argv) {
@@ -316,7 +297,7 @@ function runSingleShotMode(binPath, label, mode) {
 				"--approval-mode",
 				"auto",
 				"--sandbox",
-				replaySandboxMode,
+				"workspace-write",
 				"--tools",
 				"read",
 				PROMPT_TEXT,
@@ -432,7 +413,7 @@ function runRpcMode(binPath) {
 				"--approval-mode",
 				"auto",
 				"--sandbox",
-				replaySandboxMode,
+				"workspace-write",
 				"--tools",
 				"read",
 			],
