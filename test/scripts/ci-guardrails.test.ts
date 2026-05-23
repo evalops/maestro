@@ -829,30 +829,20 @@ describe("ci workflow guardrails", () => {
 		);
 	});
 
-	it("keeps published replay canaries portable on hosted Linux", () => {
+	it("keeps published replay canaries portable on hosted runners", () => {
 		const script = readFileSync(
 			new URL("../../scripts/smoke-published-replay-e2e.js", import.meta.url),
 			{ encoding: "utf8" },
 		);
-		const releaseWorkflow = parse(
-			readFileSync(
-				new URL("../../.github/workflows/release.yml", import.meta.url),
-				{ encoding: "utf8" },
-			),
-		) as Workflow;
-		const canaryStep = releaseWorkflow.jobs?.[
-			"post-publish-canary"
-		]?.steps?.find((step) => step.name === "Verify published package from npm");
 
+		const sandboxArgs = [
+			...script.matchAll(/"--sandbox",\s*replaySandboxMode/g),
+		];
 		expect(script).toContain("MAESTRO_PUBLISHED_REPLAY_SANDBOX_MODE");
-		expect(script).toContain('"workspace-write"');
-		expect(script).toContain('"local"');
-		expect(script).toContain("replaySandboxModes");
-		expect(script).toContain("replaySandboxMode");
-		expect(canaryStep).toBeDefined();
-		expect(canaryStep?.env).toMatchObject({
-			MAESTRO_PUBLISHED_REPLAY_SANDBOX_MODE: "local",
-		});
+		expect(script).toContain("Invalid MAESTRO_PUBLISHED_REPLAY_SANDBOX_MODE");
+		expect(script).toContain('|| "local"');
+		expect(sandboxArgs.length).toBeGreaterThanOrEqual(2);
+		expect(script).not.toMatch(/"--sandbox",\s*"workspace-write"/);
 	});
 
 	it("keeps packed CLI smoke enabled independently of package-lock management", () => {
