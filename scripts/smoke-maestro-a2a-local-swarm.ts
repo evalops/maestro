@@ -29,6 +29,68 @@ const SKILL_ID = "maestro.subagent.code-review";
 const DENIED_TASK_CLASS = "credential.materialization";
 const RESUME_TASK_ID = "local-swarm-resume-task";
 
+const HEALTHY_PEERS = [
+	{
+		slug: "alpha",
+		agentId: "maestro-a2a-local-alpha",
+		name: "Maestro Local A2A Alpha",
+		response: "A2A local swarm response from alpha",
+		objectiveId: "objective-alpha",
+		taskId: "alpha-review",
+		prompt: "Return your deterministic A2A swarm response.",
+		plan: "exercise one Platform-discovered A2A review lane.",
+		seedResumeTask: true,
+	},
+	{
+		slug: "beta",
+		agentId: "maestro-a2a-local-beta",
+		name: "Maestro Local A2A Beta",
+		response: "A2A local swarm response from beta",
+		objectiveId: "objective-beta",
+		taskId: "beta-review",
+		prompt: "Return your deterministic A2A swarm response.",
+		plan: "exercise one Platform-discovered A2A review lane.",
+	},
+	{
+		slug: "gamma",
+		agentId: "maestro-a2a-local-gamma",
+		name: "Maestro Local A2A Gamma",
+		response: "A2A local swarm response from gamma",
+		objectiveId: "objective-gamma",
+		taskId: "gamma-review",
+		prompt: "Return your deterministic A2A swarm response.",
+		plan: "exercise one Platform-discovered A2A review lane.",
+	},
+	{
+		slug: "delta",
+		agentId: "maestro-a2a-local-delta",
+		name: "Maestro Local A2A Delta",
+		response: "A2A local swarm response from delta",
+		objectiveId: "objective-delta",
+		taskId: "delta-review",
+		prompt: "Return your deterministic A2A swarm response.",
+		plan: "exercise one Platform-discovered A2A review lane.",
+	},
+	{
+		slug: "epsilon",
+		agentId: "maestro-a2a-local-epsilon",
+		name: "Maestro Local A2A Epsilon",
+		response: "A2A local swarm response from epsilon",
+		objectiveId: "objective-epsilon",
+		taskId: "epsilon-review",
+		prompt: "Return your deterministic A2A swarm response.",
+		plan: "exercise one Platform-discovered A2A review lane.",
+	},
+] as const;
+
+const SYNTHETIC_AGENT_IDS = [
+	"maestro-a2a-local-saturated",
+	"maestro-a2a-local-busy",
+	"maestro-a2a-local-no-dispatch",
+	"maestro-a2a-local-denied",
+	"maestro-a2a-local-stale",
+] as const;
+
 type MockAgent = PlatformAgentRegistryAgent & {
 	currentObjectiveIds?: string[];
 	heartbeatReceived?: boolean;
@@ -132,6 +194,14 @@ function stringList(record: Record<string, unknown>, key: string): string[] {
 	return Array.isArray(value)
 		? value.filter((item): item is string => typeof item === "string")
 		: [];
+}
+
+function booleanValue(
+	record: Record<string, unknown>,
+	key: string,
+): boolean | undefined {
+	const value = record[key];
+	return typeof value === "boolean" ? value : undefined;
 }
 
 function objectValue(
@@ -243,6 +313,15 @@ function agentHasCapability(
 	return (agent.capabilities ?? []).includes(capability);
 }
 
+function agentHasA2ADispatchEndpoint(agent: MockAgent): boolean {
+	return Boolean(agent.a2a?.internalEndpointUrl ?? agent.a2a?.publicEndpointUrl);
+}
+
+function agentHasDelegationCapacity(agent: MockAgent): boolean {
+	const remaining = agent.capacity?.remaining;
+	return remaining === undefined || remaining > 0;
+}
+
 function buildAgentFromRegister(body: Record<string, unknown>): MockAgent {
 	const a2a = objectValue(body, "a2a");
 	const now = new Date().toISOString();
@@ -290,6 +369,111 @@ function applyHeartbeat(agent: MockAgent, body: Record<string, unknown>): MockAg
 	};
 }
 
+function syntheticA2A(endpointUrl?: string): MockAgent["a2a"] {
+	return {
+		protocol: "a2a",
+		version: "1.0",
+		agentCardUrl: endpointUrl
+			? `${endpointUrl}/.well-known/agent-card.json`
+			: undefined,
+		publicEndpointUrl: endpointUrl,
+		internalEndpointUrl: endpointUrl,
+		pushNotifications: Boolean(endpointUrl),
+		skills: [
+			{
+				id: SKILL_ID,
+				name: "Code Review",
+				description: "Synthetic code review lane for local swarm filtering.",
+				allowedTaskClasses: ["code.review"],
+				deniedTaskClasses: [],
+			},
+		],
+	} as MockAgent["a2a"];
+}
+
+function syntheticAgent(input: {
+	id: string;
+	name: string;
+	status?: string;
+	endpointUrl?: string;
+	remaining?: number;
+	heartbeatReceived?: boolean;
+	lastHeartbeatAt?: string;
+	deniedTaskClasses?: string[];
+}): MockAgent {
+	const now = new Date().toISOString();
+	const a2a = syntheticA2A(input.endpointUrl);
+	const skills = skillList({ a2a } as MockAgent);
+	if (skills[0] && input.deniedTaskClasses) {
+		skills[0].deniedTaskClasses = input.deniedTaskClasses;
+	}
+	return {
+		id: input.id,
+		workspaceId: WORKSPACE_ID,
+		name: input.name,
+		description: "Synthetic local A2A fixture for failure-injected discovery.",
+		agentType: "maestro",
+		capabilities: ["code:review"],
+		surfaces: ["a2a", "maestro"],
+		surfaceTypes: ["agent"],
+		ownerId: "local-a2a-swarm-smoke",
+		status: input.status ?? "AGENT_STATUS_IDLE",
+		heartbeatReceived: input.heartbeatReceived ?? true,
+		lastHeartbeatAt: input.lastHeartbeatAt ?? now,
+		createdAt: now,
+		updatedAt: now,
+		a2a,
+		capacity: {
+			current: Math.max(0, 2 - (input.remaining ?? 2)),
+			max: 2,
+			remaining: input.remaining ?? 2,
+			reservedDelegationCount: 0,
+		},
+	};
+}
+
+function installSyntheticAgents(registry: MockRegistry): void {
+	const staleHeartbeat = new Date(Date.now() - 15 * 60_000).toISOString();
+	const fixtures = [
+		syntheticAgent({
+			id: "maestro-a2a-local-saturated",
+			name: "Maestro Local A2A Saturated",
+			endpointUrl: "http://127.0.0.1:1/saturated",
+			remaining: 0,
+		}),
+		syntheticAgent({
+			id: "maestro-a2a-local-busy",
+			name: "Maestro Local A2A Busy",
+			status: "AGENT_STATUS_BUSY",
+			endpointUrl: "http://127.0.0.1:1/busy",
+		}),
+		syntheticAgent({
+			id: "maestro-a2a-local-no-dispatch",
+			name: "Maestro Local A2A No Dispatch",
+			remaining: 2,
+		}),
+		syntheticAgent({
+			id: "maestro-a2a-local-denied",
+			name: "Maestro Local A2A Denied",
+			endpointUrl: "http://127.0.0.1:1/denied",
+			deniedTaskClasses: ["code.review", DENIED_TASK_CLASS],
+		}),
+		syntheticAgent({
+			id: "maestro-a2a-local-stale",
+			name: "Maestro Local A2A Stale",
+			endpointUrl: "http://127.0.0.1:1/stale",
+			heartbeatReceived: false,
+			lastHeartbeatAt: staleHeartbeat,
+		}),
+	];
+	for (const agent of fixtures) {
+		if (!agent.id) {
+			throw new Error("synthetic agent fixture is missing an id");
+		}
+		registry.agents.set(agent.id, agent);
+	}
+}
+
 function filterAgents(
 	agents: Iterable<MockAgent>,
 	body: Record<string, unknown>,
@@ -302,6 +486,12 @@ function filterAgents(
 		stringValue(body, "a2aSkillId") ?? stringValue(body, "a2a_skill_id");
 	const taskClass =
 		stringValue(body, "taskClass") ?? stringValue(body, "task_class");
+	const requireA2ADispatch =
+		booleanValue(body, "requireA2aDispatch") ??
+		booleanValue(body, "requireA2ADispatch") ??
+		false;
+	const eligibleForDelegation =
+		booleanValue(body, "eligibleForDelegation") ?? false;
 	const limit = Number(body.limit);
 	return [...agents]
 		.filter((agent) => agent.workspaceId === workspaceId)
@@ -310,6 +500,8 @@ function filterAgents(
 		.filter((agent) => agentHasSurface(agent, surface))
 		.filter((agent) => agentHasSkill(agent, skillId))
 		.filter((agent) => skillAllowsTaskClass(agent, skillId, taskClass))
+		.filter((agent) => !requireA2ADispatch || agentHasA2ADispatchEndpoint(agent))
+		.filter((agent) => !eligibleForDelegation || agentHasDelegationCapacity(agent))
 		.slice(0, Number.isFinite(limit) && limit > 0 ? limit : undefined);
 }
 
@@ -742,6 +934,63 @@ async function provePolicyDenial(registryUrl: string): Promise<number> {
 	}
 }
 
+async function proveDiscoveryShaping(registryUrl: string): Promise<{
+	candidateAgentIds: string[];
+	excludedInjectedAgentIds: string[];
+	staleCandidateIncluded: boolean;
+}> {
+	const snapshot = configurePlatformEnv(registryUrl);
+	try {
+		const candidates =
+			(await listA2APeerCandidatesWithPlatform({
+				workspaceId: WORKSPACE_ID,
+				capability: "code:review",
+				surface: "a2a",
+				status: "AGENT_STATUS_IDLE",
+				skillId: SKILL_ID,
+				taskClass: "code.review",
+				requireA2ADispatch: true,
+				eligibleForDelegation: true,
+				limit: HEALTHY_PEERS.length + SYNTHETIC_AGENT_IDS.length,
+				preferInternalEndpoint: true,
+			})) ?? [];
+		const candidateAgentIds = candidates
+			.map((candidate) => candidate.agent.id)
+			.filter((id): id is string => Boolean(id));
+		for (const peer of HEALTHY_PEERS) {
+			if (!candidateAgentIds.includes(peer.agentId)) {
+				throw new Error(
+					`healthy peer ${peer.agentId} was missing from shaped discovery candidates`,
+				);
+			}
+		}
+		const expectedExcluded = [
+			"maestro-a2a-local-saturated",
+			"maestro-a2a-local-busy",
+			"maestro-a2a-local-no-dispatch",
+			"maestro-a2a-local-denied",
+		];
+		for (const agentId of expectedExcluded) {
+			if (candidateAgentIds.includes(agentId)) {
+				throw new Error(`failure-injected peer ${agentId} survived discovery shaping`);
+			}
+		}
+		const staleCandidateIncluded = candidateAgentIds.includes(
+			"maestro-a2a-local-stale",
+		);
+		if (!staleCandidateIncluded) {
+			throw new Error("stale peer should remain eligible but lose to fresh peers");
+		}
+		return {
+			candidateAgentIds,
+			excludedInjectedAgentIds: expectedExcluded,
+			staleCandidateIncluded,
+		};
+	} finally {
+		restoreEnv(snapshot);
+	}
+}
+
 function peerConfig(instance: ControlPlaneInstance): A2AServiceConfig {
 	return {
 		baseUrl: instance.baseUrl,
@@ -782,12 +1031,6 @@ async function proveResume(instance: ControlPlaneInstance, taskId: string) {
 	};
 }
 
-function taskText(state: SwarmState, taskId: string): string | undefined {
-	return state.teammates.find((teammate) =>
-		teammate.completedTasks.includes(taskId),
-	)?.output;
-}
-
 async function runSwarm(
 	registryUrl: string,
 	rootDir: string,
@@ -799,36 +1042,29 @@ async function runSwarm(
 		[
 			"# Local A2A Swarm Smoke",
 			"",
-			"- alpha-review: prove Platform-discovered peer alpha can complete remote A2A work.",
-			"- beta-review: prove Platform-discovered peer beta can complete remote A2A work.",
+			...HEALTHY_PEERS.map((peer) => `- ${peer.taskId}: ${peer.plan}`),
 		].join("\n"),
 		"utf8",
 	);
 	const config: SwarmConfig = {
-		teammateCount: 2,
+		teammateCount: HEALTHY_PEERS.length,
 		planFile,
 		cwd: process.cwd(),
 		mode: "smart",
 		modelProvider: "anthropic",
 		transport: "a2a",
-		tasks: [
-			{
-				id: "alpha-review",
-				prompt: "Return the alpha deterministic A2A swarm response.",
-				subagentType: "reviewer",
-			},
-			{
-				id: "beta-review",
-				prompt: "Return the beta deterministic A2A swarm response.",
-				subagentType: "reviewer",
-			},
-		],
+		tasks: HEALTHY_PEERS.map((peer) => ({
+			id: peer.taskId,
+			prompt: peer.prompt,
+			subagentType: "reviewer",
+		})),
 		a2a: {
 			discover: true,
 			workspaceId: WORKSPACE_ID,
 			capability: "code:review",
 			surface: "a2a",
 			skillId: SKILL_ID,
+			limit: HEALTHY_PEERS.length + SYNTHETIC_AGENT_IDS.length,
 			preferInternalEndpoint: true,
 			tasksPath: join(rootDir, "swarm-a2a-tasks.json"),
 			timeoutMs: 1_500,
@@ -850,13 +1086,15 @@ async function runSwarm(
 		if (result.status !== "completed") {
 			throw new Error(`A2A swarm did not complete: ${result.status}`);
 		}
-		if (
-			taskText(result, "alpha-review") !== "A2A local swarm response from alpha"
-		) {
-			throw new Error("alpha task did not return the alpha peer response");
-		}
-		if (taskText(result, "beta-review") !== "A2A local swarm response from beta") {
-			throw new Error("beta task did not return the beta peer response");
+		const outputs = new Set(
+			result.teammates
+				.map((teammate) => teammate.output)
+				.filter((output): output is string => Boolean(output)),
+		);
+		for (const peer of HEALTHY_PEERS) {
+			if (!outputs.has(peer.response)) {
+				throw new Error(`${peer.slug} peer response was not returned by the swarm`);
+			}
 		}
 		return result;
 	} finally {
@@ -872,53 +1110,56 @@ async function main(): Promise<void> {
 	try {
 		await proveInvalidPushTokenRejected(pushReceiver);
 		await mkdir(rootDir, { recursive: true });
-		const alphaPort = await openPort();
-		const betaPort = await openPort();
-		instances.push(
-			await startControlPlane({
-				agentId: "maestro-a2a-local-alpha",
-				name: "Maestro Local A2A Alpha",
-				response: "A2A local swarm response from alpha",
-				port: alphaPort,
-				registryUrl: registry.baseUrl,
-				rootDir,
-				objectiveId: "objective-alpha",
-				seedResumeTask: true,
-			}),
-		);
-		instances.push(
-			await startControlPlane({
-				agentId: "maestro-a2a-local-beta",
-				name: "Maestro Local A2A Beta",
-				response: "A2A local swarm response from beta",
-				port: betaPort,
-				registryUrl: registry.baseUrl,
-				rootDir,
-				objectiveId: "objective-beta",
-			}),
-		);
-		await registry.waitForAgents(2);
+		for (const peer of HEALTHY_PEERS) {
+			instances.push(
+				await startControlPlane({
+					agentId: peer.agentId,
+					name: peer.name,
+					response: peer.response,
+					port: await openPort(),
+					registryUrl: registry.baseUrl,
+					rootDir,
+					objectiveId: peer.objectiveId,
+					seedResumeTask: peer.seedResumeTask,
+				}),
+			);
+		}
+		await registry.waitForAgents(HEALTHY_PEERS.length);
+		installSyntheticAgents(registry);
 		const deniedCandidateCount = await provePolicyDenial(registry.baseUrl);
 		if (deniedCandidateCount !== 0) {
 			throw new Error(
 				`denied discovery returned ${deniedCandidateCount} candidates`,
 			);
 		}
+		const discovery = await proveDiscoveryShaping(registry.baseUrl);
 		const swarm = await runSwarm(registry.baseUrl, rootDir, pushReceiver);
 		const completedExecutions = swarm.teammates
 			.map((teammate) => teammate.a2a)
 			.filter((a2a): a2a is NonNullable<typeof a2a> => Boolean(a2a));
 		const peersUsed = new Set(completedExecutions.map((a2a) => a2a.peer));
-		if (peersUsed.size !== 2) {
+		if (peersUsed.size !== HEALTHY_PEERS.length) {
 			throw new Error(
-				`expected swarm to use both local peers, used ${[...peersUsed].join(", ")}`,
+				`expected swarm to use ${HEALTHY_PEERS.length} local peers, used ${[...peersUsed].join(", ")}`,
+			);
+		}
+		const injectedPeersUsed = completedExecutions
+			.map((a2a) => a2a.peer)
+			.filter((peer) =>
+				[...SYNTHETIC_AGENT_IDS].some((agentId) =>
+					peer.toLowerCase().includes(agentId.replace("maestro-a2a-local-", "")),
+				),
+			);
+		if (injectedPeersUsed.length > 0) {
+			throw new Error(
+				`swarm selected failure-injected peers: ${injectedPeersUsed.join(", ")}`,
 			);
 		}
 		await pushReceiver.waitForTaskEvents(
 			completedExecutions.map((a2a) => a2a.taskId),
 		);
 		const alpha = instances.find(
-			(instance) => instance.name === "Maestro Local A2A Alpha",
+			(instance) => instance.agentId === "maestro-a2a-local-alpha",
 		);
 		if (!alpha) {
 			throw new Error("missing alpha control plane");
@@ -947,10 +1188,19 @@ async function main(): Promise<void> {
 		if (pushBodyJson.includes(PUSH_TOKEN)) {
 			throw new Error("push token leaked into push notification payload body");
 		}
+		const pushCounts = pushEventCounts(pushReceiver.requests);
+		for (const type of ["statusUpdate", "artifactUpdate", "task"] as const) {
+			if ((pushCounts[type] ?? 0) < completedExecutions.length) {
+				throw new Error(
+					`expected at least ${completedExecutions.length} ${type} push events, saw ${pushCounts[type] ?? 0}`,
+				);
+			}
+		}
 		console.log(
 			JSON.stringify(
 				{
 					ok: true,
+					schema: "evalops.maestro.local-a2a-multipeer-swarm.v1",
 					registry: {
 						url: registry.baseUrl,
 						registeredAgents: [...registry.agents.keys()],
@@ -967,6 +1217,7 @@ async function main(): Promise<void> {
 							request.url?.endsWith("/List"),
 						).length,
 						policyDeniedCandidateCount: deniedCandidateCount,
+						discovery,
 					},
 					swarm: {
 						id: swarm.id,
@@ -988,10 +1239,30 @@ async function main(): Promise<void> {
 					pushNotifications: {
 						url: pushReceiver.baseUrl,
 						received: pushReceiver.requests.length,
-						eventCounts: pushEventCounts(pushReceiver.requests),
+						eventCounts: pushCounts,
 						remoteTaskIds: completedExecutions.map((a2a) => a2a.taskId),
 					},
 					resume,
+					fleetEvidence: {
+						healthyPeerCount: HEALTHY_PEERS.length,
+						failureInjectedPeerCount: SYNTHETIC_AGENT_IDS.length,
+						excludedInjectedAgentIds: discovery.excludedInjectedAgentIds,
+						staleCandidateIncluded: discovery.staleCandidateIncluded,
+						distinctPeersUsed: peersUsed.size,
+						pushProof: {
+							acceptedCount: pushReceiver.requests.length,
+							minimumTerminalEventTypesSatisfied: true,
+						},
+						resumeProof: resume,
+						policyProof: {
+							deniedTaskClass: DENIED_TASK_CLASS,
+							candidateCount: deniedCandidateCount,
+						},
+						ledgerProof: {
+							workGraphCount: ledgerWorkGraphs.length,
+						},
+						noSecretLeak: true,
+					},
 				},
 				null,
 				2,

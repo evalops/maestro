@@ -412,6 +412,20 @@ describe("SwarmExecutor", () => {
 				evalops: expect.objectContaining({
 					transport: "a2a",
 					peer: "remote-a",
+					peerControl: expect.objectContaining({
+						schema: "evalops.maestro.a2a-peer-control.v1",
+						parentSwarmId: result.id,
+						taskId: "task-1",
+					}),
+				}),
+				"evalops.peerControl": expect.objectContaining({
+					contextId: `maestro-swarm:${result.id}:task-1`,
+					controlModes: expect.arrayContaining([
+						"followup",
+						"interrupt",
+						"cancel",
+					]),
+					evidenceRequired: expect.arrayContaining(["status", "workGraph"]),
 				}),
 				"evalops.subagentRequest": expect.objectContaining({
 					skillId: "maestro.subagent.code-writer",

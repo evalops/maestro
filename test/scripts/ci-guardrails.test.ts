@@ -617,6 +617,7 @@ describe("ci workflow guardrails", () => {
 			expect(uploadLogsStep?.with?.path).toContain("nx-tests-attempt-*.log");
 			return;
 		}
+
 		expect(String(uploadLogsStep?.if ?? "")).toContain(
 			"nx-tests-attempt-*.json",
 		);
