@@ -610,6 +610,13 @@ describe("ci workflow guardrails", () => {
 		expect(script).toContain("--summary-json");
 		expect(script).toContain("nx-tests-attempt-${attempt}.json");
 		expect(script).toContain("#### Attempt summaries");
+		if (isPublicValidationWorkflow(workflow)) {
+			expect(String(uploadLogsStep?.if ?? "")).toContain(
+				"nx-tests-attempt-*.log",
+			);
+			expect(uploadLogsStep?.with?.path).toContain("nx-tests-attempt-*.log");
+			return;
+		}
 		expect(String(uploadLogsStep?.if ?? "")).toContain(
 			"nx-tests-attempt-*.json",
 		);
@@ -891,6 +898,16 @@ describe("ci workflow guardrails", () => {
 	});
 
 	it("embeds and validates public mirror source metadata before opening PRs", () => {
+		const ciWorkflow = parse(
+			readFileSync(new URL("../../.github/workflows/ci.yml", import.meta.url), {
+				encoding: "utf8",
+			}),
+		) as Workflow;
+		if (isPublicValidationWorkflow(ciWorkflow)) {
+			expect(ciWorkflow.jobs?.["pr-checks"]).toBeDefined();
+			return;
+		}
+
 		const workflow = readFileSync(
 			new URL(
 				"../../.github/workflows/sync-public-release-mirror.yml",
