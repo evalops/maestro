@@ -905,17 +905,17 @@ describe("ci workflow guardrails", () => {
 		);
 		if (!existsSync(workflowPath)) {
 			const ciWorkflow = parse(
-				readFileSync(new URL("../../.github/workflows/ci.yml", import.meta.url), {
-					encoding: "utf8",
-				}),
+				readFileSync(
+					new URL("../../.github/workflows/ci.yml", import.meta.url),
+					{
+						encoding: "utf8",
+					},
+				),
 			) as Workflow;
 			expect(isPublicValidationWorkflow(ciWorkflow)).toBe(true);
 			return;
 		}
-		const workflow = readFileSync(
-			workflowPath,
-			{ encoding: "utf8" },
-		);
+		const workflow = readFileSync(workflowPath, { encoding: "utf8" });
 
 		expect(workflow).toContain("scripts/public-mirror-source.mjs marker");
 		expect(workflow).toContain("scripts/public-mirror-source.mjs validate");
