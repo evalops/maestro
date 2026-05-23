@@ -83,6 +83,16 @@ jobs:
           path: nx-tests-attempt-*.log
           if-no-files-found: ignore
 
+      - name: Upload CI timing data (if any)
+        if: ${{ always() && hashFiles('ci-timing.jsonl') != '' }}
+        continue-on-error: true
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ci-timing-${{ github.run_id }}
+          path: ci-timing.jsonl
+          if-no-files-found: ignore
+          retention-days: 7
+
   rust-hosted-conformance:
     needs: changes
     if: ${{ github.event_name != 'pull_request' || needs.changes.outputs.rust_hosted_conformance == 'true' }}

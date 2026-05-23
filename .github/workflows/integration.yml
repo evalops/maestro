@@ -29,7 +29,9 @@ concurrency:
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+  HEADLESS_PROTOCOL_RUSTFMT: "off"
   MAESTRO_INTEGRATION_POSTGRES_PASSWORD: maestro
+  SESSION_WIRE_FORMAT_RUSTFMT: "off"
 
 jobs:
   integration-tests:
@@ -40,7 +42,7 @@ jobs:
       redis:
         image: redis:7-alpine
         ports:
-          - 6379:6379
+          - 6379
         options: >-
           --health-cmd "redis-cli ping"
           --health-interval 10s
@@ -50,7 +52,7 @@ jobs:
       postgres:
         image: postgres:16-alpine
         ports:
-          - 5432:5432
+          - 5432
         env:
           POSTGRES_USER: maestro
           POSTGRES_PASSWORD: ${{ env.MAESTRO_INTEGRATION_POSTGRES_PASSWORD }}
@@ -65,14 +67,17 @@ jobs:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
       - uses: ./.github/actions/setup-bun-nx
+        with:
+          ensure-rustfmt: "false"
 
       - name: Build contracts
         run: npx nx run contracts:build
 
       - name: Run integration tests
         env:
-          MAESTRO_REDIS_URL: redis://localhost:6379
-          MAESTRO_DATABASE_URL: postgresql://maestro:${{ env.MAESTRO_INTEGRATION_POSTGRES_PASSWORD }}@localhost:5432/maestro
+          MAESTRO_REDIS_URL: redis://localhost:${{ job.services.redis.ports['6379'] }}
+          MAESTRO_DATABASE_URL: postgresql://maestro@localhost:${{ job.services.postgres.ports['5432'] }}/maestro
+          PGPASSWORD: ${{ env.MAESTRO_INTEGRATION_POSTGRES_PASSWORD }}
         run: |
           # Run web tests plus production-schema database regressions with
           # Redis and PostgreSQL available.

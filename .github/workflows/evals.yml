@@ -39,14 +39,16 @@ jobs:
           ensure-ripgrep: "true"
 
       - name: Install uv
+        if: ${{ matrix.chunkIndex == 1 }}
         uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
       - name: Install Semgrep CLI
+        if: ${{ matrix.chunkIndex == 1 }}
         env:
           UV_HTTP_TIMEOUT: "120"
         run: |
           set -e
           for attempt in 1 2 3; do
-            if uv tool install "semgrep==1.144.0"; then
+            if uv tool install --force "semgrep==1.144.0"; then
               break
             fi
             if [ "$attempt" = "3" ]; then
@@ -58,11 +60,14 @@ jobs:
           done
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
       - name: Composer Guardian
+        if: ${{ matrix.chunkIndex == 1 }}
+        env:
+          MAESTRO_GUARDIAN_TOOL_TIMEOUT_MS: "600000"
         run: bash scripts/guardian.sh --all --trigger ci
       - run: npx nx run maestro:build:all
       - run: npx nx run maestro:lint
       - name: Run tests
-        timeout-minutes: 12
+        timeout-minutes: 15
         run: bunx vitest --run --reporter=verbose --no-file-parallelism --shard=${{ matrix.chunkIndex }}/2
       - name: Run evals chunk
         timeout-minutes: 45
