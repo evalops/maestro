@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { parse } from "yaml";
 import {
@@ -61,6 +61,23 @@ type Workflow = {
 type ProjectConfig = {
 	targets?: Record<string, { dependsOn?: string[] }>;
 };
+
+type NxTargetTimingRow = {
+	durationMs: number;
+	status: string;
+	target: string;
+};
+
+function isPublicValidationWorkflow(workflow: Workflow): boolean {
+	const runsOnValues = Object.values(workflow.jobs ?? {}).map((job) =>
+		String(job["runs-on"] ?? ""),
+	);
+	return (
+		runsOnValues.some((runsOn) =>
+			runsOn.includes("PUBLIC_PR_VALIDATION_RUNNER"),
+		) && !workflow.jobs?.["public-release-mirror"]
+	);
+}
 
 describe("planCiChecks", () => {
 	it("runs expensive checks on non-PR events", () => {
@@ -225,6 +242,7 @@ describe("planCiChecks", () => {
 					"scripts/plan-nx-test-command.mjs",
 					"scripts/release-readiness.js",
 					"scripts/runtime-workspaces.mjs",
+					"scripts/summarize-nx-profile.mjs",
 					"scripts/validate-public-package-deps.js",
 					"scripts/workspace-utils.js",
 					"test/scripts/ci-guardrails.test.ts",
@@ -282,6 +300,40 @@ describe("planCiChecks", () => {
 			publicMirror: true,
 			rustHostedConformance: false,
 		});
+	});
+
+	it("skips coverage for VS Code extension-only leaf changes", () => {
+		expect(
+			planCiChecks({
+				eventName: "pull_request",
+				changedFiles: [
+					"packages/vscode-extension/src/extension.ts",
+					"packages/vscode-extension/test/extension.test.ts",
+				],
+			}),
+		).toMatchObject({
+			ciInfrastructureOnly: false,
+			coverage: false,
+			prChecks: true,
+			publicMirror: true,
+			rustHostedConformance: false,
+		});
+	});
+
+	it("keeps coverage conservative for shared runtime and verifier surfaces", () => {
+		for (const changedPath of [
+			"packages/contracts/src/index.ts",
+			"src/agent/providers/openai-codex-session.ts",
+			"src/telemetry/pricing.ts",
+			"scripts/verify-platform-a2a-live-evidence.ts",
+		]) {
+			expect(
+				planCiChecks({
+					eventName: "pull_request",
+					changedFiles: [changedPath],
+				}).coverage,
+			).toBe(true);
+		}
 	});
 
 	it("keeps package manifests out of proof-harness-only skips", () => {
@@ -352,6 +404,31 @@ describe("planCiChecks", () => {
 });
 
 describe("ci workflow guardrails", () => {
+	it("recognizes public validation workflows by runner lane", () => {
+		const publicWorkflow = {
+			jobs: {
+				coverage: {
+					"runs-on":
+						"${{ vars.PUBLIC_PR_VALIDATION_RUNNER || 'ubuntu-latest' }}",
+				},
+				"pr-checks": {
+					"runs-on":
+						"${{ vars.PUBLIC_PR_VALIDATION_RUNNER || 'ubuntu-latest' }}",
+				},
+			},
+		} satisfies Workflow;
+
+		expect(isPublicValidationWorkflow(publicWorkflow)).toBe(true);
+		expect(
+			isPublicValidationWorkflow({
+				jobs: {
+					...publicWorkflow.jobs,
+					"public-release-mirror": {},
+				},
+			}),
+		).toBe(false);
+	});
+
 	it("runs shell CI guardrails for workflow file changes", () => {
 		const script = readFileSync(
 			new URL("../../scripts/ci-nx-tests.sh", import.meta.url),
@@ -366,6 +443,7 @@ describe("ci workflow guardrails", () => {
 		expect(regex.test(".github/workflows/ci.yml")).toBe(true);
 		expect(regex.test("scripts/ci-nx-tests.sh")).toBe(true);
 		expect(regex.test("scripts/check-smoke-scripts.mjs")).toBe(true);
+		expect(regex.test("scripts/summarize-nx-profile.mjs")).toBe(true);
 	});
 
 	it("builds dist before the runtime dependency validator", () => {
@@ -426,7 +504,7 @@ describe("ci workflow guardrails", () => {
 		expect(coverageTimeouts.get("Run tests with coverage")).toBe(60);
 	});
 
-	it("routes expensive pull-request jobs to the private heavy runner lane", () => {
+	it("routes expensive pull-request jobs to the intended runner lanes", () => {
 		const workflow = parse(
 			readFileSync(new URL("../../.github/workflows/ci.yml", import.meta.url), {
 				encoding: "utf8",
@@ -436,11 +514,8 @@ describe("ci workflow guardrails", () => {
 			workflow.jobs?.["pr-checks"]?.["runs-on"] ?? "",
 		);
 		const coverageRunsOn = String(workflow.jobs?.coverage?.["runs-on"] ?? "");
-		const isPublicMirrorWorkflow = prChecksRunsOn.includes(
-			"PUBLIC_PR_VALIDATION_RUNNER",
-		);
 
-		if (isPublicMirrorWorkflow) {
+		if (isPublicValidationWorkflow(workflow)) {
 			expect(prChecksRunsOn).toContain("ubuntu-latest");
 			expect(prChecksRunsOn).toContain("PUBLIC_PR_VALIDATION_RUNNER");
 			expect(coverageRunsOn).toContain("ubuntu-latest");
@@ -452,7 +527,7 @@ describe("ci workflow guardrails", () => {
 		expect(prChecksRunsOn).toContain("light_pr_checks");
 		expect(prChecksRunsOn).toContain("evalops-private-ci");
 		expect(prChecksRunsOn).toContain("PR_CHECKS_RUNNER");
-		expect(prChecksRunsOn).toContain("evalops-private-heavy");
+		expect(prChecksRunsOn).toContain("evalops-private-ci");
 		expect(prChecksRunsOn).toContain("INTERNAL_CONFIRMATION_RUNNER");
 		expect(coverageRunsOn).toContain("ubuntu-latest");
 		expect(coverageRunsOn).toContain("PR_COVERAGE_RUNNER");
@@ -468,12 +543,6 @@ describe("ci workflow guardrails", () => {
 		) as Workflow;
 		const changesOutputs = workflow.jobs?.changes?.outputs ?? {};
 		const prCheckSteps = workflow.jobs?.["pr-checks"]?.steps ?? [];
-		const prChecksRunsOn = String(
-			workflow.jobs?.["pr-checks"]?.["runs-on"] ?? "",
-		);
-		const isPublicMirrorWorkflow = prChecksRunsOn.includes(
-			"PUBLIC_PR_VALIDATION_RUNNER",
-		);
 		const helperSmokeStep = prCheckSteps.find(
 			(step) => step.name === "Release helper package smoke",
 		);
@@ -481,9 +550,10 @@ describe("ci workflow guardrails", () => {
 			(step) => step.name === "Release readiness (CI mode)",
 		);
 
-		if (isPublicMirrorWorkflow) {
+		if (isPublicValidationWorkflow(workflow)) {
+			expect(changesOutputs).not.toHaveProperty("release_helper_only");
 			expect(helperSmokeStep).toBeUndefined();
-			expect(releaseReadinessStep?.if).not.toContain("release_helper_only");
+			expect(releaseReadinessStep?.if).toContain("proof_harness_only");
 			return;
 		}
 
@@ -638,14 +708,14 @@ describe("ci workflow guardrails", () => {
 				encoding: "utf8",
 			}),
 		) as Workflow;
+		const isInternalReleaseMirrorSource = existsSync(
+			new URL("../../.github/release-mirror-manifest.json", import.meta.url),
+		);
 		const prChecksJob = workflow.jobs?.["pr-checks"];
 		const setupRustStep = prChecksJob?.steps?.find(
 			(step) => step.uses === "./.github/actions/setup-rust",
 		);
-		const prChecksRunsOn = String(prChecksJob?.["runs-on"] ?? "");
-		const isPublicMirrorPrChecks = prChecksRunsOn.includes(
-			"PUBLIC_PR_VALIDATION_RUNNER",
-		);
+		const isPublicMirrorPrChecks = isPublicValidationWorkflow(workflow);
 
 		if (!setupRustStep) {
 			expect(isPublicMirrorPrChecks).toBe(true);
@@ -659,7 +729,7 @@ describe("ci workflow guardrails", () => {
 			return;
 		}
 
-		if (!isPublicMirrorPrChecks) {
+		if (isInternalReleaseMirrorSource) {
 			expect(workflow.jobs?.changes).toBeDefined();
 			expect(workflow.jobs?.["public-release-mirror"]).toBeDefined();
 		}
@@ -738,6 +808,47 @@ describe("ci workflow guardrails", () => {
 		expect(javaSteps[0]?.with).not.toHaveProperty("cache");
 		expect(javaIndex).toBeGreaterThan(setupBunIndex);
 		expect(javaIndex).toBeLessThan(nxTestIndex);
+	});
+
+	it("records Nx resolved targets and per-target timing profiles", () => {
+		const script = readFileSync(
+			new URL("../../scripts/ci-nx-tests.sh", import.meta.url),
+			{ encoding: "utf8" },
+		);
+
+		expect(script).toContain("nx-resolved-targets.log");
+		expect(script).toContain("--withTarget test");
+		expect(script).toContain('NX_PROFILE="$profile_file"');
+		expect(script).toContain("scripts/summarize-nx-profile.mjs");
+		expect(script).toContain("nx-target-timings-attempt-${attempt}.log");
+	});
+
+	it("uploads Nx timing and resolved-target artifacts", () => {
+		const workflow = parse(
+			readFileSync(new URL("../../.github/workflows/ci.yml", import.meta.url), {
+				encoding: "utf8",
+			}),
+		) as Workflow;
+		const uploadStep = workflow.jobs?.["pr-checks"]?.steps?.find(
+			(step) => step.name === "Upload Nx test logs (if any)",
+		);
+
+		expect(uploadStep?.if).toContain("nx-tests-attempt-*.log");
+		if (isPublicValidationWorkflow(workflow)) {
+			expect(String(uploadStep?.with?.path ?? "")).toContain(
+				"nx-tests-attempt-*.log",
+			);
+			return;
+		}
+
+		expect(uploadStep?.if).toContain("nx-target-timings-*.log");
+		expect(String(uploadStep?.with?.path ?? "")).toContain(
+			"nx-resolved-targets.log",
+		);
+		expect(String(uploadStep?.with?.path ?? "")).toContain(
+			"nx-target-timings-*.log",
+		);
+		expect(String(uploadStep?.with?.path ?? "")).toContain("nx-profile-*.json");
 	});
 
 	it("cancels stale review-thread guard runs for the same PR", () => {
@@ -955,6 +1066,7 @@ describe("planNxTestCommand", () => {
 					"scripts/check-runtime-deps.js",
 					"scripts/plan-nx-test-command.mjs",
 					"scripts/runtime-workspaces.mjs",
+					"scripts/summarize-nx-profile.mjs",
 					"test/scripts/ci-guardrails.test.ts",
 				],
 				handledOutsideNxFiles: [
@@ -963,6 +1075,7 @@ describe("planNxTestCommand", () => {
 					"scripts/check-runtime-deps.js",
 					"scripts/plan-nx-test-command.mjs",
 					"scripts/runtime-workspaces.mjs",
+					"scripts/summarize-nx-profile.mjs",
 					"test/scripts/ci-guardrails.test.ts",
 				],
 				headPackage: {
@@ -1108,6 +1221,57 @@ describe("planNxTestCommand", () => {
 				isRootPackage: true,
 			}),
 		).toBe(false);
+	});
+});
+
+describe("summarizeNxProfile", () => {
+	it("formats Nx task profile rows by slowest target first", async () => {
+		const timingModule = (await import(
+			"../../scripts/summarize-nx-profile.mjs"
+		)) as {
+			formatNxTargetTimingSummary: (
+				rows: NxTargetTimingRow[],
+				options?: { expectedTargets?: string[] },
+			) => string;
+			summarizeNxProfile: (profile: unknown) => NxTargetTimingRow[];
+		};
+
+		const rows = timingModule.summarizeNxProfile([
+			{
+				args: { name: "Group #1" },
+				name: "thread_name",
+				ph: "M",
+			},
+			{
+				args: {
+					status: "local-cache",
+					target: { project: "tui", target: "test" },
+				},
+				dur: 250_000,
+				name: "tui:test",
+				ph: "X",
+			},
+			{
+				args: {
+					status: "success",
+					target: { project: "maestro", target: "test" },
+				},
+				dur: 1_500_000,
+				name: "maestro:test",
+				ph: "X",
+			},
+		]);
+
+		expect(rows).toEqual([
+			{ durationMs: 1500, status: "success", target: "maestro:test" },
+			{ durationMs: 250, status: "local-cache", target: "tui:test" },
+		]);
+
+		expect(
+			timingModule.formatNxTargetTimingSummary(rows, {
+				expectedTargets: ["maestro:test", "tui:test", "vscode-extension:test"],
+			}),
+		).toContain("vscode-extension:test | not-profiled");
 	});
 });
 

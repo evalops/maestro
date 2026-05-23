@@ -1,17 +1,8 @@
 #!/usr/bin/env node
 
 import { build } from "esbuild";
-import { existsSync } from "node:fs";
 
-const entryPoints = process.argv
-	.slice(2)
-	.filter(Boolean)
-	.map((entryPoint) =>
-		entryPoint.startsWith(".") || entryPoint.startsWith("/")
-			? entryPoint
-			: `./${entryPoint}`,
-	)
-	.filter((entryPoint) => existsSync(entryPoint));
+const entryPoints = process.argv.slice(2).filter(Boolean);
 
 if (entryPoints.length === 0) {
 	console.log("No smoke scripts to check.");

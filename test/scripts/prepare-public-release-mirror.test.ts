@@ -204,6 +204,10 @@ describe("prepare-public-release-mirror", () => {
 
 		const pkg = readJson(join(target, "package.json"));
 		expect(pkg.name).toBe(publicPackageName);
+		expect(pkg.scripts).toMatchObject({
+			"release:verify:published": "node scripts/smoke-registry-install.js",
+			"release:deprecate": "node scripts/deprecate-release.js",
+		});
 		expect(pkg.maestro).toMatchObject({
 			canonicalPackageName: publicPackageName,
 			packageAliases: [publicPackageName, internalPackageName],
