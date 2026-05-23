@@ -53,7 +53,6 @@ export function matchesA2AOwnershipScope(
 			(next) => {
 				sawMarker = true;
 				matched ||= next;
-				matchedIdentity ||= next;
 			},
 		)
 	) {

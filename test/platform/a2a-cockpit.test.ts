@@ -4,12 +4,29 @@ import {
 	summarizeA2ACockpit,
 } from "../../src/platform/a2a-cockpit.js";
 import type { A2AFleetSummary } from "../../src/platform/a2a-fleet.js";
+import { matchesA2AOwnershipScope } from "../../src/platform/a2a-ownership.js";
 import type {
 	A2ATaskLedgerEntry,
 	A2ATaskLedgerFile,
 } from "../../src/platform/a2a-task-ledger.js";
 
 describe("A2A cockpit", () => {
+	it("does not let scope-key matches satisfy conflicting identity markers", () => {
+		expect(
+			matchesA2AOwnershipScope(
+				{
+					scopeKey: "workspace_ws-1__user_u-1",
+					ownerSubject: "user:u-2",
+				},
+				{
+					scopeKey: "workspace_ws-1__user_u-1",
+					subject: "user:u-1",
+					userId: "u-1",
+				},
+			),
+		).toBe(false);
+	});
+
 	it("prioritizes actionable tasks and emits operator commands", () => {
 		const summary = summarizeA2ACockpit({
 			fleet: fleetSummary(),
