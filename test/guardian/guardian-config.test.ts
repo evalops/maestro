@@ -184,6 +184,21 @@ describe("Guardian Config", () => {
 			expect(config.toolTimeoutMs).toBe(240_000);
 		});
 
+		it("should ignore non-integer environment tool timeouts", () => {
+			process.env.MAESTRO_GUARDIAN_TOOL_TIMEOUT_MS = "0.5";
+			const fileConfig: GuardianConfig = {
+				toolTimeoutMs: 60_000,
+			};
+			writeFileSync(
+				join(testDir, ".maestro", "guardian.json"),
+				JSON.stringify(fileConfig),
+			);
+
+			const config = resolveGuardianConfig({ root: testDir });
+
+			expect(config.toolTimeoutMs).toBe(60_000);
+		});
+
 		it("should handle malformed config files gracefully", () => {
 			writeFileSync(
 				join(testDir, ".maestro", "guardian.json"),

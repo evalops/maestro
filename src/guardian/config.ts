@@ -119,10 +119,11 @@ function mergeConfigs(...configs: (GuardianConfig | null)[]): GuardianConfig {
 
 function parsePositiveIntegerEnv(name: string): number | undefined {
 	const raw = process.env[name];
-	if (typeof raw !== "string" || raw.trim() === "") return undefined;
-	const parsed = Number(raw);
-	if (!Number.isFinite(parsed) || parsed <= 0) return undefined;
-	return Math.floor(parsed);
+	const trimmed = raw?.trim();
+	if (!trimmed || !/^[1-9]\d*$/.test(trimmed)) return undefined;
+	const parsed = Number(trimmed);
+	if (!Number.isSafeInteger(parsed)) return undefined;
+	return parsed;
 }
 
 /**
