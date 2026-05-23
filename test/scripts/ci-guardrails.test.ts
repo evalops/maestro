@@ -40,6 +40,7 @@ import {
 
 type WorkflowStep = {
 	env?: Record<string, unknown>;
+	id?: string;
 	if?: string;
 	name?: string;
 	uses?: string;
@@ -86,6 +87,15 @@ function isPublicValidationWorkflow(workflow: Workflow): boolean {
 			runsOn.includes("PUBLIC_PR_VALIDATION_RUNNER"),
 		) && !workflow.jobs?.["public-release-mirror"]
 	);
+}
+
+function expectPublicValidationWorkflow(): void {
+	const workflow = parse(
+		readFileSync(new URL("../../.github/workflows/ci.yml", import.meta.url), {
+			encoding: "utf8",
+		}),
+	) as Workflow;
+	expect(isPublicValidationWorkflow(workflow)).toBe(true);
 }
 
 describe("planCiChecks", () => {
@@ -489,6 +499,8 @@ describe("planCiChecks", () => {
 					"scripts/maestro-merge-queue-status.mjs",
 					"scripts/pr-latest-head-checks.mjs",
 					"scripts/run-prepared-public-mirror-guardrails.mjs",
+					"scripts/sync-public-companion-branch.mjs",
+					"scripts/update-behind-auto-merge-prs.mjs",
 					"test/scripts/ci-guardrails.test.ts",
 				],
 			}),
@@ -525,6 +537,8 @@ describe("planCiChecks", () => {
 					".github/workflows/ci.yml",
 					"docs/internal/operator-note.md",
 					"scripts/run-scenario-replay-gate.mjs",
+					"scripts/sync-public-companion-branch.mjs",
+					"scripts/update-behind-auto-merge-prs.mjs",
 					"scripts/validate-public-package-deps.js",
 				],
 			}).publicMirror,
@@ -1265,6 +1279,40 @@ describe("ci workflow guardrails", () => {
 		);
 	});
 
+	it("prepares public companion branches before release mirror validation", () => {
+		const workflow = parse(
+			readFileSync(new URL("../../.github/workflows/ci.yml", import.meta.url), {
+				encoding: "utf8",
+			}),
+		) as Workflow;
+		if (isPublicValidationWorkflow(workflow)) {
+			expect(workflow.jobs?.["public-release-mirror"]).toBeUndefined();
+			return;
+		}
+		const steps = workflow.jobs?.["public-release-mirror"]?.steps ?? [];
+		const stepNames = steps.map((step) => step.name ?? step.id ?? "");
+		const authStep = steps.find((step) => step.id === "public-companion-auth");
+		const appTokenStep = steps.find(
+			(step) => step.name === "Mint public companion GitHub App token",
+		);
+		const syncIndex = stepNames.indexOf("Sync public companion branch");
+		const resolveIndex = stepNames.indexOf("Resolve public mirror ref");
+		const syncStep = steps[syncIndex];
+
+		expect(authStep?.if).toBe(
+			"${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.id == github.event.repository.id }}",
+		);
+		expect(appTokenStep?.uses).toBe(
+			"actions/create-github-app-token@67018539274d69449ef7c02e8e71183d1719ab42",
+		);
+		expect(syncIndex).toBeGreaterThanOrEqual(0);
+		expect(syncIndex).toBeLessThan(resolveIndex);
+		expect(syncStep?.env?.PUBLIC_MIRROR_TOKEN).toBe(
+			"${{ steps.public-companion-app-token.outputs.token || secrets.PUBLIC_REPO_SYNC_TOKEN || secrets.PUBLIC_REPO_TOKEN }}",
+		);
+		expect(syncStep?.run).toContain("scripts/sync-public-companion-branch.mjs");
+	});
+
 	it("uses token-backed release PR pushes and formats generated release metadata", () => {
 		const workflowPath = new URL(
 			"../../.github/workflows/version-bump.yml",
@@ -1310,6 +1358,38 @@ describe("ci workflow guardrails", () => {
 		);
 		expect(prStep?.run).toContain("## Test Plan");
 		expect(prStep?.run).toContain("## Rollback");
+	});
+
+	it("updates only behind same-repo auto-merge pull requests with non-GITHUB_TOKEN auth", () => {
+		const workflowPath = new URL(
+			"../../.github/workflows/pr-auto-update.yml",
+			import.meta.url,
+		);
+		if (!existsSync(workflowPath)) {
+			expectPublicValidationWorkflow();
+			return;
+		}
+		const workflowText = readFileSync(workflowPath, { encoding: "utf8" });
+		const workflow = parse(workflowText) as Workflow;
+		const steps = workflow.jobs?.update?.steps ?? [];
+		const updateStep = steps.find(
+			(step) => step.name === "Update behind auto-merge PRs",
+		);
+
+		expect(workflowText).toContain("push:");
+		expect(workflowText).toContain("- main");
+		expect(
+			steps.some(
+				(step) => step.name === "Mint PR auto-update GitHub App token",
+			),
+		).toBe(true);
+		expect(updateStep?.env?.GH_TOKEN).toBe(
+			"${{ steps.auto-update-app-token.outputs.token || secrets.PR_AUTO_UPDATE_TOKEN || secrets.RELEASE_PR_SYNC_TOKEN || secrets.RELEASE_PR_TOKEN }}",
+		);
+		expect(updateStep?.env?.GH_TOKEN).not.toContain("github.token");
+		expect(updateStep?.run).toContain(
+			"scripts/update-behind-auto-merge-prs.mjs",
+		);
 	});
 
 	it("keeps setup-bun-nx rustfmt home stable across workflow runs", () => {
@@ -1923,6 +2003,124 @@ describe("public mirror ref resolution", () => {
 			ref: "codex/release-foo",
 			source: "matched-public-branch",
 		});
+	});
+});
+
+describe("public companion branch sync", () => {
+	it("derives companion branches from internal ref aliases", async () => {
+		const scriptPath = new URL(
+			"../../scripts/sync-public-companion-branch.mjs",
+			import.meta.url,
+		);
+		if (!existsSync(scriptPath)) {
+			expectPublicValidationWorkflow();
+			return;
+		}
+		const { companionBranchForInternalRef, publicBranchHeadRef } = await import(
+			scriptPath.href
+		);
+
+		expect(companionBranchForInternalRef("codex/internal-release-foo")).toBe(
+			"codex/internal-release-foo",
+		);
+		expect(companionBranchForInternalRef("internal-release-foo")).toBe(
+			"internal-release-foo",
+		);
+		expect(publicBranchHeadRef("codex/internal-release-foo")).toBe(
+			"refs/heads/codex/internal-release-foo",
+		);
+	});
+
+	it("injects GitHub tokens only for GitHub HTTPS remotes", async () => {
+		const scriptPath = new URL(
+			"../../scripts/sync-public-companion-branch.mjs",
+			import.meta.url,
+		);
+		if (!existsSync(scriptPath)) {
+			expectPublicValidationWorkflow();
+			return;
+		}
+		const { tokenizedGitHubUrl } = await import(scriptPath.href);
+
+		expect(
+			tokenizedGitHubUrl("https://github.com/evalops/maestro.git", "token-123"),
+		).toBe("https://x-access-token:token-123@github.com/evalops/maestro.git");
+		expect(
+			tokenizedGitHubUrl("git@github.com:evalops/maestro.git", "token-123"),
+		).toBe("git@github.com:evalops/maestro.git");
+	});
+});
+
+describe("behind auto-merge PR updates", () => {
+	const eligiblePr = {
+		autoMergeRequest: { enabledAt: "2026-05-23T00:00:00Z" },
+		baseRefName: "main",
+		headRefName: "codex/example",
+		isCrossRepository: false,
+		headRepositoryOwner: { login: "evalops" },
+		isDraft: false,
+		mergeStateStatus: "BEHIND",
+		number: 123,
+		state: "OPEN",
+		title: "example",
+	};
+
+	it("selects only open same-repo auto-merge PRs that are behind main", async () => {
+		const scriptPath = new URL(
+			"../../scripts/update-behind-auto-merge-prs.mjs",
+			import.meta.url,
+		);
+		if (!existsSync(scriptPath)) {
+			expectPublicValidationWorkflow();
+			return;
+		}
+		const { shouldUpdatePr } = await import(scriptPath.href);
+
+		expect(shouldUpdatePr(eligiblePr, { base: "main", owner: "evalops" })).toBe(
+			true,
+		);
+		for (const patch of [
+			{ autoMergeRequest: null },
+			{ baseRefName: "release/v1" },
+			{ headRepositoryOwner: { login: "contributor" } },
+			{ isCrossRepository: true },
+			{ isDraft: true },
+			{ mergeStateStatus: "CLEAN" },
+			{ state: "CLOSED" },
+		]) {
+			expect(
+				shouldUpdatePr(
+					{ ...eligiblePr, ...patch },
+					{
+						base: "main",
+						owner: "evalops",
+					},
+				),
+			).toBe(false);
+		}
+	});
+
+	it("summarizes the update queue without mutating skipped PRs", async () => {
+		const scriptPath = new URL(
+			"../../scripts/update-behind-auto-merge-prs.mjs",
+			import.meta.url,
+		);
+		if (!existsSync(scriptPath)) {
+			expectPublicValidationWorkflow();
+			return;
+		}
+		const { summarizeUpdateQueue } = await import(scriptPath.href);
+
+		const queue = summarizeUpdateQueue(
+			[
+				eligiblePr,
+				{ ...eligiblePr, autoMergeRequest: null, number: 124 },
+				{ ...eligiblePr, mergeStateStatus: "CLEAN", number: 125 },
+			],
+			{ base: "main", repo: "evalops/maestro-internal" },
+		);
+		expect(queue.selected.map((pr) => pr.number)).toEqual([123]);
+		expect(queue.skipped.map((pr) => pr.number)).toEqual([124, 125]);
 	});
 });
 
