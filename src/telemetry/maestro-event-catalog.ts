@@ -9,7 +9,6 @@ export enum MaestroBusEventType {
 	FirewallBlock = "maestro.events.firewall_block",
 	ToolCallAttempted = "maestro.events.tool_call.attempted",
 	ToolCallCompleted = "maestro.events.tool_call.completed",
-	ToolCallFailed = "maestro.events.tool_call.failed",
 	ErrorCaptured = "maestro.events.error.captured",
 	ArtifactCreated = "maestro.events.artifact.created",
 	FinalStatusReported = "maestro.events.final_status.reported",
@@ -136,16 +135,6 @@ export const MAESTRO_BUS_EVENT_CATALOG = {
 		"tool",
 		"ToolCallResult",
 		["meter.maestro-tool-call-events", "skills.maestro-tool-call-completed"],
-	),
-	[MaestroBusEventType.ToolCallFailed]: entry(
-		MaestroBusEventType.ToolCallFailed,
-		"tool",
-		"ToolCallResult",
-		[
-			"meter.maestro-tool-call-events",
-			"release.maestro-tool-failure-gates",
-			"skills.maestro-tool-call-failed",
-		],
 	),
 	[MaestroBusEventType.ErrorCaptured]: entry(
 		MaestroBusEventType.ErrorCaptured,

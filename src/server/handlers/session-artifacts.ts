@@ -173,6 +173,24 @@ function asString(value: unknown): string | undefined {
 	return typeof value === "string" ? value : undefined;
 }
 
+function hasControlCharacter(value: string): boolean {
+	for (let index = 0; index < value.length; index += 1) {
+		const code = value.charCodeAt(index);
+		if (code < 32 || code === 127) return true;
+	}
+	return false;
+}
+
+function isValidArtifactFilename(filename: string): boolean {
+	return (
+		filename.length > 0 &&
+		!filename.includes("..") &&
+		!filename.includes("/") &&
+		!filename.includes("\\") &&
+		!hasControlCharacter(filename)
+	);
+}
+
 function reconstructArtifactsFromMessages(
 	messages: ComposerMessage[],
 ): Map<string, string> {
@@ -198,6 +216,7 @@ function reconstructArtifactsFromMessages(
 			const filename = asString(args.filename)?.trim();
 
 			if (!command || !filename) continue;
+			if (!isValidArtifactFilename(filename)) continue;
 			if (command === "get" || command === "logs") continue;
 
 			if (command === "create") {
@@ -218,6 +237,7 @@ function reconstructArtifactsFromMessages(
 				const oldStr = asString(args.old_str);
 				const newStr = asString(args.new_str);
 				if (oldStr === undefined || newStr === undefined) continue;
+				if (oldStr.length === 0) continue;
 				if (!current.includes(oldStr)) continue;
 				byFilename.set(filename, current.replace(oldStr, newStr));
 				continue;
@@ -246,11 +266,7 @@ async function loadComposerMessages(
 
 function validateFilename(filename: string): void {
 	// Keep this strict: no path traversal, no folder hierarchies.
-	if (
-		filename.includes("..") ||
-		filename.includes("/") ||
-		filename.includes("\\")
-	) {
+	if (!isValidArtifactFilename(filename.trim())) {
 		throw new ApiError(400, "Invalid filename");
 	}
 }

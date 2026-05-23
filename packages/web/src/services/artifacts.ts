@@ -27,12 +27,43 @@ export interface ArtifactsState {
 	byFilename: Map<string, Artifact>;
 }
 
+const ARTIFACT_COMMANDS = new Set<string>([
+	"create",
+	"update",
+	"rewrite",
+	"get",
+	"delete",
+	"logs",
+]);
+
 export function createEmptyArtifactsState(): ArtifactsState {
 	return { byFilename: new Map<string, Artifact>() };
 }
 
 function asString(value: unknown): string | undefined {
 	return typeof value === "string" ? value : undefined;
+}
+
+function isValidArtifactCommand(command: unknown): command is ArtifactsCommand {
+	return typeof command === "string" && ARTIFACT_COMMANDS.has(command);
+}
+
+function hasControlCharacter(value: string): boolean {
+	for (let index = 0; index < value.length; index += 1) {
+		const code = value.charCodeAt(index);
+		if (code < 32 || code === 127) return true;
+	}
+	return false;
+}
+
+function isValidArtifactFilename(filename: string): boolean {
+	return (
+		filename.length > 0 &&
+		!filename.includes("..") &&
+		!filename.includes("/") &&
+		!filename.includes("\\") &&
+		!hasControlCharacter(filename)
+	);
 }
 
 export function coerceArtifactsArgs(value: unknown): ArtifactsArgs {
@@ -57,8 +88,18 @@ export function applyArtifactsCommand(
 	if (!command) {
 		return { state, output: "Error: missing command", isError: true };
 	}
+	if (!isValidArtifactCommand(command)) {
+		return {
+			state,
+			output: `Error: unknown command: ${command}`,
+			isError: true,
+		};
+	}
 	if (!filename) {
 		return { state, output: "Error: missing filename", isError: true };
+	}
+	if (!isValidArtifactFilename(filename)) {
+		return { state, output: "Error: invalid filename", isError: true };
 	}
 
 	const current = state.byFilename.get(filename);
@@ -115,6 +156,13 @@ export function applyArtifactsCommand(
 					isError: true,
 				};
 			}
+			if (oldStr.length === 0) {
+				return {
+					state,
+					output: "Error: update requires non-empty old_str",
+					isError: true,
+				};
+			}
 			if (!current.content.includes(oldStr)) {
 				return {
 					state,
@@ -157,6 +205,9 @@ export function applyArtifactsCommand(
 		}
 
 		case "logs": {
+			if (!current) {
+				return { state, output: `Error: ${filename} not found`, isError: true };
+			}
 			// Log retrieval is handled by the UI (sandbox console capture).
 			return {
 				state,

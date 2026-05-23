@@ -58,7 +58,8 @@ export class ArtifactsRuntimeProvider implements SandboxRuntimeProvider {
 				};
 
 			const w = window as SandboxWindow;
-			const isJsonFile = (filename: string) => filename.endsWith(".json");
+			const isJsonFile = (filename: string) =>
+				filename.toLowerCase().endsWith(".json");
 
 			w.listArtifacts = async (): Promise<string[]> => {
 				if (w.sendRuntimeMessage) {
@@ -183,7 +184,11 @@ export class ArtifactsRuntimeProvider implements SandboxRuntimeProvider {
 				respond({ success: false, error: "Artifacts runtime is read-only" });
 				return;
 			}
-			const filename = typeof m.filename === "string" ? m.filename : "";
+			const filename = typeof m.filename === "string" ? m.filename.trim() : "";
+			if (!filename) {
+				respond({ success: false, error: "filename is required" });
+				return;
+			}
 			const content = typeof m.content === "string" ? m.content : "";
 			await this.opts.createOrUpdate(filename, content);
 			respond({ success: true });
@@ -195,9 +200,19 @@ export class ArtifactsRuntimeProvider implements SandboxRuntimeProvider {
 				respond({ success: false, error: "Artifacts runtime is read-only" });
 				return;
 			}
-			const filename = typeof m.filename === "string" ? m.filename : "";
+			const filename = typeof m.filename === "string" ? m.filename.trim() : "";
+			if (!filename) {
+				respond({ success: false, error: "filename is required" });
+				return;
+			}
 			await this.opts.delete(filename);
 			respond({ success: true });
+			return;
 		}
+
+		respond({
+			success: false,
+			error: `Unsupported artifact operation: ${action}`,
+		});
 	}
 }
