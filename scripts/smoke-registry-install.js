@@ -15,6 +15,7 @@ import {
 	runInstalledPackageAudit,
 } from "./install-smoke-utils.js";
 import { getPackageMetadata } from "./package-metadata.js";
+import { runPublishedReplayE2E } from "./smoke-published-replay-e2e.js";
 import {
 	getWorkspacePackages,
 	loadRootPackage,
@@ -153,6 +154,11 @@ async function main() {
 			cliCommand,
 			expectedVersion: version,
 			label: "npm-installed registry CLI",
+		});
+		await runPublishedReplayE2E({
+			cliCommand,
+			installRoot: tempDir,
+			packageSpec,
 		});
 
 		console.log(`Smoke-tested ${packageSpec} from npm.`);
