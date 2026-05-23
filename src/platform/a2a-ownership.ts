@@ -16,6 +16,7 @@ export interface A2AOwnershipRecord {
 	actorId?: string;
 	ownerId?: string;
 	userId?: string;
+	keyId?: string;
 	ownerSubject?: string;
 	scopeKey?: string;
 	sessionScope?: string;

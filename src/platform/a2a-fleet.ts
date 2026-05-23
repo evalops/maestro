@@ -49,8 +49,15 @@ export interface A2AFleetPeerSummary {
 	skills?: A2AAgentCard["skills"];
 	model?: string;
 	cwd?: string;
+	scopeKey?: string;
+	sessionScope?: string;
 	workspaceId?: string;
 	organizationId?: string;
+	orgId?: string;
+	teamId?: string;
+	ownerId?: string;
+	userId?: string;
+	keyId?: string;
 	actorId?: string;
 	ownerSubject?: string;
 	lastTask?: A2AFleetTaskSummary;
@@ -198,9 +205,7 @@ function basePeerSummary(
 		...(entry.workspaceId ? { workspaceId: entry.workspaceId } : {}),
 		...(entry.organizationId ? { organizationId: entry.organizationId } : {}),
 		...(entry.actorId ? { actorId: entry.actorId } : {}),
-		...(stringMetadata(entry, "ownerSubject")
-			? { ownerSubject: stringMetadata(entry, "ownerSubject") }
-			: {}),
+		...optionalOwnershipMetadata(entry),
 		...(lastTask ? { lastTask: fleetTaskSummary(lastTask) } : {}),
 	};
 }
@@ -222,4 +227,62 @@ function stringMetadata(
 ): string | undefined {
 	const value = entry.metadata?.[key];
 	return typeof value === "string" && value.trim() ? value.trim() : undefined;
+}
+
+function firstStringMetadata(
+	entry: A2APeerRegistryEntry,
+	keys: readonly string[],
+): string | undefined {
+	for (const key of keys) {
+		const value = stringMetadata(entry, key);
+		if (value) {
+			return value;
+		}
+	}
+	return undefined;
+}
+
+function optionalOwnershipMetadata(
+	entry: A2APeerRegistryEntry,
+): Partial<A2AFleetPeerSummary> {
+	const metadata: Partial<A2AFleetPeerSummary> = {};
+	const scopeKey = firstStringMetadata(entry, ["scopeKey", "scope_key"]);
+	if (scopeKey) {
+		metadata.scopeKey = scopeKey;
+	}
+	const sessionScope = firstStringMetadata(entry, [
+		"sessionScope",
+		"session_scope",
+	]);
+	if (sessionScope) {
+		metadata.sessionScope = sessionScope;
+	}
+	const orgId = firstStringMetadata(entry, ["orgId", "org_id"]);
+	if (orgId) {
+		metadata.orgId = orgId;
+	}
+	const teamId = firstStringMetadata(entry, ["teamId", "team_id"]);
+	if (teamId) {
+		metadata.teamId = teamId;
+	}
+	const ownerSubject = firstStringMetadata(entry, [
+		"ownerSubject",
+		"owner_subject",
+	]);
+	if (ownerSubject) {
+		metadata.ownerSubject = ownerSubject;
+	}
+	const ownerId = firstStringMetadata(entry, ["ownerId", "owner_id"]);
+	if (ownerId) {
+		metadata.ownerId = ownerId;
+	}
+	const userId = firstStringMetadata(entry, ["userId", "user_id"]);
+	if (userId) {
+		metadata.userId = userId;
+	}
+	const keyId = firstStringMetadata(entry, ["keyId", "key_id"]);
+	if (keyId) {
+		metadata.keyId = keyId;
+	}
+	return metadata;
 }

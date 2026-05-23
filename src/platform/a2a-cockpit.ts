@@ -137,7 +137,7 @@ export async function buildA2ACockpit(
 	});
 	return summarizeA2ACockpit({
 		fleet,
-		ledger: scopedLedger,
+		ledger,
 		peer: options.peer,
 		limit: options.limit,
 		ownershipScope: options.ownershipScope,
@@ -168,9 +168,15 @@ export function summarizeA2ACockpit(
 ): A2ACockpitSummary {
 	const peerFilter = cleanPeer(input.peer);
 	const limit = normalizeLimit(input.limit);
+	const markerlessPeerNames = new Set(
+		input.fleet.peers
+			.filter((peer) => matchesA2AOwnershipScope(peer, input.ownershipScope))
+			.map((peer) => peer.name),
+	);
 	const scopedLedger = filterLedgerForOwnership(
 		input.ledger,
 		input.ownershipScope,
+		markerlessPeerNames,
 	);
 	const scopedTaskPeerNames = new Set(
 		scopedLedger.tasks.map((task) => task.peer),
@@ -204,12 +210,16 @@ export function summarizeA2ACockpit(
 function filterLedgerForOwnership(
 	ledger: A2ATaskLedgerFile,
 	scope: A2AOwnershipScope | undefined,
+	markerlessPeerNames?: ReadonlySet<string>,
 ): A2ATaskLedgerFile {
+	if (!hasA2AOwnershipScope(scope)) {
+		return ledger;
+	}
 	return {
 		tasks: ledger.tasks.filter((entry) =>
 			hasA2AOwnershipRecordMarkers(entry)
 				? matchesA2AOwnershipScope(entry, scope)
-				: true,
+				: Boolean(markerlessPeerNames?.has(entry.peer)),
 		),
 	};
 }

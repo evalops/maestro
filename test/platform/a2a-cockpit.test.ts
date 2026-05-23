@@ -1,6 +1,10 @@
+import { mkdtemp, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
 	type A2ACockpitTaskStatus,
+	buildA2ACockpit,
 	summarizeA2ACockpit,
 } from "../../src/platform/a2a-cockpit.js";
 import type { A2AFleetSummary } from "../../src/platform/a2a-fleet.js";
@@ -237,6 +241,14 @@ describe("A2A cockpit", () => {
 					updatedAt: "2026-05-16T00:00:11.000Z",
 				}),
 				task({
+					id: "markerless-other-user-ledger",
+					peer: "tenant-a-other-user",
+					taskId: "task-markerless-other-user",
+					state: "TASK_STATE_INPUT_REQUIRED",
+					text: "markerless task attached to another user's peer",
+					updatedAt: "2026-05-16T00:00:12.000Z",
+				}),
+				task({
 					id: "owned-ledger",
 					peer: "tenant-a",
 					taskId: "task-owned",
@@ -310,6 +322,69 @@ describe("A2A cockpit", () => {
 			tasks: 3,
 			actionRequiredTasks: 3,
 		});
+	});
+
+	it("retains markerless shared-file tasks only for peers owned by the caller", async () => {
+		const dir = await mkdtemp(join(tmpdir(), "a2a-cockpit-scope-"));
+		const registryPath = join(dir, "peers.json");
+		const tasksPath = join(dir, "tasks.json");
+		await writeFile(
+			registryPath,
+			JSON.stringify({
+				peers: {
+					"tenant-a": {
+						url: "http://127.0.0.1:9",
+						workspaceId: "ws-1",
+					},
+					"tenant-a-other-user": {
+						url: "http://127.0.0.1:9",
+						workspaceId: "ws-1",
+						metadata: {
+							ownerSubject: "user:u-2",
+						},
+					},
+				},
+			}),
+		);
+		await writeFile(
+			tasksPath,
+			JSON.stringify(
+				ledger([
+					task({
+						id: "markerless-owned-peer-ledger",
+						peer: "tenant-a",
+						taskId: "task-markerless-owned-peer",
+						state: "TASK_STATE_INPUT_REQUIRED",
+						text: "legacy task on caller-owned peer",
+						updatedAt: "2026-05-16T00:00:10.000Z",
+					}),
+					task({
+						id: "markerless-other-user-peer-ledger",
+						peer: "tenant-a-other-user",
+						taskId: "task-markerless-other-user-peer",
+						state: "TASK_STATE_INPUT_REQUIRED",
+						text: "legacy task on another user's peer",
+						updatedAt: "2026-05-16T00:00:11.000Z",
+					}),
+				]),
+			),
+		);
+
+		const summary = await buildA2ACockpit({
+			registryPath,
+			tasksPath,
+			timeoutMs: 1,
+			ownershipScope: {
+				subject: "user:u-1",
+				userId: "u-1",
+				workspaceId: "ws-1",
+			},
+		});
+
+		expect(summary.tasks.map((entry) => entry.taskId)).toEqual([
+			"task-markerless-owned-peer",
+		]);
+		expect(summary.peers.map((peer) => peer.name)).toEqual(["tenant-a"]);
 	});
 });
 
