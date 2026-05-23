@@ -829,20 +829,59 @@ describe("ci workflow guardrails", () => {
 		);
 	});
 
-	it("keeps published replay canaries portable on hosted runners", () => {
+	it("keeps published replay canaries portable on hosted Linux", () => {
 		const script = readFileSync(
 			new URL("../../scripts/smoke-published-replay-e2e.js", import.meta.url),
 			{ encoding: "utf8" },
+		);
+		const releaseWorkflow = parse(
+			readFileSync(
+				new URL("../../.github/workflows/release.yml", import.meta.url),
+				{ encoding: "utf8" },
+			),
+		) as Workflow;
+			const canaryStep = releaseWorkflow.jobs?.[
+				"post-publish-canary"
+			]?.steps?.find((step) => step.name === "Verify published package from npm");
+		const verifyWorkflowPath = new URL(
+			"../../.github/workflows/verify-published-package.yml",
+			import.meta.url,
 		);
 
 		const sandboxArgs = [
 			...script.matchAll(/"--sandbox",\s*replaySandboxMode/g),
 		];
-		expect(script).toContain("MAESTRO_PUBLISHED_REPLAY_SANDBOX_MODE");
-		expect(script).toContain("Invalid MAESTRO_PUBLISHED_REPLAY_SANDBOX_MODE");
-		expect(script).toContain('|| "local"');
+			expect(script).toContain("MAESTRO_PUBLISHED_REPLAY_SANDBOX_MODE");
+			expect(script).toContain("Invalid MAESTRO_PUBLISHED_REPLAY_SANDBOX_MODE");
+			expect(script).toMatch(
+				/const replaySandboxMode =\s*process\.env\.MAESTRO_PUBLISHED_REPLAY_SANDBOX_MODE\?\.trim\(\)\s*\|\|\s*"workspace-write";/,
+			);
+			expect(script).toContain('"workspace-write"');
+			expect(script).toContain('"local"');
+		expect(script).toContain("replaySandboxModes");
+		expect(script).toContain("replaySandboxMode");
 		expect(sandboxArgs.length).toBeGreaterThanOrEqual(2);
 		expect(script).not.toMatch(/"--sandbox",\s*"workspace-write"/);
+			expect(canaryStep).toBeDefined();
+			expect(canaryStep?.env).toMatchObject({
+				MAESTRO_PUBLISHED_REPLAY_SANDBOX_MODE: "local",
+			});
+			const requiresVerifyWorkflow =
+				process.env.GITHUB_REPOSITORY === "evalops/maestro" ||
+				existsSync(verifyWorkflowPath);
+			if (requiresVerifyWorkflow) {
+				expect(existsSync(verifyWorkflowPath)).toBe(true);
+				const verifyWorkflow = parse(
+					readFileSync(verifyWorkflowPath, { encoding: "utf8" }),
+				) as Workflow;
+			const verifyStep = verifyWorkflow.jobs?.verify?.steps?.find(
+				(step) => step.name === "Verify published package from npm",
+			);
+			expect(verifyStep).toBeDefined();
+			expect(verifyStep?.env).toMatchObject({
+				MAESTRO_PUBLISHED_REPLAY_SANDBOX_MODE: "local",
+			});
+		}
 	});
 
 	it("keeps packed CLI smoke enabled independently of package-lock management", () => {

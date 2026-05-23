@@ -57,6 +57,7 @@ jobs:
           PACKAGE_NAME: ${{ github.event.inputs.package_name || steps.defaults.outputs.package_name }}
           PACKAGE_VERSION: ${{ github.event.inputs.version || steps.defaults.outputs.version }}
           CLI_COMMAND: ${{ github.event.inputs.cli_command || steps.defaults.outputs.cli_command }}
+          MAESTRO_PUBLISHED_REPLAY_SANDBOX_MODE: local
         run: |
           set -euo pipefail
           node scripts/smoke-registry-install.js \
