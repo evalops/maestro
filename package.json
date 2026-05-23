@@ -101,6 +101,8 @@
     "verify-build:packages": "VERIFY_PACKAGES=1 bun scripts/verify-build.ts",
     "release:check": "node scripts/release-readiness.js release",
     "release:check:ci": "node scripts/release-readiness.js ci",
+    "release:verify:published": "node scripts/smoke-registry-install.js",
+    "release:deprecate": "node scripts/deprecate-release.js",
     "ci:plan": "node scripts/plan-ci-checks.mjs",
     "pr:ready": "node scripts/pr-ready-to-merge.mjs",
     "pr:feedback": "node scripts/pr-feedback-audit.mjs",
