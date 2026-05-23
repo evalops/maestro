@@ -207,9 +207,9 @@ function summarizeTask(
 	const requiresInput = isActionRequiredA2AState(entry.state);
 	const terminal = isTerminalA2AState(entry.state);
 	const final = isFinalA2AState(entry.state);
-	const nextCommand = taskCommand(entry, status);
 	const orphanedPeer =
 		registeredPeerNames !== undefined && !registeredPeerNames.has(entry.peer);
+	const nextCommand = orphanedPeer ? undefined : taskCommand(entry, status);
 	return {
 		ledgerId: entry.id,
 		peer: entry.peer,
@@ -281,6 +281,9 @@ function summarizeNextActions(
 function nextActionForTask(
 	task: A2ACockpitTaskSummary,
 ): A2ACockpitNextAction | undefined {
+	if (task.orphanedPeer) {
+		return undefined;
+	}
 	if (task.status === "waiting") {
 		return {
 			id: `reply:${task.peer}:${task.taskId}`,

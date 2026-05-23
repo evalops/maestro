@@ -162,11 +162,19 @@ describe("A2A cockpit", () => {
 			orphanedPeer: true,
 			status: "waiting",
 		});
+		expect(summary.tasks[0]?.nextCommand).toBeUndefined();
 		expect(summary.tasks[1]?.orphanedPeer).toBeUndefined();
+		expect(summary.nextActions).not.toEqual(
+			expect.arrayContaining([
+				expect.objectContaining({
+					peer: "retired-peer",
+					taskId: "task-orphan",
+				}),
+			]),
+		);
 		expect(summary.nextActions[0]).toMatchObject({
-			id: "reply:retired-peer:task-orphan",
-			peer: "retired-peer",
-			taskId: "task-orphan",
+			id: "delegate:mac-mini",
+			peer: "mac-mini",
 		});
 	});
 });
