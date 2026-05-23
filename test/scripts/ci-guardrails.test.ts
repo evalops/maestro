@@ -952,9 +952,15 @@ describe("ci workflow guardrails", () => {
 		const runStep = job?.steps?.find(
 			(step) => step.name === "Run integration tests",
 		);
+		const normalizeServicePorts = (ports: unknown[] | undefined) =>
+			ports?.map((port) => String(port).replace(/\/tcp$/u, ""));
 
-		expect(job?.services?.redis?.ports).toEqual(["6379/tcp"]);
-		expect(job?.services?.postgres?.ports).toEqual(["5432/tcp"]);
+		expect(normalizeServicePorts(job?.services?.redis?.ports)).toEqual([
+			"6379",
+		]);
+		expect(normalizeServicePorts(job?.services?.postgres?.ports)).toEqual([
+			"5432",
+		]);
 		expect(workflowText).not.toContain("6379:6379");
 		expect(workflowText).not.toContain("5432:5432");
 		expect(runStep?.env?.MAESTRO_REDIS_URL).toBe(
