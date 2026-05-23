@@ -22,6 +22,11 @@ import {
 	parseFeedbackAuditArgs,
 } from "../../scripts/pr-feedback-audit.mjs";
 import {
+	LATEST_HEAD_CHECKS_QUERY,
+	extractLatestHeadCheckPage,
+	formatLatestHeadCheckReport,
+} from "../../scripts/pr-latest-head-checks.mjs";
+import {
 	evaluateReadiness,
 	fetchRequiredStatusChecks,
 	fetchReviewThreads,
@@ -476,6 +481,27 @@ describe("planCiChecks", () => {
 		});
 	});
 
+	it("keeps PR queue and public mirror helper scripts on the guardrail lane", () => {
+		expect(
+			planCiChecks({
+				eventName: "pull_request",
+				changedFiles: [
+					"scripts/maestro-merge-queue-status.mjs",
+					"scripts/pr-latest-head-checks.mjs",
+					"scripts/run-prepared-public-mirror-guardrails.mjs",
+					"test/scripts/ci-guardrails.test.ts",
+				],
+			}),
+		).toMatchObject({
+			ciInfrastructureOnly: true,
+			coverage: false,
+			lightPrChecks: true,
+			prChecks: true,
+			publicMirror: true,
+			rustHostedConformance: false,
+		});
+	});
+
 	it("runs public mirror checks for mirror config inputs", () => {
 		expect(
 			planCiChecks({
@@ -840,40 +866,37 @@ describe("ci workflow guardrails", () => {
 				{ encoding: "utf8" },
 			),
 		) as Workflow;
-			const canaryStep = releaseWorkflow.jobs?.[
-				"post-publish-canary"
-			]?.steps?.find((step) => step.name === "Verify published package from npm");
+		const canaryStep = releaseWorkflow.jobs?.[
+			"post-publish-canary"
+		]?.steps?.find((step) => step.name === "Verify published package from npm");
 		const verifyWorkflowPath = new URL(
 			"../../.github/workflows/verify-published-package.yml",
 			import.meta.url,
 		);
+		const hasPublicVerifyWorkflow = existsSync(verifyWorkflowPath);
 
 		const sandboxArgs = [
 			...script.matchAll(/"--sandbox",\s*replaySandboxMode/g),
 		];
-			expect(script).toContain("MAESTRO_PUBLISHED_REPLAY_SANDBOX_MODE");
-			expect(script).toContain("Invalid MAESTRO_PUBLISHED_REPLAY_SANDBOX_MODE");
-			expect(script).toMatch(
-				/const replaySandboxMode =\s*process\.env\.MAESTRO_PUBLISHED_REPLAY_SANDBOX_MODE\?\.trim\(\)\s*\|\|\s*"workspace-write";/,
-			);
-			expect(script).toContain('"workspace-write"');
-			expect(script).toContain('"local"');
+		expect(script).toContain("MAESTRO_PUBLISHED_REPLAY_SANDBOX_MODE");
+		expect(script).toContain("Invalid MAESTRO_PUBLISHED_REPLAY_SANDBOX_MODE");
+		expect(script).toMatch(
+			/process\.env\.MAESTRO_PUBLISHED_REPLAY_SANDBOX_MODE\?\.trim\(\)\s*\|\|\s*"workspace-write"/,
+		);
+		expect(script).toContain('"local"');
 		expect(script).toContain("replaySandboxModes");
 		expect(script).toContain("replaySandboxMode");
 		expect(sandboxArgs.length).toBeGreaterThanOrEqual(2);
 		expect(script).not.toMatch(/"--sandbox",\s*"workspace-write"/);
+		if (isPublicValidationWorkflow(releaseWorkflow)) {
 			expect(canaryStep).toBeDefined();
 			expect(canaryStep?.env).toMatchObject({
 				MAESTRO_PUBLISHED_REPLAY_SANDBOX_MODE: "local",
 			});
-			const requiresVerifyWorkflow =
-				process.env.GITHUB_REPOSITORY === "evalops/maestro" ||
-				existsSync(verifyWorkflowPath);
-			if (requiresVerifyWorkflow) {
-				expect(existsSync(verifyWorkflowPath)).toBe(true);
-				const verifyWorkflow = parse(
-					readFileSync(verifyWorkflowPath, { encoding: "utf8" }),
-				) as Workflow;
+			expect(hasPublicVerifyWorkflow).toBe(true);
+			const verifyWorkflow = parse(
+				readFileSync(verifyWorkflowPath, { encoding: "utf8" }),
+			) as Workflow;
 			const verifyStep = verifyWorkflow.jobs?.verify?.steps?.find(
 				(step) => step.name === "Verify published package from npm",
 			);
@@ -881,6 +904,9 @@ describe("ci workflow guardrails", () => {
 			expect(verifyStep?.env).toMatchObject({
 				MAESTRO_PUBLISHED_REPLAY_SANDBOX_MODE: "local",
 			});
+		} else {
+			expect(canaryStep).toBeUndefined();
+			expect(hasPublicVerifyWorkflow).toBe(false);
 		}
 	});
 
@@ -1190,6 +1216,100 @@ describe("ci workflow guardrails", () => {
 		expect(workflow).toContain("scripts/public-mirror-source.mjs validate");
 		expect(workflow).toContain("source_marker");
 		expect(workflow).toContain("${source_marker}");
+	});
+
+	it("serializes public mirror branch updates and runs generated-tree guardrails before PR updates", () => {
+		const workflowPath = new URL(
+			"../../.github/workflows/sync-public-release-mirror.yml",
+			import.meta.url,
+		);
+		if (!existsSync(workflowPath)) {
+			const ciWorkflow = parse(
+				readFileSync(
+					new URL("../../.github/workflows/ci.yml", import.meta.url),
+					{
+						encoding: "utf8",
+					},
+				),
+			) as Workflow;
+			expect(isPublicValidationWorkflow(ciWorkflow)).toBe(true);
+			return;
+		}
+		const workflowText = readFileSync(workflowPath, { encoding: "utf8" });
+		const workflow = parse(workflowText) as Workflow;
+		const steps = workflow.jobs?.sync?.steps ?? [];
+		const stepNames = steps.map((step) => step.name ?? "");
+		const smokeIndex = stepNames.indexOf("Smoke prepared public mirror tree");
+		const setupBunIndex = stepNames.indexOf(
+			"Setup Bun for prepared public mirror guardrails",
+		);
+		const guardrailIndex = stepNames.indexOf(
+			"Run prepared public mirror CI guardrails",
+		);
+		const openPrIndex = stepNames.indexOf("Open or update public sync PR");
+		const setupBunStep = steps[setupBunIndex];
+		const guardrailStep = steps[guardrailIndex];
+
+		expect(workflow.concurrency).toMatchObject({
+			"cancel-in-progress": false,
+			group:
+				"${{ github.workflow }}-${{ github.event.inputs.mirror_scope || 'public-tree' }}",
+		});
+		expect(smokeIndex).toBeGreaterThanOrEqual(0);
+		expect(setupBunIndex).toBeGreaterThan(smokeIndex);
+		expect(guardrailIndex).toBeGreaterThan(setupBunIndex);
+		expect(guardrailIndex).toBeLessThan(openPrIndex);
+		expect(setupBunStep?.uses).toBe("./.github/actions/setup-bun-nx");
+		expect(guardrailStep?.run).toContain(
+			"scripts/run-prepared-public-mirror-guardrails.mjs",
+		);
+	});
+
+	it("uses token-backed release PR pushes and formats generated release metadata", () => {
+		const workflowPath = new URL(
+			"../../.github/workflows/version-bump.yml",
+			import.meta.url,
+		);
+		if (!existsSync(workflowPath)) {
+			const ciWorkflow = parse(
+				readFileSync(
+					new URL("../../.github/workflows/ci.yml", import.meta.url),
+					{
+						encoding: "utf8",
+					},
+				),
+			) as Workflow;
+			expect(isPublicValidationWorkflow(ciWorkflow)).toBe(true);
+			return;
+		}
+		const workflowText = readFileSync(workflowPath, { encoding: "utf8" });
+		const workflow = parse(workflowText) as Workflow;
+		const steps = workflow.jobs?.["version-bump"]?.steps ?? [];
+		const formatStep = steps.find(
+			(step) => step.name === "Format generated release files",
+		);
+		const commitStep = steps.find(
+			(step) => step.name === "Commit release branch",
+		);
+		const prStep = steps.find(
+			(step) => step.name === "Open or reuse release PR",
+		);
+
+		expect(
+			steps.some((step) => step.name === "Mint release PR GitHub App token"),
+		).toBe(true);
+		expect(formatStep?.run).toContain("@biomejs/biome@1.9.4 format --write");
+		expect(commitStep?.env?.RELEASE_PR_TOKEN).toBe(
+			"${{ steps.release-app-token.outputs.token || secrets.RELEASE_PR_SYNC_TOKEN || secrets.RELEASE_PR_TOKEN }}",
+		);
+		expect(commitStep?.run).toContain(
+			"https://x-access-token:${RELEASE_PR_TOKEN}@github.com/${GITHUB_REPOSITORY}.git",
+		);
+		expect(prStep?.env?.GH_TOKEN).toBe(
+			"${{ steps.release-app-token.outputs.token || secrets.RELEASE_PR_SYNC_TOKEN || secrets.RELEASE_PR_TOKEN }}",
+		);
+		expect(prStep?.run).toContain("## Test Plan");
+		expect(prStep?.run).toContain("## Rollback");
 	});
 
 	it("keeps setup-bun-nx rustfmt home stable across workflow runs", () => {
@@ -1976,6 +2096,75 @@ describe("maestro merge queue status", () => {
 			pending: [],
 			total: 1,
 		});
+	});
+
+	it("builds latest-head-only PR check summaries from the latest commit rollup", () => {
+		expect(LATEST_HEAD_CHECKS_QUERY).toContain("commits(last:1)");
+		expect(LATEST_HEAD_CHECKS_QUERY).toContain("checkSuite");
+		const page = extractLatestHeadCheckPage({
+			data: {
+				repository: {
+					pullRequest: {
+						baseRefName: "main",
+						commits: {
+							nodes: [
+								{
+									commit: {
+										oid: "abc1234567890",
+										statusCheckRollup: {
+											contexts: {
+												nodes: [
+													{
+														__typename: "CheckRun",
+														checkSuite: {
+															workflowRun: {
+																workflow: {
+																	name: "CI",
+																},
+															},
+														},
+														conclusion: "SUCCESS",
+														name: "pr-checks",
+														status: "COMPLETED",
+													},
+													{
+														__typename: "CheckRun",
+														conclusion: "FAILURE",
+														name: "build-and-publish",
+														status: "COMPLETED",
+														workflowName: "GHCR Publish",
+													},
+												],
+												pageInfo: {
+													endCursor: "",
+													hasNextPage: false,
+												},
+											},
+										},
+									},
+								},
+							],
+						},
+						headRefName: "release/v1.2.3",
+						headRefOid: "abc1234567890",
+						number: 123,
+						title: "Release v1.2.3",
+						url: "https://github.com/evalops/maestro-internal/pull/123",
+					},
+				},
+			},
+		});
+
+		const report = formatLatestHeadCheckReport({
+			...page.pr,
+			checks: page.checks,
+			repo: "evalops/maestro-internal",
+		});
+
+		expect(page.checks).toHaveLength(2);
+		expect(report).toContain("Latest head: release/v1.2.3@abc123456789");
+		expect(report).toContain("Checks: 1/2 pass, 1 failing");
+		expect(report).toContain("build-and-publish (FAILURE)");
 	});
 
 	it("reports merged PRs as terminal instead of actionable", () => {
