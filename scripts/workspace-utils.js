@@ -116,14 +116,14 @@ function segmentPatternSource(segment) {
 		}
 		if (char === "{") {
 			const end = segment.indexOf("}", index + 1);
-		const body = end === -1 ? "" : segment.slice(index + 1, end);
-		if (body.includes(",")) {
-			pattern += `(?:${body.split(",").map(segmentPatternSource).join("|")})`;
-			index = end;
-			continue;
+			const body = end === -1 ? "" : segment.slice(index + 1, end);
+			if (body.includes(",")) {
+				pattern += `(?:${body.split(",").map(segmentPatternSource).join("|")})`;
+				index = end;
+				continue;
+			}
 		}
-	}
-	pattern += escapeRegExp(char);
+		pattern += escapeRegExp(char);
 	}
 	return pattern;
 }
