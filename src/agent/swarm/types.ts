@@ -5,6 +5,7 @@
  * parallel agent execution for implementing plans.
  */
 
+import type { A2ATaskPushNotificationConfig } from "../../platform/a2a-client.js";
 import type { AgentMode, ModelProvider, ReasoningEffort } from "../modes.js";
 import type { SubagentType } from "../subagent-specs.js";
 
@@ -140,6 +141,8 @@ export interface SwarmA2AConfig {
 	maxWaitMs?: number;
 	/** Poll interval while waiting for remote task state. */
 	pollIntervalMs?: number;
+	/** Optional push callback config sent to remote peers for task progress/artifact updates. */
+	pushNotificationConfig?: A2ATaskPushNotificationConfig;
 }
 
 /**
