@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { spawnSync } from "node:child_process";
+import { getNpxCommand } from "./install-smoke-utils.js";
 import { getPackageMetadata } from "./package-metadata.js";
 
 const { name: packageName } = getPackageMetadata();
@@ -74,12 +75,13 @@ if (otp) {
 }
 
 const shownArgs = npmArgs.filter((arg) => !arg.startsWith("--otp="));
-console.error(`Running: npx ${shownArgs.join(" ")}`);
+const npxCommand = getNpxCommand();
+console.error(`Running: ${npxCommand} ${shownArgs.join(" ")}`);
 if (!apply && !list) {
 	console.error("Dry run only. Add --apply --otp=<code> to write npm trust config.");
 }
 
-const result = spawnSync("npx", npmArgs, { stdio: "inherit" });
+const result = spawnSync(npxCommand, npmArgs, { stdio: "inherit" });
 if (result.error) {
 	console.error(result.error.message);
 	process.exit(1);
