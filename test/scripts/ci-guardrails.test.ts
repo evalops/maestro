@@ -621,6 +621,7 @@ describe("ci workflow guardrails", () => {
 		const uploadLogsStep = prCheckSteps.find(
 			(step) => step.name === "Upload Nx test logs (if any)",
 		);
+		const isPublicWorkflow = isPublicValidationWorkflow(workflow);
 		const script = readFileSync(
 			new URL("../../scripts/ci-nx-tests.sh", import.meta.url),
 			{ encoding: "utf8" },
@@ -629,7 +630,7 @@ describe("ci workflow guardrails", () => {
 		expect(script).toContain("--summary-json");
 		expect(script).toContain("nx-tests-attempt-${attempt}.json");
 		expect(script).toContain("#### Attempt summaries");
-		if (isPublicValidationWorkflow(workflow)) {
+		if (isPublicWorkflow) {
 			expect(String(uploadLogsStep?.if ?? "")).toContain(
 				"nx-tests-attempt-*.log",
 			);
