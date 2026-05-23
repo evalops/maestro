@@ -154,6 +154,16 @@ function isFastPrChecksInfrastructurePath(path) {
 	return isCiInfrastructureOnlyPath(path) || isRustSetupActionPath(path);
 }
 
+function isProofHarnessPath(path) {
+	return (
+		CI_GUARDRAIL_FILES.has(path) ||
+		isFastPrChecksInfrastructurePath(path) ||
+		(path.startsWith("docs/") && path.endsWith(".md")) ||
+		isPackageManifest(path) ||
+		isSmokeScript(path)
+	);
+}
+
 function isRustOnlySourcePath(path) {
 	return (
 		path.startsWith("packages/ambient-agent-rs/") ||
@@ -197,6 +207,8 @@ export function planCiChecks({ eventName, labels = [], changedFiles = [] }) {
 	const files = changedFiles.map(String).map((path) => path.trim()).filter(Boolean);
 	const ciInfrastructureOnly =
 		files.length > 0 && files.every(isFastPrChecksInfrastructurePath);
+	const proofHarnessOnly =
+		files.length > 0 && files.every((path) => isProofHarnessPath(path));
 	const rustSetupActionChanged = files.some(isRustSetupActionPath);
 	const rustOnlySource =
 		files.length > 0 && files.every((path) => isRustOnlySourcePath(path));
@@ -221,6 +233,7 @@ export function planCiChecks({ eventName, labels = [], changedFiles = [] }) {
 	return {
 		ciInfrastructureOnly,
 		coverage,
+		proofHarnessOnly,
 		prChecks,
 		publicMirror,
 		rustHostedConformance,
@@ -261,6 +274,7 @@ function writeGitHubOutputs(plan) {
 		[
 			`coverage=${plan.coverage}`,
 			`ci_infrastructure_only=${plan.ciInfrastructureOnly ?? false}`,
+			`proof_harness_only=${plan.proofHarnessOnly ?? false}`,
 			`pr_checks=${plan.prChecks}`,
 			`public_mirror=${plan.publicMirror}`,
 			`rust_hosted_conformance=${plan.rustHostedConformance}`,

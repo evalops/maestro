@@ -222,6 +222,7 @@ describe("planCiChecks", () => {
 		).toMatchObject({
 			ciInfrastructureOnly: false,
 			coverage: false,
+			proofHarnessOnly: false,
 			prChecks: true,
 			publicMirror: true,
 			rustHostedConformance: false,
@@ -241,6 +242,7 @@ describe("planCiChecks", () => {
 		).toMatchObject({
 			ciInfrastructureOnly: false,
 			coverage: false,
+			proofHarnessOnly: true,
 			prChecks: true,
 			publicMirror: true,
 			rustHostedConformance: false,
@@ -428,7 +430,7 @@ describe("ci workflow guardrails", () => {
 		expect(project.targets?.test?.dependsOn ?? []).not.toContain("build");
 	});
 
-	it("skips Rust setup for CI-infrastructure-only PR checks", () => {
+	it("skips Rust setup for CI-infrastructure/proof-harness PR checks", () => {
 		const workflow = parse(
 			readFileSync(new URL("../../.github/workflows/ci.yml", import.meta.url), {
 				encoding: "utf8",
@@ -442,13 +444,16 @@ describe("ci workflow guardrails", () => {
 			(step) => step.uses === "./.github/actions/setup-rust",
 		);
 		const isPublicMirrorPrChecks =
-			workflow.jobs?.changes === undefined &&
 			workflow.jobs?.["public-release-mirror"] === undefined &&
 			prChecksJob?.["runs-on"] ===
 				"${{ vars.PUBLIC_PR_VALIDATION_RUNNER || 'ubuntu-latest' }}";
 
 		if (!setupRustStep) {
 			expect(isPublicMirrorPrChecks).toBe(true);
+			expect(workflow.jobs?.changes).toBeDefined();
+			expect(workflow.jobs?.["rust-hosted-conformance"]?.if).toBe(
+				"${{ github.event_name != 'pull_request' || needs.changes.outputs.rust_hosted_conformance == 'true' }}",
+			);
 			const rustHostedSteps =
 				workflow.jobs?.["rust-hosted-conformance"]?.steps ?? [];
 			expect(
@@ -463,9 +468,19 @@ describe("ci workflow guardrails", () => {
 			expect(workflow.jobs?.changes).toBeDefined();
 			expect(workflow.jobs?.["public-release-mirror"]).toBeDefined();
 		}
-		expect(setupRustStep?.if).toBe(
-			"${{ github.event_name != 'pull_request' || needs.changes.outputs.ci_infrastructure_only != 'true' }}",
-		);
+		const proofHarnessSkipCondition =
+			"${{ github.event_name != 'pull_request' || (needs.changes.outputs.ci_infrastructure_only != 'true' && needs.changes.outputs.proof_harness_only != 'true') }}";
+		expect(setupRustStep?.if).toBe(proofHarnessSkipCondition);
+		expect(
+			prChecksJob?.steps?.find(
+				(step) => step.name === "Setup Java for Gradle Nx tasks",
+			)?.if,
+		).toBe(proofHarnessSkipCondition);
+		expect(
+			prChecksJob?.steps?.find(
+				(step) => step.name === "Release readiness (CI mode)",
+			)?.if,
+		).toBe(proofHarnessSkipCondition);
 	});
 
 	it("keeps the Rust toolchain home stable across workflow runs", () => {
