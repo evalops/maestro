@@ -1,6 +1,10 @@
 import { isAbortError } from "../utils/abort-error.js";
 import { type A2AAgentCard, discoverA2AAgentCard } from "./a2a-client.js";
 import {
+	type A2AOwnershipScope,
+	matchesA2AOwnershipScope,
+} from "./a2a-ownership.js";
+import {
 	type A2APeerRegistryEntry,
 	listA2APeers,
 	resolveA2APeer,
@@ -19,6 +23,8 @@ export interface A2AFleetOptions {
 	registryPath?: string;
 	tasksPath?: string;
 	timeoutMs?: number;
+	ownershipScope?: A2AOwnershipScope;
+	includePeerNames?: readonly string[];
 }
 
 export interface A2AFleetSummary {
@@ -43,6 +49,10 @@ export interface A2AFleetPeerSummary {
 	skills?: A2AAgentCard["skills"];
 	model?: string;
 	cwd?: string;
+	workspaceId?: string;
+	organizationId?: string;
+	actorId?: string;
+	ownerSubject?: string;
 	lastTask?: A2AFleetTaskSummary;
 }
 
@@ -63,11 +73,18 @@ export async function inspectA2AFleet(
 		listA2APeers({ path: options.registryPath }),
 		loadA2ATaskLedger({ path: options.tasksPath }),
 	]);
+	const includePeerNames = new Set(options.includePeerNames ?? []);
+	const scopedLedger = filterLedgerForFleet(ledger, options.ownershipScope);
 	const peers = await Promise.all(
 		Object.entries(registry.peers)
+			.filter(
+				([name, entry]) =>
+					includePeerNames.has(name) ||
+					matchesA2AOwnershipScope(entry, options.ownershipScope),
+			)
 			.sort(([left], [right]) => left.localeCompare(right))
 			.map(async ([name, entry]) =>
-				inspectPeer(name, entry, latestA2ATaskForPeer(ledger, name), {
+				inspectPeer(name, entry, latestA2ATaskForPeer(scopedLedger, name), {
 					...options,
 					registryTimeoutMs: registry.timeoutMs,
 				}),
@@ -178,7 +195,24 @@ function basePeerSummary(
 		...(stringMetadata(entry, "cwd")
 			? { cwd: stringMetadata(entry, "cwd") }
 			: {}),
+		...(entry.workspaceId ? { workspaceId: entry.workspaceId } : {}),
+		...(entry.organizationId ? { organizationId: entry.organizationId } : {}),
+		...(entry.actorId ? { actorId: entry.actorId } : {}),
+		...(stringMetadata(entry, "ownerSubject")
+			? { ownerSubject: stringMetadata(entry, "ownerSubject") }
+			: {}),
 		...(lastTask ? { lastTask: fleetTaskSummary(lastTask) } : {}),
+	};
+}
+
+function filterLedgerForFleet(
+	ledger: { tasks: A2ATaskLedgerEntry[] },
+	scope: A2AOwnershipScope | undefined,
+): { tasks: A2ATaskLedgerEntry[] } {
+	return {
+		tasks: ledger.tasks.filter((entry) =>
+			matchesA2AOwnershipScope(entry, scope),
+		),
 	};
 }
 

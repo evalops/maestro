@@ -1,6 +1,9 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { buildA2ACockpit } from "../../platform/a2a-cockpit.js";
+import type { A2AOwnershipScope } from "../../platform/a2a-ownership.js";
+import { getVerifiedRequestPrincipal } from "../authz.js";
 import { ApiError, respondWithApiError, sendJson } from "../server-utils.js";
+import { resolveSessionScope } from "../session-scope.js";
 
 const DEFAULT_WEB_A2A_COCKPIT_TIMEOUT_MS = 2_500;
 const MAX_WEB_A2A_COCKPIT_TIMEOUT_MS = 10_000;
@@ -25,11 +28,31 @@ export async function handleA2ACockpit(
 				}) ?? DEFAULT_WEB_A2A_COCKPIT_TIMEOUT_MS,
 			peer: optionalQueryString(url, "peer"),
 			limit: positiveIntegerQuery(url, "limit"),
+			ownershipScope: ownershipScopeForRequest(req),
 		});
 		sendJson(res, 200, cockpit, corsHeaders, req);
 	} catch (error) {
 		respondWithApiError(res, error, 500, corsHeaders, req);
 	}
+}
+
+function ownershipScopeForRequest(
+	req: IncomingMessage,
+): A2AOwnershipScope | undefined {
+	const scopeKey = resolveSessionScope(req);
+	if (!scopeKey) {
+		return undefined;
+	}
+	const principal = getVerifiedRequestPrincipal(req);
+	return {
+		scopeKey,
+		...(principal?.subject ? { subject: principal.subject } : {}),
+		...(principal?.userId ? { userId: principal.userId } : {}),
+		...(principal?.keyId ? { keyId: principal.keyId } : {}),
+		...(principal?.workspaceId ? { workspaceId: principal.workspaceId } : {}),
+		...(principal?.orgId ? { orgId: principal.orgId } : {}),
+		...(principal?.teamId ? { teamId: principal.teamId } : {}),
+	};
 }
 
 function rejectHostedPathOverrides(url: URL): void {

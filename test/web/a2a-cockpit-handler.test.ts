@@ -2,10 +2,18 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import { PassThrough } from "node:stream";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { buildA2ACockpit } from "../../src/platform/a2a-cockpit.js";
+import { getVerifiedRequestPrincipal } from "../../src/server/authz.js";
 import { handleA2ACockpit } from "../../src/server/handlers/a2a-cockpit.js";
+import { resolveSessionScope } from "../../src/server/session-scope.js";
 
 vi.mock("../../src/platform/a2a-cockpit.js", () => ({
 	buildA2ACockpit: vi.fn(),
+}));
+vi.mock("../../src/server/authz.js", () => ({
+	getVerifiedRequestPrincipal: vi.fn(),
+}));
+vi.mock("../../src/server/session-scope.js", () => ({
+	resolveSessionScope: vi.fn(),
 }));
 
 const corsHeaders = { "Access-Control-Allow-Origin": "*" };
@@ -29,6 +37,8 @@ interface MockResponse {
 describe("handleA2ACockpit", () => {
 	beforeEach(() => {
 		vi.clearAllMocks();
+		vi.mocked(resolveSessionScope).mockReturnValue(null);
+		vi.mocked(getVerifiedRequestPrincipal).mockReturnValue(null);
 	});
 
 	it("builds the cockpit from hosted-safe query options", async () => {
@@ -67,6 +77,7 @@ describe("handleA2ACockpit", () => {
 			timeoutMs: 1234,
 			peer: "mac-mini",
 			limit: 3,
+			ownershipScope: undefined,
 		});
 		expect(res.statusCode).toBe(200);
 		expect(JSON.parse(res.body)).toMatchObject({
@@ -109,6 +120,65 @@ describe("handleA2ACockpit", () => {
 			timeoutMs: 2500,
 			peer: undefined,
 			limit: 2,
+			ownershipScope: undefined,
+		});
+		expect(res.statusCode).toBe(200);
+	});
+
+	it("filters hosted global A2A storage by authenticated session ownership", async () => {
+		vi.mocked(resolveSessionScope).mockReturnValue("workspace_ws-1__user_u-1");
+		vi.mocked(getVerifiedRequestPrincipal).mockReturnValue({
+			authMethod: "jwt",
+			subject: "user:u-1",
+			scopeKey: "workspace_ws-1__user_u-1",
+			userId: "u-1",
+			workspaceId: "ws-1",
+			orgId: "org-1",
+			teamId: "team-1",
+			roles: [],
+			scopes: [],
+		});
+		vi.mocked(buildA2ACockpit).mockResolvedValueOnce({
+			generatedAt: "2026-05-16T00:00:00.000Z",
+			registryPath: "/Users/test/.maestro/a2a/peers.json",
+			tasksPath: "/Users/test/.maestro/a2a/tasks.json",
+			counts: {
+				peers: 0,
+				onlinePeers: 0,
+				unreachablePeers: 0,
+				tasks: 0,
+				runningTasks: 0,
+				actionRequiredTasks: 0,
+				failedTasks: 0,
+				completedTasks: 0,
+			},
+			peers: [],
+			tasks: [],
+			nextActions: [],
+		});
+		const req = makeReq("/api/a2a/cockpit");
+		const res = makeRes();
+
+		await handleA2ACockpit(
+			req as unknown as IncomingMessage,
+			res as unknown as ServerResponse,
+			corsHeaders,
+		);
+
+		expect(buildA2ACockpit).toHaveBeenCalledWith({
+			registryPath: undefined,
+			tasksPath: undefined,
+			timeoutMs: 2500,
+			peer: undefined,
+			limit: undefined,
+			ownershipScope: {
+				scopeKey: "workspace_ws-1__user_u-1",
+				subject: "user:u-1",
+				userId: "u-1",
+				workspaceId: "ws-1",
+				orgId: "org-1",
+				teamId: "team-1",
+			},
 		});
 		expect(res.statusCode).toBe(200);
 	});
@@ -167,6 +237,7 @@ describe("handleA2ACockpit", () => {
 			timeoutMs: 2500,
 			peer: undefined,
 			limit: undefined,
+			ownershipScope: undefined,
 		});
 	});
 

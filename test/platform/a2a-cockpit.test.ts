@@ -177,6 +177,88 @@ describe("A2A cockpit", () => {
 			peer: "mac-mini",
 		});
 	});
+
+	it("filters global A2A files by authenticated ownership metadata", () => {
+		const summary = summarizeA2ACockpit({
+			fleet: {
+				...fleetSummary(),
+				peers: [
+					{
+						name: "tenant-a",
+						url: "http://127.0.0.1:4111",
+						status: "online",
+						workspaceId: "ws-1",
+					},
+					{
+						name: "tenant-b",
+						url: "http://127.0.0.1:4222",
+						status: "online",
+						workspaceId: "ws-2",
+					},
+					{
+						name: "tenant-a-other-user",
+						url: "http://127.0.0.1:4333",
+						status: "online",
+						workspaceId: "ws-1",
+					},
+				],
+			},
+			ledger: ledger([
+				task({
+					id: "owned-ledger",
+					peer: "tenant-a",
+					taskId: "task-owned",
+					state: "TASK_STATE_INPUT_REQUIRED",
+					text: "needs scoped operator input",
+					updatedAt: "2026-05-16T00:00:10.000Z",
+					metadata: {
+						ownerSubject: "user:u-1",
+						workspaceId: "ws-1",
+					},
+				}),
+				task({
+					id: "other-workspace-ledger",
+					peer: "tenant-b",
+					taskId: "task-other-workspace",
+					state: "TASK_STATE_INPUT_REQUIRED",
+					text: "other workspace task",
+					updatedAt: "2026-05-16T00:00:09.000Z",
+					metadata: {
+						ownerSubject: "user:u-1",
+						workspaceId: "ws-2",
+					},
+				}),
+				task({
+					id: "other-user-ledger",
+					peer: "tenant-a-other-user",
+					taskId: "task-other-user",
+					state: "TASK_STATE_INPUT_REQUIRED",
+					text: "other user task",
+					updatedAt: "2026-05-16T00:00:08.000Z",
+					metadata: {
+						ownerSubject: "user:u-2",
+						workspaceId: "ws-1",
+					},
+				}),
+			]),
+			ownershipScope: {
+				subject: "user:u-1",
+				userId: "u-1",
+				workspaceId: "ws-1",
+			},
+		});
+
+		expect(summary.peers.map((peer) => peer.name)).toEqual(["tenant-a"]);
+		expect(summary.tasks.map((task) => task.taskId)).toEqual(["task-owned"]);
+		expect(summary.nextActions.map((action) => action.peer)).toEqual([
+			"tenant-a",
+		]);
+		expect(summary.counts).toMatchObject({
+			peers: 1,
+			tasks: 1,
+			actionRequiredTasks: 1,
+		});
+	});
 });
 
 function fleetSummary(): A2AFleetSummary {
@@ -209,7 +291,8 @@ function task(
 	overrides: Pick<
 		A2ATaskLedgerEntry,
 		"id" | "peer" | "taskId" | "state" | "text" | "updatedAt"
-	>,
+	> &
+		Pick<Partial<A2ATaskLedgerEntry>, "metadata">,
 ): A2ATaskLedgerEntry {
 	return {
 		kind: "delegation",
