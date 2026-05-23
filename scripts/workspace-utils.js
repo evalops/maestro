@@ -106,7 +106,7 @@ function segmentHasPatternSyntax(segment) {
 	return segment.includes("*") || /\{[^{}]+,[^{}]*\}/u.test(segment);
 }
 
-function segmentPatternToRegExp(segment) {
+function segmentPatternSource(segment) {
 	let pattern = "";
 	for (let index = 0; index < segment.length; index += 1) {
 		const char = segment[index];
@@ -116,16 +116,20 @@ function segmentPatternToRegExp(segment) {
 		}
 		if (char === "{") {
 			const end = segment.indexOf("}", index + 1);
-			const body = end === -1 ? "" : segment.slice(index + 1, end);
-			if (body.includes(",")) {
-				pattern += `(?:${body.split(",").map(escapeRegExp).join("|")})`;
-				index = end;
-				continue;
-			}
+		const body = end === -1 ? "" : segment.slice(index + 1, end);
+		if (body.includes(",")) {
+			pattern += `(?:${body.split(",").map(segmentPatternSource).join("|")})`;
+			index = end;
+			continue;
 		}
-		pattern += escapeRegExp(char);
 	}
-	return new RegExp(`^${pattern}$`);
+	pattern += escapeRegExp(char);
+	}
+	return pattern;
+}
+
+function segmentPatternToRegExp(segment) {
+	return new RegExp(`^${segmentPatternSource(segment)}$`);
 }
 
 function listDirectories(path) {
