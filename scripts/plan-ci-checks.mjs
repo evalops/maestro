@@ -159,7 +159,6 @@ function isProofHarnessPath(path) {
 		CI_GUARDRAIL_FILES.has(path) ||
 		isFastPrChecksInfrastructurePath(path) ||
 		(path.startsWith("docs/") && path.endsWith(".md")) ||
-		isPackageManifest(path) ||
 		isSmokeScript(path)
 	);
 }

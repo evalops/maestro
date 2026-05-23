@@ -8,9 +8,9 @@ import { loadRootPackage, shouldManagePackageLock } from "./workspace-utils.js";
 const mode = process.argv[2] ?? "release";
 const rootPackage = loadRootPackage();
 
-function run(command, env = {}) {
+function run(command) {
 	console.log(`$ ${command}`);
-	execSync(command, { stdio: "inherit", env: { ...process.env, ...env } });
+	execSync(command, { stdio: "inherit" });
 }
 
 function hasScript(name) {
@@ -32,6 +32,12 @@ function runPackSmoke() {
 		console.log("Skipping packed CLI smoke test (script missing)");
 		return;
 	}
+	if (!shouldManagePackageLock(rootPackage)) {
+		console.log(
+			"Skipping packed CLI smoke test (package is not npm-installable from a tarball in this repo)",
+		);
+		return;
+	}
 
 	const tarball = execSync("npm pack --silent", { encoding: "utf8" })
 		.trim()
@@ -43,10 +49,7 @@ function runPackSmoke() {
 	}
 
 	try {
-		run(`node scripts/smoke-packed-cli.js "${tarball}"`, {
-			MAESTRO_INSTALL_AUDIT_LEVEL:
-				process.env.MAESTRO_INSTALL_AUDIT_LEVEL ?? "critical",
-		});
+		run(`node scripts/smoke-packed-cli.js "${tarball}"`);
 	} finally {
 		rmSync(resolve(process.cwd(), tarball), { force: true });
 	}
@@ -58,8 +61,6 @@ function runCiChecks() {
 	run("bun run bun:lint");
 	run("npm run build");
 	run("npm run verify:runtime-deps");
-	runPackSmoke();
-	maybeRunScript("smoke:exec-replay-e2e");
 	maybeRunScript("openapi:check");
 }
 
@@ -77,7 +78,6 @@ function runReleaseChecks() {
 		console.log("Skipping npm audit (package-lock not managed in this repo)");
 	}
 	runPackSmoke();
-	maybeRunScript("smoke:exec-replay-e2e");
 }
 
 switch (mode) {

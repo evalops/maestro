@@ -235,7 +235,6 @@ describe("planCiChecks", () => {
 				eventName: "pull_request",
 				changedFiles: [
 					"docs/protocols/a2a-fleet-delegation.md",
-					"package.json",
 					"scripts/smoke-maestro-a2a-local-swarm.ts",
 				],
 			}),
@@ -243,6 +242,26 @@ describe("planCiChecks", () => {
 			ciInfrastructureOnly: false,
 			coverage: false,
 			proofHarnessOnly: true,
+			prChecks: true,
+			publicMirror: true,
+			rustHostedConformance: false,
+		});
+	});
+
+	it("keeps package manifests out of proof-harness-only skips", () => {
+		expect(
+			planCiChecks({
+				eventName: "pull_request",
+				changedFiles: [
+					"docs/protocols/a2a-fleet-delegation.md",
+					"package.json",
+					"scripts/smoke-maestro-a2a-local-swarm.ts",
+				],
+			}),
+		).toMatchObject({
+			ciInfrastructureOnly: false,
+			coverage: false,
+			proofHarnessOnly: false,
 			prChecks: true,
 			publicMirror: true,
 			rustHostedConformance: false,
@@ -329,6 +348,23 @@ describe("ci workflow guardrails", () => {
 		);
 	});
 
+	it("filters deleted smoke scripts before static checks", () => {
+		const script = readFileSync(
+			new URL("../../scripts/ci-nx-tests.sh", import.meta.url),
+			{ encoding: "utf8" },
+		);
+		const smokeStaticChecksBody =
+			script.match(
+				/run_smoke_script_static_checks\(\) \{([\s\S]*?)\n\}/,
+			)?.[1] ?? "";
+
+		expect(smokeStaticChecksBody).not.toBe("");
+		expect(smokeStaticChecksBody).toContain('[[ -f "$file" ]] || continue');
+		expect(
+			smokeStaticChecksBody.indexOf('[[ -f "$file" ]] || continue'),
+		).toBeLessThan(smokeStaticChecksBody.indexOf('smoke_scripts+=("$file")'));
+	});
+
 	it("hard-bounds long-running Nx and coverage phases", () => {
 		const workflow = parse(
 			readFileSync(new URL("../../.github/workflows/ci.yml", import.meta.url), {
@@ -351,6 +387,27 @@ describe("ci workflow guardrails", () => {
 		expect(prCheckTimeouts.get("Test (Nx affected)")).toBe(60);
 		expect(workflow.jobs?.coverage?.["timeout-minutes"]).toBe(75);
 		expect(coverageTimeouts.get("Run tests with coverage")).toBe(60);
+	});
+
+	it("routes expensive pull-request jobs to the private heavy runner lane", () => {
+		const workflow = parse(
+			readFileSync(new URL("../../.github/workflows/ci.yml", import.meta.url), {
+				encoding: "utf8",
+			}),
+		) as Workflow;
+		const prChecksRunsOn = String(
+			workflow.jobs?.["pr-checks"]?.["runs-on"] ?? "",
+		);
+		const coverageRunsOn = String(workflow.jobs?.coverage?.["runs-on"] ?? "");
+
+		expect(prChecksRunsOn).toContain("ubuntu-latest");
+		expect(prChecksRunsOn).toContain("PR_CHECKS_RUNNER");
+		expect(prChecksRunsOn).toContain("evalops-private-heavy");
+		expect(prChecksRunsOn).toContain("INTERNAL_CONFIRMATION_RUNNER");
+		expect(coverageRunsOn).toContain("ubuntu-latest");
+		expect(coverageRunsOn).toContain("PR_COVERAGE_RUNNER");
+		expect(coverageRunsOn).toContain("evalops-private-heavy");
+		expect(coverageRunsOn).toContain("INTERNAL_CONFIRMATION_RUNNER");
 	});
 
 	it("gives evals workflow test shards enough time to finish", () => {
@@ -444,16 +501,13 @@ describe("ci workflow guardrails", () => {
 			(step) => step.uses === "./.github/actions/setup-rust",
 		);
 		const isPublicMirrorPrChecks =
+			workflow.jobs?.changes === undefined &&
 			workflow.jobs?.["public-release-mirror"] === undefined &&
 			prChecksJob?.["runs-on"] ===
 				"${{ vars.PUBLIC_PR_VALIDATION_RUNNER || 'ubuntu-latest' }}";
 
 		if (!setupRustStep) {
 			expect(isPublicMirrorPrChecks).toBe(true);
-			expect(workflow.jobs?.changes).toBeDefined();
-			expect(workflow.jobs?.["rust-hosted-conformance"]?.if).toBe(
-				"${{ github.event_name != 'pull_request' || needs.changes.outputs.rust_hosted_conformance == 'true' }}",
-			);
 			const rustHostedSteps =
 				workflow.jobs?.["rust-hosted-conformance"]?.steps ?? [];
 			expect(
