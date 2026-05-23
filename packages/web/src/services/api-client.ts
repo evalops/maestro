@@ -363,6 +363,235 @@ export interface PackageRemoveResponse {
 	} | null;
 }
 
+export type A2ACockpitTaskStatus =
+	| "waiting"
+	| "running"
+	| "completed"
+	| "failed"
+	| "unknown";
+
+export type A2ACockpitNextActionSeverity = "info" | "warning" | "critical";
+
+export interface A2ACockpitResponse {
+	generatedAt: string;
+	registryPath: string;
+	tasksPath: string;
+	peer?: string;
+	counts: {
+		peers: number;
+		onlinePeers: number;
+		unreachablePeers: number;
+		tasks: number;
+		runningTasks: number;
+		actionRequiredTasks: number;
+		failedTasks: number;
+		completedTasks: number;
+	};
+	peers: A2ACockpitPeerSummary[];
+	tasks: A2ACockpitTaskSummary[];
+	nextActions: A2ACockpitNextAction[];
+}
+
+export interface A2ACockpitPeerSummary {
+	name: string;
+	displayName?: string;
+	url: string;
+	status: "online" | "unreachable";
+	error?: string;
+	auth?: string;
+	model?: string;
+	cwd?: string;
+	taskCounts: {
+		tasks: number;
+		runningTasks: number;
+		actionRequiredTasks: number;
+		failedTasks: number;
+		completedTasks: number;
+	};
+	lastTask?: {
+		id: string;
+		state: string;
+		status: A2ACockpitTaskStatus;
+		updatedAt: string;
+		text: string;
+	};
+}
+
+export interface A2ACockpitTaskSummary {
+	ledgerId: string;
+	peer: string;
+	peerDisplayName?: string;
+	orphanedPeer?: boolean;
+	taskId: string;
+	state: string;
+	status: A2ACockpitTaskStatus;
+	requiresInput: boolean;
+	terminal: boolean;
+	final: boolean;
+	text: string;
+	responseText?: string;
+	updatedAt: string;
+	completedAt?: string;
+	workGraph?: unknown;
+	nextCommand?: string;
+}
+
+export interface A2ACockpitNextAction {
+	id: string;
+	label: string;
+	command: string;
+	severity: A2ACockpitNextActionSeverity;
+	peer: string;
+	taskId?: string;
+	reason: string;
+}
+
+export interface TrajectoryReplayLabResponse {
+	schemaVersion: string;
+	generatedAt: string;
+	run: {
+		id: string;
+		sessionId: string;
+		source: "local" | "platform";
+		generatedAt: string;
+		platformBacked: boolean;
+	};
+	summary: {
+		timelineItems: number;
+		trajectoryEvents: number;
+		replayDeltas: number;
+		replayErrors: number;
+		replayWarnings: number;
+		scoreRules: number;
+		scoreFailures: number;
+		scoreWarnings: number;
+		jumpTargets: number;
+		phases: number;
+		toolCalls: number;
+	};
+	timeline: {
+		items: TrajectoryReplayLabTimelineItem[];
+		pendingRequestCount?: number;
+		platformBacked?: boolean;
+	};
+	trajectory: {
+		events: TrajectoryReplayLabEvent[];
+		counts: {
+			events: number;
+			byPhase: Record<string, number>;
+			byKind: Record<string, number>;
+			byStatus: Record<string, number>;
+		};
+	};
+	replay: {
+		counts: {
+			deltas: number;
+			errors: number;
+			warnings: number;
+			toolCalls: number;
+			phases: number;
+		};
+		phases: TrajectoryReplayLabPhase[];
+		toolCalls: TrajectoryReplayLabToolCall[];
+		deltas: TrajectoryReplayLabDelta[];
+	};
+	score: {
+		counts: {
+			rules: number;
+			passed: number;
+			failed: number;
+			warnings: number;
+		};
+		findings: TrajectoryReplayLabFinding[];
+	};
+	inspection: {
+		counts: {
+			jumpTargets: number;
+			replayDeltas: number;
+			scoreFindings: number;
+			scoreFailures: number;
+			scoreWarnings: number;
+		};
+		finalAnswer?: {
+			eventId: string;
+			timelineItemIds: string[];
+			title: string;
+			summary?: string;
+		};
+	};
+}
+
+export interface TrajectoryReplayLabTimelineItem {
+	id: string;
+	timestamp: string;
+	type: string;
+	title: string;
+	status?: string;
+	source: "local" | "platform";
+	visibility: string;
+	summary?: string;
+	toolName?: string;
+	toolCallId?: string;
+	toolExecutionId?: string;
+	approvalRequestId?: string;
+	pendingRequestId?: string;
+	artifactId?: string;
+	agentRunId?: string;
+	childAgentRunId?: string;
+}
+
+export interface TrajectoryReplayLabEvent {
+	id: string;
+	sequence: number;
+	timestamp: string;
+	kind: string;
+	phase: string;
+	actor: string;
+	type: string;
+	status: string;
+	title: string;
+	summary?: string;
+	toolName?: string;
+	relatedIds?: string[];
+}
+
+export interface TrajectoryReplayLabPhase {
+	phase: string;
+	events: number;
+	firstSequence: number;
+	lastSequence: number;
+}
+
+export interface TrajectoryReplayLabToolCall {
+	toolCallId: string;
+	toolName?: string;
+	requestedSequence?: number;
+	resultSequences: number[];
+	terminalStatus?: "completed" | "failed";
+}
+
+export interface TrajectoryReplayLabDelta {
+	id: string;
+	severity: "error" | "warning";
+	ruleId: string;
+	message: string;
+	eventId?: string;
+	sequence?: number;
+	phase?: string;
+	kind?: string;
+	expected?: string;
+	observed?: string;
+}
+
+export interface TrajectoryReplayLabFinding {
+	ruleId: string;
+	status: "pass" | "fail" | "warn";
+	severity: "error" | "warning";
+	message: string;
+	eventIds: string[];
+	remediation: string;
+}
+
 export interface McpToolDefinition {
 	name: string;
 	description?: string;
@@ -769,6 +998,24 @@ export interface BackgroundTaskSnapshot {
 	historyTruncated?: boolean;
 }
 
+export type RunHealthLevel = "healthy" | "degraded" | "unhealthy";
+
+export interface RunHealthSlo {
+	id: string;
+	label: string;
+	status: RunHealthLevel;
+	target: string;
+	observed: string;
+	detail?: string;
+}
+
+export interface RunHealthSnapshot {
+	status: RunHealthLevel;
+	slos: RunHealthSlo[];
+	diagnostics: string[];
+	generatedAt: string;
+}
+
 export interface WorkspaceStatus {
 	cwd: string;
 	git: {
@@ -794,6 +1041,8 @@ export interface WorkspaceStatus {
 	database: {
 		configured: boolean;
 		connected: boolean;
+		initialized?: boolean;
+		reachable?: boolean;
 	};
 	backgroundTasks: BackgroundTaskSnapshot | null;
 	hooks: {
@@ -804,6 +1053,7 @@ export interface WorkspaceStatus {
 			queued: number;
 		};
 	};
+	runHealth?: RunHealthSnapshot;
 	lastUpdated: number;
 	lastLatencyMs: number;
 }
@@ -1917,6 +2167,41 @@ export class ApiClient {
 			throw new Error("Invalid session timeline payload");
 		}
 		return data as RunTimelineResponse;
+	}
+
+	/**
+	 * Get trajectory replay lab artifacts for a specific session.
+	 */
+	async getSessionReplayLab(
+		sessionId: string,
+	): Promise<TrajectoryReplayLabResponse> {
+		return (await this.fetchJsonWithFallback(
+			`/api/sessions/${encodeURIComponent(sessionId)}/replay-lab`,
+		)) as TrajectoryReplayLabResponse;
+	}
+
+	/**
+	 * Get the local A2A operator cockpit summary.
+	 */
+	async getA2ACockpit(options?: {
+		peer?: string;
+		limit?: number;
+		timeoutMs?: number;
+	}): Promise<A2ACockpitResponse> {
+		const params = new URLSearchParams();
+		if (options?.peer) {
+			params.set("peer", options.peer);
+		}
+		if (options?.limit !== undefined) {
+			params.set("limit", String(options.limit));
+		}
+		if (options?.timeoutMs !== undefined) {
+			params.set("timeoutMs", String(options.timeoutMs));
+		}
+		const query = params.toString();
+		return (await this.fetchJsonWithFallback(
+			`/api/a2a/cockpit${query ? `?${query}` : ""}`,
+		)) as A2ACockpitResponse;
 	}
 
 	/**

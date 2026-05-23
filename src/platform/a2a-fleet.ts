@@ -1,6 +1,10 @@
 import { isAbortError } from "../utils/abort-error.js";
 import { type A2AAgentCard, discoverA2AAgentCard } from "./a2a-client.js";
 import {
+	type A2AOwnershipScope,
+	matchesA2AOwnershipScope,
+} from "./a2a-ownership.js";
+import {
 	type A2APeerRegistryEntry,
 	listA2APeers,
 	resolveA2APeer,
@@ -19,6 +23,8 @@ export interface A2AFleetOptions {
 	registryPath?: string;
 	tasksPath?: string;
 	timeoutMs?: number;
+	ownershipScope?: A2AOwnershipScope;
+	includePeerNames?: readonly string[];
 }
 
 export interface A2AFleetSummary {
@@ -43,6 +49,17 @@ export interface A2AFleetPeerSummary {
 	skills?: A2AAgentCard["skills"];
 	model?: string;
 	cwd?: string;
+	scopeKey?: string;
+	sessionScope?: string;
+	workspaceId?: string;
+	organizationId?: string;
+	orgId?: string;
+	teamId?: string;
+	ownerId?: string;
+	userId?: string;
+	keyId?: string;
+	actorId?: string;
+	ownerSubject?: string;
 	lastTask?: A2AFleetTaskSummary;
 }
 
@@ -63,11 +80,18 @@ export async function inspectA2AFleet(
 		listA2APeers({ path: options.registryPath }),
 		loadA2ATaskLedger({ path: options.tasksPath }),
 	]);
+	const includePeerNames = new Set(options.includePeerNames ?? []);
+	const scopedLedger = filterLedgerForFleet(ledger, options.ownershipScope);
 	const peers = await Promise.all(
 		Object.entries(registry.peers)
+			.filter(
+				([name, entry]) =>
+					includePeerNames.has(name) ||
+					matchesA2AOwnershipScope(entry, options.ownershipScope),
+			)
 			.sort(([left], [right]) => left.localeCompare(right))
 			.map(async ([name, entry]) =>
-				inspectPeer(name, entry, latestA2ATaskForPeer(ledger, name), {
+				inspectPeer(name, entry, latestA2ATaskForPeer(scopedLedger, name), {
 					...options,
 					registryTimeoutMs: registry.timeoutMs,
 				}),
@@ -178,7 +202,22 @@ function basePeerSummary(
 		...(stringMetadata(entry, "cwd")
 			? { cwd: stringMetadata(entry, "cwd") }
 			: {}),
+		...(entry.workspaceId ? { workspaceId: entry.workspaceId } : {}),
+		...(entry.organizationId ? { organizationId: entry.organizationId } : {}),
+		...(entry.actorId ? { actorId: entry.actorId } : {}),
+		...optionalOwnershipMetadata(entry),
 		...(lastTask ? { lastTask: fleetTaskSummary(lastTask) } : {}),
+	};
+}
+
+function filterLedgerForFleet(
+	ledger: { tasks: A2ATaskLedgerEntry[] },
+	scope: A2AOwnershipScope | undefined,
+): { tasks: A2ATaskLedgerEntry[] } {
+	return {
+		tasks: ledger.tasks.filter((entry) =>
+			matchesA2AOwnershipScope(entry, scope),
+		),
 	};
 }
 
@@ -188,4 +227,62 @@ function stringMetadata(
 ): string | undefined {
 	const value = entry.metadata?.[key];
 	return typeof value === "string" && value.trim() ? value.trim() : undefined;
+}
+
+function firstStringMetadata(
+	entry: A2APeerRegistryEntry,
+	keys: readonly string[],
+): string | undefined {
+	for (const key of keys) {
+		const value = stringMetadata(entry, key);
+		if (value) {
+			return value;
+		}
+	}
+	return undefined;
+}
+
+function optionalOwnershipMetadata(
+	entry: A2APeerRegistryEntry,
+): Partial<A2AFleetPeerSummary> {
+	const metadata: Partial<A2AFleetPeerSummary> = {};
+	const scopeKey = firstStringMetadata(entry, ["scopeKey", "scope_key"]);
+	if (scopeKey) {
+		metadata.scopeKey = scopeKey;
+	}
+	const sessionScope = firstStringMetadata(entry, [
+		"sessionScope",
+		"session_scope",
+	]);
+	if (sessionScope) {
+		metadata.sessionScope = sessionScope;
+	}
+	const orgId = firstStringMetadata(entry, ["orgId", "org_id"]);
+	if (orgId) {
+		metadata.orgId = orgId;
+	}
+	const teamId = firstStringMetadata(entry, ["teamId", "team_id"]);
+	if (teamId) {
+		metadata.teamId = teamId;
+	}
+	const ownerSubject = firstStringMetadata(entry, [
+		"ownerSubject",
+		"owner_subject",
+	]);
+	if (ownerSubject) {
+		metadata.ownerSubject = ownerSubject;
+	}
+	const ownerId = firstStringMetadata(entry, ["ownerId", "owner_id"]);
+	if (ownerId) {
+		metadata.ownerId = ownerId;
+	}
+	const userId = firstStringMetadata(entry, ["userId", "user_id"]);
+	if (userId) {
+		metadata.userId = userId;
+	}
+	const keyId = firstStringMetadata(entry, ["keyId", "key_id"]);
+	if (keyId) {
+		metadata.keyId = keyId;
+	}
+	return metadata;
 }

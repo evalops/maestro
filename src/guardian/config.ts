@@ -117,6 +117,15 @@ function mergeConfigs(...configs: (GuardianConfig | null)[]): GuardianConfig {
 	return result;
 }
 
+function parsePositiveIntegerEnv(name: string): number | undefined {
+	const raw = process.env[name];
+	const trimmed = raw?.trim();
+	if (!trimmed || !/^[1-9]\d*$/.test(trimmed)) return undefined;
+	const parsed = Number(trimmed);
+	if (!Number.isSafeInteger(parsed)) return undefined;
+	return parsed;
+}
+
 /**
  * Resolve the effective Guardian configuration
  *
@@ -158,7 +167,9 @@ export function resolveGuardianConfig(options?: {
 			...merged.tools,
 		},
 		toolTimeoutMs:
-			merged.toolTimeoutMs ?? DEFAULT_GUARDIAN_CONFIG.toolTimeoutMs,
+			parsePositiveIntegerEnv("MAESTRO_GUARDIAN_TOOL_TIMEOUT_MS") ??
+			merged.toolTimeoutMs ??
+			DEFAULT_GUARDIAN_CONFIG.toolTimeoutMs,
 		blockOnFindings:
 			merged.blockOnFindings ?? DEFAULT_GUARDIAN_CONFIG.blockOnFindings,
 	};

@@ -34,6 +34,7 @@ import {
 } from "../../scripts/resolve-public-mirror-ref.mjs";
 
 type WorkflowStep = {
+	env?: Record<string, unknown>;
 	if?: string;
 	name?: string;
 	uses?: string;
@@ -47,10 +48,13 @@ type Workflow = {
 		"cancel-in-progress"?: boolean | string;
 		group?: string;
 	};
+	env?: Record<string, unknown>;
 	jobs?: Record<
 		string,
 		{
+			env?: Record<string, unknown>;
 			outputs?: Record<string, unknown>;
+			services?: Record<string, { ports?: Array<number | string> }>;
 			steps?: WorkflowStep[];
 			"timeout-minutes"?: number;
 			"runs-on"?: unknown;
@@ -256,6 +260,21 @@ describe("planCiChecks", () => {
 			prChecks: true,
 			publicMirror: true,
 			rustHostedConformance: false,
+		});
+	});
+
+	it("skips coverage for colocated package test-only changes", () => {
+		expect(
+			planCiChecks({
+				eventName: "pull_request",
+				changedFiles: [
+					"packages/web/src/components/composer-a2a-cockpit-panel.test.ts",
+					"packages/slack-agent/src/tools-status.spec.ts",
+				],
+			}),
+		).toMatchObject({
+			coverage: false,
+			prChecks: true,
 		});
 	});
 
@@ -656,6 +675,64 @@ describe("ci workflow guardrails", () => {
 		expect(coverageRunsOn).toContain("INTERNAL_CONFIRMATION_RUNNER");
 	});
 
+	it("records and uploads Nx timing data", () => {
+		const script = readFileSync(
+			new URL("../../scripts/ci-nx-tests.sh", import.meta.url),
+			{ encoding: "utf8" },
+		);
+		const workflow = parse(
+			readFileSync(new URL("../../.github/workflows/ci.yml", import.meta.url), {
+				encoding: "utf8",
+			}),
+		) as Workflow;
+		const uploadStep = workflow.jobs?.["pr-checks"]?.steps?.find(
+			(step) => step.name === "Upload CI timing data (if any)",
+		);
+
+		expect(script).toContain(
+			'ci_timing_file="${CI_TIMING_FILE:-ci-timing.jsonl}"',
+		);
+		expect(script).toContain('--timing-file "$ci_timing_file"');
+		expect(script).toContain("#### CI timings");
+		expect(uploadStep?.uses).toContain("actions/upload-artifact@");
+		expect(uploadStep?.with).toMatchObject({
+			path: "ci-timing.jsonl",
+			"retention-days": 7,
+		});
+	});
+
+	it("uses dynamic integration service ports on shared runners", () => {
+		const workflow = parse(
+			readFileSync(
+				new URL("../../.github/workflows/integration.yml", import.meta.url),
+				{
+					encoding: "utf8",
+				},
+			),
+		) as Workflow;
+		const job = workflow.jobs?.["integration-tests"];
+		const runStep = job?.steps?.find(
+			(step) => step.name === "Run integration tests",
+		);
+		const setupBunStep = job?.steps?.find(
+			(step) => step.uses === "./.github/actions/setup-bun-nx",
+		);
+
+		expect(job?.services?.redis?.ports).toEqual([6379]);
+		expect(job?.services?.postgres?.ports).toEqual([5432]);
+		expect(workflow.env).toMatchObject({
+			HEADLESS_PROTOCOL_RUSTFMT: "off",
+			SESSION_WIRE_FORMAT_RUSTFMT: "off",
+		});
+		expect(setupBunStep?.with).toMatchObject({ "ensure-rustfmt": "false" });
+		expect(runStep?.env).toMatchObject({
+			MAESTRO_REDIS_URL:
+				"redis://localhost:${{ job.services.redis.ports['6379'] }}",
+			MAESTRO_DATABASE_URL:
+				"postgresql://maestro@localhost:${{ job.services.postgres.ports['5432'] }}/maestro",
+		});
+	});
+
 	it("uses targeted release helper package smoke instead of duplicate release readiness", () => {
 		const workflow = parse(
 			readFileSync(new URL("../../.github/workflows/ci.yml", import.meta.url), {
@@ -771,8 +848,28 @@ describe("ci workflow guardrails", () => {
 		const timeouts = new Map(
 			steps.map((step) => [step.name, step["timeout-minutes"]]),
 		);
+		const checkout = steps.find(
+			(step) =>
+				typeof step.uses === "string" &&
+				step.uses.startsWith("actions/checkout@"),
+		);
+		const semgrepInstall = steps.find(
+			(step) => step.name === "Install Semgrep CLI",
+		);
+		const uvInstall = steps.find((step) => step.name === "Install uv");
+		const guardianStep = steps.find(
+			(step) => step.name === "Composer Guardian",
+		);
 
-		expect(timeouts.get("Run tests")).toBeGreaterThanOrEqual(10);
+		expect(checkout?.with).toMatchObject({ "fetch-depth": 0 });
+		expect(uvInstall?.if).toBe("${{ matrix.chunkIndex == 1 }}");
+		expect(semgrepInstall?.if).toBe("${{ matrix.chunkIndex == 1 }}");
+		expect(semgrepInstall?.run).toContain("uv tool install --force");
+		expect(guardianStep?.if).toBe("${{ matrix.chunkIndex == 1 }}");
+		expect(guardianStep?.env).toMatchObject({
+			MAESTRO_GUARDIAN_TOOL_TIMEOUT_MS: "600000",
+		});
+		expect(timeouts.get("Run tests")).toBeGreaterThanOrEqual(15);
 		expect(timeouts.get("Run evals chunk")).toBe(45);
 	});
 

@@ -21,6 +21,7 @@ const joinParts = (...parts: string[]) => parts.join("");
 describe("Guardian Config", () => {
 	let testDir: string;
 	let originalHome: string | undefined;
+	let originalToolTimeout: string | undefined;
 
 	beforeEach(() => {
 		testDir = join(
@@ -32,12 +33,19 @@ describe("Guardian Config", () => {
 
 		// Save original HOME
 		originalHome = process.env.HOME;
+		originalToolTimeout = process.env.MAESTRO_GUARDIAN_TOOL_TIMEOUT_MS;
+		Reflect.deleteProperty(process.env, "MAESTRO_GUARDIAN_TOOL_TIMEOUT_MS");
 	});
 
 	afterEach(() => {
 		// Restore original HOME
 		if (originalHome !== undefined) {
 			process.env.HOME = originalHome;
+		}
+		if (originalToolTimeout === undefined) {
+			Reflect.deleteProperty(process.env, "MAESTRO_GUARDIAN_TOOL_TIMEOUT_MS");
+		} else {
+			process.env.MAESTRO_GUARDIAN_TOOL_TIMEOUT_MS = originalToolTimeout;
 		}
 
 		// Clean up
@@ -159,6 +167,36 @@ describe("Guardian Config", () => {
 
 			expect(config.enabled).toBe(true);
 			expect(config.toolTimeoutMs).toBe(60_000); // Still from file
+		});
+
+		it("should allow the environment to override tool timeout", () => {
+			process.env.MAESTRO_GUARDIAN_TOOL_TIMEOUT_MS = "240000";
+			const fileConfig: GuardianConfig = {
+				toolTimeoutMs: 60_000,
+			};
+			writeFileSync(
+				join(testDir, ".maestro", "guardian.json"),
+				JSON.stringify(fileConfig),
+			);
+
+			const config = resolveGuardianConfig({ root: testDir });
+
+			expect(config.toolTimeoutMs).toBe(240_000);
+		});
+
+		it("should ignore non-integer environment tool timeouts", () => {
+			process.env.MAESTRO_GUARDIAN_TOOL_TIMEOUT_MS = "0.5";
+			const fileConfig: GuardianConfig = {
+				toolTimeoutMs: 60_000,
+			};
+			writeFileSync(
+				join(testDir, ".maestro", "guardian.json"),
+				JSON.stringify(fileConfig),
+			);
+
+			const config = resolveGuardianConfig({ root: testDir });
+
+			expect(config.toolTimeoutMs).toBe(60_000);
 		});
 
 		it("should handle malformed config files gracefully", () => {
