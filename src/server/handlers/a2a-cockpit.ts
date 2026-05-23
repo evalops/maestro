@@ -1,10 +1,6 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
-import { homedir } from "node:os";
-import { join } from "node:path";
 import { buildA2ACockpit } from "../../platform/a2a-cockpit.js";
-import { sanitizeSessionScope } from "../../session/scope.js";
 import { ApiError, respondWithApiError, sendJson } from "../server-utils.js";
-import { resolveSessionScope } from "../session-scope.js";
 
 const DEFAULT_WEB_A2A_COCKPIT_TIMEOUT_MS = 2_500;
 const MAX_WEB_A2A_COCKPIT_TIMEOUT_MS = 10_000;
@@ -20,10 +16,9 @@ export async function handleA2ACockpit(
 		}
 		const url = new URL(req.url ?? "/api/a2a/cockpit", "http://localhost");
 		rejectHostedPathOverrides(url);
-		const storagePaths = scopedA2AStoragePaths(req);
 		const cockpit = await buildA2ACockpit({
-			registryPath: storagePaths?.registryPath,
-			tasksPath: storagePaths?.tasksPath,
+			registryPath: undefined,
+			tasksPath: undefined,
 			timeoutMs:
 				positiveIntegerQuery(url, "timeoutMs", {
 					max: MAX_WEB_A2A_COCKPIT_TIMEOUT_MS,
@@ -35,21 +30,6 @@ export async function handleA2ACockpit(
 	} catch (error) {
 		respondWithApiError(res, error, 500, corsHeaders, req);
 	}
-}
-
-function scopedA2AStoragePaths(
-	req: IncomingMessage,
-): { registryPath: string; tasksPath: string } | undefined {
-	const scope = resolveSessionScope(req);
-	const safeScope = scope ? sanitizeSessionScope(scope) : "";
-	if (!safeScope) {
-		return undefined;
-	}
-	const scopedDir = join(homedir(), ".maestro", "a2a", "scopes", safeScope);
-	return {
-		registryPath: join(scopedDir, "peers.json"),
-		tasksPath: join(scopedDir, "tasks.json"),
-	};
 }
 
 function rejectHostedPathOverrides(url: URL): void {

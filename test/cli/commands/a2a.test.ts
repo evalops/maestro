@@ -852,8 +852,9 @@ describe("A2A CLI command helpers", () => {
 			expect(output).toContain("Tasks");
 			expect(output).toContain("task-wait");
 			expect(output).toContain("needs operator input");
-			expect(output).toContain("Next actions");
-			expect(output).toContain("maestro a2a reply stale-peer task-wait");
+			expect(output).toContain("orphaned peer");
+			expect(output).not.toContain("Next actions");
+			expect(output).not.toContain("maestro a2a reply stale-peer task-wait");
 		} finally {
 			await rm(root, { force: true, recursive: true });
 		}

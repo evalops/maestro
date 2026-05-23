@@ -3,13 +3,9 @@ import { PassThrough } from "node:stream";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { buildA2ACockpit } from "../../src/platform/a2a-cockpit.js";
 import { handleA2ACockpit } from "../../src/server/handlers/a2a-cockpit.js";
-import { resolveSessionScope } from "../../src/server/session-scope.js";
 
 vi.mock("../../src/platform/a2a-cockpit.js", () => ({
 	buildA2ACockpit: vi.fn(),
-}));
-vi.mock("../../src/server/session-scope.js", () => ({
-	resolveSessionScope: vi.fn(),
 }));
 
 const corsHeaders = { "Access-Control-Allow-Origin": "*" };
@@ -33,7 +29,6 @@ interface MockResponse {
 describe("handleA2ACockpit", () => {
 	beforeEach(() => {
 		vi.clearAllMocks();
-		vi.mocked(resolveSessionScope).mockReturnValue(null);
 	});
 
 	it("builds the cockpit from hosted-safe query options", async () => {
@@ -80,14 +75,11 @@ describe("handleA2ACockpit", () => {
 		});
 	});
 
-	it("scopes hosted cockpit storage to the authenticated session scope", async () => {
-		vi.mocked(resolveSessionScope).mockReturnValue("workspace:one/user:two");
+	it("uses the global A2A storage files that local writers update", async () => {
 		vi.mocked(buildA2ACockpit).mockResolvedValueOnce({
 			generatedAt: "2026-05-16T00:00:00.000Z",
-			registryPath:
-				"/Users/test/.maestro/a2a/scopes/workspace_one_user_two/peers.json",
-			tasksPath:
-				"/Users/test/.maestro/a2a/scopes/workspace_one_user_two/tasks.json",
+			registryPath: "/Users/test/.maestro/a2a/peers.json",
+			tasksPath: "/Users/test/.maestro/a2a/tasks.json",
 			counts: {
 				peers: 0,
 				onlinePeers: 0,
@@ -112,12 +104,8 @@ describe("handleA2ACockpit", () => {
 		);
 
 		expect(buildA2ACockpit).toHaveBeenCalledWith({
-			registryPath: expect.stringMatching(
-				/[/\\]\.maestro[/\\]a2a[/\\]scopes[/\\]workspace_one_user_two[/\\]peers\.json$/,
-			),
-			tasksPath: expect.stringMatching(
-				/[/\\]\.maestro[/\\]a2a[/\\]scopes[/\\]workspace_one_user_two[/\\]tasks\.json$/,
-			),
+			registryPath: undefined,
+			tasksPath: undefined,
 			timeoutMs: 2500,
 			peer: undefined,
 			limit: 2,
