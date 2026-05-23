@@ -32,6 +32,16 @@ function removeStandaloneBinaryArtifacts() {
 	}
 }
 
+function ensurePackedCliArtifacts() {
+	const cliArtifact = resolve(process.cwd(), "dist/cli.js");
+	if (existsSync(cliArtifact)) {
+		return;
+	}
+
+	console.log("Building package before packed CLI smoke (dist/cli.js missing).");
+	run("npm run build");
+}
+
 function runPackSmoke() {
 	const smokeScriptPath = resolve(process.cwd(), "scripts/smoke-packed-cli.js");
 	if (!existsSync(smokeScriptPath)) {
@@ -40,6 +50,7 @@ function runPackSmoke() {
 	}
 
 	removeStandaloneBinaryArtifacts();
+	ensurePackedCliArtifacts();
 	const tarball = execSync("npm pack --silent", { encoding: "utf8" })
 		.trim()
 		.split("\n")
