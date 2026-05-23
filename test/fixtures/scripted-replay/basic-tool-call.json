@@ -22,7 +22,7 @@
 					"id": "call-read-package-json",
 					"tool": "read",
 					"input": {
-						"file_path": "package.json"
+						"path": "package.json"
 					},
 					"expectedResult": "success"
 				}
