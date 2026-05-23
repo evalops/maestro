@@ -323,12 +323,15 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - id: checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        continue-on-error: true
         with:
           fetch-depth: 0
           ref: ${{ needs.prepare.outputs.release_tag }}
 
       - name: Notify release channel
+        if: ${{ steps.checkout.outcome == 'success' }}
         continue-on-error: true
         uses: ./.github/actions/release-notify
         with:
@@ -339,3 +342,8 @@ jobs:
           package-name: ${{ needs.prepare.outputs.package_name }}
           package-version: ${{ needs.prepare.outputs.package_version }}
           webhook-url: ${{ secrets.SLACK_RELEASE_WEBHOOK_URL }}
+
+      - name: Skip release notification after checkout failure
+        if: ${{ steps.checkout.outcome != 'success' }}
+        run: |
+          echo "Release notification skipped because checkout failed; publish and canary results remain authoritative."
