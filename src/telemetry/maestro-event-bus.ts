@@ -1432,7 +1432,7 @@ export function recordMaestroToolCallCompleted(
 ): void {
 	const completedAt = event.completed_at ?? new Date().toISOString();
 	void publishMaestroCloudEvent<ToolCallResultEventData>(
-		toolCallResultEventType(event.status),
+		MaestroBusEventType.ToolCallCompleted,
 		{
 			correlation: mergeCorrelation(
 				resolveMaestroEventBusConfig(event.env).defaultCorrelation,
@@ -1455,14 +1455,6 @@ export function recordMaestroToolCallCompleted(
 		},
 		{ env: event.env, eventId: event.event_id, time: completedAt },
 	);
-}
-
-function toolCallResultEventType(
-	status: MaestroToolCallStatus,
-): MaestroBusEventType.ToolCallCompleted | MaestroBusEventType.ToolCallFailed {
-	return status === "MAESTRO_TOOL_CALL_STATUS_FAILED"
-		? MaestroBusEventType.ToolCallFailed
-		: MaestroBusEventType.ToolCallCompleted;
 }
 
 export function recordMaestroPromptVariantSelected(
@@ -1791,11 +1783,8 @@ export async function mirrorTelemetryToMaestroEventBus(
 
 	if (event.type === "tool-execution") {
 		const metadata = fields.metadata;
-		const status = fields.success
-			? "MAESTRO_TOOL_CALL_STATUS_SUCCEEDED"
-			: "MAESTRO_TOOL_CALL_STATUS_FAILED";
 		await publishMaestroCloudEvent<ToolCallResultEventData>(
-			toolCallResultEventType(status),
+			MaestroBusEventType.ToolCallCompleted,
 			{
 				correlation: mergeCorrelation(
 					resolveMaestroEventBusConfig().defaultCorrelation,
@@ -1805,7 +1794,9 @@ export async function mirrorTelemetryToMaestroEventBus(
 					stringMetadata(metadata, "toolCallId") ??
 					stringMetadata(metadata, "tool_call_id") ??
 					`${String(fields.toolName ?? "tool")}:${event.timestamp}`,
-				status,
+				status: fields.success
+					? "MAESTRO_TOOL_CALL_STATUS_SUCCEEDED"
+					: "MAESTRO_TOOL_CALL_STATUS_FAILED",
 				duration: durationFromMs(fields.durationMs),
 				error_message: fields.success
 					? undefined
