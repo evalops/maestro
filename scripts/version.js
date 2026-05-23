@@ -93,16 +93,28 @@ function syncPackageMetadata() {
 	}
 }
 
+function quoteWindowsShellArg(value) {
+	return `"${String(value).replace(/"/g, '\\"')}"`;
+}
+
+function runBunx(args) {
+	if (process.platform === "win32") {
+		execSync(["bunx", ...args].map(quoteWindowsShellArg).join(" "), {
+			stdio: "inherit",
+		});
+		return;
+	}
+
+	execFileSync("bunx", args, { stdio: "inherit" });
+}
+
 function formatPackageJsonFiles(packageJsonPaths) {
 	if (packageJsonPaths.length === 0) {
 		return;
 	}
 
 	try {
-		execFileSync("bunx", ["biome", "format", "--write", ...packageJsonPaths], {
-			stdio: "inherit",
-			shell: process.platform === "win32",
-		});
+		runBunx(["biome", "format", "--write", ...packageJsonPaths]);
 		console.log("🧹 Formatted package.json files");
 	} catch (error) {
 		const reason = error instanceof Error ? error.message : "unknown error";
