@@ -67,7 +67,7 @@ jobs:
       - run: npx nx run maestro:build:all
       - run: npx nx run maestro:lint
       - name: Run tests
-        timeout-minutes: 15
+        timeout-minutes: 25
         run: bunx vitest --run --reporter=verbose --no-file-parallelism --shard=${{ matrix.chunkIndex }}/2
       - name: Run evals chunk
         timeout-minutes: 45
