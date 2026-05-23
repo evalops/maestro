@@ -2,25 +2,23 @@
 // @ts-check
 
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { getRuntimeWorkspaceNames } from "./runtime-workspaces.mjs";
 import {
+	assertInstallablePackageMetadata,
+	getBunCommand,
 	getNpmCommand,
-	getNpxCommand,
+	readInstalledPackageJson,
+	runInstalledCliSmoke,
 	runInstalledPackageAudit,
 } from "./install-smoke-utils.js";
 import { getPackageMetadata } from "./package-metadata.js";
-
-/**
- * @param {unknown} value
- * @returns {string[]}
- */
-function asStringArray(value) {
-	return Array.isArray(value)
-		? value.filter((entry) => typeof entry === "string" && entry.length > 0)
-		: [];
-}
+import {
+	getWorkspacePackages,
+	loadRootPackage,
+} from "./workspace-utils.js";
 
 function parseArgs(argv) {
 	/** @type {{packageName: string; version: string; cliCommand: string}} */
@@ -56,9 +54,19 @@ const cliCommand = overrides.cliCommand || defaults.cliCommand;
 const name = overrides.packageName || defaults.name;
 const version = overrides.version || defaults.version;
 const packageSpec = `${name}@${version}`;
+const rootPackage = loadRootPackage();
+const runtimeWorkspaceNames = getRuntimeWorkspaceNames(rootPackage);
+const workspacePackages = await getWorkspacePackages(rootPackage);
+const forbiddenWorkspaceNames = Array.from(
+	new Set([
+		...runtimeWorkspaceNames,
+		...workspacePackages
+			.filter((workspacePackage) => workspacePackage.data.private === true)
+			.map((workspacePackage) => workspacePackage.name),
+	]),
+).sort();
 const npmCommand = getNpmCommand();
-const npxCommand = getNpxCommand();
-const bunCommand = process.platform === "win32" ? "bun.exe" : "bun";
+const bunCommand = getBunCommand();
 const maxAttempts = Number.parseInt(
 	process.env.MAESTRO_REGISTRY_POLL_ATTEMPTS ?? "120",
 	10,
@@ -72,54 +80,21 @@ function sleep(milliseconds) {
 	return new Promise((resolve) => setTimeout(resolve, milliseconds));
 }
 
-function installedPackageJsonPath(packageName, installRoot) {
-	return join(
-		installRoot,
-		"node_modules",
-		...packageName.split("/"),
-		"package.json",
-	);
-}
-
-function readInstalledBundledDependencies(installRoot) {
-	const packageJsonPath = installedPackageJsonPath(name, installRoot);
-	try {
-		const parsed = JSON.parse(readFileSync(packageJsonPath, "utf8"));
-		if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-			throw new Error("installed package.json did not contain an object");
-		}
-		return asStringArray(
-			parsed.bundleDependencies ?? parsed.bundledDependencies,
-		);
-	} catch (error) {
-		const reason =
-			error instanceof Error ? error.message : "unknown package read error";
-		throw new Error(
-			`Could not read installed package metadata at ${packageJsonPath}: ${reason}`,
-		);
-	}
-}
-
-function shouldRunBunInstallSmoke(bundledDependencies) {
+function shouldRunBunInstallSmoke() {
 	if (process.env.MAESTRO_SKIP_BUN_INSTALL_SMOKE === "1") {
 		console.log(`Skipping Bun install smoke for ${packageSpec}.`);
 		return false;
 	}
 
-	if (process.env.MAESTRO_FORCE_BUN_INSTALL_SMOKE === "1") {
-		return true;
-	}
-
-	if (bundledDependencies.length > 0) {
-		console.log(
-			`Skipping Bun install smoke for ${packageSpec}; package bundles ${bundledDependencies.join(
-				", ",
-			)}, and the npm install smoke already verified the published tarball contents.`,
-		);
-		return false;
-	}
-
 	return true;
+}
+
+function assertInstalledMetadata(installRoot, label) {
+	const installedPackage = readInstalledPackageJson(name, installRoot);
+	assertInstallablePackageMetadata(installedPackage, {
+		label,
+		forbiddenWorkspaceNames,
+	});
 }
 
 async function waitForPackage() {
@@ -158,7 +133,6 @@ async function waitForPackage() {
 async function main() {
 	await waitForPackage();
 
-	let installedBundledDependencies = [];
 	const tempDir = mkdtempSync(join(tmpdir(), "maestro-registry-smoke-"));
 	try {
 		execFileSync(npmCommand, ["init", "-y"], {
@@ -169,24 +143,14 @@ async function main() {
 			cwd: tempDir,
 			stdio: "inherit",
 		});
-		installedBundledDependencies = readInstalledBundledDependencies(tempDir);
+		assertInstalledMetadata(tempDir, `${packageSpec} via npm`);
 		runInstalledPackageAudit(tempDir, {
 			label: packageSpec,
 		});
-
-		const versionOutput = execFileSync(npxCommand, [cliCommand, "--version"], {
-			cwd: tempDir,
-			encoding: "utf8",
-		});
-		if (!versionOutput.includes(version)) {
-			throw new Error(
-				`Expected ${cliCommand} --version output to include ${version}, received: ${versionOutput.trim()}`,
-			);
-		}
-
-		execFileSync(npxCommand, [cliCommand, "--help"], {
-			cwd: tempDir,
-			stdio: "ignore",
+		runInstalledCliSmoke(tempDir, {
+			cliCommand,
+			expectedVersion: version,
+			label: "npm-installed registry CLI",
 		});
 
 		console.log(`Smoke-tested ${packageSpec} from npm.`);
@@ -194,7 +158,7 @@ async function main() {
 		rmSync(tempDir, { recursive: true, force: true });
 	}
 
-	if (!shouldRunBunInstallSmoke(installedBundledDependencies)) {
+	if (!shouldRunBunInstallSmoke()) {
 		return;
 	}
 
@@ -208,20 +172,12 @@ async function main() {
 			cwd: bunTempDir,
 			stdio: "inherit",
 		});
-
-		const binPath =
-			process.platform === "win32"
-				? join(bunTempDir, "node_modules", ".bin", `${cliCommand}.cmd`)
-				: join(bunTempDir, "node_modules", ".bin", cliCommand);
-		const versionOutput = execFileSync(binPath, ["--version"], {
-			cwd: bunTempDir,
-			encoding: "utf8",
+		assertInstalledMetadata(bunTempDir, `${packageSpec} via Bun`);
+		runInstalledCliSmoke(bunTempDir, {
+			cliCommand,
+			expectedVersion: version,
+			label: "Bun-installed registry CLI",
 		});
-		if (!versionOutput.includes(version)) {
-			throw new Error(
-				`Expected Bun-installed ${cliCommand} --version output to include ${version}, received: ${versionOutput.trim()}`,
-			);
-		}
 
 		console.log(`Smoke-tested ${packageSpec} from Bun.`);
 	} finally {
