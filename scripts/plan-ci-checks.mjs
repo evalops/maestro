@@ -72,7 +72,9 @@ const CI_GUARDRAIL_FILES = new Set([
 	"scripts/plan-nx-test-command.mjs",
 	"scripts/pr-latest-head-checks.mjs",
 	"scripts/run-prepared-public-mirror-guardrails.mjs",
+	"scripts/sync-public-companion-branch.mjs",
 	"scripts/summarize-nx-profile.mjs",
+	"scripts/update-behind-auto-merge-prs.mjs",
 	"test/scripts/ci-guardrails.test.ts",
 ]);
 const CODEGEN_UTILITY_FILES = new Set([
@@ -166,6 +168,8 @@ function shouldSkipPublicMirrorForPath(path) {
 		path === "scripts/run-scenario-replay-gate.mjs" ||
 		path === "scripts/scenario-replay-governance.mjs" ||
 		path === "scripts/scenario-replay-governance.test.mjs" ||
+		path === "scripts/sync-public-companion-branch.mjs" ||
+		path === "scripts/update-behind-auto-merge-prs.mjs" ||
 		path === "scripts/validate-public-package-deps.js" ||
 		path === "AGENTS.md" ||
 		path === "CLAUDE.md"
