@@ -308,6 +308,7 @@ jobs:
       - name: Verify published package from npm
         env:
           MAESTRO_INSTALL_AUDIT_LEVEL: critical
+          MAESTRO_PUBLISHED_REPLAY_SANDBOX_MODE: local
           MAESTRO_REGISTRY_POLL_ATTEMPTS: "120"
           MAESTRO_REGISTRY_POLL_DELAY_MS: "5000"
         run: node scripts/smoke-registry-install.js
