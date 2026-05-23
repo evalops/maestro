@@ -375,6 +375,62 @@ describe("parseArgs", () => {
 		});
 	});
 
+	it("parses exec golden-path flags without swallowing prompt text", () => {
+		const parsed = parseArgs([
+			"exec",
+			"--json",
+			"--full-auto",
+			"--sandbox",
+			"workspace-write",
+			"--tools",
+			"read, write,,shell",
+			"--output-schema",
+			"schema.json",
+			"--output-last-message",
+			"out.txt",
+			"--replay",
+			"replay.json",
+			"Summarize",
+			"the file",
+		]);
+
+		expect(parsed).toMatchObject({
+			command: "exec",
+			execJson: true,
+			execFullAuto: true,
+			sandbox: "workspace-write",
+			tools: ["read", "write", "shell"],
+			execOutputSchema: "schema.json",
+			execOutputLast: "out.txt",
+			replayScenarioPath: "replay.json",
+			messages: ["Summarize", "the file"],
+		});
+		expect(parsed.error).toBeUndefined();
+	});
+
+	it("parses exec resume selectors separately from global resume", () => {
+		expect(parseArgs(["exec", "--resume", "session-123"])).toMatchObject({
+			command: "exec",
+			execResumeId: "session-123",
+			messages: [],
+		});
+		expect(parseArgs(["exec", "--resume"])).toMatchObject({
+			command: "exec",
+			execUseLast: true,
+			messages: [],
+		});
+		expect(parseArgs(["exec", "--last"])).toMatchObject({
+			command: "exec",
+			execUseLast: true,
+			messages: [],
+		});
+		expect(parseArgs(["--resume", "config", "show"])).toMatchObject({
+			resume: true,
+			command: "config",
+			subcommand: "show",
+		});
+	});
+
 	it("keeps --junit out of prompt messages", () => {
 		expect(
 			parseArgs(["--junit", "./tmp/scenario.xml", "fix", "the", "bug"]),

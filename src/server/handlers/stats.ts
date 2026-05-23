@@ -14,7 +14,7 @@ export async function handleStats(
 	}
 
 	try {
-		const status = await getStatusSnapshot();
+		const status = getStatusSnapshot();
 		const usage = getUsageSnapshot();
 		sendJson(
 			res,

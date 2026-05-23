@@ -127,23 +127,33 @@ describe("codex CLI command", () => {
 	});
 
 	it("reports app-server auth and Codex tool profile health", async () => {
+		const originalProfile = process.env.MAESTRO_CODEX_TOOL_PROFILE;
 		const log = vi.spyOn(console, "log").mockImplementation(() => {});
 
-		await handleCodexCommand("doctor");
+		try {
+			process.env.MAESTRO_CODEX_TOOL_PROFILE = "read-only";
+			await handleCodexCommand("doctor");
 
-		expect(mocks.client.initialize).toHaveBeenCalled();
-		expect(mocks.client.readAccount).toHaveBeenCalledWith(true);
-		expect(log).toHaveBeenCalledWith(expect.stringContaining("Codex Doctor"));
-		expect(log).toHaveBeenCalledWith(
-			expect.stringContaining("ChatGPT sign-in: dev@example.com, pro"),
-		);
-		expect(log).toHaveBeenCalledWith(
-			expect.stringContaining("Default Codex tool profile:"),
-		);
-		expect(log).toHaveBeenCalledWith(
-			expect.stringContaining("Dynamic tool schema: compatible"),
-		);
-		expect(mocks.client.close).toHaveBeenCalledOnce();
+			expect(mocks.client.initialize).toHaveBeenCalled();
+			expect(mocks.client.readAccount).toHaveBeenCalledWith(true);
+			expect(log).toHaveBeenCalledWith(expect.stringContaining("Codex Doctor"));
+			expect(log).toHaveBeenCalledWith(
+				expect.stringContaining("ChatGPT sign-in: dev@example.com, pro"),
+			);
+			expect(log).toHaveBeenCalledWith(
+				expect.stringContaining("Codex tool profile (read-only):"),
+			);
+			expect(log).toHaveBeenCalledWith(
+				expect.stringContaining("Dynamic tool schema: compatible"),
+			);
+			expect(mocks.client.close).toHaveBeenCalledOnce();
+		} finally {
+			if (typeof originalProfile === "string") {
+				process.env.MAESTRO_CODEX_TOOL_PROFILE = originalProfile;
+			} else {
+				delete process.env.MAESTRO_CODEX_TOOL_PROFILE;
+			}
+		}
 
 		log.mockRestore();
 	});

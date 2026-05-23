@@ -10,15 +10,50 @@ import {
 } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { join, resolve } from "node:path";
 import { promisify } from "node:util";
 import { loadMcpConfig, McpClientManager } from "../src/mcp/index.js";
 
 type JsonRecord = Record<string, unknown>;
 
 const execFileAsync = promisify(execFile);
-const targetBundleId = "com.evalops.fathom.cua-dogfood-target";
+const targetBundleIdPrefix = "com.evalops.fathom.cua-dogfood-target";
 const smokeSchema = "maestro.fathom-cua-mcp-smoke.v1";
+const userActivityIdleDelayMs = 2_750;
+const stateReadinessAttempts = 8;
+const stateReadinessDelayMs = 650;
+const focusSettleDelayMs = 150;
+const desktopActionRecoveryAttempts = 1;
+const focusedProofs = [
+	{
+		name: "text-value",
+		tool: "set_value",
+		bundleSuffix: "text",
+		displayName: "Fathom CUA Text Proof",
+		elementRole: "AXTextField",
+	},
+	{
+		name: "toggle-state",
+		tool: "set_toggle_state",
+		bundleSuffix: "toggle",
+		displayName: "Fathom CUA Toggle Proof",
+		elementRole: "AXCheckBox",
+	},
+	{
+		name: "slider-value",
+		tool: "set_slider_value",
+		bundleSuffix: "slider",
+		displayName: "Fathom CUA Slider Proof",
+		elementRole: "AXSlider",
+	},
+	{
+		name: "menu-option",
+		tool: "select_menu_option",
+		bundleSuffix: "menu",
+		displayName: "Fathom CUA Menu Proof",
+		elementRole: "AXPopUpButton",
+	},
+] as const;
 const fathomCuaEnvVars = [
 	"MAESTRO_FATHOM_CUA_ENABLED",
 	"FATHOM_CUA_MCP_ENABLED",
@@ -113,7 +148,7 @@ function assertLiveOptIn(): void {
 		"Refusing to run live Fathom CUA MCP smoke without MAESTRO_RUN_LIVE_FATHOM_CUA_MCP=1 or --allow-live.",
 		{
 			reason:
-				"This opens a local AppKit target and performs a real set_value action through Maestro's MCP manager and Fathom Helper IPC.",
+				"This opens local AppKit proof targets and performs real desktop actions through Maestro's MCP manager and Fathom Helper IPC.",
 		},
 	);
 }
@@ -129,6 +164,27 @@ async function execText(
 		maxBuffer: 32 * 1024 * 1024,
 	});
 	return String(stdout);
+}
+
+async function assertUnlockedConsoleSession(): Promise<void> {
+	let sessionState: string;
+	try {
+		sessionState = await execText("ioreg", ["-n", "Root", "-d1"]);
+	} catch (error) {
+		throw new SmokeError("Could not inspect macOS console lock state", {
+			error: error instanceof Error ? error.message : String(error),
+		});
+	}
+	if (sessionState.includes('"CGSSessionScreenIsLocked"=Yes')) {
+		throw new SmokeError(
+			"Refusing live Fathom CUA MCP smoke while macOS console is locked",
+			{
+				reason:
+					"macOS does not expose usable application windows to Accessibility while the console is locked, so desktop CUA proof would only see menu-bar nodes.",
+				nextStep: "Unlock the desktop session and rerun the smoke.",
+			},
+		);
+	}
 }
 
 async function execChecked(
@@ -364,6 +420,7 @@ async function buildFathomProducts(packageDir: string): Promise<void> {
 async function packageTargetApp(
 	binDir: string,
 	appDir: string,
+	bundleId: string,
 	displayName: string,
 ): Promise<void> {
 	await rm(appDir, { recursive: true, force: true });
@@ -382,7 +439,7 @@ async function packageTargetApp(
   <key>CFBundleExecutable</key>
   <string>fathom-cua-dogfood-target</string>
   <key>CFBundleIdentifier</key>
-  <string>${targetBundleId}</string>
+  <string>${bundleId}</string>
   <key>CFBundleName</key>
   <string>${displayName}</string>
   <key>CFBundlePackageType</key>
@@ -404,6 +461,9 @@ async function launchDogfoodTarget(
 	readyFile: string,
 	stopFile: string,
 	stateFile: string,
+	variant: string,
+	windowX: number,
+	windowY: number,
 ): Promise<number> {
 	await execChecked("open", [
 		"-n",
@@ -416,11 +476,11 @@ async function launchDogfoodTarget(
 		"--state-file",
 		stateFile,
 		"--variant",
-		"maestro",
+		variant,
 		"--window-x",
-		"120",
+		String(windowX),
 		"--window-y",
-		"120",
+		String(windowY),
 	]);
 	const ready = await waitForJsonFile(
 		readyFile,
@@ -430,15 +490,39 @@ async function launchDogfoodTarget(
 	return Number(ready.pid);
 }
 
-async function foreground(pid: number): Promise<void> {
-	await execFileAsync(
-		"osascript",
-		[
-			"-e",
-			`tell application "System Events" to set frontmost of first process whose unix id is ${pid} to true`,
-		],
-		{ encoding: "utf8" },
-	).catch(() => undefined);
+function appleScriptString(value: string): string {
+	return `"${value.replaceAll("\\", "\\\\").replaceAll('"', '\\"')}"`;
+}
+
+async function execOptional(
+	command: string,
+	args: string[],
+): Promise<string | undefined> {
+	try {
+		await execFileAsync(command, args, { encoding: "utf8" });
+		return undefined;
+	} catch (error) {
+		return error instanceof Error ? error.message : String(error);
+	}
+}
+
+async function foreground(pid: number, bundleId: string): Promise<string[]> {
+	const failures: string[] = [];
+	const processFailure = await execOptional("osascript", [
+		"-e",
+		`tell application "System Events" to set frontmost of first process whose unix id is ${pid} to true`,
+	]);
+	if (processFailure) {
+		failures.push(`pid:${processFailure}`);
+	}
+	const bundleFailure = await execOptional("osascript", [
+		"-e",
+		`tell application id ${appleScriptString(bundleId)} to activate`,
+	]);
+	if (bundleFailure) {
+		failures.push(`bundle:${bundleFailure}`);
+	}
+	return failures;
 }
 
 async function configureIsolatedMcpEnv(
@@ -498,21 +582,32 @@ async function callMcpTool(
 	return structured;
 }
 
-function findTextElement(state: JsonRecord): JsonRecord {
+function tryFindElementByRole(
+	state: JsonRecord,
+	role: string,
+): JsonRecord | undefined {
 	const elements = asArray(state.elements, "get_app_state elements");
 	for (const element of elements) {
 		const record = asRecord(element, "get_app_state element");
 		if (
-			record.role === "AXTextField" &&
+			record.role === role &&
 			record.element_index !== undefined &&
 			typeof record.element_path_hash === "string"
 		) {
 			return record;
 		}
 	}
-	throw new SmokeError("No AXTextField element found in Fathom dogfood state", {
-		elementCount: elements.length,
-	});
+	return undefined;
+}
+
+function roleHistogram(elements: unknown[]): JsonRecord {
+	const histogram: Record<string, number> = {};
+	for (const element of elements) {
+		const record = asRecord(element, "get_app_state element");
+		const role = typeof record.role === "string" ? record.role : "unknown";
+		histogram[role] = (histogram[role] ?? 0) + 1;
+	}
+	return histogram;
 }
 
 function parseHelperReport(output: string): JsonRecord {
@@ -523,36 +618,577 @@ function parseHelperReport(output: string): JsonRecord {
 	return asRecord(JSON.parse(trimmed) as unknown, "helper report");
 }
 
-async function runSmoke(): Promise<JsonRecord> {
-	assertLiveOptIn();
-	const fathomRepo = resolveFathomRepo();
-	const packageDir = join(fathomRepo, "macos", "FathomCore");
-	const tempDir = await mkdtemp(join(tmpdir(), "maestro-fathom-cua-mcp."));
-	const readyFile = join(tempDir, "ready.json");
-	const stopFile = join(tempDir, "stop");
-	const stateFile = join(tempDir, "state.json");
-	const ipcRoot = join(tempDir, "ipc");
+type FocusedProof = (typeof focusedProofs)[number];
+
+type LaunchedProof = FocusedProof & {
+	appDir: string;
+	bundleId: string;
+	pid: number;
+	readyFile: string;
+	stateFile: string;
+	stopFile: string;
+};
+
+type ProbeResult = {
+	ok: boolean;
+	output: string;
+};
+
+type ProofTarget =
+	| {
+			tool: "set_value";
+			rawValue: string;
+			expectedHash: string;
+	  }
+	| {
+			tool: "set_toggle_state";
+			checked: boolean;
+	  }
+	| {
+			tool: "set_slider_value";
+			value: number;
+	  }
+	| {
+			tool: "select_menu_option";
+			option: string;
+			expectedHash: string;
+	  };
+
+async function execProbe(
+	command: string,
+	args: string[],
+): Promise<ProbeResult> {
+	try {
+		const { stdout, stderr } = await execFileAsync(command, args, {
+			encoding: "utf8",
+			maxBuffer: 32 * 1024 * 1024,
+		});
+		return { ok: true, output: `${stdout}${stderr}`.trim() };
+	} catch (error) {
+		const execError = error as Partial<{
+			message: string;
+			stdout: unknown;
+			stderr: unknown;
+		}>;
+		const output =
+			`${String(execError.stdout ?? "")}${String(execError.stderr ?? "")}`.trim();
+		return {
+			ok: false,
+			output: output || execError.message || String(error),
+		};
+	}
+}
+
+function axReadyProbe(bundleId: string): string {
+	return `
+import AppKit
+import ApplicationServices
+import Foundation
+
+let bundleID = ${JSON.stringify(bundleId)}
+guard let app = NSRunningApplication
+    .runningApplications(withBundleIdentifier: bundleID)
+    .first(where: { !$0.isTerminated })
+else {
+    FileHandle.standardError.write(Data("missing app \\(bundleID)\\n".utf8))
+    exit(2)
+}
+
+func stringAttribute(_ element: AXUIElement, _ attribute: String) -> String {
+    var value: CFTypeRef?
+    let result = AXUIElementCopyAttributeValue(element, attribute as CFString, &value)
+    guard result == .success, let value else {
+        return ""
+    }
+    return String(describing: value)
+}
+
+func elementArrayAttribute(_ element: AXUIElement, _ attribute: String) -> [AXUIElement] {
+    var value: CFTypeRef?
+    let result = AXUIElementCopyAttributeValue(element, attribute as CFString, &value)
+    guard result == .success, let elements = value as? [AXUIElement] else {
+        return []
+    }
+    return elements
+}
+
+func elementAttribute(_ element: AXUIElement, _ attribute: String) -> AXUIElement? {
+    var value: CFTypeRef?
+    let result = AXUIElementCopyAttributeValue(element, attribute as CFString, &value)
+    guard result == .success, let value else {
+        return nil
+    }
+    return (value as! AXUIElement)
+}
+
+let usefulRoles: Set<String> = ["AXWindow", "AXButton", "AXTextField", "AXGroup", "AXCheckBox", "AXSwitch", "AXDisclosureTriangle", "AXRadioButton", "AXList", "AXTable", "AXOutline", "AXRow", "AXCell", "AXPopUpButton", "AXSlider", "AXIncrementor"]
+var foundUsefulElement = false
+var seenElements = Set<CFHashCode>()
+var visited = 0
+
+func walk(_ element: AXUIElement, depth: Int) {
+    guard !foundUsefulElement, depth <= 8, visited < 2048 else {
+        return
+    }
+    let elementID = CFHash(element)
+    guard !seenElements.contains(elementID) else {
+        return
+    }
+    seenElements.insert(elementID)
+    visited += 1
+    if usefulRoles.contains(stringAttribute(element, kAXRoleAttribute)) {
+        foundUsefulElement = true
+        return
+    }
+    for window in elementArrayAttribute(element, kAXWindowsAttribute) {
+        walk(window, depth: depth + 1)
+    }
+    if let mainWindow = elementAttribute(element, kAXMainWindowAttribute) {
+        walk(mainWindow, depth: depth + 1)
+    }
+    if let focusedWindow = elementAttribute(element, kAXFocusedWindowAttribute) {
+        walk(focusedWindow, depth: depth + 1)
+    }
+    for child in elementArrayAttribute(element, kAXChildrenAttribute) {
+        walk(child, depth: depth + 1)
+    }
+}
+
+walk(AXUIElementCreateApplication(app.processIdentifier), depth: 0)
+if foundUsefulElement {
+    exit(0)
+}
+FileHandle.standardError.write(Data("no usable AX window for \\(bundleID); visited=\\(visited)\\n".utf8))
+exit(1)
+`;
+}
+
+async function waitForNativeAxWindow(proof: LaunchedProof): Promise<void> {
+	const deadline = Date.now() + 12_000;
+	let lastProbe = "";
+	let lastActivationFailures: string[] = [];
+	while (Date.now() < deadline) {
+		lastActivationFailures = await foreground(proof.pid, proof.bundleId);
+		await sleep(focusSettleDelayMs);
+		const probe = await execProbe("swift", [
+			"-e",
+			axReadyProbe(proof.bundleId),
+		]);
+		lastProbe = probe.output;
+		if (probe.ok) {
+			return;
+		}
+		await sleep(250);
+	}
+	throw new SmokeError("Timed out waiting for native AX window", {
+		appBundleId: proof.bundleId,
+		appDir: proof.appDir,
+		pid: proof.pid,
+		lastActivationFailures,
+		lastProbe,
+	});
+}
+
+async function stopProofTarget(proof: LaunchedProof): Promise<void> {
+	await writeFile(proof.stopFile, "").catch(() => undefined);
+	await execFileAsync("kill", [String(proof.pid)]).catch(() => undefined);
+}
+
+async function launchProofTarget(
+	fathomRepo: string,
+	binDir: string,
+	tempDir: string,
+	proof: FocusedProof,
+	index: number,
+): Promise<LaunchedProof> {
+	const bundleId = `${targetBundleIdPrefix}.${proof.bundleSuffix}`;
 	const appDir = join(
 		fathomRepo,
 		".build",
-		"FathomCUADogfoodTargetMaestro.app",
+		`FathomCUADogfoodTargetMaestro-${proof.bundleSuffix}.app`,
 	);
-	const manager = new McpClientManager();
-	let helper: RunningProcess | undefined;
-	let targetPid: number | undefined;
-
+	const readyFile = join(tempDir, `${proof.bundleSuffix}.ready.json`);
+	const stopFile = join(tempDir, `${proof.bundleSuffix}.stop`);
+	const stateFile = join(tempDir, `${proof.bundleSuffix}.state.json`);
+	await packageTargetApp(binDir, appDir, bundleId, proof.displayName);
+	let launched: LaunchedProof | undefined;
 	try {
-		await buildFathomProducts(packageDir);
-		const binDir = await swiftBinPath(packageDir);
-		await packageTargetApp(binDir, appDir, "Fathom CUA Dogfood Target Maestro");
-		targetPid = await launchDogfoodTarget(
+		const pid = await launchDogfoodTarget(
 			appDir,
 			readyFile,
 			stopFile,
 			stateFile,
+			proof.name,
+			120 + index * 36,
+			120 + index * 36,
 		);
-		await foreground(targetPid);
+		launched = {
+			...proof,
+			appDir,
+			bundleId,
+			pid,
+			readyFile,
+			stateFile,
+			stopFile,
+		};
+		await waitForJsonFile(
+			stateFile,
+			(value) =>
+				value.variant === proof.name && value.raw_values_redacted === true,
+			12_000,
+		);
+		await waitForNativeAxWindow(launched);
+		return launched;
+	} catch (error) {
+		if (launched) {
+			await stopProofTarget(launched);
+		}
+		throw error;
+	}
+}
 
+function actionArgsForProof(
+	proof: LaunchedProof,
+	element: JsonRecord,
+	target: ProofTarget,
+): JsonRecord {
+	const base = {
+		app: proof.bundleId,
+		element_index: String(element.element_index),
+	};
+	switch (proof.tool) {
+		case "set_value":
+			if (target.tool !== "set_value") break;
+			return { ...base, value: target.rawValue };
+		case "set_toggle_state":
+			if (target.tool !== "set_toggle_state") break;
+			return { ...base, checked: target.checked };
+		case "set_slider_value":
+			if (target.tool !== "set_slider_value") break;
+			return { ...base, value: target.value };
+		case "select_menu_option":
+			if (target.tool !== "select_menu_option") break;
+			return { ...base, option: target.option };
+	}
+	throw new SmokeError("Mismatched Fathom CUA proof target", {
+		proofTool: proof.tool,
+		targetTool: target.tool,
+	});
+}
+
+function targetForProof(
+	proof: LaunchedProof,
+	beforeState: JsonRecord,
+	rawValue: string,
+): ProofTarget {
+	switch (proof.tool) {
+		case "set_value": {
+			return {
+				tool: "set_value",
+				rawValue,
+				expectedHash: sha256(`set-value:v1:${rawValue}`),
+			};
+		}
+		case "set_toggle_state":
+			return {
+				tool: "set_toggle_state",
+				checked: beforeState.toggle_checked !== true,
+			};
+		case "set_slider_value":
+			return {
+				tool: "set_slider_value",
+				value: beforeState.slider_value === 75 ? 25 : 75,
+			};
+		case "select_menu_option": {
+			const secondOptionHash = sha256("menu-option:v1:Second Option");
+			const option =
+				beforeState.menu_option_hash === secondOptionHash
+					? "First Option"
+					: "Second Option";
+			return {
+				tool: "select_menu_option",
+				option,
+				expectedHash: sha256(`menu-option:v1:${option}`),
+			};
+		}
+	}
+}
+
+function statePredicateForProof(
+	proof: LaunchedProof,
+	beforeState: JsonRecord,
+	target: ProofTarget,
+): (value: JsonRecord) => boolean {
+	return (value) =>
+		stateChangedFromBefore(proof, beforeState, value) &&
+		stateMatchesTarget(proof, value, target);
+}
+
+function stateChangedFromBefore(
+	proof: LaunchedProof,
+	beforeState: JsonRecord,
+	afterState: JsonRecord,
+): boolean {
+	switch (proof.tool) {
+		case "set_value":
+			return beforeState.field_value_hash !== afterState.field_value_hash;
+		case "set_toggle_state":
+			return beforeState.toggle_checked !== afterState.toggle_checked;
+		case "set_slider_value":
+			return beforeState.slider_value !== afterState.slider_value;
+		case "select_menu_option":
+			return beforeState.menu_option_hash !== afterState.menu_option_hash;
+	}
+}
+
+function stateMatchesTarget(
+	proof: LaunchedProof,
+	state: JsonRecord,
+	target: ProofTarget,
+): boolean {
+	switch (proof.tool) {
+		case "set_value":
+			return (
+				target.tool === "set_value" &&
+				state.field_value_hash === target.expectedHash
+			);
+		case "set_toggle_state":
+			return (
+				target.tool === "set_toggle_state" &&
+				state.toggle_checked === target.checked
+			);
+		case "set_slider_value":
+			return (
+				target.tool === "set_slider_value" &&
+				state.slider_value === target.value
+			);
+		case "select_menu_option":
+			return (
+				target.tool === "select_menu_option" &&
+				state.menu_option_hash === target.expectedHash
+			);
+	}
+}
+
+function stateEvidenceForProof(
+	proof: LaunchedProof,
+	beforeState: JsonRecord,
+	state: JsonRecord,
+	target: ProofTarget,
+): JsonRecord {
+	const changedFromBefore = stateChangedFromBefore(proof, beforeState, state);
+	switch (proof.tool) {
+		case "set_value": {
+			if (target.tool !== "set_value") break;
+			return {
+				beforeFieldValueHash: beforeState.field_value_hash,
+				fieldValueHash: state.field_value_hash,
+				expectedHash: target.expectedHash,
+				changedFromBefore,
+				changed:
+					changedFromBefore && state.field_value_hash === target.expectedHash,
+			};
+		}
+		case "set_toggle_state":
+			if (target.tool !== "set_toggle_state") break;
+			return {
+				beforeToggleChecked: beforeState.toggle_checked,
+				toggleChecked: state.toggle_checked,
+				expectedChecked: target.checked,
+				changedFromBefore,
+				changed: changedFromBefore && state.toggle_checked === target.checked,
+			};
+		case "set_slider_value":
+			if (target.tool !== "set_slider_value") break;
+			return {
+				beforeSliderValue: beforeState.slider_value,
+				sliderValue: state.slider_value,
+				expectedSliderValue: target.value,
+				changedFromBefore,
+				changed: changedFromBefore && state.slider_value === target.value,
+			};
+		case "select_menu_option": {
+			if (target.tool !== "select_menu_option") break;
+			return {
+				beforeMenuOptionHash: beforeState.menu_option_hash,
+				menuOptionHash: state.menu_option_hash,
+				expectedHash: target.expectedHash,
+				expectedOption: target.option,
+				changedFromBefore,
+				changed:
+					changedFromBefore && state.menu_option_hash === target.expectedHash,
+			};
+		}
+	}
+	throw new SmokeError("Mismatched Fathom CUA proof evidence target", {
+		proofTool: proof.tool,
+		targetTool: target.tool,
+	});
+}
+
+function listedApplicationBundleIds(payload: JsonRecord): string[] {
+	return asArray(payload.applications, "list_apps applications")
+		.map((application) => asRecord(application, "list_apps application"))
+		.map((application) => application.bundle_id)
+		.filter((bundleID): bundleID is string => typeof bundleID === "string");
+}
+
+type ProofStateSelection = {
+	state: JsonRecord;
+	element: JsonRecord;
+};
+
+type FathomToolCaller = (
+	toolName: string,
+	args: JsonRecord,
+) => Promise<JsonRecord>;
+
+async function waitForProofAppState(
+	callTool: FathomToolCaller,
+	proof: LaunchedProof,
+): Promise<ProofStateSelection> {
+	let lastState: JsonRecord | undefined;
+	let lastError: unknown;
+	let lastActivationFailures: string[] = [];
+	for (let attempt = 1; attempt <= stateReadinessAttempts; attempt++) {
+		try {
+			lastActivationFailures = await foreground(proof.pid, proof.bundleId);
+			await sleep(focusSettleDelayMs);
+			const state = await callTool("get_app_state", {
+				app: proof.bundleId,
+				reason: `maestro fathom cua mcp focused proof ${proof.name}`,
+			});
+			lastState = state;
+			const element = tryFindElementByRole(state, proof.elementRole);
+			if (element) {
+				return { state, element };
+			}
+		} catch (error) {
+			lastError = error;
+		}
+		if (attempt < stateReadinessAttempts) {
+			await sleep(stateReadinessDelayMs);
+		}
+	}
+	const elements = lastState
+		? asArray(lastState.elements, "get_app_state elements")
+		: [];
+	throw new SmokeError(
+		`Timed out waiting for ${proof.elementRole} in Fathom dogfood state`,
+		{
+			appBundleId: proof.bundleId,
+			appDir: proof.appDir,
+			pid: proof.pid,
+			stateReadinessAttempts,
+			stateReadinessDelayMs,
+			focusSettleDelayMs,
+			elementCount: elements.length,
+			roleHistogram: roleHistogram(elements),
+			lastActivationFailures,
+			lastError:
+				lastError instanceof Error ? lastError.message : String(lastError),
+		},
+	);
+}
+
+function isRecoverableDesktopActionError(error: unknown): boolean {
+	if (!(error instanceof SmokeError)) {
+		return false;
+	}
+	const result = error.details?.result;
+	if (!isRecord(result)) {
+		return false;
+	}
+	const nextStep = typeof result.next_step === "string" ? result.next_step : "";
+	const reason =
+		typeof result.error_reason === "string" ? result.error_reason : "";
+	return (
+		result.state_valid === false ||
+		nextStep.includes("get_app_state") ||
+		reason.includes("AX error -25202")
+	);
+}
+
+async function waitForPostActionProofState(
+	callTool: FathomToolCaller,
+	proof: LaunchedProof,
+	beforeState: JsonRecord,
+	target: ProofTarget,
+	receiptId: unknown,
+): Promise<JsonRecord> {
+	let lastState: JsonRecord | undefined;
+	let lastError: unknown;
+	const matchesTarget = statePredicateForProof(proof, beforeState, target);
+	const receiptLabel = typeof receiptId === "string" ? receiptId : "unknown";
+	for (let attempt = 1; attempt <= stateReadinessAttempts; attempt++) {
+		try {
+			const state = await callTool("get_app_state", {
+				app: proof.bundleId,
+				reason: `maestro fathom cua mcp post-action proof ${proof.name} receipt ${receiptLabel}`,
+			});
+			lastState = state;
+			if (matchesTarget(state)) {
+				return state;
+			}
+		} catch (error) {
+			lastError = error;
+		}
+		if (attempt < stateReadinessAttempts) {
+			await sleep(stateReadinessDelayMs);
+		}
+	}
+
+	throw new SmokeError(
+		`Timed out waiting for post-action ${proof.elementRole} proof state`,
+		{
+			appBundleId: proof.bundleId,
+			appDir: proof.appDir,
+			pid: proof.pid,
+			tool: proof.tool,
+			receiptId,
+			stateReadinessAttempts,
+			stateReadinessDelayMs,
+			lastError:
+				lastError instanceof Error ? lastError.message : String(lastError),
+			lastEvidence: lastState
+				? stateEvidenceForProof(proof, beforeState, lastState, target)
+				: undefined,
+		},
+	);
+}
+
+async function runSmoke(): Promise<JsonRecord> {
+	assertLiveOptIn();
+	await assertUnlockedConsoleSession();
+	const fathomRepo = resolveFathomRepo();
+	const packageDir = join(fathomRepo, "macos", "FathomCore");
+	const tempDir = await mkdtemp(join(tmpdir(), "maestro-fathom-cua-mcp."));
+	const ipcRoot = join(tempDir, "ipc");
+	const manager = new McpClientManager();
+	let helper: RunningProcess | undefined;
+	const launchedProofs: LaunchedProof[] = [];
+
+	try {
+		await buildFathomProducts(packageDir);
+		const binDir = await swiftBinPath(packageDir);
+		for (const [index, proof] of focusedProofs.entries()) {
+			const launched = await launchProofTarget(
+				fathomRepo,
+				binDir,
+				tempDir,
+				proof,
+				index,
+			);
+			launchedProofs.push(launched);
+		}
+
+		const maxRequests =
+			1 +
+			launchedProofs.length *
+				((stateReadinessAttempts + 1) *
+					(1 + desktopActionRecoveryAttempts) +
+					stateReadinessAttempts);
+		let helperRequestCount = 0;
 		helper = spawnCaptured(join(binDir, "fathom-helper"), [
 			"live-cua-process-ipc",
 			"--indicator-present",
@@ -561,9 +1197,9 @@ async function runSmoke(): Promise<JsonRecord> {
 			"--ipc-root",
 			ipcRoot,
 			"--max-requests",
-			"2",
+			String(maxRequests),
 			"--idle-timeout-seconds",
-			"20",
+			"45",
 		]);
 
 		const mcpProjectRoot = await configureIsolatedMcpEnv(
@@ -584,12 +1220,24 @@ async function runSmoke(): Promise<JsonRecord> {
 				status: fathomStatus,
 			});
 		}
+		const callFathomTool: FathomToolCaller = async (toolName, args) => {
+			try {
+				return await callMcpTool(manager, fathomServerName, toolName, args);
+			} finally {
+				helperRequestCount += 1;
+			}
+		};
 		const toolNames = manager
 			.getAllTools()
 			.filter((tool) => tool.server === fathomServerName)
 			.map((tool) => tool.tool.name)
 			.sort();
-		for (const requiredTool of ["get_app_state", "set_value"]) {
+		const requiredTools = [
+			"list_apps",
+			"get_app_state",
+			...focusedProofs.map((proof) => proof.tool),
+		];
+		for (const requiredTool of requiredTools) {
 			if (!toolNames.includes(requiredTool)) {
 				throw new SmokeError(
 					"Fathom CUA MCP server is missing a required tool",
@@ -601,28 +1249,84 @@ async function runSmoke(): Promise<JsonRecord> {
 			}
 		}
 
-		const before = await callMcpTool(
-			manager,
-			fathomServerName,
-			"get_app_state",
-			{
-				app: targetBundleId,
-				reason: "maestro fathom cua mcp smoke",
-			},
-		);
-		const textElement = findTextElement(before);
-		const rawValue = `Maestro Fathom CUA MCP ${Date.now()}`;
-		const expectedHash = sha256(`set-value:v1:${rawValue}`);
-		const action = await callMcpTool(manager, fathomServerName, "set_value", {
-			app: targetBundleId,
-			element_index: String(textElement.element_index),
-			value: rawValue,
+		const appList = await callFathomTool("list_apps", {
+			include_background: true,
 		});
-		const observedState = await waitForJsonFile(
-			stateFile,
-			(value) => value.field_value_hash === expectedHash,
-			12_000,
-		);
+		const listedBundleIds = listedApplicationBundleIds(appList);
+		const missingListedApps = launchedProofs
+			.map((proof) => proof.bundleId)
+			.filter((bundleId) => !listedBundleIds.includes(bundleId));
+		if (missingListedApps.length > 0) {
+			throw new SmokeError("Fathom CUA list_apps missed proof targets", {
+				missingListedApps,
+			});
+		}
+
+		const actionProofs: JsonRecord[] = [];
+		for (const proof of launchedProofs) {
+			let selection = await waitForProofAppState(callFathomTool, proof);
+			let element = selection.element;
+			const rawValue = `Maestro Fathom CUA MCP ${proof.name} ${Date.now()}`;
+			let beforeState = selection.state;
+			let target = targetForProof(proof, beforeState, rawValue);
+			let action: JsonRecord | undefined;
+			let recoveries = 0;
+			for (;;) {
+				await sleep(userActivityIdleDelayMs);
+				try {
+					action = await callFathomTool(
+						proof.tool,
+						actionArgsForProof(proof, element, target),
+					);
+					break;
+				} catch (error) {
+					if (
+						recoveries >= desktopActionRecoveryAttempts ||
+						!isRecoverableDesktopActionError(error)
+					) {
+						throw error;
+					}
+					recoveries += 1;
+					selection = await waitForProofAppState(callFathomTool, proof);
+					element = selection.element;
+					beforeState = selection.state;
+					target = targetForProof(proof, beforeState, rawValue);
+				}
+			}
+			if (!action) {
+				throw new SmokeError("Fathom CUA MCP action was not attempted", {
+					tool: proof.tool,
+				});
+			}
+			const observedState = await waitForPostActionProofState(
+				callFathomTool,
+				proof,
+				beforeState,
+				target,
+				action.receipt_id,
+			);
+			actionProofs.push({
+				name: proof.name,
+				appBundleId: proof.bundleId,
+				tool: proof.tool,
+				elementRole: proof.elementRole,
+				idleWaitBeforeActionMs: userActivityIdleDelayMs,
+				recoveries,
+				receiptId: action.receipt_id,
+				contextSnapshotId: action.context_snapshot_id,
+				elementIndex: element.element_index,
+				elementPathHash: element.element_path_hash,
+				stateObserved: stateEvidenceForProof(
+					proof,
+					beforeState,
+					observedState,
+					target,
+				),
+			});
+		}
+		while (helperRequestCount < maxRequests) {
+			await callFathomTool("list_apps", { include_background: false });
+		}
 		await manager.disconnectAll();
 		const helperStatus = helper ? await waitForProcess(helper, 35_000) : 1;
 		const helperReport = helper ? parseHelperReport(helper.stdout()) : {};
@@ -639,33 +1343,28 @@ async function runSmoke(): Promise<JsonRecord> {
 			ok: true,
 			source: "maestro-mcp-manager",
 			fathomRepo,
-			targetBundleId,
+			targetBundleIds: launchedProofs.map((proof) => proof.bundleId),
 			mcpServer: {
 				name: fathomServerName,
 				connected: true,
 				toolCount: toolNames.length,
-				requiredTools: ["get_app_state", "set_value"],
+				requiredTools,
 			},
-			action: {
-				tool: "set_value",
-				receiptId: action.receipt_id,
-				contextSnapshotId: action.context_snapshot_id,
-				elementIndex: textElement.element_index,
-				elementPathHash: textElement.element_path_hash,
+			observabilityProof: {
+				tool: "list_apps",
+				applicationCount: listedBundleIds.length,
+				proofTargetsListed: launchedProofs.length,
 			},
-			stateObserved: {
-				fieldValueHash: observedState.field_value_hash,
-				expectedHash,
-				changed: observedState.field_value_hash === expectedHash,
-			},
+			actionProofs,
 			helper: {
 				ok: helperReport.ok,
 				processedRequests: helperReport.processed_requests,
+				maxRequests,
 			},
 			rawValueRedacted: true,
 		};
 		const encoded = JSON.stringify(report);
-		if (encoded.includes(rawValue)) {
+		if (encoded.includes("Maestro Fathom CUA MCP ")) {
 			throw new SmokeError("Smoke report leaked the raw desktop value");
 		}
 		return report;
@@ -674,13 +1373,10 @@ async function runSmoke(): Promise<JsonRecord> {
 		if (helper && helper.process.exitCode === null) {
 			helper.process.kill();
 		}
-		await writeFile(stopFile, "").catch(() => undefined);
-		if (targetPid) {
-			await execFileAsync("kill", [String(targetPid)]).catch(() => undefined);
+		for (const proof of launchedProofs) {
+			await stopProofTarget(proof);
 		}
-		await rm(dirname(readyFile), { recursive: true, force: true }).catch(
-			() => undefined,
-		);
+		await rm(tempDir, { recursive: true, force: true }).catch(() => undefined);
 	}
 }
 

@@ -6,9 +6,13 @@ import type { AgentTool } from "../../src/agent/types.js";
 import {
 	CODEX_DEFAULT_TOOL_PROFILE,
 	CODEX_DYNAMIC_TOOL_CONFORMANCE,
+	CODEX_EXTENDED_TOOL_PROFILE,
+	CODEX_FILE_MUTATION_TOOL_PROFILE,
+	CODEX_READ_ONLY_TOOL_PROFILE,
 	compileCodexDynamicToolSpecs,
 	normalizeCodexDynamicToolInputSchema,
 	selectCodexDefaultTools,
+	selectCodexToolProfile,
 } from "../../src/codex/compatibility.js";
 import { codingTools } from "../../src/tools/index.js";
 
@@ -84,6 +88,61 @@ describe("Codex app-server compatibility contract", () => {
 				expect(spec.inputSchema).not.toHaveProperty(keyword);
 			}
 		}
+	});
+
+	it("keeps file mutations as explicit tools in the curated Codex default profile", () => {
+		expect(CODEX_FILE_MUTATION_TOOL_PROFILE).toEqual([
+			"apply_patch",
+			"edit",
+			"write",
+		]);
+		expect(CODEX_DEFAULT_TOOL_PROFILE).toEqual(
+			expect.arrayContaining(CODEX_FILE_MUTATION_TOOL_PROFILE),
+		);
+		expect(CODEX_DEFAULT_TOOL_PROFILE).not.toContain("workspace");
+		expect(CODEX_DEFAULT_TOOL_PROFILE).not.toContain("file");
+	});
+
+	it("keeps read-only and extended profiles available without expanding the default", () => {
+		expect(CODEX_READ_ONLY_TOOL_PROFILE).toEqual([
+			"read",
+			"list",
+			"find",
+			"search",
+			"diff",
+			"status",
+		]);
+		expect(CODEX_READ_ONLY_TOOL_PROFILE).not.toEqual(
+			expect.arrayContaining(["bash", "apply_patch", "edit", "write"]),
+		);
+		expect(CODEX_EXTENDED_TOOL_PROFILE).toEqual(
+			expect.arrayContaining([
+				"parallel_ripgrep",
+				"background_tasks",
+				"gh_issue",
+				"gh_repo",
+			]),
+		);
+		expect(CODEX_DEFAULT_TOOL_PROFILE).not.toEqual(
+			expect.arrayContaining([
+				"parallel_ripgrep",
+				"background_tasks",
+				"gh_issue",
+				"gh_repo",
+			]),
+		);
+	});
+
+	it("selects named Codex profiles from the full coding tool registry", () => {
+		expect(
+			selectCodexToolProfile(codingTools, "read-only").map((tool) => tool.name),
+		).toEqual(CODEX_READ_ONLY_TOOL_PROFILE);
+		expect(
+			selectCodexToolProfile(codingTools, "extended").map((tool) => tool.name),
+		).toEqual(CODEX_EXTENDED_TOOL_PROFILE);
+		expect(
+			selectCodexToolProfile(codingTools, "lean").map((tool) => tool.name),
+		).toEqual(CODEX_DEFAULT_TOOL_PROFILE);
 	});
 
 	it("renames invalid or reserved tool identifiers while preserving original bindings", () => {

@@ -1537,6 +1537,309 @@ describe("hosted AgentRuntime progress recorder", () => {
 		);
 	});
 
+	it("records queryable tool, diagnostic, artifact, and final-status events", async () => {
+		const { recorder, recordEvent } = createRecorder();
+
+		recorder.recordAgentEvent({
+			type: "tool_execution_update",
+			toolCallId: "call_stream",
+			toolExecutionId: "texec_stream",
+			toolName: "read",
+			displayName: "Read file",
+			summaryLabel: "read src/index.ts",
+			args: { file_path: "/workspace/src/index.ts" },
+			partialResult: {
+				content: [{ type: "text", text: "partial output" }],
+				details: { bytes: 14 },
+				toolExecutionId: "texec_stream",
+			},
+		});
+		recorder.recordAgentEvent({
+			type: "diagnostic_delta",
+			toolCallId: "call_stream",
+			toolName: "read",
+			file: "/workspace/src/index.ts",
+			displayPath: "src/index.ts",
+			usedDelta: true,
+			introducedCount: 1,
+			repairedCount: 2,
+			remainingCount: 0,
+			fingerprint: "diag_abc",
+			repairAttempt: 1,
+			maxRepairAttempts: 2,
+			willAutoFollowUp: false,
+			reason: "no diagnostics remain",
+		});
+		recorder.recordAgentEvent({
+			type: "tool_batch_summary",
+			summary: "read src/index.ts",
+			summaryLabels: ["read src/index.ts"],
+			toolCallIds: ["call_stream"],
+			toolNames: ["read"],
+			callsSucceeded: 1,
+			callsFailed: 0,
+		});
+		recorder.recordAgentEvent({
+			type: "tool_execution_end",
+			toolCallId: "call_stream",
+			toolExecutionId: "texec_stream",
+			toolName: "read",
+			displayName: "Read file",
+			result: {
+				role: "toolResult",
+				toolCallId: "call_stream",
+				toolName: "read",
+				content: [{ type: "text", text: "done" }],
+				isError: false,
+				timestamp: 1,
+			},
+			isError: false,
+			skillMetadata: {
+				name: "read-skill",
+				hash: "sha256:abc",
+				source: "project",
+				artifactId: "artifact_1",
+				version: "1.0.0",
+			},
+		} satisfies AgentEvent);
+		recorder.recordAgentEvent({
+			type: "agent_end",
+			messages: [],
+			aborted: false,
+			stopReason: "stop",
+		});
+		await recorder.flush();
+
+		expect(recordEvent).toHaveBeenCalledWith(
+			expect.objectContaining({
+				type: PlatformRuntimeEventTypeValue.AgentProgressRecorded,
+				message: "Maestro tool execution update recorded",
+				stepId: "maestro:session_1:tool:call_stream",
+				attributes: expect.objectContaining({
+					event_type: "tool_execution_update",
+					tool_call_id: "call_stream",
+					tool_execution_id: "texec_stream",
+					tool_name: "read",
+					arg_keys: ["file_path"],
+					content_block_count: 1,
+					text_block_count: 1,
+					text_total_chars: 14,
+					details_keys: ["bytes"],
+				}),
+			}),
+		);
+		expect(recordEvent).toHaveBeenCalledWith(
+			expect.objectContaining({
+				message: "Maestro diagnostic delta recorded",
+				stepId: "maestro:session_1:tool:call_stream",
+				attributes: expect.objectContaining({
+					event_type: "diagnostic_delta",
+					display_path: "src/index.ts",
+					introduced_count: 1,
+					repaired_count: 2,
+					remaining_count: 0,
+					fingerprint: "diag_abc",
+				}),
+			}),
+		);
+		expect(recordEvent).toHaveBeenCalledWith(
+			expect.objectContaining({
+				message: "Maestro tool batch summary recorded",
+				attributes: expect.objectContaining({
+					event_type: "tool_batch_summary",
+					calls_succeeded: 1,
+					calls_failed: 0,
+					tool_call_ids: ["call_stream"],
+					tool_names: ["read"],
+				}),
+			}),
+		);
+		expect(recordEvent).toHaveBeenCalledWith(
+			expect.objectContaining({
+				message: "Maestro tool artifact evidence recorded",
+				stepId: "maestro:session_1:tool:call_stream",
+				artifactId: "artifact_1",
+				attributes: expect.objectContaining({
+					event_type: "tool_artifact_recorded",
+					skill_name: "read-skill",
+					skill_hash: "sha256:abc",
+					skill_source: "project",
+					skill_artifact_id: "artifact_1",
+				}),
+			}),
+		);
+		expect(recordEvent).toHaveBeenCalledWith(
+			expect.objectContaining({
+				message: "Maestro agent final status recorded",
+				stepId: "maestro:session_1:agent:end-0",
+				attributes: expect.objectContaining({
+					event_type: "agent_final_status",
+					final_status: "succeeded",
+					stop_reason: "stop",
+				}),
+			}),
+		);
+	});
+
+	it("projects tool retry prompts as hosted waits and queryable retry events", async () => {
+		const { recorder, waitRun, resumeRun, recordEvent } = createRecorder();
+		const request = {
+			id: "retry_1",
+			toolCallId: "call_retry",
+			toolName: "shell",
+			args: { command: "npm test" },
+			errorMessage: "exit code 1",
+			attempt: 1,
+			maxAttempts: 3,
+			summary: "shell failed",
+		};
+
+		recorder.recordAgentEvent({
+			type: "tool_retry_required",
+			request,
+		} satisfies AgentEvent);
+		recorder.recordAgentEvent({
+			type: "tool_retry_resolved",
+			request,
+			decision: {
+				action: "retry",
+				reason: "transient",
+				resolvedBy: "user",
+			},
+		} satisfies AgentEvent);
+		await recorder.flush();
+
+		expect(waitRun).toHaveBeenCalledWith(
+			expect.objectContaining({
+				wait: expect.objectContaining({
+					id: "maestro:session_1:wait:retry_1",
+					stepId: "maestro:session_1:tool:call_retry",
+					type: PlatformAgentRunWaitTypeValue.Approval,
+					externalRef: "retry_1",
+					payload: expect.objectContaining({
+						request_type: "tool_retry",
+						tool_name: "shell",
+					}),
+				}),
+			}),
+		);
+		expect(resumeRun).toHaveBeenCalledWith(
+			expect.objectContaining({
+				waitId: "maestro:session_1:wait:retry_1",
+				resumeEventId: "maestro:session_1:resume:retry_1",
+				payload: expect.objectContaining({
+					request_type: "tool_retry",
+					resolution: "retry",
+					resolved_by: "user",
+				}),
+			}),
+		);
+		expect(recordEvent).toHaveBeenCalledWith(
+			expect.objectContaining({
+				message: "Maestro tool retry required",
+				waitId: "maestro:session_1:wait:retry_1",
+				attributes: expect.objectContaining({
+					event_type: "tool_retry_required",
+					error_message: "exit code 1",
+					attempt: 1,
+					max_attempts: 3,
+					arg_keys: ["command"],
+				}),
+			}),
+		);
+		expect(recordEvent).toHaveBeenCalledWith(
+			expect.objectContaining({
+				message: "Maestro tool retry resolved",
+				waitId: "maestro:session_1:wait:retry_1",
+				attributes: expect.objectContaining({
+					event_type: "tool_retry_resolved",
+					resolution: "retry",
+					resolved_by: "user",
+					reason: "transient",
+				}),
+			}),
+		);
+	});
+
+	it("records recovery breadcrumbs for status, compaction, and auto retry", async () => {
+		const { recorder, recordEvent, recordStep } = createRecorder();
+
+		recorder.recordAgentEvent({
+			type: "status",
+			status: "restoring checkpoint",
+			details: { checkpointId: "cp_1", replica: "pod-b" },
+		});
+		recorder.recordAgentEvent({
+			type: "compaction",
+			summary: "Older context summarized",
+			firstKeptEntryIndex: 12,
+			tokensBefore: 42_000,
+			auto: true,
+			timestamp: "2026-05-23T01:00:00.000Z",
+		});
+		recorder.recordAgentEvent({
+			type: "auto_retry_start",
+			attempt: 2,
+			maxAttempts: 5,
+			delayMs: 1_500,
+			errorMessage: "rate limited",
+		});
+		recorder.recordAgentEvent({
+			type: "auto_retry_end",
+			success: true,
+			attempt: 2,
+		});
+		await recorder.flush();
+
+		expect(recordEvent).toHaveBeenCalledWith(
+			expect.objectContaining({
+				message: "Maestro status recorded",
+				attributes: expect.objectContaining({
+					event_type: "status",
+					status: "restoring checkpoint",
+					detail_keys: ["checkpointId", "replica"],
+				}),
+			}),
+		);
+		expect(recordEvent).toHaveBeenCalledWith(
+			expect.objectContaining({
+				message: "Maestro context compaction recorded",
+				attributes: expect.objectContaining({
+					event_type: "compaction",
+					first_kept_entry_index: 12,
+					tokens_before: 42_000,
+					auto: true,
+					summary_chars: 24,
+				}),
+			}),
+		);
+		expect(recordStep).toHaveBeenCalledWith(
+			expect.objectContaining({
+				step: expect.objectContaining({
+					id: "maestro:session_1:retry:auto-2",
+					stepKind: PlatformAgentRunStepKindValue.System,
+					state: PlatformAgentRunStepStateValue.Waiting,
+					input: expect.objectContaining({
+						event_type: "auto_retry_start",
+						delay_ms: 1_500,
+					}),
+				}),
+			}),
+		);
+		expect(recordStep).toHaveBeenCalledWith(
+			expect.objectContaining({
+				step: expect.objectContaining({
+					id: "maestro:session_1:retry:auto-2",
+					state: PlatformAgentRunStepStateValue.Succeeded,
+					output: expect.objectContaining({
+						event_type: "auto_retry_end",
+						success: true,
+					}),
+				}),
+			}),
+		);
+	});
+
 	it("no-ops when hosted Platform lease handles are absent", async () => {
 		const { recorder, recordStep, waitRun, resumeRun, completeRun, failRun } =
 			createRecorder({

@@ -232,6 +232,17 @@ function stringArray(value: unknown): string[] {
 	);
 }
 
+function compactStringArray(
+	value: string[],
+	maxItems = 32,
+): string[] | undefined {
+	const compacted = value
+		.map((item) => compactString(item, 160))
+		.filter((item): item is string => Boolean(item))
+		.slice(0, maxItems);
+	return compacted.length > 0 ? compacted : undefined;
+}
+
 function codexSubagentToolName(toolName: string): string | undefined {
 	const tool = toolName.startsWith(CODEX_SUBAGENT_TOOL_PREFIX)
 		? toolName.slice(CODEX_SUBAGENT_TOOL_PREFIX.length)
@@ -529,6 +540,50 @@ function materializedToolExecutionId(event: {
 	return toolExecutionId;
 }
 
+function toolResultMetrics(result: {
+	content?: unknown;
+	details?: unknown;
+	isError?: unknown;
+	toolExecutionId?: unknown;
+	approvalRequestId?: unknown;
+}): Record<string, unknown> {
+	const content = Array.isArray(result.content) ? result.content : [];
+	const textBlocks = content.filter(
+		(block): block is { type: "text"; text: string } =>
+			isRecord(block) &&
+			block.type === "text" &&
+			typeof block.text === "string",
+	);
+	const imageMimeTypes = content
+		.map((block) =>
+			isRecord(block) && block.type === "image"
+				? compactString(block.mimeType, 128)
+				: undefined,
+		)
+		.filter((mimeType): mimeType is string => Boolean(mimeType));
+	return {
+		content_block_count: content.length,
+		text_block_count: textBlocks.length,
+		text_total_chars: textBlocks.reduce(
+			(total, block) => total + block.text.length,
+			0,
+		),
+		image_block_count: imageMimeTypes.length,
+		image_mime_types: imageMimeTypes.length > 0 ? imageMimeTypes : undefined,
+		details_keys: objectKeys(result.details),
+		result_error:
+			typeof result.isError === "boolean" ? result.isError : undefined,
+		result_tool_execution_id:
+			typeof result.toolExecutionId === "string"
+				? result.toolExecutionId
+				: undefined,
+		result_approval_request_id:
+			typeof result.approvalRequestId === "string"
+				? result.approvalRequestId
+				: undefined,
+	};
+}
+
 function waitTypeForRequest(
 	kind: ServerRequestLifecycleEvent["request"]["kind"],
 ): PlatformAgentRunWaitTypeValue {
@@ -729,23 +784,71 @@ export class HostedAgentRuntimeProgressRecorder {
 				});
 				return;
 			case "agent_end":
-				this.recordStep({
-					id: this.stepId("agent", `end-${this.turnIndex}`),
-					name: "Agent run completed",
-					stepKind:
-						event.aborted || event.stopReason === "error"
-							? PlatformAgentRunStepKindValue.Error
-							: PlatformAgentRunStepKindValue.System,
-					state:
-						event.aborted || event.stopReason === "error"
-							? PlatformAgentRunStepStateValue.Failed
-							: PlatformAgentRunStepStateValue.Succeeded,
-					output: this.basePayload({
-						event_type: event.type,
-						aborted: event.aborted ?? false,
-						stop_reason: event.stopReason,
-					}),
+				{
+					const stepId = this.stepId("agent", `end-${this.turnIndex}`);
+					this.recordStep({
+						id: stepId,
+						name: "Agent run completed",
+						stepKind:
+							event.aborted || event.stopReason === "error"
+								? PlatformAgentRunStepKindValue.Error
+								: PlatformAgentRunStepKindValue.System,
+						state:
+							event.aborted || event.stopReason === "error"
+								? PlatformAgentRunStepStateValue.Failed
+								: PlatformAgentRunStepStateValue.Succeeded,
+						output: this.basePayload({
+							event_type: event.type,
+							aborted: event.aborted ?? false,
+							stop_reason: event.stopReason,
+						}),
+					});
+					this.recordFinalStatusEvent(event, stepId);
+				}
+				return;
+			case "status":
+				this.recordStatusEvent(event);
+				return;
+			case "compaction":
+				this.recordCompactionEvent(event);
+				return;
+			case "auto_retry_start":
+				this.recordAutoRetryStart(event);
+				return;
+			case "auto_retry_end":
+				this.recordAutoRetryEnd(event);
+				return;
+			case "diagnostic_delta":
+				this.recordDiagnosticDelta(event);
+				return;
+			case "tool_batch_summary":
+				this.recordToolBatchSummary(event);
+				return;
+			case "tool_phase_summary":
+				this.recordToolPhaseSummary(event);
+				return;
+			case "tool_execution_update":
+				this.recordToolExecutionUpdate(event);
+				return;
+			case "tool_retry_required":
+				this.recordApprovalWait({
+					id: event.request.id,
+					callId: event.request.toolCallId,
+					toolName: event.request.toolName,
+					reason: event.request.summary ?? event.request.errorMessage,
+					kind: "tool_retry",
 				});
+				this.recordToolRetryEvent(event);
+				return;
+			case "tool_retry_resolved":
+				this.resumeWait({
+					id: event.request.id,
+					kind: "tool_retry",
+					resolution: event.decision.action,
+					resolvedBy: event.decision.resolvedBy,
+					reason: event.decision.reason,
+				});
+				this.recordToolRetryEvent(event);
 				return;
 			case "turn_start":
 				this.turnIndex += 1;
@@ -816,6 +919,7 @@ export class HostedAgentRuntimeProgressRecorder {
 				});
 				this.updateCodexSubagentWorkItem(event);
 				this.recordToolDerivedTaskProgress(event);
+				this.recordToolArtifactEvent(event);
 				return;
 			case "action_approval_required":
 				this.recordApprovalWait({
@@ -847,6 +951,264 @@ export class HostedAgentRuntimeProgressRecorder {
 		}
 	}
 
+	private recordFinalStatusEvent(
+		event: Extract<AgentEvent, { type: "agent_end" }>,
+		stepId: string,
+	): void {
+		const finalStatus =
+			event.aborted || event.stopReason === "error" ? "failed" : "succeeded";
+		this.recordEvent({
+			type: PlatformRuntimeEventTypeValue.AgentProgressRecorded,
+			message: "Maestro agent final status recorded",
+			stepId,
+			attributes: this.basePayload({
+				event_type: "agent_final_status",
+				final_status: finalStatus,
+				aborted: event.aborted ?? false,
+				stop_reason: event.stopReason,
+				message_count: event.messages.length,
+				partial_accepted: Boolean(event.partialAccepted),
+			}),
+		});
+	}
+
+	private recordStatusEvent(
+		event: Extract<AgentEvent, { type: "status" }>,
+	): void {
+		this.recordEvent({
+			type: PlatformRuntimeEventTypeValue.AgentProgressRecorded,
+			message: "Maestro status recorded",
+			attributes: this.basePayload({
+				event_type: event.type,
+				status: compactString(event.status),
+				detail_keys: objectKeys(event.details),
+			}),
+		});
+	}
+
+	private recordCompactionEvent(
+		event: Extract<AgentEvent, { type: "compaction" }>,
+	): void {
+		this.recordEvent({
+			type: PlatformRuntimeEventTypeValue.AgentProgressRecorded,
+			message: "Maestro context compaction recorded",
+			attributes: this.basePayload({
+				event_type: event.type,
+				first_kept_entry_index: event.firstKeptEntryIndex,
+				tokens_before: event.tokensBefore,
+				auto: event.auto ?? false,
+				custom_instructions_present: Boolean(event.customInstructions),
+				summary_chars: event.summary.length,
+				timestamp: event.timestamp,
+			}),
+		});
+	}
+
+	private recordAutoRetryStart(
+		event: Extract<AgentEvent, { type: "auto_retry_start" }>,
+	): void {
+		this.recordStep({
+			id: this.autoRetryStepId(event.attempt),
+			name: `Auto retry ${event.attempt}`,
+			stepKind: PlatformAgentRunStepKindValue.System,
+			state: PlatformAgentRunStepStateValue.Waiting,
+			input: this.basePayload({
+				event_type: event.type,
+				attempt: event.attempt,
+				max_attempts: event.maxAttempts,
+				delay_ms: event.delayMs,
+				error_message: compactString(event.errorMessage, 512),
+			}),
+		});
+	}
+
+	private recordAutoRetryEnd(
+		event: Extract<AgentEvent, { type: "auto_retry_end" }>,
+	): void {
+		this.recordStep({
+			id: this.autoRetryStepId(event.attempt),
+			name: `Auto retry ${event.attempt}`,
+			stepKind: event.success
+				? PlatformAgentRunStepKindValue.System
+				: PlatformAgentRunStepKindValue.Error,
+			state: event.success
+				? PlatformAgentRunStepStateValue.Succeeded
+				: PlatformAgentRunStepStateValue.Failed,
+			errorMessage: event.success
+				? undefined
+				: compactString(event.finalError, 512),
+			output: this.basePayload({
+				event_type: event.type,
+				success: event.success,
+				attempt: event.attempt,
+				final_error: compactString(event.finalError, 512),
+			}),
+		});
+	}
+
+	private recordDiagnosticDelta(
+		event: Extract<AgentEvent, { type: "diagnostic_delta" }>,
+	): void {
+		this.recordEvent({
+			type: PlatformRuntimeEventTypeValue.AgentProgressRecorded,
+			message: "Maestro diagnostic delta recorded",
+			stepId: this.toolStepId(event.toolCallId),
+			attributes: this.basePayload({
+				event_type: event.type,
+				tool_call_id: event.toolCallId,
+				tool_name: event.toolName,
+				display_path: compactString(event.displayPath, 512),
+				used_delta: event.usedDelta,
+				introduced_count: event.introducedCount,
+				repaired_count: event.repairedCount,
+				remaining_count: event.remainingCount,
+				fingerprint: event.fingerprint,
+				repair_attempt: event.repairAttempt,
+				max_repair_attempts: event.maxRepairAttempts,
+				will_auto_follow_up: event.willAutoFollowUp,
+				reason: compactString(event.reason),
+			}),
+		});
+	}
+
+	private recordToolBatchSummary(
+		event: Extract<AgentEvent, { type: "tool_batch_summary" }>,
+	): void {
+		this.recordEvent({
+			type: PlatformRuntimeEventTypeValue.AgentProgressRecorded,
+			message: "Maestro tool batch summary recorded",
+			attributes: this.basePayload({
+				event_type: event.type,
+				summary: compactString(event.summary, 512),
+				summary_labels: compactStringArray(event.summaryLabels),
+				tool_call_ids: compactStringArray(event.toolCallIds),
+				tool_names: compactStringArray(event.toolNames),
+				calls_succeeded: event.callsSucceeded,
+				calls_failed: event.callsFailed,
+			}),
+		});
+	}
+
+	private recordToolPhaseSummary(
+		event: Extract<AgentEvent, { type: "tool_phase_summary" }>,
+	): void {
+		this.recordEvent({
+			type: PlatformRuntimeEventTypeValue.AgentProgressRecorded,
+			message: "Maestro tool phase summary recorded",
+			attributes: this.basePayload({
+				event_type: event.type,
+				model_tool_call_count: event.modelToolCallCount,
+				model_emitted_tool_call_count: event.modelEmittedToolCallCount,
+				schedulable_wave_count: event.schedulableWaveCount,
+				parallelized_call_count: event.parallelizedCallCount,
+				actually_parallelized_call_count: event.actuallyParallelizedCallCount,
+				serialized_call_count: event.serializedCallCount,
+				delayed_call_count: event.delayedCallCount,
+				blocked_by_mutation_count: event.blockedByMutationCount,
+				mcp_opt_in_call_count: event.mcpOptInCallCount,
+				mcp_opt_in_use_count: event.mcpOptInUseCount,
+				cache_hit_count: event.cacheHitCount,
+				total_tool_wait_ms: event.totalToolWaitMs,
+				tool_wait_time_ms: event.toolWaitTimeMs,
+				serialization_reasons: event.serializationReasons,
+				batch_shaping_feedback: event.batchShapingFeedback,
+			}),
+		});
+	}
+
+	private recordToolExecutionUpdate(
+		event: Extract<AgentEvent, { type: "tool_execution_update" }>,
+	): void {
+		const partialToolExecutionId =
+			materializedToolExecutionId(event) ??
+			materializedToolExecutionId({
+				toolCallId: event.toolCallId,
+				toolExecutionId: event.partialResult.toolExecutionId,
+			});
+		this.recordEvent({
+			type: PlatformRuntimeEventTypeValue.AgentProgressRecorded,
+			message: "Maestro tool execution update recorded",
+			stepId: this.toolStepId(event.toolCallId),
+			attributes: this.basePayload({
+				event_type: event.type,
+				tool_call_id: event.toolCallId,
+				tool_execution_id: partialToolExecutionId,
+				tool_name: event.toolName,
+				display_name: event.displayName,
+				summary_label: event.summaryLabel,
+				arg_keys: objectKeys(event.args),
+				...toolResultMetrics(event.partialResult),
+			}),
+		});
+	}
+
+	private recordToolArtifactEvent(
+		event: Extract<AgentEvent, { type: "tool_execution_end" }>,
+	): void {
+		const metadata = event.skillMetadata;
+		if (!metadata) {
+			return;
+		}
+		this.recordEvent({
+			type: PlatformRuntimeEventTypeValue.AgentProgressRecorded,
+			message: "Maestro tool artifact evidence recorded",
+			stepId: this.toolStepId(event.toolCallId),
+			artifactId: metadata.artifactId,
+			attributes: this.basePayload({
+				event_type: "tool_artifact_recorded",
+				tool_call_id: event.toolCallId,
+				tool_execution_id: materializedToolExecutionId(event),
+				tool_name: event.toolName,
+				display_name: event.displayName,
+				summary_label: event.summaryLabel,
+				skill_name: metadata.name,
+				skill_hash: metadata.hash,
+				skill_source: metadata.source,
+				skill_artifact_id: metadata.artifactId,
+				skill_version: metadata.version,
+				skill_scope: metadata.scope,
+				skill_workspace_id: metadata.workspaceId,
+				skill_owner_id: metadata.ownerId,
+				source_path: compactString(metadata.sourcePath, 512),
+			}),
+		});
+	}
+
+	private recordToolRetryEvent(
+		event: Extract<
+			AgentEvent,
+			{ type: "tool_retry_required" | "tool_retry_resolved" }
+		>,
+	): void {
+		this.recordEvent({
+			type: PlatformRuntimeEventTypeValue.AgentProgressRecorded,
+			message:
+				event.type === "tool_retry_required"
+					? "Maestro tool retry required"
+					: "Maestro tool retry resolved",
+			stepId: this.toolStepId(event.request.toolCallId),
+			waitId: this.waitId(event.request.id),
+			attributes: this.basePayload({
+				event_type: event.type,
+				request_id: event.request.id,
+				tool_call_id: event.request.toolCallId,
+				tool_name: event.request.toolName,
+				error_message: compactString(event.request.errorMessage, 512),
+				summary: compactString(event.request.summary, 512),
+				attempt: event.request.attempt,
+				max_attempts: event.request.maxAttempts,
+				arg_keys: objectKeys(event.request.args),
+				...(event.type === "tool_retry_resolved"
+					? {
+							resolution: event.decision.action,
+							resolved_by: event.decision.resolvedBy,
+							reason: compactString(event.decision.reason, 512),
+						}
+					: {}),
+			}),
+		});
+	}
+
 	recordServerRequestEvent(event: ServerRequestLifecycleEvent): void {
 		if (event.type === "registered") {
 			this.recordApprovalWait({
@@ -873,14 +1235,24 @@ export class HostedAgentRuntimeProgressRecorder {
 	}
 
 	recordPromptFailure(message: string): void {
+		const stepId = this.stepId("error", `${Date.now()}`);
 		this.recordStep({
-			id: this.stepId("error", `${Date.now()}`),
+			id: stepId,
 			name: "Prompt failed",
 			stepKind: PlatformAgentRunStepKindValue.Error,
 			state: PlatformAgentRunStepStateValue.Failed,
 			errorMessage: message,
 			output: this.basePayload({
 				event_type: "prompt_failure",
+			}),
+		});
+		this.recordEvent({
+			type: PlatformRuntimeEventTypeValue.AgentProgressRecorded,
+			message: "Maestro prompt failure recorded",
+			stepId,
+			attributes: this.basePayload({
+				event_type: "prompt_failure",
+				error_message: compactString(message, 512),
 			}),
 		});
 	}
@@ -2055,6 +2427,10 @@ export class HostedAgentRuntimeProgressRecorder {
 
 	private workItemId(toolCallId: string): string {
 		return this.stepId("work", toolCallId);
+	}
+
+	private autoRetryStepId(attempt: number): string {
+		return this.stepId("retry", `auto-${attempt}`);
 	}
 
 	private waitId(requestId: string): string {

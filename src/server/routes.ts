@@ -3,7 +3,6 @@ import type { ThinkingLevel } from "../agent/types.js";
 import { createEnterpriseRoutes } from "../api/enterprise-routes.js";
 import { isDatabaseConfigured } from "../db/client.js";
 import type { WebServerContext } from "./app-context.js";
-import { handleA2ACockpit } from "./handlers/a2a-cockpit.js";
 import { handleAdminCleanup, handleAdminWarmCaches } from "./handlers/admin.js";
 import { handleApproval } from "./handlers/approval.js";
 import { handleApprovals } from "./handlers/approvals.js";
@@ -88,7 +87,6 @@ import {
 	handleSessionAttachment,
 	handleSessionAttachmentExtract,
 } from "./handlers/session-attachments.js";
-import { handleSessionReplayLab } from "./handlers/session-replay-lab.js";
 import { handleSessionTimeline } from "./handlers/session-timeline.js";
 import {
 	handleSessionExport,
@@ -151,11 +149,6 @@ export function createRoutes(context: WebServerContext): Route[] {
 			method: "POST",
 			path: PLATFORM_A2A_PUSH_CALLBACK_PATH,
 			handler: (req, res) => handlePlatformA2APushCallback(req, res, context),
-		},
-		{
-			method: "GET",
-			path: "/api/a2a/cockpit",
-			handler: (req, res) => handleA2ACockpit(req, res, corsHeaders),
 		},
 		{
 			method: "POST",
@@ -885,20 +878,6 @@ export function createRoutes(context: WebServerContext): Route[] {
 				handleSessionTimeline(req, res, params as { id: string }, corsHeaders, {
 					hostedRunner: context.hostedRunner,
 				}),
-		},
-		{
-			method: "GET",
-			path: "/api/sessions/:id/replay-lab",
-			handler: (req, res, params) =>
-				handleSessionReplayLab(
-					req,
-					res,
-					params as { id: string },
-					corsHeaders,
-					{
-						hostedRunner: context.hostedRunner,
-					},
-				),
 		},
 		{
 			method: "GET",

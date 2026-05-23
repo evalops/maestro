@@ -886,6 +886,79 @@ describe("A2A fleet delegation CLI", () => {
 		expect(errors.join("\n")).toBe("");
 	});
 
+	it("records plain sends in the durable A2A task ledger", async () => {
+		const dir = await mkdtemp(join(tmpdir(), "maestro-a2a-send-ledger-"));
+		const registryPath = join(dir, "peers.json");
+		const tasksPath = join(dir, "tasks.json");
+		await writeRegistry(registryPath, baseUrl);
+		vi.stubEnv("MAC_MINI_A2A_TOKEN", "super-secret-token");
+
+		await handleA2ACommand([
+			"send",
+			"mac-mini",
+			"check",
+			"runtime",
+			"health",
+			"--wait",
+			"--registry",
+			registryPath,
+			"--tasks",
+			tasksPath,
+			"--max-wait-ms",
+			"1000",
+			"--interval-ms",
+			"10",
+			"--timeout-ms",
+			"1000",
+		]);
+
+		expect(requests).toHaveLength(1);
+		expect(recordValue(requests[0]!.body, "message.metadata")).toMatchObject({
+			requestKind: "maestro-peer-message",
+			relayPeer: "mac-mini",
+		});
+		expect(plainLogs(logs)).toContain("Task task-mac-mini-1");
+		expect(plainLogs(logs)).toContain("mac mini finished the smoke plan");
+
+		const ledger = JSON.parse(await readFile(tasksPath, "utf8")) as {
+			tasks: Array<{
+				kind: string;
+				peer: string;
+				taskId: string;
+				text: string;
+				responseText?: string;
+				metadata?: Record<string, unknown>;
+				transcript: Array<{ role: string; text: string; messageId?: string }>;
+			}>;
+		};
+		expect(ledger.tasks).toEqual([
+			expect.objectContaining({
+				kind: "message",
+				peer: "mac-mini",
+				taskId: "task-mac-mini-1",
+				text: "check runtime health",
+				responseText: "mac mini finished the smoke plan",
+				metadata: expect.objectContaining({
+					requestKind: "maestro-peer-message",
+					relayPeer: "mac-mini",
+					worker: "mac-mini",
+				}),
+			}),
+		]);
+		expect(ledger.tasks[0]!.transcript).toEqual([
+			expect.objectContaining({
+				role: "user",
+				text: "check runtime health",
+			}),
+			expect.objectContaining({
+				role: "agent",
+				text: "mac mini finished the smoke plan",
+				messageId: "agent-message-1",
+			}),
+		]);
+		expect(JSON.stringify(ledger)).not.toContain("super-secret-token");
+	});
+
 	it("preserves an input-required delegated task and completes it after an operator reply", async () => {
 		const dir = await mkdtemp(join(tmpdir(), "maestro-a2a-input-required-"));
 		const registryPath = join(dir, "peers.json");

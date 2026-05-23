@@ -63,7 +63,37 @@ export const CODEX_DYNAMIC_TOOL_CONFORMANCE = {
 	dynamicToolCallMethod: "item/tool/call",
 } as const;
 
+export const CODEX_FILE_MUTATION_TOOL_PROFILE = [
+	"apply_patch",
+	"edit",
+	"write",
+] as const;
+
+export const CODEX_READ_ONLY_TOOL_PROFILE = [
+	"read",
+	"list",
+	"find",
+	"search",
+	"diff",
+	"status",
+] as const;
+
 export const CODEX_DEFAULT_TOOL_PROFILE = [
+	"read",
+	"list",
+	"find",
+	"search",
+	"diff",
+	"bash",
+	"apply_patch",
+	"edit",
+	"write",
+	"todo",
+	"status",
+	"gh_pr",
+] as const;
+
+export const CODEX_EXTENDED_TOOL_PROFILE = [
 	"read",
 	"list",
 	"find",
@@ -82,6 +112,16 @@ export const CODEX_DEFAULT_TOOL_PROFILE = [
 	"gh_repo",
 ] as const;
 
+export const CODEX_TOOL_PROFILES = {
+	lean: CODEX_DEFAULT_TOOL_PROFILE,
+	default: CODEX_DEFAULT_TOOL_PROFILE,
+	"read-only": CODEX_READ_ONLY_TOOL_PROFILE,
+	readonly: CODEX_READ_ONLY_TOOL_PROFILE,
+	extended: CODEX_EXTENDED_TOOL_PROFILE,
+} as const;
+
+export type CodexToolProfileName = keyof typeof CODEX_TOOL_PROFILES;
+
 const CODEX_DYNAMIC_TOOL_COMPOSITION_SCHEMA_KEYS = [
 	"anyOf",
 	"oneOf",
@@ -99,10 +139,41 @@ export function isCodexAppServerApi(api: unknown): boolean {
 export function selectCodexDefaultTools<TTool extends { name: string }>(
 	tools: readonly TTool[],
 ): TTool[] {
+	return selectCodexToolProfile(tools, "lean");
+}
+
+export function selectCodexToolProfile<TTool extends { name: string }>(
+	tools: readonly TTool[],
+	profileName: CodexToolProfileName,
+): TTool[] {
+	const profile = CODEX_TOOL_PROFILES[profileName];
 	const byName = new Map(tools.map((tool) => [tool.name, tool]));
-	return CODEX_DEFAULT_TOOL_PROFILE.map((name) => byName.get(name)).filter(
-		(tool): tool is TTool => Boolean(tool),
+	return profile
+		.map((name) => byName.get(name))
+		.filter((tool): tool is TTool => Boolean(tool));
+}
+
+export function resolveCodexToolProfileName(
+	value: string | undefined,
+): CodexToolProfileName {
+	if (!value || value.trim().length === 0) {
+		return "lean";
+	}
+	const normalized = value.trim().toLowerCase().replace(/_/g, "-");
+	if (isCodexToolProfileName(normalized)) {
+		return normalized;
+	}
+	throw new Error(
+		`Unknown Codex tool profile "${value}". Available profiles: ${getCodexToolProfileNames().join(", ")}`,
 	);
+}
+
+export function getCodexToolProfileNames(): CodexToolProfileName[] {
+	return Object.keys(CODEX_TOOL_PROFILES) as CodexToolProfileName[];
+}
+
+function isCodexToolProfileName(value: string): value is CodexToolProfileName {
+	return Object.hasOwn(CODEX_TOOL_PROFILES, value);
 }
 
 export function compileCodexDynamicToolSpecs(

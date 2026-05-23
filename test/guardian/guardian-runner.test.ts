@@ -14,7 +14,7 @@ vi.mock("../../src/guardian/config.js", () => {
 	return {
 		resolveGuardianConfig: vi.fn(
 			(options?: {
-				config?: { toolTimeoutMs?: number; tools?: Record<string, boolean> };
+				config?: { tools?: Record<string, boolean> };
 			}) => ({
 				enabled: true,
 				scanGitOperations: true,
@@ -25,7 +25,7 @@ vi.mock("../../src/guardian/config.js", () => {
 					...DEFAULT_TOOLS,
 					...(options?.config?.tools ?? {}),
 				},
-				toolTimeoutMs: options?.config?.toolTimeoutMs ?? 120_000,
+				toolTimeoutMs: 120_000,
 				blockOnFindings: true,
 			}),
 		),
@@ -239,26 +239,34 @@ describe("guardian runner", () => {
 		expect(semgrepScan?.timeout).toBe(120_000);
 	});
 
-	it("passes configured tool timeout to semgrep", async () => {
+	it("honors configured semgrep timeout", async () => {
 		process.env.MAESTRO_GUARDIAN = "1";
-		const calls: Array<{
-			cmd: string;
-			args: readonly string[];
-			timeout?: number;
-		}> = [];
+		const mockResolve = vi.mocked(resolveGuardianConfig);
+		mockResolve.mockReturnValueOnce({
+			enabled: true,
+			scanGitOperations: true,
+			scanDestructiveCommands: true,
+			customSecretPatterns: [],
+			excludePatterns: [],
+			tools: {
+				semgrep: true,
+				gitSecrets: false,
+				trufflehog: false,
+				heuristicScan: false,
+				evidenceIntegrity: false,
+			},
+			toolTimeoutMs: 600_000,
+			blockOnFindings: true,
+		});
+
+		const semgrepTimeouts: number[] = [];
 		mockSpawn.mockImplementation(
 			(
 				cmd: string,
 				args?: ReadonlyArray<string>,
 				options?: { timeout?: number },
 			) => {
-				const normalizedArgs = args ?? [];
-				calls.push({
-					cmd,
-					args: normalizedArgs,
-					timeout: options?.timeout,
-				});
-				const joined = normalizedArgs.join(" ");
+				const joined = Array.isArray(args) ? args.join(" ") : "";
 				if (cmd === "git" && joined.includes("diff --name-only --cached")) {
 					return { status: 0, stdout: "src/index.ts\n", stderr: "" };
 				}
@@ -269,30 +277,31 @@ describe("guardian runner", () => {
 					return { status: 0, stdout: "1.145.0\n", stderr: "" };
 				}
 				if (cmd === "semgrep" && joined.includes("scan")) {
+					semgrepTimeouts.push(options?.timeout ?? 0);
 					return { status: 0, stdout: "{}", stderr: "" };
 				}
 				return { status: 1, stdout: "", stderr: "" };
 			},
 		);
 
-		await runGuardian({
-			config: { toolTimeoutMs: 240_000 },
+		const result = await runGuardian({
 			target: "staged",
 			trigger: "test",
 		});
 
-		const semgrepScan = calls.find(
-			(call) => call.cmd === "semgrep" && call.args.includes("scan"),
-		);
-		expect(semgrepScan?.timeout).toBe(240_000);
+		expect(result.status).toBe("passed");
+		expect(semgrepTimeouts).toEqual([600_000]);
 	});
 
-	it("classifies timed out semgrep scans as Guardian errors", async () => {
+	it("classifies timed-out scanner commands as runtime errors", async () => {
 		process.env.MAESTRO_GUARDIAN = "1";
+		const timeoutError = Object.assign(
+			new Error("spawnSync semgrep ETIMEDOUT"),
+			{ code: "ETIMEDOUT" },
+		);
 		mockSpawn.mockImplementation(
 			(cmd: string, args?: ReadonlyArray<string>) => {
-				const normalizedArgs = args ?? [];
-				const joined = normalizedArgs.join(" ");
+				const joined = Array.isArray(args) ? args.join(" ") : "";
 				if (cmd === "git" && joined.includes("diff --name-only --cached")) {
 					return { status: 0, stdout: "src/index.ts\n", stderr: "" };
 				}
@@ -300,21 +309,15 @@ describe("guardian runner", () => {
 					return { status: 0, stdout: "export const x = 1;\n", stderr: "" };
 				}
 				if (cmd === "semgrep" && joined.includes("--version")) {
-					return { status: 0, stdout: "1.144.0\n", stderr: "" };
+					return { status: 0, stdout: "1.145.0\n", stderr: "" };
 				}
 				if (cmd === "semgrep" && joined.includes("scan")) {
-					const error = Object.assign(
-						new Error("spawnSync semgrep ETIMEDOUT"),
-						{
-							code: "ETIMEDOUT",
-						},
-					);
 					return {
 						status: null,
 						signal: "SIGTERM",
-						error,
+						error: timeoutError,
 						stdout: "",
-						stderr: "Scan Status",
+						stderr: "",
 					};
 				}
 				return { status: 1, stdout: "", stderr: "" };
@@ -322,20 +325,51 @@ describe("guardian runner", () => {
 		);
 
 		const result = await runGuardian({
-			config: {
-				toolTimeoutMs: 240_000,
-				tools: { gitSecrets: false, trufflehog: false, heuristicScan: false },
-			},
 			target: "staged",
 			trigger: "test",
 		});
 
-		const semgrepResult = result.toolResults.find(
-			(tool) => tool.tool === "semgrep",
-		);
+		const semgrep = result.toolResults.find((tool) => tool.tool === "semgrep");
 		expect(result.status).toBe("error");
 		expect(result.exitCode).toBe(124);
-		expect(semgrepResult?.exitCode).toBe(124);
-		expect(semgrepResult?.stderr).toContain("semgrep timed out after 240000ms");
+		expect(semgrep?.exitCode).toBe(124);
+		expect(semgrep?.stderr).toContain("ETIMEDOUT");
+	});
+
+	it("preserves POSIX-style exit codes for signaled scanner commands", async () => {
+		process.env.MAESTRO_GUARDIAN = "1";
+		mockSpawn.mockImplementation(
+			(cmd: string, args?: ReadonlyArray<string>) => {
+				const joined = Array.isArray(args) ? args.join(" ") : "";
+				if (cmd === "git" && joined.includes("diff --name-only --cached")) {
+					return { status: 0, stdout: "src/index.ts\n", stderr: "" };
+				}
+				if (cmd === "git" && joined.includes("show :")) {
+					return { status: 0, stdout: "export const x = 1;\n", stderr: "" };
+				}
+				if (cmd === "semgrep" && joined.includes("--version")) {
+					return { status: 0, stdout: "1.145.0\n", stderr: "" };
+				}
+				if (cmd === "semgrep" && joined.includes("scan")) {
+					return {
+						status: null,
+						signal: "SIGKILL",
+						stdout: "",
+						stderr: "",
+					};
+				}
+				return { status: 1, stdout: "", stderr: "" };
+			},
+		);
+
+		const result = await runGuardian({
+			target: "staged",
+			trigger: "test",
+		});
+
+		const semgrep = result.toolResults.find((tool) => tool.tool === "semgrep");
+		expect(result.status).toBe("error");
+		expect(result.exitCode).toBe(137);
+		expect(semgrep?.exitCode).toBe(137);
 	});
 });

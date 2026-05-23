@@ -1,5 +1,4 @@
 import { parseA2AArgs } from "../../cli/commands/a2a.js";
-import { buildA2ACockpit } from "../../platform/a2a-cockpit.js";
 import { inspectA2AFleet } from "../../platform/a2a-fleet.js";
 import { decodeA2APeerPairingCode } from "../../platform/a2a-peer-pairing.js";
 import {
@@ -76,61 +75,6 @@ export async function handleA2ATuiCommand(
 							})
 							.join("\n"),
 			].join("\n"),
-		);
-		deps.requestRender();
-		return;
-	}
-	if (subcommand === "cockpit" || subcommand === "dashboard") {
-		const cockpit = await buildA2ACockpit({
-			registryPath: stringFlag(parsed.flags, "--registry"),
-			tasksPath: stringFlag(parsed.flags, "--tasks"),
-			timeoutMs: numberFlag(parsed.flags, "--timeout-ms"),
-			peer: stringFlag(parsed.flags, "--peer"),
-			limit: numberFlag(parsed.flags, "--limit"),
-		});
-		deps.addContent(
-			[
-				`A2A cockpit (${cockpit.registryPath})`,
-				[
-					`${cockpit.counts.onlinePeers}/${cockpit.counts.peers} peers online`,
-					`${cockpit.counts.runningTasks} running`,
-					`${cockpit.counts.actionRequiredTasks} waiting`,
-					`${cockpit.counts.failedTasks} failed`,
-				].join(" · "),
-				cockpit.peers.length === 0
-					? "No peers registered. Use /a2a accept <pairing-code>."
-					: cockpit.peers
-							.map((peer) => {
-								const last = peer.lastTask
-									? ` last=${peer.lastTask.id} ${peer.lastTask.state}`
-									: "";
-								return `${peer.status} ${peer.name} ${peer.url}${last}`;
-							})
-							.join("\n"),
-				cockpit.tasks.length > 0
-					? [
-							"Tasks",
-							cockpit.tasks
-								.map((task) => {
-									const peerLabel = task.orphanedPeer
-										? `${task.peer} (orphaned peer)`
-										: task.peer;
-									return `${task.status} ${peerLabel} ${task.taskId} ${task.state} ${task.text}`;
-								})
-								.join("\n"),
-						].join("\n")
-					: "No delegated tasks recorded yet.",
-				cockpit.nextActions.length > 0
-					? [
-							"Next actions",
-							cockpit.nextActions
-								.map((action) => `${action.label}\n  ${action.command}`)
-								.join("\n"),
-						].join("\n")
-					: undefined,
-			]
-				.filter(Boolean)
-				.join("\n"),
 		);
 		deps.requestRender();
 		return;
@@ -222,7 +166,6 @@ export async function handleA2ATuiCommand(
 	deps.addContent(
 		[
 			"/a2a accept <pairing-code> [--name <peer>] [--default] [--token-env ENV]",
-			"/a2a cockpit [--peer <peer>]",
 			"/a2a fleet",
 			"/a2a peers",
 			"/a2a delegate <peer> <text>",

@@ -38,10 +38,9 @@ type CommandResult = {
 	durationMs: number;
 };
 
-function isSpawnTimeout(error: unknown): boolean {
-	if (!(error instanceof Error)) return false;
-	const code = (error as NodeJS.ErrnoException).code;
-	return code === "ETIMEDOUT" || error.message.includes("ETIMEDOUT");
+function spawnErrorCode(error: Error | undefined): string | null {
+	const code = (error as NodeJS.ErrnoException | undefined)?.code;
+	return typeof code === "string" ? code : null;
 }
 
 function exitCodeForSpawnResult(
@@ -49,31 +48,20 @@ function exitCodeForSpawnResult(
 	error: Error | undefined,
 	signal: NodeJS.Signals | null,
 ): number {
-	if (typeof status === "number") return status;
-	if (isSpawnTimeout(error)) return 124;
-	if (signal) return 128;
-	return 1;
-}
-
-function appendSpawnFailureDetails(
-	stderr: string,
-	command: string,
-	error: Error | undefined,
-	signal: NodeJS.Signals | null,
-	timeoutMs: number,
-): string {
-	const details: string[] = [];
-	if (isSpawnTimeout(error)) {
-		details.push(`${command} timed out after ${timeoutMs}ms`);
+	if (typeof status === "number") {
+		return status;
 	}
-	if (error?.message) {
-		details.push(error.message);
+	if (spawnErrorCode(error) === "ETIMEDOUT") {
+		return 124;
+	}
+	if (error) {
+		return 2;
 	}
 	if (signal) {
-		details.push(`${command} terminated by ${signal}`);
+		const signalNumber = os.constants.signals[signal];
+		return typeof signalNumber === "number" ? 128 + signalNumber : 128;
 	}
-	const uniqueDetails = Array.from(new Set(details));
-	return [stderr, ...uniqueDetails].filter((part) => part.trim()).join("\n");
+	return 1;
 }
 
 function commandExists(command: string, cwd: string): boolean {
@@ -101,6 +89,12 @@ function runCommand(
 			maxBuffer: 8 * 1024 * 1024,
 			timeout: timeoutMs,
 		});
+		const errorMessage =
+			result.error instanceof Error ? result.error.message : undefined;
+		const stderr =
+			result.stderr && result.stderr.length > 0
+				? result.stderr
+				: (errorMessage ?? "");
 		return {
 			exitCode: exitCodeForSpawnResult(
 				result.status,
@@ -108,27 +102,16 @@ function runCommand(
 				result.signal,
 			),
 			stdout: result.stdout ?? "",
-			stderr: appendSpawnFailureDetails(
-				result.stderr ?? "",
-				command,
-				result.error,
-				result.signal,
-				timeoutMs,
-			),
-			error: result.error?.message,
+			stderr,
+			error: errorMessage,
 			durationMs: Date.now() - started,
 		};
 	} catch (error) {
-		const spawnError = error instanceof Error ? error : undefined;
 		return {
-			exitCode: isSpawnTimeout(spawnError) ? 124 : 1,
+			exitCode: 1,
 			stdout: "",
-			stderr:
-				spawnError?.message ??
-				(error === undefined ? "Unknown command failure" : String(error)),
-			error:
-				spawnError?.message ??
-				(error === undefined ? "Unknown command failure" : String(error)),
+			stderr: error instanceof Error ? error.message : String(error),
+			error: error instanceof Error ? error.message : String(error),
 			durationMs: Date.now() - started,
 		};
 	}
@@ -279,6 +262,7 @@ function runSemgrep(
 		...includeArgs,
 		".",
 	];
+	// Semgrep can take longer on larger workspaces, so honor the configured tool budget.
 	const result = runCommand(cmd.command, args, root, timeoutMs, {
 		SEMGREP_SEND_METRICS: "off",
 	});

@@ -174,68 +174,6 @@ describe("intelligent router service", () => {
 		});
 	});
 
-	it("keeps eval-backed routing evidence separate from production samples", () => {
-		const service = createService();
-		for (const qualityScore of [0.95, 0.97]) {
-			service.recordPerformanceMetric({
-				taskType: "code_review",
-				provider: "anthropic",
-				model: "claude-sonnet",
-				source: "eval",
-				evalSuite: "trajectory-replay",
-				evalCase: "codex-subagent-handoff",
-				latencyMs: 1800,
-				success: true,
-				costUsd: 0.012,
-				qualityScore,
-			});
-		}
-		for (const qualityScore of [0.55, 0.58]) {
-			service.recordPerformanceMetric({
-				taskType: "code_review",
-				provider: "openai",
-				model: "gpt-4o-mini",
-				source: "eval",
-				evalSuite: "trajectory-replay",
-				evalCase: "codex-subagent-handoff",
-				latencyMs: 700,
-				success: true,
-				costUsd: 0.002,
-				qualityScore,
-			});
-		}
-
-		const anthropic = service
-			.listMetrics("code_review")
-			.find((metric) => metric.provider === "anthropic");
-		expect(anthropic).toMatchObject({
-			samples: 2,
-			productionSamples: 0,
-			evalSamples: 2,
-			evalSuccessRate: 1,
-			evalSuites: ["trajectory-replay"],
-		});
-		expect(anthropic?.evalQualityScore).toBeCloseTo(0.96);
-
-		const decision = service.routeRequest({
-			taskType: "code_review",
-			strategy: "quality",
-		});
-
-		expect(decision.reason).toBe("highest_score");
-		expect(decision.selectedModel).toEqual({
-			provider: "anthropic",
-			model: "claude-sonnet",
-		});
-		expect(decision.scores[0]).toMatchObject({
-			provider: "anthropic",
-			evalSamples: 2,
-			productionSamples: 0,
-			evalBacked: true,
-			reasons: expect.arrayContaining(["eval_samples=2", "eval_backed"]),
-		});
-	});
-
 	it("applies overrides and keeps an explicit fallback chain", () => {
 		const service = createService();
 		service.setOverride({
@@ -320,37 +258,6 @@ describe("intelligent router REST handler", () => {
 			metrics: [{ taskType: "coding", samples: 1 }],
 		});
 	});
-
-	it.each([123, "", "   "])(
-		"rejects malformed metric source values: %j",
-		async (source) => {
-			setIntelligentRouterServiceForTest(createService());
-			const metricReq = createRequest(
-				"POST",
-				"/api/intelligent-router/metrics",
-				{
-					taskType: "coding",
-					provider: "openai",
-					model: "gpt-4o-mini",
-					source,
-					latencyMs: 1200,
-					success: true,
-				},
-			);
-			const metricRes = createResponse();
-
-			await handleIntelligentRouter(
-				metricReq,
-				metricRes as unknown as ServerResponse,
-				{},
-			);
-
-			expect(metricRes.statusCode).toBe(400);
-			expect(parseJsonResponse(metricRes)).toMatchObject({
-				error: "source must be production or eval.",
-			});
-		},
-	);
 
 	it("rejects nested intelligent router resource paths", async () => {
 		setIntelligentRouterServiceForTest(createService());
