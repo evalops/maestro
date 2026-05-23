@@ -153,9 +153,21 @@ function parseJsonLines(stdout, label) {
 
 function collectFiles(dir) {
 	if (!existsSync(dir)) return [];
-	return readdirSync(dir, { recursive: true })
-		.map((entry) => join(dir, String(entry)))
-		.filter((path) => statSync(path).isFile());
+	const files = [];
+	const pending = [dir];
+	while (pending.length > 0) {
+		const current = pending.pop();
+		for (const entry of readdirSync(current)) {
+			const path = join(current, entry);
+			const stats = statSync(path);
+			if (stats.isDirectory()) {
+				pending.push(path);
+			} else if (stats.isFile()) {
+				files.push(path);
+			}
+		}
+	}
+	return files;
 }
 
 function sessionEvidenceFailure(sessionDir, label) {
