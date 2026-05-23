@@ -100,6 +100,11 @@ the same delegation prompt used for local teammates, sends it through
 `message:send` with `returnImmediately=true`, records the remote task in the
 local A2A ledger, polls `GET /tasks/{id}` until the peer reaches a terminal A2A
 state, then maps the final artifact text back into the swarm task result.
+When `a2a.pushNotificationConfig` or `MAESTRO_SWARM_A2A_PUSH_URL` is configured,
+the coordinator also sends a task push-notification config with the A2A request
+so peers can deliver progress, artifact, and terminal task callbacks while the
+polling loop remains the retry/resume fallback. Callback tokens are redacted
+from exposed swarm state and event snapshots.
 
 Static peer routing uses the local A2A peer registry:
 
@@ -130,8 +135,10 @@ npm run smoke:a2a-local-swarm
 The smoke starts a mock Agent Registry plus two real Rust control-plane
 instances, waits for both peers to auto-register and heartbeat, runs the swarm
 executor through Platform-style discovery, verifies both peers complete remote
-A2A tasks, resumes one task by `message.taskId`, and checks that a denied task
-class returns zero eligible candidates before dispatch.
+A2A tasks, receives push status/artifact/task callbacks for both remote tasks,
+checks the durable ledger captured normalized subagent work graphs, resumes one
+task by `message.taskId`, and checks that a denied task class returns zero
+eligible candidates before dispatch.
 
 Platform-discovered peers are ranked by the A2A capability market
 (`evalops.maestro.a2a-capability-market.v1`) before selection. The ranking

@@ -21,6 +21,7 @@ import { rankA2ACapabilityPeers } from "../../platform/a2a-capability-market.js"
 import {
 	type A2AServiceConfig,
 	type A2ATask,
+	type A2ATaskPushNotificationConfig,
 	buildA2AUserMessage,
 	cancelA2ATask,
 	getA2ATask,
@@ -81,6 +82,7 @@ const A2A_SKILL_PRIMARY_TASK_CLASSES = new Map<string, string>([
 	["maestro.subagent.repo-explorer", "repo.inspect"],
 	["maestro.subagent.release-shepherd", "release.follow-through"],
 ]);
+const A2A_PUSH_TOKEN_REDACTION = "<redacted>";
 const SWARM_SUBAGENT_TASK_CLASSES = new Map<string, string>([
 	["coder", "code.implementation"],
 	["worker", "code.implementation"],
@@ -145,6 +147,33 @@ function cloneTeammate(teammate: SwarmTeammate): SwarmTeammate {
 	};
 }
 
+function cloneA2APushNotificationConfig(
+	config: A2ATaskPushNotificationConfig | undefined,
+	options: { redactSecrets?: boolean } = {},
+): A2ATaskPushNotificationConfig | undefined {
+	if (!config) {
+		return undefined;
+	}
+	const authentication = config.authentication
+		? {
+				...config.authentication,
+				...(config.authentication.schemes
+					? { schemes: [...config.authentication.schemes] }
+					: {}),
+				...(options.redactSecrets && config.authentication.credentials
+					? { credentials: A2A_PUSH_TOKEN_REDACTION }
+					: {}),
+			}
+		: undefined;
+	return {
+		...config,
+		...(authentication ? { authentication } : {}),
+		...(options.redactSecrets && config.token
+			? { token: A2A_PUSH_TOKEN_REDACTION }
+			: {}),
+	};
+}
+
 function cloneConfig(config: SwarmConfig): SwarmConfig {
 	return {
 		...config,
@@ -152,6 +181,14 @@ function cloneConfig(config: SwarmConfig): SwarmConfig {
 			? {
 					...config.a2a,
 					peers: config.a2a.peers ? [...config.a2a.peers] : undefined,
+					...(config.a2a.pushNotificationConfig
+						? {
+								pushNotificationConfig: cloneA2APushNotificationConfig(
+									config.a2a.pushNotificationConfig,
+									{ redactSecrets: true },
+								),
+							}
+						: {}),
 				}
 			: undefined,
 		tasks: config.tasks.map(cloneTask),
@@ -225,6 +262,30 @@ function parseCSVEnv(value: string | undefined): string[] | undefined {
 		.map((item) => item.trim())
 		.filter(Boolean);
 	return parsed && parsed.length > 0 ? parsed : undefined;
+}
+
+function resolveA2APushNotificationConfig(
+	configured: A2ATaskPushNotificationConfig | undefined,
+): A2ATaskPushNotificationConfig | undefined {
+	const url =
+		trimString(configured?.url) ??
+		trimString(process.env.MAESTRO_SWARM_A2A_PUSH_URL);
+	if (!url) {
+		return undefined;
+	}
+	const id =
+		trimString(configured?.id) ??
+		trimString(process.env.MAESTRO_SWARM_A2A_PUSH_ID);
+	const token =
+		trimString(configured?.token) ??
+		trimString(process.env.MAESTRO_SWARM_A2A_PUSH_TOKEN);
+	const base = cloneA2APushNotificationConfig(configured) ?? {};
+	return {
+		...base,
+		url,
+		...(id ? { id } : {}),
+		...(token ? { token } : {}),
+	};
 }
 
 function a2aStateCompleted(state: string | undefined): boolean {
@@ -442,7 +503,7 @@ export class SwarmExecutor {
 		this.emit({
 			type: "swarm_start",
 			swarmId: this.state.id,
-			config: this.state.config,
+			config: cloneConfig(this.state.config),
 		});
 
 		try {
@@ -493,7 +554,7 @@ export class SwarmExecutor {
 		this.emit({
 			type: "swarm_complete",
 			swarmId: this.state.id,
-			state: this.state,
+			state: cloneState(this.state),
 		});
 
 		logger.info("Swarm execution complete", {
@@ -504,7 +565,7 @@ export class SwarmExecutor {
 			duration: this.state.completedAt - this.state.startedAt,
 		});
 
-		return this.state;
+		return cloneState(this.state);
 	}
 
 	/**
@@ -814,6 +875,9 @@ export class SwarmExecutor {
 			pollIntervalMs:
 				configured.pollIntervalMs ??
 				parsePositiveIntEnv(process.env.MAESTRO_SWARM_A2A_POLL_INTERVAL_MS),
+			pushNotificationConfig: resolveA2APushNotificationConfig(
+				configured.pushNotificationConfig,
+			),
 		};
 	}
 
@@ -1349,6 +1413,11 @@ export class SwarmExecutor {
 				configuration: {
 					returnImmediately: true,
 					acceptedOutputModes: ["text/plain", "application/json"],
+					...(options.pushNotificationConfig
+						? {
+								taskPushNotificationConfig: options.pushNotificationConfig,
+							}
+						: {}),
 				},
 				metadata: {
 					route: "maestro_swarm",

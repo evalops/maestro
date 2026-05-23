@@ -332,18 +332,6 @@ export function runtimePackageValidatorsRequired({
 	const packageJsonIsScriptsOnly =
 		normalizedChangedFiles.includes("package.json") &&
 		packageJsonScriptsOnlyChanged(basePackage, headPackage);
-	const releaseHelperOnly =
-		normalizedChangedFiles.length > 0 &&
-		normalizedChangedFiles.every(
-			(file) =>
-				CI_GUARDRAIL_FILES.has(file) ||
-				RELEASE_HELPER_PACKAGE_FILES.has(file) ||
-				RELEASE_HELPER_TEST_FILES.has(file),
-		);
-
-	if (releaseHelperOnly) {
-		return false;
-	}
 
 	return normalizedChangedFiles.some((file) => {
 		if (RUNTIME_PACKAGE_VALIDATOR_FILES.has(file)) {
