@@ -61,11 +61,26 @@ describe("maestro event catalog", () => {
 				"release.maestro-install-smoke",
 			],
 		});
+		expect(
+			getMaestroBusEventCatalogEntry(MaestroBusEventType.ToolCallFailed),
+		).toMatchObject({
+			category: "tool",
+			dataSchema: "buf.build/evalops/proto/maestro.v1.ToolCallResult",
+			protoAnyType: "type.googleapis.com/maestro.v1.ToolCallResult",
+			subject: "maestro.events.tool_call.failed",
+			platformConsumers: [
+				"audit.maestro-events",
+				"meter.maestro-tool-call-events",
+				"release.maestro-tool-failure-gates",
+				"skills.maestro-tool-call-failed",
+			],
+		});
 	});
 
 	it("recognizes only cataloged Maestro bus event types", () => {
 		expect(isMaestroBusEventType("maestro.events.eval.scored")).toBe(true);
 		expect(isMaestroBusEventType("maestro.events.error.captured")).toBe(true);
+		expect(isMaestroBusEventType("maestro.events.tool_call.failed")).toBe(true);
 		expect(isMaestroBusEventType("maestro.events.subagent.dispatched")).toBe(
 			true,
 		);
@@ -89,6 +104,22 @@ describe("maestro event catalog", () => {
 				type: MaestroBusEventType.ErrorCaptured,
 			}),
 		]);
+		expect(listMaestroBusEventCatalogByCategory("tool")).toEqual(
+			expect.arrayContaining([
+				expect.objectContaining({
+					category: "tool",
+					type: MaestroBusEventType.ToolCallAttempted,
+				}),
+				expect.objectContaining({
+					category: "tool",
+					type: MaestroBusEventType.ToolCallCompleted,
+				}),
+				expect.objectContaining({
+					category: "tool",
+					type: MaestroBusEventType.ToolCallFailed,
+				}),
+			]),
+		);
 		expect(listMaestroBusEventCatalogByCategory("artifact")).toEqual([
 			expect.objectContaining({
 				category: "artifact",

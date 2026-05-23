@@ -61,7 +61,7 @@ function resolveRustfmtCommand(command) {
 	}
 	const trimmed = command.trim();
 	if (!trimmed) {
-		return undefined;
+		return null;
 	}
 	if (RUSTFMT_DISABLE_VALUES.has(trimmed.toLowerCase())) {
 		return null;
