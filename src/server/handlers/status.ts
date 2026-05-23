@@ -2,7 +2,7 @@ import { execSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { join } from "node:path";
-import { isDatabaseConfigured, isDbAvailable } from "../../db/client.js";
+import { isDatabaseConfigured, testConnection } from "../../db/client.js";
 import {
 	getAsyncHookCount,
 	getHookConcurrencySnapshot,
@@ -14,11 +14,113 @@ import {
 import { backgroundTaskManager } from "../../tools/background-tasks.js";
 import { respondWithApiError, sendJson } from "../server-utils.js";
 
-export function getStatusSnapshot(
+const DATABASE_STATUS_CACHE_TTL_MS = 5_000;
+const DATABASE_STATUS_PROBE_TIMEOUT_MS = 500;
+const DATABASE_STATUS_PROBE_RETRY_AFTER_MS = 30_000;
+
+let databaseHealthCache: { connected: boolean; checkedAt: number } | null =
+	null;
+let databaseHealthProbe: Promise<boolean> | null = null;
+let databaseHealthProbeStartedAt = 0;
+let databaseHealthProbeGeneration = 0;
+
+function startDatabaseHealthProbe(): Promise<boolean> {
+	const now = Date.now();
+	if (
+		databaseHealthProbe &&
+		now - databaseHealthProbeStartedAt < DATABASE_STATUS_PROBE_RETRY_AFTER_MS
+	) {
+		return databaseHealthProbe;
+	}
+
+	const generation = databaseHealthProbeGeneration + 1;
+	databaseHealthProbeGeneration = generation;
+	databaseHealthProbeStartedAt = now;
+	const probe = testConnection()
+		.then((connected) => {
+			if (databaseHealthProbeGeneration === generation) {
+				databaseHealthCache = { connected, checkedAt: Date.now() };
+			}
+			return connected;
+		})
+		.catch(() => {
+			if (databaseHealthProbeGeneration === generation) {
+				databaseHealthCache = { connected: false, checkedAt: Date.now() };
+			}
+			return false;
+		})
+		.finally(() => {
+			if (databaseHealthProbe === probe) {
+				databaseHealthProbe = null;
+				databaseHealthProbeStartedAt = 0;
+			}
+		});
+
+	databaseHealthProbe = probe;
+	return probe;
+}
+
+async function waitForDatabaseProbe(
+	probe: Promise<boolean>,
+	fallback: boolean,
+): Promise<boolean> {
+	let timeout: ReturnType<typeof setTimeout> | undefined;
+	try {
+		return await Promise.race([
+			probe,
+			new Promise<boolean>((resolve) => {
+				timeout = setTimeout(() => {
+					resolve(fallback);
+				}, DATABASE_STATUS_PROBE_TIMEOUT_MS);
+				if (typeof timeout === "object" && "unref" in timeout) {
+					timeout.unref();
+				}
+			}),
+		]);
+	} finally {
+		if (timeout) {
+			clearTimeout(timeout);
+		}
+	}
+}
+
+async function getDatabaseHealthSnapshot(): Promise<{
+	configured: boolean;
+	connected: boolean;
+}> {
+	const configured = isDatabaseConfigured();
+	if (!configured) {
+		return { configured: false, connected: false };
+	}
+
+	const now = Date.now();
+	if (
+		databaseHealthCache &&
+		now - databaseHealthCache.checkedAt <= DATABASE_STATUS_CACHE_TTL_MS
+	) {
+		return { configured: true, connected: databaseHealthCache.connected };
+	}
+
+	const connected = await waitForDatabaseProbe(
+		startDatabaseHealthProbe(),
+		false,
+	);
+	return { configured: true, connected };
+}
+
+export function resetStatusDatabaseHealthCacheForTests(): void {
+	databaseHealthCache = null;
+	databaseHealthProbe = null;
+	databaseHealthProbeStartedAt = 0;
+	databaseHealthProbeGeneration = 0;
+}
+
+export async function getStatusSnapshot(
 	options: { staticCacheMaxAge?: number } = {},
 ) {
 	const startedAt = Date.now();
 	const cwd = process.cwd();
+	const database = await getDatabaseHealthSnapshot();
 
 	let gitBranch = null;
 	let gitStatus = null;
@@ -59,10 +161,7 @@ export function getStatusSnapshot(
 			version: process.version,
 			staticCacheMaxAgeSeconds: options.staticCacheMaxAge,
 		},
-		database: {
-			configured: isDatabaseConfigured(),
-			connected: isDbAvailable(),
-		},
+		database,
 		backgroundTasks: backgroundTaskManager.getHealthSnapshot({
 			maxEntries: 5,
 			logLines: 2,
@@ -76,7 +175,7 @@ export function getStatusSnapshot(
 	};
 }
 
-export function handleStatus(
+export async function handleStatus(
 	req: IncomingMessage,
 	res: ServerResponse,
 	cors: Record<string, string>,
@@ -93,7 +192,7 @@ export function handleStatus(
 			return;
 		}
 
-		const status = getStatusSnapshot(options);
+		const status = await getStatusSnapshot(options);
 		sendJson(res, 200, status, cors, req);
 	} catch (error) {
 		respondWithApiError(res, error, 500, cors, req);

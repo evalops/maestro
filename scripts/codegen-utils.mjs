@@ -60,7 +60,9 @@ function resolveRustfmt(envNames) {
 }
 
 function isRustfmtDisabled(command) {
-	return ["0", "false", "none", "off"].includes(command.trim().toLowerCase());
+	return ["0", "false", "none", "off", "skip", "disabled"].includes(
+		command.trim().toLowerCase(),
+	);
 }
 
 export function formatRustWithRustfmt(
@@ -80,7 +82,7 @@ export function formatRustWithRustfmt(
 	try {
 		writeFileSync(tempPath, source, "utf8");
 		const rustfmt = resolveRustfmt(envNames);
-		if (!rustfmt) {
+		if (rustfmt === null) {
 			return { content: source, rustfmtAvailable: false };
 		}
 		const result = spawnSync(rustfmt, [tempPath], {
