@@ -259,6 +259,13 @@ function resolvePublicPackageJson(
 			].filter((value) => typeof value === "string" && value.trim()),
 		),
 	);
+	pkg.scripts =
+		pkg.scripts && typeof pkg.scripts === "object" && !Array.isArray(pkg.scripts)
+			? pkg.scripts
+			: {};
+	pkg.scripts["release:verify:published"] =
+		"node scripts/smoke-registry-install.js";
+	pkg.scripts["release:deprecate"] = "node scripts/deprecate-release.js";
 
 	return {
 		content: `${JSON.stringify(pkg, null, 2)}\n`,
