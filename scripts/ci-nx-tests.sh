@@ -23,6 +23,7 @@ echo "Nx head: $NX_HEAD"
 
 changed_files_log="nx-changed-files.log"
 affected_projects_log="nx-affected-projects.log"
+resolved_targets_log="nx-resolved-targets.log"
 
 git diff --name-only "$NX_BASE" "$NX_HEAD" | tee "$changed_files_log"
 
@@ -32,7 +33,7 @@ changed_files_match() {
 }
 
 run_ci_guardrail_tests() {
-	if ! changed_files_match '^(\.github/workflows/.*|scripts/(check-smoke-scripts|ci-nx-tests|plan-ci-checks|plan-nx-test-command)\.mjs|scripts/ci-nx-tests\.sh|test/scripts/ci-guardrails\.test\.ts)$'; then
+	if ! changed_files_match '^(\.github/workflows/.*|scripts/(check-smoke-scripts|ci-nx-tests|plan-ci-checks|plan-nx-test-command|summarize-nx-profile)\.mjs|scripts/ci-nx-tests\.sh|test/scripts/ci-guardrails\.test\.ts)$'; then
 		return 0
 	fi
 
@@ -128,17 +129,54 @@ case "$nx_mode" in
 		;;
 esac
 
+write_resolved_targets() {
+	case "$nx_mode" in
+		all)
+			npx nx show projects --withTarget test
+			;;
+		affected-files)
+			npx nx show projects --affected --files="$nx_files" --withTarget test
+			;;
+	esac | sed 's/$/:test/' | tee "$resolved_targets_log"
+}
+
+echo "Resolved Nx test targets:"
+if ! write_resolved_targets; then
+	echo "::warning::Unable to list resolved Nx test targets before test execution"
+	: >"$resolved_targets_log"
+fi
+
+summarize_attempt_profile() {
+	local profile_file="$1"
+	local timing_file="$2"
+
+	if [[ ! -s "$profile_file" ]]; then
+		echo "::warning::Nx profile ${profile_file} was not written" | tee "$timing_file"
+		return 0
+	fi
+
+	if ! node scripts/summarize-nx-profile.mjs \
+		--profile "$profile_file" \
+		--targets "$resolved_targets_log" | tee "$timing_file"; then
+		echo "::warning::Unable to summarize Nx profile ${profile_file}" | tee "$timing_file"
+	fi
+}
+
 run_attempt() {
 	local attempt="$1"
 	local logfile="nx-tests-attempt-${attempt}.log"
+	local profile_file="nx-profile-attempt-${attempt}.json"
+	local timing_file="nx-target-timings-attempt-${attempt}.log"
 
 	echo "Running: ${cmd[*]}"
 	echo "Attempt ${attempt}..."
 	echo "Heartbeat interval: ${NX_TEST_HEARTBEAT_SECONDS}s"
 	echo "Attempt timeout: ${NX_TEST_ATTEMPT_TIMEOUT_SECONDS}s"
+	echo "Nx profile: ${profile_file}"
 
+	rm -f "$profile_file" "$timing_file"
 	set +e
-	node scripts/run-command-with-heartbeat.mjs \
+	NX_PROFILE="$profile_file" node scripts/run-command-with-heartbeat.mjs \
 		--label "Nx tests attempt ${attempt}" \
 		--logfile "$logfile" \
 		--heartbeat-seconds "$NX_TEST_HEARTBEAT_SECONDS" \
@@ -146,6 +184,8 @@ run_attempt() {
 		-- "${cmd[@]}"
 	local status="$?"
 	set -e
+
+	summarize_attempt_profile "$profile_file" "$timing_file"
 
 	return "$status"
 }
@@ -173,6 +213,20 @@ append_ci_context_summary() {
 		echo '```text'
 		sed -n '1,120p' "$affected_projects_log" 2>/dev/null || true
 		echo '```'
+		echo ""
+		echo "#### Resolved Nx test targets"
+		echo '```text'
+		sed -n '1,160p' "$resolved_targets_log" 2>/dev/null || true
+		echo '```'
+		if compgen -G 'nx-target-timings-attempt-*.log' >/dev/null; then
+			for timing_log in nx-target-timings-attempt-*.log; do
+				echo ""
+				echo "#### Nx target timings (${timing_log})"
+				echo '```text'
+				sed -n '1,200p' "$timing_log"
+				echo '```'
+			done
+		fi
 	} >>"$GITHUB_STEP_SUMMARY" 2>/dev/null || true
 }
 

@@ -19,7 +19,7 @@ function makeFixture() {
 	mkdirSync(source, { recursive: true });
 	mkdirSync(target, { recursive: true });
 	writePackage(source);
-	writePackage(target);
+	writePackage(target, { publicProjection: true });
 	return { root, source, target };
 }
 
@@ -28,22 +28,29 @@ function write(path: string, content: string) {
 	writeFileSync(path, content);
 }
 
-function writePackage(root: string) {
-	write(
-		join(root, "package.json"),
-		`${JSON.stringify(
-			{
-				name: packageName,
-				version: "1.0.0",
-				maestro: {
-					canonicalPackageName: packageName,
-					packageAliases: [packageName],
-				},
-			},
-			null,
-			2,
-		)}\n`,
-	);
+function writePackage(
+	root: string,
+	options: { publicProjection?: boolean } = {},
+) {
+	const pkg = {
+		name: packageName,
+		version: "1.0.0",
+		maestro: {
+			canonicalPackageName: packageName,
+			packageAliases: [packageName],
+		},
+		...(options.publicProjection
+			? {
+					scripts: {
+						"release:verify:published":
+							"node scripts/smoke-registry-install.js",
+						"release:deprecate": "node scripts/deprecate-release.js",
+					},
+				}
+			: {}),
+	};
+
+	write(join(root, "package.json"), `${JSON.stringify(pkg, null, 2)}\n`);
 }
 
 function readJson(path: string) {

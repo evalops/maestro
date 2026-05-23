@@ -101,8 +101,6 @@
     "verify-build:packages": "VERIFY_PACKAGES=1 bun scripts/verify-build.ts",
     "release:check": "node scripts/release-readiness.js release",
     "release:check:ci": "node scripts/release-readiness.js ci",
-    "release:verify:published": "node scripts/smoke-registry-install.js",
-    "release:deprecate": "node scripts/deprecate-release.js",
     "ci:plan": "node scripts/plan-ci-checks.mjs",
     "pr:ready": "node scripts/pr-ready-to-merge.mjs",
     "pr:feedback": "node scripts/pr-feedback-audit.mjs",
@@ -122,6 +120,7 @@
     "a2a:codex-bridge": "python3 scripts/codex-a2a-bridge.py",
     "a2a:peer": "tsx src/cli.ts a2a",
     "smoke:headless": "node scripts/smoke-headless.js",
+    "smoke:exec-replay-e2e": "node scripts/smoke-exec-replay-e2e.js",
     "headless:responsiveness": "node scripts/headless-responsiveness-harness.js",
     "smoke:pack": "node scripts/smoke-packed-cli.js",
     "metadata:sync": "node scripts/sync-package-metadata.js",
@@ -159,7 +158,9 @@
     "rust:harness": "bash scripts/rust-local-harness.sh",
     "tui-rs:build:debug": "cd packages/tui-rs && cargo build",
     "tui-rs:check": "cd packages/tui-rs && cargo check",
-    "tui-rs:test": "cd packages/tui-rs && cargo test"
+    "tui-rs:test": "cd packages/tui-rs && cargo test",
+    "release:verify:published": "node scripts/smoke-registry-install.js",
+    "release:deprecate": "node scripts/deprecate-release.js"
   },
   "dependencies": {
     "@aws-sdk/client-bedrock-runtime": "^3.1020.0",
