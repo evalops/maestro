@@ -629,6 +629,13 @@ describe("ci workflow guardrails", () => {
 		expect(script).toContain("--summary-json");
 		expect(script).toContain("nx-tests-attempt-${attempt}.json");
 		expect(script).toContain("#### Attempt summaries");
+		if (isPublicValidationWorkflow(workflow)) {
+			expect(String(uploadLogsStep?.if ?? "")).toContain(
+				"nx-tests-attempt-*.log",
+			);
+			expect(uploadLogsStep?.with?.path).toContain("nx-tests-attempt-*.log");
+			return;
+		}
 		expect(String(uploadLogsStep?.if ?? "")).toContain(
 			"nx-tests-attempt-*.json",
 		);
