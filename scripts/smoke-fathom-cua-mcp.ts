@@ -31,6 +31,7 @@ const focusedProofs = [
 		bundleSuffix: "text",
 		displayName: "Fathom CUA Text Proof",
 		elementRole: "AXTextField",
+		elementSelection: "widest-frame",
 	},
 	{
 		name: "toggle-state",
@@ -344,6 +345,49 @@ async function waitForJsonFile(
 	});
 }
 
+async function waitForProofStateFile(
+	proof: LaunchedProof,
+	predicate: (value: JsonRecord) => boolean,
+	label: string,
+): Promise<JsonRecord> {
+	const deadline =
+		Date.now() + stateReadinessAttempts * stateReadinessDelayMs;
+	let lastState: JsonRecord | undefined;
+	let lastError: unknown;
+	for (let attempt = 1; attempt <= stateReadinessAttempts; attempt++) {
+		try {
+			lastState = await readJsonFile(proof.stateFile);
+			if (
+				lastState.variant === proof.name &&
+				lastState.raw_values_redacted === true &&
+				predicate(lastState)
+			) {
+				return lastState;
+			}
+		} catch (error) {
+			lastError = error;
+		}
+		if (attempt < stateReadinessAttempts) {
+			const delay = Math.min(
+				stateReadinessDelayMs,
+				Math.max(0, deadline - Date.now()),
+			);
+			await sleep(delay);
+		}
+	}
+	throw new SmokeError(`Timed out waiting for ${label} proof state file`, {
+		appBundleId: proof.bundleId,
+		appDir: proof.appDir,
+		pid: proof.pid,
+		stateFile: proof.stateFile,
+		stateReadinessAttempts,
+		stateReadinessDelayMs,
+		lastError:
+			lastError instanceof Error ? lastError.message : String(lastError),
+		lastState,
+	});
+}
+
 function sha256(value: string): string {
 	return `sha256:${createHash("sha256").update(value).digest("hex")}`;
 }
@@ -582,11 +626,9 @@ async function callMcpTool(
 	return structured;
 }
 
-function tryFindElementByRole(
-	state: JsonRecord,
-	role: string,
-): JsonRecord | undefined {
+function elementsByRole(state: JsonRecord, role: string): JsonRecord[] {
 	const elements = asArray(state.elements, "get_app_state elements");
+	const matches: JsonRecord[] = [];
 	for (const element of elements) {
 		const record = asRecord(element, "get_app_state element");
 		if (
@@ -594,10 +636,73 @@ function tryFindElementByRole(
 			record.element_index !== undefined &&
 			typeof record.element_path_hash === "string"
 		) {
-			return record;
+			matches.push(record);
 		}
 	}
-	return undefined;
+	return matches;
+}
+
+function elementFrameValue(element: JsonRecord, key: string): number {
+	const frame = isRecord(element.frame) ? element.frame : undefined;
+	const value = frame?.[key];
+	return typeof value === "number" && Number.isFinite(value) ? value : 0;
+}
+
+function elementIndexValue(element: JsonRecord): number {
+	const value = element.element_index;
+	return typeof value === "number" && Number.isFinite(value)
+		? value
+		: Number.MAX_SAFE_INTEGER;
+}
+
+function chooseElementForProof(
+	state: JsonRecord,
+	proof: FocusedProof,
+): Omit<ProofStateSelection, "state"> | undefined {
+	const candidates = elementsByRole(state, proof.elementRole);
+	if (candidates.length === 0) {
+		return undefined;
+	}
+	if ("elementSelection" in proof && proof.elementSelection === "widest-frame") {
+		const element = [...candidates].sort((left, right) => {
+			const widthDelta =
+				elementFrameValue(right, "width") - elementFrameValue(left, "width");
+			if (widthDelta !== 0) {
+				return widthDelta;
+			}
+			const heightDelta =
+				elementFrameValue(right, "height") - elementFrameValue(left, "height");
+			if (heightDelta !== 0) {
+				return heightDelta;
+			}
+			const xDelta = elementFrameValue(left, "x") - elementFrameValue(right, "x");
+			if (xDelta !== 0) {
+				return xDelta;
+			}
+			const yDelta = elementFrameValue(left, "y") - elementFrameValue(right, "y");
+			if (yDelta !== 0) {
+				return yDelta;
+			}
+			return elementIndexValue(left) - elementIndexValue(right);
+		})[0];
+		if (!element) {
+			return undefined;
+		}
+		return {
+			element,
+			candidateCount: candidates.length,
+			selectionStrategy: "widest-frame",
+		};
+	}
+	const element = candidates[0];
+	if (!element) {
+		return undefined;
+	}
+	return {
+		element,
+		candidateCount: candidates.length,
+		selectionStrategy: "first-role-match",
+	};
 }
 
 function roleHistogram(elements: unknown[]): JsonRecord {
@@ -855,6 +960,7 @@ function actionArgsForProof(
 	const base = {
 		app: proof.bundleId,
 		element_index: String(element.element_index),
+		element_path_hash: String(element.element_path_hash),
 	};
 	switch (proof.tool) {
 		case "set_value":
@@ -1036,6 +1142,8 @@ function listedApplicationBundleIds(payload: JsonRecord): string[] {
 type ProofStateSelection = {
 	state: JsonRecord;
 	element: JsonRecord;
+	candidateCount: number;
+	selectionStrategy: string;
 };
 
 type FathomToolCaller = (
@@ -1059,9 +1167,9 @@ async function waitForProofAppState(
 				reason: `maestro fathom cua mcp focused proof ${proof.name}`,
 			});
 			lastState = state;
-			const element = tryFindElementByRole(state, proof.elementRole);
-			if (element) {
-				return { state, element };
+			const selection = chooseElementForProof(state, proof);
+			if (selection) {
+				return { state, ...selection };
 			}
 		} catch (error) {
 			lastError = error;
@@ -1110,24 +1218,25 @@ function isRecoverableDesktopActionError(error: unknown): boolean {
 }
 
 async function waitForPostActionProofState(
-	callTool: FathomToolCaller,
 	proof: LaunchedProof,
 	beforeState: JsonRecord,
 	target: ProofTarget,
+	element: JsonRecord,
+	selection: ProofStateSelection,
 	receiptId: unknown,
 ): Promise<JsonRecord> {
 	let lastState: JsonRecord | undefined;
 	let lastError: unknown;
 	const matchesTarget = statePredicateForProof(proof, beforeState, target);
-	const receiptLabel = typeof receiptId === "string" ? receiptId : "unknown";
 	for (let attempt = 1; attempt <= stateReadinessAttempts; attempt++) {
 		try {
-			const state = await callTool("get_app_state", {
-				app: proof.bundleId,
-				reason: `maestro fathom cua mcp post-action proof ${proof.name} receipt ${receiptLabel}`,
-			});
+			const state = await readJsonFile(proof.stateFile);
 			lastState = state;
-			if (matchesTarget(state)) {
+			if (
+				state.variant === proof.name &&
+				state.raw_values_redacted === true &&
+				matchesTarget(state)
+			) {
 				return state;
 			}
 		} catch (error) {
@@ -1144,8 +1253,16 @@ async function waitForPostActionProofState(
 			appBundleId: proof.bundleId,
 			appDir: proof.appDir,
 			pid: proof.pid,
+			stateFile: proof.stateFile,
 			tool: proof.tool,
 			receiptId,
+			elementIndex: element.element_index,
+			elementPathHash: element.element_path_hash,
+			elementFrame: isRecord(element.frame) ? element.frame : null,
+			elementSelection: {
+				strategy: selection.selectionStrategy,
+				candidateCount: selection.candidateCount,
+			},
 			stateReadinessAttempts,
 			stateReadinessDelayMs,
 			lastError:
@@ -1186,8 +1303,7 @@ async function runSmoke(): Promise<JsonRecord> {
 			1 +
 			launchedProofs.length *
 				((stateReadinessAttempts + 1) *
-					(1 + desktopActionRecoveryAttempts) +
-					stateReadinessAttempts);
+					(1 + desktopActionRecoveryAttempts));
 		let helperRequestCount = 0;
 		helper = spawnCaptured(join(binDir, "fathom-helper"), [
 			"live-cua-process-ipc",
@@ -1267,7 +1383,11 @@ async function runSmoke(): Promise<JsonRecord> {
 			let selection = await waitForProofAppState(callFathomTool, proof);
 			let element = selection.element;
 			const rawValue = `Maestro Fathom CUA MCP ${proof.name} ${Date.now()}`;
-			let beforeState = selection.state;
+			let beforeState = await waitForProofStateFile(
+				proof,
+				() => true,
+				`pre-action ${proof.name}`,
+			);
 			let target = targetForProof(proof, beforeState, rawValue);
 			let action: JsonRecord | undefined;
 			let recoveries = 0;
@@ -1289,7 +1409,11 @@ async function runSmoke(): Promise<JsonRecord> {
 					recoveries += 1;
 					selection = await waitForProofAppState(callFathomTool, proof);
 					element = selection.element;
-					beforeState = selection.state;
+					beforeState = await waitForProofStateFile(
+						proof,
+						() => true,
+						`pre-action recovery ${proof.name}`,
+					);
 					target = targetForProof(proof, beforeState, rawValue);
 				}
 			}
@@ -1299,10 +1423,11 @@ async function runSmoke(): Promise<JsonRecord> {
 				});
 			}
 			const observedState = await waitForPostActionProofState(
-				callFathomTool,
 				proof,
 				beforeState,
 				target,
+				element,
+				selection,
 				action.receipt_id,
 			);
 			actionProofs.push({
@@ -1316,6 +1441,11 @@ async function runSmoke(): Promise<JsonRecord> {
 				contextSnapshotId: action.context_snapshot_id,
 				elementIndex: element.element_index,
 				elementPathHash: element.element_path_hash,
+				elementFrame: isRecord(element.frame) ? element.frame : null,
+				elementSelection: {
+					strategy: selection.selectionStrategy,
+					candidateCount: selection.candidateCount,
+				},
 				stateObserved: stateEvidenceForProof(
 					proof,
 					beforeState,
