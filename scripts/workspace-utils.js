@@ -102,11 +102,19 @@ function escapeRegExp(value) {
 	return value.replace(/[.+?^${}()|[\]\\]/g, "\\$&");
 }
 
+function globTokenPattern(value) {
+	let pattern = "";
+	for (const char of value) {
+		pattern += char === "*" ? "[^/]*" : escapeRegExp(char);
+	}
+	return pattern;
+}
+
 function segmentHasPatternSyntax(segment) {
 	return segment.includes("*") || /\{[^{}]+,[^{}]*\}/u.test(segment);
 }
 
-function segmentPatternSource(segment) {
+function segmentPatternToRegExp(segment) {
 	let pattern = "";
 	for (let index = 0; index < segment.length; index += 1) {
 		const char = segment[index];
@@ -118,18 +126,14 @@ function segmentPatternSource(segment) {
 			const end = segment.indexOf("}", index + 1);
 			const body = end === -1 ? "" : segment.slice(index + 1, end);
 			if (body.includes(",")) {
-				pattern += `(?:${body.split(",").map(segmentPatternSource).join("|")})`;
+				pattern += `(?:${body.split(",").map(globTokenPattern).join("|")})`;
 				index = end;
 				continue;
 			}
 		}
 		pattern += escapeRegExp(char);
 	}
-	return pattern;
-}
-
-function segmentPatternToRegExp(segment) {
-	return new RegExp(`^${segmentPatternSource(segment)}$`);
+	return new RegExp(`^${pattern}$`);
 }
 
 function listDirectories(path) {
