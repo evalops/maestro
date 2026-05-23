@@ -26,6 +26,12 @@ function maybeRunScript(name) {
 	run(`npm run ${name}`);
 }
 
+function removeStandaloneBinaryArtifacts() {
+	for (const artifact of ["dist/maestro-bun", "dist/maestro-bun-bytecode"]) {
+		rmSync(resolve(process.cwd(), artifact), { force: true });
+	}
+}
+
 function runPackSmoke() {
 	const smokeScriptPath = resolve(process.cwd(), "scripts/smoke-packed-cli.js");
 	if (!existsSync(smokeScriptPath)) {
@@ -33,6 +39,7 @@ function runPackSmoke() {
 		return;
 	}
 
+	removeStandaloneBinaryArtifacts();
 	const tarball = execSync("npm pack --silent", { encoding: "utf8" })
 		.trim()
 		.split("\n")
@@ -81,6 +88,9 @@ function runReleaseChecks() {
 }
 
 switch (mode) {
+	case "pack-smoke":
+		runPackSmoke();
+		break;
 	case "ci":
 		runCiChecks();
 		break;
