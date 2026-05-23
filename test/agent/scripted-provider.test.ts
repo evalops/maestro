@@ -129,7 +129,7 @@ describe("scripted replay provider", () => {
 					id: "call-read-package-json",
 					name: "read",
 					arguments: {
-						file_path: "package.json",
+						path: "package.json",
 					},
 				},
 			},
