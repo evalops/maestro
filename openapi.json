@@ -33,6 +33,22 @@
         }
       }
     },
+    "/api/a2a/cockpit": {
+      "get": {
+        "summary": "Auto-generated from route definition",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        },
+        "security": [
+          {
+            "ComposerApiKey": []
+          }
+        ]
+      }
+    },
     "/api/headless/connections": {
       "post": {
         "summary": "Auto-generated from route definition",
@@ -2525,6 +2541,31 @@
       }
     },
     "/api/sessions/{id}/timeline": {
+      "get": {
+        "summary": "Auto-generated from route definition",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        },
+        "security": [
+          {
+            "ComposerApiKey": []
+          }
+        ]
+      }
+    },
+    "/api/sessions/{id}/replay-lab": {
       "get": {
         "summary": "Auto-generated from route definition",
         "parameters": [

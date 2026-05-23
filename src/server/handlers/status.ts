@@ -115,6 +115,183 @@ export function resetStatusDatabaseHealthCacheForTests(): void {
 	databaseHealthProbeGeneration = 0;
 }
 
+export type RunHealthLevel = "healthy" | "degraded" | "unhealthy";
+
+export interface RunHealthSlo {
+	id: string;
+	label: string;
+	status: RunHealthLevel;
+	target: string;
+	observed: string;
+	detail?: string;
+}
+
+export interface RunHealthSnapshot {
+	status: RunHealthLevel;
+	slos: RunHealthSlo[];
+	diagnostics: string[];
+	generatedAt: string;
+}
+
+export interface RunHealthInput {
+	apiLatencyMs: number;
+	backgroundTasks: {
+		running?: number;
+		failed?: number;
+		restarting?: number;
+	} | null;
+	database: {
+		configured: boolean;
+		connected: boolean;
+		initialized?: boolean;
+		reachable?: boolean;
+	};
+	hooks: {
+		asyncInFlight: number;
+		concurrency: {
+			max: number;
+			active: number;
+			queued: number;
+		};
+	};
+	generatedAt?: number;
+}
+
+function maxHealthLevel(levels: RunHealthLevel[]): RunHealthLevel {
+	if (levels.includes("unhealthy")) return "unhealthy";
+	if (levels.includes("degraded")) return "degraded";
+	return "healthy";
+}
+
+function latencySlo(apiLatencyMs: number): RunHealthSlo {
+	const status =
+		apiLatencyMs > 3000
+			? "unhealthy"
+			: apiLatencyMs > 1000
+				? "degraded"
+				: "healthy";
+	return {
+		id: "api_latency",
+		label: "API latency",
+		status,
+		target: "p50 snapshot <= 1000ms",
+		observed: `${Math.max(0, Math.round(apiLatencyMs))}ms`,
+		...(status === "healthy"
+			? {}
+			: { detail: "Status endpoint latency exceeded the local operator SLO." }),
+	};
+}
+
+function databaseSlo(database: RunHealthInput["database"]): RunHealthSlo {
+	if (!database.configured) {
+		return {
+			id: "database",
+			label: "Database",
+			status: "healthy",
+			target: "connected when configured",
+			observed: "unconfigured",
+			detail: "Local mode does not require a database connection.",
+		};
+	}
+	if (database.reachable === false) {
+		return {
+			id: "database",
+			label: "Database",
+			status: "unhealthy",
+			target: "reachable when configured",
+			observed: "unreachable",
+			detail: "Configured database failed an explicit reachability check.",
+		};
+	}
+	if (database.connected || database.reachable === true) {
+		return {
+			id: "database",
+			label: "Database",
+			status: "healthy",
+			target: "reachable when configured",
+			observed: database.connected ? "connected" : "reachable",
+		};
+	}
+	if (database.initialized === false) {
+		return {
+			id: "database",
+			label: "Database",
+			status: "healthy",
+			target: "reachable when configured",
+			observed: "configured, idle",
+			detail:
+				"Database is configured, but no query has initialized the lazy client yet.",
+		};
+	}
+	return {
+		id: "database",
+		label: "Database",
+		status: "unhealthy",
+		target: "reachable when configured",
+		observed: "disconnected",
+		detail: "Configured database is not currently reachable.",
+	};
+}
+
+function backgroundTaskSlo(
+	backgroundTasks: RunHealthInput["backgroundTasks"],
+): RunHealthSlo {
+	const failed = backgroundTasks?.failed ?? 0;
+	const restarting = backgroundTasks?.restarting ?? 0;
+	const status =
+		failed > 0 ? "unhealthy" : restarting > 0 ? "degraded" : "healthy";
+	return {
+		id: "background_tasks",
+		label: "Background tasks",
+		status,
+		target: "0 failed, 0 restarting",
+		observed: `${backgroundTasks?.running ?? 0} running, ${failed} failed, ${restarting} restarting`,
+		...(status === "healthy"
+			? {}
+			: { detail: "Background task supervisor has unhealthy work." }),
+	};
+}
+
+function hookQueueSlo(hooks: RunHealthInput["hooks"]): RunHealthSlo {
+	const queued = hooks.concurrency.queued;
+	const active = hooks.concurrency.active;
+	const max = hooks.concurrency.max;
+	const status =
+		queued > max ? "unhealthy" : queued > 0 ? "degraded" : "healthy";
+	return {
+		id: "hook_queue",
+		label: "Hook queue",
+		status,
+		target: "0 queued hooks",
+		observed: `${active}/${max} active, ${queued} queued, ${hooks.asyncInFlight} async`,
+		...(status === "healthy"
+			? {}
+			: {
+					detail: "Hook execution is backing up behind the concurrency gate.",
+				}),
+	};
+}
+
+export function buildRunHealthSnapshot(
+	input: RunHealthInput,
+): RunHealthSnapshot {
+	const slos = [
+		latencySlo(input.apiLatencyMs),
+		databaseSlo(input.database),
+		backgroundTaskSlo(input.backgroundTasks),
+		hookQueueSlo(input.hooks),
+	];
+	const diagnostics = slos
+		.filter((slo) => slo.status !== "healthy")
+		.map((slo) => `${slo.label}: ${slo.observed}`);
+	return {
+		status: maxHealthLevel(slos.map((slo) => slo.status)),
+		slos,
+		diagnostics,
+		generatedAt: new Date(input.generatedAt ?? Date.now()).toISOString(),
+	};
+}
+
 export async function getStatusSnapshot(
 	options: { staticCacheMaxAge?: number } = {},
 ) {
@@ -148,6 +325,17 @@ export async function getStatusSnapshot(
 		// Not a git repository or git not available
 	}
 
+	const backgroundTasks = backgroundTaskManager.getHealthSnapshot({
+		maxEntries: 5,
+		logLines: 2,
+	});
+	const hooks = {
+		asyncInFlight: getAsyncHookCount(),
+		concurrency: getHookConcurrencySnapshot(),
+	};
+	const lastUpdated = Date.now();
+	const lastLatencyMs = lastUpdated - startedAt;
+
 	return {
 		cwd,
 		git: gitBranch ? { branch: gitBranch, status: gitStatus } : null,
@@ -162,16 +350,17 @@ export async function getStatusSnapshot(
 			staticCacheMaxAgeSeconds: options.staticCacheMaxAge,
 		},
 		database,
-		backgroundTasks: backgroundTaskManager.getHealthSnapshot({
-			maxEntries: 5,
-			logLines: 2,
+		backgroundTasks,
+		hooks,
+		runHealth: buildRunHealthSnapshot({
+			apiLatencyMs: lastLatencyMs,
+			backgroundTasks,
+			database,
+			hooks,
+			generatedAt: lastUpdated,
 		}),
-		hooks: {
-			asyncInFlight: getAsyncHookCount(),
-			concurrency: getHookConcurrencySnapshot(),
-		},
-		lastUpdated: Date.now(),
-		lastLatencyMs: Date.now() - startedAt,
+		lastUpdated,
+		lastLatencyMs,
 	};
 }
 

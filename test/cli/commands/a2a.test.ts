@@ -1,4 +1,7 @@
 import { Buffer } from "node:buffer";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
 	handleA2ACommand,
@@ -793,6 +796,71 @@ describe("A2A CLI command helpers", () => {
 
 		expect(parsed.positionals).toEqual(["peers"]);
 		expect(parsed.flags.get("--registry")).toBe("/tmp/peers.json");
+	});
+
+	it("parses dashboard alias flags as cockpit flags", () => {
+		const parsed = parseA2AArgs([
+			"dashboard",
+			"--json",
+			"--peer",
+			"mac-mini",
+			"--limit",
+			"3",
+			"--timeout-ms=250",
+		]);
+
+		expect(parsed.positionals).toEqual(["dashboard"]);
+		expect(parsed.flags.get("--json")).toBe(true);
+		expect(parsed.flags.get("--peer")).toBe("mac-mini");
+		expect(parsed.flags.get("--limit")).toBe("3");
+		expect(parsed.flags.get("--timeout-ms")).toBe("250");
+	});
+
+	it("renders cockpit tasks when the peer registry is empty", async () => {
+		const root = await mkdtemp(join(tmpdir(), "maestro-a2a-cockpit-"));
+		try {
+			const registryPath = join(root, "peers.json");
+			const tasksPath = join(root, "tasks.json");
+			await writeFile(registryPath, `${JSON.stringify({ peers: {} })}\n`);
+			await writeFile(
+				tasksPath,
+				`${JSON.stringify({
+					tasks: [
+						{
+							id: "ledger-1",
+							kind: "delegation",
+							peer: "stale-peer",
+							taskId: "task-wait",
+							text: "needs operator input",
+							state: "TASK_STATE_INPUT_REQUIRED",
+							transcript: [],
+							createdAt: "2026-05-16T00:00:00.000Z",
+							updatedAt: "2026-05-16T00:00:01.000Z",
+						},
+					],
+				})}\n`,
+			);
+			const log = vi.spyOn(console, "log").mockImplementation(() => {});
+
+			await handleA2ACommand([
+				"cockpit",
+				"--registry",
+				registryPath,
+				"--tasks",
+				tasksPath,
+			]);
+
+			const output = log.mock.calls.flat().join("\n");
+			expect(output).toContain("No peers registered");
+			expect(output).toContain("Tasks");
+			expect(output).toContain("task-wait");
+			expect(output).toContain("needs operator input");
+			expect(output).toContain("orphaned peer");
+			expect(output).not.toContain("Next actions");
+			expect(output).not.toContain("maestro a2a reply stale-peer task-wait");
+		} finally {
+			await rm(root, { force: true, recursive: true });
+		}
 	});
 
 	it("ignores leading flags from other subcommands during dispatch", () => {

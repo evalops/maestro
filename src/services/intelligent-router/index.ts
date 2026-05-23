@@ -18,9 +18,11 @@ export {
 	setIntelligentRouterServiceForTest,
 } from "./service.js";
 export {
+	MODEL_PERFORMANCE_METRIC_SOURCES,
 	ROUTING_STRATEGIES,
 	type ModelPerformanceAggregate,
 	type ModelPerformanceMetricInput,
+	type ModelPerformanceMetricSource,
 	type RoutedModel,
 	type RoutingDecision,
 	type RoutingModelCandidate,

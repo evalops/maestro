@@ -44,6 +44,13 @@ function spawnErrorCode(error: Error | undefined): string | null {
 	return typeof code === "string" ? code : null;
 }
 
+function isSpawnTimeout(error: Error | undefined): boolean {
+	return (
+		spawnErrorCode(error) === "ETIMEDOUT" ||
+		error?.message.includes("ETIMEDOUT") === true
+	);
+}
+
 function exitCodeForSpawnResult(
 	status: number | null,
 	error: Error | undefined,
@@ -52,7 +59,7 @@ function exitCodeForSpawnResult(
 	if (typeof status === "number") {
 		return status;
 	}
-	if (spawnErrorCode(error) === "ETIMEDOUT") {
+	if (isSpawnTimeout(error)) {
 		return 124;
 	}
 	if (error) {
@@ -63,6 +70,27 @@ function exitCodeForSpawnResult(
 		return typeof signalNumber === "number" ? 128 + signalNumber : 128;
 	}
 	return 1;
+}
+
+function appendSpawnFailureDetails(
+	stderr: string,
+	command: string,
+	error: Error | undefined,
+	signal: NodeJS.Signals | null,
+	timeoutMs: number,
+): string {
+	const details: string[] = [];
+	if (isSpawnTimeout(error)) {
+		details.push(`${command} timed out after ${timeoutMs}ms`);
+	}
+	if (error?.message) {
+		details.push(error.message);
+	}
+	if (signal) {
+		details.push(`${command} terminated by ${signal}`);
+	}
+	const uniqueDetails = Array.from(new Set(details));
+	return [stderr, ...uniqueDetails].filter((part) => part.trim()).join("\n");
 }
 
 function commandExists(command: string, cwd: string): boolean {
@@ -103,7 +131,13 @@ function runCommand(
 				result.signal ?? null,
 			),
 			stdout: result.stdout ?? "",
-			stderr,
+			stderr: appendSpawnFailureDetails(
+				stderr,
+				command,
+				result.error,
+				result.signal ?? null,
+				timeoutMs,
+			),
 			error: errorMessage,
 			durationMs: Date.now() - started,
 		};

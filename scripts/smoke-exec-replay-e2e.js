@@ -13,19 +13,54 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 
 const SCRIPTED_SCENARIO_SCHEMA = "evalops.maestro.scripted-scenario.v1";
 const FINAL_TEXT = "Golden path completed with manifest evidence.";
 const TOOL_CALL_ID = "call-read-package-json";
-const timeoutMs = Number.parseInt(
-	process.env.MAESTRO_EXEC_REPLAY_SMOKE_TIMEOUT_MS ?? "45000",
-	10,
-);
+const SMOKE_TIMEOUT_ENV = "MAESTRO_EXEC_REPLAY_SMOKE_TIMEOUT_MS";
+const LOCAL_SMOKE_TIMEOUT_MS = 60_000;
+const CI_SMOKE_TIMEOUT_MS = 120_000;
+const timeoutMs = resolveSmokeTimeoutMs();
 const cliPath = join(process.cwd(), "dist", "cli.js");
 
-if (!existsSync(cliPath)) {
-	console.error("dist/cli.js is missing; run npm run build before this smoke.");
-	process.exit(1);
+export function defaultSmokeTimeoutMs(env = process.env) {
+	return env.CI === "true" || env.GITHUB_ACTIONS === "true"
+		? CI_SMOKE_TIMEOUT_MS
+		: LOCAL_SMOKE_TIMEOUT_MS;
+}
+
+export function resolveSmokeTimeoutMs(env = process.env) {
+	const rawValue = env[SMOKE_TIMEOUT_ENV];
+	if (rawValue === undefined || rawValue === "") {
+		return defaultSmokeTimeoutMs(env);
+	}
+	if (!/^\d+$/.test(rawValue)) {
+		throw new Error(`${SMOKE_TIMEOUT_ENV} must be a positive integer of milliseconds.`);
+	}
+	const parsedValue = Number.parseInt(rawValue, 10);
+	if (!Number.isFinite(parsedValue) || parsedValue <= 0) {
+		throw new Error(`${SMOKE_TIMEOUT_ENV} must be a positive integer of milliseconds.`);
+	}
+	return parsedValue;
+}
+
+export function describeSpawnSyncError(label, result, configuredTimeoutMs) {
+	const errorCode = result.error?.code;
+	const message =
+		errorCode === "ETIMEDOUT"
+			? `${label} timed out after ${configuredTimeoutMs}ms.`
+			: `${label} failed to launch.`;
+	const details = [
+		`status: ${result.status ?? "null"}`,
+		`signal: ${result.signal ?? "null"}`,
+		result.error?.stack ?? String(result.error),
+		result.stdout ? `stdout:\n${result.stdout}` : "",
+		result.stderr ? `stderr:\n${result.stderr}` : "",
+	]
+		.filter(Boolean)
+		.join("\n\n");
+	return { message, details };
 }
 
 function fail(message, details) {
@@ -260,7 +295,8 @@ function runExecMode(label, extraArgs = []) {
 			},
 		);
 		if (result.error) {
-			fail(`${label} failed to launch.`, result.error.stack);
+			const failure = describeSpawnSyncError(label, result, timeoutMs);
+			fail(failure.message, failure.details);
 		}
 		if (result.status !== 0) {
 			fail(
@@ -428,7 +464,16 @@ function runRpcMode() {
 	});
 }
 
-runTextMode();
-runJsonMode();
-await runRpcMode();
-console.log("Exec replay E2E smoke completed successfully.");
+export async function main() {
+	if (!existsSync(cliPath)) {
+		fail("dist/cli.js is missing; run npm run build before this smoke.");
+	}
+	runTextMode();
+	runJsonMode();
+	await runRpcMode();
+	console.log("Exec replay E2E smoke completed successfully.");
+}
+
+if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
+	await main();
+}

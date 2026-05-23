@@ -114,7 +114,10 @@ function isPackageManifest(path) {
 }
 
 function isTestFile(path) {
-	return /(^|\/)test\/.*\.(test|spec)\.[cm]?[jt]sx?$/.test(path);
+	return (
+		/(^|\/)test\/.*\.(test|spec)\.[cm]?[jt]sx?$/.test(path) ||
+		/(^|\/)[^/]+\.(test|spec)\.[cm]?[jt]sx?$/.test(path)
+	);
 }
 
 function isSmokeScript(path) {
