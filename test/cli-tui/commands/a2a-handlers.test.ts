@@ -4,7 +4,12 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { handleA2ATuiCommand } from "../../../src/cli-tui/commands/a2a-handlers.js";
 import type { CommandExecutionContext } from "../../../src/cli-tui/commands/types.js";
+import { buildA2ACockpit } from "../../../src/platform/a2a-cockpit.js";
 import { inspectA2AFleet } from "../../../src/platform/a2a-fleet.js";
+
+vi.mock("../../../src/platform/a2a-cockpit.js", () => ({
+	buildA2ACockpit: vi.fn(),
+}));
 
 vi.mock("../../../src/platform/a2a-fleet.js", () => ({
 	inspectA2AFleet: vi.fn(),
@@ -114,6 +119,98 @@ describe("A2A TUI command handler", () => {
 			timeoutMs: 2500,
 		});
 		expect(content.join("\n")).toContain("A2A fleet");
+		expect(context.showError).not.toHaveBeenCalled();
+	});
+
+	it("renders the A2A cockpit with next actions", async () => {
+		vi.mocked(buildA2ACockpit).mockResolvedValueOnce({
+			generatedAt: "2026-05-16T00:00:00.000Z",
+			registryPath: "/tmp/peers.json",
+			tasksPath: "/tmp/tasks.json",
+			counts: {
+				peers: 1,
+				onlinePeers: 1,
+				unreachablePeers: 0,
+				tasks: 1,
+				runningTasks: 0,
+				actionRequiredTasks: 1,
+				failedTasks: 0,
+				completedTasks: 0,
+			},
+			peers: [
+				{
+					name: "mac-mini",
+					url: "http://127.0.0.1:4111",
+					status: "online",
+					taskCounts: {
+						tasks: 1,
+						runningTasks: 0,
+						actionRequiredTasks: 1,
+						failedTasks: 0,
+						completedTasks: 0,
+					},
+					lastTask: {
+						id: "task-1",
+						state: "TASK_STATE_INPUT_REQUIRED",
+						status: "waiting",
+						updatedAt: "2026-05-16T00:00:00.000Z",
+						text: "Need test approval",
+					},
+				},
+			],
+			tasks: [
+				{
+					ledgerId: "ledger-1",
+					peer: "mac-mini",
+					taskId: "task-1",
+					state: "TASK_STATE_INPUT_REQUIRED",
+					status: "waiting",
+					requiresInput: true,
+					terminal: true,
+					final: false,
+					text: "Need test approval",
+					updatedAt: "2026-05-16T00:00:00.000Z",
+					nextCommand:
+						"maestro a2a reply mac-mini task-1 <response> --wait --work-graph",
+				},
+			],
+			nextActions: [
+				{
+					id: "reply:mac-mini:task-1",
+					label: "Reply to mac-mini task task-1",
+					command:
+						"maestro a2a reply mac-mini task-1 <response> --wait --work-graph",
+					severity: "critical",
+					peer: "mac-mini",
+					taskId: "task-1",
+					reason: "Peer needs input.",
+				},
+			],
+		});
+		const content: string[] = [];
+		const context = createContext(
+			"cockpit --registry /tmp/peers.json --tasks /tmp/tasks.json --timeout-ms 2500 --peer mac-mini --limit 5",
+		);
+
+		await handleA2ATuiCommand(context, {
+			addContent(text) {
+				content.push(text);
+			},
+			requestRender: vi.fn(),
+		});
+
+		expect(buildA2ACockpit).toHaveBeenCalledWith({
+			registryPath: "/tmp/peers.json",
+			tasksPath: "/tmp/tasks.json",
+			timeoutMs: 2500,
+			peer: "mac-mini",
+			limit: 5,
+		});
+		expect(content.join("\n")).toContain("A2A cockpit");
+		expect(content.join("\n")).toContain("1/1 peers online");
+		expect(content.join("\n")).toContain("waiting mac-mini task-1");
+		expect(content.join("\n")).toContain("Next actions");
+		expect(content.join("\n")).toContain("maestro a2a reply mac-mini task-1");
 		expect(context.showError).not.toHaveBeenCalled();
 	});
 

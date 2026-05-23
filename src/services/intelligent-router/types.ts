@@ -7,6 +7,11 @@ export const ROUTING_STRATEGIES = [
 
 export type RoutingStrategy = (typeof ROUTING_STRATEGIES)[number];
 
+export const MODEL_PERFORMANCE_METRIC_SOURCES = ["production", "eval"] as const;
+
+export type ModelPerformanceMetricSource =
+	(typeof MODEL_PERFORMANCE_METRIC_SOURCES)[number];
+
 export interface RoutingModelCost {
 	input?: number;
 	output?: number;
@@ -26,10 +31,13 @@ export interface ModelPerformanceMetricInput {
 	taskType: string;
 	provider: string;
 	model: string;
+	source?: ModelPerformanceMetricSource;
 	latencyMs?: number;
 	success?: boolean;
 	costUsd?: number;
 	qualityScore?: number;
+	evalSuite?: string;
+	evalCase?: string;
 	occurredAt?: Date | string;
 }
 
@@ -38,12 +46,17 @@ export interface ModelPerformanceAggregate {
 	provider: string;
 	model: string;
 	samples: number;
+	productionSamples: number;
+	evalSamples: number;
 	successCount: number;
 	successRate: number;
+	evalSuccessRate: number;
 	averageLatencyMs: number;
 	p95LatencyMs: number;
 	averageCostUsd: number;
 	qualityScore: number;
+	evalQualityScore: number;
+	evalSuites: string[];
 	updatedAt: string;
 }
 
@@ -74,6 +87,9 @@ export interface RoutingScore {
 	costScore: number;
 	qualityScore: number;
 	samples: number;
+	productionSamples: number;
+	evalSamples: number;
+	evalBacked: boolean;
 	available: boolean;
 	reasons: string[];
 }

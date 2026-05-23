@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
-import { createWriteStream } from "node:fs";
 import { spawn } from "node:child_process";
+import { appendFileSync, createWriteStream } from "node:fs";
 import process from "node:process";
 import { pathToFileURL } from "node:url";
 
@@ -24,6 +24,7 @@ export function parseArgs(argv) {
 		heartbeatSeconds: DEFAULT_HEARTBEAT_SECONDS,
 		label: "command",
 		logfile: "",
+		timingFile: "",
 		timeoutSeconds: 0,
 	};
 
@@ -45,6 +46,9 @@ export function parseArgs(argv) {
 			case "--logfile":
 				options.logfile = argv[++index] ?? "";
 				break;
+			case "--timing-file":
+				options.timingFile = argv[++index] ?? "";
+				break;
 			case "--timeout-seconds":
 				options.timeoutSeconds = parseSeconds(argv[++index], arg, {
 					allowZero: true,
@@ -57,7 +61,7 @@ export function parseArgs(argv) {
 
 	if (options.command.length === 0) {
 		throw new Error(
-			"Usage: node scripts/run-command-with-heartbeat.mjs [--label name] [--logfile path] [--timeout-seconds seconds] [--heartbeat-seconds seconds] -- <command> [args...]",
+			"Usage: node scripts/run-command-with-heartbeat.mjs [--label name] [--logfile path] [--timing-file path] [--timeout-seconds seconds] [--heartbeat-seconds seconds] -- <command> [args...]",
 		);
 	}
 
@@ -100,6 +104,35 @@ function formatElapsed(startedAt) {
 	const minutes = Math.floor(elapsedSeconds / 60);
 	const seconds = elapsedSeconds % 60;
 	return minutes > 0 ? `${minutes}m ${seconds}s` : `${seconds}s`;
+}
+
+function appendTiming(options, result) {
+	if (!options.timingFile) {
+		return;
+	}
+	const entry = {
+		label: options.label,
+		command: options.command,
+		startedAt: new Date(result.startedAtMs).toISOString(),
+		endedAt: new Date(result.endedAtMs).toISOString(),
+		durationMs: result.endedAtMs - result.startedAtMs,
+		status: result.timedOut ? "timed_out" : result.code === 0 ? "passed" : "failed",
+		exitCode: result.code,
+		signal: result.signal,
+		timedOut: result.timedOut,
+	};
+	try {
+		appendFileSync(options.timingFile, `${JSON.stringify(entry)}\n`);
+	} catch (error) {
+		console.error(
+			annotation(
+				"warning",
+				`${options.label} could not write timing file: ${
+					error instanceof Error ? error.message : String(error)
+				}`,
+			),
+		);
+	}
 }
 
 export async function runCommandWithHeartbeat(options) {
@@ -168,6 +201,7 @@ export async function runCommandWithHeartbeat(options) {
 		});
 		child.on("close", (code, signal) => resolve({ code, signal }));
 	});
+	const endedAt = Date.now();
 
 	if (heartbeatTimer) {
 		clearInterval(heartbeatTimer);
@@ -182,6 +216,14 @@ export async function runCommandWithHeartbeat(options) {
 	if (logStream) {
 		await new Promise((resolve) => logStream.end(resolve));
 	}
+
+	appendTiming(options, {
+		startedAtMs: startedAt,
+		endedAtMs: endedAt,
+		code: typeof result.code === "number" ? result.code : null,
+		signal: result.signal ?? null,
+		timedOut,
+	});
 
 	if (timedOut) {
 		return 124;

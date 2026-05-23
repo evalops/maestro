@@ -23,6 +23,7 @@ import {
 	type McpStatus,
 	type Message,
 	type Model,
+	type RunHealthLevel,
 	type Session,
 	type SessionSummary,
 	type UsageSummary,
@@ -36,6 +37,8 @@ import {
 	reconstructArtifactsFromMessages,
 } from "../services/artifacts.js";
 import { dataStore } from "../services/data-store.js";
+import "./composer-a2a-cockpit-panel.js";
+import "./composer-trajectory-replay-lab-panel.js";
 import "./command-drawer.js";
 import {
 	type ComposerApprovalStatusUpdate,
@@ -549,6 +552,16 @@ export class ComposerChat extends LitElement {
 			box-shadow: none;
 		}
 
+		.status-dot.warning {
+			background: var(--accent-yellow, #eab308);
+			box-shadow: 0 0 6px var(--accent-yellow, #eab308);
+		}
+
+		.status-dot.error {
+			background: var(--accent-red, #ef4444);
+			box-shadow: 0 0 6px var(--accent-red, #ef4444);
+		}
+
 		/* Messages Area */
 		.messages {
 			flex: 1;
@@ -767,7 +780,7 @@ export class ComposerChat extends LitElement {
 			position: fixed;
 			top: 64px;
 			right: 12px;
-			width: 260px;
+			width: min(360px, calc(100vw - 24px));
 			background: var(--bg-secondary, #0d1117);
 			border: 1px solid var(--border-secondary, #30363d);
 			padding: 0.75rem;
@@ -791,11 +804,76 @@ export class ComposerChat extends LitElement {
 		}
 
 		.health-popover-row {
-			margin: 0.25rem 0;
+			display: flex;
+			align-items: center;
+			justify-content: space-between;
+			gap: 0.75rem;
+			margin: 0.35rem 0;
+			color: var(--text-secondary, #b4b4b4);
+		}
+
+		.health-popover-row strong {
+			color: var(--text-primary, #e6edf3);
+			font-weight: 600;
 		}
 
 		.health-popover-row span {
 			color: var(--text-tertiary, #6e7681);
+			flex: 0 0 auto;
+		}
+
+		.health-popover-row .health-row-value {
+			min-width: 0;
+			text-align: right;
+			overflow-wrap: anywhere;
+		}
+
+		.health-slo-list {
+			display: flex;
+			flex-direction: column;
+			gap: 0.45rem;
+			margin-top: 0.65rem;
+			padding-top: 0.65rem;
+			border-top: 1px solid var(--border-subtle, #1e2023);
+		}
+
+		.health-slo {
+			border: 1px solid var(--border-subtle, #1e2023);
+			background: var(--bg-primary, #0a0e14);
+			padding: 0.55rem;
+		}
+
+		.health-slo.unhealthy {
+			border-color: rgba(239, 68, 68, 0.45);
+		}
+
+		.health-slo.degraded {
+			border-color: rgba(234, 179, 8, 0.45);
+		}
+
+		.health-slo-header {
+			display: flex;
+			align-items: center;
+			justify-content: space-between;
+			gap: 0.5rem;
+			margin-bottom: 0.3rem;
+		}
+
+		.health-slo-label {
+			color: var(--text-primary, #e6edf3);
+			font-weight: 600;
+		}
+
+		.health-slo-observed {
+			color: var(--text-secondary, #b4b4b4);
+			overflow-wrap: anywhere;
+		}
+
+		.health-slo-target,
+		.health-slo-detail {
+			margin-top: 0.2rem;
+			color: var(--text-tertiary, #6e7681);
+			overflow-wrap: anywhere;
 		}
 
 		.shortcuts-modal {
@@ -1099,6 +1177,8 @@ export class ComposerChat extends LitElement {
 	@state() private adminSettingsOpen = false;
 	@state() private artifactsOpen = false;
 	@state() private timelineOpen = false;
+	@state() private a2aCockpitOpen = false;
+	@state() private replayLabOpen = false;
 	@state() private activeArtifact: string | null = null;
 	@state() private artifactsState = createEmptyArtifactsState();
 	@state() private artifactsPanelAttachments: NonNullable<
@@ -2635,6 +2715,8 @@ export class ComposerChat extends LitElement {
 			| "grid"
 			| "file"
 			| "timeline"
+			| "network"
+			| "flask"
 			| "reduce"
 			| "close",
 	) {
@@ -2656,6 +2738,10 @@ export class ComposerChat extends LitElement {
 			file: "M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8zM14 2v6h6",
 			timeline:
 				"M4 5h4m-4 7h8m-8 7h12M10 5h10M14 12h6M18 19h2M8 5a2 2 0 1 1-4 0 2 2 0 0 1 4 0Zm4 7a2 2 0 1 1-4 0 2 2 0 0 1 4 0Zm4 7a2 2 0 1 1-4 0 2 2 0 0 1 4 0Z",
+			network:
+				"M12 6a3 3 0 1 0 0-6 3 3 0 0 0 0 6Zm-7 16a3 3 0 1 0 0-6 3 3 0 0 0 0 6Zm14 0a3 3 0 1 0 0-6 3 3 0 0 0 0 6ZM10.4 5.1 6.6 16.9m7-11.8 3.8 11.8M7.8 19h8.4",
+			flask:
+				"M9 3h6M10 3v5.5L5.5 17a3 3 0 0 0 2.65 4.4h7.7A3 3 0 0 0 18.5 17L14 8.5V3M8 14h8",
 			reduce: "M12 21a9 9 0 1 1 0-18 9 9 0 0 1 0 18Zm-5-9h10",
 			close: "M18 6 6 18M6 6l12 12",
 		};
@@ -2762,6 +2848,8 @@ export class ComposerChat extends LitElement {
 		this.artifactsOpen = !this.artifactsOpen;
 		if (this.artifactsOpen) {
 			this.timelineOpen = false;
+			this.a2aCockpitOpen = false;
+			this.replayLabOpen = false;
 			void this.refreshArtifactsPanelAttachments();
 		}
 	}
@@ -2774,6 +2862,9 @@ export class ComposerChat extends LitElement {
 	private setActiveArtifact(filename: string) {
 		this.activeArtifact = filename;
 		this.artifactsOpen = true;
+		this.timelineOpen = false;
+		this.a2aCockpitOpen = false;
+		this.replayLabOpen = false;
 		void this.refreshArtifactsPanelAttachments();
 	}
 
@@ -2785,11 +2876,47 @@ export class ComposerChat extends LitElement {
 		this.timelineOpen = !this.timelineOpen;
 		if (this.timelineOpen) {
 			this.artifactsOpen = false;
+			this.a2aCockpitOpen = false;
+			this.replayLabOpen = false;
 		}
 	}
 
 	private closeTimelinePanel() {
 		this.timelineOpen = false;
+	}
+
+	private toggleA2ACockpitPanel() {
+		if (this.shareToken) {
+			this.showToast("A2A cockpit is local-only", "info", 1800);
+			return;
+		}
+		this.a2aCockpitOpen = !this.a2aCockpitOpen;
+		if (this.a2aCockpitOpen) {
+			this.artifactsOpen = false;
+			this.timelineOpen = false;
+			this.replayLabOpen = false;
+		}
+	}
+
+	private closeA2ACockpitPanel() {
+		this.a2aCockpitOpen = false;
+	}
+
+	private toggleReplayLabPanel() {
+		if (this.shareToken || !this.currentSessionId) {
+			this.showToast("Select a writable session first", "info", 1800);
+			return;
+		}
+		this.replayLabOpen = !this.replayLabOpen;
+		if (this.replayLabOpen) {
+			this.artifactsOpen = false;
+			this.timelineOpen = false;
+			this.a2aCockpitOpen = false;
+		}
+	}
+
+	private closeReplayLabPanel() {
+		this.replayLabOpen = false;
 	}
 
 	private handleOpenArtifact = (e: Event) => {
@@ -3718,6 +3845,13 @@ export class ComposerChat extends LitElement {
 		}, duration);
 	}
 
+	private getRunHealthPillClass(status: RunHealthLevel | undefined) {
+		if (status === "unhealthy") return "error";
+		if (status === "degraded") return "warning";
+		if (status === "healthy") return "success";
+		return "info";
+	}
+
 	override render() {
 		const cwd = this.status?.cwd || "unknown";
 		const gitBranch = this.status?.git?.branch || "unknown";
@@ -3743,6 +3877,13 @@ export class ComposerChat extends LitElement {
 		const taskHealth = this.status?.backgroundTasks;
 		const taskRunning = taskHealth?.running ?? 0;
 		const taskFailed = taskHealth?.failed ?? 0;
+		const runHealth = this.status?.runHealth ?? null;
+		const runHealthStatus = runHealth?.status;
+		const runHealthClass = this.getRunHealthPillClass(runHealthStatus);
+		const overallRunHealthStatus = isOnline
+			? (runHealthStatus ?? "online")
+			: "offline";
+		const overallRunHealthClass = isOnline ? runHealthClass : "error";
 		const isShared = Boolean(this.shareToken);
 		const approvalPillClass = this.approvals.getApprovalPillClass();
 		const approvalTitle = this.approvals.getApprovalTitle();
@@ -3760,11 +3901,13 @@ export class ComposerChat extends LitElement {
 
 		const healthClass = !isOnline
 			? "error"
-			: latency !== null
-				? latency > 1000
-					? "warning"
-					: "success"
-				: "";
+			: runHealthStatus
+				? runHealthClass
+				: latency !== null
+					? latency > 1000
+						? "warning"
+						: "success"
+					: "";
 		const latencyLabel =
 			latency === null
 				? "n/a"
@@ -3907,6 +4050,11 @@ export class ComposerChat extends LitElement {
 									? html`<span class="muted" title=${latencyLabel}>${Math.round(latency)}ms</span>`
 									: ""
 							}
+							${
+								runHealthStatus && runHealthStatus !== "healthy"
+									? html`<span class="pill ${runHealthClass}">${runHealthStatus}</span>`
+									: ""
+							}
 							<button class="icon-btn" title="API health" @click=${this.toggleHealth}>${this.renderIcon("info")}</button>
 						</div>
 						<div class="status-item">
@@ -4009,12 +4157,28 @@ export class ComposerChat extends LitElement {
 							${this.renderIcon("file")}
 						</button>
 						<button
+							class="icon-btn ${this.a2aCockpitOpen ? "active" : ""}"
+							title=${isShared ? "Shared sessions are read-only" : "A2A cockpit"}
+							@click=${this.toggleA2ACockpitPanel}
+							?disabled=${isShared}
+						>
+							${this.renderIcon("network")}
+						</button>
+						<button
 							class="icon-btn ${this.timelineOpen ? "active" : ""}"
 							title=${isShared ? "Shared sessions are read-only" : "Run timeline"}
 							@click=${this.toggleTimelinePanel}
 							?disabled=${isShared || !this.currentSessionId}
 						>
 							${this.renderIcon("timeline")}
+						</button>
+						<button
+							class="icon-btn ${this.replayLabOpen ? "active" : ""}"
+							title=${isShared ? "Shared sessions are read-only" : "Replay lab"}
+							@click=${this.toggleReplayLabPanel}
+							?disabled=${isShared || !this.currentSessionId}
+						>
+							${this.renderIcon("flask")}
 						</button>
 						<button class="icon-btn ${this.compactMode ? "active" : ""}" title="Toggle compact layout (Ctrl/Cmd+M)" @click=${this.toggleCompact}>${this.renderIcon("grid")}</button>
 						<button class="icon-btn ${this.reducedMotion ? "active" : ""}" title="Toggle reduced motion" @click=${this.toggleReducedMotion}>${this.renderIcon("reduce")}</button>
@@ -4095,6 +4259,27 @@ export class ComposerChat extends LitElement {
 					  `
 						: ""
 				}
+				${
+					this.a2aCockpitOpen
+						? html`
+							<composer-a2a-cockpit-panel
+								.apiClient=${this.apiClient}
+								@close=${this.closeA2ACockpitPanel}
+							></composer-a2a-cockpit-panel>
+					  `
+						: ""
+				}
+				${
+					this.replayLabOpen
+						? html`
+							<composer-trajectory-replay-lab-panel
+								.apiClient=${this.apiClient}
+								.sessionId=${this.currentSessionId}
+								@close=${this.closeReplayLabPanel}
+							></composer-trajectory-replay-lab-panel>
+					  `
+						: ""
+				}
 			</div>
 
 			${
@@ -4159,13 +4344,50 @@ export class ComposerChat extends LitElement {
 					? html`
 						<div class="health-popover">
 							<div class="health-popover-header">
-								<span class="health-popover-label">API HEALTH</span>
+								<span class="health-popover-label">RUN HEALTH</span>
 								<button class="icon-btn" @click=${this.closeHealth}>${this.renderIcon("close")}</button>
 							</div>
-							<div class="health-popover-row"><span>Base:</span> ${this.apiClient.baseUrl}</div>
-							<div class="health-popover-row"><span>Latency:</span> ${latency ? `${Math.round(latency)}ms` : "n/a"}</div>
-							<div class="health-popover-row"><span>Last updated:</span> ${lastUpdated ? new Date(lastUpdated).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "n/a"}</div>
-							<div class="health-popover-row"><span>Last error:</span> ${this.lastApiError || "none"}</div>
+							<div class="health-popover-row">
+								<span>Overall:</span>
+								<strong class="pill ${overallRunHealthClass}">${overallRunHealthStatus}</strong>
+							</div>
+							<div class="health-popover-row">
+								<span>Base:</span>
+								<span class="health-row-value">${this.apiClient.baseUrl}</span>
+							</div>
+							<div class="health-popover-row">
+								<span>Latency:</span>
+								<span class="health-row-value">${latency ? `${Math.round(latency)}ms` : "n/a"}</span>
+							</div>
+							<div class="health-popover-row">
+								<span>Last updated:</span>
+								<span class="health-row-value">${lastUpdated ? new Date(lastUpdated).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "n/a"}</span>
+							</div>
+							${
+								runHealth?.slos?.length
+									? html`
+										<div class="health-slo-list">
+											${runHealth.slos.map(
+												(slo) => html`
+													<div class="health-slo ${slo.status}">
+														<div class="health-slo-header">
+															<span class="health-slo-label">${slo.label}</span>
+															<span class="pill ${this.getRunHealthPillClass(slo.status)}">${slo.status}</span>
+														</div>
+														<div class="health-slo-observed">${slo.observed}</div>
+														<div class="health-slo-target">${slo.target}</div>
+														${slo.detail ? html`<div class="health-slo-detail">${slo.detail}</div>` : ""}
+													</div>
+												`,
+											)}
+										</div>
+								  `
+									: ""
+							}
+							<div class="health-popover-row">
+								<span>Last error:</span>
+								<span class="health-row-value">${this.lastApiError || "none"}</span>
+							</div>
 						</div>
 				  `
 					: ""
