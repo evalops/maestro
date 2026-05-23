@@ -40,6 +40,7 @@ const DEFAULT_EXCLUDES = [
 	"test/internal/**",
 	"scripts/configure-npm-trusted-publisher.mjs",
 	"scripts/deprecate-release.js",
+	"scripts/smoke-published-replay-e2e.js",
 	"scripts/smoke-registry-install.js",
 	"scripts/validate-public-package-deps.js",
 ];
@@ -265,6 +266,8 @@ function resolvePublicPackageJson(
 			: {};
 	pkg.scripts["release:verify:published"] =
 		"node scripts/smoke-registry-install.js";
+	pkg.scripts["release:verify:published:e2e"] =
+		"node scripts/smoke-published-replay-e2e.js";
 	pkg.scripts["release:deprecate"] = "node scripts/deprecate-release.js";
 
 	return {

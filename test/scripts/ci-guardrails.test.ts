@@ -266,12 +266,16 @@ describe("planCiChecks", () => {
 			planCiChecks({
 				eventName: "pull_request",
 				changedFiles: [
+					"scripts/configure-npm-trusted-publisher.mjs",
+					"scripts/deprecate-release.js",
 					"scripts/install-smoke-utils.js",
 					"scripts/ci-nx-tests.sh",
 					"scripts/plan-ci-checks.mjs",
 					"scripts/plan-nx-test-command.mjs",
 					"scripts/release-readiness.js",
 					"scripts/smoke-packed-cli.js",
+					"scripts/smoke-published-replay-e2e.js",
+					"scripts/smoke-registry-install.js",
 					"scripts/workspace-utils.js",
 					"test/scripts/ci-guardrails.test.ts",
 					"test/scripts/workspace-utils.test.ts",
@@ -453,7 +457,6 @@ describe("planCiChecks", () => {
 				changedFiles: [
 					".github/workflows/ci.yml",
 					"docs/internal/operator-note.md",
-					"scripts/deprecate-release.js",
 					"scripts/run-scenario-replay-gate.mjs",
 					"scripts/validate-public-package-deps.js",
 				],
@@ -684,6 +687,18 @@ describe("ci workflow guardrails", () => {
 			"node --check scripts/release-readiness.js",
 		);
 		expect(helperSmokeStep?.run).toContain(
+			"node --check scripts/smoke-published-replay-e2e.js",
+		);
+		expect(helperSmokeStep?.run).toContain(
+			"node --check scripts/smoke-registry-install.js",
+		);
+		expect(helperSmokeStep?.run).toContain(
+			"node --check scripts/deprecate-release.js",
+		);
+		expect(helperSmokeStep?.run).toContain(
+			"node --check scripts/configure-npm-trusted-publisher.mjs",
+		);
+		expect(helperSmokeStep?.run).toContain(
 			"node ./scripts/run-vitest.js --run test/scripts/workspace-utils.test.ts",
 		);
 		expect(helperSmokeStep?.run).toContain(
@@ -693,6 +708,17 @@ describe("ci workflow guardrails", () => {
 			"node scripts/release-readiness.js pack-smoke",
 		);
 		expect(helperSmokeStep?.run).toContain("npm run build");
+		const trustedPublisherScript = readFileSync(
+			new URL(
+				"../../scripts/configure-npm-trusted-publisher.mjs",
+				import.meta.url,
+			),
+			{ encoding: "utf8" },
+		);
+		expect(trustedPublisherScript).toContain("getNpxCommand");
+		expect(trustedPublisherScript).not.toContain('spawnSync("npx"');
+		expect(trustedPublisherScript).toContain('"--allow-publish"');
+		expect(trustedPublisherScript).toContain('"--allow-stage-publish"');
 		expect(releaseReadinessStep?.if).toContain("release_helper_only != 'true'");
 	});
 
@@ -712,6 +738,21 @@ describe("ci workflow guardrails", () => {
 		]) {
 			expect(helpers[exportName]).toEqual(expect.any(Function));
 		}
+	});
+
+	it("keeps trusted-publisher setup on platform-aware npx resolution", () => {
+		const script = readFileSync(
+			new URL(
+				"../../scripts/configure-npm-trusted-publisher.mjs",
+				import.meta.url,
+			),
+			{ encoding: "utf8" },
+		);
+
+		expect(script).toContain("getNpxCommand");
+		expect(script).toContain("const npxCommand = getNpxCommand();");
+		expect(script).toContain("spawnSync(npxCommand, npmArgs");
+		expect(script).not.toContain('spawnSync("npx"');
 	});
 
 	it("keeps packed CLI smoke aligned with registry install validation", () => {
@@ -1290,10 +1331,14 @@ describe("planNxTestCommand", () => {
 			planNxTestCommand({
 				basePackage,
 				changedFiles: [
+					"scripts/configure-npm-trusted-publisher.mjs",
+					"scripts/deprecate-release.js",
 					"scripts/install-smoke-utils.js",
 					"scripts/plan-ci-checks.mjs",
 					"scripts/release-readiness.js",
 					"scripts/smoke-packed-cli.js",
+					"scripts/smoke-published-replay-e2e.js",
+					"scripts/smoke-registry-install.js",
 					"scripts/workspace-utils.js",
 					"test/scripts/ci-guardrails.test.ts",
 				],
@@ -1379,6 +1424,7 @@ describe("planNxTestCommand", () => {
 					"scripts/install-smoke-utils.js",
 					"scripts/release-readiness.js",
 					"scripts/smoke-packed-cli.js",
+					"scripts/smoke-published-replay-e2e.js",
 					"scripts/workspace-utils.js",
 				],
 				headPackage: basePackage,
