@@ -18,7 +18,32 @@ env:
   NX_DAEMON: false
 
 jobs:
+  changes:
+    runs-on: ${{ vars.PUBLIC_PR_VALIDATION_RUNNER || 'ubuntu-latest' }}
+    timeout-minutes: 5
+    outputs:
+      ci_infrastructure_only: ${{ steps.plan.outputs.ci_infrastructure_only }}
+      coverage: ${{ steps.plan.outputs.coverage }}
+      proof_harness_only: ${{ steps.plan.outputs.proof_harness_only }}
+      pr_checks: ${{ steps.plan.outputs.pr_checks }}
+      rust_hosted_conformance: ${{ steps.plan.outputs.rust_hosted_conformance }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0
+
+      - name: Plan expensive checks
+        id: plan
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          PR_LABELS: ${{ join(github.event.pull_request.labels.*.name, ',') }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before || 'HEAD~1' }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: node scripts/plan-ci-checks.mjs
+
   pr-checks:
+    needs: changes
+    if: ${{ github.event_name != 'pull_request' || needs.changes.outputs.pr_checks == 'true' }}
     runs-on: ${{ vars.PUBLIC_PR_VALIDATION_RUNNER || 'ubuntu-latest' }}
     timeout-minutes: 60
     steps:
@@ -31,12 +56,14 @@ jobs:
           ensure-ripgrep: "true"
 
       - name: Setup Java for Gradle Nx tasks
+        if: ${{ github.event_name != 'pull_request' || (needs.changes.outputs.ci_infrastructure_only != 'true' && needs.changes.outputs.proof_harness_only != 'true') }}
         uses: actions/setup-java@c5195efecf7bdfc987ee8bae7a71cb8b11521c00 # v4.7.1
         with:
           distribution: temurin
           java-version: "21"
 
       - name: Test (Nx affected)
+        if: ${{ github.event_name != 'pull_request' || needs.changes.outputs.ci_infrastructure_only != 'true' }}
         timeout-minutes: 60
         env:
           NX_BASE: ${{ github.event.pull_request.base.sha || 'HEAD~1' }}
@@ -44,6 +71,7 @@ jobs:
         run: bash scripts/ci-nx-tests.sh
 
       - name: Release readiness (CI mode)
+        if: ${{ github.event_name != 'pull_request' || (needs.changes.outputs.ci_infrastructure_only != 'true' && needs.changes.outputs.proof_harness_only != 'true') }}
         run: npm run release:check:ci
 
       - name: Upload Nx test logs (if any)
@@ -56,6 +84,8 @@ jobs:
           if-no-files-found: ignore
 
   rust-hosted-conformance:
+    needs: changes
+    if: ${{ github.event_name != 'pull_request' || needs.changes.outputs.rust_hosted_conformance == 'true' }}
     runs-on: ${{ vars.PUBLIC_PR_VALIDATION_RUNNER || 'ubuntu-latest' }}
     timeout-minutes: 60
     steps:
@@ -127,8 +157,8 @@ jobs:
           echo "should_run=$should_run" >> "$GITHUB_OUTPUT"
 
   coverage:
-    needs: coverage-scope
-    if: ${{ needs.coverage-scope.outputs.should_run == 'true' }}
+    needs: [changes, coverage-scope]
+    if: ${{ github.event_name != 'pull_request' || (needs.changes.outputs.coverage == 'true' && needs.coverage-scope.outputs.should_run == 'true') }}
     runs-on: ${{ vars.PUBLIC_PR_VALIDATION_RUNNER || 'ubuntu-latest' }}
     timeout-minutes: 75
     steps:
