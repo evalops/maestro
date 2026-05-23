@@ -117,6 +117,7 @@ describe("planCiChecks", () => {
 			}),
 		).toMatchObject({
 			ciInfrastructureOnly: true,
+			codegenUtilityOnly: false,
 			coverage: false,
 			lightPrChecks: true,
 			prChecks: true,
@@ -134,6 +135,7 @@ describe("planCiChecks", () => {
 			}),
 		).toMatchObject({
 			ciInfrastructureOnly: true,
+			codegenUtilityOnly: false,
 			coverage: false,
 			lightPrChecks: true,
 			prChecks: true,
@@ -356,6 +358,28 @@ describe("planCiChecks", () => {
 			prChecks: true,
 			publicMirror: true,
 			releaseHelperOnly: true,
+			rustHostedConformance: false,
+		});
+	});
+
+	it("routes codegen utility-only PR checks to the light runner lane", () => {
+		expect(
+			planCiChecks({
+				eventName: "pull_request",
+				changedFiles: [
+					".github/workflows/ci.yml",
+					"scripts/codegen-utils.mjs",
+					"scripts/plan-ci-checks.mjs",
+					"test/scripts/ci-guardrails.test.ts",
+					"test/scripts/codegen-utils.test.ts",
+				],
+			}),
+		).toMatchObject({
+			codegenUtilityOnly: true,
+			coverage: false,
+			lightPrChecks: true,
+			prChecks: true,
+			publicMirror: true,
 			rustHostedConformance: false,
 		});
 	});
@@ -841,6 +865,32 @@ describe("ci workflow guardrails", () => {
 		expect(steps[setupJavaIndex]?.with).not.toHaveProperty("cache");
 	});
 
+	it("uses targeted codegen checks instead of Nx for codegen utility-only changes", () => {
+		const workflow = parse(
+			readFileSync(new URL("../../.github/workflows/ci.yml", import.meta.url), {
+				encoding: "utf8",
+			}),
+		) as Workflow;
+		const changesOutputs = workflow.jobs?.changes?.outputs ?? {};
+		const steps = workflow.jobs?.["pr-checks"]?.steps ?? [];
+		const codegenStep = steps.find(
+			(step) => step.name === "Test codegen utilities",
+		);
+		const nxStep = steps.find((step) => step.name === "Test (Nx affected)");
+		const releaseReadinessStep = steps.find(
+			(step) => step.name === "Release readiness (CI mode)",
+		);
+
+		expect(changesOutputs).toHaveProperty("codegen_utility_only");
+		expect(codegenStep?.if).toContain("codegen_utility_only == 'true'");
+		expect(codegenStep?.run).toContain("test/scripts/codegen-utils.test.ts");
+		expect(codegenStep?.run).toContain("MAESTRO_RUSTFMT=");
+		expect(nxStep?.if).toContain("codegen_utility_only != 'true'");
+		expect(releaseReadinessStep?.if).toContain(
+			"codegen_utility_only != 'true'",
+		);
+	});
+
 	it("keeps dedicated JetBrains Java setup lightweight", () => {
 		const workflow = parse(
 			readFileSync(
@@ -907,7 +957,7 @@ describe("ci workflow guardrails", () => {
 			expect(workflow.jobs?.["public-release-mirror"]).toBeDefined();
 		}
 		const proofHarnessSkipCondition =
-			"${{ github.event_name != 'pull_request' || (needs.changes.outputs.ci_infrastructure_only != 'true' && needs.changes.outputs.proof_harness_only != 'true' && needs.changes.outputs.release_helper_only != 'true') }}";
+			"${{ github.event_name != 'pull_request' || (needs.changes.outputs.ci_infrastructure_only != 'true' && needs.changes.outputs.codegen_utility_only != 'true' && needs.changes.outputs.proof_harness_only != 'true' && needs.changes.outputs.release_helper_only != 'true') }}";
 		expect(setupRustStep?.if).toBe(proofHarnessSkipCondition);
 		expect(
 			prChecksJob?.steps?.find(

@@ -22,7 +22,7 @@ function makeTempDir() {
 }
 
 describe("formatRustWithRustfmt", () => {
-	it.each(["0", "false", "no", "off", "none", "skip", "disabled"])(
+	it.each(["", "  ", "0", "false", "no", "off", "none", "skip", "disabled"])(
 		"treats %s as an explicit formatter opt-out",
 		(value) => {
 			const rootDir = makeTempDir();
@@ -45,7 +45,7 @@ describe("formatRustWithRustfmt", () => {
 
 	it("allows MAESTRO_RUSTFMT to disable generated Rust formatting", () => {
 		const rootDir = makeTempDir();
-		process.env.MAESTRO_RUSTFMT = "off";
+		process.env.MAESTRO_RUSTFMT = "";
 		const source = 'pub fn generated(){println!("ok");}\n';
 
 		const result = formatRustWithRustfmt(

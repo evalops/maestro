@@ -625,6 +625,77 @@ describe("maestro event bus", () => {
 		});
 	});
 
+	it("publishes failed tool result CloudEvents on the failure subject", async () => {
+		const published: Array<{ subject: string; payload: string }> = [];
+		setMaestroEventBusTransportForTests({
+			async publish(subject, payload) {
+				published.push({ subject, payload });
+			},
+		});
+
+		recordMaestroToolCallCompleted({
+			tool_call_id: "tool_failed_1",
+			tool_execution_id: "texec_failed_1",
+			status: "MAESTRO_TOOL_CALL_STATUS_FAILED",
+			error_code: "exit_1",
+			error_message: "command failed",
+			completed_at: "2026-04-23T18:02:00.000Z",
+			env: { MAESTRO_EVENT_BUS_URL: "nats://bus.example:4222" },
+		});
+
+		await Promise.resolve();
+
+		expect(published).toHaveLength(1);
+		expect(published[0]?.subject).toBe("maestro.events.tool_call.failed");
+		expect(JSON.parse(published[0]?.payload ?? "{}")).toMatchObject({
+			type: "maestro.events.tool_call.failed",
+			data: {
+				tool_call_id: "tool_failed_1",
+				tool_execution_id: "texec_failed_1",
+				status: "MAESTRO_TOOL_CALL_STATUS_FAILED",
+				error_code: "exit_1",
+				error_message: "command failed",
+			},
+		});
+	});
+
+	it("publishes denied and cancelled tool outcomes on the completion subject", async () => {
+		const published: Array<{ subject: string; payload: string }> = [];
+		setMaestroEventBusTransportForTests({
+			async publish(subject, payload) {
+				published.push({ subject, payload });
+			},
+		});
+
+		for (const status of [
+			"MAESTRO_TOOL_CALL_STATUS_DENIED",
+			"MAESTRO_TOOL_CALL_STATUS_CANCELLED",
+		] as const) {
+			recordMaestroToolCallCompleted({
+				tool_call_id: `tool_${status.toLowerCase()}`,
+				status,
+				completed_at: "2026-04-23T18:03:00.000Z",
+				env: { MAESTRO_EVENT_BUS_URL: "nats://bus.example:4222" },
+			});
+		}
+
+		await Promise.resolve();
+
+		expect(published).toHaveLength(2);
+		for (const [index, status] of [
+			"MAESTRO_TOOL_CALL_STATUS_DENIED",
+			"MAESTRO_TOOL_CALL_STATUS_CANCELLED",
+		].entries()) {
+			expect(published[index]?.subject).toBe(
+				"maestro.events.tool_call.completed",
+			);
+			expect(JSON.parse(published[index]?.payload ?? "{}")).toMatchObject({
+				type: "maestro.events.tool_call.completed",
+				data: { status },
+			});
+		}
+	});
+
 	it("publishes skill invocation CloudEvents with selected skill identity", async () => {
 		const published: Array<{ subject: string; payload: string }> = [];
 		setMaestroEventBusTransportForTests({
