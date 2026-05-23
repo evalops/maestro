@@ -265,18 +265,78 @@ describe("planCiChecks", () => {
 				eventName: "pull_request",
 				changedFiles: [
 					"scripts/install-smoke-utils.js",
+					"scripts/ci-nx-tests.sh",
 					"scripts/plan-ci-checks.mjs",
 					"scripts/plan-nx-test-command.mjs",
 					"scripts/release-readiness.js",
 					"scripts/smoke-packed-cli.js",
 					"scripts/workspace-utils.js",
 					"test/scripts/ci-guardrails.test.ts",
+					"test/scripts/workspace-utils.test.ts",
 				],
 			}),
 		).toMatchObject({
 			coverage: false,
 			lightPrChecks: true,
 			prChecks: true,
+			releaseHelperOnly: true,
+			rustHostedConformance: false,
+		});
+	});
+
+	it("keeps release helper workflow smoke changes off the light runner lane", () => {
+		expect(
+			planCiChecks({
+				eventName: "pull_request",
+				changedFiles: [
+					".github/workflows/ci.yml",
+					"scripts/release-readiness.js",
+					"test/scripts/ci-guardrails.test.ts",
+				],
+			}),
+		).toMatchObject({
+			coverage: false,
+			lightPrChecks: false,
+			prChecks: true,
+			publicMirror: true,
+			releaseHelperOnly: true,
+			rustHostedConformance: false,
+		});
+	});
+
+	it("keeps release helper test and CI plumbing changes on the light lane with mirror validation", () => {
+		expect(
+			planCiChecks({
+				eventName: "pull_request",
+				changedFiles: [
+					"scripts/ci-nx-tests.sh",
+					"scripts/plan-ci-checks.mjs",
+					"scripts/plan-nx-test-command.mjs",
+					"test/scripts/ci-guardrails.test.ts",
+					"test/scripts/workspace-utils.test.ts",
+				],
+			}),
+		).toMatchObject({
+			coverage: false,
+			lightPrChecks: true,
+			prChecks: true,
+			publicMirror: true,
+			releaseHelperOnly: true,
+			rustHostedConformance: false,
+		});
+	});
+
+	it("keeps release helper test-only changes eligible for public mirror checks", () => {
+		expect(
+			planCiChecks({
+				eventName: "pull_request",
+				changedFiles: ["test/scripts/workspace-utils.test.ts"],
+			}),
+		).toMatchObject({
+			coverage: false,
+			lightPrChecks: true,
+			prChecks: true,
+			publicMirror: true,
 			releaseHelperOnly: true,
 			rustHostedConformance: false,
 		});
@@ -379,6 +439,8 @@ describe("planCiChecks", () => {
 				changedFiles: [
 					".github/workflows/ci.yml",
 					"docs/internal/operator-note.md",
+					"scripts/deprecate-release.js",
+					"scripts/run-scenario-replay-gate.mjs",
 					"scripts/validate-public-package-deps.js",
 				],
 			}).publicMirror,
@@ -444,6 +506,20 @@ describe("ci workflow guardrails", () => {
 		expect(regex.test("scripts/ci-nx-tests.sh")).toBe(true);
 		expect(regex.test("scripts/check-smoke-scripts.mjs")).toBe(true);
 		expect(regex.test("scripts/summarize-nx-profile.mjs")).toBe(true);
+	});
+
+	it("runs release helper script tests directly instead of the root Nx target", () => {
+		const script = readFileSync(
+			new URL("../../scripts/ci-nx-tests.sh", import.meta.url),
+			{ encoding: "utf8" },
+		);
+
+		expect(script).toContain("release_helper_script_tests_only");
+		expect(script).toContain(
+			"Release helper script tests are handled directly by Vitest.",
+		);
+		expect(script).toContain("node ./scripts/run-vitest.js --run");
+		expect(script).toContain("test/scripts/workspace-utils.test.ts");
 	});
 
 	it("builds dist before the runtime dependency validator", () => {
@@ -563,6 +639,9 @@ describe("ci workflow guardrails", () => {
 			"node --check scripts/release-readiness.js",
 		);
 		expect(helperSmokeStep?.run).toContain(
+			"node ./scripts/run-vitest.js --run test/scripts/workspace-utils.test.ts",
+		);
+		expect(helperSmokeStep?.run).toContain(
 			"node scripts/release-readiness.js pack-smoke",
 		);
 		expect(helperSmokeStep?.run).not.toContain("npm run build");
@@ -622,6 +701,12 @@ describe("ci workflow guardrails", () => {
 			'process.env.MAESTRO_INSTALL_AUDIT_LEVEL ?? "critical"',
 		);
 		expect(script).toContain("removeStandaloneBinaryArtifacts();");
+		expect(script).toContain("function ensurePackedCliArtifacts()");
+		expect(script).toContain('resolve(process.cwd(), "dist/cli.js")');
+		expect(script).toContain('run("npm run build");');
+		expect(script.indexOf("ensurePackedCliArtifacts();")).toBeLessThan(
+			script.indexOf('execSync("npm pack --silent"'),
+		);
 		expect(script).toContain('case "pack-smoke":');
 	});
 
@@ -1094,7 +1179,7 @@ describe("planNxTestCommand", () => {
 		});
 	});
 
-	it("keeps release package helper changes out of Nx affected tests", () => {
+	it("keeps release package helper scripts out of Nx affected tests", () => {
 		expect(
 			planNxTestCommand({
 				basePackage,
@@ -1109,6 +1194,23 @@ describe("planNxTestCommand", () => {
 				headPackage: basePackage,
 			}),
 		).toEqual({ files: [], mode: "none" });
+	});
+
+	it("keeps release package helper tests in Nx affected tests", () => {
+		expect(
+			planNxTestCommand({
+				basePackage,
+				changedFiles: [
+					"scripts/install-smoke-utils.js",
+					"scripts/workspace-utils.js",
+					"test/scripts/workspace-utils.test.ts",
+				],
+				headPackage: basePackage,
+			}),
+		).toEqual({
+			files: ["test/scripts/workspace-utils.test.ts"],
+			mode: "affected-files",
+		});
 	});
 
 	it("skips Nx when package scripts are the only changed files", () => {
@@ -1148,6 +1250,37 @@ describe("planNxTestCommand", () => {
 		).toBe(false);
 	});
 
+	it("skips runtime package validators for release helper only changes", () => {
+		expect(
+			runtimePackageValidatorsRequired({
+				basePackage,
+				changedFiles: [
+					"scripts/install-smoke-utils.js",
+					"scripts/plan-ci-checks.mjs",
+					"scripts/plan-nx-test-command.mjs",
+					"scripts/release-readiness.js",
+					"scripts/smoke-packed-cli.js",
+					"scripts/workspace-utils.js",
+					"test/scripts/ci-guardrails.test.ts",
+					"test/scripts/workspace-utils.test.ts",
+				],
+				headPackage: basePackage,
+			}),
+		).toBe(false);
+		expect(
+			runtimePackageValidatorsRequired({
+				basePackage,
+				changedFiles: [
+					"scripts/install-smoke-utils.js",
+					"scripts/release-readiness.js",
+					"scripts/smoke-packed-cli.js",
+					"scripts/workspace-utils.js",
+				],
+				headPackage: basePackage,
+			}),
+		).toBe(false);
+	});
+
 	it("requires runtime package validators for dependency-affecting changes", () => {
 		expect(
 			runtimePackageValidatorsRequired({
@@ -1166,18 +1299,6 @@ describe("planNxTestCommand", () => {
 			runtimePackageValidatorsRequired({
 				basePackage,
 				changedFiles: ["scripts/check-runtime-deps.js"],
-				headPackage: basePackage,
-			}),
-		).toBe(true);
-		expect(
-			runtimePackageValidatorsRequired({
-				basePackage,
-				changedFiles: [
-					"scripts/install-smoke-utils.js",
-					"scripts/release-readiness.js",
-					"scripts/smoke-packed-cli.js",
-					"scripts/workspace-utils.js",
-				],
 				headPackage: basePackage,
 			}),
 		).toBe(true);

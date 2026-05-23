@@ -77,6 +77,46 @@ describe("getWorkspacePackagePaths", () => {
 		]);
 	});
 
+	it("treats brace segments as alternatives without glob installed", () => {
+		const root = makeFixture();
+		copyScript(root, "workspace-utils.js");
+		writeFileSync(
+			join(root, "package.json"),
+			JSON.stringify({
+				name: "fixture",
+				type: "module",
+				workspaces: ["{packages,apps}/*"],
+			}),
+		);
+		writePackage(root, "apps/app-a");
+		writePackage(root, "packages/pkg-a");
+
+		expect(readWorkspacePaths(root)).toEqual([
+			realpathSync(resolve(root, "apps/app-a/package.json")),
+			realpathSync(resolve(root, "packages/pkg-a/package.json")),
+		]);
+	});
+
+	it("preserves wildcard semantics inside brace alternatives without glob installed", () => {
+		const root = makeFixture();
+		copyScript(root, "workspace-utils.js");
+		writeFileSync(
+			join(root, "package.json"),
+			JSON.stringify({
+				name: "fixture",
+				type: "module",
+				workspaces: ["{packages,pkg-*}/*"],
+			}),
+		);
+		writePackage(root, "packages/pkg-a");
+		writePackage(root, "pkg-tools/tool-a");
+
+		expect(readWorkspacePaths(root)).toEqual([
+			realpathSync(resolve(root, "packages/pkg-a/package.json")),
+			realpathSync(resolve(root, "pkg-tools/tool-a/package.json")),
+		]);
+	});
+
 	it("treats brace segments as alternatives with wildcards without glob installed", () => {
 		const root = makeFixture();
 		copyScript(root, "workspace-utils.js");
