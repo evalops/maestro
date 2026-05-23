@@ -24,6 +24,8 @@ echo "Nx head: $NX_HEAD"
 changed_files_log="nx-changed-files.log"
 affected_projects_log="nx-affected-projects.log"
 resolved_targets_log="nx-resolved-targets.log"
+ci_timing_file="${CI_TIMING_FILE:-ci-timing.jsonl}"
+rm -f "$ci_timing_file"
 
 git diff --name-only "$NX_BASE" "$NX_HEAD" | tee "$changed_files_log"
 
@@ -217,6 +219,7 @@ run_attempt() {
 		--label "Nx tests attempt ${attempt}" \
 		--logfile "$logfile" \
 		--summary-json "$summary_json" \
+		--timing-file "$ci_timing_file" \
 		--heartbeat-seconds "$NX_TEST_HEARTBEAT_SECONDS" \
 		--timeout-seconds "$NX_TEST_ATTEMPT_TIMEOUT_SECONDS" \
 		-- "${cmd[@]}"
@@ -260,6 +263,26 @@ append_ci_context_summary() {
 		echo "- Head: \`${NX_HEAD}\`"
 		echo "- Heartbeat interval: ${NX_TEST_HEARTBEAT_SECONDS}s"
 		echo "- Attempt timeout: ${NX_TEST_ATTEMPT_TIMEOUT_SECONDS}s"
+		if [[ -s "$ci_timing_file" ]]; then
+			echo ""
+			echo "#### CI timings"
+			echo ""
+			node - "$ci_timing_file" <<'NODE'
+import { readFileSync } from "node:fs";
+
+const file = process.argv[2];
+const rows = readFileSync(file, "utf8")
+	.split(/\r?\n/u)
+	.filter(Boolean)
+	.map((line) => JSON.parse(line));
+console.log("| Step | Status | Duration |");
+console.log("|---|---:|---:|");
+for (const row of rows) {
+	const duration = Number(row.durationMs) || 0;
+	console.log(`| ${row.label} | ${row.status} | ${(duration / 1000).toFixed(1)}s |`);
+}
+NODE
+		fi
 		echo ""
 		echo "#### Changed files"
 		echo '```text'

@@ -31,6 +31,8 @@ describe("run-command-with-heartbeat", () => {
 				"Nx",
 				"--logfile",
 				"nx.log",
+				"--timing-file",
+				"timing.jsonl",
 				"--summary-json",
 				"nx.json",
 				"--timeout-seconds",
@@ -47,6 +49,7 @@ describe("run-command-with-heartbeat", () => {
 			heartbeatSeconds: 2,
 			label: "Nx",
 			logfile: "nx.log",
+			timingFile: "timing.jsonl",
 			summaryJson: "nx.json",
 			timeoutSeconds: 10,
 		});
@@ -78,6 +81,45 @@ describe("run-command-with-heartbeat", () => {
 		expect(result.status).toBe(0);
 		expect(result.stdout).toContain("hello from child");
 		expect(readFileSync(logfile, "utf8")).toContain("hello from child");
+	});
+
+	it("writes a JSONL timing record", () => {
+		const root = makeRoot();
+		const timingFile = join(root, "timing.jsonl");
+		const result = spawnSync(
+			process.execPath,
+			[
+				scriptPath,
+				"--label",
+				"timed command",
+				"--timing-file",
+				timingFile,
+				"--timeout-seconds",
+				"5",
+				"--heartbeat-seconds",
+				"0",
+				"--",
+				process.execPath,
+				"-e",
+				"console.log('timed ok')",
+			],
+			{ encoding: "utf8" },
+		);
+
+		expect(result.status).toBe(0);
+		const [line] = readFileSync(timingFile, "utf8").trim().split("\n");
+		const timing = JSON.parse(line ?? "{}") as {
+			label?: string;
+			status?: string;
+			durationMs?: number;
+			command?: string[];
+		};
+		expect(timing).toMatchObject({
+			label: "timed command",
+			status: "passed",
+		});
+		expect(timing.durationMs).toBeGreaterThanOrEqual(0);
+		expect(timing.command?.[0]).toBe(process.execPath);
 	});
 
 	it("writes a summary JSON file for successful commands", () => {

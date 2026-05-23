@@ -6,6 +6,7 @@ import { PassThrough } from "node:stream";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { isDatabaseConfigured, testConnection } from "../../src/db/client.js";
 import {
+	buildRunHealthSnapshot,
 	handleStatus,
 	resetStatusDatabaseHealthCacheForTests,
 } from "../../src/server/handlers/status.js";
@@ -87,10 +88,82 @@ async function readStatus(options: { method?: string; body?: unknown } = {}) {
 	return JSON.parse(res.body) as Record<string, unknown>;
 }
 
+describe("buildRunHealthSnapshot", () => {
+	it("summarizes healthy local mode with all SLO lanes", () => {
+		const health = buildRunHealthSnapshot({
+			apiLatencyMs: 42,
+			backgroundTasks: {
+				running: 1,
+				failed: 0,
+				restarting: 0,
+			},
+			database: {
+				configured: false,
+				connected: false,
+			},
+			hooks: {
+				asyncInFlight: 0,
+				concurrency: {
+					max: 4,
+					active: 1,
+					queued: 0,
+				},
+			},
+			generatedAt: Date.parse("2026-05-22T12:00:00.000Z"),
+		});
+
+		expect(health).toMatchObject({
+			status: "healthy",
+			diagnostics: [],
+			generatedAt: "2026-05-22T12:00:00.000Z",
+		});
+		expect(health.slos.map((slo) => slo.id)).toEqual([
+			"api_latency",
+			"database",
+			"background_tasks",
+			"hook_queue",
+		]);
+	});
+
+	it("escalates unhealthy SLO lanes into operator diagnostics", () => {
+		const health = buildRunHealthSnapshot({
+			apiLatencyMs: 3200,
+			backgroundTasks: {
+				running: 0,
+				failed: 1,
+				restarting: 0,
+			},
+			database: {
+				configured: true,
+				connected: false,
+			},
+			hooks: {
+				asyncInFlight: 2,
+				concurrency: {
+					max: 1,
+					active: 1,
+					queued: 3,
+				},
+			},
+			generatedAt: Date.parse("2026-05-22T12:05:00.000Z"),
+		});
+
+		expect(health.status).toBe("unhealthy");
+		expect(health.diagnostics).toEqual([
+			"API latency: 3200ms",
+			"Database: disconnected",
+			"Background tasks: 0 running, 1 failed, 0 restarting",
+			"Hook queue: 1/1 active, 3 queued, 2 async",
+		]);
+	});
+});
+
 describe("handleStatus", () => {
 	let tempRoot: string;
 	let originalCwd: string;
 	let originalMaestroHome: string | undefined;
+	let originalDatabaseUrl: string | undefined;
+	let originalMaestroDatabaseUrl: string | undefined;
 
 	beforeEach(() => {
 		vi.mocked(isDatabaseConfigured).mockReturnValue(false);
@@ -98,7 +171,11 @@ describe("handleStatus", () => {
 		tempRoot = mkdtempSync(join(tmpdir(), "maestro-status-handler-"));
 		originalCwd = process.cwd();
 		originalMaestroHome = process.env.MAESTRO_HOME;
+		originalDatabaseUrl = process.env.DATABASE_URL;
+		originalMaestroDatabaseUrl = process.env.MAESTRO_DATABASE_URL;
 		process.env.MAESTRO_HOME = join(tempRoot, ".maestro-home");
+		Reflect.deleteProperty(process.env, "DATABASE_URL");
+		Reflect.deleteProperty(process.env, "MAESTRO_DATABASE_URL");
 		process.chdir(tempRoot);
 		resetStatusDatabaseHealthCacheForTests();
 		vi.mocked(isDatabaseConfigured).mockReset();
@@ -117,6 +194,16 @@ describe("handleStatus", () => {
 		} else {
 			process.env.MAESTRO_HOME = originalMaestroHome;
 		}
+		if (originalDatabaseUrl === undefined) {
+			Reflect.deleteProperty(process.env, "DATABASE_URL");
+		} else {
+			process.env.DATABASE_URL = originalDatabaseUrl;
+		}
+		if (originalMaestroDatabaseUrl === undefined) {
+			Reflect.deleteProperty(process.env, "MAESTRO_DATABASE_URL");
+		} else {
+			process.env.MAESTRO_DATABASE_URL = originalMaestroDatabaseUrl;
+		}
 		rmSync(tempRoot, { recursive: true, force: true });
 	});
 
@@ -125,6 +212,15 @@ describe("handleStatus", () => {
 
 		await expect(readStatus()).resolves.toMatchObject({
 			cwd: process.cwd(),
+			runHealth: {
+				status: "healthy",
+				slos: [
+					{ id: "api_latency" },
+					{ id: "database" },
+					{ id: "background_tasks" },
+					{ id: "hook_queue" },
+				],
+			},
 			onboarding: {
 				shouldShow: true,
 				completed: false,

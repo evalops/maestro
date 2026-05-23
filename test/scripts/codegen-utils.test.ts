@@ -2,7 +2,10 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { formatRustWithRustfmt } from "../../scripts/codegen-utils.mjs";
+import {
+	formatRustWithRustfmt,
+	rustGeneratedMatches,
+} from "../../scripts/codegen-utils.mjs";
 
 const envName = "HEADLESS_PROTOCOL_RUSTFMT";
 const managedEnvNames = [
@@ -68,6 +71,28 @@ describe("formatRustWithRustfmt", () => {
 		);
 
 		expect(result).toEqual({ content: source, rustfmtAvailable: false });
+	});
+
+	it("matches generated Rust when rustfmt is intentionally unavailable", () => {
+		const rootDir = makeTempDir();
+		process.env.MAESTRO_RUSTFMT = "off";
+		const source = 'pub const VALUES:&[&str]=&["a",];\n';
+		const formatted = 'pub const VALUES: &[&str] = &["a"];\n';
+
+		const output = formatRustWithRustfmt(source, join(rootDir, "out.rs"), {
+			rootDir,
+			label: "generated Rust test file",
+		});
+
+		expect(output).toEqual({
+			content: source,
+			rustfmtAvailable: false,
+		});
+		expect(
+			rustGeneratedMatches(formatted, output.content, {
+				rustfmtAvailable: output.rustfmtAvailable,
+			}),
+		).toBe(true);
 	});
 
 	it("treats per-script rustfmt off values as an explicit formatter opt-out", () => {

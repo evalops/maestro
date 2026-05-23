@@ -8,13 +8,13 @@ import {
 	type AgentTrajectoryInspectionReport,
 	buildAgentTrajectoryInspectionReport,
 } from "../../server/agent-trajectory-inspection.js";
+import { DEFAULT_AGENT_TRAJECTORY_REPLAY_LAB_RULES } from "../../server/agent-trajectory-replay-lab.js";
 import {
 	type AgentTrajectoryReplayReport,
 	replayAgentTrajectoryReport,
 } from "../../server/agent-trajectory-replay.js";
 import {
 	type AgentTrajectoryScoreReport,
-	type AgentTrajectoryScorerRule,
 	scoreAgentTrajectoryReport,
 } from "../../server/agent-trajectory-scorers.js";
 import {
@@ -27,15 +27,6 @@ import { migrateToCurrentVersion } from "../../session/migration.js";
 import type { SessionEntry, SessionHeaderEntry } from "../../session/types.js";
 
 const RUN_RECONSTRUCTION_SCHEMA = "evalops.maestro.run-reconstruction.v1";
-const RUN_INSPECT_TRAJECTORY_RULES: AgentTrajectoryScorerRule[] = [
-	{
-		id: "final-event-has-evidence",
-		severity: "error",
-		description:
-			"The final answer or runtime terminal event must have evidence.",
-		finalEvidenceCoverage: true,
-	},
-];
 
 type ComposerRunTimeline = ReturnType<typeof buildComposerRunTimeline>;
 type ComposerRunTimelineItem = ComposerRunTimeline["items"][number];
@@ -338,7 +329,7 @@ async function buildRunReconstructionReport(
 	const trajectoryReplay = replayAgentTrajectoryReport(trajectory);
 	const trajectoryScore = scoreAgentTrajectoryReport(
 		trajectory,
-		RUN_INSPECT_TRAJECTORY_RULES,
+		DEFAULT_AGENT_TRAJECTORY_REPLAY_LAB_RULES,
 	);
 	const trajectoryInspection = buildAgentTrajectoryInspectionReport({
 		timelineItems: timeline.items,

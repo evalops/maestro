@@ -42,7 +42,7 @@ jobs:
       redis:
         image: redis:7-alpine
         ports:
-          - 6379
+          - 6379/tcp
         options: >-
           --health-cmd "redis-cli ping"
           --health-interval 10s
@@ -52,7 +52,7 @@ jobs:
       postgres:
         image: postgres:16-alpine
         ports:
-          - 5432
+          - 5432/tcp
         env:
           POSTGRES_USER: maestro
           POSTGRES_PASSWORD: ${{ env.MAESTRO_INTEGRATION_POSTGRES_PASSWORD }}
