@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -10,9 +11,11 @@ import {
 	buildMaestroCloudEvent,
 	closeMaestroEventBusTransport,
 	getMaestroEventBusStatus,
+	hashA2AEndpointUrl,
 	mirrorTelemetryToMaestroEventBus,
 	publishMaestroCloudEvent,
 	publishMaestroCloudEventStrict,
+	recordMaestroA2ADelegationEvent,
 	recordMaestroEvalScored,
 	recordMaestroLearnedContext,
 	recordMaestroPromptVariantSelected,
@@ -895,6 +898,104 @@ describe("maestro event bus", () => {
 				dispatched_at: "2026-05-19T17:00:00.000Z",
 			},
 		});
+	});
+
+	it("publishes A2A delegation CloudEvents with redacted endpoint correlation", async () => {
+		const published: Array<{ subject: string; payload: string }> = [];
+		setMaestroEventBusTransportForTests({
+			async publish(subject, payload) {
+				published.push({ subject, payload });
+			},
+		});
+
+		recordMaestroA2ADelegationEvent({
+			event_type: MaestroBusEventType.A2ATaskDispatched,
+			event_id: "event_a2a_1",
+			swarm_id: "swarm_1",
+			lane_id: "lane_alpha",
+			parent_task_id: "task_parent",
+			a2a_task_id: "a2a_task_1",
+			a2a_message_id: "a2a_message_1",
+			context_id: "ctx_1",
+			peer_agent_id: "agent_alpha",
+			peer_name: "Alpha",
+			peer_endpoint_url: "https://alpha.internal/a2a?token=secret",
+			peer_endpoint_kind: "internal",
+			skill_id: "maestro.subagent.code-review",
+			task_class: "code.review",
+			source: "platform-agent-registry",
+			status: "TASK_STATE_SUBMITTED",
+			success: true,
+			latency_ms: 11,
+			metadata: {
+				platformAgentRunId: "run_platform_1",
+				workerQueue: "queue-a2a",
+			},
+			correlation: {
+				workspace_id: "workspace_123",
+				session_id: "session_123",
+				traceparent: "00-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-bbbbbbbbbbbbbbbb-01",
+				attributes: {
+					platform_agent_run_id: "run_platform_1",
+				},
+			},
+			occurred_at: "2026-05-23T18:00:00.000Z",
+			env: { MAESTRO_EVENT_BUS_URL: "nats://bus.example:4222" },
+		});
+
+		await Promise.resolve();
+
+		expect(published).toHaveLength(1);
+		expect(published[0]?.subject).toBe("maestro.events.a2a.task.dispatched");
+		const event = JSON.parse(published[0]?.payload ?? "{}");
+		expect(event).toMatchObject({
+			type: "maestro.events.a2a.task.dispatched",
+			data: {
+				"@type": "type.googleapis.com/maestro.v1.MaestroA2ADelegationEvent",
+				swarm_id: "swarm_1",
+				lane_id: "lane_alpha",
+				parent_task_id: "task_parent",
+				a2a_task_id: "a2a_task_1",
+				a2a_message_id: "a2a_message_1",
+				context_id: "ctx_1",
+				peer_agent_id: "agent_alpha",
+				peer_endpoint_kind: "internal",
+				skill_id: "maestro.subagent.code-review",
+				task_class: "code.review",
+				source: "platform-agent-registry",
+				status: "TASK_STATE_SUBMITTED",
+				success: true,
+				latency_ms: 11,
+			},
+			extensions: {
+				traceparent: "00-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-bbbbbbbbbbbbbbbb-01",
+				workspace_id: "workspace_123",
+				maestro_session_id: "session_123",
+			},
+		});
+		expect(event.data.peer_endpoint_hash).toBe(
+			`sha256:${createHash("sha256")
+				.update("https://alpha.internal/a2a")
+				.digest("hex")}`,
+		);
+		expect(JSON.stringify(event)).not.toContain("token=secret");
+		expect(JSON.stringify(event)).not.toContain("alpha.internal/a2a");
+		expect(event.data.correlation).not.toHaveProperty("traceparent");
+	});
+
+	it("normalizes A2A endpoint URLs before hashing telemetry identity", () => {
+		const expectedHash = `sha256:${createHash("sha256")
+			.update("https://alpha.internal/a2a")
+			.digest("hex")}`;
+
+		expect(
+			hashA2AEndpointUrl(
+				"https://user:secret@alpha.internal/a2a?token=one#fragment",
+			),
+		).toBe(expectedHash);
+		expect(hashA2AEndpointUrl("https://alpha.internal/a2a?token=two")).toBe(
+			expectedHash,
+		);
 	});
 
 	it("mirrors subagent dispatch telemetry into audit CloudEvents", async () => {

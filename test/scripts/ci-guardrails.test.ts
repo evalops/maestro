@@ -948,6 +948,28 @@ describe("ci workflow guardrails", () => {
 		}
 	});
 
+	it("authenticates Hopper release metadata sync before GitHub CLI calls", () => {
+		const workflow = parse(
+			readFileSync(
+				new URL("../../.github/workflows/release.yml", import.meta.url),
+				{ encoding: "utf8" },
+			),
+		) as Workflow;
+		const hopperStep = workflow.jobs?.publish?.steps?.find(
+			(step) => step.name === "Sync Hopper version metadata",
+		);
+		const run = hopperStep?.run ?? "";
+
+		expect(hopperStep).toBeDefined();
+		expect(run).toContain('export GH_TOKEN="$HOPPER_PUSH_TOKEN"');
+		expect(run.indexOf('export GH_TOKEN="$HOPPER_PUSH_TOKEN"')).toBeLessThan(
+			run.indexOf("gh api user"),
+		);
+		expect(run).not.toContain("gh auth status");
+		expect(run).not.toContain("gh auth setup-git");
+		expect(run).not.toContain("gh auth refresh");
+	});
+
 	it("keeps packed CLI smoke enabled independently of package-lock management", () => {
 		const script = readFileSync(
 			new URL("../../scripts/release-readiness.js", import.meta.url),
@@ -1324,7 +1346,7 @@ describe("ci workflow guardrails", () => {
 		const syncStep = steps[syncIndex];
 
 		expect(authStep?.if).toBe(
-			"${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.id == github.event.repository.id }}",
+			"${{ github.event_name == 'push' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.id == github.event.repository.id) }}",
 		);
 		expect(appTokenStep?.uses).toBe(
 			"actions/create-github-app-token@67018539274d69449ef7c02e8e71183d1719ab42",

@@ -17,7 +17,7 @@ describe("ComposerChat", () => {
 	it("renders with default properties", () => {
 		assert.ok(element);
 		assert.equal(element.apiEndpoint, "http://localhost:8080");
-		assert.equal(element.model, "claude-sonnet-4-5");
+		assert.equal(element.model, "openai-codex/gpt-5.5");
 	});
 
 	it("displays header with title", async () => {

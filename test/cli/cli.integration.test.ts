@@ -307,6 +307,7 @@ describe("CLI integration", () => {
 	const originalLog = console.log;
 	const originalError = console.error;
 	const originalStdoutWrite = process.stdout.write;
+	const originalStderrWrite = process.stderr.write;
 	let output: string[];
 	let tempAgentDir: string;
 
@@ -333,12 +334,17 @@ describe("CLI integration", () => {
 			output.push(String(chunk));
 			return true;
 		}) as typeof process.stdout.write;
+		process.stderr.write = ((chunk: unknown) => {
+			output.push(String(chunk));
+			return true;
+		}) as typeof process.stderr.write;
 	});
 
 	afterEach(() => {
 		console.log = originalLog;
 		console.error = originalError;
 		process.stdout.write = originalStdoutWrite;
+		process.stderr.write = originalStderrWrite;
 		if (originalEnv === undefined) {
 			Reflect.deleteProperty(process.env, "ANTHROPIC_API_KEY");
 		} else {

@@ -13,6 +13,7 @@ import type { Api, Model } from "../agent/types.js";
 import {
 	findModelById,
 	getFactoryDefaultModelSelection,
+	getRegisteredModels,
 	getSupportedProviders,
 	resolveAlias,
 	resolveModel,
@@ -24,6 +25,25 @@ export interface ModelResolutionResult {
 	provider: string;
 	modelId: string;
 	model: Model<Api>;
+}
+
+const DEFAULT_PROVIDER = "openai-codex";
+const DEFAULT_MODEL_ID = "gpt-5.5";
+const DEFAULT_MODEL_ID_BY_PROVIDER: Record<string, string> = {
+	anthropic: "claude-opus-4-6",
+	"openai-codex": DEFAULT_MODEL_ID,
+	openai: "gpt-5.2",
+};
+
+function defaultModelIdForProvider(provider: string): string | undefined {
+	const preferred = DEFAULT_MODEL_ID_BY_PROVIDER[provider];
+	const models = getRegisteredModels().filter(
+		(model) => model.provider === provider,
+	);
+	if (preferred && models.some((model) => model.id === preferred)) {
+		return preferred;
+	}
+	return models[0]?.id ?? preferred;
 }
 
 /**
@@ -86,14 +106,14 @@ export async function resolveModelFromArgs(params: {
 			if (!provider) {
 				provider = factoryDefault.provider;
 			}
-			if (!modelId) {
+			if (!modelId && factoryDefault.provider === provider) {
 				modelId = factoryDefault.modelId;
 			}
 		}
 	}
 
-	provider ??= "anthropic";
-	modelId ??= "claude-opus-4-6";
+	provider ??= DEFAULT_PROVIDER;
+	modelId ??= defaultModelIdForProvider(provider) ?? DEFAULT_MODEL_ID;
 
 	// Validate provider
 	const supportedProviders = new Set(getSupportedProviders());

@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { readFile } from "node:fs/promises";
 import chalk from "chalk";
 import { selectA2ACapabilityPeer } from "../../platform/a2a-capability-market.js";
 import {
@@ -45,6 +46,10 @@ import {
 	recordA2ATaskStart,
 	updateA2ATaskInLedger,
 } from "../../platform/a2a-task-ledger.js";
+import {
+	type A2ATelemetryCloudEventLike,
+	inspectA2ATelemetry,
+} from "../../platform/a2a-telemetry-inspect.js";
 import {
 	extractA2AWorkGraphMetadata,
 	formatA2AWorkGraphCodexSubagents,
@@ -184,6 +189,7 @@ const A2A_VALUE_FLAGS_BY_SUBCOMMAND: Record<string, readonly string[]> = {
 		"--timeout-ms",
 	],
 	tasks: ["--registry", "--tasks", "--timeout-ms"],
+	telemetry: ["--events", "--swarm-id"],
 	wait: [
 		"--interval-ms",
 		"--max-wait-ms",
@@ -210,6 +216,7 @@ const A2A_BOOLEAN_FLAGS_BY_SUBCOMMAND: Record<string, readonly string[]> = {
 	reply: ["--wait", "--work-graph"],
 	send: ["--wait", "--work-graph"],
 	tasks: ["--json", "--refresh", "--work-graph"],
+	telemetry: ["--json"],
 	wait: ["--work-graph"],
 };
 const A2A_COLLECT_VALUE_FLAGS_BY_SUBCOMMAND: Record<string, readonly string[]> =
@@ -283,6 +290,9 @@ export async function handleA2ACommand(args: string[]): Promise<void> {
 			return;
 		case "tasks":
 			await handleA2ATasks(parsed);
+			return;
+		case "telemetry":
+			await handleA2ATelemetry(parsed);
 			return;
 		case "wait":
 			await handleA2AWait(parsed);
@@ -1853,6 +1863,83 @@ async function loadA2AReplyLedgerEntry(
 	}
 }
 
+async function handleA2ATelemetry(parsed: ParsedA2AArgs): Promise<void> {
+	const eventsPath =
+		stringFlag(parsed, "--events") ??
+		fail("Usage: maestro a2a telemetry --events <path> --swarm-id <id>");
+	const swarmId =
+		stringFlag(parsed, "--swarm-id") ??
+		parsed.positionals.shift() ??
+		fail("Usage: maestro a2a telemetry --events <path> --swarm-id <id>");
+	const events = await loadA2ATelemetryEvents(eventsPath);
+	const inspection = inspectA2ATelemetry({ swarmId, events });
+	if (booleanFlag(parsed, "--json")) {
+		console.log(JSON.stringify(inspection, null, 2));
+		return;
+	}
+	console.log(
+		`A2A telemetry ${chalk.bold(swarmId)} ${inspection.complete ? "complete" : "incomplete"}`,
+	);
+	console.log(
+		chalk.dim(
+			`  events=${inspection.counts.events} lanes=${inspection.counts.lanes} completed=${inspection.counts.completedLanes} failed=${inspection.counts.failedLanes} missing=${inspection.counts.missingTelemetryLanes}`,
+		),
+	);
+	for (const lane of inspection.lanes) {
+		console.log(
+			`${lane.laneId} ${lane.status ?? "(unknown)"} ${
+				lane.peer ? chalk.dim(lane.peer) : ""
+			}`.trim(),
+		);
+		const details = [
+			lane.parentTaskId ? `parent=${lane.parentTaskId}` : undefined,
+			lane.a2aTaskId ? `task=${lane.a2aTaskId}` : undefined,
+			lane.a2aMessageId ? `message=${lane.a2aMessageId}` : undefined,
+			lane.contextId ? `context=${lane.contextId}` : undefined,
+			lane.source ? `source=${lane.source}` : undefined,
+		]
+			.filter(Boolean)
+			.join(" ");
+		if (details) {
+			console.log(chalk.dim(`  ${details}`));
+		}
+		if (lane.missingEventTypes.length > 0) {
+			console.log(
+				chalk.yellow(`  missing: ${lane.missingEventTypes.join(", ")}`),
+			);
+		}
+	}
+}
+
+async function loadA2ATelemetryEvents(
+	path: string,
+): Promise<A2ATelemetryCloudEventLike[]> {
+	const parsed = JSON.parse(await readFile(path, "utf8")) as unknown;
+	const events = Array.isArray(parsed)
+		? parsed
+		: isRecord(parsed) && Array.isArray(parsed.events)
+			? parsed.events
+			: undefined;
+	if (!events) {
+		throw new Error("A2A telemetry events file must be an array or { events }");
+	}
+	return events.filter(isA2ATelemetryCloudEventLike);
+}
+
+function isA2ATelemetryCloudEventLike(
+	value: unknown,
+): value is A2ATelemetryCloudEventLike {
+	return (
+		isRecord(value) &&
+		typeof value.type === "string" &&
+		(value.data === undefined || isRecord(value.data))
+	);
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+	return Boolean(value && typeof value === "object" && !Array.isArray(value));
+}
+
 async function handleA2ATasks(parsed: ParsedA2AArgs): Promise<void> {
 	const peerName = parsed.positionals.shift();
 	if (booleanFlag(parsed, "--refresh")) {
@@ -2321,6 +2408,7 @@ function printA2AHelp(): void {
   maestro a2a delegate --platform --from-agent-id <agent-id> [--to-agent-id <agent-id>|--capability <capability>] --skill <skill-id> <text> [--json]
   maestro a2a control <delegation-id> --mode steer|followup|collect|interrupt|cancel [--workspace-id <id>] [message]
   maestro a2a graph <delegation-id> [--workspace-id <id>] [--json]
+  maestro a2a telemetry --events <path> --swarm-id <id> [--json]
   maestro a2a reply <peer> <task-id> <text> [--wait] [--work-graph]
   maestro a2a send <peer> <text> [--wait] [--tasks <path>] [--work-graph]
   maestro a2a tasks [peer] [--json] [--refresh] [--work-graph]

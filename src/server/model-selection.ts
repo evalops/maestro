@@ -75,6 +75,18 @@ function providerExists(name: string | undefined): boolean {
 	return getRegisteredModels().some((m) => m.provider === trimmed);
 }
 
+function providerForBareModelId(
+	modelId: string | undefined,
+	defaultProvider: string,
+): string | undefined {
+	if (!modelId) return undefined;
+	const matches = getRegisteredModels().filter((model) => model.id === modelId);
+	return (
+		matches.find((model) => model.provider === defaultProvider)?.provider ??
+		matches[0]?.provider
+	);
+}
+
 export function determineModelSelection(
 	modelInput: string | null | undefined,
 	defaultProvider: string,
@@ -88,7 +100,8 @@ export function determineModelSelection(
 	}
 
 	if (!parts.provider && parts.modelId) {
-		parts.provider = defaultProvider;
+		parts.provider =
+			providerForBareModelId(parts.modelId, defaultProvider) ?? defaultProvider;
 	}
 
 	if (!parts.provider && !parts.modelId) {

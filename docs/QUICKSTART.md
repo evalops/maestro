@@ -25,11 +25,17 @@ cd maestro
 bun install        # installs workspace deps with Bun
 ```
 
-## Configure keys
-Store provider environment variables in `.env` or export them in your shell (see `maestro --help` for supported keys). Examples:
+## Configure auth
+Sign in with ChatGPT for the default Codex subscription models:
+
 ```bash
-export ANTHROPIC_API_KEY=sk-ant-...
+maestro codex login
+```
+
+You can also store provider environment variables in `.env` or export them in your shell (see `maestro --help` for supported keys). Examples:
+```bash
 export OPENAI_API_KEY=sk-...
+export ANTHROPIC_API_KEY=sk-ant-...
 ```
 
 You can also keep keys in `~/.maestro/keys.json`; see [Sessions](SESSIONS.md) for how the client resolves config files and per-workspace overrides.
@@ -47,7 +53,7 @@ During development you can use:
 - `npx nx run maestro:test --skip-nx-cache` – mirrors CI by building TUI/Web before tests
 - `bun run --filter @evalops/tui build` / `bun run --filter @evalops/maestro-web build` – package-specific builds
 - `bun run dev` – optional watch mode (tsc --watch) for inner-loop work
-- `bun run cli -- --provider anthropic --model claude-opus-4-6 "hello"` – run the CLI directly from `dist/cli.js` with the canonical model example
+- `bun run cli -- --provider openai-codex --model gpt-5.5 "hello"` – run the CLI directly from `dist/cli.js` with the default Codex model example
 
 ## Validate
 Use these checks before opening a PR:
