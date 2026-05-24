@@ -98,6 +98,20 @@ function expectPublicValidationWorkflow(): void {
 	expect(isPublicValidationWorkflow(workflow)).toBe(true);
 }
 
+function expectRustTuiRunnerLane(runsOn: string): void {
+	expect(runsOn).toContain("ubuntu-latest");
+	if (runsOn.includes("PUBLIC_PR_VALIDATION_RUNNER")) {
+		expect(runsOn).not.toContain("PR_RUST_RUNNER");
+		expect(runsOn).not.toContain("evalops-private-heavy");
+		expect(runsOn).not.toContain("INTERNAL_CONFIRMATION_RUNNER");
+		return;
+	}
+
+	expect(runsOn).toContain("PR_RUST_RUNNER");
+	expect(runsOn).toContain("evalops-private-heavy");
+	expect(runsOn).toContain("INTERNAL_CONFIRMATION_RUNNER");
+}
+
 describe("planCiChecks", () => {
 	it("runs expensive checks on non-PR events", () => {
 		expect(
@@ -1653,6 +1667,24 @@ describe("rust workflow guardrails", () => {
 		expect(steps.find((step) => step.name === "Run all tests")?.run).toContain(
 			'cargo_bin="${CARGO_HOME:-$HOME/.cargo}/bin/cargo"',
 		);
+	});
+
+	it("routes Rust TUI pull-request jobs to the expected runner lane", () => {
+		const workflow = parse(
+			readFileSync(
+				new URL("../../.github/workflows/rust.yml", import.meta.url),
+				{
+					encoding: "utf8",
+				},
+			),
+		) as Workflow;
+		const buildRunsOn = String(workflow.jobs?.build?.["runs-on"] ?? "");
+		const hooksCoverageRunsOn = String(
+			workflow.jobs?.["hooks-coverage"]?.["runs-on"] ?? "",
+		);
+
+		expectRustTuiRunnerLane(buildRunsOn);
+		expectRustTuiRunnerLane(hooksCoverageRunsOn);
 	});
 });
 
