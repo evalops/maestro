@@ -12,6 +12,9 @@ import {
 	type MaestroAppServerModelListResult,
 	type MaestroAppServerModelProviderCapabilities,
 	type MaestroAppServerModelProviderCapabilitiesReadResult,
+	type MaestroAppServerPolicyCheckResult,
+	type MaestroAppServerPolicyReadResult,
+	type MaestroAppServerRequirementsListResult,
 	type MaestroAppServerResponse,
 	type MaestroAppServerServerNotification,
 	type MaestroAppServerThread,
@@ -53,6 +56,11 @@ import {
 	MaestroAppServerHostControlError,
 	createMaestroAppServerHostControl,
 } from "./host-control-api.js";
+import {
+	type MaestroAppServerPolicyControl,
+	MaestroAppServerPolicyControlError,
+	createMaestroAppServerPolicyControl,
+} from "./policy-control-api.js";
 
 const DEFAULT_PAGE_LIMIT = 50;
 const MAX_PAGE_LIMIT = 100;
@@ -111,6 +119,7 @@ type SessionStore = Pick<
 
 export interface MaestroAppServerSessionApiOptions {
 	hostControl?: MaestroAppServerHostControl | false;
+	policyControl?: MaestroAppServerPolicyControl | false;
 	onNotification?: (notification: MaestroAppServerServerNotification) => void;
 }
 
@@ -122,6 +131,15 @@ export interface MaestroAppServerSessionApi {
 	readModelProviderCapabilities(
 		params?: Record<string, unknown>,
 	): Promise<MaestroAppServerModelProviderCapabilitiesReadResult>;
+	readPolicy(
+		params?: Record<string, unknown>,
+	): Promise<MaestroAppServerPolicyReadResult>;
+	checkPolicy(
+		params?: Record<string, unknown>,
+	): Promise<MaestroAppServerPolicyCheckResult>;
+	listRequirements(
+		params?: Record<string, unknown>,
+	): Promise<MaestroAppServerRequirementsListResult>;
 	execCommand(
 		params?: Record<string, unknown>,
 	): Promise<MaestroAppServerCommandExecResult>;
@@ -734,6 +752,10 @@ export function createMaestroAppServerSessionApi(
 				createMaestroAppServerHostControl({
 					onNotification: options.onNotification,
 				}));
+	const policyControl =
+		options.policyControl === false
+			? undefined
+			: (options.policyControl ?? createMaestroAppServerPolicyControl());
 	const canUpdateThreadMetadata = Boolean(
 		store.setSessionTitle &&
 			store.saveSessionSummary &&
@@ -762,6 +784,7 @@ export function createMaestroAppServerSessionApi(
 	);
 	const canUseHostControl = Boolean(hostControl);
 	const canUseFilesystemWatch = Boolean(hostControl?.supportsWatch());
+	const canUsePolicyControl = Boolean(policyControl);
 
 	return {
 		initialize() {
@@ -777,6 +800,8 @@ export function createMaestroAppServerSessionApi(
 					sessions: true,
 					modelList: true,
 					modelProviderCapabilities: true,
+					managedPolicy: canUsePolicyControl,
+					requirements: canUsePolicyControl,
 					commandExec: canUseHostControl,
 					commandProcessControl: canUseHostControl,
 					filesystem: canUseHostControl,
@@ -793,6 +818,36 @@ export function createMaestroAppServerSessionApi(
 					turnsList: true,
 				},
 			};
+		},
+
+		async readPolicy() {
+			if (!policyControl) {
+				throw new MaestroAppServerError(
+					-32601,
+					"Managed policy is not available",
+				);
+			}
+			return policyControl.readPolicy();
+		},
+
+		async checkPolicy(params = {}) {
+			if (!policyControl) {
+				throw new MaestroAppServerError(
+					-32601,
+					"Managed policy is not available",
+				);
+			}
+			return policyControl.checkPolicy(params);
+		},
+
+		async listRequirements() {
+			if (!policyControl) {
+				throw new MaestroAppServerError(
+					-32601,
+					"Requirements are not available",
+				);
+			}
+			return policyControl.listRequirements();
 		},
 
 		async execCommand(params = {}) {
@@ -1398,6 +1453,24 @@ export async function handleMaestroAppServerRequest(
 					id,
 					result: await api.readModelProviderCapabilities(request.params),
 				};
+			case "policy/read":
+				return {
+					jsonrpc: "2.0",
+					id,
+					result: await api.readPolicy(request.params),
+				};
+			case "policy/check":
+				return {
+					jsonrpc: "2.0",
+					id,
+					result: await api.checkPolicy(request.params),
+				};
+			case "requirements/list":
+				return {
+					jsonrpc: "2.0",
+					id,
+					result: await api.listRequirements(request.params),
+				};
 			case "command/exec":
 				return {
 					jsonrpc: "2.0",
@@ -1556,7 +1629,8 @@ export async function handleMaestroAppServerRequest(
 	} catch (error) {
 		if (
 			error instanceof MaestroAppServerError ||
-			error instanceof MaestroAppServerHostControlError
+			error instanceof MaestroAppServerHostControlError ||
+			error instanceof MaestroAppServerPolicyControlError
 		) {
 			return {
 				jsonrpc: "2.0",

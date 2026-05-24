@@ -226,6 +226,8 @@ setInterval(() => {}, 1000);
 			);
 			process.env.MAESTRO_MARKITDOWN_CMD = process.execPath;
 			process.env.MAESTRO_MARKITDOWN_ARGS = `"${script}" --pid-file "${pidFile}"`;
+			process.env.MAESTRO_MARKITDOWN_TIMEOUT_MS = "1000";
+			process.env.MAESTRO_MARKITDOWN_KILL_GRACE_MS = "100";
 
 			await expect(
 				extractDocumentText({
@@ -250,4 +252,64 @@ setInterval(() => {}, 1000);
 			await rm(dir, { force: true, recursive: true });
 		}
 	}, 30_000);
+
+	it("falls back for fractional MarkItDown timeout env values", async () => {
+		const dir = await mkdtemp(join(tmpdir(), "maestro-markitdown-test-"));
+		try {
+			const script = join(dir, "slow-success.mjs");
+			await writeFile(
+				script,
+				`
+setTimeout(() => {
+	process.stdout.write("# Converted after fractional timeout fallback");
+}, 25);
+`,
+				"utf8",
+			);
+			process.env.MAESTRO_MARKITDOWN_CMD = process.execPath;
+			process.env.MAESTRO_MARKITDOWN_ARGS = script;
+			process.env.MAESTRO_MARKITDOWN_TIMEOUT_MS = "0.5";
+
+			const out = await extractDocumentText({
+				buffer: Buffer.from("<html><body><h1>Fallback</h1></body></html>"),
+				fileName: "brief.html",
+				mimeType: "text/html",
+			});
+
+			expect(out.extractor).toBe("markitdown");
+			expect(out.extractedText).toContain("fractional timeout fallback");
+		} finally {
+			await rm(dir, { force: true, recursive: true });
+		}
+	});
+
+	it("clamps oversized MarkItDown timeout env values", async () => {
+		const dir = await mkdtemp(join(tmpdir(), "maestro-markitdown-test-"));
+		try {
+			const script = join(dir, "slow-success.mjs");
+			await writeFile(
+				script,
+				`
+setTimeout(() => {
+	process.stdout.write("# Converted after oversized timeout clamp");
+}, 25);
+`,
+				"utf8",
+			);
+			process.env.MAESTRO_MARKITDOWN_CMD = process.execPath;
+			process.env.MAESTRO_MARKITDOWN_ARGS = script;
+			process.env.MAESTRO_MARKITDOWN_TIMEOUT_MS = "2147483648";
+
+			const out = await extractDocumentText({
+				buffer: Buffer.from("<html><body><h1>Fallback</h1></body></html>"),
+				fileName: "brief.html",
+				mimeType: "text/html",
+			});
+
+			expect(out.extractor).toBe("markitdown");
+			expect(out.extractedText).toContain("oversized timeout clamp");
+		} finally {
+			await rm(dir, { force: true, recursive: true });
+		}
+	});
 });

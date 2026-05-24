@@ -36,6 +36,8 @@ const DEFAULT_MAX_CHARS = 200_000;
 const MAX_INPUT_BYTES = 50 * 1024 * 1024;
 const MARKITDOWN_TIMEOUT_MS = 20_000;
 const MARKITDOWN_TIMEOUT_KILL_GRACE_MS = 500;
+const MARKITDOWN_TIMEOUT_CLOSE_GRACE_MS = 1_000;
+const NODE_TIMER_MAX_MS = 2_147_483_647;
 const XLSX_MIME =
 	"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
 
@@ -215,6 +217,38 @@ function shouldTryMarkitdown(
 	return false;
 }
 
+function readPositiveIntegerEnv(name: string, fallback: number): number {
+	const value = process.env[name]?.trim();
+	if (!value) return fallback;
+	const parsed = Number(value);
+	if (!Number.isFinite(parsed) || !Number.isInteger(parsed) || parsed <= 0) {
+		return fallback;
+	}
+	return Math.min(parsed, NODE_TIMER_MAX_MS);
+}
+
+function signalMarkitdownProcessTree(
+	child: ReturnType<typeof spawn>,
+	signal: NodeJS.Signals,
+): void {
+	if (process.platform !== "win32" && child.pid) {
+		try {
+			process.kill(-child.pid, signal);
+			return;
+		} catch (error) {
+			if ((error as NodeJS.ErrnoException).code === "ESRCH") {
+				return;
+			}
+		}
+	}
+
+	try {
+		child.kill(signal);
+	} catch {
+		// The process may have exited between timeout handling and signal delivery.
+	}
+}
+
 function runMarkitdownCandidate(
 	candidate: { command: string; argsPrefix: string[] },
 	args: string[],
@@ -229,19 +263,45 @@ function runMarkitdownCandidate(
 		let timedOut = false;
 		let settled = false;
 		let killTimer: NodeJS.Timeout | undefined;
-		const timer = setTimeout(() => {
-			timedOut = true;
-			signalMarkitdownProcessTree(child, "SIGTERM");
-			killTimer = setTimeout(() => {
-				signalMarkitdownProcessTree(child, "SIGKILL");
-			}, MARKITDOWN_TIMEOUT_KILL_GRACE_MS);
-		}, MARKITDOWN_TIMEOUT_MS);
+		let closeGraceTimer: NodeJS.Timeout | undefined;
+		const timer = setTimeout(
+			() => {
+				timedOut = true;
+				signalMarkitdownProcessTree(child, "SIGTERM");
+				killTimer = setTimeout(
+					() => {
+						signalMarkitdownProcessTree(child, "SIGKILL");
+						closeGraceTimer = setTimeout(
+							() => {
+								child.stdout.destroy();
+								child.stderr.destroy();
+								child.unref();
+								finish(new Error("MarkItDown conversion timed out"));
+							},
+							readPositiveIntegerEnv(
+								"MAESTRO_MARKITDOWN_CLOSE_GRACE_MS",
+								MARKITDOWN_TIMEOUT_CLOSE_GRACE_MS,
+							),
+						);
+					},
+					readPositiveIntegerEnv(
+						"MAESTRO_MARKITDOWN_KILL_GRACE_MS",
+						MARKITDOWN_TIMEOUT_KILL_GRACE_MS,
+					),
+				);
+			},
+			readPositiveIntegerEnv(
+				"MAESTRO_MARKITDOWN_TIMEOUT_MS",
+				MARKITDOWN_TIMEOUT_MS,
+			),
+		);
 
 		function finish(error: Error | null, output?: string) {
 			if (settled) return;
 			settled = true;
 			clearTimeout(timer);
 			if (killTimer) clearTimeout(killTimer);
+			if (closeGraceTimer) clearTimeout(closeGraceTimer);
 			if (error) {
 				reject(error);
 				return;
@@ -280,23 +340,6 @@ function runMarkitdownCandidate(
 			);
 		});
 	});
-}
-
-function signalMarkitdownProcessTree(
-	child: ReturnType<typeof spawn>,
-	signal: NodeJS.Signals,
-): void {
-	if (process.platform !== "win32" && child.pid) {
-		try {
-			process.kill(-child.pid, signal);
-			return;
-		} catch (error) {
-			if ((error as NodeJS.ErrnoException).code === "ESRCH") {
-				return;
-			}
-		}
-	}
-	child.kill(signal);
 }
 
 async function extractWithMarkitdown(input: {
