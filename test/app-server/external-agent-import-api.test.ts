@@ -64,6 +64,46 @@ describe("Maestro app-server external agent import API", () => {
 		});
 	});
 
+	it("does not expose external agent imports when session persistence is disabled", async () => {
+		const manager = new SessionManager(false, undefined, {
+			sessionDir: join(testDir, "disabled-sessions"),
+		});
+		manager.disable();
+		const api = createMaestroAppServerSessionApi(manager);
+		const projectRoot = join(testDir, "disabled-project");
+
+		expect(api.initialize()).toMatchObject({
+			capabilities: {
+				externalAgentImport: false,
+			},
+		});
+
+		const response = await handleMaestroAppServerRequest(api, {
+			jsonrpc: "2.0",
+			id: "external-agent-import-disabled",
+			method: "externalAgent/import",
+			params: {
+				dryRun: false,
+				projectRoot,
+				artifacts: [
+					{
+						kind: "config",
+						scope: "local",
+						values: { model: "gpt-5.1" },
+					},
+				],
+			},
+		});
+
+		expect(response.error).toEqual({
+			code: -32601,
+			message: "External agent import is not available",
+		});
+		expect(existsSync(join(projectRoot, ".maestro", "config.local.toml"))).toBe(
+			false,
+		);
+	});
+
 	it("imports sessions, config, hooks, MCP servers, and skills from one bundle", async () => {
 		const projectRoot = join(testDir, "project");
 		const sourceManager = new SessionManager(false, undefined, {
@@ -302,6 +342,43 @@ describe("Maestro app-server external agent import API", () => {
 		]);
 		expect(response.result?.warnings).toHaveLength(1);
 		expect(readFileSync(hooksPath, "utf8")).toBe("{not-json");
+	});
+
+	it("rejects local hooks scope instead of writing project hooks", async () => {
+		const projectRoot = join(testDir, "local-hooks-project");
+		const manager = new SessionManager(false, undefined, {
+			sessionDir: join(testDir, "local-hooks-sessions"),
+		});
+		const api = createMaestroAppServerSessionApi(manager);
+
+		const response = await handleMaestroAppServerRequest(api, {
+			jsonrpc: "2.0",
+			id: "external-agent-import-local-hooks",
+			method: "externalAgent/import",
+			params: {
+				dryRun: false,
+				projectRoot,
+				artifacts: [
+					{
+						kind: "hooks",
+						scope: "local",
+						hooks: { SessionStart: [] },
+					},
+				],
+			},
+		});
+
+		expect(response.result?.warnings).toEqual([
+			"Hooks artifact does not support local scope",
+		]);
+		expect(response.result?.imported).toEqual([
+			expect.objectContaining({
+				kind: "hooks",
+				status: "skipped",
+				message: "Hooks artifact does not support local scope",
+			}),
+		]);
+		expect(existsSync(join(projectRoot, ".maestro", "hooks.json"))).toBe(false);
 	});
 
 	it("blocks skill file path traversal", async () => {

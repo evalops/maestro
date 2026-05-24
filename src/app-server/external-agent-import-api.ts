@@ -300,6 +300,12 @@ function hooksConfigPath(
 	if (scope === "user") {
 		return getUserHooksConfigPath();
 	}
+	if (scope === "local") {
+		throw new MaestroAppServerExternalAgentImportError(
+			-32602,
+			"Hooks artifact does not support local scope",
+		);
+	}
 	return getProjectHooksConfigPath(projectRoot);
 }
 
