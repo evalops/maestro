@@ -22,6 +22,11 @@ export const maestroAppServerClientMethods = [
 	"pluginBundle/list",
 	"pluginBundle/install",
 	"pluginBundle/remove",
+	"daemon/status",
+	"remoteControl/status",
+	"remoteControl/lease/read",
+	"remoteControl/lease/heartbeat",
+	"remoteControl/drain",
 	"command/exec",
 	"command/exec/write",
 	"command/exec/terminate",
@@ -106,6 +111,10 @@ export const MaestroAppServerCapabilitiesSchema = Type.Object({
 	sandboxProof: Type.Boolean(),
 	externalAgentImport: Type.Boolean(),
 	pluginBundles: Type.Boolean(),
+	daemonStatus: Type.Boolean(),
+	remoteControlStatus: Type.Boolean(),
+	remoteControlLease: Type.Boolean(),
+	remoteControlDrain: Type.Boolean(),
 	commandExec: Type.Boolean(),
 	commandProcessControl: Type.Boolean(),
 	filesystem: Type.Boolean(),
@@ -612,6 +621,124 @@ export type MaestroAppServerPluginBundleMutationResult = Static<
 	typeof MaestroAppServerPluginBundleMutationResultSchema
 >;
 
+export const maestroAppServerRemoteControlStatuses = [
+	"unavailable",
+	"ready",
+	"draining",
+] as const;
+export const MaestroAppServerRemoteControlStatusSchema = stringLiteralUnion(
+	maestroAppServerRemoteControlStatuses,
+);
+export type MaestroAppServerRemoteControlStatus =
+	(typeof maestroAppServerRemoteControlStatuses)[number];
+
+export const maestroAppServerRemoteControlLeaseStates = [
+	"unbound",
+	"bound",
+	"draining",
+] as const;
+export const MaestroAppServerRemoteControlLeaseStateSchema = stringLiteralUnion(
+	maestroAppServerRemoteControlLeaseStates,
+);
+export type MaestroAppServerRemoteControlLeaseState =
+	(typeof maestroAppServerRemoteControlLeaseStates)[number];
+
+export const MaestroAppServerRemoteControlLeaseSchema = Type.Object({
+	protocolVersion: Type.String(),
+	runnerSessionId: Type.String(),
+	ownerInstanceId: Type.Optional(Type.String()),
+	workspaceId: Type.Optional(Type.String()),
+	agentId: Type.Optional(Type.String()),
+	agentRunId: Type.Optional(Type.String()),
+	maestroSessionId: Type.Optional(Type.String()),
+	configuredMaestroSessionId: Type.Optional(Type.String()),
+	state: MaestroAppServerRemoteControlLeaseStateSchema,
+	generation: Type.Number(),
+	heartbeatAt: Type.String(),
+	updatedAt: Type.String(),
+	leaseTokenPresent: Type.Boolean(),
+});
+export type MaestroAppServerRemoteControlLease = Static<
+	typeof MaestroAppServerRemoteControlLeaseSchema
+>;
+
+export const MaestroAppServerRemoteControlLastDrainSchema = Type.Object({
+	status: Type.String(),
+	manifestPath: Type.String(),
+	drainedAt: Type.String(),
+	reason: Type.Optional(Type.String()),
+	requestedBy: Type.Optional(Type.String()),
+});
+export type MaestroAppServerRemoteControlLastDrain = Static<
+	typeof MaestroAppServerRemoteControlLastDrainSchema
+>;
+
+export const MaestroAppServerRemoteControlStatusResultSchema = Type.Object({
+	available: Type.Boolean(),
+	status: MaestroAppServerRemoteControlStatusSchema,
+	runnerSessionId: Type.Optional(Type.String()),
+	ownerInstanceId: Type.Optional(Type.String()),
+	workspaceRoot: Type.Optional(Type.String()),
+	snapshotRoot: Type.Optional(Type.String()),
+	workspaceId: Type.Optional(Type.String()),
+	agentId: Type.Optional(Type.String()),
+	agentRunId: Type.Optional(Type.String()),
+	a2aMessageId: Type.Optional(Type.String()),
+	a2aTaskId: Type.Optional(Type.String()),
+	agentRuntimeWorkerQueue: Type.Optional(Type.String()),
+	agentRuntimeCorrelationPath: Type.Optional(Type.String()),
+	maestroSessionId: Type.Optional(Type.String()),
+	lastDrain: Type.Optional(MaestroAppServerRemoteControlLastDrainSchema),
+	lease: Type.Union([MaestroAppServerRemoteControlLeaseSchema, Type.Null()]),
+	error: Type.Optional(Type.String()),
+});
+export type MaestroAppServerRemoteControlStatusResult = Static<
+	typeof MaestroAppServerRemoteControlStatusResultSchema
+>;
+
+export const MaestroAppServerDaemonProcessSchema = Type.Object({
+	pid: Type.Number(),
+	ppid: Type.Number(),
+	platform: Type.String(),
+	arch: Type.String(),
+	nodeVersion: Type.String(),
+	cwd: Type.String(),
+	uptimeMs: Type.Number(),
+});
+export type MaestroAppServerDaemonProcess = Static<
+	typeof MaestroAppServerDaemonProcessSchema
+>;
+
+export const MaestroAppServerDaemonStatusResultSchema = Type.Object({
+	daemon: MaestroAppServerDaemonProcessSchema,
+	remoteControl: MaestroAppServerRemoteControlStatusResultSchema,
+});
+export type MaestroAppServerDaemonStatusResult = Static<
+	typeof MaestroAppServerDaemonStatusResultSchema
+>;
+
+export const MaestroAppServerRemoteControlLeaseResultSchema = Type.Object({
+	available: Type.Boolean(),
+	lease: Type.Union([MaestroAppServerRemoteControlLeaseSchema, Type.Null()]),
+});
+export type MaestroAppServerRemoteControlLeaseResult = Static<
+	typeof MaestroAppServerRemoteControlLeaseResultSchema
+>;
+
+export const MaestroAppServerRemoteControlDrainResultSchema = Type.Object({
+	drained: Type.Boolean(),
+	status: Type.String(),
+	runnerSessionId: Type.String(),
+	reason: Type.Optional(Type.String()),
+	requestedBy: Type.Optional(Type.String()),
+	manifestPath: Type.String(),
+	manifest: Type.Unknown(),
+	remoteControl: MaestroAppServerRemoteControlStatusResultSchema,
+});
+export type MaestroAppServerRemoteControlDrainResult = Static<
+	typeof MaestroAppServerRemoteControlDrainResultSchema
+>;
+
 export const MaestroAppServerEmptyResultSchema = Type.Object(
 	{},
 	{ additionalProperties: false },
@@ -797,6 +924,10 @@ export const MaestroAppServerResponseSchema = Type.Object({
 			MaestroAppServerExternalAgentImportResultSchema,
 			MaestroAppServerPluginBundleListResultSchema,
 			MaestroAppServerPluginBundleMutationResultSchema,
+			MaestroAppServerDaemonStatusResultSchema,
+			MaestroAppServerRemoteControlStatusResultSchema,
+			MaestroAppServerRemoteControlLeaseResultSchema,
+			MaestroAppServerRemoteControlDrainResultSchema,
 			MaestroAppServerCommandExecResultSchema,
 			MaestroAppServerCommandProcessResultSchema,
 			MaestroAppServerFsReadFileResultSchema,
