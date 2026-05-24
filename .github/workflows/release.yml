@@ -239,13 +239,10 @@ jobs:
           workdir=$(mktemp -d)
           trap 'rm -rf "$workdir"' EXIT
 
-          gh auth setup-git
-          gh auth status
-          gh auth refresh --hostname github.com --scopes repo || true
-
+          export GH_TOKEN="$HOPPER_PUSH_TOKEN"
           gh api user >/dev/null || {
-            echo "gh auth not configured; initializing with provided token"
-            export GH_TOKEN="$HOPPER_PUSH_TOKEN"
+            echo "HOPPER_PUSH_TOKEN could not authenticate with GitHub."
+            exit 1
           }
 
           git clone "https://x-access-token:${HOPPER_PUSH_TOKEN}@github.com/${repo}.git" "$workdir"
