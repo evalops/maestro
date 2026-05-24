@@ -240,18 +240,24 @@ function collectFiles(dir) {
 }
 
 function assertSessionEvidence(sessionDir, label) {
+	const failure = sessionEvidenceFailure(sessionDir, label);
+	if (failure) fail(failure);
+}
+
+function sessionEvidenceFailure(sessionDir, label) {
 	const sessionFiles = collectFiles(sessionDir).filter((path) =>
 		path.endsWith(".jsonl"),
 	);
 	if (sessionFiles.length === 0) {
-		fail(`${label} did not write a session JSONL file in ${sessionDir}.`);
+		return `${label} did not write a session JSONL file in ${sessionDir}.`;
 	}
 	const sessionText = sessionFiles
 		.map((path) => readFileSync(path, "utf8"))
 		.join("\n");
 	if (!sessionText.includes(FINAL_TEXT) || !sessionText.includes(TOOL_CALL_ID)) {
-		fail(`${label} session evidence is missing the final text or tool call id.`);
+		return `${label} session evidence is missing the final text or tool call id.`;
 	}
+	return null;
 }
 
 function assertJsonMode(messages, context, label) {
@@ -450,6 +456,7 @@ function runRpcMode(binPath) {
 		let stderr = "";
 		let finished = false;
 		let settled = false;
+		let rpcEvidenceValidated = false;
 		let forceKillTimer;
 		const timer = setTimeout(() => {
 			finish(new Error("Published RPC replay smoke timed out."));
@@ -459,8 +466,18 @@ function runRpcMode(binPath) {
 			if (settled) return;
 			settled = true;
 			if (forceKillTimer) clearTimeout(forceKillTimer);
+			let settleError = error;
+			if (!settleError && rpcEvidenceValidated) {
+				const failure = sessionEvidenceFailure(
+					context.sessionDir,
+					"Published RPC replay",
+				);
+				if (failure) {
+					settleError = new Error(failure);
+				}
+			}
 			rmSync(context.runDir, { recursive: true, force: true });
-			if (error) reject(error);
+			if (settleError) reject(settleError);
 			else resolvePromise();
 		}
 
@@ -490,6 +507,7 @@ function runRpcMode(binPath) {
 			}
 			try {
 				assertRpcEvents(events, context);
+				rpcEvidenceValidated = true;
 				console.log("Published RPC replay smoke passed.");
 				finish();
 			} catch (error) {
