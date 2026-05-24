@@ -203,6 +203,76 @@ describe("tool execution bridge", () => {
 		});
 	});
 
+	it("uses hosted AgentRuntime linkage when the run handle is bound after startup", async () => {
+		process.env.EVALOPS_FEATURE_FLAGS_PATH = writeFlags([
+			MAESTRO_PLATFORM_RUNTIME_AGENT_RUNTIME_OBSERVE_FLAG,
+		]);
+		vi.stubEnv("MAESTRO_AGENT_RUN_ID", "");
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+				const url = typeof input === "string" ? input : input.toString();
+				const parsed = new URL(url);
+				requests.push({
+					body: parseRequestBody(init?.body),
+					headers: headersToRecord(init?.headers),
+					method: init?.method,
+					pathname: parsed.pathname,
+					url,
+				});
+				return new Response(
+					JSON.stringify({
+						execution: {
+							id: "texec_hosted_1",
+							state: "TOOL_EXECUTION_STATE_SUCCEEDED",
+						},
+					}),
+					{ status: 200, headers: { "Content-Type": "application/json" } },
+				);
+			}),
+		);
+
+		const bridge = new DefaultPlatformToolExecutionBridge({
+			runtimeLinkage: () => ({
+				agentRunId: "run_hosted_1",
+				agentId: "agent_hosted",
+				workspaceId: "ws_hosted",
+				remoteRunnerSessionId: "rrs_hosted_1",
+			}),
+		});
+		const prepared = await bridge.prepare({
+			cfg: baseConfig(),
+			toolCall: {
+				type: "toolCall",
+				id: "tc_hosted_1",
+				name: "bash",
+				arguments: { command: "git status" },
+			},
+			sanitizedArgs: { command: "git status" },
+		});
+		if (prepared.status !== "observe") {
+			throw new Error("expected observe plan");
+		}
+
+		await bridge.recordObservation(prepared.plan, {
+			...okResult,
+			toolCallId: "tc_hosted_1",
+		});
+
+		expect(requests[0]?.body).toMatchObject({
+			linkage: expect.objectContaining({
+				runId: "run_hosted_1",
+				agentId: "agent_hosted",
+				workspaceId: "ws_hosted",
+				stepId: "tc_hosted_1",
+			}),
+			metadata: expect.objectContaining({
+				maestro_agent_run_id: "run_hosted_1",
+				maestro_remote_runner_session_id: "rrs_hosted_1",
+			}),
+		});
+	});
+
 	it("truncates metadata without splitting surrogate pairs", async () => {
 		process.env.EVALOPS_FEATURE_FLAGS_PATH = writeFlags([
 			MAESTRO_PLATFORM_RUNTIME_AGENT_RUNTIME_OBSERVE_FLAG,

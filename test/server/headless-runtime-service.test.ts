@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+import { DefaultPlatformToolExecutionBridge } from "../../src/agent/transport/tool-execution-bridge.js";
 import type {
 	AgentEvent,
 	AppMessage,
@@ -154,13 +155,14 @@ describe("HeadlessRuntimeService restore manifests", () => {
 		);
 
 		const service = new HeadlessRuntimeService();
+		const createAgent = vi.fn().mockResolvedValue(fakeAgent);
 		const runtime = await service.ensureRuntime({
 			scope_key: "anon",
 			registeredModel: TEST_MODEL,
 			thinkingLevel: "off",
 			approvalMode: "prompt",
 			context: {
-				createAgent: vi.fn().mockResolvedValue(fakeAgent),
+				createAgent,
 				createBackgroundAgent: vi.fn().mockResolvedValue(new FakeAgent()),
 				hostedRunner: {
 					enabled: true,
@@ -172,6 +174,16 @@ describe("HeadlessRuntimeService restore manifests", () => {
 			sessionManager,
 		});
 
+		expect(createAgent).toHaveBeenCalledWith(
+			TEST_MODEL,
+			"off",
+			"prompt",
+			expect.objectContaining({
+				platformToolExecutionBridge: expect.any(
+					DefaultPlatformToolExecutionBridge,
+				),
+			}),
+		);
 		expect(runtime.getSnapshot()).toMatchObject({
 			session_id: sessionId,
 			cursor: 7,

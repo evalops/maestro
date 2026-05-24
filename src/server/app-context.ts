@@ -6,6 +6,7 @@ import type {
 import type { Agent } from "../agent/index.js";
 import type { ToolRetryService } from "../agent/tool-retry.js";
 import type { ClientToolExecutionService } from "../agent/transport.js";
+import type { PlatformToolExecutionBridge } from "../agent/transport/tool-execution-bridge.js";
 import type { ThinkingLevel } from "../agent/types.js";
 import type { RegisteredModel } from "../models/registry.js";
 import type { AuthCredential } from "../providers/auth.js";
@@ -77,6 +78,7 @@ export interface WebServerServices {
 			approvalService?: ActionApprovalService;
 			clientToolService?: ClientToolExecutionService;
 			toolRetryService?: ToolRetryService;
+			platformToolExecutionBridge?: PlatformToolExecutionBridge | false;
 		},
 	) => Promise<Agent>;
 	createBackgroundAgent: (

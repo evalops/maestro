@@ -19,6 +19,7 @@ import {
 	subscribeSwarmRuntimeEvents,
 } from "../agent/swarm/runtime-events.js";
 import type { ToolRetryService } from "../agent/tool-retry.js";
+import { DefaultPlatformToolExecutionBridge } from "../agent/transport/tool-execution-bridge.js";
 import type { AgentEvent, Attachment, ThinkingLevel } from "../agent/types.js";
 import { runUserPromptWithRecovery } from "../agent/user-prompt-runtime.js";
 import {
@@ -138,6 +139,25 @@ export function inferFleetModelTier(
 
 function hasMiniModelVariant(normalizedProviderModel: string): boolean {
 	return /(?:^|[/:._-])mini(?:$|[/:._-])/.test(normalizedProviderModel);
+}
+
+function createHostedRunnerToolExecutionBridge(
+	hostedRunner: WebServerContext["hostedRunner"],
+): DefaultPlatformToolExecutionBridge | undefined {
+	if (!hostedRunner) {
+		return undefined;
+	}
+	return new DefaultPlatformToolExecutionBridge({
+		runtimeLinkage: () => ({
+			agentRunId: hostedRunner.agentRunId,
+			agentId: hostedRunner.agentId,
+			workspaceId: hostedRunner.workspaceId,
+			sessionId:
+				hostedRunner.activeMaestroSessionId ??
+				hostedRunner.configuredMaestroSessionId,
+			remoteRunnerSessionId: hostedRunner.runnerSessionId,
+		}),
+	});
 }
 
 export function getFleetPlatformEventBusStatus():
@@ -1012,6 +1032,9 @@ export class HeadlessSessionRuntime {
 				includeVscodeTools: options.client === "vscode",
 				includeJetBrainsTools: options.client === "jetbrains",
 				includeConductorTools: options.client === "conductor",
+				platformToolExecutionBridge: createHostedRunnerToolExecutionBridge(
+					options.context.hostedRunner,
+				),
 			},
 		);
 		const automaticMemoryConsolidation =

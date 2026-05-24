@@ -30,6 +30,7 @@ import {
 import { Agent, ProviderTransport } from "./agent/index.js";
 import type { ToolRetryService } from "./agent/tool-retry.js";
 import type { ClientToolExecutionService } from "./agent/transport.js";
+import type { PlatformToolExecutionBridge } from "./agent/transport/tool-execution-bridge.js";
 import type { AgentTool, ThinkingLevel } from "./agent/types.js";
 import {
 	disposeCheckpointService,
@@ -448,6 +449,7 @@ async function createAgent(
 		approvalService?: ActionApprovalService;
 		clientToolService?: ClientToolExecutionService;
 		toolRetryService?: ToolRetryService;
+		platformToolExecutionBridge?: PlatformToolExecutionBridge | false;
 	},
 ): Promise<Agent> {
 	const cwd = options?.cwd ?? process.cwd();
@@ -500,6 +502,7 @@ async function createAgent(
 			(options?.enableClientTools || options?.useClientAskUser
 				? clientToolService
 				: undefined),
+		platformToolExecutionBridge: options?.platformToolExecutionBridge,
 		sessionTokenCounter,
 		auditLogger,
 	});
