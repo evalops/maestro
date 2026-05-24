@@ -107,6 +107,7 @@ export interface McpServerViewModel {
 	toolCount: number;
 	tools: Array<{ name: string; description?: string }>;
 	toolDetailsLabel: string | null;
+	capabilitySummaryLabel: string | null;
 	resources: string[];
 	prompts: string[];
 	promptDetails: McpPromptDefinition[];
@@ -226,6 +227,29 @@ function formatPackageFilters(
 
 function formatPackageScopeLabel(scope: PackageScope): string {
 	return formatMcpScopeLabel(scope) ?? scope;
+}
+
+function formatMcpCapabilitySummaryLabel(
+	summary: McpServerStatus["toolCapabilitySummary"],
+): string | null {
+	if (!summary) {
+		return null;
+	}
+	const desktop = summary.byDomain?.desktop ?? 0;
+	const file = summary.byDomain?.file ?? 0;
+	const fileEdits = summary.byToolLane?.file_edit ?? 0;
+	const desktopActions = summary.byToolLane?.desktop_action ?? 0;
+	const highRisk = summary.byRiskClass?.high ?? 0;
+	const receipts = summary.requiresReceipt ?? 0;
+	const parts = [
+		desktop > 0 ? `${desktop} desktop` : null,
+		desktopActions > 0 ? `${desktopActions} desktop actions` : null,
+		file > 0 ? `${file} file` : null,
+		fileEdits > 0 ? `${fileEdits} file edits` : null,
+		highRisk > 0 ? `${highRisk} high risk` : null,
+		receipts > 0 ? `${receipts} receipt-backed` : null,
+	].filter((part): part is string => Boolean(part));
+	return parts.length > 0 ? `Capabilities: ${parts.join(" · ")}` : null;
 }
 
 function formatPackagePreviewTitle(kind: "inspect" | "validate"): string {
@@ -428,6 +452,9 @@ export function buildMcpServerViewModel(
 				: toolCount > 0
 					? `${toolCount} tools reported (details unavailable).`
 					: "No tools reported.",
+		capabilitySummaryLabel: formatMcpCapabilitySummaryLabel(
+			server.toolCapabilitySummary,
+		),
 		resources,
 		prompts,
 		promptDetails: server.promptDetails ?? [],
@@ -2431,6 +2458,11 @@ export function ToolsRuntimeSection({
 															</div>
 														) : (
 															<div>{server.toolDetailsLabel}</div>
+														)}
+														{server.capabilitySummaryLabel && (
+															<div className="text-xs text-text-muted">
+																{server.capabilitySummaryLabel}
+															</div>
 														)}
 														<div className="grid grid-cols-1 gap-2 md:grid-cols-2">
 															<div className="rounded-lg border border-line-subtle/60 bg-bg-secondary/40 px-2.5 py-2 space-y-2">

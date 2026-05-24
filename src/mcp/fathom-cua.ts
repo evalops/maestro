@@ -56,7 +56,12 @@ const DISABLE_IPC_ENV_VARS = [
 	"MAESTRO_FATHOM_CUA_DISABLE_IPC",
 	"FATHOM_CUA_DISABLE_IPC",
 ] as const;
+const TOOL_PROFILE_ENV_VARS = [
+	"MAESTRO_FATHOM_CUA_TOOL_PROFILE",
+	"FATHOM_CUA_TOOL_PROFILE",
+] as const;
 const DEFAULT_SERVER_NAME = "fathom-cua";
+const DEFAULT_TOOL_PROFILE = "canonical";
 
 function envFlagEnabled(names: readonly string[]): boolean {
 	const value = getEnvValue(names);
@@ -107,6 +112,10 @@ function appendFlag(
 	}
 }
 
+function resolveToolProfile(): string {
+	return getEnvValue(TOOL_PROFILE_ENV_VARS)?.trim() || DEFAULT_TOOL_PROFILE;
+}
+
 function resolveFathomRepo(): string | undefined {
 	const configured = getEnvValue(REPO_ENV_VARS);
 	if (configured) {
@@ -140,7 +149,9 @@ function buildFathomCuaServer(): McpServerConfig {
 	const ipcRoot = getEnvValue(IPC_ROOT_ENV_VARS);
 	const sessionId = getEnvValue(SESSION_ID_ENV_VARS);
 	const turnId = getEnvValue(TURN_ID_ENV_VARS);
+	const toolProfile = resolveToolProfile();
 
+	appendFlag(args, "-tool-profile", toolProfile);
 	appendFlag(args, "-workspace-id", workspaceId);
 	appendFlag(args, "-helper-endpoint", helperEndpoint);
 	appendFlag(args, "-ipc-root", ipcRoot);

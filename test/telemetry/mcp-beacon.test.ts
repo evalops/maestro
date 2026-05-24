@@ -62,6 +62,57 @@ describe("MCP telemetry beacons", () => {
 		expect(event.parameters.metadata).not.toHaveProperty("env");
 	});
 
+	it("writes compact capability counts for tool-confusion telemetry", async () => {
+		const { emitMcpConnectionBeacon } = await import(
+			"../../src/telemetry/mcp-beacon.js"
+		);
+
+		await emitMcpConnectionBeacon({
+			serverName: "fathom-cua",
+			transport: "stdio",
+			toolCount: 18,
+			resourceCount: 0,
+			promptCount: 0,
+			toolCapabilitySummary: {
+				total: 18,
+				byDomain: {
+					desktop: 18,
+					file: 0,
+					shell: 0,
+					web: 0,
+					mcp: 0,
+					unknown: 0,
+				},
+				byRiskClass: { observe: 4, low: 0, medium: 14, high: 0 },
+				byToolLane: {
+					desktop_observe: 4,
+					desktop_action: 14,
+					file_read: 0,
+					file_edit: 0,
+					shell_exec: 0,
+					web_access: 0,
+					mcp_meta: 0,
+					unknown: 0,
+				},
+				mutating: { desktop: 14, files: 0 },
+				requiresReceipt: 18,
+				rawSecretPossible: 4,
+			},
+		});
+
+		const [event] = await readBeaconEvents(beaconFile);
+
+		expect(event.parameters.metadata).toMatchObject({
+			serverName: "fathom-cua",
+			desktopToolCount: 18,
+			desktopActionToolCount: 14,
+			fileEditToolCount: 0,
+			highRiskToolCount: 0,
+			receiptBackedToolCount: 18,
+			rawSecretPossibleToolCount: 4,
+		});
+	});
+
 	it("writes remote tool usage metadata without URL, args, or output", async () => {
 		const { emitMcpToolUsageBeacon } = await import(
 			"../../src/telemetry/mcp-beacon.js"

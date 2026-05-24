@@ -42,6 +42,7 @@ import type {
 	ActionApprovalDecision,
 	ActionApprovalRequest,
 } from "./action-approval.js";
+import type { ToolCapabilityMetadata } from "./tool-capability-types.js";
 import type { ToolRetryDecision, ToolRetryRequest } from "./tool-retry.js";
 
 /**
@@ -608,6 +609,7 @@ export interface McpToolSourceMetadata {
 	type: "mcp";
 	server: string;
 	tool: string;
+	capability?: ToolCapabilityMetadata;
 	supportsParallelToolCalls?: boolean;
 	parallelSafetyProvenance?: "static_config" | "server_capability" | "none";
 	parallelMaxConcurrency?: number;

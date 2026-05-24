@@ -14,6 +14,7 @@ import { promptSafeText } from "../utils/prompt-safe-text.js";
 import { mcpManager } from "./manager.js";
 import type { McpToolCallResult } from "./manager.js";
 import { buildMcpToolName } from "./names.js";
+import { classifyToolCapability } from "./tool-capabilities.js";
 import type { McpToolParallelSafety } from "./types.js";
 
 interface McpToolDetails {
@@ -443,23 +444,32 @@ export function createMcpToolWrapper(
 		options?.parallelSafety?.provenance ??
 		(options?.supportsParallelToolCalls === true ? "static_config" : "none");
 	const parallelMaxConcurrency = options?.parallelSafety?.maxConcurrency;
-	const advertisedParallelReadOnly =
-		supportsParallelToolCalls && options?.parallelSafety?.readOnlyHint === true;
+	const advertisedReadOnly = options?.parallelSafety?.readOnlyHint === true;
 	const annotations: ToolAnnotations | undefined =
-		mcpAnnotations || advertisedParallelReadOnly
+		mcpAnnotations || advertisedReadOnly
 			? {
 					readOnlyHint:
 						mcpAnnotations?.readOnlyHint ??
-						(advertisedParallelReadOnly ? true : undefined),
+						(advertisedReadOnly ? true : undefined),
 					destructiveHint: mcpAnnotations?.destructiveHint,
 					idempotentHint: mcpAnnotations?.idempotentHint,
 					openWorldHint: mcpAnnotations?.openWorldHint,
 				}
 			: undefined;
+	const capabilityAnnotations = annotations
+		? Object.fromEntries(
+				Object.entries(annotations).filter(([, value]) => value !== undefined),
+			)
+		: undefined;
 	const source: ToolSourceMetadata = {
 		type: "mcp",
 		server: serverName,
 		tool: mcpTool.name,
+		capability: classifyToolCapability({
+			server: serverName,
+			toolName: mcpTool.name,
+			annotations: capabilityAnnotations,
+		}),
 		supportsParallelToolCalls,
 		parallelSafetyProvenance,
 		...(parallelMaxConcurrency ? { parallelMaxConcurrency } : {}),

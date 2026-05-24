@@ -1,3 +1,5 @@
+import type { IncomingMessage, ServerResponse } from "node:http";
+import { PassThrough } from "node:stream";
 import { describe, expect, it, vi } from "vitest";
 
 vi.mock("../../src/models/registry.js", async () => {
@@ -20,10 +22,17 @@ vi.mock("../../src/models/registry.js", async () => {
 				name: "Claude",
 				api: "chat",
 			},
+			{
+				provider: "openai-codex",
+				id: "gpt-5.5",
+				name: "Codex",
+				api: "openai-codex-app-server",
+			},
 		],
 	};
 });
 
+import { handleModel } from "../../src/server/handlers/models.js";
 import {
 	determineModelSelection,
 	getRegisteredModelOrThrow,
@@ -59,9 +68,62 @@ describe("model-selection", () => {
 		});
 	});
 
+	it("preserves registered providers for bare model ids", () => {
+		const selection = determineModelSelection(
+			"claude-default",
+			"openai-codex",
+			"gpt-5.5",
+		);
+		expect(selection).toEqual({
+			provider: "anthropic",
+			modelId: "claude-default",
+		});
+	});
+
 	it("requires registered models", () => {
 		expect(() =>
 			getRegisteredModelOrThrow({ provider: "missing", modelId: "none" }),
 		).toThrow(/not found/);
+	});
+
+	it("does not require legacy credentials for Codex app-server selection writes", async () => {
+		const req = new PassThrough() as PassThrough & IncomingMessage;
+		req.method = "POST";
+		req.headers = {};
+
+		let responseBody = "";
+		const res = {
+			headersSent: false,
+			writableEnded: false,
+			writeHead: vi.fn(),
+			end: vi.fn((body?: string | Buffer) => {
+				responseBody = body?.toString() ?? "";
+			}),
+		} as unknown as ServerResponse;
+		const ensureCredential = vi.fn();
+		const setModelSelection = vi.fn();
+
+		const response = handleModel(req, res, {
+			corsHeaders: {},
+			getCurrentSelection: () => ({
+				provider: "openai-codex",
+				modelId: "gpt-5.5",
+			}),
+			ensureCredential,
+			setModelSelection,
+		} as never);
+
+		req.end(JSON.stringify({ model: "openai-codex/gpt-5.5" }));
+		await response;
+
+		expect(ensureCredential).not.toHaveBeenCalled();
+		expect(setModelSelection).toHaveBeenCalledWith(
+			expect.objectContaining({
+				provider: "openai-codex",
+				id: "gpt-5.5",
+				api: "openai-codex-app-server",
+			}),
+		);
+		expect(responseBody).toContain('"provider":"openai-codex"');
 	});
 });

@@ -34,6 +34,10 @@
  */
 
 import type { Tool as McpTool } from "@modelcontextprotocol/sdk/types.js";
+import type {
+	ToolCapabilityMetadata,
+	ToolCapabilitySummary,
+} from "./tool-capabilities.js";
 
 export type McpTransport = "stdio" | "http" | "sse";
 export type McpScope = "enterprise" | "plugin" | "project" | "local" | "user";
@@ -144,13 +148,18 @@ export interface McpConfig {
 	>;
 }
 
+export type McpToolStatus = McpTool & {
+	capability?: ToolCapabilityMetadata;
+};
+
 export interface McpServerStatus {
 	name: string;
 	connected: boolean;
 	error?: string;
 	scope?: McpScope;
 	transport: McpTransport;
-	tools: McpTool[];
+	tools: McpToolStatus[];
+	toolCapabilitySummary?: ToolCapabilitySummary;
 	resources: string[];
 	prompts: string[];
 	promptDetails?: McpPromptDefinition[];

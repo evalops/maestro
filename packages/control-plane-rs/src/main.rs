@@ -18222,7 +18222,9 @@ setTimeout(() => {
 
         let model = default_model_from_registry(&registry);
 
-        assert_eq!(model.id, "claude-sonnet-4-5-20250514");
+        assert_eq!(model.provider, "openai-codex");
+        assert_eq!(model.id, "gpt-5.5");
+        assert_eq!(model.api, "openai-codex-app-server");
     }
 
     #[test]
@@ -18987,8 +18989,9 @@ setTimeout(() => {
     fn emergency_default_model_is_available_without_registry_entries() {
         let model = emergency_default_model();
 
-        assert_eq!(model.provider, "anthropic");
-        assert!(!model.id.is_empty());
+        assert_eq!(model.provider, "openai-codex");
+        assert_eq!(model.id, "gpt-5.5");
+        assert_eq!(model.api, "openai-codex-app-server");
     }
 
     #[test]

@@ -350,8 +350,8 @@ const authResolver = createAuthResolver({
 	mode: AUTH_MODE,
 });
 
-const DEFAULT_PROVIDER = "anthropic";
-const DEFAULT_MODEL_ID = "claude-sonnet-4-5";
+const DEFAULT_PROVIDER = "openai-codex";
+const DEFAULT_MODEL_ID = "gpt-5.5";
 
 /**
  * Process-local selection store (keeps last chosen model for convenience only).
@@ -393,6 +393,8 @@ function logMissingCredentialHints(provider: string): void {
 		hints.push("Run `maestro anthropic login` to provision OAuth credentials.");
 	} else if (provider === "openai") {
 		hints.push("Set OPENAI_API_KEY or run `maestro openai login`.");
+	} else if (provider === "openai-codex") {
+		hints.push("Run `maestro codex login` to sign in with ChatGPT.");
 	}
 	logger.warn(hints.join(" "), { provider });
 }
@@ -417,7 +419,9 @@ async function getRegisteredModel(input: string | null | undefined) {
 		DEFAULT_MODEL_ID,
 	);
 	const registeredModel = getRegisteredModelOrThrow(selection);
-	await ensureCredential(registeredModel.provider);
+	if (registeredModel.api !== "openai-codex-app-server") {
+		await ensureCredential(registeredModel.provider);
+	}
 	modelSelectionStore.set(registeredModel);
 	return registeredModel;
 }
