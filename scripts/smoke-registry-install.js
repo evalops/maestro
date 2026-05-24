@@ -83,13 +83,17 @@ const pollDelayMs = Number.parseInt(
 	10,
 );
 const installAuditLevel = process.env.MAESTRO_INSTALL_AUDIT_LEVEL ?? "critical";
+const explicitEvidenceDir = overrides.evidenceDir.trim();
+const evidencePath = explicitEvidenceDir
+	? ""
+	: (process.env.MAESTRO_PUBLISHED_REPLAY_EVIDENCE_PATH?.trim() ?? "");
 const evidenceDir =
-	overrides.evidenceDir.trim() ||
-	process.env.MAESTRO_REGISTRY_SMOKE_EVIDENCE_DIR?.trim() ||
-	process.env.MAESTRO_PUBLISHED_REPLAY_EVIDENCE_DIR?.trim() ||
-	"";
-const evidencePath =
-	process.env.MAESTRO_PUBLISHED_REPLAY_EVIDENCE_PATH?.trim() ?? "";
+	explicitEvidenceDir ||
+	(evidencePath
+		? ""
+		: process.env.MAESTRO_REGISTRY_SMOKE_EVIDENCE_DIR?.trim() ||
+			process.env.MAESTRO_PUBLISHED_REPLAY_EVIDENCE_DIR?.trim() ||
+			"");
 
 function sleep(milliseconds) {
 	return new Promise((resolve) => setTimeout(resolve, milliseconds));
