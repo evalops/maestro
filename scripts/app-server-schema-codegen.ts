@@ -2,6 +2,7 @@ import { spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import {
 	MaestroAppServerClientRequestSchema,
 	MaestroAppServerResponseSchema,
@@ -26,7 +27,7 @@ import {
 import * as appServerContracts from "../packages/contracts/src/maestro-app-server.js";
 
 const check = process.argv.includes("--check");
-const rootDir = resolve(import.meta.dirname, "..");
+const rootDir = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const protocolFixturePath = resolve(
 	rootDir,
 	"packages/contracts/schema/app-server/protocol.json",
