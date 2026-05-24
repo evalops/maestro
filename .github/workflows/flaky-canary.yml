@@ -53,6 +53,8 @@ jobs:
           done
 
       - uses: ./.github/actions/setup-bun-nx
+        with:
+          ensure-ripgrep: "true"
 
       - name: Run flake-prone tests twice
         run: |
