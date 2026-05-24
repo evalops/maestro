@@ -18,7 +18,14 @@
 //! - Optional character limit truncation
 
 use std::cmp::Ordering;
+use std::env;
+use std::fs;
 use std::io::Cursor;
+use std::path::Path;
+use std::process::{self, Command, Stdio};
+use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
+use std::thread;
+use std::time::{Duration, Instant};
 
 use regex::Regex;
 use serde::Deserialize;
@@ -28,12 +35,21 @@ use zip::ZipArchive;
 use crate::agent::ToolResult;
 
 const MAX_DOWNLOAD_BYTES: usize = 50 * 1024 * 1024;
+const MARKITDOWN_EXTRACT_TIMEOUT: Duration = Duration::from_secs(20);
+static MARKITDOWN_TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Debug, Deserialize)]
 struct ExtractDocumentArgs {
     url: String,
     #[serde(default, alias = "maxChars")]
     max_chars: Option<usize>,
+}
+
+struct DocumentExtraction {
+    format: String,
+    extractor: String,
+    text: String,
+    truncated: bool,
 }
 
 fn guess_filename_from_url(url: &reqwest::Url) -> String {
@@ -189,6 +205,232 @@ fn extract_from_format(format: &str, bytes: &[u8]) -> Option<String> {
     }
 }
 
+fn env_flag_enabled(name: &str) -> bool {
+    env::var(name)
+        .map(|value| {
+            matches!(
+                value.to_ascii_lowercase().as_str(),
+                "1" | "true" | "on" | "yes"
+            )
+        })
+        .unwrap_or(false)
+}
+
+fn env_flag_disabled(name: &str) -> bool {
+    env::var(name)
+        .map(|value| {
+            matches!(
+                value.to_ascii_lowercase().as_str(),
+                "0" | "false" | "off" | "no"
+            )
+        })
+        .unwrap_or(false)
+}
+
+fn markitdown_disabled() -> bool {
+    env_flag_disabled("MAESTRO_MARKITDOWN")
+}
+
+fn markitdown_preferred() -> bool {
+    env_flag_enabled("MAESTRO_MARKITDOWN_PREFER")
+}
+
+fn split_command_args(value: Option<String>) -> Vec<String> {
+    value
+        .unwrap_or_default()
+        .split_whitespace()
+        .filter(|part| !part.is_empty())
+        .map(str::to_string)
+        .collect()
+}
+
+fn markitdown_candidates() -> Vec<(String, Vec<String>)> {
+    if let Ok(command) = env::var("MAESTRO_MARKITDOWN_CMD") {
+        let command = command.trim();
+        if !command.is_empty() {
+            return vec![(
+                command.to_string(),
+                split_command_args(env::var("MAESTRO_MARKITDOWN_ARGS").ok()),
+            )];
+        }
+    }
+    vec![
+        ("markitdown".to_string(), Vec::new()),
+        ("uvx".to_string(), vec!["markitdown".to_string()]),
+    ]
+}
+
+fn should_try_markitdown(format: &str, file_name: &str, mime_type: Option<&str>) -> bool {
+    if markitdown_disabled() {
+        return false;
+    }
+    if markitdown_preferred() {
+        return true;
+    }
+    let lower_name = file_name.to_ascii_lowercase();
+    let mime_type = mime_type.unwrap_or("").to_ascii_lowercase();
+    format == "unknown"
+        || lower_name.ends_with(".html")
+        || lower_name.ends_with(".htm")
+        || mime_type.contains("text/html")
+}
+
+fn run_markitdown_command(command: &str, args: &[String]) -> Result<String, String> {
+    let mut child = Command::new(command)
+        .args(args)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|error| error.to_string())?;
+    let started = Instant::now();
+    loop {
+        if child
+            .try_wait()
+            .map_err(|error| format!("failed to wait for MarkItDown: {error}"))?
+            .is_some()
+        {
+            let output = child
+                .wait_with_output()
+                .map_err(|error| format!("failed to read MarkItDown output: {error}"))?;
+            if output.status.success() {
+                return String::from_utf8(output.stdout)
+                    .map_err(|_| "MarkItDown output was not UTF-8".to_string());
+            }
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(format!(
+                "MarkItDown exited with {}{}",
+                output.status,
+                if stderr.is_empty() {
+                    String::new()
+                } else {
+                    format!(": {}", stderr.chars().take(500).collect::<String>())
+                }
+            ));
+        }
+        if started.elapsed() > MARKITDOWN_EXTRACT_TIMEOUT {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err("MarkItDown conversion timed out".to_string());
+        }
+        thread::sleep(Duration::from_millis(25));
+    }
+}
+
+fn extract_with_markitdown(
+    bytes: &[u8],
+    file_name: &str,
+    mime_type: Option<&str>,
+) -> Result<Option<String>, String> {
+    if markitdown_disabled() {
+        return Ok(None);
+    }
+    let counter = MARKITDOWN_TEMP_COUNTER.fetch_add(1, AtomicOrdering::SeqCst);
+    let temp_dir =
+        env::temp_dir().join(format!("maestro-markitdown-{}-{}", process::id(), counter));
+    fs::create_dir_all(&temp_dir)
+        .map_err(|error| format!("failed to create MarkItDown temp dir: {error}"))?;
+    let extension = Path::new(file_name)
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .filter(|extension| !extension.is_empty())
+        .unwrap_or("bin");
+    let input_path = temp_dir.join(format!("input.{extension}"));
+    let result = (|| {
+        fs::write(&input_path, bytes)
+            .map_err(|error| format!("failed to write MarkItDown input: {error}"))?;
+        let mut last_error: Option<String> = None;
+        for (command, prefix_args) in markitdown_candidates() {
+            let mut args = prefix_args;
+            args.push(input_path.to_string_lossy().to_string());
+            if let Some(mime_type) = mime_type {
+                args.push("--mime-type".to_string());
+                args.push(mime_type.to_string());
+            }
+            match run_markitdown_command(&command, &args) {
+                Ok(output) => {
+                    let text = output.trim().to_string();
+                    if !text.is_empty() {
+                        return Ok(Some(text));
+                    }
+                }
+                Err(error) => {
+                    last_error = Some(error);
+                }
+            }
+        }
+        if env::var("MAESTRO_MARKITDOWN_CMD")
+            .map(|value| !value.trim().is_empty())
+            .unwrap_or(false)
+        {
+            return Err(format!(
+                "MarkItDown extraction failed: {}",
+                last_error.unwrap_or_else(|| "no output".to_string())
+            ));
+        }
+        Ok(None)
+    })();
+    let _ = fs::remove_dir_all(&temp_dir);
+    result
+}
+
+fn extract_document_bytes(
+    file_name: &str,
+    mime_type: Option<&str>,
+    bytes: &[u8],
+    max_chars: Option<usize>,
+) -> Result<DocumentExtraction, String> {
+    let format = detect_format(file_name, mime_type);
+    let format_label = format.unwrap_or("unknown").to_string();
+    let prefer_markitdown = markitdown_preferred() && !markitdown_disabled();
+    let mut extractor = "native".to_string();
+    let mut extracted = if prefer_markitdown {
+        match extract_with_markitdown(bytes, file_name, mime_type)? {
+            Some(text) => {
+                extractor = "markitdown".to_string();
+                text
+            }
+            None => String::new(),
+        }
+    } else {
+        String::new()
+    };
+
+    if extracted.is_empty() {
+        if let Some(format) = format {
+            extracted = extract_from_format(format, bytes).unwrap_or_default();
+        }
+    }
+
+    if extractor != "markitdown" && should_try_markitdown(&format_label, file_name, mime_type) {
+        if let Some(text) = extract_with_markitdown(bytes, file_name, mime_type)? {
+            extracted = text;
+            extractor = "markitdown".to_string();
+        }
+    }
+
+    if extracted.is_empty() && format.is_none() {
+        return Err("Unsupported document format. Supported: PDF (.pdf), Word (.docx), Excel (.xlsx), PowerPoint (.pptx), and common text files.".to_string());
+    }
+    if extracted.is_empty() {
+        return Err("Failed to extract document text.".to_string());
+    }
+
+    let max_chars = max_chars.unwrap_or(1_000_000);
+    let truncated = extracted.chars().count() > max_chars;
+    let text = if truncated {
+        extracted.chars().take(max_chars).collect()
+    } else {
+        extracted
+    };
+
+    Ok(DocumentExtraction {
+        format: format_label,
+        extractor,
+        text,
+        truncated,
+    })
+}
+
 pub async fn extract_document(args: Value) -> ToolResult {
     let parsed: ExtractDocumentArgs = match serde_json::from_value(args) {
         Ok(val) => val,
@@ -261,43 +503,29 @@ pub async fn extract_document(args: Value) -> ToolResult {
     let file_name = parse_content_disposition(content_disposition.as_deref())
         .unwrap_or_else(|| guess_filename_from_url(&url));
 
-    let format = detect_format(&file_name, content_type.as_deref());
-    let format = match format {
-        Some(fmt) => fmt,
-        None => {
-            return ToolResult::failure(
-                "Unsupported document format. Supported: PDF (.pdf), Word (.docx), Excel (.xlsx), PowerPoint (.pptx), and common text files."
-                    .to_string(),
-            )
+    let extraction = match extract_document_bytes(
+        &file_name,
+        content_type.as_deref(),
+        &bytes,
+        parsed.max_chars,
+    ) {
+        Ok(extraction) => extraction,
+        Err(error) => {
+            return ToolResult::failure(error);
         }
-    };
-
-    let extracted = match extract_from_format(format, &bytes) {
-        Some(text) => text,
-        None => {
-            return ToolResult::failure("Failed to extract document text.".to_string());
-        }
-    };
-
-    let mut truncated = false;
-    let max_chars = parsed.max_chars.unwrap_or(1_000_000);
-    let output = if extracted.chars().count() > max_chars {
-        truncated = true;
-        extracted.chars().take(max_chars).collect::<String>()
-    } else {
-        extracted
     };
 
     let details = serde_json::json!({
         "url": url.to_string(),
         "fileName": file_name,
         "mimeType": content_type,
-        "format": format,
+        "format": extraction.format,
+        "extractor": extraction.extractor,
         "sizeBytes": bytes.len(),
-        "truncated": truncated
+        "truncated": extraction.truncated
     });
 
-    ToolResult::success(output).with_details(details)
+    ToolResult::success(extraction.text).with_details(details)
 }
 
 #[cfg(test)]
@@ -591,6 +819,43 @@ mod tests {
         let bytes = b"some data";
         let result = extract_from_format("unknown_format", bytes);
         assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_extract_document_bytes_uses_configured_markitdown_for_html() {
+        let script_path = env::temp_dir().join(format!(
+            "maestro-tui-fake-markitdown-{}-{}.sh",
+            process::id(),
+            MARKITDOWN_TEMP_COUNTER.fetch_add(1, AtomicOrdering::SeqCst)
+        ));
+        fs::write(
+            &script_path,
+            "printf '# Converted by MarkItDown\\n\\nRust TUI body from fake CLI'",
+        )
+        .expect("fake MarkItDown script should be written");
+        env::set_var("MAESTRO_MARKITDOWN_CMD", "sh");
+        env::set_var(
+            "MAESTRO_MARKITDOWN_ARGS",
+            script_path.to_string_lossy().to_string(),
+        );
+        env::remove_var("MAESTRO_MARKITDOWN");
+        env::remove_var("MAESTRO_MARKITDOWN_PREFER");
+
+        let output = extract_document_bytes(
+            "brief.html",
+            Some("text/html"),
+            b"<html><body><h1>Ignored native HTML</h1></body></html>",
+            None,
+        )
+        .expect("MarkItDown extraction should succeed");
+
+        assert_eq!(output.format, "text");
+        assert_eq!(output.extractor, "markitdown");
+        assert!(output.text.contains("# Converted by MarkItDown"));
+
+        env::remove_var("MAESTRO_MARKITDOWN_CMD");
+        env::remove_var("MAESTRO_MARKITDOWN_ARGS");
+        let _ = fs::remove_file(script_path);
     }
 
     // ========================================================================
