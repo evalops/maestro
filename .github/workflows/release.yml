@@ -306,9 +306,41 @@ jobs:
         env:
           MAESTRO_INSTALL_AUDIT_LEVEL: critical
           MAESTRO_PUBLISHED_REPLAY_SANDBOX_MODE: local
+          MAESTRO_REGISTRY_SMOKE_EVIDENCE_DIR: published-replay-evidence
           MAESTRO_REGISTRY_POLL_ATTEMPTS: "120"
           MAESTRO_REGISTRY_POLL_DELAY_MS: "5000"
         run: node scripts/smoke-registry-install.js
+
+      - name: Validate published replay evidence
+        run: |
+          set -euo pipefail
+          for evidence in \
+            published-replay-evidence/npm-published-replay-evidence.json \
+            published-replay-evidence/bun-published-replay-evidence.json; do
+            if [[ ! -f "$evidence" ]]; then
+              echo "::error::Missing published replay evidence: $evidence" >&2
+              exit 1
+            fi
+            jq -e '
+              .schemaVersion == "evalops.maestro.published-replay-evidence.v1"
+              and (.package.spec | type == "string")
+              and (.package.cliCommand | type == "string")
+              and .replay.provider == "scripted-replay"
+              and ([.modes[].mode] | sort) == ["json", "rpc", "text"]
+              and all(.modes[]; .status == "ok" and .provider == "scripted-replay")
+              and all(.modes[]; .tool.name == "read" and .tool.resultStatus == "success")
+              and all(.modes[]; .final.status == "ok")
+              and all(.modes[] | select(.mode == "text" or .mode == "json"); .session.jsonlFileCount > 0 and .session.bytes > 0 and .session.containsFinalText == true and .session.containsToolCallId == true and (.session.sha256 | type == "string" and length == 64))
+            ' "$evidence" >/dev/null
+          done
+
+      - name: Upload published replay evidence
+        if: ${{ always() && hashFiles('published-replay-evidence/*.json') != '' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          retention-days: 14
+          name: published-replay-evidence-${{ needs.prepare.outputs.release_tag }}
+          path: published-replay-evidence/*.json
 
   notify:
     if: ${{ always() && needs.validate-trigger.outputs.should_run == 'true' && needs.prepare.result == 'success' }}
