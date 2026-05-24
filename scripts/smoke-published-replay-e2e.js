@@ -2,8 +2,10 @@
 // @ts-check
 
 import { spawn, spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import {
 	existsSync,
+	mkdirSync,
 	mkdtempSync,
 	readFileSync,
 	readdirSync,
@@ -12,7 +14,7 @@ import {
 	writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
 	getNpmCommand,
@@ -22,6 +24,8 @@ import {
 import { getPackageMetadata } from "./package-metadata.js";
 
 const SCRIPTED_SCENARIO_SCHEMA = "evalops.maestro.scripted-scenario.v1";
+const PUBLISHED_REPLAY_EVIDENCE_SCHEMA =
+	"evalops.maestro.published-replay-evidence.v1";
 const FINAL_TEXT =
 	"Published package golden path completed with manifest evidence.";
 const TOOL_CALL_ID = "call-read-package-json";
@@ -60,12 +64,14 @@ if (!replaySandboxModes.includes(replaySandboxMode)) {
 }
 
 function parseArgs(argv) {
-	/** @type {{packageName: string; version: string; cliCommand: string; installRoot: string}} */
+	/** @type {{packageName: string; version: string; cliCommand: string; installRoot: string; evidencePath: string; evidenceDir: string}} */
 	const options = {
 		packageName: "",
 		version: "",
 		cliCommand: "",
 		installRoot: "",
+		evidencePath: "",
+		evidenceDir: "",
 	};
 
 	for (let index = 0; index < argv.length; index += 1) {
@@ -83,12 +89,57 @@ function parseArgs(argv) {
 			case "--install-root":
 				options.installRoot = argv[++index] ?? "";
 				break;
+			case "--evidence-path":
+				options.evidencePath = argv[++index] ?? "";
+				break;
+			case "--evidence-dir":
+				options.evidenceDir = argv[++index] ?? "";
+				break;
 			default:
 				throw new Error(`Unknown argument: ${arg}`);
 		}
 	}
 
 	return options;
+}
+
+function sha256(value) {
+	return createHash("sha256").update(value).digest("hex");
+}
+
+function countBy(values) {
+	/** @type {Record<string, number>} */
+	const counts = {};
+	for (const value of values) {
+		const key = typeof value === "string" && value ? value : "unknown";
+		counts[key] = (counts[key] ?? 0) + 1;
+	}
+	return counts;
+}
+
+export function resolvePublishedReplayEvidencePath({
+	evidencePath = "",
+	evidenceDir = "",
+	env = process.env,
+} = {}) {
+	const explicitPath = evidencePath.trim();
+	if (explicitPath) {
+		return resolve(explicitPath);
+	}
+
+	const envPath = env.MAESTRO_PUBLISHED_REPLAY_EVIDENCE_PATH?.trim() ?? "";
+	if (envPath) {
+		return resolve(envPath);
+	}
+
+	const explicitDir = evidenceDir.trim();
+	const envDir = env.MAESTRO_PUBLISHED_REPLAY_EVIDENCE_DIR?.trim() ?? "";
+	const dir = explicitDir || envDir;
+	if (!dir) {
+		return "";
+	}
+
+	return join(resolve(dir), "published-replay-evidence.json");
 }
 
 function createScenario(runDir, id) {
@@ -240,11 +291,12 @@ function collectFiles(dir) {
 }
 
 function assertSessionEvidence(sessionDir, label) {
-	const failure = sessionEvidenceFailure(sessionDir, label);
-	if (failure) fail(failure);
+	const report = sessionEvidenceReport(sessionDir, label);
+	if (typeof report === "string") fail(report);
+	return report;
 }
 
-function sessionEvidenceFailure(sessionDir, label) {
+function sessionEvidenceReport(sessionDir, label) {
 	const sessionFiles = collectFiles(sessionDir).filter((path) =>
 		path.endsWith(".jsonl"),
 	);
@@ -257,7 +309,13 @@ function sessionEvidenceFailure(sessionDir, label) {
 	if (!sessionText.includes(FINAL_TEXT) || !sessionText.includes(TOOL_CALL_ID)) {
 		return `${label} session evidence is missing the final text or tool call id.`;
 	}
-	return null;
+	return {
+		jsonlFileCount: sessionFiles.length,
+		bytes: Buffer.byteLength(sessionText),
+		sha256: sha256(sessionText),
+		containsFinalText: true,
+		containsToolCallId: true,
+	};
 }
 
 function assertJsonMode(messages, context, label) {
@@ -307,7 +365,31 @@ function assertJsonMode(messages, context, label) {
 		fail(`${label} did not emit a thread end ok event.`);
 	}
 
-	assertSessionEvidence(context.sessionDir, label);
+	return {
+		mode: "json",
+		status: "ok",
+		provider: finalMessage.data.provider,
+		stdout: {
+			jsonLineCount: messages.length,
+			eventTypes: countBy(
+				messages.map((message) =>
+					[message?.type, message?.subtype].filter(Boolean).join(":"),
+				),
+			),
+		},
+		tool: {
+			name: "read",
+			callId: toolResult.data.toolCallId,
+			inputPath: toolCall.data.args.path,
+			resultStatus: "success",
+		},
+		final: {
+			status: "ok",
+			textSha256: sha256(finalMessage.data.text),
+			containsExpectedText: true,
+		},
+		session: assertSessionEvidence(context.sessionDir, label),
+	};
 }
 
 function runSingleShotMode(binPath, label, mode) {
@@ -367,8 +449,33 @@ function runTextMode(binPath) {
 		if (!stdout.includes(FINAL_TEXT)) {
 			fail("Published text replay did not print the final assistant response.");
 		}
-		assertSessionEvidence(context.sessionDir, "Published text replay");
+		const session = assertSessionEvidence(
+			context.sessionDir,
+			"Published text replay",
+		);
 		console.log("Published text replay smoke passed.");
+		return {
+			mode: "text",
+			status: "ok",
+			provider: "scripted-replay",
+			stdout: {
+				bytes: Buffer.byteLength(stdout),
+				sha256: sha256(stdout),
+				containsFinalText: true,
+			},
+			tool: {
+				name: "read",
+				callId: TOOL_CALL_ID,
+				inputPath: "package.json",
+				resultStatus: "success",
+			},
+			final: {
+				status: "ok",
+				textSha256: sha256(FINAL_TEXT),
+				containsExpectedText: true,
+			},
+			session,
+		};
 	} finally {
 		rmSync(context.runDir, { recursive: true, force: true });
 	}
@@ -381,12 +488,13 @@ function runJsonMode(binPath) {
 		"json",
 	);
 	try {
-		assertJsonMode(
+		const evidence = assertJsonMode(
 			parseJsonLines(stdout, "Published JSON replay"),
 			context,
 			"Published JSON replay",
 		);
 		console.log("Published JSON replay smoke passed.");
+		return evidence;
 	} finally {
 		rmSync(context.runDir, { recursive: true, force: true });
 	}
@@ -424,6 +532,32 @@ function assertRpcEvents(events, context) {
 	if (!stateText.includes(FINAL_TEXT) || !stateText.includes(TOOL_CALL_ID)) {
 		fail("Published RPC replay final state is missing replay evidence.");
 	}
+	return {
+		mode: "rpc",
+		status: "ok",
+		provider: "scripted-replay",
+		events: {
+			count: events.length,
+			types: countBy(events.map((event) => event?.type)),
+			hasAgentStart: true,
+			hasToolExecutionStart: true,
+			hasToolExecutionEnd: true,
+			hasAgentEnd: true,
+		},
+		tool: {
+			name: "read",
+			callId: TOOL_CALL_ID,
+			inputPath: "package.json",
+			resultStatus: "success",
+		},
+		final: {
+			status: "ok",
+			aborted: false,
+			stateSha256: sha256(stateText),
+			containsExpectedText: true,
+			containsToolCallId: true,
+		},
+	};
 }
 
 function runRpcMode(binPath) {
@@ -456,7 +590,7 @@ function runRpcMode(binPath) {
 		let stderr = "";
 		let finished = false;
 		let settled = false;
-		let rpcEvidenceValidated = false;
+		let rpcEvidence;
 		let forceKillTimer;
 		const timer = setTimeout(() => {
 			finish(new Error("Published RPC replay smoke timed out."));
@@ -467,18 +601,20 @@ function runRpcMode(binPath) {
 			settled = true;
 			if (forceKillTimer) clearTimeout(forceKillTimer);
 			let settleError = error;
-			if (!settleError && rpcEvidenceValidated) {
-				const failure = sessionEvidenceFailure(
+			if (!settleError && rpcEvidence) {
+				const session = sessionEvidenceReport(
 					context.sessionDir,
 					"Published RPC replay",
 				);
-				if (failure) {
-					settleError = new Error(failure);
+				if (typeof session === "string") {
+					settleError = new Error(session);
+				} else {
+					rpcEvidence.session = session;
 				}
 			}
 			rmSync(context.runDir, { recursive: true, force: true });
 			if (settleError) reject(settleError);
-			else resolvePromise();
+			else resolvePromise(rpcEvidence);
 		}
 
 		function finish(error) {
@@ -506,8 +642,7 @@ function runRpcMode(binPath) {
 				return;
 			}
 			try {
-				assertRpcEvents(events, context);
-				rpcEvidenceValidated = true;
+				rpcEvidence = assertRpcEvents(events, context);
 				console.log("Published RPC replay smoke passed.");
 				finish();
 			} catch (error) {
@@ -547,21 +682,76 @@ function runRpcMode(binPath) {
 	});
 }
 
+function buildPublishedReplayEvidence({
+	packageSpec,
+	cliCommand,
+	binPath,
+	modes,
+}) {
+	return {
+		schemaVersion: PUBLISHED_REPLAY_EVIDENCE_SCHEMA,
+		generatedAt: new Date().toISOString(),
+		package: {
+			spec: packageSpec,
+			cliCommand,
+			binPath,
+		},
+		replay: {
+			provider: "scripted-replay",
+			scenarioSchemaVersion: SCRIPTED_SCENARIO_SCHEMA,
+			sandboxMode: replaySandboxMode,
+			prompt: {
+				length: PROMPT_TEXT.length,
+				sha256: sha256(PROMPT_TEXT),
+			},
+			expected: {
+				toolName: "read",
+				toolCallId: TOOL_CALL_ID,
+				toolInputPath: "package.json",
+				finalTextSha256: sha256(FINAL_TEXT),
+			},
+		},
+		modes,
+	};
+}
+
+function writePublishedReplayEvidence(evidencePath, evidence) {
+	if (!evidencePath) {
+		return;
+	}
+	mkdirSync(dirname(evidencePath), { recursive: true });
+	writeFileSync(evidencePath, `${JSON.stringify(evidence, null, 2)}\n`);
+	console.log(`Published replay E2E evidence written to ${evidencePath}.`);
+}
+
 export async function runPublishedReplayE2E({
 	installRoot,
 	cliCommand,
 	packageSpec,
+	evidencePath = "",
 }) {
 	if (process.env.MAESTRO_SKIP_PUBLISHED_REPLAY_E2E === "1") {
 		console.log(`Skipping published replay E2E smoke for ${packageSpec}.`);
-		return;
+		return null;
 	}
 
 	const binPath = installedBinPath(installRoot, cliCommand);
-	runTextMode(binPath);
-	runJsonMode(binPath);
-	await runRpcMode(binPath);
+	const modes = [];
+	modes.push(runTextMode(binPath));
+	modes.push(runJsonMode(binPath));
+	modes.push(await runRpcMode(binPath));
+	const evidence = buildPublishedReplayEvidence({
+		packageSpec,
+		cliCommand,
+		binPath,
+		modes,
+	});
+	writePublishedReplayEvidence(
+		resolvePublishedReplayEvidencePath({ evidencePath }),
+		evidence,
+	);
 	console.log(`Published replay E2E smoke passed for ${packageSpec}.`);
+	return evidence;
 }
 
 async function main() {
@@ -572,6 +762,10 @@ async function main() {
 	const version = overrides.version || defaults.version;
 	const packageSpec = `${name}@${version}`;
 	const npmCommand = getNpmCommand();
+	const evidencePath = resolvePublishedReplayEvidencePath({
+		evidencePath: overrides.evidencePath,
+		evidenceDir: overrides.evidenceDir,
+	});
 	let installRoot = overrides.installRoot
 		? resolve(overrides.installRoot)
 		: "";
@@ -609,7 +803,12 @@ async function main() {
 			expectedVersion: version,
 			label: "published replay CLI",
 		});
-		await runPublishedReplayE2E({ installRoot, cliCommand, packageSpec });
+		await runPublishedReplayE2E({
+			installRoot,
+			cliCommand,
+			packageSpec,
+			evidencePath,
+		});
 	} finally {
 		if (shouldCleanup) {
 			rmSync(installRoot, { recursive: true, force: true });
