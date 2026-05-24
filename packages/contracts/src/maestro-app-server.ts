@@ -9,6 +9,8 @@ export const maestroAppServerSupportedProtocolVersions = [
 
 export const maestroAppServerClientMethods = [
 	"initialize",
+	"protocol/mode/list",
+	"protocol/mode/set",
 	"model/list",
 	"modelProvider/capabilities/read",
 	"policy/read",
@@ -101,6 +103,7 @@ export type MaestroAppServerClientRequest = Static<
 
 export const MaestroAppServerCapabilitiesSchema = Type.Object({
 	sessions: Type.Boolean(),
+	protocolModes: Type.Boolean(),
 	modelList: Type.Boolean(),
 	modelProviderCapabilities: Type.Boolean(),
 	managedPolicy: Type.Boolean(),
@@ -621,6 +624,47 @@ export type MaestroAppServerPluginBundleMutationResult = Static<
 	typeof MaestroAppServerPluginBundleMutationResultSchema
 >;
 
+export const maestroAppServerProtocolModeIds = [
+	"standard",
+	"review",
+	"realtime",
+] as const;
+export const MaestroAppServerProtocolModeIdSchema = stringLiteralUnion(
+	maestroAppServerProtocolModeIds,
+);
+export type MaestroAppServerProtocolModeId =
+	(typeof maestroAppServerProtocolModeIds)[number];
+
+export const MaestroAppServerProtocolModeSchema = Type.Object({
+	id: MaestroAppServerProtocolModeIdSchema,
+	label: Type.String(),
+	readOnly: Type.Boolean(),
+	realtime: Type.Boolean(),
+	allowedMethods: Type.Array(Type.String()),
+	blockedMethods: Type.Array(Type.String()),
+	serverNotifications: Type.Array(Type.String()),
+});
+export type MaestroAppServerProtocolMode = Static<
+	typeof MaestroAppServerProtocolModeSchema
+>;
+
+export const MaestroAppServerProtocolModeListResultSchema = Type.Object({
+	activeMode: MaestroAppServerProtocolModeIdSchema,
+	defaultMode: MaestroAppServerProtocolModeIdSchema,
+	modes: Type.Array(MaestroAppServerProtocolModeSchema),
+});
+export type MaestroAppServerProtocolModeListResult = Static<
+	typeof MaestroAppServerProtocolModeListResultSchema
+>;
+
+export const MaestroAppServerProtocolModeSetResultSchema = Type.Object({
+	activeMode: MaestroAppServerProtocolModeIdSchema,
+	mode: MaestroAppServerProtocolModeSchema,
+});
+export type MaestroAppServerProtocolModeSetResult = Static<
+	typeof MaestroAppServerProtocolModeSetResultSchema
+>;
+
 export const maestroAppServerRemoteControlStatuses = [
 	"unavailable",
 	"ready",
@@ -924,6 +968,8 @@ export const MaestroAppServerResponseSchema = Type.Object({
 			MaestroAppServerExternalAgentImportResultSchema,
 			MaestroAppServerPluginBundleListResultSchema,
 			MaestroAppServerPluginBundleMutationResultSchema,
+			MaestroAppServerProtocolModeListResultSchema,
+			MaestroAppServerProtocolModeSetResultSchema,
 			MaestroAppServerDaemonStatusResultSchema,
 			MaestroAppServerRemoteControlStatusResultSchema,
 			MaestroAppServerRemoteControlLeaseResultSchema,

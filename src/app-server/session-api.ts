@@ -20,6 +20,8 @@ import {
 	type MaestroAppServerPluginBundleMutationResult,
 	type MaestroAppServerPolicyCheckResult,
 	type MaestroAppServerPolicyReadResult,
+	type MaestroAppServerProtocolModeListResult,
+	type MaestroAppServerProtocolModeSetResult,
 	type MaestroAppServerRemoteControlDrainResult,
 	type MaestroAppServerRemoteControlLeaseResult,
 	type MaestroAppServerRemoteControlStatusResult,
@@ -94,6 +96,12 @@ import {
 	createMaestroAppServerPolicyControl,
 } from "./policy-control-api.js";
 import {
+	type MaestroAppServerProtocolModeDecision,
+	type MaestroAppServerProtocolModes,
+	MaestroAppServerProtocolModesError,
+	createMaestroAppServerProtocolModes,
+} from "./protocol-modes-api.js";
+import {
 	type MaestroAppServerSandboxProof,
 	MaestroAppServerSandboxProofError,
 	createMaestroAppServerSandboxProof,
@@ -116,6 +124,10 @@ export {
 	type MaestroAppServerPluginBundleApi,
 	createMaestroAppServerPluginBundleApi,
 } from "./plugin-bundle-api.js";
+export {
+	type MaestroAppServerProtocolModes,
+	createMaestroAppServerProtocolModes,
+} from "./protocol-modes-api.js";
 export {
 	type MaestroAppServerSandboxProof,
 	createMaestroAppServerSandboxProof,
@@ -189,11 +201,21 @@ export interface MaestroAppServerSessionApiOptions {
 	externalAgentImport?: MaestroAppServerExternalAgentImport | false;
 	pluginBundles?: MaestroAppServerPluginBundleApi | false;
 	daemonLifecycle?: MaestroAppServerDaemonLifecycle | false;
+	protocolModes?: MaestroAppServerProtocolModes | false;
 	onNotification?: (notification: MaestroAppServerServerNotification) => void;
 }
 
 export interface MaestroAppServerSessionApi {
 	initialize(): MaestroAppServerResponse["result"];
+	checkProtocolMode(
+		method: (typeof maestroAppServerClientMethods)[number],
+	): MaestroAppServerProtocolModeDecision;
+	listProtocolModes(
+		params?: Record<string, unknown>,
+	): Promise<MaestroAppServerProtocolModeListResult>;
+	setProtocolMode(
+		params?: Record<string, unknown>,
+	): Promise<MaestroAppServerProtocolModeSetResult>;
 	listModels(
 		params?: Record<string, unknown>,
 	): Promise<MaestroAppServerModelListResult>;
@@ -881,6 +903,10 @@ export function createMaestroAppServerSessionApi(
 		options.daemonLifecycle === false
 			? undefined
 			: (options.daemonLifecycle ?? createMaestroAppServerDaemonLifecycle());
+	const protocolModes =
+		options.protocolModes === false
+			? undefined
+			: (options.protocolModes ?? createMaestroAppServerProtocolModes());
 	const daemonLifecycleCapabilities = daemonLifecycle?.capabilities() ?? {
 		daemonStatus: false,
 		remoteControlStatus: false,
@@ -938,6 +964,7 @@ export function createMaestroAppServerSessionApi(
 				},
 				capabilities: {
 					sessions: true,
+					protocolModes: Boolean(protocolModes),
 					modelList: true,
 					modelProviderCapabilities: true,
 					managedPolicy: canUsePolicyControl,
@@ -968,6 +995,30 @@ export function createMaestroAppServerSessionApi(
 					turnsList: true,
 				},
 			};
+		},
+
+		checkProtocolMode(method) {
+			return protocolModes?.checkMethod(method) ?? { allowed: true };
+		},
+
+		async listProtocolModes(params = {}) {
+			if (!protocolModes) {
+				throw new MaestroAppServerError(
+					-32601,
+					"Protocol modes are not available",
+				);
+			}
+			return protocolModes.listModes(params);
+		},
+
+		async setProtocolMode(params = {}) {
+			if (!protocolModes) {
+				throw new MaestroAppServerError(
+					-32601,
+					"Protocol modes are not available",
+				);
+			}
+			return protocolModes.setMode(params);
 		},
 
 		async readPolicy() {
@@ -1716,13 +1767,35 @@ export async function handleMaestroAppServerRequest(
 		if (!isSupportedMethod(request.method)) {
 			throw new MaestroAppServerError(-32601, "Method not found");
 		}
+		const method = request.method;
+		const protocolModeDecision = api.checkProtocolMode?.(method) ?? {
+			allowed: true,
+		};
+		if (!protocolModeDecision.allowed) {
+			throw new MaestroAppServerError(
+				-32003,
+				protocolModeDecision.reason ?? "Method blocked by protocol mode",
+			);
+		}
 
-		switch (request.method) {
+		switch (method) {
 			case "initialize":
 				return {
 					jsonrpc: "2.0",
 					id,
 					result: api.initialize(),
+				};
+			case "protocol/mode/list":
+				return {
+					jsonrpc: "2.0",
+					id,
+					result: await api.listProtocolModes(request.params),
+				};
+			case "protocol/mode/set":
+				return {
+					jsonrpc: "2.0",
+					id,
+					result: await api.setProtocolMode(request.params),
 				};
 			case "model/list":
 				return {
@@ -1996,7 +2069,8 @@ export async function handleMaestroAppServerRequest(
 			error instanceof MaestroAppServerSandboxProofError ||
 			error instanceof MaestroAppServerExternalAgentImportError ||
 			error instanceof MaestroAppServerPluginBundleError ||
-			error instanceof MaestroAppServerDaemonLifecycleError
+			error instanceof MaestroAppServerDaemonLifecycleError ||
+			error instanceof MaestroAppServerProtocolModesError
 		) {
 			return {
 				jsonrpc: "2.0",
