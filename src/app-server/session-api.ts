@@ -12,6 +12,8 @@ import {
 	type MaestroAppServerModelListResult,
 	type MaestroAppServerModelProviderCapabilities,
 	type MaestroAppServerModelProviderCapabilitiesReadResult,
+	type MaestroAppServerNetworkAuditListResult,
+	type MaestroAppServerNetworkFetchResult,
 	type MaestroAppServerPolicyCheckResult,
 	type MaestroAppServerPolicyReadResult,
 	type MaestroAppServerRequirementsListResult,
@@ -56,6 +58,11 @@ import {
 	MaestroAppServerHostControlError,
 	createMaestroAppServerHostControl,
 } from "./host-control-api.js";
+import {
+	type MaestroAppServerNetworkGovernance,
+	MaestroAppServerNetworkGovernanceError,
+	createMaestroAppServerNetworkGovernance,
+} from "./network-governance-api.js";
 import {
 	type MaestroAppServerPolicyControl,
 	MaestroAppServerPolicyControlError,
@@ -120,6 +127,7 @@ type SessionStore = Pick<
 export interface MaestroAppServerSessionApiOptions {
 	hostControl?: MaestroAppServerHostControl | false;
 	policyControl?: MaestroAppServerPolicyControl | false;
+	networkGovernance?: MaestroAppServerNetworkGovernance | false;
 	onNotification?: (notification: MaestroAppServerServerNotification) => void;
 }
 
@@ -140,6 +148,12 @@ export interface MaestroAppServerSessionApi {
 	listRequirements(
 		params?: Record<string, unknown>,
 	): Promise<MaestroAppServerRequirementsListResult>;
+	fetchNetwork(
+		params?: Record<string, unknown>,
+	): Promise<MaestroAppServerNetworkFetchResult>;
+	listNetworkAudit(
+		params?: Record<string, unknown>,
+	): Promise<MaestroAppServerNetworkAuditListResult>;
 	execCommand(
 		params?: Record<string, unknown>,
 	): Promise<MaestroAppServerCommandExecResult>;
@@ -756,6 +770,11 @@ export function createMaestroAppServerSessionApi(
 		options.policyControl === false
 			? undefined
 			: (options.policyControl ?? createMaestroAppServerPolicyControl());
+	const networkGovernance =
+		options.networkGovernance === false
+			? undefined
+			: (options.networkGovernance ??
+				createMaestroAppServerNetworkGovernance());
 	const canUpdateThreadMetadata = Boolean(
 		store.setSessionTitle &&
 			store.saveSessionSummary &&
@@ -785,6 +804,7 @@ export function createMaestroAppServerSessionApi(
 	const canUseHostControl = Boolean(hostControl);
 	const canUseFilesystemWatch = Boolean(hostControl?.supportsWatch());
 	const canUsePolicyControl = Boolean(policyControl);
+	const canUseNetworkGovernance = Boolean(networkGovernance);
 
 	return {
 		initialize() {
@@ -802,6 +822,8 @@ export function createMaestroAppServerSessionApi(
 					modelProviderCapabilities: true,
 					managedPolicy: canUsePolicyControl,
 					requirements: canUsePolicyControl,
+					networkProxy: canUseNetworkGovernance,
+					networkAudit: canUseNetworkGovernance,
 					commandExec: canUseHostControl,
 					commandProcessControl: canUseHostControl,
 					filesystem: canUseHostControl,
@@ -848,6 +870,26 @@ export function createMaestroAppServerSessionApi(
 				);
 			}
 			return policyControl.listRequirements();
+		},
+
+		async fetchNetwork(params = {}) {
+			if (!networkGovernance) {
+				throw new MaestroAppServerError(
+					-32601,
+					"Network proxy is not available",
+				);
+			}
+			return networkGovernance.fetch(params);
+		},
+
+		async listNetworkAudit(params = {}) {
+			if (!networkGovernance) {
+				throw new MaestroAppServerError(
+					-32601,
+					"Network audit is not available",
+				);
+			}
+			return networkGovernance.listAudit(params);
 		},
 
 		async execCommand(params = {}) {
@@ -1471,6 +1513,18 @@ export async function handleMaestroAppServerRequest(
 					id,
 					result: await api.listRequirements(request.params),
 				};
+			case "network/fetch":
+				return {
+					jsonrpc: "2.0",
+					id,
+					result: await api.fetchNetwork(request.params),
+				};
+			case "network/audit/list":
+				return {
+					jsonrpc: "2.0",
+					id,
+					result: await api.listNetworkAudit(request.params),
+				};
 			case "command/exec":
 				return {
 					jsonrpc: "2.0",
@@ -1630,6 +1684,7 @@ export async function handleMaestroAppServerRequest(
 		if (
 			error instanceof MaestroAppServerError ||
 			error instanceof MaestroAppServerHostControlError ||
+			error instanceof MaestroAppServerNetworkGovernanceError ||
 			error instanceof MaestroAppServerPolicyControlError
 		) {
 			return {

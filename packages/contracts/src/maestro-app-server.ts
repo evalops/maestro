@@ -14,6 +14,8 @@ export const maestroAppServerClientMethods = [
 	"policy/read",
 	"policy/check",
 	"requirements/list",
+	"network/fetch",
+	"network/audit/list",
 	"command/exec",
 	"command/exec/write",
 	"command/exec/terminate",
@@ -92,6 +94,8 @@ export const MaestroAppServerCapabilitiesSchema = Type.Object({
 	modelProviderCapabilities: Type.Boolean(),
 	managedPolicy: Type.Boolean(),
 	requirements: Type.Boolean(),
+	networkProxy: Type.Boolean(),
+	networkAudit: Type.Boolean(),
 	commandExec: Type.Boolean(),
 	commandProcessControl: Type.Boolean(),
 	filesystem: Type.Boolean(),
@@ -378,6 +382,54 @@ export type MaestroAppServerRequirementsListResult = Static<
 	typeof MaestroAppServerRequirementsListResultSchema
 >;
 
+export const maestroAppServerNetworkGovernanceStatuses = [
+	"allowed",
+	"blocked",
+	"failed",
+] as const;
+export const MaestroAppServerNetworkGovernanceStatusSchema = stringLiteralUnion(
+	maestroAppServerNetworkGovernanceStatuses,
+);
+export type MaestroAppServerNetworkGovernanceStatus =
+	(typeof maestroAppServerNetworkGovernanceStatuses)[number];
+
+export const MaestroAppServerNetworkAuditRecordSchema = Type.Object({
+	id: Type.String(),
+	method: Type.String(),
+	url: Type.String(),
+	host: Type.String(),
+	allowed: Type.Boolean(),
+	status: MaestroAppServerNetworkGovernanceStatusSchema,
+	reason: Type.Optional(Type.String()),
+	statusCode: Type.Optional(Type.Number()),
+	startedAt: Type.String(),
+	completedAt: Type.String(),
+});
+export type MaestroAppServerNetworkAuditRecord = Static<
+	typeof MaestroAppServerNetworkAuditRecordSchema
+>;
+
+export const MaestroAppServerNetworkFetchResultSchema = Type.Object({
+	allowed: Type.Boolean(),
+	status: MaestroAppServerNetworkGovernanceStatusSchema,
+	reason: Type.Optional(Type.String()),
+	statusCode: Type.Optional(Type.Number()),
+	headers: Type.Optional(Type.Record(Type.String(), Type.String())),
+	bodyBase64: Type.Optional(Type.String()),
+	audit: MaestroAppServerNetworkAuditRecordSchema,
+});
+export type MaestroAppServerNetworkFetchResult = Static<
+	typeof MaestroAppServerNetworkFetchResultSchema
+>;
+
+export const MaestroAppServerNetworkAuditListResultSchema = Type.Object({
+	audit: Type.Array(MaestroAppServerNetworkAuditRecordSchema),
+	nextCursor: Type.Union([Type.String(), Type.Null()]),
+});
+export type MaestroAppServerNetworkAuditListResult = Static<
+	typeof MaestroAppServerNetworkAuditListResultSchema
+>;
+
 export const MaestroAppServerEmptyResultSchema = Type.Object(
 	{},
 	{ additionalProperties: false },
@@ -556,6 +608,8 @@ export const MaestroAppServerResponseSchema = Type.Object({
 			MaestroAppServerPolicyReadResultSchema,
 			MaestroAppServerPolicyCheckResultSchema,
 			MaestroAppServerRequirementsListResultSchema,
+			MaestroAppServerNetworkFetchResultSchema,
+			MaestroAppServerNetworkAuditListResultSchema,
 			MaestroAppServerCommandExecResultSchema,
 			MaestroAppServerCommandProcessResultSchema,
 			MaestroAppServerFsReadFileResultSchema,
