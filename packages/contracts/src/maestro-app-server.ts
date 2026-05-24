@@ -1,12 +1,28 @@
 import { type Static, Type } from "@sinclair/typebox";
 import { stringLiteralUnion } from "./typebox-utils.js";
 
-export const maestroAppServerProtocolVersion = "maestro-app-server.v1" as const;
+export const maestroAppServerProtocolVersion = "maestro-app-server.v2" as const;
+export const maestroAppServerSupportedProtocolVersions = [
+	"maestro-app-server.v1",
+	maestroAppServerProtocolVersion,
+] as const;
 
 export const maestroAppServerClientMethods = [
 	"initialize",
 	"model/list",
 	"modelProvider/capabilities/read",
+	"command/exec",
+	"command/exec/write",
+	"command/exec/terminate",
+	"fs/readFile",
+	"fs/writeFile",
+	"fs/readDirectory",
+	"fs/getMetadata",
+	"fs/createDirectory",
+	"fs/remove",
+	"fs/copy",
+	"fs/watch",
+	"fs/unwatch",
 	"thread/list",
 	"thread/read",
 	"thread/metadata/update",
@@ -14,10 +30,19 @@ export const maestroAppServerClientMethods = [
 	"thread/goal/get",
 	"thread/goal/set",
 	"thread/goal/clear",
+	"thread/start",
+	"thread/fork",
+	"thread/archive",
+	"thread/unarchive",
+	"thread/delete",
 	"thread/turns/list",
 ] as const;
 export type MaestroAppServerClientMethod =
 	(typeof maestroAppServerClientMethods)[number];
+
+export const maestroAppServerServerMethods = ["fs/changed"] as const;
+export type MaestroAppServerServerMethod =
+	(typeof maestroAppServerServerMethods)[number];
 
 export const maestroAppServerThreadStatuses = [
 	"notLoaded",
@@ -25,6 +50,7 @@ export const maestroAppServerThreadStatuses = [
 	"running",
 	"interrupted",
 	"completed",
+	"archived",
 ] as const;
 export type MaestroAppServerThreadStatus =
 	(typeof maestroAppServerThreadStatuses)[number];
@@ -61,11 +87,19 @@ export const MaestroAppServerCapabilitiesSchema = Type.Object({
 	sessions: Type.Boolean(),
 	modelList: Type.Boolean(),
 	modelProviderCapabilities: Type.Boolean(),
+	commandExec: Type.Boolean(),
+	commandProcessControl: Type.Boolean(),
+	filesystem: Type.Boolean(),
+	filesystemWatch: Type.Boolean(),
 	threadList: Type.Boolean(),
 	threadRead: Type.Boolean(),
 	threadMetadataUpdate: Type.Boolean(),
 	threadNameSet: Type.Boolean(),
 	threadGoals: Type.Boolean(),
+	threadStart: Type.Boolean(),
+	threadFork: Type.Boolean(),
+	threadArchive: Type.Boolean(),
+	threadDelete: Type.Boolean(),
 	turnsList: Type.Boolean(),
 });
 export type MaestroAppServerCapabilities = Static<
@@ -74,6 +108,9 @@ export type MaestroAppServerCapabilities = Static<
 
 export const MaestroAppServerInitializeResultSchema = Type.Object({
 	protocolVersion: Type.Literal(maestroAppServerProtocolVersion),
+	supportedProtocolVersions: Type.Optional(
+		Type.Array(stringLiteralUnion(maestroAppServerSupportedProtocolVersions)),
+	),
 	serverInfo: Type.Object({
 		name: Type.String(),
 		version: Type.Optional(Type.String()),
@@ -106,6 +143,8 @@ export const MaestroAppServerThreadSummarySchema = Type.Object({
 	messageCount: Type.Number(),
 	favorite: Type.Boolean(),
 	tags: Type.Optional(Type.Array(Type.String())),
+	archived: Type.Optional(Type.Boolean()),
+	archivedAt: Type.Optional(Type.String()),
 });
 export type MaestroAppServerThreadSummary = Static<
 	typeof MaestroAppServerThreadSummarySchema
@@ -232,6 +271,112 @@ export type MaestroAppServerTurnsListResult = Static<
 	typeof MaestroAppServerTurnsListResultSchema
 >;
 
+export const MaestroAppServerEmptyResultSchema = Type.Object(
+	{},
+	{ additionalProperties: false },
+);
+export type MaestroAppServerEmptyResult = Static<
+	typeof MaestroAppServerEmptyResultSchema
+>;
+
+export const MaestroAppServerCommandExecResultSchema = Type.Object({
+	stdout: Type.String(),
+	stderr: Type.String(),
+	exitCode: Type.Number(),
+});
+export type MaestroAppServerCommandExecResult = Static<
+	typeof MaestroAppServerCommandExecResultSchema
+>;
+
+export const MaestroAppServerCommandProcessResultSchema = Type.Object({
+	processId: Type.String(),
+});
+export type MaestroAppServerCommandProcessResult = Static<
+	typeof MaestroAppServerCommandProcessResultSchema
+>;
+
+export const MaestroAppServerFsReadFileResultSchema = Type.Object({
+	dataBase64: Type.String(),
+});
+export type MaestroAppServerFsReadFileResult = Static<
+	typeof MaestroAppServerFsReadFileResultSchema
+>;
+
+export const MaestroAppServerFsReadDirectoryEntrySchema = Type.Object({
+	fileName: Type.String(),
+	isDirectory: Type.Boolean(),
+	isFile: Type.Boolean(),
+});
+export type MaestroAppServerFsReadDirectoryEntry = Static<
+	typeof MaestroAppServerFsReadDirectoryEntrySchema
+>;
+
+export const MaestroAppServerFsReadDirectoryResultSchema = Type.Object({
+	entries: Type.Array(MaestroAppServerFsReadDirectoryEntrySchema),
+});
+export type MaestroAppServerFsReadDirectoryResult = Static<
+	typeof MaestroAppServerFsReadDirectoryResultSchema
+>;
+
+export const MaestroAppServerFsMetadataResultSchema = Type.Object({
+	createdAtMs: Type.Number(),
+	modifiedAtMs: Type.Number(),
+	isDirectory: Type.Boolean(),
+	isFile: Type.Boolean(),
+	isSymlink: Type.Boolean(),
+});
+export type MaestroAppServerFsMetadataResult = Static<
+	typeof MaestroAppServerFsMetadataResultSchema
+>;
+
+export const MaestroAppServerFsWatchResultSchema = Type.Object({
+	watchId: Type.String(),
+	path: Type.String(),
+});
+export type MaestroAppServerFsWatchResult = Static<
+	typeof MaestroAppServerFsWatchResultSchema
+>;
+
+export const MaestroAppServerFsChangedNotificationParamsSchema = Type.Object({
+	watchId: Type.String(),
+	changedPaths: Type.Array(Type.String()),
+});
+export type MaestroAppServerFsChangedNotificationParams = Static<
+	typeof MaestroAppServerFsChangedNotificationParamsSchema
+>;
+
+export const MaestroAppServerThreadStartResultSchema = Type.Object({
+	thread: MaestroAppServerThreadSummarySchema,
+});
+export type MaestroAppServerThreadStartResult = Static<
+	typeof MaestroAppServerThreadStartResultSchema
+>;
+
+export const MaestroAppServerThreadForkResultSchema = Type.Object({
+	thread: MaestroAppServerThreadSummarySchema,
+	parentThreadId: Type.String(),
+	forkedFromEntryId: Type.String(),
+});
+export type MaestroAppServerThreadForkResult = Static<
+	typeof MaestroAppServerThreadForkResultSchema
+>;
+
+export const MaestroAppServerThreadArchiveResultSchema = Type.Object({
+	thread: MaestroAppServerThreadSummarySchema,
+	archived: Type.Boolean(),
+});
+export type MaestroAppServerThreadArchiveResult = Static<
+	typeof MaestroAppServerThreadArchiveResultSchema
+>;
+
+export const MaestroAppServerThreadDeleteResultSchema = Type.Object({
+	threadId: Type.String(),
+	deleted: Type.Boolean(),
+});
+export type MaestroAppServerThreadDeleteResult = Static<
+	typeof MaestroAppServerThreadDeleteResultSchema
+>;
+
 export const MaestroAppServerModelCapabilitiesSchema = Type.Object({
 	streaming: Type.Boolean(),
 	tools: Type.Boolean(),
@@ -301,11 +446,22 @@ export const MaestroAppServerResponseSchema = Type.Object({
 			MaestroAppServerInitializeResultSchema,
 			MaestroAppServerModelListResultSchema,
 			MaestroAppServerModelProviderCapabilitiesReadResultSchema,
+			MaestroAppServerCommandExecResultSchema,
+			MaestroAppServerCommandProcessResultSchema,
+			MaestroAppServerFsReadFileResultSchema,
+			MaestroAppServerFsReadDirectoryResultSchema,
+			MaestroAppServerFsMetadataResultSchema,
+			MaestroAppServerFsWatchResultSchema,
+			MaestroAppServerEmptyResultSchema,
 			MaestroAppServerThreadListResultSchema,
 			MaestroAppServerThreadReadResultSchema,
 			MaestroAppServerThreadMetadataUpdateResultSchema,
 			MaestroAppServerThreadGoalResultSchema,
 			MaestroAppServerTurnsListResultSchema,
+			MaestroAppServerThreadStartResultSchema,
+			MaestroAppServerThreadForkResultSchema,
+			MaestroAppServerThreadArchiveResultSchema,
+			MaestroAppServerThreadDeleteResultSchema,
 		]),
 	),
 	error: Type.Optional(
@@ -317,4 +473,13 @@ export const MaestroAppServerResponseSchema = Type.Object({
 });
 export type MaestroAppServerResponse = Static<
 	typeof MaestroAppServerResponseSchema
+>;
+
+export const MaestroAppServerServerNotificationSchema = Type.Object({
+	jsonrpc: Type.Literal("2.0"),
+	method: stringLiteralUnion(maestroAppServerServerMethods),
+	params: Type.Optional(MaestroAppServerFsChangedNotificationParamsSchema),
+});
+export type MaestroAppServerServerNotification = Static<
+	typeof MaestroAppServerServerNotificationSchema
 >;

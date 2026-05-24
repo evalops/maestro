@@ -6,6 +6,8 @@ if (process.env.FORCE_COLOR && process.env.NO_COLOR) {
 }
 
 const fastMode = process.env.VITEST_FAST === "1";
+const ciMode = process.env.CI === "true";
+const testPool = process.env.VITEST_POOL ?? "forks";
 const aiPackageSource = fileURLToPath(
 	new URL("./packages/ai/src/", import.meta.url),
 );
@@ -46,8 +48,9 @@ export default defineConfig({
 		fileParallelism: fastMode,
 		// Isolate tests to prevent module state leakage between test files
 		isolate: true,
-		// Pool configuration for better memory management
-		pool: "forks",
+		// Many integration-style tests exercise process.cwd() by changing
+		// directories; worker threads do not support process.chdir().
+		pool: ciMode ? testPool : "forks",
 		maxWorkers: fastMode ? undefined : 1,
 		// Benchmark configuration
 		benchmark: {

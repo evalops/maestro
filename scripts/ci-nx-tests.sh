@@ -17,6 +17,9 @@ ensure_sha "$NX_HEAD"
 
 NX_TEST_HEARTBEAT_SECONDS="${NX_TEST_HEARTBEAT_SECONDS:-300}"
 NX_TEST_ATTEMPT_TIMEOUT_SECONDS="${NX_TEST_ATTEMPT_TIMEOUT_SECONDS:-3300}"
+NX_TEST_POST_SUCCESS_IDLE_SECONDS="${NX_TEST_POST_SUCCESS_IDLE_SECONDS:-45}"
+NX_TEST_POST_SUCCESS_IDLE_PATTERN="${NX_TEST_POST_SUCCESS_IDLE_PATTERN:-\\bTest Files\\b[^\\n]*\\d+\\s+passed\\b[\\s\\S]*\\bTests\\b[^\\n]*\\d+\\s+passed\\b}"
+NX_TEST_POST_SUCCESS_IDLE_FINAL_PATTERN="${NX_TEST_POST_SUCCESS_IDLE_FINAL_PATTERN:-}"
 
 echo "Nx base: $NX_BASE"
 echo "Nx head: $NX_HEAD"
@@ -149,6 +152,10 @@ case "$nx_mode" in
 		;;
 esac
 
+if [[ -z "$NX_TEST_POST_SUCCESS_IDLE_FINAL_PATTERN" && "${cmd[0]}" == "npx" && "${cmd[1]}" == "nx" ]]; then
+	NX_TEST_POST_SUCCESS_IDLE_FINAL_PATTERN="\\bSuccessfully ran target\\s+test\\b"
+fi
+
 echo "Affected Nx projects:"
 if [[ "${cmd[0]}" == "node" && "${cmd[1]}" == "./scripts/run-vitest.js" ]]; then
 	printf '%s\n' "direct-vitest" "${direct_vitest_files[@]}" | tee "$affected_projects_log"
@@ -211,9 +218,20 @@ run_attempt() {
 	echo "Attempt ${attempt}..."
 	echo "Heartbeat interval: ${NX_TEST_HEARTBEAT_SECONDS}s"
 	echo "Attempt timeout: ${NX_TEST_ATTEMPT_TIMEOUT_SECONDS}s"
+	echo "Post-success idle timeout: ${NX_TEST_POST_SUCCESS_IDLE_SECONDS}s"
 	echo "Nx profile: ${profile_file}"
 
 	rm -f "$profile_file" "$timing_file"
+	local -a success_idle_args=(
+		--success-idle-seconds "$NX_TEST_POST_SUCCESS_IDLE_SECONDS"
+		--success-idle-pattern "$NX_TEST_POST_SUCCESS_IDLE_PATTERN"
+	)
+	if [[ "${cmd[0]}" == "npx" && "${cmd[1]}" == "nx" ]]; then
+		success_idle_args+=(
+			--success-idle-final-pattern "$NX_TEST_POST_SUCCESS_IDLE_FINAL_PATTERN"
+		)
+		echo "Post-success final pattern: $NX_TEST_POST_SUCCESS_IDLE_FINAL_PATTERN"
+	fi
 	set +e
 	NX_PROFILE="$profile_file" node scripts/run-command-with-heartbeat.mjs \
 		--label "Nx tests attempt ${attempt}" \
@@ -222,6 +240,7 @@ run_attempt() {
 		--timing-file "$ci_timing_file" \
 		--heartbeat-seconds "$NX_TEST_HEARTBEAT_SECONDS" \
 		--timeout-seconds "$NX_TEST_ATTEMPT_TIMEOUT_SECONDS" \
+		"${success_idle_args[@]}" \
 		-- "${cmd[@]}"
 	local status="$?"
 	set -e

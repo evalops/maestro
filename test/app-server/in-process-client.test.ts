@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { maestroAppServerProtocolVersion } from "../../packages/contracts/src/maestro-app-server.js";
 import {
 	type MaestroAppServerClientInfo,
 	createInProcessMaestroAppServerClient,
@@ -8,7 +9,7 @@ import type { MaestroAppServerSessionApi } from "../../src/app-server/session-ap
 function createApi(overrides: Partial<MaestroAppServerSessionApi> = {}) {
 	const api: MaestroAppServerSessionApi = {
 		initialize: () => ({
-			protocolVersion: "maestro-app-server.v1",
+			protocolVersion: maestroAppServerProtocolVersion,
 			serverInfo: { name: "maestro" },
 			capabilities: {
 				sessions: true,
@@ -19,6 +20,10 @@ function createApi(overrides: Partial<MaestroAppServerSessionApi> = {}) {
 				threadMetadataUpdate: true,
 				threadNameSet: true,
 				threadGoals: true,
+				threadStart: true,
+				threadFork: true,
+				threadArchive: true,
+				threadDelete: true,
 				turnsList: true,
 			},
 		}),
@@ -37,6 +42,19 @@ function createApi(overrides: Partial<MaestroAppServerSessionApi> = {}) {
 		getThreadGoal: async () => ({ threadId: "thread", goal: null }),
 		setThreadGoal: async () => ({ threadId: "thread", goal: null }),
 		clearThreadGoal: async () => ({ threadId: "thread", goal: null }),
+		startThread: async () => {
+			throw new Error("not implemented");
+		},
+		forkThread: async () => {
+			throw new Error("not implemented");
+		},
+		archiveThread: async () => {
+			throw new Error("not implemented");
+		},
+		unarchiveThread: async () => {
+			throw new Error("not implemented");
+		},
+		deleteThread: async () => ({ threadId: "thread", deleted: true }),
 		listTurns: async () => ({
 			threadId: "thread",
 			turns: [],
@@ -65,7 +83,7 @@ describe("in-process Maestro app-server client", () => {
 		});
 
 		await expect(client.initialize()).resolves.toMatchObject({
-			protocolVersion: "maestro-app-server.v1",
+			protocolVersion: maestroAppServerProtocolVersion,
 		});
 
 		await expect(client.initialize()).rejects.toMatchObject({
@@ -89,7 +107,7 @@ describe("in-process Maestro app-server client", () => {
 			message: "Already initialized",
 		});
 		await expect(first).resolves.toMatchObject({
-			protocolVersion: "maestro-app-server.v1",
+			protocolVersion: maestroAppServerProtocolVersion,
 		});
 	});
 

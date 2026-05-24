@@ -246,6 +246,7 @@ export interface PolicyValidationResponse {
 export interface AttachmentTextExtractionResponse {
 	fileName: string;
 	format: string;
+	extractor?: "native" | "markitdown";
 	size: number;
 	truncated: boolean;
 	extractedText: string;

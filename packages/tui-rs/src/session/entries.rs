@@ -921,6 +921,14 @@ pub struct SessionMeta {
         alias = "memory_extraction_hash"
     )]
     pub memory_extraction_hash: Option<String>,
+    #[serde(
+        skip_serializing_if = "Option::is_none",
+        rename = "archivedAt",
+        alias = "archived_at"
+    )]
+    pub archived_at: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub archived: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub title: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -1186,6 +1194,8 @@ mod tests {
             "parentSession" => json!("root-session"),
             "resumeSummary" => json!("Continue from the test"),
             "memoryExtractionHash" => json!("abc123"),
+            "archivedAt" => json!("2024-01-15T10:31:00Z"),
+            "archived" => json!(true),
             "attachmentId" => json!("attachment-1"),
             "extractedText" => json!("extracted text"),
             "stopReason" => json!("tool_use"),
@@ -1363,6 +1373,22 @@ mod tests {
         assert_eq!(tool_name, "read");
         assert_eq!(content, "file contents");
         assert!(!is_error);
+    }
+
+    #[test]
+    fn parse_typescript_session_meta_archive_state() {
+        let json = r#"{"type":"session_meta","timestamp":"2024-01-15T10:30:00Z","archived":true,"archivedAt":"2024-01-15T10:31:00Z"}"#;
+        let entry: SessionEntry = serde_json::from_str(json).unwrap();
+
+        let SessionEntry::SessionMeta(meta) = &entry else {
+            panic!("Expected session meta entry");
+        };
+        assert_eq!(meta.archived, Some(true));
+        assert_eq!(meta.archived_at.as_deref(), Some("2024-01-15T10:31:00Z"));
+
+        let serialized = serde_json::to_value(entry).unwrap();
+        assert_eq!(serialized["archived"], true);
+        assert_eq!(serialized["archivedAt"], "2024-01-15T10:31:00Z");
     }
 
     #[test]
