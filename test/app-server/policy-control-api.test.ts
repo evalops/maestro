@@ -362,6 +362,22 @@ describe("Maestro app-server managed policy API", () => {
 		});
 	});
 
+	it("rejects null policy check params as invalid params", async () => {
+		const api = createMaestroAppServerSessionApi(manager);
+
+		const response = await handleMaestroAppServerRequest(api, {
+			jsonrpc: "2.0",
+			id: "null-policy-params",
+			method: "policy/check",
+			params: null,
+		});
+
+		expect(response.error).toMatchObject({
+			code: -32602,
+			message: "Invalid params",
+		});
+	});
+
 	it("reports no active policy as loaded false without blocking checks", async () => {
 		const api = createMaestroAppServerSessionApi(manager);
 
