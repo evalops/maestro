@@ -34,7 +34,11 @@ jobs:
           git config --global --add safe.directory "$GITHUB_WORKSPACE"
           git init "$GITHUB_WORKSPACE"
           cd "$GITHUB_WORKSPACE"
-          git remote add origin "https://x-access-token:${CHECKOUT_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          if git remote get-url origin >/dev/null 2>&1; then
+            git remote set-url origin "https://x-access-token:${CHECKOUT_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          else
+            git remote add origin "https://x-access-token:${CHECKOUT_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          fi
 
           for attempt in 1 2 3 4; do
             echo "Checkout attempt ${attempt}"
