@@ -213,6 +213,9 @@ export function createMaestroAppServerPolicyControl(): MaestroAppServerPolicyCon
 		},
 
 		async checkPolicy(params = {}) {
+			if (!isRecord(params)) {
+				throw new MaestroAppServerPolicyControlError(-32602, "Invalid params");
+			}
 			const checks: MaestroAppServerPolicyCheckItem[] = [];
 			const session = parseSession(params.session, false);
 			const action = parseActionContext(params.action, session);
