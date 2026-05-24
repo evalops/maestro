@@ -816,6 +816,7 @@ describe("SwarmExecutor", () => {
 			.update("https://anonymous.internal/a2a")
 			.digest("hex")}`;
 		const expectedPeer = `endpoint:${expectedHash}`;
+		const expectedLaneId = a2aDelegationLaneId(expectedPeer, "task-1");
 		const [, input] = sendA2AMessageMock.mock.calls[0] as [
 			unknown,
 			{
@@ -839,8 +840,10 @@ describe("SwarmExecutor", () => {
 		expect(recordA2ADelegationTelemetryMock).toHaveBeenCalledWith(
 			expect.objectContaining({
 				phase: "peer_selected",
+				laneId: expectedLaneId,
 				peerName: expectedPeer,
 				peerEndpointHash: expectedHash,
+				peerEndpointUrl: undefined,
 			}),
 		);
 	});
@@ -850,6 +853,7 @@ describe("SwarmExecutor", () => {
 			.update("https://anonymous.internal/a2a")
 			.digest("hex")}`;
 		const expectedPeer = `endpoint:${expectedHash}`;
+		const expectedLaneId = a2aDelegationLaneId(expectedPeer, "task-1");
 		listA2APeerCandidatesWithPlatformMock.mockResolvedValue([
 			{
 				agent: {
@@ -920,11 +924,19 @@ describe("SwarmExecutor", () => {
 				relayPeer: expectedPeer,
 			}),
 		);
+		expect(JSON.stringify(sendA2AMessageMock.mock.calls[0]?.[1])).not.toContain(
+			"secret",
+		);
+		expect(JSON.stringify(sendA2AMessageMock.mock.calls[0]?.[1])).not.toContain(
+			"token=one",
+		);
 		expect(recordA2ADelegationTelemetryMock).toHaveBeenCalledWith(
 			expect.objectContaining({
 				phase: "peer_selected",
+				laneId: expectedLaneId,
 				peerName: expectedPeer,
 				peerEndpointHash: expectedHash,
+				peerEndpointUrl: undefined,
 			}),
 		);
 	});

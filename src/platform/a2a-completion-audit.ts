@@ -123,6 +123,7 @@ function buildRemoteLaneSources(
 			const parentTaskId = parentTaskIdForLane(
 				teammate.completedTasks,
 				ledgerEntry,
+				teammate.a2a,
 			);
 			return {
 				laneId: parentTaskId
@@ -188,7 +189,8 @@ function buildLaneAudit(
 ): A2ACompletionAuditLane {
 	const { a2a, ledgerEntry } = lane;
 	const parentTaskId =
-		lane.parentTaskId ?? parentTaskIdForLane(lane.completedTasks, ledgerEntry);
+		lane.parentTaskId ??
+		parentTaskIdForLane(lane.completedTasks, ledgerEntry, a2a);
 	const status = ledgerEntry?.state;
 	const evidence: Record<A2ACompletionEvidenceKey, boolean> = {
 		status: Boolean(status),
@@ -254,12 +256,14 @@ function parentTaskIdForLedger(
 function parentTaskIdForLane(
 	completedTasks: string[],
 	ledgerEntry: A2ATaskLedgerEntry | undefined,
+	a2a?: A2AAuditA2A,
 ): string | undefined {
 	const ledgerParentTaskId = parentTaskIdForLedger(ledgerEntry);
+	const a2aParentTaskId = a2a?.parentTaskId;
 	if (ledgerEntry?.state && !isCompletedA2AState(ledgerEntry.state)) {
-		return ledgerParentTaskId ?? lastValue(completedTasks);
+		return ledgerParentTaskId ?? a2aParentTaskId ?? lastValue(completedTasks);
 	}
-	return lastValue(completedTasks) ?? ledgerParentTaskId;
+	return lastValue(completedTasks) ?? ledgerParentTaskId ?? a2aParentTaskId;
 }
 
 function isCompletedA2AState(state: string): boolean {

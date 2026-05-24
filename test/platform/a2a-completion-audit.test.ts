@@ -311,6 +311,67 @@ describe("A2A completion audit", () => {
 		);
 	});
 
+	it("keeps telemetry lane ids when ledger parent metadata is missing", () => {
+		const lane = remoteLane(
+			"lane_alpha",
+			"alpha",
+			"remote-task-1",
+			"old_parent",
+		);
+		lane.completedTasks = [];
+		const a2a = lane.a2a;
+		if (!a2a) {
+			throw new Error("remoteLane test helper must create A2A metadata");
+		}
+		lane.a2a = {
+			...a2a,
+			parentTaskId: "current_parent",
+		};
+		const ledgerEntry = ledgerTask("alpha", "remote-task-1", "missing_parent");
+		ledgerEntry.metadata = {
+			swarmId: "swarm_missing_parent_metadata",
+			transport: "a2a",
+		};
+
+		const audit = buildA2ACompletionAudit({
+			swarm: {
+				id: "swarm_missing_parent_metadata",
+				status: "completed",
+				config: {
+					teammateCount: 1,
+					planFile: "/tmp/plan.md",
+					tasks: [],
+					cwd: "/tmp",
+				},
+				teammates: [lane],
+				pendingTasks: [],
+				activeTasks: new Map(),
+				completedTasks: new Set(),
+				failedTasks: new Set(),
+				startedAt: Date.now(),
+			},
+			ledger: { tasks: [ledgerEntry] },
+			pushEvidenceKeys: new Set([a2aPushEvidenceKey("alpha", "remote-task-1")]),
+		});
+
+		expect(audit.complete).toBe(false);
+		expect(audit.lanes[0]).toEqual(
+			expect.objectContaining({
+				laneId: a2aDelegationLaneId("alpha", "current_parent"),
+				parentTaskId: "current_parent",
+				evidence: expect.objectContaining({
+					status: true,
+					artifact: true,
+					task: true,
+					workGraph: true,
+					push: true,
+					correlation: false,
+				}),
+				missingEvidence: ["correlation"],
+			}),
+		);
+	});
+
 	it("uses the current parent instead of the oldest completed task", () => {
 		const swarm = {
 			id: "swarm_multi_task",
