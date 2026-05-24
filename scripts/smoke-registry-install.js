@@ -4,7 +4,7 @@
 import { execFileSync } from "node:child_process";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, dirname, extname, join, resolve } from "node:path";
 import { getRuntimeWorkspaceNames } from "./runtime-workspaces.mjs";
 import {
 	assertInstallablePackageMetadata,
@@ -24,11 +24,12 @@ import {
 } from "./workspace-utils.js";
 
 function parseArgs(argv) {
-	/** @type {{packageName: string; version: string; cliCommand: string}} */
+	/** @type {{packageName: string; version: string; cliCommand: string; evidenceDir: string}} */
 	const options = {
 		packageName: "",
 		version: "",
 		cliCommand: "",
+		evidenceDir: "",
 	};
 
 	for (let index = 0; index < argv.length; index += 1) {
@@ -42,6 +43,9 @@ function parseArgs(argv) {
 				break;
 			case "--cli-command":
 				options.cliCommand = argv[++index] ?? "";
+				break;
+			case "--evidence-dir":
+				options.evidenceDir = argv[++index] ?? "";
 				break;
 			default:
 				throw new Error(`Unknown argument: ${arg}`);
@@ -79,6 +83,17 @@ const pollDelayMs = Number.parseInt(
 	10,
 );
 const installAuditLevel = process.env.MAESTRO_INSTALL_AUDIT_LEVEL ?? "critical";
+const explicitEvidenceDir = overrides.evidenceDir.trim();
+const evidencePath = explicitEvidenceDir
+	? ""
+	: (process.env.MAESTRO_PUBLISHED_REPLAY_EVIDENCE_PATH?.trim() ?? "");
+const evidenceDir =
+	explicitEvidenceDir ||
+	(evidencePath
+		? ""
+		: process.env.MAESTRO_REGISTRY_SMOKE_EVIDENCE_DIR?.trim() ||
+			process.env.MAESTRO_PUBLISHED_REPLAY_EVIDENCE_DIR?.trim() ||
+			"");
 
 function sleep(milliseconds) {
 	return new Promise((resolve) => setTimeout(resolve, milliseconds));
@@ -99,6 +114,24 @@ function assertInstalledMetadata(installRoot, label) {
 		label,
 		forbiddenWorkspaceNames,
 	});
+}
+
+function publishedReplayEvidencePath(label) {
+	if (!evidenceDir) {
+		if (!evidencePath) {
+			return "";
+		}
+		const resolved = resolve(evidencePath);
+		if (label === "npm") {
+			return resolved;
+		}
+		const extension = extname(resolved) || ".json";
+		return join(
+			dirname(resolved),
+			`${basename(resolved, extname(resolved))}-${label}${extension}`,
+		);
+	}
+	return join(resolve(evidenceDir), `${label}-published-replay-evidence.json`);
 }
 
 async function waitForPackage() {
@@ -164,6 +197,7 @@ async function main() {
 		});
 		await runPublishedReplayE2E({
 			cliCommand,
+			evidencePath: publishedReplayEvidencePath("npm"),
 			installRoot: tempDir,
 			packageSpec,
 		});
@@ -200,6 +234,7 @@ async function main() {
 		});
 		await runPublishedReplayE2E({
 			cliCommand,
+			evidencePath: publishedReplayEvidencePath("bun"),
 			installRoot: bunTempDir,
 			packageSpec,
 		});

@@ -807,7 +807,7 @@ describe("ci workflow guardrails", () => {
 			"node --check scripts/configure-npm-trusted-publisher.mjs",
 		);
 		expect(helperSmokeStep?.run).toContain(
-			"node ./scripts/run-vitest.js --run test/scripts/workspace-utils.test.ts",
+			"node ./scripts/run-vitest.js --run test/scripts/install-smoke-utils.test.ts test/scripts/smoke-published-replay-e2e.test.ts test/scripts/workspace-utils.test.ts",
 		);
 		expect(helperSmokeStep?.run).toContain(
 			"MAESTRO_SKIP_INSTALL_AUDIT=1 MAESTRO_SKIP_BUN_INSTALL_SMOKE=1",
