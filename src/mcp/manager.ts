@@ -73,6 +73,10 @@ import {
 	getOfficialMcpRegistryMatch,
 } from "./official-registry.js";
 import { getProjectMcpServerApprovalStatus } from "./project-approvals.js";
+import {
+	classifyToolCapability,
+	summarizeToolCapabilities,
+} from "./tool-capabilities.js";
 import type {
 	McpAuthPresetConfig,
 	McpAuthPresetStatus,
@@ -83,6 +87,7 @@ import type {
 	McpServerConfig,
 	McpServerStatus,
 	McpToolParallelSafety,
+	McpToolStatus,
 } from "./types.js";
 import { ensureMcpWorkspaceTrusted } from "./workspace-trust.js";
 
@@ -247,6 +252,38 @@ function summarizeServerParallelSafety(
 			? { maxConcurrency: Math.min(...maxConcurrencyValues) }
 			: {}),
 	};
+}
+
+function toolsWithCapabilityStatus(
+	serverName: string,
+	tools: readonly McpTool[],
+	parallelSafetyByTool?: ReadonlyMap<string, McpToolParallelSafety>,
+): McpToolStatus[] {
+	return tools.map((tool) => ({
+		...tool,
+		capability: classifyToolCapability({
+			server: serverName,
+			toolName: tool.name,
+			annotations: capabilityAnnotations(
+				tool,
+				parallelSafetyByTool?.get(tool.name),
+			),
+		}),
+	}));
+}
+
+function capabilityAnnotations(
+	tool: McpTool,
+	parallelSafety: McpToolParallelSafety | undefined,
+): Record<string, unknown> | undefined {
+	const annotations = asRecord(tool.annotations);
+	if (
+		parallelSafety?.readOnlyHint !== true ||
+		annotations?.readOnlyHint !== undefined
+	) {
+		return annotations;
+	}
+	return { ...annotations, readOnlyHint: true };
 }
 
 function arraysEqual(
@@ -835,6 +872,11 @@ export class McpClientManager extends EventEmitter {
 				serverCapabilities,
 				tools,
 			});
+			const toolCapabilitySummary = summarizeToolCapabilities(
+				toolsWithCapabilityStatus(name, tools, parallelSafetyByTool)
+					.map((tool) => tool.capability)
+					.filter((capability) => capability !== undefined),
+			);
 
 			this.servers.set(name, {
 				config,
@@ -861,6 +903,7 @@ export class McpClientManager extends EventEmitter {
 				toolCount: tools.length,
 				resourceCount: resources.length,
 				promptCount: prompts.length,
+				toolCapabilitySummary,
 				isReconnect,
 				clientVersion: getPackageVersion(),
 			}).catch(() => undefined);
@@ -1224,6 +1267,13 @@ export class McpClientManager extends EventEmitter {
 		// Include configured but not connected servers
 		for (const config of this.config.servers) {
 			const connected = this.servers.get(config.name);
+			const tools = connected
+				? toolsWithCapabilityStatus(
+						config.name,
+						connected.tools,
+						connected.parallelSafetyByTool,
+					)
+				: [];
 			const projectApproval = approvalMap.get(config.name);
 			const resolvedAuth = resolveRemoteAuthConfig(config, authPresetMap);
 			const remoteUrl =
@@ -1243,7 +1293,15 @@ export class McpClientManager extends EventEmitter {
 						: this.lastErrors.get(config.name),
 				scope: config.scope,
 				transport: config.transport,
-				tools: connected?.tools ?? [],
+				tools,
+				toolCapabilitySummary:
+					tools.length > 0
+						? summarizeToolCapabilities(
+								tools
+									.map((tool) => tool.capability)
+									.filter((capability) => capability !== undefined),
+							)
+						: undefined,
 				resources: connected?.resources ?? [],
 				prompts: connected?.prompts ?? [],
 				promptDetails:

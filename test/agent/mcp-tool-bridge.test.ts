@@ -132,8 +132,9 @@ describe("MCP tool bridge schema conversion", () => {
 		expect(readOnlyWithoutParallelOptIn.source?.supportsParallelToolCalls).toBe(
 			false,
 		);
-		expect(readOnlyWithoutParallelOptIn.annotations?.readOnlyHint).toBe(
-			undefined,
+		expect(readOnlyWithoutParallelOptIn.annotations?.readOnlyHint).toBe(true);
+		expect(readOnlyWithoutParallelOptIn.source?.capability?.riskClass).toBe(
+			"observe",
 		);
 	});
 });

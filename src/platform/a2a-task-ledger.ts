@@ -91,6 +91,7 @@ const LEDGER_LOCK_STALE_MS = 30_000;
 const LEDGER_LOCK_TIMEOUT_MS = LEDGER_LOCK_STALE_MS + LEDGER_LOCK_RETRY_MS;
 const LEDGER_LOCK_OWNER_FILE = "owner";
 const LEDGER_LOCK_HEARTBEAT_FILE = "heartbeat";
+const inProcessLedgerLockQueues = new Map<string, Promise<unknown>>();
 
 export function getA2ATaskLedgerPath(path?: string): string {
 	const configured =
@@ -160,6 +161,31 @@ async function withA2ATaskLedgerLock<T>(
 	fn: () => Promise<T>,
 ): Promise<T> {
 	const path = getA2ATaskLedgerPath(options.path);
+	return runWithInProcessLedgerLock(path, () =>
+		withA2ATaskLedgerFileLock(path, fn),
+	);
+}
+
+async function runWithInProcessLedgerLock<T>(
+	path: string,
+	fn: () => Promise<T>,
+): Promise<T> {
+	const previous = inProcessLedgerLockQueues.get(path) ?? Promise.resolve();
+	const queued = previous.catch(() => undefined).then(fn);
+	inProcessLedgerLockQueues.set(path, queued);
+	try {
+		return await queued;
+	} finally {
+		if (inProcessLedgerLockQueues.get(path) === queued) {
+			inProcessLedgerLockQueues.delete(path);
+		}
+	}
+}
+
+async function withA2ATaskLedgerFileLock<T>(
+	path: string,
+	fn: () => Promise<T>,
+): Promise<T> {
 	const lockPath = `${path}.lock`;
 	const lockToken = `${process.pid}:${randomUUID()}`;
 	await mkdir(dirname(path), { recursive: true, mode: 0o700 });

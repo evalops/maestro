@@ -484,6 +484,13 @@ async function readReplayScenarioId(source: string): Promise<string> {
  * @param args - Command-line arguments (typically process.argv.slice(2))
  */
 export async function main(args: string[]) {
+	const originalStderrWrite = process.stderr.write.bind(process.stderr) as (
+		chunk: string,
+	) => boolean;
+	const writeStartupErrorToStderr = (message: string): void => {
+		originalStderrWrite(message.endsWith("\n") ? message : `${message}\n`);
+	};
+
 	// ─────────────────────────────────────────────────────────────────────────────
 	// PHASE 0: Early Exit Checks (before any async initialization)
 	// ─────────────────────────────────────────────────────────────────────────────
@@ -581,7 +588,7 @@ export async function main(args: string[]) {
 				})}\n`,
 			);
 		} else {
-			console.error(chalk.red(message));
+			writeStartupErrorToStderr(chalk.red(message));
 		}
 		process.exit(1);
 	};
@@ -590,6 +597,13 @@ export async function main(args: string[]) {
 		validateCodexFlags(args, parsed.help ? "help" : parsed.command);
 	} catch (error) {
 		exitWithEarlyStartupError(error);
+	}
+
+	if (parsed.command === "codex") {
+		const { handleCodexCommand } = await import("./cli/commands/codex.js");
+		await handleCodexCommand(parsed.subcommand, parsed.commandArgs ?? []);
+		await waitForStartupTelemetryForImmediateExit(startupTelemetry);
+		return;
 	}
 
 	const replayScenarioPath =
@@ -727,7 +741,7 @@ export async function main(args: string[]) {
 			);
 			process.stderr.write(`${stack ?? message}\n`);
 		} else {
-			console.error(chalk.red(message));
+			writeStartupErrorToStderr(chalk.red(message));
 		}
 		captureSentryException(error);
 		await flushSentry();
@@ -948,12 +962,6 @@ export async function main(args: string[]) {
 	if (parsed.command === "evalops") {
 		const { handleEvalOpsCommand } = await import("./cli/commands/evalops.js");
 		await handleEvalOpsCommand(parsed.subcommand, parsed.commandArgs ?? []);
-		return;
-	}
-
-	if (parsed.command === "codex") {
-		const { handleCodexCommand } = await import("./cli/commands/codex.js");
-		await handleCodexCommand(parsed.subcommand, parsed.commandArgs ?? []);
 		return;
 	}
 

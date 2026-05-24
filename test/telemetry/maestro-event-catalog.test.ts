@@ -75,12 +75,32 @@ describe("maestro event catalog", () => {
 				"skills.maestro-tool-call-failed",
 			],
 		});
+		expect(
+			getMaestroBusEventCatalogEntry(MaestroBusEventType.A2ATaskDispatched),
+		).toMatchObject({
+			category: "a2a",
+			dataSchema:
+				"buf.build/evalops/proto/maestro.v1.MaestroA2ADelegationEvent",
+			protoAnyType: "type.googleapis.com/maestro.v1.MaestroA2ADelegationEvent",
+			subject: "maestro.events.a2a.task.dispatched",
+			platformConsumers: [
+				"a2a.maestro-delegation-events",
+				"audit.maestro-events",
+				"meter.maestro-a2a-delegations",
+			],
+		});
 	});
 
 	it("recognizes only cataloged Maestro bus event types", () => {
 		expect(isMaestroBusEventType("maestro.events.eval.scored")).toBe(true);
 		expect(isMaestroBusEventType("maestro.events.error.captured")).toBe(true);
 		expect(isMaestroBusEventType("maestro.events.tool_call.failed")).toBe(true);
+		expect(isMaestroBusEventType("maestro.events.a2a.peer.selected")).toBe(
+			true,
+		);
+		expect(isMaestroBusEventType("maestro.events.a2a.task.completed")).toBe(
+			true,
+		);
 		expect(isMaestroBusEventType("maestro.events.subagent.dispatched")).toBe(
 			true,
 		);
@@ -117,6 +137,22 @@ describe("maestro event catalog", () => {
 				expect.objectContaining({
 					category: "tool",
 					type: MaestroBusEventType.ToolCallFailed,
+				}),
+			]),
+		);
+		expect(listMaestroBusEventCatalogByCategory("a2a")).toEqual(
+			expect.arrayContaining([
+				expect.objectContaining({
+					category: "a2a",
+					type: MaestroBusEventType.A2APeerSelected,
+				}),
+				expect.objectContaining({
+					category: "a2a",
+					type: MaestroBusEventType.A2ATaskDispatched,
+				}),
+				expect.objectContaining({
+					category: "a2a",
+					type: MaestroBusEventType.A2AEvidenceCompleted,
 				}),
 			]),
 		);

@@ -783,7 +783,7 @@ export class ComposerSidebarProvider
 			this._context.workspaceState.update("composer.messages", this._messages);
 
 			const config = vscode.workspace.getConfiguration("composer");
-			const model = config.get<string>("model") || "claude-sonnet-4-5";
+			const model = config.get<string>("model") || "openai-codex/gpt-5.5";
 
 			const stream = this._apiClient.chatWithEvents(
 				{
