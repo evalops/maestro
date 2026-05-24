@@ -365,6 +365,7 @@ function runRpcMode() {
 		let stderr = "";
 		let finished = false;
 		let settled = false;
+		let rpcEvidenceValidated = false;
 		let forceKillTimer;
 		const timer = setTimeout(() => {
 			finish(new Error("RPC replay smoke timed out."));
@@ -378,8 +379,18 @@ function runRpcMode() {
 				if (settled) return;
 				settled = true;
 				if (forceKillTimer) clearTimeout(forceKillTimer);
+				let settleError = error;
+				if (!settleError && rpcEvidenceValidated) {
+					const failure = sessionEvidenceFailure(
+						context.sessionDir,
+						"RPC replay",
+					);
+					if (failure) {
+						settleError = new Error(failure);
+					}
+				}
 				rmSync(context.runDir, { recursive: true, force: true });
-				if (error) reject(error);
+				if (settleError) reject(settleError);
 				else resolve();
 			};
 			if (child.exitCode !== null || child.signalCode !== null) {
@@ -426,6 +437,7 @@ function runRpcMode() {
 				);
 				return;
 			}
+			rpcEvidenceValidated = true;
 			console.log("RPC replay smoke passed.");
 			finish();
 		}
