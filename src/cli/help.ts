@@ -29,8 +29,8 @@ interface CliHelpOption {
 }
 
 const CLI_OPTIONS: CliHelpOption[] = [
-	{ text: "--provider <name>       Provider name (default: anthropic)" },
-	{ text: "-m, --model <id>        Model ID (default: claude-sonnet-4-5)" },
+	{ text: "--provider <name>       Provider name (default: openai-codex)" },
+	{ text: "-m, --model <id>        Model ID (default: gpt-5.5)" },
 	{ text: "--task-budget <tokens> API-side Anthropic task budget in tokens" },
 	{
 		text: "--models <patterns>     Comma-separated patterns for Ctrl+P model cycling",
@@ -128,7 +128,7 @@ export function printHelp(
 			)}`
 		: null;
 	const examples = `${sectionHeading("Examples")}${muted(
-		`  # Interactive mode (no messages = interactive TUI)
+		`  # Interactive mode (defaults to openai-codex/gpt-5.5 after \`maestro codex login\`)
   maestro
 
   # Single message
@@ -143,7 +143,7 @@ export function printHelp(
   # Use different model
   maestro --provider openai --model gpt-4o-mini "Help me refactor this code"
 
-  # Use Codex subscription models after \`maestro codex login\`
+  # Use Codex subscription models explicitly
   maestro --provider openai-codex --model gpt-5.5 "Plan this migration"
   maestro codex doctor
 

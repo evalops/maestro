@@ -559,6 +559,63 @@ describe("A2A task ledger", () => {
 		);
 	});
 
+	it("preserves concurrent task starts and terminal updates from one process", async () => {
+		const path = join(
+			await mkdtemp(join(tmpdir(), "maestro-a2a-ledger-concurrent-updates-")),
+			"tasks.json",
+		);
+		const peers = Array.from({ length: 8 }, (_, index) => `peer-${index}`);
+
+		await Promise.all(
+			peers.map((peer, index) =>
+				recordA2ATaskStart({
+					path,
+					peer,
+					task: {
+						id: `task-${index}`,
+						status: { state: "TASK_STATE_SUBMITTED" },
+					},
+					text: `run task ${index}`,
+					now: NOW,
+				}),
+			),
+		);
+		await Promise.all(
+			peers.map((peer, index) =>
+				updateA2ATaskInLedger({
+					path,
+					peer,
+					task: {
+						id: `task-${index}`,
+						status: {
+							state: "TASK_STATE_COMPLETED",
+							message: {
+								role: "ROLE_AGENT",
+								parts: [{ text: `task ${index} done` }],
+							},
+						},
+					},
+					now: LATER,
+				}),
+			),
+		);
+
+		const ledger = await loadA2ATaskLedger({ path });
+		expect(ledger.tasks).toHaveLength(peers.length);
+		expect(ledger.tasks).toEqual(
+			expect.arrayContaining(
+				peers.map((peer, index) =>
+					expect.objectContaining({
+						peer,
+						taskId: `task-${index}`,
+						state: "TASK_STATE_COMPLETED",
+						responseText: `task ${index} done`,
+					}),
+				),
+			),
+		);
+	});
+
 	it("recovers stale task ledger locks before writing", async () => {
 		const path = join(
 			await mkdtemp(join(tmpdir(), "maestro-a2a-ledger-stale-lock-")),

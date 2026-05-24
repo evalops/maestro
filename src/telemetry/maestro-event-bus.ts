@@ -1,5 +1,5 @@
 import { AsyncLocalStorage } from "node:async_hooks";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import type { JetStreamClient, NatsConnection } from "nats";
 import {
 	areMaestroPlatformEventsDisabled,
@@ -354,6 +354,32 @@ export interface SubagentDispatchEventData extends Record<string, unknown> {
 	dispatched_at: string;
 }
 
+export interface MaestroA2ADelegationEventData extends Record<string, unknown> {
+	correlation: MaestroCorrelation;
+	swarm_id: string;
+	lane_id: string;
+	parent_task_id: string;
+	a2a_task_id?: string;
+	a2a_message_id?: string;
+	context_id?: string;
+	peer_agent_id?: string;
+	peer_name?: string;
+	peer_endpoint_hash?: string;
+	peer_endpoint_kind?: string;
+	skill_id?: string;
+	task_class?: string;
+	source?: string;
+	status?: string;
+	terminal?: boolean;
+	success?: boolean;
+	latency_ms?: number;
+	duration_ms?: number;
+	push_lag_ms?: number;
+	evidence?: Record<string, unknown>;
+	metadata?: Record<string, unknown>;
+	occurred_at: string;
+}
+
 export interface MaestroEventBusTransport {
 	publish(subject: string, payload: string): Promise<void>;
 	close?(): Promise<void>;
@@ -555,6 +581,36 @@ export interface RecordMaestroSubagentDispatchInput {
 	metadata?: Record<string, unknown>;
 	correlation?: Partial<MaestroCorrelation>;
 	dispatched_at?: string;
+	env?: Env;
+}
+
+export interface RecordMaestroA2ADelegationEventInput {
+	event_type: MaestroBusEventType;
+	event_id?: string;
+	swarm_id: string;
+	lane_id: string;
+	parent_task_id: string;
+	a2a_task_id?: string;
+	a2a_message_id?: string;
+	context_id?: string;
+	peer_agent_id?: string;
+	peer_name?: string;
+	peer_endpoint_url?: string;
+	peer_endpoint_hash?: string;
+	peer_endpoint_kind?: string;
+	skill_id?: string;
+	task_class?: string;
+	source?: string;
+	status?: string;
+	terminal?: boolean;
+	success?: boolean;
+	latency_ms?: number;
+	duration_ms?: number;
+	push_lag_ms?: number;
+	evidence?: Record<string, unknown>;
+	metadata?: Record<string, unknown>;
+	correlation?: Partial<MaestroCorrelation>;
+	occurred_at?: string;
 	env?: Env;
 }
 
@@ -891,6 +947,32 @@ function mergeCorrelation(
 		session_id: definedOverrides.session_id ?? base.session_id,
 		attributes: Object.keys(attributes).length > 0 ? attributes : undefined,
 	};
+}
+
+export function hashA2AEndpointUrl(
+	url: string | undefined,
+): string | undefined {
+	const canonical = canonicalizeA2AEndpointUrl(url);
+	if (!canonical) return undefined;
+	return `sha256:${createHash("sha256").update(canonical).digest("hex")}`;
+}
+
+export function canonicalizeA2AEndpointUrl(
+	url: string | undefined,
+): string | undefined {
+	const trimmed = url?.trim();
+	if (!trimmed) return undefined;
+	try {
+		const parsed = new URL(trimmed);
+		parsed.username = "";
+		parsed.password = "";
+		parsed.search = "";
+		parsed.hash = "";
+		parsed.pathname = parsed.pathname.replace(/\/+$/u, "") || "/";
+		return parsed.toString().replace(/\/$/u, "");
+	} catch {
+		return trimmed.replace(/[?#].*$/u, "").replace(/\/+$/u, "");
+	}
 }
 
 export function maestroCorrelationToChronicleMetadata(
@@ -1616,6 +1698,52 @@ export function recordMaestroSubagentDispatch(
 			dispatched_at: dispatchedAt,
 		},
 		{ env: event.env, eventId: event.event_id, time: dispatchedAt },
+	);
+}
+
+export function recordMaestroA2ADelegationEvent(
+	event: RecordMaestroA2ADelegationEventInput,
+): void {
+	const occurredAt = event.occurred_at ?? new Date().toISOString();
+	const config = resolveMaestroEventBusConfig(event.env);
+	const peerEndpointHash =
+		event.peer_endpoint_hash ?? hashA2AEndpointUrl(event.peer_endpoint_url);
+	void publishMaestroCloudEvent<MaestroA2ADelegationEventData>(
+		event.event_type,
+		{
+			correlation: mergeCorrelation(
+				config.defaultCorrelation,
+				event.correlation,
+			),
+			swarm_id: event.swarm_id,
+			lane_id: event.lane_id,
+			parent_task_id: event.parent_task_id,
+			a2a_task_id: event.a2a_task_id,
+			a2a_message_id: event.a2a_message_id,
+			context_id: event.context_id,
+			peer_agent_id: event.peer_agent_id,
+			peer_name: event.peer_name,
+			peer_endpoint_hash: peerEndpointHash,
+			peer_endpoint_kind: event.peer_endpoint_kind,
+			skill_id: event.skill_id,
+			task_class: event.task_class,
+			source: event.source,
+			status: event.status,
+			terminal: event.terminal,
+			success: event.success,
+			latency_ms: event.latency_ms,
+			duration_ms: event.duration_ms,
+			push_lag_ms: event.push_lag_ms,
+			evidence: event.evidence,
+			metadata: event.metadata,
+			occurred_at: occurredAt,
+		},
+		{
+			env: event.env,
+			eventId: event.event_id,
+			time: occurredAt,
+			correlation: event.correlation,
+		},
 	);
 }
 

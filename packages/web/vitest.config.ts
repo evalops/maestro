@@ -3,6 +3,8 @@ import { defineConfig } from "vitest/config";
 export default defineConfig({
 	test: {
 		globals: true,
+		// The default fork pool can leave workers alive after a passing Nx run.
+		pool: "threads",
 		// Use happy-dom for Lit components (lighter than jsdom)
 		environment: "happy-dom",
 		include: ["src/**/*.test.ts"],

@@ -31,6 +31,75 @@ const focusedProofs = [
 		bundleSuffix: "text",
 		displayName: "Fathom CUA Text Proof",
 		elementRole: "AXTextField",
+		accessibilityIdentifier: "fathom-dogfood-field",
+		elementSelection: "widest-frame",
+	},
+	{
+		name: "type-text",
+		tool: "type_text",
+		bundleSuffix: "type",
+		displayName: "Fathom CUA Type Proof",
+		elementRole: "AXTextField",
+		accessibilityIdentifier: "fathom-dogfood-field",
+		elementSelection: "widest-frame",
+	},
+	{
+		name: "press-key",
+		tool: "press_key",
+		bundleSuffix: "key",
+		displayName: "Fathom CUA Key Proof",
+		elementRole: "AXTextField",
+		accessibilityIdentifier: "fathom-dogfood-field",
+		elementSelection: "widest-frame",
+	},
+	{
+		name: "select-text",
+		tool: "select_text",
+		bundleSuffix: "select",
+		displayName: "Fathom CUA Select Text Proof",
+		elementRole: "AXTextField",
+		accessibilityIdentifier: "fathom-dogfood-field",
+		elementSelection: "widest-frame",
+	},
+	{
+		name: "click-button",
+		tool: "click",
+		bundleSuffix: "click",
+		displayName: "Fathom CUA Click Proof",
+		elementRole: "AXButton",
+		accessibilityIdentifier: "fathom-dogfood-click-button",
+	},
+	{
+		name: "press-element",
+		tool: "press_element",
+		bundleSuffix: "press",
+		displayName: "Fathom CUA Press Proof",
+		elementRole: "AXButton",
+		accessibilityIdentifier: "fathom-dogfood-click-button",
+	},
+	{
+		name: "open-context-menu",
+		tool: "open_context_menu",
+		bundleSuffix: "openmenu",
+		displayName: "Fathom CUA Open Menu Proof",
+		elementRole: "AXGroup",
+		accessibilityIdentifier: "fathom-dogfood-context-menu-view",
+	},
+	{
+		name: "context-menu-item",
+		tool: "select_context_menu_item",
+		bundleSuffix: "menuitem",
+		displayName: "Fathom CUA Context Item Proof",
+		elementRole: "AXGroup",
+		accessibilityIdentifier: "fathom-dogfood-context-menu-item-view",
+	},
+	{
+		name: "focus-element",
+		tool: "focus_element",
+		bundleSuffix: "focus",
+		displayName: "Fathom CUA Focus Proof",
+		elementRole: "AXTextField",
+		accessibilityIdentifier: "fathom-dogfood-field",
 		elementSelection: "widest-frame",
 	},
 	{
@@ -39,6 +108,7 @@ const focusedProofs = [
 		bundleSuffix: "toggle",
 		displayName: "Fathom CUA Toggle Proof",
 		elementRole: "AXCheckBox",
+		accessibilityIdentifier: "fathom-dogfood-toggle",
 	},
 	{
 		name: "slider-value",
@@ -46,6 +116,7 @@ const focusedProofs = [
 		bundleSuffix: "slider",
 		displayName: "Fathom CUA Slider Proof",
 		elementRole: "AXSlider",
+		accessibilityIdentifier: "fathom-dogfood-slider",
 	},
 	{
 		name: "menu-option",
@@ -53,6 +124,7 @@ const focusedProofs = [
 		bundleSuffix: "menu",
 		displayName: "Fathom CUA Menu Proof",
 		elementRole: "AXPopUpButton",
+		accessibilityIdentifier: "fathom-dogfood-menu-option",
 	},
 ] as const;
 const fathomCuaEnvVars = [
@@ -85,6 +157,8 @@ const fathomCuaEnvVars = [
 	"FATHOM_CUA_TURN_ID",
 	"MAESTRO_AGENT_RUN_ID",
 	"MAESTRO_REQUEST_ID",
+	"MAESTRO_FATHOM_CUA_TOOL_PROFILE",
+	"FATHOM_CUA_TOOL_PROFILE",
 	"MAESTRO_FATHOM_CUA_DISABLE_IPC",
 	"FATHOM_CUA_DISABLE_IPC",
 	"FATHOM_CALLER_PRODUCT",
@@ -119,6 +193,17 @@ function resolveFathomServerName(
 		});
 	}
 	return server.name;
+}
+
+function valueAfterFlag(args: readonly string[] | undefined, flag: string): string | null {
+	if (!args) {
+		return null;
+	}
+	const index = args.indexOf(flag);
+	if (index < 0) {
+		return null;
+	}
+	return args[index + 1] ?? null;
 }
 
 interface RunningProcess {
@@ -598,6 +683,7 @@ async function configureIsolatedMcpEnv(
 	process.env.MAESTRO_FATHOM_CUA_IPC_ROOT = ipcRoot;
 	process.env.MAESTRO_FATHOM_CUA_SESSION_ID = "desktop-session-maestro-smoke";
 	process.env.MAESTRO_FATHOM_CUA_TURN_ID = "turn-maestro-smoke";
+	process.env.MAESTRO_FATHOM_CUA_TOOL_PROFILE = "canonical";
 
 	return projectRoot;
 }
@@ -659,7 +745,21 @@ function chooseElementForProof(
 	state: JsonRecord,
 	proof: FocusedProof,
 ): Omit<ProofStateSelection, "state"> | undefined {
-	const candidates = elementsByRole(state, proof.elementRole);
+	let candidates = elementsByRole(state, proof.elementRole);
+	if ("accessibilityIdentifier" in proof) {
+		const identifierHash = sha256(
+			`ax-identifier:v1:${proof.accessibilityIdentifier}`,
+		);
+		candidates = candidates.filter(
+			(element) => element.accessibility_identifier_hash === identifierHash,
+		);
+	}
+	if ("accessibilityLabel" in proof) {
+		const labelHash = sha256(`ax-label:v1:${proof.accessibilityLabel}`);
+		candidates = candidates.filter(
+			(element) => element.accessibility_label_hash === labelHash,
+		);
+	}
 	if (candidates.length === 0) {
 		return undefined;
 	}
@@ -744,6 +844,38 @@ type ProofTarget =
 			tool: "set_value";
 			rawValue: string;
 			expectedHash: string;
+	  }
+	| {
+			tool: "type_text";
+			rawValue: string;
+			expectedHash: string;
+	  }
+	| {
+			tool: "press_key";
+			key: string;
+			expectedHash: string;
+	  }
+	| {
+			tool: "select_text";
+			text: string;
+			expectedHash: string;
+			expectedLocation: number;
+			expectedLength: number;
+	  }
+	| {
+			tool: "click" | "press_element" | "open_context_menu";
+			stateKey: string;
+			expectedCount: number;
+	  }
+	| {
+			tool: "select_context_menu_item";
+			item: string;
+			expectedHash: string;
+			expectedCount: number;
+	  }
+	| {
+			tool: "focus_element";
+			expectedFocused: boolean;
 	  }
 	| {
 			tool: "set_toggle_state";
@@ -966,6 +1098,30 @@ function actionArgsForProof(
 		case "set_value":
 			if (target.tool !== "set_value") break;
 			return { ...base, value: target.rawValue };
+		case "type_text":
+			if (target.tool !== "type_text") break;
+			return { ...base, text: target.rawValue };
+		case "press_key":
+			if (target.tool !== "press_key") break;
+			return { ...base, key: target.key };
+		case "select_text":
+			if (target.tool !== "select_text") break;
+			return { ...base, text: target.text, selection: "selection" };
+		case "click":
+			if (target.tool !== "click") break;
+			return { ...base, click_count: 1 };
+		case "press_element":
+			if (target.tool !== "press_element") break;
+			return base;
+		case "open_context_menu":
+			if (target.tool !== "open_context_menu") break;
+			return base;
+		case "select_context_menu_item":
+			if (target.tool !== "select_context_menu_item") break;
+			return { ...base, item: target.item };
+		case "focus_element":
+			if (target.tool !== "focus_element") break;
+			return base;
 		case "set_toggle_state":
 			if (target.tool !== "set_toggle_state") break;
 			return { ...base, checked: target.checked };
@@ -995,6 +1151,60 @@ function targetForProof(
 				expectedHash: sha256(`set-value:v1:${rawValue}`),
 			};
 		}
+		case "type_text": {
+			return {
+				tool: "type_text",
+				rawValue,
+				expectedHash: sha256(`set-value:v1:${rawValue}`),
+			};
+		}
+		case "press_key": {
+			const key = "x";
+			return {
+				tool: "press_key",
+				key,
+				expectedHash: sha256(`set-value:v1:${key}`),
+			};
+		}
+		case "select_text": {
+			return {
+				tool: "select_text",
+				text: "Visible Target",
+				expectedLocation: 7,
+				expectedLength: 14,
+				expectedHash: sha256("text-selection:v1:7:14"),
+			};
+		}
+		case "click":
+			return {
+				tool: "click",
+				stateKey: "click_count",
+				expectedCount: Number(beforeState.click_count ?? 0) + 1,
+			};
+		case "press_element":
+			return {
+				tool: "press_element",
+				stateKey: "click_count",
+				expectedCount: Number(beforeState.click_count ?? 0) + 1,
+			};
+		case "open_context_menu":
+			return {
+				tool: "open_context_menu",
+				stateKey: "context_menu_count",
+				expectedCount: Number(beforeState.context_menu_count ?? 0) + 1,
+			};
+		case "select_context_menu_item":
+			return {
+				tool: "select_context_menu_item",
+				item: "Record Context Item",
+				expectedHash: sha256("context-menu-item:v1:Record Context Item"),
+				expectedCount: Number(beforeState.context_menu_item_count ?? 0) + 1,
+			};
+		case "focus_element":
+			return {
+				tool: "focus_element",
+				expectedFocused: true,
+			};
 		case "set_toggle_state":
 			return {
 				tool: "set_toggle_state",
@@ -1037,7 +1247,24 @@ function stateChangedFromBefore(
 ): boolean {
 	switch (proof.tool) {
 		case "set_value":
+		case "type_text":
+		case "press_key":
 			return beforeState.field_value_hash !== afterState.field_value_hash;
+		case "select_text":
+			return beforeState.field_selection_hash !== afterState.field_selection_hash;
+		case "click":
+		case "press_element":
+			return beforeState.click_count !== afterState.click_count;
+		case "open_context_menu":
+			return beforeState.context_menu_count !== afterState.context_menu_count;
+		case "select_context_menu_item":
+			return (
+				beforeState.context_menu_item_count !==
+					afterState.context_menu_item_count ||
+				beforeState.context_menu_item_hash !== afterState.context_menu_item_hash
+			);
+		case "focus_element":
+			return beforeState.field_focused !== afterState.field_focused;
 		case "set_toggle_state":
 			return beforeState.toggle_checked !== afterState.toggle_checked;
 		case "set_slider_value":
@@ -1057,6 +1284,49 @@ function stateMatchesTarget(
 			return (
 				target.tool === "set_value" &&
 				state.field_value_hash === target.expectedHash
+			);
+		case "type_text":
+			return (
+				target.tool === "type_text" &&
+				state.field_value_hash === target.expectedHash
+			);
+		case "press_key":
+			return (
+				target.tool === "press_key" &&
+				state.field_value_hash === target.expectedHash
+			);
+		case "select_text":
+			return (
+				target.tool === "select_text" &&
+				state.field_selection_hash === target.expectedHash &&
+				state.field_selection_location === target.expectedLocation &&
+				state.field_selection_length === target.expectedLength
+			);
+		case "click":
+			return (
+				target.tool === "click" &&
+				state[target.stateKey] === target.expectedCount
+			);
+		case "press_element":
+			return (
+				target.tool === "press_element" &&
+				state[target.stateKey] === target.expectedCount
+			);
+		case "open_context_menu":
+			return (
+				target.tool === "open_context_menu" &&
+				state[target.stateKey] === target.expectedCount
+			);
+		case "select_context_menu_item":
+			return (
+				target.tool === "select_context_menu_item" &&
+				state.context_menu_item_hash === target.expectedHash &&
+				state.context_menu_item_count === target.expectedCount
+			);
+		case "focus_element":
+			return (
+				target.tool === "focus_element" &&
+				state.field_focused === target.expectedFocused
 			);
 		case "set_toggle_state":
 			return (
@@ -1093,6 +1363,88 @@ function stateEvidenceForProof(
 				changedFromBefore,
 				changed:
 					changedFromBefore && state.field_value_hash === target.expectedHash,
+			};
+		}
+		case "type_text": {
+			if (target.tool !== "type_text") break;
+			return {
+				beforeFieldValueHash: beforeState.field_value_hash,
+				fieldValueHash: state.field_value_hash,
+				expectedHash: target.expectedHash,
+				changedFromBefore,
+				changed:
+					changedFromBefore && state.field_value_hash === target.expectedHash,
+			};
+		}
+		case "press_key": {
+			if (target.tool !== "press_key") break;
+			return {
+				beforeFieldValueHash: beforeState.field_value_hash,
+				fieldValueHash: state.field_value_hash,
+				expectedHash: target.expectedHash,
+				key: target.key,
+				changedFromBefore,
+				changed:
+					changedFromBefore && state.field_value_hash === target.expectedHash,
+			};
+		}
+		case "select_text": {
+			if (target.tool !== "select_text") break;
+			return {
+				beforeSelectionHash: beforeState.field_selection_hash,
+				selectionHash: state.field_selection_hash,
+				expectedHash: target.expectedHash,
+				selectionLocation: state.field_selection_location,
+				selectionLength: state.field_selection_length,
+				expectedLocation: target.expectedLocation,
+				expectedLength: target.expectedLength,
+				changedFromBefore,
+				changed:
+					changedFromBefore &&
+					state.field_selection_hash === target.expectedHash &&
+					state.field_selection_location === target.expectedLocation &&
+					state.field_selection_length === target.expectedLength,
+			};
+		}
+		case "click":
+		case "press_element":
+		case "open_context_menu": {
+			if (target.tool !== proof.tool) break;
+			return {
+				stateKey: target.stateKey,
+				beforeCount: beforeState[target.stateKey],
+				count: state[target.stateKey],
+				expectedCount: target.expectedCount,
+				changedFromBefore,
+				changed:
+					changedFromBefore && state[target.stateKey] === target.expectedCount,
+			};
+		}
+		case "select_context_menu_item": {
+			if (target.tool !== "select_context_menu_item") break;
+			return {
+				beforeContextMenuItemCount: beforeState.context_menu_item_count,
+				contextMenuItemCount: state.context_menu_item_count,
+				expectedCount: target.expectedCount,
+				beforeContextMenuItemHash: beforeState.context_menu_item_hash,
+				contextMenuItemHash: state.context_menu_item_hash,
+				expectedHash: target.expectedHash,
+				changedFromBefore,
+				changed:
+					changedFromBefore &&
+					state.context_menu_item_hash === target.expectedHash &&
+					state.context_menu_item_count === target.expectedCount,
+			};
+		}
+		case "focus_element": {
+			if (target.tool !== "focus_element") break;
+			return {
+				beforeFieldFocused: beforeState.field_focused,
+				fieldFocused: state.field_focused,
+				expectedFocused: target.expectedFocused,
+				changedFromBefore,
+				changed:
+					changedFromBefore && state.field_focused === target.expectedFocused,
 			};
 		}
 		case "set_toggle_state":
@@ -1340,7 +1692,9 @@ async function runSmoke(): Promise<JsonRecord> {
 			try {
 				return await callMcpTool(manager, fathomServerName, toolName, args);
 			} finally {
-				helperRequestCount += 1;
+				if (toolName !== "tool_search") {
+					helperRequestCount += 1;
+				}
 			}
 		};
 		const toolNames = manager
@@ -1348,9 +1702,21 @@ async function runSmoke(): Promise<JsonRecord> {
 			.filter((tool) => tool.server === fathomServerName)
 			.map((tool) => tool.tool.name)
 			.sort();
+		const toolProfile =
+			valueAfterFlag(fathomStatus?.args, "-tool-profile") ??
+			process.env.MAESTRO_FATHOM_CUA_TOOL_PROFILE ??
+			"unknown";
+		if (toolProfile !== "canonical") {
+			throw new SmokeError("Fathom CUA MCP smoke must run the canonical profile", {
+				toolProfile,
+				args: fathomStatus?.args ?? [],
+			});
+		}
 		const requiredTools = [
 			"list_apps",
 			"get_app_state",
+			"activate_app",
+			"tool_search",
 			...focusedProofs.map((proof) => proof.tool),
 		];
 		for (const requiredTool of requiredTools) {
@@ -1364,6 +1730,34 @@ async function runSmoke(): Promise<JsonRecord> {
 				);
 			}
 		}
+		const unexpectedCanonicalTools = [
+			"drag",
+			"move_mouse",
+			"paste_text",
+			"set_window_bounds",
+		].filter((toolName) => toolNames.includes(toolName));
+		if (unexpectedCanonicalTools.length > 0) {
+			throw new SmokeError("Fathom CUA canonical profile exposed broad tools", {
+				unexpectedCanonicalTools,
+				toolNames,
+			});
+		}
+		const toolSearch = await callFathomTool("tool_search", {
+			query: "visible text",
+		});
+		const toolSearchMatches = asArray(
+			toolSearch.matches,
+			"tool_search matches",
+		).map((match) => asRecord(match, "tool_search match"));
+		if (
+			!toolSearchMatches.some((match) => match.name === "select_text") ||
+			toolSearchMatches.some((match) => match.name === "paste_text")
+		) {
+			throw new SmokeError(
+				"Fathom CUA canonical tool_search did not reflect the focused profile",
+				{ toolSearch },
+			);
+		}
 
 		const appList = await callFathomTool("list_apps", {
 			include_background: true,
@@ -1375,6 +1769,24 @@ async function runSmoke(): Promise<JsonRecord> {
 		if (missingListedApps.length > 0) {
 			throw new SmokeError("Fathom CUA list_apps missed proof targets", {
 				missingListedApps,
+			});
+		}
+		const activationTarget = launchedProofs[0];
+		if (!activationTarget) {
+			throw new SmokeError("No Fathom CUA proof target was launched");
+		}
+		const activationProof = await callFathomTool("activate_app", {
+			app: activationTarget.bundleId,
+			launch_if_needed: false,
+			reason: "maestro fathom cua mcp activation proof",
+		});
+		if (
+			activationProof.activated !== true ||
+			typeof activationProof.context_snapshot_id !== "string"
+		) {
+			throw new SmokeError("Fathom CUA activate_app proof did not activate", {
+				activationProof,
+				targetBundleId: activationTarget.bundleId,
 			});
 		}
 
@@ -1477,13 +1889,26 @@ async function runSmoke(): Promise<JsonRecord> {
 			mcpServer: {
 				name: fathomServerName,
 				connected: true,
+				toolProfile,
 				toolCount: toolNames.length,
 				requiredTools,
+				capabilitySummary: fathomStatus?.toolCapabilitySummary ?? null,
 			},
 			observabilityProof: {
 				tool: "list_apps",
 				applicationCount: listedBundleIds.length,
 				proofTargetsListed: launchedProofs.length,
+				toolSearch: {
+					query: toolSearch.query,
+					matchedTools: toolSearchMatches.map((match) => match.name),
+				},
+				activation: {
+					tool: "activate_app",
+					appBundleId: activationTarget.bundleId,
+					receiptId: activationProof.receipt_id,
+					contextSnapshotId: activationProof.context_snapshot_id,
+					activated: activationProof.activated,
+				},
 			},
 			actionProofs,
 			helper: {

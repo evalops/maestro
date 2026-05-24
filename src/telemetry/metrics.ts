@@ -77,6 +77,45 @@ export const MAESTRO_OTEL_METRIC_DEFINITIONS = [
 		kind: "counter",
 		description: "Tokens consumed by direction",
 	},
+	{
+		key: "a2aDelegationCount",
+		name: "agent.a2a.delegation_count",
+		kind: "counter",
+		description: "A2A delegation lifecycle observations by phase and outcome",
+	},
+	{
+		key: "a2aDispatchLatency",
+		name: "agent.a2a.dispatch_latency",
+		kind: "histogram",
+		description: "A2A dispatch latency",
+		unit: "ms",
+	},
+	{
+		key: "a2aTaskDuration",
+		name: "agent.a2a.task_duration",
+		kind: "histogram",
+		description: "A2A delegated task duration",
+		unit: "ms",
+	},
+	{
+		key: "a2aPushLag",
+		name: "agent.a2a.push_lag",
+		kind: "histogram",
+		description: "Lag between A2A task completion and push receipt",
+		unit: "ms",
+	},
+	{
+		key: "a2aPolicyDenialCount",
+		name: "agent.a2a.policy_denial_count",
+		kind: "counter",
+		description: "A2A capability policy denials by source and reason",
+	},
+	{
+		key: "a2aPeerExclusionCount",
+		name: "agent.a2a.peer_exclusion_count",
+		kind: "counter",
+		description: "A2A peer exclusions by source and reason",
+	},
 ] as const satisfies readonly MaestroMetricDefinition[];
 
 type MetricKey = (typeof MAESTRO_OTEL_METRIC_DEFINITIONS)[number]["key"];
@@ -118,6 +157,12 @@ export const maestroOtelMetrics = {
 	agentTurnLatency: histogram("agentTurnLatency"),
 	subagentDispatchCount: counter("subagentDispatchCount"),
 	subagentDispatchLatency: histogram("subagentDispatchLatency"),
+	a2aDelegationCount: counter("a2aDelegationCount"),
+	a2aDispatchLatency: histogram("a2aDispatchLatency"),
+	a2aTaskDuration: histogram("a2aTaskDuration"),
+	a2aPushLag: histogram("a2aPushLag"),
+	a2aPolicyDenialCount: counter("a2aPolicyDenialCount"),
+	a2aPeerExclusionCount: counter("a2aPeerExclusionCount"),
 	compactionTriggered: counter("compactionTriggered"),
 	llmRequestCount: counter("llmRequestCount"),
 	llmTokenUsage: counter("llmTokenUsage"),
@@ -225,6 +270,71 @@ export function recordSubagentDispatchMetric(input: {
 	}
 }
 
+export function recordA2ADelegationMetric(input: {
+	phase: string;
+	source?: string;
+	status?: string;
+	success?: boolean;
+	skillId?: string;
+	taskClass?: string;
+	latencyMs?: number;
+	taskDurationMs?: number;
+	pushLagMs?: number;
+}): void {
+	const attributes = compactAttributes({
+		"maestro.a2a.phase": input.phase,
+		"maestro.a2a.source": input.source,
+		"maestro.a2a.status": input.status,
+		"maestro.a2a.success": input.success,
+		"maestro.a2a.skill_id": input.skillId,
+		"maestro.a2a.task_class": input.taskClass,
+	});
+	maestroOtelMetrics.a2aDelegationCount.add(1, attributes);
+	if (isFiniteNumber(input.latencyMs)) {
+		maestroOtelMetrics.a2aDispatchLatency.record(input.latencyMs, attributes);
+	}
+	if (isFiniteNumber(input.taskDurationMs)) {
+		maestroOtelMetrics.a2aTaskDuration.record(input.taskDurationMs, attributes);
+	}
+	if (isFiniteNumber(input.pushLagMs)) {
+		maestroOtelMetrics.a2aPushLag.record(input.pushLagMs, attributes);
+	}
+}
+
+export function recordA2APolicyDenialMetric(input: {
+	source?: string;
+	reason: string;
+	taskClass?: string;
+	skillId?: string;
+}): void {
+	maestroOtelMetrics.a2aPolicyDenialCount.add(
+		1,
+		compactAttributes({
+			"maestro.a2a.source": input.source,
+			"maestro.a2a.reason": input.reason,
+			"maestro.a2a.task_class": input.taskClass,
+			"maestro.a2a.skill_id": input.skillId,
+		}),
+	);
+}
+
+export function recordA2APeerExclusionMetric(input: {
+	source?: string;
+	reason: string;
+	taskClass?: string;
+	skillId?: string;
+}): void {
+	maestroOtelMetrics.a2aPeerExclusionCount.add(
+		1,
+		compactAttributes({
+			"maestro.a2a.source": input.source,
+			"maestro.a2a.reason": input.reason,
+			"maestro.a2a.task_class": input.taskClass,
+			"maestro.a2a.skill_id": input.skillId,
+		}),
+	);
+}
+
 export function recordCompactionMetric(
 	attributes: Record<string, string | number | boolean | undefined> = {},
 ): void {
@@ -258,6 +368,10 @@ export function recordLlmTokenUsageMetric(
 			);
 		}
 	}
+}
+
+function isFiniteNumber(value: number | undefined): value is number {
+	return typeof value === "number" && Number.isFinite(value);
 }
 
 export function recordLlmRequestMetric(input: {

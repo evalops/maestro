@@ -1148,7 +1148,7 @@ export class ComposerChat extends LitElement {
 	`;
 
 	@property() apiEndpoint = "";
-	@property() model = "claude-sonnet-4-5";
+	@property() model = "openai-codex/gpt-5.5";
 
 	@state() private messages: UiMessage[] = [];
 	@state() private loading = false;

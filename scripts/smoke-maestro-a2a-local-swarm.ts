@@ -12,11 +12,21 @@ import {
 	type A2AServiceConfig,
 } from "../src/platform/a2a-client.js";
 import {
+	a2aPushEvidenceKey,
+	buildA2ACompletionAudit,
+} from "../src/platform/a2a-completion-audit.js";
+import type { A2ATaskLedgerFile } from "../src/platform/a2a-task-ledger.js";
+import {
+	inspectA2ATelemetry,
+	type A2ATelemetryCloudEventLike,
+} from "../src/platform/a2a-telemetry-inspect.js";
+import {
 	listA2APeerCandidatesWithPlatform,
 	type PlatformAgentRegistryAgent,
 } from "../src/platform/agent-registry-client.js";
 import { SwarmExecutor } from "../src/agent/swarm/executor.js";
 import type { SwarmConfig, SwarmState } from "../src/agent/swarm/types.js";
+import { setMaestroEventBusTransportForTests } from "../src/telemetry/maestro-event-bus.js";
 
 const ORGANIZATION_ID = "org_local_a2a_swarm";
 const WORKSPACE_ID = "workspace_local_a2a_swarm";
@@ -276,6 +286,33 @@ function pushEventCounts(requests: CapturedRequest[]): Record<string, number> {
 		counts[summary.type] = (counts[summary.type] ?? 0) + 1;
 	}
 	return counts;
+}
+
+function pushedTaskIds(requests: CapturedRequest[]): Set<string> {
+	return new Set(
+		requests
+			.map(pushEventSummary)
+			.map((summary) => summary?.taskId)
+			.filter((taskId): taskId is string => Boolean(taskId)),
+	);
+}
+
+function pushedTaskEvidenceKeys(
+	requests: CapturedRequest[],
+	lanes: Array<{ peer: string; taskId: string }>,
+): Set<string> {
+	const pushedIds = pushedTaskIds(requests);
+	const taskIdCounts = new Map<string, number>();
+	for (const lane of lanes) {
+		taskIdCounts.set(lane.taskId, (taskIdCounts.get(lane.taskId) ?? 0) + 1);
+	}
+	const evidenceKeys = new Set<string>();
+	for (const lane of lanes) {
+		if (pushedIds.has(lane.taskId) && taskIdCounts.get(lane.taskId) === 1) {
+			evidenceKeys.add(a2aPushEvidenceKey(lane.peer, lane.taskId));
+		}
+	}
+	return evidenceKeys;
 }
 
 function skillList(agent: MockAgent): Array<Record<string, unknown>> {
@@ -938,6 +975,29 @@ function configurePlatformEnv(registryUrl: string): EnvSnapshot {
 	return snapshot;
 }
 
+function configureTelemetryCapture(
+	events: A2ATelemetryCloudEventLike[],
+): EnvSnapshot {
+	const keys = [
+		"MAESTRO_EVENT_BUS_URL",
+		"MAESTRO_EVENT_BUS_SOURCE",
+		"MAESTRO_INTERNAL_TELEMETRY_DISABLED",
+		"EVALOPS_INTERNAL_TELEMETRY_DISABLED",
+	];
+	const snapshot = snapshotEnv(keys);
+	process.env.MAESTRO_EVENT_BUS_URL =
+		"nats://local-a2a-swarm-telemetry.invalid:4222";
+	process.env.MAESTRO_EVENT_BUS_SOURCE = "maestro.a2a.local-swarm-smoke";
+	delete process.env.MAESTRO_INTERNAL_TELEMETRY_DISABLED;
+	delete process.env.EVALOPS_INTERNAL_TELEMETRY_DISABLED;
+	setMaestroEventBusTransportForTests({
+		async publish(_subject, payload) {
+			events.push(JSON.parse(payload) as A2ATelemetryCloudEventLike);
+		},
+	});
+	return snapshot;
+}
+
 async function provePolicyDenial(registryUrl: string): Promise<number> {
 	const snapshot = configurePlatformEnv(registryUrl);
 	try {
@@ -1130,6 +1190,8 @@ async function main(): Promise<void> {
 	const registry = await startMockRegistry();
 	const pushReceiver = await startPushReceiver();
 	const instances: ControlPlaneInstance[] = [];
+	const telemetryEvents: A2ATelemetryCloudEventLike[] = [];
+	const telemetryEnvSnapshot = configureTelemetryCapture(telemetryEvents);
 	try {
 		await proveInvalidPushTokenRejected(pushReceiver);
 		await mkdir(rootDir, { recursive: true });
@@ -1181,6 +1243,7 @@ async function main(): Promise<void> {
 		await pushReceiver.waitForTaskEvents(
 			completedExecutions.map((a2a) => a2a.taskId),
 		);
+		await delay(0);
 		const alpha = instances.find(
 			(instance) => instance.agentId === "maestro-a2a-local-alpha",
 		);
@@ -1190,7 +1253,7 @@ async function main(): Promise<void> {
 		const resume = await proveResume(alpha, RESUME_TASK_ID);
 		const ledger = JSON.parse(
 			await readFile(join(rootDir, "swarm-a2a-tasks.json"), "utf8"),
-		) as Record<string, unknown>;
+		) as A2ATaskLedgerFile & Record<string, unknown>;
 		const ledgerTasks = Array.isArray(ledger.tasks)
 			? (ledger.tasks.filter(
 					(task): task is Record<string, unknown> =>
@@ -1218,6 +1281,29 @@ async function main(): Promise<void> {
 					`expected at least ${completedExecutions.length} ${type} push events, saw ${pushCounts[type] ?? 0}`,
 				);
 			}
+		}
+		const completionAudit = buildA2ACompletionAudit({
+			swarm,
+			ledger,
+			pushEvidenceKeys: pushedTaskEvidenceKeys(
+				pushReceiver.requests,
+				completedExecutions,
+			),
+		});
+		if (!completionAudit.complete) {
+			throw new Error(
+				`A2A completion audit incomplete: ${JSON.stringify(completionAudit)}`,
+			);
+		}
+		const telemetryInspection = inspectA2ATelemetry({
+			swarmId: swarm.id,
+			events: telemetryEvents,
+			audit: completionAudit,
+		});
+		if (!telemetryInspection.complete) {
+			throw new Error(
+				`A2A telemetry inspection incomplete: ${JSON.stringify(telemetryInspection)}`,
+			);
 		}
 		console.log(
 			JSON.stringify(
@@ -1265,6 +1351,12 @@ async function main(): Promise<void> {
 						eventCounts: pushCounts,
 						remoteTaskIds: completedExecutions.map((a2a) => a2a.taskId),
 					},
+					telemetryProof: {
+						eventCount: telemetryEvents.length,
+						eventTypes: [...new Set(telemetryEvents.map((event) => event.type))],
+						completionAudit,
+						inspection: telemetryInspection,
+					},
 					resume,
 					fleetEvidence: {
 						healthyPeerCount: HEALTHY_PEERS.length,
@@ -1297,6 +1389,8 @@ async function main(): Promise<void> {
 		);
 		await registry.close();
 		await pushReceiver.close();
+		setMaestroEventBusTransportForTests(undefined);
+		restoreEnv(telemetryEnvSnapshot);
 		if (process.env.MAESTRO_A2A_LOCAL_SWARM_KEEP_TMP !== "1") {
 			await rm(rootDir, { recursive: true, force: true });
 		}
