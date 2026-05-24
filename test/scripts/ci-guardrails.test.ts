@@ -674,6 +674,10 @@ describe("ci workflow guardrails", () => {
 				encoding: "utf8",
 			}),
 		) as Workflow;
+		const script = readFileSync(
+			new URL("../../scripts/ci-nx-tests.sh", import.meta.url),
+			{ encoding: "utf8" },
+		);
 		const prCheckTimeouts = new Map(
 			(workflow.jobs?.["pr-checks"]?.steps ?? []).map((step) => [
 				step.name,
@@ -693,6 +697,11 @@ describe("ci workflow guardrails", () => {
 		}
 		expect(workflow.jobs?.coverage?.["timeout-minutes"]).toBe(75);
 		expect(coverageTimeouts.get("Run tests with coverage")).toBe(60);
+		expect(script).toContain("NX_TEST_POST_SUCCESS_IDLE_FINAL_PATTERN");
+		expect(script).toContain("--success-idle-final-pattern");
+		expect(script).toContain(
+			'[[ "${cmd[0]}" == "npx" && "${cmd[1]}" == "nx" ]]',
+		);
 	});
 
 	it("uploads machine-readable Nx attempt summaries with test logs", () => {

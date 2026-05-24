@@ -293,10 +293,10 @@ export function buildRunHealthSnapshot(
 }
 
 export async function getStatusSnapshot(
-	options: { staticCacheMaxAge?: number } = {},
+	options: { staticCacheMaxAge?: number; cwd?: string } = {},
 ) {
 	const startedAt = Date.now();
-	const cwd = process.cwd();
+	const cwd = options.cwd ?? process.cwd();
 	const database = await getDatabaseHealthSnapshot();
 
 	let gitBranch = null;
@@ -368,15 +368,16 @@ export async function handleStatus(
 	req: IncomingMessage,
 	res: ServerResponse,
 	cors: Record<string, string>,
-	options: { staticCacheMaxAge?: number } = {},
+	options: { staticCacheMaxAge?: number; cwd?: string } = {},
 ): Promise<void> {
 	try {
 		const method = (req.method ?? "GET").toUpperCase();
 		const url = new URL(req.url ?? "/api/status", "http://localhost");
 		const action = url.searchParams.get("action");
+		const cwd = options.cwd ?? process.cwd();
 
 		if (method === "POST" && action === "mark-onboarding-seen") {
-			markProjectOnboardingSeen(process.cwd());
+			markProjectOnboardingSeen(cwd);
 			sendJson(res, 200, { success: true }, cors, req);
 			return;
 		}

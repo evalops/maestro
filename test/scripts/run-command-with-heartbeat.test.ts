@@ -39,6 +39,8 @@ describe("run-command-with-heartbeat", () => {
 				"10",
 				"--heartbeat-seconds",
 				"2",
+				"--success-idle-final-pattern",
+				"done",
 				"--",
 				"node",
 				"-e",
@@ -49,6 +51,7 @@ describe("run-command-with-heartbeat", () => {
 			heartbeatSeconds: 2,
 			label: "Nx",
 			logfile: "nx.log",
+			successIdleFinalPattern: "done",
 			timingFile: "timing.jsonl",
 			summaryJson: "nx.json",
 			timeoutSeconds: 10,
@@ -186,6 +189,83 @@ describe("run-command-with-heartbeat", () => {
 			signal: null,
 			timedOut: false,
 		});
+	});
+
+	it("returns success when a command is idle after a passing summary", () => {
+		const root = makeRoot();
+		const logfile = join(root, "success-idle.log");
+		const summaryJson = join(root, "success-idle-summary.json");
+		const timingFile = join(root, "success-idle-timing.jsonl");
+		const result = spawnSync(
+			process.execPath,
+			[
+				scriptPath,
+				"--label",
+				"stuck passing tests",
+				"--logfile",
+				logfile,
+				"--summary-json",
+				summaryJson,
+				"--timing-file",
+				timingFile,
+				"--timeout-seconds",
+				"10",
+				"--heartbeat-seconds",
+				"0",
+				"--success-idle-seconds",
+				"1",
+				"--success-idle-pattern",
+				"\\bTest Files\\b[^\\n]*\\d+\\s+passed\\b[\\s\\S]*\\bTests\\b[^\\n]*\\d+\\s+passed\\b",
+				"--success-idle-final-pattern",
+				"\\bSuccessfully ran target\\s+test\\b",
+				"--",
+				process.execPath,
+				"-e",
+				"console.log(' Test Files  1 passed (1)'); console.log('      Tests  1 passed (1)'); console.log(' NX  Successfully ran target test for 1 project'); setInterval(() => {}, 1000)",
+			],
+			{ encoding: "utf8", timeout: 5000 },
+		);
+
+		expect(result.status).toBe(0);
+		expect(result.stderr).toContain("matched success-idle pattern");
+		expect(readFileSync(logfile, "utf8")).toContain("Test Files  1 passed");
+		expect(JSON.parse(readFileSync(summaryJson, "utf8"))).toMatchObject({
+			exitCode: 0,
+			forcedSuccess: true,
+			timedOut: false,
+		});
+		expect(readFileSync(timingFile, "utf8")).toContain("passed_forced_success");
+	});
+
+	it("does not force success before the final completion marker", () => {
+		const result = spawnSync(
+			process.execPath,
+			[
+				scriptPath,
+				"--label",
+				"unfinished shard tests",
+				"--timeout-seconds",
+				"10",
+				"--heartbeat-seconds",
+				"0",
+				"--success-idle-seconds",
+				"1",
+				"--success-idle-pattern",
+				"\\bTest Files\\b[^\\n]*\\d+\\s+passed\\b[\\s\\S]*\\bTests\\b[^\\n]*\\d+\\s+passed\\b",
+				"--success-idle-final-pattern",
+				"\\bSuccessfully ran target\\s+test\\b",
+				"--",
+				process.execPath,
+				"-e",
+				"console.log(' Test Files  1 passed (1)'); console.log('      Tests  1 passed (1)'); setTimeout(() => process.exit(9), 1500)",
+			],
+			{ encoding: "utf8", timeout: 5000 },
+		);
+
+		expect(result.status).toBe(9);
+		expect(result.stderr).not.toContain(
+			"terminating process group as successful",
+		);
 	});
 
 	it("returns 124 when the command exceeds the timeout", () => {

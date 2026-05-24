@@ -74,7 +74,11 @@ function makeRes(): MockResponse {
 	};
 }
 
-async function readStatus(options: { method?: string; body?: unknown } = {}) {
+let statusProjectRoot: string | undefined;
+
+async function readStatus(
+	options: { method?: string; body?: unknown; cwd?: string } = {},
+) {
 	const req = makeReq("/api/status", options);
 	const res = makeRes();
 
@@ -82,6 +86,7 @@ async function readStatus(options: { method?: string; body?: unknown } = {}) {
 		req as unknown as IncomingMessage,
 		res as unknown as ServerResponse,
 		corsHeaders,
+		{ cwd: options.cwd ?? statusProjectRoot },
 	);
 
 	expect(res.statusCode).toBe(200);
@@ -160,7 +165,6 @@ describe("buildRunHealthSnapshot", () => {
 
 describe("handleStatus", () => {
 	let tempRoot: string;
-	let originalCwd: string;
 	let originalMaestroHome: string | undefined;
 	let originalDatabaseUrl: string | undefined;
 	let originalMaestroDatabaseUrl: string | undefined;
@@ -169,14 +173,13 @@ describe("handleStatus", () => {
 		vi.mocked(isDatabaseConfigured).mockReturnValue(false);
 		vi.mocked(testConnection).mockResolvedValue(false);
 		tempRoot = mkdtempSync(join(tmpdir(), "maestro-status-handler-"));
-		originalCwd = process.cwd();
+		statusProjectRoot = tempRoot;
 		originalMaestroHome = process.env.MAESTRO_HOME;
 		originalDatabaseUrl = process.env.DATABASE_URL;
 		originalMaestroDatabaseUrl = process.env.MAESTRO_DATABASE_URL;
 		process.env.MAESTRO_HOME = join(tempRoot, ".maestro-home");
 		Reflect.deleteProperty(process.env, "DATABASE_URL");
 		Reflect.deleteProperty(process.env, "MAESTRO_DATABASE_URL");
-		process.chdir(tempRoot);
 		resetStatusDatabaseHealthCacheForTests();
 		vi.mocked(isDatabaseConfigured).mockReset();
 		vi.mocked(testConnection).mockReset();
@@ -188,7 +191,7 @@ describe("handleStatus", () => {
 		vi.useRealTimers();
 		vi.restoreAllMocks();
 		resetStatusDatabaseHealthCacheForTests();
-		process.chdir(originalCwd);
+		statusProjectRoot = undefined;
 		if (originalMaestroHome === undefined) {
 			Reflect.deleteProperty(process.env, "MAESTRO_HOME");
 		} else {
@@ -211,7 +214,7 @@ describe("handleStatus", () => {
 		writeFileSync(join(tempRoot, "package.json"), "{}");
 
 		await expect(readStatus()).resolves.toMatchObject({
-			cwd: process.cwd(),
+			cwd: tempRoot,
 			runHealth: {
 				status: "healthy",
 				slos: [
@@ -269,6 +272,7 @@ describe("handleStatus", () => {
 			markReq as unknown as IncomingMessage,
 			markRes as unknown as ServerResponse,
 			corsHeaders,
+			{ cwd: tempRoot },
 		);
 
 		expect(markRes.statusCode).toBe(200);

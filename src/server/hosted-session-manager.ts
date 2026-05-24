@@ -804,6 +804,17 @@ export class HostedSessionManager {
 		return `db:${this.sessionId}`;
 	}
 
+	getCurrentLeafId(): string | null {
+		return this.leafId;
+	}
+
+	branch(branchFromId: string): void {
+		if (!this.byId.has(branchFromId)) {
+			throw new Error(`Entry ${branchFromId} not found`);
+		}
+		this.leafId = branchFromId;
+	}
+
 	getSessionFileById(sessionId: string): string | null {
 		return `db:${sessionId}`;
 	}

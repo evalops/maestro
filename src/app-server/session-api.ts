@@ -1,22 +1,36 @@
+import { resolve } from "node:path";
 import {
 	type MaestroAppServerClientRequest,
+	type MaestroAppServerCommandExecResult,
+	type MaestroAppServerCommandProcessResult,
+	type MaestroAppServerEmptyResult,
+	type MaestroAppServerFsMetadataResult,
+	type MaestroAppServerFsReadDirectoryResult,
+	type MaestroAppServerFsReadFileResult,
+	type MaestroAppServerFsWatchResult,
 	type MaestroAppServerModel,
 	type MaestroAppServerModelListResult,
 	type MaestroAppServerModelProviderCapabilities,
 	type MaestroAppServerModelProviderCapabilitiesReadResult,
 	type MaestroAppServerResponse,
+	type MaestroAppServerServerNotification,
 	type MaestroAppServerThread,
+	type MaestroAppServerThreadArchiveResult,
+	type MaestroAppServerThreadDeleteResult,
+	type MaestroAppServerThreadForkResult,
 	type MaestroAppServerThreadGoal,
 	type MaestroAppServerThreadGoalResult,
 	type MaestroAppServerThreadGraph,
 	type MaestroAppServerThreadItem,
 	type MaestroAppServerThreadListResult,
 	type MaestroAppServerThreadMetadataUpdateResult,
+	type MaestroAppServerThreadStartResult,
 	type MaestroAppServerThreadSummary,
 	type MaestroAppServerTurn,
 	type MaestroAppServerTurnsListResult,
 	maestroAppServerClientMethods,
 	maestroAppServerProtocolVersion,
+	maestroAppServerSupportedProtocolVersions,
 } from "@evalops/contracts";
 import type { AppMessage } from "../agent/types.js";
 import { getRegisteredModels } from "../models/registry.js";
@@ -34,9 +48,16 @@ import type {
 	SessionSummary,
 	SessionTreeEntry,
 } from "../session/types.js";
+import {
+	type MaestroAppServerHostControl,
+	MaestroAppServerHostControlError,
+	createMaestroAppServerHostControl,
+} from "./host-control-api.js";
 
 const DEFAULT_PAGE_LIMIT = 50;
 const MAX_PAGE_LIMIT = 100;
+
+export type { MaestroAppServerServerNotification };
 
 type JsonRpcId = string | number;
 type MaybePromise<T> = T | Promise<T>;
@@ -45,6 +66,7 @@ type SessionStore = Pick<
 	SessionManager,
 	"getSessionFileById" | "loadAllSessions" | "listSessions" | "loadSession"
 > & {
+	getSessionFile?: () => string;
 	loadEntries?: (sessionId: string) => Promise<SessionEntry[] | null>;
 	flush?: () => Promise<void>;
 	saveSessionSummary?: (
@@ -61,11 +83,36 @@ type SessionStore = Pick<
 	) => MaybePromise<void>;
 	setSessionTitle?: (sessionPath: string, title: string) => MaybePromise<void>;
 	setSessionTags?: (sessionPath: string, tags: string[]) => MaybePromise<void>;
+	setSessionArchived?: (
+		sessionPath: string,
+		archived: boolean,
+	) => MaybePromise<void>;
 	setSessionAppServerGoal?: (
 		sessionPath: string,
 		goal: MaestroAppServerThreadGoal | null,
 	) => MaybePromise<void>;
+	createSession?: (options?: { title?: string }) => Promise<{
+		id: string;
+		title?: string;
+		createdAt: string;
+		updatedAt: string;
+		messageCount: number;
+	}>;
+	canCreateSession?: () => boolean;
+	createBranchedSession?: (leafId: string) => string;
+	setSessionFile?: (path: string) => MaybePromise<void>;
+	resumeSession?: (sessionId: string) => Promise<boolean>;
+	getLeafId?: () => string | null;
+	getCurrentLeafId?: () => string | null;
+	branch?: (branchFromId: string) => MaybePromise<void>;
+	resetLeaf?: () => MaybePromise<void>;
+	deleteSession?: (sessionId: string) => MaybePromise<void>;
 };
+
+export interface MaestroAppServerSessionApiOptions {
+	hostControl?: MaestroAppServerHostControl | false;
+	onNotification?: (notification: MaestroAppServerServerNotification) => void;
+}
 
 export interface MaestroAppServerSessionApi {
 	initialize(): MaestroAppServerResponse["result"];
@@ -75,6 +122,40 @@ export interface MaestroAppServerSessionApi {
 	readModelProviderCapabilities(
 		params?: Record<string, unknown>,
 	): Promise<MaestroAppServerModelProviderCapabilitiesReadResult>;
+	execCommand(
+		params?: Record<string, unknown>,
+	): Promise<MaestroAppServerCommandExecResult>;
+	writeCommandStdin(
+		params?: Record<string, unknown>,
+	): Promise<MaestroAppServerCommandProcessResult>;
+	terminateCommand(
+		params?: Record<string, unknown>,
+	): Promise<MaestroAppServerCommandProcessResult>;
+	readFile(
+		params?: Record<string, unknown>,
+	): Promise<MaestroAppServerFsReadFileResult>;
+	writeFile(
+		params?: Record<string, unknown>,
+	): Promise<MaestroAppServerEmptyResult>;
+	readDirectory(
+		params?: Record<string, unknown>,
+	): Promise<MaestroAppServerFsReadDirectoryResult>;
+	getMetadata(
+		params?: Record<string, unknown>,
+	): Promise<MaestroAppServerFsMetadataResult>;
+	createDirectory(
+		params?: Record<string, unknown>,
+	): Promise<MaestroAppServerEmptyResult>;
+	remove(
+		params?: Record<string, unknown>,
+	): Promise<MaestroAppServerEmptyResult>;
+	copy(params?: Record<string, unknown>): Promise<MaestroAppServerEmptyResult>;
+	watch(
+		params?: Record<string, unknown>,
+	): Promise<MaestroAppServerFsWatchResult>;
+	unwatch(
+		params?: Record<string, unknown>,
+	): Promise<MaestroAppServerEmptyResult>;
 	listThreads(
 		params?: Record<string, unknown>,
 	): Promise<MaestroAppServerThreadListResult>;
@@ -94,6 +175,21 @@ export interface MaestroAppServerSessionApi {
 	clearThreadGoal(
 		params?: Record<string, unknown>,
 	): Promise<MaestroAppServerThreadGoalResult>;
+	startThread(
+		params?: Record<string, unknown>,
+	): Promise<MaestroAppServerThreadStartResult>;
+	forkThread(
+		params?: Record<string, unknown>,
+	): Promise<MaestroAppServerThreadForkResult>;
+	archiveThread(
+		params?: Record<string, unknown>,
+	): Promise<MaestroAppServerThreadArchiveResult>;
+	unarchiveThread(
+		params?: Record<string, unknown>,
+	): Promise<MaestroAppServerThreadArchiveResult>;
+	deleteThread(
+		params?: Record<string, unknown>,
+	): Promise<MaestroAppServerThreadDeleteResult>;
 	listTurns(
 		params?: Record<string, unknown>,
 	): Promise<MaestroAppServerTurnsListResult>;
@@ -158,10 +254,14 @@ function toThreadSummary(
 	metadata: SessionMetadata,
 	summary?: SessionSummary,
 ): MaestroAppServerThreadSummary {
-	return {
+	const archived = summary?.archived ?? metadata.archived ?? false;
+	const archivedAt = archived
+		? (summary?.archivedAt ?? metadata.archivedAt)
+		: undefined;
+	const thread: MaestroAppServerThreadSummary = {
 		id: metadata.id,
 		source: "session",
-		status: "notLoaded",
+		status: archived ? "archived" : "notLoaded",
 		title: summary?.title ?? metadata.title ?? metadata.summary,
 		summary: metadata.summary,
 		resumeSummary: summary?.resumeSummary ?? metadata.resumeSummary,
@@ -174,16 +274,22 @@ function toThreadSummary(
 		messageCount: metadata.messageCount,
 		favorite: summary?.favorite ?? metadata.favorite,
 		tags: summary?.tags ?? metadata.tags,
+		archived,
 	};
+	if (archivedAt) {
+		thread.archivedAt = archivedAt;
+	}
+	return thread;
 }
 
 function toThreadSummaryFromSessionSummary(
 	summary: SessionSummary,
 ): MaestroAppServerThreadSummary {
-	return {
+	const archived = summary.archived ?? false;
+	const thread: MaestroAppServerThreadSummary = {
 		id: summary.id,
 		source: "session",
-		status: "notLoaded",
+		status: archived ? "archived" : "notLoaded",
 		title: summary.title ?? summary.subject,
 		summary: summary.summary ?? summary.title ?? summary.subject,
 		resumeSummary: summary.resumeSummary,
@@ -194,7 +300,12 @@ function toThreadSummaryFromSessionSummary(
 		messageCount: summary.messageCount,
 		favorite: summary.favorite,
 		tags: summary.tags,
+		archived,
 	};
+	if (archived && summary.archivedAt) {
+		thread.archivedAt = summary.archivedAt;
+	}
+	return thread;
 }
 
 function toThreadSummaryFromLoadedSession(loaded: {
@@ -209,11 +320,14 @@ function toThreadSummaryFromLoadedSession(loaded: {
 	messageCount: number;
 	favorite: boolean;
 	tags?: string[];
+	archived?: boolean;
+	archivedAt?: string;
 }): MaestroAppServerThreadSummary {
-	return {
+	const archived = loaded.archived ?? false;
+	const thread: MaestroAppServerThreadSummary = {
 		id: loaded.id,
 		source: "session",
-		status: "notLoaded",
+		status: archived ? "archived" : "notLoaded",
 		title: loaded.title ?? loaded.subject,
 		summary: loaded.summary ?? loaded.title ?? loaded.subject,
 		resumeSummary: loaded.resumeSummary,
@@ -224,7 +338,12 @@ function toThreadSummaryFromLoadedSession(loaded: {
 		messageCount: loaded.messageCount,
 		favorite: loaded.favorite,
 		tags: loaded.tags,
+		archived,
 	};
+	if (archived && loaded.archivedAt) {
+		thread.archivedAt = loaded.archivedAt;
+	}
+	return thread;
 }
 
 function appMessageContent(message: AppMessage): unknown {
@@ -368,6 +487,46 @@ async function requireExistingThreadReference(
 
 async function flushSessionWrites(store: SessionStore): Promise<void> {
 	await store.flush?.();
+}
+
+async function restoreSessionBinding(
+	store: SessionStore,
+	sessionReference: string | undefined,
+	leafId?: string | null,
+): Promise<void> {
+	if (!sessionReference) {
+		return;
+	}
+	const dbSessionId = sessionReference.startsWith("db:")
+		? sessionReference.slice("db:".length)
+		: undefined;
+	let restored = false;
+	if (dbSessionId && store.resumeSession) {
+		restored = await store.resumeSession(dbSessionId);
+	}
+	if (!restored) {
+		await store.setSessionFile?.(sessionReference);
+	}
+	if (leafId === null) {
+		await store.resetLeaf?.();
+	} else if (leafId && store.branch) {
+		await store.branch(leafId);
+	}
+}
+
+function getCurrentLeafId(store: SessionStore): string | null {
+	return store.getLeafId?.() ?? store.getCurrentLeafId?.() ?? null;
+}
+
+function isActiveThreadSessionFile(
+	store: SessionStore,
+	sessionFile: string,
+): boolean {
+	const activeSessionFile = store.getSessionFile?.();
+	if (!activeSessionFile) {
+		return false;
+	}
+	return resolve(activeSessionFile) === resolve(sessionFile);
 }
 
 interface ThreadMetadataExpectation {
@@ -566,7 +725,15 @@ function mergeProviderCapabilities(
 
 export function createMaestroAppServerSessionApi(
 	store: SessionStore,
+	options: MaestroAppServerSessionApiOptions = {},
 ): MaestroAppServerSessionApi {
+	const hostControl =
+		options.hostControl === false
+			? undefined
+			: (options.hostControl ??
+				createMaestroAppServerHostControl({
+					onNotification: options.onNotification,
+				}));
 	const canUpdateThreadMetadata = Boolean(
 		store.setSessionTitle &&
 			store.saveSessionSummary &&
@@ -578,11 +745,31 @@ export function createMaestroAppServerSessionApi(
 	const canUseThreadGoals = Boolean(
 		store.setSessionAppServerGoal && store.loadEntries,
 	);
+	const canMutateSessionPersistence = store.canCreateSession?.() ?? true;
+	const canStartThreads = Boolean(
+		store.createSession && canMutateSessionPersistence,
+	);
+	const canForkThreads = Boolean(
+		canMutateSessionPersistence &&
+			store.createBranchedSession &&
+			store.setSessionFile,
+	);
+	const canArchiveThreads = Boolean(
+		canMutateSessionPersistence && store.setSessionArchived,
+	);
+	const canDeleteThreads = Boolean(
+		canMutateSessionPersistence && store.deleteSession,
+	);
+	const canUseHostControl = Boolean(hostControl);
+	const canUseFilesystemWatch = Boolean(hostControl?.supportsWatch());
 
 	return {
 		initialize() {
 			return {
 				protocolVersion: maestroAppServerProtocolVersion,
+				supportedProtocolVersions: [
+					...maestroAppServerSupportedProtocolVersions,
+				],
 				serverInfo: {
 					name: "maestro",
 				},
@@ -590,14 +777,121 @@ export function createMaestroAppServerSessionApi(
 					sessions: true,
 					modelList: true,
 					modelProviderCapabilities: true,
+					commandExec: canUseHostControl,
+					commandProcessControl: canUseHostControl,
+					filesystem: canUseHostControl,
+					filesystemWatch: canUseFilesystemWatch,
 					threadList: true,
 					threadRead: true,
 					threadMetadataUpdate: canUpdateThreadMetadata,
 					threadNameSet: canSetThreadName,
 					threadGoals: canUseThreadGoals,
+					threadStart: canStartThreads,
+					threadFork: canForkThreads,
+					threadArchive: canArchiveThreads,
+					threadDelete: canDeleteThreads,
 					turnsList: true,
 				},
 			};
+		},
+
+		async execCommand(params = {}) {
+			if (!hostControl) {
+				throw new MaestroAppServerError(
+					-32601,
+					"Command exec is not available",
+				);
+			}
+			return hostControl.execCommand(params);
+		},
+
+		async writeCommandStdin(params = {}) {
+			if (!hostControl) {
+				throw new MaestroAppServerError(
+					-32601,
+					"Command process control is not available",
+				);
+			}
+			return hostControl.writeCommandStdin(params);
+		},
+
+		async terminateCommand(params = {}) {
+			if (!hostControl) {
+				throw new MaestroAppServerError(
+					-32601,
+					"Command process control is not available",
+				);
+			}
+			return hostControl.terminateCommand(params);
+		},
+
+		async readFile(params = {}) {
+			if (!hostControl) {
+				throw new MaestroAppServerError(-32601, "Filesystem is not available");
+			}
+			return hostControl.readFile(params);
+		},
+
+		async writeFile(params = {}) {
+			if (!hostControl) {
+				throw new MaestroAppServerError(-32601, "Filesystem is not available");
+			}
+			return hostControl.writeFile(params);
+		},
+
+		async readDirectory(params = {}) {
+			if (!hostControl) {
+				throw new MaestroAppServerError(-32601, "Filesystem is not available");
+			}
+			return hostControl.readDirectory(params);
+		},
+
+		async getMetadata(params = {}) {
+			if (!hostControl) {
+				throw new MaestroAppServerError(-32601, "Filesystem is not available");
+			}
+			return hostControl.getMetadata(params);
+		},
+
+		async createDirectory(params = {}) {
+			if (!hostControl) {
+				throw new MaestroAppServerError(-32601, "Filesystem is not available");
+			}
+			return hostControl.createDirectory(params);
+		},
+
+		async remove(params = {}) {
+			if (!hostControl) {
+				throw new MaestroAppServerError(-32601, "Filesystem is not available");
+			}
+			return hostControl.remove(params);
+		},
+
+		async copy(params = {}) {
+			if (!hostControl) {
+				throw new MaestroAppServerError(-32601, "Filesystem is not available");
+			}
+			return hostControl.copy(params);
+		},
+
+		async watch(params = {}) {
+			if (!hostControl) {
+				throw new MaestroAppServerError(
+					-32601,
+					"Filesystem watch is not available",
+				);
+			}
+			return hostControl.watch(params);
+		},
+
+		async unwatch(params = {}) {
+			if (!hostControl) {
+				throw new MaestroAppServerError(
+					-32601,
+					"Filesystem watch is not available",
+				);
+			}
+			return hostControl.unwatch(params);
 		},
 
 		async listModels(params = {}) {
@@ -645,25 +939,51 @@ export function createMaestroAppServerSessionApi(
 		async listThreads(params = {}) {
 			const limit = normalizeLimit(params.limit);
 			const offset = decodeCursor(params.cursor);
+			const includeArchived =
+				optionalBoolean(params.includeArchived, "includeArchived") ?? false;
 			const metadata = store.loadAllSessions();
 			if (metadata.length === 0) {
-				const summaries = await store.listSessions({
-					limit: limit + 1,
-					offset,
-				});
-				const page = summaries.slice(0, limit);
+				const page: SessionSummary[] = [];
+				let rawOffset = offset;
+				let cursorAfterPage = offset;
+				let hasMoreVisible = false;
+				let exhausted = false;
+				while (!hasMoreVisible && !exhausted) {
+					const summaries = await store.listSessions({
+						limit: limit + 1,
+						offset: rawOffset,
+					});
+					exhausted = summaries.length <= limit;
+					for (const summary of summaries) {
+						rawOffset += 1;
+						if (includeArchived || !summary.archived) {
+							if (page.length < limit) {
+								page.push(summary);
+								cursorAfterPage = rawOffset;
+							} else {
+								hasMoreVisible = true;
+								break;
+							}
+						}
+					}
+					if (summaries.length === 0) {
+						exhausted = true;
+					}
+				}
 				return {
 					threads: page.map(toThreadSummaryFromSessionSummary),
-					nextCursor:
-						summaries.length > limit ? encodeCursor(offset + limit) : null,
+					nextCursor: hasMoreVisible ? encodeCursor(cursorAfterPage) : null,
 				};
 			}
-			const page = metadata.slice(offset, offset + limit);
+			const visible = includeArchived
+				? metadata
+				: metadata.filter((session) => !session.archived);
+			const page = visible.slice(offset, offset + limit);
 			const nextOffset = offset + page.length;
 			return {
 				threads: page.map((session) => toThreadSummary(session)),
 				nextCursor:
-					nextOffset < metadata.length ? encodeCursor(nextOffset) : null,
+					nextOffset < visible.length ? encodeCursor(nextOffset) : null,
 			};
 		},
 
@@ -831,6 +1151,155 @@ export function createMaestroAppServerSessionApi(
 			return { threadId, goal: null };
 		},
 
+		async startThread(params = {}) {
+			const createThreadSession = store.createSession;
+			if (!canStartThreads || !createThreadSession) {
+				throw new MaestroAppServerError(
+					-32601,
+					"Thread start is not available",
+				);
+			}
+			const title = optionalTrimmedString(params.title, "title");
+			const previousSessionFile = store.getSessionFile?.();
+			const previousLeafId = getCurrentLeafId(store);
+			let created: Awaited<
+				ReturnType<NonNullable<SessionStore["createSession"]>>
+			>;
+			try {
+				created = await createThreadSession.call(
+					store,
+					title ? { title } : undefined,
+				);
+			} finally {
+				await restoreSessionBinding(store, previousSessionFile, previousLeafId);
+			}
+			await flushSessionWrites(store);
+			return {
+				thread: await summarizeThreadAfterMutation(store, created.id),
+			};
+		},
+
+		async forkThread(params = {}) {
+			const createBranchedSession = store.createBranchedSession;
+			if (!canForkThreads || !createBranchedSession) {
+				throw new MaestroAppServerError(-32601, "Thread fork is not available");
+			}
+			const threadId = requireThreadId(params);
+			const leafEntryId = optionalTrimmedString(
+				params.leafEntryId,
+				"leafEntryId",
+			);
+			if (!leafEntryId) {
+				throw new MaestroAppServerError(-32602, "Missing leafEntryId");
+			}
+			const title = optionalTrimmedString(params.title, "title");
+			const sessionFile = await requireExistingThreadReference(store, threadId);
+			const previousSessionFile = store.getSessionFile?.();
+			const previousLeafId = getCurrentLeafId(store);
+			let forkedThreadId: string | undefined;
+			try {
+				await store.setSessionFile?.(sessionFile);
+				let forkedSessionFile: string;
+				try {
+					forkedSessionFile = createBranchedSession.call(store, leafEntryId);
+				} catch (error) {
+					if (
+						error instanceof Error &&
+						error.message === `Entry ${leafEntryId} not found`
+					) {
+						throw new MaestroAppServerError(-32602, "Unknown leafEntryId");
+					}
+					throw error;
+				}
+				const forkedEntries = safeReadSessionEntries(forkedSessionFile);
+				const forkedHeader = forkedEntries.find(
+					(entry) => entry.type === "session",
+				);
+				forkedThreadId =
+					forkedHeader && "id" in forkedHeader ? forkedHeader.id : undefined;
+				if (!forkedThreadId) {
+					throw new MaestroAppServerError(
+						-32000,
+						"Thread fork did not produce a readable session",
+					);
+				}
+				if (title && store.setSessionTitle) {
+					await store.setSessionTitle(forkedSessionFile, title);
+				}
+			} finally {
+				await restoreSessionBinding(store, previousSessionFile, previousLeafId);
+			}
+			await flushSessionWrites(store);
+			return {
+				thread: await summarizeThreadAfterMutation(store, forkedThreadId),
+				parentThreadId: threadId,
+				forkedFromEntryId: leafEntryId,
+			};
+		},
+
+		async archiveThread(params = {}) {
+			const setSessionArchived = store.setSessionArchived;
+			if (!canArchiveThreads || !setSessionArchived) {
+				throw new MaestroAppServerError(
+					-32601,
+					"Thread archive is not available",
+				);
+			}
+			const threadId = requireThreadId(params);
+			const sessionFile = await requireExistingThreadReference(store, threadId);
+			await setSessionArchived.call(store, sessionFile, true);
+			const thread = await summarizeThreadAfterMutation(store, threadId);
+			if (!thread.archived) {
+				throw new MaestroAppServerError(
+					-32000,
+					"Thread archive update was not persisted",
+				);
+			}
+			return { thread, archived: true };
+		},
+
+		async unarchiveThread(params = {}) {
+			const setSessionArchived = store.setSessionArchived;
+			if (!canArchiveThreads || !setSessionArchived) {
+				throw new MaestroAppServerError(
+					-32601,
+					"Thread archive is not available",
+				);
+			}
+			const threadId = requireThreadId(params);
+			const sessionFile = await requireExistingThreadReference(store, threadId);
+			await setSessionArchived.call(store, sessionFile, false);
+			const thread = await summarizeThreadAfterMutation(store, threadId);
+			if (thread.archived) {
+				throw new MaestroAppServerError(
+					-32000,
+					"Thread archive update was not persisted",
+				);
+			}
+			return { thread, archived: false };
+		},
+
+		async deleteThread(params = {}) {
+			const deleteSession = store.deleteSession;
+			if (!canDeleteThreads || !deleteSession) {
+				throw new MaestroAppServerError(
+					-32601,
+					"Thread delete is not available",
+				);
+			}
+			const threadId = requireThreadId(params);
+			const sessionFile = await requireExistingThreadReference(store, threadId);
+			if (isActiveThreadSessionFile(store, sessionFile)) {
+				throw new MaestroAppServerError(
+					-32000,
+					"Cannot delete the currently active thread",
+				);
+			}
+			await deleteSession.call(store, threadId);
+			await flushSessionWrites(store);
+			return { threadId, deleted: true };
+		},
+
 		async listTurns(params = {}) {
 			const threadId = requireThreadId(params);
 			const limit = normalizeLimit(params.limit);
@@ -929,6 +1398,78 @@ export async function handleMaestroAppServerRequest(
 					id,
 					result: await api.readModelProviderCapabilities(request.params),
 				};
+			case "command/exec":
+				return {
+					jsonrpc: "2.0",
+					id,
+					result: await api.execCommand(request.params),
+				};
+			case "command/exec/write":
+				return {
+					jsonrpc: "2.0",
+					id,
+					result: await api.writeCommandStdin(request.params),
+				};
+			case "command/exec/terminate":
+				return {
+					jsonrpc: "2.0",
+					id,
+					result: await api.terminateCommand(request.params),
+				};
+			case "fs/readFile":
+				return {
+					jsonrpc: "2.0",
+					id,
+					result: await api.readFile(request.params),
+				};
+			case "fs/writeFile":
+				return {
+					jsonrpc: "2.0",
+					id,
+					result: await api.writeFile(request.params),
+				};
+			case "fs/readDirectory":
+				return {
+					jsonrpc: "2.0",
+					id,
+					result: await api.readDirectory(request.params),
+				};
+			case "fs/getMetadata":
+				return {
+					jsonrpc: "2.0",
+					id,
+					result: await api.getMetadata(request.params),
+				};
+			case "fs/createDirectory":
+				return {
+					jsonrpc: "2.0",
+					id,
+					result: await api.createDirectory(request.params),
+				};
+			case "fs/remove":
+				return {
+					jsonrpc: "2.0",
+					id,
+					result: await api.remove(request.params),
+				};
+			case "fs/copy":
+				return {
+					jsonrpc: "2.0",
+					id,
+					result: await api.copy(request.params),
+				};
+			case "fs/watch":
+				return {
+					jsonrpc: "2.0",
+					id,
+					result: await api.watch(request.params),
+				};
+			case "fs/unwatch":
+				return {
+					jsonrpc: "2.0",
+					id,
+					result: await api.unwatch(request.params),
+				};
 			case "thread/list":
 				return {
 					jsonrpc: "2.0",
@@ -973,6 +1514,36 @@ export async function handleMaestroAppServerRequest(
 					id,
 					result: await api.clearThreadGoal(request.params),
 				};
+			case "thread/start":
+				return {
+					jsonrpc: "2.0",
+					id,
+					result: await api.startThread(request.params),
+				};
+			case "thread/fork":
+				return {
+					jsonrpc: "2.0",
+					id,
+					result: await api.forkThread(request.params),
+				};
+			case "thread/archive":
+				return {
+					jsonrpc: "2.0",
+					id,
+					result: await api.archiveThread(request.params),
+				};
+			case "thread/unarchive":
+				return {
+					jsonrpc: "2.0",
+					id,
+					result: await api.unarchiveThread(request.params),
+				};
+			case "thread/delete":
+				return {
+					jsonrpc: "2.0",
+					id,
+					result: await api.deleteThread(request.params),
+				};
 			case "thread/turns/list":
 				return {
 					jsonrpc: "2.0",
@@ -983,7 +1554,10 @@ export async function handleMaestroAppServerRequest(
 				throw new MaestroAppServerError(-32601, "Method not found");
 		}
 	} catch (error) {
-		if (error instanceof MaestroAppServerError) {
+		if (
+			error instanceof MaestroAppServerError ||
+			error instanceof MaestroAppServerHostControlError
+		) {
 			return {
 				jsonrpc: "2.0",
 				id,

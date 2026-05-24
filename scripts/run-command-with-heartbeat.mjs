@@ -13,6 +13,8 @@ import { pathToFileURL } from "node:url";
 
 const DEFAULT_HEARTBEAT_SECONDS = 300;
 const TERMINATION_GRACE_MS = 10_000;
+const SUCCESS_IDLE_TAIL_BYTES = 128_000;
+const ANSI_PATTERN = /\u001b\[[0-?]*[ -/]*[@-~]/g;
 
 function parseSeconds(value, name, { allowZero = false } = {}) {
 	const parsed = Number.parseInt(String(value ?? ""), 10);
@@ -31,6 +33,9 @@ export function parseArgs(argv) {
 		label: "command",
 		logfile: "",
 		summaryJson: "",
+		successIdleFinalPattern: "",
+		successIdlePattern: "",
+		successIdleSeconds: 0,
 		timingFile: "",
 		timeoutSeconds: 0,
 	};
@@ -56,6 +61,17 @@ export function parseArgs(argv) {
 			case "--summary-json":
 				options.summaryJson = argv[++index] ?? "";
 				break;
+			case "--success-idle-pattern":
+				options.successIdlePattern = argv[++index] ?? "";
+				break;
+			case "--success-idle-final-pattern":
+				options.successIdleFinalPattern = argv[++index] ?? "";
+				break;
+			case "--success-idle-seconds":
+				options.successIdleSeconds = parseSeconds(argv[++index], arg, {
+					allowZero: true,
+				});
+				break;
 			case "--timing-file":
 				options.timingFile = argv[++index] ?? "";
 				break;
@@ -71,7 +87,7 @@ export function parseArgs(argv) {
 
 	if (options.command.length === 0) {
 		throw new Error(
-			"Usage: node scripts/run-command-with-heartbeat.mjs [--label name] [--logfile path] [--timing-file path] [--summary-json path] [--timeout-seconds seconds] [--heartbeat-seconds seconds] -- <command> [args...]",
+			"Usage: node scripts/run-command-with-heartbeat.mjs [--label name] [--logfile path] [--timing-file path] [--summary-json path] [--timeout-seconds seconds] [--heartbeat-seconds seconds] [--success-idle-seconds seconds] [--success-idle-pattern regex] [--success-idle-final-pattern regex] -- <command> [args...]",
 		);
 	}
 
@@ -109,6 +125,21 @@ function killChild(child, signal) {
 	child.kill(signal);
 }
 
+function compileSuccessIdlePattern(pattern, name = "--success-idle-pattern") {
+	if (!pattern) {
+		return null;
+	}
+	try {
+		return new RegExp(pattern, "iu");
+	} catch (error) {
+		throw new Error(
+			`${name} must be a valid JavaScript regex source: ${
+				error instanceof Error ? error.message : String(error)
+			}`,
+		);
+	}
+}
+
 function formatElapsed(startedAt) {
 	const elapsedSeconds = Math.max(0, Math.floor((Date.now() - startedAt) / 1000));
 	const minutes = Math.floor(elapsedSeconds / 60);
@@ -126,8 +157,15 @@ function appendTiming(options, result) {
 		startedAt: new Date(result.startedAtMs).toISOString(),
 		endedAt: new Date(result.endedAtMs).toISOString(),
 		durationMs: result.endedAtMs - result.startedAtMs,
-		status: result.timedOut ? "timed_out" : result.exitCode === 0 ? "passed" : "failed",
+		status: result.timedOut
+			? "timed_out"
+			: result.forcedSuccess
+				? "passed_forced_success"
+				: result.exitCode === 0
+					? "passed"
+					: "failed",
 		exitCode: result.exitCode,
+		forcedSuccess: result.forcedSuccess,
 		signal: result.signal,
 		timedOut: result.timedOut,
 	};
@@ -157,9 +195,19 @@ export async function runCommandWithHeartbeat(options) {
 	const [command, ...args] = options.command;
 	const startedAt = Date.now();
 	const startedAtIso = new Date(startedAt).toISOString();
+	const successIdlePattern = compileSuccessIdlePattern(
+		options.successIdlePattern,
+	);
+	const successIdleFinalPattern = compileSuccessIdlePattern(
+		options.successIdleFinalPattern,
+		"--success-idle-final-pattern",
+	);
 	const logStream = options.logfile
 		? createWriteStream(options.logfile, { flags: "w" })
 		: null;
+	let outputTail = "";
+	let lastOutputAt = Date.now();
+	let forcedSuccess = false;
 	let timedOut = false;
 	let terminateTimer = null;
 
@@ -169,6 +217,8 @@ export async function runCommandWithHeartbeat(options) {
 	});
 
 	const write = (stream, chunk) => {
+		lastOutputAt = Date.now();
+		outputTail = `${outputTail}${String(chunk)}`.slice(-SUCCESS_IDLE_TAIL_BYTES);
 		stream.write(chunk);
 		if (logStream) {
 			logStream.write(chunk);
@@ -213,6 +263,38 @@ export async function runCommandWithHeartbeat(options) {
 				}, options.timeoutSeconds * 1000)
 			: null;
 
+	const terminateAfterSuccessIdle = () => {
+		if (forcedSuccess || timedOut) {
+			return;
+		}
+		forcedSuccess = true;
+		console.error(
+			annotation(
+				"notice",
+				`${options.label} output matched success-idle pattern${successIdleFinalPattern ? " and final-success pattern" : ""} and stayed quiet for ${options.successIdleSeconds}s; terminating process group as successful`,
+			),
+		);
+		killChild(child, "SIGTERM");
+		terminateTimer = setTimeout(() => {
+			killChild(child, "SIGKILL");
+		}, TERMINATION_GRACE_MS);
+	};
+
+	const successIdleTimer =
+		successIdlePattern && options.successIdleSeconds > 0
+			? setInterval(() => {
+					const normalizedTail = outputTail.replace(ANSI_PATTERN, "");
+					if (
+						successIdlePattern.test(normalizedTail) &&
+						(!successIdleFinalPattern ||
+							successIdleFinalPattern.test(normalizedTail)) &&
+						Date.now() - lastOutputAt >= options.successIdleSeconds * 1000
+					) {
+						terminateAfterSuccessIdle();
+					}
+				}, Math.min(1_000, options.successIdleSeconds * 1000))
+			: null;
+
 	const result = await new Promise((resolve) => {
 		child.on("error", (error) => {
 			console.error(
@@ -223,7 +305,9 @@ export async function runCommandWithHeartbeat(options) {
 		child.on("close", (code, signal) => resolve({ code, signal }));
 	});
 	const endedAt = Date.now();
-	const exitCode = timedOut
+	const exitCode = forcedSuccess
+		? 0
+		: timedOut
 		? 124
 		: typeof result.code === "number"
 			? result.code
@@ -237,6 +321,9 @@ export async function runCommandWithHeartbeat(options) {
 	if (timeoutTimer) {
 		clearTimeout(timeoutTimer);
 	}
+	if (successIdleTimer) {
+		clearInterval(successIdleTimer);
+	}
 	if (terminateTimer) {
 		clearTimeout(terminateTimer);
 	}
@@ -249,6 +336,7 @@ export async function runCommandWithHeartbeat(options) {
 		startedAtMs: startedAt,
 		endedAtMs: endedAt,
 		exitCode,
+		forcedSuccess,
 		signal: result.signal ?? null,
 		timedOut,
 	});
@@ -261,10 +349,14 @@ export async function runCommandWithHeartbeat(options) {
 		logfile: options.logfile || undefined,
 		signal: result.signal ?? null,
 		startedAt: startedAtIso,
+		forcedSuccess,
 		timedOut,
 		timeoutSeconds: options.timeoutSeconds,
 	});
 
+	if (forcedSuccess) {
+		return 0;
+	}
 	if (timedOut) {
 		return 124;
 	}

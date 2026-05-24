@@ -168,6 +168,7 @@ export async function handleSessionAttachmentExtract(
 				{
 					fileName: attachment.fileName,
 					format: "unknown",
+					extractor: "native",
 					size: attachment.size ?? 0,
 					truncated: false,
 					extractedText: attachment.extractedText,
@@ -205,6 +206,7 @@ export async function handleSessionAttachmentExtract(
 			{
 				fileName: attachment.fileName,
 				format: extracted.format,
+				extractor: extracted.extractor,
 				size: extracted.sizeBytes,
 				truncated: extracted.truncated,
 				extractedText: extracted.extractedText,
