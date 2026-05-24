@@ -155,6 +155,8 @@ export interface SwarmA2ATeammateExecution {
 	peerDisplayName?: string;
 	/** Peer source used by the router. */
 	source: "registry" | "platform-agent-registry";
+	/** Parent swarm task id used to derive telemetry lane ids. */
+	parentTaskId?: string;
 	/** A2A task id returned by the peer. */
 	taskId: string;
 	/** A2A context id used for resume/reply. */

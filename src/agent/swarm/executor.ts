@@ -309,6 +309,20 @@ function hashA2AEndpointUrlForTelemetry(
 	return `sha256:${createHash("sha256").update(canonical).digest("hex")}`;
 }
 
+function platformA2APeerRouteName(
+	candidate: PlatformAgentRegistryA2APeerCandidate,
+	endpointHash = hashA2AEndpointUrlForTelemetry(candidate.endpointUrl),
+): string {
+	const configuredName =
+		trimString(candidate.agent.name) ?? trimString(candidate.agent.id);
+	if (configuredName) {
+		return configuredName;
+	}
+	return endpointHash
+		? `endpoint:${endpointHash}`
+		: "platform-agent-registry-peer";
+}
+
 function canonicalizeA2AEndpointUrlForTelemetry(url: string): string {
 	try {
 		const parsed = new URL(url);
@@ -1042,12 +1056,7 @@ export class SwarmExecutor {
 		const config = await this.a2aConfigForPlatformCandidate(candidate, options);
 		const selectedSkillId = ranked.selectedSkill?.id ?? skillId;
 		const endpointHash = hashA2AEndpointUrlForTelemetry(candidate.endpointUrl);
-		const routeName =
-			trimString(candidate.agent.name) ??
-			trimString(candidate.agent.id) ??
-			(endpointHash
-				? `endpoint:${endpointHash}`
-				: "platform-agent-registry-peer");
+		const routeName = platformA2APeerRouteName(candidate, endpointHash);
 		return {
 			name: routeName,
 			displayName: candidate.agent.name,
@@ -1527,6 +1536,7 @@ export class SwarmExecutor {
 				peer: route.name,
 				peerDisplayName: route.displayName,
 				source: route.source,
+				parentTaskId: task.id,
 				taskId: sent.task.id,
 				contextId,
 				messageId,
