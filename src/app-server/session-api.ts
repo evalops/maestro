@@ -15,6 +15,8 @@ import {
 	type MaestroAppServerModelProviderCapabilitiesReadResult,
 	type MaestroAppServerNetworkAuditListResult,
 	type MaestroAppServerNetworkFetchResult,
+	type MaestroAppServerPluginBundleListResult,
+	type MaestroAppServerPluginBundleMutationResult,
 	type MaestroAppServerPolicyCheckResult,
 	type MaestroAppServerPolicyReadResult,
 	type MaestroAppServerRequirementsListResult,
@@ -73,6 +75,11 @@ import {
 	createMaestroAppServerNetworkGovernance,
 } from "./network-governance-api.js";
 import {
+	type MaestroAppServerPluginBundleApi,
+	MaestroAppServerPluginBundleError,
+	createMaestroAppServerPluginBundleApi,
+} from "./plugin-bundle-api.js";
+import {
 	type MaestroAppServerPolicyControl,
 	MaestroAppServerPolicyControlError,
 	createMaestroAppServerPolicyControl,
@@ -92,6 +99,10 @@ export {
 	type MaestroAppServerExternalAgentImport,
 	createMaestroAppServerExternalAgentImport,
 } from "./external-agent-import-api.js";
+export {
+	type MaestroAppServerPluginBundleApi,
+	createMaestroAppServerPluginBundleApi,
+} from "./plugin-bundle-api.js";
 export {
 	type MaestroAppServerSandboxProof,
 	createMaestroAppServerSandboxProof,
@@ -163,6 +174,7 @@ export interface MaestroAppServerSessionApiOptions {
 	networkGovernance?: MaestroAppServerNetworkGovernance | false;
 	sandboxProof?: MaestroAppServerSandboxProof | false;
 	externalAgentImport?: MaestroAppServerExternalAgentImport | false;
+	pluginBundles?: MaestroAppServerPluginBundleApi | false;
 	onNotification?: (notification: MaestroAppServerServerNotification) => void;
 }
 
@@ -198,6 +210,15 @@ export interface MaestroAppServerSessionApi {
 	importExternalAgent(
 		params?: Record<string, unknown>,
 	): Promise<MaestroAppServerExternalAgentImportResult>;
+	listPluginBundles(
+		params?: Record<string, unknown>,
+	): Promise<MaestroAppServerPluginBundleListResult>;
+	installPluginBundle(
+		params?: Record<string, unknown>,
+	): Promise<MaestroAppServerPluginBundleMutationResult>;
+	removePluginBundle(
+		params?: Record<string, unknown>,
+	): Promise<MaestroAppServerPluginBundleMutationResult>;
 	execCommand(
 		params?: Record<string, unknown>,
 	): Promise<MaestroAppServerCommandExecResult>;
@@ -823,11 +844,10 @@ export function createMaestroAppServerSessionApi(
 		options.sandboxProof === false
 			? undefined
 			: (options.sandboxProof ?? createMaestroAppServerSandboxProof());
-	const externalAgentImport =
-		options.externalAgentImport === false
+	const pluginBundles =
+		options.pluginBundles === false
 			? undefined
-			: (options.externalAgentImport ??
-				createMaestroAppServerExternalAgentImport({ store }));
+			: (options.pluginBundles ?? createMaestroAppServerPluginBundleApi());
 	const canUpdateThreadMetadata = Boolean(
 		store.setSessionTitle &&
 			store.saveSessionSummary &&
@@ -840,6 +860,11 @@ export function createMaestroAppServerSessionApi(
 		store.setSessionAppServerGoal && store.loadEntries,
 	);
 	const canMutateSessionPersistence = store.canCreateSession?.() ?? true;
+	const externalAgentImport =
+		options.externalAgentImport === false || !canMutateSessionPersistence
+			? undefined
+			: (options.externalAgentImport ??
+				createMaestroAppServerExternalAgentImport({ store }));
 	const canStartThreads = Boolean(
 		store.createSession && canMutateSessionPersistence,
 	);
@@ -860,6 +885,7 @@ export function createMaestroAppServerSessionApi(
 	const canUseNetworkGovernance = Boolean(networkGovernance);
 	const canUseSandboxProof = Boolean(sandboxProof);
 	const canUseExternalAgentImport = Boolean(externalAgentImport);
+	const canUsePluginBundles = Boolean(pluginBundles);
 
 	return {
 		initialize() {
@@ -882,6 +908,7 @@ export function createMaestroAppServerSessionApi(
 					sandboxProbe: canUseSandboxProof,
 					sandboxProof: canUseSandboxProof,
 					externalAgentImport: canUseExternalAgentImport,
+					pluginBundles: canUsePluginBundles,
 					commandExec: canUseHostControl,
 					commandProcessControl: canUseHostControl,
 					filesystem: canUseHostControl,
@@ -981,6 +1008,36 @@ export function createMaestroAppServerSessionApi(
 			}
 			const normalizedParams = normalizeExternalAgentImportParams(params);
 			return externalAgentImport.importBundle(normalizedParams);
+		},
+
+		async listPluginBundles(params = {}) {
+			if (!pluginBundles) {
+				throw new MaestroAppServerError(
+					-32601,
+					"Plugin bundle lifecycle is not available",
+				);
+			}
+			return pluginBundles.listBundles(params);
+		},
+
+		async installPluginBundle(params = {}) {
+			if (!pluginBundles) {
+				throw new MaestroAppServerError(
+					-32601,
+					"Plugin bundle lifecycle is not available",
+				);
+			}
+			return pluginBundles.installBundle(params);
+		},
+
+		async removePluginBundle(params = {}) {
+			if (!pluginBundles) {
+				throw new MaestroAppServerError(
+					-32601,
+					"Plugin bundle lifecycle is not available",
+				);
+			}
+			return pluginBundles.removeBundle(params);
 		},
 
 		async execCommand(params = {}) {
@@ -1634,6 +1691,24 @@ export async function handleMaestroAppServerRequest(
 					id,
 					result: await api.importExternalAgent(request.params),
 				};
+			case "pluginBundle/list":
+				return {
+					jsonrpc: "2.0",
+					id,
+					result: await api.listPluginBundles(request.params),
+				};
+			case "pluginBundle/install":
+				return {
+					jsonrpc: "2.0",
+					id,
+					result: await api.installPluginBundle(request.params),
+				};
+			case "pluginBundle/remove":
+				return {
+					jsonrpc: "2.0",
+					id,
+					result: await api.removePluginBundle(request.params),
+				};
 			case "command/exec":
 				return {
 					jsonrpc: "2.0",
@@ -1796,7 +1871,8 @@ export async function handleMaestroAppServerRequest(
 			error instanceof MaestroAppServerNetworkGovernanceError ||
 			error instanceof MaestroAppServerPolicyControlError ||
 			error instanceof MaestroAppServerSandboxProofError ||
-			error instanceof MaestroAppServerExternalAgentImportError
+			error instanceof MaestroAppServerExternalAgentImportError ||
+			error instanceof MaestroAppServerPluginBundleError
 		) {
 			return {
 				jsonrpc: "2.0",

@@ -19,6 +19,9 @@ export const maestroAppServerClientMethods = [
 	"sandbox/probe",
 	"sandbox/proof/run",
 	"externalAgent/import",
+	"pluginBundle/list",
+	"pluginBundle/install",
+	"pluginBundle/remove",
 	"command/exec",
 	"command/exec/write",
 	"command/exec/terminate",
@@ -102,6 +105,7 @@ export const MaestroAppServerCapabilitiesSchema = Type.Object({
 	sandboxProbe: Type.Boolean(),
 	sandboxProof: Type.Boolean(),
 	externalAgentImport: Type.Boolean(),
+	pluginBundles: Type.Boolean(),
 	commandExec: Type.Boolean(),
 	commandProcessControl: Type.Boolean(),
 	filesystem: Type.Boolean(),
@@ -546,6 +550,68 @@ export type MaestroAppServerExternalAgentImportResult = Static<
 	typeof MaestroAppServerExternalAgentImportResultSchema
 >;
 
+export const maestroAppServerPluginBundleScopes = [
+	"project",
+	"local",
+	"user",
+] as const;
+export const MaestroAppServerPluginBundleScopeSchema = stringLiteralUnion(
+	maestroAppServerPluginBundleScopes,
+);
+export type MaestroAppServerPluginBundleScope =
+	(typeof maestroAppServerPluginBundleScopes)[number];
+
+export const MaestroAppServerPluginBundleSchema = Type.Object({
+	source: Type.String(),
+	scope: MaestroAppServerPluginBundleScopeSchema,
+	configPath: Type.String(),
+});
+export type MaestroAppServerPluginBundle = Static<
+	typeof MaestroAppServerPluginBundleSchema
+>;
+
+export const MaestroAppServerPluginBundleResourcesSchema = Type.Object({
+	extensions: Type.Object({
+		user: Type.Array(Type.String()),
+		project: Type.Array(Type.String()),
+	}),
+	skills: Type.Object({
+		user: Type.Array(Type.String()),
+		project: Type.Array(Type.String()),
+	}),
+	prompts: Type.Object({
+		user: Type.Array(Type.String()),
+		project: Type.Array(Type.String()),
+	}),
+	themes: Type.Object({
+		user: Type.Array(Type.String()),
+		project: Type.Array(Type.String()),
+	}),
+});
+export type MaestroAppServerPluginBundleResources = Static<
+	typeof MaestroAppServerPluginBundleResourcesSchema
+>;
+
+export const MaestroAppServerPluginBundleListResultSchema = Type.Object({
+	bundles: Type.Array(MaestroAppServerPluginBundleSchema),
+	resources: MaestroAppServerPluginBundleResourcesSchema,
+	errors: Type.Array(Type.String()),
+});
+export type MaestroAppServerPluginBundleListResult = Static<
+	typeof MaestroAppServerPluginBundleListResultSchema
+>;
+
+export const MaestroAppServerPluginBundleMutationResultSchema = Type.Object({
+	source: Type.String(),
+	scope: MaestroAppServerPluginBundleScopeSchema,
+	configPath: Type.String(),
+	changed: Type.Boolean(),
+	message: Type.String(),
+});
+export type MaestroAppServerPluginBundleMutationResult = Static<
+	typeof MaestroAppServerPluginBundleMutationResultSchema
+>;
+
 export const MaestroAppServerEmptyResultSchema = Type.Object(
 	{},
 	{ additionalProperties: false },
@@ -729,6 +795,8 @@ export const MaestroAppServerResponseSchema = Type.Object({
 			MaestroAppServerSandboxProbeResultSchema,
 			MaestroAppServerSandboxProofResultSchema,
 			MaestroAppServerExternalAgentImportResultSchema,
+			MaestroAppServerPluginBundleListResultSchema,
+			MaestroAppServerPluginBundleMutationResultSchema,
 			MaestroAppServerCommandExecResultSchema,
 			MaestroAppServerCommandProcessResultSchema,
 			MaestroAppServerFsReadFileResultSchema,
