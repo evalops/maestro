@@ -11,8 +11,10 @@ import {
 	getBunCommand,
 	getNpmCommand,
 	readInstalledPackageJson,
+	runBunxCliSmoke,
 	runInstalledCliSmoke,
 	runInstalledPackageAudit,
+	runNpxCliSmoke,
 } from "./install-smoke-utils.js";
 import { getPackageMetadata } from "./package-metadata.js";
 import { runPublishedReplayE2E } from "./smoke-published-replay-e2e.js";
@@ -155,6 +157,11 @@ async function main() {
 			expectedVersion: version,
 			label: "npm-installed registry CLI",
 		});
+		runNpxCliSmoke(tempDir, {
+			cliCommand,
+			expectedVersion: version,
+			label: "npx registry CLI",
+		});
 		await runPublishedReplayE2E({
 			cliCommand,
 			installRoot: tempDir,
@@ -185,6 +192,11 @@ async function main() {
 			cliCommand,
 			expectedVersion: version,
 			label: "Bun-installed registry CLI",
+		});
+		runBunxCliSmoke(bunTempDir, {
+			cliCommand,
+			expectedVersion: version,
+			label: "bunx registry CLI",
 		});
 		await runPublishedReplayE2E({
 			cliCommand,

@@ -17,6 +17,10 @@ export function getBunCommand() {
 	return process.platform === "win32" ? "bun.exe" : "bun";
 }
 
+export function getBunxCommand() {
+	return process.platform === "win32" ? "bunx.exe" : "bunx";
+}
+
 export function installedPackageJsonPath(packageName, installRoot) {
 	return join(
 		installRoot,
@@ -103,8 +107,15 @@ export function runInstalledCliSmoke(
 	cwd,
 	{ cliCommand, expectedVersion, label },
 ) {
-	const binPath = installedBinPath(cwd, cliCommand);
-	const versionOutput = execFileSync(binPath, ["--version"], {
+	runCliSmoke(installedBinPath(cwd, cliCommand), [], cwd, {
+		cliCommand,
+		expectedVersion,
+		label,
+	});
+}
+
+function runCliSmoke(command, prefixArgs, cwd, { cliCommand, expectedVersion, label }) {
+	const versionOutput = execFileSync(command, [...prefixArgs, "--version"], {
 		cwd,
 		encoding: "utf8",
 	});
@@ -114,9 +125,25 @@ export function runInstalledCliSmoke(
 		);
 	}
 
-	execFileSync(binPath, ["--help"], {
+	execFileSync(command, [...prefixArgs, "--help"], {
 		cwd,
 		stdio: "ignore",
+	});
+}
+
+export function runNpxCliSmoke(cwd, { cliCommand, expectedVersion, label }) {
+	runCliSmoke(getNpxCommand(), ["--no-install", cliCommand], cwd, {
+		cliCommand,
+		expectedVersion,
+		label,
+	});
+}
+
+export function runBunxCliSmoke(cwd, { cliCommand, expectedVersion, label }) {
+	runCliSmoke(getBunxCommand(), [cliCommand], cwd, {
+		cliCommand,
+		expectedVersion,
+		label,
 	});
 }
 
