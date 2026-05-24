@@ -18,6 +18,8 @@ import {
 	type MaestroAppServerPolicyReadResult,
 	type MaestroAppServerRequirementsListResult,
 	type MaestroAppServerResponse,
+	type MaestroAppServerSandboxProbeResult,
+	type MaestroAppServerSandboxProofResult,
 	type MaestroAppServerServerNotification,
 	type MaestroAppServerThread,
 	type MaestroAppServerThreadArchiveResult,
@@ -68,11 +70,21 @@ import {
 	MaestroAppServerPolicyControlError,
 	createMaestroAppServerPolicyControl,
 } from "./policy-control-api.js";
+import {
+	type MaestroAppServerSandboxProof,
+	MaestroAppServerSandboxProofError,
+	createMaestroAppServerSandboxProof,
+	normalizeSandboxProofParams,
+} from "./sandbox-proof-api.js";
 
 const DEFAULT_PAGE_LIMIT = 50;
 const MAX_PAGE_LIMIT = 100;
 
 export type { MaestroAppServerServerNotification };
+export {
+	type MaestroAppServerSandboxProof,
+	createMaestroAppServerSandboxProof,
+} from "./sandbox-proof-api.js";
 
 type JsonRpcId = string | number;
 type MaybePromise<T> = T | Promise<T>;
@@ -128,6 +140,7 @@ export interface MaestroAppServerSessionApiOptions {
 	hostControl?: MaestroAppServerHostControl | false;
 	policyControl?: MaestroAppServerPolicyControl | false;
 	networkGovernance?: MaestroAppServerNetworkGovernance | false;
+	sandboxProof?: MaestroAppServerSandboxProof | false;
 	onNotification?: (notification: MaestroAppServerServerNotification) => void;
 }
 
@@ -154,6 +167,12 @@ export interface MaestroAppServerSessionApi {
 	listNetworkAudit(
 		params?: Record<string, unknown>,
 	): Promise<MaestroAppServerNetworkAuditListResult>;
+	probeSandbox(
+		params?: Record<string, unknown>,
+	): Promise<MaestroAppServerSandboxProbeResult>;
+	runSandboxProof(
+		params?: Record<string, unknown>,
+	): Promise<MaestroAppServerSandboxProofResult>;
 	execCommand(
 		params?: Record<string, unknown>,
 	): Promise<MaestroAppServerCommandExecResult>;
@@ -775,6 +794,10 @@ export function createMaestroAppServerSessionApi(
 			? undefined
 			: (options.networkGovernance ??
 				createMaestroAppServerNetworkGovernance());
+	const sandboxProof =
+		options.sandboxProof === false
+			? undefined
+			: (options.sandboxProof ?? createMaestroAppServerSandboxProof());
 	const canUpdateThreadMetadata = Boolean(
 		store.setSessionTitle &&
 			store.saveSessionSummary &&
@@ -805,6 +828,7 @@ export function createMaestroAppServerSessionApi(
 	const canUseFilesystemWatch = Boolean(hostControl?.supportsWatch());
 	const canUsePolicyControl = Boolean(policyControl);
 	const canUseNetworkGovernance = Boolean(networkGovernance);
+	const canUseSandboxProof = Boolean(sandboxProof);
 
 	return {
 		initialize() {
@@ -824,6 +848,8 @@ export function createMaestroAppServerSessionApi(
 					requirements: canUsePolicyControl,
 					networkProxy: canUseNetworkGovernance,
 					networkAudit: canUseNetworkGovernance,
+					sandboxProbe: canUseSandboxProof,
+					sandboxProof: canUseSandboxProof,
 					commandExec: canUseHostControl,
 					commandProcessControl: canUseHostControl,
 					filesystem: canUseHostControl,
@@ -890,6 +916,28 @@ export function createMaestroAppServerSessionApi(
 				);
 			}
 			return networkGovernance.listAudit(params);
+		},
+
+		async probeSandbox(params = {}) {
+			if (!sandboxProof) {
+				throw new MaestroAppServerError(
+					-32601,
+					"Sandbox probe is not available",
+				);
+			}
+			normalizeSandboxProofParams(params);
+			return sandboxProof.probe();
+		},
+
+		async runSandboxProof(params = {}) {
+			if (!sandboxProof) {
+				throw new MaestroAppServerError(
+					-32601,
+					"Sandbox proof is not available",
+				);
+			}
+			const normalizedParams = normalizeSandboxProofParams(params);
+			return sandboxProof.runProof(normalizedParams);
 		},
 
 		async execCommand(params = {}) {
@@ -1525,6 +1573,18 @@ export async function handleMaestroAppServerRequest(
 					id,
 					result: await api.listNetworkAudit(request.params),
 				};
+			case "sandbox/probe":
+				return {
+					jsonrpc: "2.0",
+					id,
+					result: await api.probeSandbox(request.params),
+				};
+			case "sandbox/proof/run":
+				return {
+					jsonrpc: "2.0",
+					id,
+					result: await api.runSandboxProof(request.params),
+				};
 			case "command/exec":
 				return {
 					jsonrpc: "2.0",
@@ -1685,7 +1745,8 @@ export async function handleMaestroAppServerRequest(
 			error instanceof MaestroAppServerError ||
 			error instanceof MaestroAppServerHostControlError ||
 			error instanceof MaestroAppServerNetworkGovernanceError ||
-			error instanceof MaestroAppServerPolicyControlError
+			error instanceof MaestroAppServerPolicyControlError ||
+			error instanceof MaestroAppServerSandboxProofError
 		) {
 			return {
 				jsonrpc: "2.0",
