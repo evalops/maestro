@@ -11,6 +11,9 @@ export const maestroAppServerClientMethods = [
 	"initialize",
 	"model/list",
 	"modelProvider/capabilities/read",
+	"policy/read",
+	"policy/check",
+	"requirements/list",
 	"command/exec",
 	"command/exec/write",
 	"command/exec/terminate",
@@ -87,6 +90,8 @@ export const MaestroAppServerCapabilitiesSchema = Type.Object({
 	sessions: Type.Boolean(),
 	modelList: Type.Boolean(),
 	modelProviderCapabilities: Type.Boolean(),
+	managedPolicy: Type.Boolean(),
+	requirements: Type.Boolean(),
 	commandExec: Type.Boolean(),
 	commandProcessControl: Type.Boolean(),
 	filesystem: Type.Boolean(),
@@ -271,6 +276,108 @@ export type MaestroAppServerTurnsListResult = Static<
 	typeof MaestroAppServerTurnsListResultSchema
 >;
 
+export const MaestroAppServerAllowedBlockedPolicySchema = Type.Object({
+	allowed: Type.Optional(Type.Array(Type.String())),
+	blocked: Type.Optional(Type.Array(Type.String())),
+});
+export type MaestroAppServerAllowedBlockedPolicy = Static<
+	typeof MaestroAppServerAllowedBlockedPolicySchema
+>;
+
+export const MaestroAppServerPolicySkillsSchema = Type.Object({
+	required: Type.Optional(Type.Array(Type.String())),
+});
+export type MaestroAppServerPolicySkills = Static<
+	typeof MaestroAppServerPolicySkillsSchema
+>;
+
+export const MaestroAppServerPolicyNetworkSchema = Type.Object({
+	allowedHosts: Type.Optional(Type.Array(Type.String())),
+	blockedHosts: Type.Optional(Type.Array(Type.String())),
+	blockLocalhost: Type.Optional(Type.Boolean()),
+	blockPrivateIPs: Type.Optional(Type.Boolean()),
+});
+export type MaestroAppServerPolicyNetwork = Static<
+	typeof MaestroAppServerPolicyNetworkSchema
+>;
+
+export const MaestroAppServerPolicyLimitsSchema = Type.Object({
+	maxTokensPerSession: Type.Optional(Type.Number()),
+	maxSessionDurationMinutes: Type.Optional(Type.Number()),
+	maxConcurrentSessions: Type.Optional(Type.Number()),
+});
+export type MaestroAppServerPolicyLimits = Static<
+	typeof MaestroAppServerPolicyLimitsSchema
+>;
+
+export const MaestroAppServerPolicySchema = Type.Object({
+	orgId: Type.Optional(Type.String()),
+	tools: Type.Optional(MaestroAppServerAllowedBlockedPolicySchema),
+	dependencies: Type.Optional(MaestroAppServerAllowedBlockedPolicySchema),
+	models: Type.Optional(MaestroAppServerAllowedBlockedPolicySchema),
+	skills: Type.Optional(MaestroAppServerPolicySkillsSchema),
+	paths: Type.Optional(MaestroAppServerAllowedBlockedPolicySchema),
+	network: Type.Optional(MaestroAppServerPolicyNetworkSchema),
+	limits: Type.Optional(MaestroAppServerPolicyLimitsSchema),
+});
+export type MaestroAppServerPolicy = Static<
+	typeof MaestroAppServerPolicySchema
+>;
+
+export const MaestroAppServerPolicyReadResultSchema = Type.Object({
+	loaded: Type.Boolean(),
+	policy: Type.Union([MaestroAppServerPolicySchema, Type.Null()]),
+});
+export type MaestroAppServerPolicyReadResult = Static<
+	typeof MaestroAppServerPolicyReadResultSchema
+>;
+
+export const maestroAppServerPolicyCheckKinds = [
+	"action",
+	"model",
+	"session",
+] as const;
+export const MaestroAppServerPolicyCheckKindSchema = stringLiteralUnion(
+	maestroAppServerPolicyCheckKinds,
+);
+export type MaestroAppServerPolicyCheckKind =
+	(typeof maestroAppServerPolicyCheckKinds)[number];
+
+export const MaestroAppServerPolicyCheckItemSchema = Type.Object({
+	kind: MaestroAppServerPolicyCheckKindSchema,
+	allowed: Type.Boolean(),
+	reason: Type.Optional(Type.String()),
+});
+export type MaestroAppServerPolicyCheckItem = Static<
+	typeof MaestroAppServerPolicyCheckItemSchema
+>;
+
+export const MaestroAppServerPolicyCheckResultSchema = Type.Object({
+	allowed: Type.Boolean(),
+	reason: Type.Optional(Type.String()),
+	checks: Type.Array(MaestroAppServerPolicyCheckItemSchema),
+});
+export type MaestroAppServerPolicyCheckResult = Static<
+	typeof MaestroAppServerPolicyCheckResultSchema
+>;
+
+export const MaestroAppServerRequirementSchema = Type.Object({
+	kind: Type.Literal("skill"),
+	id: Type.String(),
+	required: Type.Boolean(),
+});
+export type MaestroAppServerRequirement = Static<
+	typeof MaestroAppServerRequirementSchema
+>;
+
+export const MaestroAppServerRequirementsListResultSchema = Type.Object({
+	requirements: Type.Array(MaestroAppServerRequirementSchema),
+	requiredSkills: Type.Array(Type.String()),
+});
+export type MaestroAppServerRequirementsListResult = Static<
+	typeof MaestroAppServerRequirementsListResultSchema
+>;
+
 export const MaestroAppServerEmptyResultSchema = Type.Object(
 	{},
 	{ additionalProperties: false },
@@ -446,6 +553,9 @@ export const MaestroAppServerResponseSchema = Type.Object({
 			MaestroAppServerInitializeResultSchema,
 			MaestroAppServerModelListResultSchema,
 			MaestroAppServerModelProviderCapabilitiesReadResultSchema,
+			MaestroAppServerPolicyReadResultSchema,
+			MaestroAppServerPolicyCheckResultSchema,
+			MaestroAppServerRequirementsListResultSchema,
 			MaestroAppServerCommandExecResultSchema,
 			MaestroAppServerCommandProcessResultSchema,
 			MaestroAppServerFsReadFileResultSchema,
