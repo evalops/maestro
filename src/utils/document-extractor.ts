@@ -1,3 +1,7 @@
+import { spawn } from "node:child_process";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { extname, join } from "node:path";
 import ExcelJS from "exceljs";
 import JSZip from "jszip";
 import mammoth from "mammoth";
@@ -21,6 +25,7 @@ export interface ExtractDocumentInput {
 export interface ExtractDocumentOutput {
 	extractedText: string;
 	format: ExtractedDocumentFormat;
+	extractor: "native" | "markitdown";
 	truncated: boolean;
 	sizeBytes: number;
 }
@@ -29,6 +34,7 @@ type ExcelWorkbookLoadInput = Parameters<ExcelJS.Workbook["xlsx"]["load"]>[0];
 
 const DEFAULT_MAX_CHARS = 200_000;
 const MAX_INPUT_BYTES = 50 * 1024 * 1024;
+const MARKITDOWN_TIMEOUT_MS = 20_000;
 const XLSX_MIME =
 	"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
 
@@ -82,6 +88,130 @@ function detectFormat(
 	if (textExtensions.some((ext) => lowerName.endsWith(ext))) return "text";
 
 	return "unknown";
+}
+
+function splitCommandArgs(value: string | undefined): string[] {
+	return (value ?? "").trim().split(/\s+/).filter(Boolean);
+}
+
+function isMarkitdownDisabled(): boolean {
+	return /^(0|false|off|no)$/i.test(process.env.MAESTRO_MARKITDOWN ?? "");
+}
+
+function markitdownCandidates(): Array<{
+	command: string;
+	argsPrefix: string[];
+}> {
+	const configured = process.env.MAESTRO_MARKITDOWN_CMD?.trim();
+	if (configured) {
+		return [
+			{
+				command: configured,
+				argsPrefix: splitCommandArgs(process.env.MAESTRO_MARKITDOWN_ARGS),
+			},
+		];
+	}
+	return [
+		{ command: "markitdown", argsPrefix: [] },
+		{ command: "uvx", argsPrefix: ["markitdown"] },
+	];
+}
+
+function shouldTryMarkitdown(
+	format: ExtractedDocumentFormat,
+	fileName: string,
+	mimeType?: string,
+): boolean {
+	if (isMarkitdownDisabled()) return false;
+	if (/^(1|true|on|yes)$/i.test(process.env.MAESTRO_MARKITDOWN_PREFER ?? "")) {
+		return true;
+	}
+	const lowerName = fileName.toLowerCase();
+	const type = (mimeType ?? "").toLowerCase();
+	if (format === "unknown") return true;
+	if (lowerName.endsWith(".html") || lowerName.endsWith(".htm")) return true;
+	if (type.includes("text/html")) return true;
+	return false;
+}
+
+function runMarkitdownCandidate(
+	candidate: { command: string; argsPrefix: string[] },
+	args: string[],
+): Promise<string> {
+	return new Promise((resolve, reject) => {
+		const child = spawn(candidate.command, [...candidate.argsPrefix, ...args], {
+			stdio: ["ignore", "pipe", "pipe"],
+		});
+		let stdout = "";
+		let stderr = "";
+		const timer = setTimeout(() => {
+			child.kill("SIGTERM");
+			reject(new Error("MarkItDown conversion timed out"));
+		}, MARKITDOWN_TIMEOUT_MS);
+
+		child.stdout.setEncoding("utf8");
+		child.stderr.setEncoding("utf8");
+		child.stdout.on("data", (chunk) => {
+			stdout += chunk;
+		});
+		child.stderr.on("data", (chunk) => {
+			stderr += chunk;
+		});
+		child.on("error", (error) => {
+			clearTimeout(timer);
+			reject(error);
+		});
+		child.on("close", (code) => {
+			clearTimeout(timer);
+			if (code === 0) {
+				resolve(stdout);
+				return;
+			}
+			reject(
+				new Error(
+					`MarkItDown exited with ${code}${stderr ? `: ${stderr.slice(0, 500)}` : ""}`,
+				),
+			);
+		});
+	});
+}
+
+async function extractWithMarkitdown(input: {
+	buffer: Buffer;
+	fileName: string;
+	mimeType?: string;
+}): Promise<string | null> {
+	const tempDir = await mkdtemp(join(tmpdir(), "maestro-markitdown-"));
+	const extension = extname(input.fileName) || ".bin";
+	const tempPath = join(tempDir, `input${extension}`);
+	try {
+		await writeFile(tempPath, input.buffer);
+		const args = [tempPath];
+		if (input.mimeType) {
+			args.push("--mime-type", input.mimeType);
+		}
+
+		let lastError: unknown;
+		for (const candidate of markitdownCandidates()) {
+			try {
+				const output = await runMarkitdownCandidate(candidate, args);
+				const text = output.trim();
+				if (text) return text;
+			} catch (error) {
+				lastError = error;
+				if ((error as NodeJS.ErrnoException).code === "ENOENT") continue;
+			}
+		}
+
+		if (process.env.MAESTRO_MARKITDOWN_CMD) {
+			const message =
+				lastError instanceof Error ? lastError.message : String(lastError);
+			throw new Error(`MarkItDown extraction failed: ${message}`);
+		}
+		return null;
+	} finally {
+		await rm(tempDir, { force: true, recursive: true });
+	}
 }
 
 function worksheetToRows(worksheet: ExcelJS.Worksheet): string[][] {
@@ -155,53 +285,86 @@ export async function extractDocumentText(
 	}
 
 	const format = detectFormat(fileName, input.mimeType);
+	const markitdownFirst =
+		/^(1|true|on|yes)$/i.test(process.env.MAESTRO_MARKITDOWN_PREFER ?? "") &&
+		!isMarkitdownDisabled();
 
 	let extractedText = "";
-	switch (format) {
-		case "pdf": {
-			const parser = new PDFParse({ data: buffer });
-			try {
-				const result = await parser.getText();
-				extractedText = result.text || "";
-			} finally {
+	let extractor: ExtractDocumentOutput["extractor"] = "native";
+	if (markitdownFirst) {
+		const markitdownText = await extractWithMarkitdown({
+			buffer,
+			fileName,
+			mimeType: input.mimeType,
+		});
+		if (markitdownText) {
+			extractedText = markitdownText;
+			extractor = "markitdown";
+		}
+	}
+
+	if (!extractedText) {
+		switch (format) {
+			case "pdf": {
+				const parser = new PDFParse({ data: buffer });
 				try {
-					await parser.destroy();
-				} catch {
-					// ignore
+					const result = await parser.getText();
+					extractedText = result.text || "";
+				} finally {
+					try {
+						await parser.destroy();
+					} catch {
+						// ignore
+					}
 				}
+				break;
 			}
-			break;
-		}
-		case "docx": {
-			const result = await mammoth.extractRawText({ buffer });
-			extractedText = result.value || "";
-			break;
-		}
-		case "xlsx": {
-			const workbook = new ExcelJS.Workbook();
-			await workbook.xlsx.load(buffer as unknown as ExcelWorkbookLoadInput);
-			const parts: string[] = [];
-			for (const worksheet of workbook.worksheets) {
-				const rows = worksheetToRows(worksheet);
-				if (rows.length === 0) continue;
-				parts.push(
-					`# Sheet: ${worksheet.name}\n${rows.map((row) => row.join("\t")).join("\n")}`,
-				);
+			case "docx": {
+				const result = await mammoth.extractRawText({ buffer });
+				extractedText = result.value || "";
+				break;
 			}
-			extractedText = parts.join("\n\n");
-			break;
+			case "xlsx": {
+				const workbook = new ExcelJS.Workbook();
+				await workbook.xlsx.load(buffer as unknown as ExcelWorkbookLoadInput);
+				const parts: string[] = [];
+				for (const worksheet of workbook.worksheets) {
+					const rows = worksheetToRows(worksheet);
+					if (rows.length === 0) continue;
+					parts.push(
+						`# Sheet: ${worksheet.name}\n${rows.map((row) => row.join("\t")).join("\n")}`,
+					);
+				}
+				extractedText = parts.join("\n\n");
+				break;
+			}
+			case "pptx": {
+				extractedText = await extractPptxText(buffer);
+				break;
+			}
+			case "text": {
+				extractedText = buffer.toString("utf8");
+				break;
+			}
+			default: {
+				extractedText = "";
+				break;
+			}
 		}
-		case "pptx": {
-			extractedText = await extractPptxText(buffer);
-			break;
-		}
-		case "text": {
-			extractedText = buffer.toString("utf8");
-			break;
-		}
-		default: {
-			extractedText = "";
-			break;
+	}
+
+	if (
+		extractor !== "markitdown" &&
+		shouldTryMarkitdown(format, fileName, input.mimeType)
+	) {
+		const markitdownText = await extractWithMarkitdown({
+			buffer,
+			fileName,
+			mimeType: input.mimeType,
+		});
+		if (markitdownText) {
+			extractedText = markitdownText;
+			extractor = "markitdown";
 		}
 	}
 
@@ -209,6 +372,7 @@ export async function extractDocumentText(
 	return {
 		extractedText: text,
 		format,
+		extractor,
 		truncated,
 		sizeBytes: buffer.byteLength,
 	};

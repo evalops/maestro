@@ -24,6 +24,7 @@ export interface ExtractDocumentDetails {
 	fileName: string;
 	mimeType?: string;
 	format: string;
+	extractor: string;
 	sizeBytes: number;
 	truncated: boolean;
 }
@@ -55,7 +56,7 @@ export const extractDocumentTool = createTool<
 	name: "extract_document",
 	label: "extract_document",
 	description:
-		"Download a document from a URL and extract its text. Supports PDF, DOCX, XLSX, PPTX, and common text formats. Use this when you need text from a linked document.",
+		"Download a document from a URL and extract its text. Supports PDF, DOCX, XLSX, PPTX, common text formats, and optional MarkItDown-backed Markdown conversion when available. Use this when you need text from a linked document.",
 	schema: extractDocumentSchema,
 	async run(params, { signal, respond }) {
 		const rawUrl = params.url.trim();
@@ -121,6 +122,7 @@ export const extractDocumentTool = createTool<
 			fileName,
 			mimeType,
 			format: extracted.format,
+			extractor: extracted.extractor,
 			sizeBytes: extracted.sizeBytes,
 			truncated: extracted.truncated,
 		});

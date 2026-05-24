@@ -87,6 +87,7 @@ export async function handleAttachmentExtract(
 			{
 				fileName,
 				format: extracted.format,
+				extractor: extracted.extractor,
 				size: extracted.sizeBytes,
 				truncated: extracted.truncated,
 				extractedText: extracted.extractedText,
