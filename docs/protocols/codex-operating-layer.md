@@ -64,7 +64,7 @@ npm run check:codex-operating-layer
 | remote runner continuity | `remote-runner-continuity` | `src/server/handlers/hosted-runner-drain.ts`, `packages/tui-rs/src/hosted_runner.rs`, `packages/tui-rs/src/hosted_runner_cli.rs`, `packages/tui-rs/src/headless/messages.rs`, `test/server/hosted-runner-drain.test.ts` |
 | realtime streaming | `realtime-streaming` | `src/server/handlers/runtime-app-server-ws.ts`, `test/server/runtime-app-server-ws.test.ts` |
 | TypeScript runtime | `typescript-runtime` | `src/agent/providers/codex-app-server.ts`, `test/agent/codex-app-server.test.ts` |
-| Rust runtime | `rust-control-plane` | `packages/control-plane-rs/src/model_catalog.rs`, `packages/control-plane-rs/src/main.rs` |
+| Rust runtime | `rust-control-plane` | `packages/control-plane-rs/src/model_catalog.rs`, `packages/control-plane-rs/src/main.rs`, `packages/control-plane-rs/src/tests.rs` |
 | eval telemetry | `eval-telemetry` | `docs/protocols/agent-trajectory.md`, `test/fixtures/agent-trajectory/codex-subagent-handoff.timeline.json`, `test/fixtures/agent-trajectory-scenarios/codex-subagent-handoff.json`, `test/telemetry/maestro-publisher-conformance-fixture.test.ts` |
 | operator UX and docs | `operator-ux-docs` | `docs/protocols/codex-operating-layer.md`, `docs/MODELS.md` |
 | live environment proof | `live-verification` | `scripts/smoke-codex-app-server-live.mjs`, `package.json` |

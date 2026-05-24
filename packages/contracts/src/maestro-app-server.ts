@@ -18,6 +18,7 @@ export const maestroAppServerClientMethods = [
 	"network/audit/list",
 	"sandbox/probe",
 	"sandbox/proof/run",
+	"externalAgent/import",
 	"command/exec",
 	"command/exec/write",
 	"command/exec/terminate",
@@ -100,6 +101,7 @@ export const MaestroAppServerCapabilitiesSchema = Type.Object({
 	networkAudit: Type.Boolean(),
 	sandboxProbe: Type.Boolean(),
 	sandboxProof: Type.Boolean(),
+	externalAgentImport: Type.Boolean(),
 	commandExec: Type.Boolean(),
 	commandProcessControl: Type.Boolean(),
 	filesystem: Type.Boolean(),
@@ -487,6 +489,63 @@ export type MaestroAppServerSandboxProofResult = Static<
 	typeof MaestroAppServerSandboxProofResultSchema
 >;
 
+export const maestroAppServerExternalAgentArtifactKinds = [
+	"session",
+	"config",
+	"hooks",
+	"mcp",
+	"skill",
+] as const;
+export const MaestroAppServerExternalAgentArtifactKindSchema =
+	stringLiteralUnion(maestroAppServerExternalAgentArtifactKinds);
+export type MaestroAppServerExternalAgentArtifactKind =
+	(typeof maestroAppServerExternalAgentArtifactKinds)[number];
+
+export const maestroAppServerExternalAgentImportStatuses = [
+	"planned",
+	"imported",
+	"skipped",
+] as const;
+export const MaestroAppServerExternalAgentImportStatusSchema =
+	stringLiteralUnion(maestroAppServerExternalAgentImportStatuses);
+export type MaestroAppServerExternalAgentImportStatus =
+	(typeof maestroAppServerExternalAgentImportStatuses)[number];
+
+export const maestroAppServerExternalAgentImportScopes = [
+	"project",
+	"local",
+	"user",
+] as const;
+export const MaestroAppServerExternalAgentImportScopeSchema =
+	stringLiteralUnion(maestroAppServerExternalAgentImportScopes);
+export type MaestroAppServerExternalAgentImportScope =
+	(typeof maestroAppServerExternalAgentImportScopes)[number];
+
+export const MaestroAppServerExternalAgentImportedArtifactSchema = Type.Object({
+	kind: MaestroAppServerExternalAgentArtifactKindSchema,
+	status: MaestroAppServerExternalAgentImportStatusSchema,
+	scope: Type.Optional(MaestroAppServerExternalAgentImportScopeSchema),
+	id: Type.Optional(Type.String()),
+	path: Type.Optional(Type.String()),
+	message: Type.Optional(Type.String()),
+});
+export type MaestroAppServerExternalAgentImportedArtifact = Static<
+	typeof MaestroAppServerExternalAgentImportedArtifactSchema
+>;
+
+export const MaestroAppServerExternalAgentImportResultSchema = Type.Object({
+	source: Type.Object({
+		name: Type.String(),
+		type: Type.Optional(Type.String()),
+	}),
+	dryRun: Type.Boolean(),
+	imported: Type.Array(MaestroAppServerExternalAgentImportedArtifactSchema),
+	warnings: Type.Array(Type.String()),
+});
+export type MaestroAppServerExternalAgentImportResult = Static<
+	typeof MaestroAppServerExternalAgentImportResultSchema
+>;
+
 export const MaestroAppServerEmptyResultSchema = Type.Object(
 	{},
 	{ additionalProperties: false },
@@ -669,6 +728,7 @@ export const MaestroAppServerResponseSchema = Type.Object({
 			MaestroAppServerNetworkAuditListResultSchema,
 			MaestroAppServerSandboxProbeResultSchema,
 			MaestroAppServerSandboxProofResultSchema,
+			MaestroAppServerExternalAgentImportResultSchema,
 			MaestroAppServerCommandExecResultSchema,
 			MaestroAppServerCommandProcessResultSchema,
 			MaestroAppServerFsReadFileResultSchema,

@@ -4,6 +4,7 @@ import {
 	type MaestroAppServerCommandExecResult,
 	type MaestroAppServerCommandProcessResult,
 	type MaestroAppServerEmptyResult,
+	type MaestroAppServerExternalAgentImportResult,
 	type MaestroAppServerFsMetadataResult,
 	type MaestroAppServerFsReadDirectoryResult,
 	type MaestroAppServerFsReadFileResult,
@@ -56,6 +57,12 @@ import type {
 	SessionTreeEntry,
 } from "../session/types.js";
 import {
+	type MaestroAppServerExternalAgentImport,
+	MaestroAppServerExternalAgentImportError,
+	createMaestroAppServerExternalAgentImport,
+	normalizeExternalAgentImportParams,
+} from "./external-agent-import-api.js";
+import {
 	type MaestroAppServerHostControl,
 	MaestroAppServerHostControlError,
 	createMaestroAppServerHostControl,
@@ -81,6 +88,10 @@ const DEFAULT_PAGE_LIMIT = 50;
 const MAX_PAGE_LIMIT = 100;
 
 export type { MaestroAppServerServerNotification };
+export {
+	type MaestroAppServerExternalAgentImport,
+	createMaestroAppServerExternalAgentImport,
+} from "./external-agent-import-api.js";
 export {
 	type MaestroAppServerSandboxProof,
 	createMaestroAppServerSandboxProof,
@@ -134,6 +145,16 @@ type SessionStore = Pick<
 	branch?: (branchFromId: string) => MaybePromise<void>;
 	resetLeaf?: () => MaybePromise<void>;
 	deleteSession?: (sessionId: string) => MaybePromise<void>;
+	importSessionEntries?: (entries: SessionEntry[]) => {
+		sessionFile: string;
+		sessionId: string;
+		importedCount: number;
+	};
+	importPortableSession?: (path: string) => {
+		sessionFile: string;
+		sessionId: string;
+		importedCount: number;
+	};
 };
 
 export interface MaestroAppServerSessionApiOptions {
@@ -141,6 +162,7 @@ export interface MaestroAppServerSessionApiOptions {
 	policyControl?: MaestroAppServerPolicyControl | false;
 	networkGovernance?: MaestroAppServerNetworkGovernance | false;
 	sandboxProof?: MaestroAppServerSandboxProof | false;
+	externalAgentImport?: MaestroAppServerExternalAgentImport | false;
 	onNotification?: (notification: MaestroAppServerServerNotification) => void;
 }
 
@@ -173,6 +195,9 @@ export interface MaestroAppServerSessionApi {
 	runSandboxProof(
 		params?: Record<string, unknown>,
 	): Promise<MaestroAppServerSandboxProofResult>;
+	importExternalAgent(
+		params?: Record<string, unknown>,
+	): Promise<MaestroAppServerExternalAgentImportResult>;
 	execCommand(
 		params?: Record<string, unknown>,
 	): Promise<MaestroAppServerCommandExecResult>;
@@ -798,6 +823,11 @@ export function createMaestroAppServerSessionApi(
 		options.sandboxProof === false
 			? undefined
 			: (options.sandboxProof ?? createMaestroAppServerSandboxProof());
+	const externalAgentImport =
+		options.externalAgentImport === false
+			? undefined
+			: (options.externalAgentImport ??
+				createMaestroAppServerExternalAgentImport({ store }));
 	const canUpdateThreadMetadata = Boolean(
 		store.setSessionTitle &&
 			store.saveSessionSummary &&
@@ -829,6 +859,7 @@ export function createMaestroAppServerSessionApi(
 	const canUsePolicyControl = Boolean(policyControl);
 	const canUseNetworkGovernance = Boolean(networkGovernance);
 	const canUseSandboxProof = Boolean(sandboxProof);
+	const canUseExternalAgentImport = Boolean(externalAgentImport);
 
 	return {
 		initialize() {
@@ -850,6 +881,7 @@ export function createMaestroAppServerSessionApi(
 					networkAudit: canUseNetworkGovernance,
 					sandboxProbe: canUseSandboxProof,
 					sandboxProof: canUseSandboxProof,
+					externalAgentImport: canUseExternalAgentImport,
 					commandExec: canUseHostControl,
 					commandProcessControl: canUseHostControl,
 					filesystem: canUseHostControl,
@@ -938,6 +970,17 @@ export function createMaestroAppServerSessionApi(
 			}
 			const normalizedParams = normalizeSandboxProofParams(params);
 			return sandboxProof.runProof(normalizedParams);
+		},
+
+		async importExternalAgent(params = {}) {
+			if (!externalAgentImport) {
+				throw new MaestroAppServerError(
+					-32601,
+					"External agent import is not available",
+				);
+			}
+			const normalizedParams = normalizeExternalAgentImportParams(params);
+			return externalAgentImport.importBundle(normalizedParams);
 		},
 
 		async execCommand(params = {}) {
@@ -1585,6 +1628,12 @@ export async function handleMaestroAppServerRequest(
 					id,
 					result: await api.runSandboxProof(request.params),
 				};
+			case "externalAgent/import":
+				return {
+					jsonrpc: "2.0",
+					id,
+					result: await api.importExternalAgent(request.params),
+				};
 			case "command/exec":
 				return {
 					jsonrpc: "2.0",
@@ -1746,7 +1795,8 @@ export async function handleMaestroAppServerRequest(
 			error instanceof MaestroAppServerHostControlError ||
 			error instanceof MaestroAppServerNetworkGovernanceError ||
 			error instanceof MaestroAppServerPolicyControlError ||
-			error instanceof MaestroAppServerSandboxProofError
+			error instanceof MaestroAppServerSandboxProofError ||
+			error instanceof MaestroAppServerExternalAgentImportError
 		) {
 			return {
 				jsonrpc: "2.0",

@@ -1419,6 +1419,10 @@ export class SessionManager {
 		return this.importPortableEntries(entries);
 	}
 
+	importSessionEntries(entries: SessionEntry[]): PortableSessionImportResult {
+		return this.importPortableEntries([...entries]);
+	}
+
 	importPortableSession(sourcePath: string): {
 		sessionFile: string;
 		sessionId: string;
