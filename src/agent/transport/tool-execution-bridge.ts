@@ -177,6 +177,22 @@ export interface ToolExecutionBridgeInput {
 	actionDescription?: string;
 }
 
+export interface ToolExecutionBridgeRuntimeLinkage {
+	agentRunId?: string;
+	agentId?: string;
+	workspaceId?: string;
+	sessionId?: string;
+	remoteRunnerSessionId?: string;
+}
+
+export type ToolExecutionBridgeRuntimeLinkageProvider =
+	| ToolExecutionBridgeRuntimeLinkage
+	| (() => ToolExecutionBridgeRuntimeLinkage | undefined);
+
+export interface DefaultPlatformToolExecutionBridgeOptions {
+	runtimeLinkage?: ToolExecutionBridgeRuntimeLinkageProvider;
+}
+
 interface ToolExecutionClassification {
 	family: "bash" | "mcp";
 	mode: PlatformBridgeMode;
@@ -456,14 +472,20 @@ function buildLinkage(
 	toolCall: ToolCall,
 	organizationId: string | undefined,
 	workspaceId: string,
+	runtimeLinkage: ToolExecutionBridgeRuntimeLinkage | undefined,
 ): ToolExecutionLinkage {
 	const sessionId =
-		trimString(cfg.session?.id) ?? getEnvValue(["MAESTRO_SESSION_ID"]);
-	const agentRunId = getEnvValue(["MAESTRO_AGENT_RUN_ID"]);
+		trimString(cfg.session?.id) ??
+		trimString(runtimeLinkage?.sessionId) ??
+		getEnvValue(["MAESTRO_SESSION_ID"]);
+	const agentRunId =
+		trimString(runtimeLinkage?.agentRunId) ??
+		getEnvValue(["MAESTRO_AGENT_RUN_ID"]);
 	return {
-		workspaceId,
+		workspaceId: trimString(runtimeLinkage?.workspaceId) ?? workspaceId,
 		...(organizationId ? { organizationId } : {}),
 		agentId:
+			trimString(runtimeLinkage?.agentId) ??
 			getEnvValue(["MAESTRO_AGENT_ID"]) ??
 			trimString(process.env.npm_package_name) ??
 			"maestro",
@@ -535,16 +557,21 @@ function buildMetadata(
 	input: ToolExecutionBridgeInput,
 	classification: ToolExecutionClassification,
 	linkage: ToolExecutionLinkage,
+	runtimeLinkage: ToolExecutionBridgeRuntimeLinkage | undefined,
 ): Record<string, string> {
 	const originalArgs = input.toolCall.arguments as Record<string, unknown>;
 	const redactedArguments =
 		stableStringify(originalArgs) !== stableStringify(input.sanitizedArgs);
 	const sessionId =
-		trimString(input.cfg.session?.id) ?? getEnvValue(["MAESTRO_SESSION_ID"]);
-	const remoteRunnerSessionId = getEnvValue([
-		"MAESTRO_REMOTE_RUNNER_SESSION_ID",
-		"MAESTRO_RUNNER_SESSION_ID",
-	]);
+		trimString(input.cfg.session?.id) ??
+		trimString(runtimeLinkage?.sessionId) ??
+		getEnvValue(["MAESTRO_SESSION_ID"]);
+	const remoteRunnerSessionId =
+		trimString(runtimeLinkage?.remoteRunnerSessionId) ??
+		getEnvValue([
+			"MAESTRO_REMOTE_RUNNER_SESSION_ID",
+			"MAESTRO_RUNNER_SESSION_ID",
+		]);
 	return {
 		maestro_bridge_mode: classification.mode,
 		maestro_tool_call_id: input.toolCall.id,
@@ -572,12 +599,14 @@ function buildExecuteRequest(
 	input: ToolExecutionBridgeInput,
 	config: ToolExecutionServiceConfig,
 	classification: ToolExecutionClassification,
+	runtimeLinkage: ToolExecutionBridgeRuntimeLinkage | undefined,
 ): ExecutePlatformToolRequest {
 	const linkage = buildLinkage(
 		input.cfg,
 		input.toolCall,
 		config.organizationId,
 		config.workspaceId ?? process.cwd(),
+		runtimeLinkage,
 	);
 	return {
 		linkage,
@@ -594,7 +623,7 @@ function buildExecuteRequest(
 			allowNonIdempotentRetry: false,
 		},
 		idempotencyKey: `maestro:${input.toolCall.id}`,
-		metadata: buildMetadata(input, classification, linkage),
+		metadata: buildMetadata(input, classification, linkage, runtimeLinkage),
 	};
 }
 
@@ -678,6 +707,12 @@ export interface PlatformToolExecutionBridge {
 export class DefaultPlatformToolExecutionBridge
 	implements PlatformToolExecutionBridge
 {
+	private readonly runtimeLinkage?: ToolExecutionBridgeRuntimeLinkageProvider;
+
+	constructor(options: DefaultPlatformToolExecutionBridgeOptions = {}) {
+		this.runtimeLinkage = options.runtimeLinkage;
+	}
+
 	async prepare(
 		input: ToolExecutionBridgeInput,
 		signal?: AbortSignal,
@@ -706,7 +741,12 @@ export class DefaultPlatformToolExecutionBridge
 			return { status: "skip" };
 		}
 
-		const request = buildExecuteRequest(input, config, classification);
+		const request = buildExecuteRequest(
+			input,
+			config,
+			classification,
+			resolveRuntimeLinkage(this.runtimeLinkage),
+		);
 		if (classification.mode === "observe") {
 			return {
 				status: "observe",
@@ -919,6 +959,12 @@ export class DefaultPlatformToolExecutionBridge
 			return { metadata: plan.metadata };
 		}
 	}
+}
+
+function resolveRuntimeLinkage(
+	provider: ToolExecutionBridgeRuntimeLinkageProvider | undefined,
+): ToolExecutionBridgeRuntimeLinkage | undefined {
+	return typeof provider === "function" ? provider() : provider;
 }
 
 let defaultBridge: PlatformToolExecutionBridge | null = null;
