@@ -19,6 +19,14 @@ export enum MaestroBusEventType {
 	SkillSucceeded = "maestro.events.skill.succeeded",
 	SkillFailed = "maestro.events.skill.failed",
 	SubagentDispatched = "maestro.events.subagent.dispatched",
+	A2APeerSelected = "maestro.events.a2a.peer.selected",
+	A2ATaskDispatched = "maestro.events.a2a.task.dispatched",
+	A2ATaskProgress = "maestro.events.a2a.task.progress",
+	A2ATaskCompleted = "maestro.events.a2a.task.completed",
+	A2ATaskFailed = "maestro.events.a2a.task.failed",
+	A2ATaskCancelled = "maestro.events.a2a.task.cancelled",
+	A2APushReceived = "maestro.events.a2a.push.received",
+	A2AEvidenceCompleted = "maestro.events.a2a.evidence.completed",
 	EvalScored = "maestro.events.eval.scored",
 }
 
@@ -35,6 +43,7 @@ export type MaestroBusEventCategory =
 	| "prompt"
 	| "knowledge"
 	| "skill"
+	| "a2a"
 	| "eval";
 
 export interface MaestroBusEventCatalogEntry {
@@ -200,6 +209,62 @@ export const MAESTRO_BUS_EVENT_CATALOG = {
 		"agent",
 		"SubagentDispatch",
 		["agents.maestro-subagent-dispatches", "meter.maestro-subagent-dispatches"],
+	),
+	[MaestroBusEventType.A2APeerSelected]: entry(
+		MaestroBusEventType.A2APeerSelected,
+		"a2a",
+		"MaestroA2ADelegationEvent",
+		["a2a.maestro-delegation-events", "meter.maestro-a2a-delegations"],
+	),
+	[MaestroBusEventType.A2ATaskDispatched]: entry(
+		MaestroBusEventType.A2ATaskDispatched,
+		"a2a",
+		"MaestroA2ADelegationEvent",
+		["a2a.maestro-delegation-events", "meter.maestro-a2a-delegations"],
+	),
+	[MaestroBusEventType.A2ATaskProgress]: entry(
+		MaestroBusEventType.A2ATaskProgress,
+		"a2a",
+		"MaestroA2ADelegationEvent",
+		["a2a.maestro-delegation-events", "meter.maestro-a2a-delegations"],
+	),
+	[MaestroBusEventType.A2ATaskCompleted]: entry(
+		MaestroBusEventType.A2ATaskCompleted,
+		"a2a",
+		"MaestroA2ADelegationEvent",
+		["a2a.maestro-delegation-events", "meter.maestro-a2a-delegations"],
+	),
+	[MaestroBusEventType.A2ATaskFailed]: entry(
+		MaestroBusEventType.A2ATaskFailed,
+		"a2a",
+		"MaestroA2ADelegationEvent",
+		[
+			"a2a.maestro-delegation-events",
+			"meter.maestro-a2a-delegations",
+			"release.maestro-a2a-failure-gates",
+		],
+	),
+	[MaestroBusEventType.A2ATaskCancelled]: entry(
+		MaestroBusEventType.A2ATaskCancelled,
+		"a2a",
+		"MaestroA2ADelegationEvent",
+		["a2a.maestro-delegation-events", "meter.maestro-a2a-delegations"],
+	),
+	[MaestroBusEventType.A2APushReceived]: entry(
+		MaestroBusEventType.A2APushReceived,
+		"a2a",
+		"MaestroA2ADelegationEvent",
+		["a2a.maestro-delegation-events", "meter.maestro-a2a-delegations"],
+	),
+	[MaestroBusEventType.A2AEvidenceCompleted]: entry(
+		MaestroBusEventType.A2AEvidenceCompleted,
+		"a2a",
+		"MaestroA2ADelegationEvent",
+		[
+			"a2a.maestro-delegation-events",
+			"meter.maestro-a2a-delegations",
+			"release.maestro-a2a-evidence-gates",
+		],
 	),
 	[MaestroBusEventType.EvalScored]: entry(
 		MaestroBusEventType.EvalScored,
