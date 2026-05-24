@@ -172,6 +172,12 @@ export interface AddMcpServerOptions {
 	server: McpServerInput & { name: string };
 }
 
+export interface AddMcpServersOptions {
+	projectRoot?: string;
+	scope: WritableMcpScope;
+	servers: Array<McpServerInput & { name: string }>;
+}
+
 export interface AddMcpAuthPresetOptions {
 	projectRoot?: string;
 	scope: WritableMcpScope;
@@ -308,15 +314,48 @@ export function inferRemoteMcpTransport(url: string): "http" | "sse" {
 export function addMcpServerToConfig(options: AddMcpServerOptions): {
 	path: string;
 } {
-	const path = getWritableMcpConfigPath(options.scope, options.projectRoot);
-	const validatedServer = mcpServerSchema.parse({
-		...options.server,
-		transport:
-			options.server.transport ??
-			(options.server.url
-				? inferRemoteMcpTransport(options.server.url)
-				: "stdio"),
+	return addMcpServersToConfig({
+		projectRoot: options.projectRoot,
+		scope: options.scope,
+		servers: [options.server],
 	});
+}
+
+export function validateMcpServersForConfig(options: AddMcpServersOptions): {
+	path: string;
+} {
+	const { path } = prepareMcpServersConfigUpdate(options);
+	return { path };
+}
+
+export function addMcpServersToConfig(options: AddMcpServersOptions): {
+	path: string;
+} {
+	const { path, nextConfig } = prepareMcpServersConfigUpdate(options);
+	writeJsonFile(path, nextConfig);
+	return { path };
+}
+
+function prepareMcpServersConfigUpdate(options: AddMcpServersOptions): {
+	path: string;
+	nextConfig: RawMcpConfigFile;
+} {
+	const path = getWritableMcpConfigPath(options.scope, options.projectRoot);
+	const validatedServers = options.servers.map((server) =>
+		mcpServerSchema.parse({
+			...server,
+			transport:
+				server.transport ??
+				(server.url ? inferRemoteMcpTransport(server.url) : "stdio"),
+		}),
+	);
+	const seenNames = new Set<string>();
+	for (const server of validatedServers) {
+		if (seenNames.has(server.name)) {
+			throw new Error(`MCP server "${server.name}" is listed more than once`);
+		}
+		seenNames.add(server.name);
+	}
 	const existing = readJsonFile<unknown>(path, { fallback: {} });
 	const parsed = mcpConfigSchema.safeParse(existing);
 	if (!parsed.success) {
@@ -332,38 +371,35 @@ export function addMcpServerToConfig(options: AddMcpServerOptions): {
 		const existingServers = isRecord(nextConfig.mcpServers)
 			? nextConfig.mcpServers
 			: {};
-		if (
-			Object.prototype.hasOwnProperty.call(
-				existingServers,
-				validatedServer.name,
-			)
-		) {
-			throw new Error(
-				`MCP server "${validatedServer.name}" already exists in ${path}`,
-			);
+		const nextServers = { ...existingServers };
+		for (const server of validatedServers) {
+			if (Object.prototype.hasOwnProperty.call(nextServers, server.name)) {
+				throw new Error(
+					`MCP server "${server.name}" already exists in ${path}`,
+				);
+			}
+			nextServers[server.name] = buildPersistedServerConfig(server);
 		}
-		nextConfig.mcpServers = {
-			...existingServers,
-			[validatedServer.name]: buildPersistedServerConfig(validatedServer),
-		};
+		nextConfig.mcpServers = nextServers;
 	} else {
 		const servers = nextConfig.servers ?? [];
-		if (servers.some((server) => server.name === validatedServer.name)) {
-			throw new Error(
-				`MCP server "${validatedServer.name}" already exists in ${path}`,
-			);
+		const existingNames = new Set(servers.map((server) => server.name));
+		const nextServers = [...servers];
+		for (const server of validatedServers) {
+			if (existingNames.has(server.name)) {
+				throw new Error(
+					`MCP server "${server.name}" already exists in ${path}`,
+				);
+			}
+			existingNames.add(server.name);
+			nextServers.push({
+				...buildPersistedServerConfig(server),
+				name: server.name,
+			});
 		}
-		nextConfig.servers = [
-			...servers,
-			{
-				...buildPersistedServerConfig(validatedServer),
-				name: validatedServer.name,
-			},
-		];
+		nextConfig.servers = nextServers;
 	}
-
-	writeJsonFile(path, nextConfig);
-	return { path };
+	return { path, nextConfig };
 }
 
 export function addMcpAuthPresetToConfig(options: AddMcpAuthPresetOptions): {
