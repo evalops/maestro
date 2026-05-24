@@ -13,6 +13,14 @@ import {
 } from "../../utils/url-extractor.js";
 import type { EnterprisePolicy } from "../policy.js";
 
+export interface NetworkRestrictionCheck {
+	allowed: boolean;
+	reason?: string;
+	host?: string;
+	normalizedHost?: string;
+	resolvedIPs: string[];
+}
+
 function getArgsObject(
 	context: ActionApprovalContext,
 ): Record<string, unknown> | null {
@@ -56,10 +64,10 @@ export function extractPolicyUrls(context: ActionApprovalContext): string[] {
 /**
  * Check if a URL/host matches network restrictions.
  */
-export async function checkNetworkRestrictions(
+export async function checkNetworkRestrictionsDetailed(
 	url: string,
 	network: NonNullable<EnterprisePolicy["network"]>,
-): Promise<{ allowed: boolean; reason?: string }> {
+): Promise<NetworkRestrictionCheck> {
 	try {
 		const parsed = new URL(url);
 		const host = parsed.hostname.toLowerCase();
@@ -74,13 +82,16 @@ export async function checkNetworkRestrictions(
 
 		if (!isIP) {
 			try {
-				const { address } = await lookup(normalizedHost);
-				resolvedIPs.push(address);
+				const addresses = await lookup(normalizedHost, { all: true });
+				resolvedIPs.push(...addresses.map(({ address }) => address));
 			} catch {
 				if (network.blockPrivateIPs || network.blockLocalhost) {
 					return {
 						allowed: false,
 						reason: `DNS resolution failed for "${host}" and network policy requires IP validation (blockPrivateIPs/blockLocalhost enabled). Access blocked.`,
+						host,
+						normalizedHost,
+						resolvedIPs,
 					};
 				}
 			}
@@ -93,6 +104,9 @@ export async function checkNetworkRestrictions(
 				return {
 					allowed: false,
 					reason: "Access to localhost is blocked by enterprise policy.",
+					host,
+					normalizedHost,
+					resolvedIPs,
 				};
 			}
 		}
@@ -103,6 +117,9 @@ export async function checkNetworkRestrictions(
 					allowed: false,
 					reason:
 						"Access to private IP addresses is blocked by enterprise policy.",
+					host,
+					normalizedHost,
+					resolvedIPs,
 				};
 			}
 		}
@@ -114,6 +131,9 @@ export async function checkNetworkRestrictions(
 					return {
 						allowed: false,
 						reason: `Host "${host}" is blocked by enterprise policy.`,
+						host,
+						normalizedHost,
+						resolvedIPs,
 					};
 				}
 			}
@@ -124,6 +144,9 @@ export async function checkNetworkRestrictions(
 				return {
 					allowed: false,
 					reason: `Host "${host}" is not in the allowed hosts list.`,
+					host,
+					normalizedHost,
+					resolvedIPs,
 				};
 			}
 			const isAllowed = network.allowedHosts.some((allowedHost) => {
@@ -134,16 +157,30 @@ export async function checkNetworkRestrictions(
 				return {
 					allowed: false,
 					reason: `Host "${host}" is not in the allowed hosts list.`,
+					host,
+					normalizedHost,
+					resolvedIPs,
 				};
 			}
 		}
+		return { allowed: true, host, normalizedHost, resolvedIPs };
 	} catch {
 		return {
 			allowed: false,
 			reason: "Invalid URL format - cannot validate against network policy.",
+			resolvedIPs: [],
 		};
 	}
-	return { allowed: true };
+}
+
+export async function checkNetworkRestrictions(
+	url: string,
+	network: NonNullable<EnterprisePolicy["network"]>,
+): Promise<{ allowed: boolean; reason?: string }> {
+	const check = await checkNetworkRestrictionsDetailed(url, network);
+	return check.reason
+		? { allowed: check.allowed, reason: check.reason }
+		: { allowed: check.allowed };
 }
 
 export async function checkNetworkPolicy(
