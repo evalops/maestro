@@ -2,6 +2,7 @@ import type {
 	MaestroAppServerClientMethod,
 	MaestroAppServerCommandExecResult,
 	MaestroAppServerCommandProcessResult,
+	MaestroAppServerDaemonStatusResult,
 	MaestroAppServerEmptyResult,
 	MaestroAppServerExternalAgentImportResult,
 	MaestroAppServerFsMetadataResult,
@@ -17,6 +18,9 @@ import type {
 	MaestroAppServerPluginBundleMutationResult,
 	MaestroAppServerPolicyCheckResult,
 	MaestroAppServerPolicyReadResult,
+	MaestroAppServerRemoteControlDrainResult,
+	MaestroAppServerRemoteControlLeaseResult,
+	MaestroAppServerRemoteControlStatusResult,
 	MaestroAppServerRequirementsListResult,
 	MaestroAppServerSandboxProbeResult,
 	MaestroAppServerSandboxProofResult,
@@ -81,53 +85,63 @@ type AppServerMethodResult<M extends AppServerRequestMethod> =
 															| "pluginBundle/install"
 															| "pluginBundle/remove"
 													? MaestroAppServerPluginBundleMutationResult
-													: M extends "command/exec"
-														? MaestroAppServerCommandExecResult
-														: M extends
-																	| "command/exec/write"
-																	| "command/exec/terminate"
-															? MaestroAppServerCommandProcessResult
-															: M extends "fs/readFile"
-																? MaestroAppServerFsReadFileResult
-																: M extends "fs/readDirectory"
-																	? MaestroAppServerFsReadDirectoryResult
-																	: M extends "fs/getMetadata"
-																		? MaestroAppServerFsMetadataResult
-																		: M extends "fs/watch"
-																			? MaestroAppServerFsWatchResult
-																			: M extends
-																						| "fs/writeFile"
-																						| "fs/createDirectory"
-																						| "fs/remove"
-																						| "fs/copy"
-																						| "fs/unwatch"
-																				? MaestroAppServerEmptyResult
-																				: M extends "thread/list"
-																					? MaestroAppServerThreadListResult
-																					: M extends "thread/read"
-																						? MaestroAppServerThreadReadResult
-																						: M extends "thread/metadata/update"
-																							? MaestroAppServerThreadMetadataUpdateResult
-																							: M extends "thread/name/set"
-																								? MaestroAppServerThreadMetadataUpdateResult
-																								: M extends
-																											| "thread/goal/get"
-																											| "thread/goal/set"
-																											| "thread/goal/clear"
-																									? MaestroAppServerThreadGoalResult
-																									: M extends "thread/start"
-																										? MaestroAppServerThreadStartResult
-																										: M extends "thread/fork"
-																											? MaestroAppServerThreadForkResult
-																											: M extends
-																														| "thread/archive"
-																														| "thread/unarchive"
-																												? MaestroAppServerThreadArchiveResult
-																												: M extends "thread/delete"
-																													? MaestroAppServerThreadDeleteResult
-																													: M extends "thread/turns/list"
-																														? MaestroAppServerTurnsListResult
-																														: never;
+													: M extends "daemon/status"
+														? MaestroAppServerDaemonStatusResult
+														: M extends "remoteControl/status"
+															? MaestroAppServerRemoteControlStatusResult
+															: M extends
+																		| "remoteControl/lease/read"
+																		| "remoteControl/lease/heartbeat"
+																? MaestroAppServerRemoteControlLeaseResult
+																: M extends "remoteControl/drain"
+																	? MaestroAppServerRemoteControlDrainResult
+																	: M extends "command/exec"
+																		? MaestroAppServerCommandExecResult
+																		: M extends
+																					| "command/exec/write"
+																					| "command/exec/terminate"
+																			? MaestroAppServerCommandProcessResult
+																			: M extends "fs/readFile"
+																				? MaestroAppServerFsReadFileResult
+																				: M extends "fs/readDirectory"
+																					? MaestroAppServerFsReadDirectoryResult
+																					: M extends "fs/getMetadata"
+																						? MaestroAppServerFsMetadataResult
+																						: M extends "fs/watch"
+																							? MaestroAppServerFsWatchResult
+																							: M extends
+																										| "fs/writeFile"
+																										| "fs/createDirectory"
+																										| "fs/remove"
+																										| "fs/copy"
+																										| "fs/unwatch"
+																								? MaestroAppServerEmptyResult
+																								: M extends "thread/list"
+																									? MaestroAppServerThreadListResult
+																									: M extends "thread/read"
+																										? MaestroAppServerThreadReadResult
+																										: M extends "thread/metadata/update"
+																											? MaestroAppServerThreadMetadataUpdateResult
+																											: M extends "thread/name/set"
+																												? MaestroAppServerThreadMetadataUpdateResult
+																												: M extends
+																															| "thread/goal/get"
+																															| "thread/goal/set"
+																															| "thread/goal/clear"
+																													? MaestroAppServerThreadGoalResult
+																													: M extends "thread/start"
+																														? MaestroAppServerThreadStartResult
+																														: M extends "thread/fork"
+																															? MaestroAppServerThreadForkResult
+																															: M extends
+																																		| "thread/archive"
+																																		| "thread/unarchive"
+																																? MaestroAppServerThreadArchiveResult
+																																: M extends "thread/delete"
+																																	? MaestroAppServerThreadDeleteResult
+																																	: M extends "thread/turns/list"
+																																		? MaestroAppServerTurnsListResult
+																																		: never;
 
 export class InProcessMaestroAppServerClientError extends Error {
 	constructor(

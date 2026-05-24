@@ -3,6 +3,7 @@ import {
 	type MaestroAppServerClientRequest,
 	type MaestroAppServerCommandExecResult,
 	type MaestroAppServerCommandProcessResult,
+	type MaestroAppServerDaemonStatusResult,
 	type MaestroAppServerEmptyResult,
 	type MaestroAppServerExternalAgentImportResult,
 	type MaestroAppServerFsMetadataResult,
@@ -19,6 +20,9 @@ import {
 	type MaestroAppServerPluginBundleMutationResult,
 	type MaestroAppServerPolicyCheckResult,
 	type MaestroAppServerPolicyReadResult,
+	type MaestroAppServerRemoteControlDrainResult,
+	type MaestroAppServerRemoteControlLeaseResult,
+	type MaestroAppServerRemoteControlStatusResult,
 	type MaestroAppServerRequirementsListResult,
 	type MaestroAppServerResponse,
 	type MaestroAppServerSandboxProbeResult,
@@ -59,6 +63,11 @@ import type {
 	SessionTreeEntry,
 } from "../session/types.js";
 import {
+	type MaestroAppServerDaemonLifecycle,
+	MaestroAppServerDaemonLifecycleError,
+	createMaestroAppServerDaemonLifecycle,
+} from "./daemon-lifecycle-api.js";
+import {
 	type MaestroAppServerExternalAgentImport,
 	MaestroAppServerExternalAgentImportError,
 	createMaestroAppServerExternalAgentImport,
@@ -95,6 +104,10 @@ const DEFAULT_PAGE_LIMIT = 50;
 const MAX_PAGE_LIMIT = 100;
 
 export type { MaestroAppServerServerNotification };
+export {
+	type MaestroAppServerDaemonLifecycle,
+	createMaestroAppServerDaemonLifecycle,
+} from "./daemon-lifecycle-api.js";
 export {
 	type MaestroAppServerExternalAgentImport,
 	createMaestroAppServerExternalAgentImport,
@@ -175,6 +188,7 @@ export interface MaestroAppServerSessionApiOptions {
 	sandboxProof?: MaestroAppServerSandboxProof | false;
 	externalAgentImport?: MaestroAppServerExternalAgentImport | false;
 	pluginBundles?: MaestroAppServerPluginBundleApi | false;
+	daemonLifecycle?: MaestroAppServerDaemonLifecycle | false;
 	onNotification?: (notification: MaestroAppServerServerNotification) => void;
 }
 
@@ -219,6 +233,21 @@ export interface MaestroAppServerSessionApi {
 	removePluginBundle(
 		params?: Record<string, unknown>,
 	): Promise<MaestroAppServerPluginBundleMutationResult>;
+	readDaemonStatus(
+		params?: Record<string, unknown>,
+	): Promise<MaestroAppServerDaemonStatusResult>;
+	readRemoteControlStatus(
+		params?: Record<string, unknown>,
+	): Promise<MaestroAppServerRemoteControlStatusResult>;
+	readRemoteControlLease(
+		params?: Record<string, unknown>,
+	): Promise<MaestroAppServerRemoteControlLeaseResult>;
+	heartbeatRemoteControlLease(
+		params?: Record<string, unknown>,
+	): Promise<MaestroAppServerRemoteControlLeaseResult>;
+	drainRemoteControl(
+		params?: Record<string, unknown>,
+	): Promise<MaestroAppServerRemoteControlDrainResult>;
 	execCommand(
 		params?: Record<string, unknown>,
 	): Promise<MaestroAppServerCommandExecResult>;
@@ -848,6 +877,16 @@ export function createMaestroAppServerSessionApi(
 		options.pluginBundles === false
 			? undefined
 			: (options.pluginBundles ?? createMaestroAppServerPluginBundleApi());
+	const daemonLifecycle =
+		options.daemonLifecycle === false
+			? undefined
+			: (options.daemonLifecycle ?? createMaestroAppServerDaemonLifecycle());
+	const daemonLifecycleCapabilities = daemonLifecycle?.capabilities() ?? {
+		daemonStatus: false,
+		remoteControlStatus: false,
+		remoteControlLease: false,
+		remoteControlDrain: false,
+	};
 	const canUpdateThreadMetadata = Boolean(
 		store.setSessionTitle &&
 			store.saveSessionSummary &&
@@ -909,6 +948,10 @@ export function createMaestroAppServerSessionApi(
 					sandboxProof: canUseSandboxProof,
 					externalAgentImport: canUseExternalAgentImport,
 					pluginBundles: canUsePluginBundles,
+					daemonStatus: daemonLifecycleCapabilities.daemonStatus,
+					remoteControlStatus: daemonLifecycleCapabilities.remoteControlStatus,
+					remoteControlLease: daemonLifecycleCapabilities.remoteControlLease,
+					remoteControlDrain: daemonLifecycleCapabilities.remoteControlDrain,
 					commandExec: canUseHostControl,
 					commandProcessControl: canUseHostControl,
 					filesystem: canUseHostControl,
@@ -1038,6 +1081,56 @@ export function createMaestroAppServerSessionApi(
 				);
 			}
 			return pluginBundles.removeBundle(params);
+		},
+
+		async readDaemonStatus(params = {}) {
+			if (!daemonLifecycle) {
+				throw new MaestroAppServerError(
+					-32601,
+					"Daemon lifecycle is not available",
+				);
+			}
+			return daemonLifecycle.status(params);
+		},
+
+		async readRemoteControlStatus(params = {}) {
+			if (!daemonLifecycle) {
+				throw new MaestroAppServerError(
+					-32601,
+					"Remote control lifecycle is not available",
+				);
+			}
+			return daemonLifecycle.remoteControlStatus(params);
+		},
+
+		async readRemoteControlLease(params = {}) {
+			if (!daemonLifecycle) {
+				throw new MaestroAppServerError(
+					-32601,
+					"Remote control lease is not available",
+				);
+			}
+			return daemonLifecycle.readLease(params);
+		},
+
+		async heartbeatRemoteControlLease(params = {}) {
+			if (!daemonLifecycle) {
+				throw new MaestroAppServerError(
+					-32601,
+					"Remote control lease is not available",
+				);
+			}
+			return daemonLifecycle.heartbeatLease(params);
+		},
+
+		async drainRemoteControl(params = {}) {
+			if (!daemonLifecycle) {
+				throw new MaestroAppServerError(
+					-32601,
+					"Remote control drain is not available",
+				);
+			}
+			return daemonLifecycle.drain(params);
 		},
 
 		async execCommand(params = {}) {
@@ -1709,6 +1802,36 @@ export async function handleMaestroAppServerRequest(
 					id,
 					result: await api.removePluginBundle(request.params),
 				};
+			case "daemon/status":
+				return {
+					jsonrpc: "2.0",
+					id,
+					result: await api.readDaemonStatus(request.params),
+				};
+			case "remoteControl/status":
+				return {
+					jsonrpc: "2.0",
+					id,
+					result: await api.readRemoteControlStatus(request.params),
+				};
+			case "remoteControl/lease/read":
+				return {
+					jsonrpc: "2.0",
+					id,
+					result: await api.readRemoteControlLease(request.params),
+				};
+			case "remoteControl/lease/heartbeat":
+				return {
+					jsonrpc: "2.0",
+					id,
+					result: await api.heartbeatRemoteControlLease(request.params),
+				};
+			case "remoteControl/drain":
+				return {
+					jsonrpc: "2.0",
+					id,
+					result: await api.drainRemoteControl(request.params),
+				};
 			case "command/exec":
 				return {
 					jsonrpc: "2.0",
@@ -1872,7 +1995,8 @@ export async function handleMaestroAppServerRequest(
 			error instanceof MaestroAppServerPolicyControlError ||
 			error instanceof MaestroAppServerSandboxProofError ||
 			error instanceof MaestroAppServerExternalAgentImportError ||
-			error instanceof MaestroAppServerPluginBundleError
+			error instanceof MaestroAppServerPluginBundleError ||
+			error instanceof MaestroAppServerDaemonLifecycleError
 		) {
 			return {
 				jsonrpc: "2.0",
