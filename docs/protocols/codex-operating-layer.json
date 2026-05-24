@@ -551,7 +551,7 @@
 		{
 			"area": "rust-control-plane",
 			"evidenceType": "test",
-			"path": "packages/control-plane-rs/src/main.rs",
+			"path": "packages/control-plane-rs/src/tests.rs",
 			"anchors": [
 				"codex_headless_bridge_round_trips_prompt_approval",
 				"codex_headless_bridge_streams_tool_events_over_websocket",

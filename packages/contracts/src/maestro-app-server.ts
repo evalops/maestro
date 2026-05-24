@@ -16,6 +16,8 @@ export const maestroAppServerClientMethods = [
 	"requirements/list",
 	"network/fetch",
 	"network/audit/list",
+	"sandbox/probe",
+	"sandbox/proof/run",
 	"command/exec",
 	"command/exec/write",
 	"command/exec/terminate",
@@ -96,6 +98,8 @@ export const MaestroAppServerCapabilitiesSchema = Type.Object({
 	requirements: Type.Boolean(),
 	networkProxy: Type.Boolean(),
 	networkAudit: Type.Boolean(),
+	sandboxProbe: Type.Boolean(),
+	sandboxProof: Type.Boolean(),
 	commandExec: Type.Boolean(),
 	commandProcessControl: Type.Boolean(),
 	filesystem: Type.Boolean(),
@@ -430,6 +434,59 @@ export type MaestroAppServerNetworkAuditListResult = Static<
 	typeof MaestroAppServerNetworkAuditListResultSchema
 >;
 
+export const maestroAppServerSandboxTypes = [
+	"seatbelt",
+	"landlock",
+	"none",
+] as const;
+export const MaestroAppServerSandboxTypeSchema = stringLiteralUnion(
+	maestroAppServerSandboxTypes,
+);
+export type MaestroAppServerSandboxType =
+	(typeof maestroAppServerSandboxTypes)[number];
+
+export const maestroAppServerSandboxProofModes = [
+	"read-only",
+	"workspace-write",
+] as const;
+export const MaestroAppServerSandboxProofModeSchema = stringLiteralUnion(
+	maestroAppServerSandboxProofModes,
+);
+export type MaestroAppServerSandboxProofMode =
+	(typeof maestroAppServerSandboxProofModes)[number];
+
+export const MaestroAppServerSandboxProbeResultSchema = Type.Object({
+	available: Type.Boolean(),
+	type: MaestroAppServerSandboxTypeSchema,
+	platform: Type.String(),
+	supportedModes: Type.Array(MaestroAppServerSandboxProofModeSchema),
+	proofAvailable: Type.Boolean(),
+});
+export type MaestroAppServerSandboxProbeResult = Static<
+	typeof MaestroAppServerSandboxProbeResultSchema
+>;
+
+export const MaestroAppServerSandboxProofCheckSchema = Type.Object({
+	name: Type.String(),
+	passed: Type.Boolean(),
+	detail: Type.String(),
+});
+export type MaestroAppServerSandboxProofCheck = Static<
+	typeof MaestroAppServerSandboxProofCheckSchema
+>;
+
+export const MaestroAppServerSandboxProofResultSchema = Type.Object({
+	mode: MaestroAppServerSandboxProofModeSchema,
+	available: Type.Boolean(),
+	type: MaestroAppServerSandboxTypeSchema,
+	passed: Type.Boolean(),
+	skippedReason: Type.Optional(Type.String()),
+	checks: Type.Array(MaestroAppServerSandboxProofCheckSchema),
+});
+export type MaestroAppServerSandboxProofResult = Static<
+	typeof MaestroAppServerSandboxProofResultSchema
+>;
+
 export const MaestroAppServerEmptyResultSchema = Type.Object(
 	{},
 	{ additionalProperties: false },
@@ -610,6 +667,8 @@ export const MaestroAppServerResponseSchema = Type.Object({
 			MaestroAppServerRequirementsListResultSchema,
 			MaestroAppServerNetworkFetchResultSchema,
 			MaestroAppServerNetworkAuditListResultSchema,
+			MaestroAppServerSandboxProbeResultSchema,
+			MaestroAppServerSandboxProofResultSchema,
 			MaestroAppServerCommandExecResultSchema,
 			MaestroAppServerCommandProcessResultSchema,
 			MaestroAppServerFsReadFileResultSchema,
