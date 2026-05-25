@@ -80,11 +80,13 @@
 		},
 		{
 			"area": "prompt-queue-parity",
-			"path": "packages/tui-rs/src/app.rs",
-			"anchors": [
-				"should_submit_on_tab",
-				"drain_queued_steering_batch_for_interrupt"
-			]
+			"path": "packages/tui-rs/src/app/input_handlers.rs",
+			"anchors": ["should_submit_on_tab"]
+		},
+		{
+			"area": "prompt-queue-parity",
+			"path": "packages/tui-rs/src/app/prompt_queue.rs",
+			"anchors": ["drain_queued_steering_batch_for_interrupt"]
 		},
 		{
 			"area": "prompt-queue-parity",
