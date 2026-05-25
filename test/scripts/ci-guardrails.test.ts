@@ -275,6 +275,7 @@ describe("planCiChecks", () => {
 					"scripts/ci-nx-tests.sh",
 					"scripts/install-smoke-utils.js",
 					"scripts/plan-nx-test-command.mjs",
+					"scripts/release-impact-filter.mjs",
 					"scripts/release-readiness.js",
 					"scripts/runtime-workspaces.mjs",
 					"scripts/summarize-nx-profile.mjs",
@@ -305,12 +306,14 @@ describe("planCiChecks", () => {
 					"scripts/ci-nx-tests.sh",
 					"scripts/plan-ci-checks.mjs",
 					"scripts/plan-nx-test-command.mjs",
+					"scripts/release-impact-filter.mjs",
 					"scripts/release-readiness.js",
 					"scripts/smoke-packed-cli.js",
 					"scripts/smoke-published-replay-e2e.js",
 					"scripts/smoke-registry-install.js",
 					"scripts/workspace-utils.js",
 					"test/scripts/ci-guardrails.test.ts",
+					"test/scripts/release-impact-filter.test.ts",
 					"test/scripts/workspace-utils.test.ts",
 				],
 			}),
@@ -631,6 +634,7 @@ describe("ci workflow guardrails", () => {
 			"Release helper script tests are handled directly by Vitest.",
 		);
 		expect(script).toContain("node ./scripts/run-vitest.js --run");
+		expect(script).toContain("test/scripts/release-impact-filter.test.ts");
 		expect(script).toContain("test/scripts/workspace-utils.test.ts");
 	});
 
@@ -804,10 +808,13 @@ describe("ci workflow guardrails", () => {
 			"node --check scripts/deprecate-release.js",
 		);
 		expect(helperSmokeStep?.run).toContain(
+			"node --check scripts/release-impact-filter.mjs",
+		);
+		expect(helperSmokeStep?.run).toContain(
 			"node --check scripts/configure-npm-trusted-publisher.mjs",
 		);
 		expect(helperSmokeStep?.run).toContain(
-			"node ./scripts/run-vitest.js --run test/scripts/install-smoke-utils.test.ts test/scripts/smoke-published-replay-e2e.test.ts test/scripts/workspace-utils.test.ts",
+			"node ./scripts/run-vitest.js --run test/scripts/install-smoke-utils.test.ts test/scripts/release-impact-filter.test.ts test/scripts/smoke-published-replay-e2e.test.ts test/scripts/workspace-utils.test.ts",
 		);
 		expect(helperSmokeStep?.run).toContain(
 			"MAESTRO_SKIP_INSTALL_AUDIT=1 MAESTRO_SKIP_BUN_INSTALL_SMOKE=1",
@@ -935,6 +942,10 @@ describe("ci workflow guardrails", () => {
 				{ encoding: "utf8" },
 			),
 		) as Workflow;
+		const releaseImpactFilter = readFileSync(
+			new URL("../../scripts/release-impact-filter.mjs", import.meta.url),
+			{ encoding: "utf8" },
+		);
 		const contextStep = action.runs?.steps?.find(
 			(step) => step.id === "context",
 		);
@@ -947,15 +958,17 @@ describe("ci workflow guardrails", () => {
 		expect(action.outputs).toHaveProperty("package_changed_since_tag");
 		expect(contextStep?.run).toContain('["rev-parse", "HEAD"]');
 		expect(contextStep?.run).toContain("^{commit}");
-		expect(contextStep?.run).toContain('"diff", "--name-only"');
-		expect(contextStep?.run).toContain('path.startsWith("src/")');
-		expect(contextStep?.run).toContain('path.startsWith("packages/")');
-		expect(contextStep?.run).toContain('path.startsWith("proto/")');
-		expect(contextStep?.run).toContain('path.startsWith("types/")');
-		expect(contextStep?.run).toContain('"tsconfig.base.json"');
-		expect(contextStep?.run).toContain('"scripts/codegen-utils.mjs"');
-		expect(contextStep?.run).toContain('"scripts/runtime-workspaces.mjs"');
-		expect(contextStep?.run).toContain('"scripts/workspace-utils.js"');
+		expect(contextStep?.run).toContain("scripts/release-impact-filter.mjs");
+		expect(contextStep?.run).toContain("packageChangedSinceReleaseTag");
+		expect(releaseImpactFilter).toContain('"diff", "--name-only"');
+		expect(releaseImpactFilter).toContain('path.startsWith("src/")');
+		expect(releaseImpactFilter).toContain('path.startsWith("packages/")');
+		expect(releaseImpactFilter).toContain('path.startsWith("proto/")');
+		expect(releaseImpactFilter).toContain('path.startsWith("types/")');
+		expect(releaseImpactFilter).toContain('"tsconfig.base.json"');
+		expect(releaseImpactFilter).toContain('"scripts/codegen-utils.mjs"');
+		expect(releaseImpactFilter).toContain('"scripts/runtime-workspaces.mjs"');
+		expect(releaseImpactFilter).toContain('"scripts/workspace-utils.js"');
 		expect(mismatchGuard?.if).toContain("steps.release.outputs.tag_exists");
 		expect(mismatchGuard?.if).toContain(
 			"steps.release.outputs.tag_matches_head != 'true'",
@@ -1905,6 +1918,7 @@ describe("planNxTestCommand", () => {
 					"scripts/deprecate-release.js",
 					"scripts/install-smoke-utils.js",
 					"scripts/plan-ci-checks.mjs",
+					"scripts/release-impact-filter.mjs",
 					"scripts/release-readiness.js",
 					"scripts/smoke-packed-cli.js",
 					"scripts/smoke-published-replay-e2e.js",
@@ -1924,12 +1938,16 @@ describe("planNxTestCommand", () => {
 				changedFiles: [
 					"scripts/install-smoke-utils.js",
 					"scripts/workspace-utils.js",
+					"test/scripts/release-impact-filter.test.ts",
 					"test/scripts/workspace-utils.test.ts",
 				],
 				headPackage: basePackage,
 			}),
 		).toEqual({
-			files: ["test/scripts/workspace-utils.test.ts"],
+			files: [
+				"test/scripts/release-impact-filter.test.ts",
+				"test/scripts/workspace-utils.test.ts",
+			],
 			mode: "affected-files",
 		});
 	});

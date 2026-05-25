@@ -102,6 +102,7 @@ const RELEASE_HELPER_PACKAGE_FILES = new Set([
 	"scripts/configure-npm-trusted-publisher.mjs",
 	"scripts/deprecate-release.js",
 	"scripts/install-smoke-utils.js",
+	"scripts/release-impact-filter.mjs",
 	"scripts/release-readiness.js",
 	"scripts/smoke-packed-cli.js",
 	"scripts/smoke-published-replay-e2e.js",
@@ -111,6 +112,7 @@ const RELEASE_HELPER_PACKAGE_FILES = new Set([
 const RELEASE_HELPER_TEST_FILES = new Set([
 	"test/scripts/install-smoke-utils.test.ts",
 	"test/scripts/release-context-deps.test.ts",
+	"test/scripts/release-impact-filter.test.ts",
 	"test/scripts/workspace-utils.test.ts",
 ]);
 
