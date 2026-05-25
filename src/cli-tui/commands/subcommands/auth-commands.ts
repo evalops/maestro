@@ -5,7 +5,7 @@
  *
  * Usage:
  *   /auth                 - Show auth status
- *   /auth login [mode]    - Authenticate (pro|console|provider:mode)
+ *   /auth login [provider] - Authenticate (openai-codex by default)
  *   /auth logout [provider] - Remove credentials
  *   /auth source-of-truth <provider> <area> [fallbackConnectionId] - Set connector policy
  *   /auth status          - Show current auth state
@@ -64,16 +64,7 @@ export function createAuthCommandHandler(deps: AuthCommandDeps) {
 				},
 			},
 		],
-		onUnknown: async ({ ctx, subcommand, customContext }) => {
-			if (
-				["pro", "console", "max"].includes(subcommand) ||
-				subcommand.includes(":")
-			) {
-				await deps.handleLogin(
-					customContext(`/login ${ctx.argumentText}`, ctx.argumentText),
-				);
-				return;
-			}
+		onUnknown: async ({ ctx, subcommand }) => {
 			ctx.showError(`Unknown subcommand: ${subcommand}`);
 			showAuthHelp(ctx);
 		},
@@ -96,17 +87,14 @@ Use /auth logout to sign out.`);
 		ctx.showInfo(`Authentication Status:
   Authenticated: no
 
-Use /auth login to authenticate with Claude Pro/Max.`);
+Use /auth login to authenticate with OpenAI Codex.`);
 	}
 }
 
 function showAuthHelp(ctx: CommandExecutionContext): void {
 	ctx.showInfo(`Auth Commands:
   /auth                  Show auth status
-  /auth login [mode]     Authenticate:
-                         - pro: Claude Pro
-                         - console: Anthropic Console
-                         - provider:mode (e.g., anthropic:pro)
+  /auth login [provider] Authenticate (openai-codex by default)
   /auth logout [provider] Remove credentials
   /auth source-of-truth <provider> <area> [fallbackConnectionId]
                          Set connector source-of-truth policy metadata

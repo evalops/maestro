@@ -23,6 +23,7 @@ vi.mock("../../src/oauth/storage.js", () => ({
 
 describe("auth resolver", () => {
 	const originalAnthropic = process.env.ANTHROPIC_API_KEY;
+	const originalAnthropicOAuth = process.env.ANTHROPIC_OAUTH_TOKEN;
 	const originalOpenAI = process.env.OPENAI_API_KEY;
 	const originalOpenAICodex = process.env.OPENAI_CODEX_TOKEN;
 	const originalClaude = process.env.CLAUDE_CODE_TOKEN;
@@ -58,6 +59,7 @@ describe("auth resolver", () => {
 
 	beforeEach(() => {
 		Reflect.deleteProperty(process.env, "ANTHROPIC_API_KEY");
+		Reflect.deleteProperty(process.env, "ANTHROPIC_OAUTH_TOKEN");
 		Reflect.deleteProperty(process.env, "OPENAI_API_KEY");
 		Reflect.deleteProperty(process.env, "OPENAI_CODEX_TOKEN");
 		Reflect.deleteProperty(process.env, "CLAUDE_CODE_TOKEN");
@@ -71,6 +73,11 @@ describe("auth resolver", () => {
 			Reflect.deleteProperty(process.env, "ANTHROPIC_API_KEY");
 		} else {
 			process.env.ANTHROPIC_API_KEY = originalAnthropic;
+		}
+		if (originalAnthropicOAuth === undefined) {
+			Reflect.deleteProperty(process.env, "ANTHROPIC_OAUTH_TOKEN");
+		} else {
+			process.env.ANTHROPIC_OAUTH_TOKEN = originalAnthropicOAuth;
 		}
 		if (originalOpenAI === undefined) {
 			Reflect.deleteProperty(process.env, "OPENAI_API_KEY");
@@ -152,7 +159,7 @@ describe("auth resolver", () => {
 		expect(credential).toBeUndefined();
 	});
 
-	it("prefers stored anthropic oauth token in claude mode", async () => {
+	it("ignores stored Anthropic OAuth credentials", async () => {
 		const mockedGetToken = vi.mocked(getOAuthToken);
 		const mockedLoadCreds = vi.mocked(loadOAuthCredentials);
 		mockedGetToken.mockResolvedValue("oauth-token");
@@ -163,11 +170,10 @@ describe("auth resolver", () => {
 			expires: Date.now() + 60_000,
 			metadata: { mode: "pro" },
 		});
-		const resolver = createAuthResolver({ mode: "claude" });
+		const resolver = createAuthResolver({ mode: "auto" });
 		const credential = await resolver("anthropic");
-		expect(credential).toBeDefined();
-		expect(credential?.type).toBe("anthropic-oauth");
-		expect(credential?.token).toBe("oauth-token");
+		expect(credential).toBeUndefined();
+		expect(mockedGetToken).not.toHaveBeenCalledWith("anthropic");
 		mockedGetToken.mockReset();
 		mockedLoadCreds.mockReset();
 	});
@@ -397,7 +403,7 @@ describe("auth resolver", () => {
 			const credential = await resolver(definition.id);
 			expect(credential).toBeDefined();
 			expect(credential?.type).toBe(
-				definition.usesAnthropicOAuth ? "anthropic-oauth" : "api-key",
+				definition.usesAnthropicOAuth ? "bearer-token" : "api-key",
 			);
 			expect(credential?.requestBody).toEqual({
 				metadata: {
@@ -551,19 +557,25 @@ describe("auth resolver", () => {
 		mockedLoadCreds.mockReset();
 	});
 
-	it("reads env claude token ahead of file", async () => {
+	it("ignores Anthropic OAuth environment tokens", async () => {
 		process.env.CLAUDE_CODE_TOKEN = "env-token";
-		const resolver = createAuthResolver({ mode: "claude" });
-		const credential = await resolver("anthropic");
-		expect(credential).toBeDefined();
-		expect(credential?.token).toBe("env-token");
-		expect(credential?.type).toBe("anthropic-oauth");
-		Reflect.deleteProperty(process.env, "CLAUDE_CODE_TOKEN");
-	});
-
-	it("fails when claude mode lacks oauth tokens", async () => {
-		const resolver = createAuthResolver({ mode: "claude" });
+		process.env.ANTHROPIC_OAUTH_TOKEN = "oauth-env-token";
+		const resolver = createAuthResolver({ mode: "auto" });
 		const credential = await resolver("anthropic");
 		expect(credential).toBeUndefined();
+		Reflect.deleteProperty(process.env, "CLAUDE_CODE_TOKEN");
+		Reflect.deleteProperty(process.env, "ANTHROPIC_OAUTH_TOKEN");
+	});
+
+	it("prefers Anthropic API keys over retired OAuth env tokens", async () => {
+		process.env.CLAUDE_CODE_TOKEN = "claude-env-token";
+		process.env.ANTHROPIC_OAUTH_TOKEN = "oauth-env-token";
+		process.env.ANTHROPIC_API_KEY = "anthropic-api-key";
+		const resolver = createAuthResolver({ mode: "auto" });
+		const credential = await resolver("anthropic");
+		expect(credential).toBeDefined();
+		expect(credential?.token).toBe("anthropic-api-key");
+		expect(credential?.type).toBe("api-key");
+		expect(credential?.envVar).toBe("ANTHROPIC_API_KEY");
 	});
 });

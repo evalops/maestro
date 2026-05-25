@@ -176,8 +176,8 @@ describe("OAuth Index", () => {
 		it("should return all supported providers", () => {
 			const providers = getOAuthProviders();
 
-			expect(providers).toHaveLength(7);
-			expect(providers.map((p) => p.id)).toContain("anthropic");
+			expect(providers).toHaveLength(6);
+			expect(providers.map((p) => p.id)).not.toContain("anthropic");
 			expect(providers.map((p) => p.id)).toContain("evalops");
 			expect(providers.map((p) => p.id)).toContain("openai");
 			expect(providers.map((p) => p.id)).toContain("openai-codex");
@@ -219,7 +219,6 @@ describe("OAuth Index", () => {
 
 	describe("hasOAuthCredentials", () => {
 		it("should return false when no credentials exist", () => {
-			expect(hasOAuthCredentials("anthropic")).toBe(false);
 			expect(hasOAuthCredentials("evalops")).toBe(false);
 			expect(hasOAuthCredentials("openai")).toBe(false);
 			expect(hasOAuthCredentials("openai-codex")).toBe(false);
@@ -229,32 +228,32 @@ describe("OAuth Index", () => {
 		});
 
 		it("should return true when credentials exist", () => {
-			saveOAuthCredentials("anthropic", {
+			saveOAuthCredentials("openai", {
 				type: "oauth",
 				access: "test-token",
 				refresh: "test-refresh",
 				expires: Date.now() + 3600000,
 			});
 
-			expect(hasOAuthCredentials("anthropic")).toBe(true);
-			expect(hasOAuthCredentials("openai")).toBe(false);
+			expect(hasOAuthCredentials("openai")).toBe(true);
+			expect(hasOAuthCredentials("openai-codex")).toBe(false);
 		});
 	});
 
 	describe("logout", () => {
 		it("should remove credentials for provider", async () => {
-			saveOAuthCredentials("anthropic", {
+			saveOAuthCredentials("openai", {
 				type: "oauth",
 				access: "test-token",
 				refresh: "test-refresh",
 				expires: Date.now() + 3600000,
 			});
 
-			expect(hasOAuthCredentials("anthropic")).toBe(true);
+			expect(hasOAuthCredentials("openai")).toBe(true);
 
-			await logout("anthropic");
+			await logout("openai");
 
-			expect(hasOAuthCredentials("anthropic")).toBe(false);
+			expect(hasOAuthCredentials("openai")).toBe(false);
 		});
 
 		it("should revoke EvalOps credentials before removing them", async () => {
@@ -323,19 +322,19 @@ describe("OAuth Index", () => {
 
 	describe("getOAuthToken", () => {
 		it("should return null when no credentials exist", async () => {
-			const token = await getOAuthToken("anthropic");
+			const token = await getOAuthToken("openai");
 			expect(token).toBeNull();
 		});
 
 		it("should return access token when not expired", async () => {
-			saveOAuthCredentials("anthropic", {
+			saveOAuthCredentials("openai", {
 				type: "oauth",
 				access: "valid-access-token",
 				refresh: "test-refresh",
 				expires: Date.now() + 3600000, // 1 hour from now
 			});
 
-			const token = await getOAuthToken("anthropic");
+			const token = await getOAuthToken("openai");
 			expect(token).toBe("valid-access-token");
 		});
 
@@ -349,16 +348,16 @@ describe("OAuth Index", () => {
 			vi.stubGlobal("fetch", fetchMock);
 
 			// Save expired credentials
-			saveOAuthCredentials("anthropic", {
+			saveOAuthCredentials("openai", {
 				type: "oauth",
 				access: "expired-token",
 				refresh: "invalid-refresh",
 				expires: Date.now() - 1000, // Already expired
 			});
 
-			const token = await getOAuthToken("anthropic");
+			const token = await getOAuthToken("openai");
 			expect(token).toBeNull();
-			expect(hasOAuthCredentials("anthropic")).toBe(false);
+			expect(hasOAuthCredentials("openai")).toBe(false);
 			expect(fetchMock).toHaveBeenCalledTimes(1);
 		});
 
@@ -808,7 +807,7 @@ describe("OpenAI OAuth", () => {
 	});
 });
 
-describe("Anthropic OAuth", () => {
+describe("Anthropic OAuth removal", () => {
 	beforeEach(() => {
 		process.env.MAESTRO_AGENT_DIR = join(testDir, "agent");
 		mkdirSync(testDir, { recursive: true });
@@ -820,10 +819,19 @@ describe("Anthropic OAuth", () => {
 		}
 	});
 
-	it("should import anthropic module without errors", async () => {
-		const module = await import("../src/oauth/anthropic.js");
-		expect(module.loginAnthropic).toBeDefined();
-		expect(module.refreshAnthropicToken).toBeDefined();
-		expect(module.migrateAnthropicCredentials).toBeDefined();
+	it("does not expose Anthropic as an OAuth provider", () => {
+		saveOAuthCredentials("anthropic", {
+			type: "oauth",
+			access: "stale-anthropic-token",
+			refresh: "stale-refresh",
+			expires: Date.now() + 3600000,
+		});
+
+		expect(getOAuthProviders().map((provider) => provider.id)).not.toContain(
+			"anthropic",
+		);
+		expect(hasOAuthCredentials("anthropic" as SupportedOAuthProvider)).toBe(
+			false,
+		);
 	});
 });

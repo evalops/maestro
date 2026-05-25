@@ -223,11 +223,7 @@ async function validateRuntimeSessionAccess(
 
 function normalizeAuthMode(value?: string | null): AuthMode {
 	const normalized = value?.trim().toLowerCase();
-	if (
-		normalized === "auto" ||
-		normalized === "api-key" ||
-		normalized === "claude"
-	) {
+	if (normalized === "auto" || normalized === "api-key") {
 		return normalized;
 	}
 	return "auto";
@@ -391,7 +387,7 @@ function logMissingCredentialHints(provider: string): void {
 		);
 	}
 	if (provider === "anthropic") {
-		hints.push("Run `maestro anthropic login` to provision OAuth credentials.");
+		hints.push("Set ANTHROPIC_API_KEY to use Anthropic models.");
 	} else if (provider === "openai") {
 		hints.push("Set OPENAI_API_KEY or run `maestro openai login`.");
 	} else if (provider === "openai-codex") {

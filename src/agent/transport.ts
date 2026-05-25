@@ -1846,7 +1846,7 @@ export class ProviderTransport implements AgentTransport {
 									const cost = model.cost
 										? calculateCost(usage, model.cost)
 										: 0;
-									if (credential?.type !== "anthropic-oauth") {
+									if (credential?.type !== "bearer-token") {
 										try {
 											trackUsage({
 												sessionId: cfg.session?.id,

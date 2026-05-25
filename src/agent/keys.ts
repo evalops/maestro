@@ -5,7 +5,7 @@ import { getHomeDir, resolveEnvPath } from "../utils/path-expansion.js";
 
 type StoredKey = {
 	apiKey?: string;
-	authType?: "api-key" | "anthropic-oauth";
+	authType?: "api-key";
 };
 
 type KeyStore = Record<string, StoredKey>;
@@ -94,12 +94,7 @@ export function getStoredCredentials(providerId: string): {
 	for (const store of stores) {
 		const cred = store[providerId];
 		if (cred?.apiKey) {
-			const authType =
-				cred.authType === "anthropic-oauth"
-					? "anthropic-oauth"
-					: cred.authType === "api-key"
-						? "api-key"
-						: undefined;
+			const authType = cred.authType === "api-key" ? "api-key" : undefined;
 			return { apiKey: cred.apiKey, authType };
 		}
 	}

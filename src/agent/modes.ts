@@ -359,19 +359,18 @@ export const MODEL_BY_TIER: Record<ModelTier, ModelMapping> = {
  * Get the model ID for a given tier and provider.
  *
  * @param tier - The capability tier (opus/sonnet/haiku)
- * @param provider - The LLM provider (defaults to anthropic)
+ * @param provider - The LLM provider (defaults to openai-codex)
  * @returns The concrete model ID string for the provider
  *
- * Falls back to the Anthropic model if the requested provider
+ * Falls back to the OpenAI Codex model if the requested provider
  * doesn't have a mapping for the tier.
  */
 export function getModelForTier(
 	tier: ModelTier,
-	provider: ModelProvider = "anthropic",
+	provider: ModelProvider = "openai-codex",
 ): string {
 	const mapping = MODEL_BY_TIER[tier];
-	// Fall back to Anthropic if provider doesn't have a mapping
-	return mapping[provider] ?? mapping.anthropic;
+	return mapping[provider] ?? mapping["openai-codex"] ?? "gpt-5.5";
 }
 
 function isModelTier(model: string): model is ModelTier {
@@ -412,7 +411,7 @@ function defaultReasoningEffort(config: ModeConfig): ReasoningEffort {
 export function resolveSubagentDispatch(
 	mode: AgentMode,
 	type: SubagentType,
-	provider: ModelProvider = "anthropic",
+	provider: ModelProvider = "openai-codex",
 ): ResolvedSubagentDispatch {
 	const config = getModeConfig(mode);
 	const dispatch = config.subagents?.[type];
@@ -466,7 +465,7 @@ export function getModeConfig(mode: AgentMode): ModeConfig {
  */
 export function getModelForMode(
 	mode: AgentMode,
-	provider: ModelProvider = "anthropic",
+	provider: ModelProvider = "openai-codex",
 ): string {
 	const config = getModeConfig(mode);
 	return getModelForTier(config.primaryTier, provider);

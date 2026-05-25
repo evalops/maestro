@@ -1,6 +1,6 @@
-//! # Composer TUI - Native Terminal Interface
+//! # Maestro TUI - Native Terminal Interface
 //!
-//! This is the main entry point for the Composer CLI application.
+//! This is the main entry point for the Maestro native TUI application.
 //! It's a pure Rust implementation with native AI provider integrations.
 //!
 //! ## Rust Concept: Doc Comments
@@ -11,7 +11,7 @@
 //! ## Usage
 //!
 //! ```bash
-//! composer-tui [options] [prompt]
+//! maestro-tui [options] [prompt]
 //! ```
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -63,7 +63,7 @@ use maestro_tui::hosted_runner_cli::run_hosted_runner_cli_from_env;
 ///
 /// # Arguments
 ///
-/// * `model` - The model name to analyze (e.g., "gpt-4", "claude-3-opus")
+/// * `model` - The model name to analyze (for example, "gpt-5.1-codex-max")
 ///
 /// # Returns
 ///
@@ -119,16 +119,16 @@ fn infer_provider_from_model(model: &str) -> &'static str {
         return "openrouter";
     }
 
-    // Default to Anthropic if we can't identify the provider
+    // Default to OpenAI/Codex if we can't identify the provider
     // Note: No semicolon here - this is the implicit return value
-    "anthropic"
+    "openai"
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
 // CLI ARGUMENTS DEFINITION
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// Command-line arguments for the Composer TUI.
+/// Command-line arguments for the Maestro TUI.
 ///
 /// # Rust Concepts Used
 ///
@@ -148,12 +148,12 @@ fn infer_provider_from_model(model: &str) -> &'static str {
 #[command(name = "maestro-tui")]
 #[command(about = "Native terminal interface for Maestro")]
 struct Args {
-    /// Provider to use (e.g., anthropic, openai).
+    /// Provider to use (for example, openai).
     /// When None, we infer from the model name.
     #[arg(long)]
     provider: Option<String>,
 
-    /// Model to use (e.g., claude-3-opus, gpt-4).
+    /// Model to use (for example, gpt-5.1-codex-max).
     /// `-m` is the short flag, `--model` is the long flag.
     #[arg(short, long)]
     model: Option<String>,
@@ -251,7 +251,7 @@ async fn main() -> Result<()> {
             if let Some(model) = &args.model {
                 infer_provider_from_model(model)
             } else {
-                "anthropic"
+                "openai"
             }
         });
 
@@ -332,5 +332,17 @@ mod tests {
             raw_args.get(1).and_then(|arg| arg.to_str()),
             Some("hosted-runner")
         );
+    }
+
+    #[test]
+    fn codex_models_infer_openai_provider() {
+        assert_eq!(infer_provider_from_model("gpt-5.1-codex-max"), "openai");
+        assert_eq!(infer_provider_from_model("codex-mini-latest"), "openai");
+    }
+
+    #[test]
+    fn unknown_models_default_to_openai() {
+        assert_eq!(infer_provider_from_model("unknown-model"), "openai");
+        assert_eq!(infer_provider_from_model(""), "openai");
     }
 }

@@ -1677,7 +1677,7 @@ export interface StreamOptions {
 	/** Current working directory for local provider runtimes. */
 	cwd?: string;
 	/** Authentication type for the request */
-	authType?: "api-key" | "anthropic-oauth";
+	authType?: "api-key" | "bearer-token";
 	/** Optional Anthropic API-side task budget for the current turn */
 	taskBudget?: {
 		total: number;
