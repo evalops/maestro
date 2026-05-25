@@ -46,6 +46,9 @@ outputs:
   tag_matches_head:
     description: Whether the existing release tag points at the checked-out HEAD commit.
     value: ${{ steps.context.outputs.tag_matches_head }}
+  package_changed_since_tag:
+    description: Whether package-impacting source inputs changed since the existing release tag.
+    value: ${{ steps.context.outputs.package_changed_since_tag }}
 
 runs:
   using: composite
@@ -104,6 +107,7 @@ runs:
         let tagExists = false;
         let tagTarget = "";
         let tagMatchesHead = false;
+        let packageChangedSinceTag = false;
         try {
           execFileSync("git", ["rev-parse", `refs/tags/${releaseTag}`], {
             stdio: "ignore",
@@ -120,6 +124,35 @@ runs:
           ).trim();
           tagMatchesHead = tagTarget === headSha;
         }
+        if (tagExists && !tagMatchesHead) {
+          const packageImpactingFiles = new Set([
+            "buf.gen.yaml",
+            "buf.yaml",
+            "bun.lockb",
+            "package.json",
+            "tsconfig.build.json",
+            "tsconfig.json",
+            "scripts/bundle-runtime-deps.mjs",
+            "scripts/copy-db-migrations.js",
+            "scripts/copy-themes.js",
+            "scripts/headless-protocol-codegen.mjs",
+            "scripts/session-wire-format-codegen.mjs",
+          ]);
+          const isPackageImpactingPath = (path) =>
+            packageImpactingFiles.has(path) ||
+            path.startsWith("packages/") ||
+            path.startsWith("skills/") ||
+            path.startsWith("src/");
+          const diffOutput = execFileSync(
+            "git",
+            ["diff", "--name-only", `${tagTarget}..HEAD`],
+            { encoding: "utf8" },
+          );
+          packageChangedSinceTag = diffOutput
+            .split(/\r?\n/)
+            .filter(Boolean)
+            .some((path) => isPackageImpactingPath(path));
+        }
 
         const outputs = {
           release_tag: releaseTag,
@@ -132,6 +165,7 @@ runs:
           tag_exists: String(tagExists),
           tag_target: tagTarget,
           tag_matches_head: String(tagMatchesHead),
+          package_changed_since_tag: String(packageChangedSinceTag),
         };
 
         for (const [key, value] of Object.entries(outputs)) {
