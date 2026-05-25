@@ -34,6 +34,13 @@ import {
 } from "../services/artifacts.js";
 import { dataStore } from "../services/data-store.js";
 import {
+	buildComposerMessagesForChatRequest,
+	ensureExtractedTextForComposerAttachments,
+	getAllComposerAttachments,
+	hydrateComposerAttachmentForRequest,
+	hydrateComposerAttachmentsForRequest,
+} from "./composer-chat-attachments.js";
+import {
 	formatMcpPrompt,
 	formatMcpPrompts,
 	formatMcpResourceRead,
@@ -2118,115 +2125,45 @@ export class ComposerChat extends LitElement {
 	private async ensureExtractedTextForAttachments(
 		attachments: NonNullable<Message["attachments"]>,
 	): Promise<NonNullable<Message["attachments"]>> {
-		const out: NonNullable<Message["attachments"]> = [];
-		for (const att of attachments) {
-			if (!att || typeof att !== "object") continue;
-
-			if (
-				att.type !== "document" ||
-				typeof att.extractedText === "string" ||
-				typeof att.content !== "string" ||
-				att.content.length === 0
-			) {
-				out.push(att);
-				continue;
-			}
-
-			try {
-				const res = await this.apiClient.extractAttachmentText({
-					fileName: att.fileName,
-					mimeType: att.mimeType,
-					contentBase64: att.content,
-				});
-				out.push({
-					...att,
-					extractedText: res.extractedText || undefined,
-				});
-			} catch (e) {
-				console.warn("Attachment extraction failed", e);
-				out.push(att);
-			}
-		}
-		return out;
+		return ensureExtractedTextForComposerAttachments(
+			this.apiClient,
+			attachments,
+		);
 	}
 
 	private async hydrateAttachmentForRequest(
 		att: NonNullable<Message["attachments"]>[number],
 		options: { sessionId?: string | null; shareToken?: string | null },
 	): Promise<NonNullable<Message["attachments"]>[number]> {
-		const sessionId = options.sessionId ?? null;
-		const shareToken = options.shareToken ?? null;
-		if (!att?.id) return att;
-
-		if (typeof att.content === "string" && att.content.length > 0) {
-			if (!this.attachmentContentCache.has(att.id)) {
-				this.attachmentContentCache.set(att.id, att.content);
-			}
-			return att;
-		}
-
-		if (!att.contentOmitted) return att;
-
-		const cached = this.attachmentContentCache.get(att.id);
-		if (cached) {
-			return { ...att, content: cached, contentOmitted: undefined };
-		}
-
-		if (!sessionId && !shareToken) return att;
-
-		try {
-			const base64 = shareToken
-				? await this.apiClient.getSharedSessionAttachmentContentBase64(
-						shareToken,
-						att.id,
-					)
-				: await this.apiClient.getSessionAttachmentContentBase64(
-						sessionId!,
-						att.id,
-					);
-			this.attachmentContentCache.set(att.id, base64);
-			return { ...att, content: base64, contentOmitted: undefined };
-		} catch (e) {
-			console.warn("Failed to hydrate attachment content", e);
-			return att;
-		}
+		return hydrateComposerAttachmentForRequest(
+			this.apiClient,
+			this.attachmentContentCache,
+			att,
+			options,
+		);
 	}
 
 	private async hydrateAttachmentsForRequest(
 		attachments: NonNullable<Message["attachments"]>,
 		options: { sessionId?: string | null; shareToken?: string | null },
 	): Promise<NonNullable<Message["attachments"]>> {
-		const sessionId = options.sessionId ?? null;
-		const shareToken = options.shareToken ?? null;
-		if (!sessionId && !shareToken) return attachments;
-		return await Promise.all(
-			attachments.map((att) => this.hydrateAttachmentForRequest(att, options)),
+		return hydrateComposerAttachmentsForRequest(
+			this.apiClient,
+			this.attachmentContentCache,
+			attachments,
+			options,
 		);
 	}
 
 	private async buildMessagesForChatRequest(
 		messages: UiMessage[],
 	): Promise<Message[]> {
-		const sessionId = this.currentSessionId;
-		const shareToken = this.shareToken;
-		const filtered = messages.filter((msg) => !msg.localOnly);
-		if (!sessionId && !shareToken) return filtered;
-
-		const out: Message[] = [];
-		for (const msg of filtered) {
-			const atts = Array.isArray(msg.attachments) ? msg.attachments : [];
-			if (msg.role !== "user" || atts.length === 0) {
-				out.push(msg);
-				continue;
-			}
-
-			const hydrated = await this.hydrateAttachmentsForRequest(atts, {
-				sessionId,
-				shareToken,
-			});
-			out.push({ ...msg, attachments: hydrated });
-		}
-		return out;
+		return buildComposerMessagesForChatRequest(messages, {
+			apiClient: this.apiClient,
+			contentCache: this.attachmentContentCache,
+			sessionId: this.currentSessionId,
+			shareToken: this.shareToken,
+		});
 	}
 
 	private clearPromptSuggestion() {
@@ -2776,38 +2713,10 @@ export class ComposerChat extends LitElement {
 	}
 
 	private getAllAttachments(): NonNullable<Message["attachments"]> {
-		const byId = new Map<string, NonNullable<Message["attachments"]>[number]>();
-
-		for (const msg of this.messages) {
-			if (msg.role !== "user") continue;
-			const attachments = Array.isArray(msg.attachments) ? msg.attachments : [];
-			for (const a of attachments) {
-				if (!a || typeof a !== "object") continue;
-				const id = typeof a.id === "string" ? a.id : "";
-				if (!id) continue;
-
-				const existing = byId.get(id);
-				if (!existing) {
-					byId.set(id, a);
-					continue;
-				}
-
-				byId.set(id, {
-					...existing,
-					...a,
-					content: a.content ?? existing.content,
-					preview: a.preview ?? existing.preview,
-					extractedText: a.extractedText ?? existing.extractedText,
-				});
-			}
-		}
-
-		return Array.from(byId.values()).map((a) => {
-			if (typeof a.content === "string" && a.content.length > 0) return a;
-			if (!a.contentOmitted) return a;
-			const cached = this.attachmentContentCache.get(a.id);
-			return cached ? { ...a, content: cached, contentOmitted: undefined } : a;
-		});
+		return getAllComposerAttachments(
+			this.messages,
+			this.attachmentContentCache,
+		);
 	}
 
 	private refreshStatus() {
