@@ -56,6 +56,36 @@ export function isRustTestOnlyPath(filePath) {
 
 /**
  * @param {string} line
+ * @param {number} startIndex
+ */
+function rustCharLiteralEnd(line, startIndex) {
+	let escaped = false;
+	const maxCharLiteralLength = 24;
+	const maxIndex = Math.min(
+		line.length - 1,
+		startIndex + maxCharLiteralLength,
+	);
+
+	for (let index = startIndex + 1; index <= maxIndex; index += 1) {
+		const char = line[index];
+		if (escaped) {
+			escaped = false;
+			continue;
+		}
+		if (char === "\\") {
+			escaped = true;
+			continue;
+		}
+		if (char === "'") {
+			return index;
+		}
+	}
+
+	return -1;
+}
+
+/**
+ * @param {string} line
  * @param {{ inBlockComment: boolean }} state
  */
 function braceDelta(line, state) {
@@ -98,6 +128,13 @@ function braceDelta(line, state) {
 		if (char === '"') {
 			inString = true;
 			continue;
+		}
+		if (char === "'") {
+			const literalEnd = rustCharLiteralEnd(line, index);
+			if (literalEnd !== -1) {
+				index = literalEnd;
+				continue;
+			}
 		}
 		if (char === "{") {
 			delta += 1;
