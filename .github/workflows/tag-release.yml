@@ -59,10 +59,9 @@ jobs:
           active_count="$(
             gh run list \
               --workflow release \
-              --branch "${RELEASE_TAG}" \
-              --json status \
-              --limit 20 \
-              --jq '[.[] | select(.status != "completed")] | length'
+              --json headBranch,status \
+              --limit 50 \
+              --jq "[.[] | select(.headBranch == \"${RELEASE_TAG}\" and .status != \"completed\")] | length"
           )"
           echo "active_count=${active_count}" >> "$GITHUB_OUTPUT"
           if [[ "${active_count}" == "0" ]]; then
