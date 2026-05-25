@@ -56,8 +56,9 @@ export function isRustTestOnlyPath(filePath) {
 
 /**
  * @param {string} line
+ * @param {{ inBlockComment: boolean }} state
  */
-function braceDelta(line) {
+function braceDelta(line, state) {
 	let delta = 0;
 	let inString = false;
 	let escaped = false;
@@ -66,8 +67,21 @@ function braceDelta(line) {
 		const char = line[index];
 		const next = line[index + 1];
 
+		if (state.inBlockComment) {
+			if (char === "*" && next === "/") {
+				state.inBlockComment = false;
+				index += 1;
+			}
+			continue;
+		}
+
 		if (!inString && char === "/" && next === "/") {
 			break;
+		}
+		if (!inString && char === "/" && next === "*") {
+			state.inBlockComment = true;
+			index += 1;
+			continue;
 		}
 
 		if (inString) {
@@ -119,10 +133,11 @@ export function stripRustTestModules(source) {
 			continue;
 		}
 
-		let depth = braceDelta(line);
+		const scannerState = { inBlockComment: false };
+		let depth = braceDelta(line, scannerState);
 		while (index + 1 < lines.length && depth > 0) {
 			index += 1;
-			depth += braceDelta(lines[index]);
+			depth += braceDelta(lines[index], scannerState);
 		}
 	}
 
