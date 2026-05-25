@@ -40,6 +40,12 @@ outputs:
   tag_exists:
     description: Whether the resolved tag already exists in git.
     value: ${{ steps.context.outputs.tag_exists }}
+  tag_target:
+    description: Commit SHA resolved from the existing release tag, when present.
+    value: ${{ steps.context.outputs.tag_target }}
+  tag_matches_head:
+    description: Whether the existing release tag points at the checked-out HEAD commit.
+    value: ${{ steps.context.outputs.tag_matches_head }}
 
 runs:
   using: composite
@@ -92,7 +98,12 @@ runs:
           );
         }
 
+        const headSha = execFileSync("git", ["rev-parse", "HEAD"], {
+          encoding: "utf8",
+        }).trim();
         let tagExists = false;
+        let tagTarget = "";
+        let tagMatchesHead = false;
         try {
           execFileSync("git", ["rev-parse", `refs/tags/${releaseTag}`], {
             stdio: "ignore",
@@ -100,6 +111,14 @@ runs:
           tagExists = true;
         } catch {
           tagExists = false;
+        }
+        if (tagExists) {
+          tagTarget = execFileSync(
+            "git",
+            ["rev-parse", `refs/tags/${releaseTag}^{commit}`],
+            { encoding: "utf8" },
+          ).trim();
+          tagMatchesHead = tagTarget === headSha;
         }
 
         const outputs = {
@@ -111,6 +130,8 @@ runs:
           canonical_package_name: metadata.canonicalPackageName,
           package_aliases_json: JSON.stringify(metadata.packageAliases),
           tag_exists: String(tagExists),
+          tag_target: tagTarget,
+          tag_matches_head: String(tagMatchesHead),
         };
 
         for (const [key, value] of Object.entries(outputs)) {

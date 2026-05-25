@@ -31,6 +31,19 @@ jobs:
           fallback-to-package-version: "true"
           create-tag-if-missing: "true"
 
+      - name: Require version bump for existing release tag
+        if: ${{ steps.release.outputs.tag_exists == 'true' && steps.release.outputs.tag_matches_head != 'true' }}
+        env:
+          RELEASE_TAG: ${{ steps.release.outputs.release_tag }}
+          RELEASE_VERSION: ${{ steps.release.outputs.release_version }}
+          TAG_TARGET: ${{ steps.release.outputs.tag_target }}
+        run: |
+          echo "::error title=Package version already tagged::package.json version ${RELEASE_VERSION} already has a semver tag at another commit."
+          echo "package.json version ${RELEASE_VERSION} already has a semver tag at another commit." >&2
+          echo "${RELEASE_TAG} points at ${TAG_TARGET}; current HEAD is ${GITHUB_SHA}." >&2
+          echo "Bump package.json before tagging another main commit for this package version." >&2
+          exit 1
+
       - name: Summarize tag status
         run: |
           if [[ "${{ steps.release.outputs.tag_exists }}" == "true" ]]; then
