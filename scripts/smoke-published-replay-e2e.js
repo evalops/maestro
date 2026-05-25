@@ -19,9 +19,16 @@ import { fileURLToPath } from "node:url";
 import {
 	getNpmCommand,
 	installedBinPath,
+	readInstalledPackageJson,
 	runInstalledCliSmoke,
+	summarizeInstallablePackageMetadata,
 } from "./install-smoke-utils.js";
 import { getPackageMetadata } from "./package-metadata.js";
+import { getRuntimeWorkspaceNames } from "./runtime-workspaces.mjs";
+import {
+	getWorkspacePackages,
+	loadRootPackage,
+} from "./workspace-utils.js";
 
 const SCRIPTED_SCENARIO_SCHEMA = "evalops.maestro.scripted-scenario.v1";
 const PUBLISHED_REPLAY_EVIDENCE_SCHEMA =
@@ -115,6 +122,20 @@ function countBy(values) {
 		counts[key] = (counts[key] ?? 0) + 1;
 	}
 	return counts;
+}
+
+async function getForbiddenWorkspaceNames() {
+	const rootPackage = loadRootPackage();
+	const runtimeWorkspaceNames = getRuntimeWorkspaceNames(rootPackage);
+	const workspacePackages = await getWorkspacePackages(rootPackage);
+	return Array.from(
+		new Set([
+			...runtimeWorkspaceNames,
+			...workspacePackages
+				.filter((workspacePackage) => workspacePackage.data.private === true)
+				.map((workspacePackage) => workspacePackage.name),
+		]),
+	).sort();
 }
 
 export function resolvePublishedReplayEvidencePath({
@@ -682,10 +703,11 @@ function runRpcMode(binPath) {
 	});
 }
 
-function buildPublishedReplayEvidence({
+export function buildPublishedReplayEvidence({
 	packageSpec,
 	cliCommand,
 	binPath,
+	installMetadata = null,
 	modes,
 }) {
 	return {
@@ -695,6 +717,7 @@ function buildPublishedReplayEvidence({
 			spec: packageSpec,
 			cliCommand,
 			binPath,
+			installMetadata,
 		},
 		replay: {
 			provider: "scripted-replay",
@@ -729,6 +752,7 @@ export async function runPublishedReplayE2E({
 	cliCommand,
 	packageSpec,
 	evidencePath = "",
+	installMetadata = null,
 }) {
 	if (process.env.MAESTRO_SKIP_PUBLISHED_REPLAY_E2E === "1") {
 		console.log(`Skipping published replay E2E smoke for ${packageSpec}.`);
@@ -744,6 +768,7 @@ export async function runPublishedReplayE2E({
 		packageSpec,
 		cliCommand,
 		binPath,
+		installMetadata,
 		modes,
 	});
 	writePublishedReplayEvidence(
@@ -798,6 +823,13 @@ async function main() {
 	}
 
 	try {
+		const installMetadata = summarizeInstallablePackageMetadata(
+			readInstalledPackageJson(name, installRoot),
+			{
+				label: `${packageSpec} published replay install`,
+				forbiddenWorkspaceNames: await getForbiddenWorkspaceNames(),
+			},
+		);
 		runInstalledCliSmoke(installRoot, {
 			cliCommand,
 			expectedVersion: version,
@@ -808,6 +840,7 @@ async function main() {
 			cliCommand,
 			packageSpec,
 			evidencePath,
+			installMetadata,
 		});
 	} finally {
 		if (shouldCleanup) {
