@@ -59,7 +59,7 @@ jobs:
             sleep $((attempt * 5))
           done
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
-      - name: Composer Guardian
+      - name: Maestro Guardian
         if: ${{ matrix.chunkIndex == 1 }}
         env:
           MAESTRO_GUARDIAN_TOOL_TIMEOUT_MS: "600000"

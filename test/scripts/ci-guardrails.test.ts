@@ -1103,9 +1103,7 @@ describe("ci workflow guardrails", () => {
 			(step) => step.name === "Install Semgrep CLI",
 		);
 		const uvInstall = steps.find((step) => step.name === "Install uv");
-		const guardianStep = steps.find(
-			(step) => step.name === "Composer Guardian",
-		);
+		const guardianStep = steps.find((step) => step.name === "Maestro Guardian");
 
 		expect(checkout?.with).toMatchObject({ "fetch-depth": 0 });
 		expect(uvInstall?.if).toBe("${{ matrix.chunkIndex == 1 }}");
