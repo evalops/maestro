@@ -179,6 +179,11 @@ describe("run command", () => {
 						previousExists: true,
 						editsApplied: 1,
 						bytesWritten: 42,
+						toolExecutionId: "texec-call-edit",
+						governedOutcome: {
+							classification: "approved",
+							approvalRequestId: "approval-call-edit",
+						},
 					},
 				},
 			},
@@ -500,16 +505,45 @@ describe("run command", () => {
 			running: 2,
 			failed: 1,
 		});
-		expect(
-			report?.agentRuntimeLedger.entries.find(
-				(entry) => entry.type === "tool.completed",
-			),
-		).toMatchObject({
+		const completedToolEntry = report?.agentRuntimeLedger.entries.find(
+			(entry) => entry.type === "tool.completed",
+		);
+		expect(completedToolEntry).toMatchObject({
 			kind: "tool_result",
 			state: "succeeded",
+			relatedIds: ["approval-call-edit", "call-edit", "texec-call-edit"],
+			evidence: expect.arrayContaining([
+				{ kind: "tool_call", id: "call-edit" },
+				{ kind: "tool_execution", id: "texec-call-edit" },
+				{ kind: "approval_request", id: "approval-call-edit" },
+			]),
 			platformShape: {
 				stepKind: "AGENT_RUN_STEP_KIND_TOOL_RESULT",
 				workItemKind: "AGENT_WORK_ITEM_KIND_TOOL_CALL",
+			},
+		});
+		expect(
+			report?.agentRuntimeLedger.promotion.operations.find(
+				(operation) =>
+					operation.operation === "record_run_work_item" &&
+					operation.ledgerEntryId === completedToolEntry?.id,
+			),
+		).toMatchObject({
+			operation: "record_run_work_item",
+			payload: {
+				toolExecutionId: "texec-call-edit",
+				evidenceRefs: expect.arrayContaining([
+					"tool-call:call-edit",
+					"tool-execution:texec-call-edit",
+					"approval-request:approval-call-edit",
+				]),
+				completionGate: "maestro_agent_runtime_ledger_recorded",
+				payload: expect.objectContaining({
+					maestroSessionId: sessionId,
+					ledgerEntryId: completedToolEntry?.id,
+					toolName: "edit",
+					relatedIds: ["approval-call-edit", "call-edit", "texec-call-edit"],
+				}),
 			},
 		});
 		expect(
@@ -985,7 +1019,10 @@ describe("run command", () => {
 				visibility: "user",
 				source: "local",
 				title: `Wait for ${scenario.pendingRequestKind}`,
-				evidence: [{ kind: "timeline_item", id: scenario.id }],
+				evidence: [
+					{ kind: "timeline_item", id: scenario.id },
+					{ kind: "pending_request", id: scenario.id },
+				],
 			})),
 			scenarios.map((scenario) =>
 				timelineItem(sessionId, {
@@ -1010,6 +1047,25 @@ describe("run command", () => {
 			).toMatchObject({
 				operation: "wait_run",
 				payload: { waitType: scenario.waitType },
+			});
+			expect(
+				ledger.promotion.operations.find(
+					(operation) =>
+						operation.operation === "record_run_work_item" &&
+						operation.ledgerEntryId === `ledger:event-${scenario.id}`,
+				),
+			).toMatchObject({
+				operation: "record_run_work_item",
+				payload: {
+					waitId: `ledger:event-${scenario.id}`,
+					evidenceRefs: expect.arrayContaining([
+						`pending-request:${scenario.id}`,
+					]),
+					payload: expect.objectContaining({
+						trajectoryEventId: `event-${scenario.id}`,
+						eventType: "wait.pending",
+					}),
+				},
 			});
 		}
 	});

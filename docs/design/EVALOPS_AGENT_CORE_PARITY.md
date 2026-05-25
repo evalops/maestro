@@ -174,7 +174,10 @@ plan. `maestro run replay` emits
 `evalops.maestro.agent-runtime-replay-summary.v1`, while
 `maestro run promote` emits `evalops.maestro.agent-runtime-promotion-plan.v1`
 operations shaped like Platform AgentRuntime trigger, step, work-item, wait,
-and terminal writes.
+and terminal writes. Promotion work items carry product-safe join keys such as
+`toolExecutionId`, `waitId`, `evidenceRefs`, and compact linkage payloads, so a
+future live promoter can join local session evidence to Platform ToolExecution,
+approval, wait, and timeline records without copying raw tool output.
 
 This is the local parity layer before live promotion: it gives harnesses and
 operators a stable inspect/replay/promote contract without introducing a second

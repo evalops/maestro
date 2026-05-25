@@ -152,6 +152,11 @@ export type AgentRuntimePromotionOperation =
 				state: AgentRuntimeLedgerState;
 				title: string;
 				timestamp: string;
+				waitId?: string;
+				toolExecutionId?: string;
+				evidenceRefs?: string[];
+				completionGate?: string;
+				payload?: Record<string, unknown>;
 			};
 	  }
 	| {
@@ -396,6 +401,76 @@ function runStepStateForEntry(
 	return entry.state === "blocked" ? "failed" : entry.state;
 }
 
+function firstEvidenceId(
+	entry: AgentRuntimeLedgerEntry,
+	kind: AgentTrajectoryEvent["evidence"][number]["kind"],
+): string | undefined {
+	return entry.evidence.find((anchor) => anchor.kind === kind)?.id;
+}
+
+function evidenceRefForAnchor(
+	anchor: AgentTrajectoryEvent["evidence"][number],
+): string {
+	switch (anchor.kind) {
+		case "timeline_item":
+			return `timeline-item:${anchor.id}`;
+		case "tool_call":
+			return `tool-call:${anchor.id}`;
+		case "tool_execution":
+			return `tool-execution:${anchor.id}`;
+		case "approval_request":
+			return `approval-request:${anchor.id}`;
+		case "pending_request":
+			return `pending-request:${anchor.id}`;
+		case "agent_run":
+			return `agent-run:${anchor.id}`;
+		case "parent_agent_run":
+			return `parent-agent-run:${anchor.id}`;
+		case "child_agent_run":
+			return `child-agent-run:${anchor.id}`;
+		default:
+			return `${anchor.kind}:${anchor.id}`;
+	}
+}
+
+function uniqueStrings(values: Array<string | undefined>): string[] {
+	return values.filter((value, index): value is string => {
+		return (
+			typeof value === "string" &&
+			value.length > 0 &&
+			values.indexOf(value) === index
+		);
+	});
+}
+
+function evidenceRefsForEntry(entry: AgentRuntimeLedgerEntry): string[] {
+	return uniqueStrings([
+		`trajectory-event:${entry.trajectoryEventId}`,
+		...(entry.timelineItemId ? [`timeline-item:${entry.timelineItemId}`] : []),
+		...entry.evidence.map(evidenceRefForAnchor),
+	]);
+}
+
+function workItemPayloadForEntry(
+	sessionId: string,
+	entry: AgentRuntimeLedgerEntry,
+): Record<string, unknown> {
+	return {
+		maestroSessionId: sessionId,
+		ledgerEntryId: entry.id,
+		trajectoryEventId: entry.trajectoryEventId,
+		eventType: entry.type,
+		phase: entry.phase,
+		actor: entry.actor,
+		source: entry.source,
+		state: entry.state,
+		...(entry.timelineItemId ? { timelineItemId: entry.timelineItemId } : {}),
+		...(entry.toolName ? { toolName: entry.toolName } : {}),
+		...(entry.summary ? { summary: entry.summary } : {}),
+		...(entry.relatedIds.length > 0 ? { relatedIds: entry.relatedIds } : {}),
+	};
+}
+
 function terminalEntry(
 	entries: AgentRuntimeLedgerEntry[],
 ): AgentRuntimeLedgerEntry | undefined {
@@ -470,6 +545,9 @@ function buildPromotionPlan(
 	];
 
 	for (const entry of entries) {
+		const toolExecutionId = firstEvidenceId(entry, "tool_execution");
+		const evidenceRefs = evidenceRefsForEntry(entry);
+		const waitId = entry.platformShape.waitType ? entry.id : undefined;
 		operations.push({
 			operation: "record_run_step",
 			id: `promote:${entry.id}:step`,
@@ -493,6 +571,11 @@ function buildPromotionPlan(
 				state: entry.state,
 				title: entry.title,
 				timestamp: entry.timestamp,
+				...(waitId ? { waitId } : {}),
+				...(toolExecutionId ? { toolExecutionId } : {}),
+				evidenceRefs,
+				completionGate: "maestro_agent_runtime_ledger_recorded",
+				payload: workItemPayloadForEntry(sessionId, entry),
 			},
 		});
 		if (entry.platformShape.waitType) {
