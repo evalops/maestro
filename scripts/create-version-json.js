@@ -3,7 +3,7 @@ import { join } from "node:path";
 
 async function main() {
 	const packageJson = JSON.parse(await fs.readFile("package.json", "utf8"));
-	const { version, description = "Composer CLI" } = packageJson;
+	const { version, description = "Maestro CLI" } = packageJson;
 
 	const payload = {
 		version,

@@ -160,7 +160,7 @@ impl Default for ShortcutsHelp {
 }
 
 impl ShortcutsHelp {
-    /// Create a new shortcuts help with default Composer shortcuts
+    /// Create a new shortcuts help with default Maestro shortcuts
     #[must_use]
     pub fn new() -> Self {
         Self::new_with_binding_labels(RustTuiKeybindingLabels::default())
@@ -222,7 +222,7 @@ impl ShortcutsHelp {
         }
     }
 
-    /// Add default Composer shortcuts
+    /// Add default Maestro shortcuts
     fn add_default_shortcuts(&mut self, labels: &RustTuiKeybindingLabels) {
         // Navigation
         self.add(Shortcut::new(
@@ -691,7 +691,7 @@ impl ShortcutsHelpBuilder {
         self
     }
 
-    /// Include default Composer shortcuts
+    /// Include default Maestro shortcuts
     #[must_use]
     pub fn with_defaults(mut self) -> Self {
         let defaults = ShortcutsHelp::new();

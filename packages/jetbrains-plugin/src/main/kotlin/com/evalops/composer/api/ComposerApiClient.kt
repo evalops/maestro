@@ -14,7 +14,7 @@ import java.io.IOException
 import java.util.concurrent.TimeUnit
 
 /**
- * HTTP/SSE client for communicating with Composer backend.
+ * HTTP/SSE client for communicating with Maestro backend.
  */
 class ComposerApiClient(
     private val baseUrl: String,

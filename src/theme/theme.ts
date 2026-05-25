@@ -1,5 +1,5 @@
 /**
- * Theme System for Composer
+ * Theme System for Maestro
  *
  * Adapted from pi-mono (MIT License)
  * Copyright (c) 2025 Mario Zechner

@@ -2,7 +2,7 @@
  * Session Serialization Module
  *
  * This module handles bidirectional conversion between internal agent message
- * types (AppMessage, AssistantMessage, etc.) and the external Composer protocol
+ * types (AppMessage, AssistantMessage, etc.) and the external Maestro protocol
  * messages (ComposerMessage). This conversion is essential for:
  *
  * - Web API: Converting agent output to JSON for the web client
@@ -63,7 +63,7 @@ export interface SessionSerializationContext {
 }
 
 /**
- * Convert internal Usage to Composer protocol format.
+ * Convert internal Usage to Maestro protocol format.
  * Handles missing/undefined fields by defaulting to zero.
  */
 function toComposerUsage(usage?: Usage): ComposerUsage | undefined {
@@ -347,7 +347,7 @@ function extractThinking(
 }
 
 /**
- * Extract tool calls from a message into Composer format.
+ * Extract tool calls from a message into Maestro format.
  * Returns empty array if no tool calls are present.
  */
 function extractToolCalls(
@@ -411,9 +411,9 @@ function normalizeComposerContentBlocks(
 }
 
 /**
- * Convert a single internal AppMessage to Composer protocol format.
+ * Convert a single internal AppMessage to Maestro protocol format.
  *
- * This is the main App -> Composer conversion function. It handles:
+ * This is the main app -> Maestro conversion function. It handles:
  * - User messages: Extract text content
  * - Assistant messages: Extract text, thinking, and tool calls
  * - Tool results: Extract result content and error status
@@ -493,7 +493,7 @@ export function convertAppMessageToComposer(
 }
 
 /**
- * Convert an array of AppMessages to Composer format.
+ * Convert an array of AppMessages to Maestro format.
  * Preserves message order and provides index context for errors.
  */
 export function convertAppMessagesToComposer(
@@ -506,10 +506,10 @@ export function convertAppMessagesToComposer(
 }
 
 /**
- * Normalize a Composer tool call to internal ToolCall format.
+ * Normalize a Maestro tool call to internal ToolCall format.
  * Generates stable IDs if not provided.
  *
- * @param tool - The Composer tool call to normalize
+ * @param tool - The Maestro tool call to normalize
  * @param messageIndex - Message position (for generating fallback IDs)
  * @param contentIndex - Content block position (for generating fallback IDs)
  */
@@ -534,7 +534,7 @@ function normalizeToolCall(
 }
 
 /**
- * Create a ToolResultMessage from a Composer tool call.
+ * Create a ToolResultMessage from a Maestro tool call.
  * The result is derived from the tool call's embedded result field.
  */
 function normalizeToolResult(
@@ -559,13 +559,13 @@ function normalizeToolResult(
 }
 
 /**
- * Convert a single Composer message to internal AppMessage format.
+ * Convert a single Maestro message to internal AppMessage format.
  *
- * This is the main Composer -> App conversion function. Note that a single
- * Composer message may expand to multiple AppMessages when tool calls are
+ * This is the main Maestro -> app conversion function. Note that a single
+ * Maestro message may expand to multiple AppMessages when tool calls are
  * present (the assistant message + one toolResult per tool).
  *
- * @param message - The Composer message to convert
+ * @param message - The Maestro message to convert
  * @param model - Model metadata to attach to assistant messages
  * @param index - Position in the message array (for error context)
  * @returns Array of AppMessages (may be 1+ messages)
@@ -792,11 +792,11 @@ export function convertComposerMessageToApp(
 		];
 	}
 
-	throw new SessionSerializationError("Unsupported Composer role", context);
+	throw new SessionSerializationError("Unsupported Maestro role", context);
 }
 
 /**
- * Convert an array of Composer messages to internal AppMessage format.
+ * Convert an array of Maestro messages to internal AppMessage format.
  *
  * Note: The output array may be longer than the input because assistant
  * messages with tool calls expand to multiple AppMessages.

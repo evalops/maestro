@@ -1,7 +1,7 @@
 /**
- * Main Entry Point - Composer CLI Application
+ * Main Entry Point - Maestro CLI Application
  *
- * This module orchestrates the complete initialization sequence for the Composer CLI,
+ * This module orchestrates the complete initialization sequence for the Maestro CLI,
  * including authentication, model resolution, session management, and runtime mode
  * selection. It serves as the single entry point that routes execution to the
  * appropriate mode (interactive TUI, single-shot, RPC, or exec).
@@ -463,7 +463,7 @@ async function readReplayScenarioId(source: string): Promise<string> {
 }
 
 /**
- * Main entry point for the Composer CLI application.
+ * Main entry point for the Maestro CLI application.
  *
  * This function orchestrates the complete initialization sequence and routes
  * to the appropriate runtime mode. It performs all setup synchronously where

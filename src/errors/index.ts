@@ -1,5 +1,5 @@
 /**
- * Unified error hierarchy for Composer
+ * Unified error hierarchy for Maestro
  *
  * This module provides a standardized error system with:
  * - Consistent error codes and categories
@@ -36,7 +36,7 @@ export interface ErrorContext {
 }
 
 /**
- * Base error class for all Composer errors
+ * Base error class for all Maestro errors
  *
  * Provides:
  * - Standardized error codes (e.g., "TOOL_EXECUTION_FAILED")

@@ -1,4 +1,4 @@
--- Logging Hook for Composer
+-- Logging Hook for Maestro
 --
 -- Logs all tool executions to a file for auditing.
 --

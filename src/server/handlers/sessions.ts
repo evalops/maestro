@@ -1,7 +1,7 @@
 /**
  * @fileoverview Session Management HTTP Handlers
  *
- * This module provides REST API endpoints for managing Composer sessions,
+ * This module provides REST API endpoints for managing Maestro sessions,
  * including CRUD operations, session sharing, and export functionality.
  *
  * ## Endpoints

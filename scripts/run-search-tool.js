@@ -6,7 +6,7 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 const projectRoot = join(__dirname, "..");
 const target = process.argv[2] ?? "README.md";
-const pattern = process.argv[3] ?? "Composer";
+const pattern = process.argv[3] ?? "Maestro";
 
 const { searchTool } = await import(
 	pathToFileURL(join(projectRoot, "dist", "tools", "search.js")).href,

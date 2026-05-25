@@ -49,7 +49,7 @@ export interface Args {
 	configOverrides?: string[];
 	/** Start in read-only mode (activates explore composer) */
 	readonly?: boolean;
-	/** Composer profile to activate on startup */
+	/** Agent profile to activate on startup */
 	composer?: string;
 	exportFormat?: string;
 	redactSecrets?: boolean;

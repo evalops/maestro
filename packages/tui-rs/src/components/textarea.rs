@@ -83,7 +83,7 @@
 //! Adapted from `OpenAI` Codex (MIT License):
 //! <https://github.com/openai/codex/blob/main/codex-rs/tui/src/bottom_pane/textarea.rs>
 //!
-//! Integrated with `AppState` for multi-line input support in Composer.
+//! Integrated with `AppState` for multi-line input support in Maestro.
 
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;

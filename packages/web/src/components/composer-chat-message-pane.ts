@@ -210,7 +210,7 @@ function renderEmptyState(props: ComposerChatMessagePaneProps): TemplateResult {
 						<div class="session-gallery" aria-live="polite">
 							<div class="session-gallery-header">
 								<h3>Resume a Session</h3>
-								<span>Select a recent Composer run to continue.</span>
+								<span>Select a recent Maestro run to continue.</span>
 							</div>
 							<div class="session-grid">
 								${recentSessions.map(

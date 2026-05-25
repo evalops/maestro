@@ -27,7 +27,7 @@ const { MockToolTransport } = helpersModule;
 
 const tempDir = mkdtempSync(join(projectRoot, "evals/search-read-"));
 const tempFile = join(tempDir, "note.txt");
-writeFileSync(tempFile, "Composer eval scenario\nAnother line\nTODO testing");
+writeFileSync(tempFile, "Maestro eval scenario\nAnother line\nTODO testing");
 
 const mockModel = {
 	id: "mock-model",

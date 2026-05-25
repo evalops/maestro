@@ -10,7 +10,7 @@ import com.intellij.openapi.diagnostic.Logger
 import java.util.concurrent.CopyOnWriteArrayList
 
 /**
- * Application-level service for Composer.
+ * Application-level service for Maestro.
  * Manages global state like API client and available models.
  */
 class ComposerApplicationService : Disposable {

@@ -1,7 +1,7 @@
 #!/usr/bin/env node
-// Native messaging host for the Conductor <-> Composer bridge.
+// Native messaging host for the Conductor <-> Maestro bridge.
 // Implements Chrome's length-prefixed JSON protocol and launches/monitors
-// the local Composer web server as needed.
+// the local Maestro web server as needed.
 
 import { spawn } from "node:child_process";
 import { setTimeout as delay } from "node:timers/promises";
@@ -166,7 +166,7 @@ async function ensureComposerWeb(baseUrl) {
 				reachable: false,
 				baseUrl: currentBaseUrl,
 				bridgeStatus: null,
-				error: `Failed to launch Composer: ${error instanceof Error ? error.message : String(error)}`,
+				error: `Failed to launch Maestro: ${error instanceof Error ? error.message : String(error)}`,
 				launched: false,
 			};
 		}
@@ -185,7 +185,7 @@ async function ensureComposerWeb(baseUrl) {
 		reachable: false,
 		baseUrl: currentBaseUrl,
 		bridgeStatus: null,
-		error: "Composer did not become reachable in time",
+		error: "Maestro did not become reachable in time",
 		launched: false,
 	};
 }

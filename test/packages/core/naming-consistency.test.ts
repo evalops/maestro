@@ -2,9 +2,9 @@
  * TDD tests to catch stale "composer" references in the codebase.
  * These tests enforce the Maestro rename is complete.
  */
-import { execSync } from "node:child_process";
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
+import { execFileSync } from "node:child_process";
+import { readFileSync, readdirSync, statSync } from "node:fs";
+import { basename, join } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
 	getGlobalInstallCommand,
@@ -12,17 +12,156 @@ import {
 } from "../../../src/package-metadata.js";
 
 const ROOT = join(__dirname, "../../..");
+const PRODUCT_COPY_EXTENSIONS = new Set([
+	".css",
+	".html",
+	".json",
+	".js",
+	".kt",
+	".lua",
+	".md",
+	".mjs",
+	".nix",
+	".rs",
+	".sh",
+	".svg",
+	".ts",
+	".tsx",
+	".toml",
+	".xml",
+	".yaml",
+	".yml",
+]);
+const PRODUCT_COPY_ROOTS = [
+	".github",
+	"README.md",
+	"CHANGELOG.md",
+	"docs",
+	"evals",
+	"examples",
+	"flake.nix",
+	"packages",
+	"scripts",
+	"src",
+	"test",
+	"todo.md",
+];
+const PRODUCT_COPY_IGNORED_DIRS = new Set([
+	".git",
+	".nx",
+	"coverage",
+	"dist",
+	"node_modules",
+	"target",
+]);
+
+function productCopyRelativePath(path: string): string {
+	return path.slice(ROOT.length + 1).replaceAll("\\", "/");
+}
+
+function walkProductCopyFiles(path: string): string[] {
+	const relativePath = productCopyRelativePath(path);
+	const name = basename(path);
+	if (PRODUCT_COPY_IGNORED_DIRS.has(name)) {
+		return [];
+	}
+	const stat = statSync(path);
+	if (stat.isDirectory()) {
+		return readdirSync(path).flatMap((entry) =>
+			walkProductCopyFiles(join(path, entry)),
+		);
+	}
+	if (!stat.isFile()) {
+		return [];
+	}
+	if (
+		!PRODUCT_COPY_EXTENSIONS.has(
+			name.includes(".") ? name.slice(name.lastIndexOf(".")) : "",
+		)
+	) {
+		return [];
+	}
+	if (relativePath.endsWith(".snap")) {
+		return [];
+	}
+	return [path];
+}
+
+function isAllowedComposerProductCopyLine(relativePath: string, line: string) {
+	if (!/\bComposer\b/.test(line)) {
+		return true;
+	}
+	if (
+		line.includes("@evalops/composer") ||
+		line.includes("composer.evalops.ai") ||
+		line.includes(".composer") ||
+		line.includes("X-Composer-") ||
+		line.includes("x-composer-") ||
+		line.includes("composer-") ||
+		line.includes("composer_") ||
+		line.includes("<composer-") ||
+		line.includes("/composer")
+	) {
+		return true;
+	}
+	if (
+		line.includes("legacy Composer") ||
+		line.includes("stale Composer") ||
+		line.includes("not.toContain") ||
+		line.includes("not.toEqual") ||
+		line.includes("assert_ne!") ||
+		line.includes("assert!(!") ||
+		line.includes('!tip.contains("Composer")') ||
+		line.includes("Composer control plane login code") ||
+		line.includes('Composer "Focus Mode"')
+	) {
+		return true;
+	}
+	if (/Composer[A-Z_a-z0-9]/.test(line) || /[A-Z_a-z0-9]Composer/.test(line)) {
+		return true;
+	}
+	if (/\bComposer\.[A-Za-z]/.test(line)) {
+		return true;
+	}
+	if (relativePath === "test/packages/core/naming-consistency.test.ts") {
+		return true;
+	}
+	if (
+		relativePath.startsWith("src/composers/") ||
+		relativePath.startsWith("test/composers/") ||
+		relativePath === "src/cli-tui/commands/composer-handlers.ts" ||
+		relativePath === "src/server/handlers/composer.ts"
+	) {
+		return true;
+	}
+	return false;
+}
 
 function grepSource(pattern: string, include: string): string[] {
 	try {
-		const result = execSync(
-			`grep -rn "${pattern}" --include="${include}" ${ROOT}/src/ ${ROOT}/packages/ 2>/dev/null | grep -v node_modules | grep -v dist | grep -v ".nx"`,
+		const result = execFileSync(
+			"grep",
+			[
+				"-rn",
+				pattern,
+				`--include=${include}`,
+				join(ROOT, "src"),
+				join(ROOT, "packages"),
+			],
 			{ encoding: "utf-8" },
 		);
 		return result
 			.trim()
 			.split("\n")
-			.filter((l) => l.length > 0);
+			.filter((l) => {
+				const normalized = l.replaceAll("\\", "/");
+				return (
+					normalized.length > 0 &&
+					!normalized.includes("node_modules") &&
+					!normalized.includes("/dist/") &&
+					!normalized.includes("/.nx/")
+				);
+			});
 	} catch {
 		return []; // grep returns exit code 1 when no matches
 	}
@@ -101,6 +240,7 @@ describe("Naming Consistency", () => {
 					!line.includes("composers/") &&
 					!line.includes("composer.json") &&
 					!line.includes("ComposerError") &&
+					!line.includes("packages/vscode-extension/") &&
 					!line.includes("test"),
 			);
 			if (hits.length > 0) {
@@ -122,14 +262,21 @@ describe("Naming Consistency", () => {
 
 		it("no composer_tui imports in Rust source", () => {
 			try {
-				const result = execSync(
-					`grep -rn "composer_tui" ${ROOT}/packages/tui-rs/src/ ${ROOT}/packages/tui-rs/tests/ ${ROOT}/packages/tui-rs/benches/ 2>/dev/null | grep -v target/`,
+				const result = execFileSync(
+					"grep",
+					[
+						"-rn",
+						"composer_tui",
+						join(ROOT, "packages/tui-rs/src"),
+						join(ROOT, "packages/tui-rs/tests"),
+						join(ROOT, "packages/tui-rs/benches"),
+					],
 					{ encoding: "utf-8" },
 				);
 				const lines = result
 					.trim()
 					.split("\n")
-					.filter((l) => l.length > 0);
+					.filter((l) => l.length > 0 && !l.includes("/target/"));
 				if (lines.length > 0) {
 					console.log("Found composer_tui:", lines.slice(0, 5));
 				}
@@ -147,6 +294,28 @@ describe("Naming Consistency", () => {
 				"utf-8",
 			);
 			expect(constants).toContain(".maestro");
+		});
+	});
+
+	describe("product-facing branding", () => {
+		it("does not use Composer as a product name", () => {
+			const files = PRODUCT_COPY_ROOTS.flatMap((root) =>
+				walkProductCopyFiles(join(ROOT, root)),
+			);
+			const hits = files.flatMap((file) => {
+				const relativePath = productCopyRelativePath(file);
+				return readFileSync(file, "utf-8")
+					.split("\n")
+					.flatMap((line, index) =>
+						isAllowedComposerProductCopyLine(relativePath, line)
+							? []
+							: `${relativePath}:${index + 1}: ${line.trim()}`,
+					);
+			});
+			if (hits.length > 0) {
+				console.log("Found stale Composer product copy:", hits.slice(0, 20));
+			}
+			expect(hits.length).toBe(0);
 		});
 	});
 });

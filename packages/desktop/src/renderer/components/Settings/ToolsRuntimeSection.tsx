@@ -3374,7 +3374,7 @@ export function ToolsRuntimeSection({
 					<div className="flex items-center justify-between gap-4">
 						<div>
 							<div className="text-text-primary font-medium">
-								Composer profiles
+								Agent profiles
 							</div>
 							<div className="text-xs text-text-muted">
 								Slash command: /composer

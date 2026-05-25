@@ -1,6 +1,6 @@
 //! Agent communication module
 //!
-//! This module implements the native Rust agent used by the Composer TUI.
+//! This module implements the native Rust agent used by the Maestro TUI.
 //! It exposes a lightweight handle for the UI layer and runs the actual
 //! model/tool loop in a background task.
 //!

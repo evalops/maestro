@@ -1,4 +1,4 @@
-<!-- Java-specific extensions for Composer plugin -->
+<!-- Java-specific extensions for Maestro plugin -->
 <idea-plugin>
     <!-- Java-specific tool window extensions can be added here -->
     <!-- Currently empty as Java features are handled via PSI in the main plugin -->

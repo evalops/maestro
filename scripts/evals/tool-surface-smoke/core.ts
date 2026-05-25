@@ -214,7 +214,7 @@ async function evaluateExtractDocumentCase(): Promise<unknown> {
 		res.statusCode = 200;
 		res.setHeader("content-type", "text/plain; charset=utf-8");
 		res.setHeader("content-disposition", 'attachment; filename="fixture.txt"');
-		res.end("Composer extract document smoke test\n");
+		res.end("Maestro extract document smoke test\n");
 	});
 
 	await new Promise<void>((resolvePromise, reject) => {
@@ -463,11 +463,11 @@ async function evaluateMissingExaKeyCase(
 		try {
 			if (kind === "websearch") {
 				await websearchTool.execute("tool-surface-websearch-missing-key", {
-					query: "Composer tooling",
+					query: "Maestro tooling",
 				});
 			} else if (kind === "codesearch") {
 				await codesearchTool.execute("tool-surface-codesearch-missing-key", {
-					query: "Composer api client",
+					query: "Maestro api client",
 				});
 			} else {
 				await webfetchTool.execute("tool-surface-webfetch-missing-key", {

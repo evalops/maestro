@@ -24,7 +24,7 @@
  * ## Security Note
  *
  * This sandbox provides NO isolation. Commands run with the same
- * permissions as the Composer process. Use DockerSandbox for
+ * permissions as the Maestro process. Use DockerSandbox for
  * isolated execution in untrusted environments.
  *
  * @module sandbox/local-sandbox

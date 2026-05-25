@@ -44,7 +44,7 @@ describe("enforceEndpoint", () => {
 });
 
 describe("resolveProviderApi", () => {
-	it("prefers Composer's mapping over models.dev provider api", () => {
+	it("prefers Maestro's mapping over models.dev provider api", () => {
 		expect(resolveProviderApi("mistral", "openai-responses")).toBe(
 			"openai-completions",
 		);

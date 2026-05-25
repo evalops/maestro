@@ -2,7 +2,7 @@
  * Tool DSL - Domain-Specific Language for Creating Agent Tools
  *
  * This module provides a fluent, type-safe API for defining tools that can be
- * executed by the Composer agent. It handles schema validation, response building,
+ * executed by the Maestro agent. It handles schema validation, response building,
  * retry logic, and sandbox integration.
  *
  * ## Architecture

@@ -2,7 +2,7 @@
  * @fileoverview CLI Session Selection UI
  *
  * This module provides an interactive terminal UI for selecting and resuming
- * previous Composer sessions. It wraps the TUI session selector component
+ * previous Maestro sessions. It wraps the TUI session selector component
  * in a Promise-based API for use in CLI flows.
  *
  * ## Usage

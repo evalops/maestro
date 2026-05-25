@@ -1,6 +1,6 @@
-//! # Composer TUI - Native Terminal Interface Library
+//! # Maestro TUI - Native Terminal Interface Library
 //!
-//! This crate provides the primary terminal UI and native agent for Composer,
+//! This crate provides the primary terminal UI and native agent for Maestro,
 //! including LSP diagnostics, workflow gating, and MCP annotations support.
 //! The Rust binary is the user entry point: it owns terminal rendering, AI
 //! calls, tool execution, and safety enforcement without any Node.js
@@ -94,7 +94,7 @@ pub mod hosted_runner_cli;
 /// Type definitions for messages exchanged between Rust and Node.js.
 pub mod protocol;
 
-/// Composer <-> Conductor bridge status types and helpers.
+/// Maestro <-> Conductor bridge status types and helpers.
 pub mod bridge;
 
 /// Session persistence (save/load conversations).
@@ -433,7 +433,7 @@ pub use diff::{
 
 // Bridge status types
 pub use bridge::{
-    fetch_bridge_status, // Fetches bridge status from a Composer web server
+    fetch_bridge_status, // Fetches bridge status from a Maestro web server
     BridgeClientTools,
     BridgeDefaults,
     BridgeStatus,

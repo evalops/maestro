@@ -1,5 +1,5 @@
 /**
- * Type Definitions for Composer Desktop
+ * Type Definitions for Maestro Desktop
  *
  * These types mirror the contracts package for use in the renderer.
  */

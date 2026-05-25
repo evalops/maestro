@@ -1,5 +1,5 @@
 /**
- * Example TypeScript Hook for Composer
+ * Example TypeScript Hook for Maestro
  *
  * This demonstrates how to write a TypeScript hook that:
  * 1. Intercepts tool execution events

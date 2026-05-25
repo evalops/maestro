@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Install the Composer native messaging host manifest.
+ * Install the Maestro native messaging host manifest.
  *
  * Resolution order for extension ID:
  * 1) --extension-id / CONDUCTOR_EXTENSION_ID
@@ -188,7 +188,7 @@ async function main() {
 
   const payload = {
     name: HOST_NAME,
-    description: "Composer native host for the Conductor bridge",
+    description: "Maestro native host for the Conductor bridge",
     path: HOST_PATH,
     type: "stdio",
     allowed_origins: [`chrome-extension://${extensionId}/`],

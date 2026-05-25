@@ -1,8 +1,8 @@
 /**
- * @fileoverview API Client for Composer Backend
+ * @fileoverview API Client for Maestro Backend
  *
  * This module provides a type-safe HTTP client for communicating with
- * the Composer backend API. It handles:
+ * the Maestro backend API. It handles:
  *
  * - Session management (create, list, delete)
  * - Streaming chat with Server-Sent Events (SSE)
@@ -1190,9 +1190,9 @@ export interface BranchListResponse {
 }
 
 /**
- * HTTP API client for the Composer backend.
+ * HTTP API client for the Maestro backend.
  *
- * Provides methods for all Composer API endpoints including chat streaming,
+ * Provides methods for all Maestro API endpoints including chat streaming,
  * session management, model selection, and workspace operations.
  *
  * The client automatically handles:
@@ -3138,7 +3138,7 @@ export class ApiClient {
 		);
 	}
 
-	// Composer
+	// Maestro
 	async listComposers(): Promise<Record<string, unknown>> {
 		return await this.fetchJsonWithFallback("/api/composer");
 	}

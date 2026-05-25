@@ -5,7 +5,7 @@
  * - ~/.maestro/prompts/*.md (user prompts)
  * - .maestro/prompts/*.md (project prompts)
  *
- * Additionally, Composer treats Markdown files in `.maestro/commands/*.md` and
+ * Additionally, Maestro treats Markdown files in `.maestro/commands/*.md` and
  * `~/.maestro/commands/*.md` as prompts. This lets teams colocate "prompt-like"
  * commands alongside other command templates.
  *

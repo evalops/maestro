@@ -1,6 +1,6 @@
 //! TUI Components
 //!
-//! This module contains the core UI components for the Composer terminal interface,
+//! This module contains the core UI components for the Maestro terminal interface,
 //! built using the Ratatui library. Each component is a custom widget that implements
 //! the Widget trait to render terminal UI elements.
 //!

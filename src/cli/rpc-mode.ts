@@ -2,7 +2,7 @@
  * RPC Mode - JSON-over-stdio protocol for programmatic agent control.
  *
  * Moved from main.ts. Provides a line-based JSON protocol for IDE integrations,
- * language servers, and other tools that embed Composer functionality.
+ * language servers, and other tools that embed Maestro functionality.
  *
  * ## Protocol
  *

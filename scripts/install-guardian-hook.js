@@ -19,7 +19,7 @@ mkdirSync(hookDir, { recursive: true });
 if (existsSync(hookPath)) {
 	const contents = readFileSync(hookPath, "utf-8");
 	if (alreadyConfigured(contents)) {
-		console.log("Composer Guardian pre-commit hook already present.");
+		console.log("Maestro Guardian pre-commit hook already present.");
 		process.exit(0);
 	}
 	console.error(
@@ -37,4 +37,4 @@ bash "$ROOT/scripts/guardian.sh" --trigger pre-commit "$@"
 `;
 
 writeFileSync(hookPath, script, { encoding: "utf-8", mode: 0o755 });
-console.log("Installed Composer Guardian pre-commit hook at .git/hooks/pre-commit.");
+console.log("Installed Maestro Guardian pre-commit hook at .git/hooks/pre-commit.");

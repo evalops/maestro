@@ -1,7 +1,7 @@
 /**
  * @evalops/github-agent
  *
- * Autonomous GitHub agent for Composer building Composer
+ * Autonomous GitHub agent for Maestro building Maestro
  */
 
 // Types

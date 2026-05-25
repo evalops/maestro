@@ -3,7 +3,7 @@
 //! Terminal hyperlinks using the OSC 8 escape sequence.
 //! Works in modern terminals like iTerm2, Kitty, WezTerm, etc.
 //!
-//! Ported from Composer TypeScript TUI.
+//! Ported from the TypeScript Maestro TUI.
 
 use ratatui::style::Style;
 use ratatui::text::Span;

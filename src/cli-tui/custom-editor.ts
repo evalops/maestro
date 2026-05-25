@@ -102,7 +102,7 @@ const CUSTOM_EDITOR_KEYMAP: CustomEditorBinding[] = [
 		},
 	},
 	{
-		description: "Escape closes Composer modals (unless autocomplete is open)",
+		description: "Escape closes Maestro modals (unless autocomplete is open)",
 		matches: (data) => data === "\x1b",
 		when: (editor) =>
 			Boolean(editor.onEscape) && !editor.isShowingAutocomplete(),
@@ -208,7 +208,7 @@ const CUSTOM_EDITOR_KEYMAP: CustomEditorBinding[] = [
 ];
 
 /**
- * Custom editor that handles Escape and Ctrl+C keys for Composer
+ * Custom editor that handles Escape and Ctrl+C keys for Maestro
  */
 export class CustomEditor extends Editor {
 	public onEscape?: () => void;

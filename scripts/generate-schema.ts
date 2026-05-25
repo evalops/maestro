@@ -141,14 +141,14 @@ const ConfigSchema = Type.Object(
 				default: [],
 			}),
 		},
-		{ description: "Composer CLI configuration", additionalProperties: false },
+		{ description: "Maestro CLI configuration", additionalProperties: false },
 );
 
 const schema = {
 	...ConfigSchema,
 	$id: "https://composer-cli.dev/config.schema.json",
-	title: "Composer CLI Configuration",
-	description: "Configuration schema for Composer CLI model providers and models",
+	title: "Maestro CLI Configuration",
+	description: "Configuration schema for Maestro CLI model providers and models",
 };
 
 const outputPath = join(process.cwd(), "dist", "config.schema.json");

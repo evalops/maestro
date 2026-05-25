@@ -57,7 +57,7 @@
 
         <!-- Notification Group -->
         <notificationGroup
-                id="Composer Notifications"
+                id="Maestro Notifications"
                 displayType="BALLOON"
                 toolWindowId="Maestro"/>
     </extensions>
@@ -98,7 +98,7 @@
             <add-to-group group-id="Composer.MainMenu" anchor="last"/>
         </action>
 
-        <!-- Focus Composer Action -->
+        <!-- Focus Maestro Action -->
         <action id="Composer.Focus"
                 class="com.evalops.composer.actions.FocusComposerAction"
                 text="Focus Maestro"

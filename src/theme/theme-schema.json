@@ -1,7 +1,7 @@
 {
 	"$schema": "http://json-schema.org/draft-07/schema#",
-	"title": "Composer Theme",
-	"description": "Theme schema for Composer (terminal UI).",
+	"title": "Maestro Theme",
+	"description": "Theme schema for Maestro (terminal UI).",
 	"type": "object",
 	"required": ["name", "colors"],
 	"properties": {

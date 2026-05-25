@@ -1,4 +1,4 @@
-//! # Native Composer TUI Application
+//! # Native Maestro TUI Application
 //!
 //! This is the main entry point for the native Rust TUI. It coordinates all
 //! the major subsystems: terminal rendering, input handling, agent communication,

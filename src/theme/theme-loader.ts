@@ -202,8 +202,8 @@ function normalizeThemeJson(raw: unknown): unknown {
 	if (!isRecord(raw.colors)) return raw;
 
 	// pi-mono compatibility / forward-compat:
-	// - Composer requires `accentWarm`; fall back to `accent` when missing.
-	// - pi-mono includes `thinkingXhigh` and `bashMode` which Composer does not use.
+	// - Maestro requires `accentWarm`; fall back to `accent` when missing.
+	// - pi-mono includes `thinkingXhigh` and `bashMode` which Maestro does not use.
 	const {
 		bashMode: _bashMode,
 		thinkingXhigh: _thinkingXhigh,

@@ -1,6 +1,6 @@
 //! # Application State Module
 //!
-//! This module manages the central state of the Composer TUI application.
+//! This module manages the central state of the Maestro TUI application.
 //! It contains all mutable data that changes during program execution,
 //! including messages, UI state, and agent status.
 //!
