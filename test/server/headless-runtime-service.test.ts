@@ -18,6 +18,7 @@ import {
 	HeadlessRuntimeService,
 	getFleetPlatformEventBusStatus,
 	inferFleetModelTier,
+	loadHostedRunnerRestoreManifest,
 } from "../../src/server/headless-runtime-service.js";
 import { SessionManager } from "../../src/session/manager.js";
 
@@ -60,6 +61,43 @@ class FakeAgent {
 }
 
 const tempDirs: string[] = [];
+
+function buildRestoreManifest(input: {
+	sessionId: string;
+	sessionFile: string;
+	workspaceRoot: string;
+	cursor?: number;
+}) {
+	const restoredState = createHeadlessRuntimeState();
+	restoredState.protocol_version = HEADLESS_PROTOCOL_VERSION;
+	restoredState.session_id = input.sessionId;
+	restoredState.cwd = input.workspaceRoot;
+	restoredState.pending_user_inputs = [
+		{
+			call_id: "call_user_input",
+			tool: "ask_user",
+			args: { question: "Continue?" },
+		},
+	];
+	const cursor = input.cursor ?? 7;
+	return {
+		protocol_version: "evalops.remote-runner.snapshot-manifest.v1",
+		maestro_session_id: input.sessionId,
+		runtime: {
+			flush_status: "completed",
+			session_id: input.sessionId,
+			session_file: input.sessionFile,
+			cursor,
+		},
+		snapshot: {
+			protocolVersion: HEADLESS_PROTOCOL_VERSION,
+			session_id: input.sessionId,
+			cursor,
+			last_init: null,
+			state: restoredState,
+		},
+	};
+}
 
 describe("inferFleetModelTier", () => {
 	it("classifies mini variants as fast before GPT-5 frontier matching", () => {
@@ -120,36 +158,15 @@ describe("HeadlessRuntimeService restore manifests", () => {
 		const sessionManager = new SessionManager(false, undefined, { sessionDir });
 		sessionManager.startSession(fakeAgent.state);
 		const sessionId = sessionManager.getSessionId();
-		const restoredState = createHeadlessRuntimeState();
-		restoredState.protocol_version = HEADLESS_PROTOCOL_VERSION;
-		restoredState.session_id = sessionId;
-		restoredState.cwd = workspaceRoot;
-		restoredState.pending_user_inputs = [
-			{
-				call_id: "call_user_input",
-				tool: "ask_user",
-				args: { question: "Continue?" },
-			},
-		];
 		const manifestPath = join(workspaceRoot, "restore-manifest.json");
 		await writeFile(
 			manifestPath,
 			JSON.stringify({
-				protocol_version: "evalops.remote-runner.snapshot-manifest.v1",
-				maestro_session_id: sessionId,
-				runtime: {
-					flush_status: "completed",
-					session_id: sessionId,
-					session_file: sessionManager.getSessionFile(),
-					cursor: 7,
-				},
-				snapshot: {
-					protocolVersion: HEADLESS_PROTOCOL_VERSION,
-					session_id: sessionId,
-					cursor: 7,
-					last_init: null,
-					state: restoredState,
-				},
+				...buildRestoreManifest({
+					sessionId,
+					sessionFile: sessionManager.getSessionFile(),
+					workspaceRoot,
+				}),
 			}),
 			"utf8",
 		);
@@ -233,5 +250,53 @@ describe("HeadlessRuntimeService restore manifests", () => {
 		]);
 
 		await runtime.dispose();
+	});
+
+	it.each([
+		{
+			field: "snapshot.session_id",
+			applyMismatch: (manifest: ReturnType<typeof buildRestoreManifest>) => {
+				manifest.snapshot.session_id = "other-session";
+			},
+			message:
+				"Hosted runner restore manifest snapshot is for Maestro session other-session",
+		},
+		{
+			field: "snapshot.state.session_id",
+			applyMismatch: (manifest: ReturnType<typeof buildRestoreManifest>) => {
+				manifest.snapshot.state.session_id = "other-session";
+			},
+			message:
+				"Hosted runner restore manifest snapshot state is for Maestro session other-session",
+		},
+		{
+			field: "runtime.session_id",
+			applyMismatch: (manifest: ReturnType<typeof buildRestoreManifest>) => {
+				manifest.runtime.session_id = "other-session";
+			},
+			message:
+				"Hosted runner restore manifest runtime is for Maestro session other-session",
+		},
+	])("rejects restore manifest with mismatched $field", async (testCase) => {
+		const workspaceRoot = await mkdtemp(
+			join(tmpdir(), "maestro-headless-restore-mismatch-"),
+		);
+		const sessionDir = await mkdtemp(join(tmpdir(), "maestro-sessions-"));
+		tempDirs.push(workspaceRoot, sessionDir);
+		const fakeAgent = new FakeAgent();
+		const sessionManager = new SessionManager(false, undefined, { sessionDir });
+		sessionManager.startSession(fakeAgent.state);
+		const manifest = buildRestoreManifest({
+			sessionId: sessionManager.getSessionId(),
+			sessionFile: sessionManager.getSessionFile(),
+			workspaceRoot,
+		});
+		testCase.applyMismatch(manifest);
+		const manifestPath = join(workspaceRoot, "restore-manifest.json");
+		await writeFile(manifestPath, JSON.stringify(manifest), "utf8");
+
+		await expect(loadHostedRunnerRestoreManifest(manifestPath)).rejects.toThrow(
+			testCase.message,
+		);
 	});
 });

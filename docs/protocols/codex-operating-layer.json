@@ -409,7 +409,16 @@
 			"anchors": [
 				"evalops.remote-runner.work-continuity.v1",
 				"CodexSubagentContinuityEdge",
-				"codex_subagent_edges",
+				"codex_subagent_edges"
+			]
+		},
+		{
+			"area": "remote-runner-continuity",
+			"evidenceType": "test",
+			"path": "packages/tui-rs/src/hosted_runner/tests.rs",
+			"anchors": [
+				"work_continuity_manifest_extracts_codex_subagent_ids",
+				"work_continuity_manifest_keeps_spawned_and_resumed_codex_subagents_active",
 				"close_agent"
 			]
 		},

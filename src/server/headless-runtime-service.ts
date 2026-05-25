@@ -315,15 +315,15 @@ export async function loadHostedRunnerRestoreManifest(
 			"Hosted runner restore manifest is missing runtime, snapshot, or maestro_session_id",
 		);
 	}
+	const runtimeSessionId =
+		typeof runtime.session_id === "string" ? runtime.session_id.trim() : "";
 	const restore: HostedRunnerRestoreManifest = {
 		protocol_version: HOSTED_RUNNER_SNAPSHOT_MANIFEST_VERSION,
 		maestro_session_id: maestroSessionId,
 		runtime: {
 			flush_status: restoreFlushStatus(runtime.flush_status),
 			...(typeof runtime.error === "string" ? { error: runtime.error } : {}),
-			...(typeof runtime.session_id === "string"
-				? { session_id: runtime.session_id }
-				: {}),
+			...(runtimeSessionId ? { session_id: runtimeSessionId } : {}),
 			...(typeof runtime.session_file === "string"
 				? { session_file: runtime.session_file }
 				: {}),
@@ -337,6 +337,24 @@ export async function loadHostedRunnerRestoreManifest(
 		restore.snapshot,
 		"hosted runner restore snapshot",
 	);
+	if (restore.snapshot.session_id !== maestroSessionId) {
+		throw new Error(
+			`Hosted runner restore manifest snapshot is for Maestro session ${restore.snapshot.session_id}, not ${maestroSessionId}`,
+		);
+	}
+	if (restore.snapshot.state.session_id !== maestroSessionId) {
+		throw new Error(
+			`Hosted runner restore manifest snapshot state is for Maestro session ${restore.snapshot.state.session_id}, not ${maestroSessionId}`,
+		);
+	}
+	if (
+		restore.runtime.session_id &&
+		restore.runtime.session_id !== maestroSessionId
+	) {
+		throw new Error(
+			`Hosted runner restore manifest runtime is for Maestro session ${restore.runtime.session_id}, not ${maestroSessionId}`,
+		);
+	}
 	return restore;
 }
 
