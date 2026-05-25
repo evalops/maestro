@@ -692,27 +692,21 @@ export const PRIMARY_COMMAND_CATALOG: readonly CommandCatalogEntry[] = [
 		tags: ["tools"],
 	}),
 	withArgs("login", "login", {
-		description: "Authenticate with Claude Pro/Max via OAuth",
-		usage: "/login [mode] or /login [provider:mode]",
+		description: "Authenticate with OpenAI Codex by default",
+		usage: "/login [provider]",
 		tags: ["auth"],
 		arguments: [
 			{
-				name: "argument",
+				name: "provider",
 				type: "string",
 				required: false,
-				description:
-					"Login mode (pro/console) or provider:mode format (e.g., anthropic:pro)",
+				description: "OAuth provider (openai-codex by default)",
 			},
 		],
-		examples: [
-			"/login",
-			"/login pro",
-			"/login console",
-			"/login anthropic:pro",
-		],
+		examples: ["/login", "/login openai-codex", "/login openai"],
 	}),
 	withArgs("logout", "logout", {
-		description: "Remove stored Claude OAuth credentials",
+		description: "Remove stored OAuth credentials",
 		usage: "/logout [provider]",
 		tags: ["auth"],
 		arguments: [
@@ -723,7 +717,7 @@ export const PRIMARY_COMMAND_CATALOG: readonly CommandCatalogEntry[] = [
 				description: "OAuth provider to logout from (optional)",
 			},
 		],
-		examples: ["/logout", "/logout anthropic"],
+		examples: ["/logout", "/logout openai-codex"],
 	}),
 	quit("quit", "quit", {
 		description: "Exit composer (same as ctrl+c twice)",
