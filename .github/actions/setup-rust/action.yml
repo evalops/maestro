@@ -38,9 +38,19 @@ runs:
         safe_job="${safe_job//[^A-Za-z0-9_.-]/-}"
         safe_toolchain="${TOOLCHAIN_INPUT:-stable}"
         safe_toolchain="${safe_toolchain//[^A-Za-z0-9_.-]/-}"
-        root="${RUNNER_TEMP:-${GITHUB_WORKSPACE:-$PWD}/.tmp}/maestro-rust/${safe_repo}/${safe_job}/${safe_toolchain}"
+        safe_run="${GITHUB_RUN_ID:-local}"
+        safe_run="${safe_run//[^A-Za-z0-9_.-]/-}"
+        safe_attempt="${GITHUB_RUN_ATTEMPT:-0}"
+        safe_attempt="${safe_attempt//[^A-Za-z0-9_.-]/-}"
+        base="${RUNNER_TEMP:-${GITHUB_WORKSPACE:-$PWD}/.tmp}/maestro-rust/${safe_repo}/${safe_job}/${safe_toolchain}"
+        root="$base/run-${safe_run}-attempt-${safe_attempt}"
         cargo_home="$root/cargo"
         rustup_home="$root/rustup"
+        mkdir -p "$base"
+        find "$base" -mindepth 1 -maxdepth 1 -type d -mmin +360 -exec rm -rf {} + || true
+        if [[ "$root" == "$base"/run-* ]]; then
+          rm -rf "$root"
+        fi
         mkdir -p "$cargo_home/bin" "$rustup_home"
 
         export CARGO_HOME="$cargo_home"
