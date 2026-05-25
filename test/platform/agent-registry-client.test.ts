@@ -8,6 +8,7 @@ import {
 	delegateAgentWithPlatform,
 	getA2ADelegationGraphWithPlatform,
 	heartbeatAgentWithPlatform,
+	listA2APeerCandidatesWithEvidenceWithPlatform,
 	listA2APeerCandidatesWithPlatform,
 	listAgentsWithPlatform,
 	registerAgentWithPlatform,
@@ -276,6 +277,16 @@ describe("agent registry service client", () => {
 							},
 						],
 						totalSize: 2,
+						discovery_evidence: {
+							schema: "agents.v1.discovery-evidence",
+							decision: "matched",
+							workspace_id: "ws_1",
+							capability: "code:review",
+							a2a_skill_id: "maestro.subagent.code-review",
+							require_a2a_dispatch: true,
+							candidate_count: 2,
+							matched_count: 1,
+						},
 					}),
 					{ status: 200, headers: { "Content-Type": "application/json" } },
 				);
@@ -366,7 +377,34 @@ describe("agent registry service client", () => {
 				],
 			}),
 		]);
-		expect(fetchMock).toHaveBeenCalledTimes(2);
+
+		await expect(
+			listA2APeerCandidatesWithEvidenceWithPlatform({
+				workspaceId: "ws_1",
+				capability: "code:review",
+				limit: 25,
+				preferInternalEndpoint: true,
+				skillId: "maestro.subagent.code-review",
+			}),
+		).resolves.toMatchObject({
+			candidates: [
+				expect.objectContaining({
+					endpointUrl: "http://reviewer.mesh/a2a",
+					agent: expect.objectContaining({ id: "maestro-reviewer" }),
+				}),
+			],
+			discoveryEvidence: {
+				schema: "agents.v1.discovery-evidence",
+				decision: "matched",
+				workspaceId: "ws_1",
+				capability: "code:review",
+				a2aSkillId: "maestro.subagent.code-review",
+				requireA2ADispatch: true,
+				candidateCount: 2,
+				matchedCount: 1,
+			},
+		});
+		expect(fetchMock).toHaveBeenCalledTimes(3);
 	});
 
 	it("registers, updates, and heartbeats a governed A2A Maestro peer", async () => {

@@ -57,6 +57,7 @@ import {
 } from "../../platform/a2a-work-graph.js";
 import {
 	PlatformA2ADelegationTaskControlModeValue,
+	type PlatformAgentDiscoveryEvidence,
 	type PlatformAgentRegistryA2APeerCandidate,
 	type PlatformAgentRegistryAgent,
 	PlatformAgentStatusValue,
@@ -65,7 +66,7 @@ import {
 	getA2ADelegationGraphWithPlatform,
 	heartbeatAgentWithPlatform,
 	isAgentAlreadyExistsError,
-	listA2APeerCandidatesWithPlatform,
+	listA2APeerCandidatesWithEvidenceWithPlatform,
 	registerAgentWithPlatform,
 	updateAgentWithPlatform,
 } from "../../platform/agent-registry-client.js";
@@ -234,6 +235,19 @@ const A2A_LEADING_BOOLEAN_FLAGS = new Set(
 export interface ParsedA2AArgs {
 	positionals: string[];
 	flags: Map<string, string | boolean>;
+}
+
+interface A2ADiscoverySelection {
+	source: "platform-agent-registry";
+	evidence?: PlatformAgentDiscoveryEvidence;
+	candidateCount: number;
+	matchedCount: number;
+	selectedAgentId?: string;
+	selectedAgentName?: string;
+	selectedEndpointUrl?: string;
+	selectedEndpointKind?: "public" | "internal";
+	score?: number;
+	reasons?: string[];
 }
 
 export async function handleA2ACommand(args: string[]): Promise<void> {
@@ -563,7 +577,7 @@ async function handleA2APeers(parsed: ParsedA2AArgs): Promise<void> {
 }
 
 async function handleA2ADiscover(parsed: ParsedA2AArgs): Promise<void> {
-	const candidates = await listA2APeerCandidatesWithPlatform({
+	const discovery = await listA2APeerCandidatesWithEvidenceWithPlatform({
 		workspaceId: stringFlag(parsed, "--workspace-id"),
 		capability: stringFlag(parsed, "--capability"),
 		surface: stringFlag(parsed, "--surface"),
@@ -573,13 +587,18 @@ async function handleA2ADiscover(parsed: ParsedA2AArgs): Promise<void> {
 		skillId: stringFlag(parsed, "--skill"),
 		preferInternalEndpoint: booleanFlag(parsed, "--prefer-internal"),
 	});
-	if (!candidates) {
+	if (!discovery) {
 		fail(
 			"Agent Registry service is not configured. Set AGENT_REGISTRY_SERVICE_URL, AGENT_REGISTRY_SERVICE_TOKEN, AGENT_REGISTRY_ORGANIZATION_ID, and AGENT_REGISTRY_WORKSPACE_ID.",
 		);
 	}
+	const candidates = discovery.candidates;
 	const imported = booleanFlag(parsed, "--import")
-		? await importDiscoveredA2APeers(parsed, candidates)
+		? await importDiscoveredA2APeers(
+				parsed,
+				candidates,
+				discovery.discoveryEvidence,
+			)
 		: [];
 	if (booleanFlag(parsed, "--json")) {
 		console.log(
@@ -587,6 +606,9 @@ async function handleA2ADiscover(parsed: ParsedA2AArgs): Promise<void> {
 				{
 					peers: candidates.map(discoveredPeerJson),
 					imported,
+					...(discovery.discoveryEvidence
+						? { discoveryEvidence: discovery.discoveryEvidence }
+						: {}),
 				},
 				null,
 				2,
@@ -595,6 +617,7 @@ async function handleA2ADiscover(parsed: ParsedA2AArgs): Promise<void> {
 		return;
 	}
 	console.log("Platform A2A peers");
+	printA2ADiscoveryEvidence(discovery.discoveryEvidence);
 	if (candidates.length === 0) {
 		console.log(chalk.dim("  No Platform agents expose A2A peer endpoints."));
 		return;
@@ -825,6 +848,7 @@ async function handleA2ARegister(parsed: ParsedA2AArgs): Promise<void> {
 async function importDiscoveredA2APeers(
 	parsed: ParsedA2AArgs,
 	candidates: PlatformAgentRegistryA2APeerCandidate[],
+	discoveryEvidence?: PlatformAgentDiscoveryEvidence,
 ): Promise<
 	Array<{
 		name: string;
@@ -901,13 +925,14 @@ async function importDiscoveredA2APeers(
 						}))
 					: previous?.skills,
 			metadata: compactA2APeerMetadata({
-				...previous?.metadata,
+				...a2APeerMetadataWithoutDiscoveryEvidence(previous?.metadata),
 				source: "platform-agent-registry",
 				platformAgentId: candidate.agent.id,
 				platformAgentType: candidate.agent.agentType,
 				platformAgentStatus: candidate.agent.status,
 				selectedEndpoint: candidate.endpointKind,
 				a2aPushNotifications: candidate.pushNotifications,
+				...a2ADiscoveryEvidenceMetadata(discoveryEvidence),
 			}),
 			createdAt: previous?.createdAt ?? now,
 			updatedAt: now,
@@ -1156,8 +1181,11 @@ async function handleA2ADelegate(parsed: ParsedA2AArgs): Promise<void> {
 				: "Usage: maestro a2a delegate <peer> <text>",
 		);
 	}
-	const peer = discover
+	const discoveredPeer = discover
 		? await resolveDiscoveredA2ADelegatePeer(parsed)
+		: undefined;
+	const peer = discoveredPeer
+		? discoveredPeer.peer
 		: await resolveA2APeer(peerName, {
 				path: stringFlag(parsed, "--registry"),
 				timeoutMs: numberFlag(parsed, "--timeout-ms"),
@@ -1176,6 +1204,7 @@ async function handleA2ADelegate(parsed: ParsedA2AArgs): Promise<void> {
 		skillId,
 		skill,
 		discoverySource: discover ? "platform-agent-registry" : undefined,
+		discoverySelection: discoveredPeer?.discoverySelection,
 	});
 	const ledgerMetadata = buildA2ADelegationLedgerMetadata({
 		peerName: peer.name,
@@ -1183,6 +1212,7 @@ async function handleA2ADelegate(parsed: ParsedA2AArgs): Promise<void> {
 		cwd,
 		skillId,
 		discoverySource: discover ? "platform-agent-registry" : undefined,
+		discoverySelection: discoveredPeer?.discoverySelection,
 	});
 	const sent = await sendA2AMessage(peer.config, {
 		message: buildA2AUserMessage({
@@ -1453,12 +1483,15 @@ async function handleA2AGraph(parsed: ParsedA2AArgs): Promise<void> {
 
 async function resolveDiscoveredA2ADelegatePeer(
 	parsed: ParsedA2AArgs,
-): Promise<Awaited<ReturnType<typeof resolveA2APeer>>> {
+): Promise<{
+	peer: Awaited<ReturnType<typeof resolveA2APeer>>;
+	discoverySelection: A2ADiscoverySelection;
+}> {
 	const skillId = stringFlag(parsed, "--skill");
 	if (!skillId) {
 		fail("Usage: maestro a2a delegate --discover --skill <skill-id> <text>");
 	}
-	const candidates = await listA2APeerCandidatesWithPlatform({
+	const discovery = await listA2APeerCandidatesWithEvidenceWithPlatform({
 		workspaceId: stringFlag(parsed, "--workspace-id"),
 		capability: stringFlag(parsed, "--capability"),
 		surface: stringFlag(parsed, "--surface") ?? "a2a",
@@ -1468,11 +1501,12 @@ async function resolveDiscoveredA2ADelegatePeer(
 		skillId,
 		preferInternalEndpoint: booleanFlag(parsed, "--prefer-internal"),
 	});
-	if (!candidates) {
+	if (!discovery) {
 		fail(
 			"Agent Registry service is not configured. Set AGENT_REGISTRY_SERVICE_URL, AGENT_REGISTRY_SERVICE_TOKEN, AGENT_REGISTRY_ORGANIZATION_ID, and AGENT_REGISTRY_WORKSPACE_ID.",
 		);
 	}
+	const candidates = discovery.candidates;
 	if (candidates.length === 0) {
 		fail(`No Platform A2A peers advertise skill ${skillId}.`);
 	}
@@ -1484,7 +1518,11 @@ async function resolveDiscoveredA2ADelegatePeer(
 	if (!candidate || !selected) {
 		fail(`No Platform A2A peers advertise skill ${skillId}.`);
 	}
-	const imported = await importDiscoveredA2APeers(parsed, [candidate]);
+	const imported = await importDiscoveredA2APeers(
+		parsed,
+		[candidate],
+		discovery.discoveryEvidence,
+	);
 	const importedPeer = imported[0];
 	if (!importedPeer) {
 		fail(`Could not import Platform A2A peer for skill ${skillId}.`);
@@ -1499,10 +1537,26 @@ async function resolveDiscoveredA2ADelegatePeer(
 			`Capability score: ${selected.score} (${selected.reasons.join(", ")})`,
 		),
 	);
-	return resolveA2APeer(importedPeer.name, {
-		path: stringFlag(parsed, "--registry"),
-		timeoutMs: numberFlag(parsed, "--timeout-ms"),
-	});
+	return {
+		peer: await resolveA2APeer(importedPeer.name, {
+			path: stringFlag(parsed, "--registry"),
+			timeoutMs: numberFlag(parsed, "--timeout-ms"),
+		}),
+		discoverySelection: {
+			source: "platform-agent-registry",
+			evidence: discovery.discoveryEvidence,
+			candidateCount:
+				discovery.discoveryEvidence?.candidateCount ?? candidates.length,
+			matchedCount:
+				discovery.discoveryEvidence?.matchedCount ?? candidates.length,
+			selectedAgentId: candidate.agent.id,
+			selectedAgentName: candidate.agent.name,
+			selectedEndpointUrl: candidate.endpointUrl,
+			selectedEndpointKind: candidate.endpointKind,
+			score: selected.score,
+			reasons: selected.reasons,
+		},
+	};
 }
 
 function selectA2APeerSkill(
@@ -1522,9 +1576,13 @@ function buildA2ADelegationMetadata(input: {
 	skillId?: string;
 	skill?: NonNullable<A2APeerRegistryEntry["skills"]>[number];
 	discoverySource?: string;
+	discoverySelection?: A2ADiscoverySelection;
 }): Record<string, unknown> {
 	const skill = input.skill;
 	const subagentRequestMetadataPath = a2ASkillRequestMetadataPath(skill);
+	const discoverySelection = a2ADiscoverySelectionPayload(
+		input.discoverySelection,
+	);
 	const subagentRequest = input.skillId
 		? {
 				skillId: input.skillId,
@@ -1564,6 +1622,9 @@ function buildA2ADelegationMetadata(input: {
 			? { discoverySource: input.discoverySource }
 			: {}),
 		...(input.skillId ? { a2aSkillId: input.skillId } : {}),
+		...(discoverySelection
+			? { "evalops.a2aDiscovery": discoverySelection }
+			: {}),
 		...(subagentRequest
 			? { [subagentRequestMetadataPath]: subagentRequest }
 			: {}),
@@ -1600,6 +1661,7 @@ function buildA2ADelegationLedgerMetadata(input: {
 	cwd?: string;
 	skillId?: string;
 	discoverySource?: string;
+	discoverySelection?: A2ADiscoverySelection;
 }): Record<string, string | number | boolean> | undefined {
 	return compactA2APeerMetadata({
 		requestKind: "maestro-peer-delegation",
@@ -1608,6 +1670,20 @@ function buildA2ADelegationLedgerMetadata(input: {
 		delegationCwd: input.cwd,
 		discoverySource: input.discoverySource,
 		a2aSkillId: input.skillId,
+		...(input.discoverySelection
+			? {
+					platformDiscoveryDecision:
+						input.discoverySelection.evidence?.decision,
+					platformDiscoveryCandidateCount:
+						input.discoverySelection.candidateCount,
+					platformDiscoveryMatchedCount: input.discoverySelection.matchedCount,
+					platformDiscoverySelectedAgentId:
+						input.discoverySelection.selectedAgentId,
+					platformDiscoverySelectedEndpoint:
+						input.discoverySelection.selectedEndpointKind,
+					a2aCapabilityScore: input.discoverySelection.score,
+				}
+			: {}),
 	});
 }
 
@@ -2171,6 +2247,47 @@ function printWorkGraphLines(
 	}
 }
 
+function printA2ADiscoveryEvidence(
+	evidence: PlatformAgentDiscoveryEvidence | undefined,
+): void {
+	if (!evidence) {
+		return;
+	}
+	const summary = [
+		evidence.decision ? `decision=${evidence.decision}` : undefined,
+		evidence.reason ? `reason=${evidence.reason}` : undefined,
+		evidence.matchedCount !== undefined
+			? `matched=${evidence.matchedCount}`
+			: undefined,
+		evidence.candidateCount !== undefined
+			? `candidates=${evidence.candidateCount}`
+			: undefined,
+		evidence.a2aSkillId ? `skill=${evidence.a2aSkillId}` : undefined,
+		evidence.capability ? `capability=${evidence.capability}` : undefined,
+	]
+		.filter(Boolean)
+		.join(" ");
+	if (summary) {
+		console.log(chalk.dim(`  discovery ${summary}`));
+	}
+	if (evidence.exclusions?.length) {
+		const exclusions = evidence.exclusions
+			.map((exclusion) =>
+				[
+					exclusion.reason,
+					exclusion.count !== undefined ? `count=${exclusion.count}` : "",
+				]
+					.filter(Boolean)
+					.join(":"),
+			)
+			.filter(Boolean)
+			.join(", ");
+		if (exclusions) {
+			console.log(chalk.dim(`  exclusions ${exclusions}`));
+		}
+	}
+}
+
 export const isA2AWaitCompletionState = isTerminalA2AState;
 
 function discoveredPeerJson(candidate: PlatformAgentRegistryA2APeerCandidate): {
@@ -2260,6 +2377,75 @@ function suffixedPeerName(baseName: string, suffix: number): string {
 	return normalizePeerName(
 		`${baseName.slice(0, 80 - suffixText.length)}${suffixText}`,
 	);
+}
+
+function a2ADiscoveryEvidenceMetadata(
+	evidence: PlatformAgentDiscoveryEvidence | undefined,
+): Record<string, string | number | boolean> {
+	if (!evidence) {
+		return {};
+	}
+	return (
+		compactA2APeerMetadata({
+			platformDiscoverySchema: evidence.schema,
+			platformDiscoveryDecision: evidence.decision,
+			platformDiscoveryReason: evidence.reason,
+			platformDiscoveryWorkspaceId: evidence.workspaceId,
+			platformDiscoveryCapability: evidence.capability,
+			platformDiscoveryAgentType: evidence.agentType,
+			platformDiscoveryA2ASkillId: evidence.a2aSkillId,
+			platformDiscoveryTaskClass: evidence.taskClass,
+			platformDiscoveryRequireA2ADispatch: evidence.requireA2ADispatch,
+			platformDiscoverySurface: evidence.surface,
+			platformDiscoveryStatus: evidence.status,
+			platformDiscoveryCandidateCount: evidence.candidateCount,
+			platformDiscoveryMatchedCount: evidence.matchedCount,
+		}) ?? {}
+	);
+}
+
+function a2APeerMetadataWithoutDiscoveryEvidence(
+	metadata: A2APeerRegistryEntry["metadata"] | undefined,
+): Record<string, string | number | boolean> | undefined {
+	if (!metadata) {
+		return undefined;
+	}
+	const entries = Object.entries(metadata).filter(
+		([key]) => !key.startsWith("platformDiscovery"),
+	);
+	return entries.length > 0 ? Object.fromEntries(entries) : undefined;
+}
+
+function a2ADiscoverySelectionPayload(
+	selection: A2ADiscoverySelection | undefined,
+): Record<string, unknown> | undefined {
+	if (!selection) {
+		return undefined;
+	}
+	return compactA2AUnknownRecord({
+		source: selection.source,
+		...a2ADiscoveryEvidenceMetadata(selection.evidence),
+		selectedAgentId: selection.selectedAgentId,
+		selectedAgentName: selection.selectedAgentName,
+		selectedEndpointUrl: selection.selectedEndpointUrl,
+		selectedEndpointKind: selection.selectedEndpointKind,
+		score: selection.score,
+		reasons: selection.reasons,
+		candidateCount: selection.candidateCount,
+		matchedCount: selection.matchedCount,
+	});
+}
+
+function compactA2AUnknownRecord(
+	record: Record<string, unknown>,
+): Record<string, unknown> | undefined {
+	const entries = Object.entries(record).filter(([, value]) => {
+		if (value === undefined) {
+			return false;
+		}
+		return !Array.isArray(value) || value.length > 0;
+	});
+	return entries.length > 0 ? Object.fromEntries(entries) : undefined;
 }
 
 function compactA2APeerMetadata(

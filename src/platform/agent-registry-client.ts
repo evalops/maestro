@@ -410,6 +410,11 @@ export interface PlatformAgentRegistryA2APeerCandidate {
 	pushNotifications?: boolean;
 }
 
+export interface PlatformAgentRegistryA2APeerCandidatesResult {
+	candidates: PlatformAgentRegistryA2APeerCandidate[];
+	discoveryEvidence?: PlatformAgentDiscoveryEvidence;
+}
+
 export interface PlatformAgentRegistryListA2APeersInput
 	extends PlatformAgentRegistryListAgentsInput {
 	skillId?: string;
@@ -1287,6 +1292,20 @@ export async function listA2APeerCandidatesWithPlatform(
 		signal?: AbortSignal;
 	},
 ): Promise<PlatformAgentRegistryA2APeerCandidate[] | null> {
+	const result = await listA2APeerCandidatesWithEvidenceWithPlatform(
+		input,
+		options,
+	);
+	return result?.candidates ?? null;
+}
+
+export async function listA2APeerCandidatesWithEvidenceWithPlatform(
+	input: PlatformAgentRegistryListA2APeersInput = {},
+	options?: {
+		config?: PlatformServiceConfig;
+		signal?: AbortSignal;
+	},
+): Promise<PlatformAgentRegistryA2APeerCandidatesResult | null> {
 	const result = await listAgentsWithPlatform(
 		{
 			...input,
@@ -1299,7 +1318,7 @@ export async function listA2APeerCandidatesWithPlatform(
 	if (!result) {
 		return null;
 	}
-	return result.agents
+	const candidates = result.agents
 		.map((agent) => {
 			const a2a = agent.a2a;
 			const useInternalEndpoint = Boolean(
@@ -1339,6 +1358,10 @@ export async function listA2APeerCandidatesWithPlatform(
 			(candidate): candidate is PlatformAgentRegistryA2APeerCandidate =>
 				candidate !== undefined,
 		);
+	return {
+		candidates,
+		discoveryEvidence: result.discoveryEvidence,
+	};
 }
 
 export async function delegateAgentWithPlatform(
