@@ -406,10 +406,16 @@
 			"area": "remote-runner-continuity",
 			"evidenceType": "source",
 			"path": "packages/tui-rs/src/hosted_runner.rs",
+			"anchors": ["evalops.remote-runner.work-continuity.v1"]
+		},
+		{
+			"area": "remote-runner-continuity",
+			"evidenceType": "source",
+			"path": "packages/tui-rs/src/hosted_runner/manifests.rs",
 			"anchors": [
-				"evalops.remote-runner.work-continuity.v1",
 				"CodexSubagentContinuityEdge",
-				"codex_subagent_edges"
+				"codex_subagent_edges",
+				"collect_codex_subagent_edges_from_source"
 			]
 		},
 		{
