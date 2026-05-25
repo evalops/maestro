@@ -70,8 +70,8 @@ describe("toml-config", () => {
 
 	describe("DEFAULT_CONFIG", () => {
 		it("has sensible defaults", () => {
-			expect(DEFAULT_CONFIG.model).toBe("claude-sonnet-4-20250514");
-			expect(DEFAULT_CONFIG.model_provider).toBe("anthropic");
+			expect(DEFAULT_CONFIG.model).toBe("gpt-5.5");
+			expect(DEFAULT_CONFIG.model_provider).toBe("openai-codex");
 			expect(DEFAULT_CONFIG.approval_policy).toBe("untrusted");
 			expect(DEFAULT_CONFIG.sandbox_mode).toBe("workspace-write");
 			expect(DEFAULT_CONFIG.model_reasoning_effort).toBe("medium");

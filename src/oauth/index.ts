@@ -1,14 +1,8 @@
-import type { AnthropicLoginMode } from "../providers/anthropic-auth.js";
 import {
 	assertEvalOpsManagedGatewayEnabled,
 	isEvalOpsManagedGatewayEnabled,
 } from "../providers/evalops-managed.js";
 import { createLogger } from "../utils/logger.js";
-import {
-	loginAnthropic,
-	migrateAnthropicCredentials,
-	refreshAnthropicToken,
-} from "./anthropic.js";
 import {
 	revokeOAuthProviderConnection,
 	syncOAuthProviderConnection,
@@ -50,13 +44,10 @@ import {
 
 const logger = createLogger("oauth");
 
-// Re-export for convenience
-export { listOAuthProvidersFromStorage as listOAuthProviders };
 export type { OAuthCredentials } from "./storage.js";
 export { buildEvalOpsDelegationEnvironment, issueEvalOpsDelegationToken };
 
 export type SupportedOAuthProvider =
-	| "anthropic"
 	| "evalops"
 	| "openai"
 	| "openai-codex"
@@ -64,11 +55,44 @@ export type SupportedOAuthProvider =
 	| "google-gemini-cli"
 	| "google-antigravity";
 
-export interface OAuthProviderInfo {
-	id: SupportedOAuthProvider;
+export type LegacyLogoutOnlyOAuthProvider = "anthropic";
+export type OAuthLogoutProvider =
+	| SupportedOAuthProvider
+	| LegacyLogoutOnlyOAuthProvider;
+
+const SUPPORTED_OAUTH_PROVIDERS = new Set<SupportedOAuthProvider>([
+	"evalops",
+	"openai",
+	"openai-codex",
+	"github-copilot",
+	"google-gemini-cli",
+	"google-antigravity",
+]);
+
+const LEGACY_LOGOUT_ONLY_OAUTH_PROVIDERS =
+	new Set<LegacyLogoutOnlyOAuthProvider>(["anthropic"]);
+
+export interface OAuthProviderInfo<
+	TProvider extends string = SupportedOAuthProvider,
+> {
+	id: TProvider;
 	name: string;
 	description: string;
 	available: boolean;
+}
+
+function isSupportedOAuthProvider(
+	provider: string,
+): provider is SupportedOAuthProvider {
+	return SUPPORTED_OAUTH_PROVIDERS.has(provider as SupportedOAuthProvider);
+}
+
+function isLegacyLogoutOnlyOAuthProvider(
+	provider: string,
+): provider is LegacyLogoutOnlyOAuthProvider {
+	return LEGACY_LOGOUT_ONLY_OAUTH_PROVIDERS.has(
+		provider as LegacyLogoutOnlyOAuthProvider,
+	);
 }
 
 /**
@@ -77,16 +101,10 @@ export interface OAuthProviderInfo {
 export function getOAuthProviders(): OAuthProviderInfo[] {
 	return [
 		{
-			id: "anthropic",
-			name: "Anthropic",
-			description: "Claude Pro/Max subscription",
+			id: "openai-codex",
+			name: "OpenAI Codex",
+			description: "Codex with ChatGPT Plus/Pro login",
 			available: true,
-		},
-		{
-			id: "evalops",
-			name: "EvalOps Managed",
-			description: "Identity-backed managed gateway access",
-			available: isEvalOpsManagedGatewayEnabled(),
 		},
 		{
 			id: "openai",
@@ -95,10 +113,10 @@ export function getOAuthProviders(): OAuthProviderInfo[] {
 			available: true,
 		},
 		{
-			id: "openai-codex",
-			name: "OpenAI Codex",
-			description: "Codex with ChatGPT Plus/Pro login",
-			available: true,
+			id: "evalops",
+			name: "EvalOps Managed",
+			description: "Identity-backed managed gateway access",
+			available: isEvalOpsManagedGatewayEnabled(),
 		},
 		{
 			id: "google-gemini-cli",
@@ -121,10 +139,45 @@ export function getOAuthProviders(): OAuthProviderInfo[] {
 	];
 }
 
+export function listOAuthProviders(): SupportedOAuthProvider[] {
+	return listOAuthProvidersFromStorage().filter(
+		(provider): provider is SupportedOAuthProvider =>
+			isSupportedOAuthProvider(provider),
+	);
+}
+
+export function listOAuthLogoutProviders(): OAuthLogoutProvider[] {
+	return listOAuthProvidersFromStorage().filter(
+		(provider): provider is OAuthLogoutProvider =>
+			isSupportedOAuthProvider(provider) ||
+			isLegacyLogoutOnlyOAuthProvider(provider),
+	);
+}
+
+export function getOAuthLogoutProviders(): OAuthProviderInfo<OAuthLogoutProvider>[] {
+	const loggedInProviders = new Set(listOAuthLogoutProviders());
+	const supported = getOAuthProviders().filter((provider) =>
+		loggedInProviders.has(provider.id),
+	);
+	const legacy: OAuthProviderInfo<OAuthLogoutProvider>[] = [];
+	if (loggedInProviders.has("anthropic")) {
+		legacy.push({
+			id: "anthropic",
+			name: "Anthropic OAuth",
+			description: "Legacy Anthropic OAuth credentials (logout only)",
+			available: true,
+		});
+	}
+	return [...supported, ...legacy];
+}
+
 /**
  * Check if a provider has OAuth credentials stored
  */
 export function hasOAuthCredentials(provider: SupportedOAuthProvider): boolean {
+	if (!SUPPORTED_OAUTH_PROVIDERS.has(provider)) {
+		return false;
+	}
 	return loadOAuthCredentials(provider) !== null;
 }
 
@@ -134,7 +187,7 @@ export function hasOAuthCredentials(provider: SupportedOAuthProvider): boolean {
 export async function login(
 	provider: SupportedOAuthProvider,
 	options: {
-		mode?: AnthropicLoginMode;
+		mode?: string;
 		onAuthUrl: (url: string) => void;
 		onPromptCode?: () => Promise<string>;
 		onStatus?: (status: string) => void;
@@ -143,19 +196,6 @@ export async function login(
 ): Promise<void> {
 	let shouldSyncConnectorConnection = false;
 	switch (provider) {
-		case "anthropic":
-			if (!options.onPromptCode) {
-				throw new Error(
-					"Anthropic login requires onPromptCode callback for auth code input",
-				);
-			}
-			await loginAnthropic(
-				options.mode ?? "pro",
-				options.onAuthUrl,
-				options.onPromptCode,
-			);
-			shouldSyncConnectorConnection = true;
-			break;
 		case "openai":
 			await loginOpenAI(options.onAuthUrl, options.onStatus);
 			shouldSyncConnectorConnection = true;
@@ -200,8 +240,13 @@ export async function login(
 /**
  * Logout from OAuth provider
  */
-export async function logout(provider: SupportedOAuthProvider): Promise<void> {
+export async function logout(provider: OAuthLogoutProvider): Promise<void> {
 	const credentials = loadOAuthCredentials(provider);
+	if (isLegacyLogoutOnlyOAuthProvider(provider)) {
+		await revokeOAuthProviderConnection(provider, credentials);
+		removeOAuthCredentials(provider);
+		return;
+	}
 	if (provider === "evalops" && credentials?.refresh) {
 		try {
 			await revokeEvalOpsToken(credentials.refresh, credentials.metadata);
@@ -232,12 +277,6 @@ export async function refreshToken(
 	let newCredentials: OAuthCredentials;
 
 	switch (provider) {
-		case "anthropic":
-			newCredentials = await refreshAnthropicToken(
-				credentials.refresh,
-				credentials.metadata,
-			);
-			break;
 		case "openai":
 			newCredentials = await refreshOpenAIToken(
 				credentials.refresh,
@@ -297,6 +336,9 @@ export async function refreshToken(
 export async function getOAuthToken(
 	provider: SupportedOAuthProvider,
 ): Promise<string | null> {
+	if (!SUPPORTED_OAUTH_PROVIDERS.has(provider)) {
+		return null;
+	}
 	const credentials = loadOAuthCredentials(provider);
 	if (!credentials) {
 		return null;
@@ -326,12 +368,6 @@ export async function getOAuthToken(
  * Migrate old provider-specific OAuth credentials to new generic format
  */
 export async function migrateOAuthCredentials(): Promise<void> {
-	// Migrate Anthropic credentials
-	const anthropicMigrated = await migrateAnthropicCredentials();
-	if (anthropicMigrated) {
-		logger.info("Migrated Anthropic OAuth credentials to new format");
-	}
-
 	// Migrate OpenAI credentials
 	const openaiMigrated = await migrateOpenAICredentials();
 	if (openaiMigrated) {

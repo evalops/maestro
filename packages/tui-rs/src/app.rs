@@ -922,17 +922,9 @@ Always use tools when they would be helpful. Be concise and direct in your respo
         let git_branch = git::current_branch(&cwd_path);
         self.current_git_branch = git_branch.clone();
 
-        // Determine model from environment or default (prefer Claude)
-        let model = std::env::var("MAESTRO_MODEL").unwrap_or_else(|_| {
-            if std::env::var("ANTHROPIC_API_KEY").is_ok() {
-                "claude-sonnet-4-5-20250514".to_string()
-            } else if std::env::var("OPENAI_API_KEY").is_ok() {
-                "gpt-4o".to_string()
-            } else {
-                // Default to Claude even without key (will fail with clear error)
-                "claude-sonnet-4-5-20250514".to_string()
-            }
-        });
+        // Determine model from environment or default (prefer Codex/OpenAI)
+        let model =
+            std::env::var("MAESTRO_MODEL").unwrap_or_else(|_| "gpt-5.1-codex-max".to_string());
 
         let config = NativeAgentConfig {
             model: model.clone(),

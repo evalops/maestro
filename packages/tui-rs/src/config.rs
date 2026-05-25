@@ -30,8 +30,8 @@
 //! ## Example config.toml
 //!
 //! ```toml
-//! model = "claude-3-opus"
-//! model_provider = "anthropic"
+//! model = "gpt-5.1-codex-max"
+//! model_provider = "openai"
 //! approval_policy = "on-failure"
 //!
 //! [profiles.fast]
@@ -464,8 +464,8 @@ pub struct ComposerConfig {
 /// Default configuration values
 pub static DEFAULT_CONFIG: std::sync::LazyLock<ComposerConfig> =
     std::sync::LazyLock::new(|| ComposerConfig {
-        model: Some("claude-sonnet-4-20250514".to_string()),
-        model_provider: Some("anthropic".to_string()),
+        model: Some("gpt-5.1-codex-max".to_string()),
+        model_provider: Some("openai".to_string()),
         approval_policy: Some(ApprovalPolicy::Untrusted),
         sandbox_mode: Some(SandboxMode::WorkspaceWrite),
         model_reasoning_effort: Some(ReasoningEffort::Medium),
@@ -970,7 +970,7 @@ pub fn get_config_summary(workspace_dir: &Path) -> String {
     ));
     lines.push(format!(
         "Provider: {}",
-        config.model_provider.as_deref().unwrap_or("anthropic")
+        config.model_provider.as_deref().unwrap_or("openai")
     ));
     lines.push(format!(
         "Approval Policy: {:?}",
@@ -1047,8 +1047,8 @@ mod tests {
     #[test]
     fn test_default_config() {
         let config = DEFAULT_CONFIG.clone();
-        assert_eq!(config.model.as_deref(), Some("claude-sonnet-4-20250514"));
-        assert_eq!(config.model_provider.as_deref(), Some("anthropic"));
+        assert_eq!(config.model.as_deref(), Some("gpt-5.1-codex-max"));
+        assert_eq!(config.model_provider.as_deref(), Some("openai"));
         assert_eq!(config.approval_policy, Some(ApprovalPolicy::Untrusted));
         assert_eq!(config.sandbox_mode, Some(SandboxMode::WorkspaceWrite));
     }

@@ -29,7 +29,7 @@ export interface Args {
 	commandArgs?: string[];
 	contextLiveMcp?: boolean;
 	approvalMode?: "auto" | "prompt" | "fail";
-	authMode?: "auto" | "api-key" | "claude";
+	authMode?: "auto" | "api-key";
 	force?: boolean;
 	execJson?: boolean;
 	execFullAuto?: boolean;
@@ -138,7 +138,7 @@ const FLAGS_WITH_VALUES = new Set([
 ]);
 
 const DEPRECATED_FLAGS_WITH_VALUES = new Set(["--codex-api-key"]);
-const DEPRECATED_FLAG_PREFIXES = ["--auth=chatgpt"];
+const DEPRECATED_FLAG_PREFIXES = ["--auth=chatgpt", "--auth=claude"];
 
 function isConfigInitPresetFlag(result: Args, arg: string): boolean {
 	return (
@@ -278,7 +278,7 @@ export function parseArgs(args: string[]): Args {
 			}
 		} else if (arg === "--auth" && i + 1 < args.length) {
 			const value = args[++i];
-			if (value === "auto" || value === "api-key" || value === "claude") {
+			if (value === "auto" || value === "api-key") {
 				result.authMode = value;
 			}
 		} else if (arg === "--force") {

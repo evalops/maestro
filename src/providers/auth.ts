@@ -12,7 +12,6 @@
  * |----------|------------------------------------------------|
  * | auto     | Try OAuth first, fallback to API keys (default)|
  * | api-key  | Only use API keys, skip OAuth                  |
- * | claude   | Only use Anthropic OAuth, fail if unavailable  |
  *
  * ## Credential Resolution Order
  *
@@ -29,8 +28,6 @@
  * | env                 | From environment variable                |
  * | custom_literal      | Hardcoded in custom provider config      |
  * | custom_env          | Env var from custom provider config      |
- * | anthropic_oauth_env | Anthropic OAuth token from env           |
- * | anthropic_oauth_file| Anthropic OAuth from stored credentials  |
  * | evalops_oauth_file  | EvalOps managed OAuth from stored credentials |
  * | openai_oauth_file   | OpenAI OAuth from stored credentials     |
  * | openai_codex_oauth_file | OpenAI Codex ChatGPT OAuth from stored credentials |
@@ -67,17 +64,15 @@ import {
 } from "./evalops-managed.js";
 import { getFreshOpenAIOAuthCredential } from "./openai-auth.js";
 
-export type AuthMode = "auto" | "api-key" | "claude";
+export type AuthMode = "auto" | "api-key";
 
-export type AuthCredentialType = "api-key" | "anthropic-oauth";
+export type AuthCredentialType = "api-key" | "bearer-token";
 
 export type AuthCredentialSource =
 	| "explicit"
 	| "env"
 	| "custom_literal"
 	| "custom_env"
-	| "anthropic_oauth_env"
-	| "anthropic_oauth_file"
 	| "evalops_agent_key_file"
 	| "evalops_oauth_file"
 	| "openai_oauth_file"
@@ -102,12 +97,6 @@ export interface AuthResolverOptions {
 }
 
 type AuthResolver = (provider: string) => Promise<AuthCredential | undefined>;
-
-const ANTHROPIC_OAUTH_ENV_VARS = [
-	"CLAUDE_CODE_TOKEN",
-	"ANTHROPIC_OAUTH_TOKEN",
-	"ANTHROPIC_ACCESS_TOKEN",
-];
 
 function isOpenAIProvider(provider: string): boolean {
 	const normalized = provider.toLowerCase();
@@ -137,7 +126,7 @@ function isGitHubCopilotProvider(provider: string): boolean {
 
 function resolveEvalOpsCredentialType(provider: string): AuthCredentialType {
 	return getEvalOpsManagedProviderDefinition(provider)?.usesAnthropicOAuth
-		? "anthropic-oauth"
+		? "bearer-token"
 		: "api-key";
 }
 
@@ -518,42 +507,6 @@ export function createAuthResolver(options: AuthResolverOptions): AuthResolver {
 						metadata: credentials?.metadata,
 					};
 				}
-			}
-		}
-
-		const preferAnthropicOAuth =
-			normalizedProvider === "anthropic" && options.mode !== "api-key";
-
-		if (preferAnthropicOAuth) {
-			const envTokenEntry = ANTHROPIC_OAUTH_ENV_VARS.map((envVar) => ({
-				envVar,
-				token: process.env[envVar]?.trim(),
-			})).find((entry) => entry.token);
-			if (envTokenEntry?.token) {
-				return {
-					provider,
-					token: envTokenEntry.token,
-					type: "anthropic-oauth",
-					source: "anthropic_oauth_env",
-					envVar: envTokenEntry.envVar,
-				};
-			}
-
-			// Try OAuth system (oauth.json)
-			const oauthToken = await getOAuthToken("anthropic");
-			if (oauthToken) {
-				const credentials = loadOAuthCredentials("anthropic");
-				return {
-					provider,
-					token: oauthToken,
-					type: "anthropic-oauth",
-					source: "anthropic_oauth_file",
-					metadata: credentials?.metadata,
-				};
-			}
-
-			if (options.mode === "claude") {
-				return undefined;
 			}
 		}
 

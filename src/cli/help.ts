@@ -47,7 +47,7 @@ const CLI_OPTIONS: CliHelpOption[] = [
 	},
 	{ text: "--mode <mode>           Output mode: text (default), json, or rpc" },
 	{
-		text: "--auth <mode>           Credential mode: auto (default), api-key, claude",
+		text: "--auth <mode>           Credential mode: auto (default), api-key",
 	},
 	{
 		text: "--approval-mode <mode>  Action approvals: prompt (default in TUI), auto, fail",
@@ -214,8 +214,6 @@ export function printHelp(
   OPENAI_CODEX_TOKEN      - OpenAI Codex ChatGPT access token
   OPENAI_CODEX_ACCOUNT_ID - ChatGPT account id when using a raw Codex token
   ANTHROPIC_API_KEY       - Anthropic API key
-  CLAUDE_CODE_TOKEN       - Claude Code access token for --auth claude
-  ANTHROPIC_OAUTH_TOKEN   - Alternate env for Claude Code bearer tokens
   MAESTRO_AGENT_DIR      - Session storage directory (default: ~/.maestro/agent)
   MAESTRO_SANDBOX_MODE   - Sandbox mode: read-only, workspace-write, danger-full-access
   MAESTRO_CHANGELOG      - Set to off/false/hide/hidden/skip/0 to hide startup changelog banner

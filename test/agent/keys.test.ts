@@ -47,6 +47,31 @@ describe("getStoredCredentials", () => {
 		});
 	});
 
+	it("ignores stored keys with retired auth types", () => {
+		writeFileSync(
+			tempFile,
+			JSON.stringify({
+				anthropic: {
+					apiKey: "legacy-oauth-token",
+					authType: "anthropic-oauth",
+				},
+			}),
+			"utf8",
+		);
+		writeFileSync(
+			tempFactoryConfig,
+			JSON.stringify({
+				api_keys: { anthropic: "sk-ant-valid" },
+			}),
+			"utf8",
+		);
+
+		expect(getStoredCredentials("anthropic")).toEqual({
+			apiKey: "sk-ant-valid",
+			authType: "api-key",
+		});
+	});
+
 	it("falls back to factory config api_keys map", () => {
 		writeFileSync(
 			tempFactoryConfig,

@@ -378,21 +378,19 @@ describe("agent-runner", () => {
 			process.env = originalEnv;
 		});
 
-		it("prefers ANTHROPIC_OAUTH_TOKEN over ANTHROPIC_API_KEY", () => {
+		it("ignores retired ANTHROPIC_OAUTH_TOKEN", () => {
 			process.env.ANTHROPIC_OAUTH_TOKEN = "oauth-token";
 			process.env.ANTHROPIC_API_KEY = "api-key";
 
-			const key =
-				process.env.ANTHROPIC_OAUTH_TOKEN || process.env.ANTHROPIC_API_KEY;
-			expect(key).toBe("oauth-token");
+			const key = process.env.ANTHROPIC_API_KEY;
+			expect(key).toBe("api-key");
 		});
 
-		it("falls back to ANTHROPIC_API_KEY when ANTHROPIC_OAUTH_TOKEN not set", () => {
+		it("uses ANTHROPIC_API_KEY", () => {
 			Reflect.deleteProperty(process.env, "ANTHROPIC_OAUTH_TOKEN");
 			process.env.ANTHROPIC_API_KEY = "api-key";
 
-			const key =
-				process.env.ANTHROPIC_OAUTH_TOKEN || process.env.ANTHROPIC_API_KEY;
+			const key = process.env.ANTHROPIC_API_KEY;
 			expect(key).toBe("api-key");
 		});
 
@@ -400,8 +398,7 @@ describe("agent-runner", () => {
 			Reflect.deleteProperty(process.env, "ANTHROPIC_OAUTH_TOKEN");
 			Reflect.deleteProperty(process.env, "ANTHROPIC_API_KEY");
 
-			const key =
-				process.env.ANTHROPIC_OAUTH_TOKEN || process.env.ANTHROPIC_API_KEY;
+			const key = process.env.ANTHROPIC_API_KEY;
 			expect(key).toBeUndefined();
 		});
 	});
