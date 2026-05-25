@@ -130,6 +130,7 @@ runs:
             "buf.yaml",
             "bun.lockb",
             "package.json",
+            "tsconfig.base.json",
             "tsconfig.build.json",
             "tsconfig.json",
             "scripts/bundle-runtime-deps.mjs",
