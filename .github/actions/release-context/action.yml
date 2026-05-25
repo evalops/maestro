@@ -40,6 +40,15 @@ outputs:
   tag_exists:
     description: Whether the resolved tag already exists in git.
     value: ${{ steps.context.outputs.tag_exists }}
+  tag_target:
+    description: Commit SHA resolved from the existing release tag, when present.
+    value: ${{ steps.context.outputs.tag_target }}
+  tag_matches_head:
+    description: Whether the existing release tag points at the checked-out HEAD commit.
+    value: ${{ steps.context.outputs.tag_matches_head }}
+  package_changed_since_tag:
+    description: Whether package-impacting source inputs changed since the existing release tag.
+    value: ${{ steps.context.outputs.package_changed_since_tag }}
 
 runs:
   using: composite
@@ -92,7 +101,13 @@ runs:
           );
         }
 
+        const headSha = execFileSync("git", ["rev-parse", "HEAD"], {
+          encoding: "utf8",
+        }).trim();
         let tagExists = false;
+        let tagTarget = "";
+        let tagMatchesHead = false;
+        let packageChangedSinceTag = false;
         try {
           execFileSync("git", ["rev-parse", `refs/tags/${releaseTag}`], {
             stdio: "ignore",
@@ -100,6 +115,52 @@ runs:
           tagExists = true;
         } catch {
           tagExists = false;
+        }
+        if (tagExists) {
+          tagTarget = execFileSync(
+            "git",
+            ["rev-parse", `refs/tags/${releaseTag}^{commit}`],
+            { encoding: "utf8" },
+          ).trim();
+          tagMatchesHead = tagTarget === headSha;
+        }
+        if (tagExists && !tagMatchesHead) {
+          const packageImpactingFiles = new Set([
+            "buf.gen.yaml",
+            "buf.yaml",
+            "bun.lockb",
+            "package.json",
+            "tsconfig.base.json",
+            "tsconfig.build.json",
+            "tsconfig.json",
+            "scripts/bundle-runtime-deps.mjs",
+            "scripts/copy-db-migrations.js",
+            "scripts/copy-themes.js",
+            "scripts/codegen-utils.mjs",
+            "scripts/ensure-deps.js",
+            "scripts/ensure-dir.js",
+            "scripts/headless-protocol-codegen.mjs",
+            "scripts/package-metadata.js",
+            "scripts/runtime-workspaces.mjs",
+            "scripts/session-wire-format-codegen.mjs",
+            "scripts/workspace-utils.js",
+          ]);
+          const isPackageImpactingPath = (path) =>
+            packageImpactingFiles.has(path) ||
+            path.startsWith("packages/") ||
+            path.startsWith("proto/") ||
+            path.startsWith("skills/") ||
+            path.startsWith("src/") ||
+            path.startsWith("types/");
+          const diffOutput = execFileSync(
+            "git",
+            ["diff", "--name-only", `${tagTarget}..HEAD`],
+            { encoding: "utf8" },
+          );
+          packageChangedSinceTag = diffOutput
+            .split(/\r?\n/)
+            .filter(Boolean)
+            .some((path) => isPackageImpactingPath(path));
         }
 
         const outputs = {
@@ -111,6 +172,9 @@ runs:
           canonical_package_name: metadata.canonicalPackageName,
           package_aliases_json: JSON.stringify(metadata.packageAliases),
           tag_exists: String(tagExists),
+          tag_target: tagTarget,
+          tag_matches_head: String(tagMatchesHead),
+          package_changed_since_tag: String(packageChangedSinceTag),
         };
 
         for (const [key, value] of Object.entries(outputs)) {
