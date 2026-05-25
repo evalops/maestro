@@ -135,6 +135,7 @@ runs:
             "scripts/bundle-runtime-deps.mjs",
             "scripts/copy-db-migrations.js",
             "scripts/copy-themes.js",
+            "scripts/codegen-utils.mjs",
             "scripts/ensure-deps.js",
             "scripts/ensure-dir.js",
             "scripts/headless-protocol-codegen.mjs",
