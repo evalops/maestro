@@ -55,6 +55,13 @@ export function isRustTestOnlyPath(filePath) {
 }
 
 /**
+ * @param {string} filePath
+ */
+function rustModulePathForTestsFile(filePath) {
+	return normalizeRepoPath(filePath).replace(/\/tests\.rs$/, ".rs");
+}
+
+/**
  * @param {string} line
  * @param {number} startIndex
  */
@@ -153,11 +160,12 @@ export function stripRustTestModules(source) {
 	const lines = source.split(/\r?\n/);
 	const output = [];
 	const testModulePattern =
-		/^\s*(?:pub(?:\([^)]*\))?\s+)?mod\s+tests\s*(?:;|\{)/;
+		/^\s*(?:pub(?:\([^)]*\))?\s+)?mod\s+tests\s*(;|\{)/;
 
 	for (let index = 0; index < lines.length; index += 1) {
 		const line = lines[index];
-		if (!testModulePattern.test(line)) {
+		const moduleMatch = line.match(testModulePattern);
+		if (!moduleMatch) {
 			output.push(line);
 			continue;
 		}
@@ -166,7 +174,7 @@ export function stripRustTestModules(source) {
 			output.pop();
 		}
 
-		if (line.includes(";")) {
+		if (moduleMatch[1] === ";") {
 			continue;
 		}
 
@@ -184,6 +192,43 @@ export function stripRustTestModules(source) {
 /**
  * @param {string} source
  */
+export function hasCfgTestModuleDeclaration(source) {
+	const lines = source.split(/\r?\n/);
+	const moduleDeclarationPattern =
+		/^\s*(?:pub(?:\([^)]*\))?\s+)?mod\s+tests\s*;/;
+	const inlineCfgModuleDeclarationPattern =
+		/^\s*#\s*\[\s*cfg\s*\(\s*test\s*\)\s*\]\s*(?:pub(?:\([^)]*\))?\s+)?mod\s+tests\s*;/;
+	const cfgTestAttrPattern = /^\s*#\s*\[\s*cfg\s*\(\s*test\s*\)\s*\]\s*$/;
+
+	for (let index = 0; index < lines.length; index += 1) {
+		const line = lines[index];
+		if (inlineCfgModuleDeclarationPattern.test(line)) {
+			return true;
+		}
+		if (!moduleDeclarationPattern.test(line)) {
+			continue;
+		}
+
+		for (let attrIndex = index - 1; attrIndex >= 0; attrIndex -= 1) {
+			const attrLine = lines[attrIndex].trim();
+			if (!attrLine) {
+				continue;
+			}
+			if (!attrLine.startsWith("#[")) {
+				break;
+			}
+			if (cfgTestAttrPattern.test(lines[attrIndex])) {
+				return true;
+			}
+		}
+	}
+
+	return false;
+}
+
+/**
+ * @param {string} source
+ */
 export function rustProductionContent(source) {
 	return stripRustTestModules(source)
 		.replace(/[ \t]+$/gm, "")
@@ -195,6 +240,8 @@ export function rustProductionContent(source) {
  *   path: string;
  *   oldContent?: string;
  *   newContent?: string;
+ *   oldParentContent?: string;
+ *   newParentContent?: string;
  * }} change
  */
 export function isPackageImpactingChange(change) {
@@ -203,7 +250,12 @@ export function isPackageImpactingChange(change) {
 		return false;
 	}
 	if (isRustTestOnlyPath(path)) {
-		return false;
+		const newParentContent = change.newParentContent ?? "";
+		const oldParentContent = change.oldParentContent ?? "";
+		const parentContent = newParentContent.trim()
+			? newParentContent
+			: oldParentContent;
+		return !hasCfgTestModuleDeclaration(parentContent);
 	}
 	if (path.startsWith("packages/") && path.endsWith(".rs")) {
 		const oldProduction = rustProductionContent(change.oldContent ?? "");
@@ -278,12 +330,33 @@ export function packageChangedSinceTag(options) {
 			ref: headRef,
 			path: changedPath,
 		});
+		const parentPath = isRustTestOnlyPath(changedPath)
+			? rustModulePathForTestsFile(changedPath)
+			: "";
+		const oldParentContent = parentPath
+			? readGitBlob({
+					cwd,
+					execFileSync,
+					ref: options.tagTarget,
+					path: parentPath,
+				})
+			: undefined;
+		const newParentContent = parentPath
+			? readGitBlob({
+					cwd,
+					execFileSync,
+					ref: headRef,
+					path: parentPath,
+				})
+			: undefined;
 
 		if (
 			isPackageImpactingChange({
 				path: changedPath,
 				oldContent,
 				newContent,
+				oldParentContent,
+				newParentContent,
 			})
 		) {
 			return true;
