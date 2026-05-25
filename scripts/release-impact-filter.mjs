@@ -93,7 +93,46 @@ function rustCharLiteralEnd(line, startIndex) {
 
 /**
  * @param {string} line
- * @param {{ inBlockComment: boolean }} state
+ * @param {number} startIndex
+ */
+function rustRawStringStart(line, startIndex) {
+	let rawPrefixIndex = -1;
+	if (line[startIndex] === "r") {
+		rawPrefixIndex = startIndex;
+	} else if (line[startIndex] === "b" && line[startIndex + 1] === "r") {
+		rawPrefixIndex = startIndex + 1;
+	}
+	if (rawPrefixIndex === -1) {
+		return null;
+	}
+
+	let cursor = rawPrefixIndex + 1;
+	let hashCount = 0;
+	while (line[cursor] === "#") {
+		hashCount += 1;
+		cursor += 1;
+	}
+
+	if (line[cursor] !== '"') {
+		return null;
+	}
+
+	return {
+		contentStart: cursor + 1,
+		hashCount,
+	};
+}
+
+/**
+ * @param {number} hashCount
+ */
+function rustRawStringEndToken(hashCount) {
+	return `"${"#".repeat(hashCount)}`;
+}
+
+/**
+ * @param {string} line
+ * @param {{ blockCommentDepth: number; rawStringHashes: number | null }} state
  */
 function braceDelta(line, state) {
 	let delta = 0;
@@ -104,9 +143,23 @@ function braceDelta(line, state) {
 		const char = line[index];
 		const next = line[index + 1];
 
-		if (state.inBlockComment) {
-			if (char === "*" && next === "/") {
-				state.inBlockComment = false;
+		if (state.rawStringHashes !== null) {
+			const endToken = rustRawStringEndToken(state.rawStringHashes);
+			const endIndex = line.indexOf(endToken, index);
+			if (endIndex === -1) {
+				break;
+			}
+			state.rawStringHashes = null;
+			index = endIndex + endToken.length - 1;
+			continue;
+		}
+
+		if (state.blockCommentDepth > 0) {
+			if (char === "/" && next === "*") {
+				state.blockCommentDepth += 1;
+				index += 1;
+			} else if (char === "*" && next === "/") {
+				state.blockCommentDepth -= 1;
 				index += 1;
 			}
 			continue;
@@ -116,9 +169,22 @@ function braceDelta(line, state) {
 			break;
 		}
 		if (!inString && char === "/" && next === "*") {
-			state.inBlockComment = true;
+			state.blockCommentDepth = 1;
 			index += 1;
 			continue;
+		}
+		if (!inString) {
+			const rawStringStart = rustRawStringStart(line, index);
+			if (rawStringStart) {
+				const endToken = rustRawStringEndToken(rawStringStart.hashCount);
+				const endIndex = line.indexOf(endToken, rawStringStart.contentStart);
+				if (endIndex === -1) {
+					state.rawStringHashes = rawStringStart.hashCount;
+					break;
+				}
+				index = endIndex + endToken.length - 1;
+				continue;
+			}
 		}
 
 		if (inString) {
@@ -178,7 +244,7 @@ export function stripRustTestModules(source) {
 			continue;
 		}
 
-		const scannerState = { inBlockComment: false };
+		const scannerState = { blockCommentDepth: 0, rawStringHashes: null };
 		let depth = braceDelta(line, scannerState);
 		while (index + 1 < lines.length && depth > 0) {
 			index += 1;
