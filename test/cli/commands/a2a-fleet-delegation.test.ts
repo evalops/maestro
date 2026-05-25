@@ -295,6 +295,18 @@ describe("A2A fleet delegation CLI", () => {
 								},
 							},
 						],
+						discoveryEvidence: {
+							schema: "agents.v1.discovery-evidence",
+							decision: "matched",
+							reason: "eligible_a2a_peers",
+							workspaceId: "ws_1",
+							capability: "code:review",
+							a2aSkillId: "maestro.subagent.code-review",
+							status: "AGENT_STATUS_ONLINE",
+							requireA2ADispatch: true,
+							candidateCount: 4,
+							matchedCount: 4,
+						},
 					}),
 					{ status: 200, headers: { "Content-Type": "application/json" } },
 				);
@@ -327,7 +339,17 @@ describe("A2A fleet delegation CLI", () => {
 		const output = JSON.parse(logs.join("\n")) as {
 			peers: Array<{ endpointUrl: string; agentId?: string; name?: string }>;
 			imported: Array<{ name: string; url: string; path: string }>;
+			discoveryEvidence?: {
+				decision?: string;
+				candidateCount?: number;
+				matchedCount?: number;
+			};
 		};
+		expect(output.discoveryEvidence).toMatchObject({
+			decision: "matched",
+			candidateCount: 4,
+			matchedCount: 4,
+		});
 		expect(output.peers).toEqual([
 			expect.objectContaining({
 				agentId: "maestro-reviewer",
@@ -440,6 +462,9 @@ describe("A2A fleet delegation CLI", () => {
 				platformAgentStatus: "AGENT_STATUS_ONLINE",
 				selectedEndpoint: "internal",
 				a2aPushNotifications: true,
+				platformDiscoveryDecision: "matched",
+				platformDiscoveryCandidateCount: 4,
+				platformDiscoveryMatchedCount: 4,
 			},
 		});
 		expect(registry.peers["maestro-reviewer-secondary"]).toMatchObject({
@@ -620,6 +645,17 @@ describe("A2A fleet delegation CLI", () => {
 									},
 								},
 							],
+							discovery_evidence: {
+								schema: "agents.v1.discovery-evidence",
+								decision: "matched",
+								reason: "best_capability_score",
+								workspace_id: "ws_1",
+								capability: "code:review",
+								a2a_skill_id: "maestro.subagent.code-review",
+								status: "AGENT_STATUS_IDLE",
+								candidate_count: 3,
+								matched_count: 1,
+							},
 						}),
 						{ status: 200, headers: { "Content-Type": "application/json" } },
 					);
@@ -669,6 +705,18 @@ describe("A2A fleet delegation CLI", () => {
 			delegationCwd: "/repo",
 			discoverySource: "platform-agent-registry",
 			a2aSkillId: "maestro.subagent.code-review",
+		});
+		expect(metadata?.["evalops.a2aDiscovery"]).toMatchObject({
+			source: "platform-agent-registry",
+			platformDiscoveryDecision: "matched",
+			platformDiscoveryReason: "best_capability_score",
+			platformDiscoveryCandidateCount: 3,
+			platformDiscoveryMatchedCount: 1,
+			selectedAgentId: "maestro-reviewer",
+			selectedEndpointUrl: baseUrl,
+			selectedEndpointKind: "public",
+			score: expect.any(Number),
+			reasons: expect.arrayContaining(["skill:maestro.subagent.code-review"]),
 		});
 		expect(metadata?.["evalops.subagentRequest"]).toBeUndefined();
 		expect(metadata?.["evalops.attributeSubagentRequest"]).toBeUndefined();

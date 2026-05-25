@@ -1,5 +1,5 @@
 import { Buffer } from "node:buffer";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -665,6 +665,91 @@ describe("A2A CLI command helpers", () => {
 				"x-workspace-id": "ws_graph",
 			}),
 		);
+	});
+
+	it("clears stale Platform discovery metadata when imported evidence is absent", async () => {
+		stubAgentRegistryEnv();
+		muteConsole();
+		const root = await mkdtemp(join(tmpdir(), "maestro-a2a-import-"));
+		try {
+			const registryPath = join(root, "peers.json");
+			await writeFile(
+				registryPath,
+				`${JSON.stringify({
+					peers: {
+						"maestro-reviewer": {
+							url: "https://old-reviewer.test/a2a",
+							agentId: "maestro-reviewer",
+							metadata: {
+								source: "platform-agent-registry",
+								customNote: "keep-me",
+								platformDiscoveryDecision: "matched",
+								platformDiscoveryCandidateCount: 3,
+								platformDiscoveryMatchedCount: 1,
+							},
+						},
+					},
+				})}\n`,
+			);
+			vi.stubGlobal(
+				"fetch",
+				vi.fn(async (input: RequestInfo | URL) => {
+					expect(String(input)).toBe(
+						"https://registry.test/agents.v1.AgentService/List",
+					);
+					return new Response(
+						JSON.stringify({
+							agents: [
+								{
+									id: "maestro-reviewer",
+									workspaceId: "ws_1",
+									name: "Maestro Reviewer",
+									agentType: "maestro",
+									status: "AGENT_STATUS_IDLE",
+									a2a: {
+										publicEndpointUrl: "https://reviewer.test/a2a",
+										agentCardUrl:
+											"https://reviewer.test/.well-known/agent-card.json",
+										protocolBinding: "HTTP+JSON",
+										protocolVersion: "1.0",
+										pushNotifications: true,
+										skills: [],
+									},
+								},
+							],
+						}),
+						{ status: 200, headers: { "Content-Type": "application/json" } },
+					);
+				}),
+			);
+
+			await handleA2ACommand([
+				"discover",
+				"--import",
+				"--registry",
+				registryPath,
+				"--json",
+			]);
+
+			const registry = JSON.parse(await readFile(registryPath, "utf8")) as {
+				peers: Record<string, { metadata?: Record<string, unknown> }>;
+			};
+			const metadata = registry.peers["maestro-reviewer"]?.metadata;
+			expect(metadata).toMatchObject({
+				source: "platform-agent-registry",
+				customNote: "keep-me",
+				platformAgentId: "maestro-reviewer",
+				platformAgentType: "maestro",
+				platformAgentStatus: "AGENT_STATUS_IDLE",
+				selectedEndpoint: "public",
+				a2aPushNotifications: true,
+			});
+			expect(metadata).not.toHaveProperty("platformDiscoveryDecision");
+			expect(metadata).not.toHaveProperty("platformDiscoveryCandidateCount");
+			expect(metadata).not.toHaveProperty("platformDiscoveryMatchedCount");
+		} finally {
+			await rm(root, { force: true, recursive: true });
+		}
 	});
 
 	it("rejects heartbeat-only registration when heartbeat is disabled", async () => {
