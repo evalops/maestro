@@ -1,7 +1,10 @@
 import { execFile } from "node:child_process";
 import { Spacer, type TUI, Text } from "@evalops/tui";
 import type { Container } from "@evalops/tui";
-import type { SupportedOAuthProvider } from "../../oauth/index.js";
+import type {
+	OAuthLogoutProvider,
+	SupportedOAuthProvider,
+} from "../../oauth/index.js";
 import { theme } from "../../theme/theme.js";
 import type { ModalManager } from "../modal-manager.js";
 import type { NotificationView } from "../notification-view.js";
@@ -96,30 +99,24 @@ export class OAuthFlowController {
 
 		const args = argumentText.trim().toLowerCase();
 
-		// Parse argument: can be either "mode" or "provider:mode"
+		// Parse argument as a provider. Anthropic-specific mode arguments were
+		// retired with Anthropic OAuth login support.
 		let requestedProvider: string | undefined;
-		let selectedMode = "pro";
-		const validModes = ["pro", "console"];
 
 		if (args) {
 			if (args.includes(":")) {
 				const parts = args.split(":").map((s) => s.trim());
 				requestedProvider = parts[0];
 				const mode = parts[1];
-				if (mode && !validModes.includes(mode)) {
+				if (mode) {
 					this.isOAuthFlowActive = false;
 					showError(
-						`Invalid mode: ${mode}. Valid modes: ${validModes.join(", ")}`,
+						"Provider login modes are no longer supported. Use /login openai-codex for Codex auth or /login openai for OpenAI Platform auth.",
 					);
 					return;
 				}
-				selectedMode = mode && validModes.includes(mode) ? mode : "pro";
 			} else {
-				if (validModes.includes(args)) {
-					selectedMode = args;
-				} else {
-					requestedProvider = args;
-				}
+				requestedProvider = args;
 			}
 		}
 
@@ -140,13 +137,19 @@ export class OAuthFlowController {
 			return;
 		}
 
+		const defaultProvider = providers.find(
+			(provider) => provider.id === "openai-codex",
+		);
+		if (!requestedProvider && defaultProvider) {
+			await this.performOAuthLogin(defaultProvider.id, undefined, showError);
+			return;
+		}
+
 		// If only one provider or specific provider requested, use it directly
 		if (providers.length === 1 || requestedProvider) {
 			const provider = requestedProvider
-				? providers.find(
-						(p) =>
-							p.id === requestedProvider || p.id.includes(requestedProvider),
-					)
+				? (providers.find((p) => p.id === requestedProvider) ??
+					providers.find((p) => p.id.includes(requestedProvider)))
 				: providers[0];
 
 			if (!provider) {
@@ -155,7 +158,7 @@ export class OAuthFlowController {
 				return;
 			}
 
-			await this.performOAuthLogin(provider.id, selectedMode, showError);
+			await this.performOAuthLogin(provider.id, undefined, showError);
 			return;
 		}
 
@@ -166,7 +169,11 @@ export class OAuthFlowController {
 			mode: "login",
 			onProviderSelected: async (providerId) => {
 				try {
-					await this.performOAuthLogin(providerId, selectedMode, showError);
+					await this.performOAuthLogin(
+						providerId as SupportedOAuthProvider,
+						undefined,
+						showError,
+					);
 				} finally {
 					this.isOAuthFlowActive = false;
 				}
@@ -201,10 +208,10 @@ export class OAuthFlowController {
 		const requestedProvider = args || null;
 
 		// Import OAuth system
-		const { listOAuthProviders } = await import("../../oauth/index.js");
+		const { listOAuthLogoutProviders } = await import("../../oauth/index.js");
 
 		// Get logged-in providers
-		const loggedInProviders = listOAuthProviders();
+		const loggedInProviders = listOAuthLogoutProviders();
 
 		if (loggedInProviders.length === 0) {
 			this.isOAuthFlowActive = false;
@@ -226,10 +233,7 @@ export class OAuthFlowController {
 				return;
 			}
 
-			await this.performOAuthLogout(
-				provider as SupportedOAuthProvider,
-				showError,
-			);
+			await this.performOAuthLogout(provider, showError);
 			this.isOAuthFlowActive = false;
 			return;
 		}
@@ -337,14 +341,13 @@ export class OAuthFlowController {
 
 	private async performOAuthLogin(
 		providerId: SupportedOAuthProvider,
-		mode: string,
+		mode: string | undefined,
 		showError: (msg: string) => void,
 	): Promise<void> {
 		const { login } = await import("../../oauth/index.js");
 
 		const { chatContainer, ui, requestRender } = this.renderContext;
-		const requiresPromptCode =
-			providerId === "anthropic" || providerId === "openai-codex";
+		const requiresPromptCode = providerId === "openai-codex";
 
 		chatContainer.addChild(new Spacer(1));
 		chatContainer.addChild(new Text(`Logging in to ${providerId}...`, 1, 0));
@@ -389,9 +392,7 @@ export class OAuthFlowController {
 					if (requiresPromptCode) {
 						chatContainer.addChild(
 							new Text(
-								providerId === "openai-codex"
-									? "Complete authentication in the browser. If asked, paste the redirect URL or authorization code below."
-									: "Paste the authorization code below (or type 'cancel' to abort):",
+								"Complete authentication in the browser. If asked, paste the redirect URL or authorization code below.",
 								1,
 								0,
 							),
@@ -509,8 +510,7 @@ export class OAuthFlowController {
 											trimmedText.startsWith("https://") ||
 											trimmedText.includes("code=") ||
 											/^[a-zA-Z0-9_#-]+$/.test(trimmedText))
-									: trimmedText.length >= 10 &&
-										/^[a-zA-Z0-9_#-]+$/.test(trimmedText);
+									: false;
 							if (!looksLikeOAuthValue) {
 								this.notificationView.showError(
 									"Invalid authorization code format. Please try again or type 'cancel'.",
@@ -564,7 +564,7 @@ export class OAuthFlowController {
 	}
 
 	private async performOAuthLogout(
-		providerId: SupportedOAuthProvider,
+		providerId: OAuthLogoutProvider,
 		showError: (msg: string) => void,
 	): Promise<void> {
 		const { chatContainer, requestRender } = this.renderContext;

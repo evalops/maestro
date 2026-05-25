@@ -2072,8 +2072,8 @@ describe("SwarmExecutor", () => {
 			expect.objectContaining({
 				mode: "smart",
 				subagentType: "researcher",
-				provider: "anthropic",
-				model: MODEL_BY_TIER.sonnet.anthropic,
+				provider: "openai-codex",
+				model: MODEL_BY_TIER.sonnet["openai-codex"],
 				reasoningEffort: "medium",
 				source: "mode",
 				success: false,
@@ -2134,8 +2134,8 @@ describe("SwarmExecutor", () => {
 					source: "override",
 					success: true,
 					metadata: expect.objectContaining({
-						dispatchModel: MODEL_BY_TIER.sonnet.anthropic,
-						dispatchProvider: "anthropic",
+						dispatchModel: MODEL_BY_TIER.sonnet["openai-codex"],
+						dispatchProvider: "openai-codex",
 						modelOverride: "task",
 						modelTier: "sonnet",
 					}),

@@ -535,8 +535,8 @@ const validateConfig = compileTypeboxSchema(ComposerConfigSchema);
 // ─────────────────────────────────────────────────────────────
 
 export const DEFAULT_CONFIG: ComposerConfig = {
-	model: "claude-sonnet-4-20250514",
-	model_provider: "anthropic",
+	model: "gpt-5.5",
+	model_provider: "openai-codex",
 	approval_policy: "untrusted",
 	sandbox_mode: "workspace-write",
 	model_reasoning_effort: "medium",
@@ -1451,7 +1451,7 @@ export function getConfigSummary(workspaceDir: string): string {
 	lines.push("Current Configuration");
 	lines.push("─".repeat(40));
 	lines.push(`Model: ${config.model ?? "default"}`);
-	lines.push(`Provider: ${config.model_provider ?? "anthropic"}`);
+	lines.push(`Provider: ${config.model_provider ?? "openai-codex"}`);
 	lines.push(`Approval Policy: ${config.approval_policy ?? "untrusted"}`);
 	lines.push(`Sandbox Mode: ${config.sandbox_mode ?? "workspace-write"}`);
 

@@ -6,7 +6,7 @@ import {
 	revokeRemoteConnection,
 	setRemoteSourceOfTruthPolicy,
 } from "../connectors/service-client.js";
-import type { SupportedOAuthProvider } from "./index.js";
+import type { OAuthLogoutProvider, SupportedOAuthProvider } from "./index.js";
 import {
 	type OAuthCredentials,
 	loadOAuthCredentials,
@@ -19,7 +19,6 @@ const CONNECTOR_PROVIDER_BY_OAUTH_PROVIDER: Record<
 	ConnectorOAuthProvider,
 	string
 > = {
-	anthropic: "x-evalops:anthropic",
 	"github-copilot": "github",
 	"google-antigravity": "google",
 	"google-gemini-cli": "google",
@@ -28,7 +27,6 @@ const CONNECTOR_PROVIDER_BY_OAUTH_PROVIDER: Record<
 };
 
 const DISPLAY_NAME_BY_OAUTH_PROVIDER: Record<ConnectorOAuthProvider, string> = {
-	anthropic: "Anthropic OAuth",
 	"github-copilot": "GitHub Copilot OAuth",
 	"google-antigravity": "Google Antigravity OAuth",
 	"google-gemini-cli": "Google Gemini CLI OAuth",
@@ -385,17 +383,17 @@ export function clearOAuthProviderSourceOfTruthPolicy(
 }
 
 export async function revokeOAuthProviderConnection(
-	provider: SupportedOAuthProvider,
+	provider: OAuthLogoutProvider,
 	credentials: OAuthCredentials | null,
 ): Promise<void> {
-	if (!isConnectorOAuthProvider(provider)) {
-		return;
-	}
 	const connectionId = getMetadataString(
 		credentials?.metadata,
 		"connectorConnectionId",
 	);
 	if (!connectionId) {
+		return;
+	}
+	if (!isConnectorOAuthProvider(provider) && provider !== "anthropic") {
 		return;
 	}
 	await revokeRemoteConnection(connectionId);

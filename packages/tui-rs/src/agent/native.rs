@@ -310,9 +310,9 @@ async fn execute_native_read_only_tool_wave(
 /// ```
 /// use maestro_tui::agent::NativeAgentConfig;
 ///
-/// // Default configuration (Claude Sonnet)
+/// // Default configuration (Codex on OpenAI)
 /// let config = NativeAgentConfig::default();
-/// assert_eq!(config.model, "claude-sonnet-4-5-20250514");
+/// assert_eq!(config.model, "gpt-5.1-codex-max");
 ///
 /// // Custom configuration with thinking enabled
 /// let config = NativeAgentConfig {
@@ -326,7 +326,7 @@ async fn execute_native_read_only_tool_wave(
 /// ```
 #[derive(Debug, Clone)]
 pub struct NativeAgentConfig {
-    /// Model to use (e.g., "claude-opus-4-5-20251101", "gpt-5.1-codex-max")
+    /// Model to use (e.g., "gpt-5.1-codex-max", "claude-opus-4-5-20251101")
     ///
     /// The model string is parsed by `UnifiedClient` to determine the provider
     /// (Anthropic, `OpenAI`, etc.) and model variant.
@@ -366,7 +366,7 @@ pub struct NativeAgentConfig {
 impl Default for NativeAgentConfig {
     fn default() -> Self {
         Self {
-            model: "claude-sonnet-4-5-20250514".to_string(),
+            model: "gpt-5.1-codex-max".to_string(),
             max_tokens: 16384,
             system_prompt: None,
             thinking_enabled: false,
@@ -2637,7 +2637,7 @@ mod tests {
     #[test]
     fn test_config_default() {
         let config = NativeAgentConfig::default();
-        assert!(config.model.starts_with("claude"));
+        assert_eq!(config.model, "gpt-5.1-codex-max");
         assert_eq!(config.max_tokens, 16384);
         assert!(!config.thinking_enabled);
     }

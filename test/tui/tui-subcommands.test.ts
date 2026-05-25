@@ -1126,7 +1126,7 @@ describe("Subcommand Suite Handlers", () => {
 			expect(deps.handleDiff).toHaveBeenCalled();
 		});
 
-		it("auth handler treats 'pro' as login mode", async () => {
+		it("auth handler rejects retired 'pro' login mode shorthand", async () => {
 			const { createAuthCommandHandler } = await import(
 				"../../src/cli-tui/commands/subcommands/auth-commands.js"
 			);
@@ -1145,7 +1145,11 @@ describe("Subcommand Suite Handlers", () => {
 
 			await handler(ctx);
 
-			expect(deps.handleLogin).toHaveBeenCalled();
+			expect(deps.handleLogin).not.toHaveBeenCalled();
+			expect(ctx.showError).toHaveBeenCalledWith("Unknown subcommand: pro");
+			expect(ctx.showInfo).toHaveBeenCalledWith(
+				expect.stringContaining("/auth login"),
+			);
 		});
 	});
 
