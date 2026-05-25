@@ -53,6 +53,18 @@ export function readInstalledPackageJson(packageName, installRoot) {
 	}
 }
 
+function stringValue(value) {
+	return typeof value === "string" ? value : "";
+}
+
+function stringBinCommandName(packageName) {
+	const name = stringValue(packageName);
+	if (name.startsWith("@")) {
+		return name.split("/")[1] ?? "";
+	}
+	return name;
+}
+
 function arrayValues(value) {
 	return Array.isArray(value)
 		? value.filter((entry) => typeof entry === "string" && entry.length > 0)
@@ -65,35 +77,80 @@ function objectEntries(value) {
 		: [];
 }
 
-export function assertInstallablePackageMetadata(
+export function summarizeInstallablePackageMetadata(
 	installedPackage,
 	{ label, forbiddenWorkspaceNames = [] },
 ) {
 	const forbiddenNames = new Set(forbiddenWorkspaceNames);
-	const offenders = [];
+	const forbiddenReferences = [];
+	const workspaceProtocolReferences = [];
+	const dependencySections = {};
 	for (const section of [
 		"dependencies",
 		"optionalDependencies",
 		"peerDependencies",
 	]) {
-		for (const [name, spec] of objectEntries(installedPackage[section])) {
+		const entries = objectEntries(installedPackage[section]).sort(([left], [right]) =>
+			left.localeCompare(right),
+		);
+		dependencySections[section] = entries.map(([name, spec]) => ({
+			name,
+			spec: stringValue(spec),
+		}));
+		for (const [name, spec] of entries) {
 			if (forbiddenNames.has(name)) {
-				offenders.push(`${section}.${name}`);
+				forbiddenReferences.push(`${section}.${name}`);
 			}
 			if (typeof spec === "string" && spec.startsWith("workspace:")) {
-				offenders.push(`${section}.${name}=workspace:`);
+				workspaceProtocolReferences.push(`${section}.${name}=workspace:`);
 			}
 		}
 	}
 
 	for (const section of ["bundleDependencies", "bundledDependencies"]) {
-		for (const name of arrayValues(installedPackage[section])) {
+		const names = arrayValues(installedPackage[section]).sort();
+		dependencySections[section] = names;
+		for (const name of names) {
 			if (forbiddenNames.has(name)) {
-				offenders.push(`${section}.${name}`);
+				forbiddenReferences.push(`${section}.${name}`);
 			}
 		}
 	}
 
+	const offenders = [...forbiddenReferences, ...workspaceProtocolReferences].sort();
+	const binValue = installedPackage.bin;
+	const binCommands =
+		typeof binValue === "string"
+			? [stringBinCommandName(installedPackage.name)].filter(Boolean)
+			: objectEntries(binValue)
+					.map(([name]) => name)
+					.sort();
+
+	return {
+		label,
+		name: stringValue(installedPackage.name),
+		version: stringValue(installedPackage.version),
+		binCommands,
+		forbiddenWorkspaceNames: [...forbiddenNames].sort(),
+		forbiddenReferences: forbiddenReferences.sort(),
+		workspaceProtocolReferences: workspaceProtocolReferences.sort(),
+		installable: offenders.length === 0,
+		dependencySections,
+	};
+}
+
+export function assertInstallablePackageMetadata(
+	installedPackage,
+	{ label, forbiddenWorkspaceNames = [] },
+) {
+	const summary = summarizeInstallablePackageMetadata(installedPackage, {
+		label,
+		forbiddenWorkspaceNames,
+	});
+	const offenders = [
+		...summary.forbiddenReferences,
+		...summary.workspaceProtocolReferences,
+	].sort();
 	if (offenders.length > 0) {
 		throw new Error(
 			`${label} exposes non-registry workspace metadata: ${offenders
@@ -101,6 +158,7 @@ export function assertInstallablePackageMetadata(
 				.join(", ")}`,
 		);
 	}
+	return summary;
 }
 
 export function runInstalledCliSmoke(
