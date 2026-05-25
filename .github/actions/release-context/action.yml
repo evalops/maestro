@@ -135,14 +135,21 @@ runs:
             "scripts/bundle-runtime-deps.mjs",
             "scripts/copy-db-migrations.js",
             "scripts/copy-themes.js",
+            "scripts/ensure-deps.js",
+            "scripts/ensure-dir.js",
             "scripts/headless-protocol-codegen.mjs",
+            "scripts/package-metadata.js",
+            "scripts/runtime-workspaces.mjs",
             "scripts/session-wire-format-codegen.mjs",
+            "scripts/workspace-utils.js",
           ]);
           const isPackageImpactingPath = (path) =>
             packageImpactingFiles.has(path) ||
             path.startsWith("packages/") ||
+            path.startsWith("proto/") ||
             path.startsWith("skills/") ||
-            path.startsWith("src/");
+            path.startsWith("src/") ||
+            path.startsWith("types/");
           const diffOutput = execFileSync(
             "git",
             ["diff", "--name-only", `${tagTarget}..HEAD`],
