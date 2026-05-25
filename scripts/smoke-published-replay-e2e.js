@@ -317,6 +317,22 @@ function assertSessionEvidence(sessionDir, label) {
 	return report;
 }
 
+function sessionIdFromEvidenceText(sessionText) {
+	for (const line of sessionText.split(/\r?\n/)) {
+		if (!line.trim()) continue;
+		try {
+			const entry = JSON.parse(line);
+			if (entry?.type === "session" && typeof entry?.id === "string") {
+				return entry.id;
+			}
+		} catch {
+			// Ignore non-JSON fragments; the missing session id check below reports
+			// the actionable failure with the evidence label and directory.
+		}
+	}
+	return "";
+}
+
 function sessionEvidenceReport(sessionDir, label) {
 	const sessionFiles = collectFiles(sessionDir).filter((path) =>
 		path.endsWith(".jsonl"),
@@ -330,12 +346,120 @@ function sessionEvidenceReport(sessionDir, label) {
 	if (!sessionText.includes(FINAL_TEXT) || !sessionText.includes(TOOL_CALL_ID)) {
 		return `${label} session evidence is missing the final text or tool call id.`;
 	}
+	const sessionId = sessionIdFromEvidenceText(sessionText);
+	if (!sessionId) {
+		return `${label} session evidence is missing a session header id.`;
+	}
 	return {
+		sessionId,
 		jsonlFileCount: sessionFiles.length,
 		bytes: Buffer.byteLength(sessionText),
 		sha256: sha256(sessionText),
 		containsFinalText: true,
 		containsToolCallId: true,
+	};
+}
+
+function assertAgentRuntimeLedger(binPath, context, label) {
+	const session = assertSessionEvidence(context.sessionDir, label);
+	const result = spawnSync(
+		binPath,
+		["run", "inspect", session.sessionId, "--json"],
+		{
+			cwd: context.runDir,
+			encoding: "utf8",
+			env: context.env,
+			timeout: timeoutMs,
+		},
+	);
+	if (result.error) {
+		fail(`${label} AgentRuntime ledger inspection failed to launch.`, result.error.stack);
+	}
+	if (result.status !== 0) {
+		fail(
+			`${label} AgentRuntime ledger inspection exited with ${result.status}.`,
+			[result.stdout, result.stderr].filter(Boolean).join("\n\n"),
+		);
+	}
+	let report;
+	try {
+		report = JSON.parse(result.stdout);
+	} catch (error) {
+		fail(
+			`${label} AgentRuntime ledger inspection did not emit JSON.`,
+			`${result.stdout}\n${error instanceof Error ? error.message : String(error)}`,
+		);
+	}
+	const ledger = report?.agentRuntimeLedger;
+	if (ledger?.schemaVersion !== "evalops.maestro.agent-runtime-ledger.v1") {
+		fail(`${label} AgentRuntime ledger schema was not emitted.`);
+	}
+	if (ledger?.replay?.deterministic !== true) {
+		fail(`${label} AgentRuntime ledger replay was not deterministic.`);
+	}
+	const operations = Array.isArray(ledger?.promotion?.operations)
+		? ledger.promotion.operations
+		: [];
+	const hasHandleTrigger = operations.some(
+		(operation) => operation?.operation === "handle_trigger",
+	);
+	const hasRecordRunStep = operations.some(
+		(operation) => operation?.operation === "record_run_step",
+	);
+	const hasRecordRunWorkItem = operations.some(
+		(operation) => operation?.operation === "record_run_work_item",
+	);
+	const hasTerminalOperation = operations.some(
+		(operation) =>
+			operation?.operation === "complete_run" ||
+			operation?.operation === "fail_run",
+	);
+	if (
+		!hasHandleTrigger ||
+		!hasRecordRunStep ||
+		!hasRecordRunWorkItem ||
+		!hasTerminalOperation
+	) {
+		fail(`${label} AgentRuntime promotion plan is missing required operations.`);
+	}
+	const toolWorkItem = operations.find((operation) => {
+		const payload = operation?.payload;
+		return (
+			operation?.operation === "record_run_work_item" &&
+			payload?.payload?.eventType === "tool.completed" &&
+			payload?.payload?.toolName === "read"
+		);
+	});
+	const evidenceRefs = Array.isArray(toolWorkItem?.payload?.evidenceRefs)
+		? toolWorkItem.payload.evidenceRefs
+		: [];
+	if (!evidenceRefs.includes(`tool-call:${TOOL_CALL_ID}`)) {
+		fail(`${label} AgentRuntime tool work item is missing tool-call evidence.`);
+	}
+	if (
+		toolWorkItem?.payload?.completionGate !==
+		"maestro_agent_runtime_ledger_recorded"
+	) {
+		fail(`${label} AgentRuntime tool work item is missing the completion gate.`);
+	}
+	return {
+		schemaVersion: ledger.schemaVersion,
+		replayDeterministic: true,
+		entries: ledger.counts?.entries ?? 0,
+		promotionOperations: ledger.counts?.promotionOperations ?? operations.length,
+		hasHandleTrigger,
+		hasRecordRunStep,
+		hasRecordRunWorkItem,
+		hasTerminalOperation,
+		toolWorkItem: {
+			toolName: toolWorkItem.payload.payload.toolName,
+			evidenceRefs: evidenceRefs.filter((ref) =>
+				["tool-call:", "tool-execution:", "approval-request:"].some((prefix) =>
+					ref.startsWith(prefix),
+				),
+			),
+			completionGate: toolWorkItem.payload.completionGate,
+		},
 	};
 }
 
@@ -474,6 +598,11 @@ function runTextMode(binPath) {
 			context.sessionDir,
 			"Published text replay",
 		);
+		const agentRuntimeLedger = assertAgentRuntimeLedger(
+			binPath,
+			context,
+			"Published text replay",
+		);
 		console.log("Published text replay smoke passed.");
 		return {
 			mode: "text",
@@ -496,6 +625,7 @@ function runTextMode(binPath) {
 				containsExpectedText: true,
 			},
 			session,
+			agentRuntimeLedger,
 		};
 	} finally {
 		rmSync(context.runDir, { recursive: true, force: true });
@@ -511,6 +641,11 @@ function runJsonMode(binPath) {
 	try {
 		const evidence = assertJsonMode(
 			parseJsonLines(stdout, "Published JSON replay"),
+			context,
+			"Published JSON replay",
+		);
+		evidence.agentRuntimeLedger = assertAgentRuntimeLedger(
+			binPath,
 			context,
 			"Published JSON replay",
 		);
@@ -631,6 +766,11 @@ function runRpcMode(binPath) {
 					settleError = new Error(session);
 				} else {
 					rpcEvidence.session = session;
+					rpcEvidence.agentRuntimeLedger = assertAgentRuntimeLedger(
+						binPath,
+						context,
+						"Published RPC replay",
+					);
 				}
 			}
 			rmSync(context.runDir, { recursive: true, force: true });
