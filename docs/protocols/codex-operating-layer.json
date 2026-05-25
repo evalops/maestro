@@ -449,7 +449,7 @@
 		{
 			"area": "remote-runner-continuity",
 			"evidenceType": "source",
-			"path": "packages/tui-rs/src/headless/messages.rs",
+			"path": "packages/tui-rs/src/headless/messages/state.rs",
 			"anchors": [
 				"CodexSubagentContinuityEdge",
 				"codex_subagent_edges",
