@@ -1004,6 +1004,11 @@ describe("ci workflow guardrails", () => {
 		const canaryStep = releaseWorkflow.jobs?.[
 			"post-publish-canary"
 		]?.steps?.find((step) => step.name === "Verify published package from npm");
+		const evidenceStep = releaseWorkflow.jobs?.[
+			"post-publish-canary"
+		]?.steps?.find(
+			(step) => step.name === "Validate published replay evidence",
+		);
 		const verifyWorkflowPath = new URL(
 			"../../.github/workflows/verify-published-package.yml",
 			import.meta.url,
@@ -1028,6 +1033,22 @@ describe("ci workflow guardrails", () => {
 			expect(canaryStep?.env).toMatchObject({
 				MAESTRO_PUBLISHED_REPLAY_SANDBOX_MODE: "local",
 			});
+			expect(evidenceStep?.run).toContain(
+				"$evidence.package.installMetadata.installable == true",
+			);
+			expect(evidenceStep?.run).toContain(". as $evidence");
+			expect(evidenceStep?.run).toContain(
+				"$evidence.package.installMetadata.binCommands | index($evidence.package.cliCommand) != null",
+			);
+			expect(evidenceStep?.run).not.toContain(
+				".package.installMetadata.binCommands | index(.package.cliCommand) != null",
+			);
+			expect(evidenceStep?.run).toContain(
+				"$evidence.package.installMetadata.forbiddenReferences == []",
+			);
+			expect(evidenceStep?.run).toContain(
+				"$evidence.package.installMetadata.workspaceProtocolReferences == []",
+			);
 			expect(hasPublicVerifyWorkflow).toBe(true);
 			const verifyWorkflow = parse(
 				readFileSync(verifyWorkflowPath, { encoding: "utf8" }),
