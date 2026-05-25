@@ -67,10 +67,15 @@ runs:
         import { execFileSync } from "node:child_process";
         import { pathToFileURL } from "node:url";
 
-        const modulePath = pathToFileURL(
+        const packageMetadataPath = pathToFileURL(
           `${process.env.GITHUB_ACTION_PATH}/../../../scripts/package-metadata.js`,
         );
-        const { getPackageMetadata } = await import(modulePath.href);
+        const releaseImpactFilterPath = pathToFileURL(
+          `${process.env.GITHUB_ACTION_PATH}/../../../scripts/release-impact-filter.mjs`,
+        );
+        const { getPackageMetadata } = await import(packageMetadataPath.href);
+        const { packageChangedSinceTag: packageChangedSinceReleaseTag } =
+          await import(releaseImpactFilterPath.href);
         const metadata = getPackageMetadata();
         const requestedVersion =
           (process.env.MAESTRO_RELEASE_REQUESTED_VERSION ?? "").trim();
@@ -125,42 +130,7 @@ runs:
           tagMatchesHead = tagTarget === headSha;
         }
         if (tagExists && !tagMatchesHead) {
-          const packageImpactingFiles = new Set([
-            "buf.gen.yaml",
-            "buf.yaml",
-            "bun.lockb",
-            "package.json",
-            "tsconfig.base.json",
-            "tsconfig.build.json",
-            "tsconfig.json",
-            "scripts/bundle-runtime-deps.mjs",
-            "scripts/copy-db-migrations.js",
-            "scripts/copy-themes.js",
-            "scripts/codegen-utils.mjs",
-            "scripts/ensure-deps.js",
-            "scripts/ensure-dir.js",
-            "scripts/headless-protocol-codegen.mjs",
-            "scripts/package-metadata.js",
-            "scripts/runtime-workspaces.mjs",
-            "scripts/session-wire-format-codegen.mjs",
-            "scripts/workspace-utils.js",
-          ]);
-          const isPackageImpactingPath = (path) =>
-            packageImpactingFiles.has(path) ||
-            path.startsWith("packages/") ||
-            path.startsWith("proto/") ||
-            path.startsWith("skills/") ||
-            path.startsWith("src/") ||
-            path.startsWith("types/");
-          const diffOutput = execFileSync(
-            "git",
-            ["diff", "--name-only", `${tagTarget}..HEAD`],
-            { encoding: "utf8" },
-          );
-          packageChangedSinceTag = diffOutput
-            .split(/\r?\n/)
-            .filter(Boolean)
-            .some((path) => isPackageImpactingPath(path));
+          packageChangedSinceTag = packageChangedSinceReleaseTag({ tagTarget });
         }
 
         const outputs = {
