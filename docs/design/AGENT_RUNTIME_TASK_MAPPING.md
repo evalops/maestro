@@ -120,7 +120,10 @@ plan for existing local todo stores.
 
 0. Expose saved sessions as a local AgentRuntime ledger through
    `maestro run ledger|replay|promote`, giving harnesses an inspectable dry-run
-   promotion contract before live Platform write-through is enabled.
+   promotion contract before live Platform write-through is enabled. The dry-run
+   work items preserve `toolExecutionId`, `waitId`, `evidenceRefs`, and compact
+   event linkage so live write-through can join ToolExecution, approval, and
+   timeline state without raw-output duplication.
 1. Extend the existing hosted progress recorder with methods that accept
    normalized task events.
 2. Emit normalized task events from the `todo`, background task, checkpoint, and
