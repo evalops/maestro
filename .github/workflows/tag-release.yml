@@ -31,6 +31,46 @@ jobs:
           fallback-to-package-version: "true"
           create-tag-if-missing: "true"
 
+      - id: registry-release
+        name: Check npm registry release
+        if: ${{ github.repository == 'evalops/maestro' }}
+        env:
+          PACKAGE_NAME: ${{ steps.release.outputs.package_name }}
+          RELEASE_VERSION: ${{ steps.release.outputs.release_version }}
+        run: |
+          set -euo pipefail
+          published_version="$(npm view "${PACKAGE_NAME}@${RELEASE_VERSION}" version 2>/dev/null || true)"
+          if [[ "${published_version}" == "${RELEASE_VERSION}" ]]; then
+            echo "published=true" >> "$GITHUB_OUTPUT"
+            echo "${PACKAGE_NAME}@${RELEASE_VERSION} is published on npm."
+          else
+            echo "published=false" >> "$GITHUB_OUTPUT"
+            echo "${PACKAGE_NAME}@${RELEASE_VERSION} is not published on npm yet."
+          fi
+
+      - id: active-release
+        name: Check active public release workflow
+        if: ${{ github.repository == 'evalops/maestro' && steps.registry-release.outputs.published != 'true' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ steps.release.outputs.release_tag }}
+        run: |
+          set -euo pipefail
+          active_count="$(
+            gh run list \
+              --workflow release \
+              --branch "${RELEASE_TAG}" \
+              --json status \
+              --limit 20 \
+              --jq '[.[] | select(.status != "completed")] | length'
+          )"
+          echo "active_count=${active_count}" >> "$GITHUB_OUTPUT"
+          if [[ "${active_count}" == "0" ]]; then
+            echo "No active release workflow exists for ${RELEASE_TAG}."
+          else
+            echo "Found ${active_count} active release workflow run(s) for ${RELEASE_TAG}; not dispatching another."
+          fi
+
       - name: Require version bump for existing release tag
         if: ${{ steps.release.outputs.tag_exists == 'true' && steps.release.outputs.tag_matches_head != 'true' && steps.release.outputs.package_changed_since_tag == 'true' }}
         env:
@@ -56,7 +96,7 @@ jobs:
           fi
 
       - name: Dispatch public release workflow
-        if: ${{ github.repository == 'evalops/maestro' && steps.release.outputs.tag_exists != 'true' }}
+        if: ${{ github.repository == 'evalops/maestro' && (steps.release.outputs.tag_exists != 'true' || steps.registry-release.outputs.published != 'true') && (steps.active-release.outputs.active_count == '0' || steps.active-release.outputs.active_count == '') }}
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ steps.release.outputs.release_tag }}
