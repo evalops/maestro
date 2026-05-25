@@ -256,6 +256,27 @@ export function stripRustTestModules(source) {
 }
 
 /**
+ * @param {string} line
+ * @param {number} initialDepth
+ */
+function rustBlockCommentDepthAfterLine(line, initialDepth) {
+	let depth = initialDepth;
+	for (let index = 0; index < line.length - 1; index += 1) {
+		const pair = line.slice(index, index + 2);
+		if (pair === "/*") {
+			depth += 1;
+			index += 1;
+			continue;
+		}
+		if (pair === "*/" && depth > 0) {
+			depth -= 1;
+			index += 1;
+		}
+	}
+	return depth;
+}
+
+/**
  * @param {string} source
  */
 export function hasCfgTestModuleDeclaration(source) {
@@ -264,28 +285,42 @@ export function hasCfgTestModuleDeclaration(source) {
 		/^\s*(?:pub(?:\([^)]*\))?\s+)?mod\s+tests\s*;/;
 	const inlineCfgModuleDeclarationPattern =
 		/^\s*#\s*\[\s*cfg\s*\(\s*test\s*\)\s*\]\s*(?:pub(?:\([^)]*\))?\s+)?mod\s+tests\s*;/;
-	const cfgTestAttrPattern = /^\s*#\s*\[\s*cfg\s*\(\s*test\s*\)\s*\]\s*$/;
+	const cfgTestAttrPattern =
+		/^\s*#\s*\[\s*cfg\s*\(\s*test\s*\)\s*\]\s*(?:\/\/.*)?$/;
 
 	for (let index = 0; index < lines.length; index += 1) {
 		const line = lines[index];
 		if (inlineCfgModuleDeclarationPattern.test(line)) {
 			return true;
 		}
-		if (!moduleDeclarationPattern.test(line)) {
+		if (!cfgTestAttrPattern.test(line)) {
 			continue;
 		}
 
-		for (let attrIndex = index - 1; attrIndex >= 0; attrIndex -= 1) {
+		let blockCommentDepth = 0;
+		for (let attrIndex = index + 1; attrIndex < lines.length; attrIndex += 1) {
 			const attrLine = lines[attrIndex].trim();
-			if (!attrLine) {
+			if (!attrLine || attrLine.startsWith("//")) {
 				continue;
 			}
-			if (!attrLine.startsWith("#[")) {
-				break;
+			if (blockCommentDepth > 0) {
+				blockCommentDepth = rustBlockCommentDepthAfterLine(
+					attrLine,
+					blockCommentDepth,
+				);
+				continue;
 			}
-			if (cfgTestAttrPattern.test(lines[attrIndex])) {
+			if (attrLine.startsWith("/*")) {
+				blockCommentDepth = rustBlockCommentDepthAfterLine(attrLine, 0);
+				continue;
+			}
+			if (attrLine.startsWith("#[")) {
+				continue;
+			}
+			if (moduleDeclarationPattern.test(lines[attrIndex])) {
 				return true;
 			}
+			break;
 		}
 	}
 
