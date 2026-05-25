@@ -1258,7 +1258,7 @@ describe("ci workflow guardrails", () => {
 		).toBe(proofHarnessSkipCondition);
 	});
 
-	it("keeps the Rust toolchain home stable across workflow runs", () => {
+	it("isolates the Rust toolchain home across workflow runs", () => {
 		const action = readFileSync(
 			new URL("../../.github/actions/setup-rust/action.yml", import.meta.url),
 			{
@@ -1269,11 +1269,18 @@ describe("ci workflow guardrails", () => {
 		expect(action).toContain(
 			"/maestro-rust/${safe_repo}/${safe_job}/${safe_toolchain}",
 		);
+		expect(action).toContain('safe_run="${GITHUB_RUN_ID:-local}"');
+		expect(action).toContain('safe_attempt="${GITHUB_RUN_ATTEMPT:-0}"');
+		expect(action).toContain(
+			'root="$base/run-${safe_run}-attempt-${safe_attempt}"',
+		);
+		expect(action).toContain(
+			'find "$base" -mindepth 1 -maxdepth 1 -type d -mmin +360 -exec rm -rf {} + || true',
+		);
 		expect(action).toContain("Ensure Rustup tool proxies");
 		expect(action).toContain(
 			"for proxy in cargo rustc rustdoc rustfmt cargo-fmt cargo-clippy clippy-driver",
 		);
-		expect(action).not.toContain("GITHUB_RUN_ID");
 	});
 
 	it("embeds and validates public mirror source metadata before opening PRs", () => {
