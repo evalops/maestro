@@ -110,7 +110,7 @@ function shouldRunBunInstallSmoke() {
 
 function assertInstalledMetadata(installRoot, label) {
 	const installedPackage = readInstalledPackageJson(name, installRoot);
-	assertInstallablePackageMetadata(installedPackage, {
+	return assertInstallablePackageMetadata(installedPackage, {
 		label,
 		forbiddenWorkspaceNames,
 	});
@@ -180,7 +180,10 @@ async function main() {
 			cwd: tempDir,
 			stdio: "inherit",
 		});
-		assertInstalledMetadata(tempDir, `${packageSpec} via npm`);
+		const installMetadata = assertInstalledMetadata(
+			tempDir,
+			`${packageSpec} via npm`,
+		);
 		runInstalledPackageAudit(tempDir, {
 			auditLevel: installAuditLevel,
 			label: packageSpec,
@@ -198,6 +201,7 @@ async function main() {
 		await runPublishedReplayE2E({
 			cliCommand,
 			evidencePath: publishedReplayEvidencePath("npm"),
+			installMetadata,
 			installRoot: tempDir,
 			packageSpec,
 		});
@@ -221,7 +225,10 @@ async function main() {
 			cwd: bunTempDir,
 			stdio: "inherit",
 		});
-		assertInstalledMetadata(bunTempDir, `${packageSpec} via Bun`);
+		const bunInstallMetadata = assertInstalledMetadata(
+			bunTempDir,
+			`${packageSpec} via Bun`,
+		);
 		runInstalledCliSmoke(bunTempDir, {
 			cliCommand,
 			expectedVersion: version,
@@ -235,6 +242,7 @@ async function main() {
 		await runPublishedReplayE2E({
 			cliCommand,
 			evidencePath: publishedReplayEvidencePath("bun"),
+			installMetadata: bunInstallMetadata,
 			installRoot: bunTempDir,
 			packageSpec,
 		});
