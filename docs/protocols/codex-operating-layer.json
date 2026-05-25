@@ -121,7 +121,7 @@
 		{
 			"area": "approvals-sandbox-policy",
 			"evidenceType": "source",
-			"path": "packages/control-plane-rs/src/main.rs",
+			"path": "packages/control-plane-rs/src/codex_bridge.rs",
 			"anchors": [
 				"server_requests\": [\"approval\"]",
 				"codex_headless_pending_request_id",
@@ -334,7 +334,7 @@
 		{
 			"area": "multi-agent-workgraph",
 			"evidenceType": "source",
-			"path": "packages/control-plane-rs/src/main.rs",
+			"path": "packages/control-plane-rs/src/codex_bridge.rs",
 			"anchors": [
 				"childRunIds",
 				"codexWorkGraph",
