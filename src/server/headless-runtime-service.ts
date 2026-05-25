@@ -342,9 +342,13 @@ export async function loadHostedRunnerRestoreManifest(
 			`Hosted runner restore manifest snapshot is for Maestro session ${restore.snapshot.session_id}, not ${maestroSessionId}`,
 		);
 	}
-	if (restore.snapshot.state.session_id !== maestroSessionId) {
+	const snapshotStateSessionId =
+		typeof restore.snapshot.state.session_id === "string"
+			? restore.snapshot.state.session_id.trim()
+			: "";
+	if (snapshotStateSessionId && snapshotStateSessionId !== maestroSessionId) {
 		throw new Error(
-			`Hosted runner restore manifest snapshot state is for Maestro session ${restore.snapshot.state.session_id}, not ${maestroSessionId}`,
+			`Hosted runner restore manifest snapshot state is for Maestro session ${snapshotStateSessionId}, not ${maestroSessionId}`,
 		);
 	}
 	if (

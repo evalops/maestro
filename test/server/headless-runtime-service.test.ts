@@ -254,6 +254,46 @@ describe("HeadlessRuntimeService restore manifests", () => {
 
 	it.each([
 		{
+			field: "missing snapshot.state.session_id",
+			apply: (manifest: ReturnType<typeof buildRestoreManifest>) => {
+				delete manifest.snapshot.state.session_id;
+			},
+		},
+		{
+			field: "null snapshot.state.session_id",
+			apply: (manifest: ReturnType<typeof buildRestoreManifest>) => {
+				manifest.snapshot.state.session_id = null;
+			},
+		},
+	])("accepts restore manifest with $field", async (testCase) => {
+		const workspaceRoot = await mkdtemp(
+			join(tmpdir(), "maestro-headless-restore-compatible-"),
+		);
+		const sessionDir = await mkdtemp(join(tmpdir(), "maestro-sessions-"));
+		tempDirs.push(workspaceRoot, sessionDir);
+		const fakeAgent = new FakeAgent();
+		const sessionManager = new SessionManager(false, undefined, { sessionDir });
+		sessionManager.startSession(fakeAgent.state);
+		const manifest = buildRestoreManifest({
+			sessionId: sessionManager.getSessionId(),
+			sessionFile: sessionManager.getSessionFile(),
+			workspaceRoot,
+		});
+		testCase.apply(manifest);
+		const manifestPath = join(workspaceRoot, "restore-manifest.json");
+		await writeFile(manifestPath, JSON.stringify(manifest), "utf8");
+
+		await expect(
+			loadHostedRunnerRestoreManifest(manifestPath),
+		).resolves.toEqual(
+			expect.objectContaining({
+				maestro_session_id: sessionManager.getSessionId(),
+			}),
+		);
+	});
+
+	it.each([
+		{
 			field: "snapshot.session_id",
 			applyMismatch: (manifest: ReturnType<typeof buildRestoreManifest>) => {
 				manifest.snapshot.session_id = "other-session";
