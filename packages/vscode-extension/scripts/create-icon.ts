@@ -12,7 +12,7 @@ import { join, resolve } from "node:path";
 const rootDir = resolve(__dirname, "..");
 const mediaDir = join(rootDir, "media");
 
-// Simple SVG icon - Composer logo placeholder
+// Simple SVG icon - Maestro logo placeholder
 const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128">
   <defs>
     <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">

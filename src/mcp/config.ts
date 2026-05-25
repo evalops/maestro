@@ -8,11 +8,11 @@
  * ## Configuration Sources (precedence order)
  *
  * 1. **Enterprise**: `~/.maestro/enterprise/mcp.json` (highest; legacy
- *    Composer enterprise MCP config remains a fallback)
+ *    `.composer` enterprise MCP config remains a fallback)
  * 2. **Plugin**: Programmatically provided servers
  * 3. **Project**: `.maestro/mcp.json` in project root
  * 4. **Local**: `.maestro/mcp.local.json` (git-ignored)
- * 5. **User**: `~/.maestro/mcp.json` (lowest; legacy Composer user MCP config
+ * 5. **User**: `~/.maestro/mcp.json` (lowest; legacy `.composer` user MCP config
  *    remains a fallback)
  *
  * ## Configuration Format

@@ -1,8 +1,8 @@
 /**
- * @fileoverview HTTP Router for Composer Web Server
+ * @fileoverview HTTP Router for Maestro Web Server
  *
  * This module provides a lightweight, Express-like router for handling HTTP requests
- * in the Composer web server. It supports:
+ * in the Maestro web server. It supports:
  *
  * - **Path Parameters**: Dynamic route segments using `:param` syntax (e.g., `/api/sessions/:id`)
  * - **Method Matching**: Routes are matched by HTTP method (GET, POST, PUT, DELETE, etc.)

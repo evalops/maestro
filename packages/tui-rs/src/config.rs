@@ -398,7 +398,7 @@ pub struct ProfileConfig {
     pub extra: HashMap<String, toml::Value>,
 }
 
-/// Main Composer configuration
+/// Main Maestro configuration
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ComposerConfig {
     // Model settings

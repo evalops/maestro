@@ -1,5 +1,5 @@
 /**
- * OpenAI OAuth integration for Composer.
+ * OpenAI OAuth integration for Maestro.
  *
  * This module provides OAuth login flow for OpenAI/ChatGPT accounts,
  * allowing users to authenticate with their ChatGPT Plus subscription.
@@ -180,7 +180,7 @@ export async function loginOpenAI(
 								<body style="font-family: sans-serif; padding: 40px;">
 									<h1>Success!</h1>
 									<p>You are now logged in to OpenAI.</p>
-									<p>You can close this window and return to Composer.</p>
+									<p>You can close this window and return to Maestro.</p>
 									<script>window.close();</script>
 								</body>
 							</html>

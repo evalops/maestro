@@ -1,6 +1,6 @@
 //! Enterprise policy enforcement (parity with TS).
 //!
-//! Reads enterprise policy from the Maestro home directory, with legacy Composer
+//! Reads enterprise policy from the Maestro home directory, with legacy `.composer`
 //! fallback, and enforces tool, path, network, model, and session limits. Policy
 //! load failures fail closed (block) to match CLI behavior.
 

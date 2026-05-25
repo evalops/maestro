@@ -1,7 +1,7 @@
 /**
  * Tool Registry - Central index of all available tools.
  *
- * This module serves as the main entry point for all tool definitions in Composer.
+ * This module serves as the main entry point for all tool definitions in Maestro.
  * It organizes tools into logical groups and provides utilities for filtering and
  * accessing tools by name.
  *

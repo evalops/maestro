@@ -1,6 +1,6 @@
-//! Bridge status types for Composer <-> Conductor integration.
+//! Bridge status types for Maestro <-> Conductor integration.
 //!
-//! These types mirror the JSON payload returned by the Composer web bridge
+//! These types mirror the JSON payload returned by the Maestro web bridge
 //! (`/api/bridge/status`) so Rust consumers can parse or proxy status data.
 
 use serde::{Deserialize, Serialize};
@@ -45,7 +45,7 @@ pub struct BridgeStatus {
     pub approval_modes: Option<Vec<String>>,
 }
 
-/// Fetch bridge status from a Composer web server.
+/// Fetch bridge status from a Maestro web server.
 pub async fn fetch_bridge_status(base_url: &str) -> Result<BridgeStatus, reqwest::Error> {
     let base = base_url.trim_end_matches('/');
     let url = format!("{}/api/bridge/status", base);

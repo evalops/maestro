@@ -1,7 +1,7 @@
 /**
- * Composer Web UI - Entry Point
+ * Maestro Web UI - Entry Point
  *
- * Browser-based interface for Composer AI coding assistant.
+ * Browser-based interface for Maestro AI coding assistant.
  */
 
 // Register all web components

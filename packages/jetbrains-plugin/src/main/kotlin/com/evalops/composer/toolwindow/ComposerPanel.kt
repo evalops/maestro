@@ -27,7 +27,7 @@ import javax.swing.*
 import javax.swing.border.EmptyBorder
 
 /**
- * Main panel for the Composer tool window.
+ * Main panel for the Maestro tool window.
  */
 class ComposerPanel(private val project: Project) : SimpleToolWindowPanel(true, true) {
 
@@ -305,7 +305,7 @@ class ComposerPanel(private val project: Project) : SimpleToolWindowPanel(true, 
     private inner class SettingsAction : AnAction("Settings", "Open settings", AllIcons.General.Settings) {
         override fun actionPerformed(e: AnActionEvent) {
             com.intellij.openapi.options.ShowSettingsUtil.getInstance()
-                .showSettingsDialog(project, "Composer")
+                .showSettingsDialog(project, "Maestro")
         }
     }
 

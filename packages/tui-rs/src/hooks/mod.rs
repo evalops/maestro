@@ -1,4 +1,4 @@
-//! Hook system for Composer
+//! Hook system for Maestro
 //!
 //! Provides a comprehensive hook system for intercepting and modifying agent
 //! behavior. Supports multiple execution backends:

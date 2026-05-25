@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# Icon Generation Script for Composer Desktop
+# Icon Generation Script for Maestro Desktop
 # Generates all required icon formats from SVG source
 #
 # Requirements:
@@ -20,7 +20,7 @@ GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 NC='\033[0m' # No Color
 
-echo -e "${GREEN}🎨 Generating Composer Desktop icons...${NC}"
+echo -e "${GREEN}🎨 Generating Maestro Desktop icons...${NC}"
 
 # Check for required tools
 if ! command -v magick &> /dev/null && ! command -v convert &> /dev/null; then

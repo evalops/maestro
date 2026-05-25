@@ -1,5 +1,5 @@
 /**
- * Enterprise Database Schema for Composer
+ * Enterprise Database Schema for Maestro
  * Supports multi-tenancy, RBAC, audit logging, and PII protection
  */
 

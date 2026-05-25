@@ -1,5 +1,5 @@
 /**
- * @fileoverview Type Guards for Composer Agent Messages and Content
+ * @fileoverview Type Guards for Maestro Agent Messages and Content
  *
  * This module provides type guard functions for safely narrowing message
  * and content types at runtime. Use these guards when working with the

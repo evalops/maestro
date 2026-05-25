@@ -104,7 +104,7 @@
 //! # Design Inspiration
 //!
 //! Visual design inspired by:
-//! - TypeScript Composer TUI
+//! - TypeScript Maestro TUI
 //! - `OpenAI` Codex TUI
 //!
 //! Features:
@@ -1914,7 +1914,7 @@ fn build_right_text(
 /// ┌─────────────────────────┐
 /// │  Messages (scrollable)  │
 /// │                         │
-/// │  • Composer             │
+/// │  • Maestro              │
 /// │  I can help with that   │
 /// │                         │
 /// │  › You                  │

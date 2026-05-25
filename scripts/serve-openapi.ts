@@ -8,7 +8,7 @@ const spec = readFileSync(specPath, "utf8");
 const html = `<!doctype html>
 <html>
   <head>
-    <title>Composer OpenAPI</title>
+    <title>Maestro OpenAPI</title>
     <link rel="stylesheet" href="https://unpkg.com/swagger-ui-dist/swagger-ui.css" />
   </head>
   <body>

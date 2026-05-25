@@ -1,7 +1,7 @@
 /**
- * @fileoverview Core Type Definitions for Composer Agent
+ * @fileoverview Core Type Definitions for Maestro Agent
  *
- * This module defines the fundamental types used throughout the Composer AI system,
+ * This module defines the fundamental types used throughout the Maestro AI system,
  * including message formats, tool definitions, model configurations, and agent state.
  *
  * ## Type Categories

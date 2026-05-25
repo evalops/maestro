@@ -1,7 +1,7 @@
 /**
- * API Client for Composer Backend
+ * API Client for Maestro Backend
  *
- * Handles communication with the embedded Composer server.
+ * Handles communication with the embedded Maestro server.
  */
 
 import type {

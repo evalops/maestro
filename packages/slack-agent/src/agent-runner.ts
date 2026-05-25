@@ -1,5 +1,5 @@
 /**
- * Agent Runner - Connects Slack messages to Composer's Agent
+ * Agent Runner - Connects Slack messages to Maestro's Agent
  */
 
 import { createHash } from "node:crypto";

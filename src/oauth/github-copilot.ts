@@ -1,5 +1,5 @@
 /**
- * GitHub Copilot OAuth integration for Composer.
+ * GitHub Copilot OAuth integration for Maestro.
  *
  * Uses GitHub's OAuth Device Flow for authentication, which is suitable
  * for CLI applications where users authenticate in a browser.

@@ -1,7 +1,7 @@
 /**
- * @fileoverview @evalops/ai - Shared Composer AI SDK
+ * @fileoverview @evalops/ai - Shared Maestro AI SDK
  *
- * This package provides the core AI infrastructure for Composer, including:
+ * This package provides the core AI infrastructure for Maestro, including:
  * - Model registry and provider management
  * - Provider-agnostic transport layer for LLM communication
  * - Agent event stream primitives for real-time streaming
@@ -190,7 +190,7 @@ export type {
 } from "./types.js";
 
 /**
- * Namespaced module exports for the broader Composer surface area.
+ * Namespaced module exports for the broader Maestro surface area.
  * Use these when you want a single import point with explicit groupings.
  */
 export * as tools from "./tools/index.js";

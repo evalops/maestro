@@ -1,7 +1,7 @@
 /**
  * @evalops/slack-agent
  *
- * Slack bot agent with Docker sandbox support for Composer
+ * Slack bot agent with Docker sandbox support for Maestro
  */
 
 // Slack integration

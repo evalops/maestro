@@ -1,7 +1,7 @@
 {
 	"$schema": "https://raw.githubusercontent.com/electron-userland/electron-builder/master/packages/app-builder-lib/scheme.json",
 	"appId": "com.evalops.composer",
-	"productName": "Composer",
+	"productName": "Maestro",
 	"artifactName": "${productName}-${version}-${os}-${arch}.${ext}",
 	"directories": {
 		"output": "release",
@@ -88,7 +88,7 @@
 		"installerHeaderIcon": "assets/icon.ico",
 		"createDesktopShortcut": true,
 		"createStartMenuShortcut": true,
-		"shortcutName": "Composer"
+		"shortcutName": "Maestro"
 	},
 	"linux": {
 		"target": [
@@ -108,7 +108,7 @@
 		"icon": "assets/icon.png",
 		"category": "Development",
 		"synopsis": "AI-powered coding assistant",
-		"description": "Composer is a premium AI coding assistant that helps you write, debug, and understand code.",
+		"description": "Maestro is a premium AI coding assistant that helps you write, debug, and understand code.",
 		"maintainer": "EvalOps <support@evalops.com>",
 		"vendor": "EvalOps"
 	},

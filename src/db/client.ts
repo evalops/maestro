@@ -1,7 +1,7 @@
 /**
  * @fileoverview PostgreSQL Database Client
  *
- * This module provides the database connection layer for Composer's enterprise
+ * This module provides the database connection layer for Maestro's enterprise
  * features. It uses PostgreSQL via the `postgres.js` driver with Drizzle ORM
  * for type-safe queries.
  *
@@ -46,7 +46,7 @@
  * - API token management
  *
  * For single-user deployments without enterprise features, the database
- * is optional and Composer falls back to file-based storage.
+ * is optional and Maestro falls back to file-based storage.
  *
  * @module db/client
  */

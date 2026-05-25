@@ -7,7 +7,7 @@ import com.intellij.openapi.components.Storage
 import com.intellij.util.xmlb.XmlSerializerUtil
 
 /**
- * Persistent settings for the Composer plugin.
+ * Persistent settings for the Maestro plugin.
  */
 @State(
     name = "com.evalops.composer.settings.ComposerSettings",
@@ -16,7 +16,7 @@ import com.intellij.util.xmlb.XmlSerializerUtil
 class ComposerSettings : PersistentStateComponent<ComposerSettings> {
 
     /**
-     * URL of the Composer API server.
+     * URL of the Maestro API server.
      */
     var apiEndpoint: String = "http://localhost:8080"
 

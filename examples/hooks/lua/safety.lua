@@ -1,4 +1,4 @@
--- Safety Hook for Composer
+-- Safety Hook for Maestro
 --
 -- Blocks dangerous shell commands before they execute.
 -- This is a Lua hook that runs on PreToolUse events for Bash.

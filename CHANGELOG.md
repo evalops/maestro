@@ -17,6 +17,23 @@ versioning when releases are cut.
   and keep scheduled public runs inert so public publishing stays downstream of
   the internal source-of-truth release.
 
+## [0.10.24] - 2026-05-25
+
+### Changed
+
+- Clean up Maestro product branding. <!-- maestro-release-note:8ba91124c49a -->
+- Update Codex operating-layer evidence paths (#2217). <!-- maestro-release-note:51842842c9e7 -->
+- Extract control-plane local helpers (#2215). <!-- maestro-release-note:7ede1bd34c23 -->
+- Extract control-plane Codex bridge helpers (#2216). <!-- maestro-release-note:e06f1a7a66db -->
+- Revoke legacy Anthropic connector links on logout (#2212). <!-- maestro-release-note:129499bdcd24 -->
+- Handle legacy Anthropic OAuth cleanup (#2209). <!-- maestro-release-note:9558e5ee4db8 -->
+- Extract control-plane session helpers (#2207). <!-- maestro-release-note:37f5e30102fc -->
+- Default Maestro auth to Codex (#2202). <!-- maestro-release-note:32c2e64bce88 -->
+- Update Codex parity anchors for TUI splits (#2203). <!-- maestro-release-note:e50996157c2d -->
+- Extract hosted runner manifests (#2205). <!-- maestro-release-note:850d7511ae64 -->
+- Extract tool registry execution dispatcher (#2206). <!-- maestro-release-note:e120c11987a1 -->
+- Extract TUI app session recording helpers (#2201). <!-- maestro-release-note:29b3ea1e6690 -->
+
 ## [0.10.23] - 2026-05-23
 
 ### Changed

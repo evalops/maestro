@@ -1,6 +1,6 @@
 //! Safety and Security Module
 //!
-//! This module implements security controls for the Composer agent:
+//! This module implements security controls for the Maestro agent:
 //!
 //! - **Action Firewall**: Blocks or requires approval for dangerous operations
 //! - **Dangerous Patterns**: Regex-based detection of malicious commands

@@ -1,7 +1,7 @@
 /**
- * RPC Module for Composer Agent
+ * RPC Module for Maestro Agent
  *
- * Provides typed RPC communication for programmatic control of Composer.
+ * Provides typed RPC communication for programmatic control of Maestro.
  *
  * @module rpc
  */

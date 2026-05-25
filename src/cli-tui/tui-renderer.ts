@@ -281,7 +281,7 @@ function formatLoadedSessionToast(sessionInfo: {
 }
 
 /**
- * Main TUI (Terminal User Interface) renderer for the Composer coding agent.
+ * Main TUI (Terminal User Interface) renderer for the Maestro coding agent.
  *
  * This class orchestrates all UI components, event handling, and user interactions.
  * It manages:
@@ -1308,7 +1308,7 @@ export class TuiRenderer {
 			onEditLastQueuedFollowUp: () => this.editLastQueuedFollowUp(),
 		});
 
-		// Set up MCP and Composer event handlers for notifications
+		// Set up MCP and agent profile event handlers for notifications
 		this.mcpEventsController = createMcpEventsController({
 			notificationView: this.notificationView,
 			refreshFooterHint: () => this.refreshFooterHint(),

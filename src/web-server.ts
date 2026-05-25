@@ -1,5 +1,5 @@
 /**
- * Web server for Composer - HTTP/SSE API used by the web UI
+ * Web server for Maestro - HTTP/SSE API used by the web UI
  */
 
 import { randomBytes, randomUUID } from "node:crypto";
