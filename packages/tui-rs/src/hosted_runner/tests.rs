@@ -2,6 +2,7 @@ use reqwest::StatusCode;
 use tempfile::tempdir;
 
 use super::*;
+use crate::headless::messages::CodexSubagentContinuityEdge;
 use crate::headless::RemoteTransportConfig;
 
 #[test]
