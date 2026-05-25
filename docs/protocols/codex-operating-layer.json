@@ -556,7 +556,7 @@
 		{
 			"area": "rust-control-plane",
 			"evidenceType": "test",
-			"path": "packages/tui-rs/src/swarm/types.rs",
+			"path": "packages/tui-rs/src/swarm/types/tests.rs",
 			"anchors": [
 				"test_subagent_dispatch_matches_protocol_fixture",
 				"resolve_subagent_dispatch",
