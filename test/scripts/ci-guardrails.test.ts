@@ -916,6 +916,59 @@ describe("ci workflow guardrails", () => {
 		);
 	});
 
+	it("blocks tag-release when the package version tag points at another commit", () => {
+		const action = parse(
+			readFileSync(
+				new URL(
+					"../../.github/actions/release-context/action.yml",
+					import.meta.url,
+				),
+				{ encoding: "utf8" },
+			),
+		) as {
+			outputs?: Record<string, unknown>;
+			runs?: { steps?: WorkflowStep[] };
+		};
+		const workflow = parse(
+			readFileSync(
+				new URL("../../.github/workflows/tag-release.yml", import.meta.url),
+				{ encoding: "utf8" },
+			),
+		) as Workflow;
+		const contextStep = action.runs?.steps?.find(
+			(step) => step.id === "context",
+		);
+		const steps = workflow.jobs?.["tag-current-version"]?.steps ?? [];
+		const mismatchGuard = steps.find(
+			(step) => step.name === "Require version bump for existing release tag",
+		);
+
+		expect(action.outputs).toHaveProperty("tag_matches_head");
+		expect(action.outputs).toHaveProperty("package_changed_since_tag");
+		expect(contextStep?.run).toContain('["rev-parse", "HEAD"]');
+		expect(contextStep?.run).toContain("^{commit}");
+		expect(contextStep?.run).toContain('"diff", "--name-only"');
+		expect(contextStep?.run).toContain('path.startsWith("src/")');
+		expect(contextStep?.run).toContain('path.startsWith("packages/")');
+		expect(contextStep?.run).toContain('path.startsWith("proto/")');
+		expect(contextStep?.run).toContain('path.startsWith("types/")');
+		expect(contextStep?.run).toContain('"tsconfig.base.json"');
+		expect(contextStep?.run).toContain('"scripts/codegen-utils.mjs"');
+		expect(contextStep?.run).toContain('"scripts/runtime-workspaces.mjs"');
+		expect(contextStep?.run).toContain('"scripts/workspace-utils.js"');
+		expect(mismatchGuard?.if).toContain("steps.release.outputs.tag_exists");
+		expect(mismatchGuard?.if).toContain(
+			"steps.release.outputs.tag_matches_head != 'true'",
+		);
+		expect(mismatchGuard?.if).toContain(
+			"steps.release.outputs.package_changed_since_tag == 'true'",
+		);
+		expect(mismatchGuard?.run).toContain("package.json version");
+		expect(mismatchGuard?.run).toContain(
+			"already has a semver tag at another commit",
+		);
+	});
+
 	it("keeps published replay canaries portable on hosted Linux", () => {
 		const script = readFileSync(
 			new URL("../../scripts/smoke-published-replay-e2e.js", import.meta.url),

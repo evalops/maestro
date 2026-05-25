@@ -17,6 +17,21 @@ versioning when releases are cut.
   and keep scheduled public runs inert so public publishing stays downstream of
   the internal source-of-truth release.
 
+## [0.10.25] - 2026-05-25
+
+### Changed
+
+- Guard release tags against stale package versions (#2227). <!-- maestro-release-note:0759b5ac0939 -->
+- Extract hosted runner config (#2229). <!-- maestro-release-note:a1f91301c920 -->
+- Update operating-layer anchor path. <!-- maestro-release-note:da0948b4e192 -->
+- Fix operating-layer anchors after headless state split. <!-- maestro-release-note:968a4149e651 -->
+- Move headless supervisor tests. <!-- maestro-release-note:e1728b257db0 -->
+- Extract headless message state reducer. <!-- maestro-release-note:60c633f683cd -->
+- Extract control-plane chat helpers. <!-- maestro-release-note:9c9e035eba18 -->
+- Extract A2A push notifications. <!-- maestro-release-note:980257a59f2d -->
+- Clean release note branding. <!-- maestro-release-note:78909d1cdd48 -->
+- Use Maestro branding in release note. <!-- maestro-release-note:16c1fbe34ac2 -->
+
 ## [0.10.24] - 2026-05-25
 
 ### Changed
