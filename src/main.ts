@@ -25,7 +25,7 @@
  *    └── Handle --help, config commands, and other early exits
  *
  * 4. Authentication Resolution
- *    ├── Determine auth mode (auto, api-key, or claude-only)
+ *    ├── Determine auth mode (auto or api-key)
  *    ├── Resolve credentials for the selected provider
  *    └── Build error messages for missing credentials
  *
@@ -67,7 +67,6 @@
  * |----------|--------------------------------------------------|
  * | auto     | Try OAuth first, fall back to API key env vars   |
  * | api-key  | Require explicit API key (--api-key or env var)  |
- * | claude   | Force Anthropic OAuth (no API key fallback)      |
  *
  * ## Runtime Modes
  *
@@ -826,7 +825,6 @@ export async function main(args: string[]) {
 	// Determine authentication mode:
 	// - auto: Try OAuth first, fall back to API key environment variables
 	// - api-key: Require explicit API key from --api-key or env var
-	// - claude: Force Anthropic OAuth (no API key fallback)
 	const authMode: AuthMode = parsed.authMode ?? "auto";
 
 	const { requireCredential } = createAuthSetup({
@@ -1030,7 +1028,7 @@ export async function main(args: string[]) {
 		const { handleAnthropicCommand } = await import(
 			"./cli/commands/anthropic.js"
 		);
-		await handleAnthropicCommand(parsed.subcommand, parsed.messages);
+		await handleAnthropicCommand();
 		return;
 	}
 

@@ -19,7 +19,6 @@ const CONNECTOR_PROVIDER_BY_OAUTH_PROVIDER: Record<
 	ConnectorOAuthProvider,
 	string
 > = {
-	anthropic: "x-evalops:anthropic",
 	"github-copilot": "github",
 	"google-antigravity": "google",
 	"google-gemini-cli": "google",
@@ -28,7 +27,6 @@ const CONNECTOR_PROVIDER_BY_OAUTH_PROVIDER: Record<
 };
 
 const DISPLAY_NAME_BY_OAUTH_PROVIDER: Record<ConnectorOAuthProvider, string> = {
-	anthropic: "Anthropic OAuth",
 	"github-copilot": "GitHub Copilot OAuth",
 	"google-antigravity": "Google Antigravity OAuth",
 	"google-gemini-cli": "Google Gemini CLI OAuth",

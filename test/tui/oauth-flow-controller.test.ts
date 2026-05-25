@@ -10,11 +10,12 @@ import {
 // Mock the oauth module
 vi.mock("../../src/oauth/index.js", () => ({
 	getOAuthProviders: vi.fn().mockReturnValue([
-		{ id: "anthropic", available: true },
+		{ id: "openai-codex", available: true },
 		{ id: "openai", available: true },
 	]),
 	migrateOAuthCredentials: vi.fn().mockResolvedValue(undefined),
 	listOAuthProviders: vi.fn().mockReturnValue([]),
+	listOAuthLogoutProviders: vi.fn().mockReturnValue([]),
 	login: vi.fn().mockResolvedValue(undefined),
 	logout: vi.fn().mockResolvedValue(undefined),
 }));
@@ -73,6 +74,14 @@ describe("OAuthFlowController", () => {
 
 	describe("handleLoginCommand", () => {
 		it("shows error when OAuth flow is already active", async () => {
+			const { login } = await import("../../src/oauth/index.js");
+			let releaseLogin: (() => void) | undefined;
+			(login as Mock).mockImplementationOnce(
+				() =>
+					new Promise<void>((resolve) => {
+						releaseLogin = resolve;
+					}),
+			);
 			const controller = new OAuthFlowController({
 				modalManager: createMockModalManager(),
 				notificationView: createMockNotificationView(),
@@ -84,6 +93,7 @@ describe("OAuthFlowController", () => {
 
 			// Start first flow
 			const firstLogin = controller.handleLoginCommand("", vi.fn());
+			await new Promise<void>((resolve) => setImmediate(resolve));
 
 			// Try second flow while first is active
 			await controller.handleLoginCommand("", showError);
@@ -91,9 +101,20 @@ describe("OAuthFlowController", () => {
 			expect(showError).toHaveBeenCalledWith(
 				expect.stringContaining("already in progress"),
 			);
+
+			releaseLogin?.();
+			await firstLogin;
 		});
 
-		it("shows error for invalid mode", async () => {
+		it("defaults blank /login to OpenAI Codex", async () => {
+			const { getOAuthProviders, login } = await import(
+				"../../src/oauth/index.js"
+			);
+			(getOAuthProviders as Mock).mockReturnValue([
+				{ id: "openai-codex", available: true },
+				{ id: "openai", available: true },
+			]);
+
 			const controller = new OAuthFlowController({
 				modalManager: createMockModalManager(),
 				notificationView: createMockNotificationView(),
@@ -101,18 +122,18 @@ describe("OAuthFlowController", () => {
 				editorCallbacks: createMockEditorCallbacks(),
 			});
 
-			const showError = vi.fn();
-			await controller.handleLoginCommand("anthropic:invalid", showError);
+			await controller.handleLoginCommand("", vi.fn());
 
-			expect(showError).toHaveBeenCalledWith(
-				expect.stringContaining("Invalid mode"),
+			expect(login).toHaveBeenCalledWith(
+				"openai-codex",
+				expect.objectContaining({ mode: undefined }),
 			);
 		});
 
 		it("shows error for unknown provider", async () => {
 			const { getOAuthProviders } = await import("../../src/oauth/index.js");
 			(getOAuthProviders as Mock).mockReturnValue([
-				{ id: "anthropic", available: true },
+				{ id: "openai-codex", available: true },
 			]);
 
 			const controller = new OAuthFlowController({
@@ -147,35 +168,10 @@ describe("OAuthFlowController", () => {
 			expect(showError).toHaveBeenCalledWith("No OAuth providers available");
 		});
 
-		it("parses mode-only argument correctly", async () => {
-			const { getOAuthProviders, login } = await import(
-				"../../src/oauth/index.js"
-			);
+		it("does not accept retired Anthropic login aliases", async () => {
+			const { getOAuthProviders } = await import("../../src/oauth/index.js");
 			(getOAuthProviders as Mock).mockReturnValue([
-				{ id: "anthropic", available: true },
-			]);
-
-			const controller = new OAuthFlowController({
-				modalManager: createMockModalManager(),
-				notificationView: createMockNotificationView(),
-				renderContext: createMockRenderContext(),
-				editorCallbacks: createMockEditorCallbacks(),
-			});
-
-			await controller.handleLoginCommand("console", vi.fn());
-
-			expect(login).toHaveBeenCalledWith(
-				"anthropic",
-				expect.objectContaining({ mode: "console" }),
-			);
-		});
-
-		it("parses provider:mode argument correctly", async () => {
-			const { getOAuthProviders, login } = await import(
-				"../../src/oauth/index.js"
-			);
-			(getOAuthProviders as Mock).mockReturnValue([
-				{ id: "anthropic", available: true },
+				{ id: "openai-codex", available: true },
 				{ id: "openai", available: true },
 			]);
 
@@ -186,11 +182,59 @@ describe("OAuthFlowController", () => {
 				editorCallbacks: createMockEditorCallbacks(),
 			});
 
-			await controller.handleLoginCommand("openai:pro", vi.fn());
+			const showError = vi.fn();
+			await controller.handleLoginCommand("anthropic", showError);
+
+			expect(showError).toHaveBeenCalledWith(
+				expect.stringContaining("Unknown provider"),
+			);
+		});
+
+		it("treats retired mode-only arguments as unknown providers", async () => {
+			const { getOAuthProviders, login } = await import(
+				"../../src/oauth/index.js"
+			);
+			(getOAuthProviders as Mock).mockReturnValue([
+				{ id: "openai-codex", available: true },
+			]);
+
+			const controller = new OAuthFlowController({
+				modalManager: createMockModalManager(),
+				notificationView: createMockNotificationView(),
+				renderContext: createMockRenderContext(),
+				editorCallbacks: createMockEditorCallbacks(),
+			});
+
+			const showError = vi.fn();
+			await controller.handleLoginCommand("console", showError);
+
+			expect(showError).toHaveBeenCalledWith(
+				expect.stringContaining("Unknown provider"),
+			);
+			expect(login).not.toHaveBeenCalled();
+		});
+
+		it("parses provider argument correctly", async () => {
+			const { getOAuthProviders, login } = await import(
+				"../../src/oauth/index.js"
+			);
+			(getOAuthProviders as Mock).mockReturnValue([
+				{ id: "openai-codex", available: true },
+				{ id: "openai", available: true },
+			]);
+
+			const controller = new OAuthFlowController({
+				modalManager: createMockModalManager(),
+				notificationView: createMockNotificationView(),
+				renderContext: createMockRenderContext(),
+				editorCallbacks: createMockEditorCallbacks(),
+			});
+
+			await controller.handleLoginCommand("openai", vi.fn());
 
 			expect(login).toHaveBeenCalledWith(
 				"openai",
-				expect.objectContaining({ mode: "pro" }),
+				expect.objectContaining({ mode: undefined }),
 			);
 		});
 	});
@@ -218,8 +262,10 @@ describe("OAuthFlowController", () => {
 		});
 
 		it("shows info when no providers logged in", async () => {
-			const { listOAuthProviders } = await import("../../src/oauth/index.js");
-			(listOAuthProviders as Mock).mockReturnValue([]);
+			const { listOAuthLogoutProviders } = await import(
+				"../../src/oauth/index.js"
+			);
+			(listOAuthLogoutProviders as Mock).mockReturnValue([]);
 
 			const controller = new OAuthFlowController({
 				modalManager: createMockModalManager(),
@@ -237,8 +283,10 @@ describe("OAuthFlowController", () => {
 		});
 
 		it("shows error when specified provider not logged in", async () => {
-			const { listOAuthProviders } = await import("../../src/oauth/index.js");
-			(listOAuthProviders as Mock).mockReturnValue(["anthropic"]);
+			const { listOAuthLogoutProviders } = await import(
+				"../../src/oauth/index.js"
+			);
+			(listOAuthLogoutProviders as Mock).mockReturnValue(["openai-codex"]);
 
 			const controller = new OAuthFlowController({
 				modalManager: createMockModalManager(),
@@ -256,10 +304,10 @@ describe("OAuthFlowController", () => {
 		});
 
 		it("logs out from single logged-in provider", async () => {
-			const { listOAuthProviders, logout } = await import(
+			const { listOAuthLogoutProviders, logout } = await import(
 				"../../src/oauth/index.js"
 			);
-			(listOAuthProviders as Mock).mockReturnValue(["anthropic"]);
+			(listOAuthLogoutProviders as Mock).mockReturnValue(["openai-codex"]);
 
 			const notificationView = createMockNotificationView();
 			const controller = new OAuthFlowController({
@@ -271,9 +319,32 @@ describe("OAuthFlowController", () => {
 
 			await controller.handleLogoutCommand("", vi.fn(), vi.fn());
 
-			expect(logout).toHaveBeenCalledWith("anthropic");
+			expect(logout).toHaveBeenCalledWith("openai-codex");
 			expect(notificationView.showToast).toHaveBeenCalledWith(
 				expect.stringContaining("credentials removed"),
+				"success",
+			);
+		});
+
+		it("logs out from legacy Anthropic OAuth credentials", async () => {
+			const { listOAuthLogoutProviders, logout } = await import(
+				"../../src/oauth/index.js"
+			);
+			(listOAuthLogoutProviders as Mock).mockReturnValue(["anthropic"]);
+
+			const notificationView = createMockNotificationView();
+			const controller = new OAuthFlowController({
+				modalManager: createMockModalManager(),
+				notificationView,
+				renderContext: createMockRenderContext(),
+				editorCallbacks: createMockEditorCallbacks(),
+			});
+
+			await controller.handleLogoutCommand("anthropic", vi.fn(), vi.fn());
+
+			expect(logout).toHaveBeenCalledWith("anthropic");
+			expect(notificationView.showToast).toHaveBeenCalledWith(
+				expect.stringContaining("anthropic OAuth credentials removed"),
 				"success",
 			);
 		});

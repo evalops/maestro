@@ -232,17 +232,34 @@ const fakeRegisteredModels = [
 		source: "builtin" as const,
 		isLocal: false,
 	},
+	{
+		id: "gpt-5.5",
+		name: "GPT 5.5 Codex",
+		api: "openai-codex-app-server",
+		provider: "openai-codex",
+		baseUrl: "http://127.0.0.1:0",
+		reasoning: true,
+		input: ["text"],
+		cost: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0 },
+		contextWindow: 272000,
+		maxTokens: 16384,
+		providerName: "OpenAI Codex",
+		source: "builtin" as const,
+		isLocal: false,
+	},
 ];
 
 vi.mock("../../src/models/registry.js", () => ({
 	getRegisteredModels: () => fakeRegisteredModels,
-	getSupportedProviders: () => ["anthropic", "openrouter", "openai"],
+	getSupportedProviders: () => [
+		"anthropic",
+		"openrouter",
+		"openai",
+		"openai-codex",
+	],
 	getCustomProviderMetadata: () => undefined,
 	getCustomConfigPath: () => "/tmp/composer.json",
-	getFactoryDefaultModelSelection: () => ({
-		provider: "anthropic",
-		modelId: "claude-sonnet-4-5",
-	}),
+	getFactoryDefaultModelSelection: () => null,
 	reloadModelConfig: () => {},
 	resolveAlias: () => null,
 	resolveModel: (provider: string, modelId: string) =>
@@ -301,7 +318,6 @@ describe("CLI integration", () => {
 	const originalMaestroHome = process.env.MAESTRO_HOME;
 	const originalOpenAI = process.env.OPENAI_API_KEY;
 	const originalClaude = process.env.CLAUDE_CODE_TOKEN;
-	const originalAnthropicOAuthFile = process.env.ANTHROPIC_OAUTH_FILE;
 	const originalSharedMemoryBase = process.env.MAESTRO_SHARED_MEMORY_BASE;
 	const originalSharedMemoryApiKey = process.env.MAESTRO_SHARED_MEMORY_API_KEY;
 	const originalLog = console.log;
@@ -315,10 +331,6 @@ describe("CLI integration", () => {
 		tempAgentDir = mkdtempSync(join(tmpdir(), "composer-cli-test-"));
 		process.env.MAESTRO_HOME = tempAgentDir;
 		process.env.MAESTRO_AGENT_DIR = tempAgentDir;
-		process.env.ANTHROPIC_OAUTH_FILE = join(
-			tempAgentDir,
-			"anthropic-oauth.json",
-		);
 		process.env.ANTHROPIC_API_KEY = "test-key";
 		Reflect.deleteProperty(process.env, "OPENAI_API_KEY");
 		Reflect.deleteProperty(process.env, "CLAUDE_CODE_TOKEN");
@@ -359,11 +371,6 @@ describe("CLI integration", () => {
 			Reflect.deleteProperty(process.env, "CLAUDE_CODE_TOKEN");
 		} else {
 			process.env.CLAUDE_CODE_TOKEN = originalClaude;
-		}
-		if (originalAnthropicOAuthFile === undefined) {
-			Reflect.deleteProperty(process.env, "ANTHROPIC_OAUTH_FILE");
-		} else {
-			process.env.ANTHROPIC_OAUTH_FILE = originalAnthropicOAuthFile;
 		}
 		if (originalSharedMemoryBase === undefined) {
 			Reflect.deleteProperty(process.env, "MAESTRO_SHARED_MEMORY_BASE");
@@ -451,7 +458,7 @@ describe("CLI integration", () => {
 		await main(["modes", "describe", "smart"]);
 		const combined = output.join("\n");
 		expect(combined).toContain("Mode: Smart (smart)");
-		expect(combined).toContain("Subagent dispatch (provider: anthropic)");
+		expect(combined).toContain("Subagent dispatch (provider: openai-codex)");
 		expect(combined).toContain("coder");
 		expect(combined).toContain("openai-codex");
 		expect(combined).toContain("gpt-5.5");
@@ -937,9 +944,15 @@ describe("CLI integration", () => {
 			tempAgentDir,
 			"providers-endpoint-buffer.json",
 		);
+		let resolveFetch: ((response: Response) => void) | undefined;
 		vi.stubGlobal(
 			"fetch",
-			vi.fn(() => new Promise<Response>(() => {})),
+			vi.fn(
+				() =>
+					new Promise<Response>((resolve) => {
+						resolveFetch = resolve;
+					}),
+			),
 		);
 		const exitCodes: number[] = [];
 		const exitSpy = vi.spyOn(process, "exit").mockImplementation((code) => {
@@ -959,6 +972,8 @@ describe("CLI integration", () => {
 			expect(exitCodes).toEqual([0]);
 			expect(output.join("\n")).toContain("openrouter");
 		} finally {
+			resolveFetch?.(new Response(null, { status: 204 }));
+			await new Promise((resolve) => setImmediate(resolve));
 			if (originalTelemetry === undefined) {
 				Reflect.deleteProperty(process.env, "MAESTRO_TELEMETRY");
 			} else {
@@ -1008,7 +1023,14 @@ describe("CLI integration", () => {
 	});
 
 	it("runs composer exec in text mode", async () => {
-		await main(["exec", "Summarize release notes"]);
+		await main([
+			"--provider",
+			"anthropic",
+			"--model",
+			"claude-sonnet-4-5",
+			"exec",
+			"Summarize release notes",
+		]);
 		const combined = output.join("\n");
 		expect(combined).toContain("Echo: Summarize release notes");
 	});
@@ -1292,22 +1314,8 @@ describe("CLI integration", () => {
 		exitSpy.mockRestore();
 	});
 
-	it("uses claude auth when Claude Code token is provided", async () => {
+	it("rejects retired Claude auth mode", async () => {
 		process.env.CLAUDE_CODE_TOKEN = "claude-token";
-		await main([
-			"--provider",
-			"anthropic",
-			"--model",
-			"claude-sonnet-4-5",
-			"--auth",
-			"claude",
-			"hello",
-		]);
-		expect(output.join("\n")).toContain("Echo: hello");
-		Reflect.deleteProperty(process.env, "CLAUDE_CODE_TOKEN");
-	});
-
-	it("fails when claude auth mode lacks OAuth tokens", async () => {
 		const exitCodes: number[] = [];
 		const exitSpy = vi.spyOn(process, "exit").mockImplementation((code) => {
 			exitCodes.push(Number(code ?? 0));
@@ -1325,7 +1333,10 @@ describe("CLI integration", () => {
 			]),
 		).rejects.toThrow("exit");
 		expect(exitCodes).toEqual([1]);
-		expect(output.join("\n")).toContain("maestro anthropic login");
+		expect(output.join("\n")).toContain(
+			"Anthropic OAuth auth mode is no longer supported",
+		);
+		Reflect.deleteProperty(process.env, "CLAUDE_CODE_TOKEN");
 		exitSpy.mockRestore();
 	});
 

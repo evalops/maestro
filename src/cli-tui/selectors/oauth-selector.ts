@@ -1,22 +1,26 @@
 import { Container, Spacer, Text } from "@evalops/tui";
 import type {
+	OAuthLogoutProvider,
 	OAuthProviderInfo,
 	SupportedOAuthProvider,
 } from "../../oauth/index.js";
-import { getOAuthProviders, hasOAuthCredentials } from "../../oauth/index.js";
+import {
+	getOAuthLogoutProviders,
+	getOAuthProviders,
+} from "../../oauth/index.js";
 
 /**
  * Component that renders an OAuth provider selector
  */
 export class OAuthSelectorComponent extends Container {
 	private listContainer: Container;
-	private allProviders: OAuthProviderInfo[] = [];
+	private allProviders: OAuthProviderInfo<OAuthLogoutProvider>[] = [];
 	private selectedIndex = 0;
 	private mode: "login" | "logout";
 
 	constructor(
 		mode: "login" | "logout",
-		private onSelectCallback: (providerId: SupportedOAuthProvider) => void,
+		private onSelectCallback: (providerId: OAuthLogoutProvider) => void,
 		private onCancelCallback: () => void,
 	) {
 		super();
@@ -47,16 +51,14 @@ export class OAuthSelectorComponent extends Container {
 	}
 
 	private loadProviders(): void {
-		this.allProviders = getOAuthProviders();
-
 		// For logout mode, only show providers with credentials
 		if (this.mode === "logout") {
-			this.allProviders = this.allProviders.filter((p) =>
-				hasOAuthCredentials(p.id),
-			);
+			this.allProviders = getOAuthLogoutProviders();
 		} else {
 			// For login mode, only show available providers
-			this.allProviders = this.allProviders.filter((p) => p.available);
+			this.allProviders = getOAuthProviders().filter(
+				(p): p is OAuthProviderInfo<SupportedOAuthProvider> => p.available,
+			);
 		}
 	}
 
