@@ -57,6 +57,14 @@ function stringValue(value) {
 	return typeof value === "string" ? value : "";
 }
 
+function stringBinCommandName(packageName) {
+	const name = stringValue(packageName);
+	if (name.startsWith("@")) {
+		return name.split("/")[1] ?? "";
+	}
+	return name;
+}
+
 function arrayValues(value) {
 	return Array.isArray(value)
 		? value.filter((entry) => typeof entry === "string" && entry.length > 0)
@@ -113,7 +121,7 @@ export function summarizeInstallablePackageMetadata(
 	const binValue = installedPackage.bin;
 	const binCommands =
 		typeof binValue === "string"
-			? [stringValue(installedPackage.name)].filter(Boolean)
+			? [stringBinCommandName(installedPackage.name)].filter(Boolean)
 			: objectEntries(binValue)
 					.map(([name]) => name)
 					.sort();
