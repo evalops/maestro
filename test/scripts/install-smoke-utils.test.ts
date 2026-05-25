@@ -12,7 +12,10 @@ import {
 	assertInstallablePackageMetadata,
 	runBunxCliSmoke,
 	runNpxCliSmoke,
+	summarizeInstallablePackageMetadata,
 } from "../../scripts/install-smoke-utils.js";
+
+const rootPackageName = ["@evalops", "maestro"].join("/");
 
 function withFakeLauncher(commandName: string, run: (logPath: string) => void) {
 	const tempDir = mkdtempSync(join(tmpdir(), `maestro-${commandName}-`));
@@ -60,9 +63,12 @@ function readLauncherCalls(logPath: string) {
 
 describe("assertInstallablePackageMetadata", () => {
 	it("allows ordinary registry dependencies", () => {
-		expect(() =>
+		expect(
 			assertInstallablePackageMetadata(
 				{
+					name: rootPackageName,
+					version: "9.9.9",
+					bin: { maestro: "dist/cli.js" },
 					dependencies: {
 						"@bufbuild/protobuf": "^2.11.0",
 						zod: "^4.3.6",
@@ -73,7 +79,65 @@ describe("assertInstallablePackageMetadata", () => {
 					forbiddenWorkspaceNames: ["@evalops/contracts", "@evalops/tui"],
 				},
 			),
-		).not.toThrow();
+		).toMatchObject({
+			label: "packed package",
+			name: rootPackageName,
+			version: "9.9.9",
+			binCommands: ["maestro"],
+			installable: true,
+			forbiddenReferences: [],
+			workspaceProtocolReferences: [],
+			dependencySections: {
+				dependencies: [
+					{ name: "@bufbuild/protobuf", spec: "^2.11.0" },
+					{ name: "zod", spec: "^4.3.6" },
+				],
+			},
+		});
+	});
+
+	it("summarizes forbidden install-time metadata for evidence artifacts", () => {
+		expect(
+			summarizeInstallablePackageMetadata(
+				{
+					name: rootPackageName,
+					version: "9.9.9",
+					dependencies: {
+						"@evalops/contracts": "^9.9.9",
+						"@evalops/helper": "workspace:*",
+					},
+					bundledDependencies: ["@evalops/tui"],
+				},
+				{
+					label: "published package",
+					forbiddenWorkspaceNames: ["@evalops/contracts", "@evalops/tui"],
+				},
+			),
+		).toMatchObject({
+			installable: false,
+			forbiddenReferences: [
+				"bundledDependencies.@evalops/tui",
+				"dependencies.@evalops/contracts",
+			],
+			workspaceProtocolReferences: ["dependencies.@evalops/helper=workspace:"],
+		});
+	});
+
+	it("normalizes string-form scoped package bins to npm command names", () => {
+		expect(
+			summarizeInstallablePackageMetadata(
+				{
+					name: rootPackageName,
+					version: "9.9.9",
+					bin: "dist/cli.js",
+				},
+				{
+					label: "published package",
+				},
+			),
+		).toMatchObject({
+			binCommands: ["maestro"],
+		});
 	});
 
 	it("rejects private runtime workspaces in install-time dependencies", () => {

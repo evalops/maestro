@@ -921,6 +921,14 @@ describe("ci workflow guardrails", () => {
 		expect(script.lastIndexOf("await runPublishedReplayE2E({")).toBeGreaterThan(
 			script.indexOf('bunCommand, ["add", packageSpec]'),
 		);
+		expect(script).toContain(
+			"const installMetadata = assertInstalledMetadata(",
+		);
+		expect(script).toContain("installMetadata,");
+		expect(script).toContain(
+			"const bunInstallMetadata = assertInstalledMetadata(",
+		);
+		expect(script).toContain("installMetadata: bunInstallMetadata");
 	});
 
 	it("blocks tag-release when the package version tag points at another commit", () => {

@@ -1,6 +1,11 @@
 import { join, resolve } from "node:path";
 import { describe, expect, it } from "vitest";
-import { resolvePublishedReplayEvidencePath } from "../../scripts/smoke-published-replay-e2e.js";
+import {
+	buildPublishedReplayEvidence,
+	resolvePublishedReplayEvidencePath,
+} from "../../scripts/smoke-published-replay-e2e.js";
+
+const rootPackageName = ["@evalops", "maestro"].join("/");
 
 describe("resolvePublishedReplayEvidencePath", () => {
 	it("prefers the explicit evidence path", () => {
@@ -37,5 +42,44 @@ describe("resolvePublishedReplayEvidencePath", () => {
 				},
 			}),
 		).toBe(join(resolve("artifacts"), "published-replay-evidence.json"));
+	});
+
+	it("includes install metadata in replay evidence", () => {
+		expect(
+			buildPublishedReplayEvidence({
+				packageSpec: `${rootPackageName}@9.9.9`,
+				cliCommand: "maestro",
+				binPath: "/tmp/project/node_modules/.bin/maestro",
+				installMetadata: {
+					label: `${rootPackageName}@9.9.9 via npm`,
+					name: rootPackageName,
+					version: "9.9.9",
+					binCommands: ["maestro"],
+					forbiddenWorkspaceNames: ["@evalops/contracts", "@evalops/tui"],
+					forbiddenReferences: [],
+					workspaceProtocolReferences: [],
+					installable: true,
+					dependencySections: {
+						dependencies: [{ name: "zod", spec: "^4.3.6" }],
+					},
+				},
+				modes: [
+					{
+						mode: "text",
+						status: "ok",
+					},
+				],
+			}),
+		).toMatchObject({
+			schemaVersion: "evalops.maestro.published-replay-evidence.v1",
+			package: {
+				spec: `${rootPackageName}@9.9.9`,
+				installMetadata: {
+					installable: true,
+					forbiddenReferences: [],
+					workspaceProtocolReferences: [],
+				},
+			},
+		});
 	});
 });
