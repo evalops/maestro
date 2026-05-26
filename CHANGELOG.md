@@ -17,6 +17,13 @@ versioning when releases are cut.
   and keep scheduled public runs inert so public publishing stays downstream of
   the internal source-of-truth release.
 
+## [0.10.30] - 2026-05-26
+
+### Changed
+
+- Extract transport event helpers. <!-- maestro-release-note:354ee66696bb -->
+- Expose AgentRuntime ledger correlation joins. <!-- maestro-release-note:5c5344ac5fa9 -->
+
 ## [0.10.29] - 2026-05-26
 
 ### Changed
