@@ -43,6 +43,17 @@ export function toArray<T>(value: T | T[] | undefined): T[] {
 
 const MAX_RIPGREP_OUTPUT_BYTES = 2_000_000; // ~2MB safeguard
 
+function shellQuoteArg(value: string): string {
+	if (/^[A-Za-z0-9_/:=.,@%+-]+$/.test(value)) {
+		return value;
+	}
+	return `'${value.replace(/'/g, "'\\''")}'`;
+}
+
+export function formatRipgrepCommand(args: string[]): string {
+	return ["rg", ...args].map(shellQuoteArg).join(" ");
+}
+
 export async function runRipgrep(
 	args: string[],
 	signal?: AbortSignal,

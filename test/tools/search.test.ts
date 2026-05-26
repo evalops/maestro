@@ -439,6 +439,26 @@ describe("search tool", () => {
 
 			expect(result.details).toHaveProperty("cwd");
 		});
+
+		it("quotes shell-sensitive command details", async () => {
+			const spacedDir = join(testDir, "space dir");
+			mkdirSync(spacedDir);
+			writeFileSync(join(spacedDir, "literal.txt"), "hello world");
+
+			const result = await searchTool.execute("search-26-quoted", {
+				pattern: "hello world",
+				paths: spacedDir,
+				glob: "*.txt",
+				literal: true,
+			});
+
+			expect(result.isError).toBeFalsy();
+			const command = (result.details as { command?: string } | undefined)
+				?.command;
+			expect(command).toContain("--glob '*.txt'");
+			expect(command).toContain("-- 'hello world'");
+			expect(command).toContain(`'${spacedDir}'`);
+		});
 	});
 
 	describe("error handling", () => {
@@ -478,6 +498,20 @@ describe("search tool", () => {
 					onlyMatching: true,
 				}),
 			).rejects.toThrow("onlyMatching");
+		});
+
+		it("marks ripgrep startup failures as tool errors", async () => {
+			const result = await searchTool.execute("search-29-startup", {
+				pattern: "content",
+				paths: ".",
+				cwd: join(testDir, "missing-cwd"),
+			});
+
+			expect(result.isError).toBe(true);
+			expect(getTextOutput(result)).toContain("ripgrep failed");
+			expect(result.details).toMatchObject({
+				cwd: join(testDir, "missing-cwd"),
+			});
 		});
 	});
 

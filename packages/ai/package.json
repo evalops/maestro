@@ -1,6 +1,6 @@
 {
 	"name": "@evalops/ai",
-	"version": "0.10.30",
+	"version": "0.10.31",
 	"description": "Shared Maestro AI SDK (models, transport, and agent event stream facade).",
 	"type": "module",
 	"main": "./dist/packages/ai/src/index.js",
@@ -131,8 +131,8 @@
 		"node": ">=20.0.0"
 	},
 	"dependencies": {
-		"@evalops/contracts": "^0.10.30",
-		"@evalops/tui": "^0.10.30",
+		"@evalops/contracts": "^0.10.31",
+		"@evalops/tui": "^0.10.31",
 		"@google/genai": "^1.29.1",
 		"@sinclair/typebox": "^0.34.0",
 		"nats": "^2.29.3"
