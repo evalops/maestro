@@ -16,7 +16,7 @@ on:
       message:
         description: Deprecation message.
         required: false
-        default: "Broken release: install @evalops/maestro@0.10.26 or newer."
+        default: "Broken release: install version 0.10.26 or newer of this package."
         type: string
       dry_run:
         description: Print the npm deprecate command without changing npm.
