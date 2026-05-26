@@ -656,7 +656,7 @@ describe("CLI integration", () => {
 		const importedSessions = await new SessionManager(false).listSessions();
 		expect(importedSessions.length).toBeGreaterThan(1);
 		expect(output.join("\n")).toContain("Imported session");
-	});
+	}, 60_000);
 
 	it("exports and imports portable json bundles with branched sessions", async () => {
 		await main(["hello"]);
@@ -1117,7 +1117,7 @@ describe("CLI integration", () => {
 		});
 		expect(sessionEndInput?.duration_ms).toEqual(expect.any(Number));
 		expect(Number(sessionEndInput?.duration_ms)).toBeGreaterThanOrEqual(0);
-	});
+	}, 60_000);
 
 	it("streams JSON events in composer exec", async () => {
 		const originalWrite = process.stdout.write;

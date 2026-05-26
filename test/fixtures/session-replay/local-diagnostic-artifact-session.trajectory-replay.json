@@ -68,6 +68,10 @@
 				},
 				{
 					"kind": "artifact",
+					"id": "file:src/api.ts"
+				},
+				{
+					"kind": "artifact",
 					"id": "skill_artifact_local_1"
 				},
 				{

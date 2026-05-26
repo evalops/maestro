@@ -100,7 +100,19 @@ jobs:
             exit 1
           fi
 
-          printf "//registry.npmjs.org/:_authToken=%s\n" "$NODE_AUTH_TOKEN" > ~/.npmrc
+          npm_userconfig="${NPM_CONFIG_USERCONFIG:-$HOME/.npmrc}"
+          mkdir -p "$(dirname "$npm_userconfig")"
+          printf "//registry.npmjs.org/:_authToken=%s\n" "$NODE_AUTH_TOKEN" > "$npm_userconfig"
+          if [[ "$npm_userconfig" != "$HOME/.npmrc" ]]; then
+            cp "$npm_userconfig" "$HOME/.npmrc"
+          fi
+
+          if ! npm_user="$(npm whoami 2>/tmp/npm-whoami.err)"; then
+            cat /tmp/npm-whoami.err >&2
+            echo "::error::NPM_TOKEN is present but npm whoami failed. Refresh the npm-release NPM_TOKEN secret before deprecating releases."
+            exit 1
+          fi
+          echo "Authenticated to npm as ${npm_user}."
 
           args=(--range "$RANGE" --package "$PACKAGE_NAME")
           if [[ -n "$MESSAGE" ]]; then

@@ -44,8 +44,10 @@ independently.
 
 - `scripts/configure-npm-trusted-publisher.mjs`
 - `scripts/deprecate-release.js`
+- `scripts/published-replay-evidence-gate.js`
 - `scripts/smoke-published-replay-e2e.js`
 - `scripts/smoke-registry-install.js`
+- `scripts/verify-published-replay-evidence.js`
 - `scripts/validate-public-package-deps.js`
 
 The registry smoke, published replay E2E, deprecation, and trusted-publisher
@@ -57,9 +59,9 @@ release mirror sync owns their byte-for-byte propagation.
 
 The public `package.json` is still generated from internal, so
 `scripts/prepare-public-release-mirror.mjs` injects the public-only
-`release:verify:published`, `release:verify:published:e2e`, and
-`release:deprecate` npm script aliases while leaving release-helper propagation
-to the release mirror.
+`release:verify:published`, `release:verify:published:e2e`,
+`release:verify:published:evidence`, and `release:deprecate` npm script aliases
+while leaving release-helper propagation to the release mirror.
 
 ### Internal-only docs that should not leak into the public repo
 

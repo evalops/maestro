@@ -784,6 +784,7 @@ export class ProviderTransport implements AgentTransport {
 					clientToolService: this.options.clientToolService,
 					toolExecutionBridge: platformToolExecutionBridge,
 					toolExecutionBridgePlan: safetyVerdict.toolExecutionBridgePlan,
+					approvalRequestId: safetyVerdict.approvalRequestId,
 					toolUpdateQueue,
 				});
 				const trackedExecutionPromise =
@@ -2385,6 +2386,7 @@ export class ProviderTransport implements AgentTransport {
 						clientToolService: this.options.clientToolService,
 						toolExecutionBridge: platformToolExecutionBridge,
 						toolExecutionBridgePlan: safetyVerdict.toolExecutionBridgePlan,
+						approvalRequestId: safetyVerdict.approvalRequestId,
 						toolUpdateQueue,
 						clientToolExecPromise,
 					});

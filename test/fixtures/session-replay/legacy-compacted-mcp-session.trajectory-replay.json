@@ -63,6 +63,10 @@
 			"terminalStatus": "completed",
 			"evidence": [
 				{
+					"kind": "artifact",
+					"id": "file:docs/replay.md"
+				},
+				{
 					"kind": "timeline_item",
 					"id": "file-change:tool-edit-1:call-edit"
 				},
@@ -108,6 +112,10 @@
 			"resultSequences": [10],
 			"terminalStatus": "completed",
 			"evidence": [
+				{
+					"kind": "artifact",
+					"id": "file:docs/new-replay.md"
+				},
 				{
 					"kind": "timeline_item",
 					"id": "file-change:tool-write-1:call-write"
