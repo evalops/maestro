@@ -9,6 +9,18 @@ import { assertPublishedReplayReleaseGate } from "./published-replay-evidence-ga
 const EVIDENCE_SCHEMA = "evalops.maestro.published-replay-evidence.v1";
 const REQUIRED_INSTALLERS = ["npm", "bun"];
 const REQUIRED_REPLAY_MODES = ["json", "rpc", "text"];
+const REQUIRED_RELEASE_GATE_CHECKS = [
+	"installablePackageMetadata",
+	"noForbiddenWorkspaceReferences",
+	"noWorkspaceProtocolReferences",
+	"requiredReplayModes",
+	"sessionEvidence",
+	"toolEvidence",
+	"approvalTraceEvidence",
+	"artifactTraceEvidence",
+	"agentRuntimeLedger",
+	"finalStatus",
+];
 const TOOL_CALL_ID = "call-read-package-json";
 
 function parseArgs(argv) {
@@ -268,8 +280,13 @@ export function validatePublishedReplayEvidence(evidence, { label = "evidence" }
 	);
 	pushUnless(errors, releaseGate.satisfied === true, "releaseGate.satisfied must be true");
 	const gateChecks = isObject(releaseGate.checks) ? releaseGate.checks : {};
+	for (const name of REQUIRED_RELEASE_GATE_CHECKS) {
+		pushUnless(errors, gateChecks[name] === true, `releaseGate.checks.${name} must be true`);
+	}
 	for (const [name, satisfied] of Object.entries(gateChecks)) {
-		pushUnless(errors, satisfied === true, `releaseGate.checks.${name} must be true`);
+		if (!REQUIRED_RELEASE_GATE_CHECKS.includes(name)) {
+			pushUnless(errors, satisfied === true, `releaseGate.checks.${name} must be true`);
+		}
 	}
 
 	const observability = isObject(evidence?.observability)
@@ -311,6 +328,24 @@ export function validatePublishedReplayEvidence(evidence, { label = "evidence" }
 		errors,
 		observability?.tools?.callIds?.includes?.(TOOL_CALL_ID) === true,
 		`observability.tools.callIds must include ${TOOL_CALL_ID}`,
+	);
+	pushUnless(
+		errors,
+		Number.isFinite(observability?.approvals?.count) &&
+			observability.approvals.count >= REQUIRED_REPLAY_MODES.length &&
+			stringArray(observability?.approvals?.evidenceRefs).every((ref) =>
+				ref.startsWith("approval-request:"),
+			),
+		"observability.approvals must include approval-request evidence for every replay mode",
+	);
+	pushUnless(
+		errors,
+		Number.isFinite(observability?.artifacts?.count) &&
+			observability.artifacts.count >= REQUIRED_REPLAY_MODES.length &&
+			stringArray(observability?.artifacts?.evidenceRefs).every((ref) =>
+				ref.startsWith("artifact:"),
+			),
+		"observability.artifacts must include artifact evidence for every replay mode",
 	);
 	pushUnless(
 		errors,

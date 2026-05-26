@@ -379,6 +379,20 @@ function buildPublishedReplayReleaseGate({ observability, modes }) {
 						"maestro_agent_runtime_ledger_recorded"
 				);
 			}),
+		approvalTraceEvidence:
+			modes.length > 0 &&
+			modes.every((modeEvidence) =>
+				evidenceRefsForMode(modeEvidence).some((ref) =>
+					ref.startsWith("approval-request:"),
+				),
+			),
+		artifactTraceEvidence:
+			modes.length > 0 &&
+			modes.every((modeEvidence) =>
+				evidenceRefsForMode(modeEvidence).some((ref) =>
+					ref.startsWith("artifact:"),
+				),
+			),
 		agentRuntimeLedger:
 			modes.length > 0 &&
 			modes.every((modeEvidence) => {
