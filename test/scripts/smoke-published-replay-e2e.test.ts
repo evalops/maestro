@@ -2,10 +2,78 @@ import { join, resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
 	buildPublishedReplayEvidence,
+	filterPublishedReplayEvidenceRefs,
 	resolvePublishedReplayEvidencePath,
 } from "../../scripts/smoke-published-replay-e2e.js";
 
 const rootPackageName = ["@evalops", "maestro"].join("/");
+
+function makeReplayMode(mode: "text" | "json" | "rpc") {
+	return {
+		mode,
+		status: "ok",
+		provider: "scripted-replay",
+		tool: {
+			name: "read",
+			callId: "call-read-package-json",
+			inputPath: "package.json",
+			resultStatus: "success",
+		},
+		final: {
+			status: "ok",
+			containsExpectedText: true,
+		},
+		session: {
+			sessionId: `session-${mode}`,
+			jsonlFileCount: 1,
+			bytes: 128,
+			sha256: `sha256-${mode}`,
+			containsFinalText: true,
+			containsToolCallId: true,
+		},
+		agentRuntimeLedger: {
+			schemaVersion: "evalops.maestro.agent-runtime-ledger.v1",
+			replayDeterministic: true,
+			entries: 4,
+			promotionOperations: 6,
+			counts: {
+				entries: 4,
+				promotionOperations: 6,
+				byKind: {
+					run: 1,
+					tool_call: 1,
+					tool_result: 1,
+					runtime: 1,
+				},
+				byState: {
+					running: 1,
+					succeeded: 3,
+				},
+			},
+			hasHandleTrigger: true,
+			hasRecordRunStep: true,
+			hasRecordRunWorkItem: true,
+			hasTerminalOperation: true,
+			toolWorkItem: {
+				toolName: "read",
+				evidenceRefs: [
+					"tool-call:call-read-package-json",
+					`tool-execution:tool-exec-${mode}`,
+					`approval-request:approval-${mode}`,
+					`artifact:artifact-${mode}`,
+				],
+				completionGate: "maestro_agent_runtime_ledger_recorded",
+			},
+			durability: {
+				reconstructable: true,
+				sessionFilePresent: true,
+				contextManifestPresent: true,
+				replayDeterministic: true,
+				promotionIdempotencyKey: `maestro-local-ledger:session-${mode}:session-${mode}`,
+			},
+		},
+	};
+}
 
 describe("resolvePublishedReplayEvidencePath", () => {
 	it("prefers the explicit evidence path", () => {
@@ -111,6 +179,127 @@ describe("resolvePublishedReplayEvidencePath", () => {
 					},
 				},
 			],
+		});
+	});
+
+	it("preserves artifact refs for published replay observability", () => {
+		expect(
+			filterPublishedReplayEvidenceRefs([
+				"tool-call:call-read-package-json",
+				"tool-execution:tool-exec-1",
+				"approval-request:approval-1",
+				"artifact:manifest-1",
+				"timeline-item:item-1",
+				"",
+			]),
+		).toEqual([
+			"tool-call:call-read-package-json",
+			"tool-execution:tool-exec-1",
+			"approval-request:approval-1",
+			"artifact:manifest-1",
+		]);
+	});
+
+	it("summarizes queryable release-gate evidence across install, replay, and ledger surfaces", () => {
+		const evidence = buildPublishedReplayEvidence({
+			packageSpec: `${rootPackageName}@9.9.9`,
+			cliCommand: "maestro",
+			binPath: "/tmp/project/node_modules/.bin/maestro",
+			installMetadata: {
+				label: `${rootPackageName}@9.9.9 via npm`,
+				name: rootPackageName,
+				version: "9.9.9",
+				binCommands: ["maestro"],
+				forbiddenWorkspaceNames: ["@evalops/contracts", "@evalops/tui"],
+				forbiddenReferences: [],
+				workspaceProtocolReferences: [],
+				installable: true,
+				dependencySections: {
+					dependencies: [{ name: "zod", spec: "^4.3.6" }],
+				},
+			},
+			modes: [
+				makeReplayMode("text"),
+				makeReplayMode("json"),
+				makeReplayMode("rpc"),
+			],
+		});
+
+		expect(evidence.releaseGate).toMatchObject({
+			releaseBlocking: true,
+			satisfied: true,
+			failedChecks: [],
+			checks: {
+				installablePackageMetadata: true,
+				noForbiddenWorkspaceReferences: true,
+				noWorkspaceProtocolReferences: true,
+				requiredReplayModes: true,
+				sessionEvidence: true,
+				toolEvidence: true,
+				agentRuntimeLedger: true,
+				finalStatus: true,
+			},
+		});
+		expect(evidence.observability).toMatchObject({
+			install: {
+				installable: true,
+				forbiddenReferences: [],
+				workspaceProtocolReferences: [],
+			},
+			sessions: {
+				modes: ["text", "json", "rpc"],
+				jsonlFileCount: 3,
+				bytes: 384,
+			},
+			tools: {
+				names: ["read"],
+				callIds: ["call-read-package-json"],
+				resultStatus: {
+					success: 3,
+				},
+				completionGates: ["maestro_agent_runtime_ledger_recorded"],
+			},
+			approvals: {
+				count: 3,
+			},
+			errors: {
+				count: 0,
+				modes: [],
+			},
+			artifacts: {
+				count: 3,
+			},
+			finalStatus: {
+				allOk: true,
+				byStatus: {
+					ok: 3,
+				},
+			},
+			agentRuntimeLedger: {
+				modes: ["text", "json", "rpc"],
+				replayDeterministicModes: ["text", "json", "rpc"],
+				durabilityModes: ["text", "json", "rpc"],
+				counts: {
+					entries: 12,
+					promotionOperations: 18,
+					byKind: {
+						run: 3,
+						tool_call: 3,
+						tool_result: 3,
+						runtime: 3,
+					},
+					byState: {
+						running: 3,
+						succeeded: 9,
+					},
+				},
+				operations: {
+					handleTrigger: 3,
+					recordRunStep: 3,
+					recordRunWorkItem: 3,
+					terminal: 3,
+				},
+			},
 		});
 	});
 });

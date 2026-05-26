@@ -23,6 +23,23 @@ export interface HostedRunnerIdentity {
 	agent_run_id?: string;
 	a2a_message_id?: string;
 	a2a_task_id?: string;
+	last_platform_a2a_push?: {
+		kind: string;
+		task_id?: string;
+		context_id?: string;
+		state?: string;
+		final?: boolean;
+		received_at: string;
+		runtime_event_id?: string;
+		runtime_event_type?: string;
+		traceparent?: string;
+		tracestate?: string;
+		organization_id?: string;
+		workspace_id?: string;
+		tenant_id?: string;
+		agent_id?: string;
+		actor_id?: string;
+	};
 	agent_runtime_worker_queue?: string;
 	agent_runtime_correlation_path?: string;
 	runtime_lease?: {
@@ -70,12 +87,19 @@ export async function buildHostedRunnerIdentity(
 						kind: hostedRunner.lastPlatformA2APush.kind,
 						task_id: hostedRunner.lastPlatformA2APush.taskId,
 						context_id: hostedRunner.lastPlatformA2APush.contextId,
+						workspace_id: hostedRunner.lastPlatformA2APush.workspaceId,
+						organization_id: hostedRunner.lastPlatformA2APush.organizationId,
+						tenant_id: hostedRunner.lastPlatformA2APush.tenantId,
 						state: hostedRunner.lastPlatformA2APush.state,
 						final: hostedRunner.lastPlatformA2APush.final,
 						received_at: hostedRunner.lastPlatformA2APush.receivedAt,
 						runtime_event_id: hostedRunner.lastPlatformA2APush.runtimeEventId,
 						runtime_event_type:
 							hostedRunner.lastPlatformA2APush.runtimeEventType,
+						traceparent: hostedRunner.lastPlatformA2APush.traceparent,
+						tracestate: hostedRunner.lastPlatformA2APush.tracestate,
+						agent_id: hostedRunner.lastPlatformA2APush.agentId,
+						actor_id: hostedRunner.lastPlatformA2APush.actorId,
 					},
 				}
 			: {}),

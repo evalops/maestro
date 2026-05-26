@@ -63,6 +63,15 @@ const A2A_PLATFORM_ENV_NAMES: &[&str] = &[
     "MAESTRO_A2A_PLATFORM_SURFACE",
     "MAESTRO_A2A_PLATFORM_SURFACE_TYPE",
     "MAESTRO_A2A_PLATFORM_STATUS",
+    "TRACEPARENT",
+    "TRACE_PARENT",
+    "MAESTRO_TRACEPARENT",
+    "TRACESTATE",
+    "TRACE_STATE",
+    "MAESTRO_TRACESTATE",
+    "MAESTRO_REMOTE_RUNNER_SESSION_ID",
+    "MAESTRO_RUNNER_SESSION_ID",
+    "REMOTE_RUNNER_SESSION_ID",
     "PORT",
     "MAESTRO_CONTROL_HOST",
 ];
@@ -218,6 +227,12 @@ fn a2a_platform_registration_config_uses_platform_env_and_stable_endpoint() {
     env::set_var("MAESTRO_A2A_AGENT_ID", "maestro-peer-1");
     env::set_var("MAESTRO_A2A_CURRENT_OBJECTIVE_IDS", "obj_1, obj_2");
     env::set_var("MAESTRO_A2A_PLATFORM_HEARTBEAT_INTERVAL_MS", "1234");
+    env::set_var(
+        "TRACEPARENT",
+        "00-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-bbbbbbbbbbbbbbbb-01",
+    );
+    env::set_var("TRACESTATE", "evalops=maestro-a2a");
+    env::set_var("MAESTRO_RUNNER_SESSION_ID", "mrs_123");
     env::set_var("PORT", "18787");
 
     let config = Config::from_env();
@@ -243,6 +258,18 @@ fn a2a_platform_registration_config_uses_platform_env_and_stable_endpoint() {
         vec!["obj_1".to_string(), "obj_2".to_string()]
     );
     assert_eq!(registration.heartbeat_interval_ms, 1234);
+    assert_eq!(
+        registration.traceparent.as_deref(),
+        Some("00-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-bbbbbbbbbbbbbbbb-01")
+    );
+    assert_eq!(
+        registration.tracestate.as_deref(),
+        Some("evalops=maestro-a2a")
+    );
+    assert_eq!(
+        registration.remote_runner_session_id.as_deref(),
+        Some("mrs_123")
+    );
 
     restore_env(snapshot);
 }
@@ -319,6 +346,9 @@ fn a2a_platform_payload_projects_governed_agent_card_without_drift_fields() {
         max_concurrent_objectives: "4".to_string(),
         surface: "a2a".to_string(),
         surface_type: "SURFACE_MAESTRO".to_string(),
+        traceparent: Some("00-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-bbbbbbbbbbbbbbbb-01".to_string()),
+        tracestate: Some("evalops=maestro-a2a".to_string()),
+        remote_runner_session_id: Some("mrs_123".to_string()),
     };
 
     let payload = a2a_platform_register_payload(&registration, &config);
@@ -332,6 +362,18 @@ fn a2a_platform_payload_projects_governed_agent_card_without_drift_fields() {
         "https://maestro.example/a2a/.well-known/agent-card.json"
     );
     assert_eq!(payload["a2a"]["attributes"]["maxConcurrentObjectives"], "4");
+    assert_eq!(
+        payload["a2a"]["attributes"]["traceparent"],
+        "00-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-bbbbbbbbbbbbbbbb-01"
+    );
+    assert_eq!(
+        payload["a2a"]["attributes"]["tracestate"],
+        "evalops=maestro-a2a"
+    );
+    assert_eq!(
+        payload["a2a"]["attributes"]["remoteRunnerSessionId"],
+        "mrs_123"
+    );
     assert!(payload["capabilities"]
         .as_array()
         .expect("capabilities")
@@ -397,6 +439,9 @@ fn a2a_platform_registration_posts_update_after_conflict_and_heartbeat() {
         max_concurrent_objectives: "4".to_string(),
         surface: "a2a".to_string(),
         surface_type: "SURFACE_MAESTRO".to_string(),
+        traceparent: Some("00-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-bbbbbbbbbbbbbbbb-01".to_string()),
+        tracestate: Some("evalops=maestro-a2a".to_string()),
+        remote_runner_session_id: Some("mrs_123".to_string()),
     };
 
     register_or_update_a2a_platform_agent(&registration, &config)
@@ -435,6 +480,14 @@ fn a2a_platform_registration_posts_update_after_conflict_and_heartbeat() {
         assert_eq!(
             request.headers.get("x-workspace-id").map(String::as_str),
             Some("ws_1")
+        );
+        assert_eq!(
+            request.headers.get("traceparent").map(String::as_str),
+            Some("00-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-bbbbbbbbbbbbbbbb-01")
+        );
+        assert_eq!(
+            request.headers.get("tracestate").map(String::as_str),
+            Some("evalops=maestro-a2a")
         );
     }
     assert_eq!(requests[0].body["workspaceId"], "ws_1");

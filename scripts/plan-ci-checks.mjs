@@ -113,6 +113,7 @@ const RELEASE_HELPER_TEST_FILES = new Set([
 	"test/scripts/install-smoke-utils.test.ts",
 	"test/scripts/release-context-deps.test.ts",
 	"test/scripts/release-impact-filter.test.ts",
+	"test/scripts/smoke-published-replay-e2e.test.ts",
 	"test/scripts/workspace-utils.test.ts",
 ]);
 
