@@ -303,6 +303,17 @@ export const MAESTRO_RELEASE_GATE_EVENT_CATEGORIES = [
 	"final-status",
 ] as const satisfies readonly MaestroBusEventCategory[];
 
+export const MAESTRO_RELEASE_GATE_EVENT_SUBJECTS = [
+	MaestroBusEventType.InstallCheckCompleted,
+	MaestroBusEventType.SessionClosed,
+	MaestroBusEventType.ToolCallCompleted,
+	MaestroBusEventType.ToolCallFailed,
+	MaestroBusEventType.ApprovalHit,
+	MaestroBusEventType.ErrorCaptured,
+	MaestroBusEventType.ArtifactCreated,
+	MaestroBusEventType.FinalStatusReported,
+] as const satisfies readonly MaestroBusEventType[];
+
 export type MaestroReleaseGateEventCategory =
 	(typeof MAESTRO_RELEASE_GATE_EVENT_CATEGORIES)[number];
 
