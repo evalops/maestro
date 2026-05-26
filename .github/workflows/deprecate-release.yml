@@ -49,7 +49,7 @@ jobs:
           registry-url: https://registry.npmjs.org
 
       - id: defaults
-        run: echo "package_name=$(node -p 'require(\"./package.json\").name')" >> "$GITHUB_OUTPUT"
+        run: node -e "process.stdout.write('package_name=' + require('./package.json').name + '\n')" >> "$GITHUB_OUTPUT"
 
       - name: Validate deprecation target
         env:
