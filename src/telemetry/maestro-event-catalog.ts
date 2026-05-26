@@ -391,6 +391,17 @@ export function getMissingMaestroReleaseGateConsumerCategories(
 	);
 }
 
+export function getUnexpectedMaestroReleaseGateEventSubjects(
+	catalog: readonly MaestroBusEventCatalogEntry[] = listMaestroBusEventCatalog(),
+): readonly MaestroBusEventType[] {
+	const expectedSubjects = new Set<MaestroBusEventType>(
+		MAESTRO_RELEASE_GATE_EVENT_SUBJECTS,
+	);
+	return buildMaestroReleaseGateEventQuery(catalog).subjects.filter(
+		(subject) => !expectedSubjects.has(subject),
+	);
+}
+
 function uniqueSorted(values: Iterable<string>): readonly string[] {
 	return Array.from(new Set(values)).sort();
 }
