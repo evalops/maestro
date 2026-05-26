@@ -67,6 +67,15 @@ describe("resolvePublishedReplayEvidencePath", () => {
 					{
 						mode: "text",
 						status: "ok",
+						agentRuntimeLedger: {
+							schemaVersion: "evalops.maestro.agent-runtime-ledger.v1",
+							replayDeterministic: true,
+							hasRecordRunWorkItem: true,
+							toolWorkItem: {
+								toolName: "read",
+								evidenceRefs: ["tool-call:call-read-package-json"],
+							},
+						},
 					},
 				],
 			}),
@@ -80,6 +89,16 @@ describe("resolvePublishedReplayEvidencePath", () => {
 					workspaceProtocolReferences: [],
 				},
 			},
+			modes: [
+				{
+					agentRuntimeLedger: {
+						replayDeterministic: true,
+						toolWorkItem: {
+							evidenceRefs: ["tool-call:call-read-package-json"],
+						},
+					},
+				},
+			],
 		});
 	});
 });
