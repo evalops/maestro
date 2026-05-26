@@ -17,6 +17,13 @@ versioning when releases are cut.
   and keep scheduled public runs inert so public publishing stays downstream of
   the internal source-of-truth release.
 
+## [0.10.29] - 2026-05-26
+
+### Changed
+
+- Extract native read-only tool batching (#2253). <!-- maestro-release-note:40501a390b70 -->
+- Fix parallel ripgrep error reporting. <!-- maestro-release-note:142d584de5a0 -->
+
 ## [0.10.28] - 2026-05-26
 
 ### Changed

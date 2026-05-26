@@ -212,6 +212,28 @@ function goodbye() {
 			const output = getTextOutput(result);
 			expect(output).toContain("match");
 		});
+
+		it("quotes shell-sensitive command details", async () => {
+			const spacedDir = join(testDir, "space dir");
+			mkdirSync(spacedDir);
+			writeFileSync(
+				join(spacedDir, "literal.ts"),
+				"const value = 'hello world';",
+			);
+
+			const result = await parallelRipgrepTool.execute("prg-13-quoted", {
+				patterns: ["hello world"],
+				paths: [spacedDir],
+				glob: "*.ts",
+				literal: true,
+			});
+
+			expect(result.isError).toBeFalsy();
+			const command = result.details?.commands.at(0);
+			expect(command).toContain("--glob '*.ts'");
+			expect(command).toContain("-- 'hello world'");
+			expect(command).toContain(`'${spacedDir}'`);
+		});
 	});
 
 	describe("hidden files and gitignore", () => {
@@ -281,6 +303,23 @@ function goodbye() {
 					paths: ["/nonexistent/path/xyz"],
 				}),
 			).rejects.toThrow(/No such file or directory|IO error/);
+		});
+
+		it("marks ripgrep startup failures as tool errors", async () => {
+			const result = await parallelRipgrepTool.execute("prg-20", {
+				patterns: ["hello"],
+				paths: ["."],
+				cwd: join(testDir, "missing-cwd"),
+			});
+
+			expect(result.isError).toBe(true);
+			expect(getTextOutput(result)).toContain("ripgrep failed");
+			expect(result.details).toMatchObject({
+				matchCount: 0,
+				rangeCount: 0,
+				ranges: [],
+				truncated: false,
+			});
 		});
 	});
 });

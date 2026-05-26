@@ -37,6 +37,17 @@ const RANGE_DETAIL_LIMIT = 200;
 /** Default max matches per pattern (prevents runaway searches) */
 const DEFAULT_MAX_RESULTS = 500;
 
+function shellQuoteArg(value: string): string {
+	if (/^[A-Za-z0-9_/:=.,@%+-]+$/.test(value)) {
+		return value;
+	}
+	return `'${value.replace(/'/g, "'\\''")}'`;
+}
+
+function formatRipgrepCommand(args: string[]): string {
+	return ["rg", ...args].map(shellQuoteArg).join(" ");
+}
+
 const parallelRipgrepSchema = Type.Object({
 	patterns: Type.Array(Type.String({ minLength: 1 }), {
 		minItems: 1,
@@ -388,7 +399,7 @@ export const parallelRipgrepTool = createTool<
 		let truncatedByBytes = false;
 		const ripgrepCalls = patterns.map(async (pattern) => {
 			const args = [...baseArgs, "--", pattern, ...pathArgs];
-			commands.push(["rg", ...args].join(" "));
+			commands.push(formatRipgrepCommand(args));
 			const result = await runRipgrep(args, signal, commandCwd);
 			truncatedByBytes ||= result.truncated;
 			return { pattern, result };
@@ -405,7 +416,7 @@ export const parallelRipgrepTool = createTool<
 				error instanceof Error
 					? error.message
 					: `Unknown error: ${String(error)}`;
-			return respond.text(`ripgrep failed\n\n${reason}`).detail({
+			return respond.error(`ripgrep failed\n\n${reason}`).detail({
 				commands,
 				cwd: commandCwd,
 				matchCount: 0,
