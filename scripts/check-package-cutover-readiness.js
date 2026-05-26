@@ -27,6 +27,7 @@ const allowedFiles = new Set(
 		"scripts/sync-package-metadata.js",
 		"src/agent/types.ts",
 		"src/package-metadata.ts",
+		"test/scripts/deprecate-release.test.ts",
 	]
 		.filter(Boolean)
 		.map((file) => file.replaceAll("\\", "/")),

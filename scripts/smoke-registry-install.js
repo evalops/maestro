@@ -18,6 +18,7 @@ import {
 } from "./install-smoke-utils.js";
 import { getPackageMetadata } from "./package-metadata.js";
 import { runPublishedReplayE2E } from "./smoke-published-replay-e2e.js";
+import { validatePublishedReplayEvidenceSet } from "./verify-published-replay-evidence.js";
 import {
 	getWorkspacePackages,
 	loadRootPackage,
@@ -93,7 +94,7 @@ const evidenceDir =
 		? ""
 		: process.env.MAESTRO_REGISTRY_SMOKE_EVIDENCE_DIR?.trim() ||
 			process.env.MAESTRO_PUBLISHED_REPLAY_EVIDENCE_DIR?.trim() ||
-			"");
+			"published-replay-evidence");
 
 function sleep(milliseconds) {
 	return new Promise((resolve) => setTimeout(resolve, milliseconds));
@@ -132,6 +133,33 @@ function publishedReplayEvidencePath(label) {
 		);
 	}
 	return join(resolve(evidenceDir), `${label}-published-replay-evidence.json`);
+}
+
+function validatePublishedReplayEvidenceOutputs(installers) {
+	const selectedInstallers = installers.filter((installer) =>
+		publishedReplayEvidencePath(installer),
+	);
+	if (selectedInstallers.length === 0) {
+		return;
+	}
+
+	const options = evidenceDir
+		? {
+				evidenceDir: resolve(evidenceDir),
+				installers: selectedInstallers,
+			}
+		: {
+				evidenceFiles: selectedInstallers.map((installer) =>
+					publishedReplayEvidencePath(installer),
+				),
+				installers: selectedInstallers,
+			};
+	const summaries = validatePublishedReplayEvidenceSet(options);
+	console.log(
+		`Validated published replay evidence for ${summaries
+			.map((summary) => summary.label)
+			.join(", ")}.`,
+	);
 }
 
 async function waitForPackage() {
@@ -201,10 +229,12 @@ async function main() {
 		await runPublishedReplayE2E({
 			cliCommand,
 			evidencePath: publishedReplayEvidencePath("npm"),
+			installer: "npm",
 			installMetadata,
 			installRoot: tempDir,
 			packageSpec,
 		});
+		validatePublishedReplayEvidenceOutputs(["npm"]);
 
 		console.log(`Smoke-tested ${packageSpec} from npm.`);
 	} finally {
@@ -242,10 +272,12 @@ async function main() {
 		await runPublishedReplayE2E({
 			cliCommand,
 			evidencePath: publishedReplayEvidencePath("bun"),
+			installer: "bun",
 			installMetadata: bunInstallMetadata,
 			installRoot: bunTempDir,
 			packageSpec,
 		});
+		validatePublishedReplayEvidenceOutputs(["npm", "bun"]);
 
 		console.log(`Smoke-tested ${packageSpec} from Bun.`);
 	} finally {
