@@ -960,6 +960,7 @@ describe("ci workflow guardrails", () => {
 		);
 		expect(script).toContain("installMetadata: bunInstallMetadata");
 		expect(script).toContain("validatePublishedReplayEvidenceSet");
+		expect(script).toContain('"published-replay-evidence"');
 		expect(script).toContain(
 			'validatePublishedReplayEvidenceOutputs(["npm"]);',
 		);
