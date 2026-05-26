@@ -30,6 +30,7 @@ function makeReplayMode(mode: "text" | "json" | "rpc") {
 			sha256: `sha256-${mode}`,
 			containsFinalText: true,
 			containsToolCallId: true,
+			containsWriteToolCallId: true,
 		},
 		agentRuntimeLedger: {
 			schemaVersion: "evalops.maestro.agent-runtime-ledger.v1",
@@ -56,14 +57,34 @@ function makeReplayMode(mode: "text" | "json" | "rpc") {
 			hasTerminalOperation: true,
 			toolWorkItem: {
 				toolName: "read",
+				toolCallId: "call-read-package-json",
 				evidenceRefs: [
 					"tool-call:call-read-package-json",
 					`tool-execution:tool-exec-${mode}`,
-					`approval-request:approval-${mode}`,
-					`artifact:artifact-${mode}`,
 				],
 				completionGate: "maestro_agent_runtime_ledger_recorded",
 			},
+			toolWorkItems: [
+				{
+					toolName: "read",
+					toolCallId: "call-read-package-json",
+					evidenceRefs: [
+						"tool-call:call-read-package-json",
+						`tool-execution:tool-exec-${mode}`,
+					],
+					completionGate: "maestro_agent_runtime_ledger_recorded",
+				},
+				{
+					toolName: "write",
+					toolCallId: "call-write-published-artifact",
+					evidenceRefs: [
+						"tool-call:call-write-published-artifact",
+						`approval-request:approval-${mode}`,
+						`artifact:artifact-${mode}`,
+					],
+					completionGate: "maestro_agent_runtime_ledger_recorded",
+				},
+			],
 			durability: {
 				reconstructable: true,
 				sessionFilePresent: true,
@@ -252,8 +273,8 @@ describe("resolvePublishedReplayEvidencePath", () => {
 				bytes: 384,
 			},
 			tools: {
-				names: ["read"],
-				callIds: ["call-read-package-json"],
+				names: ["read", "write"],
+				callIds: ["call-read-package-json", "call-write-published-artifact"],
 				resultStatus: {
 					success: 3,
 				},

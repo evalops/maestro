@@ -94,6 +94,18 @@ function getToolPath(
 	return redactedString(args?.path) ?? redactedString(args?.file_path);
 }
 
+function fileArtifactIdForToolResult(
+	toolResult: ToolResultMessage,
+	request: TimelineToolRequest | undefined,
+): string | undefined {
+	if (toolResult.isError) return undefined;
+	const normalizedToolName = toolResult.toolName.toLowerCase();
+	if (normalizedToolName !== "write" && normalizedToolName !== "edit") {
+		return undefined;
+	}
+	return `file:${getToolPath(request) ?? toolResult.toolCallId}`;
+}
+
 function governedToolMetadata(details: unknown): {
 	errorCode?: string;
 	approvalRequestId?: string;
@@ -145,6 +157,7 @@ function addDerivedToolResultItems(
 		(normalizedToolName === "write" || normalizedToolName === "edit")
 	) {
 		const displayPath = getToolPath(options.request);
+		const artifactId = fileArtifactIdForToolResult(toolResult, options.request);
 		const previousExists = booleanValue(details?.previousExists);
 		const editsApplied = finiteNumber(details?.editsApplied);
 		const bytesWritten = finiteNumber(details?.bytesWritten);
@@ -185,6 +198,7 @@ function addDerivedToolResultItems(
 			status: "completed",
 			toolCallId: toolResult.toolCallId,
 			toolName: toolResult.toolName,
+			...(artifactId ? { artifactId } : {}),
 			...(summary ? { summary } : {}),
 			...(metadata ? { metadata } : {}),
 		});
@@ -385,6 +399,7 @@ function addMessageItems(
 		const approvalRequestId =
 			governed.approvalRequestId ?? redactedString(details?.approvalRequestId);
 		const toolExecutionId = redactedString(details?.toolExecutionId);
+		const artifactId = fileArtifactIdForToolResult(toolResult, request);
 		const metadata = compactTimelineMetadata({
 			governedOutcome: governed.governedOutcome,
 			errorCode: governed.errorCode,
@@ -405,6 +420,7 @@ function addMessageItems(
 			toolName: toolResult.toolName,
 			...(approvalRequestId ? { approvalRequestId } : {}),
 			...(toolExecutionId ? { toolExecutionId } : {}),
+			...(artifactId ? { artifactId } : {}),
 			...(metadata ? { metadata } : {}),
 		});
 		addDerivedToolResultItems(items, sessionId, toolResult, {

@@ -532,11 +532,17 @@ describe("run command", () => {
 		expect(completedToolEntry).toMatchObject({
 			kind: "tool_result",
 			state: "succeeded",
-			relatedIds: ["approval-call-edit", "call-edit", "texec-call-edit"],
+			relatedIds: [
+				"approval-call-edit",
+				"call-edit",
+				"file:docs/run.md",
+				"texec-call-edit",
+			],
 			evidence: expect.arrayContaining([
 				{ kind: "tool_call", id: "call-edit" },
 				{ kind: "tool_execution", id: "texec-call-edit" },
 				{ kind: "approval_request", id: "approval-call-edit" },
+				{ kind: "artifact", id: "file:docs/run.md" },
 			]),
 			platformShape: {
 				stepKind: "AGENT_RUN_STEP_KIND_TOOL_RESULT",
@@ -558,6 +564,7 @@ describe("run command", () => {
 					"tool-call:call-edit",
 					"tool-execution:texec-call-edit",
 					"approval-request:approval-call-edit",
+					"artifact:file:docs/run.md",
 				]),
 				completionGate: "maestro_agent_runtime_ledger_recorded",
 				payload: expect.objectContaining({
@@ -568,7 +575,12 @@ describe("run command", () => {
 						toolExecutionId: "texec-call-edit",
 						approvalRequestId: "approval-call-edit",
 					}),
-					relatedIds: ["approval-call-edit", "call-edit", "texec-call-edit"],
+					relatedIds: [
+						"approval-call-edit",
+						"call-edit",
+						"file:docs/run.md",
+						"texec-call-edit",
+					],
 				}),
 			},
 		});

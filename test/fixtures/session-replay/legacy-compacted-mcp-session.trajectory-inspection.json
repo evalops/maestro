@@ -401,9 +401,15 @@
 			"title": "File edited",
 			"summary": "docs/replay.md | 128 bytes | 2 edits",
 			"toolName": "edit",
-			"relatedIds": ["call-edit"],
+			"relatedIds": ["call-edit", "file:docs/replay.md"],
 			"timelineItemIds": ["file-change:tool-edit-1:call-edit"],
 			"evidence": [
+				{
+					"kind": "artifact",
+					"id": "file:docs/replay.md",
+					"redacted": true,
+					"label": "artifact:file:docs/replay.md"
+				},
 				{
 					"kind": "timeline_item",
 					"id": "file-change:tool-edit-1:call-edit",
@@ -431,9 +437,15 @@
 			"source": "local",
 			"title": "edit completed",
 			"toolName": "edit",
-			"relatedIds": ["call-edit"],
+			"relatedIds": ["call-edit", "file:docs/replay.md"],
 			"timelineItemIds": ["tool-result:tool-edit-1:call-edit"],
 			"evidence": [
+				{
+					"kind": "artifact",
+					"id": "file:docs/replay.md",
+					"redacted": true,
+					"label": "artifact:file:docs/replay.md"
+				},
 				{
 					"kind": "timeline_item",
 					"id": "tool-result:tool-edit-1:call-edit",
@@ -462,9 +474,15 @@
 			"title": "File created",
 			"summary": "docs/new-replay.md | 64 bytes",
 			"toolName": "write",
-			"relatedIds": ["call-write"],
+			"relatedIds": ["call-write", "file:docs/new-replay.md"],
 			"timelineItemIds": ["file-change:tool-write-1:call-write"],
 			"evidence": [
+				{
+					"kind": "artifact",
+					"id": "file:docs/new-replay.md",
+					"redacted": true,
+					"label": "artifact:file:docs/new-replay.md"
+				},
 				{
 					"kind": "timeline_item",
 					"id": "file-change:tool-write-1:call-write",
@@ -492,9 +510,15 @@
 			"source": "local",
 			"title": "write completed",
 			"toolName": "write",
-			"relatedIds": ["call-write"],
+			"relatedIds": ["call-write", "file:docs/new-replay.md"],
 			"timelineItemIds": ["tool-result:tool-write-1:call-write"],
 			"evidence": [
+				{
+					"kind": "artifact",
+					"id": "file:docs/new-replay.md",
+					"redacted": true,
+					"label": "artifact:file:docs/new-replay.md"
+				},
 				{
 					"kind": "timeline_item",
 					"id": "tool-result:tool-write-1:call-write",

@@ -762,9 +762,12 @@ describe("ProviderTransport provider-owned tool events", () => {
 		);
 		expect(dynamicResults).toEqual([
 			{
+				approvalRequestId: "codex-dynamic-call-1",
 				content: [{ type: "text", text: "mutation completed" }],
 				isError: false,
-				details: undefined,
+				details: {
+					approvalRequestId: "codex-dynamic-call-1",
+				},
 			},
 		]);
 		expect(events).toEqual(
@@ -1202,14 +1205,19 @@ describe("ProviderTransport provider-owned tool events", () => {
 		).toHaveLength(2);
 		expect(dynamicResults).toEqual([
 			{
+				approvalRequestId: "codex-dynamic-read-1",
 				content: [{ type: "text", text: "dynamic:fixtures/guarded.txt:1" }],
 				isError: false,
-				details: undefined,
+				details: {
+					approvalRequestId: "codex-dynamic-read-1",
+				},
 			},
 			{
 				content: [{ type: "text", text: "dynamic:fixtures/guarded.txt:1" }],
 				isError: false,
-				details: undefined,
+				details: {
+					approvalRequestId: "codex-dynamic-read-1",
+				},
 			},
 		]);
 	});
