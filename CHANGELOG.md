@@ -17,6 +17,31 @@ versioning when releases are cut.
   and keep scheduled public runs inert so public publishing stays downstream of
   the internal source-of-truth release.
 
+## [0.10.32] - 2026-05-26
+
+### Changed
+
+- Fix find leading globstar root matches (#2283). <!-- maestro-release-note:820b73e77e71 -->
+- Fix published replay approval artifact evidence (#2282). <!-- maestro-release-note:a4c938587c2a -->
+- [maestro] Gate release surface conformance (#2274). <!-- maestro-release-note:2ed7226811b5 -->
+- [maestro] Improve deprecate-release auth diagnostics (#2278). <!-- maestro-release-note:6ded1a8ecca0 -->
+- Gate Maestro release observability catalog. <!-- maestro-release-note:0338651eada9 -->
+- Prove headless utility cleanup replay. <!-- maestro-release-note:8b2b5b574900 -->
+- Split A2A discovery helpers (#2267). <!-- maestro-release-note:9fdc1f4a5920 -->
+- Split tools package panel (#2270). <!-- maestro-release-note:11dbf3e7363a -->
+- [maestro] Preserve A2A push trace context (#2273). <!-- maestro-release-note:db88392aba25 -->
+- Gate published replay evidence. <!-- maestro-release-note:17c58a286e30 -->
+- [maestro] Fence Platform A2A push callbacks (#2277). <!-- maestro-release-note:73d1adc92e78 -->
+- Gate CLI runtime conformance (#2275). <!-- maestro-release-note:3962e2f82496 -->
+
+### Fixed
+
+- Preserve Windows grep fallback shell (#2281). <!-- maestro-release-note:20ceaa0e57fd -->
+- Keep search result limits per file (#2280). <!-- maestro-release-note:dcaac8a4fa2b -->
+- Harden registry process tests on public runners (#2279). <!-- maestro-release-note:0a7705b59092 -->
+- Harden TUI search and A2A registration traces. <!-- maestro-release-note:8bea2a6316d1 -->
+- Registry-smoke public fallback publishes. <!-- maestro-release-note:92c21c412d65 -->
+
 ## [0.10.31] - 2026-05-26
 
 ### Changed
