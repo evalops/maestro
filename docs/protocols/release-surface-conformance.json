@@ -1,0 +1,157 @@
+{
+	"version": 1,
+	"description": "Conformance anchors for Maestro public release, registry install, package metadata, public docs, and mirror surfaces that must not drift silently.",
+	"checks": [
+		{
+			"area": "public-install-docs",
+			"path": "README.md",
+			"evidenceType": "doc",
+			"anchors": [
+				"bun install -g @evalops/maestro",
+				"npm install -g @evalops/maestro",
+				"npm run smoke:local-e2e"
+			]
+		},
+		{
+			"area": "package-metadata",
+			"path": "package.json",
+			"evidenceType": "package-script",
+			"anchors": [
+				"\"name\": \"@evalops/maestro\"",
+				"\"private\": false",
+				"\"bin\": {",
+				"\"maestroRuntimeWorkspaces\""
+			]
+		},
+		{
+			"area": "release-gate-scripts",
+			"path": "package.json",
+			"evidenceType": "package-script",
+			"anchors": [
+				"\"release:check\": \"node scripts/release-readiness.js release\"",
+				"\"verify:runtime-deps\"",
+				"\"smoke:pack\": \"node scripts/smoke-packed-cli.js\"",
+				"\"check:release-surface\": \"node scripts/check-release-surface-conformance.mjs\""
+			]
+		},
+		{
+			"area": "forbidden-workspace-deps",
+			"path": "scripts/validate-public-package-deps.js",
+			"evidenceType": "source",
+			"anchors": [
+				"private workspace packages",
+				"vendored runtime workspace packages as install-time dependencies",
+				"Keep runtime workspace packages vendored under dist/node_modules only"
+			]
+		},
+		{
+			"area": "packed-runtime-workspaces",
+			"path": "scripts/check-packed-bundled-workspaces.mjs",
+			"evidenceType": "source",
+			"anchors": [
+				"package/dist/node_modules/${name}/package.json",
+				"without registry dependency metadata",
+				"npm pack"
+			]
+		},
+		{
+			"area": "installed-package-audit",
+			"path": "scripts/install-smoke-utils.js",
+			"evidenceType": "source",
+			"anchors": [
+				"assertInstallablePackageMetadata",
+				"workspaceProtocolReferences",
+				"runInstalledPackageAudit",
+				"runBunxCliSmoke"
+			]
+		},
+		{
+			"area": "registry-install-smoke",
+			"path": "scripts/smoke-registry-install.js",
+			"evidenceType": "live-smoke",
+			"anchors": [
+				"[\"install\", packageSpec]",
+				"[\"add\", packageSpec]",
+				"runPublishedReplayE2E",
+				"runNpxCliSmoke",
+				"runBunxCliSmoke"
+			]
+		},
+		{
+			"area": "published-replay-e2e",
+			"path": "scripts/smoke-published-replay-e2e.js",
+			"evidenceType": "live-smoke",
+			"anchors": [
+				"PUBLISHED_REPLAY_EVIDENCE_SCHEMA",
+				"mode: \"text\"",
+				"mode: \"json\"",
+				"mode: \"rpc\"",
+				"agentRuntimeLedger"
+			]
+		},
+		{
+			"area": "release-readiness",
+			"path": "scripts/release-readiness.js",
+			"evidenceType": "source",
+			"anchors": [
+				"runPackSmoke",
+				"npm run verify:runtime-deps",
+				"smoke:exec-replay-e2e",
+				"runReleaseChecks"
+			]
+		},
+		{
+			"area": "release-workflow",
+			"path": ".github/workflows/release.yml",
+			"evidenceType": "source",
+			"anchors": [
+				"npm run release:check",
+				"npm run verify:runtime-deps",
+				"npm pack --json",
+				"Create GitHub release"
+			]
+		},
+		{
+			"area": "public-mirror-workflow",
+			"path": ".github/workflows/public-release-mirror.yml",
+			"evidenceType": "source",
+			"anchors": [
+				"Prepare sanitized public release tree",
+				"Validate mirrored public tree",
+				"Publish public npm package fallback",
+				"npm publish"
+			]
+		},
+		{
+			"area": "public-mirror-contract",
+			"path": "scripts/check-release-mirror-contract.mjs",
+			"evidenceType": "source",
+			"anchors": [
+				".github/release-mirror-manifest.json",
+				"requiredCommandSuiteFiles",
+				"Release mirror contract is valid."
+			]
+		},
+		{
+			"area": "prepared-public-mirror",
+			"path": "scripts/check-prepared-public-mirror-tree.mjs",
+			"evidenceType": "source",
+			"anchors": [
+				".github/public-release-mirror.exclude must not exist",
+				"scripts/check-public-surface-boundary.mjs",
+				"Prepared public mirror tree smoke passed."
+			]
+		},
+		{
+			"area": "release-surface-docs",
+			"path": "docs/protocols/release-surface-conformance.md",
+			"evidenceType": "doc",
+			"anchors": [
+				"npm run check:release-surface",
+				"public install docs",
+				"registry install smokes",
+				"public mirror"
+			]
+		}
+	]
+}

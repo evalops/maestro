@@ -100,6 +100,8 @@ const RUNTIME_PACKAGE_VALIDATOR_FILES = new Set([
 ]);
 const RELEASE_HELPER_PACKAGE_FILES = new Set([
 	"scripts/configure-npm-trusted-publisher.mjs",
+	"scripts/check-package-cutover-readiness.js",
+	"scripts/check-release-surface-conformance.mjs",
 	"scripts/deprecate-release.js",
 	"scripts/install-smoke-utils.js",
 	"scripts/published-replay-evidence-gate.js",
@@ -116,9 +118,14 @@ const RELEASE_HELPER_TEST_FILES = new Set([
 	"test/scripts/install-smoke-utils.test.ts",
 	"test/scripts/release-context-deps.test.ts",
 	"test/scripts/release-impact-filter.test.ts",
+	"test/scripts/release-surface-conformance.test.ts",
 	"test/scripts/smoke-published-replay-e2e.test.ts",
 	"test/scripts/verify-published-replay-evidence.test.ts",
 	"test/scripts/workspace-utils.test.ts",
+]);
+const RELEASE_SURFACE_CONFORMANCE_FILES = new Set([
+	"docs/protocols/release-surface-conformance.json",
+	"docs/protocols/release-surface-conformance.md",
 ]);
 
 function isPackageManifest(path) {
@@ -147,6 +154,7 @@ function shouldSkipCoverageForPath(path) {
 		CODEGEN_UTILITY_FILES.has(path) ||
 		CI_GUARDRAIL_FILES.has(path) ||
 		RELEASE_HELPER_PACKAGE_FILES.has(path) ||
+		RELEASE_SURFACE_CONFORMANCE_FILES.has(path) ||
 		RUNTIME_PACKAGE_VALIDATOR_FILES.has(path) ||
 		isLeafIdeExtensionPath(path) ||
 		isSmokeScript(path) ||
@@ -236,6 +244,7 @@ function isLightPrChecksPath(path) {
 		CODEGEN_UTILITY_FILES.has(path) ||
 		CI_GUARDRAIL_FILES.has(path) ||
 		RELEASE_HELPER_PACKAGE_FILES.has(path) ||
+		RELEASE_SURFACE_CONFORMANCE_FILES.has(path) ||
 		RUNTIME_PACKAGE_VALIDATOR_FILES.has(path) ||
 		RELEASE_HELPER_TEST_FILES.has(path) ||
 		isSmokeScript(path)
@@ -247,6 +256,7 @@ function isReleaseHelperOnlyPath(path) {
 		isCiInfrastructureOnlyPath(path) ||
 		path === "scripts/plan-nx-test-command.mjs" ||
 		CI_GUARDRAIL_FILES.has(path) ||
+		RELEASE_SURFACE_CONFORMANCE_FILES.has(path) ||
 		RELEASE_HELPER_PACKAGE_FILES.has(path) ||
 		RELEASE_HELPER_TEST_FILES.has(path)
 	);

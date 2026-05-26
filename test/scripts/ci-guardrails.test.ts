@@ -301,6 +301,10 @@ describe("planCiChecks", () => {
 			planCiChecks({
 				eventName: "pull_request",
 				changedFiles: [
+					"docs/protocols/release-surface-conformance.json",
+					"docs/protocols/release-surface-conformance.md",
+					"scripts/check-package-cutover-readiness.js",
+					"scripts/check-release-surface-conformance.mjs",
 					"scripts/configure-npm-trusted-publisher.mjs",
 					"scripts/deprecate-release.js",
 					"scripts/install-smoke-utils.js",
@@ -317,6 +321,7 @@ describe("planCiChecks", () => {
 					"test/scripts/ci-guardrails.test.ts",
 					"test/scripts/deprecate-release.test.ts",
 					"test/scripts/release-impact-filter.test.ts",
+					"test/scripts/release-surface-conformance.test.ts",
 					"test/scripts/workspace-utils.test.ts",
 				],
 			}),
@@ -324,6 +329,7 @@ describe("planCiChecks", () => {
 			coverage: false,
 			lightPrChecks: true,
 			prChecks: true,
+			publicMirror: true,
 			releaseHelperOnly: true,
 			rustHostedConformance: false,
 		});
@@ -372,7 +378,6 @@ describe("planCiChecks", () => {
 					"test/scripts/ci-guardrails.test.ts",
 					"test/scripts/deprecate-release.test.ts",
 					"test/scripts/smoke-published-replay-e2e.test.ts",
-					"test/scripts/verify-published-replay-evidence.test.ts",
 					"test/scripts/workspace-utils.test.ts",
 				],
 			}),
@@ -642,10 +647,10 @@ describe("ci workflow guardrails", () => {
 		expect(script).toContain("node ./scripts/run-vitest.js --run");
 		expect(script).toContain("test/scripts/deprecate-release.test.ts");
 		expect(script).toContain("test/scripts/release-impact-filter.test.ts");
-		expect(script).toContain("test/scripts/smoke-published-replay-e2e.test.ts");
 		expect(script).toContain(
-			"test/scripts/verify-published-replay-evidence.test.ts",
+			"test/scripts/release-surface-conformance.test.ts",
 		);
+		expect(script).toContain("test/scripts/smoke-published-replay-e2e.test.ts");
 		expect(script).toContain("test/scripts/workspace-utils.test.ts");
 	});
 
@@ -831,7 +836,19 @@ describe("ci workflow guardrails", () => {
 			"node --check scripts/configure-npm-trusted-publisher.mjs",
 		);
 		expect(helperSmokeStep?.run).toContain(
-			"node ./scripts/run-vitest.js --run test/scripts/deprecate-release.test.ts test/scripts/install-smoke-utils.test.ts test/scripts/release-impact-filter.test.ts test/scripts/smoke-published-replay-e2e.test.ts test/scripts/verify-published-replay-evidence.test.ts test/scripts/workspace-utils.test.ts",
+			"node --check scripts/check-package-cutover-readiness.js",
+		);
+		expect(helperSmokeStep?.run).toContain(
+			"node --check scripts/check-release-surface-conformance.mjs",
+		);
+		expect(helperSmokeStep?.run).toContain(
+			"test/scripts/release-surface-conformance.test.ts",
+		);
+		expect(helperSmokeStep?.run).toContain(
+			"test/scripts/deprecate-release.test.ts",
+		);
+		expect(helperSmokeStep?.run).toContain(
+			"test/scripts/verify-published-replay-evidence.test.ts",
 		);
 		expect(helperSmokeStep?.run).toContain(
 			"MAESTRO_SKIP_INSTALL_AUDIT=1 MAESTRO_SKIP_BUN_INSTALL_SMOKE=1",
@@ -2042,6 +2059,7 @@ describe("planNxTestCommand", () => {
 			planNxTestCommand({
 				basePackage,
 				changedFiles: [
+					"scripts/check-package-cutover-readiness.js",
 					"scripts/configure-npm-trusted-publisher.mjs",
 					"scripts/deprecate-release.js",
 					"scripts/install-smoke-utils.js",
@@ -2079,6 +2097,33 @@ describe("planNxTestCommand", () => {
 				"test/scripts/release-impact-filter.test.ts",
 				"test/scripts/workspace-utils.test.ts",
 			],
+			mode: "affected-files",
+		});
+	});
+
+	it("keeps release surface conformance docs and helper out of Nx affected tests", () => {
+		expect(
+			planNxTestCommand({
+				basePackage,
+				changedFiles: [
+					"docs/protocols/release-surface-conformance.json",
+					"docs/protocols/release-surface-conformance.md",
+					"package.json",
+					"scripts/check-package-cutover-readiness.js",
+					"scripts/check-release-surface-conformance.mjs",
+					"test/scripts/release-surface-conformance.test.ts",
+				],
+				headPackage: {
+					...basePackage,
+					scripts: {
+						...basePackage.scripts,
+						"check:release-surface":
+							"node scripts/check-release-surface-conformance.mjs",
+					},
+				},
+			}),
+		).toEqual({
+			files: ["test/scripts/release-surface-conformance.test.ts"],
 			mode: "affected-files",
 		});
 	});
