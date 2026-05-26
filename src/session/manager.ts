@@ -1350,6 +1350,7 @@ export class SessionManager {
 		title?: string;
 		summary?: string;
 		resumeSummary?: string;
+		memoryExtractionHash?: string;
 		messages: AppMessage[];
 		createdAt: string;
 		updatedAt: string;

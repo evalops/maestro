@@ -75,6 +75,14 @@ describe("resolvePublishedReplayEvidencePath", () => {
 								toolName: "read",
 								evidenceRefs: ["tool-call:call-read-package-json"],
 							},
+							durability: {
+								reconstructable: true,
+								sessionFilePresent: true,
+								contextManifestPresent: true,
+								replayDeterministic: true,
+								promotionIdempotencyKey:
+									"maestro-local-ledger:session-1:session-1",
+							},
 						},
 					},
 				],
@@ -95,6 +103,10 @@ describe("resolvePublishedReplayEvidencePath", () => {
 						replayDeterministic: true,
 						toolWorkItem: {
 							evidenceRefs: ["tool-call:call-read-package-json"],
+						},
+						durability: {
+							reconstructable: true,
+							replayDeterministic: true,
 						},
 					},
 				},

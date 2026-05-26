@@ -202,6 +202,12 @@ describe("run command", () => {
 				},
 			},
 			{
+				type: "session_meta",
+				timestamp: "2026-05-09T10:00:03.750Z",
+				resumeSummary: "Resume from the docs reconstruction checkpoint.",
+				memoryExtractionHash: "sha256:session-memory-hash",
+			},
+			{
 				type: "compaction",
 				id: "compact-1",
 				parentId: "tool-1",
@@ -365,6 +371,8 @@ describe("run command", () => {
 				id: sessionId,
 				cwd: "/workspace/app",
 				model: "openai/gpt-5.5",
+				resumeSummary: "Resume from the docs reconstruction checkpoint.",
+				memoryExtractionHash: "sha256:session-memory-hash",
 				messageCount: 4,
 			},
 			promptContext: {
@@ -392,7 +400,20 @@ describe("run command", () => {
 				mcpPrompts: 1,
 				diagnostics: 1,
 			},
+			durability: {
+				reconstructable: true,
+				sessionFilePresent: true,
+				resumeSummaryPresent: true,
+				memoryExtractionHashPresent: true,
+				contextManifestPresent: true,
+				compactionCheckpoints: 1,
+				pendingRequests: 0,
+				replayDeterministic: true,
+			},
 		});
+		expect(report?.durability.promotionIdempotencyKey).toBe(
+			`maestro-local-ledger:${sessionId}:${sessionId}`,
+		);
 		expect(report?.contextManifest.byKind).toMatchObject({
 			project_doc: 1,
 			mcp_server: 1,
@@ -614,6 +635,7 @@ describe("run command", () => {
 		expect(output).toContain("Replay deltas:");
 		expect(output).toContain("Trajectory score:");
 		expect(output).toContain("Replay lab:");
+		expect(output).toContain("Durability: reconstructable=yes");
 		expect(output).toContain("yes prompt inputs");
 		expect(output).toContain("yes context manifest");
 		expect(output).toContain("yes MCP context");
@@ -661,6 +683,19 @@ describe("run command", () => {
 				sourceEventType: "maestro.local_ledger_promote",
 				sessionId,
 			},
+		});
+		expect(payload.session).toMatchObject({
+			resumeSummary: "Resume from the docs reconstruction checkpoint.",
+			memoryExtractionHash: "sha256:session-memory-hash",
+		});
+		expect(payload.durability).toMatchObject({
+			reconstructable: true,
+			resumeSummaryPresent: true,
+			memoryExtractionHashPresent: true,
+			contextManifestPresent: true,
+			compactionCheckpoints: 1,
+			replayDeterministic: true,
+			promotionIdempotencyKey: `maestro-local-ledger:${sessionId}:${sessionId}`,
 		});
 		expect(payload.trajectoryInspection.events[0]).toMatchObject({
 			timelineItemIds: ["session-started:session-reconstruct-1"],
