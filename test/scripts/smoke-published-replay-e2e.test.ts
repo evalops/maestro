@@ -257,6 +257,8 @@ describe("resolvePublishedReplayEvidencePath", () => {
 				requiredReplayModes: true,
 				sessionEvidence: true,
 				toolEvidence: true,
+				approvalTraceEvidence: true,
+				artifactTraceEvidence: true,
 				agentRuntimeLedger: true,
 				finalStatus: true,
 			},
