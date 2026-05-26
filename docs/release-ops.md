@@ -55,7 +55,12 @@
 ## Rollback And Deprecation
 
 - Verify a published package manually with `npm run release:verify:published -- --package <name> --version <version>`.
+- Prefer `.github/workflows/deprecate-release.yml` when local npm credentials
+  are unavailable. Dispatch it once with `dry_run=true`, then rerun with
+  `dry_run=false`; the mutating job requires the `npm-release` environment
+  `NPM_TOKEN`.
 - Deprecate a bad version or temporary package path from a logged-in machine with `npm run release:deprecate -- --range <version-or-range>`.
-- For the broken `@evalops/maestro@0.10.20` package, run `npm run release:deprecate -- --range 0.10.20 --message "Broken release: install @evalops/maestro@0.10.21 or newer."` from an npm-authenticated machine.
+- For the broken `@evalops/maestro@0.10.20` package, deprecate range
+  `0.10.20` with message `Broken release: install @evalops/maestro@0.10.26 or newer.`.
 - Add `--replacement-package @evalops/maestro` when retiring the temporary namespace, or provide `--message` for a custom rollback notice.
 - Use `--dry-run` first to inspect the exact `npm deprecate` command before making registry changes.
