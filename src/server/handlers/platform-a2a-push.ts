@@ -25,6 +25,9 @@ interface PlatformA2APushSnapshot {
 	kind: "statusUpdate" | "artifactUpdate" | "task" | "message";
 	taskId?: string;
 	contextId?: string;
+	workspaceId?: string;
+	organizationId?: string;
+	tenantId?: string;
 	state?: string;
 	final?: boolean;
 	receivedAt: string;
@@ -47,13 +50,7 @@ export async function handlePlatformA2APushCallback(
 		throw new ApiError(400, "Invalid A2A push notification payload");
 	}
 	const hostedRunner = context.hostedRunner;
-	if (
-		hostedRunner?.a2aTaskId &&
-		snapshot.taskId &&
-		hostedRunner.a2aTaskId !== snapshot.taskId
-	) {
-		throw new ApiError(404, "A2A task not found");
-	}
+	assertHostedRunnerA2APushBoundary(hostedRunner, snapshot);
 	if (hostedRunner) {
 		recordHostedRunnerA2APush(hostedRunner, snapshot);
 	}
@@ -86,6 +83,7 @@ function platformA2APushSnapshot(
 			kind: "statusUpdate",
 			taskId,
 			contextId: stringField(payload.statusUpdate, "contextId"),
+			...ownershipFields(payload, payload.statusUpdate),
 			state: statusState(payload.statusUpdate),
 			final: booleanField(payload.statusUpdate, "final"),
 			receivedAt: new Date().toISOString(),
@@ -105,6 +103,7 @@ function platformA2APushSnapshot(
 			kind: "task",
 			taskId,
 			contextId: stringField(payload.task, "contextId"),
+			...ownershipFields(payload, payload.task),
 			state: statusState(payload.task),
 			receivedAt: new Date().toISOString(),
 		};
@@ -118,6 +117,7 @@ function platformA2APushSnapshot(
 			kind: "artifactUpdate",
 			taskId,
 			contextId: stringField(payload.artifactUpdate, "contextId"),
+			...ownershipFields(payload, payload.artifactUpdate),
 			receivedAt: new Date().toISOString(),
 		};
 	}
@@ -130,10 +130,42 @@ function platformA2APushSnapshot(
 			kind: "message",
 			taskId,
 			contextId: stringField(payload.message, "contextId"),
+			...ownershipFields(payload, payload.message),
 			receivedAt: new Date().toISOString(),
 		};
 	}
 	return null;
+}
+
+function assertHostedRunnerA2APushBoundary(
+	hostedRunner: HostedRunnerContext | undefined,
+	snapshot: PlatformA2APushSnapshot,
+): void {
+	if (
+		hostedRunner?.a2aTaskId &&
+		snapshot.taskId &&
+		hostedRunner.a2aTaskId !== snapshot.taskId
+	) {
+		throw new ApiError(404, "A2A task not found");
+	}
+	if (!hostedRunner?.workspaceId) {
+		return;
+	}
+
+	const workspaceMarker = snapshot.workspaceId ?? snapshot.tenantId;
+	if (workspaceMarker) {
+		if (!sameIdentifier(workspaceMarker, hostedRunner.workspaceId)) {
+			throw new ApiError(403, "A2A push notification workspace mismatch");
+		}
+		return;
+	}
+
+	if (!hostedRunner.a2aTaskId) {
+		throw new ApiError(
+			403,
+			"A2A push notification is missing workspace metadata",
+		);
+	}
 }
 
 function recordHostedRunnerA2APush(
@@ -154,6 +186,83 @@ function statusState(value: JsonObject): string | undefined {
 function metadataString(value: JsonObject, key: string): string | undefined {
 	const metadata = isJsonObject(value.metadata) ? value.metadata : undefined;
 	return metadata ? stringField(metadata, key) : undefined;
+}
+
+function ownershipFields(
+	payload: JsonObject,
+	value: JsonObject,
+): Pick<
+	PlatformA2APushSnapshot,
+	"workspaceId" | "organizationId" | "tenantId"
+> {
+	return {
+		...optionalField(
+			"workspaceId",
+			ownershipString(payload, value, ["workspaceId", "workspace_id"]),
+		),
+		...optionalField(
+			"organizationId",
+			ownershipString(payload, value, [
+				"organizationId",
+				"organization_id",
+				"orgId",
+				"org_id",
+			]),
+		),
+		...optionalField(
+			"tenantId",
+			ownershipString(payload, value, ["tenantId", "tenant_id", "tenant"]),
+		),
+	};
+}
+
+function ownershipString(
+	payload: JsonObject,
+	value: JsonObject,
+	keys: readonly string[],
+): string | undefined {
+	for (const source of ownershipSources(payload, value)) {
+		for (const key of keys) {
+			const direct = stringField(source, key);
+			if (direct) {
+				return direct;
+			}
+			const metadata = metadataString(source, key);
+			if (metadata) {
+				return metadata;
+			}
+		}
+	}
+	return undefined;
+}
+
+function ownershipSources(
+	payload: JsonObject,
+	value: JsonObject,
+): JsonObject[] {
+	const sources = [value, payload];
+	const status = isJsonObject(value.status) ? value.status : undefined;
+	if (status) {
+		sources.push(status);
+		if (isJsonObject(status.message)) {
+			sources.push(status.message);
+		}
+	}
+	if (isJsonObject(value.artifact)) {
+		sources.push(value.artifact);
+	}
+	return sources;
+}
+
+function optionalField<K extends string>(
+	key: K,
+	value: string | undefined,
+): Partial<Record<K, string>> {
+	return value ? ({ [key]: value } as Partial<Record<K, string>>) : {};
+}
+
+function sameIdentifier(left: string, right: string): boolean {
+	return left.trim().toLowerCase() === right.trim().toLowerCase();
 }
 
 function stringField(value: JsonObject, key: string): string | undefined {
