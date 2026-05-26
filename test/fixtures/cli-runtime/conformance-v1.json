@@ -1,0 +1,187 @@
+{
+	"version": 1,
+	"schema": "evalops.maestro.cli-runtime-conformance.v1",
+	"description": "Release-gated CLI parser and stdio RPC mode conformance cases.",
+	"parserCases": [
+		{
+			"name": "json mode keeps prompt messages",
+			"argv": ["--mode", "json", "hello"],
+			"expect": {
+				"mode": "json",
+				"messages": ["hello"]
+			},
+			"absent": ["error"]
+		},
+		{
+			"name": "rpc mode can be selected with equals syntax",
+			"argv": ["--mode=rpc", "--no-session"],
+			"expect": {
+				"mode": "rpc",
+				"noSession": true,
+				"messages": []
+			},
+			"absent": ["error", "headless"]
+		},
+		{
+			"name": "headless mode implies headless transport",
+			"argv": ["--mode", "headless"],
+			"expect": {
+				"mode": "headless",
+				"headless": true,
+				"messages": []
+			},
+			"absent": ["error"]
+		},
+		{
+			"name": "headless flag aliases headless mode",
+			"argv": ["--headless"],
+			"expect": {
+				"mode": "headless",
+				"headless": true,
+				"messages": []
+			},
+			"absent": ["error"]
+		},
+		{
+			"name": "exec command owns json full-auto sandbox and tool filters",
+			"argv": [
+				"exec",
+				"Plan work",
+				"--json",
+				"--full-auto",
+				"--sandbox",
+				"workspace-write",
+				"--tools",
+				"read,search"
+			],
+			"expect": {
+				"command": "exec",
+				"messages": ["Plan work"],
+				"execJson": true,
+				"execFullAuto": true,
+				"sandbox": "workspace-write",
+				"tools": ["read", "search"]
+			},
+			"absent": ["error"]
+		},
+		{
+			"name": "exec resume consumes optional resume id",
+			"argv": ["exec", "--resume", "run_123"],
+			"expect": {
+				"command": "exec",
+				"execResumeId": "run_123",
+				"messages": []
+			},
+			"absent": ["error", "resume", "execUseLast"]
+		},
+		{
+			"name": "run inspect remains a structured run subcommand",
+			"argv": ["run", "inspect", "run_123"],
+			"expect": {
+				"command": "run",
+				"subcommand": "inspect",
+				"messages": ["run_123"]
+			},
+			"absent": ["error"]
+		},
+		{
+			"name": "plain run token remains prompt text",
+			"argv": ["run", "the", "tests"],
+			"expect": {
+				"messages": ["run", "the", "tests"]
+			},
+			"absent": ["command", "subcommand", "error"]
+		},
+		{
+			"name": "remote command preserves command handler args",
+			"argv": ["remote", "start", "--target", "agent-1"],
+			"expect": {
+				"command": "remote",
+				"subcommand": "start",
+				"commandArgs": ["--target", "agent-1"],
+				"messages": []
+			},
+			"absent": ["error"]
+		},
+		{
+			"name": "codex login preserves device flag for command handler",
+			"argv": ["codex", "login", "--device"],
+			"expect": {
+				"command": "codex",
+				"subcommand": "login",
+				"commandArgs": ["--device"],
+				"messages": []
+			},
+			"absent": ["error"]
+		},
+		{
+			"name": "config init preset is command-owned",
+			"argv": ["config", "init", "--preset", "managed"],
+			"expect": {
+				"command": "config",
+				"subcommand": "init",
+				"messages": []
+			},
+			"absent": ["error"]
+		},
+		{
+			"name": "task budget rejects zero before runtime startup",
+			"argv": ["--task-budget", "0", "hello"],
+			"expect": {
+				"error": "--task-budget must be a positive integer",
+				"messages": ["hello"]
+			}
+		},
+		{
+			"name": "unknown options fail before becoming public surface",
+			"argv": ["web", "--legacy-runtime"],
+			"expect": {
+				"command": "web",
+				"error": "Unknown option: --legacy-runtime",
+				"messages": []
+			}
+		}
+	],
+	"runtimeSurfaces": [
+		{
+			"area": "cli-help",
+			"path": "src/cli/help.ts",
+			"anchors": [
+				"--mode <mode>",
+				"Output mode: text (default), json, or rpc",
+				"--no-session"
+			]
+		},
+		{
+			"area": "cli-mode-selection",
+			"path": "src/main.ts",
+			"anchors": [
+				"mode === \"rpc\"",
+				"runRpcMode(agent, sessionManager)",
+				"mode === \"headless\" || parsed.headless",
+				"runHeadlessMode("
+			]
+		},
+		{
+			"area": "cli-parser",
+			"path": "src/cli/args.ts",
+			"anchors": [
+				"export function parseArgs",
+				"result.mode = \"headless\"",
+				"result.error = `Unknown option: ${arg}`",
+				"RUN_SUBCOMMANDS.has"
+			]
+		},
+		{
+			"area": "rpc-stdio-protocol",
+			"path": "src/cli/rpc-mode.ts",
+			"anchors": [
+				"JSON-over-stdio",
+				"input.type === \"prompt\"",
+				"input.type === \"get_state\"",
+				"input.type === \"get_messages\"",
+				"input.type === \"compact\""
+			]
+		}
+	]
+}
