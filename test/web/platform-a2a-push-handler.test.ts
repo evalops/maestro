@@ -78,6 +78,7 @@ function context(): WebServerContext {
 			enabled: true,
 			runnerSessionId: "runner_1",
 			workspaceRoot: process.cwd(),
+			workspaceId: "ws_hosted",
 			a2aTaskId: "run_1",
 		},
 		createAgent: vi.fn(),
@@ -122,6 +123,8 @@ describe("handlePlatformA2APushCallback", () => {
 						final: true,
 						status: { state: "TASK_STATE_COMPLETED" },
 						metadata: {
+							workspaceId: "ws_hosted",
+							organizationId: "org_1",
 							runtimeEventId: "event_1",
 							runtimeEventType: "RUNTIME_EVENT_TYPE_RUN_SUCCEEDED",
 						},
@@ -145,8 +148,44 @@ describe("handlePlatformA2APushCallback", () => {
 		expect(ctx.hostedRunner?.lastPlatformA2APush).toMatchObject({
 			kind: "statusUpdate",
 			taskId: "run_1",
+			workspaceId: "ws_hosted",
+			organizationId: "org_1",
 			state: "TASK_STATE_COMPLETED",
 			runtimeEventType: "RUNTIME_EVENT_TYPE_RUN_SUCCEEDED",
+		});
+	});
+
+	it("binds an unclaimed hosted runner task when workspace metadata matches", async () => {
+		vi.stubEnv("MAESTRO_PLATFORM_A2A_CALLBACK_TOKEN", "callback-token");
+		const ctx = context();
+		if (ctx.hostedRunner) {
+			ctx.hostedRunner.a2aTaskId = undefined;
+		}
+		const res = new MockResponse();
+
+		await handlePlatformA2APushCallback(
+			jsonRequest(
+				{
+					statusUpdate: {
+						taskId: "run_1",
+						contextId: "ctx_1",
+						status: { state: "TASK_STATE_WORKING" },
+						metadata: {
+							workspace_id: "ws_hosted",
+						},
+					},
+				},
+				{ "x-a2a-notification-token": "callback-token" },
+			),
+			res as unknown as ServerResponse,
+			ctx,
+		);
+
+		expect(res.statusCode).toBe(202);
+		expect(ctx.hostedRunner?.a2aTaskId).toBe("run_1");
+		expect(ctx.hostedRunner?.lastPlatformA2APush).toMatchObject({
+			taskId: "run_1",
+			workspaceId: "ws_hosted",
 		});
 	});
 
@@ -161,6 +200,61 @@ describe("handlePlatformA2APushCallback", () => {
 				ctx,
 			),
 		).rejects.toMatchObject({ statusCode: 404 });
+	});
+
+	it("rejects callbacks with mismatched workspace metadata", async () => {
+		vi.stubEnv("MAESTRO_PLATFORM_A2A_CALLBACK_TOKEN", "callback-token");
+		const ctx = context();
+		const res = new MockResponse();
+
+		await expect(
+			handlePlatformA2APushCallback(
+				jsonRequest(
+					{
+						statusUpdate: {
+							taskId: "run_1",
+							status: { state: "TASK_STATE_WORKING" },
+							metadata: {
+								workspaceId: "ws_other",
+							},
+						},
+					},
+					{ "x-a2a-notification-token": "callback-token" },
+				),
+				res as unknown as ServerResponse,
+				ctx,
+			),
+		).rejects.toMatchObject({ statusCode: 403 });
+
+		expect(ctx.hostedRunner?.lastPlatformA2APush).toBeUndefined();
+	});
+
+	it("rejects first unbound callbacks without workspace metadata", async () => {
+		vi.stubEnv("MAESTRO_PLATFORM_A2A_CALLBACK_TOKEN", "callback-token");
+		const ctx = context();
+		if (ctx.hostedRunner) {
+			ctx.hostedRunner.a2aTaskId = undefined;
+		}
+		const res = new MockResponse();
+
+		await expect(
+			handlePlatformA2APushCallback(
+				jsonRequest(
+					{
+						statusUpdate: {
+							taskId: "run_1",
+							status: { state: "TASK_STATE_WORKING" },
+						},
+					},
+					{ "x-a2a-notification-token": "callback-token" },
+				),
+				res as unknown as ServerResponse,
+				ctx,
+			),
+		).rejects.toMatchObject({ statusCode: 403 });
+
+		expect(ctx.hostedRunner?.a2aTaskId).toBeUndefined();
+		expect(ctx.hostedRunner?.lastPlatformA2APush).toBeUndefined();
 	});
 
 	it("rejects task updates that omit the task identifier", async () => {

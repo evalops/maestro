@@ -41,6 +41,9 @@ export interface HostedRunnerContext {
 		kind: "statusUpdate" | "artifactUpdate" | "task" | "message";
 		taskId?: string;
 		contextId?: string;
+		workspaceId?: string;
+		organizationId?: string;
+		tenantId?: string;
 		state?: string;
 		final?: boolean;
 		receivedAt: string;
