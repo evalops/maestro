@@ -57,7 +57,7 @@ npm run check:codex-operating-layer
 | installed by default | `default-install` | `package.json`, `test/install/native-dependencies.test.ts` |
 | ChatGPT sign-in | `chatgpt-sign-in` | `src/cli/commands/codex.ts`, `test/cli/codex-command.test.ts` |
 | dynamic tools | `dynamic-tools` | `src/codex/compatibility.ts`, `src/agent/providers/codex-app-server.ts`, `test/codex/compatibility.test.ts`, `test/agent/codex-app-server.test.ts` |
-| durable threads, goals, memory | `durable-threads-goals-memory` | `src/session/types.ts`, `packages/contracts/src/maestro-app-server.ts`, `test/app-server/session-api.test.ts` |
+| durable threads, goals, memory | `durable-threads-goals-memory` | `src/session/types.ts`, `src/cli/commands/run.ts`, `packages/contracts/src/maestro-app-server.ts`, `test/cli/run-command.test.ts`, `test/app-server/session-api.test.ts` |
 | approvals and sandbox policy | `approvals-sandbox-policy` | `src/agent/transport.ts`, `test/agent/provider-transport-provider-tools.test.ts`, `packages/control-plane-rs/src/main.rs`, `docs/protocols/pending-requests.md` |
 | subagents | `subagents` | `src/agent/providers/codex-app-server.ts`, `test/agent/provider-transport-provider-tools.test.ts` |
 | multi-agent work graph | `multi-agent-workgraph` | `docs/protocols/codex-subagent-workgraph-v1.json`, `src/platform/agent-runtime-client.ts`, `src/platform/agent-registry-client.ts`, `src/agent/providers/codex-app-server.ts`, `packages/control-plane-rs/src/main.rs`, `src/server/hosted-agent-runtime-progress.ts`, `test/server/hosted-agent-runtime-progress.test.ts` |
@@ -98,6 +98,14 @@ subagent spawn/wait inference and requires `codexWorkGraph` evidence on both
 spawn/send/resume/wait/close lifecycle for TypeScript and Rust conformance, and
 the remote-runner drain tests require lifecycle-edge continuity without copying
 child prompts into manifest metadata.
+
+`maestro run inspect <session-id> --json` also emits a `durability` summary for
+the local restore path. The summary is intentionally compact and redacted: it
+proves the session file was found, reconstruction produced timeline and
+AgentRuntime ledger entries, replay was deterministic, resume-summary and
+memory-hash continuity are present when saved, and the dry-run promotion plan has
+a stable idempotency key. Published replay smokes assert that summary so release
+evidence does not stop at "the CLI printed text."
 
 ## Completion Bar
 
