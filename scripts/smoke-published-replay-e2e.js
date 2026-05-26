@@ -29,6 +29,9 @@ import {
 	getWorkspacePackages,
 	loadRootPackage,
 } from "./workspace-utils.js";
+import { assertPublishedReplayReleaseGate } from "./published-replay-evidence-gate.js";
+
+export { assertPublishedReplayReleaseGate };
 
 const SCRIPTED_SCENARIO_SCHEMA = "evalops.maestro.scripted-scenario.v1";
 const PUBLISHED_REPLAY_EVIDENCE_SCHEMA =
@@ -405,16 +408,6 @@ function buildPublishedReplayReleaseGate({ observability, modes }) {
 		failedChecks,
 		checks,
 	};
-}
-
-export function assertPublishedReplayReleaseGate(evidence) {
-	if (evidence?.releaseGate?.satisfied === true) {
-		return;
-	}
-	const failedChecks = Array.isArray(evidence?.releaseGate?.failedChecks)
-		? evidence.releaseGate.failedChecks.join(", ")
-		: "unknown";
-	throw new Error(`Published replay release gate failed: ${failedChecks}`);
 }
 
 async function getForbiddenWorkspaceNames() {

@@ -4,7 +4,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
-import { assertPublishedReplayReleaseGate } from "./smoke-published-replay-e2e.js";
+import { assertPublishedReplayReleaseGate } from "./published-replay-evidence-gate.js";
 
 const EVIDENCE_SCHEMA = "evalops.maestro.published-replay-evidence.v1";
 const REQUIRED_INSTALLERS = ["npm", "bun"];
@@ -71,6 +71,22 @@ function pushUnless(errors, condition, message) {
 	}
 }
 
+function parsePackageSpec(spec) {
+	if (typeof spec !== "string") {
+		return null;
+	}
+	const versionSeparator = spec.startsWith("@")
+		? spec.indexOf("@", 1)
+		: spec.indexOf("@");
+	if (versionSeparator <= 0 || versionSeparator === spec.length - 1) {
+		return null;
+	}
+	return {
+		name: spec.slice(0, versionSeparator),
+		version: spec.slice(versionSeparator + 1),
+	};
+}
+
 export function expectedPublishedReplayEvidenceFiles({
 	evidenceDir = "published-replay-evidence",
 	installers = REQUIRED_INSTALLERS,
@@ -108,10 +124,30 @@ export function validatePublishedReplayEvidence(evidence, { label = "evidence" }
 		? packageInfo.installMetadata
 		: {};
 	pushUnless(errors, typeof packageInfo.spec === "string", "package.spec must be a string");
+	const expectedPackage = parsePackageSpec(packageInfo.spec);
+	pushUnless(
+		errors,
+		expectedPackage !== null,
+		"package.spec must include a package name and version",
+	);
 	pushUnless(
 		errors,
 		typeof packageInfo.cliCommand === "string",
 		"package.cliCommand must be a string",
+	);
+	pushUnless(
+		errors,
+		typeof installMetadata.name === "string" &&
+			expectedPackage !== null &&
+			installMetadata.name === expectedPackage.name,
+		"package.installMetadata.name must match package.spec name",
+	);
+	pushUnless(
+		errors,
+		typeof installMetadata.version === "string" &&
+			expectedPackage !== null &&
+			installMetadata.version === expectedPackage.version,
+		"package.installMetadata.version must match package.spec version",
 	);
 	pushUnless(
 		errors,
@@ -351,6 +387,6 @@ async function main() {
 	}
 }
 
-if (import.meta.url === pathToFileURL(process.argv[1]).href) {
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
 	await main();
 }

@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // @ts-check
 
-import { spawnSync } from "node:child_process";
+import { spawn } from "node:child_process";
 import { getPackageMetadata } from "./package-metadata.js";
 
 function parseArgs(argv) {
@@ -77,18 +77,33 @@ if (options.dryRun) {
 	process.exit(0);
 }
 
-const result = spawnSync(npmCommand, npmArgs, { encoding: "utf8" });
-if (result.stdout) {
-	process.stdout.write(result.stdout);
+function runNpmCommand(command, args) {
+	return new Promise((resolve, reject) => {
+		const child = spawn(command, args, {
+			stdio: ["inherit", "pipe", "pipe"],
+		});
+		let stdout = "";
+		let stderr = "";
+
+		child.stdout.on("data", (chunk) => {
+			const text = chunk.toString();
+			stdout += text;
+			process.stdout.write(text);
+		});
+		child.stderr.on("data", (chunk) => {
+			const text = chunk.toString();
+			stderr += text;
+			process.stderr.write(text);
+		});
+		child.on("error", reject);
+		child.on("close", (status) => {
+			resolve({ status: status ?? 1, stdout, stderr });
+		});
+	});
 }
-if (result.stderr) {
-	process.stderr.write(result.stderr);
-}
-if (result.error) {
-	throw result.error;
-}
+const result = await runNpmCommand(npmCommand, npmArgs);
 if (result.status !== 0) {
-	const output = `${result.stdout ?? ""}\n${result.stderr ?? ""}`;
+	const output = `${result.stdout}\n${result.stderr}`;
 	if (
 		output.includes("E404") &&
 		output.includes("could not be found or you do not have permission")
