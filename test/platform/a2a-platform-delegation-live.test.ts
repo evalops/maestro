@@ -117,10 +117,25 @@ describe("Platform A2A live delegation smoke", () => {
 				timeoutMs: 2_000,
 				maxAttempts: 1,
 			})),
-			listPeers: vi.fn(async () => [
-				peer("maestro-origin", "https://origin.test/a2a"),
-				peer("maestro-target", "https://target.test/a2a"),
-			]),
+			listPeers: vi.fn(async () => ({
+				candidates: [
+					peer("maestro-origin", "https://origin.test/a2a"),
+					peer("maestro-target", "https://target.test/a2a"),
+				],
+				discoveryEvidence: {
+					schema: "agents.v1.discovery-evidence",
+					decision: "matched",
+					organizationId: "org_1",
+					workspaceId: "ws_1",
+					a2aSkillId: "maestro.subagent.repo-explorer",
+					requireA2ADispatch: true,
+					eligibleForDelegation: true,
+					candidateCount: 2,
+					matchedCount: 2,
+					traceId: "trace-discovery-1",
+					requestId: "request-discovery-1",
+				},
+			})),
 			delegate: vi.fn(async () => ({
 				delegation: {
 					id: "delegation_1",
@@ -184,6 +199,25 @@ describe("Platform A2A live delegation smoke", () => {
 			workspaceId: "ws_1",
 			inputs: {
 				promptHash: expect.stringMatching(/^[a-f0-9]{64}$/),
+			},
+			discovery: {
+				target: {
+					sourceEvidencePresent: true,
+					query: {
+						organizationId: "org_1",
+						workspaceId: "ws_1",
+						skillId: "maestro.subagent.repo-explorer",
+						requireA2ADispatch: true,
+						eligibleForDelegation: true,
+					},
+					result: {
+						organizationId: "org_1",
+						workspaceId: "ws_1",
+						a2aSkillId: "maestro.subagent.repo-explorer",
+						matchedAgentIds: ["maestro-origin", "maestro-target"],
+						traceId: "trace-discovery-1",
+					},
+				},
 			},
 			maestro: {
 				gitSha: "1234567890abcdef1234567890abcdef12345678",
@@ -302,8 +336,14 @@ describe("Platform A2A live delegation smoke", () => {
 		const target = peer("maestro-target", "https://target.test/a2a");
 		const listPeers = vi
 			.fn()
-			.mockResolvedValueOnce([target])
-			.mockResolvedValueOnce([origin]);
+			.mockResolvedValueOnce({
+				candidates: [target],
+				discoveryEvidence: {},
+			})
+			.mockResolvedValueOnce({
+				candidates: [origin],
+				discoveryEvidence: {},
+			});
 		const dependencies: Partial<PlatformA2ALiveSmokeDependencies> = {
 			now: () => new Date("2026-05-21T20:00:00.000Z"),
 			sleep: vi.fn(async () => undefined),
@@ -353,6 +393,14 @@ describe("Platform A2A live delegation smoke", () => {
 
 		expect(result.evidence.peers.origin.agentId).toBe("maestro-origin");
 		expect(result.evidence.peers.target.agentId).toBe("maestro-target");
+		expect(result.evidence.discovery.target.sourceEvidencePresent).toBe(false);
+		expect(result.evidence.discovery.origin.sourceEvidencePresent).toBe(false);
+		expect(
+			result.evidence.discovery.target.result.organizationId,
+		).toBeUndefined();
+		expect(result.evidence.discovery.target.result.workspaceId).toBeUndefined();
+		expect(result.evidence.discovery.target.result.a2aSkillId).toBeUndefined();
+		expect(result.evidence.discovery.target.result.capability).toBeUndefined();
 		expect(listPeers).toHaveBeenNthCalledWith(
 			1,
 			expect.objectContaining({
@@ -367,6 +415,7 @@ describe("Platform A2A live delegation smoke", () => {
 			workspaceId: "ws_1",
 			limit: 100,
 			requireA2ADispatch: true,
+			eligibleForDelegation: true,
 		});
 	});
 

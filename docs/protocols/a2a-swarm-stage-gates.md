@@ -41,6 +41,7 @@ npm run platform:a2a-evidence-verify -- \
   tmp/platform-a2a-delegation-live/<run>/evidence.json \
   --require-signature \
   --require-github-dereference \
+  --require-discovery-evidence \
   --require-negative-auth-probe
 ```
 

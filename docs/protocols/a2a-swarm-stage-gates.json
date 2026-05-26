@@ -94,7 +94,7 @@
 					"proofClass": "peer-discovery",
 					"description": "Platform discovery returns both peers only when capability, workspace, organization, and A2A dispatch filters match.",
 					"authoritativeSource": "Platform Agent Registry discovery API",
-					"verification": "npm run platform:a2a-delegation-live with MAESTRO_A2A_LIVE_FROM_AGENT_ID and MAESTRO_A2A_LIVE_TO_AGENT_ID set"
+					"verification": "npm run platform:a2a-delegation-live with MAESTRO_A2A_LIVE_FROM_AGENT_ID and MAESTRO_A2A_LIVE_TO_AGENT_ID set, then npm run platform:a2a-evidence-verify -- <evidence.json> --require-discovery-evidence"
 				},
 				{
 					"id": "fresh-heartbeats",

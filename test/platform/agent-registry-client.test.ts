@@ -137,9 +137,16 @@ describe("agent registry service client", () => {
 						discoveryEvidence: {
 							schema: "agents.v1.discovery-evidence",
 							decision: "no_match",
+							organization_id: "org_1",
+							workspace_id: "ws_1",
 							requireA2aDispatch: true,
+							eligible_for_delegation: true,
 							candidateCount: 2,
 							matchedCount: 0,
+							trace_id: "trace-discovery-1",
+							span_id: "span-discovery-1",
+							request_id: "request-discovery-1",
+							observed_at: "2026-05-21T18:06:00Z",
 							exclusions: [
 								{
 									reason: "skill_policy",
@@ -175,9 +182,16 @@ describe("agent registry service client", () => {
 			discoveryEvidence: {
 				schema: "agents.v1.discovery-evidence",
 				decision: "no_match",
+				organizationId: "org_1",
+				workspaceId: "ws_1",
 				requireA2ADispatch: true,
+				eligibleForDelegation: true,
 				candidateCount: 2,
 				matchedCount: 0,
+				traceId: "trace-discovery-1",
+				spanId: "span-discovery-1",
+				requestId: "request-discovery-1",
+				observedAt: "2026-05-21T18:06:00Z",
 				exclusions: [
 					{
 						reason: "skill_policy",
@@ -280,12 +294,16 @@ describe("agent registry service client", () => {
 						discovery_evidence: {
 							schema: "agents.v1.discovery-evidence",
 							decision: "matched",
+							organization_id: "org_1",
 							workspace_id: "ws_1",
 							capability: "code:review",
 							a2a_skill_id: "maestro.subagent.code-review",
 							require_a2a_dispatch: true,
+							eligible_for_delegation: true,
 							candidate_count: 2,
 							matched_count: 1,
+							trace_id: "trace-discovery-2",
+							request_id: "request-discovery-2",
 						},
 					}),
 					{ status: 200, headers: { "Content-Type": "application/json" } },
@@ -396,12 +414,16 @@ describe("agent registry service client", () => {
 			discoveryEvidence: {
 				schema: "agents.v1.discovery-evidence",
 				decision: "matched",
+				organizationId: "org_1",
 				workspaceId: "ws_1",
 				capability: "code:review",
 				a2aSkillId: "maestro.subagent.code-review",
 				requireA2ADispatch: true,
+				eligibleForDelegation: true,
 				candidateCount: 2,
 				matchedCount: 1,
+				traceId: "trace-discovery-2",
+				requestId: "request-discovery-2",
 			},
 		});
 		expect(fetchMock).toHaveBeenCalledTimes(3);
