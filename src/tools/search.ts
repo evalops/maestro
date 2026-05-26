@@ -54,6 +54,7 @@ import { resolve as resolvePath } from "node:path";
 import { Type } from "@sinclair/typebox";
 import {
 	type RipgrepMatch,
+	formatRipgrepCommand,
 	globSchema,
 	parseRipgrepJson,
 	pathSchema,
@@ -361,6 +362,7 @@ Examples:
 			args.push(".");
 		}
 
+		const command = formatRipgrepCommand(args);
 		let result: {
 			stdout: string;
 			stderr: string;
@@ -375,8 +377,8 @@ Examples:
 					? error.message
 					: `Unknown error: ${String(error)}`;
 			return respond
-				.text(`ripgrep failed\n\n${reason}`)
-				.detail({ command: ["rg", ...args].join(" "), cwd: commandCwd });
+				.error(`ripgrep failed\n\n${reason}`)
+				.detail({ command, cwd: commandCwd });
 		}
 
 		if (result.exitCode === 2) {
@@ -385,8 +387,6 @@ Examples:
 				message.length > 0 ? message : "ripgrep exited with an error",
 			);
 		}
-
-		const command = ["rg", ...args].join(" ");
 
 		if (result.exitCode === 1 || result.stdout.trim().length === 0) {
 			// Use correct format in detail based on mode

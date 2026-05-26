@@ -24,6 +24,7 @@ import { promises as fs } from "node:fs";
 import { resolve as resolvePath } from "node:path";
 import { Type } from "@sinclair/typebox";
 import {
+	formatRipgrepCommand,
 	globSchema,
 	parseRipgrepJson,
 	pathSchema,
@@ -36,17 +37,6 @@ import { createTool, expandUserPath } from "./tool-dsl.js";
 const RANGE_DETAIL_LIMIT = 200;
 /** Default max matches per pattern (prevents runaway searches) */
 const DEFAULT_MAX_RESULTS = 500;
-
-function shellQuoteArg(value: string): string {
-	if (/^[A-Za-z0-9_/:=.,@%+-]+$/.test(value)) {
-		return value;
-	}
-	return `'${value.replace(/'/g, "'\\''")}'`;
-}
-
-function formatRipgrepCommand(args: string[]): string {
-	return ["rg", ...args].map(shellQuoteArg).join(" ");
-}
 
 const parallelRipgrepSchema = Type.Object({
 	patterns: Type.Array(Type.String({ minLength: 1 }), {

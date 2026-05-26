@@ -17,6 +17,13 @@ versioning when releases are cut.
   and keep scheduled public runs inert so public publishing stays downstream of
   the internal source-of-truth release.
 
+## [0.10.31] - 2026-05-26
+
+### Changed
+
+- Fix ripgrep search errors and MarkItDown timeout flake (#2260). <!-- maestro-release-note:c2bfc86421c4 -->
+- Extract compaction cut point helpers (#2259). <!-- maestro-release-note:752cedcc7e97 -->
+
 ## [0.10.30] - 2026-05-26
 
 ### Changed
