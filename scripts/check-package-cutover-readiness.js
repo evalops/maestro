@@ -17,6 +17,8 @@ const allowedFiles = new Set(
 		"README.md",
 		"SECURITY.md",
 		"docs/TOOLS_REFERENCE.md",
+		"docs/protocols/release-surface-conformance.json",
+		"docs/protocols/release-surface-conformance.md",
 		"docs/release-ops.md",
 		"package.json",
 		"package-lock.json",

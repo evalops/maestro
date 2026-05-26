@@ -294,6 +294,11 @@ export function validatePublishedReplayEvidence(
 		);
 		pushUnless(
 			errors,
+			mode?.session?.containsWriteToolCallId === true,
+			`${modeName}.session.containsWriteToolCallId must be true`,
+		);
+		pushUnless(
+			errors,
 			typeof mode?.session?.sha256 === "string" && mode.session.sha256.length === 64,
 			`${modeName}.session.sha256 must be a 64 character string`,
 		);

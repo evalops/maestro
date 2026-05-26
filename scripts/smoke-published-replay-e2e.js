@@ -39,6 +39,12 @@ const PUBLISHED_REPLAY_EVIDENCE_SCHEMA =
 const FINAL_TEXT =
 	"Published package golden path completed with manifest evidence.";
 const TOOL_CALL_ID = "call-read-package-json";
+const WRITE_TOOL_CALL_ID = "call-write-published-artifact";
+const ARTIFACT_PATH = "published-replay-artifact.json";
+const ARTIFACT_TEXT = JSON.stringify({
+	source: "smoke-published-replay-e2e",
+	manifest: "package.json",
+});
 const PROMPT_TEXT = "Replay the published package golden path.";
 const REQUIRED_REPLAY_MODES = ["text", "json", "rpc"];
 const PUBLISHED_REPLAY_EVIDENCE_REF_PREFIXES = [
@@ -188,6 +194,33 @@ function modeName(modeEvidence) {
 	return typeof modeEvidence?.mode === "string" ? modeEvidence.mode : "unknown";
 }
 
+function toolWorkItemsForMode(modeEvidence) {
+	const ledger = modeEvidence?.agentRuntimeLedger;
+	if (!ledger || typeof ledger !== "object") {
+		return [];
+	}
+	if (Array.isArray(ledger.toolWorkItems)) {
+		return ledger.toolWorkItems.filter(
+			(item) => item && typeof item === "object",
+		);
+	}
+	return ledger.toolWorkItem && typeof ledger.toolWorkItem === "object"
+		? [ledger.toolWorkItem]
+		: [];
+}
+
+function toolWorkItemForMode(modeEvidence, { toolName, toolCallId }) {
+	return toolWorkItemsForMode(modeEvidence).find(
+		(item) =>
+			item?.toolName === toolName &&
+			(!toolCallId ||
+				item?.toolCallId === toolCallId ||
+				filterPublishedReplayEvidenceRefs(item?.evidenceRefs).includes(
+					`tool-call:${toolCallId}`,
+				)),
+	);
+}
+
 export function filterPublishedReplayEvidenceRefs(refs) {
 	return Array.isArray(refs)
 		? refs.filter(
@@ -201,8 +234,11 @@ export function filterPublishedReplayEvidenceRefs(refs) {
 }
 
 function evidenceRefsForMode(modeEvidence) {
-	const refs = modeEvidence?.agentRuntimeLedger?.toolWorkItem?.evidenceRefs;
-	return filterPublishedReplayEvidenceRefs(refs);
+	return uniqueValues(
+		toolWorkItemsForMode(modeEvidence).flatMap((item) =>
+			filterPublishedReplayEvidenceRefs(item?.evidenceRefs),
+		),
+	);
 }
 
 function buildAgentRuntimeLedgerObservability(modes) {
@@ -332,15 +368,22 @@ function buildPublishedReplayObservability({ installMetadata, modes }) {
 			),
 		},
 		tools: {
-			names: uniqueValues(modes.map((modeEvidence) => modeEvidence?.tool?.name)),
-			callIds: uniqueValues(modes.map((modeEvidence) => modeEvidence?.tool?.callId)),
+			names: uniqueValues(
+				modes
+					.flatMap((modeEvidence) => toolWorkItemsForMode(modeEvidence))
+					.map((item) => item?.toolName),
+			),
+			callIds: uniqueValues(
+				modes
+					.flatMap((modeEvidence) => toolWorkItemsForMode(modeEvidence))
+					.map((item) => item?.toolCallId),
+			),
 			resultStatus: countBy(modes.map((modeEvidence) => modeEvidence?.tool?.resultStatus)),
 			evidenceRefs,
 			completionGates: uniqueValues(
-				modes.map(
-					(modeEvidence) =>
-						modeEvidence?.agentRuntimeLedger?.toolWorkItem?.completionGate,
-				),
+				modes
+					.flatMap((modeEvidence) => toolWorkItemsForMode(modeEvidence))
+					.map((item) => item?.completionGate),
 			),
 		},
 		approvals: {
@@ -384,12 +427,19 @@ function buildPublishedReplayReleaseGate({ observability, modes }) {
 				(modeEvidence) =>
 					modeEvidence?.session?.containsFinalText === true &&
 					modeEvidence?.session?.containsToolCallId === true &&
+					modeEvidence?.session?.containsWriteToolCallId === true &&
 					finiteNumber(modeEvidence?.session?.jsonlFileCount) > 0,
 			),
 		toolEvidence:
 			modes.length > 0 &&
 			modes.every((modeEvidence) => {
-				const refs = evidenceRefsForMode(modeEvidence);
+				const readWorkItem = toolWorkItemForMode(modeEvidence, {
+					toolName: "read",
+					toolCallId: TOOL_CALL_ID,
+				});
+				const refs = filterPublishedReplayEvidenceRefs(
+					readWorkItem?.evidenceRefs,
+				);
 				return (
 					modeEvidence?.tool?.name === "read" &&
 					modeEvidence?.tool?.callId === TOOL_CALL_ID &&
@@ -493,12 +543,12 @@ function createScenario(runDir, id) {
 				schemaVersion: SCRIPTED_SCENARIO_SCHEMA,
 				id,
 				description:
-					"Published package replay with one real read tool call and a final assistant response.",
+					"Published package replay with real read/write tool calls, approval trace evidence, artifact trace evidence, and a final assistant response.",
 				metadata: {
 					recordedFrom: "smoke-published-replay-e2e",
 					recordedAt: "2026-05-23T00:00:00.000Z",
 					modelOriginal: "maestro-replay-v1",
-					toolsExpected: ["read"],
+					toolsExpected: ["read", "write"],
 					auditEvents: ["maestro.scenario.replay.ready"],
 				},
 				frames: [
@@ -525,6 +575,27 @@ function createScenario(runDir, id) {
 						statements: [
 							{
 								kind: "text",
+								text: "I will write the release evidence artifact.",
+							},
+							{
+								kind: "tool_call",
+								id: WRITE_TOOL_CALL_ID,
+								tool: "write",
+								input: {
+									path: ARTIFACT_PATH,
+									content: ARTIFACT_TEXT,
+									previewDiff: false,
+									backup: false,
+								},
+								expectedResult: "success",
+							},
+						],
+					},
+					{
+						index: 2,
+						statements: [
+							{
+								kind: "text",
 								text: FINAL_TEXT,
 							},
 							{
@@ -541,8 +612,8 @@ function createScenario(runDir, id) {
 						tool: "read",
 					},
 					{
-						id: "write-tool-not-called",
-						kind: "tool_not_called",
+						id: "write-artifact-tool-called",
+						kind: "tool_called",
 						tool: "write",
 					},
 					{
@@ -591,6 +662,7 @@ function createRunContext(label) {
 			MAESTRO_SESSION_DIR: sessionDir,
 			ANTHROPIC_API_KEY: "test-key",
 			OPENAI_API_KEY: "test-key",
+			MAESTRO_PLAN_MODE: "1",
 		},
 	};
 }
@@ -664,8 +736,12 @@ function sessionEvidenceReport(sessionDir, label) {
 	const sessionText = sessionFiles
 		.map((path) => readFileSync(path, "utf8"))
 		.join("\n");
-	if (!sessionText.includes(FINAL_TEXT) || !sessionText.includes(TOOL_CALL_ID)) {
-		return `${label} session evidence is missing the final text or tool call id.`;
+	if (
+		!sessionText.includes(FINAL_TEXT) ||
+		!sessionText.includes(TOOL_CALL_ID) ||
+		!sessionText.includes(WRITE_TOOL_CALL_ID)
+	) {
+		return `${label} session evidence is missing the final text or tool call ids.`;
 	}
 	const sessionId = sessionIdFromEvidenceText(sessionText);
 	if (!sessionId) {
@@ -678,6 +754,7 @@ function sessionEvidenceReport(sessionDir, label) {
 		sha256: sha256(sessionText),
 		containsFinalText: true,
 		containsToolCallId: true,
+		containsWriteToolCallId: true,
 	};
 }
 
@@ -756,24 +833,64 @@ function assertAgentRuntimeLedger(binPath, context, label) {
 	) {
 		fail(`${label} AgentRuntime promotion plan is missing required operations.`);
 	}
-	const toolWorkItem = operations.find((operation) => {
+	const summarizeToolWorkItem = (operation) => {
 		const payload = operation?.payload;
+		const evidenceRefs = filterPublishedReplayEvidenceRefs(payload?.evidenceRefs);
+		const toolCallRef = evidenceRefs.find((ref) =>
+			ref.startsWith("tool-call:"),
+		);
+		return {
+			toolName: payload?.payload?.toolName,
+			toolCallId: toolCallRef?.slice("tool-call:".length),
+			evidenceRefs,
+			completionGate: payload?.completionGate,
+		};
+	};
+	const toolWorkItems = operations
+		.filter((operation) => {
+			const payload = operation?.payload;
+			return (
+				operation?.operation === "record_run_work_item" &&
+				payload?.payload?.eventType === "tool.completed"
+			);
+		})
+		.map(summarizeToolWorkItem);
+	const toolWorkItem = toolWorkItems.find((item) => {
 		return (
-			operation?.operation === "record_run_work_item" &&
-			payload?.payload?.eventType === "tool.completed" &&
-			payload?.payload?.toolName === "read"
+			item?.toolName === "read" &&
+			item?.evidenceRefs.includes(`tool-call:${TOOL_CALL_ID}`)
 		);
 	});
-	const evidenceRefs = Array.isArray(toolWorkItem?.payload?.evidenceRefs)
-		? toolWorkItem.payload.evidenceRefs
-		: [];
-	if (!evidenceRefs.includes(`tool-call:${TOOL_CALL_ID}`)) {
-		fail(`${label} AgentRuntime tool work item is missing tool-call evidence.`);
+	const artifactToolWorkItem = toolWorkItems.find((item) => {
+		return (
+			item?.toolName === "write" &&
+			item?.evidenceRefs.includes(`tool-call:${WRITE_TOOL_CALL_ID}`)
+		);
+	});
+	if (!toolWorkItem) {
+		fail(`${label} AgentRuntime tool work item is missing read evidence.`);
+	}
+	if (!artifactToolWorkItem) {
+		fail(`${label} AgentRuntime tool work item is missing write evidence.`);
 	}
 	if (
-		toolWorkItem?.payload?.completionGate !==
-		"maestro_agent_runtime_ledger_recorded"
+		!artifactToolWorkItem.evidenceRefs.some((ref) =>
+			ref.startsWith("approval-request:"),
+		)
 	) {
+		fail(`${label} AgentRuntime write work item is missing approval evidence.`);
+	}
+	if (
+		!artifactToolWorkItem.evidenceRefs.some((ref) =>
+			ref.startsWith("artifact:"),
+		)
+	) {
+		fail(`${label} AgentRuntime write work item is missing artifact evidence.`);
+	}
+	if (!toolWorkItem.evidenceRefs.includes(`tool-call:${TOOL_CALL_ID}`)) {
+		fail(`${label} AgentRuntime tool work item is missing tool-call evidence.`);
+	}
+	if (toolWorkItem.completionGate !== "maestro_agent_runtime_ledger_recorded") {
 		fail(`${label} AgentRuntime tool work item is missing the completion gate.`);
 	}
 	return {
@@ -792,10 +909,12 @@ function assertAgentRuntimeLedger(binPath, context, label) {
 		hasRecordRunWorkItem,
 		hasTerminalOperation,
 		toolWorkItem: {
-			toolName: toolWorkItem.payload.payload.toolName,
-			evidenceRefs: filterPublishedReplayEvidenceRefs(evidenceRefs),
-			completionGate: toolWorkItem.payload.completionGate,
+			toolName: toolWorkItem.toolName,
+			toolCallId: toolWorkItem.toolCallId,
+			evidenceRefs: toolWorkItem.evidenceRefs,
+			completionGate: toolWorkItem.completionGate,
 		},
+		toolWorkItems,
 		durability: {
 			reconstructable: true,
 			sessionFilePresent: durability.sessionFilePresent === true,
@@ -825,6 +944,24 @@ function assertJsonMode(messages, context, label) {
 	);
 	if (!toolResult || toolResult.data?.isError) {
 		fail(`${label} did not emit a successful read tool_result JSONL event.`);
+	}
+	const writeToolCall = messages.find(
+		(message) =>
+			message?.type === "item" &&
+			message?.subtype === "tool_call" &&
+			message?.data?.toolName === "write",
+	);
+	if (writeToolCall?.data?.args?.path !== ARTIFACT_PATH) {
+		fail(`${label} did not emit the expected write tool_call JSONL event.`);
+	}
+	const writeToolResult = messages.find(
+		(message) =>
+			message?.type === "item" &&
+			message?.subtype === "tool_result" &&
+			message?.data?.toolCallId === WRITE_TOOL_CALL_ID,
+	);
+	if (!writeToolResult || writeToolResult.data?.isError) {
+		fail(`${label} did not emit a successful write tool_result JSONL event.`);
 	}
 
 	const finalMessage = messages
@@ -871,6 +1008,12 @@ function assertJsonMode(messages, context, label) {
 			inputPath: toolCall.data.args.path,
 			resultStatus: "success",
 		},
+		artifactTool: {
+			name: "write",
+			callId: writeToolResult.data.toolCallId,
+			inputPath: writeToolCall.data.args.path,
+			resultStatus: "success",
+		},
 		final: {
 			status: "ok",
 			textSha256: sha256(finalMessage.data.text),
@@ -895,7 +1038,7 @@ function runSingleShotMode(binPath, label, mode) {
 				"--sandbox",
 				replaySandboxMode,
 				"--tools",
-				"read",
+				"read,write",
 				PROMPT_TEXT,
 			],
 			{
@@ -1023,12 +1166,36 @@ function assertRpcEvents(events, context) {
 	) {
 		fail("Published RPC replay did not emit a successful read tool result.");
 	}
+	if (
+		!events.some(
+			(event) =>
+				event?.type === "tool_execution_start" &&
+				event?.toolName === "write" &&
+				event?.args?.path === ARTIFACT_PATH,
+		)
+	) {
+		fail("Published RPC replay did not emit the expected write tool start.");
+	}
+	if (
+		!events.some(
+			(event) =>
+				event?.type === "tool_execution_end" &&
+				event?.toolName === "write" &&
+				!event?.isError,
+		)
+	) {
+		fail("Published RPC replay did not emit a successful write tool result.");
+	}
 	const agentEnd = events.findLast?.((event) => event?.type === "agent_end");
 	if (!agentEnd || agentEnd.aborted) {
 		fail("Published RPC replay did not emit a successful agent_end event.");
 	}
 	const stateText = JSON.stringify(agentEnd);
-	if (!stateText.includes(FINAL_TEXT) || !stateText.includes(TOOL_CALL_ID)) {
+	if (
+		!stateText.includes(FINAL_TEXT) ||
+		!stateText.includes(TOOL_CALL_ID) ||
+		!stateText.includes(WRITE_TOOL_CALL_ID)
+	) {
 		fail("Published RPC replay final state is missing replay evidence.");
 	}
 	return {
@@ -1047,6 +1214,12 @@ function assertRpcEvents(events, context) {
 			name: "read",
 			callId: TOOL_CALL_ID,
 			inputPath: "package.json",
+			resultStatus: "success",
+		},
+		artifactTool: {
+			name: "write",
+			callId: WRITE_TOOL_CALL_ID,
+			inputPath: ARTIFACT_PATH,
 			resultStatus: "success",
 		},
 		final: {
@@ -1074,7 +1247,7 @@ function runRpcMode(binPath) {
 				"--sandbox",
 				replaySandboxMode,
 				"--tools",
-				"read",
+				"read,write",
 			],
 			{
 				cwd: context.runDir,
