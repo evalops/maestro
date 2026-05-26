@@ -99,6 +99,17 @@ function parsePackageSpec(spec) {
 	};
 }
 
+function expectedInstallLabelFragment(installer) {
+	switch (installer) {
+		case "bun":
+			return "via Bun";
+		case "npm":
+			return "via npm";
+		default:
+			return "";
+	}
+}
+
 export function expectedPublishedReplayEvidenceFiles({
 	evidenceDir = "published-replay-evidence",
 	installers = REQUIRED_INSTALLERS,
@@ -123,13 +134,25 @@ export function readPublishedReplayEvidence(filePath) {
 	}
 }
 
-export function validatePublishedReplayEvidence(evidence, { label = "evidence" } = {}) {
+export function validatePublishedReplayEvidence(
+	evidence,
+	{ label = "evidence", expectedInstaller = "" } = {},
+) {
 	const errors = [];
 	pushUnless(
 		errors,
 		evidence?.schemaVersion === EVIDENCE_SCHEMA,
 		`schemaVersion must be ${EVIDENCE_SCHEMA}`,
 	);
+	const installer = typeof evidence?.installer === "string" ? evidence.installer : "";
+	pushUnless(errors, installer.length > 0, "installer must be a string");
+	if (expectedInstaller) {
+		pushUnless(
+			errors,
+			installer === expectedInstaller,
+			`installer must be ${expectedInstaller}`,
+		);
+	}
 
 	const packageInfo = isObject(evidence?.package) ? evidence.package : {};
 	const installMetadata = isObject(packageInfo.installMetadata)
@@ -194,6 +217,16 @@ export function validatePublishedReplayEvidence(evidence, { label = "evidence" }
 		isObject(installMetadata.dependencySections),
 		"package.installMetadata.dependencySections must be an object",
 	);
+	const installLabel =
+		typeof installMetadata.label === "string" ? installMetadata.label : "";
+	const expectedLabel = expectedInstallLabelFragment(expectedInstaller || installer);
+	if (expectedLabel) {
+		pushUnless(
+			errors,
+			installLabel.includes(expectedLabel),
+			`package.installMetadata.label must include ${expectedLabel}`,
+		);
+	}
 
 	pushUnless(
 		errors,
@@ -378,12 +411,16 @@ export function validatePublishedReplayEvidence(evidence, { label = "evidence" }
 	};
 }
 
-export function validatePublishedReplayEvidenceFile(filePath, { label = filePath } = {}) {
+export function validatePublishedReplayEvidenceFile(
+	filePath,
+	{ label = filePath, expectedInstaller = "" } = {},
+) {
 	if (!existsSync(filePath)) {
 		throw new Error(`Missing published replay evidence: ${filePath}`);
 	}
 	return validatePublishedReplayEvidence(readPublishedReplayEvidence(filePath), {
 		label,
+		expectedInstaller,
 	});
 }
 
@@ -394,14 +431,15 @@ export function validatePublishedReplayEvidenceSet({
 } = {}) {
 	const files =
 		evidenceFiles.length > 0
-			? evidenceFiles.map((filePath) => ({
-					installer: filePath,
+			? evidenceFiles.map((filePath, index) => ({
+					installer: installers[index] ?? "",
 					path: resolve(filePath),
 				}))
 			: expectedPublishedReplayEvidenceFiles({ evidenceDir, installers });
 	return files.map(({ installer, path }) =>
 		validatePublishedReplayEvidenceFile(path, {
-			label: `${installer} published replay evidence`,
+			expectedInstaller: REQUIRED_INSTALLERS.includes(installer) ? installer : "",
+			label: installer ? `${installer} published replay evidence` : path,
 		}),
 	);
 }

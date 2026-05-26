@@ -80,13 +80,15 @@ function makeReplayMode(mode: "text" | "json" | "rpc") {
 	};
 }
 
-function makeEvidence() {
+function makeEvidence(installer: "npm" | "bun" = "npm") {
+	const installLabel = installer === "bun" ? "via Bun" : "via npm";
 	return buildPublishedReplayEvidence({
 		packageSpec: `${rootPackageName}@9.9.9`,
 		cliCommand: "maestro",
 		binPath: "/tmp/project/node_modules/.bin/maestro",
+		installer,
 		installMetadata: {
-			label: `${rootPackageName}@9.9.9 via npm`,
+			label: `${rootPackageName}@9.9.9 ${installLabel}`,
 			name: rootPackageName,
 			version: "9.9.9",
 			binCommands: ["maestro"],
@@ -216,7 +218,7 @@ describe("verify-published-replay-evidence", () => {
 			for (const installer of ["npm", "bun"]) {
 				writeFileSync(
 					join(dir, `${installer}-published-replay-evidence.json`),
-					`${JSON.stringify(makeEvidence(), null, 2)}\n`,
+					`${JSON.stringify(makeEvidence(installer as "npm" | "bun"), null, 2)}\n`,
 				);
 			}
 
@@ -228,6 +230,40 @@ describe("verify-published-replay-evidence", () => {
 				"npm published replay evidence",
 				"bun published replay evidence",
 			]);
+		});
+	});
+
+	it("fails when a Bun evidence file contains npm install evidence", () => {
+		withTempDir((dir) => {
+			writeFileSync(
+				join(dir, "npm-published-replay-evidence.json"),
+				`${JSON.stringify(makeEvidence("npm"), null, 2)}\n`,
+			);
+			writeFileSync(
+				join(dir, "bun-published-replay-evidence.json"),
+				`${JSON.stringify(makeEvidence("npm"), null, 2)}\n`,
+			);
+
+			expect(() =>
+				validatePublishedReplayEvidenceSet({ evidenceDir: dir }),
+			).toThrow(/installer must be bun.*package\.installMetadata\.label/s);
+		});
+	});
+
+	it("honors installer expectations for explicit evidence files", () => {
+		withTempDir((dir) => {
+			const evidencePath = join(dir, "evidence.json");
+			writeFileSync(
+				evidencePath,
+				`${JSON.stringify(makeEvidence("npm"), null, 2)}\n`,
+			);
+
+			expect(() =>
+				validatePublishedReplayEvidenceSet({
+					evidenceFiles: [evidencePath],
+					installers: ["bun"],
+				}),
+			).toThrow(/installer must be bun.*package\.installMetadata\.label/s);
 		});
 	});
 

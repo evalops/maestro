@@ -201,6 +201,7 @@ async function main() {
 		await runPublishedReplayE2E({
 			cliCommand,
 			evidencePath: publishedReplayEvidencePath("npm"),
+			installer: "npm",
 			installMetadata,
 			installRoot: tempDir,
 			packageSpec,
@@ -242,6 +243,7 @@ async function main() {
 		await runPublishedReplayE2E({
 			cliCommand,
 			evidencePath: publishedReplayEvidencePath("bun"),
+			installer: "bun",
 			installMetadata: bunInstallMetadata,
 			installRoot: bunTempDir,
 			packageSpec,
