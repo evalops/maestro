@@ -1,0 +1,219 @@
+name: public-release-mirror
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Semver (with or without leading v) to mirror"
+        required: true
+      publish_npm:
+        description: "Publish the public npm package after tagging the public repo"
+        required: false
+        type: boolean
+        default: false
+      npm_dry_run:
+        description: "Use npm publish --dry-run for manual dispatches"
+        required: false
+        type: boolean
+        default: true
+      npm_tag:
+        description: "npm dist-tag"
+        required: false
+        default: "latest"
+      overwrite_public_tag:
+        description: "Move the public tag if it already points at a different commit"
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+  PUBLIC_REPO: evalops/maestro
+  PUBLIC_REPO_OWNER: evalops
+  PUBLIC_REPO_NAME: maestro
+
+jobs:
+  mirror-release:
+    runs-on: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.id != github.event.repository.id && 'ubuntu-latest' || (github.event_name == 'pull_request' && 'evalops-private-ci' || (vars.INTERNAL_CONFIRMATION_RUNNER || 'evalops-internal')) }}
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0
+
+      - uses: ./.github/actions/setup-bun-nx
+
+      - id: release
+        uses: ./.github/actions/release-context
+        with:
+          requested-version: ${{ github.event.inputs.version || github.ref_name }}
+
+      - name: Resolve public mirror authentication
+        id: auth
+        env:
+          PUBLIC_MIRROR_APP_ID: ${{ secrets.PUBLIC_MIRROR_APP_ID }}
+          PUBLIC_MIRROR_APP_PRIVATE_KEY: ${{ secrets.PUBLIC_MIRROR_APP_PRIVATE_KEY }}
+          PUBLIC_REPO_SYNC_TOKEN: ${{ secrets.PUBLIC_REPO_SYNC_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [[ -n "${PUBLIC_MIRROR_APP_ID:-}" && -n "${PUBLIC_MIRROR_APP_PRIVATE_KEY:-}" ]]; then
+            echo "mode=app" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if [[ -n "${PUBLIC_REPO_SYNC_TOKEN:-}" ]]; then
+            echo "mode=pat" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "::error::Configure PUBLIC_MIRROR_APP_ID/PUBLIC_MIRROR_APP_PRIVATE_KEY for the evalops/maestro GitHub App, or PUBLIC_REPO_SYNC_TOKEN as a fallback fine-grained PAT."
+          exit 1
+
+      - name: Mint public repo GitHub App token
+        id: app-token
+        if: ${{ steps.auth.outputs.mode == 'app' }}
+        uses: actions/create-github-app-token@67018539274d69449ef7c02e8e71183d1719ab42 # v2.1.4
+        with:
+          app-id: ${{ secrets.PUBLIC_MIRROR_APP_ID }}
+          private-key: ${{ secrets.PUBLIC_MIRROR_APP_PRIVATE_KEY }}
+          owner: ${{ env.PUBLIC_REPO_OWNER }}
+          repositories: ${{ env.PUBLIC_REPO_NAME }}
+
+      - name: Build production artifacts from internal source
+        run: |
+          set -euo pipefail
+          npm run clean && npm run build:all
+          npm run verify:runtime-deps
+          node scripts/create-version-json.js
+
+      - name: Clone public repository
+        env:
+          PUBLIC_MIRROR_TOKEN: ${{ steps.app-token.outputs.token || secrets.PUBLIC_REPO_SYNC_TOKEN }}
+        run: |
+          set -euo pipefail
+          git clone "https://x-access-token:${PUBLIC_MIRROR_TOKEN}@github.com/${PUBLIC_REPO}.git" public-mirror
+
+      - name: Prepare sanitized public release tree
+        run: |
+          set -euo pipefail
+          node scripts/prepare-public-release-mirror.mjs \
+            --source "$GITHUB_WORKSPACE" \
+            --target "$GITHUB_WORKSPACE/public-mirror" \
+            --package-name "${{ steps.release.outputs.canonical_package_name }}"
+
+      - name: Validate mirrored public tree
+        working-directory: public-mirror
+        run: |
+          set -euo pipefail
+          bun install --frozen-lockfile
+          npm run metadata:sync
+          npm run release:check:ci
+          npm run clean && npm run build:all
+          npm run verify:runtime-deps
+          node scripts/create-version-json.js
+          node --input-type=module <<'EOF'
+          import { readFileSync } from "node:fs";
+          const pkg = JSON.parse(readFileSync("package.json", "utf8"));
+          if (pkg.name !== "${{ steps.release.outputs.canonical_package_name }}") {
+            throw new Error(`Expected public package name ${{ steps.release.outputs.canonical_package_name }}, found ${pkg.name}`);
+          }
+          EOF
+
+      - name: Commit and tag public release
+        id: public-release
+        working-directory: public-mirror
+        env:
+          RELEASE_TAG: ${{ steps.release.outputs.release_tag }}
+          RELEASE_VERSION: ${{ steps.release.outputs.release_version }}
+          OVERWRITE_PUBLIC_TAG: ${{ github.event.inputs.overwrite_public_tag || 'false' }}
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add -A
+          if ! git diff --cached --quiet; then
+            git commit -m "chore: mirror Maestro ${RELEASE_TAG} from internal"
+            git push origin HEAD:main
+          else
+            echo "Public mirror tree already matches internal release source."
+          fi
+
+          git fetch --tags origin
+          local_head="$(git rev-parse HEAD)"
+          remote_tag_oid="$(git ls-remote origin "refs/tags/${RELEASE_TAG}" | awk '{print $1}' | head -n 1)"
+          remote_tag_commit="$(git ls-remote origin "refs/tags/${RELEASE_TAG}^{}" | awk '{print $1}' | head -n 1)"
+          if [[ -z "$remote_tag_commit" ]]; then
+            remote_tag_commit="$remote_tag_oid"
+          fi
+
+          if [[ -n "$remote_tag_commit" && "$remote_tag_commit" != "$local_head" ]]; then
+            if [[ "$OVERWRITE_PUBLIC_TAG" != "true" ]]; then
+              echo "::error::Public tag ${RELEASE_TAG} already exists at ${remote_tag_commit}; rerun with overwrite_public_tag=true if this release should move it."
+              exit 1
+            fi
+            git tag -fa "$RELEASE_TAG" -m "Maestro ${RELEASE_VERSION}"
+            git push --force-with-lease="refs/tags/${RELEASE_TAG}:${remote_tag_oid}" origin "refs/tags/${RELEASE_TAG}"
+          elif [[ -n "$remote_tag_commit" ]]; then
+            echo "Public tag ${RELEASE_TAG} already points at ${local_head}."
+          else
+            git tag -a "$RELEASE_TAG" -m "Maestro ${RELEASE_VERSION}"
+            git push origin "refs/tags/${RELEASE_TAG}"
+          fi
+
+          echo "public_sha=${local_head}" >> "$GITHUB_OUTPUT"
+
+      - name: Publish public npm package fallback
+        working-directory: public-mirror
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          NPM_TAG: ${{ github.event.inputs.npm_tag || 'latest' }}
+          PUBLISH_NPM: ${{ github.event.inputs.publish_npm == 'true' }}
+          NPM_DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.npm_dry_run == 'true' }}
+        run: |
+          set -euo pipefail
+          if [[ "$PUBLISH_NPM" != "true" ]]; then
+            echo "Skipping npm publish; the public evalops/maestro release workflow owns registry publishing."
+            exit 0
+          fi
+
+          publish_args=(--access public --tag "$NPM_TAG")
+          if [[ "$NPM_DRY_RUN" == "true" ]]; then
+            publish_args+=(--dry-run)
+          elif [[ -z "${NODE_AUTH_TOKEN:-}" ]]; then
+            echo "::error::Manual npm fallback publishing requires the NPM_TOKEN secret."
+            exit 1
+          fi
+
+          if [[ -n "${NODE_AUTH_TOKEN:-}" ]]; then
+            printf "//registry.npmjs.org/:_authToken=%s\n" "$NODE_AUTH_TOKEN" > ~/.npmrc
+          fi
+
+          echo "Running manual internal npm fallback publish. Prefer the public release workflow for normal releases."
+          npm publish "${publish_args[@]}"
+
+      - name: Verify manual npm fallback from registry
+        if: ${{ github.event.inputs.publish_npm == 'true' && !(github.event_name == 'workflow_dispatch' && github.event.inputs.npm_dry_run == 'true') }}
+        working-directory: public-mirror
+        env:
+          MAESTRO_INSTALL_AUDIT_LEVEL: critical
+          MAESTRO_PUBLISHED_REPLAY_SANDBOX_MODE: local
+          MAESTRO_REGISTRY_SMOKE_EVIDENCE_DIR: fallback-published-replay-evidence
+          MAESTRO_REGISTRY_POLL_ATTEMPTS: "120"
+          MAESTRO_REGISTRY_POLL_DELAY_MS: "5000"
+        run: node scripts/smoke-registry-install.js
+
+      - name: Upload manual fallback replay evidence
+        if: ${{ always() && hashFiles('public-mirror/fallback-published-replay-evidence/*.json') != '' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          retention-days: 14
+          name: fallback-published-replay-evidence-${{ steps.release.outputs.release_tag }}
+          path: public-mirror/fallback-published-replay-evidence/*.json
