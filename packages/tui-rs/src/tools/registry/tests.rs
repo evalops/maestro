@@ -2,6 +2,11 @@ use super::*;
 use std::path::Path;
 
 use crate::tools::details;
+use crate::tools::registry::execute::{
+    build_windows_grep_fallback_process_from_shell_config, build_windows_grep_shell_command,
+    build_windows_list_shell_command, process_succeeded_or_truncated, run_grep_with_fallback,
+    run_process_limited_stdout_lines, MAX_PROCESS_STDERR_BYTES, MAX_PROCESS_STDOUT_LINE_BYTES,
+};
 
 struct EnvGuard {
     log_bytes: Option<String>,
@@ -614,6 +619,578 @@ async fn test_executor_unknown_tool() {
 }
 
 #[tokio::test]
+async fn test_executor_grep_uses_ripgrep_without_shell_pipeline_status() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("grep.txt"), "needle from grep").unwrap();
+
+    let executor = ToolExecutor::new(dir.path().to_str().unwrap());
+    let args = serde_json::json!({
+        "pattern": "needle",
+        "path": "."
+    });
+    let result = executor.execute("grep", &args, None, "grep-rg").await;
+
+    assert!(result.success, "grep failed: {:?}", result.error);
+    assert!(result.output.contains("grep.txt"));
+    assert!(result.output.contains("needle from grep"));
+}
+
+#[tokio::test]
+async fn test_grep_falls_back_when_ripgrep_is_unavailable() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("fallback.txt"), "needle from grep fallback").unwrap();
+
+    let rg_args = vec![
+        "--no-heading".to_string(),
+        "-n".to_string(),
+        "--".to_string(),
+        "needle".to_string(),
+        ".".to_string(),
+    ];
+    let grep_args = vec![
+        "-rn".to_string(),
+        "--".to_string(),
+        "needle".to_string(),
+        ".".to_string(),
+    ];
+
+    let (result, search_tool) = run_grep_with_fallback(
+        "__maestro_missing_rg__",
+        &rg_args,
+        "grep",
+        &grep_args,
+        dir.path().to_str().unwrap(),
+        30_000,
+        MAX_GREP_LINES,
+    )
+    .await
+    .expect("grep fallback should run");
+
+    assert_eq!(search_tool, "grep");
+    assert!(process_succeeded_or_truncated(&result, &[0, 1]));
+    assert!(result.stdout.contains("fallback.txt"));
+    assert!(result.stdout.contains("needle from grep fallback"));
+}
+
+#[tokio::test]
+async fn test_executor_grep_enforces_limit_while_running_ripgrep() {
+    let dir = tempfile::tempdir().unwrap();
+    for index in 0..(MAX_GREP_LINES + 5) {
+        std::fs::write(
+            dir.path().join(format!("grep-limit-{index:03}.txt")),
+            "needle from grep limit",
+        )
+        .unwrap();
+    }
+
+    let executor = ToolExecutor::new(dir.path().to_str().unwrap());
+    let args = serde_json::json!({
+        "pattern": "needle",
+        "path": "."
+    });
+    let result = executor.execute("grep", &args, None, "grep-rg-limit").await;
+
+    assert!(result.success, "grep failed: {:?}", result.error);
+    assert_eq!(result.output.lines().count(), MAX_GREP_LINES);
+    assert_eq!(
+        result
+            .details
+            .as_ref()
+            .and_then(|details| details.get("truncated"))
+            .and_then(serde_json::Value::as_bool),
+        Some(true)
+    );
+}
+
+#[tokio::test]
+async fn test_executor_find_uses_ripgrep_without_shell_pipeline_status() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("find-me.rs"), "mod found;").unwrap();
+    std::fs::write(dir.path().join("skip.txt"), "not a rust file").unwrap();
+
+    let executor = ToolExecutor::new(dir.path().to_str().unwrap());
+    let args = serde_json::json!({
+        "pattern": "*.rs",
+        "path": ".",
+        "limit": 10
+    });
+    let result = executor.execute("find", &args, None, "find-rg").await;
+
+    assert!(result.success, "find failed: {:?}", result.error);
+    assert!(result.output.contains("find-me.rs"));
+    assert!(!result.output.contains("skip.txt"));
+}
+
+#[tokio::test]
+async fn test_executor_find_enforces_limit_while_running_ripgrep() {
+    let dir = tempfile::tempdir().unwrap();
+    for index in 0..20 {
+        std::fs::write(dir.path().join(format!("file-{index:02}.rs")), "mod found;").unwrap();
+    }
+
+    let executor = ToolExecutor::new(dir.path().to_str().unwrap());
+    let args = serde_json::json!({
+        "pattern": "*.rs",
+        "path": ".",
+        "limit": 5
+    });
+    let result = executor.execute("find", &args, None, "find-rg-limit").await;
+
+    assert!(result.success, "find failed: {:?}", result.error);
+    assert_eq!(result.output.lines().count(), 5);
+    assert_eq!(
+        result
+            .details
+            .as_ref()
+            .and_then(|details| details.get("truncated"))
+            .and_then(serde_json::Value::as_bool),
+        Some(true)
+    );
+}
+
+#[tokio::test]
+async fn test_executor_list_uses_direct_listing_without_shell_pipeline_status() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("listed.txt"), "hello").unwrap();
+
+    let executor = ToolExecutor::new(dir.path().to_str().unwrap());
+    let args = serde_json::json!({
+        "path": "."
+    });
+    let result = executor.execute("list", &args, None, "list-direct").await;
+
+    assert!(result.success, "list failed: {:?}", result.error);
+    assert!(result.output.contains("listed.txt"));
+}
+
+#[tokio::test]
+async fn test_executor_list_enforces_limit_while_running_process() {
+    let dir = tempfile::tempdir().unwrap();
+    for index in 0..(MAX_LIST_LINES + 5) {
+        std::fs::write(dir.path().join(format!("listed-{index:03}.txt")), "hello").unwrap();
+    }
+
+    let executor = ToolExecutor::new(dir.path().to_str().unwrap());
+    let args = serde_json::json!({
+        "path": ".",
+        "recursive": true
+    });
+    let result = executor
+        .execute("list", &args, None, "list-direct-limit")
+        .await;
+
+    assert!(result.success, "list failed: {:?}", result.error);
+    assert_eq!(result.output.lines().count(), MAX_LIST_LINES);
+    assert_eq!(
+        result
+            .details
+            .as_ref()
+            .and_then(|details| details.get("truncated"))
+            .and_then(serde_json::Value::as_bool),
+        Some(true)
+    );
+}
+
+#[tokio::test]
+async fn test_executor_list_handles_option_like_relative_paths() {
+    let dir = tempfile::tempdir().unwrap();
+    let dash_dir = dir.path().join("-dashdir");
+    std::fs::create_dir(&dash_dir).unwrap();
+    std::fs::write(dash_dir.join("inside.txt"), "hello").unwrap();
+
+    let executor = ToolExecutor::new(dir.path().to_str().unwrap());
+    let args = serde_json::json!({
+        "path": "-dashdir"
+    });
+    let result = executor
+        .execute("list", &args, None, "list-option-like")
+        .await;
+
+    assert!(result.success, "list failed: {:?}", result.error);
+    assert!(result.output.contains("inside.txt"));
+
+    let recursive_args = serde_json::json!({
+        "path": "-dashdir",
+        "recursive": true
+    });
+    let recursive_result = executor
+        .execute("list", &recursive_args, None, "list-option-like-recursive")
+        .await;
+
+    assert!(
+        recursive_result.success,
+        "recursive list failed: {:?}",
+        recursive_result.error
+    );
+    assert!(recursive_result.output.contains("inside.txt"));
+}
+
+#[test]
+fn test_windows_list_shell_command_uses_git_bash_and_option_separator() {
+    assert_eq!(
+        build_windows_list_shell_command("-dashdir", false),
+        "ls -la -- '-dashdir'"
+    );
+    assert_eq!(
+        build_windows_list_shell_command("/c/repo/-dashdir", true),
+        "find -- '/c/repo/-dashdir' -type f"
+    );
+    assert_eq!(
+        build_windows_list_shell_command("quote's dir", false),
+        "ls -la -- 'quote'\"'\"'s dir'"
+    );
+}
+
+#[test]
+fn test_windows_grep_shell_command_uses_git_bash_and_option_separator() {
+    assert_eq!(
+        build_windows_grep_shell_command("needle", "/c/repo/-dashdir"),
+        "grep -rn -- 'needle' '/c/repo/-dashdir'"
+    );
+    assert_eq!(
+        build_windows_grep_shell_command("quote's pattern", "quote's dir"),
+        "grep -rn -- 'quote'\"'\"'s pattern' 'quote'\"'\"'s dir'"
+    );
+}
+
+#[test]
+fn test_windows_grep_fallback_does_not_require_shell_before_ripgrep_runs() {
+    let (program, args, search_tool) = build_windows_grep_fallback_process_from_shell_config(
+        "needle",
+        "repo",
+        "/c/repo",
+        Err("Git Bash not found".to_string()),
+    );
+
+    assert_eq!(program, "grep");
+    assert_eq!(args, vec!["-rn", "--", "needle", "repo"]);
+    assert_eq!(search_tool, "grep");
+}
+
+#[test]
+fn test_windows_grep_fallback_uses_shell_when_available() {
+    let (program, args, search_tool) = build_windows_grep_fallback_process_from_shell_config(
+        "needle",
+        "repo",
+        "/c/repo",
+        Ok(("bash.exe".to_string(), vec!["-c".to_string()])),
+    );
+
+    assert_eq!(program, "bash.exe");
+    assert_eq!(args, vec!["-c", "grep -rn -- 'needle' '/c/repo'"]);
+    assert_eq!(search_tool, "grep");
+}
+
+#[tokio::test]
+#[cfg(unix)]
+async fn test_limited_process_reader_decodes_non_utf8_output_lossily() {
+    let dir = tempfile::tempdir().unwrap();
+    let args = vec![
+        "-c".to_string(),
+        "printf 'non-utf8-\\377-name.txt\\n'".to_string(),
+    ];
+    let result =
+        run_process_limited_stdout_lines("sh", &args, dir.path().to_str().unwrap(), 5_000, 10)
+            .await
+            .expect("process reader should decode stdout lossily");
+
+    assert!(result.stdout.contains("non-utf8-"));
+    assert!(result.stdout.contains('\u{fffd}'));
+    assert!(process_succeeded_or_truncated(&result, &[0]));
+}
+
+#[tokio::test]
+#[cfg(unix)]
+async fn test_limited_process_reader_stops_before_over_limit_record() {
+    let dir = tempfile::tempdir().unwrap();
+    let args = vec![
+        "-c".to_string(),
+        "printf 'kept\\n'; while :; do printf x; done".to_string(),
+    ];
+    let result =
+        run_process_limited_stdout_lines("sh", &args, dir.path().to_str().unwrap(), 1_000, 1)
+            .await
+            .expect("line cap should terminate output before the next record buffers");
+
+    assert_eq!(result.stdout, "kept");
+    assert!(process_succeeded_or_truncated(&result, &[0]));
+}
+
+#[tokio::test]
+#[cfg(unix)]
+async fn test_limited_process_reader_caps_single_line_bytes() {
+    let dir = tempfile::tempdir().unwrap();
+    let byte_count = (MAX_PROCESS_STDOUT_LINE_BYTES + 8192).to_string();
+    let args = vec!["-c".to_string(), byte_count, "/dev/zero".to_string()];
+    let result =
+        run_process_limited_stdout_lines("head", &args, dir.path().to_str().unwrap(), 5_000, 10)
+            .await
+            .expect("single-line byte cap should stop overlong output");
+
+    assert_eq!(result.stdout.len(), MAX_PROCESS_STDOUT_LINE_BYTES);
+    assert!(process_succeeded_or_truncated(&result, &[0]));
+}
+
+#[tokio::test]
+#[cfg(unix)]
+async fn test_limited_process_reader_caps_stderr_capture() {
+    let dir = tempfile::tempdir().unwrap();
+    let byte_count = (MAX_PROCESS_STDERR_BYTES + 8192).to_string();
+    let args = vec![
+        "-c".to_string(),
+        format!("head -c {byte_count} /dev/zero >&2; printf done"),
+    ];
+    let result =
+        run_process_limited_stdout_lines("sh", &args, dir.path().to_str().unwrap(), 5_000, 10)
+            .await
+            .expect("stderr byte cap should drain without unbounded buffering");
+
+    assert_eq!(result.stdout, "done");
+    assert!(
+        result.stderr.len() <= MAX_PROCESS_STDERR_BYTES + "\n[stderr truncated]".len(),
+        "stderr should be capped, got {} bytes",
+        result.stderr.len()
+    );
+    assert!(result.stderr.ends_with("[stderr truncated]"));
+    assert!(process_succeeded_or_truncated(&result, &[0]));
+}
+
+#[tokio::test]
+#[cfg(unix)]
+async fn test_limited_process_reader_reaps_timed_out_process() {
+    let dir = tempfile::tempdir().unwrap();
+    let args = vec!["-c".to_string(), "sleep 5".to_string()];
+    let started = std::time::Instant::now();
+    let error =
+        match run_process_limited_stdout_lines("sh", &args, dir.path().to_str().unwrap(), 50, 10)
+            .await
+        {
+            Ok(_) => panic!("timeout should terminate and reap the process"),
+            Err(error) => error,
+        };
+
+    assert!(error.contains("timed out after 50ms"));
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(2),
+        "timeout path should return promptly after killing the child"
+    );
+}
+
+#[tokio::test]
+async fn test_executor_diff_uses_direct_git_without_shell_pipeline_status() {
+    let dir = tempfile::tempdir().unwrap();
+    std::process::Command::new("git")
+        .args(["init"])
+        .current_dir(dir.path())
+        .output()
+        .expect("git init");
+    std::fs::write(dir.path().join("tracked.txt"), "before\n").unwrap();
+    std::process::Command::new("git")
+        .args(["add", "tracked.txt"])
+        .current_dir(dir.path())
+        .output()
+        .expect("git add");
+    std::process::Command::new("git")
+        .args([
+            "-c",
+            "user.email=test@example.com",
+            "-c",
+            "user.name=Test User",
+            "commit",
+            "-m",
+            "initial",
+        ])
+        .current_dir(dir.path())
+        .output()
+        .expect("git commit");
+    std::fs::write(dir.path().join("tracked.txt"), "after\n").unwrap();
+
+    let executor = ToolExecutor::new(dir.path().to_str().unwrap());
+    let args = serde_json::json!({
+        "target": "HEAD",
+        "path": "tracked.txt"
+    });
+    let result = executor.execute("diff", &args, None, "diff-direct").await;
+
+    assert!(result.success, "diff failed: {:?}", result.error);
+    assert!(result.output.contains("-before"));
+    assert!(result.output.contains("+after"));
+}
+
+#[tokio::test]
+async fn test_executor_diff_enforces_limit_while_running_git_diff() {
+    let dir = tempfile::tempdir().unwrap();
+    std::process::Command::new("git")
+        .args(["init"])
+        .current_dir(dir.path())
+        .output()
+        .expect("git init");
+    let before = (0..(MAX_DIFF_LINES + 50))
+        .map(|index| format!("before {index}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let after = (0..(MAX_DIFF_LINES + 50))
+        .map(|index| format!("after {index}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    std::fs::write(dir.path().join("tracked.txt"), format!("{before}\n")).unwrap();
+    std::process::Command::new("git")
+        .args(["add", "tracked.txt"])
+        .current_dir(dir.path())
+        .output()
+        .expect("git add");
+    std::process::Command::new("git")
+        .args([
+            "-c",
+            "user.email=test@example.com",
+            "-c",
+            "user.name=Test User",
+            "commit",
+            "-m",
+            "initial",
+        ])
+        .current_dir(dir.path())
+        .output()
+        .expect("git commit");
+    std::fs::write(dir.path().join("tracked.txt"), format!("{after}\n")).unwrap();
+
+    let executor = ToolExecutor::new(dir.path().to_str().unwrap());
+    let args = serde_json::json!({
+        "target": "HEAD",
+        "path": "tracked.txt"
+    });
+    let result = executor
+        .execute("diff", &args, None, "diff-direct-limit")
+        .await;
+
+    assert!(result.success, "diff failed: {:?}", result.error);
+    assert_eq!(result.output.lines().count(), MAX_DIFF_LINES);
+    assert_eq!(
+        result
+            .details
+            .as_ref()
+            .and_then(|details| details.get("truncated"))
+            .and_then(serde_json::Value::as_bool),
+        Some(true)
+    );
+}
+
+#[tokio::test]
+async fn test_executor_search_respects_cwd_argument() {
+    let executor_dir = tempfile::tempdir().unwrap();
+    let search_dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        search_dir.path().join("target.txt"),
+        "needle from search cwd",
+    )
+    .unwrap();
+
+    let executor = ToolExecutor::new(executor_dir.path().to_str().unwrap());
+    let args = serde_json::json!({
+        "pattern": "needle",
+        "paths": ".",
+        "cwd": search_dir.path().to_str().unwrap()
+    });
+    let result = executor.execute("search", &args, None, "search-cwd").await;
+
+    assert!(result.success, "search failed: {:?}", result.error);
+    assert!(result.output.contains("target.txt"));
+    assert!(result.output.contains("needle from search cwd"));
+}
+
+#[tokio::test]
+async fn test_executor_search_supports_multiple_globs() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("match.ts"), "needle in ts").unwrap();
+    std::fs::write(dir.path().join("match.js"), "needle in js").unwrap();
+    std::fs::write(dir.path().join("skip.py"), "needle in py").unwrap();
+
+    let executor = ToolExecutor::new(dir.path().to_str().unwrap());
+    let args = serde_json::json!({
+        "pattern": "needle",
+        "paths": ".",
+        "glob": ["*.ts", "*.js"]
+    });
+    let result = executor
+        .execute("search", &args, None, "search-globs")
+        .await;
+
+    assert!(result.success, "search failed: {:?}", result.error);
+    assert!(result.output.contains("match.ts"));
+    assert!(result.output.contains("match.js"));
+    assert!(!result.output.contains("skip.py"));
+}
+
+#[tokio::test]
+async fn test_executor_search_enforces_head_limit_while_running_ripgrep() {
+    let dir = tempfile::tempdir().unwrap();
+    for index in 0..20 {
+        std::fs::write(
+            dir.path().join(format!("search-limit-{index:02}.txt")),
+            "needle from search limit",
+        )
+        .unwrap();
+    }
+
+    let executor = ToolExecutor::new(dir.path().to_str().unwrap());
+    let args = serde_json::json!({
+        "pattern": "needle",
+        "paths": ".",
+        "headLimit": 5
+    });
+    let result = executor
+        .execute("search", &args, None, "search-rg-limit")
+        .await;
+
+    assert!(result.success, "search failed: {:?}", result.error);
+    assert_eq!(result.output.lines().count(), 5);
+    assert_eq!(
+        result
+            .details
+            .as_ref()
+            .and_then(|details| details.get("truncated"))
+            .and_then(serde_json::Value::as_bool),
+        Some(true)
+    );
+}
+
+#[tokio::test]
+async fn test_executor_search_max_results_does_not_globally_cap_file_output() {
+    let dir = tempfile::tempdir().unwrap();
+    for index in 0..3 {
+        std::fs::write(
+            dir.path().join(format!("search-max-results-{index}.txt")),
+            "needle one\nneedle two",
+        )
+        .unwrap();
+    }
+
+    let executor = ToolExecutor::new(dir.path().to_str().unwrap());
+    let args = serde_json::json!({
+        "pattern": "needle",
+        "paths": ".",
+        "outputMode": "files",
+        "maxResults": 1,
+        "headLimit": 10
+    });
+    let result = executor
+        .execute("search", &args, None, "search-max-results-files")
+        .await;
+
+    assert!(result.success, "search failed: {:?}", result.error);
+    assert_eq!(result.output.lines().count(), 3);
+    for index in 0..3 {
+        assert!(
+            result
+                .output
+                .contains(&format!("search-max-results-{index}.txt")),
+            "missing file {index} in output: {}",
+            result.output
+        );
+    }
+}
+
+#[tokio::test]
 async fn test_executor_edit_file() {
     let dir = tempfile::tempdir().unwrap();
     let file_path = dir.path().join("edit_test.txt");
@@ -698,14 +1275,6 @@ fn test_registry_requires_approval_edit() {
         "new_string": "bar"
     });
     assert!(registry.requires_approval("edit", &args));
-}
-
-#[test]
-fn test_shell_escape() {
-    assert_eq!(shell_escape(""), "''");
-    assert_eq!(shell_escape("simple"), "'simple'");
-    assert_eq!(shell_escape("with space"), "'with space'");
-    assert_eq!(shell_escape("a'b"), "'a'\\''b'");
 }
 
 #[test]

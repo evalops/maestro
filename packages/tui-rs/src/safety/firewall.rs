@@ -642,6 +642,12 @@ impl ActionFirewall {
                 }
             }
             "search" | "find" | "parallel_ripgrep" => {
+                if let Some(cwd) = args.get("cwd").and_then(|v| v.as_str()) {
+                    let verdict = self.check_file_read(cwd);
+                    if !verdict.is_allowed() {
+                        return verdict;
+                    }
+                }
                 if let Some(path) = args.get("path").and_then(|v| v.as_str()) {
                     let verdict = self.check_file_read(path);
                     if !verdict.is_allowed() {
@@ -1239,6 +1245,23 @@ mod tests {
         assert!(fw
             .check_tool("list", &json!({ "path": list_path }))
             .is_allowed());
+    }
+
+    #[test]
+    fn test_check_tool_search_validates_cwd() {
+        let fw = test_firewall();
+        let verdict = fw.check_tool(
+            "search",
+            &json!({
+                "pattern": "secret",
+                "paths": ".",
+                "cwd": "/etc"
+            }),
+        );
+        assert!(
+            !verdict.is_allowed(),
+            "search cwd outside the workspace must not bypass path checks"
+        );
     }
 
     #[test]

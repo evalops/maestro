@@ -35,6 +35,9 @@ pub(crate) struct A2APlatformRegistrationConfig {
     pub(crate) max_concurrent_objectives: String,
     pub(crate) surface: String,
     pub(crate) surface_type: String,
+    pub(crate) traceparent: Option<String>,
+    pub(crate) tracestate: Option<String>,
+    pub(crate) remote_runner_session_id: Option<String>,
 }
 
 pub(crate) fn maybe_spawn_a2a_platform_registration_loop(config: Arc<Config>) {
@@ -204,6 +207,13 @@ pub(crate) fn resolve_a2a_platform_registration_config(
         surface: trimmed_env("MAESTRO_A2A_PLATFORM_SURFACE").unwrap_or_else(|| "a2a".to_string()),
         surface_type: trimmed_env("MAESTRO_A2A_PLATFORM_SURFACE_TYPE")
             .unwrap_or_else(|| "SURFACE_MAESTRO".to_string()),
+        traceparent: first_trimmed_env(&["TRACEPARENT", "TRACE_PARENT", "MAESTRO_TRACEPARENT"]),
+        tracestate: first_trimmed_env(&["TRACESTATE", "TRACE_STATE", "MAESTRO_TRACESTATE"]),
+        remote_runner_session_id: first_trimmed_env(&[
+            "MAESTRO_REMOTE_RUNNER_SESSION_ID",
+            "MAESTRO_RUNNER_SESSION_ID",
+            "REMOTE_RUNNER_SESSION_ID",
+        ]),
     }))
 }
 
@@ -271,13 +281,20 @@ fn post_platform_connect_json(
         .build()
         .map_err(|error| format!("failed to build Platform client: {error}"))?;
     let url = format!("{}{}", registration.base_url, path);
-    let response = client
+    let mut request = client
         .post(&url)
         .bearer_auth(&registration.token)
         .header("Content-Type", "application/json")
         .header("Connect-Protocol-Version", "1")
         .header("X-Organization-ID", &registration.organization_id)
-        .header("X-Workspace-ID", &registration.workspace_id)
+        .header("X-Workspace-ID", &registration.workspace_id);
+    if let Some(traceparent) = registration.traceparent.as_deref() {
+        request = request.header("traceparent", traceparent);
+    }
+    if let Some(tracestate) = registration.tracestate.as_deref() {
+        request = request.header("tracestate", tracestate);
+    }
+    let response = request
         .json(body)
         .send()
         .map_err(|error| format!("POST {url} failed: {error}"))?;
@@ -425,6 +442,21 @@ fn a2a_platform_peer_projection(
         &mut attributes,
         "publishedBy",
         Some("maestro-control-plane-auto-registration"),
+    );
+    insert_string(
+        &mut attributes,
+        "traceparent",
+        registration.traceparent.as_deref(),
+    );
+    insert_string(
+        &mut attributes,
+        "tracestate",
+        registration.tracestate.as_deref(),
+    );
+    insert_string(
+        &mut attributes,
+        "remoteRunnerSessionId",
+        registration.remote_runner_session_id.as_deref(),
     );
 
     let mut projection = Map::new();

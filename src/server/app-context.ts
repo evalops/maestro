@@ -41,11 +41,18 @@ export interface HostedRunnerContext {
 		kind: "statusUpdate" | "artifactUpdate" | "task" | "message";
 		taskId?: string;
 		contextId?: string;
+		workspaceId?: string;
+		organizationId?: string;
+		tenantId?: string;
 		state?: string;
 		final?: boolean;
 		receivedAt: string;
 		runtimeEventId?: string;
 		runtimeEventType?: string;
+		traceparent?: string;
+		tracestate?: string;
+		agentId?: string;
+		actorId?: string;
 	};
 	agentRuntimeWorkerQueue?: string;
 	agentRuntimeCorrelationPath?: string;
