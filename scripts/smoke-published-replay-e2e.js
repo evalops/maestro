@@ -38,6 +38,12 @@ const FINAL_TEXT =
 const TOOL_CALL_ID = "call-read-package-json";
 const PROMPT_TEXT = "Replay the published package golden path.";
 const REQUIRED_REPLAY_MODES = ["text", "json", "rpc"];
+const PUBLISHED_REPLAY_EVIDENCE_REF_PREFIXES = [
+	"tool-call:",
+	"tool-execution:",
+	"approval-request:",
+	"artifact:",
+];
 const timeoutMs = Number.parseInt(
 	process.env.MAESTRO_PUBLISHED_REPLAY_E2E_TIMEOUT_MS ?? "45000",
 	10,
@@ -158,11 +164,21 @@ function modeName(modeEvidence) {
 	return typeof modeEvidence?.mode === "string" ? modeEvidence.mode : "unknown";
 }
 
+export function filterPublishedReplayEvidenceRefs(refs) {
+	return Array.isArray(refs)
+		? refs.filter(
+				(ref) =>
+					typeof ref === "string" &&
+					PUBLISHED_REPLAY_EVIDENCE_REF_PREFIXES.some((prefix) =>
+						ref.startsWith(prefix),
+					),
+			)
+		: [];
+}
+
 function evidenceRefsForMode(modeEvidence) {
 	const refs = modeEvidence?.agentRuntimeLedger?.toolWorkItem?.evidenceRefs;
-	return Array.isArray(refs)
-		? refs.filter((ref) => typeof ref === "string" && ref.length > 0)
-		: [];
+	return filterPublishedReplayEvidenceRefs(refs);
 }
 
 function buildAgentRuntimeLedgerObservability(modes) {
@@ -749,11 +765,7 @@ function assertAgentRuntimeLedger(binPath, context, label) {
 		hasTerminalOperation,
 		toolWorkItem: {
 			toolName: toolWorkItem.payload.payload.toolName,
-			evidenceRefs: evidenceRefs.filter((ref) =>
-				["tool-call:", "tool-execution:", "approval-request:"].some((prefix) =>
-					ref.startsWith(prefix),
-				),
-			),
+			evidenceRefs: filterPublishedReplayEvidenceRefs(evidenceRefs),
 			completionGate: toolWorkItem.payload.completionGate,
 		},
 		durability: {
