@@ -52,6 +52,16 @@ import {
 
 const logger = createLogger("web:chat-ws");
 
+const noopAutomaticMemoryExtraction = {
+	schedule: (_sessionPath?: string | null) => {},
+	flush: async () => {},
+};
+
+const noopAutomaticMemoryConsolidation = {
+	schedule: () => {},
+	flush: async () => {},
+};
+
 function getComposerTextContent(content: ComposerMessage["content"]): string {
 	if (typeof content === "string") return content;
 	if (!Array.isArray(content)) return "";
@@ -218,6 +228,7 @@ export function handleChatWebSocket(
 
 	let sseLease: symbol | null = null;
 	let cleanedUp = false;
+	let cleanupPromise: Promise<void> | null = null;
 	let requestHandled = false;
 
 	const url = new URL(
@@ -689,21 +700,25 @@ export function handleChatWebSocket(
 			const updateSessionSummary =
 				createRuntimeSessionSummaryUpdater(sessionManager);
 			const automaticMemoryConsolidation =
-				createAutomaticMemoryConsolidationCoordinator({
-					createAgent: async () =>
-						createBackgroundAgent(agent.state.model as RegisteredModel, {
-							systemPrompt: getMemoryConsolidationSystemPrompt(),
-						}),
-					getModel: () => agent.state.model,
-				});
+				typeof createBackgroundAgent === "function"
+					? createAutomaticMemoryConsolidationCoordinator({
+							createAgent: async () =>
+								createBackgroundAgent(agent.state.model as RegisteredModel, {
+									systemPrompt: getMemoryConsolidationSystemPrompt(),
+								}),
+							getModel: () => agent.state.model,
+						})
+					: noopAutomaticMemoryConsolidation;
 			const automaticMemoryExtraction =
-				createAutomaticMemoryExtractionCoordinator({
-					createAgent: async () =>
-						createBackgroundAgent(agent.state.model as RegisteredModel),
-					getModel: () => agent.state.model,
-					onProcessed: () => automaticMemoryConsolidation.schedule(),
-					sessionManager,
-				});
+				typeof createBackgroundAgent === "function"
+					? createAutomaticMemoryExtractionCoordinator({
+							createAgent: async () =>
+								createBackgroundAgent(agent.state.model as RegisteredModel),
+							getModel: () => agent.state.model,
+							onProcessed: () => automaticMemoryConsolidation.schedule(),
+							sessionManager,
+						})
+					: noopAutomaticMemoryExtraction;
 			const sessionHookService = createSessionHookService({
 				cwd: process.cwd(),
 				sessionId: sessionManager.getSessionId(),
@@ -814,17 +829,21 @@ export function handleChatWebSocket(
 			});
 
 			const cleanup = async (aborted = false) => {
-				if (cleanedUp) return;
-				cleanedUp = true;
-				unsubscribe();
-				unsubscribeMcpElicitationBridge();
-				await automaticMemoryExtraction.flush();
-				await automaticMemoryConsolidation.flush();
-				await sessionManager.flush();
-				if (aborted) {
-					wsSession.sendAborted();
-				}
-				wsSession.end();
+				if (cleanupPromise) return cleanupPromise;
+				cleanupPromise = (async () => {
+					if (cleanedUp) return;
+					cleanedUp = true;
+					unsubscribe();
+					unsubscribeMcpElicitationBridge();
+					await automaticMemoryExtraction.flush();
+					await automaticMemoryConsolidation.flush();
+					await sessionManager.flush();
+					if (aborted) {
+						wsSession.sendAborted();
+					}
+					wsSession.end();
+				})();
+				return cleanupPromise;
 			};
 
 			ws.on("close", () => {

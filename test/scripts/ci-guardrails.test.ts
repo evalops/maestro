@@ -47,6 +47,7 @@ type WorkflowStep = {
 	run?: string;
 	with?: Record<string, unknown>;
 	"timeout-minutes"?: number;
+	"working-directory"?: string;
 };
 
 type Workflow = {
@@ -370,6 +371,8 @@ describe("planCiChecks", () => {
 					"scripts/plan-nx-test-command.mjs",
 					"test/scripts/ci-guardrails.test.ts",
 					"test/scripts/deprecate-release.test.ts",
+					"test/scripts/smoke-published-replay-e2e.test.ts",
+					"test/scripts/verify-published-replay-evidence.test.ts",
 					"test/scripts/workspace-utils.test.ts",
 				],
 			}),
@@ -387,7 +390,7 @@ describe("planCiChecks", () => {
 		expect(
 			planCiChecks({
 				eventName: "pull_request",
-				changedFiles: ["test/scripts/workspace-utils.test.ts"],
+				changedFiles: ["test/scripts/smoke-published-replay-e2e.test.ts"],
 			}),
 		).toMatchObject({
 			coverage: false,
@@ -639,6 +642,10 @@ describe("ci workflow guardrails", () => {
 		expect(script).toContain("node ./scripts/run-vitest.js --run");
 		expect(script).toContain("test/scripts/deprecate-release.test.ts");
 		expect(script).toContain("test/scripts/release-impact-filter.test.ts");
+		expect(script).toContain("test/scripts/smoke-published-replay-e2e.test.ts");
+		expect(script).toContain(
+			"test/scripts/verify-published-replay-evidence.test.ts",
+		);
 		expect(script).toContain("test/scripts/workspace-utils.test.ts");
 	});
 
@@ -1505,6 +1512,53 @@ describe("ci workflow guardrails", () => {
 			"${{ steps.public-companion-app-token.outputs.token || secrets.PUBLIC_REPO_SYNC_TOKEN || secrets.PUBLIC_REPO_TOKEN }}",
 		);
 		expect(syncStep?.run).toContain("scripts/sync-public-companion-branch.mjs");
+	});
+
+	it("registry-smokes real public release mirror fallback publishes", () => {
+		const workflow = parse(
+			readFileSync(
+				new URL(
+					"../../.github/workflows/public-release-mirror.yml",
+					import.meta.url,
+				),
+				{ encoding: "utf8" },
+			),
+		) as Workflow;
+		const steps = workflow.jobs?.["mirror-release"]?.steps ?? [];
+		const stepNames = steps.map((step) => step.name ?? step.id ?? "");
+		const publishIndex = stepNames.indexOf(
+			"Publish public npm package fallback",
+		);
+		const verifyIndex = stepNames.indexOf(
+			"Verify manual npm fallback from registry",
+		);
+		const verifyStep = steps[verifyIndex];
+		const uploadStep = steps.find(
+			(step) => step.name === "Upload manual fallback replay evidence",
+		);
+
+		expect(publishIndex).toBeGreaterThanOrEqual(0);
+		expect(verifyIndex).toBeGreaterThan(publishIndex);
+		expect(verifyStep?.if).toContain(
+			"github.event.inputs.publish_npm == 'true'",
+		);
+		expect(verifyStep?.if).toContain("npm_dry_run == 'true'");
+		expect(verifyStep?.["working-directory"]).toBe("public-mirror");
+		expect(verifyStep?.run).toBe("node scripts/smoke-registry-install.js");
+		expect(verifyStep?.env).toMatchObject({
+			MAESTRO_INSTALL_AUDIT_LEVEL: "critical",
+			MAESTRO_PUBLISHED_REPLAY_SANDBOX_MODE: "local",
+			MAESTRO_REGISTRY_SMOKE_EVIDENCE_DIR: "fallback-published-replay-evidence",
+		});
+		expect(uploadStep?.uses).toBe(
+			"actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a",
+		);
+		expect(String(uploadStep?.if ?? "")).toContain(
+			"fallback-published-replay-evidence",
+		);
+		expect(uploadStep?.with?.path).toBe(
+			"public-mirror/fallback-published-replay-evidence/*.json",
+		);
 	});
 
 	it("uses token-backed release PR pushes and formats generated release metadata", () => {

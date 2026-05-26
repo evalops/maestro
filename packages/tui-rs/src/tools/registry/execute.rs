@@ -1,4 +1,3 @@
-use super::super::shell_env::resolve_shell_environment;
 use super::*;
 #[cfg(windows)]
 use crate::tools::bash::resolve_shell_config;
@@ -116,6 +115,31 @@ pub(super) fn build_windows_list_shell_command(shell_path: &str, recursive: bool
     }
 }
 
+#[cfg(any(test, windows))]
+pub(super) fn build_windows_grep_shell_command(pattern: &str, shell_path: &str) -> String {
+    format!(
+        "grep -rn -- {} {}",
+        shell_quote_arg(pattern),
+        shell_quote_arg(shell_path)
+    )
+}
+
+fn build_direct_grep_fallback_process(
+    pattern: &str,
+    display_path: &str,
+) -> (String, Vec<String>, &'static str) {
+    (
+        "grep".to_string(),
+        vec![
+            "-rn".to_string(),
+            "--".to_string(),
+            pattern.to_string(),
+            display_path.to_string(),
+        ],
+        "grep",
+    )
+}
+
 #[cfg(windows)]
 fn build_list_process(
     _display_path: &str,
@@ -150,6 +174,45 @@ fn build_list_process(
     }
 }
 
+#[cfg(windows)]
+fn build_grep_fallback_process(
+    pattern: &str,
+    display_path: &str,
+    shell_path: &str,
+) -> (String, Vec<String>, &'static str) {
+    build_windows_grep_fallback_process_from_shell_config(
+        pattern,
+        display_path,
+        shell_path,
+        resolve_shell_config(),
+    )
+}
+
+#[cfg(any(test, windows))]
+pub(super) fn build_windows_grep_fallback_process_from_shell_config(
+    pattern: &str,
+    display_path: &str,
+    shell_path: &str,
+    shell_config: Result<(String, Vec<String>), String>,
+) -> (String, Vec<String>, &'static str) {
+    match shell_config {
+        Ok((program, mut args)) => {
+            args.push(build_windows_grep_shell_command(pattern, shell_path));
+            (program, args, "grep")
+        }
+        Err(_) => build_direct_grep_fallback_process(pattern, display_path),
+    }
+}
+
+#[cfg(not(windows))]
+fn build_grep_fallback_process(
+    pattern: &str,
+    display_path: &str,
+    _shell_path: &str,
+) -> (String, Vec<String>, &'static str) {
+    build_direct_grep_fallback_process(pattern, display_path)
+}
+
 pub(super) async fn run_process_limited_stdout_lines(
     program: &str,
     args: &[String],
@@ -158,13 +221,9 @@ pub(super) async fn run_process_limited_stdout_lines(
     line_limit: usize,
 ) -> Result<ProcessRunResult, String> {
     let mut command = tokio::process::Command::new(program);
-    let env = resolve_shell_environment(Path::new(cwd), None);
     command
         .args(args)
         .current_dir(cwd)
-        .env_clear()
-        .envs(env)
-        .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .kill_on_drop(true);
@@ -430,12 +489,6 @@ impl ToolExecutor {
             .and_then(serde_json::Value::as_u64)
             .unwrap_or(MAX_GREP_LINES as u64)
             .max(1) as usize;
-        let line_limit = args
-            .get("maxResults")
-            .and_then(serde_json::Value::as_u64)
-            .map(|max_results| (max_results.max(1) as usize).min(head_limit))
-            .unwrap_or(head_limit);
-
         if let Some(max_results) = args.get("maxResults").and_then(serde_json::Value::as_u64) {
             rg_args.push("-m".to_string());
             rg_args.push(max_results.to_string());
@@ -457,7 +510,7 @@ impl ToolExecutor {
             &rg_args,
             &command_cwd,
             30_000,
-            line_limit,
+            head_limit,
         )
         .await
         {
@@ -1143,7 +1196,7 @@ impl ToolExecutor {
                 let start_time = Instant::now();
                 let pattern = args.get("pattern").and_then(|v| v.as_str()).unwrap_or("");
                 let raw_path = args.get("path").and_then(|v| v.as_str()).unwrap_or(".");
-                let (display_path, _) = match normalize_shell_path(raw_path) {
+                let (display_path, shell_path) = match normalize_shell_path(raw_path) {
                     Ok(result) => result,
                     Err(message) => {
                         return ToolResult::failure(message);
@@ -1164,16 +1217,12 @@ impl ToolExecutor {
                     pattern.to_string(),
                     display_path.clone(),
                 ];
-                let grep_args = vec![
-                    "-rn".to_string(),
-                    "--".to_string(),
-                    pattern.to_string(),
-                    display_path.clone(),
-                ];
+                let (grep_program, grep_args, grep_search_tool) =
+                    build_grep_fallback_process(pattern, &display_path, &shell_path);
                 let (result, search_tool) = match run_grep_with_fallback(
                     "rg",
                     &rg_args,
-                    "grep",
+                    &grep_program,
                     &grep_args,
                     &self.cwd,
                     30_000,
@@ -1214,7 +1263,11 @@ impl ToolExecutor {
                     .with_matches(matches_count)
                     .with_files_matched(files_matched)
                     .with_duration(duration_ms)
-                    .with_search_tool(search_tool);
+                    .with_search_tool(if search_tool == "grep" {
+                        grep_search_tool
+                    } else {
+                        search_tool
+                    });
 
                 let details = if truncated {
                     details.with_truncation()

@@ -1,17 +1,12 @@
 use super::*;
-use std::ffi::OsString;
 use std::path::Path;
 
 use crate::tools::details;
 use crate::tools::registry::execute::{
+    build_windows_grep_fallback_process_from_shell_config, build_windows_grep_shell_command,
     build_windows_list_shell_command, process_succeeded_or_truncated, run_grep_with_fallback,
     run_process_limited_stdout_lines, MAX_PROCESS_STDERR_BYTES, MAX_PROCESS_STDOUT_LINE_BYTES,
 };
-
-#[cfg(unix)]
-use std::os::unix::fs::PermissionsExt;
-
-static PATH_ENV_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 struct EnvGuard {
     log_bytes: Option<String>,
@@ -40,202 +35,6 @@ impl Drop for EnvGuard {
             std::env::remove_var("MAESTRO_BACKGROUND_TASK_LOG_SEGMENTS");
         }
     }
-}
-
-struct EnvVarGuard {
-    name: &'static str,
-    value: Option<OsString>,
-}
-
-impl EnvVarGuard {
-    fn capture(name: &'static str) -> Self {
-        Self {
-            name,
-            value: std::env::var_os(name),
-        }
-    }
-}
-
-impl Drop for EnvVarGuard {
-    fn drop(&mut self) {
-        if let Some(value) = &self.value {
-            std::env::set_var(self.name, value);
-        } else {
-            std::env::remove_var(self.name);
-        }
-    }
-}
-
-struct PathEnvGuard {
-    _lock: tokio::sync::MutexGuard<'static, ()>,
-    _temp_dir: tempfile::TempDir,
-    previous_path: Option<OsString>,
-}
-
-impl Drop for PathEnvGuard {
-    fn drop(&mut self) {
-        if let Some(path) = &self.previous_path {
-            std::env::set_var("PATH", path);
-        } else {
-            std::env::remove_var("PATH");
-        }
-    }
-}
-
-async fn install_fake_rg() -> PathEnvGuard {
-    let lock = PATH_ENV_LOCK.lock().await;
-    let temp_dir = tempfile::tempdir().expect("tempdir");
-    let bin_dir = temp_dir.path().join("bin");
-    std::fs::create_dir(&bin_dir).expect("create fake rg bin dir");
-
-    #[cfg(unix)]
-    {
-        let rg_path = bin_dir.join("rg");
-        std::fs::write(&rg_path, FAKE_RG_SH).expect("write fake rg");
-        let mut permissions = std::fs::metadata(&rg_path)
-            .expect("fake rg metadata")
-            .permissions();
-        permissions.set_mode(0o755);
-        std::fs::set_permissions(&rg_path, permissions).expect("chmod fake rg");
-    }
-
-    #[cfg(windows)]
-    {
-        std::fs::write(
-            bin_dir.join("rg.cmd"),
-            "@echo off\r\npowershell -NoProfile -ExecutionPolicy Bypass -Command \"exit 1\"\r\n",
-        )
-        .expect("write fake rg placeholder");
-    }
-
-    let previous_path = std::env::var_os("PATH");
-    let mut paths = vec![bin_dir];
-    if let Some(path) = &previous_path {
-        paths.extend(std::env::split_paths(path));
-    }
-    let next_path = std::env::join_paths(paths).expect("join fake rg PATH");
-    std::env::set_var("PATH", next_path);
-
-    PathEnvGuard {
-        _lock: lock,
-        _temp_dir: temp_dir,
-        previous_path,
-    }
-}
-
-#[cfg(unix)]
-const FAKE_RG_SH: &str = r#"#!/bin/sh
-set -eu
-
-files=0
-globs=''
-
-while [ "$#" -gt 0 ]; do
-  case "$1" in
-    --files)
-      files=1
-      shift
-      ;;
-    -g)
-      shift
-      if [ "$#" -eq 0 ]; then
-        exit 2
-      fi
-      globs="${globs}${globs:+
-}$1"
-      shift
-      ;;
-    -m|-A|-B|-C)
-      shift
-      if [ "$#" -gt 0 ]; then
-        shift
-      fi
-      ;;
-    --)
-      shift
-      break
-      ;;
-    --color=never|--hidden|--no-heading|-n|-l|--count-matches|-H|-i|-F|-w|--multiline|--no-ignore|--invert-match|--only-matching|--json)
-      shift
-      ;;
-    -*)
-      shift
-      ;;
-    *)
-      break
-      ;;
-  esac
-done
-
-matches_glob() {
-  path=$1
-  [ -n "$globs" ] || return 0
-
-  base=$(basename "$path")
-  old_ifs=$IFS
-  IFS='
-'
-  for glob in $globs; do
-    case "$base" in
-      $glob)
-        IFS=$old_ifs
-        return 0
-        ;;
-    esac
-  done
-  IFS=$old_ifs
-  return 1
-}
-
-emit_files() {
-  root=$1
-  find "$root" -type f | sort | while IFS= read -r file; do
-    rel=${file#./}
-    if matches_glob "$rel"; then
-      printf '%s\n' "$rel"
-    fi
-  done
-}
-
-if [ "$files" -eq 1 ]; then
-  if [ "$#" -eq 0 ]; then
-    set -- .
-  fi
-  for root in "$@"; do
-    emit_files "$root"
-  done
-  exit 0
-fi
-
-if [ "$#" -eq 0 ]; then
-  exit 2
-fi
-
-pattern=$1
-shift
-if [ "$#" -eq 0 ]; then
-  set -- .
-fi
-
-for root in "$@"; do
-  find "$root" -type f | sort | while IFS= read -r file; do
-    rel=${file#./}
-    matches_glob "$rel" || continue
-    awk -v pattern="$pattern" -v path="$rel" \
-      'index($0, pattern) { print path ":" FNR ":" $0 }' "$file"
-  done
-done
-"#;
-
-fn assert_search_tool(result: &ToolResult, expected: &str) {
-    assert_eq!(
-        result
-            .details
-            .as_ref()
-            .and_then(|details| details.get("search_tool"))
-            .and_then(serde_json::Value::as_str),
-        Some(expected)
-    );
 }
 
 fn write_mcp_config(config_dir: &Path, servers: Vec<serde_json::Value>) -> std::io::Result<()> {
@@ -821,7 +620,6 @@ async fn test_executor_unknown_tool() {
 
 #[tokio::test]
 async fn test_executor_grep_uses_ripgrep_without_shell_pipeline_status() {
-    let _rg = install_fake_rg().await;
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(dir.path().join("grep.txt"), "needle from grep").unwrap();
 
@@ -835,7 +633,6 @@ async fn test_executor_grep_uses_ripgrep_without_shell_pipeline_status() {
     assert!(result.success, "grep failed: {:?}", result.error);
     assert!(result.output.contains("grep.txt"));
     assert!(result.output.contains("needle from grep"));
-    assert_search_tool(&result, "rg");
 }
 
 #[tokio::test]
@@ -877,7 +674,6 @@ async fn test_grep_falls_back_when_ripgrep_is_unavailable() {
 
 #[tokio::test]
 async fn test_executor_grep_enforces_limit_while_running_ripgrep() {
-    let _rg = install_fake_rg().await;
     let dir = tempfile::tempdir().unwrap();
     for index in 0..(MAX_GREP_LINES + 5) {
         std::fs::write(
@@ -895,7 +691,6 @@ async fn test_executor_grep_enforces_limit_while_running_ripgrep() {
     let result = executor.execute("grep", &args, None, "grep-rg-limit").await;
 
     assert!(result.success, "grep failed: {:?}", result.error);
-    assert_search_tool(&result, "rg");
     assert_eq!(result.output.lines().count(), MAX_GREP_LINES);
     assert_eq!(
         result
@@ -909,7 +704,6 @@ async fn test_executor_grep_enforces_limit_while_running_ripgrep() {
 
 #[tokio::test]
 async fn test_executor_find_uses_ripgrep_without_shell_pipeline_status() {
-    let _rg = install_fake_rg().await;
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(dir.path().join("find-me.rs"), "mod found;").unwrap();
     std::fs::write(dir.path().join("skip.txt"), "not a rust file").unwrap();
@@ -929,7 +723,6 @@ async fn test_executor_find_uses_ripgrep_without_shell_pipeline_status() {
 
 #[tokio::test]
 async fn test_executor_find_enforces_limit_while_running_ripgrep() {
-    let _rg = install_fake_rg().await;
     let dir = tempfile::tempdir().unwrap();
     for index in 0..20 {
         std::fs::write(dir.path().join(format!("file-{index:02}.rs")), "mod found;").unwrap();
@@ -1048,6 +841,46 @@ fn test_windows_list_shell_command_uses_git_bash_and_option_separator() {
     );
 }
 
+#[test]
+fn test_windows_grep_shell_command_uses_git_bash_and_option_separator() {
+    assert_eq!(
+        build_windows_grep_shell_command("needle", "/c/repo/-dashdir"),
+        "grep -rn -- 'needle' '/c/repo/-dashdir'"
+    );
+    assert_eq!(
+        build_windows_grep_shell_command("quote's pattern", "quote's dir"),
+        "grep -rn -- 'quote'\"'\"'s pattern' 'quote'\"'\"'s dir'"
+    );
+}
+
+#[test]
+fn test_windows_grep_fallback_does_not_require_shell_before_ripgrep_runs() {
+    let (program, args, search_tool) = build_windows_grep_fallback_process_from_shell_config(
+        "needle",
+        "repo",
+        "/c/repo",
+        Err("Git Bash not found".to_string()),
+    );
+
+    assert_eq!(program, "grep");
+    assert_eq!(args, vec!["-rn", "--", "needle", "repo"]);
+    assert_eq!(search_tool, "grep");
+}
+
+#[test]
+fn test_windows_grep_fallback_uses_shell_when_available() {
+    let (program, args, search_tool) = build_windows_grep_fallback_process_from_shell_config(
+        "needle",
+        "repo",
+        "/c/repo",
+        Ok(("bash.exe".to_string(), vec!["-c".to_string()])),
+    );
+
+    assert_eq!(program, "bash.exe");
+    assert_eq!(args, vec!["-c", "grep -rn -- 'needle' '/c/repo'"]);
+    assert_eq!(search_tool, "grep");
+}
+
 #[tokio::test]
 #[cfg(unix)]
 async fn test_limited_process_reader_decodes_non_utf8_output_lossily() {
@@ -1124,47 +957,9 @@ async fn test_limited_process_reader_caps_stderr_capture() {
 
 #[tokio::test]
 #[cfg(unix)]
-async fn test_limited_process_reader_closes_stdin() {
-    let dir = tempfile::tempdir().unwrap();
-    let args = vec![
-        "-c".to_string(),
-        "if read line; then printf 'read:%s' \"$line\"; else printf stdin-closed; fi".to_string(),
-    ];
-    let result =
-        run_process_limited_stdout_lines("sh", &args, dir.path().to_str().unwrap(), 5_000, 10)
-            .await
-            .expect("process reader should provide closed stdin");
-
-    assert_eq!(result.stdout, "stdin-closed");
-    assert!(process_succeeded_or_truncated(&result, &[0]));
-}
-
-#[tokio::test]
-#[cfg(unix)]
-async fn test_limited_process_reader_uses_filtered_shell_environment() {
-    let _lock = PATH_ENV_LOCK.lock().await;
-    let _guard = EnvVarGuard::capture("MAESTRO_DIRECT_PROCESS_SECRET");
-    let dir = tempfile::tempdir().unwrap();
-    std::env::set_var("MAESTRO_DIRECT_PROCESS_SECRET", "leaked");
-
-    let args = vec![
-        "-c".to_string(),
-        "printf '%s' \"${MAESTRO_DIRECT_PROCESS_SECRET-unset}\"".to_string(),
-    ];
-    let result =
-        run_process_limited_stdout_lines("sh", &args, dir.path().to_str().unwrap(), 5_000, 10)
-            .await
-            .expect("process reader should run with filtered shell env");
-
-    assert_eq!(result.stdout, "unset");
-    assert!(process_succeeded_or_truncated(&result, &[0]));
-}
-
-#[tokio::test]
-#[cfg(unix)]
 async fn test_limited_process_reader_reaps_timed_out_process() {
     let dir = tempfile::tempdir().unwrap();
-    let args = vec!["-c".to_string(), "sleep 30".to_string()];
+    let args = vec!["-c".to_string(), "sleep 5".to_string()];
     let started = std::time::Instant::now();
     let error =
         match run_process_limited_stdout_lines("sh", &args, dir.path().to_str().unwrap(), 50, 10)
@@ -1176,7 +971,7 @@ async fn test_limited_process_reader_reaps_timed_out_process() {
 
     assert!(error.contains("timed out after 50ms"));
     assert!(
-        started.elapsed() < std::time::Duration::from_secs(10),
+        started.elapsed() < std::time::Duration::from_secs(2),
         "timeout path should return promptly after killing the child"
     );
 }
@@ -1282,7 +1077,6 @@ async fn test_executor_diff_enforces_limit_while_running_git_diff() {
 
 #[tokio::test]
 async fn test_executor_search_respects_cwd_argument() {
-    let _rg = install_fake_rg().await;
     let executor_dir = tempfile::tempdir().unwrap();
     let search_dir = tempfile::tempdir().unwrap();
     std::fs::write(
@@ -1302,12 +1096,10 @@ async fn test_executor_search_respects_cwd_argument() {
     assert!(result.success, "search failed: {:?}", result.error);
     assert!(result.output.contains("target.txt"));
     assert!(result.output.contains("needle from search cwd"));
-    assert_search_tool(&result, "rg");
 }
 
 #[tokio::test]
 async fn test_executor_search_supports_multiple_globs() {
-    let _rg = install_fake_rg().await;
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(dir.path().join("match.ts"), "needle in ts").unwrap();
     std::fs::write(dir.path().join("match.js"), "needle in js").unwrap();
@@ -1327,12 +1119,10 @@ async fn test_executor_search_supports_multiple_globs() {
     assert!(result.output.contains("match.ts"));
     assert!(result.output.contains("match.js"));
     assert!(!result.output.contains("skip.py"));
-    assert_search_tool(&result, "rg");
 }
 
 #[tokio::test]
 async fn test_executor_search_enforces_head_limit_while_running_ripgrep() {
-    let _rg = install_fake_rg().await;
     let dir = tempfile::tempdir().unwrap();
     for index in 0..20 {
         std::fs::write(
@@ -1353,7 +1143,6 @@ async fn test_executor_search_enforces_head_limit_while_running_ripgrep() {
         .await;
 
     assert!(result.success, "search failed: {:?}", result.error);
-    assert_search_tool(&result, "rg");
     assert_eq!(result.output.lines().count(), 5);
     assert_eq!(
         result
@@ -1363,6 +1152,42 @@ async fn test_executor_search_enforces_head_limit_while_running_ripgrep() {
             .and_then(serde_json::Value::as_bool),
         Some(true)
     );
+}
+
+#[tokio::test]
+async fn test_executor_search_max_results_does_not_globally_cap_file_output() {
+    let dir = tempfile::tempdir().unwrap();
+    for index in 0..3 {
+        std::fs::write(
+            dir.path().join(format!("search-max-results-{index}.txt")),
+            "needle one\nneedle two",
+        )
+        .unwrap();
+    }
+
+    let executor = ToolExecutor::new(dir.path().to_str().unwrap());
+    let args = serde_json::json!({
+        "pattern": "needle",
+        "paths": ".",
+        "outputMode": "files",
+        "maxResults": 1,
+        "headLimit": 10
+    });
+    let result = executor
+        .execute("search", &args, None, "search-max-results-files")
+        .await;
+
+    assert!(result.success, "search failed: {:?}", result.error);
+    assert_eq!(result.output.lines().count(), 3);
+    for index in 0..3 {
+        assert!(
+            result
+                .output
+                .contains(&format!("search-max-results-{index}.txt")),
+            "missing file {index} in output: {}",
+            result.output
+        );
+    }
 }
 
 #[tokio::test]

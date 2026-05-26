@@ -254,6 +254,13 @@ local development can opt into insecure/private callback URLs with
 delivery, and `MAESTRO_A2A_PUSH_DISABLE_DELIVERY=1` leaves configs stored without
 dispatching callbacks.
 
+Hosted Platform callbacks should include the same low-cardinality join context
+used during registration: `traceparent`, `tracestate`, `X-Organization-ID`,
+`X-Workspace-ID`, `X-EvalOps-Agent-ID`, and `X-EvalOps-Actor-ID`. Maestro records
+those headers, plus equivalent A2A payload metadata fields, in the hosted runner
+identity `last_platform_a2a_push` projection so operator health checks can join
+callback delivery back to the Platform task, trace, tenant, agent, and actor.
+
 ## EvalOps Suite Integration
 
 The current suite split is deliberate:

@@ -398,7 +398,13 @@ impl ToolRegistry {
                                     {"type": "array", "items": {"type": "string"}}
                                 ]
                             },
-                            "glob": {"type": "string", "description": "Glob filter"},
+                            "glob": {
+                                "anyOf": [
+                                    {"type": "string"},
+                                    {"type": "array", "items": {"type": "string"}}
+                                ],
+                                "description": "Glob filter or filters"
+                            },
                             "ignoreCase": {"type": "boolean", "description": "Case-insensitive search"},
                             "literal": {"type": "boolean", "description": "Treat pattern as literal"},
                             "word": {"type": "boolean", "description": "Match whole words only"},
@@ -440,7 +446,12 @@ impl ToolRegistry {
                                 {"type": "array", "items": {"type": "string"}}
                             ]
                         },
-                        "glob": {"type": "string"},
+                        "glob": {
+                            "anyOf": [
+                                {"type": "string"},
+                                {"type": "array", "items": {"type": "string"}}
+                            ]
+                        },
                         "ignoreCase": {"type": "boolean"},
                         "literal": {"type": "boolean"},
                         "word": {"type": "boolean"},
