@@ -959,6 +959,13 @@ describe("ci workflow guardrails", () => {
 			"const bunInstallMetadata = assertInstalledMetadata(",
 		);
 		expect(script).toContain("installMetadata: bunInstallMetadata");
+		expect(script).toContain("validatePublishedReplayEvidenceSet");
+		expect(script).toContain(
+			'validatePublishedReplayEvidenceOutputs(["npm"]);',
+		);
+		expect(script).toContain(
+			'validatePublishedReplayEvidenceOutputs(["npm", "bun"]);',
+		);
 	});
 
 	it("blocks tag-release when the package version tag points at another commit", () => {
