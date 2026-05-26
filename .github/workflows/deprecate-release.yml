@@ -1,0 +1,125 @@
+name: deprecate-release
+
+on:
+  workflow_dispatch:
+    inputs:
+      package_name:
+        description: Package name to deprecate. Defaults to package.json name.
+        required: false
+        default: ""
+        type: string
+      range:
+        description: Version or npm range to deprecate.
+        required: true
+        default: "0.10.20"
+        type: string
+      message:
+        description: Deprecation message.
+        required: false
+        default: "Broken release: install @evalops/maestro@0.10.26 or newer."
+        type: string
+      dry_run:
+        description: Print the npm deprecate command without changing npm.
+        required: true
+        default: true
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.inputs.package_name || 'default-package' }}-${{ github.event.inputs.range || github.ref }}
+  cancel-in-progress: false
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+jobs:
+  preflight:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      package_name: ${{ steps.defaults.outputs.package_name }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+
+      - id: defaults
+        run: echo "package_name=$(node -p 'require(\"./package.json\").name')" >> "$GITHUB_OUTPUT"
+
+      - name: Validate deprecation target
+        env:
+          PACKAGE_NAME: ${{ github.event.inputs.package_name || steps.defaults.outputs.package_name }}
+          RANGE: ${{ github.event.inputs.range }}
+          MESSAGE: ${{ github.event.inputs.message }}
+        run: |
+          set -euo pipefail
+
+          args=(--range "$RANGE" --package "$PACKAGE_NAME")
+          if [[ -n "$MESSAGE" ]]; then
+            args+=(--message "$MESSAGE")
+          fi
+
+          node scripts/deprecate-release.js "${args[@]}" --dry-run
+          npm view "${PACKAGE_NAME}@${RANGE}" version --json >/dev/null
+
+          current_deprecation="$(npm view "${PACKAGE_NAME}@${RANGE}" deprecated --json 2>/dev/null || true)"
+          if [[ -n "$current_deprecation" && "$current_deprecation" != "null" && "$current_deprecation" != '""' ]]; then
+            echo "::notice::${PACKAGE_NAME}@${RANGE} is already deprecated: ${current_deprecation}"
+          fi
+
+  deprecate:
+    if: ${{ github.event.inputs.dry_run == 'false' }}
+    needs: preflight
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: npm-release
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+
+      - name: Deprecate package release
+        env:
+          PACKAGE_NAME: ${{ github.event.inputs.package_name || needs.preflight.outputs.package_name }}
+          RANGE: ${{ github.event.inputs.range }}
+          MESSAGE: ${{ github.event.inputs.message }}
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          if [[ -z "${NODE_AUTH_TOKEN:-}" ]]; then
+            echo "::error::NPM_TOKEN is required in the npm-release environment to deprecate npm releases."
+            exit 1
+          fi
+
+          printf "//registry.npmjs.org/:_authToken=%s\n" "$NODE_AUTH_TOKEN" > ~/.npmrc
+
+          args=(--range "$RANGE" --package "$PACKAGE_NAME")
+          if [[ -n "$MESSAGE" ]]; then
+            args+=(--message "$MESSAGE")
+          fi
+
+          node scripts/deprecate-release.js "${args[@]}"
+
+          for attempt in 1 2 3 4 5 6; do
+            current_deprecation="$(npm view "${PACKAGE_NAME}@${RANGE}" deprecated --json 2>/dev/null || true)"
+            if [[ -n "$current_deprecation" && "$current_deprecation" != "null" && "$current_deprecation" != '""' ]]; then
+              echo "Verified deprecation for ${PACKAGE_NAME}@${RANGE}: ${current_deprecation}"
+              exit 0
+            fi
+
+            if [[ "$attempt" -lt 6 ]]; then
+              sleep 10
+            fi
+          done
+
+          echo "::error::npm did not report a deprecation for ${PACKAGE_NAME}@${RANGE} after the update."
+          exit 1
