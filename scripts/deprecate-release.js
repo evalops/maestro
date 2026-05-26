@@ -79,18 +79,20 @@ if (options.dryRun) {
 
 function runNpmCommand(command, args) {
 	return new Promise((resolve, reject) => {
+		const interactiveStdio =
+			process.stdin.isTTY && process.stdout.isTTY && process.stderr.isTTY;
 		const child = spawn(command, args, {
-			stdio: ["inherit", "pipe", "pipe"],
+			stdio: interactiveStdio ? "inherit" : ["inherit", "pipe", "pipe"],
 		});
 		let stdout = "";
 		let stderr = "";
 
-		child.stdout.on("data", (chunk) => {
+		child.stdout?.on("data", (chunk) => {
 			const text = chunk.toString();
 			stdout += text;
 			process.stdout.write(text);
 		});
-		child.stderr.on("data", (chunk) => {
+		child.stderr?.on("data", (chunk) => {
 			const text = chunk.toString();
 			stderr += text;
 			process.stderr.write(text);
