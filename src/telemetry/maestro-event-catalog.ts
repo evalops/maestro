@@ -108,6 +108,7 @@ export const MAESTRO_BUS_EVENT_CATALOG = {
 		[
 			"fermata.maestro-session-replay-context",
 			"meter.maestro-session-lifecycle",
+			"release.maestro-session-final-state",
 		],
 	),
 	[MaestroBusEventType.InstallCheckCompleted]: entry(
@@ -120,7 +121,7 @@ export const MAESTRO_BUS_EVENT_CATALOG = {
 		MaestroBusEventType.ApprovalHit,
 		"approval",
 		"ApprovalHit",
-		["governance.maestro-approval-hit"],
+		["governance.maestro-approval-hit", "release.maestro-approval-gates"],
 	),
 	[MaestroBusEventType.SandboxViolation]: entry(
 		MaestroBusEventType.SandboxViolation,
@@ -144,7 +145,11 @@ export const MAESTRO_BUS_EVENT_CATALOG = {
 		MaestroBusEventType.ToolCallCompleted,
 		"tool",
 		"ToolCallResult",
-		["meter.maestro-tool-call-events", "skills.maestro-tool-call-completed"],
+		[
+			"meter.maestro-tool-call-events",
+			"release.maestro-tool-success-gates",
+			"skills.maestro-tool-call-completed",
+		],
 	),
 	[MaestroBusEventType.ToolCallFailed]: entry(
 		MaestroBusEventType.ToolCallFailed,
@@ -160,19 +165,31 @@ export const MAESTRO_BUS_EVENT_CATALOG = {
 		MaestroBusEventType.ErrorCaptured,
 		"error",
 		"MaestroError",
-		["audit.maestro-errors", "meter.maestro-errors"],
+		[
+			"audit.maestro-errors",
+			"meter.maestro-errors",
+			"release.maestro-error-gates",
+		],
 	),
 	[MaestroBusEventType.ArtifactCreated]: entry(
 		MaestroBusEventType.ArtifactCreated,
 		"artifact",
 		"MaestroArtifact",
-		["fermata.maestro-artifacts", "meter.maestro-artifacts"],
+		[
+			"fermata.maestro-artifacts",
+			"meter.maestro-artifacts",
+			"release.maestro-artifact-gates",
+		],
 	),
 	[MaestroBusEventType.FinalStatusReported]: entry(
 		MaestroBusEventType.FinalStatusReported,
 		"final-status",
 		"MaestroFinalStatus",
-		["fermata.maestro-final-status", "meter.maestro-final-status"],
+		[
+			"fermata.maestro-final-status",
+			"meter.maestro-final-status",
+			"release.maestro-final-status-gates",
+		],
 	),
 	[MaestroBusEventType.PromptVariantSelected]: entry(
 		MaestroBusEventType.PromptVariantSelected,
@@ -289,6 +306,17 @@ export const MAESTRO_RELEASE_GATE_EVENT_CATEGORIES = [
 export type MaestroReleaseGateEventCategory =
 	(typeof MAESTRO_RELEASE_GATE_EVENT_CATEGORIES)[number];
 
+export interface MaestroReleaseGateEventQuery {
+	categories: readonly MaestroReleaseGateEventCategory[];
+	dataSchemas: readonly string[];
+	platformConsumers: readonly string[];
+	protoAnyTypes: readonly string[];
+	subjects: readonly MaestroBusEventType[];
+	subjectsByCategory: Readonly<
+		Record<MaestroReleaseGateEventCategory, readonly MaestroBusEventType[]>
+	>;
+}
+
 export function isMaestroBusEventType(
 	value: string,
 ): value is MaestroBusEventType {
@@ -313,6 +341,21 @@ export function listMaestroBusEventCatalogByCategory(
 	);
 }
 
+export function listMaestroReleaseGateEventCatalog(
+	catalog: readonly MaestroBusEventCatalogEntry[] = listMaestroBusEventCatalog(),
+): readonly MaestroBusEventCatalogEntry[] {
+	const releaseGateCategories = new Set<MaestroBusEventCategory>(
+		MAESTRO_RELEASE_GATE_EVENT_CATEGORIES,
+	);
+	return catalog.filter(
+		(entry) =>
+			releaseGateCategories.has(entry.category) &&
+			entry.platformConsumers.some((consumer) =>
+				consumer.startsWith("release."),
+			),
+	);
+}
+
 export function getMissingMaestroReleaseGateEventCategories(
 	catalog: readonly MaestroBusEventCatalogEntry[] = listMaestroBusEventCatalog(),
 ): readonly MaestroReleaseGateEventCategory[] {
@@ -320,4 +363,51 @@ export function getMissingMaestroReleaseGateEventCategories(
 	return MAESTRO_RELEASE_GATE_EVENT_CATEGORIES.filter(
 		(category) => !coveredCategories.has(category),
 	);
+}
+
+export function getMissingMaestroReleaseGateConsumerCategories(
+	catalog: readonly MaestroBusEventCatalogEntry[] = listMaestroBusEventCatalog(),
+): readonly MaestroReleaseGateEventCategory[] {
+	return MAESTRO_RELEASE_GATE_EVENT_CATEGORIES.filter(
+		(category) =>
+			!catalog
+				.filter((entry) => entry.category === category)
+				.some((entry) =>
+					entry.platformConsumers.some((consumer) =>
+						consumer.startsWith("release."),
+					),
+				),
+	);
+}
+
+function uniqueSorted(values: Iterable<string>): readonly string[] {
+	return Array.from(new Set(values)).sort();
+}
+
+export function buildMaestroReleaseGateEventQuery(
+	catalog: readonly MaestroBusEventCatalogEntry[] = listMaestroBusEventCatalog(),
+): MaestroReleaseGateEventQuery {
+	const releaseCatalog = listMaestroReleaseGateEventCatalog(catalog);
+	const subjectsByCategory = {} as Record<
+		MaestroReleaseGateEventCategory,
+		readonly MaestroBusEventType[]
+	>;
+	for (const category of MAESTRO_RELEASE_GATE_EVENT_CATEGORIES) {
+		subjectsByCategory[category] = releaseCatalog
+			.filter((entry) => entry.category === category)
+			.map((entry) => entry.type);
+	}
+
+	return {
+		categories: MAESTRO_RELEASE_GATE_EVENT_CATEGORIES,
+		dataSchemas: uniqueSorted(releaseCatalog.map((entry) => entry.dataSchema)),
+		platformConsumers: uniqueSorted(
+			releaseCatalog.flatMap((entry) => entry.platformConsumers),
+		),
+		protoAnyTypes: uniqueSorted(
+			releaseCatalog.map((entry) => entry.protoAnyType),
+		),
+		subjects: releaseCatalog.map((entry) => entry.subject),
+		subjectsByCategory,
+	};
 }
