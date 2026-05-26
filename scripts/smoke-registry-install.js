@@ -94,7 +94,7 @@ const evidenceDir =
 		? ""
 		: process.env.MAESTRO_REGISTRY_SMOKE_EVIDENCE_DIR?.trim() ||
 			process.env.MAESTRO_PUBLISHED_REPLAY_EVIDENCE_DIR?.trim() ||
-			"");
+			"published-replay-evidence");
 
 function sleep(milliseconds) {
 	return new Promise((resolve) => setTimeout(resolve, milliseconds));
