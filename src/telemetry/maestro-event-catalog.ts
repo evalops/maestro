@@ -303,19 +303,27 @@ export const MAESTRO_RELEASE_GATE_EVENT_CATEGORIES = [
 	"final-status",
 ] as const satisfies readonly MaestroBusEventCategory[];
 
-export const MAESTRO_RELEASE_GATE_EVENT_SUBJECTS = [
-	MaestroBusEventType.InstallCheckCompleted,
-	MaestroBusEventType.SessionClosed,
-	MaestroBusEventType.ToolCallCompleted,
-	MaestroBusEventType.ToolCallFailed,
-	MaestroBusEventType.ApprovalHit,
-	MaestroBusEventType.ErrorCaptured,
-	MaestroBusEventType.ArtifactCreated,
-	MaestroBusEventType.FinalStatusReported,
-] as const satisfies readonly MaestroBusEventType[];
-
 export type MaestroReleaseGateEventCategory =
 	(typeof MAESTRO_RELEASE_GATE_EVENT_CATEGORIES)[number];
+
+export const MAESTRO_RELEASE_GATE_EVENT_SUBJECTS_BY_CATEGORY = {
+	install: [MaestroBusEventType.InstallCheckCompleted],
+	session: [MaestroBusEventType.SessionClosed],
+	tool: [
+		MaestroBusEventType.ToolCallCompleted,
+		MaestroBusEventType.ToolCallFailed,
+	],
+	approval: [MaestroBusEventType.ApprovalHit],
+	error: [MaestroBusEventType.ErrorCaptured],
+	artifact: [MaestroBusEventType.ArtifactCreated],
+	"final-status": [MaestroBusEventType.FinalStatusReported],
+} as const satisfies Readonly<
+	Record<MaestroReleaseGateEventCategory, readonly MaestroBusEventType[]>
+>;
+
+export const MAESTRO_RELEASE_GATE_EVENT_SUBJECTS = Object.values(
+	MAESTRO_RELEASE_GATE_EVENT_SUBJECTS_BY_CATEGORY,
+).flat() as readonly MaestroBusEventType[];
 
 export interface MaestroReleaseGateEventQuery {
 	categories: readonly MaestroReleaseGateEventCategory[];
@@ -326,6 +334,14 @@ export interface MaestroReleaseGateEventQuery {
 	subjectsByCategory: Readonly<
 		Record<MaestroReleaseGateEventCategory, readonly MaestroBusEventType[]>
 	>;
+}
+
+export interface MaestroReleaseGateEventSubjectCategoryMismatch {
+	actualSubjects: readonly MaestroBusEventType[];
+	category: MaestroReleaseGateEventCategory;
+	expectedSubjects: readonly MaestroBusEventType[];
+	missingSubjects: readonly MaestroBusEventType[];
+	unexpectedSubjects: readonly MaestroBusEventType[];
 }
 
 export function isMaestroBusEventType(
@@ -400,6 +416,40 @@ export function getUnexpectedMaestroReleaseGateEventSubjects(
 	return buildMaestroReleaseGateEventQuery(catalog).subjects.filter(
 		(subject) => !expectedSubjects.has(subject),
 	);
+}
+
+export function getMismatchedMaestroReleaseGateEventSubjectCategories(
+	catalog: readonly MaestroBusEventCatalogEntry[] = listMaestroBusEventCatalog(),
+): readonly MaestroReleaseGateEventSubjectCategoryMismatch[] {
+	const query = buildMaestroReleaseGateEventQuery(catalog);
+	return MAESTRO_RELEASE_GATE_EVENT_CATEGORIES.flatMap((category) => {
+		const actualSubjects: MaestroBusEventType[] = [
+			...query.subjectsByCategory[category],
+		].sort();
+		const expectedSubjects: MaestroBusEventType[] = [
+			...MAESTRO_RELEASE_GATE_EVENT_SUBJECTS_BY_CATEGORY[category],
+		].sort();
+		const actualSubjectSet = new Set(actualSubjects);
+		const expectedSubjectSet = new Set(expectedSubjects);
+		const missingSubjects = expectedSubjects.filter(
+			(subject) => !actualSubjectSet.has(subject),
+		);
+		const unexpectedSubjects = actualSubjects.filter(
+			(subject) => !expectedSubjectSet.has(subject),
+		);
+		if (missingSubjects.length === 0 && unexpectedSubjects.length === 0) {
+			return [];
+		}
+		return [
+			{
+				actualSubjects,
+				category,
+				expectedSubjects,
+				missingSubjects,
+				unexpectedSubjects,
+			},
+		];
+	});
 }
 
 function uniqueSorted(values: Iterable<string>): readonly string[] {
