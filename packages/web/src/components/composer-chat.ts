@@ -19,7 +19,6 @@ import {
 	ApiClient,
 	type Message,
 	type Model,
-	type RunHealthLevel,
 	type Session,
 	type SessionSummary,
 	type UsageSummary,
@@ -40,14 +39,6 @@ import {
 	hydrateComposerAttachmentForRequest,
 	hydrateComposerAttachmentsForRequest,
 } from "./composer-chat-attachments.js";
-import {
-	formatMcpPrompt,
-	formatMcpPrompts,
-	formatMcpResourceRead,
-	formatMcpResources,
-	formatMcpServers,
-	formatMcpTools,
-} from "./composer-chat-mcp-formatters.js";
 import { composerChatStyles } from "./composer-chat.styles.js";
 import "./composer-a2a-cockpit-panel.js";
 import "./composer-trajectory-replay-lab-panel.js";
@@ -62,10 +53,29 @@ import {
 	ComposerChatClientRequests,
 } from "./composer-chat-client-requests.js";
 import {
+	runComposerJavascriptRepl,
+	runComposerMcpClientTool,
+} from "./composer-chat-client-tools.js";
+import { renderComposerChatIcon } from "./composer-chat-icons.js";
+import {
 	buildComposerChatViewport,
 	renderComposerChatMessagePane,
 } from "./composer-chat-message-pane.js";
-import { executeWebSlashCommand } from "./composer-chat-slash-commands.js";
+import {
+	deriveComposerModelTokens,
+	getShareTokenFromLocation,
+	normalizeComposerMessages,
+} from "./composer-chat-message-utils.js";
+import {
+	getRunHealthPillClass,
+	renderComposerHealthPopover,
+	renderComposerShortcutsModal,
+} from "./composer-chat-overlays.js";
+import {
+	appendComposerCommandOutput,
+	isComposerSlashCommand,
+	runComposerChatSlashCommand,
+} from "./composer-chat-slash-runner.js";
 import {
 	ComposerChatStreamState,
 	type UiMessage,
@@ -92,12 +102,6 @@ import "./model-selector.js";
 import "./admin-settings.js";
 import "./composer-artifacts-panel.js";
 import "./composer-attachment-viewer.js";
-import { ArtifactsRuntimeProvider } from "./sandbox/artifacts-runtime-provider.js";
-import { AttachmentsRuntimeProvider } from "./sandbox/attachments-runtime-provider.js";
-import { getSandboxConsoleSnapshot } from "./sandbox/console-runtime-provider.js";
-import { getSandboxDownloadsSnapshot } from "./sandbox/file-download-runtime-provider.js";
-import { FileDownloadRuntimeProvider } from "./sandbox/file-download-runtime-provider.js";
-import { JavascriptReplRuntimeProvider } from "./sandbox/javascript-repl-runtime-provider.js";
 
 const STATUS_CACHE_KEY = "composer_status_cache";
 const MODELS_CACHE_KEY = "composer_models_cache";
@@ -105,23 +109,6 @@ const USAGE_CACHE_KEY = "composer_usage_cache";
 const MODEL_OVERRIDE_KEY = "composer_model_override";
 const THEME_KEY = "composer_theme";
 const TRANSPORT_KEY = "composer_transport";
-
-function coerceToolArgsRecord(args: unknown): Record<string, unknown> {
-	if (!args || typeof args !== "object" || Array.isArray(args)) {
-		return {};
-	}
-	return args as Record<string, unknown>;
-}
-
-function getOptionalStringArg(
-	args: Record<string, unknown>,
-	key: string,
-): string | undefined {
-	const value = args[key];
-	if (typeof value !== "string") return undefined;
-	const trimmed = value.trim();
-	return trimmed.length > 0 ? trimmed : undefined;
-}
 
 @customElement("composer-chat")
 export class ComposerChat extends LitElement {
@@ -1035,22 +1022,6 @@ export class ComposerChat extends LitElement {
 		);
 	}
 
-	private getShareTokenFromLocation(): string | null {
-		if (typeof window === "undefined") return null;
-		try {
-			const url = new URL(window.location.href);
-			const match = /^\/share\/([^/]+)\/?$/.exec(url.pathname || "/");
-			if (match?.[1]) return match[1];
-			return (
-				url.searchParams.get("share") ||
-				url.searchParams.get("shareToken") ||
-				url.searchParams.get("token")
-			);
-		} catch {
-			return null;
-		}
-	}
-
 	private async loadSharedSession(shareToken: string) {
 		this.loading = true;
 		this.error = null;
@@ -1062,7 +1033,7 @@ export class ComposerChat extends LitElement {
 			this.currentSessionId = session.id;
 			this.resetVirtualizationState();
 			this.messages = Array.isArray(session.messages)
-				? this.normalizeMessages(session.messages)
+				? normalizeComposerMessages(session.messages)
 				: [];
 			this.renderLimit = 200;
 			this.syncRenderWindowToBottom();
@@ -1262,7 +1233,7 @@ export class ComposerChat extends LitElement {
 		super.connectedCallback();
 		this.apiClient = new ApiClient(this.apiEndpoint);
 		this.subscribeToStore();
-		const shareToken = this.getShareTokenFromLocation();
+		const shareToken = getShareTokenFromLocation();
 		if (shareToken) {
 			this.shareToken = shareToken;
 			this.sidebarOpen = false;
@@ -1518,29 +1489,13 @@ export class ComposerChat extends LitElement {
 		try {
 			const model = await this.apiClient.getCurrentModel();
 			this.currentModel = model ? `${model.provider}/${model.id}` : this.model;
-			const tokens = this.deriveModelTokens(model);
+			const tokens = deriveComposerModelTokens(model);
 			this.currentModelTokens = tokens;
 		} catch (e) {
 			console.error("Failed to load current model:", e);
 			this.currentModel = this.model;
 			this.currentModelTokens = null;
 		}
-	}
-
-	private deriveModelTokens(
-		model: Partial<{
-			contextWindow?: number;
-			maxOutputTokens?: number;
-			maxTokens?: number;
-		}> | null,
-	): string | null {
-		if (!model) return null;
-		if (model.contextWindow)
-			return `${Math.round(model.contextWindow / 1000)}k ctx`;
-		if (model.maxOutputTokens)
-			return `${Math.round(model.maxOutputTokens / 1000)}k max out`;
-		if (model.maxTokens) return `${Math.round(model.maxTokens / 1000)}k tokens`;
-		return null;
 	}
 
 	private async updateModelMeta() {
@@ -1552,7 +1507,7 @@ export class ComposerChat extends LitElement {
 			const current =
 				models.find((m) => `${m.provider}/${m.id}` === this.currentModel) ??
 				models.find((m) => m.id === this.currentModel);
-			const tokens = this.deriveModelTokens(current || null);
+			const tokens = deriveComposerModelTokens(current || null);
 			this.currentModelTokens = tokens ?? "n/a";
 		} catch (e) {
 			console.error("Failed to load model metadata:", e);
@@ -1560,32 +1515,8 @@ export class ComposerChat extends LitElement {
 		}
 	}
 
-	private coerceMessageContent(content: Message["content"]): string {
-		if (typeof content === "string") return content;
-		if (!Array.isArray(content)) return "";
-		return content
-			.filter((block) => block?.type === "text")
-			.map((block) => (block?.type === "text" ? block.text : ""))
-			.join("");
-	}
-
-	private normalizeMessage(message: Message): Message {
-		if (typeof message.content === "string") return message;
-		return {
-			...message,
-			content: this.coerceMessageContent(message.content),
-		};
-	}
-
-	private normalizeMessages(messages: Message[]): UiMessage[] {
-		return messages.map((message) => this.normalizeMessage(message));
-	}
-
 	private isSlashCommand(text: string): boolean {
-		const trimmed = text.trim();
-		if (!trimmed.startsWith("/")) return false;
-		if (trimmed.startsWith("//")) return false;
-		return trimmed.length > 1;
+		return isComposerSlashCommand(text);
 	}
 
 	private appendLocalMessage(message: UiMessage) {
@@ -1603,59 +1534,27 @@ export class ComposerChat extends LitElement {
 		output: string,
 		isError = false,
 	) {
-		const label = isError ? "Command failed" : "Command output";
-		const content = `/${command}\n\n${output}`;
-		this.appendLocalMessage({
-			role: "assistant",
-			content: content || label,
-			timestamp: new Date().toISOString(),
-			localOnly: true,
-		});
+		appendComposerCommandOutput(
+			(message) => this.appendLocalMessage(message),
+			command,
+			output,
+			isError,
+		);
 	}
 
 	private async handleSlashCommand(
 		rawText: string,
 		attachments?: Message["attachments"],
 	) {
-		const text = rawText.trim();
-		const [, ...rest] = text.split(/\s+/);
-		const command = text.slice(1).split(/\s+/)[0]?.toLowerCase() ?? "";
-		const args = rest.join(" ").trim();
-
-		this.appendLocalMessage({
-			role: "user",
-			content: text,
-			timestamp: new Date().toISOString(),
-			localOnly: true,
-		});
-
-		if (command) {
-			const recents = [
-				command,
-				...this.commandPrefs.recents.filter((n) => n !== command),
-			].slice(0, 20);
-			void this.saveCommandPrefs({
-				favorites: this.commandPrefs.favorites,
-				recents,
-			});
-		}
-
-		if (attachments && attachments.length > 0) {
-			this.appendCommandOutput(
-				command,
-				"Attachments are not supported for slash commands.",
-				true,
-			);
-			return;
-		}
-
-		await executeWebSlashCommand(command, args, {
+		await runComposerChatSlashCommand(rawText, attachments, {
 			apiClient: this.apiClient,
-			appendCommandOutput: (output, isError = false) =>
+			appendLocalMessage: (message) => this.appendLocalMessage(message),
+			appendCommandOutput: (command, output, isError = false) =>
 				this.appendCommandOutput(command, output, isError),
 			applyTheme: (theme) => this.applyTheme(theme),
 			applyZenMode: (enabled) => this.applyZenMode(enabled),
 			commands: this.slashCommands,
+			commandPrefs: this.commandPrefs,
 			createNewSession: () => this.createNewSession(),
 			currentSessionId: this.currentSessionId,
 			isSharedSession: Boolean(this.shareToken),
@@ -1663,6 +1562,7 @@ export class ComposerChat extends LitElement {
 				this.commandDrawerOpen = true;
 			},
 			openModelSelector: () => this.openModelSelector(),
+			saveCommandPrefs: (prefs) => this.saveCommandPrefs(prefs),
 			selectSession: (sessionId) => this.selectSession(sessionId),
 			setApprovalModeStatus: (status) => this.updateApprovalModeStatus(status),
 			setCleanMode: (mode) => {
@@ -1693,55 +1593,6 @@ export class ComposerChat extends LitElement {
 		} catch (e) {
 			console.error("Failed to load sessions:", e);
 		}
-	}
-
-	private renderIcon(
-		name:
-			| "chevron-left"
-			| "chevron-right"
-			| "info"
-			| "refresh"
-			| "globe"
-			| "share"
-			| "settings"
-			| "sun"
-			| "moon"
-			| "grid"
-			| "file"
-			| "timeline"
-			| "network"
-			| "flask"
-			| "reduce"
-			| "close",
-	) {
-		const paths: Record<string, string> = {
-			"chevron-left": "M15 18l-6-6 6-6",
-			"chevron-right": "M9 6l6 6-6 6",
-			info: "M12 12v4m0-8h.01M12 21a9 9 0 1 1 0-18 9 9 0 0 1 0 18Z",
-			refresh:
-				"M4.93 4.93A10 10 0 0 1 19.07 5M20 9v-4h-4M19.07 19.07A10 10 0 0 1 4.93 19M4 15v4h4",
-			globe:
-				"M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18Zm0 0c3 0 5-4 5-9s-2-9-5-9-5 4-5 9 2 9 5 9Zm0 0c2.5 0 4.5-4 4.5-9S14.5 3 12 3 7.5 7 7.5 12 9.5 21 12 21Zm0-9h9M3 12h9",
-			share:
-				"M18 8a3 3 0 1 0-2.83-4H15a3 3 0 0 0 0 6Zm-12 4a3 3 0 1 0 2.83 4H9a3 3 0 0 0 0-6Zm12 0a3 3 0 1 0 2.83 4H21a3 3 0 0 0 0-6Zm-4.59-1.51L8.59 15.5M15.41 8.5 8.59 11.5",
-			settings:
-				"M12 15.5a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7Zm7.4-2.63a1 1 0 0 0 0-1.74l-1.17-.68a1 1 0 0 1-.46-.86l.05-1.35a1 1 0 0 0-1.17-1.01l-1.35.23a1 1 0 0 1-.9-.26L13.2 6a1 1 0 0 0-1.4 0l-.9.9a1 1 0 0 1-.9.26l-1.35-.23a1 1 0 0 0-1.17 1.01l.05 1.35a1 1 0 0 1-.46.86l-1.17.68a1 1 0 0 0 0 1.74l1.17.68a1 1 0 0 1 .46.86l-.05 1.35a1 1 0 0 0 1.17 1.01l1.35-.23a1 1 0 0 1 .9.26l.9.9a1 1 0 0 0 1.4 0l.9-.9a1 1 0 0 1 .9-.26l1.35.23a1 1 0 0 0 1.17-1.01l-.05-1.35a1 1 0 0 1 .46-.86Z",
-			sun: "M12 4.5V3M12 21v-1.5M4.5 12H3m18 0h-1.5M6.75 6.75 5.7 5.7m12.6 12.6-1.05-1.05M6.75 17.25 5.7 18.3m12.6-12.6-1.05 1.05M12 8a4 4 0 1 0 0 8 4 4 0 0 0 0-8Z",
-			moon: "M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8Z",
-			grid: "M4 4h7v7H4Zm9 0h7v7h-7ZM4 13h7v7H4Zm9 7v-7h7v7Z",
-			file: "M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8zM14 2v6h6",
-			timeline:
-				"M4 5h4m-4 7h8m-8 7h12M10 5h10M14 12h6M18 19h2M8 5a2 2 0 1 1-4 0 2 2 0 0 1 4 0Zm4 7a2 2 0 1 1-4 0 2 2 0 0 1 4 0Zm4 7a2 2 0 1 1-4 0 2 2 0 0 1 4 0Z",
-			network:
-				"M12 6a3 3 0 1 0 0-6 3 3 0 0 0 0 6Zm-7 16a3 3 0 1 0 0-6 3 3 0 0 0 0 6Zm14 0a3 3 0 1 0 0-6 3 3 0 0 0 0 6ZM10.4 5.1 6.6 16.9m7-11.8 3.8 11.8M7.8 19h8.4",
-			flask:
-				"M9 3h6M10 3v5.5L5.5 17a3 3 0 0 0 2.65 4.4h7.7A3 3 0 0 0 18.5 17L14 8.5V3M8 14h8",
-			reduce: "M12 21a9 9 0 1 1 0-18 9 9 0 0 1 0 18Zm-5-9h10",
-			close: "M18 6 6 18M6 6l12 12",
-		};
-		return html`<svg class="icon" viewBox="0 0 24 24" aria-hidden="true">
-			<path d=${paths[name]}></path>
-		</svg>`;
 	}
 
 	private toggleSidebar() {
@@ -1945,7 +1796,7 @@ export class ComposerChat extends LitElement {
 		);
 		if (cached) {
 			this.currentModelTokens =
-				this.deriveModelTokens(cached) ?? this.currentModelTokens;
+				deriveComposerModelTokens(cached) ?? this.currentModelTokens;
 		} else {
 			this.currentModelTokens = this.currentModelTokens ?? null;
 		}
@@ -1964,7 +1815,7 @@ export class ComposerChat extends LitElement {
 			this.currentSessionId = session.id;
 			this.resetVirtualizationState();
 			this.messages = Array.isArray(session.messages)
-				? this.normalizeMessages(session.messages)
+				? normalizeComposerMessages(session.messages)
 				: [];
 			this.renderLimit = 200;
 			this.syncRenderWindowToBottom();
@@ -2070,7 +1921,7 @@ export class ComposerChat extends LitElement {
 			this.currentSessionId = session.id;
 			this.resetVirtualizationState();
 			this.messages = Array.isArray(session.messages)
-				? this.normalizeMessages(session.messages)
+				? normalizeComposerMessages(session.messages)
 				: [];
 			this.renderLimit = 200;
 			this.syncRenderWindowToBottom();
@@ -2401,290 +2252,50 @@ export class ComposerChat extends LitElement {
 		isError: boolean;
 		text: string;
 	}> {
-		const obj = (
-			args && typeof args === "object" ? (args as Record<string, unknown>) : {}
-		) as Record<string, unknown>;
-		const code = typeof obj.code === "string" ? obj.code : "";
-		const timeoutMs =
-			typeof obj.timeoutMs === "number" && Number.isFinite(obj.timeoutMs)
-				? obj.timeoutMs
-				: 10_000;
-
-		if (!code.trim()) {
-			return { isError: true, text: "Error: javascript_repl requires code" };
-		}
-
-		const sandboxId = `repl:${Date.now().toString(36)}:${Math.random().toString(36).slice(2, 8)}`;
-
-		let settled = false;
-		let returnValue: string | null = null;
-		const errorState: { value: { message: string; stack?: string } | null } = {
-			value: null,
-		};
-
-		let resolveDone!: () => void;
-		const done = new Promise<void>((resolve) => {
-			resolveDone = resolve;
+		return runComposerJavascriptRepl(args, {
+			getArtifactsList: () => this.getArtifactsList(),
+			getAllAttachments: () => this.getAllAttachments(),
+			getSessionScope: () => ({
+				sessionId: this.currentSessionId,
+				shareToken: this.shareToken,
+			}),
+			hydrateAttachmentsForRequest: (attachments, scope) =>
+				this.hydrateAttachmentsForRequest(attachments, scope),
+			createOrUpdateArtifact: async (filename, content) => {
+				const exists = this.artifactsState.byFilename.has(filename);
+				const command = exists ? "rewrite" : "create";
+				const result = applyArtifactsCommand(this.artifactsState, {
+					command,
+					filename,
+					content,
+				});
+				this.artifactsState = result.state;
+				if (result.isError) {
+					throw new Error(result.output);
+				}
+			},
+			deleteArtifact: async (filename) => {
+				const result = applyArtifactsCommand(this.artifactsState, {
+					command: "delete",
+					filename,
+				});
+				this.artifactsState = result.state;
+				if (result.isError) {
+					throw new Error(result.output);
+				}
+				if (this.activeArtifact === filename) {
+					this.activeArtifact = null;
+				}
+			},
+			setActiveArtifact: (filename) => this.setActiveArtifact(filename),
 		});
-
-		const consumer = {
-			handleMessage: async (message: unknown) => {
-				if (settled || !message || typeof message !== "object") return;
-				const m = message as Record<string, unknown>;
-				if (m.type === "execution-complete") {
-					settled = true;
-					returnValue =
-						typeof m.returnValue === "string"
-							? m.returnValue
-							: String(m.returnValue ?? "");
-					resolveDone();
-				}
-				if (m.type === "execution-error") {
-					settled = true;
-					const err = m.error;
-					if (err && typeof err === "object") {
-						const rec = err as Record<string, unknown>;
-						errorState.value = {
-							message:
-								typeof rec.message === "string"
-									? rec.message
-									: "Execution error",
-							stack: typeof rec.stack === "string" ? rec.stack : undefined,
-						};
-					} else {
-						errorState.value = { message: "Execution error" };
-					}
-					resolveDone();
-				}
-			},
-		};
-
-		const el = document.createElement(
-			"composer-sandboxed-iframe",
-		) as HTMLElement & {
-			sandboxId: string;
-			htmlContent: string;
-			providers: unknown[];
-			consumers: unknown[];
-		};
-
-		el.style.position = "fixed";
-		el.style.left = "-99999px";
-		el.style.top = "-99999px";
-		el.style.width = "1px";
-		el.style.height = "1px";
-		el.style.opacity = "0";
-		el.style.pointerEvents = "none";
-
-		el.sandboxId = sandboxId;
-		el.htmlContent = "<!doctype html><html><body></body></html>";
-
-		const artifactsProvider = new ArtifactsRuntimeProvider(
-			() => this.getArtifactsList(),
-			{
-				createOrUpdate: async (filename, content) => {
-					const exists = this.artifactsState.byFilename.has(filename);
-					const cmd = exists ? "rewrite" : "create";
-					const res = applyArtifactsCommand(this.artifactsState, {
-						command: cmd,
-						filename,
-						content,
-					});
-					this.artifactsState = res.state;
-					if (!res.isError) {
-						this.setActiveArtifact(filename);
-					} else {
-						throw new Error(res.output);
-					}
-				},
-				delete: async (filename) => {
-					const res = applyArtifactsCommand(this.artifactsState, {
-						command: "delete",
-						filename,
-					});
-					this.artifactsState = res.state;
-					if (res.isError) {
-						throw new Error(res.output);
-					}
-					if (this.activeArtifact === filename) {
-						this.activeArtifact = null;
-					}
-				},
-			},
-		);
-
-		const attachmentsForSandbox = await (async () => {
-			const list = this.getAllAttachments();
-			const sessionId = this.currentSessionId;
-			const shareToken = this.shareToken;
-			return await this.hydrateAttachmentsForRequest(list, {
-				sessionId,
-				shareToken,
-			});
-		})();
-
-		el.providers = [
-			artifactsProvider,
-			new AttachmentsRuntimeProvider(
-				attachmentsForSandbox
-					.filter((a) => typeof a.content === "string" && a.content.length > 0)
-					.map((a) => ({
-						id: a.id,
-						fileName: a.fileName,
-						mimeType: a.mimeType,
-						size: a.size,
-						content: a.content as string,
-						extractedText: a.extractedText,
-					})),
-			),
-			new FileDownloadRuntimeProvider(),
-			new JavascriptReplRuntimeProvider(code, { timeoutMs }),
-		];
-		el.consumers = [consumer];
-
-		document.body.appendChild(el);
-
-		const hardTimeout = window.setTimeout(() => {
-			if (settled) return;
-			settled = true;
-			errorState.value = { message: "Execution timed out" };
-			resolveDone();
-		}, timeoutMs + 200);
-
-		try {
-			await done;
-		} finally {
-			window.clearTimeout(hardTimeout);
-			try {
-				el.remove();
-			} catch {
-				// ignore
-			}
-		}
-
-		const snap = getSandboxConsoleSnapshot(sandboxId);
-		const logs = snap?.logs ?? [];
-		const lastError = snap?.lastError ?? null;
-		const downloads = getSandboxDownloadsSnapshot(sandboxId)?.files ?? [];
-
-		const lines: string[] = [];
-		if (errorState.value) {
-			lines.push(`Error: ${errorState.value.message}`);
-			if (errorState.value.stack) lines.push(errorState.value.stack);
-		} else if (returnValue !== null) {
-			lines.push("Return value:");
-			lines.push(returnValue);
-		} else {
-			lines.push("No return value.");
-		}
-
-		if (logs.length > 0) {
-			lines.push("", "Console:");
-			for (const l of logs) {
-				lines.push(`[${l.level}] ${l.text}`);
-			}
-		}
-
-		if (!errorState.value && lastError) {
-			lines.push("", "Last error:");
-			lines.push(lastError.message);
-			if (lastError.stack) lines.push(lastError.stack);
-		}
-
-		if (downloads.length > 0) {
-			lines.push("", "Downloads:");
-			for (const f of downloads) {
-				lines.push(`- ${f.fileName} (${f.mimeType})`);
-			}
-		}
-
-		return {
-			isError: Boolean(errorState.value),
-			text: lines.filter(Boolean).join("\n"),
-		};
 	}
 
 	private async runMcpClientTool(
 		toolName: string,
 		args: unknown,
 	): Promise<{ isError: boolean; text: string }> {
-		const argRecord = coerceToolArgsRecord(args);
-
-		if (toolName === "read_mcp_resource") {
-			const server = getOptionalStringArg(argRecord, "server");
-			const uri = getOptionalStringArg(argRecord, "uri");
-			if (!server || !uri) {
-				return {
-					isError: true,
-					text: "Error: read_mcp_resource requires server and uri",
-				};
-			}
-
-			const result = await this.apiClient.readMcpResource(server, uri);
-			return {
-				isError: false,
-				text: formatMcpResourceRead(result, uri),
-			};
-		}
-
-		if (toolName === "get_mcp_prompt") {
-			const server = getOptionalStringArg(argRecord, "server");
-			const name = getOptionalStringArg(argRecord, "name");
-			const promptArgs =
-				argRecord.args &&
-				typeof argRecord.args === "object" &&
-				!Array.isArray(argRecord.args)
-					? (Object.fromEntries(
-							Object.entries(argRecord.args as Record<string, unknown>).filter(
-								([, value]) => typeof value === "string",
-							),
-						) as Record<string, string>)
-					: undefined;
-			if (!server || !name) {
-				return {
-					isError: true,
-					text: "Error: get_mcp_prompt requires server and name",
-				};
-			}
-
-			const result = await this.apiClient.getMcpPrompt(
-				server,
-				name,
-				promptArgs,
-			);
-			return {
-				isError: false,
-				text: formatMcpPrompt(result, name),
-			};
-		}
-
-		const status = await this.apiClient.getMcpStatus();
-		if (toolName === "list_mcp_servers") {
-			return {
-				isError: false,
-				text: formatMcpServers(status),
-			};
-		}
-		if (toolName === "list_mcp_tools") {
-			return formatMcpTools(status, getOptionalStringArg(argRecord, "server"));
-		}
-		if (toolName === "list_mcp_resources") {
-			return formatMcpResources(
-				status,
-				getOptionalStringArg(argRecord, "server"),
-			);
-		}
-		if (toolName === "list_mcp_prompts") {
-			return formatMcpPrompts(
-				status,
-				getOptionalStringArg(argRecord, "server"),
-			);
-		}
-
-		return {
-			isError: true,
-			text: `Unsupported MCP client tool: ${toolName}`,
-		};
+		return runComposerMcpClientTool(this.apiClient, toolName, args);
 	}
 
 	private retryLastSend = () => {
@@ -2746,13 +2357,6 @@ export class ComposerChat extends LitElement {
 		}, duration);
 	}
 
-	private getRunHealthPillClass(status: RunHealthLevel | undefined) {
-		if (status === "unhealthy") return "error";
-		if (status === "degraded") return "warning";
-		if (status === "healthy") return "success";
-		return "info";
-	}
-
 	override render() {
 		const cwd = this.status?.cwd || "unknown";
 		const gitBranch = this.status?.git?.branch || "unknown";
@@ -2780,7 +2384,7 @@ export class ComposerChat extends LitElement {
 		const taskFailed = taskHealth?.failed ?? 0;
 		const runHealth = this.status?.runHealth ?? null;
 		const runHealthStatus = runHealth?.status;
-		const runHealthClass = this.getRunHealthPillClass(runHealthStatus);
+		const runHealthClass = getRunHealthPillClass(runHealthStatus);
 		const overallRunHealthStatus = isOnline
 			? (runHealthStatus ?? "online")
 			: "offline";
@@ -2933,7 +2537,7 @@ export class ComposerChat extends LitElement {
 		<div class="header">
 			<div class="header-left">
 				<button class="toggle-sidebar-btn" @click=${this.toggleSidebar} title=${this.sidebarOpen ? "Collapse sidebar" : "Expand sidebar"}>
-					${this.sidebarOpen ? this.renderIcon("chevron-left") : this.renderIcon("chevron-right")}
+					${this.sidebarOpen ? renderComposerChatIcon("chevron-left") : renderComposerChatIcon("chevron-right")}
 				</button>
 				<h1>Maestro</h1>
 			</div>
@@ -2956,7 +2560,7 @@ export class ComposerChat extends LitElement {
 									? html`<span class="pill ${runHealthClass}">${runHealthStatus}</span>`
 									: ""
 							}
-							<button class="icon-btn" title="API health" @click=${this.toggleHealth}>${this.renderIcon("info")}</button>
+							<button class="icon-btn" title="API health" @click=${this.toggleHealth}>${renderComposerChatIcon("info")}</button>
 						</div>
 						<div class="status-item">
 							<span>CWD</span>
@@ -3005,7 +2609,7 @@ export class ComposerChat extends LitElement {
 									</div>`
 								: ""
 						}
-						<button class="icon-btn" title="Refresh status" @click=${this.refreshStatus}>${this.renderIcon("refresh")}</button>
+						<button class="icon-btn" title="Refresh status" @click=${this.refreshStatus}>${renderComposerChatIcon("refresh")}</button>
 						${
 							lastUpdated
 								? html`<span class="status-item" title="Last API refresh">
@@ -3020,14 +2624,14 @@ export class ComposerChat extends LitElement {
 					<span class="model-badge">AI</span>
 					<span>${this.currentModel.split("/").pop()?.toUpperCase() || "MODEL"}</span>
 						</div>
-						<button class="icon-btn" title="Choose Model" @click=${this.openModelSelector}>${this.renderIcon("globe")}</button>
+						<button class="icon-btn" title="Choose Model" @click=${this.openModelSelector}>${renderComposerChatIcon("globe")}</button>
 						<button
 							class="icon-btn"
 							title=${isShared ? "Shared sessions are read-only" : "Share session"}
 							@click=${this.openShareDialog}
 							?disabled=${isShared || !this.currentSessionId}
 						>
-							${this.renderIcon("share")}
+							${renderComposerChatIcon("share")}
 						</button>
 						<button
 							class="icon-btn"
@@ -3042,9 +2646,9 @@ export class ComposerChat extends LitElement {
 							title="Toggle theme"
 							@click=${this.toggleTheme}
 						>
-							${this.renderIcon(this.theme === "dark" ? "sun" : "moon")}
+							${renderComposerChatIcon(this.theme === "dark" ? "sun" : "moon")}
 						</button>
-						<button class="icon-btn" title="Settings" @click=${this.toggleSettings}>${this.renderIcon("settings")}</button>
+						<button class="icon-btn" title="Settings" @click=${this.toggleSettings}>${renderComposerChatIcon("settings")}</button>
 						${
 							this.hasAdminSettingsAccess()
 								? html`<button class="icon-btn" title="Admin Settings" @click=${this.toggleAdminSettings}>🛡️</button>`
@@ -3055,7 +2659,7 @@ export class ComposerChat extends LitElement {
 							title=${isShared ? "Artifacts (read-only)" : "Artifacts"}
 							@click=${this.toggleArtifactsPanel}
 						>
-							${this.renderIcon("file")}
+							${renderComposerChatIcon("file")}
 						</button>
 						<button
 							class="icon-btn ${this.a2aCockpitOpen ? "active" : ""}"
@@ -3063,7 +2667,7 @@ export class ComposerChat extends LitElement {
 							@click=${this.toggleA2ACockpitPanel}
 							?disabled=${isShared}
 						>
-							${this.renderIcon("network")}
+							${renderComposerChatIcon("network")}
 						</button>
 						<button
 							class="icon-btn ${this.timelineOpen ? "active" : ""}"
@@ -3071,7 +2675,7 @@ export class ComposerChat extends LitElement {
 							@click=${this.toggleTimelinePanel}
 							?disabled=${isShared || !this.currentSessionId}
 						>
-							${this.renderIcon("timeline")}
+							${renderComposerChatIcon("timeline")}
 						</button>
 						<button
 							class="icon-btn ${this.replayLabOpen ? "active" : ""}"
@@ -3079,10 +2683,10 @@ export class ComposerChat extends LitElement {
 							@click=${this.toggleReplayLabPanel}
 							?disabled=${isShared || !this.currentSessionId}
 						>
-							${this.renderIcon("flask")}
+							${renderComposerChatIcon("flask")}
 						</button>
-						<button class="icon-btn ${this.compactMode ? "active" : ""}" title="Toggle compact layout (Ctrl/Cmd+M)" @click=${this.toggleCompact}>${this.renderIcon("grid")}</button>
-						<button class="icon-btn ${this.reducedMotion ? "active" : ""}" title="Toggle reduced motion" @click=${this.toggleReducedMotion}>${this.renderIcon("reduce")}</button>
+						<button class="icon-btn ${this.compactMode ? "active" : ""}" title="Toggle compact layout (Ctrl/Cmd+M)" @click=${this.toggleCompact}>${renderComposerChatIcon("grid")}</button>
+						<button class="icon-btn ${this.reducedMotion ? "active" : ""}" title="Toggle reduced motion" @click=${this.toggleReducedMotion}>${renderComposerChatIcon("reduce")}</button>
 					</div>
 				</div>
 
@@ -3240,59 +2844,18 @@ export class ComposerChat extends LitElement {
 					: ""
 			}
 
-			${
-				this.showHealth
-					? html`
-						<div class="health-popover">
-							<div class="health-popover-header">
-								<span class="health-popover-label">RUN HEALTH</span>
-								<button class="icon-btn" @click=${this.closeHealth}>${this.renderIcon("close")}</button>
-							</div>
-							<div class="health-popover-row">
-								<span>Overall:</span>
-								<strong class="pill ${overallRunHealthClass}">${overallRunHealthStatus}</strong>
-							</div>
-							<div class="health-popover-row">
-								<span>Base:</span>
-								<span class="health-row-value">${this.apiClient.baseUrl}</span>
-							</div>
-							<div class="health-popover-row">
-								<span>Latency:</span>
-								<span class="health-row-value">${latency ? `${Math.round(latency)}ms` : "n/a"}</span>
-							</div>
-							<div class="health-popover-row">
-								<span>Last updated:</span>
-								<span class="health-row-value">${lastUpdated ? new Date(lastUpdated).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "n/a"}</span>
-							</div>
-							${
-								runHealth?.slos?.length
-									? html`
-										<div class="health-slo-list">
-											${runHealth.slos.map(
-												(slo) => html`
-													<div class="health-slo ${slo.status}">
-														<div class="health-slo-header">
-															<span class="health-slo-label">${slo.label}</span>
-															<span class="pill ${this.getRunHealthPillClass(slo.status)}">${slo.status}</span>
-														</div>
-														<div class="health-slo-observed">${slo.observed}</div>
-														<div class="health-slo-target">${slo.target}</div>
-														${slo.detail ? html`<div class="health-slo-detail">${slo.detail}</div>` : ""}
-													</div>
-												`,
-											)}
-										</div>
-								  `
-									: ""
-							}
-							<div class="health-popover-row">
-								<span>Last error:</span>
-								<span class="health-row-value">${this.lastApiError || "none"}</span>
-							</div>
-						</div>
-				  `
-					: ""
-			}
+			${renderComposerHealthPopover({
+				showHealth: this.showHealth,
+				closeHealth: this.closeHealth,
+				renderIcon: (name) => renderComposerChatIcon(name),
+				overallRunHealthClass,
+				overallRunHealthStatus,
+				apiBaseUrl: this.apiClient?.baseUrl ?? this.apiEndpoint,
+				latency,
+				lastUpdated,
+				runHealth,
+				lastApiError: this.lastApiError,
+			})}
 
 			${
 				this.toast
@@ -3330,26 +2893,11 @@ export class ComposerChat extends LitElement {
 					: ""
 			}
 
-			${
-				this.showShortcuts
-					? html`
-						<div class="shortcuts-modal">
-							<div class="shortcuts-modal-header">
-								<span class="shortcuts-modal-title">Keyboard shortcuts</span>
-								<button class="icon-btn" @click=${this.closeShortcuts}>${this.renderIcon("close")}</button>
-							</div>
-						<div class="shortcuts-grid">
-							<span class="pill">Enter</span><span>Send message</span>
-							<span class="pill">Shift+Enter</span><span>New line</span>
-							<span class="pill">?</span><span>Toggle this help</span>
-							<span class="pill">↻</span><span>Refresh API status</span>
-							<span class="pill">⌘/Ctrl + K</span><span>Browser find (fwd to your editor)</span>
-							<span class="pill">⌘/Ctrl + M</span><span>Toggle compact layout</span>
-													</div>
-					</div>
-			  `
-					: ""
-			}
+			${renderComposerShortcutsModal({
+				showShortcuts: this.showShortcuts,
+				closeShortcuts: this.closeShortcuts,
+				renderIcon: (name) => renderComposerChatIcon(name),
+			})}
 		`;
 	}
 }
