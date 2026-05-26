@@ -12,14 +12,17 @@ import { pathToFileURL } from "node:url";
 import {
 	PlatformA2ADelegationTaskControlModeValue,
 	type PlatformA2ADelegationGraphNode,
+	type PlatformAgentDiscoveryEvidence,
+	type PlatformAgentRegistryA2APeerCandidatesResult,
 	type PlatformAgentRegistryA2APeerCandidate,
 	type PlatformAgentRegistryControlA2ADelegationTaskResult,
 	type PlatformAgentRegistryDelegateResult,
 	type PlatformAgentRegistryGetA2ADelegationGraphResult,
+	type PlatformAgentRegistryListA2APeersInput,
 	controlA2ADelegationTaskWithPlatform,
 	delegateAgentWithPlatform,
 	getA2ADelegationGraphWithPlatform,
-	listA2APeerCandidatesWithPlatform,
+	listA2APeerCandidatesWithEvidenceWithPlatform,
 	resolveAgentRegistryServiceConfig,
 } from "../src/platform/agent-registry-client.js";
 import {
@@ -141,6 +144,10 @@ export interface PlatformA2ALiveSmokeEvidence {
 		capability?: string;
 		promptHash?: string;
 	};
+	discovery: {
+		target: PlatformA2APeerDiscoveryEvidence;
+		origin: PlatformA2APeerDiscoveryEvidence;
+	};
 	peers: {
 		origin: PlatformA2APeerEvidence;
 		target: PlatformA2APeerEvidence;
@@ -230,6 +237,46 @@ interface PlatformA2APeerEvidence {
 	};
 }
 
+interface PlatformA2APeerDiscoveryEvidence {
+	surface: "platform-agent-registry-peer-discovery";
+	label: "target" | "origin";
+	sourceEvidencePresent: boolean;
+	query: {
+		organizationId: string;
+		workspaceId: string;
+		skillId?: string;
+		capability?: string;
+		limit?: number;
+		requireA2ADispatch?: boolean;
+		eligibleForDelegation?: boolean;
+	};
+	result: {
+		schema?: string;
+		decision?: string;
+		reason?: string;
+		organizationId?: string;
+		workspaceId?: string;
+		capability?: string;
+		capabilities?: string[];
+		a2aSkillId?: string;
+		requireA2ADispatch?: boolean;
+		eligibleForDelegation?: boolean;
+		candidateCount: number;
+		matchedCount: number;
+		matchedAgentIds: string[];
+		traceId?: string;
+		spanId?: string;
+		requestId?: string;
+		observedAt?: string;
+		exclusions?: {
+			reason?: string;
+			count?: number;
+			policyReasons?: string[];
+			policyScopes?: string[];
+		}[];
+	};
+}
+
 interface PlatformA2AGraphNodeEvidence {
 	delegationId?: string;
 	depth?: number;
@@ -242,9 +289,22 @@ interface PlatformA2AGraphNodeEvidence {
 	rootDelegationId?: string;
 }
 
+type PlatformA2APeerListResult =
+	| PlatformAgentRegistryA2APeerCandidate[]
+	| PlatformAgentRegistryA2APeerCandidatesResult
+	| null;
+
+type PlatformA2APeerListOptions = {
+	config?: PlatformServiceConfig;
+	signal?: AbortSignal;
+};
+
 export interface PlatformA2ALiveSmokeDependencies {
 	resolveConfig: () => Promise<PlatformServiceConfig | null>;
-	listPeers: typeof listA2APeerCandidatesWithPlatform;
+	listPeers: (
+		input?: PlatformAgentRegistryListA2APeersInput,
+		options?: PlatformA2APeerListOptions,
+	) => Promise<PlatformA2APeerListResult>;
 	delegate: typeof delegateAgentWithPlatform;
 	getGraph: typeof getA2ADelegationGraphWithPlatform;
 	control: typeof controlA2ADelegationTaskWithPlatform;
@@ -268,7 +328,7 @@ export interface RunPlatformA2ALiveSmokeOptions {
 
 const defaultDependencies: PlatformA2ALiveSmokeDependencies = {
 	resolveConfig: resolveAgentRegistryServiceConfig,
-	listPeers: listA2APeerCandidatesWithPlatform,
+	listPeers: listA2APeerCandidatesWithEvidenceWithPlatform,
 	delegate: delegateAgentWithPlatform,
 	getGraph: getA2ADelegationGraphWithPlatform,
 	control: controlA2ADelegationTaskWithPlatform,
@@ -393,44 +453,51 @@ export async function runPlatformA2ADelegationLiveSmoke(
 	deps.log(
 		`Discovering Platform A2A target peers in workspace ${env.workspaceId} for ${env.skillId ?? env.capability}`,
 	);
-	const targetPeers = await deps.listPeers(
-		{
-			workspaceId: env.workspaceId,
-			skillId: env.skillId,
-			capability: env.capability,
-			limit: 100,
-			requireA2ADispatch: true,
-			eligibleForDelegation: true,
-		},
-		{ config: effectiveConfig },
+	const targetDiscoveryQuery = {
+		workspaceId: env.workspaceId,
+		skillId: env.skillId,
+		capability: env.capability,
+		limit: 100,
+		requireA2ADispatch: true,
+		eligibleForDelegation: true,
+	} satisfies PlatformAgentRegistryListA2APeersInput;
+	const targetDiscovery = normalizePeerDiscoveryResult(
+		await deps.listPeers(targetDiscoveryQuery, { config: effectiveConfig }),
+		"target",
 	);
-	if (!targetPeers) {
+	if (!targetDiscovery) {
 		throw new Error("Platform A2A live smoke received no peer list from Platform");
 	}
-	const target = requirePeer(targetPeers, env.toAgentId, env, deps.now());
-	let origin = targetPeers.find(
+	const target = requirePeer(targetDiscovery.candidates, env.toAgentId, env, deps.now());
+	let originDiscovery = targetDiscovery;
+	let originDiscoveryQuery: PlatformAgentRegistryListA2APeersInput =
+		targetDiscoveryQuery;
+	let origin = targetDiscovery.candidates.find(
 		(candidate) => candidate.agent.id === env.fromAgentId,
 	);
 	if (!origin) {
 		deps.log(
 			`Discovering Platform A2A origin peer ${env.fromAgentId} without target skill filters`,
 		);
-		const originPeers = await deps.listPeers(
-			{
-				workspaceId: env.workspaceId,
-				limit: 100,
-				requireA2ADispatch: true,
-			},
-			{ config: effectiveConfig },
+		originDiscoveryQuery = {
+			workspaceId: env.workspaceId,
+			limit: 100,
+			requireA2ADispatch: true,
+			eligibleForDelegation: true,
+		};
+		const discoveredOrigin = normalizePeerDiscoveryResult(
+			await deps.listPeers(originDiscoveryQuery, { config: effectiveConfig }),
+			"origin",
 		);
-		if (!originPeers) {
+		if (!discoveredOrigin) {
 			throw new Error(
 				"Platform A2A live smoke received no origin peer list from Platform",
 			);
 		}
-		origin = requirePeer(originPeers, env.fromAgentId, env, deps.now());
+		originDiscovery = discoveredOrigin;
+		origin = requirePeer(originDiscovery.candidates, env.fromAgentId, env, deps.now());
 	} else {
-		origin = requirePeer(targetPeers, env.fromAgentId, env, deps.now());
+		origin = requirePeer(targetDiscovery.candidates, env.fromAgentId, env, deps.now());
 	}
 	if (env.fetchAgentCard) {
 		await assertAgentCardFetch(origin, effectiveConfig, deps);
@@ -498,6 +565,20 @@ export async function runPlatformA2ADelegationLiveSmoke(
 		createdAt,
 		origin,
 		target,
+		discovery: {
+			target: buildDiscoveryEvidence({
+				env,
+				label: "target",
+				query: targetDiscoveryQuery,
+				result: targetDiscovery,
+			}),
+			origin: buildDiscoveryEvidence({
+				env,
+				label: "origin",
+				query: originDiscoveryQuery,
+				result: originDiscovery,
+			}),
+		},
 		delegation: observedDelegation,
 		graph,
 		control,
@@ -526,6 +607,120 @@ function firstEnv(
 		}
 	}
 	return undefined;
+}
+
+function normalizePeerDiscoveryResult(
+	result: PlatformA2APeerListResult,
+	label: "target" | "origin",
+): PlatformAgentRegistryA2APeerCandidatesResult | null {
+	if (!result) {
+		return null;
+	}
+	if (Array.isArray(result)) {
+		return { candidates: result };
+	}
+	if (Array.isArray(result.candidates)) {
+		return result;
+	}
+	throw new Error(
+		`Platform A2A live smoke received an invalid ${label} peer discovery result`,
+	);
+}
+
+function buildDiscoveryEvidence(input: {
+	env: PlatformA2ALiveSmokeEnv;
+	label: "target" | "origin";
+	query: PlatformAgentRegistryListA2APeersInput;
+	result: PlatformAgentRegistryA2APeerCandidatesResult;
+}): PlatformA2APeerDiscoveryEvidence {
+	const source = input.result.discoveryEvidence;
+	const matchedAgentIds = input.result.candidates
+		.map((candidate) => candidate.agent.id)
+		.filter((agentId): agentId is string => Boolean(agentId));
+	return {
+		surface: "platform-agent-registry-peer-discovery",
+		label: input.label,
+		sourceEvidencePresent: hasSubstantiveDiscoveryEvidence(source),
+		query: {
+			organizationId: input.env.organizationId,
+			workspaceId: input.query.workspaceId ?? input.env.workspaceId,
+			skillId: input.query.skillId,
+			capability: input.query.capability,
+			limit: input.query.limit,
+			requireA2ADispatch: input.query.requireA2ADispatch,
+			eligibleForDelegation: input.query.eligibleForDelegation,
+		},
+		result: {
+			schema: source?.schema,
+			decision: source?.decision,
+			reason: source?.reason,
+				organizationId: source?.organizationId,
+				workspaceId: source?.workspaceId,
+				capability: source?.capability,
+				capabilities: source?.capabilities,
+				a2aSkillId: source?.a2aSkillId,
+			requireA2ADispatch:
+				source?.requireA2ADispatch ?? input.query.requireA2ADispatch,
+			eligibleForDelegation:
+				source?.eligibleForDelegation ?? input.query.eligibleForDelegation,
+			candidateCount: source?.candidateCount ?? input.result.candidates.length,
+			matchedCount: source?.matchedCount ?? input.result.candidates.length,
+			matchedAgentIds,
+			traceId: source?.traceId,
+			spanId: source?.spanId,
+			requestId: source?.requestId,
+			observedAt: source?.observedAt,
+			exclusions: summarizeDiscoveryExclusions(source),
+		},
+	};
+}
+
+function hasSubstantiveDiscoveryEvidence(
+	source: PlatformAgentDiscoveryEvidence | undefined,
+): boolean {
+	return Boolean(
+		source?.schema ||
+			source?.decision ||
+			source?.reason ||
+			source?.organizationId ||
+			source?.workspaceId ||
+			source?.capability ||
+			(source?.capabilities?.length ?? 0) > 0 ||
+			source?.agentType ||
+			source?.a2aSkillId ||
+			source?.taskClass ||
+			source?.requireA2ADispatch !== undefined ||
+			source?.eligibleForDelegation !== undefined ||
+			source?.surface ||
+			source?.status ||
+			source?.candidateCount !== undefined ||
+			source?.matchedCount !== undefined ||
+			source?.traceId ||
+			source?.spanId ||
+			source?.requestId ||
+			source?.observedAt ||
+			(source?.exclusions?.length ?? 0) > 0,
+	);
+}
+
+function summarizeDiscoveryExclusions(
+	source: PlatformAgentDiscoveryEvidence | undefined,
+): PlatformA2APeerDiscoveryEvidence["result"]["exclusions"] {
+	const exclusions = source?.exclusions
+		?.map((exclusion) => ({
+			reason: exclusion.reason,
+			count: exclusion.count,
+			policyReasons: exclusion.policyReasons,
+			policyScopes: exclusion.policyScopes,
+		}))
+		.filter(
+			(exclusion) =>
+				exclusion.reason ||
+				exclusion.count !== undefined ||
+				exclusion.policyReasons ||
+				exclusion.policyScopes,
+		);
+	return exclusions && exclusions.length > 0 ? exclusions : undefined;
 }
 
 function requirePeer(
@@ -766,6 +961,7 @@ function buildEvidence(input: {
 	createdAt: string;
 	origin: PlatformAgentRegistryA2APeerCandidate;
 	target: PlatformAgentRegistryA2APeerCandidate;
+	discovery: PlatformA2ALiveSmokeEvidence["discovery"];
 	delegation: NonNullable<PlatformAgentRegistryDelegateResult["delegation"]>;
 	graph: PlatformAgentRegistryGetA2ADelegationGraphResult;
 	control: PlatformAgentRegistryControlA2ADelegationTaskResult;
@@ -796,6 +992,7 @@ function buildEvidence(input: {
 			capability: input.env.capability,
 			promptHash: sha256Hex(input.env.prompt),
 		},
+		discovery: input.discovery,
 		peers: {
 			origin: buildPeerEvidence(input.origin, input.createdAt),
 			target: buildPeerEvidence(input.target, input.createdAt),

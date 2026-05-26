@@ -325,6 +325,7 @@ export interface PlatformAgentDiscoveryEvidence {
 	schema?: string;
 	decision?: string;
 	reason?: string;
+	organizationId?: string;
 	workspaceId?: string;
 	capability?: string;
 	capabilities?: string[];
@@ -332,10 +333,15 @@ export interface PlatformAgentDiscoveryEvidence {
 	a2aSkillId?: string;
 	taskClass?: string;
 	requireA2ADispatch?: boolean;
+	eligibleForDelegation?: boolean;
 	surface?: string;
 	status?: string;
 	candidateCount?: number;
 	matchedCount?: number;
+	traceId?: string;
+	spanId?: string;
+	requestId?: string;
+	observedAt?: string;
 	exclusions?: PlatformAgentDiscoveryExclusion[];
 }
 
@@ -914,6 +920,7 @@ function normalizeDiscoveryEvidence(
 		schema: firstString(record, "schema"),
 		decision: firstString(record, "decision"),
 		reason: firstString(record, "reason"),
+		organizationId: firstString(record, "organizationId", "organization_id"),
 		workspaceId: firstString(record, "workspaceId", "workspace_id"),
 		capability: firstString(record, "capability"),
 		capabilities: stringList(record, "capabilities"),
@@ -926,10 +933,19 @@ function normalizeDiscoveryEvidence(
 			"requireA2ADispatch",
 			"require_a2a_dispatch",
 		),
+		eligibleForDelegation: firstBoolean(
+			record,
+			"eligibleForDelegation",
+			"eligible_for_delegation",
+		),
 		surface: firstString(record, "surface"),
 		status: firstString(record, "status"),
 		candidateCount: firstNumber(record, "candidateCount", "candidate_count"),
 		matchedCount: firstNumber(record, "matchedCount", "matched_count"),
+		traceId: firstString(record, "traceId", "trace_id"),
+		spanId: firstString(record, "spanId", "span_id"),
+		requestId: firstString(record, "requestId", "request_id"),
+		observedAt: firstString(record, "observedAt", "observed_at"),
 		exclusions: objectList(record, "exclusions")
 			?.map((exclusion) => normalizeDiscoveryExclusion(exclusion))
 			.filter(

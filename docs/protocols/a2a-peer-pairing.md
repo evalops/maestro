@@ -191,17 +191,20 @@ npm run platform:a2a-evidence-verify -- \
   tmp/platform-a2a-delegation-live/<run>/evidence.json \
   --require-signature \
   --require-github-dereference \
+  --require-discovery-evidence \
   --require-negative-auth-probe
 ```
 
 The verifier checks the evidence digest sidecar, live marker, protocol version,
 40-hex Maestro git SHA, optional GitHub run/PR identifiers, optional Ed25519
 detached signature, optional GitHub API dereference, Platform delegation id,
-remote A2A task id, peer ids, graph nodes, control mode, task id, and optional
-invalid-token rejection evidence. It rejects digest mismatches,
+remote A2A task id, peer ids, Agent Registry discovery evidence, graph nodes,
+control mode, task id, and optional invalid-token rejection evidence. It
+rejects digest mismatches,
 production-looking synthetic SHAs, slug-style PR refs, fake GHA run ids,
 unresolved required Actions/PR metadata, local proof ids, missing required
-signatures, key-fingerprint mismatches, and invalid detached signatures.
+signatures, missing required discovery evidence, key-fingerprint mismatches, and
+invalid detached signatures.
 
 ## TUI Surface
 

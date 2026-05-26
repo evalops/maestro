@@ -39,12 +39,19 @@ interface PlatformA2ALiveEvidenceVerification {
 	};
 	delegationId: string;
 	a2aTaskId: string;
+	discovery?: {
+		targetSourceEvidencePresent: boolean;
+		originSourceEvidencePresent: boolean;
+		targetTraceId?: string;
+		originTraceId?: string;
+	};
 }
 
 export interface PlatformA2ALiveEvidenceVerificationOptions {
 	requireSignature?: boolean;
 	requireDereferenceableGithub?: boolean;
 	requireNegativeAuthProbe?: boolean;
+	requireDiscoveryEvidence?: boolean;
 	publicKeyPem?: string;
 	publicKeyPath?: string;
 	env?: Env;
@@ -95,6 +102,8 @@ export async function verifyPlatformA2ALiveEvidenceFile(
 	if (record.live !== true) {
 		throw new Error("Platform A2A evidence is not marked live");
 	}
+	const workspaceId = requireString(record, "workspaceId");
+	const organizationId = requireString(record, "organizationId");
 	const maestro = requireRecord(record.maestro, "maestro");
 	const gitSha = requireString(maestro, "gitSha");
 	assertRealishGitSha(gitSha);
@@ -110,6 +119,8 @@ export async function verifyPlatformA2ALiveEvidenceFile(
 	const inputs = requireRecord(record.inputs, "inputs");
 	const fromAgentId = requireString(inputs, "fromAgentId");
 	const toAgentId = requireString(inputs, "toAgentId");
+	const skillId = optionalString(inputs, "skillId");
+	const capability = optionalString(inputs, "capability");
 	const peers = requireRecord(record.peers, "peers");
 	const origin = requireRecord(peers.origin, "peers.origin");
 	const target = requireRecord(peers.target, "peers.target");
@@ -125,6 +136,15 @@ export async function verifyPlatformA2ALiveEvidenceFile(
 			`Platform A2A evidence inputs.toAgentId ${toAgentId} does not match peers.target.agentId ${targetAgentId}`,
 		);
 	}
+	const discovery = verifyDiscoveryEvidence(record.discovery, {
+		workspaceId,
+		organizationId,
+		fromAgentId,
+		toAgentId,
+		skillId,
+		capability,
+		requireDiscoveryEvidence: options.requireDiscoveryEvidence,
+	});
 	const graph = requireRecord(record.graph, "graph");
 	const nodes = graph.nodes;
 	if (!Array.isArray(nodes) || nodes.length < 1) {
@@ -170,7 +190,230 @@ export async function verifyPlatformA2ALiveEvidenceFile(
 		signature,
 		delegationId,
 		a2aTaskId,
+		discovery,
 	};
+}
+
+function verifyDiscoveryEvidence(
+	value: unknown,
+	expected: {
+		workspaceId: string;
+		organizationId: string;
+		fromAgentId: string;
+		toAgentId: string;
+		skillId?: string;
+		capability?: string;
+		requireDiscoveryEvidence?: boolean;
+	},
+): PlatformA2ALiveEvidenceVerification["discovery"] {
+	if (value === undefined || value === null) {
+		if (expected.requireDiscoveryEvidence) {
+			throw new Error("Platform A2A evidence requires discovery evidence");
+		}
+		return undefined;
+	}
+	const discovery = requireRecord(value, "discovery");
+	const target = verifyDiscoverySection(
+		discovery.target,
+		"discovery.target",
+		expected,
+		{
+			requireRequestedFilters: expected.requireDiscoveryEvidence,
+			requireSourceScope: expected.requireDiscoveryEvidence,
+		},
+	);
+	const origin = verifyDiscoverySection(
+		discovery.origin,
+		"discovery.origin",
+		expected,
+		{ requireSourceScope: expected.requireDiscoveryEvidence },
+	);
+	if (!target.matchedAgentIds.includes(expected.toAgentId)) {
+		throw new Error(
+			`Platform A2A evidence discovery.target did not match target agent ${expected.toAgentId}`,
+		);
+	}
+	if (!origin.matchedAgentIds.includes(expected.fromAgentId)) {
+		throw new Error(
+			`Platform A2A evidence discovery.origin did not match origin agent ${expected.fromAgentId}`,
+		);
+	}
+	if (
+		expected.requireDiscoveryEvidence &&
+		(!target.sourceEvidencePresent || !origin.sourceEvidencePresent)
+	) {
+		throw new Error(
+			"Platform A2A evidence requires source Agent Registry discovery evidence",
+		);
+	}
+	return {
+		targetSourceEvidencePresent: target.sourceEvidencePresent,
+		originSourceEvidencePresent: origin.sourceEvidencePresent,
+		targetTraceId: target.traceId,
+		originTraceId: origin.traceId,
+	};
+}
+
+function verifyDiscoverySection(
+	value: unknown,
+	name: string,
+	expected: {
+		workspaceId: string;
+		organizationId: string;
+		skillId?: string;
+		capability?: string;
+	},
+	options: {
+		requireRequestedFilters?: boolean;
+		requireSourceScope?: boolean;
+	} = {},
+): {
+	sourceEvidencePresent: boolean;
+	matchedAgentIds: string[];
+	traceId?: string;
+} {
+	const section = requireRecord(value, name);
+	const surface = requireString(section, "surface");
+	if (surface !== "platform-agent-registry-peer-discovery") {
+		throw new Error(
+			`Platform A2A evidence ${name}.surface is unsupported: ${surface}`,
+		);
+	}
+	const query = requireRecord(section.query, `${name}.query`);
+	const queryWorkspaceId = requireString(query, "workspaceId");
+	const queryOrganizationId = requireString(query, "organizationId");
+	if (queryWorkspaceId !== expected.workspaceId) {
+		throw new Error(
+			`Platform A2A evidence ${name}.query.workspaceId ${queryWorkspaceId} does not match workspaceId ${expected.workspaceId}`,
+		);
+	}
+	if (queryOrganizationId !== expected.organizationId) {
+		throw new Error(
+			`Platform A2A evidence ${name}.query.organizationId ${queryOrganizationId} does not match organizationId ${expected.organizationId}`,
+		);
+	}
+	requireBooleanTrue(query, "requireA2ADispatch", `${name}.query`);
+	const result = requireRecord(section.result, `${name}.result`);
+	if (options.requireRequestedFilters) {
+		verifyRequestedDiscoveryFilters(name, query, result, expected);
+	}
+	const resultWorkspaceId = optionalString(result, "workspaceId");
+	const resultOrganizationId = optionalString(result, "organizationId");
+	if (!resultWorkspaceId) {
+		if (options.requireSourceScope) {
+			throw new Error(
+				`Platform A2A evidence ${name}.result.workspaceId missing does not match workspaceId ${expected.workspaceId}`,
+			);
+		}
+	} else if (resultWorkspaceId !== expected.workspaceId) {
+		throw new Error(
+			`Platform A2A evidence ${name}.result.workspaceId ${resultWorkspaceId} does not match workspaceId ${expected.workspaceId}`,
+		);
+	}
+	if (!resultOrganizationId) {
+		if (options.requireSourceScope) {
+			throw new Error(
+				`Platform A2A evidence ${name}.result.organizationId missing does not match organizationId ${expected.organizationId}`,
+			);
+		}
+	} else if (resultOrganizationId !== expected.organizationId) {
+		throw new Error(
+			`Platform A2A evidence ${name}.result.organizationId ${resultOrganizationId} does not match organizationId ${expected.organizationId}`,
+		);
+	}
+	const sourceEvidencePresent = requireBoolean(
+		section,
+		"sourceEvidencePresent",
+		name,
+	);
+	const candidateCount = requireNonNegativeInteger(
+		result,
+		"candidateCount",
+		`${name}.result`,
+	);
+	const matchedCount = requireNonNegativeInteger(
+		result,
+		"matchedCount",
+		`${name}.result`,
+	);
+	if (candidateCount < matchedCount) {
+		throw new Error(
+			`Platform A2A evidence ${name}.result candidateCount ${candidateCount} is lower than matchedCount ${matchedCount}`,
+		);
+	}
+	const matchedAgentIds = requireStringArray(
+		result,
+		"matchedAgentIds",
+		`${name}.result`,
+	);
+	if (matchedAgentIds.length < 1) {
+		throw new Error(
+			`Platform A2A evidence ${name}.result matchedAgentIds is empty`,
+		);
+	}
+	if (matchedCount !== matchedAgentIds.length) {
+		throw new Error(
+			`Platform A2A evidence ${name}.result matchedCount ${matchedCount} does not match matchedAgentIds length ${matchedAgentIds.length}`,
+		);
+	}
+	return {
+		sourceEvidencePresent,
+		matchedAgentIds,
+		traceId: optionalString(result, "traceId"),
+	};
+}
+
+function verifyRequestedDiscoveryFilters(
+	name: string,
+	query: Record<string, unknown>,
+	result: Record<string, unknown>,
+	expected: {
+		skillId?: string;
+		capability?: string;
+	},
+): void {
+	if (!expected.skillId && !expected.capability) {
+		throw new Error(
+			`Platform A2A evidence ${name} requires an input skillId or capability for strict discovery verification`,
+		);
+	}
+	if (expected.skillId) {
+		const querySkillId = optionalString(query, "skillId");
+		if (querySkillId !== expected.skillId) {
+			throw new Error(
+				`Platform A2A evidence ${name}.query.skillId ${querySkillId ?? "missing"} does not match inputs.skillId ${expected.skillId}`,
+			);
+		}
+		const resultSkillId = optionalString(result, "a2aSkillId");
+		if (resultSkillId !== expected.skillId) {
+			throw new Error(
+				`Platform A2A evidence ${name}.result.a2aSkillId ${resultSkillId ?? "missing"} does not match inputs.skillId ${expected.skillId}`,
+			);
+		}
+	}
+	if (expected.capability) {
+		const queryCapability = optionalString(query, "capability");
+		if (queryCapability !== expected.capability) {
+			throw new Error(
+				`Platform A2A evidence ${name}.query.capability ${queryCapability ?? "missing"} does not match inputs.capability ${expected.capability}`,
+			);
+		}
+		const resultCapability = optionalString(result, "capability");
+		const resultCapabilities = optionalStringArray(result, "capabilities");
+		if (
+			resultCapability !== expected.capability &&
+			!resultCapabilities.includes(expected.capability)
+		) {
+			const actual =
+				resultCapability ??
+				(resultCapabilities.length > 0
+					? `[${resultCapabilities.join(", ")}]`
+					: "missing");
+			throw new Error(
+				`Platform A2A evidence ${name}.result.capability ${actual} does not match inputs.capability ${expected.capability}`,
+			);
+		}
+	}
 }
 
 function verifyNegativeAuthProbe(
@@ -375,6 +618,84 @@ function optionalString(
 		throw new Error(`Platform A2A evidence field ${key} must be a string`);
 	}
 	return value.trim();
+}
+
+function optionalStringArray(record: Record<string, unknown>, key: string): string[] {
+	const value = record[key];
+	if (value === undefined || value === null) {
+		return [];
+	}
+	if (!Array.isArray(value)) {
+		throw new Error(`Platform A2A evidence field ${key} must be an array`);
+	}
+	return value.map((item) => {
+		if (typeof item !== "string" || item.trim().length === 0) {
+			throw new Error(
+				`Platform A2A evidence field ${key} must contain only strings`,
+			);
+		}
+		return item.trim();
+	});
+}
+
+function requireBoolean(
+	record: Record<string, unknown>,
+	key: string,
+	name: string,
+): boolean {
+	const value = record[key];
+	if (typeof value !== "boolean") {
+		throw new Error(`Platform A2A evidence field ${name}.${key} must be a boolean`);
+	}
+	return value;
+}
+
+function requireBooleanTrue(
+	record: Record<string, unknown>,
+	key: string,
+	name: string,
+): void {
+	if (requireBoolean(record, key, name) !== true) {
+		throw new Error(`Platform A2A evidence field ${name}.${key} must be true`);
+	}
+}
+
+function requireNonNegativeInteger(
+	record: Record<string, unknown>,
+	key: string,
+	name: string,
+): number {
+	const value = record[key];
+	if (
+		typeof value !== "number" ||
+		!Number.isSafeInteger(value) ||
+		value < 0
+	) {
+		throw new Error(
+			`Platform A2A evidence field ${name}.${key} must be a non-negative integer`,
+		);
+	}
+	return value;
+}
+
+function requireStringArray(
+	record: Record<string, unknown>,
+	key: string,
+	name: string,
+): string[] {
+	const value = record[key];
+	if (!Array.isArray(value)) {
+		throw new Error(`Platform A2A evidence field ${name}.${key} must be an array`);
+	}
+	const strings = value.map((item) => {
+		if (typeof item !== "string" || item.trim().length === 0) {
+			throw new Error(
+				`Platform A2A evidence field ${name}.${key} must contain only strings`,
+			);
+		}
+		return item.trim();
+	});
+	return strings;
 }
 
 function verifyGithubEvidence(
@@ -709,7 +1030,7 @@ if (isEntrypoint()) {
 		process.env.MAESTRO_A2A_LIVE_EVIDENCE_PATH?.trim();
 	if (!evidencePath) {
 		console.error(
-			"Usage: tsx scripts/verify-platform-a2a-live-evidence.ts <evidence.json> [--require-signature] [--require-github-dereference] [--require-negative-auth-probe]",
+			"Usage: tsx scripts/verify-platform-a2a-live-evidence.ts <evidence.json> [--require-signature] [--require-github-dereference] [--require-negative-auth-probe] [--require-discovery-evidence]",
 		);
 		process.exitCode = 2;
 	} else {
@@ -723,6 +1044,11 @@ if (isEntrypoint()) {
 				args.includes("--require-negative-auth-probe") ||
 				booleanEnv(
 					process.env.MAESTRO_A2A_LIVE_EVIDENCE_REQUIRE_NEGATIVE_AUTH_PROBE,
+				),
+			requireDiscoveryEvidence:
+				args.includes("--require-discovery-evidence") ||
+				booleanEnv(
+					process.env.MAESTRO_A2A_LIVE_EVIDENCE_REQUIRE_DISCOVERY_EVIDENCE,
 				),
 			requireSignature:
 				args.includes("--require-signature") ||

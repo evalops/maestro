@@ -40,7 +40,60 @@ function evidence(
 		inputs: {
 			fromAgentId: "maestro-origin",
 			toAgentId: "maestro-target",
+			skillId: "maestro.subagent.repo-explorer",
 			promptHash: "a".repeat(64),
+		},
+		discovery: {
+			target: {
+				surface: "platform-agent-registry-peer-discovery",
+				label: "target",
+				sourceEvidencePresent: true,
+				query: {
+					organizationId: "org_1",
+					workspaceId: "ws_1",
+					skillId: "maestro.subagent.repo-explorer",
+					limit: 100,
+					requireA2ADispatch: true,
+					eligibleForDelegation: true,
+				},
+				result: {
+					schema: "agents.v1.discovery-evidence",
+					decision: "matched",
+					organizationId: "org_1",
+					workspaceId: "ws_1",
+					a2aSkillId: "maestro.subagent.repo-explorer",
+					requireA2ADispatch: true,
+					eligibleForDelegation: true,
+					candidateCount: 2,
+					matchedCount: 2,
+					matchedAgentIds: ["maestro-origin", "maestro-target"],
+					traceId: "trace-target",
+					requestId: "request-target",
+				},
+			},
+			origin: {
+				surface: "platform-agent-registry-peer-discovery",
+				label: "origin",
+				sourceEvidencePresent: true,
+				query: {
+					organizationId: "org_1",
+					workspaceId: "ws_1",
+					limit: 100,
+					requireA2ADispatch: true,
+				},
+				result: {
+					schema: "agents.v1.discovery-evidence",
+					decision: "matched",
+					organizationId: "org_1",
+					workspaceId: "ws_1",
+					requireA2ADispatch: true,
+					candidateCount: 1,
+					matchedCount: 1,
+					matchedAgentIds: ["maestro-origin"],
+					traceId: "trace-origin",
+					requestId: "request-origin",
+				},
+			},
 		},
 		peers: {
 			origin: {
@@ -142,6 +195,12 @@ describe("Platform A2A live evidence verifier", () => {
 				githubRunId: "26252628231",
 				githubPullRequestNumber: 2070,
 				evidenceSha256: expect.stringMatching(/^[a-f0-9]{64}$/),
+				discovery: {
+					targetSourceEvidencePresent: true,
+					originSourceEvidencePresent: true,
+					targetTraceId: "trace-target",
+					originTraceId: "trace-origin",
+				},
 			});
 		} finally {
 			await rm(dir, { force: true, recursive: true });
@@ -463,6 +522,355 @@ describe("Platform A2A live evidence verifier", () => {
 			);
 			await expect(verifyPlatformA2ALiveEvidenceFile(path)).rejects.toThrow(
 				/not marked rejected/,
+			);
+		} finally {
+			await rm(dir, { force: true, recursive: true });
+		}
+	});
+
+	it("requires source Agent Registry discovery evidence when requested", async () => {
+		const dir = await mkdtemp(join(tmpdir(), "maestro-a2a-evidence-"));
+		try {
+			const path = await writeEvidenceBundle(
+				dir,
+				evidence({
+					discovery: {
+						target: {
+							...(evidence().discovery as Record<string, unknown>).target,
+							sourceEvidencePresent: false,
+						},
+						origin: (evidence().discovery as Record<string, unknown>).origin,
+					},
+				}),
+			);
+			await expect(
+				verifyPlatformA2ALiveEvidenceFile(path, {
+					requireDiscoveryEvidence: true,
+				}),
+			).rejects.toThrow(/requires source Agent Registry discovery evidence/);
+		} finally {
+			await rm(dir, { force: true, recursive: true });
+		}
+	});
+
+	it("rejects strict target discovery evidence that omits the requested skill filter", async () => {
+		const dir = await mkdtemp(join(tmpdir(), "maestro-a2a-evidence-"));
+		try {
+			const base = evidence();
+			const discovery = base.discovery as Record<
+				string,
+				Record<string, unknown>
+			>;
+			const target = discovery.target as Record<string, unknown>;
+			const query = target.query as Record<string, unknown>;
+			const path = await writeEvidenceBundle(
+				dir,
+				evidence({
+					discovery: {
+						...discovery,
+						target: {
+							...target,
+							query: {
+								...query,
+								skillId: undefined,
+							},
+						},
+					},
+				}),
+			);
+			await expect(
+				verifyPlatformA2ALiveEvidenceFile(path, {
+					requireDiscoveryEvidence: true,
+				}),
+			).rejects.toThrow(
+				/discovery\.target\.query\.skillId missing does not match inputs\.skillId maestro\.subagent\.repo-explorer/,
+			);
+		} finally {
+			await rm(dir, { force: true, recursive: true });
+		}
+	});
+
+	it("rejects strict target discovery evidence with the wrong registry skill result", async () => {
+		const dir = await mkdtemp(join(tmpdir(), "maestro-a2a-evidence-"));
+		try {
+			const base = evidence();
+			const discovery = base.discovery as Record<
+				string,
+				Record<string, unknown>
+			>;
+			const target = discovery.target as Record<string, unknown>;
+			const result = target.result as Record<string, unknown>;
+			const path = await writeEvidenceBundle(
+				dir,
+				evidence({
+					discovery: {
+						...discovery,
+						target: {
+							...target,
+							result: {
+								...result,
+								a2aSkillId: "maestro.subagent.other",
+							},
+						},
+					},
+				}),
+			);
+			await expect(
+				verifyPlatformA2ALiveEvidenceFile(path, {
+					requireDiscoveryEvidence: true,
+				}),
+			).rejects.toThrow(
+				/discovery\.target\.result\.a2aSkillId maestro\.subagent\.other does not match inputs\.skillId maestro\.subagent\.repo-explorer/,
+			);
+		} finally {
+			await rm(dir, { force: true, recursive: true });
+		}
+	});
+
+	it("rejects strict target discovery evidence that omits the registry skill result", async () => {
+		const dir = await mkdtemp(join(tmpdir(), "maestro-a2a-evidence-"));
+		try {
+			const base = evidence();
+			const discovery = base.discovery as Record<
+				string,
+				Record<string, unknown>
+			>;
+			const target = discovery.target as Record<string, unknown>;
+			const result = target.result as Record<string, unknown>;
+			const path = await writeEvidenceBundle(
+				dir,
+				evidence({
+					discovery: {
+						...discovery,
+						target: {
+							...target,
+							result: {
+								...result,
+								a2aSkillId: undefined,
+							},
+						},
+					},
+				}),
+			);
+			await expect(
+				verifyPlatformA2ALiveEvidenceFile(path, {
+					requireDiscoveryEvidence: true,
+				}),
+			).rejects.toThrow(
+				/discovery\.target\.result\.a2aSkillId missing does not match inputs\.skillId maestro\.subagent\.repo-explorer/,
+			);
+		} finally {
+			await rm(dir, { force: true, recursive: true });
+		}
+	});
+
+	it("accepts strict target discovery evidence with an array capability result", async () => {
+		const dir = await mkdtemp(join(tmpdir(), "maestro-a2a-evidence-"));
+		try {
+			const base = evidence({
+				inputs: {
+					fromAgentId: "maestro-origin",
+					toAgentId: "maestro-target",
+					capability: "repo.read",
+					promptHash: "a".repeat(64),
+				},
+			});
+			const discovery = base.discovery as Record<
+				string,
+				Record<string, unknown>
+			>;
+			const target = discovery.target as Record<string, unknown>;
+			const query = target.query as Record<string, unknown>;
+			const result = target.result as Record<string, unknown>;
+			const path = await writeEvidenceBundle(
+				dir,
+				evidence({
+					inputs: base.inputs,
+					discovery: {
+						...discovery,
+						target: {
+							...target,
+							query: {
+								...query,
+								capability: "repo.read",
+								skillId: undefined,
+							},
+							result: {
+								...result,
+								a2aSkillId: undefined,
+								capability: undefined,
+								capabilities: ["repo.read", "repo.write"],
+							},
+						},
+					},
+				}),
+			);
+			await expect(
+				verifyPlatformA2ALiveEvidenceFile(path, {
+					requireDiscoveryEvidence: true,
+				}),
+			).resolves.toMatchObject({
+				discovery: {
+					targetSourceEvidencePresent: true,
+				},
+			});
+		} finally {
+			await rm(dir, { force: true, recursive: true });
+		}
+	});
+
+	it("rejects strict target discovery evidence that omits source scope fields", async () => {
+		const dir = await mkdtemp(join(tmpdir(), "maestro-a2a-evidence-"));
+		try {
+			const base = evidence();
+			const discovery = base.discovery as Record<
+				string,
+				Record<string, unknown>
+			>;
+			const target = discovery.target as Record<string, unknown>;
+			const result = target.result as Record<string, unknown>;
+			const path = await writeEvidenceBundle(
+				dir,
+				evidence({
+					discovery: {
+						...discovery,
+						target: {
+							...target,
+							result: {
+								...result,
+								workspaceId: undefined,
+							},
+						},
+					},
+				}),
+			);
+			await expect(
+				verifyPlatformA2ALiveEvidenceFile(path, {
+					requireDiscoveryEvidence: true,
+				}),
+			).rejects.toThrow(
+				/discovery\.target\.result\.workspaceId missing does not match workspaceId ws_1/,
+			);
+		} finally {
+			await rm(dir, { force: true, recursive: true });
+		}
+	});
+
+	it("accepts strict capability discovery evidence that uses capabilities array form", async () => {
+		const dir = await mkdtemp(join(tmpdir(), "maestro-a2a-evidence-"));
+		try {
+			const base = evidence();
+			const discovery = base.discovery as Record<
+				string,
+				Record<string, unknown>
+			>;
+			const target = discovery.target as Record<string, unknown>;
+			const query = target.query as Record<string, unknown>;
+			const result = target.result as Record<string, unknown>;
+			const path = await writeEvidenceBundle(
+				dir,
+				evidence({
+					inputs: {
+						fromAgentId: "maestro-origin",
+						toAgentId: "maestro-target",
+						capability: "repo.explore",
+						promptHash: "a".repeat(64),
+					},
+					discovery: {
+						...discovery,
+						target: {
+							...target,
+							query: {
+								...query,
+								skillId: undefined,
+								capability: "repo.explore",
+							},
+							result: {
+								...result,
+								a2aSkillId: undefined,
+								capability: undefined,
+								capabilities: ["repo.explore"],
+							},
+						},
+					},
+				}),
+			);
+			await expect(
+				verifyPlatformA2ALiveEvidenceFile(path, {
+					requireDiscoveryEvidence: true,
+				}),
+			).resolves.toMatchObject({
+				discovery: {
+					targetSourceEvidencePresent: true,
+					originSourceEvidencePresent: true,
+				},
+			});
+		} finally {
+			await rm(dir, { force: true, recursive: true });
+		}
+	});
+
+	it("rejects discovery evidence whose matched count disagrees with matched ids", async () => {
+		const dir = await mkdtemp(join(tmpdir(), "maestro-a2a-evidence-"));
+		try {
+			const base = evidence();
+			const discovery = base.discovery as Record<
+				string,
+				Record<string, unknown>
+			>;
+			const target = discovery.target as Record<string, unknown>;
+			const result = target.result as Record<string, unknown>;
+			const path = await writeEvidenceBundle(
+				dir,
+				evidence({
+					discovery: {
+						...discovery,
+						target: {
+							...target,
+							result: {
+								...result,
+								matchedCount: 0,
+							},
+						},
+					},
+				}),
+			);
+			await expect(verifyPlatformA2ALiveEvidenceFile(path)).rejects.toThrow(
+				/discovery\.target\.result matchedCount 0 does not match matchedAgentIds length 2/,
+			);
+		} finally {
+			await rm(dir, { force: true, recursive: true });
+		}
+	});
+
+	it("rejects discovery evidence that does not match the target agent", async () => {
+		const dir = await mkdtemp(join(tmpdir(), "maestro-a2a-evidence-"));
+		try {
+			const base = evidence();
+			const discovery = base.discovery as Record<
+				string,
+				Record<string, unknown>
+			>;
+			const target = discovery.target as Record<string, unknown>;
+			const result = target.result as Record<string, unknown>;
+			const path = await writeEvidenceBundle(
+				dir,
+				evidence({
+					discovery: {
+						...discovery,
+						target: {
+							...target,
+							result: {
+								...result,
+								matchedCount: 1,
+								matchedAgentIds: ["maestro-origin"],
+							},
+						},
+					},
+				}),
+			);
+			await expect(verifyPlatformA2ALiveEvidenceFile(path)).rejects.toThrow(
+				/discovery\.target did not match target agent maestro-target/,
 			);
 		} finally {
 			await rm(dir, { force: true, recursive: true });
