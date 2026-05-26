@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // @ts-check
 
-import { execFileSync } from "node:child_process";
+import { spawn } from "node:child_process";
 import { getPackageMetadata } from "./package-metadata.js";
 
 function parseArgs(argv) {
@@ -63,7 +63,9 @@ const defaultMessage = replacementPackage
 	: "Deprecated release. Upgrade to a supported Maestro version.";
 const message = options.message || defaultMessage;
 const spec = `${packageName}@${options.range}`;
-const npmCommand = process.platform === "win32" ? "npm.cmd" : "npm";
+const npmCommand =
+	process.env.MAESTRO_NPM_COMMAND?.trim() ||
+	(process.platform === "win32" ? "npm.cmd" : "npm");
 const npmArgs = ["deprecate", spec, message];
 
 if (options.otp) {
@@ -75,5 +77,45 @@ if (options.dryRun) {
 	process.exit(0);
 }
 
-execFileSync(npmCommand, npmArgs, { stdio: "inherit" });
+function runNpmCommand(command, args) {
+	return new Promise((resolve, reject) => {
+		const child = spawn(command, args, {
+			stdio: ["inherit", "pipe", "pipe"],
+		});
+		let stdout = "";
+		let stderr = "";
+
+		child.stdout.on("data", (chunk) => {
+			const text = chunk.toString();
+			stdout += text;
+			process.stdout.write(text);
+		});
+		child.stderr.on("data", (chunk) => {
+			const text = chunk.toString();
+			stderr += text;
+			process.stderr.write(text);
+		});
+		child.on("error", reject);
+		child.on("close", (status) => {
+			resolve({ status: status ?? 1, stdout, stderr });
+		});
+	});
+}
+const result = await runNpmCommand(npmCommand, npmArgs);
+if (result.status !== 0) {
+	const output = `${result.stdout}\n${result.stderr}`;
+	if (
+		output.includes("E404") &&
+		output.includes("could not be found or you do not have permission")
+	) {
+		console.error(
+			[
+				`npm could not deprecate ${spec}.`,
+				`${spec} resolved during workflow preflight, so this usually means the configured npm token does not have publish/deprecate permission for ${packageName}.`,
+				"Update the npm-release NPM_TOKEN secret to a token owned by a package maintainer, then rerun the deprecation workflow.",
+			].join("\n"),
+		);
+	}
+	process.exit(result.status ?? 1);
+}
 console.log(`Deprecated ${spec}`);

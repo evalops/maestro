@@ -29,6 +29,9 @@ import {
 	getWorkspacePackages,
 	loadRootPackage,
 } from "./workspace-utils.js";
+import { assertPublishedReplayReleaseGate } from "./published-replay-evidence-gate.js";
+
+export { assertPublishedReplayReleaseGate };
 
 const SCRIPTED_SCENARIO_SCHEMA = "evalops.maestro.scripted-scenario.v1";
 const PUBLISHED_REPLAY_EVIDENCE_SCHEMA =
@@ -78,7 +81,7 @@ if (!replaySandboxModes.includes(replaySandboxMode)) {
 }
 
 function parseArgs(argv) {
-	/** @type {{packageName: string; version: string; cliCommand: string; installRoot: string; evidencePath: string; evidenceDir: string}} */
+	/** @type {{packageName: string; version: string; cliCommand: string; installRoot: string; evidencePath: string; evidenceDir: string; installer: string}} */
 	const options = {
 		packageName: "",
 		version: "",
@@ -86,6 +89,7 @@ function parseArgs(argv) {
 		installRoot: "",
 		evidencePath: "",
 		evidenceDir: "",
+		installer: "",
 	};
 
 	for (let index = 0; index < argv.length; index += 1) {
@@ -108,6 +112,9 @@ function parseArgs(argv) {
 				break;
 			case "--evidence-dir":
 				options.evidenceDir = argv[++index] ?? "";
+				break;
+			case "--installer":
+				options.installer = argv[++index] ?? "";
 				break;
 			default:
 				throw new Error(`Unknown argument: ${arg}`);
@@ -142,6 +149,23 @@ function uniqueValues(values) {
 		result.push(value);
 	}
 	return result;
+}
+
+function inferPublishedInstaller({ installer, installMetadata }) {
+	const normalizedInstaller =
+		typeof installer === "string" ? installer.trim().toLowerCase() : "";
+	if (normalizedInstaller) {
+		return normalizedInstaller;
+	}
+	const label =
+		typeof installMetadata?.label === "string" ? installMetadata.label : "";
+	if (/\bvia Bun\b/.test(label)) {
+		return "bun";
+	}
+	if (/\bvia npm\b/.test(label)) {
+		return "npm";
+	}
+	return "local";
 }
 
 function finiteNumber(value) {
@@ -376,6 +400,20 @@ function buildPublishedReplayReleaseGate({ observability, modes }) {
 						"maestro_agent_runtime_ledger_recorded"
 				);
 			}),
+		approvalTraceEvidence:
+			modes.length > 0 &&
+			modes.every((modeEvidence) =>
+				evidenceRefsForMode(modeEvidence).some((ref) =>
+					ref.startsWith("approval-request:"),
+				),
+			),
+		artifactTraceEvidence:
+			modes.length > 0 &&
+			modes.every((modeEvidence) =>
+				evidenceRefsForMode(modeEvidence).some((ref) =>
+					ref.startsWith("artifact:"),
+				),
+			),
 		agentRuntimeLedger:
 			modes.length > 0 &&
 			modes.every((modeEvidence) => {
@@ -405,16 +443,6 @@ function buildPublishedReplayReleaseGate({ observability, modes }) {
 		failedChecks,
 		checks,
 	};
-}
-
-export function assertPublishedReplayReleaseGate(evidence) {
-	if (evidence?.releaseGate?.satisfied === true) {
-		return;
-	}
-	const failedChecks = Array.isArray(evidence?.releaseGate?.failedChecks)
-		? evidence.releaseGate.failedChecks.join(", ")
-		: "unknown";
-	throw new Error(`Published replay release gate failed: ${failedChecks}`);
 }
 
 async function getForbiddenWorkspaceNames() {
@@ -1163,8 +1191,10 @@ export function buildPublishedReplayEvidence({
 	cliCommand,
 	binPath,
 	installMetadata = null,
+	installer = "",
 	modes,
 }) {
+	const resolvedInstaller = inferPublishedInstaller({ installer, installMetadata });
 	const observability = buildPublishedReplayObservability({
 		installMetadata,
 		modes,
@@ -1176,6 +1206,7 @@ export function buildPublishedReplayEvidence({
 	return {
 		schemaVersion: PUBLISHED_REPLAY_EVIDENCE_SCHEMA,
 		generatedAt: new Date().toISOString(),
+		installer: resolvedInstaller,
 		package: {
 			spec: packageSpec,
 			cliCommand,
@@ -1218,6 +1249,7 @@ export async function runPublishedReplayE2E({
 	packageSpec,
 	evidencePath = "",
 	installMetadata = null,
+	installer = "",
 }) {
 	if (process.env.MAESTRO_SKIP_PUBLISHED_REPLAY_E2E === "1") {
 		console.log(`Skipping published replay E2E smoke for ${packageSpec}.`);
@@ -1234,6 +1266,7 @@ export async function runPublishedReplayE2E({
 		cliCommand,
 		binPath,
 		installMetadata,
+		installer,
 		modes,
 	});
 	writePublishedReplayEvidence(
@@ -1307,6 +1340,7 @@ async function main() {
 			packageSpec,
 			evidencePath,
 			installMetadata,
+			installer: overrides.installer || "npm",
 		});
 	} finally {
 		if (shouldCleanup) {
