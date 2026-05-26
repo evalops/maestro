@@ -69,10 +69,6 @@ import {
 	isWorkflowTrackedTool,
 } from "../safety/workflow-state.js";
 import {
-	type SkillArtifactMetadata,
-	getSkillArtifactMetadataFromDetails,
-} from "../skills/artifact-metadata.js";
-import {
 	type PathScopedMutation,
 	getPathScopedMutation,
 	isParallelSafeTool,
@@ -85,6 +81,12 @@ import type { ActionApprovalService } from "./action-approval.js";
 import { getStoredCredentials } from "./keys.js";
 import type { ToolRetryConfig, ToolRetryService } from "./tool-retry.js";
 import { createProviderStream } from "./transport/create-provider-stream.js";
+import {
+	AgentEventQueue,
+	getGovernedToolResultEventMetadata,
+	getSkillToolResultEventMetadata,
+	isDynamicToolApprovalEvent,
+} from "./transport/events.js";
 import {
 	type ReusableToolResultCacheGeneration,
 	type ReusableToolResultEntry,
@@ -137,102 +139,6 @@ import type {
 	ToolSchedulingDecision,
 	ToolSchedulingMetadata,
 } from "./types.js";
-
-type GovernedToolOutcome =
-	| "approval_required"
-	| "approval_pending"
-	| "authentication_required"
-	| "denied"
-	| "rate_limited";
-
-class AgentEventQueue {
-	private events: AgentEvent[] = [];
-	private pending?: Promise<void>;
-	private wake?: () => void;
-
-	push(event: AgentEvent): void {
-		this.events.push(event);
-		if (this.wake) {
-			const wake = this.wake;
-			this.pending = undefined;
-			this.wake = undefined;
-			wake();
-		}
-	}
-
-	shift(): AgentEvent | undefined {
-		return this.events.shift();
-	}
-
-	wait(): Promise<void> {
-		if (this.events.length > 0) {
-			return Promise.resolve();
-		}
-		if (!this.pending) {
-			this.pending = new Promise<void>((resolve) => {
-				this.wake = resolve;
-			});
-		}
-		return this.pending;
-	}
-
-	clearPendingWaiter(): void {
-		this.pending = undefined;
-		this.wake = undefined;
-	}
-}
-
-function isDynamicToolApprovalEvent(event: AgentEvent): boolean {
-	return (
-		event.type === "action_approval_required" ||
-		event.type === "action_approval_resolved"
-	);
-}
-
-function getGovernedToolResultEventMetadata(details: unknown): {
-	errorCode?: string;
-	approvalRequestId?: string;
-	governedOutcome?: GovernedToolOutcome;
-} {
-	if (!details || typeof details !== "object") {
-		return {};
-	}
-
-	const governedOutcome = (details as { governedOutcome?: unknown })
-		.governedOutcome;
-	if (!governedOutcome || typeof governedOutcome !== "object") {
-		return {};
-	}
-
-	const normalized = governedOutcome as Record<string, unknown>;
-	const classification =
-		typeof normalized.classification === "string"
-			? (normalized.classification as GovernedToolOutcome)
-			: undefined;
-	const errorCode =
-		typeof normalized.code === "string" && normalized.code.trim().length > 0
-			? normalized.code.trim()
-			: classification;
-	const approvalRequestId =
-		typeof normalized.approvalRequestId === "string" &&
-		normalized.approvalRequestId.trim().length > 0
-			? normalized.approvalRequestId.trim()
-			: undefined;
-
-	return {
-		errorCode,
-		approvalRequestId,
-		governedOutcome: classification,
-	};
-}
-
-function getSkillToolResultEventMetadata(details: unknown): {
-	skillMetadata?: SkillArtifactMetadata;
-} {
-	return {
-		skillMetadata: getSkillArtifactMetadataFromDetails(details),
-	};
-}
 
 // Re-export types for backward compatibility
 export type {

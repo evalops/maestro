@@ -1,6 +1,6 @@
 {
 	"name": "@evalops/github-agent",
-	"version": "0.10.29",
+	"version": "0.10.30",
 	"description": "Autonomous GitHub agent - Maestro building Maestro",
 	"type": "module",
 	"bin": {
@@ -36,8 +36,8 @@
 		"node": ">=20.0.0"
 	},
 	"dependencies": {
-		"@evalops/ai": "^0.10.29",
-		"@evalops/contracts": "^0.10.29",
+		"@evalops/ai": "^0.10.30",
+		"@evalops/contracts": "^0.10.30",
 		"@octokit/rest": "^21.0.0",
 		"@octokit/webhooks": "^13.0.0",
 		"@sinclair/typebox": "^0.34.0",
