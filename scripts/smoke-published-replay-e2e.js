@@ -37,6 +37,7 @@ const FINAL_TEXT =
 	"Published package golden path completed with manifest evidence.";
 const TOOL_CALL_ID = "call-read-package-json";
 const PROMPT_TEXT = "Replay the published package golden path.";
+const REQUIRED_REPLAY_MODES = ["text", "json", "rpc"];
 const timeoutMs = Number.parseInt(
 	process.env.MAESTRO_PUBLISHED_REPLAY_E2E_TIMEOUT_MS ?? "45000",
 	10,
@@ -122,6 +123,282 @@ function countBy(values) {
 		counts[key] = (counts[key] ?? 0) + 1;
 	}
 	return counts;
+}
+
+function uniqueValues(values) {
+	const seen = new Set();
+	const result = [];
+	for (const value of values) {
+		if (typeof value !== "string" || value.length === 0 || seen.has(value)) {
+			continue;
+		}
+		seen.add(value);
+		result.push(value);
+	}
+	return result;
+}
+
+function finiteNumber(value) {
+	return typeof value === "number" && Number.isFinite(value) ? value : 0;
+}
+
+function addCountMap(target, source) {
+	if (!source || typeof source !== "object" || Array.isArray(source)) {
+		return;
+	}
+	for (const [key, value] of Object.entries(source)) {
+		if (typeof value !== "number" || !Number.isFinite(value)) {
+			continue;
+		}
+		target[key] = (target[key] ?? 0) + value;
+	}
+}
+
+function modeName(modeEvidence) {
+	return typeof modeEvidence?.mode === "string" ? modeEvidence.mode : "unknown";
+}
+
+function evidenceRefsForMode(modeEvidence) {
+	const refs = modeEvidence?.agentRuntimeLedger?.toolWorkItem?.evidenceRefs;
+	return Array.isArray(refs)
+		? refs.filter((ref) => typeof ref === "string" && ref.length > 0)
+		: [];
+}
+
+function buildAgentRuntimeLedgerObservability(modes) {
+	const counts = {
+		entries: 0,
+		promotionOperations: 0,
+		byKind: {},
+		byState: {},
+	};
+	const operations = {
+		handleTrigger: 0,
+		recordRunStep: 0,
+		recordRunWorkItem: 0,
+		terminal: 0,
+	};
+	const ledgerModes = [];
+	const replayDeterministicModes = [];
+	const durabilityModes = [];
+	const promotionIdempotencyKeys = [];
+
+	for (const modeEvidence of modes) {
+		const ledger = modeEvidence?.agentRuntimeLedger;
+		if (!ledger || typeof ledger !== "object") {
+			continue;
+		}
+		const currentMode = modeName(modeEvidence);
+		ledgerModes.push(currentMode);
+		counts.entries += finiteNumber(ledger.counts?.entries ?? ledger.entries);
+		counts.promotionOperations += finiteNumber(
+			ledger.counts?.promotionOperations ?? ledger.promotionOperations,
+		);
+		addCountMap(counts.byKind, ledger.counts?.byKind);
+		addCountMap(counts.byState, ledger.counts?.byState);
+
+		if (ledger.hasHandleTrigger === true) operations.handleTrigger += 1;
+		if (ledger.hasRecordRunStep === true) operations.recordRunStep += 1;
+		if (ledger.hasRecordRunWorkItem === true) operations.recordRunWorkItem += 1;
+		if (ledger.hasTerminalOperation === true) operations.terminal += 1;
+		if (ledger.replayDeterministic === true) {
+			replayDeterministicModes.push(currentMode);
+		}
+		if (
+			ledger.durability?.reconstructable === true &&
+			ledger.durability?.replayDeterministic === true &&
+			typeof ledger.durability?.promotionIdempotencyKey === "string"
+		) {
+			durabilityModes.push(currentMode);
+			promotionIdempotencyKeys.push(ledger.durability.promotionIdempotencyKey);
+		}
+	}
+
+	return {
+		modes: uniqueValues(ledgerModes),
+		replayDeterministicModes: uniqueValues(replayDeterministicModes),
+		durabilityModes: uniqueValues(durabilityModes),
+		promotionIdempotencyKeys: uniqueValues(promotionIdempotencyKeys),
+		counts,
+		operations,
+	};
+}
+
+function buildPublishedReplayObservability({ installMetadata, modes }) {
+	const modeNames = modes.map(modeName);
+	const evidenceRefs = uniqueValues(modes.flatMap(evidenceRefsForMode));
+	const approvalRefs = evidenceRefs.filter((ref) =>
+		ref.startsWith("approval-request:"),
+	);
+	const artifactRefs = evidenceRefs.filter((ref) => ref.startsWith("artifact:"));
+	const errorModes = uniqueValues(
+		modes
+			.filter((modeEvidence) => {
+				const toolStatus = modeEvidence?.tool?.resultStatus;
+				const finalStatus = modeEvidence?.final?.status;
+				return (
+					modeEvidence?.status !== "ok" ||
+					(typeof toolStatus === "string" && toolStatus !== "success") ||
+					(typeof finalStatus === "string" && finalStatus !== "ok")
+				);
+			})
+			.map(modeName),
+	);
+
+	return {
+		install: {
+			installable: installMetadata?.installable === true,
+			forbiddenReferences: Array.isArray(installMetadata?.forbiddenReferences)
+				? installMetadata.forbiddenReferences
+				: [],
+			workspaceProtocolReferences: Array.isArray(
+				installMetadata?.workspaceProtocolReferences,
+			)
+				? installMetadata.workspaceProtocolReferences
+				: [],
+			binCommands: Array.isArray(installMetadata?.binCommands)
+				? installMetadata.binCommands
+				: [],
+		},
+		replay: {
+			requiredModes: REQUIRED_REPLAY_MODES,
+			modes: uniqueValues(modeNames),
+			provider: "scripted-replay",
+			sandboxMode: replaySandboxMode,
+		},
+		sessions: {
+			modes: uniqueValues(
+				modes
+					.filter(
+						(modeEvidence) =>
+							modeEvidence?.session?.containsFinalText === true &&
+							modeEvidence?.session?.containsToolCallId === true,
+					)
+					.map(modeName),
+			),
+			jsonlFileCount: modes.reduce(
+				(total, modeEvidence) =>
+					total + finiteNumber(modeEvidence?.session?.jsonlFileCount),
+				0,
+			),
+			bytes: modes.reduce(
+				(total, modeEvidence) => total + finiteNumber(modeEvidence?.session?.bytes),
+				0,
+			),
+			sha256ByMode: Object.fromEntries(
+				modes
+					.filter((modeEvidence) => typeof modeEvidence?.session?.sha256 === "string")
+					.map((modeEvidence) => [modeName(modeEvidence), modeEvidence.session.sha256]),
+			),
+		},
+		tools: {
+			names: uniqueValues(modes.map((modeEvidence) => modeEvidence?.tool?.name)),
+			callIds: uniqueValues(modes.map((modeEvidence) => modeEvidence?.tool?.callId)),
+			resultStatus: countBy(modes.map((modeEvidence) => modeEvidence?.tool?.resultStatus)),
+			evidenceRefs,
+			completionGates: uniqueValues(
+				modes.map(
+					(modeEvidence) =>
+						modeEvidence?.agentRuntimeLedger?.toolWorkItem?.completionGate,
+				),
+			),
+		},
+		approvals: {
+			count: approvalRefs.length,
+			evidenceRefs: approvalRefs,
+		},
+		errors: {
+			count: errorModes.length,
+			modes: errorModes,
+		},
+		artifacts: {
+			count: artifactRefs.length,
+			evidenceRefs: artifactRefs,
+		},
+		finalStatus: {
+			allOk:
+				modes.length > 0 &&
+				modes.every(
+					(modeEvidence) =>
+						modeEvidence?.final?.status === "ok" &&
+						modeEvidence?.final?.containsExpectedText === true,
+				),
+			byStatus: countBy(modes.map((modeEvidence) => modeEvidence?.final?.status)),
+		},
+		agentRuntimeLedger: buildAgentRuntimeLedgerObservability(modes),
+	};
+}
+
+function buildPublishedReplayReleaseGate({ observability, modes }) {
+	const modeSet = new Set(observability.replay.modes);
+	const checks = {
+		installablePackageMetadata: observability.install.installable === true,
+		noForbiddenWorkspaceReferences:
+			observability.install.forbiddenReferences.length === 0,
+		noWorkspaceProtocolReferences:
+			observability.install.workspaceProtocolReferences.length === 0,
+		requiredReplayModes: REQUIRED_REPLAY_MODES.every((mode) => modeSet.has(mode)),
+		sessionEvidence:
+			modes.length > 0 &&
+			modes.every(
+				(modeEvidence) =>
+					modeEvidence?.session?.containsFinalText === true &&
+					modeEvidence?.session?.containsToolCallId === true &&
+					finiteNumber(modeEvidence?.session?.jsonlFileCount) > 0,
+			),
+		toolEvidence:
+			modes.length > 0 &&
+			modes.every((modeEvidence) => {
+				const refs = evidenceRefsForMode(modeEvidence);
+				return (
+					modeEvidence?.tool?.name === "read" &&
+					modeEvidence?.tool?.callId === TOOL_CALL_ID &&
+					modeEvidence?.tool?.inputPath === "package.json" &&
+					modeEvidence?.tool?.resultStatus === "success" &&
+					refs.includes(`tool-call:${TOOL_CALL_ID}`) &&
+					modeEvidence?.agentRuntimeLedger?.toolWorkItem?.completionGate ===
+						"maestro_agent_runtime_ledger_recorded"
+				);
+			}),
+		agentRuntimeLedger:
+			modes.length > 0 &&
+			modes.every((modeEvidence) => {
+				const ledger = modeEvidence?.agentRuntimeLedger;
+				return (
+					ledger?.schemaVersion === "evalops.maestro.agent-runtime-ledger.v1" &&
+					ledger?.replayDeterministic === true &&
+					ledger?.hasHandleTrigger === true &&
+					ledger?.hasRecordRunStep === true &&
+					ledger?.hasRecordRunWorkItem === true &&
+					ledger?.hasTerminalOperation === true &&
+					ledger?.durability?.reconstructable === true &&
+					ledger?.durability?.replayDeterministic === true &&
+					typeof ledger?.durability?.promotionIdempotencyKey === "string"
+				);
+			}),
+		finalStatus: observability.finalStatus.allOk === true,
+	};
+	const failedChecks = Object.entries(checks)
+		.filter(([, satisfied]) => satisfied !== true)
+		.map(([name]) => name);
+
+	return {
+		releaseBlocking: true,
+		satisfied: failedChecks.length === 0,
+		requiredModes: REQUIRED_REPLAY_MODES,
+		failedChecks,
+		checks,
+	};
+}
+
+export function assertPublishedReplayReleaseGate(evidence) {
+	if (evidence?.releaseGate?.satisfied === true) {
+		return;
+	}
+	const failedChecks = Array.isArray(evidence?.releaseGate?.failedChecks)
+		? evidence.releaseGate.failedChecks.join(", ")
+		: "unknown";
+	throw new Error(`Published replay release gate failed: ${failedChecks}`);
 }
 
 async function getForbiddenWorkspaceNames() {
@@ -460,6 +737,12 @@ function assertAgentRuntimeLedger(binPath, context, label) {
 		replayDeterministic: true,
 		entries: ledger.counts?.entries ?? 0,
 		promotionOperations: ledger.counts?.promotionOperations ?? operations.length,
+		counts: {
+			entries: ledger.counts?.entries ?? 0,
+			promotionOperations: ledger.counts?.promotionOperations ?? operations.length,
+			byKind: ledger.counts?.byKind ?? {},
+			byState: ledger.counts?.byState ?? {},
+		},
 		hasHandleTrigger,
 		hasRecordRunStep,
 		hasRecordRunWorkItem,
@@ -870,6 +1153,14 @@ export function buildPublishedReplayEvidence({
 	installMetadata = null,
 	modes,
 }) {
+	const observability = buildPublishedReplayObservability({
+		installMetadata,
+		modes,
+	});
+	const releaseGate = buildPublishedReplayReleaseGate({
+		observability,
+		modes,
+	});
 	return {
 		schemaVersion: PUBLISHED_REPLAY_EVIDENCE_SCHEMA,
 		generatedAt: new Date().toISOString(),
@@ -894,6 +1185,8 @@ export function buildPublishedReplayEvidence({
 				finalTextSha256: sha256(FINAL_TEXT),
 			},
 		},
+		observability,
+		releaseGate,
 		modes,
 	};
 }
@@ -935,6 +1228,7 @@ export async function runPublishedReplayE2E({
 		resolvePublishedReplayEvidencePath({ evidencePath }),
 		evidence,
 	);
+	assertPublishedReplayReleaseGate(evidence);
 	console.log(`Published replay E2E smoke passed for ${packageSpec}.`);
 	return evidence;
 }
