@@ -394,6 +394,19 @@ function assertAgentRuntimeLedger(binPath, context, label) {
 	if (ledger?.schemaVersion !== "evalops.maestro.agent-runtime-ledger.v1") {
 		fail(`${label} AgentRuntime ledger schema was not emitted.`);
 	}
+	const durability = report?.durability;
+	if (durability?.reconstructable !== true) {
+		fail(`${label} run inspection did not prove reconstructable durability.`);
+	}
+	if (durability?.replayDeterministic !== true) {
+		fail(`${label} run inspection did not carry deterministic replay durability.`);
+	}
+	if (durability?.agentRuntimeLedgerEntries !== ledger?.counts?.entries) {
+		fail(`${label} durability summary did not match AgentRuntime ledger entries.`);
+	}
+	if (typeof durability?.promotionIdempotencyKey !== "string") {
+		fail(`${label} durability summary is missing the promotion idempotency key.`);
+	}
 	if (ledger?.replay?.deterministic !== true) {
 		fail(`${label} AgentRuntime ledger replay was not deterministic.`);
 	}
@@ -459,6 +472,13 @@ function assertAgentRuntimeLedger(binPath, context, label) {
 				),
 			),
 			completionGate: toolWorkItem.payload.completionGate,
+		},
+		durability: {
+			reconstructable: true,
+			sessionFilePresent: durability.sessionFilePresent === true,
+			contextManifestPresent: durability.contextManifestPresent === true,
+			replayDeterministic: true,
+			promotionIdempotencyKey: durability.promotionIdempotencyKey,
 		},
 	};
 }
