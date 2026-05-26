@@ -17,6 +17,23 @@ versioning when releases are cut.
   and keep scheduled public runs inert so public publishing stays downstream of
   the internal source-of-truth release.
 
+## [0.10.28] - 2026-05-26
+
+### Changed
+
+- Gate A2A live proof on discovery evidence (#2252). <!-- maestro-release-note:c84c85430b2b -->
+- [maestro] Extract headless runtime broker (#2251). <!-- maestro-release-note:32303b1ad1c7 -->
+- Prove run inspection durability in replay smoke (#2250). <!-- maestro-release-note:73cf071a8a9f -->
+- Extract TypeScript godfile helpers (#2249). <!-- maestro-release-note:068ec2c18739 -->
+- Prove AgentRuntime ledger in published replay smoke. <!-- maestro-release-note:63b42c06dd24 -->
+- Extract TUI state and swarm tests (#2239). <!-- maestro-release-note:7767debf7bdc -->
+- Extract composer chat attachment helpers (#2246). <!-- maestro-release-note:1a2dccd12401 -->
+- Link AgentRuntime ledger work items to ToolExecution. <!-- maestro-release-note:04ff186ee2f2 -->
+- Keep package search responses ordered. <!-- maestro-release-note:85a580b35e27 -->
+- Load package settings after client binding. <!-- maestro-release-note:26235dfae382 -->
+- Guard public release install metadata checks. <!-- maestro-release-note:c9406edae411 -->
+- Extract package settings component (#2240). <!-- maestro-release-note:c8add73a479c -->
+
 ## [0.10.25] - 2026-05-25
 
 ### Changed
