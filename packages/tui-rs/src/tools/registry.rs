@@ -134,23 +134,6 @@ const MAX_LIST_LINES: usize = 200;
 const MAX_DIFF_LINES: usize = 400;
 const MCP_RECONNECT_RETRY_COOLDOWN: Duration = Duration::from_secs(30);
 
-fn shell_escape(arg: &str) -> String {
-    if arg.is_empty() {
-        return "''".to_string();
-    }
-    let mut escaped = String::with_capacity(arg.len() + 2);
-    escaped.push('\'');
-    for ch in arg.chars() {
-        if ch == '\'' {
-            escaped.push_str("'\\''");
-        } else {
-            escaped.push(ch);
-        }
-    }
-    escaped.push('\'');
-    escaped
-}
-
 fn build_glob_pattern(base_path: &str, pattern: &str) -> String {
     if Path::new(pattern).is_absolute() {
         return pattern.to_string();

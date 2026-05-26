@@ -268,6 +268,8 @@ function resolvePublicPackageJson(
 		"node scripts/smoke-registry-install.js";
 	pkg.scripts["release:verify:published:e2e"] =
 		"node scripts/smoke-published-replay-e2e.js";
+	pkg.scripts["release:verify:published:evidence"] =
+		"node scripts/verify-published-replay-evidence.js";
 	pkg.scripts["release:deprecate"] = "node scripts/deprecate-release.js";
 
 	return {

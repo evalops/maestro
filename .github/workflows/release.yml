@@ -312,37 +312,7 @@ jobs:
         run: node scripts/smoke-registry-install.js
 
       - name: Validate published replay evidence
-        run: |
-          set -euo pipefail
-          for evidence in \
-            published-replay-evidence/npm-published-replay-evidence.json \
-            published-replay-evidence/bun-published-replay-evidence.json; do
-            if [[ ! -f "$evidence" ]]; then
-              echo "::error::Missing published replay evidence: $evidence" >&2
-              exit 1
-            fi
-            jq -e '
-              . as $evidence
-              | $evidence.schemaVersion == "evalops.maestro.published-replay-evidence.v1"
-              and ($evidence.package.spec | type == "string")
-              and ($evidence.package.cliCommand | type == "string")
-              and ($evidence.package.installMetadata | type == "object")
-              and $evidence.package.installMetadata.installable == true
-              and ($evidence.package.installMetadata.name | type == "string")
-              and ($evidence.package.installMetadata.version | type == "string")
-              and ($evidence.package.installMetadata.binCommands | index($evidence.package.cliCommand) != null)
-              and ($evidence.package.installMetadata.forbiddenWorkspaceNames | type == "array")
-              and $evidence.package.installMetadata.forbiddenReferences == []
-              and $evidence.package.installMetadata.workspaceProtocolReferences == []
-              and ($evidence.package.installMetadata.dependencySections | type == "object")
-              and $evidence.replay.provider == "scripted-replay"
-              and ([$evidence.modes[].mode] | sort) == ["json", "rpc", "text"]
-              and all($evidence.modes[]; .status == "ok" and .provider == "scripted-replay")
-              and all($evidence.modes[]; .tool.name == "read" and .tool.resultStatus == "success")
-              and all($evidence.modes[]; .final.status == "ok")
-              and all($evidence.modes[] | select(.mode == "text" or .mode == "json"); .session.jsonlFileCount > 0 and .session.bytes > 0 and .session.containsFinalText == true and .session.containsToolCallId == true and (.session.sha256 | type == "string" and length == 64))
-            ' "$evidence" >/dev/null
-          done
+        run: node scripts/verify-published-replay-evidence.js --evidence-dir published-replay-evidence
 
       - name: Upload published replay evidence
         if: ${{ always() && hashFiles('published-replay-evidence/*.json') != '' }}

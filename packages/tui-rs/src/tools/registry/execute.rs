@@ -1,4 +1,304 @@
+use super::super::shell_env::resolve_shell_environment;
 use super::*;
+#[cfg(windows)]
+use crate::tools::bash::resolve_shell_config;
+use tokio::io::{AsyncRead, AsyncReadExt as _};
+
+pub(super) struct ProcessRunResult {
+    pub(super) stdout: String,
+    pub(super) stderr: String,
+    pub(super) exit_code: i32,
+    truncated: bool,
+}
+
+pub(super) const MAX_PROCESS_STDOUT_LINE_BYTES: usize = 64 * 1024;
+pub(super) const MAX_PROCESS_STDERR_BYTES: usize = 64 * 1024;
+
+fn lossy_line(bytes: &[u8]) -> String {
+    let bytes = bytes.strip_suffix(b"\r").unwrap_or(bytes);
+    String::from_utf8_lossy(bytes).into_owned()
+}
+
+async fn read_limited_lossy<R>(mut reader: R, byte_limit: usize, truncated_label: &str) -> String
+where
+    R: AsyncRead + Unpin,
+{
+    let mut buffer = [0_u8; 8192];
+    let mut bytes = Vec::with_capacity(byte_limit.min(buffer.len()));
+    let mut truncated = false;
+
+    while let Ok(read) = reader.read(&mut buffer).await {
+        if read == 0 {
+            break;
+        }
+
+        if bytes.len() < byte_limit {
+            let remaining = byte_limit - bytes.len();
+            let keep = remaining.min(read);
+            bytes.extend_from_slice(&buffer[..keep]);
+            truncated |= keep < read;
+        } else {
+            truncated = true;
+        }
+    }
+
+    let mut output = String::from_utf8_lossy(&bytes).into_owned();
+    if truncated {
+        if !output.is_empty() && !output.ends_with('\n') {
+            output.push('\n');
+        }
+        output.push_str(truncated_label);
+    }
+    output
+}
+
+fn collect_string_values(value: Option<&Value>) -> Vec<String> {
+    match value {
+        Some(Value::String(value)) => vec![value.clone()],
+        Some(Value::Array(values)) => values
+            .iter()
+            .filter_map(|value| value.as_str().map(std::string::ToString::to_string))
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
+fn process_path_arg(path: &str) -> String {
+    if path.starts_with('-')
+        && !Path::new(path).is_absolute()
+        && !path.starts_with("./")
+        && !path.starts_with("../")
+    {
+        format!("./{path}")
+    } else {
+        path.to_string()
+    }
+}
+
+#[cfg(unix)]
+fn configure_process_group(command: &mut tokio::process::Command) {
+    use std::os::unix::process::CommandExt as _;
+    command.as_std_mut().process_group(0);
+}
+
+#[cfg(not(unix))]
+fn configure_process_group(_command: &mut tokio::process::Command) {}
+
+async fn terminate_child(child: &mut tokio::process::Child) {
+    #[cfg(unix)]
+    if let Some(pid) = child.id() {
+        let process_group = -(pid as libc::pid_t);
+        // Kill the process group so shell children close inherited stdio promptly.
+        unsafe {
+            libc::kill(process_group, libc::SIGKILL);
+        }
+    }
+
+    let _ = child.kill().await;
+}
+
+#[cfg(any(test, windows))]
+fn shell_quote_arg(value: &str) -> String {
+    if value.is_empty() {
+        return "''".to_string();
+    }
+
+    format!("'{}'", value.replace('\'', "'\"'\"'"))
+}
+
+#[cfg(any(test, windows))]
+pub(super) fn build_windows_list_shell_command(shell_path: &str, recursive: bool) -> String {
+    let quoted_path = shell_quote_arg(shell_path);
+    if recursive {
+        format!("find -- {quoted_path} -type f")
+    } else {
+        format!("ls -la -- {quoted_path}")
+    }
+}
+
+#[cfg(windows)]
+fn build_list_process(
+    _display_path: &str,
+    shell_path: &str,
+    recursive: bool,
+) -> Result<(String, Vec<String>, &'static str), String> {
+    let (program, mut args) = resolve_shell_config()?;
+    args.push(build_windows_list_shell_command(shell_path, recursive));
+    let process_name = if recursive { "find" } else { "ls" };
+    Ok((program, args, process_name))
+}
+
+#[cfg(not(windows))]
+fn build_list_process(
+    display_path: &str,
+    _shell_path: &str,
+    recursive: bool,
+) -> Result<(String, Vec<String>, &'static str), String> {
+    let process_path = process_path_arg(display_path);
+    if recursive {
+        Ok((
+            "find".to_string(),
+            vec![process_path, "-type".to_string(), "f".to_string()],
+            "find",
+        ))
+    } else {
+        Ok((
+            "ls".to_string(),
+            vec!["-la".to_string(), process_path],
+            "ls",
+        ))
+    }
+}
+
+pub(super) async fn run_process_limited_stdout_lines(
+    program: &str,
+    args: &[String],
+    cwd: &str,
+    timeout_ms: u64,
+    line_limit: usize,
+) -> Result<ProcessRunResult, String> {
+    let mut command = tokio::process::Command::new(program);
+    let env = resolve_shell_environment(Path::new(cwd), None);
+    command
+        .args(args)
+        .current_dir(cwd)
+        .env_clear()
+        .envs(env)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .kill_on_drop(true);
+    configure_process_group(&mut command);
+
+    let mut child = command
+        .spawn()
+        .map_err(|err| format!("Failed to start {program}: {err}"))?;
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| format!("{program} stdout unavailable"))?;
+    let stderr = child
+        .stderr
+        .take()
+        .ok_or_else(|| format!("{program} stderr unavailable"))?;
+    let stderr_task = tokio::spawn(async move {
+        read_limited_lossy(stderr, MAX_PROCESS_STDERR_BYTES, "[stderr truncated]").await
+    });
+
+    let read_and_wait = async {
+        let mut stdout = stdout;
+        let mut buffer = [0_u8; 8192];
+        let mut current_line = Vec::new();
+        let mut lines = Vec::new();
+        let mut truncated = false;
+        if line_limit == 0 {
+            truncated = true;
+            terminate_child(&mut child).await;
+        }
+        'read_stdout: loop {
+            let read = stdout
+                .read(&mut buffer)
+                .await
+                .map_err(|err| format!("{program} stdout read failed: {err}"))?;
+            if read == 0 {
+                break;
+            }
+
+            for byte in &buffer[..read] {
+                if lines.len() >= line_limit {
+                    truncated = true;
+                    terminate_child(&mut child).await;
+                    break 'read_stdout;
+                }
+                if *byte == b'\n' {
+                    lines.push(lossy_line(&current_line));
+                    current_line.clear();
+                    if lines.len() >= line_limit {
+                        truncated = true;
+                        terminate_child(&mut child).await;
+                        break 'read_stdout;
+                    }
+                    continue;
+                }
+                if current_line.len() >= MAX_PROCESS_STDOUT_LINE_BYTES {
+                    truncated = true;
+                    lines.push(lossy_line(&current_line));
+                    current_line.clear();
+                    terminate_child(&mut child).await;
+                    break 'read_stdout;
+                }
+                current_line.push(*byte);
+            }
+        }
+
+        if !current_line.is_empty() {
+            if lines.len() >= line_limit {
+                truncated = true;
+                terminate_child(&mut child).await;
+            } else {
+                lines.push(lossy_line(&current_line));
+            }
+        }
+
+        let status = child
+            .wait()
+            .await
+            .map_err(|err| format!("{program} wait failed: {err}"))?;
+        Ok::<_, String>((lines, truncated, status.code().unwrap_or(-1)))
+    };
+
+    let (lines, truncated, exit_code) =
+        match tokio::time::timeout(std::time::Duration::from_millis(timeout_ms), read_and_wait)
+            .await
+        {
+            Ok(Ok(result)) => result,
+            Ok(Err(err)) => return Err(err),
+            Err(_) => {
+                terminate_child(&mut child).await;
+                let _ = child.wait().await;
+                let _ = stderr_task.await;
+                return Err(format!("{program} timed out after {timeout_ms}ms"));
+            }
+        };
+    let stderr = stderr_task.await.unwrap_or_default();
+
+    Ok(ProcessRunResult {
+        stdout: lines.join("\n"),
+        stderr,
+        exit_code,
+        truncated,
+    })
+}
+
+pub(super) fn process_succeeded_or_truncated(
+    result: &ProcessRunResult,
+    success_codes: &[i32],
+) -> bool {
+    result.truncated || success_codes.contains(&result.exit_code)
+}
+
+pub(super) async fn run_grep_with_fallback(
+    rg_program: &str,
+    rg_args: &[String],
+    grep_program: &str,
+    grep_args: &[String],
+    cwd: &str,
+    timeout_ms: u64,
+    line_limit: usize,
+) -> Result<(ProcessRunResult, &'static str), String> {
+    match run_process_limited_stdout_lines(rg_program, rg_args, cwd, timeout_ms, line_limit).await {
+        Ok(result) => Ok((result, "rg")),
+        Err(message) if message.starts_with(&format!("Failed to start {rg_program}:")) => {
+            run_process_limited_stdout_lines(grep_program, grep_args, cwd, timeout_ms, line_limit)
+                .await
+                .map(|result| (result, "grep"))
+                .map_err(|fallback_message| {
+                    format!("{message}; fallback grep failed: {fallback_message}")
+                })
+        }
+        Err(message) => Err(message),
+    }
+}
 
 impl ToolExecutor {
     async fn execute_search(&self, args: &serde_json::Value) -> ToolResult {
@@ -8,140 +308,193 @@ impl ToolExecutor {
             return ToolResult::failure("Missing pattern argument".to_string());
         }
 
-        let paths: Vec<String> = match args.get("paths") {
-            Some(Value::String(path)) => vec![path.clone()],
-            Some(Value::Array(arr)) => arr
-                .iter()
-                .filter_map(|v| v.as_str().map(std::string::ToString::to_string))
-                .collect(),
-            _ => Vec::new(),
+        let paths = collect_string_values(args.get("paths").or_else(|| args.get("path")));
+        let glob_patterns = collect_string_values(args.get("glob"));
+        let command_cwd = match args.get("cwd").and_then(|v| v.as_str()) {
+            Some(cwd) => match resolve_tool_path(&self.cwd, cwd) {
+                Ok(path) => path,
+                Err(message) => return ToolResult::failure(message),
+            },
+            None => self.cwd.clone(),
         };
 
-        let mut cmd = String::from("rg --color=never --no-heading -n");
+        let mut rg_args = vec![
+            "--color=never".to_string(),
+            "--no-heading".to_string(),
+            "-n".to_string(),
+        ];
         let output_mode = args
             .get("outputMode")
             .and_then(|v| v.as_str())
             .unwrap_or("content");
         if output_mode == "files" {
-            cmd.push_str(" -l");
+            rg_args.push("-l".to_string());
         } else if output_mode == "count" {
-            cmd.push_str(" --count-matches");
+            rg_args.push("--count-matches".to_string());
+            rg_args.push("-H".to_string());
         }
         if args
             .get("ignoreCase")
             .and_then(serde_json::Value::as_bool)
             .unwrap_or(false)
         {
-            cmd.push_str(" -i");
+            rg_args.push("-i".to_string());
         }
         if args
             .get("literal")
             .and_then(serde_json::Value::as_bool)
             .unwrap_or(false)
         {
-            cmd.push_str(" -F");
+            rg_args.push("-F".to_string());
         }
         if args
             .get("word")
             .and_then(serde_json::Value::as_bool)
             .unwrap_or(false)
         {
-            cmd.push_str(" -w");
+            rg_args.push("-w".to_string());
         }
         if args
             .get("multiline")
             .and_then(serde_json::Value::as_bool)
             .unwrap_or(false)
         {
-            cmd.push_str(" --multiline");
-        }
-        if let Some(max_results) = args.get("maxResults").and_then(serde_json::Value::as_u64) {
-            cmd.push_str(&format!(" -m {max_results}"));
+            rg_args.push("--multiline".to_string());
         }
         if let Some(context) = args.get("context").and_then(serde_json::Value::as_u64) {
-            cmd.push_str(&format!(" -C {context}"));
+            rg_args.push("-C".to_string());
+            rg_args.push(context.to_string());
         } else {
             if let Some(before) = args
                 .get("beforeContext")
                 .and_then(serde_json::Value::as_u64)
             {
-                cmd.push_str(&format!(" -B {before}"));
+                rg_args.push("-B".to_string());
+                rg_args.push(before.to_string());
             }
             if let Some(after) = args.get("afterContext").and_then(serde_json::Value::as_u64) {
-                cmd.push_str(&format!(" -A {after}"));
+                rg_args.push("-A".to_string());
+                rg_args.push(after.to_string());
             }
         }
-        if let Some(glob) = args.get("glob").and_then(|v| v.as_str()) {
-            cmd.push_str(&format!(" -g {}", shell_escape(glob)));
+        for glob in &glob_patterns {
+            rg_args.push("-g".to_string());
+            rg_args.push(glob.clone());
         }
         if args
             .get("includeHidden")
             .and_then(serde_json::Value::as_bool)
             .unwrap_or(false)
         {
-            cmd.push_str(" --hidden");
+            rg_args.push("--hidden".to_string());
         }
         if args
             .get("useGitIgnore")
             .and_then(serde_json::Value::as_bool)
             .is_some_and(|v| !v)
         {
-            cmd.push_str(" --no-ignore");
+            rg_args.push("--no-ignore".to_string());
         }
         if args
             .get("invertMatch")
             .and_then(serde_json::Value::as_bool)
             .unwrap_or(false)
         {
-            cmd.push_str(" --invert-match");
+            rg_args.push("--invert-match".to_string());
         }
         if args
             .get("onlyMatching")
             .and_then(serde_json::Value::as_bool)
             .unwrap_or(false)
         {
-            cmd.push_str(" --only-matching");
+            rg_args.push("--only-matching".to_string());
         }
 
-        cmd.push_str(&format!(" -- {}", shell_escape(pattern)));
+        if args
+            .get("format")
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(|format| format == "json")
+            && output_mode == "content"
+        {
+            rg_args.push("--json".to_string());
+        }
+
         for path in &paths {
-            cmd.push_str(&format!(" {}", shell_escape(path)));
+            if path.trim().is_empty() {
+                return ToolResult::failure("paths entries must be non-empty strings");
+            }
         }
 
         let head_limit = args
             .get("headLimit")
             .and_then(serde_json::Value::as_u64)
-            .unwrap_or(MAX_GREP_LINES as u64) as usize;
-        cmd.push_str(&format!(
-            " | head -{head_limit}; status=${{PIPESTATUS[0]}}; if [ $status -eq 141 ] || [ $status -eq 1 ]; then exit 0; else exit $status; fi"
-        ));
+            .unwrap_or(MAX_GREP_LINES as u64)
+            .max(1) as usize;
+        let line_limit = args
+            .get("maxResults")
+            .and_then(serde_json::Value::as_u64)
+            .map(|max_results| (max_results.max(1) as usize).min(head_limit))
+            .unwrap_or(head_limit);
 
-        let result = self
-            .bash
-            .execute(BashArgs {
-                command: cmd,
-                timeout: Some(30000),
-                description: Some("Search for pattern".to_string()),
-                run_in_background: false,
-            })
-            .await;
+        if let Some(max_results) = args.get("maxResults").and_then(serde_json::Value::as_u64) {
+            rg_args.push("-m".to_string());
+            rg_args.push(max_results.to_string());
+        } else if output_mode == "content" {
+            rg_args.push("-m".to_string());
+            rg_args.push(head_limit.to_string());
+        }
+
+        rg_args.push("--".to_string());
+        rg_args.push(pattern.to_string());
+        if paths.is_empty() {
+            rg_args.push(".".to_string());
+        } else {
+            rg_args.extend(paths.iter().cloned());
+        }
+
+        let result = match run_process_limited_stdout_lines(
+            "rg",
+            &rg_args,
+            &command_cwd,
+            30_000,
+            line_limit,
+        )
+        .await
+        {
+            Ok(result) => result,
+            Err(message) => return ToolResult::failure(message),
+        };
 
         let duration_ms = start_time.elapsed().as_millis() as u64;
-        let matches_count = result.output.lines().count();
-        let truncated = matches_count >= head_limit;
+        let output_lines: Vec<&str> = result.stdout.lines().collect();
+        let matches_count = output_lines.len();
+        let truncated = result.truncated || matches_count >= head_limit;
+        let output = output_lines
+            .iter()
+            .take(head_limit)
+            .copied()
+            .collect::<Vec<_>>()
+            .join("\n");
 
         let mut details = GrepDetails::new(pattern)
             .with_path(paths.join(", "))
             .with_matches(matches_count)
-            .with_duration(duration_ms);
+            .with_duration(duration_ms)
+            .with_search_tool("rg");
         if truncated {
             details = details.with_truncation();
         }
 
-        if result.success {
-            ToolResult::success(result.output).with_details(details.to_json())
+        if process_succeeded_or_truncated(&result, &[0, 1]) {
+            ToolResult::success(output).with_details(details.to_json())
         } else {
-            ToolResult::failure(result.error.unwrap_or_default()).with_details(details.to_json())
+            let message = result.stderr.trim();
+            let message = if message.is_empty() {
+                format!("ripgrep exited with status {}", result.exit_code)
+            } else {
+                message.to_string()
+            };
+            ToolResult::failure(message).with_details(details.to_json())
         }
     }
 
@@ -790,7 +1143,7 @@ impl ToolExecutor {
                 let start_time = Instant::now();
                 let pattern = args.get("pattern").and_then(|v| v.as_str()).unwrap_or("");
                 let raw_path = args.get("path").and_then(|v| v.as_str()).unwrap_or(".");
-                let (display_path, shell_path) = match normalize_shell_path(raw_path) {
+                let (display_path, _) = match normalize_shell_path(raw_path) {
                     Ok(result) => result,
                     Err(message) => {
                         return ToolResult::failure(message);
@@ -804,40 +1157,64 @@ impl ToolExecutor {
                         .with_details(details.to_json());
                 }
 
-                // Use ripgrep if available, fall back to grep
-                let result = self
-                    .bash
-                    .execute(BashArgs {
-                        command: format!(
-                            "(rg --no-heading -n -- {} {} 2>/dev/null || grep -rn -- {} {} 2>/dev/null) | head -{}; status=${{PIPESTATUS[0]}}; if [ $status -eq 141 ] || [ $status -eq 1 ]; then exit 0; else exit $status; fi",
-                            shell_escape(pattern),
-                            shell_escape(&shell_path),
-                            shell_escape(pattern),
-                            shell_escape(&shell_path),
-                            MAX_GREP_LINES
-                        ),
-                        timeout: Some(30000),
-                        description: Some("Search for pattern".to_string()),
-                        run_in_background: false,
-                    })
-                    .await;
+                let rg_args = vec![
+                    "--no-heading".to_string(),
+                    "-n".to_string(),
+                    "--".to_string(),
+                    pattern.to_string(),
+                    display_path.clone(),
+                ];
+                let grep_args = vec![
+                    "-rn".to_string(),
+                    "--".to_string(),
+                    pattern.to_string(),
+                    display_path.clone(),
+                ];
+                let (result, search_tool) = match run_grep_with_fallback(
+                    "rg",
+                    &rg_args,
+                    "grep",
+                    &grep_args,
+                    &self.cwd,
+                    30_000,
+                    MAX_GREP_LINES,
+                )
+                .await
+                {
+                    Ok(result) => result,
+                    Err(message) => {
+                        let details = GrepDetails::new(pattern)
+                            .with_path(&display_path)
+                            .with_duration(start_time.elapsed().as_millis() as u64)
+                            .with_search_tool("rg");
+                        return ToolResult::failure(message).with_details(details.to_json());
+                    }
+                };
 
                 // Build grep details from result
                 let duration_ms = start_time.elapsed().as_millis() as u64;
-                let matches_count = result.output.lines().count();
-                let files_matched = result
-                    .output
-                    .lines()
+                let output_lines = result.stdout.lines().collect::<Vec<_>>();
+                let matches_count = output_lines.len();
+                let files_matched = output_lines
+                    .iter()
+                    .copied()
                     .filter_map(extract_grep_path)
                     .collect::<std::collections::HashSet<_>>()
                     .len();
-                let truncated = matches_count >= MAX_GREP_LINES;
+                let truncated = result.truncated || matches_count >= MAX_GREP_LINES;
+                let output = output_lines
+                    .iter()
+                    .take(MAX_GREP_LINES)
+                    .copied()
+                    .collect::<Vec<_>>()
+                    .join("\n");
 
                 let details = GrepDetails::new(pattern)
                     .with_path(&display_path)
                     .with_matches(matches_count)
                     .with_files_matched(files_matched)
-                    .with_duration(duration_ms);
+                    .with_duration(duration_ms)
+                    .with_search_tool(search_tool);
 
                 let details = if truncated {
                     details.with_truncation()
@@ -845,11 +1222,16 @@ impl ToolExecutor {
                     details
                 };
 
-                if result.success {
-                    ToolResult::success(result.output).with_details(details.to_json())
+                if process_succeeded_or_truncated(&result, &[0, 1]) {
+                    ToolResult::success(output).with_details(details.to_json())
                 } else {
-                    ToolResult::failure(result.error.unwrap_or_default())
-                        .with_details(details.to_json())
+                    let message = result.stderr.trim();
+                    let message = if message.is_empty() {
+                        format!("ripgrep exited with status {}", result.exit_code)
+                    } else {
+                        message.to_string()
+                    };
+                    ToolResult::failure(message).with_details(details.to_json())
                 }
             }
             "edit" | "Edit" => {
@@ -1069,38 +1451,38 @@ impl ToolExecutor {
 
                 let path = args.get("path").and_then(|v| v.as_str());
                 let normalized_path = path.map(|raw_path| normalize_git_path(&self.cwd, raw_path));
-                let (display_path, shell_path) = match normalized_path.transpose() {
-                    Ok(Some((display, shell))) => (Some(display), Some(shell)),
+                let (display_path, git_path) = match normalized_path.transpose() {
+                    Ok(Some((display, _))) => (Some(display.clone()), Some(display)),
                     Ok(None) => (None, None),
                     Err(message) => {
                         return ToolResult::failure(message);
                     }
                 };
 
-                // Build git diff command
-                let cmd = match shell_path.as_ref() {
-                    Some(p) => format!(
-                        "git diff {} -- {} | head -{}; status=${{PIPESTATUS[0]}}; if [ $status -eq 141 ]; then exit 0; else exit $status; fi",
-                        shell_escape(target),
-                        shell_escape(p),
-                        MAX_DIFF_LINES
-                    ),
-                    None => format!(
-                        "git diff {} | head -{}; status=${{PIPESTATUS[0]}}; if [ $status -eq 141 ]; then exit 0; else exit $status; fi",
-                        shell_escape(target),
-                        MAX_DIFF_LINES
-                    ),
+                let mut git_args = vec!["diff".to_string(), target.to_string()];
+                if let Some(path) = git_path.as_ref() {
+                    git_args.push("--".to_string());
+                    git_args.push(path.clone());
+                }
+                let result = match run_process_limited_stdout_lines(
+                    "git",
+                    &git_args,
+                    &self.cwd,
+                    30_000,
+                    MAX_DIFF_LINES,
+                )
+                .await
+                {
+                    Ok(result) => result,
+                    Err(message) => {
+                        let mut details = DiffDetails::new(target)
+                            .with_duration(start_time.elapsed().as_millis() as u64);
+                        if let Some(p) = display_path.as_ref() {
+                            details = details.with_path(p);
+                        }
+                        return ToolResult::failure(message).with_details(details.to_json());
+                    }
                 };
-
-                let result = self
-                    .bash
-                    .execute(BashArgs {
-                        command: cmd,
-                        timeout: Some(30000),
-                        description: Some("Get git diff".to_string()),
-                        run_in_background: false,
-                    })
-                    .await;
 
                 // Build diff details
                 let duration_ms = start_time.elapsed().as_millis() as u64;
@@ -1111,19 +1493,20 @@ impl ToolExecutor {
                 }
 
                 // Parse diff stats from output (count +/- lines)
-                let insertions = result
-                    .output
-                    .lines()
+                let output_lines = result.stdout.lines().collect::<Vec<_>>();
+                let insertions = output_lines
+                    .iter()
+                    .copied()
                     .filter(|line| line.starts_with('+') && !line.starts_with("+++"))
                     .count();
-                let deletions = result
-                    .output
-                    .lines()
+                let deletions = output_lines
+                    .iter()
+                    .copied()
                     .filter(|line| line.starts_with('-') && !line.starts_with("---"))
                     .count();
-                let files_changed = result
-                    .output
-                    .lines()
+                let files_changed = output_lines
+                    .iter()
+                    .copied()
                     .filter(|line| line.starts_with("diff --git"))
                     .count();
 
@@ -1131,16 +1514,22 @@ impl ToolExecutor {
                     details = details.with_stats(files_changed, insertions, deletions);
                 }
 
-                let truncated = result.output.lines().count() >= MAX_DIFF_LINES;
+                let truncated = result.truncated;
                 if truncated {
                     details = details.with_truncation();
                 }
+                let output = output_lines.join("\n");
 
-                if result.success {
-                    ToolResult::success(result.output).with_details(details.to_json())
+                if process_succeeded_or_truncated(&result, &[0]) {
+                    ToolResult::success(output).with_details(details.to_json())
                 } else {
-                    ToolResult::failure(result.error.unwrap_or_default())
-                        .with_details(details.to_json())
+                    let message = result.stderr.trim();
+                    let message = if message.is_empty() {
+                        format!("git diff exited with status {}", result.exit_code)
+                    } else {
+                        message.to_string()
+                    };
+                    ToolResult::failure(message).with_details(details.to_json())
                 }
             }
             "list" | "List" | "ls" => {
@@ -1162,34 +1551,38 @@ impl ToolExecutor {
                     .and_then(serde_json::Value::as_bool)
                     .unwrap_or(false);
 
-                let cmd = if recursive {
-                    format!(
-                        "find -- {} -type f | head -{}; status=${{PIPESTATUS[0]}}; if [ $status -eq 141 ]; then exit 0; else exit $status; fi",
-                        shell_escape(&shell_path),
-                        MAX_LIST_LINES
-                    )
-                } else {
-                    format!(
-                        "ls -la -- {} | head -{}; status=${{PIPESTATUS[0]}}; if [ $status -eq 141 ]; then exit 0; else exit $status; fi",
-                        shell_escape(&shell_path),
-                        MAX_LIST_LINES
-                    )
+                let (program, process_args, process_name) =
+                    match build_list_process(&display_path, &shell_path, recursive) {
+                        Ok(result) => result,
+                        Err(message) => {
+                            let details = ListDetails::new(&display_path)
+                                .with_duration(start_time.elapsed().as_millis() as u64);
+                            return ToolResult::failure(message).with_details(details.to_json());
+                        }
+                    };
+                let result = match run_process_limited_stdout_lines(
+                    &program,
+                    &process_args,
+                    &self.cwd,
+                    10_000,
+                    MAX_LIST_LINES,
+                )
+                .await
+                {
+                    Ok(result) => result,
+                    Err(message) => {
+                        let details = ListDetails::new(&display_path)
+                            .with_duration(start_time.elapsed().as_millis() as u64);
+                        return ToolResult::failure(message).with_details(details.to_json());
+                    }
                 };
-
-                let result = self
-                    .bash
-                    .execute(BashArgs {
-                        command: cmd,
-                        timeout: Some(10000),
-                        description: Some("List directory".to_string()),
-                        run_in_background: false,
-                    })
-                    .await;
 
                 // Build list details
                 let duration_ms = start_time.elapsed().as_millis() as u64;
-                let entries_count = result.output.lines().count();
-                let truncated = entries_count >= MAX_LIST_LINES;
+                let output_lines = result.stdout.lines().collect::<Vec<_>>();
+                let entries_count = output_lines.len();
+                let truncated = result.truncated;
+                let output = output_lines.join("\n");
 
                 let mut details = ListDetails::new(&display_path)
                     .with_entries(entries_count)
@@ -1203,11 +1596,16 @@ impl ToolExecutor {
                     details = details.with_truncation();
                 }
 
-                if result.success {
-                    ToolResult::success(result.output).with_details(details.to_json())
+                if process_succeeded_or_truncated(&result, &[0]) {
+                    ToolResult::success(output).with_details(details.to_json())
                 } else {
-                    ToolResult::failure(result.error.unwrap_or_default())
-                        .with_details(details.to_json())
+                    let message = result.stderr.trim();
+                    let message = if message.is_empty() {
+                        format!("{process_name} exited with status {}", result.exit_code)
+                    } else {
+                        message.to_string()
+                    };
+                    ToolResult::failure(message).with_details(details.to_json())
                 }
             }
             "find" | "Find" => {
@@ -1220,45 +1618,47 @@ impl ToolExecutor {
                     .get("path")
                     .and_then(|v| v.as_str())
                     .unwrap_or(&self.cwd);
-                let (display_path, shell_path) = match normalize_shell_path(raw_path) {
+                let (display_path, _) = match normalize_shell_path(raw_path) {
                     Ok(result) => result,
                     Err(message) => return ToolResult::failure(message),
                 };
                 let limit = args
                     .get("limit")
                     .and_then(serde_json::Value::as_u64)
-                    .unwrap_or(1000) as usize;
+                    .unwrap_or(1000)
+                    .max(1) as usize;
                 let include_hidden = args
                     .get("includeHidden")
                     .and_then(serde_json::Value::as_bool)
                     .unwrap_or(true);
 
-                let mut cmd = String::from("rg --files --color=never");
+                let mut rg_args = vec!["--files".to_string(), "--color=never".to_string()];
                 if include_hidden {
-                    cmd.push_str(" --hidden");
+                    rg_args.push("--hidden".to_string());
                 }
-                cmd.push_str(&format!(
-                    " -g {} -- {}",
-                    shell_escape(pattern),
-                    shell_escape(&shell_path)
-                ));
-                cmd.push_str(&format!(
-                    " | head -{limit}; status=${{PIPESTATUS[0]}}; if [ $status -eq 141 ]; then exit 0; else exit $status; fi"
-                ));
+                rg_args.push("-g".to_string());
+                rg_args.push(pattern.to_string());
+                rg_args.push("--".to_string());
+                rg_args.push(display_path.clone());
 
-                let result = self
-                    .bash
-                    .execute(BashArgs {
-                        command: cmd,
-                        timeout: Some(20000),
-                        description: Some("Find files".to_string()),
-                        run_in_background: false,
-                    })
-                    .await;
+                let result = match run_process_limited_stdout_lines(
+                    "rg", &rg_args, &self.cwd, 20_000, limit,
+                )
+                .await
+                {
+                    Ok(result) => result,
+                    Err(message) => {
+                        let details = ListDetails::new(&display_path)
+                            .with_duration(start_time.elapsed().as_millis() as u64);
+                        return ToolResult::failure(message).with_details(details.to_json());
+                    }
+                };
 
                 let duration_ms = start_time.elapsed().as_millis() as u64;
-                let count = result.output.lines().count();
-                let truncated = count >= limit;
+                let output_lines = result.stdout.lines().collect::<Vec<_>>();
+                let count = output_lines.len();
+                let truncated = result.truncated;
+                let output = output_lines.join("\n");
                 let mut details = ListDetails::new(&display_path)
                     .with_entries(count)
                     .with_duration(duration_ms);
@@ -1266,11 +1666,16 @@ impl ToolExecutor {
                     details = details.with_truncation();
                 }
 
-                if result.success {
-                    ToolResult::success(result.output).with_details(details.to_json())
+                if process_succeeded_or_truncated(&result, &[0, 1]) {
+                    ToolResult::success(output).with_details(details.to_json())
                 } else {
-                    ToolResult::failure(result.error.unwrap_or_default())
-                        .with_details(details.to_json())
+                    let message = result.stderr.trim();
+                    let message = if message.is_empty() {
+                        format!("ripgrep exited with status {}", result.exit_code)
+                    } else {
+                        message.to_string()
+                    };
+                    ToolResult::failure(message).with_details(details.to_json())
                 }
             }
             "search" | "Search" => self.execute_search(args).await,

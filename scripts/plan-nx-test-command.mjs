@@ -39,17 +39,22 @@ const RELEASE_HELPER_PACKAGE_FILES = new Set([
 	"scripts/configure-npm-trusted-publisher.mjs",
 	"scripts/deprecate-release.js",
 	"scripts/install-smoke-utils.js",
+	"scripts/published-replay-evidence-gate.js",
 	"scripts/release-impact-filter.mjs",
 	"scripts/release-readiness.js",
 	"scripts/smoke-packed-cli.js",
 	"scripts/smoke-published-replay-e2e.js",
 	"scripts/smoke-registry-install.js",
+	"scripts/verify-published-replay-evidence.js",
 	"scripts/workspace-utils.js",
 ]);
 const RELEASE_HELPER_TEST_FILES = new Set([
+	"test/scripts/deprecate-release.test.ts",
 	"test/scripts/install-smoke-utils.test.ts",
 	"test/scripts/release-context-deps.test.ts",
 	"test/scripts/release-impact-filter.test.ts",
+	"test/scripts/smoke-published-replay-e2e.test.ts",
+	"test/scripts/verify-published-replay-evidence.test.ts",
 	"test/scripts/workspace-utils.test.ts",
 ]);
 const SMOKE_SCRIPT_PATTERN = /^scripts\/smoke-[^/]+\.[cm]?[jt]sx?$/;

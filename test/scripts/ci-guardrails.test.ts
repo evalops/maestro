@@ -306,6 +306,7 @@ describe("planCiChecks", () => {
 					"scripts/ci-nx-tests.sh",
 					"scripts/plan-ci-checks.mjs",
 					"scripts/plan-nx-test-command.mjs",
+					"scripts/published-replay-evidence-gate.js",
 					"scripts/release-impact-filter.mjs",
 					"scripts/release-readiness.js",
 					"scripts/smoke-packed-cli.js",
@@ -313,6 +314,7 @@ describe("planCiChecks", () => {
 					"scripts/smoke-registry-install.js",
 					"scripts/workspace-utils.js",
 					"test/scripts/ci-guardrails.test.ts",
+					"test/scripts/deprecate-release.test.ts",
 					"test/scripts/release-impact-filter.test.ts",
 					"test/scripts/workspace-utils.test.ts",
 				],
@@ -367,6 +369,7 @@ describe("planCiChecks", () => {
 					"scripts/plan-ci-checks.mjs",
 					"scripts/plan-nx-test-command.mjs",
 					"test/scripts/ci-guardrails.test.ts",
+					"test/scripts/deprecate-release.test.ts",
 					"test/scripts/workspace-utils.test.ts",
 				],
 			}),
@@ -634,6 +637,7 @@ describe("ci workflow guardrails", () => {
 			"Release helper script tests are handled directly by Vitest.",
 		);
 		expect(script).toContain("node ./scripts/run-vitest.js --run");
+		expect(script).toContain("test/scripts/deprecate-release.test.ts");
 		expect(script).toContain("test/scripts/release-impact-filter.test.ts");
 		expect(script).toContain("test/scripts/workspace-utils.test.ts");
 	});
@@ -805,6 +809,12 @@ describe("ci workflow guardrails", () => {
 			"node --check scripts/smoke-registry-install.js",
 		);
 		expect(helperSmokeStep?.run).toContain(
+			"node --check scripts/published-replay-evidence-gate.js",
+		);
+		expect(helperSmokeStep?.run).toContain(
+			"node --check scripts/verify-published-replay-evidence.js",
+		);
+		expect(helperSmokeStep?.run).toContain(
 			"node --check scripts/deprecate-release.js",
 		);
 		expect(helperSmokeStep?.run).toContain(
@@ -814,7 +824,7 @@ describe("ci workflow guardrails", () => {
 			"node --check scripts/configure-npm-trusted-publisher.mjs",
 		);
 		expect(helperSmokeStep?.run).toContain(
-			"node ./scripts/run-vitest.js --run test/scripts/install-smoke-utils.test.ts test/scripts/release-impact-filter.test.ts test/scripts/smoke-published-replay-e2e.test.ts test/scripts/workspace-utils.test.ts",
+			"node ./scripts/run-vitest.js --run test/scripts/deprecate-release.test.ts test/scripts/install-smoke-utils.test.ts test/scripts/release-impact-filter.test.ts test/scripts/smoke-published-replay-e2e.test.ts test/scripts/verify-published-replay-evidence.test.ts test/scripts/workspace-utils.test.ts",
 		);
 		expect(helperSmokeStep?.run).toContain(
 			"MAESTRO_SKIP_INSTALL_AUDIT=1 MAESTRO_SKIP_BUN_INSTALL_SMOKE=1",
@@ -892,6 +902,26 @@ describe("ci workflow guardrails", () => {
 		expect(script).toContain("const npxCommand = getNpxCommand();");
 		expect(script).toContain("spawnSync(npxCommand, npmArgs");
 		expect(script).not.toContain('spawnSync("npx"');
+	});
+
+	it("authenticates deprecate-release through the effective npm config", () => {
+		const workflowPath = new URL(
+			"../../.github/workflows/deprecate-release.yml",
+			import.meta.url,
+		);
+		if (!existsSync(workflowPath)) {
+			return;
+		}
+		const workflowText = readFileSync(workflowPath, { encoding: "utf8" });
+
+		expect(workflowText).toContain(
+			'npm_userconfig="${NPM_CONFIG_USERCONFIG:-$HOME/.npmrc}"',
+		);
+		expect(workflowText).toContain('> "$npm_userconfig"');
+		expect(workflowText).toContain("npm whoami");
+		expect(workflowText).toContain(
+			"NPM_TOKEN is present but npm whoami failed",
+		);
 	});
 
 	it("keeps packed CLI smoke aligned with registry install validation", () => {
@@ -1033,21 +1063,8 @@ describe("ci workflow guardrails", () => {
 			expect(canaryStep?.env).toMatchObject({
 				MAESTRO_PUBLISHED_REPLAY_SANDBOX_MODE: "local",
 			});
-			expect(evidenceStep?.run).toContain(
-				"$evidence.package.installMetadata.installable == true",
-			);
-			expect(evidenceStep?.run).toContain(". as $evidence");
-			expect(evidenceStep?.run).toContain(
-				"$evidence.package.installMetadata.binCommands | index($evidence.package.cliCommand) != null",
-			);
-			expect(evidenceStep?.run).not.toContain(
-				".package.installMetadata.binCommands | index(.package.cliCommand) != null",
-			);
-			expect(evidenceStep?.run).toContain(
-				"$evidence.package.installMetadata.forbiddenReferences == []",
-			);
-			expect(evidenceStep?.run).toContain(
-				"$evidence.package.installMetadata.workspaceProtocolReferences == []",
+			expect(evidenceStep?.run).toBe(
+				"node scripts/verify-published-replay-evidence.js --evidence-dir published-replay-evidence",
 			);
 			expect(hasPublicVerifyWorkflow).toBe(true);
 			const verifyWorkflow = parse(
@@ -1575,6 +1592,26 @@ describe("ci workflow guardrails", () => {
 		expect(action).not.toContain("GITHUB_RUN_ID");
 	});
 
+	it("installs ripgrep before CI jobs that run search-backed tests", () => {
+		const workflow = parse(
+			readFileSync(new URL("../../.github/workflows/ci.yml", import.meta.url), {
+				encoding: "utf8",
+			}),
+		) as Workflow;
+
+		for (const jobName of [
+			"pr-checks",
+			"coverage",
+			"rust-hosted-conformance",
+		]) {
+			const setupBunStep = workflow.jobs?.[jobName]?.steps?.find(
+				(step) => step.uses === "./.github/actions/setup-bun-nx",
+			);
+
+			expect(setupBunStep?.with).toMatchObject({ "ensure-ripgrep": "true" });
+		}
+	});
+
 	it("uses dynamic host ports for integration service containers", () => {
 		const workflowText = readFileSync(
 			new URL("../../.github/workflows/integration.yml", import.meta.url),
@@ -1947,6 +1984,7 @@ describe("planNxTestCommand", () => {
 					"scripts/deprecate-release.js",
 					"scripts/install-smoke-utils.js",
 					"scripts/plan-ci-checks.mjs",
+					"scripts/published-replay-evidence-gate.js",
 					"scripts/release-impact-filter.mjs",
 					"scripts/release-readiness.js",
 					"scripts/smoke-packed-cli.js",
@@ -1967,6 +2005,7 @@ describe("planNxTestCommand", () => {
 				changedFiles: [
 					"scripts/install-smoke-utils.js",
 					"scripts/workspace-utils.js",
+					"test/scripts/deprecate-release.test.ts",
 					"test/scripts/release-impact-filter.test.ts",
 					"test/scripts/workspace-utils.test.ts",
 				],
@@ -1974,6 +2013,7 @@ describe("planNxTestCommand", () => {
 			}),
 		).toEqual({
 			files: [
+				"test/scripts/deprecate-release.test.ts",
 				"test/scripts/release-impact-filter.test.ts",
 				"test/scripts/workspace-utils.test.ts",
 			],
@@ -2026,6 +2066,7 @@ describe("planNxTestCommand", () => {
 					"scripts/plan-ci-checks.mjs",
 					"scripts/plan-nx-test-command.mjs",
 					"test/scripts/ci-guardrails.test.ts",
+					"test/scripts/deprecate-release.test.ts",
 					"test/scripts/workspace-utils.test.ts",
 				],
 				headPackage: basePackage,
