@@ -50,6 +50,12 @@ const A2A_PLATFORM_ENV_NAMES: &[&str] = &[
     "MAESTRO_A2A_AGENT_TYPE",
     "MAESTRO_A2A_OWNER_ID",
     "EVALOPS_USER_ID",
+    "MAESTRO_A2A_TRACEPARENT",
+    "MAESTRO_PLATFORM_TRACEPARENT",
+    "TRACEPARENT",
+    "MAESTRO_A2A_TRACESTATE",
+    "MAESTRO_PLATFORM_TRACESTATE",
+    "TRACESTATE",
     "MAESTRO_A2A_INTERNAL_URL",
     "MAESTRO_CONTROL_INTERNAL_URL",
     "MAESTRO_A2A_AGENT_CARD_URL",
@@ -225,6 +231,11 @@ fn a2a_platform_registration_config_uses_platform_env_and_stable_endpoint() {
     env::set_var("MAESTRO_A2A_PUBLIC_URL", "https://maestro.example/a2a/");
     env::set_var("MAESTRO_A2A_INTERNAL_URL", "http://maestro.mesh/a2a");
     env::set_var("MAESTRO_A2A_AGENT_ID", "maestro-peer-1");
+    env::set_var(
+        "MAESTRO_A2A_TRACEPARENT",
+        "00-0123456789abcdef0123456789abcdef-0123456789abcdef-01",
+    );
+    env::set_var("MAESTRO_A2A_TRACESTATE", "evalops=maestro");
     env::set_var("MAESTRO_A2A_CURRENT_OBJECTIVE_IDS", "obj_1, obj_2");
     env::set_var("MAESTRO_A2A_PLATFORM_HEARTBEAT_INTERVAL_MS", "1234");
     env::set_var(
@@ -257,19 +268,106 @@ fn a2a_platform_registration_config_uses_platform_env_and_stable_endpoint() {
         registration.current_objective_ids,
         vec!["obj_1".to_string(), "obj_2".to_string()]
     );
-    assert_eq!(registration.heartbeat_interval_ms, 1234);
     assert_eq!(
         registration.traceparent.as_deref(),
-        Some("00-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-bbbbbbbbbbbbbbbb-01")
+        Some("00-0123456789abcdef0123456789abcdef-0123456789abcdef-01")
     );
-    assert_eq!(
-        registration.tracestate.as_deref(),
-        Some("evalops=maestro-a2a")
-    );
+    assert_eq!(registration.tracestate.as_deref(), Some("evalops=maestro"));
+    assert_eq!(registration.heartbeat_interval_ms, 1234);
     assert_eq!(
         registration.remote_runner_session_id.as_deref(),
         Some("mrs_123")
     );
+
+    restore_env(snapshot);
+}
+
+#[test]
+fn a2a_platform_registration_binds_tracestate_to_traceparent_namespace() {
+    let _guard = ENV_LOCK.blocking_lock();
+    let snapshot = snapshot_env(A2A_PLATFORM_ENV_NAMES);
+    clear_env(A2A_PLATFORM_ENV_NAMES);
+
+    env::set_var("MAESTRO_HOSTED_RUNNER_MODE", "1");
+    env::set_var("AGENT_REGISTRY_SERVICE_URL", "https://platform.test");
+    env::set_var("AGENT_REGISTRY_SERVICE_TOKEN", "registry-token");
+    env::set_var("AGENT_REGISTRY_ORGANIZATION_ID", "org_1");
+    env::set_var("AGENT_REGISTRY_WORKSPACE_ID", "ws_1");
+    env::set_var("MAESTRO_A2A_PUBLIC_URL", "https://maestro.example/a2a");
+    env::set_var(
+        "MAESTRO_PLATFORM_TRACEPARENT",
+        "00-11111111111111111111111111111111-2222222222222222-01",
+    );
+    env::set_var("MAESTRO_A2A_TRACESTATE", "evalops=stale-a2a");
+    env::set_var("MAESTRO_PLATFORM_TRACESTATE", "evalops=platform");
+    env::set_var("TRACESTATE", "evalops=stale-process");
+
+    let config = Config::from_env();
+    let registration = resolve_a2a_platform_registration_config(&config)
+        .expect("registration config should resolve")
+        .expect("hosted mode should enable registration");
+
+    assert_eq!(
+        registration.traceparent.as_deref(),
+        Some("00-11111111111111111111111111111111-2222222222222222-01")
+    );
+    assert_eq!(registration.tracestate.as_deref(), Some("evalops=platform"));
+
+    env::remove_var("MAESTRO_PLATFORM_TRACESTATE");
+    let config = Config::from_env();
+    let registration = resolve_a2a_platform_registration_config(&config)
+        .expect("registration config should resolve")
+        .expect("hosted mode should enable registration");
+
+    assert_eq!(
+        registration.traceparent.as_deref(),
+        Some("00-11111111111111111111111111111111-2222222222222222-01")
+    );
+    assert!(registration.tracestate.is_none());
+
+    env::remove_var("MAESTRO_PLATFORM_TRACEPARENT");
+    env::set_var(
+        "TRACEPARENT",
+        "00-33333333333333333333333333333333-4444444444444444-01",
+    );
+    let config = Config::from_env();
+    let registration = resolve_a2a_platform_registration_config(&config)
+        .expect("registration config should resolve")
+        .expect("hosted mode should enable registration");
+
+    assert_eq!(
+        registration.traceparent.as_deref(),
+        Some("00-33333333333333333333333333333333-4444444444444444-01")
+    );
+    assert_eq!(
+        registration.tracestate.as_deref(),
+        Some("evalops=stale-process")
+    );
+
+    restore_env(snapshot);
+}
+
+#[test]
+fn a2a_platform_registration_ignores_orphan_tracestate_env() {
+    let _guard = ENV_LOCK.blocking_lock();
+    let snapshot = snapshot_env(A2A_PLATFORM_ENV_NAMES);
+    clear_env(A2A_PLATFORM_ENV_NAMES);
+
+    env::set_var("MAESTRO_HOSTED_RUNNER_MODE", "1");
+    env::set_var("AGENT_REGISTRY_SERVICE_URL", "https://platform.test");
+    env::set_var("AGENT_REGISTRY_SERVICE_TOKEN", "registry-token");
+    env::set_var("AGENT_REGISTRY_ORGANIZATION_ID", "org_1");
+    env::set_var("AGENT_REGISTRY_WORKSPACE_ID", "ws_1");
+    env::set_var("MAESTRO_A2A_PUBLIC_URL", "https://maestro.example/a2a");
+    env::set_var("TRACESTATE", "evalops=stale-process-state");
+
+    let config = Config::from_env();
+    let registration = resolve_a2a_platform_registration_config(&config)
+        .expect("registration config should resolve")
+        .expect("hosted mode should enable registration");
+
+    assert!(registration.traceparent.is_none());
+    assert!(registration.tracestate.is_none());
 
     restore_env(snapshot);
 }
@@ -362,6 +460,9 @@ fn a2a_platform_payload_projects_governed_agent_card_without_drift_fields() {
         "https://maestro.example/a2a/.well-known/agent-card.json"
     );
     assert_eq!(payload["a2a"]["attributes"]["maxConcurrentObjectives"], "4");
+    assert_eq!(payload["a2a"]["attributes"]["organizationId"], "org_1");
+    assert_eq!(payload["a2a"]["attributes"]["workspaceId"], "ws_1");
+    assert_eq!(payload["a2a"]["attributes"]["agentId"], "maestro-peer-1");
     assert_eq!(
         payload["a2a"]["attributes"]["traceparent"],
         "00-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-bbbbbbbbbbbbbbbb-01"
@@ -482,6 +583,20 @@ fn a2a_platform_registration_posts_update_after_conflict_and_heartbeat() {
             Some("ws_1")
         );
         assert_eq!(
+            request
+                .headers
+                .get("x-evalops-agent-id")
+                .map(String::as_str),
+            Some("maestro-peer-1")
+        );
+        assert_eq!(
+            request
+                .headers
+                .get("x-evalops-actor-id")
+                .map(String::as_str),
+            Some("user_1")
+        );
+        assert_eq!(
             request.headers.get("traceparent").map(String::as_str),
             Some("00-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-bbbbbbbbbbbbbbbb-01")
         );
@@ -500,6 +615,69 @@ fn a2a_platform_registration_posts_update_after_conflict_and_heartbeat() {
     assert_eq!(requests[1].body["id"], "maestro-peer-1");
     assert_eq!(requests[2].body["agentId"], "maestro-peer-1");
     assert_eq!(requests[2].body["currentObjectiveIds"][0], "obj_1");
+    for request in &requests {
+        assert_eq!(
+            request.body["a2a"]["attributes"]["traceparent"],
+            "00-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-bbbbbbbbbbbbbbbb-01"
+        );
+        assert_eq!(
+            request.body["a2a"]["attributes"]["tracestate"],
+            "evalops=maestro-a2a"
+        );
+        assert_eq!(request.body["a2a"]["attributes"]["workspaceId"], "ws_1");
+    }
+
+    restore_env(snapshot);
+}
+
+#[test]
+fn a2a_platform_registration_does_not_forward_orphan_tracestate() {
+    let _guard = ENV_LOCK.blocking_lock();
+    let snapshot = snapshot_env(A2A_PLATFORM_ENV_NAMES);
+    clear_env(A2A_PLATFORM_ENV_NAMES);
+
+    let listener = StdTcpListener::bind("127.0.0.1:0").expect("bind test server");
+    let addr = listener.local_addr().expect("test server addr");
+    let server = thread::spawn(move || {
+        capture_http_request(&listener, "200 OK", r#"{"agent":{"id":"maestro-peer-1"}}"#)
+    });
+
+    let config = Config::from_env();
+    let registration = A2APlatformRegistrationConfig {
+        base_url: format!("http://{addr}"),
+        token: "registry-token".to_string(),
+        organization_id: "org_1".to_string(),
+        workspace_id: "ws_1".to_string(),
+        agent_id: "maestro-peer-1".to_string(),
+        name: "Maestro Peer".to_string(),
+        description: "Peer".to_string(),
+        agent_type: "maestro".to_string(),
+        owner_id: None,
+        traceparent: None,
+        tracestate: Some("evalops=stale-process-state".to_string()),
+        public_endpoint_url: "https://maestro.example/a2a".to_string(),
+        internal_endpoint_url: Some("http://maestro.mesh/a2a".to_string()),
+        agent_card_url: None,
+        heartbeat_interval_ms: 60_000,
+        timeout_ms: 2_500,
+        current_objective_ids: vec!["obj_1".to_string()],
+        max_concurrent_objectives: "4".to_string(),
+        surface: "a2a".to_string(),
+        surface_type: "SURFACE_MAESTRO".to_string(),
+        remote_runner_session_id: None,
+    };
+
+    register_or_update_a2a_platform_agent(&registration, &config)
+        .expect("registration should post");
+
+    let request = server.join().expect("test server should finish");
+    assert!(request.headers.get("traceparent").is_none());
+    assert!(request.headers.get("tracestate").is_none());
+    let attributes = request.body["a2a"]["attributes"]
+        .as_object()
+        .expect("attributes");
+    assert!(!attributes.contains_key("traceparent"));
+    assert!(!attributes.contains_key("tracestate"));
 
     restore_env(snapshot);
 }

@@ -41,12 +41,18 @@ present. `MAESTRO_A2A_PLATFORM_REGISTER=0` disables the loop, while
 the same A2A projection as `maestro a2a register`, updates an existing
 `MAESTRO_A2A_AGENT_ID` on conflict, and heartbeats the Agent Card, governed
 child-agent skills, current objective IDs, capacity hint, and endpoint URLs on a
-bounded interval. Hosted default registration requires `MAESTRO_A2A_PUBLIC_URL`
-or `MAESTRO_A2A_PUBLIC_HOST`/`MAESTRO_CONTROL_PUBLIC_HOST` so Platform does not
-publish an unroutable local bind address; explicit opt-in can still use local
-fallbacks for development. When no workspace ID is configured, the loop falls
-back to the organization ID, matching the rest of the Platform client behavior.
-Missing Platform configuration leaves local/offline Maestro unchanged.
+bounded interval. It sends organization, workspace, agent, and optional actor
+headers on every registration and heartbeat request. When `MAESTRO_A2A_TRACEPARENT`
+or `MAESTRO_PLATFORM_TRACEPARENT` is present, the loop also forwards
+`traceparent`/`tracestate` headers and mirrors those values into the A2A
+projection attributes so Platform discovery, heartbeats, and later task
+delegations can join the same trace. Hosted default registration requires
+`MAESTRO_A2A_PUBLIC_URL` or `MAESTRO_A2A_PUBLIC_HOST`/`MAESTRO_CONTROL_PUBLIC_HOST`
+so Platform does not publish an unroutable local bind address; explicit opt-in
+can still use local fallbacks for development. When no workspace ID is configured,
+the loop falls back to the organization ID, matching the rest of the Platform
+client behavior. Missing Platform configuration leaves local/offline Maestro
+unchanged.
 
 `delegate` sends a normal A2A `message:send` request with Maestro delegation
 metadata: origin, peer name, role, and working directory. The resulting task is
