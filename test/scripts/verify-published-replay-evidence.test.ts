@@ -24,6 +24,18 @@ function makeReplayMode(mode: "text" | "json" | "rpc") {
 			inputPath: "package.json",
 			resultStatus: "success",
 		},
+		searchTool: {
+			name: "search",
+			callId: "call-search-package-manifest",
+			inputPath: "package.json",
+			resultStatus: "success",
+		},
+		artifactTool: {
+			name: "write",
+			callId: "call-write-published-artifact",
+			inputPath: "published-replay-artifact.json",
+			resultStatus: "success",
+		},
 		final: {
 			status: "ok",
 			containsExpectedText: true,
@@ -35,6 +47,7 @@ function makeReplayMode(mode: "text" | "json" | "rpc") {
 			sha256: digest,
 			containsFinalText: true,
 			containsToolCallId: true,
+			containsSearchToolCallId: true,
 			containsWriteToolCallId: true,
 		},
 		agentRuntimeLedger: {
@@ -76,6 +89,15 @@ function makeReplayMode(mode: "text" | "json" | "rpc") {
 					evidenceRefs: [
 						"tool-call:call-read-package-json",
 						`tool-execution:tool-exec-${mode}`,
+					],
+					completionGate: "maestro_agent_runtime_ledger_recorded",
+				},
+				{
+					toolName: "search",
+					toolCallId: "call-search-package-manifest",
+					evidenceRefs: [
+						"tool-call:call-search-package-manifest",
+						`tool-execution:tool-exec-search-${mode}`,
 					],
 					completionGate: "maestro_agent_runtime_ledger_recorded",
 				},

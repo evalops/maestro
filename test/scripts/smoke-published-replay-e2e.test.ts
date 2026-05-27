@@ -19,6 +19,18 @@ function makeReplayMode(mode: "text" | "json" | "rpc") {
 			inputPath: "package.json",
 			resultStatus: "success",
 		},
+		searchTool: {
+			name: "search",
+			callId: "call-search-package-manifest",
+			inputPath: "package.json",
+			resultStatus: "success",
+		},
+		artifactTool: {
+			name: "write",
+			callId: "call-write-published-artifact",
+			inputPath: "published-replay-artifact.json",
+			resultStatus: "success",
+		},
 		final: {
 			status: "ok",
 			containsExpectedText: true,
@@ -30,6 +42,7 @@ function makeReplayMode(mode: "text" | "json" | "rpc") {
 			sha256: `sha256-${mode}`,
 			containsFinalText: true,
 			containsToolCallId: true,
+			containsSearchToolCallId: true,
 			containsWriteToolCallId: true,
 		},
 		agentRuntimeLedger: {
@@ -71,6 +84,15 @@ function makeReplayMode(mode: "text" | "json" | "rpc") {
 					evidenceRefs: [
 						"tool-call:call-read-package-json",
 						`tool-execution:tool-exec-${mode}`,
+					],
+					completionGate: "maestro_agent_runtime_ledger_recorded",
+				},
+				{
+					toolName: "search",
+					toolCallId: "call-search-package-manifest",
+					evidenceRefs: [
+						"tool-call:call-search-package-manifest",
+						`tool-execution:tool-exec-search-${mode}`,
 					],
 					completionGate: "maestro_agent_runtime_ledger_recorded",
 				},
@@ -312,6 +334,7 @@ describe("resolvePublishedReplayEvidencePath", () => {
 				transcriptEvidence: true,
 				sessionEvidence: true,
 				toolEvidence: true,
+				searchRipgrepEvidence: true,
 				approvalTraceEvidence: true,
 				errorTraceEvidence: true,
 				artifactTraceEvidence: true,
@@ -330,13 +353,14 @@ describe("resolvePublishedReplayEvidencePath", () => {
 				model: "maestro-replay-v1",
 				deterministic: true,
 				externalCredentialsRequired: false,
-				toolAllowlist: ["read", "write"],
+				toolAllowlist: ["read", "search", "write"],
 				approvalMode: "auto",
 			},
 			transcript: {
 				modes: ["text", "json", "rpc"],
 				toolCallIds: [
 					"call-read-package-json",
+					"call-search-package-manifest",
 					"call-write-published-artifact",
 				],
 				finalStatus: {
@@ -349,12 +373,23 @@ describe("resolvePublishedReplayEvidencePath", () => {
 				bytes: 384,
 			},
 			tools: {
-				names: ["read", "write"],
-				callIds: ["call-read-package-json", "call-write-published-artifact"],
+				names: ["read", "search", "write"],
+				callIds: [
+					"call-read-package-json",
+					"call-search-package-manifest",
+					"call-write-published-artifact",
+				],
 				resultStatus: {
-					success: 3,
+					success: 9,
 				},
 				completionGates: ["maestro_agent_runtime_ledger_recorded"],
+			},
+			search: {
+				engine: "ripgrep",
+				toolName: "search",
+				callId: "call-search-package-manifest",
+				inputPath: "package.json",
+				modes: ["text", "json", "rpc"],
 			},
 			approvals: {
 				count: 3,
@@ -410,7 +445,7 @@ describe("resolvePublishedReplayEvidencePath", () => {
 			model: "maestro-replay-v1",
 			deterministic: true,
 			externalCredentialsRequired: false,
-			toolAllowlist: ["read", "write"],
+			toolAllowlist: ["read", "search", "write"],
 			approvalMode: "auto",
 		});
 		expect(evidence.transcript.schemaVersion).toBe(
@@ -436,12 +471,60 @@ describe("resolvePublishedReplayEvidencePath", () => {
 					resultStatus: "success",
 				}),
 				expect.objectContaining({
+					id: "call-search-package-manifest",
+					name: "search",
+					inputPath: "package.json",
+					resultStatus: "success",
+				}),
+				expect.objectContaining({
 					id: "call-write-published-artifact",
 					name: "write",
 					inputPath: "published-replay-artifact.json",
 					resultStatus: "success",
 				}),
 			]),
+		);
+	});
+
+	it("fails the release gate when published replay lacks search ripgrep evidence", () => {
+		const withoutSearchEvidence = (mode: "text" | "json" | "rpc") => {
+			const replayMode = makeReplayMode(mode);
+			delete (replayMode as { searchTool?: unknown }).searchTool;
+			replayMode.session.containsSearchToolCallId = false;
+			replayMode.agentRuntimeLedger.toolWorkItems =
+				replayMode.agentRuntimeLedger.toolWorkItems.filter(
+					(item) => item.toolName !== "search",
+				);
+			return replayMode;
+		};
+
+		const evidence = buildPublishedReplayEvidence({
+			packageSpec: `${rootPackageName}@9.9.9`,
+			cliCommand: "maestro",
+			binPath: "/tmp/project/node_modules/.bin/maestro",
+			installMetadata: {
+				label: `${rootPackageName}@9.9.9 via npm`,
+				name: rootPackageName,
+				version: "9.9.9",
+				binCommands: ["maestro"],
+				forbiddenWorkspaceNames: ["@evalops/contracts", "@evalops/tui"],
+				forbiddenReferences: [],
+				workspaceProtocolReferences: [],
+				installable: true,
+				dependencySections: {
+					dependencies: [{ name: "zod", spec: "^4.3.6" }],
+				},
+			},
+			modes: [
+				withoutSearchEvidence("text"),
+				withoutSearchEvidence("json"),
+				withoutSearchEvidence("rpc"),
+			],
+		});
+
+		expect(evidence.releaseGate.satisfied).toBe(false);
+		expect(evidence.releaseGate.failedChecks).toContain(
+			"searchRipgrepEvidence",
 		);
 	});
 });
