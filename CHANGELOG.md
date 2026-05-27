@@ -17,6 +17,12 @@ versioning when releases are cut.
   and keep scheduled public runs inert so public publishing stays downstream of
   the internal source-of-truth release.
 
+## [0.10.37] - 2026-05-27
+
+### Changed
+
+- Honor shell env policy for trusted tool tokens. <!-- maestro-release-note:d0672967bd20 -->
+
 ## [0.10.36] - 2026-05-27
 
 ### Fixed
