@@ -78,6 +78,18 @@ export function checkReleaseSurfaceConformance({
 				`${label} has unsupported evidenceType ${JSON.stringify(check.evidenceType)}`,
 			);
 		}
+		if (check.area === "release-gate-scripts") {
+			if (check.path !== "package.json") {
+				failures.push(
+					`${label} must use package.json as release-gate script evidence`,
+				);
+			}
+			if (check.evidenceType !== "package-script") {
+				failures.push(
+					`${label} must use package-script evidence for release-gate validation`,
+				);
+			}
+		}
 		if (!Array.isArray(check.anchors) || check.anchors.length === 0) {
 			failures.push(`${label} must list at least one anchor`);
 			continue;
@@ -106,6 +118,9 @@ export function checkReleaseSurfaceConformance({
 				failures.push(`${label} is missing anchor ${JSON.stringify(anchor)}`);
 			}
 		}
+		if (check.evidenceType === "package-script") {
+			failures.push(...validatePackageScriptEvidence({ check, source, label }));
+		}
 	}
 
 	for (const requiredArea of requiredAreas) {
@@ -117,12 +132,97 @@ export function checkReleaseSurfaceConformance({
 	return failures;
 }
 
+function validatePackageScriptEvidence({ check, source, label }) {
+	const failures = [];
+	let packageJson;
+	try {
+		packageJson = JSON.parse(source);
+	} catch (error) {
+		failures.push(`${label} points at invalid package.json: ${error.message}`);
+		return failures;
+	}
+	if (check.area === "release-gate-scripts" && check.path === "package.json") {
+		const releaseCheck = packageJson?.scripts?.["release:check"];
+		if (typeof releaseCheck !== "string") {
+			failures.push(`${label} must define scripts.release:check`);
+		} else if (
+			!packageScriptRunsCommand(
+				releaseCheck,
+				"node scripts/release-readiness.js release",
+			)
+		) {
+			failures.push(
+				`${label} scripts.release:check must run scripts/release-readiness.js release`,
+			);
+		}
+
+		const checkScript = packageJson?.scripts?.["check:release-surface"];
+		if (typeof checkScript !== "string") {
+			failures.push(`${label} must define scripts.check:release-surface`);
+		} else if (
+			!packageScriptRunsCommand(
+				checkScript,
+				"node scripts/check-release-surface-conformance.mjs",
+			)
+		) {
+			failures.push(
+				`${label} scripts.check:release-surface must run scripts/check-release-surface-conformance.mjs`,
+			);
+		}
+
+		const lintEvals = packageJson?.scripts?.["lint:evals"];
+		if (typeof lintEvals !== "string") {
+			failures.push(`${label} must define scripts.lint:evals`);
+		} else if (!packageScriptInvokes(lintEvals, "check:release-surface")) {
+			failures.push(
+				`${label} scripts.lint:evals must run check:release-surface`,
+			);
+		}
+	}
+	return failures;
+}
+
 function pathStaysWithinRoot(rootPath, targetPath) {
 	const relativePath = relative(rootPath, targetPath);
 	return (
 		relativePath === "" ||
 		(!relativePath.startsWith("..") && !isAbsolute(relativePath))
 	);
+}
+
+function packageScriptRunsCommand(command, expectedCommand) {
+	if (commandCanSwallowFailures(command)) {
+		return false;
+	}
+	return command
+		.split("&&")
+		.some((segment) => segment.trim() === expectedCommand);
+}
+
+function packageScriptInvokes(command, scriptName) {
+	if (commandCanSwallowFailures(command)) {
+		return false;
+	}
+	return command
+		.split("&&")
+		.some((segment) =>
+			new RegExp(
+				`^(?:npm|bun)\\s+run\\s+${escapeRegExp(scriptName)}$`,
+			).test(segment.trim()),
+		);
+}
+
+function commandCanSwallowFailures(command) {
+	return (
+		command.includes("||") ||
+		command.includes(";") ||
+		/[\r\n]/u.test(command) ||
+		/(^|[^&])&(?!&)/u.test(command)
+	);
+}
+
+function escapeRegExp(value) {
+	return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 function main() {
