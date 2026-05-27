@@ -117,6 +117,8 @@
 			"evidenceType": "source",
 			"anchors": [
 				"Prepare sanitized public release tree",
+				"Sync release mirror helper files",
+				"scripts/sync-release-mirror.mjs",
 				"Validate mirrored public tree",
 				"Publish public npm package fallback",
 				"npm publish"
