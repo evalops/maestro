@@ -139,7 +139,7 @@ export const MAESTRO_BUS_EVENT_CATALOG = {
 		MaestroBusEventType.ToolCallAttempted,
 		"tool",
 		"ToolCallAttempt",
-		["meter.maestro-tool-call-events"],
+		["meter.maestro-tool-call-events", "release.maestro-tool-attempt-gates"],
 	),
 	[MaestroBusEventType.ToolCallCompleted]: entry(
 		MaestroBusEventType.ToolCallCompleted,
@@ -310,6 +310,7 @@ export const MAESTRO_RELEASE_GATE_EVENT_SUBJECTS_BY_CATEGORY = {
 	install: [MaestroBusEventType.InstallCheckCompleted],
 	session: [MaestroBusEventType.SessionClosed],
 	tool: [
+		MaestroBusEventType.ToolCallAttempted,
 		MaestroBusEventType.ToolCallCompleted,
 		MaestroBusEventType.ToolCallFailed,
 	],
