@@ -55,6 +55,15 @@ const ARTIFACT_TEXT = JSON.stringify({
 const SEARCH_PATTERN = "maestro-published";
 const PROMPT_TEXT = "Replay the published package golden path.";
 const REQUIRED_REPLAY_MODES = ["text", "json", "rpc"];
+const REQUIRED_OBSERVABILITY_QUERY_TRACES = [
+	"install",
+	"session",
+	"tool",
+	"approval",
+	"error",
+	"artifact",
+	"final-status",
+];
 const PUBLISHED_REPLAY_EVIDENCE_REF_PREFIXES = [
 	"tool-call:",
 	"tool-execution:",
@@ -163,6 +172,11 @@ function uniqueValues(values) {
 		result.push(value);
 	}
 	return result;
+}
+
+function includesRequiredModes(values) {
+	const set = new Set(Array.isArray(values) ? values : []);
+	return REQUIRED_REPLAY_MODES.every((mode) => set.has(mode));
 }
 
 function cloneJson(value) {
@@ -509,6 +523,187 @@ function buildPublishedReplayTranscriptObservability(transcript) {
 	};
 }
 
+function queryIndexEntry({
+	key,
+	traceType,
+	status,
+	modes = [],
+	evidenceRefs = [],
+	ids = [],
+	counts = {},
+}) {
+	return {
+		key,
+		traceType,
+		queryable: true,
+		status,
+		modes: uniqueValues(modes),
+		evidenceRefs: uniqueValues(evidenceRefs),
+		ids: uniqueValues(ids),
+		counts,
+	};
+}
+
+function buildPublishedReplayObservabilityQueryIndex(observability) {
+	return [
+		queryIndexEntry({
+			key: "install",
+			traceType: "install",
+			status:
+				observability.install.installable === true &&
+				observability.install.forbiddenReferences.length === 0 &&
+				observability.install.workspaceProtocolReferences.length === 0
+					? "ok"
+					: "failed",
+			ids: observability.install.binCommands,
+			counts: {
+				forbiddenReferences: observability.install.forbiddenReferences.length,
+				workspaceProtocolReferences:
+					observability.install.workspaceProtocolReferences.length,
+			},
+		}),
+		queryIndexEntry({
+			key: "sessions",
+			traceType: "session",
+			status: includesRequiredModes(observability.sessions.modes)
+				? "ok"
+				: "failed",
+			modes: observability.sessions.modes,
+			ids: Object.keys(observability.sessions.sha256ByMode),
+			counts: {
+				jsonlFileCount: observability.sessions.jsonlFileCount,
+				bytes: observability.sessions.bytes,
+			},
+		}),
+		queryIndexEntry({
+			key: "tools",
+			traceType: "tool",
+			status:
+				["read", "search", "write"].every((name) =>
+					observability.tools.names.includes(name),
+				) &&
+				[TOOL_CALL_ID, SEARCH_TOOL_CALL_ID, WRITE_TOOL_CALL_ID].every((id) =>
+					observability.tools.callIds.includes(id),
+				)
+					? "ok"
+					: "failed",
+			modes: observability.replay.modes,
+			evidenceRefs: observability.tools.evidenceRefs,
+			ids: observability.tools.callIds,
+			counts: observability.tools.resultStatus,
+		}),
+		queryIndexEntry({
+			key: "approvals",
+			traceType: "approval",
+			status: includesRequiredModes(observability.approvals.modes)
+				? "ok"
+				: "failed",
+			modes: observability.approvals.modes,
+			evidenceRefs: observability.approvals.evidenceRefs,
+			counts: { count: observability.approvals.count },
+		}),
+		queryIndexEntry({
+			key: "errors",
+			traceType: "error",
+			status:
+				observability.errors.queryable === true &&
+				observability.errors.expectedCount === 0 &&
+				observability.errors.count === 0
+					? "ok"
+					: "failed",
+			modes: observability.errors.modes,
+			evidenceRefs: observability.errors.evidenceRefs,
+			counts: {
+				count: observability.errors.count,
+				expectedCount: observability.errors.expectedCount,
+			},
+		}),
+		queryIndexEntry({
+			key: "artifacts",
+			traceType: "artifact",
+			status: includesRequiredModes(observability.artifacts.modes)
+				? "ok"
+				: "failed",
+			modes: observability.artifacts.modes,
+			evidenceRefs: observability.artifacts.evidenceRefs,
+			counts: { count: observability.artifacts.count },
+		}),
+		queryIndexEntry({
+			key: "finalStatus",
+			traceType: "final-status",
+			status: observability.finalStatus.allOk === true ? "ok" : "failed",
+			modes: observability.replay.modes,
+			counts: observability.finalStatus.byStatus,
+		}),
+	];
+}
+
+function queryIndexEntryForTrace(queryIndex, traceType) {
+	return Array.isArray(queryIndex)
+		? queryIndex.find((entry) => entry?.traceType === traceType)
+		: undefined;
+}
+
+function queryableObservabilityIndexSatisfiesReleaseGate(observability) {
+	const queryIndex = Array.isArray(observability?.queryIndex)
+		? observability.queryIndex
+		: [];
+	if (
+		!REQUIRED_OBSERVABILITY_QUERY_TRACES.every((traceType) =>
+			queryIndex.some(
+				(entry) =>
+					entry?.traceType === traceType &&
+					entry?.queryable === true &&
+					entry?.status === "ok",
+			),
+		)
+	) {
+		return false;
+	}
+
+	const installEntry = queryIndexEntryForTrace(queryIndex, "install");
+	const sessionEntry = queryIndexEntryForTrace(queryIndex, "session");
+	const toolEntry = queryIndexEntryForTrace(queryIndex, "tool");
+	const approvalEntry = queryIndexEntryForTrace(queryIndex, "approval");
+	const errorEntry = queryIndexEntryForTrace(queryIndex, "error");
+	const artifactEntry = queryIndexEntryForTrace(queryIndex, "artifact");
+	const finalStatusEntry = queryIndexEntryForTrace(queryIndex, "final-status");
+	const toolRefs = Array.isArray(toolEntry?.evidenceRefs)
+		? toolEntry.evidenceRefs
+		: [];
+	const approvalRefs = Array.isArray(approvalEntry?.evidenceRefs)
+		? approvalEntry.evidenceRefs
+		: [];
+	const artifactRefs = Array.isArray(artifactEntry?.evidenceRefs)
+		? artifactEntry.evidenceRefs
+		: [];
+
+	return (
+		installEntry?.counts?.forbiddenReferences === 0 &&
+		installEntry?.counts?.workspaceProtocolReferences === 0 &&
+		includesRequiredModes(sessionEntry?.modes) &&
+		finiteNumber(sessionEntry?.counts?.jsonlFileCount) >=
+			REQUIRED_REPLAY_MODES.length &&
+		includesRequiredModes(toolEntry?.modes) &&
+		[TOOL_CALL_ID, SEARCH_TOOL_CALL_ID, WRITE_TOOL_CALL_ID].every((id) =>
+			toolEntry?.ids?.includes?.(id),
+		) &&
+		[TOOL_CALL_ID, SEARCH_TOOL_CALL_ID, WRITE_TOOL_CALL_ID].every((id) =>
+			toolRefs.includes(`tool-call:${id}`),
+		) &&
+		includesRequiredModes(approvalEntry?.modes) &&
+		approvalRefs.length > 0 &&
+		approvalRefs.every((ref) => ref.startsWith("approval-request:")) &&
+		errorEntry?.counts?.count === 0 &&
+		errorEntry?.counts?.expectedCount === 0 &&
+		includesRequiredModes(artifactEntry?.modes) &&
+		artifactRefs.length > 0 &&
+		artifactRefs.every((ref) => ref.startsWith("artifact:")) &&
+		includesRequiredModes(finalStatusEntry?.modes) &&
+		finalStatusEntry?.counts?.ok === REQUIRED_REPLAY_MODES.length
+	);
+}
+
 function providerConfigSatisfiesReleaseGate(providerConfig) {
 	return (
 		providerConfig?.provider === SCRIPTED_REPLAY_PROVIDER &&
@@ -627,7 +822,7 @@ function buildPublishedReplayObservability({
 			.map(modeName),
 	);
 
-	return {
+	const observability = {
 		install: {
 			installable: installMetadata?.installable === true,
 			forbiddenReferences: Array.isArray(installMetadata?.forbiddenReferences)
@@ -737,6 +932,10 @@ function buildPublishedReplayObservability({
 		},
 		agentRuntimeLedger: buildAgentRuntimeLedgerObservability(modes),
 	};
+	return {
+		...observability,
+		queryIndex: buildPublishedReplayObservabilityQueryIndex(observability),
+	};
 }
 
 function buildPublishedReplayReleaseGate({
@@ -826,6 +1025,8 @@ function buildPublishedReplayReleaseGate({
 					ref.startsWith("artifact:"),
 				),
 			),
+		queryableObservabilityIndex:
+			queryableObservabilityIndexSatisfiesReleaseGate(observability),
 		agentRuntimeLedger:
 			modes.length > 0 &&
 			modes.every((modeEvidence) => {
