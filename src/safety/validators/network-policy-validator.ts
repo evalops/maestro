@@ -74,6 +74,46 @@ export async function checkNetworkRestrictionsDetailed(
 
 		const normalizedHost = host.replace(/^\[|\]$/g, "");
 
+		if (network.blockedHosts?.length) {
+			for (const blockedHost of network.blockedHosts) {
+				const lowerBlocked = blockedHost.toLowerCase();
+				if (host === lowerBlocked || host.endsWith(`.${lowerBlocked}`)) {
+					return {
+						allowed: false,
+						reason: `Host "${host}" is blocked by enterprise policy.`,
+						host,
+						normalizedHost,
+						resolvedIPs: [],
+					};
+				}
+			}
+		}
+
+		if (network.allowedHosts) {
+			if (network.allowedHosts.length === 0) {
+				return {
+					allowed: false,
+					reason: `Host "${host}" is not in the allowed hosts list.`,
+					host,
+					normalizedHost,
+					resolvedIPs: [],
+				};
+			}
+			const isAllowed = network.allowedHosts.some((allowedHost) => {
+				const lowerAllowed = allowedHost.toLowerCase();
+				return host === lowerAllowed || host.endsWith(`.${lowerAllowed}`);
+			});
+			if (!isAllowed) {
+				return {
+					allowed: false,
+					reason: `Host "${host}" is not in the allowed hosts list.`,
+					host,
+					normalizedHost,
+					resolvedIPs: [],
+				};
+			}
+		}
+
 		const resolvedIPs: string[] = [];
 		const isIP =
 			parseIPv4(normalizedHost) !== null ||
@@ -124,45 +164,6 @@ export async function checkNetworkRestrictionsDetailed(
 			}
 		}
 
-		if (network.blockedHosts?.length) {
-			for (const blockedHost of network.blockedHosts) {
-				const lowerBlocked = blockedHost.toLowerCase();
-				if (host === lowerBlocked || host.endsWith(`.${lowerBlocked}`)) {
-					return {
-						allowed: false,
-						reason: `Host "${host}" is blocked by enterprise policy.`,
-						host,
-						normalizedHost,
-						resolvedIPs,
-					};
-				}
-			}
-		}
-
-		if (network.allowedHosts) {
-			if (network.allowedHosts.length === 0) {
-				return {
-					allowed: false,
-					reason: `Host "${host}" is not in the allowed hosts list.`,
-					host,
-					normalizedHost,
-					resolvedIPs,
-				};
-			}
-			const isAllowed = network.allowedHosts.some((allowedHost) => {
-				const lowerAllowed = allowedHost.toLowerCase();
-				return host === lowerAllowed || host.endsWith(`.${lowerAllowed}`);
-			});
-			if (!isAllowed) {
-				return {
-					allowed: false,
-					reason: `Host "${host}" is not in the allowed hosts list.`,
-					host,
-					normalizedHost,
-					resolvedIPs,
-				};
-			}
-		}
 		return { allowed: true, host, normalizedHost, resolvedIPs };
 	} catch {
 		return {
