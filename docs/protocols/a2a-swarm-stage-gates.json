@@ -335,9 +335,9 @@
 			]
 		},
 		{
-			"id": "stage-6-fleet-hardening",
-			"title": "Fleet hardening",
-			"purpose": "Turn the proven end-to-end path into a durable fleet service with load, chaos, SLO, quota, retention, and incident evidence.",
+			"id": "stage-6-realtime-delivery",
+			"title": "Realtime delivery",
+			"purpose": "Prove A2A streaming status, artifact delivery, and push notifications are durable, authenticated, trace-correlated, tenant-safe, and visible to operators.",
 			"dependsOn": ["stage-5-production-proof-operations"],
 			"entryEvidence": [
 				{
@@ -346,6 +346,65 @@
 					"description": "Stage 5 proves a complete live repo or deploy-lane workflow with signed, dereferenceable evidence.",
 					"authoritativeSource": "Signed Stage 5 evidence bundle",
 					"verification": "Verify Stage 5 evidence signature, GitHub dereference, deploy-verifier output, and root Platform trace id."
+				},
+				{
+					"id": "stream-push-capabilities-advertised",
+					"proofClass": "environment",
+					"description": "Participating peers advertise A2A streaming and push-notification capabilities before delivery proof starts.",
+					"authoritativeSource": "Platform Agent Registry capability metadata and A2A Agent Cards",
+					"verification": "maestro a2a discover --capability a2a:stream --capability a2a:push --import && maestro a2a peers"
+				}
+			],
+			"exitEvidence": [
+				{
+					"id": "status-stream-terminal-events",
+					"proofClass": "streaming-status-events",
+					"description": "A delegated task emits ordered status and artifact events over the A2A stream until terminal state or an explicitly accepted nonterminal observation.",
+					"authoritativeSource": "Target Maestro A2A stream and subscription endpoints",
+					"verification": "Run npm run platform:a2a-delegation-live with streaming enabled, then verify stream event ids, terminal state, and artifact ids in the signed evidence bundle."
+				},
+				{
+					"id": "push-notifications-delivered",
+					"proofClass": "push-notification-delivery",
+					"description": "The target peer delivers authenticated task push notifications to the configured callback and records accepted, rejected, and terminal notifications.",
+					"authoritativeSource": "Platform callback audit ledger and A2A task notification receiver",
+					"verification": "Inspect callback audit ids, accepted notification count, invalid-token rejection, and terminal notification state in the signed evidence bundle."
+				},
+				{
+					"id": "task-message-ids-durable",
+					"proofClass": "durable-task-message-ids",
+					"description": "Task, context, message, stream event, and push notification ids remain stable across polling, streaming, push, evidence verification, and operator inspection.",
+					"authoritativeSource": "Platform task and message ledger plus target Maestro task endpoint",
+					"verification": "Compare taskId, contextId, messageId, streamEventId, pushNotificationId, and evidence refs across the task endpoint, signed bundle, and Platform ledger."
+				},
+				{
+					"id": "delivery-traces-correlated",
+					"proofClass": "trace-correlated-delivery",
+					"description": "Stream and push delivery events preserve trace headers and link back to the root delegation, target task, callback audit, and operator trace.",
+					"authoritativeSource": "Platform trace store and A2A trace headers",
+					"verification": "Open the root trace id and verify stream, task, callback, and push spans share traceparent or tracestate links without exposing tokens."
+				},
+				{
+					"id": "delivery-metrics-operator-visible",
+					"proofClass": "operator-delivery-metrics",
+					"description": "Operators can see stream terminal rate, push delivery latency, callback rejection rate, retry counts, and stuck-delivery alerts for the participating workspace.",
+					"authoritativeSource": "Platform observability metrics and alert index",
+					"verification": "Query delivery metrics for the evidence window and attach stable dashboard, alert, or metric ids to the release evidence."
+				}
+			]
+		},
+		{
+			"id": "stage-7-fleet-hardening",
+			"title": "Fleet hardening",
+			"purpose": "Turn the proven end-to-end path into a durable fleet service with load, chaos, SLO, quota, retention, and incident evidence.",
+			"dependsOn": ["stage-6-realtime-delivery"],
+			"entryEvidence": [
+				{
+					"id": "realtime-delivery-green",
+					"proofClass": "prior-stage",
+					"description": "Stage 6 proves streaming status, artifact delivery, push notifications, durable ids, and operator delivery metrics for the participating workspace.",
+					"authoritativeSource": "Signed Stage 6 evidence bundle",
+					"verification": "Verify Stage 6 evidence signature, stream event ids, push callback audit ids, Platform trace ids, and operator metric ids."
 				},
 				{
 					"id": "fleet-capacity-targets-declared",

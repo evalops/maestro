@@ -14,7 +14,8 @@ const A2A_SWARM_STAGE_IDS = [
 	"stage-3-subagent-federation",
 	"stage-4-swarm-coordination",
 	"stage-5-production-proof-operations",
-	"stage-6-fleet-hardening",
+	"stage-6-realtime-delivery",
+	"stage-7-fleet-hardening",
 ] as const;
 
 const REQUIRED_A2A_SWARM_STAGE_PROOF_CLASSES: Record<
@@ -59,7 +60,14 @@ const REQUIRED_A2A_SWARM_STAGE_PROOF_CLASSES: Record<
 		"deploy-verifier",
 		"traces",
 	],
-	"stage-6-fleet-hardening": [
+	"stage-6-realtime-delivery": [
+		"streaming-status-events",
+		"push-notification-delivery",
+		"durable-task-message-ids",
+		"trace-correlated-delivery",
+		"operator-delivery-metrics",
+	],
+	"stage-7-fleet-hardening": [
 		"load-soak",
 		"chaos",
 		"slo",

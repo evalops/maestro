@@ -1,6 +1,7 @@
 import { spawn } from "node:child_process";
 import { Type } from "@sinclair/typebox";
 import { safeJsonParse } from "../utils/json.js";
+import { ensureTool } from "./tools-manager.js";
 
 export const pathSchema = Type.Optional(
 	Type.Union([
@@ -42,6 +43,50 @@ export function toArray<T>(value: T | T[] | undefined): T[] {
 }
 
 const MAX_RIPGREP_OUTPUT_BYTES = 2_000_000; // ~2MB safeguard
+let ripgrepExecutablePromise: Promise<string | null> | null = null;
+
+function ripgrepAbortError(): Error {
+	return new Error("ripgrep search aborted before start");
+}
+
+async function resolveRipgrepExecutable(): Promise<string> {
+	ripgrepExecutablePromise ??= ensureTool("rg", true);
+	const executable = await ripgrepExecutablePromise;
+	if (!executable) {
+		ripgrepExecutablePromise = null;
+		throw new Error("ripgrep is not available and could not be downloaded");
+	}
+	return executable;
+}
+
+function throwIfRipgrepAborted(signal?: AbortSignal): void {
+	if (signal?.aborted) {
+		throw ripgrepAbortError();
+	}
+}
+
+async function resolveRipgrepExecutableWithAbort(
+	signal?: AbortSignal,
+): Promise<string> {
+	throwIfRipgrepAborted(signal);
+	if (!signal) {
+		return await resolveRipgrepExecutable();
+	}
+
+	return await new Promise<string>((resolve, reject) => {
+		const onAbort = (): void => {
+			signal.removeEventListener("abort", onAbort);
+			reject(ripgrepAbortError());
+		};
+
+		signal.addEventListener("abort", onAbort, { once: true });
+		resolveRipgrepExecutable()
+			.then(resolve, reject)
+			.finally(() => {
+				signal.removeEventListener("abort", onAbort);
+			});
+	});
+}
 
 function shellQuoteArg(value: string): string {
 	if (/^[A-Za-z0-9_/:=.,@%+-]+$/.test(value)) {
@@ -64,7 +109,9 @@ export async function runRipgrep(
 	exitCode: number;
 	truncated: boolean;
 }> {
-	const child = spawn("rg", args, {
+	const executable = await resolveRipgrepExecutableWithAbort(signal);
+	throwIfRipgrepAborted(signal);
+	const child = spawn(executable, args, {
 		cwd: cwd ?? process.cwd(),
 		stdio: ["ignore", "pipe", "pipe"],
 		signal,
