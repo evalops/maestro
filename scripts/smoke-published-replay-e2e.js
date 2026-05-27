@@ -241,6 +241,16 @@ function evidenceRefsForMode(modeEvidence) {
 	);
 }
 
+function modesWithEvidenceRefPrefix(modes, prefix) {
+	return uniqueValues(
+		modes
+			.filter((modeEvidence) =>
+				evidenceRefsForMode(modeEvidence).some((ref) => ref.startsWith(prefix)),
+			)
+			.map(modeName),
+	);
+}
+
 function buildAgentRuntimeLedgerObservability(modes) {
 	const counts = {
 		entries: 0,
@@ -307,6 +317,8 @@ function buildPublishedReplayObservability({ installMetadata, modes }) {
 		ref.startsWith("approval-request:"),
 	);
 	const artifactRefs = evidenceRefs.filter((ref) => ref.startsWith("artifact:"));
+	const approvalModes = modesWithEvidenceRefPrefix(modes, "approval-request:");
+	const artifactModes = modesWithEvidenceRefPrefix(modes, "artifact:");
 	const errorModes = uniqueValues(
 		modes
 			.filter((modeEvidence) => {
@@ -387,7 +399,8 @@ function buildPublishedReplayObservability({ installMetadata, modes }) {
 			),
 		},
 		approvals: {
-			count: approvalRefs.length,
+			count: approvalModes.length,
+			modes: approvalModes,
 			evidenceRefs: approvalRefs,
 		},
 		errors: {
@@ -395,7 +408,8 @@ function buildPublishedReplayObservability({ installMetadata, modes }) {
 			modes: errorModes,
 		},
 		artifacts: {
-			count: artifactRefs.length,
+			count: artifactModes.length,
+			modes: artifactModes,
 			evidenceRefs: artifactRefs,
 		},
 		finalStatus: {
