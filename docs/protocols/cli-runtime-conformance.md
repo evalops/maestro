@@ -11,6 +11,10 @@ smokes depend on:
 - fail-fast handling for invalid task budgets and unknown options
 - static anchors for the JSON-over-stdio RPC surface
 
+The request/response RPC protocol itself is pinned by
+[`rpc-protocol-conformance.md`](./rpc-protocol-conformance.md), including
+request-id correlation for typed clients.
+
 Run the gate with:
 
 ```bash
