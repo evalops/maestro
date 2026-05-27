@@ -17,6 +17,23 @@ versioning when releases are cut.
   and keep scheduled public runs inert so public publishing stays downstream of
   the internal source-of-truth release.
 
+## [0.10.38] - 2026-05-27
+
+### Changed
+
+- Gate rpc protocol conformance (#2295). <!-- maestro-release-note:912ccaf53f1f -->
+- [maestro] Gate Platform runtime conformance (#2276). <!-- maestro-release-note:219cc0c215cd -->
+- Gate tool attempts in release telemetry (#2293). <!-- maestro-release-note:b26aff814445 -->
+- Avoid guardian token fixture false positive (#2292). <!-- maestro-release-note:02deab8d5c8c -->
+- [maestro] Propagate A2A Platform trace context (#2272). <!-- maestro-release-note:d05f3195f0c8 -->
+
+### Fixed
+
+- Preserve public release helper ownership (#2297). <!-- maestro-release-note:47e1fb085071 -->
+- Resolve ripgrep through managed tools (#2296). <!-- maestro-release-note:a8ff81cea99d -->
+- Avoid DNS for host policy denies (#2294). <!-- maestro-release-note:215d3295c580 -->
+- Trim public install audit surface. <!-- maestro-release-note:c7a8b96bb3fe -->
+
 ## [0.10.37] - 2026-05-27
 
 ### Changed
