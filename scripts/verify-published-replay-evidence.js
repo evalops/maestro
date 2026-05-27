@@ -7,13 +7,16 @@ import { pathToFileURL } from "node:url";
 import { assertPublishedReplayReleaseGate } from "./published-replay-evidence-gate.js";
 
 const EVIDENCE_SCHEMA = "evalops.maestro.published-replay-evidence.v1";
+const TRANSCRIPT_SCHEMA = "evalops.maestro.published-replay-transcript.v1";
 const REQUIRED_INSTALLERS = ["npm", "bun"];
 const REQUIRED_REPLAY_MODES = ["json", "rpc", "text"];
 const REQUIRED_RELEASE_GATE_CHECKS = [
 	"installablePackageMetadata",
 	"noForbiddenWorkspaceReferences",
 	"noWorkspaceProtocolReferences",
+	"providerConfig",
 	"requiredReplayModes",
+	"transcriptEvidence",
 	"sessionEvidence",
 	"toolEvidence",
 	"approvalTraceEvidence",
@@ -22,6 +25,12 @@ const REQUIRED_RELEASE_GATE_CHECKS = [
 	"finalStatus",
 ];
 const TOOL_CALL_ID = "call-read-package-json";
+const WRITE_TOOL_CALL_ID = "call-write-published-artifact";
+const ARTIFACT_PATH = "published-replay-artifact.json";
+const SCRIPTED_REPLAY_PROVIDER = "scripted-replay";
+const SCRIPTED_REPLAY_MODEL = "maestro-replay-v1";
+const SCRIPTED_REPLAY_TOOL_ALLOWLIST = ["read", "write"];
+const SCRIPTED_REPLAY_APPROVAL_MODE = "auto";
 const PUBLISHED_REPLAY_EVIDENCE_REF_PREFIXES = [
 	"tool-call:",
 	"tool-execution:",
@@ -171,6 +180,102 @@ function expectedInstallLabelFragment(installer) {
 	}
 }
 
+function providerConfigIsValid(providerConfig) {
+	return (
+		isObject(providerConfig) &&
+		providerConfig.provider === SCRIPTED_REPLAY_PROVIDER &&
+		providerConfig.model === SCRIPTED_REPLAY_MODEL &&
+		providerConfig.externalCredentialsRequired === false &&
+		providerConfig.externalNetworkRequired === false &&
+		providerConfig.approvalMode === SCRIPTED_REPLAY_APPROVAL_MODE &&
+		typeof providerConfig.sandboxMode === "string" &&
+		providerConfig.sandboxMode.length > 0 &&
+		SCRIPTED_REPLAY_TOOL_ALLOWLIST.every((toolName) =>
+			stringArray(providerConfig.toolAllowlist).includes(toolName),
+		)
+	);
+}
+
+function transcriptModeEntry(transcript, modeName) {
+	const modes = Array.isArray(transcript?.modes) ? transcript.modes : [];
+	return modes.find((mode) => mode?.mode === modeName);
+}
+
+function transcriptToolCall(mode, toolCallId) {
+	const toolCalls = Array.isArray(mode?.toolCalls) ? mode.toolCalls : [];
+	return toolCalls.find((toolCall) => toolCall?.id === toolCallId);
+}
+
+function transcriptCoversRequiredModes(transcript) {
+	const transcriptModes = Array.isArray(transcript?.modes)
+		? transcript.modes.map((mode) => mode?.mode)
+		: [];
+	return (
+		JSON.stringify(sortedStrings(transcriptModes)) ===
+		JSON.stringify(REQUIRED_REPLAY_MODES)
+	);
+}
+
+function transcriptIsValid(transcript) {
+	if (
+		!isObject(transcript) ||
+		transcript.schemaVersion !== TRANSCRIPT_SCHEMA ||
+		!transcriptCoversRequiredModes(transcript)
+	) {
+		return false;
+	}
+	const promptSha256 =
+		typeof transcript?.prompt?.sha256 === "string"
+			? transcript.prompt.sha256
+			: "";
+	const coverageModes = stringArray(transcript?.coverage?.modes);
+	const coverageToolCallIds = stringArray(transcript?.coverage?.toolCallIds);
+	if (
+		promptSha256.length !== 64 ||
+		countModesWith(coverageModes, REQUIRED_REPLAY_MODES) !==
+			REQUIRED_REPLAY_MODES.length ||
+		!coverageToolCallIds.includes(TOOL_CALL_ID) ||
+		!coverageToolCallIds.includes(WRITE_TOOL_CALL_ID) ||
+		transcript?.coverage?.finalStatus?.ok !== REQUIRED_REPLAY_MODES.length
+	) {
+		return false;
+	}
+	return REQUIRED_REPLAY_MODES.every((modeName) => {
+		const mode = transcriptModeEntry(transcript, modeName);
+		const readTool = transcriptToolCall(mode, TOOL_CALL_ID);
+		const writeTool = transcriptToolCall(mode, WRITE_TOOL_CALL_ID);
+		return (
+			isObject(mode) &&
+			mode.provider === SCRIPTED_REPLAY_PROVIDER &&
+			mode.promptSha256 === promptSha256 &&
+			readTool?.name === "read" &&
+			readTool?.inputPath === "package.json" &&
+			readTool?.resultStatus === "success" &&
+			writeTool?.name === "write" &&
+			writeTool?.inputPath === ARTIFACT_PATH &&
+			writeTool?.resultStatus === "success" &&
+			mode?.final?.status === "ok" &&
+			mode?.final?.containsExpectedText === true &&
+			Number.isFinite(mode?.session?.jsonlFileCount) &&
+			mode.session.jsonlFileCount > 0
+		);
+	});
+}
+
+function transcriptObservabilityIsValid(observabilityTranscript) {
+	return (
+		isObject(observabilityTranscript) &&
+		observabilityTranscript.schemaVersion === TRANSCRIPT_SCHEMA &&
+		countModesWith(observabilityTranscript.modes, REQUIRED_REPLAY_MODES) ===
+			REQUIRED_REPLAY_MODES.length &&
+		stringArray(observabilityTranscript.toolCallIds).includes(TOOL_CALL_ID) &&
+		stringArray(observabilityTranscript.toolCallIds).includes(
+			WRITE_TOOL_CALL_ID,
+		) &&
+		observabilityTranscript?.finalStatus?.ok === REQUIRED_REPLAY_MODES.length
+	);
+}
+
 export function expectedPublishedReplayEvidenceFiles({
 	evidenceDir = "published-replay-evidence",
 	installers = REQUIRED_INSTALLERS,
@@ -291,8 +396,18 @@ export function validatePublishedReplayEvidence(
 
 	pushUnless(
 		errors,
-		evidence?.replay?.provider === "scripted-replay",
+		evidence?.replay?.provider === SCRIPTED_REPLAY_PROVIDER,
 		"replay.provider must be scripted-replay",
+	);
+	pushUnless(
+		errors,
+		providerConfigIsValid(evidence?.replay?.providerConfig),
+		"replay.providerConfig must describe scripted replay provider configuration",
+	);
+	pushUnless(
+		errors,
+		transcriptIsValid(evidence?.transcript),
+		"transcript must include queryable published replay transcript evidence for text, json, and rpc",
 	);
 
 	const modes = Array.isArray(evidence?.modes) ? evidence.modes : [];
@@ -414,6 +529,16 @@ export function validatePublishedReplayEvidence(
 	);
 	pushUnless(
 		errors,
+		providerConfigIsValid(observability?.providerConfig),
+		"observability.providerConfig must mirror replay.providerConfig",
+	);
+	pushUnless(
+		errors,
+		transcriptObservabilityIsValid(observability?.transcript),
+		"observability.transcript must summarize transcript modes, tool calls, and final status",
+	);
+	pushUnless(
+		errors,
 		countModesWith(observability?.sessions?.modes, REQUIRED_REPLAY_MODES) ===
 			REQUIRED_REPLAY_MODES.length,
 		"observability.sessions.modes must include text, json, and rpc",
@@ -425,8 +550,18 @@ export function validatePublishedReplayEvidence(
 	);
 	pushUnless(
 		errors,
+		observability?.tools?.names?.includes?.("write") === true,
+		"observability.tools.names must include write",
+	);
+	pushUnless(
+		errors,
 		observability?.tools?.callIds?.includes?.(TOOL_CALL_ID) === true,
 		`observability.tools.callIds must include ${TOOL_CALL_ID}`,
+	);
+	pushUnless(
+		errors,
+		observability?.tools?.callIds?.includes?.(WRITE_TOOL_CALL_ID) === true,
+		`observability.tools.callIds must include ${WRITE_TOOL_CALL_ID}`,
 	);
 	const approvalRefs = stringArray(observability?.approvals?.evidenceRefs);
 	const approvalModes = observabilityCoverageModes({
