@@ -36,6 +36,12 @@ export { assertPublishedReplayReleaseGate };
 const SCRIPTED_SCENARIO_SCHEMA = "evalops.maestro.scripted-scenario.v1";
 const PUBLISHED_REPLAY_EVIDENCE_SCHEMA =
 	"evalops.maestro.published-replay-evidence.v1";
+const PUBLISHED_REPLAY_TRANSCRIPT_SCHEMA =
+	"evalops.maestro.published-replay-transcript.v1";
+const SCRIPTED_REPLAY_PROVIDER = "scripted-replay";
+const SCRIPTED_REPLAY_MODEL = "maestro-replay-v1";
+const SCRIPTED_REPLAY_TOOL_ALLOWLIST = ["read", "write"];
+const SCRIPTED_REPLAY_APPROVAL_MODE = "auto";
 const FINAL_TEXT =
 	"Published package golden path completed with manifest evidence.";
 const TOOL_CALL_ID = "call-read-package-json";
@@ -310,7 +316,236 @@ function buildAgentRuntimeLedgerObservability(modes) {
 	};
 }
 
-function buildPublishedReplayObservability({ installMetadata, modes }) {
+function buildPublishedReplayProviderConfig() {
+	return {
+		provider: SCRIPTED_REPLAY_PROVIDER,
+		model: SCRIPTED_REPLAY_MODEL,
+		api: "scripted-replay",
+		deterministic: true,
+		externalCredentialsRequired: false,
+		externalNetworkRequired: false,
+		credentialSources: [],
+		toolAllowlist: [...SCRIPTED_REPLAY_TOOL_ALLOWLIST],
+		approvalMode: SCRIPTED_REPLAY_APPROVAL_MODE,
+		sandboxMode: replaySandboxMode,
+		scenarioSchemaVersion: SCRIPTED_SCENARIO_SCHEMA,
+		prompt: {
+			length: PROMPT_TEXT.length,
+			sha256: sha256(PROMPT_TEXT),
+		},
+	};
+}
+
+function transcriptToolCallForMode(modeEvidence, toolSpec) {
+	const workItem = toolWorkItemForMode(modeEvidence, {
+		toolName: toolSpec.name,
+		toolCallId: toolSpec.id,
+	});
+	const explicitTool = toolSpec.explicitTool;
+	if (!workItem && !explicitTool) {
+		return null;
+	}
+	const evidenceRefs = filterPublishedReplayEvidenceRefs(workItem?.evidenceRefs);
+	return {
+		id:
+			typeof explicitTool?.callId === "string"
+				? explicitTool.callId
+				: workItem?.toolCallId || toolSpec.id,
+		name:
+			typeof explicitTool?.name === "string"
+				? explicitTool.name
+				: workItem?.toolName || toolSpec.name,
+		inputPath:
+			typeof explicitTool?.inputPath === "string"
+				? explicitTool.inputPath
+				: toolSpec.inputPath,
+		resultStatus:
+			typeof explicitTool?.resultStatus === "string"
+				? explicitTool.resultStatus
+				: workItem
+					? "success"
+					: "unknown",
+		evidenceRefs,
+		completionGate:
+			typeof workItem?.completionGate === "string"
+				? workItem.completionGate
+				: undefined,
+	};
+}
+
+function buildPublishedReplayTranscript({ modes }) {
+	const promptSha256 = sha256(PROMPT_TEXT);
+	const transcriptModes = modes.map((modeEvidence) => {
+		const toolCalls = [
+			transcriptToolCallForMode(modeEvidence, {
+				id: TOOL_CALL_ID,
+				name: "read",
+				inputPath: "package.json",
+				explicitTool: modeEvidence?.tool,
+			}),
+			transcriptToolCallForMode(modeEvidence, {
+				id: WRITE_TOOL_CALL_ID,
+				name: "write",
+				inputPath: ARTIFACT_PATH,
+				explicitTool: modeEvidence?.artifactTool,
+			}),
+		].filter(Boolean);
+		return {
+			mode: modeName(modeEvidence),
+			provider: modeEvidence?.provider ?? SCRIPTED_REPLAY_PROVIDER,
+			promptSha256,
+			session: {
+				sessionId:
+					typeof modeEvidence?.session?.sessionId === "string"
+						? modeEvidence.session.sessionId
+						: "",
+				jsonlFileCount: finiteNumber(modeEvidence?.session?.jsonlFileCount),
+				bytes: finiteNumber(modeEvidence?.session?.bytes),
+				sha256:
+					typeof modeEvidence?.session?.sha256 === "string"
+						? modeEvidence.session.sha256
+						: "",
+			},
+			toolCalls,
+			final: {
+				status:
+					typeof modeEvidence?.final?.status === "string"
+						? modeEvidence.final.status
+						: "unknown",
+				textSha256:
+					typeof modeEvidence?.final?.textSha256 === "string"
+						? modeEvidence.final.textSha256
+						: undefined,
+				stateSha256:
+					typeof modeEvidence?.final?.stateSha256 === "string"
+						? modeEvidence.final.stateSha256
+						: undefined,
+				containsExpectedText:
+					modeEvidence?.final?.containsExpectedText === true,
+			},
+		};
+	});
+	return {
+		schemaVersion: PUBLISHED_REPLAY_TRANSCRIPT_SCHEMA,
+		prompt: {
+			length: PROMPT_TEXT.length,
+			sha256: promptSha256,
+		},
+		modes: transcriptModes,
+		coverage: {
+			modes: uniqueValues(transcriptModes.map((mode) => mode.mode)),
+			toolCallIds: uniqueValues(
+				transcriptModes.flatMap((mode) =>
+					mode.toolCalls.map((toolCall) => toolCall.id),
+				),
+			),
+			finalStatus: countBy(transcriptModes.map((mode) => mode.final.status)),
+		},
+	};
+}
+
+function buildPublishedReplayTranscriptObservability(transcript) {
+	const modes = Array.isArray(transcript?.modes) ? transcript.modes : [];
+	return {
+		schemaVersion: transcript?.schemaVersion,
+		modes: Array.isArray(transcript?.coverage?.modes)
+			? transcript.coverage.modes
+			: uniqueValues(modes.map((mode) => mode?.mode)),
+		toolCallIds: Array.isArray(transcript?.coverage?.toolCallIds)
+			? transcript.coverage.toolCallIds
+			: uniqueValues(
+					modes.flatMap((mode) =>
+						Array.isArray(mode?.toolCalls)
+							? mode.toolCalls.map((toolCall) => toolCall?.id)
+							: [],
+					),
+				),
+		finalStatus:
+			transcript?.coverage?.finalStatus && typeof transcript.coverage.finalStatus === "object"
+				? transcript.coverage.finalStatus
+				: countBy(modes.map((mode) => mode?.final?.status)),
+		promptSha256:
+			typeof transcript?.prompt?.sha256 === "string"
+				? transcript.prompt.sha256
+				: "",
+		sessionSha256ByMode: Object.fromEntries(
+			modes
+				.filter(
+					(mode) =>
+						typeof mode?.mode === "string" &&
+						typeof mode?.session?.sha256 === "string",
+				)
+				.map((mode) => [mode.mode, mode.session.sha256]),
+		),
+	};
+}
+
+function providerConfigSatisfiesReleaseGate(providerConfig) {
+	return (
+		providerConfig?.provider === SCRIPTED_REPLAY_PROVIDER &&
+		providerConfig?.model === SCRIPTED_REPLAY_MODEL &&
+		providerConfig?.externalCredentialsRequired === false &&
+		providerConfig?.externalNetworkRequired === false &&
+		Array.isArray(providerConfig?.toolAllowlist) &&
+		SCRIPTED_REPLAY_TOOL_ALLOWLIST.every((toolName) =>
+			providerConfig.toolAllowlist.includes(toolName),
+		) &&
+		providerConfig?.approvalMode === SCRIPTED_REPLAY_APPROVAL_MODE &&
+		typeof providerConfig?.sandboxMode === "string" &&
+		providerConfig.sandboxMode.length > 0
+	);
+}
+
+function transcriptSatisfiesReleaseGate(transcript) {
+	if (
+		transcript?.schemaVersion !== PUBLISHED_REPLAY_TRANSCRIPT_SCHEMA ||
+		transcript?.prompt?.sha256 !== sha256(PROMPT_TEXT) ||
+		!Array.isArray(transcript?.modes)
+	) {
+		return false;
+	}
+	const modeSet = new Set(transcript.modes.map((mode) => mode?.mode));
+	const coverageModeSet = new Set(transcript?.coverage?.modes ?? []);
+	const coverageToolCallIds = new Set(transcript?.coverage?.toolCallIds ?? []);
+	if (
+		!REQUIRED_REPLAY_MODES.every(
+			(mode) => modeSet.has(mode) && coverageModeSet.has(mode),
+		) ||
+		!coverageToolCallIds.has(TOOL_CALL_ID) ||
+		!coverageToolCallIds.has(WRITE_TOOL_CALL_ID) ||
+		transcript?.coverage?.finalStatus?.ok !== transcript.modes.length
+	) {
+		return false;
+	}
+	return transcript.modes.every((mode) => {
+		const toolCalls = Array.isArray(mode?.toolCalls) ? mode.toolCalls : [];
+		const readTool = toolCalls.find((toolCall) => toolCall?.id === TOOL_CALL_ID);
+		const writeTool = toolCalls.find(
+			(toolCall) => toolCall?.id === WRITE_TOOL_CALL_ID,
+		);
+		return (
+			REQUIRED_REPLAY_MODES.includes(mode?.mode) &&
+			mode?.provider === SCRIPTED_REPLAY_PROVIDER &&
+			mode?.promptSha256 === transcript.prompt.sha256 &&
+			readTool?.name === "read" &&
+			readTool?.inputPath === "package.json" &&
+			readTool?.resultStatus === "success" &&
+			writeTool?.name === "write" &&
+			writeTool?.inputPath === ARTIFACT_PATH &&
+			writeTool?.resultStatus === "success" &&
+			mode?.final?.status === "ok" &&
+			mode?.final?.containsExpectedText === true &&
+			finiteNumber(mode?.session?.jsonlFileCount) > 0
+		);
+	});
+}
+
+function buildPublishedReplayObservability({
+	installMetadata,
+	modes,
+	providerConfig,
+	transcript,
+}) {
 	const modeNames = modes.map(modeName);
 	const evidenceRefs = uniqueValues(modes.flatMap(evidenceRefsForMode));
 	const approvalRefs = evidenceRefs.filter((ref) =>
@@ -354,6 +589,8 @@ function buildPublishedReplayObservability({ installMetadata, modes }) {
 			provider: "scripted-replay",
 			sandboxMode: replaySandboxMode,
 		},
+		providerConfig,
+		transcript: buildPublishedReplayTranscriptObservability(transcript),
 		sessions: {
 			modes: uniqueValues(
 				modes
@@ -426,7 +663,12 @@ function buildPublishedReplayObservability({ installMetadata, modes }) {
 	};
 }
 
-function buildPublishedReplayReleaseGate({ observability, modes }) {
+function buildPublishedReplayReleaseGate({
+	observability,
+	modes,
+	providerConfig,
+	transcript,
+}) {
 	const modeSet = new Set(observability.replay.modes);
 	const checks = {
 		installablePackageMetadata: observability.install.installable === true,
@@ -434,7 +676,9 @@ function buildPublishedReplayReleaseGate({ observability, modes }) {
 			observability.install.forbiddenReferences.length === 0,
 		noWorkspaceProtocolReferences:
 			observability.install.workspaceProtocolReferences.length === 0,
+		providerConfig: providerConfigSatisfiesReleaseGate(providerConfig),
 		requiredReplayModes: REQUIRED_REPLAY_MODES.every((mode) => modeSet.has(mode)),
+		transcriptEvidence: transcriptSatisfiesReleaseGate(transcript),
 		sessionEvidence:
 			modes.length > 0 &&
 			modes.every(
@@ -1382,13 +1626,19 @@ export function buildPublishedReplayEvidence({
 	modes,
 }) {
 	const resolvedInstaller = inferPublishedInstaller({ installer, installMetadata });
+	const providerConfig = buildPublishedReplayProviderConfig();
+	const transcript = buildPublishedReplayTranscript({ modes });
 	const observability = buildPublishedReplayObservability({
 		installMetadata,
 		modes,
+		providerConfig,
+		transcript,
 	});
 	const releaseGate = buildPublishedReplayReleaseGate({
 		observability,
 		modes,
+		providerConfig,
+		transcript,
 	});
 	return {
 		schemaVersion: PUBLISHED_REPLAY_EVIDENCE_SCHEMA,
@@ -1401,9 +1651,10 @@ export function buildPublishedReplayEvidence({
 			installMetadata,
 		},
 		replay: {
-			provider: "scripted-replay",
+			provider: SCRIPTED_REPLAY_PROVIDER,
 			scenarioSchemaVersion: SCRIPTED_SCENARIO_SCHEMA,
 			sandboxMode: replaySandboxMode,
+			providerConfig,
 			prompt: {
 				length: PROMPT_TEXT.length,
 				sha256: sha256(PROMPT_TEXT),
@@ -1415,6 +1666,7 @@ export function buildPublishedReplayEvidence({
 				finalTextSha256: sha256(FINAL_TEXT),
 			},
 		},
+		transcript,
 		observability,
 		releaseGate,
 		modes,
