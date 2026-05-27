@@ -14,9 +14,9 @@ on:
         default: "0.10.20"
         type: string
       message:
-        description: Deprecation message.
+        description: Optional deprecation message. Leave blank to use the package-aware script default.
         required: false
-        default: "Broken release: install version 0.10.26 or newer of this package."
+        default: ""
         type: string
       dry_run:
         description: Print the npm deprecate command without changing npm.

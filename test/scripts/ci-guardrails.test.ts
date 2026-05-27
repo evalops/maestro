@@ -948,6 +948,33 @@ describe("ci workflow guardrails", () => {
 		);
 	});
 
+	it("keeps the deprecate-release default message package-aware and versionless", () => {
+		const workflowPath = new URL(
+			"../../.github/workflows/deprecate-release.yml",
+			import.meta.url,
+		);
+		if (!existsSync(workflowPath)) {
+			return;
+		}
+		const workflow = parse(
+			readFileSync(workflowPath, { encoding: "utf8" }),
+		) as {
+			on?: {
+				workflow_dispatch?: {
+					inputs?: {
+						message?: {
+							default?: string;
+						};
+					};
+				};
+			};
+		};
+		const defaultMessage =
+			workflow.on?.workflow_dispatch?.inputs?.message?.default ?? "";
+
+		expect(defaultMessage).toBe("");
+	});
+
 	it("keeps packed CLI smoke aligned with registry install validation", () => {
 		const script = readFileSync(
 			new URL("../../scripts/smoke-packed-cli.js", import.meta.url),

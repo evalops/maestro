@@ -52,6 +52,42 @@ describe("deprecate-release", () => {
 		);
 	});
 
+	it("derives package-aware default messages when no message is supplied", () => {
+		const canonicalResult = spawnSync(
+			process.execPath,
+			[
+				scriptPath.pathname,
+				"--range",
+				"0.10.20",
+				"--package",
+				"@evalops/maestro",
+				"--dry-run",
+			],
+			{ encoding: "utf8" },
+		);
+		const aliasResult = spawnSync(
+			process.execPath,
+			[
+				scriptPath.pathname,
+				"--range",
+				"0.10.20",
+				"--package",
+				"@evalops/contracts",
+				"--dry-run",
+			],
+			{ encoding: "utf8" },
+		);
+
+		expect(canonicalResult.status).toBe(0);
+		expect(canonicalResult.stdout).toContain(
+			"Deprecated release. Upgrade to a supported Maestro version.",
+		);
+		expect(aliasResult.status).toBe(0);
+		expect(aliasResult.stdout).toContain(
+			"Deprecated package path. Install @evalops/maestro instead.",
+		);
+	});
+
 	it("explains npm E404 permission failures for existing package releases", () => {
 		const tempDir = mkdtempSync(join(tmpdir(), "maestro-deprecate-test-"));
 		const fakeNpm = join(tempDir, "npm");
