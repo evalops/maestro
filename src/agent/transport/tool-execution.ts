@@ -296,6 +296,7 @@ export function createToolExecutionPromise(
 		? (tool.retryDelayMs ?? resolvedRetryConfig.initialDelayMs)
 		: resolvedRetryConfig.initialDelayMs;
 	const shouldRetryFn = tool.shouldRetry ?? isRetryableToolError;
+	const fallbackToolExecutionId = `local-tool-exec-${toolCall.id}`;
 
 	const context = cfg.sandbox ? { sandbox: cfg.sandbox } : undefined;
 	const onUpdate = (partialResult: AgentToolResult) => {
@@ -332,28 +333,52 @@ export function createToolExecutionPromise(
 		);
 	};
 
-	const attachApprovalRequestId = (message: ToolResultMessage): void => {
-		if (!approvalRequestId) {
-			return;
-		}
+	const toolExecutionIdFromMessage = (
+		message: ToolResultMessage,
+	): string | undefined => {
 		const details =
 			message.details && typeof message.details === "object"
-				? { ...(message.details as Record<string, unknown>) }
+				? (message.details as Record<string, unknown>)
 				: {};
-		if (typeof details.approvalRequestId !== "string") {
-			details.approvalRequestId = approvalRequestId;
-		}
-		message.details = details as typeof message.details;
+		return typeof details.toolExecutionId === "string" &&
+			details.toolExecutionId.length > 0
+			? details.toolExecutionId
+			: undefined;
 	};
 
-	const withLocalApprovalMetadata = (
+	const withLocalExecutionMetadata = (
 		metadata: ReturnType<typeof buildObservedResultMetadata>,
+		message?: ToolResultMessage,
 	): ReturnType<typeof buildObservedResultMetadata> => ({
 		...metadata,
+		toolExecutionId:
+			metadata.toolExecutionId ??
+			(message ? toolExecutionIdFromMessage(message) : undefined) ??
+			fallbackToolExecutionId,
 		...(approvalRequestId && !metadata.approvalRequestId
 			? { approvalRequestId }
 			: {}),
 	});
+
+	const attachToolResultLinkage = (
+		message: ToolResultMessage,
+		metadata: ReturnType<typeof buildObservedResultMetadata>,
+	): ReturnType<typeof buildObservedResultMetadata> => {
+		const resolvedMetadata = withLocalExecutionMetadata(metadata, message);
+		const details =
+			message.details && typeof message.details === "object"
+				? { ...(message.details as Record<string, unknown>) }
+				: {};
+		details.toolExecutionId = resolvedMetadata.toolExecutionId;
+		if (
+			resolvedMetadata.approvalRequestId &&
+			typeof details.approvalRequestId !== "string"
+		) {
+			details.approvalRequestId = resolvedMetadata.approvalRequestId;
+		}
+		message.details = details as typeof message.details;
+		return resolvedMetadata;
+	};
 
 	const executeWithRetry = async (): Promise<AgentToolResult> => {
 		let totalAttempts = 0;
@@ -484,7 +509,14 @@ export function createToolExecutionPromise(
 				isError: result.isError || false,
 				timestamp: clock.now(),
 			};
-			attachApprovalRequestId(toolResultMsg);
+			attachToolResultLinkage(toolResultMsg, {
+				toolExecutionId:
+					result.toolExecutionId ??
+					toolExecutionBridgePlan?.metadata.toolExecutionId,
+				approvalRequestId:
+					result.approvalRequestId ??
+					toolExecutionBridgePlan?.metadata.approvalRequestId,
+			});
 
 			if (hookService && !result.isError) {
 				const postHookResult = await hookService.runPostToolUseHooks(
@@ -592,15 +624,17 @@ export function createToolExecutionPromise(
 						)
 					: undefined;
 
+			const linkageMetadata = attachToolResultLinkage(
+				toolResultMsg,
+				buildObservedResultMetadata(
+					toolExecutionBridgePlan,
+					observed ?? governedOutput,
+				),
+			);
 			return {
 				message: toolResultMsg,
 				isError: toolResultMsg.isError,
-				...withLocalApprovalMetadata(
-					buildObservedResultMetadata(
-						toolExecutionBridgePlan,
-						observed ?? governedOutput,
-					),
-				),
+				...linkageMetadata,
 			};
 		} catch (error: unknown) {
 			if (error instanceof Error && error.name === "AbortError") {
@@ -635,7 +669,10 @@ export function createToolExecutionPromise(
 				isError: true,
 				timestamp: clock.now(),
 			};
-			attachApprovalRequestId(toolResultMsg);
+			attachToolResultLinkage(toolResultMsg, {
+				toolExecutionId: toolExecutionBridgePlan?.metadata.toolExecutionId,
+				approvalRequestId: toolExecutionBridgePlan?.metadata.approvalRequestId,
+			});
 
 			if (hookService) {
 				const failureHookResult = await hookService.runPostToolUseFailureHooks(
@@ -672,15 +709,17 @@ export function createToolExecutionPromise(
 						)
 					: undefined;
 
+			const linkageMetadata = attachToolResultLinkage(
+				toolResultMsg,
+				buildObservedResultMetadata(
+					toolExecutionBridgePlan,
+					observed ?? governedOutput,
+				),
+			);
 			return {
 				message: toolResultMsg,
 				isError: true,
-				...withLocalApprovalMetadata(
-					buildObservedResultMetadata(
-						toolExecutionBridgePlan,
-						observed ?? governedOutput,
-					),
-				),
+				...linkageMetadata,
 			};
 		}
 	})();

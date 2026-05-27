@@ -47,6 +47,11 @@ const FINAL_TEXT =
 const TOOL_CALL_ID = "call-read-package-json";
 const SEARCH_TOOL_CALL_ID = "call-search-package-manifest";
 const WRITE_TOOL_CALL_ID = "call-write-published-artifact";
+const REQUIRED_TOOL_EXECUTION_SPECS = [
+	{ id: TOOL_CALL_ID, name: "read" },
+	{ id: SEARCH_TOOL_CALL_ID, name: "search" },
+	{ id: WRITE_TOOL_CALL_ID, name: "write" },
+];
 const ARTIFACT_PATH = "published-replay-artifact.json";
 const ARTIFACT_TEXT = JSON.stringify({
 	source: "smoke-published-replay-e2e",
@@ -276,6 +281,81 @@ function evidenceRefsForMode(modeEvidence) {
 		toolWorkItemsForMode(modeEvidence).flatMap((item) =>
 			filterPublishedReplayEvidenceRefs(item?.evidenceRefs),
 		),
+	);
+}
+
+function toolExecutionRefsForWorkItem(workItem) {
+	return filterPublishedReplayEvidenceRefs(workItem?.evidenceRefs).filter((ref) =>
+		ref.startsWith("tool-execution:"),
+	);
+}
+
+function buildToolExecutionCoverage(modes) {
+	const refsByCallId = Object.fromEntries(
+		REQUIRED_TOOL_EXECUTION_SPECS.map((toolSpec) => [toolSpec.id, []]),
+	);
+	const modesByCallId = Object.fromEntries(
+		REQUIRED_TOOL_EXECUTION_SPECS.map((toolSpec) => [toolSpec.id, []]),
+	);
+
+	for (const modeEvidence of modes) {
+		for (const toolSpec of REQUIRED_TOOL_EXECUTION_SPECS) {
+			const workItem = toolWorkItemForMode(modeEvidence, {
+				toolName: toolSpec.name,
+				toolCallId: toolSpec.id,
+			});
+			const refs = toolExecutionRefsForWorkItem(workItem);
+			if (refs.length === 0) {
+				continue;
+			}
+			refsByCallId[toolSpec.id].push(...refs);
+			modesByCallId[toolSpec.id].push(modeName(modeEvidence));
+		}
+	}
+
+	return {
+		refs: uniqueValues(Object.values(refsByCallId).flat()),
+		refsByCallId: Object.fromEntries(
+			Object.entries(refsByCallId).map(([callId, refs]) => [
+				callId,
+				uniqueValues(refs),
+			]),
+		),
+		modesByCallId: Object.fromEntries(
+			Object.entries(modesByCallId).map(([callId, modeNames]) => [
+				callId,
+				uniqueValues(modeNames),
+			]),
+		),
+	};
+}
+
+function toolExecutionCoverageSatisfiesReleaseGate(coverage) {
+	return REQUIRED_TOOL_EXECUTION_SPECS.every((toolSpec) => {
+		const refs = Array.isArray(coverage?.toolExecutionRefsByCallId?.[toolSpec.id])
+			? coverage.toolExecutionRefsByCallId[toolSpec.id]
+			: [];
+		const modes = Array.isArray(
+			coverage?.toolExecutionModesByCallId?.[toolSpec.id],
+		)
+			? coverage.toolExecutionModesByCallId[toolSpec.id]
+			: [];
+		return refs.length > 0 && includesRequiredModes(modes);
+	});
+}
+
+function replayModesHaveToolExecutionRefs(modes) {
+	return (
+		modes.length > 0 &&
+		modes.every((modeEvidence) =>
+			REQUIRED_TOOL_EXECUTION_SPECS.every((toolSpec) => {
+				const workItem = toolWorkItemForMode(modeEvidence, {
+					toolName: toolSpec.name,
+					toolCallId: toolSpec.id,
+				});
+				return toolExecutionRefsForWorkItem(workItem).length > 0;
+			}),
+		)
 	);
 }
 
@@ -584,7 +664,8 @@ function buildPublishedReplayObservabilityQueryIndex(observability) {
 				) &&
 				[TOOL_CALL_ID, SEARCH_TOOL_CALL_ID, WRITE_TOOL_CALL_ID].every((id) =>
 					observability.tools.callIds.includes(id),
-				)
+				) &&
+				toolExecutionCoverageSatisfiesReleaseGate(observability.tools)
 					? "ok"
 					: "failed",
 			modes: observability.replay.modes,
@@ -678,31 +759,32 @@ function queryableObservabilityIndexSatisfiesReleaseGate(observability) {
 		? artifactEntry.evidenceRefs
 		: [];
 
-	return (
-		installEntry?.counts?.forbiddenReferences === 0 &&
-		installEntry?.counts?.workspaceProtocolReferences === 0 &&
-		includesRequiredModes(sessionEntry?.modes) &&
-		finiteNumber(sessionEntry?.counts?.jsonlFileCount) >=
-			REQUIRED_REPLAY_MODES.length &&
-		includesRequiredModes(toolEntry?.modes) &&
-		[TOOL_CALL_ID, SEARCH_TOOL_CALL_ID, WRITE_TOOL_CALL_ID].every((id) =>
-			toolEntry?.ids?.includes?.(id),
-		) &&
-		[TOOL_CALL_ID, SEARCH_TOOL_CALL_ID, WRITE_TOOL_CALL_ID].every((id) =>
-			toolRefs.includes(`tool-call:${id}`),
-		) &&
-		includesRequiredModes(approvalEntry?.modes) &&
-		approvalRefs.length > 0 &&
-		approvalRefs.every((ref) => ref.startsWith("approval-request:")) &&
-		errorEntry?.counts?.count === 0 &&
-		errorEntry?.counts?.expectedCount === 0 &&
-		includesRequiredModes(artifactEntry?.modes) &&
-		artifactRefs.length > 0 &&
-		artifactRefs.every((ref) => ref.startsWith("artifact:")) &&
-		includesRequiredModes(finalStatusEntry?.modes) &&
-		finalStatusEntry?.counts?.ok === REQUIRED_REPLAY_MODES.length
-	);
-}
+		return (
+			installEntry?.counts?.forbiddenReferences === 0 &&
+			installEntry?.counts?.workspaceProtocolReferences === 0 &&
+			includesRequiredModes(sessionEntry?.modes) &&
+			finiteNumber(sessionEntry?.counts?.jsonlFileCount) >=
+				REQUIRED_REPLAY_MODES.length &&
+			includesRequiredModes(toolEntry?.modes) &&
+			[TOOL_CALL_ID, SEARCH_TOOL_CALL_ID, WRITE_TOOL_CALL_ID].every((id) =>
+				toolEntry?.ids?.includes?.(id),
+			) &&
+			[TOOL_CALL_ID, SEARCH_TOOL_CALL_ID, WRITE_TOOL_CALL_ID].every((id) =>
+				toolRefs.includes(`tool-call:${id}`),
+			) &&
+			toolExecutionCoverageSatisfiesReleaseGate(observability.tools) &&
+			includesRequiredModes(approvalEntry?.modes) &&
+			approvalRefs.length > 0 &&
+			approvalRefs.every((ref) => ref.startsWith("approval-request:")) &&
+			errorEntry?.counts?.count === 0 &&
+			errorEntry?.counts?.expectedCount === 0 &&
+			includesRequiredModes(artifactEntry?.modes) &&
+			artifactRefs.length > 0 &&
+			artifactRefs.every((ref) => ref.startsWith("artifact:")) &&
+			includesRequiredModes(finalStatusEntry?.modes) &&
+			finalStatusEntry?.counts?.ok === REQUIRED_REPLAY_MODES.length
+		);
+	}
 
 function providerConfigSatisfiesReleaseGate(providerConfig) {
 	return (
@@ -780,6 +862,7 @@ function buildPublishedReplayObservability({
 }) {
 	const modeNames = modes.map(modeName);
 	const evidenceRefs = uniqueValues(modes.flatMap(evidenceRefsForMode));
+	const toolExecutionCoverage = buildToolExecutionCoverage(modes);
 	const searchModes = uniqueValues(
 		modes
 			.filter((modeEvidence) =>
@@ -887,6 +970,9 @@ function buildPublishedReplayObservability({
 					.map((tool) => tool?.resultStatus),
 			),
 			evidenceRefs,
+			toolExecutionRefs: toolExecutionCoverage.refs,
+			toolExecutionRefsByCallId: toolExecutionCoverage.refsByCallId,
+			toolExecutionModesByCallId: toolExecutionCoverage.modesByCallId,
 			completionGates: uniqueValues(
 				modes
 					.flatMap((modeEvidence) => toolWorkItemsForMode(modeEvidence))
@@ -984,6 +1070,9 @@ function buildPublishedReplayReleaseGate({
 						"maestro_agent_runtime_ledger_recorded"
 				);
 			}),
+		toolExecutionEvidence:
+			replayModesHaveToolExecutionRefs(modes) &&
+			toolExecutionCoverageSatisfiesReleaseGate(observability.tools),
 		searchRipgrepEvidence:
 			modes.length > 0 &&
 			modes.every((modeEvidence) => {
@@ -1477,6 +1566,19 @@ function assertAgentRuntimeLedger(binPath, context, label) {
 		)
 	) {
 		fail(`${label} AgentRuntime write work item is missing artifact evidence.`);
+	}
+	for (const [workItem, toolName] of [
+		[toolWorkItem, "read"],
+		[searchToolWorkItem, "search"],
+		[artifactToolWorkItem, "write"],
+	]) {
+		if (
+			!workItem.evidenceRefs.some((ref) => ref.startsWith("tool-execution:"))
+		) {
+			fail(
+				`${label} AgentRuntime ${toolName} work item is missing ToolExecution evidence.`,
+			);
+		}
 	}
 	if (!toolWorkItem.evidenceRefs.includes(`tool-call:${TOOL_CALL_ID}`)) {
 		fail(`${label} AgentRuntime tool work item is missing tool-call evidence.`);

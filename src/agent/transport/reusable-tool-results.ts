@@ -407,20 +407,64 @@ function cloneToolResultForCache(
 	};
 }
 
+function localToolExecutionIdForCall(toolCall: ToolCall): string {
+	return `local-tool-exec-${toolCall.id}`;
+}
+
+function attachToolExecutionMetadata(
+	message: ToolResultMessage,
+	metadata: {
+		toolExecutionId?: string;
+		approvalRequestId?: string;
+	},
+	options: {
+		replaceApprovalRequestId?: boolean;
+	} = {},
+): ToolResultMessage {
+	const details =
+		message.details && typeof message.details === "object"
+			? { ...(message.details as Record<string, unknown>) }
+			: {};
+	if (metadata.toolExecutionId) {
+		details.toolExecutionId = metadata.toolExecutionId;
+	}
+	if (metadata.approvalRequestId) {
+		details.approvalRequestId = metadata.approvalRequestId;
+	} else if (options.replaceApprovalRequestId) {
+		delete details.approvalRequestId;
+	}
+	return {
+		...message,
+		details: details as typeof message.details,
+	};
+}
+
 export function cloneToolOutcomeForCall(
 	outcome: ToolExecutionOutcome,
 	toolCall: ToolCall,
 	timestamp: number,
+	metadata: {
+		approvalRequestId?: string;
+	} = {},
 ): ToolExecutionOutcome {
+	const toolExecutionId = localToolExecutionIdForCall(toolCall);
 	return {
-		message: {
-			...outcome.message,
-			toolCallId: toolCall.id,
-			toolName: toolCall.name,
-			content: outcome.message.content.map((item) => ({ ...item })),
-			timestamp,
-		},
+		message: attachToolExecutionMetadata(
+			{
+				...outcome.message,
+				toolCallId: toolCall.id,
+				toolName: toolCall.name,
+				content: outcome.message.content.map((item) => ({ ...item })),
+				timestamp,
+			},
+			{ toolExecutionId, approvalRequestId: metadata.approvalRequestId },
+			{ replaceApprovalRequestId: true },
+		),
 		isError: outcome.isError,
+		toolExecutionId,
+		...(metadata.approvalRequestId
+			? { approvalRequestId: metadata.approvalRequestId }
+			: {}),
 	};
 }
 
@@ -466,9 +510,14 @@ export async function recordReusableToolExecutionBridgeOutput({
 					signal,
 				)
 			: undefined;
+	const metadata = buildObservedResultMetadata(
+		plan,
+		observed ?? governedOutput,
+	);
 	return {
 		...outcome,
-		...buildObservedResultMetadata(plan, observed ?? governedOutput),
+		...metadata,
+		message: attachToolExecutionMetadata(outcome.message, metadata),
 	};
 }
 
