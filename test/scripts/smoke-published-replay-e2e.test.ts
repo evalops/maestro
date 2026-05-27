@@ -101,6 +101,7 @@ function makeReplayMode(mode: "text" | "json" | "rpc") {
 					toolCallId: "call-write-published-artifact",
 					evidenceRefs: [
 						"tool-call:call-write-published-artifact",
+						`tool-execution:tool-exec-write-${mode}`,
 						`approval-request:approval-${mode}`,
 						`artifact:artifact-${mode}`,
 					],
@@ -128,6 +129,7 @@ function makeReplayModeWithSharedWriteRefs(mode: "text" | "json" | "rpc") {
 	}
 	writeItem.evidenceRefs = [
 		"tool-call:call-write-published-artifact",
+		"tool-execution:tool-exec-write-shared",
 		"approval-request:call-write-published-artifact",
 		"artifact:file:published-replay-artifact.json",
 	];
@@ -334,6 +336,7 @@ describe("resolvePublishedReplayEvidencePath", () => {
 				transcriptEvidence: true,
 				sessionEvidence: true,
 				toolEvidence: true,
+				toolExecutionEvidence: true,
 				searchRipgrepEvidence: true,
 				approvalTraceEvidence: true,
 				errorTraceEvidence: true,
@@ -382,6 +385,39 @@ describe("resolvePublishedReplayEvidencePath", () => {
 				],
 				resultStatus: {
 					success: 9,
+				},
+				toolExecutionRefs: [
+					"tool-execution:tool-exec-text",
+					"tool-execution:tool-exec-json",
+					"tool-execution:tool-exec-rpc",
+					"tool-execution:tool-exec-search-text",
+					"tool-execution:tool-exec-search-json",
+					"tool-execution:tool-exec-search-rpc",
+					"tool-execution:tool-exec-write-text",
+					"tool-execution:tool-exec-write-json",
+					"tool-execution:tool-exec-write-rpc",
+				],
+				toolExecutionRefsByCallId: {
+					"call-read-package-json": [
+						"tool-execution:tool-exec-text",
+						"tool-execution:tool-exec-json",
+						"tool-execution:tool-exec-rpc",
+					],
+					"call-search-package-manifest": [
+						"tool-execution:tool-exec-search-text",
+						"tool-execution:tool-exec-search-json",
+						"tool-execution:tool-exec-search-rpc",
+					],
+					"call-write-published-artifact": [
+						"tool-execution:tool-exec-write-text",
+						"tool-execution:tool-exec-write-json",
+						"tool-execution:tool-exec-write-rpc",
+					],
+				},
+				toolExecutionModesByCallId: {
+					"call-read-package-json": ["text", "json", "rpc"],
+					"call-search-package-manifest": ["text", "json", "rpc"],
+					"call-write-published-artifact": ["text", "json", "rpc"],
 				},
 				completionGates: ["maestro_agent_runtime_ledger_recorded"],
 			},
@@ -579,5 +615,54 @@ describe("resolvePublishedReplayEvidencePath", () => {
 		expect(evidence.releaseGate.failedChecks).toContain(
 			"searchRipgrepEvidence",
 		);
+	});
+
+	it("fails the release gate when a replayed tool lacks ToolExecution evidence", () => {
+		const withoutWriteToolExecution = (mode: "text" | "json" | "rpc") => {
+			const replayMode = makeReplayMode(mode);
+			const writeItem = replayMode.agentRuntimeLedger.toolWorkItems.find(
+				(item) => item.toolName === "write",
+			);
+			if (!writeItem) {
+				throw new Error("Expected write tool work item in replay fixture");
+			}
+			writeItem.evidenceRefs = writeItem.evidenceRefs.filter(
+				(ref) => !ref.startsWith("tool-execution:"),
+			);
+			return replayMode;
+		};
+
+		const evidence = buildPublishedReplayEvidence({
+			packageSpec: `${rootPackageName}@9.9.9`,
+			cliCommand: "maestro",
+			binPath: "/tmp/project/node_modules/.bin/maestro",
+			installMetadata: {
+				label: `${rootPackageName}@9.9.9 via npm`,
+				name: rootPackageName,
+				version: "9.9.9",
+				binCommands: ["maestro"],
+				forbiddenWorkspaceNames: ["@evalops/contracts", "@evalops/tui"],
+				forbiddenReferences: [],
+				workspaceProtocolReferences: [],
+				installable: true,
+				dependencySections: {
+					dependencies: [{ name: "zod", spec: "^4.3.6" }],
+				},
+			},
+			modes: [
+				withoutWriteToolExecution("text"),
+				withoutWriteToolExecution("json"),
+				withoutWriteToolExecution("rpc"),
+			],
+		});
+
+		expect(evidence.releaseGate.satisfied).toBe(false);
+		expect(evidence.releaseGate.failedChecks).toContain(
+			"toolExecutionEvidence",
+		);
+		const toolIndex = evidence.observability.queryIndex.find(
+			(entry) => entry.traceType === "tool",
+		);
+		expect(toolIndex?.status).toBe("failed");
 	});
 });

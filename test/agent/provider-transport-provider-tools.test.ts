@@ -763,10 +763,12 @@ describe("ProviderTransport provider-owned tool events", () => {
 		expect(dynamicResults).toEqual([
 			{
 				approvalRequestId: "codex-dynamic-call-1",
+				toolExecutionId: "local-tool-exec-codex-dynamic-call-1",
 				content: [{ type: "text", text: "mutation completed" }],
 				isError: false,
 				details: {
 					approvalRequestId: "codex-dynamic-call-1",
+					toolExecutionId: "local-tool-exec-codex-dynamic-call-1",
 				},
 			},
 		]);
@@ -1206,17 +1208,22 @@ describe("ProviderTransport provider-owned tool events", () => {
 		expect(dynamicResults).toEqual([
 			{
 				approvalRequestId: "codex-dynamic-read-1",
+				toolExecutionId: "local-tool-exec-codex-dynamic-read-1",
 				content: [{ type: "text", text: "dynamic:fixtures/guarded.txt:1" }],
 				isError: false,
 				details: {
 					approvalRequestId: "codex-dynamic-read-1",
+					toolExecutionId: "local-tool-exec-codex-dynamic-read-1",
 				},
 			},
 			{
+				approvalRequestId: "codex-dynamic-read-2",
+				toolExecutionId: "local-tool-exec-codex-dynamic-read-2",
 				content: [{ type: "text", text: "dynamic:fixtures/guarded.txt:1" }],
 				isError: false,
 				details: {
-					approvalRequestId: "codex-dynamic-read-1",
+					approvalRequestId: "codex-dynamic-read-2",
+					toolExecutionId: "local-tool-exec-codex-dynamic-read-2",
 				},
 			},
 		]);
@@ -1335,11 +1342,17 @@ describe("ProviderTransport provider-owned tool events", () => {
 
 		expect(toolExecute).toHaveBeenCalledTimes(1);
 		expect(dynamicResults).toEqual(
-			Array.from({ length: repeatedToolCalls }, () => ({
-				content: [{ type: "text", text: "dynamic:package.json:1" }],
-				isError: false,
-				details: undefined,
-			})),
+			Array.from({ length: repeatedToolCalls }, (_value, index) => {
+				const toolExecutionId = `local-tool-exec-codex-dynamic-loop-read-${index + 1}`;
+				return {
+					content: [{ type: "text", text: "dynamic:package.json:1" }],
+					isError: false,
+					toolExecutionId,
+					details: {
+						toolExecutionId,
+					},
+				};
+			}),
 		);
 	});
 
@@ -1464,17 +1477,26 @@ describe("ProviderTransport provider-owned tool events", () => {
 			{
 				content: [{ type: "text", text: "dynamic:package.json:1" }],
 				isError: false,
-				details: undefined,
+				toolExecutionId: "local-tool-exec-dynamic-read-before-write",
+				details: {
+					toolExecutionId: "local-tool-exec-dynamic-read-before-write",
+				},
 			},
 			{
 				content: [{ type: "text", text: "dynamic:package.json:2" }],
 				isError: false,
-				details: undefined,
+				toolExecutionId: "local-tool-exec-dynamic-read-during-write",
+				details: {
+					toolExecutionId: "local-tool-exec-dynamic-read-during-write",
+				},
 			},
 			{
 				content: [{ type: "text", text: "write:done" }],
 				isError: false,
-				details: undefined,
+				toolExecutionId: "local-tool-exec-dynamic-write",
+				details: {
+					toolExecutionId: "local-tool-exec-dynamic-write",
+				},
 			},
 		]);
 	});

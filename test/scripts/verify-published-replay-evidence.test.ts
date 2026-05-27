@@ -106,6 +106,7 @@ function makeReplayMode(mode: "text" | "json" | "rpc") {
 					toolCallId: "call-write-published-artifact",
 					evidenceRefs: [
 						"tool-call:call-write-published-artifact",
+						`tool-execution:tool-exec-write-${mode}`,
 						`approval-request:approval-${mode}`,
 						`artifact:artifact-${mode}`,
 					],
@@ -154,6 +155,7 @@ function makeEvidence(installer: "npm" | "bun" = "npm") {
 function useSharedWriteEvidenceRefs(evidence: ReturnType<typeof makeEvidence>) {
 	const sharedRefs = [
 		"tool-call:call-write-published-artifact",
+		"tool-execution:tool-exec-write-shared",
 		"approval-request:call-write-published-artifact",
 		"artifact:file:published-replay-artifact.json",
 	];
@@ -174,6 +176,16 @@ function useSharedWriteEvidenceRefs(evidence: ReturnType<typeof makeEvidence>) {
 		count: 1,
 		evidenceRefs: ["artifact:file:published-replay-artifact.json"],
 	};
+	evidence.observability.tools.toolExecutionRefs =
+		evidence.observability.tools.toolExecutionRefs
+			.filter((ref: string) => !ref.includes("tool-exec-write-"))
+			.concat("tool-execution:tool-exec-write-shared");
+	evidence.observability.tools.toolExecutionRefsByCallId[
+		"call-write-published-artifact"
+	] = ["tool-execution:tool-exec-write-shared"];
+	evidence.observability.tools.toolExecutionModesByCallId[
+		"call-write-published-artifact"
+	] = ["text", "json", "rpc"];
 	return evidence;
 }
 
@@ -262,6 +274,52 @@ describe("verify-published-replay-evidence", () => {
 
 		expect(() => validatePublishedReplayEvidence(evidence)).toThrow(
 			/approvalTraceEvidence.*artifactTraceEvidence.*observability\.approvals.*observability\.artifacts/s,
+		);
+	});
+
+	it("fails when ToolExecution evidence is missing for a replayed tool", () => {
+		const evidence = makeEvidence();
+		for (const mode of evidence.modes) {
+			const writeItem = mode.agentRuntimeLedger.toolWorkItems.find(
+				(item) => item.toolName === "write",
+			);
+			if (!writeItem) {
+				throw new Error("Expected write tool work item in replay fixture");
+			}
+			writeItem.evidenceRefs = writeItem.evidenceRefs.filter(
+				(ref: string) => !ref.startsWith("tool-execution:"),
+			);
+		}
+		evidence.observability.tools.toolExecutionRefs =
+			evidence.observability.tools.toolExecutionRefs.filter(
+				(ref: string) => !ref.includes("tool-exec-write-"),
+			);
+		evidence.observability.tools.toolExecutionRefsByCallId[
+			"call-write-published-artifact"
+		] = [];
+		evidence.observability.tools.toolExecutionModesByCallId[
+			"call-write-published-artifact"
+		] = [];
+		evidence.releaseGate.checks.toolExecutionEvidence = false;
+		evidence.releaseGate.satisfied = false;
+		evidence.releaseGate.failedChecks = ["toolExecutionEvidence"];
+
+		expect(() => validatePublishedReplayEvidence(evidence)).toThrow(
+			/releaseGate\.checks\.toolExecutionEvidence.*ToolExecution evidence/s,
+		);
+	});
+
+	it("fails when ToolExecution refs are assigned to the wrong tool call", () => {
+		const evidence = makeEvidence();
+		evidence.observability.tools.toolExecutionRefsByCallId[
+			"call-read-package-json"
+		] =
+			evidence.observability.tools.toolExecutionRefsByCallId[
+				"call-write-published-artifact"
+			];
+
+		expect(() => validatePublishedReplayEvidence(evidence)).toThrow(
+			/ToolExecution evidence/s,
 		);
 	});
 
