@@ -484,6 +484,7 @@ function providerConfigSatisfiesReleaseGate(providerConfig) {
 	return (
 		providerConfig?.provider === SCRIPTED_REPLAY_PROVIDER &&
 		providerConfig?.model === SCRIPTED_REPLAY_MODEL &&
+		providerConfig?.deterministic === true &&
 		providerConfig?.externalCredentialsRequired === false &&
 		providerConfig?.externalNetworkRequired === false &&
 		Array.isArray(providerConfig?.toolAllowlist) &&
