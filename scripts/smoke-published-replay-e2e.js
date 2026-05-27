@@ -40,17 +40,19 @@ const PUBLISHED_REPLAY_TRANSCRIPT_SCHEMA =
 	"evalops.maestro.published-replay-transcript.v1";
 const SCRIPTED_REPLAY_PROVIDER = "scripted-replay";
 const SCRIPTED_REPLAY_MODEL = "maestro-replay-v1";
-const SCRIPTED_REPLAY_TOOL_ALLOWLIST = ["read", "write"];
+const SCRIPTED_REPLAY_TOOL_ALLOWLIST = ["read", "search", "write"];
 const SCRIPTED_REPLAY_APPROVAL_MODE = "auto";
 const FINAL_TEXT =
 	"Published package golden path completed with manifest evidence.";
 const TOOL_CALL_ID = "call-read-package-json";
+const SEARCH_TOOL_CALL_ID = "call-search-package-manifest";
 const WRITE_TOOL_CALL_ID = "call-write-published-artifact";
 const ARTIFACT_PATH = "published-replay-artifact.json";
 const ARTIFACT_TEXT = JSON.stringify({
 	source: "smoke-published-replay-e2e",
 	manifest: "package.json",
 });
+const SEARCH_PATTERN = "maestro-published";
 const PROMPT_TEXT = "Replay the published package golden path.";
 const REQUIRED_REPLAY_MODES = ["text", "json", "rpc"];
 const PUBLISHED_REPLAY_EVIDENCE_REF_PREFIXES = [
@@ -182,6 +184,18 @@ function inferPublishedInstaller({ installer, installMetadata }) {
 		return "npm";
 	}
 	return "local";
+}
+
+function installLabelForInstaller({ packageSpec, installer }) {
+	const normalizedInstaller =
+		typeof installer === "string" ? installer.trim().toLowerCase() : "";
+	const suffix =
+		normalizedInstaller === "bun"
+			? "via Bun"
+			: normalizedInstaller === "npm"
+				? "via npm"
+				: "published replay install";
+	return `${packageSpec} ${suffix}`;
 }
 
 function finiteNumber(value) {
@@ -377,6 +391,11 @@ function transcriptToolCallForMode(modeEvidence, toolSpec) {
 	};
 }
 
+function toolEvidenceForMode(modeEvidence) {
+	return [modeEvidence?.tool, modeEvidence?.searchTool, modeEvidence?.artifactTool]
+		.filter((tool) => tool && typeof tool === "object");
+}
+
 function buildPublishedReplayTranscript({ modes }) {
 	const promptSha256 = sha256(PROMPT_TEXT);
 	const transcriptModes = modes.map((modeEvidence) => {
@@ -386,6 +405,12 @@ function buildPublishedReplayTranscript({ modes }) {
 				name: "read",
 				inputPath: "package.json",
 				explicitTool: modeEvidence?.tool,
+			}),
+			transcriptToolCallForMode(modeEvidence, {
+				id: SEARCH_TOOL_CALL_ID,
+				name: "search",
+				inputPath: "package.json",
+				explicitTool: modeEvidence?.searchTool,
 			}),
 			transcriptToolCallForMode(modeEvidence, {
 				id: WRITE_TOOL_CALL_ID,
@@ -517,6 +542,7 @@ function transcriptSatisfiesReleaseGate(transcript) {
 			(mode) => modeSet.has(mode) && coverageModeSet.has(mode),
 		) ||
 		!coverageToolCallIds.has(TOOL_CALL_ID) ||
+		!coverageToolCallIds.has(SEARCH_TOOL_CALL_ID) ||
 		!coverageToolCallIds.has(WRITE_TOOL_CALL_ID) ||
 		transcript?.coverage?.finalStatus?.ok !== transcript.modes.length
 	) {
@@ -525,6 +551,9 @@ function transcriptSatisfiesReleaseGate(transcript) {
 	return transcript.modes.every((mode) => {
 		const toolCalls = Array.isArray(mode?.toolCalls) ? mode.toolCalls : [];
 		const readTool = toolCalls.find((toolCall) => toolCall?.id === TOOL_CALL_ID);
+		const searchTool = toolCalls.find(
+			(toolCall) => toolCall?.id === SEARCH_TOOL_CALL_ID,
+		);
 		const writeTool = toolCalls.find(
 			(toolCall) => toolCall?.id === WRITE_TOOL_CALL_ID,
 		);
@@ -535,6 +564,9 @@ function transcriptSatisfiesReleaseGate(transcript) {
 			readTool?.name === "read" &&
 			readTool?.inputPath === "package.json" &&
 			readTool?.resultStatus === "success" &&
+			searchTool?.name === "search" &&
+			searchTool?.inputPath === "package.json" &&
+			searchTool?.resultStatus === "success" &&
 			writeTool?.name === "write" &&
 			writeTool?.inputPath === ARTIFACT_PATH &&
 			writeTool?.resultStatus === "success" &&
@@ -553,6 +585,28 @@ function buildPublishedReplayObservability({
 }) {
 	const modeNames = modes.map(modeName);
 	const evidenceRefs = uniqueValues(modes.flatMap(evidenceRefsForMode));
+	const searchModes = uniqueValues(
+		modes
+			.filter((modeEvidence) =>
+				Boolean(
+					toolWorkItemForMode(modeEvidence, {
+						toolName: "search",
+						toolCallId: SEARCH_TOOL_CALL_ID,
+					}),
+				),
+			)
+			.map(modeName),
+	);
+	const searchEvidenceRefs = uniqueValues(
+		modes.flatMap((modeEvidence) =>
+			filterPublishedReplayEvidenceRefs(
+				toolWorkItemForMode(modeEvidence, {
+					toolName: "search",
+					toolCallId: SEARCH_TOOL_CALL_ID,
+				})?.evidenceRefs,
+			),
+		),
+	);
 	const approvalRefs = evidenceRefs.filter((ref) =>
 		ref.startsWith("approval-request:"),
 	);
@@ -632,13 +686,26 @@ function buildPublishedReplayObservability({
 					.flatMap((modeEvidence) => toolWorkItemsForMode(modeEvidence))
 					.map((item) => item?.toolCallId),
 			),
-			resultStatus: countBy(modes.map((modeEvidence) => modeEvidence?.tool?.resultStatus)),
+			resultStatus: countBy(
+				modes
+					.flatMap((modeEvidence) => toolEvidenceForMode(modeEvidence))
+					.map((tool) => tool?.resultStatus),
+			),
 			evidenceRefs,
 			completionGates: uniqueValues(
 				modes
 					.flatMap((modeEvidence) => toolWorkItemsForMode(modeEvidence))
 					.map((item) => item?.completionGate),
 			),
+		},
+		search: {
+			engine: "ripgrep",
+			toolName: "search",
+			callId: SEARCH_TOOL_CALL_ID,
+			inputPath: "package.json",
+			patternSha256: sha256(SEARCH_PATTERN),
+			modes: searchModes,
+			evidenceRefs: searchEvidenceRefs,
 		},
 		approvals: {
 			count: approvalModes.length,
@@ -694,6 +761,7 @@ function buildPublishedReplayReleaseGate({
 				(modeEvidence) =>
 					modeEvidence?.session?.containsFinalText === true &&
 					modeEvidence?.session?.containsToolCallId === true &&
+					modeEvidence?.session?.containsSearchToolCallId === true &&
 					modeEvidence?.session?.containsWriteToolCallId === true &&
 					finiteNumber(modeEvidence?.session?.jsonlFileCount) > 0,
 			),
@@ -715,6 +783,28 @@ function buildPublishedReplayReleaseGate({
 					refs.includes(`tool-call:${TOOL_CALL_ID}`) &&
 					modeEvidence?.agentRuntimeLedger?.toolWorkItem?.completionGate ===
 						"maestro_agent_runtime_ledger_recorded"
+				);
+			}),
+		searchRipgrepEvidence:
+			modes.length > 0 &&
+			modes.every((modeEvidence) => {
+				const searchWorkItem = toolWorkItemForMode(modeEvidence, {
+					toolName: "search",
+					toolCallId: SEARCH_TOOL_CALL_ID,
+				});
+				const refs = filterPublishedReplayEvidenceRefs(
+					searchWorkItem?.evidenceRefs,
+				);
+				return (
+					modeEvidence?.searchTool?.name === "search" &&
+					modeEvidence?.searchTool?.callId === SEARCH_TOOL_CALL_ID &&
+					modeEvidence?.searchTool?.inputPath === "package.json" &&
+					modeEvidence?.searchTool?.resultStatus === "success" &&
+					refs.includes(`tool-call:${SEARCH_TOOL_CALL_ID}`) &&
+					searchWorkItem?.completionGate ===
+						"maestro_agent_runtime_ledger_recorded" &&
+					observability.search.engine === "ripgrep" &&
+					observability.search.modes.includes(modeName(modeEvidence))
 				);
 			}),
 		approvalTraceEvidence:
@@ -820,7 +910,7 @@ function createScenario(runDir, id) {
 					recordedFrom: "smoke-published-replay-e2e",
 					recordedAt: "2026-05-23T00:00:00.000Z",
 					modelOriginal: "maestro-replay-v1",
-					toolsExpected: ["read", "write"],
+					toolsExpected: ["read", "search", "write"],
 					auditEvents: ["maestro.scenario.replay.ready"],
 				},
 				frames: [
@@ -837,6 +927,18 @@ function createScenario(runDir, id) {
 								tool: "read",
 								input: {
 									path: "package.json",
+								},
+								expectedResult: "success",
+							},
+							{
+								kind: "tool_call",
+								id: SEARCH_TOOL_CALL_ID,
+								tool: "search",
+								input: {
+									pattern: SEARCH_PATTERN,
+									paths: "package.json",
+									outputMode: "content",
+									literal: true,
 								},
 								expectedResult: "success",
 							},
@@ -882,6 +984,11 @@ function createScenario(runDir, id) {
 						id: "read-tool-called",
 						kind: "tool_called",
 						tool: "read",
+					},
+					{
+						id: "search-tool-called",
+						kind: "tool_called",
+						tool: "search",
 					},
 					{
 						id: "write-artifact-tool-called",
@@ -1011,6 +1118,7 @@ function sessionEvidenceReport(sessionDir, label) {
 	if (
 		!sessionText.includes(FINAL_TEXT) ||
 		!sessionText.includes(TOOL_CALL_ID) ||
+		!sessionText.includes(SEARCH_TOOL_CALL_ID) ||
 		!sessionText.includes(WRITE_TOOL_CALL_ID)
 	) {
 		return `${label} session evidence is missing the final text or tool call ids.`;
@@ -1026,6 +1134,7 @@ function sessionEvidenceReport(sessionDir, label) {
 		sha256: sha256(sessionText),
 		containsFinalText: true,
 		containsToolCallId: true,
+		containsSearchToolCallId: true,
 		containsWriteToolCallId: true,
 	};
 }
@@ -1133,6 +1242,12 @@ function assertAgentRuntimeLedger(binPath, context, label) {
 			item?.evidenceRefs.includes(`tool-call:${TOOL_CALL_ID}`)
 		);
 	});
+	const searchToolWorkItem = toolWorkItems.find((item) => {
+		return (
+			item?.toolName === "search" &&
+			item?.evidenceRefs.includes(`tool-call:${SEARCH_TOOL_CALL_ID}`)
+		);
+	});
 	const artifactToolWorkItem = toolWorkItems.find((item) => {
 		return (
 			item?.toolName === "write" &&
@@ -1141,6 +1256,9 @@ function assertAgentRuntimeLedger(binPath, context, label) {
 	});
 	if (!toolWorkItem) {
 		fail(`${label} AgentRuntime tool work item is missing read evidence.`);
+	}
+	if (!searchToolWorkItem) {
+		fail(`${label} AgentRuntime tool work item is missing search evidence.`);
 	}
 	if (!artifactToolWorkItem) {
 		fail(`${label} AgentRuntime tool work item is missing write evidence.`);
@@ -1164,6 +1282,13 @@ function assertAgentRuntimeLedger(binPath, context, label) {
 	}
 	if (toolWorkItem.completionGate !== "maestro_agent_runtime_ledger_recorded") {
 		fail(`${label} AgentRuntime tool work item is missing the completion gate.`);
+	}
+	if (
+		searchToolWorkItem.completionGate !== "maestro_agent_runtime_ledger_recorded"
+	) {
+		fail(
+			`${label} AgentRuntime search work item is missing the completion gate.`,
+		);
 	}
 	return {
 		schemaVersion: ledger.schemaVersion,
@@ -1216,6 +1341,27 @@ function assertJsonMode(messages, context, label) {
 	);
 	if (!toolResult || toolResult.data?.isError) {
 		fail(`${label} did not emit a successful read tool_result JSONL event.`);
+	}
+	const searchToolCall = messages.find(
+		(message) =>
+			message?.type === "item" &&
+			message?.subtype === "tool_call" &&
+			message?.data?.toolName === "search",
+	);
+	if (
+		searchToolCall?.data?.args?.paths !== "package.json" ||
+		searchToolCall?.data?.args?.pattern !== SEARCH_PATTERN
+	) {
+		fail(`${label} did not emit the expected search tool_call JSONL event.`);
+	}
+	const searchToolResult = messages.find(
+		(message) =>
+			message?.type === "item" &&
+			message?.subtype === "tool_result" &&
+			message?.data?.toolCallId === SEARCH_TOOL_CALL_ID,
+	);
+	if (!searchToolResult || searchToolResult.data?.isError) {
+		fail(`${label} did not emit a successful search tool_result JSONL event.`);
 	}
 	const writeToolCall = messages.find(
 		(message) =>
@@ -1280,6 +1426,12 @@ function assertJsonMode(messages, context, label) {
 			inputPath: toolCall.data.args.path,
 			resultStatus: "success",
 		},
+		searchTool: {
+			name: "search",
+			callId: searchToolResult.data.toolCallId,
+			inputPath: searchToolCall.data.args.paths,
+			resultStatus: "success",
+		},
 		artifactTool: {
 			name: "write",
 			callId: writeToolResult.data.toolCallId,
@@ -1310,7 +1462,7 @@ function runSingleShotMode(binPath, label, mode) {
 				"--sandbox",
 				replaySandboxMode,
 				"--tools",
-				"read,write",
+				SCRIPTED_REPLAY_TOOL_ALLOWLIST.join(","),
 				PROMPT_TEXT,
 			],
 			{
@@ -1375,6 +1527,18 @@ function runTextMode(binPath) {
 				name: "read",
 				callId: TOOL_CALL_ID,
 				inputPath: "package.json",
+				resultStatus: "success",
+			},
+			searchTool: {
+				name: "search",
+				callId: SEARCH_TOOL_CALL_ID,
+				inputPath: "package.json",
+				resultStatus: "success",
+			},
+			artifactTool: {
+				name: "write",
+				callId: WRITE_TOOL_CALL_ID,
+				inputPath: ARTIFACT_PATH,
 				resultStatus: "success",
 			},
 			final: {
@@ -1442,6 +1606,27 @@ function assertRpcEvents(events, context) {
 		!events.some(
 			(event) =>
 				event?.type === "tool_execution_start" &&
+				event?.toolName === "search" &&
+				event?.args?.paths === "package.json" &&
+				event?.args?.pattern === SEARCH_PATTERN,
+		)
+	) {
+		fail("Published RPC replay did not emit the expected search tool start.");
+	}
+	if (
+		!events.some(
+			(event) =>
+				event?.type === "tool_execution_end" &&
+				event?.toolName === "search" &&
+				!event?.isError,
+		)
+	) {
+		fail("Published RPC replay did not emit a successful search tool result.");
+	}
+	if (
+		!events.some(
+			(event) =>
+				event?.type === "tool_execution_start" &&
 				event?.toolName === "write" &&
 				event?.args?.path === ARTIFACT_PATH,
 		)
@@ -1466,6 +1651,7 @@ function assertRpcEvents(events, context) {
 	if (
 		!stateText.includes(FINAL_TEXT) ||
 		!stateText.includes(TOOL_CALL_ID) ||
+		!stateText.includes(SEARCH_TOOL_CALL_ID) ||
 		!stateText.includes(WRITE_TOOL_CALL_ID)
 	) {
 		fail("Published RPC replay final state is missing replay evidence.");
@@ -1485,6 +1671,12 @@ function assertRpcEvents(events, context) {
 		tool: {
 			name: "read",
 			callId: TOOL_CALL_ID,
+			inputPath: "package.json",
+			resultStatus: "success",
+		},
+		searchTool: {
+			name: "search",
+			callId: SEARCH_TOOL_CALL_ID,
 			inputPath: "package.json",
 			resultStatus: "success",
 		},
@@ -1519,7 +1711,7 @@ function runRpcMode(binPath) {
 				"--sandbox",
 				replaySandboxMode,
 				"--tools",
-				"read,write",
+				SCRIPTED_REPLAY_TOOL_ALLOWLIST.join(","),
 			],
 			{
 				cwd: context.runDir,
@@ -1677,6 +1869,10 @@ export function buildPublishedReplayEvidence({
 				toolName: "read",
 				toolCallId: TOOL_CALL_ID,
 				toolInputPath: "package.json",
+				searchToolName: "search",
+				searchToolCallId: SEARCH_TOOL_CALL_ID,
+				searchToolInputPath: "package.json",
+				searchEngine: "ripgrep",
 				finalTextSha256: sha256(FINAL_TEXT),
 			},
 		},
@@ -1738,6 +1934,7 @@ async function main() {
 	const name = overrides.packageName || defaults.name;
 	const version = overrides.version || defaults.version;
 	const packageSpec = `${name}@${version}`;
+	const installer = overrides.installer || "npm";
 	const npmCommand = getNpmCommand();
 	const evidencePath = resolvePublishedReplayEvidencePath({
 		evidencePath: overrides.evidencePath,
@@ -1778,7 +1975,7 @@ async function main() {
 		const installMetadata = summarizeInstallablePackageMetadata(
 			readInstalledPackageJson(name, installRoot),
 			{
-				label: `${packageSpec} published replay install`,
+				label: installLabelForInstaller({ packageSpec, installer }),
 				forbiddenWorkspaceNames: await getForbiddenWorkspaceNames(),
 			},
 		);
@@ -1793,7 +1990,7 @@ async function main() {
 			packageSpec,
 			evidencePath,
 			installMetadata,
-			installer: overrides.installer || "npm",
+			installer,
 		});
 	} finally {
 		if (shouldCleanup) {

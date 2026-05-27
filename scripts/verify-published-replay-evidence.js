@@ -19,6 +19,7 @@ const REQUIRED_RELEASE_GATE_CHECKS = [
 	"transcriptEvidence",
 	"sessionEvidence",
 	"toolEvidence",
+	"searchRipgrepEvidence",
 	"approvalTraceEvidence",
 	"errorTraceEvidence",
 	"artifactTraceEvidence",
@@ -26,11 +27,12 @@ const REQUIRED_RELEASE_GATE_CHECKS = [
 	"finalStatus",
 ];
 const TOOL_CALL_ID = "call-read-package-json";
+const SEARCH_TOOL_CALL_ID = "call-search-package-manifest";
 const WRITE_TOOL_CALL_ID = "call-write-published-artifact";
 const ARTIFACT_PATH = "published-replay-artifact.json";
 const SCRIPTED_REPLAY_PROVIDER = "scripted-replay";
 const SCRIPTED_REPLAY_MODEL = "maestro-replay-v1";
-const SCRIPTED_REPLAY_TOOL_ALLOWLIST = ["read", "write"];
+const SCRIPTED_REPLAY_TOOL_ALLOWLIST = ["read", "search", "write"];
 const SCRIPTED_REPLAY_APPROVAL_MODE = "auto";
 const PUBLISHED_REPLAY_EVIDENCE_REF_PREFIXES = [
 	"tool-call:",
@@ -260,6 +262,7 @@ function transcriptIsValid(transcript) {
 		countModesWith(coverageModes, REQUIRED_REPLAY_MODES) !==
 			REQUIRED_REPLAY_MODES.length ||
 		!coverageToolCallIds.includes(TOOL_CALL_ID) ||
+		!coverageToolCallIds.includes(SEARCH_TOOL_CALL_ID) ||
 		!coverageToolCallIds.includes(WRITE_TOOL_CALL_ID) ||
 		transcript?.coverage?.finalStatus?.ok !== REQUIRED_REPLAY_MODES.length
 	) {
@@ -268,6 +271,7 @@ function transcriptIsValid(transcript) {
 	return REQUIRED_REPLAY_MODES.every((modeName) => {
 		const mode = transcriptModeEntry(transcript, modeName);
 		const readTool = transcriptToolCall(mode, TOOL_CALL_ID);
+		const searchTool = transcriptToolCall(mode, SEARCH_TOOL_CALL_ID);
 		const writeTool = transcriptToolCall(mode, WRITE_TOOL_CALL_ID);
 		return (
 			isObject(mode) &&
@@ -276,6 +280,9 @@ function transcriptIsValid(transcript) {
 			readTool?.name === "read" &&
 			readTool?.inputPath === "package.json" &&
 			readTool?.resultStatus === "success" &&
+			searchTool?.name === "search" &&
+			searchTool?.inputPath === "package.json" &&
+			searchTool?.resultStatus === "success" &&
 			writeTool?.name === "write" &&
 			writeTool?.inputPath === ARTIFACT_PATH &&
 			writeTool?.resultStatus === "success" &&
@@ -294,6 +301,9 @@ function transcriptObservabilityIsValid(observabilityTranscript) {
 		countModesWith(observabilityTranscript.modes, REQUIRED_REPLAY_MODES) ===
 			REQUIRED_REPLAY_MODES.length &&
 		stringArray(observabilityTranscript.toolCallIds).includes(TOOL_CALL_ID) &&
+		stringArray(observabilityTranscript.toolCallIds).includes(
+			SEARCH_TOOL_CALL_ID,
+		) &&
 		stringArray(observabilityTranscript.toolCallIds).includes(
 			WRITE_TOOL_CALL_ID,
 		) &&
@@ -466,6 +476,26 @@ export function validatePublishedReplayEvidence(
 			mode?.tool?.resultStatus === "success",
 			`${modeName}.tool.resultStatus must be success`,
 		);
+		pushUnless(
+			errors,
+			mode?.searchTool?.name === "search",
+			`${modeName}.searchTool.name must be search`,
+		);
+		pushUnless(
+			errors,
+			mode?.searchTool?.callId === SEARCH_TOOL_CALL_ID,
+			`${modeName}.searchTool.callId must be ${SEARCH_TOOL_CALL_ID}`,
+		);
+		pushUnless(
+			errors,
+			mode?.searchTool?.inputPath === "package.json",
+			`${modeName}.searchTool.inputPath must be package.json`,
+		);
+		pushUnless(
+			errors,
+			mode?.searchTool?.resultStatus === "success",
+			`${modeName}.searchTool.resultStatus must be success`,
+		);
 		pushUnless(errors, mode?.final?.status === "ok", `${modeName}.final.status must be ok`);
 		pushUnless(
 			errors,
@@ -492,6 +522,11 @@ export function validatePublishedReplayEvidence(
 			errors,
 			mode?.session?.containsToolCallId === true,
 			`${modeName}.session.containsToolCallId must be true`,
+		);
+		pushUnless(
+			errors,
+			mode?.session?.containsSearchToolCallId === true,
+			`${modeName}.session.containsSearchToolCallId must be true`,
 		);
 		pushUnless(
 			errors,
@@ -589,6 +624,11 @@ export function validatePublishedReplayEvidence(
 	);
 	pushUnless(
 		errors,
+		observability?.tools?.names?.includes?.("search") === true,
+		"observability.tools.names must include search",
+	);
+	pushUnless(
+		errors,
 		observability?.tools?.names?.includes?.("write") === true,
 		"observability.tools.names must include write",
 	);
@@ -599,8 +639,26 @@ export function validatePublishedReplayEvidence(
 	);
 	pushUnless(
 		errors,
+		observability?.tools?.callIds?.includes?.(SEARCH_TOOL_CALL_ID) === true,
+		`observability.tools.callIds must include ${SEARCH_TOOL_CALL_ID}`,
+	);
+	pushUnless(
+		errors,
 		observability?.tools?.callIds?.includes?.(WRITE_TOOL_CALL_ID) === true,
 		`observability.tools.callIds must include ${WRITE_TOOL_CALL_ID}`,
+	);
+	pushUnless(
+		errors,
+		observability?.search?.engine === "ripgrep" &&
+			observability.search.toolName === "search" &&
+			observability.search.callId === SEARCH_TOOL_CALL_ID &&
+			observability.search.inputPath === "package.json" &&
+			countModesWith(observability.search.modes, REQUIRED_REPLAY_MODES) ===
+				REQUIRED_REPLAY_MODES.length &&
+			stringArray(observability.search.evidenceRefs).includes(
+				`tool-call:${SEARCH_TOOL_CALL_ID}`,
+			),
+		"observability.search must include ripgrep search evidence for every replay mode",
 	);
 	const approvalRefs = stringArray(observability?.approvals?.evidenceRefs);
 	const approvalModes = observabilityCoverageModes({
