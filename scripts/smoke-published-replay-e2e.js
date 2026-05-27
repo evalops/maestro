@@ -163,6 +163,10 @@ function uniqueValues(values) {
 	return result;
 }
 
+function cloneJson(value) {
+	return JSON.parse(JSON.stringify(value));
+}
+
 function inferPublishedInstaller({ installer, installMetadata }) {
 	const normalizedInstaller =
 		typeof installer === "string" ? installer.trim().toLowerCase() : "";
@@ -590,7 +594,7 @@ function buildPublishedReplayObservability({
 			provider: "scripted-replay",
 			sandboxMode: replaySandboxMode,
 		},
-		providerConfig,
+		providerConfig: cloneJson(providerConfig),
 		transcript: buildPublishedReplayTranscriptObservability(transcript),
 		sessions: {
 			modes: uniqueValues(
@@ -1655,7 +1659,7 @@ export function buildPublishedReplayEvidence({
 			provider: SCRIPTED_REPLAY_PROVIDER,
 			scenarioSchemaVersion: SCRIPTED_SCENARIO_SCHEMA,
 			sandboxMode: replaySandboxMode,
-			providerConfig,
+			providerConfig: cloneJson(providerConfig),
 			prompt: {
 				length: PROMPT_TEXT.length,
 				sha256: sha256(PROMPT_TEXT),

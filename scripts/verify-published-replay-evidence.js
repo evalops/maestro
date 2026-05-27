@@ -197,6 +197,29 @@ function providerConfigIsValid(providerConfig) {
 	);
 }
 
+function canonicalJson(value) {
+	if (Array.isArray(value)) {
+		return value.map(canonicalJson);
+	}
+	if (!isObject(value)) {
+		return value;
+	}
+	return Object.fromEntries(
+		Object.entries(value)
+			.sort(([left], [right]) => left.localeCompare(right))
+			.map(([key, entry]) => [key, canonicalJson(entry)]),
+	);
+}
+
+function providerConfigsMatch(left, right) {
+	return (
+		isObject(left) &&
+		isObject(right) &&
+		JSON.stringify(canonicalJson(left)) ===
+			JSON.stringify(canonicalJson(right))
+	);
+}
+
 function transcriptModeEntry(transcript, modeName) {
 	const modes = Array.isArray(transcript?.modes) ? transcript.modes : [];
 	return modes.find((mode) => mode?.mode === modeName);
@@ -530,7 +553,11 @@ export function validatePublishedReplayEvidence(
 	);
 	pushUnless(
 		errors,
-		providerConfigIsValid(observability?.providerConfig),
+		providerConfigIsValid(observability?.providerConfig) &&
+			providerConfigsMatch(
+				observability?.providerConfig,
+				evidence?.replay?.providerConfig,
+			),
 		"observability.providerConfig must mirror replay.providerConfig",
 	);
 	pushUnless(
