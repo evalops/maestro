@@ -20,6 +20,7 @@ const REQUIRED_RELEASE_GATE_CHECKS = [
 	"sessionEvidence",
 	"toolEvidence",
 	"approvalTraceEvidence",
+	"errorTraceEvidence",
 	"artifactTraceEvidence",
 	"agentRuntimeLedger",
 	"finalStatus",
@@ -539,6 +540,16 @@ export function validatePublishedReplayEvidence(
 		errors,
 		observability?.errors?.count === 0,
 		"observability.errors.count must be 0",
+	);
+	pushUnless(
+		errors,
+		observability?.errors?.queryable === true &&
+			observability.errors.expectedCount === 0 &&
+			Array.isArray(observability.errors.modes) &&
+			observability.errors.modes.length === 0 &&
+			isObject(observability.errors.byStatus) &&
+			Array.isArray(observability.errors.evidenceRefs),
+		"observability.errors must declare a queryable zero-error trace",
 	);
 	pushUnless(
 		errors,

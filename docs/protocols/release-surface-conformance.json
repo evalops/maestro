@@ -86,6 +86,8 @@
 				"PUBLISHED_REPLAY_TRANSCRIPT_SCHEMA",
 				"buildPublishedReplayProviderConfig",
 				"transcriptEvidence",
+				"errorTraceEvidence",
+				"observability.errors",
 				"mode: \"text\"",
 				"mode: \"json\"",
 				"mode: \"rpc\"",

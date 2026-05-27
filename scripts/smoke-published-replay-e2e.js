@@ -646,8 +646,12 @@ function buildPublishedReplayObservability({
 			evidenceRefs: approvalRefs,
 		},
 		errors: {
+			queryable: true,
+			expectedCount: 0,
 			count: errorModes.length,
 			modes: errorModes,
+			byStatus: countBy(modes.map((modeEvidence) => modeEvidence?.status)),
+			evidenceRefs: [],
 		},
 		artifacts: {
 			count: artifactModes.length,
@@ -720,6 +724,11 @@ function buildPublishedReplayReleaseGate({
 					ref.startsWith("approval-request:"),
 				),
 			),
+		errorTraceEvidence:
+			observability.errors.queryable === true &&
+			observability.errors.expectedCount === 0 &&
+			observability.errors.count === 0 &&
+			Array.isArray(observability.errors.modes),
 		artifactTraceEvidence:
 			modes.length > 0 &&
 			modes.every((modeEvidence) =>
