@@ -363,6 +363,20 @@ describe("shell-utils", () => {
 			expect(env.GH_TOKEN).toBeUndefined();
 		});
 
+		it("restores scoped tool credentials when include_only policy is empty", () => {
+			const baseEnv = {
+				PATH: "/usr/bin",
+				MAESTRO_SURFACE: "platform-agent-runtime",
+				MAESTRO_PLATFORM_TRUSTED_TOOL_ENV: "true",
+				GH_TOKEN: SAMPLE_GH_TOKEN,
+			};
+			const env = applyShellEnvironmentPolicy(baseEnv, {
+				include_only: [],
+			});
+			expect(env.PATH).toBe("/usr/bin");
+			expect(env.GH_TOKEN).toBe(baseEnv.GH_TOKEN);
+		});
+
 		it("keeps secret-like variables when ignore_default_excludes is true", () => {
 			const baseEnv = {
 				OPENAI_API_KEY: "sk-test",
