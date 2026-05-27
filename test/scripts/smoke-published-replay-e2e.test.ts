@@ -338,6 +338,7 @@ describe("resolvePublishedReplayEvidencePath", () => {
 				approvalTraceEvidence: true,
 				errorTraceEvidence: true,
 				artifactTraceEvidence: true,
+				queryableObservabilityIndex: true,
 				agentRuntimeLedger: true,
 				finalStatus: true,
 			},
@@ -440,6 +441,58 @@ describe("resolvePublishedReplayEvidencePath", () => {
 				},
 			},
 		});
+		expect(evidence.observability.queryIndex).toEqual(
+			expect.arrayContaining([
+				expect.objectContaining({
+					key: "install",
+					traceType: "install",
+					queryable: true,
+					status: "ok",
+				}),
+				expect.objectContaining({
+					key: "sessions",
+					traceType: "session",
+					queryable: true,
+					status: "ok",
+					modes: ["text", "json", "rpc"],
+				}),
+				expect.objectContaining({
+					key: "tools",
+					traceType: "tool",
+					queryable: true,
+					status: "ok",
+					modes: ["text", "json", "rpc"],
+				}),
+				expect.objectContaining({
+					key: "approvals",
+					traceType: "approval",
+					queryable: true,
+					status: "ok",
+					modes: ["text", "json", "rpc"],
+				}),
+				expect.objectContaining({
+					key: "errors",
+					traceType: "error",
+					queryable: true,
+					status: "ok",
+					modes: [],
+				}),
+				expect.objectContaining({
+					key: "artifacts",
+					traceType: "artifact",
+					queryable: true,
+					status: "ok",
+					modes: ["text", "json", "rpc"],
+				}),
+				expect.objectContaining({
+					key: "finalStatus",
+					traceType: "final-status",
+					queryable: true,
+					status: "ok",
+					modes: ["text", "json", "rpc"],
+				}),
+			]),
+		);
 		expect(evidence.replay.providerConfig).toMatchObject({
 			provider: "scripted-replay",
 			model: "maestro-replay-v1",

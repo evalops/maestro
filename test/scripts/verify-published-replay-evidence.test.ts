@@ -288,6 +288,16 @@ describe("verify-published-replay-evidence", () => {
 		);
 	});
 
+	it("fails when the queryable observability index is missing", () => {
+		const evidence = makeEvidence();
+		delete evidence.observability.queryIndex;
+		delete evidence.releaseGate.checks.queryableObservabilityIndex;
+
+		expect(() => validatePublishedReplayEvidence(evidence)).toThrow(
+			/releaseGate\.checks\.queryableObservabilityIndex.*observability\.queryIndex/s,
+		);
+	});
+
 	it("fails when provider config or transcript evidence is missing", () => {
 		const evidence = makeEvidence();
 		delete evidence.replay.providerConfig;
