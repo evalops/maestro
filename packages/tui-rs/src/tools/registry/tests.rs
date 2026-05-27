@@ -1434,15 +1434,15 @@ async fn test_executor_cache_not_used_for_bash() {
 async fn test_executor_vaults_credentials_from_bash_result() {
     let dir = tempfile::tempdir().unwrap();
     let executor = ToolExecutor::new(dir.path().to_str().unwrap());
-    let token = "ghs_123456789012345678901234567890123456";
+    let token = ["ghs", "123456789012345678901234567890123456"].join("_");
     let args = serde_json::json!({"command": format!("echo GITHUB_TOKEN={token}")});
 
     let result = executor.execute("bash", &args, None, "call-1").await;
 
     assert!(result.success);
-    assert!(!result.output.contains(token));
+    assert!(!result.output.contains(&token));
     assert!(result.output.contains("{{CRED:"));
-    assert!(!result.details.unwrap().to_string().contains(token));
+    assert!(!result.details.unwrap().to_string().contains(&token));
 }
 
 #[test]
