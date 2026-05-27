@@ -118,7 +118,11 @@ fn platform_trusted_tool_env_policy_allows_key(
                 return false;
             }
         }
-        if let Some(patterns) = policy.include_only.as_ref() {
+        if let Some(patterns) = policy
+            .include_only
+            .as_ref()
+            .filter(|patterns| !patterns.is_empty())
+        {
             if !matches_any(key, patterns) {
                 return false;
             }
@@ -201,7 +205,7 @@ where
         }
     }
 
-    if let Some(patterns) = include_only {
+    if let Some(patterns) = include_only.filter(|patterns| !patterns.is_empty()) {
         let keys: Vec<String> = env.keys().cloned().collect();
         for key in keys {
             if !matches_any(&key, patterns) {
@@ -415,6 +419,26 @@ mod tests {
             Some(&"worker-git-credential".to_string())
         );
         assert!(!env.contains_key("GITHUB_TOKEN"));
+    }
+
+    #[test]
+    fn test_platform_trusted_tool_env_ignores_empty_include_only() {
+        let base = env(&[
+            ("PATH", "/bin"),
+            ("MAESTRO_SURFACE", PLATFORM_WORKER_SURFACE),
+            (PLATFORM_TRUSTED_TOOL_ENV_FLAG, "true"),
+            ("GH_TOKEN", "worker-git-credential"),
+        ]);
+        let policy = ShellEnvironmentPolicy {
+            include_only: Some(vec![]),
+            ..Default::default()
+        };
+        let env = build_shell_environment(base, Some(&policy), None);
+        assert_eq!(env.get("PATH"), Some(&"/bin".to_string()));
+        assert_eq!(
+            env.get("GH_TOKEN"),
+            Some(&"worker-git-credential".to_string())
+        );
     }
 
     #[test]
