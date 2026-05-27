@@ -500,6 +500,22 @@ describe("search tool", () => {
 			).rejects.toThrow("onlyMatching");
 		});
 
+		it("marks non-existent paths as tool errors", async () => {
+			const result = await searchTool.execute("search-29-missing-path", {
+				pattern: "content",
+				paths: "/nonexistent/path/xyz",
+			});
+
+			expect(result.isError).toBe(true);
+			expect(getTextOutput(result)).toContain("ripgrep failed");
+			expect(getTextOutput(result)).toMatch(
+				/No such file or directory|IO error/,
+			);
+			expect(result.details).toMatchObject({
+				cwd: process.cwd(),
+			});
+		});
+
 		it("marks ripgrep startup failures as tool errors", async () => {
 			const result = await searchTool.execute("search-29-startup", {
 				pattern: "content",

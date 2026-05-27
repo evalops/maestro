@@ -313,6 +313,7 @@ describe("resolvePublishedReplayEvidencePath", () => {
 				sessionEvidence: true,
 				toolEvidence: true,
 				approvalTraceEvidence: true,
+				errorTraceEvidence: true,
 				artifactTraceEvidence: true,
 				agentRuntimeLedger: true,
 				finalStatus: true,
@@ -360,8 +361,13 @@ describe("resolvePublishedReplayEvidencePath", () => {
 				modes: ["text", "json", "rpc"],
 			},
 			errors: {
+				queryable: true,
+				expectedCount: 0,
 				count: 0,
 				modes: [],
+				byStatus: {
+					ok: 3,
+				},
 			},
 			artifacts: {
 				count: 3,

@@ -253,6 +253,19 @@ describe("verify-published-replay-evidence", () => {
 		);
 	});
 
+	it("fails when error trace evidence is not queryable or release-gated", () => {
+		const evidence = makeEvidence();
+		evidence.observability.errors = {
+			count: 0,
+			modes: [],
+		};
+		delete evidence.releaseGate.checks.errorTraceEvidence;
+
+		expect(() => validatePublishedReplayEvidence(evidence)).toThrow(
+			/releaseGate\.checks\.errorTraceEvidence.*observability\.errors/s,
+		);
+	});
+
 	it("fails when provider config or transcript evidence is missing", () => {
 		const evidence = makeEvidence();
 		delete evidence.replay.providerConfig;
