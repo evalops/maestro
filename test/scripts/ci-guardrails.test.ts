@@ -948,7 +948,7 @@ describe("ci workflow guardrails", () => {
 		);
 	});
 
-	it("keeps the deprecate-release default message package-specific and versionless", () => {
+	it("keeps the deprecate-release default message package-aware and versionless", () => {
 		const workflowPath = new URL(
 			"../../.github/workflows/deprecate-release.yml",
 			import.meta.url,
@@ -972,9 +972,7 @@ describe("ci workflow guardrails", () => {
 		const defaultMessage =
 			workflow.on?.workflow_dispatch?.inputs?.message?.default ?? "";
 
-		expect(defaultMessage).toContain("@evalops/maestro");
-		expect(defaultMessage).toContain("latest");
-		expect(defaultMessage).not.toMatch(/\b\d+\.\d+\.\d+\b/);
+		expect(defaultMessage).toBe("");
 	});
 
 	it("keeps packed CLI smoke aligned with registry install validation", () => {
