@@ -253,6 +253,46 @@ describe("verify-published-replay-evidence", () => {
 		);
 	});
 
+	it("fails when provider config or transcript evidence is missing", () => {
+		const evidence = makeEvidence();
+		delete evidence.replay.providerConfig;
+		delete evidence.transcript;
+		delete evidence.observability.providerConfig;
+		delete evidence.observability.transcript;
+		delete evidence.releaseGate.checks.providerConfig;
+		delete evidence.releaseGate.checks.transcriptEvidence;
+
+		expect(() => validatePublishedReplayEvidence(evidence)).toThrow(
+			/releaseGate\.checks\.providerConfig.*releaseGate\.checks\.transcriptEvidence.*replay\.providerConfig.*transcript/s,
+		);
+	});
+
+	it("fails when provider config is not deterministic", () => {
+		const evidence = makeEvidence();
+		evidence.replay.providerConfig.deterministic = false;
+		evidence.observability.providerConfig.deterministic = false;
+
+		expect(() => validatePublishedReplayEvidence(evidence)).toThrow(
+			/replay\.providerConfig.*observability\.providerConfig/s,
+		);
+	});
+
+	it("fails when observability provider config diverges from replay provider config", () => {
+		const evidence = makeEvidence();
+		const divergentSandboxMode =
+			evidence.replay.providerConfig.sandboxMode === "danger-full-access"
+				? "workspace-write"
+				: "danger-full-access";
+		evidence.observability.providerConfig = {
+			...evidence.observability.providerConfig,
+			sandboxMode: divergentSandboxMode,
+		};
+
+		expect(() => validatePublishedReplayEvidence(evidence)).toThrow(
+			/observability\.providerConfig must mirror replay\.providerConfig/s,
+		);
+	});
+
 	it("imports without inheriting smoke-runner sandbox mode exits", () => {
 		const result = spawnSync(
 			process.execPath,

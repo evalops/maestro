@@ -83,6 +83,9 @@
 			"evidenceType": "live-smoke",
 			"anchors": [
 				"PUBLISHED_REPLAY_EVIDENCE_SCHEMA",
+				"PUBLISHED_REPLAY_TRANSCRIPT_SCHEMA",
+				"buildPublishedReplayProviderConfig",
+				"transcriptEvidence",
 				"mode: \"text\"",
 				"mode: \"json\"",
 				"mode: \"rpc\"",
