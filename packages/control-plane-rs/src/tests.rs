@@ -4296,6 +4296,11 @@ async fn a2a_message_stream_emits_task_status_and_artifact_events() {
     let response = String::from_utf8(bytes).expect("response should be utf-8");
 
     assert!(response.contains("Content-Type: text/event-stream"));
+    assert!(response.contains("id: a2a:ctx-stream:maestro-task-"));
+    assert!(response.contains(":task:TASK_STATE_WORKING:"));
+    assert!(response.contains(":status:TASK_STATE_COMPLETED:"));
+    assert!(response.contains(":artifact:maestro-task-"));
+    assert!(response.contains("-assistant-response"));
     assert!(response.contains("event: task"));
     assert!(response.contains("event: statusUpdate"));
     assert!(response.contains("event: artifactUpdate"));
@@ -4427,6 +4432,12 @@ async fn a2a_task_subscribe_streams_active_task_until_terminal_update() {
     let response = String::from_utf8(response_bytes).expect("response should be utf-8");
 
     assert!(response.contains("Content-Type: text/event-stream"));
+    assert!(
+        response.contains("id: a2a:ctx-1:maestro-task-active-subscribe:task:TASK_STATE_WORKING:")
+    );
+    assert!(response
+        .contains("id: a2a:ctx-1:maestro-task-active-subscribe:status:TASK_STATE_COMPLETED:"));
+    assert!(response.contains("id: a2a:ctx-1:maestro-task-active-subscribe:artifact:artifact-1"));
     assert!(response.contains("event: task"));
     assert!(response.contains("event: statusUpdate"));
     assert!(response.contains("event: artifactUpdate"));

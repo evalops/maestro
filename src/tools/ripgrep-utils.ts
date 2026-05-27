@@ -44,19 +44,88 @@ export function toArray<T>(value: T | T[] | undefined): T[] {
 
 const MAX_RIPGREP_OUTPUT_BYTES = 2_000_000; // ~2MB safeguard
 let ripgrepExecutablePromise: Promise<string | null> | null = null;
+let ripgrepInstallController: AbortController | null = null;
+let ripgrepExecutableWaiters = 0;
 
 function ripgrepAbortError(): Error {
 	return new Error("ripgrep search aborted before start");
 }
 
-async function resolveRipgrepExecutable(): Promise<string> {
-	ripgrepExecutablePromise ??= ensureTool("rg", true);
-	const executable = await ripgrepExecutablePromise;
-	if (!executable) {
-		ripgrepExecutablePromise = null;
-		throw new Error("ripgrep is not available and could not be downloaded");
+function resetRipgrepExecutablePromise(): void {
+	ripgrepExecutablePromise = null;
+	ripgrepInstallController = null;
+}
+
+function getRipgrepExecutablePromise(): Promise<string | null> {
+	if (!ripgrepExecutablePromise) {
+		const controller = new AbortController();
+		ripgrepInstallController = controller;
+		const promise = ensureTool("rg", true, controller.signal).then(
+			(executable) => {
+				if (ripgrepInstallController === controller) {
+					ripgrepInstallController = null;
+				}
+				if (ripgrepExecutablePromise === promise && !executable) {
+					ripgrepExecutablePromise = null;
+				}
+				return executable;
+			},
+			(error) => {
+				if (ripgrepInstallController === controller) {
+					ripgrepInstallController = null;
+				}
+				if (ripgrepExecutablePromise === promise) {
+					ripgrepExecutablePromise = null;
+				}
+				throw error;
+			},
+		);
+		ripgrepExecutablePromise = promise;
 	}
-	return executable;
+	return ripgrepExecutablePromise;
+}
+
+function releaseRipgrepExecutableWaiter(signal?: AbortSignal): void {
+	ripgrepExecutableWaiters = Math.max(0, ripgrepExecutableWaiters - 1);
+	if (signal?.aborted && ripgrepExecutableWaiters === 0) {
+		const controller = ripgrepInstallController;
+		resetRipgrepExecutablePromise();
+		controller?.abort(signal.reason);
+	}
+}
+
+async function waitForRipgrepExecutableWithAbort(
+	promise: Promise<string | null>,
+	signal: AbortSignal,
+): Promise<string | null> {
+	throwIfRipgrepAborted(signal);
+	return await new Promise<string | null>((resolve, reject) => {
+		const onAbort = (): void => {
+			signal.removeEventListener("abort", onAbort);
+			reject(ripgrepAbortError());
+		};
+
+		signal.addEventListener("abort", onAbort, { once: true });
+		promise.then(resolve, reject).finally(() => {
+			signal.removeEventListener("abort", onAbort);
+		});
+	});
+}
+
+async function resolveRipgrepExecutable(signal?: AbortSignal): Promise<string> {
+	ripgrepExecutableWaiters += 1;
+	try {
+		const promise = getRipgrepExecutablePromise();
+		const executable = signal
+			? await waitForRipgrepExecutableWithAbort(promise, signal)
+			: await promise;
+		if (!executable) {
+			throw new Error("ripgrep is not available and could not be downloaded");
+		}
+		return executable;
+	} finally {
+		releaseRipgrepExecutableWaiter(signal);
+	}
 }
 
 function throwIfRipgrepAborted(signal?: AbortSignal): void {
@@ -73,19 +142,7 @@ async function resolveRipgrepExecutableWithAbort(
 		return await resolveRipgrepExecutable();
 	}
 
-	return await new Promise<string>((resolve, reject) => {
-		const onAbort = (): void => {
-			signal.removeEventListener("abort", onAbort);
-			reject(ripgrepAbortError());
-		};
-
-		signal.addEventListener("abort", onAbort, { once: true });
-		resolveRipgrepExecutable()
-			.then(resolve, reject)
-			.finally(() => {
-				signal.removeEventListener("abort", onAbort);
-			});
-	});
+	return await resolveRipgrepExecutable(signal);
 }
 
 function shellQuoteArg(value: string): string {

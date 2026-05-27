@@ -1119,8 +1119,13 @@ describe("ci workflow guardrails", () => {
 		expect(script).not.toMatch(/"--sandbox",\s*"workspace-write"/);
 		if (isPublicValidationWorkflow(releaseWorkflow)) {
 			expect(canaryStep).toBeDefined();
+			expect(canaryStep?.run).toBe("node scripts/smoke-registry-install.js");
 			expect(canaryStep?.env).toMatchObject({
+				MAESTRO_INSTALL_AUDIT_LEVEL: "critical",
 				MAESTRO_PUBLISHED_REPLAY_SANDBOX_MODE: "local",
+				MAESTRO_REGISTRY_POLL_ATTEMPTS: "120",
+				MAESTRO_REGISTRY_POLL_DELAY_MS: "5000",
+				MAESTRO_REGISTRY_SMOKE_EVIDENCE_DIR: "published-replay-evidence",
 			});
 			expect(evidenceStep?.run).toBe(
 				"node scripts/verify-published-replay-evidence.js --evidence-dir published-replay-evidence",
@@ -1133,8 +1138,15 @@ describe("ci workflow guardrails", () => {
 				(step) => step.name === "Verify published package from npm",
 			);
 			expect(verifyStep).toBeDefined();
+			expect(verifyStep?.run).toContain(
+				"node scripts/smoke-registry-install.js",
+			);
 			expect(verifyStep?.env).toMatchObject({
+				MAESTRO_INSTALL_AUDIT_LEVEL: "critical",
 				MAESTRO_PUBLISHED_REPLAY_SANDBOX_MODE: "local",
+				MAESTRO_REGISTRY_POLL_ATTEMPTS: "120",
+				MAESTRO_REGISTRY_POLL_DELAY_MS: "5000",
+				MAESTRO_REGISTRY_SMOKE_EVIDENCE_DIR: "published-replay-evidence",
 			});
 		} else {
 			expect(canaryStep).toBeUndefined();
