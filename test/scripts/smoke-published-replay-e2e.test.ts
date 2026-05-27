@@ -307,7 +307,9 @@ describe("resolvePublishedReplayEvidencePath", () => {
 				installablePackageMetadata: true,
 				noForbiddenWorkspaceReferences: true,
 				noWorkspaceProtocolReferences: true,
+				providerConfig: true,
 				requiredReplayModes: true,
+				transcriptEvidence: true,
 				sessionEvidence: true,
 				toolEvidence: true,
 				approvalTraceEvidence: true,
@@ -321,6 +323,24 @@ describe("resolvePublishedReplayEvidencePath", () => {
 				installable: true,
 				forbiddenReferences: [],
 				workspaceProtocolReferences: [],
+			},
+			providerConfig: {
+				provider: "scripted-replay",
+				model: "maestro-replay-v1",
+				deterministic: true,
+				externalCredentialsRequired: false,
+				toolAllowlist: ["read", "write"],
+				approvalMode: "auto",
+			},
+			transcript: {
+				modes: ["text", "json", "rpc"],
+				toolCallIds: [
+					"call-read-package-json",
+					"call-write-published-artifact",
+				],
+				finalStatus: {
+					ok: 3,
+				},
 			},
 			sessions: {
 				modes: ["text", "json", "rpc"],
@@ -379,5 +399,43 @@ describe("resolvePublishedReplayEvidencePath", () => {
 				},
 			},
 		});
+		expect(evidence.replay.providerConfig).toMatchObject({
+			provider: "scripted-replay",
+			model: "maestro-replay-v1",
+			deterministic: true,
+			externalCredentialsRequired: false,
+			toolAllowlist: ["read", "write"],
+			approvalMode: "auto",
+		});
+		expect(evidence.transcript.schemaVersion).toBe(
+			"evalops.maestro.published-replay-transcript.v1",
+		);
+		const textTranscript = evidence.transcript.modes.find(
+			(mode) => mode.mode === "text",
+		);
+		expect(textTranscript).toMatchObject({
+			mode: "text",
+			promptSha256: expect.any(String),
+			final: {
+				status: "ok",
+				containsExpectedText: true,
+			},
+		});
+		expect(textTranscript?.toolCalls).toEqual(
+			expect.arrayContaining([
+				expect.objectContaining({
+					id: "call-read-package-json",
+					name: "read",
+					inputPath: "package.json",
+					resultStatus: "success",
+				}),
+				expect.objectContaining({
+					id: "call-write-published-artifact",
+					name: "write",
+					inputPath: "published-replay-artifact.json",
+					resultStatus: "success",
+				}),
+			]),
+		);
 	});
 });
