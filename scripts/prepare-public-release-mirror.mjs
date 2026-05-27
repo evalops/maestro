@@ -40,8 +40,10 @@ const DEFAULT_EXCLUDES = [
 	"test/internal/**",
 	"scripts/configure-npm-trusted-publisher.mjs",
 	"scripts/deprecate-release.js",
+	"scripts/published-replay-evidence-gate.js",
 	"scripts/smoke-published-replay-e2e.js",
 	"scripts/smoke-registry-install.js",
+	"scripts/verify-published-replay-evidence.js",
 	"scripts/validate-public-package-deps.js",
 ];
 

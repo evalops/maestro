@@ -1578,6 +1578,34 @@ describe("ci workflow guardrails", () => {
 		);
 	});
 
+	it("syncs release mirror helpers before validating public release mirrors", () => {
+		const workflow = parse(
+			readFileSync(
+				new URL(
+					"../../.github/workflows/public-release-mirror.yml",
+					import.meta.url,
+				),
+				{ encoding: "utf8" },
+			),
+		) as Workflow;
+		const steps = workflow.jobs?.["mirror-release"]?.steps ?? [];
+		const stepNames = steps.map((step) => step.name ?? step.id ?? "");
+		const prepareIndex = stepNames.indexOf(
+			"Prepare sanitized public release tree",
+		);
+		const syncIndex = stepNames.indexOf("Sync release mirror helper files");
+		const validateIndex = stepNames.indexOf("Validate mirrored public tree");
+		const syncStep = steps[syncIndex];
+
+		expect(prepareIndex).toBeGreaterThanOrEqual(0);
+		expect(syncIndex).toBeGreaterThan(prepareIndex);
+		expect(validateIndex).toBeGreaterThan(syncIndex);
+		expect(syncStep?.run).toContain("scripts/sync-release-mirror.mjs");
+		expect(syncStep?.run).toContain(
+			'--target "$GITHUB_WORKSPACE/public-mirror"',
+		);
+	});
+
 	it("uses token-backed release PR pushes and formats generated release metadata", () => {
 		const workflowPath = new URL(
 			"../../.github/workflows/version-bump.yml",

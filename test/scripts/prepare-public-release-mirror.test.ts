@@ -92,6 +92,14 @@ describe("prepare-public-release-mirror", () => {
 			join(source, "scripts/smoke-published-replay-e2e.js"),
 			"internal replay\n",
 		);
+		write(
+			join(source, "scripts/published-replay-evidence-gate.js"),
+			"internal evidence gate\n",
+		);
+		write(
+			join(source, "scripts/verify-published-replay-evidence.js"),
+			"internal evidence verifier\n",
+		);
 		write(join(source, ".env"), "SECRET=value\n");
 		write(join(source, ".env.local"), "LOCAL_SECRET=value\n");
 		write(
@@ -125,6 +133,14 @@ describe("prepare-public-release-mirror", () => {
 		write(
 			join(target, "scripts/smoke-published-replay-e2e.js"),
 			"public replay\n",
+		);
+		write(
+			join(target, "scripts/published-replay-evidence-gate.js"),
+			"public evidence gate\n",
+		);
+		write(
+			join(target, "scripts/verify-published-replay-evidence.js"),
+			"public evidence verifier\n",
 		);
 		write(join(target, ".git/config"), '[remote "origin"]\n');
 
@@ -212,6 +228,18 @@ describe("prepare-public-release-mirror", () => {
 				"utf8",
 			),
 		).toBe("public replay\n");
+		expect(
+			readFileSync(
+				join(target, "scripts/published-replay-evidence-gate.js"),
+				"utf8",
+			),
+		).toBe("public evidence gate\n");
+		expect(
+			readFileSync(
+				join(target, "scripts/verify-published-replay-evidence.js"),
+				"utf8",
+			),
+		).toBe("public evidence verifier\n");
 		expect(readFileSync(join(target, ".git/config"), "utf8")).toBe(
 			'[remote "origin"]\n',
 		);
@@ -222,6 +250,8 @@ describe("prepare-public-release-mirror", () => {
 			"release:verify:published": "node scripts/smoke-registry-install.js",
 			"release:verify:published:e2e":
 				"node scripts/smoke-published-replay-e2e.js",
+			"release:verify:published:evidence":
+				"node scripts/verify-published-replay-evidence.js",
 			"release:deprecate": "node scripts/deprecate-release.js",
 		});
 		expect(pkg.maestro).toMatchObject({
