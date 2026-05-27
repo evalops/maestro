@@ -167,6 +167,7 @@ function toolExecutionCoverageIsValid({ observability, modes }) {
 	return REQUIRED_TOOL_EXECUTION_SPECS.every((toolSpec) => {
 		const declaredRefs = stringArray(refsByCallId[toolSpec.id]);
 		const declaredModes = stringArray(modesByCallId[toolSpec.id]);
+		const actualRefs = new Set();
 		const modeCoverage =
 			Array.isArray(modes) &&
 			modes.length > 0 &&
@@ -175,12 +176,20 @@ function toolExecutionCoverageIsValid({ observability, modes }) {
 					toolName: toolSpec.name,
 					toolCallId: toolSpec.id,
 				});
-				return toolExecutionRefsForWorkItem(workItem).length > 0;
+				const refs = toolExecutionRefsForWorkItem(workItem);
+				for (const ref of refs) {
+					actualRefs.add(ref);
+				}
+				return refs.length > 0;
 			});
+		const declaredRefsMatchWorkItems =
+			declaredRefs.length === actualRefs.size &&
+			declaredRefs.every((ref) => actualRefs.has(ref));
 		return (
 			declaredRefs.length > 0 &&
 			declaredRefs.every((ref) => ref.startsWith("tool-execution:")) &&
 			declaredRefs.every((ref) => allExecutionRefs.includes(ref)) &&
+			declaredRefsMatchWorkItems &&
 			countModesWith(declaredModes, REQUIRED_REPLAY_MODES) ===
 				REQUIRED_REPLAY_MODES.length &&
 			modeCoverage
