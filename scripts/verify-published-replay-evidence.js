@@ -22,6 +22,12 @@ const REQUIRED_RELEASE_GATE_CHECKS = [
 	"finalStatus",
 ];
 const TOOL_CALL_ID = "call-read-package-json";
+const PUBLISHED_REPLAY_EVIDENCE_REF_PREFIXES = [
+	"tool-call:",
+	"tool-execution:",
+	"approval-request:",
+	"artifact:",
+];
 
 function parseArgs(argv) {
 	const options = {
@@ -75,6 +81,61 @@ function sortedStrings(value) {
 function countModesWith(value, modeNames) {
 	const set = new Set(stringArray(value));
 	return modeNames.filter((mode) => set.has(mode)).length;
+}
+
+function filterPublishedReplayEvidenceRefs(refs) {
+	return stringArray(refs).filter((ref) =>
+		PUBLISHED_REPLAY_EVIDENCE_REF_PREFIXES.some((prefix) =>
+			ref.startsWith(prefix),
+		),
+	);
+}
+
+function toolWorkItemsForMode(mode) {
+	const ledger = isObject(mode?.agentRuntimeLedger)
+		? mode.agentRuntimeLedger
+		: {};
+	if (Array.isArray(ledger.toolWorkItems)) {
+		return ledger.toolWorkItems.filter(isObject);
+	}
+	return isObject(ledger.toolWorkItem) ? [ledger.toolWorkItem] : [];
+}
+
+function evidenceRefsForMode(mode) {
+	return toolWorkItemsForMode(mode).flatMap((item) =>
+		filterPublishedReplayEvidenceRefs(item?.evidenceRefs),
+	);
+}
+
+function modesWithEvidenceRefPrefix(modes, prefix) {
+	const result = new Set();
+	for (const mode of modes) {
+		const modeName = typeof mode?.mode === "string" ? mode.mode : "";
+		if (
+			modeName &&
+			evidenceRefsForMode(mode).some((ref) => ref.startsWith(prefix))
+		) {
+			result.add(modeName);
+		}
+	}
+	return sortedStrings(Array.from(result));
+}
+
+function observabilityCoverageModes({ section, modes, prefix }) {
+	const declaredModes = stringArray(section?.modes);
+	if (declaredModes.length > 0) {
+		return declaredModes;
+	}
+
+	const inferredModes = modesWithEvidenceRefPrefix(modes, prefix);
+	if (inferredModes.length > 0) {
+		return inferredModes;
+	}
+
+	return Number.isFinite(section?.count) &&
+		section.count >= REQUIRED_REPLAY_MODES.length
+		? REQUIRED_REPLAY_MODES
+		: [];
 }
 
 function pushUnless(errors, condition, message) {
@@ -367,22 +428,32 @@ export function validatePublishedReplayEvidence(
 		observability?.tools?.callIds?.includes?.(TOOL_CALL_ID) === true,
 		`observability.tools.callIds must include ${TOOL_CALL_ID}`,
 	);
+	const approvalRefs = stringArray(observability?.approvals?.evidenceRefs);
+	const approvalModes = observabilityCoverageModes({
+		section: observability?.approvals,
+		modes,
+		prefix: "approval-request:",
+	});
 	pushUnless(
 		errors,
-		Number.isFinite(observability?.approvals?.count) &&
-			observability.approvals.count >= REQUIRED_REPLAY_MODES.length &&
-			stringArray(observability?.approvals?.evidenceRefs).every((ref) =>
-				ref.startsWith("approval-request:"),
-			),
+		countModesWith(approvalModes, REQUIRED_REPLAY_MODES) ===
+			REQUIRED_REPLAY_MODES.length &&
+			approvalRefs.length > 0 &&
+			approvalRefs.every((ref) => ref.startsWith("approval-request:")),
 		"observability.approvals must include approval-request evidence for every replay mode",
 	);
+	const artifactRefs = stringArray(observability?.artifacts?.evidenceRefs);
+	const artifactModes = observabilityCoverageModes({
+		section: observability?.artifacts,
+		modes,
+		prefix: "artifact:",
+	});
 	pushUnless(
 		errors,
-		Number.isFinite(observability?.artifacts?.count) &&
-			observability.artifacts.count >= REQUIRED_REPLAY_MODES.length &&
-			stringArray(observability?.artifacts?.evidenceRefs).every((ref) =>
-				ref.startsWith("artifact:"),
-			),
+		countModesWith(artifactModes, REQUIRED_REPLAY_MODES) ===
+			REQUIRED_REPLAY_MODES.length &&
+			artifactRefs.length > 0 &&
+			artifactRefs.every((ref) => ref.startsWith("artifact:")),
 		"observability.artifacts must include artifact evidence for every replay mode",
 	);
 	pushUnless(
