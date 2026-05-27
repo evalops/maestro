@@ -619,7 +619,7 @@ impl ToolExecutor {
                     });
                 }
 
-                let result = self.bash.execute(bash_args).await;
+                let result = vault_tool_result_credentials(self.bash.execute(bash_args).await);
 
                 // Send tool output event
                 if let Some(tx) = event_tx {
@@ -2392,10 +2392,11 @@ impl ToolExecutor {
                         });
                     }
 
-                    let result = self
-                        .inline_executor
-                        .execute(inline_tool, args.clone())
-                        .await;
+                    let result = vault_tool_result_credentials(
+                        self.inline_executor
+                            .execute(inline_tool, args.clone())
+                            .await,
+                    );
 
                     // Send tool output and end events
                     if let Some(tx) = event_tx {

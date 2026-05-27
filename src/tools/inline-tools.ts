@@ -43,6 +43,7 @@ import type { AgentTool, ToolAnnotations } from "../agent/types.js";
 import { PATHS } from "../config/constants.js";
 import { createLogger } from "../utils/logger.js";
 import { expandTildePath } from "../utils/path-expansion.js";
+import { sanitizeWithStaticMask } from "../utils/secret-redactor.js";
 import { resolveShellEnvironment } from "../utils/shell-env.js";
 import { createTool } from "./tool-dsl.js";
 
@@ -362,6 +363,8 @@ function createInlineTool(def: InlineToolDef): AgentTool {
 						`stderr exceeded ${displayedKB}KB limit and was truncated`,
 					);
 				}
+				const stdout = sanitizeWithStaticMask(result.stdout);
+				const stderr = sanitizeWithStaticMask(result.stderr);
 				const truncationNotice =
 					truncationMessages.length > 0
 						? `Warning: Output truncated: ${truncationMessages.join(
@@ -370,22 +373,21 @@ function createInlineTool(def: InlineToolDef): AgentTool {
 						: "";
 
 				if (result.exitCode !== 0) {
-					const baseError =
-						result.stderr.trim() || `Exit code: ${result.exitCode}`;
+					const baseError = stderr.trim() || `Exit code: ${result.exitCode}`;
 					const errorMsg = truncationNotice
 						? `${baseError}\n\n${truncationNotice}`
 						: baseError;
 					return context.respond.error(
-						`Command failed: ${errorMsg}\n\nStdout:\n${result.stdout}`,
+						`Command failed: ${errorMsg}\n\nStdout:\n${stdout}`,
 					);
 				}
 
 				// Return stdout as the result
-				const output = result.stdout.trim();
-				if (result.stderr.trim()) {
+				const output = stdout.trim();
+				if (stderr.trim()) {
 					const combined = output
-						? `${output}\n\n[stderr]: ${result.stderr.trim()}`
-						: `[stderr]: ${result.stderr.trim()}`;
+						? `${output}\n\n[stderr]: ${stderr.trim()}`
+						: `[stderr]: ${stderr.trim()}`;
 					return context.respond.text(
 						truncationNotice ? `${combined}\n\n${truncationNotice}` : combined,
 					);
@@ -398,7 +400,9 @@ function createInlineTool(def: InlineToolDef): AgentTool {
 				}
 				return context.respond.text(output || "(no output)");
 			} catch (error) {
-				const message = error instanceof Error ? error.message : String(error);
+				const message = sanitizeWithStaticMask(
+					error instanceof Error ? error.message : String(error),
+				);
 				return context.respond.error(`Failed to execute command: ${message}`);
 			}
 		},

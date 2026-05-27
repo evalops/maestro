@@ -13,6 +13,20 @@ import {
 	resolveShellEnvironment,
 } from "../../src/utils/shell-env.js";
 
+const joinParts = (...parts: string[]) => parts.join("");
+const SAMPLE_GH_TOKEN = joinParts(
+	"ghp",
+	"_",
+	"abcdefghijklmnopqrstuvwxyz",
+	"ABCDEFGHIJ",
+);
+const SAMPLE_GITHUB_TOKEN = joinParts(
+	"ghs",
+	"_",
+	"abcdefghijklmnopqrstuvwxyz",
+	"ABCDEFGHIJ",
+);
+
 describe("shell-utils", () => {
 	let testDir: string;
 
@@ -237,6 +251,116 @@ describe("shell-utils", () => {
 			expect(env.NORMAL).toBe("ok");
 			expect(env.OPENAI_API_KEY).toBeUndefined();
 			expect(env.GITHUB_TOKEN).toBeUndefined();
+		});
+
+		it("restores scoped tool credentials for the trusted Platform worker surface", () => {
+			const baseEnv = {
+				PATH: "/usr/bin",
+				MAESTRO_SURFACE: "platform-agent-runtime",
+				MAESTRO_PLATFORM_TRUSTED_TOOL_ENV: "true",
+				GH_TOKEN: SAMPLE_GH_TOKEN,
+				GITHUB_TOKEN: SAMPLE_GITHUB_TOKEN,
+				CODEX_WORKER_RUNTIME_TOKEN: "runtime-token",
+				MAESTRO_PLATFORM_A2A_ENABLED: "true",
+				OPENAI_API_KEY: "sk-test",
+			};
+			const env = applyShellEnvironmentPolicy(baseEnv);
+			expect(env.PATH).toBe("/usr/bin");
+			expect(env.GH_TOKEN).toBe(baseEnv.GH_TOKEN);
+			expect(env.GITHUB_TOKEN).toBe(baseEnv.GITHUB_TOKEN);
+			expect(env.CODEX_WORKER_RUNTIME_TOKEN).toBe(
+				baseEnv.CODEX_WORKER_RUNTIME_TOKEN,
+			);
+			expect(env.MAESTRO_PLATFORM_A2A_ENABLED).toBe("true");
+			expect(env.OPENAI_API_KEY).toBeUndefined();
+		});
+
+		it("honors include_only before restoring trusted Platform worker credentials", () => {
+			const baseEnv = {
+				PATH: "/usr/bin",
+				MAESTRO_SURFACE: "platform-agent-runtime",
+				MAESTRO_PLATFORM_TRUSTED_TOOL_ENV: "true",
+				GH_TOKEN: SAMPLE_GH_TOKEN,
+				GITHUB_TOKEN: SAMPLE_GITHUB_TOKEN,
+			};
+			const env = applyShellEnvironmentPolicy(baseEnv, {
+				include_only: ["PATH"],
+			});
+			expect(env.PATH).toBe("/usr/bin");
+			expect(env.GH_TOKEN).toBeUndefined();
+			expect(env.GITHUB_TOKEN).toBeUndefined();
+		});
+
+		it("restores only trusted Platform worker credentials allowed by include_only", () => {
+			const baseEnv = {
+				PATH: "/usr/bin",
+				MAESTRO_SURFACE: "platform-agent-runtime",
+				MAESTRO_PLATFORM_TRUSTED_TOOL_ENV: "true",
+				GH_TOKEN: SAMPLE_GH_TOKEN,
+				GITHUB_TOKEN: SAMPLE_GITHUB_TOKEN,
+			};
+			const env = applyShellEnvironmentPolicy(baseEnv, {
+				include_only: ["PATH", "GH_TOKEN"],
+			});
+			expect(env.PATH).toBe("/usr/bin");
+			expect(env.GH_TOKEN).toBe(SAMPLE_GH_TOKEN);
+			expect(env.GITHUB_TOKEN).toBeUndefined();
+		});
+
+		it("honors explicit excludes before restoring trusted Platform worker credentials", () => {
+			const baseEnv = {
+				PATH: "/usr/bin",
+				MAESTRO_SURFACE: "platform-agent-runtime",
+				MAESTRO_PLATFORM_TRUSTED_TOOL_ENV: "true",
+				GH_TOKEN: SAMPLE_GH_TOKEN,
+				GITHUB_TOKEN: SAMPLE_GITHUB_TOKEN,
+			};
+			const env = applyShellEnvironmentPolicy(baseEnv, {
+				exclude: ["GH_TOKEN"],
+			});
+			expect(env.PATH).toBe("/usr/bin");
+			expect(env.GH_TOKEN).toBeUndefined();
+			expect(env.GITHUB_TOKEN).toBe(SAMPLE_GITHUB_TOKEN);
+		});
+
+		it("honors explicit set values before restoring trusted Platform worker credentials", () => {
+			const baseEnv = {
+				PATH: "/usr/bin",
+				MAESTRO_SURFACE: "platform-agent-runtime",
+				MAESTRO_PLATFORM_TRUSTED_TOOL_ENV: "true",
+				GH_TOKEN: SAMPLE_GH_TOKEN,
+			};
+			const env = applyShellEnvironmentPolicy(baseEnv, {
+				include_only: ["PATH", "GH_TOKEN"],
+				set: { GH_TOKEN: "policy-token" },
+			});
+			expect(env.PATH).toBe("/usr/bin");
+			expect(env.GH_TOKEN).toBe("policy-token");
+		});
+
+		it("honors inherit none before restoring trusted Platform worker credentials", () => {
+			const baseEnv = {
+				PATH: "/usr/bin",
+				MAESTRO_SURFACE: "platform-agent-runtime",
+				MAESTRO_PLATFORM_TRUSTED_TOOL_ENV: "true",
+				GH_TOKEN: SAMPLE_GH_TOKEN,
+			};
+			const env = applyShellEnvironmentPolicy(baseEnv, {
+				inherit: "none",
+			});
+			expect(env.PATH).toBeUndefined();
+			expect(env.GH_TOKEN).toBeUndefined();
+		});
+
+		it("does not restore scoped tool credentials without the Platform worker surface", () => {
+			const baseEnv = {
+				PATH: "/usr/bin",
+				MAESTRO_PLATFORM_TRUSTED_TOOL_ENV: "true",
+				GH_TOKEN: SAMPLE_GH_TOKEN,
+			};
+			const env = applyShellEnvironmentPolicy(baseEnv);
+			expect(env.PATH).toBe("/usr/bin");
+			expect(env.GH_TOKEN).toBeUndefined();
 		});
 
 		it("keeps secret-like variables when ignore_default_excludes is true", () => {

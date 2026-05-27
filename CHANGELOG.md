@@ -17,6 +17,24 @@ versioning when releases are cut.
   and keep scheduled public runs inert so public publishing stays downstream of
   the internal source-of-truth release.
 
+## [0.10.36] - 2026-05-27
+
+### Fixed
+
+- Honor shell env policy for platform credentials. <!-- maestro-release-note:bebe6c199b90 -->
+
+## [0.10.35] - 2026-05-27
+
+### Fixed
+
+- Honor shell env policy for platform credentials. <!-- maestro-release-note:14780834d753 -->
+
+## [0.10.34] - 2026-05-27
+
+### Fixed
+
+- Preserve platform worker tool credentials. <!-- maestro-release-note:7ec95fe0748f -->
+
 ## [0.10.33] - 2026-05-27
 
 ### Changed
