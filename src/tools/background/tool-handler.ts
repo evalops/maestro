@@ -5,6 +5,7 @@
 
 import { Type } from "@sinclair/typebox";
 import { StringEnum } from "../../agent/providers/typebox-helpers.js";
+import { sanitizeWithStaticMask } from "../../utils/secret-redactor.js";
 import { backgroundTaskManager } from "../background-tasks.js";
 import { createTool } from "../tool-dsl.js";
 import type { ToolResponseBuilder } from "../tool-dsl.js";
@@ -162,9 +163,18 @@ function renderTaskList(
 	}
 
 	const lines = tasks.map(
-		(task) => `${formatTaskSummary(task)}\n  ${task.command}`,
+		(task) =>
+			`${formatTaskSummary(task)}\n  ${sanitizeWithStaticMask(task.command)}`,
 	);
 	respond.text(lines.join("\n"));
+}
+
+function buildSanitizedTaskDetail(task: BackgroundTask) {
+	const detail = buildTaskDetail(task);
+	return {
+		...detail,
+		command: sanitizeWithStaticMask(detail.command),
+	};
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -218,14 +228,14 @@ export const backgroundTasksTool = createTool<
 						"Use action=list to view tasks or action=stop to terminate.",
 					].join("\n"),
 				)
-				.detail(buildTaskDetail(task));
+				.detail(buildSanitizedTaskDetail(task));
 			return respond;
 		}
 
 		if (params.action === "list") {
 			const tasks = backgroundTaskManager.getTasks();
 			renderTaskList(tasks, respond);
-			respond.detail(tasks.map((task) => buildTaskDetail(task)));
+			respond.detail(tasks.map((task) => buildSanitizedTaskDetail(task)));
 			return respond;
 		}
 
@@ -238,7 +248,7 @@ export const backgroundTasksTool = createTool<
 				const summary = formatTaskSummary(result.task);
 				respond
 					.text(`${statusLabel} ${summary}`)
-					.detail(buildTaskDetail(result.task));
+					.detail(buildSanitizedTaskDetail(result.task));
 			}
 			return respond;
 		}

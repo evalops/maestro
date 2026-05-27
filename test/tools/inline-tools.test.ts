@@ -16,6 +16,14 @@ import {
 	loadInlineTools,
 } from "../../src/tools/inline-tools.js";
 
+const joinParts = (...parts: string[]) => parts.join("");
+const SAMPLE_GITHUB_TOKEN = joinParts(
+	"ghp",
+	"_",
+	"abcdefghijklmnopqrstuvwxyz",
+	"ABCDEFGHIJ",
+);
+
 beforeEach(() => {
 	vi.useRealTimers();
 });
@@ -254,6 +262,28 @@ describe("inline tool execution", () => {
 			type: "text",
 			text: "hello world",
 		});
+	});
+
+	it("redacts secret-like values from output", async () => {
+		const quotedNode = JSON.stringify(process.execPath);
+		const config = {
+			tools: [
+				{
+					name: "redact_test",
+					description: "Redaction test",
+					command: `${quotedNode} -e "console.log('${SAMPLE_GITHUB_TOKEN}')"`,
+				},
+			],
+		};
+		writeFileSync(join(composerDir, "tools.json"), JSON.stringify(config));
+
+		const tools = loadInlineTools(testDir);
+		const result = await tools[0]!.execute("test-call", {});
+
+		expect(result.isError).toBeFalsy();
+		const text = (result.content[0] as { type: "text"; text: string }).text;
+		expect(text).toContain("[secret]");
+		expect(text).not.toContain(SAMPLE_GITHUB_TOKEN);
 	});
 
 	it("passes parameters via stdin", async () => {

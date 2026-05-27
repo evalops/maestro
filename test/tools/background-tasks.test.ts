@@ -617,6 +617,14 @@ describe("backgroundTasksTool", () => {
 		const preview = snapshot?.entries[0]?.lastLogLine ?? "";
 		expect(preview).toContain("[secret:");
 		expect(preview).not.toContain(SAMPLE_REDACTED_TOKEN);
+		const logsResult = await backgroundTasksTool.execute("bg-redact-logs", {
+			action: "logs",
+			taskId,
+			lines: 5,
+		});
+		const logsText = getTextOutput(logsResult as ToolResult);
+		expect(logsText).toContain("[secret:");
+		expect(logsText).not.toContain(SAMPLE_REDACTED_TOKEN);
 		await backgroundTaskManager.stopTask(taskId);
 	});
 

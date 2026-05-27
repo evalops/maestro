@@ -5,7 +5,7 @@
 
 use crate::config::{load_config, ShellEnvironmentPolicy, ShellInherit};
 use glob::Pattern;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
 const CORE_ENV_VARS: [&str; 9] = [
@@ -13,6 +13,33 @@ const CORE_ENV_VARS: [&str; 9] = [
 ];
 
 const DEFAULT_EXCLUDES: [&str; 3] = ["*KEY*", "*SECRET*", "*TOKEN*"];
+const PLATFORM_WORKER_SURFACE: &str = "platform-agent-runtime";
+const PLATFORM_TRUSTED_TOOL_ENV_FLAG: &str = "MAESTRO_PLATFORM_TRUSTED_TOOL_ENV";
+const PLATFORM_TRUSTED_TOOL_ENV_ALLOWLIST: [&str; 23] = [
+    "CODEX_WORKER_GIT_TOKEN",
+    "CODEX_WORKER_GIT_USERNAME",
+    "GH_TOKEN",
+    "GITHUB_TOKEN",
+    "GIT_ASKPASS",
+    "GIT_TERMINAL_PROMPT",
+    "CODEX_WORKER_RUNTIME_TOKEN",
+    "AGENT_RUNTIME_TOKEN",
+    "MAESTRO_AGENT_RUNTIME_SERVICE_TOKEN",
+    "AGENT_RUNTIME_SERVICE_TOKEN",
+    "MAESTRO_PLATFORM_A2A_TOKEN",
+    "MAESTRO_AGENT_OPERATING_PLANE_TOKEN",
+    "CODEX_WORKER_AGENT_REGISTRY_TOKEN",
+    "AGENT_REGISTRY_SERVICE_TOKEN",
+    "MAESTRO_AGENT_REGISTRY_SERVICE_TOKEN",
+    "MAESTRO_PLATFORM_A2A_ENABLED",
+    "MAESTRO_AGENT_RUNTIME_A2A_ENABLED",
+    "MAESTRO_PLATFORM_A2A_EXTENSIONS",
+    "MAESTRO_AGENT_RUNTIME_SERVICE_URL",
+    "MAESTRO_PLATFORM_A2A_URL",
+    "MAESTRO_AGENT_REGISTRY_SERVICE_URL",
+    "MAESTRO_AGENT_RUNTIME_ORG_ID",
+    "MAESTRO_AGENT_RUNTIME_WORKSPACE_ID",
+];
 
 fn matches_any(name: &str, patterns: &[String]) -> bool {
     let name = name.to_lowercase();
@@ -34,6 +61,81 @@ fn matches_any_static(name: &str, patterns: &[&str]) -> bool {
     })
 }
 
+fn truthy(value: Option<&String>) -> bool {
+    matches!(
+        value.map(|v| v.trim().to_ascii_lowercase()),
+        Some(value) if matches!(value.as_str(), "1" | "true" | "yes" | "on")
+    )
+}
+
+fn platform_trusted_tool_env_enabled(base: &HashMap<String, String>) -> bool {
+    truthy(base.get(PLATFORM_TRUSTED_TOOL_ENV_FLAG))
+        && base
+            .get("MAESTRO_SURFACE")
+            .map(|value| value.trim() == PLATFORM_WORKER_SURFACE)
+            .unwrap_or(false)
+}
+
+fn restore_platform_trusted_tool_env(
+    base: &HashMap<String, String>,
+    env: &mut HashMap<String, String>,
+    policy: Option<&ShellEnvironmentPolicy>,
+    inherit: ShellInherit,
+    core_set: &HashSet<String>,
+) {
+    if !platform_trusted_tool_env_enabled(base) {
+        return;
+    }
+    for key in PLATFORM_TRUSTED_TOOL_ENV_ALLOWLIST {
+        if !platform_trusted_tool_env_policy_allows_key(key, policy, inherit, core_set) {
+            continue;
+        }
+        if let Some(value) = base.get(key) {
+            env.insert(key.to_string(), value.clone());
+        }
+    }
+}
+
+fn platform_trusted_tool_env_policy_allows_key(
+    key: &str,
+    policy: Option<&ShellEnvironmentPolicy>,
+    inherit: ShellInherit,
+    core_set: &HashSet<String>,
+) -> bool {
+    match inherit {
+        ShellInherit::All => {}
+        ShellInherit::Core => {
+            if !core_set.contains(&key.to_uppercase()) {
+                return false;
+            }
+        }
+        ShellInherit::None => return false,
+    }
+
+    if let Some(policy) = policy {
+        if let Some(patterns) = policy.exclude.as_ref() {
+            if matches_any(key, patterns) {
+                return false;
+            }
+        }
+        if let Some(patterns) = policy.include_only.as_ref() {
+            if !matches_any(key, patterns) {
+                return false;
+            }
+        }
+        if policy
+            .set
+            .as_ref()
+            .map(|set| set.contains_key(key))
+            .unwrap_or(false)
+        {
+            return false;
+        }
+    }
+
+    true
+}
+
 /// Build a filtered shell environment from a base environment.
 pub fn build_shell_environment<I>(
     base_env: I,
@@ -43,6 +145,8 @@ pub fn build_shell_environment<I>(
 where
     I: IntoIterator<Item = (String, String)>,
 {
+    let base_env: Vec<(String, String)> = base_env.into_iter().collect();
+    let base_lookup: HashMap<String, String> = base_env.iter().cloned().collect();
     let inherit = policy.and_then(|p| p.inherit).unwrap_or(ShellInherit::All);
     let ignore_default_excludes = policy
         .and_then(|p| p.ignore_default_excludes)
@@ -55,7 +159,7 @@ where
     let core_set = CORE_ENV_VARS
         .iter()
         .map(|name| name.to_uppercase())
-        .collect::<std::collections::HashSet<_>>();
+        .collect::<HashSet<_>>();
 
     match inherit {
         ShellInherit::All => {
@@ -105,6 +209,8 @@ where
             }
         }
     }
+
+    restore_platform_trusted_tool_env(&base_lookup, &mut env, policy, inherit, &core_set);
 
     if let Some(overrides) = overrides {
         for (key, value) in overrides {
@@ -234,5 +340,150 @@ mod tests {
         overrides.insert("OPENAI_API_KEY".to_string(), "override".to_string());
         let env = build_shell_environment(base, None, Some(&overrides));
         assert_eq!(env.get("OPENAI_API_KEY"), Some(&"override".to_string()));
+    }
+
+    #[test]
+    fn test_platform_trusted_tool_env_restores_scoped_worker_tokens() {
+        let base = env(&[
+            ("MAESTRO_SURFACE", PLATFORM_WORKER_SURFACE),
+            (PLATFORM_TRUSTED_TOOL_ENV_FLAG, "true"),
+            ("GH_TOKEN", "worker-git-credential"),
+            ("GITHUB_TOKEN", "worker-git-credential"),
+            (
+                "MAESTRO_PLATFORM_A2A_TOKEN",
+                "platform-runtime-token-1234567890",
+            ),
+            ("MAESTRO_PLATFORM_A2A_ENABLED", "true"),
+            ("OPENAI_API_KEY", "sk-should-stay-filtered-1234567890"),
+        ]);
+        let env = build_shell_environment(base, None, None);
+        assert_eq!(
+            env.get("GH_TOKEN"),
+            Some(&"worker-git-credential".to_string())
+        );
+        assert_eq!(
+            env.get("GITHUB_TOKEN"),
+            Some(&"worker-git-credential".to_string())
+        );
+        assert_eq!(
+            env.get("MAESTRO_PLATFORM_A2A_TOKEN"),
+            Some(&"platform-runtime-token-1234567890".to_string())
+        );
+        assert_eq!(
+            env.get("MAESTRO_PLATFORM_A2A_ENABLED"),
+            Some(&"true".to_string())
+        );
+        assert!(!env.contains_key("OPENAI_API_KEY"));
+    }
+
+    #[test]
+    fn test_platform_trusted_tool_env_honors_include_only() {
+        let base = env(&[
+            ("PATH", "/bin"),
+            ("MAESTRO_SURFACE", PLATFORM_WORKER_SURFACE),
+            (PLATFORM_TRUSTED_TOOL_ENV_FLAG, "true"),
+            ("GH_TOKEN", "worker-git-credential"),
+            ("GITHUB_TOKEN", "worker-git-credential"),
+        ]);
+        let policy = ShellEnvironmentPolicy {
+            include_only: Some(vec!["PATH".to_string()]),
+            ..Default::default()
+        };
+        let env = build_shell_environment(base, Some(&policy), None);
+        assert_eq!(env.get("PATH"), Some(&"/bin".to_string()));
+        assert!(!env.contains_key("GH_TOKEN"));
+        assert!(!env.contains_key("GITHUB_TOKEN"));
+    }
+
+    #[test]
+    fn test_platform_trusted_tool_env_restores_only_include_only_matches() {
+        let base = env(&[
+            ("PATH", "/bin"),
+            ("MAESTRO_SURFACE", PLATFORM_WORKER_SURFACE),
+            (PLATFORM_TRUSTED_TOOL_ENV_FLAG, "true"),
+            ("GH_TOKEN", "worker-git-credential"),
+            ("GITHUB_TOKEN", "worker-git-credential"),
+        ]);
+        let policy = ShellEnvironmentPolicy {
+            include_only: Some(vec!["PATH".to_string(), "GH_TOKEN".to_string()]),
+            ..Default::default()
+        };
+        let env = build_shell_environment(base, Some(&policy), None);
+        assert_eq!(env.get("PATH"), Some(&"/bin".to_string()));
+        assert_eq!(
+            env.get("GH_TOKEN"),
+            Some(&"worker-git-credential".to_string())
+        );
+        assert!(!env.contains_key("GITHUB_TOKEN"));
+    }
+
+    #[test]
+    fn test_platform_trusted_tool_env_honors_explicit_exclude() {
+        let base = env(&[
+            ("PATH", "/bin"),
+            ("MAESTRO_SURFACE", PLATFORM_WORKER_SURFACE),
+            (PLATFORM_TRUSTED_TOOL_ENV_FLAG, "true"),
+            ("GH_TOKEN", "worker-git-credential"),
+            ("GITHUB_TOKEN", "worker-git-credential"),
+        ]);
+        let policy = ShellEnvironmentPolicy {
+            exclude: Some(vec!["GH_TOKEN".to_string()]),
+            ..Default::default()
+        };
+        let env = build_shell_environment(base, Some(&policy), None);
+        assert_eq!(env.get("PATH"), Some(&"/bin".to_string()));
+        assert!(!env.contains_key("GH_TOKEN"));
+        assert_eq!(
+            env.get("GITHUB_TOKEN"),
+            Some(&"worker-git-credential".to_string())
+        );
+    }
+
+    #[test]
+    fn test_platform_trusted_tool_env_honors_explicit_set() {
+        let base = env(&[
+            ("PATH", "/bin"),
+            ("MAESTRO_SURFACE", PLATFORM_WORKER_SURFACE),
+            (PLATFORM_TRUSTED_TOOL_ENV_FLAG, "true"),
+            ("GH_TOKEN", "worker-git-credential"),
+        ]);
+        let policy = ShellEnvironmentPolicy {
+            include_only: Some(vec!["PATH".to_string(), "GH_TOKEN".to_string()]),
+            set: Some(HashMap::from([(
+                "GH_TOKEN".to_string(),
+                "policy-token".to_string(),
+            )])),
+            ..Default::default()
+        };
+        let env = build_shell_environment(base, Some(&policy), None);
+        assert_eq!(env.get("PATH"), Some(&"/bin".to_string()));
+        assert_eq!(env.get("GH_TOKEN"), Some(&"policy-token".to_string()));
+    }
+
+    #[test]
+    fn test_platform_trusted_tool_env_honors_inherit_none() {
+        let base = env(&[
+            ("PATH", "/bin"),
+            ("MAESTRO_SURFACE", PLATFORM_WORKER_SURFACE),
+            (PLATFORM_TRUSTED_TOOL_ENV_FLAG, "true"),
+            ("GH_TOKEN", "worker-git-credential"),
+        ]);
+        let policy = ShellEnvironmentPolicy {
+            inherit: Some(ShellInherit::None),
+            ..Default::default()
+        };
+        let env = build_shell_environment(base, Some(&policy), None);
+        assert!(!env.contains_key("PATH"));
+        assert!(!env.contains_key("GH_TOKEN"));
+    }
+
+    #[test]
+    fn test_platform_trusted_tool_env_requires_platform_surface() {
+        let base = env(&[
+            (PLATFORM_TRUSTED_TOOL_ENV_FLAG, "true"),
+            ("GH_TOKEN", "worker-git-credential"),
+        ]);
+        let env = build_shell_environment(base, None, None);
+        assert!(!env.contains_key("GH_TOKEN"));
     }
 }

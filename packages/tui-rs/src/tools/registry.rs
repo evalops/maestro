@@ -117,7 +117,9 @@ use super::notebook_edit;
 use super::status;
 use super::todo;
 use super::web_fetch::{WebFetchArgs, WebFetchTool};
-use crate::agent::{FromAgent, ToolDefinition, ToolResult};
+use crate::agent::{
+    vault_credentials_in_json, vault_credentials_in_text, FromAgent, ToolDefinition, ToolResult,
+};
 use crate::lsp;
 use crate::mcp::{
     append_mcp_prompt_summary, load_mcp_config, McpClient, McpConfigScope, McpContent, McpPrompt,
@@ -133,6 +135,17 @@ const MAX_GREP_LINES: usize = 100;
 const MAX_LIST_LINES: usize = 200;
 const MAX_DIFF_LINES: usize = 400;
 const MCP_RECONNECT_RETRY_COOLDOWN: Duration = Duration::from_secs(30);
+
+fn vault_tool_result_credentials(mut result: ToolResult) -> ToolResult {
+    result.output = vault_credentials_in_text(&result.output);
+    if let Some(error) = result.error.take() {
+        result.error = Some(vault_credentials_in_text(&error));
+    }
+    if let Some(details) = result.details.take() {
+        result.details = Some(vault_credentials_in_json(&details));
+    }
+    result
+}
 
 fn build_glob_pattern(base_path: &str, pattern: &str) -> String {
     if Path::new(pattern).is_absolute() {
