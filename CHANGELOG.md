@@ -17,6 +17,12 @@ versioning when releases are cut.
   and keep scheduled public runs inert so public publishing stays downstream of
   the internal source-of-truth release.
 
+## [0.10.33] - 2026-05-27
+
+### Changed
+
+- Fix published replay evidence mode coverage (#2286). <!-- maestro-release-note:c1bc8e66dd4f -->
+
 ## [0.10.32] - 2026-05-26
 
 ### Changed
