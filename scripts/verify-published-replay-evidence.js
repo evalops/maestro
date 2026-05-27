@@ -185,6 +185,7 @@ function providerConfigIsValid(providerConfig) {
 		isObject(providerConfig) &&
 		providerConfig.provider === SCRIPTED_REPLAY_PROVIDER &&
 		providerConfig.model === SCRIPTED_REPLAY_MODEL &&
+		providerConfig.deterministic === true &&
 		providerConfig.externalCredentialsRequired === false &&
 		providerConfig.externalNetworkRequired === false &&
 		providerConfig.approvalMode === SCRIPTED_REPLAY_APPROVAL_MODE &&
