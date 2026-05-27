@@ -1,0 +1,134 @@
+{
+	"version": 1,
+	"description": "Release-gated evidence map for Maestro Platform AgentRuntime and ToolExecution lifecycle joins.",
+	"checks": [
+		{
+			"area": "agentruntime-client-contract",
+			"evidenceType": "source",
+			"path": "src/platform/agent-runtime-client.ts",
+			"lifecycle": ["turns", "model-steps", "tool-steps", "waits", "outcomes"],
+			"anchors": [
+				"PlatformRuntimeEventTypeValue",
+				"PlatformAgentRunStepKindValue",
+				"PlatformAgentRunWaitTypeValue",
+				"recordAgentRuntimeRunStep",
+				"waitAgentRuntimeRun",
+				"resumeAgentRuntimeRun",
+				"completeAgentRuntimeRun",
+				"failAgentRuntimeRun"
+			]
+		},
+		{
+			"area": "hosted-runtime-wiring",
+			"evidenceType": "source",
+			"path": "src/server/headless-runtime-service.ts",
+			"lifecycle": ["turns", "waits", "approvals", "tool-retries", "outcomes"],
+			"anchors": [
+				"createHostedAgentRuntimeProgressRecorder",
+				"completeHostedAgentRuntimeRun",
+				"failHostedAgentRuntimeRun",
+				"recordHostedAgentRuntimeDrain",
+				"this.agentRuntimeProgress?.recordAgentEvent(event)",
+				"this.agentRuntimeProgress?.recordServerRequestEvent(event)"
+			]
+		},
+		{
+			"area": "hosted-progress-turns-steps-outcomes",
+			"evidenceType": "test",
+			"path": "test/server/hosted-agent-runtime-progress.test.ts",
+			"lifecycle": ["turns", "model-steps", "tool-steps", "outcomes"],
+			"anchors": [
+				"records turn and tool progress as leased AgentRuntime steps",
+				"records assistant usage as AgentRuntime model response evidence",
+				"records hosted drain manifest evidence before terminal completion",
+				"completes the Platform run after prior progress writes during hosted drain",
+				"fails the Platform run once when hosted drain is interrupted"
+			]
+		},
+		{
+			"area": "hosted-progress-waits-approvals-retries",
+			"evidenceType": "test",
+			"path": "test/server/hosted-agent-runtime-progress.test.ts",
+			"lifecycle": ["waits", "approvals", "tool-retries", "auto-retries"],
+			"anchors": [
+				"records pending server requests as waits and resumes them on resolution",
+				"propagates approval lifecycle timing to hosted wait and resume payloads",
+				"projects tool retry prompts as hosted waits and queryable retry events",
+				"coalesces tool retry AgentEvents with server-request lifecycle waits",
+				"records recovery breadcrumbs for status, compaction, and auto retry"
+			]
+		},
+		{
+			"area": "toolexecution-client-contract",
+			"evidenceType": "source",
+			"path": "src/platform/tool-execution-client.ts",
+			"lifecycle": [
+				"toolexecution-linkage",
+				"approvals",
+				"tool-output-records"
+			],
+			"anchors": [
+				"ToolExecutionLinkage",
+				"PlatformToolRetryPolicy",
+				"ExecutePlatformToolRequest",
+				"ResumePlatformToolExecutionRequest",
+				"RecordPlatformToolExecutionOutputRequest",
+				"approvalWait",
+				"retryPolicy"
+			]
+		},
+		{
+			"area": "toolexecution-bridge-linkage",
+			"evidenceType": "test",
+			"path": "test/agent/tool-execution-bridge.test.ts",
+			"lifecycle": ["toolexecution-linkage"],
+			"anchors": [
+				"records observe-only bash executions after local completion",
+				"uses hosted AgentRuntime linkage when the run handle is bound after startup",
+				"maestro_agent_run_id",
+				"maestro_agent_run_step_id",
+				"maestro_remote_runner_session_id"
+			]
+		},
+		{
+			"area": "toolexecution-bridge-approval-output",
+			"evidenceType": "test",
+			"path": "test/agent/tool-execution-bridge.test.ts",
+			"lifecycle": ["approvals", "tool-output-records"],
+			"anchors": [
+				"waits for approval and resumes governed executions",
+				"records governed local output against the Platform execution",
+				"ResumeToolExecution",
+				"RecordToolExecutionOutput",
+				"maestro_local_outcome"
+			]
+		},
+		{
+			"area": "live-platform-lifecycle-smoke",
+			"evidenceType": "live-smoke",
+			"path": "scripts/smoke-platform-agentruntime-lifecycle.ts",
+			"lifecycle": ["live-platform-smoke", "waits", "outcomes"],
+			"anchors": [
+				"handleAgentRuntimeTrigger",
+				"claimNextAgentRuntimeRun",
+				"recordAgentRuntimeRunStep",
+				"waitAgentRuntimeRun",
+				"resumeAgentRuntimeRun",
+				"completeAgentRuntimeRun",
+				"listAgentRuntimeRunEvents",
+				"Validated Maestro AgentRuntime lifecycle against live Platform handler"
+			]
+		},
+		{
+			"area": "release-gate",
+			"evidenceType": "package-script",
+			"path": "package.json",
+			"lifecycle": ["release-gate"],
+			"anchors": [
+				"check:platform-runtime-conformance",
+				"scripts/check-platform-runtime-conformance.mjs",
+				"lint:evals"
+			]
+		}
+	]
+}
