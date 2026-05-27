@@ -408,7 +408,7 @@ export const findTool = createTool<typeof findSchema, FindToolDetails>({
 
 		const { pattern, path: searchDir, limit, includeHidden = true } = params;
 
-		const fdPath = await ensureTool("fd", true);
+		const fdPath = await ensureTool("fd", true, signal);
 		if (!fdPath) {
 			return respond
 				.error("fd is not available and could not be downloaded")

@@ -693,9 +693,12 @@ async fn send_a2a_stream_response(stream: &mut TcpStream, value: &Value) -> Resu
     let Some(event_name) = a2a_stream_event_name(value) else {
         return send_sse(stream, value).await;
     };
+    let event_id = a2a_stream_event_id(value)
+        .map(|id| format!("id: {id}\n"))
+        .unwrap_or_default();
     let body = serde_json::to_string(value).map_err(|error| error.to_string())?;
     stream
-        .write_all(format!("event: {event_name}\ndata: {body}\n\n").as_bytes())
+        .write_all(format!("{event_id}event: {event_name}\ndata: {body}\n\n").as_bytes())
         .await
         .map_err(|error| error.to_string())
 }
@@ -710,6 +713,79 @@ fn a2a_stream_event_name(value: &Value) -> Option<&'static str> {
     } else {
         None
     }
+}
+
+fn a2a_stream_event_id(value: &Value) -> Option<String> {
+    if let Some(task) = value.get("task") {
+        let context_id = a2a_stream_id_value(task.get("contextId"), "unknown-context");
+        let task_id = a2a_stream_id_value(task.get("id"), "unknown-task");
+        let state = a2a_stream_id_value(
+            task.get("status").and_then(|status| status.get("state")),
+            "snapshot",
+        );
+        let timestamp = a2a_stream_id_value(
+            task.get("status")
+                .and_then(|status| status.get("timestamp")),
+            "latest",
+        );
+        return Some(format!(
+            "a2a:{context_id}:{task_id}:task:{state}:{timestamp}"
+        ));
+    }
+
+    if let Some(update) = value.get("statusUpdate") {
+        let context_id = a2a_stream_id_value(update.get("contextId"), "unknown-context");
+        let task_id = a2a_stream_id_value(update.get("taskId"), "unknown-task");
+        let state = a2a_stream_id_value(
+            update.get("status").and_then(|status| status.get("state")),
+            "snapshot",
+        );
+        let timestamp = a2a_stream_id_value(
+            update
+                .get("status")
+                .and_then(|status| status.get("timestamp")),
+            "latest",
+        );
+        return Some(format!(
+            "a2a:{context_id}:{task_id}:status:{state}:{timestamp}"
+        ));
+    }
+
+    if let Some(update) = value.get("artifactUpdate") {
+        let context_id = a2a_stream_id_value(update.get("contextId"), "unknown-context");
+        let task_id = a2a_stream_id_value(update.get("taskId"), "unknown-task");
+        let artifact_id = a2a_stream_id_value(
+            update
+                .get("artifact")
+                .and_then(|artifact| artifact.get("artifactId").or_else(|| artifact.get("id"))),
+            "latest",
+        );
+        return Some(format!("a2a:{context_id}:{task_id}:artifact:{artifact_id}"));
+    }
+
+    None
+}
+
+fn a2a_stream_id_value(value: Option<&Value>, fallback: &str) -> String {
+    let segment = value
+        .and_then(Value::as_str)
+        .map(a2a_stream_id_segment)
+        .filter(|segment| !segment.is_empty());
+    segment.unwrap_or_else(|| fallback.to_string())
+}
+
+fn a2a_stream_id_segment(value: &str) -> String {
+    value
+        .trim()
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.' | '~') {
+                ch
+            } else {
+                '_'
+            }
+        })
+        .collect()
 }
 
 pub(super) fn a2a_status_update_event(task: &Value) -> Value {

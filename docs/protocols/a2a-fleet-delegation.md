@@ -309,6 +309,11 @@ The task ledger defaults to:
 `MAESTRO_A2A_TASKS_FILE` overrides the ledger path. `CODEX_A2A_TASKS_FILE` is
 accepted as a migration alias.
 
+A2A `message:stream` and task subscription responses emit deterministic SSE
+`id:` fields derived from the context id, task id, event kind, status timestamp,
+and artifact id. Platform evidence can compare those stream ids against the task
+ledger without depending on process-local counters.
+
 ## Operator Verification
 
 Use bounded one-shot checks against a local control-plane peer:
