@@ -129,6 +129,32 @@ function makeEvidence(installer: "npm" | "bun" = "npm") {
 	});
 }
 
+function useSharedWriteEvidenceRefs(evidence: ReturnType<typeof makeEvidence>) {
+	const sharedRefs = [
+		"tool-call:call-write-published-artifact",
+		"approval-request:call-write-published-artifact",
+		"artifact:file:published-replay-artifact.json",
+	];
+	for (const mode of evidence.modes) {
+		const writeItem = mode.agentRuntimeLedger.toolWorkItems.find(
+			(item) => item.toolName === "write",
+		);
+		if (!writeItem) {
+			throw new Error("Expected write tool work item in replay fixture");
+		}
+		writeItem.evidenceRefs = sharedRefs;
+	}
+	evidence.observability.approvals = {
+		count: 1,
+		evidenceRefs: ["approval-request:call-write-published-artifact"],
+	};
+	evidence.observability.artifacts = {
+		count: 1,
+		evidenceRefs: ["artifact:file:published-replay-artifact.json"],
+	};
+	return evidence;
+}
+
 function withTempDir(run: (dir: string) => void) {
 	const dir = mkdtempSync(join(tmpdir(), "maestro-published-evidence-"));
 	try {
@@ -159,6 +185,18 @@ describe("verify-published-replay-evidence", () => {
 		});
 	});
 
+	it("accepts shared approval and artifact refs when each replay mode carries them", () => {
+		expect(
+			validatePublishedReplayEvidence(
+				useSharedWriteEvidenceRefs(makeEvidence()),
+			),
+		).toMatchObject({
+			packageSpec: `${rootPackageName}@9.9.9`,
+			cliCommand: "maestro",
+			modes: ["json", "rpc", "text"],
+		});
+	});
+
 	it("fails when install metadata does not match the published package spec", () => {
 		const evidence = makeEvidence();
 		evidence.package.installMetadata.name = "@evalops/not-maestro";
@@ -172,12 +210,17 @@ describe("verify-published-replay-evidence", () => {
 	it("fails when approval or artifact trace evidence is missing", () => {
 		const evidence = makeEvidence();
 		for (const mode of evidence.modes) {
-			mode.agentRuntimeLedger.toolWorkItem.evidenceRefs =
-				mode.agentRuntimeLedger.toolWorkItem.evidenceRefs.filter(
+			const workItems = [
+				mode.agentRuntimeLedger.toolWorkItem,
+				...mode.agentRuntimeLedger.toolWorkItems,
+			];
+			for (const workItem of workItems) {
+				workItem.evidenceRefs = workItem.evidenceRefs.filter(
 					(ref: string) =>
 						!ref.startsWith("approval-request:") &&
 						!ref.startsWith("artifact:"),
 				);
+			}
 		}
 		evidence.observability.approvals = {
 			count: 0,

@@ -96,6 +96,22 @@ function makeReplayMode(mode: "text" | "json" | "rpc") {
 	};
 }
 
+function makeReplayModeWithSharedWriteRefs(mode: "text" | "json" | "rpc") {
+	const replayMode = makeReplayMode(mode);
+	const writeItem = replayMode.agentRuntimeLedger.toolWorkItems.find(
+		(item) => item.toolName === "write",
+	);
+	if (!writeItem) {
+		throw new Error("Expected write tool work item in replay fixture");
+	}
+	writeItem.evidenceRefs = [
+		"tool-call:call-write-published-artifact",
+		"approval-request:call-write-published-artifact",
+		"artifact:file:published-replay-artifact.json",
+	];
+	return replayMode;
+}
+
 describe("resolvePublishedReplayEvidencePath", () => {
 	it("prefers the explicit evidence path", () => {
 		expect(
@@ -221,6 +237,43 @@ describe("resolvePublishedReplayEvidencePath", () => {
 		]);
 	});
 
+	it("counts shared approval and artifact refs by replay mode", () => {
+		const evidence = buildPublishedReplayEvidence({
+			packageSpec: `${rootPackageName}@9.9.9`,
+			cliCommand: "maestro",
+			binPath: "/tmp/project/node_modules/.bin/maestro",
+			installMetadata: {
+				label: `${rootPackageName}@9.9.9 via npm`,
+				name: rootPackageName,
+				version: "9.9.9",
+				binCommands: ["maestro"],
+				forbiddenWorkspaceNames: ["@evalops/contracts", "@evalops/tui"],
+				forbiddenReferences: [],
+				workspaceProtocolReferences: [],
+				installable: true,
+				dependencySections: {
+					dependencies: [{ name: "zod", spec: "^4.3.6" }],
+				},
+			},
+			modes: [
+				makeReplayModeWithSharedWriteRefs("text"),
+				makeReplayModeWithSharedWriteRefs("json"),
+				makeReplayModeWithSharedWriteRefs("rpc"),
+			],
+		});
+
+		expect(evidence.observability.approvals).toMatchObject({
+			count: 3,
+			modes: ["text", "json", "rpc"],
+			evidenceRefs: ["approval-request:call-write-published-artifact"],
+		});
+		expect(evidence.observability.artifacts).toMatchObject({
+			count: 3,
+			modes: ["text", "json", "rpc"],
+			evidenceRefs: ["artifact:file:published-replay-artifact.json"],
+		});
+	});
+
 	it("summarizes queryable release-gate evidence across install, replay, and ledger surfaces", () => {
 		const evidence = buildPublishedReplayEvidence({
 			packageSpec: `${rootPackageName}@9.9.9`,
@@ -284,6 +337,7 @@ describe("resolvePublishedReplayEvidencePath", () => {
 			},
 			approvals: {
 				count: 3,
+				modes: ["text", "json", "rpc"],
 			},
 			errors: {
 				count: 0,
@@ -291,6 +345,7 @@ describe("resolvePublishedReplayEvidencePath", () => {
 			},
 			artifacts: {
 				count: 3,
+				modes: ["text", "json", "rpc"],
 			},
 			finalStatus: {
 				allOk: true,
