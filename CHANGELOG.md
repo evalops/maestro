@@ -17,6 +17,19 @@ versioning when releases are cut.
   and keep scheduled public runs inert so public publishing stays downstream of
   the internal source-of-truth release.
 
+## [0.10.40] - 2026-05-27
+
+### Changed
+
+- Harden release surface gate scripts. <!-- maestro-release-note:52e5b469a427 -->
+- Verify published replay provider config mirrors. <!-- maestro-release-note:db33aac1117f -->
+- Require deterministic published replay provider config. <!-- maestro-release-note:20ccb579d520 -->
+- Gate published replay provider transcript evidence. <!-- maestro-release-note:85d27c1a856b -->
+
+### Fixed
+
+- Harden ripgrep path errors and replay error evidence (#2307). <!-- maestro-release-note:2d2352fdcfa1 -->
+
 ## [0.10.39] - 2026-05-27
 
 ### Changed
