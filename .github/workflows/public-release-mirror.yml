@@ -109,6 +109,13 @@ jobs:
             --target "$GITHUB_WORKSPACE/public-mirror" \
             --package-name "${{ steps.release.outputs.canonical_package_name }}"
 
+      - name: Sync release mirror helper files
+        run: |
+          set -euo pipefail
+          node scripts/sync-release-mirror.mjs \
+            --source "$GITHUB_WORKSPACE" \
+            --target "$GITHUB_WORKSPACE/public-mirror"
+
       - name: Validate mirrored public tree
         working-directory: public-mirror
         run: |
