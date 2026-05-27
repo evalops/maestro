@@ -17,6 +17,20 @@ versioning when releases are cut.
   and keep scheduled public runs inert so public publishing stays downstream of
   the internal source-of-truth release.
 
+## [0.10.39] - 2026-05-27
+
+### Changed
+
+- Drain ripgrep retry promise cleanup. <!-- maestro-release-note:0f3181530fe5 -->
+- Guard published package canary env. <!-- maestro-release-note:e73fa66a32ab -->
+- [maestro] Guard deprecation message drift (#2299). <!-- maestro-release-note:c310c97ba937 -->
+
+### Fixed
+
+- Reset aborted ripgrep installs for retries. <!-- maestro-release-note:b1066de6caaf -->
+- Dedupe abortable ripgrep installs. <!-- maestro-release-note:a4ce5f223417 -->
+- Harden managed tool aborts and A2A stream IDs. <!-- maestro-release-note:307bcf6fdd35 -->
+
 ## [0.10.38] - 2026-05-27
 
 ### Changed
