@@ -84,6 +84,19 @@ describe("maestro event catalog", () => {
 			],
 		});
 		expect(
+			getMaestroBusEventCatalogEntry(MaestroBusEventType.ToolCallAttempted),
+		).toMatchObject({
+			category: "tool",
+			dataSchema: "buf.build/evalops/proto/maestro.v1.ToolCallAttempt",
+			protoAnyType: "type.googleapis.com/maestro.v1.ToolCallAttempt",
+			subject: "maestro.events.tool_call.attempted",
+			platformConsumers: [
+				"audit.maestro-events",
+				"meter.maestro-tool-call-events",
+				"release.maestro-tool-attempt-gates",
+			],
+		});
+		expect(
 			getMaestroBusEventCatalogEntry(MaestroBusEventType.A2ATaskDispatched),
 		).toMatchObject({
 			category: "a2a",
@@ -208,11 +221,12 @@ describe("maestro event catalog", () => {
 			MAESTRO_RELEASE_GATE_EVENT_SUBJECTS_BY_CATEGORY,
 		);
 		expect(query.subjects).not.toContain(MaestroBusEventType.SessionStarted);
-		expect(query.subjects).not.toContain(MaestroBusEventType.ToolCallAttempted);
+		expect(query.subjects).toContain(MaestroBusEventType.ToolCallAttempted);
 		expect(query.platformConsumers).toEqual(
 			expect.arrayContaining([
 				"release.maestro-install-smoke",
 				"release.maestro-session-final-state",
+				"release.maestro-tool-attempt-gates",
 				"release.maestro-tool-success-gates",
 				"release.maestro-tool-failure-gates",
 				"release.maestro-approval-gates",
@@ -234,12 +248,12 @@ describe("maestro event catalog", () => {
 	it("flags release-gate subjects outside the explicit release allowlist", () => {
 		const catalogWithExtraReleaseSubject = listMaestroBusEventCatalog().map(
 			(entry) =>
-				entry.type === MaestroBusEventType.ToolCallAttempted
+				entry.type === MaestroBusEventType.SessionStarted
 					? {
 							...entry,
 							platformConsumers: [
 								...entry.platformConsumers,
-								"release.maestro-tool-attempts",
+								"release.maestro-session-started",
 							],
 						}
 					: entry,
@@ -250,7 +264,7 @@ describe("maestro event catalog", () => {
 			getUnexpectedMaestroReleaseGateEventSubjects(
 				catalogWithExtraReleaseSubject,
 			),
-		).toEqual([MaestroBusEventType.ToolCallAttempted]);
+		).toEqual([MaestroBusEventType.SessionStarted]);
 	});
 
 	it("flags release-gate subjects assigned to the wrong category", () => {
@@ -271,9 +285,13 @@ describe("maestro event catalog", () => {
 			),
 		).toEqual([
 			{
-				actualSubjects: [MaestroBusEventType.ToolCallCompleted],
+				actualSubjects: [
+					MaestroBusEventType.ToolCallAttempted,
+					MaestroBusEventType.ToolCallCompleted,
+				],
 				category: "tool",
 				expectedSubjects: [
+					MaestroBusEventType.ToolCallAttempted,
 					MaestroBusEventType.ToolCallCompleted,
 					MaestroBusEventType.ToolCallFailed,
 				],
