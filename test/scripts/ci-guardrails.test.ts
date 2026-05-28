@@ -209,6 +209,27 @@ describe("planCiChecks", () => {
 		});
 	});
 
+	it("keeps workflow unit-test changes on the light proof lane", () => {
+		expect(
+			planCiChecks({
+				eventName: "pull_request",
+				changedFiles: [
+					".github/workflows/tag-release.yml",
+					"test/scripts/ci-guardrails.test.ts",
+					"test/workflows/tag-release.test.ts",
+				],
+			}),
+		).toMatchObject({
+			ciInfrastructureOnly: false,
+			coverage: false,
+			lightPrChecks: true,
+			proofHarnessOnly: true,
+			prChecks: true,
+			publicMirror: true,
+			rustHostedConformance: false,
+		});
+	});
+
 	it("skips TS/Nx checks for Rust-only pull requests", () => {
 		expect(
 			planCiChecks({
@@ -637,15 +658,15 @@ describe("ci workflow guardrails", () => {
 		expect(regex.test("scripts/summarize-nx-profile.mjs")).toBe(true);
 	});
 
-	it("runs release helper script tests directly instead of the root Nx target", () => {
+	it("runs selected infrastructure tests directly instead of the root Nx target", () => {
 		const script = readFileSync(
 			new URL("../../scripts/ci-nx-tests.sh", import.meta.url),
 			{ encoding: "utf8" },
 		);
 
-		expect(script).toContain("release_helper_script_tests_only");
+		expect(script).toContain("direct_vitest_tests_only");
 		expect(script).toContain(
-			"Release helper script tests are handled directly by Vitest.",
+			"Selected infrastructure test files are handled directly by Vitest.",
 		);
 		expect(script).toContain("node ./scripts/run-vitest.js --run");
 		expect(script).toContain("test/scripts/deprecate-release.test.ts");
@@ -655,6 +676,11 @@ describe("ci workflow guardrails", () => {
 		);
 		expect(script).toContain("test/scripts/smoke-published-replay-e2e.test.ts");
 		expect(script).toContain("test/scripts/workspace-utils.test.ts");
+		expect(script).toContain("test/workflows/*.test.ts");
+		expect(script).toContain("rg -q --regexp");
+		expect(script).toContain(
+			"Skipping Nx profile summary for direct Vitest run.",
+		);
 	});
 
 	it("builds dist before the runtime dependency validator", () => {
@@ -2228,6 +2254,23 @@ describe("planNxTestCommand", () => {
 			}),
 		).toEqual({
 			files: ["test/scripts/release-surface-conformance.test.ts"],
+			mode: "affected-files",
+		});
+	});
+
+	it("keeps workflow unit tests as explicit affected files", () => {
+		expect(
+			planNxTestCommand({
+				basePackage,
+				changedFiles: [
+					".github/workflows/tag-release.yml",
+					"test/scripts/ci-guardrails.test.ts",
+					"test/workflows/tag-release.test.ts",
+				],
+				headPackage: basePackage,
+			}),
+		).toEqual({
+			files: ["test/workflows/tag-release.test.ts"],
 			mode: "affected-files",
 		});
 	});

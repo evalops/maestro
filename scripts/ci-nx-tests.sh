@@ -34,7 +34,7 @@ git diff --name-only "$NX_BASE" "$NX_HEAD" | tee "$changed_files_log"
 
 changed_files_match() {
 	local pattern="$1"
-	grep -qE "$pattern" "$changed_files_log"
+	rg -q --regexp "$pattern" "$changed_files_log"
 }
 
 run_ci_guardrail_tests() {
@@ -51,7 +51,7 @@ run_smoke_script_static_checks() {
 	while IFS= read -r file; do
 		[[ -f "$file" ]] || continue
 		smoke_scripts+=("$file")
-	done < <(grep -E '^scripts/smoke-[^/]+\.[cm]?[jt]sx?$' "$changed_files_log" || true)
+	done < <(rg --regexp '^scripts/smoke-[^/]+\.[cm]?[jt]sx?$' "$changed_files_log" || true)
 	if [[ "${#smoke_scripts[@]}" -eq 0 ]]; then
 		return 0
 	fi
@@ -82,14 +82,14 @@ run_runtime_package_validators() {
 }
 
 run_shared_memory_tests() {
-	if git diff --name-only "$NX_BASE" "$NX_HEAD" | grep -qE '^(src/shared-memory/|test/shared-memory/|src/config/env-vars\.ts|src/cli/commands/memory\.ts|src/cli/help\.ts|src/session/manager\.ts)'; then
+	if git diff --name-only "$NX_BASE" "$NX_HEAD" | rg -q --regexp '^(src/shared-memory/|test/shared-memory/|src/config/env-vars\.ts|src/cli/commands/memory\.ts|src/cli/help\.ts|src/session/manager\.ts)'; then
 		echo "Running shared memory tests..."
 		bunx vitest --run test/shared-memory/ --reporter=verbose
 	fi
 }
 
 direct_vitest_files=()
-release_helper_script_tests_only() {
+direct_vitest_tests_only() {
 	local mode="$1"
 	local files_csv="$2"
 	if [[ "$mode" != "affected-files" || -z "$files_csv" ]]; then
@@ -104,7 +104,7 @@ release_helper_script_tests_only() {
 	local file
 	for file in "${direct_vitest_files[@]}"; do
 		case "$file" in
-			test/scripts/deprecate-release.test.ts | test/scripts/install-smoke-utils.test.ts | test/scripts/release-context-deps.test.ts | test/scripts/release-impact-filter.test.ts | test/scripts/release-surface-conformance.test.ts | test/scripts/smoke-published-replay-e2e.test.ts | test/scripts/verify-published-replay-evidence.test.ts | test/scripts/workspace-utils.test.ts)
+			test/scripts/deprecate-release.test.ts | test/scripts/install-smoke-utils.test.ts | test/scripts/release-context-deps.test.ts | test/scripts/release-impact-filter.test.ts | test/scripts/release-surface-conformance.test.ts | test/scripts/smoke-published-replay-e2e.test.ts | test/scripts/verify-published-replay-evidence.test.ts | test/scripts/workspace-utils.test.ts | test/workflows/*.test.ts)
 				;;
 			*)
 				return 1
@@ -134,8 +134,8 @@ case "$nx_mode" in
 		cmd=(npx nx run-many -t test --all --parallel=3)
 		;;
 	affected-files)
-		if release_helper_script_tests_only "$nx_mode" "$nx_files"; then
-			echo "Release helper script tests are handled directly by Vitest."
+		if direct_vitest_tests_only "$nx_mode" "$nx_files"; then
+			echo "Selected infrastructure test files are handled directly by Vitest."
 			cmd=(node ./scripts/run-vitest.js --run "${direct_vitest_files[@]}")
 		else
 			cmd=(npx nx affected -t test --files="$nx_files" --parallel=3)
@@ -194,6 +194,11 @@ fi
 summarize_attempt_profile() {
 	local profile_file="$1"
 	local timing_file="$2"
+
+	if [[ "${cmd[0]}" == "node" && "${cmd[1]}" == "./scripts/run-vitest.js" ]]; then
+		echo "Skipping Nx profile summary for direct Vitest run." | tee "$timing_file"
+		return 0
+	fi
 
 	if [[ ! -s "$profile_file" ]]; then
 		echo "::warning::Nx profile ${profile_file} was not written" | tee "$timing_file"
@@ -358,7 +363,7 @@ append_unhandled_error_summary() {
 	fi
 
 	local start
-	start="$(grep -n "Unhandled Error" "$logfile" | head -n1 | cut -d: -f1 || true)"
+	start="$(rg -n --fixed-strings "Unhandled Error" "$logfile" | head -n1 | cut -d: -f1 || true)"
 	if [[ -z "$start" ]]; then
 		return 0
 	fi
