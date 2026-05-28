@@ -64,6 +64,7 @@ export interface SlackContext {
 	message: SlackMessage;
 	teamId: string;
 	channelName?: string;
+	botUserId?: string | null;
 	store: ChannelStore;
 	channels: ChannelInfo[];
 	users: UserInfo[];
@@ -1220,6 +1221,7 @@ export class SlackBot {
 			},
 			teamId: ws.teamId,
 			channelName,
+			botUserId: ws.botUserId,
 			store: ws.store,
 			channels: this.getChannels(ws),
 			users: this.getUsers(ws),
@@ -1577,6 +1579,7 @@ export class SlackBot {
 			},
 			teamId: ws.teamId,
 			channelName: ws.channelCache.get(command.channel_id),
+			botUserId: ws.botUserId,
 			store: ws.store,
 			channels: this.getChannels(ws),
 			users: this.getUsers(ws),
@@ -1637,6 +1640,7 @@ export class SlackBot {
 			},
 			teamId: ws.teamId,
 			channelName: ws.channelCache.get(channelId),
+			botUserId: ws.botUserId,
 			store: ws.store,
 			channels: this.getChannels(ws),
 			users: this.getUsers(ws),

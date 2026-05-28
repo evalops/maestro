@@ -612,17 +612,63 @@ Use the workflow tool for:
 ${connectorDescription ? `\n${connectorDescription}\n` : ""}`;
 }
 
+export function extractCodeSpannedLiterals(text: string): string[] {
+	const literals: string[] = [];
+	const seen = new Set<string>();
+	const pattern = /`([^`\n]+)`/g;
+	let match = pattern.exec(text);
+	while (match !== null) {
+		const literal = match[1]?.trim();
+		if (literal && !seen.has(literal)) {
+			seen.add(literal);
+			literals.push(literal);
+		}
+		match = pattern.exec(text);
+	}
+	return literals;
+}
+
+function escapeRegExp(value: string): string {
+	return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+export function buildAuthoritativeCurrentRequest(
+	message: SlackContext["message"],
+	botUserId?: string | null,
+): string {
+	const rawText = message.rawText?.trim();
+	const text = rawText || message.text;
+	if (!botUserId) {
+		return text;
+	}
+
+	return text
+		.replace(new RegExp(`<@${escapeRegExp(botUserId)}>`, "gi"), "")
+		.trim();
+}
+
 export function buildSlackAgentUserPrompt(
 	recentMessages: string,
 	fileContentSection = "",
+	currentRequest = "",
 ): string {
-	let userPrompt = `Conversation history (last 50 turns). Respond to the last message.
-The last message is the current request. It overrides earlier bot replies if they conflict.
-When the last message asks you to include exact names, IDs, SHAs, revisions, URLs, or code-spanned literals, preserve those literals exactly in your answer.
-Do not copy blank or missing identifiers from earlier assistant messages.
+	const exactLiterals = extractCodeSpannedLiterals(currentRequest);
+	const exactLiteralSection =
+		exactLiterals.length > 0
+			? `\n## Exact Literals From Current Request\nThese are ordinary operational identifiers unless they are actual credentials. If the current request asks you to include any of them, copy them verbatim into the final answer instead of paraphrasing, omitting, or blanking them:\n${exactLiterals.map((literal) => `- \`${literal}\``).join("\n")}\n`
+			: "";
+
+	let userPrompt = `Prior conversation context (not authoritative if it conflicts with the current request).
+Some older assistant replies may contain blank or missing identifiers; treat those blanks as prior mistakes, not a style to copy.
 Format: date TAB user TAB text TAB attachments
 
-${recentMessages}`;
+${recentMessages}
+
+## Current Request (authoritative)
+${currentRequest || "(current request text unavailable)"}
+${exactLiteralSection}
+Respond to the Current Request. Preserve exact names, IDs, SHAs, revisions, URLs, and code-spanned literals the current request asks you to include.
+Before sending a final answer, check it contains each requested literal that should appear. Do not copy blank or missing identifiers from prior assistant messages.`;
 
 	if (fileContentSection) {
 		userPrompt += fileContentSection;
@@ -1247,9 +1293,14 @@ export function createAgentRunner(
 			});
 
 			// Run the agent with user's message
+			const authoritativeCurrentRequest = buildAuthoritativeCurrentRequest(
+				ctx.message,
+				ctx.botUserId,
+			);
 			const userPrompt = buildSlackAgentUserPrompt(
 				recentMessages,
 				fileContentSection,
+				authoritativeCurrentRequest,
 			);
 
 			// Debug: write full context to file (guarded to avoid persisting secrets)
@@ -1279,7 +1330,7 @@ export function createAgentRunner(
 				const runtimeResult = await recordSlackAgentRuntimeTrigger(ctx, {
 					workingDir,
 					channelDir,
-					prompt: ctx.message.text,
+					prompt: authoritativeCurrentRequest,
 					model: `${model.provider}/${model.id}`,
 				});
 				if (runtimeResult?.runId) {
