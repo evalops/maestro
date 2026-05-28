@@ -124,6 +124,70 @@ function makeReplayMode(mode: "text" | "json" | "rpc") {
 	};
 }
 
+function makeAgentRuntimeLifecycle() {
+	return {
+		schemaVersion: "evalops.maestro.agent-runtime-lifecycle.v1",
+		sessionId: "published-lifecycle-fixture",
+		replayDeterministic: true,
+		counts: {
+			entries: 8,
+			promotionOperations: 18,
+			waits: 2,
+			approvalWaits: 1,
+			toolRetryWaits: 1,
+			terminalOperations: 1,
+		},
+		operations: {
+			handleTrigger: 1,
+			recordRunStep: 8,
+			recordRunWorkItem: 8,
+			waitRun: 2,
+			terminal: 1,
+			completeRun: 1,
+			failRun: 0,
+		},
+		waits: [
+			{
+				pendingRequestId: "pending-lifecycle-approval",
+				pendingRequestKind: "approval",
+				waitType: "AGENT_RUN_WAIT_TYPE_APPROVAL",
+				approvalRequestId: "approval-lifecycle-search",
+				toolExecutionId: "tool-exec-lifecycle-search",
+				evidenceRefs: [
+					"pending-request:pending-lifecycle-approval",
+					"approval-request:approval-lifecycle-search",
+					"tool-execution:tool-exec-lifecycle-search",
+				],
+			},
+			{
+				pendingRequestId: "pending-lifecycle-retry",
+				pendingRequestKind: "tool_retry",
+				waitType: "AGENT_RUN_WAIT_TYPE_APPROVAL",
+				approvalRequestId: "approval-lifecycle-retry",
+				toolExecutionId: "tool-exec-lifecycle-search",
+				evidenceRefs: [
+					"pending-request:pending-lifecycle-retry",
+					"approval-request:approval-lifecycle-retry",
+					"tool-execution:tool-exec-lifecycle-search",
+				],
+			},
+		],
+		outcomes: {
+			terminalStates: { succeeded: 1 },
+			terminalEventTypes: ["message.assistant"],
+		},
+		durability: {
+			reconstructable: true,
+			sessionFilePresent: true,
+			contextManifestPresent: true,
+			replayDeterministic: true,
+			promotionIdempotencyKey:
+				"maestro-local-ledger:published-lifecycle-fixture:published-lifecycle-fixture",
+			pendingRequests: 2,
+		},
+	};
+}
+
 function makeEvidence(installer: "npm" | "bun" = "npm") {
 	const installLabel = installer === "bun" ? "via Bun" : "via npm";
 	return buildPublishedReplayEvidence({
@@ -149,6 +213,7 @@ function makeEvidence(installer: "npm" | "bun" = "npm") {
 			makeReplayMode("json"),
 			makeReplayMode("rpc"),
 		],
+		agentRuntimeLifecycle: makeAgentRuntimeLifecycle(),
 	});
 }
 
@@ -320,6 +385,60 @@ describe("verify-published-replay-evidence", () => {
 
 		expect(() => validatePublishedReplayEvidence(evidence)).toThrow(
 			/ToolExecution evidence/s,
+		);
+	});
+
+	it("fails when lifecycle wait summaries exist without wait records", () => {
+		const evidence = makeEvidence();
+		for (const lifecycle of [
+			evidence.agentRuntimeLifecycle,
+			evidence.observability.agentRuntimeLifecycle,
+		]) {
+			lifecycle.waits = [];
+			lifecycle.waitKinds = ["approval", "tool_retry"];
+			lifecycle.evidenceRefs = [
+				"pending-request:pending-lifecycle-approval",
+				"pending-request:pending-lifecycle-retry",
+			];
+		}
+
+		expect(() => validatePublishedReplayEvidence(evidence)).toThrow(
+			/agentRuntimeLifecycle must include approval waits, tool_retry waits, and terminal outcome evidence/,
+		);
+	});
+
+	it("fails when lifecycle wait evidence refs do not match their pending request ids", () => {
+		const evidence = makeEvidence();
+		for (const lifecycle of [
+			evidence.agentRuntimeLifecycle,
+			evidence.observability.agentRuntimeLifecycle,
+		]) {
+			lifecycle.waits[0].evidenceRefs = [
+				"pending-request:pending-lifecycle-other",
+				"approval-request:approval-lifecycle-search",
+				"tool-execution:tool-exec-lifecycle-search",
+			];
+		}
+
+		expect(() => validatePublishedReplayEvidence(evidence)).toThrow(
+			/agentRuntimeLifecycle must include approval waits, tool_retry waits, and terminal outcome evidence/,
+		);
+	});
+
+	it("fails when lifecycle terminal outcome records are missing", () => {
+		const evidence = makeEvidence();
+		for (const lifecycle of [
+			evidence.agentRuntimeLifecycle,
+			evidence.observability.agentRuntimeLifecycle,
+		]) {
+			lifecycle.outcomes = {
+				terminalStates: {},
+				terminalEventTypes: [],
+			};
+		}
+
+		expect(() => validatePublishedReplayEvidence(evidence)).toThrow(
+			/agentRuntimeLifecycle must include approval waits, tool_retry waits, and terminal outcome evidence/,
 		);
 	});
 

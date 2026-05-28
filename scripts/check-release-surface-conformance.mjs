@@ -35,6 +35,15 @@ const allowedEvidenceTypes = new Set([
 	"live-smoke",
 ]);
 
+const registryInstallSmokeRequiredAnchors = [
+	'["install", packageSpec]',
+	'["add", packageSpec]',
+	"runPublishedReplayE2E",
+	"runNpxCliSmoke",
+	"runBunxCliSmoke",
+	"runBunRuntimeCliSmoke",
+];
+
 export function loadReleaseSurfaceConformanceManifest(
 	manifestPath = defaultManifestPath,
 ) {
@@ -88,6 +97,23 @@ export function checkReleaseSurfaceConformance({
 				failures.push(
 					`${label} must use package-script evidence for release-gate validation`,
 				);
+			}
+		}
+		if (check.area === "registry-install-smoke") {
+			if (check.path !== "scripts/smoke-registry-install.js") {
+				failures.push(
+					`${label} must use scripts/smoke-registry-install.js as registry smoke evidence`,
+				);
+			}
+			if (check.evidenceType !== "live-smoke") {
+				failures.push(
+					`${label} must use live-smoke evidence for registry install validation`,
+				);
+			}
+			for (const requiredAnchor of registryInstallSmokeRequiredAnchors) {
+				if (!check.anchors?.includes(requiredAnchor)) {
+					failures.push(`${label} must anchor ${requiredAnchor}`);
+				}
 			}
 		}
 		if (!Array.isArray(check.anchors) || check.anchors.length === 0) {

@@ -143,7 +143,7 @@ export interface OperatingPlaneRun {
 	tool_calls?: OperatingPlaneToolCall[];
 	approvals?: OperatingPlaneApproval[];
 	usage?: OperatingPlaneUsage;
-	value_proof?: OperatingPlaneValueProof;
+	value_proof?: OperatingPlaneRuntimeSignals;
 	canonical_attributes?: Record<string, unknown>;
 }
 
@@ -232,7 +232,7 @@ export interface OperatingPlaneUsage {
 	currency?: string;
 }
 
-export interface OperatingPlaneValueProof {
+export interface OperatingPlaneRuntimeSignals {
 	operation_id: string;
 	operator_summary: string;
 	identity_bound: boolean;

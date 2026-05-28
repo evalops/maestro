@@ -98,7 +98,7 @@
     "bun:lint": "bunx biome check . && bun run lint:evals",
     "bun:test": "node ./scripts/run-vitest.js --run",
     "bun:test:fast": "VITEST_FAST=1 node ./scripts/run-vitest.js --run",
-    "bun:check": "bun run bun:lint && bunx tsc --noEmit",
+    "bun:check": "bun run bun:lint && bunx tsc -p tsconfig.build.json --noEmit",
     "bun:compile": "npm run build && bun build ./dist/cli.js --compile --external tree-sitter --external tree-sitter-bash --outfile dist/maestro-bun",
     "bun:compile:bytecode": "npm run build && bun build ./dist/cli.js --compile --bytecode --external tree-sitter --external tree-sitter-bash --outfile dist/maestro-bun-bytecode",
     "bun:evals": "bun run build && bun run ./scripts/run-evals.js",

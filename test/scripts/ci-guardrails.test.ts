@@ -1,4 +1,4 @@
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { parse } from "yaml";
 import {
@@ -68,6 +68,9 @@ type Workflow = {
 		}
 	>;
 };
+
+const node24CreateGitHubAppTokenPin =
+	"actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1";
 
 type ProjectConfig = {
 	targets?: Record<string, { dependsOn?: string[] }>;
@@ -930,6 +933,30 @@ describe("ci workflow guardrails", () => {
 		expect(script).not.toContain('spawnSync("npx"');
 	});
 
+	it("keeps GitHub App token actions on the Node24-compatible pin", () => {
+		const workflowsDir = new URL("../../.github/workflows/", import.meta.url);
+		const workflowFiles = readdirSync(workflowsDir)
+			.filter((file) => file.endsWith(".yml") || file.endsWith(".yaml"))
+			.sort();
+		const legacyPins: string[] = [];
+
+		for (const file of workflowFiles) {
+			const workflowText = readFileSync(new URL(file, workflowsDir), {
+				encoding: "utf8",
+			});
+			const matches = [
+				...workflowText.matchAll(/actions\/create-github-app-token@[^\s"']+/g),
+			].map((match) => match[0]);
+			for (const actionRef of matches) {
+				if (actionRef !== node24CreateGitHubAppTokenPin) {
+					legacyPins.push(`${file}: ${actionRef}`);
+				}
+			}
+		}
+
+		expect(legacyPins).toEqual([]);
+	});
+
 	it("authenticates deprecate-release through the effective npm config", () => {
 		const workflowPath = new URL(
 			"../../.github/workflows/deprecate-release.yml",
@@ -1565,9 +1592,7 @@ describe("ci workflow guardrails", () => {
 		expect(authStep?.if).toBe(
 			"${{ github.event_name == 'push' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.id == github.event.repository.id) }}",
 		);
-		expect(appTokenStep?.uses).toBe(
-			"actions/create-github-app-token@67018539274d69449ef7c02e8e71183d1719ab42",
-		);
+		expect(appTokenStep?.uses).toBe(node24CreateGitHubAppTokenPin);
 		expect(syncIndex).toBeGreaterThanOrEqual(0);
 		expect(syncIndex).toBeLessThan(resolveIndex);
 		expect(syncStep?.env?.PUBLIC_MIRROR_TOKEN).toBe(

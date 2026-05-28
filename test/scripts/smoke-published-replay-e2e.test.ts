@@ -136,6 +136,70 @@ function makeReplayModeWithSharedWriteRefs(mode: "text" | "json" | "rpc") {
 	return replayMode;
 }
 
+function makeAgentRuntimeLifecycle() {
+	return {
+		schemaVersion: "evalops.maestro.agent-runtime-lifecycle.v1",
+		sessionId: "published-lifecycle-fixture",
+		replayDeterministic: true,
+		counts: {
+			entries: 8,
+			promotionOperations: 18,
+			waits: 2,
+			approvalWaits: 1,
+			toolRetryWaits: 1,
+			terminalOperations: 1,
+		},
+		operations: {
+			handleTrigger: 1,
+			recordRunStep: 8,
+			recordRunWorkItem: 8,
+			waitRun: 2,
+			terminal: 1,
+			completeRun: 1,
+			failRun: 0,
+		},
+		waits: [
+			{
+				pendingRequestId: "pending-lifecycle-approval",
+				pendingRequestKind: "approval",
+				waitType: "AGENT_RUN_WAIT_TYPE_APPROVAL",
+				approvalRequestId: "approval-lifecycle-search",
+				toolExecutionId: "tool-exec-lifecycle-search",
+				evidenceRefs: [
+					"pending-request:pending-lifecycle-approval",
+					"approval-request:approval-lifecycle-search",
+					"tool-execution:tool-exec-lifecycle-search",
+				],
+			},
+			{
+				pendingRequestId: "pending-lifecycle-retry",
+				pendingRequestKind: "tool_retry",
+				waitType: "AGENT_RUN_WAIT_TYPE_APPROVAL",
+				approvalRequestId: "approval-lifecycle-retry",
+				toolExecutionId: "tool-exec-lifecycle-search",
+				evidenceRefs: [
+					"pending-request:pending-lifecycle-retry",
+					"approval-request:approval-lifecycle-retry",
+					"tool-execution:tool-exec-lifecycle-search",
+				],
+			},
+		],
+		outcomes: {
+			terminalStates: { succeeded: 1 },
+			terminalEventTypes: ["message.assistant"],
+		},
+		durability: {
+			reconstructable: true,
+			sessionFilePresent: true,
+			contextManifestPresent: true,
+			replayDeterministic: true,
+			promotionIdempotencyKey:
+				"maestro-local-ledger:published-lifecycle-fixture:published-lifecycle-fixture",
+			pendingRequests: 2,
+		},
+	};
+}
+
 describe("resolvePublishedReplayEvidencePath", () => {
 	it("prefers the explicit evidence path", () => {
 		expect(
@@ -215,6 +279,7 @@ describe("resolvePublishedReplayEvidencePath", () => {
 						},
 					},
 				],
+				agentRuntimeLifecycle: makeAgentRuntimeLifecycle(),
 			}),
 		).toMatchObject({
 			schemaVersion: "evalops.maestro.published-replay-evidence.v1",
@@ -284,6 +349,7 @@ describe("resolvePublishedReplayEvidencePath", () => {
 				makeReplayModeWithSharedWriteRefs("json"),
 				makeReplayModeWithSharedWriteRefs("rpc"),
 			],
+			agentRuntimeLifecycle: makeAgentRuntimeLifecycle(),
 		});
 
 		expect(evidence.observability.approvals).toMatchObject({
@@ -321,6 +387,7 @@ describe("resolvePublishedReplayEvidencePath", () => {
 				makeReplayMode("json"),
 				makeReplayMode("rpc"),
 			],
+			agentRuntimeLifecycle: makeAgentRuntimeLifecycle(),
 		});
 
 		expect(evidence.releaseGate).toMatchObject({
@@ -343,6 +410,7 @@ describe("resolvePublishedReplayEvidencePath", () => {
 				artifactTraceEvidence: true,
 				queryableObservabilityIndex: true,
 				agentRuntimeLedger: true,
+				agentRuntimeLifecycle: true,
 				finalStatus: true,
 			},
 		});
@@ -428,6 +496,20 @@ describe("resolvePublishedReplayEvidencePath", () => {
 				inputPath: "package.json",
 				modes: ["text", "json", "rpc"],
 			},
+			agentRuntimeLifecycle: {
+				schemaVersion: "evalops.maestro.agent-runtime-lifecycle.v1",
+				waitKinds: ["approval", "tool_retry"],
+				counts: {
+					waits: 2,
+					approvalWaits: 1,
+					toolRetryWaits: 1,
+					terminalOperations: 1,
+				},
+				operations: {
+					waitRun: 2,
+					completeRun: 1,
+				},
+			},
 			approvals: {
 				count: 3,
 				modes: ["text", "json", "rpc"],
@@ -500,11 +582,24 @@ describe("resolvePublishedReplayEvidencePath", () => {
 					modes: ["text", "json", "rpc"],
 				}),
 				expect.objectContaining({
+					key: "search",
+					traceType: "search",
+					queryable: true,
+					status: "ok",
+					modes: ["text", "json", "rpc"],
+				}),
+				expect.objectContaining({
 					key: "approvals",
 					traceType: "approval",
 					queryable: true,
 					status: "ok",
 					modes: ["text", "json", "rpc"],
+				}),
+				expect.objectContaining({
+					key: "agentRuntimeLifecycle",
+					traceType: "agent-runtime-lifecycle",
+					queryable: true,
+					status: "ok",
 				}),
 				expect.objectContaining({
 					key: "errors",
@@ -573,6 +668,92 @@ describe("resolvePublishedReplayEvidencePath", () => {
 				}),
 			]),
 		);
+	});
+
+	it("does not satisfy the lifecycle gate without terminal outcome records", () => {
+		const agentRuntimeLifecycle = makeAgentRuntimeLifecycle();
+		agentRuntimeLifecycle.outcomes = {
+			terminalStates: {},
+			terminalEventTypes: [],
+		};
+
+		const evidence = buildPublishedReplayEvidence({
+			packageSpec: `${rootPackageName}@9.9.9`,
+			cliCommand: "maestro",
+			binPath: "/tmp/project/node_modules/.bin/maestro",
+			installMetadata: {
+				label: `${rootPackageName}@9.9.9 via npm`,
+				name: rootPackageName,
+				version: "9.9.9",
+				binCommands: ["maestro"],
+				forbiddenWorkspaceNames: ["@evalops/contracts", "@evalops/tui"],
+				forbiddenReferences: [],
+				workspaceProtocolReferences: [],
+				installable: true,
+				dependencySections: {
+					dependencies: [{ name: "zod", spec: "^4.3.6" }],
+				},
+			},
+			modes: [
+				makeReplayMode("text"),
+				makeReplayMode("json"),
+				makeReplayMode("rpc"),
+			],
+			agentRuntimeLifecycle,
+		});
+
+		expect(evidence.releaseGate.satisfied).toBe(false);
+		expect(evidence.releaseGate.failedChecks).toContain(
+			"agentRuntimeLifecycle",
+		);
+		expect(evidence.releaseGate.checks.agentRuntimeLifecycle).toBe(false);
+		expect(
+			evidence.observability.queryIndex.find(
+				(entry) => entry.key === "agentRuntimeLifecycle",
+			),
+		).toMatchObject({
+			status: "failed",
+		});
+	});
+
+	it("does not satisfy the lifecycle gate when wait refs mismatch pending ids", () => {
+		const agentRuntimeLifecycle = makeAgentRuntimeLifecycle();
+		agentRuntimeLifecycle.waits[0].evidenceRefs = [
+			"pending-request:pending-lifecycle-other",
+			"approval-request:approval-lifecycle-search",
+			"tool-execution:tool-exec-lifecycle-search",
+		];
+
+		const evidence = buildPublishedReplayEvidence({
+			packageSpec: `${rootPackageName}@9.9.9`,
+			cliCommand: "maestro",
+			binPath: "/tmp/project/node_modules/.bin/maestro",
+			installMetadata: {
+				label: `${rootPackageName}@9.9.9 via npm`,
+				name: rootPackageName,
+				version: "9.9.9",
+				binCommands: ["maestro"],
+				forbiddenWorkspaceNames: ["@evalops/contracts", "@evalops/tui"],
+				forbiddenReferences: [],
+				workspaceProtocolReferences: [],
+				installable: true,
+				dependencySections: {
+					dependencies: [{ name: "zod", spec: "^4.3.6" }],
+				},
+			},
+			modes: [
+				makeReplayMode("text"),
+				makeReplayMode("json"),
+				makeReplayMode("rpc"),
+			],
+			agentRuntimeLifecycle,
+		});
+
+		expect(evidence.releaseGate.satisfied).toBe(false);
+		expect(evidence.releaseGate.failedChecks).toContain(
+			"agentRuntimeLifecycle",
+		);
+		expect(evidence.releaseGate.checks.agentRuntimeLifecycle).toBe(false);
 	});
 
 	it("fails the release gate when published replay lacks search ripgrep evidence", () => {

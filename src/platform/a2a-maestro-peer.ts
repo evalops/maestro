@@ -158,7 +158,7 @@ function laneSkillPolicy(laneId: string): {
 				requiredContextGrants: [
 					"repo:read",
 					"pull-request:read",
-					"evidence:read",
+					"artifact:read",
 				],
 				requiredArtifactKinds: ["review.summary"],
 				optionalArtifactKinds: ["risk.finding", "test.plan"],
@@ -169,7 +169,7 @@ function laneSkillPolicy(laneId: string): {
 				requiredContextGrants: [
 					"repo:read",
 					"tool:execute-tests",
-					"evidence:write",
+					"artifact:write",
 				],
 				requiredArtifactKinds: ["test.report"],
 				optionalArtifactKinds: ["failure.triage", "coverage.summary"],
@@ -177,9 +177,9 @@ function laneSkillPolicy(laneId: string): {
 			};
 		case "repo-explorer":
 			return {
-				requiredContextGrants: ["repo:read", "evidence:write"],
+				requiredContextGrants: ["repo:read", "context:index:write"],
 				requiredArtifactKinds: ["repo.map"],
-				optionalArtifactKinds: ["evidence.index"],
+				optionalArtifactKinds: ["context.index"],
 				allowedTaskClasses: ["repo.inspect", "context.gathering"],
 			};
 		case "release-shepherd":
@@ -188,9 +188,10 @@ function laneSkillPolicy(laneId: string): {
 					"repo:read",
 					"pull-request:write",
 					"deploy:read",
-					"evidence:write",
+					"artifact:write",
+					"runtime:events:read",
 				],
-				requiredArtifactKinds: ["release.evidence"],
+				requiredArtifactKinds: ["release.summary"],
 				optionalArtifactKinds: ["ci.summary", "deploy.status"],
 				allowedTaskClasses: ["release.follow-through", "deployment.smoke"],
 			};
@@ -198,7 +199,7 @@ function laneSkillPolicy(laneId: string): {
 			return {
 				requiredContextGrants: ["repo:read"],
 				requiredArtifactKinds: ["subagent.summary"],
-				optionalArtifactKinds: ["evidence.index"],
+				optionalArtifactKinds: ["context.index"],
 				allowedTaskClasses: ["agent.delegation"],
 			};
 	}

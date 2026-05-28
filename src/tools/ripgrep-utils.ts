@@ -1,6 +1,7 @@
 import { spawn } from "node:child_process";
 import { Type } from "@sinclair/typebox";
 import { safeJsonParse } from "../utils/json.js";
+import { expandTildePath } from "../utils/path-expansion.js";
 import { ensureTool } from "./tools-manager.js";
 
 export const pathSchema = Type.Optional(
@@ -40,6 +41,10 @@ export function toArray<T>(value: T | T[] | undefined): T[] {
 		return [];
 	}
 	return Array.isArray(value) ? value : [value];
+}
+
+export function normalizeRipgrepPathArgs(paths: string[]): string[] {
+	return paths.map((path) => expandTildePath(path));
 }
 
 const MAX_RIPGREP_OUTPUT_BYTES = 2_000_000; // ~2MB safeguard

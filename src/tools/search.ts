@@ -57,6 +57,7 @@ import {
 	formatRipgrepCommand,
 	globSchema,
 	isRipgrepPathError,
+	normalizeRipgrepPathArgs,
 	parseRipgrepJson,
 	pathSchema,
 	runRipgrep,
@@ -279,7 +280,7 @@ Examples:
 			);
 		}
 
-		const pathArgs = toArray(paths);
+		const pathArgs = normalizeRipgrepPathArgs(toArray(paths));
 		const globArgs = toArray(glob);
 		const commandCwd = cwd ? resolvePath(expandUserPath(cwd)) : process.cwd();
 
