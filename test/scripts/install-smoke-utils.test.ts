@@ -10,6 +10,7 @@ import { delimiter, join } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
 	assertInstallablePackageMetadata,
+	runBunRuntimeCliSmoke,
 	runBunxCliSmoke,
 	runNpxCliSmoke,
 	summarizeInstallablePackageMetadata,
@@ -206,6 +207,21 @@ describe("assertInstallablePackageMetadata", () => {
 			expect(readLauncherCalls(logPath)).toEqual([
 				["maestro", "--version"],
 				["maestro", "--help"],
+			]);
+		});
+	});
+
+	it("smoke-tests Bun runtime execution through the bunx --bun launcher", () => {
+		withFakeLauncher("bunx", (logPath) => {
+			runBunRuntimeCliSmoke(process.cwd(), {
+				cliCommand: "maestro",
+				expectedVersion: "9.9.9",
+				label: "fake bunx --bun",
+			});
+
+			expect(readLauncherCalls(logPath)).toEqual([
+				["--bun", "maestro", "--version"],
+				["--bun", "maestro", "--help"],
 			]);
 		});
 	});

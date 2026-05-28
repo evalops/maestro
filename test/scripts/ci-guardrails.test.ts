@@ -906,6 +906,8 @@ describe("ci workflow guardrails", () => {
 			"getNpmCommand",
 			"getNpxCommand",
 			"readInstalledPackageJson",
+			"runBunRuntimeCliSmoke",
+			"runBunxCliSmoke",
 			"runInstalledCliSmoke",
 			"runInstalledPackageAudit",
 		]) {
@@ -983,6 +985,8 @@ describe("ci workflow guardrails", () => {
 
 		expect(script).toContain("assertInstallablePackageMetadata");
 		expect(script).toContain("runInstalledCliSmoke");
+		expect(script).toContain("runBunxCliSmoke");
+		expect(script).toContain("runBunRuntimeCliSmoke");
 		expect(script).toContain("getBunCommand");
 		expect(script).toContain("runNpmInstallSmoke();");
 		expect(script).toContain("runBunInstallSmoke();");
@@ -1009,6 +1013,8 @@ describe("ci workflow guardrails", () => {
 		expect(script).toContain(
 			"const bunInstallMetadata = assertInstalledMetadata(",
 		);
+		expect(script).toContain("runBunxCliSmoke");
+		expect(script).toContain("runBunRuntimeCliSmoke");
 		expect(script).toContain("installMetadata: bunInstallMetadata");
 		expect(script).toContain("validatePublishedReplayEvidenceSet");
 		expect(script).toContain('"published-replay-evidence"');

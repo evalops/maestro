@@ -5,7 +5,6 @@ import { extname, join } from "node:path";
 import ExcelJS from "exceljs";
 import JSZip from "jszip";
 import mammoth from "mammoth";
-import { PDFParse } from "pdf-parse";
 
 export type ExtractedDocumentFormat =
 	| "pdf"
@@ -31,6 +30,7 @@ export interface ExtractDocumentOutput {
 }
 
 type ExcelWorkbookLoadInput = Parameters<ExcelJS.Workbook["xlsx"]["load"]>[0];
+type PDFParseConstructor = typeof import("pdf-parse").PDFParse;
 
 const DEFAULT_MAX_CHARS = 200_000;
 const MAX_INPUT_BYTES = 50 * 1024 * 1024;
@@ -40,6 +40,15 @@ const MARKITDOWN_TIMEOUT_CLOSE_GRACE_MS = 1_000;
 const NODE_TIMER_MAX_MS = 2_147_483_647;
 const XLSX_MIME =
 	"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
+
+let cachedPDFParse: PDFParseConstructor | undefined;
+
+async function loadPDFParse(): Promise<PDFParseConstructor> {
+	if (!cachedPDFParse) {
+		({ PDFParse: cachedPDFParse } = await import("pdf-parse"));
+	}
+	return cachedPDFParse;
+}
 
 function clampText(
 	text: string,
@@ -472,6 +481,7 @@ export async function extractDocumentText(
 	if (!extractedText) {
 		switch (format) {
 			case "pdf": {
+				const PDFParse = await loadPDFParse();
 				const parser = new PDFParse({ data: buffer });
 				try {
 					const result = await parser.getText();
