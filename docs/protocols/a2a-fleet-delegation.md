@@ -314,6 +314,13 @@ A2A `message:stream` and task subscription responses emit deterministic SSE
 and artifact id. Platform evidence can compare those stream ids against the task
 ledger without depending on process-local counters.
 
+Live Platform A2A evidence can now be verified in a strict durable-ID mode. In
+that mode the signed evidence bundle must join the Platform delegation id, A2A
+task id, dispatch message id, task `contextId`, task message ids, terminal task
+state, graph node task id, collect-mode control probe, redacted prompt hash,
+source discovery traces, and invalid-token rejection evidence before it can be
+used as release proof.
+
 ## Operator Verification
 
 Use bounded one-shot checks against a local control-plane peer:
@@ -346,6 +353,16 @@ For the full local harness, run:
 
 ```sh
 bash scripts/smoke-maestro-a2a-tmux.sh
+```
+
+For live Platform A2A smoke artifacts, verify the evidence bundle before
+promotion:
+
+```sh
+npm run platform:a2a-evidence-verify -- evidence.json \
+  --require-discovery-evidence \
+  --require-negative-auth-probe \
+  --require-durable-a2a-ids
 ```
 
 ## Acceptance Tests

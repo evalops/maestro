@@ -108,6 +108,7 @@ function evidence(
 		delegation: {
 			id: "delegation_1",
 			a2aTaskId: "task_1",
+			a2aMessageId: "message_1",
 		},
 		graph: {
 			nodes: [{ delegationId: "delegation_1", a2aTaskId: "task_1" }],
@@ -121,6 +122,8 @@ function evidence(
 			id: "task_1",
 			state: "TASK_STATE_COMPLETED",
 			terminal: true,
+			contextId: "context_1",
+			messageIds: ["message_1"],
 		},
 		redaction: {
 			rawTokensWithheld: true,
@@ -192,6 +195,9 @@ describe("Platform A2A live evidence verifier", () => {
 				gitSha: "1234567890abcdef1234567890abcdef12345678",
 				delegationId: "delegation_1",
 				a2aTaskId: "task_1",
+				a2aMessageId: "message_1",
+				contextId: "context_1",
+				taskTerminal: true,
 				githubRunId: "26252628231",
 				githubPullRequestNumber: 2070,
 				evidenceSha256: expect.stringMatching(/^[a-f0-9]{64}$/),
@@ -259,6 +265,99 @@ describe("Platform A2A live evidence verifier", () => {
 			await expect(verifyPlatformA2ALiveEvidenceFile(path)).rejects.toThrow(
 				/graph does not include delegation\.id delegation_1/,
 			);
+		} finally {
+			await rm(dir, { force: true, recursive: true });
+		}
+	});
+
+	it("accepts strict durable A2A id evidence", async () => {
+		const dir = await mkdtemp(join(tmpdir(), "maestro-a2a-evidence-"));
+		try {
+			const path = await writeEvidenceBundle(dir, evidence());
+			await expect(
+				verifyPlatformA2ALiveEvidenceFile(path, {
+					requireDurableA2AIds: true,
+				}),
+			).resolves.toMatchObject({
+				a2aTaskId: "task_1",
+				a2aMessageId: "message_1",
+				contextId: "context_1",
+				taskTerminal: true,
+			});
+		} finally {
+			await rm(dir, { force: true, recursive: true });
+		}
+	});
+
+	it("rejects strict durable A2A evidence without the dispatch message id", async () => {
+		const dir = await mkdtemp(join(tmpdir(), "maestro-a2a-evidence-"));
+		try {
+			const path = await writeEvidenceBundle(
+				dir,
+				evidence({
+					delegation: {
+						id: "delegation_1",
+						a2aTaskId: "task_1",
+					},
+				}),
+			);
+			await expect(
+				verifyPlatformA2ALiveEvidenceFile(path, {
+					requireDurableA2AIds: true,
+				}),
+			).rejects.toThrow(/requires delegation\.a2aMessageId/);
+		} finally {
+			await rm(dir, { force: true, recursive: true });
+		}
+	});
+
+	it("rejects strict durable A2A evidence when task messages omit the dispatch message id", async () => {
+		const dir = await mkdtemp(join(tmpdir(), "maestro-a2a-evidence-"));
+		try {
+			const path = await writeEvidenceBundle(
+				dir,
+				evidence({
+					task: {
+						id: "task_1",
+						state: "TASK_STATE_COMPLETED",
+						terminal: true,
+						contextId: "context_1",
+						messageIds: ["message_other"],
+					},
+				}),
+			);
+			await expect(
+				verifyPlatformA2ALiveEvidenceFile(path, {
+					requireDurableA2AIds: true,
+				}),
+			).rejects.toThrow(
+				/task\.messageIds must include delegation\.a2aMessageId/,
+			);
+		} finally {
+			await rm(dir, { force: true, recursive: true });
+		}
+	});
+
+	it("rejects strict durable A2A evidence before terminal task state", async () => {
+		const dir = await mkdtemp(join(tmpdir(), "maestro-a2a-evidence-"));
+		try {
+			const path = await writeEvidenceBundle(
+				dir,
+				evidence({
+					task: {
+						id: "task_1",
+						state: "TASK_STATE_WORKING",
+						terminal: false,
+						contextId: "context_1",
+						messageIds: ["message_1"],
+					},
+				}),
+			);
+			await expect(
+				verifyPlatformA2ALiveEvidenceFile(path, {
+					requireDurableA2AIds: true,
+				}),
+			).rejects.toThrow(/requires terminal task state/);
 		} finally {
 			await rm(dir, { force: true, recursive: true });
 		}

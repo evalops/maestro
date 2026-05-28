@@ -27,6 +27,7 @@ import {
 } from "../src/platform/agent-registry-client.js";
 import {
 	type A2AAgentCard,
+	type A2AMessage,
 	type A2AServiceConfig,
 	type A2ATask,
 	discoverA2AAgentCard,
@@ -187,6 +188,7 @@ export interface PlatformA2ALiveSmokeEvidence {
 		state?: string;
 		terminal: boolean;
 		contextId?: string;
+		messageIds?: string[];
 	};
 	negativeAuthProbe?: {
 		surface: "platform-agent-registry-peer-discovery";
@@ -1037,6 +1039,7 @@ function buildEvidence(input: {
 			state: input.task.status?.state,
 			terminal: input.terminal,
 			contextId: input.task.contextId,
+			messageIds: nonEmptyArray(collectTaskMessageIds(input.task)),
 		},
 		negativeAuthProbe: input.negativeAuthProbe,
 		redaction: {
@@ -1044,6 +1047,25 @@ function buildEvidence(input: {
 			rawPayloadsWithheld: true,
 		},
 	};
+}
+
+function collectTaskMessageIds(task: A2ATask): string[] {
+	const ids = new Set<string>();
+	const addMessage = (message: A2AMessage | undefined): void => {
+		const messageId = trimString(message?.messageId);
+		if (messageId) {
+			ids.add(messageId);
+		}
+	};
+	addMessage(task.status?.message);
+	for (const message of task.history ?? []) {
+		addMessage(message);
+	}
+	return [...ids];
+}
+
+function nonEmptyArray<T>(values: T[]): T[] | undefined {
+	return values.length > 0 ? values : undefined;
 }
 
 function buildGithubEvidence(env: Env): PlatformA2ALiveSmokeGithubEvidence | undefined {

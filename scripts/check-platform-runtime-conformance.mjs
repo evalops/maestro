@@ -18,6 +18,7 @@ const requiredAreas = [
 	"toolexecution-bridge-linkage",
 	"toolexecution-bridge-approval-output",
 	"live-platform-lifecycle-smoke",
+	"a2a-live-evidence-contract",
 	"release-gate",
 ];
 
@@ -33,6 +34,10 @@ const requiredLifecycleClaims = [
 	"toolexecution-linkage",
 	"tool-output-records",
 	"live-platform-smoke",
+	"a2a-live-evidence",
+	"durable-a2a-ids",
+	"auth-boundaries",
+	"trace-correlation",
 	"release-gate",
 ];
 
