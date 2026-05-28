@@ -71,7 +71,7 @@ jobs:
           fi
 
       - name: Require version bump for existing release tag
-        if: ${{ github.repository == 'evalops/maestro' && steps.release.outputs.tag_exists == 'true' && steps.release.outputs.tag_matches_head != 'true' && steps.release.outputs.package_changed_since_tag == 'true' }}
+        if: ${{ github.repository == 'evalops/maestro' && steps.release.outputs.tag_exists == 'true' && steps.release.outputs.tag_matches_head != 'true' && steps.release.outputs.package_changed_since_tag == 'true' && steps.registry-release.outputs.published != 'true' }}
         env:
           RELEASE_TAG: ${{ steps.release.outputs.release_tag }}
           RELEASE_VERSION: ${{ steps.release.outputs.release_version }}
