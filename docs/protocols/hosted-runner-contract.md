@@ -215,6 +215,8 @@ The manifest protocol is
 `evalops.remote-runner.snapshot-manifest.v1`. Both Rust-hosted and
 TypeScript-hosted drain paths write this same local manifest envelope, including
 the runtime flush status, workspace export contract, headless runtime snapshot,
+schema-versioned `runtime_continuity` evidence for the source runner session,
+source owner instance, source process, restore manifest path, and replay cursor,
 schema-versioned `work_continuity` metadata for active/pending
 Codex subagent child runs, and
 `retention_policy` metadata describing visibility and redaction classes. Managed

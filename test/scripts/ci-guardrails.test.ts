@@ -1099,6 +1099,12 @@ describe("ci workflow guardrails", () => {
 		expect(releaseImpactFilter).toContain('"scripts/codegen-utils.mjs"');
 		expect(releaseImpactFilter).toContain('"scripts/runtime-workspaces.mjs"');
 		expect(releaseImpactFilter).toContain('"scripts/workspace-utils.js"');
+		expect(mismatchGuard?.if).toContain(
+			"github.repository == 'evalops/maestro'",
+		);
+		expect(mismatchGuard?.if).not.toContain(
+			"steps.registry-release.outputs.published != 'true'",
+		);
 		expect(mismatchGuard?.if).toContain("steps.release.outputs.tag_exists");
 		expect(mismatchGuard?.if).toContain(
 			"steps.release.outputs.tag_matches_head != 'true'",

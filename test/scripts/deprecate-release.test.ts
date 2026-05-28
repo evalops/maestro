@@ -119,6 +119,34 @@ describe("deprecate-release", () => {
 		}
 	});
 
+	it("explains npm auth failures from stale release tokens", () => {
+		const tempDir = mkdtempSync(join(tmpdir(), "maestro-deprecate-auth-test-"));
+		const fakeNpm = join(tempDir, "npm");
+		writeFileSync(
+			fakeNpm,
+			[
+				"#!/usr/bin/env bash",
+				"echo 'npm error code E401' >&2",
+				"echo 'npm error 401 Unauthorized - PUT https://registry.npmjs.org/@evalops%2fmaestro' >&2",
+				"exit 1",
+				"",
+			].join("\n"),
+		);
+		chmodSync(fakeNpm, 0o755);
+
+		try {
+			const result = runDeprecate({ MAESTRO_NPM_COMMAND: fakeNpm });
+
+			expect(result.status).toBe(1);
+			expect(result.stderr).toContain(
+				"npm could not authenticate while deprecating @evalops/maestro@0.10.20.",
+			);
+			expect(result.stderr).toContain("Refresh the npm-release NPM_TOKEN");
+		} finally {
+			rmSync(tempDir, { recursive: true, force: true });
+		}
+	});
+
 	it("forwards stdin to npm so local OTP prompts can be answered", () => {
 		const tempDir = mkdtempSync(join(tmpdir(), "maestro-deprecate-otp-test-"));
 		const fakeNpm = join(tempDir, "npm");

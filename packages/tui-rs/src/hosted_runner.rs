@@ -51,6 +51,8 @@ pub const HOSTED_RUNNER_RETENTION_POLICY_VERSION: &str = "evalops.remote-runner.
 pub const HOSTED_RUNNER_WORK_CONTINUITY_VERSION: &str = "evalops.remote-runner.work-continuity.v1";
 pub const HOSTED_RUNNER_PLATFORM_EVIDENCE_VERSION: &str =
     "evalops.remote-runner.platform-evidence.v1";
+pub const HOSTED_RUNNER_RUNTIME_CONTINUITY_VERSION: &str =
+    "evalops.remote-runner.runtime-continuity.v1";
 
 const DEFAULT_HEARTBEAT_INTERVAL_MS: u64 = 15_000;
 const CONNECTION_IDLE_MS: i64 = (DEFAULT_HEARTBEAT_INTERVAL_MS as i64) * 3;

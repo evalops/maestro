@@ -15,6 +15,7 @@ describe("tag-release workflow", () => {
 				"tag-current-version": {
 					steps: Array<{
 						env?: Record<string, string>;
+						if?: string;
 						name?: string;
 						run?: string;
 					}>;
@@ -30,6 +31,12 @@ describe("tag-release workflow", () => {
 		const activeReleaseStep = workflow.jobs["tag-current-version"].steps.find(
 			(step) => step.name === "Check active public release workflow",
 		);
+		const mismatchGuard = workflow.jobs["tag-current-version"].steps.find(
+			(step) => step.name === "Require version bump for existing release tag",
+		);
+		const summaryStep = workflow.jobs["tag-current-version"].steps.find(
+			(step) => step.name === "Summarize tag status",
+		);
 
 		expect(dispatchStep?.env?.RELEASE_TAG).toBe(
 			"${{ steps.release.outputs.release_tag }}",
@@ -42,11 +49,18 @@ describe("tag-release workflow", () => {
 		expect(dispatchStep?.if).toContain(
 			"steps.registry-release.outputs.published != 'true'",
 		);
+		expect(mismatchGuard?.if).toContain(
+			"github.repository == 'evalops/maestro'",
+		);
+		expect(mismatchGuard?.if).not.toContain(
+			"steps.registry-release.outputs.published != 'true'",
+		);
 		expect(dispatchStep?.if).toContain(
 			"steps.active-release.outputs.active_count == '0'",
 		);
 		expect(dispatchStep?.run).toContain(
 			'gh workflow run release --ref "${RELEASE_TAG}" --field "version=${RELEASE_VERSION}"',
 		);
+		expect(summaryStep?.run).toContain("is already published on npm");
 	});
 });

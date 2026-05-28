@@ -6,7 +6,8 @@ use serde::{Deserialize, Serialize};
 use super::{
     resolve_workspace_path, HostedError, HostedResult, HostedRunnerConfig, HostedRunnerErrorCode,
     HOSTED_RUNNER_PLATFORM_EVIDENCE_VERSION, HOSTED_RUNNER_RETENTION_POLICY_VERSION,
-    HOSTED_RUNNER_SNAPSHOT_MANIFEST_VERSION, HOSTED_RUNNER_WORK_CONTINUITY_VERSION,
+    HOSTED_RUNNER_RUNTIME_CONTINUITY_VERSION, HOSTED_RUNNER_SNAPSHOT_MANIFEST_VERSION,
+    HOSTED_RUNNER_WORK_CONTINUITY_VERSION,
 };
 use crate::headless::messages::{
     active_codex_subagent_status, codex_subagent_child_runs, codex_subagent_edge_key,
@@ -133,6 +134,8 @@ pub(super) struct SnapshotManifest {
     pub(super) runtime: RuntimeFlushManifest,
     pub(super) workspace_export: WorkspaceExportManifest,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) runtime_continuity: Option<RuntimeContinuityManifest>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(super) work_continuity: Option<WorkContinuityManifest>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(super) platform_evidence: Option<PlatformEvidenceManifest>,
@@ -170,6 +173,31 @@ impl SnapshotManifest {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub(super) struct RuntimeContinuityManifest {
+    pub(super) protocol_version: String,
+    pub(super) handoff: String,
+    pub(super) source_runner_session_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) source_owner_instance_id: Option<String>,
+    pub(super) source_process_id: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) source_runtime_lease: Option<RuntimeContinuityLeaseManifest>,
+    pub(super) restore_environment_key: String,
+    pub(super) restore_manifest_path: String,
+    pub(super) evidence_refs: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub(super) struct RuntimeContinuityLeaseManifest {
+    pub(super) protocol_version: String,
+    pub(super) state: String,
+    pub(super) generation: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) maestro_session_id: Option<String>,
+    pub(super) updated_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub(super) struct WorkContinuityManifest {
     pub(super) protocol_version: String,
     pub(super) active_tool_count: usize,
@@ -202,6 +230,8 @@ pub(super) struct PlatformEvidenceManifest {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(super) requested_by: Option<String>,
     pub(super) work_continuity: PlatformEvidenceWorkContinuityManifest,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) runtime_continuity: Option<PlatformEvidenceRuntimeContinuityManifest>,
     pub(super) retention: PlatformEvidenceRetentionManifest,
     pub(super) evidence_refs: Vec<String>,
 }
@@ -221,6 +251,18 @@ pub(super) struct PlatformEvidenceWorkContinuityManifest {
     pub(super) codex_subagent_thread_ids: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub(super) codex_subagent_edges: Vec<CodexSubagentContinuityEdge>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub(super) struct PlatformEvidenceRuntimeContinuityManifest {
+    pub(super) protocol_version: String,
+    pub(super) handoff: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) source_owner_instance_id: Option<String>,
+    pub(super) source_process_id: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) source_runtime_lease_generation: Option<u64>,
+    pub(super) restore_manifest_path: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -287,12 +329,46 @@ pub(super) fn runtime_flush_status_label(status: RuntimeFlushStatus) -> &'static
     }
 }
 
+pub(super) struct RuntimeContinuityManifestInput<'a> {
+    pub(super) config: &'a HostedRunnerConfig,
+    pub(super) maestro_session_id: &'a str,
+    pub(super) manifest_path: &'a Path,
+    pub(super) runtime: &'a RuntimeFlushManifest,
+}
+
+pub(super) fn default_runtime_continuity_manifest(
+    input: RuntimeContinuityManifestInput<'_>,
+) -> RuntimeContinuityManifest {
+    RuntimeContinuityManifest {
+        protocol_version: HOSTED_RUNNER_RUNTIME_CONTINUITY_VERSION.to_string(),
+        handoff: "drain_restore".to_string(),
+        source_runner_session_id: input.config.runner_session_id.clone(),
+        source_owner_instance_id: input.config.owner_instance_id.clone(),
+        source_process_id: std::process::id(),
+        source_runtime_lease: None,
+        restore_environment_key: "MAESTRO_REMOTE_RUNNER_RESTORE_MANIFEST".to_string(),
+        restore_manifest_path: input.manifest_path.to_string_lossy().to_string(),
+        evidence_refs: vec![
+            format!(
+                "remote-runner://sessions/{}/drain#snapshot",
+                input.config.runner_session_id
+            ),
+            format!(
+                "maestro://headless/sessions/{}#cursor:{}",
+                input.maestro_session_id,
+                input.runtime.cursor.unwrap_or(0)
+            ),
+        ],
+    }
+}
+
 pub(super) struct PlatformEvidenceManifestInput<'a> {
     pub(super) config: &'a HostedRunnerConfig,
     pub(super) maestro_session_id: &'a str,
     pub(super) created_at: &'a str,
     pub(super) manifest_path: &'a Path,
     pub(super) runtime: &'a RuntimeFlushManifest,
+    pub(super) runtime_continuity: &'a RuntimeContinuityManifest,
     pub(super) work_continuity: &'a WorkContinuityManifest,
     pub(super) retention_policy: &'a RetentionPolicyManifest,
     pub(super) reason: Option<&'a str>,
@@ -342,6 +418,18 @@ pub(super) fn default_platform_evidence_manifest(
             codex_subagent_thread_ids: input.work_continuity.codex_subagent_thread_ids.clone(),
             codex_subagent_edges: input.work_continuity.codex_subagent_edges.clone(),
         },
+        runtime_continuity: Some(PlatformEvidenceRuntimeContinuityManifest {
+            protocol_version: input.runtime_continuity.protocol_version.clone(),
+            handoff: input.runtime_continuity.handoff.clone(),
+            source_owner_instance_id: input.runtime_continuity.source_owner_instance_id.clone(),
+            source_process_id: input.runtime_continuity.source_process_id,
+            source_runtime_lease_generation: input
+                .runtime_continuity
+                .source_runtime_lease
+                .as_ref()
+                .map(|lease| lease.generation),
+            restore_manifest_path: input.runtime_continuity.restore_manifest_path.clone(),
+        }),
         retention: PlatformEvidenceRetentionManifest {
             policy_version: input.retention_policy.policy_version.clone(),
             control_plane_metadata_visibility: input

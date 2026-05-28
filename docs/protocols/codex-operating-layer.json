@@ -381,12 +381,15 @@
 			"path": "src/server/handlers/hosted-runner-drain.ts",
 			"anchors": [
 				"evalops.remote-runner.work-continuity.v1",
+				"evalops.remote-runner.runtime-continuity.v1",
 				"collectHostedRunnerWorkContinuity",
+				"buildHostedRunnerRuntimeContinuity",
 				"codex_subagent_child_run_ids",
 				"codex_subagent_thread_ids",
 				"codex_subagent_edges",
 				"collectCodexSubagentEdgesFromSource",
-				"codexSubagentOperation"
+				"codexSubagentOperation",
+				"source_owner_instance_id"
 			]
 		},
 		{
@@ -406,13 +409,17 @@
 			"area": "remote-runner-continuity",
 			"evidenceType": "source",
 			"path": "packages/tui-rs/src/hosted_runner.rs",
-			"anchors": ["evalops.remote-runner.work-continuity.v1"]
+			"anchors": [
+				"evalops.remote-runner.work-continuity.v1",
+				"evalops.remote-runner.runtime-continuity.v1"
+			]
 		},
 		{
 			"area": "remote-runner-continuity",
 			"evidenceType": "source",
 			"path": "packages/tui-rs/src/hosted_runner/manifests.rs",
 			"anchors": [
+				"RuntimeContinuityManifest",
 				"CodexSubagentContinuityEdge",
 				"codex_subagent_edges",
 				"collect_codex_subagent_edges_from_source"
@@ -481,6 +488,7 @@
 				"records Codex subagent continuity without copying prompt payloads into manifest metadata",
 				"records Codex subagent edge lifecycle from restored runtime state",
 				"HOSTED_RUNNER_WORK_CONTINUITY_VERSION",
+				"HOSTED_RUNNER_RUNTIME_CONTINUITY_VERSION",
 				"codex_subagent_child_run_ids",
 				"codex_subagent_edges",
 				"close_agent"
@@ -490,7 +498,11 @@
 			"area": "remote-runner-continuity",
 			"evidenceType": "doc",
 			"path": "docs/protocols/hosted-runner-contract.md",
-			"anchors": ["work_continuity", "Codex subagent child runs"]
+			"anchors": [
+				"runtime_continuity",
+				"work_continuity",
+				"Codex subagent child runs"
+			]
 		},
 		{
 			"area": "realtime-streaming",
