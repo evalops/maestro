@@ -399,6 +399,29 @@ async fn identity_and_drain_follow_runner_contract() {
         manifest["work_continuity"]["protocol_version"],
         HOSTED_RUNNER_WORK_CONTINUITY_VERSION
     );
+    assert_eq!(
+        manifest["runtime_continuity"]["protocol_version"],
+        HOSTED_RUNNER_RUNTIME_CONTINUITY_VERSION
+    );
+    assert_eq!(manifest["runtime_continuity"]["handoff"], "drain_restore");
+    assert_eq!(
+        manifest["runtime_continuity"]["source_runner_session_id"],
+        "mrs_test"
+    );
+    assert_eq!(
+        manifest["runtime_continuity"]["source_owner_instance_id"],
+        "owner_test"
+    );
+    assert!(
+        manifest["runtime_continuity"]["source_process_id"]
+            .as_u64()
+            .unwrap_or_default()
+            > 0
+    );
+    assert_eq!(
+        manifest["runtime_continuity"]["restore_environment_key"],
+        "MAESTRO_REMOTE_RUNNER_RESTORE_MANIFEST"
+    );
     assert_eq!(manifest["work_continuity"]["active_tool_count"], 0);
     assert_eq!(manifest["work_continuity"]["tracked_tool_count"], 0);
     assert_eq!(
@@ -420,6 +443,10 @@ async fn identity_and_drain_follow_runner_contract() {
     assert_eq!(
         manifest["platform_evidence"]["runtime_flush_status"],
         "skipped"
+    );
+    assert_eq!(
+        manifest["platform_evidence"]["runtime_continuity"]["protocol_version"],
+        HOSTED_RUNNER_RUNTIME_CONTINUITY_VERSION
     );
     assert_eq!(
         manifest["platform_evidence"]["manifest_path"],
@@ -700,24 +727,14 @@ fn snapshot_manifest_parser_accepts_typescript_hosted_shape() {
     let workspace = tempdir().expect("workspace");
     let readme_path = workspace.path().join("README.md");
     std::fs::write(&readme_path, "# workspace\n").expect("workspace file");
-    let manifest = json!({
-        "protocol_version": HOSTED_RUNNER_SNAPSHOT_MANIFEST_VERSION,
-        "runner_session_id": "mrs_ts",
-        "workspace_id": "ws_ts",
-        "agent_run_id": "run_ts",
-        "maestro_session_id": "session_ts",
-        "reason": "ttl_expired",
-        "requested_by": "platform",
-        "created_at": "2026-04-23T00:00:00.000Z",
-        "workspace_root": workspace.path(),
-        "runtime": {
+    let runtime = json!({
             "flush_status": "completed",
             "session_id": "session_ts",
             "session_file": workspace.path().join(".maestro/sessions/session.jsonl"),
             "protocol_version": HEADLESS_PROTOCOL_VERSION,
             "cursor": 7
-        },
-        "workspace_export": {
+    });
+    let workspace_export = json!({
             "mode": "local_path_contract",
             "paths": [{
                 "input": "README.md",
@@ -725,8 +742,8 @@ fn snapshot_manifest_parser_accepts_typescript_hosted_shape() {
                 "relative_path": "README.md",
                 "type": "file"
             }]
-        },
-        "work_continuity": {
+    });
+    let work_continuity = json!({
             "protocol_version": HOSTED_RUNNER_WORK_CONTINUITY_VERSION,
             "active_tool_count": 1,
             "tracked_tool_count": 1,
@@ -734,8 +751,30 @@ fn snapshot_manifest_parser_accepts_typescript_hosted_shape() {
             "codex_subagent_tool_call_ids": ["collab-spawn-ts"],
             "codex_subagent_child_run_ids": ["agent-run-child-ts"],
             "codex_subagent_thread_ids": ["child-thread-ts"]
-        },
-        "platform_evidence": {
+    });
+    let platform_work_continuity = json!({
+            "protocol_version": HOSTED_RUNNER_WORK_CONTINUITY_VERSION,
+            "active_tool_count": 1,
+            "tracked_tool_count": 1,
+            "pending_request_count": 0,
+            "codex_subagent_tool_call_count": 1,
+            "codex_subagent_child_run_count": 1,
+            "codex_subagent_thread_count": 1,
+            "codex_subagent_edge_count": 0,
+            "codex_subagent_tool_call_ids": ["collab-spawn-ts"],
+            "codex_subagent_child_run_ids": ["agent-run-child-ts"],
+            "codex_subagent_thread_ids": ["child-thread-ts"]
+    });
+    let retention = json!({
+            "policy_version": HOSTED_RUNNER_RETENTION_POLICY_VERSION,
+            "control_plane_metadata_visibility": "operator",
+            "runtime_snapshot_visibility": "internal",
+            "redaction_required_before_external_persistence": [
+                "runtime_snapshot",
+                "runtime_logs"
+            ]
+    });
+    let platform_evidence = json!({
             "protocol_version": HOSTED_RUNNER_PLATFORM_EVIDENCE_VERSION,
             "event_type": "hosted_runner_drain_manifest_recorded",
             "runner_session_id": "mrs_ts",
@@ -749,35 +788,15 @@ fn snapshot_manifest_parser_accepts_typescript_hosted_shape() {
             "created_at": "2026-04-23T00:00:00.000Z",
             "reason": "ttl_expired",
             "requested_by": "platform",
-            "work_continuity": {
-                "protocol_version": HOSTED_RUNNER_WORK_CONTINUITY_VERSION,
-                "active_tool_count": 1,
-                "tracked_tool_count": 1,
-                "pending_request_count": 0,
-                "codex_subagent_tool_call_count": 1,
-                "codex_subagent_child_run_count": 1,
-                "codex_subagent_thread_count": 1,
-                "codex_subagent_edge_count": 0,
-                "codex_subagent_tool_call_ids": ["collab-spawn-ts"],
-                "codex_subagent_child_run_ids": ["agent-run-child-ts"],
-                "codex_subagent_thread_ids": ["child-thread-ts"]
-            },
-            "retention": {
-                "policy_version": HOSTED_RUNNER_RETENTION_POLICY_VERSION,
-                "control_plane_metadata_visibility": "operator",
-                "runtime_snapshot_visibility": "internal",
-                "redaction_required_before_external_persistence": [
-                    "runtime_snapshot",
-                    "runtime_logs"
-                ]
-            },
+            "work_continuity": platform_work_continuity,
+            "retention": retention,
             "evidence_refs": [
                 "remote-runner://sessions/mrs_ts/drain#manifest",
                 "maestro://headless/sessions/session_ts#drain",
                 "platform-agent-run:run_ts"
             ]
-        },
-        "retention_policy": {
+    });
+    let retention_policy = json!({
             "policy_version": HOSTED_RUNNER_RETENTION_POLICY_VERSION,
             "managed_by": "platform",
             "visibility": {
@@ -799,8 +818,8 @@ fn snapshot_manifest_parser_accepts_typescript_hosted_shape() {
                     "raw_environment"
                 ]
             }
-        },
-        "snapshot": {
+    });
+    let snapshot = json!({
             "protocolVersion": HEADLESS_PROTOCOL_VERSION,
             "session_id": "session_ts",
             "cursor": 7,
@@ -827,7 +846,23 @@ fn snapshot_manifest_parser_accepts_typescript_hosted_shape() {
                 "is_ready": true,
                 "is_responding": false
             }
-        }
+    });
+    let manifest = json!({
+        "protocol_version": HOSTED_RUNNER_SNAPSHOT_MANIFEST_VERSION,
+        "runner_session_id": "mrs_ts",
+        "workspace_id": "ws_ts",
+        "agent_run_id": "run_ts",
+        "maestro_session_id": "session_ts",
+        "reason": "ttl_expired",
+        "requested_by": "platform",
+        "created_at": "2026-04-23T00:00:00.000Z",
+        "workspace_root": workspace.path(),
+        "runtime": runtime,
+        "workspace_export": workspace_export,
+        "work_continuity": work_continuity,
+        "platform_evidence": platform_evidence,
+        "retention_policy": retention_policy,
+        "snapshot": snapshot
     });
     let bytes = serde_json::to_vec(&manifest).expect("manifest json");
     let parsed = parse_snapshot_manifest_bytes(&bytes, workspace.path()).expect("typed manifest");

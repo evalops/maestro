@@ -57,8 +57,9 @@ The first conformance tranche covers:
 - approval server request emission and protocol response resolution
 - hosted workspace-root enforcement for file reads
 - hosted utility command/search/watch lifecycle
-- hosted drain/snapshot handoff, including manifest export paths and post-drain
-  mutation rejection
+- hosted drain/snapshot handoff, including manifest export paths,
+  runtime-continuity evidence for drain/restore handoff, and post-drain mutation
+  rejection
 - hosted restore from a drain manifest for adapters with hosted lifecycle hooks,
   including reset replay and post-restore controller mutation
 - hosted incomplete restore semantics for Rust unit coverage: failed or skipped

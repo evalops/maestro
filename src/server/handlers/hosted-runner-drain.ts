@@ -18,7 +18,11 @@ import {
 } from "../../cli/headless-protocol.js";
 import type { HostedRunnerContext, WebServerContext } from "../app-context.js";
 import type { HeadlessRuntimeSnapshot } from "../headless-runtime-service.js";
-import { markHostedRunnerLeaseDraining } from "../hosted-runner-lease.js";
+import {
+	HOSTED_RUNNER_LEASE_PROTOCOL_VERSION,
+	type HostedRunnerLeaseSnapshot,
+	markHostedRunnerLeaseDraining,
+} from "../hosted-runner-lease.js";
 import { ApiError, readJsonBody, sendJson } from "../server-utils.js";
 
 const execFileAsync = promisify(execFile);
@@ -40,6 +44,9 @@ export const HOSTED_RUNNER_WORK_CONTINUITY_VERSION =
 
 export const HOSTED_RUNNER_PLATFORM_EVIDENCE_VERSION =
 	"evalops.remote-runner.platform-evidence.v1";
+
+export const HOSTED_RUNNER_RUNTIME_CONTINUITY_VERSION =
+	"evalops.remote-runner.runtime-continuity.v1";
 
 export enum HostedRunnerDrainStatusValue {
 	Drained = "drained",
@@ -175,6 +182,7 @@ export interface HostedRunnerSnapshotManifest {
 		mode: HostedRunnerWorkspaceExportMode;
 		paths: HostedRunnerWorkspaceExportPath[];
 	};
+	runtime_continuity: HostedRunnerRuntimeContinuity;
 	work_continuity: HostedRunnerWorkContinuity;
 	platform_evidence: HostedRunnerPlatformEvidence;
 	snapshot: HeadlessRuntimeSnapshot;
@@ -184,6 +192,24 @@ export interface HostedRunnerSnapshotManifest {
 		branch?: string;
 		dirty?: boolean;
 	};
+}
+
+export interface HostedRunnerRuntimeContinuity {
+	protocol_version: typeof HOSTED_RUNNER_RUNTIME_CONTINUITY_VERSION;
+	handoff: "drain_restore";
+	source_runner_session_id: string;
+	source_owner_instance_id?: string;
+	source_process_id: number;
+	source_runtime_lease?: {
+		protocol_version: typeof HOSTED_RUNNER_LEASE_PROTOCOL_VERSION;
+		state: HostedRunnerLeaseSnapshot["state"];
+		generation: number;
+		maestro_session_id?: string;
+		updated_at: string;
+	};
+	restore_environment_key: "MAESTRO_REMOTE_RUNNER_RESTORE_MANIFEST";
+	restore_manifest_path: string;
+	evidence_refs: string[];
 }
 
 export interface HostedRunnerWorkContinuity {
@@ -226,6 +252,14 @@ export interface HostedRunnerPlatformEvidence {
 		codex_subagent_child_run_ids: string[];
 		codex_subagent_thread_ids: string[];
 		codex_subagent_edges?: HeadlessCodexSubagentContinuityEdge[];
+	};
+	runtime_continuity: {
+		protocol_version: typeof HOSTED_RUNNER_RUNTIME_CONTINUITY_VERSION;
+		handoff: "drain_restore";
+		source_owner_instance_id?: string;
+		source_process_id: number;
+		source_runtime_lease_generation?: number;
+		restore_manifest_path: string;
 	};
 	retention: {
 		policy_version: typeof HOSTED_RUNNER_RETENTION_POLICY_VERSION;
@@ -518,6 +552,41 @@ function buildHostedRunnerRetentionPolicy(): HostedRunnerRetentionPolicy {
 	};
 }
 
+function buildHostedRunnerRuntimeContinuity(input: {
+	hostedRunner: HostedRunnerContext;
+	maestroSessionId: string;
+	manifestPath: string;
+	runtime: HostedRunnerSnapshotManifest["runtime"];
+	leaseSnapshot: HostedRunnerLeaseSnapshot;
+}): HostedRunnerRuntimeContinuity {
+	return {
+		protocol_version: HOSTED_RUNNER_RUNTIME_CONTINUITY_VERSION,
+		handoff: "drain_restore",
+		source_runner_session_id: input.hostedRunner.runnerSessionId,
+		...(input.hostedRunner.ownerInstanceId
+			? { source_owner_instance_id: input.hostedRunner.ownerInstanceId }
+			: {}),
+		source_process_id: process.pid,
+		source_runtime_lease: {
+			protocol_version: HOSTED_RUNNER_LEASE_PROTOCOL_VERSION,
+			state: input.leaseSnapshot.state,
+			generation: input.leaseSnapshot.generation,
+			...(input.leaseSnapshot.maestroSessionId
+				? { maestro_session_id: input.leaseSnapshot.maestroSessionId }
+				: {}),
+			updated_at: input.leaseSnapshot.updatedAt,
+		},
+		restore_environment_key: "MAESTRO_REMOTE_RUNNER_RESTORE_MANIFEST",
+		restore_manifest_path: input.manifestPath,
+		evidence_refs: [
+			`remote-runner://sessions/${input.hostedRunner.runnerSessionId}/drain#snapshot`,
+			`maestro://headless/sessions/${input.maestroSessionId}#cursor:${
+				input.runtime.cursor ?? 0
+			}`,
+		],
+	};
+}
+
 function buildHostedRunnerPlatformEvidence(input: {
 	hostedRunner: HostedRunnerContext;
 	status: HostedRunnerDrainStatus;
@@ -525,6 +594,7 @@ function buildHostedRunnerPlatformEvidence(input: {
 	createdAt: string;
 	manifestPath: string;
 	runtime: HostedRunnerSnapshotManifest["runtime"];
+	runtimeContinuity: HostedRunnerRuntimeContinuity;
 	workContinuity: HostedRunnerWorkContinuity;
 	retentionPolicy: HostedRunnerRetentionPolicy;
 	reason?: string;
@@ -569,6 +639,24 @@ function buildHostedRunnerPlatformEvidence(input: {
 				input.workContinuity.codex_subagent_child_run_ids,
 			codex_subagent_thread_ids: input.workContinuity.codex_subagent_thread_ids,
 			...(edges.length > 0 ? { codex_subagent_edges: edges } : {}),
+		},
+		runtime_continuity: {
+			protocol_version: input.runtimeContinuity.protocol_version,
+			handoff: input.runtimeContinuity.handoff,
+			...(input.runtimeContinuity.source_owner_instance_id
+				? {
+						source_owner_instance_id:
+							input.runtimeContinuity.source_owner_instance_id,
+					}
+				: {}),
+			source_process_id: input.runtimeContinuity.source_process_id,
+			...(input.runtimeContinuity.source_runtime_lease
+				? {
+						source_runtime_lease_generation:
+							input.runtimeContinuity.source_runtime_lease.generation,
+					}
+				: {}),
+			restore_manifest_path: input.runtimeContinuity.restore_manifest_path,
 		},
 		retention: {
 			policy_version: input.retentionPolicy.policy_version,
@@ -778,7 +866,10 @@ export async function drainHostedRunner(
 	}
 
 	const requestedAtDate = options.now?.() ?? new Date();
-	markHostedRunnerLeaseDraining(hostedRunner, requestedAtDate);
+	const leaseSnapshot = markHostedRunnerLeaseDraining(
+		hostedRunner,
+		requestedAtDate,
+	);
 	const requestedAt = requestedAtDate.toISOString();
 	const workspaceRoot = await resolveWorkspaceRoot(hostedRunner);
 	const snapshotRoot = resolve(
@@ -868,6 +959,13 @@ export async function drainHostedRunner(
 		buildHostedRunnerSnapshot(maestroSessionId, workspaceRoot, runtime);
 	const workContinuity = collectHostedRunnerWorkContinuity(snapshot);
 	const retentionPolicy = buildHostedRunnerRetentionPolicy();
+	const runtimeContinuity = buildHostedRunnerRuntimeContinuity({
+		hostedRunner,
+		maestroSessionId,
+		manifestPath: snapshotPath,
+		runtime,
+		leaseSnapshot,
+	});
 	const platformEvidence = buildHostedRunnerPlatformEvidence({
 		hostedRunner,
 		status,
@@ -875,6 +973,7 @@ export async function drainHostedRunner(
 		createdAt: requestedAt,
 		manifestPath: snapshotPath,
 		runtime,
+		runtimeContinuity,
 		workContinuity,
 		retentionPolicy,
 		reason: input.reason,
@@ -899,6 +998,7 @@ export async function drainHostedRunner(
 			mode: HostedRunnerWorkspaceExportModeValue.LocalPathContract,
 			paths: exportPaths,
 		},
+		runtime_continuity: runtimeContinuity,
 		work_continuity: workContinuity,
 		platform_evidence: platformEvidence,
 		snapshot,
@@ -936,6 +1036,7 @@ export async function drainHostedRunner(
 				createdAt: requestedAt,
 				manifestPath: snapshotPath,
 				runtime,
+				runtimeContinuity,
 				workContinuity,
 				retentionPolicy,
 				reason: input.reason,

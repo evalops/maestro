@@ -82,12 +82,19 @@ pub(super) async fn write_snapshot_manifest(
     };
     let work_continuity = default_work_continuity_manifest(&snapshot);
     let retention_policy = default_retention_policy_manifest();
+    let runtime_continuity = default_runtime_continuity_manifest(RuntimeContinuityManifestInput {
+        config: &shared.config,
+        maestro_session_id: &maestro_session_id,
+        manifest_path: &path,
+        runtime: &runtime,
+    });
     let platform_evidence = default_platform_evidence_manifest(PlatformEvidenceManifestInput {
         config: &shared.config,
         maestro_session_id: &maestro_session_id,
         created_at: &created_at,
         manifest_path: &path,
         runtime: &runtime,
+        runtime_continuity: &runtime_continuity,
         work_continuity: &work_continuity,
         retention_policy: &retention_policy,
         reason: input.reason.as_deref(),
@@ -108,6 +115,7 @@ pub(super) async fn write_snapshot_manifest(
             mode: "local_path_contract".to_string(),
             paths: workspace_export_paths,
         },
+        runtime_continuity: Some(runtime_continuity),
         work_continuity: Some(work_continuity),
         platform_evidence: Some(platform_evidence),
         snapshot,

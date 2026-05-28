@@ -17,6 +17,19 @@ versioning when releases are cut.
   and keep scheduled public runs inert so public publishing stays downstream of
   the internal source-of-truth release.
 
+## [0.10.44] - 2026-05-28
+
+### Changed
+
+- Harden hosted runner continuity evidence. <!-- maestro-release-note:a0e4b937ee8e -->
+- Require public release tag mismatches with package-impacting changes to use a
+  new package version.
+
+### Fixed
+
+- Release post-v0.10.43 package changes under v0.10.44 instead of silently
+  skipping the public tag guard.
+
 ## [0.10.43] - 2026-05-28
 
 ### Changed
