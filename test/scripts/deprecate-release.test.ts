@@ -19,11 +19,11 @@ function runDeprecate(
 		[
 			scriptPath.pathname,
 			"--range",
-			"0.10.20",
+			">=0.10.8 <=0.10.20",
 			"--package",
 			"@evalops/maestro",
 			"--message",
-			"Broken release: install @evalops/maestro@0.10.21 or newer.",
+			"Broken release metadata references private workspace packages; install @evalops/maestro@latest.",
 			...extraArgs,
 		],
 		{
@@ -45,10 +45,10 @@ describe("deprecate-release", () => {
 
 		expect(result.status).toBe(0);
 		expect(result.stdout).toContain(
-			"[dry-run] /tmp/fake-npm deprecate @evalops/maestro@0.10.20",
+			"[dry-run] /tmp/fake-npm deprecate @evalops/maestro@>=0.10.8 <=0.10.20",
 		);
 		expect(result.stdout).toContain(
-			"Broken release: install @evalops/maestro@0.10.21 or newer.",
+			"Broken release metadata references private workspace packages; install @evalops/maestro@latest.",
 		);
 	});
 
@@ -96,7 +96,7 @@ describe("deprecate-release", () => {
 			[
 				"#!/usr/bin/env bash",
 				"echo 'npm error code E404' >&2",
-				"echo \"npm error 404  The requested resource '@evalops/maestro@0.10.20' could not be found or you do not have permission to access it.\" >&2",
+				"echo \"npm error 404  The requested resource '@evalops/maestro@>=0.10.8 <=0.10.20' could not be found or you do not have permission to access it.\" >&2",
 				"exit 1",
 				"",
 			].join("\n"),
@@ -108,7 +108,7 @@ describe("deprecate-release", () => {
 
 			expect(result.status).toBe(1);
 			expect(result.stderr).toContain(
-				"npm could not deprecate @evalops/maestro@0.10.20.",
+				"npm could not deprecate @evalops/maestro@>=0.10.8 <=0.10.20.",
 			);
 			expect(result.stderr).toContain(
 				"configured npm token does not have publish/deprecate permission",
@@ -139,7 +139,7 @@ describe("deprecate-release", () => {
 
 			expect(result.status).toBe(1);
 			expect(result.stderr).toContain(
-				"npm could not authenticate while deprecating @evalops/maestro@0.10.20.",
+				"npm could not authenticate while deprecating @evalops/maestro@>=0.10.8 <=0.10.20.",
 			);
 			expect(result.stderr).toContain("Refresh the npm-release NPM_TOKEN");
 		} finally {
