@@ -11,6 +11,8 @@ import {
 	getBunCommand,
 	getNpmCommand,
 	readInstalledPackageJson,
+	runBunRuntimeCliSmoke,
+	runBunxCliSmoke,
 	runInstalledCliSmoke,
 	runInstalledPackageAudit,
 } from "./install-smoke-utils.js";
@@ -118,6 +120,16 @@ function runBunInstallSmoke() {
 			cliCommand,
 			expectedVersion: version,
 			label: "Bun-installed packed CLI",
+		});
+		runBunxCliSmoke(tempDir, {
+			cliCommand,
+			expectedVersion: version,
+			label: "bunx packed CLI",
+		});
+		runBunRuntimeCliSmoke(tempDir, {
+			cliCommand,
+			expectedVersion: version,
+			label: "bunx --bun packed CLI",
 		});
 
 		console.log(
