@@ -1,8 +1,10 @@
 import { describe, expect, it } from "vitest";
 import {
 	DEFAULT_RETRY_CONFIG,
+	buildAuthoritativeCurrentRequest,
 	buildSlackAgentUserPrompt,
 	buildSystemPrompt,
+	extractCodeSpannedLiterals,
 	isRetryableError,
 	translateToHostPath,
 	withRetry,
@@ -103,14 +105,52 @@ describe("buildSlackAgentUserPrompt", () => {
 				"2026-05-28T10:00:00Z\tEnsemble\tArgo Application  is Synced/Healthy at revision .\t",
 				"2026-05-28T10:01:00Z\tJonathan\tConfirm `evalops-production` at revision `b7f760e49d42ba56ffe056763aa4fc5ebb0d10c9` and run `26573810837`.\t",
 			].join("\n"),
+			"",
+			"Confirm `evalops-production` at revision `b7f760e49d42ba56ffe056763aa4fc5ebb0d10c9` and run `26573810837`.",
 		);
 
-		expect(prompt).toContain("The last message is the current request");
-		expect(prompt).toContain("preserve those literals exactly");
+		expect(prompt).toContain("Current Request (authoritative)");
+		expect(prompt).toContain("copy them verbatim into the final answer");
 		expect(prompt).toContain("Do not copy blank or missing identifiers");
+		expect(prompt).toContain("Exact Literals From Current Request");
 		expect(prompt).toContain("evalops-production");
 		expect(prompt).toContain("b7f760e49d42ba56ffe056763aa4fc5ebb0d10c9");
 		expect(prompt).toContain("26573810837");
+	});
+
+	it("keeps non-bot Slack mentions in the authoritative current request", () => {
+		const currentRequest = buildAuthoritativeCurrentRequest(
+			{
+				text: "ask to confirm `evalops-production`",
+				rawText: "<@UBOT123> ask <@U12345> to confirm `evalops-production`",
+				user: "U999",
+				userName: "Jonathan",
+				teamId: "T123",
+				channel: "C123",
+				ts: "1710000000.000000",
+				attachments: [],
+			},
+			"UBOT123",
+		);
+
+		const prompt = buildSlackAgentUserPrompt("", "", currentRequest);
+
+		expect(currentRequest).toBe(
+			"ask <@U12345> to confirm `evalops-production`",
+		);
+		expect(prompt).toContain("<@U12345>");
+		expect(prompt).toContain("evalops-production");
+		expect(prompt).not.toContain("<@UBOT123>");
+	});
+});
+
+describe("extractCodeSpannedLiterals", () => {
+	it("deduplicates current-request code literals in order", () => {
+		expect(
+			extractCodeSpannedLiterals(
+				"Confirm `evalops-production`, `sha-fbd1ba8`, and `evalops-production`.",
+			),
+		).toEqual(["evalops-production", "sha-fbd1ba8"]);
 	});
 });
 
