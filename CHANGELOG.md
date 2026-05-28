@@ -17,6 +17,19 @@ versioning when releases are cut.
   and keep scheduled public runs inert so public publishing stays downstream of
   the internal source-of-truth release.
 
+## [0.10.45] - 2026-05-28
+
+### Changed
+
+- Harden Platform A2A live evidence ids (#2324). <!-- maestro-release-note:8064054b7ec7 -->
+- Release package-impacting follow-up changes under v0.10.45 while keeping the
+  tag-release version guard strict.
+- Harden hosted runner continuity evidence. <!-- maestro-release-note:a0e4b937ee8e -->
+
+### Fixed
+
+- Preserve requested deploy identifiers. <!-- maestro-release-note:fa4a2e7f9429 -->
+
 ## [0.10.44] - 2026-05-28
 
 ### Changed
