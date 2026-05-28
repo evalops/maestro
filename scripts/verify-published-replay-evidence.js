@@ -43,6 +43,12 @@ const REQUIRED_OBSERVABILITY_QUERY_TRACES = [
 	"final-status",
 ];
 const REQUIRED_AGENT_RUNTIME_WAIT_KINDS = ["approval", "tool_retry"];
+const TERMINAL_AGENT_RUNTIME_STATES = new Set([
+	"succeeded",
+	"failed",
+	"cancelled",
+	"canceled",
+]);
 const TOOL_CALL_ID = "call-read-package-json";
 const SEARCH_TOOL_CALL_ID = "call-search-package-manifest";
 const WRITE_TOOL_CALL_ID = "call-write-published-artifact";
@@ -218,6 +224,22 @@ function modesWithEvidenceRefPrefix(modes, prefix) {
 	return sortedStrings(Array.from(result));
 }
 
+function terminalOutcomesAreValid(outcomes) {
+	const terminalStates = isObject(outcomes?.terminalStates)
+		? Object.entries(outcomes.terminalStates)
+		: [];
+	const terminalEventTypes = stringArray(outcomes?.terminalEventTypes);
+	return (
+		terminalStates.some(
+			([state, count]) =>
+				TERMINAL_AGENT_RUNTIME_STATES.has(state) &&
+				typeof count === "number" &&
+				Number.isFinite(count) &&
+				count > 0,
+		) && terminalEventTypes.some((eventType) => eventType.length > 0)
+	);
+}
+
 function agentRuntimeLifecycleIsValid(lifecycle) {
 	const waits = Array.isArray(lifecycle?.waits)
 		? lifecycle.waits.filter(isObject)
@@ -262,6 +284,7 @@ function agentRuntimeLifecycleIsValid(lifecycle) {
 		lifecycle.counts.toolRetryWaits > 0 &&
 		Number.isFinite(lifecycle?.counts?.terminalOperations) &&
 		lifecycle.counts.terminalOperations > 0 &&
+		terminalOutcomesAreValid(lifecycle?.outcomes) &&
 		Number.isFinite(lifecycle?.operations?.waitRun) &&
 		lifecycle.operations.waitRun >= REQUIRED_AGENT_RUNTIME_WAIT_KINDS.length &&
 		Number.isFinite(lifecycle?.operations?.recordRunStep) &&

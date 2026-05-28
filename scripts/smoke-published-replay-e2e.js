@@ -75,6 +75,12 @@ const REQUIRED_OBSERVABILITY_QUERY_TRACES = [
 	"final-status",
 ];
 const REQUIRED_AGENT_RUNTIME_WAIT_KINDS = ["approval", "tool_retry"];
+const TERMINAL_AGENT_RUNTIME_STATES = new Set([
+	"succeeded",
+	"failed",
+	"cancelled",
+	"canceled",
+]);
 const PUBLISHED_REPLAY_EVIDENCE_REF_PREFIXES = [
 	"tool-call:",
 	"tool-execution:",
@@ -226,6 +232,30 @@ function installLabelForInstaller({ packageSpec, installer }) {
 
 function finiteNumber(value) {
 	return typeof value === "number" && Number.isFinite(value) ? value : 0;
+}
+
+function terminalOutcomesSatisfyReleaseGate(outcomes) {
+	const terminalStates =
+		outcomes?.terminalStates &&
+		typeof outcomes.terminalStates === "object" &&
+		!Array.isArray(outcomes.terminalStates)
+			? Object.entries(outcomes.terminalStates)
+			: [];
+	const terminalEventTypes = Array.isArray(outcomes?.terminalEventTypes)
+		? outcomes.terminalEventTypes
+		: [];
+	return (
+		terminalStates.some(
+			([state, count]) =>
+				TERMINAL_AGENT_RUNTIME_STATES.has(state) &&
+				typeof count === "number" &&
+				Number.isFinite(count) &&
+				count > 0,
+		) &&
+		terminalEventTypes.some(
+			(eventType) => typeof eventType === "string" && eventType.length > 0,
+		)
+	);
 }
 
 function addCountMap(target, source) {
@@ -508,6 +538,7 @@ function agentRuntimeLifecycleSatisfiesReleaseGate(lifecycle) {
 		normalized.counts.approvalWaits > 0 &&
 		normalized.counts.toolRetryWaits > 0 &&
 		normalized.counts.terminalOperations > 0 &&
+		terminalOutcomesSatisfyReleaseGate(normalized.outcomes) &&
 		normalized.durability?.reconstructable === true &&
 		normalized.durability?.replayDeterministic === true &&
 		typeof normalized.durability?.promotionIdempotencyKey === "string" &&
