@@ -7,6 +7,7 @@ import {
 	existsSync,
 	mkdirSync,
 	mkdtempSync,
+	realpathSync,
 	readFileSync,
 	readdirSync,
 	rmSync,
@@ -14,7 +15,7 @@ import {
 	writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
 	getNpmCommand,
@@ -38,6 +39,8 @@ const PUBLISHED_REPLAY_EVIDENCE_SCHEMA =
 	"evalops.maestro.published-replay-evidence.v1";
 const PUBLISHED_REPLAY_TRANSCRIPT_SCHEMA =
 	"evalops.maestro.published-replay-transcript.v1";
+const AGENT_RUNTIME_LIFECYCLE_SCHEMA =
+	"evalops.maestro.agent-runtime-lifecycle.v1";
 const SCRIPTED_REPLAY_PROVIDER = "scripted-replay";
 const SCRIPTED_REPLAY_MODEL = "maestro-replay-v1";
 const SCRIPTED_REPLAY_TOOL_ALLOWLIST = ["read", "search", "write"];
@@ -64,15 +67,19 @@ const REQUIRED_OBSERVABILITY_QUERY_TRACES = [
 	"install",
 	"session",
 	"tool",
+	"search",
 	"approval",
 	"error",
 	"artifact",
+	"agent-runtime-lifecycle",
 	"final-status",
 ];
+const REQUIRED_AGENT_RUNTIME_WAIT_KINDS = ["approval", "tool_retry"];
 const PUBLISHED_REPLAY_EVIDENCE_REF_PREFIXES = [
 	"tool-call:",
 	"tool-execution:",
 	"approval-request:",
+	"pending-request:",
 	"artifact:",
 ];
 const timeoutMs = Number.parseInt(
@@ -428,6 +435,93 @@ function buildAgentRuntimeLedgerObservability(modes) {
 	};
 }
 
+function normalizeAgentRuntimeLifecycle(lifecycle) {
+	const waits = Array.isArray(lifecycle?.waits)
+		? lifecycle.waits.filter((wait) => wait && typeof wait === "object")
+		: [];
+	const evidenceRefs = uniqueValues(
+		waits.flatMap((wait) =>
+			Array.isArray(wait?.evidenceRefs)
+				? wait.evidenceRefs.filter((ref) => typeof ref === "string")
+				: [],
+		),
+	);
+	return {
+		schemaVersion:
+			typeof lifecycle?.schemaVersion === "string"
+				? lifecycle.schemaVersion
+				: AGENT_RUNTIME_LIFECYCLE_SCHEMA,
+		sessionId: typeof lifecycle?.sessionId === "string" ? lifecycle.sessionId : "",
+		replayDeterministic: lifecycle?.replayDeterministic === true,
+		counts: {
+			entries: finiteNumber(lifecycle?.counts?.entries),
+			promotionOperations: finiteNumber(
+				lifecycle?.counts?.promotionOperations,
+			),
+			waits: finiteNumber(lifecycle?.counts?.waits),
+			approvalWaits: finiteNumber(lifecycle?.counts?.approvalWaits),
+			toolRetryWaits: finiteNumber(lifecycle?.counts?.toolRetryWaits),
+			terminalOperations: finiteNumber(
+				lifecycle?.counts?.terminalOperations,
+			),
+		},
+		operations: {
+			handleTrigger: finiteNumber(lifecycle?.operations?.handleTrigger),
+			recordRunStep: finiteNumber(lifecycle?.operations?.recordRunStep),
+			recordRunWorkItem: finiteNumber(
+				lifecycle?.operations?.recordRunWorkItem,
+			),
+			waitRun: finiteNumber(lifecycle?.operations?.waitRun),
+			terminal: finiteNumber(lifecycle?.operations?.terminal),
+			completeRun: finiteNumber(lifecycle?.operations?.completeRun),
+			failRun: finiteNumber(lifecycle?.operations?.failRun),
+		},
+		waits,
+		waitKinds: uniqueValues(waits.map((wait) => wait?.pendingRequestKind)),
+		evidenceRefs,
+		outcomes:
+			lifecycle?.outcomes && typeof lifecycle.outcomes === "object"
+				? cloneJson(lifecycle.outcomes)
+				: { terminalStates: {}, terminalEventTypes: [] },
+		durability:
+			lifecycle?.durability && typeof lifecycle.durability === "object"
+				? cloneJson(lifecycle.durability)
+				: {},
+	};
+}
+
+function agentRuntimeLifecycleSatisfiesReleaseGate(lifecycle) {
+	const normalized = normalizeAgentRuntimeLifecycle(lifecycle);
+	return (
+		normalized.schemaVersion === AGENT_RUNTIME_LIFECYCLE_SCHEMA &&
+		normalized.replayDeterministic === true &&
+		normalized.sessionId.length > 0 &&
+		REQUIRED_AGENT_RUNTIME_WAIT_KINDS.every((kind) =>
+			normalized.waitKinds.includes(kind),
+		) &&
+		normalized.operations.waitRun >= REQUIRED_AGENT_RUNTIME_WAIT_KINDS.length &&
+		normalized.operations.recordRunStep > 0 &&
+		normalized.operations.recordRunWorkItem > 0 &&
+		normalized.operations.terminal > 0 &&
+		normalized.operations.completeRun > 0 &&
+		normalized.counts.waits >= REQUIRED_AGENT_RUNTIME_WAIT_KINDS.length &&
+		normalized.counts.approvalWaits > 0 &&
+		normalized.counts.toolRetryWaits > 0 &&
+		normalized.counts.terminalOperations > 0 &&
+		normalized.durability?.reconstructable === true &&
+		normalized.durability?.replayDeterministic === true &&
+		typeof normalized.durability?.promotionIdempotencyKey === "string" &&
+		normalized.waits.every(
+			(wait) =>
+				typeof wait?.pendingRequestId === "string" &&
+				typeof wait?.pendingRequestKind === "string" &&
+				typeof wait?.waitType === "string" &&
+				Array.isArray(wait?.evidenceRefs) &&
+				wait.evidenceRefs.some((ref) => ref.startsWith("pending-request:")),
+		)
+	);
+}
+
 function buildPublishedReplayProviderConfig() {
 	return {
 		provider: SCRIPTED_REPLAY_PROVIDER,
@@ -674,6 +768,22 @@ function buildPublishedReplayObservabilityQueryIndex(observability) {
 			counts: observability.tools.resultStatus,
 		}),
 		queryIndexEntry({
+			key: "search",
+			traceType: "search",
+			status:
+				observability.search.engine === "ripgrep" &&
+				observability.search.callId === SEARCH_TOOL_CALL_ID &&
+				includesRequiredModes(observability.search.modes)
+					? "ok"
+					: "failed",
+			modes: observability.search.modes,
+			evidenceRefs: observability.search.evidenceRefs,
+			ids: [observability.search.callId],
+			counts: {
+				modes: observability.search.modes.length,
+			},
+		}),
+		queryIndexEntry({
 			key: "approvals",
 			traceType: "approval",
 			status: includesRequiredModes(observability.approvals.modes)
@@ -708,6 +818,28 @@ function buildPublishedReplayObservabilityQueryIndex(observability) {
 			modes: observability.artifacts.modes,
 			evidenceRefs: observability.artifacts.evidenceRefs,
 			counts: { count: observability.artifacts.count },
+		}),
+		queryIndexEntry({
+			key: "agentRuntimeLifecycle",
+			traceType: "agent-runtime-lifecycle",
+			status: agentRuntimeLifecycleSatisfiesReleaseGate(
+				observability.agentRuntimeLifecycle,
+			)
+				? "ok"
+				: "failed",
+			evidenceRefs: observability.agentRuntimeLifecycle.evidenceRefs,
+			ids: observability.agentRuntimeLifecycle.waits.map(
+				(wait) => wait?.pendingRequestId,
+			),
+			counts: {
+				waits: observability.agentRuntimeLifecycle.counts.waits,
+				approvalWaits:
+					observability.agentRuntimeLifecycle.counts.approvalWaits,
+				toolRetryWaits:
+					observability.agentRuntimeLifecycle.counts.toolRetryWaits,
+				terminalOperations:
+					observability.agentRuntimeLifecycle.counts.terminalOperations,
+			},
 		}),
 		queryIndexEntry({
 			key: "finalStatus",
@@ -745,12 +877,20 @@ function queryableObservabilityIndexSatisfiesReleaseGate(observability) {
 	const installEntry = queryIndexEntryForTrace(queryIndex, "install");
 	const sessionEntry = queryIndexEntryForTrace(queryIndex, "session");
 	const toolEntry = queryIndexEntryForTrace(queryIndex, "tool");
+	const searchEntry = queryIndexEntryForTrace(queryIndex, "search");
 	const approvalEntry = queryIndexEntryForTrace(queryIndex, "approval");
 	const errorEntry = queryIndexEntryForTrace(queryIndex, "error");
 	const artifactEntry = queryIndexEntryForTrace(queryIndex, "artifact");
+	const lifecycleEntry = queryIndexEntryForTrace(
+		queryIndex,
+		"agent-runtime-lifecycle",
+	);
 	const finalStatusEntry = queryIndexEntryForTrace(queryIndex, "final-status");
 	const toolRefs = Array.isArray(toolEntry?.evidenceRefs)
 		? toolEntry.evidenceRefs
+		: [];
+	const searchRefs = Array.isArray(searchEntry?.evidenceRefs)
+		? searchEntry.evidenceRefs
 		: [];
 	const approvalRefs = Array.isArray(approvalEntry?.evidenceRefs)
 		? approvalEntry.evidenceRefs
@@ -758,33 +898,44 @@ function queryableObservabilityIndexSatisfiesReleaseGate(observability) {
 	const artifactRefs = Array.isArray(artifactEntry?.evidenceRefs)
 		? artifactEntry.evidenceRefs
 		: [];
+	const lifecycleRefs = Array.isArray(lifecycleEntry?.evidenceRefs)
+		? lifecycleEntry.evidenceRefs
+		: [];
 
-		return (
-			installEntry?.counts?.forbiddenReferences === 0 &&
-			installEntry?.counts?.workspaceProtocolReferences === 0 &&
-			includesRequiredModes(sessionEntry?.modes) &&
-			finiteNumber(sessionEntry?.counts?.jsonlFileCount) >=
-				REQUIRED_REPLAY_MODES.length &&
-			includesRequiredModes(toolEntry?.modes) &&
-			[TOOL_CALL_ID, SEARCH_TOOL_CALL_ID, WRITE_TOOL_CALL_ID].every((id) =>
-				toolEntry?.ids?.includes?.(id),
-			) &&
-			[TOOL_CALL_ID, SEARCH_TOOL_CALL_ID, WRITE_TOOL_CALL_ID].every((id) =>
-				toolRefs.includes(`tool-call:${id}`),
-			) &&
-			toolExecutionCoverageSatisfiesReleaseGate(observability.tools) &&
-			includesRequiredModes(approvalEntry?.modes) &&
-			approvalRefs.length > 0 &&
-			approvalRefs.every((ref) => ref.startsWith("approval-request:")) &&
-			errorEntry?.counts?.count === 0 &&
-			errorEntry?.counts?.expectedCount === 0 &&
-			includesRequiredModes(artifactEntry?.modes) &&
-			artifactRefs.length > 0 &&
-			artifactRefs.every((ref) => ref.startsWith("artifact:")) &&
-			includesRequiredModes(finalStatusEntry?.modes) &&
-			finalStatusEntry?.counts?.ok === REQUIRED_REPLAY_MODES.length
-		);
-	}
+	return (
+		installEntry?.counts?.forbiddenReferences === 0 &&
+		installEntry?.counts?.workspaceProtocolReferences === 0 &&
+		includesRequiredModes(sessionEntry?.modes) &&
+		finiteNumber(sessionEntry?.counts?.jsonlFileCount) >=
+			REQUIRED_REPLAY_MODES.length &&
+		includesRequiredModes(toolEntry?.modes) &&
+		[TOOL_CALL_ID, SEARCH_TOOL_CALL_ID, WRITE_TOOL_CALL_ID].every((id) =>
+			toolEntry?.ids?.includes?.(id),
+		) &&
+		[TOOL_CALL_ID, SEARCH_TOOL_CALL_ID, WRITE_TOOL_CALL_ID].every((id) =>
+			toolRefs.includes(`tool-call:${id}`),
+		) &&
+		toolExecutionCoverageSatisfiesReleaseGate(observability.tools) &&
+		includesRequiredModes(searchEntry?.modes) &&
+		searchEntry?.ids?.includes?.(SEARCH_TOOL_CALL_ID) &&
+		searchRefs.includes(`tool-call:${SEARCH_TOOL_CALL_ID}`) &&
+		includesRequiredModes(approvalEntry?.modes) &&
+		approvalRefs.length > 0 &&
+		approvalRefs.every((ref) => ref.startsWith("approval-request:")) &&
+		errorEntry?.counts?.count === 0 &&
+		errorEntry?.counts?.expectedCount === 0 &&
+		includesRequiredModes(artifactEntry?.modes) &&
+		artifactRefs.length > 0 &&
+		artifactRefs.every((ref) => ref.startsWith("artifact:")) &&
+		lifecycleEntry?.status === "ok" &&
+		lifecycleRefs.some((ref) => ref.startsWith("pending-request:")) &&
+		agentRuntimeLifecycleSatisfiesReleaseGate(
+			observability.agentRuntimeLifecycle,
+		) &&
+		includesRequiredModes(finalStatusEntry?.modes) &&
+		finalStatusEntry?.counts?.ok === REQUIRED_REPLAY_MODES.length
+	);
+}
 
 function providerConfigSatisfiesReleaseGate(providerConfig) {
 	return (
@@ -859,6 +1010,7 @@ function buildPublishedReplayObservability({
 	modes,
 	providerConfig,
 	transcript,
+	agentRuntimeLifecycle,
 }) {
 	const modeNames = modes.map(modeName);
 	const evidenceRefs = uniqueValues(modes.flatMap(evidenceRefsForMode));
@@ -1017,6 +1169,9 @@ function buildPublishedReplayObservability({
 			byStatus: countBy(modes.map((modeEvidence) => modeEvidence?.final?.status)),
 		},
 		agentRuntimeLedger: buildAgentRuntimeLedgerObservability(modes),
+		agentRuntimeLifecycle: normalizeAgentRuntimeLifecycle(
+			agentRuntimeLifecycle,
+		),
 	};
 	return {
 		...observability,
@@ -1029,6 +1184,7 @@ function buildPublishedReplayReleaseGate({
 	modes,
 	providerConfig,
 	transcript,
+	agentRuntimeLifecycle,
 }) {
 	const modeSet = new Set(observability.replay.modes);
 	const checks = {
@@ -1132,6 +1288,11 @@ function buildPublishedReplayReleaseGate({
 					typeof ledger?.durability?.promotionIdempotencyKey === "string"
 				);
 			}),
+		agentRuntimeLifecycle:
+			agentRuntimeLifecycleSatisfiesReleaseGate(agentRuntimeLifecycle) &&
+			agentRuntimeLifecycleSatisfiesReleaseGate(
+				observability.agentRuntimeLifecycle,
+			),
 		finalStatus: observability.finalStatus.allOk === true,
 	};
 	const failedChecks = Object.entries(checks)
@@ -1334,6 +1495,183 @@ function createRunContext(label) {
 			MAESTRO_PLAN_MODE: "1",
 		},
 	};
+}
+
+function scopedSessionDirForContext(context) {
+	const cwd = realpathSync(context.runDir);
+	const safePath = `--${cwd.replace(/^[/\\]/, "").replace(/[/\\:]/g, "-")}--`;
+	return join(context.sessionDir, safePath);
+}
+
+function writeAgentRuntimeLifecycleFixtureSession(context, label) {
+	const sessionId = `published-lifecycle-${label}`;
+	const entries = [
+		{
+			type: "session",
+			version: 2,
+			id: sessionId,
+			timestamp: "2026-05-23T00:00:00.000Z",
+			cwd: context.runDir,
+			model: SCRIPTED_REPLAY_MODEL,
+			unifiedContextManifest: {
+				protocolVersion: "maestro.unified-context-manifest.v1",
+				version: 1,
+				cwd: context.runDir,
+				projectDocs: {
+					cwd: context.runDir,
+					candidates: ["package.json"],
+					bytesRead: 0,
+					entries: [],
+					diagnostics: [],
+				},
+				entries: [],
+				diagnostics: [],
+			},
+			tools: [{ name: "search" }, { name: "write" }],
+		},
+		{
+			type: "message",
+			id: "user-lifecycle-1",
+			parentId: null,
+			timestamp: "2026-05-23T00:00:01.000Z",
+			message: {
+				role: "user",
+				content: "Exercise AgentRuntime waits and retry joins.",
+				timestamp: 1779494401000,
+			},
+		},
+		{
+			type: "message",
+			id: "assistant-lifecycle-1",
+			parentId: "user-lifecycle-1",
+			timestamp: "2026-05-23T00:00:02.000Z",
+			message: {
+				role: "assistant",
+				content: [
+					{ type: "text", text: "I will run a governed search." },
+					{
+						type: "toolCall",
+						id: "call-lifecycle-search",
+						name: "search",
+						arguments: { pattern: "maestro", paths: "package.json" },
+					},
+				],
+				api: "scripted-replay",
+				provider: SCRIPTED_REPLAY_PROVIDER,
+				model: SCRIPTED_REPLAY_MODEL,
+				stopReason: "toolUse",
+				timestamp: 1779494402000,
+			},
+		},
+		{
+			type: "message",
+			id: "tool-lifecycle-search",
+			parentId: "assistant-lifecycle-1",
+			timestamp: "2026-05-23T00:00:03.000Z",
+			message: {
+				role: "toolResult",
+				toolCallId: "call-lifecycle-search",
+				toolName: "search",
+				content: [{ type: "text", text: "search failed" }],
+				isError: true,
+				timestamp: 1779494403000,
+				details: {
+					toolExecutionId: "tool-exec-lifecycle-search",
+					governedOutcome: {
+						classification: "approval_required",
+						approvalRequestId: "approval-lifecycle-search",
+					},
+				},
+			},
+		},
+		{
+			type: "custom",
+			id: "pending-lifecycle-approval-entry",
+			parentId: "tool-lifecycle-search",
+			timestamp: "2026-05-23T00:00:03.250Z",
+			customType: "pending_request",
+			data: {
+				request: {
+					id: "pending-lifecycle-approval",
+					kind: "approval",
+					status: "pending",
+					visibility: "user",
+					sessionId,
+					toolCallId: "call-lifecycle-search",
+					toolName: "search",
+					displayName: "Governed search",
+					args: { pattern: "maestro", paths: "package.json" },
+					reason: "Approval is required before continuing.",
+					createdAt: "2026-05-23T00:00:03.250Z",
+					source: "platform",
+					platform: {
+						source: "tool_execution",
+						toolExecutionId: "tool-exec-lifecycle-search",
+						approvalRequestId: "approval-lifecycle-search",
+					},
+				},
+			},
+		},
+		{
+			type: "custom",
+			id: "pending-lifecycle-retry-entry",
+			parentId: "tool-lifecycle-search",
+			timestamp: "2026-05-23T00:00:03.500Z",
+			customType: "pending_request",
+			data: {
+				request: {
+					id: "pending-lifecycle-retry",
+					kind: "tool_retry",
+					status: "pending",
+					visibility: "user",
+					sessionId,
+					toolCallId: "call-lifecycle-search",
+					toolName: "search",
+					displayName: "Retry governed search",
+					args: { pattern: "maestro", paths: "package.json" },
+					reason: "The failed search needs a retry decision.",
+					createdAt: "2026-05-23T00:00:03.500Z",
+					source: "platform",
+					platform: {
+						source: "tool_execution",
+						toolExecutionId: "tool-exec-lifecycle-search",
+						approvalRequestId: "approval-lifecycle-retry",
+					},
+				},
+			},
+		},
+		{
+			type: "message",
+			id: "assistant-lifecycle-final",
+			parentId: "tool-lifecycle-search",
+			timestamp: "2026-05-23T00:00:04.000Z",
+			message: {
+				role: "assistant",
+				content:
+					"Lifecycle fixture reached a terminal outcome after wait capture.",
+				api: "scripted-replay",
+				provider: SCRIPTED_REPLAY_PROVIDER,
+				model: SCRIPTED_REPLAY_MODEL,
+				stopReason: "stop",
+				timestamp: 1779494404000,
+			},
+		},
+	];
+	const sessionFileName = `2026-05-23T00-00-00-000Z_${sessionId}.jsonl`;
+	const scopedSessionDir = scopedSessionDirForContext(context);
+	const candidateDirs = uniqueValues([
+		scopedSessionDir,
+		context.sessionDir,
+		join(context.env.MAESTRO_AGENT_DIR, "sessions", basename(scopedSessionDir)),
+	]);
+	for (const sessionDir of candidateDirs) {
+		mkdirSync(sessionDir, { recursive: true });
+		writeFileSync(
+			join(sessionDir, sessionFileName),
+			`${entries.map((entry) => JSON.stringify(entry)).join("\n")}\n`,
+		);
+	}
+	return sessionId;
 }
 
 function parseJsonLines(stdout, label) {
@@ -1623,6 +1961,148 @@ function assertAgentRuntimeLedger(binPath, context, label) {
 			promotionIdempotencyKey: durability.promotionIdempotencyKey,
 		},
 	};
+}
+
+function assertAgentRuntimeLifecycle(binPath) {
+	const context = createRunContext("agent-runtime-lifecycle");
+	try {
+		const sessionId = writeAgentRuntimeLifecycleFixtureSession(
+			context,
+			"agent-runtime-lifecycle",
+		);
+		const result = spawnSync(
+			binPath,
+			["run", "inspect", sessionId, "--json"],
+			{
+				cwd: context.runDir,
+				encoding: "utf8",
+				env: context.env,
+				timeout: timeoutMs,
+			},
+		);
+		if (result.error) {
+			fail(
+				"Published AgentRuntime lifecycle fixture inspection failed to launch.",
+				result.error.stack,
+			);
+		}
+		if (result.status !== 0) {
+			fail(
+				`Published AgentRuntime lifecycle fixture inspection exited with ${result.status}.`,
+				[result.stdout, result.stderr].filter(Boolean).join("\n\n"),
+			);
+		}
+		let report;
+		try {
+			report = JSON.parse(result.stdout);
+		} catch (error) {
+			fail(
+				"Published AgentRuntime lifecycle fixture inspection did not emit JSON.",
+				`${result.stdout}\n${error instanceof Error ? error.message : String(error)}`,
+			);
+		}
+		const ledger = report?.agentRuntimeLedger;
+		const operations = Array.isArray(ledger?.promotion?.operations)
+			? ledger.promotion.operations
+			: [];
+		const waitOperations = operations.filter(
+			(operation) => operation?.operation === "wait_run",
+		);
+		const waitWorkItems = operations.filter(
+			(operation) =>
+				operation?.operation === "record_run_work_item" &&
+				typeof operation?.payload?.pendingRequestId === "string",
+		);
+		const terminalOperations = operations.filter(
+			(operation) =>
+				operation?.operation === "complete_run" ||
+				operation?.operation === "fail_run",
+		);
+		const waits = waitOperations.map((operation) => {
+			const payload = operation?.payload ?? {};
+			const workItem = waitWorkItems.find(
+				(candidate) =>
+					candidate?.payload?.pendingRequestId === payload.pendingRequestId,
+			);
+			return {
+				pendingRequestId: payload.pendingRequestId,
+				pendingRequestKind: payload.pendingRequestKind,
+				waitType: payload.waitType,
+				approvalRequestId: payload.approvalRequestId,
+				toolExecutionId: payload.toolExecutionId,
+				evidenceRefs: filterPublishedReplayEvidenceRefs(
+					workItem?.payload?.evidenceRefs,
+				),
+			};
+		});
+		const operationsSummary = {
+			handleTrigger: operations.filter(
+				(operation) => operation?.operation === "handle_trigger",
+			).length,
+			recordRunStep: operations.filter(
+				(operation) => operation?.operation === "record_run_step",
+			).length,
+			recordRunWorkItem: operations.filter(
+				(operation) => operation?.operation === "record_run_work_item",
+			).length,
+			waitRun: waitOperations.length,
+			terminal: terminalOperations.length,
+			completeRun: terminalOperations.filter(
+				(operation) => operation?.operation === "complete_run",
+			).length,
+			failRun: terminalOperations.filter(
+				(operation) => operation?.operation === "fail_run",
+			).length,
+		};
+		const lifecycle = {
+			schemaVersion: AGENT_RUNTIME_LIFECYCLE_SCHEMA,
+			sessionId,
+			replayDeterministic: ledger?.replay?.deterministic === true,
+			counts: {
+				entries: finiteNumber(ledger?.counts?.entries),
+				promotionOperations: finiteNumber(
+					ledger?.counts?.promotionOperations ?? operations.length,
+				),
+				waits: waitOperations.length,
+				approvalWaits: waits.filter(
+					(wait) => wait.pendingRequestKind === "approval",
+				).length,
+				toolRetryWaits: waits.filter(
+					(wait) => wait.pendingRequestKind === "tool_retry",
+				).length,
+				terminalOperations: terminalOperations.length,
+			},
+			operations: operationsSummary,
+			waits,
+			outcomes: {
+				terminalStates: countBy(
+					terminalOperations.map((operation) => operation?.payload?.state),
+				),
+				terminalEventTypes: uniqueValues(
+					terminalOperations.map((operation) => operation?.payload?.eventType),
+				),
+			},
+			durability: {
+				reconstructable: report?.durability?.reconstructable === true,
+				sessionFilePresent: report?.durability?.sessionFilePresent === true,
+				contextManifestPresent:
+					report?.durability?.contextManifestPresent === true,
+				replayDeterministic: report?.durability?.replayDeterministic === true,
+				promotionIdempotencyKey: report?.durability?.promotionIdempotencyKey,
+				pendingRequests: report?.durability?.pendingRequests ?? 0,
+			},
+		};
+		if (!agentRuntimeLifecycleSatisfiesReleaseGate(lifecycle)) {
+			fail(
+				"Published AgentRuntime lifecycle fixture did not cover approval waits, retry waits, and terminal outcomes.",
+				JSON.stringify(lifecycle, null, 2),
+			);
+		}
+		console.log("Published AgentRuntime lifecycle fixture smoke passed.");
+		return lifecycle;
+	} finally {
+		rmSync(context.runDir, { recursive: true, force: true });
+	}
 }
 
 function assertJsonMode(messages, context, label) {
@@ -2133,6 +2613,7 @@ export function buildPublishedReplayEvidence({
 	installMetadata = null,
 	installer = "",
 	modes,
+	agentRuntimeLifecycle = null,
 }) {
 	const resolvedInstaller = inferPublishedInstaller({ installer, installMetadata });
 	const providerConfig = buildPublishedReplayProviderConfig();
@@ -2142,12 +2623,14 @@ export function buildPublishedReplayEvidence({
 		modes,
 		providerConfig,
 		transcript,
+		agentRuntimeLifecycle,
 	});
 	const releaseGate = buildPublishedReplayReleaseGate({
 		observability,
 		modes,
 		providerConfig,
 		transcript,
+		agentRuntimeLifecycle,
 	});
 	return {
 		schemaVersion: PUBLISHED_REPLAY_EVIDENCE_SCHEMA,
@@ -2182,6 +2665,9 @@ export function buildPublishedReplayEvidence({
 		transcript,
 		observability,
 		releaseGate,
+		agentRuntimeLifecycle: normalizeAgentRuntimeLifecycle(
+			agentRuntimeLifecycle,
+		),
 		modes,
 	};
 }
@@ -2213,6 +2699,7 @@ export async function runPublishedReplayE2E({
 	modes.push(runTextMode(binPath));
 	modes.push(runJsonMode(binPath));
 	modes.push(await runRpcMode(binPath));
+	const agentRuntimeLifecycle = assertAgentRuntimeLifecycle(binPath);
 	const evidence = buildPublishedReplayEvidence({
 		packageSpec,
 		cliCommand,
@@ -2220,6 +2707,7 @@ export async function runPublishedReplayE2E({
 		installMetadata,
 		installer,
 		modes,
+		agentRuntimeLifecycle,
 	});
 	writePublishedReplayEvidence(
 		resolvePublishedReplayEvidencePath({ evidencePath }),
