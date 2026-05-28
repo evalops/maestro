@@ -17,6 +17,12 @@ versioning when releases are cut.
   and keep scheduled public runs inert so public publishing stays downstream of
   the internal source-of-truth release.
 
+## [0.10.46] - 2026-05-28
+
+### Fixed
+
+- Foreground current request literals. <!-- maestro-release-note:b9ac6b5c93ef -->
+
 ## [0.10.45] - 2026-05-28
 
 ### Changed
