@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
 	buildPublishedReplayEvidence,
 	filterPublishedReplayEvidenceRefs,
+	registryInstallPlanForInstaller,
 	resolvePublishedReplayEvidencePath,
 } from "../../scripts/smoke-published-replay-e2e.js";
 
@@ -201,6 +202,42 @@ function makeAgentRuntimeLifecycle() {
 }
 
 describe("resolvePublishedReplayEvidencePath", () => {
+	it("uses the requested package manager for standalone registry installs", () => {
+		expect(
+			registryInstallPlanForInstaller({
+				installer: "npm",
+				packageSpec: `${rootPackageName}@9.9.9`,
+			}),
+		).toMatchObject({
+			installer: "npm",
+			command: process.platform === "win32" ? "npm.cmd" : "npm",
+			initArgs: ["init", "-y"],
+			installArgs: ["install", `${rootPackageName}@9.9.9`],
+			tempPrefix: "maestro-published-replay-install-",
+		});
+		expect(
+			registryInstallPlanForInstaller({
+				installer: "bun",
+				packageSpec: `${rootPackageName}@9.9.9`,
+			}),
+		).toMatchObject({
+			installer: "bun",
+			command: process.platform === "win32" ? "bun.exe" : "bun",
+			initArgs: ["init", "-y"],
+			installArgs: ["add", `${rootPackageName}@9.9.9`],
+			tempPrefix: "maestro-bun-published-replay-install-",
+		});
+	});
+
+	it("rejects unsupported standalone registry installers", () => {
+		expect(() =>
+			registryInstallPlanForInstaller({
+				installer: "pnpm",
+				packageSpec: `${rootPackageName}@9.9.9`,
+			}),
+		).toThrow(/Unsupported published replay installer "pnpm"/);
+	});
+
 	it("prefers the explicit evidence path", () => {
 		expect(
 			resolvePublishedReplayEvidencePath({
