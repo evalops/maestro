@@ -84,6 +84,7 @@ function graph(
 					toAgentId: "maestro-target",
 					status: "DELEGATION_STATUS_ACCEPTED",
 					a2aTaskId,
+					a2aMessageId: a2aTaskId ? "message_1" : undefined,
 					a2aDispatchStatus: a2aTaskId ? "dispatched" : "pending",
 					a2aEndpointUrl: "https://target.test/a2a",
 					a2aSkillId: "maestro.subagent.repo-explorer",
@@ -170,7 +171,26 @@ describe("Platform A2A live delegation smoke", () => {
 				.mockResolvedValueOnce({
 					id: "task_1",
 					contextId: "ctx_1",
-					status: { state: "TASK_STATE_COMPLETED" },
+					status: {
+						state: "TASK_STATE_COMPLETED",
+						message: {
+							messageId: "message_1",
+							role: "ROLE_AGENT",
+							parts: [{ text: "done" }],
+						},
+					},
+					history: [
+						{
+							messageId: "message_0",
+							role: "ROLE_USER",
+							parts: [{ text: "request" }],
+						},
+						{
+							messageId: "message_1",
+							role: "ROLE_AGENT",
+							parts: [{ text: "done" }],
+						},
+					],
 				}),
 			writeEvidence: vi.fn(async (_outputDir, evidence) => {
 				writtenEvidence = evidence;
@@ -234,11 +254,14 @@ describe("Platform A2A live delegation smoke", () => {
 			delegation: {
 				id: "delegation_1",
 				a2aTaskId: "task_1",
+				a2aMessageId: "message_1",
 			},
 			task: {
 				id: "task_1",
 				state: "TASK_STATE_COMPLETED",
 				terminal: true,
+				contextId: "ctx_1",
+				messageIds: ["message_1", "message_0"],
 			},
 		});
 		expect(JSON.stringify(writtenEvidence)).not.toContain("registry-token");

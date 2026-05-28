@@ -120,6 +120,29 @@
 			]
 		},
 		{
+			"area": "a2a-live-evidence-contract",
+			"evidenceType": "source",
+			"path": "scripts/verify-platform-a2a-live-evidence.ts",
+			"lifecycle": [
+				"live-platform-smoke",
+				"a2a-live-evidence",
+				"durable-a2a-ids",
+				"auth-boundaries",
+				"trace-correlation"
+			],
+			"anchors": [
+				"requireDurableA2AIds",
+				"MAESTRO_A2A_LIVE_EVIDENCE_REQUIRE_DURABLE_A2A_IDS",
+				"task.messageIds",
+				"delegation.a2aMessageId",
+				"task.contextId",
+				"requireNegativeAuthProbe",
+				"requireDiscoveryEvidence",
+				"targetTraceId",
+				"originTraceId"
+			]
+		},
+		{
 			"area": "release-gate",
 			"evidenceType": "package-script",
 			"path": "package.json",

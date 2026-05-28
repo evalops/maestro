@@ -7,6 +7,7 @@ The gate covers:
 - AgentRuntime turns, model steps, tool steps, waits, approvals, tool retries, automatic retries, and terminal outcomes.
 - ToolExecution linkage from Maestro tool calls to workspace, agent run, step, correlation, approval, retry policy, and recorded output metadata.
 - A live Platform AgentRuntime lifecycle smoke path for trigger, claim, step, wait, resume, complete, and event listing.
+- Platform A2A live evidence verification for durable task/message/context IDs, invalid-token rejection, source discovery evidence, and trace joins.
 
 Run it locally with:
 

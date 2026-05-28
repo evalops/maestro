@@ -39,6 +39,9 @@ interface PlatformA2ALiveEvidenceVerification {
 	};
 	delegationId: string;
 	a2aTaskId: string;
+	a2aMessageId?: string;
+	contextId?: string;
+	taskTerminal: boolean;
 	discovery?: {
 		targetSourceEvidencePresent: boolean;
 		originSourceEvidencePresent: boolean;
@@ -52,6 +55,7 @@ export interface PlatformA2ALiveEvidenceVerificationOptions {
 	requireDereferenceableGithub?: boolean;
 	requireNegativeAuthProbe?: boolean;
 	requireDiscoveryEvidence?: boolean;
+	requireDurableA2AIds?: boolean;
 	publicKeyPem?: string;
 	publicKeyPath?: string;
 	env?: Env;
@@ -61,6 +65,13 @@ export interface PlatformA2ALiveEvidenceVerificationOptions {
 const PROTOCOL_VERSION = "evalops.maestro.platform-a2a-live-smoke.v1";
 const SIGNATURE_PROTOCOL_VERSION =
 	"evalops.maestro.platform-a2a-live-evidence-signature.v1";
+const TERMINAL_TASK_STATES = new Set([
+	"TASK_STATE_COMPLETED",
+	"TASK_STATE_FAILED",
+	"TASK_STATE_CANCELED",
+	"TASK_STATE_CANCELLED",
+	"TASK_STATE_REJECTED",
+]);
 
 const VERIFICATION_KEY_ENV_VARS = [
 	"MAESTRO_A2A_LIVE_EVIDENCE_VERIFY_PUBLIC_KEY",
@@ -116,11 +127,18 @@ export async function verifyPlatformA2ALiveEvidenceFile(
 	const delegation = requireRecord(record.delegation, "delegation");
 	const delegationId = requireString(delegation, "id");
 	const a2aTaskId = requireString(delegation, "a2aTaskId");
+	const a2aMessageId = optionalString(delegation, "a2aMessageId");
 	const inputs = requireRecord(record.inputs, "inputs");
 	const fromAgentId = requireString(inputs, "fromAgentId");
 	const toAgentId = requireString(inputs, "toAgentId");
 	const skillId = optionalString(inputs, "skillId");
 	const capability = optionalString(inputs, "capability");
+	const promptHash = optionalString(inputs, "promptHash");
+	if (promptHash && !/^[a-f0-9]{64}$/u.test(promptHash)) {
+		throw new Error(
+			`Platform A2A evidence inputs.promptHash must be a SHA-256 hex digest, got ${promptHash}`,
+		);
+	}
 	const peers = requireRecord(record.peers, "peers");
 	const origin = requireRecord(peers.origin, "peers.origin");
 	const target = requireRecord(peers.target, "peers.target");
@@ -150,9 +168,14 @@ export async function verifyPlatformA2ALiveEvidenceFile(
 	if (!Array.isArray(nodes) || nodes.length < 1) {
 		throw new Error("Platform A2A evidence graph has no nodes");
 	}
+	let graphDelegationNode: Record<string, unknown> | undefined;
 	const graphIncludesDelegation = nodes.some((nodeValue, index) => {
 		const node = requireRecord(nodeValue, `graph.nodes[${index}]`);
-		return optionalString(node, "delegationId") === delegationId;
+		if (optionalString(node, "delegationId") === delegationId) {
+			graphDelegationNode = node;
+			return true;
+		}
+		return false;
 	});
 	if (!graphIncludesDelegation) {
 		throw new Error(
@@ -174,6 +197,30 @@ export async function verifyPlatformA2ALiveEvidenceFile(
 			`Platform A2A evidence control.taskId ${controlTaskId} does not match task.id ${taskId}`,
 		);
 	}
+	const taskState = optionalString(task, "state");
+	const taskTerminal = requireBoolean(task, "terminal", "task");
+	if (taskTerminal && taskState && !TERMINAL_TASK_STATES.has(taskState)) {
+		throw new Error(
+			`Platform A2A evidence task.terminal is true but task.state ${taskState} is not terminal`,
+		);
+	}
+	const contextId = optionalString(task, "contextId");
+	const taskMessageIds = optionalStringArray(task, "messageIds");
+	verifyDurableA2AIdEvidence({
+		options,
+		delegationId,
+		a2aTaskId,
+		a2aMessageId,
+		control,
+		graphDelegationNode,
+		inputs,
+		taskId,
+		taskState,
+		taskTerminal,
+		contextId,
+		taskMessageIds,
+		record,
+	});
 	const negativeAuthProbe = verifyNegativeAuthProbe(
 		record.negativeAuthProbe,
 		options,
@@ -190,8 +237,84 @@ export async function verifyPlatformA2ALiveEvidenceFile(
 		signature,
 		delegationId,
 		a2aTaskId,
+		a2aMessageId,
+		contextId,
+		taskTerminal,
 		discovery,
 	};
+}
+
+function verifyDurableA2AIdEvidence(input: {
+	options: PlatformA2ALiveEvidenceVerificationOptions;
+	delegationId: string;
+	a2aTaskId: string;
+	a2aMessageId?: string;
+	control: Record<string, unknown>;
+	graphDelegationNode?: Record<string, unknown>;
+	inputs: Record<string, unknown>;
+	taskId: string;
+	taskState?: string;
+	taskTerminal: boolean;
+	contextId?: string;
+	taskMessageIds: string[];
+	record: Record<string, unknown>;
+}): void {
+	const graphTaskId = input.graphDelegationNode
+		? optionalString(input.graphDelegationNode, "a2aTaskId")
+		: undefined;
+	if (graphTaskId && graphTaskId !== input.a2aTaskId) {
+		throw new Error(
+			`Platform A2A evidence graph delegation ${input.delegationId} a2aTaskId ${graphTaskId} does not match delegation.a2aTaskId ${input.a2aTaskId}`,
+		);
+	}
+	const controlMode = requireString(input.control, "mode");
+	if (!input.options.requireDurableA2AIds) {
+		return;
+	}
+	if (!input.a2aMessageId) {
+		throw new Error(
+			"Platform A2A evidence requires delegation.a2aMessageId for durable A2A id verification",
+		);
+	}
+	if (!input.contextId) {
+		throw new Error(
+			"Platform A2A evidence requires task.contextId for durable A2A id verification",
+		);
+	}
+	if (!input.taskTerminal || !input.taskState) {
+		throw new Error(
+			"Platform A2A evidence requires terminal task state for durable A2A id verification",
+		);
+	}
+	if (!TERMINAL_TASK_STATES.has(input.taskState)) {
+		throw new Error(
+			`Platform A2A evidence task.state ${input.taskState} is not terminal for durable A2A id verification`,
+		);
+	}
+	if (!input.taskMessageIds.includes(input.a2aMessageId)) {
+		throw new Error(
+			`Platform A2A evidence task.messageIds must include delegation.a2aMessageId ${input.a2aMessageId}`,
+		);
+	}
+	if (!graphTaskId) {
+		throw new Error(
+			`Platform A2A evidence graph delegation ${input.delegationId} must include a2aTaskId for durable A2A id verification`,
+		);
+	}
+	if (controlMode !== "A2A_DELEGATION_TASK_CONTROL_MODE_COLLECT") {
+		throw new Error(
+			`Platform A2A evidence control.mode ${controlMode} is not collect mode for durable A2A id verification`,
+		);
+	}
+	const promptHash = requireString(input.inputs, "promptHash");
+	if (!/^[a-f0-9]{64}$/u.test(promptHash)) {
+		throw new Error(
+			`Platform A2A evidence inputs.promptHash must be a SHA-256 hex digest, got ${promptHash}`,
+		);
+	}
+	const redaction = requireRecord(input.record.redaction, "redaction");
+	requireBooleanTrue(redaction, "rawTokensWithheld", "redaction");
+	requireBooleanTrue(redaction, "rawPayloadsWithheld", "redaction");
 }
 
 function verifyDiscoveryEvidence(
@@ -1030,7 +1153,7 @@ if (isEntrypoint()) {
 		process.env.MAESTRO_A2A_LIVE_EVIDENCE_PATH?.trim();
 	if (!evidencePath) {
 		console.error(
-			"Usage: tsx scripts/verify-platform-a2a-live-evidence.ts <evidence.json> [--require-signature] [--require-github-dereference] [--require-negative-auth-probe] [--require-discovery-evidence]",
+			"Usage: tsx scripts/verify-platform-a2a-live-evidence.ts <evidence.json> [--require-signature] [--require-github-dereference] [--require-negative-auth-probe] [--require-discovery-evidence] [--require-durable-a2a-ids]",
 		);
 		process.exitCode = 2;
 	} else {
@@ -1049,6 +1172,11 @@ if (isEntrypoint()) {
 				args.includes("--require-discovery-evidence") ||
 				booleanEnv(
 					process.env.MAESTRO_A2A_LIVE_EVIDENCE_REQUIRE_DISCOVERY_EVIDENCE,
+				),
+			requireDurableA2AIds:
+				args.includes("--require-durable-a2a-ids") ||
+				booleanEnv(
+					process.env.MAESTRO_A2A_LIVE_EVIDENCE_REQUIRE_DURABLE_A2A_IDS,
 				),
 			requireSignature:
 				args.includes("--require-signature") ||
