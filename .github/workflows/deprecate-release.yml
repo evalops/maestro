@@ -11,7 +11,7 @@ on:
       range:
         description: Version or npm range to deprecate.
         required: true
-        default: "0.10.20"
+        default: ">=0.10.8 <=0.10.20"
         type: string
       message:
         description: Optional deprecation message. Leave blank to use the package-aware script default.

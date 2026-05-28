@@ -1017,6 +1017,9 @@ describe("ci workflow guardrails", () => {
 			on?: {
 				workflow_dispatch?: {
 					inputs?: {
+						range?: {
+							default?: string;
+						};
 						message?: {
 							default?: string;
 						};
@@ -1024,9 +1027,12 @@ describe("ci workflow guardrails", () => {
 				};
 			};
 		};
+		const defaultRange =
+			workflow.on?.workflow_dispatch?.inputs?.range?.default ?? "";
 		const defaultMessage =
 			workflow.on?.workflow_dispatch?.inputs?.message?.default ?? "";
 
+		expect(defaultRange).toBe(">=0.10.8 <=0.10.20");
 		expect(defaultMessage).toBe("");
 	});
 
