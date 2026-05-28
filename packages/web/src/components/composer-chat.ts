@@ -81,6 +81,7 @@ import {
 	type UiMessage,
 	hasAssistantMessageProgress,
 } from "./composer-chat-stream-state.js";
+import { getSandboxConsoleSnapshot } from "./sandbox/console-runtime-provider.js";
 import {
 	WEB_SLASH_COMMANDS,
 	type WebSlashCommand,

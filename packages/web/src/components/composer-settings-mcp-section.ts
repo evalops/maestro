@@ -1,5 +1,11 @@
 import { html } from "lit";
-import type { McpRegistryImportRequest } from "../services/api-client.js";
+import type {
+	McpAuthPresetStatus,
+	McpOfficialRegistryEntry,
+	McpOfficialRegistryUrlOption,
+	McpRegistryImportRequest,
+	McpServerStatus,
+} from "../services/api-client.js";
 
 // The MCP settings surface has a wide context by design: it renders and wires
 // the existing ComposerSettings state without changing ownership.
@@ -9,8 +15,9 @@ type ComposerSettingsMcpSectionContext = Record<string, any>;
 export function renderComposerSettingsMcpSection(
 	ctx: ComposerSettingsMcpSectionContext,
 ) {
-	const servers = ctx.mcpStatus?.servers ?? [];
-	const authPresets = ctx.getAvailableAuthPresets();
+	const servers = (ctx.mcpStatus?.servers ?? []) as McpServerStatus[];
+	const authPresets = ctx.getAvailableAuthPresets() as McpAuthPresetStatus[];
+	const registryEntries = ctx.mcpRegistryEntries as McpOfficialRegistryEntry[];
 
 	return html`
 			<div class="section">
@@ -1413,32 +1420,40 @@ export function renderComposerSettingsMcpSection(
 							: ""
 					}
 					${
-						ctx.mcpRegistryEntries.length > 0
+						registryEntries.length > 0
 							? html`
-								<div class="panel-grid">
-									${ctx.mcpRegistryEntries.map((entry, index) => {
-										const entryId = ctx.getMcpRegistryEntryId(entry, index);
-										const urlOptions = ctx.getMcpRegistryUrlOptions(entry);
-										const selectedUrl =
-											ctx.mcpRegistrySelectedUrls[entryId] ||
-											urlOptions[0]?.url ||
-											"";
-										const transportLabel = ctx.formatMcpTransportLabel(
-											entry.transport,
-										);
-										const countBits = [
-											typeof entry.toolCount === "number"
-												? ctx.formatCountLabel(entry.toolCount, "tool", "tools")
-												: null,
-											typeof entry.promptCount === "number"
-												? ctx.formatCountLabel(
-														entry.promptCount,
-														"prompt",
-														"prompts",
-													)
-												: null,
-										].filter((value): value is string => Boolean(value));
-										return html`
+									<div class="panel-grid">
+										${registryEntries.map((entry, index) => {
+											const entryId = ctx.getMcpRegistryEntryId(entry, index);
+											const urlOptions = ctx.getMcpRegistryUrlOptions(
+												entry,
+											) as Array<
+												McpOfficialRegistryUrlOption & { label: string }
+											>;
+											const selectedUrl =
+												ctx.mcpRegistrySelectedUrls[entryId] ||
+												urlOptions[0]?.url ||
+												"";
+											const transportLabel = ctx.formatMcpTransportLabel(
+												entry.transport,
+											);
+											const countBits = [
+												typeof entry.toolCount === "number"
+													? ctx.formatCountLabel(
+															entry.toolCount,
+															"tool",
+															"tools",
+														)
+													: null,
+												typeof entry.promptCount === "number"
+													? ctx.formatCountLabel(
+															entry.promptCount,
+															"prompt",
+															"prompts",
+														)
+													: null,
+											].filter((value): value is string => Boolean(value));
+											return html`
 											<div class="panel-card">
 												<div class="panel-card-header">
 													<div>
@@ -1573,7 +1588,7 @@ export function renderComposerSettingsMcpSection(
 												}
 											</div>
 										`;
-									})}
+										})}
 								</div>
 							`
 							: html`<div class="empty-state">
