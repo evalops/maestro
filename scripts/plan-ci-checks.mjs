@@ -143,6 +143,10 @@ function isSmokeScript(path) {
 	return /^scripts\/smoke-[^/]+\.[cm]?[jt]sx?$/.test(path);
 }
 
+function isWorkflowUnitTest(path) {
+	return /^test\/workflows\/[^/]+\.test\.[cm]?[jt]sx?$/.test(path);
+}
+
 function isLeafIdeExtensionPath(path) {
 	return path.startsWith("packages/vscode-extension/") && !isPackageManifest(path);
 }
@@ -220,6 +224,7 @@ function isProofHarnessPath(path) {
 	return (
 		CI_GUARDRAIL_FILES.has(path) ||
 		isFastPrChecksInfrastructurePath(path) ||
+		isWorkflowUnitTest(path) ||
 		(path.startsWith("docs/") && path.endsWith(".md")) ||
 		isSmokeScript(path)
 	);
@@ -247,6 +252,7 @@ function isLightPrChecksPath(path) {
 		RELEASE_SURFACE_CONFORMANCE_FILES.has(path) ||
 		RUNTIME_PACKAGE_VALIDATOR_FILES.has(path) ||
 		RELEASE_HELPER_TEST_FILES.has(path) ||
+		isWorkflowUnitTest(path) ||
 		isSmokeScript(path)
 	);
 }
