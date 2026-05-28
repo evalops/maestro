@@ -57,6 +57,9 @@ describe("release-surface conformance", () => {
 		expect(failures).toContain(
 			"manifest is missing required area public-mirror-workflow",
 		);
+		expect(failures).toContain(
+			"manifest is missing required area tag-release-workflow",
+		);
 	});
 
 	it("rejects entries without evidence types or anchors", () => {
