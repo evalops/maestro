@@ -52,7 +52,7 @@ describe("tag-release workflow", () => {
 		expect(mismatchGuard?.if).toContain(
 			"github.repository == 'evalops/maestro'",
 		);
-		expect(mismatchGuard?.if).not.toContain(
+		expect(mismatchGuard?.if).toContain(
 			"steps.registry-release.outputs.published != 'true'",
 		);
 		expect(dispatchStep?.if).toContain(
