@@ -19,7 +19,7 @@ env:
 jobs:
   tag-current-version:
     runs-on: ${{ github.repository == 'evalops/maestro-internal' && (vars.INTERNAL_CONFIRMATION_RUNNER || 'evalops-internal') || (vars.PUBLIC_PR_VALIDATION_RUNNER || 'ubuntu-latest') }}
-    timeout-minutes: 10
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
@@ -47,6 +47,41 @@ jobs:
             echo "published=false" >> "$GITHUB_OUTPUT"
             echo "${PACKAGE_NAME}@${RELEASE_VERSION} is not published on npm yet."
           fi
+
+      - name: Setup registry install smoke tools
+        if: ${{ github.repository == 'evalops/maestro' && steps.registry-release.outputs.published == 'true' }}
+        uses: ./.github/actions/setup-bun-nx
+        with:
+          install: "false"
+          cache-nx: "false"
+          ensure-rustfmt: "false"
+
+      - name: Verify already-published package from registry
+        if: ${{ github.repository == 'evalops/maestro' && steps.registry-release.outputs.published == 'true' }}
+        env:
+          PACKAGE_NAME: ${{ steps.release.outputs.package_name }}
+          RELEASE_VERSION: ${{ steps.release.outputs.release_version }}
+          MAESTRO_INSTALL_AUDIT_LEVEL: critical
+          MAESTRO_PUBLISHED_REPLAY_SANDBOX_MODE: local
+          MAESTRO_REGISTRY_SMOKE_EVIDENCE_DIR: tag-release-published-replay-evidence
+          MAESTRO_REGISTRY_POLL_ATTEMPTS: "1"
+          MAESTRO_REGISTRY_POLL_DELAY_MS: "1000"
+        run: |
+          set -euo pipefail
+          cli_command="$(node -p 'Object.keys(require("./package.json").bin)[0]')"
+          node scripts/smoke-registry-install.js \
+            --package "$PACKAGE_NAME" \
+            --version "$RELEASE_VERSION" \
+            --cli-command "$cli_command"
+          node scripts/verify-published-replay-evidence.js --evidence-dir tag-release-published-replay-evidence
+
+      - name: Upload already-published replay evidence
+        if: ${{ always() && hashFiles('tag-release-published-replay-evidence/*.json') != '' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          retention-days: 14
+          name: tag-release-published-replay-evidence-${{ steps.release.outputs.release_tag }}
+          path: tag-release-published-replay-evidence/*.json
 
       - id: active-release
         name: Check active public release workflow
