@@ -1053,7 +1053,7 @@ describe("ci workflow guardrails", () => {
 		);
 	});
 
-	it("blocks tag-release when the package version tag points at another commit", () => {
+	it("blocks tag-release when an unpublished package version tag points at another commit", () => {
 		const action = parse(
 			readFileSync(
 				new URL(
@@ -1102,7 +1102,7 @@ describe("ci workflow guardrails", () => {
 		expect(mismatchGuard?.if).toContain(
 			"github.repository == 'evalops/maestro'",
 		);
-		expect(mismatchGuard?.if).not.toContain(
+		expect(mismatchGuard?.if).toContain(
 			"steps.registry-release.outputs.published != 'true'",
 		);
 		expect(mismatchGuard?.if).toContain("steps.release.outputs.tag_exists");
