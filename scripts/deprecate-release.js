@@ -72,8 +72,17 @@ if (options.otp) {
 	npmArgs.push("--otp", options.otp);
 }
 
+function shellQuote(value) {
+	if (/^[A-Za-z0-9_/:=-]+$/.test(value)) {
+		return value;
+	}
+	return `'${value.replaceAll("'", "'\\''")}'`;
+}
+
 if (options.dryRun) {
-	console.log(`[dry-run] ${npmCommand} ${npmArgs.join(" ")}`);
+	console.log(
+		`[dry-run] ${[npmCommand, ...npmArgs].map(shellQuote).join(" ")}`,
+	);
 	process.exit(0);
 }
 
