@@ -61,12 +61,19 @@ class FakeAgent {
 }
 
 const tempDirs: string[] = [];
+type RestoreManifestFlushStatus =
+	| "completed"
+	| "failed"
+	| "interrupted"
+	| "skipped";
 
 function buildRestoreManifest(input: {
 	sessionId: string;
 	sessionFile: string;
 	workspaceRoot: string;
 	cursor?: number;
+	flushStatus?: RestoreManifestFlushStatus;
+	runtimeError?: string;
 }) {
 	const restoredState = createHeadlessRuntimeState();
 	restoredState.protocol_version = HEADLESS_PROTOCOL_VERSION;
@@ -84,7 +91,8 @@ function buildRestoreManifest(input: {
 		protocol_version: "evalops.remote-runner.snapshot-manifest.v1",
 		maestro_session_id: input.sessionId,
 		runtime: {
-			flush_status: "completed",
+			flush_status: input.flushStatus ?? "completed",
+			...(input.runtimeError ? { error: input.runtimeError } : {}),
 			session_id: input.sessionId,
 			session_file: input.sessionFile,
 			cursor,
@@ -251,6 +259,148 @@ describe("HeadlessRuntimeService restore manifests", () => {
 
 		await runtime.dispose();
 	});
+
+	it.each([
+		{
+			flushStatus: "failed" as const,
+			runtimeError: "worker exited before flushing runtime state",
+			expectedStatus: "Restore interrupted before runtime flush completed",
+			expectedError: "worker exited before flushing runtime state",
+		},
+		{
+			flushStatus: "interrupted" as const,
+			runtimeError: "legacy runner interrupted the flush",
+			expectedStatus: "Restore interrupted before runtime flush completed",
+			expectedError: "legacy runner interrupted the flush",
+		},
+		{
+			flushStatus: "skipped" as const,
+			expectedStatus: "Restore incomplete: runtime flush skipped",
+			expectedError:
+				"runtime flush was skipped; no runtime activity was persisted",
+		},
+	])(
+		"restores $flushStatus manifest into inspectable not-ready state",
+		async (testCase) => {
+			const workspaceRoot = await mkdtemp(
+				join(tmpdir(), "maestro-headless-restore-incomplete-"),
+			);
+			const sessionDir = await mkdtemp(join(tmpdir(), "maestro-sessions-"));
+			tempDirs.push(workspaceRoot, sessionDir);
+			const fakeAgent = new FakeAgent();
+			const sessionManager = new SessionManager(false, undefined, {
+				sessionDir,
+			});
+			sessionManager.startSession(fakeAgent.state);
+			const sessionId = sessionManager.getSessionId();
+			const manifestPath = join(workspaceRoot, "restore-manifest.json");
+			await writeFile(
+				manifestPath,
+				JSON.stringify(
+					buildRestoreManifest({
+						sessionId,
+						sessionFile: sessionManager.getSessionFile(),
+						workspaceRoot,
+						flushStatus: testCase.flushStatus,
+						runtimeError: testCase.runtimeError,
+					}),
+				),
+				"utf8",
+			);
+
+			const service = new HeadlessRuntimeService();
+			const runtime = await service.ensureRuntime({
+				scope_key: "anon",
+				registeredModel: TEST_MODEL,
+				thinkingLevel: "off",
+				approvalMode: "prompt",
+				context: {
+					createAgent: vi.fn().mockResolvedValue(fakeAgent),
+					createBackgroundAgent: vi.fn().mockResolvedValue(new FakeAgent()),
+					hostedRunner: {
+						enabled: true,
+						runnerSessionId: "mrs_restore",
+						workspaceRoot,
+						restoreManifestPath: manifestPath,
+					},
+				},
+				sessionManager,
+			});
+
+			expect(runtime.getSnapshot()).toMatchObject({
+				session_id: sessionId,
+				cursor: 7,
+				state: {
+					is_ready: false,
+					is_responding: false,
+					last_status: testCase.expectedStatus,
+					last_error: testCase.expectedError,
+					last_error_type: "protocol",
+					pending_user_inputs: [
+						{
+							call_id: "call_user_input",
+							tool: "ask_user",
+						},
+					],
+				},
+			});
+			expect(runtime.replayFrom(0)).toEqual([
+				expect.objectContaining({
+					type: "reset",
+					reason: "restored_from_snapshot",
+					snapshot: expect.objectContaining({
+						session_id: sessionId,
+						cursor: 7,
+						state: expect.objectContaining({
+							is_ready: false,
+							last_status: testCase.expectedStatus,
+							last_error: testCase.expectedError,
+						}),
+					}),
+				}),
+			]);
+			expect(() => runtime.createSubscription({ role: "viewer" })).toThrow(
+				/not ready for new attachments/,
+			);
+			expect(() => runtime.registerConnection({ role: "controller" })).toThrow(
+				/not ready for new attachments/,
+			);
+			expect(runtime.getSnapshot().state.connection_count).toBe(0);
+			const replayStream = runtime.createImplicitStream({
+				cursor: 0,
+				role: "viewer",
+			});
+			expect(replayStream.next()).toEqual(
+				expect.objectContaining({
+					type: "reset",
+					reason: "restored_from_snapshot",
+					snapshot: expect.objectContaining({
+						session_id: sessionId,
+						state: expect.objectContaining({
+							is_ready: false,
+							last_status: testCase.expectedStatus,
+						}),
+					}),
+				}),
+			);
+			replayStream.close();
+			await expect(
+				runtime.send({ type: "prompt", content: "after incomplete restore" }),
+			).rejects.toThrow(/not ready for controller messages/);
+			await expect(runtime.send({ type: "interrupt" })).rejects.toThrow(
+				/not ready for controller messages/,
+			);
+			expect(() =>
+				runtime.assertCanSend("controller", null, null, {
+					allowNotReady: true,
+				}),
+			).not.toThrow();
+			await expect(runtime.send({ type: "shutdown" })).resolves.toBeUndefined();
+			expect(runtime.isDisposed()).toBe(true);
+
+			await runtime.dispose();
+		},
+	);
 
 	it.each([
 		{

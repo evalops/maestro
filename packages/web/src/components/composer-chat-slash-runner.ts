@@ -1,8 +1,6 @@
-import type {
-	ComposerApprovalMode,
-	ComposerApprovalStatusUpdate,
-} from "@evalops/contracts";
+import type { ComposerApprovalMode } from "@evalops/contracts";
 import type { ApiClient, Message } from "../services/api-client.js";
+import type { ComposerApprovalStatusUpdate } from "./composer-chat-approvals.js";
 import { executeWebSlashCommand } from "./composer-chat-slash-commands.js";
 import type { UiMessage } from "./composer-chat-stream-state.js";
 import type { WebSlashCommand } from "./slash-commands.js";

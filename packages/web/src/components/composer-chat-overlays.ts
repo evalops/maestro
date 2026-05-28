@@ -33,7 +33,7 @@ export function renderComposerHealthPopover({
 	overallRunHealthStatus: string;
 	apiBaseUrl: string;
 	latency: number | null;
-	lastUpdated: string | null;
+	lastUpdated: number | string | null;
 	runHealth: WorkspaceStatus["runHealth"] | null;
 	lastApiError: string | null;
 }) {

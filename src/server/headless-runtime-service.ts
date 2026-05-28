@@ -226,6 +226,17 @@ function parseBooleanEnv(value: string | undefined): boolean | undefined {
 
 export type HostedRunnerRestoreFlushStatus = "completed" | "failed" | "skipped";
 
+export class HeadlessRuntimeNotReadyError extends Error {
+	readonly code = "runtime_not_ready";
+
+	constructor(action: string, state: HeadlessRuntimeState) {
+		const status = state.last_status ? `: ${state.last_status}` : "";
+		const error = state.last_error ? ` (${state.last_error})` : "";
+		super(`Headless runtime is not ready for ${action}${status}${error}`);
+		this.name = "HeadlessRuntimeNotReadyError";
+	}
+}
+
 export interface HostedRunnerRestoreManifest {
 	protocol_version: typeof HOSTED_RUNNER_SNAPSHOT_MANIFEST_VERSION;
 	maestro_session_id: string;
@@ -920,6 +931,12 @@ export class HeadlessSessionRuntime {
 		return snapshot;
 	}
 
+	private assertRuntimeReady(action: string): void {
+		if (!this.state.is_ready) {
+			throw new HeadlessRuntimeNotReadyError(action, this.state);
+		}
+	}
+
 	getSessionFile(): string {
 		return this.sessionManager.getSessionFile();
 	}
@@ -1373,6 +1390,9 @@ export class HeadlessSessionRuntime {
 	}): HeadlessRuntimeSubscriptionSnapshot {
 		const role = options?.role ?? "controller";
 		const explicit = options?.explicit ?? true;
+		if (explicit) {
+			this.assertRuntimeReady("new attachments");
+		}
 		const announceConnectionInfo = options?.announceConnectionInfo ?? true;
 		const reusableControllerConnectionId =
 			!options?.connectionId &&
@@ -1545,9 +1565,13 @@ export class HeadlessSessionRuntime {
 		role: "viewer" | "controller",
 		subscriptionId?: string | null,
 		connectionId?: string | null,
+		options?: { allowNotReady?: boolean },
 	): void {
 		if (role === "viewer") {
 			throw new Error("Viewer headless connections cannot send messages");
+		}
+		if (!options?.allowNotReady) {
+			this.assertRuntimeReady("controller messages");
 		}
 		const subscriber = subscriptionId
 			? this.subscribers.get(subscriptionId)
@@ -1714,6 +1738,7 @@ export class HeadlessSessionRuntime {
 		role?: HeadlessConnectionRole;
 		takeControl?: boolean;
 	}): HeadlessRuntimeHeartbeatSnapshot {
+		this.assertRuntimeReady("new attachments");
 		const role = metadata.role ?? "controller";
 		const connection = this.ensureConnection({
 			connectionId: metadata.connectionId,
@@ -1787,6 +1812,9 @@ export class HeadlessSessionRuntime {
 	): Promise<void> {
 		if (this.disposed) {
 			throw new Error("Headless runtime is no longer available");
+		}
+		if (msg.type !== "shutdown") {
+			this.assertRuntimeReady("controller messages");
 		}
 		this.updatedAt = Date.now();
 
@@ -2514,9 +2542,25 @@ export class HeadlessRuntimeService {
 	async ensureRuntime(
 		options: EnsureRuntimeOptions,
 	): Promise<HeadlessSessionRuntime> {
+		const shouldRegisterConnection =
+			options.registerConnection !== false &&
+			(options.clientProtocolVersion ||
+				options.clientInfo ||
+				options.capabilities ||
+				options.optOutNotifications ||
+				options.role);
 		if (options.sessionId) {
 			const existing = this.getRuntime(options.scope_key, options.sessionId);
 			if (existing) {
+				if (shouldRegisterConnection) {
+					const snapshot = existing.getSnapshot();
+					if (!snapshot.state.is_ready) {
+						throw new HeadlessRuntimeNotReadyError(
+							"new attachments",
+							snapshot.state,
+						);
+					}
+				}
 				return existing;
 			}
 		}
@@ -2548,23 +2592,23 @@ export class HeadlessRuntimeService {
 			context: options.context,
 			sessionManager: options.sessionManager,
 		});
-		if (
-			options.registerConnection !== false &&
-			(options.clientProtocolVersion ||
-				options.clientInfo ||
-				options.capabilities ||
-				options.optOutNotifications ||
-				options.role)
-		) {
-			runtime.registerConnection({
-				clientProtocolVersion: options.clientProtocolVersion,
-				clientInfo: options.clientInfo,
-				capabilities: options.capabilities,
-				optOutNotifications: options.optOutNotifications,
-				role: options.role,
-			});
-		}
 		this.runtimes.set(runtime.key(), runtime);
+		if (shouldRegisterConnection) {
+			try {
+				runtime.registerConnection({
+					clientProtocolVersion: options.clientProtocolVersion,
+					clientInfo: options.clientInfo,
+					capabilities: options.capabilities,
+					optOutNotifications: options.optOutNotifications,
+					role: options.role,
+				});
+			} catch (error) {
+				if (!(error instanceof HeadlessRuntimeNotReadyError)) {
+					this.runtimes.delete(runtime.key());
+				}
+				throw error;
+			}
+		}
 		return runtime;
 	}
 

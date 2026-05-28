@@ -19,6 +19,7 @@ import type {
 	McpOfficialRegistryEntry,
 	McpRegistryImportRequest,
 	McpServerStatus,
+	McpServerUpdateRequest,
 } from "../../lib/api-client";
 import { ToolsRuntimePackages } from "./ToolsRuntimePackages";
 import {
@@ -34,6 +35,8 @@ import {
 } from "./ToolsRuntimeSectionViewModel";
 import type {
 	LspAction,
+	McpRegistryEntryViewModel,
+	McpServerViewModel,
 	ToolsRuntimeSectionProps,
 } from "./ToolsRuntimeSectionViewModel";
 
