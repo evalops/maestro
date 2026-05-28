@@ -45,10 +45,10 @@ describe("deprecate-release", () => {
 
 		expect(result.status).toBe(0);
 		expect(result.stdout).toContain(
-			"[dry-run] /tmp/fake-npm deprecate @evalops/maestro@>=0.10.8 <=0.10.20",
+			"[dry-run] /tmp/fake-npm deprecate '@evalops/maestro@>=0.10.8 <=0.10.20'",
 		);
 		expect(result.stdout).toContain(
-			"Broken release metadata references private workspace packages; install @evalops/maestro@latest.",
+			"'Broken release metadata references private workspace packages; install @evalops/maestro@latest.'",
 		);
 	});
 
