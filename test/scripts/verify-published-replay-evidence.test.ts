@@ -24,6 +24,18 @@ function makeReplayMode(mode: "text" | "json" | "rpc") {
 			inputPath: "package.json",
 			resultStatus: "success",
 		},
+		searchTool: {
+			name: "search",
+			callId: "call-search-package-manifest",
+			inputPath: "package.json",
+			resultStatus: "success",
+		},
+		artifactTool: {
+			name: "write",
+			callId: "call-write-published-artifact",
+			inputPath: "published-replay-artifact.json",
+			resultStatus: "success",
+		},
 		final: {
 			status: "ok",
 			containsExpectedText: true,
@@ -35,6 +47,7 @@ function makeReplayMode(mode: "text" | "json" | "rpc") {
 			sha256: digest,
 			containsFinalText: true,
 			containsToolCallId: true,
+			containsSearchToolCallId: true,
 			containsWriteToolCallId: true,
 		},
 		agentRuntimeLedger: {
@@ -80,10 +93,20 @@ function makeReplayMode(mode: "text" | "json" | "rpc") {
 					completionGate: "maestro_agent_runtime_ledger_recorded",
 				},
 				{
+					toolName: "search",
+					toolCallId: "call-search-package-manifest",
+					evidenceRefs: [
+						"tool-call:call-search-package-manifest",
+						`tool-execution:tool-exec-search-${mode}`,
+					],
+					completionGate: "maestro_agent_runtime_ledger_recorded",
+				},
+				{
 					toolName: "write",
 					toolCallId: "call-write-published-artifact",
 					evidenceRefs: [
 						"tool-call:call-write-published-artifact",
+						`tool-execution:tool-exec-write-${mode}`,
 						`approval-request:approval-${mode}`,
 						`artifact:artifact-${mode}`,
 					],
@@ -132,6 +155,7 @@ function makeEvidence(installer: "npm" | "bun" = "npm") {
 function useSharedWriteEvidenceRefs(evidence: ReturnType<typeof makeEvidence>) {
 	const sharedRefs = [
 		"tool-call:call-write-published-artifact",
+		"tool-execution:tool-exec-write-shared",
 		"approval-request:call-write-published-artifact",
 		"artifact:file:published-replay-artifact.json",
 	];
@@ -152,6 +176,16 @@ function useSharedWriteEvidenceRefs(evidence: ReturnType<typeof makeEvidence>) {
 		count: 1,
 		evidenceRefs: ["artifact:file:published-replay-artifact.json"],
 	};
+	evidence.observability.tools.toolExecutionRefs =
+		evidence.observability.tools.toolExecutionRefs
+			.filter((ref: string) => !ref.includes("tool-exec-write-"))
+			.concat("tool-execution:tool-exec-write-shared");
+	evidence.observability.tools.toolExecutionRefsByCallId[
+		"call-write-published-artifact"
+	] = ["tool-execution:tool-exec-write-shared"];
+	evidence.observability.tools.toolExecutionModesByCallId[
+		"call-write-published-artifact"
+	] = ["text", "json", "rpc"];
 	return evidence;
 }
 
@@ -243,6 +277,52 @@ describe("verify-published-replay-evidence", () => {
 		);
 	});
 
+	it("fails when ToolExecution evidence is missing for a replayed tool", () => {
+		const evidence = makeEvidence();
+		for (const mode of evidence.modes) {
+			const writeItem = mode.agentRuntimeLedger.toolWorkItems.find(
+				(item) => item.toolName === "write",
+			);
+			if (!writeItem) {
+				throw new Error("Expected write tool work item in replay fixture");
+			}
+			writeItem.evidenceRefs = writeItem.evidenceRefs.filter(
+				(ref: string) => !ref.startsWith("tool-execution:"),
+			);
+		}
+		evidence.observability.tools.toolExecutionRefs =
+			evidence.observability.tools.toolExecutionRefs.filter(
+				(ref: string) => !ref.includes("tool-exec-write-"),
+			);
+		evidence.observability.tools.toolExecutionRefsByCallId[
+			"call-write-published-artifact"
+		] = [];
+		evidence.observability.tools.toolExecutionModesByCallId[
+			"call-write-published-artifact"
+		] = [];
+		evidence.releaseGate.checks.toolExecutionEvidence = false;
+		evidence.releaseGate.satisfied = false;
+		evidence.releaseGate.failedChecks = ["toolExecutionEvidence"];
+
+		expect(() => validatePublishedReplayEvidence(evidence)).toThrow(
+			/releaseGate\.checks\.toolExecutionEvidence.*ToolExecution evidence/s,
+		);
+	});
+
+	it("fails when ToolExecution refs are assigned to the wrong tool call", () => {
+		const evidence = makeEvidence();
+		evidence.observability.tools.toolExecutionRefsByCallId[
+			"call-read-package-json"
+		] =
+			evidence.observability.tools.toolExecutionRefsByCallId[
+				"call-write-published-artifact"
+			];
+
+		expect(() => validatePublishedReplayEvidence(evidence)).toThrow(
+			/ToolExecution evidence/s,
+		);
+	});
+
 	it("fails when approval or artifact release-gate checks are absent", () => {
 		const evidence = makeEvidence();
 		delete evidence.releaseGate.checks.approvalTraceEvidence;
@@ -250,6 +330,69 @@ describe("verify-published-replay-evidence", () => {
 
 		expect(() => validatePublishedReplayEvidence(evidence)).toThrow(
 			/releaseGate\.checks\.approvalTraceEvidence.*releaseGate\.checks\.artifactTraceEvidence/s,
+		);
+	});
+
+	it("fails when error trace evidence is not queryable or release-gated", () => {
+		const evidence = makeEvidence();
+		evidence.observability.errors = {
+			count: 0,
+			modes: [],
+		};
+		delete evidence.releaseGate.checks.errorTraceEvidence;
+
+		expect(() => validatePublishedReplayEvidence(evidence)).toThrow(
+			/releaseGate\.checks\.errorTraceEvidence.*observability\.errors/s,
+		);
+	});
+
+	it("fails when the queryable observability index is missing", () => {
+		const evidence = makeEvidence();
+		delete evidence.observability.queryIndex;
+		delete evidence.releaseGate.checks.queryableObservabilityIndex;
+
+		expect(() => validatePublishedReplayEvidence(evidence)).toThrow(
+			/releaseGate\.checks\.queryableObservabilityIndex.*observability\.queryIndex/s,
+		);
+	});
+
+	it("fails when provider config or transcript evidence is missing", () => {
+		const evidence = makeEvidence();
+		delete evidence.replay.providerConfig;
+		delete evidence.transcript;
+		delete evidence.observability.providerConfig;
+		delete evidence.observability.transcript;
+		delete evidence.releaseGate.checks.providerConfig;
+		delete evidence.releaseGate.checks.transcriptEvidence;
+
+		expect(() => validatePublishedReplayEvidence(evidence)).toThrow(
+			/releaseGate\.checks\.providerConfig.*releaseGate\.checks\.transcriptEvidence.*replay\.providerConfig.*transcript/s,
+		);
+	});
+
+	it("fails when provider config is not deterministic", () => {
+		const evidence = makeEvidence();
+		evidence.replay.providerConfig.deterministic = false;
+		evidence.observability.providerConfig.deterministic = false;
+
+		expect(() => validatePublishedReplayEvidence(evidence)).toThrow(
+			/replay\.providerConfig.*observability\.providerConfig/s,
+		);
+	});
+
+	it("fails when observability provider config diverges from replay provider config", () => {
+		const evidence = makeEvidence();
+		const divergentSandboxMode =
+			evidence.replay.providerConfig.sandboxMode === "danger-full-access"
+				? "workspace-write"
+				: "danger-full-access";
+		evidence.observability.providerConfig = {
+			...evidence.observability.providerConfig,
+			sandboxMode: divergentSandboxMode,
+		};
+
+		expect(() => validatePublishedReplayEvidence(evidence)).toThrow(
+			/observability\.providerConfig must mirror replay\.providerConfig/s,
 		);
 	});
 

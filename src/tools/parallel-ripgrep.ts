@@ -26,6 +26,7 @@ import { Type } from "@sinclair/typebox";
 import {
 	formatRipgrepCommand,
 	globSchema,
+	isRipgrepPathError,
 	parseRipgrepJson,
 	pathSchema,
 	runRipgrep,
@@ -425,6 +426,20 @@ export const parallelRipgrepTool = createTool<
 		for (const { pattern, result } of results) {
 			if (result.exitCode === 2) {
 				const message = result.stderr.trim() || result.stdout.trim();
+				if (isRipgrepPathError(message)) {
+					return respond
+						.error(
+							`ripgrep failed\n\n${message.length > 0 ? message : "ripgrep path lookup failed"}`,
+						)
+						.detail({
+							commands,
+							cwd: commandCwd,
+							matchCount: 0,
+							rangeCount: 0,
+							ranges: [],
+							truncated: false,
+						});
+				}
 				throw new Error(
 					message.length > 0 ? message : "ripgrep exited with an error",
 				);

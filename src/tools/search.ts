@@ -56,6 +56,7 @@ import {
 	type RipgrepMatch,
 	formatRipgrepCommand,
 	globSchema,
+	isRipgrepPathError,
 	parseRipgrepJson,
 	pathSchema,
 	runRipgrep,
@@ -383,6 +384,13 @@ Examples:
 
 		if (result.exitCode === 2) {
 			const message = result.stderr.trim() || result.stdout.trim();
+			if (isRipgrepPathError(message)) {
+				return respond
+					.error(
+						`ripgrep failed\n\n${message.length > 0 ? message : "ripgrep path lookup failed"}`,
+					)
+					.detail({ command, cwd: commandCwd });
+			}
 			throw new Error(
 				message.length > 0 ? message : "ripgrep exited with an error",
 			);

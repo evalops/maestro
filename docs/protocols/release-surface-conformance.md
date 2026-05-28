@@ -21,7 +21,7 @@ npm run check:release-surface
 | package metadata | `@evalops/maestro` stays public, exposes the `maestro` bin, and declares runtime workspaces as vendored metadata. |
 | dependency hygiene | Private runtime workspace packages cannot reappear as install-time registry dependencies. |
 | registry install smokes | npm, npx, Bun, and bunx install paths stay connected to published replay evidence. |
-| published replay | text, JSON, and RPC replay modes keep session and AgentRuntime evidence. |
+| published replay | text, JSON, and RPC replay modes keep session, tool, ToolExecution, approval, search/ripgrep, error, artifact, final-status, query-index, and AgentRuntime evidence. |
 | release readiness | local release gates continue to build, verify runtime deps, pack-smoke, and replay-smoke. |
 | public mirror | the sanitized public tree, release-helper mirror sync, mirror contract, and fallback publish workflow keep their guardrails. |
 

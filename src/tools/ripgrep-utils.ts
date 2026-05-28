@@ -156,6 +156,12 @@ export function formatRipgrepCommand(args: string[]): string {
 	return ["rg", ...args].map(shellQuoteArg).join(" ");
 }
 
+export function isRipgrepPathError(message: string): boolean {
+	return /No such file or directory|IO error|os error 2|system cannot find the path/i.test(
+		message,
+	);
+}
+
 export async function runRipgrep(
 	args: string[],
 	signal?: AbortSignal,

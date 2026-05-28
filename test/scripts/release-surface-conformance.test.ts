@@ -141,4 +141,133 @@ describe("release-surface conformance", () => {
 			"public-install-docs: surface-link.txt escapes repository root",
 		);
 	});
+
+	it("requires release-gate script evidence to validate package scripts", () => {
+		tempDir = join(
+			tmpdir(),
+			`release-surface-script-shape-${process.pid}-${Date.now()}`,
+		);
+		mkdirSync(tempDir, { recursive: true });
+		writeFileSync(
+			join(tempDir, "surface.txt"),
+			'"release:check": "node scripts/release-readiness.js release"\n"check:release-surface": "node scripts/check-release-surface-conformance.mjs"\n',
+			"utf8",
+		);
+
+		const failures = checkReleaseSurfaceConformance({
+			rootDir: tempDir,
+			manifest: {
+				version: 1,
+				checks: [
+					{
+						area: "release-gate-scripts",
+						path: "surface.txt",
+						evidenceType: "source",
+						anchors: [
+							'"release:check": "node scripts/release-readiness.js release"',
+							'"check:release-surface": "node scripts/check-release-surface-conformance.mjs"',
+						],
+					},
+				],
+			},
+		});
+
+		expect(failures).toContain(
+			"release-gate-scripts: surface.txt must use package.json as release-gate script evidence",
+		);
+		expect(failures).toContain(
+			"release-gate-scripts: surface.txt must use package-script evidence for release-gate validation",
+		);
+	});
+
+	it("requires lint:evals to invoke the release surface conformance gate", () => {
+		tempDir = join(
+			tmpdir(),
+			`release-surface-script-${process.pid}-${Date.now()}`,
+		);
+		mkdirSync(tempDir, { recursive: true });
+		writeFileSync(
+			join(tempDir, "package.json"),
+			JSON.stringify({
+				scripts: {
+					"release:check": "node scripts/release-readiness.js release",
+					"check:release-surface":
+						"node scripts/check-release-surface-conformance.mjs",
+					"lint:evals":
+						"node scripts/verify-evals.js && echo check:release-surface",
+				},
+			}),
+			"utf8",
+		);
+
+		const failures = checkReleaseSurfaceConformance({
+			rootDir: tempDir,
+			manifest: {
+				version: 1,
+				checks: [
+					{
+						area: "release-gate-scripts",
+						path: "package.json",
+						evidenceType: "package-script",
+						anchors: [
+							"release:check",
+							"scripts/release-readiness.js",
+							"check:release-surface",
+							"scripts/check-release-surface-conformance.mjs",
+							"lint:evals",
+						],
+					},
+				],
+			},
+		});
+
+		expect(failures).toContain(
+			"release-gate-scripts: package.json scripts.lint:evals must run check:release-surface",
+		);
+	});
+
+	it("rejects release-surface gates that can swallow failures", () => {
+		tempDir = join(
+			tmpdir(),
+			`release-surface-script-swallow-${process.pid}-${Date.now()}`,
+		);
+		mkdirSync(tempDir, { recursive: true });
+		writeFileSync(
+			join(tempDir, "package.json"),
+			JSON.stringify({
+				scripts: {
+					"release:check": "node scripts/release-readiness.js release",
+					"check:release-surface":
+						"node scripts/check-release-surface-conformance.mjs || true",
+					"lint:evals": "npm run check:release-surface",
+				},
+			}),
+			"utf8",
+		);
+
+		const failures = checkReleaseSurfaceConformance({
+			rootDir: tempDir,
+			manifest: {
+				version: 1,
+				checks: [
+					{
+						area: "release-gate-scripts",
+						path: "package.json",
+						evidenceType: "package-script",
+						anchors: [
+							"release:check",
+							"scripts/release-readiness.js",
+							"check:release-surface",
+							"scripts/check-release-surface-conformance.mjs",
+							"lint:evals",
+						],
+					},
+				],
+			},
+		});
+
+		expect(failures).toContain(
+			"release-gate-scripts: package.json scripts.check:release-surface must run scripts/check-release-surface-conformance.mjs",
+		);
+	});
 });

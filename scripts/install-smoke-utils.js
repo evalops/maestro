@@ -205,6 +205,17 @@ export function runBunxCliSmoke(cwd, { cliCommand, expectedVersion, label }) {
 	});
 }
 
+export function runBunRuntimeCliSmoke(
+	cwd,
+	{ cliCommand, expectedVersion, label },
+) {
+	runCliSmoke(getBunxCommand(), ["--bun", cliCommand], cwd, {
+		cliCommand,
+		expectedVersion,
+		label,
+	});
+}
+
 function parseAuditJson(output) {
 	try {
 		return JSON.parse(output);

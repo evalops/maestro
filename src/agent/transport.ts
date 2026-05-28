@@ -708,18 +708,12 @@ export class ProviderTransport implements AgentTransport {
 							{
 								bridge: platformToolExecutionBridge,
 								plan: safetyVerdict.toolExecutionBridgePlan,
-								outcome: {
-									message: {
-										...cachedEntry.message,
-										toolCallId: toolCall.id,
-										toolName: toolCall.name,
-										content: cachedEntry.message.content.map((item) => ({
-											...item,
-										})),
-										timestamp: this.clock.now(),
-									},
-									isError: false,
-								},
+								outcome: cloneToolOutcomeForCall(
+									{ message: cachedEntry.message, isError: false },
+									toolCall,
+									this.clock.now(),
+									{ approvalRequestId: safetyVerdict.approvalRequestId },
+								),
 								durationMs: this.clock.now() - cacheHitStart,
 								signal,
 							},
@@ -748,6 +742,7 @@ export class ProviderTransport implements AgentTransport {
 									await pendingReusable,
 									toolCall,
 									this.clock.now(),
+									{ approvalRequestId: safetyVerdict.approvalRequestId },
 								),
 								durationMs: this.clock.now() - cacheHitStart,
 								signal,
@@ -2193,18 +2188,12 @@ export class ProviderTransport implements AgentTransport {
 								await recordReusableToolExecutionBridgeOutput({
 									bridge: platformToolExecutionBridge,
 									plan: safetyVerdict.toolExecutionBridgePlan,
-									outcome: {
-										message: {
-											...cachedEntry.message,
-											toolCallId: toolCall.id,
-											toolName: toolCall.name,
-											content: cachedEntry.message.content.map((item) => ({
-												...item,
-											})),
-											timestamp: this.clock.now(),
-										},
-										isError: false,
-									},
+									outcome: cloneToolOutcomeForCall(
+										{ message: cachedEntry.message, isError: false },
+										toolCall,
+										this.clock.now(),
+										{ approvalRequestId: safetyVerdict.approvalRequestId },
+									),
 									durationMs: this.clock.now() - cacheHitStart,
 									signal,
 								});
@@ -2269,6 +2258,9 @@ export class ProviderTransport implements AgentTransport {
 											await pendingReusable,
 											toolCall,
 											this.clock.now(),
+											{
+												approvalRequestId: safetyVerdict.approvalRequestId,
+											},
 										),
 										durationMs: this.clock.now() - cacheHitStart,
 										signal,

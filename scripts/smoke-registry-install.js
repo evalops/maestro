@@ -12,6 +12,7 @@ import {
 	getNpmCommand,
 	readInstalledPackageJson,
 	runBunxCliSmoke,
+	runBunRuntimeCliSmoke,
 	runInstalledCliSmoke,
 	runInstalledPackageAudit,
 	runNpxCliSmoke,
@@ -268,6 +269,11 @@ async function main() {
 			cliCommand,
 			expectedVersion: version,
 			label: "bunx registry CLI",
+		});
+		runBunRuntimeCliSmoke(bunTempDir, {
+			cliCommand,
+			expectedVersion: version,
+			label: "bunx --bun registry CLI",
 		});
 		await runPublishedReplayE2E({
 			cliCommand,
