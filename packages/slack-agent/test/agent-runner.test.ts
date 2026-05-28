@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
 	DEFAULT_RETRY_CONFIG,
+	buildSlackAgentUserPrompt,
+	buildSystemPrompt,
 	isRetryableError,
 	translateToHostPath,
 	withRetry,
@@ -91,6 +93,47 @@ describe("isRetryableError", () => {
 			expect(isRetryableError(new Error("HTTP 403 Forbidden"))).toBe(false);
 			expect(isRetryableError(new Error("HTTP 404 Not Found"))).toBe(false);
 		});
+	});
+});
+
+describe("buildSlackAgentUserPrompt", () => {
+	it("makes the last Slack turn authoritative and preserves requested literals", () => {
+		const prompt = buildSlackAgentUserPrompt(
+			[
+				"2026-05-28T10:00:00Z\tEnsemble\tArgo Application  is Synced/Healthy at revision .\t",
+				"2026-05-28T10:01:00Z\tJonathan\tConfirm `evalops-production` at revision `b7f760e49d42ba56ffe056763aa4fc5ebb0d10c9` and run `26573810837`.\t",
+			].join("\n"),
+		);
+
+		expect(prompt).toContain("The last message is the current request");
+		expect(prompt).toContain("preserve those literals exactly");
+		expect(prompt).toContain("Do not copy blank or missing identifiers");
+		expect(prompt).toContain("evalops-production");
+		expect(prompt).toContain("b7f760e49d42ba56ffe056763aa4fc5ebb0d10c9");
+		expect(prompt).toContain("26573810837");
+	});
+});
+
+describe("buildSystemPrompt", () => {
+	it("tells the Slack worker not to blank normal deploy identifiers", () => {
+		const prompt = buildSystemPrompt(
+			"/workspace",
+			"C123",
+			"",
+			{ type: "host" },
+			[],
+			[],
+		);
+
+		expect(prompt).toContain("Slack Reply Integrity");
+		expect(prompt).toContain("Preserve exact literals");
+		expect(prompt).toContain("Argo Application names");
+		expect(prompt).toContain("GitHub Actions run IDs");
+		expect(prompt).toContain(
+			"Do not blank or omit ordinary operational identifiers",
+		);
+		expect(prompt).toContain("evalops-production");
+		expect(prompt).toContain("Redact only actual secrets");
 	});
 });
 

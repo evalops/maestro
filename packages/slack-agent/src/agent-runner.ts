@@ -476,7 +476,7 @@ function getMemory(channelDir: string): string {
 	return parts.join("\n\n");
 }
 
-function buildSystemPrompt(
+export function buildSystemPrompt(
 	workspacePath: string,
 	channelId: string,
 	memory: string,
@@ -527,6 +527,13 @@ function buildSystemPrompt(
 ## Slack Formatting (mrkdwn, NOT Markdown)
 Bold: *text*, Italic: _text_, Code: \`code\`, Block: \`\`\`code\`\`\`, Links: <url|text>
 Do NOT use **double asterisks** or [markdown](links).
+
+## Slack Reply Integrity
+- The last conversation turn is the current request and is authoritative over earlier bot replies.
+- Preserve exact literals the user asks you to include, especially app names, deployment names, PR numbers, commit SHAs, GitHub Actions run IDs, Argo Application names, and revision IDs.
+- Do not blank or omit ordinary operational identifiers. Names like \`evalops-production\` and commit SHAs are not secrets.
+- If older bot replies in the thread contain missing identifiers, treat that as a prior mistake and do not copy that style.
+- Redact only actual secrets such as tokens, passwords, private keys, and credentials.
 
 ## Slack IDs
 Channels: ${channelMappings}
@@ -603,6 +610,25 @@ Use the workflow tool for:
 - Chaining connector queries with data transformations
 - Reference previous step results with $steps.<stepName>
 ${connectorDescription ? `\n${connectorDescription}\n` : ""}`;
+}
+
+export function buildSlackAgentUserPrompt(
+	recentMessages: string,
+	fileContentSection = "",
+): string {
+	let userPrompt = `Conversation history (last 50 turns). Respond to the last message.
+The last message is the current request. It overrides earlier bot replies if they conflict.
+When the last message asks you to include exact names, IDs, SHAs, revisions, URLs, or code-spanned literals, preserve those literals exactly in your answer.
+Do not copy blank or missing identifiers from earlier assistant messages.
+Format: date TAB user TAB text TAB attachments
+
+${recentMessages}`;
+
+	if (fileContentSection) {
+		userPrompt += fileContentSection;
+	}
+
+	return userPrompt;
 }
 
 function truncate(text: string, maxLen: number): string {
@@ -1221,12 +1247,10 @@ export function createAgentRunner(
 			});
 
 			// Run the agent with user's message
-			let userPrompt = `Conversation history (last 50 turns). Respond to the last message.\nFormat: date TAB user TAB text TAB attachments\n\n${recentMessages}`;
-
-			// Append file contents if any code/text files were attached
-			if (fileContentSection) {
-				userPrompt += fileContentSection;
-			}
+			const userPrompt = buildSlackAgentUserPrompt(
+				recentMessages,
+				fileContentSection,
+			);
 
 			// Debug: write full context to file (guarded to avoid persisting secrets)
 			if (process.env.SLACK_AGENT_DEBUG_PROMPTS === "1") {
