@@ -17,6 +17,26 @@ versioning when releases are cut.
   and keep scheduled public runs inert so public publishing stays downstream of
   the internal source-of-truth release.
 
+## [0.10.43] - 2026-05-28
+
+### Changed
+
+- Harden release smoke conformance gates. <!-- maestro-release-note:2e08ee188332 -->
+- Simplify teammate runtime surface. <!-- maestro-release-note:736c201f0f42 -->
+- Gate published replay lifecycle evidence (#2316). <!-- maestro-release-note:efaa8396bf9f -->
+- Harden Bun runtime package smoke (#2314). <!-- maestro-release-note:81b82f5fd1b0 -->
+- Gate published replay ToolExecution evidence (#2312). <!-- maestro-release-note:b7593028a1d8 -->
+- Gate queryable replay observability (#2311). <!-- maestro-release-note:5d907d6476a4 -->
+- Gate published replay search evidence (#2310). <!-- maestro-release-note:e781ffc42d54 -->
+- Harden release surface gate scripts. <!-- maestro-release-note:52e5b469a427 -->
+- Verify published replay provider config mirrors. <!-- maestro-release-note:db33aac1117f -->
+- Require deterministic published replay provider config. <!-- maestro-release-note:20ccb579d520 -->
+- Gate published replay provider transcript evidence. <!-- maestro-release-note:85d27c1a856b -->
+
+### Fixed
+
+- Harden ripgrep path errors and replay error evidence (#2307). <!-- maestro-release-note:2d2352fdcfa1 -->
+
 ## [0.10.42] - 2026-05-28
 
 ### Changed
