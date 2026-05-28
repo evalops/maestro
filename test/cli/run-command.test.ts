@@ -1,4 +1,10 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import {
+	appendFileSync,
+	mkdirSync,
+	mkdtempSync,
+	rmSync,
+	writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ComposerRunTimelineItem } from "@evalops/contracts";
@@ -626,6 +632,126 @@ describe("run command", () => {
 		expect(
 			report?.trajectoryInspection.scoreFindings[0]?.timelineItemIds,
 		).toEqual(["compaction:compact-1"]);
+	});
+
+	it("reconstructs persisted approval and retry waits into AgentRuntime operations", async () => {
+		const { sessionDir, sessionId } = makeSessionDir();
+		const manager = new SessionManager(false, undefined, { sessionDir });
+		const sessionFile = manager.getSessionFileById(sessionId);
+		if (!sessionFile) {
+			throw new Error("Expected test session file to exist");
+		}
+		const pendingEntries = [
+			{
+				type: "custom",
+				id: "pending-approval-entry",
+				parentId: "tool-1",
+				timestamp: "2026-05-09T10:00:03.800Z",
+				customType: "pending_request",
+				data: {
+					request: {
+						id: "pending-approval-1",
+						kind: "approval",
+						status: "pending",
+						visibility: "user",
+						sessionId,
+						toolCallId: "call-edit",
+						toolName: "edit",
+						displayName: "Edit docs",
+						args: { path: "docs/run.md" },
+						reason: "Governed edit approval is pending.",
+						createdAt: "2026-05-09T10:00:03.800Z",
+						source: "platform",
+						platform: {
+							source: "tool_execution",
+							toolExecutionId: "texec-call-edit",
+							approvalRequestId: "approval-call-edit",
+						},
+					},
+				},
+			},
+			{
+				type: "custom",
+				id: "pending-retry-entry",
+				parentId: "tool-2",
+				timestamp: "2026-05-09T10:00:03.900Z",
+				customType: "pending_request",
+				data: {
+					request: {
+						id: "pending-retry-1",
+						kind: "tool_retry",
+						status: "pending",
+						visibility: "user",
+						sessionId,
+						toolCallId: "call-mcp-search",
+						toolName: "mcp__platform__search",
+						displayName: "Platform search",
+						args: { query: "run reconstruction" },
+						reason: "Search failed and needs a retry decision.",
+						createdAt: "2026-05-09T10:00:03.900Z",
+						source: "platform",
+						platform: {
+							source: "tool_execution",
+							toolExecutionId: "texec-retry-1",
+							approvalRequestId: "approval-retry-1",
+						},
+					},
+				},
+			},
+		];
+		appendFileSync(
+			sessionFile,
+			`\n${pendingEntries.map((entry) => JSON.stringify(entry)).join("\n")}\n`,
+		);
+
+		const report = await testing.buildRunReconstructionReport(sessionId, {
+			sessionDir,
+		});
+
+		expect(report?.coverage.pendingRequests).toBe(true);
+		expect(report?.timeline.pendingRequestCount).toBe(2);
+		expect(report?.durability.pendingRequests).toBe(2);
+		expect(report?.counts.byType).toMatchObject({
+			"wait.pending": 2,
+		});
+		expect(report?.agentRuntimeLedger.counts.byKind).toMatchObject({
+			wait: 2,
+		});
+		const waitOperations =
+			report?.agentRuntimeLedger.promotion.operations.filter(
+				(operation) => operation.operation === "wait_run",
+			) ?? [];
+		expect(waitOperations).toEqual(
+			expect.arrayContaining([
+				expect.objectContaining({
+					operation: "wait_run",
+					payload: expect.objectContaining({
+						waitType: "AGENT_RUN_WAIT_TYPE_APPROVAL",
+						pendingRequestId: "pending-approval-1",
+						pendingRequestKind: "approval",
+						approvalRequestId: "approval-call-edit",
+						toolExecutionId: "texec-call-edit",
+					}),
+				}),
+				expect.objectContaining({
+					operation: "wait_run",
+					payload: expect.objectContaining({
+						waitType: "AGENT_RUN_WAIT_TYPE_APPROVAL",
+						pendingRequestId: "pending-retry-1",
+						pendingRequestKind: "tool_retry",
+						approvalRequestId: "approval-retry-1",
+						toolExecutionId: "texec-retry-1",
+					}),
+				}),
+			]),
+		);
+		expect(
+			report?.agentRuntimeLedger.promotion.operations.some(
+				(operation) =>
+					operation.operation === "record_run_work_item" &&
+					operation.payload.pendingRequestKind === "tool_retry",
+			),
+		).toBe(true);
 	});
 
 	it("migrates legacy entries before reconstructing the timeline", async () => {

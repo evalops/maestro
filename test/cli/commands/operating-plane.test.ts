@@ -30,14 +30,14 @@ const inspection: OperatingPlaneInspection = {
 					kind: "model_event",
 					revision: "rev_1",
 					available: true,
-					summary: "SECRET evidence summary",
+					summary: "SECRET artifact summary",
 				},
 			],
 			work_items: [
 				{
 					kind: "followup",
 					state: "waiting",
-					next_action: "Post allowed evidence revision to operator",
+					next_action: "Post allowed artifact revision to operator",
 					blocker: "approval pending",
 				},
 			],
@@ -63,7 +63,7 @@ describe("operating-plane CLI command", () => {
 			"status",
 			"--thread-id",
 			"C123:1740000000.000100",
-			"--evidence-id=gateway:req_123",
+			"--artifact-id=gateway:req_123",
 			"--auth-subject",
 			"user:alice",
 			"--audience",
@@ -87,7 +87,7 @@ describe("operating-plane CLI command", () => {
 		});
 	});
 
-	it("fetches and prints a content-free value proof report", async () => {
+	it("fetches and prints a content-free runtime status report", async () => {
 		const lines: string[] = [];
 		const queries: unknown[] = [];
 
@@ -96,7 +96,7 @@ describe("operating-plane CLI command", () => {
 				"status",
 				"--thread-id",
 				"C123:1740000000.000100",
-				"--evidence-id",
+				"--artifact-id",
 				"gateway:req_123",
 				"--auth-subject",
 				"user:alice",
@@ -123,17 +123,17 @@ describe("operating-plane CLI command", () => {
 			},
 		]);
 		const output = lines.join("\n");
-		expect(output).toContain("Agent operating-plane value proof");
+		expect(output).toContain("Agent operating-plane status");
 		expect(output).toContain("Identity: user:alice");
 		expect(output).toContain(
-			"Evidence: gateway:req_123 (llm_gateway/model_event, available, revision rev_1)",
+			"Artifacts: gateway:req_123 (llm_gateway/model_event, available, revision rev_1)",
 		);
 		expect(output).toContain(
-			"Next action: Post allowed evidence revision to operator",
+			"Next action: Post allowed artifact revision to operator",
 		);
 		expect(output).toContain("Withheld/out of scope: customer_content");
 		expect(output).not.toContain("SECRET customer prompt");
-		expect(output).not.toContain("SECRET evidence summary");
+		expect(output).not.toContain("SECRET artifact summary");
 	});
 
 	it("can emit the safe summary as JSON for Slack/web bridges", async () => {
@@ -148,13 +148,13 @@ describe("operating-plane CLI command", () => {
 		);
 
 		const report = JSON.parse(lines.join("\n")) as {
-			runs: Array<{ runId: string; evidenceRefs: Array<{ id: string }> }>;
+			runs: Array<{ runId: string; artifactRefs: Array<{ id: string }> }>;
 		};
 		expect(report.runs[0]).toMatchObject({
 			runId: "run_1",
-			evidenceRefs: [{ id: "gateway:req_123" }],
+			artifactRefs: [{ id: "gateway:req_123" }],
 		});
 		expect(lines.join("\n")).not.toContain("SECRET customer prompt");
-		expect(lines.join("\n")).not.toContain("SECRET evidence summary");
+		expect(lines.join("\n")).not.toContain("SECRET artifact summary");
 	});
 });

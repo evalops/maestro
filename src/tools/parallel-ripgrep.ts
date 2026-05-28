@@ -27,6 +27,7 @@ import {
 	formatRipgrepCommand,
 	globSchema,
 	isRipgrepPathError,
+	normalizeRipgrepPathArgs,
 	parseRipgrepJson,
 	pathSchema,
 	runRipgrep,
@@ -326,7 +327,7 @@ export const parallelRipgrepTool = createTool<
 			);
 		}
 
-		const pathArgs = toArray(paths);
+		const pathArgs = normalizeRipgrepPathArgs(toArray(paths));
 		const globArgs = toArray(glob);
 		const commandCwd = cwd ? resolvePath(expandUserPath(cwd)) : process.cwd();
 		const before = beforeContext ?? context ?? 0;

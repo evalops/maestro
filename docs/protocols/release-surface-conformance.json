@@ -74,7 +74,8 @@
 				"[\"add\", packageSpec]",
 				"runPublishedReplayE2E",
 				"runNpxCliSmoke",
-				"runBunxCliSmoke"
+				"runBunxCliSmoke",
+				"runBunRuntimeCliSmoke"
 			]
 		},
 		{

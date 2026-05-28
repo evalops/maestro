@@ -56,7 +56,7 @@ export const CODEX_SUBAGENT_DISPATCH_TABLE = {
 			skillId: "maestro.subagent.test-runner",
 			displayName: "Maestro test runner subagent",
 			description:
-				"Delegate test execution, failure triage, and verification evidence capture to a target-owned Maestro child agent.",
+				"Delegate test execution, failure triage, and result artifact capture to a target-owned Maestro child agent.",
 			tags: ["maestro", "subagent", "test", "ci"],
 			typeAliases: ["test", "qa", "ci", "ci-monitor", "test-runner"],
 			capabilityAliases: [

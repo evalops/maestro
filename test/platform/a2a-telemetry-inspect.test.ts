@@ -5,7 +5,7 @@ import {
 } from "../../src/platform/a2a-telemetry-inspect.js";
 
 describe("A2A telemetry inspection", () => {
-	it("reconstructs delegated lanes from A2A CloudEvents and completion audit proof", () => {
+	it("reconstructs delegated lanes from A2A CloudEvents and completion signals", () => {
 		const events: A2ATelemetryCloudEventLike[] = [
 			event(
 				"maestro.events.a2a.peer.selected",
@@ -53,7 +53,7 @@ describe("A2A telemetry inspection", () => {
 			swarmId: "swarm_1",
 			events,
 			audit: {
-				schema: "evalops.maestro.a2a-completion-audit.v1",
+				schema: "evalops.maestro.a2a-completion-audit.v2",
 				swarmId: "swarm_1",
 				generatedAt: "2026-05-23T18:00:00.000Z",
 				complete: true,
@@ -74,7 +74,7 @@ describe("A2A telemetry inspection", () => {
 						peer: "Alpha",
 						status: "TASK_STATE_COMPLETED",
 						terminal: true,
-						evidence: {
+						signals: {
 							status: true,
 							artifact: true,
 							task: true,
@@ -82,7 +82,7 @@ describe("A2A telemetry inspection", () => {
 							push: true,
 							correlation: true,
 						},
-						missingEvidence: [],
+						missingSignals: [],
 					},
 				],
 			},
@@ -90,7 +90,7 @@ describe("A2A telemetry inspection", () => {
 
 		expect(inspection).toEqual(
 			expect.objectContaining({
-				schema: "evalops.maestro.a2a-telemetry-inspection.v1",
+				schema: "evalops.maestro.a2a-telemetry-inspection.v2",
 				swarmId: "swarm_1",
 				complete: true,
 				counts: {
@@ -133,7 +133,7 @@ describe("A2A telemetry inspection", () => {
 						},
 						orderingAnomalies: [],
 						missingEventTypes: [],
-						missingEvidence: [],
+						missingSignals: [],
 					}),
 				],
 			}),
@@ -235,7 +235,7 @@ describe("A2A telemetry inspection", () => {
 		);
 	});
 
-	it("flags lanes whose terminal event arrives before dispatch proof", () => {
+	it("flags lanes whose terminal event arrives before dispatch", () => {
 		const events: A2ATelemetryCloudEventLike[] = [
 			event(
 				"maestro.events.a2a.peer.selected",

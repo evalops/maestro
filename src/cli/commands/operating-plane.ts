@@ -24,6 +24,7 @@ export interface HandleOperatingPlaneCommandOptions {
 
 const VALUE_FLAGS = new Set([
 	"--agent-id",
+	"--artifact-id",
 	"--audience",
 	"--auth-subject",
 	"--autonomy-session-id",
@@ -128,7 +129,8 @@ function queryFromFlags(
 		channelThreadId: flagString(flags, "--channel-thread-id"),
 		traceId: flagString(flags, "--trace-id"),
 		sessionId: flagString(flags, "--session-id"),
-		evidenceId: flagString(flags, "--evidence-id"),
+		evidenceId:
+			flagString(flags, "--artifact-id") ?? flagString(flags, "--evidence-id"),
 		gatewayAuthenticatedSubject:
 			flagString(flags, "--gateway-authenticated-subject") ??
 			flagString(flags, "--auth-subject"),
@@ -203,7 +205,7 @@ function operatingPlaneHelpText(): string {
 
 Filters:
   --thread-id <id>                  Slack/channel thread id
-  --evidence-id <id>                Evidence ref id
+  --artifact-id <id>                Runtime artifact ref id
   --auth-subject <subject>          Gateway-authenticated subject
   --trace-id <id>                   Trace id
   --session-id <id>                 Maestro/session id

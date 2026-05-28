@@ -20,8 +20,10 @@ function getTextOutput(result: AgentToolResult<unknown>): string {
 
 describe("parallel-ripgrep", () => {
 	let testDir: string;
+	let originalHome: string | undefined;
 
 	beforeEach(() => {
+		originalHome = process.env.HOME;
 		testDir = mkdtempSync(join(tmpdir(), "parallel-ripgrep-test-"));
 		// Create test files
 		writeFileSync(
@@ -59,6 +61,11 @@ function goodbye() {
 	});
 
 	afterEach(() => {
+		if (originalHome === undefined) {
+			delete process.env.HOME;
+		} else {
+			process.env.HOME = originalHome;
+		}
 		rmSync(testDir, { recursive: true, force: true });
 	});
 
@@ -211,6 +218,22 @@ function goodbye() {
 			expect(result.isError).toBeFalsy();
 			const output = getTextOutput(result);
 			expect(output).toContain("match");
+		});
+
+		it("expands tilde in search paths", async () => {
+			process.env.HOME = testDir;
+			writeFileSync(join(testDir, "home-parallel.ts"), "const needle = true;");
+
+			const result = await parallelRipgrepTool.execute("prg-13-tilde", {
+				patterns: ["needle"],
+				paths: ["~/home-parallel.ts"],
+			});
+
+			expect(result.isError).toBeFalsy();
+			expect(getTextOutput(result)).toContain("needle");
+			expect(result.details?.commands.at(0)).toContain(
+				join(testDir, "home-parallel.ts"),
+			);
 		});
 
 		it("quotes shell-sensitive command details", async () => {

@@ -22,16 +22,16 @@ export interface OperatingPlaneRunStatus {
 	traceId?: string;
 	identitySubject?: string;
 	operatorSummary?: string;
-	proofPresent: string[];
-	proofMissing: string[];
-	evidenceRefs: OperatingPlaneEvidenceStatus[];
+	signalsPresent: string[];
+	signalsMissing: string[];
+	artifactRefs: OperatingPlaneArtifactStatus[];
 	nextActions: string[];
 	blockers: string[];
 	withheld: string[];
 	usage: OperatingPlaneUsageStatus;
 }
 
-export interface OperatingPlaneEvidenceStatus {
+export interface OperatingPlaneArtifactStatus {
 	id: string;
 	source: string;
 	kind: string;
@@ -52,7 +52,7 @@ interface OperatingPlaneSummaryOptions {
 	maxRuns?: number;
 }
 
-type ProofField = {
+type SignalField = {
 	label: string;
 	value: boolean | undefined;
 };
@@ -77,7 +77,7 @@ export function formatOperatingPlaneStatusReport(
 	report: OperatingPlaneStatusReport,
 ): string {
 	const lines = [
-		`Agent operating-plane value proof (${report.runCount} ${pluralize("run", report.runCount)})`,
+		`Agent operating-plane status (${report.runCount} ${pluralize("run", report.runCount)})`,
 		`Generated: ${report.generatedAt}`,
 	];
 	if (report.unavailableSources.length > 0) {
@@ -96,15 +96,15 @@ export function formatOperatingPlaneStatusReport(
 		pushLine(lines, "  Thread", run.channelThreadId);
 		pushLine(lines, "  Trace", run.traceId);
 		pushLine(lines, "  Identity", run.identitySubject);
-		if (run.proofPresent.length > 0) {
-			lines.push(`  Proof present: ${run.proofPresent.join(", ")}`);
+		if (run.signalsPresent.length > 0) {
+			lines.push(`  Signals present: ${run.signalsPresent.join(", ")}`);
 		}
-		if (run.proofMissing.length > 0) {
-			lines.push(`  Missing proof: ${run.proofMissing.join(", ")}`);
+		if (run.signalsMissing.length > 0) {
+			lines.push(`  Signals missing: ${run.signalsMissing.join(", ")}`);
 		}
-		if (run.evidenceRefs.length > 0) {
+		if (run.artifactRefs.length > 0) {
 			lines.push(
-				`  Evidence: ${run.evidenceRefs.map(formatEvidenceRef).join("; ")}`,
+				`  Artifacts: ${run.artifactRefs.map(formatArtifactRef).join("; ")}`,
 			);
 		}
 		for (const nextAction of run.nextActions) {
@@ -128,7 +128,7 @@ export function formatOperatingPlaneStatusReport(
 function summarizeOperatingPlaneRun(
 	run: OperatingPlaneRun,
 ): OperatingPlaneRunStatus {
-	const { proofPresent, proofMissing } = summarizeProof(run);
+	const { signalsPresent, signalsMissing } = summarizeValueSignals(run);
 	return stripUndefined({
 		runId: run.agent_run_id,
 		title: oneLine(run.title) ?? "",
@@ -138,9 +138,9 @@ function summarizeOperatingPlaneRun(
 		traceId: oneLine(run.trace_id),
 		identitySubject: operatingPlaneIdentitySubject(run),
 		operatorSummary: oneLine(run.value_proof?.operator_summary),
-		proofPresent,
-		proofMissing,
-		evidenceRefs: summarizeEvidenceRefs(run.evidence_refs),
+		signalsPresent,
+		signalsMissing,
+		artifactRefs: summarizeArtifactRefs(run.evidence_refs),
 		nextActions: uniqueStrings(
 			run.work_items?.map((item) => oneLine(item.next_action)),
 		),
@@ -152,36 +152,36 @@ function summarizeOperatingPlaneRun(
 	});
 }
 
-function summarizeProof(run: OperatingPlaneRun): {
-	proofPresent: string[];
-	proofMissing: string[];
+function summarizeValueSignals(run: OperatingPlaneRun): {
+	signalsPresent: string[];
+	signalsMissing: string[];
 } {
-	const proof = run.value_proof;
-	const fields: ProofField[] = [
-		{ label: "identity", value: proof?.identity_bound },
-		{ label: "model", value: proof?.model_observed },
-		{ label: "tool", value: proof?.tool_observed },
-		{ label: "approval", value: proof?.approval_observed },
-		{ label: "trace", value: proof?.trace_linked },
-		{ label: "evidence", value: proof?.evidence_linked },
-		{ label: "cost", value: proof?.cost_attributed },
+	const signals = run.value_proof;
+	const fields: SignalField[] = [
+		{ label: "identity", value: signals?.identity_bound },
+		{ label: "model", value: signals?.model_observed },
+		{ label: "tool", value: signals?.tool_observed },
+		{ label: "approval", value: signals?.approval_observed },
+		{ label: "trace", value: signals?.trace_linked },
+		{ label: "artifact", value: signals?.evidence_linked },
+		{ label: "cost", value: signals?.cost_attributed },
 	];
-	const proofPresent = fields
+	const signalsPresent = fields
 		.filter((field) => field.value === true)
 		.map((field) => field.label);
-	const proofMissing = uniqueStrings([
+	const signalsMissing = uniqueStrings([
 		...fields
 			.filter((field) => field.value !== true)
 			.map((field) => field.label),
-		...(proof?.missing_proof ?? []),
-		proof ? undefined : "value_proof unavailable",
+		...(signals?.missing_proof ?? []).map(operatorFacingSignalLabel),
+		signals ? undefined : "runtime signal unavailable",
 	]);
-	return { proofPresent, proofMissing };
+	return { signalsPresent, signalsMissing };
 }
 
-function summarizeEvidenceRefs(
+function summarizeArtifactRefs(
 	evidenceRefs: OperatingPlaneEvidence[] | undefined,
-): OperatingPlaneEvidenceStatus[] {
+): OperatingPlaneArtifactStatus[] {
 	return (evidenceRefs ?? [])
 		.map((evidence) =>
 			stripUndefined({
@@ -232,7 +232,7 @@ function operatingPlaneWithheldReasons(run: OperatingPlaneRun): string[] {
 	]);
 }
 
-function formatEvidenceRef(evidence: OperatingPlaneEvidenceStatus): string {
+function formatArtifactRef(evidence: OperatingPlaneArtifactStatus): string {
 	const details = [
 		`${evidence.source}/${evidence.kind}`,
 		evidence.available ? "available" : "unavailable",
@@ -240,6 +240,19 @@ function formatEvidenceRef(evidence: OperatingPlaneEvidenceStatus): string {
 		evidence.revision ? `revision ${evidence.revision}` : undefined,
 	];
 	return `${evidence.id} (${uniqueStrings(details).join(", ")})`;
+}
+
+function operatorFacingSignalLabel(value: string): string | undefined {
+	const normalized = oneLine(value);
+	if (!normalized) {
+		return undefined;
+	}
+	if (normalized === "value_proof unavailable") {
+		return "runtime signal unavailable";
+	}
+	return normalized
+		.replace(/\bproof\b/giu, "signal")
+		.replace(/\bevidence\b/giu, "artifact");
 }
 
 function formatUsage(usage: OperatingPlaneUsageStatus): string | undefined {

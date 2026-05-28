@@ -21,12 +21,19 @@ function getTextOutput(result: AgentToolResult<unknown>): string {
 
 describe("search tool", () => {
 	let testDir: string;
+	let originalHome: string | undefined;
 
 	beforeEach(() => {
+		originalHome = process.env.HOME;
 		testDir = mkdtempSync(join(tmpdir(), "search-tool-test-"));
 	});
 
 	afterEach(() => {
+		if (originalHome === undefined) {
+			delete process.env.HOME;
+		} else {
+			process.env.HOME = originalHome;
+		}
 		rmSync(testDir, { recursive: true, force: true });
 	});
 
@@ -340,6 +347,22 @@ describe("search tool", () => {
 			const output = getTextOutput(result);
 			expect(output).toContain("a.txt");
 			expect(output).toContain("b.txt");
+		});
+
+		it("expands tilde in search paths", async () => {
+			process.env.HOME = testDir;
+			writeFileSync(join(testDir, "home-search.txt"), "needle from home");
+
+			const result = await searchTool.execute("search-19-tilde", {
+				pattern: "needle",
+				paths: "~/home-search.txt",
+			});
+
+			expect(result.isError).toBeFalsy();
+			expect(getTextOutput(result)).toContain("needle from home");
+			expect((result.details as { command?: string }).command).toContain(
+				join(testDir, "home-search.txt"),
+			);
 		});
 	});
 

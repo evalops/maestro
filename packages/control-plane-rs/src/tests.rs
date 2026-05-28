@@ -2620,7 +2620,7 @@ fn a2a_agent_card_advertises_http_json_interface() {
     );
     assert_eq!(
         code_review_skill["requiredContextGrants"],
-        serde_json::json!(["repo:read", "pull-request:read", "evidence:read"])
+        serde_json::json!(["repo:read", "pull-request:read", "artifact:read"])
     );
     assert_eq!(
         code_review_skill["approvalPolicyRef"],

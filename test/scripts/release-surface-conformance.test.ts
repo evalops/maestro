@@ -226,6 +226,51 @@ describe("release-surface conformance", () => {
 		);
 	});
 
+	it("requires registry install smokes to anchor Bun runtime execution", () => {
+		tempDir = join(
+			tmpdir(),
+			`release-surface-registry-smoke-${process.pid}-${Date.now()}`,
+		);
+		mkdirSync(join(tempDir, "scripts"), { recursive: true });
+		writeFileSync(
+			join(tempDir, "scripts/smoke-registry-install.js"),
+			[
+				'["install", packageSpec]',
+				'["add", packageSpec]',
+				"runPublishedReplayE2E",
+				"runNpxCliSmoke",
+				"runBunxCliSmoke",
+				"runBunRuntimeCliSmoke",
+			].join("\n"),
+			"utf8",
+		);
+
+		const failures = checkReleaseSurfaceConformance({
+			rootDir: tempDir,
+			manifest: {
+				version: 1,
+				checks: [
+					{
+						area: "registry-install-smoke",
+						path: "scripts/smoke-registry-install.js",
+						evidenceType: "live-smoke",
+						anchors: [
+							'["install", packageSpec]',
+							'["add", packageSpec]',
+							"runPublishedReplayE2E",
+							"runNpxCliSmoke",
+							"runBunxCliSmoke",
+						],
+					},
+				],
+			},
+		});
+
+		expect(failures).toContain(
+			"registry-install-smoke: scripts/smoke-registry-install.js must anchor runBunRuntimeCliSmoke",
+		);
+	});
+
 	it("rejects release-surface gates that can swallow failures", () => {
 		tempDir = join(
 			tmpdir(),
