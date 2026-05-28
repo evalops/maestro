@@ -258,6 +258,14 @@ function terminalOutcomesSatisfyReleaseGate(outcomes) {
 	);
 }
 
+function waitHasOwnPendingRequestEvidence(wait) {
+	return (
+		typeof wait?.pendingRequestId === "string" &&
+		Array.isArray(wait?.evidenceRefs) &&
+		wait.evidenceRefs.includes(`pending-request:${wait.pendingRequestId}`)
+	);
+}
+
 function addCountMap(target, source) {
 	if (!source || typeof source !== "object" || Array.isArray(source)) {
 		return;
@@ -544,12 +552,11 @@ function agentRuntimeLifecycleSatisfiesReleaseGate(lifecycle) {
 		typeof normalized.durability?.promotionIdempotencyKey === "string" &&
 		normalized.waits.every(
 			(wait) =>
-				typeof wait?.pendingRequestId === "string" &&
-				typeof wait?.pendingRequestKind === "string" &&
-				typeof wait?.waitType === "string" &&
-				Array.isArray(wait?.evidenceRefs) &&
-				wait.evidenceRefs.some((ref) => ref.startsWith("pending-request:")),
-		)
+					typeof wait?.pendingRequestId === "string" &&
+					typeof wait?.pendingRequestKind === "string" &&
+					typeof wait?.waitType === "string" &&
+					waitHasOwnPendingRequestEvidence(wait),
+			)
 	);
 }
 

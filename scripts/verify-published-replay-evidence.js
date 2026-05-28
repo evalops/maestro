@@ -240,6 +240,15 @@ function terminalOutcomesAreValid(outcomes) {
 	);
 }
 
+function waitHasOwnPendingRequestEvidence(wait) {
+	return (
+		typeof wait?.pendingRequestId === "string" &&
+		stringArray(wait?.evidenceRefs).includes(
+			`pending-request:${wait.pendingRequestId}`,
+		)
+	);
+}
+
 function agentRuntimeLifecycleIsValid(lifecycle) {
 	const waits = Array.isArray(lifecycle?.waits)
 		? lifecycle.waits.filter(isObject)
@@ -257,14 +266,12 @@ function agentRuntimeLifecycleIsValid(lifecycle) {
 	const waitsHaveRequiredRecords = REQUIRED_AGENT_RUNTIME_WAIT_KINDS.every(
 		(kind) =>
 			waits.some(
-				(wait) =>
-					wait.pendingRequestKind === kind &&
-					typeof wait.pendingRequestId === "string" &&
-					typeof wait.waitType === "string" &&
-					stringArray(wait.evidenceRefs).some((ref) =>
-						ref.startsWith("pending-request:"),
-					),
-			),
+					(wait) =>
+						wait.pendingRequestKind === kind &&
+						typeof wait.pendingRequestId === "string" &&
+						typeof wait.waitType === "string" &&
+						waitHasOwnPendingRequestEvidence(wait),
+				),
 	);
 	return (
 		isObject(lifecycle) &&
@@ -298,14 +305,12 @@ function agentRuntimeLifecycleIsValid(lifecycle) {
 		typeof lifecycle?.durability?.promotionIdempotencyKey === "string" &&
 		waits.every(
 			(wait) =>
-				typeof wait.pendingRequestId === "string" &&
-				typeof wait.pendingRequestKind === "string" &&
-				typeof wait.waitType === "string" &&
-				stringArray(wait.evidenceRefs).some((ref) =>
-					ref.startsWith("pending-request:"),
-				),
-		) &&
-		allEvidenceRefs.some((ref) => ref.startsWith("pending-request:"))
+					typeof wait.pendingRequestId === "string" &&
+					typeof wait.pendingRequestKind === "string" &&
+					typeof wait.waitType === "string" &&
+					waitHasOwnPendingRequestEvidence(wait),
+			) &&
+			allEvidenceRefs.some((ref) => ref.startsWith("pending-request:"))
 	);
 }
 
