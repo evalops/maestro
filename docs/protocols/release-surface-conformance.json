@@ -127,6 +127,19 @@
 			]
 		},
 		{
+			"area": "tag-release-workflow",
+			"path": ".github/workflows/tag-release.yml",
+			"evidenceType": "source",
+			"anchors": [
+				"Check npm registry release",
+				"Verify already-published package from registry",
+				"node scripts/smoke-registry-install.js",
+				"node scripts/verify-published-replay-evidence.js --evidence-dir tag-release-published-replay-evidence",
+				"MAESTRO_REGISTRY_POLL_ATTEMPTS: \"1\"",
+				"tag-release-published-replay-evidence"
+			]
+		},
+		{
 			"area": "public-mirror-workflow",
 			"path": ".github/workflows/public-release-mirror.yml",
 			"evidenceType": "source",

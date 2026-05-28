@@ -20,6 +20,7 @@ const requiredAreas = [
 	"published-replay-e2e",
 	"release-readiness",
 	"release-workflow",
+	"tag-release-workflow",
 	"public-mirror-workflow",
 	"public-mirror-contract",
 	"prepared-public-mirror",

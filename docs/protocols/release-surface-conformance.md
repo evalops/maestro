@@ -23,6 +23,7 @@ npm run check:release-surface
 | registry install smokes | npm, npx, Bun, bunx, and `bunx --bun` runtime paths stay connected to published replay evidence. |
 | published replay | text, JSON, and RPC replay modes keep session, tool, ToolExecution, approval, search/ripgrep, error, artifact, final-status, query-index, and AgentRuntime evidence. |
 | release readiness | local release gates continue to build, verify runtime deps, pack-smoke, and replay-smoke. |
+| tag release | the already-published package path cannot pass on `npm view` alone; it must run npm and Bun registry install smokes plus published replay evidence validation. |
 | public mirror | the sanitized public tree, release-helper mirror sync, mirror contract, and fallback publish workflow keep their guardrails. |
 
 ## Completion Bar
