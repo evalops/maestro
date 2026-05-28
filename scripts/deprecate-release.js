@@ -107,6 +107,18 @@ const result = await runNpmCommand(npmCommand, npmArgs);
 if (result.status !== 0) {
 	const output = `${result.stdout}\n${result.stderr}`;
 	if (
+		output.includes("E401") ||
+		output.includes("401 Unauthorized") ||
+		output.includes("ENEEDAUTH")
+	) {
+		console.error(
+			[
+				`npm could not authenticate while deprecating ${spec}.`,
+				`Refresh the npm-release NPM_TOKEN secret with a token owned by a ${packageName} maintainer, then rerun the deprecation workflow.`,
+			].join("\n"),
+		);
+	}
+	if (
 		output.includes("E404") &&
 		output.includes("could not be found or you do not have permission")
 	) {
