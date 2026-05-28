@@ -18,6 +18,7 @@ import { tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
+	getBunCommand,
 	getNpmCommand,
 	installedBinPath,
 	readInstalledPackageJson,
@@ -228,6 +229,33 @@ function installLabelForInstaller({ packageSpec, installer }) {
 				? "via npm"
 				: "published replay install";
 	return `${packageSpec} ${suffix}`;
+}
+
+export function registryInstallPlanForInstaller({ installer, packageSpec }) {
+	const normalizedInstaller =
+		typeof installer === "string" ? installer.trim().toLowerCase() : "";
+	switch (normalizedInstaller || "npm") {
+		case "npm":
+			return {
+				installer: "npm",
+				command: getNpmCommand(),
+				initArgs: ["init", "-y"],
+				installArgs: ["install", packageSpec],
+				tempPrefix: "maestro-published-replay-install-",
+			};
+		case "bun":
+			return {
+				installer: "bun",
+				command: getBunCommand(),
+				initArgs: ["init", "-y"],
+				installArgs: ["add", packageSpec],
+				tempPrefix: "maestro-bun-published-replay-install-",
+			};
+		default:
+			throw new Error(
+				`Unsupported published replay installer "${installer}". Use npm or bun, or pass --install-root for a preinstalled package.`,
+			);
+	}
 }
 
 function finiteNumber(value) {
@@ -2764,7 +2792,6 @@ async function main() {
 	const version = overrides.version || defaults.version;
 	const packageSpec = `${name}@${version}`;
 	const installer = overrides.installer || "npm";
-	const npmCommand = getNpmCommand();
 	const evidencePath = resolvePublishedReplayEvidencePath({
 		evidencePath: overrides.evidencePath,
 		evidenceDir: overrides.evidenceDir,
@@ -2775,13 +2802,17 @@ async function main() {
 	const shouldCleanup = !installRoot;
 
 	if (!installRoot) {
-		installRoot = mkdtempSync(join(tmpdir(), "maestro-published-replay-install-"));
+		const installPlan = registryInstallPlanForInstaller({
+			installer,
+			packageSpec,
+		});
+		installRoot = mkdtempSync(join(tmpdir(), installPlan.tempPrefix));
 		try {
-			spawnSync(npmCommand, ["init", "-y"], {
+			spawnSync(installPlan.command, installPlan.initArgs, {
 				cwd: installRoot,
 				stdio: "ignore",
 			});
-			const install = spawnSync(npmCommand, ["install", packageSpec], {
+			const install = spawnSync(installPlan.command, installPlan.installArgs, {
 				cwd: installRoot,
 				encoding: "utf8",
 				stdio: "inherit",
@@ -2790,7 +2821,9 @@ async function main() {
 				throw install.error;
 			}
 			if (install.status !== 0) {
-				throw new Error(`npm install ${packageSpec} exited with ${install.status}`);
+				throw new Error(
+					`${installPlan.command} ${installPlan.installArgs.join(" ")} exited with ${install.status}`,
+				);
 			}
 		} catch (error) {
 			if (shouldCleanup) {
