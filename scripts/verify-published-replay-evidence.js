@@ -222,16 +222,28 @@ function agentRuntimeLifecycleIsValid(lifecycle) {
 	const waits = Array.isArray(lifecycle?.waits)
 		? lifecycle.waits.filter(isObject)
 		: [];
-	const waitKinds = stringArray(lifecycle?.waitKinds);
-	const inferredWaitKinds = waits
-		.map((wait) => wait?.pendingRequestKind)
-		.filter((kind) => typeof kind === "string");
-	const allWaitKinds = new Set([...waitKinds, ...inferredWaitKinds]);
+	const waitKindsFromRecords = new Set(
+		waits
+			.map((wait) => wait?.pendingRequestKind)
+			.filter((kind) => typeof kind === "string"),
+	);
 	const evidenceRefs = stringArray(lifecycle?.evidenceRefs);
 	const waitEvidenceRefs = waits.flatMap((wait) =>
 		stringArray(wait?.evidenceRefs),
 	);
 	const allEvidenceRefs = [...evidenceRefs, ...waitEvidenceRefs];
+	const waitsHaveRequiredRecords = REQUIRED_AGENT_RUNTIME_WAIT_KINDS.every(
+		(kind) =>
+			waits.some(
+				(wait) =>
+					wait.pendingRequestKind === kind &&
+					typeof wait.pendingRequestId === "string" &&
+					typeof wait.waitType === "string" &&
+					stringArray(wait.evidenceRefs).some((ref) =>
+						ref.startsWith("pending-request:"),
+					),
+			),
+	);
 	return (
 		isObject(lifecycle) &&
 		lifecycle.schemaVersion === AGENT_RUNTIME_LIFECYCLE_SCHEMA &&
@@ -239,8 +251,9 @@ function agentRuntimeLifecycleIsValid(lifecycle) {
 		lifecycle.sessionId.length > 0 &&
 		lifecycle.replayDeterministic === true &&
 		REQUIRED_AGENT_RUNTIME_WAIT_KINDS.every((kind) =>
-			allWaitKinds.has(kind),
+			waitKindsFromRecords.has(kind),
 		) &&
+		waitsHaveRequiredRecords &&
 		Number.isFinite(lifecycle?.counts?.waits) &&
 		lifecycle.counts.waits >= REQUIRED_AGENT_RUNTIME_WAIT_KINDS.length &&
 		Number.isFinite(lifecycle?.counts?.approvalWaits) &&
