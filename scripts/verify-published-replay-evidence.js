@@ -8,6 +8,8 @@ import { assertPublishedReplayReleaseGate } from "./published-replay-evidence-ga
 
 const EVIDENCE_SCHEMA = "evalops.maestro.published-replay-evidence.v1";
 const TRANSCRIPT_SCHEMA = "evalops.maestro.published-replay-transcript.v1";
+const AGENT_RUNTIME_LIFECYCLE_SCHEMA =
+	"evalops.maestro.agent-runtime-lifecycle.v1";
 const REQUIRED_INSTALLERS = ["npm", "bun"];
 const REQUIRED_REPLAY_MODES = ["json", "rpc", "text"];
 const REQUIRED_RELEASE_GATE_CHECKS = [
@@ -26,17 +28,27 @@ const REQUIRED_RELEASE_GATE_CHECKS = [
 	"artifactTraceEvidence",
 	"queryableObservabilityIndex",
 	"agentRuntimeLedger",
+	"agentRuntimeLifecycle",
 	"finalStatus",
 ];
 const REQUIRED_OBSERVABILITY_QUERY_TRACES = [
 	"install",
 	"session",
 	"tool",
+	"search",
 	"approval",
 	"error",
 	"artifact",
+	"agent-runtime-lifecycle",
 	"final-status",
 ];
+const REQUIRED_AGENT_RUNTIME_WAIT_KINDS = ["approval", "tool_retry"];
+const TERMINAL_AGENT_RUNTIME_STATES = new Set([
+	"succeeded",
+	"failed",
+	"cancelled",
+	"canceled",
+]);
 const TOOL_CALL_ID = "call-read-package-json";
 const SEARCH_TOOL_CALL_ID = "call-search-package-manifest";
 const WRITE_TOOL_CALL_ID = "call-write-published-artifact";
@@ -54,6 +66,7 @@ const PUBLISHED_REPLAY_EVIDENCE_REF_PREFIXES = [
 	"tool-call:",
 	"tool-execution:",
 	"approval-request:",
+	"pending-request:",
 	"artifact:",
 ];
 
@@ -211,6 +224,96 @@ function modesWithEvidenceRefPrefix(modes, prefix) {
 	return sortedStrings(Array.from(result));
 }
 
+function terminalOutcomesAreValid(outcomes) {
+	const terminalStates = isObject(outcomes?.terminalStates)
+		? Object.entries(outcomes.terminalStates)
+		: [];
+	const terminalEventTypes = stringArray(outcomes?.terminalEventTypes);
+	return (
+		terminalStates.some(
+			([state, count]) =>
+				TERMINAL_AGENT_RUNTIME_STATES.has(state) &&
+				typeof count === "number" &&
+				Number.isFinite(count) &&
+				count > 0,
+		) && terminalEventTypes.some((eventType) => eventType.length > 0)
+	);
+}
+
+function waitHasOwnPendingRequestEvidence(wait) {
+	return (
+		typeof wait?.pendingRequestId === "string" &&
+		stringArray(wait?.evidenceRefs).includes(
+			`pending-request:${wait.pendingRequestId}`,
+		)
+	);
+}
+
+function agentRuntimeLifecycleIsValid(lifecycle) {
+	const waits = Array.isArray(lifecycle?.waits)
+		? lifecycle.waits.filter(isObject)
+		: [];
+	const waitKindsFromRecords = new Set(
+		waits
+			.map((wait) => wait?.pendingRequestKind)
+			.filter((kind) => typeof kind === "string"),
+	);
+	const evidenceRefs = stringArray(lifecycle?.evidenceRefs);
+	const waitEvidenceRefs = waits.flatMap((wait) =>
+		stringArray(wait?.evidenceRefs),
+	);
+	const allEvidenceRefs = [...evidenceRefs, ...waitEvidenceRefs];
+	const waitsHaveRequiredRecords = REQUIRED_AGENT_RUNTIME_WAIT_KINDS.every(
+		(kind) =>
+			waits.some(
+					(wait) =>
+						wait.pendingRequestKind === kind &&
+						typeof wait.pendingRequestId === "string" &&
+						typeof wait.waitType === "string" &&
+						waitHasOwnPendingRequestEvidence(wait),
+				),
+	);
+	return (
+		isObject(lifecycle) &&
+		lifecycle.schemaVersion === AGENT_RUNTIME_LIFECYCLE_SCHEMA &&
+		typeof lifecycle.sessionId === "string" &&
+		lifecycle.sessionId.length > 0 &&
+		lifecycle.replayDeterministic === true &&
+		REQUIRED_AGENT_RUNTIME_WAIT_KINDS.every((kind) =>
+			waitKindsFromRecords.has(kind),
+		) &&
+		waitsHaveRequiredRecords &&
+		Number.isFinite(lifecycle?.counts?.waits) &&
+		lifecycle.counts.waits >= REQUIRED_AGENT_RUNTIME_WAIT_KINDS.length &&
+		Number.isFinite(lifecycle?.counts?.approvalWaits) &&
+		lifecycle.counts.approvalWaits > 0 &&
+		Number.isFinite(lifecycle?.counts?.toolRetryWaits) &&
+		lifecycle.counts.toolRetryWaits > 0 &&
+		Number.isFinite(lifecycle?.counts?.terminalOperations) &&
+		lifecycle.counts.terminalOperations > 0 &&
+		terminalOutcomesAreValid(lifecycle?.outcomes) &&
+		Number.isFinite(lifecycle?.operations?.waitRun) &&
+		lifecycle.operations.waitRun >= REQUIRED_AGENT_RUNTIME_WAIT_KINDS.length &&
+		Number.isFinite(lifecycle?.operations?.recordRunStep) &&
+		lifecycle.operations.recordRunStep > 0 &&
+		Number.isFinite(lifecycle?.operations?.recordRunWorkItem) &&
+		lifecycle.operations.recordRunWorkItem > 0 &&
+		Number.isFinite(lifecycle?.operations?.completeRun) &&
+		lifecycle.operations.completeRun > 0 &&
+		lifecycle?.durability?.reconstructable === true &&
+		lifecycle?.durability?.replayDeterministic === true &&
+		typeof lifecycle?.durability?.promotionIdempotencyKey === "string" &&
+		waits.every(
+			(wait) =>
+					typeof wait.pendingRequestId === "string" &&
+					typeof wait.pendingRequestKind === "string" &&
+					typeof wait.waitType === "string" &&
+					waitHasOwnPendingRequestEvidence(wait),
+			) &&
+			allEvidenceRefs.some((ref) => ref.startsWith("pending-request:"))
+	);
+}
+
 function observabilityCoverageModes({ section, modes, prefix }) {
 	const declaredModes = stringArray(section?.modes);
 	if (declaredModes.length > 0) {
@@ -260,13 +363,20 @@ function queryableObservabilityIndexIsValid({ observability, modes }) {
 	const installEntry = queryIndexEntryForTrace(queryIndex, "install");
 	const sessionEntry = queryIndexEntryForTrace(queryIndex, "session");
 	const toolEntry = queryIndexEntryForTrace(queryIndex, "tool");
+	const searchEntry = queryIndexEntryForTrace(queryIndex, "search");
 	const approvalEntry = queryIndexEntryForTrace(queryIndex, "approval");
 	const errorEntry = queryIndexEntryForTrace(queryIndex, "error");
 	const artifactEntry = queryIndexEntryForTrace(queryIndex, "artifact");
+	const lifecycleEntry = queryIndexEntryForTrace(
+		queryIndex,
+		"agent-runtime-lifecycle",
+	);
 	const finalStatusEntry = queryIndexEntryForTrace(queryIndex, "final-status");
 	const toolRefs = stringArray(toolEntry?.evidenceRefs);
+	const searchRefs = stringArray(searchEntry?.evidenceRefs);
 	const approvalRefs = stringArray(approvalEntry?.evidenceRefs);
 	const artifactRefs = stringArray(artifactEntry?.evidenceRefs);
+	const lifecycleRefs = stringArray(lifecycleEntry?.evidenceRefs);
 
 	return (
 		isObject(installEntry?.counts) &&
@@ -283,6 +393,9 @@ function queryableObservabilityIndexIsValid({ observability, modes }) {
 			toolRefs.includes(`tool-call:${id}`),
 		) &&
 		toolExecutionCoverageIsValid({ observability, modes }) &&
+		queryIndexEntryHasRequiredModes(searchEntry) &&
+		stringArray(searchEntry?.ids).includes(SEARCH_TOOL_CALL_ID) &&
+		searchRefs.includes(`tool-call:${SEARCH_TOOL_CALL_ID}`) &&
 		queryIndexEntryHasRequiredModes(approvalEntry) &&
 		approvalRefs.length > 0 &&
 		approvalRefs.every((ref) => ref.startsWith("approval-request:")) &&
@@ -291,6 +404,9 @@ function queryableObservabilityIndexIsValid({ observability, modes }) {
 		queryIndexEntryHasRequiredModes(artifactEntry) &&
 		artifactRefs.length > 0 &&
 		artifactRefs.every((ref) => ref.startsWith("artifact:")) &&
+		lifecycleEntry?.status === "ok" &&
+		lifecycleRefs.some((ref) => ref.startsWith("pending-request:")) &&
+		agentRuntimeLifecycleIsValid(observability?.agentRuntimeLifecycle) &&
 		queryIndexEntryHasRequiredModes(finalStatusEntry) &&
 		finalStatusEntry?.counts?.ok === REQUIRED_REPLAY_MODES.length &&
 		countModesWith(modes.map((mode) => mode?.mode), REQUIRED_REPLAY_MODES) ===
@@ -812,6 +928,16 @@ export function validatePublishedReplayEvidence(
 				`tool-call:${SEARCH_TOOL_CALL_ID}`,
 			),
 		"observability.search must include ripgrep search evidence for every replay mode",
+	);
+	pushUnless(
+		errors,
+		agentRuntimeLifecycleIsValid(evidence?.agentRuntimeLifecycle),
+		"agentRuntimeLifecycle must include approval waits, tool_retry waits, and terminal outcome evidence",
+	);
+	pushUnless(
+		errors,
+		agentRuntimeLifecycleIsValid(observability?.agentRuntimeLifecycle),
+		"observability.agentRuntimeLifecycle must summarize approval waits, tool_retry waits, and terminal outcomes",
 	);
 	const approvalRefs = stringArray(observability?.approvals?.evidenceRefs);
 	const approvalModes = observabilityCoverageModes({
