@@ -1316,15 +1316,45 @@ export function sha256Hex(value: string): string {
 	return createHash("sha256").update(value).digest("hex");
 }
 
+export function formatPlatformA2ALiveSmokeUsage(): string {
+	return [
+		"Usage: tsx scripts/smoke-platform-a2a-delegation-live.ts",
+		"",
+		"Required environment:",
+		`  ${SERVICE_URL_ENV_VARS[0]} or EVALOPS_BASE_URL`,
+		`  ${SERVICE_TOKEN_ENV_VARS[0]} or EVALOPS_TOKEN`,
+		`  ${ORGANIZATION_ENV_VARS[0]} or EVALOPS_ORGANIZATION_ID`,
+		`  ${WORKSPACE_ENV_VARS[0]} or EVALOPS_WORKSPACE_ID`,
+		"  MAESTRO_A2A_LIVE_FROM_AGENT_ID",
+		"  MAESTRO_A2A_LIVE_TO_AGENT_ID",
+		"  MAESTRO_A2A_LIVE_SKILL_ID or MAESTRO_A2A_LIVE_CAPABILITY",
+		"",
+		"Useful optional environment:",
+		"  MAESTRO_A2A_LIVE_EVIDENCE_DIR",
+		"  MAESTRO_A2A_LIVE_REQUIRE_INVALID_TOKEN_PROBE=true",
+		"  MAESTRO_A2A_LIVE_REQUIRE_TERMINAL_TASK=false",
+		"  MAESTRO_A2A_LIVE_EVIDENCE_SIGNING_PRIVATE_KEY_FILE",
+		"",
+		"After the smoke writes evidence, verify it with:",
+		"  npm run platform:a2a-evidence-verify -- <evidence.json> --require-negative-auth-probe --require-discovery-evidence --require-durable-a2a-ids",
+	].join("\n");
+}
+
 function isEntrypoint(): boolean {
 	const entrypoint = process.argv[1];
 	return Boolean(entrypoint && import.meta.url === pathToFileURL(entrypoint).href);
 }
 
 if (isEntrypoint()) {
-	runPlatformA2ADelegationLiveSmoke().catch((error: unknown) => {
-		const message = error instanceof Error ? error.message : String(error);
-		console.error(message);
-		process.exitCode = 1;
-	});
+	const args = process.argv.slice(2);
+	if (args.includes("--help") || args.includes("-h")) {
+		console.log(formatPlatformA2ALiveSmokeUsage());
+		process.exitCode = 0;
+	} else {
+		runPlatformA2ADelegationLiveSmoke().catch((error: unknown) => {
+			const message = error instanceof Error ? error.message : String(error);
+			console.error(message);
+			process.exitCode = 1;
+		});
+	}
 }
