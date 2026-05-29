@@ -63,6 +63,7 @@ describe("prepare-public-release-mirror", () => {
 		write(join(source, "README.md"), "public readme\n");
 		write(join(source, "src/index.ts"), "export const value = 1;\n");
 		write(join(source, ".github/workflows/ci.yml"), "internal ci\n");
+		write(join(source, ".nx/workspace-data/project-graph.json"), "{}\n");
 		write(
 			join(source, ".github/workflows/review-thread-guard.yml"),
 			[
@@ -81,8 +82,16 @@ describe("prepare-public-release-mirror", () => {
 			"generated package output\n",
 		);
 		write(
+			join(source, "packages/tui-rs/target/debug/maestro-tui"),
+			"generated rust output\n",
+		);
+		write(
 			join(source, "packages/core/node_modules/pkg/index.js"),
 			"nested dependency\n",
+		);
+		write(
+			join(source, "packages/github-agent/tsconfig.build.tsbuildinfo"),
+			"generated tsbuildinfo\n",
 		);
 		write(
 			join(source, "scripts/smoke-registry-install.js"),
@@ -193,7 +202,18 @@ describe("prepare-public-release-mirror", () => {
 			false,
 		);
 		expect(
+			existsSync(join(target, ".nx/workspace-data/project-graph.json")),
+		).toBe(false);
+		expect(
+			existsSync(join(target, "packages/tui-rs/target/debug/maestro-tui")),
+		).toBe(false);
+		expect(
 			existsSync(join(target, "packages/core/node_modules/pkg/index.js")),
+		).toBe(false);
+		expect(
+			existsSync(
+				join(target, "packages/github-agent/tsconfig.build.tsbuildinfo"),
+			),
 		).toBe(false);
 		expect(
 			readFileSync(
