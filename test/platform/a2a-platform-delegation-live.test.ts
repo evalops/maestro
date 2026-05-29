@@ -6,6 +6,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
 	type PlatformA2ALiveSmokeDependencies,
 	type PlatformA2ALiveSmokeEvidence,
+	formatPlatformA2ALiveSmokeUsage,
 	resolvePlatformA2ALiveSmokeEnv,
 	runPlatformA2ADelegationLiveSmoke,
 	sha256Hex,
@@ -97,6 +98,14 @@ function graph(
 }
 
 describe("Platform A2A live delegation smoke", () => {
+	it("prints operator help before requiring live environment", () => {
+		const usage = formatPlatformA2ALiveSmokeUsage();
+
+		expect(usage).toContain("MAESTRO_A2A_LIVE_FROM_AGENT_ID");
+		expect(usage).toContain("npm run platform:a2a-evidence-verify");
+		expect(usage).toContain("--require-durable-a2a-ids");
+	});
+
 	it("fails before network work when required env is missing", () => {
 		expect(() => resolvePlatformA2ALiveSmokeEnv({})).toThrow(
 			/MAESTRO_AGENT_REGISTRY_SERVICE_URL/,
