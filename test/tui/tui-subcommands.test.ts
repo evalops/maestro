@@ -575,6 +575,27 @@ describe("Subcommand Suite Handlers", () => {
 			);
 		});
 
+		it("awaits async authenticated status", async () => {
+			const { createAuthCommandHandler } = await import(
+				"../../src/cli-tui/commands/subcommands/auth-commands.js"
+			);
+
+			const deps = createAuthDeps();
+			deps.getAuthState.mockResolvedValue({
+				authenticated: true,
+				provider: "openai-codex",
+				mode: "app-server",
+			});
+			const handler = createAuthCommandHandler(deps);
+			const ctx = createMockContext("/auth status", "status");
+
+			await handler(ctx);
+
+			expect(ctx.showInfo).toHaveBeenCalledWith(
+				expect.stringContaining("Mode: app-server"),
+			);
+		});
+
 		it("shows unauthenticated status", async () => {
 			const { createAuthCommandHandler } = await import(
 				"../../src/cli-tui/commands/subcommands/auth-commands.js"

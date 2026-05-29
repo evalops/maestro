@@ -22,6 +22,7 @@ export class OAuthSelectorComponent extends Container {
 		mode: "login" | "logout",
 		private onSelectCallback: (providerId: OAuthLogoutProvider) => void,
 		private onCancelCallback: () => void,
+		private readonly providerIds?: OAuthLogoutProvider[],
 	) {
 		super();
 
@@ -53,7 +54,11 @@ export class OAuthSelectorComponent extends Container {
 	private loadProviders(): void {
 		// For logout mode, only show providers with credentials
 		if (this.mode === "logout") {
-			this.allProviders = getOAuthLogoutProviders();
+			this.allProviders = this.providerIds
+				? this.providerIds.map((providerId) =>
+						resolveLogoutProviderInfo(providerId),
+					)
+				: getOAuthLogoutProviders();
 		} else {
 			// For login mode, only show available providers
 			this.allProviders = getOAuthProviders().filter(
@@ -132,4 +137,29 @@ export class OAuthSelectorComponent extends Container {
 			this.onCancelCallback();
 		}
 	}
+}
+
+function resolveLogoutProviderInfo(
+	providerId: OAuthLogoutProvider,
+): OAuthProviderInfo<OAuthLogoutProvider> {
+	const provider = getOAuthProviders().find(
+		(candidate) => candidate.id === providerId,
+	);
+	if (provider) {
+		return provider;
+	}
+	if (providerId === "anthropic") {
+		return {
+			id: "anthropic",
+			name: "Anthropic OAuth",
+			description: "Legacy Anthropic OAuth credentials (logout only)",
+			available: true,
+		};
+	}
+	return {
+		id: providerId,
+		name: providerId,
+		description: "OAuth credentials",
+		available: true,
+	};
 }

@@ -107,4 +107,30 @@ describe("app-server schema fixtures", () => {
 			}),
 		).toBe(true);
 	});
+
+	it("keeps generated capability requirements aligned with sandbox check fields", async () => {
+		const payloads = JSON.parse(
+			await readFile(
+				"packages/contracts/schema/app-server/payload-schemas.json",
+				"utf8",
+			),
+		) as {
+			namedSchemas: Record<
+				string,
+				{
+					properties?: Record<string, unknown>;
+					required?: string[];
+				}
+			>;
+		};
+		const capabilities =
+			payloads.namedSchemas.MaestroAppServerCapabilitiesSchema;
+
+		expect(capabilities.properties).toHaveProperty("sandboxProbe");
+		expect(capabilities.properties).toHaveProperty("sandboxCheck");
+		expect(capabilities.properties).not.toHaveProperty("sandboxProof");
+		expect(capabilities.required).toContain("sandboxProbe");
+		expect(capabilities.required).toContain("sandboxCheck");
+		expect(capabilities.required).not.toContain("sandboxProof");
+	});
 });

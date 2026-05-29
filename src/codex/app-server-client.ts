@@ -56,6 +56,7 @@ export type CodexLoginStartResult =
 			verificationUrl: string;
 			userCode: string;
 	  }
+	| { type: "chatgptAuthTokens" }
 	| { type: string; [key: string]: unknown };
 
 export interface CodexLoginCompletedNotification {
@@ -113,6 +114,7 @@ export interface CodexAppServerClientLike {
 	readAccount(refreshToken?: boolean): Promise<CodexAccountReadResult>;
 	startChatGptLogin(
 		flow?: "browser" | "device",
+		options?: { codexStreamlinedLogin?: boolean },
 	): Promise<CodexLoginStartResult>;
 	waitForLoginCompletion(
 		loginId: string,
@@ -327,10 +329,16 @@ export class CodexAppServerRpcClient implements CodexAppServerClientLike {
 
 	startChatGptLogin(
 		flow: "browser" | "device" = "browser",
+		options: { codexStreamlinedLogin?: boolean } = {},
 	): Promise<CodexLoginStartResult> {
-		return this.request("account/login/start", {
-			type: flow === "device" ? "chatgptDeviceCode" : "chatgpt",
-		});
+		const params =
+			flow === "device"
+				? { type: "chatgptDeviceCode" }
+				: {
+						type: "chatgpt",
+						codexStreamlinedLogin: options.codexStreamlinedLogin || undefined,
+					};
+		return this.request("account/login/start", params);
 	}
 
 	async waitForLoginCompletion(
@@ -429,6 +437,18 @@ export class CodexAppServerRpcClient implements CodexAppServerClientLike {
 			method: request.method,
 			params: request.params,
 		});
+
+		if (request.method === "account/chatgptAuthTokens/refresh") {
+			this.writeMessage({
+				id: request.id,
+				error: {
+					code: -32601,
+					message:
+						"Maestro does not manage Codex ChatGPT auth tokens directly. Run `maestro codex login` or `codex login` so Codex app-server owns ChatGPT auth refresh.",
+				},
+			});
+			return;
+		}
 
 		for (const handler of Array.from(this.requestHandlers)) {
 			try {

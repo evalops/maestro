@@ -24,8 +24,8 @@ import type {
 	MaestroAppServerRemoteControlLeaseResult,
 	MaestroAppServerRemoteControlStatusResult,
 	MaestroAppServerRequirementsListResult,
+	MaestroAppServerSandboxCheckResult,
 	MaestroAppServerSandboxProbeResult,
-	MaestroAppServerSandboxProofResult,
 	MaestroAppServerThreadArchiveResult,
 	MaestroAppServerThreadDeleteResult,
 	MaestroAppServerThreadForkResult,
@@ -81,8 +81,8 @@ type AppServerMethodResult<M extends AppServerRequestMethod> =
 										? MaestroAppServerNetworkAuditListResult
 										: M extends "sandbox/probe"
 											? MaestroAppServerSandboxProbeResult
-											: M extends "sandbox/proof/run"
-												? MaestroAppServerSandboxProofResult
+											: M extends "sandbox/check/run"
+												? MaestroAppServerSandboxCheckResult
 												: M extends "externalAgent/import"
 													? MaestroAppServerExternalAgentImportResult
 													: M extends "pluginBundle/list"

@@ -28,7 +28,6 @@ import { mcpManager } from "../mcp/index.js";
 import { withMcpPostKeepMessages } from "../mcp/prompt-recovery.js";
 import type { RegisteredModel } from "../models/registry.js";
 import { getRegisteredModels } from "../models/registry.js";
-import { listOAuthProviders, loadOAuthCredentials } from "../oauth/storage.js";
 import { getOpenTelemetryStatus } from "../opentelemetry.js";
 import {
 	type SessionModelMetadata,
@@ -42,6 +41,7 @@ import {
 } from "../telemetry/session-perf.js";
 import { getCurrentThemeName, setTheme } from "../theme/theme.js";
 import { getTrainingStatus } from "../training.js";
+import { getTuiAuthState } from "./auth-state.js";
 
 import { AutoCompactionMonitor } from "../agent/auto-compaction.js";
 import {
@@ -2601,42 +2601,8 @@ export class TuiRenderer {
 		process.stdout.off("resize", this.resizeHandler);
 	}
 
-	/**
-	 * Get the actual OAuth authentication state by checking stored credentials.
-	 * Returns info about which provider the user is authenticated with.
-	 */
-	private getActualAuthState(): {
-		authenticated: boolean;
-		provider?: string;
-		mode?: string;
-	} {
-		const providers = listOAuthProviders();
-
-		if (providers.length === 0) {
-			return { authenticated: false };
-		}
-
-		// Get the primary provider (prefer current model provider if authenticated)
-		const currentProvider = this.agent.state.model?.provider;
-		let activeProvider = providers[0];
-
-		// If we're using a provider that has OAuth credentials, use that one
-		if (currentProvider && providers.includes(currentProvider)) {
-			activeProvider = currentProvider;
-		}
-
-		// Load credentials to get metadata (like mode)
-		if (!activeProvider) {
-			return { authenticated: false, provider: undefined, mode: undefined };
-		}
-		const credentials = loadOAuthCredentials(activeProvider);
-		const mode = credentials?.metadata?.mode as string | undefined;
-
-		return {
-			authenticated: true,
-			provider: activeProvider,
-			mode,
-		};
+	private async getActualAuthState() {
+		return getTuiAuthState(this.agent.state.model?.provider);
 	}
 
 	private async detectAndApplyTerminalTheme(): Promise<void> {

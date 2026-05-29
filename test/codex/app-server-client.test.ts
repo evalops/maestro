@@ -148,6 +148,53 @@ describe("Codex app-server RPC client", () => {
 		harness.rl.close();
 	});
 
+	it("can request Codex streamlined ChatGPT login", async () => {
+		const harness = createHarness();
+		const login = harness.client.startChatGptLogin("browser", {
+			codexStreamlinedLogin: true,
+		});
+
+		const request = await harness.nextRequest();
+		expect(request).toMatchObject({
+			id: 1,
+			method: "account/login/start",
+			params: { type: "chatgpt", codexStreamlinedLogin: true },
+		});
+		harness.respond(1, {
+			type: "chatgpt",
+			loginId: "login-1",
+			authUrl: "https://chatgpt.com/auth",
+		});
+		await expect(login).resolves.toMatchObject({
+			type: "chatgpt",
+			loginId: "login-1",
+		});
+
+		harness.client.close();
+		harness.rl.close();
+	});
+
+	it("returns an actionable error for unmanaged Codex token refresh requests", async () => {
+		const harness = createHarness();
+		harness.requestFromServer("server-1", "account/chatgptAuthTokens/refresh", {
+			reason: "unauthorized",
+			previousAccountId: "acct_123",
+		});
+
+		const response = await harness.nextRequest();
+		expect(response).toEqual({
+			id: "server-1",
+			error: {
+				code: -32601,
+				message:
+					"Maestro does not manage Codex ChatGPT auth tokens directly. Run `maestro codex login` or `codex login` so Codex app-server owns ChatGPT auth refresh.",
+			},
+		});
+
+		harness.client.close();
+		harness.rl.close();
+	});
+
 	it("resolves login completion notifications received before waiting", async () => {
 		const harness = createHarness();
 

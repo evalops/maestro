@@ -2,9 +2,9 @@ import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { platform as osPlatform, tmpdir } from "node:os";
 import { join } from "node:path";
 import type {
+	MaestroAppServerSandboxCheckMode,
+	MaestroAppServerSandboxCheckResult,
 	MaestroAppServerSandboxProbeResult,
-	MaestroAppServerSandboxProofMode,
-	MaestroAppServerSandboxProofResult,
 	MaestroAppServerSandboxType,
 } from "@evalops/contracts";
 import {
@@ -17,22 +17,22 @@ import {
 
 type UnknownRecord = Record<string, unknown>;
 
-export class MaestroAppServerSandboxProofError extends Error {
+export class MaestroAppServerSandboxCheckError extends Error {
 	constructor(
 		readonly code: number,
 		message: string,
 	) {
 		super(message);
-		this.name = "MaestroAppServerSandboxProofError";
+		this.name = "MaestroAppServerSandboxCheckError";
 	}
 }
 
-export interface MaestroAppServerSandboxProof {
+export interface MaestroAppServerSandboxCheck {
 	probe(): MaestroAppServerSandboxProbeResult;
-	runProof(params?: UnknownRecord): Promise<MaestroAppServerSandboxProofResult>;
+	runCheck(params?: UnknownRecord): Promise<MaestroAppServerSandboxCheckResult>;
 }
 
-export interface MaestroAppServerSandboxProofOptions {
+export interface MaestroAppServerSandboxCheckOptions {
 	cwd?: string;
 	isNativeSandboxAvailable?: () => boolean;
 	getNativeSandboxType?: () => MaestroAppServerSandboxType;
@@ -41,22 +41,22 @@ export interface MaestroAppServerSandboxProofOptions {
 	) => Promise<Sandbox | undefined>;
 }
 
-function parseProofMode(value: unknown): MaestroAppServerSandboxProofMode {
+function parseCheckMode(value: unknown): MaestroAppServerSandboxCheckMode {
 	if (value === undefined || value === null) {
 		return "workspace-write";
 	}
 	if (value === "read-only" || value === "workspace-write") {
 		return value;
 	}
-	throw new MaestroAppServerSandboxProofError(-32602, "Invalid sandbox mode");
+	throw new MaestroAppServerSandboxCheckError(-32602, "Invalid sandbox mode");
 }
 
-export function normalizeSandboxProofParams(value: unknown): UnknownRecord {
+export function normalizeSandboxCheckParams(value: unknown): UnknownRecord {
 	if (value === undefined || value === null) {
 		return {};
 	}
 	if (typeof value !== "object" || Array.isArray(value)) {
-		throw new MaestroAppServerSandboxProofError(-32602, "Invalid params");
+		throw new MaestroAppServerSandboxCheckError(-32602, "Invalid params");
 	}
 	return value as UnknownRecord;
 }
@@ -69,13 +69,13 @@ function checkDetail(
 	name: string,
 	passed: boolean,
 	detail: string,
-): MaestroAppServerSandboxProofResult["checks"][number] {
+): MaestroAppServerSandboxCheckResult["checks"][number] {
 	return { name, passed, detail };
 }
 
-export function createMaestroAppServerSandboxProof(
-	options: MaestroAppServerSandboxProofOptions = {},
-): MaestroAppServerSandboxProof {
+export function createMaestroAppServerSandboxCheck(
+	options: MaestroAppServerSandboxCheckOptions = {},
+): MaestroAppServerSandboxCheck {
 	const available =
 		options.isNativeSandboxAvailable ?? isNativeSandboxAvailable;
 	const sandboxType = options.getNativeSandboxType ?? getNativeSandboxType;
@@ -90,13 +90,13 @@ export function createMaestroAppServerSandboxProof(
 				type: sandboxType(),
 				platform: osPlatform(),
 				supportedModes: isAvailable ? ["read-only", "workspace-write"] : [],
-				proofAvailable: isAvailable,
+				checkAvailable: isAvailable,
 			};
 		},
 
-		async runProof(params = {}) {
-			const normalizedParams = normalizeSandboxProofParams(params);
-			const mode = parseProofMode(normalizedParams.mode);
+		async runCheck(params = {}) {
+			const normalizedParams = normalizeSandboxCheckParams(params);
+			const mode = parseCheckMode(normalizedParams.mode);
 			const type = sandboxType();
 			if (!available()) {
 				return {
@@ -111,13 +111,13 @@ export function createMaestroAppServerSandboxProof(
 
 			const outsidePath = join(
 				tmpdir(),
-				`maestro-native-proof-outside-${process.pid}-${Date.now()}`,
+				`maestro-native-check-outside-${process.pid}-${Date.now()}`,
 			);
 			let workspace: string | undefined;
 			let sandbox: Sandbox | undefined;
-			const checks: MaestroAppServerSandboxProofResult["checks"] = [];
+			const checks: MaestroAppServerSandboxCheckResult["checks"] = [];
 			try {
-				workspace = mkdtempSync(join(cwd, "maestro-native-proof-"));
+				workspace = mkdtempSync(join(cwd, "maestro-native-check-"));
 				sandbox = await sandboxFactory({
 					mode,
 					cwd: workspace,
@@ -150,7 +150,7 @@ export function createMaestroAppServerSandboxProof(
 
 				if (mode === "workspace-write") {
 					const inside = await sandbox.exec(
-						"touch inside-proof.txt && test -f inside-proof.txt",
+						"touch inside-check.txt && test -f inside-check.txt",
 					);
 					checks.push(
 						checkDetail(
@@ -163,13 +163,13 @@ export function createMaestroAppServerSandboxProof(
 					);
 				} else {
 					const readOnly = await sandbox.exec(
-						"touch read-only-proof.txt 2>/dev/null",
+						"touch read-only-check.txt 2>/dev/null",
 					);
 					checks.push(
 						checkDetail(
 							"read-only-write-blocked",
 							readOnly.exitCode !== 0 &&
-								!existsSync(join(workspace, "read-only-proof.txt")),
+								!existsSync(join(workspace, "read-only-check.txt")),
 							readOnly.exitCode !== 0
 								? "blocked workspace write"
 								: "workspace write unexpectedly succeeded",
@@ -200,9 +200,9 @@ export function createMaestroAppServerSandboxProof(
 			} catch (error) {
 				checks.push(
 					checkDetail(
-						"native-sandbox-proof",
+						"native-sandbox-check",
 						false,
-						error instanceof Error ? error.message : "proof failed",
+						error instanceof Error ? error.message : "check failed",
 					),
 				);
 				return { mode, available: true, type, passed: false, checks };

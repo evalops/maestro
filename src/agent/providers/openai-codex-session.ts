@@ -44,7 +44,7 @@ export function resolveOpenAICodexAccountId(
 		extractOpenAICodexAccountId(token);
 	if (!accountId) {
 		throw new Error(
-			"OpenAI Codex account id is required. Log in with /login openai-codex or set OPENAI_CODEX_ACCOUNT_ID.",
+			"OpenAI Codex account id is required for legacy Codex Responses models. Log in with /login openai-codex:responses or set OPENAI_CODEX_ACCOUNT_ID.",
 		);
 	}
 	return accountId;
