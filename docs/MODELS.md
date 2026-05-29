@@ -160,7 +160,10 @@ generator, so you can use them out of the box:
   `gpt-5.2-codex`, `gpt-5.3-codex`, `gpt-5.3-codex-spark`,
   `gpt-5.4`, `gpt-5.4-mini`, and `gpt-5.5` under the `openai-codex`
   provider. These use `api: "openai-codex-app-server"` and require
-  `maestro codex login` to Sign in with ChatGPT through `codex app-server`.
+  `maestro codex login` to Sign in with ChatGPT through Codex app-server.
+  Published Maestro installs use the packaged `@openai/codex` app-server first
+  and source checkouts fall back to a `codex` binary on `PATH`, so `codex login`
+  and `maestro codex login` share the same Codex-owned `CODEX_HOME` auth state.
   Use `maestro codex status` to inspect the current Codex-owned sign-in,
   `maestro codex login --force` to refresh it, and
   `maestro codex login --device-auth` for remote/headless machines.
