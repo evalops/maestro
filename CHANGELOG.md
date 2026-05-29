@@ -17,6 +17,29 @@ versioning when releases are cut.
   and keep scheduled public runs inert so public publishing stays downstream of
   the internal source-of-truth release.
 
+## [0.10.47] - 2026-05-29
+
+### Changed
+
+- Recover login when refresh fails (#2346). <!-- maestro-release-note:f2ceab065c0f -->
+- Rename sandbox proof surface to checks. <!-- maestro-release-note:efe1907cf01d -->
+- Avoid refreshing passive auth probes (#2345). <!-- maestro-release-note:00018d636738 -->
+- Surface app-server auth in tui status. <!-- maestro-release-note:d390030bc9f0 -->
+- Align login with app-server auth. <!-- maestro-release-note:a0131380881b -->
+- Keep ripgrep guard public-safe. <!-- maestro-release-note:db78b72d5fc6 -->
+- Mirror ripgrep helper release action. <!-- maestro-release-note:7255e7a9975e -->
+- Harden ripgrep setup and background log rotation. <!-- maestro-release-note:716e558f5c33 -->
+- Record Slack delivery runtime events (#2337). <!-- maestro-release-note:838e72f7d4c5 -->
+- Add teammate Slack delivery queue (#2331). <!-- maestro-release-note:d3e986d2bf10 -->
+- Smoke already-published registry releases (#2335). <!-- maestro-release-note:3d1f6d3a7cc5 -->
+- Cover legacy broken release range (#2334). <!-- maestro-release-note:22d7ef756cfe -->
+
+### Fixed
+
+- Preserve delivered slack finals. <!-- maestro-release-note:9478ca17aae6 -->
+- Bind durable a2a push message ids (#2336). <!-- maestro-release-note:4c34b9ff45d1 -->
+- Keep tag-release published no-op in source (#2333). <!-- maestro-release-note:6cba565f53bd -->
+
 ## [0.10.46] - 2026-05-28
 
 ### Fixed
