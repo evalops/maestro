@@ -4,8 +4,8 @@
 	"replaySchemaVersion": "evalops.maestro.agent-trajectory-replay.v1",
 	"scoreSchemaVersion": "evalops.maestro.agent-trajectory-score.v1",
 	"run": {
-		"id": "slack-contract-progress-outcome-0007",
-		"sessionId": "slack-contract-progress-outcome-0007",
+		"id": "slack-teammate-progress-outcome-0007",
+		"sessionId": "slack-teammate-progress-outcome-0007",
 		"source": "platform",
 		"platformBacked": true
 	},
@@ -48,7 +48,7 @@
 			"title": "Slack thread ingress accepted",
 			"summary": "Redacted customer thread requested a repo-backed teammate answer.",
 			"metadataKeys": [
-				"ensemble_transcript_id",
+				"platform_slack_event_id",
 				"platform_trace_id",
 				"work_envelope_id"
 			],
@@ -107,7 +107,7 @@
 			"summary": "Final answer stayed in-thread, cited the redacted evidence artifact, and named the next action.",
 			"relatedIds": [
 				"agent-run-slack-progress-0007",
-				"vfs-artifact-slack-contract-dev-0007"
+				"vfs-artifact-slack-teammate-dev-0007"
 			],
 			"timelineItemIds": ["slack-final-reply:thread-redacted-0007"],
 			"evidence": [
@@ -119,9 +119,9 @@
 				},
 				{
 					"kind": "artifact",
-					"id": "vfs-artifact-slack-contract-dev-0007",
+					"id": "vfs-artifact-slack-teammate-dev-0007",
 					"redacted": true,
-					"label": "artifact:vfs-artifact-slack-contract-dev-0007"
+					"label": "artifact:vfs-artifact-slack-teammate-dev-0007"
 				},
 				{
 					"kind": "agent_run",
@@ -144,9 +144,9 @@
 			"evidence": [
 				{
 					"kind": "artifact",
-					"id": "vfs-artifact-slack-contract-dev-0007",
+					"id": "vfs-artifact-slack-teammate-dev-0007",
 					"redacted": true,
-					"label": "artifact:vfs-artifact-slack-contract-dev-0007"
+					"label": "artifact:vfs-artifact-slack-teammate-dev-0007"
 				}
 			],
 			"remediation": "No action required."

@@ -2,8 +2,8 @@
 	"schemaVersion": "evalops.maestro.agent-trajectory-score.v1",
 	"trajectorySchemaVersion": "evalops.maestro.agent-trajectory.v1",
 	"run": {
-		"id": "slack-contract-progress-outcome-0007",
-		"sessionId": "slack-contract-progress-outcome-0007",
+		"id": "slack-teammate-progress-outcome-0007",
+		"sessionId": "slack-teammate-progress-outcome-0007",
 		"source": "platform",
 		"platformBacked": true
 	},
@@ -45,7 +45,7 @@
 				"trajectory:slack-final-reply:thread-redacted-0007"
 			],
 			"evidence": [
-				{ "kind": "artifact", "id": "vfs-artifact-slack-contract-dev-0007" },
+				{ "kind": "artifact", "id": "vfs-artifact-slack-teammate-dev-0007" },
 				{
 					"kind": "timeline_item",
 					"id": "artifact-linked:slack-evidence-0007"
@@ -91,7 +91,7 @@
 					"kind": "timeline_item",
 					"id": "slack-final-reply:thread-redacted-0007"
 				},
-				{ "kind": "artifact", "id": "vfs-artifact-slack-contract-dev-0007" }
+				{ "kind": "artifact", "id": "vfs-artifact-slack-teammate-dev-0007" }
 			],
 			"remediation": "No action required."
 		},
@@ -122,12 +122,12 @@
 			"severity": "error",
 			"message": "Final runtime event has evidence anchors.",
 			"eventIds": [
-				"trajectory:runtime-finished:slack-contract-progress-outcome-0007"
+				"trajectory:runtime-finished:slack-teammate-progress-outcome-0007"
 			],
 			"evidence": [
 				{
 					"kind": "timeline_item",
-					"id": "runtime-finished:slack-contract-progress-outcome-0007"
+					"id": "runtime-finished:slack-teammate-progress-outcome-0007"
 				},
 				{ "kind": "agent_run", "id": "agent-run-slack-progress-0007" }
 			],

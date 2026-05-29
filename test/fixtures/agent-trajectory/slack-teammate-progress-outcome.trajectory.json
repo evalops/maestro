@@ -1,10 +1,10 @@
 {
 	"schemaVersion": "evalops.maestro.agent-trajectory-fixture.v1",
-	"fixture": "agent-trajectory/slack-contract-progress-outcome.timeline.json",
+	"fixture": "agent-trajectory/slack-teammate-progress-outcome.timeline.json",
 	"trajectorySchemaVersion": "evalops.maestro.agent-trajectory.v1",
 	"run": {
-		"id": "slack-contract-progress-outcome-0007",
-		"sessionId": "slack-contract-progress-outcome-0007",
+		"id": "slack-teammate-progress-outcome-0007",
+		"sessionId": "slack-teammate-progress-outcome-0007",
 		"source": "platform",
 		"platformBacked": true
 	},
@@ -36,7 +36,7 @@
 	},
 	"events": [
 		{
-			"id": "trajectory:session-started:slack-contract-progress-outcome-0007",
+			"id": "trajectory:session-started:slack-teammate-progress-outcome-0007",
 			"sequence": 1,
 			"kind": "session",
 			"phase": "setup",
@@ -49,7 +49,7 @@
 			"evidence": [
 				{
 					"kind": "timeline_item",
-					"id": "session-started:slack-contract-progress-outcome-0007"
+					"id": "session-started:slack-teammate-progress-outcome-0007"
 				},
 				{ "kind": "agent_run", "id": "agent-run-slack-progress-0007" }
 			],
@@ -175,13 +175,13 @@
 					"id": "artifact-linked:slack-evidence-0007"
 				},
 				{ "kind": "tool_call", "id": "call-evidence-lookup-0007" },
-				{ "kind": "artifact", "id": "vfs-artifact-slack-contract-dev-0007" },
+				{ "kind": "artifact", "id": "vfs-artifact-slack-teammate-dev-0007" },
 				{ "kind": "agent_run", "id": "agent-run-slack-progress-0007" }
 			],
 			"relatedIds": [
 				"agent-run-slack-progress-0007",
 				"call-evidence-lookup-0007",
-				"vfs-artifact-slack-contract-dev-0007"
+				"vfs-artifact-slack-teammate-dev-0007"
 			]
 		},
 		{
@@ -243,16 +243,16 @@
 					"kind": "timeline_item",
 					"id": "slack-final-reply:thread-redacted-0007"
 				},
-				{ "kind": "artifact", "id": "vfs-artifact-slack-contract-dev-0007" },
+				{ "kind": "artifact", "id": "vfs-artifact-slack-teammate-dev-0007" },
 				{ "kind": "agent_run", "id": "agent-run-slack-progress-0007" }
 			],
 			"relatedIds": [
 				"agent-run-slack-progress-0007",
-				"vfs-artifact-slack-contract-dev-0007"
+				"vfs-artifact-slack-teammate-dev-0007"
 			]
 		},
 		{
-			"id": "trajectory:runtime-finished:slack-contract-progress-outcome-0007",
+			"id": "trajectory:runtime-finished:slack-teammate-progress-outcome-0007",
 			"sequence": 11,
 			"kind": "runtime",
 			"phase": "finish",
@@ -265,7 +265,7 @@
 			"evidence": [
 				{
 					"kind": "timeline_item",
-					"id": "runtime-finished:slack-contract-progress-outcome-0007"
+					"id": "runtime-finished:slack-teammate-progress-outcome-0007"
 				},
 				{ "kind": "agent_run", "id": "agent-run-slack-progress-0007" }
 			],

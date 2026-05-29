@@ -1,10 +1,10 @@
 {
 	"schemaVersion": "evalops.maestro.agent-trajectory-fixture.v1",
-	"fixture": "agent-trajectory/slack-contract-unsafe-degraded.timeline.json",
+	"fixture": "agent-trajectory/slack-teammate-unsafe-degraded.timeline.json",
 	"trajectorySchemaVersion": "evalops.maestro.agent-trajectory.v1",
 	"run": {
-		"id": "slack-contract-unsafe-degraded-0019",
-		"sessionId": "slack-contract-unsafe-degraded-0019",
+		"id": "slack-teammate-unsafe-degraded-0019",
+		"sessionId": "slack-teammate-unsafe-degraded-0019",
 		"source": "platform",
 		"platformBacked": true
 	},
@@ -37,7 +37,7 @@
 	},
 	"events": [
 		{
-			"id": "trajectory:session-started:slack-contract-unsafe-degraded-0019",
+			"id": "trajectory:session-started:slack-teammate-unsafe-degraded-0019",
 			"sequence": 1,
 			"kind": "session",
 			"phase": "setup",
@@ -50,7 +50,7 @@
 			"evidence": [
 				{
 					"kind": "timeline_item",
-					"id": "session-started:slack-contract-unsafe-degraded-0019"
+					"id": "session-started:slack-teammate-unsafe-degraded-0019"
 				},
 				{ "kind": "agent_run", "id": "agent-run-slack-degraded-0019" }
 			],
@@ -207,7 +207,7 @@
 			"relatedIds": ["agent-run-slack-degraded-0019"]
 		},
 		{
-			"id": "trajectory:runtime-finished:slack-contract-unsafe-degraded-0019",
+			"id": "trajectory:runtime-finished:slack-teammate-unsafe-degraded-0019",
 			"sequence": 9,
 			"kind": "runtime",
 			"phase": "finish",
@@ -220,7 +220,7 @@
 			"evidence": [
 				{
 					"kind": "timeline_item",
-					"id": "runtime-finished:slack-contract-unsafe-degraded-0019"
+					"id": "runtime-finished:slack-teammate-unsafe-degraded-0019"
 				},
 				{ "kind": "agent_run", "id": "agent-run-slack-degraded-0019" }
 			],

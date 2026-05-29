@@ -918,7 +918,7 @@ export interface UsageSummary {
 export interface UIStatusResponse {
 	zenMode: boolean;
 	cleanMode: "off" | "soft" | "aggressive";
-	footerMode: "ensemble" | "solo";
+	footerMode: "rich" | "solo";
 	compactTools: boolean;
 	queueMode: "one" | "all";
 }

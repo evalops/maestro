@@ -41,7 +41,7 @@ const inspection: OperatingPlaneInspection = {
 					blocker: "approval pending",
 				},
 			],
-			value_proof: {
+			runtime_signals: {
 				operation_id: "run_1",
 				operator_summary: "Gateway request is tied to Slack thread",
 				identity_bound: true,

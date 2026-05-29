@@ -2693,7 +2693,7 @@ export class ApiClient {
 	}
 
 	async setFooterMode(
-		mode: "ensemble" | "solo",
+		mode: "rich" | "solo",
 		sessionId: string,
 	): Promise<{ success: boolean; footerMode: UIStatusResponse["footerMode"] }> {
 		return await this.fetchJsonRequestWithFallback(

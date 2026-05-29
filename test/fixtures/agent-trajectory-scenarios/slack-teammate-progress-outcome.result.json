@@ -2,27 +2,27 @@
 	"schemaVersion": "evalops.maestro.agent-trajectory-scenario-result.v1",
 	"scenarioSchemaVersion": "evalops.maestro.scenario.v1",
 	"scenario": {
-		"id": "slack-contract-progress-outcome",
+		"id": "slack-teammate-progress-outcome",
 		"title": "Slack teammate progress and evidence outcome stays replayable",
 		"expectedOutcome": "pass",
 		"observedOutcome": "pass",
 		"reviewLabels": ["accepted", "platform_promotion_ready"]
 	},
 	"externalRefs": {
-		"ensembleTranscriptIds": ["slack-contract-lab/dev/thread-redacted-0007"],
-		"platformTraceIds": ["trace-slack-contract-dev-0007"],
-		"platformWorkEnvelopeIds": ["we-slack-contract-dev-0007"],
+		"platformSlackEventIds": ["platform-slack/dev/thread-redacted-0007"],
+		"platformTraceIds": ["trace-slack-teammate-dev-0007"],
+		"platformWorkEnvelopeIds": ["we-slack-teammate-dev-0007"],
 		"slackThreadRefs": [
 			"slack://T_REDACTED_DEV/C_REDACTED_SUPPORT/1778242500.000700"
 		],
-		"evidenceArtifactIds": ["vfs-artifact-slack-contract-dev-0007"]
+		"evidenceArtifactIds": ["vfs-artifact-slack-teammate-dev-0007"]
 	},
 	"run": {
-		"id": "slack-contract-progress-outcome-0007",
-		"sessionId": "slack-contract-progress-outcome-0007",
+		"id": "slack-teammate-progress-outcome-0007",
+		"sessionId": "slack-teammate-progress-outcome-0007",
 		"source": "platform",
 		"platformBacked": true,
-		"scenarioId": "slack-contract-progress-outcome",
+		"scenarioId": "slack-teammate-progress-outcome",
 		"replay": true,
 		"generatedAt": "<redacted>"
 	},
@@ -45,23 +45,23 @@
 		"traceJoinKeys": [
 			"sessionId",
 			"scenarioId",
-			"ensemble_transcript_id",
+			"platform_slack_event_id",
 			"platform_trace_id",
 			"work_envelope_id",
 			"agent_run",
 			"tool_call",
 			"artifact"
 		],
-		"rationale": "Slack contract-lab scenarios must join Ensemble transcript replay with Platform trace and work-envelope evidence before becoming release gates.",
+		"rationale": "Slack teammate runtime scenarios must join Platform Slack event history with Platform trace and work-envelope evidence before becoming release gates.",
 		"evidenceEventType": "maestro.events.eval.scored"
 	},
 	"assumptions": {
 		"workflow": "A Slack teammate receives a redacted customer thread, posts progress in-thread, recalls scoped memory, gathers safe evidence, proposes/accepts memory, and posts the final outcome in the same thread.",
 		"correctnessModel": "The scenario is correct only when the trace contains same-thread continuity, one progress reply, one final reply, accepted memory lifecycle, safe evidence artifact, and zero replay deltas.",
-		"threatModel": "Raw Slack text, customer identifiers, tool arguments, model responses, connector payloads, and VFS bytes must stay behind permissioned Ensemble and Platform sources.",
+		"threatModel": "Raw Slack text, customer identifiers, tool arguments, model responses, connector payloads, and VFS bytes must stay behind permissioned Platform sources.",
 		"researchBasis": [
 			"Existing trajectory replay already gives Maestro deterministic event, score, inspection, and JUnit artifacts.",
-			"Slack contract-lab fixtures need real cross-system IDs rather than synthetic-only local session IDs.",
+			"Slack teammate runtime fixtures need real cross-system IDs rather than synthetic-only local session IDs.",
 			"Long-horizon Slack teammate evals should score progress, memory lifecycle, evidence handling, and final answer quality together."
 		]
 	},
@@ -71,11 +71,11 @@
 			"kind": "external.refs",
 			"status": "pass",
 			"severity": "error",
-			"message": "External refs present for ensembleTranscriptIds, platformTraceIds, platformWorkEnvelopeIds, slackThreadRefs, evidenceArtifactIds.",
+			"message": "External refs present for platformSlackEventIds, platformTraceIds, platformWorkEnvelopeIds, slackThreadRefs, evidenceArtifactIds.",
 			"evidence": [
 				{
 					"kind": "scenario",
-					"id": "slack-contract-progress-outcome",
+					"id": "slack-teammate-progress-outcome",
 					"source": "scenario",
 					"label": "external-refs"
 				}
@@ -197,9 +197,9 @@
 				},
 				{
 					"kind": "artifact",
-					"id": "vfs-artifact-slack-contract-dev-0007",
+					"id": "vfs-artifact-slack-teammate-dev-0007",
 					"source": "trajectory",
-					"label": "artifact:vfs-artifact-slack-contract-dev-0007"
+					"label": "artifact:vfs-artifact-slack-teammate-dev-0007"
 				},
 				{
 					"kind": "trajectory_event",
@@ -248,9 +248,9 @@
 				},
 				{
 					"kind": "artifact",
-					"id": "vfs-artifact-slack-contract-dev-0007",
+					"id": "vfs-artifact-slack-teammate-dev-0007",
 					"source": "trajectory",
-					"label": "artifact:vfs-artifact-slack-contract-dev-0007"
+					"label": "artifact:vfs-artifact-slack-teammate-dev-0007"
 				},
 				{
 					"kind": "trajectory_event",
@@ -275,7 +275,7 @@
 			"evidence": [
 				{
 					"kind": "scenario",
-					"id": "slack-contract-progress-outcome-0007",
+					"id": "slack-teammate-progress-outcome-0007",
 					"source": "scenario",
 					"label": "inspection:redaction"
 				}
@@ -296,9 +296,9 @@
 				},
 				{
 					"kind": "artifact",
-					"id": "vfs-artifact-slack-contract-dev-0007",
+					"id": "vfs-artifact-slack-teammate-dev-0007",
 					"source": "trajectory",
-					"label": "artifact:vfs-artifact-slack-contract-dev-0007"
+					"label": "artifact:vfs-artifact-slack-teammate-dev-0007"
 				},
 				{
 					"kind": "trajectory_event",
@@ -323,7 +323,7 @@
 			"evidence": [
 				{
 					"kind": "scenario",
-					"id": "slack-contract-progress-outcome",
+					"id": "slack-teammate-progress-outcome",
 					"source": "scenario",
 					"label": "human-review:labels"
 				}
@@ -332,7 +332,7 @@
 	],
 	"provenance": [
 		{
-			"eventId": "trajectory:session-started:slack-contract-progress-outcome-0007",
+			"eventId": "trajectory:session-started:slack-teammate-progress-outcome-0007",
 			"eventType": "session.started",
 			"phase": "setup",
 			"actor": "platform",
@@ -345,15 +345,15 @@
 				},
 				{
 					"kind": "trajectory_event",
-					"id": "trajectory:session-started:slack-contract-progress-outcome-0007",
+					"id": "trajectory:session-started:slack-teammate-progress-outcome-0007",
 					"source": "trajectory",
-					"label": "session.started:trajectory:session-started:slack-contract-progress-outcome-0007"
+					"label": "session.started:trajectory:session-started:slack-teammate-progress-outcome-0007"
 				},
 				{
 					"kind": "timeline_item",
-					"id": "session-started:slack-contract-progress-outcome-0007",
+					"id": "session-started:slack-teammate-progress-outcome-0007",
 					"source": "trajectory",
-					"label": "timeline_item:session-started:slack-contract-progress-outcome-0007"
+					"label": "timeline_item:session-started:slack-teammate-progress-outcome-0007"
 				}
 			]
 		},
@@ -507,9 +507,9 @@
 				},
 				{
 					"kind": "artifact",
-					"id": "vfs-artifact-slack-contract-dev-0007",
+					"id": "vfs-artifact-slack-teammate-dev-0007",
 					"source": "trajectory",
-					"label": "artifact:vfs-artifact-slack-contract-dev-0007"
+					"label": "artifact:vfs-artifact-slack-teammate-dev-0007"
 				},
 				{
 					"kind": "trajectory_event",
@@ -597,9 +597,9 @@
 				},
 				{
 					"kind": "artifact",
-					"id": "vfs-artifact-slack-contract-dev-0007",
+					"id": "vfs-artifact-slack-teammate-dev-0007",
 					"source": "trajectory",
-					"label": "artifact:vfs-artifact-slack-contract-dev-0007"
+					"label": "artifact:vfs-artifact-slack-teammate-dev-0007"
 				},
 				{
 					"kind": "trajectory_event",
@@ -616,7 +616,7 @@
 			]
 		},
 		{
-			"eventId": "trajectory:runtime-finished:slack-contract-progress-outcome-0007",
+			"eventId": "trajectory:runtime-finished:slack-teammate-progress-outcome-0007",
 			"eventType": "runtime.finished",
 			"phase": "finish",
 			"actor": "platform",
@@ -629,15 +629,15 @@
 				},
 				{
 					"kind": "trajectory_event",
-					"id": "trajectory:runtime-finished:slack-contract-progress-outcome-0007",
+					"id": "trajectory:runtime-finished:slack-teammate-progress-outcome-0007",
 					"source": "trajectory",
-					"label": "runtime.finished:trajectory:runtime-finished:slack-contract-progress-outcome-0007"
+					"label": "runtime.finished:trajectory:runtime-finished:slack-teammate-progress-outcome-0007"
 				},
 				{
 					"kind": "timeline_item",
-					"id": "runtime-finished:slack-contract-progress-outcome-0007",
+					"id": "runtime-finished:slack-teammate-progress-outcome-0007",
 					"source": "trajectory",
-					"label": "timeline_item:runtime-finished:slack-contract-progress-outcome-0007"
+					"label": "timeline_item:runtime-finished:slack-teammate-progress-outcome-0007"
 				}
 			]
 		}

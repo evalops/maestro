@@ -51,7 +51,7 @@ export class FooterComponent {
 
 	constructor(
 		state: AgentState,
-		mode: FooterMode = "ensemble",
+		mode: FooterMode = "rich",
 		gitBranchTracker = new GitBranchTracker(),
 	) {
 		this.state = state;

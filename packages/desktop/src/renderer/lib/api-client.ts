@@ -56,7 +56,7 @@ interface DesktopApiConfig {
 export type ApprovalMode = "auto" | "prompt" | "fail";
 export type QueueMode = "one" | "all";
 export type CleanMode = "off" | "soft" | "aggressive";
-export type FooterMode = "ensemble" | "solo";
+export type FooterMode = "rich" | "solo";
 
 export interface UiStatus {
 	zenMode: boolean;
