@@ -105,6 +105,34 @@
 			]
 		},
 		{
+			"area": "published-replay-evidence-verifier",
+			"path": "scripts/verify-published-replay-evidence.js",
+			"evidenceType": "source",
+			"anchors": [
+				"const REQUIRED_INSTALLERS = [\"npm\", \"bun\"];",
+				"const REQUIRED_REPLAY_MODES = [\"json\", \"rpc\", \"text\"];",
+				"\"toolExecutionEvidence\"",
+				"\"searchRipgrepEvidence\"",
+				"\"queryableObservabilityIndex\"",
+				"\"agentRuntimeLedger\"",
+				"\"agentRuntimeLifecycle\"",
+				"\"agent-runtime-lifecycle\"",
+				"function toolExecutionCoverageIsValid",
+				"function agentRuntimeLifecycleIsValid",
+				"assertPublishedReplayReleaseGate(evidence);"
+			]
+		},
+		{
+			"area": "published-replay-release-gate",
+			"path": "scripts/published-replay-evidence-gate.js",
+			"evidenceType": "source",
+			"anchors": [
+				"export function assertPublishedReplayReleaseGate",
+				"evidence?.releaseGate?.satisfied === true",
+				"Published replay release gate failed"
+			]
+		},
+		{
 			"area": "release-readiness",
 			"path": "scripts/release-readiness.js",
 			"evidenceType": "source",

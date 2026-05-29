@@ -274,6 +274,92 @@ describe("release-surface conformance", () => {
 		);
 	});
 
+	it("requires published replay verifier coverage anchors", () => {
+		tempDir = join(
+			tmpdir(),
+			`release-surface-replay-verifier-${process.pid}-${Date.now()}`,
+		);
+		mkdirSync(join(tempDir, "scripts"), { recursive: true });
+		const anchors = [
+			'const REQUIRED_INSTALLERS = ["npm", "bun"];',
+			'const REQUIRED_REPLAY_MODES = ["json", "rpc", "text"];',
+			'"toolExecutionEvidence"',
+			'"searchRipgrepEvidence"',
+			'"queryableObservabilityIndex"',
+			'"agentRuntimeLedger"',
+			'"agentRuntimeLifecycle"',
+			'"agent-runtime-lifecycle"',
+			"function toolExecutionCoverageIsValid",
+			"function agentRuntimeLifecycleIsValid",
+			"assertPublishedReplayReleaseGate(evidence);",
+		];
+		writeFileSync(
+			join(tempDir, "scripts/verify-published-replay-evidence.js"),
+			anchors.join("\n"),
+			"utf8",
+		);
+
+		const failures = checkReleaseSurfaceConformance({
+			rootDir: tempDir,
+			manifest: {
+				version: 1,
+				checks: [
+					{
+						area: "published-replay-evidence-verifier",
+						path: "scripts/verify-published-replay-evidence.js",
+						evidenceType: "source",
+						anchors: anchors.filter(
+							(anchor) => anchor !== '"agentRuntimeLifecycle"',
+						),
+					},
+				],
+			},
+		});
+
+		expect(failures).toContain(
+			'published-replay-evidence-verifier: scripts/verify-published-replay-evidence.js must anchor "agentRuntimeLifecycle"',
+		);
+	});
+
+	it("requires the published replay release-gate assertion", () => {
+		tempDir = join(
+			tmpdir(),
+			`release-surface-replay-gate-${process.pid}-${Date.now()}`,
+		);
+		mkdirSync(join(tempDir, "scripts"), { recursive: true });
+		writeFileSync(
+			join(tempDir, "scripts/published-replay-evidence-gate.js"),
+			[
+				"export function assertPublishedReplayReleaseGate",
+				"evidence?.releaseGate?.satisfied === true",
+				"Published replay release gate failed",
+			].join("\n"),
+			"utf8",
+		);
+
+		const failures = checkReleaseSurfaceConformance({
+			rootDir: tempDir,
+			manifest: {
+				version: 1,
+				checks: [
+					{
+						area: "published-replay-release-gate",
+						path: "scripts/published-replay-evidence-gate.js",
+						evidenceType: "source",
+						anchors: [
+							"export function assertPublishedReplayReleaseGate",
+							"evidence?.releaseGate?.satisfied === true",
+						],
+					},
+				],
+			},
+		});
+
+		expect(failures).toContain(
+			"published-replay-release-gate: scripts/published-replay-evidence-gate.js must anchor Published replay release gate failed",
+		);
+	});
+
 	it("rejects release-surface gates that can swallow failures", () => {
 		tempDir = join(
 			tmpdir(),
