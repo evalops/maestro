@@ -17,6 +17,7 @@ const mockWebClient = {
 
 const mockStore = {
 	logBotResponse: vi.fn(),
+	logMessage: vi.fn(),
 };
 
 function createMockConfig(
@@ -145,6 +146,112 @@ describe("createResponseHandlers", () => {
 				}),
 			);
 		});
+
+		it("logs replacement text when requested", async () => {
+			const handlers = createResponseHandlers(createMockConfig());
+
+			await handlers.respond("Initial", false);
+			await handlers.replaceMessage("Visible final", true, "Full final text");
+
+			expect(mockStore.logBotResponse).toHaveBeenCalledWith(
+				"C123456",
+				"Full final text",
+				"1234567890.123456",
+			);
+		});
+	});
+
+	describe("explicit posts", () => {
+		it("posts a standalone channel message without mutating the placeholder", async () => {
+			const handlers = createResponseHandlers(createMockConfig());
+
+			await handlers.respond("Working", false);
+			await handlers.postMessage("C999", "Separate update", true);
+
+			expect(mockWebClient.chat.postMessage).toHaveBeenLastCalledWith(
+				expect.objectContaining({
+					channel: "C999",
+					text: "Separate update",
+				}),
+			);
+			expect(mockWebClient.chat.update).not.toHaveBeenCalledWith(
+				expect.objectContaining({
+					text: expect.stringContaining("Separate update"),
+				}),
+			);
+			expect(mockStore.logBotResponse).toHaveBeenCalledWith(
+				"C999",
+				"Separate update",
+				"1234567890.123456",
+			);
+		});
+
+		it("posts a reply to the requested channel and thread", async () => {
+			const handlers = createResponseHandlers(createMockConfig());
+
+			await handlers.postThreadReply(
+				"C999",
+				"1710000000.000100",
+				"Thread note",
+			);
+
+			expect(mockWebClient.chat.postMessage).toHaveBeenCalledWith(
+				expect.objectContaining({
+					channel: "C999",
+					thread_ts: "1710000000.000100",
+					text: "Thread note",
+				}),
+			);
+		});
+
+		it("logs explicit thread replies with their parent thread", async () => {
+			const handlers = createResponseHandlers(createMockConfig());
+
+			await handlers.postThreadReply(
+				"C999",
+				"1710000000.000100",
+				"Thread note",
+				true,
+			);
+
+			expect(mockStore.logMessage).toHaveBeenCalledWith(
+				"C999",
+				expect.objectContaining({
+					ts: "1234567890.123456",
+					threadTs: "1710000000.000100",
+					user: "bot",
+					text: "Thread note",
+					attachments: [],
+					isBot: true,
+				}),
+			);
+		});
+
+		it("recovers queued responses after an explicit post fails", async () => {
+			mockWebClient.chat.postMessage
+				.mockResolvedValueOnce({ ts: "1234567890.123456" })
+				.mockRejectedValueOnce(new Error("channel_not_found"));
+			const handlers = createResponseHandlers(createMockConfig());
+
+			await handlers.respond("Working", false);
+			await expect(
+				handlers.postMessage("CBAD", "Separate update", true),
+			).rejects.toThrow("channel_not_found");
+			await handlers.replaceMessage("Final answer", true, "Full final answer");
+
+			expect(mockWebClient.chat.update).toHaveBeenLastCalledWith(
+				expect.objectContaining({
+					channel: "C123456",
+					ts: "1234567890.123456",
+					text: "Final answer ...",
+				}),
+			);
+			expect(mockStore.logBotResponse).toHaveBeenCalledWith(
+				"C123456",
+				"Full final answer",
+				"1234567890.123456",
+			);
+		});
 	});
 
 	describe("respondInThread", () => {
@@ -163,13 +270,38 @@ describe("createResponseHandlers", () => {
 			);
 		});
 
-		it("does nothing if no main message exists", async () => {
+		it("posts a standalone channel message if no main message exists", async () => {
 			const handlers = createResponseHandlers(createMockConfig());
 
 			await handlers.respondInThread("Orphan reply");
 
-			// Should only have not called postMessage for thread
-			expect(mockWebClient.chat.postMessage).not.toHaveBeenCalled();
+			expect(mockWebClient.chat.postMessage).toHaveBeenCalledWith(
+				expect.objectContaining({
+					channel: "C123456",
+					text: "Orphan reply",
+				}),
+			);
+			expect(mockWebClient.chat.postMessage).toHaveBeenCalledWith(
+				expect.not.objectContaining({
+					thread_ts: expect.any(String),
+				}),
+			);
+		});
+
+		it("uses the configured thread when no main message exists", async () => {
+			const handlers = createResponseHandlers(
+				createMockConfig({ threadTs: "9999999999.999999" }),
+			);
+
+			await handlers.respondInThread("Thread blocker");
+
+			expect(mockWebClient.chat.postMessage).toHaveBeenCalledWith(
+				expect.objectContaining({
+					channel: "C123456",
+					thread_ts: "9999999999.999999",
+					text: "Thread blocker",
+				}),
+			);
 		});
 
 		it("applies obfuscateUsernames to thread text", async () => {
@@ -187,6 +319,23 @@ describe("createResponseHandlers", () => {
 					text: "Hello @[redacted]",
 				}),
 			);
+		});
+
+		it("logs requested thread replies for follow-up context", async () => {
+			const handlers = createResponseHandlers(createMockConfig());
+
+			await handlers.respond("Main");
+			await handlers.respondInThread("_I need: Can I merge PR #123?_", true);
+
+			expect(mockStore.logMessage).toHaveBeenCalledWith("C123456", {
+				date: expect.any(String),
+				ts: "1234567890.123456",
+				threadTs: "1234567890.123456",
+				user: "bot",
+				text: "_I need: Can I merge PR #123?_",
+				attachments: [],
+				isBot: true,
+			});
 		});
 	});
 

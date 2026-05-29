@@ -100,6 +100,8 @@ describe("hosted runner identity", () => {
 				lastPlatformA2APush: {
 					kind: "statusUpdate",
 					taskId: "task_123",
+					messageId: "message_123",
+					messageIds: ["message_123", "message_124"],
 					contextId: "ctx_123",
 					state: "TASK_STATE_COMPLETED",
 					final: true,
@@ -120,6 +122,8 @@ describe("hosted runner identity", () => {
 			last_platform_a2a_push: {
 				kind: "statusUpdate",
 				task_id: "task_123",
+				message_id: "message_123",
+				message_ids: ["message_123", "message_124"],
 				context_id: "ctx_123",
 				state: "TASK_STATE_COMPLETED",
 				final: true,

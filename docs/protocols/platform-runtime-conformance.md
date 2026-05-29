@@ -8,6 +8,7 @@ The gate covers:
 - ToolExecution linkage from Maestro tool calls to workspace, agent run, step, correlation, approval, retry policy, and recorded output metadata.
 - A live Platform AgentRuntime lifecycle smoke path for trigger, claim, step, wait, resume, complete, and event listing.
 - Platform A2A live evidence verification for durable task/message/context IDs, invalid-token rejection, source discovery evidence, and trace joins.
+- Platform A2A push-notification callbacks that bind durable message IDs, reject mismatched task/message IDs, preserve tenant/workspace boundaries, and carry trace context into hosted-runner identity.
 
 Run it locally with:
 

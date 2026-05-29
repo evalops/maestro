@@ -39,10 +39,19 @@ import {
 	ThreadMemoryManager,
 } from "./thread-memory.js";
 import { createLiveDashboardTool } from "./tools/create-live-dashboard.js";
-import { createSlackAgentTools, setUploadFunction } from "./tools/index.js";
+import {
+	createSlackAgentTools,
+	createSlackDeliveryTools,
+	isSlackDeliveryTool,
+	setUploadFunction,
+} from "./tools/index.js";
 import type { DashboardRegistry } from "./ui/dashboard-registry.js";
 import { ensureDir } from "./utils/fs.js";
-import { MessageQueue } from "./utils/message-queue.js";
+import {
+	type MessageDeliveryEvent,
+	type MessageDeliveryKind,
+	MessageQueue,
+} from "./utils/message-queue.js";
 import { createTimestampGenerator } from "./utils/slack-timestamp.js";
 import { splitForSlack } from "./utils/split-for-slack.js";
 
@@ -518,7 +527,7 @@ export function buildSystemPrompt(
 	const currentDate = new Date().toISOString().split("T")[0];
 	const currentDateTime = new Date().toISOString();
 
-	return `You are a Slack bot assistant. Be concise. No emojis.
+	return `You are an EvalOps teammate working from Slack. Be concise, natural, and useful. No emojis.
 
 ## Context
 - Date: ${currentDate} (${currentDateTime})
@@ -527,6 +536,12 @@ export function buildSystemPrompt(
 ## Slack Formatting (mrkdwn, NOT Markdown)
 Bold: *text*, Italic: _text_, Code: \`code\`, Block: \`\`\`code\`\`\`, Links: <url|text>
 Do NOT use **double asterisks** or [markdown](links).
+
+## Slack Delivery
+- The runtime owns progress updates and final delivery. Do not narrate tool traces, transcript structure, or internal delivery mechanics.
+- Write one clean final answer for the user. Put the useful outcome first, then the relevant status, what changed or what you checked, and any real blocker or next human action.
+- If a needed credential or tool is missing after you actually try it, say exactly what is blocked and what access would unblock it.
+- Speak like a coworker, not a report generator.
 
 ## Slack Reply Integrity
 - The last conversation turn is the current request and is authoritative over earlier bot replies.
@@ -540,7 +555,7 @@ Channels: ${channelMappings}
 
 Users: ${userMappings}
 
-When mentioning users, use <@username> format (e.g., <@mario>).
+When mentioning users, use the Slack user ID from the table, formatted like <@U123>. Do not mention display names or usernames as if they were Slack IDs.
 
 ## Environment
 ${envDescription}
@@ -573,16 +588,22 @@ ${memory}
 
 	## Tools
 	- bash: Run shell commands (primary tool). Install packages as needed. Destructive commands require user approval.
+	- gh: Use GitHub CLI from bash when available for issues, PRs, checks, branches, comments, and repo state.
 	- read: Read files
 	- write: Create/overwrite files
 	- edit: Surgical file edits
 	- attach: Share files to Slack
 	- status: Check system health, resource usage (CPU, memory), and workspace disk usage
+	- send_progress: When available, send a short, rate-limited Slack status update for meaningful movement only
+	- send_request: When available, ask one concrete question or approval request when you cannot responsibly continue
+	- send_final: When available, send the one clean final Slack answer; after using it, finish with "Final sent in Slack."
+	- send_error / send_blocker: When available, send a separate blocker/error message when work cannot continue
+	- send_message / send_thread_reply: When available, send an explicit channel message or thread reply when the user asked for multiple messages
 	- schedule: Schedule tasks for future execution (one-time or recurring)
 	- deploy: Deploy a mini-app/dashboard from the sandbox and get a public URL
 	- create_live_dashboard: Create a persistent, workspace-scoped live BI dashboard in the control plane (returns a link)
 
-	Each tool requires a "label" parameter (shown to user).
+	Use each tool according to its schema. Slack delivery tools do not need an extra label argument; their tool name is already the user-facing action label.
 
 Use the status tool when:
 - User asks about your status, health, or resources
@@ -680,6 +701,49 @@ Before sending a final answer, check it contains each requested literal that sho
 function truncate(text: string, maxLen: number): string {
 	if (text.length <= maxLen) return text;
 	return `${text.substring(0, maxLen - 3)}...`;
+}
+
+function slackDeliveryRuntimeMessage(kind: MessageDeliveryKind): string {
+	switch (kind) {
+		case "progress":
+			return "Slack progress updated";
+		case "message":
+			return "Slack channel message sent";
+		case "thread_reply":
+			return "Slack thread reply sent";
+		case "final_continuation":
+			return "Slack final continuation sent";
+		case "error":
+			return "Slack error message sent";
+		case "blocker":
+			return "Slack blocker message sent";
+		case "request":
+			return "Slack request message sent";
+		case "delivery_error":
+			return "Slack delivery error reported";
+		case "final":
+			return "Slack final response sent";
+	}
+}
+
+function slackDeliveryRuntimeAttributes(
+	delivery: MessageDeliveryEvent,
+	run: {
+		stopReason: string;
+		toolsExecuted: number;
+		runCostTotal: number;
+	},
+): Record<string, string | number | boolean | undefined> {
+	return {
+		message_kind: `slack_${delivery.kind}`,
+		delivery_target: delivery.target,
+		text_length: delivery.textLength,
+		chunk_index: delivery.chunkIndex,
+		chunk_count: delivery.chunkCount,
+		stop_reason: run.stopReason,
+		tools_executed: run.toolsExecuted,
+		total_cost_usd: run.runCostTotal,
+	};
 }
 
 function extractToolResultText(result: unknown): string {
@@ -801,14 +865,6 @@ export function createAgentRunner(
 		): Promise<AgentRunResult> {
 			const runStartMs = Date.now();
 			await ensureDir(channelDir);
-			try {
-				await ctx.updateStatus("Starting...");
-			} catch (error) {
-				logger.logDebug("Initial status update failed", {
-					error: error instanceof Error ? error.message : String(error),
-				});
-			}
-
 			// Wait for any file downloads to complete before processing
 			if (ctx.message.attachments.length > 0) {
 				logger.logInfo(
@@ -830,6 +886,9 @@ export function createAgentRunner(
 				message: string,
 				attributes?: Parameters<RuntimeEventRecorder["record"]>[2],
 			) => runtimeEventRecorder.record(type, message, attributes);
+			let stopReason = "stop";
+			let toolsExecuted = 0;
+			let runCostTotal = 0;
 
 			// Build file content section for code/text files attached to current message
 			let fileContentSection = "";
@@ -877,6 +936,41 @@ export function createAgentRunner(
 				}
 			}
 
+			const SLACK_MAX_LENGTH = 40000;
+			const queue = new MessageQueue({
+				handler: {
+					respond: (text, log) => ctx.respond(text, log),
+					replaceMessage: (text, log, logText) =>
+						ctx.replaceMessage(text, log, logText),
+					respondInThread: (text, log) => ctx.respondInThread(text, log),
+					postMessage: (channel, text, log) =>
+						ctx.postMessage(channel, text, log),
+					postThreadReply: (channel, threadTs, text, log) =>
+						ctx.postThreadReply(channel, threadTs, text, log),
+					updateStatus: (status) => ctx.updateStatus(status),
+				},
+				splitText: (text) =>
+					splitForSlack(text, { maxLength: SLACK_MAX_LENGTH }),
+				progressMinIntervalMs: 15000,
+				progressMaxLength: 220,
+				onDelivery: (delivery) => {
+					if (delivery.kind === "final") {
+						return;
+					}
+					void recordRuntimeEvent(
+						delivery.kind === "progress"
+							? "RUNTIME_EVENT_TYPE_AGENT_PROGRESS_RECORDED"
+							: "RUNTIME_EVENT_TYPE_CHANNEL_MESSAGE_RECORDED",
+						slackDeliveryRuntimeMessage(delivery.kind),
+						slackDeliveryRuntimeAttributes(delivery, {
+							stopReason,
+							toolsExecuted,
+							runCostTotal,
+						}),
+					);
+				},
+			});
+
 			// Create tools with executor
 			const extraTools = [
 				...(connectorRegistry?.tools ?? []),
@@ -891,6 +985,11 @@ export function createAgentRunner(
 							}),
 						]
 					: []),
+				...createSlackDeliveryTools({
+					queue,
+					defaultChannel: channelId,
+					defaultThreadTs: ctx.message.threadTs,
+				}),
 			];
 			const onApprovalNeeded: ApprovalRequestCallback | undefined =
 				options?.onApprovalNeeded
@@ -1021,21 +1120,33 @@ export function createAgentRunner(
 				{ toolName: string; args: unknown; startTime: number }
 			>();
 
-			let stopReason = "stop";
-			const SLACK_MAX_LENGTH = 40000;
-			let runCostTotal = 0;
 			let inputTokens = 0;
 			let outputTokens = 0;
 			let cacheWriteTokens = 0;
 			let cacheReadTokens = 0;
 			let modelUsed: string | null = null;
+			const buildRunResult = (reason = stopReason): AgentRunResult => ({
+				stopReason: reason,
+				durationMs: Date.now() - runStartMs,
+				toolsExecuted,
+				cost: {
+					total: runCostTotal,
+					inputTokens,
+					outputTokens,
+					cacheWriteTokens,
+					cacheReadTokens,
+					model: modelUsed,
+				},
+			});
 
-			// Progress indicator - update status every 30 seconds during long operations
+			// The Slack queue is the only visible delivery lane for the run:
+			// progress is terse, final is one primary message, and blockers/errors
+			// are their own replies.
+			// Progress indicator - update status during long operations.
 			let lastStatusUpdate = Date.now();
-			let toolsExecuted = 0;
 			const STATUS_UPDATE_INTERVAL = 15000; // 15 seconds
 
-			const maybeUpdateStatus = async () => {
+			const maybeUpdateStatus = () => {
 				const now = Date.now();
 				if (now - lastStatusUpdate >= STATUS_UPDATE_INTERVAL) {
 					lastStatusUpdate = now;
@@ -1050,26 +1161,9 @@ export function createAgentRunner(
 							.join(", ");
 						status += ` - running: ${pendingNames}`;
 					}
-					try {
-						await ctx.updateStatus(status);
-					} catch (err) {
-						// Log but don't fail on status update errors
-						logger.logDebug("Status update failed", {
-							error: err instanceof Error ? err.message : String(err),
-						});
-					}
+					queue.sendProgress(status);
 				}
 			};
-
-			// Promise queue for ordered Slack responses
-			const queue = new MessageQueue({
-				handler: {
-					respond: (text, log) => ctx.respond(text, log),
-					respondInThread: (text) => ctx.respondInThread(text),
-				},
-				splitText: (text) =>
-					splitForSlack(text, { maxLength: SLACK_MAX_LENGTH }),
-			});
 
 			// Subscribe to agent events
 			agent.subscribe(async (event: AgentEvent) => {
@@ -1101,12 +1195,8 @@ export function createAgentRunner(
 							},
 						);
 
-						try {
-							await ctx.updateStatus(`Running ${label}...`);
-						} catch (err) {
-							logger.logDebug("Status update failed", {
-								error: err instanceof Error ? err.message : String(err),
-							});
+						if (!isSlackDeliveryTool(event.toolName)) {
+							queue.sendProgress(`Running ${label}`);
 						}
 
 						await store.logMessage(ctx.message.channel, {
@@ -1118,10 +1208,6 @@ export function createAgentRunner(
 							isBot: true,
 						});
 
-						queue.enqueue(
-							() => ctx.respond(`_-> ${label}_`, false),
-							"tool label",
-						);
 						break;
 					}
 
@@ -1134,7 +1220,7 @@ export function createAgentRunner(
 						const durationMs = pending ? Date.now() - pending.startTime : 0;
 
 						// Check if we should update progress status
-						await maybeUpdateStatus();
+						maybeUpdateStatus();
 
 						if (event.isError) {
 							logger.logToolError(
@@ -1173,26 +1259,6 @@ export function createAgentRunner(
 							isBot: true,
 						});
 
-						const label = pending?.args
-							? (pending.args as { label?: string }).label
-							: undefined;
-						const duration = (durationMs / 1000).toFixed(1);
-						let threadMessage = `*${event.isError ? "err" : "ok"} ${event.toolName}*`;
-						if (label) {
-							threadMessage += `: ${label}`;
-						}
-						threadMessage += ` (${duration}s)\n`;
-						threadMessage += `*Result:*\n\`\`\`\n${resultStr}\n\`\`\``;
-
-						queue.enqueueMessage(threadMessage, "thread", "tool result", false);
-
-						if (event.isError) {
-							queue.enqueue(
-								() =>
-									ctx.respond(`_Error: ${truncate(resultStr, 200)}_`, false),
-								"tool error",
-							);
-						}
 						break;
 					}
 
@@ -1273,19 +1339,10 @@ export function createAgentRunner(
 
 							for (const thinking of thinkingParts) {
 								logger.logThinking(logCtx, thinking);
-								queue.enqueueMessage(`_${thinking}_`, "main", "thinking main");
-								queue.enqueueMessage(
-									`_${thinking}_`,
-									"thread",
-									"thinking thread",
-									false,
-								);
 							}
 
 							if (text.trim()) {
 								logger.logResponse(logCtx, text);
-								queue.enqueueMessage(text, "main", "response main");
-								queue.enqueueMessage(text, "thread", "response thread", false);
 							}
 						}
 						break;
@@ -1361,6 +1418,7 @@ export function createAgentRunner(
 			}
 
 			// Run with retry logic for transient API failures
+			let promptFailedAfterDeliveredFinal = false;
 			try {
 				await retryAsync("Agent prompt", () => activeAgent.prompt(userPrompt), {
 					maxAttempts: 3,
@@ -1374,33 +1432,44 @@ export function createAgentRunner(
 						);
 						queue.enqueue(
 							() =>
-								ctx.respond(
-									`_Temporary error, retrying in ${delaySec}s..._`,
-									false,
-								),
+								ctx.updateStatus(`Temporary error, retrying in ${delaySec}s`),
 							"retry notice",
 						);
 					},
 				});
 			} catch (error) {
+				const errorMessage =
+					error instanceof Error ? error.message : String(error);
 				await recordRuntimeEvent(
 					"RUNTIME_EVENT_TYPE_AGENT_PROGRESS_RECORDED",
 					"Slack agent observed run failure",
 					{
 						progress_kind: "run_failure_observed",
-						error: error instanceof Error ? error.message : String(error),
+						error: errorMessage,
 						tools_executed: toolsExecuted,
 						total_cost_usd: runCostTotal,
 					},
 				);
-				throw error;
+				if (queue.hasFinal()) {
+					stopReason = "error";
+					promptFailedAfterDeliveredFinal = true;
+					logger.logWarning(
+						"Agent failed after final response delivery",
+						errorMessage,
+					);
+					queue.sendError(
+						`A later step failed after I sent the final answer: ${errorMessage}`,
+					);
+					await queue.flush();
+				} else {
+					throw error;
+				}
 			}
 
-			await runtimeEventRecorder.flush();
-			await queue.flush();
-
 			// Get final assistant message and replace main message
-			const messages = activeAgent.state.messages as Message[];
+			const messages = promptFailedAfterDeliveredFinal
+				? []
+				: (activeAgent.state.messages as Message[]);
 			const lastAssistant = messages
 				.filter((m): m is AssistantMessage => m.role === "assistant")
 				.pop();
@@ -1410,36 +1479,44 @@ export function createAgentRunner(
 					.map((c) => c.text)
 					.join("\n") || "";
 
-			if (finalText.trim()) {
+			const alreadySentFinalText = queue.finalText();
+			let deliveredFinalText = alreadySentFinalText;
+			if (finalText.trim() && !alreadySentFinalText) {
 				try {
-					const mainText =
-						finalText.length > SLACK_MAX_LENGTH
-							? `${finalText.substring(0, SLACK_MAX_LENGTH - 50)}\n\n_(see thread for full response)_`
-							: finalText;
-					await ctx.replaceMessage(mainText);
-					await recordRuntimeEvent(
-						"RUNTIME_EVENT_TYPE_CHANNEL_MESSAGE_RECORDED",
-						"Slack response posted",
-						{
-							message_kind: "final_response",
-							text_length: finalText.length,
-							truncated_for_main_message: finalText.length > SLACK_MAX_LENGTH,
-							stop_reason: stopReason,
-							tools_executed: toolsExecuted,
-							total_cost_usd: runCostTotal,
-						},
-					);
+					await queue.flush();
+					const failureCount = queue.deliveryFailures();
+					const sent = queue.sendFinal(finalText);
+					await queue.flushOrThrowIfDeliveryFailed(failureCount);
+					if (sent) {
+						deliveredFinalText = queue.finalText();
+					}
 				} catch (err) {
 					const errMsg = err instanceof Error ? err.message : String(err);
 					logger.logWarning("Failed to replace message", errMsg);
 				}
 			}
+			if (deliveredFinalText.trim()) {
+				await recordRuntimeEvent(
+					"RUNTIME_EVENT_TYPE_CHANNEL_MESSAGE_RECORDED",
+					"Slack response posted",
+					{
+						message_kind: "final_response",
+						text_length: deliveredFinalText.length,
+						chunked_for_slack: deliveredFinalText.length > SLACK_MAX_LENGTH,
+						stop_reason: stopReason,
+						tools_executed: toolsExecuted,
+						total_cost_usd: runCostTotal,
+					},
+				);
+			}
+			await runtimeEventRecorder.flush();
+			await queue.flush();
 
-			if (threadMemory && ctx.threadKey && finalText.trim()) {
+			if (threadMemory && ctx.threadKey && deliveredFinalText.trim()) {
 				try {
 					await threadMemory.addMessage(channelId, ctx.threadKey, {
 						role: "assistant",
-						content: finalText,
+						content: deliveredFinalText,
 						messageTs: slackTsGenerator.generate(),
 						metadata: { userName: "bot" },
 					});
@@ -1451,20 +1528,7 @@ export function createAgentRunner(
 				}
 			}
 
-			const durationMs = Date.now() - runStartMs;
-			return {
-				stopReason,
-				durationMs,
-				toolsExecuted,
-				cost: {
-					total: runCostTotal,
-					inputTokens,
-					outputTokens,
-					cacheWriteTokens,
-					cacheReadTokens,
-					model: modelUsed,
-				},
-			};
+			return buildRunResult();
 		},
 
 		abort(): void {
