@@ -104,12 +104,13 @@
 			"absent": ["error"]
 		},
 		{
-			"name": "codex login preserves device flag for command handler",
-			"argv": ["codex", "login", "--device"],
+			"name": "codex login preserves current Codex auth flags for command handler",
+			"argv": ["codex", "login", "--device-auth", "--force"],
 			"expect": {
 				"command": "codex",
 				"subcommand": "login",
-				"commandArgs": ["--device"],
+				"commandArgs": ["--device-auth"],
+				"force": true,
 				"messages": []
 			},
 			"absent": ["error"]

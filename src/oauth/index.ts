@@ -1,4 +1,9 @@
 import {
+	hasOpenAICodexAppServerAccount,
+	loginOpenAICodexAppServer,
+	logoutOpenAICodexAppServer,
+} from "../codex/auth.js";
+import {
 	assertEvalOpsManagedGatewayEnabled,
 	isEvalOpsManagedGatewayEnabled,
 } from "../providers/evalops-managed.js";
@@ -154,6 +159,19 @@ export function listOAuthLogoutProviders(): OAuthLogoutProvider[] {
 	);
 }
 
+export async function listOAuthLogoutProvidersWithCodexAppServer(): Promise<
+	OAuthLogoutProvider[]
+> {
+	const providers = listOAuthLogoutProviders();
+	if (
+		!providers.includes("openai-codex") &&
+		(await hasOpenAICodexAppServerAccount())
+	) {
+		return [...providers, "openai-codex"];
+	}
+	return providers;
+}
+
 export function getOAuthLogoutProviders(): OAuthProviderInfo<OAuthLogoutProvider>[] {
 	const loggedInProviders = new Set(listOAuthLogoutProviders());
 	const supported = getOAuthProviders().filter((provider) =>
@@ -201,12 +219,20 @@ export async function login(
 			shouldSyncConnectorConnection = true;
 			break;
 		case "openai-codex":
-			await loginOpenAICodex(
-				options.onAuthUrl,
-				options.onPromptCode,
-				options.onStatus,
-			);
-			shouldSyncConnectorConnection = true;
+			if (options.mode === "responses" || options.mode === "legacy-responses") {
+				await loginOpenAICodex(
+					options.onAuthUrl,
+					options.onPromptCode,
+					options.onStatus,
+				);
+				shouldSyncConnectorConnection = true;
+			} else {
+				await loginOpenAICodexAppServer(
+					options.onAuthUrl,
+					options.onPromptCode,
+					options.onStatus,
+				);
+			}
 			break;
 		case "evalops":
 			assertEvalOpsManagedGatewayEnabled();
@@ -242,6 +268,7 @@ export async function login(
  */
 export async function logout(provider: OAuthLogoutProvider): Promise<void> {
 	const credentials = loadOAuthCredentials(provider);
+	let codexAppServerLogoutError: unknown;
 	if (isLegacyLogoutOnlyOAuthProvider(provider)) {
 		await revokeOAuthProviderConnection(provider, credentials);
 		removeOAuthCredentials(provider);
@@ -257,10 +284,39 @@ export async function logout(provider: OAuthLogoutProvider): Promise<void> {
 			});
 		}
 	}
+	if (provider === "openai-codex") {
+		const shouldLogoutAppServer =
+			!credentials || (await hasOpenAICodexAppServerAccount());
+		if (shouldLogoutAppServer) {
+			try {
+				await logoutOpenAICodexAppServer();
+			} catch (error) {
+				if (!credentials) {
+					const message =
+						error instanceof Error ? error.message : String(error);
+					throw new Error(`Failed to sign out of Codex app-server: ${message}`);
+				}
+				codexAppServerLogoutError = error;
+			}
+		}
+	}
 	if (provider !== "evalops") {
 		await revokeOAuthProviderConnection(provider, credentials);
 	}
 	removeOAuthCredentials(provider);
+	if (codexAppServerLogoutError) {
+		const message =
+			codexAppServerLogoutError instanceof Error
+				? codexAppServerLogoutError.message
+				: String(codexAppServerLogoutError);
+		logger.warn("Failed to sign out of Codex app-server", {
+			error: message,
+			provider,
+		});
+		throw new Error(
+			`Failed to sign out of Codex app-server; legacy OAuth credentials were removed: ${message}`,
+		);
+	}
 }
 
 /**

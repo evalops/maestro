@@ -10,6 +10,7 @@ interface OAuthSelectorViewOptions {
 	modalManager: ModalManager;
 	ui: TUI;
 	mode: "login" | "logout";
+	providers?: OAuthLogoutProvider[];
 	onProviderSelected: (
 		providerId: SupportedOAuthProvider | OAuthLogoutProvider,
 	) => Promise<void>;
@@ -36,6 +37,7 @@ export class OAuthSelectorView {
 				this.options.onCancel();
 				this.hide();
 			},
+			this.options.providers,
 		);
 
 		this.options.modalManager.push(this.selector);

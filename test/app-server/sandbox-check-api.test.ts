@@ -5,14 +5,14 @@ import { Value } from "@sinclair/typebox/value";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { MaestroAppServerResponseSchema } from "../../packages/contracts/src/maestro-app-server.js";
 import {
-	type MaestroAppServerSandboxProof,
-	createMaestroAppServerSandboxProof,
+	type MaestroAppServerSandboxCheck,
+	createMaestroAppServerSandboxCheck,
 	createMaestroAppServerSessionApi,
 	handleMaestroAppServerRequest,
 } from "../../src/app-server/session-api.js";
 import { SessionManager } from "../../src/session/manager.js";
 
-describe("Maestro app-server sandbox proof API", () => {
+describe("Maestro app-server sandbox check API", () => {
 	let testDir: string;
 	let manager: SessionManager;
 
@@ -29,27 +29,27 @@ describe("Maestro app-server sandbox proof API", () => {
 		}
 	});
 
-	it("advertises sandbox probe and proof capabilities", () => {
+	it("advertises sandbox probe and check capabilities", () => {
 		const api = createMaestroAppServerSessionApi(manager);
 
 		expect(api.initialize()).toMatchObject({
 			capabilities: {
 				sandboxProbe: true,
-				sandboxProof: true,
+				sandboxCheck: true,
 			},
 		});
 	});
 
-	it("exposes probe and proof results through the app-server contract", async () => {
-		const sandboxProof: MaestroAppServerSandboxProof = {
+	it("exposes probe and check results through the app-server contract", async () => {
+		const sandboxCheck: MaestroAppServerSandboxCheck = {
 			probe: () => ({
 				available: true,
 				type: "seatbelt",
 				platform: "darwin",
 				supportedModes: ["read-only", "workspace-write"],
-				proofAvailable: true,
+				checkAvailable: true,
 			}),
-			runProof: async () => ({
+			runCheck: async () => ({
 				mode: "workspace-write",
 				available: true,
 				type: "seatbelt",
@@ -68,7 +68,7 @@ describe("Maestro app-server sandbox proof API", () => {
 				],
 			}),
 		};
-		const api = createMaestroAppServerSessionApi(manager, { sandboxProof });
+		const api = createMaestroAppServerSessionApi(manager, { sandboxCheck });
 
 		const probeResponse = await handleMaestroAppServerRequest(api, {
 			jsonrpc: "2.0",
@@ -80,19 +80,19 @@ describe("Maestro app-server sandbox proof API", () => {
 			type: "seatbelt",
 			platform: "darwin",
 			supportedModes: ["read-only", "workspace-write"],
-			proofAvailable: true,
+			checkAvailable: true,
 		});
 		expect(Value.Check(MaestroAppServerResponseSchema, probeResponse)).toBe(
 			true,
 		);
 
-		const proofResponse = await handleMaestroAppServerRequest(api, {
+		const checkResponse = await handleMaestroAppServerRequest(api, {
 			jsonrpc: "2.0",
-			id: "sandbox-proof",
-			method: "sandbox/proof/run",
+			id: "sandbox-check",
+			method: "sandbox/check/run",
 			params: { mode: "workspace-write" },
 		});
-		expect(proofResponse.result).toMatchObject({
+		expect(checkResponse.result).toMatchObject({
 			mode: "workspace-write",
 			available: true,
 			type: "seatbelt",
@@ -102,21 +102,21 @@ describe("Maestro app-server sandbox proof API", () => {
 				{ name: "outside-write-blocked", passed: true },
 			],
 		});
-		expect(Value.Check(MaestroAppServerResponseSchema, proofResponse)).toBe(
+		expect(Value.Check(MaestroAppServerResponseSchema, checkResponse)).toBe(
 			true,
 		);
 	});
 
-	it("reports unavailable native sandbox proof without falling back silently", async () => {
-		const sandboxProof = createMaestroAppServerSandboxProof({
+	it("reports unavailable native sandbox check without falling back silently", async () => {
+		const sandboxCheck = createMaestroAppServerSandboxCheck({
 			cwd: testDir,
 			isNativeSandboxAvailable: () => false,
 			getNativeSandboxType: () => "none",
 		});
 
-		const proof = await sandboxProof.runProof({ mode: "workspace-write" });
+		const check = await sandboxCheck.runCheck({ mode: "workspace-write" });
 
-		expect(proof).toEqual({
+		expect(check).toEqual({
 			mode: "workspace-write",
 			available: false,
 			type: "none",
@@ -126,28 +126,28 @@ describe("Maestro app-server sandbox proof API", () => {
 		});
 	});
 
-	it("reports workspace preparation failures as failed proof checks", async () => {
-		const sandboxProof = createMaestroAppServerSandboxProof({
+	it("reports workspace preparation failures as failed sandbox checks", async () => {
+		const sandboxCheck = createMaestroAppServerSandboxCheck({
 			cwd: join(testDir, "missing-parent"),
 			isNativeSandboxAvailable: () => true,
 			getNativeSandboxType: () => "seatbelt",
 		});
 
-		const proof = await sandboxProof.runProof({ mode: "workspace-write" });
+		const check = await sandboxCheck.runCheck({ mode: "workspace-write" });
 
-		expect(proof).toMatchObject({
+		expect(check).toMatchObject({
 			mode: "workspace-write",
 			available: true,
 			type: "seatbelt",
 			passed: false,
-			checks: [{ name: "native-sandbox-proof", passed: false }],
+			checks: [{ name: "native-sandbox-check", passed: false }],
 		});
 	});
 
-	it("runs workspace-write proof through the native sandbox adapter", async () => {
+	it("runs the workspace-write check through the native sandbox adapter", async () => {
 		const commands: string[] = [];
 		let disposed = false;
-		const sandboxProof = createMaestroAppServerSandboxProof({
+		const sandboxCheck = createMaestroAppServerSandboxCheck({
 			cwd: testDir,
 			isNativeSandboxAvailable: () => true,
 			getNativeSandboxType: () => "seatbelt",
@@ -160,17 +160,17 @@ describe("Maestro app-server sandbox proof API", () => {
 					excludeTmpdir: true,
 				});
 				expect(options.cwd.startsWith(testDir)).toBe(true);
-				expect(options.cwd).toContain("maestro-native-proof-");
+				expect(options.cwd).toContain("maestro-native-check-");
 				return {
 					exec: async (command: string) => {
 						commands.push(command);
 						if (command.includes("MAESTRO_SANDBOX")) {
 							return { stdout: "seatbelt", stderr: "", exitCode: 0 };
 						}
-						if (command.includes("inside-proof.txt")) {
+						if (command.includes("inside-check.txt")) {
 							return { stdout: "", stderr: "", exitCode: 0 };
 						}
-						if (command.includes("maestro-native-proof-outside")) {
+						if (command.includes("maestro-native-check-outside")) {
 							return {
 								stdout: "",
 								stderr: "Operation not permitted",
@@ -189,9 +189,9 @@ describe("Maestro app-server sandbox proof API", () => {
 			},
 		});
 
-		const proof = await sandboxProof.runProof({ mode: "workspace-write" });
+		const check = await sandboxCheck.runCheck({ mode: "workspace-write" });
 
-		expect(proof).toMatchObject({
+		expect(check).toMatchObject({
 			mode: "workspace-write",
 			available: true,
 			type: "seatbelt",
@@ -206,13 +206,13 @@ describe("Maestro app-server sandbox proof API", () => {
 		expect(disposed).toBe(true);
 	});
 
-	it("rejects malformed proof params as an invalid request", async () => {
+	it("rejects malformed check params as an invalid request", async () => {
 		const api = createMaestroAppServerSessionApi(manager);
 
 		const response = await handleMaestroAppServerRequest(api, {
 			jsonrpc: "2.0",
 			id: "sandbox-invalid-params",
-			method: "sandbox/proof/run",
+			method: "sandbox/check/run",
 			params: ["workspace-write"] as unknown as Record<string, unknown>,
 		});
 
@@ -222,27 +222,27 @@ describe("Maestro app-server sandbox proof API", () => {
 		});
 	});
 
-	it("rejects malformed proof params before invoking injected adapters", async () => {
+	it("rejects malformed check params before invoking injected adapters", async () => {
 		let invoked = false;
-		const sandboxProof: MaestroAppServerSandboxProof = {
+		const sandboxCheck: MaestroAppServerSandboxCheck = {
 			probe: () => ({
 				available: true,
 				type: "seatbelt",
 				platform: "darwin",
 				supportedModes: ["read-only", "workspace-write"],
-				proofAvailable: true,
+				checkAvailable: true,
 			}),
-			runProof: async () => {
+			runCheck: async () => {
 				invoked = true;
 				throw new Error("adapter should not be called");
 			},
 		};
-		const api = createMaestroAppServerSessionApi(manager, { sandboxProof });
+		const api = createMaestroAppServerSessionApi(manager, { sandboxCheck });
 
 		const response = await handleMaestroAppServerRequest(api, {
 			jsonrpc: "2.0",
 			id: "sandbox-injected-invalid-params",
-			method: "sandbox/proof/run",
+			method: "sandbox/check/run",
 			params: ["workspace-write"] as unknown as Record<string, unknown>,
 		});
 

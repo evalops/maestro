@@ -600,7 +600,11 @@ export async function main(args: string[]) {
 
 	if (parsed.command === "codex") {
 		const { handleCodexCommand } = await import("./cli/commands/codex.js");
-		await handleCodexCommand(parsed.subcommand, parsed.commandArgs ?? []);
+		const commandArgs = [...(parsed.commandArgs ?? [])];
+		if (parsed.subcommand === "login" && parsed.force) {
+			commandArgs.push("--force");
+		}
+		await handleCodexCommand(parsed.subcommand, commandArgs);
 		await waitForStartupTelemetryForImmediateExit(startupTelemetry);
 		return;
 	}

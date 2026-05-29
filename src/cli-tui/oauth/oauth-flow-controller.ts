@@ -102,6 +102,7 @@ export class OAuthFlowController {
 		// Parse argument as a provider. Anthropic-specific mode arguments were
 		// retired with Anthropic OAuth login support.
 		let requestedProvider: string | undefined;
+		let requestedMode: string | undefined;
 
 		if (args) {
 			if (args.includes(":")) {
@@ -109,11 +110,15 @@ export class OAuthFlowController {
 				requestedProvider = parts[0];
 				const mode = parts[1];
 				if (mode) {
-					this.isOAuthFlowActive = false;
-					showError(
-						"Provider login modes are no longer supported. Use /login openai-codex for Codex auth or /login openai for OpenAI Platform auth.",
-					);
-					return;
+					if (requestedProvider === "openai-codex" && mode === "responses") {
+						requestedMode = mode;
+					} else {
+						this.isOAuthFlowActive = false;
+						showError(
+							"Provider login modes are no longer supported, except /login openai-codex:responses for legacy Codex Responses credentials.",
+						);
+						return;
+					}
 				}
 			} else {
 				requestedProvider = args;
@@ -141,7 +146,11 @@ export class OAuthFlowController {
 			(provider) => provider.id === "openai-codex",
 		);
 		if (!requestedProvider && defaultProvider) {
-			await this.performOAuthLogin(defaultProvider.id, undefined, showError);
+			await this.performOAuthLogin(
+				defaultProvider.id,
+				requestedMode,
+				showError,
+			);
 			return;
 		}
 
@@ -158,7 +167,7 @@ export class OAuthFlowController {
 				return;
 			}
 
-			await this.performOAuthLogin(provider.id, undefined, showError);
+			await this.performOAuthLogin(provider.id, requestedMode, showError);
 			return;
 		}
 
@@ -208,10 +217,13 @@ export class OAuthFlowController {
 		const requestedProvider = args || null;
 
 		// Import OAuth system
-		const { listOAuthLogoutProviders } = await import("../../oauth/index.js");
+		const { listOAuthLogoutProvidersWithCodexAppServer } = await import(
+			"../../oauth/index.js"
+		);
 
 		// Get logged-in providers
-		const loggedInProviders = listOAuthLogoutProviders();
+		const loggedInProviders =
+			await listOAuthLogoutProvidersWithCodexAppServer();
 
 		if (loggedInProviders.length === 0) {
 			this.isOAuthFlowActive = false;
@@ -243,6 +255,7 @@ export class OAuthFlowController {
 			modalManager: this.modalManager,
 			ui: this.renderContext.ui,
 			mode: "logout",
+			providers: loggedInProviders,
 			onProviderSelected: async (providerId) => {
 				try {
 					await this.performOAuthLogout(providerId, showError);
@@ -355,7 +368,7 @@ export class OAuthFlowController {
 
 		try {
 			await login(providerId, {
-				mode: mode as "pro" | "console" | undefined,
+				mode,
 				onStatus: (status: string) => {
 					chatContainer.addChild(new Spacer(1));
 					chatContainer.addChild(new Text(status, 1, 0));
@@ -533,14 +546,12 @@ export class OAuthFlowController {
 				`Successfully authenticated with ${providerId}!`,
 				"success",
 			);
+			const completionMessage =
+				providerId === "openai-codex" && mode !== "responses"
+					? "Authentication complete. Codex app-server sign-in is ready."
+					: `Authentication complete. ${providerId} OAuth credentials saved.`;
 			chatContainer.addChild(new Spacer(1));
-			chatContainer.addChild(
-				new Text(
-					`Authentication complete. ${providerId} OAuth credentials saved.`,
-					1,
-					0,
-				),
-			);
+			chatContainer.addChild(new Text(completionMessage, 1, 0));
 			requestRender();
 		} catch (error) {
 			const message = error instanceof Error ? error.message : "Login failed";
@@ -573,18 +584,13 @@ export class OAuthFlowController {
 			const { logout } = await import("../../oauth/index.js");
 			await logout(providerId);
 
-			this.notificationView.showToast(
-				`${providerId} OAuth credentials removed`,
-				"success",
-			);
+			const message =
+				providerId === "openai-codex"
+					? "Signed out from openai-codex"
+					: `${providerId} OAuth credentials removed`;
+			this.notificationView.showToast(message, "success");
 			chatContainer.addChild(new Spacer(1));
-			chatContainer.addChild(
-				new Text(
-					`Logged out from ${providerId}. OAuth credentials removed.`,
-					1,
-					0,
-				),
-			);
+			chatContainer.addChild(new Text(message, 1, 0));
 			requestRender();
 		} catch (error) {
 			const message = error instanceof Error ? error.message : "Logout failed";

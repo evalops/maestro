@@ -17,7 +17,7 @@ import {
 	maestroAppServerProtocolVersion,
 	maestroAppServerRemoteControlLeaseStates,
 	maestroAppServerRemoteControlStatuses,
-	maestroAppServerSandboxProofModes,
+	maestroAppServerSandboxCheckModes,
 	maestroAppServerSandboxTypes,
 	maestroAppServerServerMethods,
 	maestroAppServerSupportedProtocolVersions,
@@ -100,7 +100,7 @@ const protocolFixture = {
 	protocolModeIds: [...maestroAppServerProtocolModeIds],
 	networkGovernanceStatuses: [...maestroAppServerNetworkGovernanceStatuses],
 	sandboxTypes: [...maestroAppServerSandboxTypes],
-	sandboxProofModes: [...maestroAppServerSandboxProofModes],
+	sandboxCheckModes: [...maestroAppServerSandboxCheckModes],
 	externalAgentArtifactKinds: [
 		...maestroAppServerExternalAgentArtifactKinds,
 	],

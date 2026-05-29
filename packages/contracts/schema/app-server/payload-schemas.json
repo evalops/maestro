@@ -70,10 +70,10 @@
 				"requirements": {
 					"type": "boolean"
 				},
-				"sandboxProbe": {
+				"sandboxCheck": {
 					"type": "boolean"
 				},
-				"sandboxProof": {
+				"sandboxProbe": {
 					"type": "boolean"
 				},
 				"sessions": {
@@ -120,7 +120,7 @@
 				"networkProxy",
 				"networkAudit",
 				"sandboxProbe",
-				"sandboxProof",
+				"sandboxCheck",
 				"externalAgentImport",
 				"pluginBundles",
 				"daemonStatus",
@@ -851,10 +851,10 @@
 						"requirements": {
 							"type": "boolean"
 						},
-						"sandboxProbe": {
+						"sandboxCheck": {
 							"type": "boolean"
 						},
-						"sandboxProof": {
+						"sandboxProbe": {
 							"type": "boolean"
 						},
 						"sessions": {
@@ -901,7 +901,7 @@
 						"networkProxy",
 						"networkAudit",
 						"sandboxProbe",
-						"sandboxProof",
+						"sandboxCheck",
 						"externalAgentImport",
 						"pluginBundles",
 						"daemonStatus",
@@ -926,7 +926,7 @@
 					"type": "object"
 				},
 				"protocolVersion": {
-					"const": "maestro-app-server.v2",
+					"const": "maestro-app-server.v3",
 					"type": "string"
 				},
 				"serverInfo": {
@@ -943,16 +943,8 @@
 				},
 				"supportedProtocolVersions": {
 					"items": {
-						"anyOf": [
-							{
-								"const": "maestro-app-server.v1",
-								"type": "string"
-							},
-							{
-								"const": "maestro-app-server.v2",
-								"type": "string"
-							}
-						]
+						"const": "maestro-app-server.v3",
+						"type": "string"
 					},
 					"type": "array"
 				}
@@ -3284,10 +3276,10 @@
 										"requirements": {
 											"type": "boolean"
 										},
-										"sandboxProbe": {
+										"sandboxCheck": {
 											"type": "boolean"
 										},
-										"sandboxProof": {
+										"sandboxProbe": {
 											"type": "boolean"
 										},
 										"sessions": {
@@ -3334,7 +3326,7 @@
 										"networkProxy",
 										"networkAudit",
 										"sandboxProbe",
-										"sandboxProof",
+										"sandboxCheck",
 										"externalAgentImport",
 										"pluginBundles",
 										"daemonStatus",
@@ -3359,7 +3351,7 @@
 									"type": "object"
 								},
 								"protocolVersion": {
-									"const": "maestro-app-server.v2",
+									"const": "maestro-app-server.v3",
 									"type": "string"
 								},
 								"serverInfo": {
@@ -3376,16 +3368,8 @@
 								},
 								"supportedProtocolVersions": {
 									"items": {
-										"anyOf": [
-											{
-												"const": "maestro-app-server.v1",
-												"type": "string"
-											},
-											{
-												"const": "maestro-app-server.v2",
-												"type": "string"
-											}
-										]
+										"const": "maestro-app-server.v3",
+										"type": "string"
 									},
 									"type": "array"
 								}
@@ -4005,11 +3989,11 @@
 								"available": {
 									"type": "boolean"
 								},
+								"checkAvailable": {
+									"type": "boolean"
+								},
 								"platform": {
 									"type": "string"
-								},
-								"proofAvailable": {
-									"type": "boolean"
 								},
 								"supportedModes": {
 									"items": {
@@ -4048,7 +4032,7 @@
 								"type",
 								"platform",
 								"supportedModes",
-								"proofAvailable"
+								"checkAvailable"
 							],
 							"type": "object"
 						},
@@ -6283,59 +6267,7 @@
 			"required": ["jsonrpc", "id"],
 			"type": "object"
 		},
-		"MaestroAppServerSandboxProbeResultSchema": {
-			"properties": {
-				"available": {
-					"type": "boolean"
-				},
-				"platform": {
-					"type": "string"
-				},
-				"proofAvailable": {
-					"type": "boolean"
-				},
-				"supportedModes": {
-					"items": {
-						"anyOf": [
-							{
-								"const": "read-only",
-								"type": "string"
-							},
-							{
-								"const": "workspace-write",
-								"type": "string"
-							}
-						]
-					},
-					"type": "array"
-				},
-				"type": {
-					"anyOf": [
-						{
-							"const": "seatbelt",
-							"type": "string"
-						},
-						{
-							"const": "landlock",
-							"type": "string"
-						},
-						{
-							"const": "none",
-							"type": "string"
-						}
-					]
-				}
-			},
-			"required": [
-				"available",
-				"type",
-				"platform",
-				"supportedModes",
-				"proofAvailable"
-			],
-			"type": "object"
-		},
-		"MaestroAppServerSandboxProofCheckSchema": {
+		"MaestroAppServerSandboxCheckItemSchema": {
 			"properties": {
 				"detail": {
 					"type": "string"
@@ -6350,7 +6282,7 @@
 			"required": ["name", "passed", "detail"],
 			"type": "object"
 		},
-		"MaestroAppServerSandboxProofModeSchema": {
+		"MaestroAppServerSandboxCheckModeSchema": {
 			"anyOf": [
 				{
 					"const": "read-only",
@@ -6362,7 +6294,7 @@
 				}
 			]
 		},
-		"MaestroAppServerSandboxProofResultSchema": {
+		"MaestroAppServerSandboxCheckResultSchema": {
 			"properties": {
 				"available": {
 					"type": "boolean"
@@ -6421,6 +6353,58 @@
 				}
 			},
 			"required": ["mode", "available", "type", "passed", "checks"],
+			"type": "object"
+		},
+		"MaestroAppServerSandboxProbeResultSchema": {
+			"properties": {
+				"available": {
+					"type": "boolean"
+				},
+				"checkAvailable": {
+					"type": "boolean"
+				},
+				"platform": {
+					"type": "string"
+				},
+				"supportedModes": {
+					"items": {
+						"anyOf": [
+							{
+								"const": "read-only",
+								"type": "string"
+							},
+							{
+								"const": "workspace-write",
+								"type": "string"
+							}
+						]
+					},
+					"type": "array"
+				},
+				"type": {
+					"anyOf": [
+						{
+							"const": "seatbelt",
+							"type": "string"
+						},
+						{
+							"const": "landlock",
+							"type": "string"
+						},
+						{
+							"const": "none",
+							"type": "string"
+						}
+					]
+				}
+			},
+			"required": [
+				"available",
+				"type",
+				"platform",
+				"supportedModes",
+				"checkAvailable"
+			],
 			"type": "object"
 		},
 		"MaestroAppServerSandboxTypeSchema": {
@@ -8190,10 +8174,10 @@
 										"requirements": {
 											"type": "boolean"
 										},
-										"sandboxProbe": {
+										"sandboxCheck": {
 											"type": "boolean"
 										},
-										"sandboxProof": {
+										"sandboxProbe": {
 											"type": "boolean"
 										},
 										"sessions": {
@@ -8240,7 +8224,7 @@
 										"networkProxy",
 										"networkAudit",
 										"sandboxProbe",
-										"sandboxProof",
+										"sandboxCheck",
 										"externalAgentImport",
 										"pluginBundles",
 										"daemonStatus",
@@ -8265,7 +8249,7 @@
 									"type": "object"
 								},
 								"protocolVersion": {
-									"const": "maestro-app-server.v2",
+									"const": "maestro-app-server.v3",
 									"type": "string"
 								},
 								"serverInfo": {
@@ -8282,16 +8266,8 @@
 								},
 								"supportedProtocolVersions": {
 									"items": {
-										"anyOf": [
-											{
-												"const": "maestro-app-server.v1",
-												"type": "string"
-											},
-											{
-												"const": "maestro-app-server.v2",
-												"type": "string"
-											}
-										]
+										"const": "maestro-app-server.v3",
+										"type": "string"
 									},
 									"type": "array"
 								}
@@ -8911,11 +8887,11 @@
 								"available": {
 									"type": "boolean"
 								},
+								"checkAvailable": {
+									"type": "boolean"
+								},
 								"platform": {
 									"type": "string"
-								},
-								"proofAvailable": {
-									"type": "boolean"
 								},
 								"supportedModes": {
 									"items": {
@@ -8954,7 +8930,7 @@
 								"type",
 								"platform",
 								"supportedModes",
-								"proofAvailable"
+								"checkAvailable"
 							],
 							"type": "object"
 						},

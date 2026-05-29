@@ -1,9 +1,6 @@
 {
-	"protocolVersion": "maestro-app-server.v2",
-	"supportedProtocolVersions": [
-		"maestro-app-server.v1",
-		"maestro-app-server.v2"
-	],
+	"protocolVersion": "maestro-app-server.v3",
+	"supportedProtocolVersions": ["maestro-app-server.v3"],
 	"clientMethods": [
 		"initialize",
 		"protocol/mode/list",
@@ -16,7 +13,7 @@
 		"network/fetch",
 		"network/audit/list",
 		"sandbox/probe",
-		"sandbox/proof/run",
+		"sandbox/check/run",
 		"externalAgent/import",
 		"pluginBundle/list",
 		"pluginBundle/install",
@@ -65,7 +62,7 @@
 	"protocolModeIds": ["standard", "review", "realtime"],
 	"networkGovernanceStatuses": ["allowed", "blocked", "failed"],
 	"sandboxTypes": ["seatbelt", "landlock", "none"],
-	"sandboxProofModes": ["read-only", "workspace-write"],
+	"sandboxCheckModes": ["read-only", "workspace-write"],
 	"externalAgentArtifactKinds": ["session", "config", "hooks", "mcp", "skill"],
 	"externalAgentImportStatuses": ["planned", "imported", "skipped"],
 	"externalAgentImportScopes": ["project", "local", "user"],

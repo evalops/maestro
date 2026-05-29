@@ -348,7 +348,7 @@ export function parseArgs(args: string[]): Args {
 		} else if (
 			result.command === "codex" &&
 			result.subcommand === "login" &&
-			(arg === "--device" || arg === "--device-code")
+			(arg === "--device" || arg === "--device-code" || arg === "--device-auth")
 		) {
 			if (!result.commandArgs) {
 				result.commandArgs = [];

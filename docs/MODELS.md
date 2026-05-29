@@ -161,6 +161,9 @@ generator, so you can use them out of the box:
   `gpt-5.4`, `gpt-5.4-mini`, and `gpt-5.5` under the `openai-codex`
   provider. These use `api: "openai-codex-app-server"` and require
   `maestro codex login` to Sign in with ChatGPT through `codex app-server`.
+  Use `maestro codex status` to inspect the current Codex-owned sign-in,
+  `maestro codex login --force` to refresh it, and
+  `maestro codex login --device-auth` for remote/headless machines.
 
 To add more Responses-capable models (or override these), drop them into
 `.maestro/config.json` with `api: "openai-responses"`; Maestro will normalize
@@ -170,7 +173,14 @@ Codex models are deliberately separated from the regular `openai` provider.
 `openai` uses Platform API keys or OpenAI Platform OAuth exchange, while
 `openai-codex` uses Codex app-server `account/read`, `account/login/start`,
 `thread/start`, and `turn/start` so Codex owns ChatGPT OAuth refresh and local
-thread execution.
+thread execution. Maestro should not copy Codex ChatGPT tokens into its normal
+provider key store for app-server runs.
+
+Legacy custom models that explicitly use `api: "openai-codex-responses"` still
+need stored ChatGPT OAuth credentials for direct backend Responses calls. Use
+`/login openai-codex:responses` for that compatibility path; the default
+`/login openai-codex` and `maestro codex login` continue to use Codex
+app-server.
 
 ### Responses API Compatibility Notes (Tools)
 

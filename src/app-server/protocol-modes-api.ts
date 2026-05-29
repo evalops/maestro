@@ -15,7 +15,7 @@ const DEFAULT_MODE: MaestroAppServerProtocolModeId = "standard";
 
 const REVIEW_BLOCKED_METHODS = new Set<MaestroAppServerClientMethod>([
 	"network/fetch",
-	"sandbox/proof/run",
+	"sandbox/check/run",
 	"externalAgent/import",
 	"pluginBundle/install",
 	"pluginBundle/remove",
