@@ -411,7 +411,7 @@ export class BackgroundTaskRuntime {
 		attach(child.stdout);
 		attach(child.stderr);
 
-		child.once("exit", closeStream);
+		child.once("close", closeStream);
 		child.once("error", closeStream);
 	}
 }
