@@ -7,7 +7,7 @@
  *   /ui                   - Show current UI settings
  *   /ui theme             - Open theme selector
  *   /ui clean [mode]      - Toggle text deduplication (off|soft|aggressive)
- *   /ui footer [mode]     - Footer style (ensemble|solo|history|clear)
+ *   /ui footer [mode]     - Footer style (rich|solo|history|clear)
  *   /ui alerts [cmd]      - Alert management (history|clear)
  *   /ui zen [on|off]      - Toggle zen mode
  *   /ui compact [on|off]  - Toggle tool output folding
@@ -93,7 +93,7 @@ function showUiHelp(ctx: CommandExecutionContext): void {
   /ui                   Show current UI settings
   /ui theme             Open theme selector
   /ui clean [mode]      Text deduplication (off|soft|aggressive)
-  /ui footer [mode]     Footer style (ensemble|solo)
+  /ui footer [mode]     Footer style (rich|solo)
   /ui alerts [cmd]      Alerts (history|clear)
   /ui zen [on|off]      Toggle zen mode
   /ui compact [on|off]  Toggle tool output folding
