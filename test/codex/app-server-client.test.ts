@@ -1,7 +1,10 @@
 import { createInterface } from "node:readline";
 import { PassThrough } from "node:stream";
 import { describe, expect, it, vi } from "vitest";
-import { CodexAppServerRpcClient } from "../../src/codex/app-server-client.js";
+import {
+	CodexAppServerRpcClient,
+	resolveCodexAppServerSpawnCommand,
+} from "../../src/codex/app-server-client.js";
 import { readPackageVersion } from "../../src/package-version.js";
 
 interface HarnessMessage {
@@ -83,12 +86,52 @@ function createHarness() {
 		requestFromServer,
 		exit: (code: number | null, signal: string | null = null) =>
 			onceListeners.get("exit")?.(code, signal),
+		error: (error: Error) => onceListeners.get("error")?.(error),
 		kill,
 		rl,
 	};
 }
 
 describe("Codex app-server RPC client", () => {
+	it("prefers the bundled @openai/codex package for default app-server spawns", () => {
+		const resolved = resolveCodexAppServerSpawnCommand(
+			{},
+			() => "/workspace/node_modules/@openai/codex/bin/codex.js",
+		);
+
+		expect(resolved).toEqual({
+			command: process.execPath,
+			args: [
+				"/workspace/node_modules/@openai/codex/bin/codex.js",
+				"app-server",
+				"--listen",
+				"stdio://",
+			],
+			source: "bundled-package",
+		});
+	});
+
+	it("falls back to codex on PATH when the package bin is unavailable", () => {
+		expect(resolveCodexAppServerSpawnCommand({}, () => null)).toEqual({
+			command: "codex",
+			args: ["app-server", "--listen", "stdio://"],
+			source: "path",
+		});
+	});
+
+	it("honors explicit app-server spawn overrides", () => {
+		expect(
+			resolveCodexAppServerSpawnCommand(
+				{ command: "/tmp/codex-dev", args: ["app-server"] },
+				() => "/workspace/node_modules/@openai/codex/bin/codex.js",
+			),
+		).toEqual({
+			command: "/tmp/codex-dev",
+			args: ["app-server"],
+			source: "override",
+		});
+	});
+
 	it("initializes and sends the initialized notification", async () => {
 		const harness = createHarness();
 		const initialize = harness.client.initialize();
@@ -221,6 +264,22 @@ describe("Codex app-server RPC client", () => {
 		await expect(completion).rejects.toThrow(
 			"Codex app-server exited with code 1",
 		);
+		harness.rl.close();
+	});
+
+	it("returns an actionable error when the Codex app-server binary is missing", async () => {
+		const harness = createHarness();
+		const completion = harness.client.waitForLoginCompletion("login-1", 10_000);
+		const error = Object.assign(new Error("spawn codex ENOENT"), {
+			code: "ENOENT",
+		});
+
+		harness.error(error);
+
+		await expect(completion).rejects.toThrow(
+			"Codex app-server executable was not found",
+		);
+		await expect(completion).rejects.toThrow("@openai/codex");
 		harness.rl.close();
 	});
 

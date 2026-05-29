@@ -35,7 +35,8 @@ maestro codex login
 If Codex is already signed in, `maestro codex login` reports that account
 instead of starting a second flow. Use `maestro codex login --force` to refresh
 the sign-in, or `maestro codex login --device-auth` on a remote/headless
-machine.
+machine. Published installs run this through Maestro's packaged `@openai/codex`
+app-server; source checkouts also work with a `codex` binary on `PATH`.
 
 You can also store provider environment variables in `.env` or export them in your shell (see `maestro --help` for supported keys). Examples:
 ```bash
