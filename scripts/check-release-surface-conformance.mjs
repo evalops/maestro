@@ -18,6 +18,8 @@ const requiredAreas = [
 	"installed-package-audit",
 	"registry-install-smoke",
 	"published-replay-e2e",
+	"published-replay-evidence-verifier",
+	"published-replay-release-gate",
 	"release-readiness",
 	"release-workflow",
 	"tag-release-workflow",
@@ -43,6 +45,26 @@ const registryInstallSmokeRequiredAnchors = [
 	"runNpxCliSmoke",
 	"runBunxCliSmoke",
 	"runBunRuntimeCliSmoke",
+];
+
+const publishedReplayEvidenceVerifierRequiredAnchors = [
+	'const REQUIRED_INSTALLERS = ["npm", "bun"];',
+	'const REQUIRED_REPLAY_MODES = ["json", "rpc", "text"];',
+	'"toolExecutionEvidence"',
+	'"searchRipgrepEvidence"',
+	'"queryableObservabilityIndex"',
+	'"agentRuntimeLedger"',
+	'"agentRuntimeLifecycle"',
+	'"agent-runtime-lifecycle"',
+	"function toolExecutionCoverageIsValid",
+	"function agentRuntimeLifecycleIsValid",
+	"assertPublishedReplayReleaseGate(evidence);",
+];
+
+const publishedReplayReleaseGateRequiredAnchors = [
+	"export function assertPublishedReplayReleaseGate",
+	"evidence?.releaseGate?.satisfied === true",
+	"Published replay release gate failed",
 ];
 
 export function loadReleaseSurfaceConformanceManifest(
@@ -112,6 +134,40 @@ export function checkReleaseSurfaceConformance({
 				);
 			}
 			for (const requiredAnchor of registryInstallSmokeRequiredAnchors) {
+				if (!check.anchors?.includes(requiredAnchor)) {
+					failures.push(`${label} must anchor ${requiredAnchor}`);
+				}
+			}
+		}
+		if (check.area === "published-replay-evidence-verifier") {
+			if (check.path !== "scripts/verify-published-replay-evidence.js") {
+				failures.push(
+					`${label} must use scripts/verify-published-replay-evidence.js as published replay verifier evidence`,
+				);
+			}
+			if (check.evidenceType !== "source") {
+				failures.push(
+					`${label} must use source evidence for published replay verifier validation`,
+				);
+			}
+			for (const requiredAnchor of publishedReplayEvidenceVerifierRequiredAnchors) {
+				if (!check.anchors?.includes(requiredAnchor)) {
+					failures.push(`${label} must anchor ${requiredAnchor}`);
+				}
+			}
+		}
+		if (check.area === "published-replay-release-gate") {
+			if (check.path !== "scripts/published-replay-evidence-gate.js") {
+				failures.push(
+					`${label} must use scripts/published-replay-evidence-gate.js as published replay release-gate evidence`,
+				);
+			}
+			if (check.evidenceType !== "source") {
+				failures.push(
+					`${label} must use source evidence for published replay release-gate validation`,
+				);
+			}
+			for (const requiredAnchor of publishedReplayReleaseGateRequiredAnchors) {
 				if (!check.anchors?.includes(requiredAnchor)) {
 					failures.push(`${label} must anchor ${requiredAnchor}`);
 				}
