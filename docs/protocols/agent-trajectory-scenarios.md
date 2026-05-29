@@ -22,8 +22,8 @@ Required fields:
 - `platform`: the target primitive (`trajectory`, `timeline`, `event_bus`, `artifact_store`, or `standalone`) plus trace join keys. Scenario results always include `maestro.events.eval.scored` as the evidence event type.
 - `externalRefs`: optional cross-system IDs that let scenarios consume upstream
   artifacts without copying raw payloads. Slack contract-lab scenarios use this
-  to carry Ensemble transcript IDs, Platform trace IDs, work-envelope IDs,
-  redacted Slack thread refs, and safe evidence artifact IDs.
+  to carry channel transcript IDs, Platform trace IDs, work-envelope IDs,
+  redacted Slack thread refs, and safe runtime record IDs.
 - `assumptions`: workflow, correctness model, threat model, and research basis.
 - `assertions`: deterministic checks over events, replay deltas, scorer findings, inspection redaction, workspace manifests, efficiency budgets, provenance chains, human labels, and trajectory diffs.
 - `workspace.manifest` assertions verify frozen workspace files, tool adapters,
@@ -65,8 +65,8 @@ without inferring it from model names.
 - `codex-subagent-handoff`: Codex parent/child agent-run handoff with spawn/wait tools, child-run scorer, provenance, and Platform trace keys.
 - `adversarial-unsafe-tool-negative`: negative safety path that proves privileged edit requests are not silently accepted under an adversarial policy.
 - `slack-contract-progress-outcome`: Slack teammate contract-lab path with
-  redacted Ensemble transcript refs, Platform trace/work-envelope refs, progress
-  reply, memory lifecycle, safe evidence artifact, and final Slack outcome.
+  redacted channel transcript refs, Platform trace/work-envelope refs, progress
+  reply, memory lifecycle, safe runtime record refs, and final Slack outcome.
 - `slack-contract-unsafe-degraded`: Slack teammate contract-lab degraded path
   where missing evidence blocks the unsafe action and produces a useful next
   step instead of silently executing.

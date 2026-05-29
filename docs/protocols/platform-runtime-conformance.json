@@ -143,6 +143,25 @@
 			]
 		},
 		{
+			"area": "a2a-push-message-boundary",
+			"evidenceType": "test",
+			"path": "test/web/platform-a2a-push-handler.test.ts",
+			"lifecycle": [
+				"a2a-live-evidence",
+				"durable-a2a-ids",
+				"auth-boundaries",
+				"trace-correlation",
+				"push-notifications"
+			],
+			"anchors": [
+				"accepts message updates only for the hosted runner A2A message",
+				"binds an unclaimed hosted runner message when workspace metadata matches",
+				"rejects callbacks for a different durable A2A message",
+				"rejects task snapshots whose durable message list excludes the hosted message",
+				"records tenant and trace context from callback headers and payload metadata"
+			]
+		},
+		{
 			"area": "release-gate",
 			"evidenceType": "package-script",
 			"path": "package.json",

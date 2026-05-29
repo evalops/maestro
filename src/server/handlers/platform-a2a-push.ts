@@ -24,6 +24,8 @@ type JsonObject = Record<string, unknown>;
 interface PlatformA2APushSnapshot {
 	kind: "statusUpdate" | "artifactUpdate" | "task" | "message";
 	taskId?: string;
+	messageId?: string;
+	messageIds?: string[];
 	contextId?: string;
 	workspaceId?: string;
 	organizationId?: string;
@@ -99,6 +101,7 @@ function platformA2APushSnapshot(
 			{
 				kind: "statusUpdate",
 				taskId,
+				...messageIdFields(payload, payload.statusUpdate),
 				contextId: stringField(payload.statusUpdate, "contextId"),
 				...ownershipFields(payload, payload.statusUpdate),
 				state: statusState(payload.statusUpdate),
@@ -123,6 +126,7 @@ function platformA2APushSnapshot(
 			{
 				kind: "task",
 				taskId,
+				...messageIdFields(payload, payload.task),
 				contextId: stringField(payload.task, "contextId"),
 				...ownershipFields(payload, payload.task),
 				state: statusState(payload.task),
@@ -141,6 +145,7 @@ function platformA2APushSnapshot(
 			{
 				kind: "artifactUpdate",
 				taskId,
+				...messageIdFields(payload, payload.artifactUpdate),
 				contextId: stringField(payload.artifactUpdate, "contextId"),
 				...ownershipFields(payload, payload.artifactUpdate),
 				receivedAt: new Date().toISOString(),
@@ -151,13 +156,15 @@ function platformA2APushSnapshot(
 	}
 	if (isJsonObject(payload.message)) {
 		const taskId = stringField(payload.message, "taskId");
-		if (!taskId) {
+		const messageFields = messageIdFields(payload, payload.message);
+		if (!messageFields.messageId) {
 			return null;
 		}
 		return withPlatformA2APushContext(
 			{
 				kind: "message",
-				taskId,
+				...optionalField("taskId", taskId),
+				...messageFields,
 				contextId: stringField(payload.message, "contextId"),
 				...ownershipFields(payload, payload.message),
 				receivedAt: new Date().toISOString(),
@@ -261,6 +268,21 @@ function assertHostedRunnerA2APushBoundary(
 	) {
 		throw new ApiError(404, "A2A task not found");
 	}
+	if (
+		hostedRunner?.a2aMessageId &&
+		snapshotHasBoundaryMessageIdEvidence(snapshot) &&
+		!snapshotIncludesMessageId(snapshot, hostedRunner.a2aMessageId)
+	) {
+		throw new ApiError(404, "A2A message not found");
+	}
+	if (
+		hostedRunner &&
+		snapshot.kind === "message" &&
+		!hostedRunner.a2aMessageId &&
+		!snapshotHasMessageBindingCorrelation(snapshot)
+	) {
+		throw new ApiError(403, "A2A message push is missing correlation metadata");
+	}
 	if (!hostedRunner?.workspaceId) {
 		return;
 	}
@@ -288,6 +310,14 @@ function recordHostedRunnerA2APush(
 	hostedRunner.lastPlatformA2APush = snapshot;
 	if (snapshot.taskId && !hostedRunner.a2aTaskId) {
 		hostedRunner.a2aTaskId = snapshot.taskId;
+	}
+	if (
+		snapshot.messageId &&
+		!hostedRunner.a2aMessageId &&
+		snapshot.kind === "message" &&
+		snapshotHasMessageBindingCorrelation(snapshot)
+	) {
+		hostedRunner.a2aMessageId = snapshot.messageId;
 	}
 }
 
@@ -327,6 +357,144 @@ function ownershipFields(
 			ownershipString(payload, value, ["tenantId", "tenant_id", "tenant"]),
 		),
 	};
+}
+
+function messageIdFields(
+	payload: JsonObject,
+	value: JsonObject,
+): Pick<PlatformA2APushSnapshot, "messageId" | "messageIds"> {
+	const messageIds = messageIdsFromSources(payload, value);
+	return {
+		...optionalField("messageId", messageIds[0]),
+		...(messageIds.length > 0 ? { messageIds } : {}),
+	};
+}
+
+function messageIdsFromSources(
+	payload: JsonObject,
+	value: JsonObject,
+): string[] {
+	const result: string[] = [];
+	for (const source of messageIdSources(payload, value)) {
+		pushIdentifierStrings(result, source, [
+			"messageId",
+			"message_id",
+			"a2aMessageId",
+			"a2a_message_id",
+		]);
+		pushIdentifierArrayStrings(result, source, ["messageIds", "message_ids"]);
+	}
+	const payloadMessage = isJsonObject(payload.message)
+		? payload.message
+		: undefined;
+	if (payloadMessage) {
+		pushMessageObjectIdentifier(result, payloadMessage);
+	}
+	return result;
+}
+
+function messageIdSources(
+	payload: JsonObject,
+	value: JsonObject,
+): JsonObject[] {
+	const sources = [value, payload];
+	if (isJsonObject(value.artifact)) {
+		sources.push(value.artifact);
+	}
+	return sources;
+}
+
+function pushMessageObjectIdentifier(
+	target: string[],
+	message: JsonObject,
+): void {
+	pushUniqueIdentifier(target, stringField(message, "id"));
+	pushIdentifierStrings(target, message, [
+		"messageId",
+		"message_id",
+		"a2aMessageId",
+		"a2a_message_id",
+	]);
+}
+
+function pushIdentifierStrings(
+	target: string[],
+	value: JsonObject,
+	keys: readonly string[],
+): void {
+	for (const key of keys) {
+		pushUniqueIdentifier(target, stringField(value, key));
+		const metadata = metadataString(value, key);
+		pushUniqueIdentifier(target, metadata);
+	}
+}
+
+function pushIdentifierArrayStrings(
+	target: string[],
+	value: JsonObject,
+	keys: readonly string[],
+): void {
+	for (const key of keys) {
+		const direct = value[key];
+		if (Array.isArray(direct)) {
+			for (const entry of direct) {
+				pushUniqueIdentifier(
+					target,
+					typeof entry === "string" ? entry.trim() : undefined,
+				);
+			}
+		}
+		const metadata = isJsonObject(value.metadata)
+			? value.metadata[key]
+			: undefined;
+		if (Array.isArray(metadata)) {
+			for (const entry of metadata) {
+				pushUniqueIdentifier(
+					target,
+					typeof entry === "string" ? entry.trim() : undefined,
+				);
+			}
+		}
+	}
+}
+
+function pushUniqueIdentifier(
+	target: string[],
+	value: string | undefined,
+): void {
+	if (!value || target.some((entry) => sameMessageIdentifier(entry, value))) {
+		return;
+	}
+	target.push(value);
+}
+
+function snapshotHasBoundaryMessageIdEvidence(
+	snapshot: PlatformA2APushSnapshot,
+): boolean {
+	return (
+		snapshot.kind === "message" ||
+		(snapshot.kind === "task" && Boolean(snapshot.messageIds?.length))
+	);
+}
+
+function snapshotHasMessageBindingCorrelation(
+	snapshot: PlatformA2APushSnapshot,
+): boolean {
+	return Boolean(snapshot.taskId || snapshot.workspaceId);
+}
+
+function snapshotIncludesMessageId(
+	snapshot: PlatformA2APushSnapshot,
+	messageId: string,
+): boolean {
+	return (
+		(snapshot.messageId
+			? sameMessageIdentifier(snapshot.messageId, messageId)
+			: false) ||
+		(snapshot.messageIds ?? []).some((candidate) =>
+			sameMessageIdentifier(candidate, messageId),
+		)
+	);
 }
 
 function ownershipString(
@@ -376,6 +544,10 @@ function optionalField<K extends string>(
 
 function sameIdentifier(left: string, right: string): boolean {
 	return left.trim().toLowerCase() === right.trim().toLowerCase();
+}
+
+function sameMessageIdentifier(left: string, right: string): boolean {
+	return left.trim() === right.trim();
 }
 
 function stringField(value: JsonObject, key: string): string | undefined {

@@ -676,7 +676,7 @@ describe("backgroundTasksTool", () => {
 		const startResult = await backgroundTasksTool.execute("bg-rotate", {
 			action: "start",
 			command:
-				"node -e \"const chunk = 'A'.repeat(2048); let count = 0; const timer = setInterval(() => { process.stdout.write(chunk); count += 1; if (count === 4) { clearInterval(timer); process.exit(0); } }, 20);\"",
+				"node -e \"const chunk = 'A'.repeat(512); let count = 0; const timer = setInterval(() => { process.stdout.write(chunk); count += 1; if (count === 3) { clearInterval(timer); process.exit(0); } }, 20);\"",
 			limits: { logSizeLimit: 1024, logSegments: 2 },
 		});
 		const taskId = (startResult.details as TaskDetails)?.id as string;

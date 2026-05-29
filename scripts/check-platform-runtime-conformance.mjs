@@ -19,6 +19,7 @@ const requiredAreas = [
 	"toolexecution-bridge-approval-output",
 	"live-platform-lifecycle-smoke",
 	"a2a-live-evidence-contract",
+	"a2a-push-message-boundary",
 	"release-gate",
 ];
 
@@ -38,6 +39,7 @@ const requiredLifecycleClaims = [
 	"durable-a2a-ids",
 	"auth-boundaries",
 	"trace-correlation",
+	"push-notifications",
 	"release-gate",
 ];
 

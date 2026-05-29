@@ -1,7 +1,7 @@
 {
 	"name": "@evalops/slack-agent",
 	"version": "0.10.46",
-	"description": "Slack bot agent with Docker sandbox support for Maestro",
+	"description": "Slack teammate agent with sandbox support for Maestro",
 	"type": "module",
 	"bin": {
 		"slack-agent": "dist/main.js"

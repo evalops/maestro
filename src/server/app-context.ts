@@ -40,6 +40,8 @@ export interface HostedRunnerContext {
 	lastPlatformA2APush?: {
 		kind: "statusUpdate" | "artifactUpdate" | "task" | "message";
 		taskId?: string;
+		messageId?: string;
+		messageIds?: string[];
 		contextId?: string;
 		workspaceId?: string;
 		organizationId?: string;

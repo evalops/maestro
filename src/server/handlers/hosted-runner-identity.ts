@@ -26,6 +26,8 @@ export interface HostedRunnerIdentity {
 	last_platform_a2a_push?: {
 		kind: string;
 		task_id?: string;
+		message_id?: string;
+		message_ids?: string[];
 		context_id?: string;
 		state?: string;
 		final?: boolean;
@@ -86,6 +88,8 @@ export async function buildHostedRunnerIdentity(
 					last_platform_a2a_push: {
 						kind: hostedRunner.lastPlatformA2APush.kind,
 						task_id: hostedRunner.lastPlatformA2APush.taskId,
+						message_id: hostedRunner.lastPlatformA2APush.messageId,
+						message_ids: hostedRunner.lastPlatformA2APush.messageIds,
 						context_id: hostedRunner.lastPlatformA2APush.contextId,
 						workspace_id: hostedRunner.lastPlatformA2APush.workspaceId,
 						organization_id: hostedRunner.lastPlatformA2APush.organizationId,
