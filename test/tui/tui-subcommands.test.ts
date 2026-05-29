@@ -322,7 +322,7 @@ describe("Subcommand Suite Handlers", () => {
 			getUiState: vi.fn().mockReturnValue({
 				zenMode: false,
 				cleanMode: "off",
-				footerMode: "ensemble",
+				footerMode: "rich",
 				compactTools: false,
 			}),
 		});
@@ -962,7 +962,7 @@ describe("Subcommand Suite Handlers", () => {
 				getUiState: vi.fn().mockReturnValue({
 					zenMode: false,
 					cleanMode: "off",
-					footerMode: "ensemble",
+					footerMode: "rich",
 					compactTools: false,
 				}),
 			};
@@ -1608,7 +1608,7 @@ describe("Subcommand Suite Handlers", () => {
 				getUiState: vi.fn().mockReturnValue({
 					zenMode: false,
 					cleanMode: "off",
-					footerMode: "ensemble",
+					footerMode: "rich",
 					compactTools: false,
 				}),
 			};
@@ -1691,7 +1691,7 @@ describe("Subcommand Suite Handlers", () => {
 				getUiState: vi.fn().mockReturnValue({
 					zenMode: false,
 					cleanMode: "off",
-					footerMode: "ensemble",
+					footerMode: "rich",
 					compactTools: false,
 				}),
 			};

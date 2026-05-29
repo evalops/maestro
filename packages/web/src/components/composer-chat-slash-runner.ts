@@ -30,7 +30,7 @@ export interface ComposerChatSlashCommandContext {
 	setApprovalModeStatus: (status: ComposerApprovalStatusUpdate) => void;
 	setCleanMode: (mode: "off" | "soft" | "aggressive") => void;
 	setCurrentModel: (model: string) => void;
-	setFooterMode: (mode: "ensemble" | "solo") => void;
+	setFooterMode: (mode: "rich" | "solo") => void;
 	setInputValue: (text: string) => void;
 	setQueueMode: (mode: "one" | "all") => void;
 	setTransportPreference: (mode: "auto" | "sse" | "ws") => void;

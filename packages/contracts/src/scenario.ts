@@ -60,7 +60,9 @@ export interface MaestroScenarioPlatformLink {
 }
 
 export interface MaestroScenarioExternalRefs {
+	/** @deprecated Preserved only for archived evalops.maestro.scenario.v1 artifacts. */
 	ensembleTranscriptIds?: string[];
+	platformSlackEventIds?: string[];
 	platformTraceIds?: string[];
 	platformWorkEnvelopeIds?: string[];
 	slackThreadRefs?: string[];

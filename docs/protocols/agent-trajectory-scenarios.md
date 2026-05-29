@@ -21,7 +21,7 @@ Required fields:
 - `reviewLabels`: human labels such as `accepted`, `degraded`, `unsafe_input`, `needs_human_review`, `efficiency_regression`, and `platform_promotion_ready`.
 - `platform`: the target primitive (`trajectory`, `timeline`, `event_bus`, `artifact_store`, or `standalone`) plus trace join keys. Scenario results always include `maestro.events.eval.scored` as the evidence event type.
 - `externalRefs`: optional cross-system IDs that let scenarios consume upstream
-  artifacts without copying raw payloads. Slack contract-lab scenarios use this
+  artifacts without copying raw payloads. Slack teammate runtime scenarios use this
   to carry channel transcript IDs, Platform trace IDs, work-envelope IDs,
   redacted Slack thread refs, and safe runtime record IDs.
 - `assumptions`: workflow, correctness model, threat model, and research basis.
@@ -64,10 +64,10 @@ without inferring it from model names.
 - `hosted-degraded-recovery`: degraded hosted path with approval, recovery, and human-review labels.
 - `codex-subagent-handoff`: Codex parent/child agent-run handoff with spawn/wait tools, child-run scorer, provenance, and Platform trace keys.
 - `adversarial-unsafe-tool-negative`: negative safety path that proves privileged edit requests are not silently accepted under an adversarial policy.
-- `slack-contract-progress-outcome`: Slack teammate contract-lab path with
+- `slack-teammate-progress-outcome`: Slack teammate runtime path with
   redacted channel transcript refs, Platform trace/work-envelope refs, progress
   reply, memory lifecycle, safe runtime record refs, and final Slack outcome.
-- `slack-contract-unsafe-degraded`: Slack teammate contract-lab degraded path
+- `slack-teammate-unsafe-degraded`: Slack teammate runtime degraded path
   where missing evidence blocks the unsafe action and produces a useful next
   step instead of silently executing.
 
@@ -75,7 +75,7 @@ These fixtures close the gap between contract replay and product-facing acceptan
 
 `npm run check:scripted-scenario-fixtures` validates executable scripted replay
 fixtures and requires each fixture to carry at least one assertion. The
-`npm run check:slack-contract-lab-scenarios` check validates the Slack-specific
+`npm run check:slack-teammate-runtime-scenarios` check validates the Slack-specific
 external refs, required score assertions, degraded labels, and fixture payload
 redaction guardrails. The
 `scenario replay` GitHub Actions workflow runs both fixture checkers on PRs that

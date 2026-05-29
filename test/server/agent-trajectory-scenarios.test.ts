@@ -142,21 +142,21 @@ describe("agent trajectory scenarios", () => {
 		).toContain('"observedOutcome": "pass"');
 	});
 
-	it("carries external transcript and trace refs through Slack contract scenarios", () => {
+	it("carries Platform Slack event and trace refs through teammate scenarios", () => {
 		const fixturePath = join(
 			fixturesDir,
-			"slack-contract-progress-outcome.json",
+			"slack-teammate-progress-outcome.json",
 		);
 		const scenario = loadAgentTrajectoryScenario(fixturePath);
 		const result = runAgentTrajectoryScenarioFile(fixturePath, {
 			baseDir: fixturesDir,
 		});
 
-		expect(scenario.externalRefs?.ensembleTranscriptIds).toContain(
-			"slack-contract-lab/dev/thread-redacted-0007",
+		expect(scenario.externalRefs?.platformSlackEventIds).toContain(
+			"platform-slack/dev/thread-redacted-0007",
 		);
 		expect(result.externalRefs?.platformWorkEnvelopeIds).toContain(
-			"we-slack-contract-dev-0007",
+			"we-slack-teammate-dev-0007",
 		);
 		expect(result.assertions).toContainEqual(
 			expect.objectContaining({
@@ -358,7 +358,7 @@ describe("agent trajectory scenarios", () => {
 		const fixturePath = join(fixturesDir, "local-diagnostic-success.json");
 		const scenario = JSON.parse(readFileSync(fixturePath, "utf8"));
 		scenario.externalRefs = {
-			ensembleTranscriptIds: ["slack-contract-lab/dev/thread-redacted-0001"],
+			platformSlackEventIds: ["platform-slack/dev/thread-redacted-0001"],
 		};
 		scenario.assertions.push({
 			id: "external-refs-present",
@@ -376,7 +376,7 @@ describe("agent trajectory scenarios", () => {
 		const fixturePath = join(fixturesDir, "local-diagnostic-success.json");
 		const scenario = JSON.parse(readFileSync(fixturePath, "utf8"));
 		scenario.externalRefs = {
-			ensembleTranscriptIds: ["slack-contract-lab/dev/thread-redacted-0001"],
+			platformSlackEventIds: ["platform-slack/dev/thread-redacted-0001"],
 		};
 		scenario.assertions.push({
 			id: "external-refs-present",
@@ -391,17 +391,35 @@ describe("agent trajectory scenarios", () => {
 		);
 	});
 
+	it("accepts legacy v1 ensemble transcript ref assertions", () => {
+		const fixturePath = join(fixturesDir, "local-diagnostic-success.json");
+		const scenario = JSON.parse(readFileSync(fixturePath, "utf8"));
+		scenario.externalRefs = {
+			ensembleTranscriptIds: ["ensemble://transcript/thread-redacted-0001"],
+		};
+		scenario.assertions.push({
+			id: "legacy-external-refs-present",
+			kind: "external.refs",
+			requiredExternalRefKinds: ["ensembleTranscriptIds"],
+			requiredExternalRefs: ["ensemble://transcript/thread-redacted-0001"],
+		});
+
+		expect(() =>
+			validateAgentTrajectoryScenario(scenario, "legacy-external-ref-kind"),
+		).not.toThrow();
+	});
+
 	it("rejects malformed required external refs before evaluation", () => {
 		const fixturePath = join(fixturesDir, "local-diagnostic-success.json");
 		const scenario = JSON.parse(readFileSync(fixturePath, "utf8"));
 		scenario.externalRefs = {
-			ensembleTranscriptIds: ["slack-contract-lab/dev/thread-redacted-0001"],
+			platformSlackEventIds: ["platform-slack/dev/thread-redacted-0001"],
 		};
 		scenario.assertions.push({
 			id: "external-refs-present",
 			kind: "external.refs",
-			requiredExternalRefKinds: ["ensembleTranscriptIds"],
-			requiredExternalRefs: "slack-contract-lab/dev/thread-redacted-0001",
+			requiredExternalRefKinds: ["platformSlackEventIds"],
+			requiredExternalRefs: "platform-slack/dev/thread-redacted-0001",
 		});
 
 		expect(() =>

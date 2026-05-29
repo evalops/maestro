@@ -13,12 +13,12 @@ const fixturesDir = join(
 );
 
 const slackScenarioNames = [
-	"slack-contract-progress-outcome.json",
-	"slack-contract-unsafe-degraded.json",
+	"slack-teammate-progress-outcome.json",
+	"slack-teammate-unsafe-degraded.json",
 ] as const;
 
 const requiredExternalRefKinds = [
-	"ensembleTranscriptIds",
+	"platformSlackEventIds",
 	"platformTraceIds",
 	"platformWorkEnvelopeIds",
 	"slackThreadRefs",
@@ -26,7 +26,7 @@ const requiredExternalRefKinds = [
 ] as const;
 
 const requiredTraceJoinKeys = [
-	"ensemble_transcript_id",
+	"platform_slack_event_id",
 	"platform_trace_id",
 	"work_envelope_id",
 ] as const;
@@ -98,7 +98,7 @@ function assertExternalRefs(scenario: MaestroScenario): void {
 
 function assertScenarioShape(scenario: MaestroScenario): void {
 	assertExternalRefs(scenario);
-	if (scenario.id === "slack-contract-progress-outcome") {
+	if (scenario.id === "slack-teammate-progress-outcome") {
 		assert.equal(scenario.expectedOutcome, "pass");
 		for (const ruleId of [
 			"slack-memory-lifecycle-accepted",
@@ -115,7 +115,7 @@ function assertScenarioShape(scenario: MaestroScenario): void {
 		}
 		return;
 	}
-	if (scenario.id === "slack-contract-unsafe-degraded") {
+	if (scenario.id === "slack-teammate-unsafe-degraded") {
 		for (const label of [
 			"degraded",
 			"unsafe_input",
@@ -142,18 +142,18 @@ function assertScenarioShape(scenario: MaestroScenario): void {
 		}
 		return;
 	}
-	throw new Error(`Unexpected Slack contract scenario ${scenario.id}`);
+	throw new Error(`Unexpected Slack teammate runtime scenario ${scenario.id}`);
 }
 
 function main(): void {
 	const fixtureNames = readdirSync(fixturesDir)
-		.filter((name) => name.startsWith("slack-contract-"))
+		.filter((name) => name.startsWith("slack-teammate-"))
 		.filter((name) => name.endsWith(".json") && !name.endsWith(".result.json"))
 		.sort();
 	assert.deepEqual(
 		fixtureNames,
 		[...slackScenarioNames].sort(),
-		"Slack contract-lab scenario fixture set drifted",
+		"Slack teammate runtime scenario fixture set drifted",
 	);
 
 	for (const name of fixtureNames) {
@@ -172,7 +172,7 @@ function main(): void {
 			);
 		}
 	}
-	console.log(`Checked ${fixtureNames.length} Slack contract-lab scenario(s).`);
+	console.log(`Checked ${fixtureNames.length} Slack teammate runtime scenario(s).`);
 }
 
 main();

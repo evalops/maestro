@@ -422,7 +422,7 @@ export class TuiRenderer {
 	// Users can still override via /clean or env/UI state.
 	private cleanMode: CleanMode = "soft";
 	private uiState: UiState = {};
-	private footerMode: FooterMode = "ensemble";
+	private footerMode: FooterMode = "rich";
 	private reducedMotion = false;
 	private zenMode = false;
 	private hideThinkingBlocks = false;

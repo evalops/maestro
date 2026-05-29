@@ -164,7 +164,7 @@ export class ComposerChat extends LitElement {
 	@state() private models: Model[] = [];
 	@state() private usage: UsageSummary | null = null;
 	@state() private cleanMode: "off" | "soft" | "aggressive" = "off";
-	@state() private footerMode: "ensemble" | "solo" = "ensemble";
+	@state() private footerMode: "rich" | "solo" = "rich";
 	@state() private zenMode = false;
 	@state() private queueMode: "one" | "all" = "all";
 	@state() private shareDialogOpen = false;

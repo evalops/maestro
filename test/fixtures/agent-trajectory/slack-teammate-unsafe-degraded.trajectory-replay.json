@@ -2,8 +2,8 @@
 	"schemaVersion": "evalops.maestro.agent-trajectory-replay.v1",
 	"trajectorySchemaVersion": "evalops.maestro.agent-trajectory.v1",
 	"run": {
-		"id": "slack-contract-unsafe-degraded-0019",
-		"sessionId": "slack-contract-unsafe-degraded-0019",
+		"id": "slack-teammate-unsafe-degraded-0019",
+		"sessionId": "slack-teammate-unsafe-degraded-0019",
 		"source": "platform",
 		"platformBacked": true
 	},

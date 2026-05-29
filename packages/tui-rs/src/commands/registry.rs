@@ -1510,16 +1510,16 @@ pub fn build_command_registry() -> CommandRegistry {
             "Change footer style",
             CommandCategory::Ui,
             Box::new(|ctx| {
-                let style = ctx.get_string("style").unwrap_or("ensemble");
+                let style = ctx.get_string("style").unwrap_or("rich");
                 Ok(CommandOutput::Message(format!("Footer style: {style}")))
             }),
         )
         .arg(CommandArgument::choice(
             "style",
             "Footer style",
-            vec!["ensemble", "solo", "history", "clear"],
+            vec!["rich", "solo", "history", "clear"],
         ))
-        .usage("/footer [ensemble|solo|history|clear]"),
+        .usage("/footer [rich|solo|history|clear]"),
     );
 
     // Memory commands
