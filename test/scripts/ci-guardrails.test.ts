@@ -1821,6 +1821,49 @@ describe("ci workflow guardrails", () => {
 		}
 	});
 
+	it("shares CI ripgrep installation through the composite helper", () => {
+		const setupBunNx = parse(
+			readFileSync(
+				new URL(
+					"../../.github/actions/setup-bun-nx/action.yml",
+					import.meta.url,
+				),
+				{ encoding: "utf8" },
+			),
+		) as { runs?: { steps?: WorkflowStep[] } };
+		const setupRust = parse(
+			readFileSync(
+				new URL("../../.github/actions/setup-rust/action.yml", import.meta.url),
+				{ encoding: "utf8" },
+			),
+		) as { runs?: { steps?: WorkflowStep[] } };
+		const ensureRipgrep = parse(
+			readFileSync(
+				new URL(
+					"../../.github/actions/ensure-ripgrep/action.yml",
+					import.meta.url,
+				),
+				{ encoding: "utf8" },
+			),
+		) as { runs?: { steps?: WorkflowStep[] } };
+		const setupBunStep = setupBunNx.runs?.steps?.find(
+			(step) => step.name === "Ensure ripgrep",
+		);
+		const setupRustStep = setupRust.runs?.steps?.find(
+			(step) => step.name === "Ensure ripgrep",
+		);
+		const ensureScript =
+			ensureRipgrep.runs?.steps?.find((step) => step.name === "Ensure ripgrep")
+				?.run ?? "";
+
+		expect(setupBunStep?.uses).toBe("./.github/actions/ensure-ripgrep");
+		expect(setupRustStep?.uses).toBe("./.github/actions/ensure-ripgrep");
+		expect(ensureScript).toContain("rg --version");
+		expect(ensureScript).toContain("sudo apt-get update");
+		expect(ensureScript).toContain("brew install ripgrep");
+		expect(ensureScript).toContain("neither rg, apt-get, nor Homebrew");
+	});
+
 	it("uses dynamic host ports for integration service containers", () => {
 		const workflowText = readFileSync(
 			new URL("../../.github/workflows/integration.yml", import.meta.url),

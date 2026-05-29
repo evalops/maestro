@@ -84,4 +84,35 @@ describe("check-release-mirror-contract", () => {
 			"Missing command-suite mirror file: src/cli-tui/commands/command-catalog.ts",
 		);
 	});
+
+	it("keeps mirrored local action dependencies together", () => {
+		const root = makeFixture();
+		write(
+			join(root, ".github/release-mirror-manifest.json"),
+			`${JSON.stringify(
+				{ files: [".github/actions/setup-bun-nx/action.yml"] },
+				null,
+				2,
+			)}\n`,
+		);
+		write(
+			join(root, ".github/actions/setup-bun-nx/action.yml"),
+			[
+				"name: setup-bun-nx",
+				"runs:",
+				"  using: composite",
+				"  steps:",
+				"    - name: Ensure ripgrep",
+				"      uses: ./.github/actions/ensure-ripgrep",
+				"",
+			].join("\n"),
+		);
+
+		const result = runCheck(root);
+
+		expect(result.status).toBe(1);
+		expect(result.stderr).toContain(
+			"Missing local action dependency for .github/actions/setup-bun-nx/action.yml: .github/actions/ensure-ripgrep/action.yml",
+		);
+	});
 });

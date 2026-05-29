@@ -124,23 +124,7 @@ runs:
 
     - name: Ensure ripgrep
       if: ${{ inputs.ensure-ripgrep == 'true' }}
-      shell: bash
-      run: |
-        set -euo pipefail
-        if command -v rg >/dev/null 2>&1; then
-          exit 0
-        fi
-        if ! command -v apt-get >/dev/null 2>&1; then
-          echo "::error::ripgrep is required but apt-get is unavailable"
-          exit 1
-        fi
-        if command -v sudo >/dev/null 2>&1; then
-          sudo apt-get update
-          sudo apt-get install -y ripgrep
-        else
-          apt-get update
-          apt-get install -y ripgrep
-        fi
+      uses: ./.github/actions/ensure-ripgrep
 
     - name: Cache Cargo
       uses: Swatinem/rust-cache@779680da715d629ac1d338a641029a2f4372abb5 # v2.8.2

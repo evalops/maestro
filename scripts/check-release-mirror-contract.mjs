@@ -71,6 +71,39 @@ function isRepoRelativePath(path) {
 	);
 }
 
+function isMirroredYamlPath(path) {
+	return (
+		(path.startsWith(".github/actions/") ||
+			path.startsWith(".github/workflows/")) &&
+		/\.ya?ml$/u.test(path)
+	);
+}
+
+function localActionDependencyPath(usesValue) {
+	const match = /^\.\/\.github\/actions\/([^/\s'"]+)$/u.exec(usesValue);
+	return match ? `.github/actions/${match[1]}/action.yml` : null;
+}
+
+function collectLocalActionDependencies(path) {
+	if (!isMirroredYamlPath(path) || !existsSync(resolve(path))) {
+		return [];
+	}
+
+	const content = readFileSync(resolve(path), "utf8");
+	const dependencies = new Set();
+	const usesPattern =
+		/^\s*-?\s*uses:\s*["']?(\.\/\.github\/actions\/[^"'\s#]+)["']?\s*(?:#.*)?$/gmu;
+
+	for (const match of content.matchAll(usesPattern)) {
+		const dependency = localActionDependencyPath(match[1]);
+		if (dependency) {
+			dependencies.add(dependency);
+		}
+	}
+
+	return [...dependencies];
+}
+
 const errors = [];
 
 if (!existsSync(resolve(contractPath))) {
@@ -127,6 +160,16 @@ for (const file of seen) {
 		if (file.startsWith(prefix)) {
 			errors.push(
 				`${file} is under an internal-only grouped-command surface.`,
+			);
+		}
+	}
+}
+
+for (const file of seen) {
+	for (const dependency of collectLocalActionDependencies(file)) {
+		if (!seen.has(dependency)) {
+			errors.push(
+				`Missing local action dependency for ${file}: ${dependency}`,
 			);
 		}
 	}
