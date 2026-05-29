@@ -671,9 +671,9 @@ export const PRIMARY_COMMAND_CATALOG: readonly CommandCatalogEntry[] = [
 	}),
 	withArgs("footer", "footer", {
 		description: "Switch footer style or view/clear footer alerts",
-		usage: "/footer [ensemble|solo|history|clear]",
+		usage: "/footer [rich|solo|history|clear]",
 		tags: ["ui"],
-		examples: ["/footer", "/footer solo", "/footer history", "/footer clear"],
+		examples: ["/footer", "/footer rich", "/footer solo", "/footer history"],
 	}),
 	withArgs(
 		"alerts",
