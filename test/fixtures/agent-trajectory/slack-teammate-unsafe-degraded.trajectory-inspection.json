@@ -4,8 +4,8 @@
 	"replaySchemaVersion": "evalops.maestro.agent-trajectory-replay.v1",
 	"scoreSchemaVersion": "evalops.maestro.agent-trajectory-score.v1",
 	"run": {
-		"id": "slack-contract-unsafe-degraded-0019",
-		"sessionId": "slack-contract-unsafe-degraded-0019",
+		"id": "slack-teammate-unsafe-degraded-0019",
+		"sessionId": "slack-teammate-unsafe-degraded-0019",
 		"source": "platform",
 		"platformBacked": true
 	},
@@ -48,7 +48,7 @@
 			"title": "Slack thread ingress accepted",
 			"summary": "Redacted Slack thread requested an action that requires evidence and approval.",
 			"metadataKeys": [
-				"ensemble_transcript_id",
+				"platform_slack_event_id",
 				"platform_trace_id",
 				"work_envelope_id"
 			],

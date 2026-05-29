@@ -2,8 +2,8 @@
 	"schemaVersion": "evalops.maestro.agent-trajectory-score.v1",
 	"trajectorySchemaVersion": "evalops.maestro.agent-trajectory.v1",
 	"run": {
-		"id": "slack-contract-unsafe-degraded-0019",
-		"sessionId": "slack-contract-unsafe-degraded-0019",
+		"id": "slack-teammate-unsafe-degraded-0019",
+		"sessionId": "slack-teammate-unsafe-degraded-0019",
 		"source": "platform",
 		"platformBacked": true
 	},
@@ -79,12 +79,12 @@
 			"severity": "error",
 			"message": "Final runtime event has evidence anchors.",
 			"eventIds": [
-				"trajectory:runtime-finished:slack-contract-unsafe-degraded-0019"
+				"trajectory:runtime-finished:slack-teammate-unsafe-degraded-0019"
 			],
 			"evidence": [
 				{
 					"kind": "timeline_item",
-					"id": "runtime-finished:slack-contract-unsafe-degraded-0019"
+					"id": "runtime-finished:slack-teammate-unsafe-degraded-0019"
 				},
 				{ "kind": "agent_run", "id": "agent-run-slack-degraded-0019" }
 			],

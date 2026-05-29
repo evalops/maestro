@@ -1,21 +1,20 @@
-# Slack Contract Lab Scenarios
+# Slack Teammate Runtime Scenarios
 
 Issue: https://github.com/evalops/maestro-internal/issues/2021
 
-Maestro's role in the Slack Teammate Evidence-to-Outcome Contract Lab is to turn
-redacted Slack transcript outcomes into deterministic scenario and trajectory
-evidence. Ensemble remains the owner of Slack ingress, rendering, and transcript
-import. Platform remains the owner of AgentRuntime, work-envelope, trace, and
-evidence contracts. Maestro owns the offline scenario pack that proves a Slack
-teammate path can be replayed and scored without a live model provider or raw
+Maestro's role in Slack teammate runtime scenarios is to turn redacted Slack
+teammate outcomes into deterministic scenario and trajectory coverage. Platform
+owns Slack ingress, runtime rendering, work-envelope state, trace joins, and
+evidence contracts. Maestro owns the offline scenario pack that keeps the
+teammate path replayable and scoreable without a live model provider or raw
 Slack payloads.
 
 ## Current Harness Mapping
 
-The existing Maestro trajectory stack already gives the contract lab most of the
+The existing Maestro trajectory stack already gives the runtime most of the
 needed primitives:
 
-| Contract lab need | Maestro primitive | Notes |
+| Runtime need | Maestro primitive | Notes |
 | --- | --- | --- |
 | Preserve Slack thread shape without raw content | `evalops.maestro.agent-trajectory.v1` events | Events keep stable IDs, phases, actors, visibility, safe summaries, and evidence anchors. Raw Slack text stays out of the artifact. |
 | Replay a long-horizon teammate path | `evalops.maestro.agent-trajectory-replay.v1` | Replay reports preserve deterministic deltas, tool-call lifecycle, and phase summaries. |
@@ -26,14 +25,14 @@ needed primitives:
 This slice extends the scenario contract with `externalRefs` so a fixture can
 carry actual redacted cross-system IDs:
 
-- `ensembleTranscriptIds`: governed transcript fixture IDs from Ensemble.
+- `platformSlackEventIds`: governed Platform Slack event or source-record IDs.
 - `platformTraceIds`: Platform or OpenTelemetry trace IDs.
 - `platformWorkEnvelopeIds`: stable Slack work-envelope IDs.
 - `slackThreadRefs`: redacted workspace/channel/thread references.
 - `evidenceArtifactIds`: VFS or artifact IDs that point to safe evidence bundles.
 
 The new `external.refs` assertion proves those references are present before a
-scenario can pass. It lets Maestro consume Ensemble transcript IDs and Platform
+scenario can pass. It lets Maestro consume Platform Slack event IDs and Platform
 trace/work-envelope IDs without copying raw transcript text, tool arguments, or
 model output into the fixture.
 
@@ -43,8 +42,8 @@ The initial corpus adds two fixtures:
 
 | Fixture | Purpose | Expected outcome |
 | --- | --- | --- |
-| `slack-contract-progress-outcome` | Long-horizon Slack teammate path with ingress, progress reply, memory lifecycle, evidence artifact, and final answer. | `pass` |
-| `slack-contract-unsafe-degraded` | Unsafe or under-evidenced Slack action request that must block, explain the degraded state, and provide a useful next action. | `pass` |
+| `slack-teammate-progress-outcome` | Long-horizon Slack teammate path with ingress, progress reply, memory lifecycle, evidence artifact, and final answer. | `pass` |
+| `slack-teammate-unsafe-degraded` | Unsafe or under-evidenced Slack action request that must block, explain the degraded state, and provide a useful next action. | `pass` |
 
 The degraded fixture is expected to pass because the harness is validating the
 correct blocked behavior, not rewarding the unsafe request. It carries
@@ -53,7 +52,7 @@ training or release gates can distinguish it from a clean success.
 
 ## Privacy And Security Boundary
 
-Slack contract-lab fixtures must not include:
+Slack teammate runtime fixtures must not include:
 
 - raw Slack message text;
 - customer names, emails, secrets, tokens, private keys, or connector payloads;
@@ -61,15 +60,15 @@ Slack contract-lab fixtures must not include:
   file bytes;
 - VFS artifact bytes or raw artifact URIs outside explicitly safe evidence IDs.
 
-The fixture summaries are intentionally product-safe paraphrases. The source
-transcript importer and Platform evidence broker own permissioned access to raw
-data; Maestro only carries IDs and redacted evidence anchors needed for replay,
-scorecards, and release gates.
+The fixture summaries are intentionally product-safe paraphrases. Platform owns
+permissioned access to raw Slack event history and evidence records; Maestro
+only carries IDs and redacted evidence anchors needed for replay, scorecards,
+and release gates.
 
 ## Promotion Path
 
-1. Ensemble imports and redacts representative Slack threads, then emits
-   governed transcript IDs.
+1. Platform imports and redacts representative Slack threads, then emits
+   governed Slack event IDs.
 2. Platform joins Slack ingress, AgentRun, tool execution, memory, evidence, and
    rendering into trace/work-envelope IDs.
 3. Maestro scenario fixtures consume those IDs through `externalRefs`, replay
@@ -79,5 +78,5 @@ scorecards, and release gates.
    once false-positive review is complete.
 
 The current fixtures are deliberately small. They are the schema and regression
-seed; the full contract lab still needs the governed 100-thread train/dev/holdout
+seed; the full runtime still needs the governed 100-thread train/dev/holdout
 corpus and production shadow-mode comparison before release enforcement.

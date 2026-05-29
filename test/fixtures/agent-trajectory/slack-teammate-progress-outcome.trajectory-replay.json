@@ -2,8 +2,8 @@
 	"schemaVersion": "evalops.maestro.agent-trajectory-replay.v1",
 	"trajectorySchemaVersion": "evalops.maestro.agent-trajectory.v1",
 	"run": {
-		"id": "slack-contract-progress-outcome-0007",
-		"sessionId": "slack-contract-progress-outcome-0007",
+		"id": "slack-teammate-progress-outcome-0007",
+		"sessionId": "slack-teammate-progress-outcome-0007",
 		"source": "platform",
 		"platformBacked": true
 	},
