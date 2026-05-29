@@ -703,7 +703,12 @@ export const PRIMARY_COMMAND_CATALOG: readonly CommandCatalogEntry[] = [
 				description: "OAuth provider (openai-codex by default)",
 			},
 		],
-		examples: ["/login", "/login openai-codex", "/login openai"],
+		examples: [
+			"/login",
+			"/login openai-codex",
+			"/login openai-codex:responses",
+			"/login openai",
+		],
 	}),
 	withArgs("logout", "logout", {
 		description: "Remove stored OAuth credentials",
