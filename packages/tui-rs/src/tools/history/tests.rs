@@ -530,16 +530,20 @@ fn record_test_execution(
     success: bool,
     duration: Duration,
 ) {
-    history.start(id, tool_name, json!({}));
-    history.in_progress.insert(
-        id.to_string(),
-        Instant::now().checked_sub(duration).unwrap(),
-    );
-
+    let mut exec = ToolExecution::start(id, tool_name, json!({}));
     if success {
-        history.complete(id, "ok".to_string());
+        exec.complete("ok".to_string(), duration);
     } else {
-        history.fail(id, "error".to_string());
+        exec.fail("error".to_string(), duration);
+    }
+
+    let tool_stats = history.stats.entry(tool_name.to_string()).or_default();
+    tool_stats.record(success, duration);
+    history.global_stats.record(success, duration);
+    history.executions.push_back(exec);
+
+    while history.executions.len() > history.max_size {
+        history.executions.pop_front();
     }
 }
 
@@ -1025,13 +1029,14 @@ fn test_tool_stats_with_max_durations() {
 fn test_filter_max_duration() {
     let mut history = ToolHistory::new(100);
 
-    history.start("fast", "read", json!({}));
-    std::thread::sleep(Duration::from_millis(1));
-    history.complete("fast", "ok".to_string());
-
-    history.start("slow", "read", json!({}));
-    std::thread::sleep(Duration::from_millis(10));
-    history.complete("slow", "ok".to_string());
+    record_test_execution(&mut history, "fast", "read", true, Duration::from_millis(1));
+    record_test_execution(
+        &mut history,
+        "slow",
+        "read",
+        true,
+        Duration::from_millis(10),
+    );
 
     // Filter to only fast executions
     let filter = HistoryFilter::default().max_duration(Duration::from_millis(5));
@@ -1047,9 +1052,13 @@ fn test_filter_duration_between() {
 
     for i in 0..5 {
         let id = format!("{}", i);
-        history.start(&id, "test", json!({}));
-        std::thread::sleep(Duration::from_millis((i + 1) * 2));
-        history.complete(&id, "ok".to_string());
+        record_test_execution(
+            &mut history,
+            &id,
+            "test",
+            true,
+            Duration::from_millis((i + 1) * 2),
+        );
     }
 
     // Filter to middle range
@@ -1057,8 +1066,10 @@ fn test_filter_duration_between() {
         .duration_between(Duration::from_millis(3), Duration::from_millis(7));
     let results = history.search(&filter);
 
-    // Should match executions with ~4ms and ~6ms duration
-    assert!(!results.is_empty());
+    // Should match executions with 4ms and 6ms duration
+    assert_eq!(results.len(), 2);
+    assert_eq!(results[0].id, "2");
+    assert_eq!(results[1].id, "1");
 }
 
 #[test]
@@ -1231,15 +1242,14 @@ fn test_stats_last_duration() {
 fn test_stats_slow_executions() {
     let mut history = ToolHistory::new(100);
 
-    // Fast execution
-    history.start("fast", "read", json!({}));
-    std::thread::sleep(Duration::from_millis(1));
-    history.complete("fast", "ok".to_string());
-
-    // Slow execution
-    history.start("slow", "read", json!({}));
-    std::thread::sleep(Duration::from_millis(10));
-    history.complete("slow", "ok".to_string());
+    record_test_execution(&mut history, "fast", "read", true, Duration::from_millis(1));
+    record_test_execution(
+        &mut history,
+        "slow",
+        "read",
+        true,
+        Duration::from_millis(10),
+    );
 
     let stats = history.stats_slow_executions(Duration::from_millis(5));
     assert_eq!(stats.total, 1);

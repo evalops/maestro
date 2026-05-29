@@ -1306,6 +1306,22 @@ async fn connect_replays_saved_init_from_restored_session_snapshot() {
     assert!(supervisor.state().is_ready);
 
     supervisor.connect().await.expect("connect");
+    assert!(matches!(
+        supervisor.recv().await,
+        Some(SupervisorEvent::Connected)
+    ));
+    assert!(matches!(
+        supervisor.recv().await,
+        Some(SupervisorEvent::HealthChanged {
+            status: HealthStatus::Healthy
+        })
+    ));
+    let ready_event = tokio::time::timeout(Duration::from_secs(10), supervisor.recv())
+        .await
+        .expect("ready event timed out")
+        .expect("ready event");
+    assert!(matches!(ready_event, SupervisorEvent::Agent(_)));
+
     for _ in 0..80 {
         let log_contents = fs::read_to_string(&log_path).expect("read log");
         if log_contents.contains(r#""type":"init""#) {
