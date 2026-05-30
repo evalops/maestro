@@ -475,6 +475,17 @@ describe("verify-published-replay-evidence", () => {
 		);
 	});
 
+	it("fails when queryable observability entries omit release query descriptors", () => {
+		const evidence = makeEvidence();
+		for (const entry of evidence.observability.queryIndex) {
+			delete entry.query;
+		}
+
+		expect(() => validatePublishedReplayEvidence(evidence)).toThrow(
+			/observability\.queryIndex.*release query descriptors/s,
+		);
+	});
+
 	it("fails when provider config or transcript evidence is missing", () => {
 		const evidence = makeEvidence();
 		delete evidence.replay.providerConfig;

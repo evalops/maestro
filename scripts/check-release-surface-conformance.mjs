@@ -17,6 +17,7 @@ const requiredAreas = [
 	"packed-runtime-workspaces",
 	"installed-package-audit",
 	"registry-install-smoke",
+	"release-observability-query-contract",
 	"published-replay-e2e",
 	"published-replay-evidence-verifier",
 	"published-replay-release-gate",
@@ -60,7 +61,17 @@ const publishedReplayEvidenceVerifierRequiredAnchors = [
 	'"agent-runtime-lifecycle"',
 	"function toolExecutionCoverageIsValid",
 	"function agentRuntimeLifecycleIsValid",
+	"releaseObservabilityQueryDescriptorIsValid",
 	"assertPublishedReplayReleaseGate(evidence);",
+];
+
+const releaseObservabilityQueryContractRequiredAnchors = [
+	"RELEASE_OBSERVABILITY_QUERY_SCHEMA",
+	"REQUIRED_OBSERVABILITY_QUERY_TRACES",
+	"export function releaseObservabilityQueryDescriptor",
+	"export function releaseObservabilityQueryDescriptorIsValid",
+	"agent-runtime-lifecycle",
+	"final-status",
 ];
 
 const publishedReplayReleaseGateRequiredAnchors = [
@@ -163,6 +174,23 @@ export function checkReleaseSurfaceConformance({
 				);
 			}
 			for (const requiredAnchor of publishedReplayEvidenceVerifierRequiredAnchors) {
+				if (!check.anchors?.includes(requiredAnchor)) {
+					failures.push(`${label} must anchor ${requiredAnchor}`);
+				}
+			}
+		}
+		if (check.area === "release-observability-query-contract") {
+			if (check.path !== "scripts/release-observability-query-contract.js") {
+				failures.push(
+					`${label} must use scripts/release-observability-query-contract.js as release observability query evidence`,
+				);
+			}
+			if (check.evidenceType !== "source") {
+				failures.push(
+					`${label} must use source evidence for release observability query validation`,
+				);
+			}
+			for (const requiredAnchor of releaseObservabilityQueryContractRequiredAnchors) {
 				if (!check.anchors?.includes(requiredAnchor)) {
 					failures.push(`${label} must anchor ${requiredAnchor}`);
 				}
