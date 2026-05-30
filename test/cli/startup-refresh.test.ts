@@ -146,7 +146,7 @@ describe("attemptStartupUpdate", () => {
 		expect(checkForUpdateImpl).not.toHaveBeenCalled();
 	});
 
-	it("uses a bounded startup update check timeout", async () => {
+	it("uses a bounded startup update check timeout while preserving fallback sources", async () => {
 		const checkForUpdateImpl = vi.fn().mockResolvedValue({
 			currentVersion: "0.10.0",
 			latestVersion: "0.10.0",
@@ -155,16 +155,19 @@ describe("attemptStartupUpdate", () => {
 		});
 		const outcome = await attemptStartupUpdate({
 			argv: installedArgv,
-			checkTimeoutMs: 123,
+			checkTimeoutMs: 120,
 			currentVersion: "0.10.0",
-			env: {},
+			env: {
+				MAESTRO_UPDATE_URLS: "https://example.com/a,https://example.com/b",
+			},
 			globalPrefix,
 			isTty: true,
 			checkForUpdateImpl,
 		});
 		expect(outcome.status).toBe("current");
 		expect(checkForUpdateImpl).toHaveBeenCalledWith("0.10.0", {
-			timeoutMs: 123,
+			timeoutMs: 60,
+			urls: ["https://example.com/a", "https://example.com/b"],
 		});
 	});
 

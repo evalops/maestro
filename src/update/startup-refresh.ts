@@ -13,7 +13,11 @@ import {
 	getPackageName,
 } from "../package-metadata.js";
 import { withTimeout } from "../utils/async.js";
-import { type UpdateCheckResult, checkForUpdate } from "./check.js";
+import {
+	type UpdateCheckResult,
+	checkForUpdate,
+	resolveUpdateUrls,
+} from "./check.js";
 
 const SKIP_ENV = "MAESTRO_SKIP_STARTUP_UPDATE";
 const STARTUP_UPDATE_ENV = "MAESTRO_STARTUP_UPDATE";
@@ -49,7 +53,7 @@ type StartupUpdateOptions = {
 	packageName?: string;
 	checkForUpdateImpl?: (
 		currentVersion: string,
-		options?: { timeoutMs?: number },
+		options?: { timeoutMs?: number; urls?: string[] },
 	) => Promise<UpdateCheckResult>;
 	checkTimeoutMs?: number;
 	globalPrefix?: string | null;
@@ -218,6 +222,11 @@ const startupCheckTimeoutMsFromEnv = (env: NodeJS.ProcessEnv): number => {
 	return DEFAULT_STARTUP_UPDATE_TIMEOUT_MS;
 };
 
+const startupSourceTimeoutMs = (
+	totalTimeoutMs: number,
+	sourceCount: number,
+): number => Math.max(1, Math.floor(totalTimeoutMs / Math.max(1, sourceCount)));
+
 const shouldThrottleAttempt = (
 	state: StartupUpdateState | null,
 	version: string,
@@ -308,10 +317,16 @@ export async function attemptStartupUpdate(
 
 	const checkTimeoutMs =
 		options.checkTimeoutMs ?? startupCheckTimeoutMsFromEnv(env);
+	const updateUrls = resolveUpdateUrls({}, env);
+	const checkOptions = {
+		timeoutMs: startupSourceTimeoutMs(checkTimeoutMs, updateUrls.length),
+		urls: updateUrls,
+	};
 	const check = await withTimeout(
-		(options.checkForUpdateImpl ?? checkForUpdate)(options.currentVersion, {
-			timeoutMs: checkTimeoutMs,
-		}),
+		(options.checkForUpdateImpl ?? checkForUpdate)(
+			options.currentVersion,
+			checkOptions,
+		),
 		checkTimeoutMs,
 		`Startup update check timed out after ${checkTimeoutMs}ms`,
 	).catch(

@@ -1248,16 +1248,30 @@ describe("ci workflow guardrails", () => {
 				{ encoding: "utf8" },
 			),
 		) as Workflow;
-		const steps = workflow.jobs?.publish?.steps ?? [];
+		const canaryJob = workflow.jobs?.["post-publish-canary"];
+		const steps = canaryJob?.steps ?? [];
+		const validateIndex = steps.findIndex(
+			(step) => step.name === "Validate published replay evidence",
+		);
+		const metadataIndex = steps.findIndex(
+			(step) => step.name === "Generate version metadata",
+		);
 		const authStep = steps.find(
 			(step) =>
 				step.name === "Authenticate to Google Cloud for release metadata",
 		);
-		const gcsStep = steps.find(
+		const gcsIndex = steps.findIndex(
 			(step) => step.name === "Sync GCS version metadata",
 		);
+		const gcsStep = steps[gcsIndex];
 		const run = gcsStep?.run ?? "";
 
+		expect(canaryJob).toBeDefined();
+		expect(canaryJob?.needs).toContain("publish");
+		expect(canaryJob?.permissions?.["id-token"]).toBe("write");
+		expect(validateIndex).toBeGreaterThan(-1);
+		expect(metadataIndex).toBeGreaterThan(validateIndex);
+		expect(gcsIndex).toBeGreaterThan(metadataIndex);
 		expect(authStep).toBeDefined();
 		expect(authStep?.uses).toContain("google-github-actions/auth@");
 		expect(gcsStep).toBeDefined();
