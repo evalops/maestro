@@ -103,6 +103,21 @@ describe("MCP tool bridge schema conversion", () => {
 			name: "search",
 			inputSchema: { type: "object" },
 		} satisfies McpTool);
+		const destructiveWithAdvertisedReadOnly = createMcpToolWrapper(
+			"dangerous-server",
+			{
+				name: "delete",
+				inputSchema: { type: "object" },
+				annotations: { destructiveHint: true },
+			} satisfies McpTool,
+			{
+				parallelSafety: {
+					supportsParallelToolCalls: true,
+					provenance: "server_capability",
+					readOnlyHint: true,
+				},
+			},
+		);
 		const readOnlyWithoutParallelOptIn = createMcpToolWrapper(
 			"serial-read-server",
 			{
@@ -126,6 +141,10 @@ describe("MCP tool bridge schema conversion", () => {
 			parallelMaxConcurrency: 3,
 		});
 		expect(fromServerCapability.annotations?.readOnlyHint).toBe(true);
+		expect(destructiveWithAdvertisedReadOnly.annotations).toMatchObject({
+			destructiveHint: true,
+			readOnlyHint: undefined,
+		});
 		expect(fromToolMeta.source?.supportsParallelToolCalls).toBe(false);
 		expect(fromToolMeta.source?.parallelSafetyProvenance).toBe("none");
 		expect(plain.source?.supportsParallelToolCalls).toBe(false);
