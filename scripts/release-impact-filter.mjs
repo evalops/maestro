@@ -47,7 +47,11 @@ export function isPackageImpactingPath(filePath) {
 }
 
 function packageJsonObjectOrderIsSignificant(path) {
-	return path.includes("exports") || path.includes("imports");
+	return (
+		path.includes("exports") ||
+		path.includes("imports") ||
+		path.includes("typesVersions")
+	);
 }
 
 function stableJsonValue(value, path = []) {
