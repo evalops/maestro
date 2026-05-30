@@ -17,6 +17,7 @@ const requiredAreas = [
 	"toolexecution-client-contract",
 	"toolexecution-bridge-linkage",
 	"toolexecution-bridge-approval-output",
+	"toolexecution-bridge-retry-policy",
 	"live-platform-lifecycle-smoke",
 	"a2a-live-evidence-contract",
 	"a2a-live-evidence-producer",

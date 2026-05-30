@@ -987,6 +987,18 @@ export async function main(args: string[]) {
 		return;
 	}
 
+	if (parsed.command === "sessions") {
+		const { handleSessionsCommand } = await import(
+			"./cli/commands/sessions.js"
+		);
+		await handleSessionsCommand(parsed.subcommand, parsed.messages, {
+			json: parsed.execJson,
+			format: parsed.exportFormat,
+			redactSecrets: parsed.redactSecrets,
+		});
+		return;
+	}
+
 	if (parsed.command === "export") {
 		const { handleExportCommand } = await import(
 			"./cli/commands/session-transfer.js"

@@ -10,10 +10,19 @@ import {
 	getUnexpectedMaestroReleaseGateEventSubjects,
 	listMaestroReleaseGateEventCatalog,
 } from "../src/telemetry/maestro-event-catalog.js";
+import {
+	REQUIRED_OBSERVABILITY_QUERY_TRACES,
+	releaseObservabilityQueryDescriptor,
+} from "./release-observability-query-contract.js";
 
 const releaseCatalog = listMaestroReleaseGateEventCatalog();
 const query = buildMaestroReleaseGateEventQuery();
 const issues: string[] = [];
+const querySubjects = new Set<string>(query.subjects);
+const queryPlatformConsumers = new Set<string>(query.platformConsumers);
+const releaseObservabilityTraceTypes = new Set<string>(
+	REQUIRED_OBSERVABILITY_QUERY_TRACES,
+);
 
 for (const category of getMissingMaestroReleaseGateEventCategories()) {
 	issues.push(`missing release-gate event category: ${category}`);
@@ -53,6 +62,69 @@ for (const subject of getUnexpectedMaestroReleaseGateEventSubjects()) {
 	issues.push(`unexpected release-gate query subject: ${subject}`);
 }
 
+for (const category of MAESTRO_RELEASE_GATE_EVENT_CATEGORIES) {
+	if (!releaseObservabilityTraceTypes.has(category)) {
+		issues.push(
+			`missing release observability query trace for category: ${category}`,
+		);
+	}
+}
+
+for (const traceType of REQUIRED_OBSERVABILITY_QUERY_TRACES) {
+	const descriptor = releaseObservabilityQueryDescriptor(traceType);
+	if (!descriptor) {
+		issues.push(`missing release observability query descriptor: ${traceType}`);
+		continue;
+	}
+
+	for (const subject of descriptor.subjects) {
+		if (!querySubjects.has(subject)) {
+			issues.push(
+				`release observability query ${traceType} references non-release-gated subject: ${subject}`,
+			);
+		}
+	}
+
+	for (const consumer of descriptor.platformConsumers) {
+		if (
+			consumer.startsWith("release.") &&
+			!queryPlatformConsumers.has(consumer)
+		) {
+			issues.push(
+				`release observability query ${traceType} references unknown release consumer: ${consumer}`,
+			);
+		}
+	}
+}
+
+for (const category of MAESTRO_RELEASE_GATE_EVENT_CATEGORIES) {
+	const descriptor = releaseObservabilityQueryDescriptor(category);
+	if (!descriptor) {
+		continue;
+	}
+	const descriptorSubjects = new Set<string>(descriptor.subjects);
+	const descriptorConsumers = new Set<string>(descriptor.platformConsumers);
+	for (const subject of query.subjectsByCategory[category]) {
+		if (!descriptorSubjects.has(subject)) {
+			issues.push(
+				`release observability query ${category} is missing release-gated subject: ${subject}`,
+			);
+		}
+	}
+	for (const consumer of new Set(
+		releaseCatalog
+			.filter((entry) => entry.category === category)
+			.flatMap((entry) => entry.platformConsumers)
+			.filter((consumer) => consumer.startsWith("release.")),
+	)) {
+		if (!descriptorConsumers.has(consumer)) {
+			issues.push(
+				`release observability query ${category} is missing release consumer: ${consumer}`,
+			);
+		}
+	}
+}
+
 for (const entry of releaseCatalog) {
 	if (entry.subject !== entry.type) {
 		issues.push(`${entry.type} subject does not match its event type`);
@@ -90,5 +162,6 @@ console.log(
 		`Release consumers: ${query.platformConsumers
 			.filter((consumer) => consumer.startsWith("release."))
 			.join(", ")}`,
+		`Release observability traces: ${REQUIRED_OBSERVABILITY_QUERY_TRACES.join(", ")}`,
 	].join("\n"),
 );
