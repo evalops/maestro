@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 
+declare const MAESTRO_BUNDLE_RUNTIME: boolean | undefined;
+
 // Suppress punycode deprecation warning from dependencies
 // This warning comes from old dependencies still using the deprecated punycode module
 const originalEmit = process.emit.bind(process) as (
@@ -91,35 +93,65 @@ async function refreshInstalledCliOnStartup(args: string[]): Promise<void> {
 	}
 }
 
+function isImmediateVersionInvocation(args: string[]): boolean {
+	return args.length === 1 && (args[0] === "--version" || args[0] === "-v");
+}
+
+function isImmediateHelpInvocation(args: string[]): boolean {
+	return (
+		args.length === 1 &&
+		(args[0] === "--help" ||
+			args[0] === "-h" ||
+			args[0] === "--help-hidden" ||
+			args[0] === "--help-all")
+	);
+}
+
+async function handleImmediateCliExit(args: string[]): Promise<boolean> {
+	if (args[0] === "a2a") {
+		return false;
+	}
+	if (isImmediateVersionInvocation(args)) {
+		const { getPackageVersion } = await import("./package-metadata.js");
+		console.log(`Maestro v${getPackageVersion()}`);
+		return true;
+	}
+	if (isImmediateHelpInvocation(args)) {
+		const [{ getPackageVersion }, { printHelp }] = await Promise.all([
+			import("./package-metadata.js"),
+			import("./cli/help.js"),
+		]);
+		printHelp(getPackageVersion(), {
+			includeHidden:
+				args.includes("--help-hidden") || args.includes("--help-all"),
+		});
+		return true;
+	}
+	return false;
+}
+
+async function runCliRuntime(args: string[]): Promise<void> {
+	if (typeof MAESTRO_BUNDLE_RUNTIME !== "undefined" && MAESTRO_BUNDLE_RUNTIME) {
+		const { runCliRuntime: runRuntime } = await import("./cli-runtime.js");
+		await runRuntime(args);
+		return;
+	}
+	const runtimeEntry = "./cli-runtime." + "js";
+	const { runCliRuntime: runRuntime } = await import(runtimeEntry);
+	await runRuntime(args);
+}
+
 const run = async () => {
 	try {
-		const { loadEnv } = await import("./load-env.js");
-		loadEnv();
-		await refreshInstalledCliOnStartup(process.argv.slice(2));
-
-		if (process.argv[2] === "a2a") {
-			const { handleA2ACommand } = await import("./cli/commands/a2a.js");
-			await handleA2ACommand(process.argv.slice(3));
+		const args = process.argv.slice(2);
+		if (await handleImmediateCliExit(args)) {
 			return;
 		}
 
-		// Prefer the TypeScript entry when running under Bun during development,
-		// but fall back to the compiled JS for bundled/compiled binaries.
-		const loadMain = async () => {
-			if (process.versions?.bun) {
-				const tsEntry = "./main." + "ts";
-				try {
-					return await import(tsEntry);
-				} catch {
-					// In compiled binaries the .ts source isn't present; use JS output.
-					return await import("./main.js");
-				}
-			}
-			return await import("./main.js");
-		};
-
-		const { main } = await loadMain();
-		await main(process.argv.slice(2));
+		const { loadEnv } = await import("./load-env.js");
+		loadEnv();
+		await refreshInstalledCliOnStartup(args);
+		await runCliRuntime(args);
 	} catch (err) {
 		if (isHeadlessInvocation(process.argv.slice(2))) {
 			emitHeadlessStartupError(err);

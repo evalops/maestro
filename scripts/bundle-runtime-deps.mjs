@@ -12,6 +12,7 @@ import {
 const bundledPackages = new Set(["@google/genai", "google-auth-library"]);
 const entryPoints = [
 	"dist/cli.js",
+	"dist/cli-runtime.js",
 	"dist/agent/providers/google.js",
 	"dist/agent/providers/google-gemini-cli.js",
 	"dist/agent/providers/vertex.js",

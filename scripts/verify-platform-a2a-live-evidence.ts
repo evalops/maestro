@@ -48,6 +48,12 @@ interface PlatformA2ALiveEvidenceVerification {
 		targetTraceId?: string;
 		originTraceId?: string;
 	};
+	realtimeDelivery?: {
+		streamTerminalEventId: string;
+		pushTerminalNotificationId: string;
+		metricQueryId: string;
+		rootTraceId: string;
+	};
 }
 
 export interface PlatformA2ALiveEvidenceVerificationOptions {
@@ -56,6 +62,7 @@ export interface PlatformA2ALiveEvidenceVerificationOptions {
 	requireNegativeAuthProbe?: boolean;
 	requireDiscoveryEvidence?: boolean;
 	requireDurableA2AIds?: boolean;
+	requireRealtimeDeliveryEvidence?: boolean;
 	publicKeyPem?: string;
 	publicKeyPath?: string;
 	env?: Env;
@@ -225,6 +232,19 @@ export async function verifyPlatformA2ALiveEvidenceFile(
 		record.negativeAuthProbe,
 		options,
 	);
+	const realtimeDelivery = verifyRealtimeDeliveryEvidence(
+		record.realtimeDelivery,
+		{
+			options,
+			workspaceId,
+			a2aTaskId,
+			a2aMessageId,
+			contextId,
+			taskState,
+			taskTerminal,
+			taskMessageIds,
+		},
+	);
 	return {
 		path: evidencePath,
 		evidenceSha256: actualDigest,
@@ -241,6 +261,7 @@ export async function verifyPlatformA2ALiveEvidenceFile(
 		contextId,
 		taskTerminal,
 		discovery,
+		realtimeDelivery,
 	};
 }
 
@@ -577,6 +598,459 @@ function verifyNegativeAuthProbe(
 	};
 }
 
+function verifyRealtimeDeliveryEvidence(
+	value: unknown,
+	input: {
+		options: PlatformA2ALiveEvidenceVerificationOptions;
+		workspaceId: string;
+		a2aTaskId: string;
+		a2aMessageId?: string;
+		contextId?: string;
+		taskState?: string;
+		taskTerminal: boolean;
+		taskMessageIds: string[];
+	},
+): PlatformA2ALiveEvidenceVerification["realtimeDelivery"] | undefined {
+	if (value === undefined || value === null) {
+		if (input.options.requireRealtimeDeliveryEvidence) {
+			throw new Error(
+				"Platform A2A evidence requires realtime delivery evidence",
+			);
+		}
+		return undefined;
+	}
+	const delivery = requireRecord(value, "realtimeDelivery");
+	const trace = verifyRealtimeDeliveryTrace(
+		requireRealtimeSection(delivery, "trace"),
+	);
+	const stream = verifyRealtimeStreamEvidence(
+		requireRealtimeSection(delivery, "stream"),
+		{ ...input, rootTraceId: trace.rootTraceId },
+	);
+	const push = verifyRealtimePushEvidence(
+		requireRealtimeSection(delivery, "push"),
+		{ ...input, rootTraceId: trace.rootTraceId },
+	);
+	const metrics = verifyRealtimeMetricsEvidence(
+		requireRealtimeSection(delivery, "metrics"),
+		input.workspaceId,
+		[...stream.observedAt, ...push.observedAt],
+	);
+	return {
+		streamTerminalEventId: stream.terminalEventId,
+		pushTerminalNotificationId: push.terminalNotificationId,
+		metricQueryId: metrics.queryId,
+		rootTraceId: trace.rootTraceId,
+	};
+}
+
+function requireRealtimeSection(
+	record: Record<string, unknown>,
+	key: "metrics" | "push" | "stream" | "trace",
+): Record<string, unknown> {
+	const value = record[key];
+	if (value === undefined || value === null) {
+		throw new Error(`Platform A2A evidence requires realtime delivery ${key}`);
+	}
+	return requireRecord(value, `realtimeDelivery.${key}`);
+}
+
+function verifyRealtimeDeliveryTrace(
+	trace: Record<string, unknown>,
+): { rootTraceId: string } {
+	const rootTraceId = requireTraceId(
+		trace,
+		"rootTraceId",
+		"realtimeDelivery.trace",
+	);
+	for (const key of ["taskTraceId", "streamTraceId", "pushTraceId"] as const) {
+		const value = requireTraceId(trace, key, "realtimeDelivery.trace");
+		if (value !== rootTraceId) {
+			throw new Error(
+				`Platform A2A evidence realtime delivery trace ${key} ${value} does not match rootTraceId ${rootTraceId}`,
+			);
+		}
+	}
+	requireBooleanTrue(trace, "correlated", "realtimeDelivery.trace");
+	return { rootTraceId };
+}
+
+function verifyRealtimeStreamEvidence(
+	stream: Record<string, unknown>,
+	expected: {
+		rootTraceId: string;
+		a2aTaskId: string;
+		a2aMessageId?: string;
+		contextId?: string;
+		taskState?: string;
+		taskTerminal: boolean;
+		taskMessageIds: string[];
+	},
+): { observedAt: string[]; terminalEventId: string } {
+	const surface = requireString(stream, "surface");
+	if (surface !== "a2a-task-status-stream") {
+		throw new Error(
+			`Platform A2A evidence realtime stream surface is unsupported: ${surface}`,
+		);
+	}
+	requireBooleanTrue(stream, "sourceEvidencePresent", "realtimeDelivery.stream");
+	const traceparent = requireString(stream, "traceparent");
+	verifyTraceparent(traceparent, expected.rootTraceId, "realtimeDelivery.stream");
+	const terminalEventId = requireString(stream, "terminalEventId");
+	const streamArtifactIds = requireStringArray(
+		stream,
+		"artifactIds",
+		"realtimeDelivery.stream",
+	);
+	if (streamArtifactIds.length < 1) {
+		throw new Error(
+			"Platform A2A evidence realtime stream requires artifactIds",
+		);
+	}
+	const events = requireRecordArray(
+		stream,
+		"events",
+		"realtimeDelivery.stream",
+	);
+	const seenIds = new Set<string>();
+	let terminalEvent: Record<string, unknown> | undefined;
+	const observedAt: string[] = [];
+	for (const event of events) {
+		const id = requireString(event, "id");
+		if (terminalEvent) {
+			throw new Error(
+				`Platform A2A evidence realtime stream event ${id} appears after terminalEventId ${terminalEventId}`,
+			);
+		}
+		if (seenIds.has(id)) {
+			throw new Error(
+				`Platform A2A evidence realtime stream has duplicate event id ${id}`,
+			);
+		}
+		seenIds.add(id);
+		verifyRealtimeDeliveryRecordIds(
+			event,
+			`realtime stream event ${id}`,
+			expected,
+		);
+		observedAt.push(
+			requireTimestampString(event, "observedAt", `realtime stream event ${id}`),
+		);
+		requireBoolean(event, "terminal", `realtimeDelivery.stream.events.${id}`);
+		if (id === terminalEventId) {
+			terminalEvent = event;
+		}
+	}
+	if (!terminalEvent) {
+		throw new Error(
+			`Platform A2A evidence realtime stream terminalEventId ${terminalEventId} is not present in events`,
+		);
+	}
+	verifyTerminalRealtimeRecord(
+		terminalEvent,
+		`realtime stream event ${terminalEventId}`,
+		expected,
+	);
+	const terminalArtifactIds = optionalStringArray(terminalEvent, "artifactIds");
+	if (
+		isRealtimeArtifactStreamEvent(terminalEvent) &&
+		terminalArtifactIds.length < 1
+	) {
+		throw new Error(
+			`Platform A2A evidence realtime stream event ${terminalEventId} requires artifactIds`,
+		);
+	}
+	return { observedAt, terminalEventId };
+}
+
+function verifyRealtimePushEvidence(
+	push: Record<string, unknown>,
+	expected: {
+		rootTraceId: string;
+		a2aTaskId: string;
+		a2aMessageId?: string;
+		contextId?: string;
+		taskState?: string;
+		taskTerminal: boolean;
+		taskMessageIds: string[];
+	},
+): { observedAt: string[]; terminalNotificationId: string } {
+	const surface = requireString(push, "surface");
+	if (surface !== "a2a-task-push-notification") {
+		throw new Error(
+			`Platform A2A evidence realtime push surface is unsupported: ${surface}`,
+		);
+	}
+	requireBooleanTrue(push, "sourceEvidencePresent", "realtimeDelivery.push");
+	requireString(push, "callbackAuditId");
+	const traceparent = requireString(push, "traceparent");
+	verifyTraceparent(traceparent, expected.rootTraceId, "realtimeDelivery.push");
+	const terminalNotificationId = requireString(push, "terminalNotificationId");
+	const acceptedCount = requireNonNegativeInteger(
+		push,
+		"acceptedCount",
+		"realtimeDelivery.push",
+	);
+	const rejectedCount = requireNonNegativeInteger(
+		push,
+		"rejectedCount",
+		"realtimeDelivery.push",
+	);
+	requireBooleanTrue(push, "invalidTokenRejected", "realtimeDelivery.push");
+	if (rejectedCount < 1) {
+		throw new Error(
+			"Platform A2A evidence realtime push requires at least one rejected callback notification",
+		);
+	}
+	const notifications = requireRecordArray(
+		push,
+		"notifications",
+		"realtimeDelivery.push",
+	);
+	const seenIds = new Set<string>();
+	let terminalNotification: Record<string, unknown> | undefined;
+	let actualAcceptedCount = 0;
+	let actualRejectedCount = 0;
+	let authRejectedNotification = false;
+	const observedAt: string[] = [];
+	for (const notification of notifications) {
+		const id = requireString(notification, "id");
+		if (seenIds.has(id)) {
+			throw new Error(
+				`Platform A2A evidence realtime push has duplicate notification id ${id}`,
+			);
+		}
+		seenIds.add(id);
+		verifyRealtimeDeliveryRecordIds(
+			notification,
+			`realtime push notification ${id}`,
+			expected,
+		);
+		observedAt.push(
+			requireTimestampString(
+				notification,
+				"observedAt",
+				`realtime push notification ${id}`,
+			),
+		);
+		if (
+			requireBoolean(
+				notification,
+				"accepted",
+				`realtimeDelivery.push.notifications.${id}`,
+			)
+		) {
+			actualAcceptedCount += 1;
+		} else {
+			actualRejectedCount += 1;
+			const errorClass = optionalString(notification, "errorClass");
+			if (errorClass === "unauthorized" || errorClass === "forbidden") {
+				authRejectedNotification = true;
+			}
+		}
+		requireBoolean(
+			notification,
+			"terminal",
+			`realtimeDelivery.push.notifications.${id}`,
+		);
+		if (id === terminalNotificationId) {
+			terminalNotification = notification;
+		}
+	}
+	if (actualAcceptedCount !== acceptedCount) {
+		throw new Error(
+			`Platform A2A evidence realtime push acceptedCount ${acceptedCount} does not match accepted notifications ${actualAcceptedCount}`,
+		);
+	}
+	if (actualRejectedCount !== rejectedCount) {
+		throw new Error(
+			`Platform A2A evidence realtime push rejectedCount ${rejectedCount} does not match rejected notifications ${actualRejectedCount}`,
+		);
+	}
+	if (!authRejectedNotification) {
+		throw new Error(
+			"Platform A2A evidence realtime push invalidTokenRejected requires at least one rejected notification with unauthorized or forbidden errorClass",
+		);
+	}
+	if (!terminalNotification) {
+		throw new Error(
+			`Platform A2A evidence realtime push terminalNotificationId ${terminalNotificationId} is not present in notifications`,
+		);
+	}
+	verifyTerminalRealtimeRecord(
+		terminalNotification,
+		`realtime push notification ${terminalNotificationId}`,
+		expected,
+	);
+	if (
+		requireBoolean(
+			terminalNotification,
+			"accepted",
+			`realtimeDelivery.push.notifications.${terminalNotificationId}`,
+		) !== true
+	) {
+		throw new Error(
+			`Platform A2A evidence realtime push notification ${terminalNotificationId} is not accepted`,
+		);
+	}
+	return { observedAt, terminalNotificationId };
+}
+
+function verifyRealtimeMetricsEvidence(
+	metrics: Record<string, unknown>,
+	workspaceId: string,
+	deliveryObservedAt: string[],
+): { queryId: string } {
+	const surface = requireString(metrics, "surface");
+	if (surface !== "platform-observability-delivery-metrics") {
+		throw new Error(
+			`Platform A2A evidence realtime delivery metrics surface is unsupported: ${surface}`,
+		);
+	}
+	requireBooleanTrue(
+		metrics,
+		"sourceEvidencePresent",
+		"realtimeDelivery.metrics",
+	);
+	const queryId = requireString(metrics, "queryId");
+	const metricsWorkspaceId = requireString(metrics, "workspaceId");
+	if (metricsWorkspaceId !== workspaceId) {
+		throw new Error(
+			`Platform A2A evidence realtime delivery metrics workspaceId ${metricsWorkspaceId} does not match workspaceId ${workspaceId}`,
+		);
+	}
+	const windowStart = requireTimestampString(
+		metrics,
+		"windowStart",
+		"realtimeDelivery.metrics",
+	);
+	const windowEnd = requireTimestampString(
+		metrics,
+		"windowEnd",
+		"realtimeDelivery.metrics",
+	);
+	verifyMetricsWindowIncludesObservedDeliveries(
+		windowStart,
+		windowEnd,
+		deliveryObservedAt,
+	);
+	requireNumberInRange(
+		metrics,
+		"streamTerminalRate",
+		"realtimeDelivery.metrics",
+		0,
+		1,
+	);
+	requireNonNegativeNumber(
+		metrics,
+		"pushDeliveryLatencyMsP95",
+		"realtimeDelivery.metrics",
+	);
+	requireNumberInRange(
+		metrics,
+		"callbackRejectionRate",
+		"realtimeDelivery.metrics",
+		0,
+		1,
+	);
+	requireNonNegativeInteger(metrics, "retryCount", "realtimeDelivery.metrics");
+	requireNonNegativeInteger(
+		metrics,
+		"stuckDeliveryAlerts",
+		"realtimeDelivery.metrics",
+	);
+	return { queryId };
+}
+
+function verifyMetricsWindowIncludesObservedDeliveries(
+	windowStart: string,
+	windowEnd: string,
+	deliveryObservedAt: string[],
+): void {
+	const windowStartMs = parseTimestampMs(windowStart);
+	const windowEndMs = parseTimestampMs(windowEnd);
+	if (windowStartMs > windowEndMs) {
+		throw new Error(
+			"Platform A2A evidence realtime delivery metrics windowStart must be before or equal to windowEnd",
+		);
+	}
+	const observedTimesMs = deliveryObservedAt.map((value) =>
+		parseTimestampMs(value),
+	);
+	const firstObservedMs = Math.min(...observedTimesMs);
+	const lastObservedMs = Math.max(...observedTimesMs);
+	if (windowStartMs > firstObservedMs || windowEndMs < lastObservedMs) {
+		throw new Error(
+			"Platform A2A evidence realtime delivery metrics window must include observed stream and push deliveries",
+		);
+	}
+}
+
+function verifyRealtimeDeliveryRecordIds(
+	record: Record<string, unknown>,
+	label: string,
+	expected: {
+		a2aTaskId: string;
+		a2aMessageId?: string;
+		contextId?: string;
+		taskMessageIds: string[];
+	},
+): void {
+	const taskId = requireString(record, "taskId");
+	if (taskId !== expected.a2aTaskId) {
+		throw new Error(
+			`Platform A2A evidence ${label} taskId ${taskId} does not match delegation.a2aTaskId ${expected.a2aTaskId}`,
+		);
+	}
+	const contextId = optionalString(record, "contextId");
+	if (expected.contextId && contextId !== expected.contextId) {
+		throw new Error(
+			`Platform A2A evidence ${label} contextId ${contextId ?? "missing"} does not match task.contextId ${expected.contextId}`,
+		);
+	}
+	const messageId = optionalString(record, "messageId");
+	if (expected.a2aMessageId && messageId && messageId !== expected.a2aMessageId) {
+		throw new Error(
+			`Platform A2A evidence ${label} messageId ${messageId ?? "missing"} does not match delegation.a2aMessageId ${expected.a2aMessageId}`,
+		);
+	}
+	if (messageId && !expected.taskMessageIds.includes(messageId)) {
+		throw new Error(
+			`Platform A2A evidence ${label} messageId ${messageId} is not present in task.messageIds`,
+		);
+	}
+}
+
+function isRealtimeArtifactStreamEvent(record: Record<string, unknown>): boolean {
+	const type = optionalString(record, "type");
+	return type === "task-artifact" || type === "artifactUpdate";
+}
+
+function verifyTerminalRealtimeRecord(
+	record: Record<string, unknown>,
+	label: string,
+	expected: {
+		taskState?: string;
+		taskTerminal: boolean;
+	},
+): void {
+	if (requireBoolean(record, "terminal", label) !== true) {
+		throw new Error(`Platform A2A evidence ${label} is not terminal`);
+	}
+	if (!expected.taskTerminal) {
+		throw new Error(
+			`Platform A2A evidence ${label} is terminal but task.terminal is false`,
+		);
+	}
+	const state = optionalString(record, "state");
+	const shouldValidateState = state || !isRealtimeArtifactStreamEvent(record);
+	if (expected.taskState && shouldValidateState && state !== expected.taskState) {
+		throw new Error(
+			`Platform A2A evidence ${label} state ${state ?? "missing"} does not match task.state ${expected.taskState}`,
+		);
+	}
+}
+
 async function verifyDetachedSignature(
 	evidencePath: string,
 	evidenceBytes: string,
@@ -801,6 +1275,41 @@ function requireNonNegativeInteger(
 	return value;
 }
 
+function requireNonNegativeNumber(
+	record: Record<string, unknown>,
+	key: string,
+	name: string,
+): number {
+	const value = record[key];
+	if (typeof value !== "number" || !Number.isFinite(value) || value < 0) {
+		throw new Error(
+			`Platform A2A evidence field ${name}.${key} must be a non-negative number`,
+		);
+	}
+	return value;
+}
+
+function requireNumberInRange(
+	record: Record<string, unknown>,
+	key: string,
+	name: string,
+	min: number,
+	max: number,
+): number {
+	const value = record[key];
+	if (
+		typeof value !== "number" ||
+		!Number.isFinite(value) ||
+		value < min ||
+		value > max
+	) {
+		throw new Error(
+			`Platform A2A evidence field ${name}.${key} must be between ${min} and ${max}`,
+		);
+	}
+	return value;
+}
+
 function requireStringArray(
 	record: Record<string, unknown>,
 	key: string,
@@ -819,6 +1328,40 @@ function requireStringArray(
 		return item.trim();
 	});
 	return strings;
+}
+
+function requireRecordArray(
+	record: Record<string, unknown>,
+	key: string,
+	name: string,
+): Record<string, unknown>[] {
+	const value = record[key];
+	if (!Array.isArray(value) || value.length < 1) {
+		throw new Error(
+			`Platform A2A evidence field ${name}.${key} must be a non-empty array`,
+		);
+	}
+	return value.map((item, index) =>
+		requireRecord(item, `${name}.${key}[${index}]`),
+	);
+}
+
+function requireTimestampString(
+	record: Record<string, unknown>,
+	key: string,
+	name: string,
+): string {
+	const value = requireString(record, key);
+	if (Number.isNaN(parseTimestampMs(value))) {
+		throw new Error(
+			`Platform A2A evidence field ${name}.${key} must be a timestamp`,
+		);
+	}
+	return value;
+}
+
+function parseTimestampMs(value: string): number {
+	return new Date(value).getTime();
 }
 
 function verifyGithubEvidence(
@@ -1097,6 +1640,50 @@ function assertRealishGitSha(gitSha: string): void {
 	}
 }
 
+function requireTraceId(
+	record: Record<string, unknown>,
+	key: string,
+	name: string,
+): string {
+	return normalizeTraceId(requireString(record, key), `${name}.${key}`);
+}
+
+function normalizeTraceId(value: string, name: string): string {
+	const traceId = value.trim().toLowerCase();
+	if (!/^[a-f0-9]{32}$/u.test(traceId) || /^0{32}$/u.test(traceId)) {
+		throw new Error(
+			`Platform A2A evidence field ${name} must be a non-zero 32-hex trace id`,
+		);
+	}
+	return traceId;
+}
+
+function verifyTraceparent(
+	value: string,
+	rootTraceId: string,
+	name: string,
+): void {
+	const match = value
+		.trim()
+		.toLowerCase()
+		.match(/^00-([a-f0-9]{32})-([a-f0-9]{16})-[a-f0-9]{2}$/u);
+	if (
+		!match?.[1] ||
+		!match[2] ||
+		/^0{32}$/u.test(match[1]) ||
+		/^0{16}$/u.test(match[2])
+	) {
+		throw new Error(
+			`Platform A2A evidence ${name}.traceparent must be a W3C traceparent`,
+		);
+	}
+	if (match[1] !== rootTraceId) {
+		throw new Error(
+			`Platform A2A evidence ${name}.traceparent trace id ${match[1]} does not match rootTraceId ${rootTraceId}`,
+		);
+	}
+}
+
 function assertNoSyntheticProofId(record: Record<string, unknown>): void {
 	for (const [key, value] of [
 		["proofId", record.proofId],
@@ -1153,7 +1740,7 @@ if (isEntrypoint()) {
 		process.env.MAESTRO_A2A_LIVE_EVIDENCE_PATH?.trim();
 	if (!evidencePath) {
 		console.error(
-			"Usage: tsx scripts/verify-platform-a2a-live-evidence.ts <evidence.json> [--require-signature] [--require-github-dereference] [--require-negative-auth-probe] [--require-discovery-evidence] [--require-durable-a2a-ids]",
+			"Usage: tsx scripts/verify-platform-a2a-live-evidence.ts <evidence.json> [--require-signature] [--require-github-dereference] [--require-negative-auth-probe] [--require-discovery-evidence] [--require-durable-a2a-ids] [--require-realtime-delivery-evidence]",
 		);
 		process.exitCode = 2;
 	} else {
@@ -1177,6 +1764,12 @@ if (isEntrypoint()) {
 				args.includes("--require-durable-a2a-ids") ||
 				booleanEnv(
 					process.env.MAESTRO_A2A_LIVE_EVIDENCE_REQUIRE_DURABLE_A2A_IDS,
+				),
+			requireRealtimeDeliveryEvidence:
+				args.includes("--require-realtime-delivery-evidence") ||
+				booleanEnv(
+					process.env
+						.MAESTRO_A2A_LIVE_EVIDENCE_REQUIRE_REALTIME_DELIVERY_EVIDENCE,
 				),
 			requireSignature:
 				args.includes("--require-signature") ||
