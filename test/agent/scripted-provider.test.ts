@@ -759,6 +759,46 @@ describe("scripted replay provider", () => {
 		);
 	});
 
+	it("rejects release-blocking scripted gates without frozen workspace evidence", () => {
+		const missingWorkspaceArtifactPath = writeScenarioFixture({
+			schemaVersion: MAESTRO_SCRIPTED_SCENARIO_SCHEMA,
+			id: "release-blocking-without-workspace-artifact",
+			description: "Release-blocking scripted fixtures must pin a workspace.",
+			releaseGate: {
+				releaseBlocking: true,
+				tier: "smoke",
+				requiredArtifacts: ["replay"],
+			},
+			frames: [],
+		});
+
+		expect(() => loadScriptedScenario(missingWorkspaceArtifactPath)).toThrow(
+			/release-blocking scripted scenarios must require workspace_manifest/,
+		);
+
+		const missingWorkspacePath = writeScenarioFixture({
+			schemaVersion: MAESTRO_SCRIPTED_SCENARIO_SCHEMA,
+			id: "release-blocking-missing-workspace-path",
+			description: "Workspace manifest gates require a manifest path.",
+			releaseGate: {
+				releaseBlocking: true,
+				tier: "smoke",
+				requiredArtifacts: ["replay", "workspace_manifest"],
+			},
+			frames: [],
+			assertions: [
+				{
+					id: "workspace-ready",
+					kind: "workspace_manifest",
+				},
+			],
+		});
+
+		expect(() => loadScriptedScenario(missingWorkspacePath)).toThrow(
+			/releaseGate requires workspace_manifest but workspaceManifestPath is missing/,
+		);
+	});
+
 	it("cleans up abort listeners after streamed text completes", async () => {
 		process.env.MAESTRO_SCENARIO_PATH = writeScenarioFixture({
 			schemaVersion: MAESTRO_SCRIPTED_SCENARIO_SCHEMA,

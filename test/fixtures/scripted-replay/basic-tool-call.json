@@ -2,6 +2,16 @@
 	"schemaVersion": "evalops.maestro.scripted-scenario.v1",
 	"id": "basic-tool-call",
 	"description": "Deterministic scripted replay fixture that emits text and one tool call.",
+	"workspaceManifestPath": "workspaces/basic-tool-call/workspace-manifest.json",
+	"releaseGate": {
+		"releaseBlocking": true,
+		"tier": "smoke",
+		"requiredArtifacts": ["replay", "workspace_manifest"],
+		"maxToolCalls": 1,
+		"maxScoreFailures": 0,
+		"maxScoreWarnings": 0,
+		"rationale": "Executable replay fixtures must prove the frozen workspace and tool-adapter surface before release."
+	},
 	"metadata": {
 		"recordedFrom": "test",
 		"recordedAt": "2026-05-10T00:00:00.000Z",
@@ -63,6 +73,16 @@
 			"kind": "file_contents",
 			"path": "basic-tool-call.json",
 			"contains": "evalops.maestro.scripted-scenario.v1"
+		},
+		{
+			"id": "frozen-workspace-manifest-ready",
+			"kind": "workspace_manifest",
+			"requiredWorkspaceFiles": ["package.json"],
+			"requiredToolAdapters": ["read"],
+			"requiredHydrationModes": ["fixture_workspace"],
+			"requiredReleaseGateTier": "smoke",
+			"minWorkspaceFiles": 1,
+			"minToolAdapters": 1
 		},
 		{
 			"id": "audit-event-tagged",

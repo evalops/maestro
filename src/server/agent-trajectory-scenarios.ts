@@ -306,7 +306,7 @@ function loadTypedJson<T>(
 	return value as T;
 }
 
-function validateWorkspaceManifest(
+export function validateWorkspaceManifest(
 	manifest: MaestroScenarioWorkspaceManifest,
 	label: string,
 ): void {
@@ -379,6 +379,18 @@ function validateWorkspaceManifest(
 	);
 }
 
+export function loadScenarioWorkspaceManifest(
+	path: string,
+): MaestroScenarioWorkspaceManifest {
+	const workspaceManifest = loadTypedJson<MaestroScenarioWorkspaceManifest>(
+		path,
+		MAESTRO_SCENARIO_WORKSPACE_MANIFEST_SCHEMA,
+		"workspace manifest",
+	);
+	validateWorkspaceManifest(workspaceManifest, `workspace manifest at ${path}`);
+	return workspaceManifest;
+}
+
 export function parseAgentTrajectoryScenario(
 	value: unknown,
 	label: string,
@@ -433,16 +445,7 @@ export function loadAgentTrajectoryScenarioInputs(
 	}
 	if (source.workspaceManifestPath) {
 		const manifestPath = resolvePath(source.workspaceManifestPath);
-		const workspaceManifest = loadTypedJson<MaestroScenarioWorkspaceManifest>(
-			manifestPath,
-			MAESTRO_SCENARIO_WORKSPACE_MANIFEST_SCHEMA,
-			"workspace manifest",
-		);
-		validateWorkspaceManifest(
-			workspaceManifest,
-			`workspace manifest at ${manifestPath}`,
-		);
-		inputs.workspaceManifest = workspaceManifest;
+		inputs.workspaceManifest = loadScenarioWorkspaceManifest(manifestPath);
 	}
 	if (source.baselineTrajectoryPath) {
 		inputs.baselineTrajectory = loadTypedJson<AgentTrajectoryReport>(
@@ -917,7 +920,7 @@ function workspaceEvidence(
 	];
 }
 
-function buildWorkspaceSummary(
+export function buildWorkspaceSummary(
 	manifest: MaestroScenarioWorkspaceManifest | undefined,
 ): AgentTrajectoryScenarioWorkspaceSummary | undefined {
 	if (!manifest) return undefined;
