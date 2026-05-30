@@ -86,7 +86,7 @@ if (options.dryRun) {
 	process.exit(0);
 }
 
-function runNpmCommand(command, args) {
+function runNpmCommand(command, args, { writeOutput = true } = {}) {
 	return new Promise((resolve, reject) => {
 		const interactiveStdio =
 			process.stdin.isTTY && process.stdout.isTTY && process.stderr.isTTY;
@@ -99,12 +99,16 @@ function runNpmCommand(command, args) {
 		child.stdout?.on("data", (chunk) => {
 			const text = chunk.toString();
 			stdout += text;
-			process.stdout.write(text);
+			if (writeOutput) {
+				process.stdout.write(text);
+			}
 		});
 		child.stderr?.on("data", (chunk) => {
 			const text = chunk.toString();
 			stderr += text;
-			process.stderr.write(text);
+			if (writeOutput) {
+				process.stderr.write(text);
+			}
 		});
 		child.on("error", reject);
 		child.on("close", (status) => {
@@ -112,9 +116,69 @@ function runNpmCommand(command, args) {
 		});
 	});
 }
+
+function hasDeprecationValue(value) {
+	if (value === null || value === undefined || value === "") {
+		return false;
+	}
+	if (typeof value === "object") {
+		return Object.values(value).some(hasDeprecationValue);
+	}
+	return true;
+}
+
+function countJsonValues(value, predicate = () => true) {
+	if (Array.isArray(value)) {
+		return value.filter(predicate).length;
+	}
+	if (value && typeof value === "object") {
+		return Object.values(value).filter(predicate).length;
+	}
+	return predicate(value) ? 1 : 0;
+}
+
+async function readNpmJson(command, targetSpec, field) {
+	const result = await runNpmCommand(
+		command,
+		["view", targetSpec, field, "--json"],
+		{ writeOutput: false },
+	);
+	if (result.status !== 0) {
+		return undefined;
+	}
+
+	const text = result.stdout.trim();
+	if (!text) {
+		return undefined;
+	}
+
+	try {
+		return JSON.parse(text);
+	} catch {
+		return text;
+	}
+}
+
+async function verifyDeprecation(command, targetSpec) {
+	const versions = await readNpmJson(command, targetSpec, "version");
+	const deprecations = await readNpmJson(command, targetSpec, "deprecated");
+	const versionCount = countJsonValues(versions, (value) => Boolean(value));
+	if (versionCount === 0) {
+		return false;
+	}
+
+	return countJsonValues(deprecations, hasDeprecationValue) >= versionCount;
+}
+
 const result = await runNpmCommand(npmCommand, npmArgs);
 if (result.status !== 0) {
 	const output = `${result.stdout}\n${result.stderr}`;
+	if (output.includes("E422") && (await verifyDeprecation(npmCommand, spec))) {
+		console.log(
+			`Verified existing deprecation for ${spec} after npm returned E422.`,
+		);
+		process.exit(0);
+	}
 	if (
 		output.includes("E401") ||
 		output.includes("401 Unauthorized") ||
