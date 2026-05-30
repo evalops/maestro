@@ -109,11 +109,7 @@ export function releaseObservabilityQueryDescriptor(traceType) {
 
 export function releaseObservabilityQueryDescriptorIsValid(entry, traceType) {
 	const expected = RELEASE_OBSERVABILITY_QUERY_DESCRIPTORS[traceType];
-	const query = isObject(entry?.query)
-		? entry.query
-		: isObject(entry)
-			? entry
-			: {};
+	const query = isObject(entry?.query) ? entry.query : {};
 	const subjects = stringArray(query?.subjects);
 	const platformConsumers = stringArray(query?.platformConsumers);
 	const filterFields = stringArray(query?.filterFields);
