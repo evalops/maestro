@@ -104,6 +104,19 @@
 			]
 		},
 		{
+			"area": "toolexecution-bridge-retry-policy",
+			"evidenceType": "test",
+			"path": "test/agent/tool-execution-bridge.test.ts",
+			"lifecycle": ["tool-retries", "toolexecution-linkage"],
+			"anchors": [
+				"pins Platform retry policy to Maestro local retry ownership",
+				"retryPolicy: expectedRetryPolicy",
+				"maxAttempts: 1",
+				"allowNonIdempotentRetry: false",
+				"maestro_local_execution_authoritative"
+			]
+		},
+		{
 			"area": "live-platform-lifecycle-smoke",
 			"evidenceType": "live-smoke",
 			"path": "scripts/smoke-platform-agentruntime-lifecycle.ts",

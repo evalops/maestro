@@ -390,6 +390,90 @@ describe("tool execution bridge", () => {
 		expect(fetch).not.toHaveBeenCalled();
 	});
 
+	it("pins Platform retry policy to Maestro local retry ownership", async () => {
+		process.env.EVALOPS_FEATURE_FLAGS_PATH = writeFlags([
+			MAESTRO_PLATFORM_RUNTIME_TOOL_EXECUTION_BRIDGE_FLAG,
+		]);
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+				const url = typeof input === "string" ? input : input.toString();
+				const parsed = new URL(url);
+				requests.push({
+					body: parseRequestBody(init?.body),
+					headers: headersToRecord(init?.headers),
+					method: init?.method,
+					pathname: parsed.pathname,
+					url,
+				});
+				return new Response(
+					JSON.stringify({
+						execution: {
+							id: `texec_retry_policy_${requests.length}`,
+							state: "TOOL_EXECUTION_STATE_SUCCEEDED",
+						},
+					}),
+					{ status: 200, headers: { "Content-Type": "application/json" } },
+				);
+			}),
+		);
+
+		const expectedRetryPolicy = {
+			maxAttempts: 1,
+			initialDelayMs: 0,
+			maxDelayMs: 0,
+			allowNonIdempotentRetry: false,
+		};
+		const bridge = new DefaultPlatformToolExecutionBridge();
+		const observePlan = await bridge.prepare({
+			cfg: baseConfig(),
+			toolCall: {
+				type: "toolCall",
+				id: "tc_retry_observe_1",
+				name: "bash",
+				arguments: { command: "git status" },
+			},
+			sanitizedArgs: { command: "git status" },
+		});
+		if (observePlan.status !== "observe") {
+			throw new Error("expected observe plan");
+		}
+		await bridge.recordObservation(observePlan.plan, {
+			...okResult,
+			toolCallId: "tc_retry_observe_1",
+		});
+
+		const governedPlan = await bridge.prepare({
+			cfg: baseConfig(),
+			toolCall: {
+				type: "toolCall",
+				id: "tc_retry_governed_1",
+				name: "bash",
+				arguments: { command: "git push" },
+			},
+			sanitizedArgs: { command: "git push" },
+		});
+		expect(governedPlan).toMatchObject({ status: "allow" });
+
+		expect(requests).toHaveLength(2);
+		expect(requests[0]?.body).toMatchObject({
+			idempotencyKey: "maestro:tc_retry_observe_1",
+			retryPolicy: expectedRetryPolicy,
+			metadata: expect.objectContaining({
+				maestro_bridge_mode: "observe",
+				maestro_local_execution_authoritative: "false",
+			}),
+		});
+		expect(requests[1]?.body).toMatchObject({
+			idempotencyKey: "maestro:tc_retry_governed_1",
+			retryPolicy: expectedRetryPolicy,
+			metadata: expect.objectContaining({
+				maestro_bridge_mode: "governed",
+				maestro_local_execution_authoritative: "true",
+			}),
+		});
+	});
+
 	it("keeps local observe-only execution when Platform recording fails", async () => {
 		process.env.EVALOPS_FEATURE_FLAGS_PATH = writeFlags([
 			MAESTRO_PLATFORM_RUNTIME_AGENT_RUNTIME_OBSERVE_FLAG,

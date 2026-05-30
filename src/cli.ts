@@ -4,6 +4,12 @@ declare const MAESTRO_BUNDLE_RUNTIME: boolean | undefined;
 
 // Suppress punycode deprecation warning from dependencies
 // This warning comes from old dependencies still using the deprecated punycode module
+import {
+	type ImmediateCliExit,
+	getImmediateCliExit,
+	shouldUseInstantCliExit,
+} from "./cli/instant-exit.js";
+
 const originalEmit = process.emit.bind(process) as (
 	event: string | symbol,
 	...args: unknown[]
@@ -93,41 +99,18 @@ async function refreshInstalledCliOnStartup(args: string[]): Promise<void> {
 	}
 }
 
-function isImmediateVersionInvocation(args: string[]): boolean {
-	return args.length === 1 && (args[0] === "--version" || args[0] === "-v");
-}
-
-function isImmediateHelpInvocation(args: string[]): boolean {
-	return (
-		args.length === 1 &&
-		(args[0] === "--help" ||
-			args[0] === "-h" ||
-			args[0] === "--help-hidden" ||
-			args[0] === "--help-all")
-	);
-}
-
-async function handleImmediateCliExit(args: string[]): Promise<boolean> {
-	if (args[0] === "a2a") {
-		return false;
-	}
-	if (isImmediateVersionInvocation(args)) {
+async function runImmediateCliExit(exit: ImmediateCliExit): Promise<void> {
+	if (exit.kind === "version") {
 		const { getPackageVersion } = await import("./package-metadata.js");
 		console.log(`Maestro v${getPackageVersion()}`);
-		return true;
+		return;
 	}
-	if (isImmediateHelpInvocation(args)) {
-		const [{ getPackageVersion }, { printHelp }] = await Promise.all([
-			import("./package-metadata.js"),
-			import("./cli/help.js"),
-		]);
-		printHelp(getPackageVersion(), {
-			includeHidden:
-				args.includes("--help-hidden") || args.includes("--help-all"),
-		});
-		return true;
-	}
-	return false;
+
+	const [{ printHelp }, { getPackageVersion }] = await Promise.all([
+		import("./cli/help.js"),
+		import("./package-metadata.js"),
+	]);
+	printHelp(getPackageVersion(), { includeHidden: exit.includeHidden });
 }
 
 async function runCliRuntime(args: string[]): Promise<void> {
@@ -144,12 +127,22 @@ async function runCliRuntime(args: string[]): Promise<void> {
 const run = async () => {
 	try {
 		const args = process.argv.slice(2);
-		if (await handleImmediateCliExit(args)) {
+		const immediateExit = getImmediateCliExit(args);
+		let envLoaded = false;
+		if (immediateExit !== null) {
+			const { loadEnv } = await import("./load-env.js");
+			loadEnv();
+			envLoaded = true;
+		}
+		if (shouldUseInstantCliExit(immediateExit, process.env)) {
+			await runImmediateCliExit(immediateExit);
 			return;
 		}
 
-		const { loadEnv } = await import("./load-env.js");
-		loadEnv();
+		if (!envLoaded) {
+			const { loadEnv } = await import("./load-env.js");
+			loadEnv();
+		}
 		await refreshInstalledCliOnStartup(args);
 		await runCliRuntime(args);
 	} catch (err) {
