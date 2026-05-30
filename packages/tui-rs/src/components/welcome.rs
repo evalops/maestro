@@ -1,14 +1,11 @@
 //! Welcome/Onboarding Screen Component
 //!
-//! Displays a welcome screen with ASCII art animation and getting started info.
+//! Displays a plain welcome screen for first-time setup and new sessions.
 //! Used for first-time setup and new session starts.
 //!
 //! # Features
 //!
-//! - Animated ASCII art
-//! - Getting started tips
 //! - Version and status display
-//! - Keyboard hints
 //!
 //! # Example
 //!
@@ -28,11 +25,7 @@ use ratatui::{
     widgets::{Clear, Paragraph, Widget, Wrap},
 };
 
-use super::ascii_animation::{logos, AsciiAnimation};
-
-/// Minimum dimensions for showing animation
-const MIN_ANIMATION_HEIGHT: u16 = 15;
-const MIN_ANIMATION_WIDTH: u16 = 50;
+use super::ascii_animation::AsciiAnimation;
 
 /// Welcome screen widget
 #[derive(Debug, Clone)]
@@ -64,13 +57,13 @@ impl WelcomeScreen {
     #[must_use]
     pub fn new() -> Self {
         Self {
-            animation: Some(AsciiAnimation::new()),
-            animations_enabled: true,
+            animation: None,
+            animations_enabled: false,
             version: None,
             model: None,
             is_authenticated: false,
             welcome_message: None,
-            show_hints: true,
+            show_hints: false,
         }
     }
 
@@ -123,108 +116,45 @@ impl WelcomeScreen {
     }
 
     /// Build the content lines
-    fn build_content(&self, area: Rect) -> Vec<Line<'static>> {
+    fn build_content(&self, _area: Rect) -> Vec<Line<'static>> {
         let mut lines: Vec<Line<'static>> = Vec::new();
 
-        // Show animation if space permits
-        let show_animation = self.animations_enabled
-            && area.height >= MIN_ANIMATION_HEIGHT
-            && area.width >= MIN_ANIMATION_WIDTH;
-
-        if show_animation {
-            if let Some(ref anim) = self.animation {
-                let frame = anim.current_frame();
-                for line in frame.lines() {
-                    lines.push(Line::from(line.to_string()));
-                }
-                lines.push(Line::from(""));
-            }
-        } else {
-            // Show small logo instead
-            for line in logos::MAESTRO_SMALL.lines() {
-                lines.push(Line::from(Span::styled(
-                    line.to_string(),
-                    Style::default().fg(Color::Cyan),
-                )));
-            }
-            lines.push(Line::from(""));
-        }
-
-        // Welcome message
         let welcome_text = self
             .welcome_message
             .clone()
-            .unwrap_or_else(|| "Welcome to".to_string());
-        lines.push(Line::from(vec![
-            Span::raw("  "),
-            Span::raw(welcome_text),
-            Span::raw(" "),
-            Span::styled(
-                "Maestro",
-                Style::default()
-                    .fg(Color::Cyan)
-                    .add_modifier(Modifier::BOLD),
-            ),
-        ]));
+            .unwrap_or_else(|| "Maestro".to_string());
+        lines.push(Line::from(vec![Span::styled(
+            welcome_text,
+            Style::default()
+                .fg(Color::White)
+                .add_modifier(Modifier::BOLD),
+        )]));
 
-        // Version
         if let Some(ref version) = self.version {
             lines.push(Line::from(vec![
-                Span::raw("  Version "),
-                Span::styled(version.clone(), Style::default().fg(Color::Green)),
+                Span::raw("version "),
+                Span::styled(version.clone(), Style::default().fg(Color::DarkGray)),
             ]));
         }
 
-        lines.push(Line::from(""));
-
-        // Model info
         if let Some(ref model) = self.model {
             lines.push(Line::from(vec![
-                Span::raw("  Model: "),
-                Span::styled(model.clone(), Style::default().fg(Color::Yellow)),
+                Span::raw("model "),
+                Span::styled(model.clone(), Style::default().fg(Color::DarkGray)),
             ]));
         }
 
-        // Auth status
-        let auth_text = if self.is_authenticated {
-            Span::styled("✓ Authenticated", Style::default().fg(Color::Green))
-        } else {
-            Span::styled("○ Not authenticated", Style::default().fg(Color::DarkGray))
-        };
-        lines.push(Line::from(vec![Span::raw("  "), auth_text]));
-
-        lines.push(Line::from(""));
-
-        // Getting started section
-        lines.push(Line::from(Span::styled(
-            "  Getting Started",
-            Style::default()
-                .add_modifier(Modifier::BOLD)
-                .add_modifier(Modifier::UNDERLINED),
-        )));
-        lines.push(Line::from(""));
-
-        let tips = [
-            ("Type a message", "to start chatting"),
-            ("Use /help", "to see available commands"),
-            ("Press ?", "for keyboard shortcuts"),
-            ("Press Ctrl+P", "to open command palette"),
-        ];
-
-        for (key, desc) in tips {
+        if self.is_authenticated {
             lines.push(Line::from(vec![
-                Span::raw("  "),
-                Span::styled(key, Style::default().fg(Color::Cyan)),
-                Span::raw(" "),
-                Span::styled(desc, Style::default().fg(Color::DarkGray)),
+                Span::raw("status "),
+                Span::styled("authenticated", Style::default().fg(Color::DarkGray)),
             ]));
         }
 
-        // Keyboard hints
         if self.show_hints {
             lines.push(Line::from(""));
             lines.push(Line::from(Span::styled(
-                "  Press Ctrl+. to change animation",
+                "Type a message or /help",
                 Style::default()
                     .fg(Color::DarkGray)
                     .add_modifier(Modifier::DIM),
@@ -260,6 +190,7 @@ impl Widget for WelcomeScreen {
 
         Paragraph::new(content)
             .wrap(Wrap { trim: false })
+            .alignment(Alignment::Center)
             .render(content_area, buf);
     }
 }
@@ -410,7 +341,7 @@ impl Default for SplashScreen {
         Self {
             title: "Maestro".to_string(),
             subtitle: None,
-            show_logo: true,
+            show_logo: false,
         }
     }
 }
@@ -443,16 +374,6 @@ impl Widget for SplashScreen {
         Clear.render(area, buf);
 
         let mut lines: Vec<Line<'static>> = Vec::new();
-
-        if self.show_logo {
-            for line in logos::MAESTRO_SMALL.lines() {
-                lines.push(Line::from(Span::styled(
-                    line.to_string(),
-                    Style::default().fg(Color::Cyan),
-                )));
-            }
-            lines.push(Line::from(""));
-        }
 
         lines.push(Line::from(Span::styled(
             self.title.clone(),
@@ -497,8 +418,8 @@ mod tests {
     #[test]
     fn test_welcome_screen_default() {
         let welcome = WelcomeScreen::new();
-        assert!(welcome.animations_enabled);
-        assert!(welcome.show_hints);
+        assert!(!welcome.animations_enabled);
+        assert!(!welcome.show_hints);
         assert!(!welcome.is_authenticated);
     }
 
@@ -519,7 +440,7 @@ mod tests {
     }
 
     #[test]
-    fn test_welcome_screen_uses_maestro_branding() {
+    fn test_welcome_screen_uses_plain_maestro_branding() {
         let welcome = WelcomeScreen::new().animations(false);
         let lines = welcome.build_content(Rect::new(0, 0, 80, 24));
         let rendered = lines
@@ -528,8 +449,10 @@ mod tests {
             .collect::<Vec<_>>()
             .join("\n");
 
-        assert!(rendered.contains("Welcome to Maestro"));
+        assert!(rendered.contains("Maestro"));
+        assert!(!rendered.contains("Welcome to Maestro"));
         assert!(!rendered.contains("Welcome to Composer"));
+        assert!(!rendered.contains("Getting Started"));
     }
 
     #[test]
@@ -583,6 +506,7 @@ mod tests {
     fn test_splash_screen_default_title_uses_maestro() {
         let splash = SplashScreen::default();
         assert_eq!(splash.title, "Maestro");
+        assert!(!splash.show_logo);
         assert_ne!(splash.title, "Composer");
     }
 }

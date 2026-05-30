@@ -361,14 +361,14 @@
 					"proofClass": "streaming-status-events",
 					"description": "A delegated task emits ordered status and artifact events over the A2A stream until terminal state or an explicitly accepted nonterminal observation.",
 					"authoritativeSource": "Target Maestro A2A stream and subscription endpoints",
-					"verification": "Run npm run platform:a2a-delegation-live with streaming enabled, then verify stream event ids, terminal state, and artifact ids in the signed evidence bundle."
+					"verification": "Run MAESTRO_A2A_LIVE_REQUIRE_REALTIME_DELIVERY_EVIDENCE=true MAESTRO_A2A_LIVE_REALTIME_DELIVERY_EVIDENCE_FILE=<collector-output.json> npm run platform:a2a-delegation-live with streaming enabled, then npm run platform:a2a-evidence-verify -- <evidence.json> --require-realtime-delivery-evidence to verify stream event ids, terminal state, and artifact ids in the signed evidence bundle."
 				},
 				{
 					"id": "push-notifications-delivered",
 					"proofClass": "push-notification-delivery",
 					"description": "The target peer delivers authenticated task push notifications to the configured callback and records accepted, rejected, and terminal notifications.",
 					"authoritativeSource": "Platform callback audit ledger and A2A task notification receiver",
-					"verification": "Inspect callback audit ids, accepted notification count, invalid-token rejection, and terminal notification state in the signed evidence bundle."
+					"verification": "Run MAESTRO_A2A_LIVE_REQUIRE_REALTIME_DELIVERY_EVIDENCE=true MAESTRO_A2A_LIVE_REALTIME_DELIVERY_EVIDENCE_FILE=<collector-output.json> npm run platform:a2a-delegation-live, then npm run platform:a2a-evidence-verify -- <evidence.json> --require-realtime-delivery-evidence and inspect callback audit ids, accepted and rejected notification counts, invalid-token rejection, and terminal notification state in the signed evidence bundle."
 				},
 				{
 					"id": "task-message-ids-durable",
@@ -382,14 +382,14 @@
 					"proofClass": "trace-correlated-delivery",
 					"description": "Stream and push delivery events preserve trace headers and link back to the root delegation, target task, callback audit, and operator trace.",
 					"authoritativeSource": "Platform trace store and A2A trace headers",
-					"verification": "Open the root trace id and verify stream, task, callback, and push spans share traceparent or tracestate links without exposing tokens."
+					"verification": "Run npm run platform:a2a-evidence-verify -- <evidence.json> --require-realtime-delivery-evidence, then open the root trace id and verify stream, task, callback, and push spans share traceparent or tracestate links without exposing tokens."
 				},
 				{
 					"id": "delivery-metrics-operator-visible",
 					"proofClass": "operator-delivery-metrics",
 					"description": "Operators can see stream terminal rate, push delivery latency, callback rejection rate, retry counts, and stuck-delivery alerts for the participating workspace.",
 					"authoritativeSource": "Platform observability metrics and alert index",
-					"verification": "Query delivery metrics for the evidence window and attach stable dashboard, alert, or metric ids to the release evidence."
+					"verification": "Run npm run platform:a2a-evidence-verify -- <evidence.json> --require-realtime-delivery-evidence to require delivery metric query ids, then query delivery metrics for the evidence window and attach stable dashboard, alert, or metric ids to the release evidence."
 				}
 			]
 		},
