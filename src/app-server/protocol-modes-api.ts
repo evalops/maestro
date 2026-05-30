@@ -14,6 +14,7 @@ type UnknownRecord = Record<string, unknown>;
 const DEFAULT_MODE: MaestroAppServerProtocolModeId = "standard";
 
 const REVIEW_BLOCKED_METHODS = new Set<MaestroAppServerClientMethod>([
+	"protocol/mode/set",
 	"network/fetch",
 	"sandbox/proof/run",
 	"externalAgent/import",

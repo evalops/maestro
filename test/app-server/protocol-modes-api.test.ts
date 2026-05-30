@@ -57,6 +57,7 @@ describe("Maestro app-server protocol modes", () => {
 					blockedMethods: expect.arrayContaining([
 						"command/exec",
 						"thread/delete",
+						"protocol/mode/set",
 					]),
 				}),
 				expect.objectContaining({
@@ -116,21 +117,15 @@ describe("Maestro app-server protocol modes", () => {
 			message: "Missing watchId",
 		});
 
-		await handleMaestroAppServerRequest(api, {
+		const blockedModeReset = await handleMaestroAppServerRequest(api, {
 			jsonrpc: "2.0",
 			id: "set-standard",
 			method: "protocol/mode/set",
 			params: { mode: "standard" },
 		});
-		const standardMutation = await handleMaestroAppServerRequest(api, {
-			jsonrpc: "2.0",
-			id: "standard-name-set",
-			method: "thread/name/set",
-			params: { threadId: "thread_1", name: "Renamed" },
-		});
-		expect(standardMutation.error).toMatchObject({
-			code: -32004,
-			message: "Thread not found",
+		expect(blockedModeReset.error).toMatchObject({
+			code: -32003,
+			message: "protocol/mode/set is blocked while protocol mode is review",
 		});
 	});
 
