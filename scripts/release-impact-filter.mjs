@@ -46,6 +46,47 @@ export function isPackageImpactingPath(filePath) {
 	);
 }
 
+function packageJsonObjectOrderIsSignificant(path) {
+	return (
+		path.includes("exports") ||
+		path.includes("imports") ||
+		path.includes("typesVersions")
+	);
+}
+
+function stableJsonValue(value, path = []) {
+	if (!value || typeof value !== "object") {
+		return value;
+	}
+	if (Array.isArray(value)) {
+		return value.map((entry, index) =>
+			stableJsonValue(entry, [...path, String(index)]),
+		);
+	}
+	const keys = packageJsonObjectOrderIsSignificant(path)
+		? Object.keys(value)
+		: Object.keys(value).sort((left, right) => left.localeCompare(right));
+	return Object.fromEntries(
+		keys.map((key) => [key, stableJsonValue(value[key], [...path, key])]),
+	);
+}
+
+function semanticJsonContent(source) {
+	return JSON.stringify(stableJsonValue(JSON.parse(source)));
+}
+
+function jsonContentChanged(oldContent, newContent) {
+	try {
+		return semanticJsonContent(oldContent) !== semanticJsonContent(newContent);
+	} catch {
+		return oldContent !== newContent;
+	}
+}
+
+function shouldCompareAsSemanticJson(filePath) {
+	return normalizeRepoPath(filePath).endsWith(".json");
+}
+
 /**
  * @param {string} filePath
  */
@@ -362,6 +403,9 @@ export function isPackageImpactingChange(change) {
 		const oldProduction = rustProductionContent(change.oldContent ?? "");
 		const newProduction = rustProductionContent(change.newContent ?? "");
 		return oldProduction !== newProduction;
+	}
+	if (shouldCompareAsSemanticJson(path)) {
+		return jsonContentChanged(change.oldContent ?? "", change.newContent ?? "");
 	}
 	return true;
 }
