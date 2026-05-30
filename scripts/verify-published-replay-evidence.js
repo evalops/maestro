@@ -42,6 +42,71 @@ const REQUIRED_OBSERVABILITY_QUERY_TRACES = [
 	"agent-runtime-lifecycle",
 	"final-status",
 ];
+const RELEASE_OBSERVABILITY_QUERY_SCHEMA =
+	"evalops.maestro.release-observability-query.v1";
+const REQUIRED_OBSERVABILITY_QUERY_DESCRIPTORS = {
+	install: {
+		subjects: ["maestro.events.install_check.completed"],
+		platformConsumers: ["release.maestro-install-smoke"],
+		filterFields: ["packageSpec", "installer", "installable"],
+	},
+	session: {
+		subjects: ["maestro.sessions.session.closed"],
+		platformConsumers: ["release.maestro-session-final-state"],
+		filterFields: ["sessionId", "mode", "finalStatus"],
+	},
+	tool: {
+		subjects: [
+			"maestro.events.tool_call.attempted",
+			"maestro.events.tool_call.completed",
+			"maestro.events.tool_call.failed",
+		],
+		platformConsumers: [
+			"release.maestro-tool-attempt-gates",
+			"release.maestro-tool-success-gates",
+			"release.maestro-tool-failure-gates",
+		],
+		filterFields: ["toolCallId", "toolName", "mode", "toolExecutionId"],
+	},
+	search: {
+		subjects: ["maestro.events.tool_call.completed"],
+		platformConsumers: ["release.maestro-tool-success-gates"],
+		filterFields: ["toolCallId", "toolName=search", "mode", "toolExecutionId"],
+	},
+	approval: {
+		subjects: ["maestro.events.approval_hit"],
+		platformConsumers: ["release.maestro-approval-gates"],
+		filterFields: ["approvalRequestId", "mode", "toolExecutionId"],
+	},
+	error: {
+		subjects: ["maestro.events.error.captured"],
+		platformConsumers: ["release.maestro-error-gates"],
+		filterFields: ["status", "mode", "expectedCount"],
+	},
+	artifact: {
+		subjects: ["maestro.events.artifact.created"],
+		platformConsumers: ["release.maestro-artifact-gates"],
+		filterFields: ["artifactId", "path", "mode"],
+	},
+	"agent-runtime-lifecycle": {
+		subjects: ["maestro.sessions.session.closed"],
+		platformConsumers: [
+			"release.maestro-session-final-state",
+			"release.maestro-tool-success-gates",
+		],
+		filterFields: ["sessionId", "pendingRequestId", "toolExecutionId"],
+		platformRecords: [
+			"AgentRuntimeRun",
+			"AgentRuntimeRunStep",
+			"ToolExecution",
+		],
+	},
+	"final-status": {
+		subjects: ["maestro.events.final_status.reported"],
+		platformConsumers: ["release.maestro-final-status-gates"],
+		filterFields: ["sessionId", "mode", "status"],
+	},
+};
 const REQUIRED_AGENT_RUNTIME_WAIT_KINDS = ["approval", "tool_retry"];
 const TERMINAL_AGENT_RUNTIME_STATES = new Set([
 	"succeeded",
@@ -342,6 +407,28 @@ function queryIndexEntryHasRequiredModes(entry) {
 		REQUIRED_REPLAY_MODES.length;
 }
 
+function releaseQueryDescriptorIsValid(entry, traceType) {
+	const expected = REQUIRED_OBSERVABILITY_QUERY_DESCRIPTORS[traceType];
+	const query = isObject(entry?.query) ? entry.query : {};
+	const subjects = stringArray(query?.subjects);
+	const platformConsumers = stringArray(query?.platformConsumers);
+	const filterFields = stringArray(query?.filterFields);
+	const platformRecords = stringArray(query?.platformRecords);
+	return (
+		isObject(expected) &&
+		query.schemaVersion === RELEASE_OBSERVABILITY_QUERY_SCHEMA &&
+		query.traceType === traceType &&
+		expected.subjects.every((subject) => subjects.includes(subject)) &&
+		expected.platformConsumers.every((consumer) =>
+			platformConsumers.includes(consumer),
+		) &&
+		expected.filterFields.every((field) => filterFields.includes(field)) &&
+		(expected.platformRecords ?? []).every((record) =>
+			platformRecords.includes(record),
+		)
+	);
+}
+
 function queryableObservabilityIndexIsValid({ observability, modes }) {
 	const queryIndex = Array.isArray(observability?.queryIndex)
 		? observability.queryIndex
@@ -353,7 +440,8 @@ function queryableObservabilityIndexIsValid({ observability, modes }) {
 					isObject(entry) &&
 					entry.traceType === traceType &&
 					entry.queryable === true &&
-					entry.status === "ok",
+					entry.status === "ok" &&
+					releaseQueryDescriptorIsValid(entry, traceType),
 			),
 		)
 	) {
@@ -986,7 +1074,7 @@ export function validatePublishedReplayEvidence(
 	pushUnless(
 		errors,
 		queryableObservabilityIndexIsValid({ observability, modes }),
-		"observability.queryIndex must provide queryable install, session, tool, approval, error, artifact, and final-status traces",
+		"observability.queryIndex must provide queryable install, session, tool, approval, error, artifact, and final-status traces with release query descriptors",
 	);
 
 	if (errors.length > 0) {

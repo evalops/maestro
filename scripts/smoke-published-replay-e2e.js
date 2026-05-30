@@ -75,6 +75,71 @@ const REQUIRED_OBSERVABILITY_QUERY_TRACES = [
 	"agent-runtime-lifecycle",
 	"final-status",
 ];
+const RELEASE_OBSERVABILITY_QUERY_SCHEMA =
+	"evalops.maestro.release-observability-query.v1";
+const RELEASE_OBSERVABILITY_QUERY_DESCRIPTORS = {
+	install: {
+		subjects: ["maestro.events.install_check.completed"],
+		platformConsumers: ["release.maestro-install-smoke"],
+		filterFields: ["packageSpec", "installer", "installable"],
+	},
+	session: {
+		subjects: ["maestro.sessions.session.closed"],
+		platformConsumers: ["release.maestro-session-final-state"],
+		filterFields: ["sessionId", "mode", "finalStatus"],
+	},
+	tool: {
+		subjects: [
+			"maestro.events.tool_call.attempted",
+			"maestro.events.tool_call.completed",
+			"maestro.events.tool_call.failed",
+		],
+		platformConsumers: [
+			"release.maestro-tool-attempt-gates",
+			"release.maestro-tool-success-gates",
+			"release.maestro-tool-failure-gates",
+		],
+		filterFields: ["toolCallId", "toolName", "mode", "toolExecutionId"],
+	},
+	search: {
+		subjects: ["maestro.events.tool_call.completed"],
+		platformConsumers: ["release.maestro-tool-success-gates"],
+		filterFields: ["toolCallId", "toolName=search", "mode", "toolExecutionId"],
+	},
+	approval: {
+		subjects: ["maestro.events.approval_hit"],
+		platformConsumers: ["release.maestro-approval-gates"],
+		filterFields: ["approvalRequestId", "mode", "toolExecutionId"],
+	},
+	error: {
+		subjects: ["maestro.events.error.captured"],
+		platformConsumers: ["release.maestro-error-gates"],
+		filterFields: ["status", "mode", "expectedCount"],
+	},
+	artifact: {
+		subjects: ["maestro.events.artifact.created"],
+		platformConsumers: ["release.maestro-artifact-gates"],
+		filterFields: ["artifactId", "path", "mode"],
+	},
+	"agent-runtime-lifecycle": {
+		subjects: ["maestro.sessions.session.closed"],
+		platformConsumers: [
+			"release.maestro-session-final-state",
+			"release.maestro-tool-success-gates",
+		],
+		filterFields: ["sessionId", "pendingRequestId", "toolExecutionId"],
+		platformRecords: [
+			"AgentRuntimeRun",
+			"AgentRuntimeRunStep",
+			"ToolExecution",
+		],
+	},
+	"final-status": {
+		subjects: ["maestro.events.final_status.reported"],
+		platformConsumers: ["release.maestro-final-status-gates"],
+		filterFields: ["sessionId", "mode", "status"],
+	},
+};
 const REQUIRED_AGENT_RUNTIME_WAIT_KINDS = ["approval", "tool_retry"];
 const TERMINAL_AGENT_RUNTIME_STATES = new Set([
 	"succeeded",
@@ -776,11 +841,29 @@ function queryIndexEntry({
 		key,
 		traceType,
 		queryable: true,
+		query: releaseObservabilityQueryDescriptor(traceType),
 		status,
 		modes: uniqueValues(modes),
 		evidenceRefs: uniqueValues(evidenceRefs),
 		ids: uniqueValues(ids),
 		counts,
+	};
+}
+
+function releaseObservabilityQueryDescriptor(traceType) {
+	const descriptor = RELEASE_OBSERVABILITY_QUERY_DESCRIPTORS[traceType];
+	if (!descriptor) {
+		return undefined;
+	}
+	return {
+		schemaVersion: RELEASE_OBSERVABILITY_QUERY_SCHEMA,
+		traceType,
+		subjects: [...descriptor.subjects],
+		platformConsumers: [...descriptor.platformConsumers],
+		filterFields: [...descriptor.filterFields],
+		...(descriptor.platformRecords
+			? { platformRecords: [...descriptor.platformRecords] }
+			: {}),
 	};
 }
 
@@ -923,6 +1006,36 @@ function queryIndexEntryForTrace(queryIndex, traceType) {
 		: undefined;
 }
 
+function releaseQueryDescriptorSatisfiesReleaseGate(entry, traceType) {
+	const expected = RELEASE_OBSERVABILITY_QUERY_DESCRIPTORS[traceType];
+	const query = entry?.query;
+	if (!expected || !query || typeof query !== "object") {
+		return false;
+	}
+	const subjects = Array.isArray(query.subjects) ? query.subjects : [];
+	const platformConsumers = Array.isArray(query.platformConsumers)
+		? query.platformConsumers
+		: [];
+	const filterFields = Array.isArray(query.filterFields)
+		? query.filterFields
+		: [];
+	const platformRecords = Array.isArray(query.platformRecords)
+		? query.platformRecords
+		: [];
+	return (
+		query.schemaVersion === RELEASE_OBSERVABILITY_QUERY_SCHEMA &&
+		query.traceType === traceType &&
+		expected.subjects.every((subject) => subjects.includes(subject)) &&
+		expected.platformConsumers.every((consumer) =>
+			platformConsumers.includes(consumer),
+		) &&
+		expected.filterFields.every((field) => filterFields.includes(field)) &&
+		(expected.platformRecords ?? []).every((record) =>
+			platformRecords.includes(record),
+		)
+	);
+}
+
 function queryableObservabilityIndexSatisfiesReleaseGate(observability) {
 	const queryIndex = Array.isArray(observability?.queryIndex)
 		? observability.queryIndex
@@ -933,7 +1046,8 @@ function queryableObservabilityIndexSatisfiesReleaseGate(observability) {
 				(entry) =>
 					entry?.traceType === traceType &&
 					entry?.queryable === true &&
-					entry?.status === "ok",
+					entry?.status === "ok" &&
+					releaseQueryDescriptorSatisfiesReleaseGate(entry, traceType),
 			),
 		)
 	) {
