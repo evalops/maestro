@@ -24,6 +24,7 @@ const requiredAreas = [
 	"release-workflow",
 	"tag-release-workflow",
 	"public-mirror-workflow",
+	"public-mirror-package-scripts",
 	"public-mirror-contract",
 	"prepared-public-mirror",
 	"release-surface-docs",
@@ -65,6 +66,16 @@ const publishedReplayReleaseGateRequiredAnchors = [
 	"export function assertPublishedReplayReleaseGate",
 	"evidence?.releaseGate?.satisfied === true",
 	"Published replay release gate failed",
+];
+
+const publicMirrorPackageScriptRequiredAnchors = [
+	'pkg.scripts["release:verify:published"] =',
+	'"node scripts/smoke-registry-install.js";',
+	'pkg.scripts["release:verify:published:e2e"] =',
+	'"node scripts/smoke-published-replay-e2e.js";',
+	'pkg.scripts["release:verify:published:evidence"] =',
+	'"node scripts/verify-published-replay-evidence.js";',
+	'pkg.scripts["release:deprecate"] = "node scripts/deprecate-release.js";',
 ];
 
 export function loadReleaseSurfaceConformanceManifest(
@@ -168,6 +179,23 @@ export function checkReleaseSurfaceConformance({
 				);
 			}
 			for (const requiredAnchor of publishedReplayReleaseGateRequiredAnchors) {
+				if (!check.anchors?.includes(requiredAnchor)) {
+					failures.push(`${label} must anchor ${requiredAnchor}`);
+				}
+			}
+		}
+		if (check.area === "public-mirror-package-scripts") {
+			if (check.path !== "scripts/prepare-public-release-mirror.mjs") {
+				failures.push(
+					`${label} must use scripts/prepare-public-release-mirror.mjs as public mirror package-script evidence`,
+				);
+			}
+			if (check.evidenceType !== "source") {
+				failures.push(
+					`${label} must use source evidence for public mirror package-script validation`,
+				);
+			}
+			for (const requiredAnchor of publicMirrorPackageScriptRequiredAnchors) {
 				if (!check.anchors?.includes(requiredAnchor)) {
 					failures.push(`${label} must anchor ${requiredAnchor}`);
 				}

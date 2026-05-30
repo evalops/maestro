@@ -127,6 +127,9 @@ const RELEASE_SURFACE_CONFORMANCE_FILES = new Set([
 	"docs/protocols/release-surface-conformance.json",
 	"docs/protocols/release-surface-conformance.md",
 ]);
+const PUBLIC_MIRROR_GUARDRAIL_TEST_FILES = new Set([
+	"test/scripts/ci-guardrails.test.ts",
+]);
 
 function isPackageManifest(path) {
 	return path === "package.json" || /^packages\/[^/]+\/package\.json$/.test(path);
@@ -321,6 +324,7 @@ export function planCiChecks({ eventName, labels = [], changedFiles = [] }) {
 		labelSet.has("run-pr-checks") || ciInfrastructureOnly || !rustOnlySource;
 	const publicMirror =
 		labelSet.has("run-public-mirror") ||
+		files.some((path) => PUBLIC_MIRROR_GUARDRAIL_TEST_FILES.has(path)) ||
 		files.some(
 			(path) =>
 				!isCiInfrastructureOnlyPath(path) && !shouldSkipPublicMirrorForPath(path),
