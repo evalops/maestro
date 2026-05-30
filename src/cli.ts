@@ -74,14 +74,22 @@ async function reportFatalCliError(error: unknown): Promise<void> {
 	}
 }
 
-async function refreshInstalledCliOnStartup(args: string[]): Promise<void> {
+async function refreshInstalledCliOnStartup(
+	args: string[],
+	ignoredEnvKeys: string[] = [],
+): Promise<void> {
 	try {
 		const [{ getPackageVersion }, { attemptStartupUpdate }] = await Promise.all(
 			[import("./package-metadata.js"), import("./update/startup-refresh.js")],
 		);
+		const env = { ...process.env };
+		for (const key of ignoredEnvKeys) {
+			delete env[key];
+		}
 		const outcome = await attemptStartupUpdate({
 			args,
 			currentVersion: getPackageVersion(),
+			env,
 		});
 		if (outcome.status === "restarted") {
 			process.exit(outcome.exitCode);
@@ -94,8 +102,8 @@ async function refreshInstalledCliOnStartup(args: string[]): Promise<void> {
 const run = async () => {
 	try {
 		const { loadEnv } = await import("./load-env.js");
-		loadEnv();
-		await refreshInstalledCliOnStartup(process.argv.slice(2));
+		const loadedEnvKeys = loadEnv();
+		await refreshInstalledCliOnStartup(process.argv.slice(2), loadedEnvKeys);
 
 		if (process.argv[2] === "a2a") {
 			const { handleA2ACommand } = await import("./cli/commands/a2a.js");

@@ -31,6 +31,34 @@ const DEFAULT_STARTUP_UPDATE_TIMEOUT_MS = 1_500;
 const NPM_PREFIX_TIMEOUT_MS = 2_000;
 const BUN_PREFIX_TIMEOUT_MS = 2_000;
 
+const PACKAGE_MANAGER_ENV_PATTERN =
+	/^(?:npm_config_|NPM_CONFIG_|BUN_CONFIG_|bun_config_|YARN_|yarn_|PNPM_|pnpm_)/u;
+const PACKAGE_MANAGER_ENV_BLOCKLIST = new Set([
+	"NODE_OPTIONS",
+	"NPM_TOKEN",
+	"NODE_AUTH_TOKEN",
+	"MAESTRO_UPDATE_URL",
+	"MAESTRO_UPDATE_URLS",
+	"MAESTRO_STARTUP_UPDATE_STATE",
+]);
+
+const packageManagerEnv = (env: NodeJS.ProcessEnv): NodeJS.ProcessEnv => {
+	const sanitized: NodeJS.ProcessEnv = {};
+	for (const [key, value] of Object.entries(env)) {
+		if (value === undefined) {
+			continue;
+		}
+		if (PACKAGE_MANAGER_ENV_BLOCKLIST.has(key)) {
+			continue;
+		}
+		if (PACKAGE_MANAGER_ENV_PATTERN.test(key)) {
+			continue;
+		}
+		sanitized[key] = value;
+	}
+	return sanitized;
+};
+
 type PackageManager = "npm" | "bun";
 
 type GlobalInstallContext = {
@@ -271,12 +299,14 @@ const defaultInstallPackage = (
 	packageManager: PackageManager,
 	packageName: string,
 	version: string,
+	env: NodeJS.ProcessEnv = process.env,
 ) => {
 	const result = spawnSync(
 		packageManager,
 		["install", "-g", `${packageName}@${version}`],
 		{
 			encoding: "utf-8",
+			env: packageManagerEnv(env),
 			stdio: "pipe",
 			timeout: DEFAULT_INSTALL_TIMEOUT_MS,
 		},
@@ -445,7 +475,11 @@ export async function attemptStartupUpdate(
 		lastAttemptAt: now,
 		lastStatus: "failed",
 	});
-	const install = (options.installPackage ?? defaultInstallPackage)(
+	const installPackage =
+		options.installPackage ??
+		((packageManager: PackageManager, name: string, version: string) =>
+			defaultInstallPackage(packageManager, name, version, env));
+	const install = installPackage(
 		installContext.packageManager,
 		packageName,
 		check.latestVersion,

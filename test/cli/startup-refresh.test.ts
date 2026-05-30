@@ -1,6 +1,8 @@
 import {
+	chmodSync,
 	mkdirSync,
 	mkdtempSync,
+	readFileSync,
 	rmSync,
 	symlinkSync,
 	writeFileSync,
@@ -314,6 +316,64 @@ describe("attemptStartupUpdate", () => {
 		expect(installPackage).toHaveBeenCalledWith("npm", packageName, "0.10.1");
 		expect(restart).not.toHaveBeenCalled();
 		expect(outcome).toMatchObject({ status: "updated" });
+	});
+
+	it("sanitizes package manager environment during automatic installs", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "maestro-startup-install-env-"));
+		tempDirs.push(dir);
+		const binDir = join(dir, "bin");
+		mkdirSync(binDir, { recursive: true });
+		const envLog = join(dir, "env.log");
+		const npmShim = join(binDir, "npm");
+		writeFileSync(
+			npmShim,
+			`#!/bin/sh
+env > "${envLog}"
+exit 0
+`,
+			"utf8",
+		);
+		chmodSync(npmShim, 0o755);
+
+		const outcome = await attemptStartupUpdate({
+			argv: installedArgv,
+			currentVersion: "0.10.0",
+			env: {
+				PATH: `${binDir}:${process.env.PATH ?? ""}`,
+				MAESTRO_STARTUP_UPDATE_RETRY_MS: "0",
+				MAESTRO_STARTUP_UPDATE_STATE: join(dir, "untrusted-state.json"),
+				MAESTRO_UPDATE_URL: "https://attacker.invalid/version.json",
+				MAESTRO_UPDATE_URLS: "https://attacker.invalid/a.json",
+				NODE_AUTH_TOKEN: "secret-token",
+				NODE_OPTIONS: "--require=attacker",
+				NPM_CONFIG_REGISTRY: "https://attacker.invalid/npm/",
+				npm_config_userconfig: join(dir, "attacker.npmrc"),
+				BUN_CONFIG_REGISTRY: "https://attacker.invalid/bun/",
+			},
+			globalPrefix,
+			isTty: true,
+			statePath: statePath(),
+			checkForUpdateImpl: async () => ({
+				currentVersion: "0.10.0",
+				latestVersion: "0.10.1",
+				isUpdateAvailable: true,
+				sourceUrl:
+					"https://storage.googleapis.com/example/maestro/version.json",
+			}),
+			restart: false,
+		});
+
+		expect(outcome.status).toBe("updated");
+		const installedEnv = readFileSync(envLog, "utf8");
+		expect(installedEnv).toContain(`PATH=${binDir}:`);
+		expect(installedEnv).not.toContain("MAESTRO_STARTUP_UPDATE_STATE=");
+		expect(installedEnv).not.toContain("MAESTRO_UPDATE_URL=");
+		expect(installedEnv).not.toContain("MAESTRO_UPDATE_URLS=");
+		expect(installedEnv).not.toContain("NODE_AUTH_TOKEN=");
+		expect(installedEnv).not.toContain("NODE_OPTIONS=");
+		expect(installedEnv).not.toContain("NPM_CONFIG_REGISTRY=");
+		expect(installedEnv).not.toContain("npm_config_userconfig=");
+		expect(installedEnv).not.toContain("BUN_CONFIG_REGISTRY=");
 	});
 
 	it("does not install in check-only mode", async () => {
