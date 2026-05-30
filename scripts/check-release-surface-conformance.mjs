@@ -46,6 +46,7 @@ const registryInstallSmokeRequiredAnchors = [
 	"runNpxCliSmoke",
 	"runBunxCliSmoke",
 	"runBunRuntimeCliSmoke",
+	"MAESTRO_ALLOW_REGISTRY_BUN_INSTALL_SMOKE_SKIP",
 ];
 
 const publishedReplayEvidenceVerifierRequiredAnchors = [
