@@ -68,6 +68,7 @@ const COMMANDS = new Set([
 	"cost",
 	"stats",
 	"status",
+	"update",
 	"run",
 	"agents",
 	"a2a",
@@ -389,6 +390,7 @@ export function parseArgs(args: string[]): Args {
 					arg === "hosted-runner" ||
 					arg === "init" ||
 					arg === "evalops" ||
+					arg === "update" ||
 					arg === "skill"
 				) {
 					result.commandArgs = args.slice(i + 1);

@@ -64,7 +64,7 @@ type StartupUpdateOptions = {
 		status: number | null;
 		error?: Error;
 	};
-	restart?: () => { status: number | null; error?: Error };
+	restart?: false | (() => { status: number | null; error?: Error });
 	statePath?: string;
 };
 
@@ -88,6 +88,9 @@ const toErrorMessage = (error: unknown): string => {
 const shouldSkipForArgs = (args: string[]): string | null => {
 	if (args[0] === "a2a") {
 		return "a2a command";
+	}
+	if (args[0] === "update") {
+		return "manual update command";
 	}
 	if (
 		args.includes("--version") ||
@@ -390,6 +393,10 @@ export async function attemptStartupUpdate(
 		lastAttemptAt: now,
 		lastStatus: "updated",
 	});
+
+	if (options.restart === false) {
+		return { status: "updated", check };
+	}
 
 	const restart =
 		options.restart ??

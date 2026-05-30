@@ -669,6 +669,12 @@ export async function main(args: string[]) {
 		return;
 	}
 
+	if (parsed.command === "update") {
+		const { handleUpdateCommand } = await import("./cli/commands/update.js");
+		await handleUpdateCommand(parsed.commandArgs ?? []);
+		return;
+	}
+
 	if (parsed.command === "context") {
 		const { handleContextCommand } = await import("./cli/commands/context.js");
 		await handleContextCommand(parsed.subcommand, parsed.messages, {

@@ -112,6 +112,24 @@ describe("attemptStartupUpdate", () => {
 		expect(checkForUpdateImpl).not.toHaveBeenCalled();
 	});
 
+	it("skips the manual update command before checking the network", async () => {
+		const checkForUpdateImpl = vi.fn();
+		const outcome = await attemptStartupUpdate({
+			args: ["update"],
+			argv: installedArgv,
+			currentVersion: "0.10.0",
+			env: {},
+			globalPrefix,
+			isTty: true,
+			checkForUpdateImpl,
+		});
+		expect(outcome).toMatchObject({
+			status: "skipped",
+			reason: "manual update command",
+		});
+		expect(checkForUpdateImpl).not.toHaveBeenCalled();
+	});
+
 	it("skips when the running package is outside the npm global prefix", async () => {
 		const checkForUpdateImpl = vi.fn();
 		const outcome = await attemptStartupUpdate({
@@ -194,6 +212,31 @@ describe("attemptStartupUpdate", () => {
 		expect(installPackage).toHaveBeenCalledWith(packageName, "0.10.1");
 		expect(restart).toHaveBeenCalled();
 		expect(outcome).toMatchObject({ status: "restarted", exitCode: 7 });
+	});
+
+	it("can install without restarting for manual update commands", async () => {
+		const installPackage = vi.fn().mockReturnValue({ status: 0 });
+		const restart = vi.fn();
+		const outcome = await attemptStartupUpdate({
+			argv: installedArgv,
+			currentVersion: "0.10.0",
+			env: {},
+			globalPrefix,
+			isTty: true,
+			statePath: statePath(),
+			checkForUpdateImpl: async () => ({
+				currentVersion: "0.10.0",
+				latestVersion: "0.10.1",
+				isUpdateAvailable: true,
+				sourceUrl:
+					"https://storage.googleapis.com/example/maestro/version.json",
+			}),
+			installPackage,
+			restart: false,
+		});
+		expect(installPackage).toHaveBeenCalledWith(packageName, "0.10.1");
+		expect(restart).not.toHaveBeenCalled();
+		expect(outcome).toMatchObject({ status: "updated" });
 	});
 
 	it("does not install in check-only mode", async () => {

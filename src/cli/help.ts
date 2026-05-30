@@ -156,6 +156,10 @@ export function printHelp(
   # Confirm managed mode sinks and EvalOps org identity
   maestro status
 
+  # Check or install the newest published Maestro CLI
+  maestro update --check
+  maestro update
+
   # Inspect mode-level subagent model dispatch before running a swarm
   maestro modes describe smart
 

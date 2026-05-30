@@ -240,6 +240,14 @@ describe("parseArgs", () => {
 		});
 	});
 
+	it("preserves update command arguments for the update handler", () => {
+		expect(parseArgs(["update", "--check", "--json"])).toMatchObject({
+			command: "update",
+			commandArgs: ["--check", "--json"],
+			messages: [],
+		});
+	});
+
 	it("parses stats commands", () => {
 		expect(parseArgs(["stats"])).toMatchObject({
 			command: "stats",
