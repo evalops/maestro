@@ -337,6 +337,7 @@ describe("planCiChecks", () => {
 					"scripts/plan-nx-test-command.mjs",
 					"scripts/published-replay-evidence-gate.js",
 					"scripts/release-impact-filter.mjs",
+					"scripts/release-observability-query-contract.js",
 					"scripts/release-readiness.js",
 					"scripts/smoke-packed-cli.js",
 					"scripts/smoke-published-replay-e2e.js",
@@ -345,6 +346,7 @@ describe("planCiChecks", () => {
 					"test/scripts/ci-guardrails.test.ts",
 					"test/scripts/deprecate-release.test.ts",
 					"test/scripts/release-impact-filter.test.ts",
+					"test/scripts/release-observability-query-contract.test.ts",
 					"test/scripts/release-surface-conformance.test.ts",
 					"test/scripts/workspace-utils.test.ts",
 				],
@@ -607,6 +609,7 @@ describe("planCiChecks", () => {
 					"scripts/sync-public-companion-branch.mjs",
 					"scripts/update-behind-auto-merge-prs.mjs",
 					"scripts/validate-public-package-deps.js",
+					"test/scripts/validate-public-package-deps.test.ts",
 				],
 			}).publicMirror,
 		).toBe(false);
@@ -859,6 +862,9 @@ describe("ci workflow guardrails", () => {
 			"node --check scripts/release-readiness.js",
 		);
 		expect(helperSmokeStep?.run).toContain(
+			"node --check scripts/release-observability-query-contract.js",
+		);
+		expect(helperSmokeStep?.run).toContain(
 			"node --check scripts/smoke-published-replay-e2e.js",
 		);
 		expect(helperSmokeStep?.run).toContain(
@@ -884,6 +890,9 @@ describe("ci workflow guardrails", () => {
 		);
 		expect(helperSmokeStep?.run).toContain(
 			"node --check scripts/check-release-surface-conformance.mjs",
+		);
+		expect(helperSmokeStep?.run).toContain(
+			"test/scripts/release-observability-query-contract.test.ts",
 		);
 		expect(helperSmokeStep?.run).toContain(
 			"test/scripts/release-surface-conformance.test.ts",
@@ -2368,6 +2377,7 @@ describe("planNxTestCommand", () => {
 					"scripts/plan-ci-checks.mjs",
 					"scripts/published-replay-evidence-gate.js",
 					"scripts/release-impact-filter.mjs",
+					"scripts/release-observability-query-contract.js",
 					"scripts/release-readiness.js",
 					"scripts/smoke-packed-cli.js",
 					"scripts/smoke-published-replay-e2e.js",

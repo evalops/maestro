@@ -46,10 +46,12 @@ const DEFAULT_EXCLUDES = [
 	"scripts/configure-npm-trusted-publisher.mjs",
 	"scripts/deprecate-release.js",
 	"scripts/published-replay-evidence-gate.js",
+	"scripts/release-observability-query-contract.js",
 	"scripts/smoke-published-replay-e2e.js",
 	"scripts/smoke-registry-install.js",
 	"scripts/verify-published-replay-evidence.js",
 	"scripts/validate-public-package-deps.js",
+	"test/scripts/validate-public-package-deps.test.ts",
 ];
 
 const PUBLIC_INCLUDE_OVERRIDES = new Set([

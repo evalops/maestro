@@ -602,6 +602,12 @@ describe("resolvePublishedReplayEvidencePath", () => {
 					key: "install",
 					traceType: "install",
 					queryable: true,
+					query: expect.objectContaining({
+						schemaVersion: "evalops.maestro.release-observability-query.v1",
+						subjects: ["maestro.events.install_check.completed"],
+						platformConsumers: ["release.maestro-install-smoke"],
+						filterFields: ["packageSpec", "installer", "installable"],
+					}),
 					status: "ok",
 				}),
 				expect.objectContaining({
@@ -615,6 +621,14 @@ describe("resolvePublishedReplayEvidencePath", () => {
 					key: "tools",
 					traceType: "tool",
 					queryable: true,
+					query: expect.objectContaining({
+						subjects: [
+							"maestro.events.tool_call.attempted",
+							"maestro.events.tool_call.completed",
+							"maestro.events.tool_call.failed",
+						],
+						filterFields: ["toolCallId", "toolName", "mode", "toolExecutionId"],
+					}),
 					status: "ok",
 					modes: ["text", "json", "rpc"],
 				}),
@@ -636,6 +650,14 @@ describe("resolvePublishedReplayEvidencePath", () => {
 					key: "agentRuntimeLifecycle",
 					traceType: "agent-runtime-lifecycle",
 					queryable: true,
+					query: expect.objectContaining({
+						platformRecords: [
+							"AgentRuntimeRun",
+							"AgentRuntimeRunStep",
+							"ToolExecution",
+						],
+						filterFields: ["sessionId", "pendingRequestId", "toolExecutionId"],
+					}),
 					status: "ok",
 				}),
 				expect.objectContaining({

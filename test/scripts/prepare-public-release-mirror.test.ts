@@ -106,8 +106,20 @@ describe("prepare-public-release-mirror", () => {
 			"internal evidence gate\n",
 		);
 		write(
+			join(source, "scripts/release-observability-query-contract.js"),
+			"internal observability query contract\n",
+		);
+		write(
 			join(source, "scripts/verify-published-replay-evidence.js"),
 			"internal evidence verifier\n",
+		);
+		write(
+			join(source, "scripts/validate-public-package-deps.js"),
+			"internal public package dependency validator\n",
+		);
+		write(
+			join(source, "test/scripts/validate-public-package-deps.test.ts"),
+			"internal public package dependency validator test\n",
 		);
 		write(join(source, ".env"), "SECRET=value\n");
 		write(join(source, ".env.local"), "LOCAL_SECRET=value\n");
@@ -148,8 +160,20 @@ describe("prepare-public-release-mirror", () => {
 			"public evidence gate\n",
 		);
 		write(
+			join(target, "scripts/release-observability-query-contract.js"),
+			"public observability query contract\n",
+		);
+		write(
 			join(target, "scripts/verify-published-replay-evidence.js"),
 			"public evidence verifier\n",
+		);
+		write(
+			join(target, "scripts/validate-public-package-deps.js"),
+			"public package dependency validator\n",
+		);
+		write(
+			join(target, "test/scripts/validate-public-package-deps.test.ts"),
+			"public package dependency validator test\n",
 		);
 		write(join(target, ".git/config"), '[remote "origin"]\n');
 
@@ -256,10 +280,28 @@ describe("prepare-public-release-mirror", () => {
 		).toBe("public evidence gate\n");
 		expect(
 			readFileSync(
+				join(target, "scripts/release-observability-query-contract.js"),
+				"utf8",
+			),
+		).toBe("public observability query contract\n");
+		expect(
+			readFileSync(
 				join(target, "scripts/verify-published-replay-evidence.js"),
 				"utf8",
 			),
 		).toBe("public evidence verifier\n");
+		expect(
+			readFileSync(
+				join(target, "scripts/validate-public-package-deps.js"),
+				"utf8",
+			),
+		).toBe("public package dependency validator\n");
+		expect(
+			readFileSync(
+				join(target, "test/scripts/validate-public-package-deps.test.ts"),
+				"utf8",
+			),
+		).toBe("public package dependency validator test\n");
 		expect(readFileSync(join(target, ".git/config"), "utf8")).toBe(
 			'[remote "origin"]\n',
 		);
