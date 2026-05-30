@@ -147,6 +147,40 @@ describe("deprecate-release", () => {
 		}
 	});
 
+	it("treats npm E422 as success when the target is already deprecated", () => {
+		const tempDir = mkdtempSync(join(tmpdir(), "maestro-deprecate-e422-test-"));
+		const fakeNpm = join(tempDir, "npm");
+		writeFileSync(
+			fakeNpm,
+			[
+				"#!/usr/bin/env bash",
+				'if [[ "$1" == "deprecate" ]]; then',
+				'  echo "npm error code E422" >&2',
+				'  echo "npm error 422 Unprocessable Entity - PUT https://registry.npmjs.org/@evalops%2fmaestro - Unprocessable Entity" >&2',
+				"  exit 1",
+				"fi",
+				'if [[ "$1" == "view" ]]; then',
+				'  echo "[\\"Deprecated release. Upgrade to a supported Maestro version.\\"]"',
+				"  exit 0",
+				"fi",
+				"exit 2",
+				"",
+			].join("\n"),
+		);
+		chmodSync(fakeNpm, 0o755);
+
+		try {
+			const result = runDeprecate({ MAESTRO_NPM_COMMAND: fakeNpm });
+
+			expect(result.status).toBe(0);
+			expect(result.stdout).toContain(
+				"Verified existing deprecation for @evalops/maestro@>=0.10.8 <=0.10.20 after npm returned E422.",
+			);
+		} finally {
+			rmSync(tempDir, { recursive: true, force: true });
+		}
+	});
+
 	it("forwards stdin to npm so local OTP prompts can be answered", () => {
 		const tempDir = mkdtempSync(join(tmpdir(), "maestro-deprecate-otp-test-"));
 		const fakeNpm = join(tempDir, "npm");

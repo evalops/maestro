@@ -86,7 +86,7 @@ if (options.dryRun) {
 	process.exit(0);
 }
 
-function runNpmCommand(command, args) {
+function runNpmCommand(command, args, { writeOutput = true } = {}) {
 	return new Promise((resolve, reject) => {
 		const interactiveStdio =
 			process.stdin.isTTY && process.stdout.isTTY && process.stderr.isTTY;
@@ -99,12 +99,16 @@ function runNpmCommand(command, args) {
 		child.stdout?.on("data", (chunk) => {
 			const text = chunk.toString();
 			stdout += text;
-			process.stdout.write(text);
+			if (writeOutput) {
+				process.stdout.write(text);
+			}
 		});
 		child.stderr?.on("data", (chunk) => {
 			const text = chunk.toString();
 			stderr += text;
-			process.stderr.write(text);
+			if (writeOutput) {
+				process.stderr.write(text);
+			}
 		});
 		child.on("error", reject);
 		child.on("close", (status) => {
@@ -112,9 +116,51 @@ function runNpmCommand(command, args) {
 		});
 	});
 }
+
+function hasDeprecationValue(value) {
+	if (value === null || value === undefined || value === "") {
+		return false;
+	}
+	if (Array.isArray(value)) {
+		return value.some(hasDeprecationValue);
+	}
+	if (typeof value === "object") {
+		return Object.values(value).some(hasDeprecationValue);
+	}
+	return true;
+}
+
+async function verifyDeprecation(command, targetSpec) {
+	const verifyResult = await runNpmCommand(
+		command,
+		["view", targetSpec, "deprecated", "--json"],
+		{ writeOutput: false },
+	);
+	if (verifyResult.status !== 0) {
+		return false;
+	}
+
+	const text = verifyResult.stdout.trim();
+	if (!text || text === "null" || text === '""') {
+		return false;
+	}
+
+	try {
+		return hasDeprecationValue(JSON.parse(text));
+	} catch {
+		return true;
+	}
+}
+
 const result = await runNpmCommand(npmCommand, npmArgs);
 if (result.status !== 0) {
 	const output = `${result.stdout}\n${result.stderr}`;
+	if (output.includes("E422") && (await verifyDeprecation(npmCommand, spec))) {
+		console.log(
+			`Verified existing deprecation for ${spec} after npm returned E422.`,
+		);
+		process.exit(0);
+	}
 	if (
 		output.includes("E401") ||
 		output.includes("401 Unauthorized") ||
