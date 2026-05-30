@@ -46,17 +46,24 @@ export function isPackageImpactingPath(filePath) {
 	);
 }
 
-function stableJsonValue(value) {
+function packageJsonObjectOrderIsSignificant(path) {
+	return path.includes("exports") || path.includes("imports");
+}
+
+function stableJsonValue(value, path = []) {
 	if (!value || typeof value !== "object") {
 		return value;
 	}
 	if (Array.isArray(value)) {
-		return value.map(stableJsonValue);
+		return value.map((entry, index) =>
+			stableJsonValue(entry, [...path, String(index)]),
+		);
 	}
+	const keys = packageJsonObjectOrderIsSignificant(path)
+		? Object.keys(value)
+		: Object.keys(value).sort((left, right) => left.localeCompare(right));
 	return Object.fromEntries(
-		Object.keys(value)
-			.sort((left, right) => left.localeCompare(right))
-			.map((key) => [key, stableJsonValue(value[key])]),
+		keys.map((key) => [key, stableJsonValue(value[key], [...path, key])]),
 	);
 }
 
