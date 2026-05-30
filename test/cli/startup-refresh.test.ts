@@ -140,6 +140,42 @@ describe("attemptStartupUpdate", () => {
 		expect(checkForUpdateImpl).not.toHaveBeenCalled();
 	});
 
+	it("skips single-shot prompt invocations before checking the network", async () => {
+		const checkForUpdateImpl = vi.fn();
+		const outcome = await attemptStartupUpdate({
+			args: ["audit this repo"],
+			argv: installedArgv,
+			currentVersion: "0.10.0",
+			env: {},
+			globalPrefix,
+			isTty: true,
+			checkForUpdateImpl,
+		});
+		expect(outcome).toMatchObject({
+			status: "skipped",
+			reason: "single-shot prompt",
+		});
+		expect(checkForUpdateImpl).not.toHaveBeenCalled();
+	});
+
+	it("skips exec invocations before checking the network", async () => {
+		const checkForUpdateImpl = vi.fn();
+		const outcome = await attemptStartupUpdate({
+			args: ["exec", "audit this repo"],
+			argv: installedArgv,
+			currentVersion: "0.10.0",
+			env: {},
+			globalPrefix,
+			isTty: true,
+			checkForUpdateImpl,
+		});
+		expect(outcome).toMatchObject({
+			status: "skipped",
+			reason: "non-interactive command",
+		});
+		expect(checkForUpdateImpl).not.toHaveBeenCalled();
+	});
+
 	it("skips when the running package is outside the npm global prefix", async () => {
 		const checkForUpdateImpl = vi.fn();
 		const outcome = await attemptStartupUpdate({

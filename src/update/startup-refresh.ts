@@ -7,6 +7,7 @@ import {
 	writeFileSync,
 } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
+import { parseArgs } from "../cli/args.js";
 import { getAgentDir } from "../config/constants.js";
 import {
 	getGlobalInstallCommand,
@@ -99,6 +100,9 @@ const shouldSkipForArgs = (args: string[]): string | null => {
 	if (args[0] === "a2a") {
 		return "a2a command";
 	}
+	if (args[0] === "exec") {
+		return "non-interactive command";
+	}
 	if (args[0] === "update") {
 		return "manual update command";
 	}
@@ -129,6 +133,9 @@ const shouldSkipForArgs = (args: string[]): string | null => {
 		) {
 			return "headless command";
 		}
+	}
+	if (parseArgs(args).messages.length > 0) {
+		return "single-shot prompt";
 	}
 	return null;
 };
