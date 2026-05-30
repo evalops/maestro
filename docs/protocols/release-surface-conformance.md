@@ -20,7 +20,7 @@ npm run check:release-surface
 | public install docs | README install commands for npm and Bun remain visible and package-specific. |
 | package metadata | `@evalops/maestro` stays public, exposes the `maestro` bin, and declares runtime workspaces as vendored metadata. |
 | dependency hygiene | Private runtime workspace packages cannot reappear as install-time registry dependencies. |
-| registry install smokes | npm, npx, Bun, bunx, and `bunx --bun` runtime paths stay connected to published replay evidence. |
+| registry install smokes | npm, npx, Bun, bunx, and `bunx --bun` runtime paths stay connected to published replay evidence; Bun registry install cannot be skipped without an explicit non-release escape hatch. |
 | published replay | text, JSON, and RPC replay modes keep session, tool, ToolExecution, approval, search/ripgrep, error, artifact, final-status, query-index, and AgentRuntime evidence. |
 | published replay verifier | The evidence verifier must keep npm and Bun installer coverage, replay modes, ToolExecution checks, queryable observability traces, AgentRuntime lifecycle checks, and the release-gate assertion wired. |
 | release readiness | local release gates continue to build, verify runtime deps, pack-smoke, and replay-smoke. |
