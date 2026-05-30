@@ -2055,8 +2055,7 @@ impl ChatView<'_> {
             .collect();
 
         if area.height == 0 || renderable_messages.is_empty() {
-            // Show welcome message
-            let welcome = Paragraph::new("Welcome to Maestro! Type a message to get started.")
+            let welcome = Paragraph::new("Maestro\nType a message or /help.")
                 .style(Style::default().fg(Color::DarkGray))
                 .wrap(Wrap { trim: false });
             welcome.render(area, buf);
@@ -2361,7 +2360,7 @@ mod tests {
     }
 
     #[test]
-    fn empty_chat_view_uses_maestro_welcome_copy() {
+    fn empty_chat_view_uses_plain_maestro_welcome_copy() {
         let state = crate::state::AppState::default();
         let width = 100;
         let height = 20;
@@ -2370,7 +2369,9 @@ mod tests {
         ChatView::new(&state).render(Rect::new(0, 0, width, height), &mut buf);
 
         let rendered = buffer_lines(&buf, width, height).join("\n");
-        assert!(rendered.contains("Welcome to Maestro! Type a message to get started."));
+        assert!(rendered.contains("Maestro"));
+        assert!(rendered.contains("Type a message or /help."));
+        assert!(!rendered.contains("Welcome to Maestro!"));
         assert!(!rendered.contains("Welcome to Composer! Type a message to get started."));
     }
 }

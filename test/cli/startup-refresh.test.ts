@@ -235,6 +235,24 @@ describe("attemptStartupUpdate", () => {
 		});
 	});
 
+	it("infers global install context from npm entrypoints before checking updates", async () => {
+		const checkForUpdateImpl = vi.fn().mockResolvedValue({
+			currentVersion: "0.10.0",
+			latestVersion: "0.10.0",
+			isUpdateAvailable: false,
+			sourceUrl: "https://storage.googleapis.com/example/maestro/version.json",
+		});
+		const outcome = await attemptStartupUpdate({
+			argv: installedArgv,
+			currentVersion: "0.10.0",
+			env: {},
+			isTty: true,
+			checkForUpdateImpl,
+		});
+		expect(outcome.status).toBe("current");
+		expect(checkForUpdateImpl).toHaveBeenCalledTimes(1);
+	});
+
 	it("installs and restarts when a newer version is available", async () => {
 		const installPackage = vi.fn().mockReturnValue({ status: 0 });
 		const restart = vi.fn().mockReturnValue({ status: 7 });

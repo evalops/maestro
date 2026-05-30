@@ -1283,6 +1283,39 @@ fn codex_bridge_prompt_body_lists_attachment_paths() {
     assert!(body.contains("Summarize the upload"));
     assert!(body.contains("/tmp/maestro-chat/a/report.pdf"));
     assert!(body.contains("/tmp/maestro-chat/a/screenshot.png"));
+    assert!(!body.contains("Use the read tool"));
+    assert!(!body.contains("prompt.md"));
+}
+
+#[tokio::test]
+async fn codex_bridge_prompt_uses_direct_argument_for_normal_requests() {
+    let cwd = TestDir::new("codex-bridge-direct-prompt");
+    let prepared = prepare_codex_bridge_prompt(cwd.path(), "Summarize the upload", &[])
+        .await
+        .expect("prompt should be prepared");
+    assert!(prepared.argument.contains("Summarize the upload"));
+    assert!(!prepared.argument.contains("Use the read tool"));
+    assert!(!prepared.temp_dir.join("prompt.md").exists());
+    let _ = tokio::fs::remove_dir_all(&prepared.temp_dir).await;
+}
+
+#[tokio::test]
+async fn codex_bridge_prompt_uses_file_for_oversized_requests() {
+    let cwd = TestDir::new("codex-bridge-file-prompt");
+    let prompt = "x".repeat(CODEX_BRIDGE_DIRECT_ARG_MAX_BYTES + 1);
+    let prepared = prepare_codex_bridge_prompt(cwd.path(), &prompt, &[])
+        .await
+        .expect("prompt should be prepared");
+    let prompt_path = prepared.temp_dir.join("prompt.md");
+    let stored = tokio::fs::read_to_string(&prompt_path)
+        .await
+        .expect("prompt file should be readable");
+    assert!(prepared.argument.contains("Use the read tool"));
+    assert!(prepared
+        .argument
+        .contains(&prompt_path.display().to_string()));
+    assert!(stored.contains(&prompt));
+    let _ = tokio::fs::remove_dir_all(&prepared.temp_dir).await;
 }
 
 #[test]
