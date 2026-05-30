@@ -96,7 +96,7 @@ describe("attemptStartupUpdate", () => {
 		const outcome = await attemptStartupUpdate({
 			argv: installedArgv,
 			currentVersion: "0.10.0",
-			env: {},
+			env: { MAESTRO_STARTUP_UPDATE: "auto" },
 			isTty: true,
 			statePath: statePath(),
 			checkForUpdateImpl: async () => ({
@@ -112,6 +112,57 @@ describe("attemptStartupUpdate", () => {
 		expect(installPackage).toHaveBeenCalledWith("@evalops/maestro", "0.10.1");
 		expect(restart).toHaveBeenCalled();
 		expect(outcome).toMatchObject({ status: "restarted", exitCode: 7 });
+	});
+
+	it("prompts before installing by default", async () => {
+		const confirmUpdate = vi.fn().mockResolvedValue(true);
+		const installPackage = vi.fn().mockReturnValue({ status: 0 });
+		const restart = vi.fn().mockReturnValue({ status: 0 });
+		const outcome = await attemptStartupUpdate({
+			argv: installedArgv,
+			currentVersion: "0.10.0",
+			env: {},
+			isTty: true,
+			statePath: statePath(),
+			checkForUpdateImpl: async () => ({
+				currentVersion: "0.10.0",
+				latestVersion: "0.10.1",
+				isUpdateAvailable: true,
+				sourceUrl:
+					"https://storage.googleapis.com/example/maestro/version.json",
+			}),
+			confirmUpdate,
+			installPackage,
+			restart,
+		});
+		expect(confirmUpdate).toHaveBeenCalledWith(
+			expect.objectContaining({ latestVersion: "0.10.1" }),
+			"@evalops/maestro",
+		);
+		expect(installPackage).toHaveBeenCalledWith("@evalops/maestro", "0.10.1");
+		expect(outcome.status).toBe("restarted");
+	});
+
+	it("does not install when the update prompt is declined", async () => {
+		const installPackage = vi.fn();
+		const outcome = await attemptStartupUpdate({
+			argv: installedArgv,
+			currentVersion: "0.10.0",
+			env: {},
+			isTty: true,
+			statePath: statePath(),
+			checkForUpdateImpl: async () => ({
+				currentVersion: "0.10.0",
+				latestVersion: "0.10.1",
+				isUpdateAvailable: true,
+				sourceUrl:
+					"https://storage.googleapis.com/example/maestro/version.json",
+			}),
+			confirmUpdate: async () => false,
+			installPackage,
+		});
+		expect(outcome.status).toBe("available");
+		expect(installPackage).not.toHaveBeenCalled();
 	});
 
 	it("does not install in check-only mode", async () => {
@@ -167,7 +218,7 @@ describe("attemptStartupUpdate", () => {
 		const first = await attemptStartupUpdate({
 			argv: installedArgv,
 			currentVersion: "0.10.0",
-			env: {},
+			env: { MAESTRO_STARTUP_UPDATE: "auto" },
 			isTty: true,
 			now: 1000,
 			statePath: path,
@@ -177,7 +228,7 @@ describe("attemptStartupUpdate", () => {
 		const second = await attemptStartupUpdate({
 			argv: installedArgv,
 			currentVersion: "0.10.0",
-			env: {},
+			env: { MAESTRO_STARTUP_UPDATE: "auto" },
 			isTty: true,
 			now: 2000,
 			statePath: path,

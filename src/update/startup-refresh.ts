@@ -7,6 +7,7 @@ import {
 	writeFileSync,
 } from "node:fs";
 import { dirname, resolve } from "node:path";
+import { createInterface } from "node:readline/promises";
 import { getAgentDir } from "../config/constants.js";
 import {
 	getGlobalInstallCommand,
@@ -51,11 +52,16 @@ type StartupUpdateOptions = {
 		status: number | null;
 		error?: Error;
 	};
+	confirmUpdate?: (
+		check: UpdateCheckResult,
+		packageName: string,
+	) => Promise<boolean>;
 	restart?: () => { status: number | null; error?: Error };
 	statePath?: string;
 };
 
 const OFF_VALUES = new Set(["0", "false", "off", "skip", "disabled"]);
+const AUTO_VALUES = new Set(["1", "true", "on", "auto", "install", "yes"]);
 const CHECK_ONLY_VALUES = new Set(["check", "notice", "notify"]);
 const INSTALLABLE_VERSION = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/u;
 
@@ -192,6 +198,25 @@ const defaultInstallPackage = (packageName: string, version: string) => {
 	return { status: result.status, error: result.error };
 };
 
+const defaultConfirmUpdate = async (
+	check: UpdateCheckResult,
+	packageName: string,
+): Promise<boolean> => {
+	const rl = createInterface({
+		input: process.stdin,
+		output: process.stderr,
+	});
+	try {
+		const answer = await rl.question(
+			`${packageName} ${check.latestVersion} is available (current ${check.currentVersion}). Install and restart now? [Y/n] `,
+		);
+		const normalized = answer.trim().toLowerCase();
+		return normalized === "" || normalized === "y" || normalized === "yes";
+	} finally {
+		rl.close();
+	}
+};
+
 export async function attemptStartupUpdate(
 	options: StartupUpdateOptions,
 ): Promise<StartupUpdateOutcome> {
@@ -254,6 +279,15 @@ export async function attemptStartupUpdate(
 		)
 	) {
 		return { status: "available", check };
+	}
+	if (!AUTO_VALUES.has(updateMode)) {
+		const accepted = await (options.confirmUpdate ?? defaultConfirmUpdate)(
+			check,
+			packageName,
+		);
+		if (!accepted) {
+			return { status: "available", check };
+		}
 	}
 
 	writeState(statePath, {
