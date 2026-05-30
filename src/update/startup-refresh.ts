@@ -12,14 +12,18 @@ import {
 	getGlobalInstallCommand,
 	getPackageName,
 } from "../package-metadata.js";
+import { withTimeout } from "../utils/async.js";
 import { type UpdateCheckResult, checkForUpdate } from "./check.js";
 
 const SKIP_ENV = "MAESTRO_SKIP_STARTUP_UPDATE";
 const STARTUP_UPDATE_ENV = "MAESTRO_STARTUP_UPDATE";
 const STARTUP_UPDATE_STATE_ENV = "MAESTRO_STARTUP_UPDATE_STATE";
+const STARTUP_UPDATE_TIMEOUT_ENV = "MAESTRO_STARTUP_UPDATE_TIMEOUT_MS";
 const STARTUP_UPDATE_TTL_ENV = "MAESTRO_STARTUP_UPDATE_RETRY_MS";
 const DEFAULT_INSTALL_TIMEOUT_MS = 60_000;
 const DEFAULT_RETRY_MS = 24 * 60 * 60 * 1_000;
+const DEFAULT_STARTUP_UPDATE_TIMEOUT_MS = 1_500;
+const NPM_PREFIX_TIMEOUT_MS = 2_000;
 
 type StartupUpdateState = {
 	version?: string;
@@ -43,7 +47,12 @@ type StartupUpdateOptions = {
 	isTty?: boolean;
 	now?: number;
 	packageName?: string;
-	checkForUpdateImpl?: (currentVersion: string) => Promise<UpdateCheckResult>;
+	checkForUpdateImpl?: (
+		currentVersion: string,
+		options?: { timeoutMs?: number },
+	) => Promise<UpdateCheckResult>;
+	checkTimeoutMs?: number;
+	globalPrefix?: string | null;
 	installPackage?: (
 		packageName: string,
 		version: string,
@@ -61,6 +70,16 @@ const INSTALLABLE_VERSION = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/u;
 
 const envValue = (env: NodeJS.ProcessEnv, key: string): string =>
 	env[key]?.trim().toLowerCase() ?? "";
+
+const toErrorMessage = (error: unknown): string => {
+	if (error instanceof Error) {
+		return error.message;
+	}
+	if (typeof error === "string") {
+		return error;
+	}
+	return "Unknown error";
+};
 
 const shouldSkipForArgs = (args: string[]): string | null => {
 	if (args[0] === "a2a") {
@@ -100,15 +119,20 @@ const shouldSkipForArgs = (args: string[]): string | null => {
 export const isInstalledPackageEntrypoint = (
 	entrypoint: string | undefined,
 	packageName = getPackageName(),
+	globalPrefix?: string | null,
 ): boolean => {
 	if (!entrypoint) {
 		return false;
 	}
-	if (isPackageEntrypointPath(entrypoint, packageName)) {
+	if (isPackageEntrypointPath(entrypoint, packageName, globalPrefix)) {
 		return true;
 	}
 	try {
-		return isPackageEntrypointPath(realpathSync(entrypoint), packageName);
+		return isPackageEntrypointPath(
+			realpathSync(entrypoint),
+			packageName,
+			globalPrefix,
+		);
 	} catch {
 		return false;
 	}
@@ -117,9 +141,36 @@ export const isInstalledPackageEntrypoint = (
 const isPackageEntrypointPath = (
 	entrypoint: string,
 	packageName: string,
+	globalPrefix?: string | null,
 ): boolean => {
 	const normalized = entrypoint.replace(/\\/g, "/");
-	return normalized.includes(`/node_modules/${packageName}/dist/cli.js`);
+	const packageEntrypoint = `/node_modules/${packageName}/dist/cli.js`;
+	if (!normalized.endsWith(packageEntrypoint)) {
+		return false;
+	}
+	if (!globalPrefix) {
+		return true;
+	}
+	const normalizedPrefix = globalPrefix
+		.replace(/\\/g, "/")
+		.replace(/\/+$/u, "");
+	const normalizedPrefixes = new Set([normalizedPrefix]);
+	try {
+		normalizedPrefixes.add(
+			realpathSync(globalPrefix).replace(/\\/g, "/").replace(/\/+$/u, ""),
+		);
+	} catch {
+		// A missing prefix will fail the exact path checks below.
+	}
+	for (const prefix of normalizedPrefixes) {
+		if (
+			normalized === `${prefix}/lib/node_modules/${packageName}/dist/cli.js` ||
+			normalized === `${prefix}/node_modules/${packageName}/dist/cli.js`
+		) {
+			return true;
+		}
+	}
+	return false;
 };
 
 const resolveStatePath = (
@@ -159,6 +210,14 @@ const retryMsFromEnv = (env: NodeJS.ProcessEnv): number => {
 	return DEFAULT_RETRY_MS;
 };
 
+const startupCheckTimeoutMsFromEnv = (env: NodeJS.ProcessEnv): number => {
+	const parsed = Number.parseInt(env[STARTUP_UPDATE_TIMEOUT_ENV] ?? "", 10);
+	if (Number.isFinite(parsed) && parsed > 0) {
+		return parsed;
+	}
+	return DEFAULT_STARTUP_UPDATE_TIMEOUT_MS;
+};
+
 const shouldThrottleAttempt = (
 	state: StartupUpdateState | null,
 	version: string,
@@ -192,6 +251,22 @@ const defaultInstallPackage = (packageName: string, version: string) => {
 	return { status: result.status, error: result.error };
 };
 
+const resolveNpmGlobalPrefix = (
+	env: NodeJS.ProcessEnv = process.env,
+): string | null => {
+	const result = spawnSync("npm", ["prefix", "-g"], {
+		encoding: "utf-8",
+		env,
+		stdio: ["ignore", "pipe", "ignore"],
+		timeout: NPM_PREFIX_TIMEOUT_MS,
+	});
+	if (result.error || result.status !== 0) {
+		return null;
+	}
+	const prefix = result.stdout.trim();
+	return prefix.length > 0 ? prefix : null;
+};
+
 export async function attemptStartupUpdate(
 	options: StartupUpdateOptions,
 ): Promise<StartupUpdateOutcome> {
@@ -220,12 +295,32 @@ export async function attemptStartupUpdate(
 	if (argsSkipReason) {
 		return { status: "skipped", reason: argsSkipReason };
 	}
-	if (!isInstalledPackageEntrypoint(argv[1], packageName)) {
+	const globalPrefix =
+		options.globalPrefix === undefined
+			? resolveNpmGlobalPrefix(env)
+			: options.globalPrefix;
+	if (!globalPrefix) {
+		return { status: "skipped", reason: "npm global prefix unavailable" };
+	}
+	if (!isInstalledPackageEntrypoint(argv[1], packageName, globalPrefix)) {
 		return { status: "skipped", reason: "not running installed npm package" };
 	}
 
-	const check = await (options.checkForUpdateImpl ?? checkForUpdate)(
-		options.currentVersion,
+	const checkTimeoutMs =
+		options.checkTimeoutMs ?? startupCheckTimeoutMsFromEnv(env);
+	const check = await withTimeout(
+		(options.checkForUpdateImpl ?? checkForUpdate)(options.currentVersion, {
+			timeoutMs: checkTimeoutMs,
+		}),
+		checkTimeoutMs,
+		`Startup update check timed out after ${checkTimeoutMs}ms`,
+	).catch(
+		(error): UpdateCheckResult => ({
+			currentVersion: options.currentVersion,
+			isUpdateAvailable: false,
+			sourceUrl: "",
+			error: toErrorMessage(error),
+		}),
 	);
 	if (check.error) {
 		return { status: "failed", check, error: check.error };

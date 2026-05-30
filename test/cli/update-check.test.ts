@@ -118,6 +118,51 @@ describe("checkForUpdate", () => {
 		expect(result.latestVersion).toBe("0.9.0");
 		expect(result.sourceUrl).toContain("registry.npmjs.org");
 	});
+
+	it("continues past stale metadata to find a newer fallback source", async () => {
+		const fetchMock = vi
+			.fn()
+			.mockResolvedValueOnce(createResponse({ version: "0.8.0" }))
+			.mockResolvedValueOnce(createResponse({ version: "0.9.0" }));
+		const result = await checkForUpdate("0.8.0", {
+			urls: [
+				"https://storage.googleapis.com/example/maestro/version.json",
+				"https://registry.npmjs.org/@evalops%2Fmaestro/latest",
+			],
+			timeoutMs: 0,
+			fetch: fetchMock,
+		});
+		expect(fetchMock).toHaveBeenCalledTimes(2);
+		expect(result.isUpdateAvailable).toBe(true);
+		expect(result.latestVersion).toBe("0.9.0");
+		expect(result.sourceUrl).toContain("registry.npmjs.org");
+	});
+
+	it("keeps valid current metadata when later fallback sources fail", async () => {
+		const fetchMock = vi
+			.fn()
+			.mockResolvedValueOnce(createResponse({ version: "0.8.0" }))
+			.mockResolvedValueOnce(
+				createResponse(null, {
+					ok: false,
+					status: 500,
+					statusText: "Server Error",
+				}),
+			);
+		const result = await checkForUpdate("0.8.0", {
+			urls: [
+				"https://storage.googleapis.com/example/maestro/version.json",
+				"https://registry.npmjs.org/@evalops%2Fmaestro/latest",
+			],
+			timeoutMs: 0,
+			fetch: fetchMock,
+		});
+		expect(fetchMock).toHaveBeenCalledTimes(2);
+		expect(result.isUpdateAvailable).toBe(false);
+		expect(result.latestVersion).toBe("0.8.0");
+		expect(result.error).toBeUndefined();
+		expect(result.sourceUrl).toContain("storage.googleapis.com");
+	});
 });
 
 describe("resolveUpdateUrls", () => {

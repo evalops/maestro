@@ -181,6 +181,7 @@ export async function checkForUpdate(
 	const fetchImpl = options.fetch ?? fetch;
 	const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
 	let lastResult: UpdateCheckResult | null = null;
+	let bestCurrentResult: UpdateCheckResult | null = null;
 
 	for (const url of urls) {
 		try {
@@ -225,13 +226,26 @@ export async function checkForUpdate(
 			}
 			const latestVersion = payload.version.trim();
 			const comparison = compareVersions(currentVersion.trim(), latestVersion);
-			return {
+			const result = {
 				currentVersion,
 				latestVersion,
 				notes: normalizeNotes(payload.notes),
 				isUpdateAvailable: comparison < 0,
 				sourceUrl: url,
 			};
+			lastResult = result;
+			if (result.isUpdateAvailable) {
+				return result;
+			}
+			if (
+				!bestCurrentResult ||
+				compareVersions(
+					bestCurrentResult.latestVersion ?? currentVersion,
+					latestVersion,
+				) < 0
+			) {
+				bestCurrentResult = result;
+			}
 		} catch (error) {
 			lastResult = {
 				currentVersion,
@@ -243,6 +257,7 @@ export async function checkForUpdate(
 	}
 
 	return (
+		bestCurrentResult ??
 		lastResult ?? {
 			currentVersion,
 			isUpdateAvailable: false,

@@ -19,6 +19,7 @@ const installedArgv = [
 	"/usr/local/bin/node",
 	`/usr/local/lib/node_modules/${packageName}/dist/cli.js`,
 ];
+const globalPrefix = "/usr/local";
 
 describe("isInstalledPackageEntrypoint", () => {
 	it("recognizes npm-installed package entrypoints", () => {
@@ -26,12 +27,31 @@ describe("isInstalledPackageEntrypoint", () => {
 			isInstalledPackageEntrypoint(
 				`/usr/local/lib/node_modules/${packageName}/dist/cli.js`,
 				packageName,
+				globalPrefix,
 			),
 		).toBe(true);
 		expect(
 			isInstalledPackageEntrypoint(
 				"/Users/me/Projects/maestro/dist/cli.js",
 				packageName,
+				globalPrefix,
+			),
+		).toBe(false);
+	});
+
+	it("rejects project and npx package entrypoints outside the npm global prefix", () => {
+		expect(
+			isInstalledPackageEntrypoint(
+				`/Users/me/Projects/app/node_modules/${packageName}/dist/cli.js`,
+				packageName,
+				globalPrefix,
+			),
+		).toBe(false);
+		expect(
+			isInstalledPackageEntrypoint(
+				`/Users/me/.npm/_npx/abc/node_modules/${packageName}/dist/cli.js`,
+				packageName,
+				globalPrefix,
 			),
 		).toBe(false);
 	});
@@ -54,7 +74,9 @@ describe("isInstalledPackageEntrypoint", () => {
 			mkdirSync(dirname(shimPath), { recursive: true });
 			symlinkSync(cliPath, shimPath);
 
-			expect(isInstalledPackageEntrypoint(shimPath, packageName)).toBe(true);
+			expect(isInstalledPackageEntrypoint(shimPath, packageName, dir)).toBe(
+				true,
+			);
 		} finally {
 			rmSync(dir, { force: true, recursive: true });
 		}
@@ -82,11 +104,68 @@ describe("attemptStartupUpdate", () => {
 			argv: ["/usr/local/bin/node", "/Users/me/Projects/maestro/dist/cli.js"],
 			currentVersion: "0.10.0",
 			env: {},
+			globalPrefix,
 			isTty: true,
 			checkForUpdateImpl,
 		});
 		expect(outcome.status).toBe("skipped");
 		expect(checkForUpdateImpl).not.toHaveBeenCalled();
+	});
+
+	it("skips when the running package is outside the npm global prefix", async () => {
+		const checkForUpdateImpl = vi.fn();
+		const outcome = await attemptStartupUpdate({
+			argv: [
+				"/usr/local/bin/node",
+				`/Users/me/app/node_modules/${packageName}/dist/cli.js`,
+			],
+			currentVersion: "0.10.0",
+			env: {},
+			globalPrefix,
+			isTty: true,
+			checkForUpdateImpl,
+		});
+		expect(outcome.status).toBe("skipped");
+		expect(checkForUpdateImpl).not.toHaveBeenCalled();
+	});
+
+	it("skips when the npm global prefix cannot be resolved", async () => {
+		const checkForUpdateImpl = vi.fn();
+		const outcome = await attemptStartupUpdate({
+			argv: installedArgv,
+			currentVersion: "0.10.0",
+			env: {},
+			globalPrefix: null,
+			isTty: true,
+			checkForUpdateImpl,
+		});
+		expect(outcome).toMatchObject({
+			status: "skipped",
+			reason: "npm global prefix unavailable",
+		});
+		expect(checkForUpdateImpl).not.toHaveBeenCalled();
+	});
+
+	it("uses a bounded startup update check timeout", async () => {
+		const checkForUpdateImpl = vi.fn().mockResolvedValue({
+			currentVersion: "0.10.0",
+			latestVersion: "0.10.0",
+			isUpdateAvailable: false,
+			sourceUrl: "https://storage.googleapis.com/example/maestro/version.json",
+		});
+		const outcome = await attemptStartupUpdate({
+			argv: installedArgv,
+			checkTimeoutMs: 123,
+			currentVersion: "0.10.0",
+			env: {},
+			globalPrefix,
+			isTty: true,
+			checkForUpdateImpl,
+		});
+		expect(outcome.status).toBe("current");
+		expect(checkForUpdateImpl).toHaveBeenCalledWith("0.10.0", {
+			timeoutMs: 123,
+		});
 	});
 
 	it("installs and restarts when a newer version is available", async () => {
@@ -96,6 +175,7 @@ describe("attemptStartupUpdate", () => {
 			argv: installedArgv,
 			currentVersion: "0.10.0",
 			env: {},
+			globalPrefix,
 			isTty: true,
 			statePath: statePath(),
 			checkForUpdateImpl: async () => ({
@@ -119,6 +199,7 @@ describe("attemptStartupUpdate", () => {
 			argv: installedArgv,
 			currentVersion: "0.10.0",
 			env: { MAESTRO_STARTUP_UPDATE: "check" },
+			globalPrefix,
 			isTty: true,
 			checkForUpdateImpl: async () => ({
 				currentVersion: "0.10.0",
@@ -139,6 +220,7 @@ describe("attemptStartupUpdate", () => {
 			argv: installedArgv,
 			currentVersion: "0.10.0",
 			env: {},
+			globalPrefix,
 			isTty: true,
 			checkForUpdateImpl: async () => ({
 				currentVersion: "0.10.0",
@@ -167,6 +249,7 @@ describe("attemptStartupUpdate", () => {
 			argv: installedArgv,
 			currentVersion: "0.10.0",
 			env: {},
+			globalPrefix,
 			isTty: true,
 			now: 1000,
 			statePath: path,
@@ -177,6 +260,7 @@ describe("attemptStartupUpdate", () => {
 			argv: installedArgv,
 			currentVersion: "0.10.0",
 			env: {},
+			globalPrefix,
 			isTty: true,
 			now: 2000,
 			statePath: path,
