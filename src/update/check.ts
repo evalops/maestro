@@ -1,7 +1,9 @@
+import { getPackageName } from "../package-metadata.js";
 import { withTimeout } from "../utils/async.js";
 
-const DEFAULT_UPDATE_URL =
-	"https://raw.githubusercontent.com/evalops/hopper/main/public/composer/version.json";
+const DEFAULT_GCS_UPDATE_URL =
+	"https://storage.googleapis.com/evalops-prod-maestro-releases/maestro/version.json";
+const NPM_REGISTRY_BASE_URL = "https://registry.npmjs.org";
 const DEFAULT_TIMEOUT_MS = 5_000;
 
 interface VersionMetadata {
@@ -22,7 +24,43 @@ interface CheckForUpdateOptions {
 	fetch?: typeof fetch;
 	timeoutMs?: number;
 	url?: string;
+	urls?: string[];
 }
+
+const splitUrlList = (value: string | undefined): string[] => {
+	if (!value) {
+		return [];
+	}
+	return value
+		.split(/[\n,]/u)
+		.map((url) => url.trim())
+		.filter(Boolean);
+};
+
+const npmLatestUrl = (packageName = getPackageName()): string => {
+	return `${NPM_REGISTRY_BASE_URL}/${encodeURIComponent(packageName)}/latest`;
+};
+
+export const resolveUpdateUrls = (
+	options: Pick<CheckForUpdateOptions, "url" | "urls"> = {},
+	env: NodeJS.ProcessEnv = process.env,
+): string[] => {
+	const explicitUrls = options.urls?.map((url) => url.trim()).filter(Boolean);
+	if (explicitUrls && explicitUrls.length > 0) {
+		return explicitUrls;
+	}
+	if (options.url?.trim()) {
+		return [options.url.trim()];
+	}
+	const envUrls = splitUrlList(env.MAESTRO_UPDATE_URLS);
+	if (envUrls.length > 0) {
+		return envUrls;
+	}
+	if (env.MAESTRO_UPDATE_URL?.trim()) {
+		return [env.MAESTRO_UPDATE_URL.trim()];
+	}
+	return [DEFAULT_GCS_UPDATE_URL, npmLatestUrl()];
+};
 
 const toErrorMessage = (error: unknown): string => {
 	if (error instanceof Error) {
@@ -139,63 +177,77 @@ export async function checkForUpdate(
 	currentVersion: string,
 	options: CheckForUpdateOptions = {},
 ): Promise<UpdateCheckResult> {
-	const url =
-		options.url ?? process.env.MAESTRO_UPDATE_URL ?? DEFAULT_UPDATE_URL;
+	const urls = resolveUpdateUrls(options);
 	const fetchImpl = options.fetch ?? fetch;
 	const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+	let lastResult: UpdateCheckResult | null = null;
 
-	try {
-		const response = await withTimeout(
-			fetchImpl(url, {
-				headers: { Accept: "application/json" },
-			}),
-			timeoutMs,
-			`Update check timed out after ${timeoutMs}ms`,
-		);
-
-		if (!response.ok) {
-			return {
-				currentVersion,
-				isUpdateAvailable: false,
-				sourceUrl: url,
-				error:
-					`Update check failed (${response.status} ${response.statusText || ""})`.trim(),
-			};
-		}
-		let payload: VersionMetadata;
+	for (const url of urls) {
 		try {
-			payload = (await response.json()) as VersionMetadata;
+			const response = await withTimeout(
+				fetchImpl(url, {
+					headers: { Accept: "application/json" },
+				}),
+				timeoutMs,
+				`Update check timed out after ${timeoutMs}ms`,
+			);
+
+			if (!response.ok) {
+				lastResult = {
+					currentVersion,
+					isUpdateAvailable: false,
+					sourceUrl: url,
+					error:
+						`Update check failed (${response.status} ${response.statusText || ""})`.trim(),
+				};
+				continue;
+			}
+			let payload: VersionMetadata;
+			try {
+				payload = (await response.json()) as VersionMetadata;
+			} catch (error) {
+				lastResult = {
+					currentVersion,
+					isUpdateAvailable: false,
+					sourceUrl: url,
+					error: `Invalid update metadata: ${toErrorMessage(error)}`,
+				};
+				continue;
+			}
+			if (!payload || typeof payload.version !== "string") {
+				lastResult = {
+					currentVersion,
+					isUpdateAvailable: false,
+					sourceUrl: url,
+					error: "Update metadata missing version field",
+				};
+				continue;
+			}
+			const latestVersion = payload.version.trim();
+			const comparison = compareVersions(currentVersion.trim(), latestVersion);
+			return {
+				currentVersion,
+				latestVersion,
+				notes: normalizeNotes(payload.notes),
+				isUpdateAvailable: comparison < 0,
+				sourceUrl: url,
+			};
 		} catch (error) {
-			return {
+			lastResult = {
 				currentVersion,
 				isUpdateAvailable: false,
 				sourceUrl: url,
-				error: `Invalid update metadata: ${toErrorMessage(error)}`,
+				error: toErrorMessage(error),
 			};
 		}
-		if (!payload || typeof payload.version !== "string") {
-			return {
-				currentVersion,
-				isUpdateAvailable: false,
-				sourceUrl: url,
-				error: "Update metadata missing version field",
-			};
-		}
-		const latestVersion = payload.version.trim();
-		const comparison = compareVersions(currentVersion.trim(), latestVersion);
-		return {
-			currentVersion,
-			latestVersion,
-			notes: normalizeNotes(payload.notes),
-			isUpdateAvailable: comparison < 0,
-			sourceUrl: url,
-		};
-	} catch (error) {
-		return {
+	}
+
+	return (
+		lastResult ?? {
 			currentVersion,
 			isUpdateAvailable: false,
-			sourceUrl: url,
-			error: toErrorMessage(error),
-		};
-	}
+			sourceUrl: urls[0] ?? "",
+			error: "No update metadata sources configured",
+		}
+	);
 }

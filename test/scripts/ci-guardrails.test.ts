@@ -1241,6 +1241,34 @@ describe("ci workflow guardrails", () => {
 		expect(run).not.toContain("gh auth refresh");
 	});
 
+	it("publishes release version metadata to GCS through workload identity", () => {
+		const workflow = parse(
+			readFileSync(
+				new URL("../../.github/workflows/release.yml", import.meta.url),
+				{ encoding: "utf8" },
+			),
+		) as Workflow;
+		const steps = workflow.jobs?.publish?.steps ?? [];
+		const authStep = steps.find(
+			(step) =>
+				step.name === "Authenticate to Google Cloud for release metadata",
+		);
+		const gcsStep = steps.find(
+			(step) => step.name === "Sync GCS version metadata",
+		);
+		const run = gcsStep?.run ?? "";
+
+		expect(authStep).toBeDefined();
+		expect(authStep?.uses).toContain("google-github-actions/auth@");
+		expect(gcsStep).toBeDefined();
+		expect(gcsStep?.if).toContain(
+			"MAESTRO_RELEASE_GCP_WORKLOAD_IDENTITY_PROVIDER",
+		);
+		expect(run).toContain("gcloud storage cp");
+		expect(run).toContain("dist/version.json");
+		expect(run).toContain("/version.json");
+	});
+
 	it("keeps packed CLI smoke enabled independently of package-lock management", () => {
 		const script = readFileSync(
 			new URL("../../scripts/release-readiness.js", import.meta.url),

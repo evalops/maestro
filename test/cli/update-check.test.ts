@@ -1,5 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
-import { checkForUpdate, compareVersions } from "../../src/update/check.js";
+import {
+	checkForUpdate,
+	compareVersions,
+	resolveUpdateUrls,
+} from "../../src/update/check.js";
 
 type ResponseFields = {
 	ok: boolean;
@@ -88,5 +92,58 @@ describe("checkForUpdate", () => {
 		});
 		expect(result.isUpdateAvailable).toBe(false);
 		expect(result.error).toContain("missing version");
+	});
+
+	it("falls back to the next metadata source", async () => {
+		const fetchMock = vi
+			.fn()
+			.mockResolvedValueOnce(
+				createResponse(null, {
+					ok: false,
+					status: 403,
+					statusText: "Forbidden",
+				}),
+			)
+			.mockResolvedValueOnce(createResponse({ version: "0.9.0" }));
+		const result = await checkForUpdate("0.8.0", {
+			urls: [
+				"https://storage.googleapis.com/example/maestro/version.json",
+				"https://registry.npmjs.org/@evalops%2Fmaestro/latest",
+			],
+			timeoutMs: 0,
+			fetch: fetchMock,
+		});
+		expect(fetchMock).toHaveBeenCalledTimes(2);
+		expect(result.isUpdateAvailable).toBe(true);
+		expect(result.latestVersion).toBe("0.9.0");
+		expect(result.sourceUrl).toContain("registry.npmjs.org");
+	});
+});
+
+describe("resolveUpdateUrls", () => {
+	it("prefers explicit source lists", () => {
+		expect(
+			resolveUpdateUrls({
+				urls: [" https://example.com/a.json ", "https://example.com/b.json"],
+			}),
+		).toEqual(["https://example.com/a.json", "https://example.com/b.json"]);
+	});
+
+	it("supports comma-separated env source lists", () => {
+		expect(
+			resolveUpdateUrls(
+				{},
+				{
+					MAESTRO_UPDATE_URLS:
+						"https://example.com/a.json, https://example.com/b.json",
+				},
+			),
+		).toEqual(["https://example.com/a.json", "https://example.com/b.json"]);
+	});
+
+	it("defaults to GCS metadata before the npm registry", () => {
+		const urls = resolveUpdateUrls({}, {});
+		expect(urls[0]).toContain("storage.googleapis.com");
+		expect(urls[1]).toContain("registry.npmjs.org");
 	});
 });

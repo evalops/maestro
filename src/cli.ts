@@ -74,8 +74,27 @@ async function reportFatalCliError(error: unknown): Promise<void> {
 	}
 }
 
+async function refreshInstalledCliOnStartup(args: string[]): Promise<void> {
+	try {
+		const [{ getPackageVersion }, { attemptStartupUpdate }] = await Promise.all(
+			[import("./package-metadata.js"), import("./update/startup-refresh.js")],
+		);
+		const outcome = await attemptStartupUpdate({
+			args,
+			currentVersion: getPackageVersion(),
+		});
+		if (outcome.status === "restarted") {
+			process.exit(outcome.exitCode);
+		}
+	} catch {
+		// Startup refresh is best-effort and must never prevent the CLI from booting.
+	}
+}
+
 const run = async () => {
 	try {
+		await refreshInstalledCliOnStartup(process.argv.slice(2));
+
 		if (process.argv[2] === "a2a") {
 			const { loadEnv } = await import("./load-env.js");
 			loadEnv();
