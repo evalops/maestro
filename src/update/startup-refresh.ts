@@ -1,5 +1,11 @@
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import {
+	existsSync,
+	mkdirSync,
+	readFileSync,
+	realpathSync,
+	writeFileSync,
+} from "node:fs";
 import { dirname, resolve } from "node:path";
 import { getAgentDir } from "../config/constants.js";
 import {
@@ -98,6 +104,20 @@ export const isInstalledPackageEntrypoint = (
 	if (!entrypoint) {
 		return false;
 	}
+	if (isPackageEntrypointPath(entrypoint, packageName)) {
+		return true;
+	}
+	try {
+		return isPackageEntrypointPath(realpathSync(entrypoint), packageName);
+	} catch {
+		return false;
+	}
+};
+
+const isPackageEntrypointPath = (
+	entrypoint: string,
+	packageName: string,
+): boolean => {
 	const normalized = entrypoint.replace(/\\/g, "/");
 	return normalized.includes(`/node_modules/${packageName}/dist/cli.js`);
 };

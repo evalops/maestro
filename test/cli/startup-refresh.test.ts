@@ -1,6 +1,12 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import {
+	mkdirSync,
+	mkdtempSync,
+	rmSync,
+	symlinkSync,
+	writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
 	attemptStartupUpdate,
@@ -26,6 +32,33 @@ describe("isInstalledPackageEntrypoint", () => {
 				"@evalops/maestro",
 			),
 		).toBe(false);
+	});
+
+	it("recognizes npm bin shims that resolve to installed package entrypoints", () => {
+		const dir = mkdtempSync(join(tmpdir(), "maestro-entrypoint-"));
+		try {
+			const cliPath = join(
+				dir,
+				"lib",
+				"node_modules",
+				"@evalops",
+				"maestro",
+				"dist",
+				"cli.js",
+			);
+			mkdirSync(dirname(cliPath), { recursive: true });
+			writeFileSync(cliPath, "#!/usr/bin/env node\n", "utf8");
+
+			const shimPath = join(dir, "bin", "maestro");
+			mkdirSync(dirname(shimPath), { recursive: true });
+			symlinkSync(cliPath, shimPath);
+
+			expect(isInstalledPackageEntrypoint(shimPath, "@evalops/maestro")).toBe(
+				true,
+			);
+		} finally {
+			rmSync(dir, { force: true, recursive: true });
+		}
 	});
 });
 
