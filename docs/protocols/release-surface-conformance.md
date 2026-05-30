@@ -25,7 +25,7 @@ npm run check:release-surface
 | published replay verifier | The evidence verifier must keep npm and Bun installer coverage, replay modes, ToolExecution checks, queryable observability traces, AgentRuntime lifecycle checks, and the release-gate assertion wired. |
 | release readiness | local release gates continue to build, verify runtime deps, pack-smoke, and replay-smoke. |
 | tag release | the already-published package path cannot pass on `npm view` alone; it must run npm and Bun registry install smokes plus published replay evidence validation. |
-| public mirror | the sanitized public tree, release-helper mirror sync, mirror contract, and fallback publish workflow keep their guardrails. |
+| public mirror | the sanitized public tree, release-helper mirror sync, public-only published verification scripts, mirror contract, and fallback publish workflow keep their guardrails. |
 
 ## Completion Bar
 

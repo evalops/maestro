@@ -174,7 +174,7 @@ describe("planCiChecks", () => {
 			coverage: false,
 			lightPrChecks: true,
 			prChecks: true,
-			publicMirror: false,
+			publicMirror: true,
 			rustHostedConformance: false,
 		});
 		expect(
@@ -427,6 +427,21 @@ describe("planCiChecks", () => {
 			prChecks: true,
 			publicMirror: true,
 			releaseHelperOnly: true,
+			rustHostedConformance: false,
+		});
+	});
+
+	it("keeps mirrored CI guardrail test changes eligible for public mirror checks", () => {
+		expect(
+			planCiChecks({
+				eventName: "pull_request",
+				changedFiles: ["test/scripts/ci-guardrails.test.ts"],
+			}),
+		).toMatchObject({
+			coverage: false,
+			lightPrChecks: true,
+			prChecks: true,
+			publicMirror: true,
 			rustHostedConformance: false,
 		});
 	});
@@ -1256,6 +1271,10 @@ describe("ci workflow guardrails", () => {
 		const metadataIndex = steps.findIndex(
 			(step) => step.name === "Generate version metadata",
 		);
+		const authIndex = steps.findIndex(
+			(step) =>
+				step.name === "Authenticate to Google Cloud for release metadata",
+		);
 		const authStep = steps.find(
 			(step) =>
 				step.name === "Authenticate to Google Cloud for release metadata",
@@ -1266,12 +1285,19 @@ describe("ci workflow guardrails", () => {
 		const gcsStep = steps[gcsIndex];
 		const run = gcsStep?.run ?? "";
 
+		if (!isPublicValidationWorkflow(workflow)) {
+			expect(canaryJob).toBeUndefined();
+			return;
+		}
+
 		expect(canaryJob).toBeDefined();
 		expect(canaryJob?.needs).toContain("publish");
 		expect(canaryJob?.permissions?.["id-token"]).toBe("write");
 		expect(validateIndex).toBeGreaterThan(-1);
 		expect(metadataIndex).toBeGreaterThan(validateIndex);
+		expect(authIndex).toBeGreaterThan(metadataIndex);
 		expect(gcsIndex).toBeGreaterThan(metadataIndex);
+		expect(gcsIndex).toBeGreaterThan(authIndex);
 		expect(authStep).toBeDefined();
 		expect(authStep?.uses).toContain("google-github-actions/auth@");
 		expect(gcsStep).toBeDefined();
@@ -1686,6 +1712,54 @@ describe("ci workflow guardrails", () => {
 			"${{ steps.public-companion-app-token.outputs.token || secrets.PUBLIC_REPO_SYNC_TOKEN || secrets.PUBLIC_REPO_TOKEN }}",
 		);
 		expect(syncStep?.run).toContain("scripts/sync-public-companion-branch.mjs");
+	});
+
+	it("runs prepared public mirror guardrails during PR mirror validation", () => {
+		const workflow = parse(
+			readFileSync(new URL("../../.github/workflows/ci.yml", import.meta.url), {
+				encoding: "utf8",
+			}),
+		) as Workflow;
+		if (isPublicValidationWorkflow(workflow)) {
+			expect(workflow.jobs?.["public-release-mirror"]).toBeUndefined();
+			return;
+		}
+		const steps = workflow.jobs?.["public-release-mirror"]?.steps ?? [];
+		const stepNames = steps.map((step) => step.name ?? step.id ?? "");
+		const verifyIndex = stepNames.indexOf(
+			"Verify mirrored release files match public repo",
+		);
+		const prepareIndex = stepNames.indexOf(
+			"Prepare public mirror tree for guardrails",
+		);
+		const syncIndex = stepNames.indexOf(
+			"Sync release manifest files into prepared public tree",
+		);
+		const smokeIndex = stepNames.indexOf("Smoke prepared public mirror tree");
+		const setupBunIndex = stepNames.indexOf(
+			"Setup Bun for prepared public mirror guardrails",
+		);
+		const guardrailIndex = stepNames.indexOf(
+			"Run prepared public mirror CI guardrails",
+		);
+
+		expect(verifyIndex).toBeGreaterThanOrEqual(0);
+		expect(prepareIndex).toBeGreaterThan(verifyIndex);
+		expect(syncIndex).toBeGreaterThan(prepareIndex);
+		expect(smokeIndex).toBeGreaterThan(syncIndex);
+		expect(setupBunIndex).toBeGreaterThan(smokeIndex);
+		expect(guardrailIndex).toBeGreaterThan(setupBunIndex);
+		expect(steps[prepareIndex]?.run).toContain(
+			"scripts/prepare-public-release-mirror.mjs",
+		);
+		expect(steps[syncIndex]?.run).toContain("scripts/sync-release-mirror.mjs");
+		expect(steps[smokeIndex]?.run).toContain(
+			"scripts/check-prepared-public-mirror-tree.mjs",
+		);
+		expect(steps[setupBunIndex]?.uses).toBe("./.github/actions/setup-bun-nx");
+		expect(steps[guardrailIndex]?.run).toContain(
+			"scripts/run-prepared-public-mirror-guardrails.mjs",
+		);
 	});
 
 	it("registry-smokes real public release mirror fallback publishes", () => {

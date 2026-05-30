@@ -181,6 +181,20 @@
 			]
 		},
 		{
+			"area": "public-mirror-package-scripts",
+			"path": "scripts/prepare-public-release-mirror.mjs",
+			"evidenceType": "source",
+			"anchors": [
+				"pkg.scripts[\"release:verify:published\"] =",
+				"\"node scripts/smoke-registry-install.js\";",
+				"pkg.scripts[\"release:verify:published:e2e\"] =",
+				"\"node scripts/smoke-published-replay-e2e.js\";",
+				"pkg.scripts[\"release:verify:published:evidence\"] =",
+				"\"node scripts/verify-published-replay-evidence.js\";",
+				"pkg.scripts[\"release:deprecate\"] = \"node scripts/deprecate-release.js\";"
+			]
+		},
+		{
 			"area": "public-mirror-contract",
 			"path": "scripts/check-release-mirror-contract.mjs",
 			"evidenceType": "source",
@@ -208,6 +222,7 @@
 				"npm run check:release-surface",
 				"public install docs",
 				"registry install smokes",
+				"public-only published verification scripts",
 				"public mirror"
 			]
 		}
