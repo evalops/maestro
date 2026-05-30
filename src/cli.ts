@@ -93,11 +93,11 @@ async function refreshInstalledCliOnStartup(args: string[]): Promise<void> {
 
 const run = async () => {
 	try {
+		const { loadEnv } = await import("./load-env.js");
+		loadEnv();
 		await refreshInstalledCliOnStartup(process.argv.slice(2));
 
 		if (process.argv[2] === "a2a") {
-			const { loadEnv } = await import("./load-env.js");
-			loadEnv();
 			const { handleA2ACommand } = await import("./cli/commands/a2a.js");
 			await handleA2ACommand(process.argv.slice(3));
 			return;

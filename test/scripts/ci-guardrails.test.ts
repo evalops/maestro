@@ -1283,6 +1283,19 @@ describe("ci workflow guardrails", () => {
 		expect(run).toContain("/version.json");
 	});
 
+	it("loads dotenv configuration before startup refresh", () => {
+		const source = readFileSync(new URL("../../src/cli.ts", import.meta.url), {
+			encoding: "utf8",
+		});
+		const loadEnvImportIndex = source.indexOf('await import("./load-env.js")');
+		const loadEnvIndex = source.indexOf("loadEnv();", loadEnvImportIndex);
+		const refreshIndex = source.indexOf("await refreshInstalledCliOnStartup");
+
+		expect(loadEnvImportIndex).toBeGreaterThan(-1);
+		expect(loadEnvIndex).toBeGreaterThan(loadEnvImportIndex);
+		expect(refreshIndex).toBeGreaterThan(loadEnvIndex);
+	});
+
 	it("keeps packed CLI smoke enabled independently of package-lock management", () => {
 		const script = readFileSync(
 			new URL("../../scripts/release-readiness.js", import.meta.url),
