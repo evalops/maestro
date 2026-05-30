@@ -28,7 +28,7 @@ describe("Fathom CUA MCP plugin server", () => {
 				transport: "stdio",
 				command: "go",
 				cwd: "/tmp/fathom",
-				scope: "plugin",
+				scope: "project",
 				env: {
 					FATHOM_CALLER_PRODUCT: "maestro",
 					FATHOM_CUA_PRODUCT: "maestro",
@@ -89,7 +89,7 @@ describe("Fathom CUA MCP plugin server", () => {
 		});
 	});
 
-	it("participates in the merged MCP config as plugin scope", () => {
+	it("participates in the merged MCP config as project scope", () => {
 		vi.stubEnv("MAESTRO_FATHOM_CUA_ENABLED", "1");
 		vi.stubEnv("MAESTRO_FATHOM_CUA_REPO", "/tmp/fathom");
 
@@ -99,7 +99,7 @@ describe("Fathom CUA MCP plugin server", () => {
 			config.servers.find((server) => server.name === "fathom-cua"),
 		).toEqual(
 			expect.objectContaining({
-				scope: "plugin",
+				scope: "project",
 				command: "go",
 			}),
 		);
