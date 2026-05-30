@@ -13,6 +13,21 @@ describe("tag-release workflow", () => {
 		) as {
 			jobs: {
 				"tag-current-version": {
+					outputs?: Record<string, string>;
+					steps: Array<{
+						env?: Record<string, string>;
+						if?: string;
+						name?: string;
+						run?: string;
+						uses?: string;
+						with?: Record<string, string>;
+					}>;
+					"timeout-minutes"?: number;
+				};
+				"verify-published-registry-package": {
+					if?: string;
+					needs?: string;
+					permissions?: Record<string, string>;
 					steps: Array<{
 						env?: Record<string, string>;
 						if?: string;
@@ -40,26 +55,41 @@ describe("tag-release workflow", () => {
 		const summaryStep = workflow.jobs["tag-current-version"].steps.find(
 			(step) => step.name === "Summarize tag status",
 		);
-		const setupPublishedSmokeStep = workflow.jobs[
-			"tag-current-version"
-		].steps.find((step) => step.name === "Setup registry install smoke tools");
-		const verifyPublishedSmokeStep = workflow.jobs[
-			"tag-current-version"
-		].steps.find(
+		const registrySmokeJob =
+			workflow.jobs["verify-published-registry-package"];
+		const registrySmokeCheckoutStep = registrySmokeJob.steps.find(
+			(step) => step.uses?.startsWith("actions/checkout@"),
+		);
+		const setupPublishedSmokeStep = registrySmokeJob.steps.find(
+			(step) => step.name === "Setup registry install smoke tools",
+		);
+		const verifyPublishedSmokeStep = registrySmokeJob.steps.find(
 			(step) => step.name === "Verify already-published package from registry",
 		);
-		const uploadEvidenceStep = workflow.jobs["tag-current-version"].steps.find(
+		const uploadEvidenceStep = registrySmokeJob.steps.find(
 			(step) => step.name === "Upload already-published replay evidence",
 		);
 
 		expect(workflow.jobs["tag-current-version"]["timeout-minutes"]).toBe(45);
+		expect(workflow.jobs["tag-current-version"].outputs).toMatchObject({
+			package_name: "${{ steps.release.outputs.package_name }}",
+			release_tag: "${{ steps.release.outputs.release_tag }}",
+			release_version: "${{ steps.release.outputs.release_version }}",
+			registry_published: "${{ steps.registry-release.outputs.published }}",
+		});
+		expect(registrySmokeJob.needs).toBe("tag-current-version");
+		expect(registrySmokeJob.if).toContain(
+			"needs.tag-current-version.outputs.registry_published == 'true'",
+		);
+		expect(registrySmokeJob.permissions).toMatchObject({ contents: "read" });
+		expect(registrySmokeJob["timeout-minutes"]).toBe(30);
+		expect(registrySmokeCheckoutStep?.with).toMatchObject({
+			"persist-credentials": false,
+		});
 		expect(dispatchStep?.env?.RELEASE_TAG).toBe(
 			"${{ steps.release.outputs.release_tag }}",
 		);
 		expect(registryStep?.run).toContain("npm view");
-		expect(setupPublishedSmokeStep?.if).toContain(
-			"steps.registry-release.outputs.published == 'true'",
-		);
 		expect(setupPublishedSmokeStep?.uses).toBe(
 			"./.github/actions/setup-bun-nx",
 		);
@@ -68,15 +98,9 @@ describe("tag-release workflow", () => {
 			"cache-nx": "false",
 			"ensure-rustfmt": "false",
 		});
-		expect(verifyPublishedSmokeStep?.if).toContain(
-			"github.repository == 'evalops/maestro'",
-		);
-		expect(verifyPublishedSmokeStep?.if).toContain(
-			"steps.registry-release.outputs.published == 'true'",
-		);
 		expect(verifyPublishedSmokeStep?.env).toMatchObject({
-			PACKAGE_NAME: "${{ steps.release.outputs.package_name }}",
-			RELEASE_VERSION: "${{ steps.release.outputs.release_version }}",
+			PACKAGE_NAME: "${{ needs.tag-current-version.outputs.package_name }}",
+			RELEASE_VERSION: "${{ needs.tag-current-version.outputs.release_version }}",
 			MAESTRO_INSTALL_AUDIT_LEVEL: "critical",
 			MAESTRO_PUBLISHED_REPLAY_SANDBOX_MODE: "local",
 			MAESTRO_REGISTRY_SMOKE_EVIDENCE_DIR:
@@ -98,6 +122,9 @@ describe("tag-release workflow", () => {
 		);
 		expect(uploadEvidenceStep?.uses).toBe(
 			"actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a",
+		);
+		expect(uploadEvidenceStep?.with?.name).toBe(
+			"tag-release-published-replay-evidence-${{ needs.tag-current-version.outputs.release_tag }}",
 		);
 		expect(uploadEvidenceStep?.with?.path).toBe(
 			"tag-release-published-replay-evidence/*.json",
