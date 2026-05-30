@@ -43,11 +43,24 @@ npm run platform:a2a-evidence-verify -- \
   --require-signature \
   --require-github-dereference \
   --require-discovery-evidence \
-  --require-negative-auth-probe
+  --require-negative-auth-probe \
+  --require-durable-a2a-ids
 ```
 
 The stage is not complete until the evidence resolves in the named system of
 record. A pretty bundle with unresolvable identifiers is a failed gate.
 Realtime delivery is its own ordered gate: stream events and push callbacks must
 resolve through Platform ledgers, task endpoints, trace stores, and operator
-metrics before fleet hardening can start.
+metrics before fleet hardening can start. Stage 6 evidence also runs the strict
+delivery gate after the live smoke producer has emitted the collected stream,
+push, trace, and metric evidence:
+
+```sh
+MAESTRO_A2A_LIVE_REQUIRE_REALTIME_DELIVERY_EVIDENCE=true \
+MAESTRO_A2A_LIVE_REALTIME_DELIVERY_EVIDENCE_FILE=./platform-a2a-realtime-delivery.json \
+npm run platform:a2a-delegation-live
+
+npm run platform:a2a-evidence-verify -- \
+  tmp/platform-a2a-delegation-live/<run>/evidence.json \
+  --require-realtime-delivery-evidence
+```

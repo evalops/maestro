@@ -1,5 +1,5 @@
 import { generateKeyPairSync } from "node:crypto";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
@@ -97,13 +97,108 @@ function graph(
 	};
 }
 
+function realtimeDeliveryEvidence(): NonNullable<
+	PlatformA2ALiveSmokeEvidence["realtimeDelivery"]
+> {
+	return {
+		stream: {
+			surface: "a2a-task-status-stream",
+			sourceEvidencePresent: true,
+			traceparent: "00-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-bbbbbbbbbbbbbbbb-01",
+			events: [
+				{
+					id: "stream_event_1",
+					type: "task-status",
+					taskId: "task_1",
+					contextId: "ctx_1",
+					messageId: "message_1",
+					state: "TASK_STATE_WORKING",
+					terminal: false,
+					observedAt: "2026-05-21T20:00:01.500Z",
+				},
+				{
+					id: "stream_event_2",
+					type: "task-artifact",
+					taskId: "task_1",
+					contextId: "ctx_1",
+					messageId: "message_1",
+					state: "TASK_STATE_COMPLETED",
+					terminal: true,
+					artifactIds: ["artifact_1"],
+					observedAt: "2026-05-21T20:00:02.000Z",
+				},
+			],
+			terminalEventId: "stream_event_2",
+			artifactIds: ["artifact_1"],
+		},
+		push: {
+			surface: "a2a-task-push-notification",
+			sourceEvidencePresent: true,
+			callbackAuditId: "callback_audit_1",
+			traceparent: "00-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-cccccccccccccccc-01",
+			acceptedCount: 1,
+			rejectedCount: 1,
+			invalidTokenRejected: true,
+			terminalNotificationId: "push_notification_1",
+			notifications: [
+				{
+					id: "push_notification_rejected_1",
+					taskId: "task_1",
+					contextId: "ctx_1",
+					messageId: "message_1",
+					state: "TASK_STATE_WORKING",
+					accepted: false,
+					terminal: false,
+					errorClass: "unauthorized",
+					observedAt: "2026-05-21T20:00:01.750Z",
+				},
+				{
+					id: "push_notification_1",
+					taskId: "task_1",
+					contextId: "ctx_1",
+					messageId: "message_1",
+					state: "TASK_STATE_COMPLETED",
+					accepted: true,
+					terminal: true,
+					observedAt: "2026-05-21T20:00:02.500Z",
+				},
+			],
+		},
+		trace: {
+			rootTraceId: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			taskTraceId: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			streamTraceId: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			pushTraceId: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			correlated: true,
+		},
+		metrics: {
+			surface: "platform-observability-delivery-metrics",
+			sourceEvidencePresent: true,
+			queryId: "delivery_metrics_query_1",
+			workspaceId: "ws_1",
+			windowStart: "2026-05-21T20:00:00.000Z",
+			windowEnd: "2026-05-21T20:01:00.000Z",
+			streamTerminalRate: 1,
+			pushDeliveryLatencyMsP95: 500,
+			callbackRejectionRate: 0.5,
+			retryCount: 1,
+			stuckDeliveryAlerts: 0,
+		},
+	};
+}
+
 describe("Platform A2A live delegation smoke", () => {
 	it("prints operator help before requiring live environment", () => {
 		const usage = formatPlatformA2ALiveSmokeUsage();
 
 		expect(usage).toContain("MAESTRO_A2A_LIVE_FROM_AGENT_ID");
+		expect(usage).toContain(
+			"MAESTRO_A2A_LIVE_REQUIRE_REALTIME_DELIVERY_EVIDENCE=true",
+		);
+		expect(usage).toContain("MAESTRO_A2A_LIVE_REALTIME_DELIVERY_EVIDENCE_FILE");
 		expect(usage).toContain("npm run platform:a2a-evidence-verify");
 		expect(usage).toContain("--require-durable-a2a-ids");
+		expect(usage).toContain("--require-realtime-delivery-evidence");
 	});
 
 	it("fails before network work when required env is missing", () => {
@@ -112,8 +207,240 @@ describe("Platform A2A live delegation smoke", () => {
 		);
 	});
 
+	it("fails before live delegation when strict realtime evidence has no source", async () => {
+		const resolveConfig = vi.fn(async () => ({
+			baseUrl: "https://platform.test",
+			token: "registry-token",
+			organizationId: "org_1",
+			workspaceId: "ws_1",
+			timeoutMs: 2_000,
+			maxAttempts: 1,
+		}));
+		const listPeers = vi.fn(async () => [
+			peer("maestro-origin", "https://origin.test/a2a"),
+			peer("maestro-target", "https://target.test/a2a"),
+		]);
+		const delegate = vi.fn(async () => ({
+			delegation: {
+				id: "delegation_1",
+				workspaceId: "ws_1",
+				fromAgentId: "maestro-origin",
+				toAgentId: "maestro-target",
+				status: "DELEGATION_STATUS_ACCEPTED",
+			},
+		}));
+
+		await expect(
+			runPlatformA2ADelegationLiveSmoke({
+				env: {
+					...baseEnv,
+					MAESTRO_A2A_LIVE_REQUIRE_REALTIME_DELIVERY_EVIDENCE: "true",
+				},
+				dependencies: {
+					resolveConfig,
+					listPeers,
+					delegate,
+				},
+			}),
+		).rejects.toThrow(/MAESTRO_A2A_LIVE_REALTIME_DELIVERY_EVIDENCE_FILE/);
+
+		expect(resolveConfig).not.toHaveBeenCalled();
+		expect(listPeers).not.toHaveBeenCalled();
+		expect(delegate).not.toHaveBeenCalled();
+	});
+
+	it("allows a fresh realtime evidence file path through preflight", async () => {
+		const dir = await mkdtemp(join(tmpdir(), "maestro-a2a-live-proof-"));
+		try {
+			const realtimeEvidenceFile = join(dir, "future-realtime-delivery.json");
+			const resolveConfig = vi.fn(async () => ({
+				baseUrl: "https://platform.test",
+				token: "registry-token",
+				organizationId: "org_1",
+				workspaceId: "ws_1",
+				timeoutMs: 2_000,
+				maxAttempts: 1,
+			}));
+			const delegate = vi.fn(async () => ({
+				delegation: {
+					id: "delegation_1",
+					workspaceId: "ws_1",
+					fromAgentId: "maestro-origin",
+					toAgentId: "maestro-target",
+					status: "DELEGATION_STATUS_ACCEPTED",
+				},
+			}));
+			const dependencies: Partial<PlatformA2ALiveSmokeDependencies> = {
+				now: () => new Date("2026-05-21T20:00:00.000Z"),
+				sleep: vi.fn(async () => undefined),
+				log: vi.fn(),
+				resolveConfig,
+				listPeers: vi.fn(async () => [
+					peer("maestro-origin", "https://origin.test/a2a"),
+					peer("maestro-target", "https://target.test/a2a"),
+				]),
+				delegate,
+				getGraph: vi.fn(async () => graph("task_1")),
+				control: vi.fn(async () => ({
+					delegation: graph("task_1").nodes[0]?.delegation,
+					remoteTask: {
+						taskId: "task_1",
+						state: "TASK_STATE_COMPLETED",
+						controlMode: PlatformA2ADelegationTaskControlModeValue.Collect,
+					},
+				})),
+				getTask: vi.fn(async () => ({
+					id: "task_1",
+					contextId: "ctx_1",
+					status: { state: "TASK_STATE_COMPLETED" },
+				})),
+			};
+
+			await expect(
+				runPlatformA2ADelegationLiveSmoke({
+					env: {
+						...baseEnv,
+						MAESTRO_A2A_LIVE_REQUIRE_REALTIME_DELIVERY_EVIDENCE: "true",
+						MAESTRO_A2A_LIVE_REALTIME_DELIVERY_EVIDENCE_FILE:
+							realtimeEvidenceFile,
+					},
+					dependencies,
+				}),
+			).rejects.toThrow(/future-realtime-delivery\.json|ENOENT/);
+
+			expect(resolveConfig).toHaveBeenCalled();
+			expect(delegate).toHaveBeenCalled();
+		} finally {
+			await rm(dir, { force: true, recursive: true });
+		}
+	});
+
+	it("whitelists realtime evidence file fields before writing the live bundle", async () => {
+		const dir = await mkdtemp(join(tmpdir(), "maestro-a2a-live-proof-"));
+		try {
+			const delivery = realtimeDeliveryEvidence();
+			const stream = delivery.stream as Record<string, unknown>;
+			const push = delivery.push as Record<string, unknown>;
+			const streamEvents = stream.events as Record<string, unknown>[];
+			const notifications = push.notifications as Record<string, unknown>[];
+			const realtimeEvidenceFile = join(dir, "realtime-delivery.json");
+			await writeFile(
+				realtimeEvidenceFile,
+				`${JSON.stringify(
+					{
+						realtimeDelivery: {
+							...delivery,
+							rawCollectorPayload: "raw-callback-token",
+							stream: {
+								...stream,
+								rawSseFrame: "raw-stream-secret",
+								events: streamEvents.map((event) => ({
+									...event,
+									rawPayload: "raw-stream-event-secret",
+								})),
+							},
+							push: {
+								...push,
+								rawCallbackHeaders: {
+									authorization: "Bearer raw-push-secret",
+								},
+								notifications: notifications.map((notification) => ({
+									...notification,
+									rawBody: "raw-push-body-secret",
+								})),
+							},
+						},
+					},
+					null,
+					2,
+				)}\n`,
+				"utf8",
+			);
+			let writtenEvidence: PlatformA2ALiveSmokeEvidence | undefined;
+			const dependencies: Partial<PlatformA2ALiveSmokeDependencies> = {
+				now: () => new Date("2026-05-21T20:00:00.000Z"),
+				sleep: vi.fn(async () => undefined),
+				log: vi.fn(),
+				gitSha: () => "1234567890abcdef1234567890abcdef12345678",
+				resolveConfig: vi.fn(async () => ({
+					baseUrl: "https://platform.test",
+					token: "registry-token",
+					organizationId: "org_1",
+					workspaceId: "ws_1",
+					timeoutMs: 2_000,
+					maxAttempts: 1,
+				})),
+				listPeers: vi.fn(async () => [
+					peer("maestro-origin", "https://origin.test/a2a"),
+					peer("maestro-target", "https://target.test/a2a"),
+				]),
+				delegate: vi.fn(async () => ({
+					delegation: {
+						id: "delegation_1",
+						workspaceId: "ws_1",
+						fromAgentId: "maestro-origin",
+						toAgentId: "maestro-target",
+						status: "DELEGATION_STATUS_ACCEPTED",
+					},
+				})),
+				getGraph: vi.fn(async () => graph("task_1")),
+				control: vi.fn(async () => ({
+					delegation: graph("task_1").nodes[0]?.delegation,
+					remoteTask: {
+						taskId: "task_1",
+						state: "TASK_STATE_COMPLETED",
+						controlMode: PlatformA2ADelegationTaskControlModeValue.Collect,
+					},
+				})),
+				getTask: vi.fn(async () => ({
+					id: "task_1",
+					contextId: "ctx_1",
+					status: {
+						state: "TASK_STATE_COMPLETED",
+						message: {
+							messageId: "message_1",
+							role: "ROLE_AGENT",
+							parts: [{ text: "done" }],
+						},
+					},
+				})),
+				writeEvidence: vi.fn(async (_outputDir, evidence) => {
+					writtenEvidence = evidence;
+					return "/tmp/platform-a2a-delegation-live/evidence.json";
+				}),
+			};
+
+			const result = await runPlatformA2ADelegationLiveSmoke({
+				env: {
+					...baseEnv,
+					MAESTRO_A2A_LIVE_REQUIRE_REALTIME_DELIVERY_EVIDENCE: "true",
+					MAESTRO_A2A_LIVE_REALTIME_DELIVERY_EVIDENCE_FILE:
+						realtimeEvidenceFile,
+				},
+				dependencies,
+			});
+
+			expect(result.evidence.realtimeDelivery).toMatchObject({
+				stream: { terminalEventId: "stream_event_2" },
+				push: { terminalNotificationId: "push_notification_1" },
+				metrics: { queryId: "delivery_metrics_query_1" },
+			});
+			const writtenJson = JSON.stringify(writtenEvidence);
+			expect(writtenJson).not.toContain("raw-callback-token");
+			expect(writtenJson).not.toContain("raw-stream-secret");
+			expect(writtenJson).not.toContain("raw-stream-event-secret");
+			expect(writtenJson).not.toContain("raw-push-secret");
+			expect(writtenJson).not.toContain("raw-push-body-secret");
+		} finally {
+			await rm(dir, { force: true, recursive: true });
+		}
+	});
+
 	it("runs the live proof path and writes redacted evidence", async () => {
 		let writtenEvidence: PlatformA2ALiveSmokeEvidence | undefined;
+		const collectRealtimeDeliveryEvidence = vi.fn(async () =>
+			realtimeDeliveryEvidence(),
+		);
 		const dependencies: Partial<PlatformA2ALiveSmokeDependencies> = {
 			now: () => new Date("2026-05-21T20:00:00.000Z"),
 			sleep: vi.fn(async () => undefined),
@@ -205,11 +532,13 @@ describe("Platform A2A live delegation smoke", () => {
 				writtenEvidence = evidence;
 				return "/tmp/platform-a2a-delegation-live/evidence.json";
 			}),
+			collectRealtimeDeliveryEvidence,
 		};
 
 		const result = await runPlatformA2ADelegationLiveSmoke({
 			env: {
 				...baseEnv,
+				MAESTRO_A2A_LIVE_REQUIRE_REALTIME_DELIVERY_EVIDENCE: "true",
 				GITHUB_REPOSITORY: "evalops/maestro-internal",
 				GITHUB_RUN_ID: "26252628231",
 				GITHUB_SHA: "1234567890abcdef1234567890abcdef12345678",
@@ -272,7 +601,31 @@ describe("Platform A2A live delegation smoke", () => {
 				contextId: "ctx_1",
 				messageIds: ["message_1", "message_0"],
 			},
+			realtimeDelivery: {
+				stream: {
+					terminalEventId: "stream_event_2",
+				},
+				push: {
+					callbackAuditId: "callback_audit_1",
+					terminalNotificationId: "push_notification_1",
+				},
+				metrics: {
+					queryId: "delivery_metrics_query_1",
+				},
+			},
 		});
+		expect(collectRealtimeDeliveryEvidence).toHaveBeenCalledWith(
+			expect.objectContaining({
+				env: expect.objectContaining({
+					requireRealtimeDeliveryEvidence: true,
+				}),
+				task: expect.objectContaining({
+					id: "task_1",
+					contextId: "ctx_1",
+				}),
+				terminal: true,
+			}),
+		);
 		expect(JSON.stringify(writtenEvidence)).not.toContain("registry-token");
 		expect(JSON.stringify(writtenEvidence)).not.toContain(
 			"acknowledge delegation",
