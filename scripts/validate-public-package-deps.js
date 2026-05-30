@@ -6,25 +6,7 @@ import {
 	loadRootPackage,
 } from "./workspace-utils.js";
 import { getRuntimeWorkspaceNames } from "./runtime-workspaces.mjs";
-
-const rootPackage = loadRootPackage();
-const rootName = typeof rootPackage.name === "string" ? rootPackage.name : "root";
-
-if (rootPackage.private === true) {
-	console.log(`${rootName} is private; public package dependency check skipped.`);
-	process.exit(0);
-}
-
-const workspacePackages = await getWorkspacePackages(rootPackage);
-const workspaceNames = new Set(
-	workspacePackages.map((workspacePackage) => workspacePackage.name),
-);
-const privateWorkspaceNames = new Set(
-	workspacePackages
-		.filter((workspacePackage) => workspacePackage.data.private === true)
-		.map((workspacePackage) => workspacePackage.name),
-);
-const runtimeWorkspaceNames = new Set(getRuntimeWorkspaceNames(rootPackage));
+import { isDirectCliEntrypoint } from "./direct-cli-entrypoint.mjs";
 
 const dependencySections = [
 	"dependencies",
@@ -32,51 +14,127 @@ const dependencySections = [
 	"peerDependencies",
 ];
 
-const offenders = [];
-const runtimeDependencyOffenders = [];
+export function collectPublicPackageDependencyReport({
+	rootPackage,
+	workspacePackages,
+	runtimeWorkspaceNames,
+}) {
+	const rootName =
+		typeof rootPackage?.name === "string" ? rootPackage.name : "root";
 
-for (const section of dependencySections) {
-	const deps = rootPackage[section];
-	if (!deps || typeof deps !== "object" || Array.isArray(deps)) {
-		continue;
+	if (rootPackage?.private === true) {
+		return {
+			rootName,
+			skipped: true,
+			privateWorkspaceDependencies: [],
+			runtimeWorkspaceDependencies: [],
+		};
 	}
-	for (const name of Object.keys(deps)) {
-		if (privateWorkspaceNames.has(name)) {
-			offenders.push(`${section}.${name}`);
-		}
-		if (!runtimeWorkspaceNames.has(name)) {
+
+	const privateWorkspaceNames = new Set(
+		workspacePackages
+			.filter((workspacePackage) => workspacePackage.data.private === true)
+			.map((workspacePackage) => workspacePackage.name),
+	);
+	const runtimeWorkspaceNameSet = new Set(runtimeWorkspaceNames);
+	const offenders = [];
+	const runtimeDependencyOffenders = [];
+
+	for (const section of dependencySections) {
+		const deps = rootPackage?.[section];
+		if (!deps || typeof deps !== "object" || Array.isArray(deps)) {
 			continue;
 		}
-		runtimeDependencyOffenders.push(`${section}.${name}`);
+		for (const name of Object.keys(deps)) {
+			if (privateWorkspaceNames.has(name)) {
+				offenders.push(`${section}.${name}`);
+			}
+			if (!runtimeWorkspaceNameSet.has(name)) {
+				continue;
+			}
+			runtimeDependencyOffenders.push(`${section}.${name}`);
+		}
 	}
+
+	return {
+		rootName,
+		skipped: false,
+		privateWorkspaceDependencies: offenders.sort(),
+		runtimeWorkspaceDependencies: runtimeDependencyOffenders.sort(),
+	};
 }
 
-if (offenders.length > 0) {
-	console.error(
-		`${rootName} is public but references private workspace packages:`,
-	);
-	for (const offender of offenders.sort()) {
-		console.error(`- ${offender}`);
+export async function buildPublicPackageDependencyReport({
+	rootPackage = loadRootPackage(),
+	loadWorkspacePackages = getWorkspacePackages,
+	resolveRuntimeWorkspaceNames = getRuntimeWorkspaceNames,
+} = {}) {
+	if (rootPackage?.private === true) {
+		return collectPublicPackageDependencyReport({
+			rootPackage,
+			workspacePackages: [],
+			runtimeWorkspaceNames: [],
+		});
 	}
-	console.error(
-		"Publish the workspace package first or vendor the narrow client into the public package.",
-	);
-	process.exit(1);
+	return collectPublicPackageDependencyReport({
+		rootPackage,
+		workspacePackages: await loadWorkspacePackages(rootPackage),
+		runtimeWorkspaceNames: resolveRuntimeWorkspaceNames(rootPackage),
+	});
 }
 
-if (runtimeDependencyOffenders.length > 0) {
-	console.error(
-		`${rootName} is public but declares vendored runtime workspace packages as install-time dependencies:`,
-	);
-	for (const offender of runtimeDependencyOffenders.sort()) {
-		console.error(`- ${offender}`);
-	}
-	console.error(
-		"Keep runtime workspace packages vendored under dist/node_modules only so package managers do not resolve them from the registry.",
-	);
-	process.exit(1);
+function reportHasPrivateWorkspaceDependencies(report) {
+	return report.privateWorkspaceDependencies.length > 0;
 }
 
-console.log(
-	`${rootName} does not reference forbidden workspace package dependency metadata.`,
-);
+function reportHasRuntimeWorkspaceDependencies(report) {
+	return report.runtimeWorkspaceDependencies.length > 0;
+}
+
+async function main() {
+	const report = await buildPublicPackageDependencyReport();
+
+	if (report.skipped) {
+		console.log(
+			`${report.rootName} is private; public package dependency check skipped.`,
+		);
+		return;
+	}
+
+	if (reportHasPrivateWorkspaceDependencies(report)) {
+		console.error(
+			`${report.rootName} is public but references private workspace packages:`,
+		);
+		for (const offender of report.privateWorkspaceDependencies) {
+			console.error(`- ${offender}`);
+		}
+		console.error(
+			"Publish the workspace package first or vendor the narrow client into the public package.",
+		);
+		process.exit(1);
+	}
+
+	if (reportHasRuntimeWorkspaceDependencies(report)) {
+		console.error(
+			`${report.rootName} is public but declares vendored runtime workspace packages as install-time dependencies:`,
+		);
+		for (const offender of report.runtimeWorkspaceDependencies) {
+			console.error(`- ${offender}`);
+		}
+		console.error(
+			"Keep runtime workspace packages vendored under dist/node_modules only so package managers do not resolve them from the registry.",
+		);
+		process.exit(1);
+	}
+
+	console.log(
+		`${report.rootName} does not reference forbidden workspace package dependency metadata.`,
+	);
+}
+
+if (isDirectCliEntrypoint(import.meta.url)) {
+	main().catch((error) => {
+		console.error(error instanceof Error ? error.message : String(error));
+		process.exit(1);
+	});
+}
