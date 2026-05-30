@@ -46,7 +46,7 @@ pub const HOSTED_RUNNER_WORK_CONTINUITY_VERSION: &str = "evalops.remote-runner.w
 pub const HOSTED_RUNNER_PLATFORM_EVIDENCE_VERSION: &str =
     "evalops.remote-runner.platform-evidence.v1";
 
-const DEFAULT_LISTEN_HOST: &str = "0.0.0.0";
+const DEFAULT_LISTEN_HOST: &str = "127.0.0.1";
 const DEFAULT_LISTEN_PORT: u16 = 8080;
 const DEFAULT_HEARTBEAT_INTERVAL_MS: u64 = 15_000;
 const CONNECTION_IDLE_MS: i64 = (DEFAULT_HEARTBEAT_INTERVAL_MS as i64) * 3;
