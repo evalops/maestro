@@ -1241,6 +1241,61 @@ describe("ci workflow guardrails", () => {
 		expect(run).not.toContain("gh auth refresh");
 	});
 
+	it("publishes release version metadata to GCS through workload identity", () => {
+		const workflow = parse(
+			readFileSync(
+				new URL("../../.github/workflows/release.yml", import.meta.url),
+				{ encoding: "utf8" },
+			),
+		) as Workflow;
+		const canaryJob = workflow.jobs?.["post-publish-canary"];
+		const steps = canaryJob?.steps ?? [];
+		const validateIndex = steps.findIndex(
+			(step) => step.name === "Validate published replay evidence",
+		);
+		const metadataIndex = steps.findIndex(
+			(step) => step.name === "Generate version metadata",
+		);
+		const authStep = steps.find(
+			(step) =>
+				step.name === "Authenticate to Google Cloud for release metadata",
+		);
+		const gcsIndex = steps.findIndex(
+			(step) => step.name === "Sync GCS version metadata",
+		);
+		const gcsStep = steps[gcsIndex];
+		const run = gcsStep?.run ?? "";
+
+		expect(canaryJob).toBeDefined();
+		expect(canaryJob?.needs).toContain("publish");
+		expect(canaryJob?.permissions?.["id-token"]).toBe("write");
+		expect(validateIndex).toBeGreaterThan(-1);
+		expect(metadataIndex).toBeGreaterThan(validateIndex);
+		expect(gcsIndex).toBeGreaterThan(metadataIndex);
+		expect(authStep).toBeDefined();
+		expect(authStep?.uses).toContain("google-github-actions/auth@");
+		expect(gcsStep).toBeDefined();
+		expect(gcsStep?.if).toContain(
+			"MAESTRO_RELEASE_GCP_WORKLOAD_IDENTITY_PROVIDER",
+		);
+		expect(run).toContain("gcloud storage cp");
+		expect(run).toContain("dist/version.json");
+		expect(run).toContain("/version.json");
+	});
+
+	it("loads dotenv configuration before startup refresh", () => {
+		const source = readFileSync(new URL("../../src/cli.ts", import.meta.url), {
+			encoding: "utf8",
+		});
+		const loadEnvImportIndex = source.indexOf('await import("./load-env.js")');
+		const loadEnvIndex = source.indexOf("loadEnv();", loadEnvImportIndex);
+		const refreshIndex = source.indexOf("await refreshInstalledCliOnStartup");
+
+		expect(loadEnvImportIndex).toBeGreaterThan(-1);
+		expect(loadEnvIndex).toBeGreaterThan(loadEnvImportIndex);
+		expect(refreshIndex).toBeGreaterThan(loadEnvIndex);
+	});
+
 	it("keeps packed CLI smoke enabled independently of package-lock management", () => {
 		const script = readFileSync(
 			new URL("../../scripts/release-readiness.js", import.meta.url),
