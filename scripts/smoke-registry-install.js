@@ -103,6 +103,11 @@ function sleep(milliseconds) {
 
 function shouldRunBunInstallSmoke() {
 	if (process.env.MAESTRO_SKIP_BUN_INSTALL_SMOKE === "1") {
+		if (process.env.MAESTRO_ALLOW_REGISTRY_BUN_INSTALL_SMOKE_SKIP !== "1") {
+			throw new Error(
+				`Bun registry install smoke is release-blocking for ${packageSpec}; set MAESTRO_ALLOW_REGISTRY_BUN_INSTALL_SMOKE_SKIP=1 only for non-release debugging.`,
+			);
+		}
 		console.log(`Skipping Bun install smoke for ${packageSpec}.`);
 		return false;
 	}
