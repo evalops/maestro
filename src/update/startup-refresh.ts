@@ -6,7 +6,7 @@ import {
 	realpathSync,
 	writeFileSync,
 } from "node:fs";
-import { dirname, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import { getAgentDir } from "../config/constants.js";
 import {
 	getGlobalInstallCommand,
@@ -28,6 +28,14 @@ const DEFAULT_INSTALL_TIMEOUT_MS = 60_000;
 const DEFAULT_RETRY_MS = 24 * 60 * 60 * 1_000;
 const DEFAULT_STARTUP_UPDATE_TIMEOUT_MS = 1_500;
 const NPM_PREFIX_TIMEOUT_MS = 2_000;
+const BUN_PREFIX_TIMEOUT_MS = 2_000;
+
+type PackageManager = "npm" | "bun";
+
+type GlobalInstallContext = {
+	packageManager: PackageManager;
+	prefix: string;
+};
 
 type StartupUpdateState = {
 	version?: string;
@@ -56,8 +64,10 @@ type StartupUpdateOptions = {
 		options?: { timeoutMs?: number; urls?: string[] },
 	) => Promise<UpdateCheckResult>;
 	checkTimeoutMs?: number;
+	globalInstallContexts?: GlobalInstallContext[] | null;
 	globalPrefix?: string | null;
 	installPackage?: (
+		packageManager: PackageManager,
 		packageName: string,
 		version: string,
 	) => {
@@ -250,9 +260,13 @@ const shouldThrottleAttempt = (
 const isInstallableVersion = (version: string): boolean =>
 	INSTALLABLE_VERSION.test(version);
 
-const defaultInstallPackage = (packageName: string, version: string) => {
+const defaultInstallPackage = (
+	packageManager: PackageManager,
+	packageName: string,
+	version: string,
+) => {
 	const result = spawnSync(
-		"npm",
+		packageManager,
 		["install", "-g", `${packageName}@${version}`],
 		{
 			encoding: "utf-8",
@@ -277,6 +291,41 @@ const resolveNpmGlobalPrefix = (
 	}
 	const prefix = result.stdout.trim();
 	return prefix.length > 0 ? prefix : null;
+};
+
+const resolveBunGlobalPrefix = (
+	env: NodeJS.ProcessEnv = process.env,
+): string | null => {
+	const result = spawnSync("bun", ["pm", "bin", "-g"], {
+		encoding: "utf-8",
+		env,
+		stdio: ["ignore", "pipe", "ignore"],
+		timeout: BUN_PREFIX_TIMEOUT_MS,
+	});
+	if (result.error || result.status !== 0) {
+		return null;
+	}
+	const binDir = result.stdout.trim();
+	if (!binDir) {
+		return null;
+	}
+	const bunHome = basename(binDir) === "bin" ? dirname(binDir) : binDir;
+	return join(bunHome, "install", "global");
+};
+
+const resolveGlobalInstallContexts = (
+	env: NodeJS.ProcessEnv = process.env,
+): GlobalInstallContext[] => {
+	const contexts: GlobalInstallContext[] = [];
+	const npmPrefix = resolveNpmGlobalPrefix(env);
+	if (npmPrefix) {
+		contexts.push({ packageManager: "npm", prefix: npmPrefix });
+	}
+	const bunPrefix = resolveBunGlobalPrefix(env);
+	if (bunPrefix) {
+		contexts.push({ packageManager: "bun", prefix: bunPrefix });
+	}
+	return contexts;
 };
 
 export async function attemptStartupUpdate(
@@ -307,15 +356,30 @@ export async function attemptStartupUpdate(
 	if (argsSkipReason) {
 		return { status: "skipped", reason: argsSkipReason };
 	}
-	const globalPrefix =
-		options.globalPrefix === undefined
-			? resolveNpmGlobalPrefix(env)
-			: options.globalPrefix;
-	if (!globalPrefix) {
-		return { status: "skipped", reason: "npm global prefix unavailable" };
+	const globalInstallContexts =
+		options.globalInstallContexts ??
+		(options.globalPrefix === undefined
+			? resolveGlobalInstallContexts(env)
+			: options.globalPrefix
+				? [{ packageManager: "npm" as const, prefix: options.globalPrefix }]
+				: []);
+	if (globalInstallContexts.length === 0) {
+		return {
+			status: "skipped",
+			reason:
+				options.globalPrefix === null
+					? "npm global prefix unavailable"
+					: "global package prefix unavailable",
+		};
 	}
-	if (!isInstalledPackageEntrypoint(argv[1], packageName, globalPrefix)) {
-		return { status: "skipped", reason: "not running installed npm package" };
+	const installContext = globalInstallContexts.find((context) =>
+		isInstalledPackageEntrypoint(argv[1], packageName, context.prefix),
+	);
+	if (!installContext) {
+		return {
+			status: "skipped",
+			reason: "not running installed global package",
+		};
 	}
 
 	const checkTimeoutMs =
@@ -375,6 +439,7 @@ export async function attemptStartupUpdate(
 		lastStatus: "failed",
 	});
 	const install = (options.installPackage ?? defaultInstallPackage)(
+		installContext.packageManager,
 		packageName,
 		check.latestVersion,
 	);
@@ -384,7 +449,7 @@ export async function attemptStartupUpdate(
 			check,
 			error:
 				install.error?.message ??
-				`${getGlobalInstallCommand("npm", `${packageName}@${check.latestVersion}`)} exited ${install.status}`,
+				`${getGlobalInstallCommand(installContext.packageManager, `${packageName}@${check.latestVersion}`)} exited ${install.status}`,
 		};
 	}
 

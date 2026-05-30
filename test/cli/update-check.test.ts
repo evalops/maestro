@@ -138,6 +138,25 @@ describe("checkForUpdate", () => {
 		expect(result.sourceUrl).toContain("registry.npmjs.org");
 	});
 
+	it("selects the highest update version across metadata sources", async () => {
+		const fetchMock = vi
+			.fn()
+			.mockResolvedValueOnce(createResponse({ version: "0.9.0" }))
+			.mockResolvedValueOnce(createResponse({ version: "1.0.0" }));
+		const result = await checkForUpdate("0.8.0", {
+			urls: [
+				"https://storage.googleapis.com/example/maestro/version.json",
+				"https://registry.npmjs.org/@evalops%2Fmaestro/latest",
+			],
+			timeoutMs: 0,
+			fetch: fetchMock,
+		});
+		expect(fetchMock).toHaveBeenCalledTimes(2);
+		expect(result.isUpdateAvailable).toBe(true);
+		expect(result.latestVersion).toBe("1.0.0");
+		expect(result.sourceUrl).toContain("registry.npmjs.org");
+	});
+
 	it("keeps valid current metadata when later fallback sources fail", async () => {
 		const fetchMock = vi
 			.fn()

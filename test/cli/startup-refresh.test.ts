@@ -56,6 +56,16 @@ describe("isInstalledPackageEntrypoint", () => {
 		).toBe(false);
 	});
 
+	it("recognizes Bun global package entrypoints", () => {
+		expect(
+			isInstalledPackageEntrypoint(
+				`/Users/me/.bun/install/global/node_modules/${packageName}/dist/cli.js`,
+				packageName,
+				"/Users/me/.bun/install/global",
+			),
+		).toBe(true);
+	});
+
 	it("recognizes npm bin shims that resolve to installed package entrypoints", () => {
 		const dir = mkdtempSync(join(tmpdir(), "maestro-entrypoint-"));
 		try {
@@ -209,9 +219,40 @@ describe("attemptStartupUpdate", () => {
 			installPackage,
 			restart,
 		});
-		expect(installPackage).toHaveBeenCalledWith(packageName, "0.10.1");
+		expect(installPackage).toHaveBeenCalledWith("npm", packageName, "0.10.1");
 		expect(restart).toHaveBeenCalled();
 		expect(outcome).toMatchObject({ status: "restarted", exitCode: 7 });
+	});
+
+	it("uses Bun to update Bun global installs", async () => {
+		const installPackage = vi.fn().mockReturnValue({ status: 0 });
+		const outcome = await attemptStartupUpdate({
+			argv: [
+				"/usr/local/bin/node",
+				`/Users/me/.bun/install/global/node_modules/${packageName}/dist/cli.js`,
+			],
+			currentVersion: "0.10.0",
+			env: {},
+			globalInstallContexts: [
+				{
+					packageManager: "bun",
+					prefix: "/Users/me/.bun/install/global",
+				},
+			],
+			isTty: true,
+			statePath: statePath(),
+			checkForUpdateImpl: async () => ({
+				currentVersion: "0.10.0",
+				latestVersion: "0.10.1",
+				isUpdateAvailable: true,
+				sourceUrl:
+					"https://storage.googleapis.com/example/maestro/version.json",
+			}),
+			installPackage,
+			restart: false,
+		});
+		expect(installPackage).toHaveBeenCalledWith("bun", packageName, "0.10.1");
+		expect(outcome).toMatchObject({ status: "updated" });
 	});
 
 	it("can install without restarting for manual update commands", async () => {
@@ -234,7 +275,7 @@ describe("attemptStartupUpdate", () => {
 			installPackage,
 			restart: false,
 		});
-		expect(installPackage).toHaveBeenCalledWith(packageName, "0.10.1");
+		expect(installPackage).toHaveBeenCalledWith("npm", packageName, "0.10.1");
 		expect(restart).not.toHaveBeenCalled();
 		expect(outcome).toMatchObject({ status: "updated" });
 	});
