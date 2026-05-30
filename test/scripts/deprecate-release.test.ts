@@ -160,7 +160,11 @@ describe("deprecate-release", () => {
 				"  exit 1",
 				"fi",
 				'if [[ "$1" == "view" ]]; then',
-				'  echo "[\\"Deprecated release. Upgrade to a supported Maestro version.\\"]"',
+				'  if [[ "$3" == "version" ]]; then',
+				'    echo "[\\"0.10.8\\",\\"0.10.9\\"]"',
+				"  else",
+				'    echo "[\\"Deprecated release. Upgrade to a supported Maestro version.\\",\\"Deprecated release. Upgrade to a supported Maestro version.\\"]"',
+				"  fi",
 				"  exit 0",
 				"fi",
 				"exit 2",
@@ -176,6 +180,47 @@ describe("deprecate-release", () => {
 			expect(result.stdout).toContain(
 				"Verified existing deprecation for @evalops/maestro@>=0.10.8 <=0.10.20 after npm returned E422.",
 			);
+		} finally {
+			rmSync(tempDir, { recursive: true, force: true });
+		}
+	});
+
+	it("keeps npm E422 fatal when only part of a range is deprecated", () => {
+		const tempDir = mkdtempSync(
+			join(tmpdir(), "maestro-deprecate-partial-e422-test-"),
+		);
+		const fakeNpm = join(tempDir, "npm");
+		writeFileSync(
+			fakeNpm,
+			[
+				"#!/usr/bin/env bash",
+				'if [[ "$1" == "deprecate" ]]; then',
+				'  echo "npm error code E422" >&2',
+				'  echo "npm error 422 Unprocessable Entity - PUT https://registry.npmjs.org/@evalops%2fmaestro - Unprocessable Entity" >&2',
+				"  exit 1",
+				"fi",
+				'if [[ "$1" == "view" ]]; then',
+				'  if [[ "$3" == "version" ]]; then',
+				'    echo "[\\"0.10.8\\",\\"0.10.9\\"]"',
+				"  else",
+				'    echo "[\\"Deprecated release. Upgrade to a supported Maestro version.\\"]"',
+				"  fi",
+				"  exit 0",
+				"fi",
+				"exit 2",
+				"",
+			].join("\n"),
+		);
+		chmodSync(fakeNpm, 0o755);
+
+		try {
+			const result = runDeprecate({ MAESTRO_NPM_COMMAND: fakeNpm });
+
+			expect(result.status).toBe(1);
+			expect(result.stdout).not.toContain(
+				"Verified existing deprecation for @evalops/maestro@>=0.10.8 <=0.10.20 after npm returned E422.",
+			);
+			expect(result.stderr).toContain("npm error code E422");
 		} finally {
 			rmSync(tempDir, { recursive: true, force: true });
 		}

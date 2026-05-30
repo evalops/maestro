@@ -121,35 +121,53 @@ function hasDeprecationValue(value) {
 	if (value === null || value === undefined || value === "") {
 		return false;
 	}
-	if (Array.isArray(value)) {
-		return value.some(hasDeprecationValue);
-	}
 	if (typeof value === "object") {
 		return Object.values(value).some(hasDeprecationValue);
 	}
 	return true;
 }
 
-async function verifyDeprecation(command, targetSpec) {
-	const verifyResult = await runNpmCommand(
+function countJsonValues(value, predicate = () => true) {
+	if (Array.isArray(value)) {
+		return value.filter(predicate).length;
+	}
+	if (value && typeof value === "object") {
+		return Object.values(value).filter(predicate).length;
+	}
+	return predicate(value) ? 1 : 0;
+}
+
+async function readNpmJson(command, targetSpec, field) {
+	const result = await runNpmCommand(
 		command,
-		["view", targetSpec, "deprecated", "--json"],
+		["view", targetSpec, field, "--json"],
 		{ writeOutput: false },
 	);
-	if (verifyResult.status !== 0) {
-		return false;
+	if (result.status !== 0) {
+		return undefined;
 	}
 
-	const text = verifyResult.stdout.trim();
-	if (!text || text === "null" || text === '""') {
-		return false;
+	const text = result.stdout.trim();
+	if (!text) {
+		return undefined;
 	}
 
 	try {
-		return hasDeprecationValue(JSON.parse(text));
+		return JSON.parse(text);
 	} catch {
-		return true;
+		return text;
 	}
+}
+
+async function verifyDeprecation(command, targetSpec) {
+	const versions = await readNpmJson(command, targetSpec, "version");
+	const deprecations = await readNpmJson(command, targetSpec, "deprecated");
+	const versionCount = countJsonValues(versions, (value) => Boolean(value));
+	if (versionCount === 0) {
+		return false;
+	}
+
+	return countJsonValues(deprecations, hasDeprecationValue) >= versionCount;
 }
 
 const result = await runNpmCommand(npmCommand, npmArgs);
