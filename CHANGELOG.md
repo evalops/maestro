@@ -17,6 +17,20 @@ versioning when releases are cut.
   and keep scheduled public runs inert so public publishing stays downstream of
   the internal source-of-truth release.
 
+## [0.10.48] - 2026-05-30
+
+### Changed
+
+- Rerun release-auth checks. <!-- maestro-release-note:79b5f14693f4 -->
+- Sync release mirror for main. <!-- maestro-release-note:b4c37a629b19 -->
+
+### Fixed
+
+- Refresh maestro from release metadata on startup (#695). <!-- maestro-release-note:ede92baf8649 -->
+- Verify full deprecation range on rerun. <!-- maestro-release-note:26ad24a575d0 -->
+- Make npm deprecation reruns idempotent. <!-- maestro-release-note:c8c4d44560c3 -->
+- Bundle Codex app-server integration. <!-- maestro-release-note:657ca196960f -->
+
 ## [0.10.47] - 2026-05-29
 
 ### Changed
