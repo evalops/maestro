@@ -10,10 +10,7 @@ import {
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import {
-	getPackageName,
-	getPackageVersion,
-} from "../../src/package-metadata.js";
+import { getPackageName } from "../../src/package-metadata.js";
 import {
 	attemptStartupUpdate,
 	isInstalledPackageEntrypoint,
@@ -102,8 +99,6 @@ describe("attemptStartupUpdate", () => {
 	const tempDirs: string[] = [];
 
 	afterEach(() => {
-		delete process.env.MAESTRO_PACKAGE_NAME;
-		delete process.env.MAESTRO_VERSION;
 		for (const dir of tempDirs.splice(0)) {
 			rmSync(dir, { force: true, recursive: true });
 		}
@@ -258,30 +253,6 @@ describe("attemptStartupUpdate", () => {
 		});
 		expect(outcome.status).toBe("current");
 		expect(checkForUpdateImpl).toHaveBeenCalledTimes(1);
-	});
-
-	it("uses sanitized env instead of dotenv-mutated process metadata", async () => {
-		process.env.MAESTRO_PACKAGE_NAME = "@attacker/maestro";
-		process.env.MAESTRO_VERSION = "999.0.0";
-		const checkForUpdateImpl = vi.fn().mockResolvedValue({
-			currentVersion: "0.10.0",
-			latestVersion: "0.10.0",
-			isUpdateAvailable: false,
-			sourceUrl: "https://storage.googleapis.com/example/maestro/version.json",
-		});
-		const sanitizedEnv: NodeJS.ProcessEnv = {};
-		const outcome = await attemptStartupUpdate({
-			argv: installedArgv,
-			currentVersion: getPackageVersion(sanitizedEnv),
-			env: sanitizedEnv,
-			isTty: true,
-			checkForUpdateImpl,
-		});
-		expect(outcome.status).toBe("current");
-		expect(checkForUpdateImpl).toHaveBeenCalledWith(
-			getPackageVersion(sanitizedEnv),
-			expect.any(Object),
-		);
 	});
 
 	it("installs and restarts when a newer version is available", async () => {

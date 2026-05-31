@@ -4,19 +4,11 @@ import { config } from "dotenv";
 
 const ENV_FILES = [".env.local", ".env"];
 
-export function loadEnv(): string[] {
-	const loadedKeys = new Set<string>();
+export function loadEnv(): void {
 	for (const file of ENV_FILES) {
 		const resolved = join(process.cwd(), file);
 		if (existsSync(resolved)) {
-			const before = new Set(Object.keys(process.env));
-			const result = config({ path: resolved, override: false });
-			for (const key of Object.keys(result.parsed ?? {})) {
-				if (!before.has(key)) {
-					loadedKeys.add(key);
-				}
-			}
+			config({ path: resolved, override: false });
 		}
 	}
-	return [...loadedKeys];
 }

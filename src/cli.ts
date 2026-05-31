@@ -82,25 +82,14 @@ async function reportFatalCliError(error: unknown): Promise<void> {
 	}
 }
 
-async function refreshInstalledCliOnStartup(
-	args: string[],
-	ignoredEnvKeys: string[] = [],
-): Promise<void> {
+async function refreshInstalledCliOnStartup(args: string[]): Promise<void> {
 	try {
-		const [{ getPackageName, getPackageVersion }, { attemptStartupUpdate }] =
-			await Promise.all([
-				import("./package-metadata.js"),
-				import("./update/startup-refresh.js"),
-			]);
-		const env = { ...process.env };
-		for (const key of ignoredEnvKeys) {
-			delete env[key];
-		}
+		const [{ getPackageVersion }, { attemptStartupUpdate }] = await Promise.all(
+			[import("./package-metadata.js"), import("./update/startup-refresh.js")],
+		);
 		const outcome = await attemptStartupUpdate({
 			args,
-			currentVersion: getPackageVersion(env),
-			env,
-			packageName: getPackageName(env),
+			currentVersion: getPackageVersion(),
 		});
 		if (outcome.status === "restarted") {
 			process.exit(outcome.exitCode);
@@ -135,15 +124,41 @@ async function runCliRuntime(args: string[]): Promise<void> {
 	await runRuntime(args);
 }
 
+async function loadDirectRuntimeCommandModule() {
+	if (typeof MAESTRO_BUNDLE_RUNTIME !== "undefined" && MAESTRO_BUNDLE_RUNTIME) {
+		return import("./cli/direct-runtime-command.js");
+	}
+	const directRuntimeCommandEntry = "./cli/direct-runtime-command." + "js";
+	return import(directRuntimeCommandEntry);
+}
+
+async function runCliCommandRuntime(args: string[]): Promise<boolean> {
+	const { shouldAttemptDirectRuntimeDispatch } =
+		await loadDirectRuntimeCommandModule();
+	if (!shouldAttemptDirectRuntimeDispatch(args)) {
+		return false;
+	}
+	if (typeof MAESTRO_BUNDLE_RUNTIME !== "undefined" && MAESTRO_BUNDLE_RUNTIME) {
+		const { runCliCommandRuntime: runCommandRuntime } = await import(
+			"./cli-command-runtime.js"
+		);
+		return runCommandRuntime(args);
+	}
+	const commandRuntimeEntry = "./cli-command-runtime." + "js";
+	const { runCliCommandRuntime: runCommandRuntime } = await import(
+		commandRuntimeEntry
+	);
+	return runCommandRuntime(args);
+}
+
 const run = async () => {
 	try {
 		const args = process.argv.slice(2);
 		const immediateExit = getImmediateCliExit(args);
 		let envLoaded = false;
-		let loadedEnvKeys: string[] = [];
 		if (immediateExit !== null) {
 			const { loadEnv } = await import("./load-env.js");
-			loadedEnvKeys = loadEnv();
+			loadEnv();
 			envLoaded = true;
 		}
 		if (shouldUseInstantCliExit(immediateExit, process.env)) {
@@ -153,9 +168,12 @@ const run = async () => {
 
 		if (!envLoaded) {
 			const { loadEnv } = await import("./load-env.js");
-			loadedEnvKeys = loadEnv();
+			loadEnv();
 		}
-		await refreshInstalledCliOnStartup(args, loadedEnvKeys);
+		await refreshInstalledCliOnStartup(args);
+		if (await runCliCommandRuntime(args)) {
+			return;
+		}
 		await runCliRuntime(args);
 	} catch (err) {
 		if (isHeadlessInvocation(process.argv.slice(2))) {

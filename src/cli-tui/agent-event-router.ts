@@ -43,10 +43,13 @@ export class AgentEventRouter {
 
 			case "message_update":
 				if (event.message.role === "assistant") {
-					this.options.streamingView.updateAssistantMessage(
-						event.message as AssistantMessage,
-					);
-					this.options.requestRender();
+					const changedVisibleContent =
+						this.options.streamingView.updateAssistantMessage(
+							event.message as AssistantMessage,
+						);
+					if (changedVisibleContent) {
+						this.options.requestRender();
+					}
 				}
 				return;
 
