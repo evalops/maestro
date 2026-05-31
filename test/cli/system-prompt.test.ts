@@ -203,6 +203,69 @@ describe("buildSystemPrompt", () => {
 		expect(prompt).not.toContain("**/.ssh/**");
 	});
 
+	it("reports default guarded categories for representative protected paths", () => {
+		const projectDir = join(testDir, "guarded-defaults-project");
+		for (const dir of [
+			".cursor",
+			".windsurf",
+			".idea",
+			".amp",
+			".ssh",
+			".gnupg/private-keys-v1.d",
+		]) {
+			mkdirSync(join(projectDir, dir), { recursive: true });
+		}
+		writeFileSync(join(projectDir, ".cursor", "settings.json"), "{}");
+		writeFileSync(join(projectDir, ".windsurf", "config.json"), "{}");
+		writeFileSync(join(projectDir, ".idea", "workspace.xml"), "<project />");
+		writeFileSync(join(projectDir, ".amp", "state.json"), "{}");
+		writeFileSync(join(projectDir, "amp.json"), "{}");
+		writeFileSync(join(projectDir, ".ssh", "id_ed25519"), "private key");
+		writeFileSync(
+			join(projectDir, ".gnupg", "private-keys-v1.d", "key"),
+			"private key",
+		);
+
+		const prompt = finalizeSystemPrompt("base prompt", undefined, projectDir);
+
+		expect(prompt).toContain("# Guarded Workspace Paths");
+		for (const category of [
+			"Cursor configuration",
+			"Windsurf configuration",
+			"JetBrains project configuration",
+			"Amp settings",
+			"SSH and GPG keys",
+		]) {
+			expect(prompt).toContain(category);
+		}
+		expect(prompt).not.toContain("Neovim configuration");
+		expect(prompt).not.toContain("Shell configuration");
+		expect(prompt).not.toContain("settings.json");
+		expect(prompt).not.toContain("private-keys-v1.d");
+	});
+
+	it("does not over-report harmless paths with guarded-looking names", () => {
+		const projectDir = join(testDir, "harmless-guarded-names-project");
+		for (const dir of [
+			"src/cursor-config",
+			"docs/ssh-notes",
+			"idea",
+			"amp-json",
+			"src/.configish",
+		]) {
+			mkdirSync(join(projectDir, dir), { recursive: true });
+		}
+		writeFileSync(join(projectDir, "src", "amp.json.backup"), "{}");
+		writeFileSync(join(projectDir, "docs", "ssh-notes", "README.md"), "safe");
+
+		const prompt = finalizeSystemPrompt("base prompt", undefined, projectDir);
+
+		expect(prompt).not.toContain("# Guarded Workspace Paths");
+		expect(prompt).not.toContain("SSH and GPG keys");
+		expect(prompt).not.toContain("Amp settings");
+		expect(prompt).not.toContain("Cursor configuration");
+	});
+
 	it("omits guarded workspace guidance when no guarded paths are present", () => {
 		const projectDir = join(testDir, "ordinary-project");
 		mkdirSync(join(projectDir, "src"), { recursive: true });

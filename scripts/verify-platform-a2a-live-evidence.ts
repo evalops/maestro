@@ -725,8 +725,8 @@ function verifyRealtimeStreamEvidence(
 	const observedAt: string[] = [];
 	for (const event of events) {
 		const id = requireString(event, "id");
-		const type = optionalString(event, "type");
-		if (type && !REALTIME_STREAM_EVENT_TYPES.has(type)) {
+		const type = requireString(event, "type");
+		if (!REALTIME_STREAM_EVENT_TYPES.has(type)) {
 			throw new Error(
 				`Platform A2A evidence unsupported realtime stream event type ${type} for event ${id}`,
 			);

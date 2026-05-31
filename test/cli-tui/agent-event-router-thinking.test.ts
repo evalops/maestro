@@ -1,5 +1,5 @@
 import type { Component } from "@evalops/tui";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { AssistantMessage } from "../../src/agent/types.js";
 import { AgentEventRouter } from "../../src/cli-tui/agent-event-router.js";
 import { StreamingView } from "../../src/cli-tui/streaming-view.js";
@@ -55,6 +55,12 @@ const noopToolOutputView = {
 } as unknown as ToolOutputViewType;
 
 describe("AgentEventRouter reasoning summary streaming", () => {
+	afterEach(() => {
+		vi.clearAllTimers();
+		vi.useRealTimers();
+		vi.clearAllMocks();
+	});
+
 	it("propagates thinking summaries to the streaming view", () => {
 		const chatContainer = new MockContainer();
 		const streamingView = new StreamingView({
@@ -324,5 +330,104 @@ describe("AgentEventRouter reasoning summary streaming", () => {
 
 		expect(showToolBatchSummary).toHaveBeenCalledWith("Read README.md +1 more");
 		expect(requestRender).toHaveBeenCalled();
+	});
+
+	it("lets low-bandwidth streaming flush own render request", () => {
+		vi.useFakeTimers();
+		const requestRender = vi.fn();
+		const chatContainer = new MockContainer();
+		const streamingView = new StreamingView({
+			chatContainer,
+			toolOutputView: noopToolOutputView,
+			pendingTools: new Map(),
+			lowBandwidth: { enabled: true, batchIntervalMs: 25, scrollbackLimit: 10 },
+			getCleanMode: () => "off",
+			requestRender,
+		});
+
+		const router = new AgentEventRouter({
+			messageView: { addMessage: vi.fn() } as unknown as {
+				addMessage: (message: unknown) => void;
+			},
+			streamingView,
+			loaderView: {
+				beginTurn: vi.fn(),
+				completeTurn: vi.fn(),
+				setStreamingActive: vi.fn(),
+				maybeTransitionToResponding: vi.fn(),
+				registerToolStage: vi.fn(),
+				markToolComplete: vi.fn(),
+				showRuntimeStatus: vi.fn(),
+				showCompactionNotice: vi.fn(),
+				showRuntimeError: vi.fn(),
+				showToolBatchSummary: vi.fn(),
+			} as unknown,
+			runController: {
+				handleAgentStart: vi.fn(),
+				handleAgentEnd: (cb: () => void) => cb(),
+			} as unknown,
+			sessionContext: {
+				beginTurn: vi.fn(),
+				completeTurn: vi.fn(),
+				setLastUserMessage: vi.fn(),
+				setLastAssistantMessage: vi.fn(),
+				recordPrompt: vi.fn(),
+				recordToolUsage: vi.fn(),
+				recordToolStart: vi.fn(),
+				recordToolEnd: vi.fn(),
+			} as unknown,
+			extractText: () => "",
+			clearEditor: vi.fn(),
+			requestRender,
+			clearPendingTools: vi.fn(),
+			refreshPlanHint: vi.fn(),
+		});
+
+		const baseAssistant: AssistantMessage = {
+			role: "assistant",
+			content: [{ type: "text", text: "" }],
+			api: "anthropic-messages",
+			provider: "anthropic",
+			model: "claude-sonnet",
+			usage: {
+				input: 0,
+				output: 0,
+				cacheRead: 0,
+				cacheWrite: 0,
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+			},
+			stopReason: "stop",
+			timestamp: Date.now(),
+		};
+
+		updateContentMock.mockClear();
+		router.handle({ type: "message_start", message: baseAssistant });
+		updateContentMock.mockClear();
+
+		for (const text of ["one", "two", "three"]) {
+			router.handle({
+				type: "message_update",
+				message: {
+					...baseAssistant,
+					content: [{ type: "text", text }],
+				},
+				assistantMessageEvent: {
+					type: "text_delta",
+					contentIndex: 0,
+					delta: text,
+				},
+			});
+		}
+
+		expect(requestRender).toHaveBeenCalledTimes(1);
+		expect(updateContentMock).not.toHaveBeenCalled();
+
+		vi.advanceTimersByTime(25);
+
+		expect(requestRender).toHaveBeenCalledTimes(2);
+		const lastRenderable = updateContentMock.mock.calls.at(-1)?.[0] as {
+			textBlocks?: string[];
+		};
+		expect(lastRenderable?.textBlocks?.[0]).toBe("three");
 	});
 });
