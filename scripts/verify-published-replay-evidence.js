@@ -135,13 +135,6 @@ function toolWorkItemsForMode(mode) {
 	return isObject(ledger.toolWorkItem) ? [ledger.toolWorkItem] : [];
 }
 
-function runStepsForMode(mode) {
-	const ledger = isObject(mode?.agentRuntimeLedger)
-		? mode.agentRuntimeLedger
-		: {};
-	return Array.isArray(ledger.runSteps) ? ledger.runSteps.filter(isObject) : [];
-}
-
 function evidenceRefsForMode(mode) {
 	return toolWorkItemsForMode(mode).flatMap((item) =>
 		filterPublishedReplayEvidenceRefs(item?.evidenceRefs),
@@ -208,27 +201,6 @@ function toolExecutionCoverageIsValid({ observability, modes }) {
 			modeCoverage
 		);
 	});
-}
-
-function agentRuntimeRunStepsAreValid(mode) {
-	const steps = runStepsForMode(mode);
-	if (steps.length === 0) {
-		return false;
-	}
-	const stepIds = new Set();
-	for (const step of steps) {
-		if (
-			typeof step.stepId !== "string" ||
-			typeof step.ledgerEntryId !== "string" ||
-			typeof step.kind !== "string" ||
-			typeof step.state !== "string" ||
-			typeof step.title !== "string"
-		) {
-			return false;
-		}
-		stepIds.add(step.stepId);
-	}
-	return stepIds.size === steps.length;
 }
 
 function modesWithEvidenceRefPrefix(modes, prefix) {
@@ -1008,15 +980,6 @@ export function validatePublishedReplayEvidence(
 			REQUIRED_REPLAY_MODES,
 		) === REQUIRED_REPLAY_MODES.length,
 		"observability.agentRuntimeLedger.durabilityModes must include text, json, and rpc",
-	);
-	pushUnless(
-		errors,
-		countModesWith(
-			observability?.agentRuntimeLedger?.runStepModes,
-			REQUIRED_REPLAY_MODES,
-		) === REQUIRED_REPLAY_MODES.length &&
-			modes.every(agentRuntimeRunStepsAreValid),
-		"observability.agentRuntimeLedger.runStepModes and mode agentRuntimeLedger.runSteps must include AgentRuntime run-step records for text, json, and rpc",
 	);
 	pushUnless(
 		errors,

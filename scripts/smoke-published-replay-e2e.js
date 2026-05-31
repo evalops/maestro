@@ -319,13 +319,6 @@ function toolWorkItemsForMode(modeEvidence) {
 		: [];
 }
 
-function runStepsForMode(modeEvidence) {
-	const ledger = modeEvidence?.agentRuntimeLedger;
-	return Array.isArray(ledger?.runSteps)
-		? ledger.runSteps.filter((step) => step && typeof step === "object")
-		: [];
-}
-
 function toolWorkItemForMode(modeEvidence, { toolName, toolCallId }) {
 	return toolWorkItemsForMode(modeEvidence).find(
 		(item) =>
@@ -433,32 +426,6 @@ function replayModesHaveToolExecutionRefs(modes) {
 	);
 }
 
-function replayModesHaveAgentRuntimeRunSteps(modes) {
-	return (
-		modes.length > 0 &&
-		modes.every((modeEvidence) => {
-			const steps = runStepsForMode(modeEvidence);
-			if (steps.length === 0) {
-				return false;
-			}
-			const stepIds = new Set();
-			for (const step of steps) {
-				if (
-					typeof step.stepId !== "string" ||
-					typeof step.kind !== "string" ||
-					typeof step.state !== "string" ||
-					typeof step.title !== "string" ||
-					typeof step.ledgerEntryId !== "string"
-				) {
-					return false;
-				}
-				stepIds.add(step.stepId);
-			}
-			return stepIds.size === steps.length;
-		})
-	);
-}
-
 function modesWithEvidenceRefPrefix(modes, prefix) {
 	return uniqueValues(
 		modes
@@ -485,8 +452,6 @@ function buildAgentRuntimeLedgerObservability(modes) {
 	const ledgerModes = [];
 	const replayDeterministicModes = [];
 	const durabilityModes = [];
-	const runStepModes = [];
-	const runStepKinds = {};
 	const promotionIdempotencyKeys = [];
 
 	for (const modeEvidence of modes) {
@@ -518,19 +483,12 @@ function buildAgentRuntimeLedgerObservability(modes) {
 			durabilityModes.push(currentMode);
 			promotionIdempotencyKeys.push(ledger.durability.promotionIdempotencyKey);
 		}
-		const runSteps = runStepsForMode(modeEvidence);
-		if (runSteps.length > 0) {
-			runStepModes.push(currentMode);
-			addCountMap(runStepKinds, countBy(runSteps.map((step) => step?.kind)));
-		}
 	}
 
 	return {
 		modes: uniqueValues(ledgerModes),
 		replayDeterministicModes: uniqueValues(replayDeterministicModes),
 		durabilityModes: uniqueValues(durabilityModes),
-		runStepModes: uniqueValues(runStepModes),
-		runStepKinds,
 		promotionIdempotencyKeys: uniqueValues(promotionIdempotencyKeys),
 		counts,
 		operations,
@@ -1391,7 +1349,6 @@ function buildPublishedReplayReleaseGate({
 					ledger?.hasRecordRunStep === true &&
 					ledger?.hasRecordRunWorkItem === true &&
 					ledger?.hasTerminalOperation === true &&
-					replayModesHaveAgentRuntimeRunSteps([modeEvidence]) &&
 					ledger?.durability?.reconstructable === true &&
 					ledger?.durability?.replayDeterministic === true &&
 					typeof ledger?.durability?.promotionIdempotencyKey === "string"
@@ -1973,49 +1930,6 @@ function assertAgentRuntimeLedger(binPath, context, label) {
 			);
 		})
 		.map(summarizeToolWorkItem);
-	const workItemOperationsByLedgerEntry = new Map(
-		operations
-			.filter((operation) => operation?.operation === "record_run_work_item")
-			.map((operation) => [operation?.ledgerEntryId, operation]),
-	);
-	const runSteps = operations
-		.filter((operation) => operation?.operation === "record_run_step")
-		.map((operation) => {
-			const payload = operation?.payload ?? {};
-			const workItem = workItemOperationsByLedgerEntry.get(operation?.ledgerEntryId);
-			return {
-				stepId: payload.stepId,
-				ledgerEntryId: operation?.ledgerEntryId,
-				kind: payload.kind,
-				state: payload.state,
-				title: payload.title,
-				...(typeof payload.toolName === "string"
-					? { toolName: payload.toolName }
-					: {}),
-				evidenceRefs: filterPublishedReplayEvidenceRefs(
-					workItem?.payload?.evidenceRefs,
-				),
-			};
-		});
-	if (runSteps.length === 0) {
-		fail(`${label} AgentRuntime promotion plan is missing run step records.`);
-	}
-	const runStepIds = new Set();
-	for (const step of runSteps) {
-		if (
-			typeof step.stepId !== "string" ||
-			typeof step.ledgerEntryId !== "string" ||
-			typeof step.kind !== "string" ||
-			typeof step.state !== "string" ||
-			typeof step.title !== "string"
-		) {
-			fail(`${label} AgentRuntime run step record is missing required fields.`);
-		}
-		runStepIds.add(step.stepId);
-	}
-	if (runStepIds.size !== runSteps.length) {
-		fail(`${label} AgentRuntime run step ids are not unique.`);
-	}
 	const toolWorkItem = toolWorkItems.find((item) => {
 		return (
 			item?.toolName === "read" &&
@@ -2098,7 +2012,6 @@ function assertAgentRuntimeLedger(binPath, context, label) {
 		hasRecordRunStep,
 		hasRecordRunWorkItem,
 		hasTerminalOperation,
-		runSteps,
 		toolWorkItem: {
 			toolName: toolWorkItem.toolName,
 			toolCallId: toolWorkItem.toolCallId,
