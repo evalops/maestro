@@ -91,16 +91,10 @@ import type {
 	ActionApprovalService,
 	ApprovalMode,
 } from "./agent/action-approval.js";
-import {
-	type Agent,
-	type Api,
-	type Model,
-	isAssistantMessage,
-} from "./agent/index.js";
+import type { Agent, Api, Model } from "./agent/index.js";
 import { getAllModes, getModelForMode } from "./agent/modes.js";
 import { loadScriptedScenarioFromSource } from "./agent/providers/scripted.js";
 import { scenarioSourceLabel } from "./agent/scenario-source.js";
-import { applySessionEndHooks } from "./agent/session-lifecycle-hooks.js";
 import { type ToolRetryMode, ToolRetryService } from "./agent/tool-retry.js";
 import {
 	applySessionStartHooks,
@@ -124,15 +118,7 @@ import {
 	selectHeadlessRuntime,
 	willDispatchHeadlessRuntime,
 } from "./cli/headless-runtime-selection.js";
-import { runHeadlessMode } from "./cli/headless.js";
 import { printHelp } from "./cli/help.js";
-import {
-	JsonlEventWriter,
-	createAgentJsonlAdapter,
-	emitThreadEnd,
-	emitThreadStart,
-	emitUserTurn as emitUserTurnEvent,
-} from "./cli/jsonl-writer.js";
 import { selectSession } from "./cli/session.js";
 import {
 	detectRuntimeConstraintContext,
@@ -143,7 +129,6 @@ import { loadRuntimeConfig } from "./config/runtime-config.js";
 import { loadUnifiedContextManifest } from "./context/manifest.js";
 import { loadEnv } from "./load-env.js";
 import { bootstrapLsp } from "./lsp/bootstrap.js";
-import { withMcpPostKeepMessages } from "./mcp/prompt-recovery.js";
 import { createLazyAutoMemoryCoordinators } from "./memory/lazy-auto-memory.js";
 import { ensureModelsLoaded } from "./models/builtin.js";
 import type { RegisteredModel } from "./models/registry.js";
@@ -151,7 +136,6 @@ import { reloadModelConfig } from "./models/registry.js";
 import { getPackageVersion } from "./package-metadata.js";
 import { resolveMaestroSystemPrompt } from "./prompts/system-prompt.js";
 import type { AuthMode } from "./providers/auth.js";
-import { AgentRuntimeController } from "./runtime/agent-runtime.js";
 import { registerBackgroundTaskShutdownHooks } from "./runtime/background-task-hooks.js";
 import { configureSafeMode } from "./safety/safe-mode.js";
 import { LocalSandbox } from "./sandbox/index.js";
@@ -294,6 +278,9 @@ async function runInteractiveMode(
 
 	let sessionEndReason: "user_exit" | "error" = "user_exit";
 	try {
+		const { AgentRuntimeController } = await import(
+			"./runtime/agent-runtime.js"
+		);
 		const { TuiRenderer } = await import("./cli-tui/tui-renderer.js");
 		// Initialize the TUI renderer which manages all terminal output
 		const renderer = new TuiRenderer(
@@ -335,6 +322,9 @@ async function runInteractiveMode(
 		sessionEndReason = "error";
 		throw error;
 	} finally {
+		const { applySessionEndHooks } = await import(
+			"./agent/session-lifecycle-hooks.js"
+		);
 		await applySessionEndHooks({
 			agent,
 			sessionManager,
@@ -393,6 +383,13 @@ async function runSingleShotMode(
 	messages: string[],
 	mode: Extract<Mode, "text" | "json">,
 ): Promise<void> {
+	const {
+		JsonlEventWriter,
+		createAgentJsonlAdapter,
+		emitThreadEnd,
+		emitThreadStart,
+		emitUserTurn: emitUserTurnEvent,
+	} = await import("./cli/jsonl-writer.js");
 	// Use session ID as thread ID for JSONL output correlation
 	const threadId = sessionManager.getSessionId();
 
@@ -421,6 +418,10 @@ async function runSingleShotMode(
 
 	let sessionEndReason: "complete" | "error" = "complete";
 	try {
+		const { withMcpPostKeepMessages } = await import(
+			"./mcp/prompt-recovery.js"
+		);
+
 		// Process each message sequentially
 		// This allows multi-message conversations in single-shot mode
 		for (const message of messages) {
@@ -440,6 +441,7 @@ async function runSingleShotMode(
 		// In text mode, extract and output only the final text response
 		// This provides clean output for shell pipelines and scripts
 		if (mode === "text") {
+			const { isAssistantMessage } = await import("./agent/index.js");
 			const lastMessage = agent.state.messages[agent.state.messages.length - 1];
 			if (isAssistantMessage(lastMessage)) {
 				for (const content of lastMessage.content) {
@@ -461,6 +463,9 @@ async function runSingleShotMode(
 		}
 		throw error;
 	} finally {
+		const { applySessionEndHooks } = await import(
+			"./agent/session-lifecycle-hooks.js"
+		);
 		await applySessionEndHooks({
 			agent,
 			sessionManager,
@@ -1726,6 +1731,7 @@ export async function main(args: string[]) {
 			console.log(chalk.dim(`AGENTS.md generated at ${displayPath}`));
 		} else if (mode === "headless" || parsed.headless) {
 			// Headless mode - for native TUI communication
+			const { runHeadlessMode } = await import("./cli/headless.js");
 			startupProfiler.terminal("headless:ready");
 			await runHeadlessMode(
 				agent,
