@@ -31,6 +31,8 @@ const DEFAULT_STARTUP_UPDATE_TIMEOUT_MS = 350;
 const NPM_PREFIX_TIMEOUT_MS = 350;
 const BUN_PREFIX_TIMEOUT_MS = 350;
 
+type PackageManager = "npm" | "bun";
+
 const PACKAGE_MANAGER_ENV_PATTERN =
 	/^(?:npm_config_|NPM_CONFIG_|BUN_CONFIG_|bun_config_|YARN_|yarn_|PNPM_|pnpm_)/u;
 const PACKAGE_MANAGER_ENV_BLOCKLIST = new Set([
@@ -72,8 +74,6 @@ const packageManagerEnv = (
 	}
 	return sanitized;
 };
-
-type PackageManager = "npm" | "bun";
 
 type GlobalInstallContext = {
 	packageManager: PackageManager;
@@ -456,7 +456,7 @@ export async function attemptStartupUpdate(
 	const env = options.env ?? process.env;
 	const args = options.args ?? process.argv.slice(2);
 	const argv = options.argv ?? process.argv;
-	const packageName = options.packageName ?? getPackageName(env);
+	const packageName = options.packageName ?? getPackageName();
 	const updateMode = envValue(env, STARTUP_UPDATE_ENV);
 	const now = options.now ?? Date.now();
 

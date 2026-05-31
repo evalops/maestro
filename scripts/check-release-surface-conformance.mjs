@@ -90,6 +90,20 @@ const publicMirrorPackageScriptRequiredAnchors = [
 	'pkg.scripts["release:deprecate"] = "node scripts/deprecate-release.js";',
 ];
 
+const publicPackageName = ["@evalops", "maestro"].join("/");
+const publicPackageLatest = `${publicPackageName}@latest`;
+
+const publicInstallDocsRequiredAnchors = [
+	`bun install -g ${publicPackageName}`,
+	`npm install -g ${publicPackageName}`,
+	publicPackageLatest,
+	"@evalops/tui",
+	"@evalops/contracts",
+	"deprecated 0.10.8-0.10.20 package",
+	"referenced private workspace dependencies",
+	"published release verification now runs npm and Bun",
+];
+
 export function loadReleaseSurfaceConformanceManifest(
 	manifestPath = defaultManifestPath,
 ) {
@@ -143,6 +157,23 @@ export function checkReleaseSurfaceConformance({
 				failures.push(
 					`${label} must use package-script evidence for release-gate validation`,
 				);
+			}
+		}
+		if (check.area === "public-install-docs") {
+			if (check.path !== "README.md") {
+				failures.push(
+					`${label} must use README.md as public install documentation evidence`,
+				);
+			}
+			if (check.evidenceType !== "doc") {
+				failures.push(
+					`${label} must use doc evidence for public install documentation validation`,
+				);
+			}
+			for (const requiredAnchor of publicInstallDocsRequiredAnchors) {
+				if (!check.anchors?.includes(requiredAnchor)) {
+					failures.push(`${label} must anchor ${requiredAnchor}`);
+				}
 			}
 		}
 		if (check.area === "registry-install-smoke") {

@@ -73,6 +73,46 @@ function makeReplayMode(mode: "text" | "json" | "rpc") {
 			hasRecordRunStep: true,
 			hasRecordRunWorkItem: true,
 			hasTerminalOperation: true,
+			runSteps: [
+				{
+					stepId: `ledger:${mode}:read`,
+					ledgerEntryId: `ledger:${mode}:read`,
+					kind: "AGENT_RUN_STEP_KIND_TOOL_CALL",
+					state: "succeeded",
+					title: "Read package manifest",
+					toolName: "read",
+					evidenceRefs: [
+						"tool-call:call-read-package-json",
+						`tool-execution:tool-exec-${mode}`,
+					],
+				},
+				{
+					stepId: `ledger:${mode}:search`,
+					ledgerEntryId: `ledger:${mode}:search`,
+					kind: "AGENT_RUN_STEP_KIND_TOOL_CALL",
+					state: "succeeded",
+					title: "Search package manifest",
+					toolName: "search",
+					evidenceRefs: [
+						"tool-call:call-search-package-manifest",
+						`tool-execution:tool-exec-search-${mode}`,
+					],
+				},
+				{
+					stepId: `ledger:${mode}:write`,
+					ledgerEntryId: `ledger:${mode}:write`,
+					kind: "AGENT_RUN_STEP_KIND_TOOL_CALL",
+					state: "succeeded",
+					title: "Write published replay artifact",
+					toolName: "write",
+					evidenceRefs: [
+						"tool-call:call-write-published-artifact",
+						`tool-execution:tool-exec-write-${mode}`,
+						`approval-request:approval-${mode}`,
+						`artifact:artifact-${mode}`,
+					],
+				},
+			],
 			toolWorkItem: {
 				toolName: "read",
 				toolCallId: "call-read-package-json",
@@ -385,6 +425,18 @@ describe("verify-published-replay-evidence", () => {
 
 		expect(() => validatePublishedReplayEvidence(evidence)).toThrow(
 			/ToolExecution evidence/s,
+		);
+	});
+
+	it("fails when AgentRuntime run-step summaries are missing", () => {
+		const evidence = makeEvidence();
+		for (const mode of evidence.modes) {
+			mode.agentRuntimeLedger.runSteps = [];
+		}
+		evidence.observability.agentRuntimeLedger.runStepModes = [];
+
+		expect(() => validatePublishedReplayEvidence(evidence)).toThrow(
+			/agentRuntimeLedger\.runStepModes.*agentRuntimeLedger\.runSteps/s,
 		);
 	});
 
