@@ -119,7 +119,6 @@ import {
 	willDispatchHeadlessRuntime,
 } from "./cli/headless-runtime-selection.js";
 import { printHelp } from "./cli/help.js";
-import { selectSession } from "./cli/session.js";
 import {
 	detectRuntimeConstraintContext,
 	resolveExplicitSystemPromptSourcePaths,
@@ -1367,6 +1366,7 @@ export async function main(args: string[]) {
 
 	// Handle --resume flag: show session selector
 	if (parsed.resume) {
+		const { selectSession } = await import("./cli/session.js");
 		const selectedSession = await selectSession(sessionManager);
 		if (!selectedSession) {
 			console.log(chalk.dim("No session selected"));
