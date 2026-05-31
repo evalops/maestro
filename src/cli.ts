@@ -135,6 +135,24 @@ async function runCliRuntime(args: string[]): Promise<void> {
 	await runRuntime(args);
 }
 
+async function runMainRuntime(args: string[]): Promise<void> {
+	const loadMain = async () => {
+		if (process.versions?.bun) {
+			const tsEntry = "./main." + "ts";
+			try {
+				return await import(tsEntry);
+			} catch {
+				return await import("./main.js");
+			}
+		}
+		const mainEntry = "./main." + "js";
+		return import(mainEntry);
+	};
+
+	const { main } = await loadMain();
+	await main(args);
+}
+
 async function loadDirectRuntimeCommandModule() {
 	if (typeof MAESTRO_BUNDLE_RUNTIME !== "undefined" && MAESTRO_BUNDLE_RUNTIME) {
 		return import("./cli/direct-runtime-command.js");
@@ -162,6 +180,19 @@ async function runCliCommandRuntime(args: string[]): Promise<boolean> {
 	return runCommandRuntime(args);
 }
 
+async function runUnbundledMainRuntime(args: string[]): Promise<boolean> {
+	if (typeof MAESTRO_BUNDLE_RUNTIME !== "undefined" && MAESTRO_BUNDLE_RUNTIME) {
+		return false;
+	}
+	const { shouldUseUnbundledMainRuntime } =
+		await loadDirectRuntimeCommandModule();
+	if (!shouldUseUnbundledMainRuntime(args)) {
+		return false;
+	}
+	await runMainRuntime(args);
+	return true;
+}
+
 const run = async () => {
 	try {
 		const args = process.argv.slice(2);
@@ -184,6 +215,9 @@ const run = async () => {
 		}
 		await refreshInstalledCliOnStartup(args, loadedEnvKeys);
 		if (await runCliCommandRuntime(args)) {
+			return;
+		}
+		if (await runUnbundledMainRuntime(args)) {
 			return;
 		}
 		await runCliRuntime(args);

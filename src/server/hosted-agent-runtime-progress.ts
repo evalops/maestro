@@ -528,110 +528,6 @@ function toolDisplayName(event: {
 	return event.displayName ?? event.summaryLabel ?? event.toolName;
 }
 
-const MAX_TEXT_FIELD_LENGTH = 160;
-const REDACTED = "[redacted]";
-
-function sanitizeOutboundText(value: string | undefined): string | undefined {
-	const text = nonEmptyString(value);
-	if (!text) {
-		return undefined;
-	}
-	if (
-		/\b(?:sk|gh[pousr]_?|github_pat_|xox[baprs]?|AKIA|ASIA)[A-Za-z0-9_-]{8,}\b/.test(
-			text,
-		) ||
-		/\b(?:api[_-]?key|token|secret|password)[':"\s=]+['"]?[^'"\s]{8,}/i.test(
-			text,
-		)
-	) {
-		return REDACTED;
-	}
-	if (containsShellCommandSyntax(text)) {
-		return REDACTED;
-	}
-	return text.length > MAX_TEXT_FIELD_LENGTH
-		? `${text.slice(0, MAX_TEXT_FIELD_LENGTH)}...`
-		: text;
-}
-
-function containsShellCommandSyntax(value: string): boolean {
-	if (containsShellCommandAtStart(value)) {
-		return true;
-	}
-	if (value.split(/\r?\n/).some((line) => containsShellCommandAtStart(line))) {
-		return true;
-	}
-	const prefixedCommand =
-		/\b(?:detected command|command failed|command):\s*(.+)$/i.exec(value);
-	if (prefixedCommand?.[1] && containsShellCommandAtStart(prefixedCommand[1])) {
-		return true;
-	}
-	const embeddedCommand =
-		/\b(?:please\s+)?(?:run|execute|start|launch|retry)\s+(.+)$/i.exec(value);
-	return embeddedCommand?.[1]
-		? containsShellCommandAtStart(embeddedCommand[1])
-		: false;
-}
-
-function containsShellCommandAtStart(value: string): boolean {
-	if (
-		/^\s*(?:bash|sh|zsh)\s+(?:-[A-Za-z]+|\.{0,2}\/|~\/|[A-Za-z0-9_.\/-]+\.(?:bash|sh|zsh))/i.test(
-			value,
-		) ||
-		/^\s*(?:powershell|cmd)\s+(?:-[A-Za-z]+|\/c\b)/i.test(value)
-	) {
-		return true;
-	}
-	if (/^\s*Ran\s+\S+/i.test(value)) {
-		return true;
-	}
-	if (
-		/^\s*(?:git\s+\S+|rm\s+-[A-Za-z]*[rf][A-Za-z]*\s+\S+|sudo\s+\S+|curl\s+\S+|wget\s+\S+|npm\s+\S+|npx\s+\S+|pnpm\s+\S+|bunx?\s+\S+|node\s+\S+|python(?:3)?\s+\S+|pip(?:3)?\s+\S+|docker\s+\S+|kubectl\s+\S+|terraform\s+\S+)/i.test(
-			value,
-		)
-	) {
-		return true;
-	}
-	if (
-		/^\s*(?:yarn\s+(?:test|run|build|install|add|remove|exec|workspace|workspaces|dlx)\b|make\s+[A-Za-z0-9_.:/-]+\s*$|go\s+(?:test|run|build|mod|fmt|vet|install|generate|env|version)\b|cargo\s+(?:test|run|build|check|fmt|clippy|install)\b)/.test(
-			value,
-		)
-	) {
-		return true;
-	}
-	if (containsGenericShellCommandSyntax(value)) {
-		return true;
-	}
-	return (
-		/^\s*(?:\.{1,2}\/|~\/)[^\s]+(?:\s+\S+)*\s*$/.test(value) ||
-		/^\s*(?:\.{0,2}\/|[A-Za-z0-9_.-]*\/)[^\s]+(?:\s+\S+)*(?:\s*(?:&&|\|\||[;|`])|\$\()/i.test(
-			value,
-		)
-	);
-}
-
-function containsGenericShellCommandSyntax(value: string): boolean {
-	const trimmed = value.trim();
-	if (/^(?:[A-Za-z_][A-Za-z0-9_]*=\S+\s+)+\S+(?:\s+\S+)*$/.test(trimmed)) {
-		return true;
-	}
-	const command = /^[a-z][a-z0-9_.-]*(?:\s+(.+))?$/.exec(trimmed);
-	if (!command?.[1]) {
-		return false;
-	}
-	return /(?:\$[A-Za-z_][A-Za-z0-9_]*|\$\{|`|\$\(|~\/|\.{1,2}\/|&&|\|\||[;|<>])/.test(
-		command[1],
-	);
-}
-
-function sanitizedToolDisplayName(event: {
-	displayName?: string;
-	summaryLabel?: string;
-	toolName: string;
-}): string {
-	return sanitizeOutboundText(toolDisplayName(event)) ?? event.toolName;
-}
-
 function materializedToolExecutionId(event: {
 	toolCallId: string;
 	toolExecutionId?: string;
@@ -1967,7 +1863,6 @@ export class HostedAgentRuntimeProgressRecorder {
 		}
 		const toolExecutionId = materializedToolExecutionId(event);
 		const prompt = nonEmptyString(event.args.prompt);
-		const sanitizedPrompt = sanitizeOutboundText(prompt);
 		const model = nonEmptyString(event.args.model);
 		const reasoningEffort = nonEmptyString(event.args.reasoningEffort);
 		const codexSubagentOperationName = codexSubagentOperation(codexTool);
@@ -1984,8 +1879,8 @@ export class HostedAgentRuntimeProgressRecorder {
 				codexTool === "wait"
 					? PlatformAgentWorkItemStateValue.Waiting
 					: PlatformAgentWorkItemStateValue.Running,
-			title: sanitizedToolDisplayName(event),
-			...(sanitizedPrompt ? { goal: sanitizedPrompt } : {}),
+			title: toolDisplayName(event),
+			...(prompt ? { goal: prompt } : {}),
 			nextAction: codexSubagentNextAction(codexTool),
 			...(toolExecutionId ? { toolExecutionId } : {}),
 			evidenceRefs: [
@@ -1999,8 +1894,8 @@ export class HostedAgentRuntimeProgressRecorder {
 				codex_tool: codexTool,
 				tool_call_id: event.toolCallId,
 				tool_name: event.toolName,
-				display_name: sanitizeOutboundText(event.displayName),
-				summary_label: sanitizeOutboundText(event.summaryLabel),
+				display_name: event.displayName,
+				summary_label: event.summaryLabel,
 				codex_subagent_operation: codexSubagentOperationName,
 				codex_subagent_edge_status: activeCodexSubagentEdgeStatus(codexTool),
 				sender_thread_id: nonEmptyString(event.args.senderThreadId),
@@ -2028,7 +1923,7 @@ export class HostedAgentRuntimeProgressRecorder {
 				childRunIds,
 				linkedWorkItemIds,
 				workGraph,
-				prompt: sanitizedPrompt,
+				prompt,
 				model,
 				reasoningEffort,
 			});
@@ -2074,8 +1969,8 @@ export class HostedAgentRuntimeProgressRecorder {
 					owner_child_run_id: input.ownerChildRunId,
 					tool_call_id: input.event.toolCallId,
 					tool_name: input.event.toolName,
-					display_name: sanitizeOutboundText(input.event.displayName),
-					summary_label: sanitizeOutboundText(input.event.summaryLabel),
+					display_name: input.event.displayName,
+					summary_label: input.event.summaryLabel,
 					from_agent_id: fromAgentId,
 					to_agent_id: toAgentId,
 					required_capability: requiredCapability,

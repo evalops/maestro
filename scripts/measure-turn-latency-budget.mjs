@@ -1,7 +1,14 @@
 #!/usr/bin/env node
 
-import { spawnSync } from "node:child_process";
-import { existsSync, mkdtempSync, rmSync, statSync } from "node:fs";
+import { spawn, spawnSync } from "node:child_process";
+import {
+	existsSync,
+	mkdirSync,
+	mkdtempSync,
+	readdirSync,
+	rmSync,
+	statSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { performance } from "node:perf_hooks";
@@ -82,6 +89,49 @@ function commandEnv(extra = {}) {
 		EVALOPS_INTERNAL_TELEMETRY_DISABLED: "1",
 		...extra,
 	};
+}
+
+function parseProfileCheckpoints(stderr) {
+	const startup = [];
+	const query = [];
+	for (const line of (stderr ?? "").split("\n")) {
+		const match = line.match(/^\[(startup|query)\]\s+(\d+)ms\s+([^ ]+)/);
+		if (!match) continue;
+		const checkpoint = {
+			ms: Number.parseInt(match[2], 10),
+			checkpoint: match[3],
+			line,
+		};
+		if (match[1] === "startup") {
+			startup.push(checkpoint);
+		} else {
+			query.push(checkpoint);
+		}
+	}
+	return { startup, query };
+}
+
+function firstCheckpointMs(checkpoints, name) {
+	return checkpoints.find((entry) => entry.checkpoint === name)?.ms;
+}
+
+function summarizeOptional(samples) {
+	return summarize(samples.filter((value) => Number.isFinite(value)));
+}
+
+function findFiles(root, predicate, results = []) {
+	if (!existsSync(root)) {
+		return results;
+	}
+	for (const entry of readdirSync(root, { withFileTypes: true })) {
+		const fullPath = join(root, entry.name);
+		if (entry.isDirectory()) {
+			findFiles(fullPath, predicate, results);
+		} else if (predicate(fullPath)) {
+			results.push(fullPath);
+		}
+	}
+	return results;
 }
 
 async function measurePromptAssembly(iterations) {
@@ -212,6 +262,380 @@ function measureMockTurn(iterations) {
 	};
 }
 
+function classifyJsonEvent(event) {
+	if (!event || typeof event !== "object") {
+		return {};
+	}
+	const isUser =
+		event.role === "user" ||
+		(event.type === "turn" && event.role === "user") ||
+		(event.type === "item" &&
+			event.subtype === "message_complete" &&
+			event.turnId === "turn-1");
+	const isAssistantOrTool =
+		(event.type === "turn" &&
+			(event.role === "assistant" || event.role === "tool")) ||
+		(event.type === "item" &&
+			["message_delta", "tool_call", "tool_result", "tool_update"].includes(
+				event.subtype,
+			)) ||
+		(event.type === "item" &&
+			event.subtype === "message_complete" &&
+			event.turnId !== "turn-1");
+	const isAssistantDelta =
+		event.type === "item" && event.subtype === "message_delta";
+	const isTool =
+		event.type === "item" &&
+		["tool_call", "tool_result", "tool_update"].includes(event.subtype);
+	return { isUser, isAssistantOrTool, isAssistantDelta, isTool };
+}
+
+function runExecReplaySample(readSessionEntries) {
+	return new Promise((resolve) => {
+		const dir = mkdtempSync(join(tmpdir(), "maestro-exec-latency-"));
+		const homeDir = join(dir, "home");
+		const maestroHome = join(dir, "maestro-home");
+		const maestroAgentDir = join(dir, "maestro-agent");
+		const sessionDir = join(dir, "sessions");
+		mkdirSync(homeDir, { recursive: true });
+		mkdirSync(maestroHome, { recursive: true });
+		mkdirSync(maestroAgentDir, { recursive: true });
+		const startedAt = performance.now();
+		const sample = {
+			status: null,
+			signal: null,
+			wall_ms: 0,
+			first_stdout_line_ms: undefined,
+			first_json_event_ms: undefined,
+			first_user_json_event_ms: undefined,
+			first_assistant_or_tool_event_ms: undefined,
+			first_assistant_delta_ms: undefined,
+			first_tool_event_ms: undefined,
+			first_non_json_stdout_line_ms: undefined,
+			first_startup_profile_ms: undefined,
+			startup_exec_ready_parent_ms: undefined,
+			first_query_profile_ms: undefined,
+			query_tools_prepared_parent_ms: undefined,
+			query_model_first_token_parent_ms: undefined,
+			query_turn_complete_parent_ms: undefined,
+			stdout_lines: 0,
+			non_json_stdout_lines: 0,
+			non_json_stdout_samples: [],
+			json_events: 0,
+			session_file_visible_ms: undefined,
+			session_read_duration_ms: undefined,
+			session_entries: 0,
+			session_file_count: 0,
+			startup_checkpoints: [],
+			query_checkpoints: [],
+			error: undefined,
+		};
+		let stdoutBuffer = "";
+		let stderrBuffer = "";
+		let stderr = "";
+		let settled = false;
+
+		const child = spawn(
+			node,
+			[
+				cliPath,
+				"exec",
+				"--replay",
+				"test/fixtures/scripted-replay/basic-tool-call.json",
+				"--tools",
+				"read",
+				"--json",
+				"Replay the CLI golden path.",
+			],
+			{
+				cwd: repoRoot,
+				env: commandEnv({
+					HOME: homeDir,
+					MAESTRO_HOME: maestroHome,
+					MAESTRO_AGENT_DIR: maestroAgentDir,
+					MAESTRO_SESSION_DIR: sessionDir,
+					MAESTRO_STARTUP_PROFILE: "1",
+					MAESTRO_QUERY_PROFILE: "1",
+					ANTHROPIC_API_KEY: "test-key",
+					OPENAI_API_KEY: "test-key",
+				}),
+				stdio: ["ignore", "pipe", "pipe"],
+			},
+		);
+
+		const timeout = setTimeout(() => {
+			if (!settled) {
+				sample.error = "timeout";
+				child.kill("SIGTERM");
+			}
+		}, 15_000);
+
+		const processLine = (line) => {
+			if (!line.trim()) return;
+			const elapsed = performance.now() - startedAt;
+			sample.stdout_lines++;
+			sample.first_stdout_line_ms ??= elapsed;
+			if (!line.trimStart().startsWith("{")) {
+				sample.non_json_stdout_lines++;
+				sample.first_non_json_stdout_line_ms ??= elapsed;
+				if (sample.non_json_stdout_samples.length < 5) {
+					sample.non_json_stdout_samples.push(line.slice(0, 160));
+				}
+				return;
+			}
+			let event;
+			try {
+				event = JSON.parse(line);
+			} catch {
+				sample.non_json_stdout_lines++;
+				sample.first_non_json_stdout_line_ms ??= elapsed;
+				if (sample.non_json_stdout_samples.length < 5) {
+					sample.non_json_stdout_samples.push(line.slice(0, 160));
+				}
+				return;
+			}
+			sample.json_events++;
+			sample.first_json_event_ms ??= elapsed;
+			const classification = classifyJsonEvent(event);
+			if (classification.isUser) {
+				sample.first_user_json_event_ms ??= elapsed;
+			}
+			if (classification.isAssistantOrTool) {
+				sample.first_assistant_or_tool_event_ms ??= elapsed;
+			}
+			if (classification.isAssistantDelta) {
+				sample.first_assistant_delta_ms ??= elapsed;
+			}
+			if (classification.isTool) {
+				sample.first_tool_event_ms ??= elapsed;
+			}
+		};
+		const processStderrLine = (line) => {
+			if (!line.trim()) return;
+			const match = line.match(/^\[(startup|query)\]\s+(\d+)ms\s+([^ ]+)/);
+			if (!match) return;
+			const elapsed = performance.now() - startedAt;
+			const scope = match[1];
+			const checkpoint = match[3];
+			if (scope === "startup") {
+				sample.first_startup_profile_ms ??= elapsed;
+				if (checkpoint === "exec:ready") {
+					sample.startup_exec_ready_parent_ms ??= elapsed;
+				}
+				return;
+			}
+			sample.first_query_profile_ms ??= elapsed;
+			if (checkpoint === "tools:prepared") {
+				sample.query_tools_prepared_parent_ms ??= elapsed;
+			} else if (checkpoint === "model:first-token") {
+				sample.query_model_first_token_parent_ms ??= elapsed;
+			} else if (checkpoint === "turn:complete") {
+				sample.query_turn_complete_parent_ms ??= elapsed;
+			}
+		};
+
+		child.stdout.on("data", (chunk) => {
+			stdoutBuffer += chunk.toString("utf8");
+			const lines = stdoutBuffer.split("\n");
+			stdoutBuffer = lines.pop() ?? "";
+			for (const line of lines) {
+				processLine(line);
+			}
+		});
+		child.stderr.on("data", (chunk) => {
+			const text = chunk.toString("utf8");
+			stderr += text;
+			stderrBuffer += text;
+			const lines = stderrBuffer.split("\n");
+			stderrBuffer = lines.pop() ?? "";
+			for (const line of lines) {
+				processStderrLine(line);
+			}
+		});
+		child.on("error", (error) => {
+			sample.error = error.message;
+		});
+		child.on("close", (status, signal) => {
+			settled = true;
+			clearTimeout(timeout);
+			if (stdoutBuffer) {
+				processLine(stdoutBuffer);
+			}
+			if (stderrBuffer) {
+				processStderrLine(stderrBuffer);
+			}
+			sample.status = status;
+			sample.signal = signal;
+			sample.wall_ms = performance.now() - startedAt;
+			const checkpoints = parseProfileCheckpoints(stderr);
+			sample.startup_checkpoints = checkpoints.startup;
+			sample.query_checkpoints = checkpoints.query;
+
+			const sessionReadStart = performance.now();
+			try {
+				const sessionFiles = findFiles(
+					sessionDir,
+					(filePath) =>
+						filePath.endsWith(".jsonl") &&
+						!filePath.endsWith("session-migration-state.jsonl"),
+				);
+				sample.session_file_count = sessionFiles.length;
+				if (sessionFiles[0]) {
+					const entries = readSessionEntries(sessionFiles[0]);
+					sample.session_entries = entries.length;
+					sample.session_file_visible_ms = performance.now() - startedAt;
+				}
+				sample.session_read_duration_ms = performance.now() - sessionReadStart;
+			} catch (error) {
+				sample.error = error instanceof Error ? error.message : String(error);
+			} finally {
+				rmSync(dir, { recursive: true, force: true });
+			}
+			resolve(sample);
+		});
+	});
+}
+
+async function measureExecReplayTimeline(iterations) {
+	const { readSessionEntries } = await import(
+		join(repoRoot, "dist", "session", "session-context.js")
+	);
+	const samples = [];
+	const failures = [];
+	for (let i = 0; i < iterations; i++) {
+		const sample = await runExecReplaySample(readSessionEntries);
+		samples.push(sample);
+		if (sample.status !== 0 || sample.error) {
+			failures.push({
+				status: sample.status,
+				signal: sample.signal,
+				error: sample.error,
+			});
+		}
+	}
+
+	const startupCheckpointSamples = (name) =>
+		samples
+			.map((sample) => firstCheckpointMs(sample.startup_checkpoints, name))
+			.filter((value) => value !== undefined);
+	const queryCheckpointSamples = (name) =>
+		samples
+			.map((sample) => firstCheckpointMs(sample.query_checkpoints, name))
+			.filter((value) => value !== undefined);
+
+	return {
+		wall: summarize(samples.map((sample) => sample.wall_ms)),
+		first_stdout_line: summarizeOptional(
+			samples.map((sample) => sample.first_stdout_line_ms),
+		),
+		first_non_json_stdout_line: summarizeOptional(
+			samples.map((sample) => sample.first_non_json_stdout_line_ms),
+		),
+		first_json_event: summarizeOptional(
+			samples.map((sample) => sample.first_json_event_ms),
+		),
+		first_user_json_event: summarizeOptional(
+			samples.map((sample) => sample.first_user_json_event_ms),
+		),
+		first_assistant_or_tool_event: summarizeOptional(
+			samples.map((sample) => sample.first_assistant_or_tool_event_ms),
+		),
+		first_assistant_delta: summarizeOptional(
+			samples.map((sample) => sample.first_assistant_delta_ms),
+		),
+		first_tool_event: summarizeOptional(
+			samples.map((sample) => sample.first_tool_event_ms),
+		),
+		session_file_visible_after_exit: summarizeOptional(
+			samples.map((sample) => sample.session_file_visible_ms),
+		),
+		session_read_after_exit: summarizeOptional(
+			samples.map((sample) => sample.session_read_duration_ms),
+		),
+		startup_process_start_parent: summarizeOptional(
+			samples.map((sample) => sample.first_startup_profile_ms),
+		),
+		startup_exec_ready_parent: summarizeOptional(
+			samples.map((sample) => sample.startup_exec_ready_parent_ms),
+		),
+		startup_agent_ready: summarizeOptional(startupCheckpointSamples("agent:ready")),
+		startup_exec_ready: summarizeOptional(startupCheckpointSamples("exec:ready")),
+		query_prompt_assembled: summarizeOptional(
+			queryCheckpointSamples("prompt:assembled"),
+		),
+		query_tools_prepared: summarizeOptional(
+			queryCheckpointSamples("tools:prepared"),
+		),
+		query_tools_prepared_parent: summarizeOptional(
+			samples.map((sample) => sample.query_tools_prepared_parent_ms),
+		),
+		query_model_request_start: summarizeOptional(
+			queryCheckpointSamples("model:request:start"),
+		),
+		query_model_first_token: summarizeOptional(
+			queryCheckpointSamples("model:first-token"),
+		),
+		query_model_first_token_parent: summarizeOptional(
+			samples.map((sample) => sample.query_model_first_token_parent_ms),
+		),
+		query_turn_complete: summarizeOptional(
+			queryCheckpointSamples("turn:complete"),
+		),
+		query_turn_complete_parent: summarizeOptional(
+			samples.map((sample) => sample.query_turn_complete_parent_ms),
+		),
+		stdout_lines: summarize(samples.map((sample) => sample.stdout_lines)),
+		non_json_stdout_lines: summarize(
+			samples.map((sample) => sample.non_json_stdout_lines),
+		),
+		non_json_stdout_samples: samples
+			.flatMap((sample) => sample.non_json_stdout_samples)
+			.filter((line, index, lines) => lines.indexOf(line) === index)
+			.slice(0, 10),
+		json_events: summarize(samples.map((sample) => sample.json_events)),
+		session_entries: summarize(samples.map((sample) => sample.session_entries)),
+		samples: samples.map((sample) => ({
+			status: sample.status,
+			wall_ms: Number(sample.wall_ms.toFixed(1)),
+			first_non_json_stdout_line_ms:
+				sample.first_non_json_stdout_line_ms === undefined
+					? undefined
+					: Number(sample.first_non_json_stdout_line_ms.toFixed(1)),
+			first_json_event_ms:
+				sample.first_json_event_ms === undefined
+					? undefined
+					: Number(sample.first_json_event_ms.toFixed(1)),
+			first_assistant_or_tool_event_ms:
+				sample.first_assistant_or_tool_event_ms === undefined
+					? undefined
+					: Number(sample.first_assistant_or_tool_event_ms.toFixed(1)),
+			startup_process_start_parent_ms:
+				sample.first_startup_profile_ms === undefined
+					? undefined
+					: Number(sample.first_startup_profile_ms.toFixed(1)),
+			startup_exec_ready_parent_ms:
+				sample.startup_exec_ready_parent_ms === undefined
+					? undefined
+					: Number(sample.startup_exec_ready_parent_ms.toFixed(1)),
+			query_tools_prepared_parent_ms:
+				sample.query_tools_prepared_parent_ms === undefined
+					? undefined
+					: Number(sample.query_tools_prepared_parent_ms.toFixed(1)),
+			query_model_first_token_parent_ms:
+				sample.query_model_first_token_parent_ms === undefined
+					? undefined
+					: Number(sample.query_model_first_token_parent_ms.toFixed(1)),
+			query_turn_complete_parent_ms:
+				sample.query_turn_complete_parent_ms === undefined
+					? undefined
+					: Number(sample.query_turn_complete_parent_ms.toFixed(1)),
+			non_json_stdout_lines: sample.non_json_stdout_lines,
+			session_entries: sample.session_entries,
+		})),
+		failures,
+	};
+}
+
 async function measureSessionWriteRead(iterations) {
 	const { SessionFileWriter } = await import(
 		join(repoRoot, "dist", "session", "file-writer.js")
@@ -308,6 +732,122 @@ async function measureTraceNormalizeExport(iterations) {
 	return {
 		span_count: spanCount,
 		...summarize(samples),
+	};
+}
+
+function camelTraceRowToListRow(row) {
+	return {
+		trace_id: row.traceId,
+		workspace_id: row.workspaceId,
+		agent_id: row.agentId,
+		duration_ms: row.durationMs,
+		status: row.status,
+		spans: row.spans,
+		span_count: Array.isArray(row.spans) ? row.spans.length : 0,
+		created_at: row.createdAt,
+	};
+}
+
+function createInMemoryTraceDb() {
+	const rows = new Map();
+	return {
+		insert() {
+			let pending;
+			return {
+				values(value) {
+					pending = value;
+					return this;
+				},
+				onConflictDoUpdate() {
+					return this;
+				},
+				async returning() {
+					const previous = rows.get(pending.traceId);
+					const createdAt =
+						previous && previous.createdAt < pending.createdAt
+							? previous.createdAt
+							: pending.createdAt;
+					const row = { ...pending, createdAt };
+					rows.set(row.traceId, row);
+					return [row];
+				},
+			};
+		},
+		select() {
+			return {
+				from() {
+					return {
+						where() {
+							return {
+								limit() {
+									return Array.from(rows.values()).slice(0, 1);
+								},
+							};
+						},
+					};
+				},
+			};
+		},
+		async execute() {
+			return Array.from(rows.values())
+				.sort((a, b) => {
+					const createdDelta =
+						new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime();
+					return createdDelta || a.traceId.localeCompare(b.traceId);
+				})
+				.map(camelTraceRowToListRow);
+		},
+	};
+}
+
+async function measureTraceServiceVisibility(iterations) {
+	const { TracesService } = await import(
+		join(repoRoot, "dist", "services", "traces", "index.js")
+	);
+	const writeSamples = [];
+	const readSamples = [];
+	const indexSamples = [];
+	const totalSamples = [];
+	const spanCount = 25;
+
+	for (let i = 0; i < iterations; i++) {
+		const db = createInMemoryTraceDb();
+		const service = new TracesService(() => db, () => true);
+		const input = {
+			...sampleTraceInput(spanCount),
+			traceId: `trace-latency-${i}`,
+			createdAt: new Date(1_000 + i).toISOString(),
+		};
+		const totalStart = performance.now();
+		const writeStart = performance.now();
+		const recorded = await service.recordTrace(input);
+		writeSamples.push(performance.now() - writeStart);
+
+		const readStart = performance.now();
+		const read = await service.getTrace(recorded.traceId);
+		readSamples.push(performance.now() - readStart);
+
+		const indexStart = performance.now();
+		const listed = await service.listTraces({ limit: 10, offset: 0 });
+		indexSamples.push(performance.now() - indexStart);
+		totalSamples.push(performance.now() - totalStart);
+
+		if (read?.traceId !== recorded.traceId) {
+			throw new Error("Trace read visibility failed");
+		}
+		if (
+			!listed.traces.some((trace) => trace.traceId === recorded.traceId)
+		) {
+			throw new Error("Trace index visibility failed");
+		}
+	}
+
+	return {
+		span_count: spanCount,
+		write_flush: summarize(writeSamples),
+		read_visible: summarize(readSamples),
+		index_visible: summarize(indexSamples),
+		total_write_read_index: summarize(totalSamples),
 	};
 }
 
@@ -462,8 +1002,40 @@ function printTable(results) {
 			"turn.mock_tools_prepared_ms",
 			results.mock_turn.profile_checkpoints.at(-1)?.ms ?? "n/a",
 		],
+		[
+			"turn.exec_runtime_start_parent.median_ms",
+			results.exec_replay.startup_process_start_parent.median_ms,
+		],
+		[
+			"turn.exec_ready_parent.median_ms",
+			results.exec_replay.startup_exec_ready_parent.median_ms,
+		],
+		[
+			"turn.exec_first_json.median_ms",
+			results.exec_replay.first_json_event.median_ms,
+		],
+		[
+			"turn.exec_non_json_stdout_lines.median",
+			results.exec_replay.non_json_stdout_lines.median_ms,
+		],
+		[
+			"turn.exec_first_assistant_or_tool.median_ms",
+			results.exec_replay.first_assistant_or_tool_event.median_ms,
+		],
+		[
+			"turn.exec_query_prompt_assembled.median_ms",
+			results.exec_replay.query_prompt_assembled.median_ms,
+		],
+		[
+			"turn.exec_complete.median_ms",
+			results.exec_replay.query_turn_complete.median_ms,
+		],
 		["session.write_read.median_ms", results.session_io.median_ms],
 		["trace.normalize_export.median_ms", results.traces.median_ms],
+		[
+			"trace.write_read_index.median_ms",
+			results.trace_service.total_write_read_index.median_ms,
+		],
 		[
 			"ui.low_bw.render_requests.median",
 			results.ui_low_bandwidth.render_requests.median_ms,
@@ -501,8 +1073,10 @@ async function main() {
 		commands,
 		prompt_context: await measurePromptAssembly(options.iterations),
 		mock_turn: measureMockTurn(options.iterations),
+		exec_replay: await measureExecReplayTimeline(options.iterations),
 		session_io: await measureSessionWriteRead(options.iterations),
 		traces: await measureTraceNormalizeExport(options.iterations),
+		trace_service: await measureTraceServiceVisibility(options.iterations),
 		ui_low_bandwidth: await measureLowBandwidthUi(options.iterations),
 	};
 
