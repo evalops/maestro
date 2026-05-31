@@ -444,7 +444,9 @@ export function createMcpToolWrapper(
 		options?.parallelSafety?.provenance ??
 		(options?.supportsParallelToolCalls === true ? "static_config" : "none");
 	const parallelMaxConcurrency = options?.parallelSafety?.maxConcurrency;
-	const advertisedReadOnly = options?.parallelSafety?.readOnlyHint === true;
+	const advertisedReadOnly =
+		options?.parallelSafety?.readOnlyHint === true &&
+		mcpAnnotations?.destructiveHint !== true;
 	const annotations: ToolAnnotations | undefined =
 		mcpAnnotations || advertisedReadOnly
 			? {
