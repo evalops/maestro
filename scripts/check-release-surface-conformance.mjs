@@ -17,6 +17,7 @@ const requiredAreas = [
 	"packed-runtime-workspaces",
 	"installed-package-audit",
 	"registry-install-smoke",
+	"release-observability-query-contract",
 	"published-replay-e2e",
 	"published-replay-evidence-verifier",
 	"published-replay-release-gate",
@@ -24,6 +25,7 @@ const requiredAreas = [
 	"release-workflow",
 	"tag-release-workflow",
 	"public-mirror-workflow",
+	"public-mirror-package-scripts",
 	"public-mirror-contract",
 	"prepared-public-mirror",
 	"release-surface-docs",
@@ -45,6 +47,7 @@ const registryInstallSmokeRequiredAnchors = [
 	"runNpxCliSmoke",
 	"runBunxCliSmoke",
 	"runBunRuntimeCliSmoke",
+	"MAESTRO_ALLOW_REGISTRY_BUN_INSTALL_SMOKE_SKIP",
 ];
 
 const publishedReplayEvidenceVerifierRequiredAnchors = [
@@ -58,13 +61,33 @@ const publishedReplayEvidenceVerifierRequiredAnchors = [
 	'"agent-runtime-lifecycle"',
 	"function toolExecutionCoverageIsValid",
 	"function agentRuntimeLifecycleIsValid",
+	"releaseObservabilityQueryDescriptorIsValid",
 	"assertPublishedReplayReleaseGate(evidence);",
+];
+
+const releaseObservabilityQueryContractRequiredAnchors = [
+	"RELEASE_OBSERVABILITY_QUERY_SCHEMA",
+	"REQUIRED_OBSERVABILITY_QUERY_TRACES",
+	"export function releaseObservabilityQueryDescriptor",
+	"export function releaseObservabilityQueryDescriptorIsValid",
+	"agent-runtime-lifecycle",
+	"final-status",
 ];
 
 const publishedReplayReleaseGateRequiredAnchors = [
 	"export function assertPublishedReplayReleaseGate",
 	"evidence?.releaseGate?.satisfied === true",
 	"Published replay release gate failed",
+];
+
+const publicMirrorPackageScriptRequiredAnchors = [
+	'pkg.scripts["release:verify:published"] =',
+	'"node scripts/smoke-registry-install.js";',
+	'pkg.scripts["release:verify:published:e2e"] =',
+	'"node scripts/smoke-published-replay-e2e.js";',
+	'pkg.scripts["release:verify:published:evidence"] =',
+	'"node scripts/verify-published-replay-evidence.js";',
+	'pkg.scripts["release:deprecate"] = "node scripts/deprecate-release.js";',
 ];
 
 export function loadReleaseSurfaceConformanceManifest(
@@ -156,6 +179,23 @@ export function checkReleaseSurfaceConformance({
 				}
 			}
 		}
+		if (check.area === "release-observability-query-contract") {
+			if (check.path !== "scripts/release-observability-query-contract.js") {
+				failures.push(
+					`${label} must use scripts/release-observability-query-contract.js as release observability query evidence`,
+				);
+			}
+			if (check.evidenceType !== "source") {
+				failures.push(
+					`${label} must use source evidence for release observability query validation`,
+				);
+			}
+			for (const requiredAnchor of releaseObservabilityQueryContractRequiredAnchors) {
+				if (!check.anchors?.includes(requiredAnchor)) {
+					failures.push(`${label} must anchor ${requiredAnchor}`);
+				}
+			}
+		}
 		if (check.area === "published-replay-release-gate") {
 			if (check.path !== "scripts/published-replay-evidence-gate.js") {
 				failures.push(
@@ -168,6 +208,23 @@ export function checkReleaseSurfaceConformance({
 				);
 			}
 			for (const requiredAnchor of publishedReplayReleaseGateRequiredAnchors) {
+				if (!check.anchors?.includes(requiredAnchor)) {
+					failures.push(`${label} must anchor ${requiredAnchor}`);
+				}
+			}
+		}
+		if (check.area === "public-mirror-package-scripts") {
+			if (check.path !== "scripts/prepare-public-release-mirror.mjs") {
+				failures.push(
+					`${label} must use scripts/prepare-public-release-mirror.mjs as public mirror package-script evidence`,
+				);
+			}
+			if (check.evidenceType !== "source") {
+				failures.push(
+					`${label} must use source evidence for public mirror package-script validation`,
+				);
+			}
+			for (const requiredAnchor of publicMirrorPackageScriptRequiredAnchors) {
 				if (!check.anchors?.includes(requiredAnchor)) {
 					failures.push(`${label} must anchor ${requiredAnchor}`);
 				}

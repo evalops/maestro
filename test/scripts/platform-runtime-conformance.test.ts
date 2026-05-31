@@ -147,6 +147,57 @@ describe("Platform runtime conformance", () => {
 		);
 	});
 
+	it("requires A2A realtime delivery producer evidence to stay release-gated", () => {
+		const manifest = loadPlatformRuntimeManifest();
+		const withoutRealtimeProducer = {
+			...manifest,
+			checks: manifest.checks
+				.filter((check) => check.area !== "a2a-live-evidence-producer")
+				.map((check) => ({
+					...check,
+					lifecycle: Array.isArray(check.lifecycle)
+						? check.lifecycle.filter((claim) => claim !== "realtime-delivery")
+						: check.lifecycle,
+				})),
+		};
+
+		const failures = checkPlatformRuntimeConformance({
+			manifest: withoutRealtimeProducer,
+		});
+
+		expect(failures).toContain(
+			"manifest is missing required area a2a-live-evidence-producer",
+		);
+		expect(failures).toContain(
+			"manifest is missing lifecycle claim realtime-delivery",
+		);
+	});
+
+	it("requires realtime delivery to stay bound to the A2A evidence producer", () => {
+		const manifest = loadPlatformRuntimeManifest();
+		const withoutProducerRealtimeClaim = {
+			...manifest,
+			checks: manifest.checks.map((check) =>
+				check.area === "a2a-live-evidence-producer"
+					? {
+							...check,
+							lifecycle: check.lifecycle.filter(
+								(claim) => claim !== "realtime-delivery",
+							),
+						}
+					: check,
+			),
+		};
+
+		const failures = checkPlatformRuntimeConformance({
+			manifest: withoutProducerRealtimeClaim,
+		});
+
+		expect(failures).toContain(
+			"a2a-live-evidence-producer: scripts/smoke-platform-a2a-delegation-live.ts must include lifecycle claim realtime-delivery",
+		);
+	});
+
 	it("requires lint:evals to invoke the Platform runtime conformance gate", () => {
 		tempDir = join(
 			tmpdir(),

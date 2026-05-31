@@ -27,9 +27,9 @@ const STARTUP_UPDATE_TIMEOUT_ENV = "MAESTRO_STARTUP_UPDATE_TIMEOUT_MS";
 const STARTUP_UPDATE_TTL_ENV = "MAESTRO_STARTUP_UPDATE_RETRY_MS";
 const DEFAULT_INSTALL_TIMEOUT_MS = 60_000;
 const DEFAULT_RETRY_MS = 24 * 60 * 60 * 1_000;
-const DEFAULT_STARTUP_UPDATE_TIMEOUT_MS = 1_500;
-const NPM_PREFIX_TIMEOUT_MS = 2_000;
-const BUN_PREFIX_TIMEOUT_MS = 2_000;
+const DEFAULT_STARTUP_UPDATE_TIMEOUT_MS = 350;
+const NPM_PREFIX_TIMEOUT_MS = 350;
+const BUN_PREFIX_TIMEOUT_MS = 350;
 
 const PACKAGE_MANAGER_ENV_PATTERN =
 	/^(?:npm_config_|NPM_CONFIG_|BUN_CONFIG_|bun_config_|YARN_|yarn_|PNPM_|pnpm_)/u;
@@ -41,6 +41,10 @@ const PACKAGE_MANAGER_ENV_BLOCKLIST = new Set([
 	"MAESTRO_UPDATE_URLS",
 	"MAESTRO_STARTUP_UPDATE_STATE",
 ]);
+const PACKAGE_MANAGER_ENV_ALLOWLIST = new Set([
+	"NPM_CONFIG_PREFIX",
+	"npm_config_prefix",
+]);
 
 const packageManagerEnv = (env: NodeJS.ProcessEnv): NodeJS.ProcessEnv => {
 	const sanitized: NodeJS.ProcessEnv = {};
@@ -51,7 +55,10 @@ const packageManagerEnv = (env: NodeJS.ProcessEnv): NodeJS.ProcessEnv => {
 		if (PACKAGE_MANAGER_ENV_BLOCKLIST.has(key)) {
 			continue;
 		}
-		if (PACKAGE_MANAGER_ENV_PATTERN.test(key)) {
+		if (
+			PACKAGE_MANAGER_ENV_PATTERN.test(key) &&
+			!PACKAGE_MANAGER_ENV_ALLOWLIST.has(key)
+		) {
 			continue;
 		}
 		sanitized[key] = value;
@@ -168,6 +175,18 @@ const shouldSkipForArgs = (args: string[]): string | null => {
 	return null;
 };
 
+const resolveDefaultGlobalInstallContexts = (
+	entrypoint: string | undefined,
+	packageName: string,
+	env: NodeJS.ProcessEnv,
+): GlobalInstallContext[] => {
+	const inferred = inferGlobalInstallContextsFromEntrypoint(
+		entrypoint,
+		packageName,
+	);
+	return inferred.length > 0 ? inferred : resolveGlobalInstallContexts(env);
+};
+
 export const isInstalledPackageEntrypoint = (
 	entrypoint: string | undefined,
 	packageName = getPackageName(),
@@ -223,6 +242,64 @@ const isPackageEntrypointPath = (
 		}
 	}
 	return false;
+};
+
+const inferGlobalInstallContextFromEntrypointPath = (
+	entrypoint: string,
+	packageName: string,
+): GlobalInstallContext | null => {
+	const normalized = entrypoint.replace(/\\/g, "/");
+	const packageEntrypoint = `/node_modules/${packageName}/dist/cli.js`;
+	if (!normalized.endsWith(packageEntrypoint)) {
+		return null;
+	}
+	const prefixCandidate = normalized.slice(0, -packageEntrypoint.length);
+	if (prefixCandidate.endsWith("/lib")) {
+		return {
+			packageManager: "npm",
+			prefix: prefixCandidate.slice(0, -"/lib".length),
+		};
+	}
+	if (prefixCandidate.endsWith("/install/global")) {
+		return { packageManager: "bun", prefix: prefixCandidate };
+	}
+	return null;
+};
+
+const inferGlobalInstallContextsFromEntrypoint = (
+	entrypoint: string | undefined,
+	packageName: string,
+): GlobalInstallContext[] => {
+	if (!entrypoint) {
+		return [];
+	}
+	const contexts: GlobalInstallContext[] = [];
+	const direct = inferGlobalInstallContextFromEntrypointPath(
+		entrypoint,
+		packageName,
+	);
+	if (direct) {
+		contexts.push(direct);
+	}
+	try {
+		const real = inferGlobalInstallContextFromEntrypointPath(
+			realpathSync(entrypoint),
+			packageName,
+		);
+		if (
+			real &&
+			!contexts.some(
+				(context) =>
+					context.packageManager === real.packageManager &&
+					context.prefix === real.prefix,
+			)
+		) {
+			contexts.push(real);
+		}
+	} catch {
+		// If the entrypoint cannot be resolved, fall back to prefix discovery.
+	}
+	return contexts;
 };
 
 const resolveStatePath = (
@@ -371,7 +448,7 @@ export async function attemptStartupUpdate(
 	const env = options.env ?? process.env;
 	const args = options.args ?? process.argv.slice(2);
 	const argv = options.argv ?? process.argv;
-	const packageName = options.packageName ?? getPackageName();
+	const packageName = options.packageName ?? getPackageName(env);
 	const updateMode = envValue(env, STARTUP_UPDATE_ENV);
 	const now = options.now ?? Date.now();
 
@@ -396,7 +473,7 @@ export async function attemptStartupUpdate(
 	const globalInstallContexts =
 		options.globalInstallContexts ??
 		(options.globalPrefix === undefined
-			? resolveGlobalInstallContexts(env)
+			? resolveDefaultGlobalInstallContexts(argv[1], packageName, env)
 			: options.globalPrefix
 				? [{ packageManager: "npm" as const, prefix: options.globalPrefix }]
 				: []);

@@ -986,9 +986,11 @@ fn value_u64_field(value: &Value, names: &[&str]) -> u64 {
         .unwrap_or(0)
 }
 
-struct CodexBridgePrompt {
-    argument: String,
-    temp_dir: PathBuf,
+pub(crate) const CODEX_BRIDGE_DIRECT_ARG_MAX_BYTES: usize = 64 * 1024;
+
+pub(crate) struct CodexBridgePrompt {
+    pub(crate) argument: String,
+    pub(crate) temp_dir: PathBuf,
 }
 
 pub(crate) fn codex_bridge_prompt_body(prompt: &str, attachment_paths: &[String]) -> String {
@@ -1079,7 +1081,7 @@ async fn run_codex_bridge_command(mut command: Command) -> Result<std::process::
     })
 }
 
-async fn prepare_codex_bridge_prompt(
+pub(crate) async fn prepare_codex_bridge_prompt(
     cwd: &Path,
     prompt: &str,
     attachment_paths: &[String],
@@ -1088,16 +1090,21 @@ async fn prepare_codex_bridge_prompt(
     tokio::fs::create_dir_all(&temp_dir)
         .await
         .map_err(|error| format!("failed to create Codex bridge prompt directory: {error}"))?;
+    let body = codex_bridge_prompt_body(prompt, attachment_paths);
+    if body.len() <= CODEX_BRIDGE_DIRECT_ARG_MAX_BYTES {
+        return Ok(CodexBridgePrompt {
+            argument: body,
+            temp_dir,
+        });
+    }
+
     let prompt_path = temp_dir.join("prompt.md");
-    tokio::fs::write(
-        &prompt_path,
-        codex_bridge_prompt_body(prompt, attachment_paths),
-    )
-    .await
-    .map_err(|error| format!("failed to write Codex bridge prompt: {error}"))?;
+    tokio::fs::write(&prompt_path, body)
+        .await
+        .map_err(|error| format!("failed to write Codex bridge prompt file: {error}"))?;
     Ok(CodexBridgePrompt {
         argument: format!(
-            "Use the read tool to read {}. Follow the instructions in that file. If it lists attachment files, inspect them as needed. Reply only with the final answer.",
+            "Use the read tool to read {}. Follow the request in that file. Reply only with the final answer.",
             prompt_path.display()
         ),
         temp_dir,

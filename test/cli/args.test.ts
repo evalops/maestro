@@ -148,6 +148,44 @@ describe("parseArgs", () => {
 		});
 	});
 
+	it("parses sessions list, search, and transfer commands", () => {
+		expect(parseArgs(["sessions", "list", "--json"])).toMatchObject({
+			command: "sessions",
+			subcommand: "list",
+			execJson: true,
+			messages: [],
+		});
+		expect(
+			parseArgs(["sessions", "search", "release", "verification"]),
+		).toMatchObject({
+			command: "sessions",
+			subcommand: "search",
+			messages: ["release", "verification"],
+		});
+		expect(
+			parseArgs([
+				"sessions",
+				"export",
+				"session-123",
+				"./session.json",
+				"--format",
+				"json",
+				"--redact-secrets",
+			]),
+		).toMatchObject({
+			command: "sessions",
+			subcommand: "export",
+			messages: ["session-123", "./session.json"],
+			exportFormat: "json",
+			redactSecrets: true,
+		});
+		expect(parseArgs(["sessions", "import", "./session.jsonl"])).toMatchObject({
+			command: "sessions",
+			subcommand: "import",
+			messages: ["./session.jsonl"],
+		});
+	});
+
 	it("preserves remote command-group arguments for the remote handler", () => {
 		expect(
 			parseArgs([

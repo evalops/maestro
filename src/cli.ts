@@ -1,7 +1,15 @@
 #!/usr/bin/env node
 
+declare const MAESTRO_BUNDLE_RUNTIME: boolean | undefined;
+
 // Suppress punycode deprecation warning from dependencies
 // This warning comes from old dependencies still using the deprecated punycode module
+import {
+	type ImmediateCliExit,
+	getImmediateCliExit,
+	shouldUseInstantCliExit,
+} from "./cli/instant-exit.js";
+
 const originalEmit = process.emit.bind(process) as (
 	event: string | symbol,
 	...args: unknown[]
@@ -79,17 +87,20 @@ async function refreshInstalledCliOnStartup(
 	ignoredEnvKeys: string[] = [],
 ): Promise<void> {
 	try {
-		const [{ getPackageVersion }, { attemptStartupUpdate }] = await Promise.all(
-			[import("./package-metadata.js"), import("./update/startup-refresh.js")],
-		);
+		const [{ getPackageName, getPackageVersion }, { attemptStartupUpdate }] =
+			await Promise.all([
+				import("./package-metadata.js"),
+				import("./update/startup-refresh.js"),
+			]);
 		const env = { ...process.env };
 		for (const key of ignoredEnvKeys) {
 			delete env[key];
 		}
 		const outcome = await attemptStartupUpdate({
 			args,
-			currentVersion: getPackageVersion(),
+			currentVersion: getPackageVersion(env),
 			env,
+			packageName: getPackageName(env),
 		});
 		if (outcome.status === "restarted") {
 			process.exit(outcome.exitCode);
@@ -99,35 +110,53 @@ async function refreshInstalledCliOnStartup(
 	}
 }
 
+async function runImmediateCliExit(exit: ImmediateCliExit): Promise<void> {
+	if (exit.kind === "version") {
+		const { getPackageVersion } = await import("./package-metadata.js");
+		console.log(`Maestro v${getPackageVersion()}`);
+		return;
+	}
+
+	const [{ printHelp }, { getPackageVersion }] = await Promise.all([
+		import("./cli/help.js"),
+		import("./package-metadata.js"),
+	]);
+	printHelp(getPackageVersion(), { includeHidden: exit.includeHidden });
+}
+
+async function runCliRuntime(args: string[]): Promise<void> {
+	if (typeof MAESTRO_BUNDLE_RUNTIME !== "undefined" && MAESTRO_BUNDLE_RUNTIME) {
+		const { runCliRuntime: runRuntime } = await import("./cli-runtime.js");
+		await runRuntime(args);
+		return;
+	}
+	const runtimeEntry = "./cli-runtime." + "js";
+	const { runCliRuntime: runRuntime } = await import(runtimeEntry);
+	await runRuntime(args);
+}
+
 const run = async () => {
 	try {
-		const { loadEnv } = await import("./load-env.js");
-		const loadedEnvKeys = loadEnv();
-		await refreshInstalledCliOnStartup(process.argv.slice(2), loadedEnvKeys);
-
-		if (process.argv[2] === "a2a") {
-			const { handleA2ACommand } = await import("./cli/commands/a2a.js");
-			await handleA2ACommand(process.argv.slice(3));
+		const args = process.argv.slice(2);
+		const immediateExit = getImmediateCliExit(args);
+		let envLoaded = false;
+		let loadedEnvKeys: string[] = [];
+		if (immediateExit !== null) {
+			const { loadEnv } = await import("./load-env.js");
+			loadedEnvKeys = loadEnv();
+			envLoaded = true;
+		}
+		if (shouldUseInstantCliExit(immediateExit, process.env)) {
+			await runImmediateCliExit(immediateExit);
 			return;
 		}
 
-		// Prefer the TypeScript entry when running under Bun during development,
-		// but fall back to the compiled JS for bundled/compiled binaries.
-		const loadMain = async () => {
-			if (process.versions?.bun) {
-				const tsEntry = "./main." + "ts";
-				try {
-					return await import(tsEntry);
-				} catch {
-					// In compiled binaries the .ts source isn't present; use JS output.
-					return await import("./main.js");
-				}
-			}
-			return await import("./main.js");
-		};
-
-		const { main } = await loadMain();
-		await main(process.argv.slice(2));
+		if (!envLoaded) {
+			const { loadEnv } = await import("./load-env.js");
+			loadedEnvKeys = loadEnv();
+		}
+		await refreshInstalledCliOnStartup(args, loadedEnvKeys);
+		await runCliRuntime(args);
 	} catch (err) {
 		if (isHeadlessInvocation(process.argv.slice(2))) {
 			emitHeadlessStartupError(err);

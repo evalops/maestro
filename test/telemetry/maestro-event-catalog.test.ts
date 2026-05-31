@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
 import {
+	REQUIRED_OBSERVABILITY_QUERY_TRACES,
+	releaseObservabilityQueryDescriptor,
+} from "../../scripts/release-observability-query-contract.js";
+import {
 	MAESTRO_BUS_EVENT_CATALOG,
 	MAESTRO_BUS_EVENT_TYPES,
 	MAESTRO_RELEASE_GATE_EVENT_CATEGORIES,
@@ -243,6 +247,58 @@ describe("maestro event catalog", () => {
 				typeUrl.startsWith("type.googleapis.com/"),
 			),
 		).toBe(true);
+	});
+
+	it("keeps release observability query descriptors backed by the event catalog", () => {
+		const releaseCatalog = listMaestroReleaseGateEventCatalog();
+		const query = buildMaestroReleaseGateEventQuery();
+		const querySubjects = new Set(query.subjects);
+		const queryPlatformConsumers = new Set(query.platformConsumers);
+
+		expect(REQUIRED_OBSERVABILITY_QUERY_TRACES).toEqual(
+			expect.arrayContaining([
+				...MAESTRO_RELEASE_GATE_EVENT_CATEGORIES,
+				"search",
+				"agent-runtime-lifecycle",
+			]),
+		);
+
+		for (const traceType of REQUIRED_OBSERVABILITY_QUERY_TRACES) {
+			const descriptor = releaseObservabilityQueryDescriptor(traceType);
+			if (!descriptor) {
+				throw new Error(
+					`Expected release observability descriptor ${traceType}`,
+				);
+			}
+			expect(
+				descriptor.subjects.every((subject) => querySubjects.has(subject)),
+			).toBe(true);
+			expect(
+				descriptor.platformConsumers
+					.filter((consumer) => consumer.startsWith("release."))
+					.every((consumer) => queryPlatformConsumers.has(consumer)),
+			).toBe(true);
+		}
+
+		for (const category of MAESTRO_RELEASE_GATE_EVENT_CATEGORIES) {
+			const descriptor = releaseObservabilityQueryDescriptor(category);
+			if (!descriptor) {
+				throw new Error(
+					`Expected release observability descriptor ${category}`,
+				);
+			}
+			expect(descriptor.subjects).toEqual(
+				expect.arrayContaining([...query.subjectsByCategory[category]]),
+			);
+			for (const consumer of new Set(
+				releaseCatalog
+					.filter((entry) => entry.category === category)
+					.flatMap((entry) => entry.platformConsumers)
+					.filter((consumer) => consumer.startsWith("release.")),
+			)) {
+				expect(descriptor.platformConsumers).toContain(consumer);
+			}
+		}
 	});
 
 	it("flags release-gate subjects outside the explicit release allowlist", () => {

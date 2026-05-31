@@ -174,7 +174,7 @@ describe("planCiChecks", () => {
 			coverage: false,
 			lightPrChecks: true,
 			prChecks: true,
-			publicMirror: false,
+			publicMirror: true,
 			rustHostedConformance: false,
 		});
 		expect(
@@ -337,6 +337,7 @@ describe("planCiChecks", () => {
 					"scripts/plan-nx-test-command.mjs",
 					"scripts/published-replay-evidence-gate.js",
 					"scripts/release-impact-filter.mjs",
+					"scripts/release-observability-query-contract.js",
 					"scripts/release-readiness.js",
 					"scripts/smoke-packed-cli.js",
 					"scripts/smoke-published-replay-e2e.js",
@@ -345,6 +346,7 @@ describe("planCiChecks", () => {
 					"test/scripts/ci-guardrails.test.ts",
 					"test/scripts/deprecate-release.test.ts",
 					"test/scripts/release-impact-filter.test.ts",
+					"test/scripts/release-observability-query-contract.test.ts",
 					"test/scripts/release-surface-conformance.test.ts",
 					"test/scripts/workspace-utils.test.ts",
 				],
@@ -427,6 +429,21 @@ describe("planCiChecks", () => {
 			prChecks: true,
 			publicMirror: true,
 			releaseHelperOnly: true,
+			rustHostedConformance: false,
+		});
+	});
+
+	it("keeps mirrored CI guardrail test changes eligible for public mirror checks", () => {
+		expect(
+			planCiChecks({
+				eventName: "pull_request",
+				changedFiles: ["test/scripts/ci-guardrails.test.ts"],
+			}),
+		).toMatchObject({
+			coverage: false,
+			lightPrChecks: true,
+			prChecks: true,
+			publicMirror: true,
 			rustHostedConformance: false,
 		});
 	});
@@ -592,6 +609,7 @@ describe("planCiChecks", () => {
 					"scripts/sync-public-companion-branch.mjs",
 					"scripts/update-behind-auto-merge-prs.mjs",
 					"scripts/validate-public-package-deps.js",
+					"test/scripts/validate-public-package-deps.test.ts",
 				],
 			}).publicMirror,
 		).toBe(false);
@@ -844,6 +862,9 @@ describe("ci workflow guardrails", () => {
 			"node --check scripts/release-readiness.js",
 		);
 		expect(helperSmokeStep?.run).toContain(
+			"node --check scripts/release-observability-query-contract.js",
+		);
+		expect(helperSmokeStep?.run).toContain(
 			"node --check scripts/smoke-published-replay-e2e.js",
 		);
 		expect(helperSmokeStep?.run).toContain(
@@ -869,6 +890,9 @@ describe("ci workflow guardrails", () => {
 		);
 		expect(helperSmokeStep?.run).toContain(
 			"node --check scripts/check-release-surface-conformance.mjs",
+		);
+		expect(helperSmokeStep?.run).toContain(
+			"test/scripts/release-observability-query-contract.test.ts",
 		);
 		expect(helperSmokeStep?.run).toContain(
 			"test/scripts/release-surface-conformance.test.ts",
@@ -1256,6 +1280,10 @@ describe("ci workflow guardrails", () => {
 		const metadataIndex = steps.findIndex(
 			(step) => step.name === "Generate version metadata",
 		);
+		const authIndex = steps.findIndex(
+			(step) =>
+				step.name === "Authenticate to Google Cloud for release metadata",
+		);
 		const authStep = steps.find(
 			(step) =>
 				step.name === "Authenticate to Google Cloud for release metadata",
@@ -1266,12 +1294,19 @@ describe("ci workflow guardrails", () => {
 		const gcsStep = steps[gcsIndex];
 		const run = gcsStep?.run ?? "";
 
+		if (!isPublicValidationWorkflow(workflow)) {
+			expect(canaryJob).toBeUndefined();
+			return;
+		}
+
 		expect(canaryJob).toBeDefined();
 		expect(canaryJob?.needs).toContain("publish");
 		expect(canaryJob?.permissions?.["id-token"]).toBe("write");
 		expect(validateIndex).toBeGreaterThan(-1);
 		expect(metadataIndex).toBeGreaterThan(validateIndex);
+		expect(authIndex).toBeGreaterThan(metadataIndex);
 		expect(gcsIndex).toBeGreaterThan(metadataIndex);
+		expect(gcsIndex).toBeGreaterThan(authIndex);
 		expect(authStep).toBeDefined();
 		expect(authStep?.uses).toContain("google-github-actions/auth@");
 		expect(gcsStep).toBeDefined();
@@ -1289,11 +1324,11 @@ describe("ci workflow guardrails", () => {
 		});
 		const loadEnvImportIndex = source.indexOf('await import("./load-env.js")');
 		const loadEnvIndex = source.indexOf(
-			"const loadedEnvKeys = loadEnv();",
+			"loadedEnvKeys = loadEnv();",
 			loadEnvImportIndex,
 		);
 		const refreshIndex = source.indexOf(
-			"await refreshInstalledCliOnStartup(process.argv.slice(2), loadedEnvKeys)",
+			"await refreshInstalledCliOnStartup(args, loadedEnvKeys)",
 		);
 
 		expect(loadEnvImportIndex).toBeGreaterThan(-1);
@@ -1691,6 +1726,54 @@ describe("ci workflow guardrails", () => {
 			"${{ steps.public-companion-app-token.outputs.token || secrets.PUBLIC_REPO_SYNC_TOKEN || secrets.PUBLIC_REPO_TOKEN }}",
 		);
 		expect(syncStep?.run).toContain("scripts/sync-public-companion-branch.mjs");
+	});
+
+	it("runs prepared public mirror guardrails during PR mirror validation", () => {
+		const workflow = parse(
+			readFileSync(new URL("../../.github/workflows/ci.yml", import.meta.url), {
+				encoding: "utf8",
+			}),
+		) as Workflow;
+		if (isPublicValidationWorkflow(workflow)) {
+			expect(workflow.jobs?.["public-release-mirror"]).toBeUndefined();
+			return;
+		}
+		const steps = workflow.jobs?.["public-release-mirror"]?.steps ?? [];
+		const stepNames = steps.map((step) => step.name ?? step.id ?? "");
+		const verifyIndex = stepNames.indexOf(
+			"Verify mirrored release files match public repo",
+		);
+		const prepareIndex = stepNames.indexOf(
+			"Prepare public mirror tree for guardrails",
+		);
+		const syncIndex = stepNames.indexOf(
+			"Sync release manifest files into prepared public tree",
+		);
+		const smokeIndex = stepNames.indexOf("Smoke prepared public mirror tree");
+		const setupBunIndex = stepNames.indexOf(
+			"Setup Bun for prepared public mirror guardrails",
+		);
+		const guardrailIndex = stepNames.indexOf(
+			"Run prepared public mirror CI guardrails",
+		);
+
+		expect(verifyIndex).toBeGreaterThanOrEqual(0);
+		expect(prepareIndex).toBeGreaterThan(verifyIndex);
+		expect(syncIndex).toBeGreaterThan(prepareIndex);
+		expect(smokeIndex).toBeGreaterThan(syncIndex);
+		expect(setupBunIndex).toBeGreaterThan(smokeIndex);
+		expect(guardrailIndex).toBeGreaterThan(setupBunIndex);
+		expect(steps[prepareIndex]?.run).toContain(
+			"scripts/prepare-public-release-mirror.mjs",
+		);
+		expect(steps[syncIndex]?.run).toContain("scripts/sync-release-mirror.mjs");
+		expect(steps[smokeIndex]?.run).toContain(
+			"scripts/check-prepared-public-mirror-tree.mjs",
+		);
+		expect(steps[setupBunIndex]?.uses).toBe("./.github/actions/setup-bun-nx");
+		expect(steps[guardrailIndex]?.run).toContain(
+			"scripts/run-prepared-public-mirror-guardrails.mjs",
+		);
 	});
 
 	it("registry-smokes real public release mirror fallback publishes", () => {
@@ -2299,6 +2382,7 @@ describe("planNxTestCommand", () => {
 					"scripts/plan-ci-checks.mjs",
 					"scripts/published-replay-evidence-gate.js",
 					"scripts/release-impact-filter.mjs",
+					"scripts/release-observability-query-contract.js",
 					"scripts/release-readiness.js",
 					"scripts/smoke-packed-cli.js",
 					"scripts/smoke-published-replay-e2e.js",

@@ -665,15 +665,15 @@ describe("ActionFirewall", () => {
 			expect(verdict.action).toBe("allow");
 		});
 
-		it("allows MCP tools with readOnlyHint=true even if destructiveHint=true", async () => {
-			// readOnlyHint takes precedence - tool is safe
+		it("requires approval when destructiveHint=true even if readOnlyHint=true", async () => {
+			// destructiveHint takes precedence for MCP tools
 			const verdict = await defaultActionFirewall.evaluate(
 				makeMcpToolContext("mcp_server_safe_delete", {
 					readOnlyHint: true,
 					destructiveHint: true,
 				}),
 			);
-			expect(verdict.action).toBe("allow");
+			expect(verdict.action).toBe("require_approval");
 		});
 
 		it("does not apply MCP annotation rule to non-MCP tools", async () => {

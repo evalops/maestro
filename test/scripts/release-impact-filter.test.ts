@@ -3,12 +3,14 @@ import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
+import { getPackageMetadata } from "../../scripts/package-metadata.js";
 import {
 	isPackageImpactingPath,
 	packageChangedSinceTag,
 } from "../../scripts/release-impact-filter.mjs";
 
 const fixtures: string[] = [];
+const rootPackageName = getPackageMetadata().name;
 
 function git(root: string, args: string[]) {
 	return execFileSync("git", args, {
@@ -423,6 +425,170 @@ describe("release impact filter", () => {
 			false,
 		);
 		expect(packageChangedSinceTag({ cwd: root, tagTarget })).toBe(false);
+	});
+
+	it("ignores package.json formatting-only mirror drift", () => {
+		const root = makeRepo();
+		writeFixtureFile(
+			root,
+			"package.json",
+			JSON.stringify(
+				{
+					name: rootPackageName,
+					version: "0.10.48",
+					scripts: {
+						"release:check": "node scripts/release-readiness.js release",
+						test: "node ./scripts/run-vitest.js --run",
+					},
+				},
+				null,
+				"\t",
+			),
+		);
+		const tagTarget = commit(root, "initial package metadata");
+
+		writeFixtureFile(
+			root,
+			"package.json",
+			JSON.stringify(
+				{
+					version: "0.10.48",
+					scripts: {
+						test: "node ./scripts/run-vitest.js --run",
+						"release:check": "node scripts/release-readiness.js release",
+					},
+					name: rootPackageName,
+				},
+				null,
+				2,
+			),
+		);
+		commit(root, "public mirror package formatting");
+
+		expect(packageChangedSinceTag({ cwd: root, tagTarget })).toBe(false);
+	});
+
+	it("still treats package.json semantic edits as package impacting", () => {
+		const root = makeRepo();
+		writeFixtureFile(
+			root,
+			"package.json",
+			JSON.stringify(
+				{
+					name: rootPackageName,
+					version: "0.10.48",
+					scripts: {
+						"release:check": "node scripts/release-readiness.js release",
+					},
+				},
+				null,
+				2,
+			),
+		);
+		const tagTarget = commit(root, "initial package metadata");
+
+		writeFixtureFile(
+			root,
+			"package.json",
+			JSON.stringify(
+				{
+					name: rootPackageName,
+					version: "0.10.49",
+					scripts: {
+						"release:check": "node scripts/release-readiness.js release",
+					},
+				},
+				null,
+				2,
+			),
+		);
+		commit(root, "bump package version");
+
+		expect(packageChangedSinceTag({ cwd: root, tagTarget })).toBe(true);
+	});
+
+	it("keeps order-sensitive package exports changes package impacting", () => {
+		const root = makeRepo();
+		writeFixtureFile(
+			root,
+			"packages/contracts/package.json",
+			JSON.stringify(
+				{
+					name: "@evalops/contracts",
+					exports: {
+						".": {
+							types: "./dist/index.d.ts",
+							import: "./dist/index.js",
+							default: "./dist/index.js",
+						},
+					},
+				},
+				null,
+				2,
+			),
+		);
+		const tagTarget = commit(root, "initial package exports");
+
+		writeFixtureFile(
+			root,
+			"packages/contracts/package.json",
+			JSON.stringify(
+				{
+					name: "@evalops/contracts",
+					exports: {
+						".": {
+							default: "./dist/index.js",
+							import: "./dist/index.js",
+							types: "./dist/index.d.ts",
+						},
+					},
+				},
+				null,
+				2,
+			),
+		);
+		commit(root, "reorder conditional exports");
+
+		expect(packageChangedSinceTag({ cwd: root, tagTarget })).toBe(true);
+	});
+
+	it("keeps order-sensitive package typesVersions changes package impacting", () => {
+		const root = makeRepo();
+		writeFixtureFile(
+			root,
+			"packages/contracts/package.json",
+			JSON.stringify(
+				{
+					name: "@evalops/contracts",
+					typesVersions: {
+						">=5.0": { "*": ["dist/ts5/*"] },
+						"*": { "*": ["dist/*"] },
+					},
+				},
+				null,
+				2,
+			),
+		);
+		const tagTarget = commit(root, "initial package type redirects");
+
+		writeFixtureFile(
+			root,
+			"packages/contracts/package.json",
+			JSON.stringify(
+				{
+					name: "@evalops/contracts",
+					typesVersions: {
+						"*": { "*": ["dist/*"] },
+						">=5.0": { "*": ["dist/ts5/*"] },
+					},
+				},
+				null,
+				2,
+			),
+		);
+		commit(root, "reorder type redirects");
+
+		expect(packageChangedSinceTag({ cwd: root, tagTarget })).toBe(true);
 	});
 
 	it("keeps release-critical config and generated-contract paths package impacting", () => {

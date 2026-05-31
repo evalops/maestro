@@ -106,6 +106,7 @@ const RELEASE_HELPER_PACKAGE_FILES = new Set([
 	"scripts/install-smoke-utils.js",
 	"scripts/published-replay-evidence-gate.js",
 	"scripts/release-impact-filter.mjs",
+	"scripts/release-observability-query-contract.js",
 	"scripts/release-readiness.js",
 	"scripts/smoke-packed-cli.js",
 	"scripts/smoke-published-replay-e2e.js",
@@ -118,6 +119,7 @@ const RELEASE_HELPER_TEST_FILES = new Set([
 	"test/scripts/install-smoke-utils.test.ts",
 	"test/scripts/release-context-deps.test.ts",
 	"test/scripts/release-impact-filter.test.ts",
+	"test/scripts/release-observability-query-contract.test.ts",
 	"test/scripts/release-surface-conformance.test.ts",
 	"test/scripts/smoke-published-replay-e2e.test.ts",
 	"test/scripts/verify-published-replay-evidence.test.ts",
@@ -126,6 +128,9 @@ const RELEASE_HELPER_TEST_FILES = new Set([
 const RELEASE_SURFACE_CONFORMANCE_FILES = new Set([
 	"docs/protocols/release-surface-conformance.json",
 	"docs/protocols/release-surface-conformance.md",
+]);
+const PUBLIC_MIRROR_GUARDRAIL_TEST_FILES = new Set([
+	"test/scripts/ci-guardrails.test.ts",
 ]);
 
 function isPackageManifest(path) {
@@ -190,6 +195,7 @@ function shouldSkipPublicMirrorForPath(path) {
 		path === "scripts/sync-public-companion-branch.mjs" ||
 		path === "scripts/update-behind-auto-merge-prs.mjs" ||
 		path === "scripts/validate-public-package-deps.js" ||
+		path === "test/scripts/validate-public-package-deps.test.ts" ||
 		path === "AGENTS.md" ||
 		path === "CLAUDE.md"
 	);
@@ -321,6 +327,7 @@ export function planCiChecks({ eventName, labels = [], changedFiles = [] }) {
 		labelSet.has("run-pr-checks") || ciInfrastructureOnly || !rustOnlySource;
 	const publicMirror =
 		labelSet.has("run-public-mirror") ||
+		files.some((path) => PUBLIC_MIRROR_GUARDRAIL_TEST_FILES.has(path)) ||
 		files.some(
 			(path) =>
 				!isCiInfrastructureOnlyPath(path) && !shouldSkipPublicMirrorForPath(path),

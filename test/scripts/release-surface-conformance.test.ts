@@ -274,6 +274,53 @@ describe("release-surface conformance", () => {
 		);
 	});
 
+	it("requires registry install smokes to keep Bun install checks release-blocking", () => {
+		tempDir = join(
+			tmpdir(),
+			`release-surface-registry-bun-required-${process.pid}-${Date.now()}`,
+		);
+		mkdirSync(join(tempDir, "scripts"), { recursive: true });
+		writeFileSync(
+			join(tempDir, "scripts/smoke-registry-install.js"),
+			[
+				'["install", packageSpec]',
+				'["add", packageSpec]',
+				"runPublishedReplayE2E",
+				"runNpxCliSmoke",
+				"runBunxCliSmoke",
+				"runBunRuntimeCliSmoke",
+				"MAESTRO_SKIP_BUN_INSTALL_SMOKE",
+			].join("\n"),
+			"utf8",
+		);
+
+		const failures = checkReleaseSurfaceConformance({
+			rootDir: tempDir,
+			manifest: {
+				version: 1,
+				checks: [
+					{
+						area: "registry-install-smoke",
+						path: "scripts/smoke-registry-install.js",
+						evidenceType: "live-smoke",
+						anchors: [
+							'["install", packageSpec]',
+							'["add", packageSpec]',
+							"runPublishedReplayE2E",
+							"runNpxCliSmoke",
+							"runBunxCliSmoke",
+							"runBunRuntimeCliSmoke",
+						],
+					},
+				],
+			},
+		});
+
+		expect(failures).toContain(
+			"registry-install-smoke: scripts/smoke-registry-install.js must anchor MAESTRO_ALLOW_REGISTRY_BUN_INSTALL_SMOKE_SKIP",
+		);
+	});
+
 	it("requires published replay verifier coverage anchors", () => {
 		tempDir = join(
 			tmpdir(),
@@ -357,6 +404,53 @@ describe("release-surface conformance", () => {
 
 		expect(failures).toContain(
 			"published-replay-release-gate: scripts/published-replay-evidence-gate.js must anchor Published replay release gate failed",
+		);
+	});
+
+	it("requires public mirror package scripts to expose published verification aliases", () => {
+		tempDir = join(
+			tmpdir(),
+			`release-surface-public-scripts-${process.pid}-${Date.now()}`,
+		);
+		mkdirSync(join(tempDir, "scripts"), { recursive: true });
+		writeFileSync(
+			join(tempDir, "scripts/prepare-public-release-mirror.mjs"),
+			[
+				'pkg.scripts["release:verify:published"] =',
+				'"node scripts/smoke-registry-install.js";',
+				'pkg.scripts["release:verify:published:e2e"] =',
+				'"node scripts/smoke-published-replay-e2e.js";',
+				'pkg.scripts["release:verify:published:evidence"] =',
+				'"node scripts/verify-published-replay-evidence.js";',
+				'pkg.scripts["release:deprecate"] = "node scripts/deprecate-release.js";',
+			].join("\n"),
+			"utf8",
+		);
+
+		const failures = checkReleaseSurfaceConformance({
+			rootDir: tempDir,
+			manifest: {
+				version: 1,
+				checks: [
+					{
+						area: "public-mirror-package-scripts",
+						path: "scripts/prepare-public-release-mirror.mjs",
+						evidenceType: "source",
+						anchors: [
+							'pkg.scripts["release:verify:published"] =',
+							'"node scripts/smoke-registry-install.js";',
+							'pkg.scripts["release:verify:published:e2e"] =',
+							'"node scripts/smoke-published-replay-e2e.js";',
+							'"node scripts/verify-published-replay-evidence.js";',
+							'pkg.scripts["release:deprecate"] = "node scripts/deprecate-release.js";',
+						],
+					},
+				],
+			},
+		});
+
+		expect(failures).toContain(
+			'public-mirror-package-scripts: scripts/prepare-public-release-mirror.mjs must anchor pkg.scripts["release:verify:published:evidence"] =',
 		);
 	});
 

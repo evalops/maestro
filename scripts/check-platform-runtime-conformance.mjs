@@ -17,8 +17,10 @@ const requiredAreas = [
 	"toolexecution-client-contract",
 	"toolexecution-bridge-linkage",
 	"toolexecution-bridge-approval-output",
+	"toolexecution-bridge-retry-policy",
 	"live-platform-lifecycle-smoke",
 	"a2a-live-evidence-contract",
+	"a2a-live-evidence-producer",
 	"a2a-push-message-boundary",
 	"release-gate",
 ];
@@ -39,9 +41,14 @@ const requiredLifecycleClaims = [
 	"durable-a2a-ids",
 	"auth-boundaries",
 	"trace-correlation",
+	"realtime-delivery",
 	"push-notifications",
 	"release-gate",
 ];
+
+const requiredLifecycleClaimsByArea = new Map([
+	["a2a-live-evidence-producer", ["realtime-delivery"]],
+]);
 
 const allowedEvidenceTypes = new Set([
 	"source",
@@ -112,6 +119,14 @@ export function checkPlatformRuntimeConformance({
 		} else {
 			for (const claim of check.lifecycle) {
 				lifecycleClaims.add(claim);
+			}
+			for (const requiredClaim of requiredLifecycleClaimsByArea.get(check.area) ??
+				[]) {
+				if (!check.lifecycle.includes(requiredClaim)) {
+					failures.push(
+						`${label} must include lifecycle claim ${requiredClaim}`,
+					);
+				}
 			}
 		}
 		if (!Array.isArray(check.anchors) || check.anchors.length === 0) {

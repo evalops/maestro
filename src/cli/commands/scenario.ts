@@ -122,6 +122,14 @@ function rejectRemoteScriptedScenarioRelativeFileAssertions(
 	if (!isRemoteScenarioSource(source)) {
 		return;
 	}
+	if (
+		scenario.workspaceManifestPath &&
+		!isAbsolute(scenario.workspaceManifestPath)
+	) {
+		throw new Error(
+			`Remote scripted scenario ${scenarioSourceLabel(source)} workspaceManifestPath must be absolute; relative workspace manifests are not supported for remote scripted scenarios.`,
+		);
+	}
 	for (const assertion of scenario.assertions ?? []) {
 		if (
 			(assertion.kind === "file_exists" ||

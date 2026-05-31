@@ -75,7 +75,21 @@
 				"runPublishedReplayE2E",
 				"runNpxCliSmoke",
 				"runBunxCliSmoke",
-				"runBunRuntimeCliSmoke"
+				"runBunRuntimeCliSmoke",
+				"MAESTRO_ALLOW_REGISTRY_BUN_INSTALL_SMOKE_SKIP"
+			]
+		},
+		{
+			"area": "release-observability-query-contract",
+			"path": "scripts/release-observability-query-contract.js",
+			"evidenceType": "source",
+			"anchors": [
+				"RELEASE_OBSERVABILITY_QUERY_SCHEMA",
+				"REQUIRED_OBSERVABILITY_QUERY_TRACES",
+				"export function releaseObservabilityQueryDescriptor",
+				"export function releaseObservabilityQueryDescriptorIsValid",
+				"agent-runtime-lifecycle",
+				"final-status"
 			]
 		},
 		{
@@ -90,6 +104,8 @@
 				"searchRipgrepEvidence",
 				"toolExecutionEvidence",
 				"queryableObservabilityIndex",
+				"releaseObservabilityQueryDescriptor",
+				"releaseObservabilityQueryDescriptorIsValid",
 				"SEARCH_TOOL_CALL_ID",
 				"errorTraceEvidence",
 				"observability.errors",
@@ -117,6 +133,8 @@
 				"\"agentRuntimeLedger\"",
 				"\"agentRuntimeLifecycle\"",
 				"\"agent-runtime-lifecycle\"",
+				"function releaseQueryDescriptorIsValid",
+				"releaseObservabilityQueryDescriptorIsValid",
 				"function toolExecutionCoverageIsValid",
 				"function agentRuntimeLifecycleIsValid",
 				"assertPublishedReplayReleaseGate(evidence);"
@@ -181,12 +199,28 @@
 			]
 		},
 		{
+			"area": "public-mirror-package-scripts",
+			"path": "scripts/prepare-public-release-mirror.mjs",
+			"evidenceType": "source",
+			"anchors": [
+				"pkg.scripts[\"release:verify:published\"] =",
+				"\"node scripts/smoke-registry-install.js\";",
+				"pkg.scripts[\"release:verify:published:e2e\"] =",
+				"\"node scripts/smoke-published-replay-e2e.js\";",
+				"pkg.scripts[\"release:verify:published:evidence\"] =",
+				"\"node scripts/verify-published-replay-evidence.js\";",
+				"pkg.scripts[\"release:deprecate\"] = \"node scripts/deprecate-release.js\";"
+			]
+		},
+		{
 			"area": "public-mirror-contract",
 			"path": "scripts/check-release-mirror-contract.mjs",
 			"evidenceType": "source",
 			"anchors": [
 				".github/release-mirror-manifest.json",
 				"requiredCommandSuiteFiles",
+				"forbiddenReleaseMirrorFileMessages",
+				"requiredReleaseReplayHelperFiles",
 				"Release mirror contract is valid."
 			]
 		},
@@ -208,6 +242,7 @@
 				"npm run check:release-surface",
 				"public install docs",
 				"registry install smokes",
+				"public-only published verification scripts",
 				"public mirror"
 			]
 		}

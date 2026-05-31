@@ -115,4 +115,37 @@ describe("check-release-mirror-contract", () => {
 			"Missing local action dependency for .github/actions/setup-bun-nx/action.yml: .github/actions/ensure-ripgrep/action.yml",
 		);
 	});
+
+	it("keeps release replay helper imports together", () => {
+		const root = makeFixture();
+		writeManifest(root, [
+			"scripts/smoke-published-replay-e2e.js",
+			"scripts/verify-published-replay-evidence.js",
+		]);
+
+		const result = runCheck(root);
+
+		expect(result.status).toBe(1);
+		expect(result.stderr).toContain(
+			"Missing release replay mirror file: scripts/release-observability-query-contract.js",
+		);
+	});
+
+	it("keeps public-only package dependency validator files out of the mirror manifest", () => {
+		const root = makeFixture();
+		writeManifest(root, [
+			"scripts/validate-public-package-deps.js",
+			"test/scripts/validate-public-package-deps.test.ts",
+		]);
+
+		const result = runCheck(root);
+
+		expect(result.status).toBe(1);
+		expect(result.stderr).toContain(
+			"scripts/validate-public-package-deps.js is public-only; do not mirror it from internal.",
+		);
+		expect(result.stderr).toContain(
+			"test/scripts/validate-public-package-deps.test.ts covers the public-only validator; keep it out of the release mirror manifest.",
+		);
+	});
 });

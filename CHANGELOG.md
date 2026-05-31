@@ -17,6 +17,29 @@ versioning when releases are cut.
   and keep scheduled public runs inert so public publishing stays downstream of
   the internal source-of-truth release.
 
+## [0.10.48] - 2026-05-30
+
+### Changed
+
+- Gate public mirror published verification scripts (#2361). <!-- maestro-release-note:e47d3cb174d4 -->
+- Rerun release-auth checks. <!-- maestro-release-note:79b5f14693f4 -->
+- Remove timing flake from rust tui tests. <!-- maestro-release-note:6afafcde7a15 -->
+- Lock A2A stage gate evidence ids. <!-- maestro-release-note:73e227c68bf2 -->
+- Gate published replay evidence verifier. <!-- maestro-release-note:52a6ef07d804 -->
+- Give ghcr image builds more headroom. <!-- maestro-release-note:96aca1a604dc -->
+- Document live smoke evidence inputs. <!-- maestro-release-note:123a4a481fad -->
+- Move Slack scenarios to Platform runtime refs (#2347). <!-- maestro-release-note:61245c594cdb -->
+
+### Fixed
+
+- Refresh maestro from release metadata on startup (#2360). <!-- maestro-release-note:0a81cbc261ba -->
+- Verify full deprecation range on rerun. <!-- maestro-release-note:26ad24a575d0 -->
+- Make npm deprecation reruns idempotent. <!-- maestro-release-note:c8c4d44560c3 -->
+- Bundle Codex app-server integration. <!-- maestro-release-note:657ca196960f -->
+- Lock tui rust dependencies for public ci. <!-- maestro-release-note:3b7472e79f22 -->
+- Retire ensemble footer mode (#2350). <!-- maestro-release-note:c71b0f4cd7b8 -->
+- Consume runtime signals only (#2349). <!-- maestro-release-note:539894730a32 -->
+
 ## [0.10.47] - 2026-05-29
 
 ### Changed

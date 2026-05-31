@@ -32,6 +32,11 @@ import {
 	loadRootPackage,
 } from "./workspace-utils.js";
 import { assertPublishedReplayReleaseGate } from "./published-replay-evidence-gate.js";
+import {
+	REQUIRED_OBSERVABILITY_QUERY_TRACES,
+	releaseObservabilityQueryDescriptor,
+	releaseObservabilityQueryDescriptorIsValid,
+} from "./release-observability-query-contract.js";
 
 export { assertPublishedReplayReleaseGate };
 
@@ -64,17 +69,6 @@ const ARTIFACT_TEXT = JSON.stringify({
 const SEARCH_PATTERN = "maestro-published";
 const PROMPT_TEXT = "Replay the published package golden path.";
 const REQUIRED_REPLAY_MODES = ["text", "json", "rpc"];
-const REQUIRED_OBSERVABILITY_QUERY_TRACES = [
-	"install",
-	"session",
-	"tool",
-	"search",
-	"approval",
-	"error",
-	"artifact",
-	"agent-runtime-lifecycle",
-	"final-status",
-];
 const REQUIRED_AGENT_RUNTIME_WAIT_KINDS = ["approval", "tool_retry"];
 const TERMINAL_AGENT_RUNTIME_STATES = new Set([
 	"succeeded",
@@ -776,6 +770,7 @@ function queryIndexEntry({
 		key,
 		traceType,
 		queryable: true,
+		query: releaseObservabilityQueryDescriptor(traceType),
 		status,
 		modes: uniqueValues(modes),
 		evidenceRefs: uniqueValues(evidenceRefs),
@@ -923,6 +918,10 @@ function queryIndexEntryForTrace(queryIndex, traceType) {
 		: undefined;
 }
 
+function releaseQueryDescriptorSatisfiesReleaseGate(entry, traceType) {
+	return releaseObservabilityQueryDescriptorIsValid(entry, traceType);
+}
+
 function queryableObservabilityIndexSatisfiesReleaseGate(observability) {
 	const queryIndex = Array.isArray(observability?.queryIndex)
 		? observability.queryIndex
@@ -933,7 +932,8 @@ function queryableObservabilityIndexSatisfiesReleaseGate(observability) {
 				(entry) =>
 					entry?.traceType === traceType &&
 					entry?.queryable === true &&
-					entry?.status === "ok",
+					entry?.status === "ok" &&
+					releaseQueryDescriptorSatisfiesReleaseGate(entry, traceType),
 			),
 		)
 	) {
