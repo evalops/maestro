@@ -3,7 +3,7 @@ import Foundation
 import Security
 
 private let keychainService = "com.evalops.maestro.device-identity"
-private let keychainAccount = "secure-enclave-p256-signing-key-v1"
+private let keychainAccount = "secure-enclave-p256-signing-key-v2"
 
 struct Request: Decodable {
     let command: String
@@ -109,7 +109,7 @@ func loadOrCreateKey() throws -> SecureEnclave.P256.Signing.PrivateKey {
     guard let access = SecAccessControlCreateWithFlags(
         nil,
         kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly,
-        [.privateKeyUsage],
+        [.privateKeyUsage, .userPresence],
         &error
     ) else {
         let message = error?.takeRetainedValue().localizedDescription ?? "unknown"
