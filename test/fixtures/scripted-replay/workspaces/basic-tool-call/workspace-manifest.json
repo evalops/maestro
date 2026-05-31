@@ -1,0 +1,32 @@
+{
+	"schemaVersion": "evalops.maestro.scenario-workspace-manifest.v1",
+	"id": "workspace-scripted-basic-tool-call-1",
+	"recordedAt": "2026-05-30T00:00:00.000Z",
+	"source": "fixture",
+	"workspaceRoot": "/workspaces/scripted-basic-tool-call",
+	"hydration": {
+		"mode": "fixture_workspace",
+		"rootPath": "workspaces/basic-tool-call"
+	},
+	"files": [
+		{
+			"path": "package.json",
+			"purpose": "Minimal frozen package manifest read by the scripted replay tool call."
+		}
+	],
+	"toolAdapters": [
+		{
+			"tool": "read",
+			"mode": "mocked",
+			"fixturePath": "../../basic-tool-call.json",
+			"rationale": "The replayed read tool is constrained to the frozen fixture workspace."
+		}
+	],
+	"redaction": {
+		"secretsRemoved": true,
+		"rawPromptsIncluded": false,
+		"notes": [
+			"Fixture workspace contains only package metadata needed by the deterministic read tool."
+		]
+	}
+}

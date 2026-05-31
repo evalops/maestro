@@ -34,6 +34,10 @@ Scripted replay scenarios may also include executable assertions:
 
 - `tool_called` and `tool_not_called` check deterministic tool-call intent.
 - `file_exists` and `file_contents` check fixture or workspace side effects.
+- `workspace_manifest` checks that release-blocking scripted replays carry a
+  frozen workspace manifest, required files, tool adapters, hydration mode, and
+  release-gate tier. For `fixture_workspace` and `frozen_archive` hydration, the
+  checker verifies required files exist under the declared hydrated root.
 - `audit_event_emitted` checks replay/audit tags declared by the scenario.
 - `external.refs` checks that required external ref families and IDs are present
   before a cross-repo scenario can pass.
@@ -74,7 +78,9 @@ without inferring it from model names.
 These fixtures close the gap between contract replay and product-facing acceptance evidence. Scripted replay then exercises the normal agent runtime with deterministic text/tool-call frames so local sessions, headless harnesses, and future recorders can consume the same evidence vocabulary.
 
 `npm run check:scripted-scenario-fixtures` validates executable scripted replay
-fixtures and requires each fixture to carry at least one assertion. The
+fixtures and requires each fixture to carry at least one assertion. Release-blocking
+scripted fixtures must include `workspaceManifestPath`, a
+`workspace_manifest` assertion, and redaction-safe workspace policy evidence. The
 `npm run check:slack-teammate-runtime-scenarios` check validates the Slack-specific
 external refs, required score assertions, degraded labels, and fixture payload
 redaction guardrails. The

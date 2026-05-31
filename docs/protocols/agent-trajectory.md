@@ -146,9 +146,10 @@ tool-call lifecycle reconstruction, optional expected terminal tool status, and
 required artifact checks. The checker writes `.trajectory-replay.json` goldens
 beside the source fixtures and is wired into `lint:evals`.
 
-This is intentionally the first replay layer. It does not yet hydrate a real
-workspace or execute sandboxed tools; those adapters should plug into the same
-`expectedTools` comparison path once frozen workspace/tool fixtures exist.
+This is intentionally the first replay layer. It does not execute sandboxed
+tools itself; executable scripted replay fixtures now carry release-gated frozen
+workspace manifests and tool-adapter checks, and the full trajectory adapter can
+plug those hydrated fixtures into the same `expectedTools` comparison path.
 
 ### Phase 4: Platform promotion
 
