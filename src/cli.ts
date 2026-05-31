@@ -82,14 +82,25 @@ async function reportFatalCliError(error: unknown): Promise<void> {
 	}
 }
 
-async function refreshInstalledCliOnStartup(args: string[]): Promise<void> {
+async function refreshInstalledCliOnStartup(
+	args: string[],
+	ignoredEnvKeys: string[] = [],
+): Promise<void> {
 	try {
-		const [{ getPackageVersion }, { attemptStartupUpdate }] = await Promise.all(
-			[import("./package-metadata.js"), import("./update/startup-refresh.js")],
-		);
+		const [{ getPackageName, getPackageVersion }, { attemptStartupUpdate }] =
+			await Promise.all([
+				import("./package-metadata.js"),
+				import("./update/startup-refresh.js"),
+			]);
+		const env = { ...process.env };
+		for (const key of ignoredEnvKeys) {
+			delete env[key];
+		}
 		const outcome = await attemptStartupUpdate({
 			args,
-			currentVersion: getPackageVersion(),
+			currentVersion: getPackageVersion(env),
+			env,
+			packageName: getPackageName(env),
 		});
 		if (outcome.status === "restarted") {
 			process.exit(outcome.exitCode);
@@ -129,9 +140,10 @@ const run = async () => {
 		const args = process.argv.slice(2);
 		const immediateExit = getImmediateCliExit(args);
 		let envLoaded = false;
+		let loadedEnvKeys: string[] = [];
 		if (immediateExit !== null) {
 			const { loadEnv } = await import("./load-env.js");
-			loadEnv();
+			loadedEnvKeys = loadEnv();
 			envLoaded = true;
 		}
 		if (shouldUseInstantCliExit(immediateExit, process.env)) {
@@ -141,9 +153,9 @@ const run = async () => {
 
 		if (!envLoaded) {
 			const { loadEnv } = await import("./load-env.js");
-			loadEnv();
+			loadedEnvKeys = loadEnv();
 		}
-		await refreshInstalledCliOnStartup(args);
+		await refreshInstalledCliOnStartup(args, loadedEnvKeys);
 		await runCliRuntime(args);
 	} catch (err) {
 		if (isHeadlessInvocation(process.argv.slice(2))) {
