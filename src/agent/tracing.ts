@@ -207,13 +207,15 @@ export async function traceToolCall<T>(
 			"tool.input_size": context.inputSize,
 		},
 		async (span) => {
-			const result = await operation(span);
-
-			if (span) {
-				span.setAttribute("tool.duration_ms", performance.now() - startTime);
+			try {
+				const result = await operation(span);
+				return result;
+			} finally {
+				const durationMs = performance.now() - startTime;
+				if (span) {
+					span.setAttribute("tool.duration_ms", durationMs);
+				}
 			}
-
-			return result;
 		},
 	);
 }
@@ -254,19 +256,19 @@ export async function traceLlmRequest<T>(
 			"llm.thinking_tokens": context.thinkingTokens,
 		},
 		async (span) => {
-			const result = await operation(span);
-
-			if (span) {
-				span.setAttribute("llm.duration_ms", performance.now() - startTime);
+			try {
+				return await operation(span);
+			} finally {
+				if (span) {
+					span.setAttribute("llm.duration_ms", performance.now() - startTime);
+				}
 			}
-
-			return result;
 		},
 	);
 }
 
 /**
- * Records usage metrics on an existing span.
+ * Records usage attributes on an existing span.
  */
 export function recordUsageOnSpan(span: Span | null, usage: Usage): void {
 	if (!span) return;

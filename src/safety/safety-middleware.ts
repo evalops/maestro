@@ -100,6 +100,11 @@ export interface PreExecutionResult {
 	};
 }
 
+export interface PreExecutionOptions {
+	/** Skip only loop detection for a transport-managed duplicate; firewall and sequence checks still run. */
+	skipLoopDetection?: boolean;
+}
+
 /**
  * Configuration for SafetyMiddleware
  */
@@ -184,6 +189,7 @@ export class SafetyMiddleware {
 	preExecution(
 		toolName: string,
 		args: Record<string, unknown>,
+		options?: PreExecutionOptions,
 	): PreExecutionResult {
 		const details: PreExecutionResult["details"] = {};
 
@@ -240,7 +246,10 @@ export class SafetyMiddleware {
 		}
 
 		// 2. Loop Detection - check for repetitive patterns
-		if (this.config.enableLoopDetection) {
+		if (
+			this.config.enableLoopDetection &&
+			options?.skipLoopDetection !== true
+		) {
 			const loopResult = this.loopDetector.check(toolName, args);
 			details.loopResult = loopResult;
 

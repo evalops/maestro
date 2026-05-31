@@ -4,7 +4,7 @@
  * Extracted from TuiRenderer to consolidate UI state management including:
  * - Zen mode (minimal distraction mode)
  * - Clean mode (streaming text deduplication)
- * - Footer mode (ensemble vs solo display)
+ * - Footer mode (rich vs solo display)
  * - Thinking blocks visibility
  *
  * This controller owns the state and persistence, providing callbacks
@@ -170,7 +170,7 @@ export class UiStateController {
 
 		if (tokens.length === 0 || tokens[0] === "help") {
 			context.showInfo(
-				`Footer mode is ${this.describeFooterMode(this.footerMode)}. Use "/footer ensemble" for the full Maestro Ensemble or "/footer solo" for the minimal Solo style.`,
+				`Footer mode is ${this.describeFooterMode(this.footerMode)}. Use "/footer rich" for the full footer or "/footer solo" for the minimal style.`,
 			);
 			return;
 		}
@@ -197,9 +197,7 @@ export class UiStateController {
 		}
 		const parsed = this.parseFooterMode(candidate ?? "");
 		if (!parsed) {
-			context.showError(
-				"Footer mode must be either 'ensemble' (rich) or 'solo' (minimal).",
-			);
+			context.showError("Footer mode must be either 'rich' or 'solo'.");
 			return;
 		}
 		if (parsed === this.footerMode) {
@@ -216,15 +214,9 @@ export class UiStateController {
 
 	private parseFooterMode(value: string): FooterMode | null {
 		switch (value) {
-			case "ensemble":
 			case "rich":
-			case "classic":
-			case "full":
-				return "ensemble";
+				return "rich";
 			case "solo":
-			case "minimal":
-			case "lean":
-			case "lite":
 				return "solo";
 			default:
 				return null;
@@ -232,7 +224,7 @@ export class UiStateController {
 	}
 
 	private describeFooterMode(mode: FooterMode): string {
-		return mode === "ensemble" ? "Ensemble (rich)" : "Solo (minimal)";
+		return mode === "rich" ? "Rich" : "Solo";
 	}
 
 	// ─── Thinking Blocks ─────────────────────────────────────────────────────

@@ -51,8 +51,14 @@ import {
 	ProgressNotificationSchema,
 	PromptListChangedNotificationSchema,
 	ResourceListChangedNotificationSchema,
+	type ServerCapabilities,
 	ToolListChangedNotificationSchema,
 } from "@modelcontextprotocol/sdk/types.js";
+import { getPackageVersion } from "../package-metadata.js";
+import {
+	emitMcpConnectionBeacon,
+	emitMcpToolUsageBeacon,
+} from "../telemetry/mcp-beacon.js";
 import { parseCommandArguments } from "../tools/shell-utils.js";
 import { createLogger } from "../utils/logger.js";
 import { getHomeDir } from "../utils/path-expansion.js";
@@ -67,6 +73,10 @@ import {
 	getOfficialMcpRegistryMatch,
 } from "./official-registry.js";
 import { getProjectMcpServerApprovalStatus } from "./project-approvals.js";
+import {
+	classifyToolCapability,
+	summarizeToolCapabilities,
+} from "./tool-capabilities.js";
 import type {
 	McpAuthPresetConfig,
 	McpAuthPresetStatus,
@@ -76,7 +86,10 @@ import type {
 	McpPromptDefinition,
 	McpServerConfig,
 	McpServerStatus,
+	McpToolParallelSafety,
+	McpToolStatus,
 } from "./types.js";
+import { ensureMcpWorkspaceTrusted } from "./workspace-trust.js";
 
 const logger = createLogger("mcp:manager");
 const execFileAsync = promisify(execFile);
@@ -104,6 +117,174 @@ const DEFAULT_RECONNECT_DELAY_MS = 5000;
 
 // Maximum number of automatic reconnection attempts
 const MAX_RECONNECT_ATTEMPTS = 3;
+const PARALLEL_SAFETY_EXPERIMENTAL_KEYS = [
+	"evalops.maestro.parallelSafety",
+	"evalops.maestro/parallelSafety",
+	"maestro.parallelSafety",
+];
+
+function asRecord(value: unknown): Record<string, unknown> | undefined {
+	return value && typeof value === "object" && !Array.isArray(value)
+		? (value as Record<string, unknown>)
+		: undefined;
+}
+
+function positiveInteger(value: unknown): number | undefined {
+	return typeof value === "number" && Number.isFinite(value) && value > 0
+		? Math.floor(value)
+		: undefined;
+}
+
+function serverParallelSafetyAdvertisement(
+	capabilities: ServerCapabilities | undefined,
+): Record<string, unknown> | undefined {
+	const experimental = asRecord(capabilities?.experimental);
+	if (!experimental) {
+		return undefined;
+	}
+	for (const key of PARALLEL_SAFETY_EXPERIMENTAL_KEYS) {
+		const advertisement = asRecord(experimental[key]);
+		if (advertisement) {
+			return advertisement;
+		}
+	}
+	return undefined;
+}
+
+function resolveToolParallelSafety({
+	config,
+	serverCapabilities,
+	tool,
+}: {
+	config: McpServerConfig;
+	serverCapabilities?: ServerCapabilities;
+	tool: McpTool;
+}): McpToolParallelSafety {
+	const advertisement = serverParallelSafetyAdvertisement(serverCapabilities);
+	const advertisedTools = asRecord(advertisement?.tools);
+	const advertisedTool =
+		asRecord(advertisedTools?.[tool.name]) ?? asRecord(advertisedTools?.["*"]);
+	const toolSupportsParallel = advertisedTool?.supportsParallelToolCalls;
+	const advertisedSupports =
+		toolSupportsParallel === true ||
+		(toolSupportsParallel !== false &&
+			advertisement?.supportsParallelToolCalls === true);
+	const maxConcurrency =
+		positiveInteger(advertisedTool?.maxConcurrency) ??
+		positiveInteger(advertisement?.maxConcurrency);
+
+	if (config.supportsParallelToolCalls === true) {
+		return {
+			supportsParallelToolCalls: true,
+			provenance: "static_config",
+			...(maxConcurrency ? { maxConcurrency } : {}),
+			...(advertisedTool?.readOnlyHint === true ? { readOnlyHint: true } : {}),
+		};
+	}
+	if (advertisedSupports) {
+		return {
+			supportsParallelToolCalls: true,
+			provenance: "server_capability",
+			...(maxConcurrency ? { maxConcurrency } : {}),
+			...(advertisedTool?.readOnlyHint === true ? { readOnlyHint: true } : {}),
+		};
+	}
+	return {
+		supportsParallelToolCalls: false,
+		provenance: "none",
+		...(advertisedTool?.readOnlyHint === true ? { readOnlyHint: true } : {}),
+	};
+}
+
+function resolveParallelSafetyByTool({
+	config,
+	serverCapabilities,
+	tools,
+}: {
+	config: McpServerConfig;
+	serverCapabilities?: ServerCapabilities;
+	tools: McpTool[];
+}): Map<string, McpToolParallelSafety> {
+	return new Map(
+		tools.map((tool) => [
+			tool.name,
+			resolveToolParallelSafety({
+				config,
+				serverCapabilities,
+				tool,
+			}),
+		]),
+	);
+}
+
+function summarizeServerParallelSafety(
+	config: McpServerConfig,
+	connected: ConnectedServer | undefined,
+): McpServerStatus["parallelSafety"] {
+	if (!connected) {
+		return {
+			supportsParallelToolCalls: config.supportsParallelToolCalls === true,
+			provenance:
+				config.supportsParallelToolCalls === true ? "static_config" : "none",
+		};
+	}
+	const values = [...connected.parallelSafetyByTool.values()];
+	const supportsParallelToolCalls = values.some(
+		(value) => value.supportsParallelToolCalls === true,
+	);
+	const staticConfig = values.some(
+		(value) => value.provenance === "static_config",
+	);
+	const serverCapability = values.some(
+		(value) => value.provenance === "server_capability",
+	);
+	const maxConcurrencyValues = values
+		.map((value) => value.maxConcurrency)
+		.filter((value): value is number => typeof value === "number");
+	return {
+		supportsParallelToolCalls,
+		provenance: staticConfig
+			? "static_config"
+			: serverCapability
+				? "server_capability"
+				: "none",
+		...(maxConcurrencyValues.length > 0
+			? { maxConcurrency: Math.min(...maxConcurrencyValues) }
+			: {}),
+	};
+}
+
+function toolsWithCapabilityStatus(
+	serverName: string,
+	tools: readonly McpTool[],
+	parallelSafetyByTool?: ReadonlyMap<string, McpToolParallelSafety>,
+): McpToolStatus[] {
+	return tools.map((tool) => ({
+		...tool,
+		capability: classifyToolCapability({
+			server: serverName,
+			toolName: tool.name,
+			annotations: capabilityAnnotations(
+				tool,
+				parallelSafetyByTool?.get(tool.name),
+			),
+		}),
+	}));
+}
+
+function capabilityAnnotations(
+	tool: McpTool,
+	parallelSafety: McpToolParallelSafety | undefined,
+): Record<string, unknown> | undefined {
+	const annotations = asRecord(tool.annotations);
+	if (
+		parallelSafety?.readOnlyHint !== true ||
+		annotations?.readOnlyHint !== undefined
+	) {
+		return annotations;
+	}
+	return { ...annotations, readOnlyHint: true };
+}
 
 function arraysEqual(
 	left: readonly string[] | undefined,
@@ -375,6 +556,8 @@ interface ConnectedServer {
 	prompts: string[];
 	/** Cached prompt metadata for structured prompt UIs */
 	promptDetails: McpPromptDefinition[];
+	/** Per-tool parallel safety resolved from static config or server handshake. */
+	parallelSafetyByTool: ReadonlyMap<string, McpToolParallelSafety>;
 	/** Counter for reconnection attempts */
 	reconnectAttempts: number;
 }
@@ -434,6 +617,8 @@ export class McpClientManager extends EventEmitter {
 			servers: config.servers ?? [],
 			authPresets: config.authPresets ?? [],
 			projectRoot: config.projectRoot,
+			trustedWorkspaces: config.trustedWorkspaces,
+			workspaceTrustDefault: config.workspaceTrustDefault,
 			envLimits: config.envLimits,
 		};
 		const previousAuthPresetMap = buildAuthPresetMap(this.config.authPresets);
@@ -468,6 +653,7 @@ export class McpClientManager extends EventEmitter {
 		const toAdd = nextConfig.servers.filter(
 			(server) => !oldServerNames.has(server.name),
 		);
+		const toAddNames = new Set(toAdd.map((server) => server.name));
 
 		this.config = nextConfig;
 
@@ -490,12 +676,15 @@ export class McpClientManager extends EventEmitter {
 			}),
 		);
 
-		// Connect new servers (don't wait for success)
+		// Connect new servers and unchanged servers that were explicitly disconnected.
 		await Promise.allSettled(
-			toAdd
+			nextConfig.servers
 				.filter(
 					(server) =>
-						!reconnectNames.has(server.name) &&
+						(toAddNames.has(server.name) ||
+							(oldServerNames.has(server.name) &&
+								!reconnectNames.has(server.name) &&
+								!this.servers.has(server.name))) &&
 						canConnectServer(server, nextApprovalMap),
 				)
 				.map((server) => this.connectServer(server)),
@@ -677,6 +866,17 @@ export class McpClientManager extends EventEmitter {
 			const resources = await this.fetchResources(client);
 			const promptDetails = await this.fetchPrompts(client);
 			const prompts = getPromptNames(promptDetails);
+			const serverCapabilities = client.getServerCapabilities();
+			const parallelSafetyByTool = resolveParallelSafetyByTool({
+				config,
+				serverCapabilities,
+				tools,
+			});
+			const toolCapabilitySummary = summarizeToolCapabilities(
+				toolsWithCapabilityStatus(name, tools, parallelSafetyByTool)
+					.map((tool) => tool.capability)
+					.filter((capability) => capability !== undefined),
+			);
 
 			this.servers.set(name, {
 				config,
@@ -686,6 +886,7 @@ export class McpClientManager extends EventEmitter {
 				resources,
 				prompts,
 				promptDetails,
+				parallelSafetyByTool,
 				reconnectAttempts: 0,
 			});
 			this.lastErrors.delete(name);
@@ -695,6 +896,17 @@ export class McpClientManager extends EventEmitter {
 			this.setupNotificationHandlers(client, name);
 
 			this.emit("connected", { name, tools: tools.length, isReconnect });
+			void emitMcpConnectionBeacon({
+				serverName: name,
+				transport: transportType,
+				remoteHost: config.url ? getMcpRemoteHost(config.url) : undefined,
+				toolCount: tools.length,
+				resourceCount: resources.length,
+				promptCount: prompts.length,
+				toolCapabilitySummary,
+				isReconnect,
+				clientVersion: getPackageVersion(),
+			}).catch(() => undefined);
 		} catch (error) {
 			const message = error instanceof Error ? error.message : String(error);
 			this.lastErrors.set(name, message);
@@ -821,6 +1033,11 @@ export class McpClientManager extends EventEmitter {
 					const server = this.servers.get(serverName);
 					if (server) {
 						server.tools = await this.fetchTools(client);
+						server.parallelSafetyByTool = resolveParallelSafetyByTool({
+							config: server.config,
+							serverCapabilities: client.getServerCapabilities(),
+							tools: server.tools,
+						});
 						this.emit("tools_changed", {
 							name: serverName,
 							tools: server.tools,
@@ -956,6 +1173,25 @@ export class McpClientManager extends EventEmitter {
 		if (!server) {
 			throw new Error(`MCP server '${serverName}' not connected`);
 		}
+		await ensureMcpWorkspaceTrusted({
+			config: this.config,
+			server: buildComparableServerConfig(
+				server.config,
+				buildAuthPresetMap(this.config.authPresets),
+			),
+			toolName,
+			clientToolService: getCurrentMcpClientToolService(),
+		});
+
+		void emitMcpToolUsageBeacon({
+			serverName,
+			transport: server.config.transport,
+			remoteHost: server.config.url
+				? getMcpRemoteHost(server.config.url)
+				: undefined,
+			toolName,
+			clientVersion: getPackageVersion(),
+		}).catch(() => undefined);
 
 		const result = await server.client.callTool({
 			name: toolName,
@@ -980,11 +1216,34 @@ export class McpClientManager extends EventEmitter {
 		};
 	}
 
-	getAllTools(): Array<{ server: string; tool: McpTool }> {
-		const tools: Array<{ server: string; tool: McpTool }> = [];
+	getAllTools(): Array<{
+		server: string;
+		tool: McpTool;
+		supportsParallelToolCalls: boolean;
+		parallelSafety: McpToolParallelSafety;
+	}> {
+		const tools: Array<{
+			server: string;
+			tool: McpTool;
+			supportsParallelToolCalls: boolean;
+			parallelSafety: McpToolParallelSafety;
+		}> = [];
 		for (const [serverName, server] of this.servers) {
 			for (const tool of server.tools) {
-				tools.push({ server: serverName, tool });
+				const parallelSafety =
+					server.parallelSafetyByTool.get(tool.name) ??
+					resolveToolParallelSafety({
+						config: server.config,
+						serverCapabilities: server.client.getServerCapabilities(),
+						tool,
+					});
+				tools.push({
+					server: serverName,
+					tool,
+					supportsParallelToolCalls:
+						parallelSafety.supportsParallelToolCalls === true,
+					parallelSafety,
+				});
 			}
 		}
 		return tools;
@@ -1008,6 +1267,13 @@ export class McpClientManager extends EventEmitter {
 		// Include configured but not connected servers
 		for (const config of this.config.servers) {
 			const connected = this.servers.get(config.name);
+			const tools = connected
+				? toolsWithCapabilityStatus(
+						config.name,
+						connected.tools,
+						connected.parallelSafetyByTool,
+					)
+				: [];
 			const projectApproval = approvalMap.get(config.name);
 			const resolvedAuth = resolveRemoteAuthConfig(config, authPresetMap);
 			const remoteUrl =
@@ -1027,7 +1293,15 @@ export class McpClientManager extends EventEmitter {
 						: this.lastErrors.get(config.name),
 				scope: config.scope,
 				transport: config.transport,
-				tools: connected?.tools ?? [],
+				tools,
+				toolCapabilitySummary:
+					tools.length > 0
+						? summarizeToolCapabilities(
+								tools
+									.map((tool) => tool.capability)
+									.filter((capability) => capability !== undefined),
+							)
+						: undefined,
 				resources: connected?.resources ?? [],
 				prompts: connected?.prompts ?? [],
 				promptDetails:
@@ -1046,6 +1320,8 @@ export class McpClientManager extends EventEmitter {
 				headersHelper: resolvedAuth.headersHelper,
 				authPreset: config.authPreset,
 				timeout: config.timeout,
+				supportsParallelToolCalls: config.supportsParallelToolCalls === true,
+				parallelSafety: summarizeServerParallelSafety(config, connected),
 				remoteTrust: remoteRegistryMatch?.trust,
 				officialRegistry: remoteRegistryMatch?.info,
 				projectApproval,

@@ -64,6 +64,7 @@ function validateManifest(manifest) {
 	if (typeof manifest.version !== "string" || manifest.version.length === 0) {
 		throw new Error("Session wire manifest version must be a non-empty string");
 	}
+	assertStringArray(manifest.sessionHeaderFields, "sessionHeaderFields");
 	assertStringMap(manifest.stopReasonAliases, "stopReasonAliases");
 	assertNestedStringMap(manifest.fieldAliases, "fieldAliases");
 	assertStringMap(manifest.contentBlockTypeAliases, "contentBlockTypeAliases");
@@ -108,6 +109,8 @@ function renderTs(manifest) {
  */
 
 export const sessionWireFormatVersion = ${JSON.stringify(manifest.version)} as const;
+
+export const sessionWireSessionHeaderFields = ${renderObject(manifest.sessionHeaderFields)} as const;
 
 export const sessionWireStopReasonAliases = ${renderObject(manifest.stopReasonAliases)} as const;
 
@@ -167,6 +170,7 @@ export function isSessionWireCompactionExcludedMessageRole(
 const RUST_MAX_WIDTH = 100;
 const STOP_REASON_ALIASES_PREFIX =
 	"pub const STOP_REASON_ALIASES: &[(&str, &str)] = ";
+const SESSION_HEADER_FIELDS_PREFIX = "pub const SESSION_HEADER_FIELDS: &[&str] = ";
 const CONTENT_BLOCK_TYPE_ALIASES_PREFIX =
 	"pub const CONTENT_BLOCK_TYPE_ALIASES: &[(&str, &str)] = ";
 const COMPACTION_CONTEXT_ENTRY_TYPES_PREFIX =
@@ -283,6 +287,7 @@ function renderRust(manifest) {
 		manifest.contentBlockFieldAliases ?? {},
 	);
 	const fieldAliases = Object.entries(manifest.fieldAliases ?? {});
+	const sessionHeaderFields = manifest.sessionHeaderFields ?? [];
 	const compactionContextEntryTypes =
 		manifest.compactionContextEntryTypes ?? [];
 	const compactionContextExcludedMessageRoles =
@@ -305,6 +310,11 @@ function renderRust(manifest) {
 #![allow(dead_code)]
 
 pub const SESSION_WIRE_FORMAT_VERSION: &str = ${JSON.stringify(manifest.version)};
+
+${SESSION_HEADER_FIELDS_PREFIX}${toRustStringArray(
+		sessionHeaderFields,
+		SESSION_HEADER_FIELDS_PREFIX.length,
+	)};
 
 ${STOP_REASON_ALIASES_PREFIX}${toRustArray(stopAliases, STOP_REASON_ALIASES_PREFIX.length)};
 

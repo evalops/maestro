@@ -1,3 +1,5 @@
+import { MAESTRO_PACKAGE_KEYWORD } from "./constants.js";
+
 export interface PackageSearchEntry {
 	name: string;
 	version?: string;
@@ -35,7 +37,6 @@ interface NpmRegistrySearchPayload {
 }
 
 const PACKAGE_DISCOVERY_LIMIT = 8;
-const MAESTRO_PACKAGE_KEYWORD = "maestro-package";
 
 function buildPackageSearchText(query: string): string {
 	const trimmed = query.trim();

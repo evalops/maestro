@@ -33,6 +33,7 @@ export interface RuntimeBadgeParams {
 	alertCount?: number;
 	reducedMotion?: boolean;
 	compactForced?: boolean;
+	replayMode?: boolean;
 	enterpriseMode?: boolean;
 	enterprisePolicyActive?: boolean;
 	enterpriseMcpActive?: boolean;
@@ -48,6 +49,10 @@ export function buildRuntimeBadges(params: RuntimeBadgeParams): string[] {
 
 	if (process.env.MAESTRO_PLAN_MODE === "1") {
 		badges.push("plan:on");
+	}
+
+	if (params.replayMode ?? isReplayModeEnabled()) {
+		badges.push("replay:on");
 	}
 
 	badges.push(
@@ -224,6 +229,13 @@ function isTruthy(value: string | undefined): boolean {
 
 function hasEnvValue(value: string | undefined): boolean {
 	return (value?.trim().length ?? 0) > 0;
+}
+
+function isReplayModeEnabled(): boolean {
+	return (
+		process.env.MAESTRO_MODE?.trim().toLowerCase() === "replay" ||
+		hasEnvValue(process.env.MAESTRO_SCENARIO_PATH)
+	);
 }
 
 function fileExists(path: string): boolean {

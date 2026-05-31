@@ -1,3 +1,4 @@
+import { readFile } from "node:fs/promises";
 import {
 	type HeadlessConnectionRole,
 	type HeadlessNotificationType,
@@ -13,7 +14,12 @@ import type {
 } from "../agent/action-approval.js";
 import type { Agent } from "../agent/index.js";
 import { buildCompactionEvent } from "../agent/prompt-recovery.js";
+import {
+	type SwarmRuntimeEvent,
+	subscribeSwarmRuntimeEvents,
+} from "../agent/swarm/runtime-events.js";
 import type { ToolRetryService } from "../agent/tool-retry.js";
+import { DefaultPlatformToolExecutionBridge } from "../agent/transport/tool-execution-bridge.js";
 import type { AgentEvent, Attachment, ThinkingLevel } from "../agent/types.js";
 import { runUserPromptWithRecovery } from "../agent/user-prompt-runtime.js";
 import {
@@ -63,7 +69,20 @@ import { WebActionApprovalService } from "./approval-service.js";
 import { getAgentCircuitBreaker } from "./circuit-breaker.js";
 import { clientToolService } from "./client-tools-service.js";
 import {
+	type HeadlessAttachedSubscription,
+	HeadlessRuntimeBroker,
+	type HeadlessRuntimeHeartbeatEnvelope,
+	type HeadlessRuntimeResetEnvelope,
+	type HeadlessRuntimeSnapshot,
+	type HeadlessRuntimeStreamEnvelope,
+	HeadlessSubscriberMailbox,
+	type RuntimeListener,
+	createConnectionId,
+	createSubscriptionId,
+} from "./headless-runtime/broker.js";
+import {
 	type HostedAgentRuntimeCompleteInput,
+	type HostedAgentRuntimeDrainInput,
 	type HostedAgentRuntimeFailInput,
 	type HostedAgentRuntimeProgressRecorder,
 	createHostedAgentRuntimeProgressRecorder,
@@ -74,21 +93,18 @@ import {
 } from "./server-request-manager.js";
 import { ServerRequestToolRetryService } from "./tool-retry-service.js";
 
+export type {
+	HeadlessAttachedSubscription,
+	HeadlessRuntimeEventEnvelope,
+	HeadlessRuntimeHeartbeatEnvelope,
+	HeadlessRuntimeResetEnvelope,
+	HeadlessRuntimeSnapshot,
+	HeadlessRuntimeSnapshotEnvelope,
+	HeadlessRuntimeStreamEnvelope,
+} from "./headless-runtime/broker.js";
+
 const logger = createLogger("server:headless-runtime");
 
-const MAX_BUFFERED_EVENTS =
-	Number.parseInt(
-		process.env.MAESTRO_HEADLESS_RUNTIME_EVENT_BUFFER || "",
-		10,
-	) || 512;
-const MAX_SUBSCRIBER_MAILBOX_EVENTS =
-	Number.parseInt(process.env.MAESTRO_HEADLESS_SUBSCRIBER_QUEUE || "", 10) ||
-	128;
-const MAX_SUBSCRIPTION_IDLE_MS =
-	Number.parseInt(
-		process.env.MAESTRO_HEADLESS_SUBSCRIPTION_IDLE_MS || "",
-		10,
-	) || 30 * 1000;
 const CONNECTION_HEARTBEAT_INTERVAL_MS =
 	Number.parseInt(
 		process.env.MAESTRO_HEADLESS_CONNECTION_HEARTBEAT_INTERVAL_MS || "",
@@ -106,6 +122,8 @@ const MAX_RUNTIME_CLEANUP_FAILURES =
 		10,
 	) || 3;
 const AMBIENT_ROUTING_SUBJECT = "maestro.ambient_agent.routing.selected";
+const HOSTED_RUNNER_SNAPSHOT_MANIFEST_VERSION =
+	"evalops.remote-runner.snapshot-manifest.v1";
 
 export function inferFleetModelTier(
 	provider: string,
@@ -130,6 +148,25 @@ export function inferFleetModelTier(
 
 function hasMiniModelVariant(normalizedProviderModel: string): boolean {
 	return /(?:^|[/:._-])mini(?:$|[/:._-])/.test(normalizedProviderModel);
+}
+
+function createHostedRunnerToolExecutionBridge(
+	hostedRunner: WebServerContext["hostedRunner"],
+): DefaultPlatformToolExecutionBridge | undefined {
+	if (!hostedRunner) {
+		return undefined;
+	}
+	return new DefaultPlatformToolExecutionBridge({
+		runtimeLinkage: () => ({
+			agentRunId: hostedRunner.agentRunId,
+			agentId: hostedRunner.agentId,
+			workspaceId: hostedRunner.workspaceId,
+			sessionId:
+				hostedRunner.activeMaestroSessionId ??
+				hostedRunner.configuredMaestroSessionId,
+			remoteRunnerSessionId: hostedRunner.runnerSessionId,
+		}),
+	});
 }
 
 export function getFleetPlatformEventBusStatus():
@@ -187,12 +224,154 @@ function parseBooleanEnv(value: string | undefined): boolean | undefined {
 	}
 }
 
-export interface HeadlessRuntimeSnapshot {
-	protocolVersion: string;
-	session_id: string;
-	cursor: number;
-	last_init: HeadlessInitMessage | null;
-	state: HeadlessRuntimeState;
+export type HostedRunnerRestoreFlushStatus = "completed" | "failed" | "skipped";
+
+export class HeadlessRuntimeNotReadyError extends Error {
+	readonly code = "runtime_not_ready";
+
+	constructor(action: string, state: HeadlessRuntimeState) {
+		const status = state.last_status ? `: ${state.last_status}` : "";
+		const error = state.last_error ? ` (${state.last_error})` : "";
+		super(`Headless runtime is not ready for ${action}${status}${error}`);
+		this.name = "HeadlessRuntimeNotReadyError";
+	}
+}
+
+export interface HostedRunnerRestoreManifest {
+	protocol_version: typeof HOSTED_RUNNER_SNAPSHOT_MANIFEST_VERSION;
+	maestro_session_id: string;
+	runtime: {
+		flush_status: HostedRunnerRestoreFlushStatus;
+		error?: string;
+		session_id?: string;
+		session_file?: string;
+		cursor?: number;
+	};
+	snapshot: HeadlessRuntimeSnapshot;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+	return Boolean(value && typeof value === "object" && !Array.isArray(value));
+}
+
+function restoreFlushStatus(value: unknown): HostedRunnerRestoreFlushStatus {
+	switch (value) {
+		case "completed":
+			return "completed";
+		case "failed":
+		case "interrupted":
+			return "failed";
+		case "skipped":
+			return "skipped";
+		default:
+			throw new Error(
+				`Unsupported hosted runner restore flush status: ${value}`,
+			);
+	}
+}
+
+function restoreLastStatus(status: HostedRunnerRestoreFlushStatus): string {
+	switch (status) {
+		case "completed":
+			return "Restored from snapshot";
+		case "failed":
+			return "Restore interrupted before runtime flush completed";
+		case "skipped":
+			return "Restore incomplete: runtime flush skipped";
+	}
+}
+
+function restoreLastError(
+	status: HostedRunnerRestoreFlushStatus,
+	error: unknown,
+): string | undefined {
+	if (status === "completed") {
+		return undefined;
+	}
+	const message = typeof error === "string" ? error.trim() : "";
+	if (message) {
+		return message;
+	}
+	return status === "failed"
+		? "runtime flush failed before restore"
+		: "runtime flush was skipped; no runtime activity was persisted";
+}
+
+export async function loadHostedRunnerRestoreManifest(
+	path: string | undefined,
+): Promise<HostedRunnerRestoreManifest | undefined> {
+	if (!path) {
+		return undefined;
+	}
+	const manifest = JSON.parse(await readFile(path, "utf8")) as unknown;
+	if (!isRecord(manifest)) {
+		throw new Error("Hosted runner restore manifest must be a JSON object");
+	}
+	if (manifest.protocol_version !== HOSTED_RUNNER_SNAPSHOT_MANIFEST_VERSION) {
+		throw new Error(
+			`Unsupported hosted runner restore manifest protocol version: ${String(
+				manifest.protocol_version,
+			)}`,
+		);
+	}
+	const runtime = isRecord(manifest.runtime) ? manifest.runtime : undefined;
+	const snapshot = isRecord(manifest.snapshot)
+		? (manifest.snapshot as unknown as HeadlessRuntimeSnapshot)
+		: undefined;
+	const maestroSessionId =
+		typeof manifest.maestro_session_id === "string"
+			? manifest.maestro_session_id.trim()
+			: "";
+	if (!runtime || !snapshot || !maestroSessionId) {
+		throw new Error(
+			"Hosted runner restore manifest is missing runtime, snapshot, or maestro_session_id",
+		);
+	}
+	const runtimeSessionId =
+		typeof runtime.session_id === "string" ? runtime.session_id.trim() : "";
+	const restore: HostedRunnerRestoreManifest = {
+		protocol_version: HOSTED_RUNNER_SNAPSHOT_MANIFEST_VERSION,
+		maestro_session_id: maestroSessionId,
+		runtime: {
+			flush_status: restoreFlushStatus(runtime.flush_status),
+			...(typeof runtime.error === "string" ? { error: runtime.error } : {}),
+			...(runtimeSessionId ? { session_id: runtimeSessionId } : {}),
+			...(typeof runtime.session_file === "string"
+				? { session_file: runtime.session_file }
+				: {}),
+			...(typeof runtime.cursor === "number" && Number.isFinite(runtime.cursor)
+				? { cursor: runtime.cursor }
+				: {}),
+		},
+		snapshot,
+	};
+	assertHeadlessRuntimeSnapshot(
+		restore.snapshot,
+		"hosted runner restore snapshot",
+	);
+	if (restore.snapshot.session_id !== maestroSessionId) {
+		throw new Error(
+			`Hosted runner restore manifest snapshot is for Maestro session ${restore.snapshot.session_id}, not ${maestroSessionId}`,
+		);
+	}
+	const snapshotStateSessionId =
+		typeof restore.snapshot.state.session_id === "string"
+			? restore.snapshot.state.session_id.trim()
+			: "";
+	if (snapshotStateSessionId && snapshotStateSessionId !== maestroSessionId) {
+		throw new Error(
+			`Hosted runner restore manifest snapshot state is for Maestro session ${snapshotStateSessionId}, not ${maestroSessionId}`,
+		);
+	}
+	if (
+		restore.runtime.session_id &&
+		restore.runtime.session_id !== maestroSessionId
+	) {
+		throw new Error(
+			`Hosted runner restore manifest runtime is for Maestro session ${restore.runtime.session_id}, not ${maestroSessionId}`,
+		);
+	}
+	return restore;
 }
 
 export type FleetAgentHealth = "healthy" | "degraded" | "unhealthy" | "idle";
@@ -280,28 +459,6 @@ export interface FleetDashboardSnapshot {
 	instances: FleetAgentInstance[];
 }
 
-export interface HeadlessRuntimeSnapshotEnvelope {
-	type: "snapshot";
-	snapshot: HeadlessRuntimeSnapshot;
-}
-
-export interface HeadlessRuntimeEventEnvelope {
-	type: "message";
-	cursor: number;
-	message: HeadlessFromAgentMessage;
-}
-
-export interface HeadlessRuntimeHeartbeatEnvelope {
-	type: "heartbeat";
-	cursor: number;
-}
-
-export interface HeadlessRuntimeResetEnvelope {
-	type: "reset";
-	reason: "lagged" | "replay_gap" | "restored_from_snapshot";
-	snapshot: HeadlessRuntimeSnapshot;
-}
-
 export interface HeadlessRuntimeSubscriptionSnapshot {
 	connection_id: string;
 	subscription_id: string;
@@ -338,150 +495,6 @@ export interface HeadlessRuntimeConnectionClosedSnapshot {
 	disconnected_subscription_ids: string[];
 }
 
-export type HeadlessRuntimeStreamEnvelope =
-	| HeadlessRuntimeSnapshotEnvelope
-	| HeadlessRuntimeEventEnvelope
-	| HeadlessRuntimeHeartbeatEnvelope
-	| HeadlessRuntimeResetEnvelope;
-
-type RuntimeListener = (envelope: HeadlessRuntimeStreamEnvelope) => void;
-type SubscriberListener = () => void;
-
-function createConnectionId(): string {
-	return `conn_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
-}
-
-function createSubscriptionId(): string {
-	return `sub_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
-}
-
-class HeadlessSubscriberMailbox {
-	private readonly listeners = new Set<SubscriberListener>();
-	private readonly queue: HeadlessRuntimeStreamEnvelope[] = [];
-	private queuedReset: HeadlessRuntimeResetEnvelope | null = null;
-	private detachedAt: number | null;
-	private attached = false;
-	private allowRawAgentEvents: boolean;
-
-	constructor(
-		readonly id: string,
-		readonly role: "viewer" | "controller",
-		readonly explicit: boolean,
-		readonly connectionId: string,
-		readonly optOutNotifications: HeadlessNotificationType[] = [],
-		allowRawAgentEvents = false,
-	) {
-		this.detachedAt = explicit ? Date.now() : null;
-		this.allowRawAgentEvents = allowRawAgentEvents;
-	}
-
-	onAvailable(listener: SubscriberListener): () => void {
-		this.listeners.add(listener);
-		return () => {
-			this.listeners.delete(listener);
-		};
-	}
-
-	enqueue(
-		envelope: HeadlessRuntimeStreamEnvelope,
-		createReset: (
-			reason: HeadlessRuntimeResetEnvelope["reason"],
-		) => HeadlessRuntimeResetEnvelope,
-	): void {
-		if (this.shouldFilterEnvelope(envelope)) {
-			return;
-		}
-		this.queue.push(envelope);
-		if (this.queue.length > MAX_SUBSCRIBER_MAILBOX_EVENTS) {
-			this.queue.length = 0;
-			this.queuedReset = createReset("lagged");
-		}
-		this.emit();
-	}
-
-	next(): HeadlessRuntimeStreamEnvelope | null {
-		const next = this.queuedReset ?? this.queue.shift() ?? null;
-		if (next?.type === "reset") {
-			this.queuedReset = null;
-		}
-		return next;
-	}
-
-	attach(): void {
-		this.attached = true;
-		this.detachedAt = null;
-		this.emit();
-	}
-
-	detach(): void {
-		this.attached = false;
-		this.detachedAt = Date.now();
-	}
-
-	touch(): void {
-		if (this.explicit && !this.attached) {
-			this.detachedAt = Date.now();
-		}
-	}
-
-	isExpired(now = Date.now()): boolean {
-		return (
-			this.explicit &&
-			!this.attached &&
-			this.detachedAt !== null &&
-			now - this.detachedAt > MAX_SUBSCRIPTION_IDLE_MS
-		);
-	}
-
-	isAttached(): boolean {
-		return this.attached;
-	}
-
-	allowsRawAgentEvents(): boolean {
-		return this.allowRawAgentEvents;
-	}
-
-	setAllowRawAgentEvents(value: boolean): void {
-		this.allowRawAgentEvents = value;
-	}
-
-	private emit(): void {
-		for (const listener of this.listeners) {
-			listener();
-		}
-	}
-
-	private shouldFilterEnvelope(
-		envelope: HeadlessRuntimeStreamEnvelope,
-	): boolean {
-		if (envelope.type === "heartbeat") {
-			return this.optOutNotifications.includes("heartbeat");
-		}
-		if (envelope.type !== "message") {
-			return false;
-		}
-		if (
-			envelope.message.type === "raw_agent_event" &&
-			!this.allowRawAgentEvents
-		) {
-			return true;
-		}
-		if (this.optOutNotifications.length === 0) {
-			return false;
-		}
-		switch (envelope.message.type) {
-			case "status":
-				return this.optOutNotifications.includes("status");
-			case "connection_info":
-				return this.optOutNotifications.includes("connection_info");
-			case "compaction":
-				return this.optOutNotifications.includes("compaction");
-			default:
-				return false;
-		}
-	}
-}
-
 interface HeadlessConnectionRecord {
 	id: string;
 	role: HeadlessConnectionRole;
@@ -491,112 +504,6 @@ interface HeadlessConnectionRecord {
 	optOutNotifications?: HeadlessNotificationType[];
 	subscriptionIds: Set<string>;
 	lastSeenAt: number;
-}
-
-export interface HeadlessAttachedSubscription {
-	id: string;
-	next(): HeadlessRuntimeStreamEnvelope | null;
-	onAvailable(listener: SubscriberListener): () => void;
-	enqueue(envelope: HeadlessRuntimeStreamEnvelope): void;
-	close(): void;
-}
-
-class HeadlessRuntimeBroker {
-	private nextCursor = 1;
-	private readonly listeners = new Set<RuntimeListener>();
-	private readonly events: HeadlessRuntimeStreamEnvelope[] = [];
-
-	private publishEnvelope(
-		envelope: HeadlessRuntimeStreamEnvelope,
-	): HeadlessRuntimeStreamEnvelope {
-		assertHeadlessRuntimeStreamEnvelope(
-			envelope,
-			"headless runtime stream envelope",
-		);
-		this.events.push(envelope);
-		while (this.events.length > MAX_BUFFERED_EVENTS) {
-			this.events.shift();
-		}
-		for (const listener of this.listeners) {
-			listener(envelope);
-		}
-		return envelope;
-	}
-
-	publish(message: HeadlessFromAgentMessage): HeadlessRuntimeEventEnvelope {
-		const envelope = this.createMessageEnvelope(message);
-		return this.publishEnvelope(envelope) as HeadlessRuntimeEventEnvelope;
-	}
-
-	createPrivateMessage(
-		message: HeadlessFromAgentMessage,
-	): HeadlessRuntimeEventEnvelope {
-		return this.createMessageEnvelope(message);
-	}
-
-	private createMessageEnvelope(
-		message: HeadlessFromAgentMessage,
-	): HeadlessRuntimeEventEnvelope {
-		assertHeadlessFromAgentMessage(message, "headless runtime message");
-		const envelope: HeadlessRuntimeEventEnvelope = {
-			type: "message",
-			cursor: this.nextCursor++,
-			message,
-		};
-		return envelope;
-	}
-
-	publishSnapshot(
-		createSnapshot: (cursor: number) => HeadlessRuntimeSnapshot,
-	): HeadlessRuntimeSnapshotEnvelope {
-		const cursor = this.nextCursor++;
-		const envelope: HeadlessRuntimeSnapshotEnvelope = {
-			type: "snapshot",
-			snapshot: createSnapshot(cursor),
-		};
-		return this.publishEnvelope(envelope) as HeadlessRuntimeSnapshotEnvelope;
-	}
-
-	currentCursor(): number {
-		return this.nextCursor - 1;
-	}
-
-	replayFrom(cursor: number): HeadlessRuntimeStreamEnvelope[] | null {
-		if (this.events.length === 0) {
-			return [];
-		}
-		const earliest = this.getEnvelopeCursor(this.events[0]) ?? this.nextCursor;
-		if (cursor < earliest - 1) {
-			return null;
-		}
-		return this.events.filter(
-			(event) => (this.getEnvelopeCursor(event) ?? 0) > cursor,
-		);
-	}
-
-	subscribe(listener: RuntimeListener): () => void {
-		this.listeners.add(listener);
-		return () => {
-			this.listeners.delete(listener);
-		};
-	}
-
-	private getEnvelopeCursor(
-		envelope: HeadlessRuntimeStreamEnvelope | undefined,
-	): number | undefined {
-		if (!envelope) {
-			return undefined;
-		}
-		switch (envelope.type) {
-			case "message":
-				return envelope.cursor;
-			case "heartbeat":
-				return envelope.cursor;
-			case "snapshot":
-			case "reset":
-				return envelope.snapshot.cursor;
-		}
-	}
 }
 
 type RuntimeOptions = {
@@ -613,6 +520,7 @@ type RuntimeOptions = {
 	approvalMode: ApprovalMode;
 	enableClientTools?: boolean;
 	client?: "vscode" | "jetbrains" | "conductor" | "generic";
+	restoreManifest?: HostedRunnerRestoreManifest;
 	context: Pick<
 		WebServerContext,
 		"createAgent" | "createBackgroundAgent" | "hostedRunner"
@@ -642,6 +550,7 @@ export class HeadlessSessionRuntime {
 	private readonly connections = new Map<string, HeadlessConnectionRecord>();
 	private controllerConnectionId: string | null = null;
 	private lastInit: HeadlessInitMessage | null = null;
+	private readonly unsubscribeSwarmRuntimeEvents: () => void;
 	private running = false;
 	private disposed = false;
 	private disposePromise: Promise<void> | null = null;
@@ -767,20 +676,66 @@ export class HeadlessSessionRuntime {
 			this.handleAgentEvent(event);
 		});
 
-		this.publish(
-			this.translator.buildReadyMessage(this.agent, this.sessionManager),
-		);
-		this.publish(
-			this.translator.buildSessionInfoMessage(
-				this.sessionManager,
-				this.workspaceRoot ?? process.cwd(),
-			),
-		);
+		if (options.restoreManifest) {
+			this.restoreFromManifest(options.restoreManifest);
+		} else {
+			this.publish(
+				this.translator.buildReadyMessage(this.agent, this.sessionManager),
+			);
+			this.publish(
+				this.translator.buildSessionInfoMessage(
+					this.sessionManager,
+					this.workspaceRoot ?? process.cwd(),
+				),
+			);
+		}
 		this.unsubscribeServerRequestEvents = serverRequestManager.subscribe(
 			(event) => {
 				this.handleServerRequestEvent(event);
 			},
 		);
+		this.unsubscribeSwarmRuntimeEvents = subscribeSwarmRuntimeEvents(
+			(event) => {
+				this.handleSwarmRuntimeEvent(event);
+			},
+		);
+	}
+
+	private restoreFromManifest(manifest: HostedRunnerRestoreManifest): void {
+		const restoredState = structuredClone(
+			manifest.snapshot.state ?? createHeadlessRuntimeState(),
+		);
+		Object.assign(this.state, restoredState);
+		this.state.protocol_version = HEADLESS_PROTOCOL_VERSION;
+		this.state.session_id = this.sessionId;
+		this.state.cwd ??= this.workspaceRoot ?? process.cwd();
+		this.state.is_ready = manifest.runtime.flush_status === "completed";
+		this.state.is_responding = false;
+		this.state.last_status = restoreLastStatus(manifest.runtime.flush_status);
+		const restoreError = restoreLastError(
+			manifest.runtime.flush_status,
+			manifest.runtime.error,
+		);
+		if (restoreError) {
+			this.state.last_error = restoreError;
+			this.state.last_error_type = "protocol";
+		} else {
+			delete this.state.last_error;
+			delete this.state.last_error_type;
+		}
+		this.lastInit = manifest.snapshot.last_init
+			? structuredClone(manifest.snapshot.last_init)
+			: null;
+		const cursor = manifest.runtime.cursor ?? manifest.snapshot.cursor;
+		const snapshot: HeadlessRuntimeSnapshot = {
+			protocolVersion: HEADLESS_PROTOCOL_VERSION,
+			session_id: this.sessionId,
+			cursor,
+			last_init: this.lastInit ? structuredClone(this.lastInit) : null,
+			state: structuredClone(this.state),
+		};
+		assertHeadlessRuntimeSnapshot(snapshot, "hosted runner restored snapshot");
+		this.broker.restoreFromSnapshot(snapshot);
 	}
 
 	static async create(
@@ -817,6 +772,9 @@ export class HeadlessSessionRuntime {
 				includeVscodeTools: options.client === "vscode",
 				includeJetBrainsTools: options.client === "jetbrains",
 				includeConductorTools: options.client === "conductor",
+				platformToolExecutionBridge: createHostedRunnerToolExecutionBridge(
+					options.context.hostedRunner,
+				),
 			},
 		);
 		const automaticMemoryConsolidation =
@@ -916,6 +874,12 @@ export class HeadlessSessionRuntime {
 		await this.agentRuntimeProgress?.failRun(input);
 	}
 
+	async recordHostedAgentRuntimeDrain(
+		input: HostedAgentRuntimeDrainInput,
+	): Promise<void> {
+		await this.agentRuntimeProgress?.recordHostedRunnerDrain(input);
+	}
+
 	disposeBestEffort(reason: string): void {
 		if (this.disposed) {
 			return;
@@ -965,6 +929,12 @@ export class HeadlessSessionRuntime {
 		};
 		assertHeadlessRuntimeSnapshot(snapshot, "headless runtime snapshot");
 		return snapshot;
+	}
+
+	private assertRuntimeReady(action: string): void {
+		if (!this.state.is_ready) {
+			throw new HeadlessRuntimeNotReadyError(action, this.state);
+		}
 	}
 
 	getSessionFile(): string {
@@ -1420,6 +1390,9 @@ export class HeadlessSessionRuntime {
 	}): HeadlessRuntimeSubscriptionSnapshot {
 		const role = options?.role ?? "controller";
 		const explicit = options?.explicit ?? true;
+		if (explicit) {
+			this.assertRuntimeReady("new attachments");
+		}
 		const announceConnectionInfo = options?.announceConnectionInfo ?? true;
 		const reusableControllerConnectionId =
 			!options?.connectionId &&
@@ -1592,9 +1565,13 @@ export class HeadlessSessionRuntime {
 		role: "viewer" | "controller",
 		subscriptionId?: string | null,
 		connectionId?: string | null,
+		options?: { allowNotReady?: boolean },
 	): void {
 		if (role === "viewer") {
 			throw new Error("Viewer headless connections cannot send messages");
+		}
+		if (!options?.allowNotReady) {
+			this.assertRuntimeReady("controller messages");
 		}
 		const subscriber = subscriptionId
 			? this.subscribers.get(subscriptionId)
@@ -1761,6 +1738,7 @@ export class HeadlessSessionRuntime {
 		role?: HeadlessConnectionRole;
 		takeControl?: boolean;
 	}): HeadlessRuntimeHeartbeatSnapshot {
+		this.assertRuntimeReady("new attachments");
 		const role = metadata.role ?? "controller";
 		const connection = this.ensureConnection({
 			connectionId: metadata.connectionId,
@@ -1834,6 +1812,9 @@ export class HeadlessSessionRuntime {
 	): Promise<void> {
 		if (this.disposed) {
 			throw new Error("Headless runtime is no longer available");
+		}
+		if (msg.type !== "shutdown") {
+			this.assertRuntimeReady("controller messages");
 		}
 		this.updatedAt = Date.now();
 
@@ -2372,6 +2353,7 @@ export class HeadlessSessionRuntime {
 		this.disposed = true;
 		this.running = false;
 		this.unsubscribeServerRequestEvents();
+		this.unsubscribeSwarmRuntimeEvents();
 	}
 
 	private handleServerRequestEvent(event: ServerRequestLifecycleEvent): void {
@@ -2401,6 +2383,9 @@ export class HeadlessSessionRuntime {
 					: {}),
 				args: event.request.args,
 				reason: event.request.reason,
+				...(event.request.startedAtMs !== undefined
+					? { started_at_ms: event.request.startedAtMs }
+					: {}),
 			});
 			return;
 		}
@@ -2416,7 +2401,20 @@ export class HeadlessSessionRuntime {
 			resolution: event.resolution,
 			reason: event.reason,
 			resolved_by: event.resolvedBy,
+			...(event.request.startedAtMs !== undefined
+				? { started_at_ms: event.request.startedAtMs }
+				: {}),
+			...(event.resolvedAtMs !== undefined
+				? { resolved_at_ms: event.resolvedAtMs }
+				: {}),
 		});
+	}
+
+	private handleSwarmRuntimeEvent(event: SwarmRuntimeEvent): void {
+		if (event.parentSessionId !== this.sessionId) {
+			return;
+		}
+		this.agentRuntimeProgress?.recordSwarmEvent(event.event);
 	}
 
 	private resolveLegacyToolResponse(
@@ -2544,14 +2542,38 @@ export class HeadlessRuntimeService {
 	async ensureRuntime(
 		options: EnsureRuntimeOptions,
 	): Promise<HeadlessSessionRuntime> {
+		const shouldRegisterConnection =
+			options.registerConnection !== false &&
+			(options.clientProtocolVersion ||
+				options.clientInfo ||
+				options.capabilities ||
+				options.optOutNotifications ||
+				options.role);
 		if (options.sessionId) {
 			const existing = this.getRuntime(options.scope_key, options.sessionId);
 			if (existing) {
+				if (shouldRegisterConnection) {
+					const snapshot = existing.getSnapshot();
+					if (!snapshot.state.is_ready) {
+						throw new HeadlessRuntimeNotReadyError(
+							"new attachments",
+							snapshot.state,
+						);
+					}
+				}
 				return existing;
 			}
 		}
 
 		const sessionId = options.sessionManager.getSessionId();
+		const restoreManifest = await loadHostedRunnerRestoreManifest(
+			options.context.hostedRunner?.restoreManifestPath,
+		);
+		if (restoreManifest && restoreManifest.maestro_session_id !== sessionId) {
+			throw new Error(
+				`Hosted runner restore manifest is for Maestro session ${restoreManifest.maestro_session_id}, not ${sessionId}`,
+			);
+		}
 		const runtime = await HeadlessSessionRuntime.create({
 			scope_key: options.scope_key,
 			session_id: sessionId,
@@ -2566,26 +2588,27 @@ export class HeadlessRuntimeService {
 			approvalMode: options.approvalMode,
 			enableClientTools: options.enableClientTools,
 			client: options.client,
+			restoreManifest,
 			context: options.context,
 			sessionManager: options.sessionManager,
 		});
-		if (
-			options.registerConnection !== false &&
-			(options.clientProtocolVersion ||
-				options.clientInfo ||
-				options.capabilities ||
-				options.optOutNotifications ||
-				options.role)
-		) {
-			runtime.registerConnection({
-				clientProtocolVersion: options.clientProtocolVersion,
-				clientInfo: options.clientInfo,
-				capabilities: options.capabilities,
-				optOutNotifications: options.optOutNotifications,
-				role: options.role,
-			});
-		}
 		this.runtimes.set(runtime.key(), runtime);
+		if (shouldRegisterConnection) {
+			try {
+				runtime.registerConnection({
+					clientProtocolVersion: options.clientProtocolVersion,
+					clientInfo: options.clientInfo,
+					capabilities: options.capabilities,
+					optOutNotifications: options.optOutNotifications,
+					role: options.role,
+				});
+			} catch (error) {
+				if (!(error instanceof HeadlessRuntimeNotReadyError)) {
+					this.runtimes.delete(runtime.key());
+				}
+				throw error;
+			}
+		}
 		return runtime;
 	}
 

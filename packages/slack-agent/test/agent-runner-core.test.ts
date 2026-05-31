@@ -172,7 +172,7 @@ describe("agent-runner core logic", () => {
 		): string {
 			const parts: string[] = [];
 
-			parts.push("You are a helpful Slack bot assistant.");
+			parts.push("You are a helpful EvalOps teammate working in Slack.");
 			parts.push(`\n## Workspace\nPath: ${workspacePath}`);
 			parts.push(`Current channel: ${channelId}`);
 

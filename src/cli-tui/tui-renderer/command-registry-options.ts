@@ -10,6 +10,7 @@ import type { AppMessage } from "../../agent/types.js";
 import type { AboutView } from "../about-view.js";
 import type { BackgroundTasksController } from "../background/background-tasks-controller.js";
 import type { ChangelogView } from "../changelog-view.js";
+import { handleA2ATuiCommand } from "../commands/a2a-handlers.js";
 import { handleAccessCommand } from "../commands/access-command.js";
 import { handleAuditCommand } from "../commands/audit-command.js";
 import { createHotkeysCommandHandler } from "../commands/hotkeys-command.js";
@@ -185,6 +186,11 @@ export function buildTuiCommandRegistryOptions(
 		undoChanges: (context) => deps.handleEnhancedUndoCommand(context),
 		mention: (context) =>
 			deps.getFileSearchView().handleMentionCommand(context.rawInput),
+		a2a: (context) =>
+			handleA2ATuiCommand(context, {
+				addContent,
+				requestRender,
+			}),
 		access: (context) => handleAccessCommand(context),
 		pii: (context) => handlePiiCommand(context),
 		audit: (context) => handleAuditCommand(context),

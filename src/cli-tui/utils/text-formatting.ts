@@ -13,6 +13,14 @@ export function stripAnsiSequences(text: string): string {
 	return text.replace(ANSI_ESCAPE_SEQUENCE, "");
 }
 
+export function sanitizeTerminalPreview(text: string): string {
+	return stripAnsiSequences(text).replace(
+		// biome-ignore lint/suspicious/noControlCharactersInRegex: preview text may come from repository files and must not emit terminal controls.
+		/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g,
+		"",
+	);
+}
+
 function consumeAnsiSequence(text: string, index: number): number {
 	if (text[index] !== "\x1B") {
 		return index + 1;

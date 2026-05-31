@@ -1,0 +1,175 @@
+{
+	"schemaVersion": "evalops.maestro.agent-trajectory-replay.v1",
+	"trajectorySchemaVersion": "evalops.maestro.agent-trajectory.v1",
+	"run": {
+		"id": "hosted-governed-recovery-1",
+		"sessionId": "hosted-governed-recovery-1",
+		"source": "platform",
+		"platformBacked": true
+	},
+	"deterministic": true,
+	"counts": {
+		"events": 16,
+		"deltas": 0,
+		"errors": 0,
+		"warnings": 0,
+		"toolCalls": 3,
+		"phases": 9
+	},
+	"phases": [
+		{
+			"phase": "setup",
+			"events": 2,
+			"firstSequence": 1,
+			"lastSequence": 2
+		},
+		{
+			"phase": "observe",
+			"events": 1,
+			"firstSequence": 3,
+			"lastSequence": 3
+		},
+		{
+			"phase": "think",
+			"events": 3,
+			"firstSequence": 4,
+			"lastSequence": 15
+		},
+		{
+			"phase": "act",
+			"events": 2,
+			"firstSequence": 5,
+			"lastSequence": 12
+		},
+		{
+			"phase": "wait",
+			"events": 2,
+			"firstSequence": 6,
+			"lastSequence": 11
+		},
+		{
+			"phase": "govern",
+			"events": 1,
+			"firstSequence": 7,
+			"lastSequence": 7
+		},
+		{
+			"phase": "verify",
+			"events": 3,
+			"firstSequence": 8,
+			"lastSequence": 14
+		},
+		{
+			"phase": "recover",
+			"events": 1,
+			"firstSequence": 9,
+			"lastSequence": 9
+		},
+		{
+			"phase": "finish",
+			"events": 1,
+			"firstSequence": 16,
+			"lastSequence": 16
+		}
+	],
+	"toolCalls": [
+		{
+			"toolCallId": "call-hosted-restart",
+			"toolName": "restart_worker",
+			"requestedSequence": 5,
+			"resultSequences": [8],
+			"terminalStatus": "failed",
+			"evidence": [
+				{
+					"kind": "approval_request",
+					"id": "approval-hosted-1"
+				},
+				{
+					"kind": "pending_request",
+					"id": "pending-approval-hosted-1"
+				},
+				{
+					"kind": "timeline_item",
+					"id": "pending:pending-approval-hosted-1"
+				},
+				{
+					"kind": "timeline_item",
+					"id": "policy-decision:hosted-assistant-1:call-hosted-restart"
+				},
+				{
+					"kind": "timeline_item",
+					"id": "runtime:hosted-recovery-1"
+				},
+				{
+					"kind": "timeline_item",
+					"id": "tool-requested:hosted-assistant-1:call-hosted-restart"
+				},
+				{
+					"kind": "timeline_item",
+					"id": "tool-result:hosted-restart-1:call-hosted-restart"
+				},
+				{
+					"kind": "tool_call",
+					"id": "call-hosted-restart"
+				},
+				{
+					"kind": "tool_execution",
+					"id": "tool-exec-hosted-1"
+				}
+			]
+		},
+		{
+			"toolCallId": "call-hosted-read",
+			"toolName": "read_runtime_state",
+			"requestedSequence": 12,
+			"resultSequences": [13],
+			"terminalStatus": "completed",
+			"evidence": [
+				{
+					"kind": "artifact",
+					"id": "skill_artifact_hosted_1"
+				},
+				{
+					"kind": "timeline_item",
+					"id": "artifact-linked:hosted-read-1:call-hosted-read"
+				},
+				{
+					"kind": "timeline_item",
+					"id": "tool-requested:hosted-assistant-2:call-hosted-read"
+				},
+				{
+					"kind": "timeline_item",
+					"id": "tool-result:hosted-read-1:call-hosted-read"
+				},
+				{
+					"kind": "tool_call",
+					"id": "call-hosted-read"
+				},
+				{
+					"kind": "tool_execution",
+					"id": "tool-exec-hosted-read-1"
+				}
+			]
+		},
+		{
+			"toolCallId": "call-hosted-elicit",
+			"toolName": "mcp__ops__elicit_restart_window",
+			"resultSequences": [],
+			"evidence": [
+				{
+					"kind": "pending_request",
+					"id": "pending-mcp-hosted-1"
+				},
+				{
+					"kind": "timeline_item",
+					"id": "pending:pending-mcp-hosted-1"
+				},
+				{
+					"kind": "tool_call",
+					"id": "call-hosted-elicit"
+				}
+			]
+		}
+	],
+	"deltas": []
+}

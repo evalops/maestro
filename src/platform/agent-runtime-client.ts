@@ -1,4 +1,10 @@
 import {
+	EVALOPS_ACCESS_TOKEN_ENV_VARS,
+	EVALOPS_ORGANIZATION_ID_ENV_VARS,
+	EVALOPS_WORKSPACE_ID_ENV_VARS,
+} from "../evalops/env-aliases.js";
+import { isAbortError } from "../utils/abort-error.js";
+import {
 	type A2AServiceConfig,
 	type A2ATask,
 	buildA2AUserMessage,
@@ -56,6 +62,14 @@ const DEDICATED_A2A_MAX_ATTEMPTS_ENV_VARS = [
 	"MAESTRO_PLATFORM_A2A_MAX_ATTEMPTS",
 	"MAESTRO_A2A_MAX_ATTEMPTS",
 ] as const;
+const DEDICATED_A2A_CALLBACK_URL_ENV_VARS = [
+	"MAESTRO_PLATFORM_A2A_CALLBACK_URL",
+	"MAESTRO_A2A_CALLBACK_URL",
+] as const;
+const DEDICATED_A2A_CALLBACK_TOKEN_ENV_VARS = [
+	"MAESTRO_PLATFORM_A2A_CALLBACK_TOKEN",
+	"MAESTRO_A2A_CALLBACK_TOKEN",
+] as const;
 
 const HANDLE_TRIGGER_PATH = platformConnectMethodPath(
 	PLATFORM_CONNECT_METHODS.agentRuntime.handleTrigger,
@@ -65,6 +79,18 @@ const CLAIM_NEXT_RUN_PATH = platformConnectMethodPath(
 );
 const RECORD_RUN_STEP_PATH = platformConnectMethodPath(
 	PLATFORM_CONNECT_METHODS.agentRuntime.recordRunStep,
+);
+const RECORD_RUN_EVENT_PATH = platformConnectMethodPath(
+	PLATFORM_CONNECT_METHODS.agentRuntime.recordRunEvent,
+);
+const RECORD_RUN_COST_PATH = platformConnectMethodPath(
+	PLATFORM_CONNECT_METHODS.agentRuntime.recordRunCost,
+);
+const RECORD_RUN_WORK_ITEM_PATH = platformConnectMethodPath(
+	PLATFORM_CONNECT_METHODS.agentRuntime.recordRunWorkItem,
+);
+const UPDATE_RUN_WORK_ITEM_PATH = platformConnectMethodPath(
+	PLATFORM_CONNECT_METHODS.agentRuntime.updateRunWorkItem,
 );
 const WAIT_RUN_PATH = platformConnectMethodPath(
 	PLATFORM_CONNECT_METHODS.agentRuntime.waitRun,
@@ -85,10 +111,6 @@ const LIST_RUN_EVENTS_PATH = platformConnectMethodPath(
 	PLATFORM_CONNECT_METHODS.agentRuntime.listRunEvents,
 );
 
-function isAbortError(error: unknown): boolean {
-	return error instanceof Error && error.name === "AbortError";
-}
-
 const AGENT_RUNTIME_BASE_URL_ENV_VARS = [
 	"MAESTRO_AGENT_RUNTIME_SERVICE_URL",
 	"AGENT_RUNTIME_SERVICE_URL",
@@ -97,23 +119,22 @@ const AGENT_RUNTIME_BASE_URL_ENV_VARS = [
 const AGENT_RUNTIME_TOKEN_ENV_VARS = [
 	"MAESTRO_AGENT_RUNTIME_SERVICE_TOKEN",
 	"AGENT_RUNTIME_SERVICE_TOKEN",
-	"MAESTRO_EVALOPS_ACCESS_TOKEN",
-	"EVALOPS_TOKEN",
+	...EVALOPS_ACCESS_TOKEN_ENV_VARS,
 ] as const;
 
 const AGENT_RUNTIME_ORGANIZATION_ENV_VARS = [
 	"MAESTRO_AGENT_RUNTIME_ORG_ID",
 	"AGENT_RUNTIME_ORGANIZATION_ID",
-	"MAESTRO_EVALOPS_ORG_ID",
-	"EVALOPS_ORGANIZATION_ID",
-	"MAESTRO_ENTERPRISE_ORG_ID",
+	...EVALOPS_ORGANIZATION_ID_ENV_VARS,
 ] as const;
 
 const AGENT_RUNTIME_WORKSPACE_ENV_VARS = [
 	"MAESTRO_AGENT_RUNTIME_WORKSPACE_ID",
 	"AGENT_RUNTIME_WORKSPACE_ID",
 	"MAESTRO_WORKSPACE_ID",
-	"EVALOPS_WORKSPACE_ID",
+	...EVALOPS_WORKSPACE_ID_ENV_VARS.filter(
+		(name) => name !== "MAESTRO_WORKSPACE_ID",
+	),
 ] as const;
 
 const AGENT_RUNTIME_TIMEOUT_ENV_VARS = [
@@ -151,6 +172,9 @@ export enum PlatformRuntimeEventTypeValue {
 	RunResumed = "RUNTIME_EVENT_TYPE_RUN_RESUMED",
 	RunSucceeded = "RUNTIME_EVENT_TYPE_RUN_SUCCEEDED",
 	RunFailed = "RUNTIME_EVENT_TYPE_RUN_FAILED",
+	AgentProgressRecorded = "RUNTIME_EVENT_TYPE_AGENT_PROGRESS_RECORDED",
+	ModelResponseRecorded = "RUNTIME_EVENT_TYPE_MODEL_RESPONSE_RECORDED",
+	ApprovalRequested = "RUNTIME_EVENT_TYPE_APPROVAL_REQUESTED",
 }
 
 export enum PlatformAgentRunStateValue {
@@ -187,6 +211,28 @@ export enum PlatformAgentRunWaitTypeValue {
 	Input = "AGENT_RUN_WAIT_TYPE_INPUT",
 	Event = "AGENT_RUN_WAIT_TYPE_EVENT",
 	Timer = "AGENT_RUN_WAIT_TYPE_TIMER",
+}
+
+export enum PlatformAgentWorkItemKindValue {
+	Root = "AGENT_WORK_ITEM_KIND_ROOT",
+	ModelCall = "AGENT_WORK_ITEM_KIND_MODEL_CALL",
+	ToolCall = "AGENT_WORK_ITEM_KIND_TOOL_CALL",
+	ChildRun = "AGENT_WORK_ITEM_KIND_CHILD_RUN",
+	Wait = "AGENT_WORK_ITEM_KIND_WAIT",
+	Memory = "AGENT_WORK_ITEM_KIND_MEMORY",
+	UserInput = "AGENT_WORK_ITEM_KIND_USER_INPUT",
+	Followup = "AGENT_WORK_ITEM_KIND_FOLLOWUP",
+	Recovery = "AGENT_WORK_ITEM_KIND_RECOVERY",
+}
+
+export enum PlatformAgentWorkItemStateValue {
+	Pending = "AGENT_WORK_ITEM_STATE_PENDING",
+	Running = "AGENT_WORK_ITEM_STATE_RUNNING",
+	Waiting = "AGENT_WORK_ITEM_STATE_WAITING",
+	Blocked = "AGENT_WORK_ITEM_STATE_BLOCKED",
+	Succeeded = "AGENT_WORK_ITEM_STATE_SUCCEEDED",
+	Failed = "AGENT_WORK_ITEM_STATE_FAILED",
+	Cancelled = "AGENT_WORK_ITEM_STATE_CANCELLED",
 }
 
 export enum MaestroAgentRuntimeSourceEventType {
@@ -245,6 +291,7 @@ export interface PlatformRuntimeEvent {
 	checkpointId?: string;
 	attributes?: Record<string, unknown>;
 	occurredAt?: string;
+	costId?: string;
 }
 
 export interface PlatformAgentRuntimeHandleTriggerResult {
@@ -277,6 +324,21 @@ export interface PlatformAgentRunStep {
 	linkage?: PlatformAgentRun["linkage"];
 }
 
+export interface PlatformAgentRunCost {
+	id?: string;
+	linkage?: PlatformAgentRun["linkage"];
+	stepId?: string;
+	meterRef?: string;
+	provider?: string;
+	model?: string;
+	inputTokens?: number;
+	outputTokens?: number;
+	totalTokens?: number;
+	currency?: string;
+	estimatedCostMicros?: number;
+	recordedAt?: string;
+}
+
 export interface PlatformAgentRunCheckpoint {
 	id?: string;
 	stepId?: string;
@@ -300,6 +362,33 @@ export interface PlatformAgentRunWait {
 	resolvedAt?: string;
 	resolvedByEventId?: string;
 	linkage?: PlatformAgentRun["linkage"];
+}
+
+export interface PlatformAgentWorkItem {
+	id?: string;
+	linkage?: PlatformAgentRun["linkage"];
+	autonomySessionId?: string;
+	runId?: string;
+	workEnvelopeId?: string;
+	parentWorkItemId?: string;
+	ownerChildRunId?: string;
+	kind?: PlatformAgentWorkItemKindValue | string;
+	state?: PlatformAgentWorkItemStateValue | string;
+	title?: string;
+	goal?: string;
+	nextAction?: string;
+	blocker?: string;
+	waitId?: string;
+	toolExecutionId?: string;
+	evidenceRefs?: string[];
+	completionGate?: string;
+	payload?: Record<string, unknown>;
+	createdAt?: string;
+	updatedAt?: string;
+	startedAt?: string;
+	completedAt?: string;
+	failedAt?: string;
+	cancelledAt?: string;
 }
 
 export interface PlatformAgentRuntimeClaimNextRunInput {
@@ -326,6 +415,36 @@ export interface PlatformAgentRuntimeRecordRunStepResult {
 	event?: PlatformRuntimeEvent;
 }
 
+export interface PlatformAgentRuntimeRecordRunEventInput {
+	runId: string;
+	type: PlatformRuntimeEventTypeValue | string;
+	message: string;
+	attributes?: Record<string, unknown>;
+	stepId?: string;
+	checkpointId?: string;
+	artifactId?: string;
+	costId?: string;
+	waitId?: string;
+	visibility?: Record<string, unknown>;
+}
+
+export interface PlatformAgentRuntimeRecordRunEventResult {
+	run: PlatformAgentRun;
+	event?: PlatformRuntimeEvent;
+}
+
+export interface PlatformAgentRuntimeRecordRunCostInput {
+	runId: string;
+	leaseToken: string;
+	cost: PlatformAgentRunCost;
+}
+
+export interface PlatformAgentRuntimeRecordRunCostResult {
+	run: PlatformAgentRun;
+	cost?: PlatformAgentRunCost;
+	event?: PlatformRuntimeEvent;
+}
+
 export interface PlatformAgentRuntimeWaitRunInput {
 	runId: string;
 	leaseToken: string;
@@ -345,6 +464,36 @@ export interface PlatformAgentRuntimeResumeRunInput {
 	waitId: string;
 	resumeEventId?: string;
 	payload?: Record<string, unknown>;
+}
+
+export interface PlatformAgentRuntimeRecordRunWorkItemInput {
+	runId: string;
+	workItem: PlatformAgentWorkItem;
+}
+
+export interface PlatformAgentRuntimeRecordRunWorkItemResult {
+	run: PlatformAgentRun;
+	workItem?: PlatformAgentWorkItem;
+	event?: PlatformRuntimeEvent;
+}
+
+export interface PlatformAgentRuntimeUpdateRunWorkItemInput {
+	runId: string;
+	workItemId: string;
+	state: PlatformAgentWorkItemStateValue | string;
+	nextAction?: string;
+	blocker?: string;
+	waitId?: string;
+	toolExecutionId?: string;
+	evidenceRefs?: string[];
+	completionGate?: string;
+	payload?: Record<string, unknown>;
+}
+
+export interface PlatformAgentRuntimeUpdateRunWorkItemResult {
+	run: PlatformAgentRun;
+	workItem?: PlatformAgentWorkItem;
+	event?: PlatformRuntimeEvent;
 }
 
 export interface PlatformAgentRuntimeRunEventResult {
@@ -535,6 +684,35 @@ function normalizeStep(value: unknown): PlatformAgentRunStep | undefined {
 	};
 }
 
+function normalizeCost(value: unknown): PlatformAgentRunCost | undefined {
+	if (!value || typeof value !== "object" || Array.isArray(value)) {
+		return undefined;
+	}
+	const record = value as Record<string, unknown>;
+	const id = pickString(record, "id");
+	if (!id) {
+		return undefined;
+	}
+	return {
+		id,
+		linkage: normalizeLinkage(record.linkage),
+		stepId: pickString(record, "stepId", "step_id"),
+		meterRef: pickString(record, "meterRef", "meter_ref"),
+		provider: pickString(record, "provider"),
+		model: pickString(record, "model"),
+		inputTokens: pickNumber(record, "inputTokens", "input_tokens"),
+		outputTokens: pickNumber(record, "outputTokens", "output_tokens"),
+		totalTokens: pickNumber(record, "totalTokens", "total_tokens"),
+		currency: pickString(record, "currency"),
+		estimatedCostMicros: pickNumber(
+			record,
+			"estimatedCostMicros",
+			"estimated_cost_micros",
+		),
+		recordedAt: pickString(record, "recordedAt", "recorded_at"),
+	};
+}
+
 function normalizeCheckpoint(
 	value: unknown,
 ): PlatformAgentRunCheckpoint | undefined {
@@ -575,6 +753,67 @@ function normalizeWait(value: unknown): PlatformAgentRunWait | undefined {
 			"resolved_by_event_id",
 		),
 		linkage: normalizeLinkage(record.linkage),
+	};
+}
+
+function normalizeStringArray(value: unknown): string[] | undefined {
+	if (!Array.isArray(value)) {
+		return undefined;
+	}
+	const strings = value.filter(
+		(item): item is string => typeof item === "string" && item.length > 0,
+	);
+	return strings.length > 0 ? strings : undefined;
+}
+
+function normalizeWorkItem(value: unknown): PlatformAgentWorkItem | undefined {
+	if (!value || typeof value !== "object" || Array.isArray(value)) {
+		return undefined;
+	}
+	const record = value as Record<string, unknown>;
+	const id = pickString(record, "id");
+	if (!id) {
+		return undefined;
+	}
+	return {
+		id,
+		linkage: normalizeLinkage(record.linkage),
+		autonomySessionId: pickString(
+			record,
+			"autonomySessionId",
+			"autonomy_session_id",
+		),
+		runId: pickString(record, "runId", "run_id"),
+		workEnvelopeId: pickString(record, "workEnvelopeId", "work_envelope_id"),
+		parentWorkItemId: pickString(
+			record,
+			"parentWorkItemId",
+			"parent_work_item_id",
+		),
+		ownerChildRunId: pickString(
+			record,
+			"ownerChildRunId",
+			"owner_child_run_id",
+		),
+		kind: pickString(record, "kind"),
+		state: pickString(record, "state"),
+		title: pickString(record, "title"),
+		goal: pickString(record, "goal"),
+		nextAction: pickString(record, "nextAction", "next_action"),
+		blocker: pickString(record, "blocker"),
+		waitId: pickString(record, "waitId", "wait_id"),
+		toolExecutionId: pickString(record, "toolExecutionId", "tool_execution_id"),
+		evidenceRefs: normalizeStringArray(
+			record.evidenceRefs ?? record.evidence_refs,
+		),
+		completionGate: pickString(record, "completionGate", "completion_gate"),
+		payload: pickRecord(record, "payload"),
+		createdAt: pickString(record, "createdAt", "created_at"),
+		updatedAt: pickString(record, "updatedAt", "updated_at"),
+		startedAt: pickString(record, "startedAt", "started_at"),
+		completedAt: pickString(record, "completedAt", "completed_at"),
+		failedAt: pickString(record, "failedAt", "failed_at"),
+		cancelledAt: pickString(record, "cancelledAt", "cancelled_at"),
 	};
 }
 
@@ -620,6 +859,7 @@ function normalizeEvent(value: unknown): PlatformRuntimeEvent | undefined {
 		stepId: pickString(record, "stepId", "step_id"),
 		waitId: pickString(record, "waitId", "wait_id"),
 		checkpointId: pickString(record, "checkpointId", "checkpoint_id"),
+		costId: pickString(record, "costId", "cost_id"),
 		attributes: pickRecord(record, "attributes"),
 		occurredAt: pickString(record, "occurredAt", "occurred_at"),
 	};
@@ -815,6 +1055,118 @@ export async function recordAgentRuntimeRunStep(
 	return {
 		run: normalizeRequiredRun(payload),
 		step: normalizeStep(payload.step),
+		event: normalizeEvent(payload.event),
+	};
+}
+
+export async function recordAgentRuntimeRunEvent(
+	input: PlatformAgentRuntimeRecordRunEventInput,
+	options?: {
+		config?: PlatformServiceConfig;
+		signal?: AbortSignal;
+	},
+): Promise<PlatformAgentRuntimeRecordRunEventResult> {
+	const payload = await postAgentRuntimeOperation(
+		RECORD_RUN_EVENT_PATH,
+		{
+			runId: input.runId,
+			type: input.type,
+			message: input.message,
+			...(input.attributes ? { attributes: input.attributes } : {}),
+			...(input.stepId ? { stepId: input.stepId } : {}),
+			...(input.checkpointId ? { checkpointId: input.checkpointId } : {}),
+			...(input.artifactId ? { artifactId: input.artifactId } : {}),
+			...(input.costId ? { costId: input.costId } : {}),
+			...(input.waitId ? { waitId: input.waitId } : {}),
+			...(input.visibility ? { visibility: input.visibility } : {}),
+		},
+		options,
+	);
+	return {
+		run: normalizeRequiredRun(payload),
+		event: normalizeEvent(payload.event),
+	};
+}
+
+export async function recordAgentRuntimeRunCost(
+	input: PlatformAgentRuntimeRecordRunCostInput,
+	options?: {
+		config?: PlatformServiceConfig;
+		signal?: AbortSignal;
+	},
+): Promise<PlatformAgentRuntimeRecordRunCostResult> {
+	const payload = await postAgentRuntimeOperation(
+		RECORD_RUN_COST_PATH,
+		{
+			runId: input.runId,
+			leaseToken: input.leaseToken,
+			cost: input.cost,
+		},
+		options,
+	);
+	return {
+		run: normalizeRequiredRun(payload),
+		cost: normalizeCost(payload.cost),
+		event: normalizeEvent(payload.event),
+	};
+}
+
+export async function recordAgentRuntimeRunWorkItem(
+	input: PlatformAgentRuntimeRecordRunWorkItemInput,
+	options?: {
+		config?: PlatformServiceConfig;
+		signal?: AbortSignal;
+	},
+): Promise<PlatformAgentRuntimeRecordRunWorkItemResult> {
+	const payload = await postAgentRuntimeOperation(
+		RECORD_RUN_WORK_ITEM_PATH,
+		{
+			runId: input.runId,
+			workItem: input.workItem,
+		},
+		options,
+	);
+	return {
+		run: normalizeRequiredRun(payload),
+		workItem: normalizeWorkItem(payload.workItem ?? payload.work_item),
+		event: normalizeEvent(payload.event),
+	};
+}
+
+export async function updateAgentRuntimeRunWorkItem(
+	input: PlatformAgentRuntimeUpdateRunWorkItemInput,
+	options?: {
+		config?: PlatformServiceConfig;
+		signal?: AbortSignal;
+	},
+): Promise<PlatformAgentRuntimeUpdateRunWorkItemResult> {
+	const payload = await postAgentRuntimeOperation(
+		UPDATE_RUN_WORK_ITEM_PATH,
+		{
+			runId: input.runId,
+			workItemId: input.workItemId,
+			state: input.state,
+			...(input.nextAction !== undefined
+				? { nextAction: input.nextAction }
+				: {}),
+			...(input.blocker !== undefined ? { blocker: input.blocker } : {}),
+			...(input.waitId !== undefined ? { waitId: input.waitId } : {}),
+			...(input.toolExecutionId !== undefined
+				? { toolExecutionId: input.toolExecutionId }
+				: {}),
+			...(input.evidenceRefs !== undefined
+				? { evidenceRefs: input.evidenceRefs }
+				: {}),
+			...(input.completionGate !== undefined
+				? { completionGate: input.completionGate }
+				: {}),
+			...(input.payload ? { payload: input.payload } : {}),
+		},
+		options,
+	);
+	return {
+		run: normalizeRequiredRun(payload),
+		workItem: normalizeWorkItem(payload.workItem ?? payload.work_item),
 		event: normalizeEvent(payload.event),
 	};
 }
@@ -1077,6 +1429,7 @@ async function recordMaestroSessionRuntimeTriggerViaA2A(
 	const correlationId =
 		trimString(input.correlationId) ?? ["maestro-session", sessionId].join(":");
 	const traceContext = maestroRuntimeTraceContext(input);
+	const pushNotificationConfig = platformA2APushNotificationConfig(sessionId);
 	try {
 		const sent = await sendA2AMessage(
 			config,
@@ -1103,7 +1456,12 @@ async function recordMaestroSessionRuntimeTriggerViaA2A(
 						...(factsContext ? { facts_context: factsContext } : {}),
 					},
 				}),
-				configuration: { returnImmediately: true },
+				configuration: {
+					returnImmediately: true,
+					...(pushNotificationConfig
+						? { taskPushNotificationConfig: pushNotificationConfig }
+						: {}),
+				},
 				metadata: {
 					route: "maestro_session",
 					transport: "a2a",
@@ -1133,6 +1491,21 @@ async function recordMaestroSessionRuntimeTriggerViaA2A(
 		}
 		return null;
 	}
+}
+
+function platformA2APushNotificationConfig(
+	sessionId: string,
+): { id: string; url: string; token?: string } | undefined {
+	const url = getEnvValue(DEDICATED_A2A_CALLBACK_URL_ENV_VARS);
+	if (!url) {
+		return undefined;
+	}
+	const token = getEnvValue(DEDICATED_A2A_CALLBACK_TOKEN_ENV_VARS);
+	return {
+		id: `maestro-session-${sessionId}`,
+		url,
+		...(token ? { token } : {}),
+	};
 }
 
 function isAgentRuntimeA2AEnabled(): boolean {

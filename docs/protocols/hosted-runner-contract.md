@@ -92,6 +92,27 @@ The response is intentionally sparse:
 If Platform expects an owner generation, it must compare
 `owner_instance_id` before proxying attach traffic.
 
+The identity response also exposes the local runtime lease projection:
+
+```json
+{
+  "runtime_lease": {
+    "protocol_version": "evalops.maestro.hosted-runner-lease.v1",
+    "state": "bound",
+    "generation": 3,
+    "maestro_session_id": "maestro-session-123",
+    "lease_token_present": true,
+    "heartbeat_at": "2026-05-20T04:00:00.000Z",
+    "updated_at": "2026-05-20T04:00:01.000Z"
+  }
+}
+```
+
+This projection is intentionally compact. It is the TypeScript runtime's local
+fencing contract until Platform owns a durable runner-lease table. Gateways and
+operators can distinguish `unbound`, `bound`, and `draining` without reading
+process memory or scraping logs.
+
 The Maestro Helm chart defaults to `replicaCount=1` with
 `headlessRuntime.routing.mode=single-replica` because the TypeScript
 web/headless runtime keeps session ownership, connection leases, event replay,
@@ -132,6 +153,13 @@ Connections negotiate:
 
 Viewers are read-only. Controllers hold the mutation lease. Controller takeover
 must be explicit and visible in heartbeat/subscription snapshots.
+
+Headless session creation must also pass the hosted-runner lease check. A bound
+runner only accepts the already-bound Maestro session id; a new or different
+session receives `runtime_owned_elsewhere` with the active and requested session
+ids plus the lease generation. A draining runner receives `runtime_not_ready`.
+Those error reasons are stable so Platform can map them to stale-session,
+drain, and retry policies.
 
 ## Workspace Rules
 
@@ -187,7 +215,14 @@ The manifest protocol is
 `evalops.remote-runner.snapshot-manifest.v1`. Both Rust-hosted and
 TypeScript-hosted drain paths write this same local manifest envelope, including
 the runtime flush status, workspace export contract, headless runtime snapshot,
-and `retention_policy` metadata describing visibility and redaction classes.
+schema-versioned `runtime_continuity` evidence for the source runner session,
+source owner instance, source process, restore manifest path, and replay cursor,
+schema-versioned `work_continuity` metadata for active/pending
+Codex subagent child runs, and
+`retention_policy` metadata describing visibility and redaction classes. Managed
+drains also include `platform_evidence`, a compact operator-safe record that
+Platform can store as AgentRuntime progress before the run is completed or
+failed.
 Maestro does not upload to GCS, S3, Modal storage, Daytona storage, or any
 other provider store. Upload, retention, workspace artifact hydration, and
 choosing which manifest should be restored are Platform responsibilities. See
@@ -220,14 +255,18 @@ problem in `last_status`, `last_error`, and `last_error_type`. It does not
 hydrate files from cloud storage; the provider must mount or download workspace
 artifacts before starting Maestro.
 
-The Rust surface now has an opt-in hosted conformance adapter. The adapter
-spawns a deterministic fixture binary, attaches over HTTP/SSE, and exercises the
-same shared scenarios as the TypeScript in-process host while the Rust server
-owns leases, replay, snapshots, workspace utilities, heartbeat, and disconnect
-behavior. The required hosted adapter also covers the drain handoff shape:
-manifest response, persisted snapshot file, export-path recording, and
-post-drain mutation rejection. It is not yet the final `maestro hosted-runner`
-CLI wrapper.
+The Rust surface now has both an opt-in hosted conformance adapter and a real
+hosted-runner CLI wrapper. `maestro-tui hosted-runner` and the
+`maestro-hosted-runner` binary parse the same Platform contract names, bind the
+Rust hosted HTTP/SSE server, and forward headless traffic through an
+`AgentSupervisor` to the configured Maestro headless executable. The wrapper
+honors `MAESTRO_HEADLESS_CLI_PATH` or `MAESTRO_AGENT_SCRIPT` when the runtime
+image needs to point at a packaged CLI, while leaving the default production
+entrypoint as `maestro --headless`.
+
+The required hosted adapter also covers the drain handoff shape: manifest
+response, persisted snapshot file, export-path recording, and post-drain
+mutation rejection.
 
 ## Error Vocabulary
 

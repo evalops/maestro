@@ -307,6 +307,7 @@ export const ComposerActionApprovalRequestSchema = Type.Object({
 	actionDescription: Type.Optional(Type.String()),
 	args: Type.Unknown(),
 	reason: Type.String(),
+	startedAtMs: Type.Optional(Type.Number()),
 	platform: Type.Optional(ComposerPendingRequestPlatformRefSchema),
 });
 
@@ -314,6 +315,7 @@ export const ComposerActionApprovalDecisionSchema = Type.Object({
 	approved: Type.Boolean(),
 	reason: Type.Optional(Type.String()),
 	resolvedBy: Type.Union([Type.Literal("policy"), Type.Literal("user")]),
+	resolvedAtMs: Type.Optional(Type.Number()),
 });
 
 export const ComposerPendingClientToolRequestSchema = Type.Object({
@@ -449,10 +451,15 @@ export const ComposerRunTimelineEventTypeSchema = Type.Union([
 	Type.Literal("artifact.linked"),
 	Type.Literal("policy.decision"),
 	Type.Literal("wait.pending"),
+	Type.Literal("agent.run.started"),
+	Type.Literal("agent.run.completed"),
+	Type.Literal("agent.run.failed"),
 	Type.Literal("compaction.created"),
 	Type.Literal("branch.created"),
 	Type.Literal("model.changed"),
 	Type.Literal("thinking.changed"),
+	Type.Literal("runtime.recovery"),
+	Type.Literal("runtime.finished"),
 	Type.Literal("custom.event"),
 ]);
 
@@ -492,6 +499,9 @@ export const ComposerRunTimelineItemSchema = Type.Object({
 	approvalRequestId: Type.Optional(Type.String()),
 	toolExecutionId: Type.Optional(Type.String()),
 	artifactId: Type.Optional(Type.String()),
+	agentRunId: Type.Optional(Type.String()),
+	parentAgentRunId: Type.Optional(Type.String()),
+	childAgentRunId: Type.Optional(Type.String()),
 	remoteRunnerSessionId: Type.Optional(Type.String()),
 	platform: Type.Optional(ComposerPendingRequestPlatformRefSchema),
 	platformOperation: Type.Optional(
@@ -534,6 +544,12 @@ export const ComposerToolRetryDecisionSchema = Type.Object({
 	]),
 });
 
+export const ComposerSessionMessagesViewSchema = Type.Union([
+	Type.Literal("full"),
+	Type.Literal("summary"),
+	Type.Literal("notLoaded"),
+]);
+
 export const ComposerSessionSchema = Type.Object({
 	id: Type.String(),
 	title: Type.Optional(Type.String()),
@@ -543,6 +559,7 @@ export const ComposerSessionSchema = Type.Object({
 	messageCount: Type.Number(),
 	favorite: Type.Optional(Type.Boolean()),
 	tags: Type.Optional(Type.Array(Type.String())),
+	messagesView: Type.Optional(ComposerSessionMessagesViewSchema),
 	messages: Type.Array(ComposerMessageSchema),
 	pendingApprovalRequests: Type.Optional(
 		Type.Array(ComposerActionApprovalRequestSchema),

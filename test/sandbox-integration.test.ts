@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
 	type SandboxMode,
 	createSandbox,
+	isNativeSandboxAvailable,
 	loadSandboxConfig,
 } from "../src/sandbox/index.js";
 import { LocalSandbox } from "../src/sandbox/local-sandbox.js";
@@ -170,6 +171,32 @@ describe("Sandbox", () => {
 				} else {
 					process.env.MAESTRO_SANDBOX_MODE = originalEnv;
 				}
+			}
+		});
+
+		it("should treat policy MAESTRO_SANDBOX_MODE values as native sandbox requests", async () => {
+			const originalEnv = process.env.MAESTRO_SANDBOX_MODE;
+			const testDir = join(tmpdir(), `sandbox-policy-env-test-${Date.now()}`);
+			mkdirSync(testDir, { recursive: true });
+
+			try {
+				process.env.MAESTRO_SANDBOX_MODE = "workspace-write";
+				if (isNativeSandboxAvailable()) {
+					const sandbox = await createSandbox({ cwd: testDir });
+					expect(sandbox?.exec).toBeDefined();
+					await sandbox?.dispose();
+				} else {
+					await expect(createSandbox({ cwd: testDir })).rejects.toThrow(
+						'Native sandbox policy mode "workspace-write" requires native sandbox support; refusing to fall back to local execution.',
+					);
+				}
+			} finally {
+				if (originalEnv === undefined) {
+					Reflect.deleteProperty(process.env, "MAESTRO_SANDBOX_MODE");
+				} else {
+					process.env.MAESTRO_SANDBOX_MODE = originalEnv;
+				}
+				rmSync(testDir, { recursive: true, force: true });
 			}
 		});
 

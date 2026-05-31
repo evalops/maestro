@@ -135,8 +135,24 @@ stream and records only structural progress metadata:
 - `turn_start` and `turn_end` become model-call steps.
 - Tool starts become tool-intent steps; tool ends become tool-result or error
   steps.
+- Tool partial updates become `AgentProgressRecorded` events with result
+  shape, content counts, detail keys, and ToolExecution ids, but not raw tool
+  output.
+- Tool batch and scheduler summaries become `AgentProgressRecorded` events with
+  call counts, wait timings, serialization reasons, and batch labels.
 - Pending server requests become AgentRuntime waits with checkpoints.
 - Server-request resolutions resume the matching AgentRuntime wait.
+- Tool retry AgentEvents also become approval-shaped waits/resumes, so retry
+  prompts remain visible even when they do not originate from the server request
+  manager.
+- Diagnostic deltas, status updates, context compactions, and auto-retry
+  attempts become queryable progress events or system steps for recovery and
+  replay analysis.
+- Skill-backed tool artifact metadata is linked through runtime events with
+  `artifactId` when the local tool result exposes one.
+- `agent_end` records a final-status progress event in addition to the terminal
+  agent step. Hosted-runner drain still owns the authoritative Platform
+  `CompleteRun` / `FailRun` transition.
 - Successful hosted-runner drain completes the Platform run.
 - Interrupted hosted-runner drain records a terminal error step and fails the
   Platform run.

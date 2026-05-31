@@ -21,6 +21,10 @@ export {
 	recordCost,
 	recordCompaction,
 	recordModelSwitch,
+	recordSubagentDispatch,
+	recordA2ADelegationTelemetry,
+	recordA2APeerExclusionTelemetry,
+	recordA2APolicyDenialTelemetry,
 	recordSandboxViolation,
 	getTelemetryStatus,
 	setTelemetryRuntimeOverride,
@@ -34,6 +38,9 @@ export {
 	type BackgroundTaskTelemetry,
 	type BusinessMetricTelemetry,
 	type SandboxViolationTelemetry,
+	type SubagentDispatchTelemetry,
+	type A2ADelegationTelemetryInput,
+	type A2ADelegationTelemetryPhase,
 } from "../telemetry.js";
 
 // Maestro event bus catalog shared with the public mirror.
@@ -52,9 +59,11 @@ export {
 	buildMaestroCloudEvent,
 	closeMaestroEventBusTransport,
 	getMaestroEventBusStatus,
+	hashA2AEndpointUrl,
 	maestroCorrelationToChronicleMetadata,
 	publishMaestroCloudEvent,
 	publishMaestroCloudEventStrict,
+	recordMaestroA2ADelegationEvent,
 	recordMaestroApprovalHit,
 	recordMaestroEvalScored,
 	recordMaestroFirewallBlock,
@@ -63,6 +72,7 @@ export {
 	recordMaestroSessionEvent,
 	recordMaestroSkillInvoked,
 	recordMaestroSkillOutcome,
+	recordMaestroSubagentDispatch,
 	recordMaestroToolCallAttempt,
 	recordMaestroToolCallCompleted,
 	resolveMaestroEventBusConfig,
@@ -70,6 +80,7 @@ export {
 	type ApprovalHitEventData,
 	type EvalScoredEventData,
 	type FirewallBlockEventData,
+	type MaestroA2ADelegationEventData,
 	type MaestroCloudEvent,
 	type MaestroCloseReason,
 	type MaestroCorrelation,
@@ -88,6 +99,7 @@ export {
 	type MaestroSurface,
 	type MaestroToolCallStatus,
 	type PublishMaestroEventOptions,
+	type RecordMaestroA2ADelegationEventInput,
 	type RecordMaestroApprovalHitInput,
 	type RecordMaestroEvalScoredInput,
 	type RecordMaestroFirewallBlockInput,
@@ -96,11 +108,13 @@ export {
 	type PromptVariantSelectedEventData,
 	type RecordMaestroSkillInvokedInput,
 	type RecordMaestroSkillOutcomeInput,
+	type RecordMaestroSubagentDispatchInput,
 	type RecordMaestroToolCallAttemptInput,
 	type RecordMaestroToolCallCompletedInput,
 	type SandboxViolationEventData,
 	type SkillInvocationEventData,
 	type SkillOutcomeEventData,
+	type SubagentDispatchEventData,
 	type ToolCallAttemptEventData,
 	type ToolCallResultEventData,
 } from "./maestro-event-bus.js";
@@ -121,6 +135,18 @@ export {
 	type MaestroPlatformReplayFixture,
 	type MaestroPlatformReplayFixtureEvent,
 } from "./maestro-platform-replay-fixture.js";
+
+export {
+	buildAgentOperatingPlaneContext,
+	buildAgentOperatingPlaneCorrelation,
+	buildAgentOperatingPlaneMetadata,
+	type AgentOperatingPlaneContext,
+	type AgentOperatingPlaneContextInput,
+	type AgentOperatingPlaneCorrelationInput,
+	type AgentOperatingPlaneDataClassification,
+	type AgentOperatingPlaneMetadataInput,
+	type AgentOperatingPlaneRetentionClass,
+} from "./agent-operating-plane-context.js";
 
 // Wide events (canonical turn events)
 export {
@@ -148,3 +174,26 @@ export {
 	formatPerfReport,
 	type SessionPerfSnapshot,
 } from "./session-perf.js";
+
+export {
+	emitBeacon,
+	emitBeaconBatch,
+	isBeaconEnabled,
+	normalizeBeaconEvent,
+	type BeaconEvent,
+	type EmitBeaconOptions,
+} from "./beacon.js";
+
+export {
+	CliCommandAggregator,
+	getGlobalCliCommandAggregator,
+	normalizeCommandAction,
+	resetGlobalCliCommandAggregatorForTests,
+	type CliCommandAggregatorOptions,
+} from "./cli-command-aggregator.js";
+
+export {
+	cliCommandName,
+	recordCliStartupTelemetry,
+	type RecordCliStartupTelemetryOptions,
+} from "./cli-startup.js";

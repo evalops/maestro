@@ -27,6 +27,30 @@ export const mcpAuthPresetSchema = z
 		}
 	});
 
+export const mcpWorkspaceTrustModeSchema = z.union([
+	z.literal("trusted"),
+	z.literal("ask"),
+	z.literal("blocked"),
+]);
+
+export const mcpWorkspaceTrustDefaultSchema = z.union([
+	z.literal("trusted"),
+	z.literal("ask"),
+	z.literal("untrusted"),
+]);
+
+export const mcpWorkspaceTrustEntrySchema = z
+	.object({
+		workspaceUri: z.string().min(1),
+		mode: mcpWorkspaceTrustModeSchema,
+		serverFingerprint: z.string().optional(),
+		grantedBy: z.string().optional(),
+		grantedAt: z.string().optional(),
+		expiresAt: z.string().optional(),
+		reason: z.string().optional(),
+	})
+	.strict();
+
 export const mcpServerSchema = z
 	.object({
 		name: mcpNameSchema,
@@ -45,6 +69,7 @@ export const mcpServerSchema = z
 		timeout: z.number().int().positive().optional(),
 		enabled: z.boolean().optional(),
 		disabled: z.boolean().optional(),
+		supportsParallelToolCalls: z.boolean().optional(),
 	})
 	.strict()
 	.superRefine((cfg, ctx) => {
@@ -81,6 +106,8 @@ export const mcpConfigSchema = z.object({
 	// allow loose objects; we normalize/validate per-entry later
 	mcpServers: z.record(z.string(), z.unknown()).optional(),
 	authPresets: z.record(z.string(), z.unknown()).optional(),
+	trustedWorkspaces: z.unknown().optional(),
+	workspaceTrustDefault: z.unknown().optional(),
 });
 
 export type McpConfigInput = z.infer<typeof mcpConfigSchema>;

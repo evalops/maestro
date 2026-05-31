@@ -26,6 +26,7 @@ import {
 	updateMcpServerInConfig,
 } from "../../mcp/index.js";
 import { parseCommandArguments } from "../../tools/shell-utils.js";
+import { promptSafeText } from "../../utils/prompt-safe-text.js";
 
 type RemoteMcpTransport = "http" | "sse";
 
@@ -911,9 +912,8 @@ function formatMcpPromptArgumentSummary(
 			const summary = argument.required
 				? `${argument.name} (required)`
 				: argument.name;
-			return argument.description
-				? `${summary}: ${argument.description}`
-				: summary;
+			const description = promptSafeText(argument.description);
+			return description ? `${summary}: ${description}` : summary;
 		})
 		.join("; ");
 }
@@ -936,8 +936,9 @@ function appendMcpPromptSummary(
 	if (prompt.title && prompt.title !== promptName) {
 		lines.push(`${detailIndent}Title: ${prompt.title}`);
 	}
-	if (prompt.description) {
-		lines.push(`${detailIndent}Description: ${prompt.description}`);
+	const description = promptSafeText(prompt.description);
+	if (description) {
+		lines.push(`${detailIndent}Description: ${description}`);
 	}
 	const argumentSummary = formatMcpPromptArgumentSummary(server, promptName);
 	if (argumentSummary) {

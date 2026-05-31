@@ -2,7 +2,7 @@
  * @fileoverview @evalops/contracts - Shared TypeScript Definitions
  *
  * This package provides the TypeScript type definitions that form the contract
- * between Composer's frontend (Web UI) and backend (API server). All shared
+ * between Maestro's frontend (Web UI) and backend (API server). All shared
  * types, interfaces, and enums are defined here to ensure type safety across
  * the client-server boundary.
  *
@@ -28,7 +28,7 @@
  * // Type-safe message handling
  * const message: ComposerMessage = {
  *   role: "user",
- *   content: "Hello, Composer!",
+ *   content: "Hello, Maestro!",
  *   timestamp: new Date().toISOString(),
  * };
  *
@@ -46,14 +46,21 @@
 export * from "./headless-protocol-generated.js";
 export * from "./headless-protocol-schemas.generated.js";
 export * as headlessProto from "./proto/maestro/v1/headless_pb.js";
+export * from "./advisor-effort.js";
+export * from "./artifacts.js";
+export * from "./delegation-prompt.js";
+export * from "./guarded-files-settings.js";
 export * from "./key-value-tokens.js";
 export * from "./mcp-settings.js";
 export * from "./memory.js";
 export * from "./memory-utils.js";
+export * from "./maestro-app-server.js";
 export * from "./onboarding-utils.js";
 export * from "./proto/maestro/v1/headless_pb.js";
+export * from "./runtime-constraints.js";
 export * from "./runtime-app-server.js";
 export * from "./runtime-server-request.js";
+export * from "./scenario.js";
 
 /**
  * Role of a message in the conversation.
@@ -167,7 +174,7 @@ export interface ComposerAttachment {
 }
 
 /**
- * A message in the Composer conversation.
+ * A message in the Maestro conversation.
  *
  * Messages can contain text content, tool calls, thinking traces,
  * and usage statistics. This is the primary data structure for
@@ -415,6 +422,8 @@ export interface ComposerSessionSummary {
 	tags?: string[];
 }
 
+export type ComposerSessionMessagesView = "full" | "summary" | "notLoaded";
+
 export interface ComposerPendingClientToolRequest {
 	toolCallId: string;
 	toolName: string;
@@ -515,10 +524,15 @@ export type ComposerRunTimelineEventType =
 	| "artifact.linked"
 	| "policy.decision"
 	| "wait.pending"
+	| "agent.run.started"
+	| "agent.run.completed"
+	| "agent.run.failed"
 	| "compaction.created"
 	| "branch.created"
 	| "model.changed"
 	| "thinking.changed"
+	| "runtime.recovery"
+	| "runtime.finished"
 	| "custom.event";
 
 export type ComposerRunTimelineStatus =
@@ -548,6 +562,9 @@ export interface ComposerRunTimelineItem {
 	approvalRequestId?: string;
 	toolExecutionId?: string;
 	artifactId?: string;
+	agentRunId?: string;
+	parentAgentRunId?: string;
+	childAgentRunId?: string;
 	remoteRunnerSessionId?: string;
 	platform?: ComposerPendingRequestPlatformRef;
 	platformOperation?: ComposerPendingRequestPlatformOperation;
@@ -569,6 +586,8 @@ export interface ComposerRunTimelineResponse {
  * Returned when loading a specific session.
  */
 export interface ComposerSession extends ComposerSessionSummary {
+	/** Hydration level used for the messages array. Defaults to full. */
+	messagesView?: ComposerSessionMessagesView;
 	/** Complete conversation history */
 	messages: ComposerMessage[];
 	/** Pending approval requests that still require a decision */
@@ -667,6 +686,7 @@ export interface ComposerActionApprovalRequest {
 	actionDescription?: string;
 	args: unknown;
 	reason: string;
+	startedAtMs?: number;
 	platform?: ComposerPendingRequestPlatformRef;
 }
 
@@ -674,6 +694,7 @@ export interface ComposerActionApprovalDecision {
 	approved: boolean;
 	reason?: string;
 	resolvedBy: "policy" | "user";
+	resolvedAtMs?: number;
 }
 
 export interface ComposerToolRetryRequest {

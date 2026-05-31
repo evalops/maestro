@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -10,13 +11,17 @@ import {
 	buildMaestroCloudEvent,
 	closeMaestroEventBusTransport,
 	getMaestroEventBusStatus,
+	hashA2AEndpointUrl,
+	mirrorTelemetryToMaestroEventBus,
 	publishMaestroCloudEvent,
 	publishMaestroCloudEventStrict,
+	recordMaestroA2ADelegationEvent,
 	recordMaestroEvalScored,
 	recordMaestroLearnedContext,
 	recordMaestroPromptVariantSelected,
 	recordMaestroSkillInvoked,
 	recordMaestroSkillOutcome,
+	recordMaestroSubagentDispatch,
 	recordMaestroToolCallCompleted,
 	resolveMaestroEventBusConfig,
 	setMaestroEventBusTransportForTests,
@@ -70,6 +75,19 @@ describe("maestro event bus", () => {
 			workspace_id: "workspace_123",
 			session_id: "session_123",
 		});
+	});
+
+	it("honors the internal telemetry kill switch before audit-bus routing", () => {
+		const config = resolveMaestroEventBusConfig({
+			MAESTRO_INTERNAL_TELEMETRY_DISABLED: "1",
+			MAESTRO_TELEMETRY: "1",
+			MAESTRO_EVENT_BUS_URL: "nats://bus.example:4222",
+			MAESTRO_EVALOPS_ORG_ID: "org_123",
+		});
+
+		expect(config.enabled).toBe(false);
+		expect(config.reason).toBe("internal telemetry disabled");
+		expect(config.natsUrl).toBe("nats://bus.example:4222");
 	});
 
 	it("requires the managed rollout flag when a feature flag snapshot is mounted", () => {
@@ -287,6 +305,9 @@ describe("maestro event bus", () => {
 				correlation: {
 					workspace_id: "workspace_123",
 					session_id: "session_123",
+					traceparent:
+						"00-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-bbbbbbbbbbbbbbbb-01",
+					tracestate: "evalops=maestro-test",
 				},
 				tool_call_id: "tool_1",
 				tool_name: "bash",
@@ -318,8 +339,12 @@ describe("maestro event bus", () => {
 				user_id: "user_123",
 				workspace_id: "workspace_123",
 				maestro_session_id: "session_123",
+				traceparent: "00-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-bbbbbbbbbbbbbbbb-01",
+				tracestate: "evalops=maestro-test",
 			},
 		});
+		expect(event.data.correlation).not.toHaveProperty("traceparent");
+		expect(event.data.correlation).not.toHaveProperty("tracestate");
 		expect(event.data["@type"]).toBe(
 			"type.googleapis.com/maestro.v1.ToolCallAttempt",
 		);
@@ -425,6 +450,7 @@ describe("maestro event bus", () => {
 			principal_id: "principal_123",
 			trace_id: "trace_123",
 			traceparent: "00-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-bbbbbbbbbbbbbbbb-01",
+			tracestate: "evalops=maestro-test",
 			request_id: "request_123",
 			parent_event_id: "event_parent",
 			attributes: {
@@ -450,6 +476,7 @@ describe("maestro event bus", () => {
 			principal_id: "principal_123",
 			trace_id: "trace_123",
 			traceparent: "00-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-bbbbbbbbbbbbbbbb-01",
+			tracestate: "evalops=maestro-test",
 			request_id: "request_123",
 			parent_event_id: "event_parent",
 			task_id: "task_123",
@@ -601,6 +628,77 @@ describe("maestro event bus", () => {
 		});
 	});
 
+	it("publishes failed tool result CloudEvents on the failure subject", async () => {
+		const published: Array<{ subject: string; payload: string }> = [];
+		setMaestroEventBusTransportForTests({
+			async publish(subject, payload) {
+				published.push({ subject, payload });
+			},
+		});
+
+		recordMaestroToolCallCompleted({
+			tool_call_id: "tool_failed_1",
+			tool_execution_id: "texec_failed_1",
+			status: "MAESTRO_TOOL_CALL_STATUS_FAILED",
+			error_code: "exit_1",
+			error_message: "command failed",
+			completed_at: "2026-04-23T18:02:00.000Z",
+			env: { MAESTRO_EVENT_BUS_URL: "nats://bus.example:4222" },
+		});
+
+		await Promise.resolve();
+
+		expect(published).toHaveLength(1);
+		expect(published[0]?.subject).toBe("maestro.events.tool_call.failed");
+		expect(JSON.parse(published[0]?.payload ?? "{}")).toMatchObject({
+			type: "maestro.events.tool_call.failed",
+			data: {
+				tool_call_id: "tool_failed_1",
+				tool_execution_id: "texec_failed_1",
+				status: "MAESTRO_TOOL_CALL_STATUS_FAILED",
+				error_code: "exit_1",
+				error_message: "command failed",
+			},
+		});
+	});
+
+	it("publishes denied and cancelled tool outcomes on the completion subject", async () => {
+		const published: Array<{ subject: string; payload: string }> = [];
+		setMaestroEventBusTransportForTests({
+			async publish(subject, payload) {
+				published.push({ subject, payload });
+			},
+		});
+
+		for (const status of [
+			"MAESTRO_TOOL_CALL_STATUS_DENIED",
+			"MAESTRO_TOOL_CALL_STATUS_CANCELLED",
+		] as const) {
+			recordMaestroToolCallCompleted({
+				tool_call_id: `tool_${status.toLowerCase()}`,
+				status,
+				completed_at: "2026-04-23T18:03:00.000Z",
+				env: { MAESTRO_EVENT_BUS_URL: "nats://bus.example:4222" },
+			});
+		}
+
+		await Promise.resolve();
+
+		expect(published).toHaveLength(2);
+		for (const [index, status] of [
+			"MAESTRO_TOOL_CALL_STATUS_DENIED",
+			"MAESTRO_TOOL_CALL_STATUS_CANCELLED",
+		].entries()) {
+			expect(published[index]?.subject).toBe(
+				"maestro.events.tool_call.completed",
+			);
+			expect(JSON.parse(published[index]?.payload ?? "{}")).toMatchObject({
+				type: "maestro.events.tool_call.completed",
+				data: { status },
+			});
+		}
+	});
+
 	it("publishes skill invocation CloudEvents with selected skill identity", async () => {
 		const published: Array<{ subject: string; payload: string }> = [];
 		setMaestroEventBusTransportForTests({
@@ -744,6 +842,202 @@ describe("maestro event bus", () => {
 					artifactId: "skill_remote_1",
 					source: "service",
 				},
+			},
+		});
+	});
+
+	it("publishes subagent dispatch CloudEvents for audit replay", async () => {
+		const published: Array<{ subject: string; payload: string }> = [];
+		setMaestroEventBusTransportForTests({
+			async publish(subject, payload) {
+				published.push({ subject, payload });
+			},
+		});
+
+		recordMaestroSubagentDispatch({
+			dispatch_id: "dispatch_1",
+			mode: "smart",
+			subagent_type: "coder",
+			model: "gpt-5.5",
+			provider: "openai-codex",
+			reasoning_effort: "medium",
+			source: "mode",
+			success: true,
+			latency_ms: 7,
+			parent_mode: "smart",
+			parent_model_provider: "anthropic",
+			swarm_id: "swarm_1",
+			task_id: "task_1",
+			teammate_id: "teammate_1",
+			dispatched_at: "2026-05-19T17:00:00.000Z",
+			env: { MAESTRO_EVENT_BUS_URL: "nats://bus.example:4222" },
+		});
+
+		await Promise.resolve();
+
+		expect(published).toHaveLength(1);
+		expect(published[0]?.subject).toBe("maestro.events.subagent.dispatched");
+		expect(JSON.parse(published[0]?.payload ?? "{}")).toMatchObject({
+			type: "maestro.events.subagent.dispatched",
+			data: {
+				"@type": "type.googleapis.com/maestro.v1.SubagentDispatch",
+				dispatch_id: "dispatch_1",
+				mode: "smart",
+				subagent_type: "coder",
+				model: "gpt-5.5",
+				provider: "openai-codex",
+				reasoning_effort: "medium",
+				source: "mode",
+				success: true,
+				latency_ms: 7,
+				parent_mode: "smart",
+				parent_model_provider: "anthropic",
+				swarm_id: "swarm_1",
+				task_id: "task_1",
+				teammate_id: "teammate_1",
+				dispatched_at: "2026-05-19T17:00:00.000Z",
+			},
+		});
+	});
+
+	it("publishes A2A delegation CloudEvents with redacted endpoint correlation", async () => {
+		const published: Array<{ subject: string; payload: string }> = [];
+		setMaestroEventBusTransportForTests({
+			async publish(subject, payload) {
+				published.push({ subject, payload });
+			},
+		});
+
+		recordMaestroA2ADelegationEvent({
+			event_type: MaestroBusEventType.A2ATaskDispatched,
+			event_id: "event_a2a_1",
+			swarm_id: "swarm_1",
+			lane_id: "lane_alpha",
+			parent_task_id: "task_parent",
+			a2a_task_id: "a2a_task_1",
+			a2a_message_id: "a2a_message_1",
+			context_id: "ctx_1",
+			peer_agent_id: "agent_alpha",
+			peer_name: "Alpha",
+			peer_endpoint_url: "https://alpha.internal/a2a?token=secret",
+			peer_endpoint_kind: "internal",
+			skill_id: "maestro.subagent.code-review",
+			task_class: "code.review",
+			source: "platform-agent-registry",
+			status: "TASK_STATE_SUBMITTED",
+			success: true,
+			latency_ms: 11,
+			metadata: {
+				platformAgentRunId: "run_platform_1",
+				workerQueue: "queue-a2a",
+			},
+			correlation: {
+				workspace_id: "workspace_123",
+				session_id: "session_123",
+				traceparent: "00-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-bbbbbbbbbbbbbbbb-01",
+				attributes: {
+					platform_agent_run_id: "run_platform_1",
+				},
+			},
+			occurred_at: "2026-05-23T18:00:00.000Z",
+			env: { MAESTRO_EVENT_BUS_URL: "nats://bus.example:4222" },
+		});
+
+		await Promise.resolve();
+
+		expect(published).toHaveLength(1);
+		expect(published[0]?.subject).toBe("maestro.events.a2a.task.dispatched");
+		const event = JSON.parse(published[0]?.payload ?? "{}");
+		expect(event).toMatchObject({
+			type: "maestro.events.a2a.task.dispatched",
+			data: {
+				"@type": "type.googleapis.com/maestro.v1.MaestroA2ADelegationEvent",
+				swarm_id: "swarm_1",
+				lane_id: "lane_alpha",
+				parent_task_id: "task_parent",
+				a2a_task_id: "a2a_task_1",
+				a2a_message_id: "a2a_message_1",
+				context_id: "ctx_1",
+				peer_agent_id: "agent_alpha",
+				peer_endpoint_kind: "internal",
+				skill_id: "maestro.subagent.code-review",
+				task_class: "code.review",
+				source: "platform-agent-registry",
+				status: "TASK_STATE_SUBMITTED",
+				success: true,
+				latency_ms: 11,
+			},
+			extensions: {
+				traceparent: "00-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-bbbbbbbbbbbbbbbb-01",
+				workspace_id: "workspace_123",
+				maestro_session_id: "session_123",
+			},
+		});
+		expect(event.data.peer_endpoint_hash).toBe(
+			`sha256:${createHash("sha256")
+				.update("https://alpha.internal/a2a")
+				.digest("hex")}`,
+		);
+		expect(JSON.stringify(event)).not.toContain("token=secret");
+		expect(JSON.stringify(event)).not.toContain("alpha.internal/a2a");
+		expect(event.data.correlation).not.toHaveProperty("traceparent");
+	});
+
+	it("normalizes A2A endpoint URLs before hashing telemetry identity", () => {
+		const expectedHash = `sha256:${createHash("sha256")
+			.update("https://alpha.internal/a2a")
+			.digest("hex")}`;
+
+		expect(
+			hashA2AEndpointUrl(
+				"https://user:secret@alpha.internal/a2a?token=one#fragment",
+			),
+		).toBe(expectedHash);
+		expect(hashA2AEndpointUrl("https://alpha.internal/a2a?token=two")).toBe(
+			expectedHash,
+		);
+	});
+
+	it("mirrors subagent dispatch telemetry into audit CloudEvents", async () => {
+		const published: Array<{ subject: string; payload: string }> = [];
+		setMaestroEventBusTransportForTests({
+			async publish(subject, payload) {
+				published.push({ subject, payload });
+			},
+		});
+
+		const telemetryEvent = {
+			type: "subagent-dispatch",
+			timestamp: "2026-05-19T17:01:00.000Z",
+			mode: "smart",
+			subagentType: "planner",
+			model: "claude-sonnet-4-5",
+			provider: "anthropic",
+			reasoningEffort: "medium",
+			source: "tier",
+			success: false,
+			latencyMs: 3,
+			metadata: {
+				dispatchId: "dispatch_2",
+				swarmId: "swarm_2",
+				taskId: "task_2",
+				reason: "missing_parent_model_provider",
+			},
+		} as Parameters<typeof mirrorTelemetryToMaestroEventBus>[0] &
+			Record<string, unknown>;
+		await mirrorTelemetryToMaestroEventBus(telemetryEvent);
+
+		expect(published).toHaveLength(1);
+		expect(JSON.parse(published[0]?.payload ?? "{}")).toMatchObject({
+			type: "maestro.events.subagent.dispatched",
+			data: {
+				dispatch_id: "dispatch_2",
+				subagent_type: "planner",
+				success: false,
+				latency_ms: 3,
+				swarm_id: "swarm_2",
+				task_id: "task_2",
+				reason: "missing_parent_model_provider",
 			},
 		});
 	});

@@ -36,7 +36,7 @@ export interface ModeCommandDeps {
  */
 export function createModeCommandHandler(deps: ModeCommandDeps = {}) {
 	return function handleModeCommand(ctx: CommandExecutionContext): void {
-		const arg = ctx.argumentText.trim().toLowerCase();
+		const arg = ctx.argumentText.trim().toLowerCase().split(/\s+/).join(" ");
 
 		// No argument - show current mode
 		if (!arg) {
@@ -50,9 +50,13 @@ export function createModeCommandHandler(deps: ModeCommandDeps = {}) {
 			return;
 		}
 
-		// List all modes
+		// List visible modes by default; include hidden modes only on explicit request.
 		if (arg === "list" || arg === "all") {
-			showAllModes(ctx);
+			showAllModes(ctx, false);
+			return;
+		}
+		if (arg === "list --all" || arg === "list-all" || arg === "all --hidden") {
+			showAllModes(ctx, true);
 			return;
 		}
 
@@ -102,16 +106,25 @@ function showCurrentMode(ctx: CommandExecutionContext): void {
 	);
 }
 
-function showAllModes(ctx: CommandExecutionContext): void {
-	const modes = getAllModes();
+function showAllModes(
+	ctx: CommandExecutionContext,
+	includeHidden: boolean,
+): void {
+	const modes = includeHidden
+		? getAllModes({ includeHidden: true })
+		: getAllModes();
 	const current = getCurrentMode();
 
-	const lines = ["Available Modes:", ""];
+	const lines = [
+		includeHidden ? "Available Modes (including hidden):" : "Available Modes:",
+		"",
+	];
 	for (const { mode, config } of modes) {
 		const marker = mode === current ? "▶" : " ";
 		const model = getModelForMode(mode);
+		const hiddenSuffix = config.visible === false ? " [hidden]" : "";
 		lines.push(
-			`${marker} ${config.displayName.padEnd(8)} ${config.description}`,
+			`${marker} ${config.displayName.padEnd(8)} ${config.description}${hiddenSuffix}`,
 		);
 		lines.push(`          Model: ${model}`);
 	}
@@ -127,6 +140,7 @@ function showModeHelp(ctx: CommandExecutionContext): void {
   /mode rush         Fast responses (sonnet, no thinking)
   /mode free         Cost-effective (haiku, minimal)
   /mode list         Show all available modes
+  /mode list --all   Show hidden and experimental modes
   /mode suggest      Get mode suggestion for current task
 
 Modes affect model selection, thinking, and cost/speed tradeoffs.`);
@@ -152,11 +166,12 @@ function formatSpeedLevel(hint: number): string {
 export function getModeCompletions(
 	prefix: string,
 ): Array<{ label: string; description: string }> {
+	const normalizedPrefix = prefix.trim().toLowerCase();
 	const modes = getAllModes();
 	const completions: Array<{ label: string; description: string }> = [];
 
 	for (const { mode, config } of modes) {
-		if (mode.startsWith(prefix.toLowerCase())) {
+		if (mode.startsWith(normalizedPrefix)) {
 			completions.push({
 				label: mode,
 				description: config.description,
@@ -165,13 +180,13 @@ export function getModeCompletions(
 	}
 
 	// Add special commands
-	if ("suggest".startsWith(prefix.toLowerCase())) {
+	if ("suggest".startsWith(normalizedPrefix)) {
 		completions.push({
 			label: "suggest",
 			description: "Get mode suggestion for current task",
 		});
 	}
-	if ("list".startsWith(prefix.toLowerCase())) {
+	if ("list".startsWith(normalizedPrefix)) {
 		completions.push({
 			label: "list",
 			description: "Show all available modes",

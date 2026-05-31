@@ -22,6 +22,17 @@ Local command:
 npm run test -- test/headless/runtime-conformance.test.ts
 ```
 
+The protocol-level golden transcript lives at
+[`test/fixtures/headless/conformance-v1.json`](../../test/fixtures/headless/conformance-v1.json).
+It intentionally stays smaller than the hosted runtime suite: one handshake,
+one init, one prompt, approval and tool retry server requests, their correlated
+responses and resolutions, and a terminal `response_end`. The fixture is guarded
+by:
+
+```bash
+npm run test -- test/headless/protocol-conformance-fixture.test.ts
+```
+
 Rust hosted-runner wire check:
 
 ```bash
@@ -46,8 +57,9 @@ The first conformance tranche covers:
 - approval server request emission and protocol response resolution
 - hosted workspace-root enforcement for file reads
 - hosted utility command/search/watch lifecycle
-- hosted drain/snapshot handoff, including manifest export paths and post-drain
-  mutation rejection
+- hosted drain/snapshot handoff, including manifest export paths,
+  runtime-continuity evidence for drain/restore handoff, and post-drain mutation
+  rejection
 - hosted restore from a drain manifest for adapters with hosted lifecycle hooks,
   including reset replay and post-restore controller mutation
 - hosted incomplete restore semantics for Rust unit coverage: failed or skipped

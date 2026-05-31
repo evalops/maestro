@@ -23,6 +23,10 @@ const serviceModules = {
 		specifier: "agentruntime/v1/runtime_pb",
 		exportName: "AgentRuntimeService",
 	},
+	agents: {
+		specifier: "agents/v1/agents_pb",
+		exportName: "AgentService",
+	},
 	approvals: {
 		specifier: "approvals/v1/approvals_pb",
 		exportName: "ApprovalService",
@@ -30,6 +34,14 @@ const serviceModules = {
 	connectors: {
 		specifier: "connectors/v1/connectors_pb",
 		exportName: "ConnectorService",
+	},
+	fermata: {
+		specifier: "fermata/v1/fermata_pb",
+		exportName: "FermataService",
+	},
+	fermataExecution: {
+		specifier: "fermata/v1/worker_pb",
+		exportName: "FermataExecutionService",
 	},
 	governance: {
 		specifier: "governance/v1/governance_pb",
@@ -243,6 +255,17 @@ async function assertMemoryContract(
 	}
 }
 
+function assertAgentRuntimeHttpContract(): void {
+	if (
+		PLATFORM_HTTP_ROUTES.agentRuntime.operatingPlaneRuns !==
+		"/v1/agent-operating-plane/runs"
+	) {
+		throw new Error(
+			`agent runtime operating-plane HTTP route drifted: ${PLATFORM_HTTP_ROUTES.agentRuntime.operatingPlaneRuns}`,
+		);
+	}
+}
+
 async function assertIdentityContract(
 	importPackageModule: (specifier: string) => Promise<Record<string, unknown>>,
 ): Promise<void> {
@@ -308,6 +331,7 @@ async function main(): Promise<void> {
 
 		const { importPackageModule } = installPackedSdk(tempDir, tarball);
 		await assertConnectContracts(importPackageModule);
+		assertAgentRuntimeHttpContract();
 		await assertMemoryContract(importPackageModule);
 		await assertIdentityContract(importPackageModule);
 		console.log(

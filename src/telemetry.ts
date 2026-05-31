@@ -8,15 +8,27 @@ import {
 	initOpenTelemetry,
 	isOpenTelemetryEnabled,
 } from "./opentelemetry.js";
+import { isInternalTelemetryDisabled } from "./telemetry/disablement.js";
 import {
 	type MaestroCorrelation,
 	mirrorTelemetryToMaestroEventBus,
+	recordMaestroA2ADelegationEvent,
 	resolveMaestroEventBusConfig,
 } from "./telemetry/maestro-event-bus.js";
+import { MaestroBusEventType } from "./telemetry/maestro-event-catalog.js";
+import { normalizeTelemetryMetadataInputs } from "./telemetry/metadata-normalization.js";
 import {
 	hasRemoteMeterDestination,
 	mirrorCanonicalTurnEventToMeter,
 } from "./telemetry/meter-service-client.js";
+import {
+	recordA2ADelegationMetric,
+	recordA2APeerExclusionMetric,
+	recordA2APolicyDenialMetric,
+	recordCompactionMetric,
+	recordSubagentDispatchMetric,
+	recordToolInvocationMetric,
+} from "./telemetry/metrics.js";
 import {
 	type CanonicalTurnEvent,
 	setDefaultTelemetryRecorder,
@@ -27,6 +39,8 @@ import {
 	sanitizeWithStaticMask,
 } from "./utils/secret-redactor.js";
 
+export { splitTelemetryMetadata } from "./telemetry/metadata-normalization.js";
+
 type BaseTelemetryEvent = {
 	type:
 		| "tool-execution"
@@ -36,8 +50,11 @@ type BaseTelemetryEvent = {
 		| "background-task"
 		| "api-request"
 		| "business-metric"
-		| "sandbox-violation";
+		| "staged-rollout-surface"
+		| "sandbox-violation"
+		| "subagent-dispatch";
 	timestamp: string;
+	sensitiveMetadata?: Record<string, unknown>;
 };
 
 export interface ApiRequestTelemetry extends BaseTelemetryEvent {
@@ -140,6 +157,18 @@ export interface BusinessMetricTelemetry extends BaseTelemetryEvent {
 	};
 }
 
+export interface StagedRolloutSurfaceTelemetry extends BaseTelemetryEvent {
+	type: "staged-rollout-surface";
+	event: "hidden_flag_used" | "hidden_mode_used" | "internal_gate_used";
+	surfaceId: string;
+	surfaceType: "cli_flag" | "mode" | "internal_gate" | "protocol_capability";
+	metadata?: {
+		owner?: string;
+		source?: string;
+		[key: string]: unknown;
+	};
+}
+
 /**
  * Sandbox violation tracking for security auditing.
  */
@@ -156,6 +185,63 @@ export interface SandboxViolationTelemetry extends BaseTelemetryEvent {
 		userId?: string;
 		[key: string]: unknown;
 	};
+}
+
+/**
+ * Subagent dispatch tracking for multi-agent routing and audit.
+ */
+export interface SubagentDispatchTelemetry extends BaseTelemetryEvent {
+	type: "subagent-dispatch";
+	event: "subagent_dispatched";
+	mode: string;
+	subagentType: string;
+	model: string;
+	provider: string;
+	reasoningEffort: string;
+	latencyMs: number;
+	success: boolean;
+	source?: string;
+	metadata?: Record<string, unknown>;
+}
+
+export type A2ADelegationTelemetryPhase =
+	| "peer_selected"
+	| "task_dispatched"
+	| "task_progress"
+	| "task_completed"
+	| "task_failed"
+	| "task_cancelled"
+	| "push_received"
+	| "evidence_completed";
+
+export interface A2ADelegationTelemetryInput {
+	phase: A2ADelegationTelemetryPhase;
+	swarmId: string;
+	laneId: string;
+	parentTaskId: string;
+	a2aTaskId?: string;
+	a2aMessageId?: string;
+	contextId?: string;
+	peerAgentId?: string;
+	peerName?: string;
+	peerEndpointUrl?: string;
+	peerEndpointHash?: string;
+	peerEndpointKind?: string;
+	skillId?: string;
+	taskClass?: string;
+	source?: string;
+	status?: string;
+	terminal?: boolean;
+	success?: boolean;
+	latencyMs?: number;
+	durationMs?: number;
+	taskDurationMs?: number;
+	pushLagMs?: number;
+	evidence?: Record<string, unknown>;
+	metadata?: Record<string, unknown>;
+	correlation?: Partial<MaestroCorrelation>;
+	occurredAt?: string;
+	env?: NodeJS.ProcessEnv;
 }
 
 /**
@@ -179,7 +265,9 @@ type TelemetryEvent =
 	| BackgroundTaskTelemetry
 	| ApiRequestTelemetry
 	| BusinessMetricTelemetry
+	| StagedRolloutSurfaceTelemetry
 	| SandboxViolationTelemetry
+	| SubagentDispatchTelemetry
 	| CanonicalTurnEventBase
 	| CanonicalTurnEvent;
 
@@ -214,6 +302,20 @@ const initialTelemetryEnabled = shouldEnableTelemetry();
 let telemetryEnabled = initialTelemetryEnabled;
 let telemetryOverride: boolean | null = null;
 let telemetryOverrideReason: string | undefined;
+
+const A2A_PHASE_EVENT_TYPES: Record<
+	A2ADelegationTelemetryPhase,
+	MaestroBusEventType
+> = {
+	peer_selected: MaestroBusEventType.A2APeerSelected,
+	task_dispatched: MaestroBusEventType.A2ATaskDispatched,
+	task_progress: MaestroBusEventType.A2ATaskProgress,
+	task_completed: MaestroBusEventType.A2ATaskCompleted,
+	task_failed: MaestroBusEventType.A2ATaskFailed,
+	task_cancelled: MaestroBusEventType.A2ATaskCancelled,
+	push_received: MaestroBusEventType.A2APushReceived,
+	evidence_completed: MaestroBusEventType.A2AEvidenceCompleted,
+};
 
 const parseSamplingRate = (): number => {
 	const raw = telemetrySampleEnv;
@@ -285,6 +387,38 @@ export function setTelemetryRuntimeOverride(
 	telemetryOverride = enabled;
 	telemetryOverrideReason = reason;
 	telemetryEnabled = enabled === null ? initialTelemetryEnabled : enabled;
+}
+
+function normalizeTelemetryEventMetadata(
+	event: TelemetryEvent,
+): TelemetryEvent {
+	if (!("metadata" in event) && !("sensitiveMetadata" in event)) {
+		return event;
+	}
+	const existingMetadata =
+		"metadata" in event ? stringRecord(event.metadata) : undefined;
+	const existingSensitiveMetadata =
+		"sensitiveMetadata" in event
+			? stringRecord(event.sensitiveMetadata)
+			: undefined;
+	const { metadata, sensitiveMetadata } = normalizeTelemetryMetadataInputs(
+		existingMetadata,
+		existingSensitiveMetadata,
+	);
+	const normalized = { ...event };
+	if ("metadata" in normalized) {
+		if (metadata) {
+			normalized.metadata = metadata;
+		} else {
+			delete normalized.metadata;
+		}
+	}
+	if (sensitiveMetadata) {
+		normalized.sensitiveMetadata = sensitiveMetadata;
+	} else {
+		delete normalized.sensitiveMetadata;
+	}
+	return normalized;
 }
 
 function isCanonicalTurnTelemetryEvent(
@@ -412,6 +546,20 @@ function recordOpenTelemetrySpan(event: TelemetryEvent): void {
 					}
 					span.setStatus({ code: SpanStatusCode.OK });
 					break;
+				case "staged-rollout-surface":
+					span.setAttributes({
+						"maestro.staged_rollout.event": event.event,
+						"maestro.staged_rollout.surface_id": event.surfaceId,
+						"maestro.staged_rollout.surface_type": event.surfaceType,
+					});
+					if (event.metadata?.owner) {
+						span.setAttribute(
+							"maestro.staged_rollout.owner",
+							String(event.metadata.owner),
+						);
+					}
+					span.setStatus({ code: SpanStatusCode.OK });
+					break;
 				case "sandbox-violation":
 					span.setAttributes({
 						"maestro.sandbox.event": event.event,
@@ -427,6 +575,22 @@ function recordOpenTelemetrySpan(event: TelemetryEvent): void {
 							event.event === "blocked"
 								? SpanStatusCode.ERROR
 								: SpanStatusCode.OK,
+					});
+					break;
+				case "subagent-dispatch":
+					span.setAttributes({
+						"maestro.subagent.event": event.event,
+						"maestro.subagent.mode": event.mode,
+						"maestro.subagent.type": event.subagentType,
+						"maestro.subagent.reasoning_effort": event.reasoningEffort,
+						"maestro.subagent.source": event.source ?? "unknown",
+						"maestro.subagent.success": event.success,
+						"maestro.subagent.latency_ms": event.latencyMs,
+						"llm.model.id": event.model,
+						"llm.model.provider": event.provider,
+					});
+					span.setStatus({
+						code: event.success ? SpanStatusCode.OK : SpanStatusCode.ERROR,
 					});
 					break;
 				case "canonical-turn": {
@@ -488,10 +652,68 @@ function recordOpenTelemetrySpan(event: TelemetryEvent): void {
 	}
 }
 
+function recordOpenTelemetryMetric(event: TelemetryEvent): void {
+	try {
+		switch (event.type) {
+			case "tool-execution":
+				recordToolInvocationMetric({
+					toolName: event.toolName,
+					durationMs: event.durationMs,
+					success: event.success,
+					agentRunId: metadataString(event.metadata, [
+						"agentRunId",
+						"agent_run_id",
+					]),
+					skillName: skillNameFromMetadata(event.metadata),
+				});
+				break;
+			case "business-metric":
+				if (event.metric === "compaction.triggered") {
+					recordCompactionMetric({
+						"maestro.session_id": event.metadata?.sessionId,
+						"llm.model.id": event.metadata?.model,
+						"llm.model.provider": event.metadata?.provider,
+					});
+				}
+				break;
+			case "subagent-dispatch":
+				recordSubagentDispatchMetric({
+					mode: event.mode,
+					subagentType: event.subagentType,
+					provider: event.provider,
+					model: event.model,
+					reasoningEffort: event.reasoningEffort,
+					source: event.source,
+					success: event.success,
+					latencyMs: event.latencyMs,
+					agentRunId: metadataString(event.metadata, [
+						"agentRunId",
+						"agent_run_id",
+					]),
+				});
+				break;
+			default:
+				break;
+		}
+	} catch {
+		// Never let metric recording affect runtime behavior.
+	}
+}
+
 function stringRecord(value: unknown): Record<string, unknown> | undefined {
 	return value && typeof value === "object" && !Array.isArray(value)
 		? (value as Record<string, unknown>)
 		: undefined;
+}
+
+function skillNameFromMetadata(
+	metadata: Record<string, unknown> | undefined,
+): string | undefined {
+	return (
+		metadataString(metadata, ["skillName", "skill_name"]) ??
+		metadataString(stringRecord(metadata?.skillMetadata), ["name"]) ??
+		metadataString(stringRecord(metadata?.skill_metadata), ["name"])
+	);
 }
 
 function metadataString(
@@ -546,9 +768,22 @@ function eventCorrelationOverrides(
 			"tool_call_id",
 		]),
 		agent_id: metadataString(metadata, ["agentId", "agent_id"]),
+		actor_id: metadataString(metadata, ["actorId", "actor_id"]),
+		principal_id: metadataString(metadata, ["principalId", "principal_id"]),
 		trace_id:
 			topLevelTraceId ?? metadataString(metadata, ["traceId", "trace_id"]),
+		traceparent: metadataString(metadata, ["traceparent", "trace_parent"]),
+		tracestate: metadataString(metadata, ["tracestate", "trace_state"]),
 		request_id: metadataString(metadata, ["requestId", "request_id"]),
+		remote_runner_session_id: metadataString(metadata, [
+			"remoteRunnerSessionId",
+			"remote_runner_session_id",
+		]),
+		objective_id: metadataString(metadata, ["objectiveId", "objective_id"]),
+		conversation_id: metadataString(metadata, [
+			"conversationId",
+			"conversation_id",
+		]),
 	};
 }
 
@@ -576,10 +811,17 @@ function maestroCorrelationSpanAttributes(
 		"evalops.workspace_id": correlation.workspace_id ?? principal?.workspace_id,
 		"maestro.session_id": correlation.session_id,
 		"agent.id": correlation.agent_id,
+		"agent.actor.id": correlation.actor_id,
+		"evalops.principal_id": correlation.principal_id,
 		"maestro.agent_run_id": correlation.agent_run_id,
 		"maestro.agent_run_step_id": correlation.agent_run_step_id,
 		"trace.id": correlation.trace_id,
+		traceparent: correlation.traceparent,
+		tracestate: correlation.tracestate,
 		"request.id": correlation.request_id,
+		"evalops.remote_runner_session_id": correlation.remote_runner_session_id,
+		"evalops.objective_id": correlation.objective_id,
+		"evalops.conversation_id": correlation.conversation_id,
 		"maestro.surface": config.defaultSurface,
 	};
 
@@ -644,11 +886,17 @@ export function getBackgroundTaskHistory(
 }
 
 export async function recordTelemetry(event: TelemetryEvent): Promise<void> {
+	if (isInternalTelemetryDisabled()) {
+		return;
+	}
+
+	const normalizedEvent = normalizeTelemetryEventMetadata(event);
 	const openTelemetryEnabled = isOpenTelemetryEnabled();
 	if (openTelemetryEnabled) {
-		recordOpenTelemetrySpan(event);
+		recordOpenTelemetrySpan(normalizedEvent);
+		recordOpenTelemetryMetric(normalizedEvent);
 	}
-	const eventBusTask = mirrorTelemetryToMaestroEventBus(event);
+	const eventBusTask = mirrorTelemetryToMaestroEventBus(normalizedEvent);
 
 	const legacyEnabled = telemetryEnabled && samplingRate > 0;
 	if (!legacyEnabled) {
@@ -662,7 +910,7 @@ export async function recordTelemetry(event: TelemetryEvent): Promise<void> {
 	}
 
 	try {
-		await Promise.all([persistTelemetry(event), eventBusTask]);
+		await Promise.all([persistTelemetry(normalizedEvent), eventBusTask]);
 	} catch (_error) {
 		// Ignore telemetry persistence failures
 	}
@@ -897,6 +1145,124 @@ export function recordModelSwitch(
 		model: toModel,
 		previousModel: fromModel,
 	});
+}
+
+export function recordStagedRolloutSurfaceUsage(
+	event: StagedRolloutSurfaceTelemetry["event"],
+	options: {
+		surfaceId: string;
+		surfaceType: StagedRolloutSurfaceTelemetry["surfaceType"];
+		owner?: string;
+		source?: string;
+		metadata?: Record<string, unknown>;
+	},
+): Promise<void> {
+	return recordTelemetry({
+		type: "staged-rollout-surface",
+		timestamp: new Date().toISOString(),
+		event,
+		surfaceId: options.surfaceId,
+		surfaceType: options.surfaceType,
+		metadata: {
+			...options.metadata,
+			owner: options.owner,
+			source: options.source,
+		},
+	});
+}
+
+export function recordSubagentDispatch(
+	event: Omit<SubagentDispatchTelemetry, "type" | "timestamp" | "event">,
+): void {
+	void recordTelemetry({
+		...event,
+		type: "subagent-dispatch",
+		event: "subagent_dispatched",
+		timestamp: new Date().toISOString(),
+	});
+}
+
+export function recordA2ADelegationTelemetry(
+	event: A2ADelegationTelemetryInput,
+): void {
+	if (isInternalTelemetryDisabled()) {
+		return;
+	}
+	try {
+		recordA2ADelegationMetric({
+			phase: event.phase,
+			source: event.source,
+			status: event.status,
+			success: event.success,
+			skillId: event.skillId,
+			taskClass: event.taskClass,
+			latencyMs: event.latencyMs,
+			taskDurationMs: event.taskDurationMs ?? event.durationMs,
+			pushLagMs: event.pushLagMs,
+		});
+		recordMaestroA2ADelegationEvent({
+			event_type: A2A_PHASE_EVENT_TYPES[event.phase],
+			swarm_id: event.swarmId,
+			lane_id: event.laneId,
+			parent_task_id: event.parentTaskId,
+			a2a_task_id: event.a2aTaskId,
+			a2a_message_id: event.a2aMessageId,
+			context_id: event.contextId,
+			peer_agent_id: event.peerAgentId,
+			peer_name: event.peerName,
+			peer_endpoint_url: event.peerEndpointUrl,
+			peer_endpoint_hash: event.peerEndpointHash,
+			peer_endpoint_kind: event.peerEndpointKind,
+			skill_id: event.skillId,
+			task_class: event.taskClass,
+			source: event.source,
+			status: event.status,
+			terminal: event.terminal,
+			success: event.success,
+			latency_ms: event.latencyMs,
+			duration_ms: event.taskDurationMs ?? event.durationMs,
+			push_lag_ms: event.pushLagMs,
+			evidence: event.evidence,
+			metadata: event.metadata,
+			correlation: event.correlation,
+			occurred_at: event.occurredAt,
+			env: event.env,
+		});
+	} catch {
+		// Telemetry must never affect A2A delegation runtime behavior.
+	}
+}
+
+export function recordA2APolicyDenialTelemetry(event: {
+	source?: string;
+	reason: string;
+	taskClass?: string;
+	skillId?: string;
+}): void {
+	if (isInternalTelemetryDisabled()) {
+		return;
+	}
+	try {
+		recordA2APolicyDenialMetric(event);
+	} catch {
+		// Best-effort only.
+	}
+}
+
+export function recordA2APeerExclusionTelemetry(event: {
+	source?: string;
+	reason: string;
+	taskClass?: string;
+	skillId?: string;
+}): void {
+	if (isInternalTelemetryDisabled()) {
+		return;
+	}
+	try {
+		recordA2APeerExclusionMetric(event);
+	} catch {
+		// Best-effort only.
+	}
 }
 
 /**

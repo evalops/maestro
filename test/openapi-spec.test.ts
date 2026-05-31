@@ -24,6 +24,11 @@ describe("OpenAPI spec", () => {
 					p.name === "id" && p.in === "path" && p.required,
 			),
 		).toBe(true);
+		expect(
+			getSession.parameters?.some(
+				(p: OpenApiParameter) => p.name === "messagesView" && p.in === "query",
+			),
+		).toBe(true);
 	});
 
 	it("applies API key security to protected endpoints", () => {
@@ -40,6 +45,7 @@ describe("OpenAPI spec", () => {
 			expect.arrayContaining(["id", "messages", "messageCount"]),
 		);
 		expect(Session.properties.messages).toBeDefined();
+		expect(Session.properties.messagesView).toBeDefined();
 		expect(SessionSummary.required).toEqual(
 			expect.arrayContaining(["id", "messageCount"]),
 		);

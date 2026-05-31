@@ -191,6 +191,7 @@ describe("SessionCatalog", () => {
 		expect(loaded).toMatchObject({
 			id: session.id,
 			title: "Review Session",
+			summary: expect.stringContaining("Deeply review the codebase"),
 			resumeSummary: "Reviewing the codebase before touching tests.",
 			favorite: true,
 			messageCount: 2,

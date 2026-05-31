@@ -1,7 +1,7 @@
 /**
  * Configuration Module
  *
- * Unified configuration access for Composer. Combines multiple configuration
+ * Unified configuration access for Maestro. Combines multiple configuration
  * sources with a clear precedence order:
  *
  * 1. CLI flags (--model, --config key=value, --profile)
@@ -24,8 +24,10 @@ export {
 	parseCliOverride,
 	applyCliOverride,
 	DEFAULT_CONFIG,
+	loadPromptProjectDocManifest,
 	resolveLoadedAppendSystemPromptPath,
 	resolveProjectDocCandidateFilenames,
+	resolveProjectDocGlobalDirectories,
 	resolvePromptLoadedProjectDocPaths,
 	type ComposerConfig,
 	type ConfiguredPackageSpec,
@@ -43,4 +45,8 @@ export {
 	type ShellEnvironmentPolicy,
 	type SandboxWorkspaceWriteConfig,
 	type ProfileConfig,
+	type PromptProjectDocManifest,
+	type PromptProjectDocManifestEntry,
+	type PromptProjectDocDiagnostic,
+	type PromptProjectDocSourceKind,
 } from "./toml-config.js";

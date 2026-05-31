@@ -3,7 +3,7 @@
 /**
  * Slack Agent - Entry Point
  *
- * A Slack bot that runs an AI coding agent in a sandboxed environment.
+ * Slack teammate agent entry point for sandboxed work from Slack.
  */
 
 import { existsSync, readFileSync, rmSync } from "node:fs";
@@ -1073,7 +1073,11 @@ async function handleMessage(
 	} catch (error) {
 		const errorMsg = error instanceof Error ? error.message : String(error);
 		logger.logAgentError(logCtx, errorMsg);
-		await ctx.respond(`_Error: ${errorMsg}_`);
+		await ctx.replaceMessage(
+			`_Blocked: ${errorMsg}_`,
+			true,
+			`Blocked: ${errorMsg}`,
+		);
 	} finally {
 		await ctx.setWorking(false);
 		clearRunState(rt, channelId);

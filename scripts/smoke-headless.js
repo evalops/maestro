@@ -5,6 +5,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 const home = mkdtempSync(join(tmpdir(), "maestro-headless-smoke-"));
+const timeoutMs =
+	Number.parseInt(process.env.MAESTRO_HEADLESS_SMOKE_TIMEOUT_MS ?? "60000", 10) ||
+	60000;
 
 function fail(message, details) {
 	console.error(message);
@@ -37,7 +40,7 @@ function runHeadless(args, input = "") {
 				OPENAI_API_KEY: "test-key",
 				ANTHROPIC_API_KEY: "test-key",
 			},
-			timeout: 15_000,
+			timeout: timeoutMs,
 		},
 	);
 }

@@ -4,7 +4,7 @@
  * GitHub Agent - Entry Point
  *
  * An autonomous agent that watches GitHub issues and creates PRs.
- * Composer building Composer.
+ * Maestro building Maestro.
  */
 
 import { resolve } from "node:path";
@@ -12,7 +12,7 @@ import { Orchestrator, type OrchestratorConfig } from "./orchestrator.js";
 import { DEFAULT_CONFIG } from "./types.js";
 
 function printUsage(): void {
-	console.error("GitHub Agent - Composer building Composer");
+	console.error("GitHub Agent - Maestro building Maestro");
 	console.error("");
 	console.error("Usage: github-agent <owner/repo> [options]");
 	console.error("");

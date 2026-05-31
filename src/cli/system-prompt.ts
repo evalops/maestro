@@ -1,21 +1,26 @@
+import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
+import type { Dirent } from "node:fs";
+import { basename, dirname, join, resolve } from "node:path";
+import { pathToFileURL } from "node:url";
 import {
-	closeSync,
-	existsSync,
-	openSync,
-	readFileSync,
-	readSync,
-	statSync,
-} from "node:fs";
-import { join, resolve } from "node:path";
+	type RuntimeConstraintContext,
+	type RuntimeNetworkAccess,
+	buildRuntimeConstraintPrompt,
+	isSandboxModeEnabled,
+} from "@evalops/contracts";
 import chalk from "chalk";
 import { buildSearchGuidelines } from "../agent/search-guidance.js";
-import { getAgentDir } from "../config/constants.js";
 import {
 	type ComposerConfig,
-	loadConfig,
+	type PromptProjectDocManifest,
+	type PromptProjectDocManifestEntry,
+	loadPromptProjectDocManifest,
 	resolveLoadedAppendSystemPromptPath,
-	resolveProjectDocCandidateFilenames,
 } from "../config/index.js";
+import {
+	DEFAULT_GUARDED_FILE_RULES,
+	findDefaultGuardedFileMatch,
+} from "../safety/guarded-files.js";
 
 // Tool descriptions for dynamic system prompt generation
 const TOOL_DESCRIPTIONS: Record<string, string> = {
@@ -107,11 +112,165 @@ function loadAppendSystemPrompt(cwd: string): string | null {
 		: null;
 }
 
+interface RuntimeConstraintDetectionOptions {
+	cwd?: string;
+	sandboxMode?: string | null;
+	sandboxEnabled?: boolean;
+	readOnly?: boolean;
+	env?: Record<string, string | undefined>;
+}
+
+export interface FinalizeSystemPromptOptions {
+	runtimeConstraints?: RuntimeConstraintContext | null;
+	promptContextManifest?: PromptProjectDocManifest;
+}
+
+function readEnvFlag(
+	env: Record<string, string | undefined>,
+	name: string,
+): boolean {
+	const value = env[name]?.trim().toLowerCase();
+	return value === "1" || value === "true" || value === "yes" || value === "on";
+}
+
+function normalizeNetworkAccess(
+	value?: string,
+): RuntimeNetworkAccess | undefined {
+	const normalized = value?.trim().toLowerCase();
+	if (!normalized) {
+		return undefined;
+	}
+	if (
+		normalized === "disabled" ||
+		normalized === "offline" ||
+		normalized === "none" ||
+		normalized === "no-network"
+	) {
+		return "disabled";
+	}
+	if (
+		normalized === "restricted" ||
+		normalized === "firewall" ||
+		normalized === "gated"
+	) {
+		return "restricted";
+	}
+	if (normalized === "available" || normalized === "enabled") {
+		return "available";
+	}
+	return "unknown";
+}
+
+function resolveGitDirectoryAtPath(path: string): string | null {
+	const gitPath = join(path, ".git");
+	try {
+		const gitStat = statSync(gitPath);
+		if (gitStat.isDirectory()) {
+			return gitPath;
+		}
+		if (!gitStat.isFile()) {
+			return null;
+		}
+		const gitFile = readFileSync(gitPath, "utf8");
+		const match = /^gitdir:\s*(.+?)\s*$/m.exec(gitFile);
+		const gitDir = match?.[1];
+		if (!gitDir) {
+			return null;
+		}
+		return resolve(path, gitDir);
+	} catch {
+		return null;
+	}
+}
+
+function resolveGitDirectory(cwd: string): string | null {
+	let current = resolve(cwd);
+	while (true) {
+		const gitDir = resolveGitDirectoryAtPath(current);
+		if (gitDir) {
+			return gitDir;
+		}
+		const parent = dirname(current);
+		if (parent === current) {
+			return null;
+		}
+		current = parent;
+	}
+}
+
+function resolveGitCommonDirectory(gitDir: string): string {
+	try {
+		const commonDir = readFileSync(join(gitDir, "commondir"), "utf8").trim();
+		if (commonDir) {
+			return resolve(gitDir, commonDir);
+		}
+	} catch {
+		// Older/non-worktree repositories do not have a commondir file.
+	}
+	return gitDir;
+}
+
+function isShallowGitCheckout(cwd: string): boolean {
+	const gitDir = resolveGitDirectory(cwd);
+	if (!gitDir) {
+		return false;
+	}
+	const commonGitDir = resolveGitCommonDirectory(gitDir);
+	return (
+		existsSync(join(commonGitDir, "shallow")) ||
+		existsSync(join(gitDir, "shallow"))
+	);
+}
+
+export function detectRuntimeConstraintContext(
+	options: RuntimeConstraintDetectionOptions = {},
+): RuntimeConstraintContext {
+	const cwd = options.cwd ?? process.cwd();
+	const env = options.env ?? process.env;
+	const sandboxMode =
+		options.sandboxMode ??
+		env.MAESTRO_SANDBOX_MODE ??
+		env.CODEX_SANDBOX_MODE ??
+		env.MAESTRO_SANDBOX ??
+		null;
+	const networkAccess =
+		readEnvFlag(env, "MAESTRO_OFFLINE_EVAL") ||
+		readEnvFlag(env, "CODEX_OFFLINE_EVAL")
+			? "disabled"
+			: normalizeNetworkAccess(
+					env.MAESTRO_NETWORK_ACCESS ?? env.CODEX_NETWORK_ACCESS,
+				);
+
+	return {
+		sandboxMode,
+		sandboxEnabled: options.sandboxEnabled ?? isSandboxModeEnabled(sandboxMode),
+		isShallowGitCheckout: isShallowGitCheckout(cwd),
+		readOnly:
+			options.readOnly ??
+			(readEnvFlag(env, "MAESTRO_READ_ONLY") ||
+				readEnvFlag(env, "CODEX_READ_ONLY")),
+		networkAccess,
+		hostedRunner:
+			readEnvFlag(env, "MAESTRO_HOSTED_RUNNER") ||
+			env.MAESTRO_RUNNER_KIND?.trim().toLowerCase() === "hosted",
+		firewallRestricted:
+			readEnvFlag(env, "MAESTRO_FIREWALL_RESTRICTED") ||
+			readEnvFlag(env, "CODEX_FIREWALL_RESTRICTED"),
+		runnerImage: env.MAESTRO_RUNNER_IMAGE ?? null,
+	};
+}
+
 function buildGuidelines(toolNames: Set<string>, currentYear: number): string {
 	const guidelines: string[] = [];
 
 	guidelines.push(
 		"You can emit multiple tool calls in a single turn; the runtime will execute independent calls in parallel. No batch tool is needed—just include separate tool calls when parallelism helps.",
+	);
+	guidelines.push(
+		"Emit independent safe tool calls together when their inputs are known, including read-only inspections, trusted MCP reads, and disjoint file mutations with explicit paths.",
+	);
+	guidelines.push(
+		"Avoid one-tool-per-turn inspection chains: when the next few read/list/search calls are already known and independent, emit them together.",
 	);
 	guidelines.push(...buildSearchGuidelines(toolNames, currentYear));
 
@@ -205,25 +364,12 @@ function buildGuidelines(toolNames: Set<string>, currentYear: number): string {
 	return `Guidelines:\n${guidelines.map((g) => `- ${g}`).join("\n")}`;
 }
 
-interface ContextFile {
+export interface ContextFile {
 	path: string;
 	content: string;
 }
 
-interface ContextFileOptions {
-	candidates: string[];
-	maxBytes?: number;
-}
-
-interface ReadContextResult {
-	content: string;
-	truncated: boolean;
-	bytesRead: number;
-	originalSize?: number;
-	maxBytes?: number;
-}
-
-function truncateUtf8(
+export function truncateUtf8(
 	buffer: Buffer,
 	maxBytes: number,
 ): {
@@ -276,145 +422,32 @@ function truncateUtf8(
 	return { content: slice.toString("utf-8"), bytes: slice.length };
 }
 
-function readContextFile(
-	filePath: string,
-	maxBytes?: number,
-): ReadContextResult | null {
-	if (maxBytes !== undefined && maxBytes > 0) {
-		const stats = statSync(filePath);
-		if (stats.size > maxBytes) {
-			const fd = openSync(filePath, "r");
-			try {
-				const buffer = Buffer.alloc(maxBytes);
-				const bytesRead = readSync(fd, buffer, 0, maxBytes, 0);
-				const truncated = truncateUtf8(buffer, bytesRead);
-				return {
-					content: truncated.content,
-					truncated: true,
-					bytesRead: truncated.bytes,
-					originalSize: stats.size,
-					maxBytes,
-				};
-			} finally {
-				closeSync(fd);
-			}
-		}
-	}
-	const content = readFileSync(filePath, "utf-8");
-	return {
-		content,
-		truncated: false,
-		bytesRead: Buffer.byteLength(content),
-	};
-}
-
-interface ContextFileLoadResult {
-	file: ContextFile;
-	bytesRead: number;
-}
-
-function loadContextFileFromDir(
-	dir: string,
-	options: ContextFileOptions & { remainingBytes?: number },
-): ContextFileLoadResult | null {
-	const { candidates, maxBytes, remainingBytes } = options;
-	const budget = remainingBytes ?? maxBytes;
-	if (budget !== undefined && budget <= 0) {
-		return null;
-	}
-	for (const filename of candidates) {
-		const filePath = join(dir, filename);
-		if (existsSync(filePath)) {
-			try {
-				const result = readContextFile(filePath, budget);
-				if (!result) return null;
-				const note = result.truncated
-					? `\n\n[Truncated to ${result.bytesRead} bytes from ${result.originalSize} bytes.]`
-					: "";
-				return {
-					file: {
-						path: filePath,
-						content: `${result.content}${note}`,
-					},
-					bytesRead: result.bytesRead,
-				};
-			} catch (error) {
-				console.error(
-					chalk.yellow(`Warning: Could not read ${filePath}: ${error}`),
-				);
-			}
-		}
-	}
-	return null;
-}
-
-function resolveContextCandidates(config?: ComposerConfig): string[] {
-	return resolveProjectDocCandidateFilenames(config);
-}
-
 export function loadProjectContextFiles(
 	cwdOverride?: string,
 	options: { config?: ComposerConfig } = {},
 ): ContextFile[] {
-	const contextFiles: ContextFile[] = [];
+	return loadPromptProjectDocManifest(cwdOverride, options.config).entries.map(
+		(entry) => ({
+			path: entry.path,
+			content: entry.content,
+		}),
+	);
+}
 
-	const cwd = cwdOverride ?? process.cwd();
-	const config = options.config ?? loadConfig(cwd);
-	const candidates = resolveContextCandidates(config);
-	const maxBytesRaw = config.project_doc_max_bytes;
-	const maxBytes =
-		typeof maxBytesRaw === "number"
-			? Math.max(0, Math.floor(maxBytesRaw))
-			: undefined;
-	let remainingBytes = maxBytes;
-	if (remainingBytes === 0) {
-		return contextFiles;
-	}
-
-	const globalContextDir = resolve(getAgentDir());
-	const globalContext = loadContextFileFromDir(globalContextDir, {
-		candidates,
-		maxBytes,
-		remainingBytes,
-	});
-	if (globalContext) {
-		contextFiles.push(globalContext.file);
-		if (remainingBytes !== undefined) {
-			remainingBytes = Math.max(0, remainingBytes - globalContext.bytesRead);
-		}
-	}
-
-	const directories: string[] = [];
-	let currentDir = cwd;
-	const root = resolve("/");
-
-	while (true) {
-		directories.push(currentDir);
-		if (currentDir === root) break;
-
-		const parentDir = resolve(currentDir, "..");
-		if (parentDir === currentDir) break;
-		currentDir = parentDir;
-	}
-
-	directories.reverse();
-
-	for (const dir of directories) {
-		if (remainingBytes === 0) break;
-		const contextFile = loadContextFileFromDir(dir, {
-			candidates,
-			maxBytes,
-			remainingBytes,
-		});
-		if (contextFile) {
-			contextFiles.push(contextFile.file);
-			if (remainingBytes !== undefined) {
-				remainingBytes = Math.max(0, remainingBytes - contextFile.bytesRead);
-			}
-		}
-	}
-
-	return contextFiles;
+function formatProjectContextFile(
+	file: ContextFile | PromptProjectDocManifestEntry,
+): string {
+	const filename = basename(file.path);
+	const dir = dirname(file.path);
+	return [
+		`# ${filename} instructions for ${dir}`,
+		"",
+		"<INSTRUCTIONS>",
+		file.content.trimEnd(),
+		"</INSTRUCTIONS>",
+		"",
+		"",
+	].join("\n");
 }
 
 // Default tool names when no filter is applied
@@ -455,6 +488,94 @@ function formatCurrentDateTime(): string {
 	});
 }
 
+const GUARDED_WORKSPACE_SCAN_IGNORES = new Set([
+	".git",
+	".hg",
+	".svn",
+	"node_modules",
+	"dist",
+	"build",
+	"coverage",
+	".next",
+	".turbo",
+	".nx",
+	".cache",
+	"tmp",
+]);
+
+function collectGuardedWorkspaceCategories(
+	cwd: string,
+	options: { maxEntries?: number } = {},
+): string[] {
+	const maxEntries = options.maxEntries ?? 5000;
+	const categories = new Set<string>();
+	const stack = [cwd];
+	let entriesVisited = 0;
+
+	while (stack.length > 0 && entriesVisited < maxEntries) {
+		const dir = stack.pop();
+		if (!dir) break;
+
+		let entries: Dirent[];
+		try {
+			entries = readdirSync(dir, { withFileTypes: true });
+		} catch {
+			continue;
+		}
+
+		for (const entry of entries) {
+			if (entriesVisited >= maxEntries) break;
+			entriesVisited += 1;
+			const path = join(dir, entry.name);
+			const match = findDefaultGuardedFileMatch(path, { cwd });
+			if (match) {
+				categories.add(match.category);
+			}
+			if (
+				entry.isDirectory() &&
+				!GUARDED_WORKSPACE_SCAN_IGNORES.has(entry.name)
+			) {
+				stack.push(path);
+			}
+		}
+	}
+
+	return DEFAULT_GUARDED_FILE_RULES.map((rule) => rule.category).filter(
+		(category) => categories.has(category),
+	);
+}
+
+function buildGuardedWorkspacePromptFragment(cwd: string): string | null {
+	const categories = collectGuardedWorkspaceCategories(cwd);
+	if (categories.length === 0) {
+		return null;
+	}
+
+	const categoryText = categories.join(", ");
+	return [
+		"# Guarded Workspace Paths",
+		"",
+		`This workspace contains paths covered by Maestro's default guarded-files policy: ${categoryText}.`,
+		"Ask for explicit user approval before attempting to read, list, search, execute against, or modify these guarded paths.",
+	].join("\n");
+}
+
+export function buildFileCitationPromptFragment(cwd = process.cwd()): string {
+	const examplePath = join(cwd, "src/auth/middleware.ts");
+	const exampleUri = `${pathToFileURL(examplePath).href}#L42`;
+
+	return [
+		"# File Citations",
+		"",
+		"When mentioning a workspace file in any user-facing response, link it using Markdown with a `file:///` URI so every surface can make the reference clickable.",
+		"Prefer the displayed text users expect to read, such as `src/auth/middleware.ts`, and percent-encode spaces and other URI characters in the link target.",
+		"Include known line references as URL fragments, such as `#L42`, `#L42-L48`, or `#L42C8`.",
+		"At GitHub comment boundaries, use repository blob URLs instead of local `file:///` URIs when repository metadata is available.",
+		`Good: See [src/auth/middleware.ts](${exampleUri}) for the validation logic.`,
+		"Bad: See src/auth/middleware.ts for the validation logic.",
+	].join("\n");
+}
+
 export function buildBundledSystemPromptBase(toolNames?: string[]): string {
 	const currentYear = new Date().getFullYear();
 	const activeToolNames = toolNames ?? DEFAULT_TOOL_NAMES;
@@ -471,19 +592,35 @@ export function finalizeSystemPrompt(
 	basePrompt: string,
 	appendPrompt?: string,
 	cwd = process.cwd(),
+	options: FinalizeSystemPromptOptions = {},
 ): string {
 	const appendSource =
 		resolveSystemPromptOverride(appendPrompt) ?? loadAppendSystemPrompt(cwd);
 	const appendText = appendSource?.trim();
 	let prompt = basePrompt;
-	const contextFiles = loadProjectContextFiles(cwd);
+	const contextFiles =
+		options.promptContextManifest?.entries ?? loadProjectContextFiles(cwd);
 	if (contextFiles.length > 0) {
 		prompt += "\n\n# Project Context\n\n";
 		prompt += "The following project context files have been loaded:\n\n";
-		for (const { path, content } of contextFiles) {
-			prompt += `## ${path}\n\n${content}\n\n`;
+		for (const file of contextFiles) {
+			prompt += formatProjectContextFile(file);
 		}
 	}
+
+	const guardedWorkspaceFragment = buildGuardedWorkspacePromptFragment(cwd);
+	if (guardedWorkspaceFragment) {
+		prompt += `\n\n${guardedWorkspaceFragment}\n`;
+	}
+
+	const runtimeConstraintPrompt = buildRuntimeConstraintPrompt(
+		options.runtimeConstraints,
+	);
+	if (runtimeConstraintPrompt) {
+		prompt += `\n\n${runtimeConstraintPrompt}\n`;
+	}
+
+	prompt += `\n\n${buildFileCitationPromptFragment(cwd)}\n`;
 
 	if (appendText) {
 		prompt += "\n\n# Additional System Instructions\n\n";
@@ -500,9 +637,15 @@ export function buildSystemPrompt(
 	customPrompt?: string,
 	toolNames?: string[],
 	appendPrompt?: string,
+	options?: FinalizeSystemPromptOptions,
 ): string {
 	const promptSource =
 		resolveSystemPromptOverride(customPrompt) ??
 		buildBundledSystemPromptBase(toolNames);
-	return finalizeSystemPrompt(promptSource, appendPrompt);
+	return finalizeSystemPrompt(
+		promptSource,
+		appendPrompt,
+		process.cwd(),
+		options,
+	);
 }

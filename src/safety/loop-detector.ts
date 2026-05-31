@@ -22,6 +22,7 @@
  */
 
 import { createHash } from "node:crypto";
+import { stableStringify } from "../agent/transport/stable-stringify.js";
 import { createLogger } from "../utils/logger.js";
 
 const logger = createLogger("safety:loop-detector");
@@ -80,10 +81,7 @@ interface CallRecord {
  * Generate a hash for a tool call
  */
 function hashCall(tool: string, args: Record<string, unknown>): string {
-	const normalized = JSON.stringify(
-		{ tool, args },
-		Object.keys({ tool, args }).sort(),
-	);
+	const normalized = stableStringify({ tool, args });
 	return createHash("md5").update(normalized).digest("hex").slice(0, 16);
 }
 
@@ -132,6 +130,10 @@ function detectCycle(
 		}
 
 		// Check if the last cycleLen items match the previous cycleLen items
+		const candidateCycle = sequence.slice(-cycleLen);
+		if (new Set(candidateCycle).size < 2) {
+			continue;
+		}
 		let isCycle = true;
 		for (let i = 0; i < cycleLen; i++) {
 			const idx1 = sequence.length - 1 - i;

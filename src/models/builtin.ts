@@ -61,12 +61,30 @@ function cloneManagedGatewayModelsForApis(
 	);
 }
 
-// Manual overlay for Claude Opus 4.6 (not yet in models.dev registry)
-const ANTHROPIC_OPUS_46_OVERLAY = {
+// Manual overlay for current Claude Opus 4.x models not yet in models.dev.
+const ANTHROPIC_OPUS_4_OVERLAY = {
 	anthropic: {
 		"claude-opus-4-6": {
 			id: "claude-opus-4-6",
 			name: "Claude Opus 4.6",
+			api: "anthropic-messages",
+			provider: "anthropic",
+			baseUrl: "https://api.anthropic.com",
+			reasoning: true,
+			toolUse: true,
+			input: ["text", "image"],
+			cost: {
+				input: 5,
+				output: 25,
+				cacheRead: 0.5,
+				cacheWrite: 6.25,
+			},
+			contextWindow: 1000000,
+			maxTokens: 128000,
+		} as Model<"anthropic-messages">,
+		"claude-opus-4-7": {
+			id: "claude-opus-4-7",
+			name: "Claude Opus 4.7",
 			api: "anthropic-messages",
 			provider: "anthropic",
 			baseUrl: "https://api.anthropic.com",
@@ -220,140 +238,140 @@ const OPENAI_CODEX_OVERLAY = {
 	},
 } satisfies Record<string, Record<string, Model<Api>>>;
 
-// ChatGPT Codex subscription models. These use the ChatGPT Codex backend and
-// require OpenAI Codex OAuth (`/login openai-codex`), not OPENAI_API_KEY.
+// ChatGPT Codex subscription models. These use the local Codex app-server and
+// require `maestro codex login` (Sign in with ChatGPT), not OPENAI_API_KEY.
 const OPENAI_CODEX_CHATGPT_OVERLAY = {
 	"openai-codex": {
 		"gpt-5.1": {
 			id: "gpt-5.1",
 			name: "GPT-5.1 (Codex)",
-			api: "openai-codex-responses",
+			api: "openai-codex-app-server",
 			provider: "openai-codex",
-			baseUrl: "https://chatgpt.com/backend-api",
+			baseUrl: "codex-app-server://local",
 			reasoning: true,
 			toolUse: true,
 			input: ["text", "image"],
 			cost: { input: 1.25, output: 10, cacheRead: 0.125, cacheWrite: 0 },
 			contextWindow: 272000,
 			maxTokens: 128000,
-		} as Model<"openai-codex-responses">,
+		} as Model<"openai-codex-app-server">,
 		"gpt-5.1-codex-max": {
 			id: "gpt-5.1-codex-max",
 			name: "GPT-5.1 Codex Max",
-			api: "openai-codex-responses",
+			api: "openai-codex-app-server",
 			provider: "openai-codex",
-			baseUrl: "https://chatgpt.com/backend-api",
+			baseUrl: "codex-app-server://local",
 			reasoning: true,
 			toolUse: true,
 			input: ["text", "image"],
 			cost: { input: 1.25, output: 10, cacheRead: 0.125, cacheWrite: 0 },
 			contextWindow: 272000,
 			maxTokens: 128000,
-		} as Model<"openai-codex-responses">,
+		} as Model<"openai-codex-app-server">,
 		"gpt-5.1-codex-mini": {
 			id: "gpt-5.1-codex-mini",
 			name: "GPT-5.1 Codex Mini",
-			api: "openai-codex-responses",
+			api: "openai-codex-app-server",
 			provider: "openai-codex",
-			baseUrl: "https://chatgpt.com/backend-api",
+			baseUrl: "codex-app-server://local",
 			reasoning: true,
 			toolUse: true,
 			input: ["text", "image"],
 			cost: { input: 0.25, output: 2, cacheRead: 0.025, cacheWrite: 0 },
 			contextWindow: 272000,
 			maxTokens: 128000,
-		} as Model<"openai-codex-responses">,
+		} as Model<"openai-codex-app-server">,
 		"gpt-5.2": {
 			id: "gpt-5.2",
 			name: "GPT-5.2 (Codex)",
-			api: "openai-codex-responses",
+			api: "openai-codex-app-server",
 			provider: "openai-codex",
-			baseUrl: "https://chatgpt.com/backend-api",
+			baseUrl: "codex-app-server://local",
 			reasoning: true,
 			toolUse: true,
 			input: ["text", "image"],
 			cost: { input: 1.75, output: 14, cacheRead: 0.175, cacheWrite: 0 },
 			contextWindow: 272000,
 			maxTokens: 128000,
-		} as Model<"openai-codex-responses">,
+		} as Model<"openai-codex-app-server">,
 		"gpt-5.2-codex": {
 			id: "gpt-5.2-codex",
 			name: "GPT-5.2 Codex",
-			api: "openai-codex-responses",
+			api: "openai-codex-app-server",
 			provider: "openai-codex",
-			baseUrl: "https://chatgpt.com/backend-api",
+			baseUrl: "codex-app-server://local",
 			reasoning: true,
 			toolUse: true,
 			input: ["text", "image"],
 			cost: { input: 1.75, output: 14, cacheRead: 0.175, cacheWrite: 0 },
 			contextWindow: 272000,
 			maxTokens: 128000,
-		} as Model<"openai-codex-responses">,
+		} as Model<"openai-codex-app-server">,
 		"gpt-5.3-codex": {
 			id: "gpt-5.3-codex",
 			name: "GPT-5.3 Codex",
-			api: "openai-codex-responses",
+			api: "openai-codex-app-server",
 			provider: "openai-codex",
-			baseUrl: "https://chatgpt.com/backend-api",
+			baseUrl: "codex-app-server://local",
 			reasoning: true,
 			toolUse: true,
 			input: ["text", "image"],
 			cost: { input: 1.75, output: 14, cacheRead: 0.175, cacheWrite: 0 },
 			contextWindow: 272000,
 			maxTokens: 128000,
-		} as Model<"openai-codex-responses">,
+		} as Model<"openai-codex-app-server">,
 		"gpt-5.3-codex-spark": {
 			id: "gpt-5.3-codex-spark",
 			name: "GPT-5.3 Codex Spark",
-			api: "openai-codex-responses",
+			api: "openai-codex-app-server",
 			provider: "openai-codex",
-			baseUrl: "https://chatgpt.com/backend-api",
+			baseUrl: "codex-app-server://local",
 			reasoning: true,
 			toolUse: true,
 			input: ["text", "image"],
 			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
 			contextWindow: 128000,
 			maxTokens: 128000,
-		} as Model<"openai-codex-responses">,
+		} as Model<"openai-codex-app-server">,
 		"gpt-5.4": {
 			id: "gpt-5.4",
 			name: "GPT-5.4 (Codex)",
-			api: "openai-codex-responses",
+			api: "openai-codex-app-server",
 			provider: "openai-codex",
-			baseUrl: "https://chatgpt.com/backend-api",
+			baseUrl: "codex-app-server://local",
 			reasoning: true,
 			toolUse: true,
 			input: ["text", "image"],
 			cost: { input: 2.5, output: 15, cacheRead: 0.25, cacheWrite: 0 },
 			contextWindow: 272000,
 			maxTokens: 128000,
-		} as Model<"openai-codex-responses">,
+		} as Model<"openai-codex-app-server">,
 		"gpt-5.4-mini": {
 			id: "gpt-5.4-mini",
 			name: "GPT-5.4 Mini (Codex)",
-			api: "openai-codex-responses",
+			api: "openai-codex-app-server",
 			provider: "openai-codex",
-			baseUrl: "https://chatgpt.com/backend-api",
+			baseUrl: "codex-app-server://local",
 			reasoning: true,
 			toolUse: true,
 			input: ["text", "image"],
 			cost: { input: 0.75, output: 4.5, cacheRead: 0.075, cacheWrite: 0 },
 			contextWindow: 272000,
 			maxTokens: 128000,
-		} as Model<"openai-codex-responses">,
+		} as Model<"openai-codex-app-server">,
 		"gpt-5.5": {
 			id: "gpt-5.5",
 			name: "GPT-5.5 (Codex)",
-			api: "openai-codex-responses",
+			api: "openai-codex-app-server",
 			provider: "openai-codex",
-			baseUrl: "https://chatgpt.com/backend-api",
+			baseUrl: "codex-app-server://local",
 			reasoning: true,
 			toolUse: true,
 			input: ["text", "image"],
 			cost: { input: 5, output: 30, cacheRead: 0.5, cacheWrite: 0 },
 			contextWindow: 272000,
 			maxTokens: 128000,
-		} as Model<"openai-codex-responses">,
+		} as Model<"openai-codex-app-server">,
 	},
 } satisfies Record<string, Record<string, Model<Api>>>;
 
@@ -1775,6 +1793,29 @@ const PROVIDER_OVERRIDES: Record<string, ProviderOverride> = {
 	},
 };
 
+const SCRIPTED_REPLAY_OVERLAY = {
+	"scripted-replay": {
+		"maestro-replay-v1": {
+			id: "maestro-replay-v1",
+			name: "Maestro Scripted Replay",
+			api: "scripted-replay",
+			provider: "scripted-replay",
+			baseUrl: "http://localhost/scripted-replay",
+			reasoning: false,
+			toolUse: true,
+			input: ["text"],
+			cost: {
+				input: 0,
+				output: 0,
+				cacheRead: 0,
+				cacheWrite: 0,
+			},
+			contextWindow: 1000000,
+			maxTokens: 1,
+		} as Model<"scripted-replay">,
+	},
+} satisfies Record<string, Record<string, Model<Api>>>;
+
 /**
  * Convert generated models to our format (called lazily on first access)
  */
@@ -1817,7 +1858,7 @@ function convertGeneratedModels(): Record<string, Model<Api>[]> {
 
 	// Apply overlay additions
 	const overlays: Record<string, Record<string, Model<Api>>>[] = [
-		ANTHROPIC_OPUS_46_OVERLAY,
+		ANTHROPIC_OPUS_4_OVERLAY,
 		OPENROUTER_RESPONSES_OVERLAY,
 		GROQ_RESPONSES_OVERLAY,
 		OPENAI_CODEX_OVERLAY,
@@ -1835,6 +1876,7 @@ function convertGeneratedModels(): Record<string, Model<Api>[]> {
 		GOOGLE_ANTIGRAVITY_OVERLAY,
 		WRITER_OVERLAY,
 		BEDROCK_OVERLAY,
+		SCRIPTED_REPLAY_OVERLAY,
 	];
 
 	for (const overlay of overlays) {

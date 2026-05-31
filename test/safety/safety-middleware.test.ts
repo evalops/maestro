@@ -159,6 +159,23 @@ describe("safety-middleware", () => {
 			expect(result.requiresApproval).toBe(true);
 			expect(result.triggeredBy).toBe("sequence");
 		});
+
+		it("detects system path escalation inside apply_patch", () => {
+			const result = middleware.preExecution("apply_patch", {
+				patch: [
+					"*** Begin Patch",
+					"*** Update File: /etc/passwd",
+					"@@",
+					"-old",
+					"+new",
+					"*** End Patch",
+				].join("\n"),
+			});
+
+			expect(result.allowed).toBe(false);
+			expect(result.requiresApproval).toBe(true);
+			expect(result.triggeredBy).toBe("sequence");
+		});
 	});
 
 	describe("context firewall integration", () => {

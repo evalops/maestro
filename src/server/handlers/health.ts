@@ -28,9 +28,11 @@ export interface HealthCheckResult {
 			workspaceRoot: string;
 			snapshotRoot?: string;
 			workspaceId?: string;
+			agentId?: string;
 			agentRunId?: string;
 			a2aMessageId?: string;
 			a2aTaskId?: string;
+			lastPlatformA2APush?: HostedRunnerContext["lastPlatformA2APush"];
 			agentRuntimeWorkerQueue?: string;
 			agentRuntimeCorrelationPath?: string;
 			maestroSessionId?: string;
@@ -74,9 +76,11 @@ export async function checkHostedRunnerReadiness(
 			? { snapshotRoot: hostedRunner.snapshotRoot }
 			: {}),
 		workspaceId: hostedRunner.workspaceId,
+		agentId: hostedRunner.agentId,
 		agentRunId: hostedRunner.agentRunId,
 		a2aMessageId: hostedRunner.a2aMessageId,
 		a2aTaskId: hostedRunner.a2aTaskId,
+		lastPlatformA2APush: hostedRunner.lastPlatformA2APush,
 		agentRuntimeWorkerQueue: hostedRunner.agentRuntimeWorkerQueue,
 		agentRuntimeCorrelationPath: hostedRunner.agentRuntimeCorrelationPath,
 		maestroSessionId:

@@ -34,11 +34,30 @@ const requiredCommandSuiteFiles = [
 	"src/cli-tui/tui-renderer/command-suite-wiring.ts",
 ];
 
+const requiredReleaseReplayHelperFiles = [
+	"scripts/published-replay-evidence-gate.js",
+	"scripts/release-observability-query-contract.js",
+	"scripts/smoke-published-replay-e2e.js",
+	"scripts/smoke-registry-install.js",
+	"scripts/verify-published-replay-evidence.js",
+];
+
 const forbiddenExactFiles = [
 	"src/cli-tui/tui-renderer.ts",
 	"src/cli-tui/commands/grouped-command-handlers.ts",
 	"src/cli-tui/tui-renderer/grouped-handlers-wiring.ts",
 ];
+
+const forbiddenReleaseMirrorFileMessages = new Map([
+	[
+		"scripts/validate-public-package-deps.js",
+		"scripts/validate-public-package-deps.js is public-only; do not mirror it from internal.",
+	],
+	[
+		"test/scripts/validate-public-package-deps.test.ts",
+		"test/scripts/validate-public-package-deps.test.ts covers the public-only validator; keep it out of the release mirror manifest.",
+	],
+]);
 
 const forbiddenPrefixes = ["src/cli-tui/commands/grouped/"];
 
@@ -69,6 +88,39 @@ function isRepoRelativePath(path) {
 		!path.includes("\\") &&
 		!path.split("/").includes("..")
 	);
+}
+
+function isMirroredYamlPath(path) {
+	return (
+		(path.startsWith(".github/actions/") ||
+			path.startsWith(".github/workflows/")) &&
+		/\.ya?ml$/u.test(path)
+	);
+}
+
+function localActionDependencyPath(usesValue) {
+	const match = /^\.\/\.github\/actions\/([^/\s'"]+)$/u.exec(usesValue);
+	return match ? `.github/actions/${match[1]}/action.yml` : null;
+}
+
+function collectLocalActionDependencies(path) {
+	if (!isMirroredYamlPath(path) || !existsSync(resolve(path))) {
+		return [];
+	}
+
+	const content = readFileSync(resolve(path), "utf8");
+	const dependencies = new Set();
+	const usesPattern =
+		/^\s*-?\s*uses:\s*["']?(\.\/\.github\/actions\/[^"'\s#]+)["']?\s*(?:#.*)?$/gmu;
+
+	for (const match of content.matchAll(usesPattern)) {
+		const dependency = localActionDependencyPath(match[1]);
+		if (dependency) {
+			dependencies.add(dependency);
+		}
+	}
+
+	return [...dependencies];
 }
 
 const errors = [];
@@ -122,11 +174,27 @@ for (const file of forbiddenExactFiles) {
 	}
 }
 
+for (const [file, message] of forbiddenReleaseMirrorFileMessages) {
+	if (seen.has(file)) {
+		errors.push(message);
+	}
+}
+
 for (const file of seen) {
 	for (const prefix of forbiddenPrefixes) {
 		if (file.startsWith(prefix)) {
 			errors.push(
 				`${file} is under an internal-only grouped-command surface.`,
+			);
+		}
+	}
+}
+
+for (const file of seen) {
+	for (const dependency of collectLocalActionDependencies(file)) {
+		if (!seen.has(dependency)) {
+			errors.push(
+				`Missing local action dependency for ${file}: ${dependency}`,
 			);
 		}
 	}
@@ -142,6 +210,18 @@ if (hasCommandSuiteRuntime) {
 	for (const file of requiredCommandSuiteFiles) {
 		if (!seen.has(file)) {
 			errors.push(`Missing command-suite mirror file: ${file}`);
+		}
+	}
+}
+
+const hasReleaseReplayHelper = [...seen].some((file) =>
+	requiredReleaseReplayHelperFiles.includes(file),
+);
+
+if (hasReleaseReplayHelper) {
+	for (const file of requiredReleaseReplayHelperFiles) {
+		if (!seen.has(file)) {
+			errors.push(`Missing release replay mirror file: ${file}`);
 		}
 	}
 }

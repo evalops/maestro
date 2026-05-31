@@ -5,6 +5,7 @@ import {
 	type HeadlessApprovalMode,
 	type HeadlessConnectionRole,
 	type HeadlessErrorType,
+	type HeadlessExecutorType,
 	type HeadlessNotificationType,
 	type HeadlessServerRequestResolution,
 	type HeadlessServerRequestResolvedBy,
@@ -16,7 +17,10 @@ import {
 	type HeadlessUtilityCommandTerminalMode,
 	type HeadlessUtilityFileWatchChangeType,
 	type HeadlessUtilityOperation,
+	headlessConnectionRoles,
 	headlessProtocolVersion,
+	headlessServerRequestTypes,
+	headlessUtilityOperations,
 } from "@evalops/contracts";
 import { lookup as lookupMimeType } from "mime-types";
 
@@ -30,6 +34,13 @@ import type {
 	AssistantMessageEvent,
 	Attachment,
 } from "../agent/types.js";
+import {
+	CODEX_SUBAGENT_TOOL_PREFIX,
+	CODEX_SUBAGENT_WORK_GRAPH_SCHEMA,
+	codexSubagentActiveStatus,
+	codexSubagentOperationName,
+	codexSubagentTerminalSuccessStatus,
+} from "../codex/subagent-workgraph.js";
 import { appendHeadlessOutput } from "../headless/output-buffer.js";
 import type { SessionManager } from "../session/manager.js";
 import { isSupportedImageFormat } from "../tools/image-processor.js";
@@ -61,6 +72,20 @@ export interface HeadlessClientCapabilities {
 	utility_operations?: HeadlessUtilityOperation[];
 	raw_agent_events?: boolean;
 }
+
+export interface HeadlessServerCapabilities {
+	server_requests: HeadlessServerRequestType[];
+	utility_operations: HeadlessUtilityOperation[];
+	raw_agent_events: boolean;
+	connection_roles: HeadlessConnectionRole[];
+}
+
+export const HEADLESS_SERVER_CAPABILITIES: HeadlessServerCapabilities = {
+	server_requests: [...headlessServerRequestTypes],
+	utility_operations: [...headlessUtilityOperations],
+	raw_agent_events: true,
+	connection_roles: [...headlessConnectionRoles],
+};
 
 export interface HeadlessHelloMessage {
 	type: "hello";
@@ -225,6 +250,7 @@ export interface HeadlessReadyMessage {
 	protocol_version: string;
 	model: string;
 	provider: string;
+	executor_type?: HeadlessExecutorType;
 	session_id: string | null;
 }
 
@@ -266,6 +292,7 @@ export interface HeadlessResponseEndMessage {
 export interface HeadlessToolCallMessage {
 	type: "tool_call";
 	call_id: string;
+	tool_execution_id?: string;
 	tool: string;
 	args: Record<string, unknown> | unknown;
 	requires_approval: boolean;
@@ -285,7 +312,10 @@ export interface HeadlessToolOutputMessage {
 export interface HeadlessToolEndMessage {
 	type: "tool_end";
 	call_id: string;
+	tool_execution_id?: string;
 	success: boolean;
+	tool?: string;
+	details?: unknown;
 	error_code?: string;
 	approval_request_id?: string;
 	governed_outcome?: string;
@@ -294,6 +324,7 @@ export interface HeadlessToolEndMessage {
 export interface HeadlessClientToolRequestMessage {
 	type: "client_tool_request";
 	call_id: string;
+	tool_execution_id?: string;
 	tool: string;
 	args: unknown;
 }
@@ -303,12 +334,14 @@ export interface HeadlessServerRequestMessage {
 	request_id: string;
 	request_type: HeadlessServerRequestType;
 	call_id: string;
+	tool_execution_id?: string;
 	tool: string;
 	display_name?: string;
 	summary_label?: string;
 	action_description?: string;
 	args: unknown;
 	reason: string;
+	started_at_ms?: number;
 }
 
 export interface HeadlessServerRequestResolvedMessage {
@@ -319,6 +352,8 @@ export interface HeadlessServerRequestResolvedMessage {
 	resolution: HeadlessServerRequestResolution;
 	reason?: string;
 	resolved_by: HeadlessServerRequestResolvedBy;
+	started_at_ms?: number;
+	resolved_at_ms?: number;
 }
 
 export interface HeadlessUtilityCommandStartedMessage {
@@ -447,6 +482,7 @@ export interface HeadlessHelloOkMessage {
 	client_protocol_version?: string;
 	client_info?: HeadlessClientInfo;
 	capabilities?: HeadlessClientCapabilities;
+	server_capabilities?: HeadlessServerCapabilities;
 	opt_out_notifications?: HeadlessNotificationType[];
 	role?: HeadlessConnectionRole;
 	controller_connection_id?: string | null;
@@ -511,12 +547,14 @@ export interface HeadlessStreamingResponseState {
 
 export interface HeadlessPendingApprovalState {
 	call_id: string;
+	tool_execution_id?: string;
 	request_id?: string;
 	tool: string;
 	display_name?: string;
 	summary_label?: string;
 	action_description?: string;
 	args: unknown;
+	started_at_ms?: number;
 }
 
 export interface HeadlessPendingRequestState
@@ -535,6 +573,17 @@ export interface HeadlessActiveToolState {
 	call_id: string;
 	tool: string;
 	output: string;
+}
+
+export interface HeadlessCodexSubagentContinuityEdge {
+	spawn_tool_call_id?: string;
+	spawn_tool_execution_id?: string;
+	wait_tool_call_id?: string;
+	wait_tool_execution_id?: string;
+	child_run_id?: string;
+	thread_id?: string;
+	operation: string;
+	status: string;
 }
 
 export interface HeadlessActiveUtilityCommandState {
@@ -577,6 +626,7 @@ export interface HeadlessRuntimeState {
 	client_protocol_version?: string;
 	client_info?: HeadlessClientInfo;
 	capabilities?: HeadlessClientCapabilities;
+	server_capabilities?: HeadlessServerCapabilities;
 	opt_out_notifications?: HeadlessNotificationType[];
 	connection_role?: HeadlessConnectionRole;
 	connection_count: number;
@@ -586,6 +636,7 @@ export interface HeadlessRuntimeState {
 	connections: HeadlessConnectionState[];
 	model?: string;
 	provider?: string;
+	executor_type?: HeadlessExecutorType;
 	session_id?: string | null;
 	cwd?: string;
 	git_branch?: string | null;
@@ -600,6 +651,7 @@ export interface HeadlessRuntimeState {
 	active_utility_commands: HeadlessActiveUtilityCommandState[];
 	active_file_watches: HeadlessActiveFileWatchState[];
 	tracked_tools: HeadlessPendingApprovalState[];
+	codex_subagent_edges: HeadlessCodexSubagentContinuityEdge[];
 	last_error?: string;
 	last_error_type?: HeadlessErrorMessage["error_type"];
 	last_status?: string;
@@ -636,6 +688,7 @@ export function createHeadlessRuntimeState(): HeadlessRuntimeState {
 		active_utility_commands: [],
 		active_file_watches: [],
 		tracked_tools: [],
+		codex_subagent_edges: [],
 		is_ready: false,
 		is_responding: false,
 	};
@@ -655,6 +708,9 @@ function toUnifiedPendingRequestState(
 		...(sessionId !== undefined ? { session_id: sessionId } : {}),
 		tool_call_id: request.call_id,
 		call_id: request.call_id,
+		...(request.tool_execution_id
+			? { tool_execution_id: request.tool_execution_id }
+			: {}),
 		...(request.request_id ? { request_id: request.request_id } : {}),
 		tool_name: request.tool,
 		tool: request.tool,
@@ -664,6 +720,9 @@ function toUnifiedPendingRequestState(
 			? { action_description: request.action_description }
 			: {}),
 		args: request.args,
+		...(request.started_at_ms !== undefined
+			? { started_at_ms: request.started_at_ms }
+			: {}),
 		source: "local",
 	};
 }
@@ -690,6 +749,432 @@ export function syncHeadlessPendingRequests(
 		),
 	];
 	return state.pending_requests;
+}
+
+export { CODEX_SUBAGENT_TOOL_PREFIX, CODEX_SUBAGENT_WORK_GRAPH_SCHEMA };
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+	return Boolean(value && typeof value === "object" && !Array.isArray(value));
+}
+
+export function nonEmptyString(value: unknown): string | undefined {
+	return typeof value === "string" && value.trim() ? value.trim() : undefined;
+}
+
+export function stringArray(value: unknown): string[] {
+	return Array.isArray(value)
+		? value.filter(
+				(item): item is string => typeof item === "string" && item.length > 0,
+			)
+		: [];
+}
+
+export function codexSubagentOperation(tool: string): string | undefined {
+	return codexSubagentOperationName(tool);
+}
+
+export function activeCodexSubagentStatus(operation: string): string {
+	return codexSubagentActiveStatus(operation) ?? "waiting_for_restore";
+}
+
+export function codexSubagentStatusIsTerminal(
+	status: string | undefined,
+): boolean {
+	switch ((status ?? "").toLowerCase().replace(/[-\s]+/g, "_")) {
+		case "closed":
+		case "explicitly_closed":
+		case "succeeded":
+		case "success":
+		case "completed":
+		case "complete":
+		case "done":
+		case "acknowledged":
+		case "failed":
+		case "failure":
+		case "error":
+		case "cancelled":
+		case "canceled":
+			return true;
+		default:
+			return false;
+	}
+}
+
+function terminalCodexSubagentStatus(
+	operation: string,
+	success: boolean,
+): string {
+	if (!success) {
+		return "failed";
+	}
+	return codexSubagentTerminalSuccessStatus(operation) ?? "completed";
+}
+
+export function collectCodexChildRuns(args: unknown): Array<{
+	child_run_id?: string;
+	thread_id?: string;
+	status?: string;
+}> {
+	if (!isRecord(args)) {
+		return [];
+	}
+	const childRunIds = stringArray(args.childRunIds ?? args.child_run_ids);
+	const threadIds = stringArray(
+		args.receiverThreadIds ?? args.receiver_thread_ids,
+	);
+	const graph = args.codexWorkGraph ?? args.codex_work_graph;
+	const graphRuns: Array<{
+		child_run_id?: string;
+		thread_id?: string;
+		status?: string;
+	}> = [];
+	if (isRecord(graph)) {
+		const graphChildRuns = graph.childRuns ?? graph.child_runs;
+		for (const childRun of Array.isArray(graphChildRuns)
+			? graphChildRuns
+			: []) {
+			if (!isRecord(childRun)) {
+				continue;
+			}
+			graphRuns.push({
+				child_run_id: nonEmptyString(
+					childRun.childRunId ?? childRun.child_run_id,
+				),
+				thread_id: nonEmptyString(childRun.threadId ?? childRun.thread_id),
+				status: nonEmptyString(
+					childRun.status ?? childRun.targetStatus ?? childRun.target_status,
+				),
+			});
+		}
+	}
+	const count = Math.max(
+		childRunIds.length,
+		threadIds.length,
+		graphRuns.length,
+		1,
+	);
+	const runs: Array<{
+		child_run_id?: string;
+		thread_id?: string;
+		status?: string;
+	}> = [];
+	for (let index = 0; index < count; index += 1) {
+		const threadId = threadIds[index] ?? graphRuns[index]?.thread_id;
+		const status =
+			graphRuns[index]?.status ?? codexAgentStateStatus(args, threadId);
+		runs.push({
+			child_run_id: childRunIds[index] ?? graphRuns[index]?.child_run_id,
+			thread_id: threadId,
+			...(status ? { status } : {}),
+		});
+	}
+	return runs.filter((run) => run.child_run_id || run.thread_id);
+}
+
+function codexAgentStateStatus(
+	args: Record<string, unknown>,
+	threadId: string | undefined,
+): string | undefined {
+	if (!threadId) {
+		return undefined;
+	}
+	const agentsStates = args.agentsStates ?? args.agents_states;
+	if (!isRecord(agentsStates)) {
+		return undefined;
+	}
+	const agentState = agentsStates[threadId];
+	if (!isRecord(agentState)) {
+		return undefined;
+	}
+	return nonEmptyString(agentState.status);
+}
+
+function hasCodexSubagentArgs(value: unknown): boolean {
+	if (!isRecord(value)) {
+		return false;
+	}
+	return (
+		hasCodexWorkGraph(value) ||
+		stringArray(value.childRunIds ?? value.child_run_ids).length > 0 ||
+		stringArray(value.receiverThreadIds ?? value.receiver_thread_ids).length > 0
+	);
+}
+
+function mergeRecordArgs(
+	base: unknown,
+	patch: Record<string, unknown>,
+): unknown {
+	return {
+		...(isRecord(base) ? base : {}),
+		...patch,
+	};
+}
+
+function codexSubagentToolEndArgs(
+	sourceArgs: unknown,
+	details: unknown,
+): unknown {
+	if (!isRecord(details)) {
+		return sourceArgs;
+	}
+	const wrappedArgs = details.args;
+	if (isRecord(wrappedArgs)) {
+		return mergeRecordArgs(sourceArgs, wrappedArgs);
+	}
+	if (hasCodexSubagentArgs(details)) {
+		return mergeRecordArgs(sourceArgs, details);
+	}
+	return sourceArgs;
+}
+
+const CODEX_SUBAGENT_DETAIL_KEYS = [
+	"codexTool",
+	"codex_tool",
+	"status",
+	"threadId",
+	"thread_id",
+	"turnId",
+	"turn_id",
+	"senderThreadId",
+	"sender_thread_id",
+	"receiverThreadIds",
+	"receiver_thread_ids",
+	"childRunIds",
+	"child_run_ids",
+	"codexWorkGraph",
+	"codex_work_graph",
+	"agentsStates",
+	"agents_states",
+] as const;
+
+const CODEX_SUBAGENT_DETAIL_REDACTED_KEYS = new Set([
+	"prompt",
+	"model",
+	"reasoningEffort",
+	"reasoning_effort",
+]);
+
+function hasCodexWorkGraph(args: unknown): boolean {
+	if (!isRecord(args)) {
+		return false;
+	}
+	const graph = args.codexWorkGraph ?? args.codex_work_graph;
+	return (
+		isRecord(graph) &&
+		(graph.schemaVersion === CODEX_SUBAGENT_WORK_GRAPH_SCHEMA ||
+			graph.schema_version === CODEX_SUBAGENT_WORK_GRAPH_SCHEMA)
+	);
+}
+
+function sanitizeCodexSubagentDetailValue(value: unknown): unknown {
+	if (Array.isArray(value)) {
+		return value.map((item) => sanitizeCodexSubagentDetailValue(item));
+	}
+	if (!isRecord(value)) {
+		return value;
+	}
+	const out: Record<string, unknown> = {};
+	for (const [key, child] of Object.entries(value)) {
+		if (CODEX_SUBAGENT_DETAIL_REDACTED_KEYS.has(key)) {
+			continue;
+		}
+		out[key] = sanitizeCodexSubagentDetailValue(child);
+	}
+	return out;
+}
+
+function codexSubagentToolEndDetails(
+	toolName: string,
+	details: unknown,
+): Record<string, unknown> | undefined {
+	if (!toolName.startsWith(CODEX_SUBAGENT_TOOL_PREFIX) || !isRecord(details)) {
+		return undefined;
+	}
+	const out: Record<string, unknown> = {};
+	for (const key of CODEX_SUBAGENT_DETAIL_KEYS) {
+		if (details[key] !== undefined) {
+			out[key] = sanitizeCodexSubagentDetailValue(details[key]);
+		}
+	}
+	return Object.keys(out).length > 0 ? out : undefined;
+}
+
+export function codexSubagentEdgeKey(
+	edge: HeadlessCodexSubagentContinuityEdge,
+): string {
+	return [
+		edge.spawn_tool_call_id ?? "",
+		edge.wait_tool_call_id ?? "",
+		edge.child_run_id ?? "",
+		edge.thread_id ?? "",
+		edge.operation,
+	].join("\u0000");
+}
+
+export function buildCodexSubagentContinuityEdges(input: {
+	call_id: string;
+	tool_execution_id?: string;
+	tool: string;
+	args?: unknown;
+	status: string;
+}): HeadlessCodexSubagentContinuityEdge[] {
+	const operation = codexSubagentOperation(input.tool);
+	if (!operation) {
+		return [];
+	}
+	const base: Omit<
+		HeadlessCodexSubagentContinuityEdge,
+		"child_run_id" | "thread_id"
+	> = {
+		operation,
+		status: input.status,
+		...(operation === "spawn_agent"
+			? {
+					spawn_tool_call_id: input.call_id,
+					...(input.tool_execution_id
+						? { spawn_tool_execution_id: input.tool_execution_id }
+						: {}),
+				}
+			: {
+					wait_tool_call_id: input.call_id,
+					...(input.tool_execution_id
+						? { wait_tool_execution_id: input.tool_execution_id }
+						: {}),
+				}),
+	};
+	const childRuns = collectCodexChildRuns(input.args);
+	return childRuns.length > 0
+		? childRuns.map((childRun) => ({
+				...base,
+				...(childRun.child_run_id
+					? { child_run_id: childRun.child_run_id }
+					: {}),
+				...(childRun.thread_id ? { thread_id: childRun.thread_id } : {}),
+				status: childRun.status ?? base.status,
+			}))
+		: [base];
+}
+
+function upsertCodexSubagentContinuityEdges(
+	state: HeadlessRuntimeState,
+	input: {
+		call_id: string;
+		tool_execution_id?: string;
+		tool: string;
+		args?: unknown;
+		status: string;
+	},
+): void {
+	const operation = codexSubagentOperation(input.tool);
+	if (
+		!operation ||
+		(!input.tool.startsWith(CODEX_SUBAGENT_TOOL_PREFIX) &&
+			!hasCodexWorkGraph(input.args))
+	) {
+		return;
+	}
+	const edges = buildCodexSubagentContinuityEdges(input);
+	state.codex_subagent_edges ??= [];
+	const existing = new Map<string, HeadlessCodexSubagentContinuityEdge>(
+		state.codex_subagent_edges.map((edge) => [
+			codexSubagentEdgeKey(edge),
+			edge,
+		]),
+	);
+	if (edges.some((edge) => edge.child_run_id || edge.thread_id)) {
+		for (const [key, edge] of existing) {
+			const sameToolCall =
+				edge.spawn_tool_call_id === input.call_id ||
+				edge.wait_tool_call_id === input.call_id;
+			if (
+				sameToolCall &&
+				edge.operation === operation &&
+				!edge.child_run_id &&
+				!edge.thread_id
+			) {
+				existing.delete(key);
+			}
+		}
+	}
+	for (const edge of edges) {
+		existing.set(codexSubagentEdgeKey(edge), edge);
+	}
+	if (
+		(input.status === "closed" || input.status === "completed") &&
+		(operation === "close_agent" || operation === "wait_agent")
+	) {
+		const closedChildIds = new Set(
+			edges.map((edge) => edge.child_run_id).filter(Boolean),
+		);
+		const closedThreadIds = new Set(
+			edges.map((edge) => edge.thread_id).filter(Boolean),
+		);
+		for (const [key, edge] of existing) {
+			if (
+				edge.operation === operation ||
+				codexSubagentStatusIsTerminal(edge.status)
+			) {
+				continue;
+			}
+			const sameChild =
+				(edge.child_run_id && closedChildIds.has(edge.child_run_id)) ||
+				(edge.thread_id && closedThreadIds.has(edge.thread_id));
+			if (sameChild) {
+				existing.set(key, { ...edge, status: "completed" });
+			}
+		}
+	}
+	state.codex_subagent_edges = [...existing.values()].sort((left, right) =>
+		codexSubagentEdgeKey(left).localeCompare(codexSubagentEdgeKey(right)),
+	);
+}
+
+function markCodexSubagentEdgesFailedForCall(
+	state: HeadlessRuntimeState,
+	callId: string,
+): void {
+	if (!callId) {
+		return;
+	}
+	state.codex_subagent_edges ??= [];
+	state.codex_subagent_edges = state.codex_subagent_edges
+		.map((edge) => {
+			const matches =
+				edge.spawn_tool_call_id === callId || edge.wait_tool_call_id === callId;
+			if (!matches || codexSubagentStatusIsTerminal(edge.status)) {
+				return edge;
+			}
+			return { ...edge, status: "failed" };
+		})
+		.sort((left, right) =>
+			codexSubagentEdgeKey(left).localeCompare(codexSubagentEdgeKey(right)),
+		);
+}
+
+function failCodexSubagentContinuityEdge(
+	state: HeadlessRuntimeState,
+	callId: string,
+): void {
+	const source =
+		state.tracked_tools.find((tool) => tool.call_id === callId) ??
+		state.pending_approvals.find((approval) => approval.call_id === callId) ??
+		state.pending_client_tools.find((request) => request.call_id === callId) ??
+		state.pending_mcp_elicitations.find(
+			(request) => request.call_id === callId,
+		) ??
+		state.pending_user_inputs.find((request) => request.call_id === callId) ??
+		state.pending_tool_retries.find((request) => request.call_id === callId);
+	const operation = source ? codexSubagentOperation(source.tool) : undefined;
+	if (source && operation) {
+		upsertCodexSubagentContinuityEdges(state, {
+			call_id: callId,
+			tool_execution_id: source.tool_execution_id,
+			tool: source.tool,
+			args: source.args,
+			status: terminalCodexSubagentStatus(operation, false),
+		});
+	}
+	markCodexSubagentEdgesFailedForCall(state, callId);
 }
 
 export function headlessViewerCanSend(msg: HeadlessToAgentMessage): boolean {
@@ -747,15 +1232,20 @@ function getPendingRequestId(request: HeadlessPendingApprovalState): string {
 
 function toPendingRequestState(params: {
 	call_id: string;
+	tool_execution_id?: string;
 	request_id: string;
 	tool: string;
 	display_name?: string;
 	summary_label?: string;
 	action_description?: string;
 	args: unknown;
+	started_at_ms?: number;
 }): HeadlessPendingApprovalState {
 	return {
 		call_id: params.call_id,
+		...(params.tool_execution_id
+			? { tool_execution_id: params.tool_execution_id }
+			: {}),
 		...(params.request_id !== params.call_id
 			? { request_id: params.request_id }
 			: {}),
@@ -766,6 +1256,9 @@ function toPendingRequestState(params: {
 			? { action_description: params.action_description }
 			: {}),
 		args: params.args,
+		...(params.started_at_ms !== undefined
+			? { started_at_ms: params.started_at_ms }
+			: {}),
 	};
 }
 
@@ -1043,6 +1536,9 @@ export class HeadlessProtocolTranslator {
 					{
 						type: "tool_call",
 						call_id: event.toolCallId,
+						...(event.toolExecutionId
+							? { tool_execution_id: event.toolExecutionId }
+							: {}),
 						tool: event.toolName,
 						args: event.args,
 						requires_approval: false,
@@ -1065,18 +1561,26 @@ export class HeadlessProtocolTranslator {
 					},
 				];
 			}
-			case "tool_execution_end":
+			case "tool_execution_end": {
 				this.noteToolExecution(
 					event.toolName,
 					undefined,
 					event.summaryLabel,
 					!event.isError,
 				);
+				const details = codexSubagentToolEndDetails(
+					event.toolName,
+					event.result.details,
+				);
 				return [
 					{
 						type: "tool_end",
 						call_id: event.toolCallId,
+						...(event.toolExecutionId
+							? { tool_execution_id: event.toolExecutionId }
+							: {}),
 						success: !event.isError,
+						...(details ? { tool: event.toolName, details } : {}),
 						...(event.errorCode ? { error_code: event.errorCode } : {}),
 						...(event.approvalRequestId
 							? { approval_request_id: event.approvalRequestId }
@@ -1086,6 +1590,7 @@ export class HeadlessProtocolTranslator {
 							: {}),
 					},
 				];
+			}
 			case "tool_batch_summary": {
 				const message = event.summary.trim();
 				if (!message) {
@@ -1103,6 +1608,9 @@ export class HeadlessProtocolTranslator {
 					{
 						type: "tool_call",
 						call_id: event.request.id,
+						...(event.request.platform?.toolExecutionId
+							? { tool_execution_id: event.request.platform.toolExecutionId }
+							: {}),
 						tool: event.request.toolName,
 						args: event.request.args,
 						requires_approval: true,
@@ -1112,6 +1620,9 @@ export class HeadlessProtocolTranslator {
 						request_id: event.request.id,
 						request_type: "approval",
 						call_id: event.request.id,
+						...(event.request.platform?.toolExecutionId
+							? { tool_execution_id: event.request.platform.toolExecutionId }
+							: {}),
 						tool: event.request.toolName,
 						...(event.request.displayName
 							? { display_name: event.request.displayName }
@@ -1124,6 +1635,9 @@ export class HeadlessProtocolTranslator {
 							: {}),
 						args: event.request.args,
 						reason: event.request.reason,
+						...(event.request.startedAtMs !== undefined
+							? { started_at_ms: event.request.startedAtMs }
+							: {}),
 					},
 				];
 			case "error":
@@ -1186,6 +1700,12 @@ export class HeadlessProtocolTranslator {
 						resolution: event.decision.approved ? "approved" : "denied",
 						reason: event.decision.reason,
 						resolved_by: event.decision.resolvedBy,
+						...(event.request.startedAtMs !== undefined
+							? { started_at_ms: event.request.startedAtMs }
+							: {}),
+						...(event.decision.resolvedAtMs !== undefined
+							? { resolved_at_ms: event.decision.resolvedAtMs }
+							: {}),
 					},
 				];
 			default:
@@ -1198,11 +1718,14 @@ export class HeadlessProtocolTranslator {
 		sessionManager: SessionManager,
 	): HeadlessReadyMessage {
 		const model = agent.state.model;
+		const executorType: HeadlessExecutorType =
+			model.provider === "scripted-replay" ? "replay" : "live";
 		return {
 			type: "ready",
 			protocol_version: HEADLESS_PROTOCOL_VERSION,
 			model: model.id,
 			provider: model.provider,
+			executor_type: executorType,
 			session_id: sessionManager.getSessionId() ?? null,
 		};
 	}
@@ -1228,6 +1751,7 @@ export class HeadlessProtocolTranslator {
 		client_protocol_version?: string;
 		client_info?: HeadlessClientInfo;
 		capabilities?: HeadlessClientCapabilities;
+		server_capabilities?: HeadlessServerCapabilities;
 		opt_out_notifications?: HeadlessNotificationType[];
 		role?: HeadlessConnectionRole;
 		controller_connection_id?: string | null;
@@ -1240,6 +1764,8 @@ export class HeadlessProtocolTranslator {
 			client_protocol_version: metadata.client_protocol_version,
 			client_info: metadata.client_info,
 			capabilities: metadata.capabilities,
+			server_capabilities:
+				metadata.server_capabilities ?? HEADLESS_SERVER_CAPABILITIES,
 			opt_out_notifications: metadata.opt_out_notifications,
 			role: metadata.role,
 			controller_connection_id: metadata.controller_connection_id,
@@ -1448,6 +1974,9 @@ function applyOutgoingHeadlessMessageInner(
 			state.is_responding = true;
 			return;
 		case "tool_response":
+			if (!msg.approved) {
+				failCodexSubagentContinuityEdge(state, msg.call_id);
+			}
 			state.pending_approvals = state.pending_approvals.filter(
 				(approval) => approval.call_id !== msg.call_id,
 			);
@@ -1476,12 +2005,20 @@ function applyOutgoingHeadlessMessageInner(
 			return;
 		case "server_request_response":
 			if (msg.request_type === "approval") {
+				const pendingApproval = state.pending_approvals.find(
+					(approval) => getPendingRequestId(approval) === msg.request_id,
+				);
+				const callId = pendingApproval?.call_id ?? msg.request_id;
+				if (!msg.approved) {
+					failCodexSubagentContinuityEdge(state, callId);
+				}
 				state.pending_approvals = state.pending_approvals.filter(
 					(approval) => getPendingRequestId(approval) !== msg.request_id,
 				);
 				if (!msg.approved) {
 					state.tracked_tools = state.tracked_tools.filter(
-						(tool) => tool.call_id !== msg.request_id,
+						(tool) =>
+							tool.call_id !== callId && tool.call_id !== msg.request_id,
 					);
 				}
 			} else if (msg.request_type === "client_tool") {
@@ -1552,6 +2089,7 @@ function applyIncomingHeadlessMessageInner(
 			state.client_protocol_version = msg.client_protocol_version;
 			state.client_info = msg.client_info;
 			state.capabilities = msg.capabilities;
+			state.server_capabilities = msg.server_capabilities;
 			state.opt_out_notifications = msg.opt_out_notifications;
 			state.connection_role = msg.role;
 			state.controller_connection_id = msg.controller_connection_id;
@@ -1560,6 +2098,7 @@ function applyIncomingHeadlessMessageInner(
 			state.protocol_version = msg.protocol_version;
 			state.model = msg.model;
 			state.provider = msg.provider;
+			state.executor_type = msg.executor_type ?? "live";
 			state.session_id = msg.session_id;
 			state.is_ready = true;
 			return;
@@ -1606,10 +2145,20 @@ function applyIncomingHeadlessMessageInner(
 			state.is_responding = false;
 			return;
 		case "tool_call":
+			upsertCodexSubagentContinuityEdges(state, {
+				call_id: msg.call_id,
+				tool_execution_id: msg.tool_execution_id,
+				tool: msg.tool,
+				args: msg.args,
+				status: activeCodexSubagentStatus(
+					codexSubagentOperation(msg.tool) ?? "",
+				),
+			});
 			state.tracked_tools = [
 				...state.tracked_tools.filter((tool) => tool.call_id !== msg.call_id),
 				{
 					call_id: msg.call_id,
+					tool_execution_id: msg.tool_execution_id,
 					tool: msg.tool,
 					args: msg.args,
 				},
@@ -1621,6 +2170,7 @@ function applyIncomingHeadlessMessageInner(
 					),
 					{
 						call_id: msg.call_id,
+						tool_execution_id: msg.tool_execution_id,
 						tool: msg.tool,
 						args: msg.args,
 					},
@@ -1670,7 +2220,38 @@ function applyIncomingHeadlessMessageInner(
 					: tool,
 			);
 			return;
-		case "tool_end":
+		case "tool_end": {
+			const source =
+				state.tracked_tools.find((tool) => tool.call_id === msg.call_id) ??
+				state.pending_approvals.find(
+					(approval) => approval.call_id === msg.call_id,
+				) ??
+				state.pending_client_tools.find(
+					(request) => request.call_id === msg.call_id,
+				) ??
+				state.pending_mcp_elicitations.find(
+					(request) => request.call_id === msg.call_id,
+				) ??
+				state.pending_user_inputs.find(
+					(request) => request.call_id === msg.call_id,
+				) ??
+				state.pending_tool_retries.find(
+					(request) => request.call_id === msg.call_id,
+				);
+			const active = state.active_tools.find(
+				(tool) => tool.call_id === msg.call_id,
+			);
+			const tool = msg.tool ?? source?.tool ?? active?.tool;
+			const operation = tool ? codexSubagentOperation(tool) : undefined;
+			if (tool && operation) {
+				upsertCodexSubagentContinuityEdges(state, {
+					call_id: msg.call_id,
+					tool_execution_id: msg.tool_execution_id ?? source?.tool_execution_id,
+					tool,
+					args: codexSubagentToolEndArgs(source?.args, msg.details),
+					status: terminalCodexSubagentStatus(operation, msg.success),
+				});
+			}
 			state.active_tools = state.active_tools.filter(
 				(tool) => tool.call_id !== msg.call_id,
 			);
@@ -1693,15 +2274,26 @@ function applyIncomingHeadlessMessageInner(
 				(tool) => tool.call_id !== msg.call_id,
 			);
 			return;
+		}
 		case "client_tool_request":
 			state.tracked_tools = [
 				...state.tracked_tools.filter((tool) => tool.call_id !== msg.call_id),
 				{
 					call_id: msg.call_id,
+					tool_execution_id: msg.tool_execution_id,
 					tool: msg.tool,
 					args: msg.args,
 				},
 			];
+			upsertCodexSubagentContinuityEdges(state, {
+				call_id: msg.call_id,
+				tool_execution_id: msg.tool_execution_id,
+				tool: msg.tool,
+				args: msg.args,
+				status: activeCodexSubagentStatus(
+					codexSubagentOperation(msg.tool) ?? "",
+				),
+			});
 			if (msg.tool === "ask_user") {
 				state.pending_user_inputs = [
 					...state.pending_user_inputs.filter(
@@ -1709,6 +2301,7 @@ function applyIncomingHeadlessMessageInner(
 					),
 					{
 						call_id: msg.call_id,
+						tool_execution_id: msg.tool_execution_id,
 						tool: msg.tool,
 						args: msg.args,
 					},
@@ -1720,26 +2313,43 @@ function applyIncomingHeadlessMessageInner(
 					),
 					{
 						call_id: msg.call_id,
+						tool_execution_id: msg.tool_execution_id,
 						tool: msg.tool,
 						args: msg.args,
 					},
 				];
 			}
 			return;
-		case "server_request":
-			if (
+		case "server_request": {
+			const trackedTool = state.tracked_tools.find(
+				(tool) => tool.call_id === msg.call_id,
+			);
+			const toolExecutionId =
+				msg.tool_execution_id ?? trackedTool?.tool_execution_id;
+			const shouldTrackRequest =
 				msg.request_type !== "tool_retry" ||
-				!state.tracked_tools.some((tool) => tool.call_id === msg.call_id)
-			) {
+				!trackedTool ||
+				trackedTool.tool_execution_id !== toolExecutionId;
+			if (shouldTrackRequest) {
 				state.tracked_tools = [
 					...state.tracked_tools.filter((tool) => tool.call_id !== msg.call_id),
 					{
 						call_id: msg.call_id,
+						tool_execution_id: toolExecutionId,
 						tool: msg.tool,
 						args: msg.args,
 					},
 				];
 			}
+			upsertCodexSubagentContinuityEdges(state, {
+				call_id: msg.call_id,
+				tool_execution_id: toolExecutionId,
+				tool: msg.tool,
+				args: msg.args,
+				status: activeCodexSubagentStatus(
+					codexSubagentOperation(msg.tool) ?? "",
+				),
+			});
 			if (msg.request_type === "approval") {
 				state.pending_approvals = [
 					...state.pending_approvals.filter(
@@ -1747,12 +2357,14 @@ function applyIncomingHeadlessMessageInner(
 					),
 					toPendingRequestState({
 						call_id: msg.call_id,
+						tool_execution_id: toolExecutionId,
 						request_id: msg.request_id,
 						tool: msg.tool,
 						display_name: msg.display_name,
 						summary_label: msg.summary_label,
 						action_description: msg.action_description,
 						args: msg.args,
+						started_at_ms: msg.started_at_ms,
 					}),
 				];
 			} else if (msg.request_type === "client_tool") {
@@ -1762,9 +2374,11 @@ function applyIncomingHeadlessMessageInner(
 					),
 					toPendingRequestState({
 						call_id: msg.call_id,
+						tool_execution_id: toolExecutionId,
 						request_id: msg.request_id,
 						tool: msg.tool,
 						args: msg.args,
+						started_at_ms: msg.started_at_ms,
 					}),
 				];
 			} else if (msg.request_type === "mcp_elicitation") {
@@ -1774,9 +2388,11 @@ function applyIncomingHeadlessMessageInner(
 					),
 					toPendingRequestState({
 						call_id: msg.call_id,
+						tool_execution_id: toolExecutionId,
 						request_id: msg.request_id,
 						tool: msg.tool,
 						args: msg.args,
+						started_at_ms: msg.started_at_ms,
 					}),
 				];
 			} else if (msg.request_type === "user_input") {
@@ -1786,9 +2402,11 @@ function applyIncomingHeadlessMessageInner(
 					),
 					toPendingRequestState({
 						call_id: msg.call_id,
+						tool_execution_id: toolExecutionId,
 						request_id: msg.request_id,
 						tool: msg.tool,
 						args: msg.args,
+						started_at_ms: msg.started_at_ms,
 					}),
 				];
 			} else {
@@ -1798,19 +2416,23 @@ function applyIncomingHeadlessMessageInner(
 					),
 					toPendingRequestState({
 						call_id: msg.call_id,
+						tool_execution_id: toolExecutionId,
 						request_id: msg.request_id,
 						tool: msg.tool,
 						args: msg.args,
+						started_at_ms: msg.started_at_ms,
 					}),
 				];
 			}
 			return;
+		}
 		case "server_request_resolved":
 			if (msg.request_type === "approval") {
 				state.pending_approvals = state.pending_approvals.filter(
 					(approval) => getPendingRequestId(approval) !== msg.request_id,
 				);
 				if (msg.resolution !== "approved") {
+					failCodexSubagentContinuityEdge(state, msg.call_id);
 					state.tracked_tools = state.tracked_tools.filter(
 						(tool) => tool.call_id !== msg.call_id,
 					);
@@ -1820,6 +2442,7 @@ function applyIncomingHeadlessMessageInner(
 					(request) => getPendingRequestId(request) !== msg.request_id,
 				);
 				if (msg.resolution === "cancelled") {
+					failCodexSubagentContinuityEdge(state, msg.call_id);
 					state.tracked_tools = state.tracked_tools.filter(
 						(tool) => tool.call_id !== msg.call_id,
 					);
@@ -1833,6 +2456,7 @@ function applyIncomingHeadlessMessageInner(
 					(request) => getPendingRequestId(request) !== msg.request_id,
 				);
 				if (msg.resolution !== "answered") {
+					failCodexSubagentContinuityEdge(state, msg.call_id);
 					state.tracked_tools = state.tracked_tools.filter(
 						(tool) => tool.call_id !== msg.call_id,
 					);
@@ -1938,6 +2562,13 @@ export function buildHeadlessServerRequestCancellationMessages(
 	>,
 	reason: string,
 ): HeadlessServerRequestResolvedMessage[] {
+	const resolvedAtMs = Date.now();
+	const lifecycleTiming = (request: HeadlessPendingApprovalState) => ({
+		...(request.started_at_ms !== undefined
+			? { started_at_ms: request.started_at_ms }
+			: {}),
+		resolved_at_ms: resolvedAtMs,
+	});
 	return [
 		...state.pending_approvals.map((approval) => ({
 			type: "server_request_resolved" as const,
@@ -1947,6 +2578,7 @@ export function buildHeadlessServerRequestCancellationMessages(
 			resolution: "cancelled" as const,
 			reason,
 			resolved_by: "runtime" as const,
+			...lifecycleTiming(approval),
 		})),
 		...state.pending_client_tools.map((request) => ({
 			type: "server_request_resolved" as const,
@@ -1956,6 +2588,7 @@ export function buildHeadlessServerRequestCancellationMessages(
 			resolution: "cancelled" as const,
 			reason,
 			resolved_by: "runtime" as const,
+			...lifecycleTiming(request),
 		})),
 		...state.pending_mcp_elicitations.map((request) => ({
 			type: "server_request_resolved" as const,
@@ -1965,6 +2598,7 @@ export function buildHeadlessServerRequestCancellationMessages(
 			resolution: "cancelled" as const,
 			reason,
 			resolved_by: "runtime" as const,
+			...lifecycleTiming(request),
 		})),
 		...state.pending_user_inputs.map((request) => ({
 			type: "server_request_resolved" as const,
@@ -1974,6 +2608,7 @@ export function buildHeadlessServerRequestCancellationMessages(
 			resolution: "cancelled" as const,
 			reason,
 			resolved_by: "runtime" as const,
+			...lifecycleTiming(request),
 		})),
 		...state.pending_tool_retries.map((request) => ({
 			type: "server_request_resolved" as const,
@@ -1983,6 +2618,7 @@ export function buildHeadlessServerRequestCancellationMessages(
 			resolution: "cancelled" as const,
 			reason,
 			resolved_by: "runtime" as const,
+			...lifecycleTiming(request),
 		})),
 	];
 }

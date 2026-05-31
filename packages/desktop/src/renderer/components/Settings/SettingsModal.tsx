@@ -86,7 +86,7 @@ export interface SettingsModalProps {
 const DEFAULT_UI_STATUS: UiStatus = {
 	zenMode: false,
 	cleanMode: "off",
-	footerMode: "ensemble",
+	footerMode: "rich",
 	compactTools: false,
 	queueMode: "all",
 };

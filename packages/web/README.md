@@ -75,7 +75,7 @@ npm run build
 npm run web
 
 # Or via the CLI
-composer web
+maestro web
 
 # Or with custom port
 PORT=3000 npm run web

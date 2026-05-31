@@ -15,6 +15,7 @@ import {
 	getWritablePackageConfigPath,
 	loadConfig,
 	loadConfiguredPackageSpecs,
+	loadPromptProjectDocManifest,
 	parseCliOverride,
 	removeConfiguredPackageSpecFromConfig,
 	resolvePromptLoadedProjectDocPaths,
@@ -25,6 +26,8 @@ describe("toml-config", () => {
 	let globalDir: string;
 	let projectDir: string;
 	let previousMaestroHome: string | undefined;
+	let previousMaestroAgentDir: string | undefined;
+	let previousHome: string | undefined;
 
 	beforeEach(() => {
 		clearConfigCache();
@@ -32,6 +35,8 @@ describe("toml-config", () => {
 		globalDir = join(testDir, "global", ".maestro");
 		projectDir = join(testDir, "project");
 		previousMaestroHome = process.env.MAESTRO_HOME;
+		previousMaestroAgentDir = process.env.MAESTRO_AGENT_DIR;
+		previousHome = process.env.HOME;
 		mkdirSync(globalDir, { recursive: true });
 		mkdirSync(join(projectDir, ".maestro"), { recursive: true });
 	});
@@ -51,12 +56,22 @@ describe("toml-config", () => {
 		} else {
 			process.env.MAESTRO_HOME = previousMaestroHome;
 		}
+		if (previousMaestroAgentDir === undefined) {
+			Reflect.deleteProperty(process.env, "MAESTRO_AGENT_DIR");
+		} else {
+			process.env.MAESTRO_AGENT_DIR = previousMaestroAgentDir;
+		}
+		if (previousHome === undefined) {
+			Reflect.deleteProperty(process.env, "HOME");
+		} else {
+			process.env.HOME = previousHome;
+		}
 	});
 
 	describe("DEFAULT_CONFIG", () => {
 		it("has sensible defaults", () => {
-			expect(DEFAULT_CONFIG.model).toBe("claude-sonnet-4-20250514");
-			expect(DEFAULT_CONFIG.model_provider).toBe("anthropic");
+			expect(DEFAULT_CONFIG.model).toBe("gpt-5.5");
+			expect(DEFAULT_CONFIG.model_provider).toBe("openai-codex");
 			expect(DEFAULT_CONFIG.approval_policy).toBe("untrusted");
 			expect(DEFAULT_CONFIG.sandbox_mode).toBe("workspace-write");
 			expect(DEFAULT_CONFIG.model_reasoning_effort).toBe("medium");
@@ -856,6 +871,125 @@ experimental_instructions_file = ".maestro/instructions.md"
 			expect(resolvedPaths).toEqual(loadedPaths);
 			expect(resolvedPaths).toHaveLength(1);
 			expect(resolvedPaths[0]).toBe(resolve(join(projectDir, "AGENT.md")));
+		});
+
+		it("tracks ~/.config global instructions before project docs under the byte budget", () => {
+			const agentDir = join(testDir, "agent");
+			const configDir = join(testDir, ".config");
+			mkdirSync(agentDir, { recursive: true });
+			mkdirSync(configDir, { recursive: true });
+			writeFileSync(join(agentDir, "AGENT.md"), "A".repeat(40));
+			writeFileSync(join(configDir, "AGENT.md"), "B".repeat(40));
+			writeFileSync(join(projectDir, "AGENT.md"), "C".repeat(40));
+			process.env.MAESTRO_AGENT_DIR = agentDir;
+			process.env.HOME = testDir;
+
+			const config = {
+				...DEFAULT_CONFIG,
+				project_doc_max_bytes: 70,
+			} as ComposerConfig;
+
+			const loadedPaths = loadProjectContextFiles(projectDir, { config }).map(
+				(file) => resolve(file.path),
+			);
+			const resolvedPaths = resolvePromptLoadedProjectDocPaths(
+				projectDir,
+				config,
+			).map((filePath) => resolve(filePath));
+
+			expect(resolvedPaths).toEqual(loadedPaths);
+			expect(resolvedPaths).toEqual([
+				resolve(join(agentDir, "AGENT.md")),
+				resolve(join(configDir, "AGENT.md")),
+			]);
+		});
+
+		it("dedupes ~/.config instructions when cwd is inside ~/.config", () => {
+			const configDir = join(testDir, ".config");
+			const dotfilesDir = join(configDir, "dotfiles");
+			mkdirSync(dotfilesDir, { recursive: true });
+			writeFileSync(join(configDir, "AGENT.md"), "Config guidance");
+			writeFileSync(join(dotfilesDir, "AGENT.md"), "Dotfiles guidance");
+			process.env.MAESTRO_AGENT_DIR = join(testDir, "empty-agent-dir");
+			process.env.HOME = testDir;
+
+			const config = {
+				...DEFAULT_CONFIG,
+				project_doc_max_bytes: 100,
+			} as ComposerConfig;
+
+			const loadedPaths = loadProjectContextFiles(dotfilesDir, { config }).map(
+				(file) => resolve(file.path),
+			);
+			const resolvedPaths = resolvePromptLoadedProjectDocPaths(
+				dotfilesDir,
+				config,
+			).map((filePath) => resolve(filePath));
+			const configInstructionPath = resolve(join(configDir, "AGENT.md"));
+
+			expect(resolvedPaths).toEqual(loadedPaths);
+			expect(
+				resolvedPaths.filter((filePath) => filePath === configInstructionPath),
+			).toHaveLength(1);
+		});
+
+		it("exposes manifest metadata for loaded, truncated, layered project docs", () => {
+			const appDir = join(projectDir, "apps", "web");
+			mkdirSync(appDir, { recursive: true });
+			writeFileSync(join(projectDir, "AGENTS.md"), "root instructions");
+			writeFileSync(join(appDir, "AGENTS.md"), "child instructions");
+
+			const config = {
+				...DEFAULT_CONFIG,
+				project_doc_max_bytes: 25,
+			} as ComposerConfig;
+
+			const manifest = loadPromptProjectDocManifest(appDir, config);
+
+			expect(manifest.cwd).toBe(resolve(appDir));
+			expect(manifest.maxBytes).toBe(25);
+			expect(manifest.entries.map((entry) => entry.path)).toEqual([
+				resolve(join(projectDir, "AGENTS.md")),
+				resolve(join(appDir, "AGENTS.md")),
+			]);
+			expect(manifest.entries[0]).toMatchObject({
+				sourceKind: "project",
+				scopeDir: resolve(projectDir),
+				candidateName: "AGENTS.md",
+				bytesRead: Buffer.byteLength("root instructions"),
+				truncated: false,
+				precedenceIndex: 0,
+			});
+			expect(manifest.entries[0]?.contentHash).toMatch(/^[a-f0-9]{64}$/);
+			expect(manifest.entries[1]).toMatchObject({
+				sourceKind: "project",
+				scopeDir: resolve(appDir),
+				candidateName: "AGENTS.md",
+				bytesRead: Buffer.byteLength("child in"),
+				truncated: true,
+				precedenceIndex: 1,
+			});
+			expect(manifest.entries[1]?.content).toContain("[Truncated to 8 bytes");
+			expect(manifest.diagnostics.map((diagnostic) => diagnostic.code)).toEqual(
+				expect.arrayContaining(["truncated", "multiple_instruction_layers"]),
+			);
+		});
+
+		it("diagnoses unreadable candidates and continues to the next project doc", () => {
+			mkdirSync(join(projectDir, "AGENTS.md"));
+			writeFileSync(join(projectDir, "CLAUDE.md"), "fallback instructions");
+
+			const manifest = loadPromptProjectDocManifest(projectDir, DEFAULT_CONFIG);
+
+			expect(manifest.entries).toHaveLength(1);
+			expect(manifest.entries[0]).toMatchObject({
+				path: resolve(join(projectDir, "CLAUDE.md")),
+				candidateName: "CLAUDE.md",
+				content: "fallback instructions",
+			});
+			expect(manifest.diagnostics.map((diagnostic) => diagnostic.code)).toEqual(
+				expect.arrayContaining(["read_failed"]),
+			);
 		});
 	});
 });

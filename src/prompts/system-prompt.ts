@@ -1,9 +1,11 @@
 import { createHash } from "node:crypto";
+import type { RuntimeConstraintContext } from "@evalops/contracts";
 import {
 	buildBundledSystemPromptBase,
 	finalizeSystemPrompt,
 	resolveSystemPromptOverride,
 } from "../cli/system-prompt.js";
+import { loadPromptProjectDocManifest } from "../config/index.js";
 import { resolvePromptTemplate } from "./service-client.js";
 import type { PromptMetadata, ResolvedSystemPrompt } from "./types.js";
 
@@ -38,14 +40,28 @@ export async function resolveMaestroSystemPrompt(options?: {
 	customPrompt?: string;
 	toolNames?: string[];
 	appendPrompt?: string;
+	runtimeConstraints?: RuntimeConstraintContext | null;
+	cwd?: string;
 }): Promise<ResolvedSystemPrompt> {
+	const cwd = options?.cwd ?? process.cwd();
+	const promptContextManifest = loadPromptProjectDocManifest(cwd);
+	const finalizeOptions = {
+		runtimeConstraints: options?.runtimeConstraints,
+		promptContextManifest,
+	};
 	const overridePrompt = resolveSystemPromptOverride(options?.customPrompt);
 	if (overridePrompt) {
 		return {
-			systemPrompt: finalizeSystemPrompt(overridePrompt, options?.appendPrompt),
+			systemPrompt: finalizeSystemPrompt(
+				overridePrompt,
+				options?.appendPrompt,
+				cwd,
+				finalizeOptions,
+			),
 			promptMetadata: buildPromptMetadata(overridePrompt, {
 				source: "override",
 			}),
+			promptContextManifest,
 		};
 	}
 
@@ -59,20 +75,29 @@ export async function resolveMaestroSystemPrompt(options?: {
 			systemPrompt: finalizeSystemPrompt(
 				resolvedPrompt.content,
 				options?.appendPrompt,
+				cwd,
+				finalizeOptions,
 			),
 			promptMetadata: buildPromptMetadata(resolvedPrompt.content, {
 				source: "service",
 				version: resolvedPrompt.version,
 				versionId: resolvedPrompt.versionId,
 			}),
+			promptContextManifest,
 		};
 	}
 
 	const bundledPrompt = buildBundledSystemPromptBase(options?.toolNames);
 	return {
-		systemPrompt: finalizeSystemPrompt(bundledPrompt, options?.appendPrompt),
+		systemPrompt: finalizeSystemPrompt(
+			bundledPrompt,
+			options?.appendPrompt,
+			cwd,
+			finalizeOptions,
+		),
 		promptMetadata: buildPromptMetadata(bundledPrompt, {
 			source: "bundled",
 		}),
+		promptContextManifest,
 	};
 }

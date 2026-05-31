@@ -36,6 +36,7 @@ import {
 	isComposerAgentEvent,
 	validateSchema,
 } from "../../packages/contracts/src/validators.js";
+import { createHeadlessRuntimeState } from "../../src/cli/headless-protocol.js";
 
 describe("contracts validators", () => {
 	it("accepts a minimal chat request", () => {
@@ -98,9 +99,27 @@ describe("contracts validators", () => {
 				actionDescription: "Running rm -rf dist",
 				args: { command: "rm -rf dist" },
 				reason: "Dangerous command",
+				startedAtMs: 1_000,
 			},
 		});
 		expect(approvalEvent.ok).toBe(true);
+		const approvalResolvedEvent = validateSchema(ComposerAgentEventSchema, {
+			type: "action_approval_resolved",
+			request: {
+				id: "approval_1",
+				toolName: "bash",
+				args: { command: "rm -rf dist" },
+				reason: "Dangerous command",
+				startedAtMs: 1_000,
+			},
+			decision: {
+				approved: false,
+				reason: "Denied",
+				resolvedBy: "user",
+				resolvedAtMs: 1_750,
+			},
+		});
+		expect(approvalResolvedEvent.ok).toBe(true);
 	});
 
 	it("rejects malformed headless commands with generated per-type schemas", () => {
@@ -127,6 +146,25 @@ describe("contracts validators", () => {
 			assertHeadlessRuntimeStreamEnvelope({
 				type: "heartbeat",
 				cursor: 3,
+			}),
+		).not.toThrow();
+	});
+
+	it("accepts legacy headless runtime snapshots without Codex subagent edge state", () => {
+		const state = createHeadlessRuntimeState();
+		delete (state as Partial<typeof state>).codex_subagent_edges;
+
+		expect(() =>
+			assertHeadlessRuntimeStreamEnvelope({
+				type: "reset",
+				reason: "restored_from_snapshot",
+				snapshot: {
+					protocolVersion: "2026-04-02",
+					session_id: "sess_legacy_edges",
+					cursor: 4,
+					last_init: null,
+					state,
+				},
 			}),
 		).not.toThrow();
 	});

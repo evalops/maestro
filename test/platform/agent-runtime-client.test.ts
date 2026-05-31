@@ -15,8 +15,11 @@ import {
 	failAgentRuntimeRun,
 	getAgentRuntimeRun,
 	listAgentRuntimeRunEvents,
+	recordAgentRuntimeRunCost,
+	recordAgentRuntimeRunEvent,
 	recordAgentRuntimeRunStep,
 	recordMaestroSessionRuntimeTrigger,
+	resolveAgentRuntimeServiceConfig,
 	resumeAgentRuntimeRun,
 	waitAgentRuntimeRun,
 } from "../../src/platform/agent-runtime-client.js";
@@ -50,19 +53,26 @@ describe("agent runtime service client", () => {
 			"EVALOPS_BASE_URL",
 			"MAESTRO_AGENT_RUNTIME_SERVICE_TOKEN",
 			"AGENT_RUNTIME_SERVICE_TOKEN",
+			"MAESTRO_AGENT_RUNTIME_TIMEOUT_MS",
 			"MAESTRO_PLATFORM_A2A_TOKEN",
 			"MAESTRO_A2A_TOKEN",
 			"MAESTRO_EVALOPS_ACCESS_TOKEN",
 			"EVALOPS_TOKEN",
 			"MAESTRO_AGENT_RUNTIME_ORG_ID",
+			"MAESTRO_AGENT_RUNTIME_ORGANIZATION_ID",
+			"AGENT_RUNTIME_ORG_ID",
 			"AGENT_RUNTIME_ORGANIZATION_ID",
 			"MAESTRO_PLATFORM_A2A_ORG_ID",
 			"MAESTRO_A2A_ORG_ID",
 			"MAESTRO_EVALOPS_ORG_ID",
 			"EVALOPS_ORGANIZATION_ID",
+			"EVALOPS_ORG_ID",
 			"MAESTRO_ENTERPRISE_ORG_ID",
 			"MAESTRO_AGENT_RUNTIME_WORKSPACE_ID",
 			"AGENT_RUNTIME_WORKSPACE_ID",
+			"MAESTRO_REMOTE_RUNNER_ORG_ID",
+			"MAESTRO_LLM_GATEWAY_ORG_ID",
+			"MAESTRO_REMOTE_RUNNER_WORKSPACE_ID",
 			"MAESTRO_PLATFORM_A2A_WORKSPACE_ID",
 			"MAESTRO_A2A_WORKSPACE_ID",
 			"MAESTRO_WORKSPACE_ID",
@@ -151,6 +161,19 @@ describe("agent runtime service client", () => {
 
 		expect(resolveCerebroFactsServiceConfig()).toMatchObject({
 			baseUrl: "https://cerebro.test",
+		});
+	});
+
+	it("preserves AgentRuntime workspace precedence ahead of shared EvalOps fallbacks", async () => {
+		vi.stubEnv("MAESTRO_AGENT_RUNTIME_SERVICE_URL", "https://runtime.test/");
+		vi.stubEnv("MAESTRO_AGENT_RUNTIME_SERVICE_TOKEN", "runtime-token");
+		vi.stubEnv("MAESTRO_AGENT_RUNTIME_ORG_ID", "org_1");
+		vi.stubEnv("MAESTRO_WORKSPACE_ID", "workspace_maestro");
+		vi.stubEnv("MAESTRO_EVALOPS_WORKSPACE_ID", "workspace_evalops");
+		vi.stubEnv("EVALOPS_WORKSPACE_ID", "workspace_public");
+
+		await expect(resolveAgentRuntimeServiceConfig()).resolves.toMatchObject({
+			workspaceId: "workspace_maestro",
 		});
 	});
 
@@ -335,6 +358,72 @@ describe("agent runtime service client", () => {
 					});
 				}
 
+				if (url.endsWith("/RecordRunEvent")) {
+					expect(body).toMatchObject({
+						runId: "run_1",
+						type: PlatformRuntimeEventTypeValue.AgentProgressRecorded,
+						message: "hosted runner drain manifest recorded",
+						attributes: {
+							event_type: "hosted_runner_drain_manifest_recorded",
+							manifest_path: "/tmp/manifest.json",
+						},
+					});
+					return Response.json({
+						run: {
+							id: "run_1",
+							state: PlatformAgentRunStateValue.Running,
+						},
+						event: {
+							id: "event_progress",
+							runId: "run_1",
+							type: PlatformRuntimeEventTypeValue.AgentProgressRecorded,
+						},
+					});
+				}
+
+				if (url.endsWith("/RecordRunCost")) {
+					expect(body).toMatchObject({
+						runId: "run_1",
+						leaseToken: "lease-token-1",
+						cost: {
+							id: "cost_1",
+							stepId: "step_tool_1",
+							meterRef: "meter://maestro/model-usage/cost_1",
+							provider: "openai",
+							model: "gpt-5.3-codex",
+							inputTokens: 10,
+							outputTokens: 5,
+							totalTokens: 18,
+							currency: "USD",
+							estimatedCostMicros: 330,
+						},
+					});
+					return Response.json({
+						run: {
+							id: "run_1",
+							state: PlatformAgentRunStateValue.Running,
+						},
+						cost: {
+							id: "cost_1",
+							stepId: "step_tool_1",
+							meterRef: "meter://maestro/model-usage/cost_1",
+							provider: "openai",
+							model: "gpt-5.3-codex",
+							inputTokens: 10,
+							outputTokens: 5,
+							totalTokens: 18,
+							currency: "USD",
+							estimatedCostMicros: 330,
+						},
+						event: {
+							id: "event_cost",
+							runId: "run_1",
+							type: "RUNTIME_EVENT_TYPE_COST_RECORDED",
+							costId: "cost_1",
+						},
+					});
+				}
+
 				if (url.endsWith("/WaitRun")) {
 					expect(body).toMatchObject({
 						runId: "run_1",
@@ -484,6 +573,53 @@ describe("agent runtime service client", () => {
 		});
 
 		await expect(
+			recordAgentRuntimeRunEvent(
+				{
+					runId: "run_1",
+					type: PlatformRuntimeEventTypeValue.AgentProgressRecorded,
+					message: "hosted runner drain manifest recorded",
+					attributes: {
+						event_type: "hosted_runner_drain_manifest_recorded",
+						manifest_path: "/tmp/manifest.json",
+					},
+				},
+				{ config },
+			),
+		).resolves.toMatchObject({
+			event: { type: PlatformRuntimeEventTypeValue.AgentProgressRecorded },
+		});
+
+		await expect(
+			recordAgentRuntimeRunCost(
+				{
+					runId: "run_1",
+					leaseToken: "lease-token-1",
+					cost: {
+						id: "cost_1",
+						stepId: "step_tool_1",
+						meterRef: "meter://maestro/model-usage/cost_1",
+						provider: "openai",
+						model: "gpt-5.3-codex",
+						inputTokens: 10,
+						outputTokens: 5,
+						totalTokens: 18,
+						currency: "USD",
+						estimatedCostMicros: 330,
+					},
+				},
+				{ config },
+			),
+		).resolves.toMatchObject({
+			cost: {
+				id: "cost_1",
+				meterRef: "meter://maestro/model-usage/cost_1",
+				totalTokens: 18,
+				estimatedCostMicros: 330,
+			},
+			event: { costId: "cost_1" },
+		});
+
+		await expect(
 			waitAgentRuntimeRun(
 				{
 					runId: "run_1",
@@ -552,6 +688,8 @@ describe("agent runtime service client", () => {
 		expect(requests.map((request) => request.url)).toEqual([
 			"https://runtime.test/agentruntime.v1.AgentRuntimeService/ClaimNextRun",
 			"https://runtime.test/agentruntime.v1.AgentRuntimeService/RecordRunStep",
+			"https://runtime.test/agentruntime.v1.AgentRuntimeService/RecordRunEvent",
+			"https://runtime.test/agentruntime.v1.AgentRuntimeService/RecordRunCost",
 			"https://runtime.test/agentruntime.v1.AgentRuntimeService/WaitRun",
 			"https://runtime.test/agentruntime.v1.AgentRuntimeService/ResumeRun",
 			"https://runtime.test/agentruntime.v1.AgentRuntimeService/CompleteRun",
@@ -1504,14 +1642,23 @@ describe("agent runtime service client", () => {
 		vi.stubEnv("MAESTRO_PLATFORM_A2A_TOKEN", "a2a-token");
 		vi.stubEnv("MAESTRO_PLATFORM_A2A_ORG_ID", "a2a-org");
 		vi.stubEnv("MAESTRO_PLATFORM_A2A_WORKSPACE_ID", "a2a-ws");
+		vi.stubEnv(
+			"MAESTRO_PLATFORM_A2A_CALLBACK_URL",
+			"https://maestro.test/api/platform/a2a/push",
+		);
+		vi.stubEnv("MAESTRO_PLATFORM_A2A_CALLBACK_TOKEN", "callback-token");
 
 		const requests: string[] = [];
 		const headers: Record<string, string>[] = [];
+		const bodies: unknown[] = [];
 		const fetchMock = vi.fn(
 			async (input: RequestInfo | URL, init?: RequestInit) => {
 				const url = String(input);
 				requests.push(url);
 				headers.push(headersToRecord(init?.headers));
+				if (typeof init?.body === "string") {
+					bodies.push(JSON.parse(init.body));
+				}
 				if (url === "https://bridge.test/message:send") {
 					return Response.json({
 						task: {
@@ -1547,6 +1694,16 @@ describe("agent runtime service client", () => {
 			"content-type": "application/json",
 			"x-organization-id": "a2a-org",
 			"x-evalops-workspace-id": "a2a-ws",
+		});
+		expect(bodies[0]).toMatchObject({
+			configuration: {
+				returnImmediately: true,
+				taskPushNotificationConfig: {
+					id: "maestro-session-session_1",
+					url: "https://maestro.test/api/platform/a2a/push",
+					token: "callback-token",
+				},
+			},
 		});
 	});
 

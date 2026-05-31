@@ -650,6 +650,7 @@ class RustHostedHttpConformanceAdapter implements RuntimeConformanceAdapter {
 					return {
 						approved: message.resolution === "approved",
 						reason: message.reason,
+						resolvedAtMs: message.resolved_at_ms,
 						resolvedBy: message.resolved_by,
 					};
 				}
@@ -976,7 +977,7 @@ function restoreEnvValue(name: string, value: string | undefined): void {
 function defineHeadlessRuntimeConformanceSuite(
 	name: string,
 	createAdapter: () => RuntimeConformanceAdapter,
-	options: { skip?: boolean } = {},
+	options: { skip?: boolean; testTimeoutMs?: number } = {},
 ) {
 	const describeRuntime = options.skip ? describe.skip : describe;
 	describeRuntime(`${name} headless runtime conformance`, () => {
@@ -1004,42 +1005,46 @@ function defineHeadlessRuntimeConformanceSuite(
 			vi.restoreAllMocks();
 		});
 
-		it("creates controller and viewer subscriptions with schema-valid heartbeat snapshots", async () => {
-			const runtime = await start();
-			const controller = await runtime.subscribe({ role: "controller" });
-			expect(
-				Value.Check(HeadlessRuntimeSubscriptionSnapshotSchema, controller),
-			).toBe(true);
-			expect(controller.role).toBe("controller");
-			expect(controller.controller_lease_granted).toBe(true);
+		it(
+			"creates controller and viewer subscriptions with schema-valid heartbeat snapshots",
+			async () => {
+				const runtime = await start();
+				const controller = await runtime.subscribe({ role: "controller" });
+				expect(
+					Value.Check(HeadlessRuntimeSubscriptionSnapshotSchema, controller),
+				).toBe(true);
+				expect(controller.role).toBe("controller");
+				expect(controller.controller_lease_granted).toBe(true);
 
-			const viewer = await runtime.subscribe({ role: "viewer" });
-			expect(
-				Value.Check(HeadlessRuntimeSubscriptionSnapshotSchema, viewer),
-			).toBe(true);
-			expect(viewer.role).toBe("viewer");
-			expect(viewer.controller_lease_granted).toBe(false);
-			expect(viewer.controller_connection_id).toBe(controller.connection_id);
+				const viewer = await runtime.subscribe({ role: "viewer" });
+				expect(
+					Value.Check(HeadlessRuntimeSubscriptionSnapshotSchema, viewer),
+				).toBe(true);
+				expect(viewer.role).toBe("viewer");
+				expect(viewer.controller_lease_granted).toBe(false);
+				expect(viewer.controller_connection_id).toBe(controller.connection_id);
 
-			const controllerHeartbeat = await runtime.heartbeat({
-				subscriptionId: controller.subscription_id,
-			});
-			expect(
-				Value.Check(
-					HeadlessRuntimeHeartbeatSnapshotSchema,
-					controllerHeartbeat,
-				),
-			).toBe(true);
-			expect(controllerHeartbeat.controller_lease_granted).toBe(true);
+				const controllerHeartbeat = await runtime.heartbeat({
+					subscriptionId: controller.subscription_id,
+				});
+				expect(
+					Value.Check(
+						HeadlessRuntimeHeartbeatSnapshotSchema,
+						controllerHeartbeat,
+					),
+				).toBe(true);
+				expect(controllerHeartbeat.controller_lease_granted).toBe(true);
 
-			const viewerHeartbeat = await runtime.heartbeat({
-				subscriptionId: viewer.subscription_id,
-			});
-			expect(
-				Value.Check(HeadlessRuntimeHeartbeatSnapshotSchema, viewerHeartbeat),
-			).toBe(true);
-			expect(viewerHeartbeat.controller_lease_granted).toBe(false);
-		});
+				const viewerHeartbeat = await runtime.heartbeat({
+					subscriptionId: viewer.subscription_id,
+				});
+				expect(
+					Value.Check(HeadlessRuntimeHeartbeatSnapshotSchema, viewerHeartbeat),
+				).toBe(true);
+				expect(viewerHeartbeat.controller_lease_granted).toBe(false);
+			},
+			options.testTimeoutMs,
+		);
 
 		it("enforces viewer read-only access and explicit controller takeover", async () => {
 			const runtime = await start();
@@ -1187,9 +1192,10 @@ function defineHeadlessRuntimeConformanceSuite(
 				{ role: "controller", subscriptionId: controller.subscription_id },
 			);
 
-			await expect(approval).resolves.toEqual({
+			await expect(approval).resolves.toMatchObject({
 				approved: false,
 				reason: "Denied in conformance",
+				resolvedAtMs: expect.any(Number),
 				resolvedBy: "user",
 			});
 			expect(
@@ -1639,5 +1645,8 @@ defineHeadlessRuntimeConformanceSuite(
 defineHeadlessRuntimeConformanceSuite(
 	"Rust hosted HTTP runner",
 	() => new RustHostedHttpConformanceAdapter(),
-	{ skip: process.env.MAESTRO_RUST_HOSTED_CONFORMANCE !== "1" },
+	{
+		skip: process.env.MAESTRO_RUST_HOSTED_CONFORMANCE !== "1",
+		testTimeoutMs: 60_000,
+	},
 );

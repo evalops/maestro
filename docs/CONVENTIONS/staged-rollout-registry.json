@@ -1,0 +1,55 @@
+{
+	"version": 1,
+	"surfaces": [
+		{
+			"id": "cli:--help-hidden",
+			"type": "hidden_cli_flag",
+			"owner": "platform-cli",
+			"introduced_in": "2026-05-09",
+			"status": "indefinite-internal",
+			"target": "support-only discovery",
+			"telemetry_event": "hidden_flag_used",
+			"rationale": "Lets support and engineers inspect hidden rollout surfaces without exposing those surfaces in default help."
+		},
+		{
+			"id": "cli:--list-modes-all",
+			"type": "hidden_cli_flag",
+			"owner": "agent-runtime",
+			"introduced_in": "2026-05-09",
+			"status": "indefinite-internal",
+			"target": "support-only discovery",
+			"telemetry_event": "hidden_flag_used",
+			"rationale": "Lists hidden agent modes for support and release validation while keeping default help focused on stable modes."
+		},
+		{
+			"id": "mode:frontier",
+			"type": "hidden_mode",
+			"owner": "agent-runtime",
+			"introduced_in": "2026-05-09",
+			"status": "experimental",
+			"target": "promote-or-remove-before-ga",
+			"telemetry_event": "hidden_mode_used",
+			"rationale": "Exercises high-capability orchestration behind explicit selection before mode-picker promotion."
+		},
+		{
+			"id": "protocol:hello-ok-server-capabilities",
+			"type": "protocol_capability",
+			"owner": "headless-runtime",
+			"introduced_in": "2026-05-09",
+			"status": "enabling-primitive",
+			"target": "use-for-next-protocol-ui-promotion",
+			"telemetry_event": null,
+			"rationale": "Advertises server-supported headless protocol surfaces so clients can gate UI on negotiated runtime support."
+		},
+		{
+			"id": "internal-gate:headless-runtime-selector",
+			"type": "internal_gate",
+			"owner": "headless-runtime",
+			"introduced_in": "2026-05-09",
+			"status": "indefinite-internal",
+			"target": "runtime-dispatch-boundary-only",
+			"telemetry_event": "internal_gate_used",
+			"rationale": "Runtime escape selection belongs to internal env/config gates rather than external CLI help or parser surface."
+		}
+	]
+}

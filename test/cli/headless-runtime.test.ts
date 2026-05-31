@@ -1,7 +1,7 @@
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ActionApprovalService } from "../../src/agent/action-approval.js";
 import type { AgentEvent } from "../../src/agent/types.js";
 import { HEADLESS_PROTOCOL_VERSION } from "../../src/cli/headless-protocol.js";
@@ -23,6 +23,12 @@ const supportsPty =
 	})();
 
 describe("runHeadlessMode", () => {
+	beforeEach(() => {
+		vi.resetModules();
+		vi.doUnmock("node:readline");
+		vi.doUnmock("@evalops/contracts");
+	});
+
 	afterEach(() => {
 		for (const request of serverRequestManager.listPending()) {
 			serverRequestManager.cancel(request.id, "test cleanup");
@@ -267,6 +273,15 @@ describe("runHeadlessMode", () => {
 			type: "hello_ok",
 			protocol_version: HEADLESS_PROTOCOL_VERSION,
 			opt_out_notifications: ["status", "heartbeat"],
+			server_capabilities: {
+				server_requests: expect.arrayContaining(["approval", "tool_retry"]),
+				utility_operations: expect.arrayContaining([
+					"command_exec",
+					"file_read",
+				]),
+				raw_agent_events: true,
+				connection_roles: expect.arrayContaining(["controller", "viewer"]),
+			},
 		});
 	});
 
@@ -1015,6 +1030,8 @@ describe("runHeadlessMode", () => {
 			resolution: "cancelled",
 			reason: "Interrupted before request completed",
 			resolved_by: "runtime",
+			started_at_ms: expect.any(Number),
+			resolved_at_ms: expect.any(Number),
 		});
 	});
 
@@ -2504,6 +2521,115 @@ describe("runHeadlessMode", () => {
 		expect(requestIndex).toBeGreaterThan(toolCallIndex);
 	});
 
+	it("forwards server request lifecycle timestamps from the manager", async () => {
+		let onLine: LineHandler | undefined;
+		let onClose: CloseHandler | undefined;
+		const readlineInterface = {
+			on(event: string, handler: LineHandler | CloseHandler) {
+				if (event === "line") {
+					onLine = handler as LineHandler;
+				}
+				if (event === "close") {
+					onClose = handler as CloseHandler;
+				}
+				return this;
+			},
+		};
+
+		vi.doMock("node:readline", () => ({
+			createInterface: () => readlineInterface,
+		}));
+
+		const writes: string[] = [];
+		vi.spyOn(process.stdout, "write").mockImplementation(((chunk: unknown) => {
+			writes.push(String(chunk));
+			return true;
+		}) as typeof process.stdout.write);
+
+		const { runHeadlessMode } = await import("../../src/cli/headless.ts");
+		const { serverRequestManager: runtimeServerRequestManager } = await import(
+			"../../src/server/server-request-manager.js"
+		);
+
+		const runPromise = runHeadlessMode(
+			{
+				state: { model: { id: "gpt-5.4", provider: "openai" } },
+				subscribe: vi.fn(),
+				prompt: vi.fn(),
+				abort: vi.fn(),
+			} as never,
+			{
+				getSessionId: () => "session-headless-test",
+			} as never,
+		);
+
+		await vi.waitFor(() => {
+			expect(onLine).toBeTypeOf("function");
+			expect(onClose).toBeTypeOf("function");
+		});
+
+		await onLine?.(
+			JSON.stringify({
+				type: "hello",
+				capabilities: { server_requests: ["approval"] },
+				role: "controller",
+			}),
+		);
+
+		runtimeServerRequestManager.registerApproval({
+			sessionId: "session-headless-test",
+			request: {
+				id: "approval_lifecycle",
+				toolName: "bash",
+				args: { command: "rm -rf dist" },
+				reason: "Dangerous command",
+				startedAtMs: 1_000,
+			},
+			service: {
+				resolve: vi.fn(() => true),
+			} as unknown as ActionApprovalService,
+		});
+		runtimeServerRequestManager.resolveApproval("approval_lifecycle", {
+			approved: false,
+			reason: "Denied by user",
+			resolvedBy: "user",
+			resolvedAtMs: 1_750,
+		});
+
+		onClose?.();
+		await runPromise;
+
+		const messages = writes
+			.join("")
+			.trim()
+			.split("\n")
+			.filter(Boolean)
+			.map(
+				(line) => JSON.parse(line) as { type: string; [key: string]: unknown },
+			);
+		expect(messages).toContainEqual({
+			type: "server_request",
+			request_id: "approval_lifecycle",
+			request_type: "approval",
+			call_id: "approval_lifecycle",
+			tool: "bash",
+			args: { command: "rm -rf dist" },
+			reason: "Dangerous command",
+			started_at_ms: 1_000,
+		});
+		expect(messages).toContainEqual({
+			type: "server_request_resolved",
+			request_id: "approval_lifecycle",
+			request_type: "approval",
+			call_id: "approval_lifecycle",
+			resolution: "denied",
+			reason: "Denied by user",
+			resolved_by: "user",
+			started_at_ms: 1_000,
+			resolved_at_ms: 1_750,
+		});
+	});
+
 	it("routes tool retry prompts through generic server request responses", async () => {
 		let onLine: LineHandler | undefined;
 		let onClose: CloseHandler | undefined;
@@ -2599,6 +2725,7 @@ describe("runHeadlessMode", () => {
 					summary: "Retry bash command",
 				},
 				reason: "Retry bash command",
+				started_at_ms: expect.any(Number),
 			});
 		});
 
@@ -2637,6 +2764,8 @@ describe("runHeadlessMode", () => {
 			resolution: "retried",
 			reason: "Try again",
 			resolved_by: "user",
+			started_at_ms: expect.any(Number),
+			resolved_at_ms: expect.any(Number),
 		});
 	});
 

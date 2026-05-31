@@ -17,12 +17,17 @@ export {
 } from "./tools/index.js";
 export {
 	recordEvaluationResult,
+	recordSubagentDispatch,
 	recordToolExecution,
 } from "./telemetry.js";
 
 // SDK tool types for external consumers
 export * from "./sdk-tools.js";
 export * from "./platform/a2a-client.js";
+export * from "./platform/a2a-peer-pairing.js";
+export * from "./platform/a2a-peer-registry.js";
+export * from "./platform/operating-plane-client.js";
+export * from "./platform/operating-plane-summary.js";
 
 // Distributed lock manager for concurrent operations
 export {

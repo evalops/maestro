@@ -102,6 +102,59 @@ and verifies Maestro's core service paths against the generated descriptors.
 
 **Run:** `MAESTRO_PLATFORM_REPO=/path/to/platform npm run platform:sdk-smoke`
 
+### 8. Cerebro Local E2E (`make cerebro-e2e`)
+
+Cross-repo local usability smoke for Maestro plus Cerebro. From Maestro, the
+target delegates to a sibling Cerebro checkout, sets `LOCAL_MAESTRO_REPO` to the
+current Maestro checkout, builds and smokes Maestro, generates Maestro's
+canonical Platform replay, publishes that replay through Cerebro's local NATS
+stack, and verifies Cerebro graph projection plus MCP recall.
+
+**Run:**
+
+- `make cerebro-dev`
+- `eval "$(make -s cerebro-env)"`
+- `make cerebro-e2e-doctor`
+- `make cerebro-e2e`
+- `make cerebro-e2e-trace`
+
+`make cerebro-dev` starts the sibling Cerebro checkout with Maestro event
+ingestion enabled and leaves it running for real local Maestro use. In another
+Maestro terminal, `eval "$(make -s cerebro-env)"` exports the matching
+Cerebro API, MCP, workspace, and memory-mode variables before `make run-ts` or
+`make web-local`.
+
+`make cerebro-e2e-trace` is the trace-backed rehearsal lane. It delegates to
+Cerebro's `make local-e2e-trace`, builds and smokes this Maestro checkout,
+publishes the generated Maestro replay through local Cerebro, verifies graph and
+MCP recall, and asserts Jaeger contains one trace with both the Cerebro API and
+Maestro consumer spans.
+
+Use `LOCAL_CEREBRO_REPO=/path/to/cerebro make cerebro-e2e` when Cerebro is not
+checked out next to Maestro. The doctor target verifies the Cerebro checkout,
+Docker Compose, Maestro replay generator, local Cerebro env defaults or
+overrides, configured-port availability, and Cerebro's own E2E preflight before
+the full smoke starts.
+
+First-time local path:
+
+```bash
+gh repo clone evalops/cerebro ../cerebro
+make setup
+make cerebro-e2e-doctor
+make cerebro-e2e
+```
+
+If your local OTEL collector logs are unavailable, keep the graph/MCP proof and
+skip only the collector-log assertion with
+`LOCAL_ASSERT_OTEL=false make cerebro-e2e`.
+
+The default Cerebro API URL is `http://localhost:18080`, but the doctor respects
+`.env` or exported `MAESTRO_CEREBRO_URL` / `LOCAL_BASE_URL` overrides. When you
+move Cerebro to another port, pass the same `LOCAL_HTTP_PORT`, `LOCAL_ADDR`, and
+`LOCAL_BASE_URL` values to the E2E target so the delegated Cerebro make target
+starts on the same endpoint the doctor checked.
+
 ## Usage
 
 ### Local Development
@@ -118,8 +171,18 @@ bun run verify-build
 # Run smoke tests
 bun run smoke
 
+# Run the credential-free local CLI/headless/mock-agent smoke
+npm run smoke:local-e2e
+
 # Run all build tests
 bunx vitest --run test/build/
+```
+
+For a credential-free browser-server smoke, run:
+
+```bash
+make web-local
+curl http://localhost:8080/api/models
 ```
 
 ### Pre-Commit Checklist

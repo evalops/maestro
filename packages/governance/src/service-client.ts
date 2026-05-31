@@ -13,6 +13,19 @@ const GOVERNANCE_SERVICE_PATH = "/governance.v1.GovernanceService";
 const EVALUATE_ACTION_PATH = `${GOVERNANCE_SERVICE_PATH}/EvaluateAction`;
 const DETECT_PII_PATH = `${GOVERNANCE_SERVICE_PATH}/DetectPII`;
 const GET_SAFETY_POLICY_PATH = `${GOVERNANCE_SERVICE_PATH}/GetSafetyPolicy`;
+const EVALOPS_ACCESS_TOKEN_ENV_VARS = [
+	"MAESTRO_EVALOPS_ACCESS_TOKEN",
+	"EVALOPS_TOKEN",
+] as const;
+const EVALOPS_ORGANIZATION_ID_ENV_VARS = [
+	"MAESTRO_EVALOPS_ORG_ID",
+	"EVALOPS_ORGANIZATION_ID",
+	"MAESTRO_ENTERPRISE_ORG_ID",
+] as const;
+const EVALOPS_WORKSPACE_ID_ENV_VARS = [
+	"MAESTRO_EVALOPS_WORKSPACE_ID",
+	"MAESTRO_WORKSPACE_ID",
+] as const;
 
 export interface GovernanceServiceConfig {
 	baseUrl?: string;
@@ -119,11 +132,8 @@ function resolveWorkspaceId(
 	const envWorkspaceId = getEnvValue([
 		"GOVERNANCE_SERVICE_WORKSPACE_ID",
 		"MAESTRO_GOVERNANCE_WORKSPACE_ID",
-		"MAESTRO_EVALOPS_WORKSPACE_ID",
-		"MAESTRO_WORKSPACE_ID",
-		"MAESTRO_EVALOPS_ORG_ID",
-		"EVALOPS_ORGANIZATION_ID",
-		"MAESTRO_ENTERPRISE_ORG_ID",
+		...EVALOPS_WORKSPACE_ID_ENV_VARS,
+		...EVALOPS_ORGANIZATION_ID_ENV_VARS,
 	]);
 	return (
 		configuredWorkspaceId ?? trimString(toolCall?.user?.orgId) ?? envWorkspaceId
@@ -186,8 +196,7 @@ export function resolveGovernanceServiceConfig(
 			getEnvValue([
 				"GOVERNANCE_SERVICE_TOKEN",
 				"MAESTRO_GOVERNANCE_SERVICE_TOKEN",
-				"MAESTRO_EVALOPS_ACCESS_TOKEN",
-				"EVALOPS_TOKEN",
+				...EVALOPS_ACCESS_TOKEN_ENV_VARS,
 			]),
 		workspaceId,
 	};

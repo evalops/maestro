@@ -22,7 +22,7 @@ env:
 
 jobs:
   validate-trigger:
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: ${{ vars.PUBLIC_PR_VALIDATION_RUNNER || 'ubuntu-latest' }}
     timeout-minutes: 5
     outputs:
       should_run: ${{ steps.check.outputs.should_run }}
@@ -51,7 +51,7 @@ jobs:
   skip-when-no-tag:
     if: ${{ needs.validate-trigger.outputs.should_run == 'false' }}
     needs: validate-trigger
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: ${{ vars.PUBLIC_PR_VALIDATION_RUNNER || 'ubuntu-latest' }}
     timeout-minutes: 2
     steps:
       - name: Skip release workflow
@@ -61,7 +61,7 @@ jobs:
   prepare:
     if: ${{ needs.validate-trigger.outputs.should_run == 'true' }}
     needs: validate-trigger
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: ${{ vars.PUBLIC_PR_VALIDATION_RUNNER || 'ubuntu-latest' }}
     timeout-minutes: 15
     outputs:
       release_tag: ${{ steps.release.outputs.release_tag }}
@@ -87,9 +87,9 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: blacksmith-4vcpu-ubuntu-2404
+          - os: ${{ vars.PUBLIC_PR_VALIDATION_RUNNER || 'ubuntu-latest' }}
             chunkIndex: 1
-          - os: blacksmith-4vcpu-ubuntu-2404
+          - os: ${{ vars.PUBLIC_PR_VALIDATION_RUNNER || 'ubuntu-latest' }}
             chunkIndex: 2
     runs-on: ${{ matrix.os }}
     timeout-minutes: 90
@@ -157,10 +157,13 @@ jobs:
           echo "tarball=$FILE" >> "$GITHUB_OUTPUT"
 
       - name: Smoke-test packed CLI
+        env:
+          MAESTRO_INSTALL_AUDIT_LEVEL: critical
         run: node scripts/smoke-packed-cli.js "${{ steps.pack.outputs.tarball }}"
 
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
+          retention-days: 14
           name: npm-tarball-${{ needs.prepare.outputs.release_tag }}
           path: ${{ steps.pack.outputs.tarball }}
 
@@ -236,13 +239,10 @@ jobs:
           workdir=$(mktemp -d)
           trap 'rm -rf "$workdir"' EXIT
 
-          gh auth setup-git
-          gh auth status
-          gh auth refresh --hostname github.com --scopes repo || true
-
+          export GH_TOKEN="$HOPPER_PUSH_TOKEN"
           gh api user >/dev/null || {
-            echo "gh auth not configured; initializing with provided token"
-            export GH_TOKEN="$HOPPER_PUSH_TOKEN"
+            echo "HOPPER_PUSH_TOKEN could not authenticate with GitHub."
+            exit 1
           }
 
           git clone "https://x-access-token:${HOPPER_PUSH_TOKEN}@github.com/${repo}.git" "$workdir"
@@ -284,11 +284,18 @@ jobs:
     timeout-minutes: 30
     permissions:
       contents: read
+      id-token: write
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           fetch-depth: 0
           ref: ${{ needs.prepare.outputs.release_tag }}
+
+      - uses: ./.github/actions/setup-bun-nx
+        with:
+          install: "false"
+          cache-nx: "false"
+          ensure-rustfmt: "false"
 
       - name: Setup Node for npm canary
         uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
@@ -298,9 +305,53 @@ jobs:
 
       - name: Verify published package from npm
         env:
+          MAESTRO_INSTALL_AUDIT_LEVEL: critical
+          MAESTRO_PUBLISHED_REPLAY_SANDBOX_MODE: local
+          MAESTRO_REGISTRY_SMOKE_EVIDENCE_DIR: published-replay-evidence
           MAESTRO_REGISTRY_POLL_ATTEMPTS: "120"
           MAESTRO_REGISTRY_POLL_DELAY_MS: "5000"
         run: node scripts/smoke-registry-install.js
+
+      - name: Validate published replay evidence
+        run: node scripts/verify-published-replay-evidence.js --evidence-dir published-replay-evidence
+
+      - name: Generate version metadata
+        run: node scripts/create-version-json.js
+
+      - name: Authenticate to Google Cloud for release metadata
+        if: ${{ vars.MAESTRO_RELEASE_GCP_WORKLOAD_IDENTITY_PROVIDER != '' && vars.MAESTRO_RELEASE_GCP_SERVICE_ACCOUNT != '' }}
+        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
+        with:
+          workload_identity_provider: ${{ vars.MAESTRO_RELEASE_GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ vars.MAESTRO_RELEASE_GCP_SERVICE_ACCOUNT }}
+
+      - name: Setup Google Cloud SDK
+        if: ${{ vars.MAESTRO_RELEASE_GCP_WORKLOAD_IDENTITY_PROVIDER != '' && vars.MAESTRO_RELEASE_GCP_SERVICE_ACCOUNT != '' }}
+        uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db # v3.0.1
+
+      - name: Sync GCS version metadata
+        if: ${{ vars.MAESTRO_RELEASE_GCP_WORKLOAD_IDENTITY_PROVIDER != '' && vars.MAESTRO_RELEASE_GCP_SERVICE_ACCOUNT != '' }}
+        env:
+          MAESTRO_RELEASES_BUCKET: ${{ vars.MAESTRO_RELEASES_BUCKET || 'evalops-prod-maestro-releases' }}
+          MAESTRO_RELEASES_PREFIX: ${{ vars.MAESTRO_RELEASES_PREFIX || 'maestro' }}
+        run: |
+          set -euo pipefail
+          prefix="${MAESTRO_RELEASES_PREFIX#/}"
+          prefix="${prefix%/}"
+          target="gs://${MAESTRO_RELEASES_BUCKET%/}/${prefix}/version.json"
+          gcloud storage cp "$GITHUB_WORKSPACE/dist/version.json" "$target"
+          gcloud storage objects update "$target" \
+            --cache-control="public, max-age=60" \
+            --content-type="application/json"
+          echo "Synced Maestro version metadata to ${target}."
+
+      - name: Upload published replay evidence
+        if: ${{ always() && hashFiles('published-replay-evidence/*.json') != '' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          retention-days: 14
+          name: published-replay-evidence-${{ needs.prepare.outputs.release_tag }}
+          path: published-replay-evidence/*.json
 
   notify:
     if: ${{ always() && needs.validate-trigger.outputs.should_run == 'true' && needs.prepare.result == 'success' }}
@@ -313,12 +364,15 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - id: checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        continue-on-error: true
         with:
           fetch-depth: 0
           ref: ${{ needs.prepare.outputs.release_tag }}
 
       - name: Notify release channel
+        if: ${{ steps.checkout.outcome == 'success' }}
         continue-on-error: true
         uses: ./.github/actions/release-notify
         with:
@@ -329,3 +383,8 @@ jobs:
           package-name: ${{ needs.prepare.outputs.package_name }}
           package-version: ${{ needs.prepare.outputs.package_version }}
           webhook-url: ${{ secrets.SLACK_RELEASE_WEBHOOK_URL }}
+
+      - name: Skip release notification after checkout failure
+        if: ${{ steps.checkout.outcome != 'success' }}
+        run: |
+          echo "Release notification skipped because checkout failed; publish and canary results remain authoritative."

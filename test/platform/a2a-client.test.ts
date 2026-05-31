@@ -1,11 +1,18 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
 	buildA2AUserMessage,
+	cancelA2ATask,
+	createA2ATaskPushNotificationConfig,
+	deleteA2ATaskPushNotificationConfig,
 	discoverA2AAgentCard,
 	getA2ATask,
+	getA2ATaskPushNotificationConfig,
+	listA2ATaskPushNotificationConfigs,
 	resolveA2AServiceConfig,
 	resolveA2ATraceContext,
 	sendA2AMessage,
+	streamA2AMessage,
+	subscribeA2ATask,
 } from "../../src/platform/a2a-client.js";
 
 type CapturedRequest = {
@@ -28,6 +35,33 @@ function parseRequestBody(
 	return typeof body === "string"
 		? (JSON.parse(body) as Record<string, unknown>)
 		: undefined;
+}
+
+function sseResponse(chunks: string[]): Response {
+	const encoder = new TextEncoder();
+	return new Response(
+		new ReadableStream({
+			start(controller) {
+				for (const chunk of chunks) {
+					controller.enqueue(encoder.encode(chunk));
+				}
+				controller.close();
+			},
+		}),
+		{
+			headers: { "content-type": "text/event-stream" },
+		},
+	);
+}
+
+async function collectAsyncIterable<T>(
+	iterable: AsyncIterable<T>,
+): Promise<T[]> {
+	const values: T[] = [];
+	for await (const value of iterable) {
+		values.push(value);
+	}
+	return values;
 }
 
 describe("platform A2A client", () => {
@@ -72,6 +106,8 @@ describe("platform A2A client", () => {
 			"TRACE_STATE",
 			"MAESTRO_TRACEPARENT",
 			"MAESTRO_TRACESTATE",
+			"MAESTRO_PLATFORM_A2A_EXTENSIONS",
+			"MAESTRO_A2A_EXTENSIONS",
 		]) {
 			vi.stubEnv(name, "");
 		}
@@ -136,12 +172,70 @@ describe("platform A2A client", () => {
 					});
 				}
 
+				if (parsed.pathname === "/message:stream") {
+					return sseResponse([
+						'data: {"task":{"id":"run_stream","contextId":"session_1","status":{"state":"TASK_STATE_SUBMITTED"}}}\n\n',
+						'event: message\ndata: {"message":{"messageId":"msg_agent","contextId":"session_1","role":"ROLE_AGENT","parts":[{"text":"streaming","mediaType":"text/plain"}]}}\n\n',
+						'data: {"statusUpdate":{"type":"payload-status","taskId":"run_stream","contextId":"session_1","status":{"state":"TASK_STATE_WORKING","timestamp":"2026-05-16T12:00:00.000Z"},"metadata":{"step":"start"}}}\n\n',
+						'data: {"artifactUpdate":{"type":"payload-artifact","taskId":"run_stream","contextId":"session_1","artifact":{"artifactId":"artifact_1","name":"summary","parts":[{"text":"done","mediaType":"text/plain"}]},"append":false,"lastChunk":true}}\n\n',
+					]);
+				}
+
 				if (parsed.pathname === "/tasks/run_1") {
 					return Response.json({
 						id: "run_1",
 						contextId: "session_1",
 						status: { state: "TASK_STATE_COMPLETED" },
 					});
+				}
+
+				if (parsed.pathname === "/tasks/run_1:cancel") {
+					return Response.json({
+						id: "run_1",
+						contextId: "session_1",
+						status: { state: "TASK_STATE_CANCELLED" },
+					});
+				}
+
+				if (parsed.pathname === "/tasks/run_1/pushNotificationConfigs") {
+					if (init?.method === "POST") {
+						return Response.json({
+							id: "cfg_1",
+							taskId: "run_1",
+							url: "https://hooks.test/a2a",
+							token: "notify-token",
+						});
+					}
+					return Response.json({
+						configs: [
+							{
+								id: "cfg_1",
+								taskId: "run_1",
+								url: "https://hooks.test/a2a",
+								token: "notify-token",
+							},
+						],
+					});
+				}
+
+				if (parsed.pathname === "/tasks/run_1/pushNotificationConfigs/cfg_1") {
+					if (init?.method === "DELETE") {
+						return Response.json({});
+					}
+					return Response.json({
+						id: "cfg_1",
+						taskId: "run_1",
+						url: "https://hooks.test/a2a",
+						token: "notify-token",
+					});
+				}
+
+				if (parsed.pathname === "/tasks/run_1:subscribe") {
+					return sseResponse([
+						'data: {"taskId":"run_1","status":{"state":"TASK_STATE_WORKING"}}\r\n\r\n',
+						'data: {"taskId":"run_1","artifact":{"artifactId":"artifact_2","parts":[{"text":"partial"}]},"append":true}\r\n\r\n',
+						'data: {"taskId":"run_1","status":{"state":"TASK_STATE_COMPLETED"},"final":true}\r\n\r\n',
+					]);
 				}
 
 				return Response.json(
@@ -227,8 +321,8 @@ describe("platform A2A client", () => {
 		});
 
 		expect(requests[0]).toMatchObject({
-			method: "GET",
 			url: "https://platform.test/.well-known/agent-card.json",
+			method: "GET",
 			headers: expect.objectContaining({
 				authorization: "Bearer a2a-token",
 				"x-evalops-workspace-id": "ws_1",
@@ -299,6 +393,80 @@ describe("platform A2A client", () => {
 		expect(requests[0]?.body).not.toHaveProperty("traceContext");
 	});
 
+	it("projects requested A2A extensions into headers and message body", async () => {
+		const config = await resolveA2AServiceConfig({
+			extensions: ["https://evalops.com/a2a/extensions/operating-plane/v1"],
+		});
+		if (!config) {
+			throw new Error("expected config");
+		}
+
+		await sendA2AMessage(config, {
+			message: buildA2AUserMessage({
+				messageId: "msg_extension",
+				contextId: "session_1",
+				text: "Run with negotiated extension",
+				extensions: ["https://example.test/a2a/extensions/custom/v1"],
+			}),
+		});
+
+		expect(requests[0]?.headers).toMatchObject({
+			"a2a-extensions":
+				"https://evalops.com/a2a/extensions/operating-plane/v1,https://example.test/a2a/extensions/custom/v1",
+		});
+		expect(requests[0]?.body).toMatchObject({
+			message: {
+				extensions: ["https://example.test/a2a/extensions/custom/v1"],
+			},
+		});
+	});
+
+	it("configures A2A task push notifications", async () => {
+		const config = await resolveA2AServiceConfig();
+		if (!config) {
+			throw new Error("expected config");
+		}
+
+		await expect(
+			createA2ATaskPushNotificationConfig(config, "run_1", {
+				id: "cfg_1",
+				url: "https://hooks.test/a2a",
+				token: "notify-token",
+			}),
+		).resolves.toMatchObject({
+			id: "cfg_1",
+			taskId: "run_1",
+		});
+		await expect(
+			listA2ATaskPushNotificationConfigs(config, "run_1"),
+		).resolves.toMatchObject({
+			configs: [{ id: "cfg_1", taskId: "run_1" }],
+		});
+		await expect(
+			getA2ATaskPushNotificationConfig(config, "run_1", "cfg_1"),
+		).resolves.toMatchObject({
+			id: "cfg_1",
+			taskId: "run_1",
+		});
+		await expect(
+			deleteA2ATaskPushNotificationConfig(config, "run_1", "cfg_1"),
+		).resolves.toBeUndefined();
+
+		expect(
+			requests.map((request) => `${request.method} ${request.pathname}`),
+		).toEqual([
+			"POST /tasks/run_1/pushNotificationConfigs",
+			"GET /tasks/run_1/pushNotificationConfigs",
+			"GET /tasks/run_1/pushNotificationConfigs/cfg_1",
+			"DELETE /tasks/run_1/pushNotificationConfigs/cfg_1",
+		]);
+		expect(requests[0]?.body).toMatchObject({
+			id: "cfg_1",
+			url: "https://hooks.test/a2a",
+			token: "notify-token",
+		});
+	});
+
 	it("keeps explicit partial trace context isolated from env tracestate", () => {
 		vi.stubEnv("TRACESTATE", "evalops=stale-env-state");
 
@@ -357,6 +525,303 @@ describe("platform A2A client", () => {
 		).not.toHaveProperty("tracestate");
 	});
 
+	it("streams A2A message events with Platform correlation metadata", async () => {
+		const config = await resolveA2AServiceConfig();
+		if (!config) {
+			throw new Error("expected config");
+		}
+
+		const events = await collectAsyncIterable(
+			streamA2AMessage(config, {
+				message: buildA2AUserMessage({
+					messageId: "msg_stream",
+					contextId: "session_1",
+					text: "Stream the release smoke test",
+				}),
+				traceContext: {
+					traceparent:
+						"00-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-bbbbbbbbbbbbbbbb-01",
+					tracestate: "evalops=maestro",
+				},
+			}),
+		);
+
+		expect(requests[0]).toMatchObject({
+			method: "POST",
+			url: "https://platform.test/message:stream",
+			body: {
+				message: expect.objectContaining({
+					messageId: "msg_stream",
+					metadata: expect.objectContaining({
+						workspaceId: "ws_1",
+						agentId: "agent_maestro",
+						sessionId: "session_1",
+						actorId: "user_1",
+						traceparent:
+							"00-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-bbbbbbbbbbbbbbbb-01",
+						tracestate: "evalops=maestro",
+					}),
+				}),
+			},
+			headers: expect.objectContaining({
+				accept: "text/event-stream",
+				authorization: "Bearer a2a-token",
+				traceparent: "00-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-bbbbbbbbbbbbbbbb-01",
+				tracestate: "evalops=maestro",
+				"x-evalops-workspace-id": "ws_1",
+			}),
+		});
+		expect(requests[0]?.body).not.toHaveProperty("traceContext");
+		expect(events).toEqual([
+			{
+				type: "task",
+				task: {
+					id: "run_stream",
+					contextId: "session_1",
+					status: { state: "TASK_STATE_SUBMITTED" },
+				},
+			},
+			{
+				type: "message",
+				message: {
+					messageId: "msg_agent",
+					contextId: "session_1",
+					role: "ROLE_AGENT",
+					parts: [{ text: "streaming", mediaType: "text/plain" }],
+				},
+			},
+			{
+				type: "statusUpdate",
+				taskId: "run_stream",
+				contextId: "session_1",
+				status: {
+					state: "TASK_STATE_WORKING",
+					timestamp: "2026-05-16T12:00:00.000Z",
+				},
+				metadata: { step: "start" },
+			},
+			{
+				type: "artifactUpdate",
+				taskId: "run_stream",
+				contextId: "session_1",
+				artifact: {
+					artifactId: "artifact_1",
+					name: "summary",
+					parts: [{ text: "done", mediaType: "text/plain" }],
+				},
+				append: false,
+				lastChunk: true,
+			},
+		]);
+	});
+
+	it("skips malformed A2A SSE frames without aborting the stream", async () => {
+		const config = await resolveA2AServiceConfig();
+		if (!config) {
+			throw new Error("expected config");
+		}
+		vi.mocked(fetch).mockImplementationOnce(
+			async (input: RequestInfo | URL, init?: RequestInit) => {
+				const url = typeof input === "string" ? input : input.toString();
+				const parsed = new URL(url);
+				requests.push({
+					body: parseRequestBody(init?.body),
+					headers: headersToRecord(init?.headers),
+					method: init?.method,
+					pathname: parsed.pathname,
+					url,
+				});
+				return sseResponse([
+					"data: not-json\n\n",
+					"data: null\n\n",
+					'data: {"statusUpdate":{"taskId":"run_stream","status":{"state":"TASK_STATE_COMPLETED"},"final":true}}\n\n',
+				]);
+			},
+		);
+
+		const events = await collectAsyncIterable(
+			streamA2AMessage(config, {
+				message: buildA2AUserMessage({
+					messageId: "msg_stream_malformed",
+					contextId: "session_1",
+					text: "Stream through malformed frames",
+				}),
+			}),
+		);
+
+		expect(events).toEqual([
+			{
+				type: "statusUpdate",
+				taskId: "run_stream",
+				status: { state: "TASK_STATE_COMPLETED" },
+				final: true,
+			},
+		]);
+	});
+
+	it("handles mixed-newline A2A SSE frame delimiters", async () => {
+		const config = await resolveA2AServiceConfig();
+		if (!config) {
+			throw new Error("expected config");
+		}
+		vi.mocked(fetch).mockImplementationOnce(
+			async (input: RequestInfo | URL, init?: RequestInit) => {
+				const url = typeof input === "string" ? input : input.toString();
+				const parsed = new URL(url);
+				requests.push({
+					body: parseRequestBody(init?.body),
+					headers: headersToRecord(init?.headers),
+					method: init?.method,
+					pathname: parsed.pathname,
+					url,
+				});
+				return sseResponse([
+					'data: {"task":{"id":"run_mixed","status":{"state":"TASK_STATE_SUBMITTED"}}}\r\n\n',
+					'event: statusUpdate\r\ndata: {"taskId":"run_mixed","status":{"state":"TASK_STATE_COMPLETED"},"final":true}\r\n\r\n',
+				]);
+			},
+		);
+
+		const events = await collectAsyncIterable(
+			streamA2AMessage(config, {
+				message: buildA2AUserMessage({
+					messageId: "msg_stream_mixed",
+					contextId: "session_1",
+					text: "Stream mixed newline frames",
+				}),
+			}),
+		);
+
+		expect(events).toEqual([
+			{
+				type: "task",
+				task: {
+					id: "run_mixed",
+					status: { state: "TASK_STATE_SUBMITTED" },
+				},
+			},
+			{
+				type: "statusUpdate",
+				taskId: "run_mixed",
+				status: { state: "TASK_STATE_COMPLETED" },
+				final: true,
+			},
+		]);
+	});
+
+	it("unwraps JSON-RPC envelopes in A2A SSE frames", async () => {
+		const config = await resolveA2AServiceConfig();
+		if (!config) {
+			throw new Error("expected config");
+		}
+		vi.mocked(fetch).mockImplementationOnce(
+			async (input: RequestInfo | URL, init?: RequestInit) => {
+				const url = typeof input === "string" ? input : input.toString();
+				const parsed = new URL(url);
+				requests.push({
+					body: parseRequestBody(init?.body),
+					headers: headersToRecord(init?.headers),
+					method: init?.method,
+					pathname: parsed.pathname,
+					url,
+				});
+				return sseResponse([
+					'data: {"jsonrpc":"2.0","id":1,"result":{"task":{"id":"run_rpc","status":{"state":"TASK_STATE_SUBMITTED"}}}}\n\n',
+					'event: message\ndata: {"jsonrpc":"2.0","id":2,"result":{"message":{"messageId":"msg_rpc","contextId":"session_1","role":"ROLE_AGENT","parts":[{"text":"rpc","mediaType":"text/plain"}]}}}\n\n',
+					'event: statusUpdate\ndata: {"jsonrpc":"2.0","id":3,"result":{"taskId":"run_rpc","status":{"state":"TASK_STATE_COMPLETED"},"final":true}}\n\n',
+					'event: artifactUpdate\ndata: {"jsonrpc":"2.0","id":4,"result":{"taskId":"run_rpc","artifact":{"artifactId":"artifact_rpc","parts":[{"text":"wrapped","mediaType":"text/plain"}]},"lastChunk":true}}\n\n',
+				]);
+			},
+		);
+
+		const events = await collectAsyncIterable(
+			streamA2AMessage(config, {
+				message: buildA2AUserMessage({
+					messageId: "msg_stream_rpc",
+					contextId: "session_1",
+					text: "Stream JSON-RPC envelopes",
+				}),
+			}),
+		);
+
+		expect(events).toEqual([
+			{
+				type: "task",
+				task: {
+					id: "run_rpc",
+					status: { state: "TASK_STATE_SUBMITTED" },
+				},
+			},
+			{
+				type: "message",
+				message: {
+					messageId: "msg_rpc",
+					contextId: "session_1",
+					role: "ROLE_AGENT",
+					parts: [{ text: "rpc", mediaType: "text/plain" }],
+				},
+			},
+			{
+				type: "statusUpdate",
+				taskId: "run_rpc",
+				status: { state: "TASK_STATE_COMPLETED" },
+				final: true,
+			},
+			{
+				type: "artifactUpdate",
+				taskId: "run_rpc",
+				artifact: {
+					artifactId: "artifact_rpc",
+					parts: [{ text: "wrapped", mediaType: "text/plain" }],
+				},
+				lastChunk: true,
+			},
+		]);
+	});
+
+	it("does not unwrap non-JSON-RPC A2A payload result fields", async () => {
+		const config = await resolveA2AServiceConfig();
+		if (!config) {
+			throw new Error("expected config");
+		}
+		vi.mocked(fetch).mockImplementationOnce(
+			async (input: RequestInfo | URL, init?: RequestInit) => {
+				const url = typeof input === "string" ? input : input.toString();
+				const parsed = new URL(url);
+				requests.push({
+					body: parseRequestBody(init?.body),
+					headers: headersToRecord(init?.headers),
+					method: init?.method,
+					pathname: parsed.pathname,
+					url,
+				});
+				return sseResponse([
+					'data: {"task":{"id":"run_direct","status":{"state":"TASK_STATE_SUBMITTED"}},"result":{"task":{"id":"wrong","status":{"state":"TASK_STATE_FAILED"}}}}\n\n',
+				]);
+			},
+		);
+
+		const events = await collectAsyncIterable(
+			streamA2AMessage(config, {
+				message: buildA2AUserMessage({
+					messageId: "msg_stream_result_extension",
+					contextId: "session_1",
+					text: "Stream a direct A2A payload with a result extension",
+				}),
+			}),
+		);
+
+		expect(events).toEqual([
+			{
+				type: "task",
+				task: {
+					id: "run_direct",
+					status: { state: "TASK_STATE_SUBMITTED" },
+				},
+			},
+		]);
+	});
+
 	it("gets an A2A task by run id", async () => {
 		const config = await resolveA2AServiceConfig();
 		if (!config) {
@@ -368,6 +833,127 @@ describe("platform A2A client", () => {
 			status: { state: "TASK_STATE_COMPLETED" },
 		});
 		expect(requests[0]?.url).toBe("https://platform.test/tasks/run_1");
+	});
+
+	it("cancels an A2A task by run id", async () => {
+		const config = await resolveA2AServiceConfig();
+		if (!config) {
+			throw new Error("expected config");
+		}
+
+		await expect(cancelA2ATask(config, "run_1")).resolves.toMatchObject({
+			id: "run_1",
+			status: { state: "TASK_STATE_CANCELLED" },
+		});
+		expect(requests[0]).toMatchObject({
+			url: "https://platform.test/tasks/run_1:cancel",
+			method: "POST",
+			headers: expect.objectContaining({
+				authorization: "Bearer a2a-token",
+				"x-evalops-actor-id": "user_1",
+				"x-evalops-agent-id": "agent_maestro",
+				"x-evalops-workspace-id": "ws_1",
+			}),
+		});
+	});
+
+	it("subscribes to A2A task SSE updates with explicit trace headers", async () => {
+		const config = await resolveA2AServiceConfig();
+		if (!config) {
+			throw new Error("expected config");
+		}
+
+		const events = await collectAsyncIterable(
+			subscribeA2ATask(config, "run_1", {
+				traceContext: {
+					traceparent:
+						"00-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-bbbbbbbbbbbbbbbb-01",
+					tracestate: "evalops=maestro",
+				},
+			}),
+		);
+
+		expect(requests[0]).toMatchObject({
+			url: "https://platform.test/tasks/run_1:subscribe",
+			method: "POST",
+			headers: expect.objectContaining({
+				accept: "text/event-stream",
+				traceparent: "00-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-bbbbbbbbbbbbbbbb-01",
+				tracestate: "evalops=maestro",
+			}),
+		});
+		expect(events).toEqual([
+			{
+				type: "statusUpdate",
+				taskId: "run_1",
+				status: { state: "TASK_STATE_WORKING" },
+			},
+			{
+				type: "artifactUpdate",
+				taskId: "run_1",
+				artifact: {
+					artifactId: "artifact_2",
+					parts: [{ text: "partial" }],
+				},
+				append: true,
+			},
+			{
+				type: "statusUpdate",
+				taskId: "run_1",
+				status: { state: "TASK_STATE_COMPLETED" },
+				final: true,
+			},
+		]);
+	});
+
+	it("cancels the A2A SSE body when the consumer stops early", async () => {
+		const config = await resolveA2AServiceConfig();
+		if (!config) {
+			throw new Error("expected config");
+		}
+		let canceled = false;
+		vi.mocked(fetch).mockImplementationOnce(
+			async (input: RequestInfo | URL, init?: RequestInit) => {
+				const url = typeof input === "string" ? input : input.toString();
+				const parsed = new URL(url);
+				requests.push({
+					body: parseRequestBody(init?.body),
+					headers: headersToRecord(init?.headers),
+					method: init?.method,
+					pathname: parsed.pathname,
+					url,
+				});
+				const encoder = new TextEncoder();
+				return new Response(
+					new ReadableStream({
+						start(controller) {
+							controller.enqueue(
+								encoder.encode(
+									'data: {"taskId":"run_cancel","status":{"state":"TASK_STATE_WORKING"}}\n\n',
+								),
+							);
+						},
+						cancel() {
+							canceled = true;
+						},
+					}),
+					{ headers: { "content-type": "text/event-stream" } },
+				);
+			},
+		);
+
+		for await (const event of subscribeA2ATask(config, "run_cancel")) {
+			expect(event).toMatchObject({
+				type: "statusUpdate",
+				taskId: "run_cancel",
+			});
+			break;
+		}
+
+		expect(canceled).toBe(true);
+		expect(requests.at(-1)?.url).toBe(
+			"https://platform.test/tasks/run_cancel:subscribe",
+		);
 	});
 
 	it("gets an A2A task with explicit trace headers", async () => {

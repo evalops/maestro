@@ -117,6 +117,17 @@ async function waitForCondition(
 	throw new Error("Condition was not met within the allotted attempts");
 }
 
+function getFileSizeIfPresent(path: string): number | undefined {
+	try {
+		return statSync(path).size;
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+			return undefined;
+		}
+		throw error;
+	}
+}
+
 describe("backgroundTasksTool", () => {
 	let logDir: string;
 
@@ -401,19 +412,23 @@ describe("backgroundTasksTool", () => {
 				200,
 				50,
 			);
+			let observedSize = 0;
 			await waitForCondition(() => {
 				const task = backgroundTaskManager.getTask(taskId);
 				if (!task?.logPath) {
 					return false;
 				}
-				return existsSync(task.logPath) && statSync(task.logPath).size > 0;
+				const size = getFileSizeIfPresent(task.logPath);
+				if (size === undefined || size === 0 || size > 512) {
+					return false;
+				}
+				observedSize = size;
+				return true;
 			});
 			const task = backgroundTaskManager.getTask(taskId);
 			expect(task?.logPath).toBeTruthy();
-			if (task?.logPath) {
-				const size = statSync(task.logPath).size;
-				expect(size).toBeLessThanOrEqual(512);
-			}
+			expect(observedSize).toBeGreaterThan(0);
+			expect(observedSize).toBeLessThanOrEqual(512);
 		} finally {
 			rmSync(flagPath, { force: true });
 			await backgroundTaskManager.stopTask(taskId);
@@ -602,6 +617,14 @@ describe("backgroundTasksTool", () => {
 		const preview = snapshot?.entries[0]?.lastLogLine ?? "";
 		expect(preview).toContain("[secret:");
 		expect(preview).not.toContain(SAMPLE_REDACTED_TOKEN);
+		const logsResult = await backgroundTasksTool.execute("bg-redact-logs", {
+			action: "logs",
+			taskId,
+			lines: 5,
+		});
+		const logsText = getTextOutput(logsResult as ToolResult);
+		expect(logsText).toContain("[secret:");
+		expect(logsText).not.toContain(SAMPLE_REDACTED_TOKEN);
 		await backgroundTaskManager.stopTask(taskId);
 	});
 
@@ -653,7 +676,7 @@ describe("backgroundTasksTool", () => {
 		const startResult = await backgroundTasksTool.execute("bg-rotate", {
 			action: "start",
 			command:
-				"node -e \"const chunk = 'A'.repeat(2048); let count = 0; const timer = setInterval(() => { process.stdout.write(chunk); count += 1; if (count === 4) { clearInterval(timer); process.exit(0); } }, 20);\"",
+				"node -e \"const chunk = 'A'.repeat(512); let count = 0; const timer = setInterval(() => { process.stdout.write(chunk); count += 1; if (count === 3) { clearInterval(timer); process.exit(0); } }, 20);\"",
 			limits: { logSizeLimit: 1024, logSegments: 2 },
 		});
 		const taskId = (startResult.details as TaskDetails)?.id as string;

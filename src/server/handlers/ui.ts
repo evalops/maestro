@@ -21,12 +21,12 @@ function parseCleanMode(value: string): "off" | "soft" | "aggressive" | null {
 	return null;
 }
 
-function parseFooterMode(value: string): "ensemble" | "solo" | null {
+function parseFooterMode(value: string): "rich" | "solo" | null {
 	const normalized = value.toLowerCase();
-	if (["ensemble", "rich", "classic", "full"].includes(normalized)) {
-		return "ensemble";
+	if (normalized === "rich") {
+		return "rich";
 	}
-	if (["solo", "minimal", "lean", "lite"].includes(normalized)) {
+	if (normalized === "solo") {
 		return "solo";
 	}
 	return null;
@@ -67,8 +67,7 @@ export async function handleUI(
 					{
 						zenMode: sessionState.zenMode ?? state.zenMode ?? false,
 						cleanMode: sessionState.cleanMode ?? state.cleanMode ?? "off",
-						footerMode:
-							sessionState.footerMode ?? state.footerMode ?? "ensemble",
+						footerMode: sessionState.footerMode ?? state.footerMode ?? "rich",
 						compactTools:
 							sessionState.compactTools ?? state.compactTools ?? false,
 						queueMode:
@@ -121,7 +120,7 @@ export async function handleUI(
 			const data = await readJsonBody<{
 				action: string;
 				cleanMode?: "off" | "soft" | "aggressive";
-				footerMode?: "ensemble" | "solo";
+				footerMode?: "rich" | "solo";
 				compactTools?: boolean;
 			}>(req);
 			const { action } = data;
@@ -159,7 +158,7 @@ export async function handleUI(
 					sendJson(
 						res,
 						400,
-						{ error: "Invalid footerMode. Use ensemble or solo." },
+						{ error: "Invalid footerMode. Use rich or solo." },
 						corsHeaders,
 					);
 					return;

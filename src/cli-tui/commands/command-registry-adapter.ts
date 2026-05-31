@@ -193,7 +193,13 @@ function executeCommand(
 		argumentText,
 		parsedArgs: parseResult.args,
 	});
-	return handler(context);
+	const result = handler(context);
+	if (result && typeof result.then === "function") {
+		return result.catch((error: unknown) => {
+			context.showError(`Command failed: ${errorMessage(error)}`);
+		});
+	}
+	return result;
 }
 
 function extractArgumentText(input: string): string {
@@ -206,4 +212,8 @@ function extractArgumentText(input: string): string {
 
 function escapeRegExp(value: string): string {
 	return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function errorMessage(error: unknown): string {
+	return error instanceof Error ? error.message : String(error);
 }

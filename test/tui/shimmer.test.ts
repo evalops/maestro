@@ -14,7 +14,7 @@ describe("shimmerText", () => {
 	});
 
 	it("preserves the original text content", () => {
-		const input = "Composer";
+		const input = "Maestro";
 		const styled = shimmerText(input, { time: 0, sweepSeconds: 1 });
 		expect(stripAnsi(styled)).toBe(input);
 	});

@@ -223,4 +223,56 @@ describe("Anthropic streaming", () => {
 			},
 		});
 	});
+
+	it("sends temperature for Anthropic models that accept it", async () => {
+		const mockFetch = vi.mocked(fetch);
+		mockFetch.mockResolvedValue(
+			new Response(
+				makeStream([sse("message_stop", { type: "message_stop" })]),
+				{
+					status: 200,
+				},
+			),
+		);
+
+		for await (const _ of streamAnthropic(baseModel, baseContext, {
+			apiKey: "test-key",
+			temperature: 0.2,
+		})) {
+			// Drain the stream.
+		}
+
+		const [, init] = mockFetch.mock.calls[0] ?? [];
+		const request = init as RequestInit;
+		expect(JSON.parse(String(request.body))).toMatchObject({
+			temperature: 0.2,
+		});
+	});
+
+	it("omits deprecated temperature for direct Anthropic Opus 4 models", async () => {
+		const mockFetch = vi.mocked(fetch);
+		mockFetch.mockResolvedValue(
+			new Response(
+				makeStream([sse("message_stop", { type: "message_stop" })]),
+				{
+					status: 200,
+				},
+			),
+		);
+
+		for await (const _ of streamAnthropic(
+			{ ...baseModel, id: "claude-opus-4-7" },
+			baseContext,
+			{
+				apiKey: "test-key",
+				temperature: 0.2,
+			},
+		)) {
+			// Drain the stream.
+		}
+
+		const [, init] = mockFetch.mock.calls[0] ?? [];
+		const request = init as RequestInit;
+		expect(JSON.parse(String(request.body))).not.toHaveProperty("temperature");
+	});
 });

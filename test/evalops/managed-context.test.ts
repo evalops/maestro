@@ -3,6 +3,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
+	EVALOPS_ORGANIZATION_ID_ENV_VARS,
+	EVALOPS_WORKSPACE_ID_ENV_VARS,
+	readEvalOpsEnv,
+} from "../../src/evalops/env-aliases.js";
+import {
 	formatManagedEvalOpsStatus,
 	resolveManagedEvalOpsContext,
 } from "../../src/evalops/managed-context.js";
@@ -46,6 +51,73 @@ describe("managed EvalOps context", () => {
 	afterEach(() => {
 		vi.restoreAllMocks();
 		vi.unstubAllEnvs();
+	});
+
+	it("keeps shared EvalOps aliases from adopting service-specific org ids", () => {
+		expect(EVALOPS_ORGANIZATION_ID_ENV_VARS).not.toContain(
+			"MAESTRO_LLM_GATEWAY_ORG_ID",
+		);
+		expect(EVALOPS_ORGANIZATION_ID_ENV_VARS).not.toContain(
+			"MAESTRO_REMOTE_RUNNER_ORG_ID",
+		);
+		expect(EVALOPS_WORKSPACE_ID_ENV_VARS).toContain(
+			"MAESTRO_REMOTE_RUNNER_WORKSPACE_ID",
+		);
+		expect(
+			readEvalOpsEnv(
+				{
+					EVALOPS_ORGANIZATION_ID: "org_evalops",
+					MAESTRO_LLM_GATEWAY_ORG_ID: "org_gateway",
+					MAESTRO_REMOTE_RUNNER_ORG_ID: "org_remote",
+					MAESTRO_REMOTE_RUNNER_WORKSPACE_ID: "workspace_remote",
+				},
+				EVALOPS_ORGANIZATION_ID_ENV_VARS,
+			),
+		).toBe("org_evalops");
+		expect(
+			readEvalOpsEnv(
+				{
+					EVALOPS_WORKSPACE_ID: "workspace_evalops",
+					MAESTRO_REMOTE_RUNNER_WORKSPACE_ID: "workspace_remote",
+				},
+				EVALOPS_WORKSPACE_ID_ENV_VARS,
+			),
+		).toBe("workspace_evalops");
+		expect(
+			readEvalOpsEnv(
+				{
+					MAESTRO_ENTERPRISE_ORG_ID: "org_enterprise",
+					MAESTRO_LLM_GATEWAY_ORG_ID: "org_gateway",
+					MAESTRO_REMOTE_RUNNER_ORG_ID: "org_remote",
+				},
+				EVALOPS_ORGANIZATION_ID_ENV_VARS,
+			),
+		).toBe("org_enterprise");
+		expect(
+			readEvalOpsEnv(
+				{
+					MAESTRO_LLM_GATEWAY_ORG_ID: "org_gateway",
+					MAESTRO_REMOTE_RUNNER_ORG_ID: "org_remote",
+				},
+				EVALOPS_ORGANIZATION_ID_ENV_VARS,
+			),
+		).toBeUndefined();
+		expect(
+			readEvalOpsEnv(
+				{
+					MAESTRO_REMOTE_RUNNER_ORG_ID: "org_remote",
+				},
+				EVALOPS_ORGANIZATION_ID_ENV_VARS,
+			),
+		).toBeUndefined();
+		expect(
+			readEvalOpsEnv(
+				{
+					MAESTRO_REMOTE_RUNNER_WORKSPACE_ID: "workspace_remote",
+				},
+				EVALOPS_WORKSPACE_ID_ENV_VARS,
+			),
+		).toBe("workspace_remote");
 	});
 
 	it("resolves managed mode from stored init credentials when env is sparse", () => {
@@ -178,6 +250,27 @@ describe("managed EvalOps context", () => {
 				MAESTRO_LLM_GATEWAY_ORG_ID: "org_gateway",
 			}).organizationId,
 		).toBe("org_gateway");
+	});
+
+	it("uses public EvalOps aliases for managed profile metadata", () => {
+		const context = resolveManagedEvalOpsContext({
+			MAESTRO_EVALOPS_ACCESS_TOKEN: "evalops-token",
+			MAESTRO_REMOTE_RUNNER_ORG_ID: "org_remote",
+			MAESTRO_REMOTE_RUNNER_WORKSPACE_ID: "workspace_remote",
+			MAESTRO_AGENT_RUN_ID: "run_remote",
+			EVALOPS_INTEGRATION_PROFILE: "mcp_only",
+			EVALOPS_MEMORY_MODE: "cerebro",
+			EVALOPS_RUNTIME_OWNER: "customer",
+			EVALOPS_SHIM_TYPE: "shim",
+			EVALOPS_TRACE_MODE: "mcp_events",
+		});
+
+		expect(context.managed).toBe(true);
+		expect(context.integrationProfile).toBe("mcp_only");
+		expect(context.memoryMode).toBe("cerebro");
+		expect(context.runtimeOwner).toBe("customer");
+		expect(context.shimType).toBe("shim");
+		expect(context.traceMode).toBe("mcp_events");
 	});
 
 	it("requires an agent session before treating env auth as managed", () => {

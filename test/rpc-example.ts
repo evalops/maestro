@@ -4,7 +4,7 @@ import * as readline from "node:readline";
 import { fileURLToPath } from "node:url";
 
 /**
- * Interactive example of using Composer in RPC mode
+ * Interactive example of using Maestro in RPC mode
  * Usage: npx tsx test/rpc-example.ts
  */
 
@@ -86,5 +86,5 @@ process.on("SIGINT", () => {
 
 agent.stderr.on("data", (data) => console.error("Error:", data.toString()));
 
-console.log("Interactive Composer RPC mode example. Type 'exit' to quit.\n");
+console.log("Interactive Maestro RPC mode example. Type 'exit' to quit.\n");
 process.stdout.write("You: ");

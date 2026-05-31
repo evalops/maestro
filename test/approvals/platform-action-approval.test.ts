@@ -70,9 +70,10 @@ describe("platform-backed action approval service", () => {
 		await waitForPending(service);
 		expect(service.approve("approval-1", "looks good")).toBe(true);
 
-		await expect(approval).resolves.toEqual({
+		await expect(approval).resolves.toMatchObject({
 			approved: true,
 			reason: "looks good",
+			resolvedAtMs: expect.any(Number),
 			resolvedBy: "user",
 		});
 		expect(fetchMock).toHaveBeenCalledTimes(2);
@@ -95,7 +96,88 @@ describe("platform-backed action approval service", () => {
 			approvalRequestId: "remote-approval-1",
 			decision: "DECISION_TYPE_APPROVED",
 			reason: "looks good",
+			resolvedAtMs: expect.any(Number),
 		});
+	});
+
+	it("propagates AbortError while syncing the remote approval decision", async () => {
+		const abortError = new Error("aborted");
+		abortError.name = "AbortError";
+		const controller = new AbortController();
+		const fetchMock = vi.fn(async (url: string | URL | Request) => {
+			const href = String(url);
+			if (href.endsWith("/approvals.v1.ApprovalService/RequestApproval")) {
+				return new Response(
+					JSON.stringify({ approvalRequest: { id: "remote-approval-abort" } }),
+					{ status: 200, headers: { "Content-Type": "application/json" } },
+				);
+			}
+			if (href.endsWith("/approvals.v1.ApprovalService/ResolveApproval")) {
+				controller.abort();
+				throw abortError;
+			}
+			return new Response("not found", { status: 404 });
+		});
+		vi.stubGlobal("fetch", fetchMock);
+
+		const service = new PlatformBackedActionApprovalService("prompt", {
+			sessionIdProvider: "session-abort",
+			approvalsServiceConfig: {
+				baseUrl: "https://platform.test",
+				maxAttempts: 1,
+				timeoutMs: 500,
+				token: "token-1",
+				workspaceId: "workspace-1",
+			},
+		});
+
+		const approval = service.requestApproval(
+			{
+				...approvalRequest,
+				id: "approval-abort-sync",
+			},
+			controller.signal,
+		);
+		await waitForPending(service);
+		expect(service.approve("approval-abort-sync", "looks good")).toBe(true);
+
+		await expect(approval).rejects.toMatchObject({ name: "AbortError" });
+	});
+
+	it("propagates AbortError while registering the remote approval request", async () => {
+		const abortError = new Error("aborted");
+		abortError.name = "AbortError";
+		const controller = new AbortController();
+		const fetchMock = vi.fn(async (url: string | URL | Request) => {
+			const href = String(url);
+			if (href.endsWith("/approvals.v1.ApprovalService/RequestApproval")) {
+				controller.abort();
+				throw abortError;
+			}
+			return new Response("not found", { status: 404 });
+		});
+		vi.stubGlobal("fetch", fetchMock);
+
+		const service = new PlatformBackedActionApprovalService("prompt", {
+			sessionIdProvider: "session-abort-register",
+			approvalsServiceConfig: {
+				baseUrl: "https://platform.test",
+				maxAttempts: 1,
+				timeoutMs: 500,
+				token: "token-1",
+				workspaceId: "workspace-1",
+			},
+		});
+
+		await expect(
+			service.requestApproval(
+				{
+					...approvalRequest,
+					id: "approval-abort-register",
+				},
+				controller.signal,
+			),
+		).rejects.toMatchObject({ name: "AbortError" });
 	});
 
 	it("exposes remote approval registration metadata while the request is pending", async () => {
@@ -142,9 +224,10 @@ describe("platform-backed action approval service", () => {
 		});
 
 		expect(service.approve("approval-2", "approved")).toBe(true);
-		await expect(approval).resolves.toEqual({
+		await expect(approval).resolves.toMatchObject({
 			approved: true,
 			reason: "approved",
+			resolvedAtMs: expect.any(Number),
 			resolvedBy: "user",
 		});
 		expect(
@@ -190,9 +273,10 @@ describe("platform-backed action approval service", () => {
 		await waitForPending(service);
 		expect(service.deny("approval-1", "not now")).toBe(true);
 
-		await expect(approval).resolves.toEqual({
+		await expect(approval).resolves.toMatchObject({
 			approved: false,
 			reason: "not now",
+			resolvedAtMs: expect.any(Number),
 			resolvedBy: "user",
 		});
 		expect(fetchMock).toHaveBeenCalledTimes(1);
@@ -215,10 +299,13 @@ describe("platform-backed action approval service", () => {
 			},
 		});
 
-		await expect(service.requestApproval(approvalRequest)).resolves.toEqual({
+		await expect(
+			service.requestApproval(approvalRequest),
+		).resolves.toMatchObject({
 			approved: false,
 			reason:
 				"Approvals service unavailable: approvals service returned 503: unavailable",
+			resolvedAtMs: expect.any(Number),
 			resolvedBy: "policy",
 		});
 		expect(service.getPendingRequests()).toHaveLength(0);

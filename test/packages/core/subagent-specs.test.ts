@@ -53,6 +53,7 @@ describe("SubagentSpecs", () => {
 
 		it("has write category with edit and write", () => {
 			expect(TOOL_CATEGORIES.write).toBeDefined();
+			expect(TOOL_CATEGORIES.write).toContain("apply_patch");
 			expect(TOOL_CATEGORIES.write).toContain("edit");
 			expect(TOOL_CATEGORIES.write).toContain("write");
 		});

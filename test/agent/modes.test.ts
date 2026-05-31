@@ -11,6 +11,7 @@ import {
 	getModelForMode,
 	getModelForTier,
 	parseMode,
+	resolveSubagentDispatch,
 	setCurrentMode,
 	suggestMode,
 } from "../../src/agent/modes.js";
@@ -22,6 +23,7 @@ describe("agent/modes", () => {
 			expect(MODE_CONFIGS.rush).toBeDefined();
 			expect(MODE_CONFIGS.free).toBeDefined();
 			expect(MODE_CONFIGS.custom).toBeDefined();
+			expect(MODE_CONFIGS.frontier).toBeDefined();
 		});
 
 		it("smart mode uses opus tier", () => {
@@ -54,9 +56,9 @@ describe("agent/modes", () => {
 	});
 
 	describe("getModelForTier", () => {
-		it("returns anthropic model by default", () => {
+		it("returns OpenAI Codex model by default", () => {
 			const model = getModelForTier("opus");
-			expect(model).toBe("claude-opus-4-6");
+			expect(model).toBe("gpt-5.5");
 		});
 
 		it("returns openai model when specified", () => {
@@ -79,19 +81,52 @@ describe("agent/modes", () => {
 	});
 
 	describe("getModelForMode", () => {
-		it("returns opus model for smart mode", () => {
+		it("returns Codex opus-tier model for smart mode", () => {
 			const model = getModelForMode("smart");
-			expect(model).toContain("opus");
+			expect(model).toBe("gpt-5.5");
 		});
 
-		it("returns sonnet model for rush mode", () => {
+		it("returns Codex sonnet-tier model for rush mode", () => {
 			const model = getModelForMode("rush");
-			expect(model).toContain("sonnet");
+			expect(model).toBe("gpt-5.4");
 		});
 
-		it("returns haiku model for free mode", () => {
+		it("returns Codex haiku-tier model for free mode", () => {
 			const model = getModelForMode("free");
-			expect(model).toContain("haiku");
+			expect(model).toBe("gpt-5.4-mini");
+		});
+	});
+
+	describe("resolveSubagentDispatch", () => {
+		it("routes smart coder subagents to an explicit OpenAI Codex model", () => {
+			const dispatch = resolveSubagentDispatch("smart", "coder", "anthropic");
+
+			expect(dispatch).toMatchObject({
+				mode: "smart",
+				type: "coder",
+				provider: "openai-codex",
+				model: "gpt-5.5",
+				reasoningEffort: "medium",
+				source: "mode",
+			});
+		});
+
+		it("falls back to the mode primary tier when a subagent type is undeclared", () => {
+			const dispatch = resolveSubagentDispatch(
+				"custom",
+				"researcher",
+				"google",
+			);
+
+			expect(dispatch).toMatchObject({
+				mode: "custom",
+				type: "researcher",
+				provider: "google",
+				model: MODEL_BY_TIER.sonnet.google,
+				modelTier: "sonnet",
+				reasoningEffort: "medium",
+				source: "fallback",
+			});
 		});
 	});
 
@@ -119,6 +154,7 @@ describe("agent/modes", () => {
 			expect(parseMode("SMART")).toBe("smart");
 			expect(parseMode("Rush")).toBe("rush");
 			expect(parseMode("FREE")).toBe("free");
+			expect(parseMode("Frontier")).toBe("frontier");
 		});
 
 		it("returns null for invalid modes", () => {
@@ -174,6 +210,23 @@ describe("agent/modes", () => {
 			expect(modes.map((m) => m.mode)).toContain("rush");
 			expect(modes.map((m) => m.mode)).toContain("free");
 			expect(modes.map((m) => m.mode)).toContain("custom");
+			expect(modes.map((m) => m.mode)).not.toContain("frontier");
+		});
+
+		it("returns hidden modes only when requested", () => {
+			const modes = getAllModes({ includeHidden: true });
+			expect(modes.map((m) => m.mode)).toEqual([
+				"smart",
+				"rush",
+				"free",
+				"custom",
+				"frontier",
+				"replay",
+			]);
+			expect(getAllModes().map((m) => m.mode)).not.toContain("frontier");
+			expect(getAllModes().map((m) => m.mode)).not.toContain("replay");
+			expect(MODE_CONFIGS.frontier.visible).toBe(false);
+			expect(MODE_CONFIGS.replay.visible).toBe(false);
 		});
 	});
 

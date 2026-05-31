@@ -53,6 +53,7 @@ import type {
 	WorkflowStateSnapshot,
 } from "../agent/action-approval.js";
 export type { ActionApprovalContext } from "../agent/action-approval.js";
+import { parseApplyPatchPaths } from "../tools/apply-patch-parser.js";
 import { createLogger } from "../utils/logger.js";
 import { isCommandAllowlisted } from "./bash-allowlist.js";
 import {
@@ -71,6 +72,11 @@ import {
 	evaluateActionWithActionFirewallGovernanceService,
 	resolveActionFirewallGovernanceServiceConfig,
 } from "./governance-service-client.js";
+import {
+	DEFAULT_GUARDED_FILE_RULE_ID,
+	describeDefaultGuardedFileMatch,
+	findGuardedToolCallMatch,
+} from "./guarded-files.js";
 import { isContainedInWorkspace, isSystemPath } from "./path-containment.js";
 import { checkPolicy } from "./policy.js";
 import { RuleCache } from "./rule-cache.js";
@@ -412,22 +418,29 @@ function extractFilePaths(context: ActionApprovalContext): string[] {
 	const args = getArgsObject(context);
 	if (!args) return [];
 	const paths: string[] = [];
+	const toolName = context.toolName.toLowerCase();
 
 	// Simple extraction for standard file tools
 	// Note: deeper extraction is done in policy.ts, this is for quick system protection
-	if (context.toolName === "write" || context.toolName === "edit") {
+	if (toolName === "write" || toolName === "edit") {
 		const p =
 			getStringArg(context, "file_path") || getStringArg(context, "path");
 		if (p) paths.push(p);
 	}
-	if (context.toolName === "delete_file") {
+	if (toolName === "apply_patch") {
+		const patch = getStringArg(context, "patch");
+		if (patch) {
+			paths.push(...parseApplyPatchPaths(patch));
+		}
+	}
+	if (toolName === "delete_file") {
 		const p =
 			getStringArg(context, "file_path") ||
 			getStringArg(context, "target_file");
 		if (p) paths.push(p);
 	}
 	// Handle move_file and copy_file - extract both source and destination
-	if (context.toolName === "move_file" || context.toolName === "copy_file") {
+	if (toolName === "move_file" || toolName === "copy_file") {
 		const source =
 			getStringArg(context, "source") ||
 			getStringArg(context, "source_path") ||
@@ -507,9 +520,14 @@ export const defaultFirewallRules: ActionFirewallRule[] = [
 		evaluate: (ctx) => {
 			// Only check file mutation tools
 			if (
-				!["write", "edit", "delete_file", "move_file", "copy_file"].includes(
-					ctx.toolName,
-				)
+				![
+					"write",
+					"edit",
+					"apply_patch",
+					"delete_file",
+					"move_file",
+					"copy_file",
+				].includes(ctx.toolName)
 			) {
 				return { allowed: true };
 			}
@@ -534,6 +552,44 @@ export const defaultFirewallRules: ActionFirewallRule[] = [
 			"Do not modify critical system paths. If you need to write a file, use the current workspace directory or a temporary folder.",
 	},
 	{
+		id: DEFAULT_GUARDED_FILE_RULE_ID,
+		description:
+			"Block guarded user and editor configuration files when policy requires a hard block",
+		action: "block",
+		evaluate: (ctx) => {
+			const match = findGuardedToolCallMatch(ctx.toolName, ctx.args, {
+				policy: ctx.metadata?.guardedFiles,
+			});
+			if (match?.defaultBehavior === "block") {
+				return {
+					allowed: false,
+					reason: describeDefaultGuardedFileMatch(match),
+					remediation:
+						"Remove the matching custom guard or change its defaultBehavior to ask if this access should be approval-gated instead of blocked.",
+				};
+			}
+			return { allowed: true };
+		},
+	},
+	{
+		id: DEFAULT_GUARDED_FILE_RULE_ID,
+		description:
+			"Require explicit approval before reading or mutating guarded user and editor configuration files",
+		action: "require_approval",
+		evaluate: (ctx) => {
+			const match = findGuardedToolCallMatch(ctx.toolName, ctx.args, {
+				policy: ctx.metadata?.guardedFiles,
+			});
+			if (match) {
+				return {
+					allowed: false,
+					reason: describeDefaultGuardedFileMatch(match),
+				};
+			}
+			return { allowed: true };
+		},
+	},
+	{
 		name: "workspace-containment",
 		description:
 			"Require approval for file modifications outside the workspace",
@@ -541,9 +597,14 @@ export const defaultFirewallRules: ActionFirewallRule[] = [
 		evaluate: (ctx) => {
 			// Only check file mutation tools
 			if (
-				!["write", "edit", "delete_file", "move_file", "copy_file"].includes(
-					ctx.toolName,
-				)
+				![
+					"write",
+					"edit",
+					"apply_patch",
+					"delete_file",
+					"move_file",
+					"copy_file",
+				].includes(ctx.toolName)
 			) {
 				return { allowed: true };
 			}
@@ -595,9 +656,7 @@ export const defaultFirewallRules: ActionFirewallRule[] = [
 			if (!isMcpTool(ctx.toolName)) return false;
 			const annotations = getAnnotations(ctx);
 			// Require approval if destructiveHint is true and readOnlyHint is not true
-			return (
-				annotations?.destructiveHint === true && !annotations?.readOnlyHint
-			);
+			return annotations?.destructiveHint === true;
 		},
 		reason: (ctx) =>
 			`MCP tool "${ctx.toolName}" is marked as destructive and requires approval`,
@@ -610,7 +669,14 @@ export const defaultFirewallRules: ActionFirewallRule[] = [
 		match: (ctx) => {
 			if (process.env.MAESTRO_PLAN_MODE !== "1") return false;
 			const name = ctx.toolName;
-			if (name === "write" || name === "edit" || name === "bash") return true;
+			if (
+				name === "write" ||
+				name === "edit" ||
+				name === "apply_patch" ||
+				name === "bash"
+			) {
+				return true;
+			}
 			if (name === "todo") return true;
 			if (name === "gh_pr") {
 				const action = getStringArg(ctx, "action");
@@ -773,6 +839,7 @@ export class ActionFirewall {
 				"bash",
 				"write",
 				"edit",
+				"apply_patch",
 				"delete_file",
 				"background_tasks",
 			];

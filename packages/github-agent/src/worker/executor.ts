@@ -1,5 +1,5 @@
 /**
- * Task Executor - Runs Composer to implement tasks
+ * Task Executor - Runs Maestro to implement tasks
  *
  * Flow:
  * 1. Create feature branch
@@ -11,10 +11,16 @@
 
 import { spawn } from "node:child_process";
 import { mkdirSync } from "node:fs";
+import { type DelegationPrompt, formatDelegation } from "@evalops/contracts";
 import type { GitHubApiClient } from "../github/client.js";
 import type { GitHubReporter, TaskProgress } from "../github/reporter.js";
 import type { MemoryStore } from "../memory/store.js";
-import type { AgentConfig, Task, TaskResult } from "../types.js";
+import type {
+	AgentConfig,
+	GitHubAgentEvidence,
+	Task,
+	TaskResult,
+} from "../types.js";
 import {
 	buildGitHubTaskEnvironment,
 	recordGitHubTaskSessionClosed,
@@ -85,7 +91,7 @@ export class TaskExecutor {
 				composerResultTemp = await this.runComposer(prompt, composerEnv);
 
 				if (!composerResultTemp.success) {
-					throw new Error(`Composer failed: ${composerResultTemp.error}`);
+					throw new Error(`Maestro failed: ${composerResultTemp.error}`);
 				}
 			});
 			if (!composerResultTemp) {
@@ -122,26 +128,42 @@ export class TaskExecutor {
 			const pr: PrResult = prTemp;
 			progress.prUrl = pr.url;
 
+			const headSha = await this.resolveHeadSha(branchName);
 			await this.applyPrMetadata(pr.number);
 			await this.applyMergePolicy(pr.number, branchName);
 			await this.publishCheckRun(task, progress, branchName, pr);
 
 			progress.status = "completed";
 			progress.durationMs = Date.now() - startTime;
+			const evidence = this.buildGitHubAgentEvidence(
+				task,
+				branchName,
+				headSha,
+				pr,
+				progress,
+			);
 			await this.reportProgress(task, progress);
 			recordGitHubTaskSessionClosed(task, {
 				status: "completed",
 				branch: progress.branch,
+				headSha,
 				prUrl: progress.prUrl,
+				prNumber: pr.number,
+				checkRunId: task.checkRunId,
 				durationMs: progress.durationMs,
 				tokensUsed: progress.tokensUsed,
 				cost: progress.cost,
+				evidence,
 			});
 
 			return {
 				success: true,
 				prNumber: pr.number,
 				prUrl: pr.url,
+				branch: branchName,
+				headSha,
+				checkRunId: task.checkRunId,
+				evidence,
 				duration: Date.now() - startTime,
 				tokensUsed: composerResult.tokensUsed,
 				cost: composerResult.cost,
@@ -199,36 +221,30 @@ export class TaskExecutor {
 
 	private buildPrompt(task: Task): string {
 		const memoryContext = this.memory.getContextForPrompt();
+		const evidence = [
+			`Task type: ${task.type}`,
+			`Task title: ${task.title}`,
+			task.sourceIssue ? `GitHub issue: #${task.sourceIssue}` : undefined,
+			memoryContext
+				? `Context from previous work:\n${memoryContext}`
+				: undefined,
+		].filter((item): item is string => Boolean(item));
+		const delegationPrompt: DelegationPrompt = {
+			goal: "Implement the assigned GitHub task in the Maestro codebase.",
+			context:
+				"You are working on the Maestro codebase, a coding agent that helps developers.",
+			task: task.description,
+			evidence,
+			validation:
+				"Follow existing code style and patterns, add tests for new behavior, run relevant tests, run the linter, and fix failures before completing.",
+			stoppingCondition: [
+				"Commit your changes with a clear commit message that references the issue.",
+				`Use the format: [composer] <description> (fixes #${task.sourceIssue || "N/A"}).`,
+				"Do NOT create the PR - just commit to the current branch.",
+			].join(" "),
+		};
 
-		const lines: string[] = [
-			"You are working on the Composer codebase (a coding agent that helps developers).",
-			"",
-			task.description,
-			"",
-			"## Requirements:",
-			"1. Implement the requested changes",
-			"2. Follow the existing code style and patterns",
-			"3. Add tests for any new functionality",
-			"4. Run tests and fix any failures before completing",
-			"5. Run the linter and fix any issues",
-			"",
-		];
-
-		if (memoryContext) {
-			lines.push("## Context from previous work:");
-			lines.push(memoryContext);
-			lines.push("");
-		}
-
-		lines.push(
-			"## When you're done:",
-			"Commit your changes with a clear commit message that references the issue.",
-			`Use the format: [composer] <description> (fixes #${task.sourceIssue || "N/A"})`,
-			"",
-			"Do NOT create the PR - just commit to the current branch.",
-		);
-
-		return lines.join("\n");
+		return formatDelegation(delegationPrompt);
 	}
 
 	private async runComposer(
@@ -455,7 +471,7 @@ ${diff}
 			? `[composer] ${sanitizedTaskTitle} (fixes #${task.sourceIssue})`
 			: `[composer] ${sanitizedTaskTitle}`;
 
-		const body = this.buildPRBody(task);
+		const body = this.buildPRBody(task, branchName);
 
 		if (this.githubClient) {
 			const existing = await this.findExistingPr(branchName);
@@ -463,6 +479,7 @@ ${diff}
 				this.log(
 					`[executor] Reusing existing PR #${existing.number} for ${branchName}`,
 				);
+				await this.refreshExistingPrBody(existing, body);
 				return existing;
 			}
 			try {
@@ -479,6 +496,7 @@ ${diff}
 					this.log(
 						`[executor] Found existing PR #${existingAfterError.number} after create failure`,
 					);
+					await this.refreshExistingPrBody(existingAfterError, body);
 					return existingAfterError;
 				}
 				this.log(
@@ -500,6 +518,7 @@ ${diff}
 			this.log(
 				`[executor] Reusing existing PR #${existing.number} for ${branchName}`,
 			);
+			await this.refreshExistingPrBodyViaGh(existing, body);
 			return existing;
 		}
 		const draftFlag = this.config.draftPullRequests ? ["--draft"] : [];
@@ -529,6 +548,42 @@ ${diff}
 		}
 
 		return { number: prNumber, url: prUrl };
+	}
+
+	private async refreshExistingPrBody(
+		pr: { number: number; url: string },
+		body: string,
+	): Promise<void> {
+		if (!this.githubClient) return;
+		try {
+			await this.githubClient.updatePullRequest({
+				pullNumber: pr.number,
+				body,
+			});
+		} catch (err) {
+			throw new Error(
+				`Failed to refresh existing PR body: ${err instanceof Error ? err.message : err}`,
+			);
+		}
+	}
+
+	private async refreshExistingPrBodyViaGh(
+		pr: { number: number; url: string },
+		body: string,
+	): Promise<void> {
+		try {
+			await this.runCommand("gh", [
+				"pr",
+				"edit",
+				String(pr.number),
+				"--body",
+				body,
+			]);
+		} catch (err) {
+			throw new Error(
+				`Failed to refresh existing PR body via gh: ${err instanceof Error ? err.message : err}`,
+			);
+		}
 	}
 
 	private async findExistingPr(
@@ -663,7 +718,7 @@ ${diff}
 		}
 	}
 
-	private buildPRBody(task: Task): string {
+	private buildPRBody(task: Task, branchName?: string): string {
 		const lines: string[] = [
 			"## Summary",
 			"",
@@ -684,12 +739,63 @@ ${diff}
 			"- [ ] Type check passes",
 			"- [ ] Manual verification (if applicable)",
 			"",
+			"## EvalOps Agent Evidence",
+			"",
+			`- Task ID: \`${task.id}\``,
+			"- Action lane: `code_change_via_pr`",
+			...(branchName ? [`- Branch: \`${branchName}\``] : []),
+			"- Independent verifier: `deploy/scripts/check-agent-action-pr-lane.py`",
+			"",
 			"---",
 			"",
-			"_This PR was generated autonomously by the GitHub Agent (Composer building Composer)._",
+			"_This PR was generated autonomously by the GitHub Agent (Maestro building Maestro)._",
 		);
 
 		return lines.join("\n");
+	}
+
+	private async resolveHeadSha(branchName: string): Promise<string> {
+		if (this.githubClient) {
+			try {
+				return await this.githubClient.getBranchHeadSha(branchName);
+			} catch (err) {
+				this.log(
+					`[executor] Failed to resolve branch SHA through GitHub API: ${err instanceof Error ? err.message : err}`,
+				);
+			}
+		}
+		return (await this.runCommand("git", ["rev-parse", "HEAD"])).trim();
+	}
+
+	private buildGitHubAgentEvidence(
+		task: Task,
+		branchName: string,
+		headSha: string,
+		pr: { number: number; url: string },
+		progress: TaskProgress,
+	): GitHubAgentEvidence {
+		return {
+			schemaVersion: "evalops.github-agent.pr-evidence.v1",
+			taskId: task.id,
+			taskType: task.type,
+			repository: `${this.config.owner}/${this.config.repo}`,
+			baseBranch: this.config.baseBranch,
+			branch: branchName,
+			headSha,
+			prNumber: pr.number,
+			prUrl: pr.url,
+			...(task.checkRunId ? { checkRunId: task.checkRunId } : {}),
+			durationMs: progress.durationMs ?? 0,
+			...(typeof progress.tokensUsed === "number"
+				? { tokensUsed: progress.tokensUsed }
+				: {}),
+			...(typeof progress.cost === "number" ? { cost: progress.cost } : {}),
+			verifier: {
+				name: "deploy/scripts/check-agent-action-pr-lane.py",
+				requiredOutput: "pull_request",
+				prOnly: true,
+			},
+		};
 	}
 
 	private buildInitialProgress(task: Task, startTime: number): TaskProgress {

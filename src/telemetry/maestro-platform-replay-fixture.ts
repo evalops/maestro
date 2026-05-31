@@ -1,4 +1,8 @@
 import {
+	buildAgentOperatingPlaneContext,
+	buildAgentOperatingPlaneCorrelation,
+} from "./agent-operating-plane-context.js";
+import {
 	MaestroBusEventType,
 	type MaestroCloudEvent,
 	type MaestroCorrelation,
@@ -19,6 +23,8 @@ const SKILL_TOOL_CALL_ID = "tool_call_platform_replay_skill_001";
 const SKILL_TOOL_EXECUTION_ID = "tool_exec_platform_replay_skill_001";
 const APPROVAL_REQUEST_ID = "approval_platform_replay_001";
 const SKILL_ID = "skill_incident_review";
+const DATA_CLASSIFICATION = "internal";
+const RETENTION_CLASS = "operational_audit";
 
 const promptMetadata = {
 	name: "maestro-system",
@@ -38,24 +44,28 @@ const skillMetadata = {
 	version: "3",
 };
 
-const baseCorrelation: MaestroCorrelation = {
-	organization_id: ORGANIZATION_ID,
-	workspace_id: WORKSPACE_ID,
-	session_id: SESSION_ID,
-	agent_run_id: AGENT_RUN_ID,
-	agent_run_step_id: "agent_run_step_platform_replay_001",
-	agent_id: "agent_maestro_platform_replay",
-	actor_id: "user_platform_replay",
-	principal_id: "principal_platform_replay",
-	trace_id: "trace_platform_replay_001",
-	request_id: "request_platform_replay_001",
-	remote_runner_session_id: "remote_runner_platform_replay_001",
-	objective_id: "objective_platform_replay_001",
-	conversation_id: "conversation_platform_replay_001",
-	attributes: {
-		fixture: CANONICAL_MAESTRO_PLATFORM_REPLAY_FIXTURE_NAME,
+const baseCorrelation: MaestroCorrelation = buildAgentOperatingPlaneCorrelation(
+	{
+		organization_id: ORGANIZATION_ID,
+		workspace_id: WORKSPACE_ID,
+		session_id: SESSION_ID,
+		agent_run_id: AGENT_RUN_ID,
+		agent_run_step_id: "agent_run_step_platform_replay_001",
+		agent_id: "agent_maestro_platform_replay",
+		actor_id: "user_platform_replay",
+		principal_id: "principal_platform_replay",
+		trace_id: "trace_platform_replay_001",
+		request_id: "request_platform_replay_001",
+		remote_runner_session_id: "remote_runner_platform_replay_001",
+		objective_id: "objective_platform_replay_001",
+		conversation_id: "conversation_platform_replay_001",
+		tracestate: "evalops=maestro-platform-replay",
+		attributes: {
+			fixture: CANONICAL_MAESTRO_PLATFORM_REPLAY_FIXTURE_NAME,
+			scenario_id: CANONICAL_MAESTRO_PLATFORM_REPLAY_FIXTURE_NAME,
+		},
 	},
-};
+);
 
 const principal: MaestroPrincipal = {
 	subject: "user:platform-replay@example.com",
@@ -83,6 +93,7 @@ const fixtureEnv: NodeJS.ProcessEnv = {
 	MAESTRO_REMOTE_RUNNER_SESSION_ID: baseCorrelation.remote_runner_session_id,
 	MAESTRO_OBJECTIVE_ID: baseCorrelation.objective_id,
 	MAESTRO_CONVERSATION_ID: baseCorrelation.conversation_id,
+	TRACESTATE: baseCorrelation.tracestate,
 	MAESTRO_SURFACE: "web",
 	MAESTRO_RUNTIME_MODE: "hosted",
 };
@@ -197,12 +208,12 @@ function eventFor(
 	return buildMaestroCloudEvent(
 		type,
 		{
-			correlation: {
+			...withOperatingPlaneContext(type, data, {
 				...baseCorrelation,
 				agent_run_step_id: stepId,
 				traceparent: fixtureTraceparent(index),
-			},
-			...data,
+				tracestate: fixtureTracestate(index),
+			}),
 		},
 		{
 			env: fixtureEnv,
@@ -214,6 +225,63 @@ function eventFor(
 
 function fixtureTraceparent(index: number): string {
 	return `00-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-${String(index + 1).padStart(16, "0")}-01`;
+}
+
+function fixtureTracestate(index: number): string {
+	return `evalops=maestro-platform-replay-${String(index + 1).padStart(2, "0")}`;
+}
+
+function withOperatingPlaneContext(
+	type: MaestroBusEventType,
+	data: Record<string, unknown>,
+	correlation: MaestroCorrelation,
+): Record<string, unknown> {
+	const { metadata, ...eventData } = data;
+	const context = buildAgentOperatingPlaneContext({
+		correlation,
+		metadata: {
+			dataClassification: DATA_CLASSIFICATION,
+			retentionClass: RETENTION_CLASS,
+			safeSummary: safeSummaryFor(type),
+		},
+	});
+	return {
+		correlation: context.correlation,
+		metadata: {
+			...context.metadata,
+			...(isRecord(metadata) ? metadata : {}),
+		},
+		...eventData,
+	};
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+	return Boolean(value && typeof value === "object" && !Array.isArray(value));
+}
+
+function safeSummaryFor(type: MaestroBusEventType): string {
+	switch (type) {
+		case MaestroBusEventType.SessionStarted:
+			return "Hosted Maestro session started";
+		case MaestroBusEventType.PromptVariantSelected:
+			return "Prompt variant selected by stable artifact identity";
+		case MaestroBusEventType.ToolCallAttempted:
+			return "Tool call attempt recorded with safe argument summary";
+		case MaestroBusEventType.ToolCallCompleted:
+			return "Tool call completed with safe output summary";
+		case MaestroBusEventType.SkillInvoked:
+			return "Skill invocation linked to tool execution";
+		case MaestroBusEventType.ApprovalHit:
+			return "Governance approval requested for workspace command";
+		case MaestroBusEventType.EvalScored:
+			return "Evaluation result linked to tool execution";
+		case MaestroBusEventType.SkillFailed:
+			return "Skill outcome failed the evaluation threshold";
+		case MaestroBusEventType.SessionClosed:
+			return "Hosted Maestro session closed";
+		default:
+			return "Maestro operating-plane event recorded";
+	}
 }
 
 function buildEvents(): MaestroPlatformReplayFixtureEvent[] {
@@ -233,6 +301,7 @@ function buildEvents(): MaestroPlatformReplayFixtureEvent[] {
 				started_at: eventPlan[0].time,
 				metadata: {
 					fixture: CANONICAL_MAESTRO_PLATFORM_REPLAY_FIXTURE_NAME,
+					scenario_id: CANONICAL_MAESTRO_PLATFORM_REPLAY_FIXTURE_NAME,
 				},
 			},
 			0,
@@ -303,7 +372,7 @@ function buildEvents(): MaestroPlatformReplayFixtureEvent[] {
 				approval_request_id: APPROVAL_REQUEST_ID,
 				governance_decision_id: "governance_decision_platform_replay_001",
 				action: "Run workspace test command",
-				command: "bunx vitest --run test/telemetry",
+				command: "workspace test command",
 				risk_level: "RISK_LEVEL_MEDIUM",
 				decision_mode: "MAESTRO_DECISION_MODE_REQUIRE_APPROVAL",
 				policy_id: "policy_workspace_test_approval",
@@ -312,8 +381,8 @@ function buildEvents(): MaestroPlatformReplayFixtureEvent[] {
 					tool_name: "Bash",
 					display_name: "Bash",
 					summary_label: "Bash",
-					args: {
-						command: "bunx vitest --run test/telemetry",
+					safe_arguments: {
+						command_summary: "Run telemetry test suite",
 					},
 				},
 				occurred_at: eventPlan[5].time,
@@ -334,7 +403,7 @@ function buildEvents(): MaestroPlatformReplayFixtureEvent[] {
 				mutates_resource: false,
 				risk_level: "RISK_LEVEL_MEDIUM",
 				safe_arguments: {
-					command_summary: "bunx vitest --run test/telemetry",
+					command_summary: "Run telemetry test suite",
 				},
 				redactions: ["raw_command"],
 				idempotency_key: "idempotency_platform_replay_bash_001",
@@ -437,11 +506,19 @@ export function buildCanonicalMaestroPlatformReplayFixture(): MaestroPlatformRep
 			workspace_id: WORKSPACE_ID,
 			session_id: SESSION_ID,
 			agent_run_id: AGENT_RUN_ID,
+			agent_id: baseCorrelation.agent_id ?? "",
+			actor_id: baseCorrelation.actor_id ?? "",
+			principal_id: baseCorrelation.principal_id ?? "",
+			request_id: baseCorrelation.request_id ?? "",
+			remote_runner_session_id: baseCorrelation.remote_runner_session_id ?? "",
+			objective_id: baseCorrelation.objective_id ?? "",
+			conversation_id: baseCorrelation.conversation_id ?? "",
 			tool_call_id: BASH_TOOL_CALL_ID,
 			tool_execution_id: BASH_TOOL_EXECUTION_ID,
 			skill_tool_call_id: SKILL_TOOL_CALL_ID,
 			skill_tool_execution_id: SKILL_TOOL_EXECUTION_ID,
 			approval_request_id: APPROVAL_REQUEST_ID,
+			scenario_id: CANONICAL_MAESTRO_PLATFORM_REPLAY_FIXTURE_NAME,
 		},
 		subjects,
 		events,
@@ -458,6 +535,7 @@ export function buildCanonicalMaestroPlatformReplayFixture(): MaestroPlatformRep
 				evaluation_tool_call_id: BASH_TOOL_CALL_ID,
 				evaluation_tool_execution_id: BASH_TOOL_EXECUTION_ID,
 				eval_run_id: "eval_run_platform_replay_001",
+				scenario_id: CANONICAL_MAESTRO_PLATFORM_REPLAY_FIXTURE_NAME,
 				skill_tool_call_id: SKILL_TOOL_CALL_ID,
 				skill_tool_execution_id: SKILL_TOOL_EXECUTION_ID,
 				skill_invocation_id: "invocation_platform_replay_skill_001",

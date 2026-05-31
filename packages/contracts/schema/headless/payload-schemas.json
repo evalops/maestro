@@ -41,6 +41,39 @@
 				}
 			}
 		},
+		"HeadlessServerCapabilitiesSchema": {
+			"kind": "object",
+			"additionalProperties": false,
+			"properties": {
+				"server_requests": {
+					"kind": "array",
+					"items": {
+						"kind": "enumRef",
+						"name": "headlessServerRequestTypes"
+					},
+					"uniqueItems": true
+				},
+				"utility_operations": {
+					"kind": "array",
+					"items": {
+						"kind": "enumRef",
+						"name": "headlessUtilityOperations"
+					},
+					"uniqueItems": true
+				},
+				"raw_agent_events": {
+					"kind": "boolean"
+				},
+				"connection_roles": {
+					"kind": "array",
+					"items": {
+						"kind": "enumRef",
+						"name": "headlessConnectionRoles"
+					},
+					"uniqueItems": true
+				}
+			}
+		},
 		"HeadlessOptOutNotificationsSchema": {
 			"kind": "array",
 			"items": {
@@ -551,6 +584,11 @@
 					"name": "HeadlessClientCapabilitiesSchema",
 					"optional": true
 				},
+				"server_capabilities": {
+					"kind": "ref",
+					"name": "HeadlessServerCapabilitiesSchema",
+					"optional": true
+				},
 				"opt_out_notifications": {
 					"kind": "ref",
 					"name": "HeadlessOptOutNotificationsSchema",
@@ -601,6 +639,11 @@
 							"value": null
 						}
 					]
+				},
+				"executor_type": {
+					"kind": "enumRef",
+					"name": "headlessExecutorTypes",
+					"optional": true
 				}
 			}
 		},
@@ -730,6 +773,10 @@
 				"call_id": {
 					"kind": "string"
 				},
+				"tool_execution_id": {
+					"kind": "string",
+					"optional": true
+				},
 				"tool": {
 					"kind": "string"
 				},
@@ -781,8 +828,20 @@
 				"call_id": {
 					"kind": "string"
 				},
+				"tool_execution_id": {
+					"kind": "string",
+					"optional": true
+				},
 				"success": {
 					"kind": "boolean"
+				},
+				"tool": {
+					"kind": "string",
+					"optional": true
+				},
+				"details": {
+					"kind": "unknown",
+					"optional": true
 				},
 				"error_code": {
 					"kind": "string",
@@ -808,6 +867,10 @@
 				},
 				"call_id": {
 					"kind": "string"
+				},
+				"tool_execution_id": {
+					"kind": "string",
+					"optional": true
 				},
 				"tool": {
 					"kind": "string"
@@ -835,6 +898,10 @@
 				"call_id": {
 					"kind": "string"
 				},
+				"tool_execution_id": {
+					"kind": "string",
+					"optional": true
+				},
 				"tool": {
 					"kind": "string"
 				},
@@ -855,6 +922,10 @@
 				},
 				"reason": {
 					"kind": "string"
+				},
+				"started_at_ms": {
+					"kind": "number",
+					"optional": true
 				}
 			}
 		},
@@ -887,6 +958,14 @@
 				"resolved_by": {
 					"kind": "enumRef",
 					"name": "headlessServerRequestResolvedBy"
+				},
+				"started_at_ms": {
+					"kind": "number",
+					"optional": true
+				},
+				"resolved_at_ms": {
+					"kind": "number",
+					"optional": true
 				}
 			}
 		},
@@ -1444,6 +1523,10 @@
 				"call_id": {
 					"kind": "string"
 				},
+				"tool_execution_id": {
+					"kind": "string",
+					"optional": true
+				},
 				"request_id": {
 					"kind": "string",
 					"optional": true
@@ -1465,6 +1548,10 @@
 				},
 				"args": {
 					"kind": "unknown"
+				},
+				"started_at_ms": {
+					"kind": "number",
+					"optional": true
 				}
 			}
 		},
@@ -1506,6 +1593,10 @@
 				"call_id": {
 					"kind": "string"
 				},
+				"tool_execution_id": {
+					"kind": "string",
+					"optional": true
+				},
 				"request_id": {
 					"kind": "string",
 					"optional": true
@@ -1530,6 +1621,10 @@
 				},
 				"args": {
 					"kind": "unknown"
+				},
+				"started_at_ms": {
+					"kind": "number",
+					"optional": true
 				},
 				"source": {
 					"kind": "union",
@@ -1561,6 +1656,42 @@
 					"kind": "string"
 				},
 				"output": {
+					"kind": "string"
+				}
+			}
+		},
+		"HeadlessCodexSubagentContinuityEdgeSchema": {
+			"kind": "object",
+			"additionalProperties": false,
+			"properties": {
+				"spawn_tool_call_id": {
+					"kind": "string",
+					"optional": true
+				},
+				"spawn_tool_execution_id": {
+					"kind": "string",
+					"optional": true
+				},
+				"wait_tool_call_id": {
+					"kind": "string",
+					"optional": true
+				},
+				"wait_tool_execution_id": {
+					"kind": "string",
+					"optional": true
+				},
+				"child_run_id": {
+					"kind": "string",
+					"optional": true
+				},
+				"thread_id": {
+					"kind": "string",
+					"optional": true
+				},
+				"operation": {
+					"kind": "string"
+				},
+				"status": {
 					"kind": "string"
 				}
 			}
@@ -1743,6 +1874,11 @@
 					"kind": "string",
 					"optional": true
 				},
+				"executor_type": {
+					"kind": "enumRef",
+					"name": "headlessExecutorTypes",
+					"optional": true
+				},
 				"session_id": {
 					"kind": "union",
 					"variants": [
@@ -1847,6 +1983,14 @@
 					"items": {
 						"kind": "ref",
 						"name": "HeadlessPendingToolStateSchema"
+					}
+				},
+				"codex_subagent_edges": {
+					"kind": "array",
+					"optional": true,
+					"items": {
+						"kind": "ref",
+						"name": "HeadlessCodexSubagentContinuityEdgeSchema"
 					}
 				},
 				"last_error": {

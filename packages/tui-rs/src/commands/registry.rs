@@ -74,9 +74,9 @@ use std::path::Path;
 use std::sync::Arc;
 
 use super::types::{
-    ArgumentValue, Command, CommandAction, CommandArgument, CommandCategory, CommandContext,
-    CommandError, CommandOutput, CommandResult, ExportAction, HistoryAction, HooksAction,
-    McpAction, ModalType, QueueAction, QueueModeKind, SessionAction, SkillsAction,
+    A2aAction, ArgumentValue, Command, CommandAction, CommandArgument, CommandCategory,
+    CommandContext, CommandError, CommandOutput, CommandResult, ExportAction, HistoryAction,
+    HooksAction, McpAction, ModalType, QueueAction, QueueModeKind, SessionAction, SkillsAction,
     ToolHistoryAction, UsageAction,
 };
 use crate::git;
@@ -503,6 +503,180 @@ fn parse_mcp_prompts_action(raw: &str) -> Result<McpAction, CommandError> {
     })
 }
 
+fn parse_a2a_action(raw: &str) -> Result<A2aAction, CommandError> {
+    let tokens = tokenize_command_args(raw);
+    let subcommand = tokens
+        .first()
+        .map(|value| value.to_ascii_lowercase())
+        .unwrap_or_default();
+    match subcommand.as_str() {
+        "" | "help" => Ok(A2aAction::Help),
+        "fleet" => Ok(A2aAction::Fleet),
+        "peers" | "list" => Ok(A2aAction::Peers),
+        "tasks" => Ok(A2aAction::Tasks {
+            peer: first_a2a_positional(&tokens, 1),
+            include_work_graph: has_a2a_flag(&tokens, "--work-graph"),
+        }),
+        "coordinate" => {
+            let reply_index = tokens.iter().position(|value| value == "--reply");
+            let peer = first_a2a_positional(
+                reply_index
+                    .map(|index| &tokens[..index])
+                    .unwrap_or_else(|| tokens.as_slice()),
+                1,
+            );
+            let include_work_graph = has_a2a_flag(&tokens, "--work-graph");
+            let reply = reply_index.map(|index| {
+                tokens
+                    .get(index + 1..)
+                    .unwrap_or(&[])
+                    .iter()
+                    .take_while(|value| !value.starts_with("--"))
+                    .cloned()
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            });
+            let reply = reply.and_then(|value| {
+                let trimmed = value.trim();
+                if trimmed.is_empty() {
+                    None
+                } else {
+                    Some(trimmed.to_string())
+                }
+            });
+            Ok(A2aAction::Coordinate {
+                peer,
+                reply,
+                include_work_graph,
+            })
+        }
+        "accept" => {
+            let code = tokens
+                .get(1)
+                .ok_or_else(|| CommandError::new("Usage: /a2a accept <pairing-code>"))?;
+            Ok(A2aAction::Accept { code: code.clone() })
+        }
+        "register" | "publish" => Ok(A2aAction::Register {
+            agent_id: a2a_flag_value(&tokens, "--agent-id"),
+            public_url: a2a_flag_value(&tokens, "--url")
+                .or_else(|| a2a_flag_value(&tokens, "--public-url")),
+            heartbeat_only: has_a2a_flag(&tokens, "--heartbeat-only"),
+        }),
+        "delegate" => {
+            let peer = tokens
+                .get(1)
+                .ok_or_else(|| CommandError::new("Usage: /a2a delegate <peer> <text>"))?;
+            let text = tokens.get(2..).unwrap_or(&[]).join(" ");
+            if text.trim().is_empty() {
+                return Err(CommandError::new("Usage: /a2a delegate <peer> <text>"));
+            }
+            Ok(A2aAction::Delegate {
+                peer: peer.clone(),
+                text,
+            })
+        }
+        "reply" | "continue" => {
+            let peer = tokens
+                .get(1)
+                .ok_or_else(|| CommandError::new("Usage: /a2a reply <peer> <task-id> <text>"))?;
+            let task_id = tokens
+                .get(2)
+                .ok_or_else(|| CommandError::new("Usage: /a2a reply <peer> <task-id> <text>"))?;
+            let text = tokens.get(3..).unwrap_or(&[]).join(" ");
+            if text.trim().is_empty() {
+                return Err(CommandError::new("Usage: /a2a reply <peer> <task-id> <text>"));
+            }
+            Ok(A2aAction::Reply {
+                peer: peer.clone(),
+                task_id: task_id.clone(),
+                text,
+            })
+        }
+        "send" => {
+            let peer = tokens
+                .get(1)
+                .ok_or_else(|| CommandError::new("Usage: /a2a send <peer> <text>"))?;
+            let text = tokens.get(2..).unwrap_or(&[]).join(" ");
+            if text.trim().is_empty() {
+                return Err(CommandError::new("Usage: /a2a send <peer> <text>"));
+            }
+            Ok(A2aAction::Send {
+                peer: peer.clone(),
+                text,
+            })
+        }
+        _ => Err(CommandError::new(format!("Unknown A2A subcommand: {subcommand}")).with_hint(
+            "Usage: /a2a [fleet|peers|tasks [--work-graph]|coordinate [--work-graph]|accept <code>|register --url <base-url>|delegate <peer> <text>|reply <peer> <task-id> <text>|send <peer> <text>]",
+        )),
+    }
+}
+
+fn has_a2a_flag(tokens: &[String], flag: &str) -> bool {
+    tokens.iter().any(|value| value == flag)
+}
+
+fn first_a2a_positional(tokens: &[String], start: usize) -> Option<String> {
+    let mut index = start;
+    while index < tokens.len() {
+        let token = &tokens[index];
+        if token.starts_with("--") {
+            if a2a_value_flag(token) && !token.contains('=') {
+                index += 2;
+            } else {
+                index += 1;
+            }
+            continue;
+        }
+        return Some(token.clone());
+    }
+    None
+}
+
+fn a2a_flag_value(tokens: &[String], flag: &str) -> Option<String> {
+    for (index, token) in tokens.iter().enumerate() {
+        if let Some((token_flag, value)) = token.split_once('=') {
+            if token_flag == flag {
+                let value = value.trim();
+                return (!value.is_empty()).then(|| value.to_string());
+            }
+        }
+        if token == flag {
+            let value = tokens.get(index + 1)?.trim();
+            return (!value.is_empty() && !value.starts_with("--")).then(|| value.to_string());
+        }
+    }
+    None
+}
+
+fn a2a_value_flag(token: &str) -> bool {
+    matches!(
+        token,
+        "--registry"
+            | "--tasks"
+            | "--timeout-ms"
+            | "--interval-ms"
+            | "--max-wait-ms"
+            | "--role"
+            | "--cwd"
+            | "--agent-card-url"
+            | "--agent-id"
+            | "--capabilities"
+            | "--description"
+            | "--internal-url"
+            | "--name"
+            | "--owner-id"
+            | "--protocol-version"
+            | "--public-url"
+            | "--security-schemes"
+            | "--status"
+            | "--surface"
+            | "--surface-types"
+            | "--type"
+            | "--url"
+            | "--workspace-id"
+    )
+}
+
 /// Build the default command registry with all built-in commands
 ///
 /// Constructs and returns a fully populated `CommandRegistry` containing all
@@ -714,6 +888,21 @@ pub fn build_command_registry() -> CommandRegistry {
         CommandCategory::Ui,
         Box::new(|_| Ok(CommandOutput::Action(CommandAction::CopyLastMessage))),
     ));
+
+    // A2A peer pairing command
+    registry.register(
+        Command::new(
+            "a2a",
+            "Pair, inspect, and delegate to A2A peer agents",
+            CommandCategory::Tools,
+            Box::new(|ctx| {
+                Ok(CommandOutput::Action(CommandAction::A2a(parse_a2a_action(
+                    &ctx.raw_args,
+                )?)))
+            }),
+        )
+        .usage("/a2a [fleet|peers|tasks [--work-graph]|coordinate [--work-graph]|accept <code>|register --url <base-url>|delegate <peer> <text>|reply <peer> <task-id> <text>|send <peer> <text>]"),
+    );
 
     // Queue command
     registry.register(
@@ -1321,16 +1510,16 @@ pub fn build_command_registry() -> CommandRegistry {
             "Change footer style",
             CommandCategory::Ui,
             Box::new(|ctx| {
-                let style = ctx.get_string("style").unwrap_or("ensemble");
+                let style = ctx.get_string("style").unwrap_or("rich");
                 Ok(CommandOutput::Message(format!("Footer style: {style}")))
             }),
         )
         .arg(CommandArgument::choice(
             "style",
             "Footer style",
-            vec!["ensemble", "solo", "history", "clear"],
+            vec!["rich", "solo", "history", "clear"],
         ))
-        .usage("/footer [ensemble|solo|history|clear]"),
+        .usage("/footer [rich|solo|history|clear]"),
     );
 
     // Memory commands
@@ -1806,322 +1995,4 @@ fn truncate_text(text: &str, max_lines: usize, max_chars: usize) -> (String, boo
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    use crate::keybindings::keybindings_test_env_lock;
-    use tempfile::tempdir;
-
-    fn with_temp_keybindings_file<T>(body: impl FnOnce(&Path) -> T) -> T {
-        let _guard = keybindings_test_env_lock().blocking_lock();
-        let temp = tempdir().expect("tempdir");
-        let path = temp.path().join("keybindings.json");
-        let previous = std::env::var_os("MAESTRO_KEYBINDINGS_FILE");
-        std::env::set_var("MAESTRO_KEYBINDINGS_FILE", &path);
-        let result = body(&path);
-        match previous {
-            Some(value) => std::env::set_var("MAESTRO_KEYBINDINGS_FILE", value),
-            None => std::env::remove_var("MAESTRO_KEYBINDINGS_FILE"),
-        }
-        result
-    }
-
-    #[test]
-    fn registry_register_and_get() {
-        let mut registry = CommandRegistry::new();
-        registry.register(Command::new(
-            "test",
-            "A test command",
-            CommandCategory::Diagnostics,
-            Box::new(|_| Ok(CommandOutput::Silent)),
-        ));
-
-        assert!(registry.get("test").is_some());
-        assert!(registry.get("unknown").is_none());
-    }
-
-    #[test]
-    fn registry_alias_lookup() {
-        let mut registry = CommandRegistry::new();
-        registry.register(
-            Command::new(
-                "help",
-                "Help command",
-                CommandCategory::Navigation,
-                Box::new(|_| Ok(CommandOutput::Silent)),
-            )
-            .alias("h"),
-        );
-
-        assert!(registry.get("help").is_some());
-        assert!(registry.get("h").is_some());
-        assert_eq!(
-            registry.get("h").unwrap().name,
-            registry.get("help").unwrap().name
-        );
-    }
-
-    #[test]
-    fn registry_execute() {
-        let registry = build_command_registry();
-        let result = registry.execute("/version", "/tmp", None, None);
-        assert!(result.is_ok());
-        match result.unwrap() {
-            CommandOutput::Message(message) => {
-                assert_eq!(
-                    message,
-                    format!("Maestro TUI v{}", env!("CARGO_PKG_VERSION"))
-                );
-            }
-            other => panic!("expected version message, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn registry_execute_unknown() {
-        let registry = build_command_registry();
-        let result = registry.execute("/unknowncommand", "/tmp", None, None);
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn built_in_commands_exist() {
-        let registry = build_command_registry();
-        assert!(registry.get("help").is_some());
-        assert!(registry.get("hotkeys").is_some());
-        assert!(registry.get("keys").is_some());
-        assert!(registry.get("shortcuts").is_some());
-        assert!(registry.get("theme").is_some());
-        assert!(registry.get("model").is_some());
-        assert!(registry.get("quit").is_some());
-        assert!(registry.get("limits").is_some());
-        assert!(registry.get("status").is_some());
-        assert!(registry.get("stats").is_some());
-        assert!(registry.get("about").is_some());
-        assert!(registry.get("context").is_some());
-        assert!(registry.get("git").is_some());
-        assert!(registry.get("diff").is_some());
-        assert!(registry.get("review").is_some());
-    }
-
-    #[test]
-    fn hotkeys_command_opens_shortcuts_help_modal() {
-        let registry = build_command_registry();
-        let result = registry.execute("/hotkeys", "/tmp", None, None);
-
-        match result.expect("hotkeys command should succeed") {
-            CommandOutput::OpenModal(ModalType::ShortcutsHelp) => {}
-            other => panic!("expected shortcuts help modal, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn hotkeys_command_can_init_and_validate_keybindings_config() {
-        with_temp_keybindings_file(|path| {
-            let registry = build_command_registry();
-            let init_result = registry
-                .execute("/hotkeys init", "/tmp", None, None)
-                .expect("hotkeys init should succeed");
-            match init_result {
-                CommandOutput::Message(message) => {
-                    assert!(message.contains("Created keyboard shortcuts config at"));
-                }
-                other => panic!("expected init message, got {other:?}"),
-            }
-            assert!(path.exists(), "hotkeys init should create the config file");
-
-            let validate_result = registry
-                .execute("/hotkeys validate", "/tmp", None, None)
-                .expect("hotkeys validate should succeed");
-            match validate_result {
-                CommandOutput::Message(message) => {
-                    assert!(message.contains("Keyboard Shortcuts Config:"));
-                    assert!(message.contains("Status: present"));
-                    assert!(message.contains("Rust TUI overrides:"));
-                }
-                other => panic!("expected validation message, got {other:?}"),
-            }
-        });
-    }
-
-    #[test]
-    fn hotkeys_command_requires_force_to_overwrite_existing_config() {
-        with_temp_keybindings_file(|path| {
-            std::fs::write(path, r#"{"version":1,"bindings":{}}"#)
-                .expect("write keybindings config");
-            let registry = build_command_registry();
-            let err = registry
-                .execute("/hotkeys init", "/tmp", None, None)
-                .expect_err("init without force should fail when config exists");
-
-            assert_eq!(
-                err.message,
-                format!("Keybindings config already exists at {}.", path.display())
-            );
-            assert_eq!(
-                err.hint,
-                Some("Re-run with /hotkeys init --force to overwrite it.".to_string())
-            );
-        });
-    }
-
-    #[test]
-    fn cost_command_exists() {
-        let registry = build_command_registry();
-        assert!(registry.get("cost").is_some());
-        assert!(registry.get("usage").is_some()); // alias
-        assert!(registry.get("tokens").is_some()); // alias
-    }
-
-    #[test]
-    fn cost_command_actions() {
-        let registry = build_command_registry();
-
-        // Summary (default)
-        let result = registry.execute("/cost", "/tmp", None, None);
-        assert!(result.is_ok());
-
-        // Detailed
-        let result = registry.execute("/cost detailed", "/tmp", None, None);
-        assert!(result.is_ok());
-
-        // Reset
-        let result = registry.execute("/cost reset", "/tmp", None, None);
-        assert!(result.is_ok());
-
-        // Invalid
-        let result = registry.execute("/cost invalid", "/tmp", None, None);
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn export_command_exists() {
-        let registry = build_command_registry();
-        assert!(registry.get("export").is_some());
-    }
-
-    #[test]
-    fn export_command_formats() {
-        let registry = build_command_registry();
-
-        // No args (show options)
-        let result = registry.execute("/export", "/tmp", None, None);
-        assert!(result.is_ok());
-
-        // Markdown
-        let result = registry.execute("/export markdown", "/tmp", None, None);
-        assert!(result.is_ok());
-
-        // HTML with path
-        let result = registry.execute("/export html output.html", "/tmp", None, None);
-        assert!(result.is_ok());
-
-        // Invalid format
-        let result = registry.execute("/export invalid", "/tmp", None, None);
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn history_command_exists() {
-        let registry = build_command_registry();
-        assert!(registry.get("history").is_some());
-        assert!(registry.get("hist").is_some()); // alias
-    }
-
-    #[test]
-    fn history_command_actions() {
-        let registry = build_command_registry();
-
-        // Default (recent 20)
-        let result = registry.execute("/history", "/tmp", None, None);
-        assert!(result.is_ok());
-
-        // With count
-        let result = registry.execute("/history 10", "/tmp", None, None);
-        assert!(result.is_ok());
-
-        // Search
-        let result = registry.execute("/history git status", "/tmp", None, None);
-        assert!(result.is_ok());
-
-        // Clear
-        let result = registry.execute("/history clear", "/tmp", None, None);
-        assert!(result.is_ok());
-    }
-
-    #[test]
-    fn toolhistory_command_exists() {
-        let registry = build_command_registry();
-        assert!(registry.get("toolhistory").is_some());
-        assert!(registry.get("th").is_some()); // alias
-    }
-
-    #[test]
-    fn toolhistory_command_actions() {
-        let registry = build_command_registry();
-
-        // Default
-        let result = registry.execute("/toolhistory", "/tmp", None, None);
-        assert!(result.is_ok());
-
-        // Stats
-        let result = registry.execute("/toolhistory stats", "/tmp", None, None);
-        assert!(result.is_ok());
-
-        // For specific tool
-        let result = registry.execute("/toolhistory read", "/tmp", None, None);
-        assert!(result.is_ok());
-
-        // Clear
-        let result = registry.execute("/toolhistory clear", "/tmp", None, None);
-        assert!(result.is_ok());
-    }
-
-    #[test]
-    fn mcp_prompts_command_parses_prompt_arguments() {
-        let registry = build_command_registry();
-        let result = registry.execute(
-            r#"/mcp prompts docs summarize topic="MCP auth flow" format=brief"#,
-            "/tmp",
-            None,
-            None,
-        );
-
-        match result.expect("mcp prompt args should parse") {
-            CommandOutput::Action(CommandAction::Mcp(McpAction::Prompts {
-                server,
-                name,
-                arguments,
-            })) => {
-                assert_eq!(server.as_deref(), Some("docs"));
-                assert_eq!(name.as_deref(), Some("summarize"));
-                assert_eq!(
-                    arguments.get("topic").map(std::string::String::as_str),
-                    Some("MCP auth flow")
-                );
-                assert_eq!(
-                    arguments.get("format").map(std::string::String::as_str),
-                    Some("brief")
-                );
-            }
-            other => panic!("expected MCP prompts action, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn mcp_prompts_command_rejects_invalid_prompt_arguments() {
-        let registry = build_command_registry();
-        let result = registry.execute(
-            "/mcp prompts docs summarize invalid-arg",
-            "/tmp",
-            None,
-            None,
-        );
-
-        let err = result.expect_err("invalid MCP prompt args should fail");
-        assert_eq!(
-            err.message,
-            "Invalid MCP prompt argument. Use KEY=value after the prompt name."
-        );
-    }
-}
+mod tests;

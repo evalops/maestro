@@ -28,7 +28,7 @@ describe("resolveWorkspaceRoot", () => {
 	it("returns undefined when no marker found", async () => {
 		const file = join(tempDir, "file.ts");
 		writeFileSync(file, "");
-		const resolved = await resolveWorkspaceRoot(file);
+		const resolved = await resolveWorkspaceRoot(file, { stopAt: tempDir });
 		expect(resolved).toBeUndefined();
 	});
 });

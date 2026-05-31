@@ -5,8 +5,11 @@ export interface PlatformConnectMethodDescriptor {
 
 export const PLATFORM_CONNECT_SERVICES = {
 	agentRuntime: "agentruntime.v1.AgentRuntimeService",
+	agents: "agents.v1.AgentService",
 	approvals: "approvals.v1.ApprovalService",
 	connectors: "connectors.v1.ConnectorService",
+	fermata: "fermata.v1.FermataService",
+	fermataExecution: "fermata.v1.FermataExecutionService",
 	governance: "governance.v1.GovernanceService",
 	llmGateway: "llmgateway.v1.GatewayService",
 	maestroTimeline: "maestro.v1.MaestroTimelineService",
@@ -50,17 +53,63 @@ export const PLATFORM_CONNECT_METHODS = {
 			service: PLATFORM_CONNECT_SERVICES.agentRuntime,
 			method: "RecordRunCost",
 		},
+		recordRunEvent: {
+			service: PLATFORM_CONNECT_SERVICES.agentRuntime,
+			method: "RecordRunEvent",
+		},
 		recordRunStep: {
 			service: PLATFORM_CONNECT_SERVICES.agentRuntime,
 			method: "RecordRunStep",
+		},
+		recordRunWorkItem: {
+			service: PLATFORM_CONNECT_SERVICES.agentRuntime,
+			method: "RecordRunWorkItem",
 		},
 		resumeRun: {
 			service: PLATFORM_CONNECT_SERVICES.agentRuntime,
 			method: "ResumeRun",
 		},
+		updateRunWorkItem: {
+			service: PLATFORM_CONNECT_SERVICES.agentRuntime,
+			method: "UpdateRunWorkItem",
+		},
 		waitRun: {
 			service: PLATFORM_CONNECT_SERVICES.agentRuntime,
 			method: "WaitRun",
+		},
+	},
+	agents: {
+		controlA2ADelegationTask: {
+			service: PLATFORM_CONNECT_SERVICES.agents,
+			method: "ControlA2ADelegationTask",
+		},
+		getA2ADelegationGraph: {
+			service: PLATFORM_CONNECT_SERVICES.agents,
+			method: "GetA2ADelegationGraph",
+		},
+		heartbeat: {
+			service: PLATFORM_CONNECT_SERVICES.agents,
+			method: "Heartbeat",
+		},
+		register: {
+			service: PLATFORM_CONNECT_SERVICES.agents,
+			method: "Register",
+		},
+		delegate: {
+			service: PLATFORM_CONNECT_SERVICES.agents,
+			method: "Delegate",
+		},
+		list: {
+			service: PLATFORM_CONNECT_SERVICES.agents,
+			method: "List",
+		},
+		resolveDelegation: {
+			service: PLATFORM_CONNECT_SERVICES.agents,
+			method: "ResolveDelegation",
+		},
+		update: {
+			service: PLATFORM_CONNECT_SERVICES.agents,
+			method: "Update",
 		},
 	},
 	approvals: {
@@ -113,6 +162,22 @@ export const PLATFORM_CONNECT_METHODS = {
 		setSourceOfTruthPolicy: {
 			service: PLATFORM_CONNECT_SERVICES.connectors,
 			method: "SetSourceOfTruthPolicy",
+		},
+	},
+	fermata: {
+		createTestSuite: {
+			service: PLATFORM_CONNECT_SERVICES.fermata,
+			method: "CreateTestSuite",
+		},
+		getTestSuite: {
+			service: PLATFORM_CONNECT_SERVICES.fermata,
+			method: "GetTestSuite",
+		},
+	},
+	fermataExecution: {
+		runTestSuite: {
+			service: PLATFORM_CONNECT_SERVICES.fermataExecution,
+			method: "RunTestSuite",
 		},
 	},
 	governance: {
@@ -232,6 +297,9 @@ export const PLATFORM_CONNECT_METHODS = {
 } as const;
 
 export const PLATFORM_HTTP_ROUTES = {
+	agentRuntime: {
+		operatingPlaneRuns: "/v1/agent-operating-plane/runs",
+	},
 	identity: {
 		apiKeys: "/v1/api-keys",
 		authGoogleStart: "/v1/auth/google/start",

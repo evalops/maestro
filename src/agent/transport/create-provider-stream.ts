@@ -32,6 +32,12 @@ export async function* createProviderStream(
 	options: StreamOptions,
 	reasoning: ReasoningOptions,
 ): AsyncGenerator<AssistantMessageEvent, void, unknown> {
+	if (model.api === "scripted-replay") {
+		const { streamScriptedReplay } = await import("../providers/scripted.js");
+		yield* streamScriptedReplay(model, context, options);
+		return;
+	}
+
 	if (model.api === "anthropic-messages") {
 		const { streamAnthropic } = await import("../providers/anthropic.js");
 		yield* streamAnthropic(model as Model<"anthropic-messages">, context, {
@@ -61,6 +67,22 @@ export async function* createProviderStream(
 		);
 		yield* streamOpenAICodexResponses(
 			model as Model<"openai-codex-responses">,
+			context,
+			{
+				...options,
+				reasoningEffort: reasoning.reasoning,
+				reasoningSummary: reasoning.reasoningSummary,
+			},
+		);
+		return;
+	}
+
+	if (model.api === "openai-codex-app-server") {
+		const { streamCodexAppServer } = await import(
+			"../providers/codex-app-server.js"
+		);
+		yield* streamCodexAppServer(
+			model as Model<"openai-codex-app-server">,
 			context,
 			{
 				...options,

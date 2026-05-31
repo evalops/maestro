@@ -12,7 +12,6 @@
  * |----------|------------------------------------------------|
  * | auto     | Try OAuth first, fallback to API keys (default)|
  * | api-key  | Only use API keys, skip OAuth                  |
- * | claude   | Only use Anthropic OAuth, fail if unavailable  |
  *
  * ## Credential Resolution Order
  *
@@ -29,8 +28,6 @@
  * | env                 | From environment variable                |
  * | custom_literal      | Hardcoded in custom provider config      |
  * | custom_env          | Env var from custom provider config      |
- * | anthropic_oauth_env | Anthropic OAuth token from env           |
- * | anthropic_oauth_file| Anthropic OAuth from stored credentials  |
  * | evalops_oauth_file  | EvalOps managed OAuth from stored credentials |
  * | openai_oauth_file   | OpenAI OAuth from stored credentials     |
  * | openai_codex_oauth_file | OpenAI Codex ChatGPT OAuth from stored credentials |
@@ -51,6 +48,11 @@
  * @module providers/auth
  */
 
+import {
+	EVALOPS_ORGANIZATION_ID_ENV_VARS,
+	EVALOPS_WORKSPACE_ID_ENV_VARS,
+	readEvalOpsEnv,
+} from "../evalops/env-aliases.js";
 import { getOAuthToken } from "../oauth/index.js";
 import { loadOAuthCredentials } from "../oauth/storage.js";
 import { lookupApiKey } from "./api-keys.js";
@@ -62,17 +64,15 @@ import {
 } from "./evalops-managed.js";
 import { getFreshOpenAIOAuthCredential } from "./openai-auth.js";
 
-export type AuthMode = "auto" | "api-key" | "claude";
+export type AuthMode = "auto" | "api-key";
 
-export type AuthCredentialType = "api-key" | "anthropic-oauth";
+export type AuthCredentialType = "api-key" | "bearer-token";
 
 export type AuthCredentialSource =
 	| "explicit"
 	| "env"
 	| "custom_literal"
 	| "custom_env"
-	| "anthropic_oauth_env"
-	| "anthropic_oauth_file"
 	| "evalops_agent_key_file"
 	| "evalops_oauth_file"
 	| "openai_oauth_file"
@@ -97,12 +97,6 @@ export interface AuthResolverOptions {
 }
 
 type AuthResolver = (provider: string) => Promise<AuthCredential | undefined>;
-
-const ANTHROPIC_OAUTH_ENV_VARS = [
-	"CLAUDE_CODE_TOKEN",
-	"ANTHROPIC_OAUTH_TOKEN",
-	"ANTHROPIC_ACCESS_TOKEN",
-];
 
 function isOpenAIProvider(provider: string): boolean {
 	const normalized = provider.toLowerCase();
@@ -132,7 +126,7 @@ function isGitHubCopilotProvider(provider: string): boolean {
 
 function resolveEvalOpsCredentialType(provider: string): AuthCredentialType {
 	return getEvalOpsManagedProviderDefinition(provider)?.usesAnthropicOAuth
-		? "anthropic-oauth"
+		? "bearer-token"
 		: "api-key";
 }
 
@@ -144,6 +138,20 @@ function getNonEmptyString(value: unknown): string | undefined {
 	return typeof value === "string" && value.trim().length > 0
 		? value.trim()
 		: undefined;
+}
+
+function firstNonEmptyString(...values: unknown[]): string | undefined {
+	for (const value of values) {
+		const candidate = getNonEmptyString(value);
+		if (candidate) {
+			return candidate;
+		}
+	}
+	return undefined;
+}
+
+function readFirstEnv(names: readonly string[]): string | undefined {
+	return firstNonEmptyString(...names.map((name) => process.env[name]));
 }
 
 function getStringArray(value: unknown): string[] {
@@ -181,17 +189,7 @@ function resolveEvalOpsOrganizationId(
 	if (candidate && candidate.trim().length > 0) {
 		return candidate.trim();
 	}
-	for (const envVar of [
-		"MAESTRO_EVALOPS_ORG_ID",
-		"EVALOPS_ORGANIZATION_ID",
-		"MAESTRO_ENTERPRISE_ORG_ID",
-	]) {
-		const value = process.env[envVar]?.trim();
-		if (value) {
-			return value;
-		}
-	}
-	return undefined;
+	return readEvalOpsEnv(process.env, EVALOPS_ORGANIZATION_ID_ENV_VARS);
 }
 
 function resolveEvalOpsProviderRef(
@@ -238,26 +236,126 @@ function resolveEvalOpsProviderRef(
 function resolveEvalOpsRequestMetadata(
 	metadata?: Record<string, unknown>,
 ): Record<string, string> {
+	const agentMcp = isRecord(metadata?.agentMcp) ? metadata.agentMcp : undefined;
+	const agentID = firstNonEmptyString(
+		metadata?.agentId,
+		metadata?.agent_id,
+		agentMcp?.agentId,
+		agentMcp?.agent_id,
+		readFirstEnv(["MAESTRO_EVALOPS_AGENT_ID", "MAESTRO_AGENT_ID"]),
+	);
+	const platformRunID = firstNonEmptyString(
+		metadata?.runId,
+		metadata?.run_id,
+		agentMcp?.runId,
+		agentMcp?.run_id,
+		readFirstEnv(["MAESTRO_EVALOPS_RUN_ID"]),
+	);
+	const agentRunID = firstNonEmptyString(
+		metadata?.agentRunId,
+		metadata?.agent_run_id,
+		agentMcp?.agentRunId,
+		agentMcp?.agent_run_id,
+		readFirstEnv(["MAESTRO_AGENT_RUN_ID", "MAESTRO_EVALOPS_AGENT_RUN_ID"]),
+		platformRunID,
+	);
+	const runID = platformRunID ?? agentRunID;
+	const platformSessionID = firstNonEmptyString(
+		metadata?.sessionId,
+		metadata?.session_id,
+		agentMcp?.sessionId,
+		agentMcp?.session_id,
+		readFirstEnv(["MAESTRO_EVALOPS_SESSION_ID"]),
+	);
+	const maestroSessionID = firstNonEmptyString(
+		metadata?.maestroSessionId,
+		metadata?.maestro_session_id,
+		readFirstEnv(["MAESTRO_SESSION_ID"]),
+		platformSessionID,
+	);
+	const sessionID = platformSessionID ?? maestroSessionID;
+	const workspaceID = firstNonEmptyString(
+		metadata?.workspaceId,
+		metadata?.workspace_id,
+		agentMcp?.workspaceId,
+		agentMcp?.workspace_id,
+		readEvalOpsEnv(process.env, EVALOPS_WORKSPACE_ID_ENV_VARS),
+	);
+	const objectiveID = firstNonEmptyString(
+		metadata?.objectiveId,
+		metadata?.objective_id,
+		agentMcp?.objectiveId,
+		agentMcp?.objective_id,
+		readFirstEnv(["MAESTRO_OBJECTIVE_ID", "MAESTRO_EVALOPS_OBJECTIVE_ID"]),
+	);
+	const stepID = firstNonEmptyString(
+		metadata?.agentRunStepId,
+		metadata?.agent_run_step_id,
+		metadata?.stepId,
+		metadata?.step_id,
+		agentMcp?.agentRunStepId,
+		agentMcp?.agent_run_step_id,
+		readFirstEnv([
+			"MAESTRO_AGENT_RUN_STEP_ID",
+			"MAESTRO_EVALOPS_AGENT_RUN_STEP_ID",
+		]),
+	);
+	const traceID = firstNonEmptyString(
+		metadata?.traceId,
+		metadata?.trace_id,
+		agentMcp?.traceId,
+		agentMcp?.trace_id,
+		readFirstEnv(["MAESTRO_TRACE_ID", "TRACE_ID"]),
+	);
+	const threadID = firstNonEmptyString(
+		metadata?.threadId,
+		metadata?.thread_id,
+		agentMcp?.threadId,
+		agentMcp?.thread_id,
+		readFirstEnv(["MAESTRO_THREAD_ID", "MAESTRO_EVALOPS_THREAD_ID"]),
+	);
+	const turnID = firstNonEmptyString(
+		metadata?.turnId,
+		metadata?.turn_id,
+		agentMcp?.turnId,
+		agentMcp?.turn_id,
+		readFirstEnv(["MAESTRO_TURN_ID", "MAESTRO_EVALOPS_TURN_ID"]),
+	);
+	const toolCallID = firstNonEmptyString(
+		metadata?.toolCallId,
+		metadata?.tool_call_id,
+		agentMcp?.toolCallId,
+		agentMcp?.tool_call_id,
+		readFirstEnv(["MAESTRO_TOOL_CALL_ID", "MAESTRO_EVALOPS_TOOL_CALL_ID"]),
+	);
+	const workload = firstNonEmptyString(
+		metadata?.workload,
+		agentMcp?.workload,
+		readFirstEnv(["MAESTRO_EVALOPS_WORKLOAD", "MAESTRO_WORKLOAD"]),
+	);
+	const surface =
+		firstNonEmptyString(
+			metadata?.surface,
+			agentMcp?.surface,
+			readFirstEnv(["MAESTRO_EVALOPS_SURFACE", "MAESTRO_SURFACE"]),
+		) ?? "maestro";
+
 	return Object.fromEntries(
 		Object.entries({
-			agent_id:
-				getNonEmptyString(metadata?.agentId) ??
-				getNonEmptyString(metadata?.agent_id) ??
-				process.env.MAESTRO_EVALOPS_AGENT_ID?.trim() ??
-				process.env.MAESTRO_AGENT_ID?.trim(),
-			run_id:
-				getNonEmptyString(metadata?.runId) ??
-				getNonEmptyString(metadata?.run_id) ??
-				process.env.MAESTRO_EVALOPS_RUN_ID?.trim(),
-			session_id:
-				getNonEmptyString(metadata?.sessionId) ??
-				getNonEmptyString(metadata?.session_id) ??
-				process.env.MAESTRO_SESSION_ID?.trim(),
-			surface:
-				getNonEmptyString(metadata?.surface) ??
-				process.env.MAESTRO_EVALOPS_SURFACE?.trim() ??
-				process.env.MAESTRO_SURFACE?.trim() ??
-				"maestro",
+			agent_id: agentID,
+			workspace_id: workspaceID,
+			objective_id: objectiveID,
+			run_id: runID,
+			agent_run_id: agentRunID,
+			agent_run_step_id: stepID,
+			session_id: sessionID,
+			maestro_session_id: maestroSessionID,
+			surface,
+			trace_id: traceID,
+			thread_id: threadID,
+			turn_id: turnID,
+			tool_call_id: toolCallID,
+			workload,
 		}).filter(
 			(entry): entry is [string, string] =>
 				typeof entry[1] === "string" && entry[1].trim().length > 0,
@@ -409,42 +507,6 @@ export function createAuthResolver(options: AuthResolverOptions): AuthResolver {
 						metadata: credentials?.metadata,
 					};
 				}
-			}
-		}
-
-		const preferAnthropicOAuth =
-			normalizedProvider === "anthropic" && options.mode !== "api-key";
-
-		if (preferAnthropicOAuth) {
-			const envTokenEntry = ANTHROPIC_OAUTH_ENV_VARS.map((envVar) => ({
-				envVar,
-				token: process.env[envVar]?.trim(),
-			})).find((entry) => entry.token);
-			if (envTokenEntry?.token) {
-				return {
-					provider,
-					token: envTokenEntry.token,
-					type: "anthropic-oauth",
-					source: "anthropic_oauth_env",
-					envVar: envTokenEntry.envVar,
-				};
-			}
-
-			// Try OAuth system (oauth.json)
-			const oauthToken = await getOAuthToken("anthropic");
-			if (oauthToken) {
-				const credentials = loadOAuthCredentials("anthropic");
-				return {
-					provider,
-					token: oauthToken,
-					type: "anthropic-oauth",
-					source: "anthropic_oauth_file",
-					metadata: credentials?.metadata,
-				};
-			}
-
-			if (options.mode === "claude") {
-				return undefined;
 			}
 		}
 

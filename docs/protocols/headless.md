@@ -124,6 +124,57 @@ snapshot manifest. The manifest directory comes from `--snapshot-root`,
         }
       ]
     },
+    "work_continuity": {
+      "protocol_version": "evalops.remote-runner.work-continuity.v1",
+      "codex_subagent_schema_version": "evalops.maestro.codex.subagent-workgraph.v1",
+      "active_tool_count": 0,
+      "tracked_tool_count": 0,
+      "pending_request_count": 0,
+      "codex_subagent_tool_call_ids": [],
+      "codex_subagent_child_run_ids": [],
+      "codex_subagent_thread_ids": []
+    },
+    "platform_evidence": {
+      "protocol_version": "evalops.remote-runner.platform-evidence.v1",
+      "event_type": "hosted_runner_drain_manifest_recorded",
+      "runner_session_id": "mrs_123",
+      "workspace_id": "workspace_123",
+      "agent_run_id": "run_123",
+      "maestro_session_id": "session_123",
+      "status": "drained",
+      "runtime_flush_status": "completed",
+      "manifest_path": "/workspace/.maestro/runner-snapshots/mrs_123-2026-04-23T00_00_00_000Z.json",
+      "manifest_protocol_version": "evalops.remote-runner.snapshot-manifest.v1",
+      "created_at": "2026-04-23T00:00:00.000Z",
+      "work_continuity": {
+        "protocol_version": "evalops.remote-runner.work-continuity.v1",
+        "codex_subagent_schema_version": "evalops.maestro.codex.subagent-workgraph.v1",
+        "active_tool_count": 0,
+        "tracked_tool_count": 0,
+        "pending_request_count": 0,
+        "codex_subagent_tool_call_count": 0,
+        "codex_subagent_child_run_count": 0,
+        "codex_subagent_thread_count": 0,
+        "codex_subagent_edge_count": 0,
+        "codex_subagent_tool_call_ids": [],
+        "codex_subagent_child_run_ids": [],
+        "codex_subagent_thread_ids": []
+      },
+      "retention": {
+        "policy_version": "evalops.remote-runner.retention.v1",
+        "control_plane_metadata_visibility": "operator",
+        "runtime_snapshot_visibility": "internal",
+        "redaction_required_before_external_persistence": [
+          "runtime_snapshot",
+          "runtime_logs"
+        ]
+      },
+      "evidence_refs": [
+        "remote-runner://sessions/mrs_123/drain#manifest",
+        "maestro://headless/sessions/session_123#drain",
+        "platform-agent-run:run_123"
+      ]
+    },
     "retention_policy": {
       "policy_version": "evalops.remote-runner.retention.v1",
       "managed_by": "platform",
@@ -187,6 +238,14 @@ The runtime flush status is the field that controls restore readiness:
 means no runtime activity was persisted. Older local manifests that used
 `interrupted` for the runtime flush status are treated as `failed`.
 
+New drain manifests also include `runtime_continuity`, a compact handoff record
+for Platform and operators. It names the source runner session, owner instance,
+source process id, restore manifest path, restore environment key, and the
+cursor-scoped evidence refs that prove which headless snapshot should be
+restored after process shutdown or replica replacement. `platform_evidence`
+mirrors a redacted summary of the same block so AgentRuntime progress records
+can be queried without reading the full runtime snapshot.
+
 ## Hosted Remote-Runner Restore
 
 When Platform has already restored workspace artifacts and a prior snapshot
@@ -248,7 +307,13 @@ Handshake acknowledgement:
   "protocol_version": "2026-04-02",
   "connection_id": "conn_123",
   "client_protocol_version": "2026-04-02",
-  "role": "controller"
+  "role": "controller",
+  "server_capabilities": {
+    "server_requests": ["approval", "client_tool", "mcp_elicitation", "user_input", "tool_retry"],
+    "utility_operations": ["command_exec", "file_search", "file_watch", "file_read"],
+    "raw_agent_events": true,
+    "connection_roles": ["controller", "viewer"]
+  }
 }
 ```
 
@@ -260,6 +325,7 @@ Initial runtime state:
   "protocol_version": "2026-04-02",
   "model": "claude-opus-4-6",
   "provider": "anthropic",
+  "executor_type": "live",
   "session_id": null
 }
 ```
@@ -281,6 +347,17 @@ Negotiated client capabilities in `hello.capabilities`:
   - `command_exec`, `file_search`, `file_watch`, `file_read`
 - `raw_agent_events`
   - opt into raw internal agent events
+
+Advertised server capabilities in `hello_ok.server_capabilities`:
+
+- `server_requests`
+  - request classes this Maestro runtime can emit when a client advertises support
+- `utility_operations`
+  - utility operations this Maestro runtime can host for clients
+- `raw_agent_events`
+  - whether raw internal agent events are available as an opt-in stream
+- `connection_roles`
+  - connection roles the runtime understands
 
 Optional notification opt-outs in `hello.opt_out_notifications`:
 
@@ -342,7 +419,12 @@ Supported `server_request_response.request_type` values:
 - `hello_ok`
   - handshake acknowledgement
 - `ready`
-  - runtime-ready event with protocol version and active model/provider
+  - runtime-ready event with protocol version, active model/provider, and
+    `executor_type`
+  - `executor_type=live` means the runtime is backed by an external or local
+    model provider; `executor_type=replay` means the session is driven by a
+    deterministic scripted scenario and should be visibly badged as replay by
+    clients and control planes
 - `session_info`
   - current `session_id`, `cwd`, and `git_branch`
 - `connection_info`
@@ -502,6 +584,16 @@ attributes (`evalops.organization_id`, `enduser.id`, `evalops.workspace_id`,
 `maestro.session_id`, and `maestro.agent_run_id`). Platform `traces` normalizes
 those attributes into first-class trace fields, and Cerebro imports the same
 event correlation into org/user/session/run/tool graph nodes.
+
+When a session uses an EvalOps managed model provider, Maestro also forwards the
+same content-free join keys to `llm-gateway` request metadata. The gateway
+metadata includes `agent_id`, `workspace_id`, `objective_id`, `run_id`,
+`agent_run_id`, `agent_run_step_id`, `session_id`, `maestro_session_id`,
+`trace_id`, `turn_id`, `tool_call_id`, `workload`, and `surface` when those
+values are available from stored managed-agent identity or the environment. This
+lets Platform's AgentRuntime operating ledger attach model usage to the same run
+as tool execution, approval, trace, and timeline evidence without copying raw
+prompts or responses into operator surfaces.
 
 For direct Cerebro MCP access through the EvalOps plugin, set
 `MAESTRO_PLATFORM_MCP_URL`, `MAESTRO_EVALOPS_AGENT_MCP_URL`, or the manifest

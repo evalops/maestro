@@ -1,6 +1,8 @@
 import { spawn } from "node:child_process";
 import { Type } from "@sinclair/typebox";
 import { safeJsonParse } from "../utils/json.js";
+import { expandTildePath } from "../utils/path-expansion.js";
+import { ensureTool } from "./tools-manager.js";
 
 export const pathSchema = Type.Optional(
 	Type.Union([
@@ -41,7 +43,129 @@ export function toArray<T>(value: T | T[] | undefined): T[] {
 	return Array.isArray(value) ? value : [value];
 }
 
+export function normalizeRipgrepPathArgs(paths: string[]): string[] {
+	return paths.map((path) => expandTildePath(path));
+}
+
 const MAX_RIPGREP_OUTPUT_BYTES = 2_000_000; // ~2MB safeguard
+let ripgrepExecutablePromise: Promise<string | null> | null = null;
+let ripgrepInstallController: AbortController | null = null;
+let ripgrepExecutableWaiters = 0;
+
+function ripgrepAbortError(): Error {
+	return new Error("ripgrep search aborted before start");
+}
+
+function resetRipgrepExecutablePromise(): void {
+	ripgrepExecutablePromise = null;
+	ripgrepInstallController = null;
+}
+
+function getRipgrepExecutablePromise(): Promise<string | null> {
+	if (!ripgrepExecutablePromise) {
+		const controller = new AbortController();
+		ripgrepInstallController = controller;
+		const promise = ensureTool("rg", true, controller.signal).then(
+			(executable) => {
+				if (ripgrepInstallController === controller) {
+					ripgrepInstallController = null;
+				}
+				if (ripgrepExecutablePromise === promise && !executable) {
+					ripgrepExecutablePromise = null;
+				}
+				return executable;
+			},
+			(error) => {
+				if (ripgrepInstallController === controller) {
+					ripgrepInstallController = null;
+				}
+				if (ripgrepExecutablePromise === promise) {
+					ripgrepExecutablePromise = null;
+				}
+				throw error;
+			},
+		);
+		ripgrepExecutablePromise = promise;
+	}
+	return ripgrepExecutablePromise;
+}
+
+function releaseRipgrepExecutableWaiter(signal?: AbortSignal): void {
+	ripgrepExecutableWaiters = Math.max(0, ripgrepExecutableWaiters - 1);
+	if (signal?.aborted && ripgrepExecutableWaiters === 0) {
+		const controller = ripgrepInstallController;
+		resetRipgrepExecutablePromise();
+		controller?.abort(signal.reason);
+	}
+}
+
+async function waitForRipgrepExecutableWithAbort(
+	promise: Promise<string | null>,
+	signal: AbortSignal,
+): Promise<string | null> {
+	throwIfRipgrepAborted(signal);
+	return await new Promise<string | null>((resolve, reject) => {
+		const onAbort = (): void => {
+			signal.removeEventListener("abort", onAbort);
+			reject(ripgrepAbortError());
+		};
+
+		signal.addEventListener("abort", onAbort, { once: true });
+		promise.then(resolve, reject).finally(() => {
+			signal.removeEventListener("abort", onAbort);
+		});
+	});
+}
+
+async function resolveRipgrepExecutable(signal?: AbortSignal): Promise<string> {
+	ripgrepExecutableWaiters += 1;
+	try {
+		const promise = getRipgrepExecutablePromise();
+		const executable = signal
+			? await waitForRipgrepExecutableWithAbort(promise, signal)
+			: await promise;
+		if (!executable) {
+			throw new Error("ripgrep is not available and could not be downloaded");
+		}
+		return executable;
+	} finally {
+		releaseRipgrepExecutableWaiter(signal);
+	}
+}
+
+function throwIfRipgrepAborted(signal?: AbortSignal): void {
+	if (signal?.aborted) {
+		throw ripgrepAbortError();
+	}
+}
+
+async function resolveRipgrepExecutableWithAbort(
+	signal?: AbortSignal,
+): Promise<string> {
+	throwIfRipgrepAborted(signal);
+	if (!signal) {
+		return await resolveRipgrepExecutable();
+	}
+
+	return await resolveRipgrepExecutable(signal);
+}
+
+function shellQuoteArg(value: string): string {
+	if (/^[A-Za-z0-9_/:=.,@%+-]+$/.test(value)) {
+		return value;
+	}
+	return `'${value.replace(/'/g, "'\\''")}'`;
+}
+
+export function formatRipgrepCommand(args: string[]): string {
+	return ["rg", ...args].map(shellQuoteArg).join(" ");
+}
+
+export function isRipgrepPathError(message: string): boolean {
+	return /No such file or directory|IO error|os error 2|system cannot find the path/i.test(
+		message,
+	);
+}
 
 export async function runRipgrep(
 	args: string[],
@@ -53,7 +177,9 @@ export async function runRipgrep(
 	exitCode: number;
 	truncated: boolean;
 }> {
-	const child = spawn("rg", args, {
+	const executable = await resolveRipgrepExecutableWithAbort(signal);
+	throwIfRipgrepAborted(signal);
+	const child = spawn(executable, args, {
 		cwd: cwd ?? process.cwd(),
 		stdio: ["ignore", "pipe", "pipe"],
 		signal,

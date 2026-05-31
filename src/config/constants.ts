@@ -1,5 +1,5 @@
 /**
- * Centralized configuration constants for Composer CLI.
+ * Centralized configuration constants for Maestro CLI.
  *
  * This module consolidates magic numbers, default values, and paths
  * to improve maintainability and allow environment-based overrides.
@@ -70,7 +70,7 @@ export const TOOL_CONFIG = {
  * Storage paths configuration
  */
 export const PATHS = {
-	/** Composer home directory */
+	/** Maestro home directory */
 	get MAESTRO_HOME(): string {
 		return getComposerHome();
 	},
@@ -104,6 +104,13 @@ export const PATHS = {
 		return (
 			resolveEnvPath(process.env.MAESTRO_MCP_PROJECT_APPROVALS_FILE) ??
 			join(getComposerHome(), "mcp-project-approvals.json")
+		);
+	},
+	/** Per-workspace MCP invocation trust decisions */
+	get MCP_WORKSPACE_TRUST_FILE(): string {
+		return (
+			resolveEnvPath(process.env.MAESTRO_MCP_WORKSPACE_TRUST_FILE) ??
+			join(getComposerHome(), "mcp-workspace-trust.json")
 		);
 	},
 	/** Project onboarding state */
@@ -188,7 +195,11 @@ export const PATHS = {
 	AGENT_CONTEXT_FILES: [
 		"AGENTS.override.md",
 		"AGENTS.md",
+		"Agents.md",
+		"agents.md",
 		"AGENT.md",
+		"Agent.md",
+		"agent.md",
 		"CLAUDE.md",
 	] as const,
 } as const;

@@ -1,6 +1,7 @@
 import { spawn } from "node:child_process";
 import { constants, access } from "node:fs/promises";
 import { PLATFORM_HTTP_ROUTES } from "../platform/core-services.js";
+import { isAbortError } from "../utils/abort-error.js";
 import { fetchDownstream } from "../utils/downstream-http.js";
 
 const DEFAULT_TIMEOUT_MS = 10_000;
@@ -53,10 +54,6 @@ async function helperExists(helperPath: string): Promise<boolean> {
 	} catch {
 		return false;
 	}
-}
-
-function isAbortError(error: unknown): boolean {
-	return error instanceof Error && error.name === "AbortError";
 }
 
 async function runHelper(

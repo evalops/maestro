@@ -1,0 +1,14 @@
+{
+  "defaultPeer": "mac-mini",
+  "timeoutMs": 600000,
+  "peers": {
+    "dev-desktop": {
+      "url": "http://192.168.4.113:18787",
+      "tokenFile": "~/.codex/fleet/dev-desktop.token"
+    },
+    "mac-mini": {
+      "url": "http://192.168.4.53:18787",
+      "tokenFile": "~/.codex/fleet/mac-mini.token"
+    }
+  }
+}

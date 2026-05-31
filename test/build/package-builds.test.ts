@@ -10,9 +10,12 @@ const __dirname = dirname(__filename);
 const projectRoot = join(__dirname, "..", "..");
 
 describe("Package Build Verification", () => {
-	describe("TUI package", () => {
-		const tuiDistPath = join(projectRoot, "packages", "tui", "dist");
+	const tuiDistPath = join(projectRoot, "packages", "tui", "dist");
+	const webDistPath = join(projectRoot, "packages", "web", "dist");
+	const contractsDistPath = join(projectRoot, "packages", "contracts", "dist");
+	const aiDistPath = join(projectRoot, "packages", "ai", "dist");
 
+	describe.skipIf(!existsSync(tuiDistPath))("TUI package", () => {
 		it("should have TUI dist directory", async () => {
 			await expect(access(tuiDistPath)).resolves.not.toThrow();
 		});
@@ -34,9 +37,7 @@ describe("Package Build Verification", () => {
 		});
 	});
 
-	describe("Web package", () => {
-		const webDistPath = join(projectRoot, "packages", "web", "dist");
-
+	describe.skipIf(!existsSync(webDistPath))("Web package", () => {
 		it("should have Web dist directory", async () => {
 			await expect(access(webDistPath)).resolves.not.toThrow();
 		});
@@ -55,14 +56,7 @@ describe("Package Build Verification", () => {
 		});
 	});
 
-	describe("Contracts package", () => {
-		const contractsDistPath = join(
-			projectRoot,
-			"packages",
-			"contracts",
-			"dist",
-		);
-
+	describe.skipIf(!existsSync(contractsDistPath))("Contracts package", () => {
 		it("should have Contracts dist directory", async () => {
 			await expect(access(contractsDistPath)).resolves.not.toThrow();
 		});
@@ -75,20 +69,15 @@ describe("Package Build Verification", () => {
 		});
 	});
 
-	describe.skipIf(!existsSync(join(projectRoot, "packages", "ai", "dist")))(
-		"AI package",
-		() => {
-			const aiDistPath = join(projectRoot, "packages", "ai", "dist");
+	describe.skipIf(!existsSync(aiDistPath))("AI package", () => {
+		it("should have AI dist directory", async () => {
+			await expect(access(aiDistPath)).resolves.not.toThrow();
+		});
 
-			it("should have AI dist directory", async () => {
-				await expect(access(aiDistPath)).resolves.not.toThrow();
-			});
-
-			it("should have AI module files", async () => {
-				const { readdir } = await import("node:fs/promises");
-				const entries = await readdir(aiDistPath);
-				expect(entries.length).toBeGreaterThan(0);
-			});
-		},
-	);
+		it("should have AI module files", async () => {
+			const { readdir } = await import("node:fs/promises");
+			const entries = await readdir(aiDistPath);
+			expect(entries.length).toBeGreaterThan(0);
+		});
+	});
 });

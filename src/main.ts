@@ -1,7 +1,7 @@
 /**
- * Main Entry Point - Composer CLI Application
+ * Main Entry Point - Maestro CLI Application
  *
- * This module orchestrates the complete initialization sequence for the Composer CLI,
+ * This module orchestrates the complete initialization sequence for the Maestro CLI,
  * including authentication, model resolution, session management, and runtime mode
  * selection. It serves as the single entry point that routes execution to the
  * appropriate mode (interactive TUI, single-shot, RPC, or exec).
@@ -25,7 +25,7 @@
  *    └── Handle --help, config commands, and other early exits
  *
  * 4. Authentication Resolution
- *    ├── Determine auth mode (auto, api-key, or claude-only)
+ *    ├── Determine auth mode (auto or api-key)
  *    ├── Resolve credentials for the selected provider
  *    └── Build error messages for missing credentials
  *
@@ -67,7 +67,6 @@
  * |----------|--------------------------------------------------|
  * | auto     | Try OAuth first, fall back to API key env vars   |
  * | api-key  | Require explicit API key (--api-key or env var)  |
- * | claude   | Force Anthropic OAuth (no API key fallback)      |
  *
  * ## Runtime Modes
  *
@@ -100,6 +99,9 @@ import {
 	type Model,
 	isAssistantMessage,
 } from "./agent/index.js";
+import { getAllModes, getModelForMode } from "./agent/modes.js";
+import { loadScriptedScenarioFromSource } from "./agent/providers/scripted.js";
+import { scenarioSourceLabel } from "./agent/scenario-source.js";
 import { applySessionEndHooks } from "./agent/session-lifecycle-hooks.js";
 import { type ToolRetryMode, ToolRetryService } from "./agent/tool-retry.js";
 import {
@@ -114,11 +116,18 @@ import {
 } from "./checkpoints/index.js";
 import { TuiClientToolService } from "./cli-tui/client-tools/local-client-tool-service.js";
 import { TuiRenderer } from "./cli-tui/tui-renderer.js";
+import { sanitizeTerminalPreview } from "./cli-tui/utils/text-formatting.js";
 import { type Mode, parseArgs } from "./cli/args.js";
 import {
 	EXEC_SESSION_SUMMARY_PREFIX,
 	runExecCommand,
 } from "./cli/commands/exec.js";
+import {
+	isHeadlessModeRequested,
+	recordHeadlessRuntimeSelection,
+	selectHeadlessRuntime,
+	willDispatchHeadlessRuntime,
+} from "./cli/headless-runtime-selection.js";
 import { runHeadlessMode } from "./cli/headless.js";
 import { printHelp } from "./cli/help.js";
 import {
@@ -129,9 +138,13 @@ import {
 	emitUserTurn as emitUserTurnEvent,
 } from "./cli/jsonl-writer.js";
 import { selectSession } from "./cli/session.js";
-import { resolveExplicitSystemPromptSourcePaths } from "./cli/system-prompt.js";
+import {
+	detectRuntimeConstraintContext,
+	resolveExplicitSystemPromptSourcePaths,
+} from "./cli/system-prompt.js";
 import { validateFrameworkPreference } from "./config/framework.js";
 import { loadRuntimeConfig } from "./config/runtime-config.js";
+import { loadUnifiedContextManifest } from "./context/manifest.js";
 import { loadEnv } from "./load-env.js";
 import { bootstrapLsp } from "./lsp/bootstrap.js";
 import { withMcpPostKeepMessages } from "./mcp/prompt-recovery.js";
@@ -152,10 +165,14 @@ import type { AuthMode } from "./providers/auth.js";
 import { AgentRuntimeController } from "./runtime/agent-runtime.js";
 import { registerBackgroundTaskShutdownHooks } from "./runtime/background-task-hooks.js";
 import { configureSafeMode } from "./safety/safe-mode.js";
+import { LocalSandbox } from "./sandbox/index.js";
+import { captureSentryException, flushSentry, initSentry } from "./sentry.js";
 import { ServerRequestActionApprovalService } from "./server/approval-service.js";
 import { clientToolService } from "./server/client-tools-service.js";
 import { ServerRequestToolRetryService } from "./server/tool-retry-service.js";
 import { SessionManager } from "./session/manager.js";
+import { recordStagedRolloutSurfaceUsage } from "./telemetry.js";
+import { beaconTimeoutMs } from "./telemetry/beacon.js";
 import { askUserClientTool } from "./tools/ask-user-client.js";
 import type { UpdateCheckResult } from "./update/check.js";
 import { createStartupProfilerFromEnv } from "./utils/checkpoint-profiler.js";
@@ -169,10 +186,22 @@ const packageJson = createRequire(import.meta.url)("../package.json") as {
 	version?: string;
 };
 const VERSION = packageJson.version ?? "unknown";
+const STARTUP_TELEMETRY_EXIT_WAIT_GRACE_MS = 25;
 
 let enterpriseCleanupRegistered = false;
 let checkpointCleanupRegistered = false;
 let sandboxCleanupRegistered = false;
+
+function printAllAgentModes(): void {
+	const lines = ["Agent modes:", ""];
+	for (const { mode, config } of getAllModes({ includeHidden: true })) {
+		const hiddenSuffix = config.visible === false ? " [hidden]" : "";
+		lines.push(`${mode}${hiddenSuffix}`);
+		lines.push(`  ${config.description}`);
+		lines.push(`  model: ${getModelForMode(mode)}`);
+	}
+	console.log(lines.join("\n"));
+}
 
 /**
  * Configuration options passed to the interactive TUI renderer.
@@ -270,6 +299,29 @@ async function runInteractiveMode(
 			cwd: process.cwd(),
 			reason: sessionEndReason,
 		});
+	}
+}
+
+async function waitForStartupTelemetryForImmediateExit(
+	startupTelemetry: Promise<void>,
+): Promise<void> {
+	let timeout: NodeJS.Timeout | undefined;
+	try {
+		await Promise.race([
+			startupTelemetry,
+			new Promise<void>((resolve) => {
+				timeout = setTimeout(
+					resolve,
+					beaconTimeoutMs(process.env) + STARTUP_TELEMETRY_EXIT_WAIT_GRACE_MS,
+				);
+			}),
+		]);
+	} catch {
+		// Startup telemetry is best effort and must not affect explicit exits.
+	} finally {
+		if (timeout) {
+			clearTimeout(timeout);
+		}
 	}
 }
 
@@ -401,8 +453,17 @@ function resolveSessionStartHookSource(params: {
 	return "cli";
 }
 
+async function readReplayScenarioId(source: string): Promise<string> {
+	try {
+		return (await loadScriptedScenarioFromSource(source)).id;
+	} catch {
+		// The scripted provider surfaces schema and file errors during streaming.
+	}
+	return scenarioSourceLabel(source);
+}
+
 /**
- * Main entry point for the Composer CLI application.
+ * Main entry point for the Maestro CLI application.
  *
  * This function orchestrates the complete initialization sequence and routes
  * to the appropriate runtime mode. It performs all setup synchronously where
@@ -422,6 +483,13 @@ function resolveSessionStartHookSource(params: {
  * @param args - Command-line arguments (typically process.argv.slice(2))
  */
 export async function main(args: string[]) {
+	const originalStderrWrite = process.stderr.write.bind(process.stderr) as (
+		chunk: string,
+	) => boolean;
+	const writeStartupErrorToStderr = (message: string): void => {
+		originalStderrWrite(message.endsWith("\n") ? message : `${message}\n`);
+	};
+
 	// ─────────────────────────────────────────────────────────────────────────────
 	// PHASE 0: Early Exit Checks (before any async initialization)
 	// ─────────────────────────────────────────────────────────────────────────────
@@ -434,29 +502,124 @@ export async function main(args: string[]) {
 	// Parse arguments early to check for version/help flags before heavy initialization
 	const parsed = parseArgs(args);
 	startupProfiler.checkpoint("cli:parsed");
+	const startupTelemetry = import("./telemetry/cli-startup.js")
+		.then(({ recordCliStartupTelemetry }) =>
+			recordCliStartupTelemetry({
+				args: parsed,
+				clientVersion: VERSION,
+				commandCountLockTimeoutMs: 0,
+				rawArgs: args,
+			}),
+		)
+		.catch(() => undefined);
 
 	// Handle --version early exit (before any async operations)
 	if (parsed.version) {
 		console.log(`Maestro v${VERSION}`);
+		await waitForStartupTelemetryForImmediateExit(startupTelemetry);
 		process.exit(0);
 	}
 
 	// Handle --help early exit (before any logging redirection or heavy init)
 	if (parsed.help) {
-		printHelp(VERSION);
+		const hiddenFlagTelemetry = parsed.helpHidden
+			? recordStagedRolloutSurfaceUsage("hidden_flag_used", {
+					surfaceId: "cli:--help-hidden",
+					surfaceType: "cli_flag",
+					owner: "platform-cli",
+				})
+			: Promise.resolve();
+		printHelp(VERSION, { includeHidden: parsed.helpHidden });
+		await waitForStartupTelemetryForImmediateExit(
+			Promise.all([startupTelemetry, hiddenFlagTelemetry]).then(
+				() => undefined,
+			),
+		);
+		process.exit(0);
+	}
+
+	if (parsed.listModesAll) {
+		const hiddenFlagTelemetry = recordStagedRolloutSurfaceUsage(
+			"hidden_flag_used",
+			{
+				surfaceId: "cli:--list-modes-all",
+				surfaceType: "cli_flag",
+				owner: "agent-runtime",
+			},
+		);
+		printAllAgentModes();
+		await waitForStartupTelemetryForImmediateExit(
+			Promise.all([startupTelemetry, hiddenFlagTelemetry]).then(
+				() => undefined,
+			),
+		);
 		process.exit(0);
 	}
 
 	if (parsed.error) {
 		console.error(chalk.red(parsed.error));
+		await waitForStartupTelemetryForImmediateExit(startupTelemetry);
 		process.exit(1);
 	}
 
+	if (parsed.command === "modes") {
+		const { handleModesCommand } = await import("./cli/commands/modes.js");
+		await handleModesCommand(parsed.subcommand, parsed.messages, {
+			provider: parsed.provider,
+			json: parsed.execJson,
+		});
+		await waitForStartupTelemetryForImmediateExit(startupTelemetry);
+		return;
+	}
+
+	const isHeadlessMode = isHeadlessModeRequested(parsed);
+	const willDispatchHeadlessMode = willDispatchHeadlessRuntime(parsed);
+
 	const exitWithEarlyStartupError = (error: unknown): never => {
 		const message = error instanceof Error ? error.message : String(error);
-		console.error(chalk.red(message));
+		if (isHeadlessMode) {
+			process.stdout.write(
+				`${JSON.stringify({
+					type: "error",
+					message: `Headless startup failed: ${message}`,
+					fatal: true,
+					error_type: "fatal",
+				})}\n`,
+			);
+		} else {
+			writeStartupErrorToStderr(chalk.red(message));
+		}
 		process.exit(1);
 	};
+
+	try {
+		validateCodexFlags(args, parsed.help ? "help" : parsed.command);
+	} catch (error) {
+		exitWithEarlyStartupError(error);
+	}
+
+	if (parsed.command === "codex") {
+		const { handleCodexCommand } = await import("./cli/commands/codex.js");
+		const commandArgs = [...(parsed.commandArgs ?? [])];
+		if (parsed.subcommand === "login" && parsed.force) {
+			commandArgs.push("--force");
+		}
+		await handleCodexCommand(parsed.subcommand, commandArgs);
+		await waitForStartupTelemetryForImmediateExit(startupTelemetry);
+		return;
+	}
+
+	const replayScenarioPath =
+		parsed.replayScenarioPath ?? process.env.MAESTRO_SCENARIO_PATH;
+	if (replayScenarioPath) {
+		parsed.replayScenarioPath = replayScenarioPath;
+		process.env.MAESTRO_SCENARIO_PATH = replayScenarioPath;
+		process.env.MAESTRO_SCENARIO_ID =
+			await readReplayScenarioId(replayScenarioPath);
+		process.env.MAESTRO_MODE = "replay";
+		parsed.provider = "scripted-replay";
+		parsed.model = "maestro-replay-v1";
+	}
 
 	// Handle `maestro hosted-runner` before importing web-server so hosted
 	// defaults are visible to its module-level runtime profile.
@@ -495,26 +658,46 @@ export async function main(args: string[]) {
 	// progress or diagnostic output on stderr, so route it before config loading
 	// can emit normal CLI startup logs.
 	if (parsed.command === "init") {
-		try {
-			validateCodexFlags(args, parsed.command);
-		} catch (error) {
-			exitWithEarlyStartupError(error);
-		}
-
 		const { handleInitCommand } = await import("./cli/commands/init.js");
 		await handleInitCommand(parsed.commandArgs ?? []);
 		return;
 	}
 
 	if (parsed.command === "status") {
-		try {
-			validateCodexFlags(args, parsed.command);
-		} catch (error) {
-			exitWithEarlyStartupError(error);
-		}
-
 		const { handleStatusCommand } = await import("./cli/commands/status.js");
 		await handleStatusCommand();
+		return;
+	}
+
+	if (parsed.command === "update") {
+		const { handleUpdateCommand } = await import("./cli/commands/update.js");
+		await handleUpdateCommand(parsed.commandArgs ?? []);
+		return;
+	}
+
+	if (parsed.command === "context") {
+		const { handleContextCommand } = await import("./cli/commands/context.js");
+		await handleContextCommand(parsed.subcommand, parsed.messages, {
+			json: parsed.execJson,
+			liveMcp: parsed.contextLiveMcp,
+		});
+		return;
+	}
+
+	if (parsed.command === "scenario") {
+		const { handleScenarioCommand } = await import(
+			"./cli/commands/scenario.js"
+		);
+		await handleScenarioCommand(parsed.subcommand, parsed.messages, {
+			json: parsed.execJson,
+			junitPath: parsed.junitPath,
+		});
+		return;
+	}
+
+	if (parsed.command === "skill") {
+		const { handleSkillCommand } = await import("./cli/commands/skill.js");
+		await handleSkillCommand(parsed.subcommand, parsed.commandArgs ?? []);
 		return;
 	}
 
@@ -525,8 +708,7 @@ export async function main(args: string[]) {
 		!parsed.messages.length &&
 		(parsed.mode === "text" || parsed.mode === undefined) &&
 		parsed.command === undefined;
-	const isHeadlessMode = parsed.headless || parsed.mode === "headless";
-	if (isLikelyInteractiveTui || isHeadlessMode) {
+	if (isLikelyInteractiveTui || willDispatchHeadlessMode) {
 		const {
 			redirectLoggerToFile,
 			redirectConsoleToLogger,
@@ -534,12 +716,17 @@ export async function main(args: string[]) {
 			pipeProcessEventsToLogger,
 		} = await import("./utils/logger.js");
 		redirectLoggerToFile();
-		redirectConsoleToLogger({ preserveErrorStderr: isHeadlessMode });
-		if (!isHeadlessMode) {
+		redirectConsoleToLogger({ preserveErrorStderr: willDispatchHeadlessMode });
+		if (!willDispatchHeadlessMode) {
 			redirectStderrToLogger();
 		}
 		pipeProcessEventsToLogger();
 	}
+
+	const headlessRuntimeSelection = selectHeadlessRuntime(process.env, {
+		allowLegacy: willDispatchHeadlessMode,
+	});
+	recordHeadlessRuntimeSelection(headlessRuntimeSelection);
 
 	const runtimeConfig = loadRuntimeConfig(parsed, process.cwd());
 	startupProfiler.checkpoint("config:loaded");
@@ -549,7 +736,7 @@ export async function main(args: string[]) {
 			: runtimeConfig.config.model_reasoning_summary === "none"
 				? null
 				: runtimeConfig.config.model_reasoning_summary;
-	const exitWithStartupError = (error: unknown): never => {
+	const exitWithStartupError = async (error: unknown): Promise<never> => {
 		const message = error instanceof Error ? error.message : String(error);
 		const stack = error instanceof Error ? error.stack : undefined;
 		if (isHeadlessMode) {
@@ -563,8 +750,10 @@ export async function main(args: string[]) {
 			);
 			process.stderr.write(`${stack ?? message}\n`);
 		} else {
-			console.error(chalk.red(message));
+			writeStartupErrorToStderr(chalk.red(message));
 		}
+		captureSentryException(error);
+		await flushSentry();
 		process.exit(1);
 	};
 
@@ -575,6 +764,7 @@ export async function main(args: string[]) {
 	// Initialize OpenTelemetry tracing for observability
 	// This is non-blocking (void) to avoid startup latency
 	void initOpenTelemetry("composer-cli");
+	initSentry("maestro-cli");
 
 	const modelLoadPromise = (async () => {
 		await ensureModelsLoaded();
@@ -645,14 +835,7 @@ export async function main(args: string[]) {
 	// Determine authentication mode:
 	// - auto: Try OAuth first, fall back to API key environment variables
 	// - api-key: Require explicit API key from --api-key or env var
-	// - claude: Force Anthropic OAuth (no API key fallback)
 	const authMode: AuthMode = parsed.authMode ?? "auto";
-
-	try {
-		validateCodexFlags(args, parsed.command);
-	} catch (error) {
-		exitWithStartupError(error);
-	}
 
 	const { requireCredential } = createAuthSetup({
 		authMode,
@@ -662,16 +845,24 @@ export async function main(args: string[]) {
 
 	if (parsed.command === "exec") {
 		if (parsed.execFullAuto && parsed.execReadOnly) {
-			exitWithStartupError(
+			await exitWithStartupError(
 				"Cannot combine --full-auto with --read-only in maestro exec.",
 			);
 		}
 	}
 
 	// Validate sandbox mode (applies to both exec and interactive modes)
-	const validSandboxModes = ["docker", "local", "none"];
+	const validSandboxModes = [
+		"docker",
+		"local",
+		"native",
+		"none",
+		"read-only",
+		"workspace-write",
+		"danger-full-access",
+	];
 	if (parsed.sandbox && !validSandboxModes.includes(parsed.sandbox)) {
-		exitWithStartupError(
+		await exitWithStartupError(
 			`Unknown sandbox mode "${parsed.sandbox}". Supported: ${validSandboxModes.join(", ")}`,
 		);
 	}
@@ -782,15 +973,29 @@ export async function main(args: string[]) {
 		return;
 	}
 
-	if (parsed.command === "codex") {
-		const { handleCodexCommand } = await import("./cli/commands/codex.js");
-		await handleCodexCommand(parsed.subcommand, parsed.messages);
-		return;
-	}
-
 	if (parsed.command === "hooks") {
 		const { handleHooksCommand } = await import("./cli/commands/hooks.js");
 		await handleHooksCommand(parsed.subcommand);
+		return;
+	}
+
+	if (parsed.command === "run") {
+		const { handleRunCommand } = await import("./cli/commands/run.js");
+		await handleRunCommand(parsed.subcommand, parsed.messages, {
+			json: parsed.execJson,
+		});
+		return;
+	}
+
+	if (parsed.command === "sessions") {
+		const { handleSessionsCommand } = await import(
+			"./cli/commands/sessions.js"
+		);
+		await handleSessionsCommand(parsed.subcommand, parsed.messages, {
+			json: parsed.execJson,
+			format: parsed.exportFormat,
+			redactSecrets: parsed.redactSecrets,
+		});
 		return;
 	}
 
@@ -827,11 +1032,25 @@ export async function main(args: string[]) {
 		return;
 	}
 
+	if (parsed.command === "a2a") {
+		const { handleA2ACommand } = await import("./cli/commands/a2a.js");
+		await handleA2ACommand(parsed.commandArgs ?? []);
+		return;
+	}
+
+	if (parsed.command === "operating-plane") {
+		const { handleOperatingPlaneCommand } = await import(
+			"./cli/commands/operating-plane.js"
+		);
+		await handleOperatingPlaneCommand(parsed.commandArgs ?? []);
+		return;
+	}
+
 	if (parsed.command === "anthropic") {
 		const { handleAnthropicCommand } = await import(
 			"./cli/commands/anthropic.js"
 		);
-		await handleAnthropicCommand(parsed.subcommand, parsed.messages);
+		await handleAnthropicCommand();
 		return;
 	}
 
@@ -966,6 +1185,28 @@ export async function main(args: string[]) {
 	let agentsInitPrompt: string | null = null;
 	let agentsInitPath: string | null = null;
 
+	const quoteShellArg = (value: string): string => {
+		if (/^[A-Za-z0-9_./:=@+-]+$/.test(value)) {
+			return value;
+		}
+		if (process.platform === "win32") {
+			const escaped = value
+				.replace(
+					/(\\*)"/g,
+					(_match, slashes: string) => `${slashes}${slashes}\\"`,
+				)
+				.replace(/\\+$/g, (slashes) => `${slashes}${slashes}`);
+			return `"${escaped}"`;
+		}
+		return `'${value.replaceAll("'", "'\\''")}'`;
+	};
+	const buildAgentsInitRerunCommand = (
+		targetArg: string | undefined,
+	): string =>
+		targetArg
+			? `maestro agents init ${quoteShellArg(targetArg)} --force`
+			: "maestro agents init --force";
+
 	// Handle "maestro agents init" command to generate AGENTS.md
 	if (parsed.command === "agents") {
 		const { buildAgentsInitPrompt, handleAgentsInit } = await import(
@@ -981,9 +1222,25 @@ export async function main(args: string[]) {
 		}
 		try {
 			const targetArg = parsed.messages[0];
-			const filePath = handleAgentsInit(targetArg, { force: parsed.force });
-			agentsInitPath = filePath;
-			agentsInitPrompt = buildAgentsInitPrompt(filePath);
+			const result = handleAgentsInit(targetArg, { force: parsed.force });
+			if (result.action === "preview") {
+				const rerunCommand = buildAgentsInitRerunCommand(targetArg);
+				console.log(
+					[
+						`AGENTS instructions already exist at ${result.path}.`,
+						`Preview the proposed update below, then re-run with \`${rerunCommand}\` to apply it.`,
+						"",
+						sanitizeTerminalPreview(result.diff ?? ""),
+					].join("\n"),
+				);
+				return;
+			}
+			if (result.action === "updated") {
+				console.log(`Updated AGENTS instructions at ${result.path}.`);
+				return;
+			}
+			agentsInitPath = result.path;
+			agentsInitPrompt = buildAgentsInitPrompt(result.path, result.sources);
 			if (parsed.messages.length === 0) {
 				parsed.messages = [agentsInitPrompt];
 			}
@@ -1011,6 +1268,18 @@ export async function main(args: string[]) {
 		parsed.continue && !parsed.resume, // continueSession: auto-load most recent
 		parsed.session, // customSessionPath: explicit session file
 	);
+	let scenarioRecorder:
+		| import("./server/scenario-recorder.js").ScriptedScenarioRecorder
+		| undefined;
+	if (parsed.recordScenarioPath) {
+		const { ScriptedScenarioRecorder } = await import(
+			"./server/scenario-recorder.js"
+		);
+		scenarioRecorder = new ScriptedScenarioRecorder({
+			outPath: parsed.recordScenarioPath,
+			recordedFrom: () => sessionManager.getSessionId(),
+		});
+	}
 	startupProfiler.checkpoint("session:created");
 
 	let execResumeApplied = false;
@@ -1075,31 +1344,8 @@ export async function main(args: string[]) {
 		});
 		model = resolved.model;
 	} catch (error) {
-		exitWithStartupError(error);
+		await exitWithStartupError(error);
 	}
-	// ─────────────────────────────────────────────────────────────────────────────
-	// PHASE 9: System Prompt and Tool Configuration
-	// ─────────────────────────────────────────────────────────────────────────────
-
-	// Build the system prompt with project context
-	// The system prompt includes:
-	// - Base instructions for the agent
-	// - Project context files (COMPOSER.md, AGENTS.md, etc.)
-	// - Tool-specific instructions based on available tools
-	const systemPromptToolNames = parsed.tools;
-	const { systemPrompt, promptMetadata } = await resolveMaestroSystemPrompt({
-		customPrompt: parsed.systemPrompt,
-		toolNames: systemPromptToolNames,
-		appendPrompt: parsed.appendSystemPrompt,
-	});
-	startupProfiler.checkpoint("prompt:assembled", {
-		system_bytes: systemPrompt.length,
-	});
-	const systemPromptSourcePaths = resolveExplicitSystemPromptSourcePaths(
-		parsed.systemPrompt,
-		parsed.appendSystemPrompt,
-	);
-
 	// Determine approval mode for tool execution:
 	// - "prompt": Ask user before each tool execution (default for interactive)
 	// - "auto": Automatically approve all tools (default for non-interactive)
@@ -1162,10 +1408,11 @@ export async function main(args: string[]) {
 		toolsResult = await createToolsAndSandbox({
 			parsedTools: parsed.tools,
 			parsedSandbox: parsed.sandbox,
+			modelApi: model.api,
 			cwd: process.cwd(),
 		});
 	} catch (error) {
-		exitWithStartupError(error);
+		await exitWithStartupError(error);
 	}
 	const { allTools, sandbox, sandboxMode } = toolsResult;
 	startupProfiler.checkpoint("tools:prepared", { tools: allTools.length });
@@ -1178,6 +1425,48 @@ export async function main(args: string[]) {
 		? replaceAskUserTool(allTools)
 		: allTools;
 
+	// ─────────────────────────────────────────────────────────────────────────────
+	// PHASE 11: System Prompt Assembly
+	// ─────────────────────────────────────────────────────────────────────────────
+
+	// Build the system prompt with project context after sandbox setup so runtime
+	// constraint fragments reflect the resolved sandbox state, not just the
+	// requested CLI mode.
+	const resolvedConstraintSandboxMode = sandbox
+		? sandbox instanceof LocalSandbox
+			? "local"
+			: (sandboxMode ?? null)
+		: "none";
+	const systemPromptToolNames =
+		parsed.tools ??
+		(model.api === "openai-codex-app-server"
+			? toolsResult.baseTools.map((tool) => tool.name)
+			: undefined);
+	const runtimeConstraints = detectRuntimeConstraintContext({
+		cwd: process.cwd(),
+		sandboxMode: resolvedConstraintSandboxMode,
+		sandboxEnabled:
+			Boolean(sandbox) && resolvedConstraintSandboxMode !== "local",
+		readOnly: parsed.execReadOnly || parsed.readonly ? true : undefined,
+	});
+	const { systemPrompt, promptMetadata, promptContextManifest } =
+		await resolveMaestroSystemPrompt({
+			customPrompt: parsed.systemPrompt,
+			toolNames: systemPromptToolNames,
+			appendPrompt: parsed.appendSystemPrompt,
+			runtimeConstraints,
+			cwd: process.cwd(),
+		});
+	const unifiedContextManifest = loadUnifiedContextManifest(process.cwd(), {
+		projectDocs: promptContextManifest,
+	});
+	startupProfiler.checkpoint("prompt:assembled", {
+		system_bytes: systemPrompt.length,
+	});
+	const systemPromptSourcePaths = resolveExplicitSystemPromptSourcePaths(
+		parsed.systemPrompt,
+		parsed.appendSystemPrompt,
+	);
 	// Register sandbox cleanup on exit (only if sandbox is active)
 	if (sandbox && toolsResult.disposeSandbox) {
 		const cleanupSandbox = toolsResult.disposeSandbox;
@@ -1196,7 +1485,7 @@ export async function main(args: string[]) {
 	}
 
 	// ─────────────────────────────────────────────────────────────────────────────
-	// PHASE 11: Agent Creation
+	// PHASE 12: Agent Creation
 	// ─────────────────────────────────────────────────────────────────────────────
 
 	const { createAgentInstance } = await import(
@@ -1211,6 +1500,8 @@ export async function main(args: string[]) {
 		systemPrompt,
 		promptMetadata,
 		systemPromptSourcePaths,
+		promptContextManifest,
+		unifiedContextManifest,
 		model,
 		reasoningSummary,
 		allTools: configuredAllTools,
@@ -1362,6 +1653,14 @@ export async function main(args: string[]) {
 		cwd: process.cwd(),
 		enterpriseContext,
 		automaticMemoryExtraction,
+		scenarioReplay:
+			parsed.replayScenarioPath && process.env.MAESTRO_SCENARIO_ID
+				? {
+						path: scenarioSourceLabel(parsed.replayScenarioPath),
+						scenarioId: process.env.MAESTRO_SCENARIO_ID,
+					}
+				: undefined,
+		scenarioRecorder,
 	});
 
 	// ─────────────────────────────────────────────────────────────────────────────
@@ -1401,6 +1700,7 @@ export async function main(args: string[]) {
 				sessionManager,
 				approvalService,
 				toolRetryService,
+				{ runtimeSelection: headlessRuntimeSelection },
 			);
 		} else if (mode === "rpc") {
 			// RPC mode - headless operation

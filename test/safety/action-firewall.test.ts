@@ -7,6 +7,7 @@ import {
 	ActionFirewall,
 	defaultActionFirewall,
 } from "../../src/safety/action-firewall.js";
+import { SemanticJudge } from "../../src/safety/semantic-judge.js";
 
 const withPlanMode = async (fn: () => Promise<void>) => {
 	const prev = process.env.MAESTRO_PLAN_MODE;
@@ -99,6 +100,48 @@ function makeEditContext(): ActionApprovalContext {
 	return { toolName: "edit", args: { path: "file.txt" } };
 }
 
+function makeApplyPatchContext(path: string): ActionApprovalContext {
+	return {
+		toolName: "apply_patch",
+		args: {
+			patch: [
+				"*** Begin Patch",
+				`*** Update File: ${path}`,
+				"@@",
+				" old",
+				"-value",
+				"+updated",
+				"*** End Patch",
+			].join("\n"),
+		},
+	};
+}
+
+function makeReadPathContext(path: string): ActionApprovalContext {
+	return { toolName: "read", args: { path } };
+}
+
+function makeSearchPathContext(
+	paths: string | string[],
+): ActionApprovalContext {
+	return { toolName: "search", args: { pattern: "Host", paths } };
+}
+
+function makeListPathContext(path: string): ActionApprovalContext {
+	return { toolName: "list", args: { path } };
+}
+
+function makeDeleteFileContext(path: string): ActionApprovalContext {
+	return { toolName: "delete_file", args: { target_file: path } };
+}
+
+function makeMoveFileContext(
+	source: string,
+	destination: string,
+): ActionApprovalContext {
+	return { toolName: "move_file", args: { source, destination } };
+}
+
 function makeTodoContext(): ActionApprovalContext {
 	return { toolName: "todo", args: { items: [] } };
 }
@@ -161,6 +204,171 @@ describe("ActionFirewall", () => {
 			makeBashContext('echo "safe command"'),
 		);
 		expect(verdict.action).toBe("allow");
+	});
+
+	it("requires approval for default guarded file reads", async () => {
+		const verdict = await defaultActionFirewall.evaluate(
+			makeReadPathContext("~/.ssh/config"),
+		);
+		expect(verdict).toMatchObject({
+			action: "require_approval",
+			ruleId: "default-guarded-file",
+		});
+		if (verdict.action !== "require_approval") {
+			throw new Error("Expected guarded file read to require approval");
+		}
+		expect(verdict.reason).toContain("Guarded file access");
+	});
+
+	it("lets explicit guardedFiles key allowlists bypass default guards", async () => {
+		const verdict = await defaultActionFirewall.evaluate({
+			...makeReadPathContext("~/.ssh/config"),
+			metadata: {
+				guardedFiles: {
+					user: { allowlist: ["ssh-gpg-keys"] },
+				},
+			},
+		});
+		expect(verdict.action).toBe("allow");
+	});
+
+	it("keeps mandatory org guardedFiles keys approval-gated", async () => {
+		const verdict = await defaultActionFirewall.evaluate({
+			...makeReadPathContext("~/.ssh/config"),
+			metadata: {
+				guardedFiles: {
+					organization: { mandatoryKeys: ["ssh-gpg-keys"] },
+					user: { allowlist: ["ssh-gpg-keys"] },
+				},
+			},
+		});
+		expect(verdict).toMatchObject({
+			action: "require_approval",
+			ruleId: "default-guarded-file",
+		});
+	});
+
+	it("blocks custom guardedFiles rules with defaultBehavior block", async () => {
+		const verdict = await defaultActionFirewall.evaluate({
+			toolName: "read",
+			args: { path: "/workspace/project/.secrets/token.txt" },
+			metadata: {
+				guardedFiles: {
+					organization: {
+						rules: [
+							{
+								key: "org-secrets",
+								description: "Organization secret fixtures",
+								patterns: ["**/.secrets/**"],
+								defaultBehavior: "block",
+							},
+						],
+					},
+				},
+			},
+		});
+		expect(verdict).toMatchObject({
+			action: "block",
+			ruleId: "default-guarded-file",
+		});
+	});
+
+	it("blocks multi-path tool calls when any guarded path is block-scoped", async () => {
+		const verdict = await defaultActionFirewall.evaluate({
+			toolName: "move_file",
+			args: {
+				source: "/workspace/project/.cursor/settings.json",
+				destination: "/workspace/project/.secrets/token.txt",
+			},
+			metadata: {
+				guardedFiles: {
+					organization: {
+						rules: [
+							{
+								key: "org-secrets",
+								description: "Organization secret fixtures",
+								patterns: ["**/.secrets/**"],
+								defaultBehavior: "block",
+							},
+						],
+					},
+				},
+			},
+		});
+		expect(verdict).toMatchObject({
+			action: "block",
+			ruleId: "default-guarded-file",
+		});
+		if (verdict.action !== "block") {
+			throw new Error("Expected multi-path guarded move to be blocked");
+		}
+		expect(verdict.reason).toContain("is blocked by policy");
+		expect(verdict.reason).not.toContain("requires explicit approval");
+	});
+
+	it("requires approval for guarded file mutations beyond write and edit", async () => {
+		const deleteVerdict = await defaultActionFirewall.evaluate(
+			makeDeleteFileContext("~/.ssh/config"),
+		);
+		expect(deleteVerdict).toMatchObject({
+			action: "require_approval",
+			ruleId: "default-guarded-file",
+		});
+
+		const moveVerdict = await defaultActionFirewall.evaluate(
+			makeMoveFileContext("~/.gnupg/secring.gpg", "./backup.gpg"),
+		);
+		expect(moveVerdict).toMatchObject({
+			action: "require_approval",
+			ruleId: "default-guarded-file",
+		});
+
+		const applyPatchVerdict = await defaultActionFirewall.evaluate(
+			makeApplyPatchContext("~/.ssh/config"),
+		);
+		expect(applyPatchVerdict).toMatchObject({
+			action: "require_approval",
+			ruleId: "default-guarded-file",
+		});
+	});
+
+	it("preserves hard blocks for guarded paths under system directories", async () => {
+		const verdict = await defaultActionFirewall.evaluate({
+			toolName: "edit",
+			args: { path: "/etc/windsurf/settings.json" },
+		});
+		expect(verdict).toMatchObject({
+			action: "block",
+			ruleId: "system-path-protection",
+		});
+	});
+
+	it("requires approval for guarded files reached through bash", async () => {
+		const verdict = await defaultActionFirewall.evaluate(
+			makeBashContext("cat ~/.ssh/config"),
+		);
+		expect(verdict).toMatchObject({
+			action: "require_approval",
+			ruleId: "default-guarded-file",
+		});
+	});
+
+	it("requires approval for guarded files reached through search and list", async () => {
+		const searchVerdict = await defaultActionFirewall.evaluate(
+			makeSearchPathContext(["~/.ssh"]),
+		);
+		expect(searchVerdict).toMatchObject({
+			action: "require_approval",
+			ruleId: "default-guarded-file",
+		});
+
+		const listVerdict = await defaultActionFirewall.evaluate(
+			makeListPathContext("~/.gnupg"),
+		);
+		expect(listVerdict).toMatchObject({
+			action: "require_approval",
+			ruleId: "default-guarded-file",
+		});
 	});
 
 	it("respects bash allowlist patterns", async () => {
@@ -321,6 +529,29 @@ describe("ActionFirewall", () => {
 		expect(verdict.action).toBe("require_approval");
 	});
 
+	it("runs semantic judge for apply_patch calls", async () => {
+		const firewall = new ActionFirewall();
+		firewall.setSemanticJudge(
+			new SemanticJudge(async () =>
+				JSON.stringify({
+					safe: false,
+					reason: "Patch edits a file unrelated to the user intent.",
+				}),
+			),
+		);
+
+		const verdict = await firewall.evaluate({
+			...makeApplyPatchContext("file.txt"),
+			userIntent: "Inspect the repository",
+		});
+
+		expect(verdict).toMatchObject({
+			action: "require_approval",
+			ruleId: "semantic-judge",
+			reason: "Patch edits a file unrelated to the user intent.",
+		});
+	});
+
 	it("requires approval for mutating tools when plan mode is on", async () => {
 		await withPlanMode(async () => {
 			const bashVerdict = await defaultActionFirewall.evaluate(
@@ -337,6 +568,11 @@ describe("ActionFirewall", () => {
 				makeEditContext(),
 			);
 			expect(editVerdict.action).toBe("require_approval");
+
+			const applyPatchVerdict = await defaultActionFirewall.evaluate(
+				makeApplyPatchContext("file.txt"),
+			);
+			expect(applyPatchVerdict.action).toBe("require_approval");
 
 			const todoVerdict = await defaultActionFirewall.evaluate(
 				makeTodoContext(),
@@ -429,15 +665,15 @@ describe("ActionFirewall", () => {
 			expect(verdict.action).toBe("allow");
 		});
 
-		it("allows MCP tools with readOnlyHint=true even if destructiveHint=true", async () => {
-			// readOnlyHint takes precedence - tool is safe
+		it("requires approval when destructiveHint=true even if readOnlyHint=true", async () => {
+			// destructiveHint takes precedence for MCP tools
 			const verdict = await defaultActionFirewall.evaluate(
 				makeMcpToolContext("mcp_server_safe_delete", {
 					readOnlyHint: true,
 					destructiveHint: true,
 				}),
 			);
-			expect(verdict.action).toBe("allow");
+			expect(verdict.action).toBe("require_approval");
 		});
 
 		it("does not apply MCP annotation rule to non-MCP tools", async () => {

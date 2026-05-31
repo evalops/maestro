@@ -1,6 +1,6 @@
-//! # Composer TUI - Native Terminal Interface
+//! # Maestro TUI - Native Terminal Interface
 //!
-//! This is the main entry point for the Composer CLI application.
+//! This is the main entry point for the Maestro native TUI application.
 //! It's a pure Rust implementation with native AI provider integrations.
 //!
 //! ## Rust Concept: Doc Comments
@@ -11,7 +11,7 @@
 //! ## Usage
 //!
 //! ```bash
-//! composer-tui [options] [prompt]
+//! maestro-tui [options] [prompt]
 //! ```
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -40,6 +40,8 @@ use maestro_tui::App;
 use maestro_tui::tools::cleanup_background_processes;
 // Import the process cleanup function for signal handlers.
 
+use maestro_tui::hosted_runner_cli::run_hosted_runner_cli_from_env;
+
 // ─────────────────────────────────────────────────────────────────────────────
 // HELPER FUNCTIONS
 // ─────────────────────────────────────────────────────────────────────────────
@@ -61,7 +63,7 @@ use maestro_tui::tools::cleanup_background_processes;
 ///
 /// # Arguments
 ///
-/// * `model` - The model name to analyze (e.g., "gpt-4", "claude-3-opus")
+/// * `model` - The model name to analyze (for example, "gpt-5.1-codex-max")
 ///
 /// # Returns
 ///
@@ -117,16 +119,16 @@ fn infer_provider_from_model(model: &str) -> &'static str {
         return "openrouter";
     }
 
-    // Default to Anthropic if we can't identify the provider
+    // Default to OpenAI/Codex if we can't identify the provider
     // Note: No semicolon here - this is the implicit return value
-    "anthropic"
+    "openai"
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
 // CLI ARGUMENTS DEFINITION
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// Command-line arguments for the Composer TUI.
+/// Command-line arguments for the Maestro TUI.
 ///
 /// # Rust Concepts Used
 ///
@@ -146,12 +148,12 @@ fn infer_provider_from_model(model: &str) -> &'static str {
 #[command(name = "maestro-tui")]
 #[command(about = "Native terminal interface for Maestro")]
 struct Args {
-    /// Provider to use (e.g., anthropic, openai).
+    /// Provider to use (for example, openai).
     /// When None, we infer from the model name.
     #[arg(long)]
     provider: Option<String>,
 
-    /// Model to use (e.g., claude-3-opus, gpt-4).
+    /// Model to use (for example, gpt-5.1-codex-max).
     /// `-m` is the short flag, `--model` is the long flag.
     #[arg(short, long)]
     model: Option<String>,
@@ -213,6 +215,18 @@ async fn main() -> Result<()> {
         default_hook(panic_info);
     }));
 
+    let raw_args = std::env::args_os().collect::<Vec<_>>();
+    if raw_args
+        .get(1)
+        .and_then(|arg| arg.to_str())
+        .is_some_and(|arg| arg == "hosted-runner")
+    {
+        let mut hosted_args = vec![std::ffi::OsString::from("maestro-tui hosted-runner")];
+        hosted_args.extend(raw_args.into_iter().skip(2));
+        run_hosted_runner_cli_from_env(hosted_args).await?;
+        return Ok(());
+    }
+
     // Parse command-line arguments using clap.
     // `Args::parse()` reads from std::env::args() and returns our Args struct.
     // If parsing fails (e.g., unknown flag), clap prints help and exits.
@@ -237,7 +251,7 @@ async fn main() -> Result<()> {
             if let Some(model) = &args.model {
                 infer_provider_from_model(model)
             } else {
-                "anthropic"
+                "openai"
             }
         });
 
@@ -304,5 +318,31 @@ mod tests {
             command.get_about().map(|about| about.to_string()),
             Some("Native terminal interface for Maestro".to_string())
         );
+    }
+
+    #[test]
+    fn hosted_runner_subcommand_is_reserved_before_prompt_capture() {
+        let raw_args = [
+            std::ffi::OsString::from("maestro-tui"),
+            std::ffi::OsString::from("hosted-runner"),
+            std::ffi::OsString::from("--runner-session-id"),
+            std::ffi::OsString::from("mrs_test"),
+        ];
+        assert_eq!(
+            raw_args.get(1).and_then(|arg| arg.to_str()),
+            Some("hosted-runner")
+        );
+    }
+
+    #[test]
+    fn codex_models_infer_openai_provider() {
+        assert_eq!(infer_provider_from_model("gpt-5.1-codex-max"), "openai");
+        assert_eq!(infer_provider_from_model("codex-mini-latest"), "openai");
+    }
+
+    #[test]
+    fn unknown_models_default_to_openai() {
+        assert_eq!(infer_provider_from_model("unknown-model"), "openai");
+        assert_eq!(infer_provider_from_model(""), "openai");
     }
 }

@@ -42,29 +42,22 @@ describe("handler compression forwarding", () => {
 		};
 		const res = createRes();
 
-		const sendJsonSpy = vi
-			.spyOn(serverUtils, "sendJson")
-			.mockImplementation(() => {
-				throw new Error("boom");
-			});
+		const boom = new Error("boom");
+		res.writeHead.mockImplementationOnce(() => {
+			throw boom;
+		});
 		const errorSpy = vi
 			.spyOn(serverUtils, "respondWithApiError")
 			.mockImplementation(() => true);
 
-		handleStatus(
+		await handleStatus(
 			req as unknown as IncomingMessage,
 			res as unknown as ServerResponse,
 			cors,
 		);
 
-		expect(sendJsonSpy).toHaveBeenCalled();
-		expect(errorSpy).toHaveBeenCalledWith(
-			res,
-			expect.any(Error),
-			500,
-			cors,
-			req,
-		);
+		expect(res.writeHead).toHaveBeenCalled();
+		expect(errorSpy).toHaveBeenCalledWith(res, boom, 500, cors, req);
 	});
 
 	it("handleUsage forwards req to respondWithApiError on failure", () => {

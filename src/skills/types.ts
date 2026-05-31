@@ -23,6 +23,14 @@ export interface Skill {
 	tags?: string[];
 	/** Required tools for this skill */
 	requiredTools?: string[];
+	/** Built-in Maestro tools this skill expects to use */
+	builtinTools?: string[];
+	/** Preferred model while this skill is active */
+	model?: string;
+	/** Preferred agent mode while this skill is active */
+	mode?: string;
+	/** Whether the skill should run in isolated context when supported */
+	isolatedContext?: boolean;
 	/** Whether this skill is currently active in the session */
 	active?: boolean;
 }
@@ -39,6 +47,12 @@ export interface SkillMetadata {
 	tags?: string[];
 	/** Required tools */
 	tools?: string[];
+	/** Built-in Maestro tools */
+	builtinTools?: string[];
+	/** Preferred model */
+	model?: string;
+	/** Preferred mode */
+	mode?: string;
 	/** Trigger patterns (when to auto-activate) */
 	triggers?: string[];
 }

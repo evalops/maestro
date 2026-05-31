@@ -1,3 +1,4 @@
+import { existsSync } from "node:fs";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import {
 	type HeadlessConnectionRole,
@@ -24,11 +25,21 @@ import {
 } from "../approval-mode-store.js";
 import { getAuthScopeKey, getAuthSubject } from "../authz.js";
 import type {
+	HeadlessAttachedSubscription,
 	HeadlessRuntimeConnectionSnapshot,
 	HeadlessRuntimeHeartbeatSnapshot,
 	HeadlessRuntimeStreamEnvelope,
 	HeadlessSessionRuntime,
 } from "../headless-runtime-service.js";
+import {
+	HeadlessRuntimeNotReadyError,
+	loadHostedRunnerRestoreManifest,
+} from "../headless-runtime-service.js";
+import {
+	bindHostedRunnerPlatformLease,
+	claimHostedRunnerLease,
+	evaluateHostedRunnerLeaseUse,
+} from "../hosted-runner-lease.js";
 import { getTraceParentHeader } from "../request-context.js";
 import {
 	ApiError,
@@ -356,42 +367,26 @@ function ensureHostedRunnerCanUseSession(
 	if (!hostedRunner) {
 		return;
 	}
-	const activeSessionId =
-		hostedRunner.activeMaestroSessionId ??
-		hostedRunner.configuredMaestroSessionId;
-	if (hostedRunner.draining) {
-		throw hostedRunnerNotReadyError(
-			context,
-			"Hosted runner is draining and not accepting headless session traffic",
-			{
-				draining: "true",
-				maestro_session_id: activeSessionId,
-				requested_maestro_session_id: requestedSessionId,
-			},
-		);
-	}
-	if (!activeSessionId) {
+	const decision = evaluateHostedRunnerLeaseUse(
+		hostedRunner,
+		requestedSessionId,
+	);
+	if (decision.ok) {
 		return;
 	}
-	if (!requestedSessionId) {
-		throw hostedRunnerOwnershipError(
-			context,
-			`Hosted runner is already bound to Maestro session ${activeSessionId}`,
-			{
-				maestro_session_id: activeSessionId,
-			},
-		);
+	if (decision.reason === "runtime_draining") {
+		throw hostedRunnerNotReadyError(context, decision.message, {
+			draining: "true",
+			maestro_session_id: decision.activeSessionId,
+			requested_maestro_session_id: requestedSessionId,
+			lease_generation: String(decision.snapshot.generation),
+		});
 	}
-	if (requestedSessionId !== activeSessionId) {
-		throw hostedRunnerOwnershipError(
-			context,
-			`Hosted runner is bound to Maestro session ${activeSessionId}`,
-			{
-				maestro_session_id: activeSessionId,
-				requested_maestro_session_id: requestedSessionId,
-			},
-		);
-	}
+	throw hostedRunnerOwnershipError(context, decision.message, {
+		maestro_session_id: decision.activeSessionId,
+		requested_maestro_session_id: decision.requestedSessionId,
+		lease_generation: String(decision.snapshot.generation),
+	});
 }
 
 function claimHostedRunnerSession(
@@ -402,20 +397,22 @@ function claimHostedRunnerSession(
 	if (!hostedRunner) {
 		return;
 	}
-	const activeSessionId =
-		hostedRunner.activeMaestroSessionId ??
-		hostedRunner.configuredMaestroSessionId;
-	if (activeSessionId && activeSessionId !== sessionId) {
-		throw hostedRunnerOwnershipError(
-			context,
-			`Hosted runner is bound to Maestro session ${activeSessionId}`,
-			{
-				maestro_session_id: activeSessionId,
-				requested_maestro_session_id: sessionId,
-			},
-		);
+	const decision = claimHostedRunnerLease(hostedRunner, sessionId);
+	if (!decision.ok) {
+		if (decision.reason === "runtime_draining") {
+			throw hostedRunnerNotReadyError(context, decision.message, {
+				draining: "true",
+				maestro_session_id: decision.activeSessionId,
+				requested_maestro_session_id: decision.requestedSessionId ?? sessionId,
+				lease_generation: String(decision.snapshot.generation),
+			});
+		}
+		throw hostedRunnerOwnershipError(context, decision.message, {
+			maestro_session_id: decision.activeSessionId,
+			requested_maestro_session_id: decision.requestedSessionId ?? sessionId,
+			lease_generation: String(decision.snapshot.generation),
+		});
 	}
-	hostedRunner.activeMaestroSessionId = sessionId;
 }
 
 function resolveRuntimeWorkspaceRoot(
@@ -464,6 +461,19 @@ function rethrowHeadlessMessageError(error: unknown): never {
 	if (!(error instanceof Error)) {
 		throw error;
 	}
+	if (error instanceof HeadlessRuntimeNotReadyError) {
+		throw new ApiError(
+			503,
+			error.message,
+			[
+				{
+					reason: HostedRunnerErrorType.RuntimeNotReady,
+					domain: HOSTED_RUNNER_ERROR_DOMAIN,
+				},
+			],
+			HostedRunnerErrorType.RuntimeNotReady,
+		);
+	}
 	if (error.message === "Viewer headless connections cannot send messages") {
 		throw new ApiError(403, error.message);
 	}
@@ -486,6 +496,19 @@ function rethrowHeadlessMessageError(error: unknown): never {
 function rethrowHeadlessConnectionLifecycleError(error: unknown): never {
 	if (!(error instanceof Error)) {
 		throw error;
+	}
+	if (error instanceof HeadlessRuntimeNotReadyError) {
+		throw new ApiError(
+			503,
+			error.message,
+			[
+				{
+					reason: HostedRunnerErrorType.RuntimeNotReady,
+					domain: HOSTED_RUNNER_ERROR_DOMAIN,
+				},
+			],
+			HostedRunnerErrorType.RuntimeNotReady,
+		);
 	}
 	if (error.message === "Headless connection not found") {
 		throw new ApiError(404, error.message);
@@ -510,14 +533,31 @@ async function ensureRuntime(
 ) {
 	const sessionManager = createSessionManagerForRequest(req, false);
 	const role = getHeadlessRole(req, input.role);
-	const requestedSessionId = input.sessionId?.trim() || undefined;
+	const hostedRestoreSessionId = context.hostedRunner?.restoreManifestPath
+		? (context.hostedRunner.activeMaestroSessionId ??
+			context.hostedRunner.configuredMaestroSessionId)
+		: undefined;
+	const requestedSessionId =
+		input.sessionId?.trim() || hostedRestoreSessionId || undefined;
 	const workspaceRoot = resolveRuntimeWorkspaceRoot(
 		context,
 		input.workspaceRoot,
 	);
 	ensureHostedRunnerCanUseSession(context, requestedSessionId);
 	if (requestedSessionId) {
-		const sessionFile = sessionManager.getSessionFileById(requestedSessionId);
+		let sessionFile = sessionManager.getSessionFileById(requestedSessionId);
+		if (!sessionFile && context.hostedRunner?.restoreManifestPath) {
+			const restoreManifest = await loadHostedRunnerRestoreManifest(
+				context.hostedRunner.restoreManifestPath,
+			);
+			const restoreSessionFile =
+				restoreManifest?.maestro_session_id === requestedSessionId
+					? restoreManifest.runtime.session_file
+					: undefined;
+			if (restoreSessionFile && existsSync(restoreSessionFile)) {
+				sessionFile = restoreSessionFile;
+			}
+		}
 		if (!sessionFile) {
 			throw new ApiError(404, "Session not found");
 		}
@@ -627,6 +667,7 @@ async function recordPlatformAgentRuntimeSessionStart(options: {
 	// all join on the same Maestro session.
 	const result = await recordMaestroSessionRuntimeTrigger({
 		workspaceId: hostedRunner?.workspaceId,
+		agentId: hostedRunner?.agentId,
 		sessionId: snapshot.session_id,
 		actorId: options.subject,
 		correlationId: `maestro-session:${snapshot.session_id}`,
@@ -642,6 +683,7 @@ async function recordPlatformAgentRuntimeSessionStart(options: {
 			workspace_root: options.workspaceRoot,
 			runner_session_id: hostedRunner?.runnerSessionId,
 			owner_instance_id: hostedRunner?.ownerInstanceId,
+			agent_id: hostedRunner?.agentId,
 		},
 	});
 	if (!hostedRunner || !result) {
@@ -650,10 +692,11 @@ async function recordPlatformAgentRuntimeSessionStart(options: {
 	const a2aCorrelation = result.events.find(
 		(event) => event.type === "maestro.platform_runtime.a2a_correlated",
 	)?.attributes;
-	if (result.run.id) {
-		hostedRunner.agentRunId = result.run.id;
-	}
-	hostedRunner.agentRuntimeLeaseToken = result.run.lease?.token;
+	bindHostedRunnerPlatformLease(hostedRunner, {
+		agentRunId: result.run.id,
+		agentId: result.run.linkage?.agentId,
+		leaseToken: result.run.lease?.token,
+	});
 	// Store only support-grade handles on the hosted runner. The full run/task
 	// state stays in Platform; health and identity endpoints expose these ids
 	// for operators without making Platform a session-state dependency.
@@ -748,7 +791,15 @@ export async function handleHeadlessSessionCreate(
 		req,
 		HeadlessSessionCreateSchema,
 	);
-	const runtime = await ensureRuntime(req, context, input);
+	let runtime: HeadlessSessionRuntime;
+	try {
+		runtime = await ensureRuntime(req, context, input);
+	} catch (error) {
+		if (error instanceof HeadlessRuntimeNotReadyError) {
+			rethrowHeadlessConnectionLifecycleError(error);
+		}
+		throw error;
+	}
 	sendJson(res, 200, runtime.getSnapshot(), context.corsHeaders, req);
 }
 
@@ -825,6 +876,9 @@ export async function handleHeadlessSessionSubscribe(
 			req,
 		);
 	} catch (error) {
+		if (error instanceof HeadlessRuntimeNotReadyError) {
+			rethrowHeadlessConnectionLifecycleError(error);
+		}
 		if (
 			error instanceof Error &&
 			error.message === "Controller lease is already held by another connection"
@@ -926,13 +980,18 @@ export function handleHeadlessSessionEvents(
 	const subscriptionId =
 		url.searchParams.get("subscriptionId") || getHeadlessSubscriberId(req);
 
-	const stream = subscriptionId
-		? runtime.attachSubscription(subscriptionId)
-		: runtime.createImplicitStream({
-				cursor,
-				role: getHeadlessRole(req),
-				optOutNotifications: parseOptOutNotifications(req),
-			});
+	let stream: HeadlessAttachedSubscription | null;
+	try {
+		stream = subscriptionId
+			? runtime.attachSubscription(subscriptionId)
+			: runtime.createImplicitStream({
+					cursor,
+					role: getHeadlessRole(req),
+					optOutNotifications: parseOptOutNotifications(req),
+				});
+	} catch (error) {
+		rethrowHeadlessConnectionLifecycleError(error);
+	}
 	if (!stream) {
 		throw new ApiError(404, "Headless subscriber not found");
 	}
@@ -999,6 +1058,7 @@ export async function handleHeadlessSessionMessage(
 			getHeadlessRole(req),
 			getHeadlessSubscriberId(req),
 			getHeadlessConnectionId(req),
+			{ allowNotReady: input.type === "shutdown" },
 		);
 	} catch (error) {
 		rethrowHeadlessMessageError(error);

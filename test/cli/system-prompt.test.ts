@@ -1,9 +1,12 @@
 import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { pathToFileURL } from "node:url";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
+	buildFileCitationPromptFragment,
 	buildSystemPrompt,
+	detectRuntimeConstraintContext,
 	finalizeSystemPrompt,
 	resolveExplicitSystemPromptSourcePaths,
 } from "../../src/cli/system-prompt.js";
@@ -12,11 +15,13 @@ import { clearConfigCache } from "../../src/config/index.js";
 describe("buildSystemPrompt", () => {
 	let originalCwd: string;
 	let originalHome: string | undefined;
+	let originalUserHome: string | undefined;
 	let testDir: string;
 
 	beforeEach(() => {
 		originalCwd = process.cwd();
 		originalHome = process.env.MAESTRO_HOME;
+		originalUserHome = process.env.HOME;
 		testDir = join(tmpdir(), `maestro-system-prompt-${Date.now()}`);
 		mkdirSync(testDir, { recursive: true });
 		process.chdir(testDir);
@@ -24,6 +29,7 @@ describe("buildSystemPrompt", () => {
 		const maestroHome = join(testDir, "maestro-home");
 		mkdirSync(maestroHome, { recursive: true });
 		process.env.MAESTRO_HOME = maestroHome;
+		process.env.HOME = testDir;
 		clearConfigCache();
 	});
 
@@ -33,6 +39,11 @@ describe("buildSystemPrompt", () => {
 			Reflect.deleteProperty(process.env, "MAESTRO_HOME");
 		} else {
 			process.env.MAESTRO_HOME = originalHome;
+		}
+		if (originalUserHome === undefined) {
+			Reflect.deleteProperty(process.env, "HOME");
+		} else {
+			process.env.HOME = originalUserHome;
 		}
 		clearConfigCache();
 		if (existsSync(testDir)) {
@@ -46,6 +57,55 @@ describe("buildSystemPrompt", () => {
 		expect(prompt).toContain(
 			"Length limits: keep text between tool calls to <=25 words. Keep final responses to <=100 words unless the task requires more detail.",
 		);
+	});
+
+	it("nudges models to batch safe independent tool calls", () => {
+		const prompt = buildSystemPrompt(undefined, [
+			"read",
+			"write",
+			"mcp__trusted_fs__probe",
+		]);
+
+		expect(prompt).toContain(
+			"Emit independent safe tool calls together when their inputs are known, including read-only inspections, trusted MCP reads, and disjoint file mutations with explicit paths.",
+		);
+		expect(prompt).toContain(
+			"Avoid one-tool-per-turn inspection chains: when the next few read/list/search calls are already known and independent, emit them together.",
+		);
+	});
+
+	it("injects file citation guidance into bundled and custom prompts", () => {
+		const projectDir = join(testDir, "citation-project");
+		mkdirSync(projectDir, { recursive: true });
+
+		const customPrompt = finalizeSystemPrompt(
+			"custom base prompt",
+			undefined,
+			projectDir,
+		);
+		const exampleUri = `${
+			pathToFileURL(join(projectDir, "src/auth/middleware.ts")).href
+		}#L42`;
+
+		expect(buildSystemPrompt(undefined, [], undefined, {})).toContain(
+			"# File Citations",
+		);
+		expect(customPrompt).toContain("# File Citations");
+		expect(customPrompt).toContain("[src/auth/middleware.ts]");
+		expect(customPrompt).toContain(exampleUri);
+		expect(customPrompt).not.toContain("file:///workspace/");
+		expect(customPrompt).toContain("Bad: See src/auth/middleware.ts");
+	});
+
+	it("keeps file citation guidance compact and URI-oriented", () => {
+		const fragment = buildFileCitationPromptFragment(testDir);
+
+		expect(fragment).toContain("Markdown");
+		expect(fragment).toContain("`file:///` URI");
+		expect(fragment).toContain("percent-encode spaces");
+		expect(fragment).toContain("repository blob URLs");
+		expect(fragment).toContain("#L42-L48");
+		expect(fragment.length - testDir.length).toBeLessThan(900);
 	});
 
 	it("returns exact paths for explicit prompt files only", () => {
@@ -78,6 +138,251 @@ describe("buildSystemPrompt", () => {
 		const prompt = finalizeSystemPrompt("base prompt", undefined, projectDir);
 
 		expect(prompt).toContain("project specific context");
+		expect(prompt).toContain(`# AGENTS.md instructions for ${projectDir}`);
+		expect(prompt).toContain("<INSTRUCTIONS>\nproject specific context");
+		expect(prompt).toContain("</INSTRUCTIONS>");
 		expect(prompt).toContain(`Current working directory: ${projectDir}`);
+	});
+
+	it("loads hierarchical agent instructions from root to cwd", () => {
+		const projectDir = join(testDir, "monorepo");
+		const packageDir = join(projectDir, "packages", "api");
+		const cwd = join(packageDir, "src");
+		mkdirSync(cwd, { recursive: true });
+		writeFileSync(join(projectDir, "AGENTS.md"), "root instructions");
+		writeFileSync(join(packageDir, "AGENT.md"), "package instructions");
+
+		const prompt = finalizeSystemPrompt("base prompt", undefined, cwd);
+
+		const rootHeader = `# AGENTS.md instructions for ${projectDir}`;
+		const packageHeader = `# AGENT.md instructions for ${packageDir}`;
+		expect(prompt).toContain(rootHeader);
+		expect(prompt).toContain(packageHeader);
+		expect(prompt.indexOf(rootHeader)).toBeLessThan(
+			prompt.indexOf(packageHeader),
+		);
+		expect(prompt).toContain("<INSTRUCTIONS>\nroot instructions");
+		expect(prompt).toContain("<INSTRUCTIONS>\npackage instructions");
+		expect(prompt).toContain(`</INSTRUCTIONS>\n\n${packageHeader}`);
+	});
+
+	it("loads user-global ~/.config/AGENT.md before project instructions", () => {
+		const projectDir = join(testDir, "global-project");
+		const globalConfigDir = join(testDir, ".config");
+		mkdirSync(projectDir, { recursive: true });
+		mkdirSync(globalConfigDir, { recursive: true });
+		writeFileSync(join(globalConfigDir, "AGENT.md"), "global instructions");
+		writeFileSync(join(projectDir, "AGENTS.md"), "project instructions");
+
+		const prompt = finalizeSystemPrompt("base prompt", undefined, projectDir);
+
+		const globalHeader = `# AGENT.md instructions for ${globalConfigDir}`;
+		const projectHeader = `# AGENTS.md instructions for ${projectDir}`;
+		expect(prompt).toContain(globalHeader);
+		expect(prompt).toContain(projectHeader);
+		expect(prompt.indexOf(globalHeader)).toBeLessThan(
+			prompt.indexOf(projectHeader),
+		);
+	});
+
+	it("warns the agent when the workspace contains guarded path categories", () => {
+		const projectDir = join(testDir, "guarded-project");
+		mkdirSync(join(projectDir, ".idea"), { recursive: true });
+		mkdirSync(join(projectDir, ".ssh"), { recursive: true });
+		writeFileSync(join(projectDir, ".idea", "workspace.xml"), "<project />");
+		writeFileSync(join(projectDir, ".ssh", "id_ed25519"), "private key");
+
+		const prompt = finalizeSystemPrompt("base prompt", undefined, projectDir);
+
+		expect(prompt).toContain("# Guarded Workspace Paths");
+		expect(prompt).toContain("JetBrains project configuration");
+		expect(prompt).toContain("SSH and GPG keys");
+		expect(prompt).toContain("Ask for explicit user approval");
+		expect(prompt).not.toContain("workspace.xml");
+		expect(prompt).not.toContain("id_ed25519");
+		expect(prompt).not.toContain("**/.ssh/**");
+	});
+
+	it("omits guarded workspace guidance when no guarded paths are present", () => {
+		const projectDir = join(testDir, "ordinary-project");
+		mkdirSync(join(projectDir, "src"), { recursive: true });
+		writeFileSync(join(projectDir, "src", "index.ts"), "export {};");
+
+		const prompt = finalizeSystemPrompt("base prompt", undefined, projectDir);
+
+		expect(prompt).not.toContain("# Guarded Workspace Paths");
+	});
+
+	it("injects sandbox shallow-git runtime guidance", () => {
+		const projectDir = join(testDir, "shallow-project");
+		mkdirSync(join(projectDir, ".git"), { recursive: true });
+		writeFileSync(join(projectDir, ".git", "shallow"), "abc123\n");
+
+		const runtimeConstraints = detectRuntimeConstraintContext({
+			cwd: projectDir,
+			sandboxMode: "workspace-write",
+			env: {},
+		});
+		const prompt = finalizeSystemPrompt("base prompt", undefined, projectDir, {
+			runtimeConstraints,
+		});
+
+		expect(prompt).toContain("# Runtime Constraints");
+		expect(prompt).toContain("sandbox.shallow-git");
+		expect(prompt).toContain("git fetch --unshallow");
+	});
+
+	it("detects shallow git checkouts from repository subdirectories", () => {
+		const projectDir = join(testDir, "nested-shallow-project");
+		const subdir = join(projectDir, "packages", "cli");
+		mkdirSync(join(projectDir, ".git"), { recursive: true });
+		mkdirSync(subdir, { recursive: true });
+		writeFileSync(join(projectDir, ".git", "shallow"), "abc123\n");
+
+		const runtimeConstraints = detectRuntimeConstraintContext({
+			cwd: subdir,
+			sandboxMode: "workspace-write",
+			env: {},
+		});
+
+		expect(runtimeConstraints.isShallowGitCheckout).toBe(true);
+		expect(
+			finalizeSystemPrompt("base prompt", undefined, subdir, {
+				runtimeConstraints,
+			}),
+		).toContain("git fetch --unshallow");
+	});
+
+	it("detects shallow git checkouts from linked worktree common dirs", () => {
+		const projectDir = join(testDir, "linked-worktree-project");
+		const commonGitDir = join(testDir, "common-git");
+		const worktreeGitDir = join(commonGitDir, "worktrees", "linked");
+		mkdirSync(projectDir, { recursive: true });
+		mkdirSync(worktreeGitDir, { recursive: true });
+		writeFileSync(join(projectDir, ".git"), `gitdir: ${worktreeGitDir}\n`);
+		writeFileSync(join(worktreeGitDir, "commondir"), "../..\n");
+		writeFileSync(join(commonGitDir, "shallow"), "abc123\n");
+
+		const runtimeConstraints = detectRuntimeConstraintContext({
+			cwd: projectDir,
+			sandboxMode: "workspace-write",
+			env: {},
+		});
+
+		expect(runtimeConstraints.isShallowGitCheckout).toBe(true);
+		expect(
+			finalizeSystemPrompt("base prompt", undefined, projectDir, {
+				runtimeConstraints,
+			}),
+		).toContain("git fetch --unshallow");
+	});
+
+	it("trims trailing whitespace from gitdir worktree files", () => {
+		const projectDir = join(testDir, "spaced-worktree-project");
+		const commonGitDir = join(testDir, "spaced-common-git");
+		const worktreeGitDir = join(commonGitDir, "worktrees", "spaced");
+		mkdirSync(projectDir, { recursive: true });
+		mkdirSync(worktreeGitDir, { recursive: true });
+		writeFileSync(join(projectDir, ".git"), `gitdir: ${worktreeGitDir} \t\n`);
+		writeFileSync(join(worktreeGitDir, "commondir"), "../..\n");
+		writeFileSync(join(commonGitDir, "shallow"), "abc123\n");
+
+		expect(
+			detectRuntimeConstraintContext({
+				cwd: projectDir,
+				sandboxMode: "workspace-write",
+				env: {},
+			}).isShallowGitCheckout,
+		).toBe(true);
+	});
+
+	it("honors MAESTRO_SANDBOX_MODE when detecting sandbox constraints", () => {
+		const projectDir = join(testDir, "env-sandbox-project");
+		mkdirSync(projectDir, { recursive: true });
+
+		const runtimeConstraints = detectRuntimeConstraintContext({
+			cwd: projectDir,
+			env: { MAESTRO_SANDBOX_MODE: "workspace-write" },
+		});
+
+		expect(runtimeConstraints.sandboxMode).toBe("workspace-write");
+		expect(
+			finalizeSystemPrompt("base prompt", undefined, projectDir, {
+				runtimeConstraints,
+			}),
+		).toContain("sandbox.filesystem");
+	});
+
+	it("prefers sandbox policy env over backend marker env", () => {
+		const projectDir = join(testDir, "policy-env-project");
+		mkdirSync(projectDir, { recursive: true });
+
+		const runtimeConstraints = detectRuntimeConstraintContext({
+			cwd: projectDir,
+			env: {
+				MAESTRO_SANDBOX: "seatbelt",
+				MAESTRO_SANDBOX_MODE: "read-only",
+			},
+		});
+
+		expect(runtimeConstraints.sandboxMode).toBe("read-only");
+		expect(
+			finalizeSystemPrompt("base prompt", undefined, projectDir, {
+				runtimeConstraints,
+			}),
+		).toContain("checkout.read-only");
+	});
+
+	it("preserves explicit no-sandbox state over sandbox env fallback", () => {
+		const projectDir = join(testDir, "resolved-none-project");
+		mkdirSync(projectDir, { recursive: true });
+
+		const runtimeConstraints = detectRuntimeConstraintContext({
+			cwd: projectDir,
+			sandboxMode: "none",
+			sandboxEnabled: false,
+			env: { MAESTRO_SANDBOX_MODE: "read-only" },
+		});
+
+		const prompt = finalizeSystemPrompt("base prompt", undefined, projectDir, {
+			runtimeConstraints,
+		});
+
+		expect(runtimeConstraints.sandboxMode).toBe("none");
+		expect(prompt).not.toContain("checkout.read-only");
+		expect(prompt).not.toContain("# Runtime Constraints");
+	});
+
+	it("injects offline-eval runtime guidance and skips fragments by default", () => {
+		const projectDir = join(testDir, "offline-project");
+		mkdirSync(projectDir, { recursive: true });
+
+		const offlinePrompt = finalizeSystemPrompt(
+			"base prompt",
+			undefined,
+			projectDir,
+			{
+				runtimeConstraints: detectRuntimeConstraintContext({
+					cwd: projectDir,
+					env: { MAESTRO_OFFLINE_EVAL: "1" },
+				}),
+			},
+		);
+		const defaultPrompt = finalizeSystemPrompt(
+			"base prompt",
+			undefined,
+			projectDir,
+			{
+				runtimeConstraints: detectRuntimeConstraintContext({
+					cwd: projectDir,
+					env: {},
+				}),
+			},
+		);
+
+		expect(offlinePrompt).toContain("network.offline");
+		expect(offlinePrompt).toContain("skip web search");
+		expect(offlinePrompt).toContain("network requests are expected to fail");
+		expect(defaultPrompt).not.toContain("# Runtime Constraints");
 	});
 });
