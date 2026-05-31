@@ -91,7 +91,6 @@ import type {
 	ActionApprovalService,
 	ApprovalMode,
 } from "./agent/action-approval.js";
-import { createBackgroundTextAgent } from "./agent/background-agent.js";
 import {
 	type Agent,
 	type Api,
@@ -145,18 +144,10 @@ import { loadUnifiedContextManifest } from "./context/manifest.js";
 import { loadEnv } from "./load-env.js";
 import { bootstrapLsp } from "./lsp/bootstrap.js";
 import { withMcpPostKeepMessages } from "./mcp/prompt-recovery.js";
-import {
-	createAutomaticMemoryConsolidationCoordinator,
-	getMemoryConsolidationSystemPrompt,
-} from "./memory/auto-consolidation.js";
-import {
-	createAutomaticMemoryExtractionCoordinator,
-	getMemoryExtractionSystemPrompt,
-} from "./memory/auto-extraction.js";
+import { createLazyAutoMemoryCoordinators } from "./memory/lazy-auto-memory.js";
 import { ensureModelsLoaded } from "./models/builtin.js";
 import type { RegisteredModel } from "./models/registry.js";
 import { reloadModelConfig } from "./models/registry.js";
-import { initOpenTelemetry } from "./opentelemetry.js";
 import { getPackageVersion } from "./package-metadata.js";
 import { resolveMaestroSystemPrompt } from "./prompts/system-prompt.js";
 import type { AuthMode } from "./providers/auth.js";
@@ -164,13 +155,12 @@ import { AgentRuntimeController } from "./runtime/agent-runtime.js";
 import { registerBackgroundTaskShutdownHooks } from "./runtime/background-task-hooks.js";
 import { configureSafeMode } from "./safety/safe-mode.js";
 import { LocalSandbox } from "./sandbox/index.js";
-import { captureSentryException, flushSentry, initSentry } from "./sentry.js";
 import { ServerRequestActionApprovalService } from "./server/approval-service.js";
 import { clientToolService } from "./server/client-tools-service.js";
 import { ServerRequestToolRetryService } from "./server/tool-retry-service.js";
 import { SessionManager } from "./session/manager.js";
-import { recordStagedRolloutSurfaceUsage } from "./telemetry.js";
 import { beaconTimeoutMs } from "./telemetry/beacon.js";
+import { recordStagedRolloutSurfaceUsageLazy } from "./telemetry/staged-rollout-lazy.js";
 import { askUserClientTool } from "./tools/ask-user-client.js";
 import type { UpdateCheckResult } from "./update/check.js";
 import { createStartupProfilerFromEnv } from "./utils/checkpoint-profiler.js";
@@ -181,6 +171,67 @@ const STARTUP_TELEMETRY_EXIT_WAIT_GRACE_MS = 25;
 let enterpriseCleanupRegistered = false;
 let checkpointCleanupRegistered = false;
 let sandboxCleanupRegistered = false;
+
+function isTruthyEnvFlag(value: string | undefined): boolean {
+	switch (value?.trim().toLowerCase()) {
+		case "1":
+		case "true":
+		case "yes":
+		case "on":
+			return true;
+		default:
+			return false;
+	}
+}
+
+function shouldStartOpenTelemetry(env: NodeJS.ProcessEnv): boolean {
+	if (
+		isTruthyEnvFlag(env.MAESTRO_INTERNAL_TELEMETRY_DISABLED) ||
+		isTruthyEnvFlag(env.EVALOPS_INTERNAL_TELEMETRY_DISABLED) ||
+		env.MAESTRO_OTEL === "0"
+	) {
+		return false;
+	}
+	if (env.MAESTRO_OTEL === "1") {
+		return true;
+	}
+	const hasOtlpEndpoint = Boolean(env.OTEL_EXPORTER_OTLP_ENDPOINT);
+	const hasExplicitExporter = [
+		env.OTEL_TRACES_EXPORTER,
+		env.OTEL_METRICS_EXPORTER,
+		env.OTEL_LOGS_EXPORTER,
+	].some((exporter) => exporter && exporter !== "none");
+	return hasOtlpEndpoint || hasExplicitExporter;
+}
+
+function startObservability(env: NodeJS.ProcessEnv): void {
+	if (shouldStartOpenTelemetry(env)) {
+		void import("./opentelemetry.js")
+			.then(({ initOpenTelemetry }) => initOpenTelemetry("composer-cli"))
+			.catch(() => undefined);
+	}
+	if (env.SENTRY_DSN?.trim()) {
+		void import("./sentry.js")
+			.then(({ initSentry }) => initSentry("maestro-cli"))
+			.catch(() => undefined);
+	}
+}
+
+async function captureStartupError(error: unknown): Promise<void> {
+	if (!process.env.SENTRY_DSN?.trim()) {
+		return;
+	}
+	try {
+		const { captureSentryException, flushSentry, initSentry } = await import(
+			"./sentry.js"
+		);
+		initSentry("maestro-cli");
+		captureSentryException(error);
+		await flushSentry();
+	} catch {
+		// Startup error reporting is best-effort and must not mask the root error.
+	}
+}
 
 function printAllAgentModes(): void {
 	const lines = ["Agent modes:", ""];
@@ -514,7 +565,7 @@ export async function main(args: string[]) {
 	// Handle --help early exit (before any logging redirection or heavy init)
 	if (parsed.help) {
 		const hiddenFlagTelemetry = parsed.helpHidden
-			? recordStagedRolloutSurfaceUsage("hidden_flag_used", {
+			? recordStagedRolloutSurfaceUsageLazy("hidden_flag_used", {
 					surfaceId: "cli:--help-hidden",
 					surfaceType: "cli_flag",
 					owner: "platform-cli",
@@ -530,7 +581,7 @@ export async function main(args: string[]) {
 	}
 
 	if (parsed.listModesAll) {
-		const hiddenFlagTelemetry = recordStagedRolloutSurfaceUsage(
+		const hiddenFlagTelemetry = recordStagedRolloutSurfaceUsageLazy(
 			"hidden_flag_used",
 			{
 				surfaceId: "cli:--list-modes-all",
@@ -743,8 +794,7 @@ export async function main(args: string[]) {
 		} else {
 			writeStartupErrorToStderr(chalk.red(message));
 		}
-		captureSentryException(error);
-		await flushSentry();
+		await captureStartupError(error);
 		process.exit(1);
 	};
 
@@ -754,8 +804,7 @@ export async function main(args: string[]) {
 
 	// Initialize OpenTelemetry tracing for observability
 	// This is non-blocking (void) to avoid startup latency
-	void initOpenTelemetry("composer-cli");
-	initSentry("maestro-cli");
+	startObservability(process.env);
 
 	const modelLoadPromise = (async () => {
 		await ensureModelsLoaded();
@@ -1618,27 +1667,10 @@ export async function main(args: string[]) {
 	const { setupEventSubscriptions } = await import(
 		"./bootstrap/event-subscriptions-setup.js"
 	);
-	const automaticMemoryConsolidation =
-		createAutomaticMemoryConsolidationCoordinator({
-			createAgent: async () =>
-				createBackgroundTextAgent({
-					model: agent.state.model as Model<Api>,
-					systemPrompt: getMemoryConsolidationSystemPrompt(),
-					cwd: process.cwd(),
-					getAuthContext: (provider) => requireCredential(provider, false),
-				}),
-			getModel: () => agent.state.model as Model<Api>,
-		});
-	const automaticMemoryExtraction = createAutomaticMemoryExtractionCoordinator({
-		createAgent: async () =>
-			createBackgroundTextAgent({
-				model: agent.state.model as Model<Api>,
-				systemPrompt: getMemoryExtractionSystemPrompt(),
-				cwd: process.cwd(),
-				getAuthContext: (provider) => requireCredential(provider, false),
-			}),
+	const automaticMemory = createLazyAutoMemoryCoordinators({
+		cwd: process.cwd(),
+		getAuthContext: (provider) => requireCredential(provider, false),
 		getModel: () => agent.state.model as Model<Api>,
-		onProcessed: () => automaticMemoryConsolidation.schedule(),
 		sessionManager,
 	});
 	setupEventSubscriptions({
@@ -1652,7 +1684,7 @@ export async function main(args: string[]) {
 		tsHookCount: tsHooks.length,
 		cwd: process.cwd(),
 		enterpriseContext,
-		automaticMemoryExtraction,
+		automaticMemoryExtraction: automaticMemory.extraction,
 		scenarioReplay:
 			parsed.replayScenarioPath && process.env.MAESTRO_SCENARIO_ID
 				? {
@@ -1741,7 +1773,6 @@ export async function main(args: string[]) {
 			await runSingleShotMode(agent, sessionManager, parsed.messages, mode);
 		}
 	} finally {
-		await automaticMemoryExtraction.flush();
-		await automaticMemoryConsolidation.flush();
+		await automaticMemory.flush();
 	}
 }
