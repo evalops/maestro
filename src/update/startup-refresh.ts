@@ -31,8 +31,6 @@ const DEFAULT_STARTUP_UPDATE_TIMEOUT_MS = 350;
 const NPM_PREFIX_TIMEOUT_MS = 350;
 const BUN_PREFIX_TIMEOUT_MS = 350;
 
-type PackageManager = "npm" | "bun";
-
 const PACKAGE_MANAGER_ENV_PATTERN =
 	/^(?:npm_config_|NPM_CONFIG_|BUN_CONFIG_|bun_config_|YARN_|yarn_|PNPM_|pnpm_)/u;
 const PACKAGE_MANAGER_ENV_BLOCKLIST = new Set([
@@ -47,6 +45,17 @@ const PACKAGE_MANAGER_ENV_ALLOWLIST = new Set([
 	"NPM_CONFIG_PREFIX",
 	"npm_config_prefix",
 ]);
+
+const bunInstallHomeFromGlobalPrefix = (prefix: string): string | undefined => {
+	const normalized = prefix.replace(/\/+$/u, "");
+	if (
+		basename(normalized) !== "global" ||
+		basename(dirname(normalized)) !== "install"
+	) {
+		return undefined;
+	}
+	return dirname(dirname(normalized));
+};
 
 const packageManagerEnv = (
 	env: NodeJS.ProcessEnv,
@@ -72,8 +81,16 @@ const packageManagerEnv = (
 		sanitized.NPM_CONFIG_PREFIX = options.prefix;
 		delete sanitized.npm_config_prefix;
 	}
+	if (options.packageManager === "bun" && options.prefix) {
+		const bunInstall = bunInstallHomeFromGlobalPrefix(options.prefix);
+		if (bunInstall) {
+			sanitized.BUN_INSTALL = bunInstall;
+		}
+	}
 	return sanitized;
 };
+
+type PackageManager = "npm" | "bun";
 
 type GlobalInstallContext = {
 	packageManager: PackageManager;
@@ -456,7 +473,7 @@ export async function attemptStartupUpdate(
 	const env = options.env ?? process.env;
 	const args = options.args ?? process.argv.slice(2);
 	const argv = options.argv ?? process.argv;
-	const packageName = options.packageName ?? getPackageName();
+	const packageName = options.packageName ?? getPackageName(env);
 	const updateMode = envValue(env, STARTUP_UPDATE_ENV);
 	const now = options.now ?? Date.now();
 
@@ -506,7 +523,7 @@ export async function attemptStartupUpdate(
 
 	const checkTimeoutMs =
 		options.checkTimeoutMs ?? startupCheckTimeoutMsFromEnv(env);
-	const updateUrls = resolveUpdateUrls({}, env);
+	const updateUrls = resolveUpdateUrls({}, env, packageName);
 	const checkOptions = {
 		timeoutMs: startupSourceTimeoutMs(checkTimeoutMs, updateUrls.length),
 		urls: updateUrls,
