@@ -260,7 +260,10 @@ describe("handlePlatformA2APushCallback", () => {
 							contextId: "ctx_1",
 						},
 					},
-					{ "x-a2a-notification-token": "callback-token" },
+					{
+						"x-a2a-notification-token": "callback-token",
+						"x-evalops-agent-id": "agent_expected",
+					},
 				),
 				res as unknown as ServerResponse,
 				ctx,
@@ -366,6 +369,81 @@ describe("handlePlatformA2APushCallback", () => {
 			agentId: "agent_payload",
 			actorId: "actor_header",
 		});
+	});
+
+	it("rejects callbacks for a different hosted runner agent", async () => {
+		vi.stubEnv("MAESTRO_PLATFORM_A2A_CALLBACK_TOKEN", "callback-token");
+		const ctx = context();
+		if (ctx.hostedRunner) {
+			ctx.hostedRunner.agentId = "agent_expected";
+		}
+		const res = new MockResponse();
+
+		await expect(
+			handlePlatformA2APushCallback(
+				jsonRequest(
+					{
+						statusUpdate: {
+							taskId: "run_1",
+							contextId: "ctx_1",
+							status: { state: "TASK_STATE_WORKING" },
+							metadata: {
+								workspaceId: "ws_hosted",
+								agentId: "agent_other",
+							},
+						},
+					},
+					{ "x-a2a-notification-token": "callback-token" },
+				),
+				res as unknown as ServerResponse,
+				ctx,
+			),
+		).rejects.toMatchObject({ statusCode: 403 });
+
+		expect(ctx.hostedRunner?.lastPlatformA2APush).toBeUndefined();
+	});
+
+	it("rejects callbacks for a different nested hosted runner agent", async () => {
+		vi.stubEnv("MAESTRO_PLATFORM_A2A_CALLBACK_TOKEN", "callback-token");
+		const ctx = context();
+		if (ctx.hostedRunner) {
+			ctx.hostedRunner.agentId = "agent_expected";
+		}
+		const res = new MockResponse();
+
+		await expect(
+			handlePlatformA2APushCallback(
+				jsonRequest(
+					{
+						statusUpdate: {
+							taskId: "run_1",
+							contextId: "ctx_1",
+							status: {
+								state: "TASK_STATE_WORKING",
+								message: {
+									id: "agent_response_message",
+									metadata: {
+										agentId: "agent_other",
+									},
+								},
+							},
+							metadata: {
+								workspaceId: "ws_hosted",
+								agentId: "agent_expected",
+							},
+						},
+					},
+					{
+						"x-a2a-notification-token": "callback-token",
+						"x-evalops-agent-id": "agent_expected",
+					},
+				),
+				res as unknown as ServerResponse,
+				ctx,
+			),
+		).rejects.toMatchObject({ statusCode: 403 });
+
+		expect(ctx.hostedRunner?.lastPlatformA2APush).toBeUndefined();
 	});
 
 	it("does not reject status pushes for agent response message ids", async () => {

@@ -4,6 +4,10 @@ export async function runCliRuntime(args: string[]): Promise<void> {
 		await handleA2ACommand(args.slice(1));
 		return;
 	}
+	const { runCliCommandRuntime } = await import("./cli-command-runtime.js");
+	if (await runCliCommandRuntime(args)) {
+		return;
+	}
 
 	const loadMain = async () => {
 		if (process.versions?.bun) {

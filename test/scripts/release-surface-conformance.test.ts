@@ -7,6 +7,9 @@ import {
 	loadReleaseSurfaceConformanceManifest,
 } from "../../scripts/check-release-surface-conformance.mjs";
 
+const publicPackageName = ["@evalops", "maestro"].join("/");
+const publicPackageLatest = `${publicPackageName}@latest`;
+
 describe("release-surface conformance", () => {
 	let tempDir = "";
 
@@ -180,6 +183,54 @@ describe("release-surface conformance", () => {
 		);
 		expect(failures).toContain(
 			"release-gate-scripts: surface.txt must use package-script evidence for release-gate validation",
+		);
+	});
+
+	it("requires public install docs to explain deprecated private workspace dependency failures", () => {
+		tempDir = join(
+			tmpdir(),
+			`release-surface-public-install-${process.pid}-${Date.now()}`,
+		);
+		mkdirSync(tempDir, { recursive: true });
+		writeFileSync(
+			join(tempDir, "README.md"),
+			[
+				`bun install -g ${publicPackageName}`,
+				`npm install -g ${publicPackageName}`,
+				publicPackageLatest,
+				"@evalops/tui",
+				"@evalops/contracts",
+				"deprecated 0.10.8-0.10.20 package",
+				"published release verification now runs npm and Bun",
+			].join("\n"),
+			"utf8",
+		);
+
+		const failures = checkReleaseSurfaceConformance({
+			rootDir: tempDir,
+			manifest: {
+				version: 1,
+				checks: [
+					{
+						area: "public-install-docs",
+						path: "README.md",
+						evidenceType: "doc",
+						anchors: [
+							`bun install -g ${publicPackageName}`,
+							`npm install -g ${publicPackageName}`,
+							publicPackageLatest,
+							"@evalops/tui",
+							"@evalops/contracts",
+							"deprecated 0.10.8-0.10.20 package",
+							"published release verification now runs npm and Bun",
+						],
+					},
+				],
+			},
+		});
+
+		expect(failures).toContain(
+			"public-install-docs: README.md must anchor referenced private workspace dependencies",
 		);
 	});
 

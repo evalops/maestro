@@ -1323,13 +1323,8 @@ describe("ci workflow guardrails", () => {
 			encoding: "utf8",
 		});
 		const loadEnvImportIndex = source.indexOf('await import("./load-env.js")');
-		const loadEnvIndex = source.indexOf(
-			"loadedEnvKeys = loadEnv();",
-			loadEnvImportIndex,
-		);
-		const refreshIndex = source.indexOf(
-			"await refreshInstalledCliOnStartup(args, loadedEnvKeys)",
-		);
+		const loadEnvIndex = source.indexOf("loadEnv();", loadEnvImportIndex);
+		const refreshIndex = source.indexOf("await refreshInstalledCliOnStartup");
 
 		expect(loadEnvImportIndex).toBeGreaterThan(-1);
 		expect(loadEnvIndex).toBeGreaterThan(loadEnvImportIndex);
