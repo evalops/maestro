@@ -154,42 +154,58 @@ describe("scripted scenario runner", () => {
 		});
 	});
 
-	it("fails release-blocking gate violations even when assertions pass", () => {
+	it("fails release-blocking scripted outcomes when the release gate is unsatisfied", () => {
+		const baseDir = createTempDir();
+		writeFileSync(join(baseDir, "ready.txt"), "ready\n");
 		const scenario: MaestroScriptedScenario = {
 			schemaVersion: "evalops.maestro.scripted-scenario.v1",
-			id: "release-gate-budget-failure",
-			description: "Scripted replay release gates must affect CI outcome.",
+			id: "scripted-release-gate-unsatisfied",
+			description: "Release gate failures should fail release-blocking replay.",
 			releaseGate: {
 				releaseBlocking: true,
 				tier: "smoke",
-				requiredArtifacts: ["replay"],
-				maxToolCalls: 0,
+				requiredArtifacts: ["replay", "score"],
+				maxToolCalls: 1,
 			},
 			metadata: {
 				recordedAt: "2026-05-10T00:00:00.000Z",
-				toolsExpected: ["read"],
+				toolsExpected: ["read", "write"],
 			},
 			frames: [
 				{
 					index: 0,
-					statements: [{ kind: "tool_call", tool: "read", id: "call-read" }],
+					statements: [
+						{ kind: "tool_call", tool: "read", id: "call-read" },
+						{ kind: "tool_call", tool: "write", id: "call-write" },
+					],
 				},
 			],
-			assertions: [],
+			assertions: [
+				{
+					id: "ready-file",
+					kind: "file_exists",
+					path: "ready.txt",
+				},
+			],
 		};
 
-		const result = evaluateScriptedScenario(scenario, {
-			baseDir: createTempDir(),
-		});
+		const result = evaluateScriptedScenario(scenario, { baseDir });
+		const junit = scriptedScenarioResultToJunit(result);
 
+		expect(result.counts.failed).toBe(0);
+		expect(result.assertions[0]).toMatchObject({
+			id: "ready-file",
+			status: "pass",
+		});
 		expect(result.scenario.observedOutcome).toBe("fail");
 		expect(result.releaseGate).toMatchObject({
 			releaseBlocking: true,
 			satisfied: false,
-			missingArtifacts: [],
-			budgetViolations: ["toolCalls 1/0"],
-			policyViolations: [],
+			missingArtifacts: ["score"],
+			budgetViolations: ["toolCalls 2/1"],
 		});
+		expect(junit).toContain('name="scenario-outcome"');
+		expect(junit).toContain("Observed outcome fail; expected pass.");
 	});
 
 	it("fails scripted workspace manifest assertions when hydration files are missing", () => {
