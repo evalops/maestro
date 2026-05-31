@@ -79,6 +79,14 @@ const TERMINAL_TASK_STATES = new Set([
 	"TASK_STATE_CANCELLED",
 	"TASK_STATE_REJECTED",
 ]);
+const REALTIME_STREAM_EVENT_TYPES = new Set([
+	"task",
+	"message",
+	"task-status",
+	"task-artifact",
+	"statusUpdate",
+	"artifactUpdate",
+]);
 
 const VERIFICATION_KEY_ENV_VARS = [
 	"MAESTRO_A2A_LIVE_EVIDENCE_VERIFY_PUBLIC_KEY",
@@ -717,6 +725,12 @@ function verifyRealtimeStreamEvidence(
 	const observedAt: string[] = [];
 	for (const event of events) {
 		const id = requireString(event, "id");
+		const type = requireString(event, "type");
+		if (!REALTIME_STREAM_EVENT_TYPES.has(type)) {
+			throw new Error(
+				`Platform A2A evidence unsupported realtime stream event type ${type} for event ${id}`,
+			);
+		}
 		if (terminalEvent) {
 			throw new Error(
 				`Platform A2A evidence realtime stream event ${id} appears after terminalEventId ${terminalEventId}`,
