@@ -154,6 +154,44 @@ describe("scripted scenario runner", () => {
 		});
 	});
 
+	it("fails release-blocking gate violations even when assertions pass", () => {
+		const scenario: MaestroScriptedScenario = {
+			schemaVersion: "evalops.maestro.scripted-scenario.v1",
+			id: "release-gate-budget-failure",
+			description: "Scripted replay release gates must affect CI outcome.",
+			releaseGate: {
+				releaseBlocking: true,
+				tier: "smoke",
+				requiredArtifacts: ["replay"],
+				maxToolCalls: 0,
+			},
+			metadata: {
+				recordedAt: "2026-05-10T00:00:00.000Z",
+				toolsExpected: ["read"],
+			},
+			frames: [
+				{
+					index: 0,
+					statements: [{ kind: "tool_call", tool: "read", id: "call-read" }],
+				},
+			],
+			assertions: [],
+		};
+
+		const result = evaluateScriptedScenario(scenario, {
+			baseDir: createTempDir(),
+		});
+
+		expect(result.scenario.observedOutcome).toBe("fail");
+		expect(result.releaseGate).toMatchObject({
+			releaseBlocking: true,
+			satisfied: false,
+			missingArtifacts: [],
+			budgetViolations: ["toolCalls 1/0"],
+			policyViolations: [],
+		});
+	});
+
 	it("fails scripted workspace manifest assertions when hydration files are missing", () => {
 		const baseDir = createTempDir();
 		writeFileSync(

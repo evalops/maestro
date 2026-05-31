@@ -494,14 +494,17 @@ export function evaluateScriptedScenario(
 	const warnings = assertions.filter(
 		(assertion) => assertion.status === "warn",
 	);
-	const observedOutcome: MaestroScenarioOutcome =
-		failed.length > 0 ? "fail" : "pass";
 	const toolCalls = toolCallStatements(scenario).length;
 	const releaseGate = buildScriptedReleaseGateSummary(
 		scenario,
 		{ assertions, toolCalls, frames: scenario.frames.length },
 		workspaceManifest,
 	);
+	const observedOutcome: MaestroScenarioOutcome =
+		failed.length > 0 ||
+		(releaseGate?.releaseBlocking === true && releaseGate.satisfied !== true)
+			? "fail"
+			: "pass";
 	const workspace = buildWorkspaceSummary(workspaceManifest);
 	return {
 		schemaVersion: SCRIPTED_SCENARIO_RESULT_SCHEMA,
