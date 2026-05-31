@@ -652,7 +652,7 @@ describe("hosted AgentRuntime progress recorder", () => {
 				receiverThreadIds: ["child-thread-secret"],
 				childRunIds: ["agent-run-secret"],
 				prompt:
-					"Please run npm test -- --runInBand with sk_live_SUBAGENT_12345678",
+					"Please investigate the hosted progress regression.\nbunx vitest --run test/server/hosted-agent-runtime-progress.test.ts",
 			},
 		});
 		await recorder.flush();

@@ -558,6 +558,9 @@ function containsShellCommandSyntax(value: string): boolean {
 	if (containsShellCommandAtStart(value)) {
 		return true;
 	}
+	if (value.split(/\r?\n/).some((line) => containsShellCommandAtStart(line))) {
+		return true;
+	}
 	const prefixedCommand =
 		/\b(?:detected command|command failed|command):\s*(.+)$/i.exec(value);
 	if (prefixedCommand?.[1] && containsShellCommandAtStart(prefixedCommand[1])) {
@@ -583,7 +586,7 @@ function containsShellCommandAtStart(value: string): boolean {
 		return true;
 	}
 	if (
-		/^\s*(?:git\s+\S+|rm\s+-[A-Za-z]*[rf][A-Za-z]*\s+\S+|sudo\s+\S+|curl\s+\S+|wget\s+\S+|npm\s+\S+|npx\s+\S+|pnpm\s+\S+|bun\s+\S+|node\s+\S+|python(?:3)?\s+\S+|pip(?:3)?\s+\S+|docker\s+\S+|kubectl\s+\S+|terraform\s+\S+)/i.test(
+		/^\s*(?:git\s+\S+|rm\s+-[A-Za-z]*[rf][A-Za-z]*\s+\S+|sudo\s+\S+|curl\s+\S+|wget\s+\S+|npm\s+\S+|npx\s+\S+|pnpm\s+\S+|bunx?\s+\S+|node\s+\S+|python(?:3)?\s+\S+|pip(?:3)?\s+\S+|docker\s+\S+|kubectl\s+\S+|terraform\s+\S+)/i.test(
 			value,
 		)
 	) {
