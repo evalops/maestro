@@ -182,6 +182,8 @@ function withPlatformA2APushContext(
 	requestContext: PlatformA2APushContext,
 ): PlatformA2APushSnapshot {
 	const metadataContext = platformA2APushMetadataContext(payload);
+	const payloadAgentId = snapshot.agentId ?? metadataContext.agentId;
+	assertCompatibleAgentContext(payloadAgentId, requestContext.agentId);
 	return {
 		...snapshot,
 		...metadataContext,
@@ -194,6 +196,7 @@ function withPlatformA2APushContext(
 			snapshot.workspaceId ??
 			metadataContext.workspaceId ??
 			requestContext.workspaceId,
+		agentId: payloadAgentId ?? requestContext.agentId,
 	};
 }
 
@@ -276,6 +279,13 @@ function assertHostedRunnerA2APushBoundary(
 		throw new ApiError(404, "A2A message not found");
 	}
 	if (
+		hostedRunner?.agentId &&
+		snapshot.agentId &&
+		!sameExactIdentifier(snapshot.agentId, hostedRunner.agentId)
+	) {
+		throw new ApiError(403, "A2A push notification agent mismatch");
+	}
+	if (
 		hostedRunner &&
 		snapshot.kind === "message" &&
 		!hostedRunner.a2aMessageId &&
@@ -336,8 +346,10 @@ function ownershipFields(
 	value: JsonObject,
 ): Pick<
 	PlatformA2APushSnapshot,
-	"workspaceId" | "organizationId" | "tenantId"
+	"workspaceId" | "organizationId" | "tenantId" | "agentId"
 > {
+	const agentIds = ownershipStrings(payload, value, ["agentId", "agent_id"]);
+	assertCompatiblePayloadAgentContext(agentIds);
 	return {
 		...optionalField(
 			"workspaceId",
@@ -356,7 +368,23 @@ function ownershipFields(
 			"tenantId",
 			ownershipString(payload, value, ["tenantId", "tenant_id", "tenant"]),
 		),
+		...optionalField("agentId", agentIds[0]),
 	};
+}
+
+function ownershipStrings(
+	payload: JsonObject,
+	value: JsonObject,
+	keys: readonly string[],
+): string[] {
+	const result: string[] = [];
+	for (const source of ownershipSources(payload, value)) {
+		for (const key of keys) {
+			pushUniqueIdentifier(result, stringField(source, key));
+			pushUniqueIdentifier(result, metadataString(source, key));
+		}
+	}
+	return result;
 }
 
 function messageIdFields(
@@ -547,6 +575,34 @@ function sameIdentifier(left: string, right: string): boolean {
 }
 
 function sameMessageIdentifier(left: string, right: string): boolean {
+	return left.trim() === right.trim();
+}
+
+function assertCompatibleAgentContext(
+	metadataAgentId: string | undefined,
+	requestAgentId: string | undefined,
+): void {
+	if (
+		metadataAgentId &&
+		requestAgentId &&
+		!sameExactIdentifier(metadataAgentId, requestAgentId)
+	) {
+		throw new ApiError(403, "A2A push notification agent mismatch");
+	}
+}
+
+function assertCompatiblePayloadAgentContext(
+	agentIds: readonly string[],
+): void {
+	if (
+		agentIds.length > 1 &&
+		agentIds.some((agentId) => !sameExactIdentifier(agentId, agentIds[0] ?? ""))
+	) {
+		throw new ApiError(403, "A2A push notification agent mismatch");
+	}
+}
+
+function sameExactIdentifier(left: string, right: string): boolean {
 	return left.trim() === right.trim();
 }
 

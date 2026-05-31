@@ -42,6 +42,12 @@ bun install -g @evalops/maestro
 npm install -g @evalops/maestro
 ```
 
+If a global install fails while resolving `@evalops/tui` or
+`@evalops/contracts`, you are installing a deprecated 0.10.8-0.10.20 package
+that referenced private workspace dependencies. Upgrade to
+`@evalops/maestro@latest`; published release verification now runs npm and Bun
+registry install smokes against the public package metadata before promotion.
+
 ### Nix
 
 ```bash
