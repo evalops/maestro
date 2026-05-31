@@ -628,16 +628,17 @@ function verifyRealtimeDeliveryEvidence(
 		return undefined;
 	}
 	const delivery = requireRecord(value, "realtimeDelivery");
+	const requireMessageId = input.options.requireRealtimeDeliveryEvidence === true;
 	const trace = verifyRealtimeDeliveryTrace(
 		requireRealtimeSection(delivery, "trace"),
 	);
 	const stream = verifyRealtimeStreamEvidence(
 		requireRealtimeSection(delivery, "stream"),
-		{ ...input, rootTraceId: trace.rootTraceId },
+		{ ...input, rootTraceId: trace.rootTraceId, requireMessageId },
 	);
 	const push = verifyRealtimePushEvidence(
 		requireRealtimeSection(delivery, "push"),
-		{ ...input, rootTraceId: trace.rootTraceId },
+		{ ...input, rootTraceId: trace.rootTraceId, requireMessageId },
 	);
 	const metrics = verifyRealtimeMetricsEvidence(
 		requireRealtimeSection(delivery, "metrics"),
@@ -693,6 +694,7 @@ function verifyRealtimeStreamEvidence(
 		taskState?: string;
 		taskTerminal: boolean;
 		taskMessageIds: string[];
+		requireMessageId?: boolean;
 	},
 ): { observedAt: string[]; terminalEventId: string } {
 	const surface = requireString(stream, "surface");
@@ -787,6 +789,7 @@ function verifyRealtimePushEvidence(
 		taskState?: string;
 		taskTerminal: boolean;
 		taskMessageIds: string[];
+		requireMessageId?: boolean;
 	},
 ): { observedAt: string[]; terminalNotificationId: string } {
 	const surface = requireString(push, "surface");
@@ -1008,6 +1011,7 @@ function verifyRealtimeDeliveryRecordIds(
 		a2aMessageId?: string;
 		contextId?: string;
 		taskMessageIds: string[];
+		requireMessageId?: boolean;
 	},
 ): void {
 	const taskId = requireString(record, "taskId");
@@ -1023,6 +1027,11 @@ function verifyRealtimeDeliveryRecordIds(
 		);
 	}
 	const messageId = optionalString(record, "messageId");
+	if (expected.requireMessageId && !messageId) {
+		throw new Error(
+			`Platform A2A evidence ${label} requires messageId when realtime delivery verification is enabled`,
+		);
+	}
 	if (messageId && !expected.taskMessageIds.includes(messageId)) {
 		throw new Error(
 			`Platform A2A evidence ${label} messageId ${messageId} is not present in task.messageIds`,

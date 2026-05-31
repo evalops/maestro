@@ -37,6 +37,7 @@ import {
 	publicMirrorRefCandidates,
 	resolvePublicMirrorRef,
 } from "../../scripts/resolve-public-mirror-ref.mjs";
+import { expectRegistryInstallSmokeIsReleaseBlocking } from "../utils/registry-install-smoke-guard.js";
 
 type WorkflowStep = {
 	env?: Record<string, unknown>;
@@ -1095,6 +1096,8 @@ describe("ci workflow guardrails", () => {
 		expect(script).toContain("installMetadata: bunInstallMetadata");
 		expect(script).toContain("validatePublishedReplayEvidenceSet");
 		expect(script).toContain('"published-replay-evidence"');
+		expect(script).toContain("Bun registry install smoke is release-blocking");
+		expect(script).toContain("MAESTRO_ALLOW_REGISTRY_BUN_INSTALL_SMOKE_SKIP");
 		expect(script).toContain(
 			'validatePublishedReplayEvidenceOutputs(["npm"]);',
 		);
@@ -1179,9 +1182,12 @@ describe("ci workflow guardrails", () => {
 				{ encoding: "utf8" },
 			),
 		) as Workflow;
-		const canaryStep = releaseWorkflow.jobs?.[
-			"post-publish-canary"
-		]?.steps?.find((step) => step.name === "Verify published package from npm");
+		const canarySteps =
+			releaseWorkflow.jobs?.["post-publish-canary"]?.steps ?? [];
+		const canaryIndex = canarySteps.findIndex(
+			(step) => step.name === "Verify published package from npm",
+		);
+		const canaryStep = canarySteps[canaryIndex];
 		const evidenceStep = releaseWorkflow.jobs?.[
 			"post-publish-canary"
 		]?.steps?.find(
@@ -1207,7 +1213,18 @@ describe("ci workflow guardrails", () => {
 		expect(sandboxArgs.length).toBeGreaterThanOrEqual(2);
 		expect(script).not.toMatch(/"--sandbox",\s*"workspace-write"/);
 		if (isPublicValidationWorkflow(releaseWorkflow)) {
-			expect(canaryStep).toBeDefined();
+			expect(canaryIndex).toBeGreaterThanOrEqual(0);
+			expectRegistryInstallSmokeIsReleaseBlocking(
+				canaryStep,
+				[
+					releaseWorkflow.env,
+					releaseWorkflow.jobs?.["post-publish-canary"]?.env,
+				],
+				{
+					containingJob: releaseWorkflow.jobs?.["post-publish-canary"],
+					precedingSteps: canarySteps.slice(0, canaryIndex),
+				},
+			);
 			expect(canaryStep?.run).toBe("node scripts/smoke-registry-install.js");
 			expect(canaryStep?.env).toMatchObject({
 				MAESTRO_INSTALL_AUDIT_LEVEL: "critical",
@@ -1223,10 +1240,20 @@ describe("ci workflow guardrails", () => {
 			const verifyWorkflow = parse(
 				readFileSync(verifyWorkflowPath, { encoding: "utf8" }),
 			) as Workflow;
-			const verifyStep = verifyWorkflow.jobs?.verify?.steps?.find(
+			const verifySteps = verifyWorkflow.jobs?.verify?.steps ?? [];
+			const verifyIndex = verifySteps.findIndex(
 				(step) => step.name === "Verify published package from npm",
 			);
-			expect(verifyStep).toBeDefined();
+			const verifyStep = verifySteps[verifyIndex];
+			expect(verifyIndex).toBeGreaterThanOrEqual(0);
+			expectRegistryInstallSmokeIsReleaseBlocking(
+				verifyStep,
+				[verifyWorkflow.env, verifyWorkflow.jobs?.verify?.env],
+				{
+					containingJob: verifyWorkflow.jobs?.verify,
+					precedingSteps: verifySteps.slice(0, verifyIndex),
+				},
+			);
 			expect(verifyStep?.run).toContain(
 				"node scripts/smoke-registry-install.js",
 			);
@@ -1806,6 +1833,14 @@ describe("ci workflow guardrails", () => {
 		);
 		expect(verifyStep?.if).toContain("npm_dry_run == 'true'");
 		expect(verifyStep?.["working-directory"]).toBe("public-mirror");
+		expectRegistryInstallSmokeIsReleaseBlocking(
+			verifyStep,
+			[workflow.env, workflow.jobs?.["mirror-release"]?.env],
+			{
+				containingJob: workflow.jobs?.["mirror-release"],
+				precedingSteps: steps.slice(0, verifyIndex),
+			},
+		);
 		expect(verifyStep?.run).toBe("node scripts/smoke-registry-install.js");
 		expect(verifyStep?.env).toMatchObject({
 			MAESTRO_INSTALL_AUDIT_LEVEL: "critical",

@@ -867,6 +867,20 @@ describe("A2A CLI command helpers", () => {
 		expect(parsed.flags.get("--tasks")).toBe("/tmp/tasks.json");
 	});
 
+	it("treats unknown flag-like coordinate reply text as data", () => {
+		const parsed = parseA2AArgs([
+			"coordinate",
+			"mac-mini",
+			"--reply",
+			"--stream-json",
+			"--wait",
+		]);
+
+		expect(parsed.positionals).toEqual(["coordinate", "mac-mini"]);
+		expect(parsed.flags.get("--reply")).toBe("--stream-json");
+		expect(parsed.flags.get("--wait")).toBe(true);
+	});
+
 	it("rejects coordinate reply flags without reply text", () => {
 		expect(() =>
 			parseA2AArgs(["coordinate", "mac-mini", "--reply", "--wait"]),

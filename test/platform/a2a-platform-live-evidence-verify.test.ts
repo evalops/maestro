@@ -490,7 +490,48 @@ describe("Platform A2A live evidence verifier", () => {
 		}
 	});
 
-	it("accepts realtime status and push records without message ids", async () => {
+	it("accepts optional realtime status and push records without message ids", async () => {
+		const dir = await mkdtemp(join(tmpdir(), "maestro-a2a-evidence-"));
+		try {
+			const delivery = realtimeDeliveryEvidence();
+			const stream = delivery.stream as Record<string, unknown>;
+			const push = delivery.push as Record<string, unknown>;
+			const events = stream.events as Record<string, unknown>[];
+			const notifications = push.notifications as Record<string, unknown>[];
+			const path = await writeEvidenceBundle(
+				dir,
+				evidence({
+					realtimeDelivery: {
+						...delivery,
+						stream: {
+							...stream,
+							events: events.map(
+								({ messageId: _messageId, ...event }) => event,
+							),
+						},
+						push: {
+							...push,
+							notifications: notifications.map(
+								({ messageId: _messageId, ...notification }) => notification,
+							),
+						},
+					},
+				}),
+			);
+			await expect(
+				verifyPlatformA2ALiveEvidenceFile(path),
+			).resolves.toMatchObject({
+				realtimeDelivery: {
+					streamTerminalEventId: "stream_event_2",
+					pushTerminalNotificationId: "push_notification_2",
+				},
+			});
+		} finally {
+			await rm(dir, { force: true, recursive: true });
+		}
+	});
+
+	it("rejects realtime delivery without message ids when realtime delivery is required", async () => {
 		const dir = await mkdtemp(join(tmpdir(), "maestro-a2a-evidence-"));
 		try {
 			const delivery = realtimeDeliveryEvidence();
@@ -522,12 +563,7 @@ describe("Platform A2A live evidence verifier", () => {
 				verifyPlatformA2ALiveEvidenceFile(path, {
 					requireRealtimeDeliveryEvidence: true,
 				}),
-			).resolves.toMatchObject({
-				realtimeDelivery: {
-					streamTerminalEventId: "stream_event_2",
-					pushTerminalNotificationId: "push_notification_2",
-				},
-			});
+			).rejects.toThrow(/requires messageId/);
 		} finally {
 			await rm(dir, { force: true, recursive: true });
 		}
