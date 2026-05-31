@@ -2791,8 +2791,16 @@ describe("hosted AgentRuntime progress recorder", () => {
 	});
 
 	it("redacts command-like and secret-like outbound progress fields", async () => {
-		const { recorder, recordStep, recordEvent, waitRun, resumeRun } =
-			createRecorder();
+		const {
+			recorder,
+			recordStep,
+			recordEvent,
+			recordWorkItem,
+			updateWorkItem,
+			waitRun,
+			resumeRun,
+			delegateAgent,
+		} = createRecorder();
 		recorder.recordAgentEvent({
 			type: "tool_execution_start",
 			toolCallId: "call_secret",
@@ -2801,6 +2809,75 @@ describe("hosted AgentRuntime progress recorder", () => {
 			summaryLabel: "Ran rm -rf /tmp/sk_live_SECRET_12345678",
 			args: { command: "rm -rf /tmp/sk_live_SECRET_12345678" },
 		});
+		recorder.recordAgentEvent({
+			type: "tool_execution_update",
+			toolCallId: "call_secret",
+			toolName: "shell",
+			displayName: "bash -lc 'echo $TOKEN'",
+			summaryLabel: "Streaming sk_live_SECRET_12345678",
+			args: { command: "rm -rf /tmp/sk_live_SECRET_12345678" },
+			partialResult: {
+				content: [{ type: "text", text: "partial output" }],
+				toolExecutionId: "texec_secret",
+			},
+		});
+		recorder.recordAgentEvent({
+			type: "tool_execution_end",
+			toolCallId: "call_secret",
+			toolExecutionId: "texec_secret",
+			toolName: "shell",
+			displayName: "sh -c 'echo artifact'",
+			summaryLabel: "Artifact for sk_live_SECRET_12345678",
+			result: {
+				role: "toolResult",
+				toolCallId: "call_secret",
+				toolName: "shell",
+				content: [{ type: "text", text: "done" }],
+				isError: false,
+				timestamp: 1,
+			},
+			isError: false,
+			skillMetadata: {
+				name: "shell-skill",
+				hash: "sha256:secret-test",
+				source: "project",
+				artifactId: "artifact_secret",
+			},
+		} satisfies AgentEvent);
+		recorder.recordAgentEvent({
+			type: "tool_execution_start",
+			toolCallId: "subagent_secret",
+			toolName: "codex.subagent.spawnAgent",
+			displayName: "bash -lc 'echo $SUBAGENT_TOKEN'",
+			summaryLabel: "Spawn with sk_live_SUBAGENT_12345678",
+			args: {
+				codexTool: "spawnAgent",
+				receiverThreadIds: ["child-thread-secret"],
+				childRunIds: ["agent-run-secret"],
+				prompt: "Review the hosted progress redaction path",
+			},
+		});
+		recorder.recordAgentEvent({
+			type: "tool_execution_end",
+			toolCallId: "subagent_secret",
+			toolName: "codex.subagent.spawnAgent",
+			displayName: "sh -c 'echo done'",
+			summaryLabel: "Completed with sk_live_SUBAGENT_12345678",
+			result: {
+				role: "toolResult",
+				toolCallId: "subagent_secret",
+				toolName: "codex.subagent.spawnAgent",
+				content: [{ type: "text", text: "spawn completed" }],
+				details: {
+					codexTool: "spawnAgent",
+					receiverThreadIds: ["child-thread-secret"],
+					childRunIds: ["agent-run-secret"],
+				},
+				isError: false,
+				timestamp: 2,
+			},
+			isError: false,
+		} satisfies AgentEvent);
 		recorder.recordPromptFailure("failed with sk_live_SECRET_12345678");
 		recorder.recordServerRequestEvent({
 			type: "registered",
@@ -2859,6 +2936,53 @@ describe("hosted AgentRuntime progress recorder", () => {
 			expect.objectContaining({
 				attributes: expect.objectContaining({
 					error_message: "[redacted]",
+				}),
+			}),
+		);
+		expect(recordEvent).toHaveBeenCalledWith(
+			expect.objectContaining({
+				message: "Maestro tool execution update recorded",
+				attributes: expect.objectContaining({
+					display_name: "[redacted]",
+					summary_label: "[redacted]",
+				}),
+			}),
+		);
+		expect(recordEvent).toHaveBeenCalledWith(
+			expect.objectContaining({
+				message: "Maestro tool artifact evidence recorded",
+				artifactId: "artifact_secret",
+				attributes: expect.objectContaining({
+					display_name: "[redacted]",
+					summary_label: "[redacted]",
+				}),
+			}),
+		);
+		expect(recordWorkItem).toHaveBeenCalledWith(
+			expect.objectContaining({
+				workItem: expect.objectContaining({
+					title: "[redacted]",
+					payload: expect.objectContaining({
+						display_name: "[redacted]",
+						summary_label: "[redacted]",
+					}),
+				}),
+			}),
+		);
+		expect(updateWorkItem).toHaveBeenCalledWith(
+			expect.objectContaining({
+				workItemId: "maestro:session_1:work:subagent_secret",
+				payload: expect.objectContaining({
+					display_name: "[redacted]",
+					summary_label: "[redacted]",
+				}),
+			}),
+		);
+		expect(delegateAgent).toHaveBeenCalledWith(
+			expect.objectContaining({
+				contextPayload: expect.objectContaining({
+					display_name: "[redacted]",
+					summary_label: "[redacted]",
 				}),
 			}),
 		);
