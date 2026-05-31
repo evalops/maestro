@@ -55,6 +55,9 @@ const SCRIPTED_REPLAY_PROVIDER = "scripted-replay";
 const SCRIPTED_REPLAY_MODEL = "maestro-replay-v1";
 const SCRIPTED_REPLAY_TOOL_ALLOWLIST = ["read", "search", "write"];
 const SCRIPTED_REPLAY_APPROVAL_MODE = "auto";
+const EXPECTED_PROMPT_LENGTH = 41;
+const EXPECTED_PROMPT_SHA256 =
+	"db296f4e8a050ac9e968523b0202171fca61524406900bbe534ae876ed506570";
 const PUBLISHED_REPLAY_EVIDENCE_REF_PREFIXES = [
 	"tool-call:",
 	"tool-execution:",
@@ -484,6 +487,9 @@ function providerConfigIsValid(providerConfig) {
 		providerConfig.approvalMode === SCRIPTED_REPLAY_APPROVAL_MODE &&
 		typeof providerConfig.sandboxMode === "string" &&
 		providerConfig.sandboxMode.length > 0 &&
+		isObject(providerConfig.prompt) &&
+		providerConfig.prompt.length === EXPECTED_PROMPT_LENGTH &&
+		providerConfig.prompt.sha256 === EXPECTED_PROMPT_SHA256 &&
 		SCRIPTED_REPLAY_TOOL_ALLOWLIST.every((toolName) =>
 			stringArray(providerConfig.toolAllowlist).includes(toolName),
 		)
@@ -548,7 +554,8 @@ function transcriptIsValid(transcript) {
 	const coverageModes = stringArray(transcript?.coverage?.modes);
 	const coverageToolCallIds = stringArray(transcript?.coverage?.toolCallIds);
 	if (
-		promptSha256.length !== 64 ||
+		transcript?.prompt?.length !== EXPECTED_PROMPT_LENGTH ||
+		promptSha256 !== EXPECTED_PROMPT_SHA256 ||
 		countModesWith(coverageModes, REQUIRED_REPLAY_MODES) !==
 			REQUIRED_REPLAY_MODES.length ||
 		!coverageToolCallIds.includes(TOOL_CALL_ID) ||
@@ -588,6 +595,7 @@ function transcriptObservabilityIsValid(observabilityTranscript) {
 	return (
 		isObject(observabilityTranscript) &&
 		observabilityTranscript.schemaVersion === TRANSCRIPT_SCHEMA &&
+		observabilityTranscript.promptSha256 === EXPECTED_PROMPT_SHA256 &&
 		countModesWith(observabilityTranscript.modes, REQUIRED_REPLAY_MODES) ===
 			REQUIRED_REPLAY_MODES.length &&
 		stringArray(observabilityTranscript.toolCallIds).includes(TOOL_CALL_ID) &&
@@ -733,6 +741,18 @@ export function validatePublishedReplayEvidence(
 		errors,
 		transcriptIsValid(evidence?.transcript),
 		"transcript must include queryable published replay transcript evidence for text, json, and rpc",
+	);
+	const providerPrompt = isObject(evidence?.replay?.providerConfig?.prompt)
+		? evidence.replay.providerConfig.prompt
+		: {};
+	const transcriptPrompt = isObject(evidence?.transcript?.prompt)
+		? evidence.transcript.prompt
+		: {};
+	pushUnless(
+		errors,
+		providerPrompt.sha256 === transcriptPrompt.sha256 &&
+			providerPrompt.length === transcriptPrompt.length,
+		"replay.providerConfig.prompt must match transcript.prompt",
 	);
 
 	const modes = Array.isArray(evidence?.modes) ? evidence.modes : [];
@@ -900,6 +920,11 @@ export function validatePublishedReplayEvidence(
 		errors,
 		transcriptObservabilityIsValid(observability?.transcript),
 		"observability.transcript must summarize transcript modes, tool calls, and final status",
+	);
+	pushUnless(
+		errors,
+		observability?.transcript?.promptSha256 === evidence?.transcript?.prompt?.sha256,
+		"observability.transcript.promptSha256 must match transcript.prompt.sha256",
 	);
 	pushUnless(
 		errors,
