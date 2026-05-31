@@ -1284,7 +1284,7 @@ export class HostedAgentRuntimeProgressRecorder {
 			stepId,
 			attributes: this.basePayload({
 				event_type: "prompt_failure",
-				error_message: compactString(message, 512),
+				error_message: sanitizeOutboundText(message),
 			}),
 		});
 	}

@@ -2791,7 +2791,8 @@ describe("hosted AgentRuntime progress recorder", () => {
 	});
 
 	it("redacts command-like and secret-like outbound progress fields", async () => {
-		const { recorder, recordStep, waitRun, resumeRun } = createRecorder();
+		const { recorder, recordStep, recordEvent, waitRun, resumeRun } =
+			createRecorder();
 		recorder.recordAgentEvent({
 			type: "tool_execution_start",
 			toolCallId: "call_secret",
@@ -2851,6 +2852,13 @@ describe("hosted AgentRuntime progress recorder", () => {
 				step: expect.objectContaining({
 					name: "Prompt failed",
 					errorMessage: "[redacted]",
+				}),
+			}),
+		);
+		expect(recordEvent).toHaveBeenCalledWith(
+			expect.objectContaining({
+				attributes: expect.objectContaining({
+					error_message: "[redacted]",
 				}),
 			}),
 		);
