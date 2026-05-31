@@ -556,6 +556,23 @@ function sanitizeOutboundText(value: string | undefined): string | undefined {
 		: text;
 }
 
+function sanitizeDelegationPrompt(
+	value: string | undefined,
+): string | undefined {
+	const text = nonEmptyString(value);
+	if (!text) {
+		return undefined;
+	}
+	if (
+		/\b(?:sk|gh[pousr]_?|github_pat_|xoxb|xoxp|AKIA|ASIA)[A-Za-z0-9_-]{8,}\b/.test(
+			text,
+		)
+	) {
+		return REDACTED;
+	}
+	return text;
+}
+
 function sanitizedToolDisplayName(event: {
 	displayName?: string;
 	summaryLabel?: string;
@@ -1900,6 +1917,7 @@ export class HostedAgentRuntimeProgressRecorder {
 		const toolExecutionId = materializedToolExecutionId(event);
 		const prompt = nonEmptyString(event.args.prompt);
 		const sanitizedPrompt = sanitizeOutboundText(prompt);
+		const delegationPrompt = sanitizeDelegationPrompt(prompt);
 		const model = nonEmptyString(event.args.model);
 		const reasoningEffort = nonEmptyString(event.args.reasoningEffort);
 		const codexSubagentOperationName = codexSubagentOperation(codexTool);
@@ -1960,7 +1978,7 @@ export class HostedAgentRuntimeProgressRecorder {
 				childRunIds,
 				linkedWorkItemIds,
 				workGraph,
-				prompt: sanitizedPrompt,
+				prompt: delegationPrompt,
 				model,
 				reasoningEffort,
 			});

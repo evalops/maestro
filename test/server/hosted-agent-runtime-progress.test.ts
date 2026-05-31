@@ -3088,4 +3088,40 @@ describe("hosted AgentRuntime progress recorder", () => {
 			}),
 		);
 	});
+
+	it("preserves ordinary command prompts for Codex subagent delegation", async () => {
+		const { recorder, recordWorkItem, delegateAgent } = createRecorder();
+
+		recorder.recordAgentEvent({
+			type: "tool_execution_start",
+			toolCallId: "subagent_command_prompt",
+			toolName: "codex.subagent.spawnAgent",
+			displayName: "Spawn test runner",
+			summaryLabel: "Run tests",
+			args: {
+				codexTool: "spawnAgent",
+				receiverThreadIds: ["child-thread-command"],
+				childRunIds: ["agent-run-command"],
+				prompt: "npm test -- --runInBand",
+			},
+		});
+		await recorder.flush();
+
+		expect(recordWorkItem).toHaveBeenCalledWith(
+			expect.objectContaining({
+				workItem: expect.objectContaining({
+					goal: "[redacted]",
+				}),
+			}),
+		);
+		expect(delegateAgent).toHaveBeenCalledWith(
+			expect.objectContaining({
+				contextPayload: expect.objectContaining({
+					prompt: "npm test -- --runInBand",
+				}),
+				reason:
+					"Codex subagent spawn requested by Maestro: npm test -- --runInBand",
+			}),
+		);
+	});
 });
