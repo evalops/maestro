@@ -46,8 +46,10 @@ export async function createToolsAndSandbox(params: {
 	parsedSandbox?: string;
 	modelApi?: Api | string;
 	cwd: string;
+	shouldPrintMessages?: boolean;
 }): Promise<ToolsSetupResult> {
 	const { parsedTools, parsedSandbox, modelApi, cwd } = params;
+	const shouldPrintMessages = params.shouldPrintMessages ?? true;
 
 	// Apply --tools filter if user specified a subset
 	let baseTools = codingTools;
@@ -60,11 +62,13 @@ export async function createToolsAndSandbox(params: {
 			);
 		}
 		baseTools = filteredTools;
-		console.log(
-			chalk.dim(
-				`Tools restricted to: ${filteredTools.map((t) => t.name).join(", ")}`,
-			),
-		);
+		if (shouldPrintMessages) {
+			console.log(
+				chalk.dim(
+					`Tools restricted to: ${filteredTools.map((t) => t.name).join(", ")}`,
+				),
+			);
+		}
 	} else if (isCodexAppServerApi(modelApi)) {
 		const profileName = resolveCodexToolProfileName(
 			process.env.MAESTRO_CODEX_TOOL_PROFILE,

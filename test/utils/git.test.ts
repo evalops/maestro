@@ -252,6 +252,29 @@ describe("getGitSnapshot", () => {
 		}
 	});
 
+	it("uses porcelain status so color config does not leak ANSI into snapshots", () => {
+		const dir = mkdtempSync(join(tmpdir(), "composer-git-snapshot-"));
+
+		try {
+			initGitRepo(dir);
+			commitFile(dir, "tracked.txt", "tracked\n", "initial commit");
+			execSync("git config color.status always", {
+				cwd: dir,
+				stdio: "ignore",
+			});
+			execSync("git config color.ui always", { cwd: dir, stdio: "ignore" });
+			writeFileSync(join(dir, "tracked.txt"), "pending change\n");
+
+			const snapshot = getGitSnapshot(dir);
+
+			expect(snapshot).toContain("Working tree: dirty");
+			expect(snapshot).toContain("tracked.txt");
+			expect(snapshot).not.toContain(String.fromCharCode(27));
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
 	it("truncates large git status snapshots", () => {
 		const dir = mkdtempSync(join(tmpdir(), "composer-git-snapshot-"));
 
@@ -281,27 +304,16 @@ describe("getGitSnapshot", () => {
 				`#!/bin/sh
 args="$*"
 case "$args" in
-  "rev-parse --is-inside-work-tree")
-    printf 'true\\n'
+  "--no-optional-locks status --porcelain=v1 --branch")
+    printf '## main...origin/main [ahead 2, behind 1]\\n M tracked.txt\\n'
     exit 0
     ;;
-  "rev-parse HEAD")
-    printf '0123456789abcdef0123456789abcdef01234567\\n'
+  "symbolic-ref --short refs/remotes/origin/HEAD")
+    printf 'origin/main\\n'
     exit 0
     ;;
-  "rev-parse --abbrev-ref HEAD")
-    printf 'main\\n'
-    exit 0
-    ;;
-  "rev-parse --abbrev-ref --symbolic-full-name @{u}")
-    exit 1
-    ;;
-  "--no-optional-locks status --porcelain")
-    printf ' M tracked.txt\\n'
-    exit 0
-    ;;
-  "--no-optional-locks status --short")
-    printf ' M tracked.txt\\n'
+  "config user.name")
+    printf 'Test User\\n'
     exit 0
     ;;
   "--no-optional-locks log --oneline -n 5")
@@ -320,8 +332,64 @@ exit 1
 			const snapshot = getGitSnapshot(dir);
 
 			expect(snapshot).toContain("Working tree: dirty");
+			expect(snapshot).toContain("Upstream: origin/main (ahead 2, behind 1)");
 			expect(snapshot).toContain("Status:\nM tracked.txt");
 			expect(snapshot).toContain("Recent commits:\n(git log unavailable)");
+		} finally {
+			if (originalPath === undefined) {
+				Reflect.deleteProperty(process.env, "PATH");
+			} else {
+				process.env.PATH = originalPath;
+			}
+			rmSync(binDir, { recursive: true, force: true });
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
+	it("preserves gone upstream status in snapshots", () => {
+		const dir = mkdtempSync(join(tmpdir(), "composer-git-snapshot-"));
+		const binDir = mkdtempSync(join(tmpdir(), "composer-fake-git-bin-"));
+		const gitPath = join(binDir, "git");
+		const originalPath = process.env.PATH;
+
+		try {
+			writeFileSync(
+				gitPath,
+				`#!/bin/sh
+args="$*"
+case "$args" in
+  "--no-optional-locks status --porcelain=v1 --branch")
+    printf '## main...origin/main [gone]\\n'
+    exit 0
+    ;;
+  "symbolic-ref --short refs/remotes/origin/HEAD")
+    printf 'origin/main\\n'
+    exit 0
+    ;;
+  "config user.name")
+    exit 1
+    ;;
+  "--no-optional-locks log --oneline -n 5")
+    printf 'abc1234 initial commit\\n'
+    exit 0
+    ;;
+esac
+
+printf 'unexpected args: %s\\n' "$args" >&2
+exit 1
+`,
+			);
+			chmodSync(gitPath, 0o755);
+			process.env.PATH = `${binDir}:${originalPath ?? ""}`;
+
+			const snapshot = getGitSnapshot(dir);
+
+			expect(snapshot).toContain("Upstream: origin/main (gone)");
+			expect(snapshot).not.toContain(
+				"Upstream: origin/main (ahead 0, behind 0)",
+			);
+			expect(snapshot).toContain("Working tree: clean");
+			expect(snapshot).toContain("Status:\n(clean)");
 		} finally {
 			if (originalPath === undefined) {
 				Reflect.deleteProperty(process.env, "PATH");

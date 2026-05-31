@@ -86,7 +86,6 @@
  * @module main
  */
 
-import { createRequire } from "node:module";
 import chalk from "chalk";
 import type {
 	ActionApprovalService,
@@ -114,9 +113,7 @@ import {
 	disposeCheckpointService,
 	initCheckpointService,
 } from "./checkpoints/index.js";
-import { TuiClientToolService } from "./cli-tui/client-tools/local-client-tool-service.js";
-import { TuiRenderer } from "./cli-tui/tui-renderer.js";
-import { sanitizeTerminalPreview } from "./cli-tui/utils/text-formatting.js";
+import type { TuiClientToolService } from "./cli-tui/client-tools/local-client-tool-service.js";
 import { type Mode, parseArgs } from "./cli/args.js";
 import {
 	EXEC_SESSION_SUMMARY_PREFIX,
@@ -160,6 +157,7 @@ import { ensureModelsLoaded } from "./models/builtin.js";
 import type { RegisteredModel } from "./models/registry.js";
 import { reloadModelConfig } from "./models/registry.js";
 import { initOpenTelemetry } from "./opentelemetry.js";
+import { getPackageVersion } from "./package-metadata.js";
 import { resolveMaestroSystemPrompt } from "./prompts/system-prompt.js";
 import type { AuthMode } from "./providers/auth.js";
 import { AgentRuntimeController } from "./runtime/agent-runtime.js";
@@ -177,15 +175,7 @@ import { askUserClientTool } from "./tools/ask-user-client.js";
 import type { UpdateCheckResult } from "./update/check.js";
 import { createStartupProfilerFromEnv } from "./utils/checkpoint-profiler.js";
 import { isInsideGitRepository } from "./utils/git.js";
-/**
- * Load version from package.json at runtime.
- * Uses Node's createRequire for compatibility with ESM imports
- * (avoids experimental import assertions syntax).
- */
-const packageJson = createRequire(import.meta.url)("../package.json") as {
-	version?: string;
-};
-const VERSION = packageJson.version ?? "unknown";
+const VERSION = getPackageVersion();
 const STARTUP_TELEMETRY_EXIT_WAIT_GRACE_MS = 25;
 
 let enterpriseCleanupRegistered = false;
@@ -253,6 +243,7 @@ async function runInteractiveMode(
 
 	let sessionEndReason: "user_exit" | "error" = "user_exit";
 	try {
+		const { TuiRenderer } = await import("./cli-tui/tui-renderer.js");
 		// Initialize the TUI renderer which manages all terminal output
 		const renderer = new TuiRenderer(
 			agent,
@@ -1224,6 +1215,9 @@ export async function main(args: string[]) {
 			const targetArg = parsed.messages[0];
 			const result = handleAgentsInit(targetArg, { force: parsed.force });
 			if (result.action === "preview") {
+				const { sanitizeTerminalPreview } = await import(
+					"./cli-tui/utils/text-formatting.js"
+				);
 				const rerunCommand = buildAgentsInitRerunCommand(targetArg);
 				console.log(
 					[
@@ -1379,10 +1373,13 @@ export async function main(args: string[]) {
 				() => sessionManager.getSessionId() ?? undefined,
 			)
 		: undefined;
-	const interactiveClientToolService =
-		isInteractiveTui && !isHeadlessMode
-			? new TuiClientToolService()
-			: undefined;
+	let interactiveClientToolService: TuiClientToolService | undefined;
+	if (isInteractiveTui && !isHeadlessMode) {
+		const { TuiClientToolService } = await import(
+			"./cli-tui/client-tools/local-client-tool-service.js"
+		);
+		interactiveClientToolService = new TuiClientToolService();
+	}
 	const toolRetryMode: ToolRetryMode =
 		isInteractiveTui && !isHeadlessMode ? "prompt" : "skip";
 	const toolRetryService = isHeadlessMode
@@ -1410,6 +1407,7 @@ export async function main(args: string[]) {
 			parsedSandbox: parsed.sandbox,
 			modelApi: model.api,
 			cwd: process.cwd(),
+			shouldPrintMessages: !parsed.execJson && parsed.mode !== "json",
 		});
 	} catch (error) {
 		await exitWithStartupError(error);
@@ -1552,8 +1550,10 @@ export async function main(args: string[]) {
 	// Don't print messages in headless mode - stdout is for JSON only
 	const shouldPrintMessages =
 		(isInteractive || mode === "text") &&
+		mode !== "json" &&
 		mode !== "headless" &&
-		!parsed.headless;
+		!parsed.headless &&
+		!parsed.execJson;
 
 	const isGitRepository = isInsideGitRepository();
 

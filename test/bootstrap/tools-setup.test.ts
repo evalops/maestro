@@ -37,6 +37,27 @@ describe("createToolsAndSandbox", () => {
 		]);
 	});
 
+	it("can suppress explicit tool filter progress for machine-readable modes", async () => {
+		const originalLog = console.log;
+		const messages: string[] = [];
+		console.log = ((message?: unknown) => {
+			messages.push(String(message ?? ""));
+		}) as typeof console.log;
+		try {
+			const result = await createToolsAndSandbox({
+				modelApi: "openai-codex-app-server",
+				parsedTools: ["read"],
+				cwd: process.cwd(),
+				shouldPrintMessages: false,
+			});
+
+			expect(result.baseTools.map((tool) => tool.name)).toEqual(["read"]);
+			expect(messages).toEqual([]);
+		} finally {
+			console.log = originalLog;
+		}
+	});
+
 	it("honors named Codex tool profiles when no explicit --tools override is set", async () => {
 		const originalProfile = process.env.MAESTRO_CODEX_TOOL_PROFILE;
 		try {

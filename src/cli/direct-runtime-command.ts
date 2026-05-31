@@ -47,9 +47,7 @@ export function isDirectRuntimeCommand(command: string | undefined): boolean {
 	return Boolean(command && DIRECT_RUNTIME_COMMANDS.has(command));
 }
 
-export function getDirectRuntimeCommand(
-	args: readonly string[],
-): string | null {
+export function getRuntimeCommand(args: readonly string[]): string | null {
 	for (let index = 0; index < args.length; index++) {
 		const arg = args[index];
 		if (!arg) {
@@ -62,9 +60,22 @@ export function getDirectRuntimeCommand(
 		if (arg.startsWith("-")) {
 			continue;
 		}
-		return DIRECT_RUNTIME_COMMANDS.has(arg) ? arg : null;
+		return arg;
 	}
 	return null;
+}
+
+export function getDirectRuntimeCommand(
+	args: readonly string[],
+): string | null {
+	const command = getRuntimeCommand(args);
+	return DIRECT_RUNTIME_COMMANDS.has(command ?? "") ? command : null;
+}
+
+export function shouldUseUnbundledMainRuntime(
+	args: readonly string[],
+): boolean {
+	return getRuntimeCommand(args) === "exec";
 }
 
 function hasLegacyAuthFlag(args: readonly string[]): boolean {

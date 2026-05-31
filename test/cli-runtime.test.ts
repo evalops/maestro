@@ -1,7 +1,9 @@
 import { describe, expect, it } from "vitest";
 import {
 	getDirectRuntimeCommand,
+	getRuntimeCommand,
 	shouldAttemptDirectRuntimeDispatch,
+	shouldUseUnbundledMainRuntime,
 } from "../src/cli/direct-runtime-command.js";
 
 describe("cli-runtime direct command dispatch", () => {
@@ -24,6 +26,24 @@ describe("cli-runtime direct command dispatch", () => {
 		expect(getDirectRuntimeCommand(["a2a", "--help"])).toBeNull();
 		expect(getDirectRuntimeCommand(["context", "--help"])).toBeNull();
 		expect(getDirectRuntimeCommand(["status", "--help"])).toBeNull();
+	});
+
+	it("detects exec as the unbundled package main runtime path", () => {
+		expect(getRuntimeCommand(["exec", "--json", "Plan work"])).toBe("exec");
+		expect(
+			getRuntimeCommand([
+				"--profile",
+				"local",
+				"--model",
+				"gpt-5",
+				"exec",
+				"--json",
+				"Plan work",
+			]),
+		).toBe("exec");
+		expect(shouldUseUnbundledMainRuntime(["exec", "--json"])).toBe(true);
+		expect(shouldUseUnbundledMainRuntime(["skill", "--help"])).toBe(false);
+		expect(shouldUseUnbundledMainRuntime(["write", "exec docs"])).toBe(false);
 	});
 
 	it("falls back to the full runtime when startup telemetry is configured", () => {
