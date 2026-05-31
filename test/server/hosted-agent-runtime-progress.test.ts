@@ -2637,6 +2637,61 @@ describe("hosted AgentRuntime progress recorder", () => {
 		);
 	});
 
+	it("redacts sensitive Codex subagent progress fields before Platform egress", async () => {
+		const { recorder, recordWorkItem, delegateAgent } = createRecorder();
+
+		for (const [toolCallId, prompt] of [
+			[
+				"subagent_pat_prompt",
+				"Review github_pat_11AA22BB33CC44DD55 before continuing",
+			],
+			["subagent_openai_key_prompt", "Check sk_live_SECRET_12345678"],
+			["subagent_command_prompt", "Run bash -lc 'echo $TOKEN'"],
+		] as const) {
+			recorder.recordAgentEvent({
+				type: "tool_execution_start",
+				toolCallId,
+				toolName: "codex.subagent.spawnAgent",
+				displayName: "bash -lc 'echo $SUBAGENT_TOKEN'",
+				summaryLabel: "Spawn with sk_live_SUBAGENT_12345678",
+				args: {
+					codexTool: "spawnAgent",
+					receiverThreadIds: [`${toolCallId}-thread`],
+					childRunIds: [`${toolCallId}-run`],
+					prompt,
+				},
+			});
+		}
+		await recorder.flush();
+
+		expect(recordWorkItem).toHaveBeenCalledTimes(3);
+		for (const call of recordWorkItem.mock.calls) {
+			expect(call[0]?.workItem).toEqual(
+				expect.objectContaining({
+					title: "[redacted]",
+					goal: "[redacted]",
+					payload: expect.objectContaining({
+						display_name: "[redacted]",
+						summary_label: "[redacted]",
+					}),
+				}),
+			);
+		}
+		expect(delegateAgent).toHaveBeenCalledTimes(3);
+		for (const call of delegateAgent.mock.calls) {
+			expect(call[0]).toEqual(
+				expect.objectContaining({
+					contextPayload: expect.objectContaining({
+						display_name: "[redacted]",
+						prompt: "[redacted]",
+						summary_label: "[redacted]",
+					}),
+					reason: "Codex subagent spawn requested by Maestro: [redacted]",
+				}),
+			);
+		}
+	});
+
 	it("bounds projected task strings to their configured limits", async () => {
 		const { recorder, recordWorkItem } = createRecorder();
 		const longTitle = "title ".repeat(80);
@@ -2786,341 +2841,6 @@ describe("hosted AgentRuntime progress recorder", () => {
 				step: expect.objectContaining({
 					id: "maestro:session_1:agent:start-2",
 				}),
-			}),
-		);
-	});
-
-	it("redacts command-like and secret-like outbound progress fields", async () => {
-		const {
-			recorder,
-			recordStep,
-			recordEvent,
-			recordWorkItem,
-			updateWorkItem,
-			waitRun,
-			resumeRun,
-			delegateAgent,
-		} = createRecorder();
-		recorder.recordAgentEvent({
-			type: "tool_execution_start",
-			toolCallId: "call_secret",
-			toolName: "shell",
-			displayName: "bash -lc 'echo $TOKEN'",
-			summaryLabel: "Ran rm -rf /tmp/sk_live_SECRET_12345678",
-			args: { command: "rm -rf /tmp/sk_live_SECRET_12345678" },
-		});
-		recorder.recordAgentEvent({
-			type: "tool_execution_update",
-			toolCallId: "call_secret",
-			toolName: "shell",
-			displayName: "bash -lc 'echo $TOKEN'",
-			summaryLabel: "Streaming sk_live_SECRET_12345678",
-			args: { command: "rm -rf /tmp/sk_live_SECRET_12345678" },
-			partialResult: {
-				content: [{ type: "text", text: "partial output" }],
-				toolExecutionId: "texec_secret",
-			},
-		});
-		recorder.recordAgentEvent({
-			type: "tool_execution_end",
-			toolCallId: "call_secret",
-			toolExecutionId: "texec_secret",
-			toolName: "shell",
-			displayName: "sh -c 'echo artifact'",
-			summaryLabel: "Artifact for sk_live_SECRET_12345678",
-			result: {
-				role: "toolResult",
-				toolCallId: "call_secret",
-				toolName: "shell",
-				content: [{ type: "text", text: "done" }],
-				isError: false,
-				timestamp: 1,
-			},
-			isError: false,
-			skillMetadata: {
-				name: "shell-skill",
-				hash: "sha256:secret-test",
-				source: "project",
-				artifactId: "artifact_secret",
-			},
-		} satisfies AgentEvent);
-		recorder.recordAgentEvent({
-			type: "tool_execution_start",
-			toolCallId: "call_fine_grained_pat",
-			toolName: "shell",
-			displayName: "GitHub token github_pat_11AA22BB33CC44DD55",
-			summaryLabel: "Using fine-grained token",
-			args: {},
-		});
-		for (const [toolCallId, token] of [
-			["call_github_oauth_token", "gho_11AA22BB33CC44DD55"],
-			["call_github_user_token", "ghu_11AA22BB33CC44DD55"],
-			["call_github_server_token", "ghs_11AA22BB33CC44DD55"],
-			["call_github_refresh_token", "ghr_11AA22BB33CC44DD55"],
-		] as const) {
-			recorder.recordAgentEvent({
-				type: "tool_execution_start",
-				toolCallId,
-				toolName: "shell",
-				displayName: `GitHub token ${token}`,
-				summaryLabel: "Using GitHub token prefix",
-				args: {},
-			});
-		}
-		recorder.recordAgentEvent({
-			type: "tool_execution_start",
-			toolCallId: "call_plain_command",
-			toolName: "shell",
-			displayName: "git push",
-			summaryLabel: "rm -rf /tmp/plain",
-			args: {},
-		});
-		recorder.recordAgentEvent({
-			type: "tool_execution_update",
-			toolCallId: "call_plain_command",
-			toolName: "shell",
-			displayName: "git push",
-			summaryLabel: "rm -rf /tmp/plain",
-			args: {},
-			partialResult: {
-				content: [{ type: "text", text: "partial output" }],
-				toolExecutionId: "texec_plain_command",
-			},
-		});
-		recorder.recordAgentEvent({
-			type: "tool_execution_start",
-			toolCallId: "subagent_secret",
-			toolName: "codex.subagent.spawnAgent",
-			displayName: "bash -lc 'echo $SUBAGENT_TOKEN'",
-			summaryLabel: "Spawn with sk_live_SUBAGENT_12345678",
-			args: {
-				codexTool: "spawnAgent",
-				receiverThreadIds: ["child-thread-secret"],
-				childRunIds: ["agent-run-secret"],
-				prompt:
-					"Review github_pat_11AA22BB33CC44DD55 before running bash -lc 'echo $TOKEN'",
-			},
-		});
-		recorder.recordAgentEvent({
-			type: "tool_execution_end",
-			toolCallId: "subagent_secret",
-			toolName: "codex.subagent.spawnAgent",
-			displayName: "sh -c 'echo done'",
-			summaryLabel: "Completed with sk_live_SUBAGENT_12345678",
-			result: {
-				role: "toolResult",
-				toolCallId: "subagent_secret",
-				toolName: "codex.subagent.spawnAgent",
-				content: [{ type: "text", text: "spawn completed" }],
-				details: {
-					codexTool: "spawnAgent",
-					receiverThreadIds: ["child-thread-secret"],
-					childRunIds: ["agent-run-secret"],
-				},
-				isError: false,
-				timestamp: 2,
-			},
-			isError: false,
-		} satisfies AgentEvent);
-		recorder.recordPromptFailure("failed with sk_live_SECRET_12345678");
-		recorder.recordServerRequestEvent({
-			type: "registered",
-			request: {
-				id: "approval_2",
-				kind: "approval",
-				sessionId: "session_1",
-				callId: "call_secret",
-				toolName: "shell",
-				args: {},
-				reason: "Detected command: rm -rf /tmp/sk_live_SECRET_12345678",
-				timestamp: Date.now(),
-				timeoutMs: 60_000,
-				displayName: "sh -c whoami",
-				summaryLabel: "Ran sh -c whoami",
-			},
-		});
-		recorder.recordServerRequestEvent({
-			type: "resolved",
-			request: {
-				id: "approval_2",
-				kind: "approval",
-				sessionId: "session_1",
-				callId: "call_secret",
-				toolName: "shell",
-				args: {},
-				reason: "reason",
-				timestamp: Date.now(),
-				timeoutMs: 60_000,
-			},
-			resolution: "denied",
-			resolvedBy: "user",
-			reason: "Contains sk_live_SECRET_12345678",
-		});
-		await recorder.flush();
-		expect(recordStep).toHaveBeenCalledWith(
-			expect.objectContaining({
-				step: expect.objectContaining({
-					name: "[redacted]",
-					input: expect.objectContaining({
-						display_name: "[redacted]",
-						summary_label: "[redacted]",
-					}),
-				}),
-			}),
-		);
-		expect(recordStep).toHaveBeenCalledWith(
-			expect.objectContaining({
-				step: expect.objectContaining({
-					id: "maestro:session_1:tool:call_fine_grained_pat",
-					name: "[redacted]",
-				}),
-			}),
-		);
-		for (const toolCallId of [
-			"call_github_oauth_token",
-			"call_github_user_token",
-			"call_github_server_token",
-			"call_github_refresh_token",
-		]) {
-			expect(recordStep).toHaveBeenCalledWith(
-				expect.objectContaining({
-					step: expect.objectContaining({
-						id: `maestro:session_1:tool:${toolCallId}`,
-						name: "[redacted]",
-					}),
-				}),
-			);
-		}
-		expect(recordStep).toHaveBeenCalledWith(
-			expect.objectContaining({
-				step: expect.objectContaining({
-					id: "maestro:session_1:tool:call_plain_command",
-					input: expect.objectContaining({
-						display_name: "[redacted]",
-						summary_label: "[redacted]",
-					}),
-					name: "[redacted]",
-				}),
-			}),
-		);
-		expect(recordStep).toHaveBeenCalledWith(
-			expect.objectContaining({
-				step: expect.objectContaining({
-					name: "Prompt failed",
-					errorMessage: "[redacted]",
-				}),
-			}),
-		);
-		expect(recordEvent).toHaveBeenCalledWith(
-			expect.objectContaining({
-				attributes: expect.objectContaining({
-					error_message: "[redacted]",
-				}),
-			}),
-		);
-		expect(recordEvent).toHaveBeenCalledWith(
-			expect.objectContaining({
-				message: "Maestro tool execution update recorded",
-				attributes: expect.objectContaining({
-					display_name: "[redacted]",
-					summary_label: "[redacted]",
-					tool_call_id: "call_plain_command",
-				}),
-			}),
-		);
-		expect(recordEvent).toHaveBeenCalledWith(
-			expect.objectContaining({
-				message: "Maestro tool artifact evidence recorded",
-				artifactId: "artifact_secret",
-				attributes: expect.objectContaining({
-					display_name: "[redacted]",
-					summary_label: "[redacted]",
-				}),
-			}),
-		);
-		expect(recordWorkItem).toHaveBeenCalledWith(
-			expect.objectContaining({
-				workItem: expect.objectContaining({
-					title: "[redacted]",
-					goal: "[redacted]",
-					payload: expect.objectContaining({
-						display_name: "[redacted]",
-						summary_label: "[redacted]",
-					}),
-				}),
-			}),
-		);
-		expect(updateWorkItem).toHaveBeenCalledWith(
-			expect.objectContaining({
-				workItemId: "maestro:session_1:work:subagent_secret",
-				payload: expect.objectContaining({
-					display_name: "[redacted]",
-					summary_label: "[redacted]",
-				}),
-			}),
-		);
-		expect(delegateAgent).toHaveBeenCalledWith(
-			expect.objectContaining({
-				contextPayload: expect.objectContaining({
-					display_name: "[redacted]",
-					prompt: "[redacted]",
-					summary_label: "[redacted]",
-				}),
-				reason: "Codex subagent spawn requested by Maestro: [redacted]",
-			}),
-		);
-		expect(waitRun).toHaveBeenCalledWith(
-			expect.objectContaining({
-				wait: expect.objectContaining({
-					reason: "[redacted]",
-					payload: expect.objectContaining({
-						display_name: "[redacted]",
-						summary_label: "[redacted]",
-					}),
-				}),
-			}),
-		);
-		expect(resumeRun).toHaveBeenCalledWith(
-			expect.objectContaining({
-				payload: expect.objectContaining({
-					reason: "[redacted]",
-				}),
-			}),
-		);
-	});
-
-	it("preserves ordinary command prompts for Codex subagent delegation", async () => {
-		const { recorder, recordWorkItem, delegateAgent } = createRecorder();
-
-		recorder.recordAgentEvent({
-			type: "tool_execution_start",
-			toolCallId: "subagent_command_prompt",
-			toolName: "codex.subagent.spawnAgent",
-			displayName: "Spawn test runner",
-			summaryLabel: "Run tests",
-			args: {
-				codexTool: "spawnAgent",
-				receiverThreadIds: ["child-thread-command"],
-				childRunIds: ["agent-run-command"],
-				prompt: "npm test -- --runInBand",
-			},
-		});
-		await recorder.flush();
-
-		expect(recordWorkItem).toHaveBeenCalledWith(
-			expect.objectContaining({
-				workItem: expect.objectContaining({
-					goal: "[redacted]",
-				}),
-			}),
-		);
-		expect(delegateAgent).toHaveBeenCalledWith(
-			expect.objectContaining({
-				contextPayload: expect.objectContaining({
-					prompt: "npm test -- --runInBand",
-				}),
-				reason:
-					"Codex subagent spawn requested by Maestro: npm test -- --runInBand",
 			}),
 		);
 	});

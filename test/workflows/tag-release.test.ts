@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import YAML from "yaml";
+import { expectRegistryInstallSmokeIsReleaseBlocking } from "../utils/registry-install-smoke-guard.js";
 
 describe("tag-release workflow", () => {
 	it("dispatches the release workflow from the tag it just created", () => {
@@ -11,8 +12,10 @@ describe("tag-release workflow", () => {
 				"utf8",
 			),
 		) as {
+			env?: Record<string, unknown>;
 			jobs: {
 				"tag-current-version": {
+					env?: Record<string, unknown>;
 					steps: Array<{
 						env?: Record<string, string>;
 						if?: string;
@@ -25,30 +28,30 @@ describe("tag-release workflow", () => {
 				};
 			};
 		};
-		const dispatchStep = workflow.jobs["tag-current-version"].steps.find(
+		const steps = workflow.jobs["tag-current-version"].steps;
+		const dispatchStep = steps.find(
 			(step) => step.name === "Dispatch public release workflow",
 		);
-		const registryStep = workflow.jobs["tag-current-version"].steps.find(
+		const registryStep = steps.find(
 			(step) => step.name === "Check npm registry release",
 		);
-		const activeReleaseStep = workflow.jobs["tag-current-version"].steps.find(
+		const activeReleaseStep = steps.find(
 			(step) => step.name === "Check active public release workflow",
 		);
-		const mismatchGuard = workflow.jobs["tag-current-version"].steps.find(
+		const mismatchGuard = steps.find(
 			(step) => step.name === "Require version bump for existing release tag",
 		);
-		const summaryStep = workflow.jobs["tag-current-version"].steps.find(
+		const summaryStep = steps.find(
 			(step) => step.name === "Summarize tag status",
 		);
-		const setupPublishedSmokeStep = workflow.jobs[
-			"tag-current-version"
-		].steps.find((step) => step.name === "Setup registry install smoke tools");
-		const verifyPublishedSmokeStep = workflow.jobs[
-			"tag-current-version"
-		].steps.find(
+		const setupPublishedSmokeStep = steps.find(
+			(step) => step.name === "Setup registry install smoke tools",
+		);
+		const verifyPublishedSmokeIndex = steps.findIndex(
 			(step) => step.name === "Verify already-published package from registry",
 		);
-		const uploadEvidenceStep = workflow.jobs["tag-current-version"].steps.find(
+		const verifyPublishedSmokeStep = steps[verifyPublishedSmokeIndex];
+		const uploadEvidenceStep = steps.find(
 			(step) => step.name === "Upload already-published replay evidence",
 		);
 
@@ -84,6 +87,15 @@ describe("tag-release workflow", () => {
 			MAESTRO_REGISTRY_POLL_ATTEMPTS: "1",
 			MAESTRO_REGISTRY_POLL_DELAY_MS: "1000",
 		});
+		expect(verifyPublishedSmokeIndex).toBeGreaterThanOrEqual(0);
+		expectRegistryInstallSmokeIsReleaseBlocking(
+			verifyPublishedSmokeStep,
+			[workflow.env, workflow.jobs["tag-current-version"].env],
+			{
+				containingJob: workflow.jobs["tag-current-version"],
+				precedingSteps: steps.slice(0, verifyPublishedSmokeIndex),
+			},
+		);
 		expect(verifyPublishedSmokeStep?.run).toContain(
 			"node scripts/smoke-registry-install.js",
 		);

@@ -148,6 +148,12 @@ const A2A_COLLECT_VALUE_FLAGS_BY_SUBCOMMAND: Record<string, readonly string[]> =
 		coordinate: ["--reply"],
 		control: ["--message"],
 	};
+const A2A_FREEFORM_POSITIONAL_PREFIX_LENGTH: Record<string, number> = {
+	control: 3,
+	delegate: 2,
+	reply: 3,
+	send: 2,
+};
 const A2A_LEADING_VALUE_FLAGS = new Set(
 	Object.values(A2A_VALUE_FLAGS_BY_SUBCOMMAND).flat(),
 );
@@ -158,6 +164,103 @@ const A2A_LEADING_BOOLEAN_FLAGS = new Set(
 export interface ParsedA2AArgs {
 	positionals: string[];
 	flags: Map<string, string | boolean>;
+}
+
+export function findA2ACommandTailFlag(
+	args: string[],
+	matchesFlag: (arg: string) => string | undefined,
+): string | undefined {
+	const subcommandIndex = findA2ASubcommandIndex(args);
+	const subcommand =
+		subcommandIndex >= 0
+			? canonicalA2ASubcommand(args[subcommandIndex])
+			: "help";
+	const valueFlags = new Set(A2A_VALUE_FLAGS_BY_SUBCOMMAND[subcommand] ?? []);
+	const booleanFlags = new Set(
+		A2A_BOOLEAN_FLAGS_BY_SUBCOMMAND[subcommand] ?? [],
+	);
+	if (subcommand === "delegate" && args.includes("--platform")) {
+		booleanFlags.add("--json");
+	}
+	const collectValueFlags = new Set(
+		A2A_COLLECT_VALUE_FLAGS_BY_SUBCOMMAND[subcommand] ?? [],
+	);
+	for (let index = 0; index < args.length; index++) {
+		const arg = args[index];
+		if (!arg) continue;
+		if (arg === "--") {
+			break;
+		}
+		if (!arg.startsWith("--")) {
+			continue;
+		}
+		const [flag, inlineValue] = arg.split("=", 2);
+		if (!flag) {
+			continue;
+		}
+		if (!valueFlags.has(flag) && !booleanFlags.has(flag)) {
+			const matched = matchesFlag(arg);
+			if (matched && !isA2AFreeformPositionalText(args, index, subcommand)) {
+				return matched;
+			}
+			continue;
+		}
+		const matched = matchesFlag(arg);
+		if (matched) {
+			return matched;
+		}
+		if (inlineValue !== undefined || booleanFlags.has(flag)) {
+			continue;
+		}
+		if (collectValueFlags.has(flag)) {
+			while (args[index + 1] && args[index + 1] !== "--") {
+				const next = args[index + 1]!;
+				const [nextFlag] = next.split("=", 2);
+				if (
+					next.startsWith("--") &&
+					nextFlag &&
+					(valueFlags.has(nextFlag) || booleanFlags.has(nextFlag))
+				) {
+					break;
+				}
+				index++;
+			}
+			continue;
+		}
+		if (args[index + 1] && args[index + 1] !== "--") {
+			index++;
+		}
+	}
+	return undefined;
+}
+
+function isA2AFreeformPositionalText(
+	args: string[],
+	index: number,
+	subcommand: string,
+): boolean {
+	const requiredPositionals = A2A_FREEFORM_POSITIONAL_PREFIX_LENGTH[subcommand];
+	if (requiredPositionals === undefined) {
+		return false;
+	}
+	if (subcommand === "delegate" && args.includes("--discover")) {
+		return countRawPositionalsBefore(args, index) >= 1;
+	}
+	return countRawPositionalsBefore(args, index) >= requiredPositionals;
+}
+
+function countRawPositionalsBefore(args: string[], endIndex: number): number {
+	let count = 0;
+	for (let index = 0; index < endIndex; index++) {
+		const arg = args[index];
+		if (!arg || arg === "--") {
+			break;
+		}
+		if (!arg.startsWith("--")) {
+			count++;
+		}
+	}
+	return count;
 }
 
 export function parseA2AArgs(args: string[]): ParsedA2AArgs {

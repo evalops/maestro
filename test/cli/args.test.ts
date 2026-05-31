@@ -148,6 +148,102 @@ describe("parseArgs", () => {
 		});
 	});
 
+	it("parses --stream-json as an exec JSONL alias", () => {
+		expect(
+			parseArgs(["exec", "--stream-json", "summarize recent changes"]),
+		).toMatchObject({
+			command: "exec",
+			execJson: true,
+			messages: ["summarize recent changes"],
+		});
+		expect(
+			parseArgs(["--stream-json", "exec", "summarize recent changes"]),
+		).toMatchObject({
+			command: "exec",
+			execJson: true,
+			messages: ["summarize recent changes"],
+		});
+	});
+
+	it("rejects --stream-json outside exec", () => {
+		expect(parseArgs(["--stream-json", "summarize recent changes"]).error).toBe(
+			"Unknown option: --stream-json",
+		);
+		expect(parseArgs(["context", "/repo", "--stream-json"]).error).toBe(
+			"Unknown option: --stream-json",
+		);
+		expect(
+			parseArgs(["remote", "list", "--workspace", "ws_123", "--stream-json"])
+				.error,
+		).toBe("Unknown option: --stream-json");
+		expect(
+			parseArgs([
+				"remote",
+				"list",
+				"--workspace",
+				"ws_123",
+				"--stream-json=true",
+			]).error,
+		).toBe("Unknown option: --stream-json=true");
+	});
+
+	it("allows escaped command-tail text to mention --stream-json", () => {
+		expect(
+			parseArgs([
+				"a2a",
+				"delegate",
+				"peer",
+				"--",
+				"Please mention",
+				"--stream-json",
+			]),
+		).toMatchObject({
+			command: "a2a",
+			commandArgs: [
+				"delegate",
+				"peer",
+				"--",
+				"Please mention",
+				"--stream-json",
+			],
+		});
+		expect(
+			parseArgs(["remote", "list", "--stream-json", "--", "Please mention"])
+				.error,
+		).toBe("Unknown option: --stream-json");
+	});
+
+	it("allows A2A reply values to mention --stream-json", () => {
+		expect(
+			parseArgs([
+				"a2a",
+				"coordinate",
+				"mac-mini",
+				"--reply",
+				"--stream-json",
+				"--wait",
+			]),
+		).toMatchObject({
+			command: "a2a",
+			commandArgs: [
+				"coordinate",
+				"mac-mini",
+				"--reply",
+				"--stream-json",
+				"--wait",
+			],
+		});
+	});
+
+	it("rejects --stream-json in non-text A2A command tails", () => {
+		expect(parseArgs(["a2a", "tasks", "--stream-json"]).error).toBe(
+			"Unknown option: --stream-json",
+		);
+		expect(parseArgs(["a2a", "peers", "--stream-json"]).error).toBe(
+			"Unknown option: --stream-json",
+		);
+	});
+
 	it("parses sessions list, search, and transfer commands", () => {
 		expect(parseArgs(["sessions", "list", "--json"])).toMatchObject({
 			command: "sessions",

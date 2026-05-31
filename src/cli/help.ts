@@ -207,6 +207,9 @@ export function printHelp(
   maestro sessions list --json
   maestro sessions search "release verification"
 
+  # Stream machine-readable exec events
+  maestro exec --stream-json "Summarize recent changes"
+
   # Validate and run a deterministic scenario fixture
   maestro scenario validate ./test/fixtures/agent-trajectory-scenarios/local-diagnostic-success.json
   maestro scenario run ./test/fixtures/agent-trajectory-scenarios/local-diagnostic-success.json --junit ./tmp/scenario.xml
@@ -243,9 +246,10 @@ export function printHelp(
 	)}`;
 	const execSection = `${sectionHeading("maestro exec")}${muted(
 		`  maestro exec "Summarize recent changes" --json
+  maestro exec --stream-json "Summarize recent changes"
 
   Flags:
-    --json                      Stream JSONL thread/turn events
+    --json, --stream-json       Stream JSONL thread/turn events
     --output-schema <file|json> Validate final assistant JSON against a schema
     --output-last-message <path> Write the final assistant message to disk
     --full-auto | --read-only   Force approval policy (auto or fail)
