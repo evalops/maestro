@@ -33,6 +33,48 @@ const BUN_PREFIX_TIMEOUT_MS = 350;
 
 type PackageManager = "npm" | "bun";
 
+const PACKAGE_MANAGER_ENV_PATTERN =
+	/^(?:npm_config_|NPM_CONFIG_|BUN_CONFIG_|bun_config_|YARN_|yarn_|PNPM_|pnpm_)/u;
+const PACKAGE_MANAGER_ENV_BLOCKLIST = new Set([
+	"NODE_OPTIONS",
+	"NPM_TOKEN",
+	"NODE_AUTH_TOKEN",
+	"MAESTRO_UPDATE_URL",
+	"MAESTRO_UPDATE_URLS",
+	"MAESTRO_STARTUP_UPDATE_STATE",
+]);
+const PACKAGE_MANAGER_ENV_ALLOWLIST = new Set([
+	"NPM_CONFIG_PREFIX",
+	"npm_config_prefix",
+]);
+
+const packageManagerEnv = (
+	env: NodeJS.ProcessEnv,
+	options: { packageManager?: PackageManager; prefix?: string } = {},
+): NodeJS.ProcessEnv => {
+	const sanitized: NodeJS.ProcessEnv = {};
+	for (const [key, value] of Object.entries(env)) {
+		if (value === undefined) {
+			continue;
+		}
+		if (PACKAGE_MANAGER_ENV_BLOCKLIST.has(key)) {
+			continue;
+		}
+		if (
+			PACKAGE_MANAGER_ENV_PATTERN.test(key) &&
+			!PACKAGE_MANAGER_ENV_ALLOWLIST.has(key)
+		) {
+			continue;
+		}
+		sanitized[key] = value;
+	}
+	if (options.packageManager === "npm" && options.prefix) {
+		sanitized.NPM_CONFIG_PREFIX = options.prefix;
+		delete sanitized.npm_config_prefix;
+	}
+	return sanitized;
+};
+
 type GlobalInstallContext = {
 	packageManager: PackageManager;
 	prefix: string;
@@ -341,12 +383,15 @@ const defaultInstallPackage = (
 	packageManager: PackageManager,
 	packageName: string,
 	version: string,
+	env: NodeJS.ProcessEnv = process.env,
+	prefix?: string,
 ) => {
 	const result = spawnSync(
 		packageManager,
 		["install", "-g", `${packageName}@${version}`],
 		{
 			encoding: "utf-8",
+			env: packageManagerEnv(env, { packageManager, prefix }),
 			stdio: "pipe",
 			timeout: DEFAULT_INSTALL_TIMEOUT_MS,
 		},
@@ -515,7 +560,17 @@ export async function attemptStartupUpdate(
 		lastAttemptAt: now,
 		lastStatus: "failed",
 	});
-	const install = (options.installPackage ?? defaultInstallPackage)(
+	const installPackage =
+		options.installPackage ??
+		((packageManager: PackageManager, name: string, version: string) =>
+			defaultInstallPackage(
+				packageManager,
+				name,
+				version,
+				env,
+				installContext.prefix,
+			));
+	const install = installPackage(
 		installContext.packageManager,
 		packageName,
 		check.latestVersion,
