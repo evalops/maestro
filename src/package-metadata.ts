@@ -29,16 +29,16 @@ function loadPackageMetadata(): RootPackageMetadata {
 	}
 }
 
-export function getPackageVersion(): string {
-	return (
-		process.env.MAESTRO_VERSION ?? loadPackageMetadata().version ?? "unknown"
-	);
+export function getPackageVersion(
+	env: NodeJS.ProcessEnv = process.env,
+): string {
+	return env.MAESTRO_VERSION ?? loadPackageMetadata().version ?? "unknown";
 }
 
-export function getPackageName(): string {
+export function getPackageName(env: NodeJS.ProcessEnv = process.env): string {
 	const metadata = loadPackageMetadata();
 	return (
-		process.env.MAESTRO_PACKAGE_NAME ??
+		env.MAESTRO_PACKAGE_NAME ??
 		metadata.name ??
 		metadata.maestro?.canonicalPackageName ??
 		"@evalops/maestro"
