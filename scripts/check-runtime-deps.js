@@ -6,15 +6,14 @@ import { readFileSync } from "node:fs";
 import { relative } from "node:path";
 import { globSync } from "glob";
 import { loadRootPackage } from "./workspace-utils.js";
+import { getRuntimeWorkspaceNames } from "./runtime-workspaces.mjs";
 
 const rootPackage = loadRootPackage();
 const allowedPackages = new Set([
 	...Object.keys(rootPackage.dependencies ?? {}),
 	...Object.keys(rootPackage.optionalDependencies ?? {}),
 	...Object.keys(rootPackage.peerDependencies ?? {}),
-	...((Array.isArray(rootPackage.bundleDependencies)
-		? rootPackage.bundleDependencies
-		: []) ?? []),
+	...getRuntimeWorkspaceNames(rootPackage),
 ]);
 const builtinPackageNames = new Set(
 	builtinModules.flatMap((name) =>

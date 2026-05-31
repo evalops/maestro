@@ -4,6 +4,7 @@
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { join, relative } from "node:path";
 import { loadRootPackage } from "./workspace-utils.js";
+import { getRuntimeWorkspaceNames } from "./runtime-workspaces.mjs";
 
 const rootDir = process.cwd();
 const dockerfilePath = join(rootDir, "Dockerfile");
@@ -25,21 +26,15 @@ function readJson(path) {
  * @param {unknown} value
  * @returns {string[]}
  */
-function asStringArray(value) {
-	return Array.isArray(value)
-		? value.filter((item) => typeof item === "string")
-		: [];
-}
-
 /**
  * @param {Record<string, unknown>} pkg
  */
 function runtimeWorkspaceNames(pkg) {
 	return new Set([
 		...Object.keys(
-			/** @type {Record<string, unknown>} */ (pkg.dependencies ?? {}),
-		),
-		...asStringArray(pkg.bundleDependencies),
+				/** @type {Record<string, unknown>} */ (pkg.dependencies ?? {}),
+			),
+			...getRuntimeWorkspaceNames(pkg),
 	]);
 }
 

@@ -114,7 +114,7 @@
 		"kind": "extractDocument",
 		"judgeRubric": "extract_document should preserve the text payload, recognize the text format, and report the downloaded filename.",
 		"expected": {
-			"text": "Composer extract document smoke test",
+			"text": "Maestro extract document smoke test",
 			"format": "text",
 			"fileName": "fixture.txt"
 		}

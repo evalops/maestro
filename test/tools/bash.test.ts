@@ -11,6 +11,14 @@ import {
 import { bashTool } from "../../src/tools/bash.js";
 import { toolRegistry } from "../../src/tools/index.js";
 
+const joinParts = (...parts: string[]) => parts.join("");
+const SAMPLE_GITHUB_TOKEN = joinParts(
+	"ghp",
+	"_",
+	"abcdefghijklmnopqrstuvwxyz",
+	"ABCDEFGHIJ",
+);
+
 // Mock the safe-mode and guardian modules
 vi.mock("../../src/safety/safe-mode.js", () => ({
 	requirePlanCheck: vi.fn(),
@@ -97,6 +105,17 @@ describe("bash tool", () => {
 			expect(result.isError).toBeFalsy();
 			const output = getTextOutput(result);
 			expect(output).toContain("successfully");
+		});
+
+		it("redacts secret-like values from command output", async () => {
+			const result = await bashTool.execute("bash-redact", {
+				command: `echo '${SAMPLE_GITHUB_TOKEN}'`,
+			});
+
+			expect(result.isError).toBeFalsy();
+			const output = getTextOutput(result);
+			expect(output).toContain("[secret]");
+			expect(output).not.toContain(SAMPLE_GITHUB_TOKEN);
 		});
 	});
 

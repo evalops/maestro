@@ -64,15 +64,119 @@ function isNestedReadme(path, prefix) {
 	return rest.includes("/") && rest.endsWith("/README.md");
 }
 
+const CI_GUARDRAIL_FILES = new Set([
+	"scripts/check-smoke-scripts.mjs",
+	"scripts/ci-nx-tests.sh",
+	"scripts/maestro-merge-queue-status.mjs",
+	"scripts/plan-ci-checks.mjs",
+	"scripts/plan-nx-test-command.mjs",
+	"scripts/pr-latest-head-checks.mjs",
+	"scripts/run-prepared-public-mirror-guardrails.mjs",
+	"scripts/sync-public-companion-branch.mjs",
+	"scripts/summarize-nx-profile.mjs",
+	"scripts/update-behind-auto-merge-prs.mjs",
+	"test/scripts/ci-guardrails.test.ts",
+]);
+const CODEGEN_UTILITY_FILES = new Set([
+	"scripts/codegen-utils.mjs",
+	"test/scripts/codegen-utils.test.ts",
+]);
+const CODEGEN_UTILITY_LANE_FILES = new Set([
+	...CODEGEN_UTILITY_FILES,
+	".github/workflows/ci.yml",
+	"scripts/plan-ci-checks.mjs",
+	"test/scripts/ci-guardrails.test.ts",
+]);
+const RUNTIME_PACKAGE_VALIDATOR_FILES = new Set([
+	"scripts/bundle-runtime-deps.mjs",
+	"scripts/check-docker-runtime-workspaces.mjs",
+	"scripts/check-packed-bundled-workspaces.mjs",
+	"scripts/check-runtime-deps.js",
+	"scripts/install-smoke-utils.js",
+	"scripts/release-readiness.js",
+	"scripts/runtime-workspaces.mjs",
+	"scripts/validate-public-package-deps.js",
+	"scripts/workspace-utils.js",
+]);
+const RELEASE_HELPER_PACKAGE_FILES = new Set([
+	"scripts/configure-npm-trusted-publisher.mjs",
+	"scripts/check-package-cutover-readiness.js",
+	"scripts/check-release-surface-conformance.mjs",
+	"scripts/deprecate-release.js",
+	"scripts/install-smoke-utils.js",
+	"scripts/published-replay-evidence-gate.js",
+	"scripts/release-impact-filter.mjs",
+	"scripts/release-observability-query-contract.js",
+	"scripts/release-readiness.js",
+	"scripts/smoke-packed-cli.js",
+	"scripts/smoke-published-replay-e2e.js",
+	"scripts/smoke-registry-install.js",
+	"scripts/verify-published-replay-evidence.js",
+	"scripts/workspace-utils.js",
+]);
+const RELEASE_HELPER_TEST_FILES = new Set([
+	"test/scripts/deprecate-release.test.ts",
+	"test/scripts/install-smoke-utils.test.ts",
+	"test/scripts/release-context-deps.test.ts",
+	"test/scripts/release-impact-filter.test.ts",
+	"test/scripts/release-observability-query-contract.test.ts",
+	"test/scripts/release-surface-conformance.test.ts",
+	"test/scripts/smoke-published-replay-e2e.test.ts",
+	"test/scripts/verify-published-replay-evidence.test.ts",
+	"test/scripts/workspace-utils.test.ts",
+]);
+const RELEASE_SURFACE_CONFORMANCE_FILES = new Set([
+	"docs/protocols/release-surface-conformance.json",
+	"docs/protocols/release-surface-conformance.md",
+]);
+const PUBLIC_MIRROR_GUARDRAIL_TEST_FILES = new Set([
+	"test/scripts/ci-guardrails.test.ts",
+]);
+
+function isPackageManifest(path) {
+	return path === "package.json" || /^packages\/[^/]+\/package\.json$/.test(path);
+}
+
+function isTestFile(path) {
+	return (
+		/(^|\/)test\/.*\.(test|spec)\.[cm]?[jt]sx?$/.test(path) ||
+		/(^|\/)[^/]+\.(test|spec)\.[cm]?[jt]sx?$/.test(path)
+	);
+}
+
+function isSmokeScript(path) {
+	return /^scripts\/smoke-[^/]+\.[cm]?[jt]sx?$/.test(path);
+}
+
+function isWorkflowUnitTest(path) {
+	return /^test\/workflows\/[^/]+\.test\.[cm]?[jt]sx?$/.test(path);
+}
+
+function isLeafIdeExtensionPath(path) {
+	return path.startsWith("packages/vscode-extension/") && !isPackageManifest(path);
+}
+
 function shouldSkipCoverageForPath(path) {
 	return (
+		path.startsWith(".github/workflows/") ||
 		(path.startsWith("docs/") && path.endsWith(".md")) ||
+		CODEGEN_UTILITY_FILES.has(path) ||
+		CI_GUARDRAIL_FILES.has(path) ||
+		RELEASE_HELPER_PACKAGE_FILES.has(path) ||
+		RELEASE_SURFACE_CONFORMANCE_FILES.has(path) ||
+		RUNTIME_PACKAGE_VALIDATOR_FILES.has(path) ||
+		isLeafIdeExtensionPath(path) ||
+		isSmokeScript(path) ||
+		isPackageManifest(path) ||
+		isTestFile(path) ||
 		isNestedReadme(path, "examples") ||
 		isNestedReadme(path, "packages") ||
 		isNestedReadme(path, "src") ||
+		path === "CHANGELOG.md" ||
 		path === "CONTRIBUTING.md" ||
 		path === "CODE_OF_CONDUCT.md" ||
 		path === "SECURITY.md" ||
+		path === "openapi.json" ||
 		path === "todo.md" ||
 		(hasNoSlash(path) && path.startsWith("LICENSE"))
 	);
@@ -85,14 +189,13 @@ function shouldSkipPublicMirrorForPath(path) {
 		path === ".github/RELEASE_MIRROR_CONTRACT.md" ||
 		path === "docs/release-ops.md" ||
 		path.startsWith("docs/internal/") ||
-		path === "scripts/configure-npm-trusted-publisher.mjs" ||
-		path === "scripts/deprecate-release.js" ||
-		path === "scripts/plan-ci-checks.mjs" ||
 		path === "scripts/run-scenario-replay-gate.mjs" ||
 		path === "scripts/scenario-replay-governance.mjs" ||
 		path === "scripts/scenario-replay-governance.test.mjs" ||
-		path === "scripts/smoke-registry-install.js" ||
+		path === "scripts/sync-public-companion-branch.mjs" ||
+		path === "scripts/update-behind-auto-merge-prs.mjs" ||
 		path === "scripts/validate-public-package-deps.js" ||
+		path === "test/scripts/validate-public-package-deps.test.ts" ||
 		path === "AGENTS.md" ||
 		path === "CLAUDE.md"
 	);
@@ -115,7 +218,22 @@ function isRustSetupActionPath(path) {
 }
 
 function isFastPrChecksInfrastructurePath(path) {
-	return isCiInfrastructureOnlyPath(path) || isRustSetupActionPath(path);
+	return (
+		isCiInfrastructureOnlyPath(path) ||
+		CI_GUARDRAIL_FILES.has(path) ||
+		isRustSetupActionPath(path) ||
+		path === "docs/release-ops.md"
+	);
+}
+
+function isProofHarnessPath(path) {
+	return (
+		CI_GUARDRAIL_FILES.has(path) ||
+		isFastPrChecksInfrastructurePath(path) ||
+		isWorkflowUnitTest(path) ||
+		(path.startsWith("docs/") && path.endsWith(".md")) ||
+		isSmokeScript(path)
+	);
 }
 
 function isRustOnlySourcePath(path) {
@@ -127,6 +245,35 @@ function isRustOnlySourcePath(path) {
 	);
 }
 
+function isRustHostedConformancePath(path) {
+	return isRustSetupActionPath(path) || isRustOnlySourcePath(path);
+}
+
+function isLightPrChecksPath(path) {
+	return (
+		isCiInfrastructureOnlyPath(path) ||
+		CODEGEN_UTILITY_FILES.has(path) ||
+		CI_GUARDRAIL_FILES.has(path) ||
+		RELEASE_HELPER_PACKAGE_FILES.has(path) ||
+		RELEASE_SURFACE_CONFORMANCE_FILES.has(path) ||
+		RUNTIME_PACKAGE_VALIDATOR_FILES.has(path) ||
+		RELEASE_HELPER_TEST_FILES.has(path) ||
+		isWorkflowUnitTest(path) ||
+		isSmokeScript(path)
+	);
+}
+
+function isReleaseHelperOnlyPath(path) {
+	return (
+		isCiInfrastructureOnlyPath(path) ||
+		path === "scripts/plan-nx-test-command.mjs" ||
+		CI_GUARDRAIL_FILES.has(path) ||
+		RELEASE_SURFACE_CONFORMANCE_FILES.has(path) ||
+		RELEASE_HELPER_PACKAGE_FILES.has(path) ||
+		RELEASE_HELPER_TEST_FILES.has(path)
+	);
+}
+
 export function planCiChecks({ eventName, labels = [], changedFiles = [] }) {
 	const normalizedLabels = normalizeLabels(labels);
 	const labelSet = new Set(normalizedLabels);
@@ -135,7 +282,10 @@ export function planCiChecks({ eventName, labels = [], changedFiles = [] }) {
 	if (!isPullRequest) {
 		return {
 			ciInfrastructureOnly: false,
+			codegenUtilityOnly: false,
 			coverage: true,
+			lightPrChecks: false,
+			releaseHelperOnly: false,
 			prChecks: true,
 			publicMirror: true,
 			rustHostedConformance: true,
@@ -146,7 +296,10 @@ export function planCiChecks({ eventName, labels = [], changedFiles = [] }) {
 	if (labelSet.has("full-ci")) {
 		return {
 			ciInfrastructureOnly: false,
+			codegenUtilityOnly: false,
 			coverage: true,
+			lightPrChecks: false,
+			releaseHelperOnly: false,
 			prChecks: true,
 			publicMirror: true,
 			rustHostedConformance: true,
@@ -157,6 +310,11 @@ export function planCiChecks({ eventName, labels = [], changedFiles = [] }) {
 	const files = changedFiles.map(String).map((path) => path.trim()).filter(Boolean);
 	const ciInfrastructureOnly =
 		files.length > 0 && files.every(isFastPrChecksInfrastructurePath);
+	const codegenUtilityOnly =
+		files.some((path) => CODEGEN_UTILITY_FILES.has(path)) &&
+		files.every((path) => CODEGEN_UTILITY_LANE_FILES.has(path));
+	const proofHarnessOnly =
+		files.length > 0 && files.every((path) => isProofHarnessPath(path));
 	const rustSetupActionChanged = files.some(isRustSetupActionPath);
 	const rustOnlySource =
 		files.length > 0 && files.every((path) => isRustOnlySourcePath(path));
@@ -169,6 +327,7 @@ export function planCiChecks({ eventName, labels = [], changedFiles = [] }) {
 		labelSet.has("run-pr-checks") || ciInfrastructureOnly || !rustOnlySource;
 	const publicMirror =
 		labelSet.has("run-public-mirror") ||
+		files.some((path) => PUBLIC_MIRROR_GUARDRAIL_TEST_FILES.has(path)) ||
 		files.some(
 			(path) =>
 				!isCiInfrastructureOnlyPath(path) && !shouldSkipPublicMirrorForPath(path),
@@ -176,11 +335,34 @@ export function planCiChecks({ eventName, labels = [], changedFiles = [] }) {
 	const rustHostedConformance =
 		labelSet.has("run-rust-hosted-conformance") ||
 		rustSetupActionChanged ||
-		!ciInfrastructureOnly;
+		files.some(isRustHostedConformancePath);
+	const releaseHelperWorkflowChanged =
+		files.some(isWorkflowFile) &&
+		files.some((path) => RELEASE_HELPER_PACKAGE_FILES.has(path));
+	const lightPrChecks =
+		!coverage &&
+		!releaseHelperWorkflowChanged &&
+		!rustHostedConformance &&
+		files.length > 0 &&
+		files.every((path) => isLightPrChecksPath(path));
+	const releaseHelperOnly =
+		!coverage &&
+		!rustHostedConformance &&
+		files.length > 0 &&
+		files.some(
+			(path) =>
+				RELEASE_HELPER_PACKAGE_FILES.has(path) ||
+				RELEASE_HELPER_TEST_FILES.has(path),
+		) &&
+		files.every((path) => isReleaseHelperOnlyPath(path));
 
 	return {
 		ciInfrastructureOnly,
+		codegenUtilityOnly,
 		coverage,
+		lightPrChecks,
+		proofHarnessOnly,
+		releaseHelperOnly,
 		prChecks,
 		publicMirror,
 		rustHostedConformance,
@@ -221,6 +403,10 @@ function writeGitHubOutputs(plan) {
 		[
 			`coverage=${plan.coverage}`,
 			`ci_infrastructure_only=${plan.ciInfrastructureOnly ?? false}`,
+			`codegen_utility_only=${plan.codegenUtilityOnly ?? false}`,
+			`light_pr_checks=${plan.lightPrChecks ?? false}`,
+			`proof_harness_only=${plan.proofHarnessOnly ?? false}`,
+			`release_helper_only=${plan.releaseHelperOnly ?? false}`,
 			`pr_checks=${plan.prChecks}`,
 			`public_mirror=${plan.publicMirror}`,
 			`rust_hosted_conformance=${plan.rustHostedConformance}`,
@@ -237,7 +423,10 @@ function writeGitHubSummary(plan, changedFiles) {
 		"## Expensive check plan",
 		"",
 		`- CI infrastructure only: \`${plan.ciInfrastructureOnly ?? false}\``,
+		`- codegen utility only: \`${plan.codegenUtilityOnly ?? false}\``,
 		`- coverage: \`${plan.coverage}\``,
+		`- light PR checks: \`${plan.lightPrChecks ?? false}\``,
+		`- release helper only: \`${plan.releaseHelperOnly ?? false}\``,
 		`- pr checks: \`${plan.prChecks}\``,
 		`- public release mirror: \`${plan.publicMirror}\``,
 		`- rust hosted conformance: \`${plan.rustHostedConformance}\``,
@@ -267,6 +456,7 @@ async function main() {
 		process.stdout.write(
 			[
 				`coverage=${plan.coverage}`,
+				`release_helper_only=${plan.releaseHelperOnly ?? false}`,
 				`pr_checks=${plan.prChecks}`,
 				`public_mirror=${plan.publicMirror}`,
 				`rust_hosted_conformance=${plan.rustHostedConformance}`,

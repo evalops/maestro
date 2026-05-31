@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { readFile } from "node:fs/promises";
 import chalk from "chalk";
 import { selectA2ACapabilityPeer } from "../../platform/a2a-capability-market.js";
 import {
@@ -10,6 +11,7 @@ import {
 	getA2ATask,
 	sendA2AMessage,
 } from "../../platform/a2a-client.js";
+import { buildA2ACockpit } from "../../platform/a2a-cockpit.js";
 import { inspectA2AFleet } from "../../platform/a2a-fleet.js";
 import {
 	buildMaestroA2APeerProjection,
@@ -26,7 +28,6 @@ import {
 	type A2APeerRegistryEntry,
 	listA2APeers,
 	loadA2APeerRegistry,
-	normalizePeerName,
 	resolveA2APeer,
 	saveA2APeerRegistry,
 	upsertA2APeerFromPairingPayload,
@@ -45,12 +46,17 @@ import {
 	updateA2ATaskInLedger,
 } from "../../platform/a2a-task-ledger.js";
 import {
+	type A2ATelemetryCloudEventLike,
+	inspectA2ATelemetry,
+} from "../../platform/a2a-telemetry-inspect.js";
+import {
 	extractA2AWorkGraphMetadata,
 	formatA2AWorkGraphCodexSubagents,
 	formatA2AWorkGraphSummary,
 } from "../../platform/a2a-work-graph.js";
 import {
 	PlatformA2ADelegationTaskControlModeValue,
+	type PlatformAgentDiscoveryEvidence,
 	type PlatformAgentRegistryA2APeerCandidate,
 	type PlatformAgentRegistryAgent,
 	PlatformAgentStatusValue,
@@ -59,166 +65,40 @@ import {
 	getA2ADelegationGraphWithPlatform,
 	heartbeatAgentWithPlatform,
 	isAgentAlreadyExistsError,
-	listA2APeerCandidatesWithPlatform,
+	listA2APeerCandidatesWithEvidenceWithPlatform,
 	registerAgentWithPlatform,
 	updateAgentWithPlatform,
 } from "../../platform/agent-registry-client.js";
 import { getEnvValue } from "../../platform/client.js";
 import { isAbortError } from "../../utils/abort-error.js";
+import {
+	type ParsedA2AArgs,
+	booleanFlag,
+	canonicalA2ASubcommand,
+	minutesFlag,
+	nonNegativeNumberFlag,
+	numberFlag,
+	parseA2AArgs,
+	stringFlag,
+	stringListFlag,
+} from "./a2a/args.js";
+import {
+	type A2ADiscoverySelection,
+	a2ADiscoveryEvidenceMetadata,
+	a2ADiscoverySelectionPayload,
+	a2APeerMetadataWithoutDiscoveryEvidence,
+	compactA2APeerMetadata,
+	discoveredPeerJson,
+	discoveredPeerName,
+	printA2ADiscoveryEvidence,
+	uniqueDiscoveredPeerName,
+} from "./a2a/discovery.js";
+
+export { parseA2AArgs } from "./a2a/args.js";
+export type { ParsedA2AArgs } from "./a2a/args.js";
 
 const DEFAULT_WAIT_MS = 300_000;
 const DEFAULT_WAIT_INTERVAL_MS = 5_000;
-const A2A_VALUE_FLAGS_BY_SUBCOMMAND: Record<string, readonly string[]> = {
-	accept: [
-		"--name",
-		"--organization-id",
-		"--registry",
-		"--token-env",
-		"--token-file",
-		"--workspace-id",
-	],
-	card: ["--registry", "--timeout-ms"],
-	discover: [
-		"--capability",
-		"--limit",
-		"--offset",
-		"--registry",
-		"--skill",
-		"--status",
-		"--surface",
-		"--workspace-id",
-	],
-	delegate: [
-		"--capability",
-		"--cwd",
-		"--from-agent-id",
-		"--interval-ms",
-		"--limit",
-		"--max-wait-ms",
-		"--objective-id",
-		"--offset",
-		"--registry",
-		"--reason",
-		"--role",
-		"--skill",
-		"--status",
-		"--surface",
-		"--tasks",
-		"--timeout-ms",
-		"--to-agent-id",
-		"--workspace-id",
-		"--workflow-run-id",
-		"--workflow-step-id",
-	],
-	coordinate: [
-		"--interval-ms",
-		"--max-wait-ms",
-		"--registry",
-		"--reply",
-		"--tasks",
-		"--timeout-ms",
-	],
-	control: [
-		"--child-run-id",
-		"--delegation-id",
-		"--idempotency-key",
-		"--message",
-		"--mode",
-		"--subagent-lane-id",
-		"--target-run-id",
-		"--work-item-id",
-		"--workspace-id",
-	],
-	fleet: ["--registry", "--tasks", "--timeout-ms"],
-	graph: [
-		"--delegation-id",
-		"--limit",
-		"--max-depth",
-		"--root",
-		"--root-delegation-id",
-		"--workspace-id",
-	],
-	offer: [
-		"--agent-card-url",
-		"--base-url",
-		"--name",
-		"--peer-id",
-		"--ttl-minutes",
-		"--url",
-	],
-	peers: ["--registry"],
-	register: [
-		"--agent-card-etag",
-		"--agent-card-hash",
-		"--agent-card-url",
-		"--agent-id",
-		"--capabilities",
-		"--description",
-		"--internal-url",
-		"--name",
-		"--owner-id",
-		"--protocol-version",
-		"--public-url",
-		"--security-schemes",
-		"--status",
-		"--surface",
-		"--surface-types",
-		"--type",
-		"--url",
-		"--workspace-id",
-	],
-	reply: [
-		"--interval-ms",
-		"--max-wait-ms",
-		"--registry",
-		"--tasks",
-		"--timeout-ms",
-	],
-	send: ["--interval-ms", "--max-wait-ms", "--registry", "--timeout-ms"],
-	tasks: ["--registry", "--tasks", "--timeout-ms"],
-	wait: [
-		"--interval-ms",
-		"--max-wait-ms",
-		"--registry",
-		"--tasks",
-		"--timeout-ms",
-	],
-};
-const A2A_BOOLEAN_FLAGS_BY_SUBCOMMAND: Record<string, readonly string[]> = {
-	accept: ["--default"],
-	coordinate: ["--json", "--refresh", "--wait", "--work-graph"],
-	delegate: [
-		"--discover",
-		"--platform",
-		"--prefer-internal",
-		"--wait",
-		"--work-graph",
-	],
-	discover: ["--default", "--import", "--json", "--prefer-internal"],
-	fleet: ["--json"],
-	graph: ["--json"],
-	register: ["--heartbeat-only", "--json", "--no-heartbeat", "--update-only"],
-	reply: ["--wait", "--work-graph"],
-	send: ["--wait", "--work-graph"],
-	tasks: ["--json", "--refresh", "--work-graph"],
-	wait: ["--work-graph"],
-};
-const A2A_COLLECT_VALUE_FLAGS_BY_SUBCOMMAND: Record<string, readonly string[]> =
-	{
-		coordinate: ["--reply"],
-		control: ["--message"],
-	};
-const A2A_LEADING_VALUE_FLAGS = new Set(
-	Object.values(A2A_VALUE_FLAGS_BY_SUBCOMMAND).flat(),
-);
-const A2A_LEADING_BOOLEAN_FLAGS = new Set(
-	Object.values(A2A_BOOLEAN_FLAGS_BY_SUBCOMMAND).flat(),
-);
-
-export interface ParsedA2AArgs {
-	positionals: string[];
-	flags: Map<string, string | boolean>;
-}
 
 export async function handleA2ACommand(args: string[]): Promise<void> {
 	const parsed = parseA2AArgs(args);
@@ -244,6 +124,10 @@ export async function handleA2ACommand(args: string[]): Promise<void> {
 			return;
 		case "fleet":
 			await handleA2AFleet(parsed);
+			return;
+		case "cockpit":
+		case "dashboard":
+			await handleA2ACockpit(parsed);
 			return;
 		case "card":
 			await handleA2ACard(parsed);
@@ -271,158 +155,14 @@ export async function handleA2ACommand(args: string[]): Promise<void> {
 		case "tasks":
 			await handleA2ATasks(parsed);
 			return;
+		case "telemetry":
+			await handleA2ATelemetry(parsed);
+			return;
 		case "wait":
 			await handleA2AWait(parsed);
 			return;
 		default:
 			printA2AHelp();
-	}
-}
-
-export function parseA2AArgs(args: string[]): ParsedA2AArgs {
-	const flags = new Map<string, string | boolean>();
-	const positionals: string[] = [];
-	const subcommandIndex = findA2ASubcommandIndex(args);
-	const subcommand =
-		subcommandIndex >= 0
-			? canonicalA2ASubcommand(args[subcommandIndex])
-			: "help";
-	const valueFlags = new Set(A2A_VALUE_FLAGS_BY_SUBCOMMAND[subcommand] ?? []);
-	const booleanFlags = new Set(
-		A2A_BOOLEAN_FLAGS_BY_SUBCOMMAND[subcommand] ?? [],
-	);
-	if (subcommand === "delegate" && args.includes("--platform")) {
-		booleanFlags.add("--json");
-	}
-	const collectValueFlags = new Set(
-		A2A_COLLECT_VALUE_FLAGS_BY_SUBCOMMAND[subcommand] ?? [],
-	);
-	for (let index = 0; index < args.length; index++) {
-		const arg = args[index];
-		if (!arg) continue;
-		if (arg === "--") {
-			positionals.push(...args.slice(index + 1));
-			break;
-		}
-		if (arg.startsWith("--")) {
-			const [flag, inlineValue] = arg.split("=", 2);
-			if (!flag) {
-				continue;
-			}
-			if (
-				index < subcommandIndex &&
-				!valueFlags.has(flag) &&
-				!booleanFlags.has(flag) &&
-				(A2A_LEADING_VALUE_FLAGS.has(flag) ||
-					A2A_LEADING_BOOLEAN_FLAGS.has(flag))
-			) {
-				if (A2A_LEADING_VALUE_FLAGS.has(flag) && inlineValue === undefined) {
-					index++;
-				}
-				continue;
-			}
-			if (!valueFlags.has(flag) && !booleanFlags.has(flag)) {
-				positionals.push(arg);
-				continue;
-			}
-			if (inlineValue !== undefined) {
-				if (collectValueFlags.has(flag) && !inlineValue.trim()) {
-					throw new Error(collectValueFlagMissingTextMessage(flag, subcommand));
-				}
-				flags.set(flag, inlineValue);
-				continue;
-			}
-			if (booleanFlags.has(flag)) {
-				flags.set(flag, true);
-				continue;
-			}
-			if (collectValueFlags.has(flag)) {
-				const values: string[] = [];
-				while (args[index + 1] && args[index + 1] !== "--") {
-					const next = args[index + 1]!;
-					const [nextFlag] = next.split("=", 2);
-					if (
-						next.startsWith("--") &&
-						nextFlag &&
-						(valueFlags.has(nextFlag) || booleanFlags.has(nextFlag))
-					) {
-						break;
-					}
-					values.push(next);
-					index++;
-				}
-				const value = values.join(" ").trim();
-				if (!value) {
-					throw new Error(collectValueFlagMissingTextMessage(flag, subcommand));
-				}
-				flags.set(flag, value);
-				continue;
-			}
-			const next = args[index + 1];
-			if (next && next !== "--") {
-				flags.set(flag, next);
-				index++;
-				continue;
-			}
-			flags.set(flag, true);
-			continue;
-		}
-		positionals.push(arg);
-	}
-	return { flags, positionals };
-}
-
-function collectValueFlagMissingTextMessage(
-	flag: string,
-	subcommand: string,
-): string {
-	const usage =
-		subcommand === "coordinate" && flag === "--reply"
-			? "\nUsage: maestro a2a coordinate [peer] --reply <text> [--wait]"
-			: "";
-	return `${flag} requires text${usage}`;
-}
-
-function findA2ASubcommandIndex(args: readonly string[]): number {
-	for (let index = 0; index < args.length; index++) {
-		const arg = args[index];
-		if (!arg || arg === "--") {
-			break;
-		}
-		if (!arg.startsWith("--")) {
-			return index;
-		}
-		const [flag = "", inlineValue] = arg.split("=", 2);
-		if (A2A_LEADING_VALUE_FLAGS.has(flag) && inlineValue === undefined) {
-			index++;
-			continue;
-		}
-		if (
-			A2A_LEADING_VALUE_FLAGS.has(flag) ||
-			A2A_LEADING_BOOLEAN_FLAGS.has(flag)
-		) {
-			continue;
-		}
-		break;
-	}
-	return -1;
-}
-
-function canonicalA2ASubcommand(input: string | undefined): string {
-	switch (input?.toLowerCase()) {
-		case "pair":
-		case "create":
-			return "offer";
-		case "list":
-			return "peers";
-		case "delegation":
-			return "delegate";
-		case "continue":
-			return "reply";
-		case "publish":
-			return "register";
-		default:
-			return input?.toLowerCase() ?? "help";
 	}
 }
 
@@ -538,7 +278,7 @@ async function handleA2APeers(parsed: ParsedA2AArgs): Promise<void> {
 }
 
 async function handleA2ADiscover(parsed: ParsedA2AArgs): Promise<void> {
-	const candidates = await listA2APeerCandidatesWithPlatform({
+	const discovery = await listA2APeerCandidatesWithEvidenceWithPlatform({
 		workspaceId: stringFlag(parsed, "--workspace-id"),
 		capability: stringFlag(parsed, "--capability"),
 		surface: stringFlag(parsed, "--surface"),
@@ -548,13 +288,18 @@ async function handleA2ADiscover(parsed: ParsedA2AArgs): Promise<void> {
 		skillId: stringFlag(parsed, "--skill"),
 		preferInternalEndpoint: booleanFlag(parsed, "--prefer-internal"),
 	});
-	if (!candidates) {
+	if (!discovery) {
 		fail(
 			"Agent Registry service is not configured. Set AGENT_REGISTRY_SERVICE_URL, AGENT_REGISTRY_SERVICE_TOKEN, AGENT_REGISTRY_ORGANIZATION_ID, and AGENT_REGISTRY_WORKSPACE_ID.",
 		);
 	}
+	const candidates = discovery.candidates;
 	const imported = booleanFlag(parsed, "--import")
-		? await importDiscoveredA2APeers(parsed, candidates)
+		? await importDiscoveredA2APeers(
+				parsed,
+				candidates,
+				discovery.discoveryEvidence,
+			)
 		: [];
 	if (booleanFlag(parsed, "--json")) {
 		console.log(
@@ -562,6 +307,9 @@ async function handleA2ADiscover(parsed: ParsedA2AArgs): Promise<void> {
 				{
 					peers: candidates.map(discoveredPeerJson),
 					imported,
+					...(discovery.discoveryEvidence
+						? { discoveryEvidence: discovery.discoveryEvidence }
+						: {}),
 				},
 				null,
 				2,
@@ -570,6 +318,7 @@ async function handleA2ADiscover(parsed: ParsedA2AArgs): Promise<void> {
 		return;
 	}
 	console.log("Platform A2A peers");
+	printA2ADiscoveryEvidence(discovery.discoveryEvidence);
 	if (candidates.length === 0) {
 		console.log(chalk.dim("  No Platform agents expose A2A peer endpoints."));
 		return;
@@ -800,6 +549,7 @@ async function handleA2ARegister(parsed: ParsedA2AArgs): Promise<void> {
 async function importDiscoveredA2APeers(
 	parsed: ParsedA2AArgs,
 	candidates: PlatformAgentRegistryA2APeerCandidate[],
+	discoveryEvidence?: PlatformAgentDiscoveryEvidence,
 ): Promise<
 	Array<{
 		name: string;
@@ -876,13 +626,14 @@ async function importDiscoveredA2APeers(
 						}))
 					: previous?.skills,
 			metadata: compactA2APeerMetadata({
-				...previous?.metadata,
+				...a2APeerMetadataWithoutDiscoveryEvidence(previous?.metadata),
 				source: "platform-agent-registry",
 				platformAgentId: candidate.agent.id,
 				platformAgentType: candidate.agent.agentType,
 				platformAgentStatus: candidate.agent.status,
 				selectedEndpoint: candidate.endpointKind,
 				a2aPushNotifications: candidate.pushNotifications,
+				...a2ADiscoveryEvidenceMetadata(discoveryEvidence),
 			}),
 			createdAt: previous?.createdAt ?? now,
 			updatedAt: now,
@@ -963,6 +714,99 @@ async function handleA2AFleet(parsed: ParsedA2AArgs): Promise<void> {
 	}
 }
 
+async function handleA2ACockpit(parsed: ParsedA2AArgs): Promise<void> {
+	const cockpit = await buildA2ACockpit({
+		registryPath: stringFlag(parsed, "--registry"),
+		tasksPath: stringFlag(parsed, "--tasks"),
+		timeoutMs: numberFlag(parsed, "--timeout-ms"),
+		peer: stringFlag(parsed, "--peer"),
+		limit: numberFlag(parsed, "--limit"),
+	});
+	if (booleanFlag(parsed, "--json")) {
+		console.log(JSON.stringify(cockpit, null, 2));
+		return;
+	}
+
+	console.log(`A2A cockpit (${cockpit.registryPath})`);
+	console.log(chalk.dim(`  tasks=${cockpit.tasksPath}`));
+	console.log(
+		[
+			`${cockpit.counts.onlinePeers}/${cockpit.counts.peers} peers online`,
+			`${cockpit.counts.runningTasks} running`,
+			`${cockpit.counts.actionRequiredTasks} waiting`,
+			`${cockpit.counts.failedTasks} failed`,
+			`${cockpit.counts.completedTasks} completed`,
+		].join(" · "),
+	);
+	console.log(chalk.bold("\nPeers"));
+	if (cockpit.peers.length === 0) {
+		console.log(
+			chalk.dim("  No peers registered. Run maestro a2a accept <code>."),
+		);
+	} else {
+		for (const peer of cockpit.peers) {
+			const status =
+				peer.status === "online" ? chalk.green("online") : chalk.yellow("down");
+			const waiting = peer.taskCounts.actionRequiredTasks;
+			const failed = peer.taskCounts.failedTasks;
+			const taskSummary = [
+				peer.taskCounts.runningTasks
+					? `${peer.taskCounts.runningTasks} running`
+					: "",
+				waiting ? chalk.yellow(`${waiting} waiting`) : "",
+				failed ? chalk.red(`${failed} failed`) : "",
+			]
+				.filter(Boolean)
+				.join(", ");
+			console.log(
+				`${status} ${chalk.bold(peer.name)} ${chalk.dim(peer.url)}${
+					taskSummary ? ` ${chalk.dim(`(${taskSummary})`)}` : ""
+				}`,
+			);
+			if (peer.lastTask) {
+				console.log(
+					chalk.dim(
+						`  last=${peer.lastTask.id} ${peer.lastTask.state} ${peer.lastTask.text}`,
+					),
+				);
+			}
+			if (peer.error) {
+				console.log(chalk.dim(`  error=${peer.error}`));
+			}
+		}
+	}
+
+	console.log(chalk.bold("\nTasks"));
+	if (cockpit.tasks.length === 0) {
+		console.log(chalk.dim("  No delegated tasks recorded yet."));
+	} else {
+		for (const task of cockpit.tasks) {
+			const peerLabel = task.orphanedPeer
+				? `${task.peer} ${chalk.yellow("(orphaned peer)")}`
+				: task.peer;
+			console.log(
+				`${peerLabel} ${chalk.bold(task.taskId)} ${formatCockpitTaskStatus(
+					task.status,
+				)} ${chalk.dim(task.updatedAt)}`,
+			);
+			console.log(chalk.dim(`  ${task.text}`));
+			if (task.nextCommand) {
+				console.log(chalk.dim(`  next: ${task.nextCommand}`));
+			}
+		}
+	}
+
+	if (cockpit.nextActions.length > 0) {
+		console.log(chalk.bold("\nNext actions"));
+		for (const action of cockpit.nextActions) {
+			console.log(
+				`${formatCockpitActionSeverity(action.severity)} ${action.label}`,
+			);
+			console.log(chalk.dim(`  ${action.command}`));
+		}
+	}
+}
+
 async function handleA2ASend(parsed: ParsedA2AArgs): Promise<void> {
 	const peerName =
 		parsed.positionals.shift() ?? fail("Usage: maestro a2a send <peer> <text>");
@@ -975,21 +819,46 @@ async function handleA2ASend(parsed: ParsedA2AArgs): Promise<void> {
 		timeoutMs: numberFlag(parsed, "--timeout-ms"),
 	});
 	const wait = booleanFlag(parsed, "--wait");
+	const messageId = `maestro-a2a-message-${randomUUID()}`;
+	const contextId = `maestro-a2a-context-${randomUUID()}`;
+	const metadata = {
+		requestKind: "maestro-peer-message",
+		relayPeer: peer.name,
+	};
 	const sent = await sendA2AMessage(peer.config, {
 		message: buildA2AUserMessage({
-			messageId: `maestro-a2a-message-${randomUUID()}`,
-			contextId: `maestro-a2a-context-${randomUUID()}`,
+			messageId,
+			contextId,
 			text,
-			metadata: {
-				requestKind: "maestro-peer-message",
-				relayPeer: peer.name,
-			},
+			metadata,
 		}),
 		...(wait ? { configuration: { returnImmediately: true } } : {}),
 	});
+	await persistA2ALedgerBestEffort("record sent task locally", () =>
+		recordA2ATaskStart({
+			path: stringFlag(parsed, "--tasks"),
+			peer: peer.name,
+			peerDisplayName: peer.entry.displayName,
+			task: sent.task,
+			text,
+			messageId,
+			contextId,
+			kind: "message",
+			metadata,
+		}),
+	);
 	const task = wait
 		? await waitForA2ATask(peer.config, sent.task.id, parsed)
 		: sent.task;
+	if (wait) {
+		await persistA2ALedgerBestEffort("sync sent task result locally", () =>
+			updateA2ATaskInLedger({
+				path: stringFlag(parsed, "--tasks"),
+				peer: peer.name,
+				task,
+			}),
+		);
+	}
 	printTask(task, {
 		includeWorkGraphDetails: booleanFlag(parsed, "--work-graph"),
 	});
@@ -1013,8 +882,11 @@ async function handleA2ADelegate(parsed: ParsedA2AArgs): Promise<void> {
 				: "Usage: maestro a2a delegate <peer> <text>",
 		);
 	}
-	const peer = discover
+	const discoveredPeer = discover
 		? await resolveDiscoveredA2ADelegatePeer(parsed)
+		: undefined;
+	const peer = discoveredPeer
+		? discoveredPeer.peer
 		: await resolveA2APeer(peerName, {
 				path: stringFlag(parsed, "--registry"),
 				timeoutMs: numberFlag(parsed, "--timeout-ms"),
@@ -1033,6 +905,7 @@ async function handleA2ADelegate(parsed: ParsedA2AArgs): Promise<void> {
 		skillId,
 		skill,
 		discoverySource: discover ? "platform-agent-registry" : undefined,
+		discoverySelection: discoveredPeer?.discoverySelection,
 	});
 	const ledgerMetadata = buildA2ADelegationLedgerMetadata({
 		peerName: peer.name,
@@ -1040,6 +913,7 @@ async function handleA2ADelegate(parsed: ParsedA2AArgs): Promise<void> {
 		cwd,
 		skillId,
 		discoverySource: discover ? "platform-agent-registry" : undefined,
+		discoverySelection: discoveredPeer?.discoverySelection,
 	});
 	const sent = await sendA2AMessage(peer.config, {
 		message: buildA2AUserMessage({
@@ -1310,12 +1184,15 @@ async function handleA2AGraph(parsed: ParsedA2AArgs): Promise<void> {
 
 async function resolveDiscoveredA2ADelegatePeer(
 	parsed: ParsedA2AArgs,
-): Promise<Awaited<ReturnType<typeof resolveA2APeer>>> {
+): Promise<{
+	peer: Awaited<ReturnType<typeof resolveA2APeer>>;
+	discoverySelection: A2ADiscoverySelection;
+}> {
 	const skillId = stringFlag(parsed, "--skill");
 	if (!skillId) {
 		fail("Usage: maestro a2a delegate --discover --skill <skill-id> <text>");
 	}
-	const candidates = await listA2APeerCandidatesWithPlatform({
+	const discovery = await listA2APeerCandidatesWithEvidenceWithPlatform({
 		workspaceId: stringFlag(parsed, "--workspace-id"),
 		capability: stringFlag(parsed, "--capability"),
 		surface: stringFlag(parsed, "--surface") ?? "a2a",
@@ -1325,11 +1202,12 @@ async function resolveDiscoveredA2ADelegatePeer(
 		skillId,
 		preferInternalEndpoint: booleanFlag(parsed, "--prefer-internal"),
 	});
-	if (!candidates) {
+	if (!discovery) {
 		fail(
 			"Agent Registry service is not configured. Set AGENT_REGISTRY_SERVICE_URL, AGENT_REGISTRY_SERVICE_TOKEN, AGENT_REGISTRY_ORGANIZATION_ID, and AGENT_REGISTRY_WORKSPACE_ID.",
 		);
 	}
+	const candidates = discovery.candidates;
 	if (candidates.length === 0) {
 		fail(`No Platform A2A peers advertise skill ${skillId}.`);
 	}
@@ -1341,7 +1219,11 @@ async function resolveDiscoveredA2ADelegatePeer(
 	if (!candidate || !selected) {
 		fail(`No Platform A2A peers advertise skill ${skillId}.`);
 	}
-	const imported = await importDiscoveredA2APeers(parsed, [candidate]);
+	const imported = await importDiscoveredA2APeers(
+		parsed,
+		[candidate],
+		discovery.discoveryEvidence,
+	);
 	const importedPeer = imported[0];
 	if (!importedPeer) {
 		fail(`Could not import Platform A2A peer for skill ${skillId}.`);
@@ -1356,10 +1238,26 @@ async function resolveDiscoveredA2ADelegatePeer(
 			`Capability score: ${selected.score} (${selected.reasons.join(", ")})`,
 		),
 	);
-	return resolveA2APeer(importedPeer.name, {
-		path: stringFlag(parsed, "--registry"),
-		timeoutMs: numberFlag(parsed, "--timeout-ms"),
-	});
+	return {
+		peer: await resolveA2APeer(importedPeer.name, {
+			path: stringFlag(parsed, "--registry"),
+			timeoutMs: numberFlag(parsed, "--timeout-ms"),
+		}),
+		discoverySelection: {
+			source: "platform-agent-registry",
+			evidence: discovery.discoveryEvidence,
+			candidateCount:
+				discovery.discoveryEvidence?.candidateCount ?? candidates.length,
+			matchedCount:
+				discovery.discoveryEvidence?.matchedCount ?? candidates.length,
+			selectedAgentId: candidate.agent.id,
+			selectedAgentName: candidate.agent.name,
+			selectedEndpointUrl: candidate.endpointUrl,
+			selectedEndpointKind: candidate.endpointKind,
+			score: selected.score,
+			reasons: selected.reasons,
+		},
+	};
 }
 
 function selectA2APeerSkill(
@@ -1379,9 +1277,13 @@ function buildA2ADelegationMetadata(input: {
 	skillId?: string;
 	skill?: NonNullable<A2APeerRegistryEntry["skills"]>[number];
 	discoverySource?: string;
+	discoverySelection?: A2ADiscoverySelection;
 }): Record<string, unknown> {
 	const skill = input.skill;
 	const subagentRequestMetadataPath = a2ASkillRequestMetadataPath(skill);
+	const discoverySelection = a2ADiscoverySelectionPayload(
+		input.discoverySelection,
+	);
 	const subagentRequest = input.skillId
 		? {
 				skillId: input.skillId,
@@ -1421,6 +1323,9 @@ function buildA2ADelegationMetadata(input: {
 			? { discoverySource: input.discoverySource }
 			: {}),
 		...(input.skillId ? { a2aSkillId: input.skillId } : {}),
+		...(discoverySelection
+			? { "evalops.a2aDiscovery": discoverySelection }
+			: {}),
 		...(subagentRequest
 			? { [subagentRequestMetadataPath]: subagentRequest }
 			: {}),
@@ -1457,6 +1362,7 @@ function buildA2ADelegationLedgerMetadata(input: {
 	cwd?: string;
 	skillId?: string;
 	discoverySource?: string;
+	discoverySelection?: A2ADiscoverySelection;
 }): Record<string, string | number | boolean> | undefined {
 	return compactA2APeerMetadata({
 		requestKind: "maestro-peer-delegation",
@@ -1465,6 +1371,20 @@ function buildA2ADelegationLedgerMetadata(input: {
 		delegationCwd: input.cwd,
 		discoverySource: input.discoverySource,
 		a2aSkillId: input.skillId,
+		...(input.discoverySelection
+			? {
+					platformDiscoveryDecision:
+						input.discoverySelection.evidence?.decision,
+					platformDiscoveryCandidateCount:
+						input.discoverySelection.candidateCount,
+					platformDiscoveryMatchedCount: input.discoverySelection.matchedCount,
+					platformDiscoverySelectedAgentId:
+						input.discoverySelection.selectedAgentId,
+					platformDiscoverySelectedEndpoint:
+						input.discoverySelection.selectedEndpointKind,
+					a2aCapabilityScore: input.discoverySelection.score,
+				}
+			: {}),
 	});
 }
 
@@ -1720,6 +1640,111 @@ async function loadA2AReplyLedgerEntry(
 	}
 }
 
+async function handleA2ATelemetry(parsed: ParsedA2AArgs): Promise<void> {
+	const eventsPath =
+		stringFlag(parsed, "--events") ??
+		fail("Usage: maestro a2a telemetry --events <path> --swarm-id <id>");
+	const swarmId =
+		stringFlag(parsed, "--swarm-id") ??
+		parsed.positionals.shift() ??
+		fail("Usage: maestro a2a telemetry --events <path> --swarm-id <id>");
+	const events = await loadA2ATelemetryEvents(eventsPath);
+	const inspection = inspectA2ATelemetry({ swarmId, events });
+	if (booleanFlag(parsed, "--json")) {
+		console.log(JSON.stringify(inspection, null, 2));
+		return;
+	}
+	console.log(
+		`A2A telemetry ${chalk.bold(swarmId)} ${inspection.complete ? "complete" : "incomplete"}`,
+	);
+	console.log(
+		chalk.dim(
+			`  events=${inspection.counts.events} lanes=${inspection.counts.lanes} completed=${inspection.counts.completedLanes} failed=${inspection.counts.failedLanes} missing=${inspection.counts.missingTelemetryLanes}`,
+		),
+	);
+	if (inspection.counts.orderingAnomalyLanes > 0) {
+		console.log(
+			chalk.yellow(
+				`  ordering_anomalies=${inspection.counts.orderingAnomalyLanes}`,
+			),
+		);
+	}
+	for (const lane of inspection.lanes) {
+		console.log(
+			`${lane.laneId} ${lane.status ?? "(unknown)"} ${
+				lane.peer ? chalk.dim(lane.peer) : ""
+			}`.trim(),
+		);
+		const details = [
+			lane.parentTaskId ? `parent=${lane.parentTaskId}` : undefined,
+			lane.a2aTaskId ? `task=${lane.a2aTaskId}` : undefined,
+			lane.a2aMessageId ? `message=${lane.a2aMessageId}` : undefined,
+			lane.contextId ? `context=${lane.contextId}` : undefined,
+			lane.source ? `source=${lane.source}` : undefined,
+		]
+			.filter(Boolean)
+			.join(" ");
+		if (details) {
+			console.log(chalk.dim(`  ${details}`));
+		}
+		const timing = [
+			lane.timing.selectionToDispatchMs !== undefined
+				? `selected_to_dispatch=${lane.timing.selectionToDispatchMs}ms`
+				: undefined,
+			lane.timing.observedDurationMs !== undefined
+				? `observed_duration=${lane.timing.observedDurationMs}ms`
+				: undefined,
+			lane.timing.reportedDurationMs !== undefined
+				? `reported_duration=${lane.timing.reportedDurationMs}ms`
+				: undefined,
+		]
+			.filter(Boolean)
+			.join(" ");
+		if (timing) {
+			console.log(chalk.dim(`  ${timing}`));
+		}
+		if (lane.missingEventTypes.length > 0) {
+			console.log(
+				chalk.yellow(`  missing: ${lane.missingEventTypes.join(", ")}`),
+			);
+		}
+		if (lane.orderingAnomalies.length > 0) {
+			console.log(
+				chalk.yellow(`  anomalies: ${lane.orderingAnomalies.join(", ")}`),
+			);
+		}
+	}
+}
+
+async function loadA2ATelemetryEvents(
+	path: string,
+): Promise<A2ATelemetryCloudEventLike[]> {
+	const parsed = JSON.parse(await readFile(path, "utf8")) as unknown;
+	const events = Array.isArray(parsed)
+		? parsed
+		: isRecord(parsed) && Array.isArray(parsed.events)
+			? parsed.events
+			: undefined;
+	if (!events) {
+		throw new Error("A2A telemetry events file must be an array or { events }");
+	}
+	return events.filter(isA2ATelemetryCloudEventLike);
+}
+
+function isA2ATelemetryCloudEventLike(
+	value: unknown,
+): value is A2ATelemetryCloudEventLike {
+	return (
+		isRecord(value) &&
+		typeof value.type === "string" &&
+		(value.data === undefined || isRecord(value.data))
+	);
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+	return Boolean(value && typeof value === "object" && !Array.isArray(value));
+}
+
 async function handleA2ATasks(parsed: ParsedA2AArgs): Promise<void> {
 	const peerName = parsed.positionals.shift();
 	if (booleanFlag(parsed, "--refresh")) {
@@ -1925,105 +1950,6 @@ function printWorkGraphLines(
 
 export const isA2AWaitCompletionState = isTerminalA2AState;
 
-function discoveredPeerJson(candidate: PlatformAgentRegistryA2APeerCandidate): {
-	agentId?: string;
-	name?: string;
-	status?: string;
-	endpointUrl: string;
-	endpointKind?: "public" | "internal";
-	agentCardUrl?: string;
-	protocolBinding?: string;
-	protocolVersion?: string;
-	skills: PlatformAgentRegistryA2APeerCandidate["skills"];
-	supportedExtensions?: string[];
-	pushNotifications?: boolean;
-} {
-	return {
-		...(candidate.agent.id ? { agentId: candidate.agent.id } : {}),
-		...(candidate.agent.name ? { name: candidate.agent.name } : {}),
-		...(candidate.agent.status ? { status: candidate.agent.status } : {}),
-		endpointUrl: candidate.endpointUrl,
-		...(candidate.endpointKind ? { endpointKind: candidate.endpointKind } : {}),
-		...(candidate.agentCardUrl ? { agentCardUrl: candidate.agentCardUrl } : {}),
-		...(candidate.protocolBinding
-			? { protocolBinding: candidate.protocolBinding }
-			: {}),
-		...(candidate.protocolVersion
-			? { protocolVersion: candidate.protocolVersion }
-			: {}),
-		skills: candidate.skills,
-		...(candidate.supportedExtensions
-			? { supportedExtensions: candidate.supportedExtensions }
-			: {}),
-		...(candidate.pushNotifications === undefined
-			? {}
-			: { pushNotifications: candidate.pushNotifications }),
-	};
-}
-
-function discoveredPeerName(
-	candidate: PlatformAgentRegistryA2APeerCandidate,
-	index: number,
-): string {
-	const raw =
-		candidate.agent.id ??
-		candidate.agent.name ??
-		`platform-a2a-peer-${index + 1}`;
-	const sanitized =
-		raw
-			.trim()
-			.replace(/[^A-Za-z0-9_.-]+/gu, "-")
-			.replace(/^-+|-+$/gu, "")
-			.slice(0, 80) || `platform-a2a-peer-${index + 1}`;
-	return normalizePeerName(sanitized);
-}
-
-function uniqueDiscoveredPeerName(input: {
-	baseName: string;
-	candidate: PlatformAgentRegistryA2APeerCandidate;
-	importedNames: Set<string>;
-	peers: Record<string, A2APeerRegistryEntry>;
-}): string {
-	for (let suffix = 1; suffix <= 100; suffix++) {
-		const name =
-			suffix === 1 ? input.baseName : suffixedPeerName(input.baseName, suffix);
-		const existing = input.peers[name];
-		const hasSameAgentId = Boolean(
-			existing?.agentId &&
-				input.candidate.agent.id &&
-				existing.agentId === input.candidate.agent.id,
-		);
-		const hasSameEndpoint = existing?.url === input.candidate.endpointUrl;
-		if (
-			!input.importedNames.has(name) &&
-			(!existing || hasSameAgentId || hasSameEndpoint)
-		) {
-			input.importedNames.add(name);
-			return name;
-		}
-	}
-	throw new Error(
-		`Could not derive a unique A2A peer name for ${input.baseName}`,
-	);
-}
-
-function suffixedPeerName(baseName: string, suffix: number): string {
-	const suffixText = `-${suffix}`;
-	return normalizePeerName(
-		`${baseName.slice(0, 80 - suffixText.length)}${suffixText}`,
-	);
-}
-
-function compactA2APeerMetadata(
-	record: Record<string, string | number | boolean | undefined>,
-): Record<string, string | number | boolean> | undefined {
-	const entries = Object.entries(record).filter(
-		(entry): entry is [string, string | number | boolean] =>
-			entry[1] !== undefined,
-	);
-	return entries.length > 0 ? Object.fromEntries(entries) : undefined;
-}
-
 function baseUrlFromAgentCardUrl(agentCardUrl: string): string {
 	const parsed = new URL(agentCardUrl);
 	parsed.pathname = parsed.pathname.replace(
@@ -2035,61 +1961,30 @@ function baseUrlFromAgentCardUrl(agentCardUrl: string): string {
 	return parsed.toString().replace(/\/+$/u, "");
 }
 
-function stringFlag(parsed: ParsedA2AArgs, name: string): string | undefined {
-	const value = parsed.flags.get(name);
-	return typeof value === "string" && value.trim() ? value.trim() : undefined;
+function formatCockpitTaskStatus(status: string): string {
+	switch (status) {
+		case "waiting":
+			return chalk.yellow(status);
+		case "failed":
+			return chalk.red(status);
+		case "completed":
+			return chalk.green(status);
+		case "running":
+			return chalk.cyan(status);
+		default:
+			return chalk.dim(status);
+	}
 }
 
-function stringListFlag(
-	parsed: ParsedA2AArgs,
-	name: string,
-	fallback: string[],
-): string[] {
-	const value = stringFlag(parsed, name);
-	if (!value) {
-		return fallback;
+function formatCockpitActionSeverity(severity: string): string {
+	switch (severity) {
+		case "critical":
+			return chalk.red("!");
+		case "warning":
+			return chalk.yellow("!");
+		default:
+			return chalk.cyan(">");
 	}
-	const parsedValues = value
-		.split(",")
-		.map((item) => item.trim())
-		.filter(Boolean);
-	return parsedValues.length > 0 ? parsedValues : fallback;
-}
-
-function numberFlag(parsed: ParsedA2AArgs, name: string): number | undefined {
-	const value = stringFlag(parsed, name);
-	if (!value) {
-		return undefined;
-	}
-	const parsedValue = Number(value);
-	if (!Number.isFinite(parsedValue) || parsedValue <= 0) {
-		throw new Error(`${name} must be a positive number`);
-	}
-	return parsedValue;
-}
-
-function nonNegativeNumberFlag(
-	parsed: ParsedA2AArgs,
-	name: string,
-): number | undefined {
-	const value = stringFlag(parsed, name);
-	if (!value) {
-		return undefined;
-	}
-	const parsedValue = Number(value);
-	if (!Number.isFinite(parsedValue) || parsedValue < 0) {
-		throw new Error(`${name} must be a non-negative number`);
-	}
-	return parsedValue;
-}
-
-function minutesFlag(parsed: ParsedA2AArgs, name: string): number | undefined {
-	const value = numberFlag(parsed, name);
-	return value === undefined ? undefined : value * 60 * 1000;
-}
-
-function booleanFlag(parsed: ParsedA2AArgs, name: string): boolean {
-	return parsed.flags.get(name) === true;
 }
 
 async function persistA2ALedgerBestEffort(
@@ -2154,6 +2049,7 @@ function printA2AHelp(): void {
   maestro a2a discover [--capability <capability>] [--skill <skill-id>] [--import]
   maestro a2a register --url <base-url> [--agent-id <id>] [--workspace-id <id>] [--json]
   maestro a2a fleet [--json]
+  maestro a2a cockpit [--peer <peer>] [--json]
   maestro a2a card <peer>
   maestro a2a coordinate [peer] [--reply <text>] [--wait] [--json] [--work-graph]
   maestro a2a delegate <peer> <text> [--role <role>] [--cwd <path>] [--wait] [--work-graph]
@@ -2161,8 +2057,9 @@ function printA2AHelp(): void {
   maestro a2a delegate --platform --from-agent-id <agent-id> [--to-agent-id <agent-id>|--capability <capability>] --skill <skill-id> <text> [--json]
   maestro a2a control <delegation-id> --mode steer|followup|collect|interrupt|cancel [--workspace-id <id>] [message]
   maestro a2a graph <delegation-id> [--workspace-id <id>] [--json]
+  maestro a2a telemetry --events <path> --swarm-id <id> [--json]
   maestro a2a reply <peer> <task-id> <text> [--wait] [--work-graph]
-  maestro a2a send <peer> <text> [--wait] [--work-graph]
+  maestro a2a send <peer> <text> [--wait] [--tasks <path>] [--work-graph]
   maestro a2a tasks [peer] [--json] [--refresh] [--work-graph]
   maestro a2a wait <peer> <task-id> [--work-graph]
 

@@ -39,7 +39,7 @@ function agentCard(): A2AAgentCard {
 				tags: ["maestro", "codex", "a2a"],
 				inputModes: ["text/plain", "application/json"],
 				outputModes: ["text/plain", "application/json"],
-				requiredContextGrants: ["repo:read", "evidence:read"],
+				requiredContextGrants: ["repo:read", "artifact:read"],
 				approvalPolicyRef: "maestro.subagent.code-review.target-policy",
 				maxAutonomy: "bounded",
 				requiredArtifactKinds: ["review.summary"],
@@ -87,7 +87,7 @@ describe("A2A peer pairing codes", () => {
 					name: "Maestro Codex",
 					description: "Collaborate on code",
 					tags: ["maestro", "codex", "a2a"],
-					requiredContextGrants: ["repo:read", "evidence:read"],
+					requiredContextGrants: ["repo:read", "artifact:read"],
 					approvalPolicyRef: "maestro.subagent.code-review.target-policy",
 					maxAutonomy: "bounded",
 					requiredArtifactKinds: ["review.summary"],
@@ -123,7 +123,7 @@ describe("A2A peer pairing codes", () => {
 				requiredContextGrants: [
 					"repo:read",
 					"pull-request:read",
-					"evidence:write",
+					"artifact:write",
 					`tenant:grant:${index}`,
 				],
 				requiredArtifactKinds: [

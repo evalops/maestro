@@ -1,5 +1,7 @@
 import { spawn as spawnChild } from "node:child_process";
 import type { ChildProcessWithoutNullStreams } from "node:child_process";
+import { createRequire } from "node:module";
+import { dirname, join } from "node:path";
 import { createInterface } from "node:readline";
 import type { Interface as ReadlineInterface } from "node:readline";
 import type { Readable, Writable } from "node:stream";
@@ -56,6 +58,7 @@ export type CodexLoginStartResult =
 			verificationUrl: string;
 			userCode: string;
 	  }
+	| { type: "chatgptAuthTokens" }
 	| { type: string; [key: string]: unknown };
 
 export interface CodexLoginCompletedNotification {
@@ -113,6 +116,7 @@ export interface CodexAppServerClientLike {
 	readAccount(refreshToken?: boolean): Promise<CodexAccountReadResult>;
 	startChatGptLogin(
 		flow?: "browser" | "device",
+		options?: { codexStreamlinedLogin?: boolean },
 	): Promise<CodexLoginStartResult>;
 	waitForLoginCompletion(
 		loginId: string,
@@ -147,11 +151,20 @@ interface JsonRpcResponse {
 const DEFAULT_REQUEST_TIMEOUT_MS = 30_000;
 const DEFAULT_LOGIN_TIMEOUT_MS = 5 * 60_000;
 const MAX_NOTIFICATION_HISTORY = 100;
+const DEFAULT_CODEX_COMMAND = "codex";
+const DEFAULT_CODEX_APP_SERVER_ARGS = ["app-server", "--listen", "stdio://"];
 const DEFAULT_CLIENT_INFO: CodexAppServerClientInfo = {
 	name: "maestro",
 	title: "Maestro",
 	version: readPackageVersion(),
 };
+const moduleRequire = createRequire(import.meta.url);
+
+export interface CodexAppServerSpawnCommand {
+	command: string;
+	args: string[];
+	source: "override" | "bundled-package" | "path";
+}
 
 export class CodexAppServerRpcClient implements CodexAppServerClientLike {
 	private readonly pending = new Map<JsonRpcId, PendingRequest>();
@@ -168,7 +181,10 @@ export class CodexAppServerRpcClient implements CodexAppServerClientLike {
 
 	constructor(
 		private readonly transport: CodexAppServerTransport,
-		private readonly options: { requestTimeoutMs?: number } = {},
+		private readonly options: {
+			requestTimeoutMs?: number;
+			commandLabel?: string;
+		} = {},
 	) {
 		this.rl = createInterface({ input: transport.stdout });
 		this.rl.on("line", (line) => this.handleLine(line));
@@ -184,7 +200,7 @@ export class CodexAppServerRpcClient implements CodexAppServerClientLike {
 		transport.once?.("error", (error) => {
 			const message =
 				error instanceof Error
-					? error.message
+					? formatTransportError(error, this.options.commandLabel)
 					: `Process error: ${String(error)}`;
 			this.rejectAll(message);
 		});
@@ -193,8 +209,8 @@ export class CodexAppServerRpcClient implements CodexAppServerClientLike {
 	static spawn(
 		options: CreateCodexAppServerClientOptions = {},
 	): CodexAppServerRpcClient {
-		const command = options.command ?? "codex";
-		const args = options.args ?? ["app-server", "--listen", "stdio://"];
+		const { command, args, source } =
+			resolveCodexAppServerSpawnCommand(options);
 		const child: ChildProcessWithoutNullStreams = spawnChild(command, args, {
 			cwd: options.cwd,
 			env: options.env ?? process.env,
@@ -202,6 +218,10 @@ export class CodexAppServerRpcClient implements CodexAppServerClientLike {
 		});
 		return new CodexAppServerRpcClient(child, {
 			requestTimeoutMs: options.requestTimeoutMs,
+			commandLabel:
+				source === "bundled-package"
+					? "@openai/codex"
+					: [command, ...args].join(" "),
 		});
 	}
 
@@ -327,10 +347,16 @@ export class CodexAppServerRpcClient implements CodexAppServerClientLike {
 
 	startChatGptLogin(
 		flow: "browser" | "device" = "browser",
+		options: { codexStreamlinedLogin?: boolean } = {},
 	): Promise<CodexLoginStartResult> {
-		return this.request("account/login/start", {
-			type: flow === "device" ? "chatgptDeviceCode" : "chatgpt",
-		});
+		const params =
+			flow === "device"
+				? { type: "chatgptDeviceCode" }
+				: {
+						type: "chatgpt",
+						codexStreamlinedLogin: options.codexStreamlinedLogin || undefined,
+					};
+		return this.request("account/login/start", params);
 	}
 
 	async waitForLoginCompletion(
@@ -429,6 +455,18 @@ export class CodexAppServerRpcClient implements CodexAppServerClientLike {
 			method: request.method,
 			params: request.params,
 		});
+
+		if (request.method === "account/chatgptAuthTokens/refresh") {
+			this.writeMessage({
+				id: request.id,
+				error: {
+					code: -32601,
+					message:
+						"Maestro does not manage Codex ChatGPT auth tokens directly. Run `maestro codex login` or `codex login` so Codex app-server owns ChatGPT auth refresh.",
+				},
+			});
+			return;
+		}
 
 		for (const handler of Array.from(this.requestHandlers)) {
 			try {
@@ -535,6 +573,43 @@ export function createCodexAppServerClient(
 	return CodexAppServerRpcClient.spawn(options);
 }
 
+export function resolveCodexAppServerSpawnCommand(
+	options: Pick<CreateCodexAppServerClientOptions, "command" | "args"> = {},
+	resolveBundledBin: () => string | null = resolveBundledCodexBinPath,
+): CodexAppServerSpawnCommand {
+	const args = options.args ?? DEFAULT_CODEX_APP_SERVER_ARGS;
+	if (options.command) {
+		return { command: options.command, args, source: "override" };
+	}
+
+	const bundledCodexBin = resolveBundledBin();
+	if (bundledCodexBin) {
+		return {
+			command: process.execPath,
+			args: [bundledCodexBin, ...args],
+			source: "bundled-package",
+		};
+	}
+
+	return { command: DEFAULT_CODEX_COMMAND, args, source: "path" };
+}
+
+export function resolveBundledCodexBinPath(): string | null {
+	try {
+		return moduleRequire.resolve("@openai/codex/bin/codex.js");
+	} catch {
+		// Some package managers enforce package exports more strictly; fall back to
+		// package.json resolution and the published bin layout.
+	}
+
+	try {
+		const packageJsonPath = moduleRequire.resolve("@openai/codex/package.json");
+		return join(dirname(packageJsonPath), "bin", "codex.js");
+	} catch {
+		return null;
+	}
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
 	return Boolean(value && typeof value === "object" && !Array.isArray(value));
 }
@@ -562,4 +637,13 @@ function defaultServerRequestResponse(
 		default:
 			return { ok: false };
 	}
+}
+
+function formatTransportError(error: Error, commandLabel?: string): string {
+	const code = (error as NodeJS.ErrnoException).code;
+	if (code === "ENOENT") {
+		const command = commandLabel ? ` (${commandLabel})` : "";
+		return `Codex app-server executable was not found${command}. Maestro uses the bundled @openai/codex package when installed and falls back to a codex binary on PATH; run your package manager install in this checkout or install Codex with \`npm install -g @openai/codex\`.`;
+	}
+	return error.message;
 }

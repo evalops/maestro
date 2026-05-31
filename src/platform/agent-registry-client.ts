@@ -325,6 +325,7 @@ export interface PlatformAgentDiscoveryEvidence {
 	schema?: string;
 	decision?: string;
 	reason?: string;
+	organizationId?: string;
 	workspaceId?: string;
 	capability?: string;
 	capabilities?: string[];
@@ -332,10 +333,15 @@ export interface PlatformAgentDiscoveryEvidence {
 	a2aSkillId?: string;
 	taskClass?: string;
 	requireA2ADispatch?: boolean;
+	eligibleForDelegation?: boolean;
 	surface?: string;
 	status?: string;
 	candidateCount?: number;
 	matchedCount?: number;
+	traceId?: string;
+	spanId?: string;
+	requestId?: string;
+	observedAt?: string;
 	exclusions?: PlatformAgentDiscoveryExclusion[];
 }
 
@@ -408,6 +414,11 @@ export interface PlatformAgentRegistryA2APeerCandidate {
 	skills: PlatformAgentA2ASkill[];
 	supportedExtensions?: string[];
 	pushNotifications?: boolean;
+}
+
+export interface PlatformAgentRegistryA2APeerCandidatesResult {
+	candidates: PlatformAgentRegistryA2APeerCandidate[];
+	discoveryEvidence?: PlatformAgentDiscoveryEvidence;
 }
 
 export interface PlatformAgentRegistryListA2APeersInput
@@ -909,6 +920,7 @@ function normalizeDiscoveryEvidence(
 		schema: firstString(record, "schema"),
 		decision: firstString(record, "decision"),
 		reason: firstString(record, "reason"),
+		organizationId: firstString(record, "organizationId", "organization_id"),
 		workspaceId: firstString(record, "workspaceId", "workspace_id"),
 		capability: firstString(record, "capability"),
 		capabilities: stringList(record, "capabilities"),
@@ -921,10 +933,19 @@ function normalizeDiscoveryEvidence(
 			"requireA2ADispatch",
 			"require_a2a_dispatch",
 		),
+		eligibleForDelegation: firstBoolean(
+			record,
+			"eligibleForDelegation",
+			"eligible_for_delegation",
+		),
 		surface: firstString(record, "surface"),
 		status: firstString(record, "status"),
 		candidateCount: firstNumber(record, "candidateCount", "candidate_count"),
 		matchedCount: firstNumber(record, "matchedCount", "matched_count"),
+		traceId: firstString(record, "traceId", "trace_id"),
+		spanId: firstString(record, "spanId", "span_id"),
+		requestId: firstString(record, "requestId", "request_id"),
+		observedAt: firstString(record, "observedAt", "observed_at"),
 		exclusions: objectList(record, "exclusions")
 			?.map((exclusion) => normalizeDiscoveryExclusion(exclusion))
 			.filter(
@@ -1287,6 +1308,20 @@ export async function listA2APeerCandidatesWithPlatform(
 		signal?: AbortSignal;
 	},
 ): Promise<PlatformAgentRegistryA2APeerCandidate[] | null> {
+	const result = await listA2APeerCandidatesWithEvidenceWithPlatform(
+		input,
+		options,
+	);
+	return result?.candidates ?? null;
+}
+
+export async function listA2APeerCandidatesWithEvidenceWithPlatform(
+	input: PlatformAgentRegistryListA2APeersInput = {},
+	options?: {
+		config?: PlatformServiceConfig;
+		signal?: AbortSignal;
+	},
+): Promise<PlatformAgentRegistryA2APeerCandidatesResult | null> {
 	const result = await listAgentsWithPlatform(
 		{
 			...input,
@@ -1299,7 +1334,7 @@ export async function listA2APeerCandidatesWithPlatform(
 	if (!result) {
 		return null;
 	}
-	return result.agents
+	const candidates = result.agents
 		.map((agent) => {
 			const a2a = agent.a2a;
 			const useInternalEndpoint = Boolean(
@@ -1339,6 +1374,10 @@ export async function listA2APeerCandidatesWithPlatform(
 			(candidate): candidate is PlatformAgentRegistryA2APeerCandidate =>
 				candidate !== undefined,
 		);
+	return {
+		candidates,
+		discoveryEvidence: result.discoveryEvidence,
+	};
 }
 
 export async function delegateAgentWithPlatform(

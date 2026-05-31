@@ -12,14 +12,19 @@ import { isInternalTelemetryDisabled } from "./telemetry/disablement.js";
 import {
 	type MaestroCorrelation,
 	mirrorTelemetryToMaestroEventBus,
+	recordMaestroA2ADelegationEvent,
 	resolveMaestroEventBusConfig,
 } from "./telemetry/maestro-event-bus.js";
+import { MaestroBusEventType } from "./telemetry/maestro-event-catalog.js";
 import { normalizeTelemetryMetadataInputs } from "./telemetry/metadata-normalization.js";
 import {
 	hasRemoteMeterDestination,
 	mirrorCanonicalTurnEventToMeter,
 } from "./telemetry/meter-service-client.js";
 import {
+	recordA2ADelegationMetric,
+	recordA2APeerExclusionMetric,
+	recordA2APolicyDenialMetric,
 	recordCompactionMetric,
 	recordSubagentDispatchMetric,
 	recordToolInvocationMetric,
@@ -199,6 +204,46 @@ export interface SubagentDispatchTelemetry extends BaseTelemetryEvent {
 	metadata?: Record<string, unknown>;
 }
 
+export type A2ADelegationTelemetryPhase =
+	| "peer_selected"
+	| "task_dispatched"
+	| "task_progress"
+	| "task_completed"
+	| "task_failed"
+	| "task_cancelled"
+	| "push_received"
+	| "evidence_completed";
+
+export interface A2ADelegationTelemetryInput {
+	phase: A2ADelegationTelemetryPhase;
+	swarmId: string;
+	laneId: string;
+	parentTaskId: string;
+	a2aTaskId?: string;
+	a2aMessageId?: string;
+	contextId?: string;
+	peerAgentId?: string;
+	peerName?: string;
+	peerEndpointUrl?: string;
+	peerEndpointHash?: string;
+	peerEndpointKind?: string;
+	skillId?: string;
+	taskClass?: string;
+	source?: string;
+	status?: string;
+	terminal?: boolean;
+	success?: boolean;
+	latencyMs?: number;
+	durationMs?: number;
+	taskDurationMs?: number;
+	pushLagMs?: number;
+	evidence?: Record<string, unknown>;
+	metadata?: Record<string, unknown>;
+	correlation?: Partial<MaestroCorrelation>;
+	occurredAt?: string;
+	env?: NodeJS.ProcessEnv;
+}
+
 /**
  * Canonical Turn Event - Wide event emitted once per agent turn.
  * Re-exported from telemetry/wide-events.ts for type union.
@@ -257,6 +302,20 @@ const initialTelemetryEnabled = shouldEnableTelemetry();
 let telemetryEnabled = initialTelemetryEnabled;
 let telemetryOverride: boolean | null = null;
 let telemetryOverrideReason: string | undefined;
+
+const A2A_PHASE_EVENT_TYPES: Record<
+	A2ADelegationTelemetryPhase,
+	MaestroBusEventType
+> = {
+	peer_selected: MaestroBusEventType.A2APeerSelected,
+	task_dispatched: MaestroBusEventType.A2ATaskDispatched,
+	task_progress: MaestroBusEventType.A2ATaskProgress,
+	task_completed: MaestroBusEventType.A2ATaskCompleted,
+	task_failed: MaestroBusEventType.A2ATaskFailed,
+	task_cancelled: MaestroBusEventType.A2ATaskCancelled,
+	push_received: MaestroBusEventType.A2APushReceived,
+	evidence_completed: MaestroBusEventType.A2AEvidenceCompleted,
+};
 
 const parseSamplingRate = (): number => {
 	const raw = telemetrySampleEnv;
@@ -1121,6 +1180,89 @@ export function recordSubagentDispatch(
 		event: "subagent_dispatched",
 		timestamp: new Date().toISOString(),
 	});
+}
+
+export function recordA2ADelegationTelemetry(
+	event: A2ADelegationTelemetryInput,
+): void {
+	if (isInternalTelemetryDisabled()) {
+		return;
+	}
+	try {
+		recordA2ADelegationMetric({
+			phase: event.phase,
+			source: event.source,
+			status: event.status,
+			success: event.success,
+			skillId: event.skillId,
+			taskClass: event.taskClass,
+			latencyMs: event.latencyMs,
+			taskDurationMs: event.taskDurationMs ?? event.durationMs,
+			pushLagMs: event.pushLagMs,
+		});
+		recordMaestroA2ADelegationEvent({
+			event_type: A2A_PHASE_EVENT_TYPES[event.phase],
+			swarm_id: event.swarmId,
+			lane_id: event.laneId,
+			parent_task_id: event.parentTaskId,
+			a2a_task_id: event.a2aTaskId,
+			a2a_message_id: event.a2aMessageId,
+			context_id: event.contextId,
+			peer_agent_id: event.peerAgentId,
+			peer_name: event.peerName,
+			peer_endpoint_url: event.peerEndpointUrl,
+			peer_endpoint_hash: event.peerEndpointHash,
+			peer_endpoint_kind: event.peerEndpointKind,
+			skill_id: event.skillId,
+			task_class: event.taskClass,
+			source: event.source,
+			status: event.status,
+			terminal: event.terminal,
+			success: event.success,
+			latency_ms: event.latencyMs,
+			duration_ms: event.taskDurationMs ?? event.durationMs,
+			push_lag_ms: event.pushLagMs,
+			evidence: event.evidence,
+			metadata: event.metadata,
+			correlation: event.correlation,
+			occurred_at: event.occurredAt,
+			env: event.env,
+		});
+	} catch {
+		// Telemetry must never affect A2A delegation runtime behavior.
+	}
+}
+
+export function recordA2APolicyDenialTelemetry(event: {
+	source?: string;
+	reason: string;
+	taskClass?: string;
+	skillId?: string;
+}): void {
+	if (isInternalTelemetryDisabled()) {
+		return;
+	}
+	try {
+		recordA2APolicyDenialMetric(event);
+	} catch {
+		// Best-effort only.
+	}
+}
+
+export function recordA2APeerExclusionTelemetry(event: {
+	source?: string;
+	reason: string;
+	taskClass?: string;
+	skillId?: string;
+}): void {
+	if (isInternalTelemetryDisabled()) {
+		return;
+	}
+	try {
+		recordA2APeerExclusionMetric(event);
+	} catch {
+		// Best-effort only.
+	}
 }
 
 /**

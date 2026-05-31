@@ -47,6 +47,7 @@ impl AiProvider {
         } else if model_lower.starts_with("gpt")
             || model_lower.starts_with("o1")
             || model_lower.starts_with("o3")
+            || model_lower.contains("codex")
         {
             AiProvider::OpenAI
         } else if model_lower.starts_with("gemini") || model_lower.contains("google") {
@@ -67,8 +68,8 @@ impl AiProvider {
             // Models prefixed with "groq/" explicitly use Groq
             AiProvider::Groq
         } else {
-            // Default to Anthropic for unknown models
-            AiProvider::Anthropic
+            // Default to OpenAI/Codex for unknown models
+            AiProvider::OpenAI
         }
     }
 }
@@ -248,6 +249,10 @@ mod tests {
         );
         assert_eq!(AiProvider::from_model("gpt-4o"), AiProvider::OpenAI);
         assert_eq!(AiProvider::from_model("gpt-4-turbo"), AiProvider::OpenAI);
+        assert_eq!(
+            AiProvider::from_model("codex-mini-latest"),
+            AiProvider::OpenAI
+        );
         assert_eq!(AiProvider::from_model("o1-preview"), AiProvider::OpenAI);
         assert_eq!(AiProvider::from_model("o3-mini"), AiProvider::OpenAI);
     }
@@ -313,12 +318,9 @@ mod tests {
 
     #[test]
     fn test_provider_from_model_default() {
-        // Unknown models default to Anthropic
-        assert_eq!(
-            AiProvider::from_model("unknown-model"),
-            AiProvider::Anthropic
-        );
-        assert_eq!(AiProvider::from_model(""), AiProvider::Anthropic);
+        // Unknown models default to OpenAI/Codex
+        assert_eq!(AiProvider::from_model("unknown-model"), AiProvider::OpenAI);
+        assert_eq!(AiProvider::from_model(""), AiProvider::OpenAI);
     }
 
     #[test]

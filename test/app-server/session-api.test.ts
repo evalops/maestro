@@ -20,6 +20,7 @@ import {
 	handleMaestroAppServerRequest,
 } from "../../src/app-server/session-api.js";
 import { SessionManager } from "../../src/session/manager.js";
+import { safeReadSessionEntries } from "../../src/session/session-context.js";
 import type { SessionEntry } from "../../src/session/types.js";
 
 function createMockState(): AgentState {
@@ -204,6 +205,10 @@ describe("Maestro app-server session API", () => {
 				threadMetadataUpdate: true,
 				threadNameSet: true,
 				threadGoals: true,
+				threadStart: true,
+				threadFork: true,
+				threadArchive: true,
+				threadDelete: true,
 				turnsList: true,
 			},
 		});
@@ -224,6 +229,62 @@ describe("Maestro app-server session API", () => {
 				threadGoals: false,
 			},
 		});
+	});
+
+	it("does not advertise persistent thread lifecycle mutations when sessions are disabled", async () => {
+		const session = await createPersistedSession("disabled persistence", {
+			title: "Disabled persistence",
+		});
+		const manager = createSessionManager(session.sessionFile);
+		manager.disable();
+		const api = createMaestroAppServerSessionApi(manager);
+
+		expect(api.initialize()).toMatchObject({
+			capabilities: {
+				threadStart: false,
+				threadFork: false,
+				threadArchive: false,
+				threadDelete: false,
+			},
+		});
+
+		for (const request of [
+			{
+				id: "disabled-thread-start",
+				method: "thread/start",
+				params: { title: "Disabled thread" },
+				message: "Thread start is not available",
+			},
+			{
+				id: "disabled-thread-fork",
+				method: "thread/fork",
+				params: { threadId: session.id, leafEntryId: "leaf" },
+				message: "Thread fork is not available",
+			},
+			{
+				id: "disabled-thread-archive",
+				method: "thread/archive",
+				params: { threadId: session.id },
+				message: "Thread archive is not available",
+			},
+			{
+				id: "disabled-thread-delete",
+				method: "thread/delete",
+				params: { threadId: session.id },
+				message: "Thread delete is not available",
+			},
+		]) {
+			const response = await handleMaestroAppServerRequest(api, {
+				jsonrpc: "2.0",
+				id: request.id,
+				method: request.method,
+				params: request.params,
+			});
+			expect(response.error).toEqual({
+				code: -32601,
+				message: request.message,
+			});
+		}
 	});
 
 	it("lists models and provider capabilities through the app-server contract", async () => {
@@ -331,6 +392,687 @@ describe("Maestro app-server session API", () => {
 			],
 			nextCursor: null,
 		});
+	});
+
+	it("starts and deletes threads through v2 lifecycle methods", async () => {
+		const manager = createSessionManager();
+		const api = createMaestroAppServerSessionApi(manager);
+
+		const started = await handleMaestroAppServerRequest(api, {
+			jsonrpc: "2.0",
+			id: "thread-start",
+			method: "thread/start",
+			params: { title: "Lifecycle thread" },
+		});
+
+		expect(started.result).toMatchObject({
+			thread: {
+				title: "Lifecycle thread",
+				status: "notLoaded",
+				messageCount: 0,
+				source: "session",
+			},
+		});
+		expect(Value.Check(MaestroAppServerResponseSchema, started)).toBe(true);
+
+		const threadId = started.result?.thread.id;
+		expect(threadId).toEqual(expect.any(String));
+
+		const listed = await handleMaestroAppServerRequest(api, {
+			jsonrpc: "2.0",
+			id: "thread-start-list",
+			method: "thread/list",
+			params: {},
+		});
+		expect(listed.result?.threads).toEqual([
+			expect.objectContaining({
+				id: threadId,
+				title: "Lifecycle thread",
+			}),
+		]);
+
+		await manager.createSession({ title: "Active replacement" });
+
+		const deleted = await handleMaestroAppServerRequest(api, {
+			jsonrpc: "2.0",
+			id: "thread-delete",
+			method: "thread/delete",
+			params: { threadId },
+		});
+		expect(deleted.result).toEqual({ threadId, deleted: true });
+		expect(Value.Check(MaestroAppServerResponseSchema, deleted)).toBe(true);
+
+		const readDeleted = await handleMaestroAppServerRequest(api, {
+			jsonrpc: "2.0",
+			id: "thread-delete-read",
+			method: "thread/read",
+			params: { threadId },
+		});
+		expect(readDeleted.error).toMatchObject({
+			code: -32004,
+			message: "Thread not found",
+		});
+	});
+
+	it("rejects deleting the currently active thread", async () => {
+		const session = await createPersistedSession("active prompt");
+		const manager = createSessionManager(session.sessionFile);
+		const api = createMaestroAppServerSessionApi(manager);
+
+		const deleted = await handleMaestroAppServerRequest(api, {
+			jsonrpc: "2.0",
+			id: "thread-delete-active",
+			method: "thread/delete",
+			params: { threadId: session.id },
+		});
+
+		expect(deleted.error).toMatchObject({
+			code: -32000,
+			message: "Cannot delete the currently active thread",
+		});
+		expect(existsSync(session.sessionFile)).toBe(true);
+		expect(manager.getSessionFile()).toBe(session.sessionFile);
+	});
+
+	it("preserves the active session binding when starting a thread", async () => {
+		const active = await createPersistedSession("active prompt");
+		const manager = createSessionManager(active.sessionFile);
+		const api = createMaestroAppServerSessionApi(manager);
+
+		const started = await handleMaestroAppServerRequest(api, {
+			jsonrpc: "2.0",
+			id: "thread-start-active-binding",
+			method: "thread/start",
+			params: { title: "Background thread" },
+		});
+		const threadId = started.result?.thread.id;
+		expect(threadId).toEqual(expect.any(String));
+		expect(manager.getSessionFile()).toBe(active.sessionFile);
+
+		manager.saveMessage(createUserMessage("continued active prompt", 10));
+		await manager.flush();
+
+		const readStarted = await handleMaestroAppServerRequest(api, {
+			jsonrpc: "2.0",
+			id: "thread-start-active-binding-read-started",
+			method: "thread/read",
+			params: { threadId },
+		});
+		expect(readStarted.result?.thread).toMatchObject({
+			id: threadId,
+			messageCount: 0,
+		});
+
+		const readActive = await handleMaestroAppServerRequest(api, {
+			jsonrpc: "2.0",
+			id: "thread-start-active-binding-read-active",
+			method: "thread/read",
+			params: { threadId: active.id },
+		});
+		expect(readActive.result?.thread).toMatchObject({
+			id: active.id,
+			messageCount: 3,
+		});
+	});
+
+	it("restores hosted-style runtime state when starting a thread", async () => {
+		const activeId = "active-thread";
+		const activeLeafId = "active-leaf";
+		const latestLeafId = "active-latest-leaf";
+		const backgroundId = "background-thread";
+		const now = "2026-05-24T06:00:00.000Z";
+		let currentSessionId = activeId;
+		let currentLeafId: string | null = activeLeafId;
+		const sessions = new Map<
+			string,
+			{
+				id: string;
+				title?: string;
+				createdAt: string;
+				updatedAt: string;
+				messages: [];
+				messageCount: number;
+				favorite: boolean;
+				messagesView: "notLoaded";
+			}
+		>([
+			[
+				activeId,
+				{
+					id: activeId,
+					title: "Active thread",
+					createdAt: now,
+					updatedAt: now,
+					messages: [],
+					messageCount: 2,
+					favorite: false,
+					messagesView: "notLoaded",
+				},
+			],
+		]);
+		const entriesBySessionId = new Map<string, SessionEntry[]>([
+			[
+				activeId,
+				[
+					{
+						type: "session",
+						id: activeId,
+						timestamp: now,
+						cwd: testDir,
+					},
+					{
+						type: "message",
+						id: activeLeafId,
+						parentId: null,
+						timestamp: now,
+						message: createUserMessage("active prompt", 10),
+					},
+					{
+						type: "message",
+						id: latestLeafId,
+						parentId: activeLeafId,
+						timestamp: now,
+						message: createAssistantMessage("latest response"),
+					},
+				],
+			],
+		]);
+		const resumeCalls: string[] = [];
+		const branchCalls: string[] = [];
+		const setSessionFileCalls: string[] = [];
+		const store = {
+			getSessionFile: () => `db:${currentSessionId}`,
+			getSessionFileById: (sessionId: string) =>
+				sessions.has(sessionId) ? `db:${sessionId}` : null,
+			loadAllSessions: () =>
+				Array.from(sessions.values()).map((session) => ({
+					path: `db:${session.id}`,
+					id: session.id,
+					title: session.title,
+					created: new Date(session.createdAt),
+					modified: new Date(session.updatedAt),
+					size: 0,
+					messageCount: session.messageCount,
+					firstMessage: "",
+					summary: session.title ?? session.id,
+					favorite: session.favorite,
+					allMessagesText: "",
+				})),
+			listSessions: async () => Array.from(sessions.values()),
+			loadSession: async (sessionId: string) => sessions.get(sessionId) ?? null,
+			flush: async () => undefined,
+			createSession: async (options?: { title?: string }) => {
+				currentSessionId = backgroundId;
+				currentLeafId = null;
+				sessions.set(backgroundId, {
+					id: backgroundId,
+					title: options?.title,
+					createdAt: now,
+					updatedAt: now,
+					messages: [],
+					messageCount: 0,
+					favorite: false,
+					messagesView: "notLoaded",
+				});
+				entriesBySessionId.set(backgroundId, [
+					{
+						type: "session",
+						id: backgroundId,
+						timestamp: now,
+						cwd: testDir,
+						provisional: true,
+					},
+				]);
+				return {
+					id: backgroundId,
+					title: options?.title,
+					createdAt: now,
+					updatedAt: now,
+					messageCount: 0,
+				};
+			},
+			resumeSession: async (sessionId: string) => {
+				resumeCalls.push(sessionId);
+				const entries = entriesBySessionId.get(sessionId);
+				if (!entries) {
+					return false;
+				}
+				currentSessionId = sessionId;
+				currentLeafId =
+					[...entries].reverse().find((entry) => entry.type === "message")
+						?.id ?? null;
+				return true;
+			},
+			setSessionFile: (sessionReference: string) => {
+				setSessionFileCalls.push(sessionReference);
+				currentSessionId = sessionReference.replace(/^db:/, "");
+			},
+			getCurrentLeafId: () => currentLeafId,
+			branch: (leafId: string) => {
+				branchCalls.push(leafId);
+				if (
+					!entriesBySessionId
+						.get(currentSessionId)
+						?.some((entry) => entry.type === "message" && entry.id === leafId)
+				) {
+					throw new Error(`Entry ${leafId} not found`);
+				}
+				currentLeafId = leafId;
+			},
+		};
+		const api = createMaestroAppServerSessionApi(store);
+
+		const started = await handleMaestroAppServerRequest(api, {
+			jsonrpc: "2.0",
+			id: "thread-start-hosted-restore",
+			method: "thread/start",
+			params: { title: "Background thread" },
+		});
+
+		expect(started.result?.thread).toMatchObject({
+			id: backgroundId,
+			title: "Background thread",
+			messageCount: 0,
+		});
+		expect(resumeCalls).toEqual([activeId]);
+		expect(branchCalls).toEqual([activeLeafId]);
+		expect(setSessionFileCalls).toEqual([]);
+		expect(store.getSessionFile()).toBe(`db:${activeId}`);
+		expect(store.getCurrentLeafId()).toBe(activeLeafId);
+	});
+
+	it("preserves the selected branch leaf after starting a background thread", async () => {
+		const active = await createPersistedSession("branch root", {
+			title: "Branched active thread",
+			secondPrompt: "later branch",
+		});
+		const manager = createSessionManager(active.sessionFile);
+		const api = createMaestroAppServerSessionApi(manager);
+		const messageEntries = safeReadSessionEntries(active.sessionFile).filter(
+			(entry): entry is Extract<SessionEntry, { type: "message" }> =>
+				entry.type === "message",
+		);
+		const branchLeafId = messageEntries[1]?.id;
+		expect(branchLeafId).toEqual(expect.any(String));
+		if (!branchLeafId) {
+			throw new Error("Expected branch leaf id");
+		}
+		expect(manager.getLeafId()).not.toBe(branchLeafId);
+
+		manager.branch(branchLeafId);
+
+		await handleMaestroAppServerRequest(api, {
+			jsonrpc: "2.0",
+			id: "thread-start-branch-restore",
+			method: "thread/start",
+			params: { title: "Background branch thread" },
+		});
+
+		expect(manager.getSessionFile()).toBe(active.sessionFile);
+		expect(manager.getLeafId()).toBe(branchLeafId);
+
+		manager.saveMessage(createUserMessage("branch continuation", 5));
+		await manager.flush();
+		const continuation = safeReadSessionEntries(active.sessionFile).find(
+			(entry): entry is Extract<SessionEntry, { type: "message" }> =>
+				entry.type === "message" &&
+				entry.message.role === "user" &&
+				entry.message.content.some(
+					(part) => part.type === "text" && part.text === "branch continuation",
+				),
+		);
+		expect(continuation?.parentId).toBe(branchLeafId);
+	});
+
+	it("preserves a root branch selection after starting a background thread", async () => {
+		const active = await createPersistedSession("root branch prompt", {
+			title: "Root selected active thread",
+			secondPrompt: "later branch",
+		});
+		const manager = createSessionManager(active.sessionFile);
+		const api = createMaestroAppServerSessionApi(manager);
+		manager.resetLeaf();
+		expect(manager.getLeafId()).toBeNull();
+
+		await handleMaestroAppServerRequest(api, {
+			jsonrpc: "2.0",
+			id: "thread-start-root-restore",
+			method: "thread/start",
+			params: { title: "Background root thread" },
+		});
+
+		expect(manager.getSessionFile()).toBe(active.sessionFile);
+		expect(manager.getLeafId()).toBeNull();
+
+		manager.saveMessage(createUserMessage("root continuation", 5));
+		await manager.flush();
+		const continuation = safeReadSessionEntries(active.sessionFile).find(
+			(entry): entry is Extract<SessionEntry, { type: "message" }> =>
+				entry.type === "message" &&
+				entry.message.role === "user" &&
+				entry.message.content.some(
+					(part) => part.type === "text" && part.text === "root continuation",
+				),
+		);
+		expect(continuation?.parentId).toBeNull();
+	});
+
+	it("lets a thread/start placeholder receive the normal first-turn session header", async () => {
+		const manager = createSessionManager();
+		const api = createMaestroAppServerSessionApi(manager);
+
+		const started = await handleMaestroAppServerRequest(api, {
+			jsonrpc: "2.0",
+			id: "thread-start",
+			method: "thread/start",
+			params: { title: "First turn thread" },
+		});
+		const threadId = started.result?.thread.id;
+		expect(threadId).toEqual(expect.any(String));
+		const threadSessionFile = manager.getSessionFileById(threadId as string);
+		if (!threadSessionFile) {
+			throw new Error("Started thread session file was not registered");
+		}
+		const provisionalEntries = safeReadSessionEntries(threadSessionFile);
+		const provisionalHeader = provisionalEntries.find(
+			(entry) => entry.type === "session",
+		);
+		const provisionalTimestamp = provisionalHeader?.timestamp;
+		expect(provisionalTimestamp).toEqual(expect.any(String));
+		await manager.setSessionFile(threadSessionFile);
+
+		const state = createMockState();
+		const firstUser = createUserMessage("first real turn", 10);
+		state.messages.push(firstUser);
+		expect(manager.shouldInitializeSession(state.messages)).toBe(true);
+
+		manager.startSession(state);
+		manager.saveMessage(firstUser);
+		await manager.flush();
+
+		const entries = safeReadSessionEntries(manager.getSessionFile());
+		const headers = entries.filter((entry) => entry.type === "session");
+		expect(headers).toHaveLength(1);
+		expect(headers[0]).toMatchObject({
+			id: threadId,
+			timestamp: provisionalTimestamp,
+			model: "anthropic/claude-sonnet-4",
+			systemPrompt: "test system prompt",
+		});
+		expect(headers[0]).not.toHaveProperty("provisional");
+
+		const read = await handleMaestroAppServerRequest(api, {
+			jsonrpc: "2.0",
+			id: "thread-read",
+			method: "thread/read",
+			params: { threadId },
+		});
+		expect(read.result?.thread).toMatchObject({
+			id: threadId,
+			title: "First turn thread",
+			messageCount: 1,
+		});
+	});
+
+	it("keeps reloaded thread/start placeholders eligible for first-turn initialization", async () => {
+		const manager = createSessionManager();
+		const api = createMaestroAppServerSessionApi(manager);
+
+		const started = await handleMaestroAppServerRequest(api, {
+			jsonrpc: "2.0",
+			id: "thread-start",
+			method: "thread/start",
+			params: { title: "Reloaded first turn thread" },
+		});
+		const threadId = started.result?.thread.id;
+		expect(threadId).toEqual(expect.any(String));
+		const sessionFile = manager.getSessionFileById(threadId as string);
+		if (!sessionFile) {
+			throw new Error("Started thread session file was not registered");
+		}
+		await manager.flush();
+		manager.disable();
+
+		const reopened = createSessionManager(sessionFile);
+		expect(reopened.getSessionId()).toBe(threadId);
+
+		const state = createMockState();
+		const firstUser = createUserMessage("first real turn after reload", 10);
+		state.messages.push(firstUser);
+		expect(reopened.shouldInitializeSession(state.messages)).toBe(true);
+
+		reopened.startSession(state);
+		reopened.saveMessage(firstUser);
+		await reopened.flush();
+
+		const entries = safeReadSessionEntries(reopened.getSessionFile());
+		const headers = entries.filter((entry) => entry.type === "session");
+		expect(headers).toHaveLength(1);
+		expect(headers[0]).toMatchObject({
+			id: threadId,
+			model: "anthropic/claude-sonnet-4",
+			systemPrompt: "test system prompt",
+		});
+		expect(headers[0]).not.toHaveProperty("provisional");
+	});
+
+	it("preserves thread/start metadata through the first-turn session header rewrite", async () => {
+		const manager = createSessionManager();
+		const api = createMaestroAppServerSessionApi(manager);
+
+		const started = await handleMaestroAppServerRequest(api, {
+			jsonrpc: "2.0",
+			id: "thread-start",
+			method: "thread/start",
+			params: { title: "Draft thread" },
+		});
+		const threadId = started.result?.thread.id;
+		expect(threadId).toEqual(expect.any(String));
+		const threadSessionFile = manager.getSessionFileById(threadId as string);
+		if (!threadSessionFile) {
+			throw new Error("Started thread session file was not registered");
+		}
+
+		await handleMaestroAppServerRequest(api, {
+			jsonrpc: "2.0",
+			id: "metadata-update",
+			method: "thread/metadata/update",
+			params: {
+				threadId,
+				summary: "Pre-turn summary",
+				resumeSummary: "Pre-turn resume",
+				favorite: true,
+				tags: ["pre-turn", "metadata"],
+			},
+		});
+
+		await manager.setSessionFile(threadSessionFile);
+		const state = createMockState();
+		const firstUser = createUserMessage("first real turn", 10);
+		state.messages.push(firstUser);
+		manager.startSession(state);
+		manager.saveMessage(firstUser);
+		await manager.flush();
+
+		const read = await handleMaestroAppServerRequest(api, {
+			jsonrpc: "2.0",
+			id: "thread-read",
+			method: "thread/read",
+			params: { threadId },
+		});
+		expect(read.result?.thread).toMatchObject({
+			id: threadId,
+			title: "Draft thread",
+			summary: "Pre-turn summary",
+			resumeSummary: "Pre-turn resume",
+			favorite: true,
+			tags: ["pre-turn", "metadata"],
+			messageCount: 1,
+		});
+
+		const entries = safeReadSessionEntries(threadSessionFile);
+		expect(
+			entries.some(
+				(entry) =>
+					entry.type === "session_meta" && entry.summary === "Pre-turn summary",
+			),
+		).toBe(true);
+		expect(
+			entries.some(
+				(entry) => entry.type === "session_meta" && entry.favorite === true,
+			),
+		).toBe(true);
+	});
+
+	it("archives and unarchives threads without deleting their contents", async () => {
+		const session = await createPersistedSession("archive prompt", {
+			title: "Archive target",
+		});
+		const api = createMaestroAppServerSessionApi(
+			createSessionManager(session.sessionFile),
+		);
+
+		const archived = await handleMaestroAppServerRequest(api, {
+			jsonrpc: "2.0",
+			id: "thread-archive",
+			method: "thread/archive",
+			params: { threadId: session.id },
+		});
+
+		expect(archived.result).toMatchObject({
+			thread: {
+				id: session.id,
+				title: "Archive target",
+				status: "archived",
+				archived: true,
+				archivedAt: expect.any(String),
+			},
+			archived: true,
+		});
+		expect(Value.Check(MaestroAppServerResponseSchema, archived)).toBe(true);
+
+		const defaultList = await handleMaestroAppServerRequest(api, {
+			jsonrpc: "2.0",
+			id: "thread-list-active",
+			method: "thread/list",
+			params: {},
+		});
+		expect(defaultList.result?.threads).toEqual([]);
+
+		const archivedList = await handleMaestroAppServerRequest(api, {
+			jsonrpc: "2.0",
+			id: "thread-list-archived",
+			method: "thread/list",
+			params: { includeArchived: true },
+		});
+		expect(archivedList.result?.threads).toEqual([
+			expect.objectContaining({
+				id: session.id,
+				status: "archived",
+				archived: true,
+			}),
+		]);
+
+		const unarchived = await handleMaestroAppServerRequest(api, {
+			jsonrpc: "2.0",
+			id: "thread-unarchive",
+			method: "thread/unarchive",
+			params: { threadId: session.id },
+		});
+
+		expect(unarchived.result).toMatchObject({
+			thread: {
+				id: session.id,
+				status: "notLoaded",
+				archived: false,
+			},
+			archived: false,
+		});
+		expect(unarchived.result?.thread).not.toHaveProperty("archivedAt");
+		expect(Value.Check(MaestroAppServerResponseSchema, unarchived)).toBe(true);
+	});
+
+	it("forks a thread from a stable entry id and exposes the new thread", async () => {
+		const session = await createPersistedSession("fork root", {
+			title: "Fork root",
+			secondPrompt: "discarded follow up",
+		});
+		const current = await createPersistedSession("current root", {
+			title: "Current thread",
+		});
+		const manager = createSessionManager(current.sessionFile);
+		const api = createMaestroAppServerSessionApi(manager);
+		const root = await handleMaestroAppServerRequest(api, {
+			jsonrpc: "2.0",
+			id: "fork-root-read",
+			method: "thread/read",
+			params: { threadId: session.id, includeTurns: true },
+		});
+		const forkFromEntryId = root.result?.thread.turns?.[0]?.items.at(-1)?.id;
+		expect(forkFromEntryId).toEqual(expect.any(String));
+
+		const forked = await handleMaestroAppServerRequest(api, {
+			jsonrpc: "2.0",
+			id: "thread-fork",
+			method: "thread/fork",
+			params: {
+				threadId: session.id,
+				leafEntryId: forkFromEntryId,
+				title: "Forked from root",
+			},
+		});
+
+		expect(forked.result).toMatchObject({
+			parentThreadId: session.id,
+			forkedFromEntryId: forkFromEntryId,
+			thread: {
+				title: "Forked from root",
+				messageCount: 2,
+				status: "notLoaded",
+			},
+		});
+		expect(Value.Check(MaestroAppServerResponseSchema, forked)).toBe(true);
+
+		const forkedThreadId = forked.result?.thread.id;
+		const forkedRead = await handleMaestroAppServerRequest(api, {
+			jsonrpc: "2.0",
+			id: "forked-read",
+			method: "thread/read",
+			params: { threadId: forkedThreadId, includeTurns: true },
+		});
+
+		expect(forkedRead.result?.thread.turns).toHaveLength(1);
+		expect(JSON.stringify(forkedRead.result)).not.toContain(
+			"discarded follow up",
+		);
+		expect(manager.getSessionFile()).toBe(current.sessionFile);
+	});
+
+	it("returns invalid params when a thread fork leaf id is unknown", async () => {
+		const session = await createPersistedSession("fork root", {
+			title: "Fork root",
+		});
+		const current = await createPersistedSession("current root", {
+			title: "Current thread",
+		});
+		const manager = createSessionManager(current.sessionFile);
+		const api = createMaestroAppServerSessionApi(manager);
+
+		const forked = await handleMaestroAppServerRequest(api, {
+			jsonrpc: "2.0",
+			id: "thread-fork-missing-leaf",
+			method: "thread/fork",
+			params: {
+				threadId: session.id,
+				leafEntryId: "missing-leaf-entry",
+			},
+		});
+
+		expect(forked.error).toMatchObject({
+			code: -32602,
+			message: "Unknown leafEntryId",
+		});
+		expect(manager.getSessionFile()).toBe(current.sessionFile);
 	});
 
 	it("keeps file-backed page summaries aligned when unreadable files sort before the cursor", async () => {
@@ -502,6 +1244,73 @@ describe("Maestro app-server session API", () => {
 		expect(secondPage.result).toMatchObject({
 			threads: [{ id: "hosted-older", favorite: true }],
 			nextCursor: null,
+		});
+	});
+
+	it("continues hosted thread pagination past archived rows", async () => {
+		const summaries = [
+			{
+				id: "archived-one",
+				title: "Archived One",
+				createdAt: "2026-01-03T00:00:00.000Z",
+				updatedAt: "2026-01-03T00:01:00.000Z",
+				messageCount: 1,
+				favorite: false,
+				archived: true,
+				archivedAt: "2026-01-03T00:02:00.000Z",
+			},
+			{
+				id: "archived-two",
+				title: "Archived Two",
+				createdAt: "2026-01-02T00:00:00.000Z",
+				updatedAt: "2026-01-02T00:01:00.000Z",
+				messageCount: 1,
+				favorite: false,
+				archived: true,
+				archivedAt: "2026-01-02T00:02:00.000Z",
+			},
+			{
+				id: "visible-hosted",
+				title: "Visible Hosted",
+				createdAt: "2026-01-01T00:00:00.000Z",
+				updatedAt: "2026-01-01T00:01:00.000Z",
+				messageCount: 1,
+				favorite: false,
+			},
+		];
+		const api = createMaestroAppServerSessionApi({
+			loadAllSessions: () => [],
+			listSessions: async (options?: { limit?: number; offset?: number }) =>
+				summaries.slice(
+					options?.offset ?? 0,
+					(options?.offset ?? 0) + (options?.limit ?? summaries.length),
+				),
+			loadSession: async () => null,
+			getSessionFileById: () => null,
+		});
+
+		const activeOnly = await handleMaestroAppServerRequest(api, {
+			jsonrpc: "2.0",
+			id: "hosted-archive-skip",
+			method: "thread/list",
+			params: { limit: 1 },
+		});
+
+		expect(activeOnly.result).toMatchObject({
+			threads: [{ id: "visible-hosted", archived: false }],
+			nextCursor: null,
+		});
+
+		const withArchived = await handleMaestroAppServerRequest(api, {
+			jsonrpc: "2.0",
+			id: "hosted-archive-include",
+			method: "thread/list",
+			params: { limit: 1, includeArchived: true },
+		});
+
+		expect(withArchived.result).toMatchObject({
+			threads: [{ id: "archived-one", status: "archived", archived: true }],
+			nextCursor: expect.any(String),
 		});
 	});
 
@@ -1676,7 +2485,7 @@ describe("Maestro app-server session API", () => {
 		const unknown = await handleMaestroAppServerRequest(api, {
 			jsonrpc: "2.0",
 			id: "bad-method",
-			method: "thread/delete",
+			method: "thread/missing",
 			params: {},
 		});
 		expect(unknown).toMatchObject({

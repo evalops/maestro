@@ -70,6 +70,112 @@ function booleanValue(value: unknown): boolean | undefined {
 	return typeof value === "boolean" ? value : undefined;
 }
 
+function stringValue(value: unknown): string | undefined {
+	return typeof value === "string" && value.trim().length > 0
+		? value
+		: undefined;
+}
+
+function isPendingRequestKind(
+	value: unknown,
+): value is ComposerPendingRequest["kind"] {
+	return (
+		value === "approval" ||
+		value === "client_tool" ||
+		value === "mcp_elicitation" ||
+		value === "user_input" ||
+		value === "tool_retry"
+	);
+}
+
+function isPendingRequestSource(
+	value: unknown,
+): value is ComposerPendingRequest["source"] {
+	return value === "local" || value === "platform";
+}
+
+function isPendingRequestPlatformSource(
+	value: unknown,
+): value is NonNullable<ComposerPendingRequest["platform"]>["source"] {
+	return value === "approvals_service" || value === "tool_execution";
+}
+
+function pendingRequestFromCustomEntry(
+	entry: SessionEntry,
+	sessionId: string,
+	timestamp: string,
+): ComposerPendingRequest | undefined {
+	if (entry.type !== "custom" || entry.customType !== "pending_request") {
+		return undefined;
+	}
+	const data = detailsRecord(entry.data);
+	const request = detailsRecord(data?.request) ?? data;
+	if (!request) {
+		return undefined;
+	}
+	const id = stringValue(request.id);
+	const kind = request.kind;
+	const toolCallId = stringValue(request.toolCallId);
+	const toolName = stringValue(request.toolName);
+	const reason = stringValue(request.reason);
+	if (
+		!id ||
+		!isPendingRequestKind(kind) ||
+		!toolCallId ||
+		!toolName ||
+		!reason
+	) {
+		return undefined;
+	}
+
+	const platformRecord = detailsRecord(request.platform);
+	const platformSource = platformRecord
+		? isPendingRequestPlatformSource(platformRecord.source)
+			? platformRecord.source
+			: undefined
+		: undefined;
+	const platform = platformSource
+		? {
+				source: platformSource,
+				...(stringValue(platformRecord?.toolExecutionId)
+					? { toolExecutionId: stringValue(platformRecord?.toolExecutionId) }
+					: {}),
+				...(stringValue(platformRecord?.approvalRequestId)
+					? {
+							approvalRequestId: stringValue(platformRecord?.approvalRequestId),
+						}
+					: {}),
+			}
+		: undefined;
+
+	return {
+		id,
+		kind,
+		status: "pending",
+		visibility: "user",
+		sessionId: stringValue(request.sessionId) ?? sessionId,
+		toolCallId,
+		toolName,
+		...(stringValue(request.displayName)
+			? { displayName: stringValue(request.displayName) }
+			: {}),
+		...(stringValue(request.summaryLabel)
+			? { summaryLabel: stringValue(request.summaryLabel) }
+			: {}),
+		...(stringValue(request.actionDescription)
+			? { actionDescription: stringValue(request.actionDescription) }
+			: {}),
+		args: request.args ?? {},
+		reason,
+		createdAt: normalizeTimestamp(request.createdAt, timestamp),
+		...(stringValue(request.expiresAt)
+			? { expiresAt: normalizeTimestamp(request.expiresAt, timestamp) }
+			: {}),
+		source: isPendingRequestSource(request.source) ? request.source : "local",
+		...(platform ? { platform } : {}),
+	};
+}
+
 function textFromContent(content: unknown): string | undefined {
 	if (typeof content === "string") return content;
 	if (!Array.isArray(content)) return undefined;
@@ -92,6 +198,18 @@ function getToolPath(
 ): string | undefined {
 	const args = request?.args;
 	return redactedString(args?.path) ?? redactedString(args?.file_path);
+}
+
+function fileArtifactIdForToolResult(
+	toolResult: ToolResultMessage,
+	request: TimelineToolRequest | undefined,
+): string | undefined {
+	if (toolResult.isError) return undefined;
+	const normalizedToolName = toolResult.toolName.toLowerCase();
+	if (normalizedToolName !== "write" && normalizedToolName !== "edit") {
+		return undefined;
+	}
+	return `file:${getToolPath(request) ?? toolResult.toolCallId}`;
 }
 
 function governedToolMetadata(details: unknown): {
@@ -145,6 +263,7 @@ function addDerivedToolResultItems(
 		(normalizedToolName === "write" || normalizedToolName === "edit")
 	) {
 		const displayPath = getToolPath(options.request);
+		const artifactId = fileArtifactIdForToolResult(toolResult, options.request);
 		const previousExists = booleanValue(details?.previousExists);
 		const editsApplied = finiteNumber(details?.editsApplied);
 		const bytesWritten = finiteNumber(details?.bytesWritten);
@@ -185,6 +304,7 @@ function addDerivedToolResultItems(
 			status: "completed",
 			toolCallId: toolResult.toolCallId,
 			toolName: toolResult.toolName,
+			...(artifactId ? { artifactId } : {}),
 			...(summary ? { summary } : {}),
 			...(metadata ? { metadata } : {}),
 		});
@@ -385,6 +505,7 @@ function addMessageItems(
 		const approvalRequestId =
 			governed.approvalRequestId ?? redactedString(details?.approvalRequestId);
 		const toolExecutionId = redactedString(details?.toolExecutionId);
+		const artifactId = fileArtifactIdForToolResult(toolResult, request);
 		const metadata = compactTimelineMetadata({
 			governedOutcome: governed.governedOutcome,
 			errorCode: governed.errorCode,
@@ -405,6 +526,7 @@ function addMessageItems(
 			toolName: toolResult.toolName,
 			...(approvalRequestId ? { approvalRequestId } : {}),
 			...(toolExecutionId ? { toolExecutionId } : {}),
+			...(artifactId ? { artifactId } : {}),
 			...(metadata ? { metadata } : {}),
 		});
 		addDerivedToolResultItems(items, sessionId, toolResult, {
@@ -468,6 +590,14 @@ function addPendingRequestItems(
 	generatedAt: string,
 ): void {
 	for (const request of pendingRequests) {
+		if (
+			items.some(
+				(item) =>
+					item.type === "wait.pending" && item.pendingRequestId === request.id,
+			)
+		) {
+			continue;
+		}
 		const summary = compactTimelineSummary(
 			request.actionDescription || request.summaryLabel || request.reason,
 		);
@@ -638,6 +768,20 @@ function addEntryItems(
 				break;
 			}
 			case "custom": {
+				const pendingRequest = pendingRequestFromCustomEntry(
+					entry,
+					sessionId,
+					timestamp,
+				);
+				if (pendingRequest) {
+					addPendingRequestItems(
+						items,
+						sessionId,
+						[pendingRequest],
+						generatedAt,
+					);
+					break;
+				}
 				appendItem(items, {
 					id: `custom:${entry.id}`,
 					sessionId,
@@ -665,6 +809,22 @@ function sortItems(
 		if (timestampDelta !== 0) return timestampDelta;
 		return a.id.localeCompare(b.id);
 	});
+}
+
+function pendingRequestCountForItems(items: ComposerRunTimelineItem[]): number {
+	const pendingRequestIds = new Set<string>();
+	let pendingWithoutId = 0;
+	for (const item of items) {
+		if (item.type !== "wait.pending") {
+			continue;
+		}
+		if (item.pendingRequestId) {
+			pendingRequestIds.add(item.pendingRequestId);
+		} else {
+			pendingWithoutId += 1;
+		}
+	}
+	return pendingRequestIds.size + pendingWithoutId;
 }
 
 export function buildComposerRunTimeline(
@@ -707,13 +867,14 @@ export function buildComposerRunTimeline(
 		pendingRequests,
 		generatedAt,
 	);
+	const sortedItems = sortItems(items);
 
 	return {
 		sessionId: options.sessionId,
 		source: "local",
 		generatedAt,
 		platformBacked: false,
-		pendingRequestCount: pendingRequests.length,
-		items: sortItems(items),
+		pendingRequestCount: pendingRequestCountForItems(sortedItems),
+		items: sortedItems,
 	};
 }

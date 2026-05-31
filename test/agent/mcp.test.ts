@@ -669,6 +669,54 @@ describe("MCP client manager", () => {
 		});
 	});
 
+	it("uses advertised read-only hints in status tool capabilities", async () => {
+		const manager = createManager();
+		await manager.configure({
+			authPresets: [],
+			servers: [
+				{
+					name: "server",
+					transport: "stdio",
+					command: "server-cmd",
+				},
+			],
+		});
+		const listedTools = [
+			{ name: "status_report", inputSchema: { type: "object" } },
+		];
+		const testManager = manager as unknown as {
+			servers: Map<string, unknown>;
+		};
+		testManager.servers.set("server", {
+			config: { name: "server", transport: "stdio", command: "server-cmd" },
+			client: { close: vi.fn(async () => undefined) },
+			transport: { close: vi.fn(async () => undefined) },
+			tools: listedTools,
+			resources: [],
+			prompts: [],
+			promptDetails: [],
+			parallelSafetyByTool: new Map([
+				[
+					"status_report",
+					{
+						supportsParallelToolCalls: true,
+						provenance: "server_capability",
+						readOnlyHint: true,
+					},
+				],
+			]),
+			reconnectAttempts: 0,
+		});
+
+		const statusTool = manager.getStatus().servers[0]?.tools[0];
+
+		expect(statusTool?.capability).toMatchObject({
+			toolName: "status_report",
+			readOnlyHint: true,
+			riskClass: "observe",
+		});
+	});
+
 	it("honors a per-tool parallel opt-out over the server default", async () => {
 		const manager = createManager();
 		type NotificationHandler = () => void | Promise<void>;

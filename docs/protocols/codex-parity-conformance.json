@@ -80,11 +80,19 @@
 		},
 		{
 			"area": "prompt-queue-parity",
-			"path": "packages/tui-rs/src/app.rs",
+			"path": "packages/tui-rs/src/app/input_handlers.rs",
+			"anchors": ["should_submit_on_tab"]
+		},
+		{
+			"area": "prompt-queue-parity",
+			"path": "packages/tui-rs/src/app/prompt_queue.rs",
+			"anchors": ["drain_queued_steering_batch_for_interrupt"]
+		},
+		{
+			"area": "prompt-queue-parity",
+			"path": "packages/tui-rs/src/app/tests.rs",
 			"anchors": [
-				"should_submit_on_tab",
-				"test_should_submit_on_tab_only_when_idle_with_non_blocked_input",
-				"drain_queued_steering_batch_for_interrupt"
+				"test_should_submit_on_tab_only_when_idle_with_non_blocked_input"
 			]
 		},
 		{

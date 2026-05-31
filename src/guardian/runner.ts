@@ -25,6 +25,7 @@ import type {
 const GUARDIAN_DISABLE_VALUES = ["0", "false", "off", "no"];
 const GUARDIAN_ENABLE_VALUES = ["1", "true", "on"];
 const DEFAULT_TIMEOUT_MS = 10_000;
+const DEFAULT_SEMGREP_TIMEOUT_MS = 120_000;
 
 type FileListResult =
 	| { ok: true; files: string[] }
@@ -37,6 +38,60 @@ type CommandResult = {
 	error?: string;
 	durationMs: number;
 };
+
+function spawnErrorCode(error: Error | undefined): string | null {
+	const code = (error as NodeJS.ErrnoException | undefined)?.code;
+	return typeof code === "string" ? code : null;
+}
+
+function isSpawnTimeout(error: Error | undefined): boolean {
+	return (
+		spawnErrorCode(error) === "ETIMEDOUT" ||
+		error?.message.includes("ETIMEDOUT") === true
+	);
+}
+
+function exitCodeForSpawnResult(
+	status: number | null,
+	error: Error | undefined,
+	signal: NodeJS.Signals | null,
+): number {
+	if (typeof status === "number") {
+		return status;
+	}
+	if (isSpawnTimeout(error)) {
+		return 124;
+	}
+	if (error) {
+		return 2;
+	}
+	if (signal) {
+		const signalNumber = os.constants.signals[signal];
+		return typeof signalNumber === "number" ? 128 + signalNumber : 128;
+	}
+	return 1;
+}
+
+function appendSpawnFailureDetails(
+	stderr: string,
+	command: string,
+	error: Error | undefined,
+	signal: NodeJS.Signals | null,
+	timeoutMs: number,
+): string {
+	const details: string[] = [];
+	if (isSpawnTimeout(error)) {
+		details.push(`${command} timed out after ${timeoutMs}ms`);
+	}
+	if (error?.message) {
+		details.push(error.message);
+	}
+	if (signal) {
+		details.push(`${command} terminated by ${signal}`);
+	}
+	const uniqueDetails = Array.from(new Set(details));
+	return [stderr, ...uniqueDetails].filter((part) => part.trim()).join("\n");
+}
 
 function commandExists(command: string, cwd: string): boolean {
 	const result = spawnSync(command, ["--version"], {
@@ -63,18 +118,37 @@ function runCommand(
 			maxBuffer: 8 * 1024 * 1024,
 			timeout: timeoutMs,
 		});
+		const errorMessage =
+			result.error instanceof Error ? result.error.message : undefined;
+		const stderr =
+			result.stderr && result.stderr.length > 0
+				? result.stderr
+				: (errorMessage ?? "");
 		return {
-			exitCode: result.status ?? 1,
+			exitCode: exitCodeForSpawnResult(
+				result.status,
+				result.error,
+				result.signal ?? null,
+			),
 			stdout: result.stdout ?? "",
-			stderr: result.stderr ?? "",
+			stderr: appendSpawnFailureDetails(
+				stderr,
+				command,
+				result.error,
+				result.signal ?? null,
+				timeoutMs,
+			),
+			error: errorMessage,
 			durationMs: Date.now() - started,
 		};
 	} catch (error) {
+		const thrownError =
+			error instanceof Error ? error : new Error(String(error));
 		return {
-			exitCode: 1,
+			exitCode: exitCodeForSpawnResult(null, thrownError, null),
 			stdout: "",
-			stderr: error instanceof Error ? error.message : String(error),
-			error: error instanceof Error ? error.message : String(error),
+			stderr: thrownError.message,
+			error: thrownError.message,
 			durationMs: Date.now() - started,
 		};
 	}
@@ -187,7 +261,11 @@ function locateSemgrep(
 	return null;
 }
 
-function runSemgrep(files: string[], root: string): GuardianToolResult {
+function runSemgrep(
+	files: string[],
+	root: string,
+	timeoutMs = DEFAULT_SEMGREP_TIMEOUT_MS,
+): GuardianToolResult {
 	const started = Date.now();
 	const cmd = locateSemgrep(root);
 	if (!cmd) {
@@ -221,8 +299,8 @@ function runSemgrep(files: string[], root: string): GuardianToolResult {
 		...includeArgs,
 		".",
 	];
-	// Semgrep can take longer on larger workspaces; allow up to 2 minutes before timing out
-	const result = runCommand(cmd.command, args, root, 120_000, {
+	// Semgrep can take longer on larger workspaces, so honor the configured tool budget.
+	const result = runCommand(cmd.command, args, root, timeoutMs, {
 		SEMGREP_SEND_METRICS: "off",
 	});
 	return {
@@ -875,7 +953,7 @@ export async function runGuardian(
 	}
 
 	if (config.tools.semgrep) {
-		toolResults.push(runSemgrep(files, scanRoot));
+		toolResults.push(runSemgrep(files, scanRoot, config.toolTimeoutMs));
 	}
 
 	let fallback: GuardianToolResult | null = null;

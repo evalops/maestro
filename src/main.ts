@@ -1,7 +1,7 @@
 /**
- * Main Entry Point - Composer CLI Application
+ * Main Entry Point - Maestro CLI Application
  *
- * This module orchestrates the complete initialization sequence for the Composer CLI,
+ * This module orchestrates the complete initialization sequence for the Maestro CLI,
  * including authentication, model resolution, session management, and runtime mode
  * selection. It serves as the single entry point that routes execution to the
  * appropriate mode (interactive TUI, single-shot, RPC, or exec).
@@ -25,7 +25,7 @@
  *    └── Handle --help, config commands, and other early exits
  *
  * 4. Authentication Resolution
- *    ├── Determine auth mode (auto, api-key, or claude-only)
+ *    ├── Determine auth mode (auto or api-key)
  *    ├── Resolve credentials for the selected provider
  *    └── Build error messages for missing credentials
  *
@@ -67,7 +67,6 @@
  * |----------|--------------------------------------------------|
  * | auto     | Try OAuth first, fall back to API key env vars   |
  * | api-key  | Require explicit API key (--api-key or env var)  |
- * | claude   | Force Anthropic OAuth (no API key fallback)      |
  *
  * ## Runtime Modes
  *
@@ -464,7 +463,7 @@ async function readReplayScenarioId(source: string): Promise<string> {
 }
 
 /**
- * Main entry point for the Composer CLI application.
+ * Main entry point for the Maestro CLI application.
  *
  * This function orchestrates the complete initialization sequence and routes
  * to the appropriate runtime mode. It performs all setup synchronously where
@@ -484,6 +483,13 @@ async function readReplayScenarioId(source: string): Promise<string> {
  * @param args - Command-line arguments (typically process.argv.slice(2))
  */
 export async function main(args: string[]) {
+	const originalStderrWrite = process.stderr.write.bind(process.stderr) as (
+		chunk: string,
+	) => boolean;
+	const writeStartupErrorToStderr = (message: string): void => {
+		originalStderrWrite(message.endsWith("\n") ? message : `${message}\n`);
+	};
+
 	// ─────────────────────────────────────────────────────────────────────────────
 	// PHASE 0: Early Exit Checks (before any async initialization)
 	// ─────────────────────────────────────────────────────────────────────────────
@@ -581,7 +587,7 @@ export async function main(args: string[]) {
 				})}\n`,
 			);
 		} else {
-			console.error(chalk.red(message));
+			writeStartupErrorToStderr(chalk.red(message));
 		}
 		process.exit(1);
 	};
@@ -590,6 +596,17 @@ export async function main(args: string[]) {
 		validateCodexFlags(args, parsed.help ? "help" : parsed.command);
 	} catch (error) {
 		exitWithEarlyStartupError(error);
+	}
+
+	if (parsed.command === "codex") {
+		const { handleCodexCommand } = await import("./cli/commands/codex.js");
+		const commandArgs = [...(parsed.commandArgs ?? [])];
+		if (parsed.subcommand === "login" && parsed.force) {
+			commandArgs.push("--force");
+		}
+		await handleCodexCommand(parsed.subcommand, commandArgs);
+		await waitForStartupTelemetryForImmediateExit(startupTelemetry);
+		return;
 	}
 
 	const replayScenarioPath =
@@ -649,6 +666,12 @@ export async function main(args: string[]) {
 	if (parsed.command === "status") {
 		const { handleStatusCommand } = await import("./cli/commands/status.js");
 		await handleStatusCommand();
+		return;
+	}
+
+	if (parsed.command === "update") {
+		const { handleUpdateCommand } = await import("./cli/commands/update.js");
+		await handleUpdateCommand(parsed.commandArgs ?? []);
 		return;
 	}
 
@@ -727,7 +750,7 @@ export async function main(args: string[]) {
 			);
 			process.stderr.write(`${stack ?? message}\n`);
 		} else {
-			console.error(chalk.red(message));
+			writeStartupErrorToStderr(chalk.red(message));
 		}
 		captureSentryException(error);
 		await flushSentry();
@@ -812,7 +835,6 @@ export async function main(args: string[]) {
 	// Determine authentication mode:
 	// - auto: Try OAuth first, fall back to API key environment variables
 	// - api-key: Require explicit API key from --api-key or env var
-	// - claude: Force Anthropic OAuth (no API key fallback)
 	const authMode: AuthMode = parsed.authMode ?? "auto";
 
 	const { requireCredential } = createAuthSetup({
@@ -951,12 +973,6 @@ export async function main(args: string[]) {
 		return;
 	}
 
-	if (parsed.command === "codex") {
-		const { handleCodexCommand } = await import("./cli/commands/codex.js");
-		await handleCodexCommand(parsed.subcommand, parsed.commandArgs ?? []);
-		return;
-	}
-
 	if (parsed.command === "hooks") {
 		const { handleHooksCommand } = await import("./cli/commands/hooks.js");
 		await handleHooksCommand(parsed.subcommand);
@@ -967,6 +983,18 @@ export async function main(args: string[]) {
 		const { handleRunCommand } = await import("./cli/commands/run.js");
 		await handleRunCommand(parsed.subcommand, parsed.messages, {
 			json: parsed.execJson,
+		});
+		return;
+	}
+
+	if (parsed.command === "sessions") {
+		const { handleSessionsCommand } = await import(
+			"./cli/commands/sessions.js"
+		);
+		await handleSessionsCommand(parsed.subcommand, parsed.messages, {
+			json: parsed.execJson,
+			format: parsed.exportFormat,
+			redactSecrets: parsed.redactSecrets,
 		});
 		return;
 	}
@@ -1022,7 +1050,7 @@ export async function main(args: string[]) {
 		const { handleAnthropicCommand } = await import(
 			"./cli/commands/anthropic.js"
 		);
-		await handleAnthropicCommand(parsed.subcommand, parsed.messages);
+		await handleAnthropicCommand();
 		return;
 	}
 

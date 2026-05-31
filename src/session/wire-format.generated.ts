@@ -53,6 +53,7 @@ export const sessionWireFieldAliases = {
 	sessionMeta: {
 		resume_summary: "resumeSummary",
 		memory_extraction_hash: "memoryExtractionHash",
+		archived_at: "archivedAt",
 	},
 	attachmentExtract: {
 		attachment_id: "attachmentId",

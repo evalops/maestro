@@ -71,4 +71,46 @@ describe("release-context dependencies", () => {
 			publicPackageName,
 		]);
 	});
+
+	it("loads workspace packages before workspace dependencies are installed", () => {
+		const root = makeFixture();
+		copyScript(root, "workspace-utils.js");
+		mkdirSync(join(root, "packages", "pkg-contracts"), { recursive: true });
+		mkdirSync(join(root, "packages", "nested", "pkg-tui"), {
+			recursive: true,
+		});
+		writeFileSync(
+			join(root, "package.json"),
+			JSON.stringify(
+				{
+					name: internalPackageName,
+					version: "1.2.3",
+					type: "module",
+					workspaces: ["packages/**/pkg-*"],
+				},
+				null,
+				2,
+			),
+		);
+		writeFileSync(
+			join(root, "packages", "pkg-contracts", "package.json"),
+			JSON.stringify({ name: "@evalops/contracts", private: true }, null, 2),
+		);
+		writeFileSync(
+			join(root, "packages", "nested", "pkg-tui", "package.json"),
+			JSON.stringify({ name: "@evalops/tui", private: true }, null, 2),
+		);
+
+		const output = execFileSync(process.execPath, ["--input-type=module"], {
+			cwd: root,
+			encoding: "utf8",
+			input: [
+				'import { getWorkspacePackages, loadRootPackage } from "./scripts/workspace-utils.js";',
+				"const packages = await getWorkspacePackages(loadRootPackage());",
+				"console.log(JSON.stringify(packages.map((pkg) => pkg.name).sort()));",
+			].join("\n"),
+		});
+
+		expect(JSON.parse(output)).toEqual(["@evalops/contracts", "@evalops/tui"]);
+	});
 });

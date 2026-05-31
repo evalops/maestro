@@ -29,7 +29,7 @@ export interface Args {
 	commandArgs?: string[];
 	contextLiveMcp?: boolean;
 	approvalMode?: "auto" | "prompt" | "fail";
-	authMode?: "auto" | "api-key" | "claude";
+	authMode?: "auto" | "api-key";
 	force?: boolean;
 	execJson?: boolean;
 	execFullAuto?: boolean;
@@ -49,7 +49,7 @@ export interface Args {
 	configOverrides?: string[];
 	/** Start in read-only mode (activates explore composer) */
 	readonly?: boolean;
-	/** Composer profile to activate on startup */
+	/** Agent profile to activate on startup */
 	composer?: string;
 	exportFormat?: string;
 	redactSecrets?: boolean;
@@ -68,7 +68,9 @@ const COMMANDS = new Set([
 	"cost",
 	"stats",
 	"status",
+	"update",
 	"run",
+	"sessions",
 	"agents",
 	"a2a",
 	"operating-plane",
@@ -96,6 +98,7 @@ const SUBCOMMAND_COMMANDS = new Set([
 	"cost",
 	"stats",
 	"run",
+	"sessions",
 	"agents",
 	"anthropic",
 	"evalops",
@@ -138,7 +141,7 @@ const FLAGS_WITH_VALUES = new Set([
 ]);
 
 const DEPRECATED_FLAGS_WITH_VALUES = new Set(["--codex-api-key"]);
-const DEPRECATED_FLAG_PREFIXES = ["--auth=chatgpt"];
+const DEPRECATED_FLAG_PREFIXES = ["--auth=chatgpt", "--auth=claude"];
 
 function isConfigInitPresetFlag(result: Args, arg: string): boolean {
 	return (
@@ -278,7 +281,7 @@ export function parseArgs(args: string[]): Args {
 			}
 		} else if (arg === "--auth" && i + 1 < args.length) {
 			const value = args[++i];
-			if (value === "auto" || value === "api-key" || value === "claude") {
+			if (value === "auto" || value === "api-key") {
 				result.authMode = value;
 			}
 		} else if (arg === "--force") {
@@ -348,7 +351,7 @@ export function parseArgs(args: string[]): Args {
 		} else if (
 			result.command === "codex" &&
 			result.subcommand === "login" &&
-			(arg === "--device" || arg === "--device-code")
+			(arg === "--device" || arg === "--device-code" || arg === "--device-auth")
 		) {
 			if (!result.commandArgs) {
 				result.commandArgs = [];
@@ -389,6 +392,7 @@ export function parseArgs(args: string[]): Args {
 					arg === "hosted-runner" ||
 					arg === "init" ||
 					arg === "evalops" ||
+					arg === "update" ||
 					arg === "skill"
 				) {
 					result.commandArgs = args.slice(i + 1);

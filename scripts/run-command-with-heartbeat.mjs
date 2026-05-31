@@ -1,12 +1,20 @@
 #!/usr/bin/env node
 
-import { createWriteStream } from "node:fs";
 import { spawn } from "node:child_process";
+import {
+	appendFileSync,
+	createWriteStream,
+	mkdirSync,
+	writeFileSync,
+} from "node:fs";
+import { dirname } from "node:path";
 import process from "node:process";
 import { pathToFileURL } from "node:url";
 
 const DEFAULT_HEARTBEAT_SECONDS = 300;
 const TERMINATION_GRACE_MS = 10_000;
+const SUCCESS_IDLE_TAIL_BYTES = 128_000;
+const ANSI_PATTERN = /\u001b\[[0-?]*[ -/]*[@-~]/g;
 
 function parseSeconds(value, name, { allowZero = false } = {}) {
 	const parsed = Number.parseInt(String(value ?? ""), 10);
@@ -24,6 +32,11 @@ export function parseArgs(argv) {
 		heartbeatSeconds: DEFAULT_HEARTBEAT_SECONDS,
 		label: "command",
 		logfile: "",
+		summaryJson: "",
+		successIdleFinalPattern: "",
+		successIdlePattern: "",
+		successIdleSeconds: 0,
+		timingFile: "",
 		timeoutSeconds: 0,
 	};
 
@@ -45,6 +58,23 @@ export function parseArgs(argv) {
 			case "--logfile":
 				options.logfile = argv[++index] ?? "";
 				break;
+			case "--summary-json":
+				options.summaryJson = argv[++index] ?? "";
+				break;
+			case "--success-idle-pattern":
+				options.successIdlePattern = argv[++index] ?? "";
+				break;
+			case "--success-idle-final-pattern":
+				options.successIdleFinalPattern = argv[++index] ?? "";
+				break;
+			case "--success-idle-seconds":
+				options.successIdleSeconds = parseSeconds(argv[++index], arg, {
+					allowZero: true,
+				});
+				break;
+			case "--timing-file":
+				options.timingFile = argv[++index] ?? "";
+				break;
 			case "--timeout-seconds":
 				options.timeoutSeconds = parseSeconds(argv[++index], arg, {
 					allowZero: true,
@@ -57,7 +87,7 @@ export function parseArgs(argv) {
 
 	if (options.command.length === 0) {
 		throw new Error(
-			"Usage: node scripts/run-command-with-heartbeat.mjs [--label name] [--logfile path] [--timeout-seconds seconds] [--heartbeat-seconds seconds] -- <command> [args...]",
+			"Usage: node scripts/run-command-with-heartbeat.mjs [--label name] [--logfile path] [--timing-file path] [--summary-json path] [--timeout-seconds seconds] [--heartbeat-seconds seconds] [--success-idle-seconds seconds] [--success-idle-pattern regex] [--success-idle-final-pattern regex] -- <command> [args...]",
 		);
 	}
 
@@ -95,6 +125,21 @@ function killChild(child, signal) {
 	child.kill(signal);
 }
 
+function compileSuccessIdlePattern(pattern, name = "--success-idle-pattern") {
+	if (!pattern) {
+		return null;
+	}
+	try {
+		return new RegExp(pattern, "iu");
+	} catch (error) {
+		throw new Error(
+			`${name} must be a valid JavaScript regex source: ${
+				error instanceof Error ? error.message : String(error)
+			}`,
+		);
+	}
+}
+
 function formatElapsed(startedAt) {
 	const elapsedSeconds = Math.max(0, Math.floor((Date.now() - startedAt) / 1000));
 	const minutes = Math.floor(elapsedSeconds / 60);
@@ -102,12 +147,67 @@ function formatElapsed(startedAt) {
 	return minutes > 0 ? `${minutes}m ${seconds}s` : `${seconds}s`;
 }
 
+function appendTiming(options, result) {
+	if (!options.timingFile) {
+		return;
+	}
+	const entry = {
+		label: options.label,
+		command: options.command,
+		startedAt: new Date(result.startedAtMs).toISOString(),
+		endedAt: new Date(result.endedAtMs).toISOString(),
+		durationMs: result.endedAtMs - result.startedAtMs,
+		status: result.timedOut
+			? "timed_out"
+			: result.forcedSuccess
+				? "passed_forced_success"
+				: result.exitCode === 0
+					? "passed"
+					: "failed",
+		exitCode: result.exitCode,
+		forcedSuccess: result.forcedSuccess,
+		signal: result.signal,
+		timedOut: result.timedOut,
+	};
+	try {
+		appendFileSync(options.timingFile, `${JSON.stringify(entry)}\n`);
+	} catch (error) {
+		console.error(
+			annotation(
+				"warning",
+				`${options.label} could not write timing file: ${
+					error instanceof Error ? error.message : String(error)
+				}`,
+			),
+		);
+	}
+}
+
+function writeSummaryJson(options, summary) {
+	if (!options.summaryJson) {
+		return;
+	}
+	mkdirSync(dirname(options.summaryJson), { recursive: true });
+	writeFileSync(options.summaryJson, `${JSON.stringify(summary, null, 2)}\n`);
+}
+
 export async function runCommandWithHeartbeat(options) {
 	const [command, ...args] = options.command;
 	const startedAt = Date.now();
+	const startedAtIso = new Date(startedAt).toISOString();
+	const successIdlePattern = compileSuccessIdlePattern(
+		options.successIdlePattern,
+	);
+	const successIdleFinalPattern = compileSuccessIdlePattern(
+		options.successIdleFinalPattern,
+		"--success-idle-final-pattern",
+	);
 	const logStream = options.logfile
 		? createWriteStream(options.logfile, { flags: "w" })
 		: null;
+	let outputTail = "";
+	let lastOutputAt = Date.now();
+	let forcedSuccess = false;
 	let timedOut = false;
 	let terminateTimer = null;
 
@@ -117,6 +217,8 @@ export async function runCommandWithHeartbeat(options) {
 	});
 
 	const write = (stream, chunk) => {
+		lastOutputAt = Date.now();
+		outputTail = `${outputTail}${String(chunk)}`.slice(-SUCCESS_IDLE_TAIL_BYTES);
 		stream.write(chunk);
 		if (logStream) {
 			logStream.write(chunk);
@@ -161,19 +263,66 @@ export async function runCommandWithHeartbeat(options) {
 				}, options.timeoutSeconds * 1000)
 			: null;
 
+	const terminateAfterSuccessIdle = () => {
+		if (forcedSuccess || timedOut) {
+			return;
+		}
+		forcedSuccess = true;
+		console.error(
+			annotation(
+				"notice",
+				`${options.label} output matched success-idle pattern${successIdleFinalPattern ? " and final-success pattern" : ""} and stayed quiet for ${options.successIdleSeconds}s; terminating process group as successful`,
+			),
+		);
+		killChild(child, "SIGTERM");
+		terminateTimer = setTimeout(() => {
+			killChild(child, "SIGKILL");
+		}, TERMINATION_GRACE_MS);
+	};
+
+	const successIdleTimer =
+		successIdlePattern && options.successIdleSeconds > 0
+			? setInterval(() => {
+					const normalizedTail = outputTail.replace(ANSI_PATTERN, "");
+					if (
+						successIdlePattern.test(normalizedTail) &&
+						(!successIdleFinalPattern ||
+							successIdleFinalPattern.test(normalizedTail)) &&
+						Date.now() - lastOutputAt >= options.successIdleSeconds * 1000
+					) {
+						terminateAfterSuccessIdle();
+					}
+				}, Math.min(1_000, options.successIdleSeconds * 1000))
+			: null;
+
 	const result = await new Promise((resolve) => {
 		child.on("error", (error) => {
-			console.error(annotation("error", `${options.label} failed to start: ${error.message}`));
+			console.error(
+				annotation("error", `${options.label} failed to start: ${error.message}`),
+			);
 			resolve({ code: 127, signal: null });
 		});
 		child.on("close", (code, signal) => resolve({ code, signal }));
 	});
+	const endedAt = Date.now();
+	const exitCode = forcedSuccess
+		? 0
+		: timedOut
+		? 124
+		: typeof result.code === "number"
+			? result.code
+			: result.signal
+				? 1
+				: 0;
 
 	if (heartbeatTimer) {
 		clearInterval(heartbeatTimer);
 	}
 	if (timeoutTimer) {
 		clearTimeout(timeoutTimer);
+	}
+	if (successIdleTimer) {
+		clearInterval(successIdleTimer);
 	}
 	if (terminateTimer) {
 		clearTimeout(terminateTimer);
@@ -183,6 +332,31 @@ export async function runCommandWithHeartbeat(options) {
 		await new Promise((resolve) => logStream.end(resolve));
 	}
 
+	appendTiming(options, {
+		startedAtMs: startedAt,
+		endedAtMs: endedAt,
+		exitCode,
+		forcedSuccess,
+		signal: result.signal ?? null,
+		timedOut,
+	});
+	writeSummaryJson(options, {
+		command: options.command,
+		elapsedMs: Math.max(0, endedAt - startedAt),
+		exitCode,
+		finishedAt: new Date(endedAt).toISOString(),
+		label: options.label,
+		logfile: options.logfile || undefined,
+		signal: result.signal ?? null,
+		startedAt: startedAtIso,
+		forcedSuccess,
+		timedOut,
+		timeoutSeconds: options.timeoutSeconds,
+	});
+
+	if (forcedSuccess) {
+		return 0;
+	}
 	if (timedOut) {
 		return 124;
 	}

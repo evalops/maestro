@@ -274,6 +274,12 @@ describe("getAllowedToolsForRole", () => {
 		expect(tools).toContain("read");
 		expect(tools).toContain("write");
 		expect(tools).toContain("bash");
+		expect(tools).toContain("send_progress");
+		expect(tools).toContain("send_final");
+		expect(tools).toContain("send_error");
+		expect(tools).toContain("send_blocker");
+		expect(tools).not.toContain("send_message");
+		expect(tools).not.toContain("send_thread_reply");
 	});
 
 	it("returns limited tools for viewer", () => {

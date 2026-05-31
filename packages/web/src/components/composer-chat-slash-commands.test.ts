@@ -148,6 +148,31 @@ describe("executeWebSlashCommand", () => {
 		expect(outputs).toEqual([]);
 	});
 
+	it("updates footer mode through the rich control path", async () => {
+		const { context, outputs, apiClient } = createContext();
+		apiClient.setFooterMode.mockResolvedValue({ footerMode: "rich" });
+
+		await executeWebSlashCommand("footer", "rich", context);
+
+		expect(apiClient.setFooterMode).toHaveBeenCalledWith("rich", "session-1");
+		expect(context.setFooterMode).toHaveBeenCalledWith("rich");
+		expect(outputs).toEqual([
+			{ output: "Footer mode set to rich.", isError: false },
+		]);
+	});
+
+	it("rejects the retired ensemble footer mode", async () => {
+		const { context, outputs, apiClient } = createContext();
+
+		await executeWebSlashCommand("footer", "ensemble", context);
+
+		expect(apiClient.setFooterMode).not.toHaveBeenCalled();
+		expect(context.setFooterMode).not.toHaveBeenCalled();
+		expect(outputs).toEqual([
+			{ output: "Usage: /footer [rich|solo]", isError: true },
+		]);
+	});
+
 	it("updates model state when a model is provided", async () => {
 		const { context, outputs, apiClient } = createContext();
 

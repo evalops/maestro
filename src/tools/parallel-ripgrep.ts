@@ -24,7 +24,10 @@ import { promises as fs } from "node:fs";
 import { resolve as resolvePath } from "node:path";
 import { Type } from "@sinclair/typebox";
 import {
+	formatRipgrepCommand,
 	globSchema,
+	isRipgrepPathError,
+	normalizeRipgrepPathArgs,
 	parseRipgrepJson,
 	pathSchema,
 	runRipgrep,
@@ -324,7 +327,7 @@ export const parallelRipgrepTool = createTool<
 			);
 		}
 
-		const pathArgs = toArray(paths);
+		const pathArgs = normalizeRipgrepPathArgs(toArray(paths));
 		const globArgs = toArray(glob);
 		const commandCwd = cwd ? resolvePath(expandUserPath(cwd)) : process.cwd();
 		const before = beforeContext ?? context ?? 0;
@@ -388,7 +391,7 @@ export const parallelRipgrepTool = createTool<
 		let truncatedByBytes = false;
 		const ripgrepCalls = patterns.map(async (pattern) => {
 			const args = [...baseArgs, "--", pattern, ...pathArgs];
-			commands.push(["rg", ...args].join(" "));
+			commands.push(formatRipgrepCommand(args));
 			const result = await runRipgrep(args, signal, commandCwd);
 			truncatedByBytes ||= result.truncated;
 			return { pattern, result };
@@ -405,7 +408,7 @@ export const parallelRipgrepTool = createTool<
 				error instanceof Error
 					? error.message
 					: `Unknown error: ${String(error)}`;
-			return respond.text(`ripgrep failed\n\n${reason}`).detail({
+			return respond.error(`ripgrep failed\n\n${reason}`).detail({
 				commands,
 				cwd: commandCwd,
 				matchCount: 0,
@@ -424,6 +427,20 @@ export const parallelRipgrepTool = createTool<
 		for (const { pattern, result } of results) {
 			if (result.exitCode === 2) {
 				const message = result.stderr.trim() || result.stdout.trim();
+				if (isRipgrepPathError(message)) {
+					return respond
+						.error(
+							`ripgrep failed\n\n${message.length > 0 ? message : "ripgrep path lookup failed"}`,
+						)
+						.detail({
+							commands,
+							cwd: commandCwd,
+							matchCount: 0,
+							rangeCount: 0,
+							ranges: [],
+							truncated: false,
+						});
+				}
 				throw new Error(
 					message.length > 0 ? message : "ripgrep exited with an error",
 				);

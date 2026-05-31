@@ -1,5 +1,8 @@
 import type { TUI } from "@evalops/tui";
-import type { SupportedOAuthProvider } from "../../oauth/index.js";
+import type {
+	OAuthLogoutProvider,
+	SupportedOAuthProvider,
+} from "../../oauth/index.js";
 import type { ModalManager } from "../modal-manager.js";
 import { OAuthSelectorComponent } from "./oauth-selector.js";
 
@@ -7,7 +10,10 @@ interface OAuthSelectorViewOptions {
 	modalManager: ModalManager;
 	ui: TUI;
 	mode: "login" | "logout";
-	onProviderSelected: (providerId: SupportedOAuthProvider) => Promise<void>;
+	providers?: OAuthLogoutProvider[];
+	onProviderSelected: (
+		providerId: SupportedOAuthProvider | OAuthLogoutProvider,
+	) => Promise<void>;
 	onCancel: () => void;
 }
 
@@ -31,6 +37,7 @@ export class OAuthSelectorView {
 				this.options.onCancel();
 				this.hide();
 			},
+			this.options.providers,
 		);
 
 		this.options.modalManager.push(this.selector);

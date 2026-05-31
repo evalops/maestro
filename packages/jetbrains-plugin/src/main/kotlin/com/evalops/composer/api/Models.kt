@@ -95,7 +95,7 @@ data class ComposerUsageCost(
 )
 
 /**
- * A message in the Composer conversation.
+ * A message in the Maestro conversation.
  */
 data class ComposerMessage(
     val role: MessageRole,

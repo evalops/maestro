@@ -1,6 +1,6 @@
 //! Agent communication module
 //!
-//! This module implements the native Rust agent used by the Composer TUI.
+//! This module implements the native Rust agent used by the Maestro TUI.
 //! It exposes a lightweight handle for the UI layer and runs the actual
 //! model/tool loop in a background task.
 //!
@@ -98,7 +98,8 @@ pub mod safety;
 pub use compaction::{CompactionConfig, CompactionResult, ContextCompactor, CutPoint};
 pub use credential_store::{
     clear_credentials, credential_stats, resolve_credentials, resolve_credentials_in_json,
-    store_credential, vault_credentials_in_json, CredentialStats, CredentialStore, CredentialType,
+    store_credential, vault_credentials_in_json, vault_credentials_in_text, CredentialStats,
+    CredentialStore, CredentialType,
 };
 pub use message_queue::{
     MessageQueue, PendingMessage, PromptKind, QueueStats, MAX_PENDING_MESSAGES,

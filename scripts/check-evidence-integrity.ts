@@ -1,20 +1,29 @@
 import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { DEFAULT_EXCLUDES } from "../src/guardian/types.js";
 import { detectEvidenceIntegrityFindings } from "../src/guardian/runner.js";
 
-const A2A_SWARM_STAGE_GATE_MANIFEST =
+export const A2A_SWARM_STAGE_GATE_MANIFEST =
 	"docs/protocols/a2a-swarm-stage-gates.json";
 
-const A2A_SWARM_STAGE_IDS = [
+export const A2A_SWARM_STAGE_IDS = [
 	"stage-0-integrity-foundation",
 	"stage-1-platform-identity-topology",
 	"stage-2-remote-delegation-task-control",
 	"stage-3-subagent-federation",
 	"stage-4-swarm-coordination",
 	"stage-5-production-proof-operations",
-	"stage-6-fleet-hardening",
+	"stage-6-realtime-delivery",
+	"stage-7-fleet-hardening",
+] as const;
+
+const REQUIRED_A2A_SWARM_GLOBAL_INVARIANTS = [
+	"Replay fixtures prove schema compatibility only and cannot satisfy exit evidence for production stages.",
+	"Every production claim must name the authoritative system of record and the command, query, or verifier that resolves it.",
+	"Live evidence must redact raw tokens and payloads while preserving enough stable identifiers for independent verification.",
+	"Stages advance in order; later stages may add evidence but cannot weaken prior-stage gates.",
 ] as const;
 
 const REQUIRED_A2A_SWARM_STAGE_PROOF_CLASSES: Record<
@@ -59,12 +68,77 @@ const REQUIRED_A2A_SWARM_STAGE_PROOF_CLASSES: Record<
 		"deploy-verifier",
 		"traces",
 	],
-	"stage-6-fleet-hardening": [
+	"stage-6-realtime-delivery": [
+		"streaming-status-events",
+		"push-notification-delivery",
+		"durable-task-message-ids",
+		"trace-correlated-delivery",
+		"operator-delivery-metrics",
+	],
+	"stage-7-fleet-hardening": [
 		"load-soak",
 		"chaos",
 		"slo",
 		"operator-runbook",
 		"quota-retention",
+	],
+};
+
+const REQUIRED_A2A_SWARM_STAGE_EXIT_EVIDENCE_IDS: Record<
+	(typeof A2A_SWARM_STAGE_IDS)[number],
+	string[]
+> = {
+	"stage-0-integrity-foundation": [
+		"guardian-blocks-synthetic-production-ids",
+		"github-identifiers-dereference",
+		"evidence-bundle-signature",
+		"invalid-token-rejection",
+	],
+	"stage-1-platform-identity-topology": [
+		"durable-agent-identities",
+		"eligible-peer-discovery",
+		"fresh-heartbeats",
+		"topology-audit-visible",
+	],
+	"stage-2-remote-delegation-task-control": [
+		"platform-delegation-created",
+		"task-lifecycle-observed",
+		"control-command-recorded",
+		"platform-only-routing",
+	],
+	"stage-3-subagent-federation": [
+		"remote-subagent-invoked",
+		"capabilities-negotiated",
+		"subagent-authorization-enforced",
+		"subagent-provenance-preserved",
+	],
+	"stage-4-swarm-coordination": [
+		"work-split-recorded",
+		"exclusive-ownership-enforced",
+		"worker-failure-recovered",
+		"final-outcome-reconciled",
+	],
+	"stage-5-production-proof-operations": [
+		"real-commit-sha",
+		"real-github-pr",
+		"real-actions-run",
+		"signed-production-evidence",
+		"deploy-verifier-outcome",
+		"operator-visible-traces",
+	],
+	"stage-6-realtime-delivery": [
+		"status-stream-terminal-events",
+		"push-notifications-delivered",
+		"task-message-ids-durable",
+		"delivery-traces-correlated",
+		"delivery-metrics-operator-visible",
+	],
+	"stage-7-fleet-hardening": [
+		"load-soak-passes",
+		"chaos-cases-pass",
+		"slos-alerts-dashboards",
+		"operator-playbook-ready",
+		"quota-retention-enforced",
 	],
 };
 
@@ -116,11 +190,14 @@ function readTextFile(path: string): string | null {
 	}
 }
 
-function validateA2ASwarmStageGateManifest(root: string): string[] {
-	const manifestPath = resolve(root, A2A_SWARM_STAGE_GATE_MANIFEST);
+export function validateA2ASwarmStageGateManifest(
+	root: string,
+	manifestRelativePath = A2A_SWARM_STAGE_GATE_MANIFEST,
+): string[] {
+	const manifestPath = resolve(root, manifestRelativePath);
 	if (!existsSync(manifestPath)) {
 		return [
-			`Missing A2A swarm stage-gate manifest: ${A2A_SWARM_STAGE_GATE_MANIFEST}`,
+			`Missing A2A swarm stage-gate manifest: ${manifestRelativePath}`,
 		];
 	}
 	const contents = readFileSync(manifestPath, "utf8");
@@ -134,6 +211,24 @@ function validateA2ASwarmStageGateManifest(root: string): string[] {
 		failures.push(
 			`${A2A_SWARM_STAGE_GATE_MANIFEST} has unexpected protocolVersion ${protocolVersion}`,
 		);
+	}
+	const globalInvariants = arrayField(manifest, "globalInvariants");
+	const globalInvariantTexts = new Set<string>();
+	globalInvariants.forEach((invariant, index) => {
+		if (typeof invariant !== "string" || invariant.trim().length === 0) {
+			failures.push(
+				`${A2A_SWARM_STAGE_GATE_MANIFEST} globalInvariants[${index}] must be a non-empty string`,
+			);
+			return;
+		}
+		globalInvariantTexts.add(invariant.trim());
+	});
+	for (const requiredInvariant of REQUIRED_A2A_SWARM_GLOBAL_INVARIANTS) {
+		if (!globalInvariantTexts.has(requiredInvariant)) {
+			failures.push(
+				`${A2A_SWARM_STAGE_GATE_MANIFEST} globalInvariants missing ${requiredInvariant}`,
+			);
+		}
 	}
 	const stages = arrayField(manifest, "stages");
 	if (stages.length !== A2A_SWARM_STAGE_IDS.length) {
@@ -188,12 +283,13 @@ function validateA2ASwarmStageGateManifest(root: string): string[] {
 			);
 		}
 		validateEvidenceList(stageId, "entryEvidence", entryEvidence, failures);
-		const exitProofClasses = validateEvidenceList(
+		const exitEvidenceValidation = validateEvidenceList(
 			stageId,
 			"exitEvidence",
 			exitEvidence,
 			failures,
 		);
+		const exitProofClasses = exitEvidenceValidation.proofClasses;
 		for (const proofClass of REQUIRED_A2A_SWARM_STAGE_PROOF_CLASSES[stageId] ??
 			[]) {
 			if (!exitProofClasses.has(proofClass)) {
@@ -202,9 +298,23 @@ function validateA2ASwarmStageGateManifest(root: string): string[] {
 				);
 			}
 		}
+		for (const evidenceId of REQUIRED_A2A_SWARM_STAGE_EXIT_EVIDENCE_IDS[
+			stageId
+		] ?? []) {
+			if (!exitEvidenceValidation.evidenceIds.has(evidenceId)) {
+				failures.push(
+					`${A2A_SWARM_STAGE_GATE_MANIFEST} ${stageId} exitEvidence missing evidence id ${evidenceId}`,
+				);
+			}
+		}
 		previousStageId = stageId;
 	});
 	return failures;
+}
+
+interface EvidenceListValidation {
+	evidenceIds: Set<string>;
+	proofClasses: Set<string>;
 }
 
 function validateEvidenceList(
@@ -212,7 +322,7 @@ function validateEvidenceList(
 	fieldName: "entryEvidence" | "exitEvidence",
 	evidence: unknown[],
 	failures: string[],
-): Set<string> {
+): EvidenceListValidation {
 	const proofClasses = new Set<string>();
 	const evidenceIds = new Set<string>();
 	evidence.forEach((evidenceValue, index) => {
@@ -246,7 +356,7 @@ function validateEvidenceList(
 			);
 		}
 	});
-	return proofClasses;
+	return { evidenceIds, proofClasses };
 }
 
 function requireRecord(value: unknown, name: string): Record<string, unknown> {
@@ -321,4 +431,6 @@ function main(): void {
 	console.log("Evidence integrity check passed.");
 }
 
-main();
+if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+	main();
+}

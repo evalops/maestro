@@ -31,11 +31,16 @@ interface MetricState {
 	provider: string;
 	model: string;
 	samples: number;
+	productionSamples: number;
+	evalSamples: number;
 	successCount: number;
+	evalSuccessCount: number;
 	totalLatencyMs: number;
 	latenciesMs: number[];
 	totalCostUsd: number;
 	qualityScoreTotal: number;
+	evalQualityScoreTotal: number;
+	evalSuites: Set<string>;
 	updatedAt: Date;
 }
 
@@ -88,14 +93,23 @@ function aggregateFromState(state: MetricState): ModelPerformanceAggregate {
 		provider: state.provider,
 		model: state.model,
 		samples: state.samples,
+		productionSamples: state.productionSamples,
+		evalSamples: state.evalSamples,
 		successCount: state.successCount,
 		successRate: state.samples > 0 ? state.successCount / state.samples : 0,
+		evalSuccessRate:
+			state.evalSamples > 0 ? state.evalSuccessCount / state.evalSamples : 0,
 		averageLatencyMs:
 			state.samples > 0 ? state.totalLatencyMs / state.samples : 0,
 		p95LatencyMs: percentile(state.latenciesMs, 0.95),
 		averageCostUsd: state.samples > 0 ? state.totalCostUsd / state.samples : 0,
 		qualityScore:
 			state.samples > 0 ? state.qualityScoreTotal / state.samples : 0.5,
+		evalQualityScore:
+			state.evalSamples > 0
+				? state.evalQualityScoreTotal / state.evalSamples
+				: 0.5,
+		evalSuites: Array.from(state.evalSuites).sort(),
 		updatedAt: state.updatedAt.toISOString(),
 	};
 }
@@ -192,6 +206,15 @@ function scoreCandidate(params: {
 		`cost=${cost.toFixed(2)}`,
 		`quality=${quality.toFixed(2)}`,
 	];
+	if (params.aggregate?.evalSamples) {
+		reasons.push(`eval_samples=${params.aggregate.evalSamples}`);
+	}
+	if (params.aggregate?.productionSamples) {
+		reasons.push(`production_samples=${params.aggregate.productionSamples}`);
+	}
+	if (params.aggregate?.evalSamples && !params.aggregate.productionSamples) {
+		reasons.push("eval_backed");
+	}
 	if (!params.available) {
 		reasons.push("unavailable");
 	}
@@ -207,6 +230,11 @@ function scoreCandidate(params: {
 		costScore: cost,
 		qualityScore: quality,
 		samples: params.aggregate?.samples ?? 0,
+		productionSamples: params.aggregate?.productionSamples ?? 0,
+		evalSamples: params.aggregate?.evalSamples ?? 0,
+		evalBacked: Boolean(
+			params.aggregate?.evalSamples && !params.aggregate.productionSamples,
+		),
 		available: params.available,
 		reasons,
 	};
@@ -252,16 +280,29 @@ export class IntelligentRouterService {
 				provider: metric.provider,
 				model: metric.model,
 				samples: 0,
+				productionSamples: 0,
+				evalSamples: 0,
 				successCount: 0,
+				evalSuccessCount: 0,
 				totalLatencyMs: 0,
 				latenciesMs: [],
 				totalCostUsd: 0,
 				qualityScoreTotal: 0,
+				evalQualityScoreTotal: 0,
+				evalSuites: new Set<string>(),
 				updatedAt: this.now(),
 			} satisfies MetricState);
 
 		state.samples += 1;
 		if (metric.success) state.successCount += 1;
+		if (metric.source === "eval") {
+			state.evalSamples += 1;
+			if (metric.success) state.evalSuccessCount += 1;
+			state.evalQualityScoreTotal += metric.qualityScore;
+			if (metric.evalSuite) state.evalSuites.add(metric.evalSuite);
+		} else {
+			state.productionSamples += 1;
+		}
 		state.totalLatencyMs += metric.latencyMs;
 		state.latenciesMs.push(metric.latencyMs);
 		if (state.latenciesMs.length > MAX_LATENCIES) {

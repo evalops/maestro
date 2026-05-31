@@ -131,6 +131,15 @@ describe("telemetry-report", () => {
 		expect(report.toolScheduling.topSerializationReasons).toEqual([
 			{ reason: "blocked_by_mutation", count: 1 },
 		]);
+		expect(report.toolScheduling.operatorSummary).toMatchObject({
+			line: "3 calls, 2 waves, 2 parallelized, 2 serialized/delayed, 0 cache hits; top blocker blocked_by_mutation (1); next adjacent_turn_read_cache",
+			serializedOrDelayedCallCount: 2,
+			topSerializationReason: {
+				count: 1,
+				reason: "blocked_by_mutation",
+			},
+			topNextActionId: "adjacent_turn_read_cache",
+		});
 		expect(report.toolScheduling.serializationReasonTiming).toEqual([
 			{
 				reason: "blocked_by_mutation",
@@ -257,6 +266,36 @@ describe("telemetry-report", () => {
 		expect(report.toolScheduling.topSerializationReasons).toEqual([
 			{ reason: "single_read_only_call", count: 1 },
 		]);
+	});
+
+	it("prints a compact operator scheduling summary in text output", async () => {
+		const dir = await mkdtemp(join(tmpdir(), "maestro-telemetry-report-"));
+		const logPath = join(dir, "telemetry.log");
+		await writeFile(
+			logPath,
+			JSON.stringify({
+				type: "tool_phase_summary",
+				modelToolCallCount: 2,
+				schedulableWaveCount: 1,
+				parallelizedCallCount: 2,
+				serializedCallCount: 0,
+				delayedCallCount: 0,
+				blockedByMutationCount: 0,
+				mcpOptInCallCount: 0,
+				cacheHitCount: 1,
+				totalToolWaitMs: 0,
+			}),
+		);
+
+		const { stdout } = await execFileAsync(
+			process.execPath,
+			["scripts/telemetry-report.js", logPath],
+			{ cwd: repoRoot },
+		);
+
+		expect(stdout).toContain(
+			"Tool scheduling summary: 2 calls, 1 wave, 2 parallelized, 0 serialized/delayed, 1 cache hit; next none",
+		);
 	});
 
 	it("keeps raw phase summaries when canonical turns do not include scheduling rollups", async () => {

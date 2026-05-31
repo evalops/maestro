@@ -7,7 +7,7 @@ import com.intellij.openapi.wm.ToolWindowFactory
 import com.intellij.ui.content.ContentFactory
 
 /**
- * Factory for creating the Composer tool window.
+ * Factory for creating the Maestro tool window.
  */
 class ComposerToolWindowFactory : ToolWindowFactory, DumbAware {
 

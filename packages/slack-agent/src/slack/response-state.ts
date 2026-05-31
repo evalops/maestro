@@ -30,8 +30,15 @@ export interface ResponseStateConfig {
 
 export interface ResponseHandlers {
 	respond(text: string, log?: boolean): Promise<void>;
-	replaceMessage(text: string): Promise<void>;
-	respondInThread(text: string): Promise<void>;
+	replaceMessage(text: string, log?: boolean, logText?: string): Promise<void>;
+	respondInThread(text: string, log?: boolean): Promise<void>;
+	postMessage(channel: string, text: string, log?: boolean): Promise<void>;
+	postThreadReply(
+		channel: string,
+		threadTs: string,
+		text: string,
+		log?: boolean,
+	): Promise<void>;
 	setTyping(isTyping: boolean): Promise<void>;
 	uploadFile(filePath: string, title?: string): Promise<void>;
 	setWorking(working: boolean): Promise<void>;
@@ -79,8 +86,14 @@ export function createResponseHandlers(
 		lastUpdateAt = Date.now();
 	};
 
+	const enqueueUpdate = (fn: () => Promise<void>): Promise<void> => {
+		const operation = updatePromise.catch(() => undefined).then(fn);
+		updatePromise = operation.catch(() => undefined);
+		return operation;
+	};
+
 	const respond = async (responseText: string, log = true): Promise<void> => {
-		updatePromise = updatePromise.then(async () => {
+		const operation = enqueueUpdate(async () => {
 			if (isThinking) {
 				accumulatedText = responseText;
 				isThinking = false;
@@ -124,11 +137,15 @@ export function createResponseHandlers(
 			}
 		});
 
-		await updatePromise;
+		await operation;
 	};
 
-	const replaceMessage = async (newText: string): Promise<void> => {
-		updatePromise = updatePromise.then(async () => {
+	const replaceMessage = async (
+		newText: string,
+		log = false,
+		logText = newText,
+	): Promise<void> => {
+		const operation = enqueueUpdate(async () => {
 			accumulatedText = newText;
 
 			const displayText = isWorking
@@ -161,32 +178,102 @@ export function createResponseHandlers(
 					messageTs = result.ts as string;
 				}
 			});
+
+			if (log && messageTs) {
+				await store.logBotResponse(channelId, logText, messageTs);
+			}
 		});
 
-		await updatePromise;
+		await operation;
 	};
 
-	const respondInThread = async (threadText: string): Promise<void> => {
-		updatePromise = updatePromise.then(async () => {
-			if (!messageTs) {
-				return;
+	const postMessage = async (
+		targetChannel: string,
+		text: string,
+		log = true,
+	): Promise<void> => {
+		const operation = enqueueUpdate(async () => {
+			const result = await callSlack(
+				() =>
+					webClient.chat.postMessage({
+						channel: targetChannel,
+						text,
+					} as ChatPostMessageArguments),
+				"chat.postMessage",
+			);
+			if (log && result.ts) {
+				await store.logBotResponse(targetChannel, text, result.ts as string);
 			}
-			const currentMessageTs = messageTs;
-			const obfuscatedText = obfuscateUsernames(threadText);
-			await throttleUpdate(async () => {
-				await callSlack(
-					() =>
-						webClient.chat.postMessage({
-							channel: channelId,
-							thread_ts: currentMessageTs,
-							text: obfuscatedText,
-						}),
-					"chat.postMessage",
-				);
-			});
 		});
 
-		await updatePromise;
+		await operation;
+	};
+
+	const postThreadReply = async (
+		targetChannel: string,
+		targetThreadTs: string,
+		text: string,
+		log = false,
+	): Promise<void> => {
+		const operation = enqueueUpdate(async () => {
+			const result = await callSlack(
+				() =>
+					webClient.chat.postMessage({
+						channel: targetChannel,
+						thread_ts: targetThreadTs,
+						text,
+					} as ChatPostMessageArguments),
+				"chat.postMessage",
+			);
+			if (log && result.ts) {
+				await store.logMessage(targetChannel, {
+					date: new Date().toISOString(),
+					ts: result.ts as string,
+					threadTs: targetThreadTs,
+					user: "bot",
+					text,
+					attachments: [],
+					isBot: true,
+				});
+			}
+		});
+
+		await operation;
+	};
+
+	const respondInThread = async (
+		threadText: string,
+		log = false,
+	): Promise<void> => {
+		const operation = enqueueUpdate(async () => {
+			const targetThreadTs = messageTs ?? threadTs;
+			const obfuscatedText = obfuscateUsernames(threadText);
+			let replyTs: string | undefined;
+			await throttleUpdate(async () => {
+				const result = await callSlack(() => {
+					const postArgs = {
+						channel: channelId,
+						text: obfuscatedText,
+						...(targetThreadTs && { thread_ts: targetThreadTs }),
+					} as ChatPostMessageArguments;
+					return webClient.chat.postMessage(postArgs);
+				}, "chat.postMessage");
+				replyTs = result.ts as string | undefined;
+			});
+			if (log && replyTs) {
+				await store.logMessage(channelId, {
+					date: new Date().toISOString(),
+					ts: replyTs,
+					threadTs: targetThreadTs,
+					user: "bot",
+					text: obfuscatedText,
+					attachments: [],
+					isBot: true,
+				});
+			}
+		});
+
+		await operation;
 	};
 
 	const setTyping = async (typing: boolean): Promise<void> => {
@@ -276,7 +363,7 @@ export function createResponseHandlers(
 	};
 
 	const setWorking = async (working: boolean): Promise<void> => {
-		updatePromise = updatePromise.then(async () => {
+		const operation = enqueueUpdate(async () => {
 			isWorking = working;
 
 			if (messageTs) {
@@ -298,11 +385,11 @@ export function createResponseHandlers(
 			}
 		});
 
-		await updatePromise;
+		await operation;
 	};
 
 	const updateStatus = async (status: string): Promise<void> => {
-		updatePromise = updatePromise.then(async () => {
+		const operation = enqueueUpdate(async () => {
 			if (messageTs && isWorking) {
 				const currentMessageTs = messageTs;
 				const displayText = `${accumulatedText}\n_${status}_${WORKING_INDICATOR}`;
@@ -320,13 +407,15 @@ export function createResponseHandlers(
 			}
 		});
 
-		await updatePromise;
+		await operation;
 	};
 
 	return {
 		respond,
 		replaceMessage,
 		respondInThread,
+		postMessage,
+		postThreadReply,
 		setTyping,
 		uploadFile,
 		setWorking,

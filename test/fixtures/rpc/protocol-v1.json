@@ -1,0 +1,161 @@
+{
+	"version": 1,
+	"schema": "evalops.maestro.rpc-protocol-conformance.v1",
+	"description": "Release-gated JSON-over-stdio RPC command, response, request-id correlation, and client launch contract.",
+	"commands": [
+		{
+			"name": "prompt dispatches a user prompt",
+			"type": "prompt",
+			"request": {
+				"id": "req_prompt",
+				"type": "prompt",
+				"message": "Summarize the workspace."
+			},
+			"response": {
+				"kind": "agent-event-stream",
+				"echoesRequestId": false
+			}
+		},
+		{
+			"name": "abort cancels the active run",
+			"type": "abort",
+			"request": {
+				"id": "req_abort",
+				"type": "abort"
+			},
+			"response": {
+				"kind": "no-body",
+				"echoesRequestId": false
+			}
+		},
+		{
+			"name": "get_messages returns correlated conversation messages",
+			"type": "get_messages",
+			"request": {
+				"id": "req_messages",
+				"type": "get_messages"
+			},
+			"response": {
+				"type": "messages",
+				"echoesRequestId": true,
+				"requiredFields": ["messages"]
+			}
+		},
+		{
+			"name": "get_state returns correlated agent state",
+			"type": "get_state",
+			"request": {
+				"id": "req_state",
+				"type": "get_state"
+			},
+			"response": {
+				"type": "state",
+				"echoesRequestId": true,
+				"requiredFields": [
+					"state.model",
+					"state.messages",
+					"state.queuedMessageCount"
+				]
+			}
+		},
+		{
+			"name": "continue resumes the conversation",
+			"type": "continue",
+			"request": {
+				"id": "req_continue",
+				"type": "continue",
+				"options": {
+					"systemPromptOverride": "Keep the reply short."
+				}
+			},
+			"response": {
+				"kind": "agent-event-stream",
+				"echoesRequestId": false
+			}
+		},
+		{
+			"name": "compact returns a correlated compaction result",
+			"type": "compact",
+			"request": {
+				"id": "req_compact",
+				"type": "compact",
+				"customInstructions": "Keep release evidence."
+			},
+			"response": {
+				"type": "compaction",
+				"echoesRequestId": true,
+				"requiredFields": [
+					"summary",
+					"firstKeptEntryIndex",
+					"tokensBefore",
+					"auto"
+				]
+			}
+		},
+		{
+			"name": "unknown commands return correlated errors",
+			"type": "unknown",
+			"request": {
+				"id": "req_unknown",
+				"type": "missing_command"
+			},
+			"response": {
+				"type": "error",
+				"echoesRequestId": true,
+				"requiredFields": ["error"]
+			}
+		}
+	],
+	"runtimeSurfaces": [
+		{
+			"area": "rpc-server-dispatch",
+			"path": "src/cli/rpc-mode.ts",
+			"anchors": [
+				"input.type === \"prompt\"",
+				"input.type === \"abort\"",
+				"input.type === \"get_messages\"",
+				"input.type === \"get_state\"",
+				"input.type === \"continue\"",
+				"input.type === \"compact\""
+			]
+		},
+		{
+			"area": "rpc-server-request-id-correlation",
+			"path": "src/cli/rpc-mode.ts",
+			"anchors": [
+				"let requestId: string | undefined",
+				"withRequestId({",
+				"Unknown RPC command: ${commandType}"
+			]
+		},
+		{
+			"area": "rpc-client-launch",
+			"path": "src/rpc/rpc-client.ts",
+			"anchors": [
+				"[\"--mode\", \"rpc\"]",
+				"commandWithId",
+				"this.pending.set(id"
+			]
+		},
+		{
+			"area": "rpc-type-union",
+			"path": "src/rpc/rpc-types.ts",
+			"anchors": [
+				"RpcPromptCommand",
+				"RpcAbortCommand",
+				"RpcGetMessagesCommand",
+				"RpcGetStateCommand",
+				"RpcContinueCommand",
+				"RpcCompactCommand"
+			]
+		},
+		{
+			"area": "rpc-runtime-tests",
+			"path": "test/cli/rpc-mode.test.ts",
+			"anchors": [
+				"echoes request ids on get_state and get_messages responses",
+				"echoes request ids on compact failures and unknown commands"
+			]
+		}
+	]
+}

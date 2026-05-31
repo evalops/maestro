@@ -1,5 +1,5 @@
 /**
- * Structured logging service for Composer CLI.
+ * Structured logging service for Maestro CLI.
  * Replaces scattered console.log/error calls with centralized, level-based logging.
  */
 

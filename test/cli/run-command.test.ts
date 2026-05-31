@@ -1,4 +1,10 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import {
+	appendFileSync,
+	mkdirSync,
+	mkdtempSync,
+	rmSync,
+	writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ComposerRunTimelineItem } from "@evalops/contracts";
@@ -179,6 +185,11 @@ describe("run command", () => {
 						previousExists: true,
 						editsApplied: 1,
 						bytesWritten: 42,
+						toolExecutionId: "texec-call-edit",
+						governedOutcome: {
+							classification: "approved",
+							approvalRequestId: "approval-call-edit",
+						},
 					},
 				},
 			},
@@ -195,6 +206,12 @@ describe("run command", () => {
 					isError: true,
 					timestamp: 1778320803500,
 				},
+			},
+			{
+				type: "session_meta",
+				timestamp: "2026-05-09T10:00:03.750Z",
+				resumeSummary: "Resume from the docs reconstruction checkpoint.",
+				memoryExtractionHash: "sha256:session-memory-hash",
 			},
 			{
 				type: "compaction",
@@ -360,6 +377,8 @@ describe("run command", () => {
 				id: sessionId,
 				cwd: "/workspace/app",
 				model: "openai/gpt-5.5",
+				resumeSummary: "Resume from the docs reconstruction checkpoint.",
+				memoryExtractionHash: "sha256:session-memory-hash",
 				messageCount: 4,
 			},
 			promptContext: {
@@ -387,7 +406,20 @@ describe("run command", () => {
 				mcpPrompts: 1,
 				diagnostics: 1,
 			},
+			durability: {
+				reconstructable: true,
+				sessionFilePresent: true,
+				resumeSummaryPresent: true,
+				memoryExtractionHashPresent: true,
+				contextManifestPresent: true,
+				compactionCheckpoints: 1,
+				pendingRequests: 0,
+				replayDeterministic: true,
+			},
 		});
+		expect(report?.durability.promotionIdempotencyKey).toBe(
+			`maestro-local-ledger:${sessionId}:${sessionId}`,
+		);
 		expect(report?.contextManifest.byKind).toMatchObject({
 			project_doc: 1,
 			mcp_server: 1,
@@ -500,16 +532,62 @@ describe("run command", () => {
 			running: 2,
 			failed: 1,
 		});
-		expect(
-			report?.agentRuntimeLedger.entries.find(
-				(entry) => entry.type === "tool.completed",
-			),
-		).toMatchObject({
+		const completedToolEntry = report?.agentRuntimeLedger.entries.find(
+			(entry) => entry.type === "tool.completed",
+		);
+		expect(completedToolEntry).toMatchObject({
 			kind: "tool_result",
 			state: "succeeded",
+			relatedIds: [
+				"approval-call-edit",
+				"call-edit",
+				"file:docs/run.md",
+				"texec-call-edit",
+			],
+			evidence: expect.arrayContaining([
+				{ kind: "tool_call", id: "call-edit" },
+				{ kind: "tool_execution", id: "texec-call-edit" },
+				{ kind: "approval_request", id: "approval-call-edit" },
+				{ kind: "artifact", id: "file:docs/run.md" },
+			]),
 			platformShape: {
 				stepKind: "AGENT_RUN_STEP_KIND_TOOL_RESULT",
 				workItemKind: "AGENT_WORK_ITEM_KIND_TOOL_CALL",
+			},
+		});
+		expect(
+			report?.agentRuntimeLedger.promotion.operations.find(
+				(operation) =>
+					operation.operation === "record_run_work_item" &&
+					operation.ledgerEntryId === completedToolEntry?.id,
+			),
+		).toMatchObject({
+			operation: "record_run_work_item",
+			payload: {
+				toolExecutionId: "texec-call-edit",
+				approvalRequestId: "approval-call-edit",
+				evidenceRefs: expect.arrayContaining([
+					"tool-call:call-edit",
+					"tool-execution:texec-call-edit",
+					"approval-request:approval-call-edit",
+					"artifact:file:docs/run.md",
+				]),
+				completionGate: "maestro_agent_runtime_ledger_recorded",
+				payload: expect.objectContaining({
+					maestroSessionId: sessionId,
+					ledgerEntryId: completedToolEntry?.id,
+					toolName: "edit",
+					correlation: expect.objectContaining({
+						toolExecutionId: "texec-call-edit",
+						approvalRequestId: "approval-call-edit",
+					}),
+					relatedIds: [
+						"approval-call-edit",
+						"call-edit",
+						"file:docs/run.md",
+						"texec-call-edit",
+					],
+				}),
 			},
 		});
 		expect(
@@ -542,11 +620,138 @@ describe("run command", () => {
 			report?.agentRuntimeLedger.promotion.operations.at(-1),
 		).toMatchObject({
 			operation: "complete_run",
-			payload: { state: "succeeded" },
+			payload: {
+				state: "succeeded",
+				ledgerEntryId: expect.any(String),
+				eventType: "compaction.created",
+				evidenceRefs: expect.arrayContaining([
+					expect.stringContaining("trajectory-event:"),
+				]),
+			},
 		});
 		expect(
 			report?.trajectoryInspection.scoreFindings[0]?.timelineItemIds,
 		).toEqual(["compaction:compact-1"]);
+	});
+
+	it("reconstructs persisted approval and retry waits into AgentRuntime operations", async () => {
+		const { sessionDir, sessionId } = makeSessionDir();
+		const manager = new SessionManager(false, undefined, { sessionDir });
+		const sessionFile = manager.getSessionFileById(sessionId);
+		if (!sessionFile) {
+			throw new Error("Expected test session file to exist");
+		}
+		const pendingEntries = [
+			{
+				type: "custom",
+				id: "pending-approval-entry",
+				parentId: "tool-1",
+				timestamp: "2026-05-09T10:00:03.800Z",
+				customType: "pending_request",
+				data: {
+					request: {
+						id: "pending-approval-1",
+						kind: "approval",
+						status: "pending",
+						visibility: "user",
+						sessionId,
+						toolCallId: "call-edit",
+						toolName: "edit",
+						displayName: "Edit docs",
+						args: { path: "docs/run.md" },
+						reason: "Governed edit approval is pending.",
+						createdAt: "2026-05-09T10:00:03.800Z",
+						source: "platform",
+						platform: {
+							source: "tool_execution",
+							toolExecutionId: "texec-call-edit",
+							approvalRequestId: "approval-call-edit",
+						},
+					},
+				},
+			},
+			{
+				type: "custom",
+				id: "pending-retry-entry",
+				parentId: "tool-2",
+				timestamp: "2026-05-09T10:00:03.900Z",
+				customType: "pending_request",
+				data: {
+					request: {
+						id: "pending-retry-1",
+						kind: "tool_retry",
+						status: "pending",
+						visibility: "user",
+						sessionId,
+						toolCallId: "call-mcp-search",
+						toolName: "mcp__platform__search",
+						displayName: "Platform search",
+						args: { query: "run reconstruction" },
+						reason: "Search failed and needs a retry decision.",
+						createdAt: "2026-05-09T10:00:03.900Z",
+						source: "platform",
+						platform: {
+							source: "tool_execution",
+							toolExecutionId: "texec-retry-1",
+							approvalRequestId: "approval-retry-1",
+						},
+					},
+				},
+			},
+		];
+		appendFileSync(
+			sessionFile,
+			`\n${pendingEntries.map((entry) => JSON.stringify(entry)).join("\n")}\n`,
+		);
+
+		const report = await testing.buildRunReconstructionReport(sessionId, {
+			sessionDir,
+		});
+
+		expect(report?.coverage.pendingRequests).toBe(true);
+		expect(report?.timeline.pendingRequestCount).toBe(2);
+		expect(report?.durability.pendingRequests).toBe(2);
+		expect(report?.counts.byType).toMatchObject({
+			"wait.pending": 2,
+		});
+		expect(report?.agentRuntimeLedger.counts.byKind).toMatchObject({
+			wait: 2,
+		});
+		const waitOperations =
+			report?.agentRuntimeLedger.promotion.operations.filter(
+				(operation) => operation.operation === "wait_run",
+			) ?? [];
+		expect(waitOperations).toEqual(
+			expect.arrayContaining([
+				expect.objectContaining({
+					operation: "wait_run",
+					payload: expect.objectContaining({
+						waitType: "AGENT_RUN_WAIT_TYPE_APPROVAL",
+						pendingRequestId: "pending-approval-1",
+						pendingRequestKind: "approval",
+						approvalRequestId: "approval-call-edit",
+						toolExecutionId: "texec-call-edit",
+					}),
+				}),
+				expect.objectContaining({
+					operation: "wait_run",
+					payload: expect.objectContaining({
+						waitType: "AGENT_RUN_WAIT_TYPE_APPROVAL",
+						pendingRequestId: "pending-retry-1",
+						pendingRequestKind: "tool_retry",
+						approvalRequestId: "approval-retry-1",
+						toolExecutionId: "texec-retry-1",
+					}),
+				}),
+			]),
+		);
+		expect(
+			report?.agentRuntimeLedger.promotion.operations.some(
+				(operation) =>
+					operation.operation === "record_run_work_item" &&
+					operation.payload.pendingRequestKind === "tool_retry",
+			),
+		).toBe(true);
 	});
 
 	it("migrates legacy entries before reconstructing the timeline", async () => {
@@ -580,6 +785,7 @@ describe("run command", () => {
 		expect(output).toContain("Replay deltas:");
 		expect(output).toContain("Trajectory score:");
 		expect(output).toContain("Replay lab:");
+		expect(output).toContain("Durability: reconstructable=yes");
 		expect(output).toContain("yes prompt inputs");
 		expect(output).toContain("yes context manifest");
 		expect(output).toContain("yes MCP context");
@@ -627,6 +833,19 @@ describe("run command", () => {
 				sourceEventType: "maestro.local_ledger_promote",
 				sessionId,
 			},
+		});
+		expect(payload.session).toMatchObject({
+			resumeSummary: "Resume from the docs reconstruction checkpoint.",
+			memoryExtractionHash: "sha256:session-memory-hash",
+		});
+		expect(payload.durability).toMatchObject({
+			reconstructable: true,
+			resumeSummaryPresent: true,
+			memoryExtractionHashPresent: true,
+			contextManifestPresent: true,
+			compactionCheckpoints: 1,
+			replayDeterministic: true,
+			promotionIdempotencyKey: `maestro-local-ledger:${sessionId}:${sessionId}`,
 		});
 		expect(payload.trajectoryInspection.events[0]).toMatchObject({
 			timelineItemIds: ["session-started:session-reconstruct-1"],
@@ -985,7 +1204,10 @@ describe("run command", () => {
 				visibility: "user",
 				source: "local",
 				title: `Wait for ${scenario.pendingRequestKind}`,
-				evidence: [{ kind: "timeline_item", id: scenario.id }],
+				evidence: [
+					{ kind: "timeline_item", id: scenario.id },
+					{ kind: "pending_request", id: scenario.id },
+				],
 			})),
 			scenarios.map((scenario) =>
 				timelineItem(sessionId, {
@@ -1009,9 +1231,122 @@ describe("run command", () => {
 				),
 			).toMatchObject({
 				operation: "wait_run",
-				payload: { waitType: scenario.waitType },
+				payload: {
+					waitType: scenario.waitType,
+					pendingRequestId: scenario.id,
+					pendingRequestKind: scenario.pendingRequestKind,
+				},
+			});
+			expect(
+				ledger.promotion.operations.find(
+					(operation) =>
+						operation.operation === "record_run_work_item" &&
+						operation.ledgerEntryId === `ledger:event-${scenario.id}`,
+				),
+			).toMatchObject({
+				operation: "record_run_work_item",
+				payload: {
+					waitId: `ledger:event-${scenario.id}`,
+					pendingRequestId: scenario.id,
+					pendingRequestKind: scenario.pendingRequestKind,
+					evidenceRefs: expect.arrayContaining([
+						`pending-request:${scenario.id}`,
+					]),
+					payload: expect.objectContaining({
+						trajectoryEventId: `event-${scenario.id}`,
+						eventType: "wait.pending",
+						correlation: expect.objectContaining({
+							pendingRequestId: scenario.id,
+							pendingRequestKind: scenario.pendingRequestKind,
+						}),
+					}),
+				},
 			});
 		}
+	});
+
+	it("exposes approval and retry wait joins as structured promotion fields", () => {
+		const sessionId = "session-wait-joins";
+		const ledger = buildLedgerForEvents(
+			sessionId,
+			[
+				{
+					id: "event-retry-wait",
+					sequence: 1,
+					timestamp: "2026-05-09T10:00:01.000Z",
+					kind: "wait",
+					phase: "wait",
+					actor: "platform",
+					type: "wait.pending",
+					status: "pending",
+					visibility: "user",
+					source: "platform",
+					title: "Retry needs approval",
+					evidence: [
+						{ kind: "timeline_item", id: "retry-wait" },
+						{ kind: "pending_request", id: "pending-retry-1" },
+						{ kind: "approval_request", id: "approval-retry-1" },
+						{ kind: "tool_execution", id: "texec-retry-1" },
+					],
+				},
+			],
+			[
+				timelineItem(sessionId, {
+					id: "retry-wait",
+					pendingRequestId: "pending-retry-1",
+					pendingRequestKind: "tool_retry",
+					approvalRequestId: "approval-retry-1",
+					toolExecutionId: "texec-retry-1",
+				}),
+			],
+		);
+
+		expect(ledger.entries[0]?.correlation).toMatchObject({
+			pendingRequestId: "pending-retry-1",
+			pendingRequestKind: "tool_retry",
+			approvalRequestId: "approval-retry-1",
+			toolExecutionId: "texec-retry-1",
+		});
+		expect(
+			ledger.promotion.operations.find(
+				(operation) =>
+					operation.operation === "wait_run" &&
+					operation.ledgerEntryId === "ledger:event-retry-wait",
+			),
+		).toMatchObject({
+			operation: "wait_run",
+			payload: {
+				waitType: "AGENT_RUN_WAIT_TYPE_APPROVAL",
+				pendingRequestId: "pending-retry-1",
+				pendingRequestKind: "tool_retry",
+				approvalRequestId: "approval-retry-1",
+				toolExecutionId: "texec-retry-1",
+			},
+		});
+		expect(
+			ledger.promotion.operations.find(
+				(operation) =>
+					operation.operation === "record_run_work_item" &&
+					operation.ledgerEntryId === "ledger:event-retry-wait",
+			),
+		).toMatchObject({
+			operation: "record_run_work_item",
+			payload: {
+				waitId: "ledger:event-retry-wait",
+				pendingRequestId: "pending-retry-1",
+				pendingRequestKind: "tool_retry",
+				approvalRequestId: "approval-retry-1",
+				toolExecutionId: "texec-retry-1",
+				payload: expect.objectContaining({
+					correlation: {
+						pendingRequestId: "pending-retry-1",
+						pendingRequestKind: "tool_retry",
+						approvalRequestId: "approval-retry-1",
+						toolExecutionId: "texec-retry-1",
+					},
+				}),
+			},
+		});
 	});
 
 	it("keeps unknown wait entries represented with an approval fallback", () => {

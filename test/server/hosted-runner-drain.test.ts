@@ -18,6 +18,7 @@ import type { HostedRunnerContext } from "../../src/server/app-context.js";
 import {
 	HOSTED_RUNNER_PLATFORM_EVIDENCE_VERSION,
 	HOSTED_RUNNER_RETENTION_POLICY_VERSION,
+	HOSTED_RUNNER_RUNTIME_CONTINUITY_VERSION,
 	HOSTED_RUNNER_SNAPSHOT_MANIFEST_VERSION,
 	HOSTED_RUNNER_WORK_CONTINUITY_VERSION,
 	HostedRunnerDrainReasonValue,
@@ -145,6 +146,26 @@ describe("hosted runner drain", () => {
 				protocol_version: HEADLESS_PROTOCOL_VERSION,
 				cursor: 7,
 			},
+			runtime_continuity: {
+				protocol_version: HOSTED_RUNNER_RUNTIME_CONTINUITY_VERSION,
+				handoff: "drain_restore",
+				source_runner_session_id: "mrs_123",
+				source_owner_instance_id: "pod_123",
+				source_process_id: process.pid,
+				source_runtime_lease: {
+					protocol_version: "evalops.maestro.hosted-runner-lease.v1",
+					state: "draining",
+					generation: 1,
+					maestro_session_id: "session_123",
+					updated_at: "2026-04-23T00:00:00.000Z",
+				},
+				restore_environment_key: "MAESTRO_REMOTE_RUNNER_RESTORE_MANIFEST",
+				restore_manifest_path: result?.manifest_path,
+				evidence_refs: [
+					"remote-runner://sessions/mrs_123/drain#snapshot",
+					"maestro://headless/sessions/session_123#cursor:7",
+				],
+			},
 			work_continuity: {
 				protocol_version: HOSTED_RUNNER_WORK_CONTINUITY_VERSION,
 				codex_subagent_schema_version: CODEX_SUBAGENT_WORK_GRAPH_SCHEMA,
@@ -182,6 +203,14 @@ describe("hosted runner drain", () => {
 					codex_subagent_tool_call_ids: [],
 					codex_subagent_child_run_ids: [],
 					codex_subagent_thread_ids: [],
+				},
+				runtime_continuity: {
+					protocol_version: HOSTED_RUNNER_RUNTIME_CONTINUITY_VERSION,
+					handoff: "drain_restore",
+					source_owner_instance_id: "pod_123",
+					source_process_id: process.pid,
+					source_runtime_lease_generation: 1,
+					restore_manifest_path: result?.manifest_path,
 				},
 				retention: {
 					policy_version: HOSTED_RUNNER_RETENTION_POLICY_VERSION,

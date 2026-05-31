@@ -56,7 +56,7 @@ export function loadUiState(): UiState {
 					? parsed.compactTools
 					: undefined,
 			footerMode:
-				parsed.footerMode === "ensemble" || parsed.footerMode === "solo"
+				parsed.footerMode === "rich" || parsed.footerMode === "solo"
 					? parsed.footerMode
 					: undefined,
 			cleanMode:

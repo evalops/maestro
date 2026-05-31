@@ -148,6 +148,44 @@ describe("parseArgs", () => {
 		});
 	});
 
+	it("parses sessions list, search, and transfer commands", () => {
+		expect(parseArgs(["sessions", "list", "--json"])).toMatchObject({
+			command: "sessions",
+			subcommand: "list",
+			execJson: true,
+			messages: [],
+		});
+		expect(
+			parseArgs(["sessions", "search", "release", "verification"]),
+		).toMatchObject({
+			command: "sessions",
+			subcommand: "search",
+			messages: ["release", "verification"],
+		});
+		expect(
+			parseArgs([
+				"sessions",
+				"export",
+				"session-123",
+				"./session.json",
+				"--format",
+				"json",
+				"--redact-secrets",
+			]),
+		).toMatchObject({
+			command: "sessions",
+			subcommand: "export",
+			messages: ["session-123", "./session.json"],
+			exportFormat: "json",
+			redactSecrets: true,
+		});
+		expect(parseArgs(["sessions", "import", "./session.jsonl"])).toMatchObject({
+			command: "sessions",
+			subcommand: "import",
+			messages: ["./session.jsonl"],
+		});
+	});
+
 	it("preserves remote command-group arguments for the remote handler", () => {
 		expect(
 			parseArgs([
@@ -236,6 +274,14 @@ describe("parseArgs", () => {
 				"--listen",
 				"0.0.0.0:8080",
 			],
+			messages: [],
+		});
+	});
+
+	it("preserves update command arguments for the update handler", () => {
+		expect(parseArgs(["update", "--check", "--json"])).toMatchObject({
+			command: "update",
+			commandArgs: ["--check", "--json"],
 			messages: [],
 		});
 	});
@@ -372,6 +418,62 @@ describe("parseArgs", () => {
 		expect(parseArgs(["--record-scenario", "recorded.json"])).toMatchObject({
 			recordScenarioPath: "recorded.json",
 			messages: [],
+		});
+	});
+
+	it("parses exec golden-path flags without swallowing prompt text", () => {
+		const parsed = parseArgs([
+			"exec",
+			"--json",
+			"--full-auto",
+			"--sandbox",
+			"workspace-write",
+			"--tools",
+			"read, write,,shell",
+			"--output-schema",
+			"schema.json",
+			"--output-last-message",
+			"out.txt",
+			"--replay",
+			"replay.json",
+			"Summarize",
+			"the file",
+		]);
+
+		expect(parsed).toMatchObject({
+			command: "exec",
+			execJson: true,
+			execFullAuto: true,
+			sandbox: "workspace-write",
+			tools: ["read", "write", "shell"],
+			execOutputSchema: "schema.json",
+			execOutputLast: "out.txt",
+			replayScenarioPath: "replay.json",
+			messages: ["Summarize", "the file"],
+		});
+		expect(parsed.error).toBeUndefined();
+	});
+
+	it("parses exec resume selectors separately from global resume", () => {
+		expect(parseArgs(["exec", "--resume", "session-123"])).toMatchObject({
+			command: "exec",
+			execResumeId: "session-123",
+			messages: [],
+		});
+		expect(parseArgs(["exec", "--resume"])).toMatchObject({
+			command: "exec",
+			execUseLast: true,
+			messages: [],
+		});
+		expect(parseArgs(["exec", "--last"])).toMatchObject({
+			command: "exec",
+			execUseLast: true,
+			messages: [],
+		});
+		expect(parseArgs(["--resume", "config", "show"])).toMatchObject({
+			resume: true,
+			command: "config",
+			subcommand: "show",
 		});
 	});
 

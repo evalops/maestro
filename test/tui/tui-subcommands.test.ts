@@ -322,7 +322,7 @@ describe("Subcommand Suite Handlers", () => {
 			getUiState: vi.fn().mockReturnValue({
 				zenMode: false,
 				cleanMode: "off",
-				footerMode: "ensemble",
+				footerMode: "rich",
 				compactTools: false,
 			}),
 		});
@@ -572,6 +572,27 @@ describe("Subcommand Suite Handlers", () => {
 
 			expect(ctx.showInfo).toHaveBeenCalledWith(
 				expect.stringContaining("Authenticated: yes"),
+			);
+		});
+
+		it("awaits async authenticated status", async () => {
+			const { createAuthCommandHandler } = await import(
+				"../../src/cli-tui/commands/subcommands/auth-commands.js"
+			);
+
+			const deps = createAuthDeps();
+			deps.getAuthState.mockResolvedValue({
+				authenticated: true,
+				provider: "openai-codex",
+				mode: "app-server",
+			});
+			const handler = createAuthCommandHandler(deps);
+			const ctx = createMockContext("/auth status", "status");
+
+			await handler(ctx);
+
+			expect(ctx.showInfo).toHaveBeenCalledWith(
+				expect.stringContaining("Mode: app-server"),
 			);
 		});
 
@@ -941,7 +962,7 @@ describe("Subcommand Suite Handlers", () => {
 				getUiState: vi.fn().mockReturnValue({
 					zenMode: false,
 					cleanMode: "off",
-					footerMode: "ensemble",
+					footerMode: "rich",
 					compactTools: false,
 				}),
 			};
@@ -1126,7 +1147,7 @@ describe("Subcommand Suite Handlers", () => {
 			expect(deps.handleDiff).toHaveBeenCalled();
 		});
 
-		it("auth handler treats 'pro' as login mode", async () => {
+		it("auth handler rejects retired 'pro' login mode shorthand", async () => {
 			const { createAuthCommandHandler } = await import(
 				"../../src/cli-tui/commands/subcommands/auth-commands.js"
 			);
@@ -1145,7 +1166,11 @@ describe("Subcommand Suite Handlers", () => {
 
 			await handler(ctx);
 
-			expect(deps.handleLogin).toHaveBeenCalled();
+			expect(deps.handleLogin).not.toHaveBeenCalled();
+			expect(ctx.showError).toHaveBeenCalledWith("Unknown subcommand: pro");
+			expect(ctx.showInfo).toHaveBeenCalledWith(
+				expect.stringContaining("/auth login"),
+			);
 		});
 	});
 
@@ -1583,7 +1608,7 @@ describe("Subcommand Suite Handlers", () => {
 				getUiState: vi.fn().mockReturnValue({
 					zenMode: false,
 					cleanMode: "off",
-					footerMode: "ensemble",
+					footerMode: "rich",
 					compactTools: false,
 				}),
 			};
@@ -1666,7 +1691,7 @@ describe("Subcommand Suite Handlers", () => {
 				getUiState: vi.fn().mockReturnValue({
 					zenMode: false,
 					cleanMode: "off",
-					footerMode: "ensemble",
+					footerMode: "rich",
 					compactTools: false,
 				}),
 			};

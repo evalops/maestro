@@ -10,7 +10,7 @@
 	},
 	"counts": {
 		"events": 14,
-		"evidenceAnchors": 22,
+		"evidenceAnchors": 26,
 		"byKind": {
 			"session": 1,
 			"message": 2,
@@ -181,10 +181,14 @@
 				{
 					"kind": "tool_call",
 					"id": "call-edit"
+				},
+				{
+					"kind": "artifact",
+					"id": "file:docs/replay.md"
 				}
 			],
 			"toolName": "edit",
-			"relatedIds": ["call-edit"],
+			"relatedIds": ["call-edit", "file:docs/replay.md"],
 			"summary": "docs/replay.md | 128 bytes | 2 edits"
 		},
 		{
@@ -206,10 +210,14 @@
 				{
 					"kind": "tool_call",
 					"id": "call-edit"
+				},
+				{
+					"kind": "artifact",
+					"id": "file:docs/replay.md"
 				}
 			],
 			"toolName": "edit",
-			"relatedIds": ["call-edit"]
+			"relatedIds": ["call-edit", "file:docs/replay.md"]
 		},
 		{
 			"id": "trajectory:file-change:tool-write-1:call-write",
@@ -230,10 +238,14 @@
 				{
 					"kind": "tool_call",
 					"id": "call-write"
+				},
+				{
+					"kind": "artifact",
+					"id": "file:docs/new-replay.md"
 				}
 			],
 			"toolName": "write",
-			"relatedIds": ["call-write"],
+			"relatedIds": ["call-write", "file:docs/new-replay.md"],
 			"summary": "docs/new-replay.md | 64 bytes"
 		},
 		{
@@ -255,10 +267,14 @@
 				{
 					"kind": "tool_call",
 					"id": "call-write"
+				},
+				{
+					"kind": "artifact",
+					"id": "file:docs/new-replay.md"
 				}
 			],
 			"toolName": "write",
-			"relatedIds": ["call-write"]
+			"relatedIds": ["call-write", "file:docs/new-replay.md"]
 		},
 		{
 			"id": "trajectory:tool-result:tool-mcp-1:call-mcp-search",

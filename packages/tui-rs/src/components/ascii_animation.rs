@@ -346,7 +346,7 @@ impl AsciiAnimation {
 
 /// Static ASCII art logos
 pub mod logos {
-    /// Composer logo
+    /// Maestro logo
     pub const COMPOSER: &str = r"
    ___
   / __\___  _ __ ___  _ __   ___  ___  ___ _ __
