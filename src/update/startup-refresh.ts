@@ -46,7 +46,10 @@ const PACKAGE_MANAGER_ENV_ALLOWLIST = new Set([
 	"npm_config_prefix",
 ]);
 
-const packageManagerEnv = (env: NodeJS.ProcessEnv): NodeJS.ProcessEnv => {
+const packageManagerEnv = (
+	env: NodeJS.ProcessEnv,
+	options: { packageManager?: PackageManager; prefix?: string } = {},
+): NodeJS.ProcessEnv => {
 	const sanitized: NodeJS.ProcessEnv = {};
 	for (const [key, value] of Object.entries(env)) {
 		if (value === undefined) {
@@ -62,6 +65,10 @@ const packageManagerEnv = (env: NodeJS.ProcessEnv): NodeJS.ProcessEnv => {
 			continue;
 		}
 		sanitized[key] = value;
+	}
+	if (options.packageManager === "npm" && options.prefix) {
+		sanitized.NPM_CONFIG_PREFIX = options.prefix;
+		delete sanitized.npm_config_prefix;
 	}
 	return sanitized;
 };
@@ -377,13 +384,14 @@ const defaultInstallPackage = (
 	packageName: string,
 	version: string,
 	env: NodeJS.ProcessEnv = process.env,
+	prefix?: string,
 ) => {
 	const result = spawnSync(
 		packageManager,
 		["install", "-g", `${packageName}@${version}`],
 		{
 			encoding: "utf-8",
-			env: packageManagerEnv(env),
+			env: packageManagerEnv(env, { packageManager, prefix }),
 			stdio: "pipe",
 			timeout: DEFAULT_INSTALL_TIMEOUT_MS,
 		},
@@ -555,7 +563,13 @@ export async function attemptStartupUpdate(
 	const installPackage =
 		options.installPackage ??
 		((packageManager: PackageManager, name: string, version: string) =>
-			defaultInstallPackage(packageManager, name, version, env));
+			defaultInstallPackage(
+				packageManager,
+				name,
+				version,
+				env,
+				installContext.prefix,
+			));
 	const install = installPackage(
 		installContext.packageManager,
 		packageName,

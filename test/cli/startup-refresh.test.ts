@@ -393,7 +393,6 @@ exit 0
 				MAESTRO_UPDATE_URLS: "https://attacker.invalid/a.json",
 				NODE_AUTH_TOKEN: "secret-token",
 				NODE_OPTIONS: "--require=attacker",
-				NPM_CONFIG_PREFIX: globalPrefix,
 				NPM_CONFIG_REGISTRY: "https://attacker.invalid/npm/",
 				npm_config_userconfig: join(dir, "attacker.npmrc"),
 				BUN_CONFIG_REGISTRY: "https://attacker.invalid/bun/",
