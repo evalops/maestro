@@ -92,7 +92,6 @@ import type {
 	ApprovalMode,
 } from "./agent/action-approval.js";
 import type { Agent, Api, Model } from "./agent/index.js";
-import { getAllModes, getModelForMode } from "./agent/modes.js";
 import { loadScriptedScenarioFromSource } from "./agent/providers/scripted.js";
 import { scenarioSourceLabel } from "./agent/scenario-source.js";
 import { type ToolRetryMode, ToolRetryService } from "./agent/tool-retry.js";
@@ -135,7 +134,6 @@ import { reloadModelConfig } from "./models/registry.js";
 import { getPackageVersion } from "./package-metadata.js";
 import { resolveMaestroSystemPrompt } from "./prompts/system-prompt.js";
 import type { AuthMode } from "./providers/auth.js";
-import { registerBackgroundTaskShutdownHooks } from "./runtime/background-task-hooks.js";
 import { configureSafeMode } from "./safety/safe-mode.js";
 import { LocalSandbox } from "./sandbox/index.js";
 import { ServerRequestActionApprovalService } from "./server/approval-service.js";
@@ -216,7 +214,8 @@ async function captureStartupError(error: unknown): Promise<void> {
 	}
 }
 
-function printAllAgentModes(): void {
+async function printAllAgentModes(): Promise<void> {
+	const { getAllModes, getModelForMode } = await import("./agent/modes.js");
 	const lines = ["Agent modes:", ""];
 	for (const { mode, config } of getAllModes({ includeHidden: true })) {
 		const hiddenSuffix = config.visible === false ? " [hidden]" : "";
@@ -225,6 +224,21 @@ function printAllAgentModes(): void {
 		lines.push(`  model: ${getModelForMode(mode)}`);
 	}
 	console.log(lines.join("\n"));
+}
+
+function shouldRegisterBackgroundTaskShutdownHooks(
+	command: ReturnType<typeof parseArgs>["command"],
+	parsedTools: readonly string[] | undefined,
+): boolean {
+	if (command !== "exec") {
+		return true;
+	}
+	if (!parsedTools || parsedTools.length === 0) {
+		return true;
+	}
+	return (
+		parsedTools.includes("bash") || parsedTools.includes("background_tasks")
+	);
 }
 
 /**
@@ -593,7 +607,7 @@ export async function main(args: string[]) {
 				owner: "agent-runtime",
 			},
 		);
-		printAllAgentModes();
+		await printAllAgentModes();
 		await waitForStartupTelemetryForImmediateExit(
 			Promise.all([startupTelemetry, hiddenFlagTelemetry]).then(
 				() => undefined,
@@ -930,8 +944,16 @@ export async function main(args: string[]) {
 	// Configure safe mode settings (e.g., disabling certain tools in sandboxed environments)
 	configureSafeMode(true);
 
-	// Register shutdown hooks for background tasks to ensure clean cleanup
-	registerBackgroundTaskShutdownHooks();
+	// Register shutdown hooks for background tasks only when the selected tool
+	// set can start managed background work.
+	const useBackgroundTaskShutdownHooks =
+		shouldRegisterBackgroundTaskShutdownHooks(parsed.command, parsed.tools);
+	if (useBackgroundTaskShutdownHooks) {
+		const { registerBackgroundTaskShutdownHooks } = await import(
+			"./runtime/background-task-hooks.js"
+		);
+		registerBackgroundTaskShutdownHooks();
+	}
 
 	// Bootstrap Language Server Protocol for IDE integration
 	// This enables features like go-to-definition, hover info, and diagnostics
@@ -942,9 +964,20 @@ export async function main(args: string[]) {
 	initCheckpointService(process.cwd());
 	const disposeCheckpoint = (): void => disposeCheckpointService();
 	if (!checkpointCleanupRegistered) {
+		const exitAfterCheckpointSignal = !useBackgroundTaskShutdownHooks;
 		process.once("beforeExit", disposeCheckpoint);
-		process.once("SIGINT", disposeCheckpoint);
-		process.once("SIGTERM", disposeCheckpoint);
+		process.once("SIGINT", () => {
+			disposeCheckpoint();
+			if (exitAfterCheckpointSignal) {
+				process.exit(130);
+			}
+		});
+		process.once("SIGTERM", () => {
+			disposeCheckpoint();
+			if (exitAfterCheckpointSignal) {
+				process.exit(0);
+			}
+		});
 		checkpointCleanupRegistered = true;
 	}
 	startupProfiler.checkpoint("runtime:prepared");
