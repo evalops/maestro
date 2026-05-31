@@ -164,6 +164,9 @@ jobs:
           HUSKY: "0"
         run: |
           set -euo pipefail
+          hooks_dir="$(mktemp -d "${RUNNER_TEMP%/}/git-hooks-empty.XXXXXX")"
+          chmod 700 "$hooks_dir"
+          git config --local core.hooksPath "$hooks_dir"
           git remote set-url origin "https://x-access-token:${RELEASE_PR_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
           if [[ -z "$(git status --porcelain)" ]]; then
             if [[ "$BRANCH_EXISTS" == "true" ]] && [[ "$(git rev-parse HEAD)" != "$(git rev-parse "origin/$RELEASE_BRANCH")" ]]; then
