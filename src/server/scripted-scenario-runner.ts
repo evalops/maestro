@@ -477,6 +477,14 @@ function buildScriptedReleaseGateSummary(
 	};
 }
 
+function releaseGateFailsScriptedOutcome(
+	releaseGate: AgentTrajectoryScenarioReleaseGateSummary | undefined,
+): boolean {
+	return (
+		releaseGate?.releaseBlocking === true && releaseGate.satisfied !== true
+	);
+}
+
 export function evaluateScriptedScenario(
 	scenario: MaestroScriptedScenario,
 	options: { baseDir?: string } = {},
@@ -501,8 +509,7 @@ export function evaluateScriptedScenario(
 		workspaceManifest,
 	);
 	const observedOutcome: MaestroScenarioOutcome =
-		failed.length > 0 ||
-		(releaseGate?.releaseBlocking === true && releaseGate.satisfied !== true)
+		failed.length > 0 || releaseGateFailsScriptedOutcome(releaseGate)
 			? "fail"
 			: "pass";
 	const workspace = buildWorkspaceSummary(workspaceManifest);

@@ -702,6 +702,121 @@ describe("Platform A2A live evidence verifier", () => {
 		}
 	});
 
+	it("accepts realtime stream events without optional event types", async () => {
+		const dir = await mkdtemp(join(tmpdir(), "maestro-a2a-evidence-"));
+		try {
+			const delivery = realtimeDeliveryEvidence();
+			const stream = delivery.stream as Record<string, unknown>;
+			const events = stream.events as Record<string, unknown>[];
+			const path = await writeEvidenceBundle(
+				dir,
+				evidence({
+					realtimeDelivery: {
+						...delivery,
+						stream: {
+							...stream,
+							events: events.map(({ type: _type, ...event }) => event),
+						},
+					},
+				}),
+			);
+			await expect(
+				verifyPlatformA2ALiveEvidenceFile(path, {
+					requireRealtimeDeliveryEvidence: true,
+				}),
+			).resolves.toMatchObject({
+				realtimeDelivery: {
+					streamTerminalEventId: "stream_event_2",
+					pushTerminalNotificationId: "push_notification_2",
+				},
+			});
+		} finally {
+			await rm(dir, { force: true, recursive: true });
+		}
+	});
+
+	it("rejects unknown realtime stream event types", async () => {
+		const dir = await mkdtemp(join(tmpdir(), "maestro-a2a-evidence-"));
+		try {
+			const delivery = realtimeDeliveryEvidence();
+			const stream = delivery.stream as Record<string, unknown>;
+			const events = stream.events as Record<string, unknown>[];
+			const path = await writeEvidenceBundle(
+				dir,
+				evidence({
+					realtimeDelivery: {
+						...delivery,
+						stream: {
+							...stream,
+							events: events.map((event, index) =>
+								index === 0 ? { ...event, type: "noop" } : event,
+							),
+						},
+					},
+				}),
+			);
+			await expect(
+				verifyPlatformA2ALiveEvidenceFile(path, {
+					requireRealtimeDeliveryEvidence: true,
+				}),
+			).rejects.toThrow(/unsupported realtime stream event type noop/);
+		} finally {
+			await rm(dir, { force: true, recursive: true });
+		}
+	});
+
+	it("accepts task and message realtime stream event types", async () => {
+		const dir = await mkdtemp(join(tmpdir(), "maestro-a2a-evidence-"));
+		try {
+			const delivery = realtimeDeliveryEvidence();
+			const stream = delivery.stream as Record<string, unknown>;
+			const events = stream.events as Record<string, unknown>[];
+			const path = await writeEvidenceBundle(
+				dir,
+				evidence({
+					realtimeDelivery: {
+						...delivery,
+						stream: {
+							...stream,
+							events: [
+								{
+									id: "stream_event_task",
+									type: "task",
+									taskId: "task_1",
+									contextId: "context_1",
+									messageId: "message_1",
+									terminal: false,
+									observedAt: "2026-05-30T08:00:00.001Z",
+								},
+								{
+									id: "stream_event_message",
+									type: "message",
+									taskId: "task_1",
+									contextId: "context_1",
+									messageId: "message_1",
+									terminal: false,
+									observedAt: "2026-05-30T08:00:00.002Z",
+								},
+								...events,
+							],
+						},
+					},
+				}),
+			);
+			await expect(
+				verifyPlatformA2ALiveEvidenceFile(path, {
+					requireRealtimeDeliveryEvidence: true,
+				}),
+			).resolves.toMatchObject({
+				realtimeDelivery: {
+					streamTerminalEventId: "stream_event_2",
+				},
+			});
+		} finally {
+			await rm(dir, { force: true, recursive: true });
+		}
+	});
+
 	it("rejects missing realtime delivery evidence when required", async () => {
 		const dir = await mkdtemp(join(tmpdir(), "maestro-a2a-evidence-"));
 		try {
