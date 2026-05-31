@@ -10,7 +10,10 @@ import {
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { getPackageName } from "../../src/package-metadata.js";
+import {
+	getPackageName,
+	getPackageVersion,
+} from "../../src/package-metadata.js";
 import {
 	attemptStartupUpdate,
 	isInstalledPackageEntrypoint,
@@ -99,6 +102,8 @@ describe("attemptStartupUpdate", () => {
 	const tempDirs: string[] = [];
 
 	afterEach(() => {
+		delete process.env.MAESTRO_PACKAGE_NAME;
+		delete process.env.MAESTRO_VERSION;
 		for (const dir of tempDirs.splice(0)) {
 			rmSync(dir, { force: true, recursive: true });
 		}
@@ -255,6 +260,42 @@ describe("attemptStartupUpdate", () => {
 		expect(checkForUpdateImpl).toHaveBeenCalledTimes(1);
 	});
 
+	it("uses sanitized env instead of dotenv-mutated process metadata", async () => {
+		process.env.MAESTRO_PACKAGE_NAME = "@attacker/maestro";
+		process.env.MAESTRO_VERSION = "999.0.0";
+		const checkForUpdateImpl = vi.fn().mockResolvedValue({
+			currentVersion: "0.10.0",
+			latestVersion: "0.10.0",
+			isUpdateAvailable: false,
+			sourceUrl: "https://storage.googleapis.com/example/maestro/version.json",
+		});
+		const sanitizedEnv: NodeJS.ProcessEnv = {};
+		const outcome = await attemptStartupUpdate({
+			argv: installedArgv,
+			currentVersion: getPackageVersion(sanitizedEnv),
+			env: sanitizedEnv,
+			isTty: true,
+			checkForUpdateImpl,
+		});
+		expect(outcome.status).toBe("current");
+		expect(checkForUpdateImpl).toHaveBeenCalledWith(
+			getPackageVersion(sanitizedEnv),
+			expect.objectContaining({
+				urls: expect.arrayContaining([
+					expect.stringContaining(
+						encodeURIComponent(getPackageName(sanitizedEnv)),
+					),
+				]),
+			}),
+		);
+		const checkOptions = checkForUpdateImpl.mock.calls[0]?.[1] as
+			| { urls?: string[] }
+			| undefined;
+		expect(checkOptions?.urls?.join("\n")).not.toContain(
+			encodeURIComponent("@attacker/maestro"),
+		);
+	});
+
 	it("installs and restarts when a newer version is available", async () => {
 		const installPackage = vi.fn().mockReturnValue({ status: 0 });
 		const restart = vi.fn().mockReturnValue({ status: 7 });
@@ -309,6 +350,59 @@ describe("attemptStartupUpdate", () => {
 		});
 		expect(installPackage).toHaveBeenCalledWith("bun", packageName, "0.10.1");
 		expect(outcome).toMatchObject({ status: "updated" });
+	});
+
+	it("preserves detected Bun home during sanitized automatic installs", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "maestro-startup-bun-env-"));
+		tempDirs.push(dir);
+		const binDir = join(dir, "bin");
+		const bunHome = join(dir, "custom-bun-home");
+		const bunGlobalPrefix = join(bunHome, "install", "global");
+		mkdirSync(binDir, { recursive: true });
+		const envLog = join(dir, "bun-env.log");
+		const bunShim = join(binDir, "bun");
+		writeFileSync(
+			bunShim,
+			`#!/bin/sh
+env > "${envLog}"
+exit 0
+`,
+			"utf8",
+		);
+		chmodSync(bunShim, 0o755);
+
+		const outcome = await attemptStartupUpdate({
+			argv: [
+				"/usr/local/bin/node",
+				`${bunGlobalPrefix}/node_modules/${packageName}/dist/cli.js`,
+			],
+			currentVersion: "0.10.0",
+			env: {
+				PATH: `${binDir}:${process.env.PATH ?? ""}`,
+				BUN_CONFIG_REGISTRY: "https://attacker.invalid/bun/",
+			},
+			globalInstallContexts: [
+				{
+					packageManager: "bun",
+					prefix: bunGlobalPrefix,
+				},
+			],
+			isTty: true,
+			statePath: statePath(),
+			checkForUpdateImpl: async () => ({
+				currentVersion: "0.10.0",
+				latestVersion: "0.10.1",
+				isUpdateAvailable: true,
+				sourceUrl:
+					"https://storage.googleapis.com/example/maestro/version.json",
+			}),
+			restart: false,
+		});
+
+		expect(outcome.status).toBe("updated");
+		const installedEnv = readFileSync(envLog, "utf8");
+		expect(installedEnv).toContain(`BUN_INSTALL=${bunHome}`);
+		expect(installedEnv).not.toContain("BUN_CONFIG_REGISTRY=");
 	});
 
 	it("can install without restarting for manual update commands", async () => {

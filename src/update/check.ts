@@ -44,6 +44,7 @@ const npmLatestUrl = (packageName = getPackageName()): string => {
 export const resolveUpdateUrls = (
 	options: Pick<CheckForUpdateOptions, "url" | "urls"> = {},
 	env: NodeJS.ProcessEnv = process.env,
+	packageName = getPackageName(env),
 ): string[] => {
 	const explicitUrls = options.urls?.map((url) => url.trim()).filter(Boolean);
 	if (explicitUrls && explicitUrls.length > 0) {
@@ -59,7 +60,7 @@ export const resolveUpdateUrls = (
 	if (env.MAESTRO_UPDATE_URL?.trim()) {
 		return [env.MAESTRO_UPDATE_URL.trim()];
 	}
-	return [DEFAULT_GCS_UPDATE_URL, npmLatestUrl()];
+	return [DEFAULT_GCS_UPDATE_URL, npmLatestUrl(packageName)];
 };
 
 const toErrorMessage = (error: unknown): string => {
