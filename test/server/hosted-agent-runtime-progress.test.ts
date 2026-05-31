@@ -2846,6 +2846,49 @@ describe("hosted AgentRuntime progress recorder", () => {
 		} satisfies AgentEvent);
 		recorder.recordAgentEvent({
 			type: "tool_execution_start",
+			toolCallId: "call_fine_grained_pat",
+			toolName: "shell",
+			displayName: "GitHub token github_pat_11AA22BB33CC44DD55",
+			summaryLabel: "Using fine-grained token",
+			args: {},
+		});
+		for (const [toolCallId, token] of [
+			["call_github_oauth_token", "gho_11AA22BB33CC44DD55"],
+			["call_github_user_token", "ghu_11AA22BB33CC44DD55"],
+			["call_github_server_token", "ghs_11AA22BB33CC44DD55"],
+			["call_github_refresh_token", "ghr_11AA22BB33CC44DD55"],
+		] as const) {
+			recorder.recordAgentEvent({
+				type: "tool_execution_start",
+				toolCallId,
+				toolName: "shell",
+				displayName: `GitHub token ${token}`,
+				summaryLabel: "Using GitHub token prefix",
+				args: {},
+			});
+		}
+		recorder.recordAgentEvent({
+			type: "tool_execution_start",
+			toolCallId: "call_plain_command",
+			toolName: "shell",
+			displayName: "git push",
+			summaryLabel: "rm -rf /tmp/plain",
+			args: {},
+		});
+		recorder.recordAgentEvent({
+			type: "tool_execution_update",
+			toolCallId: "call_plain_command",
+			toolName: "shell",
+			displayName: "git push",
+			summaryLabel: "rm -rf /tmp/plain",
+			args: {},
+			partialResult: {
+				content: [{ type: "text", text: "partial output" }],
+				toolExecutionId: "texec_plain_command",
+			},
+		});
+		recorder.recordAgentEvent({
+			type: "tool_execution_start",
 			toolCallId: "subagent_secret",
 			toolName: "codex.subagent.spawnAgent",
 			displayName: "bash -lc 'echo $SUBAGENT_TOKEN'",
@@ -2854,7 +2897,8 @@ describe("hosted AgentRuntime progress recorder", () => {
 				codexTool: "spawnAgent",
 				receiverThreadIds: ["child-thread-secret"],
 				childRunIds: ["agent-run-secret"],
-				prompt: "Review the hosted progress redaction path",
+				prompt:
+					"Review github_pat_11AA22BB33CC44DD55 before running bash -lc 'echo $TOKEN'",
 			},
 		});
 		recorder.recordAgentEvent({
@@ -2927,6 +2971,41 @@ describe("hosted AgentRuntime progress recorder", () => {
 		expect(recordStep).toHaveBeenCalledWith(
 			expect.objectContaining({
 				step: expect.objectContaining({
+					id: "maestro:session_1:tool:call_fine_grained_pat",
+					name: "[redacted]",
+				}),
+			}),
+		);
+		for (const toolCallId of [
+			"call_github_oauth_token",
+			"call_github_user_token",
+			"call_github_server_token",
+			"call_github_refresh_token",
+		]) {
+			expect(recordStep).toHaveBeenCalledWith(
+				expect.objectContaining({
+					step: expect.objectContaining({
+						id: `maestro:session_1:tool:${toolCallId}`,
+						name: "[redacted]",
+					}),
+				}),
+			);
+		}
+		expect(recordStep).toHaveBeenCalledWith(
+			expect.objectContaining({
+				step: expect.objectContaining({
+					id: "maestro:session_1:tool:call_plain_command",
+					input: expect.objectContaining({
+						display_name: "[redacted]",
+						summary_label: "[redacted]",
+					}),
+					name: "[redacted]",
+				}),
+			}),
+		);
+		expect(recordStep).toHaveBeenCalledWith(
+			expect.objectContaining({
+				step: expect.objectContaining({
 					name: "Prompt failed",
 					errorMessage: "[redacted]",
 				}),
@@ -2945,6 +3024,7 @@ describe("hosted AgentRuntime progress recorder", () => {
 				attributes: expect.objectContaining({
 					display_name: "[redacted]",
 					summary_label: "[redacted]",
+					tool_call_id: "call_plain_command",
 				}),
 			}),
 		);
@@ -2962,6 +3042,7 @@ describe("hosted AgentRuntime progress recorder", () => {
 			expect.objectContaining({
 				workItem: expect.objectContaining({
 					title: "[redacted]",
+					goal: "[redacted]",
 					payload: expect.objectContaining({
 						display_name: "[redacted]",
 						summary_label: "[redacted]",
@@ -2982,8 +3063,10 @@ describe("hosted AgentRuntime progress recorder", () => {
 			expect.objectContaining({
 				contextPayload: expect.objectContaining({
 					display_name: "[redacted]",
+					prompt: "[redacted]",
 					summary_label: "[redacted]",
 				}),
+				reason: "Codex subagent spawn requested by Maestro: [redacted]",
 			}),
 		);
 		expect(waitRun).toHaveBeenCalledWith(

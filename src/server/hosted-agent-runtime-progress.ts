@@ -536,10 +536,19 @@ function sanitizeOutboundText(value: string | undefined): string | undefined {
 	if (!text) {
 		return undefined;
 	}
-	if (/\b(?:sk|ghp|xoxb|xoxp|AKIA|ASIA)[A-Za-z0-9_-]{8,}\b/.test(text)) {
+	if (
+		/\b(?:sk|gh[pousr]_?|github_pat_|xoxb|xoxp|AKIA|ASIA)[A-Za-z0-9_-]{8,}\b/.test(
+			text,
+		)
+	) {
 		return REDACTED;
 	}
-	if (/\b(?:bash|sh|zsh|powershell|cmd)\b|[;&|`$()]/i.test(text)) {
+	if (
+		/\b(?:bash|sh|zsh|powershell|cmd)\b|[;&|`$()]/i.test(text) ||
+		/^\s*(?:git\s+\S+|rm\s+-[A-Za-z]*[rf][A-Za-z]*\s+\S+|sudo\s+\S+|curl\s+\S+|wget\s+\S+|npm\s+\S+|pnpm\s+\S+|bun\s+\S+|node\s+\S+|python(?:3)?\s+\S+|pip(?:3)?\s+\S+|docker\s+\S+|kubectl\s+\S+|terraform\s+\S+)/i.test(
+			text,
+		)
+	) {
 		return REDACTED;
 	}
 	return text.length > MAX_TEXT_FIELD_LENGTH
@@ -1890,6 +1899,7 @@ export class HostedAgentRuntimeProgressRecorder {
 		}
 		const toolExecutionId = materializedToolExecutionId(event);
 		const prompt = nonEmptyString(event.args.prompt);
+		const sanitizedPrompt = sanitizeOutboundText(prompt);
 		const model = nonEmptyString(event.args.model);
 		const reasoningEffort = nonEmptyString(event.args.reasoningEffort);
 		const codexSubagentOperationName = codexSubagentOperation(codexTool);
@@ -1907,7 +1917,7 @@ export class HostedAgentRuntimeProgressRecorder {
 					? PlatformAgentWorkItemStateValue.Waiting
 					: PlatformAgentWorkItemStateValue.Running,
 			title: sanitizedToolDisplayName(event),
-			...(prompt ? { goal: prompt } : {}),
+			...(sanitizedPrompt ? { goal: sanitizedPrompt } : {}),
 			nextAction: codexSubagentNextAction(codexTool),
 			...(toolExecutionId ? { toolExecutionId } : {}),
 			evidenceRefs: [
@@ -1950,7 +1960,7 @@ export class HostedAgentRuntimeProgressRecorder {
 				childRunIds,
 				linkedWorkItemIds,
 				workGraph,
-				prompt,
+				prompt: sanitizedPrompt,
 				model,
 				reasoningEffort,
 			});
