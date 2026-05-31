@@ -1077,8 +1077,13 @@ describe("CLI integration", () => {
 
 	it("runs SessionEnd hooks after a CLI prompt completes", async () => {
 		let sessionEndInput: Record<string, unknown> | undefined;
+		const [{ registerHook: registerCurrentHook }, { main: currentMain }] =
+			await Promise.all([
+				import("../../src/hooks/index.js"),
+				import("../../src/main.js"),
+			]);
 
-		registerHook("SessionEnd", {
+		registerCurrentHook("SessionEnd", {
 			type: "callback",
 			callback: async (input) => {
 				sessionEndInput = input as Record<string, unknown>;
@@ -1086,7 +1091,7 @@ describe("CLI integration", () => {
 			},
 		});
 
-		await main(["hello"]);
+		await currentMain(["hello"]);
 
 		expect(sessionEndInput).toMatchObject({
 			hook_event_name: "SessionEnd",
