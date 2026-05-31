@@ -652,7 +652,7 @@ describe("hosted AgentRuntime progress recorder", () => {
 				receiverThreadIds: ["child-thread-secret"],
 				childRunIds: ["agent-run-secret"],
 				prompt:
-					"Please investigate the hosted progress regression.\nbunx vitest --run test/server/hosted-agent-runtime-progress.test.ts",
+					"Please investigate the hosted progress regression.\nRun echo $SUBAGENT_TOKEN",
 			},
 		});
 		await recorder.flush();

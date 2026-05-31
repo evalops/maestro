@@ -599,11 +599,28 @@ function containsShellCommandAtStart(value: string): boolean {
 	) {
 		return true;
 	}
+	if (containsGenericShellCommandSyntax(value)) {
+		return true;
+	}
 	return (
 		/^\s*(?:\.{1,2}\/|~\/)[^\s]+(?:\s+\S+)*\s*$/.test(value) ||
 		/^\s*(?:\.{0,2}\/|[A-Za-z0-9_.-]*\/)[^\s]+(?:\s+\S+)*(?:\s*(?:&&|\|\||[;|`])|\$\()/i.test(
 			value,
 		)
+	);
+}
+
+function containsGenericShellCommandSyntax(value: string): boolean {
+	const trimmed = value.trim();
+	if (/^(?:[A-Za-z_][A-Za-z0-9_]*=\S+\s+)+\S+(?:\s+\S+)*$/.test(trimmed)) {
+		return true;
+	}
+	const command = /^[a-z][a-z0-9_.-]*(?:\s+(.+))?$/.exec(trimmed);
+	if (!command?.[1]) {
+		return false;
+	}
+	return /(?:\$[A-Za-z_][A-Za-z0-9_]*|\$\{|`|\$\(|~\/|\.{1,2}\/|&&|\|\||[;|<>])/.test(
+		command[1],
 	);
 }
 
