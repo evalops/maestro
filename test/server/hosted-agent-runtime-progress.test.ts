@@ -629,6 +629,58 @@ describe("hosted AgentRuntime progress recorder", () => {
 		});
 	});
 
+	it("redacts Codex subagent prompts before Platform egress", async () => {
+		const delegateAgent = vi.fn(async () => ({
+			delegation: {
+				id: "delegation_secret",
+				status: PlatformDelegationStatusValue.Pending,
+			},
+		}));
+		const { recorder, recordWorkItem } = createRecorder({
+			agentId: "maestro-codex-parent",
+			delegateAgent,
+		});
+
+		recorder.recordAgentEvent({
+			type: "tool_execution_start",
+			toolCallId: "spawn-secret-command",
+			toolName: "codex.subagent.spawnAgent",
+			displayName: "bash -lc 'echo $SUBAGENT_TOKEN'",
+			summaryLabel: "Spawn with sk_live_SUBAGENT_12345678",
+			args: {
+				codexTool: "spawnAgent",
+				receiverThreadIds: ["child-thread-secret"],
+				childRunIds: ["agent-run-secret"],
+				prompt:
+					"Please run npm test -- --runInBand with sk_live_SUBAGENT_12345678",
+			},
+		});
+		await recorder.flush();
+
+		expect(recordWorkItem).toHaveBeenCalledWith(
+			expect.objectContaining({
+				workItem: expect.objectContaining({
+					title: "[redacted]",
+					goal: "[redacted]",
+					payload: expect.objectContaining({
+						display_name: "[redacted]",
+						summary_label: "[redacted]",
+					}),
+				}),
+			}),
+		);
+		expect(delegateAgent).toHaveBeenCalledWith(
+			expect.objectContaining({
+				contextPayload: expect.objectContaining({
+					display_name: "[redacted]",
+					prompt: "[redacted]",
+					summary_label: "[redacted]",
+				}),
+				reason: "Codex subagent spawn requested by Maestro: [redacted]",
+			}),
+		);
+	});
+
 	it("resolves every Codex delegation targeted by a multi-child wait", async () => {
 		let delegationIndex = 0;
 		const delegateAgent = vi.fn(
