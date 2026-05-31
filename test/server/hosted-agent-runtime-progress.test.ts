@@ -305,4 +305,87 @@ describe("hosted AgentRuntime progress recorder", () => {
 			}),
 		);
 	});
+
+	it("redacts command-like and secret-like outbound progress fields", async () => {
+		const { recorder, recordStep, waitRun, resumeRun } = createRecorder();
+		recorder.recordAgentEvent({
+			type: "tool_execution_start",
+			toolCallId: "call_secret",
+			toolName: "shell",
+			displayName: "bash -lc 'echo $TOKEN'",
+			summaryLabel: "Ran rm -rf /tmp/sk_live_SECRET_12345678",
+			args: { command: "rm -rf /tmp/sk_live_SECRET_12345678" },
+		});
+		recorder.recordPromptFailure("failed with sk_live_SECRET_12345678");
+		recorder.recordServerRequestEvent({
+			type: "registered",
+			request: {
+				id: "approval_2",
+				kind: "approval",
+				sessionId: "session_1",
+				callId: "call_secret",
+				toolName: "shell",
+				args: {},
+				reason: "Detected command: rm -rf /tmp/sk_live_SECRET_12345678",
+				timestamp: Date.now(),
+				timeoutMs: 60_000,
+				displayName: "sh -c whoami",
+				summaryLabel: "Ran sh -c whoami",
+			},
+		});
+		recorder.recordServerRequestEvent({
+			type: "resolved",
+			request: {
+				id: "approval_2",
+				kind: "approval",
+				sessionId: "session_1",
+				callId: "call_secret",
+				toolName: "shell",
+				args: {},
+				reason: "reason",
+				timestamp: Date.now(),
+				timeoutMs: 60_000,
+			},
+			resolution: "denied",
+			resolvedBy: "user",
+			reason: "Contains sk_live_SECRET_12345678",
+		});
+		await recorder.flush();
+		expect(recordStep).toHaveBeenCalledWith(
+			expect.objectContaining({
+				step: expect.objectContaining({
+					input: expect.objectContaining({
+						display_name: "[redacted]",
+						summary_label: "[redacted]",
+					}),
+				}),
+			}),
+		);
+		expect(recordStep).toHaveBeenCalledWith(
+			expect.objectContaining({
+				step: expect.objectContaining({
+					name: "Prompt failed",
+					errorMessage: "[redacted]",
+				}),
+			}),
+		);
+		expect(waitRun).toHaveBeenCalledWith(
+			expect.objectContaining({
+				wait: expect.objectContaining({
+					reason: "[redacted]",
+					payload: expect.objectContaining({
+						display_name: "[redacted]",
+						summary_label: "[redacted]",
+					}),
+				}),
+			}),
+		);
+		expect(resumeRun).toHaveBeenCalledWith(
+			expect.objectContaining({
+				payload: expect.objectContaining({
+					reason: "[redacted]",
+				}),
+			}),
+		);
+	});
 });
