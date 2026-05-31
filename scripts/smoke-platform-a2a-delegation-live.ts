@@ -151,10 +151,13 @@ export interface PlatformA2ARealtimePushEvidence {
 
 export interface PlatformA2ARealtimePushNotificationEvidence {
 	id: string;
+	kind?: string;
+	type?: string;
 	taskId: string;
 	contextId?: string;
 	messageId?: string;
 	state?: string;
+	artifactIds?: string[];
 	accepted: boolean;
 	terminal: boolean;
 	errorClass?: string;
@@ -1332,15 +1335,39 @@ function sanitizeRealtimePushNotificationEvidence(
 ): PlatformA2ARealtimePushNotificationEvidence {
 	return {
 		id: requireEvidenceString(notification, "id", label),
+		kind: optionalEvidenceString(notification, "kind", label),
+		type: optionalEvidenceString(notification, "type", label),
 		taskId: requireEvidenceString(notification, "taskId", label),
 		contextId: optionalEvidenceString(notification, "contextId", label),
 		messageId: optionalEvidenceString(notification, "messageId", label),
 		state: optionalEvidenceString(notification, "state", label),
+		artifactIds: optionalRealtimePushArtifactIds(notification, label),
 		accepted: requireEvidenceBoolean(notification, "accepted", label),
 		terminal: requireEvidenceBoolean(notification, "terminal", label),
 		errorClass: optionalEvidenceString(notification, "errorClass", label),
 		observedAt: requireEvidenceString(notification, "observedAt", label),
 	};
+}
+
+function optionalRealtimePushArtifactIds(
+	notification: Record<string, unknown>,
+	label: string,
+): string[] | undefined {
+	const artifactIds = optionalEvidenceStringArray(notification, "artifactIds", label);
+	if (artifactIds && artifactIds.length > 0) {
+		return artifactIds;
+	}
+	const artifact = notification.artifact;
+	if (artifact === undefined || artifact === null) {
+		return artifactIds;
+	}
+	return [
+		requireEvidenceString(
+			requireEvidenceRecord(artifact, `${label}.artifact`),
+			"artifactId",
+			`${label}.artifact`,
+		),
+	];
 }
 
 function requireEvidenceRecord(

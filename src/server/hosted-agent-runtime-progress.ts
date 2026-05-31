@@ -528,40 +528,6 @@ function toolDisplayName(event: {
 	return event.displayName ?? event.summaryLabel ?? event.toolName;
 }
 
-const MAX_TEXT_FIELD_LENGTH = 160;
-const REDACTED = "[redacted]";
-
-function sanitizeOutboundText(value: string | undefined): string | undefined {
-	const text = nonEmptyString(value);
-	if (!text) {
-		return undefined;
-	}
-	if (
-		/\b(?:sk|gh[pousr]_?|github_pat_|xoxb|xoxp|AKIA|ASIA)[A-Za-z0-9_-]{8,}\b/.test(
-			text,
-		)
-	) {
-		return REDACTED;
-	}
-	if (
-		/\b(?:bash|sh|zsh|powershell|cmd)\b|[;&|`$()]/i.test(text) ||
-		/\b(?:rm|curl|wget|git|npm|bun|pnpm|yarn)\s+\S+/i.test(text)
-	) {
-		return REDACTED;
-	}
-	return text.length > MAX_TEXT_FIELD_LENGTH
-		? `${text.slice(0, MAX_TEXT_FIELD_LENGTH)}...`
-		: text;
-}
-
-function sanitizedToolDisplayName(event: {
-	displayName?: string;
-	summaryLabel?: string;
-	toolName: string;
-}): string {
-	return sanitizeOutboundText(toolDisplayName(event)) ?? event.toolName;
-}
-
 function materializedToolExecutionId(event: {
 	toolCallId: string;
 	toolExecutionId?: string;
@@ -1897,8 +1863,6 @@ export class HostedAgentRuntimeProgressRecorder {
 		}
 		const toolExecutionId = materializedToolExecutionId(event);
 		const prompt = nonEmptyString(event.args.prompt);
-		const sanitizedPrompt = sanitizeOutboundText(prompt);
-		const delegationPrompt = sanitizeOutboundText(prompt);
 		const model = nonEmptyString(event.args.model);
 		const reasoningEffort = nonEmptyString(event.args.reasoningEffort);
 		const codexSubagentOperationName = codexSubagentOperation(codexTool);
@@ -1915,8 +1879,8 @@ export class HostedAgentRuntimeProgressRecorder {
 				codexTool === "wait"
 					? PlatformAgentWorkItemStateValue.Waiting
 					: PlatformAgentWorkItemStateValue.Running,
-			title: sanitizedToolDisplayName(event),
-			...(sanitizedPrompt ? { goal: sanitizedPrompt } : {}),
+			title: toolDisplayName(event),
+			...(prompt ? { goal: prompt } : {}),
 			nextAction: codexSubagentNextAction(codexTool),
 			...(toolExecutionId ? { toolExecutionId } : {}),
 			evidenceRefs: [
@@ -1930,8 +1894,8 @@ export class HostedAgentRuntimeProgressRecorder {
 				codex_tool: codexTool,
 				tool_call_id: event.toolCallId,
 				tool_name: event.toolName,
-				display_name: sanitizeOutboundText(event.displayName),
-				summary_label: sanitizeOutboundText(event.summaryLabel),
+				display_name: event.displayName,
+				summary_label: event.summaryLabel,
 				codex_subagent_operation: codexSubagentOperationName,
 				codex_subagent_edge_status: activeCodexSubagentEdgeStatus(codexTool),
 				sender_thread_id: nonEmptyString(event.args.senderThreadId),
@@ -1959,7 +1923,7 @@ export class HostedAgentRuntimeProgressRecorder {
 				childRunIds,
 				linkedWorkItemIds,
 				workGraph,
-				prompt: delegationPrompt,
+				prompt,
 				model,
 				reasoningEffort,
 			});
@@ -2005,8 +1969,8 @@ export class HostedAgentRuntimeProgressRecorder {
 					owner_child_run_id: input.ownerChildRunId,
 					tool_call_id: input.event.toolCallId,
 					tool_name: input.event.toolName,
-					display_name: sanitizeOutboundText(input.event.displayName),
-					summary_label: sanitizeOutboundText(input.event.summaryLabel),
+					display_name: input.event.displayName,
+					summary_label: input.event.summaryLabel,
 					from_agent_id: fromAgentId,
 					to_agent_id: toAgentId,
 					required_capability: requiredCapability,

@@ -738,6 +738,169 @@ describe("Platform A2A live evidence verifier", () => {
 		}
 	});
 
+	it("accepts strict artifact stream events without message ids", async () => {
+		const dir = await mkdtemp(join(tmpdir(), "maestro-a2a-evidence-"));
+		try {
+			const delivery = realtimeDeliveryEvidence();
+			const stream = delivery.stream as Record<string, unknown>;
+			const events = stream.events as Record<string, unknown>[];
+			const path = await writeEvidenceBundle(
+				dir,
+				evidence({
+					realtimeDelivery: {
+						...delivery,
+						stream: {
+							...stream,
+							events: events.map((event, index) => {
+								if (index !== 1) {
+									return event;
+								}
+								const { messageId: _messageId, ...terminalArtifactEvent } =
+									event;
+								return terminalArtifactEvent;
+							}),
+						},
+					},
+				}),
+			);
+			await expect(
+				verifyPlatformA2ALiveEvidenceFile(path, {
+					requireRealtimeDeliveryEvidence: true,
+				}),
+			).resolves.toMatchObject({
+				realtimeDelivery: {
+					streamTerminalEventId: "stream_event_2",
+					pushTerminalNotificationId: "push_notification_2",
+				},
+			});
+		} finally {
+			await rm(dir, { force: true, recursive: true });
+		}
+	});
+
+	it("rejects non-terminal artifact stream events without artifact ids or message ids", async () => {
+		const dir = await mkdtemp(join(tmpdir(), "maestro-a2a-evidence-"));
+		try {
+			const delivery = realtimeDeliveryEvidence();
+			const stream = delivery.stream as Record<string, unknown>;
+			const events = stream.events as Record<string, unknown>[];
+			const path = await writeEvidenceBundle(
+				dir,
+				evidence({
+					realtimeDelivery: {
+						...delivery,
+						stream: {
+							...stream,
+							events: events.map((event, index) => {
+								if (index !== 0) {
+									return event;
+								}
+								const { messageId: _messageId, ...artifactEvent } = event;
+								return { ...artifactEvent, type: "artifactUpdate" };
+							}),
+						},
+					},
+				}),
+			);
+			await expect(
+				verifyPlatformA2ALiveEvidenceFile(path, {
+					requireRealtimeDeliveryEvidence: true,
+				}),
+			).rejects.toThrow(
+				/realtime stream event stream_event_1 requires messageId/,
+			);
+		} finally {
+			await rm(dir, { force: true, recursive: true });
+		}
+	});
+
+	it("accepts task-scoped realtime artifact push notifications without message ids", async () => {
+		const dir = await mkdtemp(join(tmpdir(), "maestro-a2a-evidence-"));
+		try {
+			const delivery = realtimeDeliveryEvidence();
+			const push = delivery.push as Record<string, unknown>;
+			const notifications = push.notifications as Record<string, unknown>[];
+			const path = await writeEvidenceBundle(
+				dir,
+				evidence({
+					realtimeDelivery: {
+						...delivery,
+						push: {
+							...push,
+							notifications: notifications.map((notification) => {
+								if (notification.id !== "push_notification_2") {
+									return notification;
+								}
+								const {
+									messageId: _messageId,
+									state: _state,
+									...artifactNotification
+								} = notification;
+								return {
+									...artifactNotification,
+									kind: "artifactUpdate",
+									artifactIds: ["artifact_1"],
+								};
+							}),
+						},
+					},
+				}),
+			);
+			await expect(
+				verifyPlatformA2ALiveEvidenceFile(path, {
+					requireRealtimeDeliveryEvidence: true,
+				}),
+			).resolves.toMatchObject({
+				realtimeDelivery: {
+					streamTerminalEventId: "stream_event_2",
+					pushTerminalNotificationId: "push_notification_2",
+				},
+			});
+		} finally {
+			await rm(dir, { force: true, recursive: true });
+		}
+	});
+
+	it("rejects realtime artifact push notifications without artifact identity or message ids", async () => {
+		const dir = await mkdtemp(join(tmpdir(), "maestro-a2a-evidence-"));
+		try {
+			const delivery = realtimeDeliveryEvidence();
+			const push = delivery.push as Record<string, unknown>;
+			const notifications = push.notifications as Record<string, unknown>[];
+			const path = await writeEvidenceBundle(
+				dir,
+				evidence({
+					realtimeDelivery: {
+						...delivery,
+						push: {
+							...push,
+							notifications: notifications.map((notification) => {
+								if (notification.id !== "push_notification_2") {
+									return notification;
+								}
+								const { messageId: _messageId, ...artifactNotification } =
+									notification;
+								return {
+									...artifactNotification,
+									kind: "artifactUpdate",
+								};
+							}),
+						},
+					},
+				}),
+			);
+			await expect(
+				verifyPlatformA2ALiveEvidenceFile(path, {
+					requireRealtimeDeliveryEvidence: true,
+				}),
+			).rejects.toThrow(
+				/realtime push notification push_notification_2 requires messageId/,
+			);
+		} finally {
+			await rm(dir, { force: true, recursive: true });
+		}
+	});
+
 	it("rejects unknown realtime stream event types", async () => {
 		const dir = await mkdtemp(join(tmpdir(), "maestro-a2a-evidence-"));
 		try {
