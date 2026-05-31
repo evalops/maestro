@@ -528,6 +528,59 @@ function toolDisplayName(event: {
 	return event.displayName ?? event.summaryLabel ?? event.toolName;
 }
 
+const MAX_TEXT_FIELD_LENGTH = 160;
+const REDACTED = "[redacted]";
+
+function sanitizeOutboundText(value: string | undefined): string | undefined {
+	const text = nonEmptyString(value);
+	if (!text) {
+		return undefined;
+	}
+	if (
+		/\b(?:sk|gh[pousr]_?|github_pat_|xoxb|xoxp|AKIA|ASIA)[A-Za-z0-9_-]{8,}\b/.test(
+			text,
+		)
+	) {
+		return REDACTED;
+	}
+	if (
+		/\b(?:bash|sh|zsh|powershell|cmd)\b|[;&|`$()]/i.test(text) ||
+		/^\s*(?:git\s+\S+|rm\s+-[A-Za-z]*[rf][A-Za-z]*\s+\S+|sudo\s+\S+|curl\s+\S+|wget\s+\S+|npm\s+\S+|pnpm\s+\S+|bun\s+\S+|node\s+\S+|python(?:3)?\s+\S+|pip(?:3)?\s+\S+|docker\s+\S+|kubectl\s+\S+|terraform\s+\S+)/i.test(
+			text,
+		)
+	) {
+		return REDACTED;
+	}
+	return text.length > MAX_TEXT_FIELD_LENGTH
+		? `${text.slice(0, MAX_TEXT_FIELD_LENGTH)}…`
+		: text;
+}
+
+function sanitizeDelegationPrompt(
+	value: string | undefined,
+): string | undefined {
+	const text = nonEmptyString(value);
+	if (!text) {
+		return undefined;
+	}
+	if (
+		/\b(?:sk|gh[pousr]_?|github_pat_|xoxb|xoxp|AKIA|ASIA)[A-Za-z0-9_-]{8,}\b/.test(
+			text,
+		)
+	) {
+		return REDACTED;
+	}
+	return text;
+}
+
+function sanitizedToolDisplayName(event: {
+	displayName?: string;
+	summaryLabel?: string;
+	toolName: string;
+}): string {
+	return sanitizeOutboundText(toolDisplayName(event)) ?? event.toolName;
+}
+
 function materializedToolExecutionId(event: {
 	toolCallId: string;
 	toolExecutionId?: string;
@@ -880,7 +933,7 @@ export class HostedAgentRuntimeProgressRecorder {
 				this.toolArgsByCallId.set(event.toolCallId, event.args);
 				this.recordStep({
 					id: this.toolStepId(event.toolCallId),
-					name: toolDisplayName(event),
+					name: sanitizedToolDisplayName(event),
 					stepKind: PlatformAgentRunStepKindValue.ToolCallIntent,
 					state: PlatformAgentRunStepStateValue.Running,
 					input: this.basePayload({
@@ -888,8 +941,8 @@ export class HostedAgentRuntimeProgressRecorder {
 						tool_call_id: event.toolCallId,
 						tool_execution_id: materializedToolExecutionId(event),
 						tool_name: event.toolName,
-						display_name: event.displayName,
-						summary_label: event.summaryLabel,
+						display_name: sanitizeOutboundText(event.displayName),
+						summary_label: sanitizeOutboundText(event.summaryLabel),
 						arg_keys: objectKeys(event.args),
 					}),
 				});
@@ -898,7 +951,7 @@ export class HostedAgentRuntimeProgressRecorder {
 			case "tool_execution_end":
 				this.recordStep({
 					id: this.toolStepId(event.toolCallId),
-					name: toolDisplayName(event),
+					name: sanitizedToolDisplayName(event),
 					stepKind: event.isError
 						? PlatformAgentRunStepKindValue.Error
 						: PlatformAgentRunStepKindValue.ToolResult,
@@ -914,8 +967,8 @@ export class HostedAgentRuntimeProgressRecorder {
 						tool_execution_id: materializedToolExecutionId(event),
 						approval_request_id: event.approvalRequestId,
 						tool_name: event.toolName,
-						display_name: event.displayName,
-						summary_label: event.summaryLabel,
+						display_name: sanitizeOutboundText(event.displayName),
+						summary_label: sanitizeOutboundText(event.summaryLabel),
 						error_code: event.errorCode,
 						governed_outcome: event.governedOutcome,
 					}),
@@ -1139,8 +1192,8 @@ export class HostedAgentRuntimeProgressRecorder {
 				tool_call_id: event.toolCallId,
 				tool_execution_id: partialToolExecutionId,
 				tool_name: event.toolName,
-				display_name: event.displayName,
-				summary_label: event.summaryLabel,
+				display_name: sanitizeOutboundText(event.displayName),
+				summary_label: sanitizeOutboundText(event.summaryLabel),
 				arg_keys: objectKeys(event.args),
 				...toolResultMetrics(event.partialResult),
 			}),
@@ -1164,8 +1217,8 @@ export class HostedAgentRuntimeProgressRecorder {
 				tool_call_id: event.toolCallId,
 				tool_execution_id: materializedToolExecutionId(event),
 				tool_name: event.toolName,
-				display_name: event.displayName,
-				summary_label: event.summaryLabel,
+				display_name: sanitizeOutboundText(event.displayName),
+				summary_label: sanitizeOutboundText(event.summaryLabel),
 				skill_name: metadata.name,
 				skill_hash: metadata.hash,
 				skill_source: metadata.source,
@@ -1246,7 +1299,7 @@ export class HostedAgentRuntimeProgressRecorder {
 			name: "Prompt failed",
 			stepKind: PlatformAgentRunStepKindValue.Error,
 			state: PlatformAgentRunStepStateValue.Failed,
-			errorMessage: message,
+			errorMessage: sanitizeOutboundText(message),
 			output: this.basePayload({
 				event_type: "prompt_failure",
 			}),
@@ -1257,7 +1310,7 @@ export class HostedAgentRuntimeProgressRecorder {
 			stepId,
 			attributes: this.basePayload({
 				event_type: "prompt_failure",
-				error_message: compactString(message, 512),
+				error_message: sanitizeOutboundText(message),
 			}),
 		});
 	}
@@ -1633,14 +1686,14 @@ export class HostedAgentRuntimeProgressRecorder {
 					stepId: this.toolStepId(input.callId),
 					type: waitTypeForRequest(input.kind ?? "approval"),
 					externalRef: input.id,
-					reason: input.reason,
+					reason: sanitizeOutboundText(input.reason),
 					payload: this.basePayload({
 						request_id: input.id,
 						request_type: input.kind ?? "approval",
 						call_id: input.callId,
 						tool_name: input.toolName,
-						display_name: input.displayName,
-						summary_label: input.summaryLabel,
+						display_name: sanitizeOutboundText(input.displayName),
+						summary_label: sanitizeOutboundText(input.summaryLabel),
 						started_at_ms: input.startedAtMs,
 					}),
 				},
@@ -1686,7 +1739,7 @@ export class HostedAgentRuntimeProgressRecorder {
 					request_type: input.kind,
 					resolution: input.resolution,
 					resolved_by: input.resolvedBy,
-					reason: input.reason,
+					reason: sanitizeOutboundText(input.reason),
 					started_at_ms: input.startedAtMs,
 					resolved_at_ms: input.resolvedAtMs,
 				}),
@@ -1863,6 +1916,8 @@ export class HostedAgentRuntimeProgressRecorder {
 		}
 		const toolExecutionId = materializedToolExecutionId(event);
 		const prompt = nonEmptyString(event.args.prompt);
+		const sanitizedPrompt = sanitizeOutboundText(prompt);
+		const delegationPrompt = sanitizeDelegationPrompt(prompt);
 		const model = nonEmptyString(event.args.model);
 		const reasoningEffort = nonEmptyString(event.args.reasoningEffort);
 		const codexSubagentOperationName = codexSubagentOperation(codexTool);
@@ -1879,8 +1934,8 @@ export class HostedAgentRuntimeProgressRecorder {
 				codexTool === "wait"
 					? PlatformAgentWorkItemStateValue.Waiting
 					: PlatformAgentWorkItemStateValue.Running,
-			title: toolDisplayName(event),
-			...(prompt ? { goal: prompt } : {}),
+			title: sanitizedToolDisplayName(event),
+			...(sanitizedPrompt ? { goal: sanitizedPrompt } : {}),
 			nextAction: codexSubagentNextAction(codexTool),
 			...(toolExecutionId ? { toolExecutionId } : {}),
 			evidenceRefs: [
@@ -1894,8 +1949,8 @@ export class HostedAgentRuntimeProgressRecorder {
 				codex_tool: codexTool,
 				tool_call_id: event.toolCallId,
 				tool_name: event.toolName,
-				display_name: event.displayName,
-				summary_label: event.summaryLabel,
+				display_name: sanitizeOutboundText(event.displayName),
+				summary_label: sanitizeOutboundText(event.summaryLabel),
 				codex_subagent_operation: codexSubagentOperationName,
 				codex_subagent_edge_status: activeCodexSubagentEdgeStatus(codexTool),
 				sender_thread_id: nonEmptyString(event.args.senderThreadId),
@@ -1923,7 +1978,7 @@ export class HostedAgentRuntimeProgressRecorder {
 				childRunIds,
 				linkedWorkItemIds,
 				workGraph,
-				prompt,
+				prompt: delegationPrompt,
 				model,
 				reasoningEffort,
 			});
@@ -1969,8 +2024,8 @@ export class HostedAgentRuntimeProgressRecorder {
 					owner_child_run_id: input.ownerChildRunId,
 					tool_call_id: input.event.toolCallId,
 					tool_name: input.event.toolName,
-					display_name: input.event.displayName,
-					summary_label: input.event.summaryLabel,
+					display_name: sanitizeOutboundText(input.event.displayName),
+					summary_label: sanitizeOutboundText(input.event.summaryLabel),
 					from_agent_id: fromAgentId,
 					to_agent_id: toAgentId,
 					required_capability: requiredCapability,
@@ -2086,8 +2141,8 @@ export class HostedAgentRuntimeProgressRecorder {
 						codex_tool: codexTool,
 						tool_call_id: event.toolCallId,
 						tool_name: event.toolName,
-						display_name: event.displayName,
-						summary_label: event.summaryLabel,
+						display_name: sanitizeOutboundText(event.displayName),
+						summary_label: sanitizeOutboundText(event.summaryLabel),
 						codex_subagent_operation: codexSubagentOperationName,
 						codex_subagent_edge_status: codexSubagentEdgeStatus,
 						error_code: event.errorCode,
