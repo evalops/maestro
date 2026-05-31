@@ -154,10 +154,12 @@ function realtimeDeliveryEvidence(): NonNullable<
 				},
 				{
 					id: "push_notification_1",
+					kind: "artifactUpdate",
 					taskId: "task_1",
 					contextId: "ctx_1",
 					messageId: "message_1",
 					state: "TASK_STATE_COMPLETED",
+					artifactIds: ["artifact_1"],
 					accepted: true,
 					terminal: true,
 					observedAt: "2026-05-21T20:00:02.500Z",
@@ -344,10 +346,26 @@ describe("Platform A2A live delegation smoke", () => {
 								rawCallbackHeaders: {
 									authorization: "Bearer raw-push-secret",
 								},
-								notifications: notifications.map((notification) => ({
-									...notification,
-									rawBody: "raw-push-body-secret",
-								})),
+								notifications: notifications.map((notification) => {
+									if (notification.id !== "push_notification_1") {
+										return {
+											...notification,
+											rawBody: "raw-push-body-secret",
+										};
+									}
+									const {
+										artifactIds: _artifactIds,
+										...notificationWithoutArtifactIds
+									} = notification;
+									return {
+										...notificationWithoutArtifactIds,
+										artifact: {
+											artifactId: "artifact_1",
+											rawPayload: "raw-push-artifact-secret",
+										},
+										rawBody: "raw-push-body-secret",
+									};
+								}),
 							},
 						},
 					},
@@ -422,7 +440,17 @@ describe("Platform A2A live delegation smoke", () => {
 
 			expect(result.evidence.realtimeDelivery).toMatchObject({
 				stream: { terminalEventId: "stream_event_2" },
-				push: { terminalNotificationId: "push_notification_1" },
+				push: {
+					terminalNotificationId: "push_notification_1",
+					notifications: [
+						expect.objectContaining({ id: "push_notification_rejected_1" }),
+						expect.objectContaining({
+							id: "push_notification_1",
+							kind: "artifactUpdate",
+							artifactIds: ["artifact_1"],
+						}),
+					],
+				},
 				metrics: { queryId: "delivery_metrics_query_1" },
 			});
 			const writtenJson = JSON.stringify(writtenEvidence);
@@ -431,6 +459,7 @@ describe("Platform A2A live delegation smoke", () => {
 			expect(writtenJson).not.toContain("raw-stream-event-secret");
 			expect(writtenJson).not.toContain("raw-push-secret");
 			expect(writtenJson).not.toContain("raw-push-body-secret");
+			expect(writtenJson).not.toContain("raw-push-artifact-secret");
 		} finally {
 			await rm(dir, { force: true, recursive: true });
 		}

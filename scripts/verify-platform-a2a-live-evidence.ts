@@ -744,11 +744,11 @@ function verifyRealtimeStreamEvidence(
 			);
 		}
 		seenIds.add(id);
-		verifyRealtimeDeliveryRecordIds(
-			event,
-			`realtime stream event ${id}`,
-			expected,
-		);
+		verifyRealtimeDeliveryRecordIds(event, `realtime stream event ${id}`, {
+			...expected,
+			requireMessageId:
+				expected.requireMessageId && !isRealtimeArtifactStreamEvent(event),
+		});
 		observedAt.push(
 			requireTimestampString(event, "observedAt", `realtime stream event ${id}`),
 		);
@@ -769,7 +769,7 @@ function verifyRealtimeStreamEvidence(
 	);
 	const terminalArtifactIds = optionalStringArray(terminalEvent, "artifactIds");
 	if (
-		isRealtimeArtifactStreamEvent(terminalEvent) &&
+		isRealtimeArtifactStreamRecord(terminalEvent) &&
 		terminalArtifactIds.length < 1
 	) {
 		throw new Error(
@@ -841,7 +841,12 @@ function verifyRealtimePushEvidence(
 		verifyRealtimeDeliveryRecordIds(
 			notification,
 			`realtime push notification ${id}`,
-			expected,
+			{
+				...expected,
+				requireMessageId:
+					expected.requireMessageId &&
+					!isRealtimeArtifactPushNotification(notification),
+			},
 		);
 		observedAt.push(
 			requireTimestampString(
@@ -1040,8 +1045,34 @@ function verifyRealtimeDeliveryRecordIds(
 }
 
 function isRealtimeArtifactStreamEvent(record: Record<string, unknown>): boolean {
+	return (
+		isRealtimeArtifactStreamRecord(record) &&
+		optionalStringArray(record, "artifactIds").length > 0
+	);
+}
+
+function isRealtimeArtifactStreamRecord(
+	record: Record<string, unknown>,
+): boolean {
 	const type = optionalString(record, "type");
 	return type === "task-artifact" || type === "artifactUpdate";
+}
+
+function isRealtimeArtifactPushNotification(
+	record: Record<string, unknown>,
+): boolean {
+	const kind = optionalString(record, "kind") ?? optionalString(record, "type");
+	if (kind !== "artifactUpdate") {
+		return false;
+	}
+	if (optionalStringArray(record, "artifactIds").length > 0) {
+		return true;
+	}
+	const artifact = record.artifact;
+	if (!artifact || typeof artifact !== "object" || Array.isArray(artifact)) {
+		return false;
+	}
+	return Boolean(optionalString(artifact as Record<string, unknown>, "artifactId"));
 }
 
 function verifyTerminalRealtimeRecord(
@@ -1061,7 +1092,10 @@ function verifyTerminalRealtimeRecord(
 		);
 	}
 	const state = optionalString(record, "state");
-	const shouldValidateState = state || !isRealtimeArtifactStreamEvent(record);
+	const shouldValidateState =
+		state ||
+		(!isRealtimeArtifactStreamEvent(record) &&
+			!isRealtimeArtifactPushNotification(record));
 	if (expected.taskState && shouldValidateState && state !== expected.taskState) {
 		throw new Error(
 			`Platform A2A evidence ${label} state ${state ?? "missing"} does not match task.state ${expected.taskState}`,
