@@ -69,6 +69,7 @@ export const mcpServerSchema = z
 		timeout: z.number().int().positive().optional(),
 		enabled: z.boolean().optional(),
 		disabled: z.boolean().optional(),
+		supportsParallelToolCalls: z.boolean().optional(),
 	})
 	.strict()
 	.superRefine((cfg, ctx) => {

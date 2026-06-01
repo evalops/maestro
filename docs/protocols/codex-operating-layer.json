@@ -121,7 +121,7 @@
 		{
 			"area": "approvals-sandbox-policy",
 			"evidenceType": "source",
-			"path": "packages/control-plane-rs/src/main.rs",
+			"path": "packages/control-plane-rs/src/codex_bridge.rs",
 			"anchors": [
 				"server_requests\": [\"approval\"]",
 				"codex_headless_pending_request_id",
@@ -155,7 +155,7 @@
 				"records Platform observations for cached dynamic read callbacks",
 				"lets Codex dynamic tool callbacks wait for user approval instead of auto-denying",
 				"preserves Platform joins for denied Codex dynamic callbacks",
-				"returns workflow-state errors from cached dynamic callbacks",
+				"returns workflow-state errors from repeated dynamic callbacks",
 				"withTimeout",
 				"action_approval_required",
 				"ActionApprovalService(\"prompt\")",
@@ -212,6 +212,22 @@
 		},
 		{
 			"area": "subagents",
+			"evidenceType": "fixture",
+			"path": "docs/protocols/codex-subagent-workgraph-v1.json",
+			"anchors": [
+				"evalops.maestro.codex.subagent-workgraph.v1",
+				"codex.subagent.",
+				"spawnAgent",
+				"sendInput",
+				"resumeAgent",
+				"wait",
+				"closeAgent",
+				"waiting_for_restore",
+				"resolved_from_child_terminal_edge"
+			]
+		},
+		{
+			"area": "subagents",
 			"evidenceType": "source",
 			"path": "src/codex/subagent-dispatch-table.ts",
 			"anchors": [
@@ -219,6 +235,18 @@
 				"DEFAULT_CODEX_SUBAGENT_DELEGATION_CAPABILITY",
 				"codexSubagentTypeA2ASkillID",
 				"codexSubagentCapabilityA2ASkillID"
+			]
+		},
+		{
+			"area": "subagents",
+			"evidenceType": "source",
+			"path": "src/codex/subagent-workgraph.ts",
+			"anchors": [
+				"CODEX_SUBAGENT_LIFECYCLE_OPERATIONS",
+				"CODEX_SUBAGENT_WORK_GRAPH_SCHEMA",
+				"canonicalCodexSubagentTool",
+				"codexSubagentOperationName",
+				"codexSubagentTerminalSuccessStatus"
 			]
 		},
 		{
@@ -281,6 +309,9 @@
 				"resolved_from_child_terminal_edge",
 				"recordCodexSubagentWorkItem",
 				"updateCodexSubagentWorkItem",
+				"recordTaskProgressEvent",
+				"recordSwarmEvent",
+				"maestro_task_progress",
 				"sendInput",
 				"resumeAgent",
 				"closeAgent",
@@ -295,7 +326,7 @@
 			"anchors": [
 				"childRunIds",
 				"codexWorkGraph",
-				"evalops.maestro.codex.subagent-workgraph.v1",
+				"CODEX_SUBAGENT_WORK_GRAPH_SCHEMA",
 				"codexCollabWorkGraph",
 				"codexCollabChildRunIds"
 			]
@@ -303,7 +334,7 @@
 		{
 			"area": "multi-agent-workgraph",
 			"evidenceType": "source",
-			"path": "packages/control-plane-rs/src/main.rs",
+			"path": "packages/control-plane-rs/src/codex_bridge.rs",
 			"anchors": [
 				"childRunIds",
 				"codexWorkGraph",
@@ -324,6 +355,9 @@
 				"resolved_from_child_terminal_edge",
 				"codex.subagent.spawnAgent",
 				"codex.subagent.sendInput",
+				"projects todo tool results into deterministic AgentRuntime task work items",
+				"projects background task details without copying env or log paths",
+				"records swarm events as parent and child AgentRuntime work items",
 				"ownerChildRunId",
 				"parentWorkItemId",
 				"codex_work_graph",
@@ -332,17 +366,30 @@
 			]
 		},
 		{
+			"area": "multi-agent-workgraph",
+			"evidenceType": "test",
+			"path": "test/codex/subagent-workgraph.test.ts",
+			"anchors": [
+				"keeps the TypeScript lifecycle operation table aligned with the fixture",
+				"normalizes every canonical, snake-case, and fully qualified lifecycle alias",
+				"builds remote-runner continuity edges for the complete subagent lifecycle"
+			]
+		},
+		{
 			"area": "remote-runner-continuity",
 			"evidenceType": "source",
 			"path": "src/server/handlers/hosted-runner-drain.ts",
 			"anchors": [
 				"evalops.remote-runner.work-continuity.v1",
+				"evalops.remote-runner.runtime-continuity.v1",
 				"collectHostedRunnerWorkContinuity",
+				"buildHostedRunnerRuntimeContinuity",
 				"codex_subagent_child_run_ids",
 				"codex_subagent_thread_ids",
 				"codex_subagent_edges",
 				"collectCodexSubagentEdgesFromSource",
-				"codexSubagentOperation"
+				"codexSubagentOperation",
+				"source_owner_instance_id"
 			]
 		},
 		{
@@ -353,11 +400,9 @@
 				"HeadlessCodexSubagentContinuityEdge",
 				"buildCodexSubagentContinuityEdges",
 				"codexSubagentOperation",
-				"spawn_agent",
-				"send_input",
-				"resume_agent",
-				"wait_agent",
-				"close_agent"
+				"codexSubagentOperationName",
+				"codexSubagentActiveStatus",
+				"codexSubagentTerminalSuccessStatus"
 			]
 		},
 		{
@@ -366,8 +411,27 @@
 			"path": "packages/tui-rs/src/hosted_runner.rs",
 			"anchors": [
 				"evalops.remote-runner.work-continuity.v1",
+				"evalops.remote-runner.runtime-continuity.v1"
+			]
+		},
+		{
+			"area": "remote-runner-continuity",
+			"evidenceType": "source",
+			"path": "packages/tui-rs/src/hosted_runner/manifests.rs",
+			"anchors": [
+				"RuntimeContinuityManifest",
 				"CodexSubagentContinuityEdge",
 				"codex_subagent_edges",
+				"collect_codex_subagent_edges_from_source"
+			]
+		},
+		{
+			"area": "remote-runner-continuity",
+			"evidenceType": "test",
+			"path": "packages/tui-rs/src/hosted_runner/tests.rs",
+			"anchors": [
+				"work_continuity_manifest_extracts_codex_subagent_ids",
+				"work_continuity_manifest_keeps_spawned_and_resumed_codex_subagents_active",
 				"close_agent"
 			]
 		},
@@ -392,7 +456,7 @@
 		{
 			"area": "remote-runner-continuity",
 			"evidenceType": "source",
-			"path": "packages/tui-rs/src/headless/messages.rs",
+			"path": "packages/tui-rs/src/headless/messages/state.rs",
 			"anchors": [
 				"CodexSubagentContinuityEdge",
 				"codex_subagent_edges",
@@ -424,6 +488,7 @@
 				"records Codex subagent continuity without copying prompt payloads into manifest metadata",
 				"records Codex subagent edge lifecycle from restored runtime state",
 				"HOSTED_RUNNER_WORK_CONTINUITY_VERSION",
+				"HOSTED_RUNNER_RUNTIME_CONTINUITY_VERSION",
 				"codex_subagent_child_run_ids",
 				"codex_subagent_edges",
 				"close_agent"
@@ -433,7 +498,46 @@
 			"area": "remote-runner-continuity",
 			"evidenceType": "doc",
 			"path": "docs/protocols/hosted-runner-contract.md",
-			"anchors": ["work_continuity", "Codex subagent child runs"]
+			"anchors": [
+				"runtime_continuity",
+				"work_continuity",
+				"Codex subagent child runs"
+			]
+		},
+		{
+			"area": "headless-runtime-durability",
+			"evidenceType": "doc",
+			"path": "docs/protocols/headless-conformance.md",
+			"anchors": [
+				"hosted drain/snapshot handoff",
+				"post-drain mutation",
+				"hosted restore from a drain manifest",
+				"runtime flush manifests preserve inspectable state but stay not-ready",
+				"remote sessions need a durable control session plus a replayable event stream"
+			]
+		},
+		{
+			"area": "headless-runtime-durability",
+			"evidenceType": "test",
+			"path": "test/server/headless-runtime-service.test.ts",
+			"anchors": [
+				"restores runtime state and replay marker from a hosted runner drain manifest",
+				"restores $flushStatus manifest into inspectable not-ready state",
+				"restored_from_snapshot",
+				"not ready for new attachments"
+			]
+		},
+		{
+			"area": "headless-runtime-durability",
+			"evidenceType": "test",
+			"path": "test/server/hosted-runner-drain.test.ts",
+			"anchors": [
+				"records an interrupted manifest when runtime drain fails",
+				"source_owner_instance_id",
+				"source_runtime_lease",
+				"restore_environment_key",
+				"runtime_flush_status"
+			]
 		},
 		{
 			"area": "realtime-streaming",
@@ -499,7 +603,7 @@
 		{
 			"area": "rust-control-plane",
 			"evidenceType": "test",
-			"path": "packages/tui-rs/src/swarm/types.rs",
+			"path": "packages/tui-rs/src/swarm/types/tests.rs",
 			"anchors": [
 				"test_subagent_dispatch_matches_protocol_fixture",
 				"resolve_subagent_dispatch",
@@ -509,11 +613,12 @@
 		{
 			"area": "rust-control-plane",
 			"evidenceType": "test",
-			"path": "packages/control-plane-rs/src/main.rs",
+			"path": "packages/control-plane-rs/src/tests.rs",
 			"anchors": [
 				"codex_headless_bridge_round_trips_prompt_approval",
 				"codex_headless_bridge_streams_tool_events_over_websocket",
 				"codex_headless_bridge_bounds_shutdown_wait_after_valid_output",
+				"codex_headless_subagent_lifecycle_matches_workgraph_fixture",
 				"codex_app_server_timeout_kills_child_process"
 			]
 		},

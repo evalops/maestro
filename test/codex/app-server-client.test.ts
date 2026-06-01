@@ -1,7 +1,11 @@
 import { createInterface } from "node:readline";
 import { PassThrough } from "node:stream";
 import { describe, expect, it, vi } from "vitest";
-import { CodexAppServerRpcClient } from "../../src/codex/app-server-client.js";
+import {
+	CodexAppServerRpcClient,
+	resolveCodexAppServerSpawnCommand,
+} from "../../src/codex/app-server-client.js";
+import { readPackageVersion } from "../../src/package-version.js";
 
 interface HarnessMessage {
 	id?: number | string;
@@ -82,12 +86,52 @@ function createHarness() {
 		requestFromServer,
 		exit: (code: number | null, signal: string | null = null) =>
 			onceListeners.get("exit")?.(code, signal),
+		error: (error: Error) => onceListeners.get("error")?.(error),
 		kill,
 		rl,
 	};
 }
 
 describe("Codex app-server RPC client", () => {
+	it("prefers the bundled @openai/codex package for default app-server spawns", () => {
+		const resolved = resolveCodexAppServerSpawnCommand(
+			{},
+			() => "/workspace/node_modules/@openai/codex/bin/codex.js",
+		);
+
+		expect(resolved).toEqual({
+			command: process.execPath,
+			args: [
+				"/workspace/node_modules/@openai/codex/bin/codex.js",
+				"app-server",
+				"--listen",
+				"stdio://",
+			],
+			source: "bundled-package",
+		});
+	});
+
+	it("falls back to codex on PATH when the package bin is unavailable", () => {
+		expect(resolveCodexAppServerSpawnCommand({}, () => null)).toEqual({
+			command: "codex",
+			args: ["app-server", "--listen", "stdio://"],
+			source: "path",
+		});
+	});
+
+	it("honors explicit app-server spawn overrides", () => {
+		expect(
+			resolveCodexAppServerSpawnCommand(
+				{ command: "/tmp/codex-dev", args: ["app-server"] },
+				() => "/workspace/node_modules/@openai/codex/bin/codex.js",
+			),
+		).toEqual({
+			command: "/tmp/codex-dev",
+			args: ["app-server"],
+			source: "override",
+		});
+	});
+
 	it("initializes and sends the initialized notification", async () => {
 		const harness = createHarness();
 		const initialize = harness.client.initialize();
@@ -100,7 +144,7 @@ describe("Codex app-server RPC client", () => {
 				clientInfo: {
 					name: "maestro",
 					title: "Maestro",
-					version: "0.10.18",
+					version: readPackageVersion(),
 				},
 			},
 		});
@@ -147,6 +191,53 @@ describe("Codex app-server RPC client", () => {
 		harness.rl.close();
 	});
 
+	it("can request Codex streamlined ChatGPT login", async () => {
+		const harness = createHarness();
+		const login = harness.client.startChatGptLogin("browser", {
+			codexStreamlinedLogin: true,
+		});
+
+		const request = await harness.nextRequest();
+		expect(request).toMatchObject({
+			id: 1,
+			method: "account/login/start",
+			params: { type: "chatgpt", codexStreamlinedLogin: true },
+		});
+		harness.respond(1, {
+			type: "chatgpt",
+			loginId: "login-1",
+			authUrl: "https://chatgpt.com/auth",
+		});
+		await expect(login).resolves.toMatchObject({
+			type: "chatgpt",
+			loginId: "login-1",
+		});
+
+		harness.client.close();
+		harness.rl.close();
+	});
+
+	it("returns an actionable error for unmanaged Codex token refresh requests", async () => {
+		const harness = createHarness();
+		harness.requestFromServer("server-1", "account/chatgptAuthTokens/refresh", {
+			reason: "unauthorized",
+			previousAccountId: "acct_123",
+		});
+
+		const response = await harness.nextRequest();
+		expect(response).toEqual({
+			id: "server-1",
+			error: {
+				code: -32601,
+				message:
+					"Maestro does not manage Codex ChatGPT auth tokens directly. Run `maestro codex login` or `codex login` so Codex app-server owns ChatGPT auth refresh.",
+			},
+		});
+
+		harness.client.close();
+		harness.rl.close();
+	});
+
 	it("resolves login completion notifications received before waiting", async () => {
 		const harness = createHarness();
 
@@ -173,6 +264,22 @@ describe("Codex app-server RPC client", () => {
 		await expect(completion).rejects.toThrow(
 			"Codex app-server exited with code 1",
 		);
+		harness.rl.close();
+	});
+
+	it("returns an actionable error when the Codex app-server binary is missing", async () => {
+		const harness = createHarness();
+		const completion = harness.client.waitForLoginCompletion("login-1", 10_000);
+		const error = Object.assign(new Error("spawn codex ENOENT"), {
+			code: "ENOENT",
+		});
+
+		harness.error(error);
+
+		await expect(completion).rejects.toThrow(
+			"Codex app-server executable was not found",
+		);
+		await expect(completion).rejects.toThrow("@openai/codex");
 		harness.rl.close();
 	});
 

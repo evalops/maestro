@@ -48,6 +48,8 @@ export interface SessionFileInfo {
 	title?: string;
 	tags?: string[];
 	favorite: boolean;
+	archived: boolean;
+	archivedAt?: string;
 	firstMessage: string;
 	allMessagesText: string;
 	messagesView: SessionMessagesView;
@@ -338,6 +340,8 @@ export function buildSessionFileInfo(
 	let title: string | undefined;
 	let tags: string[] | undefined;
 	let favorite = false;
+	let archived = false;
+	let archivedAt: string | undefined;
 	const extractedById = new Map<string, string>();
 
 	for (const entry of entries) {
@@ -384,6 +388,15 @@ export function buildSessionFileInfo(
 				if (typeof entry.favorite === "boolean") {
 					favorite = entry.favorite;
 				}
+				if (typeof entry.archived === "boolean") {
+					archived = entry.archived;
+					archivedAt =
+						entry.archived &&
+						typeof entry.archivedAt === "string" &&
+						entry.archivedAt.trim()
+							? entry.archivedAt
+							: undefined;
+				}
 				break;
 			default:
 				break;
@@ -409,6 +422,8 @@ export function buildSessionFileInfo(
 			title,
 			tags,
 			favorite,
+			archived,
+			archivedAt,
 			firstMessage: "",
 			allMessagesText: "",
 			messagesView,
@@ -452,6 +467,8 @@ export function buildSessionFileInfo(
 		title,
 		tags,
 		favorite,
+		archived,
+		archivedAt,
 		firstMessage,
 		allMessagesText,
 		messagesView,

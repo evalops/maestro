@@ -1,0 +1,70 @@
+name: tool-call-speed
+description: >
+  Reduce elapsed time for a complex provider turn that emits several independent
+  read-only tool calls around a mutating tool, while preserving deterministic
+  mutation boundaries in both the TypeScript transport and the Rust client.
+metric:
+  primary:
+    type: hard
+    name: tool_phase_ms
+    direction: minimize
+    target: 190
+  degenerate_gates:
+    - name: assertions_passed
+      check: "== 1"
+      description: "The complex goal preconditions and postconditions must pass."
+    - name: mutation_overlap_count
+      check: "== 0"
+      description: "No mutating tool may overlap a read-only inspection wave."
+  diagnostics:
+    - name: elapsed_ms
+    - name: first_read_wave_ms
+    - name: total_tool_calls
+    - name: plateau_delta_ms
+    - name: rust_client_read_only_wave_elapsed_ms
+measurement:
+  command: bunx tsx scripts/measure-tool-call-speed.ts
+  timeout_seconds: 60
+  output_format: json
+  working_directory: "."
+  stability:
+    mode: repeat
+    repeat_count: 5
+    aggregation: median
+scope:
+  mutable:
+    - src/agent/transport.ts
+    - packages/tui-rs/src/agent/native.rs
+    - test/agent/provider-transport-tool-concurrency.test.ts
+    - scripts/measure-tool-call-speed.ts
+    - .context/compound-engineering/ce-optimize/tool-call-speed/
+  immutable:
+    - packages/web/
+    - src/agent/providers/
+preconditions:
+  - A single provider turn emits four independent read-only inspections, one
+    mutating commit, and four independent read-only verifications.
+  - Read-only tools are annotated with readOnlyHint and return after a fixed
+    latency to make scheduling measurable.
+  - The mutating tool records whether any read-only tool is in flight at its
+    start time.
+  - The Rust client exposes an auto-approved read-only inline tool with fixed
+    latency so native read-only wave execution is measurable without network
+    providers.
+postconditions:
+  - The first four read-only inspections begin as one high-concurrency wave.
+  - The mutating commit starts only after all earlier read-only inspections end.
+  - The final read-only verifications begin as one high-concurrency wave after
+    the mutating commit ends.
+  - The final tool result set preserves all provider-requested tool calls.
+  - Rust client read-only waves use the same bounded parallel execution path
+    and finish near one fixed-latency interval, not one interval per tool.
+execution:
+  mode: serial
+  max_concurrent: 1
+stopping:
+  max_iterations: 4
+  max_hours: 1
+  plateau:
+    minimum_improvement_ms: 5
+    consecutive_iterations: 2

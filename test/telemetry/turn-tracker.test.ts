@@ -66,6 +66,116 @@ describe("TurnTracker", () => {
 		expect(completed?.llmDurationMs).toBe(0);
 	});
 
+	it("rolls tool scheduling decisions into the canonical turn event", () => {
+		let listener: ((event: AgentEvent) => void) | undefined;
+		const agent = {
+			state: {
+				messages: [],
+				error: undefined,
+				model: {
+					id: "test-model",
+					provider: "openai-codex",
+				},
+				thinkingLevel: "off",
+			},
+			subscribe: (fn: (event: AgentEvent) => void) => {
+				listener = fn;
+				return () => {
+					listener = undefined;
+				};
+			},
+		} as unknown as Agent;
+
+		let completed:
+			| {
+					toolScheduling?: {
+						modelToolCallCount: number;
+						parallelizedCallCount: number;
+						blockedByMutationCount: number;
+						cacheHitCount: number;
+					};
+					tools: Array<{
+						callId: string;
+						scheduling?: { decision: string; reason: string };
+					}>;
+			  }
+			| undefined;
+		const tracker = new TurnTracker(agent, {
+			sessionId: "session-scheduling",
+			onTurnComplete: (event) => {
+				completed = event;
+			},
+		});
+
+		const toolResult = {
+			role: "toolResult" as const,
+			toolCallId: "call-1",
+			toolName: "read",
+			content: [{ type: "text" as const, text: "ok" }],
+			timestamp: Date.now(),
+		};
+
+		listener?.({ type: "agent_start" });
+		listener?.({
+			type: "tool_execution_start",
+			toolCallId: "call-1",
+			toolName: "read",
+			args: {},
+		});
+		listener?.({
+			type: "tool_execution_end",
+			toolCallId: "call-1",
+			toolName: "read",
+			result: toolResult,
+			isError: false,
+		});
+		listener?.({
+			type: "tool_phase_summary",
+			modelToolCallCount: 1,
+			modelEmittedToolCallCount: 1,
+			schedulableWaveCount: 1,
+			parallelizedCallCount: 0,
+			actuallyParallelizedCallCount: 0,
+			serializedCallCount: 0,
+			delayedCallCount: 0,
+			blockedByMutationCount: 0,
+			mcpOptInCallCount: 0,
+			mcpOptInUseCount: 0,
+			cacheHitCount: 1,
+			totalToolWaitMs: 2,
+			toolWaitTimeMs: 2,
+			serializationReasons: {},
+			decisions: [
+				{
+					toolCallId: "call-1",
+					toolName: "read",
+					emittedIndex: 0,
+					outcome: "cached",
+					decision: "cached",
+					reason: "reusable_tool_result_ready",
+					waveIndex: 1,
+					waitMs: 2,
+					schedulerWaitMs: 2,
+					cacheHit: true,
+				},
+			],
+		});
+		listener?.({ type: "agent_end", messages: [toolResult] });
+
+		tracker.dispose();
+
+		expect(completed?.toolScheduling).toMatchObject({
+			modelToolCallCount: 1,
+			parallelizedCallCount: 0,
+			blockedByMutationCount: 0,
+			cacheHitCount: 1,
+		});
+		expect(completed?.tools[0]?.scheduling).toMatchObject({
+			decision: "cached",
+			reason: "reusable_tool_result_ready",
+		});
+	});
+
 	it("does not classify a max-output stop as context overflow", () => {
 		let listener: ((event: AgentEvent) => void) | undefined;
 		const agent = {
@@ -616,5 +726,97 @@ describe("TurnTracker", () => {
 				source: "service",
 			}),
 		]);
+	});
+
+	it("includes tool phase scheduling metrics in canonical turn events", () => {
+		let listener: ((event: AgentEvent) => void) | undefined;
+		const agent = {
+			state: {
+				messages: [],
+				error: undefined,
+				model: {
+					id: "test-model",
+					provider: "anthropic",
+				},
+				thinkingLevel: "off",
+			},
+			subscribe: (fn: (event: AgentEvent) => void) => {
+				listener = fn;
+				return () => {
+					listener = undefined;
+				};
+			},
+		} as unknown as Agent;
+
+		let completed:
+			| {
+					toolScheduling?: {
+						modelToolCallCount: number;
+						schedulableWaveCount: number;
+						parallelizedCallCount: number;
+						blockedByMutationCount: number;
+						cacheHitCount: number;
+						serializationReasons: Record<string, number>;
+					};
+			  }
+			| undefined;
+		const tracker = new TurnTracker(agent, {
+			sessionId: "session-tool-phase",
+			onTurnComplete: (event) => {
+				completed = {
+					toolScheduling: (
+						event as unknown as {
+							toolScheduling?: typeof completed.toolScheduling;
+						}
+					).toolScheduling,
+				};
+			},
+		});
+
+		listener?.({ type: "agent_start" });
+		listener?.({
+			type: "tool_phase_summary",
+			modelToolCallCount: 3,
+			schedulableWaveCount: 2,
+			parallelizedCallCount: 2,
+			serializedCallCount: 1,
+			delayedCallCount: 1,
+			blockedByMutationCount: 1,
+			mcpOptInCallCount: 0,
+			cacheHitCount: 0,
+			totalToolWaitMs: 12,
+			decisions: [
+				{
+					toolCallId: "read-1",
+					toolName: "read",
+					outcome: "parallelized",
+					reason: "read_only_parallel_safe",
+					waveIndex: 0,
+					waitMs: 1,
+				},
+				{
+					toolCallId: "write-1",
+					toolName: "write",
+					outcome: "delayed",
+					reason: "blocked_by_mutation",
+					waveIndex: 1,
+					waitMs: 11,
+				},
+			],
+		} as unknown as AgentEvent);
+		listener?.({ type: "agent_end", messages: [] });
+
+		tracker.dispose();
+
+		expect(completed?.toolScheduling).toMatchObject({
+			modelToolCallCount: 3,
+			schedulableWaveCount: 2,
+			parallelizedCallCount: 2,
+			blockedByMutationCount: 1,
+			cacheHitCount: 0,
+			serializationReasons: {
+				blocked_by_mutation: 1,
+			},
+		});
 	});
 });

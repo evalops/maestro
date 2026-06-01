@@ -1,5 +1,9 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import type { HostedRunnerContext } from "../app-context.js";
+import {
+	type HOSTED_RUNNER_LEASE_PROTOCOL_VERSION,
+	hostedRunnerLeaseSnapshot,
+} from "../hosted-runner-lease.js";
 import { sendJson } from "../server-utils.js";
 import { checkHostedRunnerReadiness } from "./health.js";
 
@@ -19,8 +23,36 @@ export interface HostedRunnerIdentity {
 	agent_run_id?: string;
 	a2a_message_id?: string;
 	a2a_task_id?: string;
+	last_platform_a2a_push?: {
+		kind: string;
+		task_id?: string;
+		message_id?: string;
+		message_ids?: string[];
+		context_id?: string;
+		state?: string;
+		final?: boolean;
+		received_at: string;
+		runtime_event_id?: string;
+		runtime_event_type?: string;
+		traceparent?: string;
+		tracestate?: string;
+		organization_id?: string;
+		workspace_id?: string;
+		tenant_id?: string;
+		agent_id?: string;
+		actor_id?: string;
+	};
 	agent_runtime_worker_queue?: string;
 	agent_runtime_correlation_path?: string;
+	runtime_lease?: {
+		protocol_version: typeof HOSTED_RUNNER_LEASE_PROTOCOL_VERSION;
+		state: string;
+		generation: number;
+		maestro_session_id?: string;
+		lease_token_present: boolean;
+		heartbeat_at: string;
+		updated_at: string;
+	};
 	drain_status?: string;
 	drain_manifest_path?: string;
 	drained_at?: string;
@@ -35,6 +67,7 @@ export async function buildHostedRunnerIdentity(
 
 	const readiness = await checkHostedRunnerReadiness(hostedRunner);
 	const draining = readiness.status === "draining";
+	const lease = hostedRunnerLeaseSnapshot(hostedRunner);
 
 	return {
 		protocol_version: HOSTED_RUNNER_IDENTITY_PROTOCOL_VERSION,
@@ -55,13 +88,22 @@ export async function buildHostedRunnerIdentity(
 					last_platform_a2a_push: {
 						kind: hostedRunner.lastPlatformA2APush.kind,
 						task_id: hostedRunner.lastPlatformA2APush.taskId,
+						message_id: hostedRunner.lastPlatformA2APush.messageId,
+						message_ids: hostedRunner.lastPlatformA2APush.messageIds,
 						context_id: hostedRunner.lastPlatformA2APush.contextId,
+						workspace_id: hostedRunner.lastPlatformA2APush.workspaceId,
+						organization_id: hostedRunner.lastPlatformA2APush.organizationId,
+						tenant_id: hostedRunner.lastPlatformA2APush.tenantId,
 						state: hostedRunner.lastPlatformA2APush.state,
 						final: hostedRunner.lastPlatformA2APush.final,
 						received_at: hostedRunner.lastPlatformA2APush.receivedAt,
 						runtime_event_id: hostedRunner.lastPlatformA2APush.runtimeEventId,
 						runtime_event_type:
 							hostedRunner.lastPlatformA2APush.runtimeEventType,
+						traceparent: hostedRunner.lastPlatformA2APush.traceparent,
+						tracestate: hostedRunner.lastPlatformA2APush.tracestate,
+						agent_id: hostedRunner.lastPlatformA2APush.agentId,
+						actor_id: hostedRunner.lastPlatformA2APush.actorId,
 					},
 				}
 			: {}),
@@ -74,6 +116,17 @@ export async function buildHostedRunnerIdentity(
 						hostedRunner.agentRuntimeCorrelationPath,
 				}
 			: {}),
+		runtime_lease: {
+			protocol_version: lease.protocolVersion,
+			state: lease.state,
+			generation: lease.generation,
+			...(lease.maestroSessionId
+				? { maestro_session_id: lease.maestroSessionId }
+				: {}),
+			lease_token_present: Boolean(lease.leaseToken),
+			heartbeat_at: lease.heartbeatAt,
+			updated_at: lease.updatedAt,
+		},
 		...(hostedRunner.lastDrain?.status
 			? { drain_status: hostedRunner.lastDrain.status }
 			: {}),

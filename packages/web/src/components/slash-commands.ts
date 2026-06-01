@@ -127,7 +127,7 @@ const BUILTIN_WEB_SLASH_COMMANDS: Array<Omit<WebSlashCommand, "source">> = [
 	{
 		name: "footer",
 		description: "Set footer mode",
-		usage: "/footer [ensemble|solo]",
+		usage: "/footer [rich|solo]",
 		tags: ["ui"],
 	},
 	{

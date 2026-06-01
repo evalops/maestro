@@ -25,6 +25,33 @@ const CORE_ENV_VARS = [
 ];
 
 const DEFAULT_EXCLUDES = ["*KEY*", "*SECRET*", "*TOKEN*"];
+const PLATFORM_WORKER_SURFACE = "platform-agent-runtime";
+const PLATFORM_TRUSTED_TOOL_ENV_FLAG = "MAESTRO_PLATFORM_TRUSTED_TOOL_ENV";
+const PLATFORM_TRUSTED_TOOL_ENV_ALLOWLIST = [
+	"CODEX_WORKER_GIT_TOKEN",
+	"CODEX_WORKER_GIT_USERNAME",
+	"GH_TOKEN",
+	"GITHUB_TOKEN",
+	"GIT_ASKPASS",
+	"GIT_TERMINAL_PROMPT",
+	"CODEX_WORKER_RUNTIME_TOKEN",
+	"AGENT_RUNTIME_TOKEN",
+	"MAESTRO_AGENT_RUNTIME_SERVICE_TOKEN",
+	"AGENT_RUNTIME_SERVICE_TOKEN",
+	"MAESTRO_PLATFORM_A2A_TOKEN",
+	"MAESTRO_AGENT_OPERATING_PLANE_TOKEN",
+	"CODEX_WORKER_AGENT_REGISTRY_TOKEN",
+	"AGENT_REGISTRY_SERVICE_TOKEN",
+	"MAESTRO_AGENT_REGISTRY_SERVICE_TOKEN",
+	"MAESTRO_PLATFORM_A2A_ENABLED",
+	"MAESTRO_AGENT_RUNTIME_A2A_ENABLED",
+	"MAESTRO_PLATFORM_A2A_EXTENSIONS",
+	"MAESTRO_AGENT_RUNTIME_SERVICE_URL",
+	"MAESTRO_PLATFORM_A2A_URL",
+	"MAESTRO_AGENT_REGISTRY_SERVICE_URL",
+	"MAESTRO_AGENT_RUNTIME_ORG_ID",
+	"MAESTRO_AGENT_RUNTIME_WORKSPACE_ID",
+];
 
 export interface ResolveShellEnvironmentOptions {
 	baseEnv?: NodeJS.ProcessEnv;
@@ -46,6 +73,49 @@ function coerceEnv(env: NodeJS.ProcessEnv): Record<string, string> {
 		}
 	}
 	return result;
+}
+
+function isTruthyEnv(value?: string): boolean {
+	if (!value) {
+		return false;
+	}
+	return ["1", "true", "yes", "on"].includes(value.toLowerCase());
+}
+
+function restorePlatformTrustedToolEnv(
+	env: Record<string, string>,
+	base: Record<string, string>,
+	policy: ShellEnvironmentPolicy,
+): void {
+	if (base.MAESTRO_SURFACE !== PLATFORM_WORKER_SURFACE) {
+		return;
+	}
+	if (!isTruthyEnv(base[PLATFORM_TRUSTED_TOOL_ENV_FLAG])) {
+		return;
+	}
+	const inherit = policy.inherit ?? "all";
+	const coreSet = new Set(CORE_ENV_VARS.map((name) => name.toUpperCase()));
+	for (const key of PLATFORM_TRUSTED_TOOL_ENV_ALLOWLIST) {
+		if (inherit === "none") {
+			continue;
+		}
+		if (inherit === "core" && !coreSet.has(key.toUpperCase())) {
+			continue;
+		}
+		if (policy.exclude?.length && matchesAny(key, policy.exclude)) {
+			continue;
+		}
+		if (policy.include_only?.length && !matchesAny(key, policy.include_only)) {
+			continue;
+		}
+		if (policy.set && Object.prototype.hasOwnProperty.call(policy.set, key)) {
+			continue;
+		}
+		const value = base[key];
+		if (typeof value === "string") {
+			env[key] = value;
+		}
+	}
 }
 
 /**
@@ -107,6 +177,8 @@ export function applyShellEnvironmentPolicy(
 			}
 		}
 	}
+
+	restorePlatformTrustedToolEnv(env, base, resolvedPolicy);
 
 	return env;
 }

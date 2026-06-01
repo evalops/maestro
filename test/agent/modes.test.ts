@@ -56,9 +56,9 @@ describe("agent/modes", () => {
 	});
 
 	describe("getModelForTier", () => {
-		it("returns anthropic model by default", () => {
+		it("returns OpenAI Codex model by default", () => {
 			const model = getModelForTier("opus");
-			expect(model).toBe("claude-opus-4-6");
+			expect(model).toBe("gpt-5.5");
 		});
 
 		it("returns openai model when specified", () => {
@@ -81,19 +81,19 @@ describe("agent/modes", () => {
 	});
 
 	describe("getModelForMode", () => {
-		it("returns opus model for smart mode", () => {
+		it("returns Codex opus-tier model for smart mode", () => {
 			const model = getModelForMode("smart");
-			expect(model).toContain("opus");
+			expect(model).toBe("gpt-5.5");
 		});
 
-		it("returns sonnet model for rush mode", () => {
+		it("returns Codex sonnet-tier model for rush mode", () => {
 			const model = getModelForMode("rush");
-			expect(model).toContain("sonnet");
+			expect(model).toBe("gpt-5.4");
 		});
 
-		it("returns haiku model for free mode", () => {
+		it("returns Codex haiku-tier model for free mode", () => {
 			const model = getModelForMode("free");
-			expect(model).toContain("haiku");
+			expect(model).toBe("gpt-5.4-mini");
 		});
 	});
 

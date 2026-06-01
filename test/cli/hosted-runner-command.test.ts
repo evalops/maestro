@@ -1,5 +1,5 @@
 import { realpathSync } from "node:fs";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -94,6 +94,47 @@ describe("hosted-runner command config", () => {
 		});
 	});
 
+	it("restores hosted runner session identity from a drain manifest", async () => {
+		const workspaceRoot = await createTempWorkspace();
+		const resolvedWorkspaceRoot = realpathSync(workspaceRoot);
+		const manifestPath = join(
+			resolvedWorkspaceRoot,
+			".maestro",
+			"restore.json",
+		);
+		await mkdir(join(resolvedWorkspaceRoot, ".maestro"), { recursive: true });
+		await writeFile(
+			manifestPath,
+			JSON.stringify({
+				protocol_version: "evalops.remote-runner.snapshot-manifest.v1",
+				maestro_session_id: "session_restored",
+			}),
+			"utf8",
+		);
+
+		const config = await resolveHostedRunnerConfig(
+			[
+				"--runner-session-id",
+				"mrs_123",
+				"--workspace-root",
+				workspaceRoot,
+				"--restore-manifest",
+				".maestro/restore.json",
+			],
+			{},
+		);
+
+		expect(config).toMatchObject({
+			restoreManifestPath: manifestPath,
+			maestroSessionId: "session_restored",
+		});
+		expect(toHostedRunnerContext(config)).toMatchObject({
+			restoreManifestPath: manifestPath,
+			configuredMaestroSessionId: "session_restored",
+			activeMaestroSessionId: "session_restored",
+		});
+	});
+
 	it("lets CLI owner generation override stale environment", async () => {
 		const workspaceRoot = await createTempWorkspace();
 		const config = await resolveHostedRunnerConfig(
@@ -130,6 +171,8 @@ describe("hosted-runner command config", () => {
 			MAESTRO_HOSTED_RUNNER_MODE: process.env.MAESTRO_HOSTED_RUNNER_MODE,
 			MAESTRO_RUNNER_SESSION_ID: process.env.MAESTRO_RUNNER_SESSION_ID,
 			MAESTRO_WORKSPACE_ROOT: process.env.MAESTRO_WORKSPACE_ROOT,
+			MAESTRO_REMOTE_RUNNER_RESTORE_MANIFEST:
+				process.env.MAESTRO_REMOTE_RUNNER_RESTORE_MANIFEST,
 			MAESTRO_PROFILE: process.env.MAESTRO_PROFILE,
 			MAESTRO_WEB_REQUIRE_KEY: process.env.MAESTRO_WEB_REQUIRE_KEY,
 			MAESTRO_WEB_REQUIRE_REDIS: process.env.MAESTRO_WEB_REQUIRE_REDIS,
@@ -146,12 +189,16 @@ describe("hosted-runner command config", () => {
 			applyHostedRunnerEnvironment({
 				runnerSessionId: "mrs_123",
 				workspaceRoot,
+				restoreManifestPath: join(workspaceRoot, ".maestro", "restore.json"),
 				port: 8080,
 			});
 
 			expect(process.env.MAESTRO_WEB_REQUIRE_KEY).toBe("1");
 			expect(process.env.MAESTRO_WEB_REQUIRE_REDIS).toBe("0");
 			expect(process.env.MAESTRO_WEB_REQUIRE_CSRF).toBe("0");
+			expect(process.env.MAESTRO_REMOTE_RUNNER_RESTORE_MANIFEST).toBe(
+				join(workspaceRoot, ".maestro", "restore.json"),
+			);
 		} finally {
 			process.chdir(originalCwd);
 			for (const [key, value] of Object.entries(previous)) {

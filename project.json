@@ -42,7 +42,6 @@
 		},
 		"test": {
 			"executor": "nx:run-commands",
-			"dependsOn": ["build"],
 			"options": {
 				"command": "bun run bun:test",
 				"forwardAllArgs": true

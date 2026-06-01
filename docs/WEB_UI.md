@@ -142,6 +142,8 @@ export MAESTRO_SESSION_DIR="~/.maestro/sessions"  # Session storage
 export MAESTRO_AGENT_DIR="~/.maestro/agent"       # Context files
 export MAESTRO_SESSION_SCOPE="auth"                # Scope sessions by auth subject
 export MAESTRO_MULTI_USER="1"                      # Alias for MAESTRO_SESSION_SCOPE
+export MAESTRO_MARKITDOWN_CMD="uvx"                # Optional document converter command
+export MAESTRO_MARKITDOWN_ARGS="markitdown"        # Optional converter args before the input file
 
 # Proxy Configuration (when behind nginx, CloudFlare, etc.)
 export MAESTRO_TRUST_PROXY="true"                  # Trust X-Forwarded-For headers
@@ -152,6 +154,14 @@ export MAESTRO_TRUST_PROXY="true"                  # Trust X-Forwarded-For heade
 When running behind a reverse proxy (nginx, CloudFlare, load balancer), set `MAESTRO_TRUST_PROXY=true` to extract the real client IP from the `X-Forwarded-For` header for rate limiting.
 
 **Security Warning:** Only enable this if your server is behind a trusted proxy that properly sets the `X-Forwarded-For` header. Enabling this on a publicly accessible server allows IP spoofing for rate limit bypass.
+
+#### MarkItDown Attachment Extraction
+
+Server-side attachment extraction uses Maestro's native parsers first. For HTML
+or unsupported document types, Maestro will try `markitdown` and then
+`uvx markitdown` unless `MAESTRO_MARKITDOWN=0` is set. Use
+`MAESTRO_MARKITDOWN_PREFER=1` to prefer MarkItDown for all supported attachment
+formats.
 
 **Important:** Ensure your server is NOT directly accessible from the internet when using this setting. The proxy should be the only entry point, and it should overwrite (not append to) the `X-Forwarded-For` header for incoming requests.
 

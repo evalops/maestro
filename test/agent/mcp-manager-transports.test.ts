@@ -18,7 +18,13 @@ const mockClientClose = vi.fn();
 const mockCallTool = vi.fn();
 const mockSetNotificationHandler = vi.fn();
 const mockSetRequestHandler = vi.fn();
+const mockListTools = vi.fn().mockResolvedValue({ tools: [] });
 const mockListPrompts = vi.fn().mockResolvedValue({ prompts: [] });
+let mockServerCapabilities: Record<string, unknown> = {
+	tools: {},
+	resources: {},
+	prompts: {},
+};
 const sseTransportCtor = vi.fn();
 const httpTransportCtor = vi.fn();
 const clientCtorOptions: unknown[] = [];
@@ -30,12 +36,8 @@ vi.mock("@modelcontextprotocol/sdk/client/index.js", () => ({
 		}
 
 		connect = mockClientConnect.mockResolvedValue(undefined);
-		getServerCapabilities = vi.fn(() => ({
-			tools: {},
-			resources: {},
-			prompts: {},
-		}));
-		listTools = vi.fn().mockResolvedValue({ tools: [] });
+		getServerCapabilities = vi.fn(() => mockServerCapabilities);
+		listTools = mockListTools;
 		listResources = vi.fn().mockResolvedValue({ resources: [] });
 		listPrompts = mockListPrompts;
 		callTool = mockCallTool.mockResolvedValue({
@@ -87,7 +89,13 @@ describe("MCP manager remote transports", () => {
 		mockCallTool.mockClear();
 		mockSetNotificationHandler.mockClear();
 		mockSetRequestHandler.mockClear();
+		mockListTools.mockReset().mockResolvedValue({ tools: [] });
 		mockListPrompts.mockReset().mockResolvedValue({ prompts: [] });
+		mockServerCapabilities = {
+			tools: {},
+			resources: {},
+			prompts: {},
+		};
 		sseTransportCtor.mockClear();
 		httpTransportCtor.mockClear();
 		clientCtorOptions.length = 0;
@@ -116,6 +124,74 @@ describe("MCP manager remote transports", () => {
 			"https://example.com/mcp",
 		);
 		expect(manager.isConnected("remote-http")).toBe(true);
+	});
+
+	it("refreshes parallel safety metadata when tool lists change", async () => {
+		const tool = {
+			name: "repo_status",
+			description: "Inspect repo status.",
+			inputSchema: { type: "object", properties: {} },
+		};
+		mockListTools
+			.mockResolvedValueOnce({ tools: [tool] })
+			.mockResolvedValueOnce({ tools: [tool] });
+		mockServerCapabilities = {
+			tools: {},
+			resources: {},
+			prompts: {},
+			experimental: {
+				"evalops.maestro.parallelSafety": {
+					tools: {
+						repo_status: {
+							supportsParallelToolCalls: true,
+							maxConcurrency: 4,
+						},
+					},
+				},
+			},
+		};
+
+		await manager.configure({
+			servers: [
+				{
+					name: "remote-http",
+					transport: "http",
+					url: "https://example.com/mcp",
+				},
+			],
+		});
+
+		expect(manager.getAllTools()[0]?.parallelSafety).toMatchObject({
+			supportsParallelToolCalls: true,
+			maxConcurrency: 4,
+			provenance: "server_capability",
+		});
+
+		mockServerCapabilities = {
+			tools: {},
+			resources: {},
+			prompts: {},
+			experimental: {
+				"evalops.maestro.parallelSafety": {
+					tools: {
+						repo_status: {
+							supportsParallelToolCalls: true,
+							maxConcurrency: 1,
+						},
+					},
+				},
+			},
+		};
+		const handleToolListChanged = mockSetNotificationHandler.mock
+			.calls[0]?.[1] as (() => Promise<void>) | undefined;
+		expect(handleToolListChanged).toBeDefined();
+		await handleToolListChanged?.();
+
+		expect(manager.getAllTools()[0]?.parallelSafety).toMatchObject({
+			supportsParallelToolCalls: true,
+			maxConcurrency: 1,
+			provenance: "server_capability",
+		});
 	});
 
 	it("reconnects unchanged configured servers after disconnectAll", async () => {

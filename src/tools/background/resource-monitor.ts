@@ -5,7 +5,7 @@
  * Supports Linux (/proc filesystem) and macOS (ps command).
  */
 
-import { execSync } from "node:child_process";
+import { spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 
 /**
@@ -168,12 +168,19 @@ export class ResourceMonitor {
 	 */
 	private readUsageFromPs(pid: number): TaskResourceUsage | null {
 		try {
-			const output = execSync(`ps -o rss= -o time= -p ${pid}`, {
-				encoding: "utf-8",
-			})
-				.trim()
-				.split(/\s+/)
-				.filter(Boolean);
+			const result = spawnSync(
+				"ps",
+				["-o", "rss=", "-o", "time=", "-p", String(pid)],
+				{
+					encoding: "utf-8",
+					stdio: ["ignore", "pipe", "pipe"],
+				},
+			);
+			if (result.error || result.status !== 0) {
+				return null;
+			}
+
+			const output = result.stdout.trim().split(/\s+/).filter(Boolean);
 
 			if (output.length < 2) {
 				return null;

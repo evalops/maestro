@@ -1,5 +1,5 @@
 /**
- * Centralized configuration constants for Composer CLI.
+ * Centralized configuration constants for Maestro CLI.
  *
  * This module consolidates magic numbers, default values, and paths
  * to improve maintainability and allow environment-based overrides.
@@ -70,7 +70,7 @@ export const TOOL_CONFIG = {
  * Storage paths configuration
  */
 export const PATHS = {
-	/** Composer home directory */
+	/** Maestro home directory */
 	get MAESTRO_HOME(): string {
 		return getComposerHome();
 	},

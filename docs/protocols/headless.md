@@ -126,6 +126,7 @@ snapshot manifest. The manifest directory comes from `--snapshot-root`,
     },
     "work_continuity": {
       "protocol_version": "evalops.remote-runner.work-continuity.v1",
+      "codex_subagent_schema_version": "evalops.maestro.codex.subagent-workgraph.v1",
       "active_tool_count": 0,
       "tracked_tool_count": 0,
       "pending_request_count": 0,
@@ -147,6 +148,7 @@ snapshot manifest. The manifest directory comes from `--snapshot-root`,
       "created_at": "2026-04-23T00:00:00.000Z",
       "work_continuity": {
         "protocol_version": "evalops.remote-runner.work-continuity.v1",
+        "codex_subagent_schema_version": "evalops.maestro.codex.subagent-workgraph.v1",
         "active_tool_count": 0,
         "tracked_tool_count": 0,
         "pending_request_count": 0,
@@ -235,6 +237,14 @@ The runtime flush status is the field that controls restore readiness:
 `completed` is attachable, `failed` is an interrupted restore, and `skipped`
 means no runtime activity was persisted. Older local manifests that used
 `interrupted` for the runtime flush status are treated as `failed`.
+
+New drain manifests also include `runtime_continuity`, a compact handoff record
+for Platform and operators. It names the source runner session, owner instance,
+source process id, restore manifest path, restore environment key, and the
+cursor-scoped evidence refs that prove which headless snapshot should be
+restored after process shutdown or replica replacement. `platform_evidence`
+mirrors a redacted summary of the same block so AgentRuntime progress records
+can be queried without reading the full runtime snapshot.
 
 ## Hosted Remote-Runner Restore
 

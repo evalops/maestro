@@ -172,6 +172,58 @@ describe("A2A task ledger", () => {
 		]);
 	});
 
+	it("keeps safe task metadata across task refreshes without token-like fields", async () => {
+		const path = join(
+			await mkdtemp(join(tmpdir(), "maestro-a2a-ledger-metadata-")),
+			"tasks.json",
+		);
+
+		await recordA2ATaskStart({
+			path,
+			peer: "mac-mini",
+			task: {
+				id: "task-metadata-1",
+				status: { state: "TASK_STATE_SUBMITTED" },
+				metadata: {
+					agentRunId: "run_1",
+					traceparent:
+						"00-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-bbbbbbbbbbbbbbbb-01",
+					apiToken: "do-not-write",
+					nested: { ignored: true },
+				},
+			},
+			text: "run the traceable smoke",
+			metadata: {
+				requestKind: "maestro-peer-message",
+			},
+			now: NOW,
+		});
+		await updateA2ATaskInLedger({
+			path,
+			peer: "mac-mini",
+			task: {
+				id: "task-metadata-1",
+				status: { state: "TASK_STATE_COMPLETED" },
+				metadata: {
+					worker: "mac-mini",
+					bearer: "do-not-write",
+				},
+			},
+			now: LATER,
+		});
+
+		const ledger = await loadA2ATaskLedger({ path });
+		expect(ledger.tasks[0]?.metadata).toMatchObject({
+			agentRunId: "run_1",
+			traceparent: "00-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-bbbbbbbbbbbbbbbb-01",
+			requestKind: "maestro-peer-message",
+			worker: "mac-mini",
+		});
+		expect(ledger.tasks[0]?.metadata).not.toHaveProperty("apiToken");
+		expect(ledger.tasks[0]?.metadata).not.toHaveProperty("bearer");
+		expect(JSON.stringify(ledger.tasks[0])).not.toContain("do-not-write");
+	});
+
 	it("records task replies without marking action-required states completed", async () => {
 		const path = join(
 			await mkdtemp(join(tmpdir(), "maestro-a2a-ledger-reply-")),
@@ -504,6 +556,63 @@ describe("A2A task ledger", () => {
 		await expect(loadA2ATaskLedger({ path })).resolves.toHaveProperty(
 			"tasks.length",
 			2,
+		);
+	});
+
+	it("preserves concurrent task starts and terminal updates from one process", async () => {
+		const path = join(
+			await mkdtemp(join(tmpdir(), "maestro-a2a-ledger-concurrent-updates-")),
+			"tasks.json",
+		);
+		const peers = Array.from({ length: 8 }, (_, index) => `peer-${index}`);
+
+		await Promise.all(
+			peers.map((peer, index) =>
+				recordA2ATaskStart({
+					path,
+					peer,
+					task: {
+						id: `task-${index}`,
+						status: { state: "TASK_STATE_SUBMITTED" },
+					},
+					text: `run task ${index}`,
+					now: NOW,
+				}),
+			),
+		);
+		await Promise.all(
+			peers.map((peer, index) =>
+				updateA2ATaskInLedger({
+					path,
+					peer,
+					task: {
+						id: `task-${index}`,
+						status: {
+							state: "TASK_STATE_COMPLETED",
+							message: {
+								role: "ROLE_AGENT",
+								parts: [{ text: `task ${index} done` }],
+							},
+						},
+					},
+					now: LATER,
+				}),
+			),
+		);
+
+		const ledger = await loadA2ATaskLedger({ path });
+		expect(ledger.tasks).toHaveLength(peers.length);
+		expect(ledger.tasks).toEqual(
+			expect.arrayContaining(
+				peers.map((peer, index) =>
+					expect.objectContaining({
+						peer,
+						taskId: `task-${index}`,
+						state: "TASK_STATE_COMPLETED",
+						responseText: `task ${index} done`,
+					}),
+				),
+			),
 		);
 	});
 

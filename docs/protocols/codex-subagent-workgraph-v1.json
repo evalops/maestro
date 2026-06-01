@@ -1,0 +1,73 @@
+{
+	"schemaVersion": "evalops.maestro.codex.subagent-workgraph.v1",
+	"description": "Versioned Codex subagent work-graph lifecycle contract shared by Maestro TypeScript provider/runtime code, Rust control-plane bridging, and remote-runner continuity evidence.",
+	"toolPrefix": "codex.subagent.",
+	"threadChildRunPrefix": "codex-thread:",
+	"requiredGraphFields": [
+		"schemaVersion",
+		"toolCallId",
+		"tool",
+		"status",
+		"parent",
+		"childRuns"
+	],
+	"requiredChildRunFields": [
+		"edgeId",
+		"targetIndex",
+		"threadId",
+		"childRunId",
+		"operation"
+	],
+	"operations": [
+		{
+			"tool": "spawnAgent",
+			"operation": "spawn_agent",
+			"aliases": ["spawnAgent", "spawn_agent"],
+			"activeStatus": "waiting_for_restore",
+			"terminalSuccessStatus": "spawned",
+			"nextAction": "wait for child agent initialization or completion",
+			"delegationResolution": "deferred_until_child_terminal_edge"
+		},
+		{
+			"tool": "sendInput",
+			"operation": "send_input",
+			"aliases": ["sendInput", "send_input"],
+			"activeStatus": "waiting_for_input_ack",
+			"terminalSuccessStatus": "acknowledged",
+			"nextAction": "wait for child agent response",
+			"delegationResolution": "linked_child_edge"
+		},
+		{
+			"tool": "resumeAgent",
+			"operation": "resume_agent",
+			"aliases": [
+				"resumeAgent",
+				"resumeSubagent",
+				"resume_agent",
+				"resume_subagent"
+			],
+			"activeStatus": "restoring",
+			"terminalSuccessStatus": "resumed",
+			"nextAction": "wait for resumed child agent response",
+			"delegationResolution": "resolve_on_error"
+		},
+		{
+			"tool": "wait",
+			"operation": "wait_agent",
+			"aliases": ["wait", "waitAgent", "wait_agent"],
+			"activeStatus": "wait_pending",
+			"terminalSuccessStatus": "completed",
+			"nextAction": "wait for selected child agents",
+			"delegationResolution": "resolved_from_child_terminal_edge"
+		},
+		{
+			"tool": "closeAgent",
+			"operation": "close_agent",
+			"aliases": ["closeAgent", "close_agent"],
+			"activeStatus": "waiting_for_close",
+			"terminalSuccessStatus": "closed",
+			"nextAction": "confirm child agent shutdown",
+			"delegationResolution": "resolved_from_child_terminal_edge"
+		}
+	]
+}

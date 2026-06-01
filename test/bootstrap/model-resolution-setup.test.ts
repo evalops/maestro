@@ -4,13 +4,19 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-vi.mock("../../src/models/registry.js", () => ({
+const registryMocks = vi.hoisted(() => ({
 	resolveAlias: vi.fn().mockReturnValue(null),
 	findModelById: vi.fn().mockReturnValue(null),
 	getFactoryDefaultModelSelection: vi.fn().mockReturnValue({
 		provider: "anthropic",
 		modelId: "claude-sonnet-4-5",
 	}),
+	getRegisteredModels: vi.fn().mockReturnValue([
+		{ provider: "anthropic", id: "claude-opus-4-6" },
+		{ provider: "anthropic", id: "claude-sonnet-4-5" },
+		{ provider: "openai", id: "gpt-5.2" },
+		{ provider: "openai-codex", id: "gpt-5.5" },
+	]),
 	getSupportedProviders: vi
 		.fn()
 		.mockReturnValue(["anthropic", "openai", "bedrock", "openai-codex"]),
@@ -21,6 +27,10 @@ vi.mock("../../src/models/registry.js", () => ({
 		name: id,
 		contextWindow: 200000,
 	})),
+}));
+
+vi.mock("../../src/models/registry.js", () => ({
+	...registryMocks,
 }));
 
 import { resolveModelFromArgs } from "../../src/bootstrap/model-resolution-setup.js";
@@ -36,6 +46,33 @@ const originalScenarioPath = process.env.MAESTRO_SCENARIO_PATH;
 describe("resolveModelFromArgs", () => {
 	beforeEach(() => {
 		vi.clearAllMocks();
+		registryMocks.resolveAlias.mockReturnValue(null);
+		registryMocks.findModelById.mockReturnValue(null);
+		registryMocks.getFactoryDefaultModelSelection.mockReturnValue({
+			provider: "anthropic",
+			modelId: "claude-sonnet-4-5",
+		});
+		registryMocks.getSupportedProviders.mockReturnValue([
+			"anthropic",
+			"openai",
+			"bedrock",
+			"openai-codex",
+		]);
+		registryMocks.getRegisteredModels.mockReturnValue([
+			{ provider: "anthropic", id: "claude-opus-4-6" },
+			{ provider: "anthropic", id: "claude-sonnet-4-5" },
+			{ provider: "openai", id: "gpt-5.2" },
+			{ provider: "openai-codex", id: "gpt-5.5" },
+		]);
+		registryMocks.resolveModel.mockImplementation(
+			(provider: string, id: string) => ({
+				api: "anthropic-messages",
+				provider,
+				id,
+				name: id,
+				contextWindow: 200000,
+			}),
+		);
 		mockRequireCredential.mockResolvedValue({ apiKey: "test-key" });
 	});
 
@@ -54,6 +91,52 @@ describe("resolveModelFromArgs", () => {
 
 		expect(result.provider).toBe("anthropic");
 		expect(result.modelId).toBe("claude-sonnet-4-5");
+	});
+
+	it("falls back to OpenAI Codex app-server when no factory default exists", async () => {
+		registryMocks.getFactoryDefaultModelSelection.mockReturnValueOnce(null);
+		(resolveModel as ReturnType<typeof vi.fn>).mockImplementationOnce(
+			(provider: string, id: string) => ({
+				api: "openai-codex-app-server",
+				provider,
+				id,
+				name: id,
+				contextWindow: 272000,
+			}),
+		);
+
+		const result = await resolveModelFromArgs({
+			requireCredential: mockRequireCredential,
+		});
+
+		expect(result.provider).toBe("openai-codex");
+		expect(result.modelId).toBe("gpt-5.5");
+		expect(result.model.api).toBe("openai-codex-app-server");
+		expect(mockRequireCredential).not.toHaveBeenCalled();
+	});
+
+	it("uses a provider-specific fallback when only provider is specified", async () => {
+		registryMocks.getFactoryDefaultModelSelection.mockReturnValueOnce(null);
+
+		const result = await resolveModelFromArgs({
+			parsedProvider: "anthropic",
+			requireCredential: mockRequireCredential,
+		});
+
+		expect(result.provider).toBe("anthropic");
+		expect(result.modelId).toBe("claude-opus-4-6");
+		expect(mockRequireCredential).toHaveBeenCalledWith("anthropic", false);
+	});
+
+	it("ignores mismatched factory defaults when only provider is specified", async () => {
+		const result = await resolveModelFromArgs({
+			parsedProvider: "openai",
+			requireCredential: mockRequireCredential,
+		});
+
+		expect(result.provider).toBe("openai");
+		expect(result.modelId).toBe("gpt-5.2");
+		expect(mockRequireCredential).toHaveBeenCalledWith("openai", false);
 	});
 
 	it("parses slash-format provider/model", async () => {

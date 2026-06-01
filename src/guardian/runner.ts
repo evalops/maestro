@@ -25,6 +25,7 @@ import type {
 const GUARDIAN_DISABLE_VALUES = ["0", "false", "off", "no"];
 const GUARDIAN_ENABLE_VALUES = ["1", "true", "on"];
 const DEFAULT_TIMEOUT_MS = 10_000;
+const DEFAULT_SEMGREP_TIMEOUT_MS = 120_000;
 
 type FileListResult =
 	| { ok: true; files: string[] }
@@ -37,6 +38,60 @@ type CommandResult = {
 	error?: string;
 	durationMs: number;
 };
+
+function spawnErrorCode(error: Error | undefined): string | null {
+	const code = (error as NodeJS.ErrnoException | undefined)?.code;
+	return typeof code === "string" ? code : null;
+}
+
+function isSpawnTimeout(error: Error | undefined): boolean {
+	return (
+		spawnErrorCode(error) === "ETIMEDOUT" ||
+		error?.message.includes("ETIMEDOUT") === true
+	);
+}
+
+function exitCodeForSpawnResult(
+	status: number | null,
+	error: Error | undefined,
+	signal: NodeJS.Signals | null,
+): number {
+	if (typeof status === "number") {
+		return status;
+	}
+	if (isSpawnTimeout(error)) {
+		return 124;
+	}
+	if (error) {
+		return 2;
+	}
+	if (signal) {
+		const signalNumber = os.constants.signals[signal];
+		return typeof signalNumber === "number" ? 128 + signalNumber : 128;
+	}
+	return 1;
+}
+
+function appendSpawnFailureDetails(
+	stderr: string,
+	command: string,
+	error: Error | undefined,
+	signal: NodeJS.Signals | null,
+	timeoutMs: number,
+): string {
+	const details: string[] = [];
+	if (isSpawnTimeout(error)) {
+		details.push(`${command} timed out after ${timeoutMs}ms`);
+	}
+	if (error?.message) {
+		details.push(error.message);
+	}
+	if (signal) {
+		details.push(`${command} terminated by ${signal}`);
+	}
+	const uniqueDetails = Array.from(new Set(details));
+	return [stderr, ...uniqueDetails].filter((part) => part.trim()).join("\n");
+}
 
 function commandExists(command: string, cwd: string): boolean {
 	const result = spawnSync(command, ["--version"], {
@@ -52,27 +107,48 @@ function runCommand(
 	args: string[],
 	cwd: string,
 	timeoutMs = DEFAULT_TIMEOUT_MS,
+	env?: NodeJS.ProcessEnv,
 ): CommandResult {
 	const started = Date.now();
 	try {
 		const result = spawnSync(command, args, {
 			cwd,
 			encoding: "utf-8",
+			env: env ? { ...process.env, ...env } : process.env,
 			maxBuffer: 8 * 1024 * 1024,
 			timeout: timeoutMs,
 		});
+		const errorMessage =
+			result.error instanceof Error ? result.error.message : undefined;
+		const stderr =
+			result.stderr && result.stderr.length > 0
+				? result.stderr
+				: (errorMessage ?? "");
 		return {
-			exitCode: result.status ?? 1,
+			exitCode: exitCodeForSpawnResult(
+				result.status,
+				result.error,
+				result.signal ?? null,
+			),
 			stdout: result.stdout ?? "",
-			stderr: result.stderr ?? "",
+			stderr: appendSpawnFailureDetails(
+				stderr,
+				command,
+				result.error,
+				result.signal ?? null,
+				timeoutMs,
+			),
+			error: errorMessage,
 			durationMs: Date.now() - started,
 		};
 	} catch (error) {
+		const thrownError =
+			error instanceof Error ? error : new Error(String(error));
 		return {
-			exitCode: 1,
+			exitCode: exitCodeForSpawnResult(null, thrownError, null),
 			stdout: "",
-			stderr: error instanceof Error ? error.message : String(error),
-			error: error instanceof Error ? error.message : String(error),
+			stderr: thrownError.message,
+			error: thrownError.message,
 			durationMs: Date.now() - started,
 		};
 	}
@@ -185,7 +261,11 @@ function locateSemgrep(
 	return null;
 }
 
-function runSemgrep(files: string[], root: string): GuardianToolResult {
+function runSemgrep(
+	files: string[],
+	root: string,
+	timeoutMs = DEFAULT_SEMGREP_TIMEOUT_MS,
+): GuardianToolResult {
 	const started = Date.now();
 	const cmd = locateSemgrep(root);
 	if (!cmd) {
@@ -212,13 +292,17 @@ function runSemgrep(files: string[], root: string): GuardianToolResult {
 		"--error",
 		"--timeout",
 		"7",
+		"--jobs",
+		"1",
 		"--metrics=off",
 		"--disable-version-check",
 		...includeArgs,
 		".",
 	];
-	// Semgrep can take longer on larger workspaces; allow up to 2 minutes before timing out
-	const result = runCommand(cmd.command, args, root, 120_000);
+	// Semgrep can take longer on larger workspaces, so honor the configured tool budget.
+	const result = runCommand(cmd.command, args, root, timeoutMs, {
+		SEMGREP_SEND_METRICS: "off",
+	});
 	return {
 		tool: "semgrep",
 		exitCode: result.exitCode,
@@ -388,6 +472,13 @@ export type HeuristicFindingName =
 	| "Database URL with credentials"
 	| "JWT token";
 
+export type EvidenceIntegrityFindingName =
+	| "Synthetic production commit SHA"
+	| "Synthetic production PR reference"
+	| "Synthetic local GitHub Actions run ID"
+	| "Local proof identifier"
+	| "Replay artifact claimed as production evidence";
+
 const HEURISTIC_PATTERNS: Array<{ name: HeuristicFindingName; regex: RegExp }> =
 	[
 		// AWS credentials
@@ -480,6 +571,51 @@ const HEURISTIC_PATTERNS: Array<{ name: HeuristicFindingName; regex: RegExp }> =
 		},
 	];
 
+const EVIDENCE_CONTEXT_REGEX =
+	/(?<![A-Za-z0-9_-])(?:production[\s_-]+evidence|productionEvidence|production[\s_-]+proof|productionProof|live[\s_-]+evidence|liveEvidence|live[\s_-]+proof|liveProof|dereferenceable|evidence[\s_-]+bundle|evidenceBundle|deploy-verifier|hard[_-]identifiers|hardIdentifiers)(?![A-Za-z0-9_-])/i;
+
+const REPLAY_EVIDENCE_MARKER_PATTERN = String.raw`(?:\bdeterministic_replay\b|(?<![A-Za-z0-9_])["']?replay["']?\s*:\s*true)`;
+const PRODUCTION_EVIDENCE_CLAIM_PATTERN = String.raw`(?<![A-Za-z0-9_-])["']?(?:production[_-]?evidence|live[_-]?proof)["']?\s*:\s*["']?(?:true|verified)["']?(?![A-Za-z0-9_-])`;
+
+const EVIDENCE_PATTERNS: Array<{
+	name: EvidenceIntegrityFindingName;
+	regex?: RegExp;
+	matches?: (contents: string) => boolean;
+	requiresEvidenceContext?: boolean;
+}> = [
+	{
+		name: "Synthetic production commit SHA",
+		// A 40-hex "SHA" containing an embedded UTC timestamp plus cutesy marker
+		// text is a fixture identifier, not dereferenceable git evidence.
+		regex:
+			/\b[0-9a-f]{4,12}20\d{12}[0-9a-f]{0,16}(?:c0de|cafe|5afe)[0-9a-f]{0,20}\b/i,
+		requiresEvidenceContext: true,
+	},
+	{
+		name: "Synthetic production PR reference",
+		regex:
+			/\b[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+#(?!\d+\b)[A-Za-z][A-Za-z0-9_.:-]*(?:local|prod-pr-lane)[A-Za-z0-9_.:-]*\b/i,
+		requiresEvidenceContext: true,
+	},
+	{
+		name: "Synthetic local GitHub Actions run ID",
+		regex: /\bgha-run-[A-Za-z0-9_.:-]*-local\b/i,
+		requiresEvidenceContext: true,
+	},
+	{
+		name: "Local proof identifier",
+		regex:
+			/\bproof(?:[_-]?id|Id)?\b["']?\s*[:=]\s*["']?[A-Za-z0-9_.:-]+-local\b/i,
+		requiresEvidenceContext: true,
+	},
+	{
+		name: "Replay artifact claimed as production evidence",
+		matches: (contents) =>
+			new RegExp(REPLAY_EVIDENCE_MARKER_PATTERN, "i").test(contents) &&
+			new RegExp(PRODUCTION_EVIDENCE_CLAIM_PATTERN, "i").test(contents),
+	},
+];
+
 export function detectHeuristicFindings(
 	contents: string,
 ): HeuristicFindingName[] {
@@ -490,6 +626,74 @@ export function detectHeuristicFindings(
 		}
 	}
 	return matches;
+}
+
+export function detectEvidenceIntegrityFindings(
+	contents: string,
+): EvidenceIntegrityFindingName[] {
+	const matches: EvidenceIntegrityFindingName[] = [];
+	const hasEvidenceContext = EVIDENCE_CONTEXT_REGEX.test(contents);
+	for (const pattern of EVIDENCE_PATTERNS) {
+		if (pattern.requiresEvidenceContext && !hasEvidenceContext) {
+			continue;
+		}
+		if (pattern.matches?.(contents) ?? pattern.regex?.test(contents)) {
+			matches.push(pattern.name);
+		}
+	}
+	return matches;
+}
+
+function runEvidenceIntegrityScan(
+	files: string[],
+	root: string,
+): GuardianToolResult {
+	const started = Date.now();
+	const findings: string[] = [];
+	const ignorePatterns = [
+		/test\/guardian\/evidence-integrity\.test\.ts$/,
+		/src\/guardian\/runner\.ts$/,
+	];
+
+	for (const relative of files) {
+		if (ignorePatterns.some((pattern) => pattern.test(relative))) {
+			continue;
+		}
+		const fullPath = resolve(root, relative);
+		if (!existsSync(fullPath)) continue;
+		let contents: string;
+		try {
+			const stats = statSync(fullPath);
+			if (stats.size > 2 * 1024 * 1024) {
+				continue;
+			}
+			contents = readFileSync(fullPath, "utf-8");
+		} catch {
+			continue;
+		}
+		if (contents.includes("\0")) continue;
+		for (const match of detectEvidenceIntegrityFindings(contents)) {
+			findings.push(`${match}: ${relative}`);
+		}
+	}
+
+	if (!findings.length) {
+		return {
+			tool: "evidence-integrity",
+			exitCode: 0,
+			stdout: "",
+			stderr: "",
+			durationMs: Date.now() - started,
+		};
+	}
+	return {
+		tool: "evidence-integrity",
+		exitCode: 1,
+		stdout: findings.join("\n"),
+		stderr:
+			"Live-production claims must use dereferenceable git, PR, Actions, deploy, and signature identifiers. Mark deterministic fixtures as replay evidence instead.",
+		durationMs: Date.now() - started,
+	};
 }
 
 function runHeuristicScan(files: string[], root: string): GuardianToolResult {
@@ -744,8 +948,12 @@ export async function runGuardian(
 
 	const toolResults: GuardianToolResult[] = [];
 
+	if (config.tools.evidenceIntegrity) {
+		toolResults.push(runEvidenceIntegrityScan(files, scanRoot));
+	}
+
 	if (config.tools.semgrep) {
-		toolResults.push(runSemgrep(files, scanRoot));
+		toolResults.push(runSemgrep(files, scanRoot, config.toolTimeoutMs));
 	}
 
 	let fallback: GuardianToolResult | null = null;

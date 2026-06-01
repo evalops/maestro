@@ -91,6 +91,7 @@ const AGENT_TRAJECTORY_SOURCE_PATH_FIELDS = [
 	"replayPath",
 	"scorePath",
 	"inspectionPath",
+	"workspaceManifestPath",
 	"baselineTrajectoryPath",
 	"candidateTrajectoryPath",
 	"baselineScorePath",
@@ -120,6 +121,14 @@ function rejectRemoteScriptedScenarioRelativeFileAssertions(
 ): void {
 	if (!isRemoteScenarioSource(source)) {
 		return;
+	}
+	if (
+		scenario.workspaceManifestPath &&
+		!isAbsolute(scenario.workspaceManifestPath)
+	) {
+		throw new Error(
+			`Remote scripted scenario ${scenarioSourceLabel(source)} workspaceManifestPath must be absolute; relative workspace manifests are not supported for remote scripted scenarios.`,
+		);
 	}
 	for (const assertion of scenario.assertions ?? []) {
 		if (

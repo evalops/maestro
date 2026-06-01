@@ -1,3 +1,4 @@
+import type { ToolCapabilitySummary } from "../agent/tool-capability-types.js";
 import { emitBeacon } from "./beacon.js";
 
 type McpBeaconTransport = "stdio" | "http" | "sse";
@@ -14,6 +15,7 @@ export interface McpConnectionBeacon extends McpBeaconBase {
 	resourceCount: number;
 	promptCount: number;
 	isReconnect?: boolean;
+	toolCapabilitySummary?: ToolCapabilitySummary;
 }
 
 export interface McpToolUsageBeacon extends McpBeaconBase {
@@ -41,6 +43,7 @@ export function emitMcpConnectionBeacon(
 				resourceCount: beacon.resourceCount,
 				promptCount: beacon.promptCount,
 				reconnect: beacon.isReconnect === true,
+				...compactCapabilityMetadata(beacon.toolCapabilitySummary),
 			}),
 		},
 	});
@@ -86,4 +89,21 @@ function compactMetadata(
 	return Object.fromEntries(
 		Object.entries(metadata).filter(([, value]) => value !== undefined),
 	);
+}
+
+function compactCapabilityMetadata(
+	summary: ToolCapabilitySummary | undefined,
+): Record<string, number> {
+	if (!summary) {
+		return {};
+	}
+	return {
+		desktopToolCount: summary.byDomain.desktop,
+		fileToolCount: summary.byDomain.file,
+		desktopActionToolCount: summary.byToolLane.desktop_action,
+		fileEditToolCount: summary.byToolLane.file_edit,
+		highRiskToolCount: summary.byRiskClass.high,
+		receiptBackedToolCount: summary.requiresReceipt,
+		rawSecretPossibleToolCount: summary.rawSecretPossible,
+	};
 }

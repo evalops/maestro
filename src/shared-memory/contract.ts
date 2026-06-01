@@ -1,7 +1,7 @@
 /**
  * Shared Memory Contract v1
  *
- * This file defines the contract between Composer and Conductor for
+ * This file defines the contract between Maestro and Conductor for
  * shared memory synchronization. Both projects should implement
  * compatible types to ensure interoperability.
  *
@@ -21,7 +21,7 @@ export const SHARED_MEMORY_SCHEMA_VERSION = 1;
 
 /**
  * Unified error codes for shared memory operations.
- * Both Composer and Conductor should use these codes for consistent error handling.
+ * Both Maestro and Conductor should use these codes for consistent error handling.
  */
 export enum SharedMemoryErrorCode {
 	// Network errors (1xxx)
@@ -147,7 +147,7 @@ export interface SharedMemoryEvent {
 // =============================================================================
 
 /**
- * Base state fields that both Composer and Conductor share.
+ * Base state fields that both Maestro and Conductor share.
  */
 export interface SharedMemoryStateBase {
 	/** Session identifier */
@@ -161,7 +161,7 @@ export interface SharedMemoryStateBase {
 }
 
 /**
- * Composer-specific state fields.
+ * Maestro-specific state fields.
  */
 export interface ComposerState extends SharedMemoryStateBase {
 	source: "maestro";

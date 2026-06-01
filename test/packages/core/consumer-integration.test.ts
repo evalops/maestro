@@ -30,6 +30,10 @@ import {
 // Simulate: import from '@evalops/maestro-core/sandbox'
 import { DaytonaSandbox } from "../../../packages/core/src/sandbox/index.js";
 
+import {
+	computeRestartDelay as computePackageRestartDelay,
+	createRestartPolicy as createPackageRestartPolicy,
+} from "../../../packages/core/src/background/restart-policy.js";
 // Simulate: import from '@evalops/maestro-core/swarm'
 import {
 	parsePlanContent,
@@ -97,9 +101,32 @@ describe("Consumer Integration", () => {
 		expect(formatTaskSummary).toBeDefined();
 		expect(parsePlanContent).toBeDefined();
 		expect(parsePlanFile).toBeDefined();
+		expect(createPackageRestartPolicy).toBeDefined();
+		expect(computePackageRestartDelay).toBeDefined();
 
 		// Constants
 		expect(TOOL_CATEGORIES).toBeDefined();
+	});
+
+	it("uses package-owned restart policy without the root facade", () => {
+		const policy = createPackageRestartPolicy({
+			maxAttempts: 3,
+			delayMs: 1000,
+			strategy: "exponential",
+			jitterRatio: 0,
+		});
+
+		expect(policy).toMatchObject({
+			maxAttempts: 3,
+			delayMs: 1000,
+			attempts: 0,
+			strategy: "exponential",
+		});
+		if (!policy) {
+			throw new Error("expected restart policy");
+		}
+		policy.attempts = 2;
+		expect(computePackageRestartDelay(policy)).toBe(2000);
 	});
 
 	it("can wire Agent with ProviderTransport", () => {

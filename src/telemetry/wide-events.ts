@@ -13,6 +13,11 @@
  */
 
 import { randomUUID } from "node:crypto";
+import type {
+	ToolPhaseDecisionOutcome,
+	ToolPhaseSummary,
+	ToolSchedulingDecision,
+} from "../agent/types.js";
 import { isOpenTelemetryEnabled } from "../opentelemetry.js";
 import type { PromptMetadata } from "../prompts/types.js";
 import type { SkillArtifactMetadata } from "../skills/artifact-metadata.js";
@@ -34,6 +39,7 @@ export interface ToolExecution {
 	errorCode?: string;
 	inputSizeBytes?: number;
 	outputSizeBytes?: number;
+	scheduling?: ToolSchedulingDecision;
 }
 
 export interface TokenUsage {
@@ -55,6 +61,29 @@ export interface ModelInfo {
 		| "high"
 		| "max"
 		| "ultra";
+}
+
+export interface SerializationReasonCount {
+	reason: string;
+	count: number;
+}
+
+export interface ToolSchedulingSummary {
+	modelToolCallCount: number;
+	modelEmittedToolCallCount: number;
+	schedulableWaveCount: number;
+	parallelizedCallCount: number;
+	actuallyParallelizedCallCount: number;
+	serializedCallCount: number;
+	delayedCallCount: number;
+	blockedByMutationCount: number;
+	mcpOptInCallCount: number;
+	mcpOptInUseCount: number;
+	cacheHitCount: number;
+	totalToolWaitMs: number;
+	toolWaitTimeMs: number;
+	serializationReasons: Record<string, number>;
+	topSerializationReasons: SerializationReasonCount[];
 }
 
 /**
@@ -89,6 +118,7 @@ export interface CanonicalTurnEvent {
 	toolCount: number;
 	toolSuccessCount: number;
 	toolFailureCount: number;
+	toolScheduling?: ToolSchedulingSummary;
 
 	// ─── Token Economics ────────────────────────────────────────────────────
 	tokens: TokenUsage;
@@ -199,6 +229,11 @@ export class TurnCollector {
 		string,
 		{ name: string; callId: string; startTime: number; inputSizeBytes?: number }
 	> = new Map();
+	private readonly toolSchedulingDecisions = new Map<
+		string,
+		ToolSchedulingDecision
+	>();
+	private readonly toolPhaseSummaries: ToolPhaseSummary[] = [];
 	private completedTools: ToolExecution[] = [];
 
 	// Context fields
@@ -344,6 +379,39 @@ export class TurnCollector {
 		return this;
 	}
 
+	recordToolSchedulingDecision(decision: ToolSchedulingDecision): this {
+		this.toolSchedulingDecisions.set(decision.callId, {
+			...decision,
+			schedulerWaitMs:
+				decision.schedulerWaitMs !== undefined
+					? Math.max(0, Math.round(decision.schedulerWaitMs))
+					: undefined,
+		});
+		return this;
+	}
+
+	recordToolPhaseSummary(summary: ToolPhaseSummary): this {
+		this.toolPhaseSummaries.push(summary);
+		for (const decision of summary.decisions ?? []) {
+			this.recordToolSchedulingDecision({
+				callId: decision.toolCallId,
+				toolName: decision.toolName,
+				emittedIndex: decision.emittedIndex,
+				waveIndex: decision.waveIndex,
+				decision: decision.decision,
+				reason: decision.reason,
+				schedulerWaitMs: decision.schedulerWaitMs,
+				mcpOptIn: decision.mcpOptIn,
+				cacheHit: decision.cacheHit,
+				blockedByMutation: decision.blockedByMutation,
+			});
+		}
+		for (const tool of this.completedTools) {
+			tool.scheduling ??= this.toolSchedulingDecisions.get(tool.callId);
+		}
+		return this;
+	}
+
 	recordToolEnd(
 		callId: string,
 		success: boolean,
@@ -360,6 +428,7 @@ export class TurnCollector {
 				errorCode,
 				inputSizeBytes: tool.inputSizeBytes,
 				outputSizeBytes,
+				scheduling: this.toolSchedulingDecisions.get(callId),
 			};
 			this.completedTools.push(completed);
 			this.tools.delete(callId);
@@ -396,6 +465,7 @@ export class TurnCollector {
 			this.queueStartTime !== undefined
 				? Math.max(0, this.startTime - this.queueStartTime)
 				: undefined;
+		const toolScheduling = this.summarizeToolScheduling();
 
 		// Apply tail sampling
 		const { sampled, sampleReason } = this.shouldSample(
@@ -433,6 +503,7 @@ export class TurnCollector {
 			toolCount: this.completedTools.length,
 			toolSuccessCount: this.completedTools.filter((t) => t.success).length,
 			toolFailureCount: this.completedTools.filter((t) => !t.success).length,
+			toolScheduling,
 
 			// Tokens
 			tokens,
@@ -504,6 +575,21 @@ export class TurnCollector {
 		return event;
 	}
 
+	private summarizeToolScheduling(): ToolSchedulingSummary | undefined {
+		if (this.toolPhaseSummaries.length > 0) {
+			// A turn can fail after per-call scheduling is recorded but before the
+			// final phase summary is emitted; merge those unsummarized calls back in.
+			return summarizeToolPhaseSummaries(this.toolPhaseSummaries, [
+				...this.toolSchedulingDecisions.values(),
+			]);
+		}
+
+		const decisions = [...this.toolSchedulingDecisions.values()].sort(
+			(left, right) => left.emittedIndex - right.emittedIndex,
+		);
+		return summarizeToolSchedulingDecisions(decisions);
+	}
+
 	// ─── Sampling Logic ───────────────────────────────────────────────────────
 
 	private shouldSample(
@@ -532,6 +618,285 @@ export class TurnCollector {
 
 		return { sampled: false, sampleReason: "random" };
 	}
+}
+
+function summarizeToolSchedulingDecisions(
+	decisions: ToolSchedulingDecision[],
+): ToolSchedulingSummary | undefined {
+	if (decisions.length === 0) {
+		return undefined;
+	}
+
+	const sortedDecisions = [...decisions].sort(
+		(left, right) => left.emittedIndex - right.emittedIndex,
+	);
+	const waveCounts = new Map<number, number>();
+	for (const decision of sortedDecisions) {
+		if (decision.waveIndex !== undefined) {
+			waveCounts.set(
+				decision.waveIndex,
+				(waveCounts.get(decision.waveIndex) ?? 0) + 1,
+			);
+		}
+	}
+	const classifiedDecisions = sortedDecisions.map((decision) =>
+		classifyToolSchedulingDecision(
+			decision,
+			decision.waveIndex !== undefined
+				? (waveCounts.get(decision.waveIndex) ?? 1)
+				: 1,
+			sortedDecisions.length,
+		),
+	);
+	const serializationReasons = new Map<string, number>();
+	for (const decision of classifiedDecisions) {
+		if (decision.outcome === "delayed" || decision.outcome === "serialized") {
+			serializationReasons.set(
+				decision.reason,
+				(serializationReasons.get(decision.reason) ?? 0) + 1,
+			);
+		}
+	}
+
+	return {
+		modelToolCallCount: sortedDecisions.length,
+		modelEmittedToolCallCount: sortedDecisions.length,
+		schedulableWaveCount: waveCounts.size,
+		parallelizedCallCount: classifiedDecisions.filter(
+			(decision) => decision.outcome === "parallelized",
+		).length,
+		actuallyParallelizedCallCount: classifiedDecisions.filter(
+			(decision) => decision.outcome === "parallelized",
+		).length,
+		serializedCallCount: classifiedDecisions.filter(
+			(decision) =>
+				decision.outcome === "serialized" || decision.outcome === "delayed",
+		).length,
+		delayedCallCount: classifiedDecisions.filter(
+			(decision) => decision.outcome === "delayed",
+		).length,
+		blockedByMutationCount: sortedDecisions.filter(
+			(decision) => decision.blockedByMutation === true,
+		).length,
+		mcpOptInCallCount: sortedDecisions.filter(
+			(decision) => decision.mcpOptIn === true,
+		).length,
+		mcpOptInUseCount: sortedDecisions.filter(
+			(decision) => decision.mcpOptIn === true,
+		).length,
+		cacheHitCount: sortedDecisions.filter(
+			(decision) => decision.cacheHit === true,
+		).length,
+		totalToolWaitMs: sortedDecisions.reduce(
+			(total, decision) => total + (decision.schedulerWaitMs ?? 0),
+			0,
+		),
+		toolWaitTimeMs: sortedDecisions.reduce(
+			(total, decision) => total + (decision.schedulerWaitMs ?? 0),
+			0,
+		),
+		serializationReasons: Object.fromEntries(serializationReasons),
+		topSerializationReasons: topSerializationReasons(
+			Object.fromEntries(serializationReasons),
+		),
+	};
+}
+
+function classifyToolSchedulingDecision(
+	decision: ToolSchedulingDecision,
+	waveSize: number,
+	modelToolCallCount: number,
+): { outcome: ToolPhaseDecisionOutcome; reason: string } {
+	const outcome: ToolPhaseDecisionOutcome =
+		decision.cacheHit === true
+			? "cached"
+			: decision.decision === "skipped"
+				? "skipped"
+				: decision.decision === "delayed" || decision.blockedByMutation === true
+					? "delayed"
+					: decision.decision === "parallelized" ||
+							(waveSize > 1 && decision.decision === "scheduled")
+						? "parallelized"
+						: "serialized";
+	const reason =
+		outcome === "cached"
+			? "cache_hit"
+			: decision.blockedByMutation === true
+				? decision.reason
+				: decision.reason === "workflow_state_serialized"
+					? "workflow_state_serialized"
+					: decision.mcpOptIn === true
+						? "mcp_parallel_opt_in"
+						: decision.reason.startsWith("read_only")
+							? outcome === "parallelized"
+								? "read_only_parallel_safe"
+								: modelToolCallCount === 1
+									? "single_read_only_call"
+									: decision.reason
+							: decision.reason.startsWith("path_scoped_mutation")
+								? "path_scoped_mutation"
+								: decision.reason;
+
+	return { outcome, reason };
+}
+
+function countSerializationReasons(
+	decisions: ToolPhaseSummary["decisions"],
+): Record<string, number> {
+	const reasons: Record<string, number> = {};
+	for (const decision of decisions) {
+		if (decision.outcome === "serialized" || decision.outcome === "delayed") {
+			reasons[decision.reason] = (reasons[decision.reason] ?? 0) + 1;
+		}
+	}
+	return reasons;
+}
+
+function summarizeToolPhaseSummaries(
+	summaries: ToolPhaseSummary[],
+	recordedDecisions: ToolSchedulingDecision[] = [],
+): ToolSchedulingSummary {
+	const summarizedCallIds = new Set(
+		summaries.flatMap((summary) =>
+			(summary.decisions ?? []).map((decision) => decision.toolCallId),
+		),
+	);
+	const supplementalSummary = summarizeToolSchedulingDecisions(
+		recordedDecisions.filter(
+			(decision) => !summarizedCallIds.has(decision.callId),
+		),
+	);
+	const decisions = summaries.flatMap((summary) => summary.decisions ?? []);
+	const serializationReasons =
+		decisions.length > 0
+			? countSerializationReasons(decisions)
+			: mergeSerializationReasons(summaries);
+
+	const summary = {
+		modelToolCallCount: summaries.reduce(
+			(total, summary) => total + (summary.modelToolCallCount ?? 0),
+			0,
+		),
+		modelEmittedToolCallCount: summaries.reduce(
+			(total, summary) =>
+				total +
+				(summary.modelEmittedToolCallCount ?? summary.modelToolCallCount ?? 0),
+			0,
+		),
+		schedulableWaveCount: summaries.reduce(
+			(total, summary) => total + (summary.schedulableWaveCount ?? 0),
+			0,
+		),
+		parallelizedCallCount: summaries.reduce(
+			(total, summary) => total + (summary.parallelizedCallCount ?? 0),
+			0,
+		),
+		actuallyParallelizedCallCount: summaries.reduce(
+			(total, summary) =>
+				total +
+				(summary.actuallyParallelizedCallCount ??
+					summary.parallelizedCallCount ??
+					0),
+			0,
+		),
+		serializedCallCount: summaries.reduce(
+			(total, summary) => total + (summary.serializedCallCount ?? 0),
+			0,
+		),
+		delayedCallCount: summaries.reduce(
+			(total, summary) => total + (summary.delayedCallCount ?? 0),
+			0,
+		),
+		blockedByMutationCount: summaries.reduce(
+			(total, summary) => total + (summary.blockedByMutationCount ?? 0),
+			0,
+		),
+		mcpOptInCallCount: summaries.reduce(
+			(total, summary) => total + (summary.mcpOptInCallCount ?? 0),
+			0,
+		),
+		mcpOptInUseCount: summaries.reduce(
+			(total, summary) =>
+				total + (summary.mcpOptInUseCount ?? summary.mcpOptInCallCount ?? 0),
+			0,
+		),
+		cacheHitCount: summaries.reduce(
+			(total, summary) => total + (summary.cacheHitCount ?? 0),
+			0,
+		),
+		totalToolWaitMs: summaries.reduce(
+			(total, summary) => total + (summary.totalToolWaitMs ?? 0),
+			0,
+		),
+		toolWaitTimeMs: summaries.reduce(
+			(total, summary) =>
+				total + (summary.toolWaitTimeMs ?? summary.totalToolWaitMs ?? 0),
+			0,
+		),
+		serializationReasons,
+		topSerializationReasons: topSerializationReasons(serializationReasons),
+	};
+
+	return supplementalSummary
+		? mergeToolSchedulingSummaries(summary, supplementalSummary)
+		: summary;
+}
+
+function mergeToolSchedulingSummaries(
+	left: ToolSchedulingSummary,
+	right: ToolSchedulingSummary,
+): ToolSchedulingSummary {
+	const serializationReasons = {
+		...left.serializationReasons,
+	};
+	for (const [reason, count] of Object.entries(right.serializationReasons)) {
+		serializationReasons[reason] = (serializationReasons[reason] ?? 0) + count;
+	}
+
+	return {
+		modelToolCallCount: left.modelToolCallCount + right.modelToolCallCount,
+		modelEmittedToolCallCount:
+			left.modelEmittedToolCallCount + right.modelEmittedToolCallCount,
+		schedulableWaveCount:
+			left.schedulableWaveCount + right.schedulableWaveCount,
+		parallelizedCallCount:
+			left.parallelizedCallCount + right.parallelizedCallCount,
+		actuallyParallelizedCallCount:
+			left.actuallyParallelizedCallCount + right.actuallyParallelizedCallCount,
+		serializedCallCount: left.serializedCallCount + right.serializedCallCount,
+		delayedCallCount: left.delayedCallCount + right.delayedCallCount,
+		blockedByMutationCount:
+			left.blockedByMutationCount + right.blockedByMutationCount,
+		mcpOptInCallCount: left.mcpOptInCallCount + right.mcpOptInCallCount,
+		mcpOptInUseCount: left.mcpOptInUseCount + right.mcpOptInUseCount,
+		cacheHitCount: left.cacheHitCount + right.cacheHitCount,
+		totalToolWaitMs: left.totalToolWaitMs + right.totalToolWaitMs,
+		toolWaitTimeMs: left.toolWaitTimeMs + right.toolWaitTimeMs,
+		serializationReasons,
+		topSerializationReasons: topSerializationReasons(serializationReasons),
+	};
+}
+
+function mergeSerializationReasons(
+	summaries: ToolPhaseSummary[],
+): Record<string, number> {
+	const reasons: Record<string, number> = {};
+	for (const summary of summaries) {
+		for (const [reason, count] of Object.entries(
+			summary.serializationReasons ?? {},
+		)) {
+			reasons[reason] = (reasons[reason] ?? 0) + count;
+		}
+	}
+	return reasons;
+}
+
+function topSerializationReasons(
+	reasons: Record<string, number>,
+): SerializationReasonCount[] {
+	return Object.entries(reasons)
+		.map(([reason, count]) => ({ reason, count }))
+		.sort((left, right) => right.count - left.count);
 }
 
 function hasTokenUsage(tokens: TokenUsage): boolean {

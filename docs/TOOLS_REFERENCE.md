@@ -8,6 +8,27 @@ Contents: [Validation](#parameter-validation) · [Error Handling](#error-handlin
 The agent and CLI expose a consistent set of tools. Use this sheet when adding
 new tools or debugging existing ones.
 
+## Codex Tool Profiles
+
+OpenAI Codex app-server sessions use a smaller curated profile by default so the
+model-visible surface stays focused while the full Maestro registry remains
+available for explicit selection.
+
+| Profile | Use | Tools |
+| --- | --- | --- |
+| `lean` / `default` | Normal Codex coding sessions. | `read`, `list`, `find`, `search`, `diff`, `bash`, `apply_patch`, `edit`, `write`, `todo`, `status`, `gh_pr` |
+| `read-only` / `readonly` | Audits, planning, and explorer-style runs. | `read`, `list`, `find`, `search`, `diff`, `status` |
+| `extended` | Compatibility profile for the previous broader Codex surface. | `read`, `list`, `find`, `search`, `parallel_ripgrep`, `diff`, `bash`, `background_tasks`, `apply_patch`, `edit`, `write`, `todo`, `status`, `gh_pr`, `gh_issue`, `gh_repo` |
+
+Set `MAESTRO_CODEX_TOOL_PROFILE=read-only` or
+`MAESTRO_CODEX_TOOL_PROFILE=extended` before launching a Codex app-server model.
+The explicit `--tools` CLI selection still wins over profile selection.
+
+File mutation stays intentionally split across `apply_patch`, `edit`, and
+`write`. Do not replace those with a generic workspace or file tool; separate
+tools give policy, approvals, audit receipts, and model planning a clearer
+action boundary.
+
 ## Parameter Validation
 
 Every tool declares a TypeBox schema, so arguments coming from the LLM (or

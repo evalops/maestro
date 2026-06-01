@@ -75,10 +75,13 @@ export function InputArea({
 	const [isFocused, setIsFocused] = useState(false);
 	const textareaRef = useRef<HTMLTextAreaElement>(null);
 	const containerRef = useRef<HTMLDivElement>(null);
+	const mountedRef = useRef(true);
+	const mcpLoadPromiseRef = useRef<Promise<void> | null>(null);
 
 	const [mcpTools, setMcpTools] = useState<McpToolItem[]>([]);
 	const [mcpLoading, setMcpLoading] = useState(false);
 	const [mcpError, setMcpError] = useState<string | null>(null);
+	const [mcpToolsLoaded, setMcpToolsLoaded] = useState(false);
 
 	const [mentionState, setMentionState] = useState<MentionState | null>(null);
 	const [toolPickerOpen, setToolPickerOpen] = useState(false);
@@ -104,51 +107,69 @@ export function InputArea({
 	}, [value, adjustHeight]);
 
 	useEffect(() => {
-		let cancelled = false;
-		const loadMcpTools = async () => {
-			setMcpLoading(true);
-			setMcpError(null);
-			try {
-				const status = await apiClient.getMcpStatus();
-				if (cancelled) return;
-				const tools: McpToolItem[] = [];
-				const seen = new Set<string>();
-				for (const server of status.servers ?? []) {
-					if (!server.connected) continue;
-					if (!Array.isArray(server.tools)) continue;
-					for (const tool of server.tools) {
-						if (!tool?.name) continue;
-						const id = buildMcpToolName(server.name, tool.name);
-						if (seen.has(id)) continue;
-						seen.add(id);
-						tools.push({
-							id,
-							server: server.name,
-							tool: tool.name,
-							label: `${server.name}/${tool.name}`,
-							description: tool.description,
-						});
-					}
-				}
-				setMcpTools(tools);
-			} catch (err) {
-				if (cancelled) return;
-				setMcpError(
-					err instanceof Error ? err.message : "Failed to load MCP tools",
-				);
-			} finally {
-				if (!cancelled) {
-					setMcpLoading(false);
-				}
-			}
-		};
-
-		loadMcpTools();
-
 		return () => {
-			cancelled = true;
+			mountedRef.current = false;
 		};
 	}, []);
+
+	const loadMcpTools = useCallback(async () => {
+		setMcpLoading(true);
+		setMcpError(null);
+		try {
+			const status = await apiClient.getMcpStatus();
+			if (!mountedRef.current) return;
+			const tools: McpToolItem[] = [];
+			const seen = new Set<string>();
+			for (const server of status.servers ?? []) {
+				if (!server.connected) continue;
+				if (!Array.isArray(server.tools)) continue;
+				for (const tool of server.tools) {
+					if (!tool?.name) continue;
+					const id = buildMcpToolName(server.name, tool.name);
+					if (seen.has(id)) continue;
+					seen.add(id);
+					tools.push({
+						id,
+						server: server.name,
+						tool: tool.name,
+						label: `${server.name}/${tool.name}`,
+						description: tool.description,
+					});
+				}
+			}
+			setMcpTools(tools);
+			setMcpToolsLoaded(true);
+		} catch (err) {
+			if (!mountedRef.current) return;
+			setMcpError(
+				err instanceof Error ? err.message : "Failed to load MCP tools",
+			);
+		} finally {
+			if (mountedRef.current) {
+				setMcpLoading(false);
+			}
+		}
+	}, []);
+
+	const ensureMcpToolsLoaded = useCallback(() => {
+		if (mcpToolsLoaded || mcpLoadPromiseRef.current) {
+			return;
+		}
+		const promise = loadMcpTools().finally(() => {
+			if (mcpLoadPromiseRef.current === promise) {
+				mcpLoadPromiseRef.current = null;
+			}
+		});
+		mcpLoadPromiseRef.current = promise;
+	}, [loadMcpTools, mcpToolsLoaded]);
+
+	const isPickerOpen = toolPickerOpen || mentionState !== null;
+
+	useEffect(() => {
+		if (isPickerOpen) {
+			ensureMcpToolsLoaded();
+		}
+	}, [ensureMcpToolsLoaded, isPickerOpen]);
 
 	const handleSubmit = () => {
 		if (!value.trim() || disabled) return;
@@ -211,7 +232,6 @@ export function InputArea({
 	};
 
 	const canSend = value.trim().length > 0 && !disabled;
-	const isPickerOpen = toolPickerOpen || mentionState !== null;
 
 	const filteredTools = useMemo(() => {
 		if (!isPickerOpen) return [];
@@ -527,7 +547,7 @@ export function InputArea({
 									? "Loading MCP tools"
 									: mcpError
 										? "MCP tools unavailable"
-										: mcpTools.length > 0
+										: !mcpToolsLoaded || mcpTools.length > 0
 											? "Insert MCP tool"
 											: "No MCP tools available"
 							}

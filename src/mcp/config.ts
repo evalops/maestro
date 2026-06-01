@@ -8,11 +8,11 @@
  * ## Configuration Sources (precedence order)
  *
  * 1. **Enterprise**: `~/.maestro/enterprise/mcp.json` (highest; legacy
- *    Composer enterprise MCP config remains a fallback)
+ *    `.composer` enterprise MCP config remains a fallback)
  * 2. **Plugin**: Programmatically provided servers
  * 3. **Project**: `.maestro/mcp.json` in project root
  * 4. **Local**: `.maestro/mcp.local.json` (git-ignored)
- * 5. **User**: `~/.maestro/mcp.json` (lowest; legacy Composer user MCP config
+ * 5. **User**: `~/.maestro/mcp.json` (lowest; legacy `.composer` user MCP config
  *    remains a fallback)
  *
  * ## Configuration Format
@@ -64,6 +64,7 @@ import { createLogger } from "../utils/logger.js";
 import { getHomeDir, resolveEnvPath } from "../utils/path-expansion.js";
 import { uniquePaths } from "../utils/path-utils.js";
 import { defaultEnvValidators, evaluateEnvValidators } from "./env-limits.js";
+import { getFathomCuaPluginServers } from "./fathom-cua.js";
 import { getPlatformMcpPluginServers } from "./platform-plugin.js";
 import {
 	type McpAuthPresetInput,
@@ -171,6 +172,12 @@ export interface AddMcpServerOptions {
 	server: McpServerInput & { name: string };
 }
 
+export interface AddMcpServersOptions {
+	projectRoot?: string;
+	scope: WritableMcpScope;
+	servers: Array<McpServerInput & { name: string }>;
+}
+
 export interface AddMcpAuthPresetOptions {
 	projectRoot?: string;
 	scope: WritableMcpScope;
@@ -221,6 +228,7 @@ export function loadMcpConfig(
 	const pluginCfg: ParsedConfig = {
 		servers: [
 			...getPlatformMcpPluginServers(),
+			...getFathomCuaPluginServers(),
 			...(options.pluginServers ?? []),
 		],
 		authPresets: [],
@@ -306,15 +314,48 @@ export function inferRemoteMcpTransport(url: string): "http" | "sse" {
 export function addMcpServerToConfig(options: AddMcpServerOptions): {
 	path: string;
 } {
-	const path = getWritableMcpConfigPath(options.scope, options.projectRoot);
-	const validatedServer = mcpServerSchema.parse({
-		...options.server,
-		transport:
-			options.server.transport ??
-			(options.server.url
-				? inferRemoteMcpTransport(options.server.url)
-				: "stdio"),
+	return addMcpServersToConfig({
+		projectRoot: options.projectRoot,
+		scope: options.scope,
+		servers: [options.server],
 	});
+}
+
+export function validateMcpServersForConfig(options: AddMcpServersOptions): {
+	path: string;
+} {
+	const { path } = prepareMcpServersConfigUpdate(options);
+	return { path };
+}
+
+export function addMcpServersToConfig(options: AddMcpServersOptions): {
+	path: string;
+} {
+	const { path, nextConfig } = prepareMcpServersConfigUpdate(options);
+	writeJsonFile(path, nextConfig);
+	return { path };
+}
+
+function prepareMcpServersConfigUpdate(options: AddMcpServersOptions): {
+	path: string;
+	nextConfig: RawMcpConfigFile;
+} {
+	const path = getWritableMcpConfigPath(options.scope, options.projectRoot);
+	const validatedServers = options.servers.map((server) =>
+		mcpServerSchema.parse({
+			...server,
+			transport:
+				server.transport ??
+				(server.url ? inferRemoteMcpTransport(server.url) : "stdio"),
+		}),
+	);
+	const seenNames = new Set<string>();
+	for (const server of validatedServers) {
+		if (seenNames.has(server.name)) {
+			throw new Error(`MCP server "${server.name}" is listed more than once`);
+		}
+		seenNames.add(server.name);
+	}
 	const existing = readJsonFile<unknown>(path, { fallback: {} });
 	const parsed = mcpConfigSchema.safeParse(existing);
 	if (!parsed.success) {
@@ -330,38 +371,35 @@ export function addMcpServerToConfig(options: AddMcpServerOptions): {
 		const existingServers = isRecord(nextConfig.mcpServers)
 			? nextConfig.mcpServers
 			: {};
-		if (
-			Object.prototype.hasOwnProperty.call(
-				existingServers,
-				validatedServer.name,
-			)
-		) {
-			throw new Error(
-				`MCP server "${validatedServer.name}" already exists in ${path}`,
-			);
+		const nextServers = { ...existingServers };
+		for (const server of validatedServers) {
+			if (Object.prototype.hasOwnProperty.call(nextServers, server.name)) {
+				throw new Error(
+					`MCP server "${server.name}" already exists in ${path}`,
+				);
+			}
+			nextServers[server.name] = buildPersistedServerConfig(server);
 		}
-		nextConfig.mcpServers = {
-			...existingServers,
-			[validatedServer.name]: buildPersistedServerConfig(validatedServer),
-		};
+		nextConfig.mcpServers = nextServers;
 	} else {
 		const servers = nextConfig.servers ?? [];
-		if (servers.some((server) => server.name === validatedServer.name)) {
-			throw new Error(
-				`MCP server "${validatedServer.name}" already exists in ${path}`,
-			);
+		const existingNames = new Set(servers.map((server) => server.name));
+		const nextServers = [...servers];
+		for (const server of validatedServers) {
+			if (existingNames.has(server.name)) {
+				throw new Error(
+					`MCP server "${server.name}" already exists in ${path}`,
+				);
+			}
+			existingNames.add(server.name);
+			nextServers.push({
+				...buildPersistedServerConfig(server),
+				name: server.name,
+			});
 		}
-		nextConfig.servers = [
-			...servers,
-			{
-				...buildPersistedServerConfig(validatedServer),
-				name: validatedServer.name,
-			},
-		];
+		nextConfig.servers = nextServers;
 	}
-
-	writeJsonFile(path, nextConfig);
-	return { path };
+	return { path, nextConfig };
 }
 
 export function addMcpAuthPresetToConfig(options: AddMcpAuthPresetOptions): {
@@ -822,6 +860,8 @@ function normalizeServer(
 		transport,
 		scope,
 		enabled: validated.data.enabled ?? validated.data.disabled !== true,
+		supportsParallelToolCalls:
+			validated.data.supportsParallelToolCalls === true,
 	};
 }
 
@@ -904,6 +944,7 @@ function buildPersistedServerConfig(
 		timeout: server.timeout,
 		enabled: server.enabled,
 		disabled: server.disabled,
+		supportsParallelToolCalls: server.supportsParallelToolCalls,
 	};
 }
 

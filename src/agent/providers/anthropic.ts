@@ -105,7 +105,6 @@
  * @module agent/providers/anthropic
  */
 
-import { CLAUDE_CODE_BETA_HEADER } from "../../providers/anthropic-auth.js";
 import { fetchWithRetry } from "../../providers/network-config.js";
 import {
 	createTimeoutReader,
@@ -136,6 +135,8 @@ import {
 import { transformMessages } from "./transform-messages.js";
 
 const logger = createLogger("agent:providers:anthropic");
+const ANTHROPIC_BEARER_BETA_HEADER =
+	"oauth-2025-04-20,claude-code-20250219,interleaved-thinking-2025-05-14,fine-grained-tool-streaming-2025-05-14,advanced-tool-use-2025-11-20";
 const toolArgumentNormalizer = createToolArgumentNormalizer({
 	logger,
 	providerLabel: "Anthropic",
@@ -670,11 +671,11 @@ export async function* streamAnthropic(
 		...options.headers,
 	};
 
-	const isOAuth = options.authType === "anthropic-oauth";
-	if (isOAuth) {
+	const isBearerToken = options.authType === "bearer-token";
+	if (isBearerToken) {
 		headers.authorization = `Bearer ${apiKey}`;
 		headers["anthropic-beta"] = [
-			CLAUDE_CODE_BETA_HEADER,
+			ANTHROPIC_BEARER_BETA_HEADER,
 			...(options.taskBudget ? [ANTHROPIC_TASK_BUDGETS_BETA_HEADER] : []),
 		].join(",");
 	} else {

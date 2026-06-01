@@ -11,6 +11,12 @@ import {
 	compileCodexDynamicToolSpecs,
 	createCodexDynamicToolNameMap,
 } from "../../codex/compatibility.js";
+import {
+	CODEX_SUBAGENT_WORK_GRAPH_SCHEMA,
+	CODEX_THREAD_CHILD_RUN_PREFIX,
+	type CodexSubagentCanonicalTool,
+	canonicalCodexSubagentTool,
+} from "../../codex/subagent-workgraph.js";
 import type {
 	AgentToolResult,
 	AssistantMessage,
@@ -70,32 +76,7 @@ type CodexUserInput =
 	| { type: "image"; url: string };
 
 const DEFAULT_TURN_TIMEOUT_MS = 30 * 60_000;
-const CODEX_THREAD_CHILD_RUN_PREFIX = "codex-thread:";
-const CODEX_SUBAGENT_WORK_GRAPH_SCHEMA =
-	"evalops.maestro.codex.subagent-workgraph.v1";
-
-type CodexCollabTool =
-	| "spawnAgent"
-	| "sendInput"
-	| "resumeAgent"
-	| "wait"
-	| "closeAgent";
-
-const CODEX_COLLAB_TOOL_ALIASES = new Map<string, CodexCollabTool>([
-	["spawnAgent", "spawnAgent"],
-	["spawn_agent", "spawnAgent"],
-	["sendInput", "sendInput"],
-	["send_input", "sendInput"],
-	["resumeAgent", "resumeAgent"],
-	["resumeSubagent", "resumeAgent"],
-	["resume_agent", "resumeAgent"],
-	["resume_subagent", "resumeAgent"],
-	["wait", "wait"],
-	["waitAgent", "wait"],
-	["wait_agent", "wait"],
-	["closeAgent", "closeAgent"],
-	["close_agent", "closeAgent"],
-]);
+type CodexCollabTool = CodexSubagentCanonicalTool;
 
 type CodexCollabAgentToolCallItem = {
 	type: "collabAgentToolCall";
@@ -649,7 +630,7 @@ function codexCollabSummaryLabel(item: CodexCollabAgentToolCallItem): string {
 }
 
 function canonicalCodexCollabTool(tool: string): CodexCollabTool | undefined {
-	return CODEX_COLLAB_TOOL_ALIASES.get(tool);
+	return canonicalCodexSubagentTool(tool);
 }
 
 function codexCollabHumanTool(tool: string): string {

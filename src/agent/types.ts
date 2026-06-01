@@ -1,7 +1,7 @@
 /**
- * @fileoverview Core Type Definitions for Composer Agent
+ * @fileoverview Core Type Definitions for Maestro Agent
  *
- * This module defines the fundamental types used throughout the Composer AI system,
+ * This module defines the fundamental types used throughout the Maestro AI system,
  * including message formats, tool definitions, model configurations, and agent state.
  *
  * ## Type Categories
@@ -42,6 +42,7 @@ import type {
 	ActionApprovalDecision,
 	ActionApprovalRequest,
 } from "./action-approval.js";
+import type { ToolCapabilityMetadata } from "./tool-capability-types.js";
 import type { ToolRetryDecision, ToolRetryRequest } from "./tool-retry.js";
 
 /**
@@ -226,6 +227,85 @@ export interface ToolCall {
 	 * preserved across turns when replaying the message history back to the provider.
 	 */
 	thoughtSignature?: string;
+}
+
+export type ToolSchedulingDecisionKind =
+	| "scheduled"
+	| "parallelized"
+	| "delayed"
+	| "serialized"
+	| "cached"
+	| "skipped";
+
+export interface ToolSchedulingDecision {
+	/** Tool call identifier; duplicated here for standalone telemetry use. */
+	callId: string;
+	/** Tool name, never arguments. */
+	toolName: string;
+	/** Zero-based order from the model-emitted tool-call list. */
+	emittedIndex: number;
+	/** Scheduler wave number when the call entered an execution wave. */
+	waveIndex?: number;
+	/** Scheduler outcome for this call. */
+	decision: ToolSchedulingDecisionKind;
+	/** Stable reason code; intentionally avoids raw paths and arguments. */
+	reason: string;
+	/** Time spent waiting inside the scheduler after model emission. */
+	schedulerWaitMs?: number;
+	/** True when an MCP server opt-in made the call parallel-safe. */
+	mcpOptIn?: boolean;
+	/** True when execution was served from reusable tool-result state. */
+	cacheHit?: boolean;
+	/** True when an in-flight mutation forced a wait or serialization. */
+	blockedByMutation?: boolean;
+}
+
+export type ToolPhaseDecisionOutcome =
+	| "parallelized"
+	| "serialized"
+	| "delayed"
+	| "cached"
+	| "skipped";
+
+export interface ToolPhaseDecision {
+	toolCallId: string;
+	toolName: string;
+	emittedIndex: number;
+	outcome: ToolPhaseDecisionOutcome;
+	decision: ToolPhaseDecisionOutcome;
+	reason: string;
+	waveIndex?: number;
+	waitMs: number;
+	schedulerWaitMs: number;
+	mcpOptIn?: boolean;
+	cacheHit?: boolean;
+	blockedByMutation?: boolean;
+}
+
+export interface ToolPhaseBatchShapingFeedback {
+	avoidableSingleton: boolean;
+	reason: string;
+	hint: string;
+}
+
+export interface ToolPhaseSummary {
+	type: "tool_phase_summary";
+	modelToolCallCount: number;
+	modelEmittedToolCallCount: number;
+	schedulableWaveCount: number;
+	parallelizedCallCount: number;
+	actuallyParallelizedCallCount: number;
+	serializedCallCount: number;
+	delayedCallCount: number;
+	blockedByMutationCount: number;
+	mcpOptInCallCount: number;
+	mcpOptInUseCount: number;
+	cacheHitCount: number;
+	totalToolWaitMs: number;
+	toolWaitTimeMs: number;
+	serializationReasons: Record<string, number>;
+	decisions: ToolPhaseDecision[];
+	batchShapingFeedback?: ToolPhaseBatchShapingFeedback;
 }
 
 /**
@@ -517,11 +597,25 @@ export interface ToolAnnotations {
 	readOnlyHint?: boolean;
 	/** If true, the tool may perform destructive/irreversible updates */
 	destructiveHint?: boolean;
+	/** If true, mutating calls are scoped to explicit path arguments */
+	pathScopedMutationHint?: boolean;
 	/** If true, calling repeatedly with same args has no additional effect */
 	idempotentHint?: boolean;
 	/** If true, the tool interacts with external systems (network, APIs) */
 	openWorldHint?: boolean;
 }
+
+export interface McpToolSourceMetadata {
+	type: "mcp";
+	server: string;
+	tool: string;
+	capability?: ToolCapabilityMetadata;
+	supportsParallelToolCalls?: boolean;
+	parallelSafetyProvenance?: "static_config" | "server_capability" | "none";
+	parallelMaxConcurrency?: number;
+}
+
+export type ToolSourceMetadata = McpToolSourceMetadata;
 
 /**
  * Complete tool definition with execute function.
@@ -563,6 +657,8 @@ export interface AgentTool<
 	parameters: TParameters;
 	/** Tool behavior hints from MCP annotations */
 	annotations?: ToolAnnotations;
+	/** Exact runtime provenance for bridged or remote tool sources */
+	source?: ToolSourceMetadata;
 	/** Optional categorization (e.g., "file", "shell", "web") */
 	toolType?: string;
 	/**
@@ -1112,6 +1208,36 @@ export interface AgentState {
  * - `error` - Error occurred
  * - `compaction` - Context was compacted
  */
+export interface ToolSchedulingMetadata {
+	classification:
+		| "read_only"
+		| "path_scoped_mutation"
+		| "parallel_safe_mutation"
+		| "serialized_mutation"
+		| "workflow_serialized"
+		| "cache_reuse"
+		| "unknown";
+	reason:
+		| "read_only_tool"
+		| "mcp_parallel_opt_in"
+		| "path_scope_available"
+		| "path_scope_disjoint"
+		| "path_scope_overlap"
+		| "pending_mutation"
+		| "mutating_tool"
+		| "workflow_state_tracker"
+		| "cache_hit"
+		| "cache_pending"
+		| "unknown_tool";
+	concurrencyLimit?: number;
+	queueDepth?: number;
+	pendingMutations?: number;
+	pathScope?: string[];
+	pathScopeSource?: "annotation" | "known_tool";
+	pathArgumentKeys?: string[];
+	cache?: "disabled" | "miss" | "candidate" | "pending_hit" | "hit";
+}
+
 export type AgentEvent =
 	| {
 			/** Agent execution started */
@@ -1192,6 +1318,8 @@ export type AgentEvent =
 			summaryLabel?: string;
 			/** Arguments passed to the tool */
 			args: Record<string, unknown>;
+			/** Scheduler classification and serialization reason for this call */
+			scheduling?: ToolSchedulingMetadata;
 	  }
 	| {
 			/** Tool execution completed */
@@ -1223,6 +1351,8 @@ export type AgentEvent =
 			result: ToolResultMessage;
 			/** Whether the tool returned an error */
 			isError: boolean;
+			/** Scheduler classification and final reuse/serialization reason */
+			scheduling?: ToolSchedulingMetadata;
 	  }
 	| {
 			/** LSP diagnostic delta produced by an edit/write tool call */
@@ -1270,6 +1400,7 @@ export type AgentEvent =
 			/** Failed tool calls in the batch */
 			callsFailed: number;
 	  }
+	| ToolPhaseSummary
 	| {
 			/** Tool execution produced partial output */
 			type: "tool_execution_update";
@@ -1546,7 +1677,7 @@ export interface StreamOptions {
 	/** Current working directory for local provider runtimes. */
 	cwd?: string;
 	/** Authentication type for the request */
-	authType?: "api-key" | "anthropic-oauth";
+	authType?: "api-key" | "bearer-token";
 	/** Optional Anthropic API-side task budget for the current turn */
 	taskBudget?: {
 		total: number;

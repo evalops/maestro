@@ -1,0 +1,26 @@
+name: Review thread guard
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+  pull_request_review:
+    types: [submitted, edited, dismissed]
+  pull_request_review_comment:
+    types: [created, edited, deleted]
+
+permissions:
+  contents: read
+  pull-requests: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  unresolved-review-threads:
+    if: ${{ github.event.pull_request.draft == false }}
+    uses: evalops/.github/.github/workflows/review-thread-guard.yml@d45c0bca2cf2ccea6786c57c9b5e84df09009fc8
+    with:
+      pr_number: ${{ github.event.pull_request.number }}
+      min_severity: high
+      guard_ref: d45c0bca2cf2ccea6786c57c9b5e84df09009fc8

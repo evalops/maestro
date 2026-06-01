@@ -96,6 +96,7 @@ impl HostedRunnerHeadlessMessageExecutor for ConformanceExecutor {
                         request_id: trigger.request_id.clone(),
                         request_type: ServerRequestType::Approval,
                         call_id: trigger.request_id,
+                        tool_execution_id: None,
                         tool: trigger.tool,
                         args: trigger.args,
                         reason: trigger.reason,

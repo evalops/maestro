@@ -653,6 +653,30 @@ export async function getA2ATask(
 	return (await response.json()) as A2ATask;
 }
 
+export async function cancelA2ATask(
+	config: A2AServiceConfig,
+	taskId: string,
+	options: { signal?: AbortSignal; traceContext?: A2ATraceContext } = {},
+): Promise<A2ATask> {
+	const trimmedTaskId = requireA2ATaskId(taskId);
+	const response = await fetchDownstream(
+		`${config.baseUrl}/tasks/${encodeURIComponent(trimmedTaskId)}:cancel`,
+		{
+			method: "POST",
+			headers: buildA2AHeaders(config, options.traceContext),
+			signal: options.signal,
+		},
+		{
+			serviceName: "platform-a2a",
+			failureMode: "required",
+			timeoutMs: config.timeoutMs,
+			maxAttempts: config.maxAttempts,
+		},
+	);
+	await throwForA2AError(response, "cancel task");
+	return (await response.json()) as A2ATask;
+}
+
 async function* parseA2AStreamEvents(
 	response: Response,
 ): AsyncIterable<A2AStreamEvent> {

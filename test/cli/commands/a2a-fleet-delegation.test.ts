@@ -295,6 +295,18 @@ describe("A2A fleet delegation CLI", () => {
 								},
 							},
 						],
+						discoveryEvidence: {
+							schema: "agents.v1.discovery-evidence",
+							decision: "matched",
+							reason: "eligible_a2a_peers",
+							workspaceId: "ws_1",
+							capability: "code:review",
+							a2aSkillId: "maestro.subagent.code-review",
+							status: "AGENT_STATUS_ONLINE",
+							requireA2ADispatch: true,
+							candidateCount: 4,
+							matchedCount: 4,
+						},
 					}),
 					{ status: 200, headers: { "Content-Type": "application/json" } },
 				);
@@ -327,7 +339,17 @@ describe("A2A fleet delegation CLI", () => {
 		const output = JSON.parse(logs.join("\n")) as {
 			peers: Array<{ endpointUrl: string; agentId?: string; name?: string }>;
 			imported: Array<{ name: string; url: string; path: string }>;
+			discoveryEvidence?: {
+				decision?: string;
+				candidateCount?: number;
+				matchedCount?: number;
+			};
 		};
+		expect(output.discoveryEvidence).toMatchObject({
+			decision: "matched",
+			candidateCount: 4,
+			matchedCount: 4,
+		});
 		expect(output.peers).toEqual([
 			expect.objectContaining({
 				agentId: "maestro-reviewer",
@@ -440,6 +462,9 @@ describe("A2A fleet delegation CLI", () => {
 				platformAgentStatus: "AGENT_STATUS_ONLINE",
 				selectedEndpoint: "internal",
 				a2aPushNotifications: true,
+				platformDiscoveryDecision: "matched",
+				platformDiscoveryCandidateCount: 4,
+				platformDiscoveryMatchedCount: 4,
 			},
 		});
 		expect(registry.peers["maestro-reviewer-secondary"]).toMatchObject({
@@ -620,6 +645,17 @@ describe("A2A fleet delegation CLI", () => {
 									},
 								},
 							],
+							discovery_evidence: {
+								schema: "agents.v1.discovery-evidence",
+								decision: "matched",
+								reason: "best_capability_score",
+								workspace_id: "ws_1",
+								capability: "code:review",
+								a2a_skill_id: "maestro.subagent.code-review",
+								status: "AGENT_STATUS_IDLE",
+								candidate_count: 3,
+								matched_count: 1,
+							},
 						}),
 						{ status: 200, headers: { "Content-Type": "application/json" } },
 					);
@@ -669,6 +705,18 @@ describe("A2A fleet delegation CLI", () => {
 			delegationCwd: "/repo",
 			discoverySource: "platform-agent-registry",
 			a2aSkillId: "maestro.subagent.code-review",
+		});
+		expect(metadata?.["evalops.a2aDiscovery"]).toMatchObject({
+			source: "platform-agent-registry",
+			platformDiscoveryDecision: "matched",
+			platformDiscoveryReason: "best_capability_score",
+			platformDiscoveryCandidateCount: 3,
+			platformDiscoveryMatchedCount: 1,
+			selectedAgentId: "maestro-reviewer",
+			selectedEndpointUrl: baseUrl,
+			selectedEndpointKind: "public",
+			score: expect.any(Number),
+			reasons: expect.arrayContaining(["skill:maestro.subagent.code-review"]),
 		});
 		expect(metadata?.["evalops.subagentRequest"]).toBeUndefined();
 		expect(metadata?.["evalops.attributeSubagentRequest"]).toBeUndefined();
@@ -884,6 +932,79 @@ describe("A2A fleet delegation CLI", () => {
 		]);
 		expect(taskFetches).toBe(fetchesAfterCompletion);
 		expect(errors.join("\n")).toBe("");
+	});
+
+	it("records plain sends in the durable A2A task ledger", async () => {
+		const dir = await mkdtemp(join(tmpdir(), "maestro-a2a-send-ledger-"));
+		const registryPath = join(dir, "peers.json");
+		const tasksPath = join(dir, "tasks.json");
+		await writeRegistry(registryPath, baseUrl);
+		vi.stubEnv("MAC_MINI_A2A_TOKEN", "super-secret-token");
+
+		await handleA2ACommand([
+			"send",
+			"mac-mini",
+			"check",
+			"runtime",
+			"health",
+			"--wait",
+			"--registry",
+			registryPath,
+			"--tasks",
+			tasksPath,
+			"--max-wait-ms",
+			"1000",
+			"--interval-ms",
+			"10",
+			"--timeout-ms",
+			"1000",
+		]);
+
+		expect(requests).toHaveLength(1);
+		expect(recordValue(requests[0]!.body, "message.metadata")).toMatchObject({
+			requestKind: "maestro-peer-message",
+			relayPeer: "mac-mini",
+		});
+		expect(plainLogs(logs)).toContain("Task task-mac-mini-1");
+		expect(plainLogs(logs)).toContain("mac mini finished the smoke plan");
+
+		const ledger = JSON.parse(await readFile(tasksPath, "utf8")) as {
+			tasks: Array<{
+				kind: string;
+				peer: string;
+				taskId: string;
+				text: string;
+				responseText?: string;
+				metadata?: Record<string, unknown>;
+				transcript: Array<{ role: string; text: string; messageId?: string }>;
+			}>;
+		};
+		expect(ledger.tasks).toEqual([
+			expect.objectContaining({
+				kind: "message",
+				peer: "mac-mini",
+				taskId: "task-mac-mini-1",
+				text: "check runtime health",
+				responseText: "mac mini finished the smoke plan",
+				metadata: expect.objectContaining({
+					requestKind: "maestro-peer-message",
+					relayPeer: "mac-mini",
+					worker: "mac-mini",
+				}),
+			}),
+		]);
+		expect(ledger.tasks[0]!.transcript).toEqual([
+			expect.objectContaining({
+				role: "user",
+				text: "check runtime health",
+			}),
+			expect.objectContaining({
+				role: "agent",
+				text: "mac mini finished the smoke plan",
+				messageId: "agent-message-1",
+			}),
+		]);
+		expect(JSON.stringify(ledger)).not.toContain("super-secret-token");
 	});
 
 	it("preserves an input-required delegated task and completes it after an operator reply", async () => {

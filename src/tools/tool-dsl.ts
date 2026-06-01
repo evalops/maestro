@@ -2,7 +2,7 @@
  * Tool DSL - Domain-Specific Language for Creating Agent Tools
  *
  * This module provides a fluent, type-safe API for defining tools that can be
- * executed by the Composer agent. It handles schema validation, response building,
+ * executed by the Maestro agent. It handles schema validation, response building,
  * retry logic, and sandbox integration.
  *
  * ## Architecture
@@ -71,6 +71,7 @@ import type {
 	AgentToolResult,
 	AgentToolUpdateCallback,
 	ToolAnnotations,
+	ToolSourceMetadata,
 } from "../agent/types.js";
 import type { Sandbox } from "../sandbox/types.js";
 import { resolveDefaultExport } from "../utils/module-interop.js";
@@ -159,6 +160,7 @@ export interface CreateToolOptions<Schema extends TSchema, Details> {
 	description: string;
 	schema: Schema;
 	annotations?: ToolAnnotations;
+	source?: ToolSourceMetadata;
 	toolType?: string;
 	inputExamples?: unknown[];
 	allowedCallers?: string[];
@@ -203,6 +205,7 @@ export function createTool<Schema extends TSchema, Details = undefined>(
 		description: options.description,
 		parameters: options.schema,
 		annotations: options.annotations,
+		source: options.source,
 		toolType: options.toolType,
 		inputExamples: options.inputExamples,
 		allowedCallers: options.allowedCallers,

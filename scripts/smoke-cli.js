@@ -18,6 +18,11 @@ const commands = [
 		args: ["scripts/smoke-headless.js"],
 	},
 	{
+		name: "exec-replay-e2e",
+		cmd: "node",
+		args: ["scripts/smoke-exec-replay-e2e.js"],
+	},
+	{
 		name: "mock-agent-read",
 		cmd: "node",
 		args: ["scripts/run-mock-agent.js", "README.md"],

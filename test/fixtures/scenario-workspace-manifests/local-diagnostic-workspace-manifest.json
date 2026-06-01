@@ -1,0 +1,40 @@
+{
+	"schemaVersion": "evalops.maestro.scenario-workspace-manifest.v1",
+	"id": "workspace-local-diagnostic-artifact-1",
+	"recordedAt": "2026-05-20T04:00:00.000Z",
+	"source": "fixture",
+	"workspaceRoot": "/workspaces/local-diagnostic-artifact",
+	"hydration": {
+		"mode": "fixture_workspace",
+		"rootPath": "test/fixtures/workspaces/local-diagnostic-artifact"
+	},
+	"files": [
+		{
+			"path": "package.json",
+			"purpose": "Pins the package manager and scenario-sensitive scripts used by replay."
+		},
+		{
+			"path": "docs/diagnostics/local-artifact.md",
+			"purpose": "Redacted diagnostic artifact produced by the local edit path."
+		},
+		{
+			"path": "src/server/diagnostics/local-artifact.ts",
+			"purpose": "Representative source file touched by the edit tool fixture."
+		}
+	],
+	"toolAdapters": [
+		{
+			"tool": "edit",
+			"mode": "recorded",
+			"fixturePath": "../session-replay/local-diagnostic-artifact-session.jsonl",
+			"rationale": "The release gate must replay the edit request against a frozen, redacted workspace contract."
+		}
+	],
+	"redaction": {
+		"secretsRemoved": true,
+		"rawPromptsIncluded": false,
+		"notes": [
+			"Paths are preserved for deterministic replay, but raw prompt and secret material are excluded."
+		]
+	}
+}

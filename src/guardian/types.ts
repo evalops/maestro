@@ -68,6 +68,7 @@ export interface GuardianConfig {
 
 	/** Specific tools to enable/disable */
 	tools?: {
+		evidenceIntegrity?: boolean;
 		semgrep?: boolean;
 		gitSecrets?: boolean;
 		trufflehog?: boolean;

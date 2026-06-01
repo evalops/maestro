@@ -19,13 +19,18 @@ const DEFAULT_EXCLUDES = [
 	"**/node_modules/**",
 	"dist/**",
 	"**/dist/**",
+	"target/**",
+	"**/target/**",
 	"coverage/**",
 	"tmp/**",
 	".env",
 	".env.*",
 	".maestro/**",
 	".cursor/**",
+	".nx/**",
 	".husky/_/**",
+	"*.tsbuildinfo",
+	"**/*.tsbuildinfo",
 	"AGENTS.md",
 	"CLAUDE.md",
 	".github/workflows/**",
@@ -40,12 +45,18 @@ const DEFAULT_EXCLUDES = [
 	"test/internal/**",
 	"scripts/configure-npm-trusted-publisher.mjs",
 	"scripts/deprecate-release.js",
+	"scripts/published-replay-evidence-gate.js",
+	"scripts/release-observability-query-contract.js",
+	"scripts/smoke-published-replay-e2e.js",
 	"scripts/smoke-registry-install.js",
+	"scripts/verify-published-replay-evidence.js",
 	"scripts/validate-public-package-deps.js",
+	"test/scripts/validate-public-package-deps.test.ts",
 ];
 
 const PUBLIC_INCLUDE_OVERRIDES = new Set([
 	".env.example",
+	".github/workflows/review-thread-guard.yml",
 ]);
 
 function parseArgs(argv) {
@@ -181,6 +192,14 @@ function createMatcher(patterns) {
 	};
 }
 
+function hasPublicIncludeOverrideDescendant(relativePath) {
+	const normalized = normalizePath(relativePath).replace(/^\.?\//u, "");
+	if (!normalized) return false;
+	return [...PUBLIC_INCLUDE_OVERRIDES].some((overridePath) =>
+		overridePath.startsWith(`${normalized}/`),
+	);
+}
+
 function walkFiles(root, shouldExclude) {
 	const files = [];
 
@@ -189,7 +208,9 @@ function walkFiles(root, shouldExclude) {
 			const absolute = join(dir, entry.name);
 			const relativePath = normalizePath(relative(root, absolute));
 			if (shouldExclude(relativePath)) {
-				continue;
+				if (!entry.isDirectory() || !hasPublicIncludeOverrideDescendant(relativePath)) {
+					continue;
+				}
 			}
 			if (entry.isDirectory()) {
 				visit(absolute);
@@ -248,11 +269,36 @@ function resolvePublicPackageJson(
 			].filter((value) => typeof value === "string" && value.trim()),
 		),
 	);
+	pkg.scripts =
+		pkg.scripts && typeof pkg.scripts === "object" && !Array.isArray(pkg.scripts)
+			? pkg.scripts
+			: {};
+	pkg.scripts["release:verify:published"] =
+		"node scripts/smoke-registry-install.js";
+	pkg.scripts["release:verify:published:e2e"] =
+		"node scripts/smoke-published-replay-e2e.js";
+	pkg.scripts["release:verify:published:evidence"] =
+		"node scripts/verify-published-replay-evidence.js";
+	pkg.scripts["release:deprecate"] = "node scripts/deprecate-release.js";
 
 	return {
 		content: `${JSON.stringify(pkg, null, 2)}\n`,
 		publicPackageName,
 	};
+}
+
+function resolvePublicFileContent(sourceRoot, relativePath) {
+	const sourcePath = resolve(sourceRoot, relativePath);
+	if (relativePath === ".github/workflows/review-thread-guard.yml") {
+		return Buffer.from(
+			readFileSync(sourcePath, "utf8").replace(
+				/^[^\S\r\n]*runner_label:.*(?:\r?\n|$)/gmu,
+				"",
+			),
+			"utf8",
+		);
+	}
+	return readFileSync(sourcePath);
 }
 
 function buildMirrorPlan(sourceRoot, targetRoot, shouldExclude, packageName) {
@@ -264,11 +310,10 @@ function buildMirrorPlan(sourceRoot, targetRoot, shouldExclude, packageName) {
 	const deletedPaths = [];
 
 	for (const relativePath of [...sourceFiles].sort()) {
-		const sourcePath = resolve(sourceRoot, relativePath);
 		const sourceContent =
 			relativePath === "package.json"
 				? Buffer.from(packageJsonContent, "utf8")
-				: readFileSync(sourcePath);
+				: resolvePublicFileContent(sourceRoot, relativePath);
 		const targetPath = resolve(targetRoot, relativePath);
 		const targetContent = existsSync(targetPath) ? readFileSync(targetPath) : null;
 		if (!targetContent || !sourceContent.equals(targetContent)) {
@@ -302,6 +347,8 @@ function applyMirrorPlan(sourceRoot, targetRoot, plan) {
 		mkdirSync(dirname(targetPath), { recursive: true });
 		if (relativePath === "package.json") {
 			writeFileSync(targetPath, plan.packageJsonContent);
+		} else if (relativePath === ".github/workflows/review-thread-guard.yml") {
+			writeFileSync(targetPath, resolvePublicFileContent(sourceRoot, relativePath));
 		} else {
 			copyFileSync(sourcePath, targetPath);
 		}

@@ -70,7 +70,7 @@ describe("Fermata scenario suite builder", () => {
 				evidence_event_type: "maestro.events.eval.scored",
 			}),
 		});
-		expect(request.cases).toHaveLength(19);
+		expect(request.cases).toHaveLength(20);
 		expect(request.cases[0]).toMatchObject({
 			id: "local-diagnostic-success.observed-outcome",
 			expectedOutput: "pass",
@@ -90,6 +90,19 @@ describe("Fermata scenario suite builder", () => {
 				(testCase) => typeof testCase.metadata?.actual_output === "string",
 			),
 		).toBe(true);
+		expect(
+			request.cases.find(
+				(testCase) =>
+					testCase.metadata?.assertion_id === "workspace-manifest-ready",
+			),
+		).toMatchObject({
+			id: "local-diagnostic-success.assertion.workspace-manifest-ready",
+			metadata: expect.objectContaining({
+				case_kind: "scenario_assertion_status",
+				assertion_kind: "workspace.manifest",
+				severity: "error",
+			}),
+		});
 	});
 
 	it("adds a native agent trajectory case over real replay-backed scenario results", () => {
@@ -205,7 +218,7 @@ describe("Fermata scenario suite builder", () => {
 			},
 		);
 
-		expect(request.cases).toHaveLength(20);
+		expect(request.cases).toHaveLength(21);
 		const llmCase = request.cases.find(
 			(testCase) => testCase.metadata?.case_kind === "scenario_llm_rubric",
 		);
@@ -276,7 +289,7 @@ describe("Fermata scenario suite builder", () => {
 			},
 		);
 
-		expect(request.cases).toHaveLength(20);
+		expect(request.cases).toHaveLength(21);
 		const pairwiseCase = request.cases.find(
 			(testCase) =>
 				testCase.metadata?.case_kind === "scenario_llm_pairwise_rubric",
@@ -354,7 +367,7 @@ describe("Fermata scenario suite builder", () => {
 			},
 		);
 
-		expect(request.cases).toHaveLength(21);
+		expect(request.cases).toHaveLength(22);
 		const llmCase = request.cases.find(
 			(testCase) => testCase.metadata?.case_kind === "scenario_llm_rubric",
 		);

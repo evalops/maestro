@@ -93,6 +93,38 @@ describe("MCP config loader", () => {
 		expect(config.servers[0]!.command).toBe("node");
 	});
 
+	it("loads explicit MCP server parallel tool-call opt-in", () => {
+		const configDir = join(testDir, ".maestro");
+		mkdirSync(configDir, { recursive: true });
+		writeFileSync(
+			join(configDir, "mcp.json"),
+			JSON.stringify({
+				mcpServers: {
+					"trusted-fs": {
+						command: "npx",
+						args: ["-y", "@example/mcp-server"],
+						supportsParallelToolCalls: true,
+					},
+					"plain-fs": {
+						command: "npx",
+						args: ["-y", "@example/plain-server"],
+					},
+				},
+			}),
+		);
+
+		const config = loadMcpConfig(testDir);
+		expect(config.servers).toHaveLength(2);
+		expect(
+			config.servers.find((server) => server.name === "trusted-fs")
+				?.supportsParallelToolCalls,
+		).toBe(true);
+		expect(
+			config.servers.find((server) => server.name === "plain-fs")
+				?.supportsParallelToolCalls,
+		).toBe(false);
+	});
+
 	it("loads servers from mcpServers format (Claude Desktop style)", () => {
 		const configDir = join(testDir, ".maestro");
 		mkdirSync(configDir, { recursive: true });
@@ -567,6 +599,190 @@ describe("MCP client manager", () => {
 		const manager = createManager();
 		const tools = manager.getAllTools();
 		expect(tools).toEqual([]);
+	});
+
+	it("refreshes parallel safety when a server tool list changes", async () => {
+		const manager = createManager();
+		type NotificationHandler = () => void | Promise<void>;
+		const notificationHandlers: NotificationHandler[] = [];
+		let maxConcurrency = 1;
+		const listedTools = [{ name: "search", inputSchema: { type: "object" } }];
+		const client = {
+			close: vi.fn(async () => undefined),
+			getServerCapabilities: () => ({
+				tools: {},
+				experimental: {
+					"evalops.maestro.parallelSafety": {
+						tools: {
+							search: {
+								supportsParallelToolCalls: true,
+								maxConcurrency,
+							},
+						},
+					},
+				},
+			}),
+			listTools: vi.fn(async () => ({ tools: listedTools })),
+			setNotificationHandler: vi.fn(
+				(_schema: unknown, handler: NotificationHandler) => {
+					notificationHandlers.push(handler);
+				},
+			),
+		};
+		const transport = {
+			close: vi.fn(async () => undefined),
+		};
+		const testManager = manager as unknown as {
+			servers: Map<string, unknown>;
+			setupNotificationHandlers(client: unknown, serverName: string): void;
+		};
+		testManager.servers.set("server", {
+			config: { name: "server", transport: "stdio", command: "server-cmd" },
+			client,
+			transport,
+			tools: listedTools,
+			resources: [],
+			prompts: [],
+			promptDetails: [],
+			parallelSafetyByTool: new Map([
+				[
+					"search",
+					{
+						supportsParallelToolCalls: true,
+						provenance: "server_capability",
+						maxConcurrency,
+					},
+				],
+			]),
+			reconnectAttempts: 0,
+		});
+		testManager.setupNotificationHandlers(client, "server");
+		maxConcurrency = 5;
+
+		await notificationHandlers[0]?.();
+
+		expect(client.listTools).toHaveBeenCalledTimes(1);
+		expect(manager.getAllTools()[0]?.parallelSafety).toMatchObject({
+			supportsParallelToolCalls: true,
+			provenance: "server_capability",
+			maxConcurrency: 5,
+		});
+	});
+
+	it("uses advertised read-only hints in status tool capabilities", async () => {
+		const manager = createManager();
+		await manager.configure({
+			authPresets: [],
+			servers: [
+				{
+					name: "server",
+					transport: "stdio",
+					command: "server-cmd",
+				},
+			],
+		});
+		const listedTools = [
+			{ name: "status_report", inputSchema: { type: "object" } },
+		];
+		const testManager = manager as unknown as {
+			servers: Map<string, unknown>;
+		};
+		testManager.servers.set("server", {
+			config: { name: "server", transport: "stdio", command: "server-cmd" },
+			client: { close: vi.fn(async () => undefined) },
+			transport: { close: vi.fn(async () => undefined) },
+			tools: listedTools,
+			resources: [],
+			prompts: [],
+			promptDetails: [],
+			parallelSafetyByTool: new Map([
+				[
+					"status_report",
+					{
+						supportsParallelToolCalls: true,
+						provenance: "server_capability",
+						readOnlyHint: true,
+					},
+				],
+			]),
+			reconnectAttempts: 0,
+		});
+
+		const statusTool = manager.getStatus().servers[0]?.tools[0];
+
+		expect(statusTool?.capability).toMatchObject({
+			toolName: "status_report",
+			readOnlyHint: true,
+			riskClass: "observe",
+		});
+	});
+
+	it("honors a per-tool parallel opt-out over the server default", async () => {
+		const manager = createManager();
+		type NotificationHandler = () => void | Promise<void>;
+		const notificationHandlers: NotificationHandler[] = [];
+		const listedTools = [
+			{ name: "parallel_search", inputSchema: { type: "object" } },
+			{ name: "serial_status", inputSchema: { type: "object" } },
+		];
+		const client = {
+			close: vi.fn(async () => undefined),
+			getServerCapabilities: () => ({
+				tools: {},
+				experimental: {
+					"evalops.maestro.parallelSafety": {
+						supportsParallelToolCalls: true,
+						tools: {
+							serial_status: {
+								supportsParallelToolCalls: false,
+							},
+						},
+					},
+				},
+			}),
+			listTools: vi.fn(async () => ({ tools: listedTools })),
+			setNotificationHandler: vi.fn(
+				(_schema: unknown, handler: NotificationHandler) => {
+					notificationHandlers.push(handler);
+				},
+			),
+		};
+		const transport = {
+			close: vi.fn(async () => undefined),
+		};
+		const testManager = manager as unknown as {
+			servers: Map<string, unknown>;
+			setupNotificationHandlers(client: unknown, serverName: string): void;
+		};
+		testManager.servers.set("server", {
+			config: { name: "server", transport: "stdio", command: "server-cmd" },
+			client,
+			transport,
+			tools: listedTools,
+			resources: [],
+			prompts: [],
+			promptDetails: [],
+			parallelSafetyByTool: new Map(),
+			reconnectAttempts: 0,
+		});
+		testManager.setupNotificationHandlers(client, "server");
+
+		await notificationHandlers[0]?.();
+
+		const tools = manager.getAllTools();
+		expect(
+			tools.find((tool) => tool.tool.name === "parallel_search")
+				?.parallelSafety,
+		).toMatchObject({
+			supportsParallelToolCalls: true,
+			provenance: "server_capability",
+		});
+		expect(
+			tools.find((tool) => tool.tool.name === "serial_status")?.parallelSafety,
+		).toMatchObject({
+			supportsParallelToolCalls: false,
+			provenance: "none",
+		});
 	});
 
 	it("isConnected returns false for unknown server", () => {

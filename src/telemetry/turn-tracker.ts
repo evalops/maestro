@@ -147,6 +147,10 @@ export class TurnTracker {
 				}
 				break;
 
+			case "tool_phase_summary":
+				this.currentTurn?.recordToolPhaseSummary(event);
+				break;
+
 			case "message_start":
 				if (this.currentTurn && event.message?.role === "assistant") {
 					this.currentTurn.recordLlmStart();

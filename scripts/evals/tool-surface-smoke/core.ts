@@ -189,6 +189,8 @@ async function evaluateFindCase(): Promise<unknown> {
 		await writeFile(join(dir, "alpha.ts"), "export const alpha = 1;\n", "utf8");
 		await mkdir(join(dir, "nested"), { recursive: true });
 		await writeFile(join(dir, "nested", "beta.ts"), "export const beta = 2;\n", "utf8");
+		await writeFile(join(dir, "nested", "ignored.ts"), "export const ignored = 3;\n", "utf8");
+		await writeFile(join(dir, ".gitignore"), "nested/*.ts\n!nested/beta.ts\n", "utf8");
 
 		const result = await findTool.execute("tool-surface-find", {
 			pattern: "**/*.ts",
@@ -212,7 +214,7 @@ async function evaluateExtractDocumentCase(): Promise<unknown> {
 		res.statusCode = 200;
 		res.setHeader("content-type", "text/plain; charset=utf-8");
 		res.setHeader("content-disposition", 'attachment; filename="fixture.txt"');
-		res.end("Composer extract document smoke test\n");
+		res.end("Maestro extract document smoke test\n");
 	});
 
 	await new Promise<void>((resolvePromise, reject) => {
@@ -461,11 +463,11 @@ async function evaluateMissingExaKeyCase(
 		try {
 			if (kind === "websearch") {
 				await websearchTool.execute("tool-surface-websearch-missing-key", {
-					query: "Composer tooling",
+					query: "Maestro tooling",
 				});
 			} else if (kind === "codesearch") {
 				await codesearchTool.execute("tool-surface-codesearch-missing-key", {
-					query: "Composer api client",
+					query: "Maestro api client",
 				});
 			} else {
 				await webfetchTool.execute("tool-surface-webfetch-missing-key", {

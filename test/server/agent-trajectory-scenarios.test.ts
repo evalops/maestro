@@ -1,4 +1,5 @@
-import { readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
@@ -15,6 +16,40 @@ const fixturesDir = join(
 	"fixtures",
 	"agent-trajectory-scenarios",
 );
+const workspaceManifestFixturePath = join(
+	fixturesDir,
+	"..",
+	"scenario-workspace-manifests",
+	"local-diagnostic-workspace-manifest.json",
+);
+
+function workspaceManifestFixture(): Record<string, unknown> {
+	return JSON.parse(
+		readFileSync(workspaceManifestFixturePath, "utf8"),
+	) as Record<string, unknown>;
+}
+
+function runFixtureWithWorkspaceManifest(
+	manifest: Record<string, unknown>,
+	label: string,
+) {
+	const tempDir = mkdtempSync(join(tmpdir(), `maestro-scenario-${label}-`));
+	try {
+		const scenario = JSON.parse(
+			readFileSync(join(fixturesDir, "local-diagnostic-success.json"), "utf8"),
+		);
+		const manifestPath = join(tempDir, "workspace-manifest.json");
+		const scenarioPath = join(tempDir, "scenario.json");
+		scenario.source.workspaceManifestPath = manifestPath;
+		writeFileSync(manifestPath, JSON.stringify(manifest), "utf8");
+		writeFileSync(scenarioPath, JSON.stringify(scenario), "utf8");
+		return runAgentTrajectoryScenarioFile(scenarioPath, {
+			baseDir: fixturesDir,
+		});
+	} finally {
+		rmSync(tempDir, { recursive: true, force: true });
+	}
+}
 
 describe("agent trajectory scenarios", () => {
 	it("validates and runs a successful scenario with replay labels and diff budget", () => {
@@ -29,12 +64,28 @@ describe("agent trajectory scenarios", () => {
 		expect(result.run.replay).toBe(true);
 		expect(result.run.scenarioId).toBe("local-diagnostic-success");
 		expect(result.scenario.reviewLabels).toContain("platform_promotion_ready");
+		expect(result.releaseGate).toMatchObject({
+			releaseBlocking: true,
+			tier: "smoke",
+			satisfied: true,
+			missingArtifacts: [],
+			budgetViolations: [],
+			policyViolations: [],
+		});
+		expect(result.workspace).toMatchObject({
+			manifestId: "workspace-local-diagnostic-artifact-1",
+			hydrationMode: "fixture_workspace",
+			files: 3,
+			toolAdapters: 1,
+		});
 		expect(result.counts).toMatchObject({
-			assertions: 8,
+			assertions: 9,
 			failed: 0,
 			toolCalls: 1,
 			replayDeltas: 0,
 			scoreFailures: 0,
+			workspaceFiles: 3,
+			toolAdapters: 1,
 		});
 		expect(result.diff).toMatchObject({
 			eventsDelta: -4,
@@ -91,21 +142,21 @@ describe("agent trajectory scenarios", () => {
 		).toContain('"observedOutcome": "pass"');
 	});
 
-	it("carries external transcript and trace refs through Slack contract scenarios", () => {
+	it("carries Platform Slack event and trace refs through teammate scenarios", () => {
 		const fixturePath = join(
 			fixturesDir,
-			"slack-contract-progress-outcome.json",
+			"slack-teammate-progress-outcome.json",
 		);
 		const scenario = loadAgentTrajectoryScenario(fixturePath);
 		const result = runAgentTrajectoryScenarioFile(fixturePath, {
 			baseDir: fixturesDir,
 		});
 
-		expect(scenario.externalRefs?.ensembleTranscriptIds).toContain(
-			"slack-contract-lab/dev/thread-redacted-0007",
+		expect(scenario.externalRefs?.platformSlackEventIds).toContain(
+			"platform-slack/dev/thread-redacted-0007",
 		);
 		expect(result.externalRefs?.platformWorkEnvelopeIds).toContain(
-			"we-slack-contract-dev-0007",
+			"we-slack-teammate-dev-0007",
 		);
 		expect(result.assertions).toContainEqual(
 			expect.objectContaining({
@@ -190,11 +241,124 @@ describe("agent trajectory scenarios", () => {
 		);
 	});
 
+	it("rejects release-blocking gates without workspace manifests", () => {
+		const fixturePath = join(fixturesDir, "local-diagnostic-success.json");
+		const scenario = JSON.parse(readFileSync(fixturePath, "utf8"));
+		delete scenario.source.workspaceManifestPath;
+
+		expect(() =>
+			validateAgentTrajectoryScenario(scenario, "missing-workspace-gate"),
+		).toThrow(
+			"missing-workspace-gate.releaseGate requires workspace_manifest but source.workspaceManifestPath is missing",
+		);
+	});
+
+	it("rejects workspace manifest assertions without a manifest source", () => {
+		const fixturePath = join(fixturesDir, "local-diagnostic-success.json");
+		const scenario = JSON.parse(readFileSync(fixturePath, "utf8"));
+		delete scenario.releaseGate;
+		delete scenario.source.workspaceManifestPath;
+
+		expect(() =>
+			validateAgentTrajectoryScenario(scenario, "missing-workspace-assertion"),
+		).toThrow(
+			"missing-workspace-assertion.assertions[].kind workspace.manifest requires source.workspaceManifestPath",
+		);
+	});
+
+	it("rejects release-blocking workspace gates without a workspace assertion", () => {
+		const fixturePath = join(fixturesDir, "local-diagnostic-success.json");
+		const scenario = JSON.parse(readFileSync(fixturePath, "utf8"));
+		scenario.assertions = scenario.assertions.filter(
+			(assertion: { kind?: string }) => assertion.kind !== "workspace.manifest",
+		);
+
+		expect(() =>
+			validateAgentTrajectoryScenario(
+				scenario,
+				"missing-workspace-gate-assertion",
+			),
+		).toThrow(
+			"missing-workspace-gate-assertion.releaseGate release-blocking workspace_manifest gates must include a workspace.manifest assertion",
+		);
+	});
+
+	it("rejects warning-only workspace gates for release-blocking scenarios", () => {
+		const fixturePath = join(fixturesDir, "local-diagnostic-success.json");
+		const scenario = JSON.parse(readFileSync(fixturePath, "utf8"));
+		const workspaceAssertion = scenario.assertions.find(
+			(assertion: { kind?: string }) => assertion.kind === "workspace.manifest",
+		);
+		workspaceAssertion.severity = "warning";
+
+		expect(() =>
+			validateAgentTrajectoryScenario(scenario, "warning-workspace-gate"),
+		).toThrow(
+			"warning-workspace-gate.releaseGate release-blocking workspace_manifest assertions must use error severity",
+		);
+	});
+
+	it("rejects malformed workspace assertion arrays before evaluation", () => {
+		const fixturePath = join(fixturesDir, "local-diagnostic-success.json");
+		const scenario = JSON.parse(readFileSync(fixturePath, "utf8"));
+		const workspaceAssertion = scenario.assertions.find(
+			(assertion: { kind?: string }) => assertion.kind === "workspace.manifest",
+		);
+		workspaceAssertion.requiredWorkspaceFiles = "package.json";
+
+		expect(() =>
+			validateAgentTrajectoryScenario(scenario, "malformed-workspace-files"),
+		).toThrow(
+			"malformed-workspace-files.assertions[].requiredWorkspaceFiles must contain non-empty strings",
+		);
+
+		workspaceAssertion.requiredWorkspaceFiles = ["package.json"];
+		workspaceAssertion.requiredToolAdapters = "edit";
+		expect(() =>
+			validateAgentTrajectoryScenario(scenario, "malformed-tool-adapters"),
+		).toThrow(
+			"malformed-tool-adapters.assertions[].requiredToolAdapters must contain non-empty strings",
+		);
+	});
+
+	it("rejects malformed workspace manifests before summary evaluation", () => {
+		const manifest = workspaceManifestFixture();
+		manifest.files = "package.json";
+
+		expect(() =>
+			runFixtureWithWorkspaceManifest(manifest, "malformed-manifest"),
+		).toThrow(/workspace manifest at .*\.files must be an array/u);
+	});
+
+	it("marks release gates unsatisfied when workspace redaction is unsafe", () => {
+		const manifest = workspaceManifestFixture();
+		const redaction = manifest.redaction as Record<string, unknown>;
+		redaction.rawPromptsIncluded = true;
+
+		const result = runFixtureWithWorkspaceManifest(
+			manifest,
+			"unsafe-redaction",
+		);
+
+		expect(result.releaseGate).toMatchObject({
+			satisfied: false,
+			policyViolations: [
+				"workspace manifest did not confirm raw prompts were excluded",
+			],
+		});
+		expect(result.assertions).toContainEqual(
+			expect.objectContaining({
+				id: "workspace-manifest-ready",
+				status: "fail",
+			}),
+		);
+	});
+
 	it("rejects external ref assertions without required ref kinds", () => {
 		const fixturePath = join(fixturesDir, "local-diagnostic-success.json");
 		const scenario = JSON.parse(readFileSync(fixturePath, "utf8"));
 		scenario.externalRefs = {
-			ensembleTranscriptIds: ["slack-contract-lab/dev/thread-redacted-0001"],
+			platformSlackEventIds: ["platform-slack/dev/thread-redacted-0001"],
 		};
 		scenario.assertions.push({
 			id: "external-refs-present",
@@ -212,7 +376,7 @@ describe("agent trajectory scenarios", () => {
 		const fixturePath = join(fixturesDir, "local-diagnostic-success.json");
 		const scenario = JSON.parse(readFileSync(fixturePath, "utf8"));
 		scenario.externalRefs = {
-			ensembleTranscriptIds: ["slack-contract-lab/dev/thread-redacted-0001"],
+			platformSlackEventIds: ["platform-slack/dev/thread-redacted-0001"],
 		};
 		scenario.assertions.push({
 			id: "external-refs-present",
@@ -227,17 +391,35 @@ describe("agent trajectory scenarios", () => {
 		);
 	});
 
+	it("accepts legacy v1 ensemble transcript ref assertions", () => {
+		const fixturePath = join(fixturesDir, "local-diagnostic-success.json");
+		const scenario = JSON.parse(readFileSync(fixturePath, "utf8"));
+		scenario.externalRefs = {
+			ensembleTranscriptIds: ["ensemble://transcript/thread-redacted-0001"],
+		};
+		scenario.assertions.push({
+			id: "legacy-external-refs-present",
+			kind: "external.refs",
+			requiredExternalRefKinds: ["ensembleTranscriptIds"],
+			requiredExternalRefs: ["ensemble://transcript/thread-redacted-0001"],
+		});
+
+		expect(() =>
+			validateAgentTrajectoryScenario(scenario, "legacy-external-ref-kind"),
+		).not.toThrow();
+	});
+
 	it("rejects malformed required external refs before evaluation", () => {
 		const fixturePath = join(fixturesDir, "local-diagnostic-success.json");
 		const scenario = JSON.parse(readFileSync(fixturePath, "utf8"));
 		scenario.externalRefs = {
-			ensembleTranscriptIds: ["slack-contract-lab/dev/thread-redacted-0001"],
+			platformSlackEventIds: ["platform-slack/dev/thread-redacted-0001"],
 		};
 		scenario.assertions.push({
 			id: "external-refs-present",
 			kind: "external.refs",
-			requiredExternalRefKinds: ["ensembleTranscriptIds"],
-			requiredExternalRefs: "slack-contract-lab/dev/thread-redacted-0001",
+			requiredExternalRefKinds: ["platformSlackEventIds"],
+			requiredExternalRefs: "platform-slack/dev/thread-redacted-0001",
 		});
 
 		expect(() =>

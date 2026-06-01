@@ -114,7 +114,7 @@ export function TerminalUiSection({
 						}
 						className="bg-bg-tertiary border border-line-subtle rounded-lg px-3 py-2 text-xs text-text-primary disabled:opacity-50"
 					>
-						<option value="ensemble">Ensemble</option>
+						<option value="rich">Rich</option>
 						<option value="solo">Solo</option>
 					</select>
 				</div>

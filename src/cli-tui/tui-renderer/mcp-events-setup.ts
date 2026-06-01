@@ -133,7 +133,7 @@ export function createMcpEventsController(params: {
 		}
 	};
 
-	// Composer activation handlers
+	// Agent profile activation handlers
 	handlers.composerActivated = (composer) => {
 		notificationView.showToast(
 			`Maestro "${composer.name}" activated`,

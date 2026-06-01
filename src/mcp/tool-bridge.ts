@@ -1,6 +1,10 @@
 import type { Tool as McpTool } from "@modelcontextprotocol/sdk/types.js";
 import { type TSchema, Type } from "@sinclair/typebox";
-import type { AgentTool } from "../agent/types.js";
+import type {
+	AgentTool,
+	ToolAnnotations,
+	ToolSourceMetadata,
+} from "../agent/types.js";
 import {
 	trackToolApprovalRequired,
 	trackToolBlocked,
@@ -10,6 +14,8 @@ import { promptSafeText } from "../utils/prompt-safe-text.js";
 import { mcpManager } from "./manager.js";
 import type { McpToolCallResult } from "./manager.js";
 import { buildMcpToolName } from "./names.js";
+import { classifyToolCapability } from "./tool-capabilities.js";
+import type { McpToolParallelSafety } from "./types.js";
 
 interface McpToolDetails {
 	server: string;
@@ -18,9 +24,40 @@ interface McpToolDetails {
 	structuredContent?: unknown;
 	isError?: boolean;
 	governedOutcome?: McpGovernedOutcome;
+	toolExecutionState?: McpGovernedToolExecutionState;
 }
 
-interface McpGovernedOutcome {
+export const MCP_GOVERNED_TOOL_EXECUTION_SCHEMA =
+	"evalops.maestro.mcp-governed-tool-execution.v1";
+
+export type McpGovernedClassification =
+	| "approval_required"
+	| "approval_pending"
+	| "authentication_required"
+	| "denied"
+	| "rate_limited";
+
+export type McpGovernedToolExecutionStateKind =
+	| "waiting_approval"
+	| "blocked_authentication"
+	| "blocked_retry_later"
+	| "denied";
+
+export interface McpGovernedToolExecutionState {
+	schemaVersion: typeof MCP_GOVERNED_TOOL_EXECUTION_SCHEMA;
+	authority: "mcp_result_adapter";
+	state: McpGovernedToolExecutionStateKind;
+	terminal: boolean;
+	classification: McpGovernedClassification;
+	approvalRequestId?: string;
+	retryAfterMs?: number;
+	message?: string;
+	reasons?: string[];
+	code?: string;
+	riskLevel?: string;
+}
+
+export interface McpGovernedOutcome {
 	classification:
 		| "approval_required"
 		| "approval_pending"
@@ -37,6 +74,52 @@ interface McpGovernedOutcome {
 	state?: string;
 	retryAfterMs?: number;
 	retryAfterSeconds?: number;
+}
+
+export function normalizeMcpGovernedToolExecution(
+	outcome: McpGovernedOutcome | undefined,
+): McpGovernedToolExecutionState | undefined {
+	if (!outcome) {
+		return undefined;
+	}
+	let state: McpGovernedToolExecutionStateKind;
+	let terminal = true;
+	switch (outcome.classification) {
+		case "approval_required":
+		case "approval_pending":
+			state = "waiting_approval";
+			terminal = false;
+			break;
+		case "authentication_required":
+			state = "blocked_authentication";
+			break;
+		case "rate_limited":
+			state = "blocked_retry_later";
+			break;
+		case "denied":
+			state = "denied";
+			break;
+	}
+	const retryAfterMs =
+		outcome.retryAfterMs ??
+		(outcome.retryAfterSeconds !== undefined
+			? outcome.retryAfterSeconds * 1000
+			: undefined);
+	return {
+		schemaVersion: MCP_GOVERNED_TOOL_EXECUTION_SCHEMA,
+		authority: "mcp_result_adapter",
+		state,
+		terminal,
+		classification: outcome.classification,
+		...(outcome.approvalRequestId
+			? { approvalRequestId: outcome.approvalRequestId }
+			: {}),
+		...(retryAfterMs !== undefined ? { retryAfterMs } : {}),
+		...(outcome.message ? { message: outcome.message } : {}),
+		...(outcome.reasons ? { reasons: outcome.reasons } : {}),
+		...(outcome.code ? { code: outcome.code } : {}),
+		...(outcome.riskLevel ? { riskLevel: outcome.riskLevel } : {}),
+	};
 }
 
 function normalizeObject(value: unknown): Record<string, unknown> | null {
@@ -197,6 +280,7 @@ function classifyGovernedOutcome(
 
 function formatGovernedOutcomeSummary(
 	outcome: McpGovernedOutcome | undefined,
+	toolExecutionState: McpGovernedToolExecutionState | undefined,
 ): string | undefined {
 	if (!outcome) {
 		return undefined;
@@ -229,6 +313,11 @@ function formatGovernedOutcomeSummary(
 	}
 	if (outcome.approvalRequestId) {
 		lines.push(`Approval request: ${outcome.approvalRequestId}`);
+	}
+	if (toolExecutionState) {
+		lines.push(
+			`ToolExecution state: ${toolExecutionState.state} (${toolExecutionState.authority}).`,
+		);
 	}
 	if (outcome.state && outcome.classification !== "approval_pending") {
 		lines.push(`State: ${outcome.state}`);
@@ -326,7 +415,14 @@ function convertJsonSchemaToTypebox(schema: unknown): TSchema {
 	}
 }
 
-export function createMcpToolWrapper(serverName: string, mcpTool: McpTool) {
+export function createMcpToolWrapper(
+	serverName: string,
+	mcpTool: McpTool,
+	options?: {
+		supportsParallelToolCalls?: boolean;
+		parallelSafety?: McpToolParallelSafety;
+	},
+) {
 	const toolName = buildMcpToolName(serverName, mcpTool.name);
 	const schema = mcpTool.inputSchema
 		? convertJsonSchemaToTypebox(mcpTool.inputSchema)
@@ -341,6 +437,45 @@ export function createMcpToolWrapper(serverName: string, mcpTool: McpTool) {
 				openWorldHint?: boolean;
 		  }
 		| undefined;
+	const supportsParallelToolCalls =
+		options?.parallelSafety?.supportsParallelToolCalls === true ||
+		options?.supportsParallelToolCalls === true;
+	const parallelSafetyProvenance =
+		options?.parallelSafety?.provenance ??
+		(options?.supportsParallelToolCalls === true ? "static_config" : "none");
+	const parallelMaxConcurrency = options?.parallelSafety?.maxConcurrency;
+	const advertisedReadOnly =
+		options?.parallelSafety?.readOnlyHint === true &&
+		mcpAnnotations?.destructiveHint !== true;
+	const annotations: ToolAnnotations | undefined =
+		mcpAnnotations || advertisedReadOnly
+			? {
+					readOnlyHint:
+						mcpAnnotations?.readOnlyHint ??
+						(advertisedReadOnly ? true : undefined),
+					destructiveHint: mcpAnnotations?.destructiveHint,
+					idempotentHint: mcpAnnotations?.idempotentHint,
+					openWorldHint: mcpAnnotations?.openWorldHint,
+				}
+			: undefined;
+	const capabilityAnnotations = annotations
+		? Object.fromEntries(
+				Object.entries(annotations).filter(([, value]) => value !== undefined),
+			)
+		: undefined;
+	const source: ToolSourceMetadata = {
+		type: "mcp",
+		server: serverName,
+		tool: mcpTool.name,
+		capability: classifyToolCapability({
+			server: serverName,
+			toolName: mcpTool.name,
+			annotations: capabilityAnnotations,
+		}),
+		supportsParallelToolCalls,
+		parallelSafetyProvenance,
+		...(parallelMaxConcurrency ? { parallelMaxConcurrency } : {}),
+	};
 
 	return createTool<typeof schema, McpToolDetails>({
 		name: toolName,
@@ -349,14 +484,8 @@ export function createMcpToolWrapper(serverName: string, mcpTool: McpTool) {
 			promptSafeText(mcpTool.description) ??
 			`MCP tool from ${serverName}: ${mcpTool.name}`,
 		schema,
-		annotations: mcpAnnotations
-			? {
-					readOnlyHint: mcpAnnotations.readOnlyHint,
-					destructiveHint: mcpAnnotations.destructiveHint,
-					idempotentHint: mcpAnnotations.idempotentHint,
-					openWorldHint: mcpAnnotations.openWorldHint,
-				}
-			: undefined,
+		annotations,
+		source,
 		async run(params, { respond }) {
 			const result = await mcpManager.callTool(
 				serverName,
@@ -366,10 +495,12 @@ export function createMcpToolWrapper(serverName: string, mcpTool: McpTool) {
 			const governedOutcome = classifyGovernedOutcome(
 				resolveGovernedPayload(result),
 			);
+			const toolExecutionState =
+				normalizeMcpGovernedToolExecution(governedOutcome);
 			emitGovernedOutcomeTelemetry(mcpTool.name, governedOutcome);
 
 			const output =
-				formatGovernedOutcomeSummary(governedOutcome) ??
+				formatGovernedOutcomeSummary(governedOutcome, toolExecutionState) ??
 				extractMcpTextContent(result.content) ??
 				JSON.stringify(result.structuredContent ?? result.content, null, 2);
 
@@ -383,6 +514,7 @@ export function createMcpToolWrapper(serverName: string, mcpTool: McpTool) {
 				structuredContent: result.structuredContent,
 				isError: result.isError,
 				governedOutcome,
+				toolExecutionState,
 			});
 		},
 	});
@@ -391,7 +523,13 @@ export function createMcpToolWrapper(serverName: string, mcpTool: McpTool) {
 export function getAllMcpTools(): AgentTool[] {
 	const mcpTools = mcpManager.getAllTools();
 	return [
-		...mcpTools.map(({ server, tool }) => createMcpToolWrapper(server, tool)),
+		...mcpTools.map(
+			({ server, tool, supportsParallelToolCalls, parallelSafety }) =>
+				createMcpToolWrapper(server, tool, {
+					supportsParallelToolCalls,
+					parallelSafety,
+				}),
+		),
 		...getMcpHelperTools(),
 	];
 }
@@ -404,8 +542,16 @@ export function getMcpToolMap(): Map<string, AgentTool> {
 		map.set(tool.name, tool);
 	}
 
-	for (const { server, tool } of mcpTools) {
-		const wrapper = createMcpToolWrapper(server, tool);
+	for (const {
+		server,
+		tool,
+		supportsParallelToolCalls,
+		parallelSafety,
+	} of mcpTools) {
+		const wrapper = createMcpToolWrapper(server, tool, {
+			supportsParallelToolCalls,
+			parallelSafety,
+		});
 		map.set(wrapper.name, wrapper);
 	}
 

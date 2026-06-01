@@ -1,0 +1,27 @@
+name: Codex Rails
+
+on:
+  pull_request:
+    paths:
+      - "AGENTS.md"
+      - "**/AGENTS.md"
+      - "labels.yml"
+      - "services.yaml"
+      - ".agents/skills/**"
+      - ".github/actionlint.yaml"
+      - ".github/CODEOWNERS"
+      - ".github/codex/**"
+      - ".github/contracts/**"
+      - ".github/ISSUE_TEMPLATE/**"
+      - ".github/pull_request_template.md"
+      - ".github/workflows/**"
+      - ".github/workflow-templates/**"
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    uses: evalops/.github/.github/workflows/codex-rails-check.yml@7c84584083404b2f9da1b08c20d208db84b70040
+    with:
+      require_agents: true

@@ -1,6 +1,6 @@
 //! Enterprise policy enforcement (parity with TS).
 //!
-//! Reads enterprise policy from the Maestro home directory, with legacy Composer
+//! Reads enterprise policy from the Maestro home directory, with legacy `.composer`
 //! fallback, and enforces tool, path, network, model, and session limits. Policy
 //! load failures fail closed (block) to match CLI behavior.
 
@@ -329,6 +329,22 @@ fn check_network_restrictions(url: &str, network: &NetworkPolicy) -> Option<Stri
     };
     let host = host.trim_matches(['[', ']']);
 
+    if let Some(blocked) = &network.blocked_hosts {
+        if blocked.iter().any(|pattern| host_matches(host, pattern)) {
+            return Some(format!("Host \"{host}\" is blocked by enterprise policy."));
+        }
+    }
+
+    if let Some(allowed) = &network.allowed_hosts {
+        if allowed.is_empty() {
+            return Some(format!("Host \"{host}\" is not in the allowed hosts list."));
+        }
+        let ok = allowed.iter().any(|pattern| host_matches(host, pattern));
+        if !ok {
+            return Some(format!("Host \"{host}\" is not in the allowed hosts list."));
+        }
+    }
+
     let mut resolved_ips: Vec<IpAddr> = Vec::new();
     let is_ip = host.parse::<IpAddr>().is_ok();
 
@@ -360,22 +376,6 @@ fn check_network_restrictions(url: &str, network: &NetworkPolicy) -> Option<Stri
 
     if network.block_private_ips.unwrap_or(false) && resolved_ips.iter().any(is_private_ip) {
         return Some("Access to private IP addresses is blocked by enterprise policy.".to_string());
-    }
-
-    if let Some(blocked) = &network.blocked_hosts {
-        if blocked.iter().any(|pattern| host_matches(host, pattern)) {
-            return Some(format!("Host \"{host}\" is blocked by enterprise policy."));
-        }
-    }
-
-    if let Some(allowed) = &network.allowed_hosts {
-        if allowed.is_empty() {
-            return Some(format!("Host \"{host}\" is not in the allowed hosts list."));
-        }
-        let ok = allowed.iter().any(|pattern| host_matches(host, pattern));
-        if !ok {
-            return Some(format!("Host \"{host}\" is not in the allowed hosts list."));
-        }
     }
 
     None
@@ -1038,6 +1038,40 @@ mod tests {
         assert_eq!(policy.blocked_hosts.as_ref().unwrap().len(), 1);
         assert!(policy.block_localhost.unwrap());
         assert!(!policy.block_private_ips.unwrap());
+    }
+
+    #[test]
+    fn test_network_policy_blocks_hosts_before_dns_ip_validation() {
+        let policy = NetworkPolicy {
+            allowed_hosts: None,
+            blocked_hosts: Some(vec!["blocked.invalid".to_string()]),
+            block_localhost: Some(true),
+            block_private_ips: Some(true),
+        };
+
+        let reason = check_network_restrictions("https://blocked.invalid/api", &policy).unwrap();
+
+        assert_eq!(
+            reason,
+            "Host \"blocked.invalid\" is blocked by enterprise policy."
+        );
+    }
+
+    #[test]
+    fn test_network_policy_allowlist_denies_before_dns_ip_validation() {
+        let policy = NetworkPolicy {
+            allowed_hosts: Some(vec!["api.example.com".to_string()]),
+            blocked_hosts: None,
+            block_localhost: Some(true),
+            block_private_ips: Some(true),
+        };
+
+        let reason = check_network_restrictions("https://outside.invalid/api", &policy).unwrap();
+
+        assert_eq!(
+            reason,
+            "Host \"outside.invalid\" is not in the allowed hosts list."
+        );
     }
 
     #[test]

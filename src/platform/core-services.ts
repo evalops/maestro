@@ -79,6 +79,14 @@ export const PLATFORM_CONNECT_METHODS = {
 		},
 	},
 	agents: {
+		controlA2ADelegationTask: {
+			service: PLATFORM_CONNECT_SERVICES.agents,
+			method: "ControlA2ADelegationTask",
+		},
+		getA2ADelegationGraph: {
+			service: PLATFORM_CONNECT_SERVICES.agents,
+			method: "GetA2ADelegationGraph",
+		},
 		heartbeat: {
 			service: PLATFORM_CONNECT_SERVICES.agents,
 			method: "Heartbeat",

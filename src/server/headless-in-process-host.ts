@@ -145,6 +145,7 @@ export class HeadlessInProcessHost {
 			options.role ?? "controller",
 			options.subscriptionId ?? undefined,
 			controllerConnectionId,
+			{ allowNotReady: options.message.type === "shutdown" },
 		);
 		await runtime.send(options.message, {
 			connectionId: controllerConnectionId,

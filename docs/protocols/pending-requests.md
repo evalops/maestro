@@ -45,6 +45,15 @@ bridge plan; the web pending-request payload only exposes correlation ids, and
 the bridge performs `ResumeToolExecution` after the local approval decision is
 released.
 
+MCP tools may still return governed-result payloads for compatibility with older
+servers. Maestro normalizes those payloads into
+`evalops.maestro.mcp-governed-tool-execution.v1` with
+`authority=mcp_result_adapter` and states such as `waiting_approval`, `denied`,
+`blocked_authentication`, and `blocked_retry_later`. That normalized state is
+diagnostic metadata on the tool result, not the approval authority. New governed
+MCP calls should flow through Platform ToolExecution so wait, resume, deny,
+cancel, and output recording all use the same state machine as shell tools.
+
 This contract is the Maestro-side client/read-model slice for
 `evalops/maestro-internal#1417`. Platform still owns the canonical `AgentRunWait`
 and `ApprovalRequest` APIs; Maestro uses this session projection so clients can

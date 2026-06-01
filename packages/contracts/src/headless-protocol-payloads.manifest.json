@@ -485,6 +485,7 @@
 			"properties": {
 				"type": { "kind": "literal", "value": "tool_call" },
 				"call_id": { "kind": "string" },
+				"tool_execution_id": { "kind": "string", "optional": true },
 				"tool": { "kind": "string" },
 				"args": { "kind": "unknown" },
 				"requires_approval": { "kind": "boolean" }
@@ -513,6 +514,7 @@
 			"properties": {
 				"type": { "kind": "literal", "value": "tool_end" },
 				"call_id": { "kind": "string" },
+				"tool_execution_id": { "kind": "string", "optional": true },
 				"success": { "kind": "boolean" },
 				"tool": { "kind": "string", "optional": true },
 				"details": { "kind": "unknown", "optional": true },
@@ -527,6 +529,7 @@
 			"properties": {
 				"type": { "kind": "literal", "value": "client_tool_request" },
 				"call_id": { "kind": "string" },
+				"tool_execution_id": { "kind": "string", "optional": true },
 				"tool": { "kind": "string" },
 				"args": { "kind": "unknown" }
 			}
@@ -542,6 +545,7 @@
 					"name": "headlessServerRequestTypes"
 				},
 				"call_id": { "kind": "string" },
+				"tool_execution_id": { "kind": "string", "optional": true },
 				"tool": { "kind": "string" },
 				"display_name": { "kind": "string", "optional": true },
 				"summary_label": { "kind": "string", "optional": true },
@@ -902,6 +906,7 @@
 			"additionalProperties": false,
 			"properties": {
 				"call_id": { "kind": "string" },
+				"tool_execution_id": { "kind": "string", "optional": true },
 				"request_id": { "kind": "string", "optional": true },
 				"tool": { "kind": "string" },
 				"display_name": { "kind": "string", "optional": true },
@@ -932,6 +937,7 @@
 				},
 				"tool_call_id": { "kind": "string" },
 				"call_id": { "kind": "string" },
+				"tool_execution_id": { "kind": "string", "optional": true },
 				"request_id": { "kind": "string", "optional": true },
 				"tool_name": { "kind": "string" },
 				"tool": { "kind": "string" },
@@ -964,7 +970,9 @@
 			"additionalProperties": false,
 			"properties": {
 				"spawn_tool_call_id": { "kind": "string", "optional": true },
+				"spawn_tool_execution_id": { "kind": "string", "optional": true },
 				"wait_tool_call_id": { "kind": "string", "optional": true },
+				"wait_tool_execution_id": { "kind": "string", "optional": true },
 				"child_run_id": { "kind": "string", "optional": true },
 				"thread_id": { "kind": "string", "optional": true },
 				"operation": { "kind": "string" },

@@ -34,6 +34,13 @@ import type {
 	AssistantMessageEvent,
 	Attachment,
 } from "../agent/types.js";
+import {
+	CODEX_SUBAGENT_TOOL_PREFIX,
+	CODEX_SUBAGENT_WORK_GRAPH_SCHEMA,
+	codexSubagentActiveStatus,
+	codexSubagentOperationName,
+	codexSubagentTerminalSuccessStatus,
+} from "../codex/subagent-workgraph.js";
 import { appendHeadlessOutput } from "../headless/output-buffer.js";
 import type { SessionManager } from "../session/manager.js";
 import { isSupportedImageFormat } from "../tools/image-processor.js";
@@ -285,6 +292,7 @@ export interface HeadlessResponseEndMessage {
 export interface HeadlessToolCallMessage {
 	type: "tool_call";
 	call_id: string;
+	tool_execution_id?: string;
 	tool: string;
 	args: Record<string, unknown> | unknown;
 	requires_approval: boolean;
@@ -304,6 +312,7 @@ export interface HeadlessToolOutputMessage {
 export interface HeadlessToolEndMessage {
 	type: "tool_end";
 	call_id: string;
+	tool_execution_id?: string;
 	success: boolean;
 	tool?: string;
 	details?: unknown;
@@ -315,6 +324,7 @@ export interface HeadlessToolEndMessage {
 export interface HeadlessClientToolRequestMessage {
 	type: "client_tool_request";
 	call_id: string;
+	tool_execution_id?: string;
 	tool: string;
 	args: unknown;
 }
@@ -324,6 +334,7 @@ export interface HeadlessServerRequestMessage {
 	request_id: string;
 	request_type: HeadlessServerRequestType;
 	call_id: string;
+	tool_execution_id?: string;
 	tool: string;
 	display_name?: string;
 	summary_label?: string;
@@ -536,6 +547,7 @@ export interface HeadlessStreamingResponseState {
 
 export interface HeadlessPendingApprovalState {
 	call_id: string;
+	tool_execution_id?: string;
 	request_id?: string;
 	tool: string;
 	display_name?: string;
@@ -565,7 +577,9 @@ export interface HeadlessActiveToolState {
 
 export interface HeadlessCodexSubagentContinuityEdge {
 	spawn_tool_call_id?: string;
+	spawn_tool_execution_id?: string;
 	wait_tool_call_id?: string;
+	wait_tool_execution_id?: string;
 	child_run_id?: string;
 	thread_id?: string;
 	operation: string;
@@ -694,6 +708,9 @@ function toUnifiedPendingRequestState(
 		...(sessionId !== undefined ? { session_id: sessionId } : {}),
 		tool_call_id: request.call_id,
 		call_id: request.call_id,
+		...(request.tool_execution_id
+			? { tool_execution_id: request.tool_execution_id }
+			: {}),
 		...(request.request_id ? { request_id: request.request_id } : {}),
 		tool_name: request.tool,
 		tool: request.tool,
@@ -734,9 +751,7 @@ export function syncHeadlessPendingRequests(
 	return state.pending_requests;
 }
 
-export const CODEX_SUBAGENT_TOOL_PREFIX = "codex.subagent.";
-export const CODEX_SUBAGENT_WORK_GRAPH_SCHEMA =
-	"evalops.maestro.codex.subagent-workgraph.v1";
+export { CODEX_SUBAGENT_TOOL_PREFIX, CODEX_SUBAGENT_WORK_GRAPH_SCHEMA };
 
 function isRecord(value: unknown): value is Record<string, unknown> {
 	return Boolean(value && typeof value === "object" && !Array.isArray(value));
@@ -755,44 +770,11 @@ export function stringArray(value: unknown): string[] {
 }
 
 export function codexSubagentOperation(tool: string): string | undefined {
-	const suffix = tool.startsWith(CODEX_SUBAGENT_TOOL_PREFIX)
-		? tool.slice(CODEX_SUBAGENT_TOOL_PREFIX.length)
-		: tool;
-	switch (suffix) {
-		case "spawnAgent":
-		case "spawn_agent":
-			return "spawn_agent";
-		case "sendInput":
-		case "send_input":
-			return "send_input";
-		case "resumeAgent":
-		case "resume_agent":
-			return "resume_agent";
-		case "wait":
-		case "waitAgent":
-		case "wait_agent":
-			return "wait_agent";
-		case "closeAgent":
-		case "close_agent":
-			return "close_agent";
-		default:
-			return undefined;
-	}
+	return codexSubagentOperationName(tool);
 }
 
 export function activeCodexSubagentStatus(operation: string): string {
-	switch (operation) {
-		case "send_input":
-			return "waiting_for_input_ack";
-		case "wait_agent":
-			return "wait_pending";
-		case "close_agent":
-			return "waiting_for_close";
-		case "resume_agent":
-			return "restoring";
-		default:
-			return "waiting_for_restore";
-	}
+	return codexSubagentActiveStatus(operation) ?? "waiting_for_restore";
 }
 
 export function codexSubagentStatusIsTerminal(
@@ -825,18 +807,7 @@ function terminalCodexSubagentStatus(
 	if (!success) {
 		return "failed";
 	}
-	switch (operation) {
-		case "spawn_agent":
-			return "spawned";
-		case "send_input":
-			return "acknowledged";
-		case "resume_agent":
-			return "resumed";
-		case "close_agent":
-			return "closed";
-		default:
-			return "completed";
-	}
+	return codexSubagentTerminalSuccessStatus(operation) ?? "completed";
 }
 
 export function collectCodexChildRuns(args: unknown): Array<{
@@ -1042,6 +1013,7 @@ export function codexSubagentEdgeKey(
 
 export function buildCodexSubagentContinuityEdges(input: {
 	call_id: string;
+	tool_execution_id?: string;
 	tool: string;
 	args?: unknown;
 	status: string;
@@ -1057,8 +1029,18 @@ export function buildCodexSubagentContinuityEdges(input: {
 		operation,
 		status: input.status,
 		...(operation === "spawn_agent"
-			? { spawn_tool_call_id: input.call_id }
-			: { wait_tool_call_id: input.call_id }),
+			? {
+					spawn_tool_call_id: input.call_id,
+					...(input.tool_execution_id
+						? { spawn_tool_execution_id: input.tool_execution_id }
+						: {}),
+				}
+			: {
+					wait_tool_call_id: input.call_id,
+					...(input.tool_execution_id
+						? { wait_tool_execution_id: input.tool_execution_id }
+						: {}),
+				}),
 	};
 	const childRuns = collectCodexChildRuns(input.args);
 	return childRuns.length > 0
@@ -1077,6 +1059,7 @@ function upsertCodexSubagentContinuityEdges(
 	state: HeadlessRuntimeState,
 	input: {
 		call_id: string;
+		tool_execution_id?: string;
 		tool: string;
 		args?: unknown;
 		status: string;
@@ -1185,6 +1168,7 @@ function failCodexSubagentContinuityEdge(
 	if (source && operation) {
 		upsertCodexSubagentContinuityEdges(state, {
 			call_id: callId,
+			tool_execution_id: source.tool_execution_id,
 			tool: source.tool,
 			args: source.args,
 			status: terminalCodexSubagentStatus(operation, false),
@@ -1248,6 +1232,7 @@ function getPendingRequestId(request: HeadlessPendingApprovalState): string {
 
 function toPendingRequestState(params: {
 	call_id: string;
+	tool_execution_id?: string;
 	request_id: string;
 	tool: string;
 	display_name?: string;
@@ -1258,6 +1243,9 @@ function toPendingRequestState(params: {
 }): HeadlessPendingApprovalState {
 	return {
 		call_id: params.call_id,
+		...(params.tool_execution_id
+			? { tool_execution_id: params.tool_execution_id }
+			: {}),
 		...(params.request_id !== params.call_id
 			? { request_id: params.request_id }
 			: {}),
@@ -1548,6 +1536,9 @@ export class HeadlessProtocolTranslator {
 					{
 						type: "tool_call",
 						call_id: event.toolCallId,
+						...(event.toolExecutionId
+							? { tool_execution_id: event.toolExecutionId }
+							: {}),
 						tool: event.toolName,
 						args: event.args,
 						requires_approval: false,
@@ -1585,6 +1576,9 @@ export class HeadlessProtocolTranslator {
 					{
 						type: "tool_end",
 						call_id: event.toolCallId,
+						...(event.toolExecutionId
+							? { tool_execution_id: event.toolExecutionId }
+							: {}),
 						success: !event.isError,
 						...(details ? { tool: event.toolName, details } : {}),
 						...(event.errorCode ? { error_code: event.errorCode } : {}),
@@ -1614,6 +1608,9 @@ export class HeadlessProtocolTranslator {
 					{
 						type: "tool_call",
 						call_id: event.request.id,
+						...(event.request.platform?.toolExecutionId
+							? { tool_execution_id: event.request.platform.toolExecutionId }
+							: {}),
 						tool: event.request.toolName,
 						args: event.request.args,
 						requires_approval: true,
@@ -1623,6 +1620,9 @@ export class HeadlessProtocolTranslator {
 						request_id: event.request.id,
 						request_type: "approval",
 						call_id: event.request.id,
+						...(event.request.platform?.toolExecutionId
+							? { tool_execution_id: event.request.platform.toolExecutionId }
+							: {}),
 						tool: event.request.toolName,
 						...(event.request.displayName
 							? { display_name: event.request.displayName }
@@ -2147,6 +2147,7 @@ function applyIncomingHeadlessMessageInner(
 		case "tool_call":
 			upsertCodexSubagentContinuityEdges(state, {
 				call_id: msg.call_id,
+				tool_execution_id: msg.tool_execution_id,
 				tool: msg.tool,
 				args: msg.args,
 				status: activeCodexSubagentStatus(
@@ -2157,6 +2158,7 @@ function applyIncomingHeadlessMessageInner(
 				...state.tracked_tools.filter((tool) => tool.call_id !== msg.call_id),
 				{
 					call_id: msg.call_id,
+					tool_execution_id: msg.tool_execution_id,
 					tool: msg.tool,
 					args: msg.args,
 				},
@@ -2168,6 +2170,7 @@ function applyIncomingHeadlessMessageInner(
 					),
 					{
 						call_id: msg.call_id,
+						tool_execution_id: msg.tool_execution_id,
 						tool: msg.tool,
 						args: msg.args,
 					},
@@ -2243,6 +2246,7 @@ function applyIncomingHeadlessMessageInner(
 			if (tool && operation) {
 				upsertCodexSubagentContinuityEdges(state, {
 					call_id: msg.call_id,
+					tool_execution_id: msg.tool_execution_id ?? source?.tool_execution_id,
 					tool,
 					args: codexSubagentToolEndArgs(source?.args, msg.details),
 					status: terminalCodexSubagentStatus(operation, msg.success),
@@ -2276,12 +2280,14 @@ function applyIncomingHeadlessMessageInner(
 				...state.tracked_tools.filter((tool) => tool.call_id !== msg.call_id),
 				{
 					call_id: msg.call_id,
+					tool_execution_id: msg.tool_execution_id,
 					tool: msg.tool,
 					args: msg.args,
 				},
 			];
 			upsertCodexSubagentContinuityEdges(state, {
 				call_id: msg.call_id,
+				tool_execution_id: msg.tool_execution_id,
 				tool: msg.tool,
 				args: msg.args,
 				status: activeCodexSubagentStatus(
@@ -2295,6 +2301,7 @@ function applyIncomingHeadlessMessageInner(
 					),
 					{
 						call_id: msg.call_id,
+						tool_execution_id: msg.tool_execution_id,
 						tool: msg.tool,
 						args: msg.args,
 					},
@@ -2306,21 +2313,29 @@ function applyIncomingHeadlessMessageInner(
 					),
 					{
 						call_id: msg.call_id,
+						tool_execution_id: msg.tool_execution_id,
 						tool: msg.tool,
 						args: msg.args,
 					},
 				];
 			}
 			return;
-		case "server_request":
-			if (
+		case "server_request": {
+			const trackedTool = state.tracked_tools.find(
+				(tool) => tool.call_id === msg.call_id,
+			);
+			const toolExecutionId =
+				msg.tool_execution_id ?? trackedTool?.tool_execution_id;
+			const shouldTrackRequest =
 				msg.request_type !== "tool_retry" ||
-				!state.tracked_tools.some((tool) => tool.call_id === msg.call_id)
-			) {
+				!trackedTool ||
+				trackedTool.tool_execution_id !== toolExecutionId;
+			if (shouldTrackRequest) {
 				state.tracked_tools = [
 					...state.tracked_tools.filter((tool) => tool.call_id !== msg.call_id),
 					{
 						call_id: msg.call_id,
+						tool_execution_id: toolExecutionId,
 						tool: msg.tool,
 						args: msg.args,
 					},
@@ -2328,6 +2343,7 @@ function applyIncomingHeadlessMessageInner(
 			}
 			upsertCodexSubagentContinuityEdges(state, {
 				call_id: msg.call_id,
+				tool_execution_id: toolExecutionId,
 				tool: msg.tool,
 				args: msg.args,
 				status: activeCodexSubagentStatus(
@@ -2341,6 +2357,7 @@ function applyIncomingHeadlessMessageInner(
 					),
 					toPendingRequestState({
 						call_id: msg.call_id,
+						tool_execution_id: toolExecutionId,
 						request_id: msg.request_id,
 						tool: msg.tool,
 						display_name: msg.display_name,
@@ -2357,6 +2374,7 @@ function applyIncomingHeadlessMessageInner(
 					),
 					toPendingRequestState({
 						call_id: msg.call_id,
+						tool_execution_id: toolExecutionId,
 						request_id: msg.request_id,
 						tool: msg.tool,
 						args: msg.args,
@@ -2370,6 +2388,7 @@ function applyIncomingHeadlessMessageInner(
 					),
 					toPendingRequestState({
 						call_id: msg.call_id,
+						tool_execution_id: toolExecutionId,
 						request_id: msg.request_id,
 						tool: msg.tool,
 						args: msg.args,
@@ -2383,6 +2402,7 @@ function applyIncomingHeadlessMessageInner(
 					),
 					toPendingRequestState({
 						call_id: msg.call_id,
+						tool_execution_id: toolExecutionId,
 						request_id: msg.request_id,
 						tool: msg.tool,
 						args: msg.args,
@@ -2396,6 +2416,7 @@ function applyIncomingHeadlessMessageInner(
 					),
 					toPendingRequestState({
 						call_id: msg.call_id,
+						tool_execution_id: toolExecutionId,
 						request_id: msg.request_id,
 						tool: msg.tool,
 						args: msg.args,
@@ -2404,6 +2425,7 @@ function applyIncomingHeadlessMessageInner(
 				];
 			}
 			return;
+		}
 		case "server_request_resolved":
 			if (msg.request_type === "approval") {
 				state.pending_approvals = state.pending_approvals.filter(

@@ -63,6 +63,99 @@ describe("MCP tool bridge schema conversion", () => {
 		expect(tool.parameters.description).toBe("Query input");
 		expect(tool.parameters.properties?.query?.description).toBe("Search query");
 	});
+
+	it("uses trusted MCP config or server capabilities as parallel capability sources", () => {
+		const fromServer = createMcpToolWrapper(
+			"trusted-server",
+			{
+				name: "search",
+				inputSchema: { type: "object" },
+			} satisfies McpTool,
+			{ supportsParallelToolCalls: true },
+		);
+		const fromServerCapability = createMcpToolWrapper(
+			"advertising-server",
+			{
+				name: "search",
+				inputSchema: { type: "object" },
+			} satisfies McpTool,
+			{
+				parallelSafety: {
+					supportsParallelToolCalls: true,
+					provenance: "server_capability",
+					maxConcurrency: 3,
+					readOnlyHint: true,
+				},
+			},
+		);
+		const fromToolMeta = createMcpToolWrapper("meta-server", {
+			name: "search",
+			inputSchema: { type: "object" },
+			annotations: {
+				supportsParallelToolCalls: true,
+			},
+			_meta: {
+				supportsParallelToolCalls: true,
+				"evalops.maestro/supportsParallelToolCalls": true,
+			},
+		} satisfies McpTool);
+		const plain = createMcpToolWrapper("plain-server", {
+			name: "search",
+			inputSchema: { type: "object" },
+		} satisfies McpTool);
+		const destructiveWithAdvertisedReadOnly = createMcpToolWrapper(
+			"dangerous-server",
+			{
+				name: "delete",
+				inputSchema: { type: "object" },
+				annotations: { destructiveHint: true },
+			} satisfies McpTool,
+			{
+				parallelSafety: {
+					supportsParallelToolCalls: true,
+					provenance: "server_capability",
+					readOnlyHint: true,
+				},
+			},
+		);
+		const readOnlyWithoutParallelOptIn = createMcpToolWrapper(
+			"serial-read-server",
+			{
+				name: "search",
+				inputSchema: { type: "object" },
+			} satisfies McpTool,
+			{
+				parallelSafety: {
+					supportsParallelToolCalls: false,
+					provenance: "server_capability",
+					readOnlyHint: true,
+				},
+			},
+		);
+
+		expect(fromServer.source?.supportsParallelToolCalls).toBe(true);
+		expect(fromServer.source?.parallelSafetyProvenance).toBe("static_config");
+		expect(fromServerCapability.source).toMatchObject({
+			supportsParallelToolCalls: true,
+			parallelSafetyProvenance: "server_capability",
+			parallelMaxConcurrency: 3,
+		});
+		expect(fromServerCapability.annotations?.readOnlyHint).toBe(true);
+		expect(destructiveWithAdvertisedReadOnly.annotations).toMatchObject({
+			destructiveHint: true,
+			readOnlyHint: undefined,
+		});
+		expect(fromToolMeta.source?.supportsParallelToolCalls).toBe(false);
+		expect(fromToolMeta.source?.parallelSafetyProvenance).toBe("none");
+		expect(plain.source?.supportsParallelToolCalls).toBe(false);
+		expect(readOnlyWithoutParallelOptIn.source?.supportsParallelToolCalls).toBe(
+			false,
+		);
+		expect(readOnlyWithoutParallelOptIn.annotations?.readOnlyHint).toBe(true);
+		expect(readOnlyWithoutParallelOptIn.source?.capability?.riskClass).toBe(
+			"observe",
+		);
+	});
 });
 
 // Type for MCP content items

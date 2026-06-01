@@ -1,7 +1,7 @@
 /**
  * Configuration Module
  *
- * Unified configuration access for Composer. Combines multiple configuration
+ * Unified configuration access for Maestro. Combines multiple configuration
  * sources with a clear precedence order:
  *
  * 1. CLI flags (--model, --config key=value, --profile)

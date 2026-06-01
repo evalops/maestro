@@ -68,6 +68,7 @@ export interface ToolExecutionContext {
 	clientToolService?: ClientToolExecutionService;
 	toolExecutionBridge?: PlatformToolExecutionBridge;
 	toolExecutionBridgePlan?: ToolExecutionBridgePlan;
+	approvalRequestId?: string;
 	// Concurrency
 	toolUpdateQueue: ToolUpdateQueue;
 	/** Pre-created client tool execution promise (if applicable) */
@@ -270,6 +271,7 @@ export function createToolExecutionPromise(
 		clientToolService,
 		toolExecutionBridge,
 		toolExecutionBridgePlan,
+		approvalRequestId,
 	} = ctx;
 
 	const startTime = clock.now();
@@ -294,6 +296,7 @@ export function createToolExecutionPromise(
 		? (tool.retryDelayMs ?? resolvedRetryConfig.initialDelayMs)
 		: resolvedRetryConfig.initialDelayMs;
 	const shouldRetryFn = tool.shouldRetry ?? isRetryableToolError;
+	const fallbackToolExecutionId = `local-tool-exec-${toolCall.id}`;
 
 	const context = cfg.sandbox ? { sandbox: cfg.sandbox } : undefined;
 	const onUpdate = (partialResult: AgentToolResult) => {
@@ -328,6 +331,53 @@ export function createToolExecutionPromise(
 		return runWithMcpClientToolService(clientToolService, () =>
 			tool.execute(toolCall.id, validatedArgs, signal, context, onUpdate),
 		);
+	};
+
+	const toolExecutionIdFromMessage = (
+		message: ToolResultMessage,
+	): string | undefined => {
+		const details =
+			message.details && typeof message.details === "object"
+				? (message.details as Record<string, unknown>)
+				: {};
+		return typeof details.toolExecutionId === "string" &&
+			details.toolExecutionId.length > 0
+			? details.toolExecutionId
+			: undefined;
+	};
+
+	const withLocalExecutionMetadata = (
+		metadata: ReturnType<typeof buildObservedResultMetadata>,
+		message?: ToolResultMessage,
+	): ReturnType<typeof buildObservedResultMetadata> => ({
+		...metadata,
+		toolExecutionId:
+			metadata.toolExecutionId ??
+			(message ? toolExecutionIdFromMessage(message) : undefined) ??
+			fallbackToolExecutionId,
+		...(approvalRequestId && !metadata.approvalRequestId
+			? { approvalRequestId }
+			: {}),
+	});
+
+	const attachToolResultLinkage = (
+		message: ToolResultMessage,
+		metadata: ReturnType<typeof buildObservedResultMetadata>,
+	): ReturnType<typeof buildObservedResultMetadata> => {
+		const resolvedMetadata = withLocalExecutionMetadata(metadata, message);
+		const details =
+			message.details && typeof message.details === "object"
+				? { ...(message.details as Record<string, unknown>) }
+				: {};
+		details.toolExecutionId = resolvedMetadata.toolExecutionId;
+		if (
+			resolvedMetadata.approvalRequestId &&
+			typeof details.approvalRequestId !== "string"
+		) {
+			details.approvalRequestId = resolvedMetadata.approvalRequestId;
+		}
+		message.details = details as typeof message.details;
+		return resolvedMetadata;
 	};
 
 	const executeWithRetry = async (): Promise<AgentToolResult> => {
@@ -459,6 +509,14 @@ export function createToolExecutionPromise(
 				isError: result.isError || false,
 				timestamp: clock.now(),
 			};
+			attachToolResultLinkage(toolResultMsg, {
+				toolExecutionId:
+					result.toolExecutionId ??
+					toolExecutionBridgePlan?.metadata.toolExecutionId,
+				approvalRequestId:
+					result.approvalRequestId ??
+					toolExecutionBridgePlan?.metadata.approvalRequestId,
+			});
 
 			if (hookService && !result.isError) {
 				const postHookResult = await hookService.runPostToolUseHooks(
@@ -566,13 +624,17 @@ export function createToolExecutionPromise(
 						)
 					: undefined;
 
-			return {
-				message: toolResultMsg,
-				isError: toolResultMsg.isError,
-				...buildObservedResultMetadata(
+			const linkageMetadata = attachToolResultLinkage(
+				toolResultMsg,
+				buildObservedResultMetadata(
 					toolExecutionBridgePlan,
 					observed ?? governedOutput,
 				),
+			);
+			return {
+				message: toolResultMsg,
+				isError: toolResultMsg.isError,
+				...linkageMetadata,
 			};
 		} catch (error: unknown) {
 			if (error instanceof Error && error.name === "AbortError") {
@@ -607,6 +669,10 @@ export function createToolExecutionPromise(
 				isError: true,
 				timestamp: clock.now(),
 			};
+			attachToolResultLinkage(toolResultMsg, {
+				toolExecutionId: toolExecutionBridgePlan?.metadata.toolExecutionId,
+				approvalRequestId: toolExecutionBridgePlan?.metadata.approvalRequestId,
+			});
 
 			if (hookService) {
 				const failureHookResult = await hookService.runPostToolUseFailureHooks(
@@ -643,13 +709,17 @@ export function createToolExecutionPromise(
 						)
 					: undefined;
 
-			return {
-				message: toolResultMsg,
-				isError: true,
-				...buildObservedResultMetadata(
+			const linkageMetadata = attachToolResultLinkage(
+				toolResultMsg,
+				buildObservedResultMetadata(
 					toolExecutionBridgePlan,
 					observed ?? governedOutput,
 				),
+			);
+			return {
+				message: toolResultMsg,
+				isError: true,
+				...linkageMetadata,
 			};
 		}
 	})();

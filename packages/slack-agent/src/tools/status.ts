@@ -12,6 +12,8 @@ import type { Executor } from "../sandbox.js";
 import { shellEscape } from "../utils/shell-escape.js";
 import type { AgentTool } from "./index.js";
 
+const WORKSPACE_STATUS_TIMEOUT_SECONDS = 5;
+
 export interface ContainerHealth {
 	container: {
 		name: string;
@@ -112,11 +114,12 @@ export function createStatusTool(
 			}),
 		}),
 		execute: async (_toolCallId, _args, signal) => {
+			const workspacePath = executor.getWorkspacePath(process.cwd());
 			const health: ContainerHealth = {
 				container: null,
 				resources: null,
 				workspace: {
-					path: executor.getWorkspacePath("/workspace"),
+					path: workspacePath,
 					usedBytes: 0,
 					usedHuman: "0B",
 					fileCount: 0,
@@ -126,9 +129,10 @@ export function createStatusTool(
 
 			// Get workspace disk usage
 			try {
+				const escapedWorkspacePath = shellEscape(workspacePath);
 				const duResult = await executor.exec(
-					"du -sb /workspace 2>/dev/null || du -sb . 2>/dev/null || echo '0 .'",
-					{ signal },
+					`du -sb ${escapedWorkspacePath} 2>/dev/null || echo '0 .'`,
+					{ signal, timeout: WORKSPACE_STATUS_TIMEOUT_SECONDS },
 				);
 				if (duResult.code === 0) {
 					const match = duResult.stdout.match(/^(\d+)/);
@@ -142,8 +146,8 @@ export function createStatusTool(
 
 				// Count files
 				const findResult = await executor.exec(
-					"find /workspace -type f 2>/dev/null | wc -l || find . -type f 2>/dev/null | wc -l || echo '0'",
-					{ signal },
+					`find ${escapedWorkspacePath} -type f 2>/dev/null | wc -l || echo '0'`,
+					{ signal, timeout: WORKSPACE_STATUS_TIMEOUT_SECONDS },
 				);
 				if (findResult.code === 0) {
 					health.workspace.fileCount =

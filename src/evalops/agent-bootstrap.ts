@@ -959,12 +959,12 @@ export async function bootstrapEvalOpsAgent(
 		});
 	}
 	try {
-		deps.onStatus({ message: "Loading EvalOps control-plane proof" });
+		deps.onStatus({ message: "Loading EvalOps control-plane status" });
 		controlPlaneSummary = await loadControlPlaneSummary(client);
 	} catch (error) {
 		const reason = error instanceof Error ? error.message : String(error);
 		deps.onStatus({
-			message: `EvalOps control-plane proof unavailable; continuing bootstrap (${reason})`,
+			message: `EvalOps control-plane status unavailable; continuing bootstrap (${reason})`,
 		});
 	} finally {
 		await client.close().catch(() => undefined);

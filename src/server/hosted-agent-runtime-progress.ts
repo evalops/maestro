@@ -1,4 +1,14 @@
+import { createHash } from "node:crypto";
+import type { SwarmEvent, SwarmTask } from "../agent/swarm/types.js";
 import type { AgentEvent, AppMessage, Usage } from "../agent/types.js";
+import {
+	CODEX_SUBAGENT_TOOL_PREFIX,
+	canonicalCodexSubagentTool,
+	codexSubagentActiveStatus,
+	codexSubagentNextAction as codexSubagentContractNextAction,
+	codexSubagentOperationName,
+	codexSubagentTerminalSuccessStatus,
+} from "../codex/subagent-workgraph.js";
 import {
 	PlatformDelegationStatusValue,
 	delegateAgentWithPlatform,
@@ -25,35 +35,49 @@ import {
 	waitAgentRuntimeRun,
 } from "../platform/agent-runtime-client.js";
 import { createLogger } from "../utils/logger.js";
+import { sanitizeWithStaticMask } from "../utils/secret-redactor.js";
 import type { ServerRequestLifecycleEvent } from "./server-request-manager.js";
 
 const logger = createLogger("server:hosted-agent-runtime-progress");
-const CODEX_SUBAGENT_TOOL_PREFIX = "codex.subagent.";
 const CODEX_THREAD_CHILD_RUN_PREFIX = "codex-thread:";
 const DEFAULT_CODEX_SUBAGENT_DELEGATION_CAPABILITY = "code:write";
 
-type CodexSubagentTool =
-	| "spawnAgent"
-	| "sendInput"
-	| "resumeAgent"
-	| "wait"
-	| "closeAgent";
+type HostedAgentRuntimeTaskSource =
+	| "todo"
+	| "background"
+	| "swarm"
+	| "checkpoint";
 
-const CODEX_SUBAGENT_TOOL_ALIASES = new Map<string, CodexSubagentTool>([
-	["spawnAgent", "spawnAgent"],
-	["spawn_agent", "spawnAgent"],
-	["sendInput", "sendInput"],
-	["send_input", "sendInput"],
-	["resumeAgent", "resumeAgent"],
-	["resumeSubagent", "resumeAgent"],
-	["resume_agent", "resumeAgent"],
-	["resume_subagent", "resumeAgent"],
-	["wait", "wait"],
-	["waitAgent", "wait"],
-	["wait_agent", "wait"],
-	["closeAgent", "closeAgent"],
-	["close_agent", "closeAgent"],
-]);
+type HostedAgentRuntimeTaskStatus =
+	| "pending"
+	| "running"
+	| "waiting"
+	| "blocked"
+	| "succeeded"
+	| "failed"
+	| "cancelled";
+
+export interface HostedAgentRuntimeTaskProgressEvent {
+	source: HostedAgentRuntimeTaskSource;
+	id: string;
+	status: HostedAgentRuntimeTaskStatus;
+	title: string;
+	goal?: string;
+	parentId?: string;
+	ownerChildRunId?: string;
+	workItemKind?: PlatformAgentWorkItemKindValue | string;
+	stepKind?: PlatformAgentRunStepKindValue | string;
+	nextAction?: string;
+	blocker?: string;
+	errorMessage?: string;
+	toolCallId?: string;
+	toolExecutionId?: string;
+	approvalRequestId?: string;
+	completionGate?: string;
+	evidenceRefs?: string[];
+	payload?: Record<string, unknown>;
+	recordStep?: boolean;
+}
 
 export interface HostedAgentRuntimeProgressContext {
 	enabled: true;
@@ -126,6 +150,57 @@ function nonEmptyString(value: unknown): string | undefined {
 		: undefined;
 }
 
+function compactString(value: unknown, maxLength = 256): string | undefined {
+	const text = nonEmptyString(value)?.trim();
+	if (!text) {
+		return undefined;
+	}
+	if (text.length <= maxLength) {
+		return text;
+	}
+	if (maxLength <= 0) {
+		return "";
+	}
+	if (maxLength <= 3) {
+		return ".".repeat(maxLength);
+	}
+	return `${text.slice(0, maxLength - 3)}...`;
+}
+
+function isExistingWorkItemCreateError(error: unknown): boolean {
+	const message = error instanceof Error ? error.message : String(error);
+	return /\b409\b|already exists|already_exists|duplicate|unique constraint/i.test(
+		message,
+	);
+}
+
+function stableShortHash(value: string): string {
+	return createHash("sha256").update(value).digest("hex").slice(0, 12);
+}
+
+function goalScopedTodoId(id: string, goal: string | undefined): string {
+	return goal ? `goal-${stableShortHash(goal)}:${id}` : id;
+}
+
+function swarmCompletionStatus(
+	event: Extract<SwarmEvent, { type: "swarm_complete" }>,
+): HostedAgentRuntimeTaskStatus {
+	switch (event.state.status) {
+		case "completed":
+			return "succeeded";
+		case "failed":
+			return "failed";
+		case "cancelled":
+			return "cancelled";
+		case "completing":
+			return "running";
+		case "initializing":
+			return "pending";
+		case "running":
+			return "running";
+	}
+}
+
 function objectKeys(value: unknown): string[] | undefined {
 	if (!value || typeof value !== "object" || Array.isArray(value)) {
 		return undefined;
@@ -136,6 +211,13 @@ function objectKeys(value: unknown): string[] | undefined {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
 	return Boolean(value && typeof value === "object" && !Array.isArray(value));
+}
+
+function recordArray(value: unknown): Record<string, unknown>[] {
+	if (!Array.isArray(value)) {
+		return [];
+	}
+	return value.filter(isRecord);
 }
 
 function finiteNumber(value: unknown): number {
@@ -151,11 +233,34 @@ function stringArray(value: unknown): string[] {
 	);
 }
 
+function compactStringArray(
+	value: string[],
+	maxItems = 32,
+): string[] | undefined {
+	const compacted = value
+		.map((item) => compactString(item, 160))
+		.filter((item): item is string => Boolean(item))
+		.slice(0, maxItems);
+	return compacted.length > 0 ? compacted : undefined;
+}
+
+function sanitizeOutboundTextArray(
+	value: string[],
+	maxItems = 32,
+	maxLength = MAX_TEXT_FIELD_LENGTH,
+): string[] | undefined {
+	const sanitized = value
+		.map((item) => sanitizeOutboundText(item, maxLength))
+		.filter((item): item is string => Boolean(item))
+		.slice(0, maxItems);
+	return sanitized.length > 0 ? sanitized : undefined;
+}
+
 function codexSubagentToolName(toolName: string): string | undefined {
 	const tool = toolName.startsWith(CODEX_SUBAGENT_TOOL_PREFIX)
 		? toolName.slice(CODEX_SUBAGENT_TOOL_PREFIX.length)
 		: undefined;
-	return tool ? (CODEX_SUBAGENT_TOOL_ALIASES.get(tool) ?? tool) : undefined;
+	return tool ? (canonicalCodexSubagentTool(tool) ?? tool) : undefined;
 }
 
 function codexThreadChildRunId(threadId: string): string {
@@ -229,20 +334,10 @@ function codexSubagentChildRunIds(
 }
 
 function codexSubagentNextAction(tool: string): string {
-	switch (tool) {
-		case "spawnAgent":
-			return "wait for child agent initialization or completion";
-		case "sendInput":
-			return "wait for child agent response";
-		case "resumeAgent":
-			return "wait for resumed child agent response";
-		case "wait":
-			return "wait for selected child agents";
-		case "closeAgent":
-			return "confirm child agent shutdown";
-		default:
-			return "track Codex subagent collaboration";
-	}
+	return (
+		codexSubagentContractNextAction(tool) ??
+		"track Codex subagent collaboration"
+	);
 }
 
 function codexSubagentDelegationTargetAgentId(
@@ -388,37 +483,11 @@ function codexSubagentDelegationReason(prompt: string | undefined): string {
 }
 
 function codexSubagentOperation(tool: string): string | undefined {
-	switch (tool) {
-		case "spawnAgent":
-			return "spawn_agent";
-		case "sendInput":
-			return "send_input";
-		case "resumeAgent":
-			return "resume_agent";
-		case "wait":
-			return "wait_agent";
-		case "closeAgent":
-			return "close_agent";
-		default:
-			return undefined;
-	}
+	return codexSubagentOperationName(tool);
 }
 
 function activeCodexSubagentEdgeStatus(tool: string): string | undefined {
-	switch (codexSubagentOperation(tool)) {
-		case "send_input":
-			return "waiting_for_input_ack";
-		case "wait_agent":
-			return "wait_pending";
-		case "close_agent":
-			return "waiting_for_close";
-		case "resume_agent":
-			return "restoring";
-		case "spawn_agent":
-			return "waiting_for_restore";
-		default:
-			return undefined;
-	}
+	return codexSubagentActiveStatus(tool);
 }
 
 function terminalCodexSubagentEdgeStatus(
@@ -428,20 +497,7 @@ function terminalCodexSubagentEdgeStatus(
 	if (isError) {
 		return "failed";
 	}
-	switch (codexSubagentOperation(tool)) {
-		case "spawn_agent":
-			return "spawned";
-		case "send_input":
-			return "acknowledged";
-		case "resume_agent":
-			return "resumed";
-		case "close_agent":
-			return "closed";
-		case "wait_agent":
-			return "completed";
-		default:
-			return undefined;
-	}
+	return codexSubagentTerminalSuccessStatus(tool);
 }
 
 function shouldResolveCodexSubagentDelegation(
@@ -485,6 +541,279 @@ function toolDisplayName(event: {
 	return event.displayName ?? event.summaryLabel ?? event.toolName;
 }
 
+const MAX_TEXT_FIELD_LENGTH = 160;
+const MAX_DELEGATION_PROMPT_LENGTH = 512;
+const REDACTED = "[redacted]";
+const COMMON_MAKE_TARGETS = new Set([
+	"all",
+	"build",
+	"check",
+	"clean",
+	"dev",
+	"dist",
+	"docs",
+	"format",
+	"install",
+	"lint",
+	"release",
+	"start",
+	"test",
+	"typecheck",
+	"verify",
+]);
+function shouldRedactOutboundText(text: string): boolean {
+	return (
+		sanitizeWithStaticMask(text) !== text ||
+		/\b(?:sk|gh[pousr]_?|github_pat_|xoxb|xoxp|AKIA|ASIA)[A-Za-z0-9_-]{8,}\b/.test(
+			text,
+		) ||
+		/\bAIza[A-Za-z0-9_-]{35}\b/.test(text) ||
+		containsShellCommandSyntax(text)
+	);
+}
+
+function sanitizeOutboundText(
+	value: string | undefined,
+	maxLength = MAX_TEXT_FIELD_LENGTH,
+): string | undefined {
+	const text = nonEmptyString(value);
+	if (!text) {
+		return undefined;
+	}
+	if (shouldRedactOutboundText(text)) {
+		return REDACTED;
+	}
+	return text.length > maxLength ? `${text.slice(0, maxLength)}…` : text;
+}
+
+function sanitizeToolBatchSummaryText(
+	value: string | undefined,
+): string | undefined {
+	const text = nonEmptyString(value);
+	if (text?.split(/\s*,\s*/).some((part) => containsShellCommandSyntax(part))) {
+		return REDACTED;
+	}
+	return sanitizeOutboundText(value, 512);
+}
+
+function containsShellCommandSyntax(value: string): boolean {
+	if (containsShellCommandAtStart(value)) {
+		return true;
+	}
+	const prefixedCommand =
+		/\b(?:detected (?:command|[^:\n]*\bcommand)|command failed|command):\s*(\S[\s\S]*)$/i.exec(
+			value,
+		);
+	if (prefixedCommand?.[1]) {
+		return true;
+	}
+	const embeddedCommand =
+		/\b(?:please\s+)?(?:run|running|execute|start|launch|retry)\s+([\s\S]+)$/i.exec(
+			value,
+		);
+	return embeddedCommand?.[1]
+		? containsShellCommandAtStart(embeddedCommand[1], {
+				allowArbitraryMakeTargets: true,
+			})
+		: false;
+}
+
+function containsShellCommandAtStart(
+	value: string,
+	options: { allowArbitraryMakeTargets?: boolean } = {},
+): boolean {
+	const unwrapped = unwrapCommandText(value);
+	if (unwrapped !== value && containsShellCommandAtStart(unwrapped, options)) {
+		return true;
+	}
+	if (containsLeadingWrappedCommandSyntax(value, options)) {
+		return true;
+	}
+	if (
+		/^\s*(?:bash|sh|zsh)\s+(?:-[A-Za-z]+|\.{0,2}\/|~\/|[A-Za-z0-9_.\/-]+\.(?:bash|sh|zsh))/i.test(
+			value,
+		) ||
+		/^\s*(?:powershell|cmd)\s+(?:-[A-Za-z]+|\/c\b)/i.test(value)
+	) {
+		return true;
+	}
+	if (/^\s*Ran\s+\S+/i.test(value)) {
+		return true;
+	}
+	if (
+		/^\s*(?:git\s+\S+|gh\s+\S+|rm\s+-[A-Za-z]*[rf][A-Za-z]*\s+\S+|sudo\s+\S+|curl\s+\S+|wget\s+\S+|npm\s+\S+|npx\s+\S+|pnpm\s+\S+|bunx?\s+\S+|uvx?\s+\S+|node\s+\S+|python(?:3)?\s+\S+|pytest(?:\s+\S+)?|pip(?:3)?\s+\S+|docker\s+\S+|kubectl\s+\S+|terraform\s+\S+)/i.test(
+			value,
+		)
+	) {
+		return true;
+	}
+	if (
+		/^\s*(?:yarn\s+(?:test|run|build|install|add|remove|exec|workspace|workspaces|dlx)\b|go\s+(?:test|run|build|mod|fmt|vet|install|generate|env|version)\b|cargo\s+(?:test|run|build|check|fmt|clippy|install)\b)/.test(
+			value,
+		)
+	) {
+		return true;
+	}
+	if (containsMakeCommandSyntax(value, options)) {
+		return true;
+	}
+	if (containsEnvPrefixedCommandSyntax(value, options)) {
+		return true;
+	}
+	if (containsEnvWrappedCommandSyntax(value, options)) {
+		return true;
+	}
+	if (containsChainedShellBuiltinSyntax(value)) {
+		return true;
+	}
+	return (
+		/^\s*(?:\.{1,2}\/|~\/)[^\s]+(?:\s+\S+)*\s*$/.test(value) ||
+		/^\s*(?:\.{0,2}\/|[A-Za-z0-9_.-]*\/)[^\s]+(?:\s+\S+)*(?:\s*(?:&&|\|\||[;|`])|\$\()/i.test(
+			value,
+		)
+	);
+}
+
+function containsChainedShellBuiltinSyntax(value: string): boolean {
+	return /^\s*cd\s+(?:-[A-Za-z]+\s+)*\S+(?:\s*(?:&&|\|\||;)\s*\S+)/.test(value);
+}
+
+function containsEnvPrefixedCommandSyntax(
+	value: string,
+	options: { allowArbitraryMakeTargets?: boolean } = {},
+): boolean {
+	const envPrefixedCommand =
+		/^\s*(?:[A-Za-z_][A-Za-z0-9_]*=(?:"[^"]*"|'[^']*'|\S+)\s+)+(.+)$/.exec(
+			value,
+		);
+	return envPrefixedCommand?.[1]
+		? containsShellCommandAtStart(envPrefixedCommand[1], options)
+		: false;
+}
+
+function containsEnvWrappedCommandSyntax(
+	value: string,
+	options: { allowArbitraryMakeTargets?: boolean } = {},
+): boolean {
+	const envMatch = /^\s*env\s+(.+?)\s*$/.exec(value);
+	if (!envMatch?.[1]) {
+		return false;
+	}
+	const args = envMatch[1].trim().split(/\s+/);
+	let index = 0;
+	while (index < args.length) {
+		const arg = args[index];
+		if (!arg) {
+			break;
+		}
+		if (
+			arg === "-" ||
+			arg === "-i" ||
+			arg === "--ignore-environment" ||
+			arg === "-0" ||
+			arg === "--null"
+		) {
+			index += 1;
+			continue;
+		}
+		if (
+			arg === "-C" ||
+			arg === "--chdir" ||
+			arg === "-u" ||
+			arg === "--unset"
+		) {
+			index += 2;
+			continue;
+		}
+		if (
+			arg.startsWith("-C") ||
+			arg.startsWith("--chdir=") ||
+			arg.startsWith("--unset=")
+		) {
+			index += 1;
+			continue;
+		}
+		if (/^[A-Za-z_][A-Za-z0-9_]*=(?:"[^"]*"|'[^']*'|\S+)$/.test(arg)) {
+			index += 1;
+			continue;
+		}
+		break;
+	}
+	const command = args.slice(index).join(" ");
+	return command ? containsShellCommandAtStart(command, options) : false;
+}
+
+function containsLeadingWrappedCommandSyntax(
+	value: string,
+	options: { allowArbitraryMakeTargets?: boolean } = {},
+): boolean {
+	const wrapped =
+		/^\s*(?:`([^`]+)`|'([^']+)'|"([^"]+)")(?:\s+\S[\s\S]*)?$/.exec(value);
+	const command = wrapped?.[1] ?? wrapped?.[2] ?? wrapped?.[3];
+	return command ? containsShellCommandAtStart(command, options) : false;
+}
+
+function containsMakeCommandSyntax(
+	value: string,
+	options: { allowArbitraryMakeTargets?: boolean } = {},
+): boolean {
+	if (/^\s*make\s*$/.test(value)) {
+		return true;
+	}
+	const makeMatch = /^\s*make\s+(.+?)\s*$/.exec(value);
+	if (!makeMatch?.[1]) {
+		return false;
+	}
+	const args = makeMatch[1].trim().split(/\s+/);
+	if (args.length === 0) {
+		return false;
+	}
+	if (args.length === 1) {
+		const target = args[0];
+		return target ? /^[A-Za-z0-9_.:/-]+$/.test(target) : false;
+	}
+	return (
+		(options.allowArbitraryMakeTargets &&
+			args.every((arg) => /^[A-Za-z0-9_.:/-]+$/.test(arg))) ||
+		args.every((arg) => COMMON_MAKE_TARGETS.has(arg.toLowerCase())) ||
+		args.some(
+			(arg) =>
+				arg.startsWith("-") ||
+				/^[A-Za-z_][A-Za-z0-9_]*=/.test(arg) ||
+				/[./:_-]/.test(arg),
+		)
+	);
+}
+
+function unwrapCommandText(value: string): string {
+	const trimmed = value.trim();
+	const wrapped = /^(?:`([^`]+)`|'([^']+)'|"([^"]+)")$/.exec(trimmed);
+	return wrapped?.[1] ?? wrapped?.[2] ?? wrapped?.[3] ?? value;
+}
+
+function sanitizeDelegationPrompt(
+	value: string | undefined,
+): string | undefined {
+	const text = nonEmptyString(value);
+	if (!text) {
+		return undefined;
+	}
+	if (shouldRedactOutboundText(text)) {
+		return REDACTED;
+	}
+	return text.length > MAX_DELEGATION_PROMPT_LENGTH
+		? text.slice(0, MAX_DELEGATION_PROMPT_LENGTH)
+		: text;
+}
+
+function sanitizedToolDisplayName(event: {
+	displayName?: string;
+	summaryLabel?: string;
+	toolName: string;
+}): string {
+	return sanitizeOutboundText(toolDisplayName(event)) ?? event.toolName;
+}
+
 function materializedToolExecutionId(event: {
 	toolCallId: string;
 	toolExecutionId?: string;
@@ -495,6 +824,50 @@ function materializedToolExecutionId(event: {
 		return undefined;
 	}
 	return toolExecutionId;
+}
+
+function toolResultMetrics(result: {
+	content?: unknown;
+	details?: unknown;
+	isError?: unknown;
+	toolExecutionId?: unknown;
+	approvalRequestId?: unknown;
+}): Record<string, unknown> {
+	const content = Array.isArray(result.content) ? result.content : [];
+	const textBlocks = content.filter(
+		(block): block is { type: "text"; text: string } =>
+			isRecord(block) &&
+			block.type === "text" &&
+			typeof block.text === "string",
+	);
+	const imageMimeTypes = content
+		.map((block) =>
+			isRecord(block) && block.type === "image"
+				? compactString(block.mimeType, 128)
+				: undefined,
+		)
+		.filter((mimeType): mimeType is string => Boolean(mimeType));
+	return {
+		content_block_count: content.length,
+		text_block_count: textBlocks.length,
+		text_total_chars: textBlocks.reduce(
+			(total, block) => total + block.text.length,
+			0,
+		),
+		image_block_count: imageMimeTypes.length,
+		image_mime_types: imageMimeTypes.length > 0 ? imageMimeTypes : undefined,
+		details_keys: objectKeys(result.details),
+		result_error:
+			typeof result.isError === "boolean" ? result.isError : undefined,
+		result_tool_execution_id:
+			typeof result.toolExecutionId === "string"
+				? result.toolExecutionId
+				: undefined,
+		result_approval_request_id:
+			typeof result.approvalRequestId === "string"
+				? result.approvalRequestId
+				: undefined,
+	};
 }
 
 function waitTypeForRequest(
@@ -509,6 +882,119 @@ function waitTypeForRequest(
 		case "user_input":
 			return PlatformAgentRunWaitTypeValue.Input;
 	}
+}
+
+function taskWorkItemState(
+	status: HostedAgentRuntimeTaskStatus,
+): PlatformAgentWorkItemStateValue {
+	switch (status) {
+		case "pending":
+			return PlatformAgentWorkItemStateValue.Pending;
+		case "running":
+			return PlatformAgentWorkItemStateValue.Running;
+		case "waiting":
+			return PlatformAgentWorkItemStateValue.Waiting;
+		case "blocked":
+			return PlatformAgentWorkItemStateValue.Blocked;
+		case "succeeded":
+			return PlatformAgentWorkItemStateValue.Succeeded;
+		case "failed":
+			return PlatformAgentWorkItemStateValue.Failed;
+		case "cancelled":
+			return PlatformAgentWorkItemStateValue.Cancelled;
+	}
+}
+
+function taskStepState(
+	status: HostedAgentRuntimeTaskStatus,
+): PlatformAgentRunStepStateValue {
+	switch (status) {
+		case "pending":
+			return PlatformAgentRunStepStateValue.Pending;
+		case "running":
+			return PlatformAgentRunStepStateValue.Running;
+		case "waiting":
+		case "blocked":
+			return PlatformAgentRunStepStateValue.Waiting;
+		case "succeeded":
+			return PlatformAgentRunStepStateValue.Succeeded;
+		case "failed":
+			return PlatformAgentRunStepStateValue.Failed;
+		case "cancelled":
+			return PlatformAgentRunStepStateValue.Cancelled;
+	}
+}
+
+function defaultTaskWorkItemKind(
+	source: HostedAgentRuntimeTaskSource,
+): PlatformAgentWorkItemKindValue {
+	switch (source) {
+		case "background":
+			return PlatformAgentWorkItemKindValue.ToolCall;
+		case "swarm":
+			return PlatformAgentWorkItemKindValue.ChildRun;
+		case "checkpoint":
+			return PlatformAgentWorkItemKindValue.Recovery;
+		case "todo":
+			return PlatformAgentWorkItemKindValue.Followup;
+	}
+}
+
+function defaultTaskStepKind(
+	source: HostedAgentRuntimeTaskSource,
+	status: HostedAgentRuntimeTaskStatus,
+): PlatformAgentRunStepKindValue {
+	if (status === "failed") {
+		return PlatformAgentRunStepKindValue.Error;
+	}
+	if (source === "background") {
+		return status === "succeeded" || status === "cancelled"
+			? PlatformAgentRunStepKindValue.ToolResult
+			: PlatformAgentRunStepKindValue.ToolCallIntent;
+	}
+	return PlatformAgentRunStepKindValue.System;
+}
+
+function shouldRecordTaskStep(
+	event: HostedAgentRuntimeTaskProgressEvent,
+): boolean {
+	if (event.recordStep !== undefined) {
+		return event.recordStep;
+	}
+	return event.status !== "pending";
+}
+
+function backgroundStatusToTaskStatus(
+	status: string | undefined,
+): HostedAgentRuntimeTaskStatus {
+	switch (status) {
+		case "running":
+		case "restarting":
+			return "running";
+		case "stopped":
+			return "cancelled";
+		case "exited":
+			return "succeeded";
+		case "failed":
+			return "failed";
+		default:
+			return "pending";
+	}
+}
+
+function todoStatusToTaskStatus(status: unknown): HostedAgentRuntimeTaskStatus {
+	switch (status) {
+		case "in_progress":
+			return "running";
+		case "completed":
+			return "succeeded";
+		default:
+			return "pending";
+	}
+}
+
+function taskPromptSummary(task: SwarmTask): string {
+	return compactString(task.prompt, 160) ?? task.id;
 }
 
 export class HostedAgentRuntimeProgressRecorder {
@@ -535,8 +1021,16 @@ export class HostedAgentRuntimeProgressRecorder {
 		string
 	>();
 	private readonly recordedModelUsageTurnIds = new Set<string>();
+	private readonly toolArgsByCallId = new Map<
+		string,
+		Record<string, unknown>
+	>();
+	private readonly recordedTaskWorkItemIds = new Set<string>();
 	private pending: Promise<void> = Promise.resolve();
 	private turnIndex = 0;
+	private autoRetrySequence = 0;
+	private activeAutoRetrySequence: number | null = null;
+	private lastAutoRetryAttempt = 0;
 	private terminalRecorded = false;
 
 	constructor(options: HostedAgentRuntimeProgressRecorderOptions) {
@@ -579,23 +1073,71 @@ export class HostedAgentRuntimeProgressRecorder {
 				});
 				return;
 			case "agent_end":
-				this.recordStep({
-					id: this.stepId("agent", `end-${this.turnIndex}`),
-					name: "Agent run completed",
-					stepKind:
-						event.aborted || event.stopReason === "error"
-							? PlatformAgentRunStepKindValue.Error
-							: PlatformAgentRunStepKindValue.System,
-					state:
-						event.aborted || event.stopReason === "error"
-							? PlatformAgentRunStepStateValue.Failed
-							: PlatformAgentRunStepStateValue.Succeeded,
-					output: this.basePayload({
-						event_type: event.type,
-						aborted: event.aborted ?? false,
-						stop_reason: event.stopReason,
-					}),
+				{
+					const stepId = this.stepId("agent", `end-${this.turnIndex}`);
+					this.recordStep({
+						id: stepId,
+						name: "Agent run completed",
+						stepKind:
+							event.aborted || event.stopReason === "error"
+								? PlatformAgentRunStepKindValue.Error
+								: PlatformAgentRunStepKindValue.System,
+						state:
+							event.aborted || event.stopReason === "error"
+								? PlatformAgentRunStepStateValue.Failed
+								: PlatformAgentRunStepStateValue.Succeeded,
+						output: this.basePayload({
+							event_type: event.type,
+							aborted: event.aborted ?? false,
+							stop_reason: event.stopReason,
+						}),
+					});
+					this.recordFinalStatusEvent(event, stepId);
+				}
+				return;
+			case "status":
+				this.recordStatusEvent(event);
+				return;
+			case "compaction":
+				this.recordCompactionEvent(event);
+				return;
+			case "auto_retry_start":
+				this.recordAutoRetryStart(event);
+				return;
+			case "auto_retry_end":
+				this.recordAutoRetryEnd(event);
+				return;
+			case "diagnostic_delta":
+				this.recordDiagnosticDelta(event);
+				return;
+			case "tool_batch_summary":
+				this.recordToolBatchSummary(event);
+				return;
+			case "tool_phase_summary":
+				this.recordToolPhaseSummary(event);
+				return;
+			case "tool_execution_update":
+				this.recordToolExecutionUpdate(event);
+				return;
+			case "tool_retry_required":
+				this.recordApprovalWait({
+					id: event.request.id,
+					callId: event.request.toolCallId,
+					toolName: event.request.toolName,
+					reason: event.request.summary ?? event.request.errorMessage,
+					kind: "tool_retry",
 				});
+				this.recordToolRetryEvent(event);
+				return;
+			case "tool_retry_resolved":
+				this.resumeWait({
+					id: event.request.id,
+					kind: "tool_retry",
+					resolution: event.decision.action,
+					resolvedBy: event.decision.resolvedBy,
+					reason: event.decision.reason,
+				});
+				this.recordToolRetryEvent(event);
 				return;
 			case "turn_start":
 				this.turnIndex += 1;
@@ -621,9 +1163,10 @@ export class HostedAgentRuntimeProgressRecorder {
 				this.recordModelUsageEvent(event.message);
 				return;
 			case "tool_execution_start":
+				this.toolArgsByCallId.set(event.toolCallId, event.args);
 				this.recordStep({
 					id: this.toolStepId(event.toolCallId),
-					name: toolDisplayName(event),
+					name: sanitizedToolDisplayName(event),
 					stepKind: PlatformAgentRunStepKindValue.ToolCallIntent,
 					state: PlatformAgentRunStepStateValue.Running,
 					input: this.basePayload({
@@ -631,8 +1174,8 @@ export class HostedAgentRuntimeProgressRecorder {
 						tool_call_id: event.toolCallId,
 						tool_execution_id: materializedToolExecutionId(event),
 						tool_name: event.toolName,
-						display_name: event.displayName,
-						summary_label: event.summaryLabel,
+						display_name: sanitizeOutboundText(event.displayName),
+						summary_label: sanitizeOutboundText(event.summaryLabel),
 						arg_keys: objectKeys(event.args),
 					}),
 				});
@@ -641,7 +1184,7 @@ export class HostedAgentRuntimeProgressRecorder {
 			case "tool_execution_end":
 				this.recordStep({
 					id: this.toolStepId(event.toolCallId),
-					name: toolDisplayName(event),
+					name: sanitizedToolDisplayName(event),
 					stepKind: event.isError
 						? PlatformAgentRunStepKindValue.Error
 						: PlatformAgentRunStepKindValue.ToolResult,
@@ -657,13 +1200,15 @@ export class HostedAgentRuntimeProgressRecorder {
 						tool_execution_id: materializedToolExecutionId(event),
 						approval_request_id: event.approvalRequestId,
 						tool_name: event.toolName,
-						display_name: event.displayName,
-						summary_label: event.summaryLabel,
+						display_name: sanitizeOutboundText(event.displayName),
+						summary_label: sanitizeOutboundText(event.summaryLabel),
 						error_code: event.errorCode,
 						governed_outcome: event.governedOutcome,
 					}),
 				});
 				this.updateCodexSubagentWorkItem(event);
+				this.recordToolDerivedTaskProgress(event);
+				this.recordToolArtifactEvent(event);
 				return;
 			case "action_approval_required":
 				this.recordApprovalWait({
@@ -695,6 +1240,266 @@ export class HostedAgentRuntimeProgressRecorder {
 		}
 	}
 
+	private recordFinalStatusEvent(
+		event: Extract<AgentEvent, { type: "agent_end" }>,
+		stepId: string,
+	): void {
+		const finalStatus =
+			event.aborted || event.stopReason === "error" ? "failed" : "succeeded";
+		this.recordEvent({
+			type: PlatformRuntimeEventTypeValue.AgentProgressRecorded,
+			message: "Maestro agent final status recorded",
+			stepId,
+			attributes: this.basePayload({
+				event_type: "agent_final_status",
+				final_status: finalStatus,
+				aborted: event.aborted ?? false,
+				stop_reason: event.stopReason,
+				message_count: event.messages.length,
+				partial_accepted: Boolean(event.partialAccepted),
+			}),
+		});
+	}
+
+	private recordStatusEvent(
+		event: Extract<AgentEvent, { type: "status" }>,
+	): void {
+		this.recordEvent({
+			type: PlatformRuntimeEventTypeValue.AgentProgressRecorded,
+			message: "Maestro status recorded",
+			attributes: this.basePayload({
+				event_type: event.type,
+				status: sanitizeOutboundText(event.status, 512),
+				detail_keys: objectKeys(event.details),
+			}),
+		});
+	}
+
+	private recordCompactionEvent(
+		event: Extract<AgentEvent, { type: "compaction" }>,
+	): void {
+		this.recordEvent({
+			type: PlatformRuntimeEventTypeValue.AgentProgressRecorded,
+			message: "Maestro context compaction recorded",
+			attributes: this.basePayload({
+				event_type: event.type,
+				first_kept_entry_index: event.firstKeptEntryIndex,
+				tokens_before: event.tokensBefore,
+				auto: event.auto ?? false,
+				custom_instructions_present: Boolean(event.customInstructions),
+				summary_chars: event.summary.length,
+				timestamp: event.timestamp,
+			}),
+		});
+	}
+
+	private recordAutoRetryStart(
+		event: Extract<AgentEvent, { type: "auto_retry_start" }>,
+	): void {
+		const sequence = this.resolveAutoRetryStartSequence(event.attempt);
+		this.recordStep({
+			id: this.autoRetryStepId(event.attempt, sequence),
+			name: `Auto retry ${event.attempt}`,
+			stepKind: PlatformAgentRunStepKindValue.System,
+			state: PlatformAgentRunStepStateValue.Waiting,
+			input: this.basePayload({
+				event_type: event.type,
+				attempt: event.attempt,
+				max_attempts: event.maxAttempts,
+				delay_ms: event.delayMs,
+				error_message: sanitizeOutboundText(event.errorMessage, 512),
+			}),
+		});
+	}
+
+	private recordAutoRetryEnd(
+		event: Extract<AgentEvent, { type: "auto_retry_end" }>,
+	): void {
+		const sequence = this.resolveAutoRetryEndSequence();
+		this.recordStep({
+			id: this.autoRetryStepId(event.attempt, sequence),
+			name: `Auto retry ${event.attempt}`,
+			stepKind: event.success
+				? PlatformAgentRunStepKindValue.System
+				: PlatformAgentRunStepKindValue.Error,
+			state: event.success
+				? PlatformAgentRunStepStateValue.Succeeded
+				: PlatformAgentRunStepStateValue.Failed,
+			errorMessage: event.success
+				? undefined
+				: sanitizeOutboundText(event.finalError, 512),
+			output: this.basePayload({
+				event_type: event.type,
+				success: event.success,
+				attempt: event.attempt,
+				final_error: sanitizeOutboundText(event.finalError, 512),
+			}),
+		});
+	}
+
+	private recordDiagnosticDelta(
+		event: Extract<AgentEvent, { type: "diagnostic_delta" }>,
+	): void {
+		this.recordEvent({
+			type: PlatformRuntimeEventTypeValue.AgentProgressRecorded,
+			message: "Maestro diagnostic delta recorded",
+			stepId: this.toolStepId(event.toolCallId),
+			attributes: this.basePayload({
+				event_type: event.type,
+				tool_call_id: event.toolCallId,
+				tool_name: event.toolName,
+				display_path: compactString(event.displayPath, 512),
+				used_delta: event.usedDelta,
+				introduced_count: event.introducedCount,
+				repaired_count: event.repairedCount,
+				remaining_count: event.remainingCount,
+				fingerprint: event.fingerprint,
+				repair_attempt: event.repairAttempt,
+				max_repair_attempts: event.maxRepairAttempts,
+				will_auto_follow_up: event.willAutoFollowUp,
+				reason: compactString(event.reason),
+			}),
+		});
+	}
+
+	private recordToolBatchSummary(
+		event: Extract<AgentEvent, { type: "tool_batch_summary" }>,
+	): void {
+		this.recordEvent({
+			type: PlatformRuntimeEventTypeValue.AgentProgressRecorded,
+			message: "Maestro tool batch summary recorded",
+			attributes: this.basePayload({
+				event_type: event.type,
+				summary: sanitizeToolBatchSummaryText(event.summary),
+				summary_labels: sanitizeOutboundTextArray(event.summaryLabels),
+				tool_call_ids: compactStringArray(event.toolCallIds),
+				tool_names: compactStringArray(event.toolNames),
+				calls_succeeded: event.callsSucceeded,
+				calls_failed: event.callsFailed,
+			}),
+		});
+	}
+
+	private recordToolPhaseSummary(
+		event: Extract<AgentEvent, { type: "tool_phase_summary" }>,
+	): void {
+		this.recordEvent({
+			type: PlatformRuntimeEventTypeValue.AgentProgressRecorded,
+			message: "Maestro tool phase summary recorded",
+			attributes: this.basePayload({
+				event_type: event.type,
+				model_tool_call_count: event.modelToolCallCount,
+				model_emitted_tool_call_count: event.modelEmittedToolCallCount,
+				schedulable_wave_count: event.schedulableWaveCount,
+				parallelized_call_count: event.parallelizedCallCount,
+				actually_parallelized_call_count: event.actuallyParallelizedCallCount,
+				serialized_call_count: event.serializedCallCount,
+				delayed_call_count: event.delayedCallCount,
+				blocked_by_mutation_count: event.blockedByMutationCount,
+				mcp_opt_in_call_count: event.mcpOptInCallCount,
+				mcp_opt_in_use_count: event.mcpOptInUseCount,
+				cache_hit_count: event.cacheHitCount,
+				total_tool_wait_ms: event.totalToolWaitMs,
+				tool_wait_time_ms: event.toolWaitTimeMs,
+				serialization_reasons: event.serializationReasons,
+				batch_shaping_feedback: event.batchShapingFeedback,
+			}),
+		});
+	}
+
+	private recordToolExecutionUpdate(
+		event: Extract<AgentEvent, { type: "tool_execution_update" }>,
+	): void {
+		const partialToolExecutionId =
+			materializedToolExecutionId(event) ??
+			materializedToolExecutionId({
+				toolCallId: event.toolCallId,
+				toolExecutionId: event.partialResult.toolExecutionId,
+			});
+		this.recordEvent({
+			type: PlatformRuntimeEventTypeValue.AgentProgressRecorded,
+			message: "Maestro tool execution update recorded",
+			stepId: this.toolStepId(event.toolCallId),
+			attributes: this.basePayload({
+				event_type: event.type,
+				tool_call_id: event.toolCallId,
+				tool_execution_id: partialToolExecutionId,
+				tool_name: event.toolName,
+				display_name: sanitizeOutboundText(event.displayName),
+				summary_label: sanitizeOutboundText(event.summaryLabel),
+				arg_keys: objectKeys(event.args),
+				...toolResultMetrics(event.partialResult),
+			}),
+		});
+	}
+
+	private recordToolArtifactEvent(
+		event: Extract<AgentEvent, { type: "tool_execution_end" }>,
+	): void {
+		const metadata = event.skillMetadata;
+		if (!metadata) {
+			return;
+		}
+		this.recordEvent({
+			type: PlatformRuntimeEventTypeValue.AgentProgressRecorded,
+			message: "Maestro tool artifact evidence recorded",
+			stepId: this.toolStepId(event.toolCallId),
+			artifactId: metadata.artifactId,
+			attributes: this.basePayload({
+				event_type: "tool_artifact_recorded",
+				tool_call_id: event.toolCallId,
+				tool_execution_id: materializedToolExecutionId(event),
+				tool_name: event.toolName,
+				display_name: sanitizeOutboundText(event.displayName),
+				summary_label: sanitizeOutboundText(event.summaryLabel),
+				skill_name: metadata.name,
+				skill_hash: metadata.hash,
+				skill_source: metadata.source,
+				skill_artifact_id: metadata.artifactId,
+				skill_version: metadata.version,
+				skill_scope: metadata.scope,
+				skill_workspace_id: metadata.workspaceId,
+				skill_owner_id: metadata.ownerId,
+				source_path: compactString(metadata.sourcePath, 512),
+			}),
+		});
+	}
+
+	private recordToolRetryEvent(
+		event: Extract<
+			AgentEvent,
+			{ type: "tool_retry_required" | "tool_retry_resolved" }
+		>,
+	): void {
+		this.recordEvent({
+			type: PlatformRuntimeEventTypeValue.AgentProgressRecorded,
+			message:
+				event.type === "tool_retry_required"
+					? "Maestro tool retry required"
+					: "Maestro tool retry resolved",
+			stepId: this.toolStepId(event.request.toolCallId),
+			waitId: this.waitId(event.request.id),
+			attributes: this.basePayload({
+				event_type: event.type,
+				request_id: event.request.id,
+				tool_call_id: event.request.toolCallId,
+				tool_name: event.request.toolName,
+				error_message: sanitizeOutboundText(event.request.errorMessage, 512),
+				summary: sanitizeOutboundText(event.request.summary, 512),
+				attempt: event.request.attempt,
+				max_attempts: event.request.maxAttempts,
+				arg_keys: objectKeys(event.request.args),
+				...(event.type === "tool_retry_resolved"
+					? {
+							resolution: event.decision.action,
+							resolved_by: event.decision.resolvedBy,
+							reason: sanitizeOutboundText(event.decision.reason, 512),
+						}
+					: {}),
+			}),
+		});
+	}
+
 	recordServerRequestEvent(event: ServerRequestLifecycleEvent): void {
 		if (event.type === "registered") {
 			this.recordApprovalWait({
@@ -721,16 +1526,277 @@ export class HostedAgentRuntimeProgressRecorder {
 	}
 
 	recordPromptFailure(message: string): void {
+		const stepId = this.stepId("error", `${Date.now()}`);
 		this.recordStep({
-			id: this.stepId("error", `${Date.now()}`),
+			id: stepId,
 			name: "Prompt failed",
 			stepKind: PlatformAgentRunStepKindValue.Error,
 			state: PlatformAgentRunStepStateValue.Failed,
-			errorMessage: message,
+			errorMessage: sanitizeOutboundText(message),
 			output: this.basePayload({
 				event_type: "prompt_failure",
 			}),
 		});
+		this.recordEvent({
+			type: PlatformRuntimeEventTypeValue.AgentProgressRecorded,
+			message: "Maestro prompt failure recorded",
+			stepId,
+			attributes: this.basePayload({
+				event_type: "prompt_failure",
+				error_message: sanitizeOutboundText(message),
+			}),
+		});
+	}
+
+	recordTaskProgressEvent(event: HostedAgentRuntimeTaskProgressEvent): void {
+		const runId = nonEmptyString(this.hostedRunner?.agentRunId);
+		if (!this.hostedRunner?.enabled || !runId) {
+			return;
+		}
+		const taskId = this.taskProgressId(event.source, event.id);
+		const parentWorkItemId = event.parentId
+			? this.taskProgressId(event.source, event.parentId)
+			: undefined;
+		const evidenceRefs = [
+			`maestro-task:${event.source}:${event.id}`,
+			...(event.toolCallId ? [`tool-call:${event.toolCallId}`] : []),
+			...(event.toolExecutionId
+				? [`tool-execution:${event.toolExecutionId}`]
+				: []),
+			...(event.evidenceRefs ?? []),
+		];
+		const state = taskWorkItemState(event.status);
+		const payload = this.basePayload({
+			event_type: "maestro_task_progress",
+			task_source: event.source,
+			task_id: event.id,
+			task_status: event.status,
+			parent_task_id: event.parentId,
+			owner_child_run_id: event.ownerChildRunId,
+			tool_call_id: event.toolCallId,
+			tool_execution_id: event.toolExecutionId,
+			approval_request_id: event.approvalRequestId,
+			title: compactString(event.title),
+			goal: compactString(event.goal, 512),
+			next_action: compactString(event.nextAction),
+			blocker: compactString(event.blocker),
+			...event.payload,
+		});
+		this.enqueue(async () => {
+			const updateWorkItem = () =>
+				this.operations.updateWorkItem({
+					runId,
+					workItemId: taskId,
+					state,
+					...(event.nextAction
+						? { nextAction: compactString(event.nextAction) }
+						: {}),
+					...(event.blocker ? { blocker: compactString(event.blocker) } : {}),
+					...(event.toolExecutionId
+						? { toolExecutionId: event.toolExecutionId }
+						: {}),
+					evidenceRefs,
+					completionGate:
+						event.completionGate ?? "maestro_task_progress_recorded",
+					payload,
+				});
+			if (this.recordedTaskWorkItemIds.has(taskId)) {
+				await updateWorkItem();
+				return;
+			}
+			const workItem = {
+				id: taskId,
+				runId,
+				...(parentWorkItemId ? { parentWorkItemId } : {}),
+				...(event.ownerChildRunId
+					? { ownerChildRunId: event.ownerChildRunId }
+					: {}),
+				kind: event.workItemKind ?? defaultTaskWorkItemKind(event.source),
+				state,
+				title: compactString(event.title),
+				...(event.goal ? { goal: compactString(event.goal, 512) } : {}),
+				...(event.nextAction
+					? { nextAction: compactString(event.nextAction) }
+					: {}),
+				...(event.blocker ? { blocker: compactString(event.blocker) } : {}),
+				...(event.toolExecutionId
+					? { toolExecutionId: event.toolExecutionId }
+					: {}),
+				evidenceRefs,
+				completionGate:
+					event.completionGate ?? "maestro_task_progress_recorded",
+				payload,
+			};
+			try {
+				await this.operations.recordWorkItem({
+					runId,
+					workItem,
+				});
+			} catch (error) {
+				if (!isExistingWorkItemCreateError(error)) {
+					throw error;
+				}
+				await updateWorkItem();
+			}
+			this.recordedTaskWorkItemIds.add(taskId);
+		});
+		this.recordEvent({
+			type: PlatformRuntimeEventTypeValue.AgentProgressRecorded,
+			message: `Maestro ${event.source} task ${event.status}`,
+			stepId: shouldRecordTaskStep(event) ? taskId : undefined,
+			attributes: payload,
+		});
+		if (!shouldRecordTaskStep(event)) {
+			return;
+		}
+		const stepState = taskStepState(event.status);
+		const stepKind =
+			event.stepKind ?? defaultTaskStepKind(event.source, event.status);
+		this.recordStep({
+			id: taskId,
+			name: compactString(event.title),
+			stepKind,
+			state: stepState,
+			errorMessage: event.status === "failed" ? event.errorMessage : undefined,
+			...(stepState === PlatformAgentRunStepStateValue.Running ||
+			stepState === PlatformAgentRunStepStateValue.Waiting ||
+			stepState === PlatformAgentRunStepStateValue.Pending
+				? { input: payload }
+				: { output: payload }),
+		});
+	}
+
+	recordSwarmEvent(event: SwarmEvent): void {
+		switch (event.type) {
+			case "swarm_start":
+				this.recordTaskProgressEvent({
+					source: "swarm",
+					id: event.swarmId,
+					status: "running",
+					title: `Swarm ${event.swarmId}`,
+					goal: compactString(event.config.planFile, 512),
+					workItemKind: PlatformAgentWorkItemKindValue.Root,
+					nextAction: "coordinate swarm teammates",
+					payload: {
+						swarm_id: event.swarmId,
+						teammate_count: event.config.teammateCount,
+						task_count: event.config.tasks.length,
+						mode: event.config.mode,
+						model: event.config.model,
+						model_provider: event.config.modelProvider,
+						subagent_type: event.config.subagentType,
+						reasoning_effort: event.config.reasoningEffort,
+						continue_on_failure: event.config.continueOnFailure,
+					},
+				});
+				return;
+			case "task_start":
+				this.recordTaskProgressEvent({
+					source: "swarm",
+					id: `${event.swarmId}:task:${event.task.id}`,
+					parentId: event.swarmId,
+					status: "running",
+					title: `Swarm task ${event.task.id}`,
+					goal: taskPromptSummary(event.task),
+					workItemKind: PlatformAgentWorkItemKindValue.ChildRun,
+					ownerChildRunId: `swarm:${event.swarmId}:teammate:${event.teammateId}`,
+					nextAction: "wait for teammate task completion",
+					payload: {
+						swarm_id: event.swarmId,
+						teammate_id: event.teammateId,
+						task_id: event.task.id,
+						file_count: event.task.files?.length ?? 0,
+						depends_on: event.task.dependsOn,
+						model: event.task.model,
+						subagent_type: event.task.subagentType,
+						priority: event.task.priority,
+					},
+				});
+				return;
+			case "task_complete":
+				this.recordTaskProgressEvent({
+					source: "swarm",
+					id: `${event.swarmId}:task:${event.taskId}`,
+					parentId: event.swarmId,
+					status: "succeeded",
+					title: `Swarm task ${event.taskId}`,
+					workItemKind: PlatformAgentWorkItemKindValue.ChildRun,
+					ownerChildRunId: `swarm:${event.swarmId}:teammate:${event.teammateId}`,
+					payload: {
+						swarm_id: event.swarmId,
+						teammate_id: event.teammateId,
+						task_id: event.taskId,
+						output_bytes: Buffer.byteLength(event.output, "utf8"),
+					},
+				});
+				return;
+			case "task_fail":
+				this.recordTaskProgressEvent({
+					source: "swarm",
+					id: `${event.swarmId}:task:${event.taskId}`,
+					parentId: event.swarmId,
+					status: "failed",
+					title: `Swarm task ${event.taskId}`,
+					workItemKind: PlatformAgentWorkItemKindValue.ChildRun,
+					ownerChildRunId: `swarm:${event.swarmId}:teammate:${event.teammateId}`,
+					errorMessage: event.error,
+					payload: {
+						swarm_id: event.swarmId,
+						teammate_id: event.teammateId,
+						task_id: event.taskId,
+						error: compactString(event.error, 512),
+					},
+				});
+				return;
+			case "swarm_complete":
+				this.recordTaskProgressEvent({
+					source: "swarm",
+					id: event.swarmId,
+					status: swarmCompletionStatus(event),
+					title: `Swarm ${event.swarmId}`,
+					workItemKind: PlatformAgentWorkItemKindValue.Root,
+					errorMessage: event.state.error,
+					payload: {
+						swarm_id: event.swarmId,
+						swarm_status: event.state.status,
+						completed_task_count: event.state.completedTasks.size,
+						failed_task_count: event.state.failedTasks.size,
+						teammate_count: event.state.teammates.length,
+						error: compactString(event.state.error, 512),
+					},
+				});
+				return;
+			case "swarm_fail":
+				this.recordTaskProgressEvent({
+					source: "swarm",
+					id: event.swarmId,
+					status: "failed",
+					title: `Swarm ${event.swarmId}`,
+					workItemKind: PlatformAgentWorkItemKindValue.Root,
+					errorMessage: event.error,
+					payload: {
+						swarm_id: event.swarmId,
+						error: compactString(event.error, 512),
+					},
+				});
+				return;
+			case "teammate_spawn":
+			case "teammate_complete":
+				this.recordEvent({
+					type: PlatformRuntimeEventTypeValue.AgentProgressRecorded,
+					message: `Maestro swarm ${event.type}`,
+					attributes: this.basePayload({
+						event_type: "maestro_swarm_teammate_progress",
+						swarm_id: event.swarmId,
+						swarm_event_type: event.type,
+						teammate_id: event.teammate.id,
+						teammate_name: compactString(event.teammate.name),
+						teammate_status: event.teammate.status,
+						completed_task_count: event.teammate.completedTasks.length,
+					}),
+				});
+				return;
+		}
 	}
 
 	async flush(): Promise<void> {
@@ -853,14 +1919,14 @@ export class HostedAgentRuntimeProgressRecorder {
 					stepId: this.toolStepId(input.callId),
 					type: waitTypeForRequest(input.kind ?? "approval"),
 					externalRef: input.id,
-					reason: input.reason,
+					reason: sanitizeOutboundText(input.reason),
 					payload: this.basePayload({
 						request_id: input.id,
 						request_type: input.kind ?? "approval",
 						call_id: input.callId,
 						tool_name: input.toolName,
-						display_name: input.displayName,
-						summary_label: input.summaryLabel,
+						display_name: sanitizeOutboundText(input.displayName),
+						summary_label: sanitizeOutboundText(input.summaryLabel),
 						started_at_ms: input.startedAtMs,
 					}),
 				},
@@ -906,7 +1972,7 @@ export class HostedAgentRuntimeProgressRecorder {
 					request_type: input.kind,
 					resolution: input.resolution,
 					resolved_by: input.resolvedBy,
-					reason: input.reason,
+					reason: sanitizeOutboundText(input.reason),
 					started_at_ms: input.startedAtMs,
 					resolved_at_ms: input.resolvedAtMs,
 				}),
@@ -1083,6 +2149,8 @@ export class HostedAgentRuntimeProgressRecorder {
 		}
 		const toolExecutionId = materializedToolExecutionId(event);
 		const prompt = nonEmptyString(event.args.prompt);
+		const sanitizedPrompt = sanitizeOutboundText(prompt);
+		const delegationPrompt = sanitizeDelegationPrompt(prompt);
 		const model = nonEmptyString(event.args.model);
 		const reasoningEffort = nonEmptyString(event.args.reasoningEffort);
 		const codexSubagentOperationName = codexSubagentOperation(codexTool);
@@ -1099,8 +2167,8 @@ export class HostedAgentRuntimeProgressRecorder {
 				codexTool === "wait"
 					? PlatformAgentWorkItemStateValue.Waiting
 					: PlatformAgentWorkItemStateValue.Running,
-			title: toolDisplayName(event),
-			...(prompt ? { goal: prompt } : {}),
+			title: sanitizedToolDisplayName(event),
+			...(sanitizedPrompt ? { goal: sanitizedPrompt } : {}),
 			nextAction: codexSubagentNextAction(codexTool),
 			...(toolExecutionId ? { toolExecutionId } : {}),
 			evidenceRefs: [
@@ -1114,8 +2182,8 @@ export class HostedAgentRuntimeProgressRecorder {
 				codex_tool: codexTool,
 				tool_call_id: event.toolCallId,
 				tool_name: event.toolName,
-				display_name: event.displayName,
-				summary_label: event.summaryLabel,
+				display_name: sanitizeOutboundText(event.displayName),
+				summary_label: sanitizeOutboundText(event.summaryLabel),
 				codex_subagent_operation: codexSubagentOperationName,
 				codex_subagent_edge_status: activeCodexSubagentEdgeStatus(codexTool),
 				sender_thread_id: nonEmptyString(event.args.senderThreadId),
@@ -1143,7 +2211,7 @@ export class HostedAgentRuntimeProgressRecorder {
 				childRunIds,
 				linkedWorkItemIds,
 				workGraph,
-				prompt,
+				prompt: delegationPrompt,
 				model,
 				reasoningEffort,
 			});
@@ -1189,8 +2257,8 @@ export class HostedAgentRuntimeProgressRecorder {
 					owner_child_run_id: input.ownerChildRunId,
 					tool_call_id: input.event.toolCallId,
 					tool_name: input.event.toolName,
-					display_name: input.event.displayName,
-					summary_label: input.event.summaryLabel,
+					display_name: sanitizeOutboundText(input.event.displayName),
+					summary_label: sanitizeOutboundText(input.event.summaryLabel),
 					from_agent_id: fromAgentId,
 					to_agent_id: toAgentId,
 					required_capability: requiredCapability,
@@ -1306,8 +2374,8 @@ export class HostedAgentRuntimeProgressRecorder {
 						codex_tool: codexTool,
 						tool_call_id: event.toolCallId,
 						tool_name: event.toolName,
-						display_name: event.displayName,
-						summary_label: event.summaryLabel,
+						display_name: sanitizeOutboundText(event.displayName),
+						summary_label: sanitizeOutboundText(event.summaryLabel),
 						codex_subagent_operation: codexSubagentOperationName,
 						codex_subagent_edge_status: codexSubagentEdgeStatus,
 						error_code: event.errorCode,
@@ -1457,6 +2525,130 @@ export class HostedAgentRuntimeProgressRecorder {
 		return Array.from(new Set(linked));
 	}
 
+	private recordToolDerivedTaskProgress(
+		event: Extract<AgentEvent, { type: "tool_execution_end" }>,
+	): void {
+		const args = this.toolArgsByCallId.get(event.toolCallId);
+		this.toolArgsByCallId.delete(event.toolCallId);
+		if (event.isError) {
+			return;
+		}
+		if (event.toolName === "todo") {
+			this.recordTodoTaskProgress(event, args);
+			return;
+		}
+		if (event.toolName === "background_tasks" || event.toolName === "bash") {
+			this.recordBackgroundTaskProgress(event, args);
+		}
+	}
+
+	private recordTodoTaskProgress(
+		event: Extract<AgentEvent, { type: "tool_execution_end" }>,
+		args: Record<string, unknown> | undefined,
+	): void {
+		const details = isRecord(event.result.details)
+			? event.result.details
+			: undefined;
+		if (!details) {
+			return;
+		}
+		const rawGoal = nonEmptyString(args?.goal)?.trim();
+		const goal = compactString(rawGoal, 512);
+		const goalHash = rawGoal ? stableShortHash(rawGoal) : undefined;
+		for (const item of recordArray(details.items)) {
+			const id = compactString(item.id, 128);
+			const content = compactString(item.content, 512);
+			if (!id || !content) {
+				continue;
+			}
+			const scopedId = goalScopedTodoId(id, rawGoal);
+			const blockedBy = stringArray(item.blockedBy);
+			const status = todoStatusToTaskStatus(item.status);
+			this.recordTaskProgressEvent({
+				source: "todo",
+				id: scopedId,
+				status,
+				title: content,
+				goal,
+				toolCallId: event.toolCallId,
+				toolExecutionId: materializedToolExecutionId(event),
+				completionGate: "todo_status_projected",
+				nextAction:
+					status === "pending"
+						? "wait for task to start"
+						: status === "running"
+							? "complete the active task"
+							: "task completed",
+				blocker: blockedBy.length > 0 ? blockedBy.join(", ") : undefined,
+				payload: {
+					task_id: id,
+					todo_id: id,
+					todo_scope: rawGoal ? "goal" : "session",
+					todo_goal_hash: goalHash,
+					todo_status: compactString(item.status),
+					priority: compactString(item.priority),
+					blocked_by: blockedBy,
+					due: compactString(item.due),
+				},
+			});
+		}
+	}
+
+	private recordBackgroundTaskProgress(
+		event: Extract<AgentEvent, { type: "tool_execution_end" }>,
+		args: Record<string, unknown> | undefined,
+	): void {
+		const details = event.result.details;
+		const candidates = Array.isArray(details)
+			? recordArray(details)
+			: isRecord(details)
+				? [details]
+				: [];
+		for (const detail of candidates) {
+			const id = compactString(detail.id ?? detail.taskId, 128);
+			if (!id) {
+				continue;
+			}
+			const statusLabel = compactString(detail.status, 64);
+			if (!statusLabel) {
+				continue;
+			}
+			const command = compactString(detail.command ?? args?.command, 512);
+			const status = backgroundStatusToTaskStatus(statusLabel);
+			this.recordTaskProgressEvent({
+				source: "background",
+				id,
+				status,
+				title: command
+					? `Background task: ${command}`
+					: `Background task ${id}`,
+				toolCallId: event.toolCallId,
+				toolExecutionId: materializedToolExecutionId(event),
+				completionGate: "background_task_status_projected",
+				nextAction:
+					status === "running"
+						? "monitor or stop the background task"
+						: "inspect task result if needed",
+				errorMessage: compactString(detail.failureReason, 512),
+				payload: {
+					background_task_id: id,
+					background_task_status: statusLabel,
+					command_summary: command,
+					cwd: compactString(detail.cwd, 512),
+					pid: typeof detail.pid === "number" ? detail.pid : undefined,
+					shell_mode: compactString(detail.shellMode, 64),
+					restart_attempts: finiteNumber(detail.restartAttempts),
+					restart_max_attempts: finiteNumber(detail.restartMaxAttempts),
+					log_truncated:
+						typeof detail.logTruncated === "boolean"
+							? detail.logTruncated
+							: undefined,
+					monitoring_mode: compactString(detail.monitoringMode, 64),
+				},
+			});
+		}
+	}
+
 	private enqueue(operation: ProgressOperation): void {
 		this.pending = this.pending.then(operation, operation).then(
 			() => {},
@@ -1515,12 +2707,46 @@ export class HostedAgentRuntimeProgressRecorder {
 		return `maestro:${safeIdPart(this.sessionId)}:${kind}:${safeIdPart(id)}`;
 	}
 
+	private taskProgressId(
+		source: HostedAgentRuntimeTaskSource,
+		id: string,
+	): string {
+		return this.stepId(source, id);
+	}
+
 	private toolStepId(toolCallId: string): string {
 		return this.stepId("tool", toolCallId);
 	}
 
 	private workItemId(toolCallId: string): string {
 		return this.stepId("work", toolCallId);
+	}
+
+	private resolveAutoRetryStartSequence(attempt: number): number {
+		if (
+			this.activeAutoRetrySequence === null ||
+			attempt <= this.lastAutoRetryAttempt
+		) {
+			this.autoRetrySequence += 1;
+			this.activeAutoRetrySequence = this.autoRetrySequence;
+		}
+		this.lastAutoRetryAttempt = attempt;
+		return this.activeAutoRetrySequence;
+	}
+
+	private resolveAutoRetryEndSequence(): number {
+		if (this.activeAutoRetrySequence === null) {
+			this.autoRetrySequence += 1;
+			this.activeAutoRetrySequence = this.autoRetrySequence;
+		}
+		const sequence = this.activeAutoRetrySequence;
+		this.activeAutoRetrySequence = null;
+		this.lastAutoRetryAttempt = 0;
+		return sequence;
+	}
+
+	private autoRetryStepId(attempt: number, sequence: number): string {
+		return this.stepId("retry", `auto-${sequence}-attempt-${attempt}`);
 	}
 
 	private waitId(requestId: string): string {

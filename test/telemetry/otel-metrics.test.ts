@@ -48,6 +48,12 @@ describe("Maestro OTel metrics catalog", () => {
 			"compaction.triggered",
 			"llm.request_count",
 			"llm.tokens_used",
+			"agent.a2a.delegation_count",
+			"agent.a2a.dispatch_latency",
+			"agent.a2a.task_duration",
+			"agent.a2a.push_lag",
+			"agent.a2a.policy_denial_count",
+			"agent.a2a.peer_exclusion_count",
 		]);
 		expect(createUpDownCounter).not.toHaveBeenCalled();
 		expect(createCounter).toHaveBeenCalledWith(
@@ -67,6 +73,14 @@ describe("Maestro OTel metrics catalog", () => {
 		expect(createCounter).toHaveBeenCalledWith("llm.tokens_used", {
 			description: "Tokens consumed by direction",
 			unit: undefined,
+		});
+		expect(createCounter).toHaveBeenCalledWith("agent.a2a.delegation_count", {
+			description: "A2A delegation lifecycle observations by phase and outcome",
+			unit: undefined,
+		});
+		expect(createHistogram).toHaveBeenCalledWith("agent.a2a.dispatch_latency", {
+			description: "A2A dispatch latency",
+			unit: "ms",
 		});
 	});
 
@@ -139,6 +153,27 @@ describe("Maestro OTel metrics catalog", () => {
 				cacheWrite: 2,
 			},
 		});
+		metrics.recordA2ADelegationMetric({
+			phase: "task_completed",
+			source: "platform-agent-registry",
+			success: true,
+			status: "TASK_STATE_COMPLETED",
+			skillId: "maestro.subagent.code-review",
+			taskClass: "code.review",
+			latencyMs: 11,
+			taskDurationMs: 450,
+			pushLagMs: 25,
+		});
+		metrics.recordA2APolicyDenialMetric({
+			source: "platform-agent-registry",
+			reason: "denied_task_class",
+			taskClass: "credential.materialization",
+		});
+		metrics.recordA2APeerExclusionMetric({
+			source: "platform-agent-registry",
+			reason: "stale_heartbeat",
+			taskClass: "code.review",
+		});
 
 		expect(
 			counters.get("tool_service.invocation_count")?.add,
@@ -194,6 +229,57 @@ describe("Maestro OTel metrics catalog", () => {
 		expect(counters.get("llm.tokens_used")?.add).toHaveBeenCalledWith(
 			10,
 			expect.objectContaining({ "llm.token.direction": "input" }),
+		);
+		expect(
+			counters.get("agent.a2a.delegation_count")?.add,
+		).toHaveBeenCalledWith(
+			1,
+			expect.objectContaining({
+				"maestro.a2a.phase": "task_completed",
+				"maestro.a2a.source": "platform-agent-registry",
+				"maestro.a2a.status": "TASK_STATE_COMPLETED",
+				"maestro.a2a.success": true,
+				"maestro.a2a.skill_id": "maestro.subagent.code-review",
+				"maestro.a2a.task_class": "code.review",
+			}),
+		);
+		expect(
+			histograms.get("agent.a2a.dispatch_latency")?.record,
+		).toHaveBeenCalledWith(
+			11,
+			expect.objectContaining({ "maestro.a2a.phase": "task_completed" }),
+		);
+		expect(
+			histograms.get("agent.a2a.task_duration")?.record,
+		).toHaveBeenCalledWith(
+			450,
+			expect.objectContaining({
+				"maestro.a2a.skill_id": "maestro.subagent.code-review",
+			}),
+		);
+		expect(histograms.get("agent.a2a.push_lag")?.record).toHaveBeenCalledWith(
+			25,
+			expect.objectContaining({
+				"maestro.a2a.source": "platform-agent-registry",
+			}),
+		);
+		expect(
+			counters.get("agent.a2a.policy_denial_count")?.add,
+		).toHaveBeenCalledWith(
+			1,
+			expect.objectContaining({
+				"maestro.a2a.reason": "denied_task_class",
+				"maestro.a2a.task_class": "credential.materialization",
+			}),
+		);
+		expect(
+			counters.get("agent.a2a.peer_exclusion_count")?.add,
+		).toHaveBeenCalledWith(
+			1,
+			expect.objectContaining({
+				"maestro.a2a.reason": "stale_heartbeat",
+				"maestro.a2a.task_class": "code.review",
+			}),
 		);
 	});
 });

@@ -126,6 +126,19 @@ describe("tool execution retry", () => {
 		expect(outcome.isError).toBe(true);
 	});
 
+	it("attaches deterministic ToolExecution metadata without a Platform bridge", async () => {
+		const tool = makeServerTool({
+			execute: async () => ok,
+		});
+
+		const outcome = await createToolExecutionPromise(makeCtx(tool));
+
+		expect(outcome.toolExecutionId).toBe("local-tool-exec-call_test");
+		expect(outcome.message.details).toMatchObject({
+			toolExecutionId: "local-tool-exec-call_test",
+		});
+	});
+
 	it("falls back to transport maxAutoRetries when tool defines only shouldRetry", async () => {
 		let calls = 0;
 		const tool = makeServerTool({

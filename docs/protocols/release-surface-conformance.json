@@ -1,0 +1,256 @@
+{
+	"version": 1,
+	"description": "Conformance anchors for Maestro public release, registry install, package metadata, public docs, and mirror surfaces that must not drift silently.",
+	"checks": [
+		{
+			"area": "public-install-docs",
+			"path": "README.md",
+			"evidenceType": "doc",
+			"anchors": [
+				"bun install -g @evalops/maestro",
+				"npm install -g @evalops/maestro",
+				"@evalops/maestro@latest",
+				"@evalops/tui",
+				"@evalops/contracts",
+				"deprecated 0.10.8-0.10.20 package",
+				"referenced private workspace dependencies",
+				"published release verification now runs npm and Bun",
+				"npm run smoke:local-e2e"
+			]
+		},
+		{
+			"area": "package-metadata",
+			"path": "package.json",
+			"evidenceType": "package-script",
+			"anchors": [
+				"\"name\": \"@evalops/maestro\"",
+				"\"private\": false",
+				"\"bin\": {",
+				"\"maestroRuntimeWorkspaces\""
+			]
+		},
+		{
+			"area": "release-gate-scripts",
+			"path": "package.json",
+			"evidenceType": "package-script",
+			"anchors": [
+				"\"release:check\": \"node scripts/release-readiness.js release\"",
+				"\"verify:runtime-deps\"",
+				"\"smoke:pack\": \"node scripts/smoke-packed-cli.js\"",
+				"\"check:release-surface\": \"node scripts/check-release-surface-conformance.mjs\""
+			]
+		},
+		{
+			"area": "forbidden-workspace-deps",
+			"path": "scripts/validate-public-package-deps.js",
+			"evidenceType": "source",
+			"anchors": [
+				"private workspace packages",
+				"vendored runtime workspace packages as install-time dependencies",
+				"Keep runtime workspace packages vendored under dist/node_modules only"
+			]
+		},
+		{
+			"area": "packed-runtime-workspaces",
+			"path": "scripts/check-packed-bundled-workspaces.mjs",
+			"evidenceType": "source",
+			"anchors": [
+				"package/dist/node_modules/${name}/package.json",
+				"without registry dependency metadata",
+				"npm pack"
+			]
+		},
+		{
+			"area": "installed-package-audit",
+			"path": "scripts/install-smoke-utils.js",
+			"evidenceType": "source",
+			"anchors": [
+				"assertInstallablePackageMetadata",
+				"workspaceProtocolReferences",
+				"runInstalledPackageAudit",
+				"runBunxCliSmoke"
+			]
+		},
+		{
+			"area": "registry-install-smoke",
+			"path": "scripts/smoke-registry-install.js",
+			"evidenceType": "live-smoke",
+			"anchors": [
+				"[\"install\", packageSpec]",
+				"[\"add\", packageSpec]",
+				"runPublishedReplayE2E",
+				"runNpxCliSmoke",
+				"runBunxCliSmoke",
+				"runBunRuntimeCliSmoke",
+				"MAESTRO_ALLOW_REGISTRY_BUN_INSTALL_SMOKE_SKIP"
+			]
+		},
+		{
+			"area": "release-observability-query-contract",
+			"path": "scripts/release-observability-query-contract.js",
+			"evidenceType": "source",
+			"anchors": [
+				"RELEASE_OBSERVABILITY_QUERY_SCHEMA",
+				"REQUIRED_OBSERVABILITY_QUERY_TRACES",
+				"export function releaseObservabilityQueryDescriptor",
+				"export function releaseObservabilityQueryDescriptorIsValid",
+				"agent-runtime-lifecycle",
+				"final-status"
+			]
+		},
+		{
+			"area": "published-replay-e2e",
+			"path": "scripts/smoke-published-replay-e2e.js",
+			"evidenceType": "live-smoke",
+			"anchors": [
+				"PUBLISHED_REPLAY_EVIDENCE_SCHEMA",
+				"PUBLISHED_REPLAY_TRANSCRIPT_SCHEMA",
+				"buildPublishedReplayProviderConfig",
+				"transcriptEvidence",
+				"searchRipgrepEvidence",
+				"toolExecutionEvidence",
+				"queryableObservabilityIndex",
+				"releaseObservabilityQueryDescriptor",
+				"releaseObservabilityQueryDescriptorIsValid",
+				"SEARCH_TOOL_CALL_ID",
+				"errorTraceEvidence",
+				"observability.errors",
+				"observability.search",
+				"toolExecutionRefs",
+				"toolExecutionRefsByCallId",
+				"toolExecutionModesByCallId",
+				"observability.queryIndex",
+				"mode: \"text\"",
+				"mode: \"json\"",
+				"mode: \"rpc\"",
+				"agentRuntimeLedger"
+			]
+		},
+		{
+			"area": "published-replay-evidence-verifier",
+			"path": "scripts/verify-published-replay-evidence.js",
+			"evidenceType": "source",
+			"anchors": [
+				"const REQUIRED_INSTALLERS = [\"npm\", \"bun\"];",
+				"const REQUIRED_REPLAY_MODES = [\"json\", \"rpc\", \"text\"];",
+				"\"toolExecutionEvidence\"",
+				"\"searchRipgrepEvidence\"",
+				"\"queryableObservabilityIndex\"",
+				"\"agentRuntimeLedger\"",
+				"\"agentRuntimeLifecycle\"",
+				"\"agent-runtime-lifecycle\"",
+				"function releaseQueryDescriptorIsValid",
+				"releaseObservabilityQueryDescriptorIsValid",
+				"function toolExecutionCoverageIsValid",
+				"function agentRuntimeLifecycleIsValid",
+				"assertPublishedReplayReleaseGate(evidence);"
+			]
+		},
+		{
+			"area": "published-replay-release-gate",
+			"path": "scripts/published-replay-evidence-gate.js",
+			"evidenceType": "source",
+			"anchors": [
+				"export function assertPublishedReplayReleaseGate",
+				"evidence?.releaseGate?.satisfied === true",
+				"Published replay release gate failed"
+			]
+		},
+		{
+			"area": "release-readiness",
+			"path": "scripts/release-readiness.js",
+			"evidenceType": "source",
+			"anchors": [
+				"runPackSmoke",
+				"npm run verify:runtime-deps",
+				"smoke:exec-replay-e2e",
+				"runReleaseChecks"
+			]
+		},
+		{
+			"area": "release-workflow",
+			"path": ".github/workflows/release.yml",
+			"evidenceType": "source",
+			"anchors": [
+				"npm run release:check",
+				"npm run verify:runtime-deps",
+				"npm pack --json",
+				"Create GitHub release"
+			]
+		},
+		{
+			"area": "tag-release-workflow",
+			"path": ".github/workflows/tag-release.yml",
+			"evidenceType": "source",
+			"anchors": [
+				"Check npm registry release",
+				"Verify already-published package from registry",
+				"node scripts/smoke-registry-install.js",
+				"node scripts/verify-published-replay-evidence.js --evidence-dir tag-release-published-replay-evidence",
+				"MAESTRO_REGISTRY_POLL_ATTEMPTS: \"1\"",
+				"tag-release-published-replay-evidence"
+			]
+		},
+		{
+			"area": "public-mirror-workflow",
+			"path": ".github/workflows/public-release-mirror.yml",
+			"evidenceType": "source",
+			"anchors": [
+				"Prepare sanitized public release tree",
+				"Sync release mirror helper files",
+				"scripts/sync-release-mirror.mjs",
+				"Validate mirrored public tree",
+				"Publish public npm package fallback",
+				"npm publish"
+			]
+		},
+		{
+			"area": "public-mirror-package-scripts",
+			"path": "scripts/prepare-public-release-mirror.mjs",
+			"evidenceType": "source",
+			"anchors": [
+				"pkg.scripts[\"release:verify:published\"] =",
+				"\"node scripts/smoke-registry-install.js\";",
+				"pkg.scripts[\"release:verify:published:e2e\"] =",
+				"\"node scripts/smoke-published-replay-e2e.js\";",
+				"pkg.scripts[\"release:verify:published:evidence\"] =",
+				"\"node scripts/verify-published-replay-evidence.js\";",
+				"pkg.scripts[\"release:deprecate\"] = \"node scripts/deprecate-release.js\";"
+			]
+		},
+		{
+			"area": "public-mirror-contract",
+			"path": "scripts/check-release-mirror-contract.mjs",
+			"evidenceType": "source",
+			"anchors": [
+				".github/release-mirror-manifest.json",
+				"requiredCommandSuiteFiles",
+				"forbiddenReleaseMirrorFileMessages",
+				"requiredReleaseReplayHelperFiles",
+				"Release mirror contract is valid."
+			]
+		},
+		{
+			"area": "prepared-public-mirror",
+			"path": "scripts/check-prepared-public-mirror-tree.mjs",
+			"evidenceType": "source",
+			"anchors": [
+				".github/public-release-mirror.exclude must not exist",
+				"scripts/check-public-surface-boundary.mjs",
+				"Prepared public mirror tree smoke passed."
+			]
+		},
+		{
+			"area": "release-surface-docs",
+			"path": "docs/protocols/release-surface-conformance.md",
+			"evidenceType": "doc",
+			"anchors": [
+				"npm run check:release-surface",
+				"public install docs",
+				"registry install smokes",
+				"public-only published verification scripts",
+				"public mirror"
+			]
+		}
+	]
+}

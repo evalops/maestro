@@ -69,12 +69,11 @@ import {
 	isWorkflowTrackedTool,
 } from "../safety/workflow-state.js";
 import {
-	type SkillArtifactMetadata,
-	getSkillArtifactMetadataFromDetails,
-} from "../skills/artifact-metadata.js";
-import {
-	getOptimalConcurrency,
+	type PathScopedMutation,
+	getPathScopedMutation,
+	isParallelSafeTool,
 	isReadOnlyTool,
+	pathScopesOverlap,
 } from "../tools/parallel-execution.js";
 import { trackUsage } from "../tracking/cost-tracker.js";
 import { getTrainingHeaders } from "../training.js";
@@ -82,15 +81,34 @@ import type { ActionApprovalService } from "./action-approval.js";
 import { getStoredCredentials } from "./keys.js";
 import type { ToolRetryConfig, ToolRetryService } from "./tool-retry.js";
 import { createProviderStream } from "./transport/create-provider-stream.js";
-import { stableStringify } from "./transport/stable-stringify.js";
 import {
-	type ObserveToolExecutionPlan,
-	type PlatformToolExecutionBridge,
-	type ToolExecutionBridgePlan,
-	buildObservedResultMetadata,
-	getDefaultPlatformToolExecutionBridge,
-} from "./transport/tool-execution-bridge.js";
+	AgentEventQueue,
+	getGovernedToolResultEventMetadata,
+	getSkillToolResultEventMetadata,
+	isDynamicToolApprovalEvent,
+} from "./transport/events.js";
+import {
+	type ReusableToolResultCacheGeneration,
+	type ReusableToolResultEntry,
+	clearReusableToolResultState,
+	clearRunScopedReusableToolResultState,
+	cloneToolOutcomeForCall,
+	computeReusableToolResultSnapshot,
+	createToolMetadataCache,
+	decrementPendingReusableToolSafetyCheck,
+	getReusableToolRegistrySignature,
+	getReusableToolResultCacheKey,
+	hasPendingMutatingToolExecution,
+	hasReusableToolResultState,
+	incrementPendingReusableToolSafetyCheck,
+	invalidateReusableToolResultsAfterMutation,
+	recordReusableToolExecutionBridgeOutput,
+	resolvePlatformToolExecutionBridge,
+	trackReusableToolResult,
+} from "./transport/reusable-tool-results.js";
+import type { PlatformToolExecutionBridge } from "./transport/tool-execution-bridge.js";
 import { createToolExecutionPromise } from "./transport/tool-execution.js";
+import { buildToolPhaseSummaryEvent } from "./transport/tool-phase-summary.js";
 import {
 	type ToolSafetyVerdict,
 	evaluateToolSafety,
@@ -119,325 +137,9 @@ import type {
 	QueuedMessage,
 	ToolCall,
 	ToolResultMessage,
+	ToolSchedulingDecision,
+	ToolSchedulingMetadata,
 } from "./types.js";
-
-type GovernedToolOutcome =
-	| "approval_required"
-	| "approval_pending"
-	| "authentication_required"
-	| "denied"
-	| "rate_limited";
-
-type ReusableToolResultEntry = {
-	message: ToolResultMessage;
-};
-
-type ReusableToolResultCacheGeneration = {
-	value: number;
-};
-
-function getReusableToolResultCacheKey(
-	toolCall: ToolCall,
-	tools: AgentTool[],
-): string | undefined {
-	const tool = tools.find((candidate) => candidate.name === toolCall.name);
-	if (!tool || tool.annotations?.destructiveHint === true) {
-		return undefined;
-	}
-	if (!isReadOnlyTool(tool.name, tool.annotations)) {
-		return undefined;
-	}
-	return `${toolCall.name}:${stableStringify(toolCall.arguments)}`;
-}
-
-function cloneToolResultForCache(
-	message: ToolResultMessage,
-): ToolResultMessage {
-	return {
-		...message,
-		content: message.content.map((item) => ({ ...item })),
-	};
-}
-
-function cloneToolOutcomeForCall(
-	outcome: ToolExecutionOutcome,
-	toolCall: ToolCall,
-	timestamp: number,
-): ToolExecutionOutcome {
-	return {
-		message: {
-			...outcome.message,
-			toolCallId: toolCall.id,
-			toolName: toolCall.name,
-			content: outcome.message.content.map((item) => ({ ...item })),
-			timestamp,
-		},
-		isError: outcome.isError,
-	};
-}
-
-function resolvePlatformToolExecutionBridge(
-	option: PlatformToolExecutionBridge | false | undefined,
-): PlatformToolExecutionBridge | undefined {
-	if (option === false) {
-		return undefined;
-	}
-	return option ?? getDefaultPlatformToolExecutionBridge();
-}
-
-async function recordReusableToolExecutionBridgeOutput({
-	bridge,
-	plan,
-	outcome,
-	durationMs,
-	signal,
-}: {
-	bridge?: PlatformToolExecutionBridge;
-	plan?: ToolExecutionBridgePlan;
-	outcome: ToolExecutionOutcome;
-	durationMs: number;
-	signal?: AbortSignal;
-}): Promise<ToolExecutionOutcome> {
-	if (!bridge || !plan) {
-		return outcome;
-	}
-	const observed =
-		plan.kind === "observe"
-			? await bridge.recordObservation(
-					plan as ObserveToolExecutionPlan,
-					outcome.message,
-					signal,
-				)
-			: undefined;
-	const governedOutput =
-		plan.kind === "governed"
-			? await bridge.recordGovernedOutput(
-					plan,
-					outcome.message,
-					durationMs,
-					signal,
-				)
-			: undefined;
-	return {
-		...outcome,
-		...buildObservedResultMetadata(plan, observed ?? governedOutput),
-	};
-}
-
-function hasReusableToolResultState(
-	cacheKey: string,
-	cache: Map<string, ReusableToolResultEntry>,
-	pending: Map<string, Promise<ToolExecutionOutcome>>,
-	policyCheckedKeys: Set<string>,
-	pendingSafetyChecks: Map<string, number>,
-): boolean {
-	return (
-		cache.has(cacheKey) ||
-		pending.has(cacheKey) ||
-		policyCheckedKeys.has(cacheKey) ||
-		(pendingSafetyChecks.get(cacheKey) ?? 0) > 0
-	);
-}
-
-function incrementPendingReusableToolSafetyCheck(
-	cacheKey: string | undefined,
-	pendingSafetyChecks: Map<string, number>,
-): void {
-	if (!cacheKey) {
-		return;
-	}
-	pendingSafetyChecks.set(
-		cacheKey,
-		(pendingSafetyChecks.get(cacheKey) ?? 0) + 1,
-	);
-}
-
-function decrementPendingReusableToolSafetyCheck(
-	cacheKey: string | undefined,
-	pendingSafetyChecks: Map<string, number>,
-): void {
-	if (!cacheKey) {
-		return;
-	}
-	const nextCount = (pendingSafetyChecks.get(cacheKey) ?? 0) - 1;
-	if (nextCount <= 0) {
-		pendingSafetyChecks.delete(cacheKey);
-		return;
-	}
-	pendingSafetyChecks.set(cacheKey, nextCount);
-}
-
-function clearReusableToolResultState(
-	cache: Map<string, ReusableToolResultEntry>,
-	pending: Map<string, Promise<ToolExecutionOutcome>>,
-	policyCheckedKeys: Set<string>,
-	pendingSafetyChecks: Map<string, number>,
-	cacheGeneration: ReusableToolResultCacheGeneration,
-): void {
-	cache.clear();
-	pending.clear();
-	policyCheckedKeys.clear();
-	pendingSafetyChecks.clear();
-	cacheGeneration.value += 1;
-}
-
-function invalidateReusableToolResultsAfterMutation(
-	toolCall: ToolCall,
-	tools: AgentTool[],
-	cache: Map<string, ReusableToolResultEntry>,
-	pending: Map<string, Promise<ToolExecutionOutcome>>,
-	policyCheckedKeys: Set<string>,
-	pendingSafetyChecks: Map<string, number>,
-	cacheGeneration: ReusableToolResultCacheGeneration,
-): void {
-	if (getReusableToolResultCacheKey(toolCall, tools) !== undefined) {
-		return;
-	}
-	clearReusableToolResultState(
-		cache,
-		pending,
-		policyCheckedKeys,
-		pendingSafetyChecks,
-		cacheGeneration,
-	);
-}
-
-function hasPendingMutatingToolExecution(
-	pendingExecutions: readonly PendingExecution[],
-	tools: AgentTool[],
-): boolean {
-	return pendingExecutions.some(
-		(execution) =>
-			getReusableToolResultCacheKey(execution.toolCall, tools) === undefined,
-	);
-}
-
-function trackReusableToolResult(
-	cacheKey: string,
-	executionPromise: Promise<ToolExecutionOutcome>,
-	cache: Map<string, ReusableToolResultEntry>,
-	pending: Map<string, Promise<ToolExecutionOutcome>>,
-	policyCheckedKeys?: Set<string>,
-	cacheGeneration?: ReusableToolResultCacheGeneration,
-): Promise<ToolExecutionOutcome> {
-	const trackedGeneration = cacheGeneration?.value;
-	const trackedPromise = executionPromise
-		.then((outcome) => {
-			if (
-				!outcome.isError &&
-				outcome.message.isError !== true &&
-				(cacheGeneration === undefined ||
-					cacheGeneration.value === trackedGeneration)
-			) {
-				cache.set(cacheKey, {
-					message: cloneToolResultForCache(outcome.message),
-				});
-			} else {
-				policyCheckedKeys?.delete(cacheKey);
-			}
-			return outcome;
-		})
-		.catch((error) => {
-			policyCheckedKeys?.delete(cacheKey);
-			throw error;
-		})
-		.finally(() => {
-			if (pending.get(cacheKey) === trackedPromise) {
-				pending.delete(cacheKey);
-			}
-		});
-	pending.set(cacheKey, trackedPromise);
-	return trackedPromise;
-}
-
-class AgentEventQueue {
-	private events: AgentEvent[] = [];
-	private pending?: Promise<void>;
-	private wake?: () => void;
-
-	push(event: AgentEvent): void {
-		this.events.push(event);
-		if (this.wake) {
-			const wake = this.wake;
-			this.pending = undefined;
-			this.wake = undefined;
-			wake();
-		}
-	}
-
-	shift(): AgentEvent | undefined {
-		return this.events.shift();
-	}
-
-	wait(): Promise<void> {
-		if (this.events.length > 0) {
-			return Promise.resolve();
-		}
-		if (!this.pending) {
-			this.pending = new Promise<void>((resolve) => {
-				this.wake = resolve;
-			});
-		}
-		return this.pending;
-	}
-
-	clearPendingWaiter(): void {
-		this.pending = undefined;
-		this.wake = undefined;
-	}
-}
-
-function isDynamicToolApprovalEvent(event: AgentEvent): boolean {
-	return (
-		event.type === "action_approval_required" ||
-		event.type === "action_approval_resolved"
-	);
-}
-
-function getGovernedToolResultEventMetadata(details: unknown): {
-	errorCode?: string;
-	approvalRequestId?: string;
-	governedOutcome?: GovernedToolOutcome;
-} {
-	if (!details || typeof details !== "object") {
-		return {};
-	}
-
-	const governedOutcome = (details as { governedOutcome?: unknown })
-		.governedOutcome;
-	if (!governedOutcome || typeof governedOutcome !== "object") {
-		return {};
-	}
-
-	const normalized = governedOutcome as Record<string, unknown>;
-	const classification =
-		typeof normalized.classification === "string"
-			? (normalized.classification as GovernedToolOutcome)
-			: undefined;
-	const errorCode =
-		typeof normalized.code === "string" && normalized.code.trim().length > 0
-			? normalized.code.trim()
-			: classification;
-	const approvalRequestId =
-		typeof normalized.approvalRequestId === "string" &&
-		normalized.approvalRequestId.trim().length > 0
-			? normalized.approvalRequestId.trim()
-			: undefined;
-
-	return {
-		errorCode,
-		approvalRequestId,
-		governedOutcome: classification,
-	};
-}
-
-function getSkillToolResultEventMetadata(details: unknown): {
-	skillMetadata?: SkillArtifactMetadata;
-} {
-	return {
-		skillMetadata: getSkillArtifactMetadataFromDetails(details),
-	};
-}
 
 // Re-export types for backward compatibility
 export type {
@@ -529,6 +231,20 @@ export class ProviderTransport implements AgentTransport {
 	private readonly clock: Clock;
 	private readonly sessionTokenCounter?: SessionTokenCounter;
 	private readonly auditLogger?: ToolAuditLogger;
+	private readonly reusableToolResults = new Map<
+		string,
+		ReusableToolResultEntry
+	>();
+	private readonly pendingReusableToolResults = new Map<
+		string,
+		Promise<ToolExecutionOutcome>
+	>();
+	private readonly policyCheckedReusableToolResultKeys = new Set<string>();
+	private readonly pendingReusableToolSafetyChecks = new Map<string, number>();
+	private readonly reusableToolResultCacheGeneration: ReusableToolResultCacheGeneration =
+		{ value: 0 };
+	private reusableToolResultSnapshot?: string;
+	private reusableToolRegistrySignature?: string;
 
 	/**
 	 * Rate Limit Window - time window for counting tool invocations
@@ -577,6 +293,41 @@ export class ProviderTransport implements AgentTransport {
 				},
 			},
 		});
+	}
+
+	private refreshReusableToolResultState(
+		tools: readonly AgentTool[],
+		cwd: string,
+	): void {
+		const registrySignature = getReusableToolRegistrySignature(tools);
+		const snapshot = computeReusableToolResultSnapshot(cwd);
+		if (snapshot === undefined) {
+			clearReusableToolResultState(
+				this.reusableToolResults,
+				this.pendingReusableToolResults,
+				this.policyCheckedReusableToolResultKeys,
+				this.pendingReusableToolSafetyChecks,
+				this.reusableToolResultCacheGeneration,
+			);
+			this.reusableToolResultSnapshot = undefined;
+			this.reusableToolRegistrySignature = registrySignature;
+			return;
+		}
+		if (
+			this.reusableToolResultSnapshot !== snapshot ||
+			(this.reusableToolRegistrySignature !== undefined &&
+				this.reusableToolRegistrySignature !== registrySignature)
+		) {
+			clearReusableToolResultState(
+				this.reusableToolResults,
+				this.pendingReusableToolResults,
+				this.policyCheckedReusableToolResultKeys,
+				this.pendingReusableToolSafetyChecks,
+				this.reusableToolResultCacheGeneration,
+			);
+		}
+		this.reusableToolResultSnapshot = snapshot;
+		this.reusableToolRegistrySignature = registrySignature;
 	}
 
 	/**
@@ -723,17 +474,42 @@ export class ProviderTransport implements AgentTransport {
 		}
 
 		const dynamicToolEventQueue = new AgentEventQueue();
-		const reusableToolResults = new Map<string, ReusableToolResultEntry>();
-		const pendingReusableToolResults = new Map<
-			string,
-			Promise<ToolExecutionOutcome>
-		>();
-		const policyCheckedReusableToolResultKeys = new Set<string>();
-		const pendingReusableToolSafetyChecks = new Map<string, number>();
-		const reusableToolResultCacheGeneration: ReusableToolResultCacheGeneration =
-			{
-				value: 0,
-			};
+		const reusableToolResultCwd = this.options.cwd ?? process.cwd();
+		const toolMetadataCache = createToolMetadataCache(
+			tools,
+			reusableToolResultCwd,
+		);
+		clearRunScopedReusableToolResultState(
+			this.reusableToolResults,
+			this.pendingReusableToolResults,
+			this.policyCheckedReusableToolResultKeys,
+			this.pendingReusableToolSafetyChecks,
+			this.reusableToolResultCacheGeneration,
+		);
+		let reusableToolResultStatePrepared = false;
+		const hasExistingReusableToolResultState =
+			this.reusableToolResults.size > 0 ||
+			this.pendingReusableToolResults.size > 0 ||
+			this.policyCheckedReusableToolResultKeys.size > 0 ||
+			this.pendingReusableToolSafetyChecks.size > 0;
+		const prepareReusableToolResultState = () => {
+			if (reusableToolResultStatePrepared) {
+				return;
+			}
+			this.refreshReusableToolResultState(tools, reusableToolResultCwd);
+			reusableToolResultStatePrepared = true;
+		};
+		if (hasExistingReusableToolResultState) {
+			prepareReusableToolResultState();
+		}
+		const reusableToolResults = this.reusableToolResults;
+		const pendingReusableToolResults = this.pendingReusableToolResults;
+		const policyCheckedReusableToolResultKeys =
+			this.policyCheckedReusableToolResultKeys;
+		const pendingReusableToolSafetyChecks =
+			this.pendingReusableToolSafetyChecks;
+		const reusableToolResultCacheGeneration =
+			this.reusableToolResultCacheGeneration;
 		const pendingDynamicToolExecutions: PendingExecution[] = [];
 		const platformToolExecutionBridge = resolvePlatformToolExecutionBridge(
 			this.options.platformToolExecutionBridge,
@@ -818,9 +594,10 @@ export class ProviderTransport implements AgentTransport {
 			};
 
 			try {
+				prepareReusableToolResultState();
 				const reusableToolResultKey = getReusableToolResultCacheKey(
 					toolCall,
-					tools,
+					toolMetadataCache,
 				);
 				const alreadyHadReusableToolResultState =
 					reusableToolResultKey !== undefined &&
@@ -840,7 +617,7 @@ export class ProviderTransport implements AgentTransport {
 				): boolean => {
 					const candidateKey = getReusableToolResultCacheKey(
 						candidateToolCall,
-						tools,
+						toolMetadataCache,
 					);
 					return (
 						candidateKey !== undefined &&
@@ -848,7 +625,7 @@ export class ProviderTransport implements AgentTransport {
 						alreadyHadReusableToolResultState &&
 						!hasPendingMutatingToolExecution(
 							pendingDynamicToolExecutions,
-							tools,
+							toolMetadataCache,
 						) &&
 						hasReusableToolResultState(
 							candidateKey,
@@ -926,7 +703,7 @@ export class ProviderTransport implements AgentTransport {
 					);
 				}
 				const policyCheckedReusableToolResultKey =
-					getReusableToolResultCacheKey(effectiveToolCall, tools);
+					getReusableToolResultCacheKey(effectiveToolCall, toolMetadataCache);
 				const canReuseToolResult =
 					reusableToolResultKey !== undefined &&
 					policyCheckedReusableToolResultKey === reusableToolResultKey;
@@ -935,7 +712,10 @@ export class ProviderTransport implements AgentTransport {
 				}
 				const canServeReusableToolResult =
 					canReuseToolResult &&
-					!hasPendingMutatingToolExecution(pendingDynamicToolExecutions, tools);
+					!hasPendingMutatingToolExecution(
+						pendingDynamicToolExecutions,
+						toolMetadataCache,
+					);
 				if (canServeReusableToolResult) {
 					const cachedEntry = reusableToolResults.get(reusableToolResultKey);
 					if (cachedEntry) {
@@ -944,18 +724,12 @@ export class ProviderTransport implements AgentTransport {
 							{
 								bridge: platformToolExecutionBridge,
 								plan: safetyVerdict.toolExecutionBridgePlan,
-								outcome: {
-									message: {
-										...cachedEntry.message,
-										toolCallId: toolCall.id,
-										toolName: toolCall.name,
-										content: cachedEntry.message.content.map((item) => ({
-											...item,
-										})),
-										timestamp: this.clock.now(),
-									},
-									isError: false,
-								},
+								outcome: cloneToolOutcomeForCall(
+									{ message: cachedEntry.message, isError: false },
+									toolCall,
+									this.clock.now(),
+									{ approvalRequestId: safetyVerdict.approvalRequestId },
+								),
 								durationMs: this.clock.now() - cacheHitStart,
 								signal,
 							},
@@ -984,6 +758,7 @@ export class ProviderTransport implements AgentTransport {
 									await pendingReusable,
 									toolCall,
 									this.clock.now(),
+									{ approvalRequestId: safetyVerdict.approvalRequestId },
 								),
 								durationMs: this.clock.now() - cacheHitStart,
 								signal,
@@ -1020,6 +795,7 @@ export class ProviderTransport implements AgentTransport {
 					clientToolService: this.options.clientToolService,
 					toolExecutionBridge: platformToolExecutionBridge,
 					toolExecutionBridgePlan: safetyVerdict.toolExecutionBridgePlan,
+					approvalRequestId: safetyVerdict.approvalRequestId,
 					toolUpdateQueue,
 				});
 				const trackedExecutionPromise =
@@ -1070,7 +846,7 @@ export class ProviderTransport implements AgentTransport {
 				}
 				invalidateReusableToolResultsAfterMutation(
 					effectiveToolCall,
-					tools,
+					toolMetadataCache,
 					reusableToolResults,
 					pendingReusableToolResults,
 					policyCheckedReusableToolResultKeys,
@@ -1384,7 +1160,7 @@ export class ProviderTransport implements AgentTransport {
 									const cost = model.cost
 										? calculateCost(usage, model.cost)
 										: 0;
-									if (credential?.type !== "anthropic-oauth") {
+									if (credential?.type !== "bearer-token") {
 										try {
 											trackUsage({
 												sessionId: cfg.session?.id,
@@ -1471,16 +1247,330 @@ export class ProviderTransport implements AgentTransport {
 				const requiresSerializedTurn =
 					hasWorkflowTrackedTool && toolCallsToExecute.length > 1;
 
-				// Calculate optimal concurrency - higher for read-only batches
-				let concurrencyLimit = getOptimalConcurrency(
-					toolCallsToExecute,
-					tools,
-					{
-						baseConcurrency: configuredConcurrency,
-						maxReadOnlyConcurrency: 8, // Allow up to 8x parallel for read-only
-						enabled: true,
-					},
+				const toolDefinitionsByName = toolMetadataCache.definitions;
+				const isReadOnlyToolCall = (toolCall: ToolCall): boolean => {
+					const toolDef = toolDefinitionsByName.get(toolCall.name);
+					return toolDef
+						? isReadOnlyTool(toolDef.name, toolDef.annotations, toolDef.source)
+						: false;
+				};
+				const isParallelSafeToolCall = (
+					toolCall: ToolCall,
+					toolDef = toolDefinitionsByName.get(toolCall.name),
+				): boolean =>
+					toolDef
+						? isParallelSafeTool(
+								toolDef.name,
+								toolDef.annotations,
+								toolDef.source,
+							)
+						: false;
+				const readOnlyToolCalls = toolCallsToExecute.filter(isReadOnlyToolCall);
+				const readOnlyConcurrencyLimit =
+					readOnlyToolCalls.length > 0
+						? Math.min(
+								8,
+								Math.max(configuredConcurrency, readOnlyToolCalls.length),
+							)
+						: configuredConcurrency;
+				const parallelSafeMutationConcurrencyLimit = Math.min(
+					8,
+					configuredConcurrency,
 				);
+				const concurrencyLimitForTool = (
+					defaultLimit: number,
+					toolDef?: AgentTool,
+				): number => {
+					const sourceMaxConcurrency =
+						toolDef?.source?.type === "mcp"
+							? toolDef.source.parallelMaxConcurrency
+							: undefined;
+					return Math.min(
+						defaultLimit,
+						typeof sourceMaxConcurrency === "number" &&
+							Number.isFinite(sourceMaxConcurrency) &&
+							sourceMaxConcurrency > 0
+							? Math.floor(sourceMaxConcurrency)
+							: defaultLimit,
+					);
+				};
+				const readOnlyConcurrencyLimitForTool = (toolDef?: AgentTool): number =>
+					concurrencyLimitForTool(readOnlyConcurrencyLimit, toolDef);
+				const parallelSafeMutationConcurrencyLimitForTool = (
+					toolDef?: AgentTool,
+				): number =>
+					concurrencyLimitForTool(
+						parallelSafeMutationConcurrencyLimit,
+						toolDef,
+					);
+				let concurrencyLimit = configuredConcurrency;
+				const pendingMutationScopes = new Map<
+					PendingExecution,
+					PathScopedMutation
+				>();
+				const pendingExecutionWaveIndexes = new Map<PendingExecution, number>();
+				const pendingExecutionScheduling = new Map<
+					PendingExecution,
+					ToolSchedulingDecision
+				>();
+				const toolSchedulingDecisions = new Map<
+					string,
+					ToolSchedulingDecision
+				>();
+				const toolPhaseStartMs = this.clock.now();
+				let currentWaveIndex = 0;
+				const mutationPathBase = this.options.cwd ?? process.cwd();
+				const toolSchedulingMetadata = new Map<
+					string,
+					ToolSchedulingMetadata
+				>();
+
+				const nextWaveIndex = (): number => {
+					currentWaveIndex += 1;
+					return currentWaveIndex;
+				};
+
+				const pendingWaveIndex = (): number =>
+					pendingExecutions.length > 0
+						? (pendingExecutionWaveIndexes.get(pendingExecutions[0]!) ??
+							currentWaveIndex)
+						: nextWaveIndex();
+
+				const schedulerWaitMs = (): number =>
+					Math.max(0, this.clock.now() - toolPhaseStartMs);
+
+				const isMcpParallelOptIn = (toolDef: AgentTool): boolean =>
+					toolDef.source?.type === "mcp" &&
+					toolDef.source.supportsParallelToolCalls === true &&
+					toolDef.annotations?.destructiveHint !== true;
+
+				const buildToolPhaseSummary = () =>
+					buildToolPhaseSummaryEvent(toolSchedulingDecisions.values());
+
+				const getMutationScope = (
+					toolCall: ToolCall,
+					toolDef = toolMetadataCache.get(toolCall.name),
+				): PathScopedMutation | undefined =>
+					getPathScopedMutation(toolCall, toolDef, mutationPathBase);
+
+				const sameMutationScope = (
+					left: PathScopedMutation | undefined,
+					right: PathScopedMutation | undefined,
+				): boolean => {
+					if (!left || !right) {
+						return left === right;
+					}
+					const leftArgumentKeys = left.argumentKeys ?? [];
+					const rightArgumentKeys = right.argumentKeys ?? [];
+					return (
+						left.source === right.source &&
+						left.paths.length === right.paths.length &&
+						left.paths.every((path, index) => path === right.paths[index]) &&
+						leftArgumentKeys.length === rightArgumentKeys.length &&
+						leftArgumentKeys.every(
+							(argumentKey, index) => argumentKey === rightArgumentKeys[index],
+						)
+					);
+				};
+
+				const pendingMutationCount = (): number =>
+					pendingExecutions.filter((execution) => {
+						const toolDef = toolMetadataCache.definitions.get(
+							execution.toolCall.name,
+						);
+						return (
+							!!toolDef &&
+							!isReadOnlyTool(toolDef.name, toolDef.annotations, toolDef.source)
+						);
+					}).length;
+
+				const mergeToolSchedulingMetadata = (
+					toolCallId: string,
+					metadata: ToolSchedulingMetadata,
+				): ToolSchedulingMetadata => {
+					toolSchedulingMetadata.set(toolCallId, metadata);
+					return metadata;
+				};
+
+				const pathScopeSchedulingReason = (
+					scope: PathScopedMutation,
+					canJoinPathScope: boolean,
+				): ToolSchedulingMetadata["reason"] => {
+					if (pendingExecutions.length === 0 || pendingMutationCount() === 0) {
+						return "path_scope_available";
+					}
+					if (canJoinPathScope) {
+						return "path_scope_disjoint";
+					}
+					const hasPathOverlap = pendingExecutions.some((execution) => {
+						const pendingScope = pendingMutationScopes.get(execution);
+						return pendingScope
+							? pathScopesOverlap(scope, pendingScope)
+							: false;
+					});
+					return hasPathOverlap ? "path_scope_overlap" : "pending_mutation";
+				};
+
+				const buildToolSchedulingMetadata = ({
+					toolDef,
+					readOnly,
+					parallelSafe,
+					scope,
+					cache,
+					canJoinPathScope,
+					laneConcurrencyLimit = concurrencyLimit,
+				}: {
+					toolDef?: AgentTool;
+					readOnly: boolean;
+					parallelSafe: boolean;
+					scope?: PathScopedMutation;
+					cache: ToolSchedulingMetadata["cache"];
+					canJoinPathScope: boolean;
+					laneConcurrencyLimit?: number;
+				}): ToolSchedulingMetadata => {
+					const pendingMutations = pendingMutationCount();
+					const base: ToolSchedulingMetadata = {
+						classification: "unknown",
+						reason: "unknown_tool",
+						concurrencyLimit: laneConcurrencyLimit,
+						queueDepth: pendingExecutions.length,
+						pendingMutations,
+						cache,
+					};
+					if (!toolDef) {
+						return base;
+					}
+					if (requiresSerializedTurn) {
+						return {
+							...base,
+							classification: "workflow_serialized",
+							reason: "workflow_state_tracker",
+						};
+					}
+					if (readOnly) {
+						return {
+							...base,
+							classification: "read_only",
+							reason: "read_only_tool",
+						};
+					}
+					if (scope) {
+						return {
+							...base,
+							classification: "path_scoped_mutation",
+							reason: pathScopeSchedulingReason(scope, canJoinPathScope),
+							pathScope: scope.paths,
+							pathScopeSource: scope.source,
+							pathArgumentKeys: scope.argumentKeys,
+						};
+					}
+					if (parallelSafe && !readOnly) {
+						return {
+							...base,
+							classification: "parallel_safe_mutation",
+							reason: "mcp_parallel_opt_in",
+						};
+					}
+					if (pendingMutations > 0) {
+						return {
+							...base,
+							classification: "serialized_mutation",
+							reason: "pending_mutation",
+						};
+					}
+					return {
+						...base,
+						classification: "serialized_mutation",
+						reason: "mutating_tool",
+					};
+				};
+
+				const hasPendingUnscopedMutation = (): boolean =>
+					pendingExecutions.some((execution) => {
+						const toolDef = toolMetadataCache.get(execution.toolCall.name);
+						return (
+							!!toolDef &&
+							!isReadOnlyTool(
+								toolDef.name,
+								toolDef.annotations,
+								toolDef.source,
+							) &&
+							!pendingMutationScopes.has(execution)
+						);
+					});
+
+				const mutationBlockReason = (
+					scope: PathScopedMutation | undefined,
+				): string =>
+					scope && !hasPendingUnscopedMutation()
+						? "mutation_scope_overlap"
+						: "mutation_unknown_write_set";
+
+				const isPendingParallelSafeMutation = (
+					execution: PendingExecution,
+				): boolean => {
+					const toolDef = toolMetadataCache.get(execution.toolCall.name);
+					return (
+						!!toolDef &&
+						!isReadOnlyTool(
+							toolDef.name,
+							toolDef.annotations,
+							toolDef.source,
+						) &&
+						isParallelSafeTool(
+							toolDef.name,
+							toolDef.annotations,
+							toolDef.source,
+						) &&
+						!pendingMutationScopes.has(execution)
+					);
+				};
+
+				const canJoinParallelSafeMutationWave = (
+					toolCall: ToolCall,
+					toolDef = toolMetadataCache.get(toolCall.name),
+				): boolean =>
+					!!toolDef &&
+					!isReadOnlyTool(toolDef.name, toolDef.annotations, toolDef.source) &&
+					isParallelSafeTool(
+						toolDef.name,
+						toolDef.annotations,
+						toolDef.source,
+					) &&
+					pendingExecutions.length > 0 &&
+					pendingExecutions.every(isPendingParallelSafeMutation);
+
+				const canJoinPathScopedMutationIsland = (
+					scope: PathScopedMutation | undefined,
+				): scope is PathScopedMutation =>
+					!!scope &&
+					pendingExecutions.length > 0 &&
+					pendingExecutions.every((execution) => {
+						const pendingScope = pendingMutationScopes.get(execution);
+						return pendingScope
+							? !pathScopesOverlap(scope, pendingScope)
+							: false;
+					});
+				const laneConcurrencyLimit = ({
+					readOnly,
+					scope,
+					parallelSafe,
+					toolDef,
+				}: {
+					readOnly: boolean;
+					scope?: PathScopedMutation;
+					parallelSafe: boolean;
+					toolDef?: AgentTool;
+				}): number =>
+					requiresSerializedTurn
+						? 1
+						: readOnly
+							? readOnlyConcurrencyLimitForTool(toolDef)
+							: scope
+								? configuredConcurrency
+								: parallelSafe
+									? parallelSafeMutationConcurrencyLimitForTool(toolDef)
+									: 1;
 
 				// Override: workflow-tracked tools require serialization
 				if (configuredConcurrency > 1 && requiresSerializedTurn) {
@@ -1495,6 +1585,7 @@ export class ProviderTransport implements AgentTransport {
 
 				let steeringTriggered = false;
 				let remainingToolCalls: ToolCall[] = [];
+				let mutatingToolCompletedInCurrentBatch = false;
 
 				const checkSteering = async (): Promise<void> => {
 					if (steeringTriggered || !getSteeringMessages) {
@@ -1538,6 +1629,7 @@ export class ProviderTransport implements AgentTransport {
 							toolName: toolCall.name,
 							result: message,
 							isError,
+							scheduling: toolSchedulingMetadata.get(toolCall.id),
 						} as AgentEvent,
 					];
 				};
@@ -1580,10 +1672,60 @@ export class ProviderTransport implements AgentTransport {
 						throw error;
 					}
 				};
+				const emittedIndexForToolCall = (toolCall: ToolCall): number => {
+					const emittedIndex = toolCallsToExecute.findIndex(
+						(candidate) => candidate.id === toolCall.id,
+					);
+					return emittedIndex >= 0
+						? emittedIndex
+						: toolSchedulingDecisions.size;
+				};
 				const emitSkippedToolCall = (toolCall: ToolCall): AgentEvent[] => {
 					const sanitizedSkippedArgs = this.safetyMiddleware.sanitizeForLogging(
 						toolCall.arguments as Record<string, unknown>,
 					);
+					const existingScheduling = toolSchedulingMetadata.get(toolCall.id);
+					const toolDef = toolMetadataCache.get(toolCall.name);
+					const skippedToolCallReadOnly = isReadOnlyToolCall(toolCall);
+					const skippedToolCallParallelSafe = isParallelSafeToolCall(
+						toolCall,
+						toolDef,
+					);
+					const mutationScope = getMutationScope(toolCall, toolDef);
+					prepareReusableToolResultState();
+					const reusableToolResultKey = getReusableToolResultCacheKey(
+						toolCall,
+						toolMetadataCache,
+					);
+					const schedulingMetadata = mergeToolSchedulingMetadata(
+						toolCall.id,
+						existingScheduling ??
+							buildToolSchedulingMetadata({
+								toolDef,
+								readOnly: skippedToolCallReadOnly,
+								parallelSafe: skippedToolCallParallelSafe,
+								scope: mutationScope,
+								cache:
+									reusableToolResultKey === undefined ? "disabled" : "miss",
+								canJoinPathScope:
+									canJoinPathScopedMutationIsland(mutationScope),
+								laneConcurrencyLimit: laneConcurrencyLimit({
+									readOnly: skippedToolCallReadOnly,
+									parallelSafe: skippedToolCallParallelSafe,
+									scope: mutationScope,
+									toolDef,
+								}),
+							}),
+					);
+					const schedulingDecision: ToolSchedulingDecision = {
+						callId: toolCall.id,
+						toolName: toolCall.name,
+						emittedIndex: emittedIndexForToolCall(toolCall),
+						decision: "skipped",
+						reason: "steering_interrupted",
+						schedulerWaitMs: schedulerWaitMs(),
+					};
+					toolSchedulingDecisions.set(toolCall.id, schedulingDecision);
 					const skippedResult: ToolResultMessage = {
 						role: "toolResult",
 						toolCallId: toolCall.id,
@@ -1603,16 +1745,46 @@ export class ProviderTransport implements AgentTransport {
 							toolCallId: toolCall.id,
 							toolName: toolCall.name,
 							args: sanitizedSkippedArgs,
+							scheduling: schedulingMetadata,
 						} as AgentEvent,
 						...emitToolResult(skippedResult, toolCall, true),
 					];
 				};
-				const scheduleResolveIfNeeded = async (): Promise<AgentEvent[]> => {
-					if (pendingExecutions.length < concurrencyLimit) {
-						return [];
+				const recordSafetyBlockedToolCall = (
+					toolCall: ToolCall,
+				): ToolSchedulingDecision => {
+					const existing = toolSchedulingDecisions.get(toolCall.id);
+					if (existing) {
+						return existing;
 					}
+					const scheduling: ToolSchedulingDecision = {
+						callId: toolCall.id,
+						toolName: toolCall.name,
+						emittedIndex: emittedIndexForToolCall(toolCall),
+						decision: "skipped",
+						reason: "safety_blocked",
+						schedulerWaitMs: schedulerWaitMs(),
+					};
+					toolSchedulingDecisions.set(toolCall.id, scheduling);
+					return scheduling;
+				};
+				const emitSafetyPipelineToolResult = (
+					message: ToolResultMessage,
+					toolCall: ToolCall,
+					isError: boolean,
+					metadata?: {
+						toolExecutionId?: string;
+						approvalRequestId?: string;
+					},
+				): AgentEvent[] => {
+					if (isError) {
+						recordSafetyBlockedToolCall(toolCall);
+					}
+					return emitToolResult(message, toolCall, isError, metadata);
+				};
+				const resolveNextPendingExecution = async (): Promise<AgentEvent[]> => {
 					const events: AgentEvent[] = [];
-					while (pendingExecutions.length >= concurrencyLimit) {
+					while (true) {
 						const next = await waitForNextExecutionOrUpdate(
 							pendingExecutions,
 							toolUpdateQueue,
@@ -1622,15 +1794,25 @@ export class ProviderTransport implements AgentTransport {
 							continue;
 						}
 						const outcome = next.outcome;
+						pendingMutationScopes.delete(next.execution);
+						pendingExecutionWaveIndexes.delete(next.execution);
+						pendingExecutionScheduling.delete(next.execution);
+						prepareReusableToolResultState();
+						const completedToolWasMutating =
+							getReusableToolResultCacheKey(
+								next.execution.toolCall,
+								toolMetadataCache,
+							) === undefined;
 						invalidateReusableToolResultsAfterMutation(
 							next.execution.toolCall,
-							tools,
+							toolMetadataCache,
 							reusableToolResults,
 							pendingReusableToolResults,
 							policyCheckedReusableToolResultKeys,
 							pendingReusableToolSafetyChecks,
 							reusableToolResultCacheGeneration,
 						);
+						mutatingToolCompletedInCurrentBatch ||= completedToolWasMutating;
 						events.push(
 							...emitToolResult(
 								outcome.message,
@@ -1643,9 +1825,23 @@ export class ProviderTransport implements AgentTransport {
 							),
 						);
 						await checkSteering();
-						break;
+						return events;
+					}
+				};
+				const drainPendingExecutions = async (
+					targetPendingCount = 0,
+				): Promise<AgentEvent[]> => {
+					const events: AgentEvent[] = [];
+					while (pendingExecutions.length > targetPendingCount) {
+						events.push(...(await resolveNextPendingExecution()));
 					}
 					return events;
+				};
+				const scheduleResolveIfNeeded = async (): Promise<AgentEvent[]> => {
+					if (pendingExecutions.length < concurrencyLimit) {
+						return [];
+					}
+					return drainPendingExecutions(concurrencyLimit - 1);
 				};
 
 				for (
@@ -1659,9 +1855,76 @@ export class ProviderTransport implements AgentTransport {
 					}
 					const toolCall = toolCallsToExecute[toolIndex];
 					if (!toolCall) continue;
+					let schedulingDelayReason: string | undefined;
+					let blockedByMutation = false;
+					const noteMutationDelay = (reason: string): void => {
+						schedulingDelayReason ??= reason;
+						blockedByMutation = true;
+					};
+					const originalToolCallReadOnly = isReadOnlyToolCall(toolCall);
+					const originalMutationScope = originalToolCallReadOnly
+						? undefined
+						: getMutationScope(toolCall);
+					const originalToolDef = toolDefinitionsByName.get(toolCall.name);
+					const originalToolCallParallelSafe = isParallelSafeToolCall(
+						toolCall,
+						originalToolDef,
+					);
+					const originalCanJoinPathScope = canJoinPathScopedMutationIsland(
+						originalMutationScope,
+					);
+					const originalJoinsParallelSafeMutationWave =
+						!originalToolCallReadOnly &&
+						canJoinParallelSafeMutationWave(toolCall);
+					let preDrainSchedulingMetadata: ToolSchedulingMetadata | undefined;
+					if (
+						!originalToolCallReadOnly &&
+						pendingExecutions.length > 0 &&
+						pendingMutationCount() > 0 &&
+						!originalCanJoinPathScope &&
+						!originalJoinsParallelSafeMutationWave
+					) {
+						preDrainSchedulingMetadata = buildToolSchedulingMetadata({
+							toolDef: originalToolDef,
+							readOnly: originalToolCallReadOnly,
+							parallelSafe: originalToolCallParallelSafe,
+							scope: originalMutationScope,
+							cache: "disabled",
+							canJoinPathScope: originalCanJoinPathScope,
+							laneConcurrencyLimit: laneConcurrencyLimit({
+								readOnly: originalToolCallReadOnly,
+								parallelSafe: originalToolCallParallelSafe,
+								scope: originalMutationScope,
+								toolDef: originalToolDef,
+							}),
+						});
+						if (
+							hasPendingMutatingToolExecution(
+								pendingExecutions,
+								toolMetadataCache,
+							)
+						) {
+							noteMutationDelay(mutationBlockReason(originalMutationScope));
+						}
+						const events = await drainPendingExecutions();
+						for (const event of events) {
+							yield event;
+						}
+						if (steeringTriggered) {
+							if (preDrainSchedulingMetadata) {
+								mergeToolSchedulingMetadata(
+									toolCall.id,
+									preDrainSchedulingMetadata,
+								);
+							}
+							remainingToolCalls = toolCallsToExecute.slice(toolIndex);
+							break;
+						}
+					}
+					prepareReusableToolResultState();
 					const reusableToolResultKey = getReusableToolResultCacheKey(
 						toolCall,
-						tools,
+						toolMetadataCache,
 					);
 					const alreadyHadReusableToolResultState =
 						reusableToolResultKey !== undefined &&
@@ -1681,13 +1944,17 @@ export class ProviderTransport implements AgentTransport {
 					): boolean => {
 						const candidateKey = getReusableToolResultCacheKey(
 							candidateToolCall,
-							tools,
+							toolMetadataCache,
 						);
 						return (
 							candidateKey !== undefined &&
 							candidateKey === reusableToolResultKey &&
 							alreadyHadReusableToolResultState &&
-							!hasPendingMutatingToolExecution(pendingExecutions, tools) &&
+							!hasPendingMutatingToolExecution(
+								pendingExecutions,
+								toolMetadataCache,
+							) &&
+							!mutatingToolCompletedInCurrentBatch &&
 							hasReusableToolResultState(
 								candidateKey,
 								reusableToolResults,
@@ -1697,6 +1964,39 @@ export class ProviderTransport implements AgentTransport {
 							)
 						);
 					};
+					const nextInitialSchedulingMetadata = buildToolSchedulingMetadata({
+						toolDef: originalToolDef,
+						readOnly: originalToolCallReadOnly,
+						parallelSafe: originalToolCallParallelSafe,
+						scope: originalMutationScope,
+						cache:
+							reusableToolResultKey === undefined
+								? "disabled"
+								: alreadyHadReusableToolResultState
+									? "candidate"
+									: "miss",
+						canJoinPathScope: canJoinPathScopedMutationIsland(
+							originalMutationScope,
+						),
+						laneConcurrencyLimit: laneConcurrencyLimit({
+							readOnly: originalToolCallReadOnly,
+							parallelSafe: originalToolCallParallelSafe,
+							scope: originalMutationScope,
+							toolDef: originalToolDef,
+						}),
+					});
+					const initialSchedulingMetadata = mergeToolSchedulingMetadata(
+						toolCall.id,
+						preDrainSchedulingMetadata
+							? {
+									...nextInitialSchedulingMetadata,
+									classification: preDrainSchedulingMetadata.classification,
+									reason: preDrainSchedulingMetadata.reason,
+									queueDepth: preDrainSchedulingMetadata.queueDepth,
+									pendingMutations: preDrainSchedulingMetadata.pendingMutations,
+								}
+							: nextInitialSchedulingMetadata,
+					);
 
 					// Run safety pipeline (rate limiting, hooks, firewall, approval, validation)
 					let safetyVerdict: ToolSafetyVerdict | undefined;
@@ -1727,7 +2027,8 @@ export class ProviderTransport implements AgentTransport {
 								rateLimit: ProviderTransport.TOOL_RATE_LIMIT,
 							},
 							shouldSkipLoopDetection,
-							emitToolResult,
+							schedulingMetadata: initialSchedulingMetadata,
+							emitToolResult: emitSafetyPipelineToolResult,
 						});
 						while (true) {
 							const safetyStep = await safetyIterator.next();
@@ -1767,9 +2068,114 @@ export class ProviderTransport implements AgentTransport {
 						toolDef: tool,
 						sanitizedExecutionArgs,
 					} = safetyVerdict;
+					const effectiveToolCallReadOnly =
+						isReadOnlyTool(tool.name, tool.annotations, tool.source) &&
+						tool.annotations?.destructiveHint !== true;
+					const effectiveToolCallParallelSafe = isParallelSafeTool(
+						tool.name,
+						tool.annotations,
+						tool.source,
+					);
+					if (
+						effectiveToolCallReadOnly &&
+						hasPendingMutatingToolExecution(
+							pendingExecutions,
+							toolMetadataCache,
+						)
+					) {
+						noteMutationDelay("pending_mutation");
+						const events = await drainPendingExecutions();
+						for (const event of events) {
+							yield event;
+						}
+						if (steeringTriggered) {
+							remainingToolCalls = toolCallsToExecute.slice(toolIndex);
+							break;
+						}
+					}
+					const effectiveMutationScope = effectiveToolCallReadOnly
+						? undefined
+						: getMutationScope(effectiveToolCall, tool);
+					const joinsPathScopedMutationIsland =
+						!requiresSerializedTurn &&
+						canJoinPathScopedMutationIsland(effectiveMutationScope);
+					const joinsParallelSafeMutationWave =
+						!requiresSerializedTurn &&
+						!effectiveToolCallReadOnly &&
+						canJoinParallelSafeMutationWave(effectiveToolCall, tool);
+					if (
+						!effectiveToolCallReadOnly &&
+						pendingExecutions.length > 0 &&
+						!joinsPathScopedMutationIsland &&
+						!joinsParallelSafeMutationWave
+					) {
+						if (
+							hasPendingMutatingToolExecution(
+								pendingExecutions,
+								toolMetadataCache,
+							)
+						) {
+							noteMutationDelay(mutationBlockReason(effectiveMutationScope));
+						}
+						const events = await drainPendingExecutions();
+						for (const event of events) {
+							yield event;
+						}
+						if (steeringTriggered) {
+							remainingToolCalls = toolCallsToExecute.slice(toolIndex);
+							break;
+						}
+					}
+					concurrencyLimit = requiresSerializedTurn
+						? 1
+						: effectiveToolCallReadOnly
+							? readOnlyConcurrencyLimitForTool(tool)
+							: effectiveMutationScope
+								? configuredConcurrency
+								: effectiveToolCallParallelSafe
+									? parallelSafeMutationConcurrencyLimitForTool(tool)
+									: 1;
+					const effectiveSchedulingMetadata = buildToolSchedulingMetadata({
+						toolDef: tool,
+						readOnly: effectiveToolCallReadOnly,
+						parallelSafe: effectiveToolCallParallelSafe,
+						scope: effectiveMutationScope,
+						cache:
+							reusableToolResultKey === undefined
+								? "disabled"
+								: alreadyHadReusableToolResultState
+									? "candidate"
+									: "miss",
+						canJoinPathScope: joinsPathScopedMutationIsland,
+						laneConcurrencyLimit: laneConcurrencyLimit({
+							readOnly: effectiveToolCallReadOnly,
+							parallelSafe: effectiveToolCallParallelSafe,
+							scope: effectiveMutationScope,
+							toolDef: tool,
+						}),
+					});
+					const previousSchedulingMetadata = toolSchedulingMetadata.get(
+						toolCall.id,
+					);
+					const preservePreHookBlockedSchedulingReason =
+						(previousSchedulingMetadata?.reason === "path_scope_overlap" ||
+							previousSchedulingMetadata?.reason === "pending_mutation") &&
+						sameMutationScope(originalMutationScope, effectiveMutationScope);
+					mergeToolSchedulingMetadata(
+						toolCall.id,
+						preservePreHookBlockedSchedulingReason
+							? {
+									...effectiveSchedulingMetadata,
+									classification: previousSchedulingMetadata.classification,
+									reason: previousSchedulingMetadata.reason,
+									queueDepth: previousSchedulingMetadata.queueDepth,
+									pendingMutations: previousSchedulingMetadata.pendingMutations,
+								}
+							: effectiveSchedulingMetadata,
+					);
 					// Use hook-modified (pre-validation) args for hook inputs
 					const policyCheckedReusableToolResultKey =
-						getReusableToolResultCacheKey(effectiveToolCall, tools);
+						getReusableToolResultCacheKey(effectiveToolCall, toolMetadataCache);
 					const canReuseToolResult =
 						reusableToolResultKey !== undefined &&
 						policyCheckedReusableToolResultKey === reusableToolResultKey;
@@ -1778,30 +2184,46 @@ export class ProviderTransport implements AgentTransport {
 					}
 					const canServeReusableToolResult =
 						canReuseToolResult &&
-						!hasPendingMutatingToolExecution(pendingExecutions, tools);
+						!hasPendingMutatingToolExecution(
+							pendingExecutions,
+							toolMetadataCache,
+						) &&
+						!mutatingToolCompletedInCurrentBatch;
 					if (canServeReusableToolResult) {
 						const cachedEntry = reusableToolResults.get(reusableToolResultKey);
 						if (cachedEntry) {
+							const scheduling: ToolSchedulingDecision = {
+								callId: toolCall.id,
+								toolName: toolCall.name,
+								emittedIndex: toolIndex,
+								decision: "cached",
+								reason: "reusable_tool_result_ready",
+								schedulerWaitMs: schedulerWaitMs(),
+								cacheHit: true,
+							};
+							toolSchedulingDecisions.set(toolCall.id, scheduling);
 							const cacheHitStart = this.clock.now();
 							const cachedOutcome =
 								await recordReusableToolExecutionBridgeOutput({
 									bridge: platformToolExecutionBridge,
 									plan: safetyVerdict.toolExecutionBridgePlan,
-									outcome: {
-										message: {
-											...cachedEntry.message,
-											toolCallId: toolCall.id,
-											toolName: toolCall.name,
-											content: cachedEntry.message.content.map((item) => ({
-												...item,
-											})),
-											timestamp: this.clock.now(),
-										},
-										isError: false,
-									},
+									outcome: cloneToolOutcomeForCall(
+										{ message: cachedEntry.message, isError: false },
+										toolCall,
+										this.clock.now(),
+										{ approvalRequestId: safetyVerdict.approvalRequestId },
+									),
 									durationMs: this.clock.now() - cacheHitStart,
 									signal,
 								});
+							mergeToolSchedulingMetadata(toolCall.id, {
+								classification: "cache_reuse",
+								reason: "cache_hit",
+								concurrencyLimit,
+								queueDepth: pendingExecutions.length,
+								pendingMutations: pendingMutationCount(),
+								cache: "hit",
+							});
 							for (const event of emitToolResult(
 								cachedOutcome.message,
 								toolCall,
@@ -1824,7 +2246,27 @@ export class ProviderTransport implements AgentTransport {
 							reusableToolResultKey,
 						);
 						if (pendingReusable) {
-							pendingExecutions.push({
+							mergeToolSchedulingMetadata(toolCall.id, {
+								classification: "cache_reuse",
+								reason: "cache_pending",
+								concurrencyLimit,
+								queueDepth: pendingExecutions.length,
+								pendingMutations: pendingMutationCount(),
+								cache: "pending_hit",
+							});
+							const waveIndex = pendingWaveIndex();
+							const scheduling: ToolSchedulingDecision = {
+								callId: toolCall.id,
+								toolName: toolCall.name,
+								emittedIndex: toolIndex,
+								waveIndex,
+								decision: "cached",
+								reason: "reusable_tool_result_pending",
+								schedulerWaitMs: schedulerWaitMs(),
+								cacheHit: true,
+							};
+							toolSchedulingDecisions.set(toolCall.id, scheduling);
+							const pendingExecution: PendingExecution = {
 								toolCall,
 								promise: (async () => {
 									const cacheHitStart = this.clock.now();
@@ -1835,12 +2277,18 @@ export class ProviderTransport implements AgentTransport {
 											await pendingReusable,
 											toolCall,
 											this.clock.now(),
+											{
+												approvalRequestId: safetyVerdict.approvalRequestId,
+											},
 										),
 										durationMs: this.clock.now() - cacheHitStart,
 										signal,
 									});
 								})(),
-							});
+							};
+							pendingExecutions.push(pendingExecution);
+							pendingExecutionWaveIndexes.set(pendingExecution, waveIndex);
+							pendingExecutionScheduling.set(pendingExecution, scheduling);
 							const events = await scheduleResolveIfNeeded();
 							for (const event of events) {
 								yield event;
@@ -1852,6 +2300,58 @@ export class ProviderTransport implements AgentTransport {
 							continue;
 						}
 					}
+
+					const pendingBeforeSchedule = pendingExecutions.length;
+					const waveIndex =
+						pendingBeforeSchedule > 0 ? pendingWaveIndex() : nextWaveIndex();
+					const mcpOptIn =
+						isMcpParallelOptIn(tool) && !effectiveToolCallReadOnly;
+					const decision =
+						schedulingDelayReason !== undefined
+							? "delayed"
+							: pendingBeforeSchedule > 0
+								? "parallelized"
+								: requiresSerializedTurn ||
+										(!effectiveToolCallReadOnly &&
+											!effectiveMutationScope &&
+											!effectiveToolCallParallelSafe)
+									? "serialized"
+									: "scheduled";
+					const reason =
+						schedulingDelayReason ??
+						(effectiveToolCallReadOnly
+							? requiresSerializedTurn
+								? "workflow_state_serialized"
+								: pendingBeforeSchedule > 0
+									? "read_only_wave"
+									: "read_only_wave_start"
+							: requiresSerializedTurn
+								? "workflow_state_serialized"
+								: joinsPathScopedMutationIsland
+									? "path_scoped_mutation_disjoint"
+									: joinsParallelSafeMutationWave && mcpOptIn
+										? "mcp_parallel_opt_in"
+										: joinsParallelSafeMutationWave
+											? "parallel_safe_mutation_wave"
+											: mcpOptIn
+												? pendingBeforeSchedule > 0
+													? "mcp_parallel_opt_in"
+													: "mcp_parallel_opt_in_wave_start"
+												: effectiveMutationScope
+													? "path_scoped_mutation_wave_start"
+													: "serialized_tool");
+					const scheduling: ToolSchedulingDecision = {
+						callId: toolCall.id,
+						toolName: toolCall.name,
+						emittedIndex: toolIndex,
+						waveIndex,
+						decision,
+						reason,
+						schedulerWaitMs: schedulerWaitMs(),
+						mcpOptIn,
+						blockedByMutation,
+					};
+					toolSchedulingDecisions.set(toolCall.id, scheduling);
 
 					// For client tools, set up the execution promise first, then emit event
 					// This prevents race conditions where the client responds before we're listening
@@ -1897,6 +2397,7 @@ export class ProviderTransport implements AgentTransport {
 						clientToolService: this.options.clientToolService,
 						toolExecutionBridge: platformToolExecutionBridge,
 						toolExecutionBridgePlan: safetyVerdict.toolExecutionBridgePlan,
+						approvalRequestId: safetyVerdict.approvalRequestId,
 						toolUpdateQueue,
 						clientToolExecPromise,
 					});
@@ -1912,10 +2413,16 @@ export class ProviderTransport implements AgentTransport {
 								)
 							: executionPromise;
 
-					pendingExecutions.push({
+					const pendingExecution: PendingExecution = {
 						toolCall,
 						promise: trackedExecutionPromise,
-					});
+					};
+					pendingExecutions.push(pendingExecution);
+					pendingExecutionWaveIndexes.set(pendingExecution, waveIndex);
+					pendingExecutionScheduling.set(pendingExecution, scheduling);
+					if (effectiveMutationScope) {
+						pendingMutationScopes.set(pendingExecution, effectiveMutationScope);
+					}
 					const events = await scheduleResolveIfNeeded();
 					for (const event of events) {
 						yield event;
@@ -1927,39 +2434,10 @@ export class ProviderTransport implements AgentTransport {
 				}
 
 				while (pendingExecutions.length > 0) {
-					const next = await waitForNextExecutionOrUpdate(
-						pendingExecutions,
-						toolUpdateQueue,
-					);
-					if (next.kind === "update") {
-						yield next.event;
-						continue;
-					}
-					const outcome = next.outcome;
-					invalidateReusableToolResultsAfterMutation(
-						next.execution.toolCall,
-						tools,
-						reusableToolResults,
-						pendingReusableToolResults,
-						policyCheckedReusableToolResultKeys,
-						pendingReusableToolSafetyChecks,
-						reusableToolResultCacheGeneration,
-					);
-					for (const event of emitToolResult(
-						outcome.message,
-						next.execution.toolCall,
-						outcome.isError,
-						{
-							toolExecutionId: outcome.toolExecutionId,
-							approvalRequestId: outcome.approvalRequestId,
-						},
-					)) {
+					for (const event of await resolveNextPendingExecution()) {
 						yield event;
 					}
-					await checkSteering();
 				}
-
-				this.safetyMiddleware.clearCredentials();
 
 				if (steeringTriggered && remainingToolCalls.length > 0) {
 					for (const toolCall of remainingToolCalls) {
@@ -1968,6 +2446,13 @@ export class ProviderTransport implements AgentTransport {
 						}
 					}
 				}
+
+				const toolPhaseSummary = buildToolPhaseSummary();
+				if (toolPhaseSummary) {
+					yield toolPhaseSummary;
+				}
+
+				this.safetyMiddleware.clearCredentials();
 
 				if (!steeringTriggered && getSteeringMessages) {
 					const steering = await getSteeringMessages<AppMessage>();

@@ -5,7 +5,8 @@ import {
 } from "../../codex/app-server-client.js";
 import {
 	compileCodexDynamicToolSpecs,
-	selectCodexDefaultTools,
+	resolveCodexToolProfileName,
+	selectCodexToolProfile,
 } from "../../codex/compatibility.js";
 import { codingTools } from "../../tools/index.js";
 
@@ -38,13 +39,42 @@ export async function handleCodexCommand(
 
 async function handleLogin(params: string[] = []): Promise<void> {
 	const deviceFlow =
-		params.includes("--device") || params.includes("--device-code");
+		params.includes("--device") ||
+		params.includes("--device-code") ||
+		params.includes("--device-auth");
+	const forceLogin = params.includes("--force") || params.includes("--refresh");
 	console.log(chalk.bold("Maestro OpenAI Codex Login"));
 	const client = createCodexAppServerClient();
 	try {
-		await client.initialize();
+		await client.initialize({ experimentalApi: true });
+		if (!forceLogin) {
+			let account: CodexAccountReadResult | null = null;
+			try {
+				account = await client.readAccount(true);
+			} catch {
+				console.log(
+					chalk.yellow(
+						"Codex app-server account refresh failed; starting a new sign-in flow.",
+					),
+				);
+			}
+			if (account?.account) {
+				console.log(
+					chalk.green(
+						`OpenAI Codex is already signed in${accountLabel(account)}.`,
+					),
+				);
+				console.log(
+					chalk.dim(
+						'Run "maestro codex login --force" to start a new sign-in flow.',
+					),
+				);
+				return;
+			}
+		}
 		const login = await client.startChatGptLogin(
 			deviceFlow ? "device" : "browser",
+			{ codexStreamlinedLogin: true },
 		);
 		if (isBrowserLogin(login)) {
 			console.log(
@@ -62,6 +92,19 @@ async function handleLogin(params: string[] = []): Promise<void> {
 		} else if (isApiKeyLogin(login)) {
 			console.log(
 				chalk.green("OpenAI Codex is already configured with an API key."),
+			);
+			console.log(
+				chalk.dim(
+					'Select provider "openai-codex" or a model like "openai-codex/gpt-5.5".',
+				),
+			);
+			return;
+		} else if (isAuthTokensLogin(login)) {
+			const account = await client.readAccount(true);
+			console.log(
+				chalk.green(
+					`OpenAI Codex is using externally managed ChatGPT auth${accountLabel(account)}.`,
+				),
 			);
 			console.log(
 				chalk.dim(
@@ -133,11 +176,14 @@ async function handleDoctor(): Promise<void> {
 			);
 		}
 
-		const selectedTools = selectCodexDefaultTools(codingTools);
+		const profileName = resolveCodexToolProfileName(
+			process.env.MAESTRO_CODEX_TOOL_PROFILE,
+		);
+		const selectedTools = selectCodexToolProfile(codingTools, profileName);
 		const compiled = compileCodexDynamicToolSpecs(selectedTools);
 		console.log(
 			chalk.green(
-				`Default Codex tool profile: ${selectedTools.length} tools (${selectedTools
+				`Codex tool profile (${profileName}): ${selectedTools.length} tools (${selectedTools
 					.map((tool) => tool.name)
 					.join(", ")})`,
 			),
@@ -211,6 +257,15 @@ function isApiKeyLogin(value: unknown): value is { type: "apiKey" } {
 	return (
 		Boolean(value && typeof value === "object") &&
 		(value as { type?: unknown }).type === "apiKey"
+	);
+}
+
+function isAuthTokensLogin(
+	value: unknown,
+): value is { type: "chatgptAuthTokens" } {
+	return (
+		Boolean(value && typeof value === "object") &&
+		(value as { type?: unknown }).type === "chatgptAuthTokens"
 	);
 }
 

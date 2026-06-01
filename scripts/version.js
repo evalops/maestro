@@ -22,7 +22,7 @@ import {
 	insertChangelogEntry,
 	mergeOrInsertChangelogEntry,
 } from "./release-notes.js";
-import { execSync } from "node:child_process";
+import { execFileSync, execSync } from "node:child_process";
 import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
@@ -93,6 +93,35 @@ function syncPackageMetadata() {
 	}
 }
 
+function quoteWindowsShellArg(value) {
+	return `"${String(value).replace(/"/g, '\\"')}"`;
+}
+
+function runBunx(args) {
+	if (process.platform === "win32") {
+		execSync(["bunx", ...args].map(quoteWindowsShellArg).join(" "), {
+			stdio: "inherit",
+		});
+		return;
+	}
+
+	execFileSync("bunx", args, { stdio: "inherit" });
+}
+
+function formatPackageJsonFiles(packageJsonPaths) {
+	if (packageJsonPaths.length === 0) {
+		return;
+	}
+
+	try {
+		runBunx(["biome", "format", "--write", ...packageJsonPaths]);
+		console.log("🧹 Formatted package.json files");
+	} catch (error) {
+		const reason = error instanceof Error ? error.message : "unknown error";
+		throw new Error(`Failed to format package.json files: ${reason}`);
+	}
+}
+
 function hasScript(rootPkg, scriptName) {
 	return typeof rootPkg.scripts?.[scriptName] === "string";
 }
@@ -142,6 +171,10 @@ async function updateVersionedFiles(
 		for (const pkg of workspacePkgs) {
 			writePackageJson(pkg.path, pkg.data);
 		}
+		formatPackageJsonFiles([
+			getRootPackagePath(),
+			...workspacePkgs.map((pkg) => pkg.path),
+		]);
 		console.log("✅ Updated package.json files");
 
 		// Update changelog
