@@ -82,6 +82,20 @@ import {
 	PLAN_FILE_COMPACTION_CUSTOM_TYPE,
 	PLAN_MODE_COMPACTION_CUSTOM_TYPE,
 } from "./compaction-restoration.js";
+export {
+	COMPACTION_RESUME_PROMPT,
+	isCompactionResumePromptMessage,
+	isCompactionResumePromptText,
+	isDecoratedCompactionSummaryMessage,
+	isDecoratedCompactionSummaryText,
+} from "./compaction-markers.js";
+import {
+	COMPACTION_RESUME_PROMPT,
+	isCompactionResumePromptMessage,
+	isCompactionResumePromptText,
+	isDecoratedCompactionSummaryMessage,
+	isDecoratedCompactionSummaryText,
+} from "./compaction-markers.js";
 import {
 	isContextOverflow as isCompactionOverflowMessage,
 	isOverflowErrorMessage,
@@ -110,13 +124,6 @@ const logger = createLogger("agent:compaction");
 // ============================================================================
 // Types
 // ============================================================================
-
-/**
- * Internal user prompt appended after compaction so the model resumes from the
- * summarized context on the next turn.
- */
-export const COMPACTION_RESUME_PROMPT =
-	"Use the above summary to resume the plan from where we left off.";
 
 const MAX_COMPACTION_OVERFLOW_RETRIES = 3;
 const PREVIOUS_SUMMARY_PREFIX = "Previous session summary:\n";
@@ -1490,46 +1497,6 @@ export function decorateSummaryText(
 		: "_Local summary of prior discussion (model unavailable)._\n\n";
 
 	return `${handoffPrefix}${summaryText}\n\n(Compacted ${compactedCount} messages on ${new Date().toLocaleString()})`;
-}
-
-/**
- * Check whether text matches the decorated compaction summary format.
- */
-export function isDecoratedCompactionSummaryText(text: string): boolean {
-	const normalized = text.trim();
-	if (!normalized) return false;
-	return (
-		normalized.includes(
-			"Another language model started to solve this problem",
-		) ||
-		normalized.includes("(Compacted") ||
-		normalized.includes("_Local summary of prior discussion")
-	);
-}
-
-/**
- * Check whether a message is a decorated assistant compaction summary.
- */
-export function isDecoratedCompactionSummaryMessage(
-	message: AppMessage,
-): boolean {
-	if (message.role !== "assistant") return false;
-	return isDecoratedCompactionSummaryText(extractMessageText(message));
-}
-
-/**
- * Check whether text matches the internal post-compaction resume prompt.
- */
-export function isCompactionResumePromptText(text: string): boolean {
-	return text.trim() === COMPACTION_RESUME_PROMPT;
-}
-
-/**
- * Check whether a message is the internal post-compaction resume prompt.
- */
-export function isCompactionResumePromptMessage(message: AppMessage): boolean {
-	if (message.role !== "user") return false;
-	return isCompactionResumePromptText(extractMessageText(message));
 }
 
 /**

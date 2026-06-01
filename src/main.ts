@@ -92,14 +92,9 @@ import type {
 	ApprovalMode,
 } from "./agent/action-approval.js";
 import type { Agent, Api, Model } from "./agent/index.js";
-import { loadScriptedScenarioFromSource } from "./agent/providers/scripted.js";
-import { scenarioSourceLabel } from "./agent/scenario-source.js";
+import { applySessionStartHooks } from "./agent/session-start-hooks.js";
 import { type ToolRetryMode, ToolRetryService } from "./agent/tool-retry.js";
 import type { ClientToolExecutionService } from "./agent/transport.js";
-import {
-	applySessionStartHooks,
-	runUserPromptWithRecovery,
-} from "./agent/user-prompt-runtime.js";
 import { PlatformBackedActionApprovalService } from "./approvals/platform-action-approval.js";
 import { createAuthSetup, validateCodexFlags } from "./bootstrap/auth-setup.js";
 import {
@@ -108,10 +103,7 @@ import {
 } from "./checkpoints/index.js";
 import type { TuiClientToolService } from "./cli-tui/client-tools/local-client-tool-service.js";
 import { type Mode, parseArgs } from "./cli/args.js";
-import {
-	EXEC_SESSION_SUMMARY_PREFIX,
-	runExecCommand,
-} from "./cli/commands/exec.js";
+import { EXEC_SESSION_SUMMARY_PREFIX } from "./cli/commands/exec-constants.js";
 import {
 	isHeadlessModeRequested,
 	recordHeadlessRuntimeSelection,
@@ -136,7 +128,6 @@ import { getPackageVersion } from "./package-metadata.js";
 import { resolveMaestroSystemPrompt } from "./prompts/system-prompt.js";
 import type { AuthMode } from "./providers/auth.js";
 import { configureSafeMode } from "./safety/safe-mode.js";
-import { LocalSandbox } from "./sandbox/index.js";
 import { SessionManager } from "./session/manager.js";
 import { beaconTimeoutMs } from "./telemetry/beacon.js";
 import { recordStagedRolloutSurfaceUsageLazy } from "./telemetry/staged-rollout-lazy.js";
@@ -417,6 +408,9 @@ async function runSingleShotMode(
 	// Adapter translates agent events to JSONL format
 	const adapter =
 		jsonlWriter && createAgentJsonlAdapter(jsonlWriter, nextTurnId);
+	const { runUserPromptWithRecovery } = await import(
+		"./agent/user-prompt-runtime.js"
+	);
 
 	// In JSON mode, emit thread start and subscribe to all events
 	if (jsonlWriter) {
@@ -510,13 +504,36 @@ function resolveSessionStartHookSource(params: {
 	return "cli";
 }
 
-async function readReplayScenarioId(source: string): Promise<string> {
+async function readReplayScenarioMetadata(
+	source: string,
+): Promise<{ scenarioId: string; sourceLabel: string }> {
+	const { scenarioSourceLabel } = await import("./agent/scenario-source.js");
+	const sourceLabel = scenarioSourceLabel(source);
 	try {
-		return (await loadScriptedScenarioFromSource(source)).id;
+		const { loadScriptedScenarioFromSource } = await import(
+			"./agent/providers/scripted.js"
+		);
+		return {
+			scenarioId: (await loadScriptedScenarioFromSource(source)).id,
+			sourceLabel,
+		};
 	} catch {
 		// The scripted provider surfaces schema and file errors during streaming.
 	}
-	return scenarioSourceLabel(source);
+	return { scenarioId: sourceLabel, sourceLabel };
+}
+
+async function resolveConstraintSandboxMode(params: {
+	sandbox: unknown;
+	sandboxMode: string | undefined;
+}): Promise<"none" | "local" | string | null> {
+	if (!params.sandbox) {
+		return "none";
+	}
+	const { LocalSandbox } = await import("./sandbox/local-sandbox.js");
+	return params.sandbox instanceof LocalSandbox
+		? "local"
+		: (params.sandboxMode ?? null);
 }
 
 /**
@@ -668,14 +685,24 @@ export async function main(args: string[]) {
 
 	const replayScenarioPath =
 		parsed.replayScenarioPath ?? process.env.MAESTRO_SCENARIO_PATH;
+	let scenarioReplay:
+		| {
+				path: string;
+				scenarioId: string;
+		  }
+		| undefined;
 	if (replayScenarioPath) {
 		parsed.replayScenarioPath = replayScenarioPath;
 		process.env.MAESTRO_SCENARIO_PATH = replayScenarioPath;
-		process.env.MAESTRO_SCENARIO_ID =
-			await readReplayScenarioId(replayScenarioPath);
+		const replayScenario = await readReplayScenarioMetadata(replayScenarioPath);
+		process.env.MAESTRO_SCENARIO_ID = replayScenario.scenarioId;
 		process.env.MAESTRO_MODE = "replay";
 		parsed.provider = "scripted-replay";
 		parsed.model = "maestro-replay-v1";
+		scenarioReplay = {
+			path: replayScenario.sourceLabel,
+			scenarioId: replayScenario.scenarioId,
+		};
 	}
 
 	// Handle `maestro hosted-runner` before importing web-server so hosted
@@ -1128,6 +1155,9 @@ export async function main(args: string[]) {
 		return;
 	}
 
+	const execCommandModulePromise =
+		parsed.command === "exec" ? import("./cli/commands/exec.js") : undefined;
+
 	// Handle cost commands
 	if (parsed.command === "cost") {
 		const { handleCostSummary, handleCostClear, handleCostBreakdown } =
@@ -1527,11 +1557,10 @@ export async function main(args: string[]) {
 	// Build the system prompt with project context after sandbox setup so runtime
 	// constraint fragments reflect the resolved sandbox state, not just the
 	// requested CLI mode.
-	const resolvedConstraintSandboxMode = sandbox
-		? sandbox instanceof LocalSandbox
-			? "local"
-			: (sandboxMode ?? null)
-		: "none";
+	const resolvedConstraintSandboxMode = await resolveConstraintSandboxMode({
+		sandbox,
+		sandboxMode,
+	});
 	const systemPromptToolNames =
 		parsed.tools ??
 		(model.api === "openai-codex-app-server"
@@ -1733,13 +1762,7 @@ export async function main(args: string[]) {
 		cwd: process.cwd(),
 		enterpriseContext,
 		automaticMemoryExtraction: automaticMemory.extraction,
-		scenarioReplay:
-			parsed.replayScenarioPath && process.env.MAESTRO_SCENARIO_ID
-				? {
-						path: scenarioSourceLabel(parsed.replayScenarioPath),
-						scenarioId: process.env.MAESTRO_SCENARIO_ID,
-					}
-				: undefined,
+		scenarioReplay,
 		scenarioRecorder,
 	});
 
@@ -1807,6 +1830,8 @@ export async function main(args: string[]) {
 			);
 		} else if (parsed.command === "exec") {
 			startupProfiler.terminal("exec:ready");
+			const { runExecCommand } = await (execCommandModulePromise ??
+				import("./cli/commands/exec.js"));
 			await runExecCommand({
 				agent,
 				sessionManager,
