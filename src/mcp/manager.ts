@@ -908,6 +908,14 @@ export class McpClientManager extends EventEmitter {
 				timeout: config.timeout ?? DEFAULT_TIMEOUT_MS,
 			});
 
+			if (
+				pending?.cancelled ||
+				!canConnectServer(config, buildProjectApprovalMap(this.config))
+			) {
+				await Promise.allSettled([client.close(), transport.close()]);
+				return;
+			}
+
 			// Fetch capabilities
 			const tools = await this.fetchTools(client);
 			const resources = await this.fetchResources(client);

@@ -1160,6 +1160,33 @@ describe("MCP manager remote transports", () => {
 		expect(manager.isConnected("remote-http")).toBe(false);
 	});
 
+	it("does not fetch capabilities after cancellation during remote connect", async () => {
+		const server = {
+			name: "remote-http",
+			transport: "http" as const,
+			url: "https://example.com/mcp",
+		};
+		let resolveConnect!: () => void;
+		mockClientConnect.mockReturnValueOnce(
+			new Promise<void>((resolve) => {
+				resolveConnect = resolve;
+			}),
+		);
+
+		const configure = manager.configure({ servers: [server] });
+		await vi.waitFor(() => {
+			expect(mockClientConnect).toHaveBeenCalledTimes(1);
+		});
+
+		await manager.disconnectAll();
+		resolveConnect();
+		await configure;
+
+		expect(mockListTools).not.toHaveBeenCalled();
+		expect(manager.isConnected("remote-http")).toBe(false);
+		expect(manager.getStatus().servers[0]?.error).toBeUndefined();
+	});
+
 	it("tracks reconnect retries so they can be cancelled while fetching capabilities", async () => {
 		const server = {
 			name: "remote-http",
