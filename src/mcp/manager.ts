@@ -918,8 +918,29 @@ export class McpClientManager extends EventEmitter {
 
 			// Fetch capabilities
 			const tools = await this.fetchTools(client);
+			if (
+				pending?.cancelled ||
+				!canConnectServer(config, buildProjectApprovalMap(this.config))
+			) {
+				await Promise.allSettled([client.close(), transport.close()]);
+				return;
+			}
 			const resources = await this.fetchResources(client);
+			if (
+				pending?.cancelled ||
+				!canConnectServer(config, buildProjectApprovalMap(this.config))
+			) {
+				await Promise.allSettled([client.close(), transport.close()]);
+				return;
+			}
 			const promptDetails = await this.fetchPrompts(client);
+			if (
+				pending?.cancelled ||
+				!canConnectServer(config, buildProjectApprovalMap(this.config))
+			) {
+				await Promise.allSettled([client.close(), transport.close()]);
+				return;
+			}
 			const prompts = getPromptNames(promptDetails);
 			const serverCapabilities = client.getServerCapabilities();
 			const parallelSafetyByTool = resolveParallelSafetyByTool({

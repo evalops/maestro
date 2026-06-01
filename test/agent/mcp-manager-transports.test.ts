@@ -20,6 +20,7 @@ const mockCallTool = vi.fn();
 const mockSetNotificationHandler = vi.fn();
 const mockSetRequestHandler = vi.fn();
 const mockListTools = vi.fn().mockResolvedValue({ tools: [] });
+const mockListResources = vi.fn().mockResolvedValue({ resources: [] });
 const mockListPrompts = vi.fn().mockResolvedValue({ prompts: [] });
 const mockTransportClose = vi.fn().mockResolvedValue(undefined);
 let mockServerCapabilities: Record<string, unknown> = {
@@ -40,7 +41,7 @@ vi.mock("@modelcontextprotocol/sdk/client/index.js", () => ({
 		connect = mockClientConnect.mockResolvedValue(undefined);
 		getServerCapabilities = vi.fn(() => mockServerCapabilities);
 		listTools = mockListTools;
-		listResources = vi.fn().mockResolvedValue({ resources: [] });
+		listResources = mockListResources;
 		listPrompts = mockListPrompts;
 		callTool = mockCallTool.mockResolvedValue({
 			content: [{ type: "text", text: "ok" }],
@@ -97,6 +98,7 @@ describe("MCP manager remote transports", () => {
 		mockSetRequestHandler.mockClear();
 		mockTransportClose.mockClear();
 		mockListTools.mockReset().mockResolvedValue({ tools: [] });
+		mockListResources.mockReset().mockResolvedValue({ resources: [] });
 		mockListPrompts.mockReset().mockResolvedValue({ prompts: [] });
 		mockServerCapabilities = {
 			tools: {},
@@ -1183,6 +1185,61 @@ describe("MCP manager remote transports", () => {
 		await configure;
 
 		expect(mockListTools).not.toHaveBeenCalled();
+		expect(manager.isConnected("remote-http")).toBe(false);
+		expect(manager.getStatus().servers[0]?.error).toBeUndefined();
+	});
+
+	it("does not fetch later capabilities after cancellation during tool discovery", async () => {
+		const server = {
+			name: "remote-http",
+			transport: "http" as const,
+			url: "https://example.com/mcp",
+		};
+		let resolveListTools!: (value: { tools: [] }) => void;
+		mockListTools.mockReturnValueOnce(
+			new Promise((resolve) => {
+				resolveListTools = resolve;
+			}),
+		);
+
+		const configure = manager.configure({ servers: [server] });
+		await vi.waitFor(() => {
+			expect(mockListTools).toHaveBeenCalledTimes(1);
+		});
+
+		await manager.disconnectAll();
+		resolveListTools({ tools: [] });
+		await configure;
+
+		expect(mockListResources).not.toHaveBeenCalled();
+		expect(mockListPrompts).not.toHaveBeenCalled();
+		expect(manager.isConnected("remote-http")).toBe(false);
+		expect(manager.getStatus().servers[0]?.error).toBeUndefined();
+	});
+
+	it("does not fetch prompts after cancellation during resource discovery", async () => {
+		const server = {
+			name: "remote-http",
+			transport: "http" as const,
+			url: "https://example.com/mcp",
+		};
+		let resolveListResources!: (value: { resources: [] }) => void;
+		mockListResources.mockReturnValueOnce(
+			new Promise((resolve) => {
+				resolveListResources = resolve;
+			}),
+		);
+
+		const configure = manager.configure({ servers: [server] });
+		await vi.waitFor(() => {
+			expect(mockListResources).toHaveBeenCalledTimes(1);
+		});
+
+		await manager.disconnectAll();
+		resolveListResources({ resources: [] });
+		await configure;
+
+		expect(mockListPrompts).not.toHaveBeenCalled();
 		expect(manager.isConnected("remote-http")).toBe(false);
 		expect(manager.getStatus().servers[0]?.error).toBeUndefined();
 	});
