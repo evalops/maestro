@@ -89,6 +89,41 @@ async function writeOssSkillPackageAt(packageDir: string): Promise<string> {
 	return packageDir;
 }
 
+async function writeDescribeFailingSkillPackageAt(packageDir: string): Promise<{
+	packageDir: string;
+	skillDir: string;
+}> {
+	const skillDir = join(packageDir, "skills", "strict-toolbox");
+	const toolboxDir = join(skillDir, "toolbox");
+	await mkdir(toolboxDir, { recursive: true });
+	writeFileSync(
+		join(packageDir, "package.json"),
+		JSON.stringify(
+			{
+				name: "@test/maestro-strict-toolbox",
+				version: "1.0.0",
+				keywords: ["maestro-package", "maestro-skill-package"],
+				maestro: {
+					skills: ["./skills"],
+				},
+			},
+			null,
+			2,
+		),
+	);
+	writeFileSync(
+		join(skillDir, "SKILL.md"),
+		`---\nname: strict-toolbox\ndescription: "Validate toolbox describe behavior. Use when testing strict package checks."\n---\n\n# Strict Toolbox\n`,
+	);
+	const toolboxPath = join(toolboxDir, "describe-fail");
+	writeFileSync(
+		toolboxPath,
+		'#!/usr/bin/env bash\nif [ "${MAESTRO_TOOLBOX_ACTION:-}" = "describe" ]; then\n  echo describe failed >&2\n  exit 42\nfi\necho ok\n',
+	);
+	chmodSync(toolboxPath, 0o755);
+	return { packageDir, skillDir };
+}
+
 async function captureSkillCommand(
 	subcommand: string,
 	args: string[],
@@ -818,6 +853,57 @@ describe("skill package format", () => {
 		);
 	});
 
+	it("does not execute toolbox describe checks from the plain lint compatibility flag", async () => {
+		const workspace = tempRoot();
+		const { skillDir } = await writeDescribeFailingSkillPackageAt(
+			join(workspace, "vendor", "strict-toolbox"),
+		);
+
+		const { logs, errors } = await captureSkillCommand(
+			"lint",
+			["--describe-toolbox", "--json", skillDir],
+			workspace,
+		);
+
+		const payload = JSON.parse(logs.join("\n")) as {
+			results: Array<{ issues: Array<{ code: string }> }>;
+		};
+		expect(errors).toEqual([]);
+		expect(payload.results[0]?.issues).not.toEqual(
+			expect.arrayContaining([
+				expect.objectContaining({ code: "toolbox_describe_failed" }),
+			]),
+		);
+		expect(process.exitCode).toBeUndefined();
+	});
+
+	it("preserves strict toolbox describe validation for eval and publish-check", async () => {
+		const workspace = tempRoot();
+		const { packageDir, skillDir } = await writeDescribeFailingSkillPackageAt(
+			join(workspace, "vendor", "strict-toolbox"),
+		);
+
+		const report = await evaluateSkillPackages([{ path: skillDir }], {
+			describeToolbox: true,
+		});
+		expect(report.summary).toMatchObject({ total: 1, passed: 0, failed: 1 });
+		expect(report.results[0]?.issues).toEqual(
+			expect.arrayContaining([
+				expect.objectContaining({ code: "toolbox_describe_failed" }),
+			]),
+		);
+
+		const contract = await buildSkillPackagePublishContract(packageDir, {
+			cwd: workspace,
+			describeToolbox: true,
+		});
+		expect(contract.issues).toEqual(
+			expect.arrayContaining([
+				expect.objectContaining({ code: "skill_package_eval_failed" }),
+			]),
+		);
+	});
+
 	it("scaffolds a package that passes lint", async () => {
 		const root = tempRoot();
 		const scaffold = scaffoldSkill(root, "processing-incidents", {
@@ -914,6 +1000,21 @@ describe("skill package format", () => {
 		expect(parsed.command).toBe("skill");
 		expect(parsed.subcommand).toBe("lint");
 		expect(parsed.commandArgs).toEqual(["--json", ".maestro/skills"]);
+	});
+
+	it("documents describe-toolbox as strict outside lint", async () => {
+		const workspace = tempRoot();
+
+		const { logs, errors } = await captureSkillCommand(
+			"eval",
+			["--help"],
+			workspace,
+		);
+
+		expect(errors).toEqual([]);
+		expect(logs.join("\n")).toContain(
+			"--describe-toolbox           Eval/publish-check run describe; lint ignores it",
+		);
 	});
 
 	it("supports the skill CLI scaffold command", async () => {

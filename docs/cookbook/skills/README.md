@@ -65,10 +65,10 @@ itself when `MAESTRO_TOOLBOX_ACTION=describe` is set:
 MAESTRO_TOOLBOX_ACTION=describe .maestro/skills/reviewing-prs/toolbox/list-pr-files
 ```
 
-Run strict validation with:
+Validate packages with:
 
 ```bash
-maestro skill lint .maestro/skills/reviewing-prs --describe-toolbox
+maestro skill lint .maestro/skills/reviewing-prs
 ```
 
 If a toolbox helper is shell-specific, include a same-stem Windows companion such
