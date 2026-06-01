@@ -87,15 +87,28 @@ async function refreshInstalledCliOnStartup(
 	ignoredEnvKeys: string[] = [],
 ): Promise<void> {
 	try {
+		const env = { ...process.env };
+		for (const key of ignoredEnvKeys) {
+			delete env[key];
+		}
+		const startupUpdateMode = env.MAESTRO_STARTUP_UPDATE?.trim().toLowerCase();
+		if (
+			env.MAESTRO_SKIP_STARTUP_UPDATE ||
+			env.CI ||
+			env.NODE_ENV === "test" ||
+			startupUpdateMode === "0" ||
+			startupUpdateMode === "false" ||
+			startupUpdateMode === "off" ||
+			!process.stdin.isTTY ||
+			!process.stdout.isTTY
+		) {
+			return;
+		}
 		const [{ getPackageName, getPackageVersion }, { attemptStartupUpdate }] =
 			await Promise.all([
 				import("./package-metadata.js"),
 				import("./update/startup-refresh.js"),
 			]);
-		const env = { ...process.env };
-		for (const key of ignoredEnvKeys) {
-			delete env[key];
-		}
 		const outcome = await attemptStartupUpdate({
 			args,
 			currentVersion: getPackageVersion(env),

@@ -7,7 +7,7 @@
 import type { Stats } from "node:fs";
 import { existsSync, readFileSync } from "node:fs";
 import { v4 as uuidv4 } from "uuid";
-import { isDecoratedCompactionSummaryMessage } from "../agent/compaction.js";
+import { isDecoratedCompactionSummaryMessage } from "../agent/compaction-markers.js";
 import {
 	createBranchSummaryMessage,
 	createCompactionSummaryMessage,
