@@ -528,6 +528,13 @@ export interface McpPromptDefinition {
 
 export type McpRemoteTrust = "official" | "custom" | "unknown";
 
+export type McpConfigScope =
+	| "enterprise"
+	| "plugin"
+	| "project"
+	| "local"
+	| "user";
+
 export type McpProjectApprovalStatus = "pending" | "approved" | "denied";
 
 export interface McpOfficialRegistryInfo {
@@ -559,7 +566,7 @@ export interface McpOfficialRegistryEntry extends McpOfficialRegistryInfo {
 export interface McpServerStatus {
 	name: string;
 	connected: boolean;
-	scope?: "enterprise" | "plugin" | "project" | "local" | "user";
+	scope?: McpConfigScope;
 	transport?: "stdio" | "http" | "sse";
 	tools?: McpToolDefinition[] | number;
 	toolCapabilitySummary?: {
@@ -595,7 +602,7 @@ export interface McpServerStatus {
 
 export interface McpAuthPresetStatus {
 	name: string;
-	scope?: "enterprise" | "plugin" | "project" | "local" | "user";
+	scope?: McpConfigScope;
 	headerKeys: string[];
 	headersHelper?: string;
 }
@@ -688,7 +695,7 @@ export interface McpServerRemoveResponse {
 	path: string;
 	fallback: {
 		name: string;
-		scope?: "enterprise" | "plugin" | "project" | "local" | "user";
+		scope?: McpConfigScope;
 	} | null;
 }
 
@@ -732,7 +739,7 @@ export interface McpProjectApprovalRequest {
 
 export interface McpProjectApprovalResponse {
 	name: string;
-	scope: "project";
+	scope?: McpConfigScope;
 	decision: Exclude<McpProjectApprovalStatus, "pending">;
 	projectApproval: McpProjectApprovalStatus;
 }
