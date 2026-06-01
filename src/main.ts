@@ -1709,20 +1709,30 @@ export async function main(args: string[]) {
 	const isFreshInteractiveSession =
 		isInteractive && !shouldRestoreSession && mode !== "rpc";
 
-	const { restoreSessionState } = await import(
-		"./bootstrap/session-restoration-setup.js"
-	);
-	const { startupChangelogSummary, updateNotice, scopedModels } =
-		await restoreSessionState({
-			agent,
-			sessionManager,
-			shouldRestoreSession,
-			isContinueOrResume: Boolean(parsed.continue || parsed.resume),
-			shouldPrintMessages,
-			isFreshInteractiveSession,
-			version: VERSION,
-			models: parsed.models,
-		});
+	let startupChangelogSummary: string | null = null;
+	let updateNotice: UpdateCheckResult | null = null;
+	let scopedModels: RegisteredModel[] = [];
+	const needsSessionRestorationSetup =
+		shouldRestoreSession ||
+		(shouldPrintMessages && !(parsed.continue || parsed.resume)) ||
+		Boolean(parsed.models?.length) ||
+		isFreshInteractiveSession;
+	if (needsSessionRestorationSetup) {
+		const { restoreSessionState } = await import(
+			"./bootstrap/session-restoration-setup.js"
+		);
+		({ startupChangelogSummary, updateNotice, scopedModels } =
+			await restoreSessionState({
+				agent,
+				sessionManager,
+				shouldRestoreSession,
+				isContinueOrResume: Boolean(parsed.continue || parsed.resume),
+				shouldPrintMessages,
+				isFreshInteractiveSession,
+				version: VERSION,
+				models: parsed.models,
+			}));
+	}
 
 	await applySessionStartHooks({
 		agent,
