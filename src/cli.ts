@@ -51,6 +51,61 @@ function isHeadlessInvocation(args: string[]): boolean {
 	return false;
 }
 
+// Keep this detector local: importing the shared command runtime detector is the
+// pre-main work the exec fast path avoids.
+const EXEC_RUNTIME_FLAGS_WITH_VALUES = new Set([
+	"--mode",
+	"--provider",
+	"--model",
+	"-m",
+	"--task-budget",
+	"--models",
+	"--models-file",
+	"--api-key",
+	"--port",
+	"--system-prompt",
+	"--append-system-prompt",
+	"--session",
+	"--approval-mode",
+	"--auth",
+	"--sandbox",
+	"--output-schema",
+	"--output-last-message",
+	"--tools",
+	"--composer",
+	"--format",
+	"--profile",
+	"--config",
+	"--junit",
+	"--replay",
+	"--record-scenario",
+]);
+
+function getLauncherRuntimeCommand(args: readonly string[]): string | null {
+	for (let index = 0; index < args.length; index++) {
+		const arg = args[index];
+		if (!arg) {
+			continue;
+		}
+		if (EXEC_RUNTIME_FLAGS_WITH_VALUES.has(arg) && index + 1 < args.length) {
+			index++;
+			continue;
+		}
+		if (arg.startsWith("-")) {
+			continue;
+		}
+		return arg;
+	}
+	return null;
+}
+
+function shouldUseFastUnbundledExecRuntime(args: readonly string[]): boolean {
+	if (typeof MAESTRO_BUNDLE_RUNTIME !== "undefined" && MAESTRO_BUNDLE_RUNTIME) {
+		return false;
+	}
+	return getLauncherRuntimeCommand(args) === "exec";
+}
+
 function emitHeadlessStartupError(error: unknown): void {
 	const message = error instanceof Error ? error.message : String(error);
 	const stack = error instanceof Error ? error.stack : undefined;
@@ -227,6 +282,10 @@ const run = async () => {
 			loadedEnvKeys = loadEnv();
 		}
 		await refreshInstalledCliOnStartup(args, loadedEnvKeys);
+		if (shouldUseFastUnbundledExecRuntime(args)) {
+			await runMainRuntime(args);
+			return;
+		}
 		if (await runCliCommandRuntime(args)) {
 			return;
 		}
