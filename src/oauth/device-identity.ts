@@ -4,6 +4,7 @@ import { PLATFORM_HTTP_ROUTES } from "../platform/core-services.js";
 import { fetchDownstream } from "../utils/downstream-http.js";
 
 const DEFAULT_TIMEOUT_MS = 10_000;
+const SIGN_TIMEOUT_MS = 120_000;
 
 export interface DeviceIdentityStatus {
 	available: boolean;
@@ -61,6 +62,7 @@ function isAbortError(error: unknown): boolean {
 
 async function runHelper(
 	request: Record<string, unknown>,
+	timeoutMs = DEFAULT_TIMEOUT_MS,
 ): Promise<DeviceIdentityStatus | null> {
 	const helperPath = getHelperPath();
 	if (!helperPath || !(await helperExists(helperPath))) {
@@ -75,7 +77,7 @@ async function runHelper(
 		const timeout = setTimeout(() => {
 			child.kill("SIGKILL");
 			resolve(null);
-		}, DEFAULT_TIMEOUT_MS);
+		}, timeoutMs);
 		child.stdout.setEncoding("utf8");
 		child.stdout.on("data", (chunk) => {
 			stdout += chunk;
@@ -103,7 +105,10 @@ export async function getDesktopDeviceIdentityStatus(): Promise<DeviceIdentitySt
 async function signDeviceChallenge(
 	challenge: string,
 ): Promise<DeviceIdentityStatus | null> {
-	const response = await runHelper({ command: "sign", challenge });
+	const response = await runHelper(
+		{ command: "sign", challenge },
+		SIGN_TIMEOUT_MS,
+	);
 	if (!response?.available || !response.device_id || !response.signature) {
 		return null;
 	}
