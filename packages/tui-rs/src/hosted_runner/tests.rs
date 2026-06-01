@@ -113,6 +113,7 @@ fn test_config(workspace_root: PathBuf) -> HostedRunnerConfig {
         agent_run_id: Some("run_test".to_string()),
         maestro_session_id: Some("sess_test".to_string()),
         attach_audience: None,
+        auth_token: None,
     }
 }
 
@@ -265,6 +266,10 @@ fn preserves_wildcard_bind_for_port_only_hosted_runner_env() {
     ] {
         let mut env = base_hosted_runner_env(workspace.path());
         env.insert(key.to_string(), value.to_string());
+        env.insert(
+            "MAESTRO_HOSTED_RUNNER_AUTH_TOKEN".to_string(),
+            "secret-token".to_string(),
+        );
 
         let config = HostedRunnerConfig::from_env_map(&env).expect("config");
 
@@ -274,6 +279,50 @@ fn preserves_wildcard_bind_for_port_only_hosted_runner_env() {
             "{key} should preserve hosted ingress wildcard binding"
         );
     }
+}
+
+#[test]
+fn rejects_non_loopback_bind_without_auth_token() {
+    let workspace = tempdir().expect("workspace");
+    let mut env = base_hosted_runner_env(workspace.path());
+    env.insert(
+        "MAESTRO_HOSTED_RUNNER_LISTEN".to_string(),
+        "0.0.0.0:9090".to_string(),
+    );
+
+    let error = HostedRunnerConfig::from_env_map(&env).expect_err("expected config error");
+    assert!(error
+        .to_string()
+        .contains("MAESTRO_HOSTED_RUNNER_AUTH_TOKEN"));
+}
+
+#[tokio::test]
+async fn rejects_public_api_non_loopback_bind_without_auth_token() {
+    let workspace = tempdir().expect("workspace");
+    let config = test_config(workspace.path().to_path_buf())
+        .with_bind_addr("0.0.0.0:0".parse().expect("bind addr"));
+
+    let error = match start_hosted_runner(config).await {
+        Ok(_) => panic!("expected auth token error"),
+        Err(error) => error,
+    };
+    assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
+    assert!(error.to_string().contains("auth_token"));
+}
+
+#[tokio::test]
+async fn rejects_public_api_non_loopback_bind_with_blank_auth_token() {
+    let workspace = tempdir().expect("workspace");
+    let config = test_config(workspace.path().to_path_buf())
+        .with_bind_addr("0.0.0.0:0".parse().expect("bind addr"))
+        .with_auth_token("   ");
+
+    let error = match start_hosted_runner(config).await {
+        Ok(_) => panic!("expected auth token error"),
+        Err(error) => error,
+    };
+    assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
+    assert!(error.to_string().contains("auth_token"));
 }
 
 #[test]
@@ -289,6 +338,44 @@ fn explicit_host_env_overrides_port_only_wildcard_bind() {
     let config = HostedRunnerConfig::from_env_map(&env).expect("config");
 
     assert_eq!(config.bind_addr, "127.0.0.1:9090".parse().unwrap());
+}
+
+#[tokio::test]
+async fn headless_routes_require_auth_token_when_configured() {
+    let workspace = tempdir().expect("workspace");
+    let config = test_config(workspace.path().to_path_buf()).with_auth_token("secret-token");
+    let handle = start_hosted_runner(config)
+        .await
+        .expect("start hosted runner");
+    let client = reqwest::Client::new();
+
+    let unauthorized = client
+        .post(format!("{}/api/headless/connections", handle.base_url()))
+        .json(&json!({"sessionId": "sess_test", "role": "controller"}))
+        .send()
+        .await
+        .expect("unauthorized response");
+    assert_eq!(unauthorized.status(), StatusCode::FORBIDDEN);
+
+    let authorized = client
+        .post(format!("{}/api/headless/connections", handle.base_url()))
+        .header("authorization", "Bearer secret-token")
+        .json(&json!({"sessionId": "sess_test", "role": "controller"}))
+        .send()
+        .await
+        .expect("authorized response");
+    assert_eq!(authorized.status(), StatusCode::OK);
+
+    let custom_token_authorized = client
+        .post(format!("{}/api/headless/connections", handle.base_url()))
+        .header("authorization", "Bearer wrong-forwarded-token")
+        .header("x-maestro-hosted-runner-token", "secret-token")
+        .json(&json!({"sessionId": "sess_test", "role": "viewer"}))
+        .send()
+        .await
+        .expect("custom token authorized response");
+    assert_eq!(custom_token_authorized.status(), StatusCode::OK);
+    handle.shutdown().await;
 }
 
 #[test]

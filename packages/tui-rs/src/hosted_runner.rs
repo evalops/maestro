@@ -414,6 +414,13 @@ pub async fn start_hosted_runner_with_message_executor(
     }
 
     let mut config = config;
+    config.auth_token = normalize_auth_token(config.auth_token.as_deref()).map(str::to_string);
+    if !config.bind_addr.ip().is_loopback() && config.auth_token.is_none() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "maestro hosted-runner requires auth_token when binding to non-loopback interfaces",
+        ));
+    }
     config.workspace_root = workspace_root;
     let restore_manifest = load_restore_manifest(&config).await?;
     let listener = TcpListener::bind(config.bind_addr).await?;
@@ -629,6 +636,9 @@ enum ResponseBody {
 }
 
 async fn route_request(request: HttpRequest, shared: SharedRunner) -> HostedResult<ResponseBody> {
+    if request.path == HOSTED_RUNNER_DRAIN_PATH || request.path.starts_with("/api/headless/") {
+        require_auth_header(&request.headers, shared.config.auth_token.as_deref())?;
+    }
     match (request.method.as_str(), request.path.as_str()) {
         ("GET", HOSTED_RUNNER_IDENTITY_PATH) => json_response(200, shared.identity()),
         ("GET", "/readyz" | "/healthz") => {
@@ -702,6 +712,33 @@ async fn route_request(request: HttpRequest, shared: SharedRunner) -> HostedResu
             "route not found",
         )),
     }
+}
+
+fn require_auth_header(
+    headers: &HashMap<String, String>,
+    expected_token: Option<&str>,
+) -> HostedResult<()> {
+    let Some(expected_token) = normalize_auth_token(expected_token) else {
+        return Ok(());
+    };
+    let bearer_token = headers
+        .get("authorization")
+        .and_then(|value| value.strip_prefix("Bearer "))
+        .and_then(|value| normalize_auth_token(Some(value)));
+    let runner_token = headers
+        .get("x-maestro-hosted-runner-token")
+        .and_then(|value| normalize_auth_token(Some(value)));
+    if bearer_token == Some(expected_token) || runner_token == Some(expected_token) {
+        return Ok(());
+    }
+    Err(HostedError::new(
+        HostedRunnerErrorCode::AccessDenied,
+        "missing or invalid hosted runner auth token",
+    ))
+}
+
+fn normalize_auth_token(token: Option<&str>) -> Option<&str> {
+    token.map(str::trim).filter(|value| !value.is_empty())
 }
 
 async fn handle_drain(shared: SharedRunner, input: DrainRequest) -> HostedResult<ResponseBody> {
