@@ -705,6 +705,7 @@ describe("SwarmExecutor", () => {
 				],
 			},
 		]);
+		vi.stubEnv("MAESTRO_A2A_TOKEN", "a2a-peer-token");
 		const executor = new SwarmExecutor({
 			...createConfig({ subagentType: "review" }),
 			transport: "a2a",
@@ -752,7 +753,7 @@ describe("SwarmExecutor", () => {
 		expect(serviceConfig).toEqual(
 			expect.objectContaining({
 				baseUrl: "https://target.internal/a2a",
-				token: "platform-token",
+				token: "a2a-peer-token",
 				organizationId: "org_evalops",
 				workspaceId: "workspace-1",
 				agentId: "agent-target",
@@ -769,6 +770,107 @@ describe("SwarmExecutor", () => {
 			expect.objectContaining({
 				source: "platform-agent-registry",
 				peer: "Target Maestro",
+			}),
+		);
+	});
+
+	it("falls back to the registry service token for discovered A2A peers", async () => {
+		listA2APeerCandidatesWithPlatformMock.mockResolvedValue([
+			{
+				agent: {
+					id: "agent-auth-required",
+					name: "Auth Required Maestro",
+					workspaceId: "workspace-1",
+					status: "AGENT_STATUS_IDLE",
+					lastHeartbeatAt: new Date().toISOString(),
+				},
+				endpointUrl: "https://auth-required.internal/a2a",
+				endpointKind: "internal",
+				pushNotifications: true,
+				skills: [
+					{
+						id: "maestro.subagent.code-review",
+						name: "Code Review",
+						allowedTaskClasses: ["code.review"],
+					},
+				],
+			},
+		]);
+		const executor = new SwarmExecutor({
+			...createConfig({ subagentType: "review" }),
+			transport: "a2a",
+			a2a: {
+				discover: true,
+				skillId: "maestro.subagent.code-review",
+				workspaceId: "workspace-1",
+				capability: "code-review",
+				preferInternalEndpoint: true,
+				maxWaitMs: 50,
+				pollIntervalMs: 1,
+			},
+			mode: "smart",
+			modelProvider: "anthropic",
+		});
+
+		const result = await executeWithTimeout(executor);
+
+		expect(result.status).toBe("completed");
+		expect(sendA2AMessageMock.mock.calls[0]?.[0]).toEqual(
+			expect.objectContaining({
+				baseUrl: "https://auth-required.internal/a2a",
+				token: "platform-token",
+				agentId: "agent-auth-required",
+			}),
+		);
+	});
+
+	it("uses Agent Runtime A2A token aliases before registry fallback", async () => {
+		listA2APeerCandidatesWithPlatformMock.mockResolvedValue([
+			{
+				agent: {
+					id: "agent-runtime-token",
+					name: "Runtime Token Maestro",
+					workspaceId: "workspace-1",
+					status: "AGENT_STATUS_IDLE",
+					lastHeartbeatAt: new Date().toISOString(),
+				},
+				endpointUrl: "https://runtime-token.internal/a2a",
+				endpointKind: "internal",
+				pushNotifications: true,
+				skills: [
+					{
+						id: "maestro.subagent.code-review",
+						name: "Code Review",
+						allowedTaskClasses: ["code.review"],
+					},
+				],
+			},
+		]);
+		vi.stubEnv("MAESTRO_AGENT_RUNTIME_SERVICE_TOKEN", "runtime-a2a-token");
+		const executor = new SwarmExecutor({
+			...createConfig({ subagentType: "review" }),
+			transport: "a2a",
+			a2a: {
+				discover: true,
+				skillId: "maestro.subagent.code-review",
+				workspaceId: "workspace-1",
+				capability: "code-review",
+				preferInternalEndpoint: true,
+				maxWaitMs: 50,
+				pollIntervalMs: 1,
+			},
+			mode: "smart",
+			modelProvider: "anthropic",
+		});
+
+		const result = await executeWithTimeout(executor);
+
+		expect(result.status).toBe("completed");
+		expect(sendA2AMessageMock.mock.calls[0]?.[0]).toEqual(
+			expect.objectContaining({
+				baseUrl: "https://runtime-token.internal/a2a",
+				token: "runtime-a2a-token",
+				agentId: "agent-runtime-token",
 			}),
 		);
 	});
@@ -817,13 +919,14 @@ describe("SwarmExecutor", () => {
 			.digest("hex")}`;
 		const expectedPeer = `endpoint:${expectedHash}`;
 		const expectedLaneId = a2aDelegationLaneId(expectedPeer, "task-1");
-		const [, input] = sendA2AMessageMock.mock.calls[0] as [
-			unknown,
+		const [serviceConfig, input] = sendA2AMessageMock.mock.calls[0] as [
+			Record<string, unknown>,
 			{
 				message: { metadata?: Record<string, unknown> };
 				metadata?: Record<string, unknown>;
 			},
 		];
+		expect(serviceConfig).not.toHaveProperty("agentId");
 		expect(input.message.metadata).toEqual(
 			expect.objectContaining({
 				relayPeer: expectedPeer,

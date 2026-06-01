@@ -26,6 +26,7 @@ import {
 	cancelA2ATask,
 	getA2ATask,
 	normalizeA2ABaseUrl,
+	resolveA2AServiceConfig,
 	sendA2AMessage,
 } from "../../platform/a2a-client.js";
 import { a2aDelegationLaneId } from "../../platform/a2a-completion-audit.js";
@@ -79,6 +80,12 @@ const DEFAULT_TASK_TIMEOUT_MS = 5 * 60 * 1000;
 /** Maximum concurrent teammates */
 const MAX_TEAMMATES = 10;
 const DEFAULT_A2A_POLL_INTERVAL_MS = 2_000;
+const DEDICATED_A2A_TOKEN_ENV_VARS = [
+	"MAESTRO_PLATFORM_A2A_TOKEN",
+	"MAESTRO_A2A_TOKEN",
+	"MAESTRO_AGENT_RUNTIME_SERVICE_TOKEN",
+	"AGENT_RUNTIME_SERVICE_TOKEN",
+] as const;
 const A2A_SKILL_PRIMARY_TASK_CLASSES = new Map<string, string>([
 	["maestro.subagent.code-writer", "code.implementation"],
 	["maestro.subagent.code-review", "code.review"],
@@ -1082,21 +1089,34 @@ export class SwarmExecutor {
 				"Platform Agent Registry service is not configured for A2A swarm discovery",
 			);
 		}
-		return {
+		const candidateAgentId = trimString(candidate.agent.id);
+		const registryTokenFallback = getEnvValue(DEDICATED_A2A_TOKEN_ENV_VARS)
+			? undefined
+			: platformConfig.token;
+		const serviceConfig = await resolveA2AServiceConfig({
 			baseUrl: normalizeA2ABaseUrl(candidate.endpointUrl),
-			...(platformConfig.token ? { token: platformConfig.token } : {}),
-			...(platformConfig.organizationId
-				? { organizationId: platformConfig.organizationId }
-				: {}),
+			token: registryTokenFallback,
+			organizationId: platformConfig.organizationId,
 			workspaceId:
 				candidate.agent.workspaceId ??
 				options.workspaceId ??
 				platformConfig.workspaceId,
-			...(candidate.agent.id ? { agentId: candidate.agent.id } : {}),
+			...(candidateAgentId ? { agentId: candidateAgentId } : {}),
 			actorId: "maestro-swarm",
 			timeoutMs: options.timeoutMs ?? platformConfig.timeoutMs,
 			maxAttempts: options.maxAttempts ?? platformConfig.maxAttempts,
-		};
+		});
+		if (!serviceConfig) {
+			throw new Error(
+				"Platform A2A peer discovery requires a workspace id for the selected peer",
+			);
+		}
+		if (!candidateAgentId) {
+			const { agentId: _defaultAgentId, ...anonymousServiceConfig } =
+				serviceConfig;
+			return anonymousServiceConfig;
+		}
+		return serviceConfig;
 	}
 
 	private selectA2APeerName(
