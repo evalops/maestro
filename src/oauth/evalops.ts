@@ -685,12 +685,6 @@ export async function loginEvalOps(
 			}),
 		]);
 
-		const deviceId = await enrollDesktopDeviceIdentity(
-			identityBaseUrl,
-			result.accessToken,
-			process.env.npm_package_version,
-		);
-
 		const credentials: OAuthCredentials = {
 			type: "oauth",
 			access: result.accessToken,
@@ -700,7 +694,6 @@ export async function loginEvalOps(
 				identityBaseUrl,
 				organizationId: result.organizationId,
 				providerRef,
-				...(deviceId ? { deviceId } : {}),
 				...(result.refreshExpiresAt
 					? { refreshExpiresAt: result.refreshExpiresAt }
 					: {}),
@@ -708,6 +701,20 @@ export async function loginEvalOps(
 			},
 		};
 		saveOAuthCredentials("evalops", credentials);
+		const deviceId = await enrollDesktopDeviceIdentity(
+			identityBaseUrl,
+			result.accessToken,
+			process.env.npm_package_version,
+		);
+		if (deviceId) {
+			saveOAuthCredentials("evalops", {
+				...credentials,
+				metadata: {
+					...credentials.metadata,
+					deviceId,
+				},
+			});
+		}
 		logger.info("EvalOps managed login successful", {
 			organizationId: result.organizationId,
 			provider: providerRef.provider,

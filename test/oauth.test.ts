@@ -1,4 +1,5 @@
 import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { get as httpGet } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -760,6 +761,77 @@ describe("OAuth Index", () => {
 					onStatus: () => {},
 				}),
 			).rejects.toThrow(/disabled by dynamic config/);
+		});
+
+		it("persists EvalOps login credentials before desktop enrollment prompts", async () => {
+			Object.defineProperty(process, "platform", {
+				configurable: true,
+				value: "linux",
+			});
+			process.env.MAESTRO_DEVICE_IDENTITY_HELPER = fileURLToPath(
+				new URL("../scripts/fake-device-identity-helper.mjs", import.meta.url),
+			);
+			process.env.MAESTRO_DEVICE_IDENTITY_ALLOW_TEST_HELPER = "1";
+			process.env.MAESTRO_EVALOPS_ORG_ID = "org_123";
+			process.env.MAESTRO_IDENTITY_URL = "https://identity.evalops.test";
+
+			const expiresAt = new Date(Date.now() + 60 * 60 * 1000).toISOString();
+			let refreshTokenAtEnrollment: string | undefined;
+			const fetchMock = vi.fn(async (input) => {
+				const url = String(input);
+				if (url.endsWith("/v1/auth/google/start")) {
+					return new Response(
+						JSON.stringify({
+							authorization_url: "https://accounts.google.test/auth",
+						}),
+						{ status: 200, headers: { "Content-Type": "application/json" } },
+					);
+				}
+				if (url.endsWith("/v1/device-challenges")) {
+					refreshTokenAtEnrollment = loadOAuthCredentials("evalops")?.refresh;
+					return new Response(
+						JSON.stringify({
+							challenge: "challenge:enroll:none",
+							challenge_id: "challenge-1",
+						}),
+						{ status: 200, headers: { "Content-Type": "application/json" } },
+					);
+				}
+				if (url.endsWith("/v1/devices")) {
+					return new Response(
+						JSON.stringify({ device: { id: "desktop-test-device" } }),
+						{ status: 200, headers: { "Content-Type": "application/json" } },
+					);
+				}
+				return new Response(JSON.stringify({ error: "not-found" }), {
+					status: 404,
+					headers: { "Content-Type": "application/json" },
+				});
+			});
+			vi.stubGlobal("fetch", fetchMock);
+
+			await login("evalops", {
+				onAuthUrl: () => {
+					const callback = new URL(
+						"http://127.0.0.1:1460/auth/callback/evalops",
+					);
+					callback.searchParams.set("access_token", "login-access-token");
+					callback.searchParams.set("refresh_token", "login-refresh-token");
+					callback.searchParams.set("expires_at", expiresAt);
+					callback.searchParams.set("organization_id", "org_123");
+					callback.searchParams.set("scope", "llm_gateway:invoke");
+					httpGet(callback, (res) => {
+						res.resume();
+					}).on("error", () => {});
+				},
+				onStatus: vi.fn(),
+			});
+
+			expect(refreshTokenAtEnrollment).toBe("login-refresh-token");
+			const saved = loadOAuthCredentials("evalops");
+			expect(saved?.access).toBe("login-access-token");
+			expect(saved?.refresh).toBe("login-refresh-token");
+			expect(saved?.metadata?.deviceId).toBe("desktop-test-device");
 		});
 	});
 
