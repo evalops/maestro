@@ -1789,7 +1789,7 @@ async fn message_executor_publishes_runtime_handled_events() {
 }
 
 #[tokio::test]
-async fn state_snapshot_merges_supervisor_agent_state_with_hosted_connections() {
+async fn state_snapshot_redacts_sensitive_supervisor_state() {
     let workspace = tempdir().expect("workspace");
     let mut current_response = crate::headless::StreamingResponse::new("resp-state-1".to_string());
     current_response.append("working on hosted state", false);
@@ -1873,11 +1873,14 @@ async fn state_snapshot_merges_supervisor_agent_state_with_hosted_connections() 
     assert_eq!(state["state"]["session_id"], "supervisor-session-1");
     assert_eq!(state["state"]["cwd"], "/runtime/workspace");
     assert_eq!(state["state"]["git_branch"], "feature/runtime-state");
-    assert_eq!(
-        state["state"]["current_response"]["response_id"],
-        "resp-state-1"
-    );
-    assert_eq!(state["state"]["pending_approvals"][0]["call_id"], "call-1");
+    assert!(state["state"]["current_response"].is_null());
+    assert_eq!(state["state"]["pending_approvals"], json!([]));
+    assert_eq!(state["state"]["pending_client_tools"], json!([]));
+    assert_eq!(state["state"]["pending_mcp_elicitations"], json!([]));
+    assert_eq!(state["state"]["pending_user_inputs"], json!([]));
+    assert_eq!(state["state"]["pending_tool_retries"], json!([]));
+    assert_eq!(state["state"]["tracked_tools"], json!([]));
+    assert_eq!(state["state"]["active_tools"], json!([]));
     assert_eq!(state["state"]["last_status"], "thinking");
     assert_eq!(state["state"]["is_ready"], true);
     assert_eq!(state["state"]["is_responding"], true);

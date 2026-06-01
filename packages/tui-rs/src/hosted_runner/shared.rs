@@ -239,49 +239,14 @@ impl SharedRunner {
                     .or_else(|| restored_state.and_then(|state| state.cwd.clone()))
                     .or_else(|| Some(self.config.workspace_root.to_string_lossy().to_string())),
                 git_branch,
-                current_response: agent_state
-                    .and_then(|state| state.current_response.as_ref())
-                    .map(json_value)
-                    .or_else(|| restored_state.and_then(|state| state.current_response.clone())),
-                pending_approvals: agent_state
-                    .map(|state| state.pending_approvals.iter().map(json_value).collect())
-                    .or_else(|| restored_state.map(|state| state.pending_approvals.clone()))
-                    .unwrap_or_default(),
-                pending_client_tools: agent_state
-                    .map(|state| state.pending_client_tools.iter().map(json_value).collect())
-                    .or_else(|| restored_state.map(|state| state.pending_client_tools.clone()))
-                    .unwrap_or_default(),
-                pending_mcp_elicitations: restored_state
-                    .map(|state| state.pending_mcp_elicitations.clone())
-                    .unwrap_or_default(),
-                pending_user_inputs: agent_state
-                    .map(|state| state.pending_user_inputs.iter().map(json_value).collect())
-                    .or_else(|| restored_state.map(|state| state.pending_user_inputs.clone()))
-                    .unwrap_or_default(),
-                pending_tool_retries: agent_state
-                    .map(|state| state.pending_tool_retries.iter().map(json_value).collect())
-                    .or_else(|| restored_state.map(|state| state.pending_tool_retries.clone()))
-                    .unwrap_or_default(),
-                tracked_tools: agent_state
-                    .map(|state| state.tracked_tools.values().map(json_value).collect())
-                    .or_else(|| restored_state.map(|state| state.tracked_tools.clone()))
-                    .unwrap_or_default(),
-                active_tools: agent_state
-                    .map(|state| {
-                        state
-                            .active_tools
-                            .values()
-                            .map(|tool| {
-                                json!({
-                                    "call_id": tool.call_id,
-                                    "tool": tool.tool,
-                                    "output": tool.output,
-                                })
-                            })
-                            .collect()
-                    })
-                    .or_else(|| restored_state.map(|state| state.active_tools.clone()))
-                    .unwrap_or_default(),
+                current_response: None,
+                pending_approvals: Vec::new(),
+                pending_client_tools: Vec::new(),
+                pending_mcp_elicitations: Vec::new(),
+                pending_user_inputs: Vec::new(),
+                pending_tool_retries: Vec::new(),
+                tracked_tools: Vec::new(),
+                active_tools: Vec::new(),
                 codex_subagent_edges: agent_state
                     .map(|state| state.codex_subagent_edges.clone())
                     .or_else(|| restored_state.map(|state| state.codex_subagent_edges.clone()))
