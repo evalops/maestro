@@ -8,6 +8,7 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::ffi::OsString;
 use std::io;
+use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
@@ -414,6 +415,13 @@ pub async fn start_hosted_runner_with_message_executor(
     }
 
     let mut config = config;
+    config.auth_token = normalize_auth_token(config.auth_token.as_deref()).map(str::to_string);
+    if !config.bind_addr.ip().is_loopback() && config.auth_token.is_none() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "maestro hosted-runner requires auth_token when binding to non-loopback interfaces",
+        ));
+    }
     config.workspace_root = workspace_root;
     let restore_manifest = load_restore_manifest(&config).await?;
     let listener = TcpListener::bind(config.bind_addr).await?;
@@ -569,24 +577,28 @@ async fn serve(listener: TcpListener, shared: SharedRunner, shutdown: Cancellati
         tokio::select! {
             () = shutdown.cancelled() => break,
             accepted = listener.accept() => {
-                let Ok((socket, _addr)) = accepted else {
+                let Ok((socket, peer_addr)) = accepted else {
                     continue;
                 };
                 let shared = shared.clone();
                 tokio::spawn(async move {
-                    let _ = handle_socket(socket, shared).await;
+                    let _ = handle_socket(socket, shared, peer_addr).await;
                 });
             }
         }
     }
 }
 
-async fn handle_socket(mut socket: TcpStream, shared: SharedRunner) -> io::Result<()> {
+async fn handle_socket(
+    mut socket: TcpStream,
+    shared: SharedRunner,
+    peer_addr: SocketAddr,
+) -> io::Result<()> {
     let Some(request) = read_request(&mut socket).await? else {
         return Ok(());
     };
 
-    let response = route_request(request, shared).await;
+    let response = route_request(request, shared, peer_addr).await;
     match response {
         Ok(ResponseBody::Json { status, body }) => {
             write_json_value(&mut socket, status, body).await
@@ -628,7 +640,16 @@ enum ResponseBody {
     },
 }
 
-async fn route_request(request: HttpRequest, shared: SharedRunner) -> HostedResult<ResponseBody> {
+async fn route_request(
+    request: HttpRequest,
+    shared: SharedRunner,
+    peer_addr: SocketAddr,
+) -> HostedResult<ResponseBody> {
+    if request.path.starts_with("/api/headless/")
+        || (request.path == HOSTED_RUNNER_DRAIN_PATH && !peer_addr.ip().is_loopback())
+    {
+        require_auth_header(&request.headers, shared.config.auth_token.as_deref())?;
+    }
     match (request.method.as_str(), request.path.as_str()) {
         ("GET", HOSTED_RUNNER_IDENTITY_PATH) => json_response(200, shared.identity()),
         ("GET", "/readyz" | "/healthz") => {
@@ -702,6 +723,33 @@ async fn route_request(request: HttpRequest, shared: SharedRunner) -> HostedResu
             "route not found",
         )),
     }
+}
+
+fn require_auth_header(
+    headers: &HashMap<String, String>,
+    expected_token: Option<&str>,
+) -> HostedResult<()> {
+    let Some(expected_token) = normalize_auth_token(expected_token) else {
+        return Ok(());
+    };
+    let bearer_token = headers
+        .get("authorization")
+        .and_then(|value| value.strip_prefix("Bearer "))
+        .and_then(|value| normalize_auth_token(Some(value)));
+    let runner_token = headers
+        .get("x-maestro-hosted-runner-token")
+        .and_then(|value| normalize_auth_token(Some(value)));
+    if bearer_token == Some(expected_token) || runner_token == Some(expected_token) {
+        return Ok(());
+    }
+    Err(HostedError::new(
+        HostedRunnerErrorCode::AccessDenied,
+        "missing or invalid hosted runner auth token",
+    ))
+}
+
+fn normalize_auth_token(token: Option<&str>) -> Option<&str> {
+    token.map(str::trim).filter(|value| !value.is_empty())
 }
 
 async fn handle_drain(shared: SharedRunner, input: DrainRequest) -> HostedResult<ResponseBody> {
