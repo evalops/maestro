@@ -26,10 +26,39 @@ describe("tag-release workflow", () => {
 					}>;
 					"timeout-minutes"?: number;
 				};
+				"verify-published-registry-package": {
+					env?: Record<string, unknown>;
+					steps: Array<{
+						env?: Record<string, string>;
+						if?: string;
+						name?: string;
+						run?: string;
+						uses?: string;
+						with?: Record<string, string>;
+					}>;
+					"timeout-minutes"?: number;
+				};
+				"dispatch-public-release": {
+					if?: string;
+					needs?: string[];
+					steps: Array<{
+						env?: Record<string, string>;
+						name?: string;
+						run?: string;
+					}>;
+					"timeout-minutes"?: number;
+				};
 			};
 		};
 		const steps = workflow.jobs["tag-current-version"].steps;
+		const registrySmokeJob = workflow.jobs["verify-published-registry-package"];
+		const registrySmokeSteps = registrySmokeJob.steps;
+		const dispatchJob = workflow.jobs["dispatch-public-release"];
+		const dispatchSteps = dispatchJob.steps;
 		const dispatchStep = steps.find(
+			(step) => step.name === "Dispatch public release workflow",
+		);
+		const splitDispatchStep = dispatchSteps.find(
 			(step) => step.name === "Dispatch public release workflow",
 		);
 		const registryStep = steps.find(
@@ -47,39 +76,49 @@ describe("tag-release workflow", () => {
 		const setupPublishedSmokeStep = steps.find(
 			(step) => step.name === "Setup registry install smoke tools",
 		);
-		const verifyPublishedSmokeIndex = steps.findIndex(
+		const splitSetupPublishedSmokeStep = registrySmokeSteps.find(
+			(step) => step.name === "Setup registry install smoke tools",
+		);
+		const verifyPublishedSmokeIndex = registrySmokeSteps.findIndex(
 			(step) => step.name === "Verify already-published package from registry",
 		);
-		const verifyPublishedSmokeStep = steps[verifyPublishedSmokeIndex];
-		const uploadEvidenceStep = steps.find(
+		const verifyPublishedSmokeStep =
+			registrySmokeSteps[verifyPublishedSmokeIndex];
+		const uploadEvidenceStep = registrySmokeSteps.find(
 			(step) => step.name === "Upload already-published replay evidence",
 		);
 
 		expect(workflow.jobs["tag-current-version"]["timeout-minutes"]).toBe(45);
-		expect(dispatchStep?.env?.RELEASE_TAG).toBe(
-			"${{ steps.release.outputs.release_tag }}",
+		expect(registrySmokeJob["timeout-minutes"]).toBe(30);
+		expect(dispatchJob["timeout-minutes"]).toBe(10);
+		expect(dispatchStep).toBeUndefined();
+		expect(dispatchJob.needs).toEqual([
+			"tag-current-version",
+			"verify-published-registry-package",
+		]);
+		expect(dispatchJob.if).toContain(
+			"needs.verify-published-registry-package.result == 'success'",
+		);
+		expect(splitDispatchStep?.env?.RELEASE_TAG).toBe(
+			"${{ needs.tag-current-version.outputs.release_tag }}",
 		);
 		expect(registryStep?.run).toContain("npm view");
-		expect(setupPublishedSmokeStep?.if).toContain(
-			"steps.registry-release.outputs.published == 'true'",
+		expect(registrySmokeJob.if).toContain(
+			"needs.tag-current-version.outputs.registry_published == 'true'",
 		);
-		expect(setupPublishedSmokeStep?.uses).toBe(
+		expect(setupPublishedSmokeStep).toBeUndefined();
+		expect(splitSetupPublishedSmokeStep?.uses).toBe(
 			"./.github/actions/setup-bun-nx",
 		);
-		expect(setupPublishedSmokeStep?.with).toMatchObject({
+		expect(splitSetupPublishedSmokeStep?.with).toMatchObject({
 			install: "false",
 			"cache-nx": "false",
 			"ensure-rustfmt": "false",
 		});
-		expect(verifyPublishedSmokeStep?.if).toContain(
-			"github.repository == 'evalops/maestro'",
-		);
-		expect(verifyPublishedSmokeStep?.if).toContain(
-			"steps.registry-release.outputs.published == 'true'",
-		);
 		expect(verifyPublishedSmokeStep?.env).toMatchObject({
-			PACKAGE_NAME: "${{ steps.release.outputs.package_name }}",
-			RELEASE_VERSION: "${{ steps.release.outputs.release_version }}",
+			PACKAGE_NAME: "${{ needs.tag-current-version.outputs.package_name }}",
+			RELEASE_VERSION:
+				"${{ needs.tag-current-version.outputs.release_version }}",
 			MAESTRO_INSTALL_AUDIT_LEVEL: "critical",
 			MAESTRO_PUBLISHED_REPLAY_SANDBOX_MODE: "local",
 			MAESTRO_REGISTRY_SMOKE_EVIDENCE_DIR:
@@ -90,10 +129,10 @@ describe("tag-release workflow", () => {
 		expect(verifyPublishedSmokeIndex).toBeGreaterThanOrEqual(0);
 		expectRegistryInstallSmokeIsReleaseBlocking(
 			verifyPublishedSmokeStep,
-			[workflow.env, workflow.jobs["tag-current-version"].env],
+			[workflow.env, registrySmokeJob.env],
 			{
-				containingJob: workflow.jobs["tag-current-version"],
-				precedingSteps: steps.slice(0, verifyPublishedSmokeIndex),
+				containingJob: registrySmokeJob,
+				precedingSteps: registrySmokeSteps.slice(0, verifyPublishedSmokeIndex),
 			},
 		);
 		expect(verifyPublishedSmokeStep?.run).toContain(
@@ -118,19 +157,19 @@ describe("tag-release workflow", () => {
 		expect(activeReleaseStep?.run).toContain("--workflow release");
 		expect(activeReleaseStep?.run).toContain(".headBranch");
 		expect(activeReleaseStep?.run).not.toContain("--branch");
-		expect(dispatchStep?.if).toContain(
-			"steps.registry-release.outputs.published != 'true'",
-		);
 		expect(mismatchGuard?.if).toContain(
 			"github.repository == 'evalops/maestro'",
 		);
 		expect(mismatchGuard?.if).toContain(
 			"steps.registry-release.outputs.published != 'true'",
 		);
-		expect(dispatchStep?.if).toContain(
-			"steps.active-release.outputs.active_count == '0'",
+		expect(dispatchJob.if).toContain(
+			"needs.tag-current-version.outputs.active_release_count == '0'",
 		);
-		expect(dispatchStep?.run).toContain(
+		expect(dispatchJob.if).toContain(
+			"needs.tag-current-version.outputs.registry_published != 'true'",
+		);
+		expect(splitDispatchStep?.run).toContain(
 			'gh workflow run release --ref "${RELEASE_TAG}" --field "version=${RELEASE_VERSION}"',
 		);
 		expect(summaryStep?.run).toContain("is already published on npm");
