@@ -277,6 +277,43 @@ describe("Maestro app-server protocol modes", () => {
 		});
 	});
 
+	it("honors a session escape token with custom protocol modes", async () => {
+		const api = createApi({
+			protocolModes: createMaestroAppServerProtocolModes({
+				initialMode: "review",
+			}),
+			reviewModeEscapeToken: "session-review-escape-token",
+		});
+		expect(api.reviewModeEscapeToken()).toBe("session-review-escape-token");
+
+		const ordinaryReset = await handleMaestroAppServerRequest(api, {
+			jsonrpc: "2.0",
+			id: "ordinary-reset",
+			method: "protocol/mode/set",
+			params: { mode: "standard" },
+		});
+		expect(ordinaryReset.error).toMatchObject({
+			code: -32003,
+			message: "protocol/mode/set is blocked while protocol mode is review",
+		});
+
+		const authorizedReset = await handleMaestroAppServerRequest(api, {
+			jsonrpc: "2.0",
+			id: "authorized-reset",
+			method: "protocol/mode/set",
+			params: {
+				mode: "standard",
+				reviewModeEscapeToken: "session-review-escape-token",
+			},
+		});
+		expect(authorizedReset.result).toMatchObject({
+			activeMode: "standard",
+		});
+		expect(Value.Check(MaestroAppServerResponseSchema, authorizedReset)).toBe(
+			true,
+		);
+	});
+
 	it("advertises realtime notifications and leaves realtime control methods dispatchable", async () => {
 		const api = createApi({ onNotification: () => undefined });
 

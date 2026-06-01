@@ -597,6 +597,26 @@ function optionalBoolean(value: unknown, field: string): boolean | undefined {
 	return value;
 }
 
+function isAuthorizedSessionReviewModeEscape(
+	protocolModes: MaestroAppServerProtocolModes | undefined,
+	method: (typeof maestroAppServerClientMethods)[number],
+	params: Record<string, unknown> | undefined,
+	reviewModeEscapeToken: string | undefined,
+): boolean {
+	if (
+		!protocolModes ||
+		!reviewModeEscapeToken ||
+		method !== "protocol/mode/set" ||
+		protocolModes.activeMode() !== "review"
+	) {
+		return false;
+	}
+	return (
+		params?.mode !== "review" &&
+		params?.reviewModeEscapeToken === reviewModeEscapeToken
+	);
+}
+
 function optionalStringArray(
 	value: unknown,
 	field: string,
@@ -1014,6 +1034,16 @@ export function createMaestroAppServerSessionApi(
 		},
 
 		checkProtocolMode(method, params) {
+			if (
+				isAuthorizedSessionReviewModeEscape(
+					protocolModes,
+					method,
+					params,
+					reviewModeEscapeToken,
+				)
+			) {
+				return { allowed: true };
+			}
 			return protocolModes?.checkMethod(method, params) ?? { allowed: true };
 		},
 
