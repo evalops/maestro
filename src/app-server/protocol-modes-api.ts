@@ -140,19 +140,16 @@ function isAuthorizedReviewModeEscape(
 	params: unknown,
 	reviewModeEscapeToken: string | undefined,
 ): boolean {
-	if (!isRecord(params)) {
+	if (!reviewModeEscapeToken || !isRecord(params)) {
 		return false;
 	}
 	const targetMode = params.mode;
-	const hasEscapeAuthority = reviewModeEscapeToken
-		? params.reviewModeEscapeToken === reviewModeEscapeToken
-		: params.reviewModeEscape === true;
 	return (
 		targetMode !== "review" &&
 		maestroAppServerProtocolModeIds.includes(
 			targetMode as MaestroAppServerProtocolModeId,
 		) &&
-		hasEscapeAuthority
+		params.reviewModeEscapeToken === reviewModeEscapeToken
 	);
 }
 

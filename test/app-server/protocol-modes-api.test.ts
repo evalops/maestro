@@ -178,8 +178,10 @@ describe("Maestro app-server protocol modes", () => {
 		});
 	});
 
-	it("allows the default explicit escape from review mode without unblocking ordinary resets", async () => {
+	it("allows the default token escape from review mode without unblocking ordinary resets", async () => {
 		const api = createApi();
+		const reviewModeEscapeToken = api.reviewModeEscapeToken();
+		expect(reviewModeEscapeToken).toEqual(expect.any(String));
 
 		await handleMaestroAppServerRequest(api, {
 			jsonrpc: "2.0",
@@ -205,7 +207,7 @@ describe("Maestro app-server protocol modes", () => {
 			method: "protocol/mode/set",
 			params: {
 				mode: "standard",
-				reviewModeEscape: true,
+				reviewModeEscapeToken,
 			},
 		});
 		expect(authorizedReset.result).toMatchObject({
@@ -237,7 +239,7 @@ describe("Maestro app-server protocol modes", () => {
 			jsonrpc: "2.0",
 			id: "ordinary-reset",
 			method: "protocol/mode/set",
-			params: { mode: "standard", reviewModeEscape: true },
+			params: { mode: "standard", reviewModeEscapeToken: "wrong-token" },
 		});
 		expect(ordinaryReset.error).toMatchObject({
 			code: -32003,

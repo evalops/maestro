@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { resolve } from "node:path";
 import {
 	type MaestroAppServerClientRequest,
@@ -202,11 +203,13 @@ export interface MaestroAppServerSessionApiOptions {
 	pluginBundles?: MaestroAppServerPluginBundleApi | false;
 	daemonLifecycle?: MaestroAppServerDaemonLifecycle | false;
 	protocolModes?: MaestroAppServerProtocolModes | false;
+	reviewModeEscapeToken?: string;
 	onNotification?: (notification: MaestroAppServerServerNotification) => void;
 }
 
 export interface MaestroAppServerSessionApi {
 	initialize(): MaestroAppServerResponse["result"];
+	reviewModeEscapeToken(): string | undefined;
 	checkProtocolMode(
 		method: (typeof maestroAppServerClientMethods)[number],
 		params?: Record<string, unknown>,
@@ -904,10 +907,18 @@ export function createMaestroAppServerSessionApi(
 		options.daemonLifecycle === false
 			? undefined
 			: (options.daemonLifecycle ?? createMaestroAppServerDaemonLifecycle());
+	const defaultReviewModeEscapeToken =
+		options.protocolModes === false || options.protocolModes
+			? options.reviewModeEscapeToken
+			: (options.reviewModeEscapeToken ?? randomUUID());
 	const protocolModes =
 		options.protocolModes === false
 			? undefined
-			: (options.protocolModes ?? createMaestroAppServerProtocolModes());
+			: (options.protocolModes ??
+				createMaestroAppServerProtocolModes({
+					reviewModeEscapeToken: defaultReviewModeEscapeToken,
+				}));
+	const reviewModeEscapeToken = defaultReviewModeEscapeToken;
 	const daemonLifecycleCapabilities = daemonLifecycle?.capabilities() ?? {
 		daemonStatus: false,
 		remoteControlStatus: false,
@@ -996,6 +1007,10 @@ export function createMaestroAppServerSessionApi(
 					turnsList: true,
 				},
 			};
+		},
+
+		reviewModeEscapeToken() {
+			return reviewModeEscapeToken;
 		},
 
 		checkProtocolMode(method, params) {
