@@ -529,6 +529,87 @@ describe("OAuth Index", () => {
 			});
 		});
 
+		it("does not re-enroll when refresh already used an enrolled device proof", async () => {
+			Object.defineProperty(process, "platform", {
+				configurable: true,
+				value: "linux",
+			});
+			process.env.MAESTRO_DEVICE_IDENTITY_HELPER = fileURLToPath(
+				new URL("../scripts/fake-device-identity-helper.mjs", import.meta.url),
+			);
+			process.env.MAESTRO_DEVICE_IDENTITY_ALLOW_TEST_HELPER = "1";
+
+			const expiresAt = new Date(Date.now() + 60 * 60 * 1000).toISOString();
+			const fetchMock = vi.fn(async (input) => {
+				const url = String(input);
+				if (url.endsWith("/v1/tokens/refresh")) {
+					return new Response(
+						JSON.stringify({
+							access_token: "new-evalops-access",
+							expires_at: expiresAt,
+							organization_id: "org_123",
+							refresh_token: "new-evalops-refresh",
+							scopes: ["llm_gateway:invoke"],
+							token_type: "Bearer",
+						}),
+						{ status: 200, headers: { "Content-Type": "application/json" } },
+					);
+				}
+				if (url.endsWith("/v1/device-challenges")) {
+					return new Response(
+						JSON.stringify({
+							challenge: "challenge:refresh:desktop-test-device",
+							challenge_id: "challenge-1",
+						}),
+						{ status: 200, headers: { "Content-Type": "application/json" } },
+					);
+				}
+				return new Response(
+					JSON.stringify({ error: "unexpected-enrollment" }),
+					{
+						status: 500,
+						headers: { "Content-Type": "application/json" },
+					},
+				);
+			});
+			vi.stubGlobal("fetch", fetchMock);
+
+			saveOAuthCredentials("evalops", {
+				type: "oauth",
+				access: "expired-access",
+				refresh: "old-evalops-refresh",
+				expires: Date.now() - 1000,
+				metadata: {
+					deviceId: "desktop-test-device",
+					identityBaseUrl: "https://identity.evalops.test",
+					organizationId: "org_123",
+				},
+			});
+
+			await expect(getOAuthToken("evalops")).resolves.toBe(
+				"new-evalops-access",
+			);
+
+			expect(fetchMock).toHaveBeenCalledTimes(2);
+			expect(String(fetchMock.mock.calls[0]?.[0])).toBe(
+				"https://identity.evalops.test/v1/device-challenges",
+			);
+			expect(String(fetchMock.mock.calls[1]?.[0])).toBe(
+				"https://identity.evalops.test/v1/tokens/refresh",
+			);
+			const refreshBody = JSON.parse(
+				String(fetchMock.mock.calls[1]?.[1]?.body),
+			) as Record<string, unknown>;
+			expect(refreshBody.device_proof).toEqual({
+				challenge_id: "challenge-1",
+				device_id: "desktop-test-device",
+				signature: "fake-signature:challenge:refresh:desktop-test-device",
+			});
+			expect(loadOAuthCredentials("evalops")?.metadata?.deviceId).toBe(
+				"desktop-test-device",
+			);
+		});
+
 		it("retries transient EvalOps refresh failures", async () => {
 			const expiresAt = new Date(Date.now() + 60 * 60 * 1000).toISOString();
 			let calls = 0;

@@ -762,10 +762,9 @@ export async function refreshEvalOpsToken(
 		payload.refresh_expires_at != null
 			? parseTimestamp(payload.refresh_expires_at, "refresh_expires_at")
 			: getMetadataNumber(metadata, "refreshExpiresAt");
-	const migratedDeviceId = await enrollCurrentDesktopDevice(
-		identityBaseUrl,
-		payload.access_token,
-	);
+	const migratedDeviceId = deviceProof
+		? undefined
+		: await enrollCurrentDesktopDevice(identityBaseUrl, payload.access_token);
 	const existingDeviceId = getMetadataString(metadata, "deviceId");
 
 	return {
