@@ -529,6 +529,78 @@ describe("OAuth Index", () => {
 			});
 		});
 
+		it("persists rotated refresh credentials before desktop enrollment prompts", async () => {
+			Object.defineProperty(process, "platform", {
+				configurable: true,
+				value: "linux",
+			});
+			process.env.MAESTRO_DEVICE_IDENTITY_HELPER = fileURLToPath(
+				new URL("../scripts/fake-device-identity-helper.mjs", import.meta.url),
+			);
+			process.env.MAESTRO_DEVICE_IDENTITY_ALLOW_TEST_HELPER = "1";
+
+			const expiresAt = new Date(Date.now() + 60 * 60 * 1000).toISOString();
+			let refreshTokenAtEnrollment: string | undefined;
+			const fetchMock = vi.fn(async (input) => {
+				const url = String(input);
+				if (url.endsWith("/v1/tokens/refresh")) {
+					return new Response(
+						JSON.stringify({
+							access_token: "new-evalops-access",
+							expires_at: expiresAt,
+							organization_id: "org_123",
+							refresh_token: "rotated-evalops-refresh",
+							scopes: ["llm_gateway:invoke"],
+							token_type: "Bearer",
+						}),
+						{ status: 200, headers: { "Content-Type": "application/json" } },
+					);
+				}
+				if (url.endsWith("/v1/device-challenges")) {
+					refreshTokenAtEnrollment = loadOAuthCredentials("evalops")?.refresh;
+					return new Response(
+						JSON.stringify({
+							challenge: "challenge:enroll:none",
+							challenge_id: "challenge-1",
+						}),
+						{ status: 200, headers: { "Content-Type": "application/json" } },
+					);
+				}
+				if (url.endsWith("/v1/devices")) {
+					return new Response(
+						JSON.stringify({ device: { id: "desktop-test-device" } }),
+						{ status: 200, headers: { "Content-Type": "application/json" } },
+					);
+				}
+				return new Response(JSON.stringify({ error: "not-found" }), {
+					status: 404,
+					headers: { "Content-Type": "application/json" },
+				});
+			});
+			vi.stubGlobal("fetch", fetchMock);
+
+			saveOAuthCredentials("evalops", {
+				type: "oauth",
+				access: "expired-access",
+				refresh: "old-evalops-refresh",
+				expires: Date.now() - 1000,
+				metadata: {
+					deviceId: "old-v1-device",
+					identityBaseUrl: "https://identity.evalops.test",
+					organizationId: "org_123",
+				},
+			});
+
+			await expect(getOAuthToken("evalops")).resolves.toBe(
+				"new-evalops-access",
+			);
+
+			expect(refreshTokenAtEnrollment).toBe("rotated-evalops-refresh");
+			expect(loadOAuthCredentials("evalops")?.metadata?.deviceId).toBe(
+				"desktop-test-device",
+			);
+		});
+
 		it("does not re-enroll when refresh already used an enrolled device proof", async () => {
 			Object.defineProperty(process, "platform", {
 				configurable: true,

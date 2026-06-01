@@ -768,12 +768,8 @@ export async function refreshEvalOpsToken(
 		payload.refresh_expires_at != null
 			? parseTimestamp(payload.refresh_expires_at, "refresh_expires_at")
 			: getMetadataNumber(metadata, "refreshExpiresAt");
-	const migratedDeviceId = deviceProof
-		? undefined
-		: await enrollCurrentDesktopDevice(identityBaseUrl, payload.access_token);
 	const existingDeviceId = getMetadataString(metadata, "deviceId");
-
-	return {
+	const refreshedCredentials: OAuthCredentials = {
 		type: "oauth",
 		access: payload.access_token,
 		refresh: nextRefreshToken,
@@ -787,14 +783,30 @@ export async function refreshEvalOpsToken(
 					? payload.organization_id
 					: getMetadataString(metadata, "organizationId"),
 			...(refreshExpiresAt ? { refreshExpiresAt } : {}),
-			...(migratedDeviceId
-				? { deviceId: migratedDeviceId }
-				: existingDeviceId
-					? { deviceId: existingDeviceId }
-					: {}),
+			...(existingDeviceId ? { deviceId: existingDeviceId } : {}),
 			scopes: scopes.length > 0 ? scopes : getMetadataScopes(metadata),
 		},
 	};
+	if (!deviceProof) {
+		saveOAuthCredentials("evalops", refreshedCredentials);
+	}
+
+	const migratedDeviceId = deviceProof
+		? undefined
+		: await enrollCurrentDesktopDevice(identityBaseUrl, payload.access_token);
+	if (!migratedDeviceId) {
+		return refreshedCredentials;
+	}
+
+	const migratedCredentials: OAuthCredentials = {
+		...refreshedCredentials,
+		metadata: {
+			...refreshedCredentials.metadata,
+			deviceId: migratedDeviceId,
+		},
+	};
+	saveOAuthCredentials("evalops", migratedCredentials);
+	return migratedCredentials;
 }
 
 export async function revokeEvalOpsToken(
