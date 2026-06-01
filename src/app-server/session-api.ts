@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { resolve } from "node:path";
 import {
 	type MaestroAppServerClientRequest,
@@ -203,13 +204,16 @@ export interface MaestroAppServerSessionApiOptions {
 	pluginBundles?: MaestroAppServerPluginBundleApi | false;
 	daemonLifecycle?: MaestroAppServerDaemonLifecycle | false;
 	protocolModes?: MaestroAppServerProtocolModes | false;
+	reviewModeEscapeToken?: string;
 	onNotification?: (notification: MaestroAppServerServerNotification) => void;
 }
 
 export interface MaestroAppServerSessionApi {
 	initialize(): MaestroAppServerResponse["result"];
+	reviewModeEscapeToken(): string | undefined;
 	checkProtocolMode(
 		method: (typeof maestroAppServerClientMethods)[number],
+		params?: Record<string, unknown>,
 	): MaestroAppServerProtocolModeDecision;
 	listProtocolModes(
 		params?: Record<string, unknown>,
@@ -594,6 +598,26 @@ function optionalBoolean(value: unknown, field: string): boolean | undefined {
 	return value;
 }
 
+function isAuthorizedSessionReviewModeEscape(
+	protocolModes: MaestroAppServerProtocolModes | undefined,
+	method: (typeof maestroAppServerClientMethods)[number],
+	params: Record<string, unknown> | undefined,
+	reviewModeEscapeToken: string | undefined,
+): boolean {
+	if (
+		!protocolModes ||
+		!reviewModeEscapeToken ||
+		method !== "protocol/mode/set" ||
+		protocolModes.activeMode() !== "review"
+	) {
+		return false;
+	}
+	return (
+		params?.mode !== "review" &&
+		params?.reviewModeEscapeToken === reviewModeEscapeToken
+	);
+}
+
 function optionalStringArray(
 	value: unknown,
 	field: string,
@@ -910,10 +934,18 @@ export function createMaestroAppServerSessionApi(
 		options.daemonLifecycle === false
 			? undefined
 			: (options.daemonLifecycle ?? createMaestroAppServerDaemonLifecycle());
+	const defaultReviewModeEscapeToken =
+		options.protocolModes === false || options.protocolModes
+			? options.reviewModeEscapeToken
+			: (options.reviewModeEscapeToken ?? randomUUID());
 	const protocolModes =
 		options.protocolModes === false
 			? undefined
-			: (options.protocolModes ?? createMaestroAppServerProtocolModes());
+			: (options.protocolModes ??
+				createMaestroAppServerProtocolModes({
+					reviewModeEscapeToken: defaultReviewModeEscapeToken,
+				}));
+	const reviewModeEscapeToken = defaultReviewModeEscapeToken;
 	const daemonLifecycleCapabilities = daemonLifecycle?.capabilities() ?? {
 		daemonStatus: false,
 		remoteControlStatus: false,
@@ -1003,8 +1035,22 @@ export function createMaestroAppServerSessionApi(
 			};
 		},
 
-		checkProtocolMode(method) {
-			return protocolModes?.checkMethod(method) ?? { allowed: true };
+		reviewModeEscapeToken() {
+			return reviewModeEscapeToken;
+		},
+
+		checkProtocolMode(method, params) {
+			if (
+				isAuthorizedSessionReviewModeEscape(
+					protocolModes,
+					method,
+					params,
+					reviewModeEscapeToken,
+				)
+			) {
+				return { allowed: true };
+			}
+			return protocolModes?.checkMethod(method, params) ?? { allowed: true };
 		},
 
 		async listProtocolModes(params = {}) {
@@ -1774,7 +1820,10 @@ export async function handleMaestroAppServerRequest(
 			throw new MaestroAppServerError(-32601, "Method not found");
 		}
 		const method = request.method;
-		const protocolModeDecision = api.checkProtocolMode?.(method) ?? {
+		const protocolModeDecision = api.checkProtocolMode?.(
+			method,
+			request.params,
+		) ?? {
 			allowed: true,
 		};
 		if (!protocolModeDecision.allowed) {
