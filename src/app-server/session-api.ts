@@ -895,11 +895,8 @@ export function createMaestroAppServerSessionApi(
 		options.sandboxCheck === false
 			? undefined
 			: (options.sandboxCheck ?? createMaestroAppServerSandboxCheck());
-	const canMutateSessionPersistence = store.canCreateSession?.() ?? true;
 	const pluginBundles =
-		options.pluginBundles === false ||
-		!canMutateSessionPersistence ||
-		!hostControl
+		options.pluginBundles === false
 			? undefined
 			: (options.pluginBundles ?? createMaestroAppServerPluginBundleApi());
 	const daemonLifecycle =
@@ -927,6 +924,7 @@ export function createMaestroAppServerSessionApi(
 	const canUseThreadGoals = Boolean(
 		store.setSessionAppServerGoal && store.loadEntries,
 	);
+	const canMutateSessionPersistence = store.canCreateSession?.() ?? true;
 	const externalAgentImport =
 		options.externalAgentImport === false || !canMutateSessionPersistence
 			? undefined
