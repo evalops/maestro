@@ -5,6 +5,7 @@ import { Value } from "@sinclair/typebox/value";
 import { afterEach, describe, expect, it } from "vitest";
 import { MaestroAppServerResponseSchema } from "../../packages/contracts/src/maestro-app-server.js";
 import {
+	createMaestroAppServerProtocolModes,
 	createMaestroAppServerSessionApi,
 	handleMaestroAppServerRequest,
 } from "../../src/app-server/session-api.js";
@@ -174,6 +175,62 @@ describe("Maestro app-server protocol modes", () => {
 		expect(invalidMode.error).toMatchObject({
 			code: -32602,
 			message: "Invalid mode",
+		});
+	});
+
+	it("allows an authorized escape from review mode without unblocking ordinary resets", async () => {
+		const api = createApi({
+			protocolModes: createMaestroAppServerProtocolModes({
+				reviewModeEscapeToken: "review-escape-token",
+			}),
+		});
+
+		await handleMaestroAppServerRequest(api, {
+			jsonrpc: "2.0",
+			id: "set-review",
+			method: "protocol/mode/set",
+			params: { mode: "review" },
+		});
+
+		const ordinaryReset = await handleMaestroAppServerRequest(api, {
+			jsonrpc: "2.0",
+			id: "ordinary-reset",
+			method: "protocol/mode/set",
+			params: { mode: "standard" },
+		});
+		expect(ordinaryReset.error).toMatchObject({
+			code: -32003,
+			message: "protocol/mode/set is blocked while protocol mode is review",
+		});
+
+		const authorizedReset = await handleMaestroAppServerRequest(api, {
+			jsonrpc: "2.0",
+			id: "authorized-reset",
+			method: "protocol/mode/set",
+			params: {
+				mode: "standard",
+				reviewModeEscapeToken: "review-escape-token",
+			},
+		});
+		expect(authorizedReset.result).toMatchObject({
+			activeMode: "standard",
+			mode: {
+				readOnly: false,
+			},
+		});
+		expect(Value.Check(MaestroAppServerResponseSchema, authorizedReset)).toBe(
+			true,
+		);
+
+		const standardMutation = await handleMaestroAppServerRequest(api, {
+			jsonrpc: "2.0",
+			id: "standard-name-set",
+			method: "thread/name/set",
+			params: { threadId: "thread_1", name: "Renamed" },
+		});
+		expect(standardMutation.error).toMatchObject({
+			code: -32004,
+			message: "Thread not found",
 		});
 	});
 

@@ -61,12 +61,14 @@ export interface MaestroAppServerProtocolModes {
 	setMode(params?: UnknownRecord): MaestroAppServerProtocolModeSetResult;
 	checkMethod(
 		method: MaestroAppServerClientMethod,
+		params?: UnknownRecord,
 	): MaestroAppServerProtocolModeDecision;
 	activeMode(): MaestroAppServerProtocolModeId;
 }
 
 export interface MaestroAppServerProtocolModesOptions {
 	initialMode?: MaestroAppServerProtocolModeId;
+	reviewModeEscapeToken?: string;
 }
 
 function normalizeMode(value: unknown): MaestroAppServerProtocolModeId {
@@ -100,6 +102,19 @@ function paramsRecord(params: unknown): UnknownRecord {
 	throw new MaestroAppServerProtocolModesError(-32602, "Invalid params");
 }
 
+function normalizeEscapeToken(value: unknown): string | undefined {
+	if (value === undefined || value === null) {
+		return undefined;
+	}
+	if (typeof value !== "string" || value.trim().length === 0) {
+		throw new MaestroAppServerProtocolModesError(
+			-32602,
+			"Invalid review mode escape token",
+		);
+	}
+	return value;
+}
+
 function modeLabel(mode: MaestroAppServerProtocolModeId): string {
 	switch (mode) {
 		case "review":
@@ -119,6 +134,23 @@ function isMethodAllowedInMode(
 		return true;
 	}
 	return !REVIEW_BLOCKED_METHODS.has(method);
+}
+
+function isAuthorizedReviewModeEscape(
+	params: unknown,
+	reviewModeEscapeToken: string | undefined,
+): boolean {
+	if (!reviewModeEscapeToken || !isRecord(params)) {
+		return false;
+	}
+	const targetMode = params.mode;
+	return (
+		targetMode !== "review" &&
+		maestroAppServerProtocolModeIds.includes(
+			targetMode as MaestroAppServerProtocolModeId,
+		) &&
+		params.reviewModeEscapeToken === reviewModeEscapeToken
+	);
 }
 
 function describeMode(
@@ -149,6 +181,9 @@ export function createMaestroAppServerProtocolModes(
 		options.initialMode === undefined
 			? DEFAULT_MODE
 			: normalizeMode(options.initialMode);
+	const reviewModeEscapeToken = normalizeEscapeToken(
+		options.reviewModeEscapeToken,
+	);
 	return {
 		listModes(params) {
 			paramsRecord(params);
@@ -168,7 +203,14 @@ export function createMaestroAppServerProtocolModes(
 			};
 		},
 
-		checkMethod(method) {
+		checkMethod(method, params) {
+			if (
+				activeMode === "review" &&
+				method === "protocol/mode/set" &&
+				isAuthorizedReviewModeEscape(params, reviewModeEscapeToken)
+			) {
+				return { allowed: true };
+			}
 			if (isMethodAllowedInMode(activeMode, method)) {
 				return { allowed: true };
 			}

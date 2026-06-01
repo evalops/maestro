@@ -209,6 +209,7 @@ export interface MaestroAppServerSessionApi {
 	initialize(): MaestroAppServerResponse["result"];
 	checkProtocolMode(
 		method: (typeof maestroAppServerClientMethods)[number],
+		params?: Record<string, unknown>,
 	): MaestroAppServerProtocolModeDecision;
 	listProtocolModes(
 		params?: Record<string, unknown>,
@@ -997,8 +998,8 @@ export function createMaestroAppServerSessionApi(
 			};
 		},
 
-		checkProtocolMode(method) {
-			return protocolModes?.checkMethod(method) ?? { allowed: true };
+		checkProtocolMode(method, params) {
+			return protocolModes?.checkMethod(method, params) ?? { allowed: true };
 		},
 
 		async listProtocolModes(params = {}) {
@@ -1768,7 +1769,10 @@ export async function handleMaestroAppServerRequest(
 			throw new MaestroAppServerError(-32601, "Method not found");
 		}
 		const method = request.method;
-		const protocolModeDecision = api.checkProtocolMode?.(method) ?? {
+		const protocolModeDecision = api.checkProtocolMode?.(
+			method,
+			request.params,
+		) ?? {
 			allowed: true,
 		};
 		if (!protocolModeDecision.allowed) {
