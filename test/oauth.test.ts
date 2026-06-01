@@ -1,6 +1,8 @@
 import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { get as httpGet } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 // Set up test directory before importing modules
@@ -143,8 +145,15 @@ describe("OAuth Index", () => {
 	const originalEvalOpsIdentityUrl = process.env.EVALOPS_IDENTITY_URL;
 	const originalFeatureFlagsPath = process.env.EVALOPS_FEATURE_FLAGS_PATH;
 	const originalFetch = global.fetch;
+	const originalHelper = process.env.MAESTRO_DEVICE_IDENTITY_HELPER;
+	const originalAllowTestHelper =
+		process.env.MAESTRO_DEVICE_IDENTITY_ALLOW_TEST_HELPER;
 	const originalIdentityUrl = process.env.MAESTRO_IDENTITY_URL;
 	const originalPlatformBaseUrl = process.env.MAESTRO_PLATFORM_BASE_URL;
+	const originalPlatformDescriptor = Object.getOwnPropertyDescriptor(
+		process,
+		"platform",
+	);
 
 	beforeEach(() => {
 		process.env.MAESTRO_AGENT_DIR = join(testDir, "agent");
@@ -186,6 +195,23 @@ describe("OAuth Index", () => {
 			Reflect.deleteProperty(process.env, "MAESTRO_PLATFORM_BASE_URL");
 		} else {
 			process.env.MAESTRO_PLATFORM_BASE_URL = originalPlatformBaseUrl;
+		}
+		if (originalHelper === undefined) {
+			Reflect.deleteProperty(process.env, "MAESTRO_DEVICE_IDENTITY_HELPER");
+		} else {
+			process.env.MAESTRO_DEVICE_IDENTITY_HELPER = originalHelper;
+		}
+		if (originalAllowTestHelper === undefined) {
+			Reflect.deleteProperty(
+				process.env,
+				"MAESTRO_DEVICE_IDENTITY_ALLOW_TEST_HELPER",
+			);
+		} else {
+			process.env.MAESTRO_DEVICE_IDENTITY_ALLOW_TEST_HELPER =
+				originalAllowTestHelper;
+		}
+		if (originalPlatformDescriptor) {
+			Object.defineProperty(process, "platform", originalPlatformDescriptor);
 		}
 		resetFeatureFlagCacheForTests();
 		resetConnectorsDownstreamForTests();
@@ -501,6 +527,241 @@ describe("OAuth Index", () => {
 			);
 		});
 
+		it("enrolls a rotated desktop device after refresh before persisting credentials", async () => {
+			Object.defineProperty(process, "platform", {
+				configurable: true,
+				value: "linux",
+			});
+			process.env.MAESTRO_DEVICE_IDENTITY_HELPER = fileURLToPath(
+				new URL("../scripts/fake-device-identity-helper.mjs", import.meta.url),
+			);
+			process.env.MAESTRO_DEVICE_IDENTITY_ALLOW_TEST_HELPER = "1";
+
+			const expiresAt = new Date(Date.now() + 60 * 60 * 1000).toISOString();
+			const refreshExpiresAt = new Date(
+				Date.now() + 7 * 24 * 60 * 60 * 1000,
+			).toISOString();
+			const fetchMock = vi.fn(async (input) => {
+				const url = String(input);
+				if (url.endsWith("/v1/tokens/refresh")) {
+					return new Response(
+						JSON.stringify({
+							access_token: "new-evalops-access",
+							expires_at: expiresAt,
+							organization_id: "org_123",
+							refresh_expires_at: refreshExpiresAt,
+							refresh_token: "new-evalops-refresh",
+							scopes: ["llm_gateway:invoke"],
+							token_type: "Bearer",
+						}),
+						{ status: 200, headers: { "Content-Type": "application/json" } },
+					);
+				}
+				if (url.endsWith("/v1/device-challenges")) {
+					return new Response(
+						JSON.stringify({
+							challenge: "challenge:enroll:none",
+							challenge_id: "challenge-1",
+						}),
+						{ status: 200, headers: { "Content-Type": "application/json" } },
+					);
+				}
+				if (url.endsWith("/v1/devices")) {
+					return new Response(
+						JSON.stringify({ device: { id: "desktop-test-device" } }),
+						{ status: 200, headers: { "Content-Type": "application/json" } },
+					);
+				}
+				return new Response(JSON.stringify({ error: "not-found" }), {
+					status: 404,
+					headers: { "Content-Type": "application/json" },
+				});
+			});
+			vi.stubGlobal("fetch", fetchMock);
+
+			saveOAuthCredentials("evalops", {
+				type: "oauth",
+				access: "expired-access",
+				refresh: "old-evalops-refresh",
+				expires: Date.now() - 1000,
+				metadata: {
+					deviceId: "old-v1-device",
+					identityBaseUrl: "https://identity.evalops.test",
+					organizationId: "org_123",
+				},
+			});
+
+			await expect(getOAuthToken("evalops")).resolves.toBe(
+				"new-evalops-access",
+			);
+
+			const saved = loadOAuthCredentials("evalops");
+			expect(saved?.metadata?.deviceId).toBe("desktop-test-device");
+			expect(fetchMock).toHaveBeenCalledTimes(3);
+			const refreshBody = JSON.parse(
+				String(fetchMock.mock.calls[0]?.[1]?.body),
+			) as Record<string, unknown>;
+			expect(refreshBody).toEqual({ refresh_token: "old-evalops-refresh" });
+			const registrationInit = fetchMock.mock.calls[2]?.[1];
+			expect(registrationInit?.headers).toEqual({
+				Authorization: "Bearer new-evalops-access",
+				"Content-Type": "application/json",
+			});
+		});
+
+		it("persists rotated refresh credentials before desktop enrollment prompts", async () => {
+			Object.defineProperty(process, "platform", {
+				configurable: true,
+				value: "linux",
+			});
+			process.env.MAESTRO_DEVICE_IDENTITY_HELPER = fileURLToPath(
+				new URL("../scripts/fake-device-identity-helper.mjs", import.meta.url),
+			);
+			process.env.MAESTRO_DEVICE_IDENTITY_ALLOW_TEST_HELPER = "1";
+
+			const expiresAt = new Date(Date.now() + 60 * 60 * 1000).toISOString();
+			let refreshTokenAtEnrollment: string | undefined;
+			const fetchMock = vi.fn(async (input) => {
+				const url = String(input);
+				if (url.endsWith("/v1/tokens/refresh")) {
+					return new Response(
+						JSON.stringify({
+							access_token: "new-evalops-access",
+							expires_at: expiresAt,
+							organization_id: "org_123",
+							refresh_token: "rotated-evalops-refresh",
+							scopes: ["llm_gateway:invoke"],
+							token_type: "Bearer",
+						}),
+						{ status: 200, headers: { "Content-Type": "application/json" } },
+					);
+				}
+				if (url.endsWith("/v1/device-challenges")) {
+					refreshTokenAtEnrollment = loadOAuthCredentials("evalops")?.refresh;
+					return new Response(
+						JSON.stringify({
+							challenge: "challenge:enroll:none",
+							challenge_id: "challenge-1",
+						}),
+						{ status: 200, headers: { "Content-Type": "application/json" } },
+					);
+				}
+				if (url.endsWith("/v1/devices")) {
+					return new Response(
+						JSON.stringify({ device: { id: "desktop-test-device" } }),
+						{ status: 200, headers: { "Content-Type": "application/json" } },
+					);
+				}
+				return new Response(JSON.stringify({ error: "not-found" }), {
+					status: 404,
+					headers: { "Content-Type": "application/json" },
+				});
+			});
+			vi.stubGlobal("fetch", fetchMock);
+
+			saveOAuthCredentials("evalops", {
+				type: "oauth",
+				access: "expired-access",
+				refresh: "old-evalops-refresh",
+				expires: Date.now() - 1000,
+				metadata: {
+					deviceId: "old-v1-device",
+					identityBaseUrl: "https://identity.evalops.test",
+					organizationId: "org_123",
+				},
+			});
+
+			await expect(getOAuthToken("evalops")).resolves.toBe(
+				"new-evalops-access",
+			);
+
+			expect(refreshTokenAtEnrollment).toBe("rotated-evalops-refresh");
+			expect(loadOAuthCredentials("evalops")?.metadata?.deviceId).toBe(
+				"desktop-test-device",
+			);
+		});
+
+		it("does not re-enroll when refresh already used an enrolled device proof", async () => {
+			Object.defineProperty(process, "platform", {
+				configurable: true,
+				value: "linux",
+			});
+			process.env.MAESTRO_DEVICE_IDENTITY_HELPER = fileURLToPath(
+				new URL("../scripts/fake-device-identity-helper.mjs", import.meta.url),
+			);
+			process.env.MAESTRO_DEVICE_IDENTITY_ALLOW_TEST_HELPER = "1";
+
+			const expiresAt = new Date(Date.now() + 60 * 60 * 1000).toISOString();
+			const fetchMock = vi.fn(async (input) => {
+				const url = String(input);
+				if (url.endsWith("/v1/tokens/refresh")) {
+					return new Response(
+						JSON.stringify({
+							access_token: "new-evalops-access",
+							expires_at: expiresAt,
+							organization_id: "org_123",
+							refresh_token: "new-evalops-refresh",
+							scopes: ["llm_gateway:invoke"],
+							token_type: "Bearer",
+						}),
+						{ status: 200, headers: { "Content-Type": "application/json" } },
+					);
+				}
+				if (url.endsWith("/v1/device-challenges")) {
+					return new Response(
+						JSON.stringify({
+							challenge: "challenge:refresh:desktop-test-device",
+							challenge_id: "challenge-1",
+						}),
+						{ status: 200, headers: { "Content-Type": "application/json" } },
+					);
+				}
+				return new Response(
+					JSON.stringify({ error: "unexpected-enrollment" }),
+					{
+						status: 500,
+						headers: { "Content-Type": "application/json" },
+					},
+				);
+			});
+			vi.stubGlobal("fetch", fetchMock);
+
+			saveOAuthCredentials("evalops", {
+				type: "oauth",
+				access: "expired-access",
+				refresh: "old-evalops-refresh",
+				expires: Date.now() - 1000,
+				metadata: {
+					deviceId: "desktop-test-device",
+					identityBaseUrl: "https://identity.evalops.test",
+					organizationId: "org_123",
+				},
+			});
+
+			await expect(getOAuthToken("evalops")).resolves.toBe(
+				"new-evalops-access",
+			);
+
+			expect(fetchMock).toHaveBeenCalledTimes(2);
+			expect(String(fetchMock.mock.calls[0]?.[0])).toBe(
+				"https://identity.evalops.test/v1/device-challenges",
+			);
+			expect(String(fetchMock.mock.calls[1]?.[0])).toBe(
+				"https://identity.evalops.test/v1/tokens/refresh",
+			);
+			const refreshBody = JSON.parse(
+				String(fetchMock.mock.calls[1]?.[1]?.body),
+			) as Record<string, unknown>;
+			expect(refreshBody.device_proof).toEqual({
+				challenge_id: "challenge-1",
+				device_id: "desktop-test-device",
+				signature: "fake-signature:challenge:refresh:desktop-test-device",
+			});
+			expect(loadOAuthCredentials("evalops")?.metadata?.deviceId).toBe(
+				"desktop-test-device",
+			);
+		});
+
 		it("retries transient EvalOps refresh failures", async () => {
 			const expiresAt = new Date(Date.now() + 60 * 60 * 1000).toISOString();
 			let calls = 0;
@@ -579,6 +840,77 @@ describe("OAuth Index", () => {
 					onStatus: () => {},
 				}),
 			).rejects.toThrow(/disabled by dynamic config/);
+		});
+
+		it("persists EvalOps login credentials before desktop enrollment prompts", async () => {
+			Object.defineProperty(process, "platform", {
+				configurable: true,
+				value: "linux",
+			});
+			process.env.MAESTRO_DEVICE_IDENTITY_HELPER = fileURLToPath(
+				new URL("../scripts/fake-device-identity-helper.mjs", import.meta.url),
+			);
+			process.env.MAESTRO_DEVICE_IDENTITY_ALLOW_TEST_HELPER = "1";
+			process.env.MAESTRO_EVALOPS_ORG_ID = "org_123";
+			process.env.MAESTRO_IDENTITY_URL = "https://identity.evalops.test";
+
+			const expiresAt = new Date(Date.now() + 60 * 60 * 1000).toISOString();
+			let refreshTokenAtEnrollment: string | undefined;
+			const fetchMock = vi.fn(async (input) => {
+				const url = String(input);
+				if (url.endsWith("/v1/auth/google/start")) {
+					return new Response(
+						JSON.stringify({
+							authorization_url: "https://accounts.google.test/auth",
+						}),
+						{ status: 200, headers: { "Content-Type": "application/json" } },
+					);
+				}
+				if (url.endsWith("/v1/device-challenges")) {
+					refreshTokenAtEnrollment = loadOAuthCredentials("evalops")?.refresh;
+					return new Response(
+						JSON.stringify({
+							challenge: "challenge:enroll:none",
+							challenge_id: "challenge-1",
+						}),
+						{ status: 200, headers: { "Content-Type": "application/json" } },
+					);
+				}
+				if (url.endsWith("/v1/devices")) {
+					return new Response(
+						JSON.stringify({ device: { id: "desktop-test-device" } }),
+						{ status: 200, headers: { "Content-Type": "application/json" } },
+					);
+				}
+				return new Response(JSON.stringify({ error: "not-found" }), {
+					status: 404,
+					headers: { "Content-Type": "application/json" },
+				});
+			});
+			vi.stubGlobal("fetch", fetchMock);
+
+			await login("evalops", {
+				onAuthUrl: () => {
+					const callback = new URL(
+						"http://127.0.0.1:1460/auth/callback/evalops",
+					);
+					callback.searchParams.set("access_token", "login-access-token");
+					callback.searchParams.set("refresh_token", "login-refresh-token");
+					callback.searchParams.set("expires_at", expiresAt);
+					callback.searchParams.set("organization_id", "org_123");
+					callback.searchParams.set("scope", "llm_gateway:invoke");
+					httpGet(callback, (res) => {
+						res.resume();
+					}).on("error", () => {});
+				},
+				onStatus: vi.fn(),
+			});
+
+			expect(refreshTokenAtEnrollment).toBe("login-refresh-token");
+			const saved = loadOAuthCredentials("evalops");
+			expect(saved?.access).toBe("login-access-token");
+			expect(saved?.refresh).toBe("login-refresh-token");
+			expect(saved?.metadata?.deviceId).toBe("desktop-test-device");
 		});
 	});
 
@@ -673,6 +1005,220 @@ describe("OAuth Index", () => {
 					ttl_seconds: 900,
 				}),
 			);
+		});
+
+		it("uses refreshed migrated metadata before building a delegation device proof", async () => {
+			Object.defineProperty(process, "platform", {
+				configurable: true,
+				value: "linux",
+			});
+			process.env.MAESTRO_DEVICE_IDENTITY_HELPER = fileURLToPath(
+				new URL("../scripts/fake-device-identity-helper.mjs", import.meta.url),
+			);
+			process.env.MAESTRO_DEVICE_IDENTITY_ALLOW_TEST_HELPER = "1";
+
+			const refreshExpiresAt = new Date(
+				Date.now() + 60 * 60 * 1000,
+			).toISOString();
+			const delegationExpiresAt = new Date(
+				Date.now() + 15 * 60 * 1000,
+			).toISOString();
+			const challengePurposes: unknown[] = [];
+			let deviceRegistrations = 0;
+			const fetchMock = vi.fn(async (input, init) => {
+				const url = String(input);
+				if (url.endsWith("/v1/tokens/refresh")) {
+					return new Response(
+						JSON.stringify({
+							access_token: "new-evalops-access",
+							expires_at: refreshExpiresAt,
+							organization_id: "org_123",
+							refresh_token: "new-evalops-refresh",
+							scopes: ["llm_gateway:invoke"],
+							token_type: "Bearer",
+						}),
+						{ status: 200, headers: { "Content-Type": "application/json" } },
+					);
+				}
+				if (url.endsWith("/v1/device-challenges")) {
+					const body = JSON.parse(String(init?.body)) as Record<
+						string,
+						unknown
+					>;
+					challengePurposes.push(body.purpose);
+					return new Response(
+						JSON.stringify({
+							challenge: `challenge:${body.purpose}:${body.device_id ?? "none"}`,
+							challenge_id: `challenge-${challengePurposes.length}`,
+						}),
+						{ status: 200, headers: { "Content-Type": "application/json" } },
+					);
+				}
+				if (url.endsWith("/v1/devices")) {
+					deviceRegistrations += 1;
+					return new Response(
+						JSON.stringify({ device: { id: "desktop-test-device" } }),
+						{ status: 200, headers: { "Content-Type": "application/json" } },
+					);
+				}
+				if (url.endsWith("/v1/delegation-tokens")) {
+					return new Response(
+						JSON.stringify({
+							agent_id: "agent-child-1",
+							expires_at: delegationExpiresAt,
+							run_id: "run-child-1",
+							scopes_granted: ["llm_gateway:invoke"],
+							scopes_requested: ["llm_gateway:invoke"],
+							token: TEST_DELEGATED_ACCESS_VALUE,
+							token_type: "Bearer",
+						}),
+						{ status: 201, headers: { "Content-Type": "application/json" } },
+					);
+				}
+				return new Response(JSON.stringify({ error: "not-found" }), {
+					status: 404,
+					headers: { "Content-Type": "application/json" },
+				});
+			});
+			vi.stubGlobal("fetch", fetchMock);
+
+			saveOAuthCredentials("evalops", {
+				type: "oauth",
+				access: "expired-access",
+				refresh: "old-evalops-refresh",
+				expires: Date.now() - 1000,
+				metadata: {
+					deviceId: "old-v1-device",
+					identityBaseUrl: "https://identity.evalops.test",
+					organizationId: "org_123",
+					providerRef: {
+						provider: "openai",
+						environment: "prod",
+					},
+				},
+			});
+
+			await expect(
+				issueEvalOpsDelegationToken({
+					agentId: "agent-child-1",
+					agentType: "coder",
+					runId: "run-child-1",
+					scopes: ["llm_gateway:invoke"],
+					surface: "maestro-subagent",
+				}),
+			).resolves.toEqual(
+				expect.objectContaining({
+					token: TEST_DELEGATED_ACCESS_VALUE,
+				}),
+			);
+
+			expect(deviceRegistrations).toBe(1);
+			expect(challengePurposes).toEqual(["enroll", "delegation"]);
+			const delegationBody = JSON.parse(
+				String(fetchMock.mock.calls.at(-1)?.[1]?.body),
+			) as Record<string, unknown>;
+			expect(delegationBody.device_proof).toEqual({
+				challenge_id: "challenge-2",
+				device_id: "desktop-test-device",
+				signature: "fake-signature:challenge:delegation:desktop-test-device",
+			});
+		});
+
+		it("does not re-enroll when delegation uses a supplied token", async () => {
+			Object.defineProperty(process, "platform", {
+				configurable: true,
+				value: "linux",
+			});
+			process.env.MAESTRO_DEVICE_IDENTITY_HELPER = fileURLToPath(
+				new URL("../scripts/fake-device-identity-helper.mjs", import.meta.url),
+			);
+			process.env.MAESTRO_DEVICE_IDENTITY_ALLOW_TEST_HELPER = "1";
+
+			const expiresAt = new Date(Date.now() + 15 * 60 * 1000).toISOString();
+			const challengePurposes: unknown[] = [];
+			let deviceRegistrations = 0;
+			const fetchMock = vi.fn(async (input, init) => {
+				const url = String(input);
+				if (url.endsWith("/v1/device-challenges")) {
+					const body = JSON.parse(String(init?.body)) as Record<
+						string,
+						unknown
+					>;
+					challengePurposes.push(body.purpose);
+					return new Response(
+						JSON.stringify({
+							challenge: `challenge:${body.purpose}:${body.device_id ?? "none"}`,
+							challenge_id: `challenge-${challengePurposes.length}`,
+						}),
+						{ status: 200, headers: { "Content-Type": "application/json" } },
+					);
+				}
+				if (url.endsWith("/v1/devices")) {
+					deviceRegistrations += 1;
+					return new Response(JSON.stringify({ error: "forbidden" }), {
+						status: 403,
+						headers: { "Content-Type": "application/json" },
+					});
+				}
+				if (url.endsWith("/v1/delegation-tokens")) {
+					return new Response(
+						JSON.stringify({
+							agent_id: "agent-child-1",
+							expires_at: expiresAt,
+							run_id: "run-child-1",
+							scopes_granted: ["llm_gateway:invoke"],
+							scopes_requested: ["llm_gateway:invoke"],
+							token: TEST_DELEGATED_ACCESS_VALUE,
+							token_type: "Bearer",
+						}),
+						{ status: 201, headers: { "Content-Type": "application/json" } },
+					);
+				}
+				return new Response(JSON.stringify({ error: "not-found" }), {
+					status: 404,
+					headers: { "Content-Type": "application/json" },
+				});
+			});
+			vi.stubGlobal("fetch", fetchMock);
+
+			saveOAuthCredentials("evalops", {
+				type: "oauth",
+				access: "parent-access-token",
+				refresh: "parent-refresh-token",
+				expires: Date.now() + 60 * 60 * 1000,
+				metadata: {
+					deviceId: "desktop-test-device",
+					identityBaseUrl: "https://identity.evalops.test",
+					organizationId: "org_123",
+					providerRef: {
+						provider: "openai",
+						environment: "prod",
+					},
+				},
+			});
+
+			await expect(
+				issueEvalOpsDelegationToken({
+					agentId: "agent-child-1",
+					agentType: "coder",
+					runId: "run-child-1",
+					scopes: ["llm_gateway:invoke"],
+					surface: "maestro-subagent",
+					token: "child-token",
+				}),
+			).resolves.toEqual(
+				expect.objectContaining({
+					token: TEST_DELEGATED_ACCESS_VALUE,
+				}),
+			);
+
+			expect(deviceRegistrations).toBe(0);
+			expect(challengePurposes).toEqual([]);
+			expect(fetchMock).toHaveBeenCalledTimes(1);
+			const delegationBody = JSON.parse(
+				String(fetchMock.mock.calls[0]?.[1]?.body),
+			) as Record<string, unknown>;
+			expect(delegationBody).not.toHaveProperty("device_proof");
 		});
 
 		it("uses the shared Platform base URL when no identity-specific base is configured", async () => {

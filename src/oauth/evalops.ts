@@ -10,6 +10,7 @@ import { fetchDownstream } from "../utils/downstream-http.js";
 import { createLogger } from "../utils/logger.js";
 import {
 	buildDesktopDeviceProof,
+	buildEnrolledDesktopDeviceProof,
 	enrollDesktopDeviceIdentity,
 } from "./device-identity.js";
 import {
@@ -332,6 +333,44 @@ function resolveDelegationOrganizationId(
 	return organizationId;
 }
 
+async function enrollCurrentDesktopDevice(
+	identityBaseUrl: string,
+	accessToken: string,
+): Promise<string | undefined> {
+	try {
+		return (
+			(await enrollDesktopDeviceIdentity(
+				identityBaseUrl,
+				accessToken,
+				process.env.npm_package_version,
+			)) ?? undefined
+		);
+	} catch (error) {
+		logger.warn("EvalOps desktop device enrollment skipped", {
+			errorType: error instanceof Error ? error.name : "unknown",
+		});
+		return undefined;
+	}
+}
+
+function persistStoredEvalOpsDeviceId(
+	identityBaseUrl: string,
+	deviceId: string,
+): void {
+	const stored = loadOAuthCredentials("evalops");
+	if (!stored) {
+		return;
+	}
+	saveOAuthCredentials("evalops", {
+		...stored,
+		metadata: {
+			...stored.metadata,
+			identityBaseUrl,
+			deviceId,
+		},
+	});
+}
+
 async function getFreshEvalOpsAccessToken(
 	metadata?: Record<string, unknown>,
 ): Promise<string | null> {
@@ -386,15 +425,38 @@ export async function issueEvalOpsDelegationToken(
 	const metadata = resolveStoredEvalOpsMetadata(request.metadata);
 	const identityBaseUrl =
 		getMetadataString(metadata, "identityBaseUrl") ?? getIdentityBaseUrl();
-	const deviceProof = await buildDesktopDeviceProof(
-		identityBaseUrl,
-		"delegation",
-	);
 	const token = request.token ?? (await getFreshEvalOpsAccessToken(metadata));
 	if (!token) {
 		throw new Error(
 			"EvalOps delegation requires a valid access token. Run /login evalops first.",
 		);
+	}
+	const delegationMetadata =
+		!request.token && !request.metadata
+			? (loadOAuthCredentials("evalops")?.metadata ?? metadata)
+			: metadata;
+	let enrolledDeviceId = getMetadataString(delegationMetadata, "deviceId");
+	let deviceProof = request.token
+		? undefined
+		: await buildEnrolledDesktopDeviceProof(
+				identityBaseUrl,
+				"delegation",
+				enrolledDeviceId,
+			);
+	if (!deviceProof && !request.token) {
+		const migratedDeviceId = await enrollCurrentDesktopDevice(
+			identityBaseUrl,
+			token,
+		);
+		if (migratedDeviceId) {
+			enrolledDeviceId = migratedDeviceId;
+			persistStoredEvalOpsDeviceId(identityBaseUrl, migratedDeviceId);
+			deviceProof = await buildEnrolledDesktopDeviceProof(
+				identityBaseUrl,
+				"delegation",
+				enrolledDeviceId,
+			);
+		}
 	}
 	const response = await fetchIdentity(
 		identityBaseUrl,
@@ -436,8 +498,8 @@ export async function issueEvalOpsDelegationToken(
 	return {
 		agentId: payload.agent_id ?? request.agentId,
 		expiresAt: parseTimestamp(payload.expires_at, "expires_at"),
-		organizationId: resolveDelegationOrganizationId(metadata),
-		providerRef: resolveProviderRef(metadata),
+		organizationId: resolveDelegationOrganizationId(delegationMetadata),
+		providerRef: resolveProviderRef(delegationMetadata),
 		runId: payload.run_id ?? request.runId,
 		scopesDenied: parseScopesPayload(payload.scopes_denied),
 		scopesGranted: parseScopesPayload(payload.scopes_granted),
@@ -624,12 +686,6 @@ export async function loginEvalOps(
 			}),
 		]);
 
-		const deviceId = await enrollDesktopDeviceIdentity(
-			identityBaseUrl,
-			result.accessToken,
-			process.env.npm_package_version,
-		);
-
 		const credentials: OAuthCredentials = {
 			type: "oauth",
 			access: result.accessToken,
@@ -639,7 +695,6 @@ export async function loginEvalOps(
 				identityBaseUrl,
 				organizationId: result.organizationId,
 				providerRef,
-				...(deviceId ? { deviceId } : {}),
 				...(result.refreshExpiresAt
 					? { refreshExpiresAt: result.refreshExpiresAt }
 					: {}),
@@ -647,6 +702,20 @@ export async function loginEvalOps(
 			},
 		};
 		saveOAuthCredentials("evalops", credentials);
+		const deviceId = await enrollDesktopDeviceIdentity(
+			identityBaseUrl,
+			result.accessToken,
+			process.env.npm_package_version,
+		);
+		if (deviceId) {
+			saveOAuthCredentials("evalops", {
+				...credentials,
+				metadata: {
+					...credentials.metadata,
+					deviceId,
+				},
+			});
+		}
 		logger.info("EvalOps managed login successful", {
 			organizationId: result.organizationId,
 			provider: providerRef.provider,
@@ -667,7 +736,11 @@ export async function refreshEvalOpsToken(
 
 	const identityBaseUrl =
 		getMetadataString(metadata, "identityBaseUrl") ?? getIdentityBaseUrl();
-	const deviceProof = await buildDesktopDeviceProof(identityBaseUrl, "refresh");
+	const deviceProof = await buildEnrolledDesktopDeviceProof(
+		identityBaseUrl,
+		"refresh",
+		getMetadataString(metadata, "deviceId"),
+	);
 	const response = await fetchIdentity(
 		identityBaseUrl,
 		PLATFORM_HTTP_ROUTES.identity.tokenRefresh,
@@ -703,8 +776,8 @@ export async function refreshEvalOpsToken(
 		payload.refresh_expires_at != null
 			? parseTimestamp(payload.refresh_expires_at, "refresh_expires_at")
 			: getMetadataNumber(metadata, "refreshExpiresAt");
-
-	return {
+	const existingDeviceId = getMetadataString(metadata, "deviceId");
+	const refreshedCredentials: OAuthCredentials = {
 		type: "oauth",
 		access: payload.access_token,
 		refresh: nextRefreshToken,
@@ -718,9 +791,30 @@ export async function refreshEvalOpsToken(
 					? payload.organization_id
 					: getMetadataString(metadata, "organizationId"),
 			...(refreshExpiresAt ? { refreshExpiresAt } : {}),
+			...(existingDeviceId ? { deviceId: existingDeviceId } : {}),
 			scopes: scopes.length > 0 ? scopes : getMetadataScopes(metadata),
 		},
 	};
+	if (!deviceProof) {
+		saveOAuthCredentials("evalops", refreshedCredentials);
+	}
+
+	const migratedDeviceId = deviceProof
+		? undefined
+		: await enrollCurrentDesktopDevice(identityBaseUrl, payload.access_token);
+	if (!migratedDeviceId) {
+		return refreshedCredentials;
+	}
+
+	const migratedCredentials: OAuthCredentials = {
+		...refreshedCredentials,
+		metadata: {
+			...refreshedCredentials.metadata,
+			deviceId: migratedDeviceId,
+		},
+	};
+	saveOAuthCredentials("evalops", migratedCredentials);
+	return migratedCredentials;
 }
 
 export async function revokeEvalOpsToken(

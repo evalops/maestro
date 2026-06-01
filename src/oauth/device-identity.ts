@@ -5,6 +5,7 @@ import { isAbortError } from "../utils/abort-error.js";
 import { fetchDownstream } from "../utils/downstream-http.js";
 
 const DEFAULT_TIMEOUT_MS = 10_000;
+const SIGN_TIMEOUT_MS = 120_000;
 
 export interface DeviceIdentityStatus {
 	available: boolean;
@@ -58,6 +59,7 @@ async function helperExists(helperPath: string): Promise<boolean> {
 
 async function runHelper(
 	request: Record<string, unknown>,
+	timeoutMs = DEFAULT_TIMEOUT_MS,
 ): Promise<DeviceIdentityStatus | null> {
 	const helperPath = getHelperPath();
 	if (!helperPath || !(await helperExists(helperPath))) {
@@ -72,7 +74,7 @@ async function runHelper(
 		const timeout = setTimeout(() => {
 			child.kill("SIGKILL");
 			resolve(null);
-		}, DEFAULT_TIMEOUT_MS);
+		}, timeoutMs);
 		child.stdout.setEncoding("utf8");
 		child.stdout.on("data", (chunk) => {
 			stdout += chunk;
@@ -100,7 +102,10 @@ export async function getDesktopDeviceIdentityStatus(): Promise<DeviceIdentitySt
 async function signDeviceChallenge(
 	challenge: string,
 ): Promise<DeviceIdentityStatus | null> {
-	const response = await runHelper({ command: "sign", challenge });
+	const response = await runHelper(
+		{ command: "sign", challenge },
+		SIGN_TIMEOUT_MS,
+	);
 	if (!response?.available || !response.device_id || !response.signature) {
 		return null;
 	}
@@ -155,6 +160,30 @@ export async function buildDesktopDeviceProof(
 	purpose: "refresh" | "delegation" | "verify",
 ): Promise<DeviceProof | null> {
 	const status = await getDesktopDeviceIdentityStatus();
+	return buildDesktopDeviceProofFromStatus(identityBaseUrl, purpose, status);
+}
+
+export async function buildEnrolledDesktopDeviceProof(
+	identityBaseUrl: string,
+	purpose: "refresh" | "delegation" | "verify",
+	enrolledDeviceId: string | undefined,
+): Promise<DeviceProof | null> {
+	const expectedDeviceId = enrolledDeviceId?.trim();
+	if (!expectedDeviceId) {
+		return null;
+	}
+	const status = await getDesktopDeviceIdentityStatus();
+	if (status?.device_id !== expectedDeviceId) {
+		return null;
+	}
+	return buildDesktopDeviceProofFromStatus(identityBaseUrl, purpose, status);
+}
+
+async function buildDesktopDeviceProofFromStatus(
+	identityBaseUrl: string,
+	purpose: "refresh" | "delegation" | "verify",
+	status: DeviceIdentityStatus | null,
+): Promise<DeviceProof | null> {
 	if (!status?.available || !status.device_id) {
 		return null;
 	}
