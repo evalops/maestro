@@ -20,6 +20,16 @@ jobs:
   tag-current-version:
     runs-on: ${{ github.repository == 'evalops/maestro-internal' && (vars.INTERNAL_CONFIRMATION_RUNNER || 'evalops-internal') || (vars.PUBLIC_PR_VALIDATION_RUNNER || 'ubuntu-latest') }}
     timeout-minutes: 45
+    permissions:
+      actions: read
+      contents: write
+    outputs:
+      active_release_count: ${{ steps.active-release.outputs.active_count }}
+      package_name: ${{ steps.release.outputs.package_name }}
+      release_tag: ${{ steps.release.outputs.release_tag }}
+      release_version: ${{ steps.release.outputs.release_version }}
+      tag_exists: ${{ steps.release.outputs.tag_exists }}
+      registry_published: ${{ steps.registry-release.outputs.published }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
@@ -48,40 +58,6 @@ jobs:
             echo "${PACKAGE_NAME}@${RELEASE_VERSION} is not published on npm yet."
           fi
 
-      - name: Setup registry install smoke tools
-        if: ${{ github.repository == 'evalops/maestro' && steps.registry-release.outputs.published == 'true' }}
-        uses: ./.github/actions/setup-bun-nx
-        with:
-          install: "false"
-          cache-nx: "false"
-          ensure-rustfmt: "false"
-
-      - name: Verify already-published package from registry
-        if: ${{ github.repository == 'evalops/maestro' && steps.registry-release.outputs.published == 'true' }}
-        env:
-          PACKAGE_NAME: ${{ steps.release.outputs.package_name }}
-          RELEASE_VERSION: ${{ steps.release.outputs.release_version }}
-          MAESTRO_INSTALL_AUDIT_LEVEL: critical
-          MAESTRO_PUBLISHED_REPLAY_SANDBOX_MODE: local
-          MAESTRO_REGISTRY_SMOKE_EVIDENCE_DIR: tag-release-published-replay-evidence
-          MAESTRO_REGISTRY_POLL_ATTEMPTS: "1"
-          MAESTRO_REGISTRY_POLL_DELAY_MS: "1000"
-        run: |
-          set -euo pipefail
-          cli_command="$(node -p 'Object.keys(require("./package.json").bin)[0]')"
-          node scripts/smoke-registry-install.js \
-            --package "$PACKAGE_NAME" \
-            --version "$RELEASE_VERSION" \
-            --cli-command "$cli_command"
-          node scripts/verify-published-replay-evidence.js --evidence-dir tag-release-published-replay-evidence
-
-      - name: Upload already-published replay evidence
-        if: ${{ always() && hashFiles('tag-release-published-replay-evidence/*.json') != '' }}
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          retention-days: 14
-          name: tag-release-published-replay-evidence-${{ steps.release.outputs.release_tag }}
-          path: tag-release-published-replay-evidence/*.json
 
       - id: active-release
         name: Check active public release workflow
@@ -135,12 +111,78 @@ jobs:
             echo "Created semver tag ${{ steps.release.outputs.release_tag }}."
           fi
 
-      - name: Dispatch public release workflow
-        if: ${{ github.repository == 'evalops/maestro' && (steps.release.outputs.tag_exists != 'true' || steps.registry-release.outputs.published != 'true') && (steps.active-release.outputs.active_count == '0' || steps.active-release.outputs.active_count == '') }}
+  verify-published-registry-package:
+    needs: tag-current-version
+    if: ${{ github.repository == 'evalops/maestro' && needs.tag-current-version.outputs.registry_published == 'true' }}
+    runs-on: ${{ vars.PUBLIC_PR_VALIDATION_RUNNER || 'ubuntu-latest' }}
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Setup registry install smoke tools
+        uses: ./.github/actions/setup-bun-nx
+        with:
+          install: "false"
+          cache-nx: "false"
+          ensure-rustfmt: "false"
+
+      - name: Verify already-published package from registry
         env:
-          GH_TOKEN: ${{ github.token }}
-          RELEASE_TAG: ${{ steps.release.outputs.release_tag }}
-          RELEASE_VERSION: ${{ steps.release.outputs.release_version }}
+          PACKAGE_NAME: ${{ needs.tag-current-version.outputs.package_name }}
+          RELEASE_VERSION: ${{ needs.tag-current-version.outputs.release_version }}
+          MAESTRO_INSTALL_AUDIT_LEVEL: critical
+          MAESTRO_PUBLISHED_REPLAY_SANDBOX_MODE: local
+          MAESTRO_REGISTRY_SMOKE_EVIDENCE_DIR: tag-release-published-replay-evidence
+          MAESTRO_REGISTRY_POLL_ATTEMPTS: "1"
+          MAESTRO_REGISTRY_POLL_DELAY_MS: "1000"
         run: |
           set -euo pipefail
+          cli_command="$(node -p 'Object.keys(require("./package.json").bin)[0]')"
+          node scripts/smoke-registry-install.js \
+            --package "$PACKAGE_NAME" \
+            --version "$RELEASE_VERSION" \
+            --cli-command "$cli_command"
+          node scripts/verify-published-replay-evidence.js --evidence-dir tag-release-published-replay-evidence
+
+      - name: Upload already-published replay evidence
+        if: ${{ always() && hashFiles('tag-release-published-replay-evidence/*.json') != '' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          retention-days: 14
+          name: tag-release-published-replay-evidence-${{ needs.tag-current-version.outputs.release_tag }}
+          path: tag-release-published-replay-evidence/*.json
+
+  dispatch-public-release:
+    needs:
+      - tag-current-version
+      - verify-published-registry-package
+    if: ${{ always() && github.repository == 'evalops/maestro' && needs.tag-current-version.result == 'success' && (needs.tag-current-version.outputs.registry_published != 'true' || needs.verify-published-registry-package.result == 'success') && (needs.tag-current-version.outputs.tag_exists != 'true' || needs.tag-current-version.outputs.registry_published != 'true') && (needs.tag-current-version.outputs.active_release_count == '0' || needs.tag-current-version.outputs.active_release_count == '') }}
+    runs-on: ${{ vars.PUBLIC_PR_VALIDATION_RUNNER || 'ubuntu-latest' }}
+    timeout-minutes: 10
+    permissions:
+      actions: write
+      contents: read
+    steps:
+      - name: Dispatch public release workflow
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ needs.tag-current-version.outputs.release_tag }}
+          RELEASE_VERSION: ${{ needs.tag-current-version.outputs.release_version }}
+        run: |
+          set -euo pipefail
+          active_count="$(
+            gh run list \
+              --workflow release \
+              --json headBranch,status \
+              --limit 50 \
+              --jq "[.[] | select(.headBranch == \"${RELEASE_TAG}\" and .status != \"completed\")] | length"
+          )"
+          if [[ "${active_count}" != "0" ]]; then
+            echo "Found ${active_count} active release workflow run(s) for ${RELEASE_TAG}; not dispatching another."
+            exit 0
+          fi
           gh workflow run release --ref "${RELEASE_TAG}" --field "version=${RELEASE_VERSION}"
