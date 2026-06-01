@@ -198,6 +198,7 @@ export interface MaestroAppServerSessionApiOptions {
 	policyControl?: MaestroAppServerPolicyControl | false;
 	networkGovernance?: MaestroAppServerNetworkGovernance | false;
 	sandboxCheck?: MaestroAppServerSandboxCheck | false;
+	projectRoot?: string;
 	externalAgentImport?: MaestroAppServerExternalAgentImport | false;
 	pluginBundles?: MaestroAppServerPluginBundleApi | false;
 	daemonLifecycle?: MaestroAppServerDaemonLifecycle | false;
@@ -895,10 +896,16 @@ export function createMaestroAppServerSessionApi(
 		options.sandboxCheck === false
 			? undefined
 			: (options.sandboxCheck ?? createMaestroAppServerSandboxCheck());
+	const canMutateSessionPersistence = store.canCreateSession?.() ?? true;
 	const pluginBundles =
-		options.pluginBundles === false
+		options.pluginBundles === false ||
+		!canMutateSessionPersistence ||
+		!hostControl
 			? undefined
-			: (options.pluginBundles ?? createMaestroAppServerPluginBundleApi());
+			: (options.pluginBundles ??
+				createMaestroAppServerPluginBundleApi({
+					projectRoot: options.projectRoot,
+				}));
 	const daemonLifecycle =
 		options.daemonLifecycle === false
 			? undefined
@@ -924,7 +931,6 @@ export function createMaestroAppServerSessionApi(
 	const canUseThreadGoals = Boolean(
 		store.setSessionAppServerGoal && store.loadEntries,
 	);
-	const canMutateSessionPersistence = store.canCreateSession?.() ?? true;
 	const externalAgentImport =
 		options.externalAgentImport === false || !canMutateSessionPersistence
 			? undefined
