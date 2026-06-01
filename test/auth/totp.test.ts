@@ -36,6 +36,17 @@ vi.mock("../../src/db/client.js", () => ({
 }));
 
 describe("TOTP Service", () => {
+	async function findInvalidTotpCode(secret: string): Promise<string> {
+		for (let i = 0; i < 10; i++) {
+			const code = `${i}`.repeat(6);
+			const result = await verifyTotpCode(`invalid-probe-${i}`, secret, code);
+			if (!result.valid) {
+				return code;
+			}
+		}
+		throw new Error("Could not find an invalid TOTP code");
+	}
+
 	beforeEach(() => {
 		_resetRateLimitsForTesting();
 	});
@@ -81,8 +92,9 @@ describe("TOTP Service", () => {
 
 		it("should reject invalid code", async () => {
 			const secret = generateTotpSecret();
+			const invalidTotpCode = await findInvalidTotpCode(secret);
 
-			const result = await verifyTotpCode("user-1", secret, "000000");
+			const result = await verifyTotpCode("user-1", secret, invalidTotpCode);
 			expect(result.valid).toBe(false);
 			expect(result.error).toBe("invalid_code");
 		});
@@ -95,10 +107,11 @@ describe("TOTP Service", () => {
 
 		it("should rate limit after too many failures", async () => {
 			const secret = generateTotpSecret();
+			const invalidTotpCode = await findInvalidTotpCode(secret);
 
 			// Make 5 failed attempts
 			for (let i = 0; i < 5; i++) {
-				await verifyTotpCode("user-2", secret, "000000");
+				await verifyTotpCode("user-2", secret, invalidTotpCode);
 			}
 
 			const status = isRateLimited("user-2");
@@ -108,10 +121,11 @@ describe("TOTP Service", () => {
 
 		it("should return rate_limited error when limited", async () => {
 			const secret = generateTotpSecret();
+			const invalidTotpCode = await findInvalidTotpCode(secret);
 
 			// Exhaust attempts
 			for (let i = 0; i < 5; i++) {
-				await verifyTotpCode("user-3", secret, "000000");
+				await verifyTotpCode("user-3", secret, invalidTotpCode);
 			}
 
 			const result = await verifyTotpCode("user-3", secret, "123456");
@@ -122,10 +136,11 @@ describe("TOTP Service", () => {
 
 		it("should clear rate limit on success", async () => {
 			const secret = generateTotpSecret();
+			const invalidTotpCode = await findInvalidTotpCode(secret);
 
 			// Make some failures
-			await verifyTotpCode("user-4", secret, "000000");
-			await verifyTotpCode("user-4", secret, "000000");
+			await verifyTotpCode("user-4", secret, invalidTotpCode);
+			await verifyTotpCode("user-4", secret, invalidTotpCode);
 
 			// Succeed
 			const code = generateTotpCode(secret);

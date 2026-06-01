@@ -216,6 +216,12 @@ describe("tag-release workflow", () => {
 		expect(dispatchStep?.run).toContain(
 			'gh workflow run release --ref "${RELEASE_TAG}" --field "version=${RELEASE_VERSION}"',
 		);
+		expect(dispatchStep?.run).toContain("gh run list");
+		expect(dispatchStep?.run).toContain("--workflow release");
+		expect(dispatchStep?.run).toContain(".headBranch");
+		expect(dispatchStep?.run).toContain(
+			'if [[ "${active_count}" != "0" ]]; then',
+		);
 		expect(summaryStep?.run).toContain("is already published on npm");
 	});
 });

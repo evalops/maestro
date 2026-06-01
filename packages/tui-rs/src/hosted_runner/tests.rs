@@ -116,6 +116,19 @@ fn test_config(workspace_root: PathBuf) -> HostedRunnerConfig {
     }
 }
 
+fn base_hosted_runner_env(workspace_root: &Path) -> HashMap<String, String> {
+    HashMap::from([
+        (
+            "MAESTRO_RUNNER_SESSION_ID".to_string(),
+            "mrs_123".to_string(),
+        ),
+        (
+            "MAESTRO_WORKSPACE_ROOT".to_string(),
+            workspace_root.display().to_string(),
+        ),
+    ])
+}
+
 #[tokio::test]
 async fn route_rejects_connection_prefix_without_separator() {
     let workspace = tempdir().expect("workspace");
@@ -172,18 +185,10 @@ fn supervisor_executor_reports_runtime_not_ready_until_connected() {
 #[test]
 fn resolves_env_config_with_hosted_runner_contract_names() {
     let workspace = tempdir().expect("workspace");
-    let mut env = HashMap::new();
-    env.insert(
-        "MAESTRO_RUNNER_SESSION_ID".to_string(),
-        "mrs_123".to_string(),
-    );
+    let mut env = base_hosted_runner_env(workspace.path());
     env.insert(
         "MAESTRO_REMOTE_RUNNER_OWNER_INSTANCE_ID".to_string(),
         "pod_1".to_string(),
-    );
-    env.insert(
-        "MAESTRO_WORKSPACE_ROOT".to_string(),
-        workspace.path().display().to_string(),
     );
     env.insert(
         "MAESTRO_HOSTED_RUNNER_LISTEN".to_string(),
@@ -238,6 +243,52 @@ fn resolves_env_config_with_hosted_runner_contract_names() {
                 .as_path()
         )
     );
+}
+
+#[test]
+fn defaults_hosted_runner_bind_to_localhost_when_no_listen_env_is_set() {
+    let workspace = tempdir().expect("workspace");
+    let env = base_hosted_runner_env(workspace.path());
+
+    let config = HostedRunnerConfig::from_env_map(&env).expect("config");
+
+    assert_eq!(config.bind_addr, "127.0.0.1:8080".parse().unwrap());
+}
+
+#[test]
+fn preserves_wildcard_bind_for_port_only_hosted_runner_env() {
+    let workspace = tempdir().expect("workspace");
+    for (key, value) in [
+        ("MAESTRO_HOSTED_RUNNER_LISTEN", "9090"),
+        ("MAESTRO_HOSTED_RUNNER_PORT", "9091"),
+        ("PORT", "9092"),
+    ] {
+        let mut env = base_hosted_runner_env(workspace.path());
+        env.insert(key.to_string(), value.to_string());
+
+        let config = HostedRunnerConfig::from_env_map(&env).expect("config");
+
+        assert_eq!(
+            config.bind_addr,
+            format!("0.0.0.0:{value}").parse().unwrap(),
+            "{key} should preserve hosted ingress wildcard binding"
+        );
+    }
+}
+
+#[test]
+fn explicit_host_env_overrides_port_only_wildcard_bind() {
+    let workspace = tempdir().expect("workspace");
+    let mut env = base_hosted_runner_env(workspace.path());
+    env.insert("MAESTRO_HOSTED_RUNNER_PORT".to_string(), "9090".to_string());
+    env.insert(
+        "MAESTRO_HOSTED_RUNNER_HOST".to_string(),
+        "127.0.0.1".to_string(),
+    );
+
+    let config = HostedRunnerConfig::from_env_map(&env).expect("config");
+
+    assert_eq!(config.bind_addr, "127.0.0.1:9090".parse().unwrap());
 }
 
 #[test]

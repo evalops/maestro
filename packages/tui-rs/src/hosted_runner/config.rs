@@ -3,7 +3,8 @@ use std::fs;
 use std::net::{SocketAddr, ToSocketAddrs};
 use std::path::{Path, PathBuf};
 
-const DEFAULT_LISTEN_HOST: &str = "0.0.0.0";
+const DEFAULT_LISTEN_HOST: &str = "127.0.0.1";
+const PORT_ONLY_LISTEN_HOST: &str = "0.0.0.0";
 const DEFAULT_LISTEN_PORT: u16 = 8080;
 
 #[derive(Debug, Clone)]
@@ -47,10 +48,18 @@ impl HostedRunnerConfig {
             .or(hosted_runner_port)
             .or(port_env)
             .unwrap_or(DEFAULT_LISTEN_PORT);
+        let explicit_port =
+            listen.port.is_some() || hosted_runner_port.is_some() || port_env.is_some();
         let host = listen
             .host
             .or_else(|| env_value(env, "MAESTRO_HOSTED_RUNNER_HOST"))
-            .unwrap_or_else(|| DEFAULT_LISTEN_HOST.to_string());
+            .unwrap_or_else(|| {
+                if explicit_port {
+                    PORT_ONLY_LISTEN_HOST.to_string()
+                } else {
+                    DEFAULT_LISTEN_HOST.to_string()
+                }
+            });
         let bind_addr = resolve_bind_addr(&host, port)?;
         let snapshot_root = resolve_snapshot_root(
             first_env(
