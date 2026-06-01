@@ -94,7 +94,7 @@ describe("tag-release workflow", () => {
 		);
 
 		expect(workflow.jobs["tag-current-version"]["timeout-minutes"]).toBe(45);
-		expect(workflow.jobs["tag-current-version"].permissions).toMatchObject({
+		expect(workflow.jobs["tag-current-version"].permissions).toEqual({
 			actions: "read",
 			contents: "write",
 		});
@@ -177,7 +177,7 @@ describe("tag-release workflow", () => {
 			"tag-current-version",
 			"verify-published-registry-package",
 		]);
-		expect(dispatchJob.permissions).toMatchObject({
+		expect(dispatchJob.permissions).toEqual({
 			actions: "write",
 			contents: "read",
 		});
