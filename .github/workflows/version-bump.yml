@@ -154,6 +154,17 @@ jobs:
         with:
           requested-version: ${{ steps.version.outputs.release_version }}
 
+      - name: Run release commit validators
+        run: |
+          set -euo pipefail
+          if command -v cargo >/dev/null 2>&1; then
+            cargo fmt --manifest-path "$PWD/packages/tui-rs/Cargo.toml" -- --check
+          fi
+          bash "$PWD/scripts/guardian.sh" --trigger pre-commit
+          bun run bun:lint
+          bun run build
+          bun run bun:compile
+
       - name: Commit release branch
         id: commit
         env:
@@ -161,11 +172,8 @@ jobs:
           RELEASE_VERSION: ${{ steps.version.outputs.release_version }}
           BRANCH_EXISTS: ${{ steps.branch.outputs.exists }}
           RELEASE_PR_TOKEN: ${{ steps.release-app-token.outputs.token || secrets.RELEASE_PR_SYNC_TOKEN || secrets.RELEASE_PR_TOKEN }}
-          HUSKY: "0"
         run: |
           set -euo pipefail
-          hooks_dir="$(mktemp -d)"
-          git config --local core.hooksPath "$hooks_dir"
           git remote set-url origin "https://x-access-token:${RELEASE_PR_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
           if [[ -z "$(git status --porcelain)" ]]; then
             if [[ "$BRANCH_EXISTS" == "true" ]] && [[ "$(git rev-parse HEAD)" != "$(git rev-parse "origin/$RELEASE_BRANCH")" ]]; then
