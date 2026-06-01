@@ -1572,10 +1572,10 @@ describe("hosted AgentRuntime progress recorder", () => {
 		});
 		recorder.recordAgentEvent({
 			type: "tool_batch_summary",
-			summary: "read src/index.ts, Ran npm test",
-			summaryLabels: ["read src/index.ts", "Ran npm test"],
-			toolCallIds: ["call_stream"],
-			toolNames: ["read"],
+			summary: "read src/index.ts, Ran pwd",
+			summaryLabels: ["read src/index.ts", "Ran pwd"],
+			toolCallIds: ["call_stream", "call_stream_again", "call_shell"],
+			toolNames: ["read", "read", "shell"],
 			callsSucceeded: 1,
 			callsFailed: 0,
 		});
@@ -1651,8 +1651,8 @@ describe("hosted AgentRuntime progress recorder", () => {
 					summary_labels: ["read src/index.ts", "[redacted]"],
 					calls_succeeded: 1,
 					calls_failed: 0,
-					tool_call_ids: ["call_stream"],
-					tool_names: ["read"],
+					tool_call_ids: ["call_stream", "call_stream_again", "call_shell"],
+					tool_names: ["read", "read", "shell"],
 				}),
 			}),
 		);
@@ -1939,6 +1939,79 @@ describe("hosted AgentRuntime progress recorder", () => {
 			details: { toolCallId: "call_status_command" },
 		});
 		recorder.recordAgentEvent({
+			type: "status",
+			status: "Running npm install lodash",
+			details: { toolCallId: "call_status_plain_operand" },
+		});
+		recorder.recordAgentEvent({
+			type: "status",
+			status: "Running git checkout main",
+			details: { toolCallId: "call_status_git_plain_operand" },
+		});
+		recorder.recordAgentEvent({
+			type: "status",
+			status: "Running cargo install ripgrep",
+			details: { toolCallId: "call_status_cargo_plain_operand" },
+		});
+		recorder.recordAgentEvent({
+			type: "status",
+			status: "Running go run server",
+			details: { toolCallId: "call_status_go_plain_operand" },
+		});
+		recorder.recordAgentEvent({
+			type: "status",
+			status: "Running pwd",
+			details: { toolCallId: "call_status_pwd" },
+		});
+		recorder.recordAgentEvent({
+			type: "status",
+			status: "Running date",
+			details: { toolCallId: "call_status_date" },
+		});
+		recorder.recordAgentEvent({
+			type: "status",
+			status: "Running uname -a",
+			details: { toolCallId: "call_status_uname" },
+		});
+		recorder.recordAgentEvent({
+			type: "status",
+			status: "Running which node",
+			details: { toolCallId: "call_status_which" },
+		});
+		recorder.recordAgentEvent({
+			type: "status",
+			status: "Running terraform apply tfplan",
+			details: { toolCallId: "call_status_terraform_plain_operand" },
+		});
+		recorder.recordAgentEvent({
+			type: "status",
+			status: "Running echo $TOKEN",
+			details: { toolCallId: "call_status_echo_token" },
+		});
+		recorder.recordAgentEvent({
+			type: "status",
+			status: "Running printf hello",
+			details: { toolCallId: "call_status_printf_plain_operand" },
+		});
+		recorder.recordAgentEvent({
+			type: "status",
+			status: "Running cd /private/workspace",
+			details: {
+				kind: "tool_execution_summary",
+				toolCallId: "call_status_cd",
+				toolName: "exec_command",
+			},
+		});
+		recorder.recordAgentEvent({
+			type: "status",
+			status: "Running release notes",
+			details: {
+				kind: "tool_execution_summary",
+				toolCallId: "call_status_benign_running",
+				toolName: "todo",
+			},
+		});
+		recorder.recordAgentEvent({
 			type: "compaction",
 			summary: "Older context summarized",
 			firstKeptEntryIndex: 12,
@@ -1960,26 +2033,27 @@ describe("hosted AgentRuntime progress recorder", () => {
 		});
 		await recorder.flush();
 
-		expect(recordEvent).toHaveBeenCalledWith(
-			expect.objectContaining({
-				message: "Maestro status recorded",
-				attributes: expect.objectContaining({
-					event_type: "status",
-					status: "restoring checkpoint",
-					detail_keys: ["checkpointId", "replica"],
-				}),
-			}),
-		);
-		expect(recordEvent).toHaveBeenCalledWith(
-			expect.objectContaining({
-				message: "Maestro status recorded",
-				attributes: expect.objectContaining({
-					event_type: "status",
-					status: "[redacted]",
-					detail_keys: ["toolCallId"],
-				}),
-			}),
-		);
+		const recordedStatuses = recordEvent.mock.calls
+			.map(([input]) => input.attributes)
+			.filter((attributes) => attributes.event_type === "status")
+			.map((attributes) => attributes.status);
+		expect(recordedStatuses).toEqual([
+			"restoring checkpoint",
+			"[redacted]",
+			"[redacted]",
+			"[redacted]",
+			"[redacted]",
+			"[redacted]",
+			"[redacted]",
+			"[redacted]",
+			"[redacted]",
+			"[redacted]",
+			"[redacted]",
+			"[redacted]",
+			"[redacted]",
+			"[redacted]",
+			"Running release notes",
+		]);
 		expect(recordEvent).toHaveBeenCalledWith(
 			expect.objectContaining({
 				message: "Maestro context compaction recorded",
@@ -2227,6 +2301,40 @@ describe("hosted AgentRuntime progress recorder", () => {
 		);
 	});
 
+	it("sanitizes nested hosted drain reason evidence before Platform egress", async () => {
+		const { recorder, recordEvent, completeRun } = createRecorder();
+
+		await recorder.recordHostedRunnerDrain({
+			status: "drained",
+			reason: "cleanup sk_live_DRAIN_12345678",
+			requestedBy: "maestro_web_server",
+			flushStatus: "completed",
+			manifestPath: "/workspace/.maestro/runner-snapshots/mrs.json",
+			platformEvidence: {
+				reason: "cleanup sk_live_DRAIN_12345678",
+			},
+		});
+
+		expect(recordEvent).toHaveBeenCalledWith(
+			expect.objectContaining({
+				message: "hosted runner drain manifest recorded",
+				attributes: expect.objectContaining({
+					reason: "[redacted]",
+					platform_evidence: expect.objectContaining({
+						reason: "[redacted]",
+					}),
+				}),
+			}),
+		);
+		expect(completeRun).toHaveBeenCalledWith(
+			expect.objectContaining({
+				result: expect.objectContaining({
+					reason: "[redacted]",
+				}),
+			}),
+		);
+	});
+
 	it("fails the Platform run once when hosted drain is interrupted", async () => {
 		const { recorder, recordStep, failRun } = createRecorder();
 
@@ -2263,6 +2371,46 @@ describe("hosted AgentRuntime progress recorder", () => {
 				leaseToken: "lease-token-1",
 				errorMessage: "Hosted runner drain failed: flush timed out",
 				retryable: false,
+			}),
+		);
+	});
+
+	it("sanitizes interrupted hosted drain failure text before Platform egress", async () => {
+		const { recorder, recordEvent, recordStep, failRun } = createRecorder();
+
+		await recorder.recordHostedRunnerDrain({
+			status: "interrupted",
+			reason: "cleanup sk_live_DRAIN_12345678",
+			requestedBy: "kubernetes_prestop",
+			flushStatus: "failed",
+			manifestPath: "/workspace/.maestro/runner-snapshots/mrs.json",
+			errorMessage: "drain failed with sk_live_DRAIN_12345678",
+		});
+
+		expect(recordEvent).toHaveBeenCalledWith(
+			expect.objectContaining({
+				message: "hosted runner interrupted drain manifest recorded",
+				attributes: expect.objectContaining({
+					event_type: "hosted_runner_drain_manifest_recorded",
+					reason: "[redacted]",
+					error: "[redacted]",
+				}),
+			}),
+		);
+		expect(recordStep).toHaveBeenCalledWith(
+			expect.objectContaining({
+				step: expect.objectContaining({
+					errorMessage: "[redacted]",
+					output: expect.objectContaining({
+						event_type: "hosted_runner_drain_failed",
+						reason: "[redacted]",
+					}),
+				}),
+			}),
+		);
+		expect(failRun).toHaveBeenCalledWith(
+			expect.objectContaining({
+				errorMessage: "[redacted]",
 			}),
 		);
 	});
@@ -2573,12 +2721,13 @@ describe("hosted AgentRuntime progress recorder", () => {
 				id: "maestro:session_1:background:bg_1",
 				kind: PlatformAgentWorkItemKindValue.ToolCall,
 				state: PlatformAgentWorkItemStateValue.Running,
-				title: "Background task: npm run dev",
+				title: "Background task: [redacted]",
 				toolExecutionId: "texec-bg-1",
 				payload: expect.objectContaining({
 					task_source: "background",
 					background_task_id: "bg_1",
-					command_summary: "npm run dev",
+					title: "Background task: [redacted]",
+					command_summary: "[redacted]",
 					cwd: "/workspace/app",
 				}),
 			}),
@@ -2598,6 +2747,53 @@ describe("hosted AgentRuntime progress recorder", () => {
 				}),
 			}),
 		);
+	});
+
+	it("redacts background task commands from command source context", async () => {
+		const { recorder, recordWorkItem } = createRecorder();
+
+		for (const [index, command] of [
+			"pwd",
+			"date",
+			"npm install lodash",
+		].entries()) {
+			recorder.recordAgentEvent({
+				type: "tool_execution_end",
+				toolCallId: `bash-bg-command-${index}`,
+				toolExecutionId: `texec-bg-command-${index}`,
+				toolName: "background_tasks",
+				result: {
+					role: "toolResult",
+					toolCallId: `bash-bg-command-${index}`,
+					toolName: "background_tasks",
+					content: [{ type: "text", text: "running" }],
+					details: {
+						taskId: `bg_command_${index}`,
+						status: "running",
+						command,
+					},
+					isError: false,
+					timestamp: 11 + index,
+				},
+				isError: false,
+			} satisfies AgentEvent);
+		}
+
+		await recorder.flush();
+
+		for (const index of [0, 1, 2]) {
+			expect(recordWorkItem).toHaveBeenCalledWith({
+				runId: "run_1",
+				workItem: expect.objectContaining({
+					id: `maestro:session_1:background:bg_command_${index}`,
+					title: "Background task: [redacted]",
+					payload: expect.objectContaining({
+						title: "Background task: [redacted]",
+						command_summary: "[redacted]",
+					}),
+				}),
+			});
+		}
 	});
 
 	it("records swarm events as parent and child AgentRuntime work items", async () => {
@@ -2763,9 +2959,9 @@ describe("hosted AgentRuntime progress recorder", () => {
 
 		const workItem = recordWorkItem.mock.calls[0]?.[0]?.workItem;
 		expect(workItem?.title).toHaveLength(256);
-		expect(workItem?.title).toMatch(/\.\.\.$/);
+		expect(workItem?.title).toMatch(/…$/);
 		expect(workItem?.goal).toHaveLength(512);
-		expect(workItem?.goal).toMatch(/\.\.\.$/);
+		expect(workItem?.goal).toMatch(/…$/);
 		expect(workItem?.payload?.title).toHaveLength(256);
 		expect(workItem?.payload?.goal).toHaveLength(512);
 	});
@@ -2900,6 +3096,952 @@ describe("hosted AgentRuntime progress recorder", () => {
 		);
 	});
 
+	it("keeps benign task prose while redacting command-looking task text", async () => {
+		const { recorder, recordWorkItem, recordEvent } = createRecorder();
+		const bareChecksum = "a".repeat(64);
+
+		recorder.recordTaskProgressEvent({
+			source: "todo",
+			id: "benign-prose",
+			status: "running",
+			title: "fix login; update docs",
+			goal: "Go over docs and review the bash docs",
+			payload: {
+				note: "Keep $10 pricing and OAuth wording",
+				summary: "update auth | docs notes",
+			},
+		});
+		recorder.recordTaskProgressEvent({
+			source: "todo",
+			id: "benign-executable-words",
+			status: "running",
+			title: "npm package migration",
+			goal: "python version support and kubectl docs",
+			payload: {
+				blocker: "terraform module design",
+				biome: "biome check notes",
+				buf: "buf lint config",
+				docker: "docker documentation follow-up",
+				dockerBuild: "docker build failure",
+				git: "git authentication issue",
+				gitCommit: "git commit message",
+				gitStatus: "git status notes",
+				gh: "gh actions migration",
+				ghPr: "gh pr migration notes",
+				ghWorkflow: "gh workflow ownership",
+				kubectl: "kubectl version support",
+				node: "node version support",
+				npx: "npx package migration",
+				pip: "pip install notes",
+				pipShow: "pip show follow-up",
+				sudo: "sudo access request",
+				terraform: "terraform plan notes",
+				uv: "uv run notes",
+				uvx: "uvx ruff follow-up",
+				vite: "vite build failure",
+				vitest: "vitest run follow-up",
+			},
+		});
+		recorder.recordTaskProgressEvent({
+			source: "todo",
+			id: "benign-security-prose",
+			status: "running",
+			title: "Document password rotation",
+			goal: "Review bearer authentication flow",
+			payload: {
+				note: "Keep authorization guidance readable",
+			},
+		});
+		recorder.recordTaskProgressEvent({
+			source: "todo",
+			id: "benign-credential-shape-prose",
+			status: "running",
+			title: "sketchbook notes",
+			goal: "Authorization: Bearer token handling",
+			payload: {
+				digest: bareChecksum,
+				note: "Document Authorization: Basic flow",
+			},
+		});
+		recorder.recordTaskProgressEvent({
+			source: "todo",
+			id: "benign-github-token-prefix-prose",
+			status: "running",
+			title: "ghostwriter notes",
+			goal: "ghostwritten docs follow-up",
+			payload: {
+				note: "ghoul migration planning",
+			},
+		});
+		recorder.recordTaskProgressEvent({
+			source: "todo",
+			id: "benign-find-prose",
+			status: "running",
+			title: "find root cause for login",
+			goal: "find auth regression owner",
+			payload: {
+				note: "find the related ticket",
+			},
+		});
+		recorder.recordTaskProgressEvent({
+			source: "todo",
+			id: "benign-command-label-prose",
+			status: "running",
+			title: "Command: document release process",
+			goal: "Detected command: document release process",
+			payload: {
+				note: "Command: document release process",
+			},
+		});
+		recorder.recordTaskProgressEvent({
+			source: "todo",
+			id: "benign-dev-server-url",
+			status: "running",
+			title: "Inspect http://localhost:5173/@vite/client",
+			goal: "Review Vite client URL http://localhost:5173/@vite/client",
+			payload: {
+				url: "http://localhost:5173/@vite/client",
+			},
+		});
+		recorder.recordTaskProgressEvent({
+			source: "todo",
+			id: "benign-ssh-prose",
+			status: "running",
+			title: "ssh authentication issue",
+			goal: "ssh access follow-up",
+			payload: {
+				note: "ssh terminology in docs",
+			},
+		});
+		recorder.recordTaskProgressEvent({
+			source: "todo",
+			id: "benign-grep-prose",
+			status: "running",
+			title: "grep results incorrect",
+			goal: "grep auth issue",
+			payload: {
+				note: "grep output needs review",
+			},
+		});
+		recorder.recordTaskProgressEvent({
+			source: "todo",
+			id: "benign-go-yarn-cargo-prose",
+			status: "running",
+			title: "go version support",
+			goal: "cargo build failure notes",
+			payload: {
+				note: "yarn test ownership",
+			},
+		});
+		recorder.recordTaskProgressEvent({
+			source: "todo",
+			id: "benign-curl-wget-prose",
+			status: "running",
+			title: "curl docs update",
+			goal: "wget migration notes",
+			payload: {
+				note: "curl examples backlog",
+			},
+		});
+		recorder.recordTaskProgressEvent({
+			source: "todo",
+			id: "benign-package-manager-prose",
+			status: "running",
+			title: "npm version support",
+			goal: "pnpm install notes",
+			payload: {
+				note: "npm audit follow-up",
+				bun: "bun build failure notes",
+			},
+		});
+		recorder.recordTaskProgressEvent({
+			source: "todo",
+			id: "benign-make-prose",
+			status: "running",
+			title: "make improvements",
+			goal: "make accessible",
+			payload: {
+				note: "make docs readable",
+			},
+		});
+		recorder.recordTaskProgressEvent({
+			source: "background",
+			id: "command-prose",
+			status: "running",
+			title: "Command: npm test",
+			goal: "Detected command: npm test",
+			payload: {
+				command_summary: "bash -lc npm test",
+				docker: "Command: docker run ubuntu",
+				git: "Command: git checkout main",
+				cargo: "Command: cargo run server",
+				echo: "Command: echo $TOKEN",
+				go: "Detected command: go run server",
+				npm: "Command: npm install lodash",
+				pip: "Detected command: pip install requests",
+				printf: "Command: printf hello",
+				terraform: "Command: terraform apply tfplan",
+				yarn: "Detected command: yarn add lodash",
+			},
+		});
+		recorder.recordTaskProgressEvent({
+			source: "background",
+			id: "executable-command-text",
+			status: "running",
+			title: "git push origin main",
+			goal: "node --version",
+			payload: {
+				docker: "docker build .",
+				gh: "gh pr view 2389",
+				ghWorkflow: "gh workflow run release.yml",
+				kubectl: "kubectl get pods",
+				npm: "npm test",
+				npx: "npx @scope/tool --help",
+				pip: "pip install --upgrade requests",
+				pipFreeze: "pip freeze",
+				pipShow: "pip show ./packages/example",
+				python: "python -m pytest",
+				sudo: "sudo npm test",
+				terraform: "terraform plan",
+				uv: "uv run --python 3.12 pytest",
+				uvx: "uvx ruff@latest check",
+				kubectlVersion: "kubectl version --client",
+				biome: "biome check ./src",
+				buf: "buf lint --path proto",
+				terraformPlan: "terraform plan -out=tfplan",
+				vite: "vite build --mode production",
+				vitest: "vitest run test/server/hosted-agent-runtime-progress.test.ts",
+			},
+		});
+		recorder.recordTaskProgressEvent({
+			source: "background",
+			id: "credential-url",
+			status: "running",
+			title: "Fetch https://user:pass@example.com/private",
+			goal: "Check credential URL",
+			payload: {
+				url: "https://user:pass@example.com/private",
+			},
+		});
+		recorder.recordTaskProgressEvent({
+			source: "background",
+			id: "credential-token-shape",
+			status: "running",
+			title: "sk_live_SECRET_12345678",
+			goal: "Authorization: Bearer abcdefghijklmn12",
+			payload: {
+				auth: "Authorization: Basic dXNlcjpwYXNzMTIzNA==",
+				github: "gho_abcdefghijklmno",
+			},
+		});
+		recorder.recordTaskProgressEvent({
+			source: "background",
+			id: "remote-command-text",
+			status: "running",
+			title: "ssh prod.example",
+			goal: "ssh -v prod.example",
+			payload: {
+				scp: "scp .env host:/tmp",
+				rsync: "rsync -av secrets/ host:/tmp",
+			},
+		});
+		recorder.recordTaskProgressEvent({
+			source: "background",
+			id: "grep-command-text",
+			status: "running",
+			title: "grep -R auth src",
+			goal: "grep 'auth' src/index.ts",
+			payload: {
+				path: "grep auth ./src",
+			},
+		});
+		recorder.recordTaskProgressEvent({
+			source: "background",
+			id: "go-yarn-cargo-command-text",
+			status: "running",
+			title: "go version",
+			goal: "cargo build --release",
+			payload: {
+				yarn: "yarn test --watch",
+			},
+		});
+		recorder.recordTaskProgressEvent({
+			source: "background",
+			id: "curl-wget-command-text",
+			status: "running",
+			title: "curl https://example.com/api",
+			goal: "wget -O out https://example.com/file",
+			payload: {
+				curl: "curl example.com/path",
+			},
+		});
+		recorder.recordTaskProgressEvent({
+			source: "background",
+			id: "package-manager-command-text",
+			status: "running",
+			title: "npm test",
+			goal: "pnpm install --frozen-lockfile",
+			payload: {
+				script: "npm run build",
+				path: "pnpm test ./packages/web",
+				bun: "bun install --frozen-lockfile",
+				bunScript: "bun run dev",
+			},
+		});
+		recorder.recordTaskProgressEvent({
+			source: "background",
+			id: "make-command-text",
+			status: "running",
+			title: "make build",
+			goal: "make web-local",
+			payload: {
+				chdir: "make -C packages/web build",
+			},
+		});
+		await recorder.flush();
+
+		expect(recordWorkItem).toHaveBeenCalledWith({
+			runId: "run_1",
+			workItem: expect.objectContaining({
+				id: "maestro:session_1:todo:benign-prose",
+				title: "fix login; update docs",
+				goal: "Go over docs and review the bash docs",
+				payload: expect.objectContaining({
+					title: "fix login; update docs",
+					goal: "Go over docs and review the bash docs",
+					note: "Keep $10 pricing and OAuth wording",
+					summary: "update auth | docs notes",
+				}),
+			}),
+		});
+		expect(recordWorkItem).toHaveBeenCalledWith({
+			runId: "run_1",
+			workItem: expect.objectContaining({
+				id: "maestro:session_1:todo:benign-security-prose",
+				title: "Document password rotation",
+				goal: "Review bearer authentication flow",
+				payload: expect.objectContaining({
+					title: "Document password rotation",
+					goal: "Review bearer authentication flow",
+					note: "Keep authorization guidance readable",
+				}),
+			}),
+		});
+		expect(recordWorkItem).toHaveBeenCalledWith({
+			runId: "run_1",
+			workItem: expect.objectContaining({
+				id: "maestro:session_1:todo:benign-executable-words",
+				title: "npm package migration",
+				goal: "python version support and kubectl docs",
+				payload: expect.objectContaining({
+					title: "npm package migration",
+					goal: "python version support and kubectl docs",
+					blocker: "terraform module design",
+					biome: "biome check notes",
+					buf: "buf lint config",
+					docker: "docker documentation follow-up",
+					dockerBuild: "docker build failure",
+					git: "git authentication issue",
+					gitCommit: "git commit message",
+					gitStatus: "git status notes",
+					gh: "gh actions migration",
+					ghPr: "gh pr migration notes",
+					ghWorkflow: "gh workflow ownership",
+					kubectl: "kubectl version support",
+					node: "node version support",
+					npx: "npx package migration",
+					pip: "pip install notes",
+					pipShow: "pip show follow-up",
+					sudo: "sudo access request",
+					terraform: "terraform plan notes",
+					uv: "uv run notes",
+					uvx: "uvx ruff follow-up",
+					vite: "vite build failure",
+					vitest: "vitest run follow-up",
+				}),
+			}),
+		});
+		expect(recordWorkItem).toHaveBeenCalledWith({
+			runId: "run_1",
+			workItem: expect.objectContaining({
+				id: "maestro:session_1:todo:benign-find-prose",
+				title: "find root cause for login",
+				goal: "find auth regression owner",
+				payload: expect.objectContaining({
+					title: "find root cause for login",
+					goal: "find auth regression owner",
+					note: "find the related ticket",
+				}),
+			}),
+		});
+		expect(recordWorkItem).toHaveBeenCalledWith({
+			runId: "run_1",
+			workItem: expect.objectContaining({
+				id: "maestro:session_1:todo:benign-credential-shape-prose",
+				title: "sketchbook notes",
+				goal: "Authorization: Bearer token handling",
+				payload: expect.objectContaining({
+					title: "sketchbook notes",
+					goal: "Authorization: Bearer token handling",
+					digest: bareChecksum,
+					note: "Document Authorization: Basic flow",
+				}),
+			}),
+		});
+		expect(recordWorkItem).toHaveBeenCalledWith({
+			runId: "run_1",
+			workItem: expect.objectContaining({
+				id: "maestro:session_1:todo:benign-github-token-prefix-prose",
+				title: "ghostwriter notes",
+				goal: "ghostwritten docs follow-up",
+				payload: expect.objectContaining({
+					title: "ghostwriter notes",
+					goal: "ghostwritten docs follow-up",
+					note: "ghoul migration planning",
+				}),
+			}),
+		});
+		expect(recordWorkItem).toHaveBeenCalledWith({
+			runId: "run_1",
+			workItem: expect.objectContaining({
+				id: "maestro:session_1:todo:benign-command-label-prose",
+				title: "Command: document release process",
+				goal: "Detected command: document release process",
+				payload: expect.objectContaining({
+					title: "Command: document release process",
+					goal: "Detected command: document release process",
+					note: "Command: document release process",
+				}),
+			}),
+		});
+		expect(recordWorkItem).toHaveBeenCalledWith({
+			runId: "run_1",
+			workItem: expect.objectContaining({
+				id: "maestro:session_1:todo:benign-dev-server-url",
+				title: "Inspect http://localhost:5173/@vite/client",
+				goal: "Review Vite client URL http://localhost:5173/@vite/client",
+				payload: expect.objectContaining({
+					title: "Inspect http://localhost:5173/@vite/client",
+					goal: "Review Vite client URL http://localhost:5173/@vite/client",
+					url: "http://localhost:5173/@vite/client",
+				}),
+			}),
+		});
+		expect(recordWorkItem).toHaveBeenCalledWith({
+			runId: "run_1",
+			workItem: expect.objectContaining({
+				id: "maestro:session_1:todo:benign-ssh-prose",
+				title: "ssh authentication issue",
+				goal: "ssh access follow-up",
+				payload: expect.objectContaining({
+					title: "ssh authentication issue",
+					goal: "ssh access follow-up",
+					note: "ssh terminology in docs",
+				}),
+			}),
+		});
+		expect(recordWorkItem).toHaveBeenCalledWith({
+			runId: "run_1",
+			workItem: expect.objectContaining({
+				id: "maestro:session_1:todo:benign-grep-prose",
+				title: "grep results incorrect",
+				goal: "grep auth issue",
+				payload: expect.objectContaining({
+					title: "grep results incorrect",
+					goal: "grep auth issue",
+					note: "grep output needs review",
+				}),
+			}),
+		});
+		expect(recordWorkItem).toHaveBeenCalledWith({
+			runId: "run_1",
+			workItem: expect.objectContaining({
+				id: "maestro:session_1:todo:benign-go-yarn-cargo-prose",
+				title: "go version support",
+				goal: "cargo build failure notes",
+				payload: expect.objectContaining({
+					title: "go version support",
+					goal: "cargo build failure notes",
+					note: "yarn test ownership",
+				}),
+			}),
+		});
+		expect(recordWorkItem).toHaveBeenCalledWith({
+			runId: "run_1",
+			workItem: expect.objectContaining({
+				id: "maestro:session_1:todo:benign-curl-wget-prose",
+				title: "curl docs update",
+				goal: "wget migration notes",
+				payload: expect.objectContaining({
+					title: "curl docs update",
+					goal: "wget migration notes",
+					note: "curl examples backlog",
+				}),
+			}),
+		});
+		expect(recordWorkItem).toHaveBeenCalledWith({
+			runId: "run_1",
+			workItem: expect.objectContaining({
+				id: "maestro:session_1:todo:benign-package-manager-prose",
+				title: "npm version support",
+				goal: "pnpm install notes",
+				payload: expect.objectContaining({
+					title: "npm version support",
+					goal: "pnpm install notes",
+					note: "npm audit follow-up",
+					bun: "bun build failure notes",
+				}),
+			}),
+		});
+		expect(recordWorkItem).toHaveBeenCalledWith({
+			runId: "run_1",
+			workItem: expect.objectContaining({
+				id: "maestro:session_1:todo:benign-make-prose",
+				title: "make improvements",
+				goal: "make accessible",
+				payload: expect.objectContaining({
+					title: "make improvements",
+					goal: "make accessible",
+					note: "make docs readable",
+				}),
+			}),
+		});
+		expect(recordWorkItem).toHaveBeenCalledWith({
+			runId: "run_1",
+			workItem: expect.objectContaining({
+				id: "maestro:session_1:background:command-prose",
+				title: "[redacted]",
+				goal: "[redacted]",
+				payload: expect.objectContaining({
+					title: "[redacted]",
+					goal: "[redacted]",
+					command_summary: "[redacted]",
+					docker: "[redacted]",
+					git: "[redacted]",
+					cargo: "[redacted]",
+					echo: "[redacted]",
+					go: "[redacted]",
+					npm: "[redacted]",
+					pip: "[redacted]",
+					printf: "[redacted]",
+					terraform: "[redacted]",
+					yarn: "[redacted]",
+				}),
+			}),
+		});
+		expect(recordWorkItem).toHaveBeenCalledWith({
+			runId: "run_1",
+			workItem: expect.objectContaining({
+				id: "maestro:session_1:background:credential-url",
+				title: "[redacted]",
+				goal: "Check credential URL",
+				payload: expect.objectContaining({
+					title: "[redacted]",
+					goal: "Check credential URL",
+					url: "[redacted]",
+				}),
+			}),
+		});
+		expect(recordWorkItem).toHaveBeenCalledWith({
+			runId: "run_1",
+			workItem: expect.objectContaining({
+				id: "maestro:session_1:background:credential-token-shape",
+				title: "[redacted]",
+				goal: "[redacted]",
+				payload: expect.objectContaining({
+					title: "[redacted]",
+					goal: "[redacted]",
+					auth: "[redacted]",
+					github: "[redacted]",
+				}),
+			}),
+		});
+		expect(recordWorkItem).toHaveBeenCalledWith({
+			runId: "run_1",
+			workItem: expect.objectContaining({
+				id: "maestro:session_1:background:executable-command-text",
+				title: "[redacted]",
+				goal: "[redacted]",
+				payload: expect.objectContaining({
+					title: "[redacted]",
+					goal: "[redacted]",
+					biome: "[redacted]",
+					buf: "[redacted]",
+					docker: "[redacted]",
+					gh: "[redacted]",
+					ghWorkflow: "[redacted]",
+					kubectl: "[redacted]",
+					npm: "[redacted]",
+					npx: "[redacted]",
+					pip: "[redacted]",
+					pipFreeze: "[redacted]",
+					pipShow: "[redacted]",
+					python: "[redacted]",
+					sudo: "[redacted]",
+					terraform: "[redacted]",
+					uv: "[redacted]",
+					uvx: "[redacted]",
+					kubectlVersion: "[redacted]",
+					vite: "[redacted]",
+					vitest: "[redacted]",
+					terraformPlan: "[redacted]",
+				}),
+			}),
+		});
+		expect(recordWorkItem).toHaveBeenCalledWith({
+			runId: "run_1",
+			workItem: expect.objectContaining({
+				id: "maestro:session_1:background:remote-command-text",
+				title: "[redacted]",
+				goal: "[redacted]",
+				payload: expect.objectContaining({
+					title: "[redacted]",
+					goal: "[redacted]",
+					scp: "[redacted]",
+					rsync: "[redacted]",
+				}),
+			}),
+		});
+		expect(recordWorkItem).toHaveBeenCalledWith({
+			runId: "run_1",
+			workItem: expect.objectContaining({
+				id: "maestro:session_1:background:grep-command-text",
+				title: "[redacted]",
+				goal: "[redacted]",
+				payload: expect.objectContaining({
+					title: "[redacted]",
+					goal: "[redacted]",
+					path: "[redacted]",
+				}),
+			}),
+		});
+		expect(recordWorkItem).toHaveBeenCalledWith({
+			runId: "run_1",
+			workItem: expect.objectContaining({
+				id: "maestro:session_1:background:go-yarn-cargo-command-text",
+				title: "[redacted]",
+				goal: "[redacted]",
+				payload: expect.objectContaining({
+					title: "[redacted]",
+					goal: "[redacted]",
+					yarn: "[redacted]",
+				}),
+			}),
+		});
+		expect(recordWorkItem).toHaveBeenCalledWith({
+			runId: "run_1",
+			workItem: expect.objectContaining({
+				id: "maestro:session_1:background:curl-wget-command-text",
+				title: "[redacted]",
+				goal: "[redacted]",
+				payload: expect.objectContaining({
+					title: "[redacted]",
+					goal: "[redacted]",
+					curl: "[redacted]",
+				}),
+			}),
+		});
+		expect(recordWorkItem).toHaveBeenCalledWith({
+			runId: "run_1",
+			workItem: expect.objectContaining({
+				id: "maestro:session_1:background:package-manager-command-text",
+				title: "[redacted]",
+				goal: "[redacted]",
+				payload: expect.objectContaining({
+					title: "[redacted]",
+					goal: "[redacted]",
+					script: "[redacted]",
+					path: "[redacted]",
+					bun: "[redacted]",
+					bunScript: "[redacted]",
+				}),
+			}),
+		});
+		expect(recordWorkItem).toHaveBeenCalledWith({
+			runId: "run_1",
+			workItem: expect.objectContaining({
+				id: "maestro:session_1:background:make-command-text",
+				title: "[redacted]",
+				goal: "[redacted]",
+				payload: expect.objectContaining({
+					title: "[redacted]",
+					goal: "[redacted]",
+					chdir: "[redacted]",
+				}),
+			}),
+		});
+		expect(recordEvent).toHaveBeenCalledWith(
+			expect.objectContaining({
+				message: "Maestro todo task running",
+				attributes: expect.objectContaining({
+					title: "fix login; update docs",
+					goal: "Go over docs and review the bash docs",
+					note: "Keep $10 pricing and OAuth wording",
+					summary: "update auth | docs notes",
+				}),
+			}),
+		);
+		expect(recordEvent).toHaveBeenCalledWith(
+			expect.objectContaining({
+				message: "Maestro todo task running",
+				attributes: expect.objectContaining({
+					title: "npm package migration",
+					goal: "python version support and kubectl docs",
+					blocker: "terraform module design",
+					biome: "biome check notes",
+					buf: "buf lint config",
+					docker: "docker documentation follow-up",
+					dockerBuild: "docker build failure",
+					git: "git authentication issue",
+					gitCommit: "git commit message",
+					gitStatus: "git status notes",
+					gh: "gh actions migration",
+					kubectl: "kubectl version support",
+					node: "node version support",
+					npx: "npx package migration",
+					pip: "pip install notes",
+					pipShow: "pip show follow-up",
+					sudo: "sudo access request",
+					terraform: "terraform plan notes",
+					uv: "uv run notes",
+					uvx: "uvx ruff follow-up",
+					vite: "vite build failure",
+					vitest: "vitest run follow-up",
+				}),
+			}),
+		);
+		expect(recordEvent).toHaveBeenCalledWith(
+			expect.objectContaining({
+				message: "Maestro todo task running",
+				attributes: expect.objectContaining({
+					title: "Document password rotation",
+					goal: "Review bearer authentication flow",
+					note: "Keep authorization guidance readable",
+				}),
+			}),
+		);
+		expect(recordEvent).toHaveBeenCalledWith(
+			expect.objectContaining({
+				message: "Maestro todo task running",
+				attributes: expect.objectContaining({
+					title: "sketchbook notes",
+					goal: "Authorization: Bearer token handling",
+					digest: bareChecksum,
+					note: "Document Authorization: Basic flow",
+				}),
+			}),
+		);
+		expect(recordEvent).toHaveBeenCalledWith(
+			expect.objectContaining({
+				message: "Maestro todo task running",
+				attributes: expect.objectContaining({
+					title: "ghostwriter notes",
+					goal: "ghostwritten docs follow-up",
+					note: "ghoul migration planning",
+				}),
+			}),
+		);
+		expect(recordEvent).toHaveBeenCalledWith(
+			expect.objectContaining({
+				message: "Maestro todo task running",
+				attributes: expect.objectContaining({
+					title: "find root cause for login",
+					goal: "find auth regression owner",
+					note: "find the related ticket",
+				}),
+			}),
+		);
+		expect(recordEvent).toHaveBeenCalledWith(
+			expect.objectContaining({
+				message: "Maestro todo task running",
+				attributes: expect.objectContaining({
+					title: "Command: document release process",
+					goal: "Detected command: document release process",
+					note: "Command: document release process",
+				}),
+			}),
+		);
+		expect(recordEvent).toHaveBeenCalledWith(
+			expect.objectContaining({
+				message: "Maestro todo task running",
+				attributes: expect.objectContaining({
+					title: "Inspect http://localhost:5173/@vite/client",
+					goal: "Review Vite client URL http://localhost:5173/@vite/client",
+					url: "http://localhost:5173/@vite/client",
+				}),
+			}),
+		);
+		expect(recordEvent).toHaveBeenCalledWith(
+			expect.objectContaining({
+				message: "Maestro todo task running",
+				attributes: expect.objectContaining({
+					title: "ssh authentication issue",
+					goal: "ssh access follow-up",
+					note: "ssh terminology in docs",
+				}),
+			}),
+		);
+		expect(recordEvent).toHaveBeenCalledWith(
+			expect.objectContaining({
+				message: "Maestro todo task running",
+				attributes: expect.objectContaining({
+					title: "grep results incorrect",
+					goal: "grep auth issue",
+					note: "grep output needs review",
+				}),
+			}),
+		);
+		expect(recordEvent).toHaveBeenCalledWith(
+			expect.objectContaining({
+				message: "Maestro todo task running",
+				attributes: expect.objectContaining({
+					title: "go version support",
+					goal: "cargo build failure notes",
+					note: "yarn test ownership",
+				}),
+			}),
+		);
+		expect(recordEvent).toHaveBeenCalledWith(
+			expect.objectContaining({
+				message: "Maestro todo task running",
+				attributes: expect.objectContaining({
+					title: "curl docs update",
+					goal: "wget migration notes",
+					note: "curl examples backlog",
+				}),
+			}),
+		);
+		expect(recordEvent).toHaveBeenCalledWith(
+			expect.objectContaining({
+				message: "Maestro todo task running",
+				attributes: expect.objectContaining({
+					title: "npm version support",
+					goal: "pnpm install notes",
+					note: "npm audit follow-up",
+					bun: "bun build failure notes",
+				}),
+			}),
+		);
+		expect(recordEvent).toHaveBeenCalledWith(
+			expect.objectContaining({
+				message: "Maestro background task running",
+				attributes: expect.objectContaining({
+					title: "[redacted]",
+					goal: "[redacted]",
+					auth: "[redacted]",
+					github: "[redacted]",
+				}),
+			}),
+		);
+		expect(recordEvent).toHaveBeenCalledWith(
+			expect.objectContaining({
+				message: "Maestro background task running",
+				attributes: expect.objectContaining({
+					title: "[redacted]",
+					goal: "[redacted]",
+					command_summary: "[redacted]",
+					docker: "[redacted]",
+					git: "[redacted]",
+					npm: "[redacted]",
+					pip: "[redacted]",
+					yarn: "[redacted]",
+				}),
+			}),
+		);
+		expect(recordEvent).toHaveBeenCalledWith(
+			expect.objectContaining({
+				message: "Maestro background task running",
+				attributes: expect.objectContaining({
+					title: "[redacted]",
+					goal: "[redacted]",
+					biome: "[redacted]",
+					buf: "[redacted]",
+					docker: "[redacted]",
+					gh: "[redacted]",
+					kubectl: "[redacted]",
+					npm: "[redacted]",
+					npx: "[redacted]",
+					pip: "[redacted]",
+					pipFreeze: "[redacted]",
+					pipShow: "[redacted]",
+					python: "[redacted]",
+					sudo: "[redacted]",
+					terraform: "[redacted]",
+					uv: "[redacted]",
+					uvx: "[redacted]",
+					kubectlVersion: "[redacted]",
+					vite: "[redacted]",
+					vitest: "[redacted]",
+					terraformPlan: "[redacted]",
+				}),
+			}),
+		);
+		expect(recordEvent).toHaveBeenCalledWith(
+			expect.objectContaining({
+				message: "Maestro background task running",
+				attributes: expect.objectContaining({
+					title: "[redacted]",
+					goal: "Check credential URL",
+					url: "[redacted]",
+				}),
+			}),
+		);
+		expect(recordEvent).toHaveBeenCalledWith(
+			expect.objectContaining({
+				message: "Maestro background task running",
+				attributes: expect.objectContaining({
+					title: "[redacted]",
+					goal: "[redacted]",
+					scp: "[redacted]",
+					rsync: "[redacted]",
+				}),
+			}),
+		);
+		expect(recordEvent).toHaveBeenCalledWith(
+			expect.objectContaining({
+				message: "Maestro background task running",
+				attributes: expect.objectContaining({
+					title: "[redacted]",
+					goal: "[redacted]",
+					path: "[redacted]",
+				}),
+			}),
+		);
+		expect(recordEvent).toHaveBeenCalledWith(
+			expect.objectContaining({
+				message: "Maestro background task running",
+				attributes: expect.objectContaining({
+					title: "[redacted]",
+					goal: "[redacted]",
+					yarn: "[redacted]",
+				}),
+			}),
+		);
+		expect(recordEvent).toHaveBeenCalledWith(
+			expect.objectContaining({
+				message: "Maestro background task running",
+				attributes: expect.objectContaining({
+					title: "[redacted]",
+					goal: "[redacted]",
+					curl: "[redacted]",
+				}),
+			}),
+		);
+		expect(recordEvent).toHaveBeenCalledWith(
+			expect.objectContaining({
+				message: "Maestro background task running",
+				attributes: expect.objectContaining({
+					title: "[redacted]",
+					goal: "[redacted]",
+					script: "[redacted]",
+					path: "[redacted]",
+					bun: "[redacted]",
+					bunScript: "[redacted]",
+				}),
+			}),
+		);
+	});
+
 	it("redacts command-like and secret-like outbound progress fields", async () => {
 		const {
 			recorder,
@@ -2976,12 +4118,16 @@ describe("hosted AgentRuntime progress recorder", () => {
 				"call_bearer_token",
 				"Provider error Authorization: Bearer bearer-token-value-1234567890",
 			],
+			[
+				"call_basic_auth_token",
+				"Provider error Basic dXNlcjpwYXNzd29yZC1wcm94eQ==",
+			],
 			["call_keyword_token", "Provider error token=keyword-token-value"],
 			[
 				"call_jwt_token",
 				`Provider error token eyJ${"a".repeat(12)}.${"b".repeat(12)}.${"c".repeat(12)}`,
 			],
-			["call_long_hex_secret", `Provider error ${"a".repeat(64)}`],
+			["call_long_hex_secret", `Provider error secret ${"a".repeat(64)}`],
 		] as const) {
 			recorder.recordAgentEvent({
 				type: "tool_execution_start",
@@ -3042,6 +4188,94 @@ describe("hosted AgentRuntime progress recorder", () => {
 			toolName: "shell",
 			displayName: "bunx biome check .",
 			summaryLabel: "yarn test",
+			args: {},
+		});
+		recorder.recordAgentEvent({
+			type: "tool_execution_start",
+			toolCallId: "call_simple_shell_utility_label",
+			toolName: "shell",
+			displayName: "Ran ls -la",
+			summaryLabel: "Ran cat package.json",
+			args: {},
+		});
+		recorder.recordAgentEvent({
+			type: "tool_execution_start",
+			toolCallId: "call_search_shell_utility_label",
+			toolName: "shell",
+			displayName: 'Ran rg "TODO" src',
+			summaryLabel: "Ran sed -n '1,80p' file",
+			args: {},
+		});
+		recorder.recordAgentEvent({
+			type: "tool_execution_start",
+			toolCallId: "call_fd_shell_utility_label",
+			toolName: "shell",
+			displayName: "Ran fd package.json",
+			summaryLabel: "Ran fd package.json packages",
+			args: {},
+		});
+		recorder.recordAgentEvent({
+			type: "tool_execution_start",
+			toolCallId: "call_file_shell_utility_label",
+			toolName: "shell",
+			displayName: "Ran cp .env /tmp/backup",
+			summaryLabel: "Ran mv secret.txt out/",
+			args: {},
+		});
+		recorder.recordAgentEvent({
+			type: "tool_execution_start",
+			toolCallId: "call_fs_shell_utility_label",
+			toolName: "shell",
+			displayName: "Ran mkdir -p dist",
+			summaryLabel: "Ran touch .env",
+			args: {},
+		});
+		recorder.recordAgentEvent({
+			type: "tool_execution_start",
+			toolCallId: "call_archive_shell_utility_label",
+			toolName: "shell",
+			displayName: "Ran chmod 600 key.pem",
+			summaryLabel: "Ran tar -czf logs.tgz logs",
+			args: {},
+		});
+		recorder.recordAgentEvent({
+			type: "tool_execution_start",
+			toolCallId: "call_find_shell_utility_label",
+			toolName: "shell",
+			displayName: "Ran find . -name '*.env' -print",
+			summaryLabel: "Ran find src -type f -name '*.ts'",
+			args: {},
+		});
+		recorder.recordAgentEvent({
+			type: "tool_execution_start",
+			toolCallId: "call_remote_shell_utility_label",
+			toolName: "shell",
+			displayName: "Ran ssh prod.example",
+			summaryLabel: "Ran scp .env host:/tmp",
+			args: {},
+		});
+		recorder.recordAgentEvent({
+			type: "tool_execution_start",
+			toolCallId: "call_rsync_shell_utility_label",
+			toolName: "shell",
+			displayName: "Ran rsync -av secrets/ host:/tmp",
+			summaryLabel: "Ran rsync logs/ host:/tmp",
+			args: {},
+		});
+		recorder.recordAgentEvent({
+			type: "tool_execution_start",
+			toolCallId: "call_generated_shell_label",
+			toolName: "shell",
+			displayName: "Ran pwd",
+			summaryLabel: "Ran date",
+			args: {},
+		});
+		recorder.recordAgentEvent({
+			type: "tool_execution_start",
+			toolCallId: "call_generated_bash_label",
+			toolName: "bash",
+			displayName: "Ran uname -a",
+			summaryLabel: "Ran which node",
 			args: {},
 		});
 		recorder.recordAgentEvent({
@@ -3106,6 +4340,21 @@ describe("hosted AgentRuntime progress recorder", () => {
 				timeoutMs: 60_000,
 				displayName: "sh -c whoami",
 				summaryLabel: "Ran sh -c whoami",
+			},
+		});
+		recorder.recordServerRequestEvent({
+			type: "registered",
+			request: {
+				id: "approval_generated_shell_label",
+				kind: "approval",
+				sessionId: "session_1",
+				callId: "call_plain_command",
+				toolName: "shell",
+				args: {},
+				reason: "Approval required",
+				timestamp: Date.now(),
+				timeoutMs: 60_000,
+				summaryLabel: "Ran pwd",
 			},
 		});
 		recorder.recordServerRequestEvent({
@@ -3421,6 +4670,7 @@ describe("hosted AgentRuntime progress recorder", () => {
 			"call_github_refresh_token",
 			"call_google_api_key",
 			"call_bearer_token",
+			"call_basic_auth_token",
 			"call_keyword_token",
 			"call_jwt_token",
 			"call_long_hex_secret",
@@ -3487,6 +4737,43 @@ describe("hosted AgentRuntime progress recorder", () => {
 				}),
 			}),
 		);
+		expect(recordStep).toHaveBeenCalledWith(
+			expect.objectContaining({
+				step: expect.objectContaining({
+					id: "maestro:session_1:tool:call_simple_shell_utility_label",
+					input: expect.objectContaining({
+						display_name: "[redacted]",
+						summary_label: "[redacted]",
+					}),
+					name: "[redacted]",
+				}),
+			}),
+		);
+		for (const toolCallId of [
+			"call_search_shell_utility_label",
+			"call_fd_shell_utility_label",
+			"call_file_shell_utility_label",
+			"call_fs_shell_utility_label",
+			"call_archive_shell_utility_label",
+			"call_find_shell_utility_label",
+			"call_remote_shell_utility_label",
+			"call_rsync_shell_utility_label",
+			"call_generated_shell_label",
+			"call_generated_bash_label",
+		]) {
+			expect(recordStep).toHaveBeenCalledWith(
+				expect.objectContaining({
+					step: expect.objectContaining({
+						id: `maestro:session_1:tool:${toolCallId}`,
+						input: expect.objectContaining({
+							display_name: "[redacted]",
+							summary_label: "[redacted]",
+						}),
+						name: "[redacted]",
+					}),
+				}),
+			);
+		}
 		expect(recordStep).toHaveBeenCalledWith(
 			expect.objectContaining({
 				step: expect.objectContaining({
@@ -3559,6 +4846,17 @@ describe("hosted AgentRuntime progress recorder", () => {
 					reason: "[redacted]",
 					payload: expect.objectContaining({
 						display_name: "[redacted]",
+						summary_label: "[redacted]",
+					}),
+				}),
+			}),
+		);
+		expect(waitRun).toHaveBeenCalledWith(
+			expect.objectContaining({
+				wait: expect.objectContaining({
+					externalRef: "approval_generated_shell_label",
+					reason: "Approval required",
+					payload: expect.objectContaining({
 						summary_label: "[redacted]",
 					}),
 				}),
@@ -4036,7 +5334,7 @@ describe("hosted AgentRuntime progress recorder", () => {
 		expect(recordWorkItem).toHaveBeenCalledWith(
 			expect.objectContaining({
 				workItem: expect.objectContaining({
-					goal: `${longPrompt.slice(0, 160)}…`,
+					goal: `${longPrompt.slice(0, 159)}…`,
 				}),
 			}),
 		);
