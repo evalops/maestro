@@ -84,7 +84,7 @@ describe("project MCP approvals", () => {
 
 	it("keeps Fathom CUA approvals stable across volatile run lineage args", () => {
 		const server = {
-			name: "fathom-cua",
+			name: "desktop-cua",
 			scope: "plugin" as const,
 			requiresProjectApproval: true,
 			transport: "stdio" as const,
@@ -97,6 +97,10 @@ describe("project MCP approvals", () => {
 				"-turn-id",
 				"turn-one",
 			],
+			env: {
+				FATHOM_CALLER_PRODUCT: "maestro",
+				FATHOM_CUA_PRODUCT: "maestro",
+			},
 		};
 
 		setProjectMcpServerApprovalDecision({

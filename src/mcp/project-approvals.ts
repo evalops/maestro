@@ -135,9 +135,18 @@ function getProjectRootKey(projectRoot: string): string {
 
 const FATHOM_CUA_VOLATILE_ARG_FLAGS = new Set(["-session-id", "-turn-id"]);
 
+function isGeneratedFathomCuaServer(server: McpServerConfig): boolean {
+	return (
+		server.scope === "plugin" &&
+		server.requiresProjectApproval === true &&
+		server.env?.FATHOM_CALLER_PRODUCT === "maestro" &&
+		server.env?.FATHOM_CUA_PRODUCT === "maestro"
+	);
+}
+
 function approvalFingerprintArgs(server: McpServerConfig): string[] {
 	const args = server.args ?? [];
-	if (server.name !== "fathom-cua") {
+	if (!isGeneratedFathomCuaServer(server)) {
 		return args;
 	}
 	const stableArgs: string[] = [];
