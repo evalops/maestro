@@ -5,6 +5,7 @@ import { Value } from "@sinclair/typebox/value";
 import { afterEach, describe, expect, it } from "vitest";
 import { MaestroAppServerResponseSchema } from "../../packages/contracts/src/maestro-app-server.js";
 import {
+	createMaestroAppServerProtocolModes,
 	createMaestroAppServerSessionApi,
 	handleMaestroAppServerRequest,
 } from "../../src/app-server/session-api.js";
@@ -57,6 +58,7 @@ describe("Maestro app-server protocol modes", () => {
 					blockedMethods: expect.arrayContaining([
 						"command/exec",
 						"thread/delete",
+						"protocol/mode/set",
 					]),
 				}),
 				expect.objectContaining({
@@ -116,21 +118,15 @@ describe("Maestro app-server protocol modes", () => {
 			message: "Missing watchId",
 		});
 
-		await handleMaestroAppServerRequest(api, {
+		const blockedModeReset = await handleMaestroAppServerRequest(api, {
 			jsonrpc: "2.0",
 			id: "set-standard",
 			method: "protocol/mode/set",
 			params: { mode: "standard" },
 		});
-		const standardMutation = await handleMaestroAppServerRequest(api, {
-			jsonrpc: "2.0",
-			id: "standard-name-set",
-			method: "thread/name/set",
-			params: { threadId: "thread_1", name: "Renamed" },
-		});
-		expect(standardMutation.error).toMatchObject({
-			code: -32004,
-			message: "Thread not found",
+		expect(blockedModeReset.error).toMatchObject({
+			code: -32003,
+			message: "protocol/mode/set is blocked while protocol mode is review",
 		});
 	});
 
@@ -180,6 +176,142 @@ describe("Maestro app-server protocol modes", () => {
 			code: -32602,
 			message: "Invalid mode",
 		});
+	});
+
+	it("allows the default token escape from review mode without unblocking ordinary resets", async () => {
+		const api = createApi();
+		const reviewModeEscapeToken = api.reviewModeEscapeToken();
+		expect(reviewModeEscapeToken).toEqual(expect.any(String));
+
+		await handleMaestroAppServerRequest(api, {
+			jsonrpc: "2.0",
+			id: "set-review",
+			method: "protocol/mode/set",
+			params: { mode: "review" },
+		});
+
+		const ordinaryReset = await handleMaestroAppServerRequest(api, {
+			jsonrpc: "2.0",
+			id: "ordinary-reset",
+			method: "protocol/mode/set",
+			params: { mode: "standard" },
+		});
+		expect(ordinaryReset.error).toMatchObject({
+			code: -32003,
+			message: "protocol/mode/set is blocked while protocol mode is review",
+		});
+
+		const authorizedReset = await handleMaestroAppServerRequest(api, {
+			jsonrpc: "2.0",
+			id: "authorized-reset",
+			method: "protocol/mode/set",
+			params: {
+				mode: "standard",
+				reviewModeEscapeToken,
+			},
+		});
+		expect(authorizedReset.result).toMatchObject({
+			activeMode: "standard",
+			mode: {
+				readOnly: false,
+			},
+		});
+		expect(Value.Check(MaestroAppServerResponseSchema, authorizedReset)).toBe(
+			true,
+		);
+	});
+
+	it("honors a configured escape token when leaving review mode", async () => {
+		const api = createApi({
+			protocolModes: createMaestroAppServerProtocolModes({
+				reviewModeEscapeToken: "review-escape-token",
+			}),
+		});
+
+		await handleMaestroAppServerRequest(api, {
+			jsonrpc: "2.0",
+			id: "set-review",
+			method: "protocol/mode/set",
+			params: { mode: "review" },
+		});
+
+		const ordinaryReset = await handleMaestroAppServerRequest(api, {
+			jsonrpc: "2.0",
+			id: "ordinary-reset",
+			method: "protocol/mode/set",
+			params: { mode: "standard", reviewModeEscapeToken: "wrong-token" },
+		});
+		expect(ordinaryReset.error).toMatchObject({
+			code: -32003,
+			message: "protocol/mode/set is blocked while protocol mode is review",
+		});
+
+		const authorizedReset = await handleMaestroAppServerRequest(api, {
+			jsonrpc: "2.0",
+			id: "authorized-reset",
+			method: "protocol/mode/set",
+			params: {
+				mode: "standard",
+				reviewModeEscapeToken: "review-escape-token",
+			},
+		});
+		expect(authorizedReset.result).toMatchObject({
+			activeMode: "standard",
+			mode: {
+				readOnly: false,
+			},
+		});
+		expect(Value.Check(MaestroAppServerResponseSchema, authorizedReset)).toBe(
+			true,
+		);
+
+		const standardMutation = await handleMaestroAppServerRequest(api, {
+			jsonrpc: "2.0",
+			id: "standard-name-set",
+			method: "thread/name/set",
+			params: { threadId: "thread_1", name: "Renamed" },
+		});
+		expect(standardMutation.error).toMatchObject({
+			code: -32004,
+			message: "Thread not found",
+		});
+	});
+
+	it("honors a session escape token with custom protocol modes", async () => {
+		const api = createApi({
+			protocolModes: createMaestroAppServerProtocolModes({
+				initialMode: "review",
+			}),
+			reviewModeEscapeToken: "session-review-escape-token",
+		});
+		expect(api.reviewModeEscapeToken()).toBe("session-review-escape-token");
+
+		const ordinaryReset = await handleMaestroAppServerRequest(api, {
+			jsonrpc: "2.0",
+			id: "ordinary-reset",
+			method: "protocol/mode/set",
+			params: { mode: "standard" },
+		});
+		expect(ordinaryReset.error).toMatchObject({
+			code: -32003,
+			message: "protocol/mode/set is blocked while protocol mode is review",
+		});
+
+		const authorizedReset = await handleMaestroAppServerRequest(api, {
+			jsonrpc: "2.0",
+			id: "authorized-reset",
+			method: "protocol/mode/set",
+			params: {
+				mode: "standard",
+				reviewModeEscapeToken: "session-review-escape-token",
+			},
+		});
+		expect(authorizedReset.result).toMatchObject({
+			activeMode: "standard",
+		});
+		expect(Value.Check(MaestroAppServerResponseSchema, authorizedReset)).toBe(
+			true,
+		);
 	});
 
 	it("advertises realtime notifications and leaves realtime control methods dispatchable", async () => {
