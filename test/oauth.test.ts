@@ -1,6 +1,7 @@
 import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 // Set up test directory before importing modules
@@ -117,8 +118,15 @@ describe("OAuth Index", () => {
 	const originalEvalOpsIdentityUrl = process.env.EVALOPS_IDENTITY_URL;
 	const originalFeatureFlagsPath = process.env.EVALOPS_FEATURE_FLAGS_PATH;
 	const originalFetch = global.fetch;
+	const originalHelper = process.env.MAESTRO_DEVICE_IDENTITY_HELPER;
+	const originalAllowTestHelper =
+		process.env.MAESTRO_DEVICE_IDENTITY_ALLOW_TEST_HELPER;
 	const originalIdentityUrl = process.env.MAESTRO_IDENTITY_URL;
 	const originalPlatformBaseUrl = process.env.MAESTRO_PLATFORM_BASE_URL;
+	const originalPlatformDescriptor = Object.getOwnPropertyDescriptor(
+		process,
+		"platform",
+	);
 
 	beforeEach(() => {
 		process.env.MAESTRO_AGENT_DIR = join(testDir, "agent");
@@ -155,6 +163,23 @@ describe("OAuth Index", () => {
 			Reflect.deleteProperty(process.env, "MAESTRO_PLATFORM_BASE_URL");
 		} else {
 			process.env.MAESTRO_PLATFORM_BASE_URL = originalPlatformBaseUrl;
+		}
+		if (originalHelper === undefined) {
+			Reflect.deleteProperty(process.env, "MAESTRO_DEVICE_IDENTITY_HELPER");
+		} else {
+			process.env.MAESTRO_DEVICE_IDENTITY_HELPER = originalHelper;
+		}
+		if (originalAllowTestHelper === undefined) {
+			Reflect.deleteProperty(
+				process.env,
+				"MAESTRO_DEVICE_IDENTITY_ALLOW_TEST_HELPER",
+			);
+		} else {
+			process.env.MAESTRO_DEVICE_IDENTITY_ALLOW_TEST_HELPER =
+				originalAllowTestHelper;
+		}
+		if (originalPlatformDescriptor) {
+			Object.defineProperty(process, "platform", originalPlatformDescriptor);
 		}
 		resetFeatureFlagCacheForTests();
 		global.fetch = originalFetch;
@@ -420,6 +445,88 @@ describe("OAuth Index", () => {
 			expect(init?.body).toBe(
 				JSON.stringify({ refresh_token: "old-evalops-refresh" }),
 			);
+		});
+
+		it("enrolls a rotated desktop device after refresh before persisting credentials", async () => {
+			Object.defineProperty(process, "platform", {
+				configurable: true,
+				value: "linux",
+			});
+			process.env.MAESTRO_DEVICE_IDENTITY_HELPER = fileURLToPath(
+				new URL("../scripts/fake-device-identity-helper.mjs", import.meta.url),
+			);
+			process.env.MAESTRO_DEVICE_IDENTITY_ALLOW_TEST_HELPER = "1";
+
+			const expiresAt = new Date(Date.now() + 60 * 60 * 1000).toISOString();
+			const refreshExpiresAt = new Date(
+				Date.now() + 7 * 24 * 60 * 60 * 1000,
+			).toISOString();
+			const fetchMock = vi.fn(async (input) => {
+				const url = String(input);
+				if (url.endsWith("/v1/tokens/refresh")) {
+					return new Response(
+						JSON.stringify({
+							access_token: "new-evalops-access",
+							expires_at: expiresAt,
+							organization_id: "org_123",
+							refresh_expires_at: refreshExpiresAt,
+							refresh_token: "new-evalops-refresh",
+							scopes: ["llm_gateway:invoke"],
+							token_type: "Bearer",
+						}),
+						{ status: 200, headers: { "Content-Type": "application/json" } },
+					);
+				}
+				if (url.endsWith("/v1/device-challenges")) {
+					return new Response(
+						JSON.stringify({
+							challenge: "challenge:enroll:none",
+							challenge_id: "challenge-1",
+						}),
+						{ status: 200, headers: { "Content-Type": "application/json" } },
+					);
+				}
+				if (url.endsWith("/v1/devices")) {
+					return new Response(
+						JSON.stringify({ device: { id: "desktop-test-device" } }),
+						{ status: 200, headers: { "Content-Type": "application/json" } },
+					);
+				}
+				return new Response(JSON.stringify({ error: "not-found" }), {
+					status: 404,
+					headers: { "Content-Type": "application/json" },
+				});
+			});
+			vi.stubGlobal("fetch", fetchMock);
+
+			saveOAuthCredentials("evalops", {
+				type: "oauth",
+				access: "expired-access",
+				refresh: "old-evalops-refresh",
+				expires: Date.now() - 1000,
+				metadata: {
+					deviceId: "old-v1-device",
+					identityBaseUrl: "https://identity.evalops.test",
+					organizationId: "org_123",
+				},
+			});
+
+			await expect(getOAuthToken("evalops")).resolves.toBe(
+				"new-evalops-access",
+			);
+
+			const saved = loadOAuthCredentials("evalops");
+			expect(saved?.metadata?.deviceId).toBe("desktop-test-device");
+			expect(fetchMock).toHaveBeenCalledTimes(3);
+			const refreshBody = JSON.parse(
+				String(fetchMock.mock.calls[0]?.[1]?.body),
+			) as Record<string, unknown>;
+			expect(refreshBody).toEqual({ refresh_token: "old-evalops-refresh" });
+			const registrationInit = fetchMock.mock.calls[2]?.[1];
+			expect(registrationInit?.headers).toEqual({
+				Authorization: "Bearer new-evalops-access",
+				"Content-Type": "application/json",
+			});
 		});
 
 		it("retries transient EvalOps refresh failures", async () => {
