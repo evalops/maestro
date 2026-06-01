@@ -901,6 +901,103 @@ describe("OAuth Index", () => {
 			});
 		});
 
+		it("does not re-enroll when delegation uses a supplied token", async () => {
+			Object.defineProperty(process, "platform", {
+				configurable: true,
+				value: "linux",
+			});
+			process.env.MAESTRO_DEVICE_IDENTITY_HELPER = fileURLToPath(
+				new URL("../scripts/fake-device-identity-helper.mjs", import.meta.url),
+			);
+			process.env.MAESTRO_DEVICE_IDENTITY_ALLOW_TEST_HELPER = "1";
+
+			const expiresAt = new Date(Date.now() + 15 * 60 * 1000).toISOString();
+			const challengePurposes: unknown[] = [];
+			let deviceRegistrations = 0;
+			const fetchMock = vi.fn(async (input, init) => {
+				const url = String(input);
+				if (url.endsWith("/v1/device-challenges")) {
+					const body = JSON.parse(String(init?.body)) as Record<
+						string,
+						unknown
+					>;
+					challengePurposes.push(body.purpose);
+					return new Response(
+						JSON.stringify({
+							challenge: `challenge:${body.purpose}:${body.device_id ?? "none"}`,
+							challenge_id: `challenge-${challengePurposes.length}`,
+						}),
+						{ status: 200, headers: { "Content-Type": "application/json" } },
+					);
+				}
+				if (url.endsWith("/v1/devices")) {
+					deviceRegistrations += 1;
+					return new Response(JSON.stringify({ error: "forbidden" }), {
+						status: 403,
+						headers: { "Content-Type": "application/json" },
+					});
+				}
+				if (url.endsWith("/v1/delegation-tokens")) {
+					return new Response(
+						JSON.stringify({
+							agent_id: "agent-child-1",
+							expires_at: expiresAt,
+							run_id: "run-child-1",
+							scopes_granted: ["llm_gateway:invoke"],
+							scopes_requested: ["llm_gateway:invoke"],
+							token: TEST_DELEGATED_ACCESS_VALUE,
+							token_type: "Bearer",
+						}),
+						{ status: 201, headers: { "Content-Type": "application/json" } },
+					);
+				}
+				return new Response(JSON.stringify({ error: "not-found" }), {
+					status: 404,
+					headers: { "Content-Type": "application/json" },
+				});
+			});
+			vi.stubGlobal("fetch", fetchMock);
+
+			saveOAuthCredentials("evalops", {
+				type: "oauth",
+				access: "parent-access-token",
+				refresh: "parent-refresh-token",
+				expires: Date.now() + 60 * 60 * 1000,
+				metadata: {
+					deviceId: "old-v1-device",
+					identityBaseUrl: "https://identity.evalops.test",
+					organizationId: "org_123",
+					providerRef: {
+						provider: "openai",
+						environment: "prod",
+					},
+				},
+			});
+
+			await expect(
+				issueEvalOpsDelegationToken({
+					agentId: "agent-child-1",
+					agentType: "coder",
+					runId: "run-child-1",
+					scopes: ["llm_gateway:invoke"],
+					surface: "maestro-subagent",
+					token: "delegated-child-token",
+				}),
+			).resolves.toEqual(
+				expect.objectContaining({
+					token: TEST_DELEGATED_ACCESS_VALUE,
+				}),
+			);
+
+			expect(deviceRegistrations).toBe(0);
+			expect(challengePurposes).toEqual([]);
+			expect(fetchMock).toHaveBeenCalledTimes(1);
+			const delegationBody = JSON.parse(
+				String(fetchMock.mock.calls[0]?.[1]?.body),
+			) as Record<string, unknown>;
+			expect(delegationBody).not.toHaveProperty("device_proof");
+		});
+
 		it("uses the shared Platform base URL when no identity-specific base is configured", async () => {
 			const expiresAt = new Date(Date.now() + 15 * 60 * 1000).toISOString();
 			const fetchMock = vi.fn().mockResolvedValue(

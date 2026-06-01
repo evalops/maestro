@@ -441,7 +441,7 @@ export async function issueEvalOpsDelegationToken(
 		"delegation",
 		enrolledDeviceId,
 	);
-	if (!deviceProof) {
+	if (!deviceProof && !request.token) {
 		const migratedDeviceId = await enrollCurrentDesktopDevice(
 			identityBaseUrl,
 			token,
