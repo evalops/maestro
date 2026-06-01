@@ -64,6 +64,7 @@ export interface SlackContext {
 	message: SlackMessage;
 	teamId: string;
 	channelName?: string;
+	botUserId?: string | null;
 	store: ChannelStore;
 	channels: ChannelInfo[];
 	users: UserInfo[];
@@ -82,8 +83,15 @@ export interface SlackContext {
 	/** Origin of the run (message, dm, slash, scheduled). */
 	source?: "channel" | "dm" | "slash" | "scheduled" | "trigger";
 	respond(text: string, log?: boolean): Promise<void>;
-	replaceMessage(text: string): Promise<void>;
-	respondInThread(text: string): Promise<void>;
+	replaceMessage(text: string, log?: boolean, logText?: string): Promise<void>;
+	respondInThread(text: string, log?: boolean): Promise<void>;
+	postMessage(channel: string, text: string, log?: boolean): Promise<void>;
+	postThreadReply(
+		channel: string,
+		threadTs: string,
+		text: string,
+		log?: boolean,
+	): Promise<void>;
 	setTyping(isTyping: boolean): Promise<void>;
 	uploadFile(filePath: string, title?: string): Promise<void>;
 	setWorking(working: boolean): Promise<void>;
@@ -1220,6 +1228,7 @@ export class SlackBot {
 			},
 			teamId: ws.teamId,
 			channelName,
+			botUserId: ws.botUserId,
 			store: ws.store,
 			channels: this.getChannels(ws),
 			users: this.getUsers(ws),
@@ -1577,6 +1586,7 @@ export class SlackBot {
 			},
 			teamId: ws.teamId,
 			channelName: ws.channelCache.get(command.channel_id),
+			botUserId: ws.botUserId,
 			store: ws.store,
 			channels: this.getChannels(ws),
 			users: this.getUsers(ws),
@@ -1637,6 +1647,7 @@ export class SlackBot {
 			},
 			teamId: ws.teamId,
 			channelName: ws.channelCache.get(channelId),
+			botUserId: ws.botUserId,
 			store: ws.store,
 			channels: this.getChannels(ws),
 			users: this.getUsers(ws),

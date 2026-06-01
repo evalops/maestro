@@ -57,6 +57,16 @@ export function validateCodexFlags(args: string[], command?: string): void {
 				"Legacy Codex/ChatGPT auth flags are no longer supported. Use the openai-codex provider with `maestro codex login` instead.",
 			);
 		}
+		const retiredAnthropicAuthUsed = args.some((arg, index) => {
+			if (arg === "--auth" && args[index + 1] === "claude") return true;
+			if (arg.startsWith("--auth=claude")) return true;
+			return false;
+		});
+		if (retiredAnthropicAuthUsed) {
+			throw new Error(
+				"Anthropic OAuth auth mode is no longer supported. Set ANTHROPIC_API_KEY to use Anthropic models, or run `maestro codex login` for the default Codex flow.",
+			);
+		}
 	}
 }
 
@@ -86,7 +96,7 @@ export function createAuthSetup(params: {
 		if (authMode !== "api-key") {
 			const loginHint =
 				providerName === "anthropic"
-					? 'Run "maestro anthropic login" (claude) or use /login to authenticate before retrying.'
+					? "Anthropic OAuth login has been removed."
 					: providerName === "openai"
 						? 'Run "maestro openai login" or use /login to authenticate before retrying.'
 						: isKnownEvalOpsManagedProvider(providerName) &&
@@ -95,12 +105,21 @@ export function createAuthSetup(params: {
 							: isEvalOpsManagedProvider(providerName)
 								? 'Run "maestro evalops login" or "/login evalops" to authenticate before retrying.'
 								: 'Run "/login" to authenticate before retrying.';
-			push(
-				`${loginHint} Or provide an API key for the selected provider.`,
-				chalk.dim(
+			if (providerName === "anthropic") {
+				push(
+					`${loginHint} Provide an API key for the selected provider.`,
+					chalk.dim(
+						`${loginHint} Provide an API key for the selected provider.`,
+					),
+				);
+			} else {
+				push(
 					`${loginHint} Or provide an API key for the selected provider.`,
-				),
-			);
+					chalk.dim(
+						`${loginHint} Or provide an API key for the selected provider.`,
+					),
+				);
+			}
 		}
 		const envVars = getEnvVarsForProvider(providerName);
 		if (envVars.length) {

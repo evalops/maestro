@@ -3069,178 +3069,206 @@ describe("ProviderTransport tool scheduling", () => {
 	});
 
 	it("reuses read-only results across adjacent user turns and invalidates after mutation", async () => {
-		let readExecutionCount = 0;
-		let writeExecutionCount = 0;
-		const readProbeTool: AgentTool = {
-			name: "read",
-			description: "Adjacent-turn cacheable repo read probe.",
-			parameters: Type.Object({ path: Type.String() }),
-			annotations: {
-				readOnlyHint: true,
-			},
-			execute: async (_toolCallId, args) => {
-				readExecutionCount += 1;
-				return {
-					content: [
+		const tempDir = mkdtempSync(`${tmpdir()}/maestro-cache-adjacent-`);
+		try {
+			execFileSync("git", ["init"], { cwd: tempDir, stdio: "ignore" });
+			writeFileSync(resolve(tempDir, "same.txt"), "same");
+			execFileSync("git", ["add", "same.txt"], {
+				cwd: tempDir,
+				stdio: "ignore",
+			});
+			execFileSync(
+				"git",
+				[
+					"-c",
+					"user.name=Maestro Test",
+					"-c",
+					"user.email=maestro@example.com",
+					"commit",
+					"-m",
+					"init",
+				],
+				{ cwd: tempDir, stdio: "ignore" },
+			);
+
+			let readExecutionCount = 0;
+			let writeExecutionCount = 0;
+			const readProbeTool: AgentTool = {
+				name: "read",
+				description: "Adjacent-turn cacheable repo read probe.",
+				parameters: Type.Object({ path: Type.String() }),
+				annotations: {
+					readOnlyHint: true,
+				},
+				execute: async (_toolCallId, args) => {
+					readExecutionCount += 1;
+					return {
+						content: [
+							{
+								type: "text",
+								text: `read:${String(args.path)}:${readExecutionCount}`,
+							},
+						],
+					};
+				},
+			};
+			const writeProbeTool: AgentTool = {
+				name: "adjacent_cache_write",
+				description: "Mutation probe that invalidates adjacent-turn cache.",
+				parameters: Type.Object({ label: Type.String() }),
+				annotations: {
+					readOnlyHint: false,
+					destructiveHint: true,
+				},
+				execute: async (_toolCallId, args) => {
+					writeExecutionCount += 1;
+					return {
+						content: [{ type: "text", text: `write:${String(args.label)}` }],
+					};
+				},
+			};
+
+			let streamCount = 0;
+			mocks.createProviderStream.mockImplementation(async function* () {
+				streamCount += 1;
+				const toolUseTurns: Record<
+					number,
+					Array<{
+						id: string;
+						name: string;
+						arguments: Record<string, unknown>;
+					}>
+				> = {
+					1: [
 						{
-							type: "text",
-							text: `read:${String(args.path)}:${readExecutionCount}`,
+							id: "adjacent-read-1",
+							name: "read",
+							arguments: { path: "same.txt" },
+						},
+					],
+					3: [
+						{
+							id: "adjacent-read-2",
+							name: "read",
+							arguments: { path: "same.txt" },
+						},
+					],
+					5: [
+						{
+							id: "adjacent-write-1",
+							name: "adjacent_cache_write",
+							arguments: { label: "invalidate" },
+						},
+					],
+					7: [
+						{
+							id: "adjacent-read-3",
+							name: "read",
+							arguments: { path: "same.txt" },
 						},
 					],
 				};
-			},
-		};
-		const writeProbeTool: AgentTool = {
-			name: "adjacent_cache_write",
-			description: "Mutation probe that invalidates adjacent-turn cache.",
-			parameters: Type.Object({ label: Type.String() }),
-			annotations: {
-				readOnlyHint: false,
-				destructiveHint: true,
-			},
-			execute: async (_toolCallId, args) => {
-				writeExecutionCount += 1;
-				return {
-					content: [{ type: "text", text: `write:${String(args.label)}` }],
-				};
-			},
-		};
+				const calls = toolUseTurns[streamCount];
+				if (calls) {
+					const assistant = assistantMessage([], "toolUse");
+					yield {
+						type: "start",
+						partial: assistant,
+					} satisfies AssistantMessageEvent;
+					for (const call of calls) {
+						yield {
+							type: "toolcall_end",
+							toolCall: {
+								type: "toolCall",
+								id: call.id,
+								name: call.name,
+								arguments: call.arguments,
+							},
+							partial: assistant,
+						} satisfies AssistantMessageEvent;
+					}
+					yield {
+						type: "done",
+						reason: "toolUse",
+						message: assistant,
+					} satisfies AssistantMessageEvent;
+					return;
+				}
 
-		let streamCount = 0;
-		mocks.createProviderStream.mockImplementation(async function* () {
-			streamCount += 1;
-			const toolUseTurns: Record<
-				number,
-				Array<{
-					id: string;
-					name: string;
-					arguments: Record<string, unknown>;
-				}>
-			> = {
-				1: [
-					{
-						id: "adjacent-read-1",
-						name: "read",
-						arguments: { path: "same.txt" },
-					},
-				],
-				3: [
-					{
-						id: "adjacent-read-2",
-						name: "read",
-						arguments: { path: "same.txt" },
-					},
-				],
-				5: [
-					{
-						id: "adjacent-write-1",
-						name: "adjacent_cache_write",
-						arguments: { label: "invalidate" },
-					},
-				],
-				7: [
-					{
-						id: "adjacent-read-3",
-						name: "read",
-						arguments: { path: "same.txt" },
-					},
-				],
-			};
-			const calls = toolUseTurns[streamCount];
-			if (calls) {
-				const assistant = assistantMessage([], "toolUse");
+				const assistant = assistantMessage(
+					[{ type: "text", text: "adjacent cache turn complete" }],
+					"stop",
+				);
 				yield {
 					type: "start",
 					partial: assistant,
 				} satisfies AssistantMessageEvent;
-				for (const call of calls) {
-					yield {
-						type: "toolcall_end",
-						toolCall: {
-							type: "toolCall",
-							id: call.id,
-							name: call.name,
-							arguments: call.arguments,
-						},
-						partial: assistant,
-					} satisfies AssistantMessageEvent;
-				}
 				yield {
 					type: "done",
-					reason: "toolUse",
+					reason: "stop",
 					message: assistant,
 				} satisfies AssistantMessageEvent;
-				return;
-			}
+			});
 
-			const assistant = assistantMessage(
-				[{ type: "text", text: "adjacent cache turn complete" }],
-				"stop",
-			);
-			yield {
-				type: "start",
-				partial: assistant,
-			} satisfies AssistantMessageEvent;
-			yield {
-				type: "done",
-				reason: "stop",
-				message: assistant,
-			} satisfies AssistantMessageEvent;
-		});
-
-		const transport = new ProviderTransport({
-			maxConcurrentToolExecutions: 4,
-			platformToolExecutionBridge: false,
-		});
-		const tools = [readProbeTool, writeProbeTool];
-		const runTurn = (content: string) => {
-			const userMessage: Message = {
-				role: "user",
-				content,
-				timestamp: Date.now(),
+			const transport = new ProviderTransport({
+				cwd: tempDir,
+				maxConcurrentToolExecutions: 4,
+				platformToolExecutionBridge: false,
+			});
+			const tools = [readProbeTool, writeProbeTool];
+			const runTurn = (content: string) => {
+				const userMessage: Message = {
+					role: "user",
+					content,
+					timestamp: Date.now(),
+				};
+				return drain(
+					transport.run([userMessage], userMessage, {
+						systemPrompt: "Use the requested tools.",
+						tools,
+						model,
+					}),
+				);
 			};
-			return drain(
-				transport.run([userMessage], userMessage, {
-					systemPrompt: "Use the requested tools.",
-					tools,
-					model,
-				}),
+
+			const firstEvents = await runTurn("Read the same key.");
+			const secondEvents = await runTurn("Read the same key again.");
+			const mutationEvents = await runTurn("Mutate state.");
+			const thirdReadEvents = await runTurn(
+				"Read the same key after mutation.",
 			);
-		};
 
-		const firstEvents = await runTurn("Read the same key.");
-		const secondEvents = await runTurn("Read the same key again.");
-		const mutationEvents = await runTurn("Mutate state.");
-		const thirdReadEvents = await runTurn("Read the same key after mutation.");
+			const toolResultsById = new Map(
+				[...firstEvents, ...secondEvents, ...mutationEvents, ...thirdReadEvents]
+					.filter(
+						(
+							event,
+						): event is Extract<AgentEvent, { type: "tool_execution_end" }> =>
+							event.type === "tool_execution_end",
+					)
+					.map((event) => [event.toolCallId, event]),
+			);
 
-		const toolResultsById = new Map(
-			[...firstEvents, ...secondEvents, ...mutationEvents, ...thirdReadEvents]
-				.filter(
-					(
-						event,
-					): event is Extract<AgentEvent, { type: "tool_execution_end" }> =>
-						event.type === "tool_execution_end",
-				)
-				.map((event) => [event.toolCallId, event]),
-		);
-
-		expect(readExecutionCount).toBe(2);
-		expect(writeExecutionCount).toBe(1);
-		expect(toolResultsById.get("adjacent-read-1")?.scheduling?.cache).toBe(
-			"miss",
-		);
-		expect(toolResultsById.get("adjacent-read-2")?.scheduling?.cache).toBe(
-			"hit",
-		);
-		expect(toolResultsById.get("adjacent-read-2")?.scheduling?.reason).toBe(
-			"cache_hit",
-		);
-		expect(toolResultsById.get("adjacent-write-1")?.scheduling?.cache).toBe(
-			"disabled",
-		);
-		expect(toolResultsById.get("adjacent-read-3")?.scheduling?.cache).toBe(
-			"miss",
-		);
+			expect(readExecutionCount).toBe(2);
+			expect(writeExecutionCount).toBe(1);
+			expect(toolResultsById.get("adjacent-read-1")?.scheduling?.cache).toBe(
+				"miss",
+			);
+			expect(toolResultsById.get("adjacent-read-2")?.scheduling?.cache).toBe(
+				"hit",
+			);
+			expect(toolResultsById.get("adjacent-read-2")?.scheduling?.reason).toBe(
+				"cache_hit",
+			);
+			expect(toolResultsById.get("adjacent-write-1")?.scheduling?.cache).toBe(
+				"disabled",
+			);
+			expect(toolResultsById.get("adjacent-read-3")?.scheduling?.cache).toBe(
+				"miss",
+			);
+		} finally {
+			rmSync(tempDir, { recursive: true, force: true });
+		}
 	});
 
 	it("clears adjacent-turn cache when the tool registry changes", async () => {

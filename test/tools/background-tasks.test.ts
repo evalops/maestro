@@ -617,6 +617,14 @@ describe("backgroundTasksTool", () => {
 		const preview = snapshot?.entries[0]?.lastLogLine ?? "";
 		expect(preview).toContain("[secret:");
 		expect(preview).not.toContain(SAMPLE_REDACTED_TOKEN);
+		const logsResult = await backgroundTasksTool.execute("bg-redact-logs", {
+			action: "logs",
+			taskId,
+			lines: 5,
+		});
+		const logsText = getTextOutput(logsResult as ToolResult);
+		expect(logsText).toContain("[secret:");
+		expect(logsText).not.toContain(SAMPLE_REDACTED_TOKEN);
 		await backgroundTaskManager.stopTask(taskId);
 	});
 
@@ -668,7 +676,7 @@ describe("backgroundTasksTool", () => {
 		const startResult = await backgroundTasksTool.execute("bg-rotate", {
 			action: "start",
 			command:
-				"node -e \"const chunk = 'A'.repeat(2048); let count = 0; const timer = setInterval(() => { process.stdout.write(chunk); count += 1; if (count === 4) { clearInterval(timer); process.exit(0); } }, 20);\"",
+				"node -e \"const chunk = 'A'.repeat(512); let count = 0; const timer = setInterval(() => { process.stdout.write(chunk); count += 1; if (count === 3) { clearInterval(timer); process.exit(0); } }, 20);\"",
 			limits: { logSizeLimit: 1024, logSegments: 2 },
 		});
 		const taskId = (startResult.details as TaskDetails)?.id as string;

@@ -536,9 +536,11 @@ pub(crate) fn builtin_models() -> Vec<ModelInfo> {
             },
         },
     ];
-    models.extend(codex_app_server_builtin_models().into_iter().filter(|model| {
-        !(model.provider == primary.provider && model.id == primary.id)
-    }));
+    models.extend(
+        codex_app_server_builtin_models()
+            .into_iter()
+            .filter(|model| !(model.provider == primary.provider && model.id == primary.id)),
+    );
     models
 }
 

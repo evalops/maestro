@@ -25,12 +25,16 @@ import {
 } from "../approval-mode-store.js";
 import { getAuthScopeKey, getAuthSubject } from "../authz.js";
 import type {
+	HeadlessAttachedSubscription,
 	HeadlessRuntimeConnectionSnapshot,
 	HeadlessRuntimeHeartbeatSnapshot,
 	HeadlessRuntimeStreamEnvelope,
 	HeadlessSessionRuntime,
 } from "../headless-runtime-service.js";
-import { loadHostedRunnerRestoreManifest } from "../headless-runtime-service.js";
+import {
+	HeadlessRuntimeNotReadyError,
+	loadHostedRunnerRestoreManifest,
+} from "../headless-runtime-service.js";
 import {
 	bindHostedRunnerPlatformLease,
 	claimHostedRunnerLease,
@@ -457,6 +461,19 @@ function rethrowHeadlessMessageError(error: unknown): never {
 	if (!(error instanceof Error)) {
 		throw error;
 	}
+	if (error instanceof HeadlessRuntimeNotReadyError) {
+		throw new ApiError(
+			503,
+			error.message,
+			[
+				{
+					reason: HostedRunnerErrorType.RuntimeNotReady,
+					domain: HOSTED_RUNNER_ERROR_DOMAIN,
+				},
+			],
+			HostedRunnerErrorType.RuntimeNotReady,
+		);
+	}
 	if (error.message === "Viewer headless connections cannot send messages") {
 		throw new ApiError(403, error.message);
 	}
@@ -479,6 +496,19 @@ function rethrowHeadlessMessageError(error: unknown): never {
 function rethrowHeadlessConnectionLifecycleError(error: unknown): never {
 	if (!(error instanceof Error)) {
 		throw error;
+	}
+	if (error instanceof HeadlessRuntimeNotReadyError) {
+		throw new ApiError(
+			503,
+			error.message,
+			[
+				{
+					reason: HostedRunnerErrorType.RuntimeNotReady,
+					domain: HOSTED_RUNNER_ERROR_DOMAIN,
+				},
+			],
+			HostedRunnerErrorType.RuntimeNotReady,
+		);
 	}
 	if (error.message === "Headless connection not found") {
 		throw new ApiError(404, error.message);
@@ -761,7 +791,15 @@ export async function handleHeadlessSessionCreate(
 		req,
 		HeadlessSessionCreateSchema,
 	);
-	const runtime = await ensureRuntime(req, context, input);
+	let runtime: HeadlessSessionRuntime;
+	try {
+		runtime = await ensureRuntime(req, context, input);
+	} catch (error) {
+		if (error instanceof HeadlessRuntimeNotReadyError) {
+			rethrowHeadlessConnectionLifecycleError(error);
+		}
+		throw error;
+	}
 	sendJson(res, 200, runtime.getSnapshot(), context.corsHeaders, req);
 }
 
@@ -838,6 +876,9 @@ export async function handleHeadlessSessionSubscribe(
 			req,
 		);
 	} catch (error) {
+		if (error instanceof HeadlessRuntimeNotReadyError) {
+			rethrowHeadlessConnectionLifecycleError(error);
+		}
 		if (
 			error instanceof Error &&
 			error.message === "Controller lease is already held by another connection"
@@ -939,13 +980,18 @@ export function handleHeadlessSessionEvents(
 	const subscriptionId =
 		url.searchParams.get("subscriptionId") || getHeadlessSubscriberId(req);
 
-	const stream = subscriptionId
-		? runtime.attachSubscription(subscriptionId)
-		: runtime.createImplicitStream({
-				cursor,
-				role: getHeadlessRole(req),
-				optOutNotifications: parseOptOutNotifications(req),
-			});
+	let stream: HeadlessAttachedSubscription | null;
+	try {
+		stream = subscriptionId
+			? runtime.attachSubscription(subscriptionId)
+			: runtime.createImplicitStream({
+					cursor,
+					role: getHeadlessRole(req),
+					optOutNotifications: parseOptOutNotifications(req),
+				});
+	} catch (error) {
+		rethrowHeadlessConnectionLifecycleError(error);
+	}
 	if (!stream) {
 		throw new ApiError(404, "Headless subscriber not found");
 	}
@@ -1012,6 +1058,7 @@ export async function handleHeadlessSessionMessage(
 			getHeadlessRole(req),
 			getHeadlessSubscriberId(req),
 			getHeadlessConnectionId(req),
+			{ allowNotReady: input.type === "shutdown" },
 		);
 	} catch (error) {
 		rethrowHeadlessMessageError(error);

@@ -1,7 +1,7 @@
 /**
- * @fileoverview Core Type Definitions for Composer Agent
+ * @fileoverview Core Type Definitions for Maestro Agent
  *
- * This module defines the fundamental types used throughout the Composer AI system,
+ * This module defines the fundamental types used throughout the Maestro AI system,
  * including message formats, tool definitions, model configurations, and agent state.
  *
  * ## Type Categories
@@ -1677,7 +1677,7 @@ export interface StreamOptions {
 	/** Current working directory for local provider runtimes. */
 	cwd?: string;
 	/** Authentication type for the request */
-	authType?: "api-key" | "anthropic-oauth";
+	authType?: "api-key" | "bearer-token";
 	/** Optional Anthropic API-side task budget for the current turn */
 	taskBudget?: {
 		total: number;

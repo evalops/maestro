@@ -6,9 +6,9 @@ import type {
 import { isTerminalA2AState } from "./a2a-task-ledger.js";
 
 export const A2A_COMPLETION_AUDIT_SCHEMA =
-	"evalops.maestro.a2a-completion-audit.v1";
+	"evalops.maestro.a2a-completion-audit.v2";
 
-export type A2ACompletionEvidenceKey =
+export type A2ACompletionSignalKey =
 	| "status"
 	| "artifact"
 	| "task"
@@ -25,8 +25,8 @@ export interface A2ACompletionAuditLane {
 	peer: string;
 	status?: string;
 	terminal: boolean;
-	evidence: Record<A2ACompletionEvidenceKey, boolean>;
-	missingEvidence: A2ACompletionEvidenceKey[];
+	signals: Record<A2ACompletionSignalKey, boolean>;
+	missingSignals: A2ACompletionSignalKey[];
 }
 
 export interface A2ACompletionAudit {
@@ -44,15 +44,22 @@ export interface A2ACompletionAudit {
 	lanes: A2ACompletionAuditLane[];
 }
 
+export interface A2APushCompletionSignals {
+	statusUpdateTerminal?: boolean;
+	artifactUpdate?: boolean;
+	taskTerminal?: boolean;
+}
+
 export interface BuildA2ACompletionAuditInput {
 	swarm: SwarmState;
 	ledger: A2ATaskLedgerFile;
-	pushEvidenceKeys?: ReadonlySet<string>;
+	pushSignals?: ReadonlyMap<string, A2APushCompletionSignals>;
+	pushSignalKeys?: ReadonlySet<string>;
 	pushTaskIds?: ReadonlySet<string>;
 	generatedAt?: string;
 }
 
-const EVIDENCE_ORDER: A2ACompletionEvidenceKey[] = [
+const SIGNAL_ORDER: A2ACompletionSignalKey[] = [
 	"status",
 	"artifact",
 	"task",
@@ -80,11 +87,11 @@ export function buildA2ACompletionAudit(
 		buildLaneAudit(input, lane, remoteTaskIdCounts),
 	);
 	const completeLanes = lanes.filter(
-		(lane) => lane.terminal && lane.missingEvidence.length === 0,
+		(lane) => lane.terminal && lane.missingSignals.length === 0,
 	).length;
-	const pushCoveredLanes = lanes.filter((lane) => lane.evidence.push).length;
+	const pushCoveredLanes = lanes.filter((lane) => lane.signals.push).length;
 	const workGraphCoveredLanes = lanes.filter(
-		(lane) => lane.evidence.workGraph,
+		(lane) => lane.signals.workGraph,
 	).length;
 	return {
 		schema: A2A_COMPLETION_AUDIT_SCHEMA,
@@ -102,7 +109,7 @@ export function buildA2ACompletionAudit(
 	};
 }
 
-export function a2aPushEvidenceKey(peer: string, taskId: string): string {
+export function a2aPushSignalKey(peer: string, taskId: string): string {
 	return `${peer}\u0000${taskId}`;
 }
 
@@ -139,7 +146,7 @@ function buildRemoteLaneSources(
 	const ledgerOnlyLanes = input.ledger.tasks
 		.filter((entry) => entry.kind === "delegation")
 		.filter((entry) => stringMetadata(entry, "swarmId") === input.swarm.id)
-		.filter((entry) => !seen.has(a2aPushEvidenceKey(entry.peer, entry.taskId)))
+		.filter((entry) => !seen.has(a2aPushSignalKey(entry.peer, entry.taskId)))
 		.map((entry) => {
 			const parentTaskId = parentTaskIdForLedger(entry);
 			return {
@@ -170,7 +177,7 @@ function hasA2ATask(
 }
 
 function laneKey(a2a: A2AAuditA2A): string {
-	return a2aPushEvidenceKey(a2a.peer, a2a.taskId);
+	return a2aPushSignalKey(a2a.peer, a2a.taskId);
 }
 
 function findLedgerEntry(
@@ -192,20 +199,20 @@ function buildLaneAudit(
 		lane.parentTaskId ??
 		parentTaskIdForLane(lane.completedTasks, ledgerEntry, a2a);
 	const status = ledgerEntry?.state;
-	const evidence: Record<A2ACompletionEvidenceKey, boolean> = {
+	const signals: Record<A2ACompletionSignalKey, boolean> = {
 		status: Boolean(status),
-		artifact: hasArtifactEvidence(ledgerEntry),
+		artifact: hasArtifactSignal(ledgerEntry),
 		task: Boolean(ledgerEntry),
 		workGraph: Boolean(ledgerEntry?.workGraph),
-		push: hasPushEvidence(input, a2a, remoteTaskIdCounts),
-		correlation: hasCorrelationEvidence(
+		push: hasPushSignal(input, a2a, remoteTaskIdCounts),
+		correlation: hasCorrelationSignal(
 			input.swarm.id,
 			parentTaskId,
 			a2a,
 			ledgerEntry,
 		),
 	};
-	const missingEvidence = EVIDENCE_ORDER.filter((key) => !evidence[key]);
+	const missingSignals = SIGNAL_ORDER.filter((key) => !signals[key]);
 	return {
 		laneId: lane.laneId,
 		parentTaskId,
@@ -215,8 +222,8 @@ function buildLaneAudit(
 		peer: a2a.peer,
 		status,
 		terminal: Boolean(status && isTerminalA2AState(status)),
-		evidence,
-		missingEvidence,
+		signals,
+		missingSignals,
 	};
 }
 
@@ -229,19 +236,32 @@ function countRemoteTaskIds(lanes: A2AAuditLaneSource[]): Map<string, number> {
 	return counts;
 }
 
-function hasPushEvidence(
+function hasPushSignal(
 	input: BuildA2ACompletionAuditInput,
 	a2a: NonNullable<SwarmTeammate["a2a"]>,
 	remoteTaskIdCounts: ReadonlyMap<string, number>,
 ): boolean {
-	const exactKey = a2aPushEvidenceKey(a2a.peer, a2a.taskId);
-	if (input.pushEvidenceKeys?.has(exactKey)) {
+	const exactKey = a2aPushSignalKey(a2a.peer, a2a.taskId);
+	if (input.pushSignals?.has(exactKey)) {
+		return pushCompletionSignalsAreComplete(input.pushSignals.get(exactKey));
+	}
+	if (input.pushSignalKeys?.has(exactKey)) {
 		return true;
 	}
 	if ((remoteTaskIdCounts.get(a2a.taskId) ?? 0) > 1) {
 		return false;
 	}
 	return input.pushTaskIds?.has(a2a.taskId) ?? false;
+}
+
+function pushCompletionSignalsAreComplete(
+	signals: A2APushCompletionSignals | undefined,
+): boolean {
+	return Boolean(
+		signals?.statusUpdateTerminal &&
+			signals.artifactUpdate &&
+			signals.taskTerminal,
+	);
 }
 
 function parentTaskIdForLedger(
@@ -278,7 +298,7 @@ function fallbackRemoteLaneId(peer: string, taskId: string): string {
 	return `a2a:${encodeURIComponent(peer)}:remote:${encodeURIComponent(taskId)}`;
 }
 
-function hasArtifactEvidence(entry: A2ATaskLedgerEntry | undefined): boolean {
+function hasArtifactSignal(entry: A2ATaskLedgerEntry | undefined): boolean {
 	return Boolean(
 		entry?.responseText?.trim() ||
 			entry?.transcript.some(
@@ -287,7 +307,7 @@ function hasArtifactEvidence(entry: A2ATaskLedgerEntry | undefined): boolean {
 	);
 }
 
-function hasCorrelationEvidence(
+function hasCorrelationSignal(
 	swarmId: string,
 	parentTaskId: string | undefined,
 	a2a: NonNullable<SwarmTeammate["a2a"]>,

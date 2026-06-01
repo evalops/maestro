@@ -1,3 +1,4 @@
+import { performance } from "node:perf_hooks";
 import { describe, expect, it } from "vitest";
 import { RequestScheduler } from "./request-scheduler.js";
 
@@ -37,13 +38,13 @@ describe("RequestScheduler", () => {
 
 		const first = scheduler.schedule(
 			async () => {
-				startTimes.push(Date.now());
+				startTimes.push(performance.now());
 			},
 			{ mutating: true },
 		);
 		const second = scheduler.schedule(
 			async () => {
-				startTimes.push(Date.now());
+				startTimes.push(performance.now());
 			},
 			{ mutating: true },
 		);

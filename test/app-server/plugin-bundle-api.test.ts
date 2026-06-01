@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { Value } from "@sinclair/typebox/value";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { MaestroAppServerResponseSchema } from "../../packages/contracts/src/maestro-app-server.js";
+import { createMaestroAppServerPluginBundleApi } from "../../src/app-server/plugin-bundle-api.js";
 import {
 	createMaestroAppServerSessionApi,
 	handleMaestroAppServerRequest,
@@ -72,13 +73,68 @@ describe("Maestro app-server plugin bundle lifecycle API", () => {
 		});
 	});
 
+	it("does not expose plugin bundle lifecycle when session persistence is disabled", async () => {
+		const manager = new SessionManager(false, undefined, {
+			sessionDir: join(testDir, "disabled-plugin-sessions"),
+		});
+		manager.disable();
+		const api = createMaestroAppServerSessionApi(manager);
+
+		expect(api.initialize()).toMatchObject({
+			capabilities: {
+				pluginBundles: false,
+			},
+		});
+
+		const response = await handleMaestroAppServerRequest(api, {
+			jsonrpc: "2.0",
+			id: "plugin-install-disabled",
+			method: "pluginBundle/install",
+			params: { source: "npm:@scope/package" },
+		});
+
+		expect(response.error).toEqual({
+			code: -32601,
+			message: "Plugin bundle lifecycle is not available",
+		});
+	});
+
+	it("does not expose plugin bundle lifecycle when host control is disabled", async () => {
+		const manager = new SessionManager(false, undefined, {
+			sessionDir: join(testDir, "disabled-host-sessions"),
+		});
+		const api = createMaestroAppServerSessionApi(manager, {
+			hostControl: false,
+		});
+
+		expect(api.initialize()).toMatchObject({
+			capabilities: {
+				pluginBundles: false,
+			},
+		});
+
+		const response = await handleMaestroAppServerRequest(api, {
+			jsonrpc: "2.0",
+			id: "plugin-install-host-disabled",
+			method: "pluginBundle/install",
+			params: { source: "npm:@scope/package" },
+		});
+
+		expect(response.error).toEqual({
+			code: -32601,
+			message: "Plugin bundle lifecycle is not available",
+		});
+	});
+
 	it("installs, lists, loads, and removes a local plugin bundle", async () => {
 		const projectRoot = join(testDir, "project");
 		const packageDir = writePluginBundle(projectRoot);
 		const manager = new SessionManager(false, undefined, {
 			sessionDir: join(testDir, "sessions"),
 		});
-		const api = createMaestroAppServerSessionApi(manager);
+		const api = createMaestroAppServerSessionApi(manager, {
+			pluginBundles: createMaestroAppServerPluginBundleApi({ projectRoot }),
+		});
 
 		const installed = await handleMaestroAppServerRequest(api, {
 			jsonrpc: "2.0",
@@ -180,13 +236,106 @@ describe("Maestro app-server plugin bundle lifecycle API", () => {
 		expect(listedAfterRemove.result?.bundles).toEqual([]);
 	});
 
+	it("uses the server project root for plugin bundle mutations", async () => {
+		const serverRoot = join(testDir, "server-cwd");
+		const projectRoot = join(testDir, "server-project");
+		mkdirSync(serverRoot, { recursive: true });
+		const packageDir = writePluginBundle(projectRoot);
+		const manager = new SessionManager(false, undefined, {
+			sessionDir: join(testDir, "server-root-sessions"),
+		});
+		const previousCwd = process.cwd();
+		process.chdir(serverRoot);
+		try {
+			const api = createMaestroAppServerSessionApi(manager, {
+				projectRoot,
+			});
+			const installed = await handleMaestroAppServerRequest(api, {
+				jsonrpc: "2.0",
+				id: "plugin-install-server-root",
+				method: "pluginBundle/install",
+				params: {
+					projectRoot,
+					scope: "local",
+					source: `local:${packageDir}`,
+				},
+			});
+
+			expect(installed.result).toMatchObject({
+				changed: true,
+				configPath: join(projectRoot, ".maestro", "config.local.toml"),
+				scope: "local",
+			});
+			expect(
+				existsSync(join(projectRoot, ".maestro", "config.local.toml")),
+			).toBe(true);
+			expect(
+				existsSync(join(serverRoot, ".maestro", "config.local.toml")),
+			).toBe(false);
+
+			const removed = await handleMaestroAppServerRequest(api, {
+				jsonrpc: "2.0",
+				id: "plugin-remove-server-root",
+				method: "pluginBundle/remove",
+				params: {
+					projectRoot,
+					source: `local:${packageDir}`,
+				},
+			});
+
+			expect(removed.result).toMatchObject({
+				changed: true,
+				configPath: join(projectRoot, ".maestro", "config.local.toml"),
+				scope: "local",
+			});
+			expect(
+				existsSync(join(serverRoot, ".maestro", "config.local.toml")),
+			).toBe(false);
+		} finally {
+			process.chdir(previousCwd);
+		}
+	});
+
+	it("rejects plugin bundle project roots outside the server root", async () => {
+		const projectRoot = join(testDir, "trusted-project");
+		const otherRoot = join(testDir, "other-project");
+		const packageDir = writePluginBundle(projectRoot);
+		const manager = new SessionManager(false, undefined, {
+			sessionDir: join(testDir, "untrusted-root-sessions"),
+		});
+		const api = createMaestroAppServerSessionApi(manager, {
+			projectRoot,
+		});
+
+		const rejected = await handleMaestroAppServerRequest(api, {
+			jsonrpc: "2.0",
+			id: "plugin-install-untrusted-root",
+			method: "pluginBundle/install",
+			params: {
+				projectRoot: otherRoot,
+				scope: "local",
+				source: `local:${packageDir}`,
+			},
+		});
+
+		expect(rejected.error).toEqual({
+			code: -32602,
+			message: "Plugin bundle projectRoot is not available for this server",
+		});
+		expect(existsSync(join(otherRoot, ".maestro", "config.local.toml"))).toBe(
+			false,
+		);
+	});
+
 	it("previews plugin bundle installs without writing config", async () => {
 		const projectRoot = join(testDir, "dry-run-project");
 		const packageDir = writePluginBundle(projectRoot);
 		const manager = new SessionManager(false, undefined, {
 			sessionDir: join(testDir, "dry-run-sessions"),
 		});
-		const api = createMaestroAppServerSessionApi(manager);
+		const api = createMaestroAppServerSessionApi(manager, {
+			pluginBundles: createMaestroAppServerPluginBundleApi({ projectRoot }),
+		});
 
 		const planned = await handleMaestroAppServerRequest(api, {
 			jsonrpc: "2.0",
@@ -214,7 +363,9 @@ describe("Maestro app-server plugin bundle lifecycle API", () => {
 		const manager = new SessionManager(false, undefined, {
 			sessionDir: join(testDir, "malformed-source-sessions"),
 		});
-		const api = createMaestroAppServerSessionApi(manager);
+		const api = createMaestroAppServerSessionApi(manager, {
+			pluginBundles: createMaestroAppServerPluginBundleApi({ projectRoot }),
+		});
 
 		const rejected = await handleMaestroAppServerRequest(api, {
 			jsonrpc: "2.0",
@@ -239,7 +390,9 @@ describe("Maestro app-server plugin bundle lifecycle API", () => {
 		const manager = new SessionManager(false, undefined, {
 			sessionDir: join(testDir, "invalid-sessions"),
 		});
-		const api = createMaestroAppServerSessionApi(manager);
+		const api = createMaestroAppServerSessionApi(manager, {
+			pluginBundles: createMaestroAppServerPluginBundleApi({ projectRoot }),
+		});
 
 		const invalidScope = await handleMaestroAppServerRequest(api, {
 			jsonrpc: "2.0",

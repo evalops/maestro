@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { createToolsAndSandbox } from "../../src/bootstrap/tools-setup.js";
 import {
 	CODEX_DEFAULT_TOOL_PROFILE,
@@ -35,6 +35,48 @@ describe("createToolsAndSandbox", () => {
 			"read",
 			"status",
 		]);
+	});
+
+	it("does not import the full tool registry for explicit --tools selections", async () => {
+		vi.resetModules();
+		vi.doMock("../../src/tools/index.js", () => {
+			throw new Error("full tool registry should stay lazy");
+		});
+		try {
+			const { createToolsAndSandbox: createIsolatedToolsAndSandbox } =
+				await import("../../src/bootstrap/tools-setup.js");
+			const result = await createIsolatedToolsAndSandbox({
+				parsedTools: ["read"],
+				cwd: process.cwd(),
+				shouldPrintMessages: false,
+			});
+
+			expect(result.baseTools.map((tool) => tool.name)).toEqual(["read"]);
+		} finally {
+			vi.doUnmock("../../src/tools/index.js");
+			vi.resetModules();
+		}
+	});
+
+	it("can suppress explicit tool filter progress for machine-readable modes", async () => {
+		const originalLog = console.log;
+		const messages: string[] = [];
+		console.log = ((message?: unknown) => {
+			messages.push(String(message ?? ""));
+		}) as typeof console.log;
+		try {
+			const result = await createToolsAndSandbox({
+				modelApi: "openai-codex-app-server",
+				parsedTools: ["read"],
+				cwd: process.cwd(),
+				shouldPrintMessages: false,
+			});
+
+			expect(result.baseTools.map((tool) => tool.name)).toEqual(["read"]);
+			expect(messages).toEqual([]);
+		} finally {
+			console.log = originalLog;
+		}
 	});
 
 	it("honors named Codex tool profiles when no explicit --tools override is set", async () => {

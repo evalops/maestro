@@ -26,7 +26,7 @@ describe("createWebhookServer", () => {
 						repository: { full_name: "evalops/maestro" },
 						pull_request: {
 							number: 294,
-							title: "Add platform runtime evidence",
+							title: "Add platform runtime status",
 						},
 					}),
 				},

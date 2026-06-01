@@ -1,5 +1,5 @@
 /**
- * @fileoverview Rate Limiting for Composer Web Server
+ * @fileoverview Rate Limiting for Maestro Web Server
  *
  * This module provides a token bucket rate limiter with Redis support for
  * distributed deployments. It supports both per-IP global limits and

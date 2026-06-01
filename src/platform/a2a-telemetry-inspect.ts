@@ -4,7 +4,7 @@ import type {
 } from "./a2a-completion-audit.js";
 
 export const A2A_TELEMETRY_INSPECTION_SCHEMA =
-	"evalops.maestro.a2a-telemetry-inspection.v1";
+	"evalops.maestro.a2a-telemetry-inspection.v2";
 
 export interface A2ATelemetryCloudEventLike {
 	type: string;
@@ -26,7 +26,7 @@ export interface A2ATelemetryInspectionLane {
 	timing: A2ATelemetryInspectionLaneTiming;
 	orderingAnomalies: string[];
 	missingEventTypes: string[];
-	missingEvidence: string[];
+	missingSignals: string[];
 }
 
 export interface A2ATelemetryInspectionLaneTiming {
@@ -124,7 +124,7 @@ export function inspectA2ATelemetry(
 			lanes.length > 0 &&
 			missingTelemetryLanes === 0 &&
 			orderingAnomalyLanes === 0 &&
-			lanes.every((lane) => lane.missingEvidence.length === 0) &&
+			lanes.every((lane) => lane.missingSignals.length === 0) &&
 			input.audit?.complete !== false,
 		counts: {
 			events: events.length,
@@ -161,7 +161,7 @@ function inspectLane(
 		timing,
 		orderingAnomalies: orderingAnomalies(events, timing),
 		missingEventTypes: missingEventTypes(events, eventTypes),
-		missingEvidence: auditLane?.missingEvidence ?? [],
+		missingSignals: auditLane?.missingSignals ?? [],
 	};
 }
 

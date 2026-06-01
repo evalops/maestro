@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // @ts-check
 
-import { execFileSync } from "node:child_process";
+import { spawn } from "node:child_process";
 import { getPackageMetadata } from "./package-metadata.js";
 
 function parseArgs(argv) {
@@ -63,17 +63,146 @@ const defaultMessage = replacementPackage
 	: "Deprecated release. Upgrade to a supported Maestro version.";
 const message = options.message || defaultMessage;
 const spec = `${packageName}@${options.range}`;
-const npmCommand = process.platform === "win32" ? "npm.cmd" : "npm";
+const npmCommand =
+	process.env.MAESTRO_NPM_COMMAND?.trim() ||
+	(process.platform === "win32" ? "npm.cmd" : "npm");
 const npmArgs = ["deprecate", spec, message];
 
 if (options.otp) {
 	npmArgs.push("--otp", options.otp);
 }
 
+function shellQuote(value) {
+	if (/^[A-Za-z0-9_/:=-]+$/.test(value)) {
+		return value;
+	}
+	return `'${value.replaceAll("'", "'\\''")}'`;
+}
+
 if (options.dryRun) {
-	console.log(`[dry-run] ${npmCommand} ${npmArgs.join(" ")}`);
+	console.log(
+		`[dry-run] ${[npmCommand, ...npmArgs].map(shellQuote).join(" ")}`,
+	);
 	process.exit(0);
 }
 
-execFileSync(npmCommand, npmArgs, { stdio: "inherit" });
+function runNpmCommand(command, args, { writeOutput = true } = {}) {
+	return new Promise((resolve, reject) => {
+		const interactiveStdio =
+			process.stdin.isTTY && process.stdout.isTTY && process.stderr.isTTY;
+		const child = spawn(command, args, {
+			stdio: interactiveStdio ? "inherit" : ["inherit", "pipe", "pipe"],
+		});
+		let stdout = "";
+		let stderr = "";
+
+		child.stdout?.on("data", (chunk) => {
+			const text = chunk.toString();
+			stdout += text;
+			if (writeOutput) {
+				process.stdout.write(text);
+			}
+		});
+		child.stderr?.on("data", (chunk) => {
+			const text = chunk.toString();
+			stderr += text;
+			if (writeOutput) {
+				process.stderr.write(text);
+			}
+		});
+		child.on("error", reject);
+		child.on("close", (status) => {
+			resolve({ status: status ?? 1, stdout, stderr });
+		});
+	});
+}
+
+function hasDeprecationValue(value) {
+	if (value === null || value === undefined || value === "") {
+		return false;
+	}
+	if (typeof value === "object") {
+		return Object.values(value).some(hasDeprecationValue);
+	}
+	return true;
+}
+
+function countJsonValues(value, predicate = () => true) {
+	if (Array.isArray(value)) {
+		return value.filter(predicate).length;
+	}
+	if (value && typeof value === "object") {
+		return Object.values(value).filter(predicate).length;
+	}
+	return predicate(value) ? 1 : 0;
+}
+
+async function readNpmJson(command, targetSpec, field) {
+	const result = await runNpmCommand(
+		command,
+		["view", targetSpec, field, "--json"],
+		{ writeOutput: false },
+	);
+	if (result.status !== 0) {
+		return undefined;
+	}
+
+	const text = result.stdout.trim();
+	if (!text) {
+		return undefined;
+	}
+
+	try {
+		return JSON.parse(text);
+	} catch {
+		return text;
+	}
+}
+
+async function verifyDeprecation(command, targetSpec) {
+	const versions = await readNpmJson(command, targetSpec, "version");
+	const deprecations = await readNpmJson(command, targetSpec, "deprecated");
+	const versionCount = countJsonValues(versions, (value) => Boolean(value));
+	if (versionCount === 0) {
+		return false;
+	}
+
+	return countJsonValues(deprecations, hasDeprecationValue) >= versionCount;
+}
+
+const result = await runNpmCommand(npmCommand, npmArgs);
+if (result.status !== 0) {
+	const output = `${result.stdout}\n${result.stderr}`;
+	if (output.includes("E422") && (await verifyDeprecation(npmCommand, spec))) {
+		console.log(
+			`Verified existing deprecation for ${spec} after npm returned E422.`,
+		);
+		process.exit(0);
+	}
+	if (
+		output.includes("E401") ||
+		output.includes("401 Unauthorized") ||
+		output.includes("ENEEDAUTH")
+	) {
+		console.error(
+			[
+				`npm could not authenticate while deprecating ${spec}.`,
+				`Refresh the npm-release NPM_TOKEN secret with a token owned by a ${packageName} maintainer, then rerun the deprecation workflow.`,
+			].join("\n"),
+		);
+	}
+	if (
+		output.includes("E404") &&
+		output.includes("could not be found or you do not have permission")
+	) {
+		console.error(
+			[
+				`npm could not deprecate ${spec}.`,
+				`${spec} resolved during workflow preflight, so this usually means the configured npm token does not have publish/deprecate permission for ${packageName}.`,
+				"Update the npm-release NPM_TOKEN secret to a token owned by a package maintainer, then rerun the deprecation workflow.",
+			].join("\n"),
+		);
+	}
+	process.exit(result.status ?? 1);
+}
 console.log(`Deprecated ${spec}`);

@@ -6,7 +6,7 @@ import {
 } from "../../src/platform/operating-plane-summary.js";
 
 describe("operating plane status summary", () => {
-	it("turns operating-plane inspections into content-free operator value proof", () => {
+	it("turns operating-plane inspections into content-free runtime status", () => {
 		const inspection: OperatingPlaneInspection = {
 			contract_version: "agent-operating-plane.v1",
 			generated_at: "2026-05-17T06:05:00Z",
@@ -27,7 +27,7 @@ describe("operating plane status summary", () => {
 					},
 					canonical_attributes: {
 						"evalops.raw_prompt": "SECRET raw customer prompt",
-						"evalops.evidence.body": "SECRET raw evidence body",
+						"evalops.artifact.body": "SECRET raw artifact body",
 					},
 					evidence_refs: [
 						{
@@ -36,7 +36,7 @@ describe("operating plane status summary", () => {
 							kind: "model_event",
 							revision: "rev_1",
 							available: true,
-							summary: "SECRET raw evidence summary",
+							summary: "SECRET raw artifact summary",
 						},
 					],
 					work_items: [
@@ -44,8 +44,8 @@ describe("operating plane status summary", () => {
 							id: "work_1",
 							kind: "followup",
 							state: "waiting",
-							title: "Post operator proof",
-							next_action: "Post allowed evidence revision to operator",
+							title: "Post operator status",
+							next_action: "Post allowed artifact revision to operator",
 							blocker: "approval pending",
 						},
 					],
@@ -54,7 +54,7 @@ describe("operating plane status summary", () => {
 						estimated_cost_micros: 4567,
 						currency: "USD",
 					},
-					value_proof: {
+					runtime_signals: {
 						operation_id: "run_1",
 						operator_summary: "Gateway request is tied to Slack thread",
 						identity_bound: true,
@@ -64,7 +64,7 @@ describe("operating plane status summary", () => {
 						trace_linked: true,
 						evidence_linked: true,
 						cost_attributed: true,
-						missing_proof: ["tool ledger", "approval ledger"],
+						missing_signals: ["tool ledger", "approval ledger"],
 					},
 					withholding_reasons: ["customer_content"],
 					unavailable_sources: ["tool-execution"],
@@ -89,9 +89,14 @@ describe("operating plane status summary", () => {
 					traceId: "trace-1",
 					identitySubject: "user:alice",
 					operatorSummary: "Gateway request is tied to Slack thread",
-					proofPresent: ["identity", "model", "trace", "evidence", "cost"],
-					proofMissing: ["tool", "approval", "tool ledger", "approval ledger"],
-					evidenceRefs: [
+					signalsPresent: ["identity", "model", "trace", "artifact", "cost"],
+					signalsMissing: [
+						"tool",
+						"approval",
+						"tool ledger",
+						"approval ledger",
+					],
+					artifactRefs: [
 						{
 							id: "gateway:req_123",
 							source: "llm_gateway",
@@ -100,7 +105,7 @@ describe("operating plane status summary", () => {
 							available: true,
 						},
 					],
-					nextActions: ["Post allowed evidence revision to operator"],
+					nextActions: ["Post allowed artifact revision to operator"],
 					blockers: ["approval pending"],
 					withheld: ["customer_content", "2 redactions", "tool-execution"],
 					usage: {
@@ -113,28 +118,28 @@ describe("operating plane status summary", () => {
 		});
 
 		const formatted = formatOperatingPlaneStatusReport(report);
-		expect(formatted).toContain("Agent operating-plane value proof");
+		expect(formatted).toContain("Agent operating-plane status");
 		expect(formatted).toContain("run_1");
 		expect(formatted).toContain("Identity: user:alice");
 		expect(formatted).toContain(
-			"Proof present: identity, model, trace, evidence, cost",
+			"Signals present: identity, model, trace, artifact, cost",
 		);
 		expect(formatted).toContain(
-			"Missing proof: tool, approval, tool ledger, approval ledger",
+			"Signals missing: tool, approval, tool ledger, approval ledger",
 		);
 		expect(formatted).toContain(
-			"Evidence: gateway:req_123 (llm_gateway/model_event, available, revision rev_1)",
+			"Artifacts: gateway:req_123 (llm_gateway/model_event, available, revision rev_1)",
 		);
 		expect(formatted).toContain(
-			"Next action: Post allowed evidence revision to operator",
+			"Next action: Post allowed artifact revision to operator",
 		);
 		expect(formatted).toContain("Blocker: approval pending");
 		expect(formatted).toContain(
 			"Withheld/out of scope: customer_content, 2 redactions, tool-execution",
 		);
 		expect(formatted).not.toContain("SECRET raw customer prompt");
-		expect(formatted).not.toContain("SECRET raw evidence body");
-		expect(formatted).not.toContain("SECRET raw evidence summary");
+		expect(formatted).not.toContain("SECRET raw artifact body");
+		expect(formatted).not.toContain("SECRET raw artifact summary");
 	});
 
 	it("formats empty inspections as a useful miss instead of a fake success", () => {
@@ -155,7 +160,7 @@ describe("operating plane status summary", () => {
 		);
 	});
 
-	it("treats absent value proof as missing telemetry", () => {
+	it("treats absent runtime signals as missing telemetry", () => {
 		const report = summarizeOperatingPlaneInspection({
 			contract_version: "agent-operating-plane.v1",
 			generated_at: "2026-05-17T06:05:00Z",
@@ -169,19 +174,19 @@ describe("operating plane status summary", () => {
 			],
 		});
 
-		expect(report.runs[0]?.proofPresent).toEqual([]);
-		expect(report.runs[0]?.proofMissing).toEqual([
+		expect(report.runs[0]?.signalsPresent).toEqual([]);
+		expect(report.runs[0]?.signalsMissing).toEqual([
 			"identity",
 			"model",
 			"tool",
 			"approval",
 			"trace",
-			"evidence",
+			"artifact",
 			"cost",
-			"value_proof unavailable",
+			"runtime signal unavailable",
 		]);
 		expect(formatOperatingPlaneStatusReport(report)).toContain(
-			"Missing proof: identity, model, tool, approval, trace, evidence, cost, value_proof unavailable",
+			"Signals missing: identity, model, tool, approval, trace, artifact, cost, runtime signal unavailable",
 		);
 	});
 });

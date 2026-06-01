@@ -35,7 +35,7 @@ app.whenReady().then(async () => {
 	setupIpc();
 
 	// Start the backend server
-	console.log("Starting Composer backend server...");
+	console.log("Starting Maestro backend server...");
 	const serverStarted = await startServer();
 	if (!serverStarted) {
 		console.warn(

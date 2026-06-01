@@ -656,9 +656,7 @@ export const defaultFirewallRules: ActionFirewallRule[] = [
 			if (!isMcpTool(ctx.toolName)) return false;
 			const annotations = getAnnotations(ctx);
 			// Require approval if destructiveHint is true and readOnlyHint is not true
-			return (
-				annotations?.destructiveHint === true && !annotations?.readOnlyHint
-			);
+			return annotations?.destructiveHint === true;
 		},
 		reason: (ctx) =>
 			`MCP tool "${ctx.toolName}" is marked as destructive and requires approval`,

@@ -80,11 +80,19 @@
 		},
 		{
 			"area": "prompt-queue-parity",
-			"path": "packages/tui-rs/src/app.rs",
+			"path": "packages/tui-rs/src/app/input_handlers.rs",
+			"anchors": ["should_submit_on_tab"]
+		},
+		{
+			"area": "prompt-queue-parity",
+			"path": "packages/tui-rs/src/app/prompt_queue.rs",
+			"anchors": ["drain_queued_steering_batch_for_interrupt"]
+		},
+		{
+			"area": "prompt-queue-parity",
+			"path": "packages/tui-rs/src/app/tests.rs",
 			"anchors": [
-				"should_submit_on_tab",
-				"test_should_submit_on_tab_only_when_idle_with_non_blocked_input",
-				"drain_queued_steering_batch_for_interrupt"
+				"test_should_submit_on_tab_only_when_idle_with_non_blocked_input"
 			]
 		},
 		{
@@ -93,7 +101,9 @@
 			"anchors": [
 				"runtime-conformance.test.ts",
 				"MAESTRO_RUST_HOSTED_CONFORMANCE=1",
-				"read-only viewers and controller ownership"
+				"read-only viewers and controller ownership",
+				"restart from that manifest after the provider has restored local workspace",
+				"report not-ready state rather than accepting attach traffic"
 			]
 		},
 		{
@@ -103,7 +113,19 @@
 				"controller",
 				"viewer",
 				"scopes utility file reads to the hosted workspace root",
-				"drain"
+				"drains hosted runners into a manifest and rejects new mutations",
+				"restoreFromDrain",
+				"restored_from_snapshot"
+			]
+		},
+		{
+			"area": "hosted-runtime-parity",
+			"path": "test/server/headless-runtime-service.test.ts",
+			"anchors": [
+				"restores runtime state and replay marker from a hosted runner drain manifest",
+				"restores $flushStatus manifest into inspectable not-ready state",
+				"not ready for controller messages",
+				"rejects restore manifest with mismatched $field"
 			]
 		},
 		{

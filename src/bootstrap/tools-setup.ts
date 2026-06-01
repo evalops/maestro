@@ -18,7 +18,6 @@ import {
 	createSandbox,
 	disposeSandbox,
 } from "../sandbox/index.js";
-import { codingTools, filterTools, toolRegistry } from "../tools/index.js";
 import { loadInlineTools } from "../tools/inline-tools.js";
 
 export interface ToolsSetupResult {
@@ -46,30 +45,41 @@ export async function createToolsAndSandbox(params: {
 	parsedSandbox?: string;
 	modelApi?: Api | string;
 	cwd: string;
+	shouldPrintMessages?: boolean;
 }): Promise<ToolsSetupResult> {
 	const { parsedTools, parsedSandbox, modelApi, cwd } = params;
+	const shouldPrintMessages = params.shouldPrintMessages ?? true;
 
 	// Apply --tools filter if user specified a subset
-	let baseTools = codingTools;
+	let baseTools: AgentTool[];
 	if (parsedTools && parsedTools.length > 0) {
-		const filteredTools = filterTools(parsedTools);
+		const { lazyToolNames, loadFilteredTools } = await import(
+			"../tools/lazy-registry.js"
+		);
+		const filteredTools = await loadFilteredTools(parsedTools);
 		if (filteredTools.length === 0) {
 			throw new Error(
 				`No valid tools matched --tools filter: ${parsedTools.join(", ")}. ` +
-					`Available tools: ${Object.keys(toolRegistry).sort().join(", ")}`,
+					`Available tools: ${lazyToolNames.join(", ")}`,
 			);
 		}
 		baseTools = filteredTools;
-		console.log(
-			chalk.dim(
-				`Tools restricted to: ${filteredTools.map((t) => t.name).join(", ")}`,
-			),
-		);
+		if (shouldPrintMessages) {
+			console.log(
+				chalk.dim(
+					`Tools restricted to: ${filteredTools.map((t) => t.name).join(", ")}`,
+				),
+			);
+		}
 	} else if (isCodexAppServerApi(modelApi)) {
+		const { codingTools } = await import("../tools/index.js");
 		const profileName = resolveCodexToolProfileName(
 			process.env.MAESTRO_CODEX_TOOL_PROFILE,
 		);
 		baseTools = selectCodexToolProfile(codingTools, profileName);
+	} else {
+		const { codingTools } = await import("../tools/index.js");
+		baseTools = codingTools;
 	}
 
 	// Load inline tools from .maestro/tools.json and ~/.maestro/tools.json

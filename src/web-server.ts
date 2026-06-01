@@ -1,5 +1,5 @@
 /**
- * Web server for Composer - HTTP/SSE API used by the web UI
+ * Web server for Maestro - HTTP/SSE API used by the web UI
  */
 
 import { randomBytes, randomUUID } from "node:crypto";
@@ -30,6 +30,7 @@ import {
 import { Agent, ProviderTransport } from "./agent/index.js";
 import type { ToolRetryService } from "./agent/tool-retry.js";
 import type { ClientToolExecutionService } from "./agent/transport.js";
+import type { PlatformToolExecutionBridge } from "./agent/transport/tool-execution-bridge.js";
 import type { AgentTool, ThinkingLevel } from "./agent/types.js";
 import {
 	disposeCheckpointService,
@@ -222,11 +223,7 @@ async function validateRuntimeSessionAccess(
 
 function normalizeAuthMode(value?: string | null): AuthMode {
 	const normalized = value?.trim().toLowerCase();
-	if (
-		normalized === "auto" ||
-		normalized === "api-key" ||
-		normalized === "claude"
-	) {
+	if (normalized === "auto" || normalized === "api-key") {
 		return normalized;
 	}
 	return "auto";
@@ -390,7 +387,7 @@ function logMissingCredentialHints(provider: string): void {
 		);
 	}
 	if (provider === "anthropic") {
-		hints.push("Run `maestro anthropic login` to provision OAuth credentials.");
+		hints.push("Set ANTHROPIC_API_KEY to use Anthropic models.");
 	} else if (provider === "openai") {
 		hints.push("Set OPENAI_API_KEY or run `maestro openai login`.");
 	} else if (provider === "openai-codex") {
@@ -448,6 +445,7 @@ async function createAgent(
 		approvalService?: ActionApprovalService;
 		clientToolService?: ClientToolExecutionService;
 		toolRetryService?: ToolRetryService;
+		platformToolExecutionBridge?: PlatformToolExecutionBridge | false;
 	},
 ): Promise<Agent> {
 	const cwd = options?.cwd ?? process.cwd();
@@ -500,6 +498,7 @@ async function createAgent(
 			(options?.enableClientTools || options?.useClientAskUser
 				? clientToolService
 				: undefined),
+		platformToolExecutionBridge: options?.platformToolExecutionBridge,
 		sessionTokenCounter,
 		auditLogger,
 	});

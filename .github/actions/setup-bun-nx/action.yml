@@ -80,13 +80,7 @@ runs:
 
     - name: Ensure ripgrep
       if: ${{ inputs.ensure-ripgrep == 'true' }}
-      shell: bash
-      run: |
-        set -euo pipefail
-        if ! command -v rg >/dev/null 2>&1; then
-          sudo apt-get update
-          sudo apt-get install -y ripgrep
-        fi
+      uses: ./.github/actions/ensure-ripgrep
 
     - name: Configure isolated Rust toolchain home
       if: ${{ inputs.ensure-rustfmt == 'true' && inputs.install == 'true' }}

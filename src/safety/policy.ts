@@ -1,13 +1,13 @@
 /**
  * Enterprise Policy System - Access Control and Safety Enforcement
  *
- * This module implements enterprise-grade policy enforcement for the Composer CLI,
+ * This module implements enterprise-grade policy enforcement for the Maestro CLI,
  * enabling organizations to control what tools, models, paths, and network hosts
  * can be accessed during agent execution.
  *
  * ## Policy File Location
  *
- * Policies are loaded from `~/.maestro/policy.json` (or the legacy Composer
+ * Policies are loaded from `~/.maestro/policy.json` (or the legacy `.composer`
  * policy file as a fallback) and `.maestro/workspace.toml` in the current
  * workspace. The global JSON file is typically deployed by enterprise IT and
  * should be protected with appropriate permissions. Workspace TOML applies a

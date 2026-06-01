@@ -177,6 +177,40 @@ class FakeAgent {
 	}
 }
 
+type RestoreManifestFlushStatus = "completed" | "failed" | "skipped";
+
+function buildRestoreManifest(input: {
+	sessionId: string;
+	sessionFile: string;
+	workspaceRoot: string;
+	flushStatus?: RestoreManifestFlushStatus;
+	runtimeError?: string;
+}) {
+	const restoredState = createHeadlessRuntimeState();
+	restoredState.protocol_version = HEADLESS_PROTOCOL_VERSION;
+	restoredState.session_id = input.sessionId;
+	restoredState.cwd = input.workspaceRoot;
+	const cursor = 7;
+	return {
+		protocol_version: "evalops.remote-runner.snapshot-manifest.v1",
+		maestro_session_id: input.sessionId,
+		runtime: {
+			flush_status: input.flushStatus ?? "completed",
+			...(input.runtimeError ? { error: input.runtimeError } : {}),
+			session_id: input.sessionId,
+			session_file: input.sessionFile,
+			cursor,
+		},
+		snapshot: {
+			protocolVersion: HEADLESS_PROTOCOL_VERSION,
+			session_id: input.sessionId,
+			cursor,
+			last_init: null,
+			state: restoredState,
+		},
+	};
+}
+
 function createJsonRequest(
 	method: string,
 	url: string,
@@ -1659,6 +1693,254 @@ describe("headless session handlers", () => {
 		expect(Value.Check(HeadlessRuntimeSnapshotSchema, body.snapshot)).toBe(
 			true,
 		);
+	});
+
+	it("rejects explicit connection bootstrap when restored runtime is not ready", async () => {
+		const fakeAgent = new FakeAgent();
+		const workspaceRoot = await mkdtemp(
+			join(tmpdir(), "maestro-headless-restore-route-"),
+		);
+		const sessionDir = await mkdtemp(join(tmpdir(), "maestro-sessions-"));
+		try {
+			const sessionManager = new SessionManager(false, undefined, {
+				sessionDir,
+			});
+			sessionManager.startSession(fakeAgent.state);
+			const sessionId = sessionManager.getSessionId();
+			const manifestPath = join(workspaceRoot, "restore-manifest.json");
+			await writeFile(
+				manifestPath,
+				JSON.stringify(
+					buildRestoreManifest({
+						sessionId,
+						sessionFile: sessionManager.getSessionFile(),
+						workspaceRoot,
+						flushStatus: "failed",
+						runtimeError: "worker exited before flushing runtime state",
+					}),
+				),
+				"utf8",
+			);
+			const context = createContext({
+				createAgent: vi.fn().mockResolvedValue(fakeAgent),
+				hostedRunner: {
+					enabled: true,
+					runnerSessionId: "mrs_restore",
+					workspaceRoot,
+					restoreManifestPath: manifestPath,
+				},
+			});
+			const req = createJsonRequest("POST", "/api/headless/connections", {
+				model: TEST_MODEL.id,
+				sessionId,
+				role: "controller",
+			});
+			const res = new MockResponse();
+			res.req = req;
+
+			await expect(
+				handleHeadlessConnectionCreate(
+					req,
+					res as unknown as ServerResponse,
+					context,
+				),
+			).rejects.toMatchObject({
+				statusCode: 503,
+				errorType: HostedRunnerErrorType.RuntimeNotReady,
+				message: expect.stringContaining("not ready for new attachments"),
+			});
+
+			const runtime = context.headlessRuntimeService.getRuntime(
+				"anon",
+				sessionId,
+			);
+			const state = runtime?.getSnapshot().state;
+			expect(state?.connection_count).toBe(0);
+			expect(state?.controller_connection_id).not.toEqual(expect.any(String));
+
+			const sessionReq = createJsonRequest("POST", "/api/headless/sessions", {
+				model: TEST_MODEL.id,
+				sessionId,
+				role: "controller",
+			});
+			const sessionRes = new MockResponse();
+			sessionRes.req = sessionReq;
+			await expect(
+				handleHeadlessSessionCreate(
+					sessionReq,
+					sessionRes as unknown as ServerResponse,
+					context,
+				),
+			).rejects.toMatchObject({
+				statusCode: 503,
+				errorType: HostedRunnerErrorType.RuntimeNotReady,
+				message: expect.stringContaining("not ready for new attachments"),
+			});
+			expect(runtime?.getSnapshot().state.connection_count).toBe(0);
+		} finally {
+			await rm(workspaceRoot, { recursive: true, force: true });
+			await rm(sessionDir, { recursive: true, force: true });
+		}
+	});
+
+	it("keeps failed restore sessions inspectable when role metadata is rejected", async () => {
+		const fakeAgent = new FakeAgent();
+		const workspaceRoot = await mkdtemp(
+			join(tmpdir(), "maestro-headless-restore-session-route-"),
+		);
+		const sessionDir = await mkdtemp(join(tmpdir(), "maestro-sessions-"));
+		try {
+			const sessionManager = new SessionManager(false, undefined, {
+				sessionDir,
+			});
+			sessionManager.startSession(fakeAgent.state);
+			const sessionId = sessionManager.getSessionId();
+			const manifestPath = join(workspaceRoot, "restore-manifest.json");
+			await writeFile(
+				manifestPath,
+				JSON.stringify(
+					buildRestoreManifest({
+						sessionId,
+						sessionFile: sessionManager.getSessionFile(),
+						workspaceRoot,
+						flushStatus: "skipped",
+					}),
+				),
+				"utf8",
+			);
+			const context = createContext({
+				createAgent: vi.fn().mockResolvedValue(fakeAgent),
+				hostedRunner: {
+					enabled: true,
+					runnerSessionId: "mrs_restore",
+					workspaceRoot,
+					restoreManifestPath: manifestPath,
+				},
+			});
+			const req = createJsonRequest("POST", "/api/headless/sessions", {
+				model: TEST_MODEL.id,
+				sessionId,
+				role: "controller",
+			});
+			const res = new MockResponse();
+			res.req = req;
+
+			await expect(
+				handleHeadlessSessionCreate(
+					req,
+					res as unknown as ServerResponse,
+					context,
+				),
+			).rejects.toMatchObject({
+				statusCode: 503,
+				errorType: HostedRunnerErrorType.RuntimeNotReady,
+				message: expect.stringContaining("not ready for new attachments"),
+			});
+
+			const retryReq = createJsonRequest("POST", "/api/headless/sessions", {
+				model: TEST_MODEL.id,
+				sessionId,
+				role: "controller",
+			});
+			const retryRes = new MockResponse();
+			retryRes.req = retryReq;
+			await expect(
+				handleHeadlessSessionCreate(
+					retryReq,
+					retryRes as unknown as ServerResponse,
+					context,
+				),
+			).rejects.toMatchObject({
+				statusCode: 503,
+				errorType: HostedRunnerErrorType.RuntimeNotReady,
+				message: expect.stringContaining("not ready for new attachments"),
+			});
+
+			const runtime = context.headlessRuntimeService.getRuntime(
+				"anon",
+				sessionId,
+			);
+			expect(runtime?.getSnapshot().state).toMatchObject({
+				is_ready: false,
+				connection_count: 0,
+				last_status: "Restore incomplete: runtime flush skipped",
+			});
+			expect(runtime?.getSnapshot().state.controller_connection_id).not.toEqual(
+				expect.any(String),
+			);
+		} finally {
+			await rm(workspaceRoot, { recursive: true, force: true });
+			await rm(sessionDir, { recursive: true, force: true });
+		}
+	});
+
+	it("allows shutdown messages for inspect-only restored runtimes", async () => {
+		const fakeAgent = new FakeAgent();
+		const workspaceRoot = await mkdtemp(
+			join(tmpdir(), "maestro-headless-restore-shutdown-route-"),
+		);
+		const sessionDir = await mkdtemp(join(tmpdir(), "maestro-sessions-"));
+		try {
+			const sessionManager = new SessionManager(false, undefined, {
+				sessionDir,
+			});
+			sessionManager.startSession(fakeAgent.state);
+			const sessionId = sessionManager.getSessionId();
+			const manifestPath = join(workspaceRoot, "restore-manifest.json");
+			await writeFile(
+				manifestPath,
+				JSON.stringify(
+					buildRestoreManifest({
+						sessionId,
+						sessionFile: sessionManager.getSessionFile(),
+						workspaceRoot,
+						flushStatus: "failed",
+						runtimeError: "worker exited before flushing runtime state",
+					}),
+				),
+				"utf8",
+			);
+			const context = createContext({
+				createAgent: vi.fn().mockResolvedValue(fakeAgent),
+				hostedRunner: {
+					enabled: true,
+					runnerSessionId: "mrs_restore",
+					workspaceRoot,
+					restoreManifestPath: manifestPath,
+				},
+			});
+			const runtime = await context.headlessRuntimeService.ensureRuntime({
+				scope_key: "anon",
+				sessionId,
+				registeredModel: TEST_MODEL,
+				thinkingLevel: "off",
+				approvalMode: "prompt",
+				context,
+				sessionManager,
+			});
+			expect(runtime.getSnapshot().state.is_ready).toBe(false);
+
+			const req = createJsonRequest(
+				"POST",
+				`/api/headless/sessions/${sessionId}/messages`,
+				{ type: "shutdown" },
+			);
+			const res = new MockResponse();
+			res.req = req;
+
+			await handleHeadlessSessionMessage(
+				req,
+				res as unknown as ServerResponse,
+				context,
+				{ id: sessionId },
+			);
+
+			expect(JSON.parse(res.body)).toEqual({ success: true });
+			expect(runtime.isDisposed()).toBe(true);
+		} finally {
+			await rm(workspaceRoot, { recursive: true, force: true });
+			await rm(sessionDir, { recursive: true, force: true });
+		}
 	});
 
 	it("creates explicit subscriptions with controller lease metadata", async () => {

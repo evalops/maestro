@@ -1,0 +1,5 @@
+{
+	"name": "scripted-basic-tool-call-workspace",
+	"private": true,
+	"packageManager": "bun@1.2.21"
+}

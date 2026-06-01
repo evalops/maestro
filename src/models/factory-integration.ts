@@ -1,6 +1,6 @@
 /**
  * Factory Integration
- * Reads and converts Factory config files (~/.factory/) into Composer model configuration.
+ * Reads and converts Factory config files (~/.factory/) into Maestro model configuration.
  */
 
 import { existsSync } from "node:fs";

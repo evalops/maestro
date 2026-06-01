@@ -1,13 +1,22 @@
 import { existsSync, readFileSync, statSync } from "node:fs";
-import { resolve } from "node:path";
+import { isAbsolute, relative, resolve } from "node:path";
 import type {
 	MaestroScenarioOutcome,
+	MaestroScenarioReleaseGate,
+	MaestroScenarioRequiredArtifact,
 	MaestroScenarioSeverity,
+	MaestroScenarioWorkspaceManifest,
 	MaestroScriptedScenario,
 	MaestroScriptedScenarioAssertion,
 	MaestroScriptedScenarioAssertionKind,
 	MaestroScriptedStatement,
 } from "@evalops/contracts";
+import {
+	type AgentTrajectoryScenarioReleaseGateSummary,
+	type AgentTrajectoryScenarioWorkspaceSummary,
+	buildWorkspaceSummary,
+	loadScenarioWorkspaceManifest,
+} from "./agent-trajectory-scenarios.js";
 import { escapeXml } from "./junit-xml.js";
 
 export const SCRIPTED_SCENARIO_RESULT_SCHEMA =
@@ -52,7 +61,11 @@ export interface ScriptedScenarioRunResult {
 		passed: number;
 		failed: number;
 		warnings: number;
+		workspaceFiles: number;
+		toolAdapters: number;
 	};
+	releaseGate?: AgentTrajectoryScenarioReleaseGateSummary;
+	workspace?: AgentTrajectoryScenarioWorkspaceSummary;
 	assertions: ScriptedScenarioAssertionResult[];
 }
 
@@ -120,6 +133,117 @@ function fail(
 	};
 }
 
+function workspaceEvidence(
+	manifest: MaestroScenarioWorkspaceManifest,
+): ScriptedScenarioAssertionEvidence[] {
+	return [
+		{
+			kind: "workspace_manifest",
+			id: manifest.id,
+			source: "scenario",
+			label: `workspace_manifest:${manifest.id}`,
+		},
+		...manifest.toolAdapters.map((adapter) => ({
+			kind: "tool_adapter",
+			id: adapter.tool,
+			source: "scenario" as const,
+			label: `tool_adapter:${adapter.tool}:${adapter.mode}`,
+		})),
+	];
+}
+
+function manifestWorkspaceFileExists(
+	manifest: MaestroScenarioWorkspaceManifest,
+	baseDir: string,
+	relativePath: string,
+): boolean {
+	if (manifest.hydration.mode === "manifest_only") return true;
+	const rootPath = manifest.hydration.rootPath;
+	if (!rootPath) return false;
+	if (isAbsolute(relativePath)) return false;
+	const rootDir = resolve(baseDir, rootPath);
+	const fullPath = resolve(rootDir, relativePath);
+	const pathFromRoot = relative(rootDir, fullPath);
+	if (pathFromRoot.startsWith("..") || isAbsolute(pathFromRoot)) return false;
+	return existsSync(fullPath) && statSync(fullPath).isFile();
+}
+
+function evaluateWorkspaceManifestAssertion(
+	assertion: MaestroScriptedScenarioAssertion,
+	scenario: MaestroScriptedScenario,
+	baseDir: string,
+	workspaceManifest: MaestroScenarioWorkspaceManifest | undefined,
+): ScriptedScenarioAssertionResult {
+	if (!workspaceManifest) {
+		return fail(
+			assertion,
+			"workspace_manifest requires workspaceManifestPath.",
+		);
+	}
+	const manifestFiles = new Set(
+		workspaceManifest.files.map((file) => file.path),
+	);
+	const missingFiles = (assertion.requiredWorkspaceFiles ?? []).filter(
+		(path) =>
+			!manifestFiles.has(path) ||
+			!manifestWorkspaceFileExists(workspaceManifest, baseDir, path),
+	);
+	const manifestAdapters = new Set(
+		workspaceManifest.toolAdapters.map((adapter) => adapter.tool),
+	);
+	const missingAdapters = (assertion.requiredToolAdapters ?? []).filter(
+		(tool) => !manifestAdapters.has(tool),
+	);
+	const hydrationMismatch =
+		assertion.requiredHydrationModes !== undefined &&
+		!assertion.requiredHydrationModes.includes(
+			workspaceManifest.hydration.mode,
+		);
+	const tierMismatch =
+		assertion.requiredReleaseGateTier !== undefined &&
+		scenario.releaseGate?.tier !== assertion.requiredReleaseGateTier;
+	const workspaceFileBudgetMissed =
+		assertion.minWorkspaceFiles !== undefined &&
+		workspaceManifest.files.length < assertion.minWorkspaceFiles;
+	const toolAdapterBudgetMissed =
+		assertion.minToolAdapters !== undefined &&
+		workspaceManifest.toolAdapters.length < assertion.minToolAdapters;
+	const failures = [
+		missingFiles.length > 0
+			? `missing workspace file(s): ${missingFiles.join(", ")}`
+			: undefined,
+		missingAdapters.length > 0
+			? `missing tool adapter(s): ${missingAdapters.join(", ")}`
+			: undefined,
+		hydrationMismatch
+			? `hydration mode ${workspaceManifest.hydration.mode} not allowed`
+			: undefined,
+		tierMismatch
+			? `release gate tier ${scenario.releaseGate?.tier ?? "missing"} did not match ${assertion.requiredReleaseGateTier}`
+			: undefined,
+		workspaceFileBudgetMissed
+			? `workspace files ${workspaceManifest.files.length}/${assertion.minWorkspaceFiles}`
+			: undefined,
+		toolAdapterBudgetMissed
+			? `tool adapters ${workspaceManifest.toolAdapters.length}/${assertion.minToolAdapters}`
+			: undefined,
+	].filter((value): value is string => value !== undefined);
+
+	if (failures.length > 0) {
+		return fail(
+			assertion,
+			`Workspace manifest check failed: ${failures.join("; ")}.`,
+			workspaceEvidence(workspaceManifest),
+		);
+	}
+
+	return pass(
+		assertion,
+		`Workspace manifest ${workspaceManifest.id} matched replay requirements.`,
+		workspaceEvidence(workspaceManifest),
+	);
+}
+
 function requireAssertionString(
 	assertion: MaestroScriptedScenarioAssertion,
 	field: "tool" | "toolCallId" | "path" | "contains" | "equals" | "eventType",
@@ -136,6 +260,7 @@ function evaluateAssertion(
 	assertion: MaestroScriptedScenarioAssertion,
 	scenario: MaestroScriptedScenario,
 	baseDir: string,
+	workspaceManifest: MaestroScenarioWorkspaceManifest | undefined,
 ): ScriptedScenarioAssertionResult {
 	const toolCalls = toolCallStatements(scenario);
 	switch (assertion.kind) {
@@ -229,6 +354,13 @@ function evaluateAssertion(
 					)
 				: fail(assertion, `File contents did not match: ${path}.`);
 		}
+		case "workspace_manifest":
+			return evaluateWorkspaceManifestAssertion(
+				assertion,
+				scenario,
+				baseDir,
+				workspaceManifest,
+			);
 		case "audit_event_emitted": {
 			const eventType = requireAssertionString(assertion, "eventType");
 			if (!eventType) {
@@ -248,19 +380,139 @@ function evaluateAssertion(
 	return fail(assertion, `Unsupported scripted assertion kind: ${_exhaustive}`);
 }
 
+function hasRequiredScriptedArtifact(
+	artifact: MaestroScenarioRequiredArtifact,
+	workspaceManifest: MaestroScenarioWorkspaceManifest | undefined,
+): boolean {
+	switch (artifact) {
+		case "replay":
+			return true;
+		case "workspace_manifest":
+			return workspaceManifest !== undefined;
+		case "trajectory":
+		case "score":
+		case "inspection":
+			return false;
+	}
+}
+
+function workspacePolicyViolations(
+	gate: MaestroScenarioReleaseGate,
+	workspaceManifest: MaestroScenarioWorkspaceManifest | undefined,
+): string[] {
+	if (!gate.requiredArtifacts.includes("workspace_manifest")) {
+		return [];
+	}
+	if (!workspaceManifest) {
+		return [];
+	}
+	return [
+		workspaceManifest.redaction.secretsRemoved !== true
+			? "workspace manifest did not confirm secret redaction"
+			: undefined,
+		workspaceManifest.redaction.rawPromptsIncluded !== false
+			? "workspace manifest did not confirm raw prompts were excluded"
+			: undefined,
+	].filter((value): value is string => value !== undefined);
+}
+
+function buildScriptedReleaseGateSummary(
+	scenario: MaestroScriptedScenario,
+	result: {
+		assertions: ScriptedScenarioAssertionResult[];
+		toolCalls: number;
+		frames: number;
+	},
+	workspaceManifest: MaestroScenarioWorkspaceManifest | undefined,
+): AgentTrajectoryScenarioReleaseGateSummary | undefined {
+	const gate = scenario.releaseGate;
+	if (!gate) return undefined;
+	const missingArtifacts = gate.requiredArtifacts.filter(
+		(artifact) => !hasRequiredScriptedArtifact(artifact, workspaceManifest),
+	);
+	const replayDeltas = 0;
+	const scoreFailures = 0;
+	const scoreWarnings = 0;
+	const budgetViolations = [
+		gate.maxEvents !== undefined && result.frames > gate.maxEvents
+			? `events ${result.frames}/${gate.maxEvents}`
+			: undefined,
+		gate.maxToolCalls !== undefined && result.toolCalls > gate.maxToolCalls
+			? `toolCalls ${result.toolCalls}/${gate.maxToolCalls}`
+			: undefined,
+		gate.maxReplayDeltas !== undefined && replayDeltas > gate.maxReplayDeltas
+			? `replayDeltas ${replayDeltas}/${gate.maxReplayDeltas}`
+			: undefined,
+		gate.maxScoreFailures !== undefined && scoreFailures > gate.maxScoreFailures
+			? `scoreFailures ${scoreFailures}/${gate.maxScoreFailures}`
+			: undefined,
+		gate.maxScoreWarnings !== undefined && scoreWarnings > gate.maxScoreWarnings
+			? `scoreWarnings ${scoreWarnings}/${gate.maxScoreWarnings}`
+			: undefined,
+	].filter((value): value is string => value !== undefined);
+	const policyViolations = [
+		...workspacePolicyViolations(gate, workspaceManifest),
+		...(gate.requiredArtifacts.includes("workspace_manifest")
+			? result.assertions
+					.filter(
+						(assertion) =>
+							assertion.kind === "workspace_manifest" &&
+							assertion.status === "fail",
+					)
+					.map(
+						(assertion) =>
+							`workspace manifest assertion ${assertion.id} failed`,
+					)
+			: []),
+	];
+	return {
+		...gate,
+		satisfied:
+			missingArtifacts.length === 0 &&
+			budgetViolations.length === 0 &&
+			policyViolations.length === 0,
+		missingArtifacts,
+		budgetViolations,
+		policyViolations,
+	};
+}
+
+function releaseGateFailsScriptedOutcome(
+	releaseGate: AgentTrajectoryScenarioReleaseGateSummary | undefined,
+): boolean {
+	return (
+		releaseGate?.releaseBlocking === true && releaseGate.satisfied !== true
+	);
+}
+
 export function evaluateScriptedScenario(
 	scenario: MaestroScriptedScenario,
 	options: { baseDir?: string } = {},
 ): ScriptedScenarioRunResult {
+	const baseDir = options.baseDir ?? process.cwd();
+	const workspaceManifest = scenario.workspaceManifestPath
+		? loadScenarioWorkspaceManifest(
+				resolve(baseDir, scenario.workspaceManifestPath),
+			)
+		: undefined;
 	const assertions = (scenario.assertions ?? []).map((assertion) =>
-		evaluateAssertion(assertion, scenario, options.baseDir ?? process.cwd()),
+		evaluateAssertion(assertion, scenario, baseDir, workspaceManifest),
 	);
 	const failed = assertions.filter((assertion) => assertion.status === "fail");
 	const warnings = assertions.filter(
 		(assertion) => assertion.status === "warn",
 	);
+	const toolCalls = toolCallStatements(scenario).length;
+	const releaseGate = buildScriptedReleaseGateSummary(
+		scenario,
+		{ assertions, toolCalls, frames: scenario.frames.length },
+		workspaceManifest,
+	);
 	const observedOutcome: MaestroScenarioOutcome =
-		failed.length > 0 ? "fail" : "pass";
+		failed.length > 0 || releaseGateFailsScriptedOutcome(releaseGate)
+			? "fail"
+			: "pass";
+	const workspace = buildWorkspaceSummary(workspaceManifest);
 	return {
 		schemaVersion: SCRIPTED_SCENARIO_RESULT_SCHEMA,
 		scenarioSchemaVersion: scenario.schemaVersion,
@@ -274,7 +526,7 @@ export function evaluateScriptedScenario(
 			scenarioId: scenario.id,
 			replay: true,
 			frames: scenario.frames.length,
-			toolCalls: toolCallStatements(scenario).length,
+			toolCalls,
 			auditEvents: scenario.metadata.auditEvents ?? [],
 		},
 		counts: {
@@ -283,7 +535,11 @@ export function evaluateScriptedScenario(
 				.length,
 			failed: failed.length,
 			warnings: warnings.length,
+			workspaceFiles: workspaceManifest?.files.length ?? 0,
+			toolAdapters: workspaceManifest?.toolAdapters.length ?? 0,
 		},
+		...(releaseGate ? { releaseGate } : {}),
+		...(workspace ? { workspace } : {}),
 		assertions,
 	};
 }

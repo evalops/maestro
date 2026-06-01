@@ -76,7 +76,7 @@ const API_BY_PROVIDER: Record<string, string> = {
 };
 
 /**
- * models.dev includes many provider IDs that Composer can't safely assign an API
+ * models.dev includes many provider IDs that Maestro can't safely assign an API
  * endpoint for. Only emit providers we can map to a known baseUrl; everything
  * else should be configured explicitly via models.json.
  */

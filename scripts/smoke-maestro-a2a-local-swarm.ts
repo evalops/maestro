@@ -12,8 +12,9 @@ import {
 	type A2AServiceConfig,
 } from "../src/platform/a2a-client.js";
 import {
-	a2aPushEvidenceKey,
+	a2aPushSignalKey,
 	buildA2ACompletionAudit,
+	type A2APushCompletionSignals,
 } from "../src/platform/a2a-completion-audit.js";
 import type { A2ATaskLedgerFile } from "../src/platform/a2a-task-ledger.js";
 import {
@@ -288,31 +289,43 @@ function pushEventCounts(requests: CapturedRequest[]): Record<string, number> {
 	return counts;
 }
 
-function pushedTaskIds(requests: CapturedRequest[]): Set<string> {
-	return new Set(
-		requests
-			.map(pushEventSummary)
-			.map((summary) => summary?.taskId)
-			.filter((taskId): taskId is string => Boolean(taskId)),
-	);
-}
-
-function pushedTaskEvidenceKeys(
+function pushedTaskSignals(
 	requests: CapturedRequest[],
 	lanes: Array<{ peer: string; taskId: string }>,
-): Set<string> {
-	const pushedIds = pushedTaskIds(requests);
+): Map<string, A2APushCompletionSignals> {
+	const summaries = requests
+		.map(pushEventSummary)
+		.filter((summary): summary is PushEventSummary => Boolean(summary));
 	const taskIdCounts = new Map<string, number>();
 	for (const lane of lanes) {
 		taskIdCounts.set(lane.taskId, (taskIdCounts.get(lane.taskId) ?? 0) + 1);
 	}
-	const evidenceKeys = new Set<string>();
+	const signals = new Map<string, A2APushCompletionSignals>();
 	for (const lane of lanes) {
-		if (pushedIds.has(lane.taskId) && taskIdCounts.get(lane.taskId) === 1) {
-			evidenceKeys.add(a2aPushEvidenceKey(lane.peer, lane.taskId));
+		if (taskIdCounts.get(lane.taskId) !== 1) {
+			continue;
 		}
+		const taskEvents = summaries.filter((event) => event.taskId === lane.taskId);
+		signals.set(a2aPushSignalKey(lane.peer, lane.taskId), {
+			statusUpdateTerminal: taskEvents.some(
+				(event) =>
+					event.type === "statusUpdate" && isTerminalPushState(event.state),
+			),
+			artifactUpdate: taskEvents.some(
+				(event) => event.type === "artifactUpdate",
+			),
+			taskTerminal: taskEvents.some(
+				(event) => event.type === "task" && isTerminalPushState(event.state),
+			),
+		});
 	}
-	return evidenceKeys;
+	return signals;
+}
+
+function isTerminalPushState(state: string | undefined): boolean {
+	return /COMPLETED|FAILED|CANCELLED|CANCELED|REJECTED/u.test(
+		(state ?? "").toUpperCase(),
+	);
 }
 
 function skillList(agent: MockAgent): Array<Record<string, unknown>> {
@@ -1285,10 +1298,7 @@ async function main(): Promise<void> {
 		const completionAudit = buildA2ACompletionAudit({
 			swarm,
 			ledger,
-			pushEvidenceKeys: pushedTaskEvidenceKeys(
-				pushReceiver.requests,
-				completedExecutions,
-			),
+			pushSignals: pushedTaskSignals(pushReceiver.requests, completedExecutions),
 		});
 		if (!completionAudit.complete) {
 			throw new Error(
@@ -1351,29 +1361,29 @@ async function main(): Promise<void> {
 						eventCounts: pushCounts,
 						remoteTaskIds: completedExecutions.map((a2a) => a2a.taskId),
 					},
-					telemetryProof: {
+					telemetrySignals: {
 						eventCount: telemetryEvents.length,
 						eventTypes: [...new Set(telemetryEvents.map((event) => event.type))],
 						completionAudit,
 						inspection: telemetryInspection,
 					},
 					resume,
-					fleetEvidence: {
+					fleetSignals: {
 						healthyPeerCount: HEALTHY_PEERS.length,
 						failureInjectedPeerCount: SYNTHETIC_AGENT_IDS.length,
 						excludedInjectedAgentIds: discovery.excludedInjectedAgentIds,
 						staleCandidateIncluded: discovery.staleCandidateIncluded,
 						distinctPeersUsed: peersUsed.size,
-						pushProof: {
+						pushSignals: {
 							acceptedCount: pushReceiver.requests.length,
 							minimumTerminalEventTypesSatisfied: true,
 						},
-						resumeProof: resume,
-						policyProof: {
+						resumeSignals: resume,
+						policySignals: {
 							deniedTaskClass: DENIED_TASK_CLASS,
 							candidateCount: deniedCandidateCount,
 						},
-						ledgerProof: {
+						ledgerSignals: {
 							workGraphCount: ledgerWorkGraphs.length,
 						},
 						noSecretLeak: true,

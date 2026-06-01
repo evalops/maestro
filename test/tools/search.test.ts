@@ -21,12 +21,19 @@ function getTextOutput(result: AgentToolResult<unknown>): string {
 
 describe("search tool", () => {
 	let testDir: string;
+	let originalHome: string | undefined;
 
 	beforeEach(() => {
+		originalHome = process.env.HOME;
 		testDir = mkdtempSync(join(tmpdir(), "search-tool-test-"));
 	});
 
 	afterEach(() => {
+		if (originalHome === undefined) {
+			delete process.env.HOME;
+		} else {
+			process.env.HOME = originalHome;
+		}
 		rmSync(testDir, { recursive: true, force: true });
 	});
 
@@ -341,6 +348,22 @@ describe("search tool", () => {
 			expect(output).toContain("a.txt");
 			expect(output).toContain("b.txt");
 		});
+
+		it("expands tilde in search paths", async () => {
+			process.env.HOME = testDir;
+			writeFileSync(join(testDir, "home-search.txt"), "needle from home");
+
+			const result = await searchTool.execute("search-19-tilde", {
+				pattern: "needle",
+				paths: "~/home-search.txt",
+			});
+
+			expect(result.isError).toBeFalsy();
+			expect(getTextOutput(result)).toContain("needle from home");
+			expect((result.details as { command?: string }).command).toContain(
+				join(testDir, "home-search.txt"),
+			);
+		});
 	});
 
 	describe("result limits", () => {
@@ -439,6 +462,26 @@ describe("search tool", () => {
 
 			expect(result.details).toHaveProperty("cwd");
 		});
+
+		it("quotes shell-sensitive command details", async () => {
+			const spacedDir = join(testDir, "space dir");
+			mkdirSync(spacedDir);
+			writeFileSync(join(spacedDir, "literal.txt"), "hello world");
+
+			const result = await searchTool.execute("search-26-quoted", {
+				pattern: "hello world",
+				paths: spacedDir,
+				glob: "*.txt",
+				literal: true,
+			});
+
+			expect(result.isError).toBeFalsy();
+			const command = (result.details as { command?: string } | undefined)
+				?.command;
+			expect(command).toContain("--glob '*.txt'");
+			expect(command).toContain("-- 'hello world'");
+			expect(command).toContain(`'${spacedDir}'`);
+		});
 	});
 
 	describe("error handling", () => {
@@ -478,6 +521,36 @@ describe("search tool", () => {
 					onlyMatching: true,
 				}),
 			).rejects.toThrow("onlyMatching");
+		});
+
+		it("marks non-existent paths as tool errors", async () => {
+			const result = await searchTool.execute("search-29-missing-path", {
+				pattern: "content",
+				paths: "/nonexistent/path/xyz",
+			});
+
+			expect(result.isError).toBe(true);
+			expect(getTextOutput(result)).toContain("ripgrep failed");
+			expect(getTextOutput(result)).toMatch(
+				/No such file or directory|IO error/,
+			);
+			expect(result.details).toMatchObject({
+				cwd: process.cwd(),
+			});
+		});
+
+		it("marks ripgrep startup failures as tool errors", async () => {
+			const result = await searchTool.execute("search-29-startup", {
+				pattern: "content",
+				paths: ".",
+				cwd: join(testDir, "missing-cwd"),
+			});
+
+			expect(result.isError).toBe(true);
+			expect(getTextOutput(result)).toContain("ripgrep failed");
+			expect(result.details).toMatchObject({
+				cwd: join(testDir, "missing-cwd"),
+			});
 		});
 	});
 

@@ -1,3 +1,4 @@
+import { performance } from "node:perf_hooks";
 import { setTimeout as sleep } from "node:timers/promises";
 
 export interface RequestSchedulerOptions {
@@ -60,7 +61,7 @@ export class RequestScheduler {
 	}
 
 	private async waitForMutationSlot(): Promise<void> {
-		const now = Date.now();
+		const now = performance.now();
 		const wait = Math.max(
 			0,
 			this.lastMutationAt + this.minMutationDelayMs - now,
@@ -68,6 +69,6 @@ export class RequestScheduler {
 		if (wait > 0) {
 			await sleep(wait);
 		}
-		this.lastMutationAt = Date.now();
+		this.lastMutationAt = performance.now();
 	}
 }

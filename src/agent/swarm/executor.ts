@@ -813,7 +813,7 @@ export class SwarmExecutor {
 		const dispatch = resolveSubagentDispatch(
 			mode,
 			subagentType,
-			parentProvider ?? "anthropic",
+			parentProvider ?? "openai-codex",
 		);
 		if (!parentProvider && dispatch.modelTier && !options.hasModelOverride) {
 			this.recordTaskDispatch(

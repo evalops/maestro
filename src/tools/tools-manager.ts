@@ -61,6 +61,19 @@ interface ToolConfig {
 	) => string | null;
 }
 
+function toolInstallAbortError(config: ToolConfig): Error {
+	return new Error(`${config.name} installation aborted`);
+}
+
+function throwIfToolInstallAborted(
+	config: ToolConfig,
+	signal?: AbortSignal,
+): void {
+	if (signal?.aborted) {
+		throw toolInstallAbortError(config);
+	}
+}
+
 /**
  * Registry of supported external tools and their configurations.
  * Each tool defines platform-specific asset name patterns for GitHub releases.
@@ -170,27 +183,50 @@ export function getToolPath(tool: "fd" | "rg"): string | null {
 async function fetchWithTimeout(
 	url: string,
 	init?: RequestInit,
-): Promise<{ response: Response; clearTimeout: () => void }> {
+	signal?: AbortSignal,
+): Promise<{
+	response: Response;
+	clearTimeout: () => void;
+	cleanup: () => void;
+}> {
 	const controller = new AbortController();
 	const timeout = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
+	const onAbort = (): void => {
+		controller.abort(signal?.reason);
+	};
+	if (signal?.aborted) {
+		onAbort();
+	} else {
+		signal?.addEventListener("abort", onAbort, { once: true });
+	}
+	const clearFetchTimeout = (): void => clearTimeout(timeout);
+	const cleanup = (): void => {
+		clearFetchTimeout();
+		signal?.removeEventListener("abort", onAbort);
+	};
 	try {
 		const response = await fetch(url, { ...init, signal: controller.signal });
 		return {
 			response,
-			clearTimeout: () => clearTimeout(timeout),
+			clearTimeout: clearFetchTimeout,
+			cleanup,
 		};
 	} catch (error) {
-		clearTimeout(timeout);
+		cleanup();
 		throw error;
 	}
 }
 
-async function getLatestVersion(repo: string): Promise<string> {
-	const { response, clearTimeout: clearFetchTimeout } = await fetchWithTimeout(
+async function getLatestVersion(
+	repo: string,
+	signal?: AbortSignal,
+): Promise<string> {
+	const { response, cleanup: cleanupFetch } = await fetchWithTimeout(
 		`https://api.github.com/repos/${repo}/releases/latest`,
 		{
 			headers: { "User-Agent": "composer-coding-agent" },
 		},
+		signal,
 	);
 	try {
 		if (!response.ok) {
@@ -201,7 +237,7 @@ async function getLatestVersion(repo: string): Promise<string> {
 		// Strip "v" prefix if present for consistent version handling
 		return data.tag_name.replace(/^v/, "");
 	} finally {
-		clearFetchTimeout();
+		cleanupFetch();
 	}
 }
 
@@ -209,9 +245,16 @@ async function getLatestVersion(repo: string): Promise<string> {
  * Download a file from a URL to a local path.
  * Uses streaming to handle large files efficiently.
  */
-async function downloadFile(url: string, dest: string): Promise<void> {
-	const { response, clearTimeout: clearFetchTimeout } =
-		await fetchWithTimeout(url);
+async function downloadFile(
+	url: string,
+	dest: string,
+	signal?: AbortSignal,
+): Promise<void> {
+	const {
+		response,
+		clearTimeout: clearFetchTimeout,
+		cleanup: cleanupFetch,
+	} = await fetchWithTimeout(url, undefined, signal);
 	try {
 		if (!response.ok) {
 			throw new Error(`Failed to download: ${response.status}`);
@@ -229,6 +272,11 @@ async function downloadFile(url: string, dest: string): Promise<void> {
 		);
 		const fileStream = createWriteStream(dest);
 		let idleTimeoutId: ReturnType<typeof setTimeout> | null = null;
+		const onAbort = (): void => {
+			const error = new Error("Tool download aborted");
+			stream.destroy(error);
+			fileStream.destroy(error);
+		};
 
 		const clearIdleTimeout = (): void => {
 			if (idleTimeoutId) {
@@ -254,6 +302,11 @@ async function downloadFile(url: string, dest: string): Promise<void> {
 		};
 
 		resetIdleTimeout();
+		if (signal?.aborted) {
+			onAbort();
+		} else {
+			signal?.addEventListener("abort", onAbort, { once: true });
+		}
 		stream.on("data", resetIdleTimeout);
 		stream.on("end", onStreamEnd);
 		stream.on("close", onStreamEnd);
@@ -266,10 +319,11 @@ async function downloadFile(url: string, dest: string): Promise<void> {
 			stream.off("end", onStreamEnd);
 			stream.off("close", onStreamEnd);
 			stream.off("error", onStreamEnd);
+			signal?.removeEventListener("abort", onAbort);
 			clearIdleTimeout();
 		}
 	} finally {
-		clearFetchTimeout();
+		cleanupFetch();
 	}
 }
 
@@ -328,15 +382,20 @@ function findBinary(root: string, binaryName: string): string | null {
  * @param tool - The tool identifier ("fd" or "rg")
  * @returns Path to the installed binary
  */
-async function downloadTool(tool: "fd" | "rg"): Promise<string> {
+async function downloadTool(
+	tool: "fd" | "rg",
+	signal?: AbortSignal,
+): Promise<string> {
 	const config = TOOLS[tool];
 	if (!config) throw new Error(`Unknown tool: ${tool}`);
+	throwIfToolInstallAborted(config, signal);
 
 	const plat = platform();
 	const architecture = arch();
 
 	// Get the latest version from GitHub
-	const version = await getLatestVersion(config.repo);
+	const version = await getLatestVersion(config.repo, signal);
+	throwIfToolInstallAborted(config, signal);
 
 	// Determine the correct asset for this platform
 	const assetName = config.getAssetName(version, plat, architecture);
@@ -354,7 +413,8 @@ async function downloadTool(tool: "fd" | "rg"): Promise<string> {
 	const binaryPath = join(TOOLS_DIR, config.binaryName + binaryExt);
 
 	// Download the release archive
-	await downloadFile(downloadUrl, archivePath);
+	await downloadFile(downloadUrl, archivePath, signal);
+	throwIfToolInstallAborted(config, signal);
 
 	// Create temp directory for extraction
 	const extractDir = mkdtempSync(join(TOOLS_DIR, "extract-"));
@@ -417,15 +477,17 @@ async function downloadTool(tool: "fd" | "rg"): Promise<string> {
 export async function ensureTool(
 	tool: "fd" | "rg",
 	silent = false,
+	signal?: AbortSignal,
 ): Promise<string | null> {
+	const config = TOOLS[tool];
+	if (!config) return null;
+	throwIfToolInstallAborted(config, signal);
+
 	// Check if already installed
 	const existingPath = getToolPath(tool);
 	if (existingPath) {
 		return existingPath;
 	}
-
-	const config = TOOLS[tool];
-	if (!config) return null;
 
 	// Notify user about download (unless silent)
 	if (!silent) {
@@ -433,12 +495,15 @@ export async function ensureTool(
 	}
 
 	try {
-		const path = await downloadTool(tool);
+		const path = await downloadTool(tool, signal);
 		if (!silent) {
 			console.log(chalk.dim(`${config.name} installed to ${path}`));
 		}
 		return path;
 	} catch (e) {
+		if (signal?.aborted) {
+			throw toolInstallAbortError(config);
+		}
 		// Download failed - log and return null (tool is optional)
 		if (!silent) {
 			console.log(

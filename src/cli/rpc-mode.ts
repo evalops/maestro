@@ -2,7 +2,7 @@
  * RPC Mode - JSON-over-stdio protocol for programmatic agent control.
  *
  * Moved from main.ts. Provides a line-based JSON protocol for IDE integrations,
- * language servers, and other tools that embed Composer functionality.
+ * language servers, and other tools that embed Maestro functionality.
  *
  * ## Protocol
  *
@@ -107,8 +107,12 @@ export async function runRpcMode(
 
 	// Process incoming RPC commands line by line
 	rl.on("line", async (line: string) => {
+		let requestId: string | undefined;
+		const withRequestId = <T extends Record<string, unknown>>(response: T) =>
+			requestId ? { id: requestId, ...response } : response;
 		try {
 			const input = JSON.parse(line);
+			requestId = typeof input.id === "string" ? input.id : undefined;
 
 			if (input.type === "prompt" && input.message) {
 				await runUserPromptWithRecovery({
@@ -130,25 +134,29 @@ export async function runRpcMode(
 				agent.abort();
 			} else if (input.type === "get_messages") {
 				console.log(
-					JSON.stringify({
-						type: "messages",
-						messages: agent.state.messages,
-					}),
+					JSON.stringify(
+						withRequestId({
+							type: "messages",
+							messages: agent.state.messages,
+						}),
+					),
 				);
 			} else if (input.type === "get_state") {
 				console.log(
-					JSON.stringify({
-						type: "state",
-						state: {
-							model: agent.state.model,
-							messages: agent.state.messages,
-							isStreaming: agent.state.isStreaming,
-							error: agent.state.error,
-							thinkingLevel: agent.state.thinkingLevel,
-							session: agent.state.session,
-							queuedMessageCount: agent.getQueuedMessageCount(),
-						},
-					}),
+					JSON.stringify(
+						withRequestId({
+							type: "state",
+							state: {
+								model: agent.state.model,
+								messages: agent.state.messages,
+								isStreaming: agent.state.isStreaming,
+								error: agent.state.error,
+								thinkingLevel: agent.state.thinkingLevel,
+								session: agent.state.session,
+								queuedMessageCount: agent.getQueuedMessageCount(),
+							},
+						}),
+					),
 				);
 			} else if (input.type === "continue") {
 				await runWithPromptRecovery({
@@ -204,17 +212,19 @@ export async function runRpcMode(
 
 				if (!result.success) {
 					console.log(
-						JSON.stringify({
-							type: "error",
-							error: result.error,
-						}),
+						JSON.stringify(
+							withRequestId({
+								type: "error",
+								error: result.error,
+							}),
+						),
 					);
 					return;
 				}
 
 				// Emit compaction event
-				const compactionEvent: AgentEvent = {
-					type: "compaction",
+				const compactionEvent: AgentEvent & { id?: string } = withRequestId({
+					type: "compaction" as const,
 					summary:
 						result.summary ?? `Compacted ${result.compactedCount} messages`,
 					firstKeptEntryIndex: result.firstKeptEntryIndex ?? 0,
@@ -222,12 +232,25 @@ export async function runRpcMode(
 					auto: false,
 					customInstructions,
 					timestamp: new Date().toISOString(),
-				};
+				});
 				console.log(JSON.stringify(compactionEvent));
+			} else {
+				const commandType =
+					typeof input.type === "string" && input.type ? input.type : "unknown";
+				console.log(
+					JSON.stringify(
+						withRequestId({
+							type: "error",
+							error: `Unknown RPC command: ${commandType}`,
+						}),
+					),
+				);
 			}
 		} catch (error: unknown) {
 			const message = error instanceof Error ? error.message : String(error);
-			console.log(JSON.stringify({ type: "error", error: message }));
+			console.log(
+				JSON.stringify(withRequestId({ type: "error", error: message })),
+			);
 		}
 	});
 

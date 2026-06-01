@@ -1,4 +1,4 @@
-# Composer Comprehensive Backlog
+# Maestro Comprehensive Backlog
 
 Generated from a fresh repo audit on `2026-03-13` across the current approvals/evals work, the web/server surface, core agent/provider infrastructure, desktop/TUI/CLI UX, and the existing TODO/FIXME/skip inventory.
 
@@ -32,7 +32,7 @@ Legend:
 - [x] 13. `P0` Make shared attachment downloads honor share-access semantics — `src/server/handlers/sessions.ts`, `test/shared-session-attachments-endpoints.test.ts` — tokenized attachment access currently weakens `maxAccesses` semantics.
 - [x] 14. `P0` Rate-limit shared attachment downloads — `src/server/handlers/sessions.ts`, `test/share-rate-limit.test.ts`, `test/shared-session-attachments-endpoints.test.ts` — shared-session access is rate-limited, but shared-attachment fetch is not.
 - [ ] 15. `P0` Harden the artifact viewer popup bridge — `src/server/handlers/session-artifacts.ts` — `open-external-url` messages should validate origin/source.
-- [x] 16. `P1` Expand CORS allow-headers for real web clients — `src/server/server-utils.ts`, `test/web/web-server-components.test.ts` — several Composer-specific headers are still omitted.
+- [x] 16. `P1` Expand CORS allow-headers for real web clients — `src/server/server-utils.ts`, `test/web/web-server-components.test.ts` — several compatibility headers are still omitted.
 - [x] 17. `P1` Add centralized auth/API-key/CSRF header injection to `ApiClient` — `packages/web/src/services/api-client.ts` — the web client still assumes same-origin/no-auth.
 - [x] 18. `P1` Stop auxiliary components from creating their own default API clients — `packages/web/src/components/composer-input.ts`, `model-selector.ts`, `composer-chat.ts` — they bypass shared auth/session config.
 - [x] 19. `P1` Make attachment viewing/extraction auth-aware — `packages/web/src/components/composer-attachment-viewer.ts`, `packages/web/src/services/api-client.ts` — raw `fetch()` paths break secure deployments.

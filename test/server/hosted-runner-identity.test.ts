@@ -88,6 +88,59 @@ describe("hosted runner identity", () => {
 		});
 	});
 
+	it("projects the last Platform A2A push correlation into identity", async () => {
+		const workspaceRoot = await createTempWorkspace();
+
+		await expect(
+			buildHostedRunnerIdentity({
+				enabled: true,
+				runnerSessionId: "mrs_123",
+				ownerInstanceId: "pod_123",
+				workspaceRoot,
+				lastPlatformA2APush: {
+					kind: "statusUpdate",
+					taskId: "task_123",
+					messageId: "message_123",
+					messageIds: ["message_123", "message_124"],
+					contextId: "ctx_123",
+					state: "TASK_STATE_COMPLETED",
+					final: true,
+					receivedAt: "2026-05-26T12:00:00.000Z",
+					runtimeEventId: "event_123",
+					runtimeEventType: "RUNTIME_EVENT_TYPE_RUN_SUCCEEDED",
+					traceparent:
+						"00-11111111111111111111111111111111-2222222222222222-01",
+					tracestate: "evalops=push",
+					organizationId: "org_123",
+					workspaceId: "workspace_123",
+					tenantId: "tenant_123",
+					agentId: "agent_123",
+					actorId: "actor_123",
+				},
+			}),
+		).resolves.toMatchObject({
+			last_platform_a2a_push: {
+				kind: "statusUpdate",
+				task_id: "task_123",
+				message_id: "message_123",
+				message_ids: ["message_123", "message_124"],
+				context_id: "ctx_123",
+				state: "TASK_STATE_COMPLETED",
+				final: true,
+				received_at: "2026-05-26T12:00:00.000Z",
+				runtime_event_id: "event_123",
+				runtime_event_type: "RUNTIME_EVENT_TYPE_RUN_SUCCEEDED",
+				traceparent: "00-11111111111111111111111111111111-2222222222222222-01",
+				tracestate: "evalops=push",
+				organization_id: "org_123",
+				workspace_id: "workspace_123",
+				tenant_id: "tenant_123",
+				agent_id: "agent_123",
+				actor_id: "actor_123",
+			},
+		});
+	});
+
 	it("does not expose identity without the Platform owner generation", async () => {
 		const workspaceRoot = await createTempWorkspace();
 
