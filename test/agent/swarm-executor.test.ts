@@ -540,7 +540,6 @@ describe("SwarmExecutor", () => {
 		const [serviceConfig, input] = sendA2AMessageMock.mock.calls[0] as [
 			{
 				baseUrl: string;
-				token?: string;
 				organizationId?: string;
 				agentId?: string;
 			},
@@ -552,7 +551,6 @@ describe("SwarmExecutor", () => {
 		expect(serviceConfig).toEqual(
 			expect.objectContaining({
 				baseUrl: "https://target.internal/a2a",
-				token: "platform-token",
 				organizationId: "org_evalops",
 				workspaceId: "workspace-1",
 				agentId: "agent-target",

@@ -889,7 +889,6 @@ export class SwarmExecutor {
 		}
 		return {
 			baseUrl: normalizeA2ABaseUrl(candidate.endpointUrl),
-			...(platformConfig.token ? { token: platformConfig.token } : {}),
 			...(platformConfig.organizationId
 				? { organizationId: platformConfig.organizationId }
 				: {}),
