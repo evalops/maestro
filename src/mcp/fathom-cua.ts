@@ -1,6 +1,5 @@
 import { existsSync } from "node:fs";
 import { join } from "node:path";
-import { getEnvValue } from "../platform/client.js";
 import { createLogger } from "../utils/logger.js";
 import type { McpServerConfig } from "./types.js";
 
@@ -62,6 +61,21 @@ const TOOL_PROFILE_ENV_VARS = [
 ] as const;
 const DEFAULT_SERVER_NAME = "fathom-cua";
 const DEFAULT_TOOL_PROFILE = "canonical";
+
+function trimString(value: string | undefined): string | undefined {
+	const trimmed = value?.trim();
+	return trimmed ? trimmed : undefined;
+}
+
+function getEnvValue(names: readonly string[]): string | undefined {
+	for (const name of names) {
+		const value = trimString(process.env[name]);
+		if (value) {
+			return value;
+		}
+	}
+	return undefined;
+}
 
 function envFlagEnabled(names: readonly string[]): boolean {
 	const value = getEnvValue(names);
