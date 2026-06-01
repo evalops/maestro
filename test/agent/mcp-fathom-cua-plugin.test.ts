@@ -1,5 +1,8 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { loadMcpConfig } from "../../src/mcp/config.js";
+import {
+	loadMcpConfig,
+	removeMcpServerFromConfig,
+} from "../../src/mcp/config.js";
 import { getFathomCuaPluginServers } from "../../src/mcp/fathom-cua.js";
 
 describe("Fathom CUA MCP plugin server", () => {
@@ -28,7 +31,8 @@ describe("Fathom CUA MCP plugin server", () => {
 				transport: "stdio",
 				command: "go",
 				cwd: "/tmp/fathom",
-				scope: "project",
+				scope: "plugin",
+				requiresProjectApproval: true,
 				env: {
 					FATHOM_CALLER_PRODUCT: "maestro",
 					FATHOM_CUA_PRODUCT: "maestro",
@@ -106,7 +110,7 @@ describe("Fathom CUA MCP plugin server", () => {
 		});
 	});
 
-	it("participates in the merged MCP config as project scope", () => {
+	it("participates in the merged MCP config as plugin scope with project approval", () => {
 		vi.stubEnv("MAESTRO_FATHOM_CUA_ENABLED", "1");
 		vi.stubEnv("MAESTRO_FATHOM_CUA_REPO", "/tmp/fathom");
 
@@ -116,9 +120,24 @@ describe("Fathom CUA MCP plugin server", () => {
 			config.servers.find((server) => server.name === "fathom-cua"),
 		).toEqual(
 			expect.objectContaining({
-				scope: "project",
+				scope: "plugin",
+				requiresProjectApproval: true,
 				command: "go",
 			}),
+		);
+	});
+
+	it("does not resolve generated Fathom servers to writable project config", () => {
+		vi.stubEnv("MAESTRO_FATHOM_CUA_ENABLED", "1");
+		vi.stubEnv("MAESTRO_FATHOM_CUA_REPO", "/tmp/fathom");
+
+		expect(() =>
+			removeMcpServerFromConfig({
+				projectRoot: "/tmp/project",
+				name: "fathom-cua",
+			}),
+		).toThrow(
+			'MCP server "fathom-cua" is managed by plugin scope and cannot be edited here.',
 		);
 	});
 });

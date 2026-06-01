@@ -394,7 +394,8 @@ function serverConfigsEqual(
 		left.enabled === right.enabled &&
 		left.disabled === right.disabled &&
 		left.timeout === right.timeout &&
-		left.scope === right.scope
+		left.scope === right.scope &&
+		left.requiresProjectApproval === right.requiresProjectApproval
 	);
 }
 

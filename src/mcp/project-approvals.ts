@@ -158,13 +158,19 @@ export function buildProjectMcpServerFingerprint(
 		.digest("hex");
 }
 
+export function serverRequiresProjectApproval(
+	server: McpServerConfig,
+): boolean {
+	return server.scope === "project" || server.requiresProjectApproval === true;
+}
+
 export function getProjectMcpServerApprovalStatus(options: {
 	projectRoot?: string;
 	server: McpServerConfig;
 	authPresets?: readonly McpAuthPresetConfig[];
 }): McpProjectApprovalStatus | undefined {
 	const { projectRoot, server, authPresets = [] } = options;
-	if (!projectRoot || server.scope !== "project") {
+	if (!projectRoot || !serverRequiresProjectApproval(server)) {
 		return undefined;
 	}
 
@@ -185,9 +191,9 @@ export function setProjectMcpServerApprovalDecision(options: {
 	decision: McpProjectApprovalDecision;
 }): void {
 	const { projectRoot, server, authPresets = [], decision } = options;
-	if (server.scope !== "project") {
+	if (!serverRequiresProjectApproval(server)) {
 		throw new Error(
-			`MCP server "${server.name}" is not project-scoped and does not require project approval.`,
+			`MCP server "${server.name}" does not require project approval.`,
 		);
 	}
 

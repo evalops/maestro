@@ -177,7 +177,8 @@ function buildFathomCuaServer(): McpServerConfig {
 		args,
 		cwd,
 		env,
-		scope: "project",
+		scope: "plugin",
+		requiresProjectApproval: true,
 	};
 }
 

@@ -17,6 +17,7 @@ import {
 	removeMcpServerFromConfig,
 	resolveOfficialMcpRegistryEntry,
 	searchOfficialMcpRegistry,
+	serverRequiresProjectApproval,
 	setProjectMcpServerApprovalDecision,
 	updateMcpAuthPresetInConfig,
 	updateMcpServerInConfig,
@@ -708,10 +709,10 @@ async function handleSetProjectApproval(
 			`MCP server "${body.name}" not found in merged config.`,
 		);
 	}
-	if (existingServer.scope !== "project") {
+	if (!serverRequiresProjectApproval(existingServer)) {
 		throw new ApiError(
 			400,
-			`MCP server "${body.name}" is not loaded from project config.`,
+			`MCP server "${body.name}" does not require project approval.`,
 		);
 	}
 
@@ -731,7 +732,7 @@ async function handleSetProjectApproval(
 		200,
 		{
 			name: body.name,
-			scope: "project",
+			scope: existingServer.scope,
 			decision: body.decision,
 			projectApproval: activeServer?.projectApproval ?? body.decision,
 		},

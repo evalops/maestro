@@ -1229,4 +1229,74 @@ describe("handleMcpStatus", () => {
 			projectApproval: "approved",
 		});
 	});
+
+	it("updates project approval for generated plugin servers without changing their scope", async () => {
+		vi.spyOn(mcp, "loadMcpConfig").mockReturnValue({
+			projectRoot: process.cwd(),
+			servers: [
+				{
+					name: "fathom-cua",
+					scope: "plugin",
+					requiresProjectApproval: true,
+					transport: "stdio",
+					command: "fathom-client",
+				},
+			],
+			authPresets: [],
+		});
+		const setApproval = vi
+			.spyOn(mcp, "setProjectMcpServerApprovalDecision")
+			.mockReturnValue(undefined);
+		vi.spyOn(mcp.mcpManager, "configure").mockResolvedValue(undefined);
+		vi.spyOn(mcp.mcpManager, "getStatus").mockReturnValue({
+			authPresets: [],
+			servers: [
+				{
+					name: "fathom-cua",
+					connected: false,
+					scope: "plugin",
+					transport: "stdio",
+					tools: [],
+					resources: [],
+					prompts: [],
+					projectApproval: "approved",
+				},
+			],
+		});
+
+		const req = makeReq("/api/mcp?action=set-project-approval", {
+			method: "POST",
+			body: {
+				name: "fathom-cua",
+				decision: "approved",
+			},
+		});
+		const res = makeRes();
+
+		await handleMcpStatus(
+			req as unknown as IncomingMessage,
+			res as unknown as ServerResponse,
+			corsHeaders,
+		);
+
+		expect(setApproval).toHaveBeenCalledWith({
+			projectRoot: process.cwd(),
+			server: {
+				name: "fathom-cua",
+				scope: "plugin",
+				requiresProjectApproval: true,
+				transport: "stdio",
+				command: "fathom-client",
+			},
+			authPresets: [],
+			decision: "approved",
+		});
+		expect(res.statusCode).toBe(200);
+		expect(JSON.parse(res.body)).toEqual({
+			name: "fathom-cua",
+			scope: "plugin",
+			decision: "approved",
+			projectApproval: "approved",
+		});
+	});
 });

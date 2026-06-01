@@ -51,6 +51,37 @@ describe("project MCP approvals", () => {
 		).toBe("pending");
 	});
 
+	it("allows plugin servers to opt into project approval without writable project scope", () => {
+		const server = {
+			name: "fathom-cua",
+			scope: "plugin" as const,
+			requiresProjectApproval: true,
+			transport: "stdio" as const,
+			command: "fathom-client",
+		};
+
+		expect(
+			getProjectMcpServerApprovalStatus({
+				projectRoot: testDir,
+				server,
+			}),
+		).toBe("pending");
+
+		setProjectMcpServerApprovalDecision({
+			projectRoot: testDir,
+			server,
+			decision: "approved",
+		});
+
+		expect(
+			getProjectMcpServerApprovalStatus({
+				projectRoot: testDir,
+				server,
+			}),
+		).toBe("approved");
+		expect(server.scope).toBe("plugin");
+	});
+
 	it("resets approval when the project auth preset changes", () => {
 		const server = {
 			name: "linear",
@@ -121,6 +152,34 @@ describe("project MCP approvals", () => {
 
 		expect(manager.getStatus().servers[0]).toMatchObject({
 			name: "repo-server",
+			connected: false,
+			projectApproval: "pending",
+			error: undefined,
+		});
+	});
+
+	it("keeps approval-gated plugin servers disconnected until approved", async () => {
+		const manager = createManager();
+
+		await manager.configure({
+			projectRoot: testDir,
+			authPresets: [],
+			servers: [
+				{
+					name: "fathom-cua",
+					scope: "plugin",
+					requiresProjectApproval: true,
+					transport: "stdio",
+					command: "nonexistent-cmd",
+				},
+			],
+		});
+
+		await vi.advanceTimersByTimeAsync(100);
+
+		expect(manager.getStatus().servers[0]).toMatchObject({
+			name: "fathom-cua",
+			scope: "plugin",
 			connected: false,
 			projectApproval: "pending",
 			error: undefined,
