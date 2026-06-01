@@ -1,4 +1,3 @@
-import { spawnSync } from "node:child_process";
 import {
 	existsSync,
 	mkdirSync,
@@ -338,21 +337,14 @@ async function validateToolbox(
 			continue;
 		}
 		if (options.describeToolbox) {
-			const result = spawnSync(path, {
-				env: { ...process.env, MAESTRO_TOOLBOX_ACTION: "describe" },
-				encoding: "utf8",
-				timeout: 5000,
-			});
-			if (result.status !== 0) {
-				issues.push(
-					issue(
-						"toolbox_describe_failed",
-						"error",
-						path,
-						`Toolbox describe failed: ${result.stderr || result.stdout || "non-zero exit"}`,
-					),
-				);
-			}
+			issues.push(
+				issue(
+					"toolbox_describe_unsupported",
+					"warning",
+					path,
+					"Toolbox describe checks are disabled during lint for security.",
+				),
+			);
 		}
 	}
 	return issues;

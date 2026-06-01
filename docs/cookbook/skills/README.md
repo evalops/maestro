@@ -49,10 +49,10 @@ itself when `MAESTRO_TOOLBOX_ACTION=describe` is set:
 MAESTRO_TOOLBOX_ACTION=describe .maestro/skills/reviewing-prs/toolbox/list-pr-files
 ```
 
-Run strict validation with:
+Validate packages with:
 
 ```bash
-maestro skill lint .maestro/skills/reviewing-prs --describe-toolbox
+maestro skill lint .maestro/skills/reviewing-prs
 ```
 
 ## Model And Mode Hints

@@ -36,7 +36,6 @@ Options:
   --dir <path>                 Base directory for 'new' (default: .maestro/skills)
   --description <text>         Description for 'new'
   --force                      Allow 'new' to overwrite an existing directory
-  --describe-toolbox           Run Toolbox describe checks during lint
   --help, -h                   Show this help`;
 }
 
@@ -72,8 +71,7 @@ function parseOptions(args: string[]): {
 				options.force = true;
 				break;
 			case "--describe-toolbox":
-				options.describeToolbox = true;
-				break;
+				throw new Error("--describe-toolbox is disabled for security reasons.");
 			case "--help":
 			case "-h":
 				positionals.push(arg);
