@@ -562,6 +562,37 @@ describe("verify-published-replay-evidence", () => {
 		);
 	});
 
+	it("fails when provider prompt identity diverges from transcript evidence", () => {
+		const evidence = makeEvidence();
+		evidence.replay.providerConfig.prompt.sha256 = "b".repeat(64);
+		evidence.observability.providerConfig.prompt.sha256 = "b".repeat(64);
+
+		expect(() => validatePublishedReplayEvidence(evidence)).toThrow(
+			/replay\.providerConfig.*replay\.providerConfig\.prompt must match transcript\.prompt.*observability\.providerConfig/s,
+		);
+	});
+
+	it("fails when observability transcript prompt identity diverges", () => {
+		const evidence = makeEvidence();
+		evidence.observability.transcript.promptSha256 = "c".repeat(64);
+
+		expect(() => validatePublishedReplayEvidence(evidence)).toThrow(
+			/observability\.transcript.*observability\.transcript\.promptSha256 must match transcript\.prompt\.sha256/s,
+		);
+	});
+
+	it("fails when transcript prompt identity does not match the golden-path prompt", () => {
+		const evidence = makeEvidence();
+		evidence.transcript.prompt.sha256 = "d".repeat(64);
+		for (const mode of evidence.transcript.modes) {
+			mode.promptSha256 = "d".repeat(64);
+		}
+
+		expect(() => validatePublishedReplayEvidence(evidence)).toThrow(
+			/transcript must include queryable published replay transcript evidence.*replay\.providerConfig\.prompt must match transcript\.prompt/s,
+		);
+	});
+
 	it("fails when observability provider config diverges from replay provider config", () => {
 		const evidence = makeEvidence();
 		const divergentSandboxMode =

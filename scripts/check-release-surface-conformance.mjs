@@ -62,6 +62,10 @@ const publishedReplayEvidenceVerifierRequiredAnchors = [
 	"function toolExecutionCoverageIsValid",
 	"function agentRuntimeLifecycleIsValid",
 	"releaseObservabilityQueryDescriptorIsValid",
+	"const EXPECTED_PROMPT_LENGTH = 41;",
+	'"db296f4e8a050ac9e968523b0202171fca61524406900bbe534ae876ed506570"',
+	"replay.providerConfig.prompt must match transcript.prompt",
+	"observability.transcript.promptSha256 must match transcript.prompt.sha256",
 	"assertPublishedReplayReleaseGate(evidence);",
 ];
 
