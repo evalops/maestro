@@ -11,6 +11,15 @@ import {
 import { getPackageVersion } from "../package-metadata.js";
 import { getEnvValue, normalizeBaseUrl } from "../platform/client.js";
 import { PLATFORM_HTTP_ROUTES } from "../platform/core-services.js";
+import {
+	type EvalOpsAgentMcpMetadata,
+	getStoredAgentMcpMetadata,
+} from "./agent-mcp-metadata.js";
+
+export {
+	type EvalOpsAgentMcpMetadata,
+	getStoredEvalOpsAgentMcpMetadata,
+} from "./agent-mcp-metadata.js";
 
 const DEFAULT_AGENT_MCP_BASE_URL = "https://app.evalops.dev";
 const DEFAULT_IDENTITY_BASE_URL = "https://identity.evalops.dev";
@@ -68,31 +77,6 @@ export interface EvalOpsInitOptions {
 	surface?: string;
 	traceMode?: string;
 	ttlSeconds?: number;
-	workspaceId?: string;
-}
-
-export interface EvalOpsAgentMcpMetadata {
-	agentId?: string;
-	apiKey?: string;
-	createdAt: string;
-	endpoint: string;
-	expiresAt?: string;
-	integrationProfile?: string;
-	keyId?: string;
-	keyName?: string;
-	keyPrefix?: string;
-	manifestUrl?: string;
-	memoryMode?: string;
-	registeredAt: string;
-	registryVisible?: boolean;
-	runId?: string;
-	runtimeOwner?: string;
-	scopes?: string[];
-	sessionExpiresAt?: string;
-	shimType?: string;
-	surface: string;
-	traceMode?: string;
-	type: "agent-mcp";
 	workspaceId?: string;
 }
 
@@ -229,54 +213,6 @@ function positiveInteger(value: number | undefined): number | undefined {
 	return typeof value === "number" && Number.isInteger(value) && value > 0
 		? value
 		: undefined;
-}
-
-function getStoredAgentMcpMetadata(
-	credentials: OAuthCredentials | null,
-): EvalOpsAgentMcpMetadata | undefined {
-	const metadata = credentials?.metadata;
-	const agentMcp = isRecord(metadata?.agentMcp) ? metadata.agentMcp : undefined;
-	const apiKey = nonEmptyString(agentMcp?.apiKey);
-	const endpoint = nonEmptyString(agentMcp?.endpoint);
-	const registeredAt = nonEmptyString(agentMcp?.registeredAt);
-	const createdAt = nonEmptyString(agentMcp?.createdAt);
-	const surface = nonEmptyString(agentMcp?.surface);
-	if (!apiKey || !endpoint || !registeredAt || !createdAt || !surface) {
-		return undefined;
-	}
-	return {
-		type: "agent-mcp",
-		apiKey,
-		createdAt,
-		endpoint,
-		registeredAt,
-		surface,
-		agentId: nonEmptyString(agentMcp?.agentId),
-		expiresAt: nonEmptyString(agentMcp?.expiresAt),
-		integrationProfile: nonEmptyString(agentMcp?.integrationProfile),
-		keyId: nonEmptyString(agentMcp?.keyId),
-		keyName: nonEmptyString(agentMcp?.keyName),
-		keyPrefix: nonEmptyString(agentMcp?.keyPrefix),
-		manifestUrl: nonEmptyString(agentMcp?.manifestUrl),
-		memoryMode: nonEmptyString(agentMcp?.memoryMode),
-		registryVisible:
-			typeof agentMcp?.registryVisible === "boolean"
-				? agentMcp.registryVisible
-				: undefined,
-		runId: nonEmptyString(agentMcp?.runId),
-		runtimeOwner: nonEmptyString(agentMcp?.runtimeOwner),
-		scopes: stringArray(agentMcp?.scopes),
-		sessionExpiresAt: nonEmptyString(agentMcp?.sessionExpiresAt),
-		shimType: nonEmptyString(agentMcp?.shimType),
-		traceMode: nonEmptyString(agentMcp?.traceMode),
-		workspaceId: nonEmptyString(agentMcp?.workspaceId),
-	};
-}
-
-export function getStoredEvalOpsAgentMcpMetadata():
-	| EvalOpsAgentMcpMetadata
-	| undefined {
-	return getStoredAgentMcpMetadata(loadOAuthCredentials("evalops"));
 }
 
 function normalizeMcpEndpoint(url: string): string {

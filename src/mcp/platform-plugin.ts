@@ -1,4 +1,4 @@
-import { getStoredEvalOpsAgentMcpMetadata } from "../evalops/agent-bootstrap.js";
+import { getStoredEvalOpsAgentMcpMetadata } from "../evalops/agent-mcp-metadata.js";
 import {
 	EVALOPS_ACCESS_TOKEN_ENV_VARS,
 	EVALOPS_INTEGRATION_PROFILE_ENV_VARS,
@@ -9,12 +9,7 @@ import {
 	EVALOPS_TRACE_MODE_ENV_VARS,
 	EVALOPS_WORKSPACE_ID_ENV_VARS,
 } from "../evalops/env-aliases.js";
-import {
-	getEnvValue,
-	normalizeBaseUrl,
-	resolveConfiguredToken,
-	resolveWorkspaceId,
-} from "../platform/client.js";
+import { loadOAuthCredentials } from "../oauth/storage.js";
 import type { McpServerConfig } from "./types.js";
 
 const PLATFORM_MCP_DISABLED_VALUES = new Set(["0", "false", "no", "off"]);
@@ -67,6 +62,49 @@ const PLATFORM_MCP_TRACE_MODE_ENV_VARS = EVALOPS_TRACE_MODE_ENV_VARS;
 const DEFAULT_PLATFORM_MCP_SERVER_NAME = "evalops";
 const AGENT_MCP_MANIFEST_PATH = "/.well-known/evalops/agent-mcp.json";
 const AGENT_MCP_PATH = "/mcp";
+
+function trimString(value: string | undefined): string | undefined {
+	const trimmed = value?.trim();
+	return trimmed ? trimmed : undefined;
+}
+
+function getEnvValue(names: readonly string[]): string | undefined {
+	for (const name of names) {
+		const value = trimString(process.env[name]);
+		if (value) {
+			return value;
+		}
+	}
+	return undefined;
+}
+
+function normalizeBaseUrl(baseUrl: string): string {
+	return baseUrl.trim().replace(/\/+$/u, "");
+}
+
+function getStoredEvalOpsCredentialValue(name: string): string | undefined {
+	const value = loadOAuthCredentials("evalops")?.metadata?.[name];
+	return typeof value === "string" ? trimString(value) : undefined;
+}
+
+function resolveConfiguredToken(
+	envVars: readonly string[],
+): string | undefined {
+	const envToken = getEnvValue(envVars);
+	if (envToken) {
+		return envToken;
+	}
+	const stored = loadOAuthCredentials("evalops")?.access;
+	return typeof stored === "string" ? trimString(stored) : undefined;
+}
+
+function resolveWorkspaceId(envVars: readonly string[]): string | undefined {
+	return (
+		getEnvValue(envVars) ??
+		getStoredEvalOpsCredentialValue("organizationId") ??
+		getStoredEvalOpsCredentialValue("organization_id")
+	);
+}
 
 function isPlatformMcpExplicitlyDisabled(): boolean {
 	const enabled = getEnvValue(PLATFORM_MCP_ENABLED_ENV_VARS);
