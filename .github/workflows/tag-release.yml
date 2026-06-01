@@ -174,4 +174,15 @@ jobs:
           RELEASE_VERSION: ${{ needs.tag-current-version.outputs.release_version }}
         run: |
           set -euo pipefail
+          active_count="$(
+            gh run list \
+              --workflow release \
+              --json headBranch,status \
+              --limit 50 \
+              --jq "[.[] | select(.headBranch == \"${RELEASE_TAG}\" and .status != \"completed\")] | length"
+          )"
+          if [[ "${active_count}" != "0" ]]; then
+            echo "Found ${active_count} active release workflow run(s) for ${RELEASE_TAG}; not dispatching another."
+            exit 0
+          fi
           gh workflow run release --ref "${RELEASE_TAG}" --field "version=${RELEASE_VERSION}"
