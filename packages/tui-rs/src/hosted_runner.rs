@@ -773,10 +773,6 @@ fn hosted_runner_error_from_async_transport(error: AsyncTransportError) -> Hoste
     HostedRunnerError::runtime_not_ready(format!("agent supervisor is not ready: {error}"))
 }
 
-fn json_value<T: Serialize>(value: &T) -> serde_json::Value {
-    serde_json::to_value(value).unwrap_or(serde_json::Value::Null)
-}
-
 struct HttpRequest {
     method: String,
     path: String,
@@ -998,39 +994,13 @@ impl SharedRunner {
                     .and_then(|state| state.cwd.clone())
                     .or_else(|| Some(self.config.workspace_root.to_string_lossy().to_string())),
                 git_branch,
-                current_response: agent_state
-                    .and_then(|state| state.current_response.as_ref())
-                    .map(json_value),
-                pending_approvals: agent_state
-                    .map(|state| state.pending_approvals.iter().map(json_value).collect())
-                    .unwrap_or_default(),
-                pending_client_tools: agent_state
-                    .map(|state| state.pending_client_tools.iter().map(json_value).collect())
-                    .unwrap_or_default(),
-                pending_user_inputs: agent_state
-                    .map(|state| state.pending_user_inputs.iter().map(json_value).collect())
-                    .unwrap_or_default(),
-                pending_tool_retries: agent_state
-                    .map(|state| state.pending_tool_retries.iter().map(json_value).collect())
-                    .unwrap_or_default(),
-                tracked_tools: agent_state
-                    .map(|state| state.tracked_tools.values().map(json_value).collect())
-                    .unwrap_or_default(),
-                active_tools: agent_state
-                    .map(|state| {
-                        state
-                            .active_tools
-                            .values()
-                            .map(|tool| {
-                                json!({
-                                    "call_id": tool.call_id,
-                                    "tool": tool.tool,
-                                    "output": tool.output,
-                                })
-                            })
-                            .collect()
-                    })
-                    .unwrap_or_default(),
+                current_response: None,
+                pending_approvals: Vec::new(),
+                pending_client_tools: Vec::new(),
+                pending_user_inputs: Vec::new(),
+                pending_tool_retries: Vec::new(),
+                tracked_tools: Vec::new(),
+                active_tools: Vec::new(),
                 active_utility_commands: state.active_utility_commands.values().cloned().collect(),
                 active_file_watches: state.active_file_watches.values().cloned().collect(),
                 last_error: agent_state.and_then(|state| state.last_error.clone()),
@@ -3091,7 +3061,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn state_snapshot_merges_supervisor_agent_state_with_hosted_connections() {
+    async fn state_snapshot_redacts_sensitive_supervisor_state() {
         let workspace = tempdir().expect("workspace");
         let mut current_response =
             crate::headless::StreamingResponse::new("resp-state-1".to_string());
@@ -3174,11 +3144,13 @@ mod tests {
         assert_eq!(state["state"]["session_id"], "supervisor-session-1");
         assert_eq!(state["state"]["cwd"], "/runtime/workspace");
         assert_eq!(state["state"]["git_branch"], "feature/runtime-state");
-        assert_eq!(
-            state["state"]["current_response"]["response_id"],
-            "resp-state-1"
-        );
-        assert_eq!(state["state"]["pending_approvals"][0]["call_id"], "call-1");
+        assert!(state["state"]["current_response"].is_null());
+        assert_eq!(state["state"]["pending_approvals"], json!([]));
+        assert_eq!(state["state"]["pending_client_tools"], json!([]));
+        assert_eq!(state["state"]["pending_user_inputs"], json!([]));
+        assert_eq!(state["state"]["pending_tool_retries"], json!([]));
+        assert_eq!(state["state"]["tracked_tools"], json!([]));
+        assert_eq!(state["state"]["active_tools"], json!([]));
         assert_eq!(state["state"]["last_status"], "thinking");
         assert_eq!(state["state"]["is_ready"], true);
         assert_eq!(state["state"]["is_responding"], true);
