@@ -964,7 +964,7 @@ describe("OAuth Index", () => {
 				refresh: "parent-refresh-token",
 				expires: Date.now() + 60 * 60 * 1000,
 				metadata: {
-					deviceId: "old-v1-device",
+					deviceId: "desktop-test-device",
 					identityBaseUrl: "https://identity.evalops.test",
 					organizationId: "org_123",
 					providerRef: {
@@ -981,7 +981,7 @@ describe("OAuth Index", () => {
 					runId: "run-child-1",
 					scopes: ["llm_gateway:invoke"],
 					surface: "maestro-subagent",
-					token: "delegated-child-token",
+					token: "child-token",
 				}),
 			).resolves.toEqual(
 				expect.objectContaining({

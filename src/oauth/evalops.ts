@@ -436,11 +436,13 @@ export async function issueEvalOpsDelegationToken(
 			? (loadOAuthCredentials("evalops")?.metadata ?? metadata)
 			: metadata;
 	let enrolledDeviceId = getMetadataString(delegationMetadata, "deviceId");
-	let deviceProof = await buildEnrolledDesktopDeviceProof(
-		identityBaseUrl,
-		"delegation",
-		enrolledDeviceId,
-	);
+	let deviceProof = request.token
+		? undefined
+		: await buildEnrolledDesktopDeviceProof(
+				identityBaseUrl,
+				"delegation",
+				enrolledDeviceId,
+			);
 	if (!deviceProof && !request.token) {
 		const migratedDeviceId = await enrollCurrentDesktopDevice(
 			identityBaseUrl,
