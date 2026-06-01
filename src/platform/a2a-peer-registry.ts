@@ -147,6 +147,12 @@ export async function upsertA2APeerFromPairingPayload(
 		tokenFile: previousTokenFile,
 		...previousFields
 	} = previous ?? {};
+	const identityChanged =
+		trimString(previous?.url) !== connection.baseUrl ||
+		trimString(previous?.agentCardUrl) !== connection.agentCardUrl ||
+		trimString(previous?.displayName) !== connection.displayName ||
+		trimString(previous?.protocolBinding) !== connection.protocolBinding ||
+		trimString(previous?.protocolVersion) !== connection.protocolVersion;
 	const entry: A2APeerRegistryEntry = {
 		...previousFields,
 		url: connection.baseUrl,
@@ -159,6 +165,7 @@ export async function upsertA2APeerFromPairingPayload(
 			previousTokenFile,
 			tokenEnv: options.tokenEnv,
 			tokenFile: options.tokenFile,
+			retainExisting: !identityChanged,
 		}),
 		...(options.organizationId
 			? { organizationId: options.organizationId }
@@ -263,6 +270,7 @@ function resolveUpsertTokenFields(input: {
 	previousTokenFile?: string;
 	tokenEnv?: string;
 	tokenFile?: string;
+	retainExisting?: boolean;
 }): Pick<A2APeerRegistryEntry, "tokenEnv" | "tokenFile"> {
 	const tokenEnv = trimString(input.tokenEnv);
 	const tokenFile = trimString(input.tokenFile);
@@ -274,6 +282,9 @@ function resolveUpsertTokenFields(input: {
 	}
 	if (tokenFile) {
 		return { tokenFile: expandHome(tokenFile) };
+	}
+	if (!input.retainExisting) {
+		return {};
 	}
 	return {
 		...(input.previousTokenEnv ? { tokenEnv: input.previousTokenEnv } : {}),

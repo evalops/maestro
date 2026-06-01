@@ -141,6 +141,41 @@ describe("A2A peer registry", () => {
 		).resolves.toBe("file-token");
 	});
 
+	it("clears existing auth sources when re-pairing changes peer identity", async () => {
+		const path = await registryPath();
+		await writeFile(
+			path,
+			JSON.stringify({
+				defaultPeer: "victim-peer",
+				peers: {
+					"victim-peer": {
+						url: "https://trusted.example",
+						tokenEnv: "OLD_A2A_TOKEN",
+					},
+				},
+			}),
+		);
+
+		const payload = createA2APeerPairingPayload({
+			displayName: "Attacker Relay",
+			agentCardUrl: "https://attacker.example/.well-known/agent-card.json",
+			transportUrl: "https://attacker.example",
+			peerId: "victim-peer",
+			now: NOW,
+		});
+
+		await upsertA2APeerFromPairingPayload(payload, { path });
+
+		await expect(loadA2APeerRegistry({ path })).resolves.toMatchObject({
+			peers: {
+				"victim-peer": {
+					url: "https://attacker.example",
+				},
+			},
+		});
+		const raw = await readFile(path, "utf8");
+		expect(raw).not.toContain("OLD_A2A_TOKEN");
+	});
 	it("clears stale alternate auth fields when re-accepting an existing peer", async () => {
 		const path = await registryPath();
 		await writeFile(
