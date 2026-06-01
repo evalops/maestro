@@ -394,7 +394,8 @@ function serverConfigsEqual(
 		left.enabled === right.enabled &&
 		left.disabled === right.disabled &&
 		left.timeout === right.timeout &&
-		left.scope === right.scope
+		left.scope === right.scope &&
+		left.requiresProjectApproval === right.requiresProjectApproval
 	);
 }
 
@@ -562,6 +563,15 @@ interface ConnectedServer {
 	reconnectAttempts: number;
 }
 
+interface PendingConnection {
+	promise?: Promise<void>;
+	client?: Client;
+	transport?: Transport;
+	cancelled: boolean;
+}
+
+type ConnectServerResult = "connected" | "failed" | "cancelled";
+
 function normalizePromptDefinition(prompt: McpPrompt): McpPromptDefinition {
 	return {
 		name: prompt.name,
@@ -592,8 +602,8 @@ export class McpClientManager extends EventEmitter {
 	/** Map of server name to connected server state */
 	private servers = new Map<string, ConnectedServer>();
 
-	/** Map of server name to in-flight connection promise (prevents duplicates) */
-	private connecting = new Map<string, Promise<void>>();
+	/** Map of server name to in-flight connection state (prevents duplicates) */
+	private connecting = new Map<string, PendingConnection>();
 
 	/** Map of server name to pending reconnect timer */
 	private reconnectTimers = new Map<string, ReturnType<typeof setTimeout>>();
@@ -665,10 +675,6 @@ export class McpClientManager extends EventEmitter {
 		// Disconnect and reconnect updated servers so in-place edits take effect.
 		await Promise.allSettled(
 			toReconnect.map(async (server) => {
-				const pendingConnection = this.connecting.get(server.name);
-				if (pendingConnection) {
-					await Promise.allSettled([pendingConnection]);
-				}
 				await this.disconnectServer(server.name);
 				if (canConnectServer(server, nextApprovalMap)) {
 					await this.connectServer(server);
@@ -714,7 +720,11 @@ export class McpClientManager extends EventEmitter {
 		this.reconnectTimers.clear();
 
 		// Disconnect all servers
-		const promises = Array.from(this.servers.keys()).map((name) =>
+		const disconnectNames = new Set([
+			...this.servers.keys(),
+			...this.connecting.keys(),
+		]);
+		const promises = Array.from(disconnectNames).map((name) =>
 			this.disconnectServer(name),
 		);
 		await Promise.allSettled(promises);
@@ -724,29 +734,45 @@ export class McpClientManager extends EventEmitter {
 	 * Internal: Connect to a single server.
 	 * Handles deduplication of concurrent connection attempts.
 	 */
-	private async connectServer(config: McpServerConfig): Promise<void> {
+	private async connectServer(
+		config: McpServerConfig,
+		isReconnect = false,
+	): Promise<ConnectServerResult> {
 		const { name } = config;
 
 		// Avoid duplicate connections
 		if (this.servers.has(name)) {
-			return;
+			return "connected";
 		}
 
 		// Check for in-flight connection (prevent race conditions)
 		const existing = this.connecting.get(name);
-		if (existing) {
-			return existing;
+		if (existing?.promise) {
+			await existing.promise;
+			return existing.cancelled
+				? "cancelled"
+				: this.servers.has(name)
+					? "connected"
+					: "failed";
 		}
 
 		// Track this connection attempt
-		const task = this.doConnect(config);
-		this.connecting.set(name, task);
+		const pending: PendingConnection = { cancelled: false };
+		const task = this.doConnect(config, isReconnect, pending);
+		pending.promise = task;
+		this.connecting.set(name, pending);
 
 		try {
 			await task;
 		} finally {
-			this.connecting.delete(name);
+			if (this.connecting.get(name) === pending) {
+				this.connecting.delete(name);
+			}
 		}
+		if (pending.cancelled) {
+			return "cancelled";
+		}
+		return this.servers.has(name) ? "connected" : "failed";
 	}
 
 	/**
@@ -762,6 +788,7 @@ export class McpClientManager extends EventEmitter {
 	private async doConnect(
 		config: McpServerConfig,
 		isReconnect = false,
+		pending?: PendingConnection,
 	): Promise<void> {
 		const { name, transport: transportType } = config;
 
@@ -808,6 +835,9 @@ export class McpClientManager extends EventEmitter {
 					cwd: config.cwd,
 				});
 			}
+			if (pending) {
+				pending.transport = transport;
+			}
 
 			const client = new Client(
 				{
@@ -823,6 +853,9 @@ export class McpClientManager extends EventEmitter {
 					},
 				},
 			);
+			if (pending) {
+				pending.client = client;
+			}
 
 			client.setRequestHandler(ElicitRequestSchema, async (request, extra) => {
 				const clientToolService = getCurrentMcpClientToolService();
@@ -878,6 +911,14 @@ export class McpClientManager extends EventEmitter {
 					.filter((capability) => capability !== undefined),
 			);
 
+			if (
+				pending?.cancelled ||
+				!canConnectServer(config, buildProjectApprovalMap(this.config))
+			) {
+				await Promise.allSettled([client.close(), transport.close()]);
+				return;
+			}
+
 			this.servers.set(name, {
 				config,
 				client,
@@ -918,10 +959,28 @@ export class McpClientManager extends EventEmitter {
 			this.emit("error", { name, error: message });
 
 			// Schedule reconnection for non-reconnect attempts
-			if (!isReconnect) {
-				this.scheduleReconnect(config, 0);
+			const reconnectConfig = pending?.cancelled
+				? undefined
+				: this.getCurrentConnectableServer(config.name);
+			if (!isReconnect && reconnectConfig) {
+				this.scheduleReconnect(reconnectConfig, 0);
 			}
 		}
+	}
+
+	private getCurrentConnectableServer(
+		name: string,
+	): McpServerConfig | undefined {
+		const currentConfig = this.config.servers.find(
+			(server) => server.name === name,
+		);
+		if (
+			!currentConfig ||
+			!canConnectServer(currentConfig, buildProjectApprovalMap(this.config))
+		) {
+			return undefined;
+		}
+		return currentConfig;
 	}
 
 	private scheduleReconnect(config: McpServerConfig, attempt: number): void {
@@ -950,17 +1009,26 @@ export class McpClientManager extends EventEmitter {
 			if (this.servers.has(config.name)) {
 				return; // Already reconnected
 			}
+			const reconnectConfig = this.getCurrentConnectableServer(config.name);
+			if (!reconnectConfig) {
+				return;
+			}
 
 			try {
-				await this.doConnect(config, true);
+				const result = await this.connectServer(reconnectConfig, true);
 				// If doConnect succeeded (server is now connected), we're done
-				if (!this.servers.has(config.name)) {
+				if (
+					result === "failed" &&
+					this.getCurrentConnectableServer(config.name)
+				) {
 					// Connection failed (doConnect caught the error), schedule retry
 					this.scheduleReconnect(config, attempt + 1);
 				}
 			} catch {
 				// Unexpected error, schedule retry
-				this.scheduleReconnect(config, attempt + 1);
+				if (this.getCurrentConnectableServer(config.name)) {
+					this.scheduleReconnect(config, attempt + 1);
+				}
 			}
 		}, delay);
 
@@ -1134,6 +1202,16 @@ export class McpClientManager extends EventEmitter {
 		if (timer) {
 			clearTimeout(timer);
 			this.reconnectTimers.delete(name);
+		}
+
+		const pendingConnection = this.connecting.get(name);
+		if (pendingConnection) {
+			pendingConnection.cancelled = true;
+			this.connecting.delete(name);
+			await Promise.allSettled([
+				pendingConnection.client?.close(),
+				pendingConnection.transport?.close(),
+			]);
 		}
 
 		const server = this.servers.get(name);

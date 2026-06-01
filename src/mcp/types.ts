@@ -122,6 +122,7 @@ export interface McpServerConfig {
 	timeout?: number;
 	supportsParallelToolCalls?: boolean;
 	scope?: McpScope;
+	requiresProjectApproval?: boolean;
 }
 
 export type McpParallelSafetyProvenance =
