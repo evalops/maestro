@@ -21,6 +21,7 @@ const mockSetNotificationHandler = vi.fn();
 const mockSetRequestHandler = vi.fn();
 const mockListTools = vi.fn().mockResolvedValue({ tools: [] });
 const mockListPrompts = vi.fn().mockResolvedValue({ prompts: [] });
+const mockTransportClose = vi.fn().mockResolvedValue(undefined);
 let mockServerCapabilities: Record<string, unknown> = {
 	tools: {},
 	resources: {},
@@ -57,7 +58,7 @@ vi.mock("@modelcontextprotocol/sdk/client/sse.js", () => ({
 			sseTransportCtor(url, options);
 		}
 
-		async close() {}
+		close = mockTransportClose;
 	},
 }));
 
@@ -67,7 +68,7 @@ vi.mock("@modelcontextprotocol/sdk/client/streamableHttp.js", () => ({
 			httpTransportCtor(url, options);
 		}
 
-		async close() {}
+		close = mockTransportClose;
 	},
 }));
 
@@ -94,6 +95,7 @@ describe("MCP manager remote transports", () => {
 		mockCallTool.mockClear();
 		mockSetNotificationHandler.mockClear();
 		mockSetRequestHandler.mockClear();
+		mockTransportClose.mockClear();
 		mockListTools.mockReset().mockResolvedValue({ tools: [] });
 		mockListPrompts.mockReset().mockResolvedValue({ prompts: [] });
 		mockServerCapabilities = {
@@ -1012,6 +1014,197 @@ describe("MCP manager remote transports", () => {
 		await expect(reconnect).resolves.toBe(false);
 		await configure;
 		expect(manager.isConnected("fathom-cua")).toBe(false);
+	});
+
+	it("closes a pending transport when approval is denied during a stuck connection", async () => {
+		const server = {
+			name: "fathom-cua",
+			scope: "plugin" as const,
+			requiresProjectApproval: true,
+			transport: "http" as const,
+			url: "https://example.com/mcp",
+		};
+		setProjectMcpServerApprovalDecision({
+			projectRoot: tempDir,
+			server,
+			decision: "approved",
+		});
+		let resolveListTools!: (value: { tools: [] }) => void;
+		mockListTools.mockReturnValue(
+			new Promise((resolve) => {
+				resolveListTools = resolve;
+			}),
+		);
+
+		const configure = manager.configure({
+			projectRoot: tempDir,
+			authPresets: [],
+			servers: [server],
+		});
+		await vi.waitFor(() => {
+			expect(mockListTools).toHaveBeenCalled();
+		});
+
+		setProjectMcpServerApprovalDecision({
+			projectRoot: tempDir,
+			server,
+			decision: "denied",
+		});
+		await expect(manager.reconnect("fathom-cua")).resolves.toBe(false);
+
+		expect(mockClientClose).toHaveBeenCalled();
+		expect(mockTransportClose).toHaveBeenCalled();
+		expect(manager.isConnected("fathom-cua")).toBe(false);
+
+		resolveListTools({ tools: [] });
+		await configure;
+		expect(manager.isConnected("fathom-cua")).toBe(false);
+	});
+
+	it("does not reconnect a cancelled pending connection after disconnectAll", async () => {
+		const server = {
+			name: "remote-http",
+			transport: "http" as const,
+			url: "https://example.com/mcp",
+		};
+		let rejectConnect!: (error: Error) => void;
+		mockClientConnect.mockReturnValueOnce(
+			new Promise((_resolve, reject) => {
+				rejectConnect = reject;
+			}),
+		);
+
+		const configure = manager.configure({
+			servers: [server],
+		});
+		await vi.waitFor(() => {
+			expect(mockClientConnect).toHaveBeenCalledTimes(1);
+		});
+
+		await manager.disconnectAll();
+
+		vi.useFakeTimers();
+		try {
+			rejectConnect(new Error("closed while pending"));
+			await configure;
+			await vi.advanceTimersByTimeAsync(5001);
+			expect(mockClientConnect).toHaveBeenCalledTimes(1);
+			expect(manager.getStatus().servers[0]?.error).toBeUndefined();
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it("does not connect remote transports after cancellation while resolving headers", async () => {
+		const helperPath = join(tempDir, "slow-headers-helper.js");
+		const helperStartedPath = join(tempDir, "slow-headers-helper-started");
+		writeFileSync(
+			helperPath,
+			[
+				`require("node:fs").writeFileSync(${JSON.stringify(helperStartedPath)}, "1");`,
+				"setTimeout(() => {",
+				'  console.log(JSON.stringify({ Authorization: "Bearer late" }));',
+				"}, 50);",
+				"",
+			].join("\n"),
+		);
+
+		const configure = manager.configure({
+			servers: [
+				{
+					name: "remote-http",
+					transport: "http",
+					url: "https://example.com/mcp",
+					headersHelper: `${process.execPath} ${helperPath}`,
+				},
+			],
+		});
+
+		await vi.waitFor(() => {
+			expect(existsSync(helperStartedPath)).toBe(true);
+		});
+		await manager.disconnectAll();
+		await configure;
+
+		expect(httpTransportCtor).not.toHaveBeenCalled();
+		expect(mockClientConnect).not.toHaveBeenCalled();
+		expect(manager.isConnected("remote-http")).toBe(false);
+		expect(manager.getStatus().servers[0]?.error).toBeUndefined();
+	});
+
+	it("cancels manual reconnects while fetching capabilities", async () => {
+		const server = {
+			name: "remote-http",
+			transport: "http" as const,
+			url: "https://example.com/mcp",
+		};
+		await manager.configure({ servers: [server] });
+		expect(manager.isConnected("remote-http")).toBe(true);
+
+		let resolveListTools!: (value: { tools: [] }) => void;
+		mockListTools.mockReturnValueOnce(
+			new Promise((resolve) => {
+				resolveListTools = resolve;
+			}),
+		);
+
+		const reconnect = manager.reconnect("remote-http");
+		await vi.waitFor(() => {
+			expect(mockListTools).toHaveBeenCalledTimes(2);
+		});
+
+		await manager.disconnectAll();
+		resolveListTools({ tools: [] });
+
+		await expect(reconnect).resolves.toBe(false);
+		expect(manager.isConnected("remote-http")).toBe(false);
+	});
+
+	it("tracks reconnect retries so they can be cancelled while fetching capabilities", async () => {
+		const server = {
+			name: "remote-http",
+			transport: "http" as const,
+			url: "https://example.com/mcp",
+		};
+		const reconnectableManager = manager as unknown as {
+			config: { servers: [typeof server]; authPresets: [] };
+			scheduleReconnect(config: typeof server, attempt: number): void;
+		};
+		let resolveListTools!: (value: { tools: [] }) => void;
+		mockListTools.mockReturnValue(
+			new Promise((resolve) => {
+				resolveListTools = resolve;
+			}),
+		);
+
+		vi.useFakeTimers();
+		try {
+			reconnectableManager.config = { servers: [server], authPresets: [] };
+			reconnectableManager.scheduleReconnect(server, 0);
+			expect(vi.getTimerCount()).toBe(1);
+
+			mockClientClose.mockClear();
+			mockTransportClose.mockClear();
+			vi.advanceTimersByTime(5000);
+			for (let i = 0; i < 10; i += 1) {
+				await Promise.resolve();
+			}
+
+			expect(mockClientConnect).toHaveBeenCalledTimes(1);
+			expect(mockListTools).toHaveBeenCalledTimes(1);
+
+			await manager.disconnectAll();
+			expect(mockClientClose).toHaveBeenCalled();
+			expect(mockTransportClose).toHaveBeenCalled();
+
+			resolveListTools({ tools: [] });
+			for (let i = 0; i < 10; i += 1) {
+				await Promise.resolve();
+			}
+			expect(manager.isConnected("remote-http")).toBe(false);
+		} finally {
+			vi.useRealTimers();
+		}
 	});
 
 	it("merges static headers with headersHelper output for remote transports", async () => {
