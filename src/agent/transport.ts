@@ -479,7 +479,29 @@ export class ProviderTransport implements AgentTransport {
 			tools,
 			reusableToolResultCwd,
 		);
-		this.refreshReusableToolResultState(tools, reusableToolResultCwd);
+		clearRunScopedReusableToolResultState(
+			this.reusableToolResults,
+			this.pendingReusableToolResults,
+			this.policyCheckedReusableToolResultKeys,
+			this.pendingReusableToolSafetyChecks,
+			this.reusableToolResultCacheGeneration,
+		);
+		let reusableToolResultStatePrepared = false;
+		const hasExistingReusableToolResultState =
+			this.reusableToolResults.size > 0 ||
+			this.pendingReusableToolResults.size > 0 ||
+			this.policyCheckedReusableToolResultKeys.size > 0 ||
+			this.pendingReusableToolSafetyChecks.size > 0;
+		const prepareReusableToolResultState = () => {
+			if (reusableToolResultStatePrepared) {
+				return;
+			}
+			this.refreshReusableToolResultState(tools, reusableToolResultCwd);
+			reusableToolResultStatePrepared = true;
+		};
+		if (hasExistingReusableToolResultState) {
+			prepareReusableToolResultState();
+		}
 		const reusableToolResults = this.reusableToolResults;
 		const pendingReusableToolResults = this.pendingReusableToolResults;
 		const policyCheckedReusableToolResultKeys =
@@ -488,13 +510,6 @@ export class ProviderTransport implements AgentTransport {
 			this.pendingReusableToolSafetyChecks;
 		const reusableToolResultCacheGeneration =
 			this.reusableToolResultCacheGeneration;
-		clearRunScopedReusableToolResultState(
-			reusableToolResults,
-			pendingReusableToolResults,
-			policyCheckedReusableToolResultKeys,
-			pendingReusableToolSafetyChecks,
-			reusableToolResultCacheGeneration,
-		);
 		const pendingDynamicToolExecutions: PendingExecution[] = [];
 		const platformToolExecutionBridge = resolvePlatformToolExecutionBridge(
 			this.options.platformToolExecutionBridge,
@@ -579,6 +594,7 @@ export class ProviderTransport implements AgentTransport {
 			};
 
 			try {
+				prepareReusableToolResultState();
 				const reusableToolResultKey = getReusableToolResultCacheKey(
 					toolCall,
 					toolMetadataCache,
@@ -1676,6 +1692,7 @@ export class ProviderTransport implements AgentTransport {
 						toolDef,
 					);
 					const mutationScope = getMutationScope(toolCall, toolDef);
+					prepareReusableToolResultState();
 					const reusableToolResultKey = getReusableToolResultCacheKey(
 						toolCall,
 						toolMetadataCache,
@@ -1780,6 +1797,7 @@ export class ProviderTransport implements AgentTransport {
 						pendingMutationScopes.delete(next.execution);
 						pendingExecutionWaveIndexes.delete(next.execution);
 						pendingExecutionScheduling.delete(next.execution);
+						prepareReusableToolResultState();
 						const completedToolWasMutating =
 							getReusableToolResultCacheKey(
 								next.execution.toolCall,
@@ -1903,6 +1921,7 @@ export class ProviderTransport implements AgentTransport {
 							break;
 						}
 					}
+					prepareReusableToolResultState();
 					const reusableToolResultKey = getReusableToolResultCacheKey(
 						toolCall,
 						toolMetadataCache,
