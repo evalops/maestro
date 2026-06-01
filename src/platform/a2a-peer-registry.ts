@@ -142,11 +142,30 @@ export async function upsertA2APeerFromPairingPayload(
 	const name = normalizePeerName(options.name ?? connection.peerId);
 	const now = (options.now ?? new Date()).toISOString();
 	const previous = registry.peers[name];
+	const nextBaseUrl = normalizedPeerUrl(connection.baseUrl);
 	const {
 		tokenEnv: previousTokenEnv,
 		tokenFile: previousTokenFile,
+		keyFingerprint: _previousKeyFingerprint,
 		...previousFields
 	} = previous ?? {};
+	const identityChanged = Boolean(
+		previous &&
+			(normalizedPeerUrl(previous.url) !== nextBaseUrl ||
+				identityFieldChanged(previous.agentCardUrl, connection.agentCardUrl) ||
+				identityFieldChanged(
+					previous.protocolBinding,
+					connection.protocolBinding,
+				) ||
+				identityFieldChanged(
+					previous.protocolVersion,
+					connection.protocolVersion,
+				) ||
+				identityOptionalFieldChanged(
+					previous.keyFingerprint,
+					connection.keyFingerprint,
+				)),
+	);
 	const entry: A2APeerRegistryEntry = {
 		...previousFields,
 		url: connection.baseUrl,
@@ -159,6 +178,7 @@ export async function upsertA2APeerFromPairingPayload(
 			previousTokenFile,
 			tokenEnv: options.tokenEnv,
 			tokenFile: options.tokenFile,
+			retainExisting: !identityChanged,
 		}),
 		...(options.organizationId
 			? { organizationId: options.organizationId }
@@ -263,6 +283,7 @@ function resolveUpsertTokenFields(input: {
 	previousTokenFile?: string;
 	tokenEnv?: string;
 	tokenFile?: string;
+	retainExisting?: boolean;
 }): Pick<A2APeerRegistryEntry, "tokenEnv" | "tokenFile"> {
 	const tokenEnv = trimString(input.tokenEnv);
 	const tokenFile = trimString(input.tokenFile);
@@ -275,10 +296,36 @@ function resolveUpsertTokenFields(input: {
 	if (tokenFile) {
 		return { tokenFile: expandHome(tokenFile) };
 	}
+	if (!input.retainExisting) {
+		return {};
+	}
 	return {
 		...(input.previousTokenEnv ? { tokenEnv: input.previousTokenEnv } : {}),
 		...(input.previousTokenFile ? { tokenFile: input.previousTokenFile } : {}),
 	};
+}
+
+function normalizedPeerUrl(url: string): string | undefined {
+	const peerUrl = trimString(url);
+	return peerUrl ? normalizeA2ABaseUrl(peerUrl) : undefined;
+}
+
+function identityFieldChanged(
+	previousValue: string | undefined,
+	nextValue: string | undefined,
+): boolean {
+	const previous = trimString(previousValue);
+	const next = trimString(nextValue);
+	return Boolean(previous && next && previous !== next);
+}
+
+function identityOptionalFieldChanged(
+	previousValue: string | undefined,
+	nextValue: string | undefined,
+): boolean {
+	const previous = trimString(previousValue);
+	const next = trimString(nextValue);
+	return previous !== next;
 }
 
 function normalizeRegistryEntry(

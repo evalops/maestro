@@ -181,6 +181,341 @@ describe("A2A peer registry", () => {
 		).resolves.toBe("file-token");
 	});
 
+	it("clears existing auth sources when re-pairing changes peer identity", async () => {
+		const path = await registryPath();
+		await writeFile(
+			path,
+			JSON.stringify({
+				defaultPeer: "victim-peer",
+				peers: {
+					"victim-peer": {
+						url: "https://trusted.example",
+						tokenEnv: "OLD_A2A_TOKEN",
+					},
+				},
+			}),
+		);
+
+		const payload = createA2APeerPairingPayload({
+			displayName: "Attacker Relay",
+			agentCardUrl: "https://attacker.example/.well-known/agent-card.json",
+			transportUrl: "https://attacker.example",
+			peerId: "victim-peer",
+			now: NOW,
+		});
+
+		await upsertA2APeerFromPairingPayload(payload, { path });
+
+		await expect(loadA2APeerRegistry({ path })).resolves.toMatchObject({
+			peers: {
+				"victim-peer": {
+					url: "https://attacker.example",
+				},
+			},
+		});
+		const raw = await readFile(path, "utf8");
+		expect(raw).not.toContain("OLD_A2A_TOKEN");
+	});
+
+	it("retains auth sources when re-pairing adds metadata for the same minimal peer", async () => {
+		const path = await registryPath();
+		await writeFile(
+			path,
+			JSON.stringify({
+				defaultPeer: "stable-peer",
+				peers: {
+					"stable-peer": {
+						url: "https://stable.example",
+						tokenEnv: "STABLE_A2A_TOKEN",
+					},
+				},
+			}),
+		);
+
+		const payload = createA2APeerPairingPayload({
+			displayName: "Stable Relay",
+			agentCardUrl: "https://stable.example/.well-known/agent-card.json",
+			transportUrl: "https://stable.example",
+			peerId: "stable-peer",
+			now: NOW,
+		});
+
+		await upsertA2APeerFromPairingPayload(payload, { path });
+
+		await expect(loadA2APeerRegistry({ path })).resolves.toMatchObject({
+			peers: {
+				"stable-peer": {
+					url: "https://stable.example",
+					tokenEnv: "STABLE_A2A_TOKEN",
+					displayName: "Stable Relay",
+				},
+			},
+		});
+	});
+
+	it("retains auth sources when re-pairing only renames a peer", async () => {
+		const path = await registryPath();
+		await writeFile(
+			path,
+			JSON.stringify({
+				defaultPeer: "renamed-peer",
+				peers: {
+					"renamed-peer": {
+						url: "https://stable.example/a2a",
+						displayName: "Old Relay",
+						tokenEnv: "STABLE_A2A_TOKEN",
+						keyFingerprint: "sha256:stable-key",
+					},
+				},
+			}),
+		);
+
+		const payload = createA2APeerPairingPayload({
+			displayName: "Renamed Relay",
+			agentCardUrl: "https://stable.example/a2a/.well-known/agent-card.json",
+			transportUrl: "https://stable.example/a2a",
+			peerId: "renamed-peer",
+			keyFingerprint: "sha256:stable-key",
+			now: NOW,
+		});
+
+		await upsertA2APeerFromPairingPayload(payload, { path });
+
+		await expect(loadA2APeerRegistry({ path })).resolves.toMatchObject({
+			peers: {
+				"renamed-peer": {
+					url: "https://stable.example/a2a",
+					displayName: "Renamed Relay",
+					tokenEnv: "STABLE_A2A_TOKEN",
+					keyFingerprint: "sha256:stable-key",
+				},
+			},
+		});
+	});
+
+	it("retains auth sources when re-pairing a peer stored with a trailing slash URL", async () => {
+		const path = await registryPath();
+		await writeFile(
+			path,
+			JSON.stringify({
+				defaultPeer: "slash-peer",
+				peers: {
+					"slash-peer": {
+						url: "https://stable.example/",
+						tokenEnv: "STABLE_A2A_TOKEN",
+					},
+				},
+			}),
+		);
+
+		const payload = createA2APeerPairingPayload({
+			displayName: "Stable Relay",
+			agentCardUrl: "https://stable.example/.well-known/agent-card.json",
+			transportUrl: "https://stable.example",
+			peerId: "slash-peer",
+			now: NOW,
+		});
+
+		await upsertA2APeerFromPairingPayload(payload, { path });
+
+		await expect(loadA2APeerRegistry({ path })).resolves.toMatchObject({
+			peers: {
+				"slash-peer": {
+					url: "https://stable.example",
+					tokenEnv: "STABLE_A2A_TOKEN",
+					displayName: "Stable Relay",
+				},
+			},
+		});
+	});
+
+	it("retains auth sources when re-pairing a peer stored with a message send URL", async () => {
+		const path = await registryPath();
+		await writeFile(
+			path,
+			JSON.stringify({
+				defaultPeer: "send-peer",
+				peers: {
+					"send-peer": {
+						url: "https://stable.example/a2a/message:send",
+						tokenFile: "~/stable-a2a-token",
+					},
+				},
+			}),
+		);
+
+		const payload = createA2APeerPairingPayload({
+			displayName: "Stable Relay",
+			agentCardUrl: "https://stable.example/a2a/.well-known/agent-card.json",
+			transportUrl: "https://stable.example/a2a",
+			peerId: "send-peer",
+			now: NOW,
+		});
+
+		await upsertA2APeerFromPairingPayload(payload, { path });
+
+		await expect(loadA2APeerRegistry({ path })).resolves.toMatchObject({
+			peers: {
+				"send-peer": {
+					url: "https://stable.example/a2a",
+					tokenFile: "~/stable-a2a-token",
+					displayName: "Stable Relay",
+				},
+			},
+		});
+	});
+
+	it("retains auth sources when re-pairing a canonical peer with a message send URL", async () => {
+		const path = await registryPath();
+		await writeFile(
+			path,
+			JSON.stringify({
+				defaultPeer: "send-peer",
+				peers: {
+					"send-peer": {
+						url: "https://stable.example/a2a",
+						tokenEnv: "STABLE_A2A_TOKEN",
+					},
+				},
+			}),
+		);
+
+		const payload = createA2APeerPairingPayload({
+			displayName: "Stable Relay",
+			agentCardUrl: "https://stable.example/a2a/.well-known/agent-card.json",
+			transportUrl: "https://stable.example/a2a/message:send",
+			peerId: "send-peer",
+			now: NOW,
+		});
+
+		await upsertA2APeerFromPairingPayload(payload, { path });
+
+		await expect(loadA2APeerRegistry({ path })).resolves.toMatchObject({
+			peers: {
+				"send-peer": {
+					url: "https://stable.example/a2a/message:send",
+					tokenEnv: "STABLE_A2A_TOKEN",
+					displayName: "Stable Relay",
+				},
+			},
+		});
+	});
+
+	it("clears existing auth sources when a peer key fingerprint changes", async () => {
+		const path = await registryPath();
+		await writeFile(
+			path,
+			JSON.stringify({
+				defaultPeer: "signed-peer",
+				peers: {
+					"signed-peer": {
+						url: "https://signed.example",
+						tokenEnv: "SIGNED_A2A_TOKEN",
+						keyFingerprint: "sha256:old-key",
+					},
+				},
+			}),
+		);
+
+		const payload = createA2APeerPairingPayload({
+			displayName: "Signed Relay",
+			agentCardUrl: "https://signed.example/.well-known/agent-card.json",
+			transportUrl: "https://signed.example",
+			peerId: "signed-peer",
+			keyFingerprint: "sha256:new-key",
+			now: NOW,
+		});
+
+		await upsertA2APeerFromPairingPayload(payload, { path });
+
+		await expect(loadA2APeerRegistry({ path })).resolves.toMatchObject({
+			peers: {
+				"signed-peer": {
+					url: "https://signed.example",
+					keyFingerprint: "sha256:new-key",
+				},
+			},
+		});
+		const raw = await readFile(path, "utf8");
+		expect(raw).not.toContain("SIGNED_A2A_TOKEN");
+	});
+
+	it("clears existing auth sources when a peer key fingerprint is removed", async () => {
+		const path = await registryPath();
+		await writeFile(
+			path,
+			JSON.stringify({
+				defaultPeer: "unsigned-peer",
+				peers: {
+					"unsigned-peer": {
+						url: "https://unsigned.example",
+						tokenEnv: "SIGNED_A2A_TOKEN",
+						keyFingerprint: "sha256:old-key",
+					},
+				},
+			}),
+		);
+
+		const payload = createA2APeerPairingPayload({
+			displayName: "Unsigned Relay",
+			agentCardUrl: "https://unsigned.example/.well-known/agent-card.json",
+			transportUrl: "https://unsigned.example",
+			peerId: "unsigned-peer",
+			now: NOW,
+		});
+
+		await upsertA2APeerFromPairingPayload(payload, { path });
+
+		await expect(loadA2APeerRegistry({ path })).resolves.toMatchObject({
+			peers: {
+				"unsigned-peer": {
+					url: "https://unsigned.example",
+				},
+			},
+		});
+		const raw = await readFile(path, "utf8");
+		expect(raw).not.toContain("SIGNED_A2A_TOKEN");
+		expect(raw).not.toContain("sha256:old-key");
+	});
+
+	it("retains auth sources when a peer key fingerprint is unchanged", async () => {
+		const path = await registryPath();
+		await writeFile(
+			path,
+			JSON.stringify({
+				defaultPeer: "stable-signed-peer",
+				peers: {
+					"stable-signed-peer": {
+						url: "https://stable-signed.example",
+						tokenEnv: "STABLE_SIGNED_A2A_TOKEN",
+						keyFingerprint: "sha256:stable-key",
+					},
+				},
+			}),
+		);
+
+		const payload = createA2APeerPairingPayload({
+			displayName: "Stable Signed Relay",
+			agentCardUrl: "https://stable-signed.example/.well-known/agent-card.json",
+			transportUrl: "https://stable-signed.example",
+			peerId: "stable-signed-peer",
+			keyFingerprint: "sha256:stable-key",
+			now: NOW,
+		});
+
+		await upsertA2APeerFromPairingPayload(payload, { path });
+
+		await expect(loadA2APeerRegistry({ path })).resolves.toMatchObject({
+			peers: {
+				"stable-signed-peer": {
+					url: "https://stable-signed.example",
+					tokenEnv: "STABLE_SIGNED_A2A_TOKEN",
+					keyFingerprint: "sha256:stable-key",
+				},
+			},
+		});
+	});
+
 	it("clears stale alternate auth fields when re-accepting an existing peer", async () => {
 		const path = await registryPath();
 		await writeFile(
