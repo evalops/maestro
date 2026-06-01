@@ -95,6 +95,7 @@ import type { Agent, Api, Model } from "./agent/index.js";
 import { loadScriptedScenarioFromSource } from "./agent/providers/scripted.js";
 import { scenarioSourceLabel } from "./agent/scenario-source.js";
 import { type ToolRetryMode, ToolRetryService } from "./agent/tool-retry.js";
+import type { ClientToolExecutionService } from "./agent/transport.js";
 import {
 	applySessionStartHooks,
 	runUserPromptWithRecovery,
@@ -136,13 +137,9 @@ import { resolveMaestroSystemPrompt } from "./prompts/system-prompt.js";
 import type { AuthMode } from "./providers/auth.js";
 import { configureSafeMode } from "./safety/safe-mode.js";
 import { LocalSandbox } from "./sandbox/index.js";
-import { ServerRequestActionApprovalService } from "./server/approval-service.js";
-import { clientToolService } from "./server/client-tools-service.js";
-import { ServerRequestToolRetryService } from "./server/tool-retry-service.js";
 import { SessionManager } from "./session/manager.js";
 import { beaconTimeoutMs } from "./telemetry/beacon.js";
 import { recordStagedRolloutSurfaceUsageLazy } from "./telemetry/staged-rollout-lazy.js";
-import { askUserClientTool } from "./tools/ask-user-client.js";
 import type { UpdateCheckResult } from "./update/check.js";
 import { createStartupProfilerFromEnv } from "./utils/checkpoint-profiler.js";
 import { isInsideGitRepository } from "./utils/git.js";
@@ -1445,21 +1442,43 @@ export async function main(args: string[]) {
 		}
 		return parsed.approvalMode ?? defaultApprovalMode;
 	})();
+	const toolRetryMode: ToolRetryMode =
+		isInteractiveTui && !isHeadlessMode ? "prompt" : "skip";
 
 	// Create approval service that controls tool execution authorization
-	const approvalService = isHeadlessMode
-		? new ServerRequestActionApprovalService(
-				approvalModeOverride,
-				() => sessionManager.getSessionId() ?? undefined,
-			)
-		: new PlatformBackedActionApprovalService(approvalModeOverride, {
+	let approvalService: ActionApprovalService;
+	let headlessClientToolService: ClientToolExecutionService | undefined;
+	let toolRetryService: ToolRetryService;
+	if (isHeadlessMode) {
+		const [
+			{ ServerRequestActionApprovalService },
+			{ clientToolService },
+			{ ServerRequestToolRetryService },
+		] = await Promise.all([
+			import("./server/approval-service.js"),
+			import("./server/client-tools-service.js"),
+			import("./server/tool-retry-service.js"),
+		]);
+		approvalService = new ServerRequestActionApprovalService(
+			approvalModeOverride,
+			() => sessionManager.getSessionId() ?? undefined,
+		);
+		headlessClientToolService = clientToolService.forSession(
+			() => sessionManager.getSessionId() ?? undefined,
+		);
+		toolRetryService = new ServerRequestToolRetryService(
+			toolRetryMode,
+			() => sessionManager.getSessionId() ?? undefined,
+		);
+	} else {
+		approvalService = new PlatformBackedActionApprovalService(
+			approvalModeOverride,
+			{
 				sessionIdProvider: () => sessionManager.getSessionId() ?? undefined,
-			});
-	const headlessClientToolService = isHeadlessMode
-		? clientToolService.forSession(
-				() => sessionManager.getSessionId() ?? undefined,
-			)
-		: undefined;
+			},
+		);
+		toolRetryService = new ToolRetryService(toolRetryMode);
+	}
 	let interactiveClientToolService: TuiClientToolService | undefined;
 	if (isInteractiveTui && !isHeadlessMode) {
 		const { TuiClientToolService } = await import(
@@ -1467,14 +1486,6 @@ export async function main(args: string[]) {
 		);
 		interactiveClientToolService = new TuiClientToolService();
 	}
-	const toolRetryMode: ToolRetryMode =
-		isInteractiveTui && !isHeadlessMode ? "prompt" : "skip";
-	const toolRetryService = isHeadlessMode
-		? new ServerRequestToolRetryService(
-				toolRetryMode,
-				() => sessionManager.getSessionId() ?? undefined,
-			)
-		: new ToolRetryService(toolRetryMode);
 
 	// ─────────────────────────────────────────────────────────────────────────────
 	// PHASE 10: Tool Registry and Sandbox Setup
@@ -1501,14 +1512,13 @@ export async function main(args: string[]) {
 	}
 	const { allTools, sandbox, sandboxMode } = toolsResult;
 	startupProfiler.checkpoint("tools:prepared", { tools: allTools.length });
-	const useInteractiveClientTools = Boolean(interactiveClientToolService);
-	const replaceAskUserTool = <T extends typeof allTools>(tools: T): T =>
-		tools.map((tool) =>
+	let configuredAllTools = allTools;
+	if (interactiveClientToolService) {
+		const { askUserClientTool } = await import("./tools/ask-user-client.js");
+		configuredAllTools = allTools.map((tool) =>
 			tool.name === "ask_user" ? askUserClientTool : tool,
-		) as T;
-	const configuredAllTools = useInteractiveClientTools
-		? replaceAskUserTool(allTools)
-		: allTools;
+		);
+	}
 
 	// ─────────────────────────────────────────────────────────────────────────────
 	// PHASE 11: System Prompt Assembly
