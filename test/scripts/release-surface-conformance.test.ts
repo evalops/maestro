@@ -389,6 +389,11 @@ describe("release-surface conformance", () => {
 			'"agent-runtime-lifecycle"',
 			"function toolExecutionCoverageIsValid",
 			"function agentRuntimeLifecycleIsValid",
+			"releaseObservabilityQueryDescriptorIsValid",
+			"replay.providerConfig.prompt must match transcript.prompt",
+			"observability.transcript.promptSha256 must match transcript.prompt.sha256",
+			"const EXPECTED_PROMPT_LENGTH = 41;",
+			'"db296f4e8a050ac9e968523b0202171fca61524406900bbe534ae876ed506570"',
 			"assertPublishedReplayReleaseGate(evidence);",
 		];
 		writeFileSync(
@@ -416,6 +421,59 @@ describe("release-surface conformance", () => {
 
 		expect(failures).toContain(
 			'published-replay-evidence-verifier: scripts/verify-published-replay-evidence.js must anchor "agentRuntimeLifecycle"',
+		);
+	});
+
+	it("requires published replay verifier to bind prompt identity across evidence sections", () => {
+		tempDir = join(
+			tmpdir(),
+			`release-surface-replay-prompt-${process.pid}-${Date.now()}`,
+		);
+		mkdirSync(join(tempDir, "scripts"), { recursive: true });
+		const anchors = [
+			'const REQUIRED_INSTALLERS = ["npm", "bun"];',
+			'const REQUIRED_REPLAY_MODES = ["json", "rpc", "text"];',
+			'"toolExecutionEvidence"',
+			'"searchRipgrepEvidence"',
+			'"queryableObservabilityIndex"',
+			'"agentRuntimeLedger"',
+			'"agentRuntimeLifecycle"',
+			'"agent-runtime-lifecycle"',
+			"releaseObservabilityQueryDescriptorIsValid",
+			"function toolExecutionCoverageIsValid",
+			"function agentRuntimeLifecycleIsValid",
+			"const EXPECTED_PROMPT_LENGTH = 41;",
+			"assertPublishedReplayReleaseGate(evidence);",
+		];
+		writeFileSync(
+			join(tempDir, "scripts/verify-published-replay-evidence.js"),
+			anchors.join("\n"),
+			"utf8",
+		);
+
+		const failures = checkReleaseSurfaceConformance({
+			rootDir: tempDir,
+			manifest: {
+				version: 1,
+				checks: [
+					{
+						area: "published-replay-evidence-verifier",
+						path: "scripts/verify-published-replay-evidence.js",
+						evidenceType: "source",
+						anchors,
+					},
+				],
+			},
+		});
+
+		expect(failures).toContain(
+			"published-replay-evidence-verifier: scripts/verify-published-replay-evidence.js must anchor replay.providerConfig.prompt must match transcript.prompt",
+		);
+		expect(failures).toContain(
+			"published-replay-evidence-verifier: scripts/verify-published-replay-evidence.js must anchor observability.transcript.promptSha256 must match transcript.prompt.sha256",
+		);
+		expect(failures).toContain(
+			'published-replay-evidence-verifier: scripts/verify-published-replay-evidence.js must anchor "db296f4e8a050ac9e968523b0202171fca61524406900bbe534ae876ed506570"',
 		);
 	});
 
