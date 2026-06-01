@@ -39,6 +39,7 @@ export interface DurableMemoryBackend {
 			cwd?: string;
 			projectId?: string;
 			projectName?: string;
+			sessionId?: string;
 			tags?: string[];
 		},
 	): Promise<DurableMemoryUpsertResult | null>;
@@ -62,6 +63,7 @@ class ServiceClientDurableMemoryBackend implements DurableMemoryBackend {
 			cwd?: string;
 			projectId?: string;
 			projectName?: string;
+			sessionId?: string;
 			tags?: string[];
 		},
 	): Promise<DurableMemoryUpsertResult | null> {

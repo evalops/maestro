@@ -107,8 +107,8 @@ use super::{
     TokenUsage, ToolResult,
 };
 use crate::ai::{
-    AiProvider, ContentBlock, ImageSource, Message, MessageContent, RequestConfig, Role,
-    StreamEvent, ThinkingConfig, Tool, UnifiedClient,
+    provider_model_name, AiProvider, ContentBlock, ImageSource, Message, MessageContent,
+    RequestConfig, Role, StreamEvent, ThinkingConfig, Tool, UnifiedClient,
 };
 use crate::hooks::{HookResult, IntegratedHookSystem};
 use crate::safety::{
@@ -117,6 +117,13 @@ use crate::safety::{
 };
 use crate::state::QueueMode;
 use crate::tools::{ToolExecutor, ToolRegistry};
+
+mod read_only_tools;
+
+use self::read_only_tools::{
+    execute_native_read_only_tool_wave, is_explicit_inline_read_only_tool,
+    is_native_parallel_read_only_tool_call, QueuedReadOnlyToolExecution,
+};
 
 fn provider_id(provider: AiProvider) -> &'static str {
     match provider {
@@ -190,9 +197,9 @@ fn emit_compaction_event(
 /// ```
 /// use maestro_tui::agent::NativeAgentConfig;
 ///
-/// // Default configuration (Claude Sonnet)
+/// // Default configuration (Codex on OpenAI)
 /// let config = NativeAgentConfig::default();
-/// assert_eq!(config.model, "claude-sonnet-4-5-20250514");
+/// assert_eq!(config.model, "gpt-5.1-codex-max");
 ///
 /// // Custom configuration with thinking enabled
 /// let config = NativeAgentConfig {
@@ -206,7 +213,7 @@ fn emit_compaction_event(
 /// ```
 #[derive(Debug, Clone)]
 pub struct NativeAgentConfig {
-    /// Model to use (e.g., "claude-opus-4-5-20251101", "gpt-5.1-codex-max")
+    /// Model to use (e.g., "gpt-5.1-codex-max", "claude-opus-4-5-20251101")
     ///
     /// The model string is parsed by `UnifiedClient` to determine the provider
     /// (Anthropic, `OpenAI`, etc.) and model variant.
@@ -246,7 +253,7 @@ pub struct NativeAgentConfig {
 impl Default for NativeAgentConfig {
     fn default() -> Self {
         Self {
-            model: "claude-sonnet-4-5-20250514".to_string(),
+            model: "gpt-5.1-codex-max".to_string(),
             max_tokens: 16384,
             system_prompt: None,
             thinking_enabled: false,
@@ -1710,7 +1717,7 @@ impl NativeAgentRunner {
         };
 
         RequestConfig {
-            model: self.config.model.clone(),
+            model: provider_model_name(&self.config.model),
             max_tokens: self.config.max_tokens,
             temperature: if self.config.thinking_enabled {
                 None // Temperature must be 1 or omitted for thinking
@@ -1966,6 +1973,7 @@ impl NativeAgentRunner {
                     Option<String>,
                 )> = Vec::new();
                 let mut pending_tool_calls_iter = pending_tool_calls.into_iter();
+                let mut pending_read_only_tool_calls: Vec<QueuedReadOnlyToolExecution> = Vec::new();
                 let mut processed_any_tool = false;
 
                 while let Some((call_id, tool_name, args, parse_error)) =
@@ -1977,6 +1985,11 @@ impl NativeAgentRunner {
                         }
                         deferred_steering = self.dequeue_next_turn_messages(false);
                         if !deferred_steering.is_empty() {
+                            self.drain_read_only_tool_calls(
+                                &mut pending_read_only_tool_calls,
+                                &mut tool_results,
+                            )
+                            .await?;
                             remaining_tool_calls.push((call_id, tool_name, args, parse_error));
                             remaining_tool_calls.extend(pending_tool_calls_iter);
                             break;
@@ -1985,6 +1998,11 @@ impl NativeAgentRunner {
                     processed_any_tool = true;
 
                     if let Some(message) = parse_error {
+                        self.drain_read_only_tool_calls(
+                            &mut pending_read_only_tool_calls,
+                            &mut tool_results,
+                        )
+                        .await?;
                         let _ = self.event_tx.send(FromAgent::Error {
                             message: message.clone(),
                             fatal: false,
@@ -1999,6 +2017,11 @@ impl NativeAgentRunner {
                     // Validate required fields before surfacing to UI/agent
                     let missing = self.tool_executor.missing_required(&tool_name, &args);
                     if !missing.is_empty() {
+                        self.drain_read_only_tool_calls(
+                            &mut pending_read_only_tool_calls,
+                            &mut tool_results,
+                        )
+                        .await?;
                         tool_results.push(ContentBlock::ToolResult {
                             tool_use_id: call_id.clone(),
                             content: format!(
@@ -2017,6 +2040,11 @@ impl NativeAgentRunner {
                     // Handle hook results
                     let (args, extra_context) = match hook_result {
                         HookResult::Block { reason } => {
+                            self.drain_read_only_tool_calls(
+                                &mut pending_read_only_tool_calls,
+                                &mut tool_results,
+                            )
+                            .await?;
                             // Hook blocked the tool - return error to model
                             let _ = self.event_tx.send(FromAgent::HookBlocked {
                                 call_id: call_id.clone(),
@@ -2053,6 +2081,11 @@ impl NativeAgentRunner {
                             // Proceed with tool execution
                         }
                         SafetyVerdict::BlockDoomLoop { reason } => {
+                            self.drain_read_only_tool_calls(
+                                &mut pending_read_only_tool_calls,
+                                &mut tool_results,
+                            )
+                            .await?;
                             let _ = self.event_tx.send(FromAgent::Error {
                                 message: reason.clone(),
                                 fatal: false,
@@ -2065,6 +2098,11 @@ impl NativeAgentRunner {
                             continue;
                         }
                         SafetyVerdict::BlockRateLimit { reason } => {
+                            self.drain_read_only_tool_calls(
+                                &mut pending_read_only_tool_calls,
+                                &mut tool_results,
+                            )
+                            .await?;
                             let _ = self.event_tx.send(FromAgent::Error {
                                 message: reason.clone(),
                                 fatal: false,
@@ -2092,6 +2130,11 @@ impl NativeAgentRunner {
                         annotations: annotations.as_ref(),
                     });
                     if let FirewallVerdict::Block { reason } = &firewall_verdict {
+                        self.drain_read_only_tool_calls(
+                            &mut pending_read_only_tool_calls,
+                            &mut tool_results,
+                        )
+                        .await?;
                         let _ = self.event_tx.send(FromAgent::Error {
                             message: reason.clone(),
                             fatal: false,
@@ -2108,6 +2151,20 @@ impl NativeAgentRunner {
                     let requires_approval =
                         matches!(&firewall_verdict, FirewallVerdict::RequireApproval { .. })
                             || self.tool_executor.requires_approval(&tool_name, &args);
+                    let can_parallelize_read_only = is_native_parallel_read_only_tool_call(
+                        &tool_key,
+                        requires_approval,
+                        annotations.as_ref(),
+                        is_explicit_inline_read_only_tool(&tool_key, &self.tool_executor),
+                    );
+
+                    if !can_parallelize_read_only {
+                        self.drain_read_only_tool_calls(
+                            &mut pending_read_only_tool_calls,
+                            &mut tool_results,
+                        )
+                        .await?;
+                    }
 
                     // Send tool call event
                     let _ = self.event_tx.send(FromAgent::ToolCall {
@@ -2116,6 +2173,18 @@ impl NativeAgentRunner {
                         args: safe_args.clone(),
                         requires_approval,
                     });
+
+                    if can_parallelize_read_only {
+                        pending_read_only_tool_calls.push(QueuedReadOnlyToolExecution {
+                            call_id,
+                            tool_name,
+                            args,
+                            safe_args,
+                            resolved_args,
+                            extra_context,
+                        });
+                        continue;
+                    }
 
                     // If requires approval, wait for response
                     let (approved, mut result) = if requires_approval {
@@ -2206,6 +2275,12 @@ impl NativeAgentRunner {
                         is_error: Some(is_error),
                     });
                 }
+
+                self.drain_read_only_tool_calls(
+                    &mut pending_read_only_tool_calls,
+                    &mut tool_results,
+                )
+                .await?;
 
                 if deferred_steering.is_empty() {
                     if self.drain_pending_commands() {
@@ -2345,6 +2420,74 @@ impl NativeAgentRunner {
             .execute(tool_name, args, Some(&self.event_tx), call_id)
             .await
     }
+
+    async fn drain_read_only_tool_calls(
+        &mut self,
+        pending: &mut Vec<QueuedReadOnlyToolExecution>,
+        tool_results: &mut Vec<ContentBlock>,
+    ) -> Result<()> {
+        if pending.is_empty() {
+            return Ok(());
+        }
+
+        let pending_calls = std::mem::take(pending);
+        let cancel_token = self.cancel_token.clone();
+        let mut results_by_call_id = execute_native_read_only_tool_wave(
+            &self.config.cwd,
+            &self.event_tx,
+            &pending_calls,
+            cancel_token,
+        )
+        .await;
+
+        for call in pending_calls {
+            let result = results_by_call_id
+                .remove(&call.call_id)
+                .unwrap_or_else(|| ToolResult::failure("Tool task did not return a result"));
+
+            let content = if result.success {
+                result.output.clone()
+            } else {
+                format!("Error: {}", result.error.clone().unwrap_or_default())
+            };
+            let is_error = !result.success;
+
+            let _post_result = self.hooks.execute_post_tool_use(
+                &call.tool_name,
+                &call.call_id,
+                &call.args,
+                &content,
+                is_error,
+            );
+
+            let mut final_content = if let Some(ref ctx) = call.extra_context {
+                format!("{content}\n\n{ctx}")
+            } else {
+                content
+            };
+
+            if let Err(err) = apply_workflow_state_hooks(
+                &call.tool_name,
+                &call.call_id,
+                &call.args,
+                &mut self.workflow_state,
+                is_error,
+            ) {
+                final_content = format!("{}\n\n[Workflow error: {}]", final_content, err.message);
+            }
+
+            self.safety
+                .record_tool_call(&call.tool_name, &call.safe_args);
+
+            tool_results.push(ContentBlock::ToolResult {
+                tool_use_id: call.call_id,
+                content: final_content,
+                is_error: Some(is_error),
+            });
+        }
+
+        Ok(())
+    }
 }
 
 fn parse_tool_input(tool_name: &str, json: &str) -> Result<serde_json::Value, String> {
@@ -2381,7 +2524,7 @@ mod tests {
     #[test]
     fn test_config_default() {
         let config = NativeAgentConfig::default();
-        assert!(config.model.starts_with("claude"));
+        assert_eq!(config.model, "gpt-5.1-codex-max");
         assert_eq!(config.max_tokens, 16384);
         assert!(!config.thinking_enabled);
     }

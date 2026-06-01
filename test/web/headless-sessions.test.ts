@@ -14,6 +14,7 @@ import {
 import { Value } from "@sinclair/typebox/value";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+import { publishSwarmRuntimeEvent } from "../../src/agent/swarm/runtime-events.js";
 import type {
 	AgentEvent,
 	AppMessage,
@@ -28,6 +29,7 @@ import type { RegisteredModel } from "../../src/models/registry.js";
 import {
 	MaestroAgentRuntimeSourceEventType,
 	PlatformAgentRunStateValue,
+	PlatformAgentWorkItemStateValue,
 	PlatformRuntimeChannelKindValue,
 	PlatformRuntimeTriggerKindValue,
 	PlatformSurfaceValue,
@@ -173,6 +175,40 @@ class FakeAgent {
 			listener(event);
 		}
 	}
+}
+
+type RestoreManifestFlushStatus = "completed" | "failed" | "skipped";
+
+function buildRestoreManifest(input: {
+	sessionId: string;
+	sessionFile: string;
+	workspaceRoot: string;
+	flushStatus?: RestoreManifestFlushStatus;
+	runtimeError?: string;
+}) {
+	const restoredState = createHeadlessRuntimeState();
+	restoredState.protocol_version = HEADLESS_PROTOCOL_VERSION;
+	restoredState.session_id = input.sessionId;
+	restoredState.cwd = input.workspaceRoot;
+	const cursor = 7;
+	return {
+		protocol_version: "evalops.remote-runner.snapshot-manifest.v1",
+		maestro_session_id: input.sessionId,
+		runtime: {
+			flush_status: input.flushStatus ?? "completed",
+			...(input.runtimeError ? { error: input.runtimeError } : {}),
+			session_id: input.sessionId,
+			session_file: input.sessionFile,
+			cursor,
+		},
+		snapshot: {
+			protocolVersion: HEADLESS_PROTOCOL_VERSION,
+			session_id: input.sessionId,
+			cursor,
+			last_init: null,
+			state: restoredState,
+		},
+	};
 }
 
 function createJsonRequest(
@@ -361,6 +397,110 @@ describe("headless session runtime", () => {
 					entry.type === "message" ? entry.message.type : entry.type,
 				),
 			).toEqual(["ready", "session_info", "status", "status"]);
+		} finally {
+			await rm(tempDir, { recursive: true, force: true });
+		}
+	});
+
+	it("projects same-session swarm runtime events into hosted AgentRuntime progress", async () => {
+		const fakeAgent = new FakeAgent();
+		const tempDir = await mkdtemp(
+			join(tmpdir(), "maestro-headless-runtime-swarm-progress-"),
+		);
+		const requests: Array<{ url: string; body: Record<string, unknown> }> = [];
+		const fetchMock = vi.fn(
+			async (input: RequestInfo | URL, init?: RequestInit) => {
+				const body =
+					typeof init?.body === "string"
+						? (JSON.parse(init.body) as Record<string, unknown>)
+						: {};
+				requests.push({ url: String(input), body });
+				return Response.json({
+					run: { id: "run_1" },
+					workItem:
+						(body.workItem as Record<string, unknown> | undefined) ??
+						(body.workItemId
+							? { id: body.workItemId, state: body.state }
+							: undefined),
+					step: body.step,
+					event: { id: `event_${requests.length}`, runId: "run_1" },
+				});
+			},
+		);
+		try {
+			vi.stubEnv("MAESTRO_AGENT_RUNTIME_SERVICE_URL", "https://runtime.test");
+			vi.stubEnv("MAESTRO_AGENT_RUNTIME_SERVICE_TOKEN", "runtime-token");
+			vi.stubEnv("MAESTRO_AGENT_RUNTIME_ORG_ID", "org_1");
+			vi.stubEnv("MAESTRO_AGENT_RUNTIME_WORKSPACE_ID", "ws_1");
+			vi.stubGlobal("fetch", fetchMock);
+			const sessionManager = new SessionManager(false, undefined, {
+				sessionDir: tempDir,
+			});
+			const context = createContext({
+				createAgent: vi.fn().mockResolvedValue(fakeAgent),
+				hostedRunner: {
+					enabled: true,
+					agentRunId: "run_1",
+					workspaceId: "ws_1",
+					runnerSessionId: "mrs_1",
+					ownerInstanceId: "pod-a",
+				},
+			});
+			const runtime = await context.headlessRuntimeService.ensureRuntime({
+				scope_key: "anon",
+				registeredModel: TEST_MODEL,
+				thinkingLevel: "off",
+				approvalMode: "prompt",
+				context,
+				sessionManager,
+			});
+
+			publishSwarmRuntimeEvent({
+				parentSessionId: runtime.id(),
+				cwd: tempDir,
+				planFile: join(tempDir, "plan.md"),
+				event: {
+					type: "swarm_start",
+					swarmId: "swarm_1",
+					config: {
+						teammateCount: 2,
+						planFile: join(tempDir, "plan.md"),
+						tasks: [{ id: "task-a", prompt: "Implement the bridge" }],
+						cwd: tempDir,
+						parentSessionId: runtime.id(),
+					},
+				},
+			});
+			publishSwarmRuntimeEvent({
+				parentSessionId: "other_session",
+				cwd: tempDir,
+				planFile: join(tempDir, "plan.md"),
+				event: {
+					type: "task_start",
+					swarmId: "swarm_ignored",
+					teammateId: "mate_ignored",
+					task: { id: "task-ignored", prompt: "Do not project" },
+				},
+			});
+			await runtime.dispose();
+
+			const workItems = requests
+				.map((request) => request.body.workItem)
+				.filter((workItem): workItem is Record<string, unknown> =>
+					Boolean(workItem && typeof workItem === "object"),
+				);
+			expect(workItems).toHaveLength(1);
+			expect(workItems[0]).toMatchObject({
+				id: `maestro:${runtime.id()}:swarm:swarm_1`,
+				runId: "run_1",
+				state: PlatformAgentWorkItemStateValue.Running,
+				payload: expect.objectContaining({
+					event_type: "maestro_task_progress",
+					swarm_id: "swarm_1",
+					task_source: "swarm",
+				}),
+			});
+			expect(JSON.stringify(requests)).not.toContain("swarm_ignored");
 		} finally {
 			await rm(tempDir, { recursive: true, force: true });
 		}
@@ -818,9 +958,10 @@ describe("headless session runtime", () => {
 					error: "Denied by user",
 				},
 			});
-			await expect(approvalPromise).resolves.toEqual({
+			await expect(approvalPromise).resolves.toMatchObject({
 				approved: false,
 				reason: "Denied by user",
+				resolvedAtMs: expect.any(Number),
 				resolvedBy: "user",
 			});
 
@@ -896,6 +1037,8 @@ describe("headless session runtime", () => {
 					resolution: "cancelled",
 					reason: "Interrupted before request completed",
 					resolved_by: "runtime",
+					started_at_ms: expect.any(Number),
+					resolved_at_ms: expect.any(Number),
 				},
 			});
 			expect(replay?.at(-1)).toEqual({
@@ -1047,6 +1190,7 @@ describe("headless session runtime", () => {
 				toolName: "bash",
 				args: { command: "git push --force" },
 				reason: "Force push requires approval",
+				startedAtMs: 1_771_000_000_000,
 			};
 			fakeAgent.emit({
 				type: "action_approval_required",
@@ -1075,9 +1219,10 @@ describe("headless session runtime", () => {
 			]);
 
 			await runtime.send({ type: "interrupt" });
-			await expect(pendingDecision).resolves.toEqual({
+			await expect(pendingDecision).resolves.toMatchObject({
 				approved: false,
 				reason: "Interrupted before request completed",
+				resolvedAtMs: expect.any(Number),
 				resolvedBy: "policy",
 			});
 			expect(
@@ -1095,6 +1240,15 @@ describe("headless session runtime", () => {
 			});
 
 			const replay = runtime.replayFrom(0) ?? [];
+			expect(
+				replay.some(
+					(entry) =>
+						entry.type === "message" &&
+						entry.message.type === "server_request" &&
+						entry.message.request_id === "call_interrupt_approval" &&
+						entry.message.started_at_ms === 1_771_000_000_000,
+				),
+			).toBe(true);
 			const resolutions = replay.filter(
 				(entry) =>
 					entry.type === "message" &&
@@ -1102,6 +1256,13 @@ describe("headless session runtime", () => {
 					entry.message.call_id === "call_interrupt_approval",
 			);
 			expect(resolutions).toHaveLength(1);
+			expect(resolutions[0]).toMatchObject({
+				type: "message",
+				message: expect.objectContaining({
+					started_at_ms: 1_771_000_000_000,
+					resolved_at_ms: expect.any(Number),
+				}),
+			});
 		} finally {
 			await rm(tempDir, { recursive: true, force: true });
 		}
@@ -1215,9 +1376,10 @@ describe("headless session runtime", () => {
 
 			serverRequestManager.cleanup(Date.now() + 60 * 60 * 1000 + 5);
 
-			await expect(pendingDecision).resolves.toEqual({
+			await expect(pendingDecision).resolves.toMatchObject({
 				approved: false,
 				reason: "Approval request timed out",
+				resolvedAtMs: expect.any(Number),
 				resolvedBy: "policy",
 			});
 			expect(runtime.getSnapshot().state.pending_approvals).toEqual([]);
@@ -1298,9 +1460,10 @@ describe("headless session runtime", () => {
 				},
 			});
 
-			await expect(approvalPromise).resolves.toEqual({
+			await expect(approvalPromise).resolves.toMatchObject({
 				approved: false,
 				reason: "Denied by user",
+				resolvedAtMs: expect.any(Number),
 				resolvedBy: "user",
 			});
 
@@ -1530,6 +1693,254 @@ describe("headless session handlers", () => {
 		expect(Value.Check(HeadlessRuntimeSnapshotSchema, body.snapshot)).toBe(
 			true,
 		);
+	});
+
+	it("rejects explicit connection bootstrap when restored runtime is not ready", async () => {
+		const fakeAgent = new FakeAgent();
+		const workspaceRoot = await mkdtemp(
+			join(tmpdir(), "maestro-headless-restore-route-"),
+		);
+		const sessionDir = await mkdtemp(join(tmpdir(), "maestro-sessions-"));
+		try {
+			const sessionManager = new SessionManager(false, undefined, {
+				sessionDir,
+			});
+			sessionManager.startSession(fakeAgent.state);
+			const sessionId = sessionManager.getSessionId();
+			const manifestPath = join(workspaceRoot, "restore-manifest.json");
+			await writeFile(
+				manifestPath,
+				JSON.stringify(
+					buildRestoreManifest({
+						sessionId,
+						sessionFile: sessionManager.getSessionFile(),
+						workspaceRoot,
+						flushStatus: "failed",
+						runtimeError: "worker exited before flushing runtime state",
+					}),
+				),
+				"utf8",
+			);
+			const context = createContext({
+				createAgent: vi.fn().mockResolvedValue(fakeAgent),
+				hostedRunner: {
+					enabled: true,
+					runnerSessionId: "mrs_restore",
+					workspaceRoot,
+					restoreManifestPath: manifestPath,
+				},
+			});
+			const req = createJsonRequest("POST", "/api/headless/connections", {
+				model: TEST_MODEL.id,
+				sessionId,
+				role: "controller",
+			});
+			const res = new MockResponse();
+			res.req = req;
+
+			await expect(
+				handleHeadlessConnectionCreate(
+					req,
+					res as unknown as ServerResponse,
+					context,
+				),
+			).rejects.toMatchObject({
+				statusCode: 503,
+				errorType: HostedRunnerErrorType.RuntimeNotReady,
+				message: expect.stringContaining("not ready for new attachments"),
+			});
+
+			const runtime = context.headlessRuntimeService.getRuntime(
+				"anon",
+				sessionId,
+			);
+			const state = runtime?.getSnapshot().state;
+			expect(state?.connection_count).toBe(0);
+			expect(state?.controller_connection_id).not.toEqual(expect.any(String));
+
+			const sessionReq = createJsonRequest("POST", "/api/headless/sessions", {
+				model: TEST_MODEL.id,
+				sessionId,
+				role: "controller",
+			});
+			const sessionRes = new MockResponse();
+			sessionRes.req = sessionReq;
+			await expect(
+				handleHeadlessSessionCreate(
+					sessionReq,
+					sessionRes as unknown as ServerResponse,
+					context,
+				),
+			).rejects.toMatchObject({
+				statusCode: 503,
+				errorType: HostedRunnerErrorType.RuntimeNotReady,
+				message: expect.stringContaining("not ready for new attachments"),
+			});
+			expect(runtime?.getSnapshot().state.connection_count).toBe(0);
+		} finally {
+			await rm(workspaceRoot, { recursive: true, force: true });
+			await rm(sessionDir, { recursive: true, force: true });
+		}
+	});
+
+	it("keeps failed restore sessions inspectable when role metadata is rejected", async () => {
+		const fakeAgent = new FakeAgent();
+		const workspaceRoot = await mkdtemp(
+			join(tmpdir(), "maestro-headless-restore-session-route-"),
+		);
+		const sessionDir = await mkdtemp(join(tmpdir(), "maestro-sessions-"));
+		try {
+			const sessionManager = new SessionManager(false, undefined, {
+				sessionDir,
+			});
+			sessionManager.startSession(fakeAgent.state);
+			const sessionId = sessionManager.getSessionId();
+			const manifestPath = join(workspaceRoot, "restore-manifest.json");
+			await writeFile(
+				manifestPath,
+				JSON.stringify(
+					buildRestoreManifest({
+						sessionId,
+						sessionFile: sessionManager.getSessionFile(),
+						workspaceRoot,
+						flushStatus: "skipped",
+					}),
+				),
+				"utf8",
+			);
+			const context = createContext({
+				createAgent: vi.fn().mockResolvedValue(fakeAgent),
+				hostedRunner: {
+					enabled: true,
+					runnerSessionId: "mrs_restore",
+					workspaceRoot,
+					restoreManifestPath: manifestPath,
+				},
+			});
+			const req = createJsonRequest("POST", "/api/headless/sessions", {
+				model: TEST_MODEL.id,
+				sessionId,
+				role: "controller",
+			});
+			const res = new MockResponse();
+			res.req = req;
+
+			await expect(
+				handleHeadlessSessionCreate(
+					req,
+					res as unknown as ServerResponse,
+					context,
+				),
+			).rejects.toMatchObject({
+				statusCode: 503,
+				errorType: HostedRunnerErrorType.RuntimeNotReady,
+				message: expect.stringContaining("not ready for new attachments"),
+			});
+
+			const retryReq = createJsonRequest("POST", "/api/headless/sessions", {
+				model: TEST_MODEL.id,
+				sessionId,
+				role: "controller",
+			});
+			const retryRes = new MockResponse();
+			retryRes.req = retryReq;
+			await expect(
+				handleHeadlessSessionCreate(
+					retryReq,
+					retryRes as unknown as ServerResponse,
+					context,
+				),
+			).rejects.toMatchObject({
+				statusCode: 503,
+				errorType: HostedRunnerErrorType.RuntimeNotReady,
+				message: expect.stringContaining("not ready for new attachments"),
+			});
+
+			const runtime = context.headlessRuntimeService.getRuntime(
+				"anon",
+				sessionId,
+			);
+			expect(runtime?.getSnapshot().state).toMatchObject({
+				is_ready: false,
+				connection_count: 0,
+				last_status: "Restore incomplete: runtime flush skipped",
+			});
+			expect(runtime?.getSnapshot().state.controller_connection_id).not.toEqual(
+				expect.any(String),
+			);
+		} finally {
+			await rm(workspaceRoot, { recursive: true, force: true });
+			await rm(sessionDir, { recursive: true, force: true });
+		}
+	});
+
+	it("allows shutdown messages for inspect-only restored runtimes", async () => {
+		const fakeAgent = new FakeAgent();
+		const workspaceRoot = await mkdtemp(
+			join(tmpdir(), "maestro-headless-restore-shutdown-route-"),
+		);
+		const sessionDir = await mkdtemp(join(tmpdir(), "maestro-sessions-"));
+		try {
+			const sessionManager = new SessionManager(false, undefined, {
+				sessionDir,
+			});
+			sessionManager.startSession(fakeAgent.state);
+			const sessionId = sessionManager.getSessionId();
+			const manifestPath = join(workspaceRoot, "restore-manifest.json");
+			await writeFile(
+				manifestPath,
+				JSON.stringify(
+					buildRestoreManifest({
+						sessionId,
+						sessionFile: sessionManager.getSessionFile(),
+						workspaceRoot,
+						flushStatus: "failed",
+						runtimeError: "worker exited before flushing runtime state",
+					}),
+				),
+				"utf8",
+			);
+			const context = createContext({
+				createAgent: vi.fn().mockResolvedValue(fakeAgent),
+				hostedRunner: {
+					enabled: true,
+					runnerSessionId: "mrs_restore",
+					workspaceRoot,
+					restoreManifestPath: manifestPath,
+				},
+			});
+			const runtime = await context.headlessRuntimeService.ensureRuntime({
+				scope_key: "anon",
+				sessionId,
+				registeredModel: TEST_MODEL,
+				thinkingLevel: "off",
+				approvalMode: "prompt",
+				context,
+				sessionManager,
+			});
+			expect(runtime.getSnapshot().state.is_ready).toBe(false);
+
+			const req = createJsonRequest(
+				"POST",
+				`/api/headless/sessions/${sessionId}/messages`,
+				{ type: "shutdown" },
+			);
+			const res = new MockResponse();
+			res.req = req;
+
+			await handleHeadlessSessionMessage(
+				req,
+				res as unknown as ServerResponse,
+				context,
+				{ id: sessionId },
+			);
+
+			expect(JSON.parse(res.body)).toEqual({ success: true });
+			expect(runtime.isDisposed()).toBe(true);
+		} finally {
+			await rm(workspaceRoot, { recursive: true, force: true });
+			await rm(sessionDir, { recursive: true, force: true });
+		}
 	});
 
 	it("creates explicit subscriptions with controller lease metadata", async () => {
@@ -2839,6 +3250,9 @@ describe("headless session handlers", () => {
 							run: {
 								id: "agent_run_123",
 								state: PlatformAgentRunStateValue.Accepted,
+								lease: {
+									token: "lease-token-123",
+								},
 								linkage: {
 									runId: "agent_run_123",
 									workspaceId: "ws_hosted",
@@ -2863,6 +3277,11 @@ describe("headless session handlers", () => {
 					ownerInstanceId: "pod-a",
 					workspaceRoot,
 					workspaceId: "ws_hosted",
+					agentRunId: "previous_agent_run",
+					a2aMessageId: "previous_message",
+					a2aTaskId: "previous_task",
+					agentRuntimeWorkerQueue: "previous.queue",
+					agentRuntimeCorrelationPath: "previous path",
 				},
 			});
 			const req = createJsonRequest("POST", "/api/headless/sessions", {
@@ -2914,6 +3333,219 @@ describe("headless session handlers", () => {
 				},
 			});
 			expect(context.hostedRunner?.agentRunId).toBe("agent_run_123");
+			expect(context.hostedRunner?.agentRuntimeLeaseToken).toBe(
+				"lease-token-123",
+			);
+			expect(context.hostedRunner?.a2aMessageId).toBeUndefined();
+			expect(context.hostedRunner?.a2aTaskId).toBeUndefined();
+			expect(context.hostedRunner?.agentRuntimeWorkerQueue).toBeUndefined();
+			expect(context.hostedRunner?.agentRuntimeCorrelationPath).toBeUndefined();
+		} finally {
+			await rm(workspaceRoot, { recursive: true, force: true });
+		}
+	});
+
+	it("preserves hosted runner A2A handles when Platform trigger recording fails", async () => {
+		const workspaceRoot = await mkdtemp(
+			join(tmpdir(), "maestro-headless-runtime-failed-record-"),
+		);
+		try {
+			vi.stubEnv("MAESTRO_AGENT_RUNTIME_SERVICE_URL", "https://runtime.test/");
+			vi.stubEnv("MAESTRO_AGENT_RUNTIME_SERVICE_TOKEN", "runtime-token");
+			vi.stubEnv("MAESTRO_AGENT_RUNTIME_ORG_ID", "org_1");
+			vi.stubEnv("MAESTRO_AGENT_RUNTIME_WORKSPACE_ID", "ws_env");
+			const fetchMock = vi.fn(async () =>
+				Response.json(
+					{ error: { code: "unavailable", message: "try again" } },
+					{ status: 503 },
+				),
+			);
+			vi.stubGlobal("fetch", fetchMock);
+
+			const createAgent = vi.fn().mockResolvedValue(new FakeAgent());
+			const context = createContext({
+				createAgent,
+				hostedRunner: {
+					enabled: true,
+					runnerSessionId: "mrs_test",
+					ownerInstanceId: "pod-a",
+					workspaceRoot,
+					workspaceId: "ws_hosted",
+					agentRunId: "previous_agent_run",
+					a2aMessageId: "previous_message",
+					a2aTaskId: "previous_task",
+					agentRuntimeWorkerQueue: "previous.queue",
+					agentRuntimeCorrelationPath: "previous path",
+				},
+			});
+			const req = createJsonRequest("POST", "/api/headless/sessions", {
+				model: TEST_MODEL.id,
+				workspaceRoot,
+				client: "vscode",
+				protocolVersion: "headless.v1",
+			});
+			const res = new MockResponse();
+			res.req = req;
+
+			await handleHeadlessSessionCreate(
+				req,
+				res as unknown as ServerResponse,
+				context,
+			);
+
+			expect(fetchMock).toHaveBeenCalled();
+			expect(context.hostedRunner?.agentRunId).toBe("previous_agent_run");
+			expect(context.hostedRunner?.a2aMessageId).toBe("previous_message");
+			expect(context.hostedRunner?.a2aTaskId).toBe("previous_task");
+			expect(context.hostedRunner?.agentRuntimeWorkerQueue).toBe(
+				"previous.queue",
+			);
+			expect(context.hostedRunner?.agentRuntimeCorrelationPath).toBe(
+				"previous path",
+			);
+		} finally {
+			await rm(workspaceRoot, { recursive: true, force: true });
+		}
+	});
+
+	it("can record hosted session starts through the Platform A2A bridge", async () => {
+		const workspaceRoot = await mkdtemp(
+			join(tmpdir(), "maestro-headless-runtime-a2a-"),
+		);
+		try {
+			vi.stubEnv("MAESTRO_AGENT_RUNTIME_A2A_ENABLED", "true");
+			vi.stubEnv("MAESTRO_PLATFORM_A2A_URL", "");
+			vi.stubEnv("MAESTRO_A2A_URL", "");
+			vi.stubEnv("MAESTRO_AGENT_RUNTIME_SERVICE_URL", "https://runtime.test/");
+			vi.stubEnv("MAESTRO_AGENT_RUNTIME_SERVICE_TOKEN", "runtime-token");
+			vi.stubEnv("MAESTRO_EVALOPS_WORKSPACE_ID", "ws_env");
+
+			const requests: { body?: Record<string, unknown>; url: string }[] = [];
+			let a2aMessageId = "";
+			const fetchMock = vi.fn(
+				async (input: RequestInfo | URL, init?: RequestInit) => {
+					const url = String(input);
+					const body =
+						typeof init?.body === "string"
+							? (JSON.parse(init.body) as Record<string, unknown>)
+							: undefined;
+					requests.push({
+						url,
+						body,
+					});
+					if (url === "https://runtime.test/message:send") {
+						const message =
+							body?.message && typeof body.message === "object"
+								? (body.message as Record<string, unknown>)
+								: {};
+						a2aMessageId =
+							typeof message.messageId === "string" ? message.messageId : "";
+						return Response.json({
+							task: {
+								id: "agent_run_a2a",
+								contextId: "maestro-session:test",
+								status: { state: "TASK_STATE_SUBMITTED" },
+								metadata: {
+									a2aMessageId,
+									a2aTaskId: "agent_run_a2a",
+									agentRunId: "agent_run_a2a",
+									agentRunState: PlatformAgentRunStateValue.Queued,
+									workspaceId: "ws_hosted",
+									agentId: "maestro",
+									workerQueue: "agent-runtime.production",
+									correlationPath: `maestro_message_id=${a2aMessageId} a2a_task_id=agent_run_a2a platform_agent_run_id=agent_run_a2a worker_queue=agent-runtime.production`,
+								},
+							},
+						});
+					}
+					if (url === "https://runtime.test/tasks/agent_run_a2a") {
+						return Response.json({
+							id: "agent_run_a2a",
+							contextId: "maestro-session:test",
+							status: { state: "TASK_STATE_SUBMITTED" },
+							metadata: {
+								a2aMessageId,
+								a2aTaskId: "agent_run_a2a",
+								agentRunId: "agent_run_a2a",
+								agentRunState: PlatformAgentRunStateValue.Queued,
+								workspaceId: "ws_hosted",
+								agentId: "maestro",
+								workerQueue: "agent-runtime.production",
+								correlationPath: `maestro_message_id=${a2aMessageId} a2a_task_id=agent_run_a2a platform_agent_run_id=agent_run_a2a worker_queue=agent-runtime.production`,
+							},
+						});
+					}
+					return Response.json(
+						{ error: { code: "not_found", message: `unexpected ${url}` } },
+						{ status: 404 },
+					);
+				},
+			);
+			vi.stubGlobal("fetch", fetchMock);
+
+			const createAgent = vi.fn().mockResolvedValue(new FakeAgent());
+			const context = createContext({
+				createAgent,
+				hostedRunner: {
+					enabled: true,
+					runnerSessionId: "mrs_test",
+					ownerInstanceId: "pod-a",
+					workspaceRoot,
+					workspaceId: "ws_hosted",
+				},
+			});
+			const req = createJsonRequest("POST", "/api/headless/sessions", {
+				model: TEST_MODEL.id,
+				workspaceRoot,
+				client: "vscode",
+				protocolVersion: "headless.v1",
+			});
+			const res = new MockResponse();
+			res.req = req;
+
+			await handleHeadlessSessionCreate(
+				req,
+				res as unknown as ServerResponse,
+				context,
+			);
+
+			const snapshot = JSON.parse(res.body) as { session_id: string };
+			expect(fetchMock).toHaveBeenCalledTimes(2);
+			expect(requests[0]).toMatchObject({
+				url: "https://runtime.test/message:send",
+				body: {
+					message: expect.objectContaining({
+						messageId: `maestro-session:ws_hosted:${snapshot.session_id}`,
+						contextId: `maestro-session:${snapshot.session_id}`,
+						metadata: expect.objectContaining({
+							workspaceId: "ws_hosted",
+							agentId: "maestro",
+							sessionId: snapshot.session_id,
+							actorId: "anon",
+							sourceEventType:
+								MaestroAgentRuntimeSourceEventType.SessionStarted,
+							metadata: expect.objectContaining({
+								model: TEST_MODEL.id,
+								runner_session_id: "mrs_test",
+								owner_instance_id: "pod-a",
+							}),
+						}),
+					}),
+					configuration: { returnImmediately: true },
+				},
+			});
+			expect(requests[1]?.url).toBe("https://runtime.test/tasks/agent_run_a2a");
+			expect(context.hostedRunner?.agentRunId).toBe("agent_run_a2a");
+			expect(context.hostedRunner?.a2aMessageId).toBe(
+				`maestro-session:ws_hosted:${snapshot.session_id}`,
+			);
+			expect(context.hostedRunner?.a2aTaskId).toBe("agent_run_a2a");
+			expect(context.hostedRunner?.agentRuntimeWorkerQueue).toBe(
+				"agent-runtime.production",
+			);
+			expect(context.hostedRunner?.agentRuntimeCorrelationPath).toContain(
+				"platform_agent_run_id=agent_run_a2a",
+			);
 		} finally {
 			await rm(workspaceRoot, { recursive: true, force: true });
 		}
@@ -3093,6 +3725,92 @@ describe("headless session handlers", () => {
 							owner_instance_id: "pod-a",
 							maestro_session_id: "session_owner",
 							requested_maestro_session_id: "session_owner",
+							draining: "true",
+						},
+					},
+				],
+			});
+		} finally {
+			await rm(workspaceRoot, { recursive: true, force: true });
+		}
+	});
+
+	it("preserves runtime-not-ready when a hosted runner starts draining before lease claim", async () => {
+		const workspaceRoot = await mkdtemp(
+			join(tmpdir(), "maestro-headless-hosted-draining-claim-"),
+		);
+		try {
+			const fakeAgent = new FakeAgent();
+			const context = createContext({
+				createAgent: vi.fn().mockResolvedValue(fakeAgent),
+				hostedRunner: {
+					enabled: true,
+					runnerSessionId: "mrs_test",
+					ownerInstanceId: "pod-a",
+					workspaceRoot,
+				},
+			});
+			const ensureRuntime = context.headlessRuntimeService.ensureRuntime.bind(
+				context.headlessRuntimeService,
+			);
+			vi.spyOn(
+				context.headlessRuntimeService,
+				"ensureRuntime",
+			).mockImplementation(async (options) => {
+				const runtime = await ensureRuntime(options);
+				if (context.hostedRunner) {
+					context.hostedRunner.draining = true;
+				}
+				return runtime;
+			});
+			const req = createJsonRequest("POST", "/api/headless/sessions", {
+				model: TEST_MODEL.id,
+			});
+			const res = new MockResponse();
+			res.req = req;
+
+			let caught: unknown;
+			try {
+				await handleHeadlessSessionCreate(
+					req,
+					res as unknown as ServerResponse,
+					context,
+				);
+			} catch (error) {
+				caught = error;
+			}
+
+			expect(caught).toBeInstanceOf(ApiError);
+			expect({
+				errorType: (caught as ApiError).errorType,
+				message: (caught as ApiError).message,
+				statusCode: (caught as ApiError).statusCode,
+			}).toEqual({
+				errorType: HostedRunnerErrorType.RuntimeNotReady,
+				message:
+					"Hosted runner is draining and not accepting headless session traffic",
+				statusCode: 503,
+			});
+
+			const errorRes = new MockResponse();
+			errorRes.req = req;
+			respondWithApiError(
+				errorRes as unknown as ServerResponse,
+				caught,
+				500,
+				{},
+				req,
+			);
+
+			expect(errorRes.statusCode).toBe(503);
+			expect(JSON.parse(errorRes.body)).toMatchObject({
+				error_type: HostedRunnerErrorType.RuntimeNotReady,
+				details: [
+					{
+						reason: HostedRunnerErrorType.RuntimeNotReady,
+						metadata: {
+							owner_instance_id: "pod-a",
+							requested_maestro_session_id: expect.any(String),
 							draining: "true",
 						},
 					},
@@ -3766,7 +4484,17 @@ describe("headless session handlers", () => {
 						attempt: 1,
 						summary: "Retry bash command",
 					},
+					started_at_ms: expect.any(Number),
 				},
+			]);
+			expect(runtime.getSnapshot().state.pending_requests).toEqual([
+				expect.objectContaining({
+					id: "retry_1",
+					kind: "tool_retry",
+					call_id: "call_bash",
+					request_id: "retry_1",
+					started_at_ms: expect.any(Number),
+				}),
 			]);
 
 			await runtime.send({

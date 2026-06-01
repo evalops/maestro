@@ -1,7 +1,7 @@
 /**
  * @evalops/slack-agent
  *
- * Slack bot agent with Docker sandbox support for Composer
+ * Slack teammate agent with sandbox support for Maestro
  */
 
 // Slack integration
@@ -201,6 +201,21 @@ export {
 	type ThreadContext,
 	type ThreadMemoryConfig,
 } from "./thread-memory.js";
+
+// Platform AgentRuntime bridge
+export {
+	buildSlackAgentRuntimeEvent,
+	buildSlackAgentRuntimeTrigger,
+	recordSlackAgentRuntimeEvent,
+	recordSlackAgentRuntimeTrigger,
+	resolvePlatformRuntimeConfig,
+	type PlatformRuntimeConfig,
+	type PlatformRuntimeEventResult,
+	type PlatformRuntimeTriggerResult,
+	type SlackRuntimeEventOptions,
+	type SlackRuntimeEventType,
+	type SlackRuntimeTriggerOptions,
+} from "./platform-runtime.js";
 
 // Idempotency (duplicate event prevention)
 export {

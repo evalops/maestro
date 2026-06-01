@@ -1,4 +1,10 @@
-import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import {
+	chmodSync,
+	existsSync,
+	mkdirSync,
+	rmSync,
+	writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -177,6 +183,243 @@ ${content}
 				source: "project",
 			});
 			expect(skillMetadata?.hash).toMatch(/^[a-f0-9]{64}$/u);
+		});
+
+		it("returns a runtime activation manifest for scoped skill surfaces", async () => {
+			if (process.platform === "win32") {
+				return;
+			}
+
+			const dir = join(skillsDir, "reviewing-prs");
+			mkdirSync(join(dir, "reference"), { recursive: true });
+			mkdirSync(join(dir, "toolbox"), { recursive: true });
+			writeFileSync(
+				join(dir, "SKILL.md"),
+				`---
+name: reviewing-prs
+description: Review pull requests with scoped runtime resources.
+allowed-tools:
+  - read
+  - search
+builtin-tools:
+  - read
+model: gpt-5.5
+mode: review
+isolatedContext: true
+---
+
+Review the pull request and keep findings first.
+`,
+			);
+			writeFileSync(
+				join(dir, "reference", "rubric.md"),
+				"# Rubric\n\nFind correctness issues before style comments.\n",
+			);
+			const toolboxEntry = join(dir, "toolbox", "summarize-pr");
+			writeFileSync(toolboxEntry, "#!/usr/bin/env bash\necho summary\n");
+			chmodSync(toolboxEntry, 0o755);
+			const toolboxNote = join(dir, "toolbox", "notes.txt");
+			writeFileSync(toolboxNote, "not a runnable command\n");
+			writeFileSync(
+				join(dir, "mcp.json"),
+				JSON.stringify(
+					{
+						github: {
+							command: "npx",
+							args: ["-y", "@modelcontextprotocol/server-github"],
+							env: { GITHUB_TOKEN: "${GITHUB_TOKEN}" },
+							includeTools: ["get_pull_request", "list_pull_request_files"],
+						},
+					},
+					null,
+					2,
+				),
+			);
+
+			const tool = createSkillTool(testDir, { includeSystem: false });
+			const result = await tool.execute("test-runtime-activation", {
+				skill: "reviewing-prs",
+			});
+			const activation = (
+				result.details as
+					| {
+							skillRuntimeActivation?: {
+								name: string;
+								source: string;
+								profile: {
+									model?: string;
+									mode?: string;
+									isolatedContext?: boolean;
+								};
+								tools: { allowed: string[]; builtin: string[] };
+								resources: {
+									directories: {
+										reference?: string;
+										toolbox?: string;
+									};
+								};
+								toolPackage: {
+									toolbox?: {
+										directory: string;
+										entries: Array<{ name: string; path: string }>;
+									};
+									mcp?: {
+										configPath: string;
+										servers: Array<{
+											name: string;
+											command?: string;
+											includeTools: string[];
+										}>;
+									};
+								};
+							};
+					  }
+					| undefined
+			)?.skillRuntimeActivation;
+
+			expect(activation).toMatchObject({
+				name: "reviewing-prs",
+				source: "project",
+				profile: {
+					model: "gpt-5.5",
+					mode: "review",
+					isolatedContext: true,
+				},
+				tools: {
+					allowed: ["read", "search"],
+					builtin: ["read"],
+				},
+				resources: {
+					directories: {
+						reference: join(dir, "reference"),
+						toolbox: join(dir, "toolbox"),
+					},
+				},
+				toolPackage: {
+					toolbox: {
+						directory: join(dir, "toolbox"),
+						entries: [{ name: "summarize-pr", path: toolboxEntry }],
+					},
+					mcp: {
+						configPath: join(dir, "mcp.json"),
+						servers: [
+							{
+								name: "github",
+								command: "npx",
+								includeTools: ["get_pull_request", "list_pull_request_files"],
+							},
+						],
+					},
+				},
+			});
+			expect(activation?.toolPackage.toolbox?.entries).not.toContainEqual({
+				name: "notes.txt",
+				path: toolboxNote,
+			});
+			expect(activation?.toolPackage.mcp?.servers[0]).not.toHaveProperty("env");
+		});
+
+		it("marks malformed MCP includeTools as unbounded instead of silently filtering them", async () => {
+			const dir = join(skillsDir, "bad-mcp");
+			mkdirSync(dir, { recursive: true });
+			writeFileSync(
+				join(dir, "SKILL.md"),
+				`---
+name: bad-mcp
+description: Test malformed MCP activation surfaces.
+---
+
+Use the bundled MCP server.
+`,
+			);
+			writeFileSync(
+				join(dir, "mcp.json"),
+				JSON.stringify({
+					github: {
+						command: "npx",
+						includeTools: ["get_pull_request", 42, "list_pull_request_files"],
+					},
+				}),
+			);
+
+			const tool = createSkillTool(testDir, { includeSystem: false });
+			const result = await tool.execute("test-runtime-activation-bad-mcp", {
+				skill: "bad-mcp",
+			});
+			const activation = (
+				result.details as
+					| {
+							skillRuntimeActivation?: {
+								toolPackage: {
+									mcp?: {
+										servers: Array<{ includeTools: string[] }>;
+										warnings?: string[];
+									};
+								};
+							};
+					  }
+					| undefined
+			)?.skillRuntimeActivation;
+
+			expect(activation?.toolPackage.mcp?.servers).toEqual([]);
+			expect(activation?.toolPackage.mcp?.warnings).toContain(
+				"MCP server 'github' includeTools entries must be non-empty strings.",
+			);
+		});
+
+		it("degrades unreadable toolbox directories to warnings", async () => {
+			if (process.platform === "win32" || process.getuid?.() === 0) {
+				return;
+			}
+
+			const dir = join(skillsDir, "locked-toolbox");
+			const toolboxDir = join(dir, "toolbox");
+			mkdirSync(toolboxDir, { recursive: true });
+			writeFileSync(
+				join(dir, "SKILL.md"),
+				`---
+name: locked-toolbox
+description: Test unreadable toolbox activation surfaces.
+---
+
+Use the bundled toolbox.
+`,
+			);
+			chmodSync(toolboxDir, 0o000);
+
+			const tool = createSkillTool(testDir, { includeSystem: false });
+			let result: Awaited<ReturnType<typeof tool.execute>>;
+			try {
+				result = await tool.execute("test-runtime-activation-locked-toolbox", {
+					skill: "locked-toolbox",
+				});
+			} finally {
+				chmodSync(toolboxDir, 0o755);
+			}
+			const activation = (
+				result.details as
+					| {
+							skillRuntimeActivation?: {
+								toolPackage: {
+									toolbox?: {
+										directory: string;
+										entries: Array<{ name: string; path: string }>;
+										warnings?: string[];
+									};
+								};
+							};
+					  }
+					| undefined
+			)?.skillRuntimeActivation;
+
+			expect(result.isError).toBeUndefined();
+			expect(activation?.toolPackage.toolbox).toMatchObject({
+				directory: toolboxDir,
+				entries: [],
+				warnings: [
+					expect.stringContaining("toolbox directory could not be read:"),
+				],
+			});
 		});
 
 		it("loads skill case-insensitively", async () => {

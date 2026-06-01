@@ -17,6 +17,7 @@ import {
 	loadSkills,
 	searchSkills,
 } from "./loader.js";
+import { buildSkillRuntimeActivation } from "./runtime-activation.js";
 import {
 	type SkillsServiceConfig,
 	loadSkillsFromService,
@@ -195,6 +196,7 @@ Available skills can be listed by calling this tool with skill="list".`,
 				content: [{ type: "text", text }],
 				details: {
 					skillMetadata: buildSkillArtifactMetadata(skill),
+					skillRuntimeActivation: buildSkillRuntimeActivation(skill),
 				},
 			};
 		},

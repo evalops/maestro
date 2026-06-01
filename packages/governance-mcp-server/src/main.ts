@@ -3,7 +3,7 @@
  * CLI entrypoint for the governance MCP server.
  *
  * Supports:
- * - stdio transport (default) for local use with Claude Code, Composer, etc.
+ * - stdio transport (default) for local use with Claude Code, Maestro, etc.
  * - HTTP transport via --http --port <port> for remote deployments
  *
  * Usage:

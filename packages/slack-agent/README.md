@@ -1,6 +1,6 @@
 # @evalops/slack-agent
 
-A Slack bot that runs an AI coding agent in a sandboxed environment. The agent can execute bash commands, read/write files, and interact with your development environment through natural language conversations.
+An always-on Slack teammate agent that can work in a sandboxed environment, execute commands, read and write files, and collaborate through natural Slack conversations.
 
 ## Table of Contents
 
@@ -11,7 +11,7 @@ A Slack bot that runs an AI coding agent in a sandboxed environment. The agent c
 - [Configuration](#configuration)
 - [Sandbox Modes](#sandbox-modes)
 - [Workspace Layout](#workspace-layout)
-- [Interacting with the Bot](#interacting-with-the-bot)
+- [Interacting with the Teammate](#interacting-with-the-teammate)
 - [Scheduled Tasks](#scheduled-tasks)
 - [Approval Workflows](#approval-workflows)
 - [Cost Tracking](#cost-tracking)
@@ -53,7 +53,7 @@ A Slack bot that runs an AI coding agent in a sandboxed environment. The agent c
 | Feature | Description |
 |---------|-------------|
 | **Socket Mode** | Real-time bidirectional communication (no webhooks needed) |
-| **Emoji Reactions** | Control the bot with reactions (stop, retry, clear, etc.) |
+| **Emoji Reactions** | Control the teammate with reactions (stop, retry, clear, etc.) |
 | **Progress Indicators** | Live status updates during long-running tasks |
 | **File Uploads** | Share files back to Slack from the agent |
 | **Message Backfill** | Automatically syncs channel history on startup |
@@ -207,6 +207,7 @@ Invite the bot to channels where you want it to operate:
 | `SLACK_BOT_TOKEN` | Yes | - | Bot token (xoxb-...) |
 | `ANTHROPIC_API_KEY` | Yes* | - | Anthropic API key |
 | `ANTHROPIC_OAUTH_TOKEN` | Yes* | - | Alternative: Anthropic OAuth token |
+| `SLACK_AGENT_MODEL` | No | claude-opus-4-6 | Anthropic model ID for the main Slack agent |
 | `SLACK_AGENT_DEFAULT_TIMEZONE` | No | UTC | Default timezone for scheduled tasks (IANA name) |
 | `SLACK_AGENT_DEFAULT_ROLE` | No | user | Default role for new users (admin, power_user, user, viewer) |
 | `SLACK_AGENT_HISTORY_LIMIT` | No | 15 | Max messages per conversations.history request |
@@ -215,6 +216,11 @@ Invite the bot to channels where you want it to operate:
 | `SLACK_AGENT_BACKFILL_CHANNELS` | No | - | Comma-separated channel IDs or names to include in backfill |
 | `SLACK_AGENT_BACKFILL_EXCLUDE_CHANNELS` | No | - | Comma-separated channel IDs or names to exclude from backfill |
 | `SLACK_AGENT_BACKFILL_CONCURRENCY` | No | 1 | Number of concurrent channel backfills |
+| `SLACK_AGENT_PLATFORM_RUNTIME_URL` | No | - | Platform AgentRuntime service URL for durable Slack run recording |
+| `SLACK_AGENT_PLATFORM_RUNTIME_TOKEN` | No | - | Bearer token for AgentRuntime calls |
+| `SLACK_AGENT_PLATFORM_WORKSPACE_ID` | No | Slack team ID | Platform workspace ID to attach to recorded Slack runs |
+| `SLACK_AGENT_PLATFORM_AGENT_ID` | No | maestro-slack-agent | Platform agent ID to attach to recorded Slack runs |
+| `SLACK_AGENT_PLATFORM_RUNTIME_TIMEOUT_MS` | No | 2000 | Timeout for optional AgentRuntime recording |
 | `SLACK_RATE_LIMIT_USER` | No | 10 | Max requests per user per minute |
 | `SLACK_RATE_LIMIT_CHANNEL` | No | 30 | Max requests per channel per minute |
 | `SLACK_RATE_LIMIT_WINDOW_MS` | No | 60000 | Rate limit window in milliseconds |
@@ -222,6 +228,8 @@ Invite the bot to channels where you want it to operate:
 *Either `ANTHROPIC_API_KEY` or `ANTHROPIC_OAUTH_TOKEN` is required.
 
 Channel selectors accept IDs or names with or without a leading `#`.
+
+When `SLACK_AGENT_PLATFORM_RUNTIME_URL` is set, each Slack-originated run is recorded through Platform AgentRuntime `HandleTrigger` before the local agent starts. Recording is best-effort: missing configuration or a Platform outage does not block the Slack response.
 
 ### CLI Options
 
@@ -419,7 +427,7 @@ The agent will read SKILL.md before using any skill to understand its capabiliti
 
 ---
 
-## Interacting with the Bot
+## Interacting with the Teammate
 
 ### Basic Interaction
 
@@ -440,12 +448,12 @@ Help me debug this error: TypeError: undefined is not a function
 
 ### Emoji Reactions
 
-Control the bot with reactions on any message:
+Control the teammate with reactions on any message:
 
 | Emoji | Name | Action |
 |-------|------|--------|
 | 🛑 | `:octagonal_sign:` | Stop current task |
-| 👀 | `:eyes:` | Check if bot is working |
+| 👀 | `:eyes:` | Check if the teammate is available |
 | 💰 | `:moneybag:` | View usage/cost summary |
 | 📈 | `:chart_with_upwards_trend:` | View usage/cost summary |
 | 🔄 | `:arrows_counterclockwise:` | Retry last request |
@@ -462,7 +470,7 @@ Control the bot with reactions on any message:
 
 ### Slash Commands
 
-Register these Slack slash commands to control the bot without reactions:
+Register these Slack slash commands to control the teammate without reactions:
 
 | Command | Action |
 |---------|--------|
@@ -479,10 +487,10 @@ When enabled with ☕ or 🧠, the agent uses Claude's extended thinking for mor
 
 ```
 User: (reacts with ☕)
-Bot: Extended thinking enabled ☕ I'll think more carefully on complex tasks.
+Agent: Extended thinking enabled. I'll think more carefully on complex tasks.
 
 User: @bot Design a microservices architecture for an e-commerce platform
-Bot: (uses extended reasoning before responding)
+Agent: (uses extended reasoning before responding)
 ```
 
 Check current status with 👀 - it will show "(thinking mode on)" if enabled.
@@ -491,7 +499,7 @@ Check current status with 👀 - it will show "(thinking mode on)" if enabled.
 
 **Upload files to include in context:**
 1. Drag and drop a file into Slack
-2. The bot automatically downloads and reads code/text files
+2. The teammate automatically downloads and reads code/text files
 3. File contents are included in the agent's context
 
 Supported file types for automatic reading:
@@ -602,7 +610,7 @@ The agent detects potentially destructive operations and requests approval:
 
 Example:
 ```
-Bot: ⚠️ *Approval Required*
+Agent: *Approval Required*
      Operation: Delete files/directories
      Command: rm -rf ./build
 
@@ -610,7 +618,7 @@ Bot: ⚠️ *Approval Required*
 
 User: (reacts with ✅)
 
-Bot: ✅ Approved. Executing...
+Agent: Approved. Executing...
 ```
 
 ---
@@ -1371,9 +1379,9 @@ slack-agent --sandbox=docker:auto ./data
 chmod -R 755 ./data
 ```
 
-### Bot Not Responding
+### Agent Not Responding
 
-1. **Check bot is invited** - `/invite @bot-name` in channel
+1. **Check the Slack app is invited** - `/invite @bot-name` in channel
 2. **Check event subscriptions** - Verify `app_mention`, `message.*` events
 3. **Check logs** - Look for errors in terminal output
 4. **Check rate limits** - React with 👀 to see status
@@ -1386,7 +1394,7 @@ chmod -R 755 ./data
 
 **Missing messages**
 - Only last 3 pages of history are backfilled
-- Bot messages from other bots are filtered out
+- Messages from other Slack apps are filtered out
 
 ### Debug Information
 

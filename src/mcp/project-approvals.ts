@@ -133,6 +133,37 @@ function getProjectRootKey(projectRoot: string): string {
 	return resolve(projectRoot);
 }
 
+const FATHOM_CUA_VOLATILE_ARG_FLAGS = new Set(["-session-id", "-turn-id"]);
+
+function isGeneratedFathomCuaServer(server: McpServerConfig): boolean {
+	return (
+		server.scope === "plugin" &&
+		server.requiresProjectApproval === true &&
+		server.env?.FATHOM_CALLER_PRODUCT === "maestro" &&
+		server.env?.FATHOM_CUA_PRODUCT === "maestro"
+	);
+}
+
+function approvalFingerprintArgs(server: McpServerConfig): string[] {
+	const args = server.args ?? [];
+	if (!isGeneratedFathomCuaServer(server)) {
+		return args;
+	}
+	const stableArgs: string[] = [];
+	for (let index = 0; index < args.length; index += 1) {
+		const arg = args[index];
+		if (arg === undefined) {
+			continue;
+		}
+		if (FATHOM_CUA_VOLATILE_ARG_FLAGS.has(arg)) {
+			index += 1;
+			continue;
+		}
+		stableArgs.push(arg);
+	}
+	return stableArgs;
+}
+
 export function buildProjectMcpServerFingerprint(
 	server: McpServerConfig,
 	authPresets: readonly McpAuthPresetConfig[] = [],
@@ -141,7 +172,7 @@ export function buildProjectMcpServerFingerprint(
 		name: server.name,
 		transport: server.transport,
 		command: server.command,
-		args: server.args ?? [],
+		args: approvalFingerprintArgs(server),
 		env: normalizeStringRecord(server.env),
 		cwd: server.cwd,
 		url: server.url,
@@ -158,13 +189,19 @@ export function buildProjectMcpServerFingerprint(
 		.digest("hex");
 }
 
+export function serverRequiresProjectApproval(
+	server: McpServerConfig,
+): boolean {
+	return server.scope === "project" || server.requiresProjectApproval === true;
+}
+
 export function getProjectMcpServerApprovalStatus(options: {
 	projectRoot?: string;
 	server: McpServerConfig;
 	authPresets?: readonly McpAuthPresetConfig[];
 }): McpProjectApprovalStatus | undefined {
 	const { projectRoot, server, authPresets = [] } = options;
-	if (!projectRoot || server.scope !== "project") {
+	if (!projectRoot || !serverRequiresProjectApproval(server)) {
 		return undefined;
 	}
 
@@ -185,9 +222,9 @@ export function setProjectMcpServerApprovalDecision(options: {
 	decision: McpProjectApprovalDecision;
 }): void {
 	const { projectRoot, server, authPresets = [], decision } = options;
-	if (server.scope !== "project") {
+	if (!serverRequiresProjectApproval(server)) {
 		throw new Error(
-			`MCP server "${server.name}" is not project-scoped and does not require project approval.`,
+			`MCP server "${server.name}" does not require project approval.`,
 		);
 	}
 

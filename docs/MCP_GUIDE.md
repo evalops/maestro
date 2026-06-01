@@ -117,6 +117,93 @@ Maestro auto-detects the transport type:
 - **sse**: When URL contains `/sse` or `sse` subdomain
 - **http**: For other URLs
 
+### EvalOps Cerebro MCP
+
+Managed EvalOps launches can attach the Cerebro world-model MCP server without
+adding a project config file. Configure one of:
+
+- `MAESTRO_PLATFORM_MCP_URL`
+- `MAESTRO_AGENT_MCP_URL`
+- `MAESTRO_EVALOPS_AGENT_MCP_URL`
+- `MAESTRO_PLATFORM_MCP_MANIFEST_URL`
+
+The URL may be the public app base URL, the `/mcp` endpoint, or the EvalOps
+agent MCP manifest at `/.well-known/evalops/agent-mcp.json`; Maestro normalizes
+those forms to the HTTP MCP endpoint. Maestro forwards the bearer token from `MAESTRO_PLATFORM_MCP_TOKEN`,
+`MAESTRO_AGENT_MCP_TOKEN`, `MAESTRO_EVALOPS_ACCESS_TOKEN`, or `EVALOPS_TOKEN`.
+It also forwards `X-EvalOps-Workspace-Id`, `X-EvalOps-Session-Id`,
+`X-EvalOps-Agent-Id`, `X-EvalOps-Agent-Run-Id`, trace/request IDs, and
+`X-EvalOps-Scopes`.
+
+For Cerebro, set scopes deliberately:
+
+- `cerebro:read` exposes `cerebro_search`, `cerebro_gather_facts`,
+  `cerebro_debug_beliefs`, and the other read tools.
+- `cerebro:assert` additionally exposes `cerebro_assert_fact` for explicit,
+  evidence-backed session learnings.
+
+Agents should search or gather facts before asserting. Use
+`cerebro_assert_fact` only when the session learned durable context that future
+agents should recall, and always include a stable dimension, confidence reason,
+and evidence.
+
+### Fathom CUA MCP
+
+Maestro can attach the local Fathom computer-use MCP shim as a plugin-managed
+stdio server. This keeps desktop-control tools available through the same
+Maestro MCP manager and agent tool bridge used for other MCP servers.
+
+Enable it for a local run:
+
+```bash
+export MAESTRO_FATHOM_CUA_ENABLED=1
+export MAESTRO_FATHOM_CUA_REPO=/path/to/fathom
+export MAESTRO_FATHOM_CUA_WORKSPACE_ID=workspace_1
+```
+
+Optional runtime settings:
+
+| Variable | Purpose |
+| --- | --- |
+| `MAESTRO_FATHOM_CUA_MCP_NAME` | MCP server name; defaults to `fathom-cua`. |
+| `MAESTRO_FATHOM_CUA_CLIENT_COMMAND` | Installed `fathom-client` command. If omitted and a repo is configured or found, Maestro uses `go run ./cmd/fathom-client`. |
+| `MAESTRO_FATHOM_CUA_CLIENT_ARGS_JSON` | Extra JSON string array of `fathom-client` arguments. |
+| `MAESTRO_FATHOM_CUA_TOOL_PROFILE` | Agent-facing Fathom tool profile. Defaults to `canonical`; set to `full` or `debug` only for parity/debugging. |
+| `MAESTRO_FATHOM_CUA_IPC_ROOT` | Helper IPC root for live desktop actions. |
+| `MAESTRO_FATHOM_CUA_SESSION_ID` / `MAESTRO_FATHOM_CUA_TURN_ID` | Receipt lineage IDs propagated into Fathom. |
+| `MAESTRO_FATHOM_CUA_DISABLE_IPC` | Set to `1` for negotiation/tool-list checks without Helper IPC. |
+
+Maestro launches Fathom with the `canonical` profile by default so desktop
+computer-use stays focused. The canonical profile keeps observation,
+activation, native click/context-menu, focused text entry, visible-text
+selection, structured controls, keyboard, and tool-search primitives. Broad
+diagnostic primitives such as raw drag, paste, move-mouse, low-level scroll, and
+window mutation stay behind the explicit `full`/`debug` profiles. File
+operations are not exposed through Fathom: Maestro keeps them in the normal
+file lane (`read`, `list`, `find`, `search`, `diff`, `apply_patch`, `edit`,
+`write`, and `notebook_edit`) so filesystem mutations remain specific and
+auditable.
+
+To prove the full local path, run the live smoke on a Mac with Accessibility
+permission granted:
+
+```bash
+MAESTRO_RUN_LIVE_FATHOM_CUA_MCP=1 npm run smoke:fathom-cua-mcp
+```
+
+The smoke opens focused Fathom AppKit dogfood targets, connects `fathom-cua`
+through Maestro's MCP manager in the canonical profile, proves `list_apps`,
+`tool_search`, and `activate_app`, then calls `get_app_state` and a distinct
+action on separate app bundles: `set_value`, `type_text`, `press_key`,
+`select_text`, `click`, `press_element`, `open_context_menu`,
+`select_context_menu_item`, `focus_element`, `set_toggle_state`,
+`set_slider_value`, and `select_menu_option`. It verifies each application
+state change without printing raw typed values, asserts the broad full-profile
+tools are absent, and briefly waits after state capture before each mutating
+action so Fathom's helper-side `user_active` guard can observe an idle desktop.
+The report includes the Fathom profile, tool count, and capability summary so
+profile drift is visible in CI or local proof logs.
+
 ## Creating a Custom MCP Server
 
 ### Minimal TypeScript Server

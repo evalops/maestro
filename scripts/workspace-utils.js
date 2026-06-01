@@ -6,7 +6,12 @@
  * Plain JS for direct Node execution; typed via JSDoc for safety.
  */
 
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import {
+	existsSync,
+	readFileSync,
+	readdirSync,
+	writeFileSync,
+} from "node:fs";
 import { dirname, join, resolve as resolvePath } from "node:path";
 
 /**
@@ -93,21 +98,117 @@ function getWorkspaceGlobs(rootPackage) {
 	throw new Error("Unsupported workspace configuration in package.json");
 }
 
+function escapeRegExp(value) {
+	return value.replace(/[.+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function globTokenPattern(value) {
+	let pattern = "";
+	for (const char of value) {
+		pattern += char === "*" ? "[^/]*" : escapeRegExp(char);
+	}
+	return pattern;
+}
+
+function segmentHasPatternSyntax(segment) {
+	return segment.includes("*") || /\{[^{}]+,[^{}]*\}/u.test(segment);
+}
+
+function segmentPatternToRegExp(segment) {
+	let pattern = "";
+	for (let index = 0; index < segment.length; index += 1) {
+		const char = segment[index];
+		if (char === "*") {
+			pattern += "[^/]*";
+			continue;
+		}
+		if (char === "{") {
+			const end = segment.indexOf("}", index + 1);
+			const body = end === -1 ? "" : segment.slice(index + 1, end);
+			if (body.includes(",")) {
+				pattern += `(?:${body.split(",").map(globTokenPattern).join("|")})`;
+				index = end;
+				continue;
+			}
+		}
+		pattern += escapeRegExp(char);
+	}
+	return new RegExp(`^${pattern}$`);
+}
+
+function listDirectories(path) {
+	try {
+		return readdirSync(path, { withFileTypes: true })
+			.filter((entry) => entry.isDirectory())
+			.map((entry) => join(path, entry.name));
+	} catch {
+		return [];
+	}
+}
+
+function expandWorkspacePattern(rootDir, pattern) {
+	const segments = pattern.split(/[\\/]+/u).filter(Boolean);
+	let directories = [rootDir];
+
+	for (const segment of segments) {
+		if (segment === "**") {
+			const descendants = [...directories];
+			const visit = (dir) => {
+				for (const child of listDirectories(dir)) {
+					descendants.push(child);
+					visit(child);
+				}
+			};
+			for (const dir of directories) {
+				visit(dir);
+			}
+			directories = Array.from(new Set(descendants));
+			continue;
+		}
+
+		if (segmentHasPatternSyntax(segment)) {
+			const regexp = segmentPatternToRegExp(segment);
+			directories = directories.flatMap((dir) =>
+				listDirectories(dir).filter((child) =>
+					regexp.test(child.split(/[\\/]/u).pop() ?? ""),
+				),
+			);
+			continue;
+		}
+
+		directories = directories
+			.map((dir) => join(dir, segment))
+			.filter((dir) => existsSync(dir));
+	}
+
+	return directories
+		.map((dir) => join(dir, "package.json"))
+		.filter((path) => existsSync(path))
+		.map((path) => resolvePath(path));
+}
+
+async function resolveWorkspacePackagePathsWithGlob(rootDir, globs) {
+	try {
+		const { globSync } = await import("glob");
+		return globs.flatMap((pattern) =>
+			globSync(join(pattern, "package.json"), {
+				cwd: rootDir,
+				absolute: true,
+				nodir: true,
+			}).map((p) => resolvePath(p)),
+		);
+	} catch {
+		return globs.flatMap((pattern) => expandWorkspacePattern(rootDir, pattern));
+	}
+}
+
 /**
  * @param {Record<string, unknown>} rootPackage
  */
 export async function getWorkspacePackagePaths(rootPackage) {
-	const { globSync } = await import("glob");
 	const globs = getWorkspaceGlobs(rootPackage);
-	const paths = new Set(
-		globs.flatMap((pattern) =>
-			globSync(join(pattern, "package.json"), {
-				cwd: getRootContext().rootDir,
-				absolute: true,
-				nodir: true,
-			}).map((p) => resolvePath(p)),
-		),
-	);
+	const { rootDir } = getRootContext();
+	const paths = new Set(await resolveWorkspacePackagePathsWithGlob(rootDir, globs));
 
 	if (paths.size === 0) {
 		throw new Error("No workspace package.json files found");
@@ -132,7 +233,7 @@ export function readPackageJson(path) {
  * @param {Record<string, unknown>} pkg
  */
 export function writePackageJson(path, pkg) {
-	writeFileSync(path, JSON.stringify(pkg, null, 2) + "\n");
+	writeFileSync(path, `${JSON.stringify(pkg, null, "\t")}\n`);
 }
 
 /**

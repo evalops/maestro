@@ -13,6 +13,7 @@ Nav: [Docs index](README.md) · [Quickstart](QUICKSTART.md) · [Tools Reference]
 
 ```bash
 npx nx run maestro:build --skip-nx-cache           # CLI fast path
+npm run smoke:local-e2e                            # help/version/headless/mock-agent local smoke
 npx nx run maestro:build:all --skip-nx-cache       # CLI + TUI + Web
 bun run bun:lint                                   # Biome + eval verifier
 npx nx run maestro:test --skip-nx-cache            # Builds TUI/Web, then Vitest
@@ -20,6 +21,8 @@ npx nx run maestro:evals --skip-nx-cache           # Scenario runner
 ```
 
 Expected: all commands succeed; dist artifacts appear under `dist/`.
+`smoke:local-e2e` is credential-free after build and exercises deterministic
+mock-agent read, write/read, search/read, and edit/read flows.
 
 ## 2. Inner Loop
 

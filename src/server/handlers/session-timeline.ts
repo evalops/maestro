@@ -1,6 +1,8 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import type { ComposerRunTimelineResponse } from "@evalops/contracts";
+import { tryListMaestroTimelineWithPlatform } from "../../platform/maestro-timeline-client.js";
 import { safeReadSessionEntries } from "../../session/session-context.js";
+import type { HostedRunnerContext } from "../app-context.js";
 import { getAuthSubject } from "../authz.js";
 import { getPendingComposerRequests } from "../pending-request-payload.js";
 import { ApiError, respondWithApiError, sendJson } from "../server-utils.js";
@@ -12,6 +14,10 @@ interface SessionTimelineParams {
 	id?: string;
 }
 
+interface SessionTimelineOptions {
+	hostedRunner?: HostedRunnerContext;
+}
+
 function requireSessionId(params: SessionTimelineParams): string {
 	const sessionId = params.id?.trim();
 	if (!sessionId || !sessionIdPattern.test(sessionId)) {
@@ -20,11 +26,48 @@ function requireSessionId(params: SessionTimelineParams): string {
 	return sessionId;
 }
 
+function hostedRunnerMatchesSession(
+	hostedRunner: HostedRunnerContext | undefined,
+	sessionId: string,
+): boolean {
+	if (!hostedRunner?.enabled) {
+		return false;
+	}
+	const activeSessionId =
+		hostedRunner.activeMaestroSessionId ??
+		hostedRunner.configuredMaestroSessionId;
+	return activeSessionId === sessionId;
+}
+
+async function tryBuildPlatformTimeline(
+	sessionId: string,
+	pendingRequestCount: number,
+	options: SessionTimelineOptions | undefined,
+): Promise<ComposerRunTimelineResponse | null> {
+	const hostedRunner = options?.hostedRunner;
+	if (!hostedRunnerMatchesSession(hostedRunner, sessionId)) {
+		return null;
+	}
+	const agentRunId = hostedRunner?.agentRunId;
+	const remoteRunnerSessionId = hostedRunner?.runnerSessionId;
+	if (!agentRunId && !remoteRunnerSessionId) {
+		return null;
+	}
+	return await tryListMaestroTimelineWithPlatform({
+		sessionId,
+		agentRunId,
+		remoteRunnerSessionId,
+		workspaceId: hostedRunner?.workspaceId,
+		pendingRequestCount,
+	});
+}
+
 export async function handleSessionTimeline(
 	req: IncomingMessage,
 	res: ServerResponse,
 	params: SessionTimelineParams,
 	cors: Record<string, string>,
+	options?: SessionTimelineOptions,
 ): Promise<void> {
 	try {
 		if (req.method !== "GET") {
@@ -48,12 +91,18 @@ export async function handleSessionTimeline(
 		const sessionPath = sessionManager.getSessionFileById(sessionId);
 		const entries = sessionPath ? safeReadSessionEntries(sessionPath) : [];
 		const pendingRequests = getPendingComposerRequests(session.id);
-		const responseBody: ComposerRunTimelineResponse = buildComposerRunTimeline({
-			sessionId: session.id,
-			entries,
-			messages: session.messages || [],
-			pendingRequests,
-		});
+		const responseBody: ComposerRunTimelineResponse =
+			(await tryBuildPlatformTimeline(
+				session.id,
+				pendingRequests.length,
+				options,
+			)) ??
+			buildComposerRunTimeline({
+				sessionId: session.id,
+				entries,
+				messages: session.messages || [],
+				pendingRequests,
+			});
 
 		sendJson(res, 200, responseBody, cors, req);
 	} catch (error) {

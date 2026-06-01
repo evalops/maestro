@@ -232,6 +232,8 @@ pub enum CommandAction {
     CompactConversation(Option<String>),
     /// MCP (Model Context Protocol) actions
     Mcp(McpAction),
+    /// Agent-to-Agent peer pairing actions
+    A2a(A2aAction),
     /// Hook system management action
     HooksManage(HooksAction),
     /// Show usage and cost statistics
@@ -348,6 +350,46 @@ pub enum McpAction {
         name: Option<String>,
         arguments: HashMap<String, String>,
     },
+}
+
+/// Actions for A2A peer pairing commands.
+#[derive(Debug, Clone)]
+pub enum A2aAction {
+    /// Show native A2A pairing help.
+    Help,
+    /// Show A2A fleet health.
+    Fleet,
+    /// List paired peers.
+    Peers,
+    /// List delegated A2A tasks.
+    Tasks {
+        peer: Option<String>,
+        include_work_graph: bool,
+    },
+    /// Coordinate actionable A2A tasks.
+    Coordinate {
+        peer: Option<String>,
+        reply: Option<String>,
+        include_work_graph: bool,
+    },
+    /// Accept a pairing code.
+    Accept { code: String },
+    /// Publish this Maestro instance as a Platform A2A peer.
+    Register {
+        agent_id: Option<String>,
+        public_url: Option<String>,
+        heartbeat_only: bool,
+    },
+    /// Delegate work to a peer.
+    Delegate { peer: String, text: String },
+    /// Continue an existing A2A task.
+    Reply {
+        peer: String,
+        task_id: String,
+        text: String,
+    },
+    /// Send a message to a peer.
+    Send { peer: String, text: String },
 }
 
 /// Actions for managing the hook system

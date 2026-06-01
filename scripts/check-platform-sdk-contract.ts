@@ -19,6 +19,14 @@ import {
 const EXPECTED_PACKAGE_NAME = "@evalops/sdk-ts";
 
 const serviceModules = {
+	agentRuntime: {
+		specifier: "agentruntime/v1/runtime_pb",
+		exportName: "AgentRuntimeService",
+	},
+	agents: {
+		specifier: "agents/v1/agents_pb",
+		exportName: "AgentService",
+	},
 	approvals: {
 		specifier: "approvals/v1/approvals_pb",
 		exportName: "ApprovalService",
@@ -26,6 +34,14 @@ const serviceModules = {
 	connectors: {
 		specifier: "connectors/v1/connectors_pb",
 		exportName: "ConnectorService",
+	},
+	fermata: {
+		specifier: "fermata/v1/fermata_pb",
+		exportName: "FermataService",
+	},
+	fermataExecution: {
+		specifier: "fermata/v1/worker_pb",
+		exportName: "FermataExecutionService",
 	},
 	governance: {
 		specifier: "governance/v1/governance_pb",
@@ -35,6 +51,10 @@ const serviceModules = {
 		specifier: "llmgateway/v1/gateway_pb",
 		exportName: "GatewayService",
 	},
+	maestroTimeline: {
+		specifier: "maestro/v1/timeline_pb",
+		exportName: "MaestroTimelineService",
+	},
 	meter: {
 		specifier: "meter/v1/meter_pb",
 		exportName: "MeterService",
@@ -42,6 +62,14 @@ const serviceModules = {
 	prompts: {
 		specifier: "prompts/v1/prompts_pb",
 		exportName: "PromptService",
+	},
+	remoteRunner: {
+		specifier: "remoterunner/v1/remoterunner_pb",
+		exportName: "RemoteRunnerService",
+	},
+	toolexecution: {
+		specifier: "toolexecution/v1/toolexecution_pb",
+		exportName: "ToolExecutionService",
 	},
 } as const;
 
@@ -227,6 +255,17 @@ async function assertMemoryContract(
 	}
 }
 
+function assertAgentRuntimeHttpContract(): void {
+	if (
+		PLATFORM_HTTP_ROUTES.agentRuntime.operatingPlaneRuns !==
+		"/v1/agent-operating-plane/runs"
+	) {
+		throw new Error(
+			`agent runtime operating-plane HTTP route drifted: ${PLATFORM_HTTP_ROUTES.agentRuntime.operatingPlaneRuns}`,
+		);
+	}
+}
+
 async function assertIdentityContract(
 	importPackageModule: (specifier: string) => Promise<Record<string, unknown>>,
 ): Promise<void> {
@@ -292,6 +331,7 @@ async function main(): Promise<void> {
 
 		const { importPackageModule } = installPackedSdk(tempDir, tarball);
 		await assertConnectContracts(importPackageModule);
+		assertAgentRuntimeHttpContract();
 		await assertMemoryContract(importPackageModule);
 		await assertIdentityContract(importPackageModule);
 		console.log(

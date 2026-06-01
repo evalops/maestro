@@ -1,4 +1,5 @@
 import type { ActionApprovalContext } from "../../agent/action-approval.js";
+import { parseApplyPatchPaths } from "../../tools/apply-patch-parser.js";
 import { matchesPathPattern } from "../../utils/path-matcher.js";
 import type { EnterprisePolicy } from "../policy.js";
 
@@ -59,6 +60,13 @@ export function extractPolicyFilePaths(
 	if (!args) return [];
 
 	const paths: string[] = [];
+
+	if (context.toolName === "apply_patch") {
+		const patch = getStringArg(context, "patch");
+		if (patch) {
+			paths.push(...parseApplyPatchPaths(patch));
+		}
+	}
 
 	for (const key of PATH_KEYS) {
 		const value = args[key];

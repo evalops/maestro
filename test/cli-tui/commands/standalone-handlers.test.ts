@@ -496,6 +496,7 @@ vi.mock("../../../src/mcp/index.js", () => ({
 	mcpManager: {
 		getStatus: vi.fn(() => createDefaultMcpStatus()),
 		configure: vi.fn().mockResolvedValue(undefined),
+		reconnect: vi.fn().mockResolvedValue(false),
 		readResource: vi.fn(),
 		getPrompt: vi.fn(),
 	},
@@ -521,6 +522,10 @@ vi.mock("../../../src/mcp/index.js", () => ({
 				: [],
 	})),
 	searchOfficialMcpRegistry: vi.fn(() => [mockOfficialRegistryEntry]),
+	serverRequiresProjectApproval: vi.fn(
+		(server: { scope?: string; requiresProjectApproval?: boolean }) =>
+			server.scope === "project" || server.requiresProjectApproval === true,
+	),
 	setProjectMcpServerApprovalDecision: vi.fn(),
 	updateMcpAuthPresetInConfig: vi.fn(() => ({
 		path: "/tmp/project/.maestro/mcp.local.json",
@@ -672,6 +677,43 @@ describe("mcp-handlers", () => {
 			});
 		});
 
+		it("disconnects a generated plugin MCP server when project approval is denied", async () => {
+			vi.mocked(loadMcpConfig).mockReturnValueOnce({
+				projectRoot: process.cwd(),
+				servers: [
+					{
+						name: "fathom-cua",
+						scope: "plugin",
+						requiresProjectApproval: true,
+						transport: "stdio",
+						command: "fathom-client",
+					},
+				],
+				authPresets: [],
+			});
+
+			const ctx = createMcpCtx("/mcp deny fathom-cua");
+			handleMcpCommand(ctx);
+			await vi.waitFor(() => {
+				expect(setProjectMcpServerApprovalDecision).toHaveBeenCalledWith({
+					projectRoot: process.cwd(),
+					server: {
+						name: "fathom-cua",
+						scope: "plugin",
+						requiresProjectApproval: true,
+						transport: "stdio",
+						command: "fathom-client",
+					},
+					authPresets: [],
+					decision: "denied",
+				});
+				expect(mcpManager.reconnect).toHaveBeenCalledWith("fathom-cua");
+				expect(ctx.addContent).toHaveBeenCalledWith(
+					'Denied project MCP server "fathom-cua".',
+				);
+			});
+		});
+
 		it("falls back to a generic message for blank server errors", () => {
 			vi.mocked(mcpManager.getStatus).mockReturnValueOnce({
 				authPresets: [],
@@ -728,6 +770,21 @@ describe("mcp-handlers", () => {
 			expect(output).toContain(
 				"Usage: /mcp prompts <server> <name> [KEY=value ...]",
 			);
+		});
+
+		it("normalizes externally-authored MCP prompt descriptions", () => {
+			const status = createDefaultMcpStatus();
+			status.servers[0]!.promptDetails![0]!.description =
+				"  Summarize\n\n\ttracked   issue  ";
+			status.servers[0]!.promptDetails![0]!.arguments![0]!.description =
+				"  Issue\nidentifier  ";
+
+			const output = formatMcpPromptList(status.servers, "test-server");
+
+			expect(output).toContain("Description: Summarize tracked issue");
+			expect(output).toContain("Args: ISSUE (required): Issue identifier");
+			expect(output).not.toContain("\t");
+			expect(output).not.toContain("Summarize\n");
 		});
 
 		it("passes KEY=value prompt args through the TUI MCP prompt command", async () => {

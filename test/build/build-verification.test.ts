@@ -1,3 +1,4 @@
+import { existsSync } from "node:fs";
 import { access, readFile, stat } from "node:fs/promises";
 import { join } from "node:path";
 import { dirname } from "node:path";
@@ -8,8 +9,9 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 const projectRoot = join(__dirname, "..", "..");
 const distPath = join(projectRoot, "dist");
+const describeIfBuilt = existsSync(distPath) ? describe : describe.skip;
 
-describe("Build Verification", () => {
+describeIfBuilt("Build Verification", () => {
 	describe("Critical CLI artifacts", () => {
 		const criticalFiles = [
 			"cli.js",

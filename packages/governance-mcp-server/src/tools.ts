@@ -6,13 +6,7 @@
 
 import type { GovernanceEngine } from "@evalops/governance";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import {
-	AnalyzeCommandSchema,
-	CheckPolicySchema,
-	EvaluateActionSchema,
-	LogAuditEventSchema,
-	ScanPayloadSchema,
-} from "./schemas.js";
+import { EvaluateActionSchema, ScanPayloadSchema } from "./schemas.js";
 
 export function registerGovernanceTools(
 	server: McpServer,
@@ -21,7 +15,7 @@ export function registerGovernanceTools(
 	// 1. evaluate_action — Full governance pipeline evaluation
 	server.tool(
 		"evaluate_action",
-		"Evaluate a tool call through the full governance pipeline (firewall rules, loop detection, sequence analysis, enterprise policy). Returns allow/require_approval/block verdict.",
+		"Evaluate a tool call through Platform governance.v1.GovernanceService/EvaluateAction. Returns allow/require_approval/block verdict.",
 		EvaluateActionSchema,
 		{ readOnlyHint: true },
 		async (args) => {
@@ -41,55 +35,14 @@ export function registerGovernanceTools(
 		},
 	);
 
-	// 2. scan_payload — Credential/PII detection + sanitization
+	// 2. scan_payload — Platform PII detection + sanitization
 	server.tool(
 		"scan_payload",
-		"Scan a payload for credentials, API keys, PII, and other sensitive content. Returns findings and a sanitized (redacted) copy.",
+		"Scan a payload through Platform governance.v1.GovernanceService/DetectPII. Returns findings and a sanitized (redacted) copy.",
 		ScanPayloadSchema,
 		{ readOnlyHint: true },
-		(args) => {
-			const result = engine.scanPayload(args.payload);
-			return {
-				content: [
-					{
-						type: "text" as const,
-						text: JSON.stringify(result, null, 2),
-					},
-				],
-			};
-		},
-	);
-
-	// 3. analyze_command — Bash command safety analysis
-	server.tool(
-		"analyze_command",
-		"Analyze a bash command for safety concerns using tree-sitter parsing and heuristic detection. Identifies destructive operations, egress patterns, and risky syntax.",
-		AnalyzeCommandSchema,
-		{ readOnlyHint: true },
-		(args) => {
-			const result = engine.analyzeCommand(args.command);
-			return {
-				content: [
-					{
-						type: "text" as const,
-						text: JSON.stringify(result, null, 2),
-					},
-				],
-			};
-		},
-	);
-
-	// 4. check_policy — Enterprise policy compliance check
-	server.tool(
-		"check_policy",
-		"Check a tool call against enterprise policy rules only (tool restrictions, path restrictions, network policies, dependency policies).",
-		CheckPolicySchema,
-		{ readOnlyHint: true },
 		async (args) => {
-			const result = await engine.checkPolicy({
-				toolName: args.toolName,
-				args: args.args,
-			});
+			const result = await engine.scanPayload(args.payload);
 			return {
 				content: [
 					{
@@ -101,48 +54,19 @@ export function registerGovernanceTools(
 		},
 	);
 
-	// 5. get_policy — Return current policy configuration
+	// 3. get_policy — Return Platform safety policy summary
 	server.tool(
 		"get_policy",
-		"Return the current enterprise policy configuration summary (what restrictions are active, org ID, etc.).",
+		"Return the Platform governance safety-policy summary for the configured workspace.",
 		{},
 		{ readOnlyHint: true },
-		() => {
-			const result = engine.getPolicy();
+		async () => {
+			const result = await engine.getPolicy();
 			return {
 				content: [
 					{
 						type: "text" as const,
 						text: JSON.stringify(result, null, 2),
-					},
-				],
-			};
-		},
-	);
-
-	// 6. log_audit_event — Record audit event for compliance
-	server.tool(
-		"log_audit_event",
-		"Record a governance audit event for compliance tracking. Events are stored in the engine's audit log.",
-		LogAuditEventSchema,
-		{ readOnlyHint: false },
-		(args) => {
-			engine.logAuditEvent({
-				type: args.type,
-				toolName: args.toolName,
-				verdict: args.verdict,
-				details: args.details as Record<string, unknown> | undefined,
-			});
-			const log = engine.getAuditLog();
-			return {
-				content: [
-					{
-						type: "text" as const,
-						text: JSON.stringify(
-							{ logged: true, totalEvents: log.length },
-							null,
-							2,
-						),
 					},
 				],
 			};

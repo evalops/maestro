@@ -16,9 +16,27 @@ describe("Platform core service contract names", () => {
 		).toBe("/agentruntime.v1.AgentRuntimeService/HandleTrigger");
 		expect(
 			platformConnectMethodPath(
+				PLATFORM_CONNECT_METHODS.agentRuntime.claimNextRun,
+			),
+		).toBe("/agentruntime.v1.AgentRuntimeService/ClaimNextRun");
+		expect(
+			platformConnectMethodPath(PLATFORM_CONNECT_METHODS.agents.delegate),
+		).toBe("/agents.v1.AgentService/Delegate");
+		expect(
+			platformConnectMethodPath(
+				PLATFORM_CONNECT_METHODS.agents.resolveDelegation,
+			),
+		).toBe("/agents.v1.AgentService/ResolveDelegation");
+		expect(
+			platformConnectMethodPath(
 				PLATFORM_CONNECT_METHODS.agentRuntime.recordRunStep,
 			),
 		).toBe("/agentruntime.v1.AgentRuntimeService/RecordRunStep");
+		expect(
+			platformConnectMethodPath(
+				PLATFORM_CONNECT_METHODS.agentRuntime.recordRunEvent,
+			),
+		).toBe("/agentruntime.v1.AgentRuntimeService/RecordRunEvent");
 		expect(
 			platformConnectMethodPath(PLATFORM_CONNECT_METHODS.agentRuntime.waitRun),
 		).toBe("/agentruntime.v1.AgentRuntimeService/WaitRun");
@@ -81,6 +99,11 @@ describe("Platform core service contract names", () => {
 		).toBe("/remoterunner.v1.RemoteRunnerService/GetStatus");
 		expect(
 			platformConnectMethodPath(
+				PLATFORM_CONNECT_METHODS.maestroTimeline.listRunTimeline,
+			),
+		).toBe("/maestro.v1.MaestroTimelineService/ListRunTimeline");
+		expect(
+			platformConnectMethodPath(
 				PLATFORM_CONNECT_METHODS.toolexecution.executeTool,
 			),
 		).toBe("/toolexecution.v1.ToolExecutionService/ExecuteTool");
@@ -94,10 +117,26 @@ describe("Platform core service contract names", () => {
 				PLATFORM_CONNECT_METHODS.toolexecution.recordToolExecutionOutput,
 			),
 		).toBe("/toolexecution.v1.ToolExecutionService/RecordToolExecutionOutput");
+		expect(
+			platformConnectMethodPath(
+				PLATFORM_CONNECT_METHODS.fermata.createTestSuite,
+			),
+		).toBe("/fermata.v1.FermataService/CreateTestSuite");
+		expect(
+			platformConnectMethodPath(
+				PLATFORM_CONNECT_METHODS.fermataExecution.runTestSuite,
+			),
+		).toBe("/fermata.v1.FermataExecutionService/RunTestSuite");
 	});
 
 	it("keeps durable memory on the existing HTTP JSON route", () => {
 		expect(PLATFORM_HTTP_ROUTES.memory.recall).toBe("/v1/memories/recall");
+	});
+
+	it("pins the AgentRuntime operating-plane inspection HTTP route", () => {
+		expect(PLATFORM_HTTP_ROUTES.agentRuntime.operatingPlaneRuns).toBe(
+			"/v1/agent-operating-plane/runs",
+		);
 	});
 
 	it("pins identity HTTP routes used by EvalOps login and delegation", () => {

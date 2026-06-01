@@ -1,7 +1,7 @@
 /**
- * @fileoverview Core Type Definitions for Composer Agent
+ * @fileoverview Core Type Definitions for Maestro Agent
  *
- * This module defines the fundamental types used throughout the Composer AI system,
+ * This module defines the fundamental types used throughout the Maestro AI system,
  * including message formats, tool definitions, model configurations, and agent state.
  *
  * ## Type Categories
@@ -31,7 +31,10 @@
  * @module agent/types
  */
 
+import type { GuardedFilesPolicySettings } from "@evalops/contracts";
 import type { TSchema } from "@sinclair/typebox";
+import type { PromptProjectDocManifest } from "../config/index.js";
+import type { UnifiedContextManifest } from "../context/manifest-types.js";
 import type { PromptMetadata } from "../prompts/types.js";
 import type { SkillArtifactMetadata } from "../skills/artifact-metadata.js";
 import type { CheckpointProfiler } from "../utils/checkpoint-profiler.js";
@@ -39,6 +42,7 @@ import type {
 	ActionApprovalDecision,
 	ActionApprovalRequest,
 } from "./action-approval.js";
+import type { ToolCapabilityMetadata } from "./tool-capability-types.js";
 import type { ToolRetryDecision, ToolRetryRequest } from "./tool-retry.js";
 
 /**
@@ -48,20 +52,24 @@ import type { ToolRetryDecision, ToolRetryRequest } from "./tool-retry.js";
  * - `openai-completions` - OpenAI Chat Completions API
  * - `openai-responses` - OpenAI Responses API (newer format)
  * - `openai-codex-responses` - ChatGPT Codex Responses backend
+ * - `openai-codex-app-server` - Local Codex app-server with ChatGPT sign-in
  * - `anthropic-messages` - Anthropic Messages API
  * - `google-generative-ai` - Google Generative AI (Gemini)
  * - `google-gemini-cli` - Google Cloud Code Assist (Gemini CLI)
  * - `bedrock-converse` - AWS Bedrock Converse API
+ * - `scripted-replay` - Deterministic local scenario replay provider
  */
 export type Api =
 	| "openai-completions"
 	| "openai-responses"
 	| "openai-codex-responses"
+	| "openai-codex-app-server"
 	| "anthropic-messages"
 	| "google-generative-ai"
 	| "google-gemini-cli"
 	| "bedrock-converse"
-	| "vertex-ai";
+	| "vertex-ai"
+	| "scripted-replay";
 
 export interface OpenAICompatOverrides {
 	supportsStore?: boolean;
@@ -219,6 +227,85 @@ export interface ToolCall {
 	 * preserved across turns when replaying the message history back to the provider.
 	 */
 	thoughtSignature?: string;
+}
+
+export type ToolSchedulingDecisionKind =
+	| "scheduled"
+	| "parallelized"
+	| "delayed"
+	| "serialized"
+	| "cached"
+	| "skipped";
+
+export interface ToolSchedulingDecision {
+	/** Tool call identifier; duplicated here for standalone telemetry use. */
+	callId: string;
+	/** Tool name, never arguments. */
+	toolName: string;
+	/** Zero-based order from the model-emitted tool-call list. */
+	emittedIndex: number;
+	/** Scheduler wave number when the call entered an execution wave. */
+	waveIndex?: number;
+	/** Scheduler outcome for this call. */
+	decision: ToolSchedulingDecisionKind;
+	/** Stable reason code; intentionally avoids raw paths and arguments. */
+	reason: string;
+	/** Time spent waiting inside the scheduler after model emission. */
+	schedulerWaitMs?: number;
+	/** True when an MCP server opt-in made the call parallel-safe. */
+	mcpOptIn?: boolean;
+	/** True when execution was served from reusable tool-result state. */
+	cacheHit?: boolean;
+	/** True when an in-flight mutation forced a wait or serialization. */
+	blockedByMutation?: boolean;
+}
+
+export type ToolPhaseDecisionOutcome =
+	| "parallelized"
+	| "serialized"
+	| "delayed"
+	| "cached"
+	| "skipped";
+
+export interface ToolPhaseDecision {
+	toolCallId: string;
+	toolName: string;
+	emittedIndex: number;
+	outcome: ToolPhaseDecisionOutcome;
+	decision: ToolPhaseDecisionOutcome;
+	reason: string;
+	waveIndex?: number;
+	waitMs: number;
+	schedulerWaitMs: number;
+	mcpOptIn?: boolean;
+	cacheHit?: boolean;
+	blockedByMutation?: boolean;
+}
+
+export interface ToolPhaseBatchShapingFeedback {
+	avoidableSingleton: boolean;
+	reason: string;
+	hint: string;
+}
+
+export interface ToolPhaseSummary {
+	type: "tool_phase_summary";
+	modelToolCallCount: number;
+	modelEmittedToolCallCount: number;
+	schedulableWaveCount: number;
+	parallelizedCallCount: number;
+	actuallyParallelizedCallCount: number;
+	serializedCallCount: number;
+	delayedCallCount: number;
+	blockedByMutationCount: number;
+	mcpOptInCallCount: number;
+	mcpOptInUseCount: number;
+	cacheHitCount: number;
+	totalToolWaitMs: number;
+	toolWaitTimeMs: number;
+	serializationReasons: Record<string, number>;
+	decisions: ToolPhaseDecision[];
+	batchShapingFeedback?: ToolPhaseBatchShapingFeedback;
 }
 
 /**
@@ -510,11 +597,25 @@ export interface ToolAnnotations {
 	readOnlyHint?: boolean;
 	/** If true, the tool may perform destructive/irreversible updates */
 	destructiveHint?: boolean;
+	/** If true, mutating calls are scoped to explicit path arguments */
+	pathScopedMutationHint?: boolean;
 	/** If true, calling repeatedly with same args has no additional effect */
 	idempotentHint?: boolean;
 	/** If true, the tool interacts with external systems (network, APIs) */
 	openWorldHint?: boolean;
 }
+
+export interface McpToolSourceMetadata {
+	type: "mcp";
+	server: string;
+	tool: string;
+	capability?: ToolCapabilityMetadata;
+	supportsParallelToolCalls?: boolean;
+	parallelSafetyProvenance?: "static_config" | "server_capability" | "none";
+	parallelMaxConcurrency?: number;
+}
+
+export type ToolSourceMetadata = McpToolSourceMetadata;
 
 /**
  * Complete tool definition with execute function.
@@ -556,6 +657,8 @@ export interface AgentTool<
 	parameters: TParameters;
 	/** Tool behavior hints from MCP annotations */
 	annotations?: ToolAnnotations;
+	/** Exact runtime provenance for bridged or remote tool sources */
+	source?: ToolSourceMetadata;
 	/** Optional categorization (e.g., "file", "shell", "web") */
 	toolType?: string;
 	/**
@@ -617,6 +720,10 @@ export interface AgentToolResult<TDetails = unknown> {
 	details?: TDetails;
 	/** Whether the execution resulted in an error */
 	isError?: boolean;
+	/** Optional Platform ToolExecution identifier used for audit joins */
+	toolExecutionId?: string;
+	/** Optional Platform approval request identifier correlated to ToolExecution */
+	approvalRequestId?: string;
 }
 
 /**
@@ -745,6 +852,66 @@ export type AssistantMessageEvent =
 			contentIndex: number;
 			/** Completed tool call */
 			toolCall: ToolCall;
+			/** Partial message state */
+			partial: AssistantMessage;
+	  }
+	| {
+			/** Provider-owned tool execution started outside Maestro's local executor */
+			type: "provider_tool_execution_start";
+			/** Provider tool call identifier */
+			toolCallId: string;
+			/** Provider tool name */
+			toolName: string;
+			/** Optional human-facing label for live UI */
+			displayName?: string;
+			/** Optional compact summary for live UI */
+			summaryLabel?: string;
+			/** Provider tool arguments */
+			args: Record<string, unknown>;
+			/** Optional Platform ToolExecution identifier */
+			toolExecutionId?: string;
+			/** Partial message state */
+			partial: AssistantMessage;
+	  }
+	| {
+			/** Provider-owned tool execution produced an incremental update */
+			type: "provider_tool_execution_update";
+			/** Provider tool call identifier */
+			toolCallId: string;
+			/** Provider tool name */
+			toolName: string;
+			/** Optional human-facing label for live UI */
+			displayName?: string;
+			/** Optional compact summary for live UI */
+			summaryLabel?: string;
+			/** Provider tool arguments */
+			args: Record<string, unknown>;
+			/** Partial provider result */
+			partialResult: AgentToolResult;
+			/** Optional Platform ToolExecution identifier */
+			toolExecutionId?: string;
+			/** Partial message state */
+			partial: AssistantMessage;
+	  }
+	| {
+			/** Provider-owned tool execution completed outside Maestro's local executor */
+			type: "provider_tool_execution_end";
+			/** Provider tool call identifier */
+			toolCallId: string;
+			/** Provider tool name */
+			toolName: string;
+			/** Optional human-facing label for live UI */
+			displayName?: string;
+			/** Optional compact summary for live UI */
+			summaryLabel?: string;
+			/** Provider tool result */
+			result: ToolResultMessage;
+			/** Whether the provider tool returned an error */
+			isError: boolean;
+			/** Optional Platform ToolExecution identifier */
+			toolExecutionId?: string;
+			/** Optional Platform approval request identifier correlated to ToolExecution */
+			approvalRequestId?: string;
 			/** Partial message state */
 			partial: AssistantMessage;
 	  }
@@ -940,6 +1107,10 @@ export interface AgentState {
 	promptMetadata?: PromptMetadata;
 	/** Exact prompt source files layered into the current system prompt */
 	systemPromptSourcePaths?: string[];
+	/** Manifest of project instruction files layered into the current system prompt */
+	promptContextManifest?: PromptProjectDocManifest;
+	/** Full filesystem and MCP context provenance captured for this run */
+	unifiedContextManifest?: UnifiedContextManifest;
 	/** Current model configuration */
 	model: Model<Api>;
 	/** Current thinking level for extended reasoning */
@@ -1037,6 +1208,36 @@ export interface AgentState {
  * - `error` - Error occurred
  * - `compaction` - Context was compacted
  */
+export interface ToolSchedulingMetadata {
+	classification:
+		| "read_only"
+		| "path_scoped_mutation"
+		| "parallel_safe_mutation"
+		| "serialized_mutation"
+		| "workflow_serialized"
+		| "cache_reuse"
+		| "unknown";
+	reason:
+		| "read_only_tool"
+		| "mcp_parallel_opt_in"
+		| "path_scope_available"
+		| "path_scope_disjoint"
+		| "path_scope_overlap"
+		| "pending_mutation"
+		| "mutating_tool"
+		| "workflow_state_tracker"
+		| "cache_hit"
+		| "cache_pending"
+		| "unknown_tool";
+	concurrencyLimit?: number;
+	queueDepth?: number;
+	pendingMutations?: number;
+	pathScope?: string[];
+	pathScopeSource?: "annotation" | "known_tool";
+	pathArgumentKeys?: string[];
+	cache?: "disabled" | "miss" | "candidate" | "pending_hit" | "hit";
+}
+
 export type AgentEvent =
 	| {
 			/** Agent execution started */
@@ -1117,6 +1318,8 @@ export type AgentEvent =
 			summaryLabel?: string;
 			/** Arguments passed to the tool */
 			args: Record<string, unknown>;
+			/** Scheduler classification and serialization reason for this call */
+			scheduling?: ToolSchedulingMetadata;
 	  }
 	| {
 			/** Tool execution completed */
@@ -1148,6 +1351,8 @@ export type AgentEvent =
 			result: ToolResultMessage;
 			/** Whether the tool returned an error */
 			isError: boolean;
+			/** Scheduler classification and final reuse/serialization reason */
+			scheduling?: ToolSchedulingMetadata;
 	  }
 	| {
 			/** LSP diagnostic delta produced by an edit/write tool call */
@@ -1195,11 +1400,14 @@ export type AgentEvent =
 			/** Failed tool calls in the batch */
 			callsFailed: number;
 	  }
+	| ToolPhaseSummary
 	| {
 			/** Tool execution produced partial output */
 			type: "tool_execution_update";
 			/** Tool call identifier */
 			toolCallId: string;
+			/** Optional Platform ToolExecution identifier */
+			toolExecutionId?: string;
 			/** Name of the tool */
 			toolName: string;
 			/** Optional human-facing label for live UI */
@@ -1378,6 +1586,8 @@ export interface AgentRunConfig {
 		/** When the session started */
 		startedAt: Date;
 	};
+	/** User/org guarded-files override policy for this run */
+	guardedFiles?: GuardedFilesPolicySettings;
 	/** Optional helper function for running LLM queries (e.g., for summarization) */
 	runLLM?: (systemPrompt: string, userPrompt: string) => Promise<string>;
 	/** Optional debug checkpoint profiler for local query latency diagnostics. */
@@ -1464,13 +1674,17 @@ export interface StreamOptions {
 	requestBody?: Record<string, unknown>;
 	/** Stable session id for provider-side request grouping/cache keys */
 	sessionId?: string;
+	/** Current working directory for local provider runtimes. */
+	cwd?: string;
 	/** Authentication type for the request */
-	authType?: "api-key" | "anthropic-oauth";
+	authType?: "api-key" | "bearer-token";
 	/** Optional Anthropic API-side task budget for the current turn */
 	taskBudget?: {
 		total: number;
 		remaining?: number;
 	};
+	/** Optional governed executor for provider-native dynamic tool callbacks. */
+	executeDynamicTool?: (toolCall: ToolCall) => Promise<AgentToolResult>;
 }
 
 /**

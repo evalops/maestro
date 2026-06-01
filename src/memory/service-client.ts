@@ -1,5 +1,16 @@
+import { readFileSync } from "node:fs";
+import type { IncomingMessage } from "node:http";
+import {
+	type RequestOptions as HttpsRequestOptions,
+	request as httpsRequest,
+} from "node:https";
+import {
+	EVALOPS_ACCESS_TOKEN_ENV_VARS,
+	EVALOPS_ORGANIZATION_ID_ENV_VARS,
+} from "../evalops/env-aliases.js";
 import {
 	getEnvValue,
+	parsePositiveInt,
 	resolveOrganizationId,
 	resolvePlatformToken,
 	resolveTeamId,
@@ -16,6 +27,13 @@ const DURABLE_MEMORY_TAG = "maestro-kind:durable-memory";
 const SOURCE_TAG = "source:maestro";
 const TOPIC_TAG_PREFIX = "maestro-topic:";
 const PROJECT_NAME_TAG_PREFIX = "maestro-project-name:";
+const SESSION_TAG_PREFIX = "maestro-session:";
+const MEMORY_SERVICE_TOKEN_SCOPES = [
+	"memories:read",
+	"memories:write",
+] as const;
+const DEFAULT_MEMORY_SERVICE_TOKEN_TTL_SECONDS = 300;
+const SERVICE_TOKEN_EXPIRY_SKEW_MS = 30_000;
 
 type RemoteMemoryConfig = {
 	agentId: string;
@@ -61,6 +79,23 @@ type RemoteRecallRequest = Parameters<MemoryClient["recall"]>[0] & {
 	reviewStatus?: string;
 };
 
+type CachedServiceToken = {
+	expiresAtMs: number;
+	token: string;
+};
+
+type ServiceTokenResponseBody = {
+	claims?: {
+		expires_at?: string;
+		expiresAt?: string;
+	};
+	expires_at?: string;
+	expiresAt?: string;
+	token?: string;
+};
+
+const memoryServiceTokenCache = new Map<string, CachedServiceToken>();
+
 function normalizeTopic(topic: string): string {
 	return topic.toLowerCase().trim();
 }
@@ -104,6 +139,241 @@ function resolveMemoryAgentId(): string {
 	);
 }
 
+function resolveMemoryServiceTokenUrl(): string | undefined {
+	return getEnvValue([
+		"MAESTRO_MEMORY_IDENTITY_SERVICE_TOKENS_URL",
+		"IDENTITY_SERVICE_TOKENS_URL",
+	]);
+}
+
+function resolveMemoryServiceTokenTtlSeconds(): number {
+	return parsePositiveInt(
+		getEnvValue(["MAESTRO_MEMORY_SERVICE_TOKEN_TTL_SECONDS"]),
+		DEFAULT_MEMORY_SERVICE_TOKEN_TTL_SECONDS,
+	);
+}
+
+function resolveMemoryServiceTokenBootstrapKey(): string | undefined {
+	return getEnvValue([
+		"MAESTRO_MEMORY_IDENTITY_BOOTSTRAP_KEY",
+		"IDENTITY_BOOTSTRAP_KEY",
+	]);
+}
+
+function resolveMemoryIdentityTlsOptions(): HttpsRequestOptions {
+	const caFile = getEnvValue([
+		"MAESTRO_MEMORY_IDENTITY_TLS_CA_FILE",
+		"IDENTITY_CLIENT_TLS_CA_FILE",
+	]);
+	const certFile = getEnvValue([
+		"MAESTRO_MEMORY_IDENTITY_TLS_CERT_FILE",
+		"IDENTITY_CLIENT_TLS_CERT_FILE",
+	]);
+	const keyFile = getEnvValue([
+		"MAESTRO_MEMORY_IDENTITY_TLS_KEY_FILE",
+		"IDENTITY_CLIENT_TLS_KEY_FILE",
+	]);
+	const servername = getEnvValue([
+		"MAESTRO_MEMORY_IDENTITY_TLS_SERVER_NAME",
+		"IDENTITY_CLIENT_TLS_SERVER_NAME",
+	]);
+
+	return {
+		...(caFile ? { ca: readFileSync(caFile, "utf8") } : {}),
+		...(certFile ? { cert: readFileSync(certFile, "utf8") } : {}),
+		...(keyFile ? { key: readFileSync(keyFile, "utf8") } : {}),
+		...(servername ? { servername } : {}),
+	};
+}
+
+function serviceTokenCacheValid(
+	cached: CachedServiceToken | undefined,
+): boolean {
+	return Boolean(
+		cached && cached.expiresAtMs - SERVICE_TOKEN_EXPIRY_SKEW_MS > Date.now(),
+	);
+}
+
+function parseServiceTokenExpiresAt(
+	payload: ServiceTokenResponseBody,
+	ttlSeconds: number,
+): number {
+	const value =
+		payload.expires_at ??
+		payload.expiresAt ??
+		payload.claims?.expires_at ??
+		payload.claims?.expiresAt;
+	if (value) {
+		const parsed = Date.parse(value);
+		if (Number.isFinite(parsed)) {
+			return parsed;
+		}
+	}
+	return Date.now() + ttlSeconds * 1000;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+	return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function parseServiceTokenResponseBody(
+	value: unknown,
+): ServiceTokenResponseBody {
+	if (!isRecord(value)) {
+		return {};
+	}
+	const claims = isRecord(value.claims) ? value.claims : undefined;
+	return {
+		token: typeof value.token === "string" ? value.token.trim() : undefined,
+		expires_at:
+			typeof value.expires_at === "string" ? value.expires_at : undefined,
+		expiresAt:
+			typeof value.expiresAt === "string" ? value.expiresAt : undefined,
+		claims: claims
+			? {
+					expires_at:
+						typeof claims.expires_at === "string"
+							? claims.expires_at
+							: undefined,
+					expiresAt:
+						typeof claims.expiresAt === "string" ? claims.expiresAt : undefined,
+				}
+			: undefined,
+	};
+}
+
+function readResponseBody(response: IncomingMessage): Promise<string> {
+	return new Promise((resolve, reject) => {
+		const chunks: Buffer[] = [];
+		response.on("data", (chunk: Buffer | string) => {
+			chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+		});
+		response.on("end", () => {
+			resolve(Buffer.concat(chunks).toString("utf8"));
+		});
+		response.on("error", reject);
+	});
+}
+
+function issueMemoryServiceTokenRequest(
+	url: string,
+	organizationId: string,
+	ttlSeconds: number,
+): Promise<string> {
+	return new Promise((resolve, reject) => {
+		const body = JSON.stringify({
+			service: MAESTRO_AGENT,
+			organization_id: organizationId,
+			scopes: MEMORY_SERVICE_TOKEN_SCOPES,
+			ttl_seconds: ttlSeconds,
+		});
+		const parsedUrl = new URL(url);
+		const bootstrapKey = resolveMemoryServiceTokenBootstrapKey();
+		const request = httpsRequest(
+			parsedUrl,
+			{
+				...resolveMemoryIdentityTlsOptions(),
+				headers: {
+					Accept: "application/json",
+					"Connect-Protocol-Version": "1",
+					"Content-Length": Buffer.byteLength(body).toString(),
+					"Content-Type": "application/json",
+					...(bootstrapKey ? { "X-Identity-Bootstrap-Key": bootstrapKey } : {}),
+				},
+				method: "POST",
+			},
+			async (response) => {
+				try {
+					const responseBody = await readResponseBody(response);
+					if (response.statusCode !== 200 && response.statusCode !== 201) {
+						reject(
+							new Error(
+								`identity service token request failed with status ${response.statusCode ?? "unknown"}`,
+							),
+						);
+						return;
+					}
+					const parsed = parseServiceTokenResponseBody(
+						JSON.parse(responseBody),
+					);
+					if (!parsed.token) {
+						reject(new Error("identity service token response missing token"));
+						return;
+					}
+					memoryServiceTokenCache.set(organizationId, {
+						token: parsed.token,
+						expiresAtMs: parseServiceTokenExpiresAt(parsed, ttlSeconds),
+					});
+					resolve(parsed.token);
+				} catch (error) {
+					reject(error);
+				}
+			},
+		);
+		request.on("error", reject);
+		request.write(body);
+		request.end();
+	});
+}
+
+async function resolveMemoryServiceToken(
+	organizationId: string,
+): Promise<string | undefined> {
+	const url = resolveMemoryServiceTokenUrl();
+	if (!url) {
+		return undefined;
+	}
+	const cached = memoryServiceTokenCache.get(organizationId);
+	if (serviceTokenCacheValid(cached)) {
+		return cached?.token;
+	}
+
+	const bootstrapKey = resolveMemoryServiceTokenBootstrapKey();
+	const certFile = getEnvValue([
+		"MAESTRO_MEMORY_IDENTITY_TLS_CERT_FILE",
+		"IDENTITY_CLIENT_TLS_CERT_FILE",
+	]);
+	const keyFile = getEnvValue([
+		"MAESTRO_MEMORY_IDENTITY_TLS_KEY_FILE",
+		"IDENTITY_CLIENT_TLS_KEY_FILE",
+	]);
+	if (!bootstrapKey && (!certFile || !keyFile)) {
+		return undefined;
+	}
+
+	return issueMemoryServiceTokenRequest(
+		url,
+		organizationId,
+		resolveMemoryServiceTokenTtlSeconds(),
+	);
+}
+
+async function resolveMemoryAccessToken(
+	organizationId: string,
+): Promise<string | undefined> {
+	const configuredToken = getEnvValue([
+		"MAESTRO_MEMORY_ACCESS_TOKEN",
+		...EVALOPS_ACCESS_TOKEN_ENV_VARS,
+	]);
+	if (configuredToken) {
+		return configuredToken;
+	}
+
+	try {
+		const serviceToken = await resolveMemoryServiceToken(organizationId);
+		if (serviceToken) {
+			return serviceToken;
+		}
+	} catch (error) {
+		logger.warn(
+			"Failed to issue identity service token for remote memory; trying OAuth fallback",
+			{ error },
+		);
+	}
+
+	return resolvePlatformToken([]);
+}
+
 async function resolveRemoteMemoryConfig(): Promise<RemoteMemoryConfig | null> {
 	const baseUrl = getEnvValue([
 		"MAESTRO_MEMORY_BASE",
@@ -118,9 +388,7 @@ async function resolveRemoteMemoryConfig(): Promise<RemoteMemoryConfig | null> {
 
 	const organizationId = resolveOrganizationId([
 		"MAESTRO_MEMORY_ORGANIZATION_ID",
-		"MAESTRO_EVALOPS_ORG_ID",
-		"EVALOPS_ORGANIZATION_ID",
-		"MAESTRO_ENTERPRISE_ORG_ID",
+		...EVALOPS_ORGANIZATION_ID_ENV_VARS,
 	]);
 	if (!organizationId) {
 		logger.warn(
@@ -129,11 +397,7 @@ async function resolveRemoteMemoryConfig(): Promise<RemoteMemoryConfig | null> {
 		return null;
 	}
 
-	const token = await resolvePlatformToken([
-		"MAESTRO_MEMORY_ACCESS_TOKEN",
-		"MAESTRO_EVALOPS_ACCESS_TOKEN",
-		"EVALOPS_TOKEN",
-	]);
+	const token = await resolveMemoryAccessToken(organizationId);
 	if (!token) {
 		logger.warn(
 			"Remote memory configured without access token; falling back to local memory store",
@@ -154,6 +418,10 @@ async function resolveRemoteMemoryConfig(): Promise<RemoteMemoryConfig | null> {
 			"MAESTRO_LLM_GATEWAY_TEAM_ID",
 		]),
 	};
+}
+
+export function resetMemoryServiceTokenCacheForTests(): void {
+	memoryServiceTokenCache.clear();
 }
 
 function resolveRemoteScope(options?: {
@@ -189,6 +457,7 @@ function buildRemoteMemoryTags(
 	topic: string,
 	tags?: readonly string[],
 	projectName?: string,
+	sessionId?: string,
 ): string[] {
 	return (
 		mergeTags(
@@ -199,6 +468,7 @@ function buildRemoteMemoryTags(
 				...(projectName
 					? [`${PROJECT_NAME_TAG_PREFIX}${projectName.trim().toLowerCase()}`]
 					: []),
+				...(sessionId ? [`${SESSION_TAG_PREFIX}${sessionId.trim()}`] : []),
 			],
 			tags,
 		) ?? []
@@ -208,8 +478,11 @@ function buildRemoteMemoryTags(
 function buildSourceReferences(
 	topic: string,
 	scope: RemoteMemoryScope,
+	options?: {
+		sessionId?: string;
+	},
 ): MemorySourceReference[] {
-	return [
+	const references: MemorySourceReference[] = [
 		{
 			uri: scope.repository
 				? `repo:${scope.repository}`
@@ -225,6 +498,23 @@ function buildSourceReferences(
 			},
 		},
 	];
+	const sessionId = options?.sessionId?.trim();
+	if (sessionId) {
+		references.push({
+			uri: `maestro://sessions/${sessionId}`,
+			title: `Maestro session ${sessionId}`,
+			type: "maestro-session",
+			metadata: {
+				source: "maestro",
+				sessionId,
+				topic: normalizeTopic(topic),
+				...(scope.projectId ? { projectId: scope.projectId } : {}),
+				...(scope.projectName ? { projectName: scope.projectName } : {}),
+				...(scope.repository ? { repository: scope.repository } : {}),
+			},
+		});
+	}
+	return references;
 }
 
 function extractTopicFromTags(tags?: readonly string[]): string | undefined {
@@ -280,7 +570,8 @@ function toLocalMemoryEntry(
 				tag !== SOURCE_TAG &&
 				tag !== DURABLE_MEMORY_TAG &&
 				!tag.startsWith(TOPIC_TAG_PREFIX) &&
-				!tag.startsWith(PROJECT_NAME_TAG_PREFIX),
+				!tag.startsWith(PROJECT_NAME_TAG_PREFIX) &&
+				!tag.startsWith(SESSION_TAG_PREFIX),
 		);
 
 	return {
@@ -349,6 +640,7 @@ async function upsertRemoteDurableMemoryWithConfig(
 	content: string,
 	options?: {
 		existingRecords?: ClientMemory[];
+		sessionId?: string;
 		tags?: string[];
 	},
 ): Promise<{ entry: MemoryEntry; created: boolean; updated: boolean }> {
@@ -357,6 +649,7 @@ async function upsertRemoteDurableMemoryWithConfig(
 		topic,
 		options?.tags,
 		scope.projectName,
+		options?.sessionId,
 	);
 	const existingRecords =
 		options?.existingRecords ??
@@ -377,7 +670,9 @@ async function upsertRemoteDurableMemoryWithConfig(
 			agentId: config.agentId,
 			tags: nextTags,
 			reviewStatus: "approved",
-			sourceReferences: buildSourceReferences(topic, scope),
+			sourceReferences: buildSourceReferences(topic, scope, {
+				sessionId: options?.sessionId,
+			}),
 		};
 		const created = requireMemory(
 			(await config.client.store(request)).memory,
@@ -410,7 +705,9 @@ async function upsertRemoteDurableMemoryWithConfig(
 				id: existing.id,
 				content: nextContent,
 				reviewStatus: "approved",
-				sourceReferences: buildSourceReferences(topic, scope),
+				sourceReferences: buildSourceReferences(topic, scope, {
+					sessionId: options?.sessionId,
+				}),
 				tags: mergedTags ?? [],
 			})
 		).memory,
@@ -430,6 +727,7 @@ export async function upsertRemoteDurableMemory(
 		cwd?: string;
 		projectId?: string;
 		projectName?: string;
+		sessionId?: string;
 		tags?: string[];
 	},
 ): Promise<{ entry: MemoryEntry; created: boolean; updated: boolean } | null> {
@@ -443,7 +741,7 @@ export async function upsertRemoteDurableMemory(
 		resolveRemoteScope(options),
 		topic,
 		content,
-		{ tags: options?.tags },
+		{ sessionId: options?.sessionId, tags: options?.tags },
 	);
 }
 

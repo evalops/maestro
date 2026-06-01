@@ -5,6 +5,25 @@
 
 export const sessionWireFormatVersion = "session-wire-format.v1" as const;
 
+export const sessionWireSessionHeaderFields = [
+	"type",
+	"version",
+	"id",
+	"timestamp",
+	"cwd",
+	"subject",
+	"model",
+	"modelMetadata",
+	"thinkingLevel",
+	"systemPrompt",
+	"promptMetadata",
+	"promptContextManifest",
+	"unifiedContextManifest",
+	"tools",
+	"branchedFrom",
+	"parentSession",
+] as const;
+
 export const sessionWireStopReasonAliases = {
 	tool_use: "toolUse",
 	tool_calls: "toolUse",
@@ -26,12 +45,15 @@ export const sessionWireFieldAliases = {
 		thinking_level: "thinkingLevel",
 		system_prompt: "systemPrompt",
 		prompt_metadata: "promptMetadata",
+		prompt_context_manifest: "promptContextManifest",
+		unified_context_manifest: "unifiedContextManifest",
 		branched_from: "branchedFrom",
 		parent_session: "parentSession",
 	},
 	sessionMeta: {
 		resume_summary: "resumeSummary",
 		memory_extraction_hash: "memoryExtractionHash",
+		archived_at: "archivedAt",
 	},
 	attachmentExtract: {
 		attachment_id: "attachmentId",

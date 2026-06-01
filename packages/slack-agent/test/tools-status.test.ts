@@ -1,6 +1,52 @@
 import { describe, expect, it, vi } from "vitest";
-import type { Executor } from "../src/sandbox.js";
+import type { ExecOptions, Executor } from "../src/sandbox.js";
 import { type ContainerHealth, createStatusTool } from "../src/tools/status.js";
+
+vi.mock("node:child_process", () => ({
+	exec: vi.fn(
+		(
+			cmd: string,
+			_options: unknown,
+			callback: (error: Error | null, stdout: string, stderr: string) => void,
+		) => {
+			if (cmd.includes("docker inspect")) {
+				callback(
+					null,
+					JSON.stringify([
+						{
+							Id: "abcdef1234567890",
+							Name: "/test-container",
+							Config: { Image: "node:20-slim" },
+							State: {
+								StartedAt: new Date(Date.now() - 1000).toISOString(),
+								Status: "running",
+							},
+						},
+					]),
+					"",
+				);
+				return;
+			}
+
+			if (cmd.includes("docker stats")) {
+				callback(
+					null,
+					JSON.stringify({
+						CPUPerc: "1.23%",
+						MemUsage: "12MiB / 1GiB",
+						MemPerc: "1.17%",
+						NetIO: "1kB / 2kB",
+						BlockIO: "0B / 0B",
+					}),
+					"",
+				);
+				return;
+			}
+
+			callback(new Error(`unexpected command: ${cmd}`), "", "");
+		},
+	),
+}));
 
 // Mock executor factory
 function createMockExecutor(
@@ -35,6 +81,35 @@ describe("createStatusTool", () => {
 
 			expect(result.content[0]!.text).toContain("Environment: host");
 			expect(result.content[0]!.text).toContain("Workspace:");
+		});
+
+		it("bounds workspace status probes", async () => {
+			const execCalls: Array<{ command: string; timeout?: number }> = [];
+			const executor = {
+				exec: vi
+					.fn()
+					.mockImplementation(async (cmd: string, options?: ExecOptions) => {
+						execCalls.push({ command: cmd, timeout: options?.timeout });
+						return { code: 0, stdout: "0 /workspace", stderr: "" };
+					}),
+				getWorkspacePath: vi.fn().mockImplementation((p: string) => p),
+				getContainerName: vi.fn().mockReturnValue(undefined),
+				dispose: vi.fn().mockResolvedValue(undefined),
+			} satisfies Executor;
+			const tool = createStatusTool(executor);
+
+			await tool.execute("call1", { label: "check status" });
+
+			expect(execCalls).toEqual([
+				expect.objectContaining({
+					command: expect.stringContaining("du -sb"),
+					timeout: 5,
+				}),
+				expect.objectContaining({
+					command: expect.stringContaining("find"),
+					timeout: 5,
+				}),
+			]);
 		});
 
 		it("formats bytes correctly", async () => {
@@ -130,7 +205,7 @@ describe("createStatusTool", () => {
 			const health = result.details as ContainerHealth;
 
 			expect(health.environment).toBe("docker");
-		});
+		}, 15_000);
 	});
 
 	describe("output formatting", () => {

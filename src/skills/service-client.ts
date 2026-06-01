@@ -1,3 +1,7 @@
+import {
+	EVALOPS_ACCESS_TOKEN_ENV_VARS,
+	EVALOPS_ORGANIZATION_ID_ENV_VARS,
+} from "../evalops/env-aliases.js";
 import { loadOAuthCredentials } from "../oauth/storage.js";
 import {
 	type DownstreamFailureMode as DownstreamHttpFailureMode,
@@ -108,9 +112,7 @@ function resolveWorkspaceId(
 	const envWorkspaceId = getEnvValue([
 		"SKILLS_SERVICE_WORKSPACE_ID",
 		"MAESTRO_SKILLS_WORKSPACE_ID",
-		"MAESTRO_EVALOPS_ORG_ID",
-		"EVALOPS_ORGANIZATION_ID",
-		"MAESTRO_ENTERPRISE_ORG_ID",
+		...EVALOPS_ORGANIZATION_ID_ENV_VARS,
 	]);
 	if (configuredWorkspaceId ?? envWorkspaceId) {
 		return configuredWorkspaceId ?? envWorkspaceId;
@@ -153,7 +155,7 @@ export function resolveSkillsServiceConfig(
 		getEnvValue([
 			"SKILLS_SERVICE_TOKEN",
 			"MAESTRO_SKILLS_SERVICE_TOKEN",
-			"MAESTRO_EVALOPS_ACCESS_TOKEN",
+			...EVALOPS_ACCESS_TOKEN_ENV_VARS,
 		]) ??
 		storedToken;
 

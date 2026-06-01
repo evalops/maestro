@@ -1,4 +1,6 @@
 import type { AppMessage, ImageContent, TextContent } from "../agent/types.js";
+import type { PromptProjectDocManifest } from "../config/index.js";
+import type { UnifiedContextManifest } from "../context/manifest-types.js";
 import type { PromptMetadata } from "../prompts/types.js";
 
 export const CURRENT_SESSION_VERSION = 2;
@@ -27,15 +29,46 @@ export interface SessionHeaderEntry {
 	id: string;
 	timestamp: string;
 	cwd: string;
+	provisional?: boolean;
 	subject?: string;
 	model?: string;
 	modelMetadata?: SessionModelMetadata;
 	thinkingLevel?: string;
 	systemPrompt?: string;
 	promptMetadata?: PromptMetadata;
+	promptContextManifest?: PromptProjectDocManifest;
+	unifiedContextManifest?: UnifiedContextManifest;
 	tools?: SessionToolInfo[];
 	branchedFrom?: string;
 	parentSession?: string;
+}
+
+function resolveSessionPromptContextManifest(
+	header:
+		| Pick<
+				SessionHeaderEntry,
+				"promptContextManifest" | "unifiedContextManifest"
+		  >
+		| null
+		| undefined,
+): PromptProjectDocManifest | undefined {
+	return (
+		header?.promptContextManifest ?? header?.unifiedContextManifest?.projectDocs
+	);
+}
+
+export function getPersistedSessionPromptContextManifest(
+	header:
+		| Pick<
+				SessionHeaderEntry,
+				"promptContextManifest" | "unifiedContextManifest"
+		  >
+		| null
+		| undefined,
+): PromptProjectDocManifest | undefined {
+	return header?.unifiedContextManifest
+		? undefined
+		: resolveSessionPromptContextManifest(header);
 }
 
 export interface SessionEntryBase {
@@ -77,6 +110,15 @@ export interface SessionMetaEntry {
 	favorite?: boolean;
 	title?: string;
 	tags?: string[];
+	archived?: boolean;
+	archivedAt?: string;
+	appServerGoal?: {
+		objective: string;
+		status: "active" | "complete" | "cancelled";
+		tokenBudget?: number;
+		createdAt: string;
+		updatedAt: string;
+	} | null;
 }
 
 export interface CompactionEntry<T = unknown> extends SessionEntryBase {
@@ -146,6 +188,7 @@ export interface SessionMetadata {
 	path: string;
 	id: string;
 	subject?: string;
+	title?: string;
 	created: Date;
 	modified: Date;
 	size: number;
@@ -153,20 +196,30 @@ export interface SessionMetadata {
 	firstMessage: string;
 	summary: string;
 	resumeSummary?: string;
+	memoryExtractionHash?: string;
 	favorite: boolean;
+	tags?: string[];
+	archived?: boolean;
+	archivedAt?: string;
 	allMessagesText: string;
 }
+
+export type SessionMessagesView = "full" | "summary" | "notLoaded";
 
 export interface SessionSummary {
 	id: string;
 	subject?: string;
 	title?: string;
+	summary?: string;
 	resumeSummary?: string;
+	memoryExtractionHash?: string;
 	createdAt: string;
 	updatedAt: string;
 	messageCount: number;
 	favorite: boolean;
 	tags?: string[];
+	archived?: boolean;
+	archivedAt?: string;
 }
 
 /**

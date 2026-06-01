@@ -6,10 +6,12 @@ import type {
 import type { Agent } from "../agent/index.js";
 import type { ToolRetryService } from "../agent/tool-retry.js";
 import type { ClientToolExecutionService } from "../agent/transport.js";
+import type { PlatformToolExecutionBridge } from "../agent/transport/tool-execution-bridge.js";
 import type { ThinkingLevel } from "../agent/types.js";
 import type { RegisteredModel } from "../models/registry.js";
 import type { AuthCredential } from "../providers/auth.js";
 import type { HeadlessRuntimeService } from "./headless-runtime-service.js";
+import type { HostedRunnerLeaseSnapshot } from "./hosted-runner-lease.js";
 
 export interface WebServerConfig {
 	corsHeaders: Record<string, string>;
@@ -26,13 +28,40 @@ export interface HostedRunnerContext {
 	ownerInstanceId?: string;
 	workspaceRoot: string;
 	snapshotRoot?: string;
+	restoreManifestPath?: string;
 	listenHost?: string;
 	listenPort?: number;
 	workspaceId?: string;
+	agentId?: string;
 	agentRunId?: string;
+	agentRuntimeLeaseToken?: string;
+	a2aMessageId?: string;
+	a2aTaskId?: string;
+	lastPlatformA2APush?: {
+		kind: "statusUpdate" | "artifactUpdate" | "task" | "message";
+		taskId?: string;
+		messageId?: string;
+		messageIds?: string[];
+		contextId?: string;
+		workspaceId?: string;
+		organizationId?: string;
+		tenantId?: string;
+		state?: string;
+		final?: boolean;
+		receivedAt: string;
+		runtimeEventId?: string;
+		runtimeEventType?: string;
+		traceparent?: string;
+		tracestate?: string;
+		agentId?: string;
+		actorId?: string;
+	};
+	agentRuntimeWorkerQueue?: string;
+	agentRuntimeCorrelationPath?: string;
 	attachAudience?: string;
 	configuredMaestroSessionId?: string;
 	activeMaestroSessionId?: string;
+	runtimeLease?: HostedRunnerLeaseSnapshot;
 	draining?: boolean;
 	lastDrain?: {
 		status: string;
@@ -58,6 +87,7 @@ export interface WebServerServices {
 			approvalService?: ActionApprovalService;
 			clientToolService?: ClientToolExecutionService;
 			toolRetryService?: ToolRetryService;
+			platformToolExecutionBridge?: PlatformToolExecutionBridge | false;
 		},
 	) => Promise<Agent>;
 	createBackgroundAgent: (

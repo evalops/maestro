@@ -1,3 +1,5 @@
+import { findA2ACommandTailFlag } from "./commands/a2a/args.js";
+
 export type Mode = "text" | "json" | "rpc" | "headless";
 
 export interface Args {
@@ -14,7 +16,9 @@ export interface Args {
 	continue?: boolean;
 	resume?: boolean;
 	help?: boolean;
+	helpHidden?: boolean;
 	version?: boolean;
+	listModesAll?: boolean;
 	mode?: Mode;
 	/** Run in headless mode for native TUI communication */
 	headless?: boolean;
@@ -25,13 +29,14 @@ export interface Args {
 	subcommand?: string;
 	/** Raw arguments owned by command-group handlers. */
 	commandArgs?: string[];
+	contextLiveMcp?: boolean;
 	approvalMode?: "auto" | "prompt" | "fail";
-	authMode?: "auto" | "api-key" | "claude";
+	authMode?: "auto" | "api-key";
 	force?: boolean;
 	execJson?: boolean;
 	execFullAuto?: boolean;
 	execReadOnly?: boolean;
-	/** Sandbox mode: "docker", "local", "native", or "none" */
+	/** Sandbox backend or policy mode */
 	sandbox?: string;
 	execOutputSchema?: string;
 	execOutputLast?: string;
@@ -46,54 +51,158 @@ export interface Args {
 	configOverrides?: string[];
 	/** Start in read-only mode (activates explore composer) */
 	readonly?: boolean;
-	/** Composer profile to activate on startup */
+	/** Agent profile to activate on startup */
 	composer?: string;
 	exportFormat?: string;
 	redactSecrets?: boolean;
+	junitPath?: string;
+	/** Open a real agent session backed by a scripted replay scenario. */
+	replayScenarioPath?: string;
+	/** Record assistant turns into a scripted replay scenario file. */
+	recordScenarioPath?: string;
 }
 
 const COMMANDS = new Set([
 	"config",
+	"context",
+	"modes",
 	"models",
 	"cost",
 	"stats",
+	"status",
+	"update",
+	"run",
+	"sessions",
 	"agents",
+	"a2a",
+	"operating-plane",
 	"exec",
 	"web",
 	"hosted-runner",
+	"init",
 	"anthropic",
+	"evalops",
 	"openai",
 	"codex",
 	"hooks",
+	"skill",
 	"memory",
 	"remote",
 	"export",
 	"import",
+	"scenario",
 ]);
 const SUBCOMMAND_COMMANDS = new Set([
 	"config",
+	"context",
+	"modes",
 	"models",
 	"cost",
 	"stats",
+	"run",
+	"sessions",
 	"agents",
 	"anthropic",
+	"evalops",
 	"openai",
 	"codex",
 	"hooks",
+	"skill",
 	"memory",
 	"remote",
+	"scenario",
 ]);
+const RUN_SUBCOMMANDS = new Set(["inspect", "ledger", "replay", "promote"]);
+
+const FLAGS_WITH_VALUES = new Set([
+	"--mode",
+	"--provider",
+	"--model",
+	"-m",
+	"--task-budget",
+	"--models",
+	"--models-file",
+	"--api-key",
+	"--port",
+	"--system-prompt",
+	"--append-system-prompt",
+	"--session",
+	"--approval-mode",
+	"--auth",
+	"--sandbox",
+	"--output-schema",
+	"--output-last-message",
+	"--tools",
+	"--composer",
+	"--format",
+	"--profile",
+	"--config",
+	"--junit",
+	"--replay",
+	"--record-scenario",
+]);
+
+const DEPRECATED_FLAGS_WITH_VALUES = new Set(["--codex-api-key"]);
+const DEPRECATED_FLAG_PREFIXES = ["--auth=chatgpt", "--auth=claude"];
+
+function isConfigInitPresetFlag(result: Args, arg: string): boolean {
+	return (
+		result.command === "config" &&
+		result.subcommand === "init" &&
+		(arg === "--preset" || arg === "-p")
+	);
+}
+
+function nextNonFlagToken(args: string[], start: number): string | undefined {
+	for (let index = start; index < args.length; index++) {
+		const token = args[index];
+		if (!token) continue;
+		if (!token.startsWith("-")) {
+			return token;
+		}
+		if (FLAGS_WITH_VALUES.has(token) && index + 1 < args.length) {
+			index++;
+		}
+	}
+	return undefined;
+}
+
+function streamJsonFlag(arg: string): string | undefined {
+	if (arg === "--stream-json" || arg.startsWith("--stream-json=")) {
+		return arg;
+	}
+	return undefined;
+}
+
+function commandTailStreamJsonFlag(
+	command: string,
+	args: string[],
+): string | undefined {
+	if (command === "a2a") {
+		return findA2ACommandTailFlag(args, streamJsonFlag);
+	}
+	const escapedTailIndex = args.indexOf("--");
+	const parseableArgs =
+		escapedTailIndex >= 0 ? args.slice(0, escapedTailIndex) : args;
+	return parseableArgs.find(streamJsonFlag);
+}
 
 export function parseArgs(args: string[]): Args {
 	const result: Args = {
 		messages: [],
 	};
+	let streamJsonRequested = false;
 
 	for (let i = 0; i < args.length; i++) {
 		const arg = args[i];
 
 		if (arg === "--help" || arg === "-h") {
 			result.help = true;
+		} else if (arg === "--help-hidden" || arg === "--help-all") {
+			result.help = true;
+			result.helpHidden = true;
+		} else if (arg === "--list-modes-all") {
+			result.listModesAll = true;
 		} else if (arg === "--version" || arg === "-v") {
 			result.version = true;
 		} else if (arg?.startsWith("--mode=")) {
@@ -195,13 +304,15 @@ export function parseArgs(args: string[]): Args {
 			}
 		} else if (arg === "--auth" && i + 1 < args.length) {
 			const value = args[++i];
-			if (value === "auto" || value === "api-key" || value === "claude") {
+			if (value === "auto" || value === "api-key") {
 				result.authMode = value;
 			}
 		} else if (arg === "--force") {
 			result.force = true;
 		} else if (arg === "--json") {
 			result.execJson = true;
+		} else if (arg === "--stream-json") {
+			streamJsonRequested = true;
 		} else if (arg === "--full-auto") {
 			result.execFullAuto = true;
 		} else if (arg === "--read-only") {
@@ -231,6 +342,14 @@ export function parseArgs(args: string[]): Args {
 			result.exportFormat = args[++i];
 		} else if (arg === "--redact-secrets") {
 			result.redactSecrets = true;
+		} else if (arg === "--junit" && i + 1 < args.length) {
+			result.junitPath = args[++i]!;
+		} else if (arg === "--replay" && i + 1 < args.length) {
+			result.replayScenarioPath = args[++i]!;
+		} else if (arg === "--record-scenario" && i + 1 < args.length) {
+			result.recordScenarioPath = args[++i]!;
+		} else if (arg === "--live-mcp") {
+			result.contextLiveMcp = true;
 		} else if (arg === "--profile" && i + 1 < args.length) {
 			result.profile = args[++i];
 		} else if (arg === "--config" && i + 1 < args.length) {
@@ -240,12 +359,50 @@ export function parseArgs(args: string[]): Args {
 				result.configOverrides = [];
 			}
 			result.configOverrides.push(override);
-		} else if (arg && !arg.startsWith("-")) {
-			if (!result.command && COMMANDS.has(arg)) {
+		} else if (arg && DEPRECATED_FLAGS_WITH_VALUES.has(arg)) {
+			// Preserve the later migration error from validateCodexFlags().
+			const nextArg = args[i + 1];
+			if (nextArg && !nextArg.startsWith("-") && !COMMANDS.has(nextArg)) {
+				i++;
+			}
+		} else if (
+			arg &&
+			(Array.from(DEPRECATED_FLAGS_WITH_VALUES).some((flag) =>
+				arg.startsWith(`${flag}=`),
+			) ||
+				DEPRECATED_FLAG_PREFIXES.some((flag) => arg.startsWith(flag)))
+		) {
+			// Preserve the later migration error from validateCodexFlags().
+		} else if (
+			result.command === "codex" &&
+			result.subcommand === "login" &&
+			(arg === "--device" || arg === "--device-code" || arg === "--device-auth")
+		) {
+			if (!result.commandArgs) {
+				result.commandArgs = [];
+			}
+			result.commandArgs.push(arg);
+		} else if (arg && isConfigInitPresetFlag(result, arg)) {
+			const nextArg = args[i + 1];
+			if (nextArg && !nextArg.startsWith("-")) {
+				i++;
+			}
+		} else if (arg?.startsWith("-")) {
+			result.error = `Unknown option: ${arg}`;
+		} else if (arg) {
+			const nextArg = args[i + 1];
+			const isCommandToken =
+				COMMANDS.has(arg) &&
+				(arg !== "run" ||
+					(result.messages.length === 0 &&
+						RUN_SUBCOMMANDS.has(nextNonFlagToken(args, i + 1) ?? "")));
+			if (!result.command && isCommandToken) {
 				result.command = arg;
-				const nextArg = args[i + 1];
-				if (
+				const shouldConsumeSubcommand =
 					SUBCOMMAND_COMMANDS.has(arg) &&
+					(arg !== "context" || nextArg === "explain" || nextArg === "diff");
+				if (
+					shouldConsumeSubcommand &&
 					i + 1 < args.length &&
 					nextArg &&
 					!nextArg.startsWith("-")
@@ -253,13 +410,47 @@ export function parseArgs(args: string[]): Args {
 					result.subcommand = nextArg;
 					i++;
 				}
-				if (arg === "remote" || arg === "hosted-runner") {
+				if (
+					arg === "remote" ||
+					arg === "a2a" ||
+					arg === "operating-plane" ||
+					arg === "hosted-runner" ||
+					arg === "init" ||
+					arg === "evalops" ||
+					arg === "update" ||
+					arg === "skill"
+				) {
 					result.commandArgs = args.slice(i + 1);
+					const commandTailStreamJson = commandTailStreamJsonFlag(
+						arg,
+						result.commandArgs,
+					);
+					if (commandTailStreamJson) {
+						result.error = `Unknown option: ${commandTailStreamJson}`;
+					}
 					break;
 				}
 			} else {
 				result.messages.push(arg);
 			}
+		}
+	}
+
+	if (
+		result.command === "run" &&
+		!result.subcommand &&
+		result.messages[0] &&
+		RUN_SUBCOMMANDS.has(result.messages[0])
+	) {
+		result.subcommand = result.messages[0];
+		result.messages = result.messages.slice(1);
+	}
+
+	if (streamJsonRequested) {
+		if (result.command === "exec") {
+			result.execJson = true;
+		} else if (!result.error) {
+			result.error = "Unknown option: --stream-json";
 		}
 	}
 

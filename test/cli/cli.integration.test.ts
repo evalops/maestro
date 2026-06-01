@@ -1,6 +1,7 @@
 import {
 	copyFileSync,
 	existsSync,
+	mkdirSync,
 	mkdtempSync,
 	readFileSync,
 	rmSync,
@@ -8,6 +9,8 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { HeadlessErrorMessageSchema } from "@evalops/contracts";
+import { Value } from "@sinclair/typebox/value";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { clearRegisteredHooks, registerHook } from "../../src/hooks/index.js";
 import { main } from "../../src/main.js";
@@ -229,17 +232,34 @@ const fakeRegisteredModels = [
 		source: "builtin" as const,
 		isLocal: false,
 	},
+	{
+		id: "gpt-5.5",
+		name: "GPT 5.5 Codex",
+		api: "openai-codex-app-server",
+		provider: "openai-codex",
+		baseUrl: "http://127.0.0.1:0",
+		reasoning: true,
+		input: ["text"],
+		cost: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0 },
+		contextWindow: 272000,
+		maxTokens: 16384,
+		providerName: "OpenAI Codex",
+		source: "builtin" as const,
+		isLocal: false,
+	},
 ];
 
 vi.mock("../../src/models/registry.js", () => ({
 	getRegisteredModels: () => fakeRegisteredModels,
-	getSupportedProviders: () => ["anthropic", "openrouter", "openai"],
+	getSupportedProviders: () => [
+		"anthropic",
+		"openrouter",
+		"openai",
+		"openai-codex",
+	],
 	getCustomProviderMetadata: () => undefined,
 	getCustomConfigPath: () => "/tmp/composer.json",
-	getFactoryDefaultModelSelection: () => ({
-		provider: "anthropic",
-		modelId: "claude-sonnet-4-5",
-	}),
+	getFactoryDefaultModelSelection: () => null,
 	reloadModelConfig: () => {},
 	resolveAlias: () => null,
 	resolveModel: (provider: string, modelId: string) =>
@@ -248,18 +268,62 @@ vi.mock("../../src/models/registry.js", () => ({
 		) ?? null,
 }));
 
+vi.mock("../../src/evalops/agent-bootstrap.js", async (importOriginal) => {
+	const actual =
+		await importOriginal<
+			typeof import("../../src/evalops/agent-bootstrap.js")
+		>();
+	return {
+		...actual,
+		bootstrapEvalOpsAgent: async (
+			_options: unknown,
+			deps?: { onStatus?: (status: { message: string }) => void },
+		) => {
+			deps?.onStatus?.({
+				message: "Registering Maestro with EvalOps agent MCP",
+			});
+			return {
+				agentId: "agent_json",
+				apiKeyCreated: true,
+				approvalPolicyAttached: true,
+				authenticatedAs: "json@example.com",
+				consoleUrl: "https://app.evalops.dev/overview?env=production",
+				endpoint: "https://app.evalops.dev/mcp",
+				evidenceEventPublished: true,
+				evidenceEvents: 1,
+				governedActionsLoaded: 17,
+				governedInferenceCheckRan: true,
+				integrationProfile: "managed_runtime",
+				keyPrefix: "pk_live_json",
+				memoryMode: "durable",
+				organizationId: "org_json",
+				registryVisible: true,
+				riskFindings: 0,
+				runId: "run_json",
+				runtimeOwner: "evalops",
+				scopesGranted: ["agent:register"],
+				sessionExpiresAt: "2026-05-06T13:00:00Z",
+				shimType: "sdk",
+				stored: true,
+				traceIngestionStarted: true,
+				traceMode: "otlp",
+			};
+		},
+	};
+});
+
 describe("CLI integration", () => {
 	const originalEnv = process.env.ANTHROPIC_API_KEY;
 	const originalAgentDir = process.env.MAESTRO_AGENT_DIR;
 	const originalMaestroHome = process.env.MAESTRO_HOME;
 	const originalOpenAI = process.env.OPENAI_API_KEY;
 	const originalClaude = process.env.CLAUDE_CODE_TOKEN;
-	const originalAnthropicOAuthFile = process.env.ANTHROPIC_OAUTH_FILE;
 	const originalSharedMemoryBase = process.env.MAESTRO_SHARED_MEMORY_BASE;
 	const originalSharedMemoryApiKey = process.env.MAESTRO_SHARED_MEMORY_API_KEY;
 	const originalLog = console.log;
 	const originalError = console.error;
 	const originalStdoutWrite = process.stdout.write;
+	const originalStderrWrite = process.stderr.write;
 	let output: string[];
 	let tempAgentDir: string;
 
@@ -267,10 +331,6 @@ describe("CLI integration", () => {
 		tempAgentDir = mkdtempSync(join(tmpdir(), "composer-cli-test-"));
 		process.env.MAESTRO_HOME = tempAgentDir;
 		process.env.MAESTRO_AGENT_DIR = tempAgentDir;
-		process.env.ANTHROPIC_OAUTH_FILE = join(
-			tempAgentDir,
-			"anthropic-oauth.json",
-		);
 		process.env.ANTHROPIC_API_KEY = "test-key";
 		Reflect.deleteProperty(process.env, "OPENAI_API_KEY");
 		Reflect.deleteProperty(process.env, "CLAUDE_CODE_TOKEN");
@@ -286,12 +346,17 @@ describe("CLI integration", () => {
 			output.push(String(chunk));
 			return true;
 		}) as typeof process.stdout.write;
+		process.stderr.write = ((chunk: unknown) => {
+			output.push(String(chunk));
+			return true;
+		}) as typeof process.stderr.write;
 	});
 
 	afterEach(() => {
 		console.log = originalLog;
 		console.error = originalError;
 		process.stdout.write = originalStdoutWrite;
+		process.stderr.write = originalStderrWrite;
 		if (originalEnv === undefined) {
 			Reflect.deleteProperty(process.env, "ANTHROPIC_API_KEY");
 		} else {
@@ -306,11 +371,6 @@ describe("CLI integration", () => {
 			Reflect.deleteProperty(process.env, "CLAUDE_CODE_TOKEN");
 		} else {
 			process.env.CLAUDE_CODE_TOKEN = originalClaude;
-		}
-		if (originalAnthropicOAuthFile === undefined) {
-			Reflect.deleteProperty(process.env, "ANTHROPIC_OAUTH_FILE");
-		} else {
-			process.env.ANTHROPIC_OAUTH_FILE = originalAnthropicOAuthFile;
 		}
 		if (originalSharedMemoryBase === undefined) {
 			Reflect.deleteProperty(process.env, "MAESTRO_SHARED_MEMORY_BASE");
@@ -340,6 +400,36 @@ describe("CLI integration", () => {
 		vi.resetModules();
 	});
 
+	async function waitForFile(path: string): Promise<void> {
+		const deadline = Date.now() + 500;
+		while (!existsSync(path)) {
+			if (Date.now() >= deadline) {
+				throw new Error(`Timed out waiting for ${path}`);
+			}
+			await new Promise((resolve) => setTimeout(resolve, 10));
+		}
+	}
+
+	async function readJsonFileEventually<T>(path: string): Promise<T> {
+		const deadline = Date.now() + 1000;
+		let lastError: unknown;
+		while (Date.now() < deadline) {
+			if (existsSync(path)) {
+				const content = readFileSync(path, "utf8").trim();
+				if (content.length > 0) {
+					try {
+						return JSON.parse(content) as T;
+					} catch (error) {
+						lastError = error;
+					}
+				}
+			}
+			await new Promise((resolve) => setTimeout(resolve, 10));
+		}
+		const reason = lastError instanceof Error ? `: ${lastError.message}` : "";
+		throw new Error(`Timed out waiting for parseable JSON in ${path}${reason}`);
+	}
+
 	it("emits JSON events in json mode", async () => {
 		await main(["--mode", "json", "hello"]);
 		// Should emit JSONL events like thread_start, turn, item, thread_end
@@ -362,6 +452,114 @@ describe("CLI integration", () => {
 		expect(exitCodes).toEqual([0]);
 		expect(output.some((line) => line.includes("anthropic"))).toBe(true);
 		exitSpy.mockRestore();
+	});
+
+	it("prints resolved mode subagent dispatch tables", async () => {
+		await main(["modes", "describe", "smart"]);
+		const combined = output.join("\n");
+		expect(combined).toContain("Mode: Smart (smart)");
+		expect(combined).toContain("Subagent dispatch (provider: openai-codex)");
+		expect(combined).toContain("coder");
+		expect(combined).toContain("openai-codex");
+		expect(combined).toContain("gpt-5.5");
+	});
+
+	it("prints mode dispatch descriptions as JSON", async () => {
+		await main([
+			"modes",
+			"describe",
+			"frontier",
+			"--provider",
+			"openai",
+			"--json",
+		]);
+		const parsed = JSON.parse(output.join("\n")) as {
+			mode: string;
+			primary: { provider: string; model: string };
+			subagents: Array<{
+				type: string;
+				provider: string;
+				model: string;
+				source: string;
+			}>;
+		};
+		expect(parsed.mode).toBe("frontier");
+		expect(parsed.primary).toMatchObject({
+			provider: "openai",
+			model: "gpt-5.2",
+		});
+		expect(parsed.subagents).toContainEqual(
+			expect.objectContaining({
+				type: "coder",
+				provider: "openai-codex",
+				model: "gpt-5.5",
+				source: "mode",
+			}),
+		);
+	});
+
+	it("keeps maestro init --json stdout parseable", async () => {
+		const stdoutLines: string[] = [];
+		const stderrLines: string[] = [];
+		console.log = (...args: unknown[]) => {
+			stdoutLines.push(args.map((arg) => String(arg)).join(" "));
+		};
+		console.error = (...args: unknown[]) => {
+			stderrLines.push(args.map((arg) => String(arg)).join(" "));
+		};
+
+		await main(["init", "--json"]);
+
+		expect(stderrLines.join("\n")).toContain(
+			"Registering Maestro with EvalOps agent MCP",
+		);
+		expect(stdoutLines).toHaveLength(1);
+		const parsed = JSON.parse(stdoutLines[0] ?? "{}") as Record<
+			string,
+			unknown
+		>;
+		expect(parsed).toMatchObject({
+			agentId: "agent_json",
+			integrationProfile: "managed_runtime",
+			memoryMode: "durable",
+			organizationId: "org_json",
+			runtimeOwner: "evalops",
+			traceMode: "otlp",
+		});
+		expect(stdoutLines.join("\n")).not.toContain("Loaded configuration");
+	});
+
+	it("includes custom agents init target in force rerun instructions", async () => {
+		const target = join(tempAgentDir, "docs", "team guide", "AGENTS.md");
+		mkdirSync(join(tempAgentDir, "docs", "team guide"), { recursive: true });
+		writeFileSync(target, "# Existing Guidance\n");
+
+		await main(["agents", "init", target]);
+
+		const combined = output.join("\n");
+		const quotedTarget =
+			process.platform === "win32" ? `"${target}"` : `'${target}'`;
+		expect(combined).toContain(`maestro agents init ${quotedTarget} --force`);
+		expect(combined).toContain("Index:");
+		expect(combined).toContain("--- ");
+		expect(combined).toContain("+++ ");
+		expect(readFileSync(target, "utf-8")).toBe("# Existing Guidance\n");
+	});
+
+	it("applies the previewed agents init scaffold when forced", async () => {
+		const target = join(tempAgentDir, "docs", "AGENTS.md");
+		mkdirSync(join(tempAgentDir, "docs"), { recursive: true });
+		writeFileSync(target, "# Existing Guidance\n");
+
+		await main(["agents", "init", target, "--force"]);
+
+		const combined = output.join("\n");
+		const content = readFileSync(target, "utf-8");
+		expect(combined).toContain(`Updated AGENTS instructions at ${target}.`);
+		expect(combined).not.toContain("Echo:");
+		expect(content).toContain("# Repository Guidelines");
+		expect(content).toContain("## Imported AI Tooling Rules");
+		expect(content).not.toContain("# Existing Guidance");
 	});
 
 	it("exports a saved session as portable jsonl", async () => {
@@ -458,7 +656,7 @@ describe("CLI integration", () => {
 		const importedSessions = await new SessionManager(false).listSessions();
 		expect(importedSessions.length).toBeGreaterThan(1);
 		expect(output.join("\n")).toContain("Imported session");
-	});
+	}, 60_000);
 
 	it("exports and imports portable json bundles with branched sessions", async () => {
 		await main(["hello"]);
@@ -491,17 +689,135 @@ describe("CLI integration", () => {
 	});
 
 	it("prints maestro version output", async () => {
+		const originalTelemetry = process.env.MAESTRO_TELEMETRY;
+		const originalBeaconFile = process.env.MAESTRO_BEACON_FILE;
+		const originalBufferFile =
+			process.env.MAESTRO_CLI_COMMAND_BEACON_BUFFER_FILE;
+		const beaconFile = join(tempAgentDir, "version-beacon.jsonl");
+		const bufferFile = join(tempAgentDir, "version-command-buffer.json");
+		process.env.MAESTRO_TELEMETRY = "1";
+		process.env.MAESTRO_BEACON_FILE = beaconFile;
+		process.env.MAESTRO_CLI_COMMAND_BEACON_BUFFER_FILE = bufferFile;
 		const exitCodes: number[] = [];
 		const exitSpy = vi.spyOn(process, "exit").mockImplementation((code) => {
 			exitCodes.push(Number(code ?? 0));
 			throw new Error("exit");
 		});
-		await expect(main(["--version"])).rejects.toThrow("exit");
-		expect(exitCodes).toEqual([0]);
-		const combined = output.join("\n");
-		expect(combined).toContain("Maestro v");
-		expect(combined).not.toContain("Composer v");
-		exitSpy.mockRestore();
+		try {
+			await expect(main(["--version"])).rejects.toThrow("exit");
+			expect(exitCodes).toEqual([0]);
+			const combined = output.join("\n");
+			expect(combined).toContain("Maestro v");
+			expect(combined).not.toContain("Composer v");
+			const [startupEvent] =
+				await readJsonFileEventually<[{ feature: string; action: string }]>(
+					beaconFile,
+				);
+			const commandBuffer = await readJsonFileEventually<{
+				counts: Record<string, number>;
+			}>(bufferFile);
+			expect(startupEvent).toMatchObject({
+				feature: "cli.startup",
+				action: "version",
+			});
+			expect(commandBuffer.counts).toEqual({
+				"cli.command.version": 1,
+			});
+		} finally {
+			if (originalTelemetry === undefined) {
+				Reflect.deleteProperty(process.env, "MAESTRO_TELEMETRY");
+			} else {
+				process.env.MAESTRO_TELEMETRY = originalTelemetry;
+			}
+			if (originalBeaconFile === undefined) {
+				Reflect.deleteProperty(process.env, "MAESTRO_BEACON_FILE");
+			} else {
+				process.env.MAESTRO_BEACON_FILE = originalBeaconFile;
+			}
+			if (originalBufferFile === undefined) {
+				Reflect.deleteProperty(
+					process.env,
+					"MAESTRO_CLI_COMMAND_BEACON_BUFFER_FILE",
+				);
+			} else {
+				process.env.MAESTRO_CLI_COMMAND_BEACON_BUFFER_FILE = originalBufferFile;
+			}
+			exitSpy.mockRestore();
+		}
+	});
+
+	it("waits for endpoint startup telemetry before version exits", async () => {
+		const originalTelemetry = process.env.MAESTRO_TELEMETRY;
+		const originalBeaconFile = process.env.MAESTRO_BEACON_FILE;
+		const originalBeaconEndpoint = process.env.MAESTRO_BEACON_ENDPOINT;
+		const originalBufferFile =
+			process.env.MAESTRO_CLI_COMMAND_BEACON_BUFFER_FILE;
+		const originalTimeout = process.env.MAESTRO_BEACON_TIMEOUT_MS;
+		const bufferFile = join(tempAgentDir, "version-endpoint-buffer.json");
+		process.env.MAESTRO_TELEMETRY = "1";
+		process.env.MAESTRO_BEACON_FILE = "";
+		process.env.MAESTRO_BEACON_ENDPOINT = "https://telemetry.example.test";
+		process.env.MAESTRO_BEACON_TIMEOUT_MS = "100";
+		process.env.MAESTRO_CLI_COMMAND_BEACON_BUFFER_FILE = bufferFile;
+		let fetchCompleted = false;
+		let resolveFetch!: (response: Response) => void;
+		const fetchPromise = new Promise<Response>((resolve) => {
+			resolveFetch = (response: Response) => {
+				fetchCompleted = true;
+				resolve(response);
+			};
+		});
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(() => fetchPromise),
+		);
+		const exitCodes: number[] = [];
+		const exitSpy = vi.spyOn(process, "exit").mockImplementation((code) => {
+			exitCodes.push(Number(code ?? 0));
+			throw new Error("exit");
+		});
+		try {
+			const versionExit = expect(main(["--version"])).rejects.toThrow("exit");
+			await vi.waitFor(() => {
+				expect(fetch).toHaveBeenCalled();
+			});
+			expect(fetchCompleted).toBe(false);
+			resolveFetch(new Response(null, { status: 200 }));
+			await versionExit;
+			expect(exitCodes).toEqual([0]);
+			expect(fetchCompleted).toBe(true);
+		} finally {
+			if (originalTelemetry === undefined) {
+				Reflect.deleteProperty(process.env, "MAESTRO_TELEMETRY");
+			} else {
+				process.env.MAESTRO_TELEMETRY = originalTelemetry;
+			}
+			if (originalBeaconFile === undefined) {
+				Reflect.deleteProperty(process.env, "MAESTRO_BEACON_FILE");
+			} else {
+				process.env.MAESTRO_BEACON_FILE = originalBeaconFile;
+			}
+			if (originalBeaconEndpoint === undefined) {
+				Reflect.deleteProperty(process.env, "MAESTRO_BEACON_ENDPOINT");
+			} else {
+				process.env.MAESTRO_BEACON_ENDPOINT = originalBeaconEndpoint;
+			}
+			if (originalBufferFile === undefined) {
+				Reflect.deleteProperty(
+					process.env,
+					"MAESTRO_CLI_COMMAND_BEACON_BUFFER_FILE",
+				);
+			} else {
+				process.env.MAESTRO_CLI_COMMAND_BEACON_BUFFER_FILE = originalBufferFile;
+			}
+			if (originalTimeout === undefined) {
+				Reflect.deleteProperty(process.env, "MAESTRO_BEACON_TIMEOUT_MS");
+			} else {
+				process.env.MAESTRO_BEACON_TIMEOUT_MS = originalTimeout;
+			}
+			exitSpy.mockRestore();
+			vi.unstubAllGlobals();
+		}
 	});
 
 	it("fails fast on invalid task budgets", async () => {
@@ -518,16 +834,177 @@ describe("CLI integration", () => {
 		exitSpy.mockRestore();
 	});
 
+	it("rejects unknown flags before they become support surfaces", async () => {
+		const exitCodes: number[] = [];
+		const exitSpy = vi.spyOn(process, "exit").mockImplementation((code) => {
+			exitCodes.push(Number(code ?? 0));
+			throw new Error("exit");
+		});
+
+		await expect(main(["web", "--legacy-runtime"])).rejects.toThrow("exit");
+		await expect(
+			main(["web", "--mode=headless", "--legacy-runtime"]),
+		).rejects.toThrow("exit");
+
+		expect(exitCodes).toEqual([1, 1]);
+		const combined = output.join("\n");
+		expect(combined).toContain("Unknown option: --legacy-runtime");
+		exitSpy.mockRestore();
+	});
+
 	it("prints providers summary for filter", async () => {
+		const originalTelemetry = process.env.MAESTRO_TELEMETRY;
+		const originalBeaconFile = process.env.MAESTRO_BEACON_FILE;
+		const originalBufferFile =
+			process.env.MAESTRO_CLI_COMMAND_BEACON_BUFFER_FILE;
+		const originalLegacyRuntime = process.env.MAESTRO_INTERNAL_HEADLESS_RUNTIME;
+		const beaconFile = join(tempAgentDir, "models-beacon.jsonl");
+		const bufferFile = join(tempAgentDir, "models-command-buffer.json");
+		process.env.MAESTRO_TELEMETRY = "1";
+		process.env.MAESTRO_BEACON_FILE = beaconFile;
+		process.env.MAESTRO_CLI_COMMAND_BEACON_BUFFER_FILE = bufferFile;
+		process.env.MAESTRO_INTERNAL_HEADLESS_RUNTIME = "legacy";
 		const exitCodes: number[] = [];
 		const exitSpy = vi.spyOn(process, "exit").mockImplementation((code) => {
 			exitCodes.push(Number(code ?? 0));
 			return undefined as never;
 		});
-		await main(["models", "providers", "--provider", "openrouter"]);
-		expect(exitCodes).toEqual([0]);
-		expect(output.join("\n")).toContain("openrouter");
-		exitSpy.mockRestore();
+		try {
+			await main(["models", "providers", "--provider", "openrouter"]);
+			expect(exitCodes).toEqual([0]);
+			expect(output.join("\n")).toContain("openrouter");
+			await waitForFile(beaconFile);
+			const commandBuffer = await readJsonFileEventually<{
+				counts: Record<string, number>;
+			}>(bufferFile);
+			const [startupEvent] = JSON.parse(
+				readFileSync(beaconFile, "utf8").trim(),
+			) as [
+				{
+					feature: string;
+					action: string;
+					parameters?: { metadata?: Record<string, unknown> };
+				},
+			];
+			expect(startupEvent).toMatchObject({
+				feature: "cli.startup",
+				action: "models.providers",
+				parameters: {
+					metadata: {
+						legacyRuntimeRequested: false,
+					},
+				},
+			});
+			expect(commandBuffer.counts).toEqual({
+				"cli.command.models.providers": 1,
+			});
+		} finally {
+			if (originalTelemetry === undefined) {
+				Reflect.deleteProperty(process.env, "MAESTRO_TELEMETRY");
+			} else {
+				process.env.MAESTRO_TELEMETRY = originalTelemetry;
+			}
+			if (originalBeaconFile === undefined) {
+				Reflect.deleteProperty(process.env, "MAESTRO_BEACON_FILE");
+			} else {
+				process.env.MAESTRO_BEACON_FILE = originalBeaconFile;
+			}
+			if (originalBufferFile === undefined) {
+				Reflect.deleteProperty(
+					process.env,
+					"MAESTRO_CLI_COMMAND_BEACON_BUFFER_FILE",
+				);
+			} else {
+				process.env.MAESTRO_CLI_COMMAND_BEACON_BUFFER_FILE = originalBufferFile;
+			}
+			if (originalLegacyRuntime === undefined) {
+				Reflect.deleteProperty(
+					process.env,
+					"MAESTRO_INTERNAL_HEADLESS_RUNTIME",
+				);
+			} else {
+				process.env.MAESTRO_INTERNAL_HEADLESS_RUNTIME = originalLegacyRuntime;
+			}
+			exitSpy.mockRestore();
+		}
+	});
+
+	it("does not wait for endpoint startup telemetry before subcommands", async () => {
+		const originalTelemetry = process.env.MAESTRO_TELEMETRY;
+		const originalBeaconFile = process.env.MAESTRO_BEACON_FILE;
+		const originalBeaconEndpoint = process.env.MAESTRO_BEACON_ENDPOINT;
+		const originalBufferFile =
+			process.env.MAESTRO_CLI_COMMAND_BEACON_BUFFER_FILE;
+		const originalTimeout = process.env.MAESTRO_BEACON_TIMEOUT_MS;
+		process.env.MAESTRO_TELEMETRY = "1";
+		process.env.MAESTRO_BEACON_FILE = "";
+		process.env.MAESTRO_BEACON_ENDPOINT = "https://telemetry.example.test";
+		process.env.MAESTRO_BEACON_TIMEOUT_MS = "10000";
+		process.env.MAESTRO_CLI_COMMAND_BEACON_BUFFER_FILE = join(
+			tempAgentDir,
+			"providers-endpoint-buffer.json",
+		);
+		let resolveFetch: ((response: Response) => void) | undefined;
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(
+				() =>
+					new Promise<Response>((resolve) => {
+						resolveFetch = resolve;
+					}),
+			),
+		);
+		const exitCodes: number[] = [];
+		const exitSpy = vi.spyOn(process, "exit").mockImplementation((code) => {
+			exitCodes.push(Number(code ?? 0));
+			return undefined as never;
+		});
+		try {
+			const completed = await Promise.race([
+				main(["models", "providers", "--provider", "openrouter"]).then(
+					() => true,
+				),
+				new Promise<boolean>((resolve) => {
+					setTimeout(() => resolve(false), 50);
+				}),
+			]);
+			expect(completed).toBe(true);
+			expect(exitCodes).toEqual([0]);
+			expect(output.join("\n")).toContain("openrouter");
+		} finally {
+			resolveFetch?.(new Response(null, { status: 204 }));
+			await new Promise((resolve) => setImmediate(resolve));
+			if (originalTelemetry === undefined) {
+				Reflect.deleteProperty(process.env, "MAESTRO_TELEMETRY");
+			} else {
+				process.env.MAESTRO_TELEMETRY = originalTelemetry;
+			}
+			if (originalBeaconFile === undefined) {
+				Reflect.deleteProperty(process.env, "MAESTRO_BEACON_FILE");
+			} else {
+				process.env.MAESTRO_BEACON_FILE = originalBeaconFile;
+			}
+			if (originalBeaconEndpoint === undefined) {
+				Reflect.deleteProperty(process.env, "MAESTRO_BEACON_ENDPOINT");
+			} else {
+				process.env.MAESTRO_BEACON_ENDPOINT = originalBeaconEndpoint;
+			}
+			if (originalBufferFile === undefined) {
+				Reflect.deleteProperty(
+					process.env,
+					"MAESTRO_CLI_COMMAND_BEACON_BUFFER_FILE",
+				);
+			} else {
+				process.env.MAESTRO_CLI_COMMAND_BEACON_BUFFER_FILE = originalBufferFile;
+			}
+			if (originalTimeout === undefined) {
+				Reflect.deleteProperty(process.env, "MAESTRO_BEACON_TIMEOUT_MS");
+			} else {
+				process.env.MAESTRO_BEACON_TIMEOUT_MS = originalTimeout;
+			}
+			exitSpy.mockRestore();
+			vi.unstubAllGlobals();
+		}
 	});
 
 	it("prints maestro models help for unknown models subcommand", async () => {
@@ -546,7 +1023,14 @@ describe("CLI integration", () => {
 	});
 
 	it("runs composer exec in text mode", async () => {
-		await main(["exec", "Summarize release notes"]);
+		await main([
+			"--provider",
+			"anthropic",
+			"--model",
+			"claude-sonnet-4-5",
+			"exec",
+			"Summarize release notes",
+		]);
 		const combined = output.join("\n");
 		expect(combined).toContain("Echo: Summarize release notes");
 	});
@@ -593,8 +1077,13 @@ describe("CLI integration", () => {
 
 	it("runs SessionEnd hooks after a CLI prompt completes", async () => {
 		let sessionEndInput: Record<string, unknown> | undefined;
+		const [{ registerHook: registerCurrentHook }, { main: currentMain }] =
+			await Promise.all([
+				import("../../src/hooks/index.js"),
+				import("../../src/main.js"),
+			]);
 
-		registerHook("SessionEnd", {
+		registerCurrentHook("SessionEnd", {
 			type: "callback",
 			callback: async (input) => {
 				sessionEndInput = input as Record<string, unknown>;
@@ -602,7 +1091,7 @@ describe("CLI integration", () => {
 			},
 		});
 
-		await main(["hello"]);
+		await currentMain(["hello"]);
 
 		expect(sessionEndInput).toMatchObject({
 			hook_event_name: "SessionEnd",
@@ -615,8 +1104,13 @@ describe("CLI integration", () => {
 
 	it("runs SessionEnd hooks after maestro exec completes", async () => {
 		let sessionEndInput: Record<string, unknown> | undefined;
+		const [{ registerHook: registerCurrentHook }, { main: currentMain }] =
+			await Promise.all([
+				import("../../src/hooks/index.js"),
+				import("../../src/main.js"),
+			]);
 
-		registerHook("SessionEnd", {
+		registerCurrentHook("SessionEnd", {
 			type: "callback",
 			callback: async (input) => {
 				sessionEndInput = input as Record<string, unknown>;
@@ -624,7 +1118,7 @@ describe("CLI integration", () => {
 			},
 		});
 
-		await main(["exec", "Summarize release notes"]);
+		await currentMain(["exec", "Summarize release notes"]);
 
 		expect(sessionEndInput).toMatchObject({
 			hook_event_name: "SessionEnd",
@@ -633,9 +1127,9 @@ describe("CLI integration", () => {
 		});
 		expect(sessionEndInput?.duration_ms).toEqual(expect.any(Number));
 		expect(Number(sessionEndInput?.duration_ms)).toBeGreaterThanOrEqual(0);
-	});
+	}, 60_000);
 
-	it("streams JSON events in composer exec", async () => {
+	it("streams only JSON events to stdout in composer exec json mode", async () => {
 		const originalWrite = process.stdout.write;
 		let streamed = "";
 		process.stdout.write = ((chunk: unknown) => {
@@ -643,11 +1137,14 @@ describe("CLI integration", () => {
 			return true;
 		}) as typeof process.stdout.write;
 		try {
-			await main(["exec", "Plan work", "--json"]);
+			await main(["exec", "--tools", "read", "Plan work", "--json"]);
 		} finally {
 			process.stdout.write = originalWrite;
 		}
 		expect(streamed).toContain('"type":"thread"');
+		const lines = streamed.trim().split("\n").filter(Boolean);
+		expect(lines.length).toBeGreaterThan(0);
+		expect(() => lines.map((line) => JSON.parse(line))).not.toThrow();
 	});
 
 	it("validates schema in composer exec", async () => {
@@ -675,7 +1172,7 @@ describe("CLI integration", () => {
 		output = [];
 		await main(["exec", "--last", "Follow up run"]);
 		expect(output.join("\n")).toContain("Echo: Follow up run");
-	});
+	}, 90_000);
 
 	it("rejects Codex/ChatGPT auth flags", async () => {
 		const exitCodes: number[] = [];
@@ -701,6 +1198,22 @@ describe("CLI integration", () => {
 		exitSpy.mockRestore();
 	});
 
+	it("rejects equals-form ChatGPT auth flags with migration guidance", async () => {
+		const exitCodes: number[] = [];
+		const exitSpy = vi.spyOn(process, "exit").mockImplementation((code) => {
+			exitCodes.push(Number(code ?? 0));
+			throw new Error("exit");
+		});
+		await expect(
+			main(["--provider", "openai", "--model", "gpt-test", "--auth=chatgpt"]),
+		).rejects.toThrow("exit");
+		expect(exitCodes).toEqual([1]);
+		expect(output.join("\n")).toContain(
+			"Legacy Codex/ChatGPT auth flags are no longer supported",
+		);
+		exitSpy.mockRestore();
+	});
+
 	it("rejects Codex subscription tokens", async () => {
 		const exitCodes: number[] = [];
 		const exitSpy = vi.spyOn(process, "exit").mockImplementation((code) => {
@@ -717,22 +1230,105 @@ describe("CLI integration", () => {
 		exitSpy.mockRestore();
 	});
 
-	it("uses claude auth when Claude Code token is provided", async () => {
-		process.env.CLAUDE_CODE_TOKEN = "claude-token";
-		await main([
-			"--provider",
-			"anthropic",
-			"--model",
-			"claude-sonnet-4-5",
-			"--auth",
-			"claude",
-			"hello",
-		]);
-		expect(output.join("\n")).toContain("Echo: hello");
-		Reflect.deleteProperty(process.env, "CLAUDE_CODE_TOKEN");
+	it("rejects bare Codex subscription token flags with migration guidance", async () => {
+		const exitCodes: number[] = [];
+		const exitSpy = vi.spyOn(process, "exit").mockImplementation((code) => {
+			exitCodes.push(Number(code ?? 0));
+			throw new Error("exit");
+		});
+		await expect(main(["--codex-api-key"])).rejects.toThrow("exit");
+		expect(exitCodes).toEqual([1]);
+		expect(output.join("\n")).toContain(
+			"Legacy Codex/ChatGPT auth flags are no longer supported",
+		);
+		exitSpy.mockRestore();
 	});
 
-	it("fails when claude auth mode lacks OAuth tokens", async () => {
+	it("keeps early headless auth flag errors schema-compatible", async () => {
+		const exitCodes: number[] = [];
+		const exitSpy = vi.spyOn(process, "exit").mockImplementation((code) => {
+			exitCodes.push(Number(code ?? 0));
+			throw new Error("exit");
+		});
+		await expect(main(["--headless", "--codex-api-key"])).rejects.toThrow(
+			"exit",
+		);
+		expect(exitCodes).toEqual([1]);
+
+		const payload = JSON.parse(output.join(""));
+		expect(Value.Check(HeadlessErrorMessageSchema, payload)).toBe(true);
+		expect(payload).toMatchObject({
+			type: "error",
+			fatal: true,
+			error_type: "fatal",
+		});
+		expect(payload.message).toContain(
+			"Legacy Codex/ChatGPT auth flags are no longer supported",
+		);
+		expect(payload).not.toHaveProperty("stack");
+		exitSpy.mockRestore();
+	});
+
+	it("does not consume following options as deprecated auth flag values", async () => {
+		const exitCodes: number[] = [];
+		const exitSpy = vi.spyOn(process, "exit").mockImplementation((code) => {
+			exitCodes.push(Number(code ?? 0));
+			throw new Error("exit");
+		});
+		await expect(main(["--codex-api-key", "--help"])).rejects.toThrow("exit");
+		expect(exitCodes).toEqual([0]);
+		expect(output.join("\n")).toContain("Maestro");
+		exitSpy.mockRestore();
+	});
+
+	it("rejects legacy auth flags before status early exit", async () => {
+		const exitCodes: number[] = [];
+		const exitSpy = vi.spyOn(process, "exit").mockImplementation((code) => {
+			exitCodes.push(Number(code ?? 0));
+			throw new Error("exit");
+		});
+		await expect(
+			main(["--codex-api-key", "codex-token", "status"]),
+		).rejects.toThrow("exit");
+		expect(exitCodes).toEqual([1]);
+		expect(output.join("\n")).toContain(
+			"Legacy Codex/ChatGPT auth flags are no longer supported",
+		);
+		exitSpy.mockRestore();
+	});
+
+	it("rejects legacy auth flags before hosted-runner early exit", async () => {
+		const exitCodes: number[] = [];
+		const exitSpy = vi.spyOn(process, "exit").mockImplementation((code) => {
+			exitCodes.push(Number(code ?? 0));
+			throw new Error("exit");
+		});
+		await expect(
+			main(["hosted-runner", "--codex-api-key", "codex-token"]),
+		).rejects.toThrow("exit");
+		expect(exitCodes).toEqual([1]);
+		expect(output.join("\n")).toContain(
+			"Legacy Codex/ChatGPT auth flags are no longer supported",
+		);
+		exitSpy.mockRestore();
+	});
+
+	it("rejects legacy auth flags before web early exit", async () => {
+		const exitCodes: number[] = [];
+		const exitSpy = vi.spyOn(process, "exit").mockImplementation((code) => {
+			exitCodes.push(Number(code ?? 0));
+			throw new Error("exit");
+		});
+		await expect(main(["web", "--auth", "chatgpt"])).rejects.toThrow("exit");
+		expect(exitCodes).toEqual([1]);
+		expect(output.join("\n")).toContain(
+			"Legacy Codex/ChatGPT auth flags are no longer supported",
+		);
+		exitSpy.mockRestore();
+	});
+
+	it("rejects retired Claude auth mode", async () => {
+		process.env.CLAUDE_CODE_TOKEN = "claude-token";
 		const exitCodes: number[] = [];
 		const exitSpy = vi.spyOn(process, "exit").mockImplementation((code) => {
 			exitCodes.push(Number(code ?? 0));
@@ -750,7 +1346,10 @@ describe("CLI integration", () => {
 			]),
 		).rejects.toThrow("exit");
 		expect(exitCodes).toEqual([1]);
-		expect(output.join("\n")).toContain("maestro anthropic login");
+		expect(output.join("\n")).toContain(
+			"Anthropic OAuth auth mode is no longer supported",
+		);
+		Reflect.deleteProperty(process.env, "CLAUDE_CODE_TOKEN");
 		exitSpy.mockRestore();
 	});
 

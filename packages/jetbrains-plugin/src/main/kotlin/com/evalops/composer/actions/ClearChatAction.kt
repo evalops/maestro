@@ -7,7 +7,7 @@ import com.intellij.openapi.actionSystem.AnActionEvent
 import com.intellij.openapi.project.DumbAware
 
 /**
- * Action to clear the current Composer chat session.
+ * Action to clear the current Maestro chat session.
  */
 class ClearChatAction : AnAction(), DumbAware {
 

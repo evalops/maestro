@@ -7,7 +7,7 @@
 import type { Stats } from "node:fs";
 import { existsSync, readFileSync } from "node:fs";
 import { v4 as uuidv4 } from "uuid";
-import { isDecoratedCompactionSummaryMessage } from "../agent/compaction.js";
+import { isDecoratedCompactionSummaryMessage } from "../agent/compaction-markers.js";
 import {
 	createBranchSummaryMessage,
 	createCompactionSummaryMessage,
@@ -26,6 +26,7 @@ import type {
 	CompactionEntry,
 	SessionEntry,
 	SessionHeaderEntry,
+	SessionMessagesView,
 	SessionTreeEntry,
 } from "./types.js";
 import { isSessionTreeEntry, tryParseSessionEntry } from "./types.js";
@@ -47,8 +48,11 @@ export interface SessionFileInfo {
 	title?: string;
 	tags?: string[];
 	favorite: boolean;
+	archived: boolean;
+	archivedAt?: string;
 	firstMessage: string;
 	allMessagesText: string;
+	messagesView: SessionMessagesView;
 }
 
 export interface SessionContextSnapshot {
@@ -290,6 +294,28 @@ export function buildSessionContextFromEntries(
 	return { messages, messageEntries, thinkingLevel, model, modelMetadata };
 }
 
+export function selectSessionMessagesForView(
+	messages: AppMessage[],
+	view: SessionMessagesView = "full",
+): AppMessage[] {
+	if (view === "notLoaded") {
+		return [];
+	}
+	if (view === "full" || messages.length <= 2) {
+		return messages;
+	}
+	const firstUser = messages.find((message) => message.role === "user");
+	const lastMessage = messages.at(-1);
+	const selected: AppMessage[] = [];
+	if (firstUser) {
+		selected.push(firstUser);
+	}
+	if (lastMessage && lastMessage !== firstUser) {
+		selected.push(lastMessage);
+	}
+	return selected.length > 0 ? selected : messages.slice(0, 1);
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Session File Info
 // ─────────────────────────────────────────────────────────────────────────────
@@ -297,6 +323,7 @@ export function buildSessionContextFromEntries(
 export function buildSessionFileInfo(
 	entries: SessionEntry[],
 	stats: Stats,
+	options: { messagesView?: SessionMessagesView } = {},
 ): SessionFileInfo | null {
 	if (entries.length === 0) {
 		return null;
@@ -313,6 +340,8 @@ export function buildSessionFileInfo(
 	let title: string | undefined;
 	let tags: string[] | undefined;
 	let favorite = false;
+	let archived = false;
+	let archivedAt: string | undefined;
 	const extractedById = new Map<string, string>();
 
 	for (const entry of entries) {
@@ -359,24 +388,61 @@ export function buildSessionFileInfo(
 				if (typeof entry.favorite === "boolean") {
 					favorite = entry.favorite;
 				}
+				if (typeof entry.archived === "boolean") {
+					archived = entry.archived;
+					archivedAt =
+						entry.archived &&
+						typeof entry.archivedAt === "string" &&
+						entry.archivedAt.trim()
+							? entry.archivedAt
+							: undefined;
+				}
 				break;
 			default:
 				break;
 		}
 	}
 
-	const context = buildSessionContextFromEntries(entries);
 	const messageCount = entries.filter(
 		(entry) => entry.type === "message",
 	).length;
+	const messagesView = options.messagesView ?? "full";
+
+	if (messagesView === "notLoaded") {
+		return {
+			id: sessionId || "unknown",
+			cwd,
+			subject,
+			created,
+			messages: [],
+			messageCount,
+			summary,
+			resumeSummary,
+			memoryExtractionHash,
+			title,
+			tags,
+			favorite,
+			archived,
+			archivedAt,
+			firstMessage: "",
+			allMessagesText: "",
+			messagesView,
+		};
+	}
+
+	const context = buildSessionContextFromEntries(entries);
 
 	const normalizedMessages = extractedById.size
 		? context.messages.map((message) =>
 				applyAttachmentExtracts(message, extractedById),
 			)
 		: context.messages;
+	const selectedMessages = selectSessionMessagesForView(
+		normalizedMessages,
+		messagesView,
+	);
 
-	const renderables = buildConversationModel(normalizedMessages);
+	const renderables = buildConversationModel(selectedMessages);
 	const firstRenderableUser = renderables.find((renderable) =>
 		isRenderableUserMessage(renderable),
 	);
@@ -393,7 +459,7 @@ export function buildSessionFileInfo(
 		cwd,
 		subject,
 		created,
-		messages: normalizedMessages,
+		messages: selectedMessages,
 		messageCount,
 		summary,
 		resumeSummary,
@@ -401,7 +467,10 @@ export function buildSessionFileInfo(
 		title,
 		tags,
 		favorite,
+		archived,
+		archivedAt,
 		firstMessage,
 		allMessagesText,
+		messagesView,
 	};
 }

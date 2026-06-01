@@ -188,6 +188,21 @@ describe("createCorsHeaders", () => {
 		expect(allowHeaders).toContain("X-Maestro-Client-Tools");
 		expect(allowHeaders).toContain("X-Maestro-Slim-Events");
 	});
+
+	it("allows A2A callback and Platform trace correlation headers", () => {
+		const headers = createCorsHeaders("*");
+		const allowHeaders = headers["Access-Control-Allow-Headers"] || "";
+
+		expect(allowHeaders).toContain("A2A-Version");
+		expect(allowHeaders).toContain("A2A-Extensions");
+		expect(allowHeaders).toContain("traceparent");
+		expect(allowHeaders).toContain("tracestate");
+		expect(allowHeaders).toContain("X-A2A-Notification-Token");
+		expect(allowHeaders).toContain("X-Organization-ID");
+		expect(allowHeaders).toContain("X-Workspace-ID");
+		expect(allowHeaders).toContain("X-EvalOps-Agent-ID");
+		expect(allowHeaders).toContain("X-EvalOps-Actor-ID");
+	});
 });
 
 describe("getRequestToken", () => {

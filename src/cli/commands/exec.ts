@@ -49,11 +49,7 @@
  */
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, isAbsolute, resolve } from "node:path";
-import AjvModule, {
-	Ajv as AjvClass,
-	type AnySchema,
-	type ValidateFunction,
-} from "ajv";
+import type { AnySchema, ValidateFunction } from "ajv";
 import chalk from "chalk";
 import type { Agent } from "../../agent/agent.js";
 import { applySessionEndHooks } from "../../agent/session-lifecycle-hooks.js";
@@ -69,9 +65,7 @@ import {
 	emitThreadStart,
 	emitUserTurn as emitUserTurnEvent,
 } from "../jsonl-writer.js";
-
-/** Prefix added to exec session summaries for identification */
-export const EXEC_SESSION_SUMMARY_PREFIX = "[exec]";
+import { EXEC_SESSION_SUMMARY_PREFIX } from "./exec-constants.js";
 
 interface ExecCommandOptions {
 	agent: Agent;
@@ -143,14 +137,15 @@ export async function runExecCommand(
 	const adapter = createAgentJsonlAdapter(jsonlWriter, nextTurnId);
 
 	const schemaValidator: { validate: ValidateFunction; label: string } | null =
-		(() => {
+		await (async () => {
 			if (!options.outputSchema) {
 				return null;
 			}
+			const AjvModule = await import("ajv");
 			const { schema, label } = resolveSchemaSource(options.outputSchema);
-			const AjvCtor = resolveDefaultExport<typeof AjvClass>(
-				AjvModule,
-				AjvClass,
+			const AjvCtor = resolveDefaultExport<typeof AjvModule.Ajv>(
+				AjvModule.default,
+				AjvModule.Ajv,
 			);
 			const ajv = new AjvCtor({ allErrors: true, strict: false });
 			const validate = ajv.compile(schema as AnySchema);

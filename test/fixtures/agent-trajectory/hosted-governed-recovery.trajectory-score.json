@@ -1,0 +1,133 @@
+{
+	"schemaVersion": "evalops.maestro.agent-trajectory-score.v1",
+	"trajectorySchemaVersion": "evalops.maestro.agent-trajectory.v1",
+	"run": {
+		"id": "hosted-governed-recovery-1",
+		"sessionId": "hosted-governed-recovery-1",
+		"source": "platform",
+		"platformBacked": true
+	},
+	"counts": {
+		"rules": 5,
+		"passed": 5,
+		"failed": 0,
+		"warnings": 0
+	},
+	"findings": [
+		{
+			"ruleId": "final-event-has-evidence",
+			"status": "pass",
+			"severity": "error",
+			"message": "Final trajectory event has evidence anchors.",
+			"eventIds": ["trajectory:runtime:hosted-finished-1"],
+			"evidence": [
+				{
+					"kind": "timeline_item",
+					"id": "runtime:hosted-finished-1"
+				}
+			],
+			"remediation": "No action required."
+		},
+		{
+			"ruleId": "hosted-platform-backed",
+			"status": "pass",
+			"severity": "error",
+			"message": "No forbidden event matched selector hosted-platform-backed.",
+			"eventIds": [],
+			"evidence": [],
+			"remediation": "No action required."
+		},
+		{
+			"ruleId": "hosted-approval-before-result",
+			"status": "pass",
+			"severity": "error",
+			"message": "Approval wait preceded tool result for call-hosted-restart.",
+			"eventIds": [
+				"trajectory:pending:pending-approval-hosted-1",
+				"trajectory:tool-result:hosted-restart-1:call-hosted-restart"
+			],
+			"evidence": [
+				{
+					"kind": "approval_request",
+					"id": "approval-hosted-1"
+				},
+				{
+					"kind": "pending_request",
+					"id": "pending-approval-hosted-1"
+				},
+				{
+					"kind": "timeline_item",
+					"id": "pending:pending-approval-hosted-1"
+				},
+				{
+					"kind": "timeline_item",
+					"id": "tool-result:hosted-restart-1:call-hosted-restart"
+				},
+				{
+					"kind": "tool_call",
+					"id": "call-hosted-restart"
+				},
+				{
+					"kind": "tool_execution",
+					"id": "tool-exec-hosted-1"
+				}
+			],
+			"remediation": "No action required."
+		},
+		{
+			"ruleId": "hosted-recovery-after-failure",
+			"status": "pass",
+			"severity": "warning",
+			"message": "Recovery followed failed tool call-hosted-restart.",
+			"eventIds": [
+				"trajectory:tool-result:hosted-restart-1:call-hosted-restart",
+				"trajectory:runtime:hosted-recovery-1"
+			],
+			"evidence": [
+				{
+					"kind": "approval_request",
+					"id": "approval-hosted-1"
+				},
+				{
+					"kind": "timeline_item",
+					"id": "runtime:hosted-recovery-1"
+				},
+				{
+					"kind": "timeline_item",
+					"id": "tool-result:hosted-restart-1:call-hosted-restart"
+				},
+				{
+					"kind": "tool_call",
+					"id": "call-hosted-restart"
+				},
+				{
+					"kind": "tool_execution",
+					"id": "tool-exec-hosted-1"
+				}
+			],
+			"remediation": "No action required."
+		},
+		{
+			"ruleId": "hosted-read-artifact",
+			"status": "pass",
+			"severity": "error",
+			"message": "Tool call-hosted-read produced required artifact skill_artifact_hosted_1.",
+			"eventIds": ["trajectory:artifact-linked:hosted-read-1:call-hosted-read"],
+			"evidence": [
+				{
+					"kind": "artifact",
+					"id": "skill_artifact_hosted_1"
+				},
+				{
+					"kind": "timeline_item",
+					"id": "artifact-linked:hosted-read-1:call-hosted-read"
+				},
+				{
+					"kind": "tool_call",
+					"id": "call-hosted-read"
+				}
+			],
+			"remediation": "No action required."
+		}
+	]
+}

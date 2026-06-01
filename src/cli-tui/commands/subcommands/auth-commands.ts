@@ -5,7 +5,7 @@
  *
  * Usage:
  *   /auth                 - Show auth status
- *   /auth login [mode]    - Authenticate (pro|console|provider:mode)
+ *   /auth login [provider] - Authenticate (openai-codex by default)
  *   /auth logout [provider] - Remove credentials
  *   /auth source-of-truth <provider> <area> [fallbackConnectionId] - Set connector policy
  *   /auth status          - Show current auth state
@@ -14,17 +14,19 @@
 import type { CommandExecutionContext } from "../types.js";
 import { createSubcommandHandler } from "./utils.js";
 
+export interface AuthState {
+	authenticated: boolean;
+	provider?: string;
+	mode?: string;
+}
+
 export interface AuthCommandDeps {
 	handleLogin: (ctx: CommandExecutionContext) => Promise<void> | void;
 	handleLogout: (ctx: CommandExecutionContext) => Promise<void> | void;
 	handleSourceOfTruthPolicy?: (
 		ctx: CommandExecutionContext,
 	) => Promise<void> | void;
-	getAuthState: () => {
-		authenticated: boolean;
-		provider?: string;
-		mode?: string;
-	};
+	getAuthState: () => AuthState | Promise<AuthState>;
 }
 
 export function createAuthCommandHandler(deps: AuthCommandDeps) {
@@ -64,27 +66,18 @@ export function createAuthCommandHandler(deps: AuthCommandDeps) {
 				},
 			},
 		],
-		onUnknown: async ({ ctx, subcommand, customContext }) => {
-			if (
-				["pro", "console", "max"].includes(subcommand) ||
-				subcommand.includes(":")
-			) {
-				await deps.handleLogin(
-					customContext(`/login ${ctx.argumentText}`, ctx.argumentText),
-				);
-				return;
-			}
+		onUnknown: async ({ ctx, subcommand }) => {
 			ctx.showError(`Unknown subcommand: ${subcommand}`);
 			showAuthHelp(ctx);
 		},
 	});
 }
 
-function showAuthStatus(
+async function showAuthStatus(
 	ctx: CommandExecutionContext,
 	deps: AuthCommandDeps,
-): void {
-	const state = deps.getAuthState();
+): Promise<void> {
+	const state = await deps.getAuthState();
 	if (state.authenticated) {
 		ctx.showInfo(`Authentication Status:
   Authenticated: yes
@@ -96,17 +89,14 @@ Use /auth logout to sign out.`);
 		ctx.showInfo(`Authentication Status:
   Authenticated: no
 
-Use /auth login to authenticate with Claude Pro/Max.`);
+Use /auth login to authenticate with OpenAI Codex.`);
 	}
 }
 
 function showAuthHelp(ctx: CommandExecutionContext): void {
 	ctx.showInfo(`Auth Commands:
   /auth                  Show auth status
-  /auth login [mode]     Authenticate:
-                         - pro: Claude Pro
-                         - console: Anthropic Console
-                         - provider:mode (e.g., anthropic:pro)
+  /auth login [provider] Authenticate (openai-codex by default)
   /auth logout [provider] Remove credentials
   /auth source-of-truth <provider> <area> [fallbackConnectionId]
                          Set connector source-of-truth policy metadata

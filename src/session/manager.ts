@@ -73,12 +73,14 @@ import {
 	type SessionEntry,
 	type SessionHeaderEntry,
 	type SessionMessageEntry,
+	type SessionMessagesView,
 	type SessionMetaEntry,
 	type SessionMetadata,
 	type SessionSummary,
 	type SessionTreeEntry,
 	type SessionTreeNode,
 	type ThinkingLevelChangeEntry,
+	getPersistedSessionPromptContextManifest,
 	isSessionTreeEntry,
 	tryParseSessionEntry,
 } from "./types.js";
@@ -92,6 +94,60 @@ export interface SessionManagerOptions {
 
 const logger = createLogger("session-manager");
 const PORTABLE_SESSION_EXPORT_FORMAT = "maestro-session-export.v1";
+const AUTO_PRUNE_DELAY_MS = 5000;
+const pendingAutoPruneManagers = new Set<SessionManager>();
+let autoPruneBeforeExitRegistered = false;
+
+function sessionAutoPruneEnabled(): boolean {
+	return (
+		SESSION_CONFIG.MAX_SESSIONS > 0 || SESSION_CONFIG.MAX_SESSION_AGE_DAYS > 0
+	);
+}
+
+function isTestMode(): boolean {
+	return process.env.VITEST === "true" || process.env.NODE_ENV === "test";
+}
+
+function flushPendingSessionAutoPrunes(): void {
+	const managers = [...pendingAutoPruneManagers];
+	pendingAutoPruneManagers.clear();
+	for (const manager of managers) {
+		runSessionAutoPrune(manager);
+	}
+}
+
+function runSessionAutoPrune(manager: SessionManager): void {
+	try {
+		const result = manager.pruneSessions();
+		if (result.removed > 0) {
+			logger.debug("Auto-pruned sessions", result);
+		}
+	} catch (error) {
+		logger.error(
+			"Session auto-prune failed",
+			error instanceof Error ? error : undefined,
+		);
+	}
+}
+
+function registerAutoPruneBeforeExit(): void {
+	if (autoPruneBeforeExitRegistered || isTestMode()) {
+		return;
+	}
+	autoPruneBeforeExitRegistered = true;
+	process.once("beforeExit", () => {
+		flushPendingSessionAutoPrunes();
+	});
+}
+
+export function flushPendingSessionAutoPrunesForTests(): void {
+	flushPendingSessionAutoPrunes();
+}
+
+export function resetSessionAutoPruneForTests(): void {
+	pendingAutoPruneManagers.clear();
+	autoPruneBeforeExitRegistered = false;
+}
 
 interface PortableSessionBundle {
 	format: string;
@@ -458,11 +514,22 @@ export class SessionManager {
 				? toSessionModelMetadata(state.model as RegisteredModel)
 				: undefined);
 		const fallbackMetadata = this.resolveModelMetadata(sessionModelKey);
+		const provisionalHeaderIndex = this.fileEntries.findIndex(
+			(existing) =>
+				existing.type === "session" &&
+				existing.id === this.sessionId &&
+				existing.provisional === true,
+		);
+		const provisionalHeader =
+			provisionalHeaderIndex >= 0
+				? (this.fileEntries[provisionalHeaderIndex] as SessionHeaderEntry)
+				: undefined;
+		const timestamp = provisionalHeader?.timestamp ?? new Date().toISOString();
 		const entry: SessionHeaderEntry = {
 			type: "session",
 			version: CURRENT_SESSION_VERSION,
 			id: this.sessionId,
-			timestamp: new Date().toISOString(),
+			timestamp,
 			cwd: process.cwd(),
 			subject: options?.subject || undefined,
 			model: sessionModelKey,
@@ -470,6 +537,8 @@ export class SessionManager {
 			thinkingLevel: latestThinkingLevel ?? state.thinkingLevel,
 			systemPrompt: state.systemPrompt,
 			promptMetadata: state.promptMetadata,
+			promptContextManifest: getPersistedSessionPromptContextManifest(state),
+			unifiedContextManifest: state.unifiedContextManifest,
 			tools: state.tools.map((tool) => ({
 				name: tool.name,
 				label: tool.label,
@@ -477,10 +546,19 @@ export class SessionManager {
 			})),
 		};
 		this.metadataCache.apply(entry);
-		this.fileEntries.unshift(entry);
+		if (provisionalHeaderIndex >= 0) {
+			this.fileEntries[provisionalHeaderIndex] = entry;
+		} else {
+			this.fileEntries.unshift(entry);
+		}
 		this.sessionInitialized = true;
 
-		this.persistEntry(entry);
+		if (provisionalHeaderIndex >= 0) {
+			this.rewriteSessionFile();
+			this.flushed = true;
+		} else {
+			this.persistEntry(entry);
+		}
 
 		queueSharedMemoryUpdate({
 			sessionId: this.sessionId,
@@ -511,25 +589,24 @@ export class SessionManager {
 			});
 		}
 
-		// Auto-prune old sessions in the background (non-blocking)
-		if (
-			SESSION_CONFIG.MAX_SESSIONS > 0 ||
-			SESSION_CONFIG.MAX_SESSION_AGE_DAYS > 0
-		) {
-			setTimeout(() => {
-				try {
-					const result = this.pruneSessions();
-					if (result.removed > 0) {
-						logger.debug("Auto-pruned sessions", result);
-					}
-				} catch (error) {
-					logger.error(
-						"Session auto-prune failed",
-						error instanceof Error ? error : undefined,
-					);
-				}
-			}, 5000);
+		// Auto-prune old sessions in the background (non-blocking). The timer is
+		// unref'ed for fast one-shot CLI exit, while beforeExit preserves pruning for
+		// short-lived commands that naturally finish before the delay.
+		if (sessionAutoPruneEnabled()) {
+			this.scheduleAutoPrune();
 		}
+	}
+
+	private scheduleAutoPrune(): void {
+		pendingAutoPruneManagers.add(this);
+		registerAutoPruneBeforeExit();
+		const pruneTimer = setTimeout(() => {
+			if (!pendingAutoPruneManagers.delete(this)) {
+				return;
+			}
+			runSessionAutoPrune(this);
+		}, AUTO_PRUNE_DELAY_MS);
+		pruneTimer.unref?.();
 	}
 
 	saveMessage(message: AppMessage): void {
@@ -754,6 +831,9 @@ export class SessionManager {
 			favorite?: boolean;
 			title?: string;
 			tags?: string[];
+			archived?: boolean;
+			archivedAt?: string;
+			appServerGoal?: SessionMetaEntry["appServerGoal"];
 		},
 	): void {
 		if (!existsSync(targetFile)) return;
@@ -763,7 +843,10 @@ export class SessionManager {
 			meta.memoryExtractionHash === undefined &&
 			meta.favorite === undefined &&
 			meta.title === undefined &&
-			meta.tags === undefined
+			meta.tags === undefined &&
+			meta.archived === undefined &&
+			meta.archivedAt === undefined &&
+			meta.appServerGoal === undefined
 		) {
 			return;
 		}
@@ -774,6 +857,9 @@ export class SessionManager {
 		};
 		try {
 			appendFileSync(targetFile, `${JSON.stringify(entry)}\n`);
+			if (resolve(targetFile) === this.sessionFile) {
+				this.fileEntries.push(entry);
+			}
 		} catch (error) {
 			logger.error(
 				"Failed to append session metadata",
@@ -885,6 +971,22 @@ export class SessionManager {
 		this.syncSessionMemoryEntry(sessionPath);
 	}
 
+	setSessionArchived(sessionPath: string, archived: boolean): void {
+		if (!sessionPath || !existsSync(sessionPath)) return;
+		this.appendSessionMetaEntry(sessionPath, {
+			archived,
+			archivedAt: archived ? new Date().toISOString() : undefined,
+		});
+	}
+
+	setSessionAppServerGoal(
+		sessionPath: string,
+		goal: NonNullable<SessionMetaEntry["appServerGoal"]> | null,
+	): void {
+		if (!sessionPath || !existsSync(sessionPath)) return;
+		this.appendSessionMetaEntry(sessionPath, { appServerGoal: goal });
+	}
+
 	private syncSessionMemoryEntry(sessionPath: string): void {
 		try {
 			syncSessionMemory(sessionPath);
@@ -937,6 +1039,10 @@ export class SessionManager {
 
 	isInitialized(): boolean {
 		return this.sessionInitialized;
+	}
+
+	canCreateSession(): boolean {
+		return this.enabled;
 	}
 
 	getSessionId(): string {
@@ -1167,6 +1273,14 @@ export class SessionManager {
 		return this.catalog.getSessionFileById(sessionId);
 	}
 
+	async loadEntries(sessionId: string): Promise<SessionEntry[] | null> {
+		const sessionFile = this.getSessionFileById(sessionId);
+		if (!sessionFile) {
+			return null;
+		}
+		return safeReadSessionEntries(sessionFile);
+	}
+
 	/**
 	 * Set the session file to an existing session
 	 */
@@ -1187,12 +1301,14 @@ export class SessionManager {
 			const entries = safeReadSessionEntries(this.sessionFile);
 			const migrated = migrateToCurrentVersion(entries);
 			this.fileEntries = entries;
-			this.sessionInitialized = entries.some((e) => e.type === "session");
+			const header = entries.find((e) => e.type === "session") as
+				| SessionHeaderEntry
+				| undefined;
+			this.sessionInitialized = Boolean(header && header.provisional !== true);
 			this.rebuildIndex(entries);
 			if (migrated) {
 				this.rewriteSessionFile();
 			}
-			const header = this.getHeader();
 			this.sessionId = header?.id ?? uuidv4();
 			this.flushed = true;
 			this.metadataCache.seedFromFile(this.sessionFile);
@@ -1278,19 +1394,27 @@ export class SessionManager {
 	/**
 	 * Load a session by ID
 	 */
-	async loadSession(sessionId: string): Promise<{
+	async loadSession(
+		sessionId: string,
+		options: { messagesView?: SessionMessagesView } = {},
+	): Promise<{
 		id: string;
 		subject?: string;
 		title?: string;
+		summary?: string;
 		resumeSummary?: string;
+		memoryExtractionHash?: string;
 		messages: AppMessage[];
 		createdAt: string;
 		updatedAt: string;
 		messageCount: number;
 		favorite: boolean;
 		tags?: string[];
+		archived?: boolean;
+		archivedAt?: string;
+		messagesView: SessionMessagesView;
 	} | null> {
-		return this.catalog.loadSession(sessionId);
+		return this.catalog.loadSession(sessionId, options);
 	}
 
 	/**
@@ -1306,18 +1430,29 @@ export class SessionManager {
 		messageCount: number;
 	}> {
 		this.startFreshSession();
+		const now = new Date().toISOString();
+		const header: SessionHeaderEntry = {
+			type: "session",
+			version: CURRENT_SESSION_VERSION,
+			id: this.sessionId,
+			timestamp: now,
+			cwd: process.cwd(),
+			provisional: true,
+		};
+		this.fileEntries.unshift(header);
 
 		if (options?.title && this.enabled) {
 			const entry: SessionMetaEntry = {
 				type: "session_meta",
-				timestamp: new Date().toISOString(),
+				timestamp: now,
 				title: options.title,
 			};
 			this.fileEntries.push(entry);
-			this.persistEntry(entry);
 		}
+		this.rewriteSessionFile();
+		this.flushed = true;
+		this.sessionInitialized = false;
 
-		const now = new Date().toISOString();
 		return {
 			id: this.sessionId,
 			title: options?.title,
@@ -1336,6 +1471,10 @@ export class SessionManager {
 
 		const entries = safeReadSessionEntries(resolvedSource);
 		return this.importPortableEntries(entries);
+	}
+
+	importSessionEntries(entries: SessionEntry[]): PortableSessionImportResult {
+		return this.importPortableEntries([...entries]);
 	}
 
 	importPortableSession(sourcePath: string): {

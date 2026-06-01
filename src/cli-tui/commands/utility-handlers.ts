@@ -10,6 +10,7 @@
 import { relative } from "node:path";
 import type { AppMessage } from "../../agent/types.js";
 import { handleAgentsInit } from "../../cli/commands/agents.js";
+import { sanitizeTerminalPreview } from "../utils/text-formatting.js";
 import type { CommandExecutionContext } from "./types.js";
 
 export interface CopyHandlerDeps {
@@ -88,6 +89,30 @@ export interface InitHandlerCallbacks {
 	requestRender: () => void;
 }
 
+function buildInitRerunCommand(targetArg: string | undefined): string {
+	return targetArg ? `/init --force ${targetArg}` : "/init --force";
+}
+
+export function parseInitArgs(argumentText: string): {
+	targetArg: string | undefined;
+	force: boolean;
+} {
+	const trimmed = argumentText.trim();
+	if (!trimmed) {
+		return { targetArg: undefined, force: false };
+	}
+	if (trimmed === "--force" || trimmed === "-f") {
+		return { targetArg: undefined, force: true };
+	}
+	for (const flag of ["--force ", "-f "]) {
+		if (trimmed.startsWith(flag)) {
+			const targetArg = trimmed.slice(flag.length).trim() || undefined;
+			return { targetArg, force: true };
+		}
+	}
+	return { targetArg: trimmed, force: false };
+}
+
 /**
  * Handle /init command - scaffold AGENTS.md file
  */
@@ -96,19 +121,40 @@ export function handleInitCommand(
 	callbacks: InitHandlerCallbacks,
 ): void {
 	try {
-		const targetArg = context.argumentText.trim() || undefined;
-		const createdPath = handleAgentsInit(targetArg, { force: false });
-		const relativePath = relative(process.cwd(), createdPath);
+		const { targetArg, force } = parseInitArgs(context.argumentText);
+		const result = handleAgentsInit(targetArg, { force });
+		const rerunCommand = buildInitRerunCommand(targetArg);
+		const relativePath = relative(process.cwd(), result.path);
 		const displayPath =
 			relativePath && !relativePath.startsWith("..") && relativePath !== ""
 				? `./${relativePath}`
-				: createdPath;
-		callbacks.showSuccess(
-			`Scaffolded ${displayPath}. Update it before your next run.`,
-		);
-		callbacks.addContent(
-			`Created AGENTS instructions at ${displayPath}. Customize it with project-specific guidance to improve future sessions.`,
-		);
+				: result.path;
+		if (result.action === "preview") {
+			callbacks.showSuccess(
+				`Previewed AGENTS update for ${displayPath}. Re-run with ${rerunCommand} to apply it.`,
+			);
+			callbacks.addContent(
+				[
+					`AGENTS instructions already exist at ${displayPath}. Preview the proposed update below, then re-run with ${rerunCommand} to apply it.`,
+					"",
+					"```diff",
+					sanitizeTerminalPreview(result.diff ?? ""),
+					"```",
+				].join("\n"),
+			);
+			callbacks.requestRender();
+			return;
+		}
+		if (result.action === "updated") {
+			callbacks.showSuccess(`Updated AGENTS instructions at ${displayPath}.`);
+			callbacks.addContent(
+				`Updated AGENTS instructions at ${displayPath} after preview/force confirmation.`,
+			);
+			callbacks.requestRender();
+			return;
+		}
+		callbacks.showSuccess(`Scaffolded ${displayPath}.`);
+		callbacks.addContent(`Created AGENTS instructions at ${displayPath}.`);
 		callbacks.requestRender();
 	} catch (error) {
 		const message =

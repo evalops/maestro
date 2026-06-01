@@ -5,6 +5,10 @@
  * parallel agent execution for implementing plans.
  */
 
+import type { A2ATaskPushNotificationConfig } from "../../platform/a2a-client.js";
+import type { AgentMode, ModelProvider, ReasoningEffort } from "../modes.js";
+import type { SubagentType } from "../subagent-specs.js";
+
 /**
  * Status of a swarm teammate.
  */
@@ -29,6 +33,12 @@ export interface SwarmTask {
 	dependsOn?: string[];
 	/** Optional model override for this task */
 	model?: string;
+	/** Optional subagent type used for mode-level model dispatch */
+	subagentType?: SubagentType;
+	/** Optional A2A peer override when the swarm uses remote transport */
+	a2aPeer?: string;
+	/** Optional A2A skill override when the task maps to a remote Maestro lane */
+	a2aSkillId?: string;
 	/** Priority (higher = earlier execution when no dependencies) */
 	priority?: number;
 }
@@ -49,6 +59,8 @@ export interface SwarmTeammate {
 	completedTasks: string[];
 	/** Process ID if running as subprocess */
 	pid?: number;
+	/** Remote A2A task correlation when this teammate runs on a peer */
+	a2a?: SwarmA2ATeammateExecution;
 	/** Start timestamp */
 	startedAt?: number;
 	/** Completion timestamp */
@@ -75,12 +87,86 @@ export interface SwarmConfig {
 	parentSessionId?: string;
 	/** Model to use for teammates (defaults to parent's model) */
 	model?: string;
+	/** Agent mode used to resolve subagent model dispatch */
+	mode?: AgentMode;
+	/** Parent model provider used when dispatch falls back to a model tier */
+	modelProvider?: ModelProvider;
+	/** Default subagent type for teammate tasks without their own type */
+	subagentType?: SubagentType;
+	/** Default reasoning hint for teammate tasks */
+	reasoningEffort?: ReasoningEffort;
+	/** Execution transport for teammates; local preserves subprocess behavior. */
+	transport?: "local" | "a2a";
+	/** Remote A2A routing options for Platform-discovered or registry peers. */
+	a2a?: SwarmA2AConfig;
 	/** Maximum time per task in milliseconds */
 	taskTimeout?: number;
 	/** Whether to continue on individual task failures */
 	continueOnFailure?: boolean;
 	/** Git branch to work on (creates if doesn't exist) */
 	gitBranch?: string;
+}
+
+/**
+ * Configuration for remote A2A-backed swarm teammates.
+ */
+export interface SwarmA2AConfig {
+	/** Named peers from the local A2A registry, used round-robin. */
+	peers?: string[];
+	/** Override for the local A2A peer registry path. */
+	registryPath?: string;
+	/** Override for the local A2A task ledger path. */
+	tasksPath?: string;
+	/** Default remote A2A skill id. */
+	skillId?: string;
+	/** Optional delegation role shown in task ledger metadata. */
+	role?: string;
+	/** Discover remote peers from Platform Agent Registry instead of local peers. */
+	discover?: boolean;
+	/** Platform workspace id for discovery. */
+	workspaceId?: string;
+	/** Capability filter for Platform discovery. */
+	capability?: string;
+	/** Surface filter for Platform discovery. Defaults to a2a. */
+	surface?: string;
+	/** Prefer internal endpoints returned by Platform Agent Registry. */
+	preferInternalEndpoint?: boolean;
+	/** Maximum Platform candidates to consider. */
+	limit?: number;
+	/** Timeout for individual A2A HTTP calls. */
+	timeoutMs?: number;
+	/** Max attempts for individual A2A HTTP calls. */
+	maxAttempts?: number;
+	/** Max time to wait for a remote task to reach terminal state. */
+	maxWaitMs?: number;
+	/** Poll interval while waiting for remote task state. */
+	pollIntervalMs?: number;
+	/** Optional push callback config sent to remote peers for task progress/artifact updates. */
+	pushNotificationConfig?: A2ATaskPushNotificationConfig;
+}
+
+/**
+ * Public, non-secret correlation metadata for a remote A2A swarm teammate.
+ */
+export interface SwarmA2ATeammateExecution {
+	/** Peer selected for this teammate task. */
+	peer: string;
+	/** Optional human-readable peer label. */
+	peerDisplayName?: string;
+	/** Peer source used by the router. */
+	source: "registry" | "platform-agent-registry";
+	/** Parent swarm task id used to derive telemetry lane ids. */
+	parentTaskId?: string;
+	/** A2A task id returned by the peer. */
+	taskId: string;
+	/** A2A context id used for resume/reply. */
+	contextId?: string;
+	/** A2A message id sent by the coordinator. */
+	messageId: string;
+	/** A2A skill id used for remote routing. */
+	skillId?: string;
+	/** Delegation role recorded for the remote task. */
+	role?: string;
 }
 
 /**

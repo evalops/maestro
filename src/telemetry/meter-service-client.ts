@@ -1,4 +1,8 @@
 import {
+	EVALOPS_ACCESS_TOKEN_ENV_VARS,
+	EVALOPS_ORGANIZATION_ID_ENV_VARS,
+} from "../evalops/env-aliases.js";
+import {
 	type PlatformServiceConfig,
 	getEnvValue,
 	postPlatformConnect,
@@ -41,14 +45,11 @@ async function resolveRemoteMeterConfig(): Promise<RemoteMeterConfig | null> {
 		baseUrlEnvVars: ["MAESTRO_METER_BASE", "MAESTRO_METER_SERVICE_URL"],
 		tokenEnvVars: [
 			"MAESTRO_METER_ACCESS_TOKEN",
-			"MAESTRO_EVALOPS_ACCESS_TOKEN",
-			"EVALOPS_TOKEN",
+			...EVALOPS_ACCESS_TOKEN_ENV_VARS,
 		],
 		organizationEnvVars: [
 			"MAESTRO_METER_ORGANIZATION_ID",
-			"MAESTRO_EVALOPS_ORG_ID",
-			"EVALOPS_ORGANIZATION_ID",
-			"MAESTRO_ENTERPRISE_ORG_ID",
+			...EVALOPS_ORGANIZATION_ID_ENV_VARS,
 		],
 		teamEnvVars: [
 			"MAESTRO_METER_TEAM_ID",
@@ -154,14 +155,11 @@ export function hasRemoteMeterDestination(): boolean {
 	]);
 	const organizationId = resolveOrganizationId([
 		"MAESTRO_METER_ORGANIZATION_ID",
-		"MAESTRO_EVALOPS_ORG_ID",
-		"EVALOPS_ORGANIZATION_ID",
-		"MAESTRO_ENTERPRISE_ORG_ID",
+		...EVALOPS_ORGANIZATION_ID_ENV_VARS,
 	]);
 	const token = resolveConfiguredToken([
 		"MAESTRO_METER_ACCESS_TOKEN",
-		"MAESTRO_EVALOPS_ACCESS_TOKEN",
-		"EVALOPS_TOKEN",
+		...EVALOPS_ACCESS_TOKEN_ENV_VARS,
 	]);
 	return Boolean(baseUrl && organizationId && token);
 }

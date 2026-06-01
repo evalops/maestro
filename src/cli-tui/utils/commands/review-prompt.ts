@@ -37,13 +37,18 @@ Output ONLY valid JSON (no Markdown fences) with this shape:
   ],
   "overall_correctness": "patch is correct" | "patch is incorrect",
   "overall_explanation": "<1-3 sentences>",
-  "overall_confidence_score": <0.0-1.0>
+  "overall_confidence_score": <0.0-1.0>,
+  "effort_signal": {
+    "size": "S" | "M" | "L" | "XL",
+    "justification": "<rough duration or reason>",
+    "revisit_if": "<optional signal that would invalidate the estimate>"
+  }
 }
 
 Guidance:
 - Use absolute paths (prefix with repo root); line ranges must overlap the diff and stay minimal.
 - Do NOT suggest fixes or use suggestion blocks.
-- If no issues, return an empty findings array but still fill overall_* fields.
+- If no issues, return an empty findings array but still fill overall_* fields and effort_signal.
 - Ignore trivial style unless it obscures behavior or violates repo standards.
 - Diffs may be truncated for length; [truncated …] markers mean omitted lines. Focus on available context.
 - Never wrap the JSON in fences or extra prose.`;
@@ -91,5 +96,5 @@ ${staged}
 Unstaged diff (git diff --unified=5):
 ${worktree}
 
-Task: Review ONLY the changes above. Apply the guidelines strictly. Produce the JSON output exactly as specified with no extra text. If there are no findings, use an empty findings array but still fill overall_* fields. No code fences, no commentary.`;
+Task: Review ONLY the changes above. Apply the guidelines strictly. Produce the JSON output exactly as specified with no extra text. If there are no findings, use an empty findings array but still fill overall_* fields and effort_signal. No code fences, no commentary.`;
 }

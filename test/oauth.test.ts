@@ -10,13 +10,16 @@ const testDir = join(tmpdir(), `composer-oauth-test-${Date.now()}`);
 process.env.MAESTRO_AGENT_DIR = join(testDir, "agent");
 
 import { resetFeatureFlagCacheForTests } from "../src/config/feature-flags.js";
+import { resetConnectorsDownstreamForTests } from "../src/connectors/service-client.js";
 import {
 	type SupportedOAuthProvider,
 	buildEvalOpsDelegationEnvironment,
+	getOAuthLogoutProviders,
 	getOAuthProviders,
 	getOAuthToken,
 	hasOAuthCredentials,
 	issueEvalOpsDelegationToken,
+	listOAuthLogoutProviders,
 	login,
 	logout,
 } from "../src/oauth/index.js";
@@ -101,6 +104,28 @@ describe("OAuth Storage", () => {
 		expect(providers.length).toBe(2);
 	});
 
+	it("should expose legacy Anthropic OAuth credentials for logout only", () => {
+		saveOAuthCredentials("anthropic", {
+			type: "oauth",
+			access: "legacy-access",
+			refresh: "legacy-refresh",
+			expires: Date.now() + 3600000,
+		});
+
+		expect(listOAuthLogoutProviders()).toContain("anthropic");
+		expect(getOAuthLogoutProviders()).toEqual(
+			expect.arrayContaining([
+				expect.objectContaining({
+					id: "anthropic",
+					name: "Anthropic OAuth",
+				}),
+			]),
+		);
+		expect(getOAuthProviders().map((provider) => provider.id)).not.toContain(
+			"anthropic",
+		);
+	});
+
 	it("should handle corrupted storage file gracefully", () => {
 		// Create corrupted oauth.json
 		const oauthPath = join(testDir, "oauth.json");
@@ -116,6 +141,7 @@ describe("OAuth Storage", () => {
 describe("OAuth Index", () => {
 	const originalEvalOpsOrgId = process.env.MAESTRO_EVALOPS_ORG_ID;
 	const originalEvalOpsOrganizationId = process.env.EVALOPS_ORGANIZATION_ID;
+	const originalEnterpriseOrgId = process.env.MAESTRO_ENTERPRISE_ORG_ID;
 	const originalEvalOpsIdentityUrl = process.env.EVALOPS_IDENTITY_URL;
 	const originalFeatureFlagsPath = process.env.EVALOPS_FEATURE_FLAGS_PATH;
 	const originalFetch = global.fetch;
@@ -144,6 +170,11 @@ describe("OAuth Index", () => {
 			Reflect.deleteProperty(process.env, "EVALOPS_ORGANIZATION_ID");
 		} else {
 			process.env.EVALOPS_ORGANIZATION_ID = originalEvalOpsOrganizationId;
+		}
+		if (originalEnterpriseOrgId === undefined) {
+			Reflect.deleteProperty(process.env, "MAESTRO_ENTERPRISE_ORG_ID");
+		} else {
+			process.env.MAESTRO_ENTERPRISE_ORG_ID = originalEnterpriseOrgId;
 		}
 		if (originalEvalOpsIdentityUrl === undefined) {
 			Reflect.deleteProperty(process.env, "EVALOPS_IDENTITY_URL");
@@ -183,6 +214,7 @@ describe("OAuth Index", () => {
 			Object.defineProperty(process, "platform", originalPlatformDescriptor);
 		}
 		resetFeatureFlagCacheForTests();
+		resetConnectorsDownstreamForTests();
 		global.fetch = originalFetch;
 		vi.restoreAllMocks();
 		vi.unstubAllEnvs();
@@ -196,8 +228,8 @@ describe("OAuth Index", () => {
 		it("should return all supported providers", () => {
 			const providers = getOAuthProviders();
 
-			expect(providers).toHaveLength(7);
-			expect(providers.map((p) => p.id)).toContain("anthropic");
+			expect(providers).toHaveLength(6);
+			expect(providers.map((p) => p.id)).not.toContain("anthropic");
 			expect(providers.map((p) => p.id)).toContain("evalops");
 			expect(providers.map((p) => p.id)).toContain("openai");
 			expect(providers.map((p) => p.id)).toContain("openai-codex");
@@ -239,7 +271,6 @@ describe("OAuth Index", () => {
 
 	describe("hasOAuthCredentials", () => {
 		it("should return false when no credentials exist", () => {
-			expect(hasOAuthCredentials("anthropic")).toBe(false);
 			expect(hasOAuthCredentials("evalops")).toBe(false);
 			expect(hasOAuthCredentials("openai")).toBe(false);
 			expect(hasOAuthCredentials("openai-codex")).toBe(false);
@@ -249,32 +280,80 @@ describe("OAuth Index", () => {
 		});
 
 		it("should return true when credentials exist", () => {
-			saveOAuthCredentials("anthropic", {
+			saveOAuthCredentials("openai", {
 				type: "oauth",
 				access: "test-token",
 				refresh: "test-refresh",
 				expires: Date.now() + 3600000,
 			});
 
-			expect(hasOAuthCredentials("anthropic")).toBe(true);
-			expect(hasOAuthCredentials("openai")).toBe(false);
+			expect(hasOAuthCredentials("openai")).toBe(true);
+			expect(hasOAuthCredentials("openai-codex")).toBe(false);
 		});
 	});
 
 	describe("logout", () => {
 		it("should remove credentials for provider", async () => {
-			saveOAuthCredentials("anthropic", {
+			saveOAuthCredentials("openai", {
 				type: "oauth",
 				access: "test-token",
 				refresh: "test-refresh",
 				expires: Date.now() + 3600000,
 			});
 
-			expect(hasOAuthCredentials("anthropic")).toBe(true);
+			expect(hasOAuthCredentials("openai")).toBe(true);
+
+			await logout("openai");
+
+			expect(hasOAuthCredentials("openai")).toBe(false);
+		});
+
+		it("should remove legacy Anthropic OAuth credentials", async () => {
+			saveOAuthCredentials("anthropic", {
+				type: "oauth",
+				access: "legacy-access",
+				refresh: "legacy-refresh",
+				expires: Date.now() + 3600000,
+			});
+
+			expect(listOAuthLogoutProviders()).toContain("anthropic");
 
 			await logout("anthropic");
 
-			expect(hasOAuthCredentials("anthropic")).toBe(false);
+			expect(loadOAuthCredentials("anthropic")).toBeNull();
+		});
+
+		it("should revoke legacy Anthropic connector metadata before removing credentials", async () => {
+			vi.stubEnv("CONNECTORS_SERVICE_URL", "http://connectors.test");
+			vi.stubEnv("CONNECTORS_SERVICE_WORKSPACE_ID", "org_123");
+			vi.stubEnv("CONNECTORS_SERVICE_TOKEN", "connectors-token");
+			vi.stubEnv("CONNECTORS_SERVICE_MAX_ATTEMPTS", "1");
+			resetConnectorsDownstreamForTests();
+			const fetchMock = vi.fn(async (input: unknown, init?: RequestInit) => {
+				expect(String(input)).toBe(
+					"http://connectors.test/connectors.v1.ConnectorService/RevokeConnection",
+				);
+				expect(JSON.parse(String(init?.body))).toEqual({
+					id: "conn_anthropic",
+				});
+				return new Response(JSON.stringify({}), {
+					status: 200,
+					headers: { "Content-Type": "application/json" },
+				});
+			});
+			vi.stubGlobal("fetch", fetchMock);
+			saveOAuthCredentials("anthropic", {
+				type: "oauth",
+				access: "legacy-access",
+				refresh: "legacy-refresh",
+				expires: Date.now() + 3600000,
+				metadata: { connectorConnectionId: "conn_anthropic" },
+			});
+
+			await logout("anthropic");
+
+			expect(loadOAuthCredentials("anthropic")).toBeNull();
+			expect(fetchMock).toHaveBeenCalledTimes(1);
 		});
 
 		it("should revoke EvalOps credentials before removing them", async () => {
@@ -343,19 +422,19 @@ describe("OAuth Index", () => {
 
 	describe("getOAuthToken", () => {
 		it("should return null when no credentials exist", async () => {
-			const token = await getOAuthToken("anthropic");
+			const token = await getOAuthToken("openai");
 			expect(token).toBeNull();
 		});
 
 		it("should return access token when not expired", async () => {
-			saveOAuthCredentials("anthropic", {
+			saveOAuthCredentials("openai", {
 				type: "oauth",
 				access: "valid-access-token",
 				refresh: "test-refresh",
 				expires: Date.now() + 3600000, // 1 hour from now
 			});
 
-			const token = await getOAuthToken("anthropic");
+			const token = await getOAuthToken("openai");
 			expect(token).toBe("valid-access-token");
 		});
 
@@ -369,16 +448,16 @@ describe("OAuth Index", () => {
 			vi.stubGlobal("fetch", fetchMock);
 
 			// Save expired credentials
-			saveOAuthCredentials("anthropic", {
+			saveOAuthCredentials("openai", {
 				type: "oauth",
 				access: "expired-token",
 				refresh: "invalid-refresh",
 				expires: Date.now() - 1000, // Already expired
 			});
 
-			const token = await getOAuthToken("anthropic");
+			const token = await getOAuthToken("openai");
 			expect(token).toBeNull();
-			expect(hasOAuthCredentials("anthropic")).toBe(false);
+			expect(hasOAuthCredentials("openai")).toBe(false);
 			expect(fetchMock).toHaveBeenCalledTimes(1);
 		});
 
@@ -1242,15 +1321,38 @@ describe("OAuth Index", () => {
 			).rejects.toThrow("GitHub Copilot requires onDeviceCode callback");
 		});
 
-		it("should require an org id for evalops login", async () => {
+		it("starts evalops login without a preconfigured org id", async () => {
 			Reflect.deleteProperty(process.env, "MAESTRO_EVALOPS_ORG_ID");
 			Reflect.deleteProperty(process.env, "EVALOPS_ORGANIZATION_ID");
+			Reflect.deleteProperty(process.env, "MAESTRO_ENTERPRISE_ORG_ID");
+			process.env.MAESTRO_IDENTITY_URL = "https://identity.evalops.test";
+
+			const fetchMock = vi.fn().mockResolvedValue(
+				new Response(JSON.stringify({ error: "redirect_uri_not_allowed" }), {
+					status: 400,
+					headers: { "Content-Type": "application/json" },
+				}),
+			);
+			vi.stubGlobal("fetch", fetchMock);
+
 			await expect(
 				login("evalops", {
 					onAuthUrl: vi.fn(),
 					onStatus: vi.fn(),
 				}),
-			).rejects.toThrow("MAESTRO_EVALOPS_ORG_ID");
+			).rejects.toThrow("IDENTITY_GOOGLE_ALLOWED_REDIRECT_URIS");
+
+			expect(fetchMock).toHaveBeenCalledTimes(1);
+			const [, init] = fetchMock.mock.calls[0] ?? [];
+			expect(JSON.parse(String(init?.body))).toMatchObject({
+				redirect_uri: "http://127.0.0.1:1460/auth/callback/evalops",
+				response_mode: "query",
+				prompt: "select_account",
+				scopes: ["llm_gateway:invoke"],
+			});
+			expect(JSON.parse(String(init?.body))).not.toHaveProperty(
+				"organization_id",
+			);
 		});
 	});
 });
@@ -1325,7 +1427,7 @@ describe("OpenAI OAuth", () => {
 	});
 });
 
-describe("Anthropic OAuth", () => {
+describe("Anthropic OAuth removal", () => {
 	beforeEach(() => {
 		process.env.MAESTRO_AGENT_DIR = join(testDir, "agent");
 		mkdirSync(testDir, { recursive: true });
@@ -1337,10 +1439,19 @@ describe("Anthropic OAuth", () => {
 		}
 	});
 
-	it("should import anthropic module without errors", async () => {
-		const module = await import("../src/oauth/anthropic.js");
-		expect(module.loginAnthropic).toBeDefined();
-		expect(module.refreshAnthropicToken).toBeDefined();
-		expect(module.migrateAnthropicCredentials).toBeDefined();
+	it("does not expose Anthropic as an OAuth provider", () => {
+		saveOAuthCredentials("anthropic", {
+			type: "oauth",
+			access: "stale-anthropic-token",
+			refresh: "stale-refresh",
+			expires: Date.now() + 3600000,
+		});
+
+		expect(getOAuthProviders().map((provider) => provider.id)).not.toContain(
+			"anthropic",
+		);
+		expect(hasOAuthCredentials("anthropic" as SupportedOAuthProvider)).toBe(
+			false,
+		);
 	});
 });

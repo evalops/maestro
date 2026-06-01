@@ -4,6 +4,25 @@
 
 pub const SESSION_WIRE_FORMAT_VERSION: &str = "session-wire-format.v1";
 
+pub const SESSION_HEADER_FIELDS: &[&str] = &[
+    "type",
+    "version",
+    "id",
+    "timestamp",
+    "cwd",
+    "subject",
+    "model",
+    "modelMetadata",
+    "thinkingLevel",
+    "systemPrompt",
+    "promptMetadata",
+    "promptContextManifest",
+    "unifiedContextManifest",
+    "tools",
+    "branchedFrom",
+    "parentSession",
+];
+
 pub const STOP_REASON_ALIASES: &[(&str, &str)] = &[
     ("tool_use", "toolUse"),
     ("tool_calls", "toolUse"),
@@ -40,6 +59,8 @@ pub const FIELD_ALIASES: &[(&str, &[(&str, &str)])] = &[
             ("thinking_level", "thinkingLevel"),
             ("system_prompt", "systemPrompt"),
             ("prompt_metadata", "promptMetadata"),
+            ("prompt_context_manifest", "promptContextManifest"),
+            ("unified_context_manifest", "unifiedContextManifest"),
             ("branched_from", "branchedFrom"),
             ("parent_session", "parentSession"),
         ],
@@ -49,6 +70,7 @@ pub const FIELD_ALIASES: &[(&str, &[(&str, &str)])] = &[
         &[
             ("resume_summary", "resumeSummary"),
             ("memory_extraction_hash", "memoryExtractionHash"),
+            ("archived_at", "archivedAt"),
         ],
     ),
     (
@@ -139,12 +161,15 @@ pub fn field_aliases(section: &str) -> &'static [(&'static str, &'static str)] {
             ("thinking_level", "thinkingLevel"),
             ("system_prompt", "systemPrompt"),
             ("prompt_metadata", "promptMetadata"),
+            ("prompt_context_manifest", "promptContextManifest"),
+            ("unified_context_manifest", "unifiedContextManifest"),
             ("branched_from", "branchedFrom"),
             ("parent_session", "parentSession"),
         ],
         "sessionMeta" => &[
             ("resume_summary", "resumeSummary"),
             ("memory_extraction_hash", "memoryExtractionHash"),
+            ("archived_at", "archivedAt"),
         ],
         "attachmentExtract" => &[
             ("attachment_id", "attachmentId"),

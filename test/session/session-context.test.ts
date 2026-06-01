@@ -148,6 +148,17 @@ describe("session context compatibility", () => {
 		expect(info?.allMessagesText).toContain("[tool call] read");
 		expect(info?.allMessagesText).toContain("file contents");
 	});
+
+	it("can skip message hydration while preserving message counts", () => {
+		const stats = { birthtime: new Date(timestamp) } as Stats;
+		const info = buildSessionFileInfo(createTypescriptToolSession(), stats, {
+			messagesView: "notLoaded",
+		});
+
+		expect(info?.messagesView).toBe("notLoaded");
+		expect(info?.messageCount).toBe(3);
+		expect(info?.messages).toEqual([]);
+	});
 });
 
 function parseRustAuthoredToolSession(): SessionEntry[] {

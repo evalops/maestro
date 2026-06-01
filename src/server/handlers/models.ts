@@ -134,7 +134,9 @@ export async function handleModel(
 			);
 			return;
 		}
-		await ensureCredential(registeredModel.provider);
+		if (registeredModel.api !== "openai-codex-app-server") {
+			await ensureCredential(registeredModel.provider);
+		}
 		if (onSelect) onSelect(registeredModel);
 		respondWithModel(res, registeredModel, cors, req);
 		return;

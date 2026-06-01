@@ -12,11 +12,13 @@ class TestAdminSecurityHost extends LitElement {
 		piiPatterns: string;
 		auditRetention: number;
 		webhookUrls: string;
+		telemetryDisabled: boolean;
 	} = {
 		orgSettings: null,
 		piiPatterns: "",
 		auditRetention: 90,
 		webhookUrls: "",
+		telemetryDisabled: false,
 	};
 
 	readonly getOrgSettings = vi.fn(async () => ({
@@ -24,6 +26,7 @@ class TestAdminSecurityHost extends LitElement {
 		piiPatterns: ["EMP-\\d{6}"],
 		auditRetentionDays: 30,
 		alertWebhooks: ["https://hooks.slack.com/services/a"],
+		internal: { telemetryDisabled: true },
 	}));
 
 	readonly updateOrgSettings = vi.fn(async () => undefined);
@@ -72,10 +75,14 @@ describe("AdminSecurityTab", () => {
 		const retentionInput = element.shadowRoot?.querySelector(
 			'input[type="number"]',
 		) as HTMLInputElement | null;
+		const checkboxes = Array.from(
+			element.shadowRoot?.querySelectorAll('input[type="checkbox"]') ?? [],
+		) as HTMLInputElement[];
 
 		assert.equal(textareas[0]?.value, "EMP-\\d{6}");
 		assert.equal(textareas[1]?.value, "https://hooks.slack.com/services/a");
 		assert.equal(retentionInput?.value, "30");
+		assert.equal(checkboxes[1]?.checked, true);
 	});
 
 	it("keeps PII save handler context when persisting settings", async () => {
@@ -158,6 +165,48 @@ describe("AdminSecurityTab", () => {
 		]);
 		assert.deepEqual(element.toastCalls, [
 			{ message: "Webhooks saved", type: "success" },
+		]);
+	});
+
+	it("persists the internal telemetry disablement control", async () => {
+		const element = await fixture<TestAdminSecurityHost>(
+			html`<test-admin-security-host></test-admin-security-host>`,
+		);
+		await element.updateComplete;
+
+		const checkboxes = Array.from(
+			element.shadowRoot?.querySelectorAll('input[type="checkbox"]') ?? [],
+		) as HTMLInputElement[];
+		const buttons = Array.from(
+			element.shadowRoot?.querySelectorAll("button.btn-primary") ?? [],
+		) as HTMLButtonElement[];
+		const telemetryCheckbox = checkboxes[1];
+		const telemetryButton = buttons[3];
+
+		assert.ok(telemetryCheckbox);
+		assert.ok(telemetryButton);
+
+		telemetryCheckbox.checked = true;
+		telemetryCheckbox.dispatchEvent(
+			new Event("change", { bubbles: true, composed: true }),
+		);
+		await element.updateComplete;
+
+		telemetryButton.click();
+		await new Promise((resolve) => setTimeout(resolve, 0));
+		await element.updateComplete;
+
+		assert.deepEqual(element.updateOrgSettings.mock.calls, [
+			[
+				{
+					internal: {
+						telemetryDisabled: true,
+					},
+				},
+			],
+		]);
+		assert.deepEqual(element.toastCalls, [
+			{ message: "Telemetry controls saved", type: "success" },
 		]);
 	});
 });

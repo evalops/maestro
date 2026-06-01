@@ -6,15 +6,62 @@ import type { ToolAnnotations } from "../../src/agent/types.js";
 import { loadMcpConfig } from "../../src/mcp/config.js";
 import { McpClientManager } from "../../src/mcp/manager.js";
 
+const PLATFORM_MCP_ENV_KEYS = [
+	"MAESTRO_PLATFORM_MCP_ENABLED",
+	"MAESTRO_AGENT_MCP_ENABLED",
+	"MAESTRO_HOME",
+	"MAESTRO_AGENT_DIR",
+	"MAESTRO_PLATFORM_MCP_URL",
+	"MAESTRO_AGENT_MCP_URL",
+	"MAESTRO_EVALOPS_AGENT_MCP_URL",
+	"MAESTRO_PLATFORM_MCP_TOKEN",
+	"MAESTRO_AGENT_MCP_TOKEN",
+	"MAESTRO_EVALOPS_ACCESS_TOKEN",
+	"EVALOPS_TOKEN",
+	"MAESTRO_WORKSPACE_ID",
+	"MAESTRO_EVALOPS_WORKSPACE_ID",
+	"MAESTRO_EVALOPS_ORG_ID",
+	"EVALOPS_ORGANIZATION_ID",
+	"MAESTRO_ENTERPRISE_ORG_ID",
+	"MAESTRO_AGENT_ID",
+	"MAESTRO_EVALOPS_AGENT_ID",
+	"MAESTRO_AGENT_RUN_ID",
+	"MAESTRO_SESSION_ID",
+	"MAESTRO_REQUEST_ID",
+	"TRACE_ID",
+	"OTEL_TRACE_ID",
+] as const;
+
 describe("MCP config loader", () => {
 	let testDir: string;
+	let previousEnv: Partial<
+		Record<(typeof PLATFORM_MCP_ENV_KEYS)[number], string>
+	>;
 
 	beforeEach(() => {
+		previousEnv = Object.fromEntries(
+			PLATFORM_MCP_ENV_KEYS.map((key) => [key, process.env[key]]),
+		);
 		testDir = join(tmpdir(), `mcp-test-${Date.now()}`);
 		mkdirSync(testDir, { recursive: true });
+		for (const key of PLATFORM_MCP_ENV_KEYS) {
+			Reflect.deleteProperty(process.env, key);
+		}
+		process.env.MAESTRO_PLATFORM_MCP_ENABLED = "false";
+		process.env.MAESTRO_AGENT_MCP_ENABLED = "false";
+		process.env.MAESTRO_HOME = join(testDir, "home");
+		process.env.MAESTRO_AGENT_DIR = join(testDir, "agent");
 	});
 
 	afterEach(() => {
+		for (const key of PLATFORM_MCP_ENV_KEYS) {
+			const value = previousEnv[key];
+			if (value === undefined) {
+				Reflect.deleteProperty(process.env, key);
+			} else {
+				process.env[key] = value;
+			}
+		}
 		rmSync(testDir, { recursive: true, force: true });
 	});
 
@@ -44,6 +91,38 @@ describe("MCP config loader", () => {
 		expect(config.servers).toHaveLength(1);
 		expect(config.servers[0]!.name).toBe("test-server");
 		expect(config.servers[0]!.command).toBe("node");
+	});
+
+	it("loads explicit MCP server parallel tool-call opt-in", () => {
+		const configDir = join(testDir, ".maestro");
+		mkdirSync(configDir, { recursive: true });
+		writeFileSync(
+			join(configDir, "mcp.json"),
+			JSON.stringify({
+				mcpServers: {
+					"trusted-fs": {
+						command: "npx",
+						args: ["-y", "@example/mcp-server"],
+						supportsParallelToolCalls: true,
+					},
+					"plain-fs": {
+						command: "npx",
+						args: ["-y", "@example/plain-server"],
+					},
+				},
+			}),
+		);
+
+		const config = loadMcpConfig(testDir);
+		expect(config.servers).toHaveLength(2);
+		expect(
+			config.servers.find((server) => server.name === "trusted-fs")
+				?.supportsParallelToolCalls,
+		).toBe(true);
+		expect(
+			config.servers.find((server) => server.name === "plain-fs")
+				?.supportsParallelToolCalls,
+		).toBe(false);
 	});
 
 	it("loads servers from mcpServers format (Claude Desktop style)", () => {
@@ -156,6 +235,91 @@ describe("MCP config loader", () => {
 			},
 		]);
 		expect(config.servers[0]!.authPreset).toBe("linear-auth");
+	});
+
+	it("ignores invalid trustedWorkspaces entries without rejecting the config", () => {
+		const configDir = join(testDir, ".maestro");
+		mkdirSync(configDir, { recursive: true });
+		writeFileSync(
+			join(configDir, "mcp.json"),
+			JSON.stringify({
+				mcpServers: {
+					docs: {
+						url: "https://example.com/mcp",
+					},
+				},
+				trustedWorkspaces: {
+					docs: [
+						{
+							workspaceUri: "git:https://github.com/evalops/platform.git",
+							mode: "trusted",
+						},
+						{
+							workspaceUri: "git:https://github.com/evalops/deploy.git",
+							mode: "definitely-not-valid",
+						},
+					],
+					broken: {
+						workspaceUri: "git:https://github.com/evalops/maestro.git",
+						mode: "trusted",
+					},
+				},
+			}),
+		);
+
+		const config = loadMcpConfig(testDir);
+		expect(config.servers).toHaveLength(1);
+		expect(config.servers[0]!.name).toBe("docs");
+		expect(config.trustedWorkspaces).toEqual({
+			docs: [
+				{
+					workspaceUri: "git:https://github.com/evalops/platform.git",
+					mode: "trusted",
+				},
+			],
+		});
+	});
+
+	it("ignores malformed trustedWorkspaces sections without rejecting the config", () => {
+		const configDir = join(testDir, ".maestro");
+		mkdirSync(configDir, { recursive: true });
+		writeFileSync(
+			join(configDir, "mcp.json"),
+			JSON.stringify({
+				mcpServers: {
+					docs: {
+						url: "https://example.com/mcp",
+					},
+				},
+				trustedWorkspaces: [],
+			}),
+		);
+
+		const config = loadMcpConfig(testDir);
+		expect(config.servers).toHaveLength(1);
+		expect(config.servers[0]!.name).toBe("docs");
+		expect(config.trustedWorkspaces).toBeUndefined();
+	});
+
+	it("ignores invalid workspaceTrustDefault without rejecting the config", () => {
+		const configDir = join(testDir, ".maestro");
+		mkdirSync(configDir, { recursive: true });
+		writeFileSync(
+			join(configDir, "mcp.json"),
+			JSON.stringify({
+				mcpServers: {
+					docs: {
+						url: "https://example.com/mcp",
+					},
+				},
+				workspaceTrustDefault: "definitely-not-valid",
+			}),
+		);
+
+		const config = loadMcpConfig(testDir);
+		expect(config.servers).toHaveLength(1);
+		expect(config.servers[0]!.name).toBe("docs");
+		expect(config.workspaceTrustDefault).toBeUndefined();
 	});
 
 	it("detects SSE transport when URL ends with /sse", () => {
@@ -435,6 +599,190 @@ describe("MCP client manager", () => {
 		const manager = createManager();
 		const tools = manager.getAllTools();
 		expect(tools).toEqual([]);
+	});
+
+	it("refreshes parallel safety when a server tool list changes", async () => {
+		const manager = createManager();
+		type NotificationHandler = () => void | Promise<void>;
+		const notificationHandlers: NotificationHandler[] = [];
+		let maxConcurrency = 1;
+		const listedTools = [{ name: "search", inputSchema: { type: "object" } }];
+		const client = {
+			close: vi.fn(async () => undefined),
+			getServerCapabilities: () => ({
+				tools: {},
+				experimental: {
+					"evalops.maestro.parallelSafety": {
+						tools: {
+							search: {
+								supportsParallelToolCalls: true,
+								maxConcurrency,
+							},
+						},
+					},
+				},
+			}),
+			listTools: vi.fn(async () => ({ tools: listedTools })),
+			setNotificationHandler: vi.fn(
+				(_schema: unknown, handler: NotificationHandler) => {
+					notificationHandlers.push(handler);
+				},
+			),
+		};
+		const transport = {
+			close: vi.fn(async () => undefined),
+		};
+		const testManager = manager as unknown as {
+			servers: Map<string, unknown>;
+			setupNotificationHandlers(client: unknown, serverName: string): void;
+		};
+		testManager.servers.set("server", {
+			config: { name: "server", transport: "stdio", command: "server-cmd" },
+			client,
+			transport,
+			tools: listedTools,
+			resources: [],
+			prompts: [],
+			promptDetails: [],
+			parallelSafetyByTool: new Map([
+				[
+					"search",
+					{
+						supportsParallelToolCalls: true,
+						provenance: "server_capability",
+						maxConcurrency,
+					},
+				],
+			]),
+			reconnectAttempts: 0,
+		});
+		testManager.setupNotificationHandlers(client, "server");
+		maxConcurrency = 5;
+
+		await notificationHandlers[0]?.();
+
+		expect(client.listTools).toHaveBeenCalledTimes(1);
+		expect(manager.getAllTools()[0]?.parallelSafety).toMatchObject({
+			supportsParallelToolCalls: true,
+			provenance: "server_capability",
+			maxConcurrency: 5,
+		});
+	});
+
+	it("uses advertised read-only hints in status tool capabilities", async () => {
+		const manager = createManager();
+		await manager.configure({
+			authPresets: [],
+			servers: [
+				{
+					name: "server",
+					transport: "stdio",
+					command: "server-cmd",
+				},
+			],
+		});
+		const listedTools = [
+			{ name: "status_report", inputSchema: { type: "object" } },
+		];
+		const testManager = manager as unknown as {
+			servers: Map<string, unknown>;
+		};
+		testManager.servers.set("server", {
+			config: { name: "server", transport: "stdio", command: "server-cmd" },
+			client: { close: vi.fn(async () => undefined) },
+			transport: { close: vi.fn(async () => undefined) },
+			tools: listedTools,
+			resources: [],
+			prompts: [],
+			promptDetails: [],
+			parallelSafetyByTool: new Map([
+				[
+					"status_report",
+					{
+						supportsParallelToolCalls: true,
+						provenance: "server_capability",
+						readOnlyHint: true,
+					},
+				],
+			]),
+			reconnectAttempts: 0,
+		});
+
+		const statusTool = manager.getStatus().servers[0]?.tools[0];
+
+		expect(statusTool?.capability).toMatchObject({
+			toolName: "status_report",
+			readOnlyHint: true,
+			riskClass: "observe",
+		});
+	});
+
+	it("honors a per-tool parallel opt-out over the server default", async () => {
+		const manager = createManager();
+		type NotificationHandler = () => void | Promise<void>;
+		const notificationHandlers: NotificationHandler[] = [];
+		const listedTools = [
+			{ name: "parallel_search", inputSchema: { type: "object" } },
+			{ name: "serial_status", inputSchema: { type: "object" } },
+		];
+		const client = {
+			close: vi.fn(async () => undefined),
+			getServerCapabilities: () => ({
+				tools: {},
+				experimental: {
+					"evalops.maestro.parallelSafety": {
+						supportsParallelToolCalls: true,
+						tools: {
+							serial_status: {
+								supportsParallelToolCalls: false,
+							},
+						},
+					},
+				},
+			}),
+			listTools: vi.fn(async () => ({ tools: listedTools })),
+			setNotificationHandler: vi.fn(
+				(_schema: unknown, handler: NotificationHandler) => {
+					notificationHandlers.push(handler);
+				},
+			),
+		};
+		const transport = {
+			close: vi.fn(async () => undefined),
+		};
+		const testManager = manager as unknown as {
+			servers: Map<string, unknown>;
+			setupNotificationHandlers(client: unknown, serverName: string): void;
+		};
+		testManager.servers.set("server", {
+			config: { name: "server", transport: "stdio", command: "server-cmd" },
+			client,
+			transport,
+			tools: listedTools,
+			resources: [],
+			prompts: [],
+			promptDetails: [],
+			parallelSafetyByTool: new Map(),
+			reconnectAttempts: 0,
+		});
+		testManager.setupNotificationHandlers(client, "server");
+
+		await notificationHandlers[0]?.();
+
+		const tools = manager.getAllTools();
+		expect(
+			tools.find((tool) => tool.tool.name === "parallel_search")
+				?.parallelSafety,
+		).toMatchObject({
+			supportsParallelToolCalls: true,
+			provenance: "server_capability",
+		});
+		expect(
+			tools.find((tool) => tool.tool.name === "serial_status")?.parallelSafety,
+		).toMatchObject({
+			supportsParallelToolCalls: false,
+			provenance: "none",
+		});
 	});
 
 	it("isConnected returns false for unknown server", () => {

@@ -297,6 +297,16 @@ describe("automatic memory extraction", () => {
 				applyAutoMemoryConsolidation: vi.fn(),
 			}),
 		}));
+		const recordMaestroLearnedContext = vi.fn();
+		vi.doMock("../../src/telemetry/maestro-event-bus.js", async () => {
+			const actual = await vi.importActual<
+				typeof import("../../src/telemetry/maestro-event-bus.js")
+			>("../../src/telemetry/maestro-event-bus.js");
+			return {
+				...actual,
+				recordMaestroLearnedContext,
+			};
+		});
 
 		const { createAutomaticMemoryExtractionCoordinator } = await import(
 			"../../src/memory/auto-extraction.js"
@@ -353,7 +363,33 @@ describe("automatic memory extraction", () => {
 			{
 				tags: ["auto", "durable", "workflow"],
 				cwd: repoRoot,
+				sessionId: "session-123",
 			},
+		);
+		expect(recordMaestroLearnedContext).toHaveBeenCalledWith(
+			expect.objectContaining({
+				learning_id: expect.stringMatching(
+					/^session-123-team-preferences-[a-f0-9]+$/,
+				),
+				statement: "Keep PRs focused.",
+				subject_key: expect.stringMatching(/^repo:/),
+				dimension: "memory.team_preferences",
+				confidence_score: 0.78,
+				confidence_reason:
+					"Automatic durable memory extraction from a Maestro session summary.",
+				correlation: expect.objectContaining({
+					session_id: "session-123",
+					agent_id: "maestro",
+				}),
+				evidence: [
+					expect.objectContaining({
+						source: "maestro-session",
+						source_id: "session-123",
+						uri: "maestro://sessions/session-123",
+						excerpt: "Keep PRs focused.",
+					}),
+				],
+			}),
 		);
 	});
 

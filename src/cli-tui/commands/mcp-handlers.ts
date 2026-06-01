@@ -21,11 +21,13 @@ import {
 	removeMcpServerFromConfig,
 	resolveOfficialMcpRegistryEntry,
 	searchOfficialMcpRegistry,
+	serverRequiresProjectApproval,
 	setProjectMcpServerApprovalDecision,
 	updateMcpAuthPresetInConfig,
 	updateMcpServerInConfig,
 } from "../../mcp/index.js";
 import { parseCommandArguments } from "../../tools/shell-utils.js";
+import { promptSafeText } from "../../utils/prompt-safe-text.js";
 
 type RemoteMcpTransport = "http" | "sse";
 
@@ -911,9 +913,8 @@ function formatMcpPromptArgumentSummary(
 			const summary = argument.required
 				? `${argument.name} (required)`
 				: argument.name;
-			return argument.description
-				? `${summary}: ${argument.description}`
-				: summary;
+			const description = promptSafeText(argument.description);
+			return description ? `${summary}: ${description}` : summary;
 		})
 		.join("; ");
 }
@@ -936,8 +937,9 @@ function appendMcpPromptSummary(
 	if (prompt.title && prompt.title !== promptName) {
 		lines.push(`${detailIndent}Title: ${prompt.title}`);
 	}
-	if (prompt.description) {
-		lines.push(`${detailIndent}Description: ${prompt.description}`);
+	const description = promptSafeText(prompt.description);
+	if (description) {
+		lines.push(`${detailIndent}Description: ${description}`);
 	}
 	const argumentSummary = formatMcpPromptArgumentSummary(server, promptName);
 	if (argumentSummary) {
@@ -1286,9 +1288,9 @@ async function handleMcpProjectApprovalCommand(
 				`MCP server "${parsed.name}" not found in merged config.`,
 			);
 		}
-		if (existingServer.scope !== "project") {
+		if (!serverRequiresProjectApproval(existingServer)) {
 			throw new Error(
-				`MCP server "${parsed.name}" is not loaded from project config.`,
+				`MCP server "${parsed.name}" does not require project approval.`,
 			);
 		}
 
@@ -1299,6 +1301,9 @@ async function handleMcpProjectApprovalCommand(
 			authPresets: currentConfig.authPresets,
 			decision,
 		});
+		if (decision === "denied") {
+			await mcpManager.reconnect(parsed.name);
+		}
 		await reloadMcpManager(projectRoot);
 
 		renderCtx.addContent(

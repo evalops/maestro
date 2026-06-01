@@ -53,6 +53,15 @@ export const deterministicEvalScenarioVerifications = [
 		expectedRegex: "\\[tool-surface-smoke-evals\\] \\d+/\\d+ passed",
 	},
 	{
+		name: "batch shaping eval suite",
+		expectedCommand: [
+			"bunx",
+			"tsx",
+			"scripts/evals/run-batch-shaping-evals.ts",
+		],
+		expectedRegex: "\\[batch-shaping-evals\\] \\d+/\\d+ passed",
+	},
+	{
 		name: "pipeline tool integration eval suite",
 		expectedCommand: [
 			"bunx",

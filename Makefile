@@ -1,18 +1,79 @@
-# Composer — ergonomic Make targets wrapping npm/bun scripts
+# Maestro — ergonomic Make targets wrapping npm/bun scripts
 # Auto-loads .env when present (falls back to shell env otherwise).
 # Only the vars below are exported — bare `export` would leak MAKEFLAGS etc.
 -include .env
 export ANTHROPIC_API_KEY OPENAI_API_KEY GEMINI_API_KEY GROQ_API_KEY \
        OPENROUTER_API_KEY XAI_API_KEY EXA_API_KEY \
-       COMPOSER_MODEL COMPOSER_MODEL_PROVIDER
+       MAESTRO_MODEL MAESTRO_MODEL_PROVIDER \
+       MAESTRO_CEREBRO_URL CEREBRO_URL CEREBRO_SERVICE_URL \
+       MAESTRO_CEREBRO_TOKEN CEREBRO_TOKEN \
+       MAESTRO_EVALOPS_ACCESS_TOKEN EVALOPS_TOKEN \
+       MAESTRO_CEREBRO_WORKSPACE_ID CEREBRO_WORKSPACE_ID \
+       MAESTRO_AGENT_RUNTIME_WORKSPACE_ID AGENT_RUNTIME_WORKSPACE_ID \
+       MAESTRO_WORKSPACE_ID MAESTRO_EVALOPS_WORKSPACE_ID EVALOPS_WORKSPACE_ID \
+       MAESTRO_REMOTE_RUNNER_WORKSPACE_ID \
+       MAESTRO_CEREBRO_TIMEOUT_MS CEREBRO_TIMEOUT_MS \
+       MAESTRO_CEREBRO_MAX_ATTEMPTS CEREBRO_MAX_ATTEMPTS \
+       MAESTRO_CEREBRO_SEARCH_LIMIT CEREBRO_SEARCH_LIMIT \
+       MAESTRO_CEREBRO_CHANGE_LIMIT CEREBRO_CHANGE_LIMIT \
+       LOCAL_HTTP_PORT LOCAL_ADDR LOCAL_BASE_URL \
+       MAESTRO_PLATFORM_MCP_ENABLED MAESTRO_AGENT_MCP_ENABLED \
+       MAESTRO_PLATFORM_MCP_NAME MAESTRO_AGENT_MCP_NAME \
+       MAESTRO_PLATFORM_MCP_URL MAESTRO_AGENT_MCP_URL MAESTRO_EVALOPS_AGENT_MCP_URL \
+       EVALOPS_AGENT_MCP_URL MAESTRO_PLATFORM_MCP_MANIFEST_URL \
+       MAESTRO_AGENT_MCP_MANIFEST_URL MAESTRO_EVALOPS_AGENT_MCP_MANIFEST_URL \
+       MAESTRO_PLATFORM_MCP_TOKEN MAESTRO_AGENT_MCP_TOKEN \
+       MAESTRO_CEREBRO_MCP_SCOPES MAESTRO_PLATFORM_MCP_SCOPES \
+       MAESTRO_AGENT_MCP_SCOPES MAESTRO_EVALOPS_AGENT_MCP_SCOPES \
+       MAESTRO_EVALOPS_MEMORY_MODE EVALOPS_MEMORY_MODE
 
-.PHONY: help setup install build build-all compile run-ts run-rs run-rs-debug \
-        web dev dev-all developer-surface-check test test-fast test-coverage lint check fmt fmt-unsafe \
-        smoke evals verify clean db-up db-down db-migrate
+LOCAL_CEREBRO_REPO ?= ../cerebro
+BAZEL ?= $(shell \
+	if command -v bazelisk >/dev/null 2>&1; then \
+		command -v bazelisk; \
+	elif command -v go >/dev/null 2>&1; then \
+		OLD_IFS="$$IFS"; IFS=":"; \
+		for dir in $$(go env GOPATH); do \
+			if test -x "$$dir/bin/bazelisk"; then printf '%s/bin/bazelisk' "$$dir"; exit 0; fi; \
+		done; \
+		IFS="$$OLD_IFS"; \
+		if command -v bazel >/dev/null 2>&1; then command -v bazel; else printf bazelisk; fi; \
+	elif command -v bazel >/dev/null 2>&1; then \
+		command -v bazel; \
+	else \
+		printf bazelisk; \
+	fi)
+BUILDIFIER ?= $(shell if command -v buildifier >/dev/null 2>&1; then command -v buildifier; elif command -v go >/dev/null 2>&1; then printf '%s/bin/buildifier' "$$(go env GOPATH)"; else printf buildifier; fi)
+BAZEL_TARGETS ?= //...
+BAZEL_REMOTE_CONFIG ?= remote-gcp-dev
+BAZEL_RBE_SMOKE_TARGETS ?= //:maestro_bazel_contract_test
+BAZEL_CI_REMOTE_DOWNLOAD_FLAGS ?= --remote_download_outputs=minimal
+
+.PHONY: help bazel-check bazel-format bazel-mod-tidy bazel-rbe-smoke bazel-test bazel-test-remote setup install build build-all compile run-ts run-rs run-rs-debug \
+        web web-local dev dev-all developer-surface-check test test-fast test-coverage lint check fmt fmt-unsafe \
+        smoke cerebro-dev cerebro-env cerebro-e2e cerebro-e2e-doctor cerebro-e2e-trace evals verify clean db-up db-down db-migrate
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | \
 		awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-15s\033[0m %s\n", $$1, $$2}'
+
+bazel-mod-tidy:
+	$(BAZEL) mod tidy
+
+bazel-format:
+	$(BUILDIFIER) -r .
+
+bazel-check: bazel-mod-tidy bazel-format bazel-test
+	git diff --exit-code
+
+bazel-test:
+	$(BAZEL) test $(BAZEL_TARGETS)
+
+bazel-test-remote:
+	$(BAZEL) test --config=$(BAZEL_REMOTE_CONFIG) $(BAZEL_CI_REMOTE_DOWNLOAD_FLAGS) $(BAZEL_TARGETS)
+
+bazel-rbe-smoke:
+	BAZEL_TARGETS="$(BAZEL_RBE_SMOKE_TARGETS)" ./scripts/run-bazel-rbe.sh
 
 setup: ## First-time project bootstrap
 	@test -f .env || { test -f .env.example || { echo "error: .env.example not found — is this a complete checkout?" >&2; exit 1; }; \
@@ -30,7 +91,7 @@ build: ## Build TS CLI
 build-all: ## Build all packages (contracts, tui, web, cli, ai)
 	npm run build:all
 
-compile: ## Compile standalone binary (dist/composer-bun)
+compile: ## Compile standalone binary (dist/maestro-bun)
 	npm run bun:compile
 
 run-ts: ## Launch TS TUI (with .env)
@@ -38,14 +99,17 @@ run-ts: ## Launch TS TUI (with .env)
 
 run-rs: build ## Launch Rust TUI (release)
 	cargo build --release --manifest-path packages/tui-rs/Cargo.toml && \
-	COMPOSER_AGENT_SCRIPT="$$(pwd)/dist/cli.js" ./packages/tui-rs/target/release/composer-tui
+	MAESTRO_AGENT_SCRIPT="$$(pwd)/dist/cli.js" ./packages/tui-rs/target/release/maestro-tui
 
 run-rs-debug: build ## Launch Rust TUI (debug build)
 	cargo build --manifest-path packages/tui-rs/Cargo.toml && \
-	COMPOSER_AGENT_SCRIPT="$$(pwd)/dist/cli.js" ./packages/tui-rs/target/debug/composer-tui
+	MAESTRO_AGENT_SCRIPT="$$(pwd)/dist/cli.js" ./packages/tui-rs/target/debug/maestro-tui
 
 web: ## Web UI dev server (backend + Vite)
 	npm run web:dev
+
+web-local: ## Web UI dev server with local-only auth/Redis bypasses
+	npm run web:dev:local
 
 dev: ## TS watch mode
 	npm run dev
@@ -78,6 +142,70 @@ fmt-unsafe: ## Auto-format + unsafe lint fixes
 
 smoke: build ## Smoke-test the built CLI
 	npm run smoke
+
+cerebro-e2e-doctor: ## Preflight the cross-repo Cerebro local E2E lane
+	LOCAL_CEREBRO_REPO="$(LOCAL_CEREBRO_REPO)" node scripts/check-cerebro-e2e.mjs
+
+cerebro-env: ## Print env exports for running this Maestro checkout against local Cerebro
+	@LOCAL_CEREBRO_REPO="$(LOCAL_CEREBRO_REPO)" node scripts/check-cerebro-e2e.mjs --print-maestro-env
+
+cerebro-dev: cerebro-e2e-doctor ## Start a usable local Cerebro stack with Maestro event ingestion enabled
+	@env_exports="$$(LOCAL_CEREBRO_REPO="$(LOCAL_CEREBRO_REPO)" node scripts/check-cerebro-e2e.mjs --print-env)" && \
+		eval "$$env_exports" && \
+		LOCAL_MAESTRO_REPO="$(CURDIR)" \
+		LOCAL_HTTP_PORT="$$LOCAL_HTTP_PORT" \
+		LOCAL_ADDR="$$LOCAL_ADDR" \
+		LOCAL_BASE_URL="$$LOCAL_BASE_URL" \
+		MAESTRO_CEREBRO_URL="$$MAESTRO_CEREBRO_URL" \
+		MAESTRO_CEREBRO_WORKSPACE_ID="$$MAESTRO_CEREBRO_WORKSPACE_ID" \
+		MAESTRO_WORKSPACE_ID="$$MAESTRO_WORKSPACE_ID" \
+		MAESTRO_PLATFORM_MCP_URL="$$MAESTRO_PLATFORM_MCP_URL" \
+		MAESTRO_AGENT_MCP_URL="$$MAESTRO_AGENT_MCP_URL" \
+		MAESTRO_CEREBRO_MCP_SCOPES="$$MAESTRO_CEREBRO_MCP_SCOPES" \
+		MAESTRO_PLATFORM_MCP_SCOPES="$$MAESTRO_PLATFORM_MCP_SCOPES" \
+		MAESTRO_AGENT_MCP_SCOPES="$$MAESTRO_AGENT_MCP_SCOPES" \
+		LOCAL_MAESTRO_GENERATE_REPLAY="$$LOCAL_MAESTRO_GENERATE_REPLAY" \
+		LOCAL_MAESTRO_DOCTOR_REPLAY="$$LOCAL_MAESTRO_DOCTOR_REPLAY" \
+		$(MAKE) -C "$(LOCAL_CEREBRO_REPO)" local-maestro-dev
+
+cerebro-e2e: cerebro-e2e-doctor ## Run the cross-repo Cerebro local E2E using this Maestro checkout
+	@env_exports="$$(LOCAL_CEREBRO_REPO="$(LOCAL_CEREBRO_REPO)" node scripts/check-cerebro-e2e.mjs --print-env)" && \
+		eval "$$env_exports" && \
+		LOCAL_MAESTRO_REPO="$(CURDIR)" \
+		LOCAL_HTTP_PORT="$$LOCAL_HTTP_PORT" \
+		LOCAL_ADDR="$$LOCAL_ADDR" \
+		LOCAL_BASE_URL="$$LOCAL_BASE_URL" \
+		MAESTRO_CEREBRO_URL="$$MAESTRO_CEREBRO_URL" \
+		MAESTRO_CEREBRO_WORKSPACE_ID="$$MAESTRO_CEREBRO_WORKSPACE_ID" \
+		MAESTRO_WORKSPACE_ID="$$MAESTRO_WORKSPACE_ID" \
+		MAESTRO_PLATFORM_MCP_URL="$$MAESTRO_PLATFORM_MCP_URL" \
+		MAESTRO_AGENT_MCP_URL="$$MAESTRO_AGENT_MCP_URL" \
+		MAESTRO_CEREBRO_MCP_SCOPES="$$MAESTRO_CEREBRO_MCP_SCOPES" \
+		MAESTRO_PLATFORM_MCP_SCOPES="$$MAESTRO_PLATFORM_MCP_SCOPES" \
+		MAESTRO_AGENT_MCP_SCOPES="$$MAESTRO_AGENT_MCP_SCOPES" \
+		LOCAL_MAESTRO_GENERATE_REPLAY="$$LOCAL_MAESTRO_GENERATE_REPLAY" \
+		LOCAL_MAESTRO_DOCTOR_REPLAY="$$LOCAL_MAESTRO_DOCTOR_REPLAY" \
+		$(MAKE) -C "$(LOCAL_CEREBRO_REPO)" local-maestro-e2e
+
+cerebro-e2e-trace: export LOCAL_REQUIRE_CEREBRO_TRACE_TARGET=true
+cerebro-e2e-trace: cerebro-e2e-doctor ## Run the trace-backed Maestro/Cerebro local E2E and prove it in Jaeger
+	@env_exports="$$(LOCAL_CEREBRO_REPO="$(LOCAL_CEREBRO_REPO)" node scripts/check-cerebro-e2e.mjs --print-env)" && \
+		eval "$$env_exports" && \
+		LOCAL_MAESTRO_REPO="$(CURDIR)" \
+		LOCAL_HTTP_PORT="$$LOCAL_HTTP_PORT" \
+		LOCAL_ADDR="$$LOCAL_ADDR" \
+		LOCAL_BASE_URL="$$LOCAL_BASE_URL" \
+		MAESTRO_CEREBRO_URL="$$MAESTRO_CEREBRO_URL" \
+		MAESTRO_CEREBRO_WORKSPACE_ID="$$MAESTRO_CEREBRO_WORKSPACE_ID" \
+		MAESTRO_WORKSPACE_ID="$$MAESTRO_WORKSPACE_ID" \
+		MAESTRO_PLATFORM_MCP_URL="$$MAESTRO_PLATFORM_MCP_URL" \
+		MAESTRO_AGENT_MCP_URL="$$MAESTRO_AGENT_MCP_URL" \
+		MAESTRO_CEREBRO_MCP_SCOPES="$$MAESTRO_CEREBRO_MCP_SCOPES" \
+		MAESTRO_PLATFORM_MCP_SCOPES="$$MAESTRO_PLATFORM_MCP_SCOPES" \
+		MAESTRO_AGENT_MCP_SCOPES="$$MAESTRO_AGENT_MCP_SCOPES" \
+		LOCAL_MAESTRO_GENERATE_REPLAY="$$LOCAL_MAESTRO_GENERATE_REPLAY" \
+		LOCAL_MAESTRO_DOCTOR_REPLAY="$$LOCAL_MAESTRO_DOCTOR_REPLAY" \
+		$(MAKE) -C "$(LOCAL_CEREBRO_REPO)" local-e2e-trace
 
 evals: ## Run eval scenarios
 	npx nx run maestro:evals --skip-nx-cache

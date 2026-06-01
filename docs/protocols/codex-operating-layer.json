@@ -1,0 +1,737 @@
+{
+	"version": 1,
+	"description": "Executable evidence map for making Maestro a production-grade Codex operating layer across TypeScript, Rust, operator UX, and live verification.",
+	"checks": [
+		{
+			"area": "default-install",
+			"evidenceType": "source",
+			"path": "package.json",
+			"anchors": [
+				"check:codex-operating-layer",
+				"smoke:codex-app-server-live",
+				"tree-sitter",
+				"tree-sitter-bash"
+			]
+		},
+		{
+			"area": "default-install",
+			"evidenceType": "test",
+			"path": "test/install/native-dependencies.test.ts",
+			"anchors": [
+				"trusts tree-sitter native packages required by the CLI safety parser",
+				"tree-sitter",
+				"tree-sitter-bash"
+			]
+		},
+		{
+			"area": "chatgpt-sign-in",
+			"evidenceType": "source",
+			"path": "src/cli/commands/codex.ts",
+			"anchors": [
+				"startChatGptLogin",
+				"waitForLoginCompletion",
+				"readAccount",
+				"maestro codex login"
+			]
+		},
+		{
+			"area": "chatgpt-sign-in",
+			"evidenceType": "test",
+			"path": "test/cli/codex-command.test.ts",
+			"anchors": [
+				"runs browser ChatGPT sign-in",
+				"supports ChatGPT device-code sign-in",
+				"reports current Codex app-server sign-in status",
+				"logs out of ChatGPT for Codex"
+			]
+		},
+		{
+			"area": "dynamic-tools",
+			"evidenceType": "source",
+			"path": "src/codex/compatibility.ts",
+			"anchors": [
+				"CODEX_DEFAULT_TOOL_PROFILE",
+				"CODEX_DYNAMIC_TOOL_CONFORMANCE",
+				"compileCodexDynamicToolSpecs",
+				"item/tool/call"
+			]
+		},
+		{
+			"area": "dynamic-tools",
+			"evidenceType": "source",
+			"path": "src/agent/providers/codex-app-server.ts",
+			"anchors": [
+				"nextCodexStreamItem",
+				"codexDynamicToolStartEvent",
+				"codexDynamicToolEndEvent",
+				"provider_tool_execution_start",
+				"provider_tool_execution_end",
+				"toolExecutionId",
+				"approvalRequestId"
+			]
+		},
+		{
+			"area": "dynamic-tools",
+			"evidenceType": "test",
+			"path": "test/codex/compatibility.test.ts",
+			"anchors": [
+				"tracks the upstream dynamic tool protocol fixture",
+				"compiles the curated Codex default profile into Responses-safe dynamic tools",
+				"renames invalid or reserved tool identifiers while preserving original bindings"
+			]
+		},
+		{
+			"area": "dynamic-tools",
+			"evidenceType": "test",
+			"path": "test/agent/codex-app-server.test.ts",
+			"anchors": [
+				"streams dynamic Maestro tool callbacks as provider-owned tool lifecycle events",
+				"wakes the stream for quiet dynamic tool callbacks before later app-server notifications",
+				"Codex dynamic tool: lookup_ticket",
+				"provider_tool_execution_start",
+				"provider_tool_execution_end",
+				"tool-exec-dynamic-1",
+				"approval-dynamic-1"
+			]
+		},
+		{
+			"area": "durable-threads-goals-memory",
+			"evidenceType": "source",
+			"path": "src/session/types.ts",
+			"anchors": ["memoryExtractionHash", "appServerGoal"]
+		},
+		{
+			"area": "durable-threads-goals-memory",
+			"evidenceType": "source",
+			"path": "packages/contracts/src/maestro-app-server.ts",
+			"anchors": ["MaestroAppServerThreadSummarySchema", "memoryExtractionHash"]
+		},
+		{
+			"area": "durable-threads-goals-memory",
+			"evidenceType": "test",
+			"path": "test/app-server/session-api.test.ts",
+			"anchors": [
+				"exposes memory extraction hashes in file-backed thread summaries",
+				"exposes hosted memory extraction hashes from thread list and read",
+				"persists thread goals and clears them through the app-server contract",
+				"sets hosted thread goals without a file-backed goal read",
+				"fails goal updates when the writer does not persist the new goal"
+			]
+		},
+		{
+			"area": "approvals-sandbox-policy",
+			"evidenceType": "source",
+			"path": "packages/control-plane-rs/src/codex_bridge.rs",
+			"anchors": [
+				"server_requests\": [\"approval\"]",
+				"codex_headless_pending_request_id",
+				"codex_app_server_approval_mode",
+				"MAESTRO_CODEX_APP_SERVER_SANDBOX"
+			]
+		},
+		{
+			"area": "approvals-sandbox-policy",
+			"evidenceType": "source",
+			"path": "src/agent/transport.ts",
+			"anchors": [
+				"executeDynamicTool",
+				"approvalService: this.options.approvalService",
+				"action_approval_required/resolved",
+				"evaluateToolSafety"
+			]
+		},
+		{
+			"area": "approvals-sandbox-policy",
+			"evidenceType": "test",
+			"path": "test/agent/provider-transport-provider-tools.test.ts",
+			"anchors": [
+				"reuses repeated read-only tool results across provider turns",
+				"reuses provider read results only after repeated guarded-file approvals",
+				"reuses dynamic read callback results only after repeated guarded-file approvals",
+				"does not reuse cached dynamic reads while a mutating callback is pending",
+				"does not reuse cached read results while mutating provider tools are pending",
+				"does not skip loop detection when cached reads run behind pending mutations",
+				"executes repeated non-read-only provider tool calls independently",
+				"records Platform observations for cached dynamic read callbacks",
+				"lets Codex dynamic tool callbacks wait for user approval instead of auto-denying",
+				"preserves Platform joins for denied Codex dynamic callbacks",
+				"returns workflow-state errors from repeated dynamic callbacks",
+				"withTimeout",
+				"action_approval_required",
+				"ActionApprovalService(\"prompt\")",
+				"mcp_ticket_update",
+				"observed:dynamic-observed-read-1",
+				"approval:dynamic-observed-read-1",
+				"tool-exec-denied-dynamic-1",
+				"approval-denied-dynamic-1",
+				"observed:codex-dynamic-redact-1",
+				"observed:codex-dynamic-redact-2"
+			]
+		},
+		{
+			"area": "approvals-sandbox-policy",
+			"evidenceType": "doc",
+			"path": "docs/protocols/pending-requests.md",
+			"anchors": ["approval", "tool_retry", "ResumeToolExecution"]
+		},
+		{
+			"area": "subagents",
+			"evidenceType": "source",
+			"path": "src/agent/providers/codex-app-server.ts",
+			"anchors": [
+				"collabAgentToolCall",
+				"codex.subagent.",
+				"spawnAgent",
+				"sendInput",
+				"resumeAgent",
+				"wait",
+				"closeAgent"
+			]
+		},
+		{
+			"area": "subagents",
+			"evidenceType": "test",
+			"path": "test/agent/provider-transport-provider-tools.test.ts",
+			"anchors": [
+				"forwards Codex subagent tool events without local tool execution",
+				"codex.subagent.spawnAgent",
+				"tool_execution_start",
+				"tool_execution_end"
+			]
+		},
+		{
+			"area": "subagents",
+			"evidenceType": "fixture",
+			"path": "docs/protocols/codex-subagent-dispatch-table-v1.json",
+			"anchors": [
+				"evalops.maestro.codex.subagent-dispatch-table.v1",
+				"maestro.subagent.code-writer",
+				"openai-codex/gpt-5.5",
+				"modeDispatch"
+			]
+		},
+		{
+			"area": "subagents",
+			"evidenceType": "fixture",
+			"path": "docs/protocols/codex-subagent-workgraph-v1.json",
+			"anchors": [
+				"evalops.maestro.codex.subagent-workgraph.v1",
+				"codex.subagent.",
+				"spawnAgent",
+				"sendInput",
+				"resumeAgent",
+				"wait",
+				"closeAgent",
+				"waiting_for_restore",
+				"resolved_from_child_terminal_edge"
+			]
+		},
+		{
+			"area": "subagents",
+			"evidenceType": "source",
+			"path": "src/codex/subagent-dispatch-table.ts",
+			"anchors": [
+				"CODEX_SUBAGENT_DISPATCH_TABLE",
+				"DEFAULT_CODEX_SUBAGENT_DELEGATION_CAPABILITY",
+				"codexSubagentTypeA2ASkillID",
+				"codexSubagentCapabilityA2ASkillID"
+			]
+		},
+		{
+			"area": "subagents",
+			"evidenceType": "source",
+			"path": "src/codex/subagent-workgraph.ts",
+			"anchors": [
+				"CODEX_SUBAGENT_LIFECYCLE_OPERATIONS",
+				"CODEX_SUBAGENT_WORK_GRAPH_SCHEMA",
+				"canonicalCodexSubagentTool",
+				"codexSubagentOperationName",
+				"codexSubagentTerminalSuccessStatus"
+			]
+		},
+		{
+			"area": "subagents",
+			"evidenceType": "test",
+			"path": "test/codex/subagent-dispatch-table.test.ts",
+			"anchors": [
+				"tracks the versioned A2A subagent lane fixture",
+				"keeps TypeScript mode dispatch aligned with the protocol fixture",
+				"release_manage"
+			]
+		},
+		{
+			"area": "multi-agent-workgraph",
+			"evidenceType": "source",
+			"path": "src/platform/core-services.ts",
+			"anchors": [
+				"RecordRunWorkItem",
+				"UpdateRunWorkItem",
+				"agents.v1.AgentService",
+				"ResolveDelegation"
+			]
+		},
+		{
+			"area": "multi-agent-workgraph",
+			"evidenceType": "source",
+			"path": "src/platform/agent-runtime-client.ts",
+			"anchors": [
+				"PlatformAgentWorkItemKindValue",
+				"recordAgentRuntimeRunWorkItem",
+				"updateAgentRuntimeRunWorkItem"
+			]
+		},
+		{
+			"area": "multi-agent-workgraph",
+			"evidenceType": "source",
+			"path": "src/platform/agent-registry-client.ts",
+			"anchors": [
+				"PlatformDelegationStatusValue",
+				"delegateAgentWithPlatform",
+				"resolveAgentDelegationWithPlatform",
+				"contextPayload",
+				"resultPayload"
+			]
+		},
+		{
+			"area": "multi-agent-workgraph",
+			"evidenceType": "source",
+			"path": "src/server/hosted-agent-runtime-progress.ts",
+			"anchors": [
+				"CODEX_SUBAGENT_TOOL_PREFIX",
+				"codexThreadChildRunId",
+				"codexSubagentDelegationIds",
+				"recordCodexSubagentDelegation",
+				"agent-registry-delegation",
+				"ownerChildRunId",
+				"parentWorkItemId",
+				"codex_work_graph",
+				"deferred_until_child_terminal_edge",
+				"resolved_from_child_terminal_edge",
+				"recordCodexSubagentWorkItem",
+				"updateCodexSubagentWorkItem",
+				"recordTaskProgressEvent",
+				"recordSwarmEvent",
+				"maestro_task_progress",
+				"sendInput",
+				"resumeAgent",
+				"closeAgent",
+				"PlatformAgentWorkItemKindValue.ChildRun",
+				"PlatformAgentWorkItemKindValue.Wait"
+			]
+		},
+		{
+			"area": "multi-agent-workgraph",
+			"evidenceType": "source",
+			"path": "src/agent/providers/codex-app-server.ts",
+			"anchors": [
+				"childRunIds",
+				"codexWorkGraph",
+				"CODEX_SUBAGENT_WORK_GRAPH_SCHEMA",
+				"codexCollabWorkGraph",
+				"codexCollabChildRunIds"
+			]
+		},
+		{
+			"area": "multi-agent-workgraph",
+			"evidenceType": "source",
+			"path": "packages/control-plane-rs/src/codex_bridge.rs",
+			"anchors": [
+				"childRunIds",
+				"codexWorkGraph",
+				"evalops.maestro.codex.subagent-workgraph.v1",
+				"codex_collab_work_graph_from_jsonl_item",
+				"codex_collab_child_run_ids_from_item"
+			]
+		},
+		{
+			"area": "multi-agent-workgraph",
+			"evidenceType": "test",
+			"path": "test/server/hosted-agent-runtime-progress.test.ts",
+			"anchors": [
+				"records Codex subagent collaboration as durable Platform work items",
+				"records Codex spawn handoffs as Platform agent-registry delegations",
+				"links follow-up Codex subagent tools to the spawned child work item",
+				"deferred_until_child_terminal_edge",
+				"resolved_from_child_terminal_edge",
+				"codex.subagent.spawnAgent",
+				"codex.subagent.sendInput",
+				"projects todo tool results into deterministic AgentRuntime task work items",
+				"projects background task details without copying env or log paths",
+				"records swarm events as parent and child AgentRuntime work items",
+				"ownerChildRunId",
+				"parentWorkItemId",
+				"codex_work_graph",
+				"PlatformAgentWorkItemKindValue.ChildRun",
+				"PlatformAgentWorkItemStateValue.Succeeded"
+			]
+		},
+		{
+			"area": "multi-agent-workgraph",
+			"evidenceType": "test",
+			"path": "test/codex/subagent-workgraph.test.ts",
+			"anchors": [
+				"keeps the TypeScript lifecycle operation table aligned with the fixture",
+				"normalizes every canonical, snake-case, and fully qualified lifecycle alias",
+				"builds remote-runner continuity edges for the complete subagent lifecycle"
+			]
+		},
+		{
+			"area": "remote-runner-continuity",
+			"evidenceType": "source",
+			"path": "src/server/handlers/hosted-runner-drain.ts",
+			"anchors": [
+				"evalops.remote-runner.work-continuity.v1",
+				"evalops.remote-runner.runtime-continuity.v1",
+				"collectHostedRunnerWorkContinuity",
+				"buildHostedRunnerRuntimeContinuity",
+				"codex_subagent_child_run_ids",
+				"codex_subagent_thread_ids",
+				"codex_subagent_edges",
+				"collectCodexSubagentEdgesFromSource",
+				"codexSubagentOperation",
+				"source_owner_instance_id"
+			]
+		},
+		{
+			"area": "remote-runner-continuity",
+			"evidenceType": "source",
+			"path": "src/cli/headless-protocol.ts",
+			"anchors": [
+				"HeadlessCodexSubagentContinuityEdge",
+				"buildCodexSubagentContinuityEdges",
+				"codexSubagentOperation",
+				"codexSubagentOperationName",
+				"codexSubagentActiveStatus",
+				"codexSubagentTerminalSuccessStatus"
+			]
+		},
+		{
+			"area": "remote-runner-continuity",
+			"evidenceType": "source",
+			"path": "packages/tui-rs/src/hosted_runner.rs",
+			"anchors": [
+				"evalops.remote-runner.work-continuity.v1",
+				"evalops.remote-runner.runtime-continuity.v1"
+			]
+		},
+		{
+			"area": "remote-runner-continuity",
+			"evidenceType": "source",
+			"path": "packages/tui-rs/src/hosted_runner/manifests.rs",
+			"anchors": [
+				"RuntimeContinuityManifest",
+				"CodexSubagentContinuityEdge",
+				"codex_subagent_edges",
+				"collect_codex_subagent_edges_from_source"
+			]
+		},
+		{
+			"area": "remote-runner-continuity",
+			"evidenceType": "test",
+			"path": "packages/tui-rs/src/hosted_runner/tests.rs",
+			"anchors": [
+				"work_continuity_manifest_extracts_codex_subagent_ids",
+				"work_continuity_manifest_keeps_spawned_and_resumed_codex_subagents_active",
+				"close_agent"
+			]
+		},
+		{
+			"area": "remote-runner-continuity",
+			"evidenceType": "source",
+			"path": "packages/tui-rs/src/hosted_runner_cli.rs",
+			"anchors": [
+				"start_hosted_runner_cli_runtime",
+				"AgentSupervisorHostedRunnerMessageExecutor",
+				"MAESTRO_HEADLESS_CLI_PATH",
+				"MAESTRO_AGENT_SCRIPT",
+				"MAESTRO_REMOTE_RUNNER_AGENT_ID"
+			]
+		},
+		{
+			"area": "remote-runner-continuity",
+			"evidenceType": "source",
+			"path": "packages/tui-rs/Cargo.toml",
+			"anchors": ["maestro-hosted-runner", "src/bin/maestro_hosted_runner.rs"]
+		},
+		{
+			"area": "remote-runner-continuity",
+			"evidenceType": "source",
+			"path": "packages/tui-rs/src/headless/messages/state.rs",
+			"anchors": [
+				"CodexSubagentContinuityEdge",
+				"codex_subagent_edges",
+				"send_input",
+				"resume_agent",
+				"close_agent"
+			]
+		},
+		{
+			"area": "remote-runner-continuity",
+			"evidenceType": "test",
+			"path": "packages/tui-rs/src/hosted_runner_cli.rs",
+			"anchors": [
+				"resolves_cli_flags_into_runner_and_supervisor_config",
+				"starts_real_hosted_runner_with_supervised_headless_child"
+			]
+		},
+		{
+			"area": "remote-runner-continuity",
+			"evidenceType": "test",
+			"path": "packages/tui-rs/src/main.rs",
+			"anchors": ["hosted_runner_subcommand_is_reserved_before_prompt_capture"]
+		},
+		{
+			"area": "remote-runner-continuity",
+			"evidenceType": "test",
+			"path": "test/server/hosted-runner-drain.test.ts",
+			"anchors": [
+				"records Codex subagent continuity without copying prompt payloads into manifest metadata",
+				"records Codex subagent edge lifecycle from restored runtime state",
+				"HOSTED_RUNNER_WORK_CONTINUITY_VERSION",
+				"HOSTED_RUNNER_RUNTIME_CONTINUITY_VERSION",
+				"codex_subagent_child_run_ids",
+				"codex_subagent_edges",
+				"close_agent"
+			]
+		},
+		{
+			"area": "remote-runner-continuity",
+			"evidenceType": "doc",
+			"path": "docs/protocols/hosted-runner-contract.md",
+			"anchors": [
+				"runtime_continuity",
+				"work_continuity",
+				"Codex subagent child runs"
+			]
+		},
+		{
+			"area": "headless-runtime-durability",
+			"evidenceType": "doc",
+			"path": "docs/protocols/headless-conformance.md",
+			"anchors": [
+				"hosted drain/snapshot handoff",
+				"post-drain mutation",
+				"hosted restore from a drain manifest",
+				"runtime flush manifests preserve inspectable state but stay not-ready",
+				"remote sessions need a durable control session plus a replayable event stream"
+			]
+		},
+		{
+			"area": "headless-runtime-durability",
+			"evidenceType": "test",
+			"path": "test/server/headless-runtime-service.test.ts",
+			"anchors": [
+				"restores runtime state and replay marker from a hosted runner drain manifest",
+				"restores $flushStatus manifest into inspectable not-ready state",
+				"restored_from_snapshot",
+				"not ready for new attachments"
+			]
+		},
+		{
+			"area": "headless-runtime-durability",
+			"evidenceType": "test",
+			"path": "test/server/hosted-runner-drain.test.ts",
+			"anchors": [
+				"records an interrupted manifest when runtime drain fails",
+				"source_owner_instance_id",
+				"source_runtime_lease",
+				"restore_environment_key",
+				"runtime_flush_status"
+			]
+		},
+		{
+			"area": "realtime-streaming",
+			"evidenceType": "source",
+			"path": "src/server/handlers/runtime-app-server-ws.ts",
+			"anchors": [
+				"Runtime app-server request must use JSON-RPC 2.0",
+				"runtime.server_request.registered",
+				"runtime.server_request.resolved"
+			]
+		},
+		{
+			"area": "realtime-streaming",
+			"evidenceType": "test",
+			"path": "test/server/runtime-app-server-ws.test.ts",
+			"anchors": [
+				"streams server request lifecycle notifications",
+				"replays pending server requests after session initialization",
+				"runtime.server_request.registered"
+			]
+		},
+		{
+			"area": "typescript-runtime",
+			"evidenceType": "source",
+			"path": "src/agent/providers/codex-app-server.ts",
+			"anchors": [
+				"thread/start",
+				"turn/start",
+				"item/agentMessage/delta",
+				"thread/tokenUsage/updated"
+			]
+		},
+		{
+			"area": "typescript-runtime",
+			"evidenceType": "test",
+			"path": "test/agent/codex-app-server.test.ts",
+			"anchors": [
+				"streams app-server agent message deltas into assistant text",
+				"registers and services Maestro tools through app-server dynamic tools",
+				"surfaces Codex collab-agent calls as provider-owned tool executions"
+			]
+		},
+		{
+			"area": "rust-control-plane",
+			"evidenceType": "source",
+			"path": "packages/control-plane-rs/src/model_catalog.rs",
+			"anchors": [
+				"codex_app_server_builtin_models",
+				"openai-codex",
+				"openai-codex-app-server"
+			]
+		},
+		{
+			"area": "rust-control-plane",
+			"evidenceType": "source",
+			"path": "packages/control-plane-rs/src/codex_subagent_dispatch.rs",
+			"anchors": [
+				"CODEX_SUBAGENT_DISPATCH_LANES",
+				"codex_subagent_dispatch_lanes_match_protocol_fixture",
+				"maestro.subagent.release-shepherd"
+			]
+		},
+		{
+			"area": "rust-control-plane",
+			"evidenceType": "test",
+			"path": "packages/tui-rs/src/swarm/types/tests.rs",
+			"anchors": [
+				"test_subagent_dispatch_matches_protocol_fixture",
+				"resolve_subagent_dispatch",
+				"ModelProvider::OpenAiCodex"
+			]
+		},
+		{
+			"area": "rust-control-plane",
+			"evidenceType": "test",
+			"path": "packages/control-plane-rs/src/tests.rs",
+			"anchors": [
+				"codex_headless_bridge_round_trips_prompt_approval",
+				"codex_headless_bridge_streams_tool_events_over_websocket",
+				"codex_headless_bridge_bounds_shutdown_wait_after_valid_output",
+				"codex_headless_subagent_lifecycle_matches_workgraph_fixture",
+				"codex_app_server_timeout_kills_child_process"
+			]
+		},
+		{
+			"area": "eval-telemetry",
+			"evidenceType": "doc",
+			"path": "docs/protocols/agent-trajectory.md",
+			"anchors": [
+				"approval-before-tool-result",
+				"child-run semantics",
+				"recovery behavior",
+				"codex-subagent-handoff.timeline.json"
+			]
+		},
+		{
+			"area": "eval-telemetry",
+			"evidenceType": "fixture",
+			"path": "test/fixtures/agent-trajectory/codex-subagent-handoff.timeline.json",
+			"anchors": [
+				"codex.subagent.spawnAgent",
+				"codex.subagent.wait",
+				"agent-run-parent-codex-1",
+				"agent-run-child-codex-1"
+			]
+		},
+		{
+			"area": "eval-telemetry",
+			"evidenceType": "scenario",
+			"path": "test/fixtures/agent-trajectory-scenarios/codex-subagent-handoff.json",
+			"anchors": [
+				"child-run-completed",
+				"child-run-provenance",
+				"parent_agent_run",
+				"child_agent_run"
+			]
+		},
+		{
+			"area": "eval-telemetry",
+			"evidenceType": "test",
+			"path": "test/telemetry/maestro-publisher-conformance-fixture.test.ts",
+			"anchors": [
+				"Maestro publisher conformance fixture",
+				"agent_run_publisher_fixture_001",
+				"tool_exec_publisher_fixture_bash_001"
+			]
+		},
+		{
+			"area": "operator-ux-docs",
+			"evidenceType": "doc",
+			"path": "docs/protocols/codex-operating-layer.md",
+			"anchors": [
+				"Prompt-To-Artifact Checklist",
+				"Far-Horizon Success Criteria",
+				"Operator Verification Path",
+				"Completion Bar"
+			]
+		},
+		{
+			"area": "operator-ux-docs",
+			"evidenceType": "doc",
+			"path": "docs/MODELS.md",
+			"anchors": [
+				"OpenAI Codex (Codex app-server + ChatGPT sign-in)",
+				"api: \"openai-codex-app-server\"",
+				"maestro codex login"
+			]
+		},
+		{
+			"area": "live-verification",
+			"evidenceType": "live-smoke",
+			"path": "scripts/smoke-codex-app-server-live.mjs",
+			"anchors": [
+				"doctor",
+				"real inference with dynamic read tool",
+				"real inference with Codex subagent",
+				"loop_detected",
+				"expected token",
+				"assertBoundedDynamicToolUse",
+				"assertSubagentWorkGraphUse",
+				"codex.subagent.spawnAgent",
+				"codex.subagent.wait",
+				"codexWorkGraph",
+				"MAESTRO_CODEX_LIVE_SMOKE_MAX_IDENTICAL_TOOL_CALLS"
+			]
+		},
+		{
+			"area": "live-verification",
+			"evidenceType": "test",
+			"path": "test/scripts/codex-live-smoke.test.ts",
+			"anchors": [
+				"summarizes Codex dynamic callbacks by operation args, not volatile IDs",
+				"rejects live transcripts with loop-detector warnings",
+				"rejects repeated identical dynamic tool calls",
+				"requires the final assistant message to exactly match the token",
+				"accepts a subagent spawn/wait transcript with work-graph evidence",
+				"rejects subagent transcripts missing work-graph evidence",
+				"requires wait evidence to target the spawned child run",
+				"requires structured completed status for the waited child",
+				"requires exactly one spawn and one wait operation",
+				"requires the live subagent proof to wait for the child agent"
+			]
+		},
+		{
+			"area": "live-verification",
+			"evidenceType": "test",
+			"path": "test/safety/loop-detector.test.ts",
+			"anchors": ["differentiates nested tool arguments"]
+		},
+		{
+			"area": "live-verification",
+			"evidenceType": "package-script",
+			"path": "package.json",
+			"anchors": ["smoke:codex-app-server-live", "check:codex-operating-layer"]
+		}
+	]
+}

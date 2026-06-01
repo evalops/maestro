@@ -1,5 +1,5 @@
 /**
- * Structured logging service for Composer CLI.
+ * Structured logging service for Maestro CLI.
  * Replaces scattered console.log/error calls with centralized, level-based logging.
  */
 
@@ -33,9 +33,11 @@ interface LoggerConfig {
 	minLevel: LogLevel;
 	/** Whether to output JSON format (useful for log aggregation) */
 	jsonFormat: boolean;
+	/** Whether to route debug/info logs to stdout while preserving warnings/errors on stderr */
+	splitStreams: boolean;
 	/** Whether to include timestamps */
 	timestamps: boolean;
-	/** Custom output function (defaults to console) */
+	/** Custom output function (defaults to stderr) */
 	output?: (entry: LogEntry) => void;
 }
 
@@ -54,6 +56,13 @@ const LOG_LEVELS: Record<LogLevel, number> = {
 	error: 3,
 };
 
+const LOG_SEVERITIES: Record<LogLevel, string> = {
+	debug: "DEBUG",
+	info: "INFO",
+	warn: "WARNING",
+	error: "ERROR",
+};
+
 class Logger {
 	private config: LoggerConfig;
 
@@ -61,6 +70,7 @@ class Logger {
 		this.config = {
 			minLevel: (process.env.MAESTRO_LOG_LEVEL as LogLevel) ?? "info",
 			jsonFormat: process.env.MAESTRO_LOG_JSON === "1",
+			splitStreams: process.env.MAESTRO_LOG_SPLIT_STREAMS === "1",
 			timestamps: true,
 			...config,
 		};
@@ -114,15 +124,16 @@ class Logger {
 	 * Output as JSON (for log aggregation systems)
 	 */
 	private outputJson(entry: LogEntry): void {
-		const output = entry.level === "error" ? console.error : console.log;
-		output(JSON.stringify(entry));
+		this.writeLine(
+			entry,
+			JSON.stringify({ ...entry, severity: LOG_SEVERITIES[entry.level] }),
+		);
 	}
 
 	/**
 	 * Output as human-readable format
 	 */
 	private outputPretty(entry: LogEntry): void {
-		const output = entry.level === "error" ? console.error : console.log;
 		const parts: string[] = [];
 
 		if (this.config.timestamps) {
@@ -136,11 +147,17 @@ class Logger {
 			parts.push(JSON.stringify(entry.context));
 		}
 
-		output(parts.join(" "));
+		this.writeLine(entry, parts.join(" "));
 
 		if (entry.error?.stack) {
-			output(entry.error.stack);
+			this.writeLine(entry, entry.error.stack);
 		}
+	}
+
+	private writeLine(entry: Pick<LogEntry, "level">, line: string): void {
+		const writeToStdout =
+			this.config.splitStreams && LOG_LEVELS[entry.level] < LOG_LEVELS.warn;
+		(writeToStdout ? console.log : console.error)(line);
 	}
 
 	/**

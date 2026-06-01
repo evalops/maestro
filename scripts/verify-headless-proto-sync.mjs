@@ -18,6 +18,7 @@ const protoToExportKey = {
 	NotificationType: "headlessNotificationTypes",
 	ThinkingLevel: "headlessThinkingLevels",
 	ApprovalMode: "headlessApprovalModes",
+	ExecutorType: "headlessExecutorTypes",
 	ErrorType: "headlessErrorTypes",
 	UtilityOperation: "headlessUtilityOperations",
 	UtilityCommandStream: "headlessUtilityCommandStreams",

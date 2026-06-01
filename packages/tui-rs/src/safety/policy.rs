@@ -1,7 +1,8 @@
 //! Enterprise policy enforcement (parity with TS).
 //!
-//! Reads ~/.composer/policy.json and enforces tool, path, network, model, and
-//! session limits. Policy load failures fail closed (block) to match CLI behavior.
+//! Reads enterprise policy from the Maestro home directory, with legacy `.composer`
+//! fallback, and enforces tool, path, network, model, and session limits. Policy
+//! load failures fail closed (block) to match CLI behavior.
 
 use serde::Deserialize;
 use std::net::{IpAddr, ToSocketAddrs};
@@ -11,6 +12,8 @@ use std::time::SystemTime;
 
 use regex::Regex;
 use url::Url;
+
+use crate::path_utils::{env_path, legacy_composer_home_dir, maestro_home_dir};
 
 use super::dangerous_patterns::check_dangerous_patterns;
 use super::path_containment::{expand_tilde, is_tilde_path};
@@ -108,7 +111,66 @@ static PIP_INSTALL_PATTERN: std::sync::LazyLock<Regex> = std::sync::LazyLock::ne
 });
 
 fn policy_path() -> Option<PathBuf> {
-    dirs::home_dir().map(|home| home.join(".composer").join("policy.json"))
+    select_policy_path(policy_path_candidates())
+}
+
+#[derive(Clone)]
+struct PolicyPathCandidate {
+    path: PathBuf,
+    explicit: bool,
+}
+
+fn select_policy_path(candidates: Vec<PolicyPathCandidate>) -> Option<PathBuf> {
+    if let Some(path) = candidates
+        .iter()
+        .find(|candidate| candidate.path.is_file())
+        .map(|candidate| candidate.path.clone())
+    {
+        return Some(path);
+    }
+    if let Some(path) = candidates
+        .iter()
+        .find(|candidate| candidate.explicit && candidate.path.exists())
+        .map(|candidate| candidate.path.clone())
+    {
+        return Some(path);
+    }
+    candidates
+        .into_iter()
+        .find(|candidate| !candidate.path.exists())
+        .map(|candidate| candidate.path)
+}
+
+fn push_policy_path_candidate(
+    candidates: &mut Vec<PolicyPathCandidate>,
+    path: PathBuf,
+    explicit: bool,
+) {
+    if let Some(candidate) = candidates
+        .iter_mut()
+        .find(|candidate| candidate.path == path)
+    {
+        candidate.explicit = candidate.explicit || explicit;
+    } else {
+        candidates.push(PolicyPathCandidate { path, explicit });
+    }
+}
+
+fn policy_path_candidates() -> Vec<PolicyPathCandidate> {
+    let mut candidates = Vec::new();
+    if let Some(path) = env_path("MAESTRO_ENTERPRISE_POLICY_PATH") {
+        push_policy_path_candidate(&mut candidates, path, true);
+    }
+    if let Some(path) = env_path("MAESTRO_POLICY_PATH") {
+        push_policy_path_candidate(&mut candidates, path, true);
+    }
+    if let Some(maestro_home) = maestro_home_dir() {
+        push_policy_path_candidate(&mut candidates, maestro_home.join("policy.json"), false);
+    }
+    if let Some(composer_home) = legacy_composer_home_dir() {
+        push_policy_path_candidate(&mut candidates, composer_home.join("policy.json"), false);
+    }
+    candidates
 }
 
 fn load_policy(force: bool) -> Result<Option<EnterprisePolicy>, String> {
@@ -267,6 +329,22 @@ fn check_network_restrictions(url: &str, network: &NetworkPolicy) -> Option<Stri
     };
     let host = host.trim_matches(['[', ']']);
 
+    if let Some(blocked) = &network.blocked_hosts {
+        if blocked.iter().any(|pattern| host_matches(host, pattern)) {
+            return Some(format!("Host \"{host}\" is blocked by enterprise policy."));
+        }
+    }
+
+    if let Some(allowed) = &network.allowed_hosts {
+        if allowed.is_empty() {
+            return Some(format!("Host \"{host}\" is not in the allowed hosts list."));
+        }
+        let ok = allowed.iter().any(|pattern| host_matches(host, pattern));
+        if !ok {
+            return Some(format!("Host \"{host}\" is not in the allowed hosts list."));
+        }
+    }
+
     let mut resolved_ips: Vec<IpAddr> = Vec::new();
     let is_ip = host.parse::<IpAddr>().is_ok();
 
@@ -298,22 +376,6 @@ fn check_network_restrictions(url: &str, network: &NetworkPolicy) -> Option<Stri
 
     if network.block_private_ips.unwrap_or(false) && resolved_ips.iter().any(is_private_ip) {
         return Some("Access to private IP addresses is blocked by enterprise policy.".to_string());
-    }
-
-    if let Some(blocked) = &network.blocked_hosts {
-        if blocked.iter().any(|pattern| host_matches(host, pattern)) {
-            return Some(format!("Host \"{host}\" is blocked by enterprise policy."));
-        }
-    }
-
-    if let Some(allowed) = &network.allowed_hosts {
-        if allowed.is_empty() {
-            return Some(format!("Host \"{host}\" is not in the allowed hosts list."));
-        }
-        let ok = allowed.iter().any(|pattern| host_matches(host, pattern));
-        if !ok {
-            return Some(format!("Host \"{host}\" is not in the allowed hosts list."));
-        }
     }
 
     None
@@ -876,6 +938,17 @@ fn is_private_ip(ip: &IpAddr) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::{LazyLock, Mutex};
+
+    static ENV_MUTEX: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
+
+    fn restore_env_var(name: &str, previous: Option<String>) {
+        if let Some(value) = previous {
+            std::env::set_var(name, value);
+        } else {
+            std::env::remove_var(name);
+        }
+    }
 
     // ========================================================================
     // Private IP Detection Tests
@@ -968,6 +1041,40 @@ mod tests {
     }
 
     #[test]
+    fn test_network_policy_blocks_hosts_before_dns_ip_validation() {
+        let policy = NetworkPolicy {
+            allowed_hosts: None,
+            blocked_hosts: Some(vec!["blocked.invalid".to_string()]),
+            block_localhost: Some(true),
+            block_private_ips: Some(true),
+        };
+
+        let reason = check_network_restrictions("https://blocked.invalid/api", &policy).unwrap();
+
+        assert_eq!(
+            reason,
+            "Host \"blocked.invalid\" is blocked by enterprise policy."
+        );
+    }
+
+    #[test]
+    fn test_network_policy_allowlist_denies_before_dns_ip_validation() {
+        let policy = NetworkPolicy {
+            allowed_hosts: Some(vec!["api.example.com".to_string()]),
+            blocked_hosts: None,
+            block_localhost: Some(true),
+            block_private_ips: Some(true),
+        };
+
+        let reason = check_network_restrictions("https://outside.invalid/api", &policy).unwrap();
+
+        assert_eq!(
+            reason,
+            "Host \"outside.invalid\" is not in the allowed hosts list."
+        );
+    }
+
+    #[test]
     fn test_enterprise_policy_deserialization() {
         let json = r#"{
             "tools": {"allowed": ["bash", "read"]},
@@ -992,5 +1099,84 @@ mod tests {
             let p = path.unwrap();
             assert!(p.ends_with("policy.json"));
         }
+    }
+
+    #[test]
+    fn test_policy_path_candidates_use_custom_maestro_home_without_default_maestro_fallback() {
+        let _lock = ENV_MUTEX.lock().expect("lock env");
+        let previous_enterprise = std::env::var("MAESTRO_ENTERPRISE_POLICY_PATH").ok();
+        let previous_policy = std::env::var("MAESTRO_POLICY_PATH").ok();
+        let previous_home = std::env::var("MAESTRO_HOME").ok();
+        let home = dirs::home_dir().expect("home dir");
+
+        std::env::remove_var("MAESTRO_ENTERPRISE_POLICY_PATH");
+        std::env::remove_var("MAESTRO_POLICY_PATH");
+        std::env::set_var("MAESTRO_HOME", "/tmp/custom-maestro-home");
+
+        let paths: Vec<PathBuf> = policy_path_candidates()
+            .into_iter()
+            .map(|candidate| candidate.path)
+            .collect();
+
+        assert!(paths.contains(&PathBuf::from("/tmp/custom-maestro-home/policy.json")));
+        assert!(paths.contains(&home.join(".composer").join("policy.json")));
+        assert!(!paths.contains(&home.join(".maestro").join("policy.json")));
+
+        restore_env_var("MAESTRO_ENTERPRISE_POLICY_PATH", previous_enterprise);
+        restore_env_var("MAESTRO_POLICY_PATH", previous_policy);
+        restore_env_var("MAESTRO_HOME", previous_home);
+    }
+
+    #[test]
+    fn test_select_policy_path_ignores_existing_directories() {
+        let temp = tempfile::tempdir().expect("create temp dir");
+        let directory_candidate = temp.path().join("policy-dir");
+        std::fs::create_dir(&directory_candidate).expect("create policy dir");
+
+        assert_eq!(
+            select_policy_path(vec![PolicyPathCandidate {
+                path: directory_candidate,
+                explicit: false,
+            }]),
+            None
+        );
+    }
+
+    #[test]
+    fn test_select_policy_path_prefers_regular_file_over_directory() {
+        let temp = tempfile::tempdir().expect("create temp dir");
+        let directory_candidate = temp.path().join("policy-dir");
+        let file_candidate = temp.path().join("policy.json");
+        std::fs::create_dir(&directory_candidate).expect("create policy dir");
+        std::fs::write(&file_candidate, "{}").expect("write policy file");
+
+        assert_eq!(
+            select_policy_path(vec![
+                PolicyPathCandidate {
+                    path: directory_candidate,
+                    explicit: false,
+                },
+                PolicyPathCandidate {
+                    path: file_candidate.clone(),
+                    explicit: false,
+                },
+            ]),
+            Some(file_candidate)
+        );
+    }
+
+    #[test]
+    fn test_select_policy_path_preserves_explicit_invalid_policy_path() {
+        let temp = tempfile::tempdir().expect("create temp dir");
+        let directory_candidate = temp.path().join("policy-dir");
+        std::fs::create_dir(&directory_candidate).expect("create policy dir");
+
+        assert_eq!(
+            select_policy_path(vec![PolicyPathCandidate {
+                path: directory_candidate.clone(),
+                explicit: true,
+            }]),
+            Some(directory_candidate)
+        );
     }
 }

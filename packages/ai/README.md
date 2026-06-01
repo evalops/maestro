@@ -117,6 +117,19 @@ Prefer the stable entry points above unless you need something specific; deep
 wildcard subpaths are intentionally not exported to keep the SDK surface
 predictable.
 
+## Boundary Status
+
+`@evalops/ai` is currently an internal facade package: its public subpath
+entrypoints are stable, but several implementations are still sourced from the
+root Maestro runtime under `src/`. The package declares this explicitly in
+`package.json` under `maestro.packageBoundary`, and
+`scripts/validate-package-boundaries.js` only permits those root imports while
+that metadata and rationale are present.
+
+New SDK code should live under `packages/ai/src`. Moving an existing facade
+export to package-owned source should remove the corresponding root dependency
+instead of adding another exception.
+
 You can also access these namespaces from the root entry point when you want a
 single import surface:
 

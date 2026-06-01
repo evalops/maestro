@@ -248,6 +248,104 @@ export const conductorHighlightElementTool: AgentTool = {
 	execute: async () => ({ content: [], isError: false }),
 };
 
+export const conductorBrowserOperatorTool: AgentTool = {
+	name: "browser_operator",
+	description:
+		"Use Conductor as a browser operator: observe the active page, execute one semantic browser action when supplied, and return verification plus the latest page state. Prefer this over chaining raw browser tools. Use an observe -> act -> verify loop, prefer observed refId plus frameId targets over selectors, and re-observe before retrying stale refs or selectors.",
+	parameters: Type.Object(
+		{
+			goal: Type.String({
+				description: "The browser task or observation goal.",
+			}),
+			phase: Type.Optional(
+				Type.Union([
+					Type.Literal("observe"),
+					Type.Literal("act"),
+					Type.Literal("verify"),
+					Type.Literal("recover"),
+				]),
+			),
+			previous_observation_id: Type.Optional(
+				Type.String({
+					description:
+						"Opaque observation id from the prior browser_operator result, when retrying or verifying a prior action.",
+				}),
+			),
+			expected_result: Type.Optional(
+				Type.String({
+					description:
+						"Short, redaction-safe success condition for the action, such as a visible result, URL/title change, or selector becoming present.",
+				}),
+			),
+			max_elements: Type.Optional(
+				Type.Number({
+					description:
+						"Maximum interactive elements to include when observing or refreshing page state.",
+				}),
+			),
+			include_frames: Type.Optional(
+				Type.Boolean({
+					description:
+						"Include all frame snapshots. Use this when the target may live inside an embedded app, auth, or payment frame.",
+				}),
+			),
+			action: Type.Optional(
+				Type.Object(
+					{
+						kind: Type.Union([
+							Type.Literal("click"),
+							Type.Literal("hover"),
+							Type.Literal("type"),
+							Type.Literal("select"),
+							Type.Literal("wait"),
+							Type.Literal("scroll"),
+							Type.Literal("key"),
+						]),
+						selector: Type.Optional(
+							Type.String({
+								description:
+									"CSS selector fallback for the target. Prefer refId when observation returned one.",
+							}),
+						),
+						ref: Type.Optional(
+							Type.String({
+								description:
+									"Legacy target ref. If this is a Conductor ref id, prefer putting it in refId.",
+							}),
+						),
+						refId: Type.Optional(
+							Type.String({
+								description:
+									"Stable Conductor element refId returned by observe. Prefer this over selector for follow-up actions.",
+							}),
+						),
+						ref_id: Type.Optional(Type.String()),
+						frameId: Type.Optional(
+							Type.Number({
+								description:
+									"Frame id returned by observe for iframe-scoped targets. Pass it with refId for embedded controls.",
+							}),
+						),
+						frame_id: Type.Optional(Type.Number()),
+						text: Type.Optional(Type.String()),
+						value: Type.Optional(Type.String()),
+						key: Type.Optional(Type.String()),
+						delta_x: Type.Optional(Type.Number()),
+						delta_y: Type.Optional(Type.Number()),
+						deltaX: Type.Optional(Type.Number()),
+						deltaY: Type.Optional(Type.Number()),
+						timeout_ms: Type.Optional(Type.Number()),
+					},
+					{ additionalProperties: true },
+				),
+			),
+		},
+		{ additionalProperties: true },
+	),
+	executionLocation: "client",
+	execute: async () => ({ content: [], isError: false }),
+};
+
 export const conductorMouseActionTool: AgentTool = {
 	name: "mouse_action",
 	description:
@@ -506,6 +604,7 @@ export const conductorClientTools: AgentTool[] = [
 	conductorNavigateToTool,
 	conductorOpenLinksInTabsTool,
 	conductorHighlightElementTool,
+	conductorBrowserOperatorTool,
 	conductorMouseActionTool,
 	conductorPointerActionTool,
 	conductorKeyboardActionTool,

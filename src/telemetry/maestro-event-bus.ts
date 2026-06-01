@@ -1,8 +1,18 @@
 import { AsyncLocalStorage } from "node:async_hooks";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import type { JetStreamClient, NatsConnection } from "nats";
+import {
+	areMaestroPlatformEventsDisabled,
+	isFeatureFlagSnapshotConfigured,
+	isMaestroPlatformEventsPublisherEnabled,
+} from "../config/feature-flags.js";
+import {
+	type EvalOpsManagedContext,
+	resolveManagedEvalOpsContext,
+} from "../evalops/managed-context.js";
 import type { PromptMetadata } from "../prompts/types.js";
 import type { SkillArtifactMetadata } from "../skills/artifact-metadata.js";
+import { isInternalTelemetryDisabled } from "./disablement.js";
 import {
 	MaestroBusEventType,
 	getMaestroBusEventCatalogEntry,
@@ -62,6 +72,7 @@ export type MaestroSkillOutcomeProtoStatus =
 
 export interface MaestroCorrelation {
 	organization_id?: string;
+	user_id?: string;
 	workspace_id: string;
 	session_id: string;
 	agent_run_id?: string;
@@ -71,6 +82,7 @@ export interface MaestroCorrelation {
 	principal_id?: string;
 	trace_id?: string;
 	traceparent?: string;
+	tracestate?: string;
 	request_id?: string;
 	parent_event_id?: string;
 	remote_runner_session_id?: string;
@@ -137,6 +149,7 @@ export interface ApprovalHitEventData extends Record<string, unknown> {
 	policy_id?: string;
 	reason?: string;
 	context?: Record<string, unknown>;
+	metadata?: Record<string, unknown>;
 	occurred_at: string;
 }
 
@@ -180,6 +193,7 @@ export interface ToolCallAttemptEventData extends Record<string, unknown> {
 	safe_arguments?: Record<string, unknown>;
 	redactions?: string[];
 	idempotency_key?: string;
+	metadata?: Record<string, unknown>;
 	attempted_at: string;
 }
 
@@ -197,6 +211,7 @@ export interface ToolCallResultEventData extends Record<string, unknown> {
 	redactions?: string[];
 	error_code?: string;
 	error_message?: string;
+	metadata?: Record<string, unknown>;
 	completed_at: string;
 }
 
@@ -233,6 +248,29 @@ export interface PromptVariantSelectedEventData
 	version_id: string;
 	prompt_metadata: PromptMetadata;
 	selected_at: string;
+}
+
+export interface MaestroLearnedContextEvidence extends Record<string, unknown> {
+	source: string;
+	source_id?: string;
+	uri?: string;
+	excerpt?: string;
+}
+
+export interface MaestroLearnedContextEventData
+	extends Record<string, unknown> {
+	correlation: MaestroCorrelation;
+	learning_id: string;
+	subject_thing_id?: string;
+	subject_key?: string;
+	statement: string;
+	dimension: string;
+	confidence_score: number;
+	confidence_reason: string;
+	evidence: MaestroLearnedContextEvidence[];
+	tool_call_id?: string;
+	tool_execution_id?: string;
+	learned_at: string;
 }
 
 export interface SkillInvocationEventData extends Record<string, unknown> {
@@ -273,6 +311,7 @@ export interface SkillOutcomeEventData extends Record<string, unknown> {
 	evaluation_assertion_count?: number;
 	evaluation_rationale?: string;
 	stop_reason?: string;
+	metadata?: Record<string, unknown>;
 	outcome_at: string;
 }
 
@@ -292,6 +331,53 @@ export interface EvalScoredEventData extends Record<string, unknown> {
 	rationale?: string;
 	assertion_count?: number;
 	scored_at: string;
+}
+
+export interface SubagentDispatchEventData extends Record<string, unknown> {
+	correlation: MaestroCorrelation;
+	dispatch_id: string;
+	mode: string;
+	subagent_type: string;
+	model: string;
+	provider: string;
+	reasoning_effort: string;
+	source?: string;
+	success: boolean;
+	latency_ms: number;
+	parent_mode?: string;
+	parent_model_provider?: string;
+	swarm_id?: string;
+	task_id?: string;
+	teammate_id?: string;
+	reason?: string;
+	metadata?: Record<string, unknown>;
+	dispatched_at: string;
+}
+
+export interface MaestroA2ADelegationEventData extends Record<string, unknown> {
+	correlation: MaestroCorrelation;
+	swarm_id: string;
+	lane_id: string;
+	parent_task_id: string;
+	a2a_task_id?: string;
+	a2a_message_id?: string;
+	context_id?: string;
+	peer_agent_id?: string;
+	peer_name?: string;
+	peer_endpoint_hash?: string;
+	peer_endpoint_kind?: string;
+	skill_id?: string;
+	task_class?: string;
+	source?: string;
+	status?: string;
+	terminal?: boolean;
+	success?: boolean;
+	latency_ms?: number;
+	duration_ms?: number;
+	push_lag_ms?: number;
+	evidence?: Record<string, unknown>;
+	metadata?: Record<string, unknown>;
+	occurred_at: string;
 }
 
 export interface MaestroEventBusTransport {
@@ -326,6 +412,7 @@ export interface RecordMaestroApprovalHitInput {
 	policy_id?: string;
 	reason?: string;
 	context?: Record<string, unknown>;
+	metadata?: Record<string, unknown>;
 	correlation?: Partial<MaestroCorrelation>;
 	occurred_at?: string;
 	env?: Env;
@@ -361,6 +448,7 @@ export interface RecordMaestroToolCallAttemptInput {
 	safe_arguments?: Record<string, unknown>;
 	redactions?: string[];
 	idempotency_key?: string;
+	metadata?: Record<string, unknown>;
 	correlation?: Partial<MaestroCorrelation>;
 	attempted_at?: string;
 	env?: Env;
@@ -380,6 +468,7 @@ export interface RecordMaestroToolCallCompletedInput {
 	redactions?: string[];
 	error_code?: string;
 	error_message?: string;
+	metadata?: Record<string, unknown>;
 	correlation?: Partial<MaestroCorrelation>;
 	completed_at?: string;
 	env?: Env;
@@ -393,6 +482,23 @@ export interface RecordMaestroPromptVariantSelectedInput {
 	prompt_metadata: PromptMetadata;
 	correlation?: Partial<MaestroCorrelation>;
 	selected_at?: string;
+	env?: Env;
+}
+
+export interface RecordMaestroLearnedContextInput {
+	event_id?: string;
+	learning_id: string;
+	subject_thing_id?: string;
+	subject_key?: string;
+	statement: string;
+	dimension: string;
+	confidence_score: number;
+	confidence_reason: string;
+	evidence: MaestroLearnedContextEvidence[];
+	tool_call_id?: string;
+	tool_execution_id?: string;
+	correlation?: Partial<MaestroCorrelation>;
+	learned_at?: string;
 	env?: Env;
 }
 
@@ -429,6 +535,7 @@ export interface RecordMaestroSkillOutcomeInput {
 	evaluation_assertion_count?: number;
 	evaluation_rationale?: string;
 	stop_reason?: string;
+	metadata?: Record<string, unknown>;
 	correlation?: Partial<MaestroCorrelation>;
 	outcome_at?: string;
 	env?: Env;
@@ -451,6 +558,59 @@ export interface RecordMaestroEvalScoredInput {
 	assertion_count?: number;
 	correlation?: Partial<MaestroCorrelation>;
 	scored_at?: string;
+	env?: Env;
+}
+
+export interface RecordMaestroSubagentDispatchInput {
+	event_id?: string;
+	dispatch_id?: string;
+	mode: string;
+	subagent_type: string;
+	model: string;
+	provider: string;
+	reasoning_effort: string;
+	source?: string;
+	success: boolean;
+	latency_ms?: number;
+	parent_mode?: string;
+	parent_model_provider?: string;
+	swarm_id?: string;
+	task_id?: string;
+	teammate_id?: string;
+	reason?: string;
+	metadata?: Record<string, unknown>;
+	correlation?: Partial<MaestroCorrelation>;
+	dispatched_at?: string;
+	env?: Env;
+}
+
+export interface RecordMaestroA2ADelegationEventInput {
+	event_type: MaestroBusEventType;
+	event_id?: string;
+	swarm_id: string;
+	lane_id: string;
+	parent_task_id: string;
+	a2a_task_id?: string;
+	a2a_message_id?: string;
+	context_id?: string;
+	peer_agent_id?: string;
+	peer_name?: string;
+	peer_endpoint_url?: string;
+	peer_endpoint_hash?: string;
+	peer_endpoint_kind?: string;
+	skill_id?: string;
+	task_class?: string;
+	source?: string;
+	status?: string;
+	terminal?: boolean;
+	success?: boolean;
+	latency_ms?: number;
+	duration_ms?: number;
+	push_lag_ms?: number;
+	evidence?: Record<string, unknown>;
+	metadata?: Record<string, unknown>;
+	correlation?: Partial<MaestroCorrelation>;
+	occurred_at?: string;
 	env?: Env;
 }
 
@@ -538,38 +698,26 @@ function normalizeRuntimeMode(value: string | undefined): MaestroRuntimeMode {
 	}
 }
 
-function managedEvalOpsRoutingActive(env: Env): boolean {
-	return Boolean(
-		readEnv(env, ["MAESTRO_EVALOPS_ACCESS_TOKEN"]) &&
-			readEnv(env, [
-				"MAESTRO_EVALOPS_ORG_ID",
-				"EVALOPS_ORGANIZATION_ID",
-				"MAESTRO_ENTERPRISE_ORG_ID",
-			]),
-	);
-}
-
-function defaultCorrelation(env: Env): MaestroCorrelation {
-	const workspaceId =
-		readEnv(env, ["MAESTRO_EVALOPS_WORKSPACE_ID", "EVALOPS_WORKSPACE_ID"]) ??
-		env.PWD ??
-		process.cwd();
+function defaultCorrelation(
+	env: Env,
+	managedContext: EvalOpsManagedContext,
+): MaestroCorrelation {
+	const workspaceId = managedContext.workspaceId ?? env.PWD ?? process.cwd();
 	const sessionId = readEnv(env, ["MAESTRO_SESSION_ID"]) ?? "unknown";
 
 	return {
-		organization_id: readEnv(env, [
-			"MAESTRO_EVALOPS_ORG_ID",
-			"EVALOPS_ORGANIZATION_ID",
-			"MAESTRO_ENTERPRISE_ORG_ID",
-		]),
+		organization_id: managedContext.organizationId,
+		user_id: managedContext.userId,
 		workspace_id: workspaceId,
 		session_id: sessionId,
-		agent_run_id: readEnv(env, ["MAESTRO_AGENT_RUN_ID"]),
-		agent_id: readEnv(env, ["MAESTRO_AGENT_ID"]),
+		agent_run_id: managedContext.runId,
+		agent_run_step_id: readEnv(env, ["MAESTRO_AGENT_RUN_STEP_ID"]),
+		agent_id: managedContext.agentId,
 		actor_id: readEnv(env, ["MAESTRO_ACTOR_ID"]),
 		principal_id: readEnv(env, ["MAESTRO_PRINCIPAL_ID"]),
 		trace_id: readEnv(env, ["TRACE_ID", "OTEL_TRACE_ID"]),
 		traceparent: readEnv(env, ["TRACEPARENT", "TRACE_PARENT"]),
+		tracestate: readEnv(env, ["TRACESTATE", "TRACE_STATE"]),
 		request_id: readEnv(env, ["MAESTRO_REQUEST_ID"]),
 		remote_runner_session_id: readEnv(env, [
 			"MAESTRO_REMOTE_RUNNER_SESSION_ID",
@@ -580,7 +728,10 @@ function defaultCorrelation(env: Env): MaestroCorrelation {
 	};
 }
 
-function defaultPrincipal(env: Env): MaestroPrincipal | undefined {
+function defaultPrincipal(
+	env: Env,
+	managedContext: EvalOpsManagedContext,
+): MaestroPrincipal | undefined {
 	const subject = readEnv(env, [
 		"MAESTRO_PRINCIPAL_SUBJECT",
 		"MAESTRO_USER_SUBJECT",
@@ -589,15 +740,9 @@ function defaultPrincipal(env: Env): MaestroPrincipal | undefined {
 	if (!subject) return undefined;
 	return {
 		subject,
-		user_id: readEnv(env, ["MAESTRO_USER_ID"]),
-		organization_id: readEnv(env, [
-			"MAESTRO_EVALOPS_ORG_ID",
-			"EVALOPS_ORGANIZATION_ID",
-		]),
-		workspace_id: readEnv(env, [
-			"MAESTRO_EVALOPS_WORKSPACE_ID",
-			"EVALOPS_WORKSPACE_ID",
-		]),
+		user_id: managedContext.userId,
+		organization_id: managedContext.organizationId,
+		workspace_id: managedContext.workspaceId,
 		roles: readEnv(env, ["MAESTRO_PRINCIPAL_ROLES"])
 			?.split(",")
 			.map((role) => role.trim())
@@ -610,9 +755,39 @@ function defaultPrincipal(env: Env): MaestroPrincipal | undefined {
 	};
 }
 
+function resolveEventBusFeatureGate(
+	env: Env,
+	managedContext: EvalOpsManagedContext,
+): {
+	allowed: boolean;
+	reason?: string;
+} {
+	if (!isFeatureFlagSnapshotConfigured(env)) {
+		return { allowed: true };
+	}
+	if (!managedContext.managed) {
+		return { allowed: true };
+	}
+	if (areMaestroPlatformEventsDisabled(env)) {
+		return {
+			allowed: false,
+			reason: "platform events kill switch enabled",
+		};
+	}
+	if (!isMaestroPlatformEventsPublisherEnabled(env)) {
+		return {
+			allowed: false,
+			reason: "platform events rollout disabled",
+		};
+	}
+	return { allowed: true };
+}
+
 export function resolveMaestroEventBusConfig(
 	env: Env = process.env,
 ): MaestroEventBusConfig {
+	const managedContext = resolveManagedEvalOpsContext(env);
+	const internalTelemetryDisabled = isInternalTelemetryDisabled(env);
 	const flag = readBoolean(
 		readEnv(env, ["MAESTRO_EVENT_BUS", "MAESTRO_AUDIT_BUS"]),
 	);
@@ -621,11 +796,17 @@ export function resolveMaestroEventBusConfig(
 		"EVALOPS_NATS_URL",
 		"NATS_URL",
 	]);
-	const managedRouting = managedEvalOpsRoutingActive(env);
-	const enabled =
+	const managedRouting = managedContext.managed;
+	const baseEnabled =
 		flag === false ? false : (flag ?? Boolean(natsUrl || managedRouting));
+	const featureGate = resolveEventBusFeatureGate(env, managedContext);
+	const enabled =
+		!internalTelemetryDisabled && baseEnabled && featureGate.allowed;
 	let reason = "disabled";
-	if (flag === false) reason = "flag disabled";
+	if (internalTelemetryDisabled) reason = "internal telemetry disabled";
+	else if (flag === false) reason = "flag disabled";
+	else if (baseEnabled && !featureGate.allowed)
+		reason = featureGate.reason ?? "feature flag disabled";
 	else if (natsUrl) reason = "nats";
 	else if (managedRouting) reason = "managed evalops routing";
 	else if (flag === true) reason = "flag enabled";
@@ -638,19 +819,15 @@ export function resolveMaestroEventBusConfig(
 		natsUser: readEnv(env, ["MAESTRO_EVENT_BUS_USER", "NATS_USER"]),
 		natsPassword: readEnv(env, ["MAESTRO_EVENT_BUS_PASSWORD", "NATS_PASSWORD"]),
 		source: readEnv(env, ["MAESTRO_EVENT_BUS_SOURCE"]) ?? "maestro",
-		tenantId: readEnv(env, [
-			"MAESTRO_EVALOPS_ORG_ID",
-			"EVALOPS_ORGANIZATION_ID",
-			"MAESTRO_ENTERPRISE_ORG_ID",
-		]),
+		tenantId: managedContext.organizationId,
 		defaultSurface: normalizeSurface(
 			readEnv(env, ["MAESTRO_SURFACE", "MAESTRO_EVENT_SURFACE"]),
 		),
 		defaultRuntimeMode: normalizeRuntimeMode(
 			readEnv(env, ["MAESTRO_RUNTIME_MODE"]),
 		),
-		defaultCorrelation: defaultCorrelation(env),
-		defaultPrincipal: defaultPrincipal(env),
+		defaultCorrelation: defaultCorrelation(env, managedContext),
+		defaultPrincipal: defaultPrincipal(env, managedContext),
 	};
 }
 
@@ -772,6 +949,32 @@ function mergeCorrelation(
 	};
 }
 
+export function hashA2AEndpointUrl(
+	url: string | undefined,
+): string | undefined {
+	const canonical = canonicalizeA2AEndpointUrl(url);
+	if (!canonical) return undefined;
+	return `sha256:${createHash("sha256").update(canonical).digest("hex")}`;
+}
+
+export function canonicalizeA2AEndpointUrl(
+	url: string | undefined,
+): string | undefined {
+	const trimmed = url?.trim();
+	if (!trimmed) return undefined;
+	try {
+		const parsed = new URL(trimmed);
+		parsed.username = "";
+		parsed.password = "";
+		parsed.search = "";
+		parsed.hash = "";
+		parsed.pathname = parsed.pathname.replace(/\/+$/u, "") || "/";
+		return parsed.toString().replace(/\/$/u, "");
+	} catch {
+		return trimmed.replace(/[?#].*$/u, "").replace(/\/+$/u, "");
+	}
+}
+
 export function maestroCorrelationToChronicleMetadata(
 	correlation: MaestroCorrelation,
 ): Record<string, string> {
@@ -785,6 +988,7 @@ export function maestroCorrelationToChronicleMetadata(
 		putMetadata(metadata, key, value);
 	};
 	putCanonicalMetadata("organization_id", correlation.organization_id);
+	putCanonicalMetadata("user_id", correlation.user_id);
 	putCanonicalMetadata("workspace_id", correlation.workspace_id);
 	putCanonicalMetadata("maestro_session_id", correlation.session_id);
 	putCanonicalMetadata("agent_run_id", correlation.agent_run_id);
@@ -794,6 +998,7 @@ export function maestroCorrelationToChronicleMetadata(
 	putCanonicalMetadata("principal_id", correlation.principal_id);
 	putCanonicalMetadata("trace_id", correlation.trace_id);
 	putCanonicalMetadata("traceparent", correlation.traceparent);
+	putCanonicalMetadata("tracestate", correlation.tracestate);
 	putCanonicalMetadata("request_id", correlation.request_id);
 	putCanonicalMetadata(
 		"remote_runner_session_id",
@@ -843,7 +1048,12 @@ export function buildMaestroCloudEvent<TData extends Record<string, unknown>>(
 		options.correlation,
 	);
 	const contextCorrelation =
-		"correlation" in data && data.correlation ? data.correlation : correlation;
+		"correlation" in data && data.correlation
+			? mergeCorrelation(
+					correlation,
+					data.correlation as Partial<MaestroCorrelation>,
+				)
+			: correlation;
 	const dataCorrelation = maestroDataCorrelation(
 		contextCorrelation as MaestroCorrelation,
 	);
@@ -878,7 +1088,11 @@ export function buildMaestroCloudEvent<TData extends Record<string, unknown>>(
 function maestroDataCorrelation(
 	correlation: MaestroCorrelation,
 ): MaestroCorrelation {
-	const { traceparent: _traceparent, ...dataCorrelation } = correlation;
+	const {
+		traceparent: _traceparent,
+		tracestate: _tracestate,
+		...dataCorrelation
+	} = correlation;
 	return dataCorrelation;
 }
 
@@ -887,12 +1101,15 @@ function maestroContextExtensions(
 	data: Record<string, unknown>,
 ): Record<string, string> {
 	const extensions: Record<string, string> = {};
+	putMetadata(extensions, "organization_id", correlation.organization_id);
+	putMetadata(extensions, "user_id", correlation.user_id);
 	putMetadata(extensions, "workspace_id", correlation.workspace_id);
 	putMetadata(extensions, "maestro_session_id", correlation.session_id);
 	putMetadata(extensions, "agent_run_id", correlation.agent_run_id);
 	putMetadata(extensions, "agent_run_step_id", correlation.agent_run_step_id);
 	putMetadata(extensions, "trace_id", correlation.trace_id);
 	putMetadata(extensions, "traceparent", correlation.traceparent);
+	putMetadata(extensions, "tracestate", correlation.tracestate);
 	putMetadata(extensions, "request_id", correlation.request_id);
 	putMetadata(extensions, "source_issue", correlation.attributes?.source_issue);
 	putMetadata(extensions, "task_id", correlation.attributes?.task_id);
@@ -994,6 +1211,78 @@ function correlationFromMetadata(
 				: typeof record.tool_call_id === "string"
 					? record.tool_call_id
 					: undefined,
+		organization_id:
+			typeof record.organizationId === "string"
+				? record.organizationId
+				: typeof record.organization_id === "string"
+					? record.organization_id
+					: undefined,
+		user_id:
+			typeof record.userId === "string"
+				? record.userId
+				: typeof record.user_id === "string"
+					? record.user_id
+					: undefined,
+		agent_id:
+			typeof record.agentId === "string"
+				? record.agentId
+				: typeof record.agent_id === "string"
+					? record.agent_id
+					: undefined,
+		actor_id:
+			typeof record.actorId === "string"
+				? record.actorId
+				: typeof record.actor_id === "string"
+					? record.actor_id
+					: undefined,
+		principal_id:
+			typeof record.principalId === "string"
+				? record.principalId
+				: typeof record.principal_id === "string"
+					? record.principal_id
+					: undefined,
+		trace_id:
+			typeof record.traceId === "string"
+				? record.traceId
+				: typeof record.trace_id === "string"
+					? record.trace_id
+					: undefined,
+		traceparent:
+			typeof record.traceparent === "string"
+				? record.traceparent
+				: typeof record.trace_parent === "string"
+					? record.trace_parent
+					: undefined,
+		tracestate:
+			typeof record.tracestate === "string"
+				? record.tracestate
+				: typeof record.trace_state === "string"
+					? record.trace_state
+					: undefined,
+		request_id:
+			typeof record.requestId === "string"
+				? record.requestId
+				: typeof record.request_id === "string"
+					? record.request_id
+					: undefined,
+		remote_runner_session_id:
+			typeof record.remoteRunnerSessionId === "string"
+				? record.remoteRunnerSessionId
+				: typeof record.remote_runner_session_id === "string"
+					? record.remote_runner_session_id
+					: undefined,
+		objective_id:
+			typeof record.objectiveId === "string"
+				? record.objectiveId
+				: typeof record.objective_id === "string"
+					? record.objective_id
+					: undefined,
+		conversation_id:
+			typeof record.conversationId === "string"
+				? record.conversationId
+				: typeof record.conversation_id === "string"
+					? record.conversation_id
+					: undefined,
 	};
 }
 
@@ -1004,6 +1293,34 @@ function stringMetadata(metadata: unknown, name: string): string | undefined {
 		typeof (metadata as Record<string, unknown>)[name] === "string"
 		? ((metadata as Record<string, unknown>)[name] as string)
 		: undefined;
+}
+
+function stringField(
+	fields: Record<string, unknown>,
+	name: string,
+): string | undefined {
+	const value = fields[name];
+	return typeof value === "string" && value.trim().length > 0
+		? value
+		: undefined;
+}
+
+function numberField(
+	fields: Record<string, unknown>,
+	name: string,
+): number | undefined {
+	const value = fields[name];
+	return typeof value === "number" && Number.isFinite(value)
+		? value
+		: undefined;
+}
+
+function booleanField(
+	fields: Record<string, unknown>,
+	name: string,
+): boolean | undefined {
+	const value = fields[name];
+	return typeof value === "boolean" ? value : undefined;
 }
 
 function closeReasonFromMetadata(
@@ -1129,6 +1446,7 @@ export function recordMaestroApprovalHit(
 			policy_id: event.policy_id,
 			reason: event.reason,
 			context: event.context,
+			metadata: event.metadata,
 			occurred_at: occurredAt,
 		},
 		{ env: event.env, eventId: event.event_id, time: occurredAt },
@@ -1184,6 +1502,7 @@ export function recordMaestroToolCallAttempt(
 			safe_arguments: event.safe_arguments,
 			redactions: event.redactions,
 			idempotency_key: event.idempotency_key,
+			metadata: event.metadata,
 			attempted_at: attemptedAt,
 		},
 		{ env: event.env, eventId: event.event_id, time: attemptedAt },
@@ -1195,7 +1514,7 @@ export function recordMaestroToolCallCompleted(
 ): void {
 	const completedAt = event.completed_at ?? new Date().toISOString();
 	void publishMaestroCloudEvent<ToolCallResultEventData>(
-		MaestroBusEventType.ToolCallCompleted,
+		toolCallResultEventType(event.status),
 		{
 			correlation: mergeCorrelation(
 				resolveMaestroEventBusConfig(event.env).defaultCorrelation,
@@ -1213,10 +1532,19 @@ export function recordMaestroToolCallCompleted(
 			redactions: event.redactions,
 			error_code: event.error_code,
 			error_message: event.error_message,
+			metadata: event.metadata,
 			completed_at: completedAt,
 		},
 		{ env: event.env, eventId: event.event_id, time: completedAt },
 	);
+}
+
+function toolCallResultEventType(
+	status: MaestroToolCallStatus,
+): MaestroBusEventType.ToolCallCompleted | MaestroBusEventType.ToolCallFailed {
+	return status === "MAESTRO_TOOL_CALL_STATUS_FAILED"
+		? MaestroBusEventType.ToolCallFailed
+		: MaestroBusEventType.ToolCallCompleted;
 }
 
 export function recordMaestroPromptVariantSelected(
@@ -1243,6 +1571,33 @@ export function recordMaestroPromptVariantSelected(
 			selected_at: selectedAt,
 		},
 		{ env: event.env, eventId: event.event_id, time: selectedAt },
+	);
+}
+
+export function recordMaestroLearnedContext(
+	event: RecordMaestroLearnedContextInput,
+): void {
+	const learnedAt = event.learned_at ?? new Date().toISOString();
+	void publishMaestroCloudEvent<MaestroLearnedContextEventData>(
+		MaestroBusEventType.ContextLearned,
+		{
+			correlation: mergeCorrelation(
+				resolveMaestroEventBusConfig(event.env).defaultCorrelation,
+				event.correlation,
+			),
+			learning_id: event.learning_id,
+			subject_thing_id: event.subject_thing_id,
+			subject_key: event.subject_key,
+			statement: event.statement,
+			dimension: event.dimension,
+			confidence_score: event.confidence_score,
+			confidence_reason: event.confidence_reason,
+			evidence: event.evidence,
+			tool_call_id: event.tool_call_id,
+			tool_execution_id: event.tool_execution_id,
+			learned_at: learnedAt,
+		},
+		{ env: event.env, eventId: event.event_id, time: learnedAt },
 	);
 }
 
@@ -1304,9 +1659,91 @@ export function recordMaestroSkillOutcome(
 			evaluation_assertion_count: event.evaluation_assertion_count,
 			evaluation_rationale: event.evaluation_rationale,
 			stop_reason: event.stop_reason,
+			metadata: event.metadata,
 			outcome_at: outcomeAt,
 		},
 		{ env: event.env, eventId: event.event_id, time: outcomeAt },
+	);
+}
+
+export function recordMaestroSubagentDispatch(
+	event: RecordMaestroSubagentDispatchInput,
+): void {
+	const dispatchedAt = event.dispatched_at ?? new Date().toISOString();
+	void publishMaestroCloudEvent<SubagentDispatchEventData>(
+		MaestroBusEventType.SubagentDispatched,
+		{
+			correlation: mergeCorrelation(
+				resolveMaestroEventBusConfig(event.env).defaultCorrelation,
+				event.correlation,
+			),
+			dispatch_id:
+				event.dispatch_id ??
+				`${event.mode}:${event.subagent_type}:${dispatchedAt}`,
+			mode: event.mode,
+			subagent_type: event.subagent_type,
+			model: event.model,
+			provider: event.provider,
+			reasoning_effort: event.reasoning_effort,
+			source: event.source,
+			success: event.success,
+			latency_ms: event.latency_ms ?? 0,
+			parent_mode: event.parent_mode,
+			parent_model_provider: event.parent_model_provider,
+			swarm_id: event.swarm_id,
+			task_id: event.task_id,
+			teammate_id: event.teammate_id,
+			reason: event.reason,
+			metadata: event.metadata,
+			dispatched_at: dispatchedAt,
+		},
+		{ env: event.env, eventId: event.event_id, time: dispatchedAt },
+	);
+}
+
+export function recordMaestroA2ADelegationEvent(
+	event: RecordMaestroA2ADelegationEventInput,
+): void {
+	const occurredAt = event.occurred_at ?? new Date().toISOString();
+	const config = resolveMaestroEventBusConfig(event.env);
+	const peerEndpointHash =
+		event.peer_endpoint_hash ?? hashA2AEndpointUrl(event.peer_endpoint_url);
+	void publishMaestroCloudEvent<MaestroA2ADelegationEventData>(
+		event.event_type,
+		{
+			correlation: mergeCorrelation(
+				config.defaultCorrelation,
+				event.correlation,
+			),
+			swarm_id: event.swarm_id,
+			lane_id: event.lane_id,
+			parent_task_id: event.parent_task_id,
+			a2a_task_id: event.a2a_task_id,
+			a2a_message_id: event.a2a_message_id,
+			context_id: event.context_id,
+			peer_agent_id: event.peer_agent_id,
+			peer_name: event.peer_name,
+			peer_endpoint_hash: peerEndpointHash,
+			peer_endpoint_kind: event.peer_endpoint_kind,
+			skill_id: event.skill_id,
+			task_class: event.task_class,
+			source: event.source,
+			status: event.status,
+			terminal: event.terminal,
+			success: event.success,
+			latency_ms: event.latency_ms,
+			duration_ms: event.duration_ms,
+			push_lag_ms: event.push_lag_ms,
+			evidence: event.evidence,
+			metadata: event.metadata,
+			occurred_at: occurredAt,
+		},
+		{
+			env: event.env,
+			eventId: event.event_id,
+			time: occurredAt,
+			correlation: event.correlation,
+		},
 	);
 }
 
@@ -1377,6 +1814,61 @@ export async function mirrorTelemetryToMaestroEventBus(
 		return;
 	}
 
+	if (event.type === "subagent-dispatch") {
+		const metadata = fields.metadata;
+		const mode = stringField(fields, "mode") ?? "unknown";
+		const subagentType =
+			stringField(fields, "subagentType") ??
+			stringMetadata(metadata, "subagent_type") ??
+			stringMetadata(metadata, "subagentType") ??
+			"unknown";
+		const dispatchedAt = event.timestamp;
+		await publishMaestroCloudEvent<SubagentDispatchEventData>(
+			MaestroBusEventType.SubagentDispatched,
+			{
+				correlation: mergeCorrelation(
+					resolveMaestroEventBusConfig().defaultCorrelation,
+					correlationFromMetadata(metadata),
+				),
+				dispatch_id:
+					stringMetadata(metadata, "dispatchId") ??
+					stringMetadata(metadata, "dispatch_id") ??
+					`${mode}:${subagentType}:${dispatchedAt}`,
+				mode,
+				subagent_type: subagentType,
+				model: stringField(fields, "model") ?? "unknown",
+				provider: stringField(fields, "provider") ?? "unknown",
+				reasoning_effort: stringField(fields, "reasoningEffort") ?? "unknown",
+				source: stringField(fields, "source"),
+				success: booleanField(fields, "success") ?? false,
+				latency_ms: numberField(fields, "latencyMs") ?? 0,
+				parent_mode:
+					stringMetadata(metadata, "parentMode") ??
+					stringMetadata(metadata, "parent_mode"),
+				parent_model_provider:
+					stringMetadata(metadata, "parentModelProvider") ??
+					stringMetadata(metadata, "parent_model_provider"),
+				swarm_id:
+					stringMetadata(metadata, "swarmId") ??
+					stringMetadata(metadata, "swarm_id"),
+				task_id:
+					stringMetadata(metadata, "taskId") ??
+					stringMetadata(metadata, "task_id"),
+				teammate_id:
+					stringMetadata(metadata, "teammateId") ??
+					stringMetadata(metadata, "teammate_id"),
+				reason:
+					stringMetadata(metadata, "reason") ??
+					stringMetadata(metadata, "failureReason") ??
+					stringMetadata(metadata, "failure_reason"),
+				metadata: contextFromMetadata(metadata),
+				dispatched_at: dispatchedAt,
+			},
+			{ time: dispatchedAt },
+		);
+		return;
+	}
+
 	if (event.type === "business-metric") {
 		const eventType = sessionEventTypeForMetric(fields.metric);
 		if (!eventType) return;
@@ -1427,8 +1919,11 @@ export async function mirrorTelemetryToMaestroEventBus(
 
 	if (event.type === "tool-execution") {
 		const metadata = fields.metadata;
+		const status = fields.success
+			? "MAESTRO_TOOL_CALL_STATUS_SUCCEEDED"
+			: "MAESTRO_TOOL_CALL_STATUS_FAILED";
 		await publishMaestroCloudEvent<ToolCallResultEventData>(
-			MaestroBusEventType.ToolCallCompleted,
+			toolCallResultEventType(status),
 			{
 				correlation: mergeCorrelation(
 					resolveMaestroEventBusConfig().defaultCorrelation,
@@ -1438,9 +1933,7 @@ export async function mirrorTelemetryToMaestroEventBus(
 					stringMetadata(metadata, "toolCallId") ??
 					stringMetadata(metadata, "tool_call_id") ??
 					`${String(fields.toolName ?? "tool")}:${event.timestamp}`,
-				status: fields.success
-					? "MAESTRO_TOOL_CALL_STATUS_SUCCEEDED"
-					: "MAESTRO_TOOL_CALL_STATUS_FAILED",
+				status,
 				duration: durationFromMs(fields.durationMs),
 				error_message: fields.success
 					? undefined

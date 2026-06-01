@@ -1,7 +1,15 @@
 #!/usr/bin/env node
 
+declare const MAESTRO_BUNDLE_RUNTIME: boolean | undefined;
+
 // Suppress punycode deprecation warning from dependencies
 // This warning comes from old dependencies still using the deprecated punycode module
+import {
+	type ImmediateCliExit,
+	getImmediateCliExit,
+	shouldUseInstantCliExit,
+} from "./cli/instant-exit.js";
+
 const originalEmit = process.emit.bind(process) as (
 	event: string | symbol,
 	...args: unknown[]
@@ -61,31 +69,178 @@ function emitHeadlessStartupError(error: unknown): void {
 	process.stderr.write(`${stack ?? message}\n`);
 }
 
+async function reportFatalCliError(error: unknown): Promise<void> {
+	try {
+		const { captureSentryException, flushSentry, initSentry } = await import(
+			"./sentry.js"
+		);
+		initSentry("maestro-cli");
+		captureSentryException(error);
+		await flushSentry();
+	} catch {
+		// Sentry reporting is best-effort and must not mask the original failure.
+	}
+}
+
+async function refreshInstalledCliOnStartup(
+	args: string[],
+	ignoredEnvKeys: string[] = [],
+): Promise<void> {
+	try {
+		const env = { ...process.env };
+		for (const key of ignoredEnvKeys) {
+			delete env[key];
+		}
+		const startupUpdateMode = env.MAESTRO_STARTUP_UPDATE?.trim().toLowerCase();
+		if (
+			env.MAESTRO_SKIP_STARTUP_UPDATE ||
+			env.CI ||
+			env.NODE_ENV === "test" ||
+			startupUpdateMode === "0" ||
+			startupUpdateMode === "false" ||
+			startupUpdateMode === "off" ||
+			!process.stdin.isTTY ||
+			!process.stdout.isTTY
+		) {
+			return;
+		}
+		const [{ getPackageName, getPackageVersion }, { attemptStartupUpdate }] =
+			await Promise.all([
+				import("./package-metadata.js"),
+				import("./update/startup-refresh.js"),
+			]);
+		const outcome = await attemptStartupUpdate({
+			args,
+			currentVersion: getPackageVersion(env),
+			env,
+			packageName: getPackageName(env),
+		});
+		if (outcome.status === "restarted") {
+			process.exit(outcome.exitCode);
+		}
+	} catch {
+		// Startup refresh is best-effort and must never prevent the CLI from booting.
+	}
+}
+
+async function runImmediateCliExit(exit: ImmediateCliExit): Promise<void> {
+	if (exit.kind === "version") {
+		const { getPackageVersion } = await import("./package-metadata.js");
+		console.log(`Maestro v${getPackageVersion()}`);
+		return;
+	}
+
+	const [{ printHelp }, { getPackageVersion }] = await Promise.all([
+		import("./cli/help.js"),
+		import("./package-metadata.js"),
+	]);
+	printHelp(getPackageVersion(), { includeHidden: exit.includeHidden });
+}
+
+async function runCliRuntime(args: string[]): Promise<void> {
+	if (typeof MAESTRO_BUNDLE_RUNTIME !== "undefined" && MAESTRO_BUNDLE_RUNTIME) {
+		const { runCliRuntime: runRuntime } = await import("./cli-runtime.js");
+		await runRuntime(args);
+		return;
+	}
+	const runtimeEntry = "./cli-runtime." + "js";
+	const { runCliRuntime: runRuntime } = await import(runtimeEntry);
+	await runRuntime(args);
+}
+
+async function runMainRuntime(args: string[]): Promise<void> {
+	const loadMain = async () => {
+		if (process.versions?.bun) {
+			const tsEntry = "./main." + "ts";
+			try {
+				return await import(tsEntry);
+			} catch {
+				return await import("./main.js");
+			}
+		}
+		const mainEntry = "./main." + "js";
+		return import(mainEntry);
+	};
+
+	const { main } = await loadMain();
+	await main(args);
+}
+
+async function loadDirectRuntimeCommandModule() {
+	if (typeof MAESTRO_BUNDLE_RUNTIME !== "undefined" && MAESTRO_BUNDLE_RUNTIME) {
+		return import("./cli/direct-runtime-command.js");
+	}
+	const directRuntimeCommandEntry = "./cli/direct-runtime-command." + "js";
+	return import(directRuntimeCommandEntry);
+}
+
+async function runCliCommandRuntime(args: string[]): Promise<boolean> {
+	const { shouldAttemptDirectRuntimeDispatch } =
+		await loadDirectRuntimeCommandModule();
+	if (!shouldAttemptDirectRuntimeDispatch(args)) {
+		return false;
+	}
+	if (typeof MAESTRO_BUNDLE_RUNTIME !== "undefined" && MAESTRO_BUNDLE_RUNTIME) {
+		const { runCliCommandRuntime: runCommandRuntime } = await import(
+			"./cli-command-runtime.js"
+		);
+		return runCommandRuntime(args);
+	}
+	const commandRuntimeEntry = "./cli-command-runtime." + "js";
+	const { runCliCommandRuntime: runCommandRuntime } = await import(
+		commandRuntimeEntry
+	);
+	return runCommandRuntime(args);
+}
+
+async function runUnbundledMainRuntime(args: string[]): Promise<boolean> {
+	if (typeof MAESTRO_BUNDLE_RUNTIME !== "undefined" && MAESTRO_BUNDLE_RUNTIME) {
+		return false;
+	}
+	const { shouldUseUnbundledMainRuntime } =
+		await loadDirectRuntimeCommandModule();
+	if (!shouldUseUnbundledMainRuntime(args)) {
+		return false;
+	}
+	await runMainRuntime(args);
+	return true;
+}
+
 const run = async () => {
 	try {
-		// Prefer the TypeScript entry when running under Bun during development,
-		// but fall back to the compiled JS for bundled/compiled binaries.
-		const loadMain = async () => {
-			if (process.versions?.bun) {
-				const tsEntry = "./main." + "ts";
-				try {
-					return await import(tsEntry);
-				} catch {
-					// In compiled binaries the .ts source isn't present; use JS output.
-					return await import("./main.js");
-				}
-			}
-			return await import("./main.js");
-		};
+		const args = process.argv.slice(2);
+		const immediateExit = getImmediateCliExit(args);
+		let envLoaded = false;
+		let loadedEnvKeys: string[] = [];
+		if (immediateExit !== null) {
+			const { loadEnv } = await import("./load-env.js");
+			loadedEnvKeys = loadEnv();
+			envLoaded = true;
+		}
+		if (shouldUseInstantCliExit(immediateExit, process.env)) {
+			await runImmediateCliExit(immediateExit);
+			return;
+		}
 
-		const { main } = await loadMain();
-		await main(process.argv.slice(2));
+		if (!envLoaded) {
+			const { loadEnv } = await import("./load-env.js");
+			loadedEnvKeys = loadEnv();
+		}
+		await refreshInstalledCliOnStartup(args, loadedEnvKeys);
+		if (await runCliCommandRuntime(args)) {
+			return;
+		}
+		if (await runUnbundledMainRuntime(args)) {
+			return;
+		}
+		await runCliRuntime(args);
 	} catch (err) {
 		if (isHeadlessInvocation(process.argv.slice(2))) {
 			emitHeadlessStartupError(err);
 		} else {
 			console.error(err);
 		}
+		await reportFatalCliError(err);
 		process.exit(1);
 	}
 };

@@ -43,6 +43,7 @@ import {
 	headlessViewerDisallowedCapability,
 	loadPromptAttachments,
 } from "./headless-protocol.js";
+import type { HeadlessRuntimeSelection } from "./headless-runtime-selection.js";
 
 export {
 	HEADLESS_PROTOCOL_VERSION,
@@ -53,6 +54,10 @@ export {
 };
 
 const LOCAL_HEADLESS_CONNECTION_ID = "local";
+
+export interface RunHeadlessModeOptions {
+	runtimeSelection?: HeadlessRuntimeSelection;
+}
 
 function send(msg: HeadlessFromAgentMessage): void {
 	try {
@@ -94,9 +99,11 @@ export async function runHeadlessMode(
 	sessionManager: SessionManager,
 	approvalService?: ActionApprovalService,
 	toolRetryService?: ToolRetryService,
+	options: RunHeadlessModeOptions = {},
 ): Promise<void> {
 	const translator = new HeadlessProtocolTranslator();
 	const state = createHeadlessRuntimeState();
+	void options.runtimeSelection;
 
 	const shouldFilterOutgoingMessage = (
 		msg: HeadlessFromAgentMessage,
@@ -258,6 +265,9 @@ export async function runHeadlessMode(
 					: {}),
 				args: event.request.args,
 				reason: event.request.reason,
+				...(event.request.startedAtMs !== undefined
+					? { started_at_ms: event.request.startedAtMs }
+					: {}),
 			});
 			return;
 		}
@@ -269,6 +279,12 @@ export async function runHeadlessMode(
 			resolution: event.resolution,
 			reason: event.reason,
 			resolved_by: event.resolvedBy,
+			...(event.request.startedAtMs !== undefined
+				? { started_at_ms: event.request.startedAtMs }
+				: {}),
+			...(event.resolvedAtMs !== undefined
+				? { resolved_at_ms: event.resolvedAtMs }
+				: {}),
 		});
 	});
 

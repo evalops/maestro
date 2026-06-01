@@ -50,7 +50,7 @@ const MAX_AGENT_DEPTH = 2; // Allow one level of nesting for legitimate use case
  * Command patterns that spawn agent instances.
  */
 const AGENT_SPAWN_PATTERNS = [
-	// Composer/Claude Code patterns
+	// Maestro/Claude Code patterns
 	/\bcomposer\b/i,
 	/\bclaude\b/i,
 	/\bclaude-code\b/i,

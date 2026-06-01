@@ -21,6 +21,7 @@ import {
 	resumeToolExecutionWithPlatform,
 } from "../../platform/tool-execution-client.js";
 import { isReadOnlyTool } from "../../tools/parallel-execution.js";
+import { isAbortError } from "../../utils/abort-error.js";
 import { createLogger } from "../../utils/logger.js";
 import type {
 	ActionApprovalDecision,
@@ -32,6 +33,7 @@ import type {
 	ToolCall,
 	ToolResultMessage,
 } from "../types.js";
+import { stableStringify } from "./stable-stringify.js";
 
 const logger = createLogger("transport:tool-execution-bridge");
 
@@ -173,6 +175,22 @@ export interface ToolExecutionBridgeInput {
 	displayName?: string;
 	summaryLabel?: string;
 	actionDescription?: string;
+}
+
+export interface ToolExecutionBridgeRuntimeLinkage {
+	agentRunId?: string;
+	agentId?: string;
+	workspaceId?: string;
+	sessionId?: string;
+	remoteRunnerSessionId?: string;
+}
+
+export type ToolExecutionBridgeRuntimeLinkageProvider =
+	| ToolExecutionBridgeRuntimeLinkage
+	| (() => ToolExecutionBridgeRuntimeLinkage | undefined);
+
+export interface DefaultPlatformToolExecutionBridgeOptions {
+	runtimeLinkage?: ToolExecutionBridgeRuntimeLinkageProvider;
 }
 
 interface ToolExecutionClassification {
@@ -377,19 +395,6 @@ function classifyToolExecution(
 	};
 }
 
-function stableStringify(value: unknown): string {
-	if (Array.isArray(value)) {
-		return `[${value.map((item) => stableStringify(item)).join(",")}]`;
-	}
-	if (value && typeof value === "object") {
-		return `{${Object.entries(value as Record<string, unknown>)
-			.sort(([left], [right]) => left.localeCompare(right))
-			.map(([key, item]) => `${JSON.stringify(key)}:${stableStringify(item)}`)
-			.join(",")}}`;
-	}
-	return JSON.stringify(value);
-}
-
 function cloneRecord(value: Record<string, unknown>): Record<string, unknown> {
 	return JSON.parse(JSON.stringify(value)) as Record<string, unknown>;
 }
@@ -467,14 +472,20 @@ function buildLinkage(
 	toolCall: ToolCall,
 	organizationId: string | undefined,
 	workspaceId: string,
+	runtimeLinkage: ToolExecutionBridgeRuntimeLinkage | undefined,
 ): ToolExecutionLinkage {
 	const sessionId =
-		trimString(cfg.session?.id) ?? getEnvValue(["MAESTRO_SESSION_ID"]);
-	const agentRunId = getEnvValue(["MAESTRO_AGENT_RUN_ID"]);
+		trimString(cfg.session?.id) ??
+		trimString(runtimeLinkage?.sessionId) ??
+		getEnvValue(["MAESTRO_SESSION_ID"]);
+	const agentRunId =
+		trimString(runtimeLinkage?.agentRunId) ??
+		getEnvValue(["MAESTRO_AGENT_RUN_ID"]);
 	return {
-		workspaceId,
+		workspaceId: trimString(runtimeLinkage?.workspaceId) ?? workspaceId,
 		...(organizationId ? { organizationId } : {}),
 		agentId:
+			trimString(runtimeLinkage?.agentId) ??
 			getEnvValue(["MAESTRO_AGENT_ID"]) ??
 			trimString(process.env.npm_package_name) ??
 			"maestro",
@@ -523,6 +534,10 @@ function buildRuntimeContextMetadata(
 	]);
 
 	return {
+		...(linkage.organizationId
+			? { organization_id: linkage.organizationId }
+			: {}),
+		...(linkage.workspaceId ? { workspace_id: linkage.workspaceId } : {}),
 		...(linkage.runId ? { maestro_agent_run_id: linkage.runId } : {}),
 		maestro_agent_run_step_id: linkage.stepId,
 		...(linkage.actorId ? { maestro_actor_id: linkage.actorId } : {}),
@@ -542,16 +557,21 @@ function buildMetadata(
 	input: ToolExecutionBridgeInput,
 	classification: ToolExecutionClassification,
 	linkage: ToolExecutionLinkage,
+	runtimeLinkage: ToolExecutionBridgeRuntimeLinkage | undefined,
 ): Record<string, string> {
 	const originalArgs = input.toolCall.arguments as Record<string, unknown>;
 	const redactedArguments =
 		stableStringify(originalArgs) !== stableStringify(input.sanitizedArgs);
 	const sessionId =
-		trimString(input.cfg.session?.id) ?? getEnvValue(["MAESTRO_SESSION_ID"]);
-	const remoteRunnerSessionId = getEnvValue([
-		"MAESTRO_REMOTE_RUNNER_SESSION_ID",
-		"MAESTRO_RUNNER_SESSION_ID",
-	]);
+		trimString(input.cfg.session?.id) ??
+		trimString(runtimeLinkage?.sessionId) ??
+		getEnvValue(["MAESTRO_SESSION_ID"]);
+	const remoteRunnerSessionId =
+		trimString(runtimeLinkage?.remoteRunnerSessionId) ??
+		getEnvValue([
+			"MAESTRO_REMOTE_RUNNER_SESSION_ID",
+			"MAESTRO_RUNNER_SESSION_ID",
+		]);
 	return {
 		maestro_bridge_mode: classification.mode,
 		maestro_tool_call_id: input.toolCall.id,
@@ -579,12 +599,14 @@ function buildExecuteRequest(
 	input: ToolExecutionBridgeInput,
 	config: ToolExecutionServiceConfig,
 	classification: ToolExecutionClassification,
+	runtimeLinkage: ToolExecutionBridgeRuntimeLinkage | undefined,
 ): ExecutePlatformToolRequest {
 	const linkage = buildLinkage(
 		input.cfg,
 		input.toolCall,
 		config.organizationId,
 		config.workspaceId ?? process.cwd(),
+		runtimeLinkage,
 	);
 	return {
 		linkage,
@@ -601,7 +623,7 @@ function buildExecuteRequest(
 			allowNonIdempotentRetry: false,
 		},
 		idempotencyKey: `maestro:${input.toolCall.id}`,
-		metadata: buildMetadata(input, classification, linkage),
+		metadata: buildMetadata(input, classification, linkage, runtimeLinkage),
 	};
 }
 
@@ -685,6 +707,12 @@ export interface PlatformToolExecutionBridge {
 export class DefaultPlatformToolExecutionBridge
 	implements PlatformToolExecutionBridge
 {
+	private readonly runtimeLinkage?: ToolExecutionBridgeRuntimeLinkageProvider;
+
+	constructor(options: DefaultPlatformToolExecutionBridgeOptions = {}) {
+		this.runtimeLinkage = options.runtimeLinkage;
+	}
+
 	async prepare(
 		input: ToolExecutionBridgeInput,
 		signal?: AbortSignal,
@@ -713,7 +741,12 @@ export class DefaultPlatformToolExecutionBridge
 			return { status: "skip" };
 		}
 
-		const request = buildExecuteRequest(input, config, classification);
+		const request = buildExecuteRequest(
+			input,
+			config,
+			classification,
+			resolveRuntimeLinkage(this.runtimeLinkage),
+		);
 		if (classification.mode === "observe") {
 			return {
 				status: "observe",
@@ -928,6 +961,12 @@ export class DefaultPlatformToolExecutionBridge
 	}
 }
 
+function resolveRuntimeLinkage(
+	provider: ToolExecutionBridgeRuntimeLinkageProvider | undefined,
+): ToolExecutionBridgeRuntimeLinkage | undefined {
+	return typeof provider === "function" ? provider() : provider;
+}
+
 let defaultBridge: PlatformToolExecutionBridge | null = null;
 
 export function getDefaultPlatformToolExecutionBridge(): PlatformToolExecutionBridge {
@@ -951,8 +990,4 @@ export function buildObservedResultMetadata(
 			observation?.metadata.approvalRequestId ??
 			plan.metadata.approvalRequestId,
 	};
-}
-
-function isAbortError(error: unknown): boolean {
-	return error instanceof Error && error.name === "AbortError";
 }

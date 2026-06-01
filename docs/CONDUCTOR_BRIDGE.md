@@ -29,6 +29,7 @@ to the server.
 
 | Category | Examples |
 | --- | --- |
+| Operator loop | `browser_operator` observes the active page, performs one semantic action, and returns verification plus latest page state |
 | Read & search | `read_page`, `search_page`, `find_on_page`, `extract_links`, `extract_table_data`, `extract_document` |
 | Navigation & tabs | `navigate_to`, `open_links_in_tabs`, `wait_for_selector`, `scroll_page` |
 | Interaction | `click_element`, `type_text`, `select_element`, `highlight_element`, `mouse_action`, `pointer_action`, `keyboard_action` |
@@ -36,6 +37,27 @@ to the server.
 | Native actions (CDP) | `native_click`, `native_type`, `native_press`, `native_key_down`, `native_key_up` |
 | Skills & artifacts | `run_skill`, `manage_artifact`, `patch_artifact` |
 | MCP bridging | `list_mcp_servers`, `list_mcp_tools`, `list_mcp_resources`, `read_mcp_resource` |
+
+`browser_operator` is the preferred task-level browser-control surface. Call it
+first with `phase: "observe"`, a `goal`, and no action to inspect the current
+page. Then call it with `phase: "act"`, the same `goal`, the prior
+`previous_observation_id` when available, an `expected_result`, and exactly one
+semantic action such as `{ "kind": "click", "refId": "..." }`,
+`{ "kind": "type", "refId": "...", "text": "..." }`, or
+`{ "kind": "select", "selector": "...", "value": "..." }`.
+
+Prefer the `refId` returned by observation over a CSS selector. For targets
+inside embedded apps or iframes, preserve both `frameId` and `refId` from the
+observed element and send them back with the action. Use `include_frames: true`
+on observe/recover calls when the target may be inside a frame. Observation
+results may also include page-observer freshness metadata; if a frame changed
+after the prior observation, recover by observing again before retrying.
+
+Conductor executes the action in the active tab, refreshes the page observation,
+and returns verification fields instead of making the model infer success from a
+low-level click or keypress alone. If verification fails or the ref/selector is
+stale, call `browser_operator` again with `phase: "recover"` and no typed secret
+values; the client should re-observe before retrying.
 
 ## Optional: Native Messaging Host (Auto-Launch + Status)
 
@@ -49,6 +71,9 @@ The host supports:
 - `status` requests (probe `/api/bridge/status`)
 - `launch` requests (start `maestro web` if needed)
 - JSON-RPC notifications (`bridge/status`) when connectivity changes
+- CRX-style browser-control decision notifications
+  (`onBrowserControlDecision`) forwarded to Platform `RecordRunEvent` when
+  Agent Runtime configuration is present
 
 ### Install the native host manifest
 
@@ -86,6 +111,11 @@ Place the manifest in the standard Chrome location (if you did not use the scrip
 | `MAESTRO_BRIDGE_ARGS` | Extra args (JSON array or space-delimited) | empty |
 | `MAESTRO_BRIDGE_POLL_MS` | Status poll interval (ms) | `2000` |
 | `MAESTRO_BRIDGE_LAUNCH_TIMEOUT_MS` | Launch timeout (ms) | `15000` |
+| `MAESTRO_BRIDGE_AGENT_RUNTIME_URL` | Optional Agent Runtime base URL for browser-control decision events | empty |
+| `MAESTRO_BRIDGE_AGENT_RUNTIME_TOKEN` | Optional bearer token for Agent Runtime | empty |
+| `MAESTRO_BRIDGE_AGENT_RUNTIME_ORG_ID` | Optional organization header for Agent Runtime | empty |
+| `MAESTRO_BRIDGE_PLATFORM_RUN_ID` | Fallback Platform run ID when the Conductor receipt does not include one | empty |
+| `MAESTRO_BRIDGE_PLATFORM_RUNTIME_TIMEOUT_MS` | Agent Runtime event write timeout (ms) | `2000` |
 
 When the host launches Maestro, it sets:
 
@@ -96,6 +126,12 @@ MAESTRO_WEB_ORIGIN="*"
 ```
 
 Unless those variables are already set.
+
+When `onBrowserControlDecision` includes `platformRunId`, the native host writes
+a channel-safe `RUNTIME_EVENT_TYPE_AGENT_PROGRESS_RECORDED` event with
+`schemaVersion=browser-control-runtime-decision/v1`. Platform projects that
+event into the browser-control decision metric and Deploy alerts on missing or
+invalid Platform receipts.
 
 ## Notes
 

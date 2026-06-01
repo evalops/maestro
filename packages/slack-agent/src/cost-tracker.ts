@@ -8,9 +8,15 @@
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
-// Claude Sonnet 4 pricing (as of 2024)
-// https://www.anthropic.com/pricing
+// Claude API pricing per million tokens.
+// https://platform.claude.com/docs/en/about-claude/pricing
 const PRICING = {
+	"claude-opus-4-6": {
+		inputPerMillion: 5.0,
+		outputPerMillion: 25.0,
+		cacheWritePerMillion: 6.25,
+		cacheReadPerMillion: 0.5,
+	},
 	"claude-sonnet-4-20250514": {
 		inputPerMillion: 3.0,
 		outputPerMillion: 15.0,

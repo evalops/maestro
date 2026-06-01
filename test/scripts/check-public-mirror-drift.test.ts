@@ -19,7 +19,7 @@ function makeFixture() {
 	mkdirSync(source, { recursive: true });
 	mkdirSync(target, { recursive: true });
 	writePackage(source);
-	writePackage(target);
+	writePackage(target, { publicProjection: true });
 	return { root, source, target };
 }
 
@@ -28,22 +28,33 @@ function write(path: string, content: string) {
 	writeFileSync(path, content);
 }
 
-function writePackage(root: string) {
-	write(
-		join(root, "package.json"),
-		`${JSON.stringify(
-			{
-				name: packageName,
-				version: "1.0.0",
-				maestro: {
-					canonicalPackageName: packageName,
-					packageAliases: [packageName],
-				},
-			},
-			null,
-			2,
-		)}\n`,
-	);
+function writePackage(
+	root: string,
+	options: { publicProjection?: boolean } = {},
+) {
+	const pkg = {
+		name: packageName,
+		version: "1.0.0",
+		maestro: {
+			canonicalPackageName: packageName,
+			packageAliases: [packageName],
+		},
+		...(options.publicProjection
+			? {
+					scripts: {
+						"release:verify:published":
+							"node scripts/smoke-registry-install.js",
+						"release:verify:published:e2e":
+							"node scripts/smoke-published-replay-e2e.js",
+						"release:verify:published:evidence":
+							"node scripts/verify-published-replay-evidence.js",
+						"release:deprecate": "node scripts/deprecate-release.js",
+					},
+				}
+			: {}),
+	};
+
+	write(join(root, "package.json"), `${JSON.stringify(pkg, null, 2)}\n`);
 }
 
 function readJson(path: string) {
@@ -144,5 +155,48 @@ describe("check-public-mirror-drift", () => {
 			result: "drift_detected",
 		});
 		expect(readFileSync(markdownPath, "utf8")).toContain("drift detected");
+	});
+
+	it("includes release manifest overlay drift in preview status", () => {
+		const { root, source, target } = makeFixture();
+		write(join(source, "README.md"), "hello\n");
+		write(join(target, "README.md"), "hello\n");
+		write(
+			join(source, ".github/release-mirror-manifest.json"),
+			`${JSON.stringify(
+				{ files: [".github/workflows/tag-release.yml"] },
+				null,
+				2,
+			)}\n`,
+		);
+		write(join(source, ".github/workflows/tag-release.yml"), "new\n");
+		write(join(target, ".github/workflows/tag-release.yml"), "old\n");
+		const reportPath = join(root, "drift.json");
+		const statusPath = join(root, "status.json");
+		const markdownPath = join(root, "status.md");
+
+		const result = runCheck(
+			source,
+			target,
+			reportPath,
+			statusPath,
+			markdownPath,
+		);
+
+		expect(result.status).toBe(1);
+		const report = readJson(reportPath);
+		expect(report).toMatchObject({
+			copiedCount: 1,
+			releaseManifestChangedCount: 1,
+			releaseManifestChangedPaths: [".github/workflows/tag-release.yml"],
+		});
+		const status = readJson(statusPath);
+		expect(status).toMatchObject({
+			mirror: {
+				filesToCopyOrUpdate: 1,
+				sampledChangedPaths: ["copy/update .github/workflows/tag-release.yml"],
+			},
+			result: "drift_detected",
+		});
 	});
 });

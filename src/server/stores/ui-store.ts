@@ -19,6 +19,12 @@ function sanitizeKey(key: string): string | null {
 	return KEY_REGEX.test(key) ? key : null;
 }
 
+function normalizeFooterMode(value: unknown): UiState["footerMode"] {
+	if (value === "rich" || value === "solo") return value;
+	if (value === "ensemble") return "rich";
+	return undefined;
+}
+
 function normalize(raw: unknown): UiStateFile {
 	if (!raw || typeof raw !== "object" || !("sessions" in raw)) {
 		return { sessions: {} };
@@ -36,7 +42,7 @@ function normalize(raw: unknown): UiStateFile {
 				steeringMode: state.steeringMode,
 				followUpMode: state.followUpMode,
 				compactTools: state.compactTools,
-				footerMode: state.footerMode,
+				footerMode: normalizeFooterMode(state.footerMode),
 				cleanMode: state.cleanMode,
 				reducedMotion: state.reducedMotion,
 				recentCommands: state.recentCommands,

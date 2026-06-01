@@ -3,7 +3,11 @@ import type { AppMessage } from "../../../src/agent/types.js";
 import type { CommandExecutionContext } from "../../../src/cli-tui/commands/types.js";
 
 vi.mock("../../../src/cli/commands/agents.js", () => ({
-	handleAgentsInit: vi.fn(() => "/home/user/project/AGENTS.md"),
+	handleAgentsInit: vi.fn(() => ({
+		path: "/home/user/project/AGENTS.md",
+		action: "created",
+		sources: [],
+	})),
 }));
 
 import {
@@ -14,6 +18,7 @@ import {
 	handleCopyCommand,
 	handleInitCommand,
 	handleReportCommand,
+	parseInitArgs,
 } from "../../../src/cli-tui/commands/utility-handlers.js";
 import { handleAgentsInit } from "../../../src/cli/commands/agents.js";
 
@@ -127,9 +132,11 @@ describe("utility-handlers", () => {
 
 	describe("handleInitCommand", () => {
 		it("calls handleAgentsInit and shows success on success", () => {
-			vi.mocked(handleAgentsInit).mockReturnValue(
-				"/home/user/project/AGENTS.md",
-			);
+			vi.mocked(handleAgentsInit).mockReturnValue({
+				path: "/home/user/project/AGENTS.md",
+				action: "created",
+				sources: [],
+			});
 
 			const ctx = createMockContext("/init", "");
 			const callbacks: InitHandlerCallbacks = {
@@ -144,6 +151,149 @@ describe("utility-handlers", () => {
 			expect(callbacks.showSuccess).toHaveBeenCalled();
 			expect(callbacks.addContent).toHaveBeenCalled();
 			expect(callbacks.requestRender).toHaveBeenCalled();
+		});
+
+		it("shows a diff preview when AGENTS instructions already exist", () => {
+			vi.mocked(handleAgentsInit).mockReturnValue({
+				path: "/home/user/project/AGENTS.md",
+				action: "preview",
+				diff: "diff --git a/AGENTS.md b/AGENTS.md\n-old\n+new",
+				sources: [],
+			});
+
+			const ctx = createMockContext("/init", "");
+			const callbacks: InitHandlerCallbacks = {
+				showSuccess: vi.fn(),
+				showError: vi.fn(),
+				addContent: vi.fn(),
+				requestRender: vi.fn(),
+			};
+
+			handleInitCommand(ctx, callbacks);
+
+			expect(callbacks.showSuccess).toHaveBeenCalledWith(
+				expect.stringContaining("Previewed AGENTS update"),
+			);
+			expect(callbacks.addContent).toHaveBeenCalledWith(
+				expect.stringContaining("```diff"),
+			);
+			expect(callbacks.addContent).toHaveBeenCalledWith(
+				expect.stringContaining("diff --git"),
+			);
+		});
+
+		it("includes the target path in preview force instructions", () => {
+			vi.mocked(handleAgentsInit).mockReturnValue({
+				path: "/custom/path/AGENTS.md",
+				action: "preview",
+				diff: "diff --git a/AGENTS.md b/AGENTS.md\n-old\n+new",
+				sources: [],
+			});
+
+			const ctx = createMockContext("/init ./custom/path", "./custom/path");
+			const callbacks: InitHandlerCallbacks = {
+				showSuccess: vi.fn(),
+				showError: vi.fn(),
+				addContent: vi.fn(),
+				requestRender: vi.fn(),
+			};
+
+			handleInitCommand(ctx, callbacks);
+
+			expect(callbacks.showSuccess).toHaveBeenCalledWith(
+				expect.stringContaining("/init --force ./custom/path"),
+			);
+			expect(callbacks.addContent).toHaveBeenCalledWith(
+				expect.stringContaining("/init --force ./custom/path"),
+			);
+		});
+
+		it("passes force when provided", () => {
+			vi.mocked(handleAgentsInit).mockReturnValue({
+				path: "/custom/path/AGENTS.md",
+				action: "updated",
+				sources: [],
+			});
+
+			const ctx = createMockContext(
+				"/init --force ./custom/path",
+				"--force ./custom/path",
+			);
+			const callbacks: InitHandlerCallbacks = {
+				showSuccess: vi.fn(),
+				showError: vi.fn(),
+				addContent: vi.fn(),
+				requestRender: vi.fn(),
+			};
+
+			handleInitCommand(ctx, callbacks);
+
+			expect(handleAgentsInit).toHaveBeenCalledWith("./custom/path", {
+				force: true,
+			});
+			expect(callbacks.showSuccess).toHaveBeenCalledWith(
+				expect.stringContaining("Updated AGENTS instructions"),
+			);
+		});
+
+		it("preserves literal targets that end with force-looking segments", () => {
+			vi.mocked(handleAgentsInit).mockReturnValue({
+				path: "/custom/path/AGENTS.md",
+				action: "created",
+				sources: [],
+			});
+
+			const ctx = createMockContext(
+				"/init docs/team --force",
+				"docs/team --force",
+			);
+			const callbacks: InitHandlerCallbacks = {
+				showSuccess: vi.fn(),
+				showError: vi.fn(),
+				addContent: vi.fn(),
+				requestRender: vi.fn(),
+			};
+
+			handleInitCommand(ctx, callbacks);
+
+			expect(handleAgentsInit).toHaveBeenCalledWith("docs/team --force", {
+				force: false,
+			});
+		});
+
+		it("parses leading force flags for /init updates", () => {
+			expect(parseInitArgs("--force docs/team")).toEqual({
+				targetArg: "docs/team",
+				force: true,
+			});
+			expect(parseInitArgs("-f")).toEqual({
+				targetArg: undefined,
+				force: true,
+			});
+		});
+
+		it("strips terminal controls from diff previews", () => {
+			vi.mocked(handleAgentsInit).mockReturnValue({
+				path: "/custom/path/AGENTS.md",
+				action: "preview",
+				diff: `${String.fromCharCode(27)}[2J-old${String.fromCharCode(7)}\n+new`,
+				sources: [],
+			});
+
+			const ctx = createMockContext("/init", "");
+			const callbacks: InitHandlerCallbacks = {
+				showSuccess: vi.fn(),
+				showError: vi.fn(),
+				addContent: vi.fn(),
+				requestRender: vi.fn(),
+			};
+
+			handleInitCommand(ctx, callbacks);
+
+			const preview = vi.mocked(callbacks.addContent).mock.calls[0]?.[0] ?? "";
+			expect(preview).toContain("-old\n+new");
+			expect(preview).not.toContain(String.fromCharCode(27));
+			expect(preview).not.toContain(String.fromCharCode(7));
 		});
 
 		it("shows error when handleAgentsInit throws", () => {
@@ -165,7 +315,11 @@ describe("utility-handlers", () => {
 		});
 
 		it("passes target argument when provided", () => {
-			vi.mocked(handleAgentsInit).mockReturnValue("/custom/path/AGENTS.md");
+			vi.mocked(handleAgentsInit).mockReturnValue({
+				path: "/custom/path/AGENTS.md",
+				action: "created",
+				sources: [],
+			});
 
 			const ctx = createMockContext("/init ./custom/path", "./custom/path");
 			const callbacks: InitHandlerCallbacks = {

@@ -79,13 +79,11 @@ export function resolveEnvCredential(
 	for (const name of vars) {
 		const value = process.env[name];
 		if (!value) continue;
-		const isAnthropicOAuth =
-			provider === "anthropic" && name === "ANTHROPIC_OAUTH_TOKEN";
 		return {
 			provider,
 			token: value,
-			type: isAnthropicOAuth ? "anthropic-oauth" : "api-key",
-			source: isAnthropicOAuth ? "anthropic_oauth_env" : "env",
+			type: "api-key",
+			source: "env",
 			envVar: name,
 		};
 	}

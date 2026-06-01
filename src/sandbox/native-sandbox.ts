@@ -16,15 +16,20 @@ import {
 } from "node:child_process";
 import {
 	existsSync,
+	lstatSync,
 	mkdirSync,
 	readFileSync,
 	readdirSync,
+	readlinkSync,
+	realpathSync,
 	rmSync,
 	writeFileSync,
 } from "node:fs";
 import { platform } from "node:os";
-import { dirname, isAbsolute, join } from "node:path";
+import { basename, dirname, isAbsolute, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
+import { isPathWithin } from "../utils/path-containment.js";
 import { resolveShellEnvironment } from "../utils/shell-env.js";
 import type { ExecResult, Sandbox } from "./types.js";
 
@@ -193,6 +198,29 @@ const SANDBOX_ENV_VAR = "MAESTRO_SANDBOX";
 // Helper Functions
 // ─────────────────────────────────────────────────────────────
 
+function getGitReadOnlySubpaths(cwd: string): string[] {
+	const gitPath = join(cwd, ".git");
+	if (!existsSync(gitPath)) {
+		return [];
+	}
+
+	const readOnlySubpaths = [gitPath];
+	try {
+		const gitFile = readFileSync(gitPath, "utf-8");
+		const match = gitFile.match(/^gitdir:\s*(.+?)\s*$/m);
+		const gitDir = match?.[1];
+		if (gitDir) {
+			readOnlySubpaths.push(
+				isAbsolute(gitDir) ? resolve(gitDir) : resolve(cwd, gitDir),
+			);
+		}
+	} catch {
+		// .git is usually a directory; only worktree gitfiles need parsing.
+	}
+
+	return readOnlySubpaths;
+}
+
 function getWritableRootsWithCwd(
 	policy: NativeSandboxPolicy,
 	cwd: string,
@@ -226,20 +254,83 @@ function getWritableRootsWithCwd(
 	}
 
 	// Add cwd with .git as read-only subpath if present
-	const gitDir = join(cwd, ".git");
-	const readOnlySubpaths = existsSync(gitDir) ? [gitDir] : [];
-	roots.push({ root: cwd, readOnlySubpaths });
+	roots.push({ root: cwd, readOnlySubpaths: [] });
 
-	return roots;
+	const readOnlySubpaths = getGitReadOnlySubpaths(cwd);
+	if (readOnlySubpaths.length === 0) {
+		return roots;
+	}
+
+	return roots.map((root) => ({
+		...root,
+		readOnlySubpaths: readOnlySubpaths.filter((readOnlySubpath) =>
+			isPathWithin(
+				canonicalizeForAccess(readOnlySubpath),
+				canonicalizeForAccess(root.root),
+			),
+		),
+	}));
 }
 
 function canonicalize(path: string): string {
 	// On macOS, /var is a symlink to /private/var
 	try {
-		const { realpathSync } = require("node:fs");
 		return realpathSync(path);
 	} catch {
 		return path;
+	}
+}
+
+function canonicalizeForAccess(path: string, seen = new Set<string>()): string {
+	const resolvedPath = resolve(path);
+	const missingSegments: string[] = [];
+	let existingParent = resolvedPath;
+
+	while (true) {
+		try {
+			const stat = lstatSync(existingParent);
+			if (stat.isSymbolicLink()) {
+				if (seen.has(existingParent)) {
+					return resolve(existingParent, ...missingSegments);
+				}
+				seen.add(existingParent);
+				const target = readlinkSync(existingParent);
+				const resolvedTarget = isAbsolute(target)
+					? target
+					: resolve(dirname(existingParent), target);
+				return resolve(
+					canonicalizeForAccess(resolvedTarget, seen),
+					...missingSegments,
+				);
+			}
+			return resolve(canonicalize(existingParent), ...missingSegments);
+		} catch {
+			// Keep walking upward. Unlike existsSync, lstatSync sees dangling
+			// symlinks, so writes through them are checked against their targets.
+		}
+
+		const parent = dirname(existingParent);
+		if (parent === existingParent) {
+			return resolvedPath;
+		}
+		missingSegments.unshift(basename(existingParent));
+		existingParent = parent;
+	}
+}
+
+function canonicalizeDirectoryEntryForAccess(path: string): string {
+	const resolvedPath = resolve(path);
+	return resolve(
+		canonicalizeForAccess(dirname(resolvedPath)),
+		basename(resolvedPath),
+	);
+}
+
+function isSymbolicLinkPath(path: string): boolean {
+	try {
+		return lstatSync(path).isSymbolicLink();
+	} catch {
+		return false;
 	}
 }
 
@@ -365,7 +456,8 @@ export class NativeSandbox implements Sandbox {
 		cwd?: string,
 		env?: Record<string, string>,
 	): Promise<ExecResult> {
-		const workingDir = cwd ?? this.cwd;
+		const workingDir = this.resolveWorkingDir(cwd);
+		this.assertExecutionCwd(workingDir);
 		const mergedEnv = {
 			...resolveShellEnvironment(env, { workspaceDir: this.cwd }),
 			[SANDBOX_ENV_VAR]: this.getSandboxType(),
@@ -382,7 +474,7 @@ export class NativeSandbox implements Sandbox {
 				const seatbeltArgs = createSeatbeltArgs(
 					shellCommand,
 					this.policy,
-					workingDir,
+					this.cwd,
 				);
 				child = spawn(SEATBELT_EXECUTABLE, seatbeltArgs, {
 					cwd: workingDir,
@@ -446,9 +538,11 @@ export class NativeSandbox implements Sandbox {
 		options: SpawnOptions = {},
 	): Promise<ExecResult> {
 		const fullCommand = [command, ...args];
+		const workingDir = this.resolveWorkingDir(options.cwd);
+		this.assertExecutionCwd(workingDir);
 		const mergedOptions: SpawnOptions = {
-			cwd: this.cwd,
 			...options,
+			cwd: workingDir,
 			env: {
 				...resolveShellEnvironment(options.env, {
 					workspaceDir: this.cwd,
@@ -525,6 +619,7 @@ export class NativeSandbox implements Sandbox {
 		}
 
 		const fullPath = this.resolvePath(path);
+		this.assertWritablePath(fullPath);
 
 		// Ensure parent directory exists
 		const dir = dirname(fullPath);
@@ -560,6 +655,13 @@ export class NativeSandbox implements Sandbox {
 		}
 
 		const fullPath = this.resolvePath(path);
+		const canonicalizeTarget = isSymbolicLinkPath(fullPath)
+			? canonicalizeDirectoryEntryForAccess
+			: canonicalizeForAccess;
+		this.assertWritablePath(fullPath, {
+			blockReadOnlyDescendants: recursive ?? false,
+			canonicalizeTarget,
+		});
 		rmSync(fullPath, { recursive: recursive ?? false, force: true });
 	}
 
@@ -577,6 +679,82 @@ export class NativeSandbox implements Sandbox {
 			return path;
 		}
 		return join(this.cwd, path);
+	}
+
+	private resolveWorkingDir(cwd?: string | URL): string {
+		if (!cwd) {
+			return this.cwd;
+		}
+		const cwdPath = typeof cwd === "string" ? cwd : fileURLToPath(cwd);
+		if (isAbsolute(cwdPath)) {
+			return resolve(cwdPath);
+		}
+		return resolve(this.cwd, cwdPath);
+	}
+
+	private assertExecutionCwd(workingDir: string): void {
+		if (this.policy.mode !== "workspace-write") {
+			return;
+		}
+
+		const targetPath = canonicalizeForAccess(workingDir);
+		const allowedRoots = getWritableRootsWithCwd(this.policy, this.cwd).map(
+			(root) => canonicalizeForAccess(root.root),
+		);
+
+		if (!allowedRoots.some((root) => isPathWithin(targetPath, root))) {
+			throw new Error(
+				`Cannot execute workspace-write command outside workspace or explicit writable roots: ${workingDir}`,
+			);
+		}
+
+		this.assertWritablePath(targetPath);
+	}
+
+	private assertWritablePath(
+		path: string,
+		options?: {
+			blockReadOnlyDescendants?: boolean;
+			canonicalizeTarget?: (path: string) => string;
+		},
+	): void {
+		if (this.policy.mode === "danger-full-access") {
+			return;
+		}
+
+		const targetPath = (options?.canonicalizeTarget ?? canonicalizeForAccess)(
+			path,
+		);
+		const writableRoots = getWritableRootsWithCwd(this.policy, this.cwd);
+		let hasMatchingWritableRoot = false;
+		let blockedByReadOnlySubpath = false;
+
+		for (const root of writableRoots) {
+			const rootPath = canonicalizeForAccess(root.root);
+			if (!isPathWithin(targetPath, rootPath)) {
+				continue;
+			}
+
+			hasMatchingWritableRoot = true;
+			if (
+				root.readOnlySubpaths.some((readOnlySubpath) => {
+					const readOnlyPath = canonicalizeForAccess(readOnlySubpath);
+					return (
+						isPathWithin(targetPath, readOnlyPath) ||
+						(options?.blockReadOnlyDescendants === true &&
+							isPathWithin(readOnlyPath, targetPath))
+					);
+				})
+			) {
+				blockedByReadOnlySubpath = true;
+			}
+		}
+
+		if (!hasMatchingWritableRoot || blockedByReadOnlySubpath) {
+			throw new Error(
+				`Cannot write outside writable roots in ${this.policy.mode} sandbox mode: ${path}`,
+			);
+		}
 	}
 
 	private getSandboxType(): string {
@@ -598,13 +776,7 @@ export function isNativeSandboxAvailable(): boolean {
 		return existsSync(SEATBELT_EXECUTABLE);
 	}
 	if (platform() === "linux") {
-		try {
-			const { readFileSync } = require("node:fs");
-			const lsm = readFileSync("/sys/kernel/security/lsm", "utf-8");
-			return lsm.includes("landlock");
-		} catch {
-			return false;
-		}
+		return false;
 	}
 	return false;
 }

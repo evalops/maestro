@@ -2,7 +2,7 @@ import {
 	type MaestroCloseReason,
 	recordMaestroSessionEvent,
 } from "@evalops/ai/telemetry";
-import type { AgentConfig, Task } from "../types.js";
+import type { AgentConfig, GitHubAgentEvidence, Task } from "../types.js";
 
 const DEFAULT_IDENTITY_URL = "http://127.0.0.1:8080";
 const DEFAULT_PROVIDER_REF_PROVIDER = "openai";
@@ -156,10 +156,14 @@ function buildGitHubTaskEventMetadata(
 export interface GitHubTaskSessionCloseInput {
 	status: "completed" | "failed";
 	branch?: string;
+	headSha?: string;
 	prUrl?: string;
+	prNumber?: number;
+	checkRunId?: number;
 	durationMs?: number;
 	tokensUsed?: number;
 	cost?: number;
+	evidence?: GitHubAgentEvidence;
 	error?: string;
 }
 
@@ -194,10 +198,14 @@ export function recordGitHubTaskSessionClosed(
 		metadata: buildGitHubTaskEventMetadata(task, {
 			status: input.status,
 			branch: input.branch,
+			head_sha: input.headSha,
 			pr_url: input.prUrl,
+			pr_number: input.prNumber,
+			check_run_id: input.checkRunId,
 			duration_ms: input.durationMs,
 			tokens_used: input.tokensUsed,
 			cost: input.cost,
+			evidence: input.evidence,
 		}),
 		env: buildGitHubTaskEventEnvironment(task, env),
 	});

@@ -8,10 +8,15 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AgentState } from "../../src/agent/types.js";
+import { UNIFIED_CONTEXT_MANIFEST_PROTOCOL } from "../../src/context/manifest-types.js";
 import { exportSessionToJson } from "../../src/export-html.js";
-import { SessionManager } from "../../src/session/manager.js";
+import {
+	SessionManager,
+	flushPendingSessionAutoPrunesForTests,
+	resetSessionAutoPruneForTests,
+} from "../../src/session/manager.js";
 import type { SessionHeaderEntry } from "../../src/session/types.js";
 
 // Helper to create a minimal agent state
@@ -44,6 +49,29 @@ function createMockState(): AgentState {
 		isStreaming: false,
 		streamMessage: null,
 		pendingToolCalls: new Map(),
+	};
+}
+
+function createPromptContextManifest() {
+	return {
+		cwd: "/repo",
+		candidates: ["AGENTS.md"],
+		maxBytes: 32768,
+		bytesRead: 10,
+		entries: [
+			{
+				path: "/repo/AGENTS.md",
+				sourceKind: "project" as const,
+				scopeDir: "/repo",
+				candidateName: "AGENTS.md",
+				bytesRead: 10,
+				truncated: false,
+				contentHash: "a".repeat(64),
+				precedenceIndex: 0,
+				content: "guidance",
+			},
+		],
+		diagnostics: [],
 	};
 }
 
@@ -111,6 +139,75 @@ describe("SessionManager - Deferred Session Creation", () => {
 	});
 
 	describe("Session metadata", () => {
+		it("does not keep short-lived processes alive for background auto-prune", () => {
+			const unref = vi.fn();
+			const setTimeoutSpy = vi
+				.spyOn(globalThis, "setTimeout")
+				.mockImplementation(
+					((
+						_handler: Parameters<typeof setTimeout>[0],
+						_timeout?: Parameters<typeof setTimeout>[1],
+						..._args: unknown[]
+					) =>
+						({
+							unref,
+						}) as unknown as ReturnType<
+							typeof setTimeout
+						>) as typeof setTimeout,
+				);
+
+			try {
+				const sessionManager = new SessionManager(false);
+				sessionManager.startSession(createMockState());
+
+				expect(setTimeoutSpy).toHaveBeenCalledWith(expect.any(Function), 5000);
+				expect(unref).toHaveBeenCalled();
+			} finally {
+				setTimeoutSpy.mockRestore();
+			}
+		});
+
+		it("preserves pending auto-prune for short-lived processes", () => {
+			const unref = vi.fn();
+			const setTimeoutSpy = vi
+				.spyOn(globalThis, "setTimeout")
+				.mockImplementation(
+					((
+						_handler: Parameters<typeof setTimeout>[0],
+						_timeout?: Parameters<typeof setTimeout>[1],
+						..._args: unknown[]
+					) =>
+						({
+							unref,
+						}) as unknown as ReturnType<
+							typeof setTimeout
+						>) as typeof setTimeout,
+				);
+
+			try {
+				const sessionManager = new SessionManager(false);
+				const pruneSpy = vi
+					.spyOn(sessionManager, "pruneSessions")
+					.mockReturnValue({ removed: 0, errors: 0 });
+
+				sessionManager.startSession(createMockState());
+
+				expect(setTimeoutSpy).toHaveBeenCalledWith(expect.any(Function), 5000);
+				expect(unref).toHaveBeenCalled();
+				expect(pruneSpy).not.toHaveBeenCalled();
+
+				flushPendingSessionAutoPrunesForTests();
+
+				expect(pruneSpy).toHaveBeenCalledTimes(1);
+
+				flushPendingSessionAutoPrunesForTests();
+
+				expect(pruneSpy).toHaveBeenCalledTimes(1);
+			} finally {
+				setTimeoutSpy.mockRestore();
+			}
+		});
+
 		it("derives summaries and toggles favorites", () => {
 			const sessionManager = new SessionManager(false);
 			const state = createMockState();
@@ -202,6 +299,60 @@ describe("SessionManager - Deferred Session Creation", () => {
 			expect(sessionManager.getHeader()?.promptMetadata).toEqual(
 				state.promptMetadata,
 			);
+		});
+
+		it("persists prompt context manifest in the session header", () => {
+			const sessionManager = new SessionManager(false);
+			const state = createMockState();
+			state.promptContextManifest = createPromptContextManifest();
+
+			sessionManager.startSession(state);
+
+			expect(sessionManager.getHeader()?.promptContextManifest).toEqual(
+				state.promptContextManifest,
+			);
+		});
+
+		it("persists unified context manifest in the session header", () => {
+			const sessionManager = new SessionManager(false);
+			const state = createMockState();
+			const promptContextManifest = createPromptContextManifest();
+			state.promptContextManifest = promptContextManifest;
+			state.unifiedContextManifest = {
+				protocolVersion: UNIFIED_CONTEXT_MANIFEST_PROTOCOL,
+				version: 1,
+				cwd: "/repo",
+				projectDocs: promptContextManifest,
+				entries: [
+					{
+						id: "project_doc:project:AGENTS.md",
+						kind: "project_doc",
+						source: "filesystem",
+						status: "loaded",
+						label: "AGENTS.md",
+						path: "/repo/AGENTS.md",
+						scopeDir: "/repo",
+						precedenceIndex: 0,
+						bytesRead: 10,
+						contentHash: "a".repeat(64),
+						metadata: {
+							sourceKind: "project",
+							truncated: false,
+						},
+					},
+				],
+				diagnostics: [],
+			};
+
+			sessionManager.startSession(state);
+
+			expect(sessionManager.getHeader()?.unifiedContextManifest).toEqual(
+				state.unifiedContextManifest,
+			);
+			expect(
+				readSessionHeader(sessionManager.getSessionFile())
+					.unifiedContextManifest,
+			).toEqual(state.unifiedContextManifest);
 		});
 	});
 
@@ -351,6 +502,7 @@ describe("SessionManager - Deferred Session Creation", () => {
 	});
 
 	afterEach(() => {
+		resetSessionAutoPruneForTests();
 		// Restore original state
 		process.chdir(originalCwd);
 		if (originalEnv === undefined) {

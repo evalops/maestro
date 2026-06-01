@@ -3,13 +3,20 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
 	HeadlessFromAgentMessageSchema,
+	assertHeadlessFromAgentMessage,
+	headlessConnectionRoles,
 	headlessProtocolVersion,
+	headlessServerRequestTypes,
+	headlessUtilityOperations,
 } from "@evalops/contracts";
 import { Value } from "@sinclair/typebox/value";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+import type { Agent } from "../../src/agent/index.js";
 import type { AssistantMessage } from "../../src/agent/types.js";
 import {
+	CODEX_SUBAGENT_WORK_GRAPH_SCHEMA,
 	HEADLESS_PROTOCOL_VERSION,
+	HEADLESS_SERVER_CAPABILITIES,
 	HeadlessProtocolTranslator,
 	applyIncomingHeadlessMessage,
 	applyOutgoingHeadlessMessage,
@@ -21,6 +28,7 @@ import {
 	createHeadlessRuntimeState,
 	loadPromptAttachments,
 } from "../../src/cli/headless-protocol.js";
+import type { SessionManager } from "../../src/session/manager.js";
 
 function assistantMessage(
 	overrides: Partial<AssistantMessage> = {},
@@ -53,12 +61,56 @@ describe("headless protocol helpers", () => {
 		expect(HEADLESS_PROTOCOL_VERSION).toBe(headlessProtocolVersion);
 	});
 
+	it("advertises a schema-valid complete server capability set", () => {
+		expect(HEADLESS_SERVER_CAPABILITIES).toEqual({
+			server_requests: [...headlessServerRequestTypes],
+			utility_operations: [...headlessUtilityOperations],
+			raw_agent_events: true,
+			connection_roles: [...headlessConnectionRoles],
+		});
+		expect(new Set(HEADLESS_SERVER_CAPABILITIES.server_requests).size).toBe(
+			HEADLESS_SERVER_CAPABILITIES.server_requests.length,
+		);
+		expect(new Set(HEADLESS_SERVER_CAPABILITIES.utility_operations).size).toBe(
+			HEADLESS_SERVER_CAPABILITIES.utility_operations.length,
+		);
+		expect(new Set(HEADLESS_SERVER_CAPABILITIES.connection_roles).size).toBe(
+			HEADLESS_SERVER_CAPABILITIES.connection_roles.length,
+		);
+		expect(() =>
+			assertHeadlessFromAgentMessage({
+				type: "hello_ok",
+				protocol_version: HEADLESS_PROTOCOL_VERSION,
+				server_capabilities: HEADLESS_SERVER_CAPABILITIES,
+			}),
+		).not.toThrow();
+	});
+
 	it("documents the current protocol version in the reference doc", async () => {
 		const doc = await readFile(
 			new URL("../../docs/protocols/headless.md", import.meta.url),
 			"utf-8",
 		);
 		expect(doc).toContain(`Current version: \`${HEADLESS_PROTOCOL_VERSION}\``);
+	});
+
+	it("documents the Codex subagent workgraph schema in restore continuity examples", async () => {
+		const headlessDoc = await readFile(
+			new URL("../../docs/protocols/headless.md", import.meta.url),
+			"utf-8",
+		);
+		const hostedContract = await readFile(
+			new URL(
+				"../../docs/protocols/hosted-runner-contract.md",
+				import.meta.url,
+			),
+			"utf-8",
+		);
+
+		expect(headlessDoc).toContain(
+			`"codex_subagent_schema_version": "${CODEX_SUBAGENT_WORK_GRAPH_SCHEMA}"`,
+		);
+		expect(hostedContract).toContain("schema-versioned `work_continuity`");
 	});
 
 	it("classifies cancellation-like errors", () => {
@@ -102,6 +154,86 @@ describe("headless protocol helpers", () => {
 			model_id: "claude-opus-4-6",
 			provider: "anthropic",
 		});
+	});
+
+	it("marks replay executor type in ready messages", () => {
+		const translator = new HeadlessProtocolTranslator();
+		const sessionManager = { getSessionId: () => "session_replay" };
+
+		expect(
+			translator.buildReadyMessage(
+				{
+					state: {
+						model: { id: "maestro-replay-v1", provider: "scripted-replay" },
+					},
+				} as Agent,
+				sessionManager as SessionManager,
+			),
+		).toMatchObject({
+			type: "ready",
+			executor_type: "replay",
+			session_id: "session_replay",
+		});
+	});
+
+	it("does not infer replay executor type from a stale scenario env var", () => {
+		const translator = new HeadlessProtocolTranslator();
+		const sessionManager = { getSessionId: () => "session_live" };
+		const originalScenarioPath = process.env.MAESTRO_SCENARIO_PATH;
+		process.env.MAESTRO_SCENARIO_PATH = "/tmp/stale-scenario.json";
+		try {
+			expect(
+				translator.buildReadyMessage(
+					{
+						state: {
+							model: { id: "gpt-5.4", provider: "openai" },
+						},
+					} as Agent,
+					sessionManager as SessionManager,
+				),
+			).toMatchObject({
+				type: "ready",
+				executor_type: "live",
+				session_id: "session_live",
+			});
+		} finally {
+			if (originalScenarioPath === undefined) {
+				delete process.env.MAESTRO_SCENARIO_PATH;
+			} else {
+				process.env.MAESTRO_SCENARIO_PATH = originalScenarioPath;
+			}
+		}
+	});
+
+	it("tracks ready executor type in runtime state", () => {
+		const state = createHeadlessRuntimeState();
+
+		applyIncomingHeadlessMessage(state, {
+			type: "ready",
+			protocol_version: HEADLESS_PROTOCOL_VERSION,
+			model: "gpt-5.4",
+			provider: "openai",
+			executor_type: "live",
+			session_id: "session_live",
+		});
+
+		expect(state.is_ready).toBe(true);
+		expect(state.executor_type).toBe("live");
+	});
+
+	it("defaults older ready messages without executor type to live", () => {
+		const state = createHeadlessRuntimeState();
+
+		applyIncomingHeadlessMessage(state, {
+			type: "ready",
+			protocol_version: HEADLESS_PROTOCOL_VERSION,
+			model: "gpt-5.4",
+			provider: "openai",
+			session_id: "session_live",
+		});
+
+		expect(state.is_ready).toBe(true);
+		expect(state.executor_type).toBe("live");
 	});
 
 	it("returns zeroed usage when usage metadata is missing", () => {
@@ -231,6 +363,82 @@ describe("headless protocol helpers", () => {
 		}
 	});
 
+	it("translates Codex subagent completion details into safe tool_end evidence", () => {
+		const translator = new HeadlessProtocolTranslator();
+		const messages = translator.handleAgentEvent({
+			type: "tool_execution_end",
+			toolCallId: "collab-spawn-complete",
+			toolName: "codex.subagent.spawnAgent",
+			result: {
+				role: "toolResult",
+				toolCallId: "collab-spawn-complete",
+				toolName: "codex.subagent.spawnAgent",
+				content: [{ type: "text", text: "Codex subagent completed." }],
+				details: {
+					receiverThreadIds: ["child-thread-complete"],
+					childRunIds: ["agent-run-child-complete"],
+					codexWorkGraph: {
+						schemaVersion: "evalops.maestro.codex.subagent-workgraph.v1",
+						childRuns: [
+							{
+								threadId: "child-thread-complete",
+								childRunId: "agent-run-child-complete",
+								operation: "spawnAgent",
+								prompt: "Sensitive nested child task prompt",
+							},
+						],
+					},
+					agentsStates: {
+						"child-thread-complete": {
+							status: "completed",
+							model: "sensitive-model-choice",
+						},
+					},
+					prompt: "Sensitive child task prompt",
+				},
+				isError: false,
+				timestamp: Date.now(),
+			},
+			isError: false,
+		});
+
+		expect(messages).toEqual([
+			{
+				type: "tool_end",
+				call_id: "collab-spawn-complete",
+				success: true,
+				tool: "codex.subagent.spawnAgent",
+				details: {
+					receiverThreadIds: ["child-thread-complete"],
+					childRunIds: ["agent-run-child-complete"],
+					codexWorkGraph: {
+						schemaVersion: "evalops.maestro.codex.subagent-workgraph.v1",
+						childRuns: [
+							{
+								threadId: "child-thread-complete",
+								childRunId: "agent-run-child-complete",
+								operation: "spawnAgent",
+							},
+						],
+					},
+					agentsStates: {
+						"child-thread-complete": { status: "completed" },
+					},
+				},
+			},
+		]);
+		expect(JSON.stringify(messages)).not.toContain(
+			"Sensitive child task prompt",
+		);
+		expect(JSON.stringify(messages)).not.toContain(
+			"Sensitive nested child task prompt",
+		);
+		expect(JSON.stringify(messages)).not.toContain("sensitive-model-choice");
+		for (const message of messages) {
+			expect(Value.Check(HeadlessFromAgentMessageSchema, message)).toBe(true);
+		}
+	});
+
 	it("translates approval requests into legacy and server_request messages", () => {
 		const translator = new HeadlessProtocolTranslator();
 		const messages = translator.handleAgentEvent({
@@ -243,6 +451,7 @@ describe("headless protocol helpers", () => {
 				actionDescription: "Running rm -rf dist",
 				args: { command: "rm -rf dist" },
 				reason: "Dangerous command",
+				startedAtMs: 1_000,
 			},
 		});
 
@@ -265,6 +474,7 @@ describe("headless protocol helpers", () => {
 				action_description: "Running rm -rf dist",
 				args: { command: "rm -rf dist" },
 				reason: "Dangerous command",
+				started_at_ms: 1_000,
 			},
 		]);
 		for (const message of messages) {
@@ -281,11 +491,13 @@ describe("headless protocol helpers", () => {
 				toolName: "bash",
 				args: { command: "rm -rf dist" },
 				reason: "Dangerous command",
+				startedAtMs: 1_000,
 			},
 			decision: {
 				approved: false,
 				reason: "Denied by user",
 				resolvedBy: "user",
+				resolvedAtMs: 1_750,
 			},
 		});
 		expect(messages).toEqual([
@@ -297,6 +509,8 @@ describe("headless protocol helpers", () => {
 				resolution: "denied",
 				reason: "Denied by user",
 				resolved_by: "user",
+				started_at_ms: 1_000,
+				resolved_at_ms: 1_750,
 			},
 		]);
 		for (const message of messages) {
@@ -498,6 +712,435 @@ describe("headless protocol helpers", () => {
 		]);
 	});
 
+	it("preserves Codex subagent lifecycle edges without prompt payloads", () => {
+		const state = createHeadlessRuntimeState();
+		const spawnArgs = {
+			prompt: "Sensitive child task prompt",
+			codexWorkGraph: {
+				schemaVersion: "evalops.maestro.codex.subagent-workgraph.v1",
+				childRuns: [
+					{
+						threadId: "child-thread-1",
+						childRunId: "agent-run-child-1",
+						operation: "spawnAgent",
+					},
+				],
+			},
+		};
+
+		applyIncomingHeadlessMessage(state, {
+			type: "tool_call",
+			call_id: "collab-spawn-1",
+			tool_execution_id: "texec-spawn-1",
+			tool: "codex.subagent.spawnAgent",
+			args: spawnArgs,
+			requires_approval: false,
+		});
+		expect(state.codex_subagent_edges).toEqual([
+			{
+				spawn_tool_call_id: "collab-spawn-1",
+				spawn_tool_execution_id: "texec-spawn-1",
+				child_run_id: "agent-run-child-1",
+				thread_id: "child-thread-1",
+				operation: "spawn_agent",
+				status: "waiting_for_restore",
+			},
+		]);
+
+		applyIncomingHeadlessMessage(state, {
+			type: "tool_end",
+			call_id: "collab-spawn-1",
+			success: true,
+		});
+		applyIncomingHeadlessMessage(state, {
+			type: "tool_call",
+			call_id: "collab-close-1",
+			tool_execution_id: "texec-close-1",
+			tool: "codex.subagent.closeAgent",
+			args: {
+				receiverThreadIds: ["child-thread-1"],
+				childRunIds: ["agent-run-child-1"],
+			},
+			requires_approval: false,
+		});
+		applyIncomingHeadlessMessage(state, {
+			type: "tool_end",
+			call_id: "collab-close-1",
+			success: true,
+		});
+
+		expect(state.codex_subagent_edges).toEqual([
+			{
+				wait_tool_call_id: "collab-close-1",
+				wait_tool_execution_id: "texec-close-1",
+				child_run_id: "agent-run-child-1",
+				thread_id: "child-thread-1",
+				operation: "close_agent",
+				status: "closed",
+			},
+			{
+				spawn_tool_call_id: "collab-spawn-1",
+				spawn_tool_execution_id: "texec-spawn-1",
+				child_run_id: "agent-run-child-1",
+				thread_id: "child-thread-1",
+				operation: "spawn_agent",
+				status: "completed",
+			},
+		]);
+		expect(JSON.stringify(state.codex_subagent_edges)).not.toContain(
+			"Sensitive child task prompt",
+		);
+	});
+
+	it("keeps governed Codex subagent IDs on partial server_request updates", () => {
+		const state = createHeadlessRuntimeState();
+		const spawnArgs = {
+			codexWorkGraph: {
+				schemaVersion: "evalops.maestro.codex.subagent-workgraph.v1",
+				childRuns: [
+					{
+						threadId: "child-thread-governed",
+						childRunId: "agent-run-child-governed",
+						operation: "spawnAgent",
+					},
+				],
+			},
+		};
+
+		applyIncomingHeadlessMessage(state, {
+			type: "tool_call",
+			call_id: "collab-spawn-governed",
+			tool_execution_id: "texec-spawn-governed",
+			tool: "codex.subagent.spawnAgent",
+			args: spawnArgs,
+			requires_approval: false,
+		});
+		applyIncomingHeadlessMessage(state, {
+			type: "server_request",
+			request_id: "approval-spawn-governed",
+			request_type: "approval",
+			call_id: "collab-spawn-governed",
+			tool: "codex.subagent.spawnAgent",
+			args: spawnArgs,
+			reason: "Policy approval required",
+		});
+
+		expect(state.codex_subagent_edges).toEqual([
+			{
+				spawn_tool_call_id: "collab-spawn-governed",
+				spawn_tool_execution_id: "texec-spawn-governed",
+				child_run_id: "agent-run-child-governed",
+				thread_id: "child-thread-governed",
+				operation: "spawn_agent",
+				status: "waiting_for_restore",
+			},
+		]);
+		expect(state.pending_approvals[0]?.tool_execution_id).toBe(
+			"texec-spawn-governed",
+		);
+	});
+
+	it("persists governed Codex subagent IDs introduced by retry requests", () => {
+		const state = createHeadlessRuntimeState();
+		const spawnArgs = {
+			codexWorkGraph: {
+				schemaVersion: "evalops.maestro.codex.subagent-workgraph.v1",
+				childRuns: [
+					{
+						threadId: "child-thread-retry-governed",
+						childRunId: "agent-run-child-retry-governed",
+						operation: "spawnAgent",
+					},
+				],
+			},
+		};
+
+		applyIncomingHeadlessMessage(state, {
+			type: "tool_call",
+			call_id: "collab-spawn-retry-governed",
+			tool: "codex.subagent.spawnAgent",
+			args: spawnArgs,
+			requires_approval: false,
+		});
+		applyIncomingHeadlessMessage(state, {
+			type: "server_request",
+			request_id: "retry-spawn-governed",
+			request_type: "tool_retry",
+			call_id: "collab-spawn-retry-governed",
+			tool_execution_id: "texec-spawn-retry-governed",
+			tool: "codex.subagent.spawnAgent",
+			args: spawnArgs,
+			reason: "Retry governed spawn",
+		});
+
+		expect(
+			state.tracked_tools.find(
+				(tool) => tool.call_id === "collab-spawn-retry-governed",
+			)?.tool_execution_id,
+		).toBe("texec-spawn-retry-governed");
+
+		applyIncomingHeadlessMessage(state, {
+			type: "tool_end",
+			call_id: "collab-spawn-retry-governed",
+			success: true,
+		});
+
+		expect(state.codex_subagent_edges).toEqual([
+			{
+				spawn_tool_call_id: "collab-spawn-retry-governed",
+				spawn_tool_execution_id: "texec-spawn-retry-governed",
+				child_run_id: "agent-run-child-retry-governed",
+				thread_id: "child-thread-retry-governed",
+				operation: "spawn_agent",
+				status: "spawned",
+			},
+		]);
+	});
+
+	it("normalizes snake_case Codex subagent targets in headless events", () => {
+		const state = createHeadlessRuntimeState();
+
+		applyIncomingHeadlessMessage(state, {
+			type: "tool_call",
+			call_id: "collab-snake-1",
+			tool: "codex.subagent.send_input",
+			args: {
+				receiver_thread_ids: ["child-thread-snake"],
+				child_run_ids: ["agent-run-child-snake"],
+				agents_states: {
+					"child-thread-snake": {
+						status: "acknowledged",
+					},
+				},
+			},
+			requires_approval: false,
+		});
+
+		expect(state.codex_subagent_edges).toEqual([
+			{
+				wait_tool_call_id: "collab-snake-1",
+				child_run_id: "agent-run-child-snake",
+				thread_id: "child-thread-snake",
+				operation: "send_input",
+				status: "acknowledged",
+			},
+		]);
+	});
+
+	it("uses Codex subagent completion details when start args omit child targets", () => {
+		const state = createHeadlessRuntimeState();
+
+		applyIncomingHeadlessMessage(state, {
+			type: "tool_call",
+			call_id: "collab-spawn-complete",
+			tool: "codex.subagent.spawnAgent",
+			args: {
+				receiverThreadIds: [],
+			},
+			requires_approval: false,
+		});
+		applyIncomingHeadlessMessage(state, {
+			type: "tool_end",
+			call_id: "collab-spawn-complete",
+			success: true,
+			tool: "codex.subagent.spawnAgent",
+			details: {
+				receiverThreadIds: ["child-thread-complete"],
+				childRunIds: ["agent-run-child-complete"],
+				codexWorkGraph: {
+					schemaVersion: "evalops.maestro.codex.subagent-workgraph.v1",
+					childRuns: [
+						{
+							threadId: "child-thread-complete",
+							childRunId: "agent-run-child-complete",
+							operation: "spawnAgent",
+						},
+					],
+				},
+				prompt: "Sensitive child task prompt",
+			},
+		});
+
+		expect(state.codex_subagent_edges).toEqual([
+			{
+				spawn_tool_call_id: "collab-spawn-complete",
+				child_run_id: "agent-run-child-complete",
+				thread_id: "child-thread-complete",
+				operation: "spawn_agent",
+				status: "spawned",
+			},
+		]);
+		expect(JSON.stringify(state.codex_subagent_edges)).not.toContain(
+			"Sensitive child task prompt",
+		);
+	});
+
+	it("preserves Codex subagent child target status from work graph edges", () => {
+		const state = createHeadlessRuntimeState();
+
+		applyIncomingHeadlessMessage(state, {
+			type: "tool_call",
+			call_id: "collab-spawn-status",
+			tool: "codex.subagent.spawnAgent",
+			args: {
+				codexWorkGraph: {
+					schemaVersion: "evalops.maestro.codex.subagent-workgraph.v1",
+					childRuns: [
+						{
+							edgeId: "collab-spawn-status:0:spawnAgent:agent-run-child-status",
+							targetIndex: 0,
+							threadId: "child-thread-status",
+							childRunId: "agent-run-child-status",
+							operation: "spawnAgent",
+							status: "running",
+						},
+					],
+				},
+				prompt: "Sensitive child task prompt",
+			},
+			requires_approval: false,
+		});
+
+		expect(state.codex_subagent_edges).toEqual([
+			{
+				spawn_tool_call_id: "collab-spawn-status",
+				child_run_id: "agent-run-child-status",
+				thread_id: "child-thread-status",
+				operation: "spawn_agent",
+				status: "running",
+			},
+		]);
+		expect(JSON.stringify(state.codex_subagent_edges)).not.toContain(
+			"Sensitive child task prompt",
+		);
+	});
+
+	it("keeps durable Codex subagent edges across runtime reset messages", () => {
+		const state = createHeadlessRuntimeState();
+		const edge = {
+			spawn_tool_call_id: "collab-spawn-reset",
+			child_run_id: "agent-run-child-reset",
+			thread_id: "child-thread-reset",
+			operation: "spawn_agent",
+			status: "waiting_for_restore",
+		};
+		state.codex_subagent_edges = [edge];
+
+		applyOutgoingHeadlessMessage(state, { type: "interrupt" });
+		expect(state.codex_subagent_edges).toEqual([edge]);
+
+		applyOutgoingHeadlessMessage(state, { type: "cancel" });
+		expect(state.codex_subagent_edges).toEqual([edge]);
+
+		applyOutgoingHeadlessMessage(state, { type: "shutdown" });
+		expect(state.codex_subagent_edges).toEqual([edge]);
+	});
+
+	it("preserves restored terminal Codex subagent statuses during close propagation", () => {
+		const state = createHeadlessRuntimeState();
+		state.codex_subagent_edges = [
+			{
+				spawn_tool_call_id: "collab-spawn-restored",
+				child_run_id: "agent-run-child-restored",
+				thread_id: "child-thread-restored",
+				operation: "spawn_agent",
+				status: "cancelled",
+			},
+		];
+
+		applyIncomingHeadlessMessage(state, {
+			type: "tool_call",
+			call_id: "collab-close-restored",
+			tool: "codex.subagent.closeAgent",
+			args: {
+				receiverThreadIds: ["child-thread-restored"],
+				childRunIds: ["agent-run-child-restored"],
+			},
+			requires_approval: false,
+		});
+		applyIncomingHeadlessMessage(state, {
+			type: "tool_end",
+			call_id: "collab-close-restored",
+			success: true,
+		});
+
+		expect(state.codex_subagent_edges).toEqual([
+			{
+				wait_tool_call_id: "collab-close-restored",
+				child_run_id: "agent-run-child-restored",
+				thread_id: "child-thread-restored",
+				operation: "close_agent",
+				status: "closed",
+			},
+			{
+				spawn_tool_call_id: "collab-spawn-restored",
+				child_run_id: "agent-run-child-restored",
+				thread_id: "child-thread-restored",
+				operation: "spawn_agent",
+				status: "cancelled",
+			},
+		]);
+	});
+
+	it("normalizes older restored states before tracking Codex subagent edges", () => {
+		const state = createHeadlessRuntimeState();
+		delete (state as Partial<ReturnType<typeof createHeadlessRuntimeState>>)
+			.codex_subagent_edges;
+
+		applyIncomingHeadlessMessage(state, {
+			type: "tool_call",
+			call_id: "collab-spawn-legacy",
+			tool: "codex.subagent.spawnAgent",
+			args: {
+				childRunIds: ["agent-run-child-legacy"],
+				receiverThreadIds: ["child-thread-legacy"],
+			},
+			requires_approval: false,
+		});
+
+		expect(state.codex_subagent_edges).toEqual([
+			{
+				spawn_tool_call_id: "collab-spawn-legacy",
+				child_run_id: "agent-run-child-legacy",
+				thread_id: "child-thread-legacy",
+				operation: "spawn_agent",
+				status: "waiting_for_restore",
+			},
+		]);
+	});
+
+	it("marks denied restored Codex subagent edges failed after tracked source cleanup", () => {
+		const state = createHeadlessRuntimeState();
+		state.codex_subagent_edges = [
+			{
+				spawn_tool_call_id: "collab-spawn-denied",
+				child_run_id: "agent-run-child-denied",
+				thread_id: "child-thread-denied",
+				operation: "spawn_agent",
+				status: "waiting_for_restore",
+			},
+		];
+
+		applyIncomingHeadlessMessage(state, {
+			type: "server_request_resolved",
+			request_id: "approval-denied",
+			request_type: "approval",
+			call_id: "collab-spawn-denied",
+			resolution: "denied",
+			resolved_by: "policy",
+		});
+
+		expect(state.codex_subagent_edges).toEqual([
+			{
+				spawn_tool_call_id: "collab-spawn-denied",
+				child_run_id: "agent-run-child-denied",
+				thread_id: "child-thread-denied",
+				operation: "spawn_agent",
+				status: "failed",
+			},
+		]);
+	});
+
 	it("tracks approval server requests in the runtime state", () => {
 		const state = createHeadlessRuntimeState();
 
@@ -542,6 +1185,7 @@ describe("headless protocol helpers", () => {
 			action_description: "Running git push --force",
 			args: { command: "git push --force" },
 			reason: "Force push requires approval",
+			started_at_ms: 1_771_000_000_000,
 		});
 		applyIncomingHeadlessMessage(state, {
 			type: "server_request",
@@ -569,6 +1213,7 @@ describe("headless protocol helpers", () => {
 				summary_label: "Ran git push --force",
 				action_description: "Running git push --force",
 				args: { command: "git push --force" },
+				started_at_ms: 1_771_000_000_000,
 				source: "local",
 			},
 			{
@@ -1143,6 +1788,9 @@ describe("headless protocol helpers", () => {
 	});
 
 	it("cancellation helper emits explicit cancelled resolutions for pending requests", () => {
+		vi.useFakeTimers();
+		vi.setSystemTime(new Date(4_000));
+
 		const state = createHeadlessRuntimeState();
 
 		applyIncomingHeadlessMessage(state, {
@@ -1200,12 +1848,13 @@ describe("headless protocol helpers", () => {
 			reason: "Retry bash command",
 		});
 
-		expect(
-			buildHeadlessServerRequestCancellationMessages(
-				state,
-				"Interrupted before request completed",
-			),
-		).toEqual([
+		const messages = buildHeadlessServerRequestCancellationMessages(
+			state,
+			"Interrupted before request completed",
+		);
+		vi.useRealTimers();
+
+		expect(messages).toEqual([
 			{
 				type: "server_request_resolved",
 				request_id: "call_bash",
@@ -1214,6 +1863,7 @@ describe("headless protocol helpers", () => {
 				resolution: "cancelled",
 				reason: "Interrupted before request completed",
 				resolved_by: "runtime",
+				resolved_at_ms: 4_000,
 			},
 			{
 				type: "server_request_resolved",
@@ -1223,6 +1873,7 @@ describe("headless protocol helpers", () => {
 				resolution: "cancelled",
 				reason: "Interrupted before request completed",
 				resolved_by: "runtime",
+				resolved_at_ms: 4_000,
 			},
 			{
 				type: "server_request_resolved",
@@ -1232,6 +1883,7 @@ describe("headless protocol helpers", () => {
 				resolution: "cancelled",
 				reason: "Interrupted before request completed",
 				resolved_by: "runtime",
+				resolved_at_ms: 4_000,
 			},
 			{
 				type: "server_request_resolved",
@@ -1241,6 +1893,7 @@ describe("headless protocol helpers", () => {
 				resolution: "cancelled",
 				reason: "Interrupted before request completed",
 				resolved_by: "runtime",
+				resolved_at_ms: 4_000,
 			},
 		]);
 	});

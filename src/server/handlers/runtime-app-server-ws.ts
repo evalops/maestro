@@ -133,6 +133,7 @@ export function handleRuntimeAppServerWebSocket(
 	const manager = options.serverRequestManager ?? defaultServerRequestManager;
 	let sessionId = options.sessionId;
 	let bindingSessionId: string | undefined;
+	let initialized = false;
 	const sentRegisteredRequestIds = new Set<string>();
 	const sendServerRequestEvent = (event: ServerRequestLifecycleEvent): void => {
 		if (event.type === "registered") {
@@ -145,7 +146,7 @@ export function handleRuntimeAppServerWebSocket(
 		});
 	};
 	const replayPendingServerRequests = (): void => {
-		if (!sessionId) {
+		if (!initialized || !sessionId) {
 			return;
 		}
 		for (const request of manager.listPending({ sessionId })) {
@@ -190,12 +191,11 @@ export function handleRuntimeAppServerWebSocket(
 		}
 	};
 	const unsubscribe = manager.subscribe((event) => {
-		if (!sessionId || event.request.sessionId !== sessionId) {
+		if (!initialized || !sessionId || event.request.sessionId !== sessionId) {
 			return;
 		}
 		sendServerRequestEvent(event);
 	});
-	replayPendingServerRequests();
 
 	ws.on("message", async (data) => {
 		let parsed: unknown;
@@ -219,6 +219,7 @@ export function handleRuntimeAppServerWebSocket(
 					method: "runtime.initialized",
 					params: result,
 				});
+				initialized = true;
 				replayPendingServerRequests();
 				return;
 			}

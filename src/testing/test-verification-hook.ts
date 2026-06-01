@@ -20,6 +20,7 @@ import type {
 	HookJsonOutput,
 	PostToolUseHookInput,
 } from "../hooks/types.js";
+import { parseApplyPatchPaths } from "../tools/apply-patch-parser.js";
 import { createLogger } from "../utils/logger.js";
 import {
 	type AutoVerifyConfig,
@@ -37,7 +38,12 @@ const logger = createLogger("test-verification-hook");
 /**
  * Tools that modify files and should trigger test verification.
  */
-const FILE_MODIFYING_TOOLS = new Set(["edit", "write", "notebook_edit"]);
+const FILE_MODIFYING_TOOLS = new Set([
+	"apply_patch",
+	"edit",
+	"write",
+	"notebook_edit",
+]);
 let registeredTestVerificationHookUnregisters: Array<() => void> = [];
 let registeredTestVerificationService: AutoVerifyService | null = null;
 
@@ -53,25 +59,30 @@ function clearRegisteredTestVerificationHooks(): void {
 /**
  * Extract file path from tool input based on tool type.
  */
-function extractFilePath(
+function extractFilePaths(
 	toolName: string,
 	toolInput: Record<string, unknown>,
-): string | null {
+): string[] {
 	switch (toolName) {
 		case "edit":
 			return typeof toolInput.file_path === "string"
-				? toolInput.file_path
-				: null;
+				? [toolInput.file_path]
+				: [];
+		case "apply_patch":
+			if (typeof toolInput.patch !== "string") {
+				return [];
+			}
+			return parseApplyPatchPaths(toolInput.patch);
 		case "write":
 			return typeof toolInput.file_path === "string"
-				? toolInput.file_path
-				: null;
+				? [toolInput.file_path]
+				: [];
 		case "notebook_edit":
 			return typeof toolInput.notebook_path === "string"
-				? toolInput.notebook_path
-				: null;
+				? [toolInput.notebook_path]
+				: [];
 		default:
-			return null;
+			return [];
 	}
 }
 
@@ -99,23 +110,28 @@ function createTestVerificationCallback(
 			return null;
 		}
 
-		// Extract file path from tool input
-		const filePath = extractFilePath(postInput.tool_name, postInput.tool_input);
-		if (!filePath) {
+		// Extract file paths from tool input
+		const filePaths = extractFilePaths(
+			postInput.tool_name,
+			postInput.tool_input,
+		);
+		if (filePaths.length === 0) {
 			return null;
 		}
 
-		// Record the file change (this will debounce and eventually trigger tests)
-		const absolutePath = isAbsolute(filePath)
-			? filePath
-			: join(postInput.cwd, filePath);
+		for (const filePath of filePaths) {
+			// Record the file change (this will debounce and eventually trigger tests)
+			const absolutePath = isAbsolute(filePath)
+				? filePath
+				: join(postInput.cwd, filePath);
 
-		logger.debug("Recording file change from tool", {
-			tool: postInput.tool_name,
-			filePath: absolutePath,
-		});
+			logger.debug("Recording file change from tool", {
+				tool: postInput.tool_name,
+				filePath: absolutePath,
+			});
 
-		service.recordFileChange(absolutePath);
+			service.recordFileChange(absolutePath);
+		}
 
 		// Return null to not interfere with the hook flow
 		// Tests will run asynchronously after debounce period

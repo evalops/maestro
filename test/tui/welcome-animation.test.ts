@@ -2,6 +2,15 @@ import { describe, expect, it } from "vitest";
 import { WelcomeAnimation } from "../../src/cli-tui/welcome-animation.js";
 
 describe("WelcomeAnimation", () => {
+	it("renders a plain Maestro start screen without legacy wordmark copy", () => {
+		const animation = new WelcomeAnimation(undefined, { animate: false });
+		const output = animation.render(80).join("\n");
+
+		expect(output).toContain("Maestro");
+		expect(output).not.toContain("composer");
+		expect(output).not.toContain("deterministic coding agent");
+	});
+
 	it("renders project onboarding guidance when setup is incomplete", () => {
 		const animation = new WelcomeAnimation(undefined, { animate: false });
 		animation.setProjectOnboarding({

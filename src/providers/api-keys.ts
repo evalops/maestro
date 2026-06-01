@@ -14,7 +14,7 @@
  * | google-antigravity | GOOGLE_ANTIGRAVITY_TOKEN (JSON token + projectId) |
  * | openai     | OPENAI_API_KEY                            |
  * | azure-openai | AZURE_OPENAI_API_KEY                    |
- * | anthropic  | ANTHROPIC_OAUTH_TOKEN, ANTHROPIC_API_KEY  |
+ * | anthropic  | ANTHROPIC_API_KEY                         |
  * | bedrock    | AWS_ACCESS_KEY_ID, AWS_PROFILE, etc.      |
  * | writer     | WRITER_API_KEY                            |
  * | xai        | XAI_API_KEY                               |
@@ -58,6 +58,7 @@
  * @module providers/api-keys
  */
 
+import { EVALOPS_ACCESS_TOKEN_ENV_VARS } from "../evalops/env-aliases.js";
 import { getCustomProviderMetadata } from "../models/registry.js";
 import { hasAwsCredentials } from "./aws-auth.js";
 import { isEvalOpsManagedProvider } from "./evalops-managed.js";
@@ -66,7 +67,7 @@ export const envApiKeyMap = {
 	google: ["GEMINI_API_KEY"],
 	"google-gemini-cli": ["GOOGLE_GEMINI_CLI_TOKEN"],
 	"google-antigravity": ["GOOGLE_ANTIGRAVITY_TOKEN"],
-	evalops: ["MAESTRO_EVALOPS_ACCESS_TOKEN"],
+	evalops: [...EVALOPS_ACCESS_TOKEN_ENV_VARS],
 	openai: ["OPENAI_API_KEY"],
 	"openai-codex": [
 		"OPENAI_CODEX_TOKEN",
@@ -74,7 +75,7 @@ export const envApiKeyMap = {
 		"CODEX_API_KEY",
 	],
 	"azure-openai": ["AZURE_OPENAI_API_KEY"],
-	anthropic: ["ANTHROPIC_OAUTH_TOKEN", "ANTHROPIC_API_KEY"],
+	anthropic: ["ANTHROPIC_API_KEY"],
 	bedrock: [
 		"AWS_ACCESS_KEY_ID",
 		"AWS_PROFILE",

@@ -42,6 +42,12 @@ bun install -g @evalops/maestro
 npm install -g @evalops/maestro
 ```
 
+If a global install fails while resolving `@evalops/tui` or
+`@evalops/contracts`, you are installing a deprecated 0.10.8-0.10.20 package
+that referenced private workspace dependencies. Upgrade to
+`@evalops/maestro@latest`; published release verification now runs npm and Bun
+registry install smokes against the public package metadata before promotion.
+
 ### Nix
 
 ```bash
@@ -50,15 +56,19 @@ nix run github:evalops/maestro
 
 ## Quick Start
 
-1. Configure a model provider. Fast path:
+1. Sign in for the default Codex subscription models:
 
 ```bash
-export ANTHROPIC_API_KEY=sk-ant-...
+maestro codex login
 ```
 
-Maestro also supports OpenAI, OpenAI Codex with ChatGPT login, Google, OpenRouter, Azure OpenAI, GitHub Copilot, Groq, xAI, Cerebras, and managed EvalOps auth. See [Models](docs/MODELS.md) for provider-specific setup and overrides.
+`maestro codex login` uses Codex app-server auth. Published installs use the
+packaged `@openai/codex` app-server and source checkouts fall back to a `codex`
+binary on `PATH`, so an existing `codex login` is reused automatically.
 
-For Codex subscription models, run `maestro codex login` or `/login openai-codex`, then select models under the `openai-codex` provider such as `openai-codex/gpt-5.5`.
+Bare `maestro` defaults to `openai-codex/gpt-5.5`. Maestro also supports OpenAI API keys, Anthropic, Google, OpenRouter, Azure OpenAI, GitHub Copilot, Groq, xAI, Cerebras, and managed EvalOps auth. See [Models](docs/MODELS.md) for provider-specific setup and overrides.
+
+For another Codex subscription model, select models under the `openai-codex` provider such as `openai-codex/gpt-5.5`.
 
 2. Launch the interface you want:
 
@@ -75,6 +85,7 @@ maestro web
 - Keys and config: `~/.maestro/keys.json`, `~/.maestro/config.json`
 - MCP servers: `~/.maestro/mcp.json` or `.maestro/mcp.json`
 - Hooks: `~/.maestro/hooks.json` or `.maestro/hooks.json`
+- Skills: `maestro skill new <name>`, `maestro skill lint .maestro/skills`
 - Agent instructions: `AGENT.md`, `.maestro/APPEND_SYSTEM.md`, `~/.maestro/agent/AGENT.md`
 
 ## Safety Model
@@ -96,8 +107,10 @@ See [Safety](docs/SAFETY.md) and the [Threat Model](docs/THREAT_MODEL.md) for th
 | Understand approvals and sandboxing | [Safety](docs/SAFETY.md) |
 | Run the browser interface | [Web UI Guide](docs/WEB_UI.md) |
 | Set up MCP servers | [MCP Guide](docs/MCP_GUIDE.md) |
+| Package reusable skills | [Skill Cookbook](docs/cookbook/skills/README.md) |
 | Work on the repo as a contributor | [Contributor Runbook](docs/CONTRIBUTOR_RUNBOOK.md) |
 | Integrate Maestro headlessly | [Headless protocol](docs/protocols/headless.md) |
+| Bring any coding agent into EvalOps | [Any-Agent Control Plane](docs/design/ANY_AGENT_CONTROL_PLANE.md) |
 | Browse the full docs map | [Documentation index](docs/README.md) |
 
 ## Contributing
@@ -109,9 +122,62 @@ git clone https://github.com/evalops/maestro.git
 cd maestro
 bun install
 npx nx run maestro:build --skip-nx-cache
+npm run smoke:local-e2e
 npx nx run maestro:test --skip-nx-cache
 npx nx run maestro:evals --skip-nx-cache
 ```
+
+`npm run smoke:local-e2e` is credential-free after build: it checks help,
+version, the headless protocol handshake, and deterministic mock-agent
+read/write/search/edit flows through the built CLI.
+
+For the browser UI without local API keys or Redis, use the local-only dev
+profile:
+
+```bash
+make web-local
+curl http://localhost:8080/api/models
+```
+
+To prove Maestro works against a local Cerebro stack, keep sibling checkouts and
+run:
+
+```bash
+gh repo clone evalops/cerebro ../cerebro
+make cerebro-e2e-doctor
+make cerebro-e2e
+```
+
+To actually use the two repos together locally, start Cerebro from Maestro and
+export the same Cerebro/MCP env into the Maestro terminal:
+
+```bash
+make cerebro-dev
+
+# In another Maestro terminal:
+eval "$(make -s cerebro-env)"
+make run-ts
+```
+
+That target delegates to Cerebro's `make local-maestro-e2e` with
+`LOCAL_MAESTRO_REPO` set to the current Maestro checkout. It builds and smokes
+Maestro, emits Maestro's canonical Platform replay, publishes it through local
+NATS, and verifies Cerebro graph projection plus MCP recall from the generated
+session traffic. `make cerebro-e2e-doctor` checks the Cerebro checkout, Docker
+Compose, the replay generator, and Cerebro's own local-E2E doctor before the
+full smoke starts. It also checks the effective local Cerebro URL, MCP URL, and
+workspace from `.env` or exported environment values, then verifies that the
+configured API port is free before the self-contained smoke starts. The default
+URL is `http://localhost:18080`; use `LOCAL_BASE_URL`/`MAESTRO_CEREBRO_URL` plus
+matching Cerebro `LOCAL_HTTP_PORT` overrides when that port is occupied. Set
+`LOCAL_CEREBRO_REPO=/path/to/cerebro` when the checkout is not a sibling
+directory. If your machine cannot surface OTEL collector debug logs, run
+`LOCAL_ASSERT_OTEL=false make cerebro-e2e`.
+
+For direct local Maestro runs against an already-running Cerebro dev stack,
+`make cerebro-env` prints copyable exports derived from `.env` or shell
+overrides. The Makefile exports those vars to `make` targets so `make run-ts`,
+`make web-local`, and local smokes all see the same configuration.
 
 Need Redis or PostgreSQL for a specific workflow? Start from `docker-compose.yml` and use the [Contributor Runbook](docs/CONTRIBUTOR_RUNBOOK.md) for the rest of the repo workflow.
 

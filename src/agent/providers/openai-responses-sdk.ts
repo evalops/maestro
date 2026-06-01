@@ -69,7 +69,6 @@ export async function* streamResponsesApiSdk(
 	// Build input messages
 	const input = buildInput(context, model, options);
 
-	// Filter and convert tools
 	const validTools = context.tools
 		? filterResponsesApiTools(context.tools)
 		: [];
@@ -100,19 +99,28 @@ export async function* streamResponsesApiSdk(
 			type: "function" as const,
 			name: tool.name,
 			description: tool.description,
-			parameters: tool.parameters as Record<string, unknown>,
+			parameters: tool.parameters,
 			strict: null,
 		}));
 	}
 
 	if (options.toolChoice && validTools.length > 0) {
-		params.tool_choice =
-			typeof options.toolChoice === "string"
-				? options.toolChoice
-				: {
-						type: "function",
-						name: options.toolChoice.function.name,
-					};
+		if (typeof options.toolChoice === "string") {
+			params.tool_choice = options.toolChoice;
+		} else {
+			const toolName = options.toolChoice.function.name;
+			if (validTools.some((tool) => tool.name === toolName)) {
+				params.tool_choice = {
+					type: "function",
+					name: toolName,
+				};
+			} else {
+				logger.warn("Dropping tool_choice for filtered Responses API tool", {
+					toolName,
+					model: model.id,
+				});
+			}
+		}
 	}
 
 	if (options.maxTokens) {

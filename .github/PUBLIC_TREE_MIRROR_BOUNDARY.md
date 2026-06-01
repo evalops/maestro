@@ -24,24 +24,47 @@ remain public-only.
 ### Public CI and publishing workflows
 
 - `.github/workflows/**`
+- except `.github/workflows/review-thread-guard.yml`, which is generated from
+  internal so the public mirror uses the same shared review-debt guard version;
+  the mirror strips the internal-only runner override so public validation uses
+  the reusable guard workflow's default runner
 - `.github/workflows/public-release-mirror.yml`
 - `.github/workflows/sync-public-release-mirror.yml`
 - `.github/release-mirror-manifest.json`
 - `.github/public-release-mirror.exclude`
 
 These remain public-owned because `evalops/maestro` still controls its own CI,
-registry verification, and trusted-publishing rollout. The sanitizer must not
-wipe those files while the public repo continues to publish independently.
+registry verification, and trusted-publishing rollout. The review-thread guard
+is the narrow exception because stale public pins can block generated mirror PRs
+after internal review debt has already been resolved. The sanitizer must not wipe
+the remaining public-owned files while the public repo continues to publish
+independently.
 
-### Public-only release and registry helpers
+### Release and registry helpers
 
 - `scripts/configure-npm-trusted-publisher.mjs`
 - `scripts/deprecate-release.js`
+- `scripts/published-replay-evidence-gate.js`
+- `scripts/smoke-published-replay-e2e.js`
 - `scripts/smoke-registry-install.js`
+- `scripts/verify-published-replay-evidence.js`
 - `scripts/validate-public-package-deps.js`
+- `test/scripts/validate-public-package-deps.test.ts`
 
-These scripts support public-package publishing and registry checks that do not
-yet have a single shared home in internal.
+The registry smoke, published replay E2E, deprecation, and trusted-publisher
+helpers are shared through `.github/release-mirror-manifest.json` so internal
+owns the release contract that the public package runs after publish. They
+remain excluded from the broad sanitized public-tree generation because the
+release mirror sync owns their byte-for-byte propagation.
+`scripts/validate-public-package-deps.js` remains public-only, so its internal
+unit test is also excluded from the generated public tree rather than asserting
+an internal helper API on the public-owned script.
+
+The public `package.json` is still generated from internal, so
+`scripts/prepare-public-release-mirror.mjs` injects the public-only
+`release:verify:published`, `release:verify:published:e2e`,
+`release:verify:published:evidence`, and `release:deprecate` npm script aliases
+while leaving release-helper propagation to the release mirror.
 
 ### Internal-only docs that should not leak into the public repo
 

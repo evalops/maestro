@@ -1,0 +1,44 @@
+import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
+describe("telemetry beacon disablement", () => {
+	let tempDir: string;
+	let beaconFile: string;
+
+	beforeEach(async () => {
+		vi.resetModules();
+		tempDir = await mkdtemp(join(tmpdir(), "maestro-beacon-disablement-"));
+		beaconFile = join(tempDir, "beacon.jsonl");
+		vi.stubEnv("MAESTRO_TELEMETRY", "1");
+		vi.stubEnv("MAESTRO_BEACON_FILE", beaconFile);
+		vi.stubEnv("MAESTRO_OTEL", "0");
+	});
+
+	afterEach(async () => {
+		vi.resetModules();
+		vi.restoreAllMocks();
+		vi.unstubAllEnvs();
+		await rm(tempDir, { recursive: true, force: true });
+	});
+
+	it("respects the internal telemetry kill switch for beacon files", async () => {
+		vi.stubEnv("MAESTRO_INTERNAL_TELEMETRY_DISABLED", "1");
+		const { emitBeacon } = await import("../../src/telemetry/beacon.js");
+
+		await emitBeacon({
+			feature: "cli.startup",
+			action: "interactive",
+			timestamp: 1,
+			source: {
+				client: "cli",
+				clientVersion: "0.10.18",
+			},
+		});
+
+		await expect(readFile(beaconFile, "utf8")).rejects.toMatchObject({
+			code: "ENOENT",
+		});
+	});
+});

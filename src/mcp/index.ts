@@ -41,8 +41,10 @@ export {
 export {
 	buildProjectMcpServerFingerprint,
 	getProjectMcpServerApprovalStatus,
+	serverRequiresProjectApproval,
 	setProjectMcpServerApprovalDecision,
 } from "./project-approvals.js";
+export { getFathomCuaPluginServers } from "./fathom-cua.js";
 export { getPlatformMcpPluginServers } from "./platform-plugin.js";
 export type {
 	McpAuthPresetConfig,

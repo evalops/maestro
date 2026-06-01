@@ -34,12 +34,28 @@
  */
 
 import type { Tool as McpTool } from "@modelcontextprotocol/sdk/types.js";
+import type {
+	ToolCapabilityMetadata,
+	ToolCapabilitySummary,
+} from "./tool-capabilities.js";
 
 export type McpTransport = "stdio" | "http" | "sse";
 export type McpScope = "enterprise" | "plugin" | "project" | "local" | "user";
 export type McpRemoteTrust = "official" | "custom" | "unknown";
 export type McpProjectApprovalDecision = "approved" | "denied";
 export type McpProjectApprovalStatus = "pending" | McpProjectApprovalDecision;
+export type McpWorkspaceTrustMode = "trusted" | "ask" | "blocked" | "untrusted";
+export type McpWorkspaceTrustDefault = "trusted" | "ask" | "untrusted";
+
+export interface McpWorkspaceTrustEntry {
+	workspaceUri: string;
+	mode: Exclude<McpWorkspaceTrustMode, "untrusted">;
+	serverFingerprint?: string;
+	grantedBy?: string;
+	grantedAt?: string;
+	expiresAt?: string;
+	reason?: string;
+}
 
 export interface McpOfficialRegistryInfo {
 	displayName?: string;
@@ -104,18 +120,38 @@ export interface McpServerConfig {
 	enabled?: boolean;
 	disabled?: boolean;
 	timeout?: number;
+	supportsParallelToolCalls?: boolean;
 	scope?: McpScope;
+	requiresProjectApproval?: boolean;
+}
+
+export type McpParallelSafetyProvenance =
+	| "static_config"
+	| "server_capability"
+	| "none";
+
+export interface McpToolParallelSafety {
+	supportsParallelToolCalls: boolean;
+	provenance: McpParallelSafetyProvenance;
+	maxConcurrency?: number;
+	readOnlyHint?: boolean;
 }
 
 export interface McpConfig {
 	servers: McpServerConfig[];
 	authPresets: McpAuthPresetConfig[];
 	projectRoot?: string;
+	trustedWorkspaces?: Record<string, McpWorkspaceTrustEntry[]>;
+	workspaceTrustDefault?: McpWorkspaceTrustDefault;
 	envLimits?: Record<
 		string,
 		{ effective: number; status: string; message?: string }
 	>;
 }
+
+export type McpToolStatus = McpTool & {
+	capability?: ToolCapabilityMetadata;
+};
 
 export interface McpServerStatus {
 	name: string;
@@ -123,7 +159,8 @@ export interface McpServerStatus {
 	error?: string;
 	scope?: McpScope;
 	transport: McpTransport;
-	tools: McpTool[];
+	tools: McpToolStatus[];
+	toolCapabilitySummary?: ToolCapabilitySummary;
 	resources: string[];
 	prompts: string[];
 	promptDetails?: McpPromptDefinition[];
@@ -137,6 +174,12 @@ export interface McpServerStatus {
 	headersHelper?: string;
 	authPreset?: string;
 	timeout?: number;
+	supportsParallelToolCalls?: boolean;
+	parallelSafety?: {
+		supportsParallelToolCalls: boolean;
+		provenance: McpParallelSafetyProvenance;
+		maxConcurrency?: number;
+	};
 	remoteTrust?: McpRemoteTrust;
 	officialRegistry?: McpOfficialRegistryInfo;
 	projectApproval?: McpProjectApprovalStatus;

@@ -10,6 +10,7 @@
  * @module safety/attack-patterns
  */
 
+import { parseApplyPatchPaths } from "../tools/apply-patch-parser.js";
 import type { SequencePattern } from "./tool-sequence-analyzer.js";
 
 /**
@@ -213,7 +214,34 @@ function pathMatches(args: Record<string, unknown>, pattern: RegExp): boolean {
 		(args.path as string) ||
 		(args.file_path as string) ||
 		(args.target as string);
-	return path ? pattern.test(path) : false;
+	if (path && pattern.test(path)) {
+		return true;
+	}
+	const patch = args.patch;
+	if (typeof patch === "string") {
+		return parseApplyPatchPaths(patch).some((patchPath) =>
+			pattern.test(patchPath),
+		);
+	}
+	return false;
+}
+
+function toolMutatesFiles(currentTool: string): boolean {
+	const normalizedTool = currentTool.toLowerCase();
+	return (
+		normalizedTool === "write" ||
+		normalizedTool === "edit" ||
+		normalizedTool === "apply_patch"
+	);
+}
+
+function mutationContent(args: Record<string, unknown>): string {
+	const content = args.content;
+	if (typeof content === "string") {
+		return content;
+	}
+	const patch = args.patch;
+	return typeof patch === "string" ? patch : "";
 }
 
 /**
@@ -547,10 +575,7 @@ export const PRIVILEGE_ESCALATION_PATTERNS: SequencePattern[] = [
 		windowMs: 60_000,
 		detect: (_records, currentTool, currentArgs) => {
 			const cronPattern = /\/etc\/cron|crontab|\/var\/spool\/cron/i;
-			if (
-				currentTool.toLowerCase() === "write" ||
-				currentTool.toLowerCase() === "edit"
-			) {
+			if (toolMutatesFiles(currentTool)) {
 				if (pathMatches(currentArgs, cronPattern)) {
 					return {
 						matched: true,
@@ -676,10 +701,7 @@ export const PERSISTENCE_PATTERNS: SequencePattern[] = [
 		windowMs: 60_000,
 		detect: (_records, currentTool, currentArgs) => {
 			const sshPattern = /\.ssh\/authorized_keys|\.ssh\/id_/i;
-			if (
-				currentTool.toLowerCase() === "write" ||
-				currentTool.toLowerCase() === "edit"
-			) {
+			if (toolMutatesFiles(currentTool)) {
 				if (pathMatches(currentArgs, sshPattern)) {
 					return {
 						matched: true,
@@ -700,10 +722,7 @@ export const PERSISTENCE_PATTERNS: SequencePattern[] = [
 		detect: (_records, currentTool, currentArgs) => {
 			const profilePattern =
 				/\.bashrc|\.bash_profile|\.zshrc|\.profile|\.bash_login/i;
-			if (
-				currentTool.toLowerCase() === "write" ||
-				currentTool.toLowerCase() === "edit"
-			) {
+			if (toolMutatesFiles(currentTool)) {
 				if (pathMatches(currentArgs, profilePattern)) {
 					return {
 						matched: true,
@@ -723,10 +742,7 @@ export const PERSISTENCE_PATTERNS: SequencePattern[] = [
 		windowMs: 60_000,
 		detect: (_records, currentTool, currentArgs) => {
 			const systemdPattern = /\/etc\/systemd|\.config\/systemd|\.service$/i;
-			if (
-				currentTool.toLowerCase() === "write" ||
-				currentTool.toLowerCase() === "edit"
-			) {
+			if (toolMutatesFiles(currentTool)) {
 				if (pathMatches(currentArgs, systemdPattern)) {
 					return {
 						matched: true,
@@ -749,6 +765,7 @@ export const PERSISTENCE_PATTERNS: SequencePattern[] = [
 			if (
 				currentTool.toLowerCase() === "write" ||
 				currentTool.toLowerCase() === "edit" ||
+				currentTool.toLowerCase() === "apply_patch" ||
 				currentTool.toLowerCase() === "bash"
 			) {
 				// Check for LD_PRELOAD in command or file content
@@ -766,7 +783,7 @@ export const PERSISTENCE_PATTERNS: SequencePattern[] = [
 					}
 				} else if (pathMatches(currentArgs, profilePattern)) {
 					// If writing to profile files, check for LD_PRELOAD in content
-					const content = currentArgs.content as string;
+					const content = mutationContent(currentArgs);
 					if (content && ldPreloadPattern.test(content)) {
 						return {
 							matched: true,
@@ -787,10 +804,7 @@ export const PERSISTENCE_PATTERNS: SequencePattern[] = [
 		windowMs: 60_000,
 		detect: (_records, currentTool, currentArgs) => {
 			const gitHooksPattern = /\.git\/hooks\//i;
-			if (
-				currentTool.toLowerCase() === "write" ||
-				currentTool.toLowerCase() === "edit"
-			) {
+			if (toolMutatesFiles(currentTool)) {
 				if (pathMatches(currentArgs, gitHooksPattern)) {
 					return {
 						matched: true,
@@ -810,10 +824,7 @@ export const PERSISTENCE_PATTERNS: SequencePattern[] = [
 		windowMs: 60_000,
 		detect: (_records, currentTool, currentArgs) => {
 			const pamPattern = /\/etc\/pam\.d\/|\/etc\/pam\.conf|pam_.*\.so/i;
-			if (
-				currentTool.toLowerCase() === "write" ||
-				currentTool.toLowerCase() === "edit"
-			) {
+			if (toolMutatesFiles(currentTool)) {
 				if (pathMatches(currentArgs, pamPattern)) {
 					return {
 						matched: true,

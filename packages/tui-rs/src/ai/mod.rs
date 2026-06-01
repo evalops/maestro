@@ -87,7 +87,10 @@ mod vertex;
 
 pub use anthropic::AnthropicClient;
 pub use app_message::{from_api_messages, transform_to_api_messages, AppMessage, BashExecution};
-pub use client::{create_client, create_client_for_model, AiClient, AiProvider, UnifiedClient};
+pub use client::{
+    create_client, create_client_for_model, provider_model_name, AiClient, AiProvider,
+    UnifiedClient,
+};
 pub use google::GoogleClient;
 pub use openai::OpenAiClient;
 pub use sanitize::{sanitize_control_chars, sanitize_for_api, sanitize_surrogates};

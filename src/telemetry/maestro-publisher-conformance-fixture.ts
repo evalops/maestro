@@ -1,6 +1,10 @@
 import type { PromptMetadata } from "../prompts/types.js";
 import type { SkillArtifactMetadata } from "../skills/artifact-metadata.js";
 import {
+	buildAgentOperatingPlaneCorrelation,
+	buildAgentOperatingPlaneMetadata,
+} from "./agent-operating-plane-context.js";
+import {
 	MaestroBusEventType,
 	type MaestroCloudEvent,
 	type MaestroCorrelation,
@@ -27,6 +31,8 @@ const SKILL_TOOL_EXECUTION_ID = "tool_exec_publisher_fixture_skill_001";
 const APPROVAL_REQUEST_ID = "approval_publisher_fixture_001";
 const SKILL_INVOCATION_ID = "skill_invocation_publisher_fixture_001";
 const SKILL_ID = "skill_incident_review";
+const DATA_CLASSIFICATION = "internal";
+const RETENTION_CLASS = "operational_audit";
 
 const promptMetadata = {
 	name: "maestro-system",
@@ -56,25 +62,37 @@ const fixtureEnv: NodeJS.ProcessEnv = {
 	MAESTRO_AGENT_ID: "agent_maestro_publisher_fixture",
 	MAESTRO_ACTOR_ID: "user_publisher_fixture",
 	MAESTRO_PRINCIPAL_ID: "principal_publisher_fixture",
+	MAESTRO_REQUEST_ID: "request_publisher_fixture_001",
+	MAESTRO_REMOTE_RUNNER_SESSION_ID: "remote_runner_publisher_fixture_001",
+	MAESTRO_OBJECTIVE_ID: "objective_publisher_fixture_001",
+	MAESTRO_CONVERSATION_ID: "conversation_publisher_fixture_001",
 	TRACE_ID: "trace_publisher_fixture_001",
+	TRACESTATE: "evalops=maestro-publisher-fixture",
 	MAESTRO_EVENT_BUS_ATTR_FIXTURE: "maestro-publisher-conformance",
 	MAESTRO_EVENT_BUS_ATTR_PUBLISHER_CONTRACT: "maestro.v1",
 };
 
-const baseCorrelation: MaestroCorrelation = {
-	organization_id: ORGANIZATION_ID,
-	workspace_id: WORKSPACE_ID,
-	session_id: SESSION_ID,
-	agent_run_id: AGENT_RUN_ID,
-	agent_id: "agent_maestro_publisher_fixture",
-	actor_id: "user_publisher_fixture",
-	principal_id: "principal_publisher_fixture",
-	trace_id: "trace_publisher_fixture_001",
-	attributes: {
-		fixture: "maestro-publisher-conformance",
-		publisher_contract: "maestro.v1",
+const baseCorrelation: MaestroCorrelation = buildAgentOperatingPlaneCorrelation(
+	{
+		organization_id: ORGANIZATION_ID,
+		workspace_id: WORKSPACE_ID,
+		session_id: SESSION_ID,
+		agent_run_id: AGENT_RUN_ID,
+		agent_id: "agent_maestro_publisher_fixture",
+		actor_id: "user_publisher_fixture",
+		principal_id: "principal_publisher_fixture",
+		trace_id: "trace_publisher_fixture_001",
+		request_id: "request_publisher_fixture_001",
+		remote_runner_session_id: "remote_runner_publisher_fixture_001",
+		objective_id: "objective_publisher_fixture_001",
+		conversation_id: "conversation_publisher_fixture_001",
+		tracestate: "evalops=maestro-publisher-fixture",
+		attributes: {
+			fixture: "maestro-publisher-conformance",
+			publisher_contract: "maestro.v1",
+		},
 	},
-};
+);
 
 const eventPlan = [
 	{
@@ -113,7 +131,7 @@ export interface MaestroPublisherConformanceFixture {
 	event_count: number;
 	origin: {
 		repository: "evalops/maestro";
-		issue: "evalops/maestro#49";
+		issue: "evalops/maestro#434";
 		publisher_package: "packages/ai";
 		source_paths: string[];
 		generated_by: "scripts/generate-maestro-publisher-conformance-fixture.ts";
@@ -128,18 +146,38 @@ export interface MaestroPublisherConformanceFixture {
 	events: MaestroPublisherConformanceFixtureEvent[];
 }
 
-function bashCorrelation(): MaestroCorrelation {
+function bashCorrelation(index: number): MaestroCorrelation {
 	return {
 		...baseCorrelation,
 		agent_run_step_id: BASH_AGENT_RUN_STEP_ID,
+		traceparent: fixtureTraceparent(index),
+		tracestate: fixtureTracestate(index),
 	};
 }
 
-function skillCorrelation(): MaestroCorrelation {
+function skillCorrelation(index: number): MaestroCorrelation {
 	return {
 		...baseCorrelation,
 		agent_run_step_id: SKILL_AGENT_RUN_STEP_ID,
+		traceparent: fixtureTraceparent(index),
+		tracestate: fixtureTracestate(index),
 	};
+}
+
+function fixtureTraceparent(index: number): string {
+	return `00-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-${String(index + 1).padStart(16, "0")}-01`;
+}
+
+function fixtureTracestate(index: number): string {
+	return `evalops=maestro-publisher-${String(index + 1).padStart(2, "0")}`;
+}
+
+function operatingPlaneMetadata(safeSummary: string): Record<string, string> {
+	return buildAgentOperatingPlaneMetadata({
+		dataClassification: DATA_CLASSIFICATION,
+		retentionClass: RETENTION_CLASS,
+		safeSummary,
+	});
 }
 
 async function flushPublisherTasks(): Promise<void> {
@@ -179,12 +217,15 @@ async function buildPublisherEvents(): Promise<
 					approval_request_id: APPROVAL_REQUEST_ID,
 					governance_decision_id: "governance_decision_publisher_fixture_001",
 					action: "Run workspace test command",
-					command: "bunx vitest --run test/telemetry",
+					command: "workspace test command",
 					risk_level: "RISK_LEVEL_MEDIUM",
 					decision_mode: "MAESTRO_DECISION_MODE_REQUIRE_APPROVAL",
 					policy_id: "policy_workspace_test_approval",
 					reason: "publisher fixture approval path",
-					correlation: bashCorrelation(),
+					metadata: operatingPlaneMetadata(
+						"Governance approval requested for workspace command",
+					),
+					correlation: bashCorrelation(0),
 					occurred_at: eventPlan[0].time,
 					env: fixtureEnv,
 				});
@@ -200,10 +241,13 @@ async function buildPublisherEvents(): Promise<
 					capability: "workspace:test",
 					risk_level: "RISK_LEVEL_MEDIUM",
 					safe_arguments: {
-						command_summary: "bunx vitest --run test/telemetry",
+						command_summary: "Run telemetry test suite",
 					},
 					prompt_metadata: promptMetadata,
-					correlation: bashCorrelation(),
+					metadata: operatingPlaneMetadata(
+						"Tool call attempt recorded with safe argument summary",
+					),
+					correlation: bashCorrelation(1),
 					attempted_at: eventPlan[1].time,
 					env: fixtureEnv,
 				});
@@ -221,7 +265,10 @@ async function buildPublisherEvents(): Promise<
 					},
 					prompt_metadata: promptMetadata,
 					skill_metadata: skillMetadata,
-					correlation: bashCorrelation(),
+					metadata: operatingPlaneMetadata(
+						"Tool call completed with safe output summary",
+					),
+					correlation: bashCorrelation(2),
 					completed_at: eventPlan[2].time,
 					env: fixtureEnv,
 				});
@@ -246,7 +293,10 @@ async function buildPublisherEvents(): Promise<
 					evaluation_rationale: "formatting checks failed",
 					prompt_metadata: promptMetadata,
 					skill_metadata: skillMetadata,
-					correlation: skillCorrelation(),
+					metadata: operatingPlaneMetadata(
+						"Skill outcome failed the evaluation threshold",
+					),
+					correlation: skillCorrelation(3),
 					outcome_at: eventPlan[3].time,
 					env: fixtureEnv,
 				});
@@ -267,7 +317,7 @@ export async function buildCanonicalMaestroPublisherConformanceFixture(
 		event_count: events.length,
 		origin: {
 			repository: "evalops/maestro",
-			issue: "evalops/maestro#49",
+			issue: "evalops/maestro#434",
 			publisher_package: "packages/ai",
 			source_paths: [
 				"packages/ai/src/telemetry/index.ts",
@@ -290,6 +340,7 @@ export async function buildCanonicalMaestroPublisherConformanceFixture(
 				"versionId",
 			],
 			skill_metadata: ["artifactId", "hash", "name", "source", "version"],
+			metadata: ["data_classification", "retention_class", "safe_summary"],
 			safe_arguments: ["command_summary"],
 			safe_output: ["exit_code", "summary"],
 		},

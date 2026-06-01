@@ -82,7 +82,7 @@ use reqwest::header::{HeaderMap, HeaderValue, CONTENT_TYPE};
 use serde::Deserialize;
 use tokio::sync::mpsc;
 
-use super::client::{AiClient, AiProvider};
+use super::client::{provider_model_name, AiClient, AiProvider};
 use super::types::{ContentBlock, Message, RequestConfig, StopReason, StreamEvent};
 
 /// Parser state for accumulating data across SSE events within a single stream.
@@ -97,6 +97,18 @@ struct SseParserState {
 
 const ANTHROPIC_API_URL: &str = "https://api.anthropic.com/v1/messages";
 const ANTHROPIC_VERSION: &str = "2023-06-01";
+
+fn anthropic_model_accepts_temperature(model: &str) -> bool {
+    let normalized = model.to_ascii_lowercase();
+    !(is_anthropic_opus_4_family(&normalized) || normalized == "claude-opus-latest")
+}
+
+fn is_anthropic_opus_4_family(model: &str) -> bool {
+    model == "claude-opus-4"
+        || model
+            .strip_prefix("claude-opus-4")
+            .is_some_and(|suffix| suffix.starts_with(['-', '.']))
+}
 
 /// Anthropic API client for Claude models
 ///
@@ -122,11 +134,9 @@ impl AnthropicClient {
             .timeout(std::time::Duration::from_mins(5))
             .build()
             .context("Failed to create HTTP client")?;
+        let api_key = api_key.into().trim().to_string();
 
-        Ok(Self {
-            client,
-            api_key: api_key.into(),
-        })
+        Ok(Self { client, api_key })
     }
 
     /// Create a new client from environment variable
@@ -289,8 +299,9 @@ impl AnthropicClient {
         messages: &[Message],
         config: &RequestConfig,
     ) -> Result<serde_json::Value> {
+        let model = provider_model_name(&config.model);
         let mut body = serde_json::json!({
-            "model": config.model,
+            "model": model,
             "max_tokens": config.max_tokens,
             "messages": messages,
             "stream": true,
@@ -311,7 +322,10 @@ impl AnthropicClient {
             }
         }
 
-        if let Some(temp) = config.temperature {
+        if let Some(temp) = config
+            .temperature
+            .filter(|_| anthropic_model_accepts_temperature(&model))
+        {
             body["temperature"] = serde_json::json!(temp);
         }
 
@@ -702,7 +716,7 @@ data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text
     fn test_build_request_body_basic() {
         let client = AnthropicClient::new("test-key").unwrap();
         let config = RequestConfig {
-            model: "claude-3-opus-20240229".to_string(),
+            model: "anthropic/claude-3-opus-20240229".to_string(),
             max_tokens: 4096,
             system: Some("You are a helpful assistant.".to_string()),
             cache_system_prompt: false,
@@ -716,6 +730,99 @@ data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text
         assert_eq!(body["stream"], true);
         // Without caching, system is a simple string
         assert_eq!(body["system"], "You are a helpful assistant.");
+    }
+
+    #[test]
+    fn test_build_request_body_keeps_temperature_for_models_that_accept_it() {
+        let client = AnthropicClient::new("test-key").unwrap();
+        let config = RequestConfig {
+            model: "claude-sonnet-4-5-20250514".to_string(),
+            temperature: Some(0.7),
+            ..Default::default()
+        };
+
+        let body = client.build_request_body(&[], &config).unwrap();
+
+        let temperature = body["temperature"].as_f64().unwrap();
+        assert!((temperature - 0.7).abs() < 0.000_001);
+    }
+
+    #[test]
+    fn test_build_request_body_omits_temperature_for_opus_47() {
+        let client = AnthropicClient::new("test-key").unwrap();
+        let config = RequestConfig {
+            model: "anthropic/claude-opus-4-7".to_string(),
+            temperature: Some(0.7),
+            ..Default::default()
+        };
+
+        let body = client.build_request_body(&[], &config).unwrap();
+
+        assert!(body.get("temperature").is_none());
+    }
+
+    #[test]
+    fn test_build_request_body_omits_temperature_for_opus_47_snapshot() {
+        let client = AnthropicClient::new("test-key").unwrap();
+        let config = RequestConfig {
+            model: "claude-opus-4-7-20260520".to_string(),
+            temperature: Some(0.7),
+            ..Default::default()
+        };
+
+        let body = client.build_request_body(&[], &config).unwrap();
+
+        assert!(body.get("temperature").is_none());
+    }
+
+    #[test]
+    fn test_build_request_body_omits_temperature_for_opus_4_family() {
+        let client = AnthropicClient::new("test-key").unwrap();
+
+        for model in [
+            "claude-opus-4",
+            "claude-opus-4-1-20250805",
+            "claude-opus-4-6",
+            "claude-opus-4.7",
+            "anthropic/claude-opus-4.7",
+            "claude-opus-latest",
+        ] {
+            let config = RequestConfig {
+                model: model.to_string(),
+                temperature: Some(0.7),
+                ..Default::default()
+            };
+
+            let body = client.build_request_body(&[], &config).unwrap();
+
+            assert!(
+                body.get("temperature").is_none(),
+                "{model} should omit temperature"
+            );
+        }
+    }
+
+    #[test]
+    fn test_build_request_body_keeps_temperature_for_older_opus() {
+        let client = AnthropicClient::new("test-key").unwrap();
+        let config = RequestConfig {
+            model: "claude-3-opus-20240229".to_string(),
+            temperature: Some(0.7),
+            ..Default::default()
+        };
+
+        let body = client.build_request_body(&[], &config).unwrap();
+
+        let temperature = body["temperature"].as_f64().unwrap();
+        assert!((temperature - 0.7).abs() < 0.000_001);
+    }
+
+    #[test]
+    fn trims_api_key_before_building_headers() {
+        let client = AnthropicClient::new("  test-key\n").unwrap();
+        let headers = client.headers();
+
+        assert_eq!(headers.get("x-api-key").unwrap(), "test-key");
     }
 
     #[test]

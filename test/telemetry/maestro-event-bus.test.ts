@@ -1,4 +1,9 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { createHash } from "node:crypto";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import * as oauthStorage from "../../src/oauth/storage.js";
 import { recordSessionDuration } from "../../src/telemetry.js";
 import { maestroCorrelationToChronicleMetadata } from "../../src/telemetry/index.js";
 import {
@@ -6,12 +11,17 @@ import {
 	buildMaestroCloudEvent,
 	closeMaestroEventBusTransport,
 	getMaestroEventBusStatus,
+	hashA2AEndpointUrl,
+	mirrorTelemetryToMaestroEventBus,
 	publishMaestroCloudEvent,
 	publishMaestroCloudEventStrict,
+	recordMaestroA2ADelegationEvent,
 	recordMaestroEvalScored,
+	recordMaestroLearnedContext,
 	recordMaestroPromptVariantSelected,
 	recordMaestroSkillInvoked,
 	recordMaestroSkillOutcome,
+	recordMaestroSubagentDispatch,
 	recordMaestroToolCallCompleted,
 	resolveMaestroEventBusConfig,
 	setMaestroEventBusTransportForTests,
@@ -24,11 +34,34 @@ describe("maestro event bus", () => {
 		await closeMaestroEventBusTransport();
 	});
 
+	function writeFlagSnapshot(flags: Array<{ key: string; enabled: boolean }>) {
+		const dir = mkdtempSync(join(tmpdir(), "maestro-event-bus-flags-"));
+		const path = join(dir, "flags.json");
+		writeFileSync(path, JSON.stringify({ flags, schema_version: 1 }), "utf8");
+		return {
+			path,
+			cleanup: () => rmSync(dir, { force: true, recursive: true }),
+		};
+	}
+
+	function managedEventBusEnv(snapshotPath: string) {
+		return {
+			EVALOPS_FEATURE_FLAGS_PATH: snapshotPath,
+			MAESTRO_EVENT_BUS_URL: "nats://bus.example:4222",
+			MAESTRO_EVENT_BUS_SOURCE: "maestro.web",
+			MAESTRO_EVALOPS_ORG_ID: "org_evalops",
+			MAESTRO_EVALOPS_WORKSPACE_ID: "workspace_evalops",
+			MAESTRO_EVALOPS_ACCESS_TOKEN: "token_evalops",
+			MAESTRO_AGENT_RUN_ID: "run_evalops",
+		};
+	}
+
 	it("uses an audit-bus consent scope independent of training telemetry", () => {
 		const config = resolveMaestroEventBusConfig({
 			MAESTRO_TELEMETRY: "0",
 			MAESTRO_EVENT_BUS_URL: "nats://bus.example:4222",
 			MAESTRO_EVALOPS_ORG_ID: "org_123",
+			MAESTRO_EVALOPS_USER_ID: "user_123",
 			MAESTRO_EVALOPS_WORKSPACE_ID: "workspace_123",
 			MAESTRO_SESSION_ID: "session_123",
 		});
@@ -38,8 +71,230 @@ describe("maestro event bus", () => {
 		expect(config.natsUrl).toBe("nats://bus.example:4222");
 		expect(config.defaultCorrelation).toMatchObject({
 			organization_id: "org_123",
+			user_id: "user_123",
 			workspace_id: "workspace_123",
 			session_id: "session_123",
+		});
+	});
+
+	it("honors the internal telemetry kill switch before audit-bus routing", () => {
+		const config = resolveMaestroEventBusConfig({
+			MAESTRO_INTERNAL_TELEMETRY_DISABLED: "1",
+			MAESTRO_TELEMETRY: "1",
+			MAESTRO_EVENT_BUS_URL: "nats://bus.example:4222",
+			MAESTRO_EVALOPS_ORG_ID: "org_123",
+		});
+
+		expect(config.enabled).toBe(false);
+		expect(config.reason).toBe("internal telemetry disabled");
+		expect(config.natsUrl).toBe("nats://bus.example:4222");
+	});
+
+	it("requires the managed rollout flag when a feature flag snapshot is mounted", () => {
+		const snapshot = writeFlagSnapshot([
+			{ key: "platform.kill_switches.maestro.platform_events", enabled: false },
+			{ key: "maestro.platform_events.publisher_enabled", enabled: false },
+		]);
+		try {
+			expect(
+				getMaestroEventBusStatus(managedEventBusEnv(snapshot.path)),
+			).toMatchObject({
+				enabled: false,
+				reason: "platform events rollout disabled",
+			});
+		} finally {
+			snapshot.cleanup();
+		}
+	});
+
+	it("honors the managed platform-events kill switch when a snapshot is mounted", () => {
+		const snapshot = writeFlagSnapshot([
+			{ key: "platform.kill_switches.maestro.platform_events", enabled: true },
+			{ key: "maestro.platform_events.publisher_enabled", enabled: true },
+		]);
+		try {
+			expect(
+				getMaestroEventBusStatus(managedEventBusEnv(snapshot.path)),
+			).toMatchObject({
+				enabled: false,
+				reason: "platform events kill switch enabled",
+			});
+		} finally {
+			snapshot.cleanup();
+		}
+	});
+
+	it("allows managed event publishing when rollout is enabled and kill switch is off", () => {
+		const snapshot = writeFlagSnapshot([
+			{ key: "platform.kill_switches.maestro.platform_events", enabled: false },
+			{ key: "maestro.platform_events.publisher_enabled", enabled: true },
+		]);
+		try {
+			expect(
+				getMaestroEventBusStatus(managedEventBusEnv(snapshot.path)),
+			).toMatchObject({
+				enabled: true,
+				reason: "nats",
+			});
+		} finally {
+			snapshot.cleanup();
+		}
+	});
+
+	it("does not apply managed rollout flags to manual NATS configuration", () => {
+		const snapshot = writeFlagSnapshot([
+			{ key: "platform.kill_switches.maestro.platform_events", enabled: false },
+			{ key: "maestro.platform_events.publisher_enabled", enabled: false },
+		]);
+		try {
+			expect(
+				getMaestroEventBusStatus({
+					EVALOPS_FEATURE_FLAGS_PATH: snapshot.path,
+					MAESTRO_EVENT_BUS_URL: "nats://bus.example:4222",
+				}),
+			).toMatchObject({
+				enabled: true,
+				reason: "nats",
+			});
+		} finally {
+			snapshot.cleanup();
+		}
+	});
+
+	it("does not apply managed rollout flags to NATS publishers with identity metadata", () => {
+		const snapshot = writeFlagSnapshot([
+			{ key: "platform.kill_switches.maestro.platform_events", enabled: false },
+			{ key: "maestro.platform_events.publisher_enabled", enabled: false },
+		]);
+		try {
+			expect(
+				getMaestroEventBusStatus({
+					EVALOPS_FEATURE_FLAGS_PATH: snapshot.path,
+					MAESTRO_EVENT_BUS_URL: "nats://bus.example:4222",
+					MAESTRO_EVENT_BUS_SOURCE: "maestro.web",
+					MAESTRO_EVALOPS_ORG_ID: "org_evalops",
+					MAESTRO_EVALOPS_WORKSPACE_ID: "workspace_evalops",
+				}),
+			).toMatchObject({
+				enabled: true,
+				reason: "nats",
+			});
+		} finally {
+			snapshot.cleanup();
+		}
+	});
+
+	it("prefers EvalOps-scoped user identity over legacy Maestro user identity", () => {
+		const config = resolveMaestroEventBusConfig({
+			MAESTRO_EVENT_BUS_URL: "nats://bus.example:4222",
+			MAESTRO_EVALOPS_ORG_ID: "org_123",
+			MAESTRO_EVALOPS_USER_ID: "user_evalops",
+			MAESTRO_USER_ID: "user_legacy",
+			MAESTRO_SESSION_ID: "session_123",
+			MAESTRO_PRINCIPAL_SUBJECT: "subject_123",
+		});
+
+		expect(config.defaultCorrelation.user_id).toBe("user_evalops");
+		expect(config.defaultPrincipal).toMatchObject({
+			subject: "subject_123",
+			user_id: "user_evalops",
+			organization_id: "org_123",
+		});
+	});
+
+	it("loads EvalOps oauth credentials only once per config resolution", () => {
+		const loadCredentials = vi
+			.spyOn(oauthStorage, "loadOAuthCredentials")
+			.mockReturnValue({
+				type: "oauth",
+				refresh: "refresh-token",
+				access: "access-token",
+				expires: Date.now() + 60_000,
+				metadata: {
+					organizationId: "org_123",
+					userId: "user_123",
+					agentMcp: {
+						agentId: "agent_123",
+						apiKey: "api_key_123",
+						runId: "run_123",
+						workspaceId: "workspace_123",
+					},
+				},
+			});
+		const previousSubject = process.env.MAESTRO_PRINCIPAL_SUBJECT;
+		const previousSessionId = process.env.MAESTRO_SESSION_ID;
+		try {
+			process.env.MAESTRO_PRINCIPAL_SUBJECT = "subject_123";
+			process.env.MAESTRO_SESSION_ID = "session_123";
+
+			const config = resolveMaestroEventBusConfig();
+
+			expect(loadCredentials).toHaveBeenCalledTimes(1);
+			expect(loadCredentials).toHaveBeenCalledWith("evalops");
+			expect(config.defaultCorrelation).toMatchObject({
+				organization_id: "org_123",
+				user_id: "user_123",
+				workspace_id: "workspace_123",
+				agent_id: "agent_123",
+				agent_run_id: "run_123",
+				session_id: "session_123",
+			});
+			expect(config.defaultPrincipal).toMatchObject({
+				subject: "subject_123",
+				user_id: "user_123",
+				organization_id: "org_123",
+				workspace_id: "workspace_123",
+			});
+		} finally {
+			loadCredentials.mockRestore();
+			if (previousSubject === undefined) {
+				delete process.env.MAESTRO_PRINCIPAL_SUBJECT;
+			} else {
+				process.env.MAESTRO_PRINCIPAL_SUBJECT = previousSubject;
+			}
+			if (previousSessionId === undefined) {
+				delete process.env.MAESTRO_SESSION_ID;
+			} else {
+				process.env.MAESTRO_SESSION_ID = previousSessionId;
+			}
+		}
+	});
+
+	it("carries managed EvalOps org and workspace aliases into CloudEvent context", () => {
+		const event = buildMaestroCloudEvent(
+			MaestroBusEventType.ToolCallAttempted,
+			{
+				tool_call_id: "tool_1",
+				tool_name: "bash",
+				attempted_at: "2026-05-06T01:00:00.000Z",
+			},
+			{
+				env: {
+					MAESTRO_EVALOPS_ACCESS_TOKEN: "evalops-token",
+					EVALOPS_ORGANIZATION_ID: "org_alias",
+					EVALOPS_WORKSPACE_ID: "workspace_alias",
+					MAESTRO_AGENT_ID: "coding-agent",
+					MAESTRO_AGENT_RUN_ID: "run_alias",
+					MAESTRO_SESSION_ID: "session_alias",
+				},
+				eventId: "event_alias",
+				time: "2026-05-06T01:00:00.000Z",
+			},
+		);
+
+		expect(event.tenant_id).toBe("org_alias");
+		expect(event.data.correlation).toMatchObject({
+			organization_id: "org_alias",
+			workspace_id: "workspace_alias",
+			session_id: "session_alias",
+			agent_id: "coding-agent",
+			agent_run_id: "run_alias",
+		});
+		expect(event.extensions).toMatchObject({
+			organization_id: "org_alias",
+			workspace_id: "workspace_alias",
+			maestro_session_id: "session_alias",
+			agent_run_id: "run_alias",
 		});
 	});
 
@@ -50,6 +305,9 @@ describe("maestro event bus", () => {
 				correlation: {
 					workspace_id: "workspace_123",
 					session_id: "session_123",
+					traceparent:
+						"00-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-bbbbbbbbbbbbbbbb-01",
+					tracestate: "evalops=maestro-test",
 				},
 				tool_call_id: "tool_1",
 				tool_name: "bash",
@@ -59,6 +317,8 @@ describe("maestro event bus", () => {
 				env: {
 					MAESTRO_EVENT_BUS_URL: "nats://bus.example:4222",
 					MAESTRO_EVENT_BUS_SOURCE: "maestro-test",
+					MAESTRO_EVALOPS_ORG_ID: "org_123",
+					MAESTRO_EVALOPS_USER_ID: "user_123",
 				},
 				eventId: "event_1",
 				time: "2026-04-22T16:00:00.000Z",
@@ -75,19 +335,112 @@ describe("maestro event bus", () => {
 			extensions: {
 				dataschema: "buf.build/evalops/proto/maestro.v1.ToolCallAttempt",
 				evalops_context_version: "evalops.context.v1",
+				organization_id: "org_123",
+				user_id: "user_123",
 				workspace_id: "workspace_123",
 				maestro_session_id: "session_123",
+				traceparent: "00-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-bbbbbbbbbbbbbbbb-01",
+				tracestate: "evalops=maestro-test",
 			},
 		});
+		expect(event.data.correlation).not.toHaveProperty("traceparent");
+		expect(event.data.correlation).not.toHaveProperty("tracestate");
 		expect(event.data["@type"]).toBe(
 			"type.googleapis.com/maestro.v1.ToolCallAttempt",
 		);
 		expect(event.data.tool_call_id).toBe("tool_1");
 	});
 
+	it("publishes learned context CloudEvents for Cerebro recall", async () => {
+		const published: Array<{ subject: string; payload: string }> = [];
+		setMaestroEventBusTransportForTests({
+			async publish(subject, payload) {
+				published.push({ subject, payload });
+			},
+		});
+
+		recordMaestroLearnedContext({
+			event_id: "event_learned_1",
+			learning_id: "learned_evalops_1",
+			subject_thing_id: "maestro_repository_evalops_platform",
+			statement:
+				"Platform trace budgets must be scoped by EvalOps organization.",
+			dimension: "traceability.org_budget_scope",
+			confidence_score: 0.86,
+			confidence_reason:
+				"The coding session confirmed org identifiers are propagated through telemetry.",
+			evidence: [
+				{
+					source: "maestro-session",
+					source_id: "session_123",
+					excerpt: "Org identifiers are present in trace context.",
+				},
+			],
+			tool_call_id: "tool_call_123",
+			tool_execution_id: "tool_exec_123",
+			correlation: {
+				organization_id: "org_123",
+				user_id: "user_123",
+				workspace_id: "workspace_123",
+				session_id: "session_123",
+				agent_run_id: "run_123",
+				agent_id: "maestro",
+			},
+			learned_at: "2026-05-02T18:12:00.000Z",
+			env: { MAESTRO_EVENT_BUS_URL: "nats://bus.example:4222" },
+		});
+
+		await Promise.resolve();
+
+		expect(published).toHaveLength(1);
+		expect(published[0]?.subject).toBe("maestro.events.context.learned");
+		expect(JSON.parse(published[0]?.payload ?? "{}")).toMatchObject({
+			id: "event_learned_1",
+			type: "maestro.events.context.learned",
+			data: {
+				"@type": "type.googleapis.com/maestro.v1.MaestroLearnedContext",
+				learning_id: "learned_evalops_1",
+				subject_thing_id: "maestro_repository_evalops_platform",
+				statement:
+					"Platform trace budgets must be scoped by EvalOps organization.",
+				dimension: "traceability.org_budget_scope",
+				confidence_score: 0.86,
+				confidence_reason:
+					"The coding session confirmed org identifiers are propagated through telemetry.",
+				evidence: [
+					{
+						source: "maestro-session",
+						source_id: "session_123",
+						excerpt: "Org identifiers are present in trace context.",
+					},
+				],
+				tool_call_id: "tool_call_123",
+				tool_execution_id: "tool_exec_123",
+				correlation: {
+					organization_id: "org_123",
+					user_id: "user_123",
+					workspace_id: "workspace_123",
+					session_id: "session_123",
+					agent_run_id: "run_123",
+					agent_id: "maestro",
+				},
+			},
+			extensions: {
+				dataschema: "buf.build/evalops/proto/maestro.v1.MaestroLearnedContext",
+				organization_id: "org_123",
+				user_id: "user_123",
+				workspace_id: "workspace_123",
+				maestro_session_id: "session_123",
+				agent_run_id: "run_123",
+				tool_execution_id: "tool_exec_123",
+			},
+		});
+	});
+
 	it("serializes Maestro correlation into Chronicle metadata keys", () => {
 		const metadata = maestroCorrelationToChronicleMetadata({
 			organization_id: "org_123",
+			user_id: "user_123",
 			workspace_id: "workspace_123",
 			session_id: "session_123",
 			agent_run_id: "run_123",
@@ -97,10 +450,12 @@ describe("maestro event bus", () => {
 			principal_id: "principal_123",
 			trace_id: "trace_123",
 			traceparent: "00-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-bbbbbbbbbbbbbbbb-01",
+			tracestate: "evalops=maestro-test",
 			request_id: "request_123",
 			parent_event_id: "event_parent",
 			attributes: {
 				maestro_session_id: "spoofed_session",
+				user_id: "spoofed_user",
 				task_id: "task_123",
 				task_type: "pr-review",
 				source_issue: "42",
@@ -111,6 +466,7 @@ describe("maestro event bus", () => {
 
 		expect(metadata).toMatchObject({
 			organization_id: "org_123",
+			user_id: "user_123",
 			workspace_id: "workspace_123",
 			maestro_session_id: "session_123",
 			agent_run_id: "run_123",
@@ -120,6 +476,7 @@ describe("maestro event bus", () => {
 			principal_id: "principal_123",
 			trace_id: "trace_123",
 			traceparent: "00-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-bbbbbbbbbbbbbbbb-01",
+			tracestate: "evalops=maestro-test",
 			request_id: "request_123",
 			parent_event_id: "event_parent",
 			task_id: "task_123",
@@ -127,6 +484,7 @@ describe("maestro event bus", () => {
 			source_issue: "42",
 		});
 		expect(metadata.maestro_session_id).toBe("session_123");
+		expect(metadata.user_id).toBe("user_123");
 		expect(metadata.trace_id).toBe("trace_123");
 		expect(metadata.empty).toBeUndefined();
 	});
@@ -268,6 +626,77 @@ describe("maestro event bus", () => {
 				},
 			},
 		});
+	});
+
+	it("publishes failed tool result CloudEvents on the failure subject", async () => {
+		const published: Array<{ subject: string; payload: string }> = [];
+		setMaestroEventBusTransportForTests({
+			async publish(subject, payload) {
+				published.push({ subject, payload });
+			},
+		});
+
+		recordMaestroToolCallCompleted({
+			tool_call_id: "tool_failed_1",
+			tool_execution_id: "texec_failed_1",
+			status: "MAESTRO_TOOL_CALL_STATUS_FAILED",
+			error_code: "exit_1",
+			error_message: "command failed",
+			completed_at: "2026-04-23T18:02:00.000Z",
+			env: { MAESTRO_EVENT_BUS_URL: "nats://bus.example:4222" },
+		});
+
+		await Promise.resolve();
+
+		expect(published).toHaveLength(1);
+		expect(published[0]?.subject).toBe("maestro.events.tool_call.failed");
+		expect(JSON.parse(published[0]?.payload ?? "{}")).toMatchObject({
+			type: "maestro.events.tool_call.failed",
+			data: {
+				tool_call_id: "tool_failed_1",
+				tool_execution_id: "texec_failed_1",
+				status: "MAESTRO_TOOL_CALL_STATUS_FAILED",
+				error_code: "exit_1",
+				error_message: "command failed",
+			},
+		});
+	});
+
+	it("publishes denied and cancelled tool outcomes on the completion subject", async () => {
+		const published: Array<{ subject: string; payload: string }> = [];
+		setMaestroEventBusTransportForTests({
+			async publish(subject, payload) {
+				published.push({ subject, payload });
+			},
+		});
+
+		for (const status of [
+			"MAESTRO_TOOL_CALL_STATUS_DENIED",
+			"MAESTRO_TOOL_CALL_STATUS_CANCELLED",
+		] as const) {
+			recordMaestroToolCallCompleted({
+				tool_call_id: `tool_${status.toLowerCase()}`,
+				status,
+				completed_at: "2026-04-23T18:03:00.000Z",
+				env: { MAESTRO_EVENT_BUS_URL: "nats://bus.example:4222" },
+			});
+		}
+
+		await Promise.resolve();
+
+		expect(published).toHaveLength(2);
+		for (const [index, status] of [
+			"MAESTRO_TOOL_CALL_STATUS_DENIED",
+			"MAESTRO_TOOL_CALL_STATUS_CANCELLED",
+		].entries()) {
+			expect(published[index]?.subject).toBe(
+				"maestro.events.tool_call.completed",
+			);
+			expect(JSON.parse(published[index]?.payload ?? "{}")).toMatchObject({
+				type: "maestro.events.tool_call.completed",
+				data: { status },
+			});
+		}
 	});
 
 	it("publishes skill invocation CloudEvents with selected skill identity", async () => {
@@ -413,6 +842,202 @@ describe("maestro event bus", () => {
 					artifactId: "skill_remote_1",
 					source: "service",
 				},
+			},
+		});
+	});
+
+	it("publishes subagent dispatch CloudEvents for audit replay", async () => {
+		const published: Array<{ subject: string; payload: string }> = [];
+		setMaestroEventBusTransportForTests({
+			async publish(subject, payload) {
+				published.push({ subject, payload });
+			},
+		});
+
+		recordMaestroSubagentDispatch({
+			dispatch_id: "dispatch_1",
+			mode: "smart",
+			subagent_type: "coder",
+			model: "gpt-5.5",
+			provider: "openai-codex",
+			reasoning_effort: "medium",
+			source: "mode",
+			success: true,
+			latency_ms: 7,
+			parent_mode: "smart",
+			parent_model_provider: "anthropic",
+			swarm_id: "swarm_1",
+			task_id: "task_1",
+			teammate_id: "teammate_1",
+			dispatched_at: "2026-05-19T17:00:00.000Z",
+			env: { MAESTRO_EVENT_BUS_URL: "nats://bus.example:4222" },
+		});
+
+		await Promise.resolve();
+
+		expect(published).toHaveLength(1);
+		expect(published[0]?.subject).toBe("maestro.events.subagent.dispatched");
+		expect(JSON.parse(published[0]?.payload ?? "{}")).toMatchObject({
+			type: "maestro.events.subagent.dispatched",
+			data: {
+				"@type": "type.googleapis.com/maestro.v1.SubagentDispatch",
+				dispatch_id: "dispatch_1",
+				mode: "smart",
+				subagent_type: "coder",
+				model: "gpt-5.5",
+				provider: "openai-codex",
+				reasoning_effort: "medium",
+				source: "mode",
+				success: true,
+				latency_ms: 7,
+				parent_mode: "smart",
+				parent_model_provider: "anthropic",
+				swarm_id: "swarm_1",
+				task_id: "task_1",
+				teammate_id: "teammate_1",
+				dispatched_at: "2026-05-19T17:00:00.000Z",
+			},
+		});
+	});
+
+	it("publishes A2A delegation CloudEvents with redacted endpoint correlation", async () => {
+		const published: Array<{ subject: string; payload: string }> = [];
+		setMaestroEventBusTransportForTests({
+			async publish(subject, payload) {
+				published.push({ subject, payload });
+			},
+		});
+
+		recordMaestroA2ADelegationEvent({
+			event_type: MaestroBusEventType.A2ATaskDispatched,
+			event_id: "event_a2a_1",
+			swarm_id: "swarm_1",
+			lane_id: "lane_alpha",
+			parent_task_id: "task_parent",
+			a2a_task_id: "a2a_task_1",
+			a2a_message_id: "a2a_message_1",
+			context_id: "ctx_1",
+			peer_agent_id: "agent_alpha",
+			peer_name: "Alpha",
+			peer_endpoint_url: "https://alpha.internal/a2a?token=secret",
+			peer_endpoint_kind: "internal",
+			skill_id: "maestro.subagent.code-review",
+			task_class: "code.review",
+			source: "platform-agent-registry",
+			status: "TASK_STATE_SUBMITTED",
+			success: true,
+			latency_ms: 11,
+			metadata: {
+				platformAgentRunId: "run_platform_1",
+				workerQueue: "queue-a2a",
+			},
+			correlation: {
+				workspace_id: "workspace_123",
+				session_id: "session_123",
+				traceparent: "00-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-bbbbbbbbbbbbbbbb-01",
+				attributes: {
+					platform_agent_run_id: "run_platform_1",
+				},
+			},
+			occurred_at: "2026-05-23T18:00:00.000Z",
+			env: { MAESTRO_EVENT_BUS_URL: "nats://bus.example:4222" },
+		});
+
+		await Promise.resolve();
+
+		expect(published).toHaveLength(1);
+		expect(published[0]?.subject).toBe("maestro.events.a2a.task.dispatched");
+		const event = JSON.parse(published[0]?.payload ?? "{}");
+		expect(event).toMatchObject({
+			type: "maestro.events.a2a.task.dispatched",
+			data: {
+				"@type": "type.googleapis.com/maestro.v1.MaestroA2ADelegationEvent",
+				swarm_id: "swarm_1",
+				lane_id: "lane_alpha",
+				parent_task_id: "task_parent",
+				a2a_task_id: "a2a_task_1",
+				a2a_message_id: "a2a_message_1",
+				context_id: "ctx_1",
+				peer_agent_id: "agent_alpha",
+				peer_endpoint_kind: "internal",
+				skill_id: "maestro.subagent.code-review",
+				task_class: "code.review",
+				source: "platform-agent-registry",
+				status: "TASK_STATE_SUBMITTED",
+				success: true,
+				latency_ms: 11,
+			},
+			extensions: {
+				traceparent: "00-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-bbbbbbbbbbbbbbbb-01",
+				workspace_id: "workspace_123",
+				maestro_session_id: "session_123",
+			},
+		});
+		expect(event.data.peer_endpoint_hash).toBe(
+			`sha256:${createHash("sha256")
+				.update("https://alpha.internal/a2a")
+				.digest("hex")}`,
+		);
+		expect(JSON.stringify(event)).not.toContain("token=secret");
+		expect(JSON.stringify(event)).not.toContain("alpha.internal/a2a");
+		expect(event.data.correlation).not.toHaveProperty("traceparent");
+	});
+
+	it("normalizes A2A endpoint URLs before hashing telemetry identity", () => {
+		const expectedHash = `sha256:${createHash("sha256")
+			.update("https://alpha.internal/a2a")
+			.digest("hex")}`;
+
+		expect(
+			hashA2AEndpointUrl(
+				"https://user:secret@alpha.internal/a2a?token=one#fragment",
+			),
+		).toBe(expectedHash);
+		expect(hashA2AEndpointUrl("https://alpha.internal/a2a?token=two")).toBe(
+			expectedHash,
+		);
+	});
+
+	it("mirrors subagent dispatch telemetry into audit CloudEvents", async () => {
+		const published: Array<{ subject: string; payload: string }> = [];
+		setMaestroEventBusTransportForTests({
+			async publish(subject, payload) {
+				published.push({ subject, payload });
+			},
+		});
+
+		const telemetryEvent = {
+			type: "subagent-dispatch",
+			timestamp: "2026-05-19T17:01:00.000Z",
+			mode: "smart",
+			subagentType: "planner",
+			model: "claude-sonnet-4-5",
+			provider: "anthropic",
+			reasoningEffort: "medium",
+			source: "tier",
+			success: false,
+			latencyMs: 3,
+			metadata: {
+				dispatchId: "dispatch_2",
+				swarmId: "swarm_2",
+				taskId: "task_2",
+				reason: "missing_parent_model_provider",
+			},
+		} as Parameters<typeof mirrorTelemetryToMaestroEventBus>[0] &
+			Record<string, unknown>;
+		await mirrorTelemetryToMaestroEventBus(telemetryEvent);
+
+		expect(published).toHaveLength(1);
+		expect(JSON.parse(published[0]?.payload ?? "{}")).toMatchObject({
+			type: "maestro.events.subagent.dispatched",
+			data: {
+				dispatch_id: "dispatch_2",
+				subagent_type: "planner",
+				success: false,
+				latency_ms: 3,
+				swarm_id: "swarm_2",
+				task_id: "task_2",
+				reason: "missing_parent_model_provider",
 			},
 		});
 	});

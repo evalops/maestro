@@ -45,9 +45,14 @@
  */
 
 import { spawnSync } from "node:child_process";
+import { stripVTControlCharacters } from "node:util";
 
 const DEFAULT_GIT_STATUS_MAX_CHARS = 2000;
 const DEFAULT_GIT_RECENT_COMMIT_COUNT = 5;
+
+function stripAnsi(text: string): string {
+	return stripVTControlCharacters(text);
+}
 
 function runGitText(
 	cwd: string,
@@ -61,8 +66,8 @@ function runGitText(
 
 	return {
 		ok: !result.error && result.status === 0,
-		stdout: (result.stdout ?? "").trim(),
-		stderr: (result.stderr ?? "").trim(),
+		stdout: stripAnsi(result.stdout ?? "").trim(),
+		stderr: stripAnsi(result.stderr ?? "").trim(),
 	};
 }
 
@@ -72,6 +77,98 @@ function truncateGitText(text: string, maxChars: number): string {
 	}
 
 	return `${text.slice(0, maxChars)}\n... (truncated because it exceeds ${maxChars} characters. Run git status for full output.)`;
+}
+
+interface GitStatusSnapshot {
+	branch?: string;
+	upstream?: string;
+	upstreamGone?: boolean;
+	ahead?: number;
+	behind?: number;
+	isDirty: boolean;
+	statusText: string;
+}
+
+function parseUpstreamSummary(
+	summary: string,
+): Pick<GitStatusSnapshot, "ahead" | "behind" | "upstreamGone"> {
+	const aheadMatch = summary.match(/\bahead\s+(\d+)/);
+	const behindMatch = summary.match(/\bbehind\s+(\d+)/);
+	return {
+		ahead: aheadMatch ? Number.parseInt(aheadMatch[1]!, 10) : undefined,
+		behind: behindMatch ? Number.parseInt(behindMatch[1]!, 10) : undefined,
+		upstreamGone: /\bgone\b/.test(summary) || undefined,
+	};
+}
+
+function parseGitStatusBranchHeader(
+	line: string | undefined,
+): Pick<
+	GitStatusSnapshot,
+	"branch" | "upstream" | "ahead" | "behind" | "upstreamGone"
+> {
+	if (!line?.startsWith("## ")) {
+		return {};
+	}
+
+	const header = line.slice(3).trim();
+	const summaryMatch = header.match(/\s+\[(.+)\]$/);
+	const summary = summaryMatch?.[1] ?? "";
+	const withoutSummary = summaryMatch
+		? header.slice(0, summaryMatch.index).trim()
+		: header;
+	const upstreamSummary = parseUpstreamSummary(summary);
+
+	const noCommitsMatch = withoutSummary.match(/^No commits yet on (.+)$/);
+	if (noCommitsMatch) {
+		return {
+			branch: noCommitsMatch[1],
+			...upstreamSummary,
+		};
+	}
+
+	if (withoutSummary.startsWith("HEAD ")) {
+		return upstreamSummary;
+	}
+
+	const [branch, upstream] = withoutSummary.split("...", 2);
+	return {
+		branch: branch || undefined,
+		upstream: upstream || undefined,
+		...upstreamSummary,
+	};
+}
+
+function getGitStatusSnapshot(
+	cwd: string,
+	maxStatusChars: number,
+): GitStatusSnapshot | null {
+	const statusResult = runGitText(cwd, [
+		"--no-optional-locks",
+		"status",
+		"--porcelain=v1",
+		"--branch",
+	]);
+
+	if (!statusResult.ok) {
+		return isInsideGitRepository(cwd)
+			? {
+					isDirty: false,
+					statusText: "(git status unavailable)",
+				}
+			: null;
+	}
+
+	const lines = statusResult.stdout ? statusResult.stdout.split("\n") : [];
+	const branchInfo = parseGitStatusBranchHeader(lines[0]);
+	const statusLines = lines[0]?.startsWith("## ") ? lines.slice(1) : lines;
+	const rawStatus = statusLines.join("\n").trim();
+
+	return {
+		...branchInfo,
+		isDirty: rawStatus.length > 0,
+		statusText: truncateGitText(rawStatus || "(clean)", maxStatusChars),
+	};
 }
 
 export function isInsideGitRepository(cwd: string = process.cwd()): boolean {
@@ -309,20 +406,14 @@ export function getGitSnapshot(
 	cwd: string = process.cwd(),
 	options: GitSnapshotOptions = {},
 ): string | null {
-	const state = getGitState(cwd);
-	if (!state.isRepo) {
-		return null;
-	}
-
 	const maxStatusChars = options.maxStatusChars ?? DEFAULT_GIT_STATUS_MAX_CHARS;
 	const recentCommitCount =
 		options.recentCommitCount ?? DEFAULT_GIT_RECENT_COMMIT_COUNT;
+	const statusSnapshot = getGitStatusSnapshot(cwd, maxStatusChars);
+	if (!statusSnapshot) {
+		return null;
+	}
 
-	const statusResult = runGitText(cwd, [
-		"--no-optional-locks",
-		"status",
-		"--short",
-	]);
 	const logResult = runGitText(cwd, [
 		"--no-optional-locks",
 		"log",
@@ -331,20 +422,19 @@ export function getGitSnapshot(
 		String(recentCommitCount),
 	]);
 
-	const statusText = statusResult.ok
-		? truncateGitText(statusResult.stdout || "(clean)", maxStatusChars)
-		: "(git status unavailable)";
 	const recentCommits = logResult.ok
 		? logResult.stdout || "(no commits yet)"
 		: "(git log unavailable)";
 
-	const branch = state.branch ?? "(detached HEAD)";
+	const branch = statusSnapshot.branch ?? "(detached HEAD)";
 	const defaultBranch = getDefaultBranch(cwd);
 	const gitUser = getGitUserName(cwd);
-	const upstream = state.upstream
-		? `Upstream: ${state.upstream} (ahead ${state.ahead ?? 0}, behind ${state.behind ?? 0})`
+	const upstream = statusSnapshot.upstream
+		? statusSnapshot.upstreamGone
+			? `Upstream: ${statusSnapshot.upstream} (gone)`
+			: `Upstream: ${statusSnapshot.upstream} (ahead ${statusSnapshot.ahead ?? 0}, behind ${statusSnapshot.behind ?? 0})`
 		: "Upstream: (none)";
-	const workingTree = state.isDirty ? "dirty" : "clean";
+	const workingTree = statusSnapshot.isDirty ? "dirty" : "clean";
 
 	return [
 		"# Repository Snapshot",
@@ -354,7 +444,7 @@ export function getGitSnapshot(
 		...(gitUser ? ["Git user is configured for this repository."] : []),
 		upstream,
 		`Working tree: ${workingTree}`,
-		`Status:\n${statusText}`,
+		`Status:\n${statusSnapshot.statusText}`,
 		`Recent commits:\n${recentCommits}`,
 	].join("\n\n");
 }

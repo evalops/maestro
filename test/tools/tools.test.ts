@@ -57,7 +57,7 @@ function getTextOutput(result: ToolResult): string {
 	);
 }
 
-describe("Composer Tools", () => {
+describe("Maestro Tools", () => {
 	let testDir: string;
 
 	beforeEach(() => {
@@ -1703,6 +1703,7 @@ describe("codingTools bundle", () => {
 			"diff",
 			"bash",
 			"background_tasks",
+			"apply_patch",
 			"edit",
 			"write",
 			"notebook_edit",

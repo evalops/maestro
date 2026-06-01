@@ -112,6 +112,10 @@ describe("Enhanced Cost Tracking", () => {
 		});
 	}
 
+	function seedUsageEntries(entries: UsageEntry[]): void {
+		writeFileSync(testUsageFile, JSON.stringify(entries, null, 2));
+	}
+
 	describe("exportUsageToCSV", () => {
 		it("should export usage data as CSV with proper headers", () => {
 			createSampleEntries();
@@ -604,16 +608,18 @@ describe("Enhanced Cost Tracking", () => {
 		});
 
 		it("should handle large datasets efficiently", { timeout: 60_000 }, () => {
-			// Create 1000 entries
-			for (let i = 0; i < 1000; i++) {
-				trackUsage({
+			// Seed once so the benchmark covers large-dataset export behavior, not
+			// repeated read/write setup.
+			seedUsageEntries(
+				Array.from({ length: 1000 }, (_, i) => ({
+					timestamp: Date.now() + i,
 					provider: i % 2 === 0 ? "anthropic" : "openai",
 					model: `model-${i % 5}`,
 					tokensInput: 100 + i,
 					tokensOutput: 50 + i,
 					cost: 0.001 * (i + 1),
-				});
-			}
+				})),
+			);
 
 			const start = Date.now();
 			exportUsageToCSV();

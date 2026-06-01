@@ -108,7 +108,7 @@ use reqwest::header::{HeaderMap, HeaderValue, AUTHORIZATION, CONTENT_TYPE};
 use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;
 
-use super::client::{AiClient, AiProvider};
+use super::client::{provider_model_name, AiClient, AiProvider};
 use super::types::{
     ContentBlock, ImageSource, Message, MessageContent, RequestConfig, Role, StreamEvent, Tool,
 };
@@ -481,6 +481,7 @@ fn extract_text_from_item(item: &serde_json::Value) -> Option<String> {
 
 /// Returns true if the model uses the Responses API (vs Chat Completions)
 fn uses_responses_api(model: &str) -> bool {
+    let model = provider_model_name(model);
     // Codex models and gpt-5.x models use the Responses API
     model.contains("codex") || model.starts_with("gpt-5") || model.starts_with("o3")
 }
@@ -593,10 +594,11 @@ impl OpenAiClient {
             .timeout(std::time::Duration::from_mins(5))
             .build()
             .context("Failed to create HTTP client")?;
+        let api_key = api_key.into().trim().to_string();
 
         Ok(Self {
             client,
-            api_key: api_key.into(),
+            api_key,
             base_url: None,
         })
     }
@@ -607,10 +609,11 @@ impl OpenAiClient {
             .timeout(std::time::Duration::from_mins(5))
             .build()
             .context("Failed to create HTTP client")?;
+        let api_key = api_key.into().trim().to_string();
 
         Ok(Self {
             client,
-            api_key: api_key.into(),
+            api_key,
             base_url: Some(base_url.into()),
         })
     }
@@ -822,10 +825,11 @@ impl OpenAiClient {
         messages: &[Message],
         config: &RequestConfig,
     ) -> serde_json::Value {
+        let model = provider_model_name(&config.model);
         // Check if this is a Mistral model (needs special tool handling)
-        let is_mistral = is_mistral_model(&config.model, self.base_url.as_deref());
+        let is_mistral = is_mistral_model(&model, self.base_url.as_deref());
         // Check if this is a Groq model (may need parameter adjustments)
-        let is_groq = is_groq_model(&config.model, self.base_url.as_deref());
+        let is_groq = is_groq_model(&model, self.base_url.as_deref());
 
         // Build tool ID to name mapping for Mistral
         let tool_id_to_name = if is_mistral {
@@ -837,7 +841,7 @@ impl OpenAiClient {
         let openai_messages = self.convert_messages(messages, is_mistral, &tool_id_to_name);
 
         let mut body = serde_json::json!({
-            "model": config.model,
+            "model": model,
             "max_tokens": config.max_tokens,
             "messages": openai_messages,
             "stream": true,
@@ -898,6 +902,7 @@ impl OpenAiClient {
         messages: &[Message],
         config: &RequestConfig,
     ) -> serde_json::Value {
+        let model = provider_model_name(&config.model);
         // Convert messages to Responses API format
         // The input array contains ResponseItems, which can be messages, function calls, or function outputs
         let mut input: Vec<serde_json::Value> = Vec::new();
@@ -1021,7 +1026,7 @@ impl OpenAiClient {
         }
 
         let mut body = serde_json::json!({
-            "model": config.model,
+            "model": model,
             "input": input,
             "stream": true,
             "parallel_tool_calls": true,
@@ -1784,6 +1789,7 @@ mod tests {
     fn test_uses_responses_api() {
         // gpt-5.1-codex-* should use Responses API
         assert!(uses_responses_api("gpt-5.1-codex-max"));
+        assert!(uses_responses_api("openai/gpt-5.1-codex-max"));
         assert!(uses_responses_api("gpt-5.1-codex-lite"));
         // o3 models use Responses API
         assert!(uses_responses_api("o3"));
@@ -1799,6 +1805,10 @@ mod tests {
         // Responses API models go to /v1/responses
         assert_eq!(
             api_url_for_model("gpt-5.1-codex-max"),
+            "https://api.openai.com/v1/responses"
+        );
+        assert_eq!(
+            api_url_for_model("openai/gpt-5.1-codex-max"),
             "https://api.openai.com/v1/responses"
         );
         // Chat Completions models go to /v1/chat/completions
@@ -1872,6 +1882,41 @@ mod tests {
         let filtered = filter_responses_api_tools(&tools);
         assert_eq!(filtered.len(), 1);
         assert_eq!(filtered[0].name, "read");
+    }
+
+    #[test]
+    fn trims_api_key_before_building_headers() {
+        let client = OpenAiClient::new("  test-key\n").unwrap();
+        let headers = client.headers();
+
+        assert_eq!(headers.get(AUTHORIZATION).unwrap(), "Bearer test-key");
+    }
+
+    #[test]
+    fn strips_provider_prefix_from_request_body_model() {
+        let client = OpenAiClient::new("test-key").unwrap();
+        let messages = vec![Message {
+            role: Role::User,
+            content: MessageContent::Text("Hello".to_string()),
+        }];
+
+        let responses_body = client.build_request_body(
+            &messages,
+            &RequestConfig {
+                model: "openai/gpt-5.1-codex-max".to_string(),
+                ..Default::default()
+            },
+        );
+        assert_eq!(responses_body["model"], "gpt-5.1-codex-max");
+
+        let chat_body = client.build_request_body(
+            &messages,
+            &RequestConfig {
+                model: "openai/gpt-4o".to_string(),
+                ..Default::default()
+            },
+        );
+        assert_eq!(chat_body["model"], "gpt-4o");
     }
 
     #[test]

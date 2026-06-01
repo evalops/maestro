@@ -1,7 +1,7 @@
 /**
- * API Client for Composer Backend
+ * API Client for Maestro Backend
  *
- * Handles communication with the embedded Composer server.
+ * Handles communication with the embedded Maestro server.
  */
 
 import type {
@@ -56,7 +56,7 @@ interface DesktopApiConfig {
 export type ApprovalMode = "auto" | "prompt" | "fail";
 export type QueueMode = "one" | "all";
 export type CleanMode = "off" | "soft" | "aggressive";
-export type FooterMode = "ensemble" | "solo";
+export type FooterMode = "rich" | "solo";
 
 export interface UiStatus {
 	zenMode: boolean;
@@ -335,10 +335,17 @@ export interface PackageRemoveResponse {
 	} | null;
 }
 
+export type McpConfigScope =
+	| "enterprise"
+	| "plugin"
+	| "project"
+	| "local"
+	| "user";
+
 export interface McpServerStatus {
 	name: string;
 	connected: boolean;
-	scope?: "enterprise" | "plugin" | "project" | "local" | "user";
+	scope?: McpConfigScope;
 	transport?: "stdio" | "http" | "sse";
 	tools?:
 		| Array<{
@@ -346,8 +353,30 @@ export interface McpServerStatus {
 				description?: string;
 				inputSchema?: unknown;
 				annotations?: Record<string, unknown>;
+				capability?: {
+					domain?: string;
+					toolLane?: string;
+					riskClass?: string;
+					requiresReceipt?: boolean;
+					proofRequired?: boolean;
+					mutatesDesktop?: boolean;
+					mutatesFiles?: boolean;
+					rawSecretPossible?: boolean;
+				};
 		  }>
 		| number;
+	toolCapabilitySummary?: {
+		total: number;
+		byDomain?: Record<string, number>;
+		byRiskClass?: Record<string, number>;
+		byToolLane?: Record<string, number>;
+		mutating?: {
+			desktop?: number;
+			files?: number;
+		};
+		requiresReceipt?: number;
+		rawSecretPossible?: number;
+	};
 	resources?: string[];
 	prompts?: string[];
 	promptDetails?: McpPromptDefinition[];
@@ -389,7 +418,7 @@ export interface McpPromptDefinition {
 
 export interface McpAuthPresetStatus {
 	name: string;
-	scope?: "enterprise" | "plugin" | "project" | "local" | "user";
+	scope?: McpConfigScope;
 	headerKeys: string[];
 	headersHelper?: string;
 }
@@ -522,7 +551,7 @@ export interface McpServerRemoveResponse {
 	path: string;
 	fallback: {
 		name: string;
-		scope?: "enterprise" | "plugin" | "project" | "local" | "user";
+		scope?: McpConfigScope;
 	} | null;
 }
 
@@ -566,7 +595,7 @@ export interface McpProjectApprovalRequest {
 
 export interface McpProjectApprovalResponse {
 	name: string;
-	scope: "project";
+	scope?: McpConfigScope;
 	decision: "approved" | "denied";
 	projectApproval: "pending" | "approved" | "denied";
 }

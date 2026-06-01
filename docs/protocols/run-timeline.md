@@ -5,9 +5,19 @@ Maestro exposes a session-scoped run timeline at
 answering what happened in a run without exposing raw tool arguments, raw diffs,
 or secret-bearing payloads.
 
-The current source is local session state. Platform-backed population can replace
-or augment this projection later as long as it preserves the same redaction and
-visibility rules.
+Local sessions use local session state. Hosted/Platform-backed sessions prefer
+Platform `MaestroTimelineService/ListRunTimeline` when Maestro has an
+`agent_run_id` or `remote_runner_session_id`, then fall back to the local
+projection if Platform is not configured or unavailable. That keeps the visible
+workflow understandable: start or attach a Maestro session, run governed tools,
+and inspect the same run in Platform's timeline.
+
+Required Platform configuration follows the shared EvalOps client conventions:
+
+- `MAESTRO_PLATFORM_BASE_URL` or `MAESTRO_TIMELINE_SERVICE_URL`
+- `MAESTRO_EVALOPS_ACCESS_TOKEN` or `MAESTRO_TIMELINE_SERVICE_TOKEN`
+- `MAESTRO_EVALOPS_ORG_ID`
+- `MAESTRO_REMOTE_RUNNER_WORKSPACE_ID` or `MAESTRO_TIMELINE_WORKSPACE_ID`
 
 ## Visibility Classes
 
@@ -39,7 +49,7 @@ Do not put raw tool arguments, raw diffs, command strings, file contents, or
 full secret-bearing payloads in `summary` or `metadata`. Prefer counts, stable
 IDs, display paths, result classifications, and booleans such as `hasDiff`.
 
-Known local event families:
+Known event families:
 
 - `session.*`, `message.*`, `tool.*`, and `wait.pending`
 - `file.changed` for write/edit tool results

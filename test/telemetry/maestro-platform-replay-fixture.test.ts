@@ -9,6 +9,38 @@ import {
 	canonicalMaestroPlatformReplayFixtureJson,
 } from "../../src/telemetry/maestro-platform-replay-fixture.js";
 
+const FORBIDDEN_FIXTURE_KEYS = new Set([
+	"raw_prompt",
+	"prompt",
+	"messages",
+	"tool_args",
+	"tool_arguments",
+	"args",
+	"stdout",
+	"stderr",
+	"credentials",
+	"api_key",
+	"access_token",
+	"withheld_content",
+	"withheld_vfs_bytes",
+]);
+
+function collectObjectKeys(
+	value: unknown,
+	keys = new Set<string>(),
+): Set<string> {
+	if (!value || typeof value !== "object") return keys;
+	if (Array.isArray(value)) {
+		for (const item of value) collectObjectKeys(item, keys);
+		return keys;
+	}
+	for (const [key, child] of Object.entries(value)) {
+		keys.add(key);
+		collectObjectKeys(child, keys);
+	}
+	return keys;
+}
+
 describe("canonical Maestro Platform replay fixture", () => {
 	const repoRoot = fileURLToPath(new URL("../..", import.meta.url));
 
@@ -24,11 +56,19 @@ describe("canonical Maestro Platform replay fixture", () => {
 				workspace_id: "workspace_platform_replay",
 				session_id: "session_platform_replay_001",
 				agent_run_id: "agent_run_platform_replay_001",
+				agent_id: "agent_maestro_platform_replay",
+				actor_id: "user_platform_replay",
+				principal_id: "principal_platform_replay",
+				request_id: "request_platform_replay_001",
+				remote_runner_session_id: "remote_runner_platform_replay_001",
+				objective_id: "objective_platform_replay_001",
+				conversation_id: "conversation_platform_replay_001",
 				tool_call_id: "tool_call_platform_replay_bash_001",
 				tool_execution_id: "tool_exec_platform_replay_bash_001",
 				skill_tool_call_id: "tool_call_platform_replay_skill_001",
 				skill_tool_execution_id: "tool_exec_platform_replay_skill_001",
 				approval_request_id: "approval_platform_replay_001",
+				scenario_id: CANONICAL_MAESTRO_PLATFORM_REPLAY_FIXTURE_NAME,
 			},
 		});
 
@@ -74,6 +114,17 @@ describe("canonical Maestro Platform replay fixture", () => {
 						agent_run_id: "agent_run_platform_replay_001",
 						trace_id: "trace_platform_replay_001",
 						request_id: "request_platform_replay_001",
+						remote_runner_session_id: "remote_runner_platform_replay_001",
+						objective_id: "objective_platform_replay_001",
+						conversation_id: "conversation_platform_replay_001",
+						attributes: {
+							scenario_id: CANONICAL_MAESTRO_PLATFORM_REPLAY_FIXTURE_NAME,
+						},
+					},
+					metadata: {
+						data_classification: "internal",
+						retention_class: "operational_audit",
+						safe_summary: expect.any(String),
 					},
 				},
 			});
@@ -84,7 +135,11 @@ describe("canonical Maestro Platform replay fixture", () => {
 			expect(event.extensions.traceparent).toBe(
 				`00-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-${String(index + 1).padStart(16, "0")}-01`,
 			);
+			expect(event.extensions.tracestate).toBe(
+				`evalops=maestro-platform-replay-${String(index + 1).padStart(2, "0")}`,
+			);
 			expect(event.data.correlation).not.toHaveProperty("traceparent");
+			expect(event.data.correlation).not.toHaveProperty("tracestate");
 			expect(event.time).toMatch(/^2026-04-23T18:/);
 		}
 	});
@@ -96,6 +151,11 @@ describe("canonical Maestro Platform replay fixture", () => {
 		const promptVariantSelected = byType.get(
 			MaestroBusEventType.PromptVariantSelected,
 		)?.data;
+		expect(byType.get(MaestroBusEventType.SessionStarted)?.data).toMatchObject({
+			metadata: {
+				scenario_id: CANONICAL_MAESTRO_PLATFORM_REPLAY_FIXTURE_NAME,
+			},
+		});
 		expect(promptVariantSelected).toMatchObject({
 			"@type": "type.googleapis.com/maestro.v1.PromptVariantSelected",
 			prompt_metadata: {
@@ -129,6 +189,14 @@ describe("canonical Maestro Platform replay fixture", () => {
 			tool_call_id: "tool_call_platform_replay_skill_001",
 			tool_execution_id: "tool_exec_platform_replay_skill_001",
 			tool_name: "Skill",
+			metadata: {
+				data_classification: "internal",
+				retention_class: "operational_audit",
+				safe_summary: "Tool call attempt recorded with safe argument summary",
+			},
+			safe_arguments: {
+				skill_id: "skill_incident_review",
+			},
 			prompt_metadata: {
 				name: "maestro-system",
 				label: "production",
@@ -208,12 +276,13 @@ describe("canonical Maestro Platform replay fixture", () => {
 			byType.get(MaestroBusEventType.ToolCallCompleted)?.data,
 		).not.toHaveProperty("estimated_cost");
 		expect(byType.get(MaestroBusEventType.ApprovalHit)?.data).toMatchObject({
+			command: "workspace test command",
 			context: {
 				tool_name: "Bash",
 				display_name: "Bash",
 				summary_label: "Bash",
-				args: {
-					command: "bunx vitest --run test/telemetry",
+				safe_arguments: {
+					command_summary: "Run telemetry test suite",
 				},
 			},
 		});
@@ -258,6 +327,7 @@ describe("canonical Maestro Platform replay fixture", () => {
 				evaluation_tool_call_id: "tool_call_platform_replay_bash_001",
 				evaluation_tool_execution_id: "tool_exec_platform_replay_bash_001",
 				eval_run_id: "eval_run_platform_replay_001",
+				scenario_id: "canonical-maestro-session-platform-replay",
 				skill_tool_call_id: "tool_call_platform_replay_skill_001",
 				skill_tool_execution_id: "tool_exec_platform_replay_skill_001",
 				skill_invocation_id: "invocation_platform_replay_skill_001",
@@ -319,6 +389,18 @@ describe("canonical Maestro Platform replay fixture", () => {
 		});
 		expect(parsed.events.map((event: { type: string }) => event.type)).toEqual(
 			parsed.subjects,
+		);
+	});
+
+	it("keeps replay fixtures free of raw prompts, tool args, and withheld payloads", () => {
+		const fixture = buildCanonicalMaestroPlatformReplayFixture();
+		const keys = collectObjectKeys(fixture);
+
+		expect([...keys].filter((key) => FORBIDDEN_FIXTURE_KEYS.has(key))).toEqual(
+			[],
+		);
+		expect(JSON.stringify(fixture)).not.toMatch(
+			/(Bearer\s+|sk-[A-Za-z0-9]|api[_-]?key|authorization)/i,
 		);
 	});
 

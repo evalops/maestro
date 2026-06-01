@@ -13,14 +13,10 @@ import {
 	normalizeComposerResumeSummary,
 	truncateComposerResumeSummary,
 } from "@evalops/contracts";
-import { LitElement, type PropertyValues, css, html } from "lit";
+import { LitElement, type PropertyValues, html } from "lit";
 import { customElement, property, state } from "lit/decorators.js";
 import {
 	ApiClient,
-	type McpPromptResponse,
-	type McpResourceReadResponse,
-	type McpServerStatus,
-	type McpStatus,
 	type Message,
 	type Model,
 	type Session,
@@ -36,6 +32,16 @@ import {
 	reconstructArtifactsFromMessages,
 } from "../services/artifacts.js";
 import { dataStore } from "../services/data-store.js";
+import {
+	buildComposerMessagesForChatRequest,
+	ensureExtractedTextForComposerAttachments,
+	getAllComposerAttachments,
+	hydrateComposerAttachmentForRequest,
+	hydrateComposerAttachmentsForRequest,
+} from "./composer-chat-attachments.js";
+import { composerChatStyles } from "./composer-chat.styles.js";
+import "./composer-a2a-cockpit-panel.js";
+import "./composer-trajectory-replay-lab-panel.js";
 import "./command-drawer.js";
 import {
 	type ComposerApprovalStatusUpdate,
@@ -47,15 +53,35 @@ import {
 	ComposerChatClientRequests,
 } from "./composer-chat-client-requests.js";
 import {
+	runComposerJavascriptRepl,
+	runComposerMcpClientTool,
+} from "./composer-chat-client-tools.js";
+import { renderComposerChatIcon } from "./composer-chat-icons.js";
+import {
 	buildComposerChatViewport,
 	renderComposerChatMessagePane,
 } from "./composer-chat-message-pane.js";
-import { executeWebSlashCommand } from "./composer-chat-slash-commands.js";
+import {
+	deriveComposerModelTokens,
+	getShareTokenFromLocation,
+	normalizeComposerMessages,
+} from "./composer-chat-message-utils.js";
+import {
+	getRunHealthPillClass,
+	renderComposerHealthPopover,
+	renderComposerShortcutsModal,
+} from "./composer-chat-overlays.js";
+import {
+	appendComposerCommandOutput,
+	isComposerSlashCommand,
+	runComposerChatSlashCommand,
+} from "./composer-chat-slash-runner.js";
 import {
 	ComposerChatStreamState,
 	type UiMessage,
 	hasAssistantMessageProgress,
 } from "./composer-chat-stream-state.js";
+import { getSandboxConsoleSnapshot } from "./sandbox/console-runtime-provider.js";
 import {
 	WEB_SLASH_COMMANDS,
 	type WebSlashCommand,
@@ -77,12 +103,6 @@ import "./model-selector.js";
 import "./admin-settings.js";
 import "./composer-artifacts-panel.js";
 import "./composer-attachment-viewer.js";
-import { ArtifactsRuntimeProvider } from "./sandbox/artifacts-runtime-provider.js";
-import { AttachmentsRuntimeProvider } from "./sandbox/attachments-runtime-provider.js";
-import { getSandboxConsoleSnapshot } from "./sandbox/console-runtime-provider.js";
-import { getSandboxDownloadsSnapshot } from "./sandbox/file-download-runtime-provider.js";
-import { FileDownloadRuntimeProvider } from "./sandbox/file-download-runtime-provider.js";
-import { JavascriptReplRuntimeProvider } from "./sandbox/javascript-repl-runtime-provider.js";
 
 const STATUS_CACHE_KEY = "composer_status_cache";
 const MODELS_CACHE_KEY = "composer_models_cache";
@@ -91,986 +111,12 @@ const MODEL_OVERRIDE_KEY = "composer_model_override";
 const THEME_KEY = "composer_theme";
 const TRANSPORT_KEY = "composer_transport";
 
-function coerceToolArgsRecord(args: unknown): Record<string, unknown> {
-	if (!args || typeof args !== "object" || Array.isArray(args)) {
-		return {};
-	}
-	return args as Record<string, unknown>;
-}
-
-function getOptionalStringArg(
-	args: Record<string, unknown>,
-	key: string,
-): string | undefined {
-	const value = args[key];
-	if (typeof value !== "string") return undefined;
-	const trimmed = value.trim();
-	return trimmed.length > 0 ? trimmed : undefined;
-}
-
-function getMcpToolCount(server: McpServerStatus): number {
-	if (Array.isArray(server.tools)) {
-		return server.tools.length;
-	}
-	return typeof server.tools === "number" ? server.tools : 0;
-}
-
-function formatMcpServers(status: McpStatus): string {
-	if (status.servers.length === 0) {
-		return "No MCP servers configured.";
-	}
-
-	const lines: string[] = ["# MCP Servers", ""];
-	for (const server of status.servers) {
-		lines.push(
-			`- ${server.name}: ${server.connected ? "connected" : "disconnected"}`,
-		);
-		if (server.transport) {
-			lines.push(`  transport: ${server.transport}`);
-		}
-		if (server.remoteUrl) {
-			lines.push(`  remote: ${server.remoteUrl}`);
-		}
-		if (server.remoteTrust) {
-			lines.push(`  trust: ${server.remoteTrust}`);
-		}
-		if (server.officialRegistry?.displayName) {
-			lines.push(`  official: ${server.officialRegistry.displayName}`);
-		}
-		if (server.scope) {
-			lines.push(`  scope: ${server.scope}`);
-		}
-		lines.push(`  tools: ${getMcpToolCount(server)}`);
-		lines.push(`  resources: ${server.resources?.length ?? 0}`);
-		lines.push(`  prompts: ${server.prompts?.length ?? 0}`);
-		if (server.officialRegistry?.documentationUrl) {
-			lines.push(`  docs: ${server.officialRegistry.documentationUrl}`);
-		}
-		if (server.officialRegistry?.permissions) {
-			lines.push(`  permissions: ${server.officialRegistry.permissions}`);
-		}
-		if (server.error) {
-			lines.push(`  error: ${server.error}`);
-		}
-	}
-	return lines.join("\n");
-}
-
-function formatMcpTools(
-	status: McpStatus,
-	serverName?: string,
-): { isError: boolean; text: string } {
-	const servers = serverName
-		? status.servers.filter((server) => server.name === serverName)
-		: status.servers;
-
-	if (serverName && servers.length === 0) {
-		return { isError: true, text: `MCP server '${serverName}' not found.` };
-	}
-
-	const disconnected = serverName
-		? servers.find((server) => !server.connected)
-		: null;
-	if (disconnected) {
-		return {
-			isError: true,
-			text: `MCP server '${disconnected.name}' is not connected.`,
-		};
-	}
-
-	const connectedWithTools = servers
-		.filter((server) => server.connected)
-		.map((server) => ({
-			name: server.name,
-			tools: Array.isArray(server.tools) ? server.tools : [],
-		}))
-		.filter((server) => server.tools.length > 0);
-
-	if (connectedWithTools.length === 0) {
-		return {
-			isError: false,
-			text: "No MCP tools available. Either no servers are connected or they don't expose tools.",
-		};
-	}
-
-	const lines: string[] = ["# Available MCP Tools", ""];
-	for (const server of connectedWithTools) {
-		lines.push(`## ${server.name}`);
-		for (const tool of server.tools) {
-			lines.push(
-				tool.description
-					? `- ${tool.name}: ${tool.description}`
-					: `- ${tool.name}`,
-			);
-		}
-		lines.push("");
-	}
-
-	return { isError: false, text: lines.join("\n").trimEnd() };
-}
-
-function formatMcpResources(
-	status: McpStatus,
-	serverName: string | undefined,
-): { isError: boolean; text: string } {
-	const servers = serverName
-		? status.servers.filter((server) => server.name === serverName)
-		: status.servers;
-
-	if (serverName && servers.length === 0) {
-		return {
-			isError: true,
-			text: `MCP server '${serverName}' not found.`,
-		};
-	}
-
-	const disconnected = serverName
-		? servers.find((server) => !server.connected)
-		: null;
-	if (disconnected) {
-		return {
-			isError: true,
-			text: `MCP server '${disconnected.name}' is not connected.`,
-		};
-	}
-
-	const connectedWithResources = servers
-		.filter((server) => server.connected)
-		.filter((server) => (server.resources?.length ?? 0) > 0);
-
-	if (connectedWithResources.length === 0) {
-		return {
-			isError: false,
-			text: "No MCP resources available. Either no servers are connected or they don't expose resources.",
-		};
-	}
-
-	const lines: string[] = ["# Available MCP Resources", ""];
-	for (const server of connectedWithResources) {
-		lines.push(`## ${server.name}`);
-		for (const uri of server.resources ?? []) {
-			lines.push(`- ${uri}`);
-		}
-		lines.push("");
-	}
-	return { isError: false, text: lines.join("\n").trimEnd() };
-}
-
-function formatMcpResourceRead(
-	result: McpResourceReadResponse,
-	uri: string,
-): string {
-	if (result.contents.length === 0) {
-		return `Resource '${uri}' is empty.`;
-	}
-
-	const textContents = result.contents
-		.filter((content) => typeof content.text === "string")
-		.map((content) => content.text as string);
-
-	if (textContents.length > 0) {
-		return textContents.join("\n---\n");
-	}
-
-	return JSON.stringify(result.contents, null, 2);
-}
-
-function formatMcpPrompts(
-	status: McpStatus,
-	serverName?: string,
-): { isError: boolean; text: string } {
-	const servers = serverName
-		? status.servers.filter((server) => server.name === serverName)
-		: status.servers;
-
-	if (serverName && servers.length === 0) {
-		return { isError: true, text: `MCP server '${serverName}' not found.` };
-	}
-
-	const disconnected = serverName
-		? servers.find((server) => !server.connected)
-		: null;
-	if (disconnected) {
-		return {
-			isError: true,
-			text: `MCP server '${disconnected.name}' is not connected.`,
-		};
-	}
-
-	const connectedWithPrompts = servers
-		.filter((server) => server.connected)
-		.filter((server) => (server.prompts?.length ?? 0) > 0);
-
-	if (connectedWithPrompts.length === 0) {
-		return {
-			isError: false,
-			text: serverName
-				? `MCP server '${serverName}' does not expose prompts.`
-				: "No MCP prompts available. Either no servers are connected or they don't expose prompts.",
-		};
-	}
-
-	const lines: string[] = ["# Available MCP Prompts", ""];
-	for (const server of connectedWithPrompts) {
-		lines.push(`## ${server.name}`);
-		for (const promptName of server.prompts ?? []) {
-			lines.push(`- ${promptName}`);
-			const prompt = server.promptDetails?.find(
-				(entry) => entry.name === promptName,
-			);
-			const promptArguments = prompt?.arguments ?? [];
-			if (prompt?.title && prompt.title !== promptName) {
-				lines.push(`  Title: ${prompt.title}`);
-			}
-			if (prompt?.description) {
-				lines.push(`  Description: ${prompt.description}`);
-			}
-			if (promptArguments.length > 0) {
-				lines.push(
-					`  Args: ${promptArguments
-						.map((argument) => {
-							const summary = argument.required
-								? `${argument.name} (required)`
-								: argument.name;
-							return argument.description
-								? `${summary}: ${argument.description}`
-								: summary;
-						})
-						.join("; ")}`,
-				);
-			}
-		}
-		lines.push("");
-	}
-
-	return { isError: false, text: lines.join("\n").trimEnd() };
-}
-
-function formatMcpPrompt(
-	result: McpPromptResponse,
-	promptName: string,
-): string {
-	const lines: string[] = [`Prompt: ${promptName}`, ""];
-	if (result.description) {
-		lines.push(`Description: ${result.description}`, "");
-	}
-	for (const message of result.messages) {
-		lines.push(`[${message.role}]`);
-		lines.push(message.content);
-		lines.push("");
-	}
-	return lines.join("\n").trimEnd();
-}
-
 @customElement("composer-chat")
 export class ComposerChat extends LitElement {
-	static override styles = css`
-		:host {
-			display: flex !important;
-			height: 100% !important;
-			width: 100% !important;
-			background: var(--bg-primary, #0c0d0f);
-			color: var(--text-primary, #e8e9eb);
-			overflow: hidden;
-			font-family: var(--font-sans, 'Inter', sans-serif);
-		}
-
-		/* Main Content */
-		.main-content {
-			flex: 1;
-			display: flex;
-			flex-direction: column;
-			position: relative;
-			min-width: 0;
-			background: var(--bg-primary, #0c0d0f);
-		}
-
-		:host([zen]) composer-session-sidebar {
-			display: none;
-		}
-
-		:host([zen]) .header {
-			display: none;
-		}
-
-		:host([zen]) .messages {
-			padding-top: 2.5rem;
-		}
-
-		.header {
-			display: grid;
-			grid-template-columns: auto 1fr auto;
-			align-items: center;
-			gap: 1rem;
-			padding: 0.5rem 1rem;
-			background: var(--bg-primary, #1a1b1d);
-			border-bottom: 1px solid var(--border-subtle, #1f2022);
-			min-height: 44px;
-			z-index: 10;
-		}
-
-		.header-left {
-			display: flex;
-			align-items: center;
-			gap: 0.5rem;
-		}
-
-		.toggle-sidebar-btn {
-			width: 28px;
-			height: 28px;
-			padding: 0;
-			background: transparent;
-			border: none;
-			border-radius: var(--radius-sm, 6px);
-			color: var(--text-tertiary, #8e8e8e);
-			cursor: pointer;
-			transition: background 0.12s ease, color 0.12s ease;
-			display: flex;
-			align-items: center;
-			justify-content: center;
-		}
-
-		.toggle-sidebar-btn:hover {
-			background: var(--bg-elevated, #232427);
-			color: var(--text-primary, #ececec);
-		}
-
-		.header h1 {
-			font-family: var(--font-display, "Inter", sans-serif);
-			font-size: 0.9rem;
-			font-weight: 500;
-			margin: 0;
-			color: var(--text-primary, #ececec);
-			letter-spacing: -0.005em;
-		}
-
-		.status-bar {
-			display: flex;
-			align-items: center;
-			gap: 0.4rem;
-			flex-wrap: nowrap;
-			white-space: nowrap;
-			overflow-x: auto;
-			min-width: 0;
-			font-family: var(--font-sans, "Inter", sans-serif);
-			font-size: 0.7rem;
-			color: var(--text-tertiary, #8e8e8e);
-			justify-content: center;
-		}
-
-		.status-item {
-			display: flex;
-			align-items: center;
-			gap: 0.35rem;
-			padding: 0.2rem 0.55rem;
-			background: transparent;
-			border: 1px solid transparent;
-			border-radius: var(--radius-sm, 6px);
-			font-size: 0.7rem;
-			font-weight: 500;
-			transition: background 0.12s ease, color 0.12s ease;
-			color: var(--text-tertiary, #8e8e8e);
-		}
-
-		.status-item:hover {
-			background: var(--bg-elevated, #232427);
-			color: var(--text-secondary, #b4b4b4);
-		}
-
-		.status-item.active {
-			background: var(--accent-amber-dim, rgba(212, 160, 18, 0.16));
-			color: var(--accent-amber, #d4a012);
-			border-color: transparent;
-		}
-
-		.header-right {
-			display: flex;
-			align-items: center;
-			gap: 0.5rem;
-			flex-wrap: nowrap;
-			white-space: nowrap;
-		}
-
-		.pill {
-			display: inline-flex;
-			align-items: center;
-			gap: 0.25rem;
-			padding: 0.15rem 0.5rem;
-			background: var(--bg-elevated, #232427);
-			color: var(--text-secondary, #b4b4b4);
-			font-weight: 500;
-			font-size: 0.65rem;
-			text-transform: none;
-			letter-spacing: 0;
-			border-radius: 999px;
-		}
-
-		.pill.warning {
-			background: var(--accent-yellow-dim, rgba(234, 179, 8, 0.12));
-			color: var(--accent-yellow, #eab308);
-		}
-
-		.pill.success {
-			background: var(--accent-green-dim, rgba(34, 197, 94, 0.12));
-			color: var(--accent-green, #22c55e);
-		}
-
-		.pill.error {
-			background: var(--accent-red-dim, rgba(239, 68, 68, 0.12));
-			color: var(--accent-red, #ef4444);
-		}
-
-		.pill.info {
-			background: rgba(20, 184, 166, 0.12);
-			color: var(--accent, #14b8a6);
-		}
-
-		.status-note {
-			color: var(--accent-yellow, #eab308);
-			text-transform: none;
-			letter-spacing: 0;
-		}
-
-		.status-item.runtime-status {
-			border-color: rgba(20, 184, 166, 0.18);
-			background: rgba(20, 184, 166, 0.04);
-		}
-
-		.status-dot {
-			width: 5px;
-			height: 5px;
-			border-radius: 50%;
-			background: var(--accent-green, #22c55e);
-			box-shadow: 0 0 6px var(--accent-green, #22c55e);
-		}
-
-		.status-dot.offline {
-			background: var(--accent-red, #ef4444);
-			box-shadow: none;
-		}
-
-		/* Messages Area */
-		.messages {
-			flex: 1;
-			overflow-y: auto;
-			padding: 2rem clamp(1rem, 8vw, 8rem) 1.5rem;
-			display: flex;
-			flex-direction: column;
-			background: var(--bg-primary, #1a1b1d);
-			scroll-behavior: smooth;
-		}
-
-		.messages.compact {
-			padding: 1.25rem clamp(0.75rem, 4vw, 3rem);
-		}
-
-		.virtual-spacer {
-			width: 100%;
-			display: block;
-		}
-
-		.history-truncation {
-			font-family: var(--font-sans, 'Inter', sans-serif);
-			font-size: 0.7rem;
-			color: var(--text-tertiary, #5c5e62);
-			border: 1px solid var(--border-subtle, #1e2023);
-			background: var(--bg-elevated, #161719);
-			padding: 0.5rem 0.75rem;
-			margin-bottom: 0.75rem;
-			display: flex;
-			align-items: center;
-			justify-content: space-between;
-			gap: 0.75rem;
-		}
-
-		.history-btn {
-			border: 1px solid var(--border-subtle, #1e2023);
-			background: transparent;
-			color: var(--text-tertiary, #5c5e62);
-			height: 26px;
-			padding: 0 0.6rem;
-			cursor: pointer;
-			font-family: var(--font-sans, 'Inter', sans-serif);
-			font-size: 0.65rem;
-			letter-spacing: 0;
-			text-transform: none;
-		}
-
-		.history-btn:hover {
-			background: var(--bg-surface, #1a1b1e);
-			color: var(--text-primary, #e8e9eb);
-			border-color: var(--accent-amber, #d4a012);
-		}
-
-		.history-btn:disabled {
-			opacity: 0.6;
-			cursor: not-allowed;
-		}
-
-		.jump-latest {
-			position: sticky;
-			bottom: 0.75rem;
-			align-self: center;
-			border: 1px solid var(--border-subtle, #1e2023);
-			background: var(--accent-blue-dim, rgba(59, 130, 246, 0.12));
-			color: var(--text-primary, #e8e9eb);
-			font-family: var(--font-sans, 'Inter', sans-serif);
-			font-size: 0.7rem;
-			padding: 0.5rem 0.8rem;
-			cursor: pointer;
-			letter-spacing: 0.02em;
-			backdrop-filter: blur(8px);
-			z-index: 5;
-		}
-
-		.jump-latest:hover {
-			border-color: var(--accent-blue, #3b82f6);
-			background: var(--accent-blue-dim, rgba(59, 130, 246, 0.18));
-		}
-
-		.input-container {
-			padding: 0.75rem clamp(1rem, 8vw, 8rem) 1.25rem;
-			background: var(--bg-primary, #1a1b1d);
-			border-top: none;
-			position: sticky;
-			bottom: 0;
-			z-index: 15;
-		}
-
-		/* Model Selector */
-		.model-selector {
-			display: flex;
-			align-items: center;
-			gap: 0.4rem;
-			padding: 0.25rem 0.65rem;
-			background: var(--bg-elevated, #232427);
-			border: 1px solid transparent;
-			border-radius: 999px;
-			font-family: var(--font-sans, "Inter", sans-serif);
-			font-size: 0.72rem;
-			color: var(--text-secondary, #b4b4b4);
-			font-weight: 500;
-			cursor: pointer;
-			transition: background 0.12s ease, color 0.12s ease, border-color 0.12s ease;
-		}
-
-		.model-selector:hover {
-			background: var(--bg-surface, #26282b);
-			border-color: var(--border-secondary, #3a3d42);
-			color: var(--text-primary, #ececec);
-		}
-
-		.model-badge {
-			width: 5px;
-			height: 5px;
-			border-radius: 50%;
-			background: var(--accent-amber, #d4a012);
-		}
-
-		/* Icon Buttons */
-		.icon-btn {
-			width: 28px;
-			height: 28px;
-			padding: 0;
-			background: transparent;
-			border: none;
-			border-radius: var(--radius-sm, 6px);
-			color: var(--text-tertiary, #8e8e8e);
-			cursor: pointer;
-			transition: background 0.12s ease, color 0.12s ease;
-			display: flex;
-			align-items: center;
-			justify-content: center;
-		}
-
-		.icon-btn:hover {
-			background: var(--bg-elevated, #232427);
-			color: var(--text-primary, #ececec);
-		}
-
-		.icon-btn:disabled {
-			opacity: 0.4;
-			cursor: not-allowed;
-		}
-
-		.icon-btn:disabled:hover {
-			background: transparent;
-			border-color: var(--border-primary, #1e2023);
-			color: var(--text-tertiary, #5c5e62);
-		}
-
-		.icon-btn.active {
-			background: var(--accent-amber-dim, rgba(212, 160, 18, 0.12));
-			border: 1px solid var(--accent-amber, #d4a012);
-			color: var(--accent-amber, #d4a012);
-		}
-
-		.icon {
-			width: 14px;
-			height: 14px;
-			stroke: currentColor;
-			fill: none;
-			stroke-width: 1.5;
-			stroke-linecap: round;
-			stroke-linejoin: round;
-			pointer-events: none;
-		}
-
-		/* Toast */
-		.toast {
-			position: fixed;
-			bottom: 20px;
-			right: 20px;
-			padding: 0.6rem 1rem;
-			background: var(--bg-elevated, #161719);
-			border: 1px solid var(--border-subtle, #1e2023);
-			color: var(--text-primary, #e8e9eb);
-			font-family: var(--font-sans, 'Inter', sans-serif);
-			font-size: 0.75rem;
-			box-shadow: var(--shadow-lg, 0 8px 24px rgba(0, 0, 0, 0.5));
-			z-index: 300;
-			display: flex;
-			align-items: center;
-			gap: 0.75rem;
-			animation: slideIn 0.2s ease;
-		}
-
-		@keyframes slideIn {
-			from { opacity: 0; transform: translateX(10px); }
-			to { opacity: 1; transform: translateX(0); }
-		}
-
-		.toast.success { border-left: 2px solid var(--accent-green, #22c55e); }
-		.toast.error { border-left: 2px solid var(--accent-red, #ef4444); }
-		.toast.info { border-left: 2px solid var(--accent-amber, #d4a012); }
-
-		.side-panel {
-			position: absolute;
-			top: 0;
-			right: 0;
-			height: 100%;
-			background: var(--bg-primary, #0a0e14);
-			border-left: 2px solid var(--border-primary, #21262d);
-			z-index: 100;
-		}
-
-		.side-panel.settings {
-			width: min(500px, 92vw);
-		}
-
-		.side-panel.admin {
-			width: min(800px, 95vw);
-			z-index: 110;
-		}
-
-		.health-popover {
-			position: fixed;
-			top: 64px;
-			right: 12px;
-			width: 260px;
-			background: var(--bg-secondary, #0d1117);
-			border: 1px solid var(--border-secondary, #30363d);
-			padding: 0.75rem;
-			z-index: 120;
-			box-shadow: var(--shadow-md, 0 10px 24px rgba(0, 0, 0, 0.4));
-			font-family: var(--font-sans, 'Inter', sans-serif);
-			font-size: 0.75rem;
-			color: var(--text-primary, #e6edf3);
-		}
-
-		.health-popover-header {
-			display: flex;
-			justify-content: space-between;
-			align-items: center;
-			margin-bottom: 0.5rem;
-		}
-
-		.health-popover-label {
-			color: var(--text-tertiary, #6e7681);
-			letter-spacing: 0;
-		}
-
-		.health-popover-row {
-			margin: 0.25rem 0;
-		}
-
-		.health-popover-row span {
-			color: var(--text-tertiary, #6e7681);
-		}
-
-		.shortcuts-modal {
-			position: fixed;
-			top: 30%;
-			left: 50%;
-			transform: translateX(-50%);
-			width: min(420px, 90vw);
-			background: var(--bg-secondary, #0d1117);
-			border: 1px solid var(--border-secondary, #30363d);
-			padding: 1rem;
-			z-index: 140;
-			box-shadow: var(--shadow-lg, 0 18px 40px rgba(0, 0, 0, 0.5));
-			font-family: var(--font-sans, 'Inter', sans-serif);
-			font-size: 0.78rem;
-			color: var(--text-primary, #e6edf3);
-		}
-
-		.shortcuts-modal-header {
-			display: flex;
-			justify-content: space-between;
-			align-items: center;
-			margin-bottom: 0.75rem;
-		}
-
-		.shortcuts-modal-title {
-			letter-spacing: 0;
-			color: var(--text-tertiary, #8b949e);
-		}
-
-		.shortcuts-grid {
-			display: grid;
-			grid-template-columns: auto 1fr;
-			gap: 0.35rem 0.75rem;
-		}
-
-		/* Empty State */
-		.empty-state {
-			flex: 1;
-			display: flex;
-			flex-direction: column;
-			align-items: center;
-			justify-content: center;
-			padding: 2rem;
-			background: var(--bg-primary, #0c0d0f);
-		}
-
-		.workspace-panel {
-			display: grid;
-			grid-template-columns: repeat(3, 1fr);
-			gap: 1rem;
-			background: transparent;
-			border: none;
-			margin: 2rem 0;
-			width: 100%;
-			max-width: 800px;
-		}
-
-		.panel-section {
-			background: var(--bg-elevated, #161719);
-			padding: 1rem;
-			border: 1px solid var(--border-subtle, #1e2023);
-		}
-
-		.panel-section h3 {
-			font-family: var(--font-sans, 'Inter', sans-serif);
-			font-size: 0.6rem;
-			font-weight: 600;
-			color: var(--text-tertiary, #5c5e62);
-			text-transform: none;
-			letter-spacing: 0;
-			margin: 0 0 0.75rem 0;
-		}
-
-		.panel-item {
-			font-family: var(--font-sans, 'Inter', sans-serif);
-			font-size: 0.75rem;
-			color: var(--text-primary, #e8e9eb);
-			margin: 0.4rem 0;
-			display: flex;
-			align-items: center;
-		}
-
-		.panel-item span {
-			color: var(--text-tertiary, #5c5e62);
-			margin-right: 0.5rem;
-			min-width: 2.5rem;
-		}
-
-		.session-gallery {
-			margin-top: 1.5rem;
-			width: 100%;
-			max-width: 800px;
-			background: transparent;
-			border: none;
-			box-shadow: none;
-			padding: 0;
-		}
-
-		.session-grid {
-			display: grid;
-			grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
-			gap: 0.75rem;
-		}
-
-		.session-card {
-			background: var(--bg-elevated, #161719);
-			border: 1px solid var(--border-subtle, #1e2023);
-			padding: 1rem;
-			text-align: left;
-			cursor: pointer;
-			transition: all 0.15s ease;
-			color: var(--text-primary, #e8e9eb);
-		}
-
-		.session-card:hover {
-			border-color: var(--accent-amber, #d4a012);
-			background: var(--bg-surface, #1a1b1e);
-		}
-
-		.session-card-title {
-			font-family: var(--font-sans, 'Inter', sans-serif);
-			font-size: 0.8rem;
-			font-weight: 500;
-			margin-bottom: 0.35rem;
-		}
-
-		.session-card-meta {
-			font-family: var(--font-sans, 'Inter', sans-serif);
-			font-size: 0.62rem;
-			color: var(--text-tertiary, #5c5e62);
-			display: flex;
-			gap: 0.35rem;
-			flex-wrap: wrap;
-		}
-
-		.session-card-summary {
-			margin-top: 0.55rem;
-			font-family: var(--font-sans, 'Inter', sans-serif);
-			font-size: 0.68rem;
-			line-height: 1.45;
-			color: var(--text-secondary, #a4a8ae);
-		}
-
-		.onboarding-callout {
-			width: 100%;
-			max-width: 800px;
-			margin-top: 0.5rem;
-			padding: 1rem 1.1rem;
-			background: linear-gradient(
-				135deg,
-				rgba(20, 184, 166, 0.08),
-				rgba(245, 158, 11, 0.05)
-			);
-			border: 1px solid rgba(20, 184, 166, 0.16);
-		}
-
-		.onboarding-callout h3 {
-			margin: 0 0 0.35rem 0;
-			font-family: var(--font-sans, 'Inter', sans-serif);
-			font-size: 0.7rem;
-			letter-spacing: 0;
-			text-transform: none;
-			color: var(--text-secondary, #a4a8ae);
-		}
-
-		.onboarding-callout p {
-			margin: 0 0 0.75rem 0;
-			font-size: 0.88rem;
-			color: var(--text-secondary, #a4a8ae);
-		}
-
-		.onboarding-list {
-			margin: 0;
-			padding-left: 1.1rem;
-			display: grid;
-			gap: 0.45rem;
-			color: var(--text-primary, #e8e9eb);
-		}
-
-		.onboarding-list code {
-			font-size: 0.85em;
-		}
-
-		.onboarding-actions {
-			margin-top: 0.9rem;
-			display: flex;
-			flex-wrap: wrap;
-			gap: 0.65rem;
-		}
-
-		.onboarding-action {
-			background: var(--bg-elevated, #161719);
-			border: 1px solid rgba(20, 184, 166, 0.2);
-			color: var(--text-primary, #e8e9eb);
-			padding: 0.55rem 0.8rem;
-			font-family: var(--font-sans, 'Inter', sans-serif);
-			font-size: 0.72rem;
-			cursor: pointer;
-			transition: border-color 0.15s ease, background 0.15s ease;
-		}
-
-		.onboarding-action:hover {
-			border-color: rgba(20, 184, 166, 0.36);
-			background: var(--bg-surface, #1a1b1e);
-		}
-
-		.onboarding-action.command {
-			border-color: rgba(245, 158, 11, 0.22);
-		}
-
-		.onboarding-action.command:hover {
-			border-color: rgba(245, 158, 11, 0.38);
-		}
-
-		/* Responsive */
-		@media (max-width: 768px) {
-			.workspace-panel {
-				grid-template-columns: 1fr;
-			}
-		}
-
-		.sidebar-overlay {
-			position: fixed;
-			inset: 0;
-			background: rgba(0, 0, 0, 0.4);
-			z-index: 15;
-			display: none;
-		}
-
-		@media (max-width: 960px) {
-			.header {
-				grid-template-columns: 1fr;
-				gap: 0.5rem;
-				padding: 0.6rem 0.85rem;
-			}
-			.status-bar {
-				flex-wrap: wrap;
-				row-gap: 0.4rem;
-				justify-content: flex-start;
-			}
-			.header-right {
-				flex-wrap: wrap;
-				justify-content: flex-start;
-				gap: 0.35rem;
-			}
-			.messages {
-				padding: 1.1rem 1.25rem;
-			}
-		}
-
-		@media (max-width: 640px) {
-			.header {
-				padding: 0.55rem 0.75rem;
-			}
-			.header h1 {
-				font-size: 0.9rem;
-			}
-			.status-bar {
-				display: none;
-			}
-			.messages {
-				padding: 0.9rem 0.9rem;
-			}
-		}
-
-		@media (max-width: 768px) {
-			.sidebar-overlay.active {
-				display: block;
-			}
-		}
-	`;
+	static override styles = composerChatStyles;
 
 	@property() apiEndpoint = "";
-	@property() model = "claude-sonnet-4-5";
+	@property() model = "openai-codex/gpt-5.5";
 
 	@state() private messages: UiMessage[] = [];
 	@state() private loading = false;
@@ -1099,6 +145,8 @@ export class ComposerChat extends LitElement {
 	@state() private adminSettingsOpen = false;
 	@state() private artifactsOpen = false;
 	@state() private timelineOpen = false;
+	@state() private a2aCockpitOpen = false;
+	@state() private replayLabOpen = false;
 	@state() private activeArtifact: string | null = null;
 	@state() private artifactsState = createEmptyArtifactsState();
 	@state() private artifactsPanelAttachments: NonNullable<
@@ -1116,7 +164,7 @@ export class ComposerChat extends LitElement {
 	@state() private models: Model[] = [];
 	@state() private usage: UsageSummary | null = null;
 	@state() private cleanMode: "off" | "soft" | "aggressive" = "off";
-	@state() private footerMode: "ensemble" | "solo" = "ensemble";
+	@state() private footerMode: "rich" | "solo" = "rich";
 	@state() private zenMode = false;
 	@state() private queueMode: "one" | "all" = "all";
 	@state() private shareDialogOpen = false;
@@ -1770,6 +818,20 @@ export class ComposerChat extends LitElement {
 
 		if (toolName === "artifacts") {
 			const argsRecord = coerceArtifactsArgs(args);
+			if (argsRecord.command === "logs") {
+				const validation = applyArtifactsCommand(
+					this.artifactsState,
+					argsRecord,
+				);
+				if (validation.isError) {
+					await this.apiClient.sendClientToolResult({
+						toolCallId,
+						content: [{ type: "text", text: validation.output }],
+						isError: true,
+					});
+					return;
+				}
+			}
 			if (argsRecord.command === "logs" && argsRecord.filename) {
 				const sandboxId = `artifact:${argsRecord.filename}`;
 				const snap = getSandboxConsoleSnapshot(sandboxId);
@@ -1961,22 +1023,6 @@ export class ComposerChat extends LitElement {
 		);
 	}
 
-	private getShareTokenFromLocation(): string | null {
-		if (typeof window === "undefined") return null;
-		try {
-			const url = new URL(window.location.href);
-			const match = /^\/share\/([^/]+)\/?$/.exec(url.pathname || "/");
-			if (match?.[1]) return match[1];
-			return (
-				url.searchParams.get("share") ||
-				url.searchParams.get("shareToken") ||
-				url.searchParams.get("token")
-			);
-		} catch {
-			return null;
-		}
-	}
-
 	private async loadSharedSession(shareToken: string) {
 		this.loading = true;
 		this.error = null;
@@ -1988,7 +1034,7 @@ export class ComposerChat extends LitElement {
 			this.currentSessionId = session.id;
 			this.resetVirtualizationState();
 			this.messages = Array.isArray(session.messages)
-				? this.normalizeMessages(session.messages)
+				? normalizeComposerMessages(session.messages)
 				: [];
 			this.renderLimit = 200;
 			this.syncRenderWindowToBottom();
@@ -2188,7 +1234,7 @@ export class ComposerChat extends LitElement {
 		super.connectedCallback();
 		this.apiClient = new ApiClient(this.apiEndpoint);
 		this.subscribeToStore();
-		const shareToken = this.getShareTokenFromLocation();
+		const shareToken = getShareTokenFromLocation();
 		if (shareToken) {
 			this.shareToken = shareToken;
 			this.sidebarOpen = false;
@@ -2444,29 +1490,13 @@ export class ComposerChat extends LitElement {
 		try {
 			const model = await this.apiClient.getCurrentModel();
 			this.currentModel = model ? `${model.provider}/${model.id}` : this.model;
-			const tokens = this.deriveModelTokens(model);
+			const tokens = deriveComposerModelTokens(model);
 			this.currentModelTokens = tokens;
 		} catch (e) {
 			console.error("Failed to load current model:", e);
 			this.currentModel = this.model;
 			this.currentModelTokens = null;
 		}
-	}
-
-	private deriveModelTokens(
-		model: Partial<{
-			contextWindow?: number;
-			maxOutputTokens?: number;
-			maxTokens?: number;
-		}> | null,
-	): string | null {
-		if (!model) return null;
-		if (model.contextWindow)
-			return `${Math.round(model.contextWindow / 1000)}k ctx`;
-		if (model.maxOutputTokens)
-			return `${Math.round(model.maxOutputTokens / 1000)}k max out`;
-		if (model.maxTokens) return `${Math.round(model.maxTokens / 1000)}k tokens`;
-		return null;
 	}
 
 	private async updateModelMeta() {
@@ -2478,7 +1508,7 @@ export class ComposerChat extends LitElement {
 			const current =
 				models.find((m) => `${m.provider}/${m.id}` === this.currentModel) ??
 				models.find((m) => m.id === this.currentModel);
-			const tokens = this.deriveModelTokens(current || null);
+			const tokens = deriveComposerModelTokens(current || null);
 			this.currentModelTokens = tokens ?? "n/a";
 		} catch (e) {
 			console.error("Failed to load model metadata:", e);
@@ -2486,32 +1516,8 @@ export class ComposerChat extends LitElement {
 		}
 	}
 
-	private coerceMessageContent(content: Message["content"]): string {
-		if (typeof content === "string") return content;
-		if (!Array.isArray(content)) return "";
-		return content
-			.filter((block) => block?.type === "text")
-			.map((block) => (block?.type === "text" ? block.text : ""))
-			.join("");
-	}
-
-	private normalizeMessage(message: Message): Message {
-		if (typeof message.content === "string") return message;
-		return {
-			...message,
-			content: this.coerceMessageContent(message.content),
-		};
-	}
-
-	private normalizeMessages(messages: Message[]): UiMessage[] {
-		return messages.map((message) => this.normalizeMessage(message));
-	}
-
 	private isSlashCommand(text: string): boolean {
-		const trimmed = text.trim();
-		if (!trimmed.startsWith("/")) return false;
-		if (trimmed.startsWith("//")) return false;
-		return trimmed.length > 1;
+		return isComposerSlashCommand(text);
 	}
 
 	private appendLocalMessage(message: UiMessage) {
@@ -2529,59 +1535,27 @@ export class ComposerChat extends LitElement {
 		output: string,
 		isError = false,
 	) {
-		const label = isError ? "Command failed" : "Command output";
-		const content = `/${command}\n\n${output}`;
-		this.appendLocalMessage({
-			role: "assistant",
-			content: content || label,
-			timestamp: new Date().toISOString(),
-			localOnly: true,
-		});
+		appendComposerCommandOutput(
+			(message) => this.appendLocalMessage(message),
+			command,
+			output,
+			isError,
+		);
 	}
 
 	private async handleSlashCommand(
 		rawText: string,
 		attachments?: Message["attachments"],
 	) {
-		const text = rawText.trim();
-		const [, ...rest] = text.split(/\s+/);
-		const command = text.slice(1).split(/\s+/)[0]?.toLowerCase() ?? "";
-		const args = rest.join(" ").trim();
-
-		this.appendLocalMessage({
-			role: "user",
-			content: text,
-			timestamp: new Date().toISOString(),
-			localOnly: true,
-		});
-
-		if (command) {
-			const recents = [
-				command,
-				...this.commandPrefs.recents.filter((n) => n !== command),
-			].slice(0, 20);
-			void this.saveCommandPrefs({
-				favorites: this.commandPrefs.favorites,
-				recents,
-			});
-		}
-
-		if (attachments && attachments.length > 0) {
-			this.appendCommandOutput(
-				command,
-				"Attachments are not supported for slash commands.",
-				true,
-			);
-			return;
-		}
-
-		await executeWebSlashCommand(command, args, {
+		await runComposerChatSlashCommand(rawText, attachments, {
 			apiClient: this.apiClient,
-			appendCommandOutput: (output, isError = false) =>
+			appendLocalMessage: (message) => this.appendLocalMessage(message),
+			appendCommandOutput: (command, output, isError = false) =>
 				this.appendCommandOutput(command, output, isError),
 			applyTheme: (theme) => this.applyTheme(theme),
 			applyZenMode: (enabled) => this.applyZenMode(enabled),
 			commands: this.slashCommands,
+			commandPrefs: this.commandPrefs,
 			createNewSession: () => this.createNewSession(),
 			currentSessionId: this.currentSessionId,
 			isSharedSession: Boolean(this.shareToken),
@@ -2589,6 +1563,7 @@ export class ComposerChat extends LitElement {
 				this.commandDrawerOpen = true;
 			},
 			openModelSelector: () => this.openModelSelector(),
+			saveCommandPrefs: (prefs) => this.saveCommandPrefs(prefs),
 			selectSession: (sessionId) => this.selectSession(sessionId),
 			setApprovalModeStatus: (status) => this.updateApprovalModeStatus(status),
 			setCleanMode: (mode) => {
@@ -2619,49 +1594,6 @@ export class ComposerChat extends LitElement {
 		} catch (e) {
 			console.error("Failed to load sessions:", e);
 		}
-	}
-
-	private renderIcon(
-		name:
-			| "chevron-left"
-			| "chevron-right"
-			| "info"
-			| "refresh"
-			| "globe"
-			| "share"
-			| "settings"
-			| "sun"
-			| "moon"
-			| "grid"
-			| "file"
-			| "timeline"
-			| "reduce"
-			| "close",
-	) {
-		const paths: Record<string, string> = {
-			"chevron-left": "M15 18l-6-6 6-6",
-			"chevron-right": "M9 6l6 6-6 6",
-			info: "M12 12v4m0-8h.01M12 21a9 9 0 1 1 0-18 9 9 0 0 1 0 18Z",
-			refresh:
-				"M4.93 4.93A10 10 0 0 1 19.07 5M20 9v-4h-4M19.07 19.07A10 10 0 0 1 4.93 19M4 15v4h4",
-			globe:
-				"M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18Zm0 0c3 0 5-4 5-9s-2-9-5-9-5 4-5 9 2 9 5 9Zm0 0c2.5 0 4.5-4 4.5-9S14.5 3 12 3 7.5 7 7.5 12 9.5 21 12 21Zm0-9h9M3 12h9",
-			share:
-				"M18 8a3 3 0 1 0-2.83-4H15a3 3 0 0 0 0 6Zm-12 4a3 3 0 1 0 2.83 4H9a3 3 0 0 0 0-6Zm12 0a3 3 0 1 0 2.83 4H21a3 3 0 0 0 0-6Zm-4.59-1.51L8.59 15.5M15.41 8.5 8.59 11.5",
-			settings:
-				"M12 15.5a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7Zm7.4-2.63a1 1 0 0 0 0-1.74l-1.17-.68a1 1 0 0 1-.46-.86l.05-1.35a1 1 0 0 0-1.17-1.01l-1.35.23a1 1 0 0 1-.9-.26L13.2 6a1 1 0 0 0-1.4 0l-.9.9a1 1 0 0 1-.9.26l-1.35-.23a1 1 0 0 0-1.17 1.01l.05 1.35a1 1 0 0 1-.46.86l-1.17.68a1 1 0 0 0 0 1.74l1.17.68a1 1 0 0 1 .46.86l-.05 1.35a1 1 0 0 0 1.17 1.01l1.35-.23a1 1 0 0 1 .9.26l.9.9a1 1 0 0 0 1.4 0l.9-.9a1 1 0 0 1 .9-.26l1.35.23a1 1 0 0 0 1.17-1.01l-.05-1.35a1 1 0 0 1 .46-.86Z",
-			sun: "M12 4.5V3M12 21v-1.5M4.5 12H3m18 0h-1.5M6.75 6.75 5.7 5.7m12.6 12.6-1.05-1.05M6.75 17.25 5.7 18.3m12.6-12.6-1.05 1.05M12 8a4 4 0 1 0 0 8 4 4 0 0 0 0-8Z",
-			moon: "M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8Z",
-			grid: "M4 4h7v7H4Zm9 0h7v7h-7ZM4 13h7v7H4Zm9 7v-7h7v7Z",
-			file: "M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8zM14 2v6h6",
-			timeline:
-				"M4 5h4m-4 7h8m-8 7h12M10 5h10M14 12h6M18 19h2M8 5a2 2 0 1 1-4 0 2 2 0 0 1 4 0Zm4 7a2 2 0 1 1-4 0 2 2 0 0 1 4 0Zm4 7a2 2 0 1 1-4 0 2 2 0 0 1 4 0Z",
-			reduce: "M12 21a9 9 0 1 1 0-18 9 9 0 0 1 0 18Zm-5-9h10",
-			close: "M18 6 6 18M6 6l12 12",
-		};
-		return html`<svg class="icon" viewBox="0 0 24 24" aria-hidden="true">
-			<path d=${paths[name]}></path>
-		</svg>`;
 	}
 
 	private toggleSidebar() {
@@ -2762,6 +1694,8 @@ export class ComposerChat extends LitElement {
 		this.artifactsOpen = !this.artifactsOpen;
 		if (this.artifactsOpen) {
 			this.timelineOpen = false;
+			this.a2aCockpitOpen = false;
+			this.replayLabOpen = false;
 			void this.refreshArtifactsPanelAttachments();
 		}
 	}
@@ -2774,6 +1708,9 @@ export class ComposerChat extends LitElement {
 	private setActiveArtifact(filename: string) {
 		this.activeArtifact = filename;
 		this.artifactsOpen = true;
+		this.timelineOpen = false;
+		this.a2aCockpitOpen = false;
+		this.replayLabOpen = false;
 		void this.refreshArtifactsPanelAttachments();
 	}
 
@@ -2785,11 +1722,47 @@ export class ComposerChat extends LitElement {
 		this.timelineOpen = !this.timelineOpen;
 		if (this.timelineOpen) {
 			this.artifactsOpen = false;
+			this.a2aCockpitOpen = false;
+			this.replayLabOpen = false;
 		}
 	}
 
 	private closeTimelinePanel() {
 		this.timelineOpen = false;
+	}
+
+	private toggleA2ACockpitPanel() {
+		if (this.shareToken) {
+			this.showToast("A2A cockpit is local-only", "info", 1800);
+			return;
+		}
+		this.a2aCockpitOpen = !this.a2aCockpitOpen;
+		if (this.a2aCockpitOpen) {
+			this.artifactsOpen = false;
+			this.timelineOpen = false;
+			this.replayLabOpen = false;
+		}
+	}
+
+	private closeA2ACockpitPanel() {
+		this.a2aCockpitOpen = false;
+	}
+
+	private toggleReplayLabPanel() {
+		if (this.shareToken || !this.currentSessionId) {
+			this.showToast("Select a writable session first", "info", 1800);
+			return;
+		}
+		this.replayLabOpen = !this.replayLabOpen;
+		if (this.replayLabOpen) {
+			this.artifactsOpen = false;
+			this.timelineOpen = false;
+			this.a2aCockpitOpen = false;
+		}
+	}
+
+	private closeReplayLabPanel() {
+		this.replayLabOpen = false;
 	}
 
 	private handleOpenArtifact = (e: Event) => {
@@ -2824,7 +1797,7 @@ export class ComposerChat extends LitElement {
 		);
 		if (cached) {
 			this.currentModelTokens =
-				this.deriveModelTokens(cached) ?? this.currentModelTokens;
+				deriveComposerModelTokens(cached) ?? this.currentModelTokens;
 		} else {
 			this.currentModelTokens = this.currentModelTokens ?? null;
 		}
@@ -2843,7 +1816,7 @@ export class ComposerChat extends LitElement {
 			this.currentSessionId = session.id;
 			this.resetVirtualizationState();
 			this.messages = Array.isArray(session.messages)
-				? this.normalizeMessages(session.messages)
+				? normalizeComposerMessages(session.messages)
 				: [];
 			this.renderLimit = 200;
 			this.syncRenderWindowToBottom();
@@ -2949,7 +1922,7 @@ export class ComposerChat extends LitElement {
 			this.currentSessionId = session.id;
 			this.resetVirtualizationState();
 			this.messages = Array.isArray(session.messages)
-				? this.normalizeMessages(session.messages)
+				? normalizeComposerMessages(session.messages)
 				: [];
 			this.renderLimit = 200;
 			this.syncRenderWindowToBottom();
@@ -3004,115 +1977,45 @@ export class ComposerChat extends LitElement {
 	private async ensureExtractedTextForAttachments(
 		attachments: NonNullable<Message["attachments"]>,
 	): Promise<NonNullable<Message["attachments"]>> {
-		const out: NonNullable<Message["attachments"]> = [];
-		for (const att of attachments) {
-			if (!att || typeof att !== "object") continue;
-
-			if (
-				att.type !== "document" ||
-				typeof att.extractedText === "string" ||
-				typeof att.content !== "string" ||
-				att.content.length === 0
-			) {
-				out.push(att);
-				continue;
-			}
-
-			try {
-				const res = await this.apiClient.extractAttachmentText({
-					fileName: att.fileName,
-					mimeType: att.mimeType,
-					contentBase64: att.content,
-				});
-				out.push({
-					...att,
-					extractedText: res.extractedText || undefined,
-				});
-			} catch (e) {
-				console.warn("Attachment extraction failed", e);
-				out.push(att);
-			}
-		}
-		return out;
+		return ensureExtractedTextForComposerAttachments(
+			this.apiClient,
+			attachments,
+		);
 	}
 
 	private async hydrateAttachmentForRequest(
 		att: NonNullable<Message["attachments"]>[number],
 		options: { sessionId?: string | null; shareToken?: string | null },
 	): Promise<NonNullable<Message["attachments"]>[number]> {
-		const sessionId = options.sessionId ?? null;
-		const shareToken = options.shareToken ?? null;
-		if (!att?.id) return att;
-
-		if (typeof att.content === "string" && att.content.length > 0) {
-			if (!this.attachmentContentCache.has(att.id)) {
-				this.attachmentContentCache.set(att.id, att.content);
-			}
-			return att;
-		}
-
-		if (!att.contentOmitted) return att;
-
-		const cached = this.attachmentContentCache.get(att.id);
-		if (cached) {
-			return { ...att, content: cached, contentOmitted: undefined };
-		}
-
-		if (!sessionId && !shareToken) return att;
-
-		try {
-			const base64 = shareToken
-				? await this.apiClient.getSharedSessionAttachmentContentBase64(
-						shareToken,
-						att.id,
-					)
-				: await this.apiClient.getSessionAttachmentContentBase64(
-						sessionId!,
-						att.id,
-					);
-			this.attachmentContentCache.set(att.id, base64);
-			return { ...att, content: base64, contentOmitted: undefined };
-		} catch (e) {
-			console.warn("Failed to hydrate attachment content", e);
-			return att;
-		}
+		return hydrateComposerAttachmentForRequest(
+			this.apiClient,
+			this.attachmentContentCache,
+			att,
+			options,
+		);
 	}
 
 	private async hydrateAttachmentsForRequest(
 		attachments: NonNullable<Message["attachments"]>,
 		options: { sessionId?: string | null; shareToken?: string | null },
 	): Promise<NonNullable<Message["attachments"]>> {
-		const sessionId = options.sessionId ?? null;
-		const shareToken = options.shareToken ?? null;
-		if (!sessionId && !shareToken) return attachments;
-		return await Promise.all(
-			attachments.map((att) => this.hydrateAttachmentForRequest(att, options)),
+		return hydrateComposerAttachmentsForRequest(
+			this.apiClient,
+			this.attachmentContentCache,
+			attachments,
+			options,
 		);
 	}
 
 	private async buildMessagesForChatRequest(
 		messages: UiMessage[],
 	): Promise<Message[]> {
-		const sessionId = this.currentSessionId;
-		const shareToken = this.shareToken;
-		const filtered = messages.filter((msg) => !msg.localOnly);
-		if (!sessionId && !shareToken) return filtered;
-
-		const out: Message[] = [];
-		for (const msg of filtered) {
-			const atts = Array.isArray(msg.attachments) ? msg.attachments : [];
-			if (msg.role !== "user" || atts.length === 0) {
-				out.push(msg);
-				continue;
-			}
-
-			const hydrated = await this.hydrateAttachmentsForRequest(atts, {
-				sessionId,
-				shareToken,
-			});
-			out.push({ ...msg, attachments: hydrated });
-		}
-		return out;
+		return buildComposerMessagesForChatRequest(messages, {
+			apiClient: this.apiClient,
+			contentCache: this.attachmentContentCache,
+			sessionId: this.currentSessionId,
+			shareToken: this.shareToken,
+		});
 	}
 
 	private clearPromptSuggestion() {
@@ -3350,285 +2253,50 @@ export class ComposerChat extends LitElement {
 		isError: boolean;
 		text: string;
 	}> {
-		const obj = (
-			args && typeof args === "object" ? (args as Record<string, unknown>) : {}
-		) as Record<string, unknown>;
-		const code = typeof obj.code === "string" ? obj.code : "";
-		const timeoutMs =
-			typeof obj.timeoutMs === "number" && Number.isFinite(obj.timeoutMs)
-				? obj.timeoutMs
-				: 10_000;
-
-		if (!code.trim()) {
-			return { isError: true, text: "Error: javascript_repl requires code" };
-		}
-
-		const sandboxId = `repl:${Date.now().toString(36)}:${Math.random().toString(36).slice(2, 8)}`;
-
-		let settled = false;
-		let returnValue: string | null = null;
-		const errorState: { value: { message: string; stack?: string } | null } = {
-			value: null,
-		};
-
-		let resolveDone!: () => void;
-		const done = new Promise<void>((resolve) => {
-			resolveDone = resolve;
+		return runComposerJavascriptRepl(args, {
+			getArtifactsList: () => this.getArtifactsList(),
+			getAllAttachments: () => this.getAllAttachments(),
+			getSessionScope: () => ({
+				sessionId: this.currentSessionId,
+				shareToken: this.shareToken,
+			}),
+			hydrateAttachmentsForRequest: (attachments, scope) =>
+				this.hydrateAttachmentsForRequest(attachments, scope),
+			createOrUpdateArtifact: async (filename, content) => {
+				const exists = this.artifactsState.byFilename.has(filename);
+				const command = exists ? "rewrite" : "create";
+				const result = applyArtifactsCommand(this.artifactsState, {
+					command,
+					filename,
+					content,
+				});
+				this.artifactsState = result.state;
+				if (result.isError) {
+					throw new Error(result.output);
+				}
+			},
+			deleteArtifact: async (filename) => {
+				const result = applyArtifactsCommand(this.artifactsState, {
+					command: "delete",
+					filename,
+				});
+				this.artifactsState = result.state;
+				if (result.isError) {
+					throw new Error(result.output);
+				}
+				if (this.activeArtifact === filename) {
+					this.activeArtifact = null;
+				}
+			},
+			setActiveArtifact: (filename) => this.setActiveArtifact(filename),
 		});
-
-		const consumer = {
-			handleMessage: async (message: unknown) => {
-				if (settled || !message || typeof message !== "object") return;
-				const m = message as Record<string, unknown>;
-				if (m.type === "execution-complete") {
-					settled = true;
-					returnValue =
-						typeof m.returnValue === "string"
-							? m.returnValue
-							: String(m.returnValue ?? "");
-					resolveDone();
-				}
-				if (m.type === "execution-error") {
-					settled = true;
-					const err = m.error;
-					if (err && typeof err === "object") {
-						const rec = err as Record<string, unknown>;
-						errorState.value = {
-							message:
-								typeof rec.message === "string"
-									? rec.message
-									: "Execution error",
-							stack: typeof rec.stack === "string" ? rec.stack : undefined,
-						};
-					} else {
-						errorState.value = { message: "Execution error" };
-					}
-					resolveDone();
-				}
-			},
-		};
-
-		const el = document.createElement(
-			"composer-sandboxed-iframe",
-		) as HTMLElement & {
-			sandboxId: string;
-			htmlContent: string;
-			providers: unknown[];
-			consumers: unknown[];
-		};
-
-		el.style.position = "fixed";
-		el.style.left = "-99999px";
-		el.style.top = "-99999px";
-		el.style.width = "1px";
-		el.style.height = "1px";
-		el.style.opacity = "0";
-		el.style.pointerEvents = "none";
-
-		el.sandboxId = sandboxId;
-		el.htmlContent = "<!doctype html><html><body></body></html>";
-
-		const artifactsProvider = new ArtifactsRuntimeProvider(
-			() => this.getArtifactsList(),
-			{
-				createOrUpdate: async (filename, content) => {
-					const exists = this.artifactsState.byFilename.has(filename);
-					const cmd = exists ? "rewrite" : "create";
-					const res = applyArtifactsCommand(this.artifactsState, {
-						command: cmd,
-						filename,
-						content,
-					});
-					this.artifactsState = res.state;
-					if (!res.isError) {
-						this.setActiveArtifact(filename);
-					}
-				},
-				delete: async (filename) => {
-					const res = applyArtifactsCommand(this.artifactsState, {
-						command: "delete",
-						filename,
-					});
-					this.artifactsState = res.state;
-					if (this.activeArtifact === filename) {
-						this.activeArtifact = null;
-					}
-				},
-			},
-		);
-
-		const attachmentsForSandbox = await (async () => {
-			const list = this.getAllAttachments();
-			const sessionId = this.currentSessionId;
-			const shareToken = this.shareToken;
-			return await this.hydrateAttachmentsForRequest(list, {
-				sessionId,
-				shareToken,
-			});
-		})();
-
-		el.providers = [
-			artifactsProvider,
-			new AttachmentsRuntimeProvider(
-				attachmentsForSandbox
-					.filter((a) => typeof a.content === "string" && a.content.length > 0)
-					.map((a) => ({
-						id: a.id,
-						fileName: a.fileName,
-						mimeType: a.mimeType,
-						size: a.size,
-						content: a.content as string,
-						extractedText: a.extractedText,
-					})),
-			),
-			new FileDownloadRuntimeProvider(),
-			new JavascriptReplRuntimeProvider(code, { timeoutMs }),
-		];
-		el.consumers = [consumer];
-
-		document.body.appendChild(el);
-
-		const hardTimeout = window.setTimeout(() => {
-			if (settled) return;
-			settled = true;
-			errorState.value = { message: "Execution timed out" };
-			resolveDone();
-		}, timeoutMs + 200);
-
-		try {
-			await done;
-		} finally {
-			window.clearTimeout(hardTimeout);
-			try {
-				el.remove();
-			} catch {
-				// ignore
-			}
-		}
-
-		const snap = getSandboxConsoleSnapshot(sandboxId);
-		const logs = snap?.logs ?? [];
-		const lastError = snap?.lastError ?? null;
-		const downloads = getSandboxDownloadsSnapshot(sandboxId)?.files ?? [];
-
-		const lines: string[] = [];
-		if (errorState.value) {
-			lines.push(`Error: ${errorState.value.message}`);
-			if (errorState.value.stack) lines.push(errorState.value.stack);
-		} else if (returnValue !== null) {
-			lines.push("Return value:");
-			lines.push(returnValue);
-		} else {
-			lines.push("No return value.");
-		}
-
-		if (logs.length > 0) {
-			lines.push("", "Console:");
-			for (const l of logs) {
-				lines.push(`[${l.level}] ${l.text}`);
-			}
-		}
-
-		if (!errorState.value && lastError) {
-			lines.push("", "Last error:");
-			lines.push(lastError.message);
-			if (lastError.stack) lines.push(lastError.stack);
-		}
-
-		if (downloads.length > 0) {
-			lines.push("", "Downloads:");
-			for (const f of downloads) {
-				lines.push(`- ${f.fileName} (${f.mimeType})`);
-			}
-		}
-
-		return {
-			isError: Boolean(errorState.value),
-			text: lines.filter(Boolean).join("\n"),
-		};
 	}
 
 	private async runMcpClientTool(
 		toolName: string,
 		args: unknown,
 	): Promise<{ isError: boolean; text: string }> {
-		const argRecord = coerceToolArgsRecord(args);
-
-		if (toolName === "read_mcp_resource") {
-			const server = getOptionalStringArg(argRecord, "server");
-			const uri = getOptionalStringArg(argRecord, "uri");
-			if (!server || !uri) {
-				return {
-					isError: true,
-					text: "Error: read_mcp_resource requires server and uri",
-				};
-			}
-
-			const result = await this.apiClient.readMcpResource(server, uri);
-			return {
-				isError: false,
-				text: formatMcpResourceRead(result, uri),
-			};
-		}
-
-		if (toolName === "get_mcp_prompt") {
-			const server = getOptionalStringArg(argRecord, "server");
-			const name = getOptionalStringArg(argRecord, "name");
-			const promptArgs =
-				argRecord.args &&
-				typeof argRecord.args === "object" &&
-				!Array.isArray(argRecord.args)
-					? (Object.fromEntries(
-							Object.entries(argRecord.args as Record<string, unknown>).filter(
-								([, value]) => typeof value === "string",
-							),
-						) as Record<string, string>)
-					: undefined;
-			if (!server || !name) {
-				return {
-					isError: true,
-					text: "Error: get_mcp_prompt requires server and name",
-				};
-			}
-
-			const result = await this.apiClient.getMcpPrompt(
-				server,
-				name,
-				promptArgs,
-			);
-			return {
-				isError: false,
-				text: formatMcpPrompt(result, name),
-			};
-		}
-
-		const status = await this.apiClient.getMcpStatus();
-		if (toolName === "list_mcp_servers") {
-			return {
-				isError: false,
-				text: formatMcpServers(status),
-			};
-		}
-		if (toolName === "list_mcp_tools") {
-			return formatMcpTools(status, getOptionalStringArg(argRecord, "server"));
-		}
-		if (toolName === "list_mcp_resources") {
-			return formatMcpResources(
-				status,
-				getOptionalStringArg(argRecord, "server"),
-			);
-		}
-		if (toolName === "list_mcp_prompts") {
-			return formatMcpPrompts(
-				status,
-				getOptionalStringArg(argRecord, "server"),
-			);
-		}
-
-		return {
-			isError: true,
-			text: `Unsupported MCP client tool: ${toolName}`,
-		};
+		return runComposerMcpClientTool(this.apiClient, toolName, args);
 	}
 
 	private retryLastSend = () => {
@@ -3657,38 +2325,10 @@ export class ComposerChat extends LitElement {
 	}
 
 	private getAllAttachments(): NonNullable<Message["attachments"]> {
-		const byId = new Map<string, NonNullable<Message["attachments"]>[number]>();
-
-		for (const msg of this.messages) {
-			if (msg.role !== "user") continue;
-			const attachments = Array.isArray(msg.attachments) ? msg.attachments : [];
-			for (const a of attachments) {
-				if (!a || typeof a !== "object") continue;
-				const id = typeof a.id === "string" ? a.id : "";
-				if (!id) continue;
-
-				const existing = byId.get(id);
-				if (!existing) {
-					byId.set(id, a);
-					continue;
-				}
-
-				byId.set(id, {
-					...existing,
-					...a,
-					content: a.content ?? existing.content,
-					preview: a.preview ?? existing.preview,
-					extractedText: a.extractedText ?? existing.extractedText,
-				});
-			}
-		}
-
-		return Array.from(byId.values()).map((a) => {
-			if (typeof a.content === "string" && a.content.length > 0) return a;
-			if (!a.contentOmitted) return a;
-			const cached = this.attachmentContentCache.get(a.id);
-			return cached ? { ...a, content: cached, contentOmitted: undefined } : a;
-		});
+		return getAllComposerAttachments(
+			this.messages,
+			this.attachmentContentCache,
+		);
 	}
 
 	private refreshStatus() {
@@ -3743,6 +2383,13 @@ export class ComposerChat extends LitElement {
 		const taskHealth = this.status?.backgroundTasks;
 		const taskRunning = taskHealth?.running ?? 0;
 		const taskFailed = taskHealth?.failed ?? 0;
+		const runHealth = this.status?.runHealth ?? null;
+		const runHealthStatus = runHealth?.status;
+		const runHealthClass = getRunHealthPillClass(runHealthStatus);
+		const overallRunHealthStatus = isOnline
+			? (runHealthStatus ?? "online")
+			: "offline";
+		const overallRunHealthClass = isOnline ? runHealthClass : "error";
 		const isShared = Boolean(this.shareToken);
 		const approvalPillClass = this.approvals.getApprovalPillClass();
 		const approvalTitle = this.approvals.getApprovalTitle();
@@ -3760,11 +2407,13 @@ export class ComposerChat extends LitElement {
 
 		const healthClass = !isOnline
 			? "error"
-			: latency !== null
-				? latency > 1000
-					? "warning"
-					: "success"
-				: "";
+			: runHealthStatus
+				? runHealthClass
+				: latency !== null
+					? latency > 1000
+						? "warning"
+						: "success"
+					: "";
 		const latencyLabel =
 			latency === null
 				? "n/a"
@@ -3889,7 +2538,7 @@ export class ComposerChat extends LitElement {
 		<div class="header">
 			<div class="header-left">
 				<button class="toggle-sidebar-btn" @click=${this.toggleSidebar} title=${this.sidebarOpen ? "Collapse sidebar" : "Expand sidebar"}>
-					${this.sidebarOpen ? this.renderIcon("chevron-left") : this.renderIcon("chevron-right")}
+					${this.sidebarOpen ? renderComposerChatIcon("chevron-left") : renderComposerChatIcon("chevron-right")}
 				</button>
 				<h1>Maestro</h1>
 			</div>
@@ -3907,7 +2556,12 @@ export class ComposerChat extends LitElement {
 									? html`<span class="muted" title=${latencyLabel}>${Math.round(latency)}ms</span>`
 									: ""
 							}
-							<button class="icon-btn" title="API health" @click=${this.toggleHealth}>${this.renderIcon("info")}</button>
+							${
+								runHealthStatus && runHealthStatus !== "healthy"
+									? html`<span class="pill ${runHealthClass}">${runHealthStatus}</span>`
+									: ""
+							}
+							<button class="icon-btn" title="API health" @click=${this.toggleHealth}>${renderComposerChatIcon("info")}</button>
 						</div>
 						<div class="status-item">
 							<span>CWD</span>
@@ -3956,7 +2610,7 @@ export class ComposerChat extends LitElement {
 									</div>`
 								: ""
 						}
-						<button class="icon-btn" title="Refresh status" @click=${this.refreshStatus}>${this.renderIcon("refresh")}</button>
+						<button class="icon-btn" title="Refresh status" @click=${this.refreshStatus}>${renderComposerChatIcon("refresh")}</button>
 						${
 							lastUpdated
 								? html`<span class="status-item" title="Last API refresh">
@@ -3971,14 +2625,14 @@ export class ComposerChat extends LitElement {
 					<span class="model-badge">AI</span>
 					<span>${this.currentModel.split("/").pop()?.toUpperCase() || "MODEL"}</span>
 						</div>
-						<button class="icon-btn" title="Choose Model" @click=${this.openModelSelector}>${this.renderIcon("globe")}</button>
+						<button class="icon-btn" title="Choose Model" @click=${this.openModelSelector}>${renderComposerChatIcon("globe")}</button>
 						<button
 							class="icon-btn"
 							title=${isShared ? "Shared sessions are read-only" : "Share session"}
 							@click=${this.openShareDialog}
 							?disabled=${isShared || !this.currentSessionId}
 						>
-							${this.renderIcon("share")}
+							${renderComposerChatIcon("share")}
 						</button>
 						<button
 							class="icon-btn"
@@ -3993,9 +2647,9 @@ export class ComposerChat extends LitElement {
 							title="Toggle theme"
 							@click=${this.toggleTheme}
 						>
-							${this.renderIcon(this.theme === "dark" ? "sun" : "moon")}
+							${renderComposerChatIcon(this.theme === "dark" ? "sun" : "moon")}
 						</button>
-						<button class="icon-btn" title="Settings" @click=${this.toggleSettings}>${this.renderIcon("settings")}</button>
+						<button class="icon-btn" title="Settings" @click=${this.toggleSettings}>${renderComposerChatIcon("settings")}</button>
 						${
 							this.hasAdminSettingsAccess()
 								? html`<button class="icon-btn" title="Admin Settings" @click=${this.toggleAdminSettings}>🛡️</button>`
@@ -4006,7 +2660,15 @@ export class ComposerChat extends LitElement {
 							title=${isShared ? "Artifacts (read-only)" : "Artifacts"}
 							@click=${this.toggleArtifactsPanel}
 						>
-							${this.renderIcon("file")}
+							${renderComposerChatIcon("file")}
+						</button>
+						<button
+							class="icon-btn ${this.a2aCockpitOpen ? "active" : ""}"
+							title=${isShared ? "Shared sessions are read-only" : "A2A cockpit"}
+							@click=${this.toggleA2ACockpitPanel}
+							?disabled=${isShared}
+						>
+							${renderComposerChatIcon("network")}
 						</button>
 						<button
 							class="icon-btn ${this.timelineOpen ? "active" : ""}"
@@ -4014,10 +2676,18 @@ export class ComposerChat extends LitElement {
 							@click=${this.toggleTimelinePanel}
 							?disabled=${isShared || !this.currentSessionId}
 						>
-							${this.renderIcon("timeline")}
+							${renderComposerChatIcon("timeline")}
 						</button>
-						<button class="icon-btn ${this.compactMode ? "active" : ""}" title="Toggle compact layout (Ctrl/Cmd+M)" @click=${this.toggleCompact}>${this.renderIcon("grid")}</button>
-						<button class="icon-btn ${this.reducedMotion ? "active" : ""}" title="Toggle reduced motion" @click=${this.toggleReducedMotion}>${this.renderIcon("reduce")}</button>
+						<button
+							class="icon-btn ${this.replayLabOpen ? "active" : ""}"
+							title=${isShared ? "Shared sessions are read-only" : "Replay lab"}
+							@click=${this.toggleReplayLabPanel}
+							?disabled=${isShared || !this.currentSessionId}
+						>
+							${renderComposerChatIcon("flask")}
+						</button>
+						<button class="icon-btn ${this.compactMode ? "active" : ""}" title="Toggle compact layout (Ctrl/Cmd+M)" @click=${this.toggleCompact}>${renderComposerChatIcon("grid")}</button>
+						<button class="icon-btn ${this.reducedMotion ? "active" : ""}" title="Toggle reduced motion" @click=${this.toggleReducedMotion}>${renderComposerChatIcon("reduce")}</button>
 					</div>
 				</div>
 
@@ -4095,6 +2765,27 @@ export class ComposerChat extends LitElement {
 					  `
 						: ""
 				}
+				${
+					this.a2aCockpitOpen
+						? html`
+							<composer-a2a-cockpit-panel
+								.apiClient=${this.apiClient}
+								@close=${this.closeA2ACockpitPanel}
+							></composer-a2a-cockpit-panel>
+					  `
+						: ""
+				}
+				${
+					this.replayLabOpen
+						? html`
+							<composer-trajectory-replay-lab-panel
+								.apiClient=${this.apiClient}
+								.sessionId=${this.currentSessionId}
+								@close=${this.closeReplayLabPanel}
+							></composer-trajectory-replay-lab-panel>
+					  `
+						: ""
+				}
 			</div>
 
 			${
@@ -4154,22 +2845,18 @@ export class ComposerChat extends LitElement {
 					: ""
 			}
 
-			${
-				this.showHealth
-					? html`
-						<div class="health-popover">
-							<div class="health-popover-header">
-								<span class="health-popover-label">API HEALTH</span>
-								<button class="icon-btn" @click=${this.closeHealth}>${this.renderIcon("close")}</button>
-							</div>
-							<div class="health-popover-row"><span>Base:</span> ${this.apiClient.baseUrl}</div>
-							<div class="health-popover-row"><span>Latency:</span> ${latency ? `${Math.round(latency)}ms` : "n/a"}</div>
-							<div class="health-popover-row"><span>Last updated:</span> ${lastUpdated ? new Date(lastUpdated).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "n/a"}</div>
-							<div class="health-popover-row"><span>Last error:</span> ${this.lastApiError || "none"}</div>
-						</div>
-				  `
-					: ""
-			}
+			${renderComposerHealthPopover({
+				showHealth: this.showHealth,
+				closeHealth: this.closeHealth,
+				renderIcon: (name) => renderComposerChatIcon(name),
+				overallRunHealthClass,
+				overallRunHealthStatus,
+				apiBaseUrl: this.apiClient?.baseUrl ?? this.apiEndpoint,
+				latency,
+				lastUpdated,
+				runHealth,
+				lastApiError: this.lastApiError,
+			})}
 
 			${
 				this.toast
@@ -4207,26 +2894,11 @@ export class ComposerChat extends LitElement {
 					: ""
 			}
 
-			${
-				this.showShortcuts
-					? html`
-						<div class="shortcuts-modal">
-							<div class="shortcuts-modal-header">
-								<span class="shortcuts-modal-title">Keyboard shortcuts</span>
-								<button class="icon-btn" @click=${this.closeShortcuts}>${this.renderIcon("close")}</button>
-							</div>
-						<div class="shortcuts-grid">
-							<span class="pill">Enter</span><span>Send message</span>
-							<span class="pill">Shift+Enter</span><span>New line</span>
-							<span class="pill">?</span><span>Toggle this help</span>
-							<span class="pill">↻</span><span>Refresh API status</span>
-							<span class="pill">⌘/Ctrl + K</span><span>Browser find (fwd to your editor)</span>
-							<span class="pill">⌘/Ctrl + M</span><span>Toggle compact layout</span>
-													</div>
-					</div>
-			  `
-					: ""
-			}
+			${renderComposerShortcutsModal({
+				showShortcuts: this.showShortcuts,
+				closeShortcuts: this.closeShortcuts,
+				renderIcon: (name) => renderComposerChatIcon(name),
+			})}
 		`;
 	}
 }

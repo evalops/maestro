@@ -2,7 +2,7 @@
  * Agent Core - Event-Driven LLM Interaction Engine
  *
  * This module provides the central Agent class that orchestrates all LLM
- * communication, tool execution, and state management for the Composer CLI.
+ * communication, tool execution, and state management for the Maestro CLI.
  * It implements an event-driven architecture that enables real-time streaming,
  * concurrent tool execution, and extensible transport layers.
  *
@@ -363,6 +363,22 @@ function buildPromptOnlyToolBatchSummaryMessage(
 	};
 }
 
+const PROMPT_ONLY_BATCH_SHAPING_FEEDBACK_HINT =
+	"When you need several independent reads or searches, emit them together in one assistant message so Maestro can batch them safely.";
+
+function buildPromptOnlyBatchShapingFeedbackMessage(): UserMessage {
+	return {
+		role: "user",
+		content: [
+			{
+				type: "text",
+				text: `The following is transient tool batching feedback for the next assistant turn:\n- ${PROMPT_ONLY_BATCH_SHAPING_FEEDBACK_HINT}`,
+			},
+		],
+		timestamp: Date.now(),
+	};
+}
+
 /**
  * Ensures prior assistant messages remain provider-compatible when switching models mid-session.
  *
@@ -558,7 +574,7 @@ export interface AgentOptions {
 	) => Message[] | Promise<Message[]>;
 	/** Optional message preprocessor executed immediately before provider invocation */
 	preprocessMessages?: PreprocessMessagesFn;
-	/** Disable Composer's built-in preprocessing (not recommended) */
+	/** Disable Maestro's built-in preprocessing (not recommended) */
 	disableDefaultPreprocessMessages?: boolean;
 	/** Optional context sources for environment injection */
 	contextSources?: AgentContextSource[];
@@ -600,6 +616,7 @@ export class Agent {
 	private nextRunHistoryQueue: AppMessage[] = [];
 	private nextRunPromptOnlyQueue: Message[] = [];
 	private promptOnlyQueue: Message[] = [];
+	private queuedBatchShapingFeedbackKeys = new Set<string>();
 	private nextRunSystemPromptAdditions: string[] = [];
 	private defaultTaskBudgetTotal?: number;
 	private currentTaskBudget?:
@@ -822,6 +839,7 @@ export class Agent {
 		const queued = [...this.nextRunPromptOnlyQueue, ...this.promptOnlyQueue];
 		this.nextRunPromptOnlyQueue = [];
 		this.promptOnlyQueue = [];
+		this.queuedBatchShapingFeedbackKeys.clear();
 		return queued;
 	}
 
@@ -1012,6 +1030,7 @@ export class Agent {
 		this.activeToolBatchIds = null;
 		this.completedToolBatch = [];
 		this.promptOnlyQueue = [];
+		this.queuedBatchShapingFeedbackKeys.clear();
 		this._state.error = undefined;
 		this.withheldRecoverableOverflowError = undefined;
 		this.pendingMergedRecoverableTurnEnd = undefined;
@@ -1194,6 +1213,7 @@ export class Agent {
 		this.nextRunHistoryQueue = [];
 		this.nextRunPromptOnlyQueue = [];
 		this.promptOnlyQueue = [];
+		this.queuedBatchShapingFeedbackKeys.clear();
 		this.nextRunSystemPromptAdditions = [];
 	}
 
@@ -1420,6 +1440,7 @@ export class Agent {
 		this.nextRunHistoryQueue = [];
 		this.nextRunPromptOnlyQueue = [];
 		this.promptOnlyQueue = [];
+		this.queuedBatchShapingFeedbackKeys.clear();
 		this.nextRunSystemPromptAdditions = [];
 		this._state.error = undefined;
 		this.steeringQueue = [];
@@ -1733,6 +1754,9 @@ export class Agent {
 					this.handleToolExecutionUpdate(event);
 				} else if (event.type === "tool_execution_end") {
 					this.handleToolExecutionEnd(event);
+				} else if (event.type === "tool_phase_summary") {
+					this.handleToolPhaseSummary(event);
+					this.emit(event);
 				} else if (event.type === "turn_end") {
 					if (
 						this.shouldWithholdRecoverableOverflowError(
@@ -1954,6 +1978,9 @@ export class Agent {
 					this.handleToolExecutionUpdate(event);
 				} else if (event.type === "tool_execution_end") {
 					this.handleToolExecutionEnd(event);
+				} else if (event.type === "tool_phase_summary") {
+					this.handleToolPhaseSummary(event);
+					this.emit(event);
 				} else if (event.type === "turn_end") {
 					if (
 						this.shouldWithholdRecoverableOverflowError(
@@ -2463,6 +2490,20 @@ export class Agent {
 			this.promptOnlyQueue.push(
 				buildPromptOnlyToolBatchSummaryMessage(summaryLabels),
 			);
+		}
+	}
+
+	private handleToolPhaseSummary(
+		event: Extract<AgentEvent, { type: "tool_phase_summary" }>,
+	): void {
+		const feedback = event.batchShapingFeedback;
+		if (feedback?.avoidableSingleton) {
+			const key = feedback.reason || "avoidable_singleton";
+			if (this.queuedBatchShapingFeedbackKeys.has(key)) {
+				return;
+			}
+			this.queuedBatchShapingFeedbackKeys.add(key);
+			this.promptOnlyQueue.push(buildPromptOnlyBatchShapingFeedbackMessage());
 		}
 	}
 

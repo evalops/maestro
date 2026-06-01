@@ -1,3 +1,8 @@
+import {
+	EVALOPS_ACCESS_TOKEN_ENV_VARS,
+	EVALOPS_ORGANIZATION_ID_ENV_VARS,
+	EVALOPS_WORKSPACE_ID_ENV_VARS,
+} from "../evalops/env-aliases.js";
 import { loadOAuthCredentials } from "../oauth/storage.js";
 import { CONNECT_PROTOCOL_VERSION } from "../platform/client.js";
 import {
@@ -304,11 +309,8 @@ function resolveWorkspaceId(
 	const envWorkspaceId = getEnvValue([
 		"CONNECTORS_SERVICE_WORKSPACE_ID",
 		"MAESTRO_CONNECTORS_WORKSPACE_ID",
-		"MAESTRO_EVALOPS_WORKSPACE_ID",
-		"MAESTRO_WORKSPACE_ID",
-		"MAESTRO_EVALOPS_ORG_ID",
-		"EVALOPS_ORGANIZATION_ID",
-		"MAESTRO_ENTERPRISE_ORG_ID",
+		...EVALOPS_WORKSPACE_ID_ENV_VARS,
+		...EVALOPS_ORGANIZATION_ID_ENV_VARS,
 	]);
 	if (configuredWorkspaceId ?? envWorkspaceId) {
 		return configuredWorkspaceId ?? envWorkspaceId;
@@ -392,8 +394,7 @@ export function resolveConnectorsServiceConfig(
 			getEnvValue([
 				"CONNECTORS_SERVICE_TOKEN",
 				"MAESTRO_CONNECTORS_SERVICE_TOKEN",
-				"MAESTRO_EVALOPS_ACCESS_TOKEN",
-				"EVALOPS_TOKEN",
+				...EVALOPS_ACCESS_TOKEN_ENV_VARS,
 			]) ??
 			storedToken,
 		workspaceId: resolveWorkspaceId(config),

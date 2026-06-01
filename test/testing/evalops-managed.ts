@@ -1,5 +1,6 @@
 import {
 	ALL_EVALOPS_MANAGED_PROVIDER_DEFINITIONS,
+	DEFAULT_EVALOPS_MANAGED_GATEWAY_BASE_URL,
 	type EvalOpsManagedProviderDefinition,
 } from "../../src/providers/evalops-managed.js";
 
@@ -27,10 +28,10 @@ export function expectedManagedGatewayModelBaseURL(
 ): string {
 	const api = expectedManagedGatewayModelAPI(definition);
 	if (api === "anthropic-messages") {
-		return "http://127.0.0.1:8081/v1/messages";
+		return `${DEFAULT_EVALOPS_MANAGED_GATEWAY_BASE_URL}/messages`;
 	}
 	if (api === "openai-responses") {
-		return "http://127.0.0.1:8081/v1/responses";
+		return `${DEFAULT_EVALOPS_MANAGED_GATEWAY_BASE_URL}/responses`;
 	}
-	return "http://127.0.0.1:8081/v1/chat/completions";
+	return `${DEFAULT_EVALOPS_MANAGED_GATEWAY_BASE_URL}/chat/completions`;
 }

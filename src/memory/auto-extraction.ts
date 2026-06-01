@@ -2,10 +2,12 @@ import { createHash } from "node:crypto";
 import { getLastAssistantMessage } from "../agent/index.js";
 import type { Agent, Api, Model, TextContent } from "../agent/index.js";
 import { buildSessionMemoryContent } from "../session/session-memory.js";
+import { recordMaestroLearnedContext } from "../telemetry/maestro-event-bus.js";
 import { safeJsonParse } from "../utils/json.js";
 import { createLogger } from "../utils/logger.js";
 import { getDurableMemoryBackend } from "./backend.js";
 import { upsertDurableMemory } from "./store.js";
+import { getMemoryProjectScope } from "./team-memory.js";
 
 const logger = createLogger("memory:auto-extraction");
 
@@ -98,6 +100,75 @@ function hashSessionMemory(content: string): string {
 		.filter((line) => !line.startsWith("- Updated: "))
 		.join("\n");
 	return createHash("sha256").update(stableContent).digest("hex");
+}
+
+function learnedContextID(
+	sessionId: string,
+	topic: string,
+	content: string,
+): string {
+	const hash = createHash("sha256")
+		.update(`${sessionId}\u0000${topic}\u0000${content}`)
+		.digest("hex")
+		.slice(0, 16);
+	const topicPart =
+		topic
+			.trim()
+			.toLowerCase()
+			.replace(/[^a-z0-9]+/g, "-")
+			.replace(/^-+|-+$/g, "") || "memory";
+	return `${sessionId}-${topicPart}-${hash}`;
+}
+
+function learnedContextDimension(topic: string): string {
+	const topicPart =
+		topic
+			.trim()
+			.toLowerCase()
+			.replace(/[^a-z0-9]+/g, "_")
+			.replace(/^_+|_+$/g, "") || "memory";
+	return `memory.${topicPart}`;
+}
+
+function learnedContextSubjectKey(cwd: string | undefined): string | undefined {
+	if (!cwd) {
+		return undefined;
+	}
+	const scope = getMemoryProjectScope(cwd);
+	return scope?.projectId ? `repo:${scope.projectId}` : undefined;
+}
+
+function publishLearnedContext(params: {
+	content: string;
+	cwd?: string;
+	sessionId: string;
+	topic: string;
+}): void {
+	recordMaestroLearnedContext({
+		learning_id: learnedContextID(
+			params.sessionId,
+			params.topic,
+			params.content,
+		),
+		subject_key: learnedContextSubjectKey(params.cwd),
+		statement: params.content,
+		dimension: learnedContextDimension(params.topic),
+		confidence_score: 0.78,
+		confidence_reason:
+			"Automatic durable memory extraction from a Maestro session summary.",
+		evidence: [
+			{
+				source: "maestro-session",
+				source_id: params.sessionId,
+				uri: `maestro://sessions/${params.sessionId}`,
+				excerpt: params.content,
+			},
+		],
+		correlation: {
+			session_id: params.sessionId,
+			agent_id: "maestro",
+		},
+	});
 }
 
 function stripCodeFence(text: string): string {
@@ -276,6 +347,7 @@ export function createAutomaticMemoryExtractionCoordinator(
 									{
 										tags: ["auto", "durable", ...(memory.tags ?? [])],
 										cwd: snapshot.cwd,
+										sessionId: snapshot.sessionId,
 									},
 								);
 							if (remoteResult?.created) {
@@ -299,6 +371,12 @@ export function createAutomaticMemoryExtractionCoordinator(
 						} else if (result.updated) {
 							updated += 1;
 						}
+						publishLearnedContext({
+							content: memory.content,
+							cwd: snapshot.cwd,
+							sessionId: snapshot.sessionId,
+							topic: memory.topic,
+						});
 					}
 					options.sessionManager.saveSessionMemoryExtractionHash(
 						extractionHash,

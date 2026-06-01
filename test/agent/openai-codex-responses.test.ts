@@ -197,4 +197,72 @@ describe("OpenAI Codex Responses provider", () => {
 		expect(requestBody?.tool_choice).toBeUndefined();
 		expect(requestBody?.parallel_tool_calls).toBeUndefined();
 	});
+
+	it("normalizes top-level union tool schemas before Responses filtering", async () => {
+		let requestBody: Record<string, unknown> | undefined;
+		vi.spyOn(globalThis, "fetch").mockImplementation(
+			async (_url: string | URL | Request, init?: RequestInit) => {
+				requestBody = JSON.parse(String(init?.body)) as Record<string, unknown>;
+				return sseResponse([
+					{
+						type: "response.completed",
+						response: { status: "completed" },
+					},
+				]);
+			},
+		);
+
+		const unionContext: Context = {
+			...context,
+			tools: [
+				{
+					name: "background_tasks",
+					description: "manage background tasks",
+					parameters: {
+						anyOf: [
+							{
+								type: "object",
+								properties: { action: { const: "list" } },
+								required: ["action"],
+							},
+							{
+								type: "object",
+								properties: {
+									action: { const: "stop" },
+									taskId: { type: "string" },
+								},
+								required: ["action"],
+							},
+						],
+					} as never,
+				},
+			],
+		};
+
+		for await (const _event of streamOpenAICodexResponses(model, unionContext, {
+			apiKey: fakeCodexToken(),
+		})) {
+			// Drain the stream so the request is issued.
+		}
+
+		expect(requestBody?.tools).toMatchObject([
+			{
+				type: "function",
+				name: "background_tasks",
+				description: "manage background tasks",
+				parameters: {
+					type: "object",
+					properties: {
+						action: { enum: ["list", "stop"] },
+						taskId: { type: "string" },
+					},
+					required: ["action"],
+					additionalProperties: false,
+				},
+				strict: null,
+			},
+		]);
+		expect(requestBody?.tool_choice).toBe("auto");
+		expect(requestBody?.parallel_tool_calls).toBe(true);
+	});
 });

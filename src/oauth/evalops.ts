@@ -4,6 +4,7 @@ import {
 	type ServerResponse,
 	createServer,
 } from "node:http";
+import { EVALOPS_ORGANIZATION_ID_ENV_VARS } from "../evalops/env-aliases.js";
 import { PLATFORM_HTTP_ROUTES } from "../platform/core-services.js";
 import { fetchDownstream } from "../utils/downstream-http.js";
 import { createLogger } from "../utils/logger.js";
@@ -24,7 +25,7 @@ const CALLBACK_PORT = 1460;
 const CALLBACK_PATH = "/auth/callback/evalops";
 const CALLBACK_ORIGIN = `http://127.0.0.1:${CALLBACK_PORT}`;
 const CALLBACK_URI = `${CALLBACK_ORIGIN}${CALLBACK_PATH}`;
-const DEFAULT_IDENTITY_URL = "http://127.0.0.1:8080";
+const DEFAULT_IDENTITY_URL = "https://identity.evalops.dev";
 const IDENTITY_BASE_URL_ENV_VARS = [
 	"MAESTRO_IDENTITY_URL",
 	"EVALOPS_IDENTITY_URL",
@@ -113,7 +114,7 @@ export interface EvalOpsDelegationTokenResult {
 	tokenType: string;
 }
 
-function getEnvValue(names: string[]): string | undefined {
+function getEnvValue(names: readonly string[]): string | undefined {
 	for (const name of names) {
 		const value = process.env[name]?.trim();
 		if (value) {
@@ -184,17 +185,8 @@ function fetchIdentity(
 	});
 }
 
-function getOrganizationId(): string {
-	const organizationId = getEnvValue([
-		"MAESTRO_EVALOPS_ORG_ID",
-		"EVALOPS_ORGANIZATION_ID",
-		"MAESTRO_ENTERPRISE_ORG_ID",
-	]);
-	if (!organizationId) {
-		throw new Error(
-			"EvalOps login requires MAESTRO_EVALOPS_ORG_ID or EVALOPS_ORGANIZATION_ID.",
-		);
-	}
+function getConfiguredOrganizationId(): string | undefined {
+	const organizationId = getEnvValue(EVALOPS_ORGANIZATION_ID_ENV_VARS);
 	return organizationId;
 }
 
@@ -330,7 +322,15 @@ function resolveStoredEvalOpsMetadata(
 function resolveDelegationOrganizationId(
 	metadata: Record<string, unknown> | undefined,
 ): string {
-	return getMetadataString(metadata, "organizationId") ?? getOrganizationId();
+	const organizationId =
+		getMetadataString(metadata, "organizationId") ??
+		getConfiguredOrganizationId();
+	if (!organizationId) {
+		throw new Error(
+			"EvalOps delegation requires an organization id from /login evalops or MAESTRO_EVALOPS_ORG_ID.",
+		);
+	}
+	return organizationId;
 }
 
 async function enrollCurrentDesktopDevice(
@@ -618,7 +618,7 @@ function closeServer(server: Server): Promise<void> {
 
 async function startIdentityLogin(
 	identityBaseUrl: string,
-	organizationId: string,
+	organizationId: string | undefined,
 	onStatus?: (status: string) => void,
 ): Promise<string> {
 	onStatus?.("Requesting EvalOps managed login URL...");
@@ -631,7 +631,7 @@ async function startIdentityLogin(
 			body: JSON.stringify({
 				redirect_uri: CALLBACK_URI,
 				response_mode: "query",
-				organization_id: organizationId,
+				...(organizationId ? { organization_id: organizationId } : {}),
 				prompt: "select_account",
 				scopes: [REQUIRED_SCOPE],
 			}),
@@ -662,7 +662,7 @@ export async function loginEvalOps(
 	onStatus?: (status: string) => void,
 ): Promise<void> {
 	const identityBaseUrl = getIdentityBaseUrl();
-	const organizationId = getOrganizationId();
+	const organizationId = getConfiguredOrganizationId();
 	const providerRef = getProviderRef();
 	const { server, getResult } = await startCallbackServer();
 
@@ -678,10 +678,11 @@ export async function loginEvalOps(
 		const result = await Promise.race([
 			getResult(),
 			new Promise<EvalOpsCallbackResult>((_, reject) => {
-				setTimeout(
+				const timeout = setTimeout(
 					() => reject(new Error("EvalOps login timed out after 5 minutes")),
 					5 * 60 * 1000,
 				);
+				timeout.unref?.();
 			}),
 		]);
 

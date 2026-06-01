@@ -155,12 +155,18 @@ generator, so you can use them out of the box:
 - **Groq (Responses API):** `openai/gpt-oss-20b`, `openai/gpt-oss-120b`,
   routed via Groq’s OpenAI-compatible endpoint
   `https://api.groq.com/openai/v1/responses`.
-- **OpenAI Codex (ChatGPT Codex backend):** `gpt-5.1`,
+- **OpenAI Codex (Codex app-server + ChatGPT sign-in):** `gpt-5.1`,
   `gpt-5.1-codex-max`, `gpt-5.1-codex-mini`, `gpt-5.2`,
   `gpt-5.2-codex`, `gpt-5.3-codex`, `gpt-5.3-codex-spark`,
   `gpt-5.4`, `gpt-5.4-mini`, and `gpt-5.5` under the `openai-codex`
-  provider. These use `api: "openai-codex-responses"` and require
-  `maestro codex login` or `/login openai-codex`.
+  provider. These use `api: "openai-codex-app-server"` and require
+  `maestro codex login` to Sign in with ChatGPT through Codex app-server.
+  Published Maestro installs use the packaged `@openai/codex` app-server first
+  and source checkouts fall back to a `codex` binary on `PATH`, so `codex login`
+  and `maestro codex login` share the same Codex-owned `CODEX_HOME` auth state.
+  Use `maestro codex status` to inspect the current Codex-owned sign-in,
+  `maestro codex login --force` to refresh it, and
+  `maestro codex login --device-auth` for remote/headless machines.
 
 To add more Responses-capable models (or override these), drop them into
 `.maestro/config.json` with `api: "openai-responses"`; Maestro will normalize
@@ -168,8 +174,16 @@ the base URL to `/responses` automatically.
 
 Codex models are deliberately separated from the regular `openai` provider.
 `openai` uses Platform API keys or OpenAI Platform OAuth exchange, while
-`openai-codex` uses the ChatGPT access token and account id required by
-`https://chatgpt.com/backend-api/codex/responses`.
+`openai-codex` uses Codex app-server `account/read`, `account/login/start`,
+`thread/start`, and `turn/start` so Codex owns ChatGPT OAuth refresh and local
+thread execution. Maestro should not copy Codex ChatGPT tokens into its normal
+provider key store for app-server runs.
+
+Legacy custom models that explicitly use `api: "openai-codex-responses"` still
+need stored ChatGPT OAuth credentials for direct backend Responses calls. Use
+`/login openai-codex:responses` for that compatibility path; the default
+`/login openai-codex` and `maestro codex login` continue to use Codex
+app-server.
 
 ### Responses API Compatibility Notes (Tools)
 
@@ -212,6 +226,11 @@ Background:
 > Note: ChatGPT Codex subscription access is for personal subscription use.
 > Production and organization workflows should prefer OpenAI Platform or the
 > EvalOps managed gateway.
+
+For EvalOps managed gateway models, run `maestro evalops login` locally. The
+login flow uses the Identity Google callback, stores the returned organization
+metadata with the local OAuth credential, and then routes models such as
+`evalops/gpt-4o-mini` through `MAESTRO_LLM_GATEWAY_URL`.
 
 ## Factory Commands
 

@@ -1,4 +1,3 @@
-import { createRequire } from "node:module";
 import {
 	DiagConsoleLogger,
 	DiagLogLevel,
@@ -13,6 +12,8 @@ import {
 	SEMRESATTRS_SERVICE_NAME,
 	SEMRESATTRS_SERVICE_VERSION,
 } from "@opentelemetry/semantic-conventions";
+import { readPackageVersion } from "./package-version.js";
+import { isInternalTelemetryDisabled } from "./telemetry/disablement.js";
 
 let sdkStartPromise: Promise<void> | null = null;
 let sdkStarted = false;
@@ -27,20 +28,16 @@ const packageVersion = (() => {
 		if (cached) {
 			return cached;
 		}
-		try {
-			const packageJson = createRequire(import.meta.url)("../package.json") as {
-				version?: string;
-			};
-			const version = packageJson.version;
-			cached = typeof version === "string" ? version : "unknown";
-		} catch (error) {
-			cached = process.env.MAESTRO_VERSION ?? "unknown";
-		}
+		cached = readPackageVersion();
 		return cached;
 	};
 })();
 
 export const isOpenTelemetryEnabled = (): boolean => {
+	if (isInternalTelemetryDisabled()) {
+		return false;
+	}
+
 	if (process.env.MAESTRO_OTEL === "0") {
 		return false;
 	}
@@ -77,6 +74,7 @@ export interface OpenTelemetryStatus {
 }
 
 export function getOpenTelemetryStatus(): OpenTelemetryStatus {
+	const internalTelemetryDisabled = isInternalTelemetryDisabled();
 	const enabled = isOpenTelemetryEnabled();
 	const otlpEndpoint = process.env.OTEL_EXPORTER_OTLP_ENDPOINT;
 	const tracesExporter =
@@ -95,9 +93,11 @@ export function getOpenTelemetryStatus(): OpenTelemetryStatus {
 		? process.env.MAESTRO_OTEL === "1"
 			? "MAESTRO_OTEL=1"
 			: "OTEL exporter detected"
-		: process.env.MAESTRO_OTEL === "0"
-			? "MAESTRO_OTEL=0"
-			: "no OTEL exporter configured";
+		: internalTelemetryDisabled
+			? "internal telemetry disabled"
+			: process.env.MAESTRO_OTEL === "0"
+				? "MAESTRO_OTEL=0"
+				: "no OTEL exporter configured";
 
 	return {
 		enabled,

@@ -41,6 +41,88 @@ describe("parseArgs", () => {
 		});
 	});
 
+	it("parses hidden support discovery flags", () => {
+		expect(parseArgs(["--help-hidden"])).toMatchObject({
+			help: true,
+			helpHidden: true,
+		});
+		expect(parseArgs(["--help-all"])).toMatchObject({
+			help: true,
+			helpHidden: true,
+		});
+		expect(parseArgs(["--list-modes-all"])).toMatchObject({
+			listModesAll: true,
+		});
+	});
+
+	it("parses modes describe commands", () => {
+		expect(
+			parseArgs([
+				"modes",
+				"describe",
+				"smart",
+				"--provider",
+				"openai",
+				"--json",
+			]),
+		).toMatchObject({
+			command: "modes",
+			subcommand: "describe",
+			messages: ["smart"],
+			provider: "openai",
+			execJson: true,
+		});
+	});
+
+	it("rejects unknown CLI flags before they become support surfaces", () => {
+		expect(parseArgs(["--headless", "--legacy-runtime"])).toMatchObject({
+			headless: true,
+			mode: "headless",
+			error: "Unknown option: --legacy-runtime",
+		});
+		expect(parseArgs(["--experimental-runtime"]).error).toBe(
+			"Unknown option: --experimental-runtime",
+		);
+	});
+
+	it("does not consume command tokens after deprecated value flags", () => {
+		expect(parseArgs(["--codex-api-key"]).error).toBeUndefined();
+		expect(parseArgs(["--codex-api-key", "--help"])).toMatchObject({
+			help: true,
+		});
+		expect(parseArgs(["--codex-api-key", "config", "show"])).toMatchObject({
+			command: "config",
+			subcommand: "show",
+		});
+	});
+
+	it("preserves config init preset flags for the config handler", () => {
+		const longForm = parseArgs(["config", "init", "--preset", "evalops"]);
+		expect(longForm).toMatchObject({
+			command: "config",
+			subcommand: "init",
+			messages: [],
+		});
+		expect(longForm.error).toBeUndefined();
+
+		const shortForm = parseArgs(["config", "init", "-p", "local"]);
+		expect(shortForm).toMatchObject({
+			command: "config",
+			subcommand: "init",
+			messages: [],
+		});
+		expect(shortForm.error).toBeUndefined();
+	});
+
+	it("still rejects unknown config init flags", () => {
+		expect(parseArgs(["config", "init", "--unknown"]).error).toBe(
+			"Unknown option: --unknown",
+		);
+		expect(parseArgs(["config", "init", "--preset=local"]).error).toBe(
+			"Unknown option: --preset=local",
+		);
+	});
+
 	it("parses export commands and formats", () => {
 		expect(
 			parseArgs([
@@ -66,6 +148,140 @@ describe("parseArgs", () => {
 		});
 	});
 
+	it("parses --stream-json as an exec JSONL alias", () => {
+		expect(
+			parseArgs(["exec", "--stream-json", "summarize recent changes"]),
+		).toMatchObject({
+			command: "exec",
+			execJson: true,
+			messages: ["summarize recent changes"],
+		});
+		expect(
+			parseArgs(["--stream-json", "exec", "summarize recent changes"]),
+		).toMatchObject({
+			command: "exec",
+			execJson: true,
+			messages: ["summarize recent changes"],
+		});
+	});
+
+	it("rejects --stream-json outside exec", () => {
+		expect(parseArgs(["--stream-json", "summarize recent changes"]).error).toBe(
+			"Unknown option: --stream-json",
+		);
+		expect(parseArgs(["context", "/repo", "--stream-json"]).error).toBe(
+			"Unknown option: --stream-json",
+		);
+		expect(
+			parseArgs(["remote", "list", "--workspace", "ws_123", "--stream-json"])
+				.error,
+		).toBe("Unknown option: --stream-json");
+		expect(
+			parseArgs([
+				"remote",
+				"list",
+				"--workspace",
+				"ws_123",
+				"--stream-json=true",
+			]).error,
+		).toBe("Unknown option: --stream-json=true");
+	});
+
+	it("allows escaped command-tail text to mention --stream-json", () => {
+		expect(
+			parseArgs([
+				"a2a",
+				"delegate",
+				"peer",
+				"--",
+				"Please mention",
+				"--stream-json",
+			]),
+		).toMatchObject({
+			command: "a2a",
+			commandArgs: [
+				"delegate",
+				"peer",
+				"--",
+				"Please mention",
+				"--stream-json",
+			],
+		});
+		expect(
+			parseArgs(["remote", "list", "--stream-json", "--", "Please mention"])
+				.error,
+		).toBe("Unknown option: --stream-json");
+	});
+
+	it("allows A2A reply values to mention --stream-json", () => {
+		expect(
+			parseArgs([
+				"a2a",
+				"coordinate",
+				"mac-mini",
+				"--reply",
+				"--stream-json",
+				"--wait",
+			]),
+		).toMatchObject({
+			command: "a2a",
+			commandArgs: [
+				"coordinate",
+				"mac-mini",
+				"--reply",
+				"--stream-json",
+				"--wait",
+			],
+		});
+	});
+
+	it("rejects --stream-json in non-text A2A command tails", () => {
+		expect(parseArgs(["a2a", "tasks", "--stream-json"]).error).toBe(
+			"Unknown option: --stream-json",
+		);
+		expect(parseArgs(["a2a", "peers", "--stream-json"]).error).toBe(
+			"Unknown option: --stream-json",
+		);
+	});
+
+	it("parses sessions list, search, and transfer commands", () => {
+		expect(parseArgs(["sessions", "list", "--json"])).toMatchObject({
+			command: "sessions",
+			subcommand: "list",
+			execJson: true,
+			messages: [],
+		});
+		expect(
+			parseArgs(["sessions", "search", "release", "verification"]),
+		).toMatchObject({
+			command: "sessions",
+			subcommand: "search",
+			messages: ["release", "verification"],
+		});
+		expect(
+			parseArgs([
+				"sessions",
+				"export",
+				"session-123",
+				"./session.json",
+				"--format",
+				"json",
+				"--redact-secrets",
+			]),
+		).toMatchObject({
+			command: "sessions",
+			subcommand: "export",
+			messages: ["session-123", "./session.json"],
+			exportFormat: "json",
+			redactSecrets: true,
+		});
+		expect(parseArgs(["sessions", "import", "./session.jsonl"])).toMatchObject({
+			command: "sessions",
+			subcommand: "import",
+			messages: ["./session.jsonl"],
+		});
+	});
+
 	it("preserves remote command-group arguments for the remote handler", () => {
 		expect(
 			parseArgs([
@@ -81,6 +297,54 @@ describe("parseArgs", () => {
 			command: "remote",
 			subcommand: "start",
 			commandArgs: ["--workspace", "ws_123", "--repo", "evalops/foo", "--json"],
+			messages: [],
+		});
+	});
+
+	it("preserves a2a command-group arguments for the native peer handler", () => {
+		expect(
+			parseArgs([
+				"a2a",
+				"accept",
+				"maestro-pair-v1.payload.checksum",
+				"--name",
+				"mac-mini",
+				"--default",
+			]),
+		).toMatchObject({
+			command: "a2a",
+			commandArgs: [
+				"accept",
+				"maestro-pair-v1.payload.checksum",
+				"--name",
+				"mac-mini",
+				"--default",
+			],
+			messages: [],
+		});
+	});
+
+	it("preserves operating-plane command-group arguments for operator lookups", () => {
+		expect(
+			parseArgs([
+				"operating-plane",
+				"status",
+				"--thread-id",
+				"C123:1740000000.000100",
+				"--evidence-id",
+				"gateway:req_123",
+				"--json",
+			]),
+		).toMatchObject({
+			command: "operating-plane",
+			commandArgs: [
+				"status",
+				"--thread-id",
+				"C123:1740000000.000100",
+				"--evidence-id",
+				"gateway:req_123",
+				"--json",
+			],
 			messages: [],
 		});
 	});
@@ -110,6 +374,14 @@ describe("parseArgs", () => {
 		});
 	});
 
+	it("preserves update command arguments for the update handler", () => {
+		expect(parseArgs(["update", "--check", "--json"])).toMatchObject({
+			command: "update",
+			commandArgs: ["--check", "--json"],
+			messages: [],
+		});
+	});
+
 	it("parses stats commands", () => {
 		expect(parseArgs(["stats"])).toMatchObject({
 			command: "stats",
@@ -121,6 +393,260 @@ describe("parseArgs", () => {
 		expect(parseArgs(["stats", "--session", "session-123"])).toMatchObject({
 			command: "stats",
 			session: "session-123",
+		});
+	});
+
+	it("parses context explain commands", () => {
+		expect(parseArgs(["context", "explain", "/repo", "--json"])).toMatchObject({
+			command: "context",
+			subcommand: "explain",
+			messages: ["/repo"],
+			execJson: true,
+		});
+	});
+
+	it("parses context path commands without requiring explain", () => {
+		const parsed = parseArgs(["context", "/repo", "--json"]);
+		expect(parsed).toMatchObject({
+			command: "context",
+			messages: ["/repo"],
+			execJson: true,
+		});
+		expect(parsed.subcommand).toBeUndefined();
+	});
+
+	it("parses context diff commands and live MCP discovery", () => {
+		expect(
+			parseArgs([
+				"context",
+				"diff",
+				"/before",
+				"/after",
+				"--json",
+				"--live-mcp",
+			]),
+		).toMatchObject({
+			command: "context",
+			subcommand: "diff",
+			messages: ["/before", "/after"],
+			execJson: true,
+			contextLiveMcp: true,
+		});
+	});
+
+	it("only treats run as a command for known run subcommands", () => {
+		expect(
+			parseArgs(["run", "inspect", "session-123", "--json"]),
+		).toMatchObject({
+			command: "run",
+			subcommand: "inspect",
+			messages: ["session-123"],
+			execJson: true,
+		});
+		expect(parseArgs(["run", "tests", "and", "fix", "failures"])).toMatchObject(
+			{
+				messages: ["run", "tests", "and", "fix", "failures"],
+			},
+		);
+		expect(
+			parseArgs(["run", "tests", "and", "fix", "failures"]).command,
+		).toBeUndefined();
+		expect(parseArgs(["please", "run", "inspect", "my", "logs"])).toMatchObject(
+			{
+				messages: ["please", "run", "inspect", "my", "logs"],
+			},
+		);
+		expect(
+			parseArgs(["please", "run", "inspect", "my", "logs"]).command,
+		).toBeUndefined();
+		expect(
+			parseArgs(["run", "--json", "inspect", "session-123"]),
+		).toMatchObject({
+			command: "run",
+			subcommand: "inspect",
+			messages: ["session-123"],
+			execJson: true,
+		});
+		for (const subcommand of ["ledger", "replay", "promote"] as const) {
+			expect(
+				parseArgs(["run", "--json", subcommand, "session-123"]),
+			).toMatchObject({
+				command: "run",
+				subcommand,
+				messages: ["session-123"],
+				execJson: true,
+			});
+		}
+		expect(
+			parseArgs([
+				"run",
+				"--profile",
+				"local",
+				"--json",
+				"inspect",
+				"session-123",
+			]),
+		).toMatchObject({
+			command: "run",
+			subcommand: "inspect",
+			profile: "local",
+			messages: ["session-123"],
+			execJson: true,
+		});
+	});
+
+	it("parses public scenario replay commands", () => {
+		expect(
+			parseArgs([
+				"scenario",
+				"run",
+				"evals/internal/complex-task-gauntlet.json",
+			]),
+		).toMatchObject({
+			command: "scenario",
+			subcommand: "run",
+			messages: ["evals/internal/complex-task-gauntlet.json"],
+		});
+		expect(parseArgs(["--replay", "scenario.json"])).toMatchObject({
+			replayScenarioPath: "scenario.json",
+			messages: [],
+		});
+		expect(parseArgs(["--record-scenario", "recorded.json"])).toMatchObject({
+			recordScenarioPath: "recorded.json",
+			messages: [],
+		});
+	});
+
+	it("parses exec golden-path flags without swallowing prompt text", () => {
+		const parsed = parseArgs([
+			"exec",
+			"--json",
+			"--full-auto",
+			"--sandbox",
+			"workspace-write",
+			"--tools",
+			"read, write,,shell",
+			"--output-schema",
+			"schema.json",
+			"--output-last-message",
+			"out.txt",
+			"--replay",
+			"replay.json",
+			"Summarize",
+			"the file",
+		]);
+
+		expect(parsed).toMatchObject({
+			command: "exec",
+			execJson: true,
+			execFullAuto: true,
+			sandbox: "workspace-write",
+			tools: ["read", "write", "shell"],
+			execOutputSchema: "schema.json",
+			execOutputLast: "out.txt",
+			replayScenarioPath: "replay.json",
+			messages: ["Summarize", "the file"],
+		});
+		expect(parsed.error).toBeUndefined();
+	});
+
+	it("parses exec resume selectors separately from global resume", () => {
+		expect(parseArgs(["exec", "--resume", "session-123"])).toMatchObject({
+			command: "exec",
+			execResumeId: "session-123",
+			messages: [],
+		});
+		expect(parseArgs(["exec", "--resume"])).toMatchObject({
+			command: "exec",
+			execUseLast: true,
+			messages: [],
+		});
+		expect(parseArgs(["exec", "--last"])).toMatchObject({
+			command: "exec",
+			execUseLast: true,
+			messages: [],
+		});
+		expect(parseArgs(["--resume", "config", "show"])).toMatchObject({
+			resume: true,
+			command: "config",
+			subcommand: "show",
+		});
+	});
+
+	it("keeps --junit out of prompt messages", () => {
+		expect(
+			parseArgs(["--junit", "./tmp/scenario.xml", "fix", "the", "bug"]),
+		).toMatchObject({
+			junitPath: "./tmp/scenario.xml",
+			messages: ["fix", "the", "bug"],
+		});
+	});
+
+	it("parses evalops auth commands", () => {
+		expect(parseArgs(["evalops", "login"])).toMatchObject({
+			command: "evalops",
+			subcommand: "login",
+			commandArgs: [],
+			messages: [],
+		});
+		expect(parseArgs(["evalops", "status"])).toMatchObject({
+			command: "evalops",
+			subcommand: "status",
+			commandArgs: [],
+			messages: [],
+		});
+	});
+
+	it("preserves codex login flags for the codex handler", () => {
+		expect(parseArgs(["codex", "login", "--device"])).toMatchObject({
+			command: "codex",
+			subcommand: "login",
+			commandArgs: ["--device"],
+			messages: [],
+		});
+		expect(parseArgs(["codex", "login", "--device-code"])).toMatchObject({
+			command: "codex",
+			subcommand: "login",
+			commandArgs: ["--device-code"],
+			messages: [],
+		});
+	});
+
+	it("preserves evalops init bootstrap arguments for the init handler", () => {
+		expect(
+			parseArgs([
+				"evalops",
+				"init",
+				"--mcp-url",
+				"https://app.evalops.dev",
+				"--rotate-key",
+			]),
+		).toMatchObject({
+			command: "evalops",
+			subcommand: "init",
+			commandArgs: ["--mcp-url", "https://app.evalops.dev", "--rotate-key"],
+			messages: [],
+		});
+	});
+
+	it("preserves maestro init bootstrap arguments for the init handler", () => {
+		expect(
+			parseArgs([
+				"init",
+				"--mcp-url",
+				"https://app.evalops.dev",
+				"--rotate-key",
+				"--json",
+			]),
+		).toMatchObject({
+			command: "init",
+			commandArgs: [
+				"--mcp-url",
+				"https://app.evalops.dev",
+				"--rotate-key",
+				"--json",
+			],
+			messages: [],
 		});
 	});
 });

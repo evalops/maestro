@@ -508,6 +508,11 @@ pub fn resolve_credentials_in_json(value: &serde_json::Value) -> serde_json::Val
         .resolve_in_json(value)
 }
 
+/// Vault credentials in a plain text value using the global store.
+pub fn vault_credentials_in_text(value: &str) -> String {
+    vault_credentials_in_string(value)
+}
+
 /// Vault credentials in a JSON value using the global store
 pub fn vault_credentials_in_json(value: &serde_json::Value) -> serde_json::Value {
     match value {

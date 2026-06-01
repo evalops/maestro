@@ -7,6 +7,7 @@
  * @module safety/suspicious-patterns
  */
 
+import { parseApplyPatchPaths } from "../tools/apply-patch-parser.js";
 import type { SequencePattern } from "./sequence-analyzer-types.js";
 import { containsSensitivePath, getToolTags } from "./tool-categorization.js";
 
@@ -96,18 +97,25 @@ export const SUSPICIOUS_PATTERNS: SequencePattern[] = [
 				"C:\\Program Files",
 			];
 
-			const targetPath = (currentArgs.path ||
-				currentArgs.file_path ||
-				currentArgs.target) as string | undefined;
+			const targetPaths =
+				currentTool.toLowerCase() === "apply_patch" &&
+				typeof currentArgs.patch === "string"
+					? parseApplyPatchPaths(currentArgs.patch)
+					: [
+							(currentArgs.path ||
+								currentArgs.file_path ||
+								currentArgs.target) as string | undefined,
+						].filter((path): path is string => typeof path === "string");
 
 			if (
-				targetPath &&
 				(currentTags.has("write") || currentTags.has("delete")) &&
-				systemPaths.some((sp) => targetPath.startsWith(sp))
+				targetPaths.some((targetPath) =>
+					systemPaths.some((sp) => targetPath.startsWith(sp)),
+				)
 			) {
 				return {
 					matched: true,
-					reason: `Modification of system path detected: ${targetPath}`,
+					reason: `Modification of system path detected: ${targetPaths.join(", ")}`,
 				};
 			}
 

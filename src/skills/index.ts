@@ -35,13 +35,68 @@ export {
 	type SkillDefinition,
 	type SkillResource,
 	findSkill,
+	findSkillMd,
 	formatSkillForInjection,
 	formatSkillListItem,
 	formatSkillMetadataOnly,
 	formatSkillsForSystemPrompt,
 	getSkillsSummary,
 	loadSkills,
+	parseFrontmatter,
 	searchSkills,
+	skillToDict,
+	skillToJson,
+	skillsToPrompt,
+	stringArrayValue,
 } from "./loader.js";
 
 export { createSkillTool, invalidateSkillCache } from "./tool.js";
+export {
+	type SkillRuntimeActivation,
+	type SkillRuntimeActivationOptions,
+	type SkillRuntimeMcpActivation,
+	type SkillRuntimeMcpServer,
+	type SkillRuntimeResource,
+	type SkillRuntimeResourceDirectories,
+	type SkillRuntimeToolboxActivation,
+	type SkillRuntimeToolboxEntry,
+	buildSkillRuntimeActivation,
+} from "./runtime-activation.js";
+export {
+	type SkillLintIssue,
+	type SkillLintResult,
+	type SkillScaffoldOptions,
+	SKILL_BODY_MAX_CHARS,
+	SKILL_BODY_MAX_LINES,
+	formatSkillLintText,
+	hasSkillLintErrors,
+	isWindowsRunnableToolboxEntry,
+	lintSkillDirectory,
+	lintSkillPaths,
+	scaffoldSkill,
+	shouldUseShellForToolboxDescribe,
+	toolboxDescribeSpawnCommand,
+} from "./linter.js";
+
+export {
+	type SkillEvalAssertion,
+	type SkillEvalCase,
+	type SkillEvalOutcome,
+	type SkillEvalReport,
+	type SkillEvalResult,
+	evaluateSkillPackages,
+	formatSkillEvalText,
+	hasSkillEvalFailures,
+} from "./eval-harness.js";
+export {
+	MAESTRO_PACKAGE_KEYWORD,
+	MAESTRO_SKILL_PACKAGE_KEYWORD,
+	SKILL_PACKAGE_CONTRACT_SCHEMA,
+	type BuildSkillPackagePublishContractOptions,
+	type SkillPackageContractIssue,
+	type SkillPackageInstallCommandSet,
+	type SkillPackagePublishContract,
+	buildSkillPackagePublishContract,
+	formatSkillPackageInstallSource,
+	formatSkillPackagePublishContract,
+} from "./package-contract.js";

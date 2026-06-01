@@ -4,6 +4,7 @@ import {
 	type ConfiguredPackageSpec,
 	loadConfiguredPackageSpecs,
 } from "../config/toml-config.js";
+import { MISSING_MAESTRO_PACKAGE_KEYWORD_MESSAGE } from "./constants.js";
 import { discoverPackage } from "./discovery.js";
 import {
 	loadPackage,
@@ -70,7 +71,7 @@ export function collectPackageValidationIssues(
 
 	const issues: string[] = [];
 	if (!inspected.discovered.isMaestroPackage) {
-		issues.push('Missing "maestro-package" keyword.');
+		issues.push(MISSING_MAESTRO_PACKAGE_KEYWORD_MESSAGE);
 	}
 
 	for (const error of inspected.discovered.errors ?? []) {

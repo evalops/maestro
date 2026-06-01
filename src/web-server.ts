@@ -1,5 +1,5 @@
 /**
- * Web server for Composer - HTTP/SSE API used by the web UI
+ * Web server for Maestro - HTTP/SSE API used by the web UI
  */
 
 import { randomBytes, randomUUID } from "node:crypto";
@@ -30,13 +30,16 @@ import {
 import { Agent, ProviderTransport } from "./agent/index.js";
 import type { ToolRetryService } from "./agent/tool-retry.js";
 import type { ClientToolExecutionService } from "./agent/transport.js";
+import type { PlatformToolExecutionBridge } from "./agent/transport/tool-execution-bridge.js";
 import type { AgentTool, ThinkingLevel } from "./agent/types.js";
 import {
 	disposeCheckpointService,
 	initCheckpointService,
 } from "./checkpoints/index.js";
+import { detectRuntimeConstraintContext } from "./cli/system-prompt.js";
 import { composerManager } from "./composers/index.js";
 import { resolveDefaultApprovalMode } from "./config/default-approval-mode.js";
+import { loadUnifiedContextManifest } from "./context/manifest.js";
 import { initLifecycle, shutdownLifecycle } from "./lifecycle.js";
 import { loadEnv } from "./load-env.js";
 import { bootstrapLsp } from "./lsp/bootstrap.js";
@@ -121,11 +124,13 @@ const getDbModule = (() => {
 		return promise;
 	};
 })();
+import { captureSentryException, flushSentry, initSentry } from "./sentry.js";
 import { WebActionApprovalService } from "./server/approval-service.js";
 import { checkApiAuth, getAuthSubject } from "./server/authz.js";
 import { startAutomationScheduler } from "./server/automations/scheduler.js";
 import { clientToolService } from "./server/client-tools-service.js";
 import { handleChatWebSocket } from "./server/handlers/chat-ws.js";
+import { platformA2APushAuthBoundaryExemptPaths } from "./server/handlers/platform-a2a-push.js";
 import { handleRuntimeAppServerWebSocket } from "./server/handlers/runtime-app-server-ws.js";
 import {
 	sessionIdPattern,
@@ -178,23 +183,26 @@ export { SseSession } from "./server/sse-session.js";
 
 loadEnv();
 void initOpenTelemetry("composer-web-server");
+initSentry("maestro-web-server");
 
 // Global crash handlers
 function registerCrashHandlers() {
 	process.on("uncaughtException", (error) => {
 		logError(error);
+		captureSentryException(error);
 		logger.error("FATAL: Uncaught Exception. Exiting...");
-		process.exit(1);
+		void flushSentry().finally(() => process.exit(1));
 	});
 
 	process.on("unhandledRejection", (reason) => {
-		logError(
+		const error =
 			reason instanceof Error
 				? reason
-				: new Error(`Unhandled Rejection: ${String(reason)}`),
-		);
+				: new Error(`Unhandled Rejection: ${String(reason)}`);
+		logError(error);
+		captureSentryException(error);
 		logger.error("FATAL: Unhandled Rejection. Exiting...");
-		process.exit(1);
+		void flushSentry().finally(() => process.exit(1));
 	});
 }
 
@@ -215,11 +223,7 @@ async function validateRuntimeSessionAccess(
 
 function normalizeAuthMode(value?: string | null): AuthMode {
 	const normalized = value?.trim().toLowerCase();
-	if (
-		normalized === "auto" ||
-		normalized === "api-key" ||
-		normalized === "claude"
-	) {
+	if (normalized === "auto" || normalized === "api-key") {
 		return normalized;
 	}
 	return "auto";
@@ -247,6 +251,7 @@ const WEB_API_KEY = process.env.MAESTRO_WEB_API_KEY?.trim() || null;
 const requireKeyEnv = process.env.MAESTRO_WEB_REQUIRE_KEY;
 const requireRedisEnv = process.env.MAESTRO_WEB_REQUIRE_REDIS;
 const CSRF_TOKEN = process.env.MAESTRO_WEB_CSRF_TOKEN?.trim() || null;
+const AUTH_BOUNDARY_EXEMPT_PATHS = platformA2APushAuthBoundaryExemptPaths();
 const REQUIRE_CSRF =
 	(PROD_PROFILE && process.env.MAESTRO_WEB_REQUIRE_CSRF !== "0") ||
 	Boolean(process.env.MAESTRO_WEB_CSRF_TOKEN);
@@ -342,8 +347,8 @@ const authResolver = createAuthResolver({
 	mode: AUTH_MODE,
 });
 
-const DEFAULT_PROVIDER = "anthropic";
-const DEFAULT_MODEL_ID = "claude-sonnet-4-5";
+const DEFAULT_PROVIDER = "openai-codex";
+const DEFAULT_MODEL_ID = "gpt-5.5";
 
 /**
  * Process-local selection store (keeps last chosen model for convenience only).
@@ -382,9 +387,11 @@ function logMissingCredentialHints(provider: string): void {
 		);
 	}
 	if (provider === "anthropic") {
-		hints.push("Run `maestro anthropic login` to provision OAuth credentials.");
+		hints.push("Set ANTHROPIC_API_KEY to use Anthropic models.");
 	} else if (provider === "openai") {
 		hints.push("Set OPENAI_API_KEY or run `maestro openai login`.");
+	} else if (provider === "openai-codex") {
+		hints.push("Run `maestro codex login` to sign in with ChatGPT.");
 	}
 	logger.warn(hints.join(" "), { provider });
 }
@@ -409,7 +416,9 @@ async function getRegisteredModel(input: string | null | undefined) {
 		DEFAULT_MODEL_ID,
 	);
 	const registeredModel = getRegisteredModelOrThrow(selection);
-	await ensureCredential(registeredModel.provider);
+	if (registeredModel.api !== "openai-codex-app-server") {
+		await ensureCredential(registeredModel.provider);
+	}
 	modelSelectionStore.set(registeredModel);
 	return registeredModel;
 }
@@ -436,6 +445,7 @@ async function createAgent(
 		approvalService?: ActionApprovalService;
 		clientToolService?: ClientToolExecutionService;
 		toolRetryService?: ToolRetryService;
+		platformToolExecutionBridge?: PlatformToolExecutionBridge | false;
 	},
 ): Promise<Agent> {
 	const cwd = options?.cwd ?? process.cwd();
@@ -488,11 +498,23 @@ async function createAgent(
 			(options?.enableClientTools || options?.useClientAskUser
 				? clientToolService
 				: undefined),
+		platformToolExecutionBridge: options?.platformToolExecutionBridge,
 		sessionTokenCounter,
 		auditLogger,
 	});
 
-	const { systemPrompt, promptMetadata } = await resolveMaestroSystemPrompt();
+	const runtimeConstraints = detectRuntimeConstraintContext({
+		cwd,
+		sandboxMode: process.env.MAESTRO_SANDBOX_MODE ?? null,
+	});
+	const { systemPrompt, promptMetadata, promptContextManifest } =
+		await resolveMaestroSystemPrompt({
+			cwd,
+			runtimeConstraints,
+		});
+	const unifiedContextManifest = loadUnifiedContextManifest(cwd, {
+		projectDocs: promptContextManifest,
+	});
 
 	// Only include IDE client tools when a compatible client is connected.
 	// Without a connected client, these tools will hang waiting for responses.
@@ -522,6 +544,8 @@ async function createAgent(
 		initialState: {
 			systemPrompt,
 			promptMetadata,
+			promptContextManifest,
+			unifiedContextManifest,
 			model: registeredModel,
 			thinkingLevel,
 			tools,
@@ -726,8 +750,12 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
 				TRUST_PROXY_HOPS,
 			),
 			createCorsMiddleware(CORS_HEADERS),
-			createAuthMiddleware(WEB_API_KEY, CORS_HEADERS, REQUIRE_WEB_API_KEY),
-			createCsrfMiddleware(CSRF_TOKEN, CORS_HEADERS, REQUIRE_CSRF),
+			createAuthMiddleware(WEB_API_KEY, CORS_HEADERS, REQUIRE_WEB_API_KEY, {
+				exemptPaths: AUTH_BOUNDARY_EXEMPT_PATHS,
+			}),
+			createCsrfMiddleware(CSRF_TOKEN, CORS_HEADERS, REQUIRE_CSRF, {
+				exemptPaths: AUTH_BOUNDARY_EXEMPT_PATHS,
+			}),
 			createWorkspaceConfigMiddleware(CORS_HEADERS),
 			createRouterMiddleware(router),
 		]);

@@ -27,7 +27,7 @@ const { MockToolTransport } = helpersModule;
 
 const tempDir = mkdtempSync(join(projectRoot, "evals/search-read-"));
 const tempFile = join(tempDir, "note.txt");
-writeFileSync(tempFile, "Composer eval scenario\nAnother line\nTODO testing");
+writeFileSync(tempFile, "Maestro eval scenario\nAnother line\nTODO testing");
 
 const mockModel = {
 	id: "mock-model",
@@ -42,13 +42,14 @@ const mockModel = {
 };
 
 let lineNumber = 1;
-let snippet = "";
+let readContent = "";
+let foundSearchMatch = false;
 const readOperation = {
 	name: "read",
 	args: { path: tempFile, offset: lineNumber },
 	onResult: (result) => {
 		const text = result.content.find((item) => item.type === "text");
-		snippet = text?.text?.split("\n").find((line) => line.trim()) ?? "";
+		readContent = text?.text ?? "";
 	},
 };
 const transport = new MockToolTransport(
@@ -61,13 +62,17 @@ const transport = new MockToolTransport(
 					.find((item) => item.type === "text")?.text?.split("\n")
 					.find((line) => line.includes(tempFile));
 				const number = match?.split(":")[1];
-				lineNumber = number ? Number(number) : 1;
+				const parsedLineNumber = number ? Number(number) : NaN;
+				foundSearchMatch =
+					match !== undefined &&
+					Number.isFinite(parsedLineNumber) && parsedLineNumber > 0;
+				lineNumber = foundSearchMatch ? parsedLineNumber : 1;
 				readOperation.args.offset = lineNumber;
 			},
 		},
 		readOperation,
 	],
-	() => `Search and read: ${snippet.trim()}`,
+	() => `Search and read: ${readContent.includes("TODO testing") ? "ok" : readContent.trim()}`,
 );
 
 const agent = new Agent({
@@ -89,4 +94,14 @@ if (!finalAssistant) {
 }
 
 console.log(finalAssistant.content.find((c) => c.type === "text")?.text ?? "");
+if (!foundSearchMatch) {
+	console.error("mock search/read flow did not find the expected search match");
+	rmSync(tempDir, { recursive: true, force: true });
+	process.exit(1);
+}
+if (!readContent.includes("TODO testing")) {
+	console.error("mock search/read flow did not read the expected search match");
+	rmSync(tempDir, { recursive: true, force: true });
+	process.exit(1);
+}
 rmSync(tempDir, { recursive: true, force: true });

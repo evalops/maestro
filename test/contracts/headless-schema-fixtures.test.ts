@@ -11,6 +11,7 @@ describe("headless schema fixtures", () => {
 			),
 		) as {
 			protocolVersion: string;
+			executorTypes: string[];
 			fromAgentMessageTypes: string[];
 			serverRequestTypes: string[];
 		};
@@ -22,6 +23,7 @@ describe("headless schema fixtures", () => {
 		) as { fromAgentSchemas: Record<string, unknown> };
 
 		expect(protocol.protocolVersion).toBe(headlessProtocolVersion);
+		expect(protocol.executorTypes).toEqual(["live", "replay"]);
 		expect(protocol.fromAgentMessageTypes).toContain("server_request");
 		expect(protocol.serverRequestTypes).toEqual([
 			"approval",

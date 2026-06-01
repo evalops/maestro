@@ -79,6 +79,15 @@ describe("buildMcpServerViewModel", () => {
 				scope: "project",
 				transport: "stdio",
 				tools: [{ name: "read_file", description: "Read a file" }],
+				toolCapabilitySummary: {
+					total: 1,
+					byDomain: { file: 1 },
+					byRiskClass: { observe: 1 },
+					byToolLane: { file_read: 1 },
+					mutating: { desktop: 0, files: 0 },
+					requiresReceipt: 0,
+					rawSecretPossible: 0,
+				},
 				resources: ["repo://root"],
 				prompts: ["summarize"],
 				promptDetails: [
@@ -113,6 +122,7 @@ describe("buildMcpServerViewModel", () => {
 			{ name: "read_file", description: "Read a file" },
 		]);
 		expect(viewModel.toolDetailsLabel).toBeNull();
+		expect(viewModel.capabilitySummaryLabel).toBe("Capabilities: 1 file");
 		expect(viewModel.promptDetails).toEqual([
 			{
 				name: "summarize",

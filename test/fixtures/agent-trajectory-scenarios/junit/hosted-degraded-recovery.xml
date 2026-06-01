@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="hosted-degraded-recovery" tests="5" failures="0" warnings="0">
+	<testcase classname="hosted-degraded-recovery" name="approval-wait-present"></testcase>
+	<testcase classname="hosted-degraded-recovery" name="recovery-score-passed"></testcase>
+	<testcase classname="hosted-degraded-recovery" name="approval-before-result-score-passed"></testcase>
+	<testcase classname="hosted-degraded-recovery" name="hosted-efficiency-budget"></testcase>
+	<testcase classname="hosted-degraded-recovery" name="degraded-labels-present"></testcase>
+</testsuite>
