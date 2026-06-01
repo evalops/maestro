@@ -1301,6 +1301,9 @@ async function handleMcpProjectApprovalCommand(
 			authPresets: currentConfig.authPresets,
 			decision,
 		});
+		if (decision === "denied") {
+			await mcpManager.reconnect(parsed.name);
+		}
 		await reloadMcpManager(projectRoot);
 
 		renderCtx.addContent(

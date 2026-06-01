@@ -1299,4 +1299,66 @@ describe("handleMcpStatus", () => {
 			projectApproval: "approved",
 		});
 	});
+
+	it("disconnects an approved generated plugin server when project approval is denied", async () => {
+		vi.spyOn(mcp, "loadMcpConfig").mockReturnValue({
+			projectRoot: process.cwd(),
+			servers: [
+				{
+					name: "fathom-cua",
+					scope: "plugin",
+					requiresProjectApproval: true,
+					transport: "stdio",
+					command: "fathom-client",
+				},
+			],
+			authPresets: [],
+		});
+		vi.spyOn(mcp, "setProjectMcpServerApprovalDecision").mockReturnValue(
+			undefined,
+		);
+		const reconnect = vi
+			.spyOn(mcp.mcpManager, "reconnect")
+			.mockResolvedValue(false);
+		vi.spyOn(mcp.mcpManager, "configure").mockResolvedValue(undefined);
+		vi.spyOn(mcp.mcpManager, "getStatus").mockReturnValue({
+			authPresets: [],
+			servers: [
+				{
+					name: "fathom-cua",
+					connected: false,
+					scope: "plugin",
+					transport: "stdio",
+					tools: [],
+					resources: [],
+					prompts: [],
+					projectApproval: "denied",
+				},
+			],
+		});
+
+		const req = makeReq("/api/mcp?action=set-project-approval", {
+			method: "POST",
+			body: {
+				name: "fathom-cua",
+				decision: "denied",
+			},
+		});
+		const res = makeRes();
+
+		await handleMcpStatus(
+			req as unknown as IncomingMessage,
+			res as unknown as ServerResponse,
+			corsHeaders,
+		);
+
+		expect(reconnect).toHaveBeenCalledWith("fathom-cua");
+		expect(res.statusCode).toBe(200);
+		expect(JSON.parse(res.body)).toEqual({
+			name: "fathom-cua",
+			scope: "plugin",
+			decision: "denied",
+			projectApproval: "denied",
+		});
+	});
 });

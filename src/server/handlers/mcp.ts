@@ -722,6 +722,9 @@ async function handleSetProjectApproval(
 		authPresets: config.authPresets,
 		decision: body.decision,
 	});
+	if (body.decision === "denied") {
+		await mcpManager.reconnect(body.name);
+	}
 	await reloadMcpManager(projectRoot);
 	const activeServer = mcpManager
 		.getStatus()
