@@ -40,7 +40,7 @@ pub const HOSTED_RUNNER_DRAIN_PROTOCOL_VERSION: &str = "evalops.remote-runner.dr
 pub const HOSTED_RUNNER_SNAPSHOT_MANIFEST_VERSION: &str =
     "evalops.remote-runner.snapshot-manifest.v1";
 
-const DEFAULT_LISTEN_HOST: &str = "0.0.0.0";
+const DEFAULT_LISTEN_HOST: &str = "127.0.0.1";
 const DEFAULT_LISTEN_PORT: u16 = 8080;
 const DEFAULT_HEARTBEAT_INTERVAL_MS: u64 = 15_000;
 const CONNECTION_IDLE_MS: i64 = (DEFAULT_HEARTBEAT_INTERVAL_MS as i64) * 3;
@@ -57,6 +57,7 @@ pub struct HostedRunnerConfig {
     pub agent_run_id: Option<String>,
     pub maestro_session_id: Option<String>,
     pub attach_audience: Option<String>,
+    pub auth_token: Option<String>,
 }
 
 impl HostedRunnerConfig {
@@ -91,6 +92,12 @@ impl HostedRunnerConfig {
             .or_else(|| env_value(env, "MAESTRO_HOSTED_RUNNER_HOST"))
             .unwrap_or_else(|| DEFAULT_LISTEN_HOST.to_string());
         let bind_addr = resolve_bind_addr(&host, port)?;
+        let auth_token = env_value(env, "MAESTRO_HOSTED_RUNNER_AUTH_TOKEN");
+        if !bind_addr.ip().is_loopback() && auth_token.is_none() {
+            return Err(HostedRunnerConfigError::new(
+                "maestro hosted-runner requires MAESTRO_HOSTED_RUNNER_AUTH_TOKEN when binding to non-loopback interfaces",
+            ));
+        }
         let snapshot_root = resolve_snapshot_root(
             first_env(
                 env,
@@ -122,6 +129,7 @@ impl HostedRunnerConfig {
             agent_run_id: env_value(env, "MAESTRO_AGENT_RUN_ID"),
             maestro_session_id: env_value(env, "MAESTRO_SESSION_ID"),
             attach_audience: env_value(env, "MAESTRO_ATTACH_AUDIENCE"),
+            auth_token,
         })
     }
 
@@ -143,6 +151,7 @@ impl HostedRunnerConfig {
             agent_run_id: None,
             maestro_session_id: None,
             attach_audience: None,
+            auth_token: None,
         })
     }
 
@@ -1302,6 +1311,9 @@ enum ResponseBody {
 }
 
 async fn route_request(request: HttpRequest, shared: SharedRunner) -> HostedResult<ResponseBody> {
+    if request.path == HOSTED_RUNNER_DRAIN_PATH || request.path.starts_with("/api/headless/") {
+        require_auth_header(&request.headers, shared.config.auth_token.as_deref())?;
+    }
     match (request.method.as_str(), request.path.as_str()) {
         ("GET", HOSTED_RUNNER_IDENTITY_PATH) => json_response(200, shared.identity()),
         ("GET", "/readyz" | "/healthz") => {
@@ -1373,6 +1385,32 @@ async fn route_request(request: HttpRequest, shared: SharedRunner) -> HostedResu
         }
         _ => Err(HostedError::new(404, "not_found", "route not found")),
     }
+}
+
+fn require_auth_header(
+    headers: &HashMap<String, String>,
+    expected_token: Option<&str>,
+) -> HostedResult<()> {
+    let Some(expected_token) = expected_token else {
+        return Ok(());
+    };
+    let token = headers
+        .get("authorization")
+        .and_then(|value| value.strip_prefix("Bearer "))
+        .map(str::trim)
+        .or_else(|| {
+            headers
+                .get("x-maestro-hosted-runner-token")
+                .map(|value| value.trim())
+        });
+    if token == Some(expected_token) {
+        return Ok(());
+    }
+    Err(HostedError::new(
+        401,
+        "unauthorized",
+        "missing or invalid hosted runner auth token",
+    ))
 }
 
 async fn handle_drain(shared: SharedRunner, input: DrainRequest) -> HostedResult<ResponseBody> {
@@ -2755,6 +2793,7 @@ mod tests {
             agent_run_id: Some("run_test".to_string()),
             maestro_session_id: Some("sess_test".to_string()),
             attach_audience: None,
+            auth_token: None,
         }
     }
 
@@ -2840,6 +2879,30 @@ mod tests {
             )
         );
         assert_eq!(config.workspace_id.as_deref(), Some("workspace_1"));
+        assert!(config.auth_token.is_none());
+    }
+
+    #[test]
+    fn rejects_non_loopback_bind_without_auth_token() {
+        let workspace = tempdir().expect("workspace");
+        let mut env = HashMap::new();
+        env.insert(
+            "MAESTRO_RUNNER_SESSION_ID".to_string(),
+            "mrs_123".to_string(),
+        );
+        env.insert(
+            "MAESTRO_WORKSPACE_ROOT".to_string(),
+            workspace.path().display().to_string(),
+        );
+        env.insert(
+            "MAESTRO_HOSTED_RUNNER_LISTEN".to_string(),
+            "0.0.0.0:9090".to_string(),
+        );
+
+        let error = HostedRunnerConfig::from_env_map(&env).expect_err("expected config error");
+        assert!(error
+            .to_string()
+            .contains("MAESTRO_HOSTED_RUNNER_AUTH_TOKEN"));
     }
 
     #[test]
@@ -2925,6 +2988,35 @@ mod tests {
             .await
             .expect("attach response");
         assert_eq!(attach.status(), StatusCode::SERVICE_UNAVAILABLE);
+        handle.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn headless_routes_require_auth_token_when_configured() {
+        let workspace = tempdir().expect("workspace");
+        let mut config = test_config(workspace.path().to_path_buf());
+        config.auth_token = Some("secret-token".to_string());
+        let handle = start_hosted_runner(config)
+            .await
+            .expect("start hosted runner");
+        let client = reqwest::Client::new();
+
+        let unauthorized = client
+            .post(format!("{}/api/headless/connections", handle.base_url()))
+            .json(&json!({"sessionId": "sess_test", "role": "controller"}))
+            .send()
+            .await
+            .expect("unauthorized response");
+        assert_eq!(unauthorized.status(), StatusCode::UNAUTHORIZED);
+
+        let authorized = client
+            .post(format!("{}/api/headless/connections", handle.base_url()))
+            .header("authorization", "Bearer secret-token")
+            .json(&json!({"sessionId": "sess_test", "role": "controller"}))
+            .send()
+            .await
+            .expect("authorized response");
+        assert_eq!(authorized.status(), StatusCode::OK);
         handle.shutdown().await;
     }
 
