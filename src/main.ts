@@ -128,7 +128,7 @@ import { getPackageVersion } from "./package-metadata.js";
 import { resolveMaestroSystemPrompt } from "./prompts/system-prompt.js";
 import type { AuthMode } from "./providers/auth.js";
 import { configureSafeMode } from "./safety/safe-mode.js";
-import { SessionManager } from "./session/manager.js";
+import type { SessionManager } from "./session/manager.js";
 import { beaconTimeoutMs } from "./telemetry/beacon.js";
 import { recordStagedRolloutSurfaceUsageLazy } from "./telemetry/staged-rollout-lazy.js";
 import type { UpdateCheckResult } from "./update/check.js";
@@ -1371,6 +1371,7 @@ export async function main(args: string[]) {
 	// - Message persistence in JSONL format
 	// - Session resume and continuation
 	// - Model/thinking level tracking across restarts
+	const { SessionManager } = await import("./session/manager.js");
 	const sessionManager = new SessionManager(
 		parsed.continue && !parsed.resume, // continueSession: auto-load most recent
 		parsed.session, // customSessionPath: explicit session file
