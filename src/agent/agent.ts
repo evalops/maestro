@@ -2,7 +2,7 @@
  * Agent Core - Event-Driven LLM Interaction Engine
  *
  * This module provides the central Agent class that orchestrates all LLM
- * communication, tool execution, and state management for the Composer CLI.
+ * communication, tool execution, and state management for the Maestro CLI.
  * It implements an event-driven architecture that enables real-time streaming,
  * concurrent tool execution, and extensible transport layers.
  *
@@ -574,7 +574,7 @@ export interface AgentOptions {
 	) => Message[] | Promise<Message[]>;
 	/** Optional message preprocessor executed immediately before provider invocation */
 	preprocessMessages?: PreprocessMessagesFn;
-	/** Disable Composer's built-in preprocessing (not recommended) */
+	/** Disable Maestro's built-in preprocessing (not recommended) */
 	disableDefaultPreprocessMessages?: boolean;
 	/** Optional context sources for environment injection */
 	contextSources?: AgentContextSource[];

@@ -1,7 +1,7 @@
 //! Safety Hook WASM Plugin
 //!
 //! This is an example WASM plugin that blocks dangerous shell commands.
-//! It demonstrates the WASM hook plugin interface for Composer.
+//! It demonstrates the WASM hook plugin interface for Maestro.
 //!
 //! # Building
 //!

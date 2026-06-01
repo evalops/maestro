@@ -12,12 +12,14 @@ import {
 	getNpmCommand,
 	readInstalledPackageJson,
 	runBunxCliSmoke,
+	runBunRuntimeCliSmoke,
 	runInstalledCliSmoke,
 	runInstalledPackageAudit,
 	runNpxCliSmoke,
 } from "./install-smoke-utils.js";
 import { getPackageMetadata } from "./package-metadata.js";
 import { runPublishedReplayE2E } from "./smoke-published-replay-e2e.js";
+import { validatePublishedReplayEvidenceSet } from "./verify-published-replay-evidence.js";
 import {
 	getWorkspacePackages,
 	loadRootPackage,
@@ -93,7 +95,7 @@ const evidenceDir =
 		? ""
 		: process.env.MAESTRO_REGISTRY_SMOKE_EVIDENCE_DIR?.trim() ||
 			process.env.MAESTRO_PUBLISHED_REPLAY_EVIDENCE_DIR?.trim() ||
-			"");
+			"published-replay-evidence");
 
 function sleep(milliseconds) {
 	return new Promise((resolve) => setTimeout(resolve, milliseconds));
@@ -101,6 +103,11 @@ function sleep(milliseconds) {
 
 function shouldRunBunInstallSmoke() {
 	if (process.env.MAESTRO_SKIP_BUN_INSTALL_SMOKE === "1") {
+		if (process.env.MAESTRO_ALLOW_REGISTRY_BUN_INSTALL_SMOKE_SKIP !== "1") {
+			throw new Error(
+				`Bun registry install smoke is release-blocking for ${packageSpec}; set MAESTRO_ALLOW_REGISTRY_BUN_INSTALL_SMOKE_SKIP=1 only for non-release debugging.`,
+			);
+		}
 		console.log(`Skipping Bun install smoke for ${packageSpec}.`);
 		return false;
 	}
@@ -110,7 +117,7 @@ function shouldRunBunInstallSmoke() {
 
 function assertInstalledMetadata(installRoot, label) {
 	const installedPackage = readInstalledPackageJson(name, installRoot);
-	assertInstallablePackageMetadata(installedPackage, {
+	return assertInstallablePackageMetadata(installedPackage, {
 		label,
 		forbiddenWorkspaceNames,
 	});
@@ -132,6 +139,33 @@ function publishedReplayEvidencePath(label) {
 		);
 	}
 	return join(resolve(evidenceDir), `${label}-published-replay-evidence.json`);
+}
+
+function validatePublishedReplayEvidenceOutputs(installers) {
+	const selectedInstallers = installers.filter((installer) =>
+		publishedReplayEvidencePath(installer),
+	);
+	if (selectedInstallers.length === 0) {
+		return;
+	}
+
+	const options = evidenceDir
+		? {
+				evidenceDir: resolve(evidenceDir),
+				installers: selectedInstallers,
+			}
+		: {
+				evidenceFiles: selectedInstallers.map((installer) =>
+					publishedReplayEvidencePath(installer),
+				),
+				installers: selectedInstallers,
+			};
+	const summaries = validatePublishedReplayEvidenceSet(options);
+	console.log(
+		`Validated published replay evidence for ${summaries
+			.map((summary) => summary.label)
+			.join(", ")}.`,
+	);
 }
 
 async function waitForPackage() {
@@ -180,7 +214,10 @@ async function main() {
 			cwd: tempDir,
 			stdio: "inherit",
 		});
-		assertInstalledMetadata(tempDir, `${packageSpec} via npm`);
+		const installMetadata = assertInstalledMetadata(
+			tempDir,
+			`${packageSpec} via npm`,
+		);
 		runInstalledPackageAudit(tempDir, {
 			auditLevel: installAuditLevel,
 			label: packageSpec,
@@ -198,9 +235,12 @@ async function main() {
 		await runPublishedReplayE2E({
 			cliCommand,
 			evidencePath: publishedReplayEvidencePath("npm"),
+			installer: "npm",
+			installMetadata,
 			installRoot: tempDir,
 			packageSpec,
 		});
+		validatePublishedReplayEvidenceOutputs(["npm"]);
 
 		console.log(`Smoke-tested ${packageSpec} from npm.`);
 	} finally {
@@ -221,7 +261,10 @@ async function main() {
 			cwd: bunTempDir,
 			stdio: "inherit",
 		});
-		assertInstalledMetadata(bunTempDir, `${packageSpec} via Bun`);
+		const bunInstallMetadata = assertInstalledMetadata(
+			bunTempDir,
+			`${packageSpec} via Bun`,
+		);
 		runInstalledCliSmoke(bunTempDir, {
 			cliCommand,
 			expectedVersion: version,
@@ -232,12 +275,20 @@ async function main() {
 			expectedVersion: version,
 			label: "bunx registry CLI",
 		});
+		runBunRuntimeCliSmoke(bunTempDir, {
+			cliCommand,
+			expectedVersion: version,
+			label: "bunx --bun registry CLI",
+		});
 		await runPublishedReplayE2E({
 			cliCommand,
 			evidencePath: publishedReplayEvidencePath("bun"),
+			installer: "bun",
+			installMetadata: bunInstallMetadata,
 			installRoot: bunTempDir,
 			packageSpec,
 		});
+		validatePublishedReplayEvidenceOutputs(["npm", "bun"]);
 
 		console.log(`Smoke-tested ${packageSpec} from Bun.`);
 	} finally {

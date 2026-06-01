@@ -284,6 +284,7 @@ jobs:
     timeout-minutes: 30
     permissions:
       contents: read
+      id-token: write
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
@@ -312,27 +313,37 @@ jobs:
         run: node scripts/smoke-registry-install.js
 
       - name: Validate published replay evidence
+        run: node scripts/verify-published-replay-evidence.js --evidence-dir published-replay-evidence
+
+      - name: Generate version metadata
+        run: node scripts/create-version-json.js
+
+      - name: Authenticate to Google Cloud for release metadata
+        if: ${{ vars.MAESTRO_RELEASE_GCP_WORKLOAD_IDENTITY_PROVIDER != '' && vars.MAESTRO_RELEASE_GCP_SERVICE_ACCOUNT != '' }}
+        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
+        with:
+          workload_identity_provider: ${{ vars.MAESTRO_RELEASE_GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ vars.MAESTRO_RELEASE_GCP_SERVICE_ACCOUNT }}
+
+      - name: Setup Google Cloud SDK
+        if: ${{ vars.MAESTRO_RELEASE_GCP_WORKLOAD_IDENTITY_PROVIDER != '' && vars.MAESTRO_RELEASE_GCP_SERVICE_ACCOUNT != '' }}
+        uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db # v3.0.1
+
+      - name: Sync GCS version metadata
+        if: ${{ vars.MAESTRO_RELEASE_GCP_WORKLOAD_IDENTITY_PROVIDER != '' && vars.MAESTRO_RELEASE_GCP_SERVICE_ACCOUNT != '' }}
+        env:
+          MAESTRO_RELEASES_BUCKET: ${{ vars.MAESTRO_RELEASES_BUCKET || 'evalops-prod-maestro-releases' }}
+          MAESTRO_RELEASES_PREFIX: ${{ vars.MAESTRO_RELEASES_PREFIX || 'maestro' }}
         run: |
           set -euo pipefail
-          for evidence in \
-            published-replay-evidence/npm-published-replay-evidence.json \
-            published-replay-evidence/bun-published-replay-evidence.json; do
-            if [[ ! -f "$evidence" ]]; then
-              echo "::error::Missing published replay evidence: $evidence" >&2
-              exit 1
-            fi
-            jq -e '
-              .schemaVersion == "evalops.maestro.published-replay-evidence.v1"
-              and (.package.spec | type == "string")
-              and (.package.cliCommand | type == "string")
-              and .replay.provider == "scripted-replay"
-              and ([.modes[].mode] | sort) == ["json", "rpc", "text"]
-              and all(.modes[]; .status == "ok" and .provider == "scripted-replay")
-              and all(.modes[]; .tool.name == "read" and .tool.resultStatus == "success")
-              and all(.modes[]; .final.status == "ok")
-              and all(.modes[] | select(.mode == "text" or .mode == "json"); .session.jsonlFileCount > 0 and .session.bytes > 0 and .session.containsFinalText == true and .session.containsToolCallId == true and (.session.sha256 | type == "string" and length == 64))
-            ' "$evidence" >/dev/null
-          done
+          prefix="${MAESTRO_RELEASES_PREFIX#/}"
+          prefix="${prefix%/}"
+          target="gs://${MAESTRO_RELEASES_BUCKET%/}/${prefix}/version.json"
+          gcloud storage cp "$GITHUB_WORKSPACE/dist/version.json" "$target"
+          gcloud storage objects update "$target" \
+            --cache-control="public, max-age=60" \
+            --content-type="application/json"
+          echo "Synced Maestro version metadata to ${target}."
 
       - name: Upload published replay evidence
         if: ${{ always() && hashFiles('published-replay-evidence/*.json') != '' }}

@@ -20,8 +20,10 @@ function getTextOutput(result: AgentToolResult<unknown>): string {
 
 describe("parallel-ripgrep", () => {
 	let testDir: string;
+	let originalHome: string | undefined;
 
 	beforeEach(() => {
+		originalHome = process.env.HOME;
 		testDir = mkdtempSync(join(tmpdir(), "parallel-ripgrep-test-"));
 		// Create test files
 		writeFileSync(
@@ -59,6 +61,11 @@ function goodbye() {
 	});
 
 	afterEach(() => {
+		if (originalHome === undefined) {
+			delete process.env.HOME;
+		} else {
+			process.env.HOME = originalHome;
+		}
 		rmSync(testDir, { recursive: true, force: true });
 	});
 
@@ -212,6 +219,44 @@ function goodbye() {
 			const output = getTextOutput(result);
 			expect(output).toContain("match");
 		});
+
+		it("expands tilde in search paths", async () => {
+			process.env.HOME = testDir;
+			writeFileSync(join(testDir, "home-parallel.ts"), "const needle = true;");
+
+			const result = await parallelRipgrepTool.execute("prg-13-tilde", {
+				patterns: ["needle"],
+				paths: ["~/home-parallel.ts"],
+			});
+
+			expect(result.isError).toBeFalsy();
+			expect(getTextOutput(result)).toContain("needle");
+			expect(result.details?.commands.at(0)).toContain(
+				join(testDir, "home-parallel.ts"),
+			);
+		});
+
+		it("quotes shell-sensitive command details", async () => {
+			const spacedDir = join(testDir, "space dir");
+			mkdirSync(spacedDir);
+			writeFileSync(
+				join(spacedDir, "literal.ts"),
+				"const value = 'hello world';",
+			);
+
+			const result = await parallelRipgrepTool.execute("prg-13-quoted", {
+				patterns: ["hello world"],
+				paths: [spacedDir],
+				glob: "*.ts",
+				literal: true,
+			});
+
+			expect(result.isError).toBeFalsy();
+			const command = result.details?.commands.at(0);
+			expect(command).toContain("--glob '*.ts'");
+			expect(command).toContain("-- 'hello world'");
+			expect(command).toContain(`'${spacedDir}'`);
+		});
 	});
 
 	describe("hidden files and gitignore", () => {
@@ -273,14 +318,40 @@ function goodbye() {
 			).rejects.toThrow();
 		});
 
-		it("handles non-existent path", async () => {
-			// ripgrep throws for non-existent paths with exit code 2
-			await expect(
-				parallelRipgrepTool.execute("prg-19", {
-					patterns: ["hello"],
-					paths: ["/nonexistent/path/xyz"],
-				}),
-			).rejects.toThrow(/No such file or directory|IO error/);
+		it("marks non-existent paths as tool errors", async () => {
+			const result = await parallelRipgrepTool.execute("prg-19", {
+				patterns: ["hello"],
+				paths: ["/nonexistent/path/xyz"],
+			});
+
+			expect(result.isError).toBe(true);
+			expect(getTextOutput(result)).toContain("ripgrep failed");
+			expect(getTextOutput(result)).toMatch(
+				/No such file or directory|IO error/,
+			);
+			expect(result.details).toMatchObject({
+				matchCount: 0,
+				rangeCount: 0,
+				ranges: [],
+				truncated: false,
+			});
+		});
+
+		it("marks ripgrep startup failures as tool errors", async () => {
+			const result = await parallelRipgrepTool.execute("prg-20", {
+				patterns: ["hello"],
+				paths: ["."],
+				cwd: join(testDir, "missing-cwd"),
+			});
+
+			expect(result.isError).toBe(true);
+			expect(getTextOutput(result)).toContain("ripgrep failed");
+			expect(result.details).toMatchObject({
+				matchCount: 0,
+				rangeCount: 0,
+				ranges: [],
+				truncated: false,
+			});
 		});
 	});
 });

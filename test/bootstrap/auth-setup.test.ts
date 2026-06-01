@@ -67,6 +67,18 @@ describe("validateCodexFlags", () => {
 		);
 	});
 
+	it("throws on retired --auth claude mode", () => {
+		expect(() => validateCodexFlags(["--auth", "claude"])).toThrow(
+			/Anthropic OAuth auth mode is no longer supported/,
+		);
+	});
+
+	it("throws on retired --auth=claude mode", () => {
+		expect(() => validateCodexFlags(["--auth=claude"])).toThrow(
+			/Anthropic OAuth auth mode is no longer supported/,
+		);
+	});
+
 	it("does not throw for help command even with codex flags", () => {
 		expect(() =>
 			validateCodexFlags(["--codex-api-key", "key123"], "help"),
@@ -118,12 +130,14 @@ describe("createAuthSetup", () => {
 		expect(firstLine.plain).toContain("anthropic");
 	});
 
-	it("buildMissingAuthLines includes login hint for non-api-key mode", () => {
-		const result = createAuthSetup({ authMode: "claude" });
+	it("buildMissingAuthLines does not recommend Anthropic login", () => {
+		const result = createAuthSetup({ authMode: "auto" });
 		const lines = result.buildMissingAuthLines("anthropic");
 
 		const allPlain = lines.map((l) => l.plain).join("\n");
-		expect(allPlain).toContain("login");
+		expect(allPlain).not.toContain("maestro anthropic login");
+		expect(allPlain).not.toContain("/login");
+		expect(allPlain).toContain("ANTHROPIC_API_KEY");
 	});
 
 	for (const definition of managedGatewayAliasDefinitions) {

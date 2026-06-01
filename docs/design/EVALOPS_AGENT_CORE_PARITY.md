@@ -2,14 +2,14 @@
 
 ## Goal
 
-Ship a Hermes-class public agent distribution without copying Hermes as a monolith. Maestro is the local agent core, Platform is the governed durable control plane, and Ensemble is the Slack/channel product layer.
+Ship a Hermes-class public agent distribution without copying Hermes as a monolith. Maestro is the local and hosted agent core, Platform is the governed durable control plane, and Slack/channel surfaces are thin adapters over the same runtime contract. Ensemble should shrink into compatibility glue or disappear, not own a separate execution model.
 
 The distribution target is:
 
 ```text
 maestro                    # local coding agent
 maestro skill ...          # extension package authoring and validation
-maestro run inspect ...    # durable run and evidence inspection
+maestro run inspect ...    # durable run inspection
 maestro init               # optional Platform attach
 maestro remote ...         # hosted runtime attach
 ```
@@ -20,7 +20,7 @@ EvalOps Agent Core must feel local-first on day one and cloud-governed when atta
 
 - A developer can install the public package and use Maestro without Platform credentials.
 - A team can attach the same agent to Platform for identity, approvals, memory, audit, meter, traces, and hosted execution.
-- Slack and other channels render Platform runtime events through Ensemble; they do not own durable execution state.
+- Slack and other channels render Maestro/Platform runtime state through thin adapters; they do not own durable execution state or a parallel transcript ledger.
 - Extension authors get one package format for instructions, references, scripts, toolbox executables, and MCP servers.
 
 ## Hermes Parity Map
@@ -32,8 +32,8 @@ EvalOps Agent Core must feel local-first on day one and cloud-governed when atta
 | Bundled MCP/tool plugins | Skill `mcp.json` and `toolbox/` | Require `includeTools` for all bundled MCP servers |
 | Local sessions and recall | Maestro sessions, run inspection, trajectories | Promote into a local AgentRuntime ledger |
 | Durable goals/workboard | Platform Objectives and AgentRuns | Expose a local workboard that maps to Platform when attached |
-| Gateway/channels | Ensemble adapters plus Maestro Slack/GitHub agents | Keep Slack deep before broad platform count |
-| Governance and evidence | Platform approvals, audit, traces, VFS | Preserve evidence in runtime artifacts, not chat prose |
+| Gateway/channels | Maestro Slack/GitHub agents plus thin Platform channel adapters | Keep one deep Slack teammate path before broad channel count |
+| Governance and records | Platform approvals, audit, traces, VFS | Preserve operational records in runtime artifacts, not chat prose |
 
 ## Skill Package Format
 
@@ -174,7 +174,10 @@ plan. `maestro run replay` emits
 `evalops.maestro.agent-runtime-replay-summary.v1`, while
 `maestro run promote` emits `evalops.maestro.agent-runtime-promotion-plan.v1`
 operations shaped like Platform AgentRuntime trigger, step, work-item, wait,
-and terminal writes.
+and terminal writes. Promotion work items carry product-safe join keys such as
+`toolExecutionId`, `waitId`, record refs, and compact linkage payloads, so a
+future live promoter can join local session activity to Platform ToolExecution,
+approval, wait, and timeline records without copying raw tool output.
 
 This is the local parity layer before live promotion: it gives harnesses and
 operators a stable inspect/replay/promote contract without introducing a second

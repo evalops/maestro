@@ -38,7 +38,7 @@ const DEFAULT_MIN_SCORE = 0.75;
 const DEFAULT_REPEAT = 1;
 
 const PRIMARY_JUDGE_SYSTEM_PROMPT = [
-	"You are grading Composer regression outputs.",
+	"You are grading Maestro regression outputs.",
 	"Explain the evidence before deciding pass or fail.",
 	"A passing result must satisfy the rubric, match the observed output, and avoid contradictions.",
 	"Penalize invented success, missing required behavior, misleading claims, or outputs that only partially satisfy the rubric.",

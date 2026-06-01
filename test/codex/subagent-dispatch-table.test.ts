@@ -115,12 +115,19 @@ describe("Codex subagent dispatch table", () => {
 				(skill) => skill.id === "maestro.subagent.release-shepherd",
 			),
 		).toMatchObject({
-			requiredContextGrants: expect.arrayContaining(["deploy:read"]),
+			requiredContextGrants: expect.arrayContaining([
+				"deploy:read",
+				"artifact:write",
+				"runtime:events:read",
+			]),
+			requiredArtifactKinds: ["release.summary"],
 			allowedTaskClasses: ["release.follow-through", "deployment.smoke"],
 			attributes: expect.objectContaining({
 				requestMetadataPath: "evalops.subagentRequest",
 			}),
 		});
+		expect(JSON.stringify(projection.skills)).not.toContain("evidence:");
+		expect(JSON.stringify(projection.skills)).not.toContain("release.evidence");
 	});
 
 	it("keeps TypeScript mode dispatch aligned with the protocol fixture", () => {

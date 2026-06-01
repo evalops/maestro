@@ -11,6 +11,11 @@ import { createDeployTool } from "./deploy.js";
 import { createEditTool } from "./edit.js";
 import { createReadTool } from "./read.js";
 import { type ScheduleToolOptions, createScheduleTool } from "./schedule.js";
+import {
+	createSlackDeliveryTools,
+	isSlackDeliveryTool,
+	slackDeliveryToolNames,
+} from "./slack-delivery.js";
 import { createStatusTool } from "./status.js";
 import { createWorkflowTool } from "./workflow.js";
 import { createWriteTool } from "./write.js";
@@ -98,6 +103,9 @@ export {
 	createBuildDashboardTool,
 	createLiveDashboardTool,
 	createWorkflowTool,
+	createSlackDeliveryTools,
+	isSlackDeliveryTool,
+	slackDeliveryToolNames,
 	attachTool,
 	setUploadFunction,
 };

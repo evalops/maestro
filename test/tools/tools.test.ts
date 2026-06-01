@@ -57,7 +57,7 @@ function getTextOutput(result: ToolResult): string {
 	);
 }
 
-describe("Composer Tools", () => {
+describe("Maestro Tools", () => {
 	let testDir: string;
 
 	beforeEach(() => {

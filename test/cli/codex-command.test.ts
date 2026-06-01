@@ -42,12 +42,16 @@ describe("codex CLI command", () => {
 	});
 
 	it("treats apiKey login-start as already configured", async () => {
+		mocks.client.readAccount.mockResolvedValueOnce({
+			account: null,
+			requiresOpenaiAuth: true,
+		});
 		mocks.client.startChatGptLogin.mockResolvedValue({ type: "apiKey" });
 		const log = vi.spyOn(console, "log").mockImplementation(() => {});
 
 		await handleCodexCommand("login");
 
-		expect(mocks.client.readAccount).not.toHaveBeenCalled();
+		expect(mocks.client.readAccount).toHaveBeenCalledOnce();
 		expect(log).toHaveBeenCalledWith(
 			expect.stringContaining("already configured with an API key"),
 		);
@@ -57,12 +61,29 @@ describe("codex CLI command", () => {
 	});
 
 	it("runs browser ChatGPT sign-in and refreshes account status", async () => {
+		mocks.client.readAccount
+			.mockResolvedValueOnce({
+				account: null,
+				requiresOpenaiAuth: true,
+			})
+			.mockResolvedValueOnce({
+				account: {
+					type: "chatgpt",
+					email: "dev@example.com",
+					planType: "pro",
+				},
+				requiresOpenaiAuth: false,
+			});
 		const log = vi.spyOn(console, "log").mockImplementation(() => {});
 
 		await handleCodexCommand("login");
 
-		expect(mocks.client.initialize).toHaveBeenCalled();
-		expect(mocks.client.startChatGptLogin).toHaveBeenCalledWith("browser");
+		expect(mocks.client.initialize).toHaveBeenCalledWith({
+			experimentalApi: true,
+		});
+		expect(mocks.client.startChatGptLogin).toHaveBeenCalledWith("browser", {
+			codexStreamlinedLogin: true,
+		});
 		expect(mocks.client.waitForLoginCompletion).toHaveBeenCalledWith("login-1");
 		expect(mocks.client.readAccount).toHaveBeenCalledWith(true);
 		expect(log).toHaveBeenCalledWith(
@@ -73,7 +94,53 @@ describe("codex CLI command", () => {
 		log.mockRestore();
 	});
 
+	it("starts browser ChatGPT sign-in when the existing account refresh fails", async () => {
+		mocks.client.readAccount
+			.mockRejectedValueOnce(new Error("refresh failed"))
+			.mockResolvedValueOnce({
+				account: {
+					type: "chatgpt",
+					email: "dev@example.com",
+					planType: "pro",
+				},
+				requiresOpenaiAuth: false,
+			});
+		const log = vi.spyOn(console, "log").mockImplementation(() => {});
+
+		await handleCodexCommand("login");
+
+		expect(mocks.client.startChatGptLogin).toHaveBeenCalledWith("browser", {
+			codexStreamlinedLogin: true,
+		});
+		expect(mocks.client.waitForLoginCompletion).toHaveBeenCalledWith("login-1");
+		expect(mocks.client.readAccount).toHaveBeenCalledWith(true);
+		expect(log).toHaveBeenCalledWith(
+			expect.stringContaining(
+				"Codex app-server account refresh failed; starting a new sign-in flow.",
+			),
+		);
+		expect(log).toHaveBeenCalledWith(
+			expect.stringContaining("Signed in with ChatGPT as dev@example.com, pro"),
+		);
+		expect(mocks.client.close).toHaveBeenCalledOnce();
+
+		log.mockRestore();
+	});
+
 	it("supports ChatGPT device-code sign-in", async () => {
+		mocks.client.readAccount
+			.mockResolvedValueOnce({
+				account: null,
+				requiresOpenaiAuth: true,
+			})
+			.mockResolvedValueOnce({
+				account: {
+					type: "chatgpt",
+					email: "dev@example.com",
+					planType: "pro",
+				},
+				requiresOpenaiAuth: false,
+			});
 		mocks.client.startChatGptLogin.mockResolvedValue({
 			type: "chatgptDeviceCode",
 			loginId: "login-device-1",
@@ -84,12 +151,107 @@ describe("codex CLI command", () => {
 
 		await handleCodexCommand("login", ["--device"]);
 
-		expect(mocks.client.startChatGptLogin).toHaveBeenCalledWith("device");
+		expect(mocks.client.startChatGptLogin).toHaveBeenCalledWith("device", {
+			codexStreamlinedLogin: true,
+		});
 		expect(mocks.client.waitForLoginCompletion).toHaveBeenCalledWith(
 			"login-device-1",
 		);
 		expect(log).toHaveBeenCalledWith(expect.stringContaining("ABCD-EFGH"));
 		expect(mocks.client.close).toHaveBeenCalledOnce();
+
+		log.mockRestore();
+	});
+
+	it("reports existing Codex sign-in instead of starting another flow", async () => {
+		const log = vi.spyOn(console, "log").mockImplementation(() => {});
+
+		await handleCodexCommand("login");
+
+		expect(mocks.client.startChatGptLogin).not.toHaveBeenCalled();
+		expect(log).toHaveBeenCalledWith(
+			expect.stringContaining("already signed in as dev@example.com, pro"),
+		);
+		expect(log).toHaveBeenCalledWith(
+			expect.stringContaining("maestro codex login --force"),
+		);
+		expect(mocks.client.close).toHaveBeenCalledOnce();
+
+		log.mockRestore();
+	});
+
+	it("forces a fresh Codex sign-in flow when requested", async () => {
+		const log = vi.spyOn(console, "log").mockImplementation(() => {});
+
+		await handleCodexCommand("login", ["--force"]);
+
+		expect(mocks.client.readAccount).toHaveBeenCalledWith(true);
+		expect(mocks.client.startChatGptLogin).toHaveBeenCalledWith("browser", {
+			codexStreamlinedLogin: true,
+		});
+		expect(log).toHaveBeenCalledWith(
+			expect.stringContaining("Signed in with ChatGPT as dev@example.com, pro"),
+		);
+
+		log.mockRestore();
+	});
+
+	it("recognizes current Codex device-auth spelling", async () => {
+		mocks.client.readAccount
+			.mockResolvedValueOnce({
+				account: null,
+				requiresOpenaiAuth: true,
+			})
+			.mockResolvedValueOnce({
+				account: {
+					type: "chatgpt",
+					email: "dev@example.com",
+					planType: "pro",
+				},
+				requiresOpenaiAuth: false,
+			});
+		mocks.client.startChatGptLogin.mockResolvedValue({
+			type: "chatgptDeviceCode",
+			loginId: "login-device-1",
+			verificationUrl: "https://chatgpt.test/device",
+			userCode: "ABCD-EFGH",
+		});
+		const log = vi.spyOn(console, "log").mockImplementation(() => {});
+
+		await handleCodexCommand("login", ["--device-auth"]);
+
+		expect(mocks.client.startChatGptLogin).toHaveBeenCalledWith("device", {
+			codexStreamlinedLogin: true,
+		});
+
+		log.mockRestore();
+	});
+
+	it("handles externally managed Codex ChatGPT auth tokens", async () => {
+		mocks.client.readAccount
+			.mockResolvedValueOnce({
+				account: null,
+				requiresOpenaiAuth: true,
+			})
+			.mockResolvedValueOnce({
+				account: {
+					type: "chatgpt",
+					email: "dev@example.com",
+					planType: "pro",
+				},
+				requiresOpenaiAuth: false,
+			});
+		mocks.client.startChatGptLogin.mockResolvedValue({
+			type: "chatgptAuthTokens",
+		});
+		const log = vi.spyOn(console, "log").mockImplementation(() => {});
+
+		await handleCodexCommand("login");
+
+		expect(mocks.client.waitForLoginCompletion).not.toHaveBeenCalled();
+		expect(log).toHaveBeenCalledWith(
+			expect.stringContaining("externally managed ChatGPT auth"),
+		);
 
 		log.mockRestore();
 	});

@@ -1,6 +1,7 @@
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
 import ExcelJS from "exceljs";
 import { afterEach, describe, expect, it } from "vitest";
 import { extractDocumentText } from "../src/utils/document-extractor.js";
@@ -27,6 +28,20 @@ describe("extractDocumentText", () => {
 		} catch {
 			// The timeout cleanup path may already have reaped it.
 		}
+	}
+
+	async function waitForProcessExit(
+		pid: number,
+		timeoutMs = 5_000,
+	): Promise<boolean> {
+		const deadline = Date.now() + timeoutMs;
+		while (Date.now() < deadline) {
+			if (!isProcessAlive(pid)) {
+				return true;
+			}
+			await delay(25);
+		}
+		return !isProcessAlive(pid);
 	}
 
 	it("extracts text files", async () => {
@@ -243,7 +258,7 @@ setInterval(() => {}, 1000);
 				.map((value) => Number.parseInt(value, 10));
 			expect(pids).not.toHaveLength(0);
 			for (const pid of pids) {
-				expect(isProcessAlive(pid)).toBe(false);
+				expect(await waitForProcessExit(pid)).toBe(true);
 			}
 		} finally {
 			for (const pid of pids) {

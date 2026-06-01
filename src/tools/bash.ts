@@ -39,6 +39,7 @@ import {
 import { checkCommand } from "../safety/execpolicy.js";
 import { checkBashCommandForNestedAgent } from "../safety/nested-agent-guard.js";
 import { requirePlanCheck } from "../safety/safe-mode.js";
+import { sanitizeWithStaticMask } from "../utils/secret-redactor.js";
 import { resolveShellEnvironment } from "../utils/shell-env.js";
 import { backgroundTaskManager } from "./background-tasks.js";
 import {
@@ -93,6 +94,10 @@ const MAX_TIMEOUT_SECONDS = 600;
 // Output buffer limit (40KB) to prevent memory exhaustion from verbose commands
 // Commands that exceed this will have output truncated with a warning
 const MAX_BUFFER = 40 * 1024;
+
+function sanitizeToolOutput(value: string): string {
+	return sanitizeWithStaticMask(value);
+}
 
 /**
  * Details returned when a command is started as a background task.
@@ -269,7 +274,7 @@ Timeout: 90s default, 600s max. Output truncates at 40KB.`,
 			return respond.text(lines.join("\n")).detail({
 				taskId: task.id,
 				logPath: task.logPath,
-				command: interpolatedCommand,
+				command: sanitizeToolOutput(interpolatedCommand),
 				cwd: resolvedCwd,
 				status: task.status,
 			});
@@ -301,7 +306,9 @@ Timeout: 90s default, 600s max. Output truncates at 40KB.`,
 				content: [
 					{
 						type: "text",
-						text: output.trim() || "Command executed successfully (no output)",
+						text:
+							sanitizeToolOutput(output).trim() ||
+							"Command executed successfully (no output)",
 					},
 				],
 				details: undefined,
@@ -442,7 +449,8 @@ Timeout: 90s default, 600s max. Output truncates at 40KB.`,
 						{
 							type: "text",
 							text:
-								output.trim() || "Command executed successfully (no output)",
+								sanitizeToolOutput(output).trim() ||
+								"Command executed successfully (no output)",
 						},
 					],
 					details: undefined,

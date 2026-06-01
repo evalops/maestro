@@ -20,13 +20,15 @@ import {
 	type MaestroAppServerPluginBundleMutationResult,
 	type MaestroAppServerPolicyCheckResult,
 	type MaestroAppServerPolicyReadResult,
+	type MaestroAppServerProtocolModeListResult,
+	type MaestroAppServerProtocolModeSetResult,
 	type MaestroAppServerRemoteControlDrainResult,
 	type MaestroAppServerRemoteControlLeaseResult,
 	type MaestroAppServerRemoteControlStatusResult,
 	type MaestroAppServerRequirementsListResult,
 	type MaestroAppServerResponse,
+	type MaestroAppServerSandboxCheckResult,
 	type MaestroAppServerSandboxProbeResult,
-	type MaestroAppServerSandboxProofResult,
 	type MaestroAppServerServerNotification,
 	type MaestroAppServerThread,
 	type MaestroAppServerThreadArchiveResult,
@@ -94,11 +96,17 @@ import {
 	createMaestroAppServerPolicyControl,
 } from "./policy-control-api.js";
 import {
-	type MaestroAppServerSandboxProof,
-	MaestroAppServerSandboxProofError,
-	createMaestroAppServerSandboxProof,
-	normalizeSandboxProofParams,
-} from "./sandbox-proof-api.js";
+	type MaestroAppServerProtocolModeDecision,
+	type MaestroAppServerProtocolModes,
+	MaestroAppServerProtocolModesError,
+	createMaestroAppServerProtocolModes,
+} from "./protocol-modes-api.js";
+import {
+	type MaestroAppServerSandboxCheck,
+	MaestroAppServerSandboxCheckError,
+	createMaestroAppServerSandboxCheck,
+	normalizeSandboxCheckParams,
+} from "./sandbox-check-api.js";
 
 const DEFAULT_PAGE_LIMIT = 50;
 const MAX_PAGE_LIMIT = 100;
@@ -117,9 +125,13 @@ export {
 	createMaestroAppServerPluginBundleApi,
 } from "./plugin-bundle-api.js";
 export {
-	type MaestroAppServerSandboxProof,
-	createMaestroAppServerSandboxProof,
-} from "./sandbox-proof-api.js";
+	type MaestroAppServerProtocolModes,
+	createMaestroAppServerProtocolModes,
+} from "./protocol-modes-api.js";
+export {
+	type MaestroAppServerSandboxCheck,
+	createMaestroAppServerSandboxCheck,
+} from "./sandbox-check-api.js";
 
 type JsonRpcId = string | number;
 type MaybePromise<T> = T | Promise<T>;
@@ -185,15 +197,25 @@ export interface MaestroAppServerSessionApiOptions {
 	hostControl?: MaestroAppServerHostControl | false;
 	policyControl?: MaestroAppServerPolicyControl | false;
 	networkGovernance?: MaestroAppServerNetworkGovernance | false;
-	sandboxProof?: MaestroAppServerSandboxProof | false;
+	sandboxCheck?: MaestroAppServerSandboxCheck | false;
 	externalAgentImport?: MaestroAppServerExternalAgentImport | false;
 	pluginBundles?: MaestroAppServerPluginBundleApi | false;
 	daemonLifecycle?: MaestroAppServerDaemonLifecycle | false;
+	protocolModes?: MaestroAppServerProtocolModes | false;
 	onNotification?: (notification: MaestroAppServerServerNotification) => void;
 }
 
 export interface MaestroAppServerSessionApi {
 	initialize(): MaestroAppServerResponse["result"];
+	checkProtocolMode(
+		method: (typeof maestroAppServerClientMethods)[number],
+	): MaestroAppServerProtocolModeDecision;
+	listProtocolModes(
+		params?: Record<string, unknown>,
+	): Promise<MaestroAppServerProtocolModeListResult>;
+	setProtocolMode(
+		params?: Record<string, unknown>,
+	): Promise<MaestroAppServerProtocolModeSetResult>;
 	listModels(
 		params?: Record<string, unknown>,
 	): Promise<MaestroAppServerModelListResult>;
@@ -218,9 +240,9 @@ export interface MaestroAppServerSessionApi {
 	probeSandbox(
 		params?: Record<string, unknown>,
 	): Promise<MaestroAppServerSandboxProbeResult>;
-	runSandboxProof(
+	runSandboxCheck(
 		params?: Record<string, unknown>,
-	): Promise<MaestroAppServerSandboxProofResult>;
+	): Promise<MaestroAppServerSandboxCheckResult>;
 	importExternalAgent(
 		params?: Record<string, unknown>,
 	): Promise<MaestroAppServerExternalAgentImportResult>;
@@ -869,10 +891,10 @@ export function createMaestroAppServerSessionApi(
 			? undefined
 			: (options.networkGovernance ??
 				createMaestroAppServerNetworkGovernance());
-	const sandboxProof =
-		options.sandboxProof === false
+	const sandboxCheck =
+		options.sandboxCheck === false
 			? undefined
-			: (options.sandboxProof ?? createMaestroAppServerSandboxProof());
+			: (options.sandboxCheck ?? createMaestroAppServerSandboxCheck());
 	const canMutateSessionPersistence = store.canCreateSession?.() ?? true;
 	const pluginBundles =
 		options.pluginBundles === false ||
@@ -884,6 +906,10 @@ export function createMaestroAppServerSessionApi(
 		options.daemonLifecycle === false
 			? undefined
 			: (options.daemonLifecycle ?? createMaestroAppServerDaemonLifecycle());
+	const protocolModes =
+		options.protocolModes === false
+			? undefined
+			: (options.protocolModes ?? createMaestroAppServerProtocolModes());
 	const daemonLifecycleCapabilities = daemonLifecycle?.capabilities() ?? {
 		daemonStatus: false,
 		remoteControlStatus: false,
@@ -924,7 +950,7 @@ export function createMaestroAppServerSessionApi(
 	const canUseFilesystemWatch = Boolean(hostControl?.supportsWatch());
 	const canUsePolicyControl = Boolean(policyControl);
 	const canUseNetworkGovernance = Boolean(networkGovernance);
-	const canUseSandboxProof = Boolean(sandboxProof);
+	const canUseSandboxCheck = Boolean(sandboxCheck);
 	const canUseExternalAgentImport = Boolean(externalAgentImport);
 	const canUsePluginBundles = Boolean(pluginBundles);
 
@@ -940,14 +966,15 @@ export function createMaestroAppServerSessionApi(
 				},
 				capabilities: {
 					sessions: true,
+					protocolModes: Boolean(protocolModes),
 					modelList: true,
 					modelProviderCapabilities: true,
 					managedPolicy: canUsePolicyControl,
 					requirements: canUsePolicyControl,
 					networkProxy: canUseNetworkGovernance,
 					networkAudit: canUseNetworkGovernance,
-					sandboxProbe: canUseSandboxProof,
-					sandboxProof: canUseSandboxProof,
+					sandboxProbe: canUseSandboxCheck,
+					sandboxCheck: canUseSandboxCheck,
 					externalAgentImport: canUseExternalAgentImport,
 					pluginBundles: canUsePluginBundles,
 					daemonStatus: daemonLifecycleCapabilities.daemonStatus,
@@ -970,6 +997,30 @@ export function createMaestroAppServerSessionApi(
 					turnsList: true,
 				},
 			};
+		},
+
+		checkProtocolMode(method) {
+			return protocolModes?.checkMethod(method) ?? { allowed: true };
+		},
+
+		async listProtocolModes(params = {}) {
+			if (!protocolModes) {
+				throw new MaestroAppServerError(
+					-32601,
+					"Protocol modes are not available",
+				);
+			}
+			return protocolModes.listModes(params);
+		},
+
+		async setProtocolMode(params = {}) {
+			if (!protocolModes) {
+				throw new MaestroAppServerError(
+					-32601,
+					"Protocol modes are not available",
+				);
+			}
+			return protocolModes.setMode(params);
 		},
 
 		async readPolicy() {
@@ -1023,25 +1074,25 @@ export function createMaestroAppServerSessionApi(
 		},
 
 		async probeSandbox(params = {}) {
-			if (!sandboxProof) {
+			if (!sandboxCheck) {
 				throw new MaestroAppServerError(
 					-32601,
 					"Sandbox probe is not available",
 				);
 			}
-			normalizeSandboxProofParams(params);
-			return sandboxProof.probe();
+			normalizeSandboxCheckParams(params);
+			return sandboxCheck.probe();
 		},
 
-		async runSandboxProof(params = {}) {
-			if (!sandboxProof) {
+		async runSandboxCheck(params = {}) {
+			if (!sandboxCheck) {
 				throw new MaestroAppServerError(
 					-32601,
-					"Sandbox proof is not available",
+					"Sandbox check is not available",
 				);
 			}
-			const normalizedParams = normalizeSandboxProofParams(params);
-			return sandboxProof.runProof(normalizedParams);
+			const normalizedParams = normalizeSandboxCheckParams(params);
+			return sandboxCheck.runCheck(normalizedParams);
 		},
 
 		async importExternalAgent(params = {}) {
@@ -1718,13 +1769,35 @@ export async function handleMaestroAppServerRequest(
 		if (!isSupportedMethod(request.method)) {
 			throw new MaestroAppServerError(-32601, "Method not found");
 		}
+		const method = request.method;
+		const protocolModeDecision = api.checkProtocolMode?.(method) ?? {
+			allowed: true,
+		};
+		if (!protocolModeDecision.allowed) {
+			throw new MaestroAppServerError(
+				-32003,
+				protocolModeDecision.reason ?? "Method blocked by protocol mode",
+			);
+		}
 
-		switch (request.method) {
+		switch (method) {
 			case "initialize":
 				return {
 					jsonrpc: "2.0",
 					id,
 					result: api.initialize(),
+				};
+			case "protocol/mode/list":
+				return {
+					jsonrpc: "2.0",
+					id,
+					result: await api.listProtocolModes(request.params),
+				};
+			case "protocol/mode/set":
+				return {
+					jsonrpc: "2.0",
+					id,
+					result: await api.setProtocolMode(request.params),
 				};
 			case "model/list":
 				return {
@@ -1774,11 +1847,11 @@ export async function handleMaestroAppServerRequest(
 					id,
 					result: await api.probeSandbox(request.params),
 				};
-			case "sandbox/proof/run":
+			case "sandbox/check/run":
 				return {
 					jsonrpc: "2.0",
 					id,
-					result: await api.runSandboxProof(request.params),
+					result: await api.runSandboxCheck(request.params),
 				};
 			case "externalAgent/import":
 				return {
@@ -1995,10 +2068,11 @@ export async function handleMaestroAppServerRequest(
 			error instanceof MaestroAppServerHostControlError ||
 			error instanceof MaestroAppServerNetworkGovernanceError ||
 			error instanceof MaestroAppServerPolicyControlError ||
-			error instanceof MaestroAppServerSandboxProofError ||
+			error instanceof MaestroAppServerSandboxCheckError ||
 			error instanceof MaestroAppServerExternalAgentImportError ||
 			error instanceof MaestroAppServerPluginBundleError ||
-			error instanceof MaestroAppServerDaemonLifecycleError
+			error instanceof MaestroAppServerDaemonLifecycleError ||
+			error instanceof MaestroAppServerProtocolModesError
 		) {
 			return {
 				jsonrpc: "2.0",

@@ -84,6 +84,16 @@ import {
 
 const logger = createLogger("web:chat");
 
+const noopAutomaticMemoryExtraction = {
+	schedule: (_sessionPath?: string | null) => {},
+	flush: async () => {},
+};
+
+const noopAutomaticMemoryConsolidation = {
+	schedule: () => {},
+	flush: async () => {},
+};
+
 function getComposerTextContent(content: ComposerMessage["content"]): string {
 	if (typeof content === "string") return content;
 	if (!Array.isArray(content)) return "";
@@ -447,6 +457,7 @@ export async function handleChat(
 
 		// Track cleanup state to prevent double-cleanup
 		let cleanedUp = false;
+		let cleanupPromise: Promise<void> | null = null;
 
 		// ===== Phase 5: Agent Event Subscription =====
 		// Subscribe to agent events and forward them to the SSE stream
@@ -625,21 +636,25 @@ export async function handleChat(
 		const updateSessionSummary =
 			createRuntimeSessionSummaryUpdater(sessionManager);
 		const automaticMemoryConsolidation =
-			createAutomaticMemoryConsolidationCoordinator({
-				createAgent: async () =>
-					createBackgroundAgent(agent.state.model as RegisteredModel, {
-						systemPrompt: getMemoryConsolidationSystemPrompt(),
-					}),
-				getModel: () => agent.state.model,
-			});
+			typeof createBackgroundAgent === "function"
+				? createAutomaticMemoryConsolidationCoordinator({
+						createAgent: async () =>
+							createBackgroundAgent(agent.state.model as RegisteredModel, {
+								systemPrompt: getMemoryConsolidationSystemPrompt(),
+							}),
+						getModel: () => agent.state.model,
+					})
+				: noopAutomaticMemoryConsolidation;
 		const automaticMemoryExtraction =
-			createAutomaticMemoryExtractionCoordinator({
-				createAgent: async () =>
-					createBackgroundAgent(agent.state.model as RegisteredModel),
-				getModel: () => agent.state.model,
-				onProcessed: () => automaticMemoryConsolidation.schedule(),
-				sessionManager,
-			});
+			typeof createBackgroundAgent === "function"
+				? createAutomaticMemoryExtractionCoordinator({
+						createAgent: async () =>
+							createBackgroundAgent(agent.state.model as RegisteredModel),
+						getModel: () => agent.state.model,
+						onProcessed: () => automaticMemoryConsolidation.schedule(),
+						sessionManager,
+					})
+				: noopAutomaticMemoryExtraction;
 		const sessionHookService = createSessionHookService({
 			cwd: process.cwd(),
 			sessionId: sessionManager.getSessionId(),
@@ -788,35 +803,41 @@ export async function handleChat(
 		 * Idempotent - safe to call multiple times.
 		 */
 		const cleanup = async (aborted = false) => {
-			if (cleanedUp) {
-				return;
+			if (cleanupPromise) {
+				return cleanupPromise;
 			}
-			cleanedUp = true;
-
-			// Stop keepalive and remove event listeners
-			sseSession.stopHeartbeat();
-			req.off("close", handleConnectionClose);
-			res.off("close", handleConnectionClose);
-			unsubscribe();
-			unsubscribeMcpElicitationBridge();
-
-			await automaticMemoryExtraction.flush();
-			await automaticMemoryConsolidation.flush();
-			await sessionManager.flush();
-
-			// Send final SSE events if connection is still open
-			if (!res.writableEnded) {
-				if (aborted) {
-					sseSession.sendAborted();
+			cleanupPromise = (async () => {
+				if (cleanedUp) {
+					return;
 				}
-				sseSession.end();
-			}
+				cleanedUp = true;
 
-			// Log if we had to skip writes due to client disconnect
-			const metrics = sseSession.getMetrics();
-			if (metrics.skipped > 0) {
-				console.debug("SSE writes skipped after disconnect", metrics);
-			}
+				// Stop keepalive and remove event listeners
+				sseSession.stopHeartbeat();
+				req.off("close", handleConnectionClose);
+				res.off("close", handleConnectionClose);
+				unsubscribe();
+				unsubscribeMcpElicitationBridge();
+
+				await automaticMemoryExtraction.flush();
+				await automaticMemoryConsolidation.flush();
+				await sessionManager.flush();
+
+				// Send final SSE events if connection is still open
+				if (!res.writableEnded) {
+					if (aborted) {
+						sseSession.sendAborted();
+					}
+					sseSession.end();
+				}
+
+				// Log if we had to skip writes due to client disconnect
+				const metrics = sseSession.getMetrics();
+				if (metrics.skipped > 0) {
+					console.debug("SSE writes skipped after disconnect", metrics);
+				}
+			})();
+			return cleanupPromise;
 		};
 
 		// ===== Phase 7: Agent Execution =====

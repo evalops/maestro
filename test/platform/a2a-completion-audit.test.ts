@@ -2,13 +2,13 @@ import { describe, expect, it } from "vitest";
 import type { SwarmState } from "../../src/agent/swarm/types.js";
 import {
 	a2aDelegationLaneId,
-	a2aPushEvidenceKey,
+	a2aPushSignalKey,
 	buildA2ACompletionAudit,
 } from "../../src/platform/a2a-completion-audit.js";
 import type { A2ATaskLedgerFile } from "../../src/platform/a2a-task-ledger.js";
 
 describe("A2A completion audit", () => {
-	it("requires status, artifact, ledger task, work graph, push, and correlation proof for every completed remote lane", () => {
+	it("requires status, artifact, ledger task, work graph, push, and correlation signals for every completed remote lane", () => {
 		const swarm = {
 			id: "swarm_1",
 			status: "completed",
@@ -79,7 +79,7 @@ describe("A2A completion audit", () => {
 		});
 
 		expect(audit).toMatchObject({
-			schema: "evalops.maestro.a2a-completion-audit.v1",
+			schema: "evalops.maestro.a2a-completion-audit.v2",
 			swarmId: "swarm_1",
 			complete: true,
 			counts: {
@@ -97,7 +97,7 @@ describe("A2A completion audit", () => {
 					peer: "alpha",
 					status: "TASK_STATE_COMPLETED",
 					terminal: true,
-					evidence: {
+					signals: {
 						status: true,
 						artifact: true,
 						task: true,
@@ -105,13 +105,13 @@ describe("A2A completion audit", () => {
 						push: true,
 						correlation: true,
 					},
-					missingEvidence: [],
+					missingSignals: [],
 				},
 			],
 		});
 	});
 
-	it("does not share push evidence across peers that reuse the same remote task id", () => {
+	it("does not share push signals across peers that reuse the same remote task id", () => {
 		const swarm = {
 			id: "swarm_collision",
 			status: "completed",
@@ -145,7 +145,7 @@ describe("A2A completion audit", () => {
 		});
 		expect(taskIdOnlyAudit.complete).toBe(false);
 		expect(taskIdOnlyAudit.counts.pushCoveredLanes).toBe(0);
-		expect(taskIdOnlyAudit.lanes.map((lane) => lane.evidence.push)).toEqual([
+		expect(taskIdOnlyAudit.lanes.map((lane) => lane.signals.push)).toEqual([
 			false,
 			false,
 		]);
@@ -153,18 +153,85 @@ describe("A2A completion audit", () => {
 		const peerScopedAudit = buildA2ACompletionAudit({
 			swarm,
 			ledger,
-			pushEvidenceKeys: new Set([a2aPushEvidenceKey("alpha", "shared-task")]),
+			pushSignalKeys: new Set([a2aPushSignalKey("alpha", "shared-task")]),
 		});
 		expect(peerScopedAudit.complete).toBe(false);
 		expect(peerScopedAudit.counts.pushCoveredLanes).toBe(1);
-		expect(peerScopedAudit.lanes.map((lane) => lane.evidence.push)).toEqual([
+		expect(peerScopedAudit.lanes.map((lane) => lane.signals.push)).toEqual([
 			true,
 			false,
 		]);
-		expect(peerScopedAudit.lanes[1]?.missingEvidence).toContain("push");
+		expect(peerScopedAudit.lanes[1]?.missingSignals).toContain("push");
 	});
 
-	it("rejects correlation evidence when ledger metadata points at a different parent task", () => {
+	it("requires terminal status, artifact, and task push signals when supplied", () => {
+		const swarm = {
+			id: "swarm_rich_push",
+			status: "completed",
+			config: {
+				teammateCount: 1,
+				planFile: "/tmp/plan.md",
+				tasks: [],
+				cwd: "/tmp",
+			},
+			teammates: [
+				remoteLane("lane_alpha", "alpha", "remote-task-1", "alpha_parent"),
+			],
+			pendingTasks: [],
+			activeTasks: new Map(),
+			completedTasks: new Set(["alpha_parent"]),
+			failedTasks: new Set(),
+			startedAt: Date.now(),
+		} satisfies SwarmState;
+		const ledgerEntry = ledgerTask("alpha", "remote-task-1", "alpha_parent");
+		ledgerEntry.metadata = {
+			...ledgerEntry.metadata,
+			swarmId: "swarm_rich_push",
+		};
+		const ledger = { tasks: [ledgerEntry] } satisfies A2ATaskLedgerFile;
+		const signalKey = a2aPushSignalKey("alpha", "remote-task-1");
+
+		const incompleteAudit = buildA2ACompletionAudit({
+			swarm,
+			ledger,
+			pushSignals: new Map([
+				[
+					signalKey,
+					{
+						statusUpdateTerminal: true,
+						taskTerminal: true,
+					},
+				],
+			]),
+		});
+		expect(incompleteAudit.complete).toBe(false);
+		expect(incompleteAudit.lanes[0]).toEqual(
+			expect.objectContaining({
+				signals: expect.objectContaining({ push: false }),
+				missingSignals: ["push"],
+			}),
+		);
+
+		const completeAudit = buildA2ACompletionAudit({
+			swarm,
+			ledger,
+			pushSignals: new Map([
+				[
+					signalKey,
+					{
+						statusUpdateTerminal: true,
+						artifactUpdate: true,
+						taskTerminal: true,
+					},
+				],
+			]),
+		});
+		expect(completeAudit.complete).toBe(true);
+		expect(completeAudit.lanes[0]?.missingSignals).toEqual([]);
+		expect(completeAudit.counts.pushCoveredLanes).toBe(1);
+	});
+
+	it("rejects correlation signals when ledger metadata points at a different parent task", () => {
 		const swarm = {
 			id: "swarm_mismatch",
 			status: "completed",
@@ -195,7 +262,7 @@ describe("A2A completion audit", () => {
 		const audit = buildA2ACompletionAudit({
 			swarm,
 			ledger,
-			pushEvidenceKeys: new Set([a2aPushEvidenceKey("alpha", "remote-task-1")]),
+			pushSignalKeys: new Set([a2aPushSignalKey("alpha", "remote-task-1")]),
 		});
 
 		expect(audit.complete).toBe(false);
@@ -204,7 +271,7 @@ describe("A2A completion audit", () => {
 			expect.objectContaining({
 				parentTaskId: "alpha_parent",
 				laneId: a2aDelegationLaneId("alpha", "alpha_parent"),
-				evidence: expect.objectContaining({
+				signals: expect.objectContaining({
 					status: true,
 					artifact: true,
 					task: true,
@@ -212,7 +279,7 @@ describe("A2A completion audit", () => {
 					push: true,
 					correlation: false,
 				}),
-				missingEvidence: ["correlation"],
+				missingSignals: ["correlation"],
 			}),
 		);
 	});
@@ -247,7 +314,7 @@ describe("A2A completion audit", () => {
 		const audit = buildA2ACompletionAudit({
 			swarm,
 			ledger: { tasks: [ledgerEntry] },
-			pushEvidenceKeys: new Set([a2aPushEvidenceKey("alpha", "remote-task-1")]),
+			pushSignalKeys: new Set([a2aPushSignalKey("alpha", "remote-task-1")]),
 		});
 
 		expect(audit.complete).toBe(true);
@@ -255,10 +322,10 @@ describe("A2A completion audit", () => {
 			expect.objectContaining({
 				laneId: a2aDelegationLaneId("alpha", "failed_parent"),
 				parentTaskId: "failed_parent",
-				evidence: expect.objectContaining({
+				signals: expect.objectContaining({
 					correlation: true,
 				}),
-				missingEvidence: [],
+				missingSignals: [],
 			}),
 		);
 	});
@@ -295,7 +362,7 @@ describe("A2A completion audit", () => {
 				startedAt: Date.now(),
 			},
 			ledger: { tasks: [ledgerEntry] },
-			pushEvidenceKeys: new Set([a2aPushEvidenceKey("alpha", "remote-task-1")]),
+			pushSignalKeys: new Set([a2aPushSignalKey("alpha", "remote-task-1")]),
 		});
 
 		expect(audit.complete).toBe(true);
@@ -306,7 +373,7 @@ describe("A2A completion audit", () => {
 				parentTaskId: "failed_parent",
 				peer: "alpha",
 				a2aTaskId: "remote-task-1",
-				missingEvidence: [],
+				missingSignals: [],
 			}),
 		);
 	});
@@ -351,7 +418,7 @@ describe("A2A completion audit", () => {
 				startedAt: Date.now(),
 			},
 			ledger: { tasks: [ledgerEntry] },
-			pushEvidenceKeys: new Set([a2aPushEvidenceKey("alpha", "remote-task-1")]),
+			pushSignalKeys: new Set([a2aPushSignalKey("alpha", "remote-task-1")]),
 		});
 
 		expect(audit.complete).toBe(false);
@@ -359,7 +426,7 @@ describe("A2A completion audit", () => {
 			expect.objectContaining({
 				laneId: a2aDelegationLaneId("alpha", "current_parent"),
 				parentTaskId: "current_parent",
-				evidence: expect.objectContaining({
+				signals: expect.objectContaining({
 					status: true,
 					artifact: true,
 					task: true,
@@ -367,7 +434,7 @@ describe("A2A completion audit", () => {
 					push: true,
 					correlation: false,
 				}),
-				missingEvidence: ["correlation"],
+				missingSignals: ["correlation"],
 			}),
 		);
 	});
@@ -412,8 +479,8 @@ describe("A2A completion audit", () => {
 		const audit = buildA2ACompletionAudit({
 			swarm,
 			ledger: { tasks: [ledgerEntry] },
-			pushEvidenceKeys: new Set([
-				a2aPushEvidenceKey("alpha", "remote-task-current"),
+			pushSignalKeys: new Set([
+				a2aPushSignalKey("alpha", "remote-task-current"),
 			]),
 		});
 
@@ -422,8 +489,8 @@ describe("A2A completion audit", () => {
 			expect.objectContaining({
 				laneId: a2aDelegationLaneId("alpha", "current_parent"),
 				parentTaskId: "current_parent",
-				missingEvidence: [],
-				evidence: expect.objectContaining({
+				missingSignals: [],
+				signals: expect.objectContaining({
 					correlation: true,
 				}),
 			}),
@@ -478,8 +545,8 @@ describe("A2A completion audit", () => {
 		const audit = buildA2ACompletionAudit({
 			swarm,
 			ledger: { tasks: [ledgerEntry] },
-			pushEvidenceKeys: new Set([
-				a2aPushEvidenceKey("alpha", "remote-task-current"),
+			pushSignalKeys: new Set([
+				a2aPushSignalKey("alpha", "remote-task-current"),
 			]),
 		});
 
@@ -489,15 +556,15 @@ describe("A2A completion audit", () => {
 				laneId: a2aDelegationLaneId("alpha", "current_parent"),
 				parentTaskId: "current_parent",
 				status: "TASK_STATE_FAILED",
-				missingEvidence: [],
-				evidence: expect.objectContaining({
+				missingSignals: [],
+				signals: expect.objectContaining({
 					correlation: true,
 				}),
 			}),
 		);
 	});
 
-	it("pinpoints incomplete terminal lane evidence", () => {
+	it("pinpoints incomplete terminal lane signals", () => {
 		const audit = buildA2ACompletionAudit({
 			swarm: {
 				id: "swarm_2",
@@ -534,7 +601,7 @@ describe("A2A completion audit", () => {
 
 		expect(audit.complete).toBe(false);
 		expect(audit.counts.incompleteLanes).toBe(1);
-		expect(audit.lanes[0]?.missingEvidence).toEqual([
+		expect(audit.lanes[0]?.missingSignals).toEqual([
 			"status",
 			"artifact",
 			"task",

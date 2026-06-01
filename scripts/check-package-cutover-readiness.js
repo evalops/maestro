@@ -17,6 +17,8 @@ const allowedFiles = new Set(
 		"README.md",
 		"SECURITY.md",
 		"docs/TOOLS_REFERENCE.md",
+		"docs/protocols/release-surface-conformance.json",
+		"docs/protocols/release-surface-conformance.md",
 		"docs/release-ops.md",
 		"package.json",
 		"package-lock.json",
@@ -27,6 +29,7 @@ const allowedFiles = new Set(
 		"scripts/sync-package-metadata.js",
 		"src/agent/types.ts",
 		"src/package-metadata.ts",
+		"test/scripts/deprecate-release.test.ts",
 	]
 		.filter(Boolean)
 		.map((file) => file.replaceAll("\\", "/")),

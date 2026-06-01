@@ -1,5 +1,5 @@
 /**
- * RPC Types for Composer Agent
+ * RPC Types for Maestro Agent
  *
  * Defines the typed protocol for JSON-over-stdio RPC communication.
  *

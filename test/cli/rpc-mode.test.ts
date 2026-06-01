@@ -86,6 +86,84 @@ describe("runRpcMode", () => {
 			.mockResolvedValue(undefined);
 		vi.mocked(runWithPromptRecovery).mockReset().mockResolvedValue(undefined);
 		vi.spyOn(console, "log").mockImplementation(() => {});
+		vi.mocked(console.log).mockClear();
+	});
+
+	function createRpcAgent() {
+		return {
+			state: {
+				model: { id: "mock-model", name: "Mock Model", provider: "mock" },
+				messages: [],
+				isStreaming: false,
+				error: null,
+				thinkingLevel: 0,
+				session: { id: "session_123" },
+			},
+			subscribe: vi.fn(),
+			abort: vi.fn(),
+			continue: vi.fn(),
+			prompt: vi.fn(),
+			getQueuedMessageCount: vi.fn().mockReturnValue(0),
+		};
+	}
+
+	function loggedJsonAt(index: number) {
+		const line = vi.mocked(console.log).mock.calls[index]?.[0];
+		expect(typeof line).toBe("string");
+		return JSON.parse(line as string);
+	}
+
+	it("echoes request ids on get_state and get_messages responses", async () => {
+		const agent = createRpcAgent();
+		const sessionManager = {};
+
+		void runRpcMode(agent as never, sessionManager as never);
+		await vi.waitFor(() => expect(lineHandler).toBeTypeOf("function"));
+
+		await lineHandler?.(JSON.stringify({ id: "req_state", type: "get_state" }));
+		await lineHandler?.(
+			JSON.stringify({ id: "req_messages", type: "get_messages" }),
+		);
+
+		expect(loggedJsonAt(0)).toMatchObject({
+			id: "req_state",
+			type: "state",
+			state: { queuedMessageCount: 0 },
+		});
+		expect(loggedJsonAt(1)).toMatchObject({
+			id: "req_messages",
+			type: "messages",
+			messages: [],
+		});
+	});
+
+	it("echoes request ids on compact failures and unknown commands", async () => {
+		vi.mocked(performCompaction).mockResolvedValue({
+			success: false,
+			error: "not enough context",
+			compactedCount: 0,
+		});
+		const agent = createRpcAgent();
+		const sessionManager = {};
+
+		void runRpcMode(agent as never, sessionManager as never);
+		await vi.waitFor(() => expect(lineHandler).toBeTypeOf("function"));
+
+		await lineHandler?.(JSON.stringify({ id: "req_compact", type: "compact" }));
+		await lineHandler?.(
+			JSON.stringify({ id: "req_unknown", type: "missing_command" }),
+		);
+
+		expect(loggedJsonAt(0)).toMatchObject({
+			id: "req_compact",
+			type: "error",
+			error: "not enough context",
+		});
+		expect(loggedJsonAt(1)).toMatchObject({
+			id: "req_unknown",
+			type: "error",
+			error: "Unknown RPC command: missing_command",
+		});
 	});
 
 	it("passes MCP restoration messages into prompt recovery", async () => {

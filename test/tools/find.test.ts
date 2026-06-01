@@ -4,7 +4,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { AgentToolResult } from "../../src/agent/types.js";
-import { findTool, isIgnoredByGitignoreRules } from "../../src/tools/find.js";
+import {
+	findTool,
+	getFindGlobPatterns,
+	isIgnoredByGitignoreRules,
+} from "../../src/tools/find.js";
 
 // Helper to extract text from content blocks
 function getTextOutput(result: AgentToolResult<unknown>): string {
@@ -111,6 +115,12 @@ describe("find tool", () => {
 			expect(output).toContain("root.ts");
 			expect(output).toContain("index.ts");
 			expect(output).toContain("helper.ts");
+		});
+
+		it("keeps root matches for leading globstar patterns", () => {
+			expect(getFindGlobPatterns("**/*.ts")).toEqual(["**/*.ts", "*.ts"]);
+			expect(getFindGlobPatterns("**\\*.ts")).toEqual(["**\\*.ts", "*.ts"]);
+			expect(getFindGlobPatterns("src/**/*.ts")).toEqual(["src/**/*.ts"]);
 		});
 
 		it("finds files in specific subdirectory pattern", async () => {

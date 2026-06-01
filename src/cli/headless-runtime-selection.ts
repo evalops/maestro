@@ -1,4 +1,4 @@
-import { recordStagedRolloutSurfaceUsage } from "../telemetry.js";
+import { recordStagedRolloutSurfaceUsageLazy } from "../telemetry/staged-rollout-lazy.js";
 import { createLogger } from "../utils/logger.js";
 
 export const LEGACY_HEADLESS_RUNTIME_ENV = "MAESTRO_INTERNAL_HEADLESS_RUNTIME";
@@ -79,7 +79,7 @@ export function selectHeadlessRuntime(
 export function recordHeadlessRuntimeSelection(
 	selection: HeadlessRuntimeSelection,
 	logger: RuntimeSelectionLogger = createLogger("headless-runtime"),
-	recorder: RuntimeSelectionTelemetryRecorder = recordStagedRolloutSurfaceUsage,
+	recorder: RuntimeSelectionTelemetryRecorder = recordStagedRolloutSurfaceUsageLazy,
 ): void {
 	if (selection.kind !== "legacy") {
 		return;

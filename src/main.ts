@@ -1,7 +1,7 @@
 /**
- * Main Entry Point - Composer CLI Application
+ * Main Entry Point - Maestro CLI Application
  *
- * This module orchestrates the complete initialization sequence for the Composer CLI,
+ * This module orchestrates the complete initialization sequence for the Maestro CLI,
  * including authentication, model resolution, session management, and runtime mode
  * selection. It serves as the single entry point that routes execution to the
  * appropriate mode (interactive TUI, single-shot, RPC, or exec).
@@ -25,7 +25,7 @@
  *    └── Handle --help, config commands, and other early exits
  *
  * 4. Authentication Resolution
- *    ├── Determine auth mode (auto, api-key, or claude-only)
+ *    ├── Determine auth mode (auto or api-key)
  *    ├── Resolve credentials for the selected provider
  *    └── Build error messages for missing credentials
  *
@@ -67,7 +67,6 @@
  * |----------|--------------------------------------------------|
  * | auto     | Try OAuth first, fall back to API key env vars   |
  * | api-key  | Require explicit API key (--api-key or env var)  |
- * | claude   | Force Anthropic OAuth (no API key fallback)      |
  *
  * ## Runtime Modes
  *
@@ -87,24 +86,16 @@
  * @module main
  */
 
-import { createRequire } from "node:module";
 import chalk from "chalk";
 import type {
 	ActionApprovalService,
 	ApprovalMode,
 } from "./agent/action-approval.js";
-import { createBackgroundTextAgent } from "./agent/background-agent.js";
-import {
-	type Agent,
-	type Api,
-	type Model,
-	isAssistantMessage,
-} from "./agent/index.js";
-import { getAllModes, getModelForMode } from "./agent/modes.js";
+import type { Agent, Api, Model } from "./agent/index.js";
 import { loadScriptedScenarioFromSource } from "./agent/providers/scripted.js";
 import { scenarioSourceLabel } from "./agent/scenario-source.js";
-import { applySessionEndHooks } from "./agent/session-lifecycle-hooks.js";
 import { type ToolRetryMode, ToolRetryService } from "./agent/tool-retry.js";
+import type { ClientToolExecutionService } from "./agent/transport.js";
 import {
 	applySessionStartHooks,
 	runUserPromptWithRecovery,
@@ -115,9 +106,7 @@ import {
 	disposeCheckpointService,
 	initCheckpointService,
 } from "./checkpoints/index.js";
-import { TuiClientToolService } from "./cli-tui/client-tools/local-client-tool-service.js";
-import { TuiRenderer } from "./cli-tui/tui-renderer.js";
-import { sanitizeTerminalPreview } from "./cli-tui/utils/text-formatting.js";
+import type { TuiClientToolService } from "./cli-tui/client-tools/local-client-tool-service.js";
 import { type Mode, parseArgs } from "./cli/args.js";
 import {
 	EXEC_SESSION_SUMMARY_PREFIX,
@@ -129,16 +118,7 @@ import {
 	selectHeadlessRuntime,
 	willDispatchHeadlessRuntime,
 } from "./cli/headless-runtime-selection.js";
-import { runHeadlessMode } from "./cli/headless.js";
 import { printHelp } from "./cli/help.js";
-import {
-	JsonlEventWriter,
-	createAgentJsonlAdapter,
-	emitThreadEnd,
-	emitThreadStart,
-	emitUserTurn as emitUserTurnEvent,
-} from "./cli/jsonl-writer.js";
-import { selectSession } from "./cli/session.js";
 import {
 	detectRuntimeConstraintContext,
 	resolveExplicitSystemPromptSourcePaths,
@@ -148,52 +128,91 @@ import { loadRuntimeConfig } from "./config/runtime-config.js";
 import { loadUnifiedContextManifest } from "./context/manifest.js";
 import { loadEnv } from "./load-env.js";
 import { bootstrapLsp } from "./lsp/bootstrap.js";
-import { withMcpPostKeepMessages } from "./mcp/prompt-recovery.js";
-import {
-	createAutomaticMemoryConsolidationCoordinator,
-	getMemoryConsolidationSystemPrompt,
-} from "./memory/auto-consolidation.js";
-import {
-	createAutomaticMemoryExtractionCoordinator,
-	getMemoryExtractionSystemPrompt,
-} from "./memory/auto-extraction.js";
+import { createLazyAutoMemoryCoordinators } from "./memory/lazy-auto-memory.js";
 import { ensureModelsLoaded } from "./models/builtin.js";
 import type { RegisteredModel } from "./models/registry.js";
 import { reloadModelConfig } from "./models/registry.js";
-import { initOpenTelemetry } from "./opentelemetry.js";
+import { getPackageVersion } from "./package-metadata.js";
 import { resolveMaestroSystemPrompt } from "./prompts/system-prompt.js";
 import type { AuthMode } from "./providers/auth.js";
-import { AgentRuntimeController } from "./runtime/agent-runtime.js";
-import { registerBackgroundTaskShutdownHooks } from "./runtime/background-task-hooks.js";
 import { configureSafeMode } from "./safety/safe-mode.js";
 import { LocalSandbox } from "./sandbox/index.js";
-import { captureSentryException, flushSentry, initSentry } from "./sentry.js";
-import { ServerRequestActionApprovalService } from "./server/approval-service.js";
-import { clientToolService } from "./server/client-tools-service.js";
-import { ServerRequestToolRetryService } from "./server/tool-retry-service.js";
 import { SessionManager } from "./session/manager.js";
-import { recordStagedRolloutSurfaceUsage } from "./telemetry.js";
 import { beaconTimeoutMs } from "./telemetry/beacon.js";
-import { askUserClientTool } from "./tools/ask-user-client.js";
+import { recordStagedRolloutSurfaceUsageLazy } from "./telemetry/staged-rollout-lazy.js";
 import type { UpdateCheckResult } from "./update/check.js";
 import { createStartupProfilerFromEnv } from "./utils/checkpoint-profiler.js";
 import { isInsideGitRepository } from "./utils/git.js";
-/**
- * Load version from package.json at runtime.
- * Uses Node's createRequire for compatibility with ESM imports
- * (avoids experimental import assertions syntax).
- */
-const packageJson = createRequire(import.meta.url)("../package.json") as {
-	version?: string;
-};
-const VERSION = packageJson.version ?? "unknown";
+const VERSION = getPackageVersion();
 const STARTUP_TELEMETRY_EXIT_WAIT_GRACE_MS = 25;
 
 let enterpriseCleanupRegistered = false;
 let checkpointCleanupRegistered = false;
 let sandboxCleanupRegistered = false;
 
-function printAllAgentModes(): void {
+function isTruthyEnvFlag(value: string | undefined): boolean {
+	switch (value?.trim().toLowerCase()) {
+		case "1":
+		case "true":
+		case "yes":
+		case "on":
+			return true;
+		default:
+			return false;
+	}
+}
+
+function shouldStartOpenTelemetry(env: NodeJS.ProcessEnv): boolean {
+	if (
+		isTruthyEnvFlag(env.MAESTRO_INTERNAL_TELEMETRY_DISABLED) ||
+		isTruthyEnvFlag(env.EVALOPS_INTERNAL_TELEMETRY_DISABLED) ||
+		env.MAESTRO_OTEL === "0"
+	) {
+		return false;
+	}
+	if (env.MAESTRO_OTEL === "1") {
+		return true;
+	}
+	const hasOtlpEndpoint = Boolean(env.OTEL_EXPORTER_OTLP_ENDPOINT);
+	const hasExplicitExporter = [
+		env.OTEL_TRACES_EXPORTER,
+		env.OTEL_METRICS_EXPORTER,
+		env.OTEL_LOGS_EXPORTER,
+	].some((exporter) => exporter && exporter !== "none");
+	return hasOtlpEndpoint || hasExplicitExporter;
+}
+
+function startObservability(env: NodeJS.ProcessEnv): void {
+	if (shouldStartOpenTelemetry(env)) {
+		void import("./opentelemetry.js")
+			.then(({ initOpenTelemetry }) => initOpenTelemetry("composer-cli"))
+			.catch(() => undefined);
+	}
+	if (env.SENTRY_DSN?.trim()) {
+		void import("./sentry.js")
+			.then(({ initSentry }) => initSentry("maestro-cli"))
+			.catch(() => undefined);
+	}
+}
+
+async function captureStartupError(error: unknown): Promise<void> {
+	if (!process.env.SENTRY_DSN?.trim()) {
+		return;
+	}
+	try {
+		const { captureSentryException, flushSentry, initSentry } = await import(
+			"./sentry.js"
+		);
+		initSentry("maestro-cli");
+		captureSentryException(error);
+		await flushSentry();
+	} catch {
+		// Startup error reporting is best-effort and must not mask the root error.
+	}
+}
+
+async function printAllAgentModes(): Promise<void> {
+	const { getAllModes, getModelForMode } = await import("./agent/modes.js");
 	const lines = ["Agent modes:", ""];
 	for (const { mode, config } of getAllModes({ includeHidden: true })) {
 		const hiddenSuffix = config.visible === false ? " [hidden]" : "";
@@ -202,6 +221,21 @@ function printAllAgentModes(): void {
 		lines.push(`  model: ${getModelForMode(mode)}`);
 	}
 	console.log(lines.join("\n"));
+}
+
+function shouldRegisterBackgroundTaskShutdownHooks(
+	command: ReturnType<typeof parseArgs>["command"],
+	parsedTools: readonly string[] | undefined,
+): boolean {
+	if (command !== "exec") {
+		return true;
+	}
+	if (!parsedTools || parsedTools.length === 0) {
+		return true;
+	}
+	return (
+		parsedTools.includes("bash") || parsedTools.includes("background_tasks")
+	);
 }
 
 /**
@@ -254,6 +288,10 @@ async function runInteractiveMode(
 
 	let sessionEndReason: "user_exit" | "error" = "user_exit";
 	try {
+		const { AgentRuntimeController } = await import(
+			"./runtime/agent-runtime.js"
+		);
+		const { TuiRenderer } = await import("./cli-tui/tui-renderer.js");
 		// Initialize the TUI renderer which manages all terminal output
 		const renderer = new TuiRenderer(
 			agent,
@@ -294,6 +332,9 @@ async function runInteractiveMode(
 		sessionEndReason = "error";
 		throw error;
 	} finally {
+		const { applySessionEndHooks } = await import(
+			"./agent/session-lifecycle-hooks.js"
+		);
 		await applySessionEndHooks({
 			agent,
 			sessionManager,
@@ -352,6 +393,13 @@ async function runSingleShotMode(
 	messages: string[],
 	mode: Extract<Mode, "text" | "json">,
 ): Promise<void> {
+	const {
+		JsonlEventWriter,
+		createAgentJsonlAdapter,
+		emitThreadEnd,
+		emitThreadStart,
+		emitUserTurn: emitUserTurnEvent,
+	} = await import("./cli/jsonl-writer.js");
 	// Use session ID as thread ID for JSONL output correlation
 	const threadId = sessionManager.getSessionId();
 
@@ -380,6 +428,10 @@ async function runSingleShotMode(
 
 	let sessionEndReason: "complete" | "error" = "complete";
 	try {
+		const { withMcpPostKeepMessages } = await import(
+			"./mcp/prompt-recovery.js"
+		);
+
 		// Process each message sequentially
 		// This allows multi-message conversations in single-shot mode
 		for (const message of messages) {
@@ -399,6 +451,7 @@ async function runSingleShotMode(
 		// In text mode, extract and output only the final text response
 		// This provides clean output for shell pipelines and scripts
 		if (mode === "text") {
+			const { isAssistantMessage } = await import("./agent/index.js");
 			const lastMessage = agent.state.messages[agent.state.messages.length - 1];
 			if (isAssistantMessage(lastMessage)) {
 				for (const content of lastMessage.content) {
@@ -420,6 +473,9 @@ async function runSingleShotMode(
 		}
 		throw error;
 	} finally {
+		const { applySessionEndHooks } = await import(
+			"./agent/session-lifecycle-hooks.js"
+		);
 		await applySessionEndHooks({
 			agent,
 			sessionManager,
@@ -464,7 +520,7 @@ async function readReplayScenarioId(source: string): Promise<string> {
 }
 
 /**
- * Main entry point for the Composer CLI application.
+ * Main entry point for the Maestro CLI application.
  *
  * This function orchestrates the complete initialization sequence and routes
  * to the appropriate runtime mode. It performs all setup synchronously where
@@ -524,7 +580,7 @@ export async function main(args: string[]) {
 	// Handle --help early exit (before any logging redirection or heavy init)
 	if (parsed.help) {
 		const hiddenFlagTelemetry = parsed.helpHidden
-			? recordStagedRolloutSurfaceUsage("hidden_flag_used", {
+			? recordStagedRolloutSurfaceUsageLazy("hidden_flag_used", {
 					surfaceId: "cli:--help-hidden",
 					surfaceType: "cli_flag",
 					owner: "platform-cli",
@@ -540,7 +596,7 @@ export async function main(args: string[]) {
 	}
 
 	if (parsed.listModesAll) {
-		const hiddenFlagTelemetry = recordStagedRolloutSurfaceUsage(
+		const hiddenFlagTelemetry = recordStagedRolloutSurfaceUsageLazy(
 			"hidden_flag_used",
 			{
 				surfaceId: "cli:--list-modes-all",
@@ -548,7 +604,7 @@ export async function main(args: string[]) {
 				owner: "agent-runtime",
 			},
 		);
-		printAllAgentModes();
+		await printAllAgentModes();
 		await waitForStartupTelemetryForImmediateExit(
 			Promise.all([startupTelemetry, hiddenFlagTelemetry]).then(
 				() => undefined,
@@ -601,7 +657,11 @@ export async function main(args: string[]) {
 
 	if (parsed.command === "codex") {
 		const { handleCodexCommand } = await import("./cli/commands/codex.js");
-		await handleCodexCommand(parsed.subcommand, parsed.commandArgs ?? []);
+		const commandArgs = [...(parsed.commandArgs ?? [])];
+		if (parsed.subcommand === "login" && parsed.force) {
+			commandArgs.push("--force");
+		}
+		await handleCodexCommand(parsed.subcommand, commandArgs);
 		await waitForStartupTelemetryForImmediateExit(startupTelemetry);
 		return;
 	}
@@ -663,6 +723,12 @@ export async function main(args: string[]) {
 	if (parsed.command === "status") {
 		const { handleStatusCommand } = await import("./cli/commands/status.js");
 		await handleStatusCommand();
+		return;
+	}
+
+	if (parsed.command === "update") {
+		const { handleUpdateCommand } = await import("./cli/commands/update.js");
+		await handleUpdateCommand(parsed.commandArgs ?? []);
 		return;
 	}
 
@@ -743,8 +809,7 @@ export async function main(args: string[]) {
 		} else {
 			writeStartupErrorToStderr(chalk.red(message));
 		}
-		captureSentryException(error);
-		await flushSentry();
+		await captureStartupError(error);
 		process.exit(1);
 	};
 
@@ -754,8 +819,7 @@ export async function main(args: string[]) {
 
 	// Initialize OpenTelemetry tracing for observability
 	// This is non-blocking (void) to avoid startup latency
-	void initOpenTelemetry("composer-cli");
-	initSentry("maestro-cli");
+	startObservability(process.env);
 
 	const modelLoadPromise = (async () => {
 		await ensureModelsLoaded();
@@ -826,7 +890,6 @@ export async function main(args: string[]) {
 	// Determine authentication mode:
 	// - auto: Try OAuth first, fall back to API key environment variables
 	// - api-key: Require explicit API key from --api-key or env var
-	// - claude: Force Anthropic OAuth (no API key fallback)
 	const authMode: AuthMode = parsed.authMode ?? "auto";
 
 	const { requireCredential } = createAuthSetup({
@@ -878,8 +941,16 @@ export async function main(args: string[]) {
 	// Configure safe mode settings (e.g., disabling certain tools in sandboxed environments)
 	configureSafeMode(true);
 
-	// Register shutdown hooks for background tasks to ensure clean cleanup
-	registerBackgroundTaskShutdownHooks();
+	// Register shutdown hooks for background tasks only when the selected tool
+	// set can start managed background work.
+	const useBackgroundTaskShutdownHooks =
+		shouldRegisterBackgroundTaskShutdownHooks(parsed.command, parsed.tools);
+	if (useBackgroundTaskShutdownHooks) {
+		const { registerBackgroundTaskShutdownHooks } = await import(
+			"./runtime/background-task-hooks.js"
+		);
+		registerBackgroundTaskShutdownHooks();
+	}
 
 	// Bootstrap Language Server Protocol for IDE integration
 	// This enables features like go-to-definition, hover info, and diagnostics
@@ -890,9 +961,20 @@ export async function main(args: string[]) {
 	initCheckpointService(process.cwd());
 	const disposeCheckpoint = (): void => disposeCheckpointService();
 	if (!checkpointCleanupRegistered) {
+		const exitAfterCheckpointSignal = !useBackgroundTaskShutdownHooks;
 		process.once("beforeExit", disposeCheckpoint);
-		process.once("SIGINT", disposeCheckpoint);
-		process.once("SIGTERM", disposeCheckpoint);
+		process.once("SIGINT", () => {
+			disposeCheckpoint();
+			if (exitAfterCheckpointSignal) {
+				process.exit(130);
+			}
+		});
+		process.once("SIGTERM", () => {
+			disposeCheckpoint();
+			if (exitAfterCheckpointSignal) {
+				process.exit(0);
+			}
+		});
 		checkpointCleanupRegistered = true;
 	}
 	startupProfiler.checkpoint("runtime:prepared");
@@ -979,6 +1061,18 @@ export async function main(args: string[]) {
 		return;
 	}
 
+	if (parsed.command === "sessions") {
+		const { handleSessionsCommand } = await import(
+			"./cli/commands/sessions.js"
+		);
+		await handleSessionsCommand(parsed.subcommand, parsed.messages, {
+			json: parsed.execJson,
+			format: parsed.exportFormat,
+			redactSecrets: parsed.redactSecrets,
+		});
+		return;
+	}
+
 	if (parsed.command === "export") {
 		const { handleExportCommand } = await import(
 			"./cli/commands/session-transfer.js"
@@ -1030,7 +1124,7 @@ export async function main(args: string[]) {
 		const { handleAnthropicCommand } = await import(
 			"./cli/commands/anthropic.js"
 		);
-		await handleAnthropicCommand(parsed.subcommand, parsed.messages);
+		await handleAnthropicCommand();
 		return;
 	}
 
@@ -1204,6 +1298,9 @@ export async function main(args: string[]) {
 			const targetArg = parsed.messages[0];
 			const result = handleAgentsInit(targetArg, { force: parsed.force });
 			if (result.action === "preview") {
+				const { sanitizeTerminalPreview } = await import(
+					"./cli-tui/utils/text-formatting.js"
+				);
 				const rerunCommand = buildAgentsInitRerunCommand(targetArg);
 				console.log(
 					[
@@ -1299,6 +1396,7 @@ export async function main(args: string[]) {
 
 	// Handle --resume flag: show session selector
 	if (parsed.resume) {
+		const { selectSession } = await import("./cli/session.js");
 		const selectedSession = await selectSession(sessionManager);
 		if (!selectedSession) {
 			console.log(chalk.dim("No session selected"));
@@ -1344,33 +1442,50 @@ export async function main(args: string[]) {
 		}
 		return parsed.approvalMode ?? defaultApprovalMode;
 	})();
-
-	// Create approval service that controls tool execution authorization
-	const approvalService = isHeadlessMode
-		? new ServerRequestActionApprovalService(
-				approvalModeOverride,
-				() => sessionManager.getSessionId() ?? undefined,
-			)
-		: new PlatformBackedActionApprovalService(approvalModeOverride, {
-				sessionIdProvider: () => sessionManager.getSessionId() ?? undefined,
-			});
-	const headlessClientToolService = isHeadlessMode
-		? clientToolService.forSession(
-				() => sessionManager.getSessionId() ?? undefined,
-			)
-		: undefined;
-	const interactiveClientToolService =
-		isInteractiveTui && !isHeadlessMode
-			? new TuiClientToolService()
-			: undefined;
 	const toolRetryMode: ToolRetryMode =
 		isInteractiveTui && !isHeadlessMode ? "prompt" : "skip";
-	const toolRetryService = isHeadlessMode
-		? new ServerRequestToolRetryService(
-				toolRetryMode,
-				() => sessionManager.getSessionId() ?? undefined,
-			)
-		: new ToolRetryService(toolRetryMode);
+
+	// Create approval service that controls tool execution authorization
+	let approvalService: ActionApprovalService;
+	let headlessClientToolService: ClientToolExecutionService | undefined;
+	let toolRetryService: ToolRetryService;
+	if (isHeadlessMode) {
+		const [
+			{ ServerRequestActionApprovalService },
+			{ clientToolService },
+			{ ServerRequestToolRetryService },
+		] = await Promise.all([
+			import("./server/approval-service.js"),
+			import("./server/client-tools-service.js"),
+			import("./server/tool-retry-service.js"),
+		]);
+		approvalService = new ServerRequestActionApprovalService(
+			approvalModeOverride,
+			() => sessionManager.getSessionId() ?? undefined,
+		);
+		headlessClientToolService = clientToolService.forSession(
+			() => sessionManager.getSessionId() ?? undefined,
+		);
+		toolRetryService = new ServerRequestToolRetryService(
+			toolRetryMode,
+			() => sessionManager.getSessionId() ?? undefined,
+		);
+	} else {
+		approvalService = new PlatformBackedActionApprovalService(
+			approvalModeOverride,
+			{
+				sessionIdProvider: () => sessionManager.getSessionId() ?? undefined,
+			},
+		);
+		toolRetryService = new ToolRetryService(toolRetryMode);
+	}
+	let interactiveClientToolService: TuiClientToolService | undefined;
+	if (isInteractiveTui && !isHeadlessMode) {
+		const { TuiClientToolService } = await import(
+			"./cli-tui/client-tools/local-client-tool-service.js"
+		);
+		interactiveClientToolService = new TuiClientToolService();
+	}
 
 	// ─────────────────────────────────────────────────────────────────────────────
 	// PHASE 10: Tool Registry and Sandbox Setup
@@ -1390,20 +1505,20 @@ export async function main(args: string[]) {
 			parsedSandbox: parsed.sandbox,
 			modelApi: model.api,
 			cwd: process.cwd(),
+			shouldPrintMessages: !parsed.execJson && parsed.mode !== "json",
 		});
 	} catch (error) {
 		await exitWithStartupError(error);
 	}
 	const { allTools, sandbox, sandboxMode } = toolsResult;
 	startupProfiler.checkpoint("tools:prepared", { tools: allTools.length });
-	const useInteractiveClientTools = Boolean(interactiveClientToolService);
-	const replaceAskUserTool = <T extends typeof allTools>(tools: T): T =>
-		tools.map((tool) =>
+	let configuredAllTools = allTools;
+	if (interactiveClientToolService) {
+		const { askUserClientTool } = await import("./tools/ask-user-client.js");
+		configuredAllTools = allTools.map((tool) =>
 			tool.name === "ask_user" ? askUserClientTool : tool,
-		) as T;
-	const configuredAllTools = useInteractiveClientTools
-		? replaceAskUserTool(allTools)
-		: allTools;
+		);
+	}
 
 	// ─────────────────────────────────────────────────────────────────────────────
 	// PHASE 11: System Prompt Assembly
@@ -1532,8 +1647,10 @@ export async function main(args: string[]) {
 	// Don't print messages in headless mode - stdout is for JSON only
 	const shouldPrintMessages =
 		(isInteractive || mode === "text") &&
+		mode !== "json" &&
 		mode !== "headless" &&
-		!parsed.headless;
+		!parsed.headless &&
+		!parsed.execJson;
 
 	const isGitRepository = isInsideGitRepository();
 
@@ -1598,27 +1715,10 @@ export async function main(args: string[]) {
 	const { setupEventSubscriptions } = await import(
 		"./bootstrap/event-subscriptions-setup.js"
 	);
-	const automaticMemoryConsolidation =
-		createAutomaticMemoryConsolidationCoordinator({
-			createAgent: async () =>
-				createBackgroundTextAgent({
-					model: agent.state.model as Model<Api>,
-					systemPrompt: getMemoryConsolidationSystemPrompt(),
-					cwd: process.cwd(),
-					getAuthContext: (provider) => requireCredential(provider, false),
-				}),
-			getModel: () => agent.state.model as Model<Api>,
-		});
-	const automaticMemoryExtraction = createAutomaticMemoryExtractionCoordinator({
-		createAgent: async () =>
-			createBackgroundTextAgent({
-				model: agent.state.model as Model<Api>,
-				systemPrompt: getMemoryExtractionSystemPrompt(),
-				cwd: process.cwd(),
-				getAuthContext: (provider) => requireCredential(provider, false),
-			}),
+	const automaticMemory = createLazyAutoMemoryCoordinators({
+		cwd: process.cwd(),
+		getAuthContext: (provider) => requireCredential(provider, false),
 		getModel: () => agent.state.model as Model<Api>,
-		onProcessed: () => automaticMemoryConsolidation.schedule(),
 		sessionManager,
 	});
 	setupEventSubscriptions({
@@ -1632,7 +1732,7 @@ export async function main(args: string[]) {
 		tsHookCount: tsHooks.length,
 		cwd: process.cwd(),
 		enterpriseContext,
-		automaticMemoryExtraction,
+		automaticMemoryExtraction: automaticMemory.extraction,
 		scenarioReplay:
 			parsed.replayScenarioPath && process.env.MAESTRO_SCENARIO_ID
 				? {
@@ -1674,6 +1774,7 @@ export async function main(args: string[]) {
 			console.log(chalk.dim(`AGENTS.md generated at ${displayPath}`));
 		} else if (mode === "headless" || parsed.headless) {
 			// Headless mode - for native TUI communication
+			const { runHeadlessMode } = await import("./cli/headless.js");
 			startupProfiler.terminal("headless:ready");
 			await runHeadlessMode(
 				agent,
@@ -1721,7 +1822,6 @@ export async function main(args: string[]) {
 			await runSingleShotMode(agent, sessionManager, parsed.messages, mode);
 		}
 	} finally {
-		await automaticMemoryExtraction.flush();
-		await automaticMemoryConsolidation.flush();
+		await automaticMemory.flush();
 	}
 }

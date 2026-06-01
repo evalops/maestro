@@ -31,7 +31,7 @@ const steps = [
 		args: ["install"],
 	},
 	{
-		title: "Building Composer CLI",
+		title: "Building Maestro CLI",
 		command: "npm",
 		args: ["run", "build"],
 	},
@@ -72,7 +72,7 @@ for (const step of steps) {
 }
 
 const completionMessage = shouldLink
-	? "Composer linked globally. Run 'composer --help' to verify installation."
-	: "Composer built locally. Run 'npm link' to expose the CLI globally when ready.";
+	? "Maestro linked globally. Run 'maestro --help' to verify installation."
+	: "Maestro built locally. Run 'npm link' to expose the CLI globally when ready.";
 
 console.log(`\n✅ ${completionMessage}`);

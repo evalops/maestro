@@ -1,14 +1,15 @@
 import { type Static, Type } from "@sinclair/typebox";
 import { stringLiteralUnion } from "./typebox-utils.js";
 
-export const maestroAppServerProtocolVersion = "maestro-app-server.v2" as const;
+export const maestroAppServerProtocolVersion = "maestro-app-server.v3" as const;
 export const maestroAppServerSupportedProtocolVersions = [
-	"maestro-app-server.v1",
 	maestroAppServerProtocolVersion,
 ] as const;
 
 export const maestroAppServerClientMethods = [
 	"initialize",
+	"protocol/mode/list",
+	"protocol/mode/set",
 	"model/list",
 	"modelProvider/capabilities/read",
 	"policy/read",
@@ -17,7 +18,7 @@ export const maestroAppServerClientMethods = [
 	"network/fetch",
 	"network/audit/list",
 	"sandbox/probe",
-	"sandbox/proof/run",
+	"sandbox/check/run",
 	"externalAgent/import",
 	"pluginBundle/list",
 	"pluginBundle/install",
@@ -101,6 +102,7 @@ export type MaestroAppServerClientRequest = Static<
 
 export const MaestroAppServerCapabilitiesSchema = Type.Object({
 	sessions: Type.Boolean(),
+	protocolModes: Type.Boolean(),
 	modelList: Type.Boolean(),
 	modelProviderCapabilities: Type.Boolean(),
 	managedPolicy: Type.Boolean(),
@@ -108,7 +110,7 @@ export const MaestroAppServerCapabilitiesSchema = Type.Object({
 	networkProxy: Type.Boolean(),
 	networkAudit: Type.Boolean(),
 	sandboxProbe: Type.Boolean(),
-	sandboxProof: Type.Boolean(),
+	sandboxCheck: Type.Boolean(),
 	externalAgentImport: Type.Boolean(),
 	pluginBundles: Type.Boolean(),
 	daemonStatus: Type.Boolean(),
@@ -460,46 +462,46 @@ export const MaestroAppServerSandboxTypeSchema = stringLiteralUnion(
 export type MaestroAppServerSandboxType =
 	(typeof maestroAppServerSandboxTypes)[number];
 
-export const maestroAppServerSandboxProofModes = [
+export const maestroAppServerSandboxCheckModes = [
 	"read-only",
 	"workspace-write",
 ] as const;
-export const MaestroAppServerSandboxProofModeSchema = stringLiteralUnion(
-	maestroAppServerSandboxProofModes,
+export const MaestroAppServerSandboxCheckModeSchema = stringLiteralUnion(
+	maestroAppServerSandboxCheckModes,
 );
-export type MaestroAppServerSandboxProofMode =
-	(typeof maestroAppServerSandboxProofModes)[number];
+export type MaestroAppServerSandboxCheckMode =
+	(typeof maestroAppServerSandboxCheckModes)[number];
 
 export const MaestroAppServerSandboxProbeResultSchema = Type.Object({
 	available: Type.Boolean(),
 	type: MaestroAppServerSandboxTypeSchema,
 	platform: Type.String(),
-	supportedModes: Type.Array(MaestroAppServerSandboxProofModeSchema),
-	proofAvailable: Type.Boolean(),
+	supportedModes: Type.Array(MaestroAppServerSandboxCheckModeSchema),
+	checkAvailable: Type.Boolean(),
 });
 export type MaestroAppServerSandboxProbeResult = Static<
 	typeof MaestroAppServerSandboxProbeResultSchema
 >;
 
-export const MaestroAppServerSandboxProofCheckSchema = Type.Object({
+export const MaestroAppServerSandboxCheckItemSchema = Type.Object({
 	name: Type.String(),
 	passed: Type.Boolean(),
 	detail: Type.String(),
 });
-export type MaestroAppServerSandboxProofCheck = Static<
-	typeof MaestroAppServerSandboxProofCheckSchema
+export type MaestroAppServerSandboxCheckItem = Static<
+	typeof MaestroAppServerSandboxCheckItemSchema
 >;
 
-export const MaestroAppServerSandboxProofResultSchema = Type.Object({
-	mode: MaestroAppServerSandboxProofModeSchema,
+export const MaestroAppServerSandboxCheckResultSchema = Type.Object({
+	mode: MaestroAppServerSandboxCheckModeSchema,
 	available: Type.Boolean(),
 	type: MaestroAppServerSandboxTypeSchema,
 	passed: Type.Boolean(),
 	skippedReason: Type.Optional(Type.String()),
-	checks: Type.Array(MaestroAppServerSandboxProofCheckSchema),
+	checks: Type.Array(MaestroAppServerSandboxCheckItemSchema),
 });
-export type MaestroAppServerSandboxProofResult = Static<
-	typeof MaestroAppServerSandboxProofResultSchema
+export type MaestroAppServerSandboxCheckResult = Static<
+	typeof MaestroAppServerSandboxCheckResultSchema
 >;
 
 export const maestroAppServerExternalAgentArtifactKinds = [
@@ -619,6 +621,47 @@ export const MaestroAppServerPluginBundleMutationResultSchema = Type.Object({
 });
 export type MaestroAppServerPluginBundleMutationResult = Static<
 	typeof MaestroAppServerPluginBundleMutationResultSchema
+>;
+
+export const maestroAppServerProtocolModeIds = [
+	"standard",
+	"review",
+	"realtime",
+] as const;
+export const MaestroAppServerProtocolModeIdSchema = stringLiteralUnion(
+	maestroAppServerProtocolModeIds,
+);
+export type MaestroAppServerProtocolModeId =
+	(typeof maestroAppServerProtocolModeIds)[number];
+
+export const MaestroAppServerProtocolModeSchema = Type.Object({
+	id: MaestroAppServerProtocolModeIdSchema,
+	label: Type.String(),
+	readOnly: Type.Boolean(),
+	realtime: Type.Boolean(),
+	allowedMethods: Type.Array(Type.String()),
+	blockedMethods: Type.Array(Type.String()),
+	serverNotifications: Type.Array(Type.String()),
+});
+export type MaestroAppServerProtocolMode = Static<
+	typeof MaestroAppServerProtocolModeSchema
+>;
+
+export const MaestroAppServerProtocolModeListResultSchema = Type.Object({
+	activeMode: MaestroAppServerProtocolModeIdSchema,
+	defaultMode: MaestroAppServerProtocolModeIdSchema,
+	modes: Type.Array(MaestroAppServerProtocolModeSchema),
+});
+export type MaestroAppServerProtocolModeListResult = Static<
+	typeof MaestroAppServerProtocolModeListResultSchema
+>;
+
+export const MaestroAppServerProtocolModeSetResultSchema = Type.Object({
+	activeMode: MaestroAppServerProtocolModeIdSchema,
+	mode: MaestroAppServerProtocolModeSchema,
+});
+export type MaestroAppServerProtocolModeSetResult = Static<
+	typeof MaestroAppServerProtocolModeSetResultSchema
 >;
 
 export const maestroAppServerRemoteControlStatuses = [
@@ -920,10 +963,12 @@ export const MaestroAppServerResponseSchema = Type.Object({
 			MaestroAppServerNetworkFetchResultSchema,
 			MaestroAppServerNetworkAuditListResultSchema,
 			MaestroAppServerSandboxProbeResultSchema,
-			MaestroAppServerSandboxProofResultSchema,
+			MaestroAppServerSandboxCheckResultSchema,
 			MaestroAppServerExternalAgentImportResultSchema,
 			MaestroAppServerPluginBundleListResultSchema,
 			MaestroAppServerPluginBundleMutationResultSchema,
+			MaestroAppServerProtocolModeListResultSchema,
+			MaestroAppServerProtocolModeSetResultSchema,
 			MaestroAppServerDaemonStatusResultSchema,
 			MaestroAppServerRemoteControlStatusResultSchema,
 			MaestroAppServerRemoteControlLeaseResultSchema,

@@ -35,6 +35,9 @@ pub(crate) struct A2APlatformRegistrationConfig {
     pub(crate) max_concurrent_objectives: String,
     pub(crate) surface: String,
     pub(crate) surface_type: String,
+    pub(crate) traceparent: Option<String>,
+    pub(crate) tracestate: Option<String>,
+    pub(crate) remote_runner_session_id: Option<String>,
 }
 
 pub(crate) fn maybe_spawn_a2a_platform_registration_loop(config: Arc<Config>) {
@@ -157,6 +160,7 @@ pub(crate) fn resolve_a2a_platform_registration_config(
         "EVALOPS_AGENT_ID",
     ])
     .unwrap_or_else(|| default_a2a_platform_agent_id(config));
+    let (traceparent, tracestate) = trace_context_from_env();
 
     Ok(Some(A2APlatformRegistrationConfig {
         base_url: normalize_platform_base_url(&base_url.expect("base URL presence checked above")),
@@ -204,6 +208,13 @@ pub(crate) fn resolve_a2a_platform_registration_config(
         surface: trimmed_env("MAESTRO_A2A_PLATFORM_SURFACE").unwrap_or_else(|| "a2a".to_string()),
         surface_type: trimmed_env("MAESTRO_A2A_PLATFORM_SURFACE_TYPE")
             .unwrap_or_else(|| "SURFACE_MAESTRO".to_string()),
+        traceparent,
+        tracestate,
+        remote_runner_session_id: first_trimmed_env(&[
+            "MAESTRO_REMOTE_RUNNER_SESSION_ID",
+            "MAESTRO_RUNNER_SESSION_ID",
+            "REMOTE_RUNNER_SESSION_ID",
+        ]),
     }))
 }
 
@@ -271,13 +282,24 @@ fn post_platform_connect_json(
         .build()
         .map_err(|error| format!("failed to build Platform client: {error}"))?;
     let url = format!("{}{}", registration.base_url, path);
-    let response = client
+    let mut request = client
         .post(&url)
         .bearer_auth(&registration.token)
         .header("Content-Type", "application/json")
         .header("Connect-Protocol-Version", "1")
         .header("X-Organization-ID", &registration.organization_id)
         .header("X-Workspace-ID", &registration.workspace_id)
+        .header("X-EvalOps-Agent-ID", &registration.agent_id);
+    if let Some(owner_id) = registration.owner_id.as_deref() {
+        request = request.header("X-EvalOps-Actor-ID", owner_id);
+    }
+    if let Some(traceparent) = registration.traceparent.as_deref() {
+        request = request.header("traceparent", traceparent);
+        if let Some(tracestate) = registration.tracestate.as_deref() {
+            request = request.header("tracestate", tracestate);
+        }
+    }
+    let response = request
         .json(body)
         .send()
         .map_err(|error| format!("POST {url} failed: {error}"))?;
@@ -408,6 +430,30 @@ fn a2a_platform_peer_projection(
     insert_string(&mut attributes, "controlPlane", Some("rust-control-plane"));
     insert_string(
         &mut attributes,
+        "organizationId",
+        Some(&registration.organization_id),
+    );
+    insert_string(
+        &mut attributes,
+        "workspaceId",
+        Some(&registration.workspace_id),
+    );
+    insert_string(&mut attributes, "agentId", Some(&registration.agent_id));
+    insert_string(&mut attributes, "actorId", registration.owner_id.as_deref());
+    insert_string(
+        &mut attributes,
+        "traceparent",
+        registration.traceparent.as_deref(),
+    );
+    if registration.traceparent.is_some() {
+        insert_string(
+            &mut attributes,
+            "tracestate",
+            registration.tracestate.as_deref(),
+        );
+    }
+    insert_string(
+        &mut attributes,
         "operatingPlaneExtension",
         Some(EVALOPS_A2A_EXTENSION_URI),
     );
@@ -425,6 +471,11 @@ fn a2a_platform_peer_projection(
         &mut attributes,
         "publishedBy",
         Some("maestro-control-plane-auto-registration"),
+    );
+    insert_string(
+        &mut attributes,
+        "remoteRunnerSessionId",
+        registration.remote_runner_session_id.as_deref(),
     );
 
     let mut projection = Map::new();
@@ -587,6 +638,27 @@ pub(crate) fn normalize_platform_base_url(base_url: &str) -> String {
 
 fn first_trimmed_env(names: &[&str]) -> Option<String> {
     names.iter().find_map(|name| trimmed_env(name))
+}
+
+fn trace_context_from_env() -> (Option<String>, Option<String>) {
+    const TRACE_CONTEXT_CANDIDATES: &[(&str, &[&str])] = &[
+        ("MAESTRO_A2A_TRACEPARENT", &["MAESTRO_A2A_TRACESTATE"]),
+        (
+            "MAESTRO_PLATFORM_TRACEPARENT",
+            &["MAESTRO_PLATFORM_TRACESTATE"],
+        ),
+        ("TRACEPARENT", &["TRACESTATE", "TRACE_STATE"]),
+        ("TRACE_PARENT", &["TRACESTATE", "TRACE_STATE"]),
+        ("MAESTRO_TRACEPARENT", &["MAESTRO_TRACESTATE"]),
+    ];
+
+    for (traceparent_name, tracestate_names) in TRACE_CONTEXT_CANDIDATES {
+        if let Some(traceparent) = trimmed_env(traceparent_name) {
+            return (Some(traceparent), first_trimmed_env(tracestate_names));
+        }
+    }
+
+    (None, None)
 }
 
 fn env_bool(name: &str) -> Option<bool> {

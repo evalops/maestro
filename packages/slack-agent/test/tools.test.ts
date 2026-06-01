@@ -1,7 +1,7 @@
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createExecutor } from "../src/sandbox.js";
 import {
 	attachTool,
@@ -10,10 +10,12 @@ import {
 	createReadTool,
 	createScheduleTool,
 	createSlackAgentTools,
+	createSlackDeliveryTools,
 	createStatusTool,
 	createWriteTool,
 	setUploadFunction,
 } from "../src/tools/index.js";
+import type { MessageQueue } from "../src/utils/message-queue.js";
 
 describe("createSlackAgentTools", () => {
 	it("creates all default tools", () => {
@@ -45,6 +47,161 @@ describe("createSlackAgentTools", () => {
 
 		expect(tools.map((t) => t.name)).toContain("schedule");
 		expect(tools).toHaveLength(10);
+	});
+});
+
+describe("createSlackDeliveryTools", () => {
+	function createQueue() {
+		return {
+			sendMessage: vi.fn(),
+			sendThreadReply: vi.fn(),
+			sendProgress: vi.fn(() => true),
+			sendFinal: vi.fn(() => true),
+			sendError: vi.fn(),
+			sendBlocker: vi.fn(),
+			flush: vi.fn(async () => {}),
+			deliveryFailures: vi.fn(() => 0),
+			flushOrThrowIfDeliveryFailed: vi.fn(async () => {}),
+		};
+	}
+
+	it("exposes the teammate Slack delivery surface", () => {
+		const queue = createQueue();
+		const tools = createSlackDeliveryTools({
+			queue: queue as unknown as MessageQueue,
+			defaultChannel: "C123",
+			defaultThreadTs: "1713900000.000100",
+		});
+
+		expect(tools.map((tool) => tool.name)).toEqual([
+			"send_message",
+			"send_thread_reply",
+			"send_progress",
+			"send_request",
+			"send_final",
+			"send_error",
+			"send_blocker",
+		]);
+	});
+
+	it("sends final through the queue and flushes delivery", async () => {
+		const queue = createQueue();
+		const [sendFinal] = createSlackDeliveryTools({
+			queue: queue as unknown as MessageQueue,
+			defaultChannel: "C123",
+			defaultThreadTs: "1713900000.000100",
+		}).filter((tool) => tool.name === "send_final");
+
+		const result = await sendFinal!.execute("call_1", {
+			text: "I checked prod and it is healthy.",
+		});
+
+		expect(queue.sendFinal).toHaveBeenCalledWith(
+			"I checked prod and it is healthy.",
+		);
+		expect(queue.flushOrThrowIfDeliveryFailed).toHaveBeenCalledWith(0);
+		expect(result.content[0]!.text).toBe("Final sent in Slack.");
+	});
+
+	it("logs explicit channel messages", async () => {
+		const queue = createQueue();
+		const [sendMessage] = createSlackDeliveryTools({
+			queue: queue as unknown as MessageQueue,
+			defaultChannel: "C123",
+			defaultThreadTs: "1713900000.000100",
+		}).filter((tool) => tool.name === "send_message");
+
+		await sendMessage!.execute("call_1", {
+			text: "I kicked off the deploy check.",
+		});
+
+		expect(queue.sendMessage).toHaveBeenCalledWith(
+			"C123",
+			"I kicked off the deploy check.",
+			true,
+		);
+		expect(queue.flushOrThrowIfDeliveryFailed).toHaveBeenCalledWith(0);
+	});
+
+	it("reports explicit channel delivery failures", async () => {
+		const queue = {
+			...createQueue(),
+			deliveryFailures: vi.fn(() => 2),
+			flushOrThrowIfDeliveryFailed: vi.fn(async () => {
+				throw new Error("send_message failed to deliver in Slack.");
+			}),
+		};
+		const [sendMessage] = createSlackDeliveryTools({
+			queue: queue as unknown as MessageQueue,
+			defaultChannel: "C123",
+			defaultThreadTs: "1713900000.000100",
+		}).filter((tool) => tool.name === "send_message");
+
+		await expect(
+			sendMessage!.execute("call_1", {
+				text: "I kicked off the deploy check.",
+			}),
+		).rejects.toThrow("send_message failed to deliver in Slack.");
+
+		expect(queue.flushOrThrowIfDeliveryFailed).toHaveBeenCalledWith(2);
+	});
+
+	it("defaults explicit thread replies to the current Slack thread", async () => {
+		const queue = createQueue();
+		const [sendThreadReply] = createSlackDeliveryTools({
+			queue: queue as unknown as MessageQueue,
+			defaultChannel: "C123",
+			defaultThreadTs: "1713900000.000100",
+		}).filter((tool) => tool.name === "send_thread_reply");
+
+		await sendThreadReply!.execute("call_1", {
+			text: "Extra context is ready.",
+		});
+
+		expect(queue.sendThreadReply).toHaveBeenCalledWith(
+			"C123",
+			"1713900000.000100",
+			"Extra context is ready.",
+			true,
+		);
+	});
+
+	it("sends concrete user requests through the queue", async () => {
+		const queue = {
+			...createQueue(),
+			sendRequest: vi.fn(),
+		};
+		const [sendRequest] = createSlackDeliveryTools({
+			queue: queue as unknown as MessageQueue,
+			defaultChannel: "C123",
+			defaultThreadTs: "1713900000.000100",
+		}).filter((tool) => tool.name === "send_request");
+
+		const result = await sendRequest!.execute("call_1", {
+			text: "Can I merge PR #123 after checks pass?",
+		});
+
+		expect(queue.sendRequest).toHaveBeenCalledWith(
+			"Can I merge PR #123 after checks pass?",
+		);
+		expect(result.content[0]!.text).toBe("Request sent in Slack.");
+	});
+
+	it("separates errors from blockers", async () => {
+		const queue = createQueue();
+		const tools = createSlackDeliveryTools({
+			queue: queue as unknown as MessageQueue,
+			defaultChannel: "C123",
+			defaultThreadTs: "1713900000.000100",
+		});
+		const sendError = tools.find((tool) => tool.name === "send_error");
+		const sendBlocker = tools.find((tool) => tool.name === "send_blocker");
+
+		await sendError!.execute("call_1", { text: "Slack API failed" });
+		await sendBlocker!.execute("call_2", { text: "Need GitHub access" });
+
+		expect(queue.sendError).toHaveBeenCalledWith("Slack API failed");
+		expect(queue.sendBlocker).toHaveBeenCalledWith("Need GitHub access");
 	});
 });
 

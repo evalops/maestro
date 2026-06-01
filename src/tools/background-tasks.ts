@@ -85,7 +85,10 @@ import {
 import { createLogger } from "../utils/logger.js";
 import { resolveEnvPath } from "../utils/path-expansion.js";
 import { safejoin } from "../utils/path-validation.js";
-import { redactSecrets } from "../utils/secret-redactor.js";
+import {
+	redactSecrets,
+	sanitizeWithStaticMask,
+} from "../utils/secret-redactor.js";
 import { resolveShellEnvironment } from "../utils/shell-env.js";
 import {
 	type RestartPolicy,
@@ -722,7 +725,7 @@ class BackgroundTaskManager extends EventEmitter {
 		if (!task) {
 			throw new ToolError(`Task not found or logs expired: ${taskId}`);
 		}
-		const text = this.tailLog(task, lines);
+		const text = this.sanitizeLogSnippet(this.tailLog(task, lines));
 		if (!task.logTruncated) {
 			return text;
 		}
@@ -769,7 +772,9 @@ export function formatTaskFailures(): string | null {
 			: typeof task.exitCode === "number" && task.exitCode !== 0
 				? `Exit Code: ${task.exitCode}`
 				: "Exited unexpectedly";
-		lines.push(`- Task "${task.command}" (${task.id}) stopped. ${reason}`);
+		lines.push(
+			`- Task "${sanitizeWithStaticMask(task.command)}" (${task.id}) stopped. ${reason}`,
+		);
 		// Add a hint about logs
 		lines.push(
 			`  (Use background_tasks action=logs taskId=${task.id} to investigate)`,

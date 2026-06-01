@@ -243,7 +243,7 @@ export function buildPathAndStatsLine(
 	return `${truncatedLeft}${padding}${rightSide}`;
 }
 
-export type FooterMode = "ensemble" | "solo";
+export type FooterMode = "rich" | "solo";
 
 export interface FooterStats {
 	totalInput: number;
@@ -669,7 +669,7 @@ export function truncateModelLabel(label: string, targetWidth: number): string {
  * ## Layout Priority (highest to lowest)
  *
  * 1. **Full layout**: Stats + Model Name + Brand Logo
- *    Example: "▲12K ▼5K ⟲10K $0.05 | 45%    claude-sonnet-4.0 ◆ Composer"
+ *    Example: "▲12K ▼5K ⟲10K $0.05 | 45%    claude-sonnet-4.0 ◆ Maestro"
  *
  * 2. **Drop brand**: Stats + Model Name (brand removed first)
  *    Example: "▲12K ▼5K ⟲10K $0.05 | 45%    claude-sonnet-4.0"

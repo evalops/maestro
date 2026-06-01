@@ -42,6 +42,12 @@ bun install -g @evalops/maestro
 npm install -g @evalops/maestro
 ```
 
+If a global install fails while resolving `@evalops/tui` or
+`@evalops/contracts`, you are installing a deprecated 0.10.8-0.10.20 package
+that referenced private workspace dependencies. Upgrade to
+`@evalops/maestro@latest`; published release verification now runs npm and Bun
+registry install smokes against the public package metadata before promotion.
+
 ### Nix
 
 ```bash
@@ -55,6 +61,10 @@ nix run github:evalops/maestro
 ```bash
 maestro codex login
 ```
+
+`maestro codex login` uses Codex app-server auth. Published installs use the
+packaged `@openai/codex` app-server and source checkouts fall back to a `codex`
+binary on `PATH`, so an existing `codex login` is reused automatically.
 
 Bare `maestro` defaults to `openai-codex/gpt-5.5`. Maestro also supports OpenAI API keys, Anthropic, Google, OpenRouter, Azure OpenAI, GitHub Copilot, Groq, xAI, Cerebras, and managed EvalOps auth. See [Models](docs/MODELS.md) for provider-specific setup and overrides.
 

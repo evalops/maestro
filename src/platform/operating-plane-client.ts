@@ -143,7 +143,7 @@ export interface OperatingPlaneRun {
 	tool_calls?: OperatingPlaneToolCall[];
 	approvals?: OperatingPlaneApproval[];
 	usage?: OperatingPlaneUsage;
-	value_proof?: OperatingPlaneValueProof;
+	runtime_signals?: OperatingPlaneRuntimeSignals;
 	canonical_attributes?: Record<string, unknown>;
 }
 
@@ -232,7 +232,7 @@ export interface OperatingPlaneUsage {
 	currency?: string;
 }
 
-export interface OperatingPlaneValueProof {
+export interface OperatingPlaneRuntimeSignals {
 	operation_id: string;
 	operator_summary: string;
 	identity_bound: boolean;
@@ -242,8 +242,8 @@ export interface OperatingPlaneValueProof {
 	trace_linked: boolean;
 	evidence_linked: boolean;
 	cost_attributed: boolean;
-	proof_points?: string[];
-	missing_proof?: string[];
+	observed_signals?: string[];
+	missing_signals?: string[];
 }
 
 export async function resolveOperatingPlaneServiceConfig(): Promise<PlatformServiceConfig | null> {

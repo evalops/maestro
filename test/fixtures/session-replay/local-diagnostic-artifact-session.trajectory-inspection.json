@@ -365,9 +365,15 @@
 			"title": "File edited",
 			"summary": "src/api.ts | 256 bytes | 1 edits",
 			"toolName": "edit",
-			"relatedIds": ["call-local-edit"],
+			"relatedIds": ["call-local-edit", "file:src/api.ts"],
 			"timelineItemIds": ["file-change:tool-local-edit-1:call-local-edit"],
 			"evidence": [
+				{
+					"kind": "artifact",
+					"id": "file:src/api.ts",
+					"redacted": true,
+					"label": "artifact:file:src/api.ts"
+				},
 				{
 					"kind": "timeline_item",
 					"id": "file-change:tool-local-edit-1:call-local-edit",
@@ -435,6 +441,7 @@
 			"relatedIds": [
 				"approval-local-1",
 				"call-local-edit",
+				"file:src/api.ts",
 				"tool-exec-local-1"
 			],
 			"timelineItemIds": ["tool-result:tool-local-edit-1:call-local-edit"],
@@ -444,6 +451,12 @@
 					"id": "approval-local-1",
 					"redacted": true,
 					"label": "approval_request:approval-local-1"
+				},
+				{
+					"kind": "artifact",
+					"id": "file:src/api.ts",
+					"redacted": true,
+					"label": "artifact:file:src/api.ts"
 				},
 				{
 					"kind": "timeline_item",

@@ -121,7 +121,7 @@
 		{
 			"area": "approvals-sandbox-policy",
 			"evidenceType": "source",
-			"path": "packages/control-plane-rs/src/main.rs",
+			"path": "packages/control-plane-rs/src/codex_bridge.rs",
 			"anchors": [
 				"server_requests\": [\"approval\"]",
 				"codex_headless_pending_request_id",
@@ -334,7 +334,7 @@
 		{
 			"area": "multi-agent-workgraph",
 			"evidenceType": "source",
-			"path": "packages/control-plane-rs/src/main.rs",
+			"path": "packages/control-plane-rs/src/codex_bridge.rs",
 			"anchors": [
 				"childRunIds",
 				"codexWorkGraph",
@@ -381,12 +381,15 @@
 			"path": "src/server/handlers/hosted-runner-drain.ts",
 			"anchors": [
 				"evalops.remote-runner.work-continuity.v1",
+				"evalops.remote-runner.runtime-continuity.v1",
 				"collectHostedRunnerWorkContinuity",
+				"buildHostedRunnerRuntimeContinuity",
 				"codex_subagent_child_run_ids",
 				"codex_subagent_thread_ids",
 				"codex_subagent_edges",
 				"collectCodexSubagentEdgesFromSource",
-				"codexSubagentOperation"
+				"codexSubagentOperation",
+				"source_owner_instance_id"
 			]
 		},
 		{
@@ -408,8 +411,27 @@
 			"path": "packages/tui-rs/src/hosted_runner.rs",
 			"anchors": [
 				"evalops.remote-runner.work-continuity.v1",
+				"evalops.remote-runner.runtime-continuity.v1"
+			]
+		},
+		{
+			"area": "remote-runner-continuity",
+			"evidenceType": "source",
+			"path": "packages/tui-rs/src/hosted_runner/manifests.rs",
+			"anchors": [
+				"RuntimeContinuityManifest",
 				"CodexSubagentContinuityEdge",
 				"codex_subagent_edges",
+				"collect_codex_subagent_edges_from_source"
+			]
+		},
+		{
+			"area": "remote-runner-continuity",
+			"evidenceType": "test",
+			"path": "packages/tui-rs/src/hosted_runner/tests.rs",
+			"anchors": [
+				"work_continuity_manifest_extracts_codex_subagent_ids",
+				"work_continuity_manifest_keeps_spawned_and_resumed_codex_subagents_active",
 				"close_agent"
 			]
 		},
@@ -434,7 +456,7 @@
 		{
 			"area": "remote-runner-continuity",
 			"evidenceType": "source",
-			"path": "packages/tui-rs/src/headless/messages.rs",
+			"path": "packages/tui-rs/src/headless/messages/state.rs",
 			"anchors": [
 				"CodexSubagentContinuityEdge",
 				"codex_subagent_edges",
@@ -466,6 +488,7 @@
 				"records Codex subagent continuity without copying prompt payloads into manifest metadata",
 				"records Codex subagent edge lifecycle from restored runtime state",
 				"HOSTED_RUNNER_WORK_CONTINUITY_VERSION",
+				"HOSTED_RUNNER_RUNTIME_CONTINUITY_VERSION",
 				"codex_subagent_child_run_ids",
 				"codex_subagent_edges",
 				"close_agent"
@@ -475,7 +498,46 @@
 			"area": "remote-runner-continuity",
 			"evidenceType": "doc",
 			"path": "docs/protocols/hosted-runner-contract.md",
-			"anchors": ["work_continuity", "Codex subagent child runs"]
+			"anchors": [
+				"runtime_continuity",
+				"work_continuity",
+				"Codex subagent child runs"
+			]
+		},
+		{
+			"area": "headless-runtime-durability",
+			"evidenceType": "doc",
+			"path": "docs/protocols/headless-conformance.md",
+			"anchors": [
+				"hosted drain/snapshot handoff",
+				"post-drain mutation",
+				"hosted restore from a drain manifest",
+				"runtime flush manifests preserve inspectable state but stay not-ready",
+				"remote sessions need a durable control session plus a replayable event stream"
+			]
+		},
+		{
+			"area": "headless-runtime-durability",
+			"evidenceType": "test",
+			"path": "test/server/headless-runtime-service.test.ts",
+			"anchors": [
+				"restores runtime state and replay marker from a hosted runner drain manifest",
+				"restores $flushStatus manifest into inspectable not-ready state",
+				"restored_from_snapshot",
+				"not ready for new attachments"
+			]
+		},
+		{
+			"area": "headless-runtime-durability",
+			"evidenceType": "test",
+			"path": "test/server/hosted-runner-drain.test.ts",
+			"anchors": [
+				"records an interrupted manifest when runtime drain fails",
+				"source_owner_instance_id",
+				"source_runtime_lease",
+				"restore_environment_key",
+				"runtime_flush_status"
+			]
 		},
 		{
 			"area": "realtime-streaming",
@@ -541,7 +603,7 @@
 		{
 			"area": "rust-control-plane",
 			"evidenceType": "test",
-			"path": "packages/tui-rs/src/swarm/types.rs",
+			"path": "packages/tui-rs/src/swarm/types/tests.rs",
 			"anchors": [
 				"test_subagent_dispatch_matches_protocol_fixture",
 				"resolve_subagent_dispatch",

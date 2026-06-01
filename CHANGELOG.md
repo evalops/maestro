@@ -17,6 +17,306 @@ versioning when releases are cut.
   and keep scheduled public runs inert so public publishing stays downstream of
   the internal source-of-truth release.
 
+## [0.10.48] - 2026-05-30
+
+### Changed
+
+- Gate public mirror published verification scripts (#2361). <!-- maestro-release-note:e47d3cb174d4 -->
+- Rerun release-auth checks. <!-- maestro-release-note:79b5f14693f4 -->
+- Remove timing flake from rust tui tests. <!-- maestro-release-note:6afafcde7a15 -->
+- Lock A2A stage gate evidence ids. <!-- maestro-release-note:73e227c68bf2 -->
+- Gate published replay evidence verifier. <!-- maestro-release-note:52a6ef07d804 -->
+- Give ghcr image builds more headroom. <!-- maestro-release-note:96aca1a604dc -->
+- Document live smoke evidence inputs. <!-- maestro-release-note:123a4a481fad -->
+- Move Slack scenarios to Platform runtime refs (#2347). <!-- maestro-release-note:61245c594cdb -->
+
+### Fixed
+
+- Refresh maestro from release metadata on startup (#2360). <!-- maestro-release-note:0a81cbc261ba -->
+- Verify full deprecation range on rerun. <!-- maestro-release-note:26ad24a575d0 -->
+- Make npm deprecation reruns idempotent. <!-- maestro-release-note:c8c4d44560c3 -->
+- Bundle Codex app-server integration. <!-- maestro-release-note:657ca196960f -->
+- Lock tui rust dependencies for public ci. <!-- maestro-release-note:3b7472e79f22 -->
+- Retire ensemble footer mode (#2350). <!-- maestro-release-note:c71b0f4cd7b8 -->
+- Consume runtime signals only (#2349). <!-- maestro-release-note:539894730a32 -->
+
+## [0.10.47] - 2026-05-29
+
+### Changed
+
+- Recover login when refresh fails (#2346). <!-- maestro-release-note:f2ceab065c0f -->
+- Rename sandbox proof surface to checks. <!-- maestro-release-note:efe1907cf01d -->
+- Avoid refreshing passive auth probes (#2345). <!-- maestro-release-note:00018d636738 -->
+- Surface app-server auth in tui status. <!-- maestro-release-note:d390030bc9f0 -->
+- Align login with app-server auth. <!-- maestro-release-note:a0131380881b -->
+- Keep ripgrep guard public-safe. <!-- maestro-release-note:db78b72d5fc6 -->
+- Mirror ripgrep helper release action. <!-- maestro-release-note:7255e7a9975e -->
+- Harden ripgrep setup and background log rotation. <!-- maestro-release-note:716e558f5c33 -->
+- Record Slack delivery runtime events (#2337). <!-- maestro-release-note:838e72f7d4c5 -->
+- Add teammate Slack delivery queue (#2331). <!-- maestro-release-note:d3e986d2bf10 -->
+- Smoke already-published registry releases (#2335). <!-- maestro-release-note:3d1f6d3a7cc5 -->
+- Cover legacy broken release range (#2334). <!-- maestro-release-note:22d7ef756cfe -->
+
+### Fixed
+
+- Preserve delivered slack finals. <!-- maestro-release-note:9478ca17aae6 -->
+- Bind durable a2a push message ids (#2336). <!-- maestro-release-note:4c34b9ff45d1 -->
+- Keep tag-release published no-op in source (#2333). <!-- maestro-release-note:6cba565f53bd -->
+
+## [0.10.46] - 2026-05-28
+
+### Fixed
+
+- Foreground current request literals. <!-- maestro-release-note:b9ac6b5c93ef -->
+
+## [0.10.45] - 2026-05-28
+
+### Changed
+
+- Harden Platform A2A live evidence ids (#2324). <!-- maestro-release-note:8064054b7ec7 -->
+- Release package-impacting follow-up changes under v0.10.45 while keeping the
+  tag-release version guard strict.
+- Harden hosted runner continuity evidence. <!-- maestro-release-note:a0e4b937ee8e -->
+
+### Fixed
+
+- Preserve requested deploy identifiers. <!-- maestro-release-note:fa4a2e7f9429 -->
+
+## [0.10.44] - 2026-05-28
+
+### Changed
+
+- Harden hosted runner continuity evidence. <!-- maestro-release-note:a0e4b937ee8e -->
+- Require public release tag mismatches with package-impacting changes to use a
+  new package version.
+
+### Fixed
+
+- Release post-v0.10.43 package changes under v0.10.44 instead of silently
+  skipping the public tag guard.
+
+## [0.10.43] - 2026-05-28
+
+### Changed
+
+- Harden release smoke conformance gates. <!-- maestro-release-note:2e08ee188332 -->
+- Simplify teammate runtime surface. <!-- maestro-release-note:736c201f0f42 -->
+- Gate published replay lifecycle evidence (#2316). <!-- maestro-release-note:efaa8396bf9f -->
+- Harden Bun runtime package smoke (#2314). <!-- maestro-release-note:81b82f5fd1b0 -->
+- Gate published replay ToolExecution evidence (#2312). <!-- maestro-release-note:b7593028a1d8 -->
+- Gate queryable replay observability (#2311). <!-- maestro-release-note:5d907d6476a4 -->
+- Gate published replay search evidence (#2310). <!-- maestro-release-note:e781ffc42d54 -->
+- Harden release surface gate scripts. <!-- maestro-release-note:52e5b469a427 -->
+- Verify published replay provider config mirrors. <!-- maestro-release-note:db33aac1117f -->
+- Require deterministic published replay provider config. <!-- maestro-release-note:20ccb579d520 -->
+- Gate published replay provider transcript evidence. <!-- maestro-release-note:85d27c1a856b -->
+
+### Fixed
+
+- Harden ripgrep path errors and replay error evidence (#2307). <!-- maestro-release-note:2d2352fdcfa1 -->
+
+## [0.10.42] - 2026-05-28
+
+### Changed
+
+- Harden Bun runtime package smoke (#2314). <!-- maestro-release-note:81b82f5fd1b0 -->
+- Gate published replay ToolExecution evidence (#2312). <!-- maestro-release-note:b7593028a1d8 -->
+- Gate queryable replay observability (#2311). <!-- maestro-release-note:5d907d6476a4 -->
+- Gate published replay search evidence (#2310). <!-- maestro-release-note:e781ffc42d54 -->
+- Harden release surface gate scripts. <!-- maestro-release-note:52e5b469a427 -->
+- Verify published replay provider config mirrors. <!-- maestro-release-note:db33aac1117f -->
+- Require deterministic published replay provider config. <!-- maestro-release-note:20ccb579d520 -->
+- Gate published replay provider transcript evidence. <!-- maestro-release-note:85d27c1a856b -->
+
+### Fixed
+
+- Harden ripgrep path errors and replay error evidence (#2307). <!-- maestro-release-note:2d2352fdcfa1 -->
+
+## [0.10.41] - 2026-05-27
+
+### Changed
+
+- Gate published replay ToolExecution evidence (#2312). <!-- maestro-release-note:b7593028a1d8 -->
+- Gate queryable replay observability (#2311). <!-- maestro-release-note:5d907d6476a4 -->
+- Gate published replay search evidence (#2310). <!-- maestro-release-note:e781ffc42d54 -->
+- Harden release surface gate scripts. <!-- maestro-release-note:52e5b469a427 -->
+- Verify published replay provider config mirrors. <!-- maestro-release-note:db33aac1117f -->
+- Require deterministic published replay provider config. <!-- maestro-release-note:20ccb579d520 -->
+- Gate published replay provider transcript evidence. <!-- maestro-release-note:85d27c1a856b -->
+
+### Fixed
+
+- Harden ripgrep path errors and replay error evidence (#2307). <!-- maestro-release-note:2d2352fdcfa1 -->
+
+## [0.10.40] - 2026-05-27
+
+### Changed
+
+- Harden release surface gate scripts. <!-- maestro-release-note:52e5b469a427 -->
+- Verify published replay provider config mirrors. <!-- maestro-release-note:db33aac1117f -->
+- Require deterministic published replay provider config. <!-- maestro-release-note:20ccb579d520 -->
+- Gate published replay provider transcript evidence. <!-- maestro-release-note:85d27c1a856b -->
+
+### Fixed
+
+- Harden ripgrep path errors and replay error evidence (#2307). <!-- maestro-release-note:2d2352fdcfa1 -->
+
+## [0.10.39] - 2026-05-27
+
+### Changed
+
+- Drain ripgrep retry promise cleanup. <!-- maestro-release-note:0f3181530fe5 -->
+- Guard published package canary env. <!-- maestro-release-note:e73fa66a32ab -->
+- [maestro] Guard deprecation message drift (#2299). <!-- maestro-release-note:c310c97ba937 -->
+
+### Fixed
+
+- Reset aborted ripgrep installs for retries. <!-- maestro-release-note:b1066de6caaf -->
+- Dedupe abortable ripgrep installs. <!-- maestro-release-note:a4ce5f223417 -->
+- Harden managed tool aborts and A2A stream IDs. <!-- maestro-release-note:307bcf6fdd35 -->
+
+## [0.10.38] - 2026-05-27
+
+### Changed
+
+- Gate rpc protocol conformance (#2295). <!-- maestro-release-note:912ccaf53f1f -->
+- [maestro] Gate Platform runtime conformance (#2276). <!-- maestro-release-note:219cc0c215cd -->
+- Gate tool attempts in release telemetry (#2293). <!-- maestro-release-note:b26aff814445 -->
+- Avoid guardian token fixture false positive (#2292). <!-- maestro-release-note:02deab8d5c8c -->
+- [maestro] Propagate A2A Platform trace context (#2272). <!-- maestro-release-note:d05f3195f0c8 -->
+
+### Fixed
+
+- Preserve public release helper ownership (#2297). <!-- maestro-release-note:47e1fb085071 -->
+- Resolve ripgrep through managed tools (#2296). <!-- maestro-release-note:a8ff81cea99d -->
+- Avoid DNS for host policy denies (#2294). <!-- maestro-release-note:215d3295c580 -->
+- Trim public install audit surface. <!-- maestro-release-note:c7a8b96bb3fe -->
+
+## [0.10.37] - 2026-05-27
+
+### Changed
+
+- Honor shell env policy for trusted tool tokens. <!-- maestro-release-note:d0672967bd20 -->
+
+## [0.10.36] - 2026-05-27
+
+### Fixed
+
+- Honor shell env policy for platform credentials. <!-- maestro-release-note:bebe6c199b90 -->
+
+## [0.10.35] - 2026-05-27
+
+### Fixed
+
+- Honor shell env policy for platform credentials. <!-- maestro-release-note:14780834d753 -->
+
+## [0.10.34] - 2026-05-27
+
+### Fixed
+
+- Preserve platform worker tool credentials. <!-- maestro-release-note:7ec95fe0748f -->
+
+## [0.10.33] - 2026-05-27
+
+### Changed
+
+- Fix published replay evidence mode coverage (#2286). <!-- maestro-release-note:c1bc8e66dd4f -->
+
+## [0.10.32] - 2026-05-26
+
+### Changed
+
+- Fix find leading globstar root matches (#2283). <!-- maestro-release-note:820b73e77e71 -->
+- Fix published replay approval artifact evidence (#2282). <!-- maestro-release-note:a4c938587c2a -->
+- [maestro] Gate release surface conformance (#2274). <!-- maestro-release-note:2ed7226811b5 -->
+- [maestro] Improve deprecate-release auth diagnostics (#2278). <!-- maestro-release-note:6ded1a8ecca0 -->
+- Gate Maestro release observability catalog. <!-- maestro-release-note:0338651eada9 -->
+- Prove headless utility cleanup replay. <!-- maestro-release-note:8b2b5b574900 -->
+- Split A2A discovery helpers (#2267). <!-- maestro-release-note:9fdc1f4a5920 -->
+- Split tools package panel (#2270). <!-- maestro-release-note:11dbf3e7363a -->
+- [maestro] Preserve A2A push trace context (#2273). <!-- maestro-release-note:db88392aba25 -->
+- Gate published replay evidence. <!-- maestro-release-note:17c58a286e30 -->
+- [maestro] Fence Platform A2A push callbacks (#2277). <!-- maestro-release-note:73d1adc92e78 -->
+- Gate CLI runtime conformance (#2275). <!-- maestro-release-note:3962e2f82496 -->
+
+### Fixed
+
+- Preserve Windows grep fallback shell (#2281). <!-- maestro-release-note:20ceaa0e57fd -->
+- Keep search result limits per file (#2280). <!-- maestro-release-note:dcaac8a4fa2b -->
+- Harden registry process tests on public runners (#2279). <!-- maestro-release-note:0a7705b59092 -->
+- Harden TUI search and A2A registration traces. <!-- maestro-release-note:8bea2a6316d1 -->
+- Registry-smoke public fallback publishes. <!-- maestro-release-note:92c21c412d65 -->
+
+## [0.10.31] - 2026-05-26
+
+### Changed
+
+- Fix ripgrep search errors and MarkItDown timeout flake (#2260). <!-- maestro-release-note:c2bfc86421c4 -->
+- Extract compaction cut point helpers (#2259). <!-- maestro-release-note:752cedcc7e97 -->
+
+## [0.10.30] - 2026-05-26
+
+### Changed
+
+- Extract transport event helpers. <!-- maestro-release-note:354ee66696bb -->
+- Expose AgentRuntime ledger correlation joins. <!-- maestro-release-note:5c5344ac5fa9 -->
+
+## [0.10.29] - 2026-05-26
+
+### Changed
+
+- Extract native read-only tool batching (#2253). <!-- maestro-release-note:40501a390b70 -->
+- Fix parallel ripgrep error reporting. <!-- maestro-release-note:142d584de5a0 -->
+
+## [0.10.28] - 2026-05-26
+
+### Changed
+
+- Gate A2A live proof on discovery evidence (#2252). <!-- maestro-release-note:c84c85430b2b -->
+- [maestro] Extract headless runtime broker (#2251). <!-- maestro-release-note:32303b1ad1c7 -->
+- Prove run inspection durability in replay smoke (#2250). <!-- maestro-release-note:73cf071a8a9f -->
+- Extract TypeScript godfile helpers (#2249). <!-- maestro-release-note:068ec2c18739 -->
+- Prove AgentRuntime ledger in published replay smoke. <!-- maestro-release-note:63b42c06dd24 -->
+- Extract TUI state and swarm tests (#2239). <!-- maestro-release-note:7767debf7bdc -->
+- Extract composer chat attachment helpers (#2246). <!-- maestro-release-note:1a2dccd12401 -->
+- Link AgentRuntime ledger work items to ToolExecution. <!-- maestro-release-note:04ff186ee2f2 -->
+- Keep package search responses ordered. <!-- maestro-release-note:85a580b35e27 -->
+- Load package settings after client binding. <!-- maestro-release-note:26235dfae382 -->
+- Guard public release install metadata checks. <!-- maestro-release-note:c9406edae411 -->
+- Extract package settings component (#2240). <!-- maestro-release-note:c8add73a479c -->
+
+## [0.10.25] - 2026-05-25
+
+### Changed
+
+- Guard release tags against stale package versions (#2227). <!-- maestro-release-note:0759b5ac0939 -->
+- Extract hosted runner config (#2229). <!-- maestro-release-note:a1f91301c920 -->
+- Update operating-layer anchor path. <!-- maestro-release-note:da0948b4e192 -->
+- Fix operating-layer anchors after headless state split. <!-- maestro-release-note:968a4149e651 -->
+- Move headless supervisor tests. <!-- maestro-release-note:e1728b257db0 -->
+- Extract headless message state reducer. <!-- maestro-release-note:60c633f683cd -->
+- Extract control-plane chat helpers. <!-- maestro-release-note:9c9e035eba18 -->
+- Extract A2A push notifications. <!-- maestro-release-note:980257a59f2d -->
+- Clean release note branding. <!-- maestro-release-note:78909d1cdd48 -->
+- Use Maestro branding in release note. <!-- maestro-release-note:16c1fbe34ac2 -->
+
+## [0.10.24] - 2026-05-25
+
+### Changed
+
+- Clean up Maestro product branding. <!-- maestro-release-note:8ba91124c49a -->
+- Update Codex operating-layer evidence paths (#2217). <!-- maestro-release-note:51842842c9e7 -->
+- Extract control-plane local helpers (#2215). <!-- maestro-release-note:7ede1bd34c23 -->
+- Extract control-plane Codex bridge helpers (#2216). <!-- maestro-release-note:e06f1a7a66db -->
+- Revoke legacy Anthropic connector links on logout (#2212). <!-- maestro-release-note:129499bdcd24 -->
+- Handle legacy Anthropic OAuth cleanup (#2209). <!-- maestro-release-note:9558e5ee4db8 -->
+- Extract control-plane session helpers (#2207). <!-- maestro-release-note:37f5e30102fc -->
+- Default Maestro auth to Codex (#2202). <!-- maestro-release-note:32c2e64bce88 -->
+- Update Codex parity anchors for TUI splits (#2203). <!-- maestro-release-note:e50996157c2d -->
+- Extract hosted runner manifests (#2205). <!-- maestro-release-note:850d7511ae64 -->
+- Extract tool registry execution dispatcher (#2206). <!-- maestro-release-note:e120c11987a1 -->
+- Extract TUI app session recording helpers (#2201). <!-- maestro-release-note:29b3ea1e6690 -->
+
 ## [0.10.23] - 2026-05-23
 
 ### Changed

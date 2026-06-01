@@ -94,6 +94,60 @@ export interface SessionManagerOptions {
 
 const logger = createLogger("session-manager");
 const PORTABLE_SESSION_EXPORT_FORMAT = "maestro-session-export.v1";
+const AUTO_PRUNE_DELAY_MS = 5000;
+const pendingAutoPruneManagers = new Set<SessionManager>();
+let autoPruneBeforeExitRegistered = false;
+
+function sessionAutoPruneEnabled(): boolean {
+	return (
+		SESSION_CONFIG.MAX_SESSIONS > 0 || SESSION_CONFIG.MAX_SESSION_AGE_DAYS > 0
+	);
+}
+
+function isTestMode(): boolean {
+	return process.env.VITEST === "true" || process.env.NODE_ENV === "test";
+}
+
+function flushPendingSessionAutoPrunes(): void {
+	const managers = [...pendingAutoPruneManagers];
+	pendingAutoPruneManagers.clear();
+	for (const manager of managers) {
+		runSessionAutoPrune(manager);
+	}
+}
+
+function runSessionAutoPrune(manager: SessionManager): void {
+	try {
+		const result = manager.pruneSessions();
+		if (result.removed > 0) {
+			logger.debug("Auto-pruned sessions", result);
+		}
+	} catch (error) {
+		logger.error(
+			"Session auto-prune failed",
+			error instanceof Error ? error : undefined,
+		);
+	}
+}
+
+function registerAutoPruneBeforeExit(): void {
+	if (autoPruneBeforeExitRegistered || isTestMode()) {
+		return;
+	}
+	autoPruneBeforeExitRegistered = true;
+	process.once("beforeExit", () => {
+		flushPendingSessionAutoPrunes();
+	});
+}
+
+export function flushPendingSessionAutoPrunesForTests(): void {
+	flushPendingSessionAutoPrunes();
+}
+
+export function resetSessionAutoPruneForTests(): void {
+	pendingAutoPruneManagers.clear();
+	autoPruneBeforeExitRegistered = false;
+}
 
 interface PortableSessionBundle {
 	format: string;
@@ -535,25 +589,24 @@ export class SessionManager {
 			});
 		}
 
-		// Auto-prune old sessions in the background (non-blocking)
-		if (
-			SESSION_CONFIG.MAX_SESSIONS > 0 ||
-			SESSION_CONFIG.MAX_SESSION_AGE_DAYS > 0
-		) {
-			setTimeout(() => {
-				try {
-					const result = this.pruneSessions();
-					if (result.removed > 0) {
-						logger.debug("Auto-pruned sessions", result);
-					}
-				} catch (error) {
-					logger.error(
-						"Session auto-prune failed",
-						error instanceof Error ? error : undefined,
-					);
-				}
-			}, 5000);
+		// Auto-prune old sessions in the background (non-blocking). The timer is
+		// unref'ed for fast one-shot CLI exit, while beforeExit preserves pruning for
+		// short-lived commands that naturally finish before the delay.
+		if (sessionAutoPruneEnabled()) {
+			this.scheduleAutoPrune();
 		}
+	}
+
+	private scheduleAutoPrune(): void {
+		pendingAutoPruneManagers.add(this);
+		registerAutoPruneBeforeExit();
+		const pruneTimer = setTimeout(() => {
+			if (!pendingAutoPruneManagers.delete(this)) {
+				return;
+			}
+			runSessionAutoPrune(this);
+		}, AUTO_PRUNE_DELAY_MS);
+		pruneTimer.unref?.();
 	}
 
 	saveMessage(message: AppMessage): void {
@@ -1350,6 +1403,7 @@ export class SessionManager {
 		title?: string;
 		summary?: string;
 		resumeSummary?: string;
+		memoryExtractionHash?: string;
 		messages: AppMessage[];
 		createdAt: string;
 		updatedAt: string;

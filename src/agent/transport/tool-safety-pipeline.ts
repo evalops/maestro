@@ -77,6 +77,7 @@ export type ToolSafetyVerdict =
 			toolDef: AgentTool;
 			events: AgentEvent[];
 			sanitizedExecutionArgs: Record<string, unknown>;
+			approvalRequestId?: string;
 			toolExecutionBridgePlan?: ToolExecutionBridgePlan;
 	  };
 
@@ -741,6 +742,7 @@ export async function* evaluateToolSafety(
 	}
 
 	let toolExecutionBridgePlan: ToolExecutionBridgePlan | undefined;
+	let approvalRequestId: string | undefined;
 	let platformApprovalRequest:
 		| import("../action-approval.js").ActionApprovalRequest
 		| undefined;
@@ -990,12 +992,13 @@ export async function* evaluateToolSafety(
 				decisionPromise,
 				signal,
 			);
+			approvalRequestId =
+				platformApprovalRequest?.id ??
+				toolExecutionBridgePlan?.metadata.approvalRequestId ??
+				registrationMetadata?.remoteApprovalRequestId ??
+				request.id;
 			recordMaestroApprovalHit({
-				approval_request_id:
-					platformApprovalRequest?.id ??
-					toolExecutionBridgePlan?.metadata.approvalRequestId ??
-					registrationMetadata?.remoteApprovalRequestId ??
-					request.id,
+				approval_request_id: approvalRequestId,
 				action:
 					request.actionDescription ?? request.summaryLabel ?? request.toolName,
 				command:
@@ -1109,7 +1112,9 @@ export async function* evaluateToolSafety(
 		const deniedEvents = recordEvents(
 			emitToolResult(deniedResult, toolCall, true, {
 				toolExecutionId: toolExecutionBridgePlan?.metadata.toolExecutionId,
-				approvalRequestId: toolExecutionBridgePlan?.metadata.approvalRequestId,
+				approvalRequestId:
+					toolExecutionBridgePlan?.metadata.approvalRequestId ??
+					approvalRequestId,
 			}),
 		);
 		for (const event of deniedEvents) {
@@ -1164,6 +1169,7 @@ export async function* evaluateToolSafety(
 			toolDef,
 			events,
 			sanitizedExecutionArgs,
+			...(approvalRequestId ? { approvalRequestId } : {}),
 			...(toolExecutionBridgePlan ? { toolExecutionBridgePlan } : {}),
 		},
 		rateLimitUpdate: rateLimitResult.updatedState,

@@ -17,7 +17,7 @@ import java.util.concurrent.CopyOnWriteArraySet
 import java.util.concurrent.atomic.AtomicBoolean
 
 /**
- * Project-level service for Composer.
+ * Project-level service for Maestro.
  * Manages chat state, sessions, and pinned files for a specific project.
  */
 @Service(Service.Level.PROJECT)

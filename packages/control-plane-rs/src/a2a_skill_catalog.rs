@@ -32,7 +32,7 @@ pub(crate) fn a2a_subagent_skill_contract(lane_id: &str) -> A2ASubagentSkillCont
         },
         "code-review" => A2ASubagentSkillContract {
             lane_id: "code-review",
-            required_context_grants: &["repo:read", "pull-request:read", "evidence:read"],
+            required_context_grants: &["repo:read", "pull-request:read", "artifact:read"],
             required_artifact_kinds: &["review.summary"],
             optional_artifact_kinds: &["risk.finding", "test.plan"],
             allowed_task_classes: &["code.review", "risk.analysis"],
@@ -40,7 +40,7 @@ pub(crate) fn a2a_subagent_skill_contract(lane_id: &str) -> A2ASubagentSkillCont
         },
         "test-runner" => A2ASubagentSkillContract {
             lane_id: "test-runner",
-            required_context_grants: &["repo:read", "tool:execute-tests", "evidence:write"],
+            required_context_grants: &["repo:read", "tool:execute-tests", "artifact:write"],
             required_artifact_kinds: &["test.report"],
             optional_artifact_kinds: &["failure.triage", "coverage.summary"],
             allowed_task_classes: &["test.execution", "ci.triage"],
@@ -48,9 +48,9 @@ pub(crate) fn a2a_subagent_skill_contract(lane_id: &str) -> A2ASubagentSkillCont
         },
         "repo-explorer" => A2ASubagentSkillContract {
             lane_id: "repo-explorer",
-            required_context_grants: &["repo:read", "evidence:write"],
+            required_context_grants: &["repo:read", "context:index:write"],
             required_artifact_kinds: &["repo.map"],
-            optional_artifact_kinds: &["evidence.index"],
+            optional_artifact_kinds: &["context.index"],
             allowed_task_classes: &["repo.inspect", "context.gathering"],
             denied_task_classes: DENIED_TARGET_TASK_CLASSES,
         },
@@ -60,9 +60,10 @@ pub(crate) fn a2a_subagent_skill_contract(lane_id: &str) -> A2ASubagentSkillCont
                 "repo:read",
                 "pull-request:write",
                 "deploy:read",
-                "evidence:write",
+                "artifact:write",
+                "runtime:events:read",
             ],
-            required_artifact_kinds: &["release.evidence"],
+            required_artifact_kinds: &["release.summary"],
             optional_artifact_kinds: &["ci.summary", "deploy.status"],
             allowed_task_classes: &["release.follow-through", "deployment.smoke"],
             denied_task_classes: DENIED_TARGET_TASK_CLASSES,
@@ -71,7 +72,7 @@ pub(crate) fn a2a_subagent_skill_contract(lane_id: &str) -> A2ASubagentSkillCont
             lane_id: "default",
             required_context_grants: &["repo:read"],
             required_artifact_kinds: &["subagent.summary"],
-            optional_artifact_kinds: &["evidence.index"],
+            optional_artifact_kinds: &["context.index"],
             allowed_task_classes: &["agent.delegation"],
             denied_task_classes: DENIED_TARGET_TASK_CLASSES,
         },
@@ -151,7 +152,7 @@ mod tests {
 
         assert_eq!(
             review["requiredContextGrants"],
-            serde_json::json!(["repo:read", "pull-request:read", "evidence:read"])
+            serde_json::json!(["repo:read", "pull-request:read", "artifact:read"])
         );
         assert_eq!(
             review["requiredArtifactKinds"],

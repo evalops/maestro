@@ -37,18 +37,34 @@ const RUNTIME_PACKAGE_VALIDATOR_FILES = new Set([
 ]);
 const RELEASE_HELPER_PACKAGE_FILES = new Set([
 	"scripts/configure-npm-trusted-publisher.mjs",
+	"scripts/check-package-cutover-readiness.js",
+	"scripts/check-release-surface-conformance.mjs",
 	"scripts/deprecate-release.js",
 	"scripts/install-smoke-utils.js",
+	"scripts/published-replay-evidence-gate.js",
+	"scripts/release-impact-filter.mjs",
+	"scripts/release-observability-query-contract.js",
 	"scripts/release-readiness.js",
 	"scripts/smoke-packed-cli.js",
 	"scripts/smoke-published-replay-e2e.js",
 	"scripts/smoke-registry-install.js",
+	"scripts/verify-published-replay-evidence.js",
 	"scripts/workspace-utils.js",
 ]);
 const RELEASE_HELPER_TEST_FILES = new Set([
+	"test/scripts/deprecate-release.test.ts",
 	"test/scripts/install-smoke-utils.test.ts",
 	"test/scripts/release-context-deps.test.ts",
+	"test/scripts/release-impact-filter.test.ts",
+	"test/scripts/release-observability-query-contract.test.ts",
+	"test/scripts/release-surface-conformance.test.ts",
+	"test/scripts/smoke-published-replay-e2e.test.ts",
+	"test/scripts/verify-published-replay-evidence.test.ts",
 	"test/scripts/workspace-utils.test.ts",
+]);
+const RELEASE_SURFACE_CONFORMANCE_FILES = new Set([
+	"docs/protocols/release-surface-conformance.json",
+	"docs/protocols/release-surface-conformance.md",
 ]);
 const SMOKE_SCRIPT_PATTERN = /^scripts\/smoke-[^/]+\.[cm]?[jt]sx?$/;
 
@@ -264,6 +280,7 @@ function isHandledOutsideNx(file) {
 	return (
 		CI_GUARDRAIL_FILES.has(file) ||
 		RELEASE_HELPER_PACKAGE_FILES.has(file) ||
+		RELEASE_SURFACE_CONFORMANCE_FILES.has(file) ||
 		RUNTIME_PACKAGE_VALIDATOR_FILES.has(file) ||
 		SMOKE_SCRIPT_PATTERN.test(file) ||
 		(file.startsWith("docs/") && file.endsWith(".md")) ||

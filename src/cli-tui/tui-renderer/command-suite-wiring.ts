@@ -8,6 +8,7 @@ import {
 	CommandSuiteKey,
 	createCommandSuiteHandlers,
 } from "../commands/command-suite-handlers.js";
+import type { AuthState } from "../commands/subcommands/auth-commands.js";
 import type {
 	CommandExecutionContext,
 	CommandHandlers,
@@ -70,11 +71,7 @@ export interface CommandSuiteRuntimeDeps {
 		footerMode: string;
 		compactTools: boolean;
 	};
-	getAuthState: () => {
-		authenticated: boolean;
-		provider?: string;
-		mode?: string;
-	};
+	getAuthState: () => AuthState | Promise<AuthState>;
 	handleSessionRecoverCommand: (
 		ctx: CommandExecutionContext,
 	) => void | Promise<void>;

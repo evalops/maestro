@@ -2,7 +2,7 @@
  * @fileoverview @evalops/contracts - Shared TypeScript Definitions
  *
  * This package provides the TypeScript type definitions that form the contract
- * between Composer's frontend (Web UI) and backend (API server). All shared
+ * between Maestro's frontend (Web UI) and backend (API server). All shared
  * types, interfaces, and enums are defined here to ensure type safety across
  * the client-server boundary.
  *
@@ -28,7 +28,7 @@
  * // Type-safe message handling
  * const message: ComposerMessage = {
  *   role: "user",
- *   content: "Hello, Composer!",
+ *   content: "Hello, Maestro!",
  *   timestamp: new Date().toISOString(),
  * };
  *
@@ -174,7 +174,7 @@ export interface ComposerAttachment {
 }
 
 /**
- * A message in the Composer conversation.
+ * A message in the Maestro conversation.
  *
  * Messages can contain text content, tool calls, thinking traces,
  * and usage statistics. This is the primary data structure for
