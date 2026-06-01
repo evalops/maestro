@@ -110,7 +110,7 @@ describe("tag-release workflow", () => {
 		expect(registrySmokeJob.if).toContain(
 			"needs.tag-current-version.outputs.registry_published == 'true'",
 		);
-		expect(registrySmokeJob.permissions).toMatchObject({ contents: "read" });
+		expect(registrySmokeJob.permissions).toEqual({ contents: "read" });
 		expect(registrySmokeJob["timeout-minutes"]).toBe(30);
 		expect(registrySmokeCheckoutStep?.with).toMatchObject({
 			"persist-credentials": false,
