@@ -113,6 +113,7 @@ fn test_config(workspace_root: PathBuf) -> HostedRunnerConfig {
         agent_run_id: Some("run_test".to_string()),
         maestro_session_id: Some("sess_test".to_string()),
         attach_audience: None,
+        auth_token: None,
     }
 }
 
@@ -141,7 +142,7 @@ async fn route_rejects_connection_prefix_without_separator() {
         body: b"{}".to_vec(),
     };
 
-    let error = match route_request(request, shared).await {
+    let error = match route_request(request, shared, "127.0.0.1:4567".parse().unwrap()).await {
         Ok(_) => panic!("unexpected route match"),
         Err(error) => error,
     };
@@ -265,6 +266,10 @@ fn preserves_wildcard_bind_for_port_only_hosted_runner_env() {
     ] {
         let mut env = base_hosted_runner_env(workspace.path());
         env.insert(key.to_string(), value.to_string());
+        env.insert(
+            "MAESTRO_HOSTED_RUNNER_AUTH_TOKEN".to_string(),
+            "secret-token".to_string(),
+        );
 
         let config = HostedRunnerConfig::from_env_map(&env).expect("config");
 
@@ -274,6 +279,50 @@ fn preserves_wildcard_bind_for_port_only_hosted_runner_env() {
             "{key} should preserve hosted ingress wildcard binding"
         );
     }
+}
+
+#[test]
+fn rejects_non_loopback_bind_without_auth_token() {
+    let workspace = tempdir().expect("workspace");
+    let mut env = base_hosted_runner_env(workspace.path());
+    env.insert(
+        "MAESTRO_HOSTED_RUNNER_LISTEN".to_string(),
+        "0.0.0.0:9090".to_string(),
+    );
+
+    let error = HostedRunnerConfig::from_env_map(&env).expect_err("expected config error");
+    assert!(error
+        .to_string()
+        .contains("MAESTRO_HOSTED_RUNNER_AUTH_TOKEN"));
+}
+
+#[tokio::test]
+async fn rejects_public_api_non_loopback_bind_without_auth_token() {
+    let workspace = tempdir().expect("workspace");
+    let config = test_config(workspace.path().to_path_buf())
+        .with_bind_addr("0.0.0.0:0".parse().expect("bind addr"));
+
+    let error = match start_hosted_runner(config).await {
+        Ok(_) => panic!("expected auth token error"),
+        Err(error) => error,
+    };
+    assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
+    assert!(error.to_string().contains("auth_token"));
+}
+
+#[tokio::test]
+async fn rejects_public_api_non_loopback_bind_with_blank_auth_token() {
+    let workspace = tempdir().expect("workspace");
+    let config = test_config(workspace.path().to_path_buf())
+        .with_bind_addr("0.0.0.0:0".parse().expect("bind addr"))
+        .with_auth_token("   ");
+
+    let error = match start_hosted_runner(config).await {
+        Ok(_) => panic!("expected auth token error"),
+        Err(error) => error,
+    };
+    assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
+    assert!(error.to_string().contains("auth_token"));
 }
 
 #[test]
@@ -289,6 +338,93 @@ fn explicit_host_env_overrides_port_only_wildcard_bind() {
     let config = HostedRunnerConfig::from_env_map(&env).expect("config");
 
     assert_eq!(config.bind_addr, "127.0.0.1:9090".parse().unwrap());
+}
+
+#[tokio::test]
+async fn headless_routes_require_auth_token_when_configured() {
+    let workspace = tempdir().expect("workspace");
+    let config = test_config(workspace.path().to_path_buf()).with_auth_token("secret-token");
+    let handle = start_hosted_runner(config)
+        .await
+        .expect("start hosted runner");
+    let client = reqwest::Client::new();
+
+    let unauthorized = client
+        .post(format!("{}/api/headless/connections", handle.base_url()))
+        .json(&json!({"sessionId": "sess_test", "role": "controller"}))
+        .send()
+        .await
+        .expect("unauthorized response");
+    assert_eq!(unauthorized.status(), StatusCode::FORBIDDEN);
+
+    let authorized = client
+        .post(format!("{}/api/headless/connections", handle.base_url()))
+        .header("authorization", "Bearer secret-token")
+        .json(&json!({"sessionId": "sess_test", "role": "controller"}))
+        .send()
+        .await
+        .expect("authorized response");
+    assert_eq!(authorized.status(), StatusCode::OK);
+
+    let custom_token_authorized = client
+        .post(format!("{}/api/headless/connections", handle.base_url()))
+        .header("authorization", "Bearer wrong-forwarded-token")
+        .header("x-maestro-hosted-runner-token", "secret-token")
+        .json(&json!({"sessionId": "sess_test", "role": "viewer"}))
+        .send()
+        .await
+        .expect("custom token authorized response");
+    assert_eq!(custom_token_authorized.status(), StatusCode::OK);
+    handle.shutdown().await;
+}
+
+#[tokio::test]
+async fn loopback_drain_allows_prestop_without_auth_token() {
+    let workspace = tempdir().expect("workspace");
+    let config = test_config(workspace.path().to_path_buf()).with_auth_token("secret-token");
+    let handle = start_hosted_runner(config)
+        .await
+        .expect("start hosted runner");
+    let client = reqwest::Client::new();
+
+    let drain = client
+        .post(format!(
+            "{}/.well-known/evalops/remote-runner/drain",
+            handle.base_url()
+        ))
+        .json(&json!({"reason": "preStop", "requested_by": "kubernetes", "export_paths": ["."]}))
+        .send()
+        .await
+        .expect("drain response");
+
+    assert_eq!(drain.status(), StatusCode::OK);
+    handle.shutdown().await;
+}
+
+#[tokio::test]
+async fn remote_drain_requires_auth_token_when_configured() {
+    let workspace = tempdir().expect("workspace");
+    let shared = SharedRunner::new(
+        test_config(workspace.path().to_path_buf()).with_auth_token("secret-token"),
+    );
+    let request = HttpRequest {
+        method: "POST".to_string(),
+        path: HOSTED_RUNNER_DRAIN_PATH.to_string(),
+        query: HashMap::new(),
+        headers: HashMap::new(),
+        body: serde_json::to_vec(
+            &json!({"reason": "remote", "requested_by": "platform", "export_paths": ["."]}),
+        )
+        .expect("drain request"),
+    };
+
+    let error = match route_request(request, shared, "203.0.113.10:4567".parse().unwrap()).await {
+        Ok(_) => panic!("remote drain without token should be rejected"),
+        Err(error) => error,
+    };
+
+    assert_eq!(error.status, StatusCode::FORBIDDEN.as_u16());
+    assert_eq!(error.code, HostedRunnerErrorCode::AccessDenied);
 }
 
 #[test]

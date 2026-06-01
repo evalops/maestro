@@ -19,6 +19,7 @@ pub struct HostedRunnerConfig {
     pub agent_run_id: Option<String>,
     pub maestro_session_id: Option<String>,
     pub attach_audience: Option<String>,
+    pub auth_token: Option<String>,
 }
 
 impl HostedRunnerConfig {
@@ -61,6 +62,12 @@ impl HostedRunnerConfig {
                 }
             });
         let bind_addr = resolve_bind_addr(&host, port)?;
+        let auth_token = env_value(env, "MAESTRO_HOSTED_RUNNER_AUTH_TOKEN");
+        if !bind_addr.ip().is_loopback() && auth_token.is_none() {
+            return Err(HostedRunnerConfigError::new(
+                "maestro hosted-runner requires MAESTRO_HOSTED_RUNNER_AUTH_TOKEN when binding to non-loopback interfaces",
+            ));
+        }
         let snapshot_root = resolve_snapshot_root(
             first_env(
                 env,
@@ -104,6 +111,7 @@ impl HostedRunnerConfig {
             agent_run_id: env_value(env, "MAESTRO_AGENT_RUN_ID"),
             maestro_session_id: env_value(env, "MAESTRO_SESSION_ID"),
             attach_audience: env_value(env, "MAESTRO_ATTACH_AUDIENCE"),
+            auth_token,
         })
     }
 
@@ -126,12 +134,19 @@ impl HostedRunnerConfig {
             agent_run_id: None,
             maestro_session_id: None,
             attach_audience: None,
+            auth_token: None,
         })
     }
 
     #[must_use]
     pub fn with_bind_addr(mut self, bind_addr: SocketAddr) -> Self {
         self.bind_addr = bind_addr;
+        self
+    }
+
+    #[must_use]
+    pub fn with_auth_token(mut self, auth_token: impl Into<String>) -> Self {
+        self.auth_token = Some(auth_token.into());
         self
     }
 
