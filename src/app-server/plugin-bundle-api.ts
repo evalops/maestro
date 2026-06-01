@@ -70,9 +70,12 @@ function paramsRecord(params: unknown): UnknownRecord {
 }
 
 function projectRootFromParams(
-	_options: MaestroAppServerPluginBundleApiOptions,
+	params: UnknownRecord,
+	options: MaestroAppServerPluginBundleApiOptions,
 ): string {
-	return resolve(_options.projectRoot ?? process.cwd());
+	return resolve(
+		stringValue(params.projectRoot) ?? options.projectRoot ?? process.cwd(),
+	);
 }
 
 function scopeFromParams(params: UnknownRecord): WritablePackageScope {
@@ -221,7 +224,7 @@ export function createMaestroAppServerPluginBundleApi(
 	return {
 		async listBundles(params = {}) {
 			const normalizedParams = paramsRecord(params);
-			const projectRoot = projectRootFromParams(options);
+			const projectRoot = projectRootFromParams(normalizedParams, options);
 			const resources = loadConfiguredPackageResources(projectRoot);
 			return {
 				bundles: loadConfiguredPackageSpecs(projectRoot).map((entry) => ({
@@ -241,7 +244,7 @@ export function createMaestroAppServerPluginBundleApi(
 
 		async installBundle(params = {}) {
 			const normalizedParams = paramsRecord(params);
-			const projectRoot = projectRootFromParams(options);
+			const projectRoot = projectRootFromParams(normalizedParams, options);
 			const spec = packageSpecFromParams(normalizedParams);
 			const source = sourceString(spec);
 			const scope = scopeFromParams(normalizedParams);
@@ -282,7 +285,7 @@ export function createMaestroAppServerPluginBundleApi(
 
 		async removeBundle(params = {}) {
 			const normalizedParams = paramsRecord(params);
-			const projectRoot = projectRootFromParams(options);
+			const projectRoot = projectRootFromParams(normalizedParams, options);
 			const spec = packageSpecFromParams(normalizedParams);
 			const scope =
 				normalizedParams.scope === undefined
