@@ -9,6 +9,7 @@ import { fetchDownstream } from "../utils/downstream-http.js";
 import { createLogger } from "../utils/logger.js";
 import {
 	buildDesktopDeviceProof,
+	buildEnrolledDesktopDeviceProof,
 	enrollDesktopDeviceIdentity,
 } from "./device-identity.js";
 import {
@@ -386,9 +387,10 @@ export async function issueEvalOpsDelegationToken(
 	const metadata = resolveStoredEvalOpsMetadata(request.metadata);
 	const identityBaseUrl =
 		getMetadataString(metadata, "identityBaseUrl") ?? getIdentityBaseUrl();
-	const deviceProof = await buildDesktopDeviceProof(
+	const deviceProof = await buildEnrolledDesktopDeviceProof(
 		identityBaseUrl,
 		"delegation",
+		getMetadataString(metadata, "deviceId"),
 	);
 	const token = request.token ?? (await getFreshEvalOpsAccessToken(metadata));
 	if (!token) {
@@ -666,7 +668,11 @@ export async function refreshEvalOpsToken(
 
 	const identityBaseUrl =
 		getMetadataString(metadata, "identityBaseUrl") ?? getIdentityBaseUrl();
-	const deviceProof = await buildDesktopDeviceProof(identityBaseUrl, "refresh");
+	const deviceProof = await buildEnrolledDesktopDeviceProof(
+		identityBaseUrl,
+		"refresh",
+		getMetadataString(metadata, "deviceId"),
+	);
 	const response = await fetchIdentity(
 		identityBaseUrl,
 		PLATFORM_HTTP_ROUTES.identity.tokenRefresh,

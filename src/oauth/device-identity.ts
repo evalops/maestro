@@ -163,6 +163,30 @@ export async function buildDesktopDeviceProof(
 	purpose: "refresh" | "delegation" | "verify",
 ): Promise<DeviceProof | null> {
 	const status = await getDesktopDeviceIdentityStatus();
+	return buildDesktopDeviceProofFromStatus(identityBaseUrl, purpose, status);
+}
+
+export async function buildEnrolledDesktopDeviceProof(
+	identityBaseUrl: string,
+	purpose: "refresh" | "delegation" | "verify",
+	enrolledDeviceId: string | undefined,
+): Promise<DeviceProof | null> {
+	const expectedDeviceId = enrolledDeviceId?.trim();
+	if (!expectedDeviceId) {
+		return null;
+	}
+	const status = await getDesktopDeviceIdentityStatus();
+	if (status?.device_id !== expectedDeviceId) {
+		return null;
+	}
+	return buildDesktopDeviceProofFromStatus(identityBaseUrl, purpose, status);
+}
+
+async function buildDesktopDeviceProofFromStatus(
+	identityBaseUrl: string,
+	purpose: "refresh" | "delegation" | "verify",
+	status: DeviceIdentityStatus | null,
+): Promise<DeviceProof | null> {
 	if (!status?.available || !status.device_id) {
 		return null;
 	}

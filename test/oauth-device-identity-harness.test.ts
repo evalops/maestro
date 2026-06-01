@@ -8,6 +8,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
 	buildDesktopDeviceProof,
+	buildEnrolledDesktopDeviceProof,
 	enrollDesktopDeviceIdentity,
 } from "../src/oauth/device-identity.js";
 import { PLATFORM_HTTP_ROUTES } from "../src/platform/core-services.js";
@@ -181,6 +182,22 @@ describe("device identity local harness", () => {
 				method: "POST",
 				url: PLATFORM_HTTP_ROUTES.identity.deviceChallenges,
 			});
+		} finally {
+			await harness.close();
+		}
+	});
+
+	it("suppresses proofs when the local device has not been enrolled", async () => {
+		const harness = await startIdentityHarness();
+		try {
+			const proof = await buildEnrolledDesktopDeviceProof(
+				harness.baseUrl,
+				"refresh",
+				"previously-enrolled-device",
+			);
+
+			expect(proof).toBeNull();
+			expect(harness.requests).toHaveLength(0);
 		} finally {
 			await harness.close();
 		}
