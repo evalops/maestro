@@ -91,6 +91,7 @@ const LEDGER_LOCK_STALE_MS = 30_000;
 const LEDGER_LOCK_TIMEOUT_MS = LEDGER_LOCK_STALE_MS + LEDGER_LOCK_RETRY_MS;
 const LEDGER_LOCK_OWNER_FILE = "owner";
 const LEDGER_LOCK_HEARTBEAT_FILE = "heartbeat";
+const inProcessLedgerLockQueues = new Map<string, Promise<unknown>>();
 
 export function getA2ATaskLedgerPath(path?: string): string {
 	const configured =
@@ -160,6 +161,31 @@ async function withA2ATaskLedgerLock<T>(
 	fn: () => Promise<T>,
 ): Promise<T> {
 	const path = getA2ATaskLedgerPath(options.path);
+	return runWithInProcessLedgerLock(path, () =>
+		withA2ATaskLedgerFileLock(path, fn),
+	);
+}
+
+async function runWithInProcessLedgerLock<T>(
+	path: string,
+	fn: () => Promise<T>,
+): Promise<T> {
+	const previous = inProcessLedgerLockQueues.get(path) ?? Promise.resolve();
+	const queued = previous.catch(() => undefined).then(fn);
+	inProcessLedgerLockQueues.set(path, queued);
+	try {
+		return await queued;
+	} finally {
+		if (inProcessLedgerLockQueues.get(path) === queued) {
+			inProcessLedgerLockQueues.delete(path);
+		}
+	}
+}
+
+async function withA2ATaskLedgerFileLock<T>(
+	path: string,
+	fn: () => Promise<T>,
+): Promise<T> {
 	const lockPath = `${path}.lock`;
 	const lockToken = `${process.pid}:${randomUUID()}`;
 	await mkdir(dirname(path), { recursive: true, mode: 0o700 });
@@ -302,7 +328,10 @@ export async function recordA2ATaskStart(
 		const existingIndex = ledger.tasks.findIndex(
 			(entry) => entry.peer === input.peer && entry.taskId === taskId,
 		);
-		const metadata = cleanMetadata(input.metadata);
+		const metadata = mergeLedgerMetadata(
+			extractA2ATaskLedgerMetadata(input.task),
+			input.metadata,
+		);
 		const workGraph = extractA2AWorkGraphMetadata(input.task);
 		const userText = input.text.trim();
 		const entry: A2ATaskLedgerEntry = {
@@ -381,10 +410,11 @@ export async function recordA2ATaskReply(
 		);
 		const previous =
 			existingIndex >= 0 ? ledger.tasks[existingIndex] : undefined;
-		const metadata = cleanMetadata({
-			...(previous?.metadata ?? {}),
-			...(input.metadata ?? {}),
-		});
+		const metadata = mergeLedgerMetadata(
+			previous?.metadata,
+			extractA2ATaskLedgerMetadata(input.task),
+			input.metadata,
+		);
 		const workGraph =
 			extractA2AWorkGraphMetadata(input.task) ?? previous?.workGraph;
 		const userText = input.text.trim();
@@ -469,6 +499,10 @@ export async function updateA2ATaskInLedger(
 		const previous = ledger.tasks[index]!;
 		const taskResponse = extractA2ATaskResponse(input.task);
 		const responseText = taskResponse?.text ?? previous.responseText;
+		const metadata = mergeLedgerMetadata(
+			previous.metadata,
+			extractA2ATaskLedgerMetadata(input.task),
+		);
 		const workGraph =
 			extractA2AWorkGraphMetadata(input.task) ?? previous.workGraph;
 		const entry: A2ATaskLedgerEntry = {
@@ -478,6 +512,7 @@ export async function updateA2ATaskInLedger(
 				? { contextId: trimString(input.task.contextId) }
 				: {}),
 			...(responseText ? { responseText } : {}),
+			...(metadata ? { metadata } : {}),
 			...(workGraph ? { workGraph } : {}),
 			updatedAt: now,
 			...(isFinalA2AState(input.task.status.state)
@@ -696,6 +731,44 @@ function cleanMetadata(
 			typeof entry[1] === "boolean",
 	);
 	return entries.length > 0 ? Object.fromEntries(entries) : undefined;
+}
+
+function extractA2ATaskLedgerMetadata(
+	task: A2ATask,
+): Record<string, string | number | boolean> | undefined {
+	if (!isRecord(task.metadata)) {
+		return undefined;
+	}
+	return cleanMetadata(
+		Object.fromEntries(
+			Object.entries(task.metadata).filter(([key]) => !isSecretLikeKey(key)),
+		),
+	);
+}
+
+function mergeLedgerMetadata(
+	...inputs: Array<Record<string, unknown> | undefined>
+): Record<string, string | number | boolean> | undefined {
+	const merged = Object.assign({}, ...inputs.filter(Boolean));
+	return cleanMetadata(merged);
+}
+
+function isSecretLikeKey(key: string): boolean {
+	const normalized = key.toLowerCase().replace(/[-_]/gu, "");
+	return (
+		normalized === "authorization" ||
+		normalized === "token" ||
+		normalized.endsWith("token") ||
+		normalized === "secret" ||
+		normalized.endsWith("secret") ||
+		normalized === "password" ||
+		normalized.endsWith("password") ||
+		normalized === "apikey" ||
+		normalized.endsWith("apikey") ||
+		normalized === "credentials" ||
+		normalized.endsWith("credentials") ||
+		normalized === "bearer"
+	);
 }
 
 function stringValue(input: unknown): string | undefined {

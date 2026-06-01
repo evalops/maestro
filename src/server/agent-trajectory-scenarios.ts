@@ -165,12 +165,49 @@ const AGENT_TRAJECTORY_SCENARIO_ASSERTION_KINDS = new Set<
 ]);
 
 const EXTERNAL_REF_FIELDS = [
-	"ensembleTranscriptIds",
+	"platformSlackEventIds",
 	"platformTraceIds",
 	"platformWorkEnvelopeIds",
 	"slackThreadRefs",
 	"evidenceArtifactIds",
 ] as const satisfies readonly (keyof MaestroScenarioExternalRefs)[];
+
+const LEGACY_EXTERNAL_REF_FIELDS = [
+	"ensembleTranscriptIds",
+] as const satisfies readonly string[];
+
+type LegacyExternalRefField = (typeof LEGACY_EXTERNAL_REF_FIELDS)[number];
+type ExternalRefField = (typeof EXTERNAL_REF_FIELDS)[number];
+type ScenarioExternalRefsWithLegacy = MaestroScenarioExternalRefs &
+	Partial<Record<LegacyExternalRefField, string[]>>;
+
+function isExternalRefField(value: string): value is ExternalRefField {
+	return EXTERNAL_REF_FIELDS.includes(value as ExternalRefField);
+}
+
+function isLegacyExternalRefField(
+	value: string,
+): value is LegacyExternalRefField {
+	return LEGACY_EXTERNAL_REF_FIELDS.includes(value as LegacyExternalRefField);
+}
+
+function externalRefValues(
+	externalRefs: ScenarioExternalRefsWithLegacy,
+	field: string,
+): string[] | undefined {
+	if (isExternalRefField(field) || isLegacyExternalRefField(field)) {
+		return externalRefs[field];
+	}
+	return undefined;
+}
+
+function allExternalRefValues(
+	externalRefs: ScenarioExternalRefsWithLegacy,
+): string[] {
+	return [...EXTERNAL_REF_FIELDS, ...LEGACY_EXTERNAL_REF_FIELDS].flatMap(
+		(field) => externalRefs[field] ?? [],
+	);
+}
 
 const RELEASE_GATE_TIERS = [
 	"smoke",
@@ -269,7 +306,7 @@ function loadTypedJson<T>(
 	return value as T;
 }
 
-function validateWorkspaceManifest(
+export function validateWorkspaceManifest(
 	manifest: MaestroScenarioWorkspaceManifest,
 	label: string,
 ): void {
@@ -342,6 +379,18 @@ function validateWorkspaceManifest(
 	);
 }
 
+export function loadScenarioWorkspaceManifest(
+	path: string,
+): MaestroScenarioWorkspaceManifest {
+	const workspaceManifest = loadTypedJson<MaestroScenarioWorkspaceManifest>(
+		path,
+		MAESTRO_SCENARIO_WORKSPACE_MANIFEST_SCHEMA,
+		"workspace manifest",
+	);
+	validateWorkspaceManifest(workspaceManifest, `workspace manifest at ${path}`);
+	return workspaceManifest;
+}
+
 export function parseAgentTrajectoryScenario(
 	value: unknown,
 	label: string,
@@ -396,16 +445,7 @@ export function loadAgentTrajectoryScenarioInputs(
 	}
 	if (source.workspaceManifestPath) {
 		const manifestPath = resolvePath(source.workspaceManifestPath);
-		const workspaceManifest = loadTypedJson<MaestroScenarioWorkspaceManifest>(
-			manifestPath,
-			MAESTRO_SCENARIO_WORKSPACE_MANIFEST_SCHEMA,
-			"workspace manifest",
-		);
-		validateWorkspaceManifest(
-			workspaceManifest,
-			`workspace manifest at ${manifestPath}`,
-		);
-		inputs.workspaceManifest = workspaceManifest;
+		inputs.workspaceManifest = loadScenarioWorkspaceManifest(manifestPath);
 	}
 	if (source.baselineTrajectoryPath) {
 		inputs.baselineTrajectory = loadTypedJson<AgentTrajectoryReport>(
@@ -575,9 +615,14 @@ export function validateAgentTrajectoryScenario(
 		if (!isObject(scenario.externalRefs)) {
 			throw new Error(`${label}.externalRefs must be an object`);
 		}
+		const externalRefs =
+			scenario.externalRefs as ScenarioExternalRefsWithLegacy;
 		let refs = 0;
-		for (const field of EXTERNAL_REF_FIELDS) {
-			const values = scenario.externalRefs[field];
+		for (const field of [
+			...EXTERNAL_REF_FIELDS,
+			...LEGACY_EXTERNAL_REF_FIELDS,
+		]) {
+			const values = externalRefs[field];
 			if (values === undefined) continue;
 			if (
 				!Array.isArray(values) ||
@@ -694,7 +739,9 @@ export function validateAgentTrajectoryScenario(
 		}
 		if (kind === "external.refs") {
 			const unknownKinds = (assertion.requiredExternalRefKinds ?? []).filter(
-				(refKind) => !EXTERNAL_REF_FIELDS.includes(refKind),
+				(refKind) =>
+					typeof refKind !== "string" ||
+					(!isExternalRefField(refKind) && !isLegacyExternalRefField(refKind)),
 			);
 			if (unknownKinds.length > 0) {
 				throw new Error(
@@ -873,7 +920,7 @@ function workspaceEvidence(
 	];
 }
 
-function buildWorkspaceSummary(
+export function buildWorkspaceSummary(
 	manifest: MaestroScenarioWorkspaceManifest | undefined,
 ): AgentTrajectoryScenarioWorkspaceSummary | undefined {
 	if (!manifest) return undefined;
@@ -1225,19 +1272,19 @@ function evaluateAssertion(
 					);
 		}
 		case "external.refs": {
-			const externalRefs = scenario.externalRefs;
+			const externalRefs = scenario.externalRefs as
+				| ScenarioExternalRefsWithLegacy
+				| undefined;
 			if (!externalRefs) {
 				return fail(assertion, "external.refs requires scenario.externalRefs.");
 			}
 			const missingKinds = (assertion.requiredExternalRefKinds ?? []).filter(
 				(kind) => {
-					const values = externalRefs[kind];
+					const values = externalRefValues(externalRefs, kind);
 					return !Array.isArray(values) || values.length === 0;
 				},
 			);
-			const flattenedRefs = new Set(
-				EXTERNAL_REF_FIELDS.flatMap((field) => externalRefs[field] ?? []),
-			);
+			const flattenedRefs = new Set(allExternalRefValues(externalRefs));
 			const missingRefs = (assertion.requiredExternalRefs ?? []).filter(
 				(ref) => !flattenedRefs.has(ref),
 			);

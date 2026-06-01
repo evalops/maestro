@@ -41,6 +41,8 @@ export interface LoadedSessionData {
 	messageCount: number;
 	favorite: boolean;
 	tags?: string[];
+	archived?: boolean;
+	archivedAt?: string;
 	messagesView: SessionMessagesView;
 }
 
@@ -97,6 +99,8 @@ export class SessionCatalog {
 						memoryExtractionHash: info.memoryExtractionHash,
 						favorite: info.favorite,
 						tags: info.tags,
+						archived: info.archived,
+						archivedAt: info.archivedAt,
 						allMessagesText: info.allMessagesText,
 					});
 				} catch (error) {
@@ -155,6 +159,8 @@ export class SessionCatalog {
 					messageCount: info.messageCount,
 					favorite: info.favorite,
 					tags: info.tags,
+					archived: info.archived,
+					archivedAt: info.archivedAt,
 				});
 			} catch {
 				// Skip files that can't be read
@@ -197,6 +203,8 @@ export class SessionCatalog {
 			messageCount: info.messageCount,
 			favorite: info.favorite,
 			tags: info.tags,
+			archived: info.archived,
+			archivedAt: info.archivedAt,
 			messagesView: info.messagesView,
 		};
 	}

@@ -1,4 +1,7 @@
 import { Buffer } from "node:buffer";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
 	handleA2ACommand,
@@ -206,12 +209,15 @@ describe("A2A CLI command helpers", () => {
 			"--work-graph",
 			"--timeout-ms",
 			"1000",
+			"--tasks",
+			"/tmp/tasks.json",
 		]);
 
 		expect(parsed.positionals).toEqual(["send", "mac-mini", "ping"]);
 		expect(parsed.flags.get("--wait")).toBe(true);
 		expect(parsed.flags.get("--work-graph")).toBe(true);
 		expect(parsed.flags.get("--timeout-ms")).toBe("1000");
+		expect(parsed.flags.get("--tasks")).toBe("/tmp/tasks.json");
 	});
 
 	it("parses Platform-discovered delegate flags without swallowing task text", () => {
@@ -661,6 +667,91 @@ describe("A2A CLI command helpers", () => {
 		);
 	});
 
+	it("clears stale Platform discovery metadata when imported evidence is absent", async () => {
+		stubAgentRegistryEnv();
+		muteConsole();
+		const root = await mkdtemp(join(tmpdir(), "maestro-a2a-import-"));
+		try {
+			const registryPath = join(root, "peers.json");
+			await writeFile(
+				registryPath,
+				`${JSON.stringify({
+					peers: {
+						"maestro-reviewer": {
+							url: "https://old-reviewer.test/a2a",
+							agentId: "maestro-reviewer",
+							metadata: {
+								source: "platform-agent-registry",
+								customNote: "keep-me",
+								platformDiscoveryDecision: "matched",
+								platformDiscoveryCandidateCount: 3,
+								platformDiscoveryMatchedCount: 1,
+							},
+						},
+					},
+				})}\n`,
+			);
+			vi.stubGlobal(
+				"fetch",
+				vi.fn(async (input: RequestInfo | URL) => {
+					expect(String(input)).toBe(
+						"https://registry.test/agents.v1.AgentService/List",
+					);
+					return new Response(
+						JSON.stringify({
+							agents: [
+								{
+									id: "maestro-reviewer",
+									workspaceId: "ws_1",
+									name: "Maestro Reviewer",
+									agentType: "maestro",
+									status: "AGENT_STATUS_IDLE",
+									a2a: {
+										publicEndpointUrl: "https://reviewer.test/a2a",
+										agentCardUrl:
+											"https://reviewer.test/.well-known/agent-card.json",
+										protocolBinding: "HTTP+JSON",
+										protocolVersion: "1.0",
+										pushNotifications: true,
+										skills: [],
+									},
+								},
+							],
+						}),
+						{ status: 200, headers: { "Content-Type": "application/json" } },
+					);
+				}),
+			);
+
+			await handleA2ACommand([
+				"discover",
+				"--import",
+				"--registry",
+				registryPath,
+				"--json",
+			]);
+
+			const registry = JSON.parse(await readFile(registryPath, "utf8")) as {
+				peers: Record<string, { metadata?: Record<string, unknown> }>;
+			};
+			const metadata = registry.peers["maestro-reviewer"]?.metadata;
+			expect(metadata).toMatchObject({
+				source: "platform-agent-registry",
+				customNote: "keep-me",
+				platformAgentId: "maestro-reviewer",
+				platformAgentType: "maestro",
+				platformAgentStatus: "AGENT_STATUS_IDLE",
+				selectedEndpoint: "public",
+				a2aPushNotifications: true,
+			});
+			expect(metadata).not.toHaveProperty("platformDiscoveryDecision");
+			expect(metadata).not.toHaveProperty("platformDiscoveryCandidateCount");
+			expect(metadata).not.toHaveProperty("platformDiscoveryMatchedCount");
+		} finally {
+			await rm(root, { force: true, recursive: true });
+		}
+	});
+
 	it("rejects heartbeat-only registration when heartbeat is disabled", async () => {
 		await expect(
 			handleA2ACommand([
@@ -776,6 +867,20 @@ describe("A2A CLI command helpers", () => {
 		expect(parsed.flags.get("--tasks")).toBe("/tmp/tasks.json");
 	});
 
+	it("treats unknown flag-like coordinate reply text as data", () => {
+		const parsed = parseA2AArgs([
+			"coordinate",
+			"mac-mini",
+			"--reply",
+			"--stream-json",
+			"--wait",
+		]);
+
+		expect(parsed.positionals).toEqual(["coordinate", "mac-mini"]);
+		expect(parsed.flags.get("--reply")).toBe("--stream-json");
+		expect(parsed.flags.get("--wait")).toBe(true);
+	});
+
 	it("rejects coordinate reply flags without reply text", () => {
 		expect(() =>
 			parseA2AArgs(["coordinate", "mac-mini", "--reply", "--wait"]),
@@ -790,6 +895,154 @@ describe("A2A CLI command helpers", () => {
 
 		expect(parsed.positionals).toEqual(["peers"]);
 		expect(parsed.flags.get("--registry")).toBe("/tmp/peers.json");
+	});
+
+	it("parses dashboard alias flags as cockpit flags", () => {
+		const parsed = parseA2AArgs([
+			"dashboard",
+			"--json",
+			"--peer",
+			"mac-mini",
+			"--limit",
+			"3",
+			"--timeout-ms=250",
+		]);
+
+		expect(parsed.positionals).toEqual(["dashboard"]);
+		expect(parsed.flags.get("--json")).toBe(true);
+		expect(parsed.flags.get("--peer")).toBe("mac-mini");
+		expect(parsed.flags.get("--limit")).toBe("3");
+		expect(parsed.flags.get("--timeout-ms")).toBe("250");
+	});
+
+	it("parses telemetry inspection flags", () => {
+		const parsed = parseA2AArgs([
+			"telemetry",
+			"--json",
+			"--events",
+			"/tmp/a2a-events.json",
+			"--swarm-id",
+			"swarm_1",
+		]);
+
+		expect(parsed.positionals).toEqual(["telemetry"]);
+		expect(parsed.flags.get("--json")).toBe(true);
+		expect(parsed.flags.get("--events")).toBe("/tmp/a2a-events.json");
+		expect(parsed.flags.get("--swarm-id")).toBe("swarm_1");
+	});
+
+	it("renders cockpit tasks when the peer registry is empty", async () => {
+		const root = await mkdtemp(join(tmpdir(), "maestro-a2a-cockpit-"));
+		try {
+			const registryPath = join(root, "peers.json");
+			const tasksPath = join(root, "tasks.json");
+			await writeFile(registryPath, `${JSON.stringify({ peers: {} })}\n`);
+			await writeFile(
+				tasksPath,
+				`${JSON.stringify({
+					tasks: [
+						{
+							id: "ledger-1",
+							kind: "delegation",
+							peer: "stale-peer",
+							taskId: "task-wait",
+							text: "needs operator input",
+							state: "TASK_STATE_INPUT_REQUIRED",
+							transcript: [],
+							createdAt: "2026-05-16T00:00:00.000Z",
+							updatedAt: "2026-05-16T00:00:01.000Z",
+						},
+					],
+				})}\n`,
+			);
+			const log = vi.spyOn(console, "log").mockImplementation(() => {});
+
+			await handleA2ACommand([
+				"cockpit",
+				"--registry",
+				registryPath,
+				"--tasks",
+				tasksPath,
+			]);
+
+			const output = log.mock.calls.flat().join("\n");
+			expect(output).toContain("No peers registered");
+			expect(output).toContain("Tasks");
+			expect(output).toContain("task-wait");
+			expect(output).toContain("needs operator input");
+			expect(output).toContain("orphaned peer");
+			expect(output).not.toContain("Next actions");
+			expect(output).not.toContain("maestro a2a reply stale-peer task-wait");
+		} finally {
+			await rm(root, { force: true, recursive: true });
+		}
+	});
+
+	it("renders A2A telemetry reconstruction from event JSON", async () => {
+		const root = await mkdtemp(join(tmpdir(), "maestro-a2a-telemetry-"));
+		try {
+			const eventsPath = join(root, "events.json");
+			await writeFile(
+				eventsPath,
+				`${JSON.stringify([
+					{
+						type: "maestro.events.a2a.peer.selected",
+						time: "2026-05-23T18:00:00.000Z",
+						data: {
+							swarm_id: "swarm_1",
+							lane_id: "lane_alpha",
+							parent_task_id: "task_parent",
+							peer_name: "Alpha",
+							peer_agent_id: "agent_alpha",
+						},
+					},
+					{
+						type: "maestro.events.a2a.task.dispatched",
+						time: "2026-05-23T18:00:00.250Z",
+						data: {
+							swarm_id: "swarm_1",
+							lane_id: "lane_alpha",
+							parent_task_id: "task_parent",
+							a2a_task_id: "a2a_task_1",
+							a2a_message_id: "a2a_message_1",
+							status: "TASK_STATE_SUBMITTED",
+						},
+					},
+					{
+						type: "maestro.events.a2a.task.completed",
+						time: "2026-05-23T18:00:01.000Z",
+						data: {
+							swarm_id: "swarm_1",
+							lane_id: "lane_alpha",
+							parent_task_id: "task_parent",
+							a2a_task_id: "a2a_task_1",
+							status: "TASK_STATE_COMPLETED",
+							success: true,
+						},
+					},
+				])}\n`,
+			);
+			const log = vi.spyOn(console, "log").mockImplementation(() => {});
+
+			await handleA2ACommand([
+				"telemetry",
+				"--events",
+				eventsPath,
+				"--swarm-id",
+				"swarm_1",
+			]);
+
+			const output = log.mock.calls.flat().join("\n");
+			expect(output).toContain("A2A telemetry");
+			expect(output).toContain("swarm_1");
+			expect(output).toContain("lane_alpha");
+			expect(output).toContain("Alpha");
+			expect(output).toContain("TASK_STATE_COMPLETED");
+			expect(output).toContain("selected_to_dispatch=250ms");
+			expect(output).toContain("observed_duration=750ms");
+		} finally {
+			await rm(root, { force: true, recursive: true });
+		}
 	});
 
 	it("ignores leading flags from other subcommands during dispatch", () => {

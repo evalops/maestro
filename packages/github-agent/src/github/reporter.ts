@@ -93,7 +93,7 @@ function renderTaskStatus(
 	config: AgentConfig,
 ): string {
 	const lines: string[] = [];
-	lines.push("## Composer Agent Status");
+	lines.push("## Maestro Agent Status");
 	lines.push("");
 	lines.push(`**Status:** ${formatStatus(progress.status)}`);
 	lines.push("");
@@ -141,7 +141,7 @@ function renderTaskStatus(
 
 	lines.push("");
 	lines.push(
-		"_Automated by Composer GitHub Agent. Reply with @composer to retrigger._",
+		"_Automated by Maestro GitHub Agent. Reply with @composer to retrigger._",
 	);
 
 	return lines.join("\n");

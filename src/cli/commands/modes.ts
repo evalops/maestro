@@ -65,7 +65,7 @@ type ModeDescription = {
 
 function parseProvider(provider: string | undefined): ModelProvider {
 	if (!provider) {
-		return "anthropic";
+		return "openai-codex";
 	}
 	if (PROVIDERS.includes(provider as ModelProvider)) {
 		return provider as ModelProvider;

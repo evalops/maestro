@@ -7,7 +7,7 @@
  */
 
 import { type ChildProcess, spawn } from "node:child_process";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -21,12 +21,14 @@ import { rankA2ACapabilityPeers } from "../../platform/a2a-capability-market.js"
 import {
 	type A2AServiceConfig,
 	type A2ATask,
+	type A2ATaskPushNotificationConfig,
 	buildA2AUserMessage,
 	cancelA2ATask,
 	getA2ATask,
 	normalizeA2ABaseUrl,
 	sendA2AMessage,
 } from "../../platform/a2a-client.js";
+import { a2aDelegationLaneId } from "../../platform/a2a-completion-audit.js";
 import {
 	type ResolvedA2APeer,
 	resolveA2APeer,
@@ -44,7 +46,10 @@ import {
 	resolveAgentRegistryServiceConfig,
 } from "../../platform/agent-registry-client.js";
 import { getEnvValue, trimString } from "../../platform/client.js";
-import { recordSubagentDispatch } from "../../telemetry.js";
+import {
+	recordA2ADelegationTelemetry as recordA2ADelegationTelemetryEvent,
+	recordSubagentDispatch,
+} from "../../telemetry.js";
 import { createLogger } from "../../utils/logger.js";
 import {
 	type AgentMode,
@@ -81,6 +86,7 @@ const A2A_SKILL_PRIMARY_TASK_CLASSES = new Map<string, string>([
 	["maestro.subagent.repo-explorer", "repo.inspect"],
 	["maestro.subagent.release-shepherd", "release.follow-through"],
 ]);
+const A2A_PUSH_TOKEN_REDACTION = "<redacted>";
 const SWARM_SUBAGENT_TASK_CLASSES = new Map<string, string>([
 	["coder", "code.implementation"],
 	["worker", "code.implementation"],
@@ -145,6 +151,33 @@ function cloneTeammate(teammate: SwarmTeammate): SwarmTeammate {
 	};
 }
 
+function cloneA2APushNotificationConfig(
+	config: A2ATaskPushNotificationConfig | undefined,
+	options: { redactSecrets?: boolean } = {},
+): A2ATaskPushNotificationConfig | undefined {
+	if (!config) {
+		return undefined;
+	}
+	const authentication = config.authentication
+		? {
+				...config.authentication,
+				...(config.authentication.schemes
+					? { schemes: [...config.authentication.schemes] }
+					: {}),
+				...(options.redactSecrets && config.authentication.credentials
+					? { credentials: A2A_PUSH_TOKEN_REDACTION }
+					: {}),
+			}
+		: undefined;
+	return {
+		...config,
+		...(authentication ? { authentication } : {}),
+		...(options.redactSecrets && config.token
+			? { token: A2A_PUSH_TOKEN_REDACTION }
+			: {}),
+	};
+}
+
 function cloneConfig(config: SwarmConfig): SwarmConfig {
 	return {
 		...config,
@@ -152,6 +185,14 @@ function cloneConfig(config: SwarmConfig): SwarmConfig {
 			? {
 					...config.a2a,
 					peers: config.a2a.peers ? [...config.a2a.peers] : undefined,
+					...(config.a2a.pushNotificationConfig
+						? {
+								pushNotificationConfig: cloneA2APushNotificationConfig(
+									config.a2a.pushNotificationConfig,
+									{ redactSecrets: true },
+								),
+							}
+						: {}),
 				}
 			: undefined,
 		tasks: config.tasks.map(cloneTask),
@@ -227,10 +268,88 @@ function parseCSVEnv(value: string | undefined): string[] | undefined {
 	return parsed && parsed.length > 0 ? parsed : undefined;
 }
 
+function resolveA2APushNotificationConfig(
+	configured: A2ATaskPushNotificationConfig | undefined,
+): A2ATaskPushNotificationConfig | undefined {
+	const url =
+		trimString(configured?.url) ??
+		trimString(process.env.MAESTRO_SWARM_A2A_PUSH_URL);
+	if (!url) {
+		return undefined;
+	}
+	const id =
+		trimString(configured?.id) ??
+		trimString(process.env.MAESTRO_SWARM_A2A_PUSH_ID);
+	const token =
+		trimString(configured?.token) ??
+		trimString(process.env.MAESTRO_SWARM_A2A_PUSH_TOKEN);
+	const base = cloneA2APushNotificationConfig(configured) ?? {};
+	return {
+		...base,
+		url,
+		...(id ? { id } : {}),
+		...(token ? { token } : {}),
+	};
+}
+
 function a2aStateCompleted(state: string | undefined): boolean {
 	return /COMPLETED/u.test(
 		(state ?? "").toUpperCase().replace(/[\s-]+/gu, "_"),
 	);
+}
+
+function hashA2AEndpointUrlForTelemetry(
+	url: string | undefined,
+): string | undefined {
+	const trimmed = url?.trim();
+	if (!trimmed) {
+		return undefined;
+	}
+	const canonical = canonicalizeA2AEndpointUrlForTelemetry(trimmed);
+	return `sha256:${createHash("sha256").update(canonical).digest("hex")}`;
+}
+
+function platformA2APeerRouteName(
+	candidate: PlatformAgentRegistryA2APeerCandidate,
+	endpointHash = hashA2AEndpointUrlForTelemetry(candidate.endpointUrl),
+): string {
+	const configuredName =
+		trimString(candidate.agent.name) ?? trimString(candidate.agent.id);
+	if (configuredName) {
+		return configuredName;
+	}
+	return endpointHash
+		? `endpoint:${endpointHash}`
+		: "platform-agent-registry-peer";
+}
+
+function canonicalizeA2AEndpointUrlForTelemetry(url: string): string {
+	try {
+		const parsed = new URL(url);
+		parsed.username = "";
+		parsed.password = "";
+		parsed.search = "";
+		parsed.hash = "";
+		parsed.pathname = parsed.pathname.replace(/\/+$/u, "") || "/";
+		return normalizeA2ABaseUrl(parsed.toString().replace(/\/$/u, ""));
+	} catch {
+		return normalizeA2ABaseUrl(
+			url.replace(/[?#].*$/u, "").replace(/\/+$/u, ""),
+		);
+	}
+}
+
+function a2aTerminalPhase(
+	state: string | undefined,
+): "task_completed" | "task_failed" | "task_cancelled" {
+	const normalized = (state ?? "").toUpperCase().replace(/[\s-]+/gu, "_");
+	if (normalized.includes("COMPLETED")) {
+		return "task_completed";
+	}
+	if (normalized.includes("CANCEL")) {
+		return "task_cancelled";
+	}
+	return "task_failed";
 }
 
 type A2ATeammateRoute = {
@@ -238,8 +357,12 @@ type A2ATeammateRoute = {
 	displayName?: string;
 	config: A2AServiceConfig;
 	skillId?: string;
+	taskClass?: string;
 	role?: string;
 	tasksPath?: string;
+	peerAgentId?: string;
+	peerEndpointHash?: string;
+	peerEndpointKind?: string;
 	source: "registry" | "platform-agent-registry";
 };
 
@@ -291,6 +414,8 @@ export class SwarmExecutor {
 	private state: SwarmState;
 	private processes: Map<string, ChildProcess> = new Map();
 	private remoteA2ATasks: Map<string, RemoteA2ARunningTask> = new Map();
+	private remoteA2ACancelTasks: Map<string, Promise<A2ATask | undefined>> =
+		new Map();
 	private a2aRouteCursor = 0;
 	private eventHandlers: Set<SwarmEventHandler> = new Set();
 	private abortController: AbortController;
@@ -414,24 +539,34 @@ export class SwarmExecutor {
 	private async cancelRemoteA2ATask(
 		teammateId: string,
 		remoteTask: RemoteA2ARunningTask,
-	): Promise<void> {
-		try {
-			const cancelledTask = await cancelA2ATask(
-				remoteTask.route.config,
-				remoteTask.taskId,
-			);
-			await this.updateA2ASwarmTaskLedger(remoteTask.route, cancelledTask);
-		} catch (error) {
-			logger.warn("Failed to cancel remote A2A swarm task", {
-				error: error instanceof Error ? error.message : String(error),
-				swarmId: this.state.id,
-				teammateId,
-				remoteTaskId: remoteTask.taskId,
-				peer: remoteTask.route.name,
-			});
-		} finally {
-			this.remoteA2ATasks.delete(teammateId);
+	): Promise<A2ATask | undefined> {
+		const existingCancel = this.remoteA2ACancelTasks.get(teammateId);
+		if (existingCancel) {
+			return existingCancel;
 		}
+		const cancelTask = (async () => {
+			try {
+				const cancelledTask = await cancelA2ATask(
+					remoteTask.route.config,
+					remoteTask.taskId,
+				);
+				await this.updateA2ASwarmTaskLedger(remoteTask.route, cancelledTask);
+				return cancelledTask;
+			} catch (error) {
+				logger.warn("Failed to cancel remote A2A swarm task", {
+					error: error instanceof Error ? error.message : String(error),
+					swarmId: this.state.id,
+					teammateId,
+					remoteTaskId: remoteTask.taskId,
+					peer: remoteTask.route.name,
+				});
+				return undefined;
+			} finally {
+				this.remoteA2ATasks.delete(teammateId);
+			}
+		})();
+		this.remoteA2ACancelTasks.set(teammateId, cancelTask);
+		return cancelTask;
 	}
 
 	/**
@@ -442,7 +577,7 @@ export class SwarmExecutor {
 		this.emit({
 			type: "swarm_start",
 			swarmId: this.state.id,
-			config: this.state.config,
+			config: cloneConfig(this.state.config),
 		});
 
 		try {
@@ -493,7 +628,7 @@ export class SwarmExecutor {
 		this.emit({
 			type: "swarm_complete",
 			swarmId: this.state.id,
-			state: this.state,
+			state: cloneState(this.state),
 		});
 
 		logger.info("Swarm execution complete", {
@@ -504,7 +639,7 @@ export class SwarmExecutor {
 			duration: this.state.completedAt - this.state.startedAt,
 		});
 
-		return this.state;
+		return cloneState(this.state);
 	}
 
 	/**
@@ -678,7 +813,7 @@ export class SwarmExecutor {
 		const dispatch = resolveSubagentDispatch(
 			mode,
 			subagentType,
-			parentProvider ?? "anthropic",
+			parentProvider ?? "openai-codex",
 		);
 		if (!parentProvider && dispatch.modelTier && !options.hasModelOverride) {
 			this.recordTaskDispatch(
@@ -814,6 +949,9 @@ export class SwarmExecutor {
 			pollIntervalMs:
 				configured.pollIntervalMs ??
 				parsePositiveIntEnv(process.env.MAESTRO_SWARM_A2A_POLL_INTERVAL_MS),
+			pushNotificationConfig: resolveA2APushNotificationConfig(
+				configured.pushNotificationConfig,
+			),
 		};
 	}
 
@@ -835,13 +973,16 @@ export class SwarmExecutor {
 			timeoutMs: options.timeoutMs,
 			maxAttempts: options.maxAttempts,
 		});
+		const skillId = this.resolveA2ASkillId(task, options, peer);
 		return {
 			name: peer.name,
 			displayName: peer.entry.displayName,
 			config: peer.config,
-			skillId: this.resolveA2ASkillId(task, options, peer),
+			skillId,
+			taskClass: this.resolveA2ATaskClass(task, options, skillId),
 			role: options.role ?? task.subagentType,
 			tasksPath: options.tasksPath,
+			peerEndpointHash: hashA2AEndpointUrlForTelemetry(peer.config.baseUrl),
 			source: "registry",
 		};
 	}
@@ -913,13 +1054,20 @@ export class SwarmExecutor {
 			skillId: ranked.selectedSkill?.id ?? skillId,
 		});
 		const config = await this.a2aConfigForPlatformCandidate(candidate, options);
+		const selectedSkillId = ranked.selectedSkill?.id ?? skillId;
+		const endpointHash = hashA2AEndpointUrlForTelemetry(candidate.endpointUrl);
+		const routeName = platformA2APeerRouteName(candidate, endpointHash);
 		return {
-			name: candidate.agent.name ?? candidate.agent.id ?? candidate.endpointUrl,
+			name: routeName,
 			displayName: candidate.agent.name,
 			config,
-			skillId: ranked.selectedSkill?.id ?? skillId,
+			skillId: selectedSkillId,
+			taskClass: this.resolveA2ATaskClass(task, options, selectedSkillId),
 			role: options.role ?? task.subagentType,
 			tasksPath: options.tasksPath,
+			peerAgentId: candidate.agent.id,
+			peerEndpointHash: endpointHash,
+			peerEndpointKind: candidate.endpointKind,
 			source: "platform-agent-registry",
 		};
 	}
@@ -1335,10 +1483,26 @@ export class SwarmExecutor {
 		tmpFile: string,
 		options: SwarmA2AConfig,
 	): Promise<void> {
+		let route: A2ATeammateRoute | undefined;
+		let messageId: string | undefined;
+		let contextId: string | undefined;
+		let a2aTaskId: string | undefined;
+		const startedAt = Date.now();
 		try {
-			const route = await this.resolveA2ATeammateRoute(teammate, task, options);
-			const messageId = `maestro-swarm-message-${randomUUID()}`;
-			const contextId = `maestro-swarm:${this.state.id}:${task.id}`;
+			route = await this.resolveA2ATeammateRoute(teammate, task, options);
+			messageId = `maestro-swarm-message-${randomUUID()}`;
+			contextId = `maestro-swarm:${this.state.id}:${task.id}`;
+			this.recordA2ADelegationTelemetry(
+				"peer_selected",
+				route,
+				teammate,
+				task,
+				{
+					contextId,
+					messageId,
+				},
+			);
+			const dispatchStartedAt = Date.now();
 			const sent = await sendA2AMessage(route.config, {
 				message: buildA2AUserMessage({
 					messageId,
@@ -1349,6 +1513,11 @@ export class SwarmExecutor {
 				configuration: {
 					returnImmediately: true,
 					acceptedOutputModes: ["text/plain", "application/json"],
+					...(options.pushNotificationConfig
+						? {
+								taskPushNotificationConfig: options.pushNotificationConfig,
+							}
+						: {}),
 				},
 				metadata: {
 					route: "maestro_swarm",
@@ -1360,16 +1529,33 @@ export class SwarmExecutor {
 					source: route.source,
 				},
 			});
+			a2aTaskId = sent.task.id;
+			contextId = sent.task.contextId ?? contextId;
+			const dispatchLatencyMs = Math.max(0, Date.now() - dispatchStartedAt);
 			teammate.a2a = {
 				peer: route.name,
 				peerDisplayName: route.displayName,
 				source: route.source,
+				parentTaskId: task.id,
 				taskId: sent.task.id,
-				contextId: sent.task.contextId ?? contextId,
+				contextId,
 				messageId,
 				skillId: route.skillId,
 				role: route.role,
 			};
+			this.recordA2ADelegationTelemetry(
+				"task_dispatched",
+				route,
+				teammate,
+				task,
+				{
+					a2aTaskId: sent.task.id,
+					contextId,
+					messageId,
+					status: sent.task.status.state,
+					latencyMs: dispatchLatencyMs,
+				},
+			);
 			this.remoteA2ATasks.set(teammate.id, {
 				route,
 				taskId: sent.task.id,
@@ -1382,10 +1568,29 @@ export class SwarmExecutor {
 				this.state.status === "cancelled" ||
 				this.abortController.signal.aborted
 			) {
-				await this.cancelRemoteA2ATask(teammate.id, {
+				const cancelledTask = await this.cancelRemoteA2ATask(teammate.id, {
 					route,
 					taskId: sent.task.id,
 				});
+				if (!cancelledTask) {
+					return;
+				}
+				this.recordA2ADelegationTelemetry(
+					a2aTerminalPhase(cancelledTask.status.state),
+					route,
+					teammate,
+					task,
+					{
+						a2aTaskId: cancelledTask.id,
+						contextId:
+							cancelledTask.contextId ?? sent.task.contextId ?? contextId,
+						messageId,
+						status: cancelledTask.status.state,
+						terminal: true,
+						success: a2aStateCompleted(cancelledTask.status.state),
+						durationMs: Math.max(0, Date.now() - startedAt),
+					},
+				);
 				return;
 			}
 			const remoteTask = await this.waitForA2ASwarmTask(
@@ -1394,20 +1599,68 @@ export class SwarmExecutor {
 				options,
 			);
 			await this.updateA2ASwarmTaskLedger(route, remoteTask);
+			this.recordA2ADelegationTelemetry(
+				a2aTerminalPhase(remoteTask.status.state),
+				route,
+				teammate,
+				task,
+				{
+					a2aTaskId: remoteTask.id,
+					contextId: remoteTask.contextId ?? contextId,
+					messageId,
+					status: remoteTask.status.state,
+					terminal: true,
+					success: a2aStateCompleted(remoteTask.status.state),
+					durationMs: Math.max(0, Date.now() - startedAt),
+				},
+			);
 			this.completeA2ATeammate(teammate, task, remoteTask, route);
 		} catch (error) {
-			if (
-				this.state.status !== "cancelled" &&
-				!this.abortController.signal.aborted
-			) {
-				const remoteTask = this.remoteA2ATasks.get(teammate.id);
-				if (remoteTask) {
-					await this.cancelRemoteA2ATask(teammate.id, remoteTask);
+			const wasCancelled =
+				this.state.status === "cancelled" ||
+				this.abortController.signal.aborted ||
+				teammate.status === "cancelled";
+			const remoteTask = this.remoteA2ATasks.get(teammate.id);
+			const pendingCancelTask = this.remoteA2ACancelTasks.get(teammate.id);
+			const cancelledTask = wasCancelled
+				? await (pendingCancelTask ??
+						(remoteTask
+							? this.cancelRemoteA2ATask(teammate.id, remoteTask)
+							: Promise.resolve(undefined)))
+				: undefined;
+			if (!wasCancelled && remoteTask) {
+				await this.cancelRemoteA2ATask(teammate.id, remoteTask);
+			}
+			if (route) {
+				if (!wasCancelled || cancelledTask) {
+					this.recordA2ADelegationTelemetry(
+						wasCancelled
+							? a2aTerminalPhase(cancelledTask?.status.state)
+							: "task_failed",
+						route,
+						teammate,
+						task,
+						{
+							a2aTaskId: cancelledTask?.id ?? a2aTaskId,
+							contextId: cancelledTask?.contextId ?? contextId,
+							messageId,
+							status: cancelledTask?.status.state ?? "TASK_STATE_FAILED",
+							terminal: true,
+							success: a2aStateCompleted(cancelledTask?.status.state),
+							durationMs: Math.max(0, Date.now() - startedAt),
+							metadata: {
+								error: error instanceof Error ? error.message : String(error),
+							},
+						},
+					);
 				}
 			}
-			this.failA2ATeammate(teammate, task, error);
+			this.failA2ATeammate(teammate, task, error, {
+				preserveA2A: Boolean(a2aTaskId),
+			});
 		} finally {
 			this.remoteA2ATasks.delete(teammate.id);
+			this.remoteA2ACancelTasks.delete(teammate.id);
 			try {
 				unlinkSync(tmpFile);
 			} catch {
@@ -1416,12 +1669,64 @@ export class SwarmExecutor {
 		}
 	}
 
+	private recordA2ADelegationTelemetry(
+		phase: Parameters<typeof recordA2ADelegationTelemetryEvent>[0]["phase"],
+		route: A2ATeammateRoute,
+		_teammate: SwarmTeammate,
+		task: SwarmTask,
+		options: {
+			a2aTaskId?: string;
+			contextId?: string;
+			messageId?: string;
+			status?: string;
+			terminal?: boolean;
+			success?: boolean;
+			latencyMs?: number;
+			durationMs?: number;
+			metadata?: Record<string, unknown>;
+		} = {},
+	): void {
+		const laneId = a2aDelegationLaneId(route.name, task.id);
+		recordA2ADelegationTelemetryEvent({
+			phase,
+			swarmId: this.state.id,
+			laneId,
+			parentTaskId: task.id,
+			a2aTaskId: options.a2aTaskId,
+			a2aMessageId: options.messageId,
+			contextId: options.contextId,
+			peerAgentId: route.peerAgentId,
+			peerName: route.name,
+			peerEndpointHash: route.peerEndpointHash,
+			peerEndpointUrl: undefined,
+			peerEndpointKind: route.peerEndpointKind,
+			skillId: route.skillId,
+			taskClass: route.taskClass,
+			source: route.source,
+			status: options.status,
+			terminal: options.terminal,
+			success: options.success,
+			latencyMs: options.latencyMs,
+			durationMs: options.durationMs,
+			metadata: options.metadata,
+			correlation: {
+				attributes: {
+					swarm_id: this.state.id,
+					lane_id: laneId,
+					parent_task_id: task.id,
+					peer: route.name,
+				},
+			},
+		});
+	}
+
 	private buildA2ASwarmMessageMetadata(
 		teammate: SwarmTeammate,
 		task: SwarmTask,
 		route: A2ATeammateRoute,
 	): Record<string, unknown> {
 		const currentDelegationId = `${this.state.id}:${task.id}`;
+		const contextId = `maestro-swarm:${this.state.id}:${task.id}`;
 		const lineage = {
 			rootDelegationId: this.state.id,
 			...(this.state.config.parentSessionId
@@ -1441,6 +1746,15 @@ export class SwarmExecutor {
 					swarmId: this.state.id,
 				}
 			: undefined;
+		const peerControl = {
+			schema: "evalops.maestro.a2a-peer-control.v1",
+			parentSwarmId: this.state.id,
+			laneId: a2aDelegationLaneId(route.name, task.id),
+			taskId: task.id,
+			contextId,
+			controlModes: ["followup", "steer", "interrupt", "cancel"],
+			evidenceRequired: ["status", "artifact", "task", "workGraph"],
+		};
 		return {
 			requestKind: "maestro-swarm-task",
 			transport: "a2a",
@@ -1456,7 +1770,9 @@ export class SwarmExecutor {
 				swarm: lineage,
 				transport: "a2a",
 				peer: route.name,
+				peerControl,
 			},
+			"evalops.peerControl": peerControl,
 			...(subagentRequest
 				? { "evalops.subagentRequest": subagentRequest }
 				: {}),
@@ -1560,6 +1876,7 @@ export class SwarmExecutor {
 		teammate: SwarmTeammate,
 		task: SwarmTask,
 		error: unknown,
+		options: { preserveA2A?: boolean } = {},
 	): void {
 		this.state.activeTasks.delete(task.id);
 		teammate.completedAt = Date.now();
@@ -1573,7 +1890,11 @@ export class SwarmExecutor {
 			});
 			return;
 		}
-		if (teammate.a2a && !this.remoteA2ATasks.has(teammate.id)) {
+		if (
+			teammate.a2a &&
+			!options.preserveA2A &&
+			!this.remoteA2ATasks.has(teammate.id)
+		) {
 			teammate.a2a = undefined;
 		}
 		teammate.status = "failed";
@@ -1699,6 +2020,10 @@ function platformA2ACandidateMatchesPeer(
 		candidate.endpointUrl,
 		candidate.agentCardUrl,
 	];
+	const endpointHash = hashA2AEndpointUrlForTelemetry(candidate.endpointUrl);
+	if (endpointHash) {
+		values.push(endpointHash, `endpoint:${endpointHash}`);
+	}
 	return values.some((value) => {
 		const candidateSelector = normalizePeerSelector(value);
 		if (candidateSelector && candidateSelector === selector) {

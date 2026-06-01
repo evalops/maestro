@@ -317,6 +317,293 @@ describe("HeadlessInProcessHost", () => {
 		).toBe(0);
 	});
 
+	it("disposes owned utility resources and replays cleanup after connection loss", async () => {
+		const fakeAgent = new FakeAgent();
+		tempDir = await mkdtemp(join(tmpdir(), "maestro-headless-in-process-"));
+		const sessionManager = new SessionManager(false, undefined, {
+			sessionDir: tempDir,
+		});
+		const runtimeService = new HeadlessRuntimeService();
+		const host = new HeadlessInProcessHost(runtimeService);
+
+		const snapshot = await host.ensureSession({
+			scope_key: "anon",
+			registeredModel: TEST_MODEL,
+			thinkingLevel: "off",
+			approvalMode: "prompt",
+			context: {
+				createAgent: vi.fn().mockResolvedValue(fakeAgent),
+			},
+			sessionManager,
+			capabilities: {
+				server_requests: ["approval"],
+				utility_operations: ["command_exec", "file_watch"],
+			},
+		});
+
+		const stream = host.attachStream({
+			scopeKey: "anon",
+			sessionId: snapshot.session_id,
+			role: "controller",
+			cursor: null,
+		});
+		expect((await readNextEnvelope(stream)).type).toBe("snapshot");
+
+		await host.send({
+			scopeKey: "anon",
+			sessionId: snapshot.session_id,
+			role: "controller",
+			message: {
+				type: "utility_command_start",
+				command_id: "cmd_owned",
+				command: `${JSON.stringify(process.execPath)} -e ${JSON.stringify("setInterval(() => {}, 1000)")}`,
+				shell_mode: "direct",
+			},
+		});
+
+		let commandStartedCursor: number | null = null;
+		while (commandStartedCursor === null) {
+			const next = await readNextEnvelope(stream);
+			if (
+				next.type === "message" &&
+				next.message.type === "utility_command_started" &&
+				next.message.command_id === "cmd_owned"
+			) {
+				commandStartedCursor = next.cursor;
+			}
+		}
+
+		await host.send({
+			scopeKey: "anon",
+			sessionId: snapshot.session_id,
+			role: "controller",
+			message: {
+				type: "utility_file_watch_start",
+				watch_id: "watch_owned",
+				root_dir: tempDir,
+				debounce_ms: 10,
+			},
+		});
+
+		let watchStartedCursor: number | null = null;
+		while (watchStartedCursor === null) {
+			const next = await readNextEnvelope(stream);
+			if (
+				next.type === "message" &&
+				next.message.type === "utility_file_watch_started" &&
+				next.message.watch_id === "watch_owned"
+			) {
+				watchStartedCursor = next.cursor;
+			}
+		}
+
+		const runningSnapshot = host.getSnapshot("anon", snapshot.session_id);
+		const controllerConnectionId =
+			runningSnapshot.state.controller_connection_id;
+		expect(controllerConnectionId).toEqual(expect.any(String));
+		expect(runningSnapshot.state.active_utility_commands).toContainEqual(
+			expect.objectContaining({
+				command_id: "cmd_owned",
+				owner_connection_id: controllerConnectionId,
+			}),
+		);
+		expect(runningSnapshot.state.active_file_watches).toContainEqual(
+			expect.objectContaining({
+				watch_id: "watch_owned",
+				owner_connection_id: controllerConnectionId,
+			}),
+		);
+
+		const replayCursor = Math.min(commandStartedCursor, watchStartedCursor);
+		await host.disconnect({
+			scopeKey: "anon",
+			sessionId: snapshot.session_id,
+			connectionId: controllerConnectionId,
+		});
+
+		await vi.waitFor(() => {
+			expect(
+				host.getSnapshot("anon", snapshot.session_id).state
+					.active_utility_commands,
+			).toEqual([]);
+			expect(
+				host.getSnapshot("anon", snapshot.session_id).state.active_file_watches,
+			).toEqual([]);
+		});
+
+		const replay = host.replayFrom("anon", snapshot.session_id, replayCursor);
+		expect(replay).toEqual(
+			expect.arrayContaining([
+				expect.objectContaining({
+					type: "message",
+					message: expect.objectContaining({
+						type: "utility_command_exited",
+						command_id: "cmd_owned",
+						reason:
+							"Owning connection closed while utility command was still running",
+					}),
+				}),
+				expect.objectContaining({
+					type: "message",
+					message: expect.objectContaining({
+						type: "utility_file_watch_stopped",
+						watch_id: "watch_owned",
+						reason:
+							"Owning connection closed while file watch was still running",
+					}),
+				}),
+				expect.objectContaining({
+					type: "snapshot",
+					snapshot: expect.objectContaining({
+						state: expect.objectContaining({
+							connection_count: 0,
+							controller_connection_id: null,
+							active_utility_commands: [],
+							active_file_watches: [],
+						}),
+					}),
+				}),
+			]),
+		);
+	});
+
+	it("replays pending approval waits after stream reattach and resumes them", async () => {
+		const fakeAgent = new FakeAgent();
+		tempDir = await mkdtemp(join(tmpdir(), "maestro-headless-in-process-"));
+		const sessionManager = new SessionManager(false, undefined, {
+			sessionDir: tempDir,
+		});
+		const runtimeService = new HeadlessRuntimeService();
+		const host = new HeadlessInProcessHost(runtimeService);
+
+		const snapshot = await host.ensureSession({
+			scope_key: "anon",
+			registeredModel: TEST_MODEL,
+			thinkingLevel: "off",
+			approvalMode: "prompt",
+			context: {
+				createAgent: vi.fn().mockResolvedValue(fakeAgent),
+			},
+			sessionManager,
+			capabilities: {
+				server_requests: ["approval"],
+			},
+		});
+		const runtime = runtimeService.getRuntime("anon", snapshot.session_id);
+		if (!runtime) {
+			throw new Error("Expected runtime");
+		}
+		const baselineCursor = host.getSnapshot("anon", snapshot.session_id).cursor;
+		const request = {
+			id: "call_replay_approval",
+			toolName: "bash",
+			args: { command: "git push --force-with-lease" },
+			reason: "Force push requires approval",
+			startedAtMs: 1_779_000_000_000,
+		};
+		fakeAgent.emit({
+			type: "action_approval_required",
+			request,
+		});
+		const approvalService = (
+			runtime as unknown as {
+				approvalService: {
+					requestApproval(request: typeof request): Promise<{
+						approved: boolean;
+						reason?: string;
+						resolvedBy: "policy" | "user";
+					}>;
+				};
+			}
+		).approvalService;
+		const pendingApproval = approvalService.requestApproval(request);
+
+		const reattached = host.attachStream({
+			scopeKey: "anon",
+			sessionId: snapshot.session_id,
+			role: "controller",
+			cursor: baselineCursor,
+		});
+		const replayedToolCall = await readNextEnvelope(reattached);
+		expect(replayedToolCall).toMatchObject({
+			type: "message",
+			message: {
+				type: "tool_call",
+				call_id: "call_replay_approval",
+				requires_approval: true,
+			},
+		});
+		const replayedWait = await readNextEnvelope(reattached);
+		expect(replayedWait).toMatchObject({
+			type: "message",
+			message: {
+				type: "server_request",
+				request_id: "call_replay_approval",
+				request_type: "approval",
+				call_id: "call_replay_approval",
+				started_at_ms: 1_779_000_000_000,
+			},
+		});
+		if (replayedWait.type !== "message") {
+			throw new Error("Expected replayed wait message");
+		}
+		const waitCursor = replayedWait.cursor;
+		reattached.close();
+
+		await host.send({
+			scopeKey: "anon",
+			sessionId: snapshot.session_id,
+			role: "controller",
+			message: {
+				type: "server_request_response",
+				request_id: "call_replay_approval",
+				request_type: "approval",
+				call_id: "call_replay_approval",
+				approved: true,
+				result: { output: "Approved after reconnect" },
+			},
+		});
+		await expect(pendingApproval).resolves.toMatchObject({
+			approved: true,
+			reason: "Approved after reconnect",
+			resolvedBy: "user",
+		});
+
+		const resumed = host.attachStream({
+			scopeKey: "anon",
+			sessionId: snapshot.session_id,
+			role: "controller",
+			cursor: waitCursor,
+		});
+		expect(await readNextEnvelope(resumed)).toMatchObject({
+			type: "message",
+			message: {
+				type: "server_request_resolved",
+				request_id: "call_replay_approval",
+				request_type: "approval",
+				call_id: "call_replay_approval",
+				resolution: "approved",
+				reason: "Approved after reconnect",
+				resolved_by: "user",
+				started_at_ms: 1_779_000_000_000,
+				resolved_at_ms: expect.any(Number),
+			},
+		});
+		expect(await readNextEnvelope(resumed)).toMatchObject({
+			type: "snapshot",
+			snapshot: {
+				state: expect.objectContaining({
+					pending_approvals: [],
+					pending_requests: [],
+				}),
+			},
+		});
+		expect(
+			host.getSnapshot("anon", snapshot.session_id).state.pending_approvals,
+		).toEqual([]);
+		resumed.close();
+	});
+
 	it("writes stdin to utility commands over the in-process control plane", async () => {
 		const fakeAgent = new FakeAgent();
 		tempDir = await mkdtemp(join(tmpdir(), "maestro-headless-in-process-"));

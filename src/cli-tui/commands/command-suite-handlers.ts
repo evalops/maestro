@@ -1,4 +1,5 @@
 import { isDatabaseConfigured } from "../../db/client.js";
+import type { AuthState } from "./subcommands/auth-commands.js";
 import {
 	createAuthCommandHandler,
 	createConfigCommandHandler,
@@ -94,11 +95,7 @@ export type CommandSuiteDeps = {
 		handleSourceOfTruthPolicy: (
 			ctx: CommandExecutionContext,
 		) => void | Promise<void>;
-		getAuthState: () => {
-			authenticated: boolean;
-			provider?: string;
-			mode?: string;
-		};
+		getAuthState: () => AuthState | Promise<AuthState>;
 	};
 	[CommandSuiteKey.Usage]: {
 		handleCost: (ctx: CommandExecutionContext) => void | Promise<void>;

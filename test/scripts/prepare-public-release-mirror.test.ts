@@ -63,6 +63,7 @@ describe("prepare-public-release-mirror", () => {
 		write(join(source, "README.md"), "public readme\n");
 		write(join(source, "src/index.ts"), "export const value = 1;\n");
 		write(join(source, ".github/workflows/ci.yml"), "internal ci\n");
+		write(join(source, ".nx/workspace-data/project-graph.json"), "{}\n");
 		write(
 			join(source, ".github/workflows/review-thread-guard.yml"),
 			[
@@ -81,12 +82,44 @@ describe("prepare-public-release-mirror", () => {
 			"generated package output\n",
 		);
 		write(
+			join(source, "packages/tui-rs/target/debug/maestro-tui"),
+			"generated rust output\n",
+		);
+		write(
 			join(source, "packages/core/node_modules/pkg/index.js"),
 			"nested dependency\n",
 		);
 		write(
+			join(source, "packages/github-agent/tsconfig.build.tsbuildinfo"),
+			"generated tsbuildinfo\n",
+		);
+		write(
 			join(source, "scripts/smoke-registry-install.js"),
 			"internal smoke\n",
+		);
+		write(
+			join(source, "scripts/smoke-published-replay-e2e.js"),
+			"internal replay\n",
+		);
+		write(
+			join(source, "scripts/published-replay-evidence-gate.js"),
+			"internal evidence gate\n",
+		);
+		write(
+			join(source, "scripts/release-observability-query-contract.js"),
+			"internal observability query contract\n",
+		);
+		write(
+			join(source, "scripts/verify-published-replay-evidence.js"),
+			"internal evidence verifier\n",
+		);
+		write(
+			join(source, "scripts/validate-public-package-deps.js"),
+			"internal public package dependency validator\n",
+		);
+		write(
+			join(source, "test/scripts/validate-public-package-deps.test.ts"),
+			"internal public package dependency validator test\n",
 		);
 		write(join(source, ".env"), "SECRET=value\n");
 		write(join(source, ".env.local"), "LOCAL_SECRET=value\n");
@@ -118,6 +151,30 @@ describe("prepare-public-release-mirror", () => {
 		write(join(target, "src/cli/commands/scenario.ts"), "export {};\n");
 		write(join(target, "test/scenario-pack.test.ts"), "stale\n");
 		write(join(target, "scripts/smoke-registry-install.js"), "public smoke\n");
+		write(
+			join(target, "scripts/smoke-published-replay-e2e.js"),
+			"public replay\n",
+		);
+		write(
+			join(target, "scripts/published-replay-evidence-gate.js"),
+			"public evidence gate\n",
+		);
+		write(
+			join(target, "scripts/release-observability-query-contract.js"),
+			"public observability query contract\n",
+		);
+		write(
+			join(target, "scripts/verify-published-replay-evidence.js"),
+			"public evidence verifier\n",
+		);
+		write(
+			join(target, "scripts/validate-public-package-deps.js"),
+			"public package dependency validator\n",
+		);
+		write(
+			join(target, "test/scripts/validate-public-package-deps.test.ts"),
+			"public package dependency validator test\n",
+		);
 		write(join(target, ".git/config"), '[remote "origin"]\n');
 
 		execFileSync(
@@ -169,7 +226,18 @@ describe("prepare-public-release-mirror", () => {
 			false,
 		);
 		expect(
+			existsSync(join(target, ".nx/workspace-data/project-graph.json")),
+		).toBe(false);
+		expect(
+			existsSync(join(target, "packages/tui-rs/target/debug/maestro-tui")),
+		).toBe(false);
+		expect(
 			existsSync(join(target, "packages/core/node_modules/pkg/index.js")),
+		).toBe(false);
+		expect(
+			existsSync(
+				join(target, "packages/github-agent/tsconfig.build.tsbuildinfo"),
+			),
 		).toBe(false);
 		expect(
 			readFileSync(
@@ -198,6 +266,42 @@ describe("prepare-public-release-mirror", () => {
 		expect(
 			readFileSync(join(target, "scripts/smoke-registry-install.js"), "utf8"),
 		).toBe("public smoke\n");
+		expect(
+			readFileSync(
+				join(target, "scripts/smoke-published-replay-e2e.js"),
+				"utf8",
+			),
+		).toBe("public replay\n");
+		expect(
+			readFileSync(
+				join(target, "scripts/published-replay-evidence-gate.js"),
+				"utf8",
+			),
+		).toBe("public evidence gate\n");
+		expect(
+			readFileSync(
+				join(target, "scripts/release-observability-query-contract.js"),
+				"utf8",
+			),
+		).toBe("public observability query contract\n");
+		expect(
+			readFileSync(
+				join(target, "scripts/verify-published-replay-evidence.js"),
+				"utf8",
+			),
+		).toBe("public evidence verifier\n");
+		expect(
+			readFileSync(
+				join(target, "scripts/validate-public-package-deps.js"),
+				"utf8",
+			),
+		).toBe("public package dependency validator\n");
+		expect(
+			readFileSync(
+				join(target, "test/scripts/validate-public-package-deps.test.ts"),
+				"utf8",
+			),
+		).toBe("public package dependency validator test\n");
 		expect(readFileSync(join(target, ".git/config"), "utf8")).toBe(
 			'[remote "origin"]\n',
 		);
@@ -206,6 +310,10 @@ describe("prepare-public-release-mirror", () => {
 		expect(pkg.name).toBe(publicPackageName);
 		expect(pkg.scripts).toMatchObject({
 			"release:verify:published": "node scripts/smoke-registry-install.js",
+			"release:verify:published:e2e":
+				"node scripts/smoke-published-replay-e2e.js",
+			"release:verify:published:evidence":
+				"node scripts/verify-published-replay-evidence.js",
 			"release:deprecate": "node scripts/deprecate-release.js",
 		});
 		expect(pkg.maestro).toMatchObject({

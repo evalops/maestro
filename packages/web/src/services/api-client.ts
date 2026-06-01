@@ -1,8 +1,8 @@
 /**
- * @fileoverview API Client for Composer Backend
+ * @fileoverview API Client for Maestro Backend
  *
  * This module provides a type-safe HTTP client for communicating with
- * the Composer backend API. It handles:
+ * the Maestro backend API. It handles:
  *
  * - Session management (create, list, delete)
  * - Streaming chat with Server-Sent Events (SSE)
@@ -85,42 +85,81 @@ import {
 	isComposerUsageResponse,
 } from "@evalops/contracts";
 import type {
-	ComposerAgentEvent,
-	ComposerApprovalsStatusResponse,
-	ComposerApprovalsUpdateResponse,
-	ComposerAssistantMessageEvent,
-	ComposerBackgroundHistoryResponse,
-	ComposerBackgroundStatusResponse,
-	ComposerBackgroundUpdateResponse,
-	ComposerChatRequest,
-	ComposerCommand,
-	ComposerCommandPrefs,
-	ComposerConfigResponse,
-	ComposerConfigWriteRequest,
-	ComposerConfigWriteResponse,
 	ComposerErrorResponse,
-	ComposerFrameworkListResponse,
-	ComposerFrameworkStatusResponse,
-	ComposerFrameworkUpdateResponse,
-	ComposerGuardianConfigResponse,
-	ComposerGuardianRunResponse,
-	ComposerGuardianStatusResponse,
-	ComposerMessage,
-	ComposerModel,
 	ComposerPendingRequestResumeRequest,
 	ComposerPendingRequestResumeResponse,
-	ComposerPlanActionResponse,
-	ComposerPlanStatusResponse,
-	ComposerProjectOnboardingState,
 	ComposerPromptSuggestionRequest,
 	ComposerPromptSuggestionResponse,
-	ComposerRunTimelineResponse,
-	ComposerSession,
 	ComposerSessionMessagesView,
-	ComposerSessionSummary,
+} from "@evalops/contracts";
+import type {
+	A2ACockpitNextAction,
+	A2ACockpitNextActionSeverity,
+	A2ACockpitPeerSummary,
+	A2ACockpitResponse,
+	A2ACockpitTaskStatus,
+	A2ACockpitTaskSummary,
+	AgentEvent,
+	ApiClientAuthConfig,
+	ApiClientOptions,
+	ApprovalsStatusResponse,
+	ApprovalsUpdateResponse,
+	AssistantMessageEvent,
+	AttachmentTextExtractionResponse,
+	BackgroundHistoryResponse,
+	BackgroundStatusResponse,
+	BackgroundTaskHistoryEntry,
+	BackgroundTaskLimitBreach,
+	BackgroundTaskSnapshot,
+	BackgroundTaskSnapshotEntry,
+	BackgroundUpdateResponse,
+	BranchListResponse,
+	ChatRequest,
+	ChatResponse,
+	CommandDefinition,
+	CommandPrefs,
 	ComposerToolCall,
-	ComposerUndoOperationResponse,
-	ComposerUndoStatusResponse,
+	ConfigResponse,
+	ConfigWriteRequest,
+	ConfigWriteResponse,
+	FrameworkListResponse,
+	FrameworkStatusResponse,
+	FrameworkUpdateResponse,
+	GuardianConfigResponse,
+	GuardianRunResponse,
+	GuardianStatusResponse,
+	McpAuthPresetAddRequest,
+	McpAuthPresetConfigInput,
+	McpAuthPresetMutationResponse,
+	McpAuthPresetRemoveRequest,
+	McpAuthPresetRemoveResponse,
+	McpAuthPresetStatus,
+	McpAuthPresetUpdateRequest,
+	McpOfficialRegistryEntry,
+	McpOfficialRegistryInfo,
+	McpOfficialRegistryUrlOption,
+	McpProjectApprovalRequest,
+	McpProjectApprovalResponse,
+	McpProjectApprovalStatus,
+	McpPromptArgument,
+	McpPromptDefinition,
+	McpPromptMessage,
+	McpPromptResponse,
+	McpRegistryImportRequest,
+	McpRegistryImportResponse,
+	McpRegistrySearchResponse,
+	McpRemoteTrust,
+	McpResourceContent,
+	McpResourceReadResponse,
+	McpServerAddRequest,
+	McpServerConfigInput,
+	McpServerMutationResponse,
+	McpServerRemoveRequest,
+	McpServerRemoveResponse,
+	McpServerStatus,
+	McpServerUpdateRequest,
+	McpStatus,
+	McpToolDefinition,
 	MemoryEntry,
 	MemoryMutationResponse,
 	MemoryRecentResponse,
@@ -131,17 +170,125 @@ import type {
 	MemoryTopicResponse,
 	MemoryTopicSummary,
 	MemoryTopicsResponse,
+	Message,
+	Model,
+	PackageAddResponse,
+	PackageBulkRefreshEntry,
+	PackageBulkRefreshResponse,
+	PackageCachePruneResponse,
+	PackageInspectResponse,
+	PackageInspectionResult,
+	PackageMutationRequest,
+	PackageRemoveResponse,
+	PackageResourceFilters,
+	PackageScope,
+	PackageSearchEntry,
+	PackageSearchResponse,
+	PackageStatusEntry,
+	PackageStatusResponse,
+	PlanActionResponse,
+	PlanStatusResponse,
+	PolicyValidationError,
+	PolicyValidationResponse,
+	QueueListResponse,
+	QueueStatusResponse,
+	RunHealthLevel,
+	RunHealthSlo,
+	RunHealthSnapshot,
+	RunTimelineResponse,
+	Session,
+	SessionArtifactAccessAction,
+	SessionArtifactAccessResponse,
+	SessionSummary,
 	TeamMemoryMutationResponse,
 	TeamMemoryStatus,
 	TeamMemoryStatusResponse,
-} from "@evalops/contracts";
+	TrajectoryReplayLabDelta,
+	TrajectoryReplayLabEvent,
+	TrajectoryReplayLabFinding,
+	TrajectoryReplayLabPhase,
+	TrajectoryReplayLabResponse,
+	TrajectoryReplayLabTimelineItem,
+	TrajectoryReplayLabToolCall,
+	UIStatusResponse,
+	UndoOperationResponse,
+	UndoStatusResponse,
+	UsageSummary,
+	WorkspaceStatus,
+} from "./api-client.types.js";
 import {
 	getStoredComposerAccessToken,
 	getStoredComposerApiKey,
 	getStoredComposerCsrfToken,
 } from "./enterprise-api.js";
-
 export type {
+	A2ACockpitNextAction,
+	A2ACockpitNextActionSeverity,
+	A2ACockpitPeerSummary,
+	A2ACockpitResponse,
+	A2ACockpitTaskStatus,
+	A2ACockpitTaskSummary,
+	AgentEvent,
+	ApiClientAuthConfig,
+	ApiClientOptions,
+	ApprovalsStatusResponse,
+	ApprovalsUpdateResponse,
+	AssistantMessageEvent,
+	AttachmentTextExtractionResponse,
+	BackgroundHistoryResponse,
+	BackgroundStatusResponse,
+	BackgroundTaskHistoryEntry,
+	BackgroundTaskLimitBreach,
+	BackgroundTaskSnapshot,
+	BackgroundTaskSnapshotEntry,
+	BackgroundUpdateResponse,
+	BranchListResponse,
+	ChatRequest,
+	ChatResponse,
+	CommandDefinition,
+	CommandPrefs,
+	ComposerToolCall,
+	ConfigResponse,
+	ConfigWriteRequest,
+	ConfigWriteResponse,
+	FrameworkListResponse,
+	FrameworkStatusResponse,
+	FrameworkUpdateResponse,
+	GuardianConfigResponse,
+	GuardianRunResponse,
+	GuardianStatusResponse,
+	McpAuthPresetAddRequest,
+	McpAuthPresetConfigInput,
+	McpAuthPresetMutationResponse,
+	McpAuthPresetRemoveRequest,
+	McpAuthPresetRemoveResponse,
+	McpAuthPresetStatus,
+	McpAuthPresetUpdateRequest,
+	McpOfficialRegistryEntry,
+	McpOfficialRegistryInfo,
+	McpOfficialRegistryUrlOption,
+	McpProjectApprovalRequest,
+	McpProjectApprovalResponse,
+	McpProjectApprovalStatus,
+	McpPromptArgument,
+	McpPromptDefinition,
+	McpPromptMessage,
+	McpPromptResponse,
+	McpRegistryImportRequest,
+	McpRegistryImportResponse,
+	McpRegistrySearchResponse,
+	McpRemoteTrust,
+	McpResourceContent,
+	McpResourceReadResponse,
+	McpServerAddRequest,
+	McpServerConfigInput,
+	McpServerMutationResponse,
+	McpServerRemoveRequest,
+	McpServerRemoveResponse,
+	McpServerStatus,
+	McpServerUpdateRequest,
+	McpStatus,
+	McpToolDefinition,
 	MemoryEntry,
 	MemoryMutationResponse,
 	MemoryRecentResponse,
@@ -150,70 +297,53 @@ export type {
 	MemoryStats,
 	MemoryStatsResponse,
 	MemoryTopicResponse,
-	MemoryTopicSummary,
 	MemoryTopicsResponse,
+	MemoryTopicSummary,
+	Message,
+	Model,
+	PackageAddResponse,
+	PackageBulkRefreshEntry,
+	PackageBulkRefreshResponse,
+	PackageCachePruneResponse,
+	PackageInspectionResult,
+	PackageInspectResponse,
+	PackageMutationRequest,
+	PackageRemoveResponse,
+	PackageResourceFilters,
+	PackageScope,
+	PackageSearchEntry,
+	PackageSearchResponse,
+	PackageStatusEntry,
+	PackageStatusResponse,
+	PlanActionResponse,
+	PlanStatusResponse,
+	PolicyValidationError,
+	PolicyValidationResponse,
+	QueueListResponse,
+	QueueStatusResponse,
+	RunHealthLevel,
+	RunHealthSlo,
+	RunHealthSnapshot,
+	RunTimelineResponse,
+	Session,
+	SessionArtifactAccessAction,
+	SessionSummary,
 	TeamMemoryMutationResponse,
 	TeamMemoryStatus,
 	TeamMemoryStatusResponse,
-};
-
-export type Message = ComposerMessage;
-export type { ComposerToolCall };
-
-export type AssistantMessageEvent = ComposerAssistantMessageEvent;
-
-/** AgentEvent is a discriminated union of all possible server-sent events */
-export type AgentEvent = ComposerAgentEvent;
-
-export type Model = ComposerModel;
-
-export type Session = ComposerSession;
-
-export type SessionSummary = ComposerSessionSummary;
-
-export type RunTimelineResponse = ComposerRunTimelineResponse;
-
-export type ChatRequest = ComposerChatRequest;
-
-export type CommandDefinition = ComposerCommand;
-
-export type CommandPrefs = ComposerCommandPrefs;
-
-export type ConfigResponse = ComposerConfigResponse;
-
-export type ConfigWriteRequest = ComposerConfigWriteRequest;
-
-export type ConfigWriteResponse = ComposerConfigWriteResponse;
-
-export type GuardianStatusResponse = ComposerGuardianStatusResponse;
-
-export type GuardianRunResponse = ComposerGuardianRunResponse;
-
-export type GuardianConfigResponse = ComposerGuardianConfigResponse;
-
-export type PlanStatusResponse = ComposerPlanStatusResponse;
-
-export type PlanActionResponse = ComposerPlanActionResponse;
-
-export type BackgroundStatusResponse = ComposerBackgroundStatusResponse;
-
-export type BackgroundHistoryResponse = ComposerBackgroundHistoryResponse;
-
-export type BackgroundUpdateResponse = ComposerBackgroundUpdateResponse;
-
-export type ApprovalsStatusResponse = ComposerApprovalsStatusResponse;
-
-export type ApprovalsUpdateResponse = ComposerApprovalsUpdateResponse;
-
-export type FrameworkStatusResponse = ComposerFrameworkStatusResponse;
-
-export type FrameworkListResponse = ComposerFrameworkListResponse;
-
-export type FrameworkUpdateResponse = ComposerFrameworkUpdateResponse;
-
-export type UndoStatusResponse = ComposerUndoStatusResponse;
-
-export type UndoOperationResponse = ComposerUndoOperationResponse;
+	TrajectoryReplayLabDelta,
+	TrajectoryReplayLabEvent,
+	TrajectoryReplayLabFinding,
+	TrajectoryReplayLabPhase,
+	TrajectoryReplayLabResponse,
+	TrajectoryReplayLabTimelineItem,
+	TrajectoryReplayLabToolCall,
+	UIStatusResponse,
+	UndoOperationResponse,
+	UndoStatusResponse,
+	UsageSummary,
+	WorkspaceStatus,
+} from "./api-client.types.js";
 
 const MAX_SSE_BUFFER = 1024 * 1024; // 1MB safeguard
 const VALIDATE_AGENT_EVENTS = Boolean(import.meta.env?.DEV);
@@ -221,396 +351,6 @@ const VALIDATE_CHAT_REQUESTS = Boolean(import.meta.env?.DEV);
 const VALIDATE_API_RESPONSES = Boolean(import.meta.env?.DEV);
 const ARTIFACT_ACCESS_HEADER = "X-Composer-Artifact-Access";
 const MAESTRO_ARTIFACT_ACCESS_HEADER = "X-Maestro-Artifact-Access";
-
-export interface ApiClientAuthConfig {
-	accessToken?: string | null;
-	apiKey?: string | null;
-	csrfToken?: string | null;
-}
-
-export interface ApiClientOptions {
-	auth?: ApiClientAuthConfig;
-}
-
-export interface PolicyValidationError {
-	path?: string;
-	message: string;
-	keyword?: string;
-}
-
-export interface PolicyValidationResponse {
-	valid: boolean;
-	errors?: PolicyValidationError[];
-}
-
-export interface AttachmentTextExtractionResponse {
-	fileName: string;
-	format: string;
-	size: number;
-	truncated: boolean;
-	extractedText: string;
-	cached?: boolean;
-}
-
-export type PackageScope = "local" | "project" | "user";
-
-export interface PackageResourceFilters {
-	extensions?: string[];
-	skills?: string[];
-	prompts?: string[];
-	themes?: string[];
-}
-
-export interface PackageInspectionResult {
-	sourceSpec: string;
-	resolvedSource: string;
-	sourceType: "local" | "git" | "npm";
-	resolvedPath: string;
-	discovered: {
-		name: string;
-		version?: string;
-		isMaestroPackage: boolean;
-		hasManifest: boolean;
-		manifestPaths?: PackageResourceFilters | null;
-		errors: string[];
-	} | null;
-	resources: {
-		extensions: string[];
-		skills: string[];
-		prompts: string[];
-		themes: string[];
-	} | null;
-}
-
-export interface PackageStatusEntry {
-	scope: PackageScope;
-	configPath: string;
-	sourceSpec: string;
-	filters: PackageResourceFilters | null;
-	inspection: PackageInspectionResult | null;
-	issues: string[] | null;
-	error: string | null;
-}
-
-export interface PackageStatusResponse {
-	packages: PackageStatusEntry[];
-}
-
-export interface PackageInspectResponse {
-	inspection: PackageInspectionResult;
-	issues: string[];
-}
-
-export interface PackageBulkRefreshEntry {
-	source: string;
-	sourceType: "git" | "npm";
-	scopes: PackageScope[];
-	inspection: PackageInspectionResult | null;
-	issues: string[];
-	error: string | null;
-}
-
-export interface PackageBulkRefreshResponse {
-	refreshed: PackageBulkRefreshEntry[];
-	localCount: number;
-	remoteCount: number;
-}
-
-export interface PackageCachePruneResponse {
-	cacheDir: string;
-	removed: string[];
-	removedCount: number;
-	referencedCount: number;
-}
-
-export interface PackageMutationRequest {
-	source: string;
-	scope?: PackageScope;
-}
-
-export interface PackageAddResponse {
-	path: string;
-	scope: PackageScope;
-	spec: string;
-}
-
-export interface PackageSearchEntry {
-	name: string;
-	version?: string;
-	description?: string;
-	keywords: string[];
-	date?: string;
-	links: {
-		npm?: string;
-		repository?: string;
-		homepage?: string;
-	};
-	installSource: string;
-}
-
-export interface PackageSearchResponse {
-	query: string;
-	entries: PackageSearchEntry[];
-}
-
-export interface PackageRemoveResponse {
-	path: string;
-	scope: PackageScope;
-	removedCount: number;
-	fallback?: {
-		scope: PackageScope;
-		sourceSpec: string;
-	} | null;
-}
-
-export interface McpToolDefinition {
-	name: string;
-	description?: string;
-	inputSchema?: unknown;
-	annotations?: Record<string, unknown>;
-}
-
-export interface McpPromptArgument {
-	name: string;
-	description?: string;
-	required?: boolean;
-}
-
-export interface McpPromptDefinition {
-	name: string;
-	title?: string;
-	description?: string;
-	arguments?: McpPromptArgument[];
-}
-
-export type McpRemoteTrust = "official" | "custom" | "unknown";
-export type McpProjectApprovalStatus = "pending" | "approved" | "denied";
-
-export interface McpOfficialRegistryInfo {
-	displayName?: string;
-	directoryUrl?: string;
-	documentationUrl?: string;
-	permissions?: string;
-	authorName?: string;
-	url?: string;
-}
-
-export interface McpOfficialRegistryUrlOption {
-	url: string;
-	label?: string;
-	description?: string;
-}
-
-export interface McpOfficialRegistryEntry extends McpOfficialRegistryInfo {
-	slug?: string;
-	serverName?: string;
-	oneLiner?: string;
-	transport?: "stdio" | "http" | "sse";
-	urlOptions?: McpOfficialRegistryUrlOption[];
-	urlRegex?: string;
-	toolCount?: number;
-	promptCount?: number;
-}
-
-export interface McpServerStatus {
-	name: string;
-	connected: boolean;
-	scope?: "enterprise" | "plugin" | "project" | "local" | "user";
-	transport?: "stdio" | "http" | "sse";
-	tools?: McpToolDefinition[] | number;
-	resources?: string[];
-	prompts?: string[];
-	promptDetails?: McpPromptDefinition[];
-	error?: string;
-	command?: string;
-	args?: string[];
-	cwd?: string;
-	envKeys?: string[];
-	remoteUrl?: string;
-	remoteHost?: string;
-	headerKeys?: string[];
-	headersHelper?: string;
-	authPreset?: string;
-	timeout?: number;
-	remoteTrust?: McpRemoteTrust;
-	officialRegistry?: McpOfficialRegistryInfo;
-	projectApproval?: McpProjectApprovalStatus;
-}
-
-export interface McpAuthPresetStatus {
-	name: string;
-	scope?: "enterprise" | "plugin" | "project" | "local" | "user";
-	headerKeys: string[];
-	headersHelper?: string;
-}
-
-export interface McpStatus {
-	servers: McpServerStatus[];
-	authPresets: McpAuthPresetStatus[];
-}
-
-export interface McpRegistrySearchResponse {
-	query: string;
-	entries: McpOfficialRegistryEntry[];
-}
-
-export interface McpRegistryImportRequest {
-	query: string;
-	name?: string;
-	scope?: "local" | "project" | "user";
-	url?: string;
-	headers?: Record<string, string>;
-	headersHelper?: string;
-	authPreset?: string;
-	transport?: "http" | "sse";
-}
-
-export interface McpRegistryImportResponse {
-	name: string;
-	scope: "local" | "project" | "user";
-	path: string;
-	entry: McpOfficialRegistryEntry;
-	server: {
-		transport: "http" | "sse";
-		url: string;
-		headers?: Record<string, string>;
-		headersHelper?: string;
-		authPreset?: string;
-	};
-}
-
-export interface McpServerConfigInput {
-	name: string;
-	transport?: "stdio" | "http" | "sse";
-	command?: string;
-	args?: string[] | null;
-	env?: Record<string, string> | null;
-	cwd?: string | null;
-	url?: string;
-	headers?: Record<string, string> | null;
-	headersHelper?: string | null;
-	authPreset?: string | null;
-	timeout?: number | null;
-	enabled?: boolean;
-	disabled?: boolean;
-}
-
-export interface McpAuthPresetConfigInput {
-	name: string;
-	headers?: Record<string, string> | null;
-	headersHelper?: string | null;
-}
-
-export interface McpServerAddRequest {
-	scope?: "local" | "project" | "user";
-	server: McpServerConfigInput;
-}
-
-export interface McpServerUpdateRequest {
-	name: string;
-	scope?: "local" | "project" | "user";
-	server: McpServerConfigInput;
-}
-
-export interface McpServerMutationResponse {
-	name: string;
-	scope: "local" | "project" | "user";
-	path: string;
-	server: McpServerConfigInput & {
-		transport: "stdio" | "http" | "sse";
-	};
-}
-
-export interface McpServerRemoveRequest {
-	name: string;
-	scope?: "local" | "project" | "user";
-}
-
-export interface McpServerRemoveResponse {
-	name: string;
-	scope: "local" | "project" | "user";
-	path: string;
-	fallback: {
-		name: string;
-		scope?: "enterprise" | "plugin" | "project" | "local" | "user";
-	} | null;
-}
-
-export interface McpAuthPresetAddRequest {
-	scope?: "local" | "project" | "user";
-	preset: McpAuthPresetConfigInput;
-}
-
-export interface McpAuthPresetUpdateRequest {
-	name: string;
-	scope?: "local" | "project" | "user";
-	preset: McpAuthPresetConfigInput;
-}
-
-export interface McpAuthPresetMutationResponse {
-	name: string;
-	scope: "local" | "project" | "user";
-	path: string;
-	preset: McpAuthPresetConfigInput;
-}
-
-export interface McpAuthPresetRemoveRequest {
-	name: string;
-	scope?: "local" | "project" | "user";
-}
-
-export interface McpAuthPresetRemoveResponse {
-	name: string;
-	scope: "local" | "project" | "user";
-	path: string;
-	fallback: {
-		name: string;
-		scope?: "enterprise" | "plugin" | "project" | "local" | "user";
-	} | null;
-}
-
-export interface McpProjectApprovalRequest {
-	name: string;
-	decision: Exclude<McpProjectApprovalStatus, "pending">;
-}
-
-export interface McpProjectApprovalResponse {
-	name: string;
-	scope: "project";
-	decision: Exclude<McpProjectApprovalStatus, "pending">;
-	projectApproval: McpProjectApprovalStatus;
-}
-
-export interface McpResourceContent {
-	uri: string;
-	text?: string;
-	blob?: string;
-	mimeType?: string;
-}
-
-export interface McpResourceReadResponse {
-	contents: McpResourceContent[];
-}
-
-export interface McpPromptMessage {
-	role: string;
-	content: string;
-}
-
-export interface McpPromptResponse {
-	description?: string;
-	messages: McpPromptMessage[];
-}
-
-export type SessionArtifactAccessAction = "view" | "file" | "events" | "zip";
-
-interface SessionArtifactAccessResponse {
-	token: string;
-	expiresAt: string;
-	actions: SessionArtifactAccessAction[];
-	sessionId: string;
-	filename?: string;
-}
 
 declare global {
 	interface Window {
@@ -719,132 +459,6 @@ function extractTextFromMessage(message: Message | undefined): string {
 		.join("");
 }
 
-export interface ChatResponse {
-	message: Message;
-	usage?: {
-		inputTokens: number;
-		outputTokens: number;
-	};
-}
-
-export interface BackgroundTaskSnapshotEntry {
-	id?: string;
-	status?: string;
-	command?: string;
-	summary?: string;
-	lastLogLine?: string;
-	issues?: string[];
-	logTruncated?: boolean;
-	durationSeconds?: number;
-	restarts?: string;
-}
-
-export interface BackgroundTaskLimitBreach {
-	kind: "memory" | "cpu";
-	limit: number;
-	actual: number;
-}
-
-export interface BackgroundTaskHistoryEntry {
-	event: "started" | "restarted" | "exited" | "failed" | "stopped";
-	taskId: string;
-	status: string;
-	command: string;
-	timestamp: string;
-	restartAttempts: number;
-	failureReason?: string;
-	limitBreach?: BackgroundTaskLimitBreach;
-}
-
-export interface BackgroundTaskSnapshot {
-	total: number;
-	running: number;
-	restarting: number;
-	failed: number;
-	truncated?: boolean;
-	notificationsEnabled?: boolean;
-	detailsRedacted?: boolean;
-	entries?: BackgroundTaskSnapshotEntry[];
-	history?: BackgroundTaskHistoryEntry[];
-	historyTruncated?: boolean;
-}
-
-export interface WorkspaceStatus {
-	cwd: string;
-	git: {
-		branch: string;
-		status: {
-			modified: number;
-			added: number;
-			deleted: number;
-			untracked: number;
-			total: number;
-		};
-	} | null;
-	context: {
-		agentMd: boolean;
-		claudeMd: boolean;
-	};
-	onboarding?: ComposerProjectOnboardingState;
-	server: {
-		uptime: number;
-		version: string;
-		staticCacheMaxAgeSeconds?: number;
-	};
-	database: {
-		configured: boolean;
-		connected: boolean;
-	};
-	backgroundTasks: BackgroundTaskSnapshot | null;
-	hooks: {
-		asyncInFlight: number;
-		concurrency: {
-			max: number;
-			active: number;
-			queued: number;
-		};
-	};
-	lastUpdated: number;
-	lastLatencyMs: number;
-}
-
-export interface UsageSummary {
-	totalCost: number;
-	totalRequests: number;
-	totalTokens: number;
-	totalTokensDetailed: {
-		input: number;
-		output: number;
-		cacheRead: number;
-		cacheWrite: number;
-		total: number;
-	};
-	totalTokensBreakdown: UsageSummary["totalTokensDetailed"];
-	totalCachedTokens: number;
-	byProvider: Record<
-		string,
-		{
-			cost: number;
-			calls: number;
-			requests: number;
-			tokens: number;
-			tokensDetailed: UsageSummary["totalTokensDetailed"];
-			cachedTokens: number;
-		}
-	>;
-	byModel: Record<
-		string,
-		{
-			cost: number;
-			calls: number;
-			requests: number;
-			tokens: number;
-			tokensDetailed: UsageSummary["totalTokensDetailed"];
-			cachedTokens: number;
-		}
-	>;
-}
-
 async function safeJson(response: Response) {
 	if (!response.ok) {
 		await throwApiClientError(response);
@@ -892,34 +506,10 @@ async function throwApiClientError(response: Response): Promise<never> {
 	);
 }
 
-export interface UIStatusResponse {
-	zenMode: boolean;
-	cleanMode: "off" | "soft" | "aggressive";
-	footerMode: "ensemble" | "solo";
-	compactTools: boolean;
-	queueMode: "one" | "all";
-}
-
-export interface QueueListResponse {
-	mode: "one" | "all";
-	pending: Array<{ id: number; text?: string; createdAt?: number }>;
-	count: number;
-}
-
-export interface QueueStatusResponse {
-	mode: "one" | "all";
-	pendingCount: number;
-	enabled: boolean;
-}
-
-export interface BranchListResponse {
-	userMessages: Array<{ number: number; index: number; snippet: string }>;
-}
-
 /**
- * HTTP API client for the Composer backend.
+ * HTTP API client for the Maestro backend.
  *
- * Provides methods for all Composer API endpoints including chat streaming,
+ * Provides methods for all Maestro API endpoints including chat streaming,
  * session management, model selection, and workspace operations.
  *
  * The client automatically handles:
@@ -1920,6 +1510,41 @@ export class ApiClient {
 	}
 
 	/**
+	 * Get trajectory replay lab artifacts for a specific session.
+	 */
+	async getSessionReplayLab(
+		sessionId: string,
+	): Promise<TrajectoryReplayLabResponse> {
+		return (await this.fetchJsonWithFallback(
+			`/api/sessions/${encodeURIComponent(sessionId)}/replay-lab`,
+		)) as TrajectoryReplayLabResponse;
+	}
+
+	/**
+	 * Get the local A2A operator cockpit summary.
+	 */
+	async getA2ACockpit(options?: {
+		peer?: string;
+		limit?: number;
+		timeoutMs?: number;
+	}): Promise<A2ACockpitResponse> {
+		const params = new URLSearchParams();
+		if (options?.peer) {
+			params.set("peer", options.peer);
+		}
+		if (options?.limit !== undefined) {
+			params.set("limit", String(options.limit));
+		}
+		if (options?.timeoutMs !== undefined) {
+			params.set("timeoutMs", String(options.timeoutMs));
+		}
+		const query = params.toString();
+		return (await this.fetchJsonWithFallback(
+			`/api/a2a/cockpit${query ? `?${query}` : ""}`,
+		)) as A2ACockpitResponse;
+	}
+
+	/**
 	 * Create a share link for a session.
 	 */
 	async shareSession(
@@ -2830,7 +2455,7 @@ export class ApiClient {
 		);
 	}
 
-	// Composer
+	// Maestro
 	async listComposers(): Promise<Record<string, unknown>> {
 		return await this.fetchJsonWithFallback("/api/composer");
 	}
@@ -3068,7 +2693,7 @@ export class ApiClient {
 	}
 
 	async setFooterMode(
-		mode: "ensemble" | "solo",
+		mode: "rich" | "solo",
 		sessionId: string,
 	): Promise<{ success: boolean; footerMode: UIStatusResponse["footerMode"] }> {
 		return await this.fetchJsonRequestWithFallback(

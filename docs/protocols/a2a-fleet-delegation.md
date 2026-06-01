@@ -41,12 +41,18 @@ present. `MAESTRO_A2A_PLATFORM_REGISTER=0` disables the loop, while
 the same A2A projection as `maestro a2a register`, updates an existing
 `MAESTRO_A2A_AGENT_ID` on conflict, and heartbeats the Agent Card, governed
 child-agent skills, current objective IDs, capacity hint, and endpoint URLs on a
-bounded interval. Hosted default registration requires `MAESTRO_A2A_PUBLIC_URL`
-or `MAESTRO_A2A_PUBLIC_HOST`/`MAESTRO_CONTROL_PUBLIC_HOST` so Platform does not
-publish an unroutable local bind address; explicit opt-in can still use local
-fallbacks for development. When no workspace ID is configured, the loop falls
-back to the organization ID, matching the rest of the Platform client behavior.
-Missing Platform configuration leaves local/offline Maestro unchanged.
+bounded interval. It sends organization, workspace, agent, and optional actor
+headers on every registration and heartbeat request. When `MAESTRO_A2A_TRACEPARENT`
+or `MAESTRO_PLATFORM_TRACEPARENT` is present, the loop also forwards
+`traceparent`/`tracestate` headers and mirrors those values into the A2A
+projection attributes so Platform discovery, heartbeats, and later task
+delegations can join the same trace. Hosted default registration requires
+`MAESTRO_A2A_PUBLIC_URL` or `MAESTRO_A2A_PUBLIC_HOST`/`MAESTRO_CONTROL_PUBLIC_HOST`
+so Platform does not publish an unroutable local bind address; explicit opt-in
+can still use local fallbacks for development. When no workspace ID is configured,
+the loop falls back to the organization ID, matching the rest of the Platform
+client behavior. Missing Platform configuration leaves local/offline Maestro
+unchanged.
 
 `delegate` sends a normal A2A `message:send` request with Maestro delegation
 metadata: origin, peer name, role, and working directory. The resulting task is
@@ -100,6 +106,11 @@ the same delegation prompt used for local teammates, sends it through
 `message:send` with `returnImmediately=true`, records the remote task in the
 local A2A ledger, polls `GET /tasks/{id}` until the peer reaches a terminal A2A
 state, then maps the final artifact text back into the swarm task result.
+When `a2a.pushNotificationConfig` or `MAESTRO_SWARM_A2A_PUSH_URL` is configured,
+the coordinator also sends a task push-notification config with the A2A request
+so peers can deliver progress, artifact, and terminal task callbacks while the
+polling loop remains the retry/resume fallback. Callback tokens are redacted
+from exposed swarm state and event snapshots.
 
 Static peer routing uses the local A2A peer registry:
 
@@ -127,11 +138,16 @@ For a host-local proof of the full Maestro loop, run:
 npm run smoke:a2a-local-swarm
 ```
 
-The smoke starts a mock Agent Registry plus two real Rust control-plane
-instances, waits for both peers to auto-register and heartbeat, runs the swarm
-executor through Platform-style discovery, verifies both peers complete remote
-A2A tasks, resumes one task by `message.taskId`, and checks that a denied task
-class returns zero eligible candidates before dispatch.
+The smoke starts a mock Agent Registry plus five real Rust control-plane
+instances, waits for every peer to auto-register and heartbeat, injects
+saturated, busy, no-dispatch, policy-denied, and stale registry peers, runs the
+swarm executor through Platform-style discovery, verifies the five healthy peers
+complete remote A2A tasks, receives push status/artifact/task callbacks for each
+remote task, checks the durable ledger captured normalized subagent work graphs,
+resumes one task by `message.taskId`, and checks that a denied task class
+returns zero eligible candidates before dispatch. The emitted summary uses
+`evalops.maestro.local-a2a-multipeer-swarm.v1` so CI, release gates, and later
+staging probes can archive the same evidence shape.
 
 Platform-discovered peers are ranked by the A2A capability market
 (`evalops.maestro.a2a-capability-market.v1`) before selection. The ranking
@@ -153,13 +169,17 @@ ids such as `maestro.subagent.code-writer`, `maestro.subagent.code-review`,
 
 Every remote swarm task carries native A2A plus EvalOps operating-plane
 metadata: `requestKind=maestro-swarm-task`, `transport=a2a`, `swarmId`,
-`teammateId`, `taskId`, `relayPeer`, `a2aSkillId`, `evalops.swarm` lineage, and
-`evalops.subagentRequest`. This gives Platform enough correlation to show a
-root swarm, child delegations, remote task ids, and artifacts as one fleet-scale
-work graph rather than disconnected peer transcripts. Terminal states other
-than `TASK_STATE_COMPLETED`, including `INPUT_REQUIRED` or `AUTH_REQUIRED`, are
-kept as failed swarm tasks so the coordinator/operator can follow up instead of
-treating blocked remote work as successful.
+`teammateId`, `taskId`, `relayPeer`, `a2aSkillId`, `evalops.swarm` lineage,
+`evalops.peerControl`, and `evalops.subagentRequest`. The peer-control block is
+versioned as `evalops.maestro.a2a-peer-control.v1` and advertises the child lane,
+context id, supported follow-up/steer/interrupt/cancel modes, and expected
+status/artifact/task/work-graph evidence. This gives Platform enough correlation
+to show a root swarm, child delegations, remote task ids, control affordances,
+and artifacts as one fleet-scale work graph rather than disconnected peer
+transcripts. Terminal states other than `TASK_STATE_COMPLETED`, including
+`INPUT_REQUIRED` or `AUTH_REQUIRED`, are kept as failed swarm tasks so the
+coordinator/operator can follow up instead of treating blocked remote work as
+successful.
 
 When a swarm is cancelled after a remote task has been accepted, Maestro keeps
 the non-secret peer/task/message correlation on the teammate state and sends the
@@ -240,6 +260,13 @@ local development can opt into insecure/private callback URLs with
 delivery, and `MAESTRO_A2A_PUSH_DISABLE_DELIVERY=1` leaves configs stored without
 dispatching callbacks.
 
+Hosted Platform callbacks should include the same low-cardinality join context
+used during registration: `traceparent`, `tracestate`, `X-Organization-ID`,
+`X-Workspace-ID`, `X-EvalOps-Agent-ID`, and `X-EvalOps-Actor-ID`. Maestro records
+those headers, plus equivalent A2A payload metadata fields, in the hosted runner
+identity `last_platform_a2a_push` projection so operator health checks can join
+callback delivery back to the Platform task, trace, tenant, agent, and actor.
+
 ## EvalOps Suite Integration
 
 The current suite split is deliberate:
@@ -282,6 +309,18 @@ The task ledger defaults to:
 `MAESTRO_A2A_TASKS_FILE` overrides the ledger path. `CODEX_A2A_TASKS_FILE` is
 accepted as a migration alias.
 
+A2A `message:stream` and task subscription responses emit deterministic SSE
+`id:` fields derived from the context id, task id, event kind, status timestamp,
+and artifact id. Platform evidence can compare those stream ids against the task
+ledger without depending on process-local counters.
+
+Live Platform A2A evidence can now be verified in a strict durable-ID mode. In
+that mode the signed evidence bundle must join the Platform delegation id, A2A
+task id, dispatch message id, task `contextId`, task message ids, terminal task
+state, graph node task id, collect-mode control probe, redacted prompt hash,
+source discovery traces, and invalid-token rejection evidence before it can be
+used as release proof.
+
 ## Operator Verification
 
 Use bounded one-shot checks against a local control-plane peer:
@@ -314,6 +353,16 @@ For the full local harness, run:
 
 ```sh
 bash scripts/smoke-maestro-a2a-tmux.sh
+```
+
+For live Platform A2A smoke artifacts, verify the evidence bundle before
+promotion:
+
+```sh
+npm run platform:a2a-evidence-verify -- evidence.json \
+  --require-discovery-evidence \
+  --require-negative-auth-probe \
+  --require-durable-a2a-ids
 ```
 
 ## Acceptance Tests

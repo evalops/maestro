@@ -18,6 +18,7 @@ const requiredAreas = [
 	"subagents",
 	"multi-agent-workgraph",
 	"remote-runner-continuity",
+	"headless-runtime-durability",
 	"realtime-streaming",
 	"typescript-runtime",
 	"rust-control-plane",

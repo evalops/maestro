@@ -203,6 +203,12 @@
 					"label": "approval_request:approval-local-1"
 				},
 				{
+					"kind": "artifact",
+					"id": "file:src/api.ts",
+					"source": "trajectory",
+					"label": "artifact:file:src/api.ts"
+				},
+				{
 					"kind": "timeline_item",
 					"id": "tool-result:tool-local-edit-1:call-local-edit",
 					"source": "trajectory",
@@ -404,6 +410,12 @@
 			"actor": "runtime",
 			"evidence": [
 				{
+					"kind": "artifact",
+					"id": "file:src/api.ts",
+					"source": "trajectory",
+					"label": "artifact:file:src/api.ts"
+				},
+				{
 					"kind": "trajectory_event",
 					"id": "trajectory:file-change:tool-local-edit-1:call-local-edit",
 					"source": "trajectory",
@@ -466,6 +478,12 @@
 					"id": "approval-local-1",
 					"source": "trajectory",
 					"label": "approval_request:approval-local-1"
+				},
+				{
+					"kind": "artifact",
+					"id": "file:src/api.ts",
+					"source": "trajectory",
+					"label": "artifact:file:src/api.ts"
 				},
 				{
 					"kind": "timeline_item",

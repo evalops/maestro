@@ -238,6 +238,14 @@ The runtime flush status is the field that controls restore readiness:
 means no runtime activity was persisted. Older local manifests that used
 `interrupted` for the runtime flush status are treated as `failed`.
 
+New drain manifests also include `runtime_continuity`, a compact handoff record
+for Platform and operators. It names the source runner session, owner instance,
+source process id, restore manifest path, restore environment key, and the
+cursor-scoped evidence refs that prove which headless snapshot should be
+restored after process shutdown or replica replacement. `platform_evidence`
+mirrors a redacted summary of the same block so AgentRuntime progress records
+can be queried without reading the full runtime snapshot.
+
 ## Hosted Remote-Runner Restore
 
 When Platform has already restored workspace artifacts and a prior snapshot

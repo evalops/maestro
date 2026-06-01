@@ -1,5 +1,7 @@
 import {
+	MODEL_PERFORMANCE_METRIC_SOURCES,
 	type ModelPerformanceMetricInput,
+	type ModelPerformanceMetricSource,
 	ROUTING_STRATEGIES,
 	type RoutingModelCandidate,
 	type RoutingOverrideInput,
@@ -51,6 +53,26 @@ function parseOptionalBoolean(value: unknown): boolean | undefined {
 		if (normalized === "false") return false;
 	}
 	throw new IntelligentRouterValidationError("success must be a boolean.");
+}
+
+function parseMetricSource(value: unknown): ModelPerformanceMetricSource {
+	if (value === undefined || value === null) return "production";
+	if (typeof value !== "string") {
+		throw new IntelligentRouterValidationError(
+			"source must be production or eval.",
+		);
+	}
+	const normalized = value.trim().toLowerCase();
+	if (
+		MODEL_PERFORMANCE_METRIC_SOURCES.includes(
+			normalized as ModelPerformanceMetricSource,
+		)
+	) {
+		return normalized as ModelPerformanceMetricSource;
+	}
+	throw new IntelligentRouterValidationError(
+		"source must be production or eval.",
+	);
 }
 
 function parseOptionalDate(value: unknown, label: string): Date | undefined {
@@ -162,9 +184,19 @@ export function normalizeRoutingRequest(
 	};
 }
 
+export type NormalizedModelPerformanceMetricInput =
+	ModelPerformanceMetricInput & {
+		source: ModelPerformanceMetricSource;
+		latencyMs: number;
+		success: boolean;
+		costUsd: number;
+		qualityScore: number;
+		occurredAt: Date | string;
+	};
+
 export function normalizePerformanceMetricInput(
 	input: ModelPerformanceMetricInput,
-): Required<ModelPerformanceMetricInput> {
+): NormalizedModelPerformanceMetricInput {
 	if (!isRecord(input)) {
 		throw new IntelligentRouterValidationError("Metric must be an object.");
 	}
@@ -183,10 +215,17 @@ export function normalizePerformanceMetricInput(
 		taskType: cleanRequiredString(metricInput.taskType, "taskType"),
 		provider: cleanRequiredString(metricInput.provider, "provider"),
 		model: cleanRequiredString(metricInput.model, "model"),
+		source: parseMetricSource(metricInput.source),
 		latencyMs,
 		success: parseOptionalBoolean(metricInput.success) ?? true,
 		costUsd,
 		qualityScore: Math.max(0, Math.min(1, qualityScore)),
+		...(cleanOptionalString(metricInput.evalSuite)
+			? { evalSuite: cleanOptionalString(metricInput.evalSuite) }
+			: {}),
+		...(cleanOptionalString(metricInput.evalCase)
+			? { evalCase: cleanOptionalString(metricInput.evalCase) }
+			: {}),
 		occurredAt:
 			parseOptionalDate(metricInput.occurredAt, "occurredAt") ?? new Date(),
 	};

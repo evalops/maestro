@@ -35,6 +35,7 @@ import {
 	waitAgentRuntimeRun,
 } from "../platform/agent-runtime-client.js";
 import { createLogger } from "../utils/logger.js";
+import { sanitizeWithStaticMask } from "../utils/secret-redactor.js";
 import type { ServerRequestLifecycleEvent } from "./server-request-manager.js";
 
 const logger = createLogger("server:hosted-agent-runtime-progress");
@@ -230,6 +231,29 @@ function stringArray(value: unknown): string[] {
 	return value.filter(
 		(item): item is string => typeof item === "string" && item.length > 0,
 	);
+}
+
+function compactStringArray(
+	value: string[],
+	maxItems = 32,
+): string[] | undefined {
+	const compacted = value
+		.map((item) => compactString(item, 160))
+		.filter((item): item is string => Boolean(item))
+		.slice(0, maxItems);
+	return compacted.length > 0 ? compacted : undefined;
+}
+
+function sanitizeOutboundTextArray(
+	value: string[],
+	maxItems = 32,
+	maxLength = MAX_TEXT_FIELD_LENGTH,
+): string[] | undefined {
+	const sanitized = value
+		.map((item) => sanitizeOutboundText(item, maxLength))
+		.filter((item): item is string => Boolean(item))
+		.slice(0, maxItems);
+	return sanitized.length > 0 ? sanitized : undefined;
 }
 
 function codexSubagentToolName(toolName: string): string | undefined {
@@ -517,6 +541,279 @@ function toolDisplayName(event: {
 	return event.displayName ?? event.summaryLabel ?? event.toolName;
 }
 
+const MAX_TEXT_FIELD_LENGTH = 160;
+const MAX_DELEGATION_PROMPT_LENGTH = 512;
+const REDACTED = "[redacted]";
+const COMMON_MAKE_TARGETS = new Set([
+	"all",
+	"build",
+	"check",
+	"clean",
+	"dev",
+	"dist",
+	"docs",
+	"format",
+	"install",
+	"lint",
+	"release",
+	"start",
+	"test",
+	"typecheck",
+	"verify",
+]);
+function shouldRedactOutboundText(text: string): boolean {
+	return (
+		sanitizeWithStaticMask(text) !== text ||
+		/\b(?:sk|gh[pousr]_?|github_pat_|xoxb|xoxp|AKIA|ASIA)[A-Za-z0-9_-]{8,}\b/.test(
+			text,
+		) ||
+		/\bAIza[A-Za-z0-9_-]{35}\b/.test(text) ||
+		containsShellCommandSyntax(text)
+	);
+}
+
+function sanitizeOutboundText(
+	value: string | undefined,
+	maxLength = MAX_TEXT_FIELD_LENGTH,
+): string | undefined {
+	const text = nonEmptyString(value);
+	if (!text) {
+		return undefined;
+	}
+	if (shouldRedactOutboundText(text)) {
+		return REDACTED;
+	}
+	return text.length > maxLength ? `${text.slice(0, maxLength)}…` : text;
+}
+
+function sanitizeToolBatchSummaryText(
+	value: string | undefined,
+): string | undefined {
+	const text = nonEmptyString(value);
+	if (text?.split(/\s*,\s*/).some((part) => containsShellCommandSyntax(part))) {
+		return REDACTED;
+	}
+	return sanitizeOutboundText(value, 512);
+}
+
+function containsShellCommandSyntax(value: string): boolean {
+	if (containsShellCommandAtStart(value)) {
+		return true;
+	}
+	const prefixedCommand =
+		/\b(?:detected (?:command|[^:\n]*\bcommand)|command failed|command):\s*(\S[\s\S]*)$/i.exec(
+			value,
+		);
+	if (prefixedCommand?.[1]) {
+		return true;
+	}
+	const embeddedCommand =
+		/\b(?:please\s+)?(?:run|running|execute|start|launch|retry)\s+([\s\S]+)$/i.exec(
+			value,
+		);
+	return embeddedCommand?.[1]
+		? containsShellCommandAtStart(embeddedCommand[1], {
+				allowArbitraryMakeTargets: true,
+			})
+		: false;
+}
+
+function containsShellCommandAtStart(
+	value: string,
+	options: { allowArbitraryMakeTargets?: boolean } = {},
+): boolean {
+	const unwrapped = unwrapCommandText(value);
+	if (unwrapped !== value && containsShellCommandAtStart(unwrapped, options)) {
+		return true;
+	}
+	if (containsLeadingWrappedCommandSyntax(value, options)) {
+		return true;
+	}
+	if (
+		/^\s*(?:bash|sh|zsh)\s+(?:-[A-Za-z]+|\.{0,2}\/|~\/|[A-Za-z0-9_.\/-]+\.(?:bash|sh|zsh))/i.test(
+			value,
+		) ||
+		/^\s*(?:powershell|cmd)\s+(?:-[A-Za-z]+|\/c\b)/i.test(value)
+	) {
+		return true;
+	}
+	if (/^\s*Ran\s+\S+/i.test(value)) {
+		return true;
+	}
+	if (
+		/^\s*(?:git\s+\S+|gh\s+\S+|rm\s+-[A-Za-z]*[rf][A-Za-z]*\s+\S+|sudo\s+\S+|curl\s+\S+|wget\s+\S+|npm\s+\S+|npx\s+\S+|pnpm\s+\S+|bunx?\s+\S+|uvx?\s+\S+|node\s+\S+|python(?:3)?\s+\S+|pytest(?:\s+\S+)?|pip(?:3)?\s+\S+|docker\s+\S+|kubectl\s+\S+|terraform\s+\S+)/i.test(
+			value,
+		)
+	) {
+		return true;
+	}
+	if (
+		/^\s*(?:yarn\s+(?:test|run|build|install|add|remove|exec|workspace|workspaces|dlx)\b|go\s+(?:test|run|build|mod|fmt|vet|install|generate|env|version)\b|cargo\s+(?:test|run|build|check|fmt|clippy|install)\b)/.test(
+			value,
+		)
+	) {
+		return true;
+	}
+	if (containsMakeCommandSyntax(value, options)) {
+		return true;
+	}
+	if (containsEnvPrefixedCommandSyntax(value, options)) {
+		return true;
+	}
+	if (containsEnvWrappedCommandSyntax(value, options)) {
+		return true;
+	}
+	if (containsChainedShellBuiltinSyntax(value)) {
+		return true;
+	}
+	return (
+		/^\s*(?:\.{1,2}\/|~\/)[^\s]+(?:\s+\S+)*\s*$/.test(value) ||
+		/^\s*(?:\.{0,2}\/|[A-Za-z0-9_.-]*\/)[^\s]+(?:\s+\S+)*(?:\s*(?:&&|\|\||[;|`])|\$\()/i.test(
+			value,
+		)
+	);
+}
+
+function containsChainedShellBuiltinSyntax(value: string): boolean {
+	return /^\s*cd\s+(?:-[A-Za-z]+\s+)*\S+(?:\s*(?:&&|\|\||;)\s*\S+)/.test(value);
+}
+
+function containsEnvPrefixedCommandSyntax(
+	value: string,
+	options: { allowArbitraryMakeTargets?: boolean } = {},
+): boolean {
+	const envPrefixedCommand =
+		/^\s*(?:[A-Za-z_][A-Za-z0-9_]*=(?:"[^"]*"|'[^']*'|\S+)\s+)+(.+)$/.exec(
+			value,
+		);
+	return envPrefixedCommand?.[1]
+		? containsShellCommandAtStart(envPrefixedCommand[1], options)
+		: false;
+}
+
+function containsEnvWrappedCommandSyntax(
+	value: string,
+	options: { allowArbitraryMakeTargets?: boolean } = {},
+): boolean {
+	const envMatch = /^\s*env\s+(.+?)\s*$/.exec(value);
+	if (!envMatch?.[1]) {
+		return false;
+	}
+	const args = envMatch[1].trim().split(/\s+/);
+	let index = 0;
+	while (index < args.length) {
+		const arg = args[index];
+		if (!arg) {
+			break;
+		}
+		if (
+			arg === "-" ||
+			arg === "-i" ||
+			arg === "--ignore-environment" ||
+			arg === "-0" ||
+			arg === "--null"
+		) {
+			index += 1;
+			continue;
+		}
+		if (
+			arg === "-C" ||
+			arg === "--chdir" ||
+			arg === "-u" ||
+			arg === "--unset"
+		) {
+			index += 2;
+			continue;
+		}
+		if (
+			arg.startsWith("-C") ||
+			arg.startsWith("--chdir=") ||
+			arg.startsWith("--unset=")
+		) {
+			index += 1;
+			continue;
+		}
+		if (/^[A-Za-z_][A-Za-z0-9_]*=(?:"[^"]*"|'[^']*'|\S+)$/.test(arg)) {
+			index += 1;
+			continue;
+		}
+		break;
+	}
+	const command = args.slice(index).join(" ");
+	return command ? containsShellCommandAtStart(command, options) : false;
+}
+
+function containsLeadingWrappedCommandSyntax(
+	value: string,
+	options: { allowArbitraryMakeTargets?: boolean } = {},
+): boolean {
+	const wrapped =
+		/^\s*(?:`([^`]+)`|'([^']+)'|"([^"]+)")(?:\s+\S[\s\S]*)?$/.exec(value);
+	const command = wrapped?.[1] ?? wrapped?.[2] ?? wrapped?.[3];
+	return command ? containsShellCommandAtStart(command, options) : false;
+}
+
+function containsMakeCommandSyntax(
+	value: string,
+	options: { allowArbitraryMakeTargets?: boolean } = {},
+): boolean {
+	if (/^\s*make\s*$/.test(value)) {
+		return true;
+	}
+	const makeMatch = /^\s*make\s+(.+?)\s*$/.exec(value);
+	if (!makeMatch?.[1]) {
+		return false;
+	}
+	const args = makeMatch[1].trim().split(/\s+/);
+	if (args.length === 0) {
+		return false;
+	}
+	if (args.length === 1) {
+		const target = args[0];
+		return target ? /^[A-Za-z0-9_.:/-]+$/.test(target) : false;
+	}
+	return (
+		(options.allowArbitraryMakeTargets &&
+			args.every((arg) => /^[A-Za-z0-9_.:/-]+$/.test(arg))) ||
+		args.every((arg) => COMMON_MAKE_TARGETS.has(arg.toLowerCase())) ||
+		args.some(
+			(arg) =>
+				arg.startsWith("-") ||
+				/^[A-Za-z_][A-Za-z0-9_]*=/.test(arg) ||
+				/[./:_-]/.test(arg),
+		)
+	);
+}
+
+function unwrapCommandText(value: string): string {
+	const trimmed = value.trim();
+	const wrapped = /^(?:`([^`]+)`|'([^']+)'|"([^"]+)")$/.exec(trimmed);
+	return wrapped?.[1] ?? wrapped?.[2] ?? wrapped?.[3] ?? value;
+}
+
+function sanitizeDelegationPrompt(
+	value: string | undefined,
+): string | undefined {
+	const text = nonEmptyString(value);
+	if (!text) {
+		return undefined;
+	}
+	if (shouldRedactOutboundText(text)) {
+		return REDACTED;
+	}
+	return text.length > MAX_DELEGATION_PROMPT_LENGTH
+		? text.slice(0, MAX_DELEGATION_PROMPT_LENGTH)
+		: text;
+}
+
+function sanitizedToolDisplayName(event: {
+	displayName?: string;
+	summaryLabel?: string;
+	toolName: string;
+}): string {
+	return sanitizeOutboundText(toolDisplayName(event)) ?? event.toolName;
+}
+
 function materializedToolExecutionId(event: {
 	toolCallId: string;
 	toolExecutionId?: string;
@@ -527,6 +824,50 @@ function materializedToolExecutionId(event: {
 		return undefined;
 	}
 	return toolExecutionId;
+}
+
+function toolResultMetrics(result: {
+	content?: unknown;
+	details?: unknown;
+	isError?: unknown;
+	toolExecutionId?: unknown;
+	approvalRequestId?: unknown;
+}): Record<string, unknown> {
+	const content = Array.isArray(result.content) ? result.content : [];
+	const textBlocks = content.filter(
+		(block): block is { type: "text"; text: string } =>
+			isRecord(block) &&
+			block.type === "text" &&
+			typeof block.text === "string",
+	);
+	const imageMimeTypes = content
+		.map((block) =>
+			isRecord(block) && block.type === "image"
+				? compactString(block.mimeType, 128)
+				: undefined,
+		)
+		.filter((mimeType): mimeType is string => Boolean(mimeType));
+	return {
+		content_block_count: content.length,
+		text_block_count: textBlocks.length,
+		text_total_chars: textBlocks.reduce(
+			(total, block) => total + block.text.length,
+			0,
+		),
+		image_block_count: imageMimeTypes.length,
+		image_mime_types: imageMimeTypes.length > 0 ? imageMimeTypes : undefined,
+		details_keys: objectKeys(result.details),
+		result_error:
+			typeof result.isError === "boolean" ? result.isError : undefined,
+		result_tool_execution_id:
+			typeof result.toolExecutionId === "string"
+				? result.toolExecutionId
+				: undefined,
+		result_approval_request_id:
+			typeof result.approvalRequestId === "string"
+				? result.approvalRequestId
+				: undefined,
+	};
 }
 
 function waitTypeForRequest(
@@ -687,6 +1028,9 @@ export class HostedAgentRuntimeProgressRecorder {
 	private readonly recordedTaskWorkItemIds = new Set<string>();
 	private pending: Promise<void> = Promise.resolve();
 	private turnIndex = 0;
+	private autoRetrySequence = 0;
+	private activeAutoRetrySequence: number | null = null;
+	private lastAutoRetryAttempt = 0;
 	private terminalRecorded = false;
 
 	constructor(options: HostedAgentRuntimeProgressRecorderOptions) {
@@ -729,23 +1073,71 @@ export class HostedAgentRuntimeProgressRecorder {
 				});
 				return;
 			case "agent_end":
-				this.recordStep({
-					id: this.stepId("agent", `end-${this.turnIndex}`),
-					name: "Agent run completed",
-					stepKind:
-						event.aborted || event.stopReason === "error"
-							? PlatformAgentRunStepKindValue.Error
-							: PlatformAgentRunStepKindValue.System,
-					state:
-						event.aborted || event.stopReason === "error"
-							? PlatformAgentRunStepStateValue.Failed
-							: PlatformAgentRunStepStateValue.Succeeded,
-					output: this.basePayload({
-						event_type: event.type,
-						aborted: event.aborted ?? false,
-						stop_reason: event.stopReason,
-					}),
+				{
+					const stepId = this.stepId("agent", `end-${this.turnIndex}`);
+					this.recordStep({
+						id: stepId,
+						name: "Agent run completed",
+						stepKind:
+							event.aborted || event.stopReason === "error"
+								? PlatformAgentRunStepKindValue.Error
+								: PlatformAgentRunStepKindValue.System,
+						state:
+							event.aborted || event.stopReason === "error"
+								? PlatformAgentRunStepStateValue.Failed
+								: PlatformAgentRunStepStateValue.Succeeded,
+						output: this.basePayload({
+							event_type: event.type,
+							aborted: event.aborted ?? false,
+							stop_reason: event.stopReason,
+						}),
+					});
+					this.recordFinalStatusEvent(event, stepId);
+				}
+				return;
+			case "status":
+				this.recordStatusEvent(event);
+				return;
+			case "compaction":
+				this.recordCompactionEvent(event);
+				return;
+			case "auto_retry_start":
+				this.recordAutoRetryStart(event);
+				return;
+			case "auto_retry_end":
+				this.recordAutoRetryEnd(event);
+				return;
+			case "diagnostic_delta":
+				this.recordDiagnosticDelta(event);
+				return;
+			case "tool_batch_summary":
+				this.recordToolBatchSummary(event);
+				return;
+			case "tool_phase_summary":
+				this.recordToolPhaseSummary(event);
+				return;
+			case "tool_execution_update":
+				this.recordToolExecutionUpdate(event);
+				return;
+			case "tool_retry_required":
+				this.recordApprovalWait({
+					id: event.request.id,
+					callId: event.request.toolCallId,
+					toolName: event.request.toolName,
+					reason: event.request.summary ?? event.request.errorMessage,
+					kind: "tool_retry",
 				});
+				this.recordToolRetryEvent(event);
+				return;
+			case "tool_retry_resolved":
+				this.resumeWait({
+					id: event.request.id,
+					kind: "tool_retry",
+					resolution: event.decision.action,
+					resolvedBy: event.decision.resolvedBy,
+					reason: event.decision.reason,
+				});
+				this.recordToolRetryEvent(event);
 				return;
 			case "turn_start":
 				this.turnIndex += 1;
@@ -774,7 +1166,7 @@ export class HostedAgentRuntimeProgressRecorder {
 				this.toolArgsByCallId.set(event.toolCallId, event.args);
 				this.recordStep({
 					id: this.toolStepId(event.toolCallId),
-					name: toolDisplayName(event),
+					name: sanitizedToolDisplayName(event),
 					stepKind: PlatformAgentRunStepKindValue.ToolCallIntent,
 					state: PlatformAgentRunStepStateValue.Running,
 					input: this.basePayload({
@@ -782,8 +1174,8 @@ export class HostedAgentRuntimeProgressRecorder {
 						tool_call_id: event.toolCallId,
 						tool_execution_id: materializedToolExecutionId(event),
 						tool_name: event.toolName,
-						display_name: event.displayName,
-						summary_label: event.summaryLabel,
+						display_name: sanitizeOutboundText(event.displayName),
+						summary_label: sanitizeOutboundText(event.summaryLabel),
 						arg_keys: objectKeys(event.args),
 					}),
 				});
@@ -792,7 +1184,7 @@ export class HostedAgentRuntimeProgressRecorder {
 			case "tool_execution_end":
 				this.recordStep({
 					id: this.toolStepId(event.toolCallId),
-					name: toolDisplayName(event),
+					name: sanitizedToolDisplayName(event),
 					stepKind: event.isError
 						? PlatformAgentRunStepKindValue.Error
 						: PlatformAgentRunStepKindValue.ToolResult,
@@ -808,14 +1200,15 @@ export class HostedAgentRuntimeProgressRecorder {
 						tool_execution_id: materializedToolExecutionId(event),
 						approval_request_id: event.approvalRequestId,
 						tool_name: event.toolName,
-						display_name: event.displayName,
-						summary_label: event.summaryLabel,
+						display_name: sanitizeOutboundText(event.displayName),
+						summary_label: sanitizeOutboundText(event.summaryLabel),
 						error_code: event.errorCode,
 						governed_outcome: event.governedOutcome,
 					}),
 				});
 				this.updateCodexSubagentWorkItem(event);
 				this.recordToolDerivedTaskProgress(event);
+				this.recordToolArtifactEvent(event);
 				return;
 			case "action_approval_required":
 				this.recordApprovalWait({
@@ -847,6 +1240,266 @@ export class HostedAgentRuntimeProgressRecorder {
 		}
 	}
 
+	private recordFinalStatusEvent(
+		event: Extract<AgentEvent, { type: "agent_end" }>,
+		stepId: string,
+	): void {
+		const finalStatus =
+			event.aborted || event.stopReason === "error" ? "failed" : "succeeded";
+		this.recordEvent({
+			type: PlatformRuntimeEventTypeValue.AgentProgressRecorded,
+			message: "Maestro agent final status recorded",
+			stepId,
+			attributes: this.basePayload({
+				event_type: "agent_final_status",
+				final_status: finalStatus,
+				aborted: event.aborted ?? false,
+				stop_reason: event.stopReason,
+				message_count: event.messages.length,
+				partial_accepted: Boolean(event.partialAccepted),
+			}),
+		});
+	}
+
+	private recordStatusEvent(
+		event: Extract<AgentEvent, { type: "status" }>,
+	): void {
+		this.recordEvent({
+			type: PlatformRuntimeEventTypeValue.AgentProgressRecorded,
+			message: "Maestro status recorded",
+			attributes: this.basePayload({
+				event_type: event.type,
+				status: sanitizeOutboundText(event.status, 512),
+				detail_keys: objectKeys(event.details),
+			}),
+		});
+	}
+
+	private recordCompactionEvent(
+		event: Extract<AgentEvent, { type: "compaction" }>,
+	): void {
+		this.recordEvent({
+			type: PlatformRuntimeEventTypeValue.AgentProgressRecorded,
+			message: "Maestro context compaction recorded",
+			attributes: this.basePayload({
+				event_type: event.type,
+				first_kept_entry_index: event.firstKeptEntryIndex,
+				tokens_before: event.tokensBefore,
+				auto: event.auto ?? false,
+				custom_instructions_present: Boolean(event.customInstructions),
+				summary_chars: event.summary.length,
+				timestamp: event.timestamp,
+			}),
+		});
+	}
+
+	private recordAutoRetryStart(
+		event: Extract<AgentEvent, { type: "auto_retry_start" }>,
+	): void {
+		const sequence = this.resolveAutoRetryStartSequence(event.attempt);
+		this.recordStep({
+			id: this.autoRetryStepId(event.attempt, sequence),
+			name: `Auto retry ${event.attempt}`,
+			stepKind: PlatformAgentRunStepKindValue.System,
+			state: PlatformAgentRunStepStateValue.Waiting,
+			input: this.basePayload({
+				event_type: event.type,
+				attempt: event.attempt,
+				max_attempts: event.maxAttempts,
+				delay_ms: event.delayMs,
+				error_message: sanitizeOutboundText(event.errorMessage, 512),
+			}),
+		});
+	}
+
+	private recordAutoRetryEnd(
+		event: Extract<AgentEvent, { type: "auto_retry_end" }>,
+	): void {
+		const sequence = this.resolveAutoRetryEndSequence();
+		this.recordStep({
+			id: this.autoRetryStepId(event.attempt, sequence),
+			name: `Auto retry ${event.attempt}`,
+			stepKind: event.success
+				? PlatformAgentRunStepKindValue.System
+				: PlatformAgentRunStepKindValue.Error,
+			state: event.success
+				? PlatformAgentRunStepStateValue.Succeeded
+				: PlatformAgentRunStepStateValue.Failed,
+			errorMessage: event.success
+				? undefined
+				: sanitizeOutboundText(event.finalError, 512),
+			output: this.basePayload({
+				event_type: event.type,
+				success: event.success,
+				attempt: event.attempt,
+				final_error: sanitizeOutboundText(event.finalError, 512),
+			}),
+		});
+	}
+
+	private recordDiagnosticDelta(
+		event: Extract<AgentEvent, { type: "diagnostic_delta" }>,
+	): void {
+		this.recordEvent({
+			type: PlatformRuntimeEventTypeValue.AgentProgressRecorded,
+			message: "Maestro diagnostic delta recorded",
+			stepId: this.toolStepId(event.toolCallId),
+			attributes: this.basePayload({
+				event_type: event.type,
+				tool_call_id: event.toolCallId,
+				tool_name: event.toolName,
+				display_path: compactString(event.displayPath, 512),
+				used_delta: event.usedDelta,
+				introduced_count: event.introducedCount,
+				repaired_count: event.repairedCount,
+				remaining_count: event.remainingCount,
+				fingerprint: event.fingerprint,
+				repair_attempt: event.repairAttempt,
+				max_repair_attempts: event.maxRepairAttempts,
+				will_auto_follow_up: event.willAutoFollowUp,
+				reason: compactString(event.reason),
+			}),
+		});
+	}
+
+	private recordToolBatchSummary(
+		event: Extract<AgentEvent, { type: "tool_batch_summary" }>,
+	): void {
+		this.recordEvent({
+			type: PlatformRuntimeEventTypeValue.AgentProgressRecorded,
+			message: "Maestro tool batch summary recorded",
+			attributes: this.basePayload({
+				event_type: event.type,
+				summary: sanitizeToolBatchSummaryText(event.summary),
+				summary_labels: sanitizeOutboundTextArray(event.summaryLabels),
+				tool_call_ids: compactStringArray(event.toolCallIds),
+				tool_names: compactStringArray(event.toolNames),
+				calls_succeeded: event.callsSucceeded,
+				calls_failed: event.callsFailed,
+			}),
+		});
+	}
+
+	private recordToolPhaseSummary(
+		event: Extract<AgentEvent, { type: "tool_phase_summary" }>,
+	): void {
+		this.recordEvent({
+			type: PlatformRuntimeEventTypeValue.AgentProgressRecorded,
+			message: "Maestro tool phase summary recorded",
+			attributes: this.basePayload({
+				event_type: event.type,
+				model_tool_call_count: event.modelToolCallCount,
+				model_emitted_tool_call_count: event.modelEmittedToolCallCount,
+				schedulable_wave_count: event.schedulableWaveCount,
+				parallelized_call_count: event.parallelizedCallCount,
+				actually_parallelized_call_count: event.actuallyParallelizedCallCount,
+				serialized_call_count: event.serializedCallCount,
+				delayed_call_count: event.delayedCallCount,
+				blocked_by_mutation_count: event.blockedByMutationCount,
+				mcp_opt_in_call_count: event.mcpOptInCallCount,
+				mcp_opt_in_use_count: event.mcpOptInUseCount,
+				cache_hit_count: event.cacheHitCount,
+				total_tool_wait_ms: event.totalToolWaitMs,
+				tool_wait_time_ms: event.toolWaitTimeMs,
+				serialization_reasons: event.serializationReasons,
+				batch_shaping_feedback: event.batchShapingFeedback,
+			}),
+		});
+	}
+
+	private recordToolExecutionUpdate(
+		event: Extract<AgentEvent, { type: "tool_execution_update" }>,
+	): void {
+		const partialToolExecutionId =
+			materializedToolExecutionId(event) ??
+			materializedToolExecutionId({
+				toolCallId: event.toolCallId,
+				toolExecutionId: event.partialResult.toolExecutionId,
+			});
+		this.recordEvent({
+			type: PlatformRuntimeEventTypeValue.AgentProgressRecorded,
+			message: "Maestro tool execution update recorded",
+			stepId: this.toolStepId(event.toolCallId),
+			attributes: this.basePayload({
+				event_type: event.type,
+				tool_call_id: event.toolCallId,
+				tool_execution_id: partialToolExecutionId,
+				tool_name: event.toolName,
+				display_name: sanitizeOutboundText(event.displayName),
+				summary_label: sanitizeOutboundText(event.summaryLabel),
+				arg_keys: objectKeys(event.args),
+				...toolResultMetrics(event.partialResult),
+			}),
+		});
+	}
+
+	private recordToolArtifactEvent(
+		event: Extract<AgentEvent, { type: "tool_execution_end" }>,
+	): void {
+		const metadata = event.skillMetadata;
+		if (!metadata) {
+			return;
+		}
+		this.recordEvent({
+			type: PlatformRuntimeEventTypeValue.AgentProgressRecorded,
+			message: "Maestro tool artifact evidence recorded",
+			stepId: this.toolStepId(event.toolCallId),
+			artifactId: metadata.artifactId,
+			attributes: this.basePayload({
+				event_type: "tool_artifact_recorded",
+				tool_call_id: event.toolCallId,
+				tool_execution_id: materializedToolExecutionId(event),
+				tool_name: event.toolName,
+				display_name: sanitizeOutboundText(event.displayName),
+				summary_label: sanitizeOutboundText(event.summaryLabel),
+				skill_name: metadata.name,
+				skill_hash: metadata.hash,
+				skill_source: metadata.source,
+				skill_artifact_id: metadata.artifactId,
+				skill_version: metadata.version,
+				skill_scope: metadata.scope,
+				skill_workspace_id: metadata.workspaceId,
+				skill_owner_id: metadata.ownerId,
+				source_path: compactString(metadata.sourcePath, 512),
+			}),
+		});
+	}
+
+	private recordToolRetryEvent(
+		event: Extract<
+			AgentEvent,
+			{ type: "tool_retry_required" | "tool_retry_resolved" }
+		>,
+	): void {
+		this.recordEvent({
+			type: PlatformRuntimeEventTypeValue.AgentProgressRecorded,
+			message:
+				event.type === "tool_retry_required"
+					? "Maestro tool retry required"
+					: "Maestro tool retry resolved",
+			stepId: this.toolStepId(event.request.toolCallId),
+			waitId: this.waitId(event.request.id),
+			attributes: this.basePayload({
+				event_type: event.type,
+				request_id: event.request.id,
+				tool_call_id: event.request.toolCallId,
+				tool_name: event.request.toolName,
+				error_message: sanitizeOutboundText(event.request.errorMessage, 512),
+				summary: sanitizeOutboundText(event.request.summary, 512),
+				attempt: event.request.attempt,
+				max_attempts: event.request.maxAttempts,
+				arg_keys: objectKeys(event.request.args),
+				...(event.type === "tool_retry_resolved"
+					? {
+							resolution: event.decision.action,
+							resolved_by: event.decision.resolvedBy,
+							reason: sanitizeOutboundText(event.decision.reason, 512),
+						}
+					: {}),
+			}),
+		});
+	}
+
 	recordServerRequestEvent(event: ServerRequestLifecycleEvent): void {
 		if (event.type === "registered") {
 			this.recordApprovalWait({
@@ -873,14 +1526,24 @@ export class HostedAgentRuntimeProgressRecorder {
 	}
 
 	recordPromptFailure(message: string): void {
+		const stepId = this.stepId("error", `${Date.now()}`);
 		this.recordStep({
-			id: this.stepId("error", `${Date.now()}`),
+			id: stepId,
 			name: "Prompt failed",
 			stepKind: PlatformAgentRunStepKindValue.Error,
 			state: PlatformAgentRunStepStateValue.Failed,
-			errorMessage: message,
+			errorMessage: sanitizeOutboundText(message),
 			output: this.basePayload({
 				event_type: "prompt_failure",
+			}),
+		});
+		this.recordEvent({
+			type: PlatformRuntimeEventTypeValue.AgentProgressRecorded,
+			message: "Maestro prompt failure recorded",
+			stepId,
+			attributes: this.basePayload({
+				event_type: "prompt_failure",
+				error_message: sanitizeOutboundText(message),
 			}),
 		});
 	}
@@ -1256,14 +1919,14 @@ export class HostedAgentRuntimeProgressRecorder {
 					stepId: this.toolStepId(input.callId),
 					type: waitTypeForRequest(input.kind ?? "approval"),
 					externalRef: input.id,
-					reason: input.reason,
+					reason: sanitizeOutboundText(input.reason),
 					payload: this.basePayload({
 						request_id: input.id,
 						request_type: input.kind ?? "approval",
 						call_id: input.callId,
 						tool_name: input.toolName,
-						display_name: input.displayName,
-						summary_label: input.summaryLabel,
+						display_name: sanitizeOutboundText(input.displayName),
+						summary_label: sanitizeOutboundText(input.summaryLabel),
 						started_at_ms: input.startedAtMs,
 					}),
 				},
@@ -1309,7 +1972,7 @@ export class HostedAgentRuntimeProgressRecorder {
 					request_type: input.kind,
 					resolution: input.resolution,
 					resolved_by: input.resolvedBy,
-					reason: input.reason,
+					reason: sanitizeOutboundText(input.reason),
 					started_at_ms: input.startedAtMs,
 					resolved_at_ms: input.resolvedAtMs,
 				}),
@@ -1486,6 +2149,8 @@ export class HostedAgentRuntimeProgressRecorder {
 		}
 		const toolExecutionId = materializedToolExecutionId(event);
 		const prompt = nonEmptyString(event.args.prompt);
+		const sanitizedPrompt = sanitizeOutboundText(prompt);
+		const delegationPrompt = sanitizeDelegationPrompt(prompt);
 		const model = nonEmptyString(event.args.model);
 		const reasoningEffort = nonEmptyString(event.args.reasoningEffort);
 		const codexSubagentOperationName = codexSubagentOperation(codexTool);
@@ -1502,8 +2167,8 @@ export class HostedAgentRuntimeProgressRecorder {
 				codexTool === "wait"
 					? PlatformAgentWorkItemStateValue.Waiting
 					: PlatformAgentWorkItemStateValue.Running,
-			title: toolDisplayName(event),
-			...(prompt ? { goal: prompt } : {}),
+			title: sanitizedToolDisplayName(event),
+			...(sanitizedPrompt ? { goal: sanitizedPrompt } : {}),
 			nextAction: codexSubagentNextAction(codexTool),
 			...(toolExecutionId ? { toolExecutionId } : {}),
 			evidenceRefs: [
@@ -1517,8 +2182,8 @@ export class HostedAgentRuntimeProgressRecorder {
 				codex_tool: codexTool,
 				tool_call_id: event.toolCallId,
 				tool_name: event.toolName,
-				display_name: event.displayName,
-				summary_label: event.summaryLabel,
+				display_name: sanitizeOutboundText(event.displayName),
+				summary_label: sanitizeOutboundText(event.summaryLabel),
 				codex_subagent_operation: codexSubagentOperationName,
 				codex_subagent_edge_status: activeCodexSubagentEdgeStatus(codexTool),
 				sender_thread_id: nonEmptyString(event.args.senderThreadId),
@@ -1546,7 +2211,7 @@ export class HostedAgentRuntimeProgressRecorder {
 				childRunIds,
 				linkedWorkItemIds,
 				workGraph,
-				prompt,
+				prompt: delegationPrompt,
 				model,
 				reasoningEffort,
 			});
@@ -1592,8 +2257,8 @@ export class HostedAgentRuntimeProgressRecorder {
 					owner_child_run_id: input.ownerChildRunId,
 					tool_call_id: input.event.toolCallId,
 					tool_name: input.event.toolName,
-					display_name: input.event.displayName,
-					summary_label: input.event.summaryLabel,
+					display_name: sanitizeOutboundText(input.event.displayName),
+					summary_label: sanitizeOutboundText(input.event.summaryLabel),
 					from_agent_id: fromAgentId,
 					to_agent_id: toAgentId,
 					required_capability: requiredCapability,
@@ -1709,8 +2374,8 @@ export class HostedAgentRuntimeProgressRecorder {
 						codex_tool: codexTool,
 						tool_call_id: event.toolCallId,
 						tool_name: event.toolName,
-						display_name: event.displayName,
-						summary_label: event.summaryLabel,
+						display_name: sanitizeOutboundText(event.displayName),
+						summary_label: sanitizeOutboundText(event.summaryLabel),
 						codex_subagent_operation: codexSubagentOperationName,
 						codex_subagent_edge_status: codexSubagentEdgeStatus,
 						error_code: event.errorCode,
@@ -2055,6 +2720,33 @@ export class HostedAgentRuntimeProgressRecorder {
 
 	private workItemId(toolCallId: string): string {
 		return this.stepId("work", toolCallId);
+	}
+
+	private resolveAutoRetryStartSequence(attempt: number): number {
+		if (
+			this.activeAutoRetrySequence === null ||
+			attempt <= this.lastAutoRetryAttempt
+		) {
+			this.autoRetrySequence += 1;
+			this.activeAutoRetrySequence = this.autoRetrySequence;
+		}
+		this.lastAutoRetryAttempt = attempt;
+		return this.activeAutoRetrySequence;
+	}
+
+	private resolveAutoRetryEndSequence(): number {
+		if (this.activeAutoRetrySequence === null) {
+			this.autoRetrySequence += 1;
+			this.activeAutoRetrySequence = this.autoRetrySequence;
+		}
+		const sequence = this.activeAutoRetrySequence;
+		this.activeAutoRetrySequence = null;
+		this.lastAutoRetryAttempt = 0;
+		return sequence;
+	}
+
+	private autoRetryStepId(attempt: number, sequence: number): string {
+		return this.stepId("retry", `auto-${sequence}-attempt-${attempt}`);
 	}
 
 	private waitId(requestId: string): string {

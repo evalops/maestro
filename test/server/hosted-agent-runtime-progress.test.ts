@@ -1537,6 +1537,571 @@ describe("hosted AgentRuntime progress recorder", () => {
 		);
 	});
 
+	it("records queryable tool, diagnostic, artifact, and final-status events", async () => {
+		const { recorder, recordEvent } = createRecorder();
+
+		recorder.recordAgentEvent({
+			type: "tool_execution_update",
+			toolCallId: "call_stream",
+			toolExecutionId: "texec_stream",
+			toolName: "read",
+			displayName: "Read file",
+			summaryLabel: "read src/index.ts",
+			args: { file_path: "/workspace/src/index.ts" },
+			partialResult: {
+				content: [{ type: "text", text: "partial output" }],
+				details: { bytes: 14 },
+				toolExecutionId: "texec_stream",
+			},
+		});
+		recorder.recordAgentEvent({
+			type: "diagnostic_delta",
+			toolCallId: "call_stream",
+			toolName: "read",
+			file: "/workspace/src/index.ts",
+			displayPath: "src/index.ts",
+			usedDelta: true,
+			introducedCount: 1,
+			repairedCount: 2,
+			remainingCount: 0,
+			fingerprint: "diag_abc",
+			repairAttempt: 1,
+			maxRepairAttempts: 2,
+			willAutoFollowUp: false,
+			reason: "no diagnostics remain",
+		});
+		recorder.recordAgentEvent({
+			type: "tool_batch_summary",
+			summary: "read src/index.ts, Ran npm test",
+			summaryLabels: ["read src/index.ts", "Ran npm test"],
+			toolCallIds: ["call_stream"],
+			toolNames: ["read"],
+			callsSucceeded: 1,
+			callsFailed: 0,
+		});
+		recorder.recordAgentEvent({
+			type: "tool_execution_end",
+			toolCallId: "call_stream",
+			toolExecutionId: "texec_stream",
+			toolName: "read",
+			displayName: "Read file",
+			result: {
+				role: "toolResult",
+				toolCallId: "call_stream",
+				toolName: "read",
+				content: [{ type: "text", text: "done" }],
+				isError: false,
+				timestamp: 1,
+			},
+			isError: false,
+			skillMetadata: {
+				name: "read-skill",
+				hash: "sha256:abc",
+				source: "project",
+				artifactId: "artifact_1",
+				version: "1.0.0",
+			},
+		} satisfies AgentEvent);
+		recorder.recordAgentEvent({
+			type: "agent_end",
+			messages: [],
+			aborted: false,
+			stopReason: "stop",
+		});
+		await recorder.flush();
+
+		expect(recordEvent).toHaveBeenCalledWith(
+			expect.objectContaining({
+				type: PlatformRuntimeEventTypeValue.AgentProgressRecorded,
+				message: "Maestro tool execution update recorded",
+				stepId: "maestro:session_1:tool:call_stream",
+				attributes: expect.objectContaining({
+					event_type: "tool_execution_update",
+					tool_call_id: "call_stream",
+					tool_execution_id: "texec_stream",
+					tool_name: "read",
+					arg_keys: ["file_path"],
+					content_block_count: 1,
+					text_block_count: 1,
+					text_total_chars: 14,
+					details_keys: ["bytes"],
+				}),
+			}),
+		);
+		expect(recordEvent).toHaveBeenCalledWith(
+			expect.objectContaining({
+				message: "Maestro diagnostic delta recorded",
+				stepId: "maestro:session_1:tool:call_stream",
+				attributes: expect.objectContaining({
+					event_type: "diagnostic_delta",
+					display_path: "src/index.ts",
+					introduced_count: 1,
+					repaired_count: 2,
+					remaining_count: 0,
+					fingerprint: "diag_abc",
+				}),
+			}),
+		);
+		expect(recordEvent).toHaveBeenCalledWith(
+			expect.objectContaining({
+				message: "Maestro tool batch summary recorded",
+				attributes: expect.objectContaining({
+					event_type: "tool_batch_summary",
+					summary: "[redacted]",
+					summary_labels: ["read src/index.ts", "[redacted]"],
+					calls_succeeded: 1,
+					calls_failed: 0,
+					tool_call_ids: ["call_stream"],
+					tool_names: ["read"],
+				}),
+			}),
+		);
+		expect(recordEvent).toHaveBeenCalledWith(
+			expect.objectContaining({
+				message: "Maestro tool artifact evidence recorded",
+				stepId: "maestro:session_1:tool:call_stream",
+				artifactId: "artifact_1",
+				attributes: expect.objectContaining({
+					event_type: "tool_artifact_recorded",
+					skill_name: "read-skill",
+					skill_hash: "sha256:abc",
+					skill_source: "project",
+					skill_artifact_id: "artifact_1",
+				}),
+			}),
+		);
+		expect(recordEvent).toHaveBeenCalledWith(
+			expect.objectContaining({
+				message: "Maestro agent final status recorded",
+				stepId: "maestro:session_1:agent:end-0",
+				attributes: expect.objectContaining({
+					event_type: "agent_final_status",
+					final_status: "succeeded",
+					stop_reason: "stop",
+				}),
+			}),
+		);
+	});
+
+	it("projects tool retry prompts as hosted waits and queryable retry events", async () => {
+		const { recorder, waitRun, resumeRun, recordEvent } = createRecorder();
+		const request = {
+			id: "retry_1",
+			toolCallId: "call_retry",
+			toolName: "shell",
+			args: { command: "npm test" },
+			errorMessage: "exit code 1",
+			attempt: 1,
+			maxAttempts: 3,
+			summary: "shell failed",
+		};
+
+		recorder.recordAgentEvent({
+			type: "tool_retry_required",
+			request,
+		} satisfies AgentEvent);
+		recorder.recordAgentEvent({
+			type: "tool_retry_resolved",
+			request,
+			decision: {
+				action: "retry",
+				reason: "transient",
+				resolvedBy: "user",
+			},
+		} satisfies AgentEvent);
+		await recorder.flush();
+
+		expect(waitRun).toHaveBeenCalledWith(
+			expect.objectContaining({
+				wait: expect.objectContaining({
+					id: "maestro:session_1:wait:retry_1",
+					stepId: "maestro:session_1:tool:call_retry",
+					type: PlatformAgentRunWaitTypeValue.Approval,
+					externalRef: "retry_1",
+					payload: expect.objectContaining({
+						request_type: "tool_retry",
+						tool_name: "shell",
+					}),
+				}),
+			}),
+		);
+		expect(resumeRun).toHaveBeenCalledWith(
+			expect.objectContaining({
+				waitId: "maestro:session_1:wait:retry_1",
+				resumeEventId: "maestro:session_1:resume:retry_1",
+				payload: expect.objectContaining({
+					request_type: "tool_retry",
+					resolution: "retry",
+					resolved_by: "user",
+				}),
+			}),
+		);
+		expect(recordEvent).toHaveBeenCalledWith(
+			expect.objectContaining({
+				message: "Maestro tool retry required",
+				waitId: "maestro:session_1:wait:retry_1",
+				attributes: expect.objectContaining({
+					event_type: "tool_retry_required",
+					error_message: "exit code 1",
+					attempt: 1,
+					max_attempts: 3,
+					arg_keys: ["command"],
+				}),
+			}),
+		);
+		expect(recordEvent).toHaveBeenCalledWith(
+			expect.objectContaining({
+				message: "Maestro tool retry resolved",
+				waitId: "maestro:session_1:wait:retry_1",
+				attributes: expect.objectContaining({
+					event_type: "tool_retry_resolved",
+					resolution: "retry",
+					resolved_by: "user",
+					reason: "transient",
+				}),
+			}),
+		);
+	});
+
+	it("redacts retry progress event fields before Platform egress", async () => {
+		const { recorder, recordEvent } = createRecorder();
+		const request = {
+			id: "retry_secret",
+			toolCallId: "call_retry_secret",
+			toolName: "shell",
+			args: { command: "npm test" },
+			errorMessage: "failed with sk_live_RETRY_EVENT_12345678",
+			attempt: 1,
+			maxAttempts: 3,
+			summary:
+				"Command failed: bunx vitest --run test/server/hosted-agent-runtime-progress.test.ts",
+		};
+
+		recorder.recordAgentEvent({
+			type: "tool_retry_required",
+			request,
+		} satisfies AgentEvent);
+		recorder.recordAgentEvent({
+			type: "tool_retry_resolved",
+			request,
+			decision: {
+				action: "retry",
+				reason: "Command failed: npm test",
+				resolvedBy: "user",
+			},
+		} satisfies AgentEvent);
+		await recorder.flush();
+
+		expect(recordEvent).toHaveBeenCalledWith(
+			expect.objectContaining({
+				message: "Maestro tool retry required",
+				attributes: expect.objectContaining({
+					event_type: "tool_retry_required",
+					error_message: "[redacted]",
+					summary: "[redacted]",
+				}),
+			}),
+		);
+		expect(recordEvent).toHaveBeenCalledWith(
+			expect.objectContaining({
+				message: "Maestro tool retry resolved",
+				attributes: expect.objectContaining({
+					event_type: "tool_retry_resolved",
+					error_message: "[redacted]",
+					summary: "[redacted]",
+					reason: "[redacted]",
+				}),
+			}),
+		);
+	});
+
+	it("coalesces tool retry AgentEvents with server-request lifecycle waits", async () => {
+		const { recorder, waitRun, resumeRun, recordEvent } = createRecorder();
+		const retryRequest = {
+			id: "retry_dupe",
+			toolCallId: "call_dupe",
+			toolName: "shell",
+			args: { command: "npm test" },
+			errorMessage: "exit code 1",
+			attempt: 2,
+			maxAttempts: 3,
+			summary: "shell failed again",
+		};
+		const registered: ServerRequestLifecycleEvent = {
+			type: "registered",
+			request: {
+				id: retryRequest.id,
+				kind: "tool_retry",
+				sessionId: "session_1",
+				callId: retryRequest.toolCallId,
+				toolName: retryRequest.toolName,
+				args: {
+					tool_call_id: retryRequest.toolCallId,
+					args: retryRequest.args,
+					error_message: retryRequest.errorMessage,
+					attempt: retryRequest.attempt,
+					max_attempts: retryRequest.maxAttempts,
+					summary: retryRequest.summary,
+				},
+				reason: retryRequest.summary,
+				timestamp: Date.now(),
+				startedAtMs: 4_000,
+				timeoutMs: 60_000,
+			},
+		};
+		const resolved: ServerRequestLifecycleEvent = {
+			type: "resolved",
+			request: registered.request,
+			resolution: "retried",
+			resolvedBy: "user",
+			reason: "transient",
+			resolvedAtMs: 5_000,
+		};
+
+		recorder.recordServerRequestEvent(registered);
+		recorder.recordAgentEvent({
+			type: "tool_retry_required",
+			request: retryRequest,
+		} satisfies AgentEvent);
+		recorder.recordServerRequestEvent(resolved);
+		recorder.recordAgentEvent({
+			type: "tool_retry_resolved",
+			request: retryRequest,
+			decision: {
+				action: "retry",
+				reason: "transient",
+				resolvedBy: "user",
+			},
+		} satisfies AgentEvent);
+		await recorder.flush();
+
+		expect(waitRun).toHaveBeenCalledTimes(1);
+		expect(waitRun).toHaveBeenCalledWith(
+			expect.objectContaining({
+				wait: expect.objectContaining({
+					id: "maestro:session_1:wait:retry_dupe",
+					stepId: "maestro:session_1:tool:call_dupe",
+					type: PlatformAgentRunWaitTypeValue.Approval,
+					payload: expect.objectContaining({
+						request_type: "tool_retry",
+						started_at_ms: 4_000,
+					}),
+				}),
+			}),
+		);
+		expect(resumeRun).toHaveBeenCalledTimes(1);
+		expect(resumeRun).toHaveBeenCalledWith(
+			expect.objectContaining({
+				waitId: "maestro:session_1:wait:retry_dupe",
+				payload: expect.objectContaining({
+					request_type: "tool_retry",
+					resolution: "retried",
+					resolved_by: "user",
+					resolved_at_ms: 5_000,
+				}),
+			}),
+		);
+		expect(recordEvent).toHaveBeenCalledWith(
+			expect.objectContaining({
+				message: "Maestro tool retry required",
+				waitId: "maestro:session_1:wait:retry_dupe",
+				attributes: expect.objectContaining({
+					event_type: "tool_retry_required",
+					attempt: 2,
+					max_attempts: 3,
+				}),
+			}),
+		);
+		expect(recordEvent).toHaveBeenCalledWith(
+			expect.objectContaining({
+				message: "Maestro tool retry resolved",
+				waitId: "maestro:session_1:wait:retry_dupe",
+				attributes: expect.objectContaining({
+					event_type: "tool_retry_resolved",
+					resolution: "retry",
+					reason: "transient",
+				}),
+			}),
+		);
+	});
+
+	it("records recovery breadcrumbs for status, compaction, and auto retry", async () => {
+		const { recorder, recordEvent, recordStep } = createRecorder();
+
+		recorder.recordAgentEvent({
+			type: "status",
+			status: "restoring checkpoint",
+			details: { checkpointId: "cp_1", replica: "pod-b" },
+		});
+		recorder.recordAgentEvent({
+			type: "status",
+			status: "Running npm test",
+			details: { toolCallId: "call_status_command" },
+		});
+		recorder.recordAgentEvent({
+			type: "compaction",
+			summary: "Older context summarized",
+			firstKeptEntryIndex: 12,
+			tokensBefore: 42_000,
+			auto: true,
+			timestamp: "2026-05-23T01:00:00.000Z",
+		});
+		recorder.recordAgentEvent({
+			type: "auto_retry_start",
+			attempt: 2,
+			maxAttempts: 5,
+			delayMs: 1_500,
+			errorMessage: "rate limited",
+		});
+		recorder.recordAgentEvent({
+			type: "auto_retry_end",
+			success: true,
+			attempt: 2,
+		});
+		await recorder.flush();
+
+		expect(recordEvent).toHaveBeenCalledWith(
+			expect.objectContaining({
+				message: "Maestro status recorded",
+				attributes: expect.objectContaining({
+					event_type: "status",
+					status: "restoring checkpoint",
+					detail_keys: ["checkpointId", "replica"],
+				}),
+			}),
+		);
+		expect(recordEvent).toHaveBeenCalledWith(
+			expect.objectContaining({
+				message: "Maestro status recorded",
+				attributes: expect.objectContaining({
+					event_type: "status",
+					status: "[redacted]",
+					detail_keys: ["toolCallId"],
+				}),
+			}),
+		);
+		expect(recordEvent).toHaveBeenCalledWith(
+			expect.objectContaining({
+				message: "Maestro context compaction recorded",
+				attributes: expect.objectContaining({
+					event_type: "compaction",
+					first_kept_entry_index: 12,
+					tokens_before: 42_000,
+					auto: true,
+					summary_chars: 24,
+				}),
+			}),
+		);
+		expect(recordStep).toHaveBeenCalledWith(
+			expect.objectContaining({
+				step: expect.objectContaining({
+					id: "maestro:session_1:retry:auto-1-attempt-2",
+					stepKind: PlatformAgentRunStepKindValue.System,
+					state: PlatformAgentRunStepStateValue.Waiting,
+					input: expect.objectContaining({
+						event_type: "auto_retry_start",
+						delay_ms: 1_500,
+					}),
+				}),
+			}),
+		);
+		expect(recordStep).toHaveBeenCalledWith(
+			expect.objectContaining({
+				step: expect.objectContaining({
+					id: "maestro:session_1:retry:auto-1-attempt-2",
+					state: PlatformAgentRunStepStateValue.Succeeded,
+					output: expect.objectContaining({
+						event_type: "auto_retry_end",
+						success: true,
+					}),
+				}),
+			}),
+		);
+	});
+
+	it("records unique auto-retry step IDs for separate retry sequences", async () => {
+		const { recorder, recordStep } = createRecorder();
+
+		recorder.recordAgentEvent({
+			type: "auto_retry_start",
+			attempt: 1,
+			maxAttempts: 3,
+			delayMs: 100,
+			errorMessage: "rate limited once",
+		});
+		recorder.recordAgentEvent({
+			type: "auto_retry_end",
+			success: true,
+			attempt: 1,
+		});
+		recorder.recordAgentEvent({
+			type: "auto_retry_start",
+			attempt: 1,
+			maxAttempts: 3,
+			delayMs: 200,
+			errorMessage: "rate limited again",
+		});
+		recorder.recordAgentEvent({
+			type: "auto_retry_end",
+			success: true,
+			attempt: 1,
+		});
+		await recorder.flush();
+
+		const retryStepIds = recordStep.mock.calls
+			.map(([input]) => input.step.id)
+			.filter((id) => id.includes(":retry:"));
+
+		expect(retryStepIds).toEqual([
+			"maestro:session_1:retry:auto-1-attempt-1",
+			"maestro:session_1:retry:auto-1-attempt-1",
+			"maestro:session_1:retry:auto-2-attempt-1",
+			"maestro:session_1:retry:auto-2-attempt-1",
+		]);
+		expect(new Set(retryStepIds).size).toBe(2);
+	});
+
+	it("redacts auto-retry error text before Platform egress", async () => {
+		const { recorder, recordStep } = createRecorder();
+
+		recorder.recordAgentEvent({
+			type: "auto_retry_start",
+			attempt: 1,
+			maxAttempts: 3,
+			delayMs: 100,
+			errorMessage: "Command failed: npm test -- --runInBand",
+		});
+		recorder.recordAgentEvent({
+			type: "auto_retry_end",
+			success: false,
+			attempt: 1,
+			finalError: "failed with sk_live_AUTO_RETRY_12345678",
+		});
+		await recorder.flush();
+
+		expect(recordStep).toHaveBeenCalledWith(
+			expect.objectContaining({
+				step: expect.objectContaining({
+					id: "maestro:session_1:retry:auto-1-attempt-1",
+					input: expect.objectContaining({
+						error_message: "[redacted]",
+					}),
+				}),
+			}),
+		);
+		expect(recordStep).toHaveBeenCalledWith(
+			expect.objectContaining({
+				step: expect.objectContaining({
+					id: "maestro:session_1:retry:auto-1-attempt-1",
+					errorMessage: "[redacted]",
+					output: expect.objectContaining({
+						final_error: "[redacted]",
+					}),
+				}),
+			}),
+		);
+	});
+
 	it("no-ops when hosted Platform lease handles are absent", async () => {
 		const { recorder, recordStep, waitRun, resumeRun, completeRun, failRun } =
 			createRecorder({
@@ -2331,6 +2896,1160 @@ describe("hosted AgentRuntime progress recorder", () => {
 				step: expect.objectContaining({
 					id: "maestro:session_1:agent:start-2",
 				}),
+			}),
+		);
+	});
+
+	it("redacts command-like and secret-like outbound progress fields", async () => {
+		const {
+			recorder,
+			recordStep,
+			recordEvent,
+			recordWorkItem,
+			updateWorkItem,
+			waitRun,
+			resumeRun,
+			delegateAgent,
+		} = createRecorder();
+		const fakeGoogleApiKey = `AIza${"A".repeat(35)}`;
+		recorder.recordAgentEvent({
+			type: "tool_execution_start",
+			toolCallId: "call_secret",
+			toolName: "shell",
+			displayName: "bash -lc 'echo $TOKEN'",
+			summaryLabel: "Ran rm -rf /tmp/sk_live_SECRET_12345678",
+			args: { command: "rm -rf /tmp/sk_live_SECRET_12345678" },
+		});
+		recorder.recordAgentEvent({
+			type: "tool_execution_update",
+			toolCallId: "call_secret",
+			toolName: "shell",
+			displayName: "bash -lc 'echo $TOKEN'",
+			summaryLabel: "Streaming sk_live_SECRET_12345678",
+			args: { command: "rm -rf /tmp/sk_live_SECRET_12345678" },
+			partialResult: {
+				content: [{ type: "text", text: "partial output" }],
+				toolExecutionId: "texec_secret",
+			},
+		});
+		recorder.recordAgentEvent({
+			type: "tool_execution_end",
+			toolCallId: "call_secret",
+			toolExecutionId: "texec_secret",
+			toolName: "shell",
+			displayName: "sh -c 'echo artifact'",
+			summaryLabel: "Artifact for sk_live_SECRET_12345678",
+			result: {
+				role: "toolResult",
+				toolCallId: "call_secret",
+				toolName: "shell",
+				content: [{ type: "text", text: "done" }],
+				isError: false,
+				timestamp: 1,
+			},
+			isError: false,
+			skillMetadata: {
+				name: "shell-skill",
+				hash: "sha256:secret-test",
+				source: "project",
+				artifactId: "artifact_secret",
+			},
+		} satisfies AgentEvent);
+		recorder.recordAgentEvent({
+			type: "tool_execution_start",
+			toolCallId: "call_fine_grained_pat",
+			toolName: "shell",
+			displayName: "GitHub token github_pat_11AA22BB33CC44DD55",
+			summaryLabel: "Using fine-grained token",
+			args: {},
+		});
+		recorder.recordAgentEvent({
+			type: "tool_execution_start",
+			toolCallId: "call_google_api_key",
+			toolName: "shell",
+			displayName: `Google API key ${fakeGoogleApiKey}`,
+			summaryLabel: "Using Gemini provider key",
+			args: {},
+		});
+		for (const [toolCallId, displayName] of [
+			[
+				"call_bearer_token",
+				"Provider error Authorization: Bearer bearer-token-value-1234567890",
+			],
+			["call_keyword_token", "Provider error token=keyword-token-value"],
+			[
+				"call_jwt_token",
+				`Provider error token eyJ${"a".repeat(12)}.${"b".repeat(12)}.${"c".repeat(12)}`,
+			],
+			["call_long_hex_secret", `Provider error ${"a".repeat(64)}`],
+		] as const) {
+			recorder.recordAgentEvent({
+				type: "tool_execution_start",
+				toolCallId,
+				toolName: "shell",
+				displayName,
+				summaryLabel: "Using provider credential",
+				args: {},
+			});
+		}
+		for (const [toolCallId, token] of [
+			["call_github_oauth_token", "gho_11AA22BB33CC44DD55"],
+			["call_github_user_token", "ghu_11AA22BB33CC44DD55"],
+			["call_github_server_token", "ghs_11AA22BB33CC44DD55"],
+			["call_github_refresh_token", "ghr_11AA22BB33CC44DD55"],
+		] as const) {
+			recorder.recordAgentEvent({
+				type: "tool_execution_start",
+				toolCallId,
+				toolName: "shell",
+				displayName: `GitHub token ${token}`,
+				summaryLabel: "Using GitHub token prefix",
+				args: {},
+			});
+		}
+		recorder.recordAgentEvent({
+			type: "tool_execution_start",
+			toolCallId: "call_plain_command",
+			toolName: "shell",
+			displayName: "git push",
+			summaryLabel: "rm -rf /tmp/plain",
+			args: {},
+		});
+		recorder.recordAgentEvent({
+			type: "tool_execution_start",
+			toolCallId: "call_prefixed_command_summary",
+			toolName: "shell",
+			summaryLabel: "Ran npm test -- --runInBand",
+			args: {},
+		});
+		for (const [toolCallId, summaryLabel] of [
+			["call_prefixed_npx_summary", "Ran npx nx run maestro:test"],
+			["call_prefixed_make_summary", "Ran make web-local"],
+			["call_prefixed_yarn_summary", "Ran yarn test"],
+			["call_prefixed_go_summary", "Ran go test ./..."],
+		] as const) {
+			recorder.recordAgentEvent({
+				type: "tool_execution_start",
+				toolCallId,
+				toolName: "shell",
+				summaryLabel,
+				args: {},
+			});
+		}
+		recorder.recordAgentEvent({
+			type: "tool_execution_start",
+			toolCallId: "call_raw_common_command",
+			toolName: "shell",
+			displayName: "bunx biome check .",
+			summaryLabel: "yarn test",
+			args: {},
+		});
+		recorder.recordAgentEvent({
+			type: "tool_execution_update",
+			toolCallId: "call_plain_command",
+			toolName: "shell",
+			displayName: "git push",
+			summaryLabel: "rm -rf /tmp/plain",
+			args: {},
+			partialResult: {
+				content: [{ type: "text", text: "partial output" }],
+				toolExecutionId: "texec_plain_command",
+			},
+		});
+		recorder.recordAgentEvent({
+			type: "tool_execution_start",
+			toolCallId: "subagent_secret",
+			toolName: "codex.subagent.spawnAgent",
+			displayName: "bash -lc 'echo $SUBAGENT_TOKEN'",
+			summaryLabel: "Spawn with sk_live_SUBAGENT_12345678",
+			args: {
+				codexTool: "spawnAgent",
+				receiverThreadIds: ["child-thread-secret"],
+				childRunIds: ["agent-run-secret"],
+				prompt:
+					"Review github_pat_11AA22BB33CC44DD55 before running bash -lc 'echo $TOKEN'",
+			},
+		});
+		recorder.recordAgentEvent({
+			type: "tool_execution_end",
+			toolCallId: "subagent_secret",
+			toolName: "codex.subagent.spawnAgent",
+			displayName: "sh -c 'echo done'",
+			summaryLabel: "Completed with sk_live_SUBAGENT_12345678",
+			result: {
+				role: "toolResult",
+				toolCallId: "subagent_secret",
+				toolName: "codex.subagent.spawnAgent",
+				content: [{ type: "text", text: "spawn completed" }],
+				details: {
+					codexTool: "spawnAgent",
+					receiverThreadIds: ["child-thread-secret"],
+					childRunIds: ["agent-run-secret"],
+				},
+				isError: false,
+				timestamp: 2,
+			},
+			isError: false,
+		} satisfies AgentEvent);
+		recorder.recordPromptFailure("failed with sk_live_SECRET_12345678");
+		recorder.recordServerRequestEvent({
+			type: "registered",
+			request: {
+				id: "approval_2",
+				kind: "approval",
+				sessionId: "session_1",
+				callId: "call_secret",
+				toolName: "shell",
+				args: {},
+				reason: "Detected command: rm -rf /tmp/sk_live_SECRET_12345678",
+				timestamp: Date.now(),
+				timeoutMs: 60_000,
+				displayName: "sh -c whoami",
+				summaryLabel: "Ran sh -c whoami",
+			},
+		});
+		recorder.recordServerRequestEvent({
+			type: "resolved",
+			request: {
+				id: "approval_2",
+				kind: "approval",
+				sessionId: "session_1",
+				callId: "call_secret",
+				toolName: "shell",
+				args: {},
+				reason: "reason",
+				timestamp: Date.now(),
+				timeoutMs: 60_000,
+			},
+			resolution: "denied",
+			resolvedBy: "user",
+			reason: "Contains sk_live_SECRET_12345678",
+		});
+		recorder.recordServerRequestEvent({
+			type: "registered",
+			request: {
+				id: "approval_embedded_command",
+				kind: "approval",
+				sessionId: "session_1",
+				callId: "call_plain_command",
+				toolName: "shell",
+				args: {},
+				reason: "Detected command: rm -rf /tmp/plain",
+				timestamp: Date.now(),
+				timeoutMs: 60_000,
+			},
+		});
+		recorder.recordServerRequestEvent({
+			type: "resolved",
+			request: {
+				id: "approval_embedded_command",
+				kind: "approval",
+				sessionId: "session_1",
+				callId: "call_plain_command",
+				toolName: "shell",
+				args: {},
+				reason: "reason",
+				timestamp: Date.now(),
+				timeoutMs: 60_000,
+			},
+			resolution: "denied",
+			resolvedBy: "user",
+			reason: "Command failed: npm test",
+		});
+		recorder.recordServerRequestEvent({
+			type: "registered",
+			request: {
+				id: "approval_path_command",
+				kind: "approval",
+				sessionId: "session_1",
+				callId: "call_plain_command",
+				toolName: "shell",
+				args: {},
+				reason: "Detected command: ./scripts/deploy.sh prod",
+				timestamp: Date.now(),
+				timeoutMs: 60_000,
+			},
+		});
+		recorder.recordServerRequestEvent({
+			type: "resolved",
+			request: {
+				id: "approval_path_command",
+				kind: "approval",
+				sessionId: "session_1",
+				callId: "call_plain_command",
+				toolName: "shell",
+				args: {},
+				reason: "reason",
+				timestamp: Date.now(),
+				timeoutMs: 60_000,
+			},
+			resolution: "denied",
+			resolvedBy: "user",
+			reason: "Command: ../bin/tool --flag",
+		});
+		recorder.recordServerRequestEvent({
+			type: "registered",
+			request: {
+				id: "approval_make_command",
+				kind: "approval",
+				sessionId: "session_1",
+				callId: "call_plain_command",
+				toolName: "shell",
+				args: {},
+				reason: "Command failed: make -C packages/web build",
+				timestamp: Date.now(),
+				timeoutMs: 60_000,
+			},
+		});
+		recorder.recordServerRequestEvent({
+			type: "resolved",
+			request: {
+				id: "approval_make_command",
+				kind: "approval",
+				sessionId: "session_1",
+				callId: "call_plain_command",
+				toolName: "shell",
+				args: {},
+				reason: "reason",
+				timestamp: Date.now(),
+				timeoutMs: 60_000,
+			},
+			resolution: "denied",
+			resolvedBy: "user",
+			reason: "Command failed: make web-local FOO=bar",
+		});
+		recorder.recordServerRequestEvent({
+			type: "registered",
+			request: {
+				id: "approval_pytest_command",
+				kind: "approval",
+				sessionId: "session_1",
+				callId: "call_plain_command",
+				toolName: "shell",
+				args: {},
+				reason: "Command failed: pytest tests",
+				timestamp: Date.now(),
+				timeoutMs: 60_000,
+			},
+		});
+		recorder.recordServerRequestEvent({
+			type: "registered",
+			request: {
+				id: "approval_wrapped_command",
+				kind: "approval",
+				sessionId: "session_1",
+				callId: "call_plain_command",
+				toolName: "shell",
+				args: {},
+				reason: "Command failed: `npm test`",
+				timestamp: Date.now(),
+				timeoutMs: 60_000,
+			},
+		});
+		recorder.recordServerRequestEvent({
+			type: "registered",
+			request: {
+				id: "approval_bare_make_command",
+				kind: "approval",
+				sessionId: "session_1",
+				callId: "call_plain_command",
+				toolName: "shell",
+				args: {},
+				reason: "Command failed: make",
+				timestamp: Date.now(),
+				timeoutMs: 60_000,
+			},
+		});
+		recorder.recordServerRequestEvent({
+			type: "registered",
+			request: {
+				id: "approval_make_multi_target_command",
+				kind: "approval",
+				sessionId: "session_1",
+				callId: "call_plain_command",
+				toolName: "shell",
+				args: {},
+				reason: "Command failed: make test build",
+				timestamp: Date.now(),
+				timeoutMs: 60_000,
+			},
+		});
+		recorder.recordServerRequestEvent({
+			type: "registered",
+			request: {
+				id: "approval_make_project_targets_command",
+				kind: "approval",
+				sessionId: "session_1",
+				callId: "call_plain_command",
+				toolName: "shell",
+				args: {},
+				reason: "Command failed: make deploy prod",
+				timestamp: Date.now(),
+				timeoutMs: 60_000,
+			},
+		});
+		recorder.recordServerRequestEvent({
+			type: "registered",
+			request: {
+				id: "approval_chained_builtin_command",
+				kind: "approval",
+				sessionId: "session_1",
+				callId: "call_plain_command",
+				toolName: "shell",
+				args: {},
+				reason: "Command failed: cd packages/web && npm test",
+				timestamp: Date.now(),
+				timeoutMs: 60_000,
+			},
+		});
+		recorder.recordServerRequestEvent({
+			type: "registered",
+			request: {
+				id: "approval_multiline_prefixed_command",
+				kind: "approval",
+				sessionId: "session_1",
+				callId: "call_plain_command",
+				toolName: "shell",
+				args: {},
+				reason: "Command failed: npm test\nstderr: failed tests",
+				timestamp: Date.now(),
+				timeoutMs: 60_000,
+			},
+		});
+		recorder.recordServerRequestEvent({
+			type: "registered",
+			request: {
+				id: "approval_uv_command",
+				kind: "approval",
+				sessionId: "session_1",
+				callId: "call_plain_command",
+				toolName: "shell",
+				args: {},
+				reason: "Command failed: uv run pytest",
+				timestamp: Date.now(),
+				timeoutMs: 60_000,
+			},
+		});
+		recorder.recordServerRequestEvent({
+			type: "registered",
+			request: {
+				id: "approval_explicit_unknown_cli_command",
+				kind: "approval",
+				sessionId: "session_1",
+				callId: "call_plain_command",
+				toolName: "shell",
+				args: {},
+				reason: "Command failed: ruff check .",
+				timestamp: Date.now(),
+				timeoutMs: 60_000,
+			},
+		});
+		recorder.recordServerRequestEvent({
+			type: "registered",
+			request: {
+				id: "approval_env_prefixed_command",
+				kind: "approval",
+				sessionId: "session_1",
+				callId: "call_plain_command",
+				toolName: "shell",
+				args: {},
+				reason: "Command failed: CI=1 npm test",
+				timestamp: Date.now(),
+				timeoutMs: 60_000,
+			},
+		});
+		recorder.recordServerRequestEvent({
+			type: "registered",
+			request: {
+				id: "approval_env_wrapped_command",
+				kind: "approval",
+				sessionId: "session_1",
+				callId: "call_plain_command",
+				toolName: "shell",
+				args: {},
+				reason: "Command failed: env CI=1 npm test",
+				timestamp: Date.now(),
+				timeoutMs: 60_000,
+			},
+		});
+		recorder.recordServerRequestEvent({
+			type: "registered",
+			request: {
+				id: "approval_detected_dangerous_command",
+				kind: "approval",
+				sessionId: "session_1",
+				callId: "call_plain_command",
+				toolName: "shell",
+				args: {},
+				reason: "Detected dangerous rm command: rm -rf /tmp/plain",
+				timestamp: Date.now(),
+				timeoutMs: 60_000,
+			},
+		});
+		await recorder.flush();
+		expect(recordStep).toHaveBeenCalledWith(
+			expect.objectContaining({
+				step: expect.objectContaining({
+					name: "[redacted]",
+					input: expect.objectContaining({
+						display_name: "[redacted]",
+						summary_label: "[redacted]",
+					}),
+				}),
+			}),
+		);
+		expect(recordStep).toHaveBeenCalledWith(
+			expect.objectContaining({
+				step: expect.objectContaining({
+					id: "maestro:session_1:tool:call_fine_grained_pat",
+					name: "[redacted]",
+				}),
+			}),
+		);
+		expect(recordStep).toHaveBeenCalledWith(
+			expect.objectContaining({
+				step: expect.objectContaining({
+					id: "maestro:session_1:tool:call_google_api_key",
+					name: "[redacted]",
+				}),
+			}),
+		);
+		for (const toolCallId of [
+			"call_github_oauth_token",
+			"call_github_user_token",
+			"call_github_server_token",
+			"call_github_refresh_token",
+			"call_google_api_key",
+			"call_bearer_token",
+			"call_keyword_token",
+			"call_jwt_token",
+			"call_long_hex_secret",
+		]) {
+			expect(recordStep).toHaveBeenCalledWith(
+				expect.objectContaining({
+					step: expect.objectContaining({
+						id: `maestro:session_1:tool:${toolCallId}`,
+						name: "[redacted]",
+					}),
+				}),
+			);
+		}
+		expect(recordStep).toHaveBeenCalledWith(
+			expect.objectContaining({
+				step: expect.objectContaining({
+					id: "maestro:session_1:tool:call_plain_command",
+					input: expect.objectContaining({
+						display_name: "[redacted]",
+						summary_label: "[redacted]",
+					}),
+					name: "[redacted]",
+				}),
+			}),
+		);
+		expect(recordStep).toHaveBeenCalledWith(
+			expect.objectContaining({
+				step: expect.objectContaining({
+					id: "maestro:session_1:tool:call_prefixed_command_summary",
+					input: expect.objectContaining({
+						summary_label: "[redacted]",
+					}),
+					name: "[redacted]",
+				}),
+			}),
+		);
+		for (const toolCallId of [
+			"call_prefixed_npx_summary",
+			"call_prefixed_make_summary",
+			"call_prefixed_yarn_summary",
+			"call_prefixed_go_summary",
+		]) {
+			expect(recordStep).toHaveBeenCalledWith(
+				expect.objectContaining({
+					step: expect.objectContaining({
+						id: `maestro:session_1:tool:${toolCallId}`,
+						input: expect.objectContaining({
+							summary_label: "[redacted]",
+						}),
+						name: "[redacted]",
+					}),
+				}),
+			);
+		}
+		expect(recordStep).toHaveBeenCalledWith(
+			expect.objectContaining({
+				step: expect.objectContaining({
+					id: "maestro:session_1:tool:call_raw_common_command",
+					input: expect.objectContaining({
+						display_name: "[redacted]",
+						summary_label: "[redacted]",
+					}),
+					name: "[redacted]",
+				}),
+			}),
+		);
+		expect(recordStep).toHaveBeenCalledWith(
+			expect.objectContaining({
+				step: expect.objectContaining({
+					name: "Prompt failed",
+					errorMessage: "[redacted]",
+				}),
+			}),
+		);
+		expect(recordEvent).toHaveBeenCalledWith(
+			expect.objectContaining({
+				attributes: expect.objectContaining({
+					error_message: "[redacted]",
+				}),
+			}),
+		);
+		expect(recordEvent).toHaveBeenCalledWith(
+			expect.objectContaining({
+				message: "Maestro tool execution update recorded",
+				attributes: expect.objectContaining({
+					display_name: "[redacted]",
+					summary_label: "[redacted]",
+					tool_call_id: "call_plain_command",
+				}),
+			}),
+		);
+		expect(recordEvent).toHaveBeenCalledWith(
+			expect.objectContaining({
+				message: "Maestro tool artifact evidence recorded",
+				artifactId: "artifact_secret",
+				attributes: expect.objectContaining({
+					display_name: "[redacted]",
+					summary_label: "[redacted]",
+				}),
+			}),
+		);
+		expect(recordWorkItem).toHaveBeenCalledWith(
+			expect.objectContaining({
+				workItem: expect.objectContaining({
+					title: "[redacted]",
+					goal: "[redacted]",
+					payload: expect.objectContaining({
+						display_name: "[redacted]",
+						summary_label: "[redacted]",
+					}),
+				}),
+			}),
+		);
+		expect(updateWorkItem).toHaveBeenCalledWith(
+			expect.objectContaining({
+				workItemId: "maestro:session_1:work:subagent_secret",
+				payload: expect.objectContaining({
+					display_name: "[redacted]",
+					summary_label: "[redacted]",
+				}),
+			}),
+		);
+		expect(delegateAgent).toHaveBeenCalledWith(
+			expect.objectContaining({
+				contextPayload: expect.objectContaining({
+					display_name: "[redacted]",
+					prompt: "[redacted]",
+					summary_label: "[redacted]",
+				}),
+				reason: "Codex subagent spawn requested by Maestro: [redacted]",
+			}),
+		);
+		expect(waitRun).toHaveBeenCalledWith(
+			expect.objectContaining({
+				wait: expect.objectContaining({
+					reason: "[redacted]",
+					payload: expect.objectContaining({
+						display_name: "[redacted]",
+						summary_label: "[redacted]",
+					}),
+				}),
+			}),
+		);
+		expect(resumeRun).toHaveBeenCalledWith(
+			expect.objectContaining({
+				payload: expect.objectContaining({
+					reason: "[redacted]",
+				}),
+			}),
+		);
+		expect(waitRun).toHaveBeenCalledWith(
+			expect.objectContaining({
+				wait: expect.objectContaining({
+					externalRef: "approval_embedded_command",
+					reason: "[redacted]",
+				}),
+			}),
+		);
+		expect(resumeRun).toHaveBeenCalledWith(
+			expect.objectContaining({
+				resumeEventId: "maestro:session_1:resume:approval_embedded_command",
+				payload: expect.objectContaining({
+					reason: "[redacted]",
+				}),
+			}),
+		);
+		expect(waitRun).toHaveBeenCalledWith(
+			expect.objectContaining({
+				wait: expect.objectContaining({
+					externalRef: "approval_path_command",
+					reason: "[redacted]",
+				}),
+			}),
+		);
+		expect(resumeRun).toHaveBeenCalledWith(
+			expect.objectContaining({
+				resumeEventId: "maestro:session_1:resume:approval_path_command",
+				payload: expect.objectContaining({
+					reason: "[redacted]",
+				}),
+			}),
+		);
+		expect(waitRun).toHaveBeenCalledWith(
+			expect.objectContaining({
+				wait: expect.objectContaining({
+					externalRef: "approval_make_command",
+					reason: "[redacted]",
+				}),
+			}),
+		);
+		expect(resumeRun).toHaveBeenCalledWith(
+			expect.objectContaining({
+				resumeEventId: "maestro:session_1:resume:approval_make_command",
+				payload: expect.objectContaining({
+					reason: "[redacted]",
+				}),
+			}),
+		);
+		expect(waitRun).toHaveBeenCalledWith(
+			expect.objectContaining({
+				wait: expect.objectContaining({
+					externalRef: "approval_pytest_command",
+					reason: "[redacted]",
+				}),
+			}),
+		);
+		expect(waitRun).toHaveBeenCalledWith(
+			expect.objectContaining({
+				wait: expect.objectContaining({
+					externalRef: "approval_bare_make_command",
+					reason: "[redacted]",
+				}),
+			}),
+		);
+		expect(waitRun).toHaveBeenCalledWith(
+			expect.objectContaining({
+				wait: expect.objectContaining({
+					externalRef: "approval_wrapped_command",
+					reason: "[redacted]",
+				}),
+			}),
+		);
+		expect(waitRun).toHaveBeenCalledWith(
+			expect.objectContaining({
+				wait: expect.objectContaining({
+					externalRef: "approval_make_multi_target_command",
+					reason: "[redacted]",
+				}),
+			}),
+		);
+		expect(waitRun).toHaveBeenCalledWith(
+			expect.objectContaining({
+				wait: expect.objectContaining({
+					externalRef: "approval_make_project_targets_command",
+					reason: "[redacted]",
+				}),
+			}),
+		);
+		expect(waitRun).toHaveBeenCalledWith(
+			expect.objectContaining({
+				wait: expect.objectContaining({
+					externalRef: "approval_chained_builtin_command",
+					reason: "[redacted]",
+				}),
+			}),
+		);
+		expect(waitRun).toHaveBeenCalledWith(
+			expect.objectContaining({
+				wait: expect.objectContaining({
+					externalRef: "approval_multiline_prefixed_command",
+					reason: "[redacted]",
+				}),
+			}),
+		);
+		expect(waitRun).toHaveBeenCalledWith(
+			expect.objectContaining({
+				wait: expect.objectContaining({
+					externalRef: "approval_uv_command",
+					reason: "[redacted]",
+				}),
+			}),
+		);
+		expect(waitRun).toHaveBeenCalledWith(
+			expect.objectContaining({
+				wait: expect.objectContaining({
+					externalRef: "approval_explicit_unknown_cli_command",
+					reason: "[redacted]",
+				}),
+			}),
+		);
+		expect(waitRun).toHaveBeenCalledWith(
+			expect.objectContaining({
+				wait: expect.objectContaining({
+					externalRef: "approval_env_prefixed_command",
+					reason: "[redacted]",
+				}),
+			}),
+		);
+		expect(waitRun).toHaveBeenCalledWith(
+			expect.objectContaining({
+				wait: expect.objectContaining({
+					externalRef: "approval_env_wrapped_command",
+					reason: "[redacted]",
+				}),
+			}),
+		);
+		expect(waitRun).toHaveBeenCalledWith(
+			expect.objectContaining({
+				wait: expect.objectContaining({
+					externalRef: "approval_detected_dangerous_command",
+					reason: "[redacted]",
+				}),
+			}),
+		);
+	});
+
+	it("preserves benign prose with punctuation in outbound progress fields", async () => {
+		const { recorder, recordStep } = createRecorder();
+
+		recorder.recordAgentEvent({
+			type: "tool_execution_start",
+			toolCallId: "call_benign_prose",
+			toolName: "task",
+			displayName: "make login faster",
+			summaryLabel: "Go over docs",
+			args: {},
+		});
+		await recorder.flush();
+
+		expect(recordStep).toHaveBeenCalledWith(
+			expect.objectContaining({
+				step: expect.objectContaining({
+					id: "maestro:session_1:tool:call_benign_prose",
+					name: "make login faster",
+					input: expect.objectContaining({
+						display_name: "make login faster",
+						summary_label: "Go over docs",
+					}),
+				}),
+			}),
+		);
+	});
+
+	it("redacts embedded command prompts from Codex subagent goals", async () => {
+		const { recorder, recordWorkItem, delegateAgent } = createRecorder();
+
+		recorder.recordAgentEvent({
+			type: "tool_execution_start",
+			toolCallId: "subagent_command_prompt",
+			toolName: "codex.subagent.spawnAgent",
+			displayName: "Spawn test runner",
+			summaryLabel: "Run tests",
+			args: {
+				codexTool: "spawnAgent",
+				receiverThreadIds: ["child-thread-command"],
+				childRunIds: ["agent-run-command"],
+				prompt: "Please run `npm test -- --runInBand`",
+			},
+		});
+		await recorder.flush();
+
+		expect(recordWorkItem).toHaveBeenCalledWith(
+			expect.objectContaining({
+				workItem: expect.objectContaining({
+					goal: "[redacted]",
+				}),
+			}),
+		);
+		expect(delegateAgent).toHaveBeenCalledWith(
+			expect.objectContaining({
+				contextPayload: expect.objectContaining({
+					prompt: "[redacted]",
+				}),
+				reason: "Codex subagent spawn requested by Maestro: [redacted]",
+			}),
+		);
+
+		recorder.recordAgentEvent({
+			type: "tool_execution_start",
+			toolCallId: "subagent_gh_command_prompt",
+			toolName: "codex.subagent.spawnAgent",
+			displayName: "Spawn GitHub reviewer",
+			summaryLabel: "Run GitHub CLI",
+			args: {
+				codexTool: "spawnAgent",
+				receiverThreadIds: ["child-thread-gh"],
+				childRunIds: ["agent-run-gh"],
+				prompt: "Please run gh pr list --repo evalops/maestro-internal",
+			},
+		});
+		await recorder.flush();
+
+		expect(recordWorkItem).toHaveBeenCalledWith(
+			expect.objectContaining({
+				workItem: expect.objectContaining({
+					id: "maestro:session_1:work:subagent_gh_command_prompt",
+					goal: "[redacted]",
+				}),
+			}),
+		);
+		expect(delegateAgent).toHaveBeenCalledWith(
+			expect.objectContaining({
+				contextPayload: expect.objectContaining({
+					tool_call_id: "subagent_gh_command_prompt",
+					prompt: "[redacted]",
+				}),
+				reason: "Codex subagent spawn requested by Maestro: [redacted]",
+			}),
+		);
+
+		recorder.recordAgentEvent({
+			type: "tool_execution_start",
+			toolCallId: "subagent_pytest_prompt",
+			toolName: "codex.subagent.spawnAgent",
+			displayName: "Spawn Python tester",
+			summaryLabel: "Run pytest",
+			args: {
+				codexTool: "spawnAgent",
+				receiverThreadIds: ["child-thread-pytest"],
+				childRunIds: ["agent-run-pytest"],
+				prompt: "Please run pytest -k auth",
+			},
+		});
+		await recorder.flush();
+
+		expect(recordWorkItem).toHaveBeenCalledWith(
+			expect.objectContaining({
+				workItem: expect.objectContaining({
+					id: "maestro:session_1:work:subagent_pytest_prompt",
+					goal: "[redacted]",
+				}),
+			}),
+		);
+		expect(delegateAgent).toHaveBeenCalledWith(
+			expect.objectContaining({
+				contextPayload: expect.objectContaining({
+					tool_call_id: "subagent_pytest_prompt",
+					prompt: "[redacted]",
+				}),
+				reason: "Codex subagent spawn requested by Maestro: [redacted]",
+			}),
+		);
+
+		recorder.recordAgentEvent({
+			type: "tool_execution_start",
+			toolCallId: "subagent_chained_builtin_prompt",
+			toolName: "codex.subagent.spawnAgent",
+			displayName: "Spawn web tester",
+			summaryLabel: "Run web tests",
+			args: {
+				codexTool: "spawnAgent",
+				receiverThreadIds: ["child-thread-web"],
+				childRunIds: ["agent-run-web"],
+				prompt: "Please run cd packages/web && npm test",
+			},
+		});
+		await recorder.flush();
+
+		expect(recordWorkItem).toHaveBeenCalledWith(
+			expect.objectContaining({
+				workItem: expect.objectContaining({
+					id: "maestro:session_1:work:subagent_chained_builtin_prompt",
+					goal: "[redacted]",
+				}),
+			}),
+		);
+		expect(delegateAgent).toHaveBeenCalledWith(
+			expect.objectContaining({
+				contextPayload: expect.objectContaining({
+					tool_call_id: "subagent_chained_builtin_prompt",
+					prompt: "[redacted]",
+				}),
+				reason: "Codex subagent spawn requested by Maestro: [redacted]",
+			}),
+		);
+
+		recorder.recordAgentEvent({
+			type: "tool_execution_start",
+			toolCallId: "subagent_wrapped_trailing_prompt",
+			toolName: "codex.subagent.spawnAgent",
+			displayName: "Spawn test reporter",
+			summaryLabel: "Run test report",
+			args: {
+				codexTool: "spawnAgent",
+				receiverThreadIds: ["child-thread-report"],
+				childRunIds: ["agent-run-report"],
+				prompt: "Please run `npm test` and report failures",
+			},
+		});
+		await recorder.flush();
+
+		expect(recordWorkItem).toHaveBeenCalledWith(
+			expect.objectContaining({
+				workItem: expect.objectContaining({
+					id: "maestro:session_1:work:subagent_wrapped_trailing_prompt",
+					goal: "[redacted]",
+				}),
+			}),
+		);
+		expect(delegateAgent).toHaveBeenCalledWith(
+			expect.objectContaining({
+				contextPayload: expect.objectContaining({
+					tool_call_id: "subagent_wrapped_trailing_prompt",
+					prompt: "[redacted]",
+				}),
+				reason: "Codex subagent spawn requested by Maestro: [redacted]",
+			}),
+		);
+
+		recorder.recordAgentEvent({
+			type: "tool_execution_start",
+			toolCallId: "subagent_uvx_prompt",
+			toolName: "codex.subagent.spawnAgent",
+			displayName: "Spawn Python linter",
+			summaryLabel: "Run ruff",
+			args: {
+				codexTool: "spawnAgent",
+				receiverThreadIds: ["child-thread-uvx"],
+				childRunIds: ["agent-run-uvx"],
+				prompt: "Please run uvx ruff check",
+			},
+		});
+		await recorder.flush();
+
+		expect(recordWorkItem).toHaveBeenCalledWith(
+			expect.objectContaining({
+				workItem: expect.objectContaining({
+					id: "maestro:session_1:work:subagent_uvx_prompt",
+					goal: "[redacted]",
+				}),
+			}),
+		);
+		expect(delegateAgent).toHaveBeenCalledWith(
+			expect.objectContaining({
+				contextPayload: expect.objectContaining({
+					tool_call_id: "subagent_uvx_prompt",
+					prompt: "[redacted]",
+				}),
+				reason: "Codex subagent spawn requested by Maestro: [redacted]",
+			}),
+		);
+
+		recorder.recordAgentEvent({
+			type: "tool_execution_start",
+			toolCallId: "subagent_env_prefixed_prompt",
+			toolName: "codex.subagent.spawnAgent",
+			displayName: "Spawn test runner",
+			summaryLabel: "Run tests",
+			args: {
+				codexTool: "spawnAgent",
+				receiverThreadIds: ["child-thread-env"],
+				childRunIds: ["agent-run-env"],
+				prompt: "Please run NODE_ENV=test bun test",
+			},
+		});
+		await recorder.flush();
+
+		expect(recordWorkItem).toHaveBeenCalledWith(
+			expect.objectContaining({
+				workItem: expect.objectContaining({
+					id: "maestro:session_1:work:subagent_env_prefixed_prompt",
+					goal: "[redacted]",
+				}),
+			}),
+		);
+		expect(delegateAgent).toHaveBeenCalledWith(
+			expect.objectContaining({
+				contextPayload: expect.objectContaining({
+					tool_call_id: "subagent_env_prefixed_prompt",
+					prompt: "[redacted]",
+				}),
+				reason: "Codex subagent spawn requested by Maestro: [redacted]",
+			}),
+		);
+
+		recorder.recordAgentEvent({
+			type: "tool_execution_start",
+			toolCallId: "subagent_env_wrapped_prompt",
+			toolName: "codex.subagent.spawnAgent",
+			displayName: "Spawn package test runner",
+			summaryLabel: "Run package tests",
+			args: {
+				codexTool: "spawnAgent",
+				receiverThreadIds: ["child-thread-env-wrapper"],
+				childRunIds: ["agent-run-env-wrapper"],
+				prompt: "Please run env -C packages/web npm test",
+			},
+		});
+		await recorder.flush();
+
+		expect(recordWorkItem).toHaveBeenCalledWith(
+			expect.objectContaining({
+				workItem: expect.objectContaining({
+					id: "maestro:session_1:work:subagent_env_wrapped_prompt",
+					goal: "[redacted]",
+				}),
+			}),
+		);
+		expect(delegateAgent).toHaveBeenCalledWith(
+			expect.objectContaining({
+				contextPayload: expect.objectContaining({
+					tool_call_id: "subagent_env_wrapped_prompt",
+					prompt: "[redacted]",
+				}),
+				reason: "Codex subagent spawn requested by Maestro: [redacted]",
+			}),
+		);
+	});
+
+	it("preserves benign delegation prompts beyond telemetry label length", async () => {
+		const { recorder, recordWorkItem, delegateAgent } = createRecorder();
+		const longPrompt =
+			"Review the hosted progress redaction behavior and summarize the routing context for the release steward. ".repeat(
+				6,
+			);
+		const expectedDelegationPrompt = longPrompt.slice(0, 512);
+
+		recorder.recordAgentEvent({
+			type: "tool_execution_start",
+			toolCallId: "subagent_long_benign_prompt",
+			toolName: "codex.subagent.spawnAgent",
+			displayName: "Spawn release reviewer",
+			summaryLabel: "Coordinate release review",
+			args: {
+				codexTool: "spawnAgent",
+				receiverThreadIds: ["child-thread-long"],
+				childRunIds: ["agent-run-long"],
+				prompt: longPrompt,
+			},
+		});
+		await recorder.flush();
+
+		expect(recordWorkItem).toHaveBeenCalledWith(
+			expect.objectContaining({
+				workItem: expect.objectContaining({
+					goal: `${longPrompt.slice(0, 160)}…`,
+				}),
+			}),
+		);
+		expect(delegateAgent).toHaveBeenCalledWith(
+			expect.objectContaining({
+				contextPayload: expect.objectContaining({
+					prompt: expectedDelegationPrompt,
+				}),
+				reason:
+					`Codex subagent spawn requested by Maestro: ${expectedDelegationPrompt}`.slice(
+						0,
+						512,
+					),
 			}),
 		);
 	});

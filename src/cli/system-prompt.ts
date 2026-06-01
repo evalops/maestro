@@ -1,5 +1,6 @@
 import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import type { Dirent } from "node:fs";
+import { homedir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import {
@@ -17,10 +18,7 @@ import {
 	loadPromptProjectDocManifest,
 	resolveLoadedAppendSystemPromptPath,
 } from "../config/index.js";
-import {
-	DEFAULT_GUARDED_FILE_RULES,
-	findDefaultGuardedFileMatch,
-} from "../safety/guarded-files.js";
+import { DEFAULT_GUARDED_FILE_RULES } from "../safety/guarded-files.js";
 
 // Tool descriptions for dynamic system prompt generation
 const TOOL_DESCRIPTIONS: Record<string, string> = {
@@ -503,12 +501,116 @@ const GUARDED_WORKSPACE_SCAN_IGNORES = new Set([
 	"tmp",
 ]);
 
+const DEFAULT_GUARDED_CATEGORY_BY_KEY = new Map(
+	DEFAULT_GUARDED_FILE_RULES.map((rule) => [rule.key, rule.category]),
+);
+
+const GUARDED_WORKSPACE_ENTRY_KEYS = new Map<string, string>([
+	[".cursor", "cursor-config"],
+	[".windsurf", "windsurf-config"],
+	[".idea", "jetbrains-project-config"],
+	[".amp", "amp-settings"],
+	["amp.json", "amp-settings"],
+	[".ssh", "ssh-gpg-keys"],
+	[".gnupg", "ssh-gpg-keys"],
+]);
+
+interface GuardedAbsolutePathRule {
+	key: string;
+	path: string;
+	match: "exact" | "prefix";
+}
+
+function normalizeGuardScanPath(path: string): string {
+	return resolve(path).replace(/\\/g, "/");
+}
+
+function addGuardedCategory(categories: Set<string>, key: string): void {
+	const category = DEFAULT_GUARDED_CATEGORY_BY_KEY.get(key);
+	if (category) {
+		categories.add(category);
+	}
+}
+
+function buildGuardedAbsolutePathRules(
+	env: Record<string, string | undefined> = process.env,
+): GuardedAbsolutePathRule[] {
+	const home = normalizeGuardScanPath(homedir());
+	const prefix = (key: string, path: string): GuardedAbsolutePathRule => ({
+		key,
+		path: normalizeGuardScanPath(path),
+		match: "prefix",
+	});
+	const exact = (key: string, path: string): GuardedAbsolutePathRule => ({
+		key,
+		path: normalizeGuardScanPath(path),
+		match: "exact",
+	});
+	const envPrefix = (
+		key: string,
+		name: string,
+		child: string,
+	): GuardedAbsolutePathRule[] => {
+		const base = (env[name] ?? env[name.toUpperCase()])?.trim();
+		return base ? [prefix(key, join(base, child))] : [];
+	};
+
+	return [
+		prefix("cursor-config", join(home, ".cursor")),
+		prefix("cursor-config", join(home, "Library/Application Support/Cursor")),
+		prefix("cursor-config", join(home, ".config/Cursor")),
+		...envPrefix("cursor-config", "APPDATA", "Cursor"),
+		prefix("windsurf-config", join(home, ".codeium/windsurf")),
+		prefix(
+			"windsurf-config",
+			join(home, "Library/Application Support/Windsurf"),
+		),
+		prefix("windsurf-config", join(home, ".config/Windsurf")),
+		prefix("windsurf-config", "/Library/Application Support/Windsurf"),
+		prefix("windsurf-config", "/etc/windsurf"),
+		...envPrefix("windsurf-config", "APPDATA", "Windsurf"),
+		...envPrefix("windsurf-config", "LOCALAPPDATA", "Windsurf"),
+		...envPrefix("windsurf-config", "ProgramData", "Windsurf"),
+		prefix("antigravity-config", join(home, ".gemini")),
+		prefix(
+			"jetbrains-app-config",
+			join(home, "Library/Application Support/JetBrains"),
+		),
+		prefix("jetbrains-app-config", join(home, ".config/JetBrains")),
+		prefix("jetbrains-app-config", join(home, ".local/share/JetBrains")),
+		...envPrefix("jetbrains-app-config", "APPDATA", "JetBrains"),
+		...envPrefix("jetbrains-app-config", "LOCALAPPDATA", "JetBrains"),
+		prefix("neovim-config", join(home, ".config/nvim")),
+		prefix("neovim-config", join(home, ".local/share/nvim")),
+		prefix("neovim-config", join(home, ".local/state/nvim")),
+		exact("shell-config", join(home, ".bashrc")),
+		exact("shell-config", join(home, ".zshrc")),
+		exact("shell-config", join(home, ".cshrc")),
+		exact("shell-config", join(home, ".tcshrc")),
+		exact("shell-config", join(home, ".config/fish/config.fish")),
+		prefix("shell-config", join(home, ".config/fish/conf.d")),
+		prefix("ssh-gpg-keys", join(home, ".ssh")),
+		prefix("ssh-gpg-keys", join(home, ".gnupg")),
+	];
+}
+
+function matchesGuardedAbsolutePath(
+	path: string,
+	rule: GuardedAbsolutePathRule,
+): boolean {
+	if (rule.match === "exact") {
+		return path === rule.path;
+	}
+	return path === rule.path || path.startsWith(`${rule.path}/`);
+}
+
 function collectGuardedWorkspaceCategories(
 	cwd: string,
 	options: { maxEntries?: number } = {},
 ): string[] {
 	const maxEntries = options.maxEntries ?? 5000;
 	const categories = new Set<string>();
+	const absoluteRules = buildGuardedAbsolutePathRules();
 	const stack = [cwd];
 	let entriesVisited = 0;
 
@@ -527,9 +629,15 @@ function collectGuardedWorkspaceCategories(
 			if (entriesVisited >= maxEntries) break;
 			entriesVisited += 1;
 			const path = join(dir, entry.name);
-			const match = findDefaultGuardedFileMatch(path, { cwd });
-			if (match) {
-				categories.add(match.category);
+			const normalizedPath = normalizeGuardScanPath(path);
+			const entryKey = GUARDED_WORKSPACE_ENTRY_KEYS.get(entry.name);
+			if (entryKey) {
+				addGuardedCategory(categories, entryKey);
+			}
+			for (const rule of absoluteRules) {
+				if (matchesGuardedAbsolutePath(normalizedPath, rule)) {
+					addGuardedCategory(categories, rule.key);
+				}
 			}
 			if (
 				entry.isDirectory() &&

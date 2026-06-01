@@ -27,7 +27,7 @@ describe("buildTerminalUiViewModel", () => {
 			{
 				zenMode: true,
 				cleanMode: "aggressive",
-				footerMode: "ensemble",
+				footerMode: "rich",
 				compactTools: false,
 				queueMode: "one",
 			},
@@ -38,7 +38,7 @@ describe("buildTerminalUiViewModel", () => {
 		expect(viewModel.showSessionWarning).toBe(false);
 		expect(viewModel.zenModeLabel).toBe("On");
 		expect(viewModel.cleanMode).toBe("aggressive");
-		expect(viewModel.footerMode).toBe("ensemble");
+		expect(viewModel.footerMode).toBe("rich");
 		expect(viewModel.compactToolsLabel).toBe("Off");
 	});
 });

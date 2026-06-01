@@ -23,6 +23,7 @@ Use this index to jump to the right guide quickly and see how the pieces connect
 - [Skill Cookbook](cookbook/skills/README.md) — progressive skill package authoring, linting, bundled MCP, and toolbox examples.
 - [Headless Protocol Reference](protocols/headless.md) — versioned JSON-over-stdio contract for Chat, TUIs, and other embedders.
 - [Codex Parity Conformance](protocols/codex-parity-conformance.md) — compact anchors for Codex-inspired auth, patching, MCP, queue, and hosted-runtime surfaces.
+- [RPC Protocol Conformance](protocols/rpc-protocol-conformance.md) — release-gated JSON-over-stdio request, response, and client-correlation contract.
 - [Hosted Runner Contract](protocols/hosted-runner-contract.md) — provider-neutral runtime contract for account-scoped remote Maestro sessions.
 - [Platform AgentRuntime Session Bridge](design/PLATFORM_AGENT_RUNTIME_SESSION_BRIDGE.md) — how hosted session starts are projected to Platform AgentRuntime/A2A with trace and support correlation.
 - [AgentRuntime Task Mapping](design/AGENT_RUNTIME_TASK_MAPPING.md) — how local todo, background-task, checkpoint, and swarm concepts project into Platform AgentRuntime phases.

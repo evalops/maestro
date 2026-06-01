@@ -1,5 +1,5 @@
 /**
- * Task Executor - Runs Composer to implement tasks
+ * Task Executor - Runs Maestro to implement tasks
  *
  * Flow:
  * 1. Create feature branch
@@ -91,7 +91,7 @@ export class TaskExecutor {
 				composerResultTemp = await this.runComposer(prompt, composerEnv);
 
 				if (!composerResultTemp.success) {
-					throw new Error(`Composer failed: ${composerResultTemp.error}`);
+					throw new Error(`Maestro failed: ${composerResultTemp.error}`);
 				}
 			});
 			if (!composerResultTemp) {
@@ -230,9 +230,9 @@ export class TaskExecutor {
 				: undefined,
 		].filter((item): item is string => Boolean(item));
 		const delegationPrompt: DelegationPrompt = {
-			goal: "Implement the assigned GitHub task in the Composer codebase.",
+			goal: "Implement the assigned GitHub task in the Maestro codebase.",
 			context:
-				"You are working on the Composer codebase, a coding agent that helps developers.",
+				"You are working on the Maestro codebase, a coding agent that helps developers.",
 			task: task.description,
 			evidence,
 			validation:
@@ -748,7 +748,7 @@ ${diff}
 			"",
 			"---",
 			"",
-			"_This PR was generated autonomously by the GitHub Agent (Composer building Composer)._",
+			"_This PR was generated autonomously by the GitHub Agent (Maestro building Maestro)._",
 		);
 
 		return lines.join("\n");

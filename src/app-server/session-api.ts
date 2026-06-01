@@ -1,22 +1,52 @@
+import { resolve } from "node:path";
 import {
 	type MaestroAppServerClientRequest,
+	type MaestroAppServerCommandExecResult,
+	type MaestroAppServerCommandProcessResult,
+	type MaestroAppServerDaemonStatusResult,
+	type MaestroAppServerEmptyResult,
+	type MaestroAppServerExternalAgentImportResult,
+	type MaestroAppServerFsMetadataResult,
+	type MaestroAppServerFsReadDirectoryResult,
+	type MaestroAppServerFsReadFileResult,
+	type MaestroAppServerFsWatchResult,
 	type MaestroAppServerModel,
 	type MaestroAppServerModelListResult,
 	type MaestroAppServerModelProviderCapabilities,
 	type MaestroAppServerModelProviderCapabilitiesReadResult,
+	type MaestroAppServerNetworkAuditListResult,
+	type MaestroAppServerNetworkFetchResult,
+	type MaestroAppServerPluginBundleListResult,
+	type MaestroAppServerPluginBundleMutationResult,
+	type MaestroAppServerPolicyCheckResult,
+	type MaestroAppServerPolicyReadResult,
+	type MaestroAppServerProtocolModeListResult,
+	type MaestroAppServerProtocolModeSetResult,
+	type MaestroAppServerRemoteControlDrainResult,
+	type MaestroAppServerRemoteControlLeaseResult,
+	type MaestroAppServerRemoteControlStatusResult,
+	type MaestroAppServerRequirementsListResult,
 	type MaestroAppServerResponse,
+	type MaestroAppServerSandboxCheckResult,
+	type MaestroAppServerSandboxProbeResult,
+	type MaestroAppServerServerNotification,
 	type MaestroAppServerThread,
+	type MaestroAppServerThreadArchiveResult,
+	type MaestroAppServerThreadDeleteResult,
+	type MaestroAppServerThreadForkResult,
 	type MaestroAppServerThreadGoal,
 	type MaestroAppServerThreadGoalResult,
 	type MaestroAppServerThreadGraph,
 	type MaestroAppServerThreadItem,
 	type MaestroAppServerThreadListResult,
 	type MaestroAppServerThreadMetadataUpdateResult,
+	type MaestroAppServerThreadStartResult,
 	type MaestroAppServerThreadSummary,
 	type MaestroAppServerTurn,
 	type MaestroAppServerTurnsListResult,
 	maestroAppServerClientMethods,
 	maestroAppServerProtocolVersion,
+	maestroAppServerSupportedProtocolVersions,
 } from "@evalops/contracts";
 import type { AppMessage } from "../agent/types.js";
 import { getRegisteredModels } from "../models/registry.js";
@@ -34,9 +64,74 @@ import type {
 	SessionSummary,
 	SessionTreeEntry,
 } from "../session/types.js";
+import {
+	type MaestroAppServerDaemonLifecycle,
+	MaestroAppServerDaemonLifecycleError,
+	createMaestroAppServerDaemonLifecycle,
+} from "./daemon-lifecycle-api.js";
+import {
+	type MaestroAppServerExternalAgentImport,
+	MaestroAppServerExternalAgentImportError,
+	createMaestroAppServerExternalAgentImport,
+	normalizeExternalAgentImportParams,
+} from "./external-agent-import-api.js";
+import {
+	type MaestroAppServerHostControl,
+	MaestroAppServerHostControlError,
+	createMaestroAppServerHostControl,
+} from "./host-control-api.js";
+import {
+	type MaestroAppServerNetworkGovernance,
+	MaestroAppServerNetworkGovernanceError,
+	createMaestroAppServerNetworkGovernance,
+} from "./network-governance-api.js";
+import {
+	type MaestroAppServerPluginBundleApi,
+	MaestroAppServerPluginBundleError,
+	createMaestroAppServerPluginBundleApi,
+} from "./plugin-bundle-api.js";
+import {
+	type MaestroAppServerPolicyControl,
+	MaestroAppServerPolicyControlError,
+	createMaestroAppServerPolicyControl,
+} from "./policy-control-api.js";
+import {
+	type MaestroAppServerProtocolModeDecision,
+	type MaestroAppServerProtocolModes,
+	MaestroAppServerProtocolModesError,
+	createMaestroAppServerProtocolModes,
+} from "./protocol-modes-api.js";
+import {
+	type MaestroAppServerSandboxCheck,
+	MaestroAppServerSandboxCheckError,
+	createMaestroAppServerSandboxCheck,
+	normalizeSandboxCheckParams,
+} from "./sandbox-check-api.js";
 
 const DEFAULT_PAGE_LIMIT = 50;
 const MAX_PAGE_LIMIT = 100;
+
+export type { MaestroAppServerServerNotification };
+export {
+	type MaestroAppServerDaemonLifecycle,
+	createMaestroAppServerDaemonLifecycle,
+} from "./daemon-lifecycle-api.js";
+export {
+	type MaestroAppServerExternalAgentImport,
+	createMaestroAppServerExternalAgentImport,
+} from "./external-agent-import-api.js";
+export {
+	type MaestroAppServerPluginBundleApi,
+	createMaestroAppServerPluginBundleApi,
+} from "./plugin-bundle-api.js";
+export {
+	type MaestroAppServerProtocolModes,
+	createMaestroAppServerProtocolModes,
+} from "./protocol-modes-api.js";
+export {
+	type MaestroAppServerSandboxCheck,
+	createMaestroAppServerSandboxCheck,
+} from "./sandbox-check-api.js";
 
 type JsonRpcId = string | number;
 type MaybePromise<T> = T | Promise<T>;
@@ -45,6 +140,7 @@ type SessionStore = Pick<
 	SessionManager,
 	"getSessionFileById" | "loadAllSessions" | "listSessions" | "loadSession"
 > & {
+	getSessionFile?: () => string;
 	loadEntries?: (sessionId: string) => Promise<SessionEntry[] | null>;
 	flush?: () => Promise<void>;
 	saveSessionSummary?: (
@@ -61,20 +157,153 @@ type SessionStore = Pick<
 	) => MaybePromise<void>;
 	setSessionTitle?: (sessionPath: string, title: string) => MaybePromise<void>;
 	setSessionTags?: (sessionPath: string, tags: string[]) => MaybePromise<void>;
+	setSessionArchived?: (
+		sessionPath: string,
+		archived: boolean,
+	) => MaybePromise<void>;
 	setSessionAppServerGoal?: (
 		sessionPath: string,
 		goal: MaestroAppServerThreadGoal | null,
 	) => MaybePromise<void>;
+	createSession?: (options?: { title?: string }) => Promise<{
+		id: string;
+		title?: string;
+		createdAt: string;
+		updatedAt: string;
+		messageCount: number;
+	}>;
+	canCreateSession?: () => boolean;
+	createBranchedSession?: (leafId: string) => string;
+	setSessionFile?: (path: string) => MaybePromise<void>;
+	resumeSession?: (sessionId: string) => Promise<boolean>;
+	getLeafId?: () => string | null;
+	getCurrentLeafId?: () => string | null;
+	branch?: (branchFromId: string) => MaybePromise<void>;
+	resetLeaf?: () => MaybePromise<void>;
+	deleteSession?: (sessionId: string) => MaybePromise<void>;
+	importSessionEntries?: (entries: SessionEntry[]) => {
+		sessionFile: string;
+		sessionId: string;
+		importedCount: number;
+	};
+	importPortableSession?: (path: string) => {
+		sessionFile: string;
+		sessionId: string;
+		importedCount: number;
+	};
 };
+
+export interface MaestroAppServerSessionApiOptions {
+	hostControl?: MaestroAppServerHostControl | false;
+	policyControl?: MaestroAppServerPolicyControl | false;
+	networkGovernance?: MaestroAppServerNetworkGovernance | false;
+	sandboxCheck?: MaestroAppServerSandboxCheck | false;
+	externalAgentImport?: MaestroAppServerExternalAgentImport | false;
+	pluginBundles?: MaestroAppServerPluginBundleApi | false;
+	daemonLifecycle?: MaestroAppServerDaemonLifecycle | false;
+	protocolModes?: MaestroAppServerProtocolModes | false;
+	onNotification?: (notification: MaestroAppServerServerNotification) => void;
+}
 
 export interface MaestroAppServerSessionApi {
 	initialize(): MaestroAppServerResponse["result"];
+	checkProtocolMode(
+		method: (typeof maestroAppServerClientMethods)[number],
+	): MaestroAppServerProtocolModeDecision;
+	listProtocolModes(
+		params?: Record<string, unknown>,
+	): Promise<MaestroAppServerProtocolModeListResult>;
+	setProtocolMode(
+		params?: Record<string, unknown>,
+	): Promise<MaestroAppServerProtocolModeSetResult>;
 	listModels(
 		params?: Record<string, unknown>,
 	): Promise<MaestroAppServerModelListResult>;
 	readModelProviderCapabilities(
 		params?: Record<string, unknown>,
 	): Promise<MaestroAppServerModelProviderCapabilitiesReadResult>;
+	readPolicy(
+		params?: Record<string, unknown>,
+	): Promise<MaestroAppServerPolicyReadResult>;
+	checkPolicy(
+		params?: Record<string, unknown>,
+	): Promise<MaestroAppServerPolicyCheckResult>;
+	listRequirements(
+		params?: Record<string, unknown>,
+	): Promise<MaestroAppServerRequirementsListResult>;
+	fetchNetwork(
+		params?: Record<string, unknown>,
+	): Promise<MaestroAppServerNetworkFetchResult>;
+	listNetworkAudit(
+		params?: Record<string, unknown>,
+	): Promise<MaestroAppServerNetworkAuditListResult>;
+	probeSandbox(
+		params?: Record<string, unknown>,
+	): Promise<MaestroAppServerSandboxProbeResult>;
+	runSandboxCheck(
+		params?: Record<string, unknown>,
+	): Promise<MaestroAppServerSandboxCheckResult>;
+	importExternalAgent(
+		params?: Record<string, unknown>,
+	): Promise<MaestroAppServerExternalAgentImportResult>;
+	listPluginBundles(
+		params?: Record<string, unknown>,
+	): Promise<MaestroAppServerPluginBundleListResult>;
+	installPluginBundle(
+		params?: Record<string, unknown>,
+	): Promise<MaestroAppServerPluginBundleMutationResult>;
+	removePluginBundle(
+		params?: Record<string, unknown>,
+	): Promise<MaestroAppServerPluginBundleMutationResult>;
+	readDaemonStatus(
+		params?: Record<string, unknown>,
+	): Promise<MaestroAppServerDaemonStatusResult>;
+	readRemoteControlStatus(
+		params?: Record<string, unknown>,
+	): Promise<MaestroAppServerRemoteControlStatusResult>;
+	readRemoteControlLease(
+		params?: Record<string, unknown>,
+	): Promise<MaestroAppServerRemoteControlLeaseResult>;
+	heartbeatRemoteControlLease(
+		params?: Record<string, unknown>,
+	): Promise<MaestroAppServerRemoteControlLeaseResult>;
+	drainRemoteControl(
+		params?: Record<string, unknown>,
+	): Promise<MaestroAppServerRemoteControlDrainResult>;
+	execCommand(
+		params?: Record<string, unknown>,
+	): Promise<MaestroAppServerCommandExecResult>;
+	writeCommandStdin(
+		params?: Record<string, unknown>,
+	): Promise<MaestroAppServerCommandProcessResult>;
+	terminateCommand(
+		params?: Record<string, unknown>,
+	): Promise<MaestroAppServerCommandProcessResult>;
+	readFile(
+		params?: Record<string, unknown>,
+	): Promise<MaestroAppServerFsReadFileResult>;
+	writeFile(
+		params?: Record<string, unknown>,
+	): Promise<MaestroAppServerEmptyResult>;
+	readDirectory(
+		params?: Record<string, unknown>,
+	): Promise<MaestroAppServerFsReadDirectoryResult>;
+	getMetadata(
+		params?: Record<string, unknown>,
+	): Promise<MaestroAppServerFsMetadataResult>;
+	createDirectory(
+		params?: Record<string, unknown>,
+	): Promise<MaestroAppServerEmptyResult>;
+	remove(
+		params?: Record<string, unknown>,
+	): Promise<MaestroAppServerEmptyResult>;
+	copy(params?: Record<string, unknown>): Promise<MaestroAppServerEmptyResult>;
+	watch(
+		params?: Record<string, unknown>,
+	): Promise<MaestroAppServerFsWatchResult>;
+	unwatch(
+		params?: Record<string, unknown>,
+	): Promise<MaestroAppServerEmptyResult>;
 	listThreads(
 		params?: Record<string, unknown>,
 	): Promise<MaestroAppServerThreadListResult>;
@@ -94,6 +323,21 @@ export interface MaestroAppServerSessionApi {
 	clearThreadGoal(
 		params?: Record<string, unknown>,
 	): Promise<MaestroAppServerThreadGoalResult>;
+	startThread(
+		params?: Record<string, unknown>,
+	): Promise<MaestroAppServerThreadStartResult>;
+	forkThread(
+		params?: Record<string, unknown>,
+	): Promise<MaestroAppServerThreadForkResult>;
+	archiveThread(
+		params?: Record<string, unknown>,
+	): Promise<MaestroAppServerThreadArchiveResult>;
+	unarchiveThread(
+		params?: Record<string, unknown>,
+	): Promise<MaestroAppServerThreadArchiveResult>;
+	deleteThread(
+		params?: Record<string, unknown>,
+	): Promise<MaestroAppServerThreadDeleteResult>;
 	listTurns(
 		params?: Record<string, unknown>,
 	): Promise<MaestroAppServerTurnsListResult>;
@@ -158,10 +402,14 @@ function toThreadSummary(
 	metadata: SessionMetadata,
 	summary?: SessionSummary,
 ): MaestroAppServerThreadSummary {
-	return {
+	const archived = summary?.archived ?? metadata.archived ?? false;
+	const archivedAt = archived
+		? (summary?.archivedAt ?? metadata.archivedAt)
+		: undefined;
+	const thread: MaestroAppServerThreadSummary = {
 		id: metadata.id,
 		source: "session",
-		status: "notLoaded",
+		status: archived ? "archived" : "notLoaded",
 		title: summary?.title ?? metadata.title ?? metadata.summary,
 		summary: metadata.summary,
 		resumeSummary: summary?.resumeSummary ?? metadata.resumeSummary,
@@ -174,16 +422,22 @@ function toThreadSummary(
 		messageCount: metadata.messageCount,
 		favorite: summary?.favorite ?? metadata.favorite,
 		tags: summary?.tags ?? metadata.tags,
+		archived,
 	};
+	if (archivedAt) {
+		thread.archivedAt = archivedAt;
+	}
+	return thread;
 }
 
 function toThreadSummaryFromSessionSummary(
 	summary: SessionSummary,
 ): MaestroAppServerThreadSummary {
-	return {
+	const archived = summary.archived ?? false;
+	const thread: MaestroAppServerThreadSummary = {
 		id: summary.id,
 		source: "session",
-		status: "notLoaded",
+		status: archived ? "archived" : "notLoaded",
 		title: summary.title ?? summary.subject,
 		summary: summary.summary ?? summary.title ?? summary.subject,
 		resumeSummary: summary.resumeSummary,
@@ -194,7 +448,12 @@ function toThreadSummaryFromSessionSummary(
 		messageCount: summary.messageCount,
 		favorite: summary.favorite,
 		tags: summary.tags,
+		archived,
 	};
+	if (archived && summary.archivedAt) {
+		thread.archivedAt = summary.archivedAt;
+	}
+	return thread;
 }
 
 function toThreadSummaryFromLoadedSession(loaded: {
@@ -209,11 +468,14 @@ function toThreadSummaryFromLoadedSession(loaded: {
 	messageCount: number;
 	favorite: boolean;
 	tags?: string[];
+	archived?: boolean;
+	archivedAt?: string;
 }): MaestroAppServerThreadSummary {
-	return {
+	const archived = loaded.archived ?? false;
+	const thread: MaestroAppServerThreadSummary = {
 		id: loaded.id,
 		source: "session",
-		status: "notLoaded",
+		status: archived ? "archived" : "notLoaded",
 		title: loaded.title ?? loaded.subject,
 		summary: loaded.summary ?? loaded.title ?? loaded.subject,
 		resumeSummary: loaded.resumeSummary,
@@ -224,7 +486,12 @@ function toThreadSummaryFromLoadedSession(loaded: {
 		messageCount: loaded.messageCount,
 		favorite: loaded.favorite,
 		tags: loaded.tags,
+		archived,
 	};
+	if (archived && loaded.archivedAt) {
+		thread.archivedAt = loaded.archivedAt;
+	}
+	return thread;
 }
 
 function appMessageContent(message: AppMessage): unknown {
@@ -368,6 +635,46 @@ async function requireExistingThreadReference(
 
 async function flushSessionWrites(store: SessionStore): Promise<void> {
 	await store.flush?.();
+}
+
+async function restoreSessionBinding(
+	store: SessionStore,
+	sessionReference: string | undefined,
+	leafId?: string | null,
+): Promise<void> {
+	if (!sessionReference) {
+		return;
+	}
+	const dbSessionId = sessionReference.startsWith("db:")
+		? sessionReference.slice("db:".length)
+		: undefined;
+	let restored = false;
+	if (dbSessionId && store.resumeSession) {
+		restored = await store.resumeSession(dbSessionId);
+	}
+	if (!restored) {
+		await store.setSessionFile?.(sessionReference);
+	}
+	if (leafId === null) {
+		await store.resetLeaf?.();
+	} else if (leafId && store.branch) {
+		await store.branch(leafId);
+	}
+}
+
+function getCurrentLeafId(store: SessionStore): string | null {
+	return store.getLeafId?.() ?? store.getCurrentLeafId?.() ?? null;
+}
+
+function isActiveThreadSessionFile(
+	store: SessionStore,
+	sessionFile: string,
+): boolean {
+	const activeSessionFile = store.getSessionFile?.();
+	if (!activeSessionFile) {
+		return false;
+	}
+	return resolve(activeSessionFile) === resolve(sessionFile);
 }
 
 interface ThreadMetadataExpectation {
@@ -566,7 +873,46 @@ function mergeProviderCapabilities(
 
 export function createMaestroAppServerSessionApi(
 	store: SessionStore,
+	options: MaestroAppServerSessionApiOptions = {},
 ): MaestroAppServerSessionApi {
+	const hostControl =
+		options.hostControl === false
+			? undefined
+			: (options.hostControl ??
+				createMaestroAppServerHostControl({
+					onNotification: options.onNotification,
+				}));
+	const policyControl =
+		options.policyControl === false
+			? undefined
+			: (options.policyControl ?? createMaestroAppServerPolicyControl());
+	const networkGovernance =
+		options.networkGovernance === false
+			? undefined
+			: (options.networkGovernance ??
+				createMaestroAppServerNetworkGovernance());
+	const sandboxCheck =
+		options.sandboxCheck === false
+			? undefined
+			: (options.sandboxCheck ?? createMaestroAppServerSandboxCheck());
+	const pluginBundles =
+		options.pluginBundles === false
+			? undefined
+			: (options.pluginBundles ?? createMaestroAppServerPluginBundleApi());
+	const daemonLifecycle =
+		options.daemonLifecycle === false
+			? undefined
+			: (options.daemonLifecycle ?? createMaestroAppServerDaemonLifecycle());
+	const protocolModes =
+		options.protocolModes === false
+			? undefined
+			: (options.protocolModes ?? createMaestroAppServerProtocolModes());
+	const daemonLifecycleCapabilities = daemonLifecycle?.capabilities() ?? {
+		daemonStatus: false,
+		remoteControlStatus: false,
+		remoteControlLease: false,
+		remoteControlDrain: false,
+	};
 	const canUpdateThreadMetadata = Boolean(
 		store.setSessionTitle &&
 			store.saveSessionSummary &&
@@ -578,26 +924,363 @@ export function createMaestroAppServerSessionApi(
 	const canUseThreadGoals = Boolean(
 		store.setSessionAppServerGoal && store.loadEntries,
 	);
+	const canMutateSessionPersistence = store.canCreateSession?.() ?? true;
+	const externalAgentImport =
+		options.externalAgentImport === false || !canMutateSessionPersistence
+			? undefined
+			: (options.externalAgentImport ??
+				createMaestroAppServerExternalAgentImport({ store }));
+	const canStartThreads = Boolean(
+		store.createSession && canMutateSessionPersistence,
+	);
+	const canForkThreads = Boolean(
+		canMutateSessionPersistence &&
+			store.createBranchedSession &&
+			store.setSessionFile,
+	);
+	const canArchiveThreads = Boolean(
+		canMutateSessionPersistence && store.setSessionArchived,
+	);
+	const canDeleteThreads = Boolean(
+		canMutateSessionPersistence && store.deleteSession,
+	);
+	const canUseHostControl = Boolean(hostControl);
+	const canUseFilesystemWatch = Boolean(hostControl?.supportsWatch());
+	const canUsePolicyControl = Boolean(policyControl);
+	const canUseNetworkGovernance = Boolean(networkGovernance);
+	const canUseSandboxCheck = Boolean(sandboxCheck);
+	const canUseExternalAgentImport = Boolean(externalAgentImport);
+	const canUsePluginBundles = Boolean(pluginBundles);
 
 	return {
 		initialize() {
 			return {
 				protocolVersion: maestroAppServerProtocolVersion,
+				supportedProtocolVersions: [
+					...maestroAppServerSupportedProtocolVersions,
+				],
 				serverInfo: {
 					name: "maestro",
 				},
 				capabilities: {
 					sessions: true,
+					protocolModes: Boolean(protocolModes),
 					modelList: true,
 					modelProviderCapabilities: true,
+					managedPolicy: canUsePolicyControl,
+					requirements: canUsePolicyControl,
+					networkProxy: canUseNetworkGovernance,
+					networkAudit: canUseNetworkGovernance,
+					sandboxProbe: canUseSandboxCheck,
+					sandboxCheck: canUseSandboxCheck,
+					externalAgentImport: canUseExternalAgentImport,
+					pluginBundles: canUsePluginBundles,
+					daemonStatus: daemonLifecycleCapabilities.daemonStatus,
+					remoteControlStatus: daemonLifecycleCapabilities.remoteControlStatus,
+					remoteControlLease: daemonLifecycleCapabilities.remoteControlLease,
+					remoteControlDrain: daemonLifecycleCapabilities.remoteControlDrain,
+					commandExec: canUseHostControl,
+					commandProcessControl: canUseHostControl,
+					filesystem: canUseHostControl,
+					filesystemWatch: canUseFilesystemWatch,
 					threadList: true,
 					threadRead: true,
 					threadMetadataUpdate: canUpdateThreadMetadata,
 					threadNameSet: canSetThreadName,
 					threadGoals: canUseThreadGoals,
+					threadStart: canStartThreads,
+					threadFork: canForkThreads,
+					threadArchive: canArchiveThreads,
+					threadDelete: canDeleteThreads,
 					turnsList: true,
 				},
 			};
+		},
+
+		checkProtocolMode(method) {
+			return protocolModes?.checkMethod(method) ?? { allowed: true };
+		},
+
+		async listProtocolModes(params = {}) {
+			if (!protocolModes) {
+				throw new MaestroAppServerError(
+					-32601,
+					"Protocol modes are not available",
+				);
+			}
+			return protocolModes.listModes(params);
+		},
+
+		async setProtocolMode(params = {}) {
+			if (!protocolModes) {
+				throw new MaestroAppServerError(
+					-32601,
+					"Protocol modes are not available",
+				);
+			}
+			return protocolModes.setMode(params);
+		},
+
+		async readPolicy() {
+			if (!policyControl) {
+				throw new MaestroAppServerError(
+					-32601,
+					"Managed policy is not available",
+				);
+			}
+			return policyControl.readPolicy();
+		},
+
+		async checkPolicy(params = {}) {
+			if (!policyControl) {
+				throw new MaestroAppServerError(
+					-32601,
+					"Managed policy is not available",
+				);
+			}
+			return policyControl.checkPolicy(params);
+		},
+
+		async listRequirements() {
+			if (!policyControl) {
+				throw new MaestroAppServerError(
+					-32601,
+					"Requirements are not available",
+				);
+			}
+			return policyControl.listRequirements();
+		},
+
+		async fetchNetwork(params = {}) {
+			if (!networkGovernance) {
+				throw new MaestroAppServerError(
+					-32601,
+					"Network proxy is not available",
+				);
+			}
+			return networkGovernance.fetch(params);
+		},
+
+		async listNetworkAudit(params = {}) {
+			if (!networkGovernance) {
+				throw new MaestroAppServerError(
+					-32601,
+					"Network audit is not available",
+				);
+			}
+			return networkGovernance.listAudit(params);
+		},
+
+		async probeSandbox(params = {}) {
+			if (!sandboxCheck) {
+				throw new MaestroAppServerError(
+					-32601,
+					"Sandbox probe is not available",
+				);
+			}
+			normalizeSandboxCheckParams(params);
+			return sandboxCheck.probe();
+		},
+
+		async runSandboxCheck(params = {}) {
+			if (!sandboxCheck) {
+				throw new MaestroAppServerError(
+					-32601,
+					"Sandbox check is not available",
+				);
+			}
+			const normalizedParams = normalizeSandboxCheckParams(params);
+			return sandboxCheck.runCheck(normalizedParams);
+		},
+
+		async importExternalAgent(params = {}) {
+			if (!externalAgentImport) {
+				throw new MaestroAppServerError(
+					-32601,
+					"External agent import is not available",
+				);
+			}
+			const normalizedParams = normalizeExternalAgentImportParams(params);
+			return externalAgentImport.importBundle(normalizedParams);
+		},
+
+		async listPluginBundles(params = {}) {
+			if (!pluginBundles) {
+				throw new MaestroAppServerError(
+					-32601,
+					"Plugin bundle lifecycle is not available",
+				);
+			}
+			return pluginBundles.listBundles(params);
+		},
+
+		async installPluginBundle(params = {}) {
+			if (!pluginBundles) {
+				throw new MaestroAppServerError(
+					-32601,
+					"Plugin bundle lifecycle is not available",
+				);
+			}
+			return pluginBundles.installBundle(params);
+		},
+
+		async removePluginBundle(params = {}) {
+			if (!pluginBundles) {
+				throw new MaestroAppServerError(
+					-32601,
+					"Plugin bundle lifecycle is not available",
+				);
+			}
+			return pluginBundles.removeBundle(params);
+		},
+
+		async readDaemonStatus(params = {}) {
+			if (!daemonLifecycle) {
+				throw new MaestroAppServerError(
+					-32601,
+					"Daemon lifecycle is not available",
+				);
+			}
+			return daemonLifecycle.status(params);
+		},
+
+		async readRemoteControlStatus(params = {}) {
+			if (!daemonLifecycle) {
+				throw new MaestroAppServerError(
+					-32601,
+					"Remote control lifecycle is not available",
+				);
+			}
+			return daemonLifecycle.remoteControlStatus(params);
+		},
+
+		async readRemoteControlLease(params = {}) {
+			if (!daemonLifecycle) {
+				throw new MaestroAppServerError(
+					-32601,
+					"Remote control lease is not available",
+				);
+			}
+			return daemonLifecycle.readLease(params);
+		},
+
+		async heartbeatRemoteControlLease(params = {}) {
+			if (!daemonLifecycle) {
+				throw new MaestroAppServerError(
+					-32601,
+					"Remote control lease is not available",
+				);
+			}
+			return daemonLifecycle.heartbeatLease(params);
+		},
+
+		async drainRemoteControl(params = {}) {
+			if (!daemonLifecycle) {
+				throw new MaestroAppServerError(
+					-32601,
+					"Remote control drain is not available",
+				);
+			}
+			return daemonLifecycle.drain(params);
+		},
+
+		async execCommand(params = {}) {
+			if (!hostControl) {
+				throw new MaestroAppServerError(
+					-32601,
+					"Command exec is not available",
+				);
+			}
+			return hostControl.execCommand(params);
+		},
+
+		async writeCommandStdin(params = {}) {
+			if (!hostControl) {
+				throw new MaestroAppServerError(
+					-32601,
+					"Command process control is not available",
+				);
+			}
+			return hostControl.writeCommandStdin(params);
+		},
+
+		async terminateCommand(params = {}) {
+			if (!hostControl) {
+				throw new MaestroAppServerError(
+					-32601,
+					"Command process control is not available",
+				);
+			}
+			return hostControl.terminateCommand(params);
+		},
+
+		async readFile(params = {}) {
+			if (!hostControl) {
+				throw new MaestroAppServerError(-32601, "Filesystem is not available");
+			}
+			return hostControl.readFile(params);
+		},
+
+		async writeFile(params = {}) {
+			if (!hostControl) {
+				throw new MaestroAppServerError(-32601, "Filesystem is not available");
+			}
+			return hostControl.writeFile(params);
+		},
+
+		async readDirectory(params = {}) {
+			if (!hostControl) {
+				throw new MaestroAppServerError(-32601, "Filesystem is not available");
+			}
+			return hostControl.readDirectory(params);
+		},
+
+		async getMetadata(params = {}) {
+			if (!hostControl) {
+				throw new MaestroAppServerError(-32601, "Filesystem is not available");
+			}
+			return hostControl.getMetadata(params);
+		},
+
+		async createDirectory(params = {}) {
+			if (!hostControl) {
+				throw new MaestroAppServerError(-32601, "Filesystem is not available");
+			}
+			return hostControl.createDirectory(params);
+		},
+
+		async remove(params = {}) {
+			if (!hostControl) {
+				throw new MaestroAppServerError(-32601, "Filesystem is not available");
+			}
+			return hostControl.remove(params);
+		},
+
+		async copy(params = {}) {
+			if (!hostControl) {
+				throw new MaestroAppServerError(-32601, "Filesystem is not available");
+			}
+			return hostControl.copy(params);
+		},
+
+		async watch(params = {}) {
+			if (!hostControl) {
+				throw new MaestroAppServerError(
+					-32601,
+					"Filesystem watch is not available",
+				);
+			}
+			return hostControl.watch(params);
+		},
+
+		async unwatch(params = {}) {
+			if (!hostControl) {
+				throw new MaestroAppServerError(
+					-32601,
+					"Filesystem watch is not available",
+				);
+			}
+			return hostControl.unwatch(params);
 		},
 
 		async listModels(params = {}) {
@@ -645,25 +1328,51 @@ export function createMaestroAppServerSessionApi(
 		async listThreads(params = {}) {
 			const limit = normalizeLimit(params.limit);
 			const offset = decodeCursor(params.cursor);
+			const includeArchived =
+				optionalBoolean(params.includeArchived, "includeArchived") ?? false;
 			const metadata = store.loadAllSessions();
 			if (metadata.length === 0) {
-				const summaries = await store.listSessions({
-					limit: limit + 1,
-					offset,
-				});
-				const page = summaries.slice(0, limit);
+				const page: SessionSummary[] = [];
+				let rawOffset = offset;
+				let cursorAfterPage = offset;
+				let hasMoreVisible = false;
+				let exhausted = false;
+				while (!hasMoreVisible && !exhausted) {
+					const summaries = await store.listSessions({
+						limit: limit + 1,
+						offset: rawOffset,
+					});
+					exhausted = summaries.length <= limit;
+					for (const summary of summaries) {
+						rawOffset += 1;
+						if (includeArchived || !summary.archived) {
+							if (page.length < limit) {
+								page.push(summary);
+								cursorAfterPage = rawOffset;
+							} else {
+								hasMoreVisible = true;
+								break;
+							}
+						}
+					}
+					if (summaries.length === 0) {
+						exhausted = true;
+					}
+				}
 				return {
 					threads: page.map(toThreadSummaryFromSessionSummary),
-					nextCursor:
-						summaries.length > limit ? encodeCursor(offset + limit) : null,
+					nextCursor: hasMoreVisible ? encodeCursor(cursorAfterPage) : null,
 				};
 			}
-			const page = metadata.slice(offset, offset + limit);
+			const visible = includeArchived
+				? metadata
+				: metadata.filter((session) => !session.archived);
+			const page = visible.slice(offset, offset + limit);
 			const nextOffset = offset + page.length;
 			return {
 				threads: page.map((session) => toThreadSummary(session)),
 				nextCursor:
-					nextOffset < metadata.length ? encodeCursor(nextOffset) : null,
+					nextOffset < visible.length ? encodeCursor(nextOffset) : null,
 			};
 		},
 
@@ -831,6 +1540,155 @@ export function createMaestroAppServerSessionApi(
 			return { threadId, goal: null };
 		},
 
+		async startThread(params = {}) {
+			const createThreadSession = store.createSession;
+			if (!canStartThreads || !createThreadSession) {
+				throw new MaestroAppServerError(
+					-32601,
+					"Thread start is not available",
+				);
+			}
+			const title = optionalTrimmedString(params.title, "title");
+			const previousSessionFile = store.getSessionFile?.();
+			const previousLeafId = getCurrentLeafId(store);
+			let created: Awaited<
+				ReturnType<NonNullable<SessionStore["createSession"]>>
+			>;
+			try {
+				created = await createThreadSession.call(
+					store,
+					title ? { title } : undefined,
+				);
+			} finally {
+				await restoreSessionBinding(store, previousSessionFile, previousLeafId);
+			}
+			await flushSessionWrites(store);
+			return {
+				thread: await summarizeThreadAfterMutation(store, created.id),
+			};
+		},
+
+		async forkThread(params = {}) {
+			const createBranchedSession = store.createBranchedSession;
+			if (!canForkThreads || !createBranchedSession) {
+				throw new MaestroAppServerError(-32601, "Thread fork is not available");
+			}
+			const threadId = requireThreadId(params);
+			const leafEntryId = optionalTrimmedString(
+				params.leafEntryId,
+				"leafEntryId",
+			);
+			if (!leafEntryId) {
+				throw new MaestroAppServerError(-32602, "Missing leafEntryId");
+			}
+			const title = optionalTrimmedString(params.title, "title");
+			const sessionFile = await requireExistingThreadReference(store, threadId);
+			const previousSessionFile = store.getSessionFile?.();
+			const previousLeafId = getCurrentLeafId(store);
+			let forkedThreadId: string | undefined;
+			try {
+				await store.setSessionFile?.(sessionFile);
+				let forkedSessionFile: string;
+				try {
+					forkedSessionFile = createBranchedSession.call(store, leafEntryId);
+				} catch (error) {
+					if (
+						error instanceof Error &&
+						error.message === `Entry ${leafEntryId} not found`
+					) {
+						throw new MaestroAppServerError(-32602, "Unknown leafEntryId");
+					}
+					throw error;
+				}
+				const forkedEntries = safeReadSessionEntries(forkedSessionFile);
+				const forkedHeader = forkedEntries.find(
+					(entry) => entry.type === "session",
+				);
+				forkedThreadId =
+					forkedHeader && "id" in forkedHeader ? forkedHeader.id : undefined;
+				if (!forkedThreadId) {
+					throw new MaestroAppServerError(
+						-32000,
+						"Thread fork did not produce a readable session",
+					);
+				}
+				if (title && store.setSessionTitle) {
+					await store.setSessionTitle(forkedSessionFile, title);
+				}
+			} finally {
+				await restoreSessionBinding(store, previousSessionFile, previousLeafId);
+			}
+			await flushSessionWrites(store);
+			return {
+				thread: await summarizeThreadAfterMutation(store, forkedThreadId),
+				parentThreadId: threadId,
+				forkedFromEntryId: leafEntryId,
+			};
+		},
+
+		async archiveThread(params = {}) {
+			const setSessionArchived = store.setSessionArchived;
+			if (!canArchiveThreads || !setSessionArchived) {
+				throw new MaestroAppServerError(
+					-32601,
+					"Thread archive is not available",
+				);
+			}
+			const threadId = requireThreadId(params);
+			const sessionFile = await requireExistingThreadReference(store, threadId);
+			await setSessionArchived.call(store, sessionFile, true);
+			const thread = await summarizeThreadAfterMutation(store, threadId);
+			if (!thread.archived) {
+				throw new MaestroAppServerError(
+					-32000,
+					"Thread archive update was not persisted",
+				);
+			}
+			return { thread, archived: true };
+		},
+
+		async unarchiveThread(params = {}) {
+			const setSessionArchived = store.setSessionArchived;
+			if (!canArchiveThreads || !setSessionArchived) {
+				throw new MaestroAppServerError(
+					-32601,
+					"Thread archive is not available",
+				);
+			}
+			const threadId = requireThreadId(params);
+			const sessionFile = await requireExistingThreadReference(store, threadId);
+			await setSessionArchived.call(store, sessionFile, false);
+			const thread = await summarizeThreadAfterMutation(store, threadId);
+			if (thread.archived) {
+				throw new MaestroAppServerError(
+					-32000,
+					"Thread archive update was not persisted",
+				);
+			}
+			return { thread, archived: false };
+		},
+
+		async deleteThread(params = {}) {
+			const deleteSession = store.deleteSession;
+			if (!canDeleteThreads || !deleteSession) {
+				throw new MaestroAppServerError(
+					-32601,
+					"Thread delete is not available",
+				);
+			}
+			const threadId = requireThreadId(params);
+			const sessionFile = await requireExistingThreadReference(store, threadId);
+			if (isActiveThreadSessionFile(store, sessionFile)) {
+				throw new MaestroAppServerError(
+					-32000,
+					"Cannot delete the currently active thread",
+				);
+			}
+			await deleteSession.call(store, threadId);
+			await flushSessionWrites(store);
+			return { threadId, deleted: true };
+		},
+
 		async listTurns(params = {}) {
 			const threadId = requireThreadId(params);
 			const limit = normalizeLimit(params.limit);
@@ -909,13 +1767,35 @@ export async function handleMaestroAppServerRequest(
 		if (!isSupportedMethod(request.method)) {
 			throw new MaestroAppServerError(-32601, "Method not found");
 		}
+		const method = request.method;
+		const protocolModeDecision = api.checkProtocolMode?.(method) ?? {
+			allowed: true,
+		};
+		if (!protocolModeDecision.allowed) {
+			throw new MaestroAppServerError(
+				-32003,
+				protocolModeDecision.reason ?? "Method blocked by protocol mode",
+			);
+		}
 
-		switch (request.method) {
+		switch (method) {
 			case "initialize":
 				return {
 					jsonrpc: "2.0",
 					id,
 					result: api.initialize(),
+				};
+			case "protocol/mode/list":
+				return {
+					jsonrpc: "2.0",
+					id,
+					result: await api.listProtocolModes(request.params),
+				};
+			case "protocol/mode/set":
+				return {
+					jsonrpc: "2.0",
+					id,
+					result: await api.setProtocolMode(request.params),
 				};
 			case "model/list":
 				return {
@@ -928,6 +1808,174 @@ export async function handleMaestroAppServerRequest(
 					jsonrpc: "2.0",
 					id,
 					result: await api.readModelProviderCapabilities(request.params),
+				};
+			case "policy/read":
+				return {
+					jsonrpc: "2.0",
+					id,
+					result: await api.readPolicy(request.params),
+				};
+			case "policy/check":
+				return {
+					jsonrpc: "2.0",
+					id,
+					result: await api.checkPolicy(request.params),
+				};
+			case "requirements/list":
+				return {
+					jsonrpc: "2.0",
+					id,
+					result: await api.listRequirements(request.params),
+				};
+			case "network/fetch":
+				return {
+					jsonrpc: "2.0",
+					id,
+					result: await api.fetchNetwork(request.params),
+				};
+			case "network/audit/list":
+				return {
+					jsonrpc: "2.0",
+					id,
+					result: await api.listNetworkAudit(request.params),
+				};
+			case "sandbox/probe":
+				return {
+					jsonrpc: "2.0",
+					id,
+					result: await api.probeSandbox(request.params),
+				};
+			case "sandbox/check/run":
+				return {
+					jsonrpc: "2.0",
+					id,
+					result: await api.runSandboxCheck(request.params),
+				};
+			case "externalAgent/import":
+				return {
+					jsonrpc: "2.0",
+					id,
+					result: await api.importExternalAgent(request.params),
+				};
+			case "pluginBundle/list":
+				return {
+					jsonrpc: "2.0",
+					id,
+					result: await api.listPluginBundles(request.params),
+				};
+			case "pluginBundle/install":
+				return {
+					jsonrpc: "2.0",
+					id,
+					result: await api.installPluginBundle(request.params),
+				};
+			case "pluginBundle/remove":
+				return {
+					jsonrpc: "2.0",
+					id,
+					result: await api.removePluginBundle(request.params),
+				};
+			case "daemon/status":
+				return {
+					jsonrpc: "2.0",
+					id,
+					result: await api.readDaemonStatus(request.params),
+				};
+			case "remoteControl/status":
+				return {
+					jsonrpc: "2.0",
+					id,
+					result: await api.readRemoteControlStatus(request.params),
+				};
+			case "remoteControl/lease/read":
+				return {
+					jsonrpc: "2.0",
+					id,
+					result: await api.readRemoteControlLease(request.params),
+				};
+			case "remoteControl/lease/heartbeat":
+				return {
+					jsonrpc: "2.0",
+					id,
+					result: await api.heartbeatRemoteControlLease(request.params),
+				};
+			case "remoteControl/drain":
+				return {
+					jsonrpc: "2.0",
+					id,
+					result: await api.drainRemoteControl(request.params),
+				};
+			case "command/exec":
+				return {
+					jsonrpc: "2.0",
+					id,
+					result: await api.execCommand(request.params),
+				};
+			case "command/exec/write":
+				return {
+					jsonrpc: "2.0",
+					id,
+					result: await api.writeCommandStdin(request.params),
+				};
+			case "command/exec/terminate":
+				return {
+					jsonrpc: "2.0",
+					id,
+					result: await api.terminateCommand(request.params),
+				};
+			case "fs/readFile":
+				return {
+					jsonrpc: "2.0",
+					id,
+					result: await api.readFile(request.params),
+				};
+			case "fs/writeFile":
+				return {
+					jsonrpc: "2.0",
+					id,
+					result: await api.writeFile(request.params),
+				};
+			case "fs/readDirectory":
+				return {
+					jsonrpc: "2.0",
+					id,
+					result: await api.readDirectory(request.params),
+				};
+			case "fs/getMetadata":
+				return {
+					jsonrpc: "2.0",
+					id,
+					result: await api.getMetadata(request.params),
+				};
+			case "fs/createDirectory":
+				return {
+					jsonrpc: "2.0",
+					id,
+					result: await api.createDirectory(request.params),
+				};
+			case "fs/remove":
+				return {
+					jsonrpc: "2.0",
+					id,
+					result: await api.remove(request.params),
+				};
+			case "fs/copy":
+				return {
+					jsonrpc: "2.0",
+					id,
+					result: await api.copy(request.params),
+				};
+			case "fs/watch":
+				return {
+					jsonrpc: "2.0",
+					id,
+					result: await api.watch(request.params),
+				};
+			case "fs/unwatch":
+				return {
+					jsonrpc: "2.0",
+					id,
+					result: await api.unwatch(request.params),
 				};
 			case "thread/list":
 				return {
@@ -973,6 +2021,36 @@ export async function handleMaestroAppServerRequest(
 					id,
 					result: await api.clearThreadGoal(request.params),
 				};
+			case "thread/start":
+				return {
+					jsonrpc: "2.0",
+					id,
+					result: await api.startThread(request.params),
+				};
+			case "thread/fork":
+				return {
+					jsonrpc: "2.0",
+					id,
+					result: await api.forkThread(request.params),
+				};
+			case "thread/archive":
+				return {
+					jsonrpc: "2.0",
+					id,
+					result: await api.archiveThread(request.params),
+				};
+			case "thread/unarchive":
+				return {
+					jsonrpc: "2.0",
+					id,
+					result: await api.unarchiveThread(request.params),
+				};
+			case "thread/delete":
+				return {
+					jsonrpc: "2.0",
+					id,
+					result: await api.deleteThread(request.params),
+				};
 			case "thread/turns/list":
 				return {
 					jsonrpc: "2.0",
@@ -983,7 +2061,17 @@ export async function handleMaestroAppServerRequest(
 				throw new MaestroAppServerError(-32601, "Method not found");
 		}
 	} catch (error) {
-		if (error instanceof MaestroAppServerError) {
+		if (
+			error instanceof MaestroAppServerError ||
+			error instanceof MaestroAppServerHostControlError ||
+			error instanceof MaestroAppServerNetworkGovernanceError ||
+			error instanceof MaestroAppServerPolicyControlError ||
+			error instanceof MaestroAppServerSandboxCheckError ||
+			error instanceof MaestroAppServerExternalAgentImportError ||
+			error instanceof MaestroAppServerPluginBundleError ||
+			error instanceof MaestroAppServerDaemonLifecycleError ||
+			error instanceof MaestroAppServerProtocolModesError
+		) {
 			return {
 				jsonrpc: "2.0",
 				id,

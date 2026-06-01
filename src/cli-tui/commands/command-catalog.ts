@@ -671,9 +671,9 @@ export const PRIMARY_COMMAND_CATALOG: readonly CommandCatalogEntry[] = [
 	}),
 	withArgs("footer", "footer", {
 		description: "Switch footer style or view/clear footer alerts",
-		usage: "/footer [ensemble|solo|history|clear]",
+		usage: "/footer [rich|solo|history|clear]",
 		tags: ["ui"],
-		examples: ["/footer", "/footer solo", "/footer history", "/footer clear"],
+		examples: ["/footer", "/footer rich", "/footer solo", "/footer history"],
 	}),
 	withArgs(
 		"alerts",
@@ -692,27 +692,26 @@ export const PRIMARY_COMMAND_CATALOG: readonly CommandCatalogEntry[] = [
 		tags: ["tools"],
 	}),
 	withArgs("login", "login", {
-		description: "Authenticate with Claude Pro/Max via OAuth",
-		usage: "/login [mode] or /login [provider:mode]",
+		description: "Authenticate with OpenAI Codex by default",
+		usage: "/login [provider]",
 		tags: ["auth"],
 		arguments: [
 			{
-				name: "argument",
+				name: "provider",
 				type: "string",
 				required: false,
-				description:
-					"Login mode (pro/console) or provider:mode format (e.g., anthropic:pro)",
+				description: "OAuth provider (openai-codex by default)",
 			},
 		],
 		examples: [
 			"/login",
-			"/login pro",
-			"/login console",
-			"/login anthropic:pro",
+			"/login openai-codex",
+			"/login openai-codex:responses",
+			"/login openai",
 		],
 	}),
 	withArgs("logout", "logout", {
-		description: "Remove stored Claude OAuth credentials",
+		description: "Remove stored OAuth credentials",
 		usage: "/logout [provider]",
 		tags: ["auth"],
 		arguments: [
@@ -723,7 +722,7 @@ export const PRIMARY_COMMAND_CATALOG: readonly CommandCatalogEntry[] = [
 				description: "OAuth provider to logout from (optional)",
 			},
 		],
-		examples: ["/logout", "/logout anthropic"],
+		examples: ["/logout", "/logout openai-codex"],
 	}),
 	quit("quit", "quit", {
 		description: "Exit composer (same as ctrl+c twice)",

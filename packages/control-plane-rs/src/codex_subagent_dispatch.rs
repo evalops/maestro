@@ -53,7 +53,7 @@ pub(crate) const CODEX_SUBAGENT_DISPATCH_LANES: &[CodexSubagentDispatchLane] = &
         lane_id: "test-runner",
         skill_id: "maestro.subagent.test-runner",
         display_name: "Maestro test runner subagent",
-        description: "Delegate test execution, failure triage, and verification evidence capture to a target-owned Maestro child agent.",
+        description: "Delegate test execution, failure triage, and result artifact capture to a target-owned Maestro child agent.",
         tags: &["maestro", "subagent", "test", "ci"],
         #[cfg(test)]
         type_aliases: &["test", "qa", "ci", "ci-monitor", "test-runner"],

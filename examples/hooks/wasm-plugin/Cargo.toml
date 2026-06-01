@@ -2,7 +2,7 @@
 name = "safety-plugin"
 version = "0.1.0"
 edition = "2021"
-description = "Example WASM safety hook plugin for Composer"
+description = "Example WASM safety hook plugin for Maestro"
 license = "MIT"
 
 [lib]

@@ -134,6 +134,7 @@ const toolScheduling = {
 	topSerializationReasons: [],
 	serializationReasonTiming: [],
 	nextActions: [],
+	operatorSummary: null,
 	hasSchedulingData: false,
 	schedulingCoverageRatio: 0,
 	canonicalSchedulingSummaryCount: 0,
@@ -410,6 +411,41 @@ function buildNextActions() {
 
 toolScheduling.nextActions = buildNextActions();
 
+function plural(count, singular, pluralForm = `${singular}s`) {
+	return `${count} ${count === 1 ? singular : pluralForm}`;
+}
+
+function buildOperatorSummary() {
+	const serializedOrDelayedCallCount =
+		toolScheduling.serializedCallCount + toolScheduling.delayedCallCount;
+	const topSerializationReason =
+		toolScheduling.topSerializationReasons[0] ?? null;
+	const topNextAction = toolScheduling.nextActions[0] ?? null;
+	const metrics = [
+		plural(toolScheduling.modelToolCallCount, "call"),
+		plural(toolScheduling.schedulableWaveCount, "wave"),
+		`${toolScheduling.parallelizedCallCount} parallelized`,
+		`${serializedOrDelayedCallCount} serialized/delayed`,
+		plural(toolScheduling.cacheHitCount, "cache hit"),
+	];
+	const segments = [metrics.join(", ")];
+	if (topSerializationReason) {
+		segments.push(
+			`top blocker ${topSerializationReason.reason} (${topSerializationReason.count})`,
+		);
+	}
+	segments.push(`next ${topNextAction?.id ?? "none"}`);
+
+	return {
+		line: segments.join("; "),
+		serializedOrDelayedCallCount,
+		topNextActionId: topNextAction?.id ?? "none",
+		topSerializationReason,
+	};
+}
+
+toolScheduling.operatorSummary = buildOperatorSummary();
+
 const logPath = sources.length === 1 ? sources[0] : `${sources.length} telemetry logs`;
 
 if (jsonOutput) {
@@ -461,6 +497,7 @@ console.log(
 	`Evaluation success rate: ${evaluations === 0 ? "n/a" : `${((evalSuccess / evaluations) * 100).toFixed(1)}%`}`,
 );
 console.log(`Model tool calls: ${toolScheduling.modelToolCallCount}`);
+console.log(`Tool scheduling summary: ${toolScheduling.operatorSummary.line}`);
 console.log(`Schedulable waves: ${toolScheduling.schedulableWaveCount}`);
 console.log(`Parallelized calls: ${toolScheduling.parallelizedCallCount}`);
 console.log(`Serialized calls: ${toolScheduling.serializedCallCount}`);

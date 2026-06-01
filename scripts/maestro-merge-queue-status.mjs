@@ -188,7 +188,7 @@ export function summarizeChecks(statusCheckRollup = []) {
 	return summary;
 }
 
-function summarizeCheckText(summary) {
+export function summarizeCheckText(summary) {
 	const parts = [`${summary.passing}/${summary.total} pass`];
 	if (summary.pending.length > 0) {
 		parts.push(`${summary.pending.length} pending`);

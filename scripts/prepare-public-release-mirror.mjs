@@ -19,13 +19,18 @@ const DEFAULT_EXCLUDES = [
 	"**/node_modules/**",
 	"dist/**",
 	"**/dist/**",
+	"target/**",
+	"**/target/**",
 	"coverage/**",
 	"tmp/**",
 	".env",
 	".env.*",
 	".maestro/**",
 	".cursor/**",
+	".nx/**",
 	".husky/_/**",
+	"*.tsbuildinfo",
+	"**/*.tsbuildinfo",
 	"AGENTS.md",
 	"CLAUDE.md",
 	".github/workflows/**",
@@ -40,8 +45,13 @@ const DEFAULT_EXCLUDES = [
 	"test/internal/**",
 	"scripts/configure-npm-trusted-publisher.mjs",
 	"scripts/deprecate-release.js",
+	"scripts/published-replay-evidence-gate.js",
+	"scripts/release-observability-query-contract.js",
+	"scripts/smoke-published-replay-e2e.js",
 	"scripts/smoke-registry-install.js",
+	"scripts/verify-published-replay-evidence.js",
 	"scripts/validate-public-package-deps.js",
+	"test/scripts/validate-public-package-deps.test.ts",
 ];
 
 const PUBLIC_INCLUDE_OVERRIDES = new Set([
@@ -265,6 +275,10 @@ function resolvePublicPackageJson(
 			: {};
 	pkg.scripts["release:verify:published"] =
 		"node scripts/smoke-registry-install.js";
+	pkg.scripts["release:verify:published:e2e"] =
+		"node scripts/smoke-published-replay-e2e.js";
+	pkg.scripts["release:verify:published:evidence"] =
+		"node scripts/verify-published-replay-evidence.js";
 	pkg.scripts["release:deprecate"] = "node scripts/deprecate-release.js";
 
 	return {

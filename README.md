@@ -42,6 +42,12 @@ bun install -g @evalops/maestro
 npm install -g @evalops/maestro
 ```
 
+If a global install fails while resolving `@evalops/tui` or
+`@evalops/contracts`, you are installing a deprecated 0.10.8-0.10.20 package
+that referenced private workspace dependencies. Upgrade to
+`@evalops/maestro@latest`; published release verification now runs npm and Bun
+registry install smokes against the public package metadata before promotion.
+
 ### Nix
 
 ```bash
@@ -50,15 +56,19 @@ nix run github:evalops/maestro
 
 ## Quick Start
 
-1. Configure a model provider. Fast path:
+1. Sign in for the default Codex subscription models:
 
 ```bash
-export ANTHROPIC_API_KEY=sk-ant-...
+maestro codex login
 ```
 
-Maestro also supports OpenAI, OpenAI Codex with ChatGPT login, Google, OpenRouter, Azure OpenAI, GitHub Copilot, Groq, xAI, Cerebras, and managed EvalOps auth. See [Models](docs/MODELS.md) for provider-specific setup and overrides.
+`maestro codex login` uses Codex app-server auth. Published installs use the
+packaged `@openai/codex` app-server and source checkouts fall back to a `codex`
+binary on `PATH`, so an existing `codex login` is reused automatically.
 
-For Codex subscription models, run `maestro codex login` to Sign in with ChatGPT through the Codex app-server, then select models under the `openai-codex` provider such as `openai-codex/gpt-5.5`.
+Bare `maestro` defaults to `openai-codex/gpt-5.5`. Maestro also supports OpenAI API keys, Anthropic, Google, OpenRouter, Azure OpenAI, GitHub Copilot, Groq, xAI, Cerebras, and managed EvalOps auth. See [Models](docs/MODELS.md) for provider-specific setup and overrides.
+
+For another Codex subscription model, select models under the `openai-codex` provider such as `openai-codex/gpt-5.5`.
 
 2. Launch the interface you want:
 

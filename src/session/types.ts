@@ -29,6 +29,7 @@ export interface SessionHeaderEntry {
 	id: string;
 	timestamp: string;
 	cwd: string;
+	provisional?: boolean;
 	subject?: string;
 	model?: string;
 	modelMetadata?: SessionModelMetadata;
@@ -109,6 +110,8 @@ export interface SessionMetaEntry {
 	favorite?: boolean;
 	title?: string;
 	tags?: string[];
+	archived?: boolean;
+	archivedAt?: string;
 	appServerGoal?: {
 		objective: string;
 		status: "active" | "complete" | "cancelled";
@@ -196,6 +199,8 @@ export interface SessionMetadata {
 	memoryExtractionHash?: string;
 	favorite: boolean;
 	tags?: string[];
+	archived?: boolean;
+	archivedAt?: string;
 	allMessagesText: string;
 }
 
@@ -213,6 +218,8 @@ export interface SessionSummary {
 	messageCount: number;
 	favorite: boolean;
 	tags?: string[];
+	archived?: boolean;
+	archivedAt?: string;
 }
 
 /**

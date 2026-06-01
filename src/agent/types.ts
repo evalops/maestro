@@ -1,7 +1,7 @@
 /**
- * @fileoverview Core Type Definitions for Composer Agent
+ * @fileoverview Core Type Definitions for Maestro Agent
  *
- * This module defines the fundamental types used throughout the Composer AI system,
+ * This module defines the fundamental types used throughout the Maestro AI system,
  * including message formats, tool definitions, model configurations, and agent state.
  *
  * ## Type Categories
@@ -42,6 +42,7 @@ import type {
 	ActionApprovalDecision,
 	ActionApprovalRequest,
 } from "./action-approval.js";
+import type { ToolCapabilityMetadata } from "./tool-capability-types.js";
 import type { ToolRetryDecision, ToolRetryRequest } from "./tool-retry.js";
 
 /**
@@ -608,6 +609,7 @@ export interface McpToolSourceMetadata {
 	type: "mcp";
 	server: string;
 	tool: string;
+	capability?: ToolCapabilityMetadata;
 	supportsParallelToolCalls?: boolean;
 	parallelSafetyProvenance?: "static_config" | "server_capability" | "none";
 	parallelMaxConcurrency?: number;
@@ -1675,7 +1677,7 @@ export interface StreamOptions {
 	/** Current working directory for local provider runtimes. */
 	cwd?: string;
 	/** Authentication type for the request */
-	authType?: "api-key" | "anthropic-oauth";
+	authType?: "api-key" | "bearer-token";
 	/** Optional Anthropic API-side task budget for the current turn */
 	taskBudget?: {
 		total: number;

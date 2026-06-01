@@ -29,8 +29,8 @@ interface CliHelpOption {
 }
 
 const CLI_OPTIONS: CliHelpOption[] = [
-	{ text: "--provider <name>       Provider name (default: anthropic)" },
-	{ text: "-m, --model <id>        Model ID (default: claude-sonnet-4-5)" },
+	{ text: "--provider <name>       Provider name (default: openai-codex)" },
+	{ text: "-m, --model <id>        Model ID (default: gpt-5.5)" },
 	{ text: "--task-budget <tokens> API-side Anthropic task budget in tokens" },
 	{
 		text: "--models <patterns>     Comma-separated patterns for Ctrl+P model cycling",
@@ -47,7 +47,7 @@ const CLI_OPTIONS: CliHelpOption[] = [
 	},
 	{ text: "--mode <mode>           Output mode: text (default), json, or rpc" },
 	{
-		text: "--auth <mode>           Credential mode: auto (default), api-key, claude",
+		text: "--auth <mode>           Credential mode: auto (default), api-key",
 	},
 	{
 		text: "--approval-mode <mode>  Action approvals: prompt (default in TUI), auto, fail",
@@ -128,7 +128,7 @@ export function printHelp(
 			)}`
 		: null;
 	const examples = `${sectionHeading("Examples")}${muted(
-		`  # Interactive mode (no messages = interactive TUI)
+		`  # Interactive mode (defaults to openai-codex/gpt-5.5 after \`maestro codex login\`)
   maestro
 
   # Single message
@@ -143,7 +143,7 @@ export function printHelp(
   # Use different model
   maestro --provider openai --model gpt-4o-mini "Help me refactor this code"
 
-  # Use Codex subscription models after \`maestro codex login\`
+  # Use Codex subscription models explicitly
   maestro --provider openai-codex --model gpt-5.5 "Plan this migration"
   maestro codex doctor
 
@@ -155,6 +155,10 @@ export function printHelp(
 
   # Confirm managed mode sinks and EvalOps org identity
   maestro status
+
+  # Check or install the newest published Maestro CLI
+  maestro update --check
+  maestro update
 
   # Inspect mode-level subagent model dispatch before running a swarm
   maestro modes describe smart
@@ -173,9 +177,11 @@ export function printHelp(
 
   # Export a portable JSON archive with secret redaction
   maestro export <session-id> ./session.json --format json --redact-secrets
+  maestro sessions export <session-id> ./session.json --format json --redact-secrets
 
   # Import a portable session log into this workspace
   maestro import ./session.json
+  maestro sessions import ./session.json
 
   # Scaffold and validate progressive skill packages
   maestro skill new processing-incidents --description "Process incident reports. Use when the user asks for incident triage."
@@ -197,6 +203,13 @@ export function printHelp(
   maestro run inspect <session-id> --json
   maestro run promote <session-id>
 
+  # Discover saved sessions without opening the TUI
+  maestro sessions list --json
+  maestro sessions search "release verification"
+
+  # Stream machine-readable exec events
+  maestro exec --stream-json "Summarize recent changes"
+
   # Validate and run a deterministic scenario fixture
   maestro scenario validate ./test/fixtures/agent-trajectory-scenarios/local-diagnostic-success.json
   maestro scenario run ./test/fixtures/agent-trajectory-scenarios/local-diagnostic-success.json --junit ./tmp/scenario.xml
@@ -214,8 +227,6 @@ export function printHelp(
   OPENAI_CODEX_TOKEN      - OpenAI Codex ChatGPT access token
   OPENAI_CODEX_ACCOUNT_ID - ChatGPT account id when using a raw Codex token
   ANTHROPIC_API_KEY       - Anthropic API key
-  CLAUDE_CODE_TOKEN       - Claude Code access token for --auth claude
-  ANTHROPIC_OAUTH_TOKEN   - Alternate env for Claude Code bearer tokens
   MAESTRO_AGENT_DIR      - Session storage directory (default: ~/.maestro/agent)
   MAESTRO_SANDBOX_MODE   - Sandbox mode: read-only, workspace-write, danger-full-access
   MAESTRO_CHANGELOG      - Set to off/false/hide/hidden/skip/0 to hide startup changelog banner
@@ -235,9 +246,10 @@ export function printHelp(
 	)}`;
 	const execSection = `${sectionHeading("maestro exec")}${muted(
 		`  maestro exec "Summarize recent changes" --json
+  maestro exec --stream-json "Summarize recent changes"
 
   Flags:
-    --json                      Stream JSONL thread/turn events
+    --json, --stream-json       Stream JSONL thread/turn events
     --output-schema <file|json> Validate final assistant JSON against a schema
     --output-last-message <path> Write the final assistant message to disk
     --full-auto | --read-only   Force approval policy (auto or fail)
@@ -255,6 +267,8 @@ export function printHelp(
 	const portabilitySection = `${sectionHeading("Session Portability")}${muted(
 		`  maestro export <session-id> [output-path] --format json|jsonl [--redact-secrets]
  maestro import <file.json|file.jsonl>
+ maestro sessions export <session-id> [output-path] --format json|jsonl [--redact-secrets]
+ maestro sessions import <file.json|file.jsonl>
 
   Notes:
     - json preserves the full session in a portable wrapper object
@@ -292,14 +306,14 @@ export function printHelp(
   maestro remote extend <session-id> --ttl 2h
   maestro remote stop <session-id> [--reason <text>]`,
 	)}`;
-	const operatingPlaneSection = `${sectionHeading("maestro operating-plane")}${muted(
-		`  maestro operating-plane status --thread-id <slack-thread> [--evidence-id <id>] [--auth-subject <subject>]
-  maestro operating-plane status --trace-id <id> --json
-
-  Fetches the Platform operating-plane ledger and prints a content-free value
-  proof report with identity, model/tool/approval/trace/evidence/cost status,
-  allowed evidence ids/revisions, blockers, next actions, and withheld reasons.`,
-	)}`;
+	const operatingPlaneHelp = [
+		"  maestro operating-plane status --thread-id <slack-thread> [--artifact-id <id>] [--auth-subject <subject>]",
+		"  maestro operating-plane status --trace-id <id> --json",
+		"  Fetches the Platform operating-plane ledger and prints content-free runtime",
+		"  status with identity, model/tool/approval/trace/artifact/cost signals,",
+		"  allowed artifact ids/revisions, blockers, next actions, and withheld reasons.",
+	].join("\n");
+	const operatingPlaneSection = `${sectionHeading("maestro operating-plane")}${muted(operatingPlaneHelp)}`;
 	const runSection = `${sectionHeading("maestro run")}${muted(
 		`  maestro run inspect <session-id> [--json]
   maestro run ledger <session-id>
@@ -330,7 +344,8 @@ export function printHelp(
   /sessions summarize <id>          Auto-summarize a saved session`,
 	)}`;
 	const sessionsDiscovery = `${sectionHeading("Session Commands")}${muted(
-		`  /session [info|favorite|unfavorite|summary "<text>"]
+		`  maestro sessions [list|search <query>|export <session-id>|import <file>] [--json]
+  /session [info|favorite|unfavorite|summary "<text>"]
   /sessions [list|load <id>|favorite <id>|unfavorite <id>|summarize <id>]
   (Also available via TUI command palette)`,
 	)}`;

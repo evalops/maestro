@@ -366,6 +366,35 @@ function constrainGlobMatches(
 	return constrained;
 }
 
+/** @internal */
+export function getFindGlobPatterns(pattern: string): string[] {
+	const patterns = [pattern];
+	const rootEquivalent = pattern.match(/^\*\*[\\/](.+)$/u)?.[1];
+	if (rootEquivalent && rootEquivalent !== pattern) {
+		patterns.push(rootEquivalent);
+	}
+	return patterns;
+}
+
+function findGlobMatches(
+	pattern: string,
+	searchPath: string,
+	includeHidden: boolean,
+): string[] {
+	const matches = new Set<string>();
+	for (const globPattern of getFindGlobPatterns(pattern)) {
+		for (const match of globSync(globPattern, {
+			cwd: searchPath,
+			dot: includeHidden,
+			nodir: false,
+			absolute: true,
+		})) {
+			matches.add(resolvePath(match));
+		}
+	}
+	return [...matches];
+}
+
 export const findTool = createTool<typeof findSchema, FindToolDetails>({
 	name: "find",
 	label: "find",
@@ -379,7 +408,7 @@ export const findTool = createTool<typeof findSchema, FindToolDetails>({
 
 		const { pattern, path: searchDir, limit, includeHidden = true } = params;
 
-		const fdPath = await ensureTool("fd", true);
+		const fdPath = await ensureTool("fd", true, signal);
 		if (!fdPath) {
 			return respond
 				.error("fd is not available and could not be downloaded")
@@ -455,12 +484,7 @@ export const findTool = createTool<typeof findSchema, FindToolDetails>({
 
 		if (!output) {
 			// Fallback to globbing when fd returns nothing (handles patterns with subdirectories on some platforms)
-			const globMatches = globSync(pattern, {
-				cwd: searchPath,
-				dot: includeHidden,
-				nodir: false,
-				absolute: true,
-			});
+			const globMatches = findGlobMatches(pattern, searchPath, includeHidden);
 			const constrained = constrainGlobMatches(
 				globMatches,
 				searchPath,
@@ -527,12 +551,7 @@ export const findTool = createTool<typeof findSchema, FindToolDetails>({
 				? searchPath
 				: `${searchPath}${sep}`;
 			const seen = new Set(relativized);
-			for (const match of globSync(pattern, {
-				cwd: searchPath,
-				dot: includeHidden,
-				nodir: false,
-				absolute: true,
-			})) {
+			for (const match of findGlobMatches(pattern, searchPath, includeHidden)) {
 				const resolved = resolvePath(match);
 				if (resolved !== searchPath && !resolved.startsWith(searchRoot)) {
 					continue;

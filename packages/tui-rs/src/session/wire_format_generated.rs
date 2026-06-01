@@ -70,6 +70,7 @@ pub const FIELD_ALIASES: &[(&str, &[(&str, &str)])] = &[
         &[
             ("resume_summary", "resumeSummary"),
             ("memory_extraction_hash", "memoryExtractionHash"),
+            ("archived_at", "archivedAt"),
         ],
     ),
     (
@@ -168,6 +169,7 @@ pub fn field_aliases(section: &str) -> &'static [(&'static str, &'static str)] {
         "sessionMeta" => &[
             ("resume_summary", "resumeSummary"),
             ("memory_extraction_hash", "memoryExtractionHash"),
+            ("archived_at", "archivedAt"),
         ],
         "attachmentExtract" => &[
             ("attachment_id", "attachmentId"),

@@ -12,20 +12,103 @@ import {
 	type A2AServiceConfig,
 } from "../src/platform/a2a-client.js";
 import {
+	a2aPushSignalKey,
+	buildA2ACompletionAudit,
+	type A2APushCompletionSignals,
+} from "../src/platform/a2a-completion-audit.js";
+import type { A2ATaskLedgerFile } from "../src/platform/a2a-task-ledger.js";
+import {
+	inspectA2ATelemetry,
+	type A2ATelemetryCloudEventLike,
+} from "../src/platform/a2a-telemetry-inspect.js";
+import {
 	listA2APeerCandidatesWithPlatform,
 	type PlatformAgentRegistryAgent,
 } from "../src/platform/agent-registry-client.js";
 import { SwarmExecutor } from "../src/agent/swarm/executor.js";
 import type { SwarmConfig, SwarmState } from "../src/agent/swarm/types.js";
+import { setMaestroEventBusTransportForTests } from "../src/telemetry/maestro-event-bus.js";
 
 const ORGANIZATION_ID = "org_local_a2a_swarm";
 const WORKSPACE_ID = "workspace_local_a2a_swarm";
 const REGISTRY_TOKEN = "local-a2a-swarm-token";
+const PUSH_TOKEN = "local-a2a-swarm-push-token";
 const CONTROL_READY_TIMEOUT_MS = 120_000;
 const REGISTRY_READY_TIMEOUT_MS = 30_000;
+const PUSH_EVENT_TIMEOUT_MS = 30_000;
 const SKILL_ID = "maestro.subagent.code-review";
 const DENIED_TASK_CLASS = "credential.materialization";
 const RESUME_TASK_ID = "local-swarm-resume-task";
+
+const HEALTHY_PEERS = [
+	{
+		slug: "alpha",
+		agentId: "maestro-a2a-local-alpha",
+		name: "Maestro Local A2A Alpha",
+		response: "A2A local swarm response from alpha",
+		objectiveId: "objective-alpha",
+		taskId: "alpha-review",
+		prompt: "Return your deterministic A2A swarm response.",
+		plan: "exercise one Platform-discovered A2A review lane.",
+		seedResumeTask: true,
+	},
+	{
+		slug: "beta",
+		agentId: "maestro-a2a-local-beta",
+		name: "Maestro Local A2A Beta",
+		response: "A2A local swarm response from beta",
+		objectiveId: "objective-beta",
+		taskId: "beta-review",
+		prompt: "Return your deterministic A2A swarm response.",
+		plan: "exercise one Platform-discovered A2A review lane.",
+	},
+	{
+		slug: "gamma",
+		agentId: "maestro-a2a-local-gamma",
+		name: "Maestro Local A2A Gamma",
+		response: "A2A local swarm response from gamma",
+		objectiveId: "objective-gamma",
+		taskId: "gamma-review",
+		prompt: "Return your deterministic A2A swarm response.",
+		plan: "exercise one Platform-discovered A2A review lane.",
+	},
+	{
+		slug: "delta",
+		agentId: "maestro-a2a-local-delta",
+		name: "Maestro Local A2A Delta",
+		response: "A2A local swarm response from delta",
+		objectiveId: "objective-delta",
+		taskId: "delta-review",
+		prompt: "Return your deterministic A2A swarm response.",
+		plan: "exercise one Platform-discovered A2A review lane.",
+	},
+	{
+		slug: "epsilon",
+		agentId: "maestro-a2a-local-epsilon",
+		name: "Maestro Local A2A Epsilon",
+		response: "A2A local swarm response from epsilon",
+		objectiveId: "objective-epsilon",
+		taskId: "epsilon-review",
+		prompt: "Return your deterministic A2A swarm response.",
+		plan: "exercise one Platform-discovered A2A review lane.",
+	},
+] as const;
+
+const SYNTHETIC_AGENT_IDS = [
+	"maestro-a2a-local-saturated",
+	"maestro-a2a-local-busy",
+	"maestro-a2a-local-no-dispatch",
+	"maestro-a2a-local-denied",
+	"maestro-a2a-local-stale",
+] as const;
+
+const SYNTHETIC_AGENT_NAMES_BY_ID = {
+	"maestro-a2a-local-saturated": "Maestro Local A2A Saturated",
+	"maestro-a2a-local-busy": "Maestro Local A2A Busy",
+	"maestro-a2a-local-no-dispatch": "Maestro Local A2A No Dispatch",
+	"maestro-a2a-local-denied": "Maestro Local A2A Denied",
+	"maestro-a2a-local-stale": "Maestro Local A2A Stale",
+} satisfies Record<(typeof SYNTHETIC_AGENT_IDS)[number], string>;
 
 type MockAgent = PlatformAgentRegistryAgent & {
 	currentObjectiveIds?: string[];
@@ -39,12 +122,25 @@ type CapturedRequest = {
 	url?: string;
 };
 
+type PushEventSummary = {
+	type: "statusUpdate" | "artifactUpdate" | "task";
+	taskId?: string;
+	state?: string;
+};
+
 type MockRegistry = {
 	baseUrl: string;
 	close: () => Promise<void>;
 	requests: CapturedRequest[];
 	agents: Map<string, MockAgent>;
 	waitForAgents: (count: number) => Promise<void>;
+};
+
+type PushReceiver = {
+	baseUrl: string;
+	close: () => Promise<void>;
+	requests: CapturedRequest[];
+	waitForTaskEvents: (taskIds: string[]) => Promise<void>;
 };
 
 type ControlPlaneInstance = {
@@ -60,6 +156,21 @@ type EnvSnapshot = Record<string, string | undefined>;
 
 function delay(ms: number): Promise<void> {
 	return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function normalizePeerLabel(value: string): string {
+	return value.toLowerCase().replace(/[^a-z0-9]+/g, "");
+}
+
+const SYNTHETIC_PEER_LABELS = new Set(
+	SYNTHETIC_AGENT_IDS.flatMap((agentId) => [
+		agentId,
+		SYNTHETIC_AGENT_NAMES_BY_ID[agentId],
+	]).map(normalizePeerLabel),
+);
+
+function isSyntheticPeerLabel(value: string | undefined): boolean {
+	return Boolean(value && SYNTHETIC_PEER_LABELS.has(normalizePeerLabel(value)));
 }
 
 async function openPort(): Promise<number> {
@@ -119,6 +230,14 @@ function stringList(record: Record<string, unknown>, key: string): string[] {
 		: [];
 }
 
+function booleanValue(
+	record: Record<string, unknown>,
+	key: string,
+): boolean | undefined {
+	const value = record[key];
+	return typeof value === "boolean" ? value : undefined;
+}
+
 function objectValue(
 	record: Record<string, unknown>,
 	key: string,
@@ -127,6 +246,86 @@ function objectValue(
 	return value && typeof value === "object" && !Array.isArray(value)
 		? (value as Record<string, unknown>)
 		: undefined;
+}
+
+function pushEventSummary(request: CapturedRequest): PushEventSummary | undefined {
+	const statusUpdate = objectValue(request.body, "statusUpdate");
+	if (statusUpdate) {
+		const status = objectValue(statusUpdate, "status");
+		return {
+			type: "statusUpdate",
+			taskId: stringValue(statusUpdate, "taskId"),
+			state: status ? stringValue(status, "state") : undefined,
+		};
+	}
+	const artifactUpdate = objectValue(request.body, "artifactUpdate");
+	if (artifactUpdate) {
+		return {
+			type: "artifactUpdate",
+			taskId: stringValue(artifactUpdate, "taskId"),
+		};
+	}
+	const task = objectValue(request.body, "task");
+	if (task) {
+		const status = objectValue(task, "status");
+		return {
+			type: "task",
+			taskId: stringValue(task, "id"),
+			state: status ? stringValue(status, "state") : undefined,
+		};
+	}
+	return undefined;
+}
+
+function pushEventCounts(requests: CapturedRequest[]): Record<string, number> {
+	const counts: Record<string, number> = {};
+	for (const request of requests) {
+		const summary = pushEventSummary(request);
+		if (!summary) {
+			continue;
+		}
+		counts[summary.type] = (counts[summary.type] ?? 0) + 1;
+	}
+	return counts;
+}
+
+function pushedTaskSignals(
+	requests: CapturedRequest[],
+	lanes: Array<{ peer: string; taskId: string }>,
+): Map<string, A2APushCompletionSignals> {
+	const summaries = requests
+		.map(pushEventSummary)
+		.filter((summary): summary is PushEventSummary => Boolean(summary));
+	const taskIdCounts = new Map<string, number>();
+	for (const lane of lanes) {
+		taskIdCounts.set(lane.taskId, (taskIdCounts.get(lane.taskId) ?? 0) + 1);
+	}
+	const signals = new Map<string, A2APushCompletionSignals>();
+	for (const lane of lanes) {
+		if (taskIdCounts.get(lane.taskId) !== 1) {
+			continue;
+		}
+		const taskEvents = summaries.filter((event) => event.taskId === lane.taskId);
+		signals.set(a2aPushSignalKey(lane.peer, lane.taskId), {
+			statusUpdateTerminal: taskEvents.some(
+				(event) =>
+					event.type === "statusUpdate" && isTerminalPushState(event.state),
+			),
+			artifactUpdate: taskEvents.some(
+				(event) => event.type === "artifactUpdate",
+			),
+			taskTerminal: taskEvents.some(
+				(event) => event.type === "task" && isTerminalPushState(event.state),
+			),
+		});
+	}
+	return signals;
+}
+
+function isTerminalPushState(state: string | undefined): boolean {
+	return /COMPLETED|FAILED|CANCELLED|CANCELED|REJECTED/u.test(
+		(state ?? "").toUpperCase(),
+	);
 }
 
 function skillList(agent: MockAgent): Array<Record<string, unknown>> {
@@ -187,6 +386,15 @@ function agentHasCapability(
 	return (agent.capabilities ?? []).includes(capability);
 }
 
+function agentHasA2ADispatchEndpoint(agent: MockAgent): boolean {
+	return Boolean(agent.a2a?.internalEndpointUrl ?? agent.a2a?.publicEndpointUrl);
+}
+
+function agentHasDelegationCapacity(agent: MockAgent): boolean {
+	const remaining = agent.capacity?.remaining;
+	return remaining === undefined || remaining > 0;
+}
+
 function buildAgentFromRegister(body: Record<string, unknown>): MockAgent {
 	const a2a = objectValue(body, "a2a");
 	const now = new Date().toISOString();
@@ -234,6 +442,111 @@ function applyHeartbeat(agent: MockAgent, body: Record<string, unknown>): MockAg
 	};
 }
 
+function syntheticA2A(endpointUrl?: string): MockAgent["a2a"] {
+	return {
+		protocol: "a2a",
+		version: "1.0",
+		agentCardUrl: endpointUrl
+			? `${endpointUrl}/.well-known/agent-card.json`
+			: undefined,
+		publicEndpointUrl: endpointUrl,
+		internalEndpointUrl: endpointUrl,
+		pushNotifications: Boolean(endpointUrl),
+		skills: [
+			{
+				id: SKILL_ID,
+				name: "Code Review",
+				description: "Synthetic code review lane for local swarm filtering.",
+				allowedTaskClasses: ["code.review"],
+				deniedTaskClasses: [],
+			},
+		],
+	} as MockAgent["a2a"];
+}
+
+function syntheticAgent(input: {
+	id: string;
+	name: string;
+	status?: string;
+	endpointUrl?: string;
+	remaining?: number;
+	heartbeatReceived?: boolean;
+	lastHeartbeatAt?: string;
+	deniedTaskClasses?: string[];
+}): MockAgent {
+	const now = new Date().toISOString();
+	const a2a = syntheticA2A(input.endpointUrl);
+	const skills = skillList({ a2a } as MockAgent);
+	if (skills[0] && input.deniedTaskClasses) {
+		skills[0].deniedTaskClasses = input.deniedTaskClasses;
+	}
+	return {
+		id: input.id,
+		workspaceId: WORKSPACE_ID,
+		name: input.name,
+		description: "Synthetic local A2A fixture for failure-injected discovery.",
+		agentType: "maestro",
+		capabilities: ["code:review"],
+		surfaces: ["a2a", "maestro"],
+		surfaceTypes: ["agent"],
+		ownerId: "local-a2a-swarm-smoke",
+		status: input.status ?? "AGENT_STATUS_IDLE",
+		heartbeatReceived: input.heartbeatReceived ?? true,
+		lastHeartbeatAt: input.lastHeartbeatAt ?? now,
+		createdAt: now,
+		updatedAt: now,
+		a2a,
+		capacity: {
+			current: Math.max(0, 2 - (input.remaining ?? 2)),
+			max: 2,
+			remaining: input.remaining ?? 2,
+			reservedDelegationCount: 0,
+		},
+	};
+}
+
+function installSyntheticAgents(registry: MockRegistry): void {
+	const staleHeartbeat = new Date(Date.now() - 15 * 60_000).toISOString();
+	const fixtures = [
+		syntheticAgent({
+			id: "maestro-a2a-local-saturated",
+			name: SYNTHETIC_AGENT_NAMES_BY_ID["maestro-a2a-local-saturated"],
+			endpointUrl: "http://127.0.0.1:1/saturated",
+			remaining: 0,
+		}),
+		syntheticAgent({
+			id: "maestro-a2a-local-busy",
+			name: SYNTHETIC_AGENT_NAMES_BY_ID["maestro-a2a-local-busy"],
+			status: "AGENT_STATUS_BUSY",
+			endpointUrl: "http://127.0.0.1:1/busy",
+		}),
+		syntheticAgent({
+			id: "maestro-a2a-local-no-dispatch",
+			name: SYNTHETIC_AGENT_NAMES_BY_ID["maestro-a2a-local-no-dispatch"],
+			remaining: 2,
+		}),
+		syntheticAgent({
+			id: "maestro-a2a-local-denied",
+			name: SYNTHETIC_AGENT_NAMES_BY_ID["maestro-a2a-local-denied"],
+			endpointUrl: "http://127.0.0.1:1/denied",
+			deniedTaskClasses: ["code.review", DENIED_TASK_CLASS],
+		}),
+		syntheticAgent({
+			id: "maestro-a2a-local-stale",
+			name: SYNTHETIC_AGENT_NAMES_BY_ID["maestro-a2a-local-stale"],
+			endpointUrl: "http://127.0.0.1:1/stale",
+			heartbeatReceived: false,
+			lastHeartbeatAt: staleHeartbeat,
+		}),
+	];
+	for (const agent of fixtures) {
+		if (!agent.id) {
+			throw new Error("synthetic agent fixture is missing an id");
+		}
+		registry.agents.set(agent.id, agent);
+	}
+}
+
 function filterAgents(
 	agents: Iterable<MockAgent>,
 	body: Record<string, unknown>,
@@ -246,6 +559,12 @@ function filterAgents(
 		stringValue(body, "a2aSkillId") ?? stringValue(body, "a2a_skill_id");
 	const taskClass =
 		stringValue(body, "taskClass") ?? stringValue(body, "task_class");
+	const requireA2ADispatch =
+		booleanValue(body, "requireA2aDispatch") ??
+		booleanValue(body, "requireA2ADispatch") ??
+		false;
+	const eligibleForDelegation =
+		booleanValue(body, "eligibleForDelegation") ?? false;
 	const limit = Number(body.limit);
 	return [...agents]
 		.filter((agent) => agent.workspaceId === workspaceId)
@@ -254,6 +573,8 @@ function filterAgents(
 		.filter((agent) => agentHasSurface(agent, surface))
 		.filter((agent) => agentHasSkill(agent, skillId))
 		.filter((agent) => skillAllowsTaskClass(agent, skillId, taskClass))
+		.filter((agent) => !requireA2ADispatch || agentHasA2ADispatchEndpoint(agent))
+		.filter((agent) => !eligibleForDelegation || agentHasDelegationCapacity(agent))
 		.slice(0, Number.isFinite(limit) && limit > 0 ? limit : undefined);
 }
 
@@ -384,6 +705,108 @@ async function startMockRegistry(): Promise<MockRegistry> {
 	};
 }
 
+async function startPushReceiver(): Promise<PushReceiver> {
+	const port = await openPort();
+	const requests: CapturedRequest[] = [];
+	const server = createServer(async (request, response) => {
+		const rawBody = await readBody(request);
+		if (request.method !== "POST") {
+			respondJson(response, 405, { error: "method not allowed" });
+			return;
+		}
+		if (request.headers["x-a2a-notification-token"] !== PUSH_TOKEN) {
+			respondJson(response, 401, { error: "missing push token" });
+			return;
+		}
+		if (rawBody.includes(PUSH_TOKEN)) {
+			respondJson(response, 400, { error: "push token leaked into body" });
+			return;
+		}
+		const body = rawBody.trim()
+			? (JSON.parse(rawBody) as Record<string, unknown>)
+			: {};
+		requests.push({
+			body,
+			headers: request.headers,
+			method: request.method,
+			url: request.url,
+		});
+		respondJson(response, 202, { ok: true });
+	});
+
+	await new Promise<void>((resolve, reject) => {
+		server.once("error", reject);
+		server.listen(port, "127.0.0.1", resolve);
+	});
+
+	return {
+		baseUrl: `http://127.0.0.1:${port}`,
+		requests,
+		close: async () => {
+			await new Promise<void>((resolve, reject) => {
+				server.close((error) => (error ? reject(error) : resolve()));
+			});
+		},
+		waitForTaskEvents: async (taskIds: string[]) => {
+			const deadline = Date.now() + PUSH_EVENT_TIMEOUT_MS;
+			while (Date.now() < deadline) {
+				const missing = taskIds.filter((taskId) => {
+					const events = requests
+						.map(pushEventSummary)
+						.filter(
+							(event): event is NonNullable<typeof event> =>
+								Boolean(event) && event.taskId === taskId,
+						);
+					return (
+						!events.some(
+							(event) =>
+								event.type === "statusUpdate" &&
+								event.state === "TASK_STATE_COMPLETED",
+						) ||
+						!events.some((event) => event.type === "artifactUpdate") ||
+						!events.some(
+							(event) =>
+								event.type === "task" &&
+								event.state === "TASK_STATE_COMPLETED",
+						)
+					);
+				});
+				if (missing.length === 0) {
+					return;
+				}
+				await delay(100);
+			}
+			throw new Error(
+				`push receiver missed terminal task events for ${taskIds.join(", ")}; saw ${JSON.stringify(
+					requests.map(pushEventSummary).filter(Boolean),
+				)}`,
+			);
+		},
+	};
+}
+
+async function proveInvalidPushTokenRejected(
+	pushReceiver: PushReceiver,
+): Promise<void> {
+	const response = await fetch(`${pushReceiver.baseUrl}/a2a/push`, {
+		method: "POST",
+		headers: {
+			"content-type": "application/json",
+			"x-a2a-notification-token": "wrong-local-token",
+		},
+		body: JSON.stringify({
+			taskId: "unauthorized-local-swarm-task",
+			status: { state: "TASK_STATE_COMPLETED" },
+		}),
+	});
+	if (response.status !== 401) {
+		throw new Error(`expected invalid push token to return 401, got ${response.status}`);
+	}
+	if (pushReceiver.requests.length !== 0) {
+		throw new Error("invalid push token was recorded as an accepted push event");
+	}
+}
+
 async function waitForHealth(
 	baseUrl: string,
 	stderr: () => string,
@@ -442,6 +865,9 @@ async function startControlPlane(input: {
 				MAESTRO_A2A_PLATFORM_REGISTER: "1",
 				MAESTRO_A2A_PLATFORM_STATUS: "AGENT_STATUS_IDLE",
 				MAESTRO_A2A_PUBLIC_URL: baseUrl,
+				MAESTRO_A2A_PUSH_ALLOW_INSECURE: "1",
+				MAESTRO_A2A_PUSH_ALLOW_PRIVATE: "1",
+				MAESTRO_A2A_PUSH_TIMEOUT_MS: "1000",
 				MAESTRO_A2A_TASKS_FILE: tasksPath,
 				MAESTRO_AGENT_REGISTRY_SERVICE_TOKEN: REGISTRY_TOKEN,
 				MAESTRO_AGENT_REGISTRY_SERVICE_URL: input.registryUrl,
@@ -562,6 +988,29 @@ function configurePlatformEnv(registryUrl: string): EnvSnapshot {
 	return snapshot;
 }
 
+function configureTelemetryCapture(
+	events: A2ATelemetryCloudEventLike[],
+): EnvSnapshot {
+	const keys = [
+		"MAESTRO_EVENT_BUS_URL",
+		"MAESTRO_EVENT_BUS_SOURCE",
+		"MAESTRO_INTERNAL_TELEMETRY_DISABLED",
+		"EVALOPS_INTERNAL_TELEMETRY_DISABLED",
+	];
+	const snapshot = snapshotEnv(keys);
+	process.env.MAESTRO_EVENT_BUS_URL =
+		"nats://local-a2a-swarm-telemetry.invalid:4222";
+	process.env.MAESTRO_EVENT_BUS_SOURCE = "maestro.a2a.local-swarm-smoke";
+	delete process.env.MAESTRO_INTERNAL_TELEMETRY_DISABLED;
+	delete process.env.EVALOPS_INTERNAL_TELEMETRY_DISABLED;
+	setMaestroEventBusTransportForTests({
+		async publish(_subject, payload) {
+			events.push(JSON.parse(payload) as A2ATelemetryCloudEventLike);
+		},
+	});
+	return snapshot;
+}
+
 async function provePolicyDenial(registryUrl: string): Promise<number> {
 	const snapshot = configurePlatformEnv(registryUrl);
 	try {
@@ -576,6 +1025,63 @@ async function provePolicyDenial(registryUrl: string): Promise<number> {
 			eligibleForDelegation: true,
 		});
 		return denied?.length ?? 0;
+	} finally {
+		restoreEnv(snapshot);
+	}
+}
+
+async function proveDiscoveryShaping(registryUrl: string): Promise<{
+	candidateAgentIds: string[];
+	excludedInjectedAgentIds: string[];
+	staleCandidateIncluded: boolean;
+}> {
+	const snapshot = configurePlatformEnv(registryUrl);
+	try {
+		const candidates =
+			(await listA2APeerCandidatesWithPlatform({
+				workspaceId: WORKSPACE_ID,
+				capability: "code:review",
+				surface: "a2a",
+				status: "AGENT_STATUS_IDLE",
+				skillId: SKILL_ID,
+				taskClass: "code.review",
+				requireA2ADispatch: true,
+				eligibleForDelegation: true,
+				limit: HEALTHY_PEERS.length + SYNTHETIC_AGENT_IDS.length,
+				preferInternalEndpoint: true,
+			})) ?? [];
+		const candidateAgentIds = candidates
+			.map((candidate) => candidate.agent.id)
+			.filter((id): id is string => Boolean(id));
+		for (const peer of HEALTHY_PEERS) {
+			if (!candidateAgentIds.includes(peer.agentId)) {
+				throw new Error(
+					`healthy peer ${peer.agentId} was missing from shaped discovery candidates`,
+				);
+			}
+		}
+		const expectedExcluded = [
+			"maestro-a2a-local-saturated",
+			"maestro-a2a-local-busy",
+			"maestro-a2a-local-no-dispatch",
+			"maestro-a2a-local-denied",
+		];
+		for (const agentId of expectedExcluded) {
+			if (candidateAgentIds.includes(agentId)) {
+				throw new Error(`failure-injected peer ${agentId} survived discovery shaping`);
+			}
+		}
+		const staleCandidateIncluded = candidateAgentIds.includes(
+			"maestro-a2a-local-stale",
+		);
+		if (!staleCandidateIncluded) {
+			throw new Error("stale peer should remain eligible but lose to fresh peers");
+		}
+		return {
+			candidateAgentIds,
+			excludedInjectedAgentIds: expectedExcluded,
+			staleCandidateIncluded,
+		};
 	} finally {
 		restoreEnv(snapshot);
 	}
@@ -621,15 +1127,10 @@ async function proveResume(instance: ControlPlaneInstance, taskId: string) {
 	};
 }
 
-function taskText(state: SwarmState, taskId: string): string | undefined {
-	return state.teammates.find((teammate) =>
-		teammate.completedTasks.includes(taskId),
-	)?.output;
-}
-
 async function runSwarm(
 	registryUrl: string,
 	rootDir: string,
+	pushReceiver: PushReceiver,
 ): Promise<SwarmState> {
 	const planFile = join(rootDir, "local-a2a-swarm-plan.md");
 	await writeFile(
@@ -637,42 +1138,40 @@ async function runSwarm(
 		[
 			"# Local A2A Swarm Smoke",
 			"",
-			"- alpha-review: prove Platform-discovered peer alpha can complete remote A2A work.",
-			"- beta-review: prove Platform-discovered peer beta can complete remote A2A work.",
+			...HEALTHY_PEERS.map((peer) => `- ${peer.taskId}: ${peer.plan}`),
 		].join("\n"),
 		"utf8",
 	);
 	const config: SwarmConfig = {
-		teammateCount: 2,
+		teammateCount: HEALTHY_PEERS.length,
 		planFile,
 		cwd: process.cwd(),
 		mode: "smart",
 		modelProvider: "anthropic",
 		transport: "a2a",
-		tasks: [
-			{
-				id: "alpha-review",
-				prompt: "Return the alpha deterministic A2A swarm response.",
-				subagentType: "reviewer",
-			},
-			{
-				id: "beta-review",
-				prompt: "Return the beta deterministic A2A swarm response.",
-				subagentType: "reviewer",
-			},
-		],
+		tasks: HEALTHY_PEERS.map((peer) => ({
+			id: peer.taskId,
+			prompt: peer.prompt,
+			subagentType: "reviewer",
+		})),
 		a2a: {
 			discover: true,
 			workspaceId: WORKSPACE_ID,
 			capability: "code:review",
 			surface: "a2a",
 			skillId: SKILL_ID,
+			limit: HEALTHY_PEERS.length + SYNTHETIC_AGENT_IDS.length,
 			preferInternalEndpoint: true,
 			tasksPath: join(rootDir, "swarm-a2a-tasks.json"),
 			timeoutMs: 1_500,
 			maxAttempts: 1,
 			maxWaitMs: 20_000,
 			pollIntervalMs: 100,
+			pushNotificationConfig: {
+				id: "local-swarm-push",
+				url: `${pushReceiver.baseUrl}/a2a/push`,
+				token: PUSH_TOKEN,
+			},
 		},
 		taskTimeout: 20_000,
 	};
@@ -683,13 +1182,15 @@ async function runSwarm(
 		if (result.status !== "completed") {
 			throw new Error(`A2A swarm did not complete: ${result.status}`);
 		}
-		if (
-			taskText(result, "alpha-review") !== "A2A local swarm response from alpha"
-		) {
-			throw new Error("alpha task did not return the alpha peer response");
-		}
-		if (taskText(result, "beta-review") !== "A2A local swarm response from beta") {
-			throw new Error("beta task did not return the beta peer response");
+		const outputs = new Set(
+			result.teammates
+				.map((teammate) => teammate.output)
+				.filter((output): output is string => Boolean(output)),
+		);
+		for (const peer of HEALTHY_PEERS) {
+			if (!outputs.has(peer.response)) {
+				throw new Error(`${peer.slug} peer response was not returned by the swarm`);
+			}
 		}
 		return result;
 	} finally {
@@ -700,53 +1201,64 @@ async function runSwarm(
 async function main(): Promise<void> {
 	const rootDir = await mkdtemp(join(tmpdir(), "maestro-a2a-local-swarm-"));
 	const registry = await startMockRegistry();
+	const pushReceiver = await startPushReceiver();
 	const instances: ControlPlaneInstance[] = [];
+	const telemetryEvents: A2ATelemetryCloudEventLike[] = [];
+	const telemetryEnvSnapshot = configureTelemetryCapture(telemetryEvents);
 	try {
+		await proveInvalidPushTokenRejected(pushReceiver);
 		await mkdir(rootDir, { recursive: true });
-		const alphaPort = await openPort();
-		const betaPort = await openPort();
-		instances.push(
-			await startControlPlane({
-				agentId: "maestro-a2a-local-alpha",
-				name: "Maestro Local A2A Alpha",
-				response: "A2A local swarm response from alpha",
-				port: alphaPort,
-				registryUrl: registry.baseUrl,
-				rootDir,
-				objectiveId: "objective-alpha",
-				seedResumeTask: true,
-			}),
-		);
-		instances.push(
-			await startControlPlane({
-				agentId: "maestro-a2a-local-beta",
-				name: "Maestro Local A2A Beta",
-				response: "A2A local swarm response from beta",
-				port: betaPort,
-				registryUrl: registry.baseUrl,
-				rootDir,
-				objectiveId: "objective-beta",
-			}),
-		);
-		await registry.waitForAgents(2);
+		for (const peer of HEALTHY_PEERS) {
+			instances.push(
+				await startControlPlane({
+					agentId: peer.agentId,
+					name: peer.name,
+					response: peer.response,
+					port: await openPort(),
+					registryUrl: registry.baseUrl,
+					rootDir,
+					objectiveId: peer.objectiveId,
+					seedResumeTask: peer.seedResumeTask,
+				}),
+			);
+		}
+		await registry.waitForAgents(HEALTHY_PEERS.length);
+		installSyntheticAgents(registry);
 		const deniedCandidateCount = await provePolicyDenial(registry.baseUrl);
 		if (deniedCandidateCount !== 0) {
 			throw new Error(
 				`denied discovery returned ${deniedCandidateCount} candidates`,
 			);
 		}
-		const swarm = await runSwarm(registry.baseUrl, rootDir);
+		const discovery = await proveDiscoveryShaping(registry.baseUrl);
+		const swarm = await runSwarm(registry.baseUrl, rootDir, pushReceiver);
 		const completedExecutions = swarm.teammates
 			.map((teammate) => teammate.a2a)
 			.filter((a2a): a2a is NonNullable<typeof a2a> => Boolean(a2a));
 		const peersUsed = new Set(completedExecutions.map((a2a) => a2a.peer));
-		if (peersUsed.size !== 2) {
+		if (peersUsed.size !== HEALTHY_PEERS.length) {
 			throw new Error(
-				`expected swarm to use both local peers, used ${[...peersUsed].join(", ")}`,
+				`expected swarm to use ${HEALTHY_PEERS.length} local peers, used ${[...peersUsed].join(", ")}`,
 			);
 		}
+		const injectedPeersUsed = completedExecutions
+			.filter(
+				(a2a) =>
+					isSyntheticPeerLabel(a2a.peer) ||
+					isSyntheticPeerLabel(a2a.peerDisplayName),
+			)
+			.map((a2a) => a2a.peerDisplayName ?? a2a.peer);
+		if (injectedPeersUsed.length > 0) {
+			throw new Error(
+				`swarm selected failure-injected peers: ${injectedPeersUsed.join(", ")}`,
+			);
+		}
+		await pushReceiver.waitForTaskEvents(
+			completedExecutions.map((a2a) => a2a.taskId),
+		);
+		await delay(0);
 		const alpha = instances.find(
-			(instance) => instance.name === "Maestro Local A2A Alpha",
+			(instance) => instance.agentId === "maestro-a2a-local-alpha",
 		);
 		if (!alpha) {
 			throw new Error("missing alpha control plane");
@@ -754,11 +1266,60 @@ async function main(): Promise<void> {
 		const resume = await proveResume(alpha, RESUME_TASK_ID);
 		const ledger = JSON.parse(
 			await readFile(join(rootDir, "swarm-a2a-tasks.json"), "utf8"),
-		) as Record<string, unknown>;
+		) as A2ATaskLedgerFile & Record<string, unknown>;
+		const ledgerTasks = Array.isArray(ledger.tasks)
+			? (ledger.tasks.filter(
+					(task): task is Record<string, unknown> =>
+						Boolean(task) && typeof task === "object" && !Array.isArray(task),
+				) as Record<string, unknown>[])
+			: [];
+		const ledgerWorkGraphs = ledgerTasks.filter((task) =>
+			Boolean(objectValue(task, "workGraph")),
+		);
+		if (ledgerWorkGraphs.length !== completedExecutions.length) {
+			throw new Error(
+				`expected ${completedExecutions.length} ledger work graphs, saw ${ledgerWorkGraphs.length}`,
+			);
+		}
+		const pushBodyJson = JSON.stringify(
+			pushReceiver.requests.map((request) => request.body),
+		);
+		if (pushBodyJson.includes(PUSH_TOKEN)) {
+			throw new Error("push token leaked into push notification payload body");
+		}
+		const pushCounts = pushEventCounts(pushReceiver.requests);
+		for (const type of ["statusUpdate", "artifactUpdate", "task"] as const) {
+			if ((pushCounts[type] ?? 0) < completedExecutions.length) {
+				throw new Error(
+					`expected at least ${completedExecutions.length} ${type} push events, saw ${pushCounts[type] ?? 0}`,
+				);
+			}
+		}
+		const completionAudit = buildA2ACompletionAudit({
+			swarm,
+			ledger,
+			pushSignals: pushedTaskSignals(pushReceiver.requests, completedExecutions),
+		});
+		if (!completionAudit.complete) {
+			throw new Error(
+				`A2A completion audit incomplete: ${JSON.stringify(completionAudit)}`,
+			);
+		}
+		const telemetryInspection = inspectA2ATelemetry({
+			swarmId: swarm.id,
+			events: telemetryEvents,
+			audit: completionAudit,
+		});
+		if (!telemetryInspection.complete) {
+			throw new Error(
+				`A2A telemetry inspection incomplete: ${JSON.stringify(telemetryInspection)}`,
+			);
+		}
 		console.log(
 			JSON.stringify(
 				{
 					ok: true,
+					schema: "evalops.maestro.local-a2a-multipeer-swarm.v1",
 					registry: {
 						url: registry.baseUrl,
 						registeredAgents: [...registry.agents.keys()],
@@ -775,6 +1336,7 @@ async function main(): Promise<void> {
 							request.url?.endsWith("/List"),
 						).length,
 						policyDeniedCandidateCount: deniedCandidateCount,
+						discovery,
 					},
 					swarm: {
 						id: swarm.id,
@@ -791,8 +1353,41 @@ async function main(): Promise<void> {
 						ledgerTasks: Array.isArray(ledger.tasks)
 							? ledger.tasks.length
 							: undefined,
+						ledgerWorkGraphs: ledgerWorkGraphs.length,
+					},
+					pushNotifications: {
+						url: pushReceiver.baseUrl,
+						received: pushReceiver.requests.length,
+						eventCounts: pushCounts,
+						remoteTaskIds: completedExecutions.map((a2a) => a2a.taskId),
+					},
+					telemetrySignals: {
+						eventCount: telemetryEvents.length,
+						eventTypes: [...new Set(telemetryEvents.map((event) => event.type))],
+						completionAudit,
+						inspection: telemetryInspection,
 					},
 					resume,
+					fleetSignals: {
+						healthyPeerCount: HEALTHY_PEERS.length,
+						failureInjectedPeerCount: SYNTHETIC_AGENT_IDS.length,
+						excludedInjectedAgentIds: discovery.excludedInjectedAgentIds,
+						staleCandidateIncluded: discovery.staleCandidateIncluded,
+						distinctPeersUsed: peersUsed.size,
+						pushSignals: {
+							acceptedCount: pushReceiver.requests.length,
+							minimumTerminalEventTypesSatisfied: true,
+						},
+						resumeSignals: resume,
+						policySignals: {
+							deniedTaskClass: DENIED_TASK_CLASS,
+							candidateCount: deniedCandidateCount,
+						},
+						ledgerSignals: {
+							workGraphCount: ledgerWorkGraphs.length,
+						},
+						noSecretLeak: true,
+					},
 				},
 				null,
 				2,
@@ -803,6 +1398,9 @@ async function main(): Promise<void> {
 			instances.map((instance) => stopProcess(instance.process)),
 		);
 		await registry.close();
+		await pushReceiver.close();
+		setMaestroEventBusTransportForTests(undefined);
+		restoreEnv(telemetryEnvSnapshot);
 		if (process.env.MAESTRO_A2A_LOCAL_SWARM_KEEP_TMP !== "1") {
 			await rm(rootDir, { recursive: true, force: true });
 		}

@@ -5,6 +5,7 @@
  * parallel agent execution for implementing plans.
  */
 
+import type { A2ATaskPushNotificationConfig } from "../../platform/a2a-client.js";
 import type { AgentMode, ModelProvider, ReasoningEffort } from "../modes.js";
 import type { SubagentType } from "../subagent-specs.js";
 
@@ -140,6 +141,8 @@ export interface SwarmA2AConfig {
 	maxWaitMs?: number;
 	/** Poll interval while waiting for remote task state. */
 	pollIntervalMs?: number;
+	/** Optional push callback config sent to remote peers for task progress/artifact updates. */
+	pushNotificationConfig?: A2ATaskPushNotificationConfig;
 }
 
 /**
@@ -152,6 +155,8 @@ export interface SwarmA2ATeammateExecution {
 	peerDisplayName?: string;
 	/** Peer source used by the router. */
 	source: "registry" | "platform-agent-registry";
+	/** Parent swarm task id used to derive telemetry lane ids. */
+	parentTaskId?: string;
 	/** A2A task id returned by the peer. */
 	taskId: string;
 	/** A2A context id used for resume/reply. */

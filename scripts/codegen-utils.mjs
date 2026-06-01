@@ -45,14 +45,39 @@ export function formatTsWithBiome(
 	}
 }
 
+const RUSTFMT_DISABLE_VALUES = new Set([
+	"0",
+	"false",
+	"no",
+	"none",
+	"off",
+	"skip",
+	"disabled",
+]);
+
+function resolveRustfmtCommand(command) {
+	if (typeof command !== "string") {
+		return undefined;
+	}
+	const trimmed = command.trim();
+	if (!trimmed) {
+		return null;
+	}
+	if (RUSTFMT_DISABLE_VALUES.has(trimmed.toLowerCase())) {
+		return null;
+	}
+	return trimmed;
+}
+
 function resolveRustfmt(envNames) {
 	for (const envName of envNames) {
-		const command = process.env[envName];
-		if (command) {
+		const command = resolveRustfmtCommand(process.env[envName]);
+		if (command !== undefined) {
 			return command;
 		}
 	}
-	return process.env.MAESTRO_RUSTFMT ?? "rustfmt";
+	const defaultCommand = resolveRustfmtCommand(process.env.MAESTRO_RUSTFMT);
+	return defaultCommand === undefined ? "rustfmt" : defaultCommand;
 }
 
 export function formatRustWithRustfmt(
@@ -72,6 +97,9 @@ export function formatRustWithRustfmt(
 	try {
 		writeFileSync(tempPath, source, "utf8");
 		const rustfmt = resolveRustfmt(envNames);
+		if (rustfmt === null) {
+			return { content: source, rustfmtAvailable: false };
+		}
 		const result = spawnSync(rustfmt, [tempPath], {
 			cwd: rootDir,
 			encoding: "utf8",

@@ -60,6 +60,9 @@ describe("Codex operating-layer conformance", () => {
 			"manifest is missing required area remote-runner-continuity",
 		);
 		expect(failures).toContain(
+			"manifest is missing required area headless-runtime-durability",
+		);
+		expect(failures).toContain(
 			"manifest is missing required area live-verification",
 		);
 	});

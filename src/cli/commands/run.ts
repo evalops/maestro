@@ -8,13 +8,13 @@ import {
 	type AgentTrajectoryInspectionReport,
 	buildAgentTrajectoryInspectionReport,
 } from "../../server/agent-trajectory-inspection.js";
+import { DEFAULT_AGENT_TRAJECTORY_REPLAY_LAB_RULES } from "../../server/agent-trajectory-replay-lab.js";
 import {
 	type AgentTrajectoryReplayReport,
 	replayAgentTrajectoryReport,
 } from "../../server/agent-trajectory-replay.js";
 import {
 	type AgentTrajectoryScoreReport,
-	type AgentTrajectoryScorerRule,
 	scoreAgentTrajectoryReport,
 } from "../../server/agent-trajectory-scorers.js";
 import {
@@ -27,15 +27,6 @@ import { migrateToCurrentVersion } from "../../session/migration.js";
 import type { SessionEntry, SessionHeaderEntry } from "../../session/types.js";
 
 const RUN_RECONSTRUCTION_SCHEMA = "evalops.maestro.run-reconstruction.v1";
-const RUN_INSPECT_TRAJECTORY_RULES: AgentTrajectoryScorerRule[] = [
-	{
-		id: "final-event-has-evidence",
-		severity: "error",
-		description:
-			"The final answer or runtime terminal event must have evidence.",
-		finalEvidenceCoverage: true,
-	},
-];
 
 type ComposerRunTimeline = ReturnType<typeof buildComposerRunTimeline>;
 type ComposerRunTimelineItem = ComposerRunTimeline["items"][number];
@@ -97,6 +88,8 @@ interface RunReconstructionReport {
 		id: string;
 		title?: string;
 		summary?: string;
+		resumeSummary?: string;
+		memoryExtractionHash?: string;
 		createdAt: string;
 		updatedAt: string;
 		messageCount: number;
@@ -114,6 +107,20 @@ interface RunReconstructionReport {
 	trajectoryScore: AgentTrajectoryScoreReport;
 	trajectoryInspection: AgentTrajectoryInspectionReport;
 	agentRuntimeLedger: AgentRuntimeLedgerReport;
+	durability: RunDurabilitySummary;
+}
+
+interface RunDurabilitySummary {
+	reconstructable: boolean;
+	sessionFilePresent: boolean;
+	resumeSummaryPresent: boolean;
+	memoryExtractionHashPresent: boolean;
+	contextManifestPresent: boolean;
+	compactionCheckpoints: number;
+	pendingRequests: number;
+	agentRuntimeLedgerEntries: number;
+	replayDeterministic: boolean;
+	promotionIdempotencyKey: string;
 }
 
 function usage(): string {
@@ -308,6 +315,39 @@ function buildCoverage(
 	};
 }
 
+function buildDurabilitySummary(input: {
+	sessionFile?: string;
+	session: { resumeSummary?: string; memoryExtractionHash?: string };
+	counts: ReconstructionCountSummary;
+	contextManifest: ContextManifestSummary;
+	agentRuntimeLedger: AgentRuntimeLedgerReport;
+}): RunDurabilitySummary {
+	const sessionFilePresent =
+		typeof input.sessionFile === "string" && input.sessionFile.length > 0;
+	const contextManifestPresent =
+		input.contextManifest.protocolVersion !== undefined;
+	const replayDeterministic = input.agentRuntimeLedger.replay.deterministic;
+	return {
+		reconstructable:
+			sessionFilePresent &&
+			input.counts.timelineItems > 0 &&
+			replayDeterministic,
+		sessionFilePresent,
+		resumeSummaryPresent:
+			typeof input.session.resumeSummary === "string" &&
+			input.session.resumeSummary.trim().length > 0,
+		memoryExtractionHashPresent:
+			typeof input.session.memoryExtractionHash === "string" &&
+			input.session.memoryExtractionHash.trim().length > 0,
+		contextManifestPresent,
+		compactionCheckpoints: input.counts.byType["compaction.created"] ?? 0,
+		pendingRequests: input.counts.byType["wait.pending"] ?? 0,
+		agentRuntimeLedgerEntries: input.agentRuntimeLedger.counts.entries,
+		replayDeterministic,
+		promotionIdempotencyKey: input.agentRuntimeLedger.promotion.idempotencyKey,
+	};
+}
+
 async function buildRunReconstructionReport(
 	sessionId: string,
 	options: RunInspectOptions = {},
@@ -338,7 +378,7 @@ async function buildRunReconstructionReport(
 	const trajectoryReplay = replayAgentTrajectoryReport(trajectory);
 	const trajectoryScore = scoreAgentTrajectoryReport(
 		trajectory,
-		RUN_INSPECT_TRAJECTORY_RULES,
+		DEFAULT_AGENT_TRAJECTORY_REPLAY_LAB_RULES,
 	);
 	const trajectoryInspection = buildAgentTrajectoryInspectionReport({
 		timelineItems: timeline.items,
@@ -374,6 +414,12 @@ async function buildRunReconstructionReport(
 	if (session.summary) {
 		sessionReport.summary = session.summary;
 	}
+	if (session.resumeSummary) {
+		sessionReport.resumeSummary = session.resumeSummary;
+	}
+	if (session.memoryExtractionHash) {
+		sessionReport.memoryExtractionHash = session.memoryExtractionHash;
+	}
 	if (header?.cwd) {
 		sessionReport.cwd = header.cwd;
 	}
@@ -394,6 +440,13 @@ async function buildRunReconstructionReport(
 		trajectoryScore,
 		trajectoryInspection,
 		agentRuntimeLedger,
+		durability: buildDurabilitySummary({
+			sessionFile,
+			session,
+			counts,
+			contextManifest,
+			agentRuntimeLedger,
+		}),
 	};
 }
 
@@ -442,6 +495,7 @@ function renderRunReconstruction(report: RunReconstructionReport): string {
 		`Trajectory score: ${report.trajectoryScore.counts.failed} failed, ${report.trajectoryScore.counts.warnings} warnings across ${report.trajectoryScore.counts.rules} rule(s)`,
 		`Replay lab: ${report.trajectoryInspection.counts.jumpTargets} event/source jump target(s), redaction=${report.trajectoryInspection.redaction.default}`,
 		`AgentRuntime ledger: ${report.agentRuntimeLedger.counts.entries} entries, ${report.agentRuntimeLedger.counts.promotionOperations} dry-run promotion op(s), replay deterministic=${report.agentRuntimeLedger.replay.deterministic ? "yes" : "no"}`,
+		`Durability: reconstructable=${report.durability.reconstructable ? "yes" : "no"}, resume summary=${report.durability.resumeSummaryPresent ? "yes" : "no"}, memory hash=${report.durability.memoryExtractionHashPresent ? "yes" : "no"}, checkpoints=${report.durability.compactionCheckpoints}, pending waits=${report.durability.pendingRequests}`,
 		`Coverage: ${renderCoverage(report.coverage)}`,
 		`Prompt context: ${report.promptContext.entries} entries (${report.promptContext.projectDocs} docs, ${report.promptContext.mcpServers} MCP servers)`,
 		`Context manifest: ${report.contextManifest.entries} entries (${report.contextManifest.projectDocs} docs, ${report.contextManifest.mcpServers} MCP servers, ${report.contextManifest.mcpResources} resources, ${report.contextManifest.mcpPrompts} prompts, ${report.contextManifest.diagnostics} diagnostics)`,

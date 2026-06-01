@@ -47,6 +47,17 @@ type AgentRuntimePromotionStepState = Exclude<
 	"blocked"
 >;
 
+export interface AgentRuntimeLedgerCorrelation {
+	pendingRequestId?: string;
+	pendingRequestKind?: ComposerRunTimelineItem["pendingRequestKind"];
+	approvalRequestId?: string;
+	toolExecutionId?: string;
+	artifactId?: string;
+	agentRunId?: string;
+	parentAgentRunId?: string;
+	childAgentRunId?: string;
+}
+
 export interface AgentRuntimeLedgerEntry {
 	id: string;
 	sequence: number;
@@ -65,6 +76,7 @@ export interface AgentRuntimeLedgerEntry {
 	summary?: string;
 	relatedIds: string[];
 	evidence: AgentTrajectoryEvent["evidence"];
+	correlation?: AgentRuntimeLedgerCorrelation;
 	platformShape: {
 		stepKind: string;
 		workItemKind: string;
@@ -152,7 +164,11 @@ export type AgentRuntimePromotionOperation =
 				state: AgentRuntimeLedgerState;
 				title: string;
 				timestamp: string;
-			};
+				waitId?: string;
+				evidenceRefs?: string[];
+				completionGate?: string;
+				payload?: Record<string, unknown>;
+			} & AgentRuntimeLedgerCorrelation;
 	  }
 	| {
 			operation: "wait_run";
@@ -163,7 +179,7 @@ export type AgentRuntimePromotionOperation =
 				waitType: string;
 				title: string;
 				timestamp: string;
-			};
+			} & AgentRuntimeLedgerCorrelation;
 	  }
 	| {
 			operation: "complete_run" | "fail_run";
@@ -172,6 +188,11 @@ export type AgentRuntimePromotionOperation =
 				state: "succeeded" | "failed";
 				timestamp: string;
 				reason?: string;
+				ledgerEntryId: string;
+				trajectoryEventId: string;
+				eventType: string;
+				title: string;
+				evidenceRefs: string[];
 			};
 	  };
 
@@ -308,6 +329,57 @@ function waitTypeForEntry(
 	return "AGENT_RUN_WAIT_TYPE_APPROVAL";
 }
 
+function firstEvidenceIdForEvent(
+	event: AgentTrajectoryEvent,
+	kind: AgentTrajectoryEvent["evidence"][number]["kind"],
+): string | undefined {
+	return event.evidence.find((anchor) => anchor.kind === kind)?.id;
+}
+
+function hasCorrelation(correlation: AgentRuntimeLedgerCorrelation): boolean {
+	return Object.values(correlation).some(
+		(value) => typeof value === "string" && value.length > 0,
+	);
+}
+
+function correlationForEvent(
+	event: AgentTrajectoryEvent,
+	timelineItem?: ComposerRunTimelineItem,
+): AgentRuntimeLedgerCorrelation | undefined {
+	const pendingRequestId =
+		timelineItem?.pendingRequestId ??
+		firstEvidenceIdForEvent(event, "pending_request");
+	const approvalRequestId =
+		timelineItem?.approvalRequestId ??
+		firstEvidenceIdForEvent(event, "approval_request");
+	const toolExecutionId =
+		timelineItem?.toolExecutionId ??
+		firstEvidenceIdForEvent(event, "tool_execution");
+	const artifactId =
+		timelineItem?.artifactId ?? firstEvidenceIdForEvent(event, "artifact");
+	const agentRunId =
+		timelineItem?.agentRunId ?? firstEvidenceIdForEvent(event, "agent_run");
+	const parentAgentRunId =
+		timelineItem?.parentAgentRunId ??
+		firstEvidenceIdForEvent(event, "parent_agent_run");
+	const childAgentRunId =
+		timelineItem?.childAgentRunId ??
+		firstEvidenceIdForEvent(event, "child_agent_run");
+	const correlation: AgentRuntimeLedgerCorrelation = {
+		...(pendingRequestId ? { pendingRequestId } : {}),
+		...(timelineItem?.pendingRequestKind
+			? { pendingRequestKind: timelineItem.pendingRequestKind }
+			: {}),
+		...(approvalRequestId ? { approvalRequestId } : {}),
+		...(toolExecutionId ? { toolExecutionId } : {}),
+		...(artifactId ? { artifactId } : {}),
+		...(agentRunId ? { agentRunId } : {}),
+		...(parentAgentRunId ? { parentAgentRunId } : {}),
+		...(childAgentRunId ? { childAgentRunId } : {}),
+	};
+	return hasCorrelation(correlation) ? correlation : undefined;
+}
+
 function buildLedgerEntries(
 	timeline: ComposerRunTimelineResponse,
 	trajectory: AgentTrajectoryReport,
@@ -323,6 +395,7 @@ function buildLedgerEntries(
 			? timelineItemsById.get(timelineItemId)
 			: undefined;
 		const waitType = waitTypeForEntry(kind, timelineItem);
+		const correlation = correlationForEvent(event, timelineItem);
 		return {
 			id: `ledger:${event.id}`,
 			sequence: event.sequence,
@@ -341,6 +414,7 @@ function buildLedgerEntries(
 			...(event.summary ? { summary: event.summary } : {}),
 			relatedIds: event.relatedIds ?? [],
 			evidence: event.evidence,
+			...(correlation ? { correlation } : {}),
 			platformShape: {
 				stepKind: stepKindForEntry(kind, event),
 				workItemKind: workItemKindForEntry(kind),
@@ -396,6 +470,77 @@ function runStepStateForEntry(
 	return entry.state === "blocked" ? "failed" : entry.state;
 }
 
+function firstEvidenceId(
+	entry: AgentRuntimeLedgerEntry,
+	kind: AgentTrajectoryEvent["evidence"][number]["kind"],
+): string | undefined {
+	return entry.evidence.find((anchor) => anchor.kind === kind)?.id;
+}
+
+function evidenceRefForAnchor(
+	anchor: AgentTrajectoryEvent["evidence"][number],
+): string {
+	switch (anchor.kind) {
+		case "timeline_item":
+			return `timeline-item:${anchor.id}`;
+		case "tool_call":
+			return `tool-call:${anchor.id}`;
+		case "tool_execution":
+			return `tool-execution:${anchor.id}`;
+		case "approval_request":
+			return `approval-request:${anchor.id}`;
+		case "pending_request":
+			return `pending-request:${anchor.id}`;
+		case "agent_run":
+			return `agent-run:${anchor.id}`;
+		case "parent_agent_run":
+			return `parent-agent-run:${anchor.id}`;
+		case "child_agent_run":
+			return `child-agent-run:${anchor.id}`;
+		default:
+			return `${anchor.kind}:${anchor.id}`;
+	}
+}
+
+function uniqueStrings(values: Array<string | undefined>): string[] {
+	return values.filter((value, index): value is string => {
+		return (
+			typeof value === "string" &&
+			value.length > 0 &&
+			values.indexOf(value) === index
+		);
+	});
+}
+
+function evidenceRefsForEntry(entry: AgentRuntimeLedgerEntry): string[] {
+	return uniqueStrings([
+		`trajectory-event:${entry.trajectoryEventId}`,
+		...(entry.timelineItemId ? [`timeline-item:${entry.timelineItemId}`] : []),
+		...entry.evidence.map(evidenceRefForAnchor),
+	]);
+}
+
+function workItemPayloadForEntry(
+	sessionId: string,
+	entry: AgentRuntimeLedgerEntry,
+): Record<string, unknown> {
+	return {
+		maestroSessionId: sessionId,
+		ledgerEntryId: entry.id,
+		trajectoryEventId: entry.trajectoryEventId,
+		eventType: entry.type,
+		phase: entry.phase,
+		actor: entry.actor,
+		source: entry.source,
+		state: entry.state,
+		...(entry.timelineItemId ? { timelineItemId: entry.timelineItemId } : {}),
+		...(entry.toolName ? { toolName: entry.toolName } : {}),
+		...(entry.summary ? { summary: entry.summary } : {}),
+		...(entry.relatedIds.length > 0 ? { relatedIds: entry.relatedIds } : {}),
+		...(entry.correlation ? { correlation: entry.correlation } : {}),
+	};
+}
+
 function terminalEntry(
 	entries: AgentRuntimeLedgerEntry[],
 ): AgentRuntimeLedgerEntry | undefined {
@@ -423,6 +568,11 @@ function terminalOperation(
 		payload: {
 			state: succeeded ? "succeeded" : "failed",
 			timestamp: terminal.timestamp,
+			ledgerEntryId: terminal.id,
+			trajectoryEventId: terminal.trajectoryEventId,
+			eventType: terminal.type,
+			title: terminal.title,
+			evidenceRefs: evidenceRefsForEntry(terminal),
 			...(succeeded
 				? {}
 				: {
@@ -470,6 +620,11 @@ function buildPromotionPlan(
 	];
 
 	for (const entry of entries) {
+		const correlation = entry.correlation ?? {};
+		const toolExecutionId =
+			correlation.toolExecutionId ?? firstEvidenceId(entry, "tool_execution");
+		const evidenceRefs = evidenceRefsForEntry(entry);
+		const waitId = entry.platformShape.waitType ? entry.id : undefined;
 		operations.push({
 			operation: "record_run_step",
 			id: `promote:${entry.id}:step`,
@@ -493,6 +648,12 @@ function buildPromotionPlan(
 				state: entry.state,
 				title: entry.title,
 				timestamp: entry.timestamp,
+				...(waitId ? { waitId } : {}),
+				...correlation,
+				...(toolExecutionId ? { toolExecutionId } : {}),
+				evidenceRefs,
+				completionGate: "maestro_agent_runtime_ledger_recorded",
+				payload: workItemPayloadForEntry(sessionId, entry),
 			},
 		});
 		if (entry.platformShape.waitType) {
@@ -505,6 +666,7 @@ function buildPromotionPlan(
 					waitType: entry.platformShape.waitType,
 					title: entry.title,
 					timestamp: entry.timestamp,
+					...correlation,
 				},
 			});
 		}

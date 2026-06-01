@@ -89,7 +89,7 @@ export class RpcClient extends EventEmitter {
 			...this.options.env,
 		};
 
-		this.process = spawn(this.options.cliPath, ["--rpc"], {
+		this.process = spawn(this.options.cliPath, ["--mode", "rpc"], {
 			cwd: this.options.cwd,
 			env,
 			stdio: ["pipe", "pipe", "pipe"],

@@ -40,6 +40,8 @@ describe("Fathom CUA MCP plugin server", () => {
 		expect(getFathomCuaPluginServers()[0]?.args).toEqual([
 			"run",
 			"./cmd/fathom-client",
+			"-tool-profile",
+			"canonical",
 			"-workspace-id",
 			"workspace_1",
 			"-ipc-root",
@@ -62,8 +64,23 @@ describe("Fathom CUA MCP plugin server", () => {
 
 		expect(getFathomCuaPluginServers()[0]).toMatchObject({
 			command: "/opt/fathom-client",
-			args: ["-helper-endpoint", "xpc:test", "-disable-ipc"],
+			args: [
+				"-helper-endpoint",
+				"xpc:test",
+				"-tool-profile",
+				"canonical",
+				"-disable-ipc",
+			],
 		});
+	});
+
+	it("allows explicit full profile for debugging and CI parity checks", () => {
+		vi.stubEnv("MAESTRO_FATHOM_CUA_ENABLED", "1");
+		vi.stubEnv("MAESTRO_FATHOM_CUA_REPO", "/tmp/fathom");
+		vi.stubEnv("MAESTRO_FATHOM_CUA_TOOL_PROFILE", "full");
+
+		expect(getFathomCuaPluginServers()[0]?.args).toContain("-tool-profile");
+		expect(getFathomCuaPluginServers()[0]?.args).toContain("full");
 	});
 
 	it("does not force the auto-detected repo cwd onto custom commands", () => {

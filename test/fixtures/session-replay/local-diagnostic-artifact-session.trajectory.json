@@ -10,7 +10,7 @@
 	},
 	"counts": {
 		"events": 10,
-		"evidenceAnchors": 20,
+		"evidenceAnchors": 22,
 		"byKind": {
 			"session": 1,
 			"message": 3,
@@ -189,10 +189,14 @@
 				{
 					"kind": "tool_call",
 					"id": "call-local-edit"
+				},
+				{
+					"kind": "artifact",
+					"id": "file:src/api.ts"
 				}
 			],
 			"toolName": "edit",
-			"relatedIds": ["call-local-edit"],
+			"relatedIds": ["call-local-edit", "file:src/api.ts"],
 			"summary": "src/api.ts | 256 bytes | 1 edits"
 		},
 		{
@@ -251,10 +255,19 @@
 				{
 					"kind": "approval_request",
 					"id": "approval-local-1"
+				},
+				{
+					"kind": "artifact",
+					"id": "file:src/api.ts"
 				}
 			],
 			"toolName": "edit",
-			"relatedIds": ["approval-local-1", "call-local-edit", "tool-exec-local-1"]
+			"relatedIds": [
+				"approval-local-1",
+				"call-local-edit",
+				"file:src/api.ts",
+				"tool-exec-local-1"
+			]
 		},
 		{
 			"id": "trajectory:message:assistant-local-2",

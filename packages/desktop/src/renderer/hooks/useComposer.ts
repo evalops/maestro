@@ -1,7 +1,7 @@
 /**
  * useComposer Hook
  *
- * Manages global Composer state including sessions, models, and settings.
+ * Manages global Maestro state including sessions, models, and settings.
  */
 
 import { useCallback, useEffect, useState } from "react";

@@ -5,8 +5,10 @@ import { getHomeDir, resolveEnvPath } from "../utils/path-expansion.js";
 
 type StoredKey = {
 	apiKey?: string;
-	authType?: "api-key" | "anthropic-oauth";
+	authType?: string;
 };
+
+type SupportedStoredAuthType = "api-key";
 
 type KeyStore = Record<string, StoredKey>;
 
@@ -56,7 +58,7 @@ function loadStore(pathOverride?: string): KeyStore {
 
 export function getStoredCredentials(providerId: string): {
 	apiKey?: string;
-	authType?: StoredKey["authType"];
+	authType?: SupportedStoredAuthType;
 } {
 	const stores = [loadStore(PROJECT_KEYS_PATH), loadStore()];
 
@@ -94,12 +96,10 @@ export function getStoredCredentials(providerId: string): {
 	for (const store of stores) {
 		const cred = store[providerId];
 		if (cred?.apiKey) {
-			const authType =
-				cred.authType === "anthropic-oauth"
-					? "anthropic-oauth"
-					: cred.authType === "api-key"
-						? "api-key"
-						: undefined;
+			if (cred.authType && cred.authType !== "api-key") {
+				continue;
+			}
+			const authType = cred.authType === "api-key" ? "api-key" : undefined;
 			return { apiKey: cred.apiKey, authType };
 		}
 	}

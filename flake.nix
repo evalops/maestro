@@ -1,5 +1,5 @@
 {
-  description = "Composer - AI-assisted development tool with TUI/CLI and Web UI";
+  description = "Maestro - AI-assisted development tool with TUI/CLI and Web UI";
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
@@ -61,7 +61,7 @@
           '';
 
           meta = with pkgs.lib; {
-            description = "Composer by EvalOps - Deterministic coding agent with TUI/CLI and Web UI";
+            description = "Maestro by EvalOps - Deterministic coding agent with TUI/CLI and Web UI";
             homepage = "https://github.com/evalops/composer";
             license = licenses.mit;
             maintainers = [ ];
@@ -91,7 +91,7 @@
           ];
 
           shellHook = ''
-            echo "Composer development environment"
+            echo "Maestro development environment"
             echo "Node: $(node --version)"
             echo "npm: $(npm --version)"
             echo ""

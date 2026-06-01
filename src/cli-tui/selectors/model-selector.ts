@@ -271,7 +271,6 @@ export class ModelSelectorComponent extends Container {
 		// of relying on Maestro's OAuth/API-key credential store.
 		if (isSelectableWithoutStoredCredential(model)) return { usable: true };
 		const oauthProviders = new Set<SupportedOAuthProvider>([
-			"anthropic",
 			"evalops",
 			"openai",
 			"openai-codex",
