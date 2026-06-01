@@ -784,6 +784,123 @@ describe("OAuth Index", () => {
 			);
 		});
 
+		it("uses refreshed migrated metadata before building a delegation device proof", async () => {
+			Object.defineProperty(process, "platform", {
+				configurable: true,
+				value: "linux",
+			});
+			process.env.MAESTRO_DEVICE_IDENTITY_HELPER = fileURLToPath(
+				new URL("../scripts/fake-device-identity-helper.mjs", import.meta.url),
+			);
+			process.env.MAESTRO_DEVICE_IDENTITY_ALLOW_TEST_HELPER = "1";
+
+			const refreshExpiresAt = new Date(
+				Date.now() + 60 * 60 * 1000,
+			).toISOString();
+			const delegationExpiresAt = new Date(
+				Date.now() + 15 * 60 * 1000,
+			).toISOString();
+			const challengePurposes: unknown[] = [];
+			let deviceRegistrations = 0;
+			const fetchMock = vi.fn(async (input, init) => {
+				const url = String(input);
+				if (url.endsWith("/v1/tokens/refresh")) {
+					return new Response(
+						JSON.stringify({
+							access_token: "new-evalops-access",
+							expires_at: refreshExpiresAt,
+							organization_id: "org_123",
+							refresh_token: "new-evalops-refresh",
+							scopes: ["llm_gateway:invoke"],
+							token_type: "Bearer",
+						}),
+						{ status: 200, headers: { "Content-Type": "application/json" } },
+					);
+				}
+				if (url.endsWith("/v1/device-challenges")) {
+					const body = JSON.parse(String(init?.body)) as Record<
+						string,
+						unknown
+					>;
+					challengePurposes.push(body.purpose);
+					return new Response(
+						JSON.stringify({
+							challenge: `challenge:${body.purpose}:${body.device_id ?? "none"}`,
+							challenge_id: `challenge-${challengePurposes.length}`,
+						}),
+						{ status: 200, headers: { "Content-Type": "application/json" } },
+					);
+				}
+				if (url.endsWith("/v1/devices")) {
+					deviceRegistrations += 1;
+					return new Response(
+						JSON.stringify({ device: { id: "desktop-test-device" } }),
+						{ status: 200, headers: { "Content-Type": "application/json" } },
+					);
+				}
+				if (url.endsWith("/v1/delegation-tokens")) {
+					return new Response(
+						JSON.stringify({
+							agent_id: "agent-child-1",
+							expires_at: delegationExpiresAt,
+							run_id: "run-child-1",
+							scopes_granted: ["llm_gateway:invoke"],
+							scopes_requested: ["llm_gateway:invoke"],
+							token: TEST_DELEGATED_ACCESS_VALUE,
+							token_type: "Bearer",
+						}),
+						{ status: 201, headers: { "Content-Type": "application/json" } },
+					);
+				}
+				return new Response(JSON.stringify({ error: "not-found" }), {
+					status: 404,
+					headers: { "Content-Type": "application/json" },
+				});
+			});
+			vi.stubGlobal("fetch", fetchMock);
+
+			saveOAuthCredentials("evalops", {
+				type: "oauth",
+				access: "expired-access",
+				refresh: "old-evalops-refresh",
+				expires: Date.now() - 1000,
+				metadata: {
+					deviceId: "old-v1-device",
+					identityBaseUrl: "https://identity.evalops.test",
+					organizationId: "org_123",
+					providerRef: {
+						provider: "openai",
+						environment: "prod",
+					},
+				},
+			});
+
+			await expect(
+				issueEvalOpsDelegationToken({
+					agentId: "agent-child-1",
+					agentType: "coder",
+					runId: "run-child-1",
+					scopes: ["llm_gateway:invoke"],
+					surface: "maestro-subagent",
+				}),
+			).resolves.toEqual(
+				expect.objectContaining({
+					token: TEST_DELEGATED_ACCESS_VALUE,
+				}),
+			);
+
+			expect(deviceRegistrations).toBe(1);
+			expect(challengePurposes).toEqual(["enroll", "delegation"]);
+			const delegationBody = JSON.parse(
+				String(fetchMock.mock.calls.at(-1)?.[1]?.body),
+			) as Record<string, unknown>;
+			expect(delegationBody.device_proof).toEqual({
+				challenge_id: "challenge-2",
+				device_id: "desktop-test-device",
+				signature: "fake-signature:challenge:delegation:desktop-test-device",
+			});
+		});
+
 		it("uses the shared Platform base URL when no identity-specific base is configured", async () => {
 			const expiresAt = new Date(Date.now() + 15 * 60 * 1000).toISOString();
 			const fetchMock = vi.fn().mockResolvedValue(

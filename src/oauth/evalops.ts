@@ -431,7 +431,11 @@ export async function issueEvalOpsDelegationToken(
 			"EvalOps delegation requires a valid access token. Run /login evalops first.",
 		);
 	}
-	let enrolledDeviceId = getMetadataString(metadata, "deviceId");
+	const delegationMetadata =
+		!request.token && !request.metadata
+			? (loadOAuthCredentials("evalops")?.metadata ?? metadata)
+			: metadata;
+	let enrolledDeviceId = getMetadataString(delegationMetadata, "deviceId");
 	let deviceProof = await buildEnrolledDesktopDeviceProof(
 		identityBaseUrl,
 		"delegation",
@@ -492,8 +496,8 @@ export async function issueEvalOpsDelegationToken(
 	return {
 		agentId: payload.agent_id ?? request.agentId,
 		expiresAt: parseTimestamp(payload.expires_at, "expires_at"),
-		organizationId: resolveDelegationOrganizationId(metadata),
-		providerRef: resolveProviderRef(metadata),
+		organizationId: resolveDelegationOrganizationId(delegationMetadata),
+		providerRef: resolveProviderRef(delegationMetadata),
 		runId: payload.run_id ?? request.runId,
 		scopesDenied: parseScopesPayload(payload.scopes_denied),
 		scopesGranted: parseScopesPayload(payload.scopes_granted),
