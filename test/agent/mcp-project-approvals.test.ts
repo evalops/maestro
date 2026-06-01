@@ -82,6 +82,56 @@ describe("project MCP approvals", () => {
 		expect(server.scope).toBe("plugin");
 	});
 
+	it("keeps Fathom CUA approvals stable across volatile run lineage args", () => {
+		const server = {
+			name: "fathom-cua",
+			scope: "plugin" as const,
+			requiresProjectApproval: true,
+			transport: "stdio" as const,
+			command: "fathom-client",
+			args: [
+				"-tool-profile",
+				"default",
+				"-session-id",
+				"session-one",
+				"-turn-id",
+				"turn-one",
+			],
+		};
+
+		setProjectMcpServerApprovalDecision({
+			projectRoot: testDir,
+			server,
+			decision: "approved",
+		});
+
+		expect(
+			getProjectMcpServerApprovalStatus({
+				projectRoot: testDir,
+				server: {
+					...server,
+					args: [
+						"-tool-profile",
+						"default",
+						"-session-id",
+						"session-two",
+						"-turn-id",
+						"turn-two",
+					],
+				},
+			}),
+		).toBe("approved");
+		expect(
+			getProjectMcpServerApprovalStatus({
+				projectRoot: testDir,
+				server: {
+					...server,
+					args: ["-tool-profile", "high", "-session-id", "session-two"],
+				},
+			}),
+		).toBe("pending");
+	});
+
 	it("resets approval when the project auth preset changes", () => {
 		const server = {
 			name: "linear",

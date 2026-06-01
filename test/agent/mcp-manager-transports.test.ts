@@ -11,6 +11,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { runWithMcpClientToolService } from "../../src/mcp/elicitation.js";
+import { setProjectMcpServerApprovalDecision } from "../../src/mcp/project-approvals.js";
 import { resolveMcpWorkspaceUri } from "../../src/mcp/workspace-trust.js";
 
 const mockClientConnect = vi.fn();
@@ -80,6 +81,10 @@ describe("MCP manager remote transports", () => {
 		manager = new McpClientManager();
 		tempDir = join(tmpdir(), `maestro-mcp-transport-${Date.now()}`);
 		mkdirSync(tempDir, { recursive: true });
+		vi.stubEnv(
+			"MAESTRO_MCP_PROJECT_APPROVALS_FILE",
+			join(tempDir, "project-approvals.json"),
+		);
 		vi.stubEnv(
 			"MAESTRO_MCP_WORKSPACE_TRUST_FILE",
 			join(tempDir, "workspace-trust.json"),
@@ -965,6 +970,48 @@ describe("MCP manager remote transports", () => {
 			"https://example.com/mcp/v2",
 		);
 		expect(manager.isConnected("remote-http")).toBe(true);
+	});
+
+	it("does not install tools when approval is denied during an in-flight connection", async () => {
+		const server = {
+			name: "fathom-cua",
+			scope: "plugin" as const,
+			requiresProjectApproval: true,
+			transport: "http" as const,
+			url: "https://example.com/mcp",
+		};
+		setProjectMcpServerApprovalDecision({
+			projectRoot: tempDir,
+			server,
+			decision: "approved",
+		});
+		let resolveListTools!: (value: { tools: [] }) => void;
+		mockListTools.mockReturnValue(
+			new Promise((resolve) => {
+				resolveListTools = resolve;
+			}),
+		);
+
+		const configure = manager.configure({
+			projectRoot: tempDir,
+			authPresets: [],
+			servers: [server],
+		});
+		await vi.waitFor(() => {
+			expect(mockListTools).toHaveBeenCalled();
+		});
+
+		setProjectMcpServerApprovalDecision({
+			projectRoot: tempDir,
+			server,
+			decision: "denied",
+		});
+		const reconnect = manager.reconnect("fathom-cua");
+		resolveListTools({ tools: [] });
+
+		await expect(reconnect).resolves.toBe(false);
+		await configure;
+		expect(manager.isConnected("fathom-cua")).toBe(false);
 	});
 
 	it("merges static headers with headersHelper output for remote transports", async () => {

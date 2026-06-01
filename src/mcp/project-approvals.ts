@@ -133,6 +133,28 @@ function getProjectRootKey(projectRoot: string): string {
 	return resolve(projectRoot);
 }
 
+const FATHOM_CUA_VOLATILE_ARG_FLAGS = new Set(["-session-id", "-turn-id"]);
+
+function approvalFingerprintArgs(server: McpServerConfig): string[] {
+	const args = server.args ?? [];
+	if (server.name !== "fathom-cua") {
+		return args;
+	}
+	const stableArgs: string[] = [];
+	for (let index = 0; index < args.length; index += 1) {
+		const arg = args[index];
+		if (arg === undefined) {
+			continue;
+		}
+		if (FATHOM_CUA_VOLATILE_ARG_FLAGS.has(arg)) {
+			index += 1;
+			continue;
+		}
+		stableArgs.push(arg);
+	}
+	return stableArgs;
+}
+
 export function buildProjectMcpServerFingerprint(
 	server: McpServerConfig,
 	authPresets: readonly McpAuthPresetConfig[] = [],
@@ -141,7 +163,7 @@ export function buildProjectMcpServerFingerprint(
 		name: server.name,
 		transport: server.transport,
 		command: server.command,
-		args: server.args ?? [],
+		args: approvalFingerprintArgs(server),
 		env: normalizeStringRecord(server.env),
 		cwd: server.cwd,
 		url: server.url,
