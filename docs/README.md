@@ -27,6 +27,7 @@ Use this index to jump to the right guide quickly and see how the pieces connect
 - [Hosted Runner Contract](protocols/hosted-runner-contract.md) — provider-neutral runtime contract for account-scoped remote Maestro sessions.
 - [Platform AgentRuntime Session Bridge](design/PLATFORM_AGENT_RUNTIME_SESSION_BRIDGE.md) — how hosted session starts are projected to Platform AgentRuntime/A2A with trace and support correlation.
 - [AgentRuntime Task Mapping](design/AGENT_RUNTIME_TASK_MAPPING.md) — how local todo, background-task, checkpoint, and swarm concepts project into Platform AgentRuntime phases.
+- [EvalOps Agent Event Stream ADR](adr/evalops-agent-event-stream-v1.md) — docs-only v1 vocabulary for agent events, streams, identity, readiness, evidence refs, and capability grants.
 - [Pending Request Contract](protocols/pending-requests.md) — unified session projection for approvals, user input, MCP elicitations, tool retries, and Platform waits.
 
 ## Architecture & Patterns
