@@ -335,10 +335,17 @@ export interface PackageRemoveResponse {
 	} | null;
 }
 
+export type McpConfigScope =
+	| "enterprise"
+	| "plugin"
+	| "project"
+	| "local"
+	| "user";
+
 export interface McpServerStatus {
 	name: string;
 	connected: boolean;
-	scope?: "enterprise" | "plugin" | "project" | "local" | "user";
+	scope?: McpConfigScope;
 	transport?: "stdio" | "http" | "sse";
 	tools?:
 		| Array<{
@@ -411,7 +418,7 @@ export interface McpPromptDefinition {
 
 export interface McpAuthPresetStatus {
 	name: string;
-	scope?: "enterprise" | "plugin" | "project" | "local" | "user";
+	scope?: McpConfigScope;
 	headerKeys: string[];
 	headersHelper?: string;
 }
@@ -544,7 +551,7 @@ export interface McpServerRemoveResponse {
 	path: string;
 	fallback: {
 		name: string;
-		scope?: "enterprise" | "plugin" | "project" | "local" | "user";
+		scope?: McpConfigScope;
 	} | null;
 }
 
@@ -588,7 +595,7 @@ export interface McpProjectApprovalRequest {
 
 export interface McpProjectApprovalResponse {
 	name: string;
-	scope: "project";
+	scope?: McpConfigScope;
 	decision: "approved" | "denied";
 	projectApproval: "pending" | "approved" | "denied";
 }

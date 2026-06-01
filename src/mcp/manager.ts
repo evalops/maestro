@@ -394,7 +394,8 @@ function serverConfigsEqual(
 		left.enabled === right.enabled &&
 		left.disabled === right.disabled &&
 		left.timeout === right.timeout &&
-		left.scope === right.scope
+		left.scope === right.scope &&
+		left.requiresProjectApproval === right.requiresProjectApproval
 	);
 }
 
@@ -878,6 +879,11 @@ export class McpClientManager extends EventEmitter {
 					.filter((capability) => capability !== undefined),
 			);
 
+			if (!canConnectServer(config, buildProjectApprovalMap(this.config))) {
+				await Promise.allSettled([client.close(), transport.close()]);
+				return;
+			}
+
 			this.servers.set(name, {
 				config,
 				client,
@@ -918,7 +924,10 @@ export class McpClientManager extends EventEmitter {
 			this.emit("error", { name, error: message });
 
 			// Schedule reconnection for non-reconnect attempts
-			if (!isReconnect) {
+			if (
+				!isReconnect &&
+				canConnectServer(config, buildProjectApprovalMap(this.config))
+			) {
 				this.scheduleReconnect(config, 0);
 			}
 		}
@@ -949,6 +958,9 @@ export class McpClientManager extends EventEmitter {
 
 			if (this.servers.has(config.name)) {
 				return; // Already reconnected
+			}
+			if (!canConnectServer(config, buildProjectApprovalMap(this.config))) {
+				return;
 			}
 
 			try {
@@ -1134,6 +1146,11 @@ export class McpClientManager extends EventEmitter {
 		if (timer) {
 			clearTimeout(timer);
 			this.reconnectTimers.delete(name);
+		}
+
+		const pendingConnection = this.connecting.get(name);
+		if (pendingConnection) {
+			await Promise.allSettled([pendingConnection]);
 		}
 
 		const server = this.servers.get(name);

@@ -21,6 +21,7 @@ import {
 	removeMcpServerFromConfig,
 	resolveOfficialMcpRegistryEntry,
 	searchOfficialMcpRegistry,
+	serverRequiresProjectApproval,
 	setProjectMcpServerApprovalDecision,
 	updateMcpAuthPresetInConfig,
 	updateMcpServerInConfig,
@@ -1287,9 +1288,9 @@ async function handleMcpProjectApprovalCommand(
 				`MCP server "${parsed.name}" not found in merged config.`,
 			);
 		}
-		if (existingServer.scope !== "project") {
+		if (!serverRequiresProjectApproval(existingServer)) {
 			throw new Error(
-				`MCP server "${parsed.name}" is not loaded from project config.`,
+				`MCP server "${parsed.name}" does not require project approval.`,
 			);
 		}
 
@@ -1300,6 +1301,9 @@ async function handleMcpProjectApprovalCommand(
 			authPresets: currentConfig.authPresets,
 			decision,
 		});
+		if (decision === "denied") {
+			await mcpManager.reconnect(parsed.name);
+		}
 		await reloadMcpManager(projectRoot);
 
 		renderCtx.addContent(

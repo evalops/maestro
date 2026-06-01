@@ -496,6 +496,7 @@ vi.mock("../../../src/mcp/index.js", () => ({
 	mcpManager: {
 		getStatus: vi.fn(() => createDefaultMcpStatus()),
 		configure: vi.fn().mockResolvedValue(undefined),
+		reconnect: vi.fn().mockResolvedValue(false),
 		readResource: vi.fn(),
 		getPrompt: vi.fn(),
 	},
@@ -521,6 +522,10 @@ vi.mock("../../../src/mcp/index.js", () => ({
 				: [],
 	})),
 	searchOfficialMcpRegistry: vi.fn(() => [mockOfficialRegistryEntry]),
+	serverRequiresProjectApproval: vi.fn(
+		(server: { scope?: string; requiresProjectApproval?: boolean }) =>
+			server.scope === "project" || server.requiresProjectApproval === true,
+	),
 	setProjectMcpServerApprovalDecision: vi.fn(),
 	updateMcpAuthPresetInConfig: vi.fn(() => ({
 		path: "/tmp/project/.maestro/mcp.local.json",
@@ -668,6 +673,43 @@ describe("mcp-handlers", () => {
 				});
 				expect(ctx.addContent).toHaveBeenCalledWith(
 					'Approved project MCP server "test-server".',
+				);
+			});
+		});
+
+		it("disconnects a generated plugin MCP server when project approval is denied", async () => {
+			vi.mocked(loadMcpConfig).mockReturnValueOnce({
+				projectRoot: process.cwd(),
+				servers: [
+					{
+						name: "fathom-cua",
+						scope: "plugin",
+						requiresProjectApproval: true,
+						transport: "stdio",
+						command: "fathom-client",
+					},
+				],
+				authPresets: [],
+			});
+
+			const ctx = createMcpCtx("/mcp deny fathom-cua");
+			handleMcpCommand(ctx);
+			await vi.waitFor(() => {
+				expect(setProjectMcpServerApprovalDecision).toHaveBeenCalledWith({
+					projectRoot: process.cwd(),
+					server: {
+						name: "fathom-cua",
+						scope: "plugin",
+						requiresProjectApproval: true,
+						transport: "stdio",
+						command: "fathom-client",
+					},
+					authPresets: [],
+					decision: "denied",
+				});
+				expect(mcpManager.reconnect).toHaveBeenCalledWith("fathom-cua");
+				expect(ctx.addContent).toHaveBeenCalledWith(
+					'Denied project MCP server "fathom-cua".',
 				);
 			});
 		});
