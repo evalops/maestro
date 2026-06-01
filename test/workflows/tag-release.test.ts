@@ -17,6 +17,7 @@ describe("tag-release workflow", () => {
 				"tag-current-version": {
 					env?: Record<string, unknown>;
 					outputs?: Record<string, string>;
+					permissions?: Record<string, string>;
 					steps: Array<{
 						env?: Record<string, string>;
 						if?: string;
@@ -24,6 +25,18 @@ describe("tag-release workflow", () => {
 						run?: string;
 						uses?: string;
 						with?: Record<string, string>;
+					}>;
+					"timeout-minutes"?: number;
+				};
+				"dispatch-public-release": {
+					if?: string;
+					needs?: string[];
+					permissions?: Record<string, string>;
+					steps: Array<{
+						env?: Record<string, string>;
+						if?: string;
+						name?: string;
+						run?: string;
 					}>;
 					"timeout-minutes"?: number;
 				};
@@ -45,9 +58,12 @@ describe("tag-release workflow", () => {
 			};
 		};
 		const steps = workflow.jobs["tag-current-version"].steps;
-		const registrySmokeJob =
-			workflow.jobs["verify-published-registry-package"];
-		const dispatchStep = steps.find(
+		const registrySmokeJob = workflow.jobs["verify-published-registry-package"];
+		const dispatchJob = workflow.jobs["dispatch-public-release"];
+		const upstreamDispatchStep = steps.find(
+			(step) => step.name === "Dispatch public release workflow",
+		);
+		const dispatchStep = dispatchJob.steps.find(
 			(step) => step.name === "Dispatch public release workflow",
 		);
 		const registryStep = steps.find(
@@ -62,8 +78,8 @@ describe("tag-release workflow", () => {
 		const summaryStep = steps.find(
 			(step) => step.name === "Summarize tag status",
 		);
-		const registrySmokeCheckoutStep = registrySmokeJob.steps.find(
-			(step) => step.uses?.startsWith("actions/checkout@"),
+		const registrySmokeCheckoutStep = registrySmokeJob.steps.find((step) =>
+			step.uses?.startsWith("actions/checkout@"),
 		);
 		const setupPublishedSmokeStep = registrySmokeJob.steps.find(
 			(step) => step.name === "Setup registry install smoke tools",
@@ -78,10 +94,16 @@ describe("tag-release workflow", () => {
 		);
 
 		expect(workflow.jobs["tag-current-version"]["timeout-minutes"]).toBe(45);
+		expect(workflow.jobs["tag-current-version"].permissions).toMatchObject({
+			actions: "read",
+			contents: "write",
+		});
 		expect(workflow.jobs["tag-current-version"].outputs).toMatchObject({
+			active_release_count: "${{ steps.active-release.outputs.active_count }}",
 			package_name: "${{ steps.release.outputs.package_name }}",
 			release_tag: "${{ steps.release.outputs.release_tag }}",
 			release_version: "${{ steps.release.outputs.release_version }}",
+			tag_exists: "${{ steps.release.outputs.tag_exists }}",
 			registry_published: "${{ steps.registry-release.outputs.published }}",
 		});
 		expect(registrySmokeJob.needs).toBe("tag-current-version");
@@ -93,9 +115,6 @@ describe("tag-release workflow", () => {
 		expect(registrySmokeCheckoutStep?.with).toMatchObject({
 			"persist-credentials": false,
 		});
-		expect(dispatchStep?.env?.RELEASE_TAG).toBe(
-			"${{ steps.release.outputs.release_tag }}",
-		);
 		expect(registryStep?.run).toContain("npm view");
 		expect(setupPublishedSmokeStep?.uses).toBe(
 			"./.github/actions/setup-bun-nx",
@@ -107,7 +126,8 @@ describe("tag-release workflow", () => {
 		});
 		expect(verifyPublishedSmokeStep?.env).toMatchObject({
 			PACKAGE_NAME: "${{ needs.tag-current-version.outputs.package_name }}",
-			RELEASE_VERSION: "${{ needs.tag-current-version.outputs.release_version }}",
+			RELEASE_VERSION:
+				"${{ needs.tag-current-version.outputs.release_version }}",
 			MAESTRO_INSTALL_AUDIT_LEVEL: "critical",
 			MAESTRO_PUBLISHED_REPLAY_SANDBOX_MODE: "local",
 			MAESTRO_REGISTRY_SMOKE_EVIDENCE_DIR:
@@ -121,7 +141,10 @@ describe("tag-release workflow", () => {
 			[workflow.env, registrySmokeJob.env],
 			{
 				containingJob: registrySmokeJob,
-				precedingSteps: registrySmokeJob.steps.slice(0, verifyPublishedSmokeIndex),
+				precedingSteps: registrySmokeJob.steps.slice(
+					0,
+					verifyPublishedSmokeIndex,
+				),
 			},
 		);
 		expect(verifyPublishedSmokeStep?.run).toContain(
@@ -149,8 +172,31 @@ describe("tag-release workflow", () => {
 		expect(activeReleaseStep?.run).toContain("--workflow release");
 		expect(activeReleaseStep?.run).toContain(".headBranch");
 		expect(activeReleaseStep?.run).not.toContain("--branch");
-		expect(dispatchStep?.if).toContain(
-			"steps.registry-release.outputs.published != 'true'",
+		expect(upstreamDispatchStep).toBeUndefined();
+		expect(dispatchJob.needs).toEqual([
+			"tag-current-version",
+			"verify-published-registry-package",
+		]);
+		expect(dispatchJob.permissions).toMatchObject({
+			actions: "write",
+			contents: "read",
+		});
+		expect(dispatchJob["timeout-minutes"]).toBe(10);
+		expect(dispatchJob.if).toContain("always()");
+		expect(dispatchJob.if).toContain(
+			"needs.tag-current-version.result == 'success'",
+		);
+		expect(dispatchJob.if).toContain(
+			"needs.tag-current-version.outputs.registry_published != 'true'",
+		);
+		expect(dispatchJob.if).toContain(
+			"needs.verify-published-registry-package.result == 'success'",
+		);
+		expect(dispatchJob.if).toContain(
+			"(needs.tag-current-version.outputs.registry_published != 'true' || needs.verify-published-registry-package.result == 'success')",
+		);
+		expect(dispatchJob.if).toContain(
+			"needs.tag-current-version.outputs.tag_exists != 'true'",
 		);
 		expect(mismatchGuard?.if).toContain(
 			"github.repository == 'evalops/maestro'",
@@ -158,8 +204,14 @@ describe("tag-release workflow", () => {
 		expect(mismatchGuard?.if).toContain(
 			"steps.registry-release.outputs.published != 'true'",
 		);
-		expect(dispatchStep?.if).toContain(
-			"steps.active-release.outputs.active_count == '0'",
+		expect(dispatchJob.if).toContain(
+			"needs.tag-current-version.outputs.active_release_count == '0'",
+		);
+		expect(dispatchStep?.env?.RELEASE_TAG).toBe(
+			"${{ needs.tag-current-version.outputs.release_tag }}",
+		);
+		expect(dispatchStep?.env?.RELEASE_VERSION).toBe(
+			"${{ needs.tag-current-version.outputs.release_version }}",
 		);
 		expect(dispatchStep?.run).toContain(
 			'gh workflow run release --ref "${RELEASE_TAG}" --field "version=${RELEASE_VERSION}"',
