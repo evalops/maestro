@@ -243,7 +243,7 @@ export function buildPathAndStatsLine(
 	return `${truncatedLeft}${padding}${rightSide}`;
 }
 
-export type FooterMode = "ensemble" | "solo";
+export type FooterMode = "rich" | "solo";
 
 export interface FooterStats {
 	totalInput: number;

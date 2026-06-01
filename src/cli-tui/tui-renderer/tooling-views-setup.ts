@@ -84,6 +84,7 @@ export function createToolingViews(params: {
 		lowBandwidth,
 		getCleanMode,
 		getHideThinkingBlocks,
+		requestRender,
 	});
 
 	const agentEventRouter = new AgentEventRouter({

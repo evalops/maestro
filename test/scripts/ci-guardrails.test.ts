@@ -37,6 +37,7 @@ import {
 	publicMirrorRefCandidates,
 	resolvePublicMirrorRef,
 } from "../../scripts/resolve-public-mirror-ref.mjs";
+import { expectRegistryInstallSmokeIsReleaseBlocking } from "../utils/registry-install-smoke-guard.js";
 
 type WorkflowStep = {
 	env?: Record<string, unknown>;
@@ -174,7 +175,7 @@ describe("planCiChecks", () => {
 			coverage: false,
 			lightPrChecks: true,
 			prChecks: true,
-			publicMirror: false,
+			publicMirror: true,
 			rustHostedConformance: false,
 		});
 		expect(
@@ -337,6 +338,7 @@ describe("planCiChecks", () => {
 					"scripts/plan-nx-test-command.mjs",
 					"scripts/published-replay-evidence-gate.js",
 					"scripts/release-impact-filter.mjs",
+					"scripts/release-observability-query-contract.js",
 					"scripts/release-readiness.js",
 					"scripts/smoke-packed-cli.js",
 					"scripts/smoke-published-replay-e2e.js",
@@ -345,6 +347,7 @@ describe("planCiChecks", () => {
 					"test/scripts/ci-guardrails.test.ts",
 					"test/scripts/deprecate-release.test.ts",
 					"test/scripts/release-impact-filter.test.ts",
+					"test/scripts/release-observability-query-contract.test.ts",
 					"test/scripts/release-surface-conformance.test.ts",
 					"test/scripts/workspace-utils.test.ts",
 				],
@@ -427,6 +430,21 @@ describe("planCiChecks", () => {
 			prChecks: true,
 			publicMirror: true,
 			releaseHelperOnly: true,
+			rustHostedConformance: false,
+		});
+	});
+
+	it("keeps mirrored CI guardrail test changes eligible for public mirror checks", () => {
+		expect(
+			planCiChecks({
+				eventName: "pull_request",
+				changedFiles: ["test/scripts/ci-guardrails.test.ts"],
+			}),
+		).toMatchObject({
+			coverage: false,
+			lightPrChecks: true,
+			prChecks: true,
+			publicMirror: true,
 			rustHostedConformance: false,
 		});
 	});
@@ -592,6 +610,7 @@ describe("planCiChecks", () => {
 					"scripts/sync-public-companion-branch.mjs",
 					"scripts/update-behind-auto-merge-prs.mjs",
 					"scripts/validate-public-package-deps.js",
+					"test/scripts/validate-public-package-deps.test.ts",
 				],
 			}).publicMirror,
 		).toBe(false);
@@ -844,6 +863,9 @@ describe("ci workflow guardrails", () => {
 			"node --check scripts/release-readiness.js",
 		);
 		expect(helperSmokeStep?.run).toContain(
+			"node --check scripts/release-observability-query-contract.js",
+		);
+		expect(helperSmokeStep?.run).toContain(
 			"node --check scripts/smoke-published-replay-e2e.js",
 		);
 		expect(helperSmokeStep?.run).toContain(
@@ -869,6 +891,9 @@ describe("ci workflow guardrails", () => {
 		);
 		expect(helperSmokeStep?.run).toContain(
 			"node --check scripts/check-release-surface-conformance.mjs",
+		);
+		expect(helperSmokeStep?.run).toContain(
+			"test/scripts/release-observability-query-contract.test.ts",
 		);
 		expect(helperSmokeStep?.run).toContain(
 			"test/scripts/release-surface-conformance.test.ts",
@@ -1017,9 +1042,6 @@ describe("ci workflow guardrails", () => {
 			on?: {
 				workflow_dispatch?: {
 					inputs?: {
-						range?: {
-							default?: string;
-						};
 						message?: {
 							default?: string;
 						};
@@ -1027,12 +1049,9 @@ describe("ci workflow guardrails", () => {
 				};
 			};
 		};
-		const defaultRange =
-			workflow.on?.workflow_dispatch?.inputs?.range?.default ?? "";
 		const defaultMessage =
 			workflow.on?.workflow_dispatch?.inputs?.message?.default ?? "";
 
-		expect(defaultRange).toBe(">=0.10.8 <=0.10.20");
 		expect(defaultMessage).toBe("");
 	});
 
@@ -1077,6 +1096,8 @@ describe("ci workflow guardrails", () => {
 		expect(script).toContain("installMetadata: bunInstallMetadata");
 		expect(script).toContain("validatePublishedReplayEvidenceSet");
 		expect(script).toContain('"published-replay-evidence"');
+		expect(script).toContain("Bun registry install smoke is release-blocking");
+		expect(script).toContain("MAESTRO_ALLOW_REGISTRY_BUN_INSTALL_SMOKE_SKIP");
 		expect(script).toContain(
 			'validatePublishedReplayEvidenceOutputs(["npm"]);',
 		);
@@ -1161,9 +1182,12 @@ describe("ci workflow guardrails", () => {
 				{ encoding: "utf8" },
 			),
 		) as Workflow;
-		const canaryStep = releaseWorkflow.jobs?.[
-			"post-publish-canary"
-		]?.steps?.find((step) => step.name === "Verify published package from npm");
+		const canarySteps =
+			releaseWorkflow.jobs?.["post-publish-canary"]?.steps ?? [];
+		const canaryIndex = canarySteps.findIndex(
+			(step) => step.name === "Verify published package from npm",
+		);
+		const canaryStep = canarySteps[canaryIndex];
 		const evidenceStep = releaseWorkflow.jobs?.[
 			"post-publish-canary"
 		]?.steps?.find(
@@ -1189,7 +1213,18 @@ describe("ci workflow guardrails", () => {
 		expect(sandboxArgs.length).toBeGreaterThanOrEqual(2);
 		expect(script).not.toMatch(/"--sandbox",\s*"workspace-write"/);
 		if (isPublicValidationWorkflow(releaseWorkflow)) {
-			expect(canaryStep).toBeDefined();
+			expect(canaryIndex).toBeGreaterThanOrEqual(0);
+			expectRegistryInstallSmokeIsReleaseBlocking(
+				canaryStep,
+				[
+					releaseWorkflow.env,
+					releaseWorkflow.jobs?.["post-publish-canary"]?.env,
+				],
+				{
+					containingJob: releaseWorkflow.jobs?.["post-publish-canary"],
+					precedingSteps: canarySteps.slice(0, canaryIndex),
+				},
+			);
 			expect(canaryStep?.run).toBe("node scripts/smoke-registry-install.js");
 			expect(canaryStep?.env).toMatchObject({
 				MAESTRO_INSTALL_AUDIT_LEVEL: "critical",
@@ -1205,10 +1240,20 @@ describe("ci workflow guardrails", () => {
 			const verifyWorkflow = parse(
 				readFileSync(verifyWorkflowPath, { encoding: "utf8" }),
 			) as Workflow;
-			const verifyStep = verifyWorkflow.jobs?.verify?.steps?.find(
+			const verifySteps = verifyWorkflow.jobs?.verify?.steps ?? [];
+			const verifyIndex = verifySteps.findIndex(
 				(step) => step.name === "Verify published package from npm",
 			);
-			expect(verifyStep).toBeDefined();
+			const verifyStep = verifySteps[verifyIndex];
+			expect(verifyIndex).toBeGreaterThanOrEqual(0);
+			expectRegistryInstallSmokeIsReleaseBlocking(
+				verifyStep,
+				[verifyWorkflow.env, verifyWorkflow.jobs?.verify?.env],
+				{
+					containingJob: verifyWorkflow.jobs?.verify,
+					precedingSteps: verifySteps.slice(0, verifyIndex),
+				},
+			);
 			expect(verifyStep?.run).toContain(
 				"node scripts/smoke-registry-install.js",
 			);
@@ -1245,6 +1290,77 @@ describe("ci workflow guardrails", () => {
 		expect(run).not.toContain("gh auth status");
 		expect(run).not.toContain("gh auth setup-git");
 		expect(run).not.toContain("gh auth refresh");
+	});
+
+	it("publishes release version metadata to GCS through workload identity", () => {
+		const workflow = parse(
+			readFileSync(
+				new URL("../../.github/workflows/release.yml", import.meta.url),
+				{ encoding: "utf8" },
+			),
+		) as Workflow;
+		const canaryJob = workflow.jobs?.["post-publish-canary"];
+		const steps = canaryJob?.steps ?? [];
+		const validateIndex = steps.findIndex(
+			(step) => step.name === "Validate published replay evidence",
+		);
+		const metadataIndex = steps.findIndex(
+			(step) => step.name === "Generate version metadata",
+		);
+		const authIndex = steps.findIndex(
+			(step) =>
+				step.name === "Authenticate to Google Cloud for release metadata",
+		);
+		const authStep = steps.find(
+			(step) =>
+				step.name === "Authenticate to Google Cloud for release metadata",
+		);
+		const gcsIndex = steps.findIndex(
+			(step) => step.name === "Sync GCS version metadata",
+		);
+		const gcsStep = steps[gcsIndex];
+		const run = gcsStep?.run ?? "";
+
+		if (!isPublicValidationWorkflow(workflow)) {
+			expect(canaryJob).toBeUndefined();
+			return;
+		}
+
+		expect(canaryJob).toBeDefined();
+		expect(canaryJob?.needs).toContain("publish");
+		expect(canaryJob?.permissions?.["id-token"]).toBe("write");
+		expect(validateIndex).toBeGreaterThan(-1);
+		expect(metadataIndex).toBeGreaterThan(validateIndex);
+		expect(authIndex).toBeGreaterThan(metadataIndex);
+		expect(gcsIndex).toBeGreaterThan(metadataIndex);
+		expect(gcsIndex).toBeGreaterThan(authIndex);
+		expect(authStep).toBeDefined();
+		expect(authStep?.uses).toContain("google-github-actions/auth@");
+		expect(gcsStep).toBeDefined();
+		expect(gcsStep?.if).toContain(
+			"MAESTRO_RELEASE_GCP_WORKLOAD_IDENTITY_PROVIDER",
+		);
+		expect(run).toContain("gcloud storage cp");
+		expect(run).toContain("dist/version.json");
+		expect(run).toContain("/version.json");
+	});
+
+	it("loads dotenv configuration before startup refresh", () => {
+		const source = readFileSync(new URL("../../src/cli.ts", import.meta.url), {
+			encoding: "utf8",
+		});
+		const loadEnvImportIndex = source.indexOf('await import("./load-env.js")');
+		const loadEnvIndex = source.indexOf(
+			"loadedEnvKeys = loadEnv();",
+			loadEnvImportIndex,
+		);
+		const refreshIndex = source.indexOf(
+			"await refreshInstalledCliOnStartup(args, loadedEnvKeys)",
+		);
+
+		expect(loadEnvImportIndex).toBeGreaterThan(-1);
+		expect(loadEnvIndex).toBeGreaterThan(loadEnvImportIndex);
+		expect(refreshIndex).toBeGreaterThan(loadEnvIndex);
 	});
 
 	it("keeps packed CLI smoke enabled independently of package-lock management", () => {
@@ -1639,6 +1755,54 @@ describe("ci workflow guardrails", () => {
 		expect(syncStep?.run).toContain("scripts/sync-public-companion-branch.mjs");
 	});
 
+	it("runs prepared public mirror guardrails during PR mirror validation", () => {
+		const workflow = parse(
+			readFileSync(new URL("../../.github/workflows/ci.yml", import.meta.url), {
+				encoding: "utf8",
+			}),
+		) as Workflow;
+		if (isPublicValidationWorkflow(workflow)) {
+			expect(workflow.jobs?.["public-release-mirror"]).toBeUndefined();
+			return;
+		}
+		const steps = workflow.jobs?.["public-release-mirror"]?.steps ?? [];
+		const stepNames = steps.map((step) => step.name ?? step.id ?? "");
+		const verifyIndex = stepNames.indexOf(
+			"Verify mirrored release files match public repo",
+		);
+		const prepareIndex = stepNames.indexOf(
+			"Prepare public mirror tree for guardrails",
+		);
+		const syncIndex = stepNames.indexOf(
+			"Sync release manifest files into prepared public tree",
+		);
+		const smokeIndex = stepNames.indexOf("Smoke prepared public mirror tree");
+		const setupBunIndex = stepNames.indexOf(
+			"Setup Bun for prepared public mirror guardrails",
+		);
+		const guardrailIndex = stepNames.indexOf(
+			"Run prepared public mirror CI guardrails",
+		);
+
+		expect(verifyIndex).toBeGreaterThanOrEqual(0);
+		expect(prepareIndex).toBeGreaterThan(verifyIndex);
+		expect(syncIndex).toBeGreaterThan(prepareIndex);
+		expect(smokeIndex).toBeGreaterThan(syncIndex);
+		expect(setupBunIndex).toBeGreaterThan(smokeIndex);
+		expect(guardrailIndex).toBeGreaterThan(setupBunIndex);
+		expect(steps[prepareIndex]?.run).toContain(
+			"scripts/prepare-public-release-mirror.mjs",
+		);
+		expect(steps[syncIndex]?.run).toContain("scripts/sync-release-mirror.mjs");
+		expect(steps[smokeIndex]?.run).toContain(
+			"scripts/check-prepared-public-mirror-tree.mjs",
+		);
+		expect(steps[setupBunIndex]?.uses).toBe("./.github/actions/setup-bun-nx");
+		expect(steps[guardrailIndex]?.run).toContain(
+			"scripts/run-prepared-public-mirror-guardrails.mjs",
+		);
+	});
+
 	it("registry-smokes real public release mirror fallback publishes", () => {
 		const workflow = parse(
 			readFileSync(
@@ -1669,6 +1833,14 @@ describe("ci workflow guardrails", () => {
 		);
 		expect(verifyStep?.if).toContain("npm_dry_run == 'true'");
 		expect(verifyStep?.["working-directory"]).toBe("public-mirror");
+		expectRegistryInstallSmokeIsReleaseBlocking(
+			verifyStep,
+			[workflow.env, workflow.jobs?.["mirror-release"]?.env],
+			{
+				containingJob: workflow.jobs?.["mirror-release"],
+				precedingSteps: steps.slice(0, verifyIndex),
+			},
+		);
 		expect(verifyStep?.run).toBe("node scripts/smoke-registry-install.js");
 		expect(verifyStep?.env).toMatchObject({
 			MAESTRO_INSTALL_AUDIT_LEVEL: "critical",
@@ -1825,6 +1997,49 @@ describe("ci workflow guardrails", () => {
 
 			expect(setupBunStep?.with).toMatchObject({ "ensure-ripgrep": "true" });
 		}
+	});
+
+	it("shares CI ripgrep installation through the composite helper", () => {
+		const setupBunNx = parse(
+			readFileSync(
+				new URL(
+					"../../.github/actions/setup-bun-nx/action.yml",
+					import.meta.url,
+				),
+				{ encoding: "utf8" },
+			),
+		) as { runs?: { steps?: WorkflowStep[] } };
+		const setupRust = parse(
+			readFileSync(
+				new URL("../../.github/actions/setup-rust/action.yml", import.meta.url),
+				{ encoding: "utf8" },
+			),
+		) as { runs?: { steps?: WorkflowStep[] } };
+		const ensureRipgrep = parse(
+			readFileSync(
+				new URL(
+					"../../.github/actions/ensure-ripgrep/action.yml",
+					import.meta.url,
+				),
+				{ encoding: "utf8" },
+			),
+		) as { runs?: { steps?: WorkflowStep[] } };
+		const setupBunStep = setupBunNx.runs?.steps?.find(
+			(step) => step.name === "Ensure ripgrep",
+		);
+		const setupRustStep = setupRust.runs?.steps?.find(
+			(step) => step.name === "Ensure ripgrep",
+		);
+		const ensureScript =
+			ensureRipgrep.runs?.steps?.find((step) => step.name === "Ensure ripgrep")
+				?.run ?? "";
+
+		expect(setupBunStep?.uses).toBe("./.github/actions/ensure-ripgrep");
+		expect(setupRustStep?.uses).toBe("./.github/actions/ensure-ripgrep");
+		expect(ensureScript).toContain("rg --version");
+		expect(ensureScript).toContain("sudo apt-get update");
+		expect(ensureScript).toContain("brew install ripgrep");
+		expect(ensureScript).toContain("neither rg, apt-get, nor Homebrew");
 	});
 
 	it("uses dynamic host ports for integration service containers", () => {
@@ -2202,6 +2417,7 @@ describe("planNxTestCommand", () => {
 					"scripts/plan-ci-checks.mjs",
 					"scripts/published-replay-evidence-gate.js",
 					"scripts/release-impact-filter.mjs",
+					"scripts/release-observability-query-contract.js",
 					"scripts/release-readiness.js",
 					"scripts/smoke-packed-cli.js",
 					"scripts/smoke-published-replay-e2e.js",

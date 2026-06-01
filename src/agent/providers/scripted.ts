@@ -29,9 +29,134 @@ const scriptedScenarioSourceCache = new Map<
 	string,
 	Promise<ScriptedScenario>
 >();
+const SCRIPTED_ASSERTION_KINDS = [
+	"tool_called",
+	"tool_not_called",
+	"file_exists",
+	"file_contents",
+	"workspace_manifest",
+	"audit_event_emitted",
+] as const;
+const RELEASE_GATE_TIERS = ["smoke", "regression", "gauntlet"] as const;
+const REQUIRED_ARTIFACTS = [
+	"trajectory",
+	"replay",
+	"score",
+	"inspection",
+	"workspace_manifest",
+] as const;
+const HYDRATION_MODES = [
+	"manifest_only",
+	"fixture_workspace",
+	"frozen_archive",
+] as const;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
 	return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function requireOptionalNonEmptyString(value: unknown, label: string): void {
+	if (
+		value !== undefined &&
+		(typeof value !== "string" || value.length === 0)
+	) {
+		throw new Error(`${label} must be a non-empty string`);
+	}
+}
+
+function requireOptionalStringArray(value: unknown, label: string): void {
+	if (
+		value !== undefined &&
+		(!Array.isArray(value) ||
+			value.some((item) => typeof item !== "string" || item.length === 0))
+	) {
+		throw new Error(`${label} must contain non-empty strings`);
+	}
+}
+
+function requireOptionalNonNegativeInteger(
+	value: unknown,
+	label: string,
+): void {
+	if (
+		value !== undefined &&
+		(!Number.isInteger(value) || (value as number) < 0)
+	) {
+		throw new Error(`${label} must be a non-negative integer`);
+	}
+}
+
+function validateScriptedReleaseGate(
+	value: Record<string, unknown>,
+	label: string,
+): void {
+	const releaseGate = value.releaseGate;
+	if (releaseGate === undefined) return;
+	if (!isRecord(releaseGate)) {
+		throw new Error(`Replay scenario ${label} releaseGate must be an object`);
+	}
+	if (typeof releaseGate.releaseBlocking !== "boolean") {
+		throw new Error(
+			`Replay scenario ${label} releaseGate.releaseBlocking must be a boolean`,
+		);
+	}
+	if (!RELEASE_GATE_TIERS.includes(releaseGate.tier as never)) {
+		throw new Error(
+			`Replay scenario ${label} releaseGate.tier must be one of: ${RELEASE_GATE_TIERS.join(", ")}`,
+		);
+	}
+	if (
+		!Array.isArray(releaseGate.requiredArtifacts) ||
+		releaseGate.requiredArtifacts.length === 0
+	) {
+		throw new Error(
+			`Replay scenario ${label} releaseGate.requiredArtifacts must not be empty`,
+		);
+	}
+	const unknownArtifacts = releaseGate.requiredArtifacts.filter(
+		(artifact) => !REQUIRED_ARTIFACTS.includes(artifact as never),
+	);
+	if (unknownArtifacts.length > 0) {
+		throw new Error(
+			`Replay scenario ${label} releaseGate.requiredArtifacts contains unknown artifact(s): ${unknownArtifacts.join(", ")}`,
+		);
+	}
+	if (
+		releaseGate.releaseBlocking === true &&
+		!releaseGate.requiredArtifacts.includes("workspace_manifest")
+	) {
+		throw new Error(
+			`Replay scenario ${label} releaseGate release-blocking scripted scenarios must require workspace_manifest`,
+		);
+	}
+	if (
+		releaseGate.requiredArtifacts.includes("workspace_manifest") &&
+		typeof value.workspaceManifestPath !== "string"
+	) {
+		throw new Error(
+			`Replay scenario ${label} releaseGate requires workspace_manifest but workspaceManifestPath is missing`,
+		);
+	}
+	requireOptionalNonNegativeInteger(
+		releaseGate.maxEvents,
+		`Replay scenario ${label} releaseGate.maxEvents`,
+	);
+	requireOptionalNonNegativeInteger(
+		releaseGate.maxToolCalls,
+		`Replay scenario ${label} releaseGate.maxToolCalls`,
+	);
+	requireOptionalNonNegativeInteger(
+		releaseGate.maxReplayDeltas,
+		`Replay scenario ${label} releaseGate.maxReplayDeltas`,
+	);
+	requireOptionalNonNegativeInteger(
+		releaseGate.maxScoreFailures,
+		`Replay scenario ${label} releaseGate.maxScoreFailures`,
+	);
+	requireOptionalNonNegativeInteger(
+		releaseGate.maxScoreWarnings,
+		`Replay scenario ${label} releaseGate.maxScoreWarnings`,
+	);
 }
 
 export function parseScriptedScenario(
@@ -66,6 +191,11 @@ export function parseScriptedScenario(
 			`Replay scenario ${label} expectedOutcome must be pass or fail`,
 		);
 	}
+	requireOptionalNonEmptyString(
+		value.workspaceManifestPath,
+		`Replay scenario ${label} workspaceManifestPath`,
+	);
+	validateScriptedReleaseGate(value, label);
 	if (!Array.isArray(value.frames)) {
 		throw new Error(`Replay scenario ${label} must contain frames`);
 	}
@@ -112,6 +242,8 @@ export function parseScriptedScenario(
 	if (value.assertions !== undefined && !Array.isArray(value.assertions)) {
 		throw new Error(`Replay scenario ${label} assertions must be an array`);
 	}
+	let hasWorkspaceManifestAssertion = false;
+	let hasWarningWorkspaceManifestAssertion = false;
 	for (const [assertionOffset, assertion] of (
 		value.assertions ?? []
 	).entries()) {
@@ -124,19 +256,81 @@ export function parseScriptedScenario(
 				`Replay scenario ${label} assertion ${assertionOffset} must contain id and kind`,
 			);
 		}
-		if (
-			![
-				"tool_called",
-				"tool_not_called",
-				"file_exists",
-				"file_contents",
-				"audit_event_emitted",
-			].includes(assertion.kind)
-		) {
+		if (!SCRIPTED_ASSERTION_KINDS.includes(assertion.kind as never)) {
 			throw new Error(
 				`Replay scenario ${label} assertion ${assertion.id} has unknown kind ${assertion.kind}`,
 			);
 		}
+		if (assertion.kind === "workspace_manifest") {
+			hasWorkspaceManifestAssertion = true;
+			hasWarningWorkspaceManifestAssertion =
+				hasWarningWorkspaceManifestAssertion ||
+				assertion.severity === "warning";
+			if (typeof value.workspaceManifestPath !== "string") {
+				throw new Error(
+					`Replay scenario ${label} assertion ${assertion.id} workspace_manifest requires workspaceManifestPath`,
+				);
+			}
+			requireOptionalStringArray(
+				assertion.requiredWorkspaceFiles,
+				`Replay scenario ${label} assertion ${assertion.id} requiredWorkspaceFiles`,
+			);
+			requireOptionalStringArray(
+				assertion.requiredToolAdapters,
+				`Replay scenario ${label} assertion ${assertion.id} requiredToolAdapters`,
+			);
+			if (
+				assertion.requiredHydrationModes !== undefined &&
+				(!Array.isArray(assertion.requiredHydrationModes) ||
+					assertion.requiredHydrationModes.some(
+						(mode) => !HYDRATION_MODES.includes(mode as never),
+					))
+			) {
+				throw new Error(
+					`Replay scenario ${label} assertion ${assertion.id} requiredHydrationModes must contain known hydration modes`,
+				);
+			}
+			if (
+				assertion.requiredReleaseGateTier !== undefined &&
+				!RELEASE_GATE_TIERS.includes(assertion.requiredReleaseGateTier as never)
+			) {
+				throw new Error(
+					`Replay scenario ${label} assertion ${assertion.id} requiredReleaseGateTier must be one of: ${RELEASE_GATE_TIERS.join(", ")}`,
+				);
+			}
+			requireOptionalNonNegativeInteger(
+				assertion.minWorkspaceFiles,
+				`Replay scenario ${label} assertion ${assertion.id} minWorkspaceFiles`,
+			);
+			requireOptionalNonNegativeInteger(
+				assertion.minToolAdapters,
+				`Replay scenario ${label} assertion ${assertion.id} minToolAdapters`,
+			);
+		}
+	}
+	if (
+		value.releaseGate !== undefined &&
+		isRecord(value.releaseGate) &&
+		value.releaseGate.releaseBlocking === true &&
+		Array.isArray(value.releaseGate.requiredArtifacts) &&
+		value.releaseGate.requiredArtifacts.includes("workspace_manifest") &&
+		!hasWorkspaceManifestAssertion
+	) {
+		throw new Error(
+			`Replay scenario ${label} releaseGate release-blocking workspace_manifest gates must include a workspace_manifest assertion`,
+		);
+	}
+	if (
+		value.releaseGate !== undefined &&
+		isRecord(value.releaseGate) &&
+		value.releaseGate.releaseBlocking === true &&
+		Array.isArray(value.releaseGate.requiredArtifacts) &&
+		value.releaseGate.requiredArtifacts.includes("workspace_manifest") &&
+		hasWarningWorkspaceManifestAssertion
+	) {
+		throw new Error(
+			`Replay scenario ${label} releaseGate release-blocking workspace_manifest assertions must use error severity`,
+		);
 	}
 	for (const [frameOffset, frame] of value.frames.entries()) {
 		if (

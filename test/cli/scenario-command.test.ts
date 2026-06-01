@@ -59,9 +59,13 @@ describe("scenario command", () => {
 				"utf8",
 			),
 		);
+		delete fixture.workspaceManifestPath;
+		delete fixture.releaseGate;
 		fixture.assertions = fixture.assertions.filter(
 			(assertion: { kind: string }) =>
-				assertion.kind !== "file_exists" && assertion.kind !== "file_contents",
+				assertion.kind !== "file_exists" &&
+				assertion.kind !== "file_contents" &&
+				assertion.kind !== "workspace_manifest",
 		);
 		const url = await serveFixture(fixture);
 		const logSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
@@ -83,12 +87,33 @@ describe("scenario command", () => {
 				"utf8",
 			),
 		);
+		delete fixture.workspaceManifestPath;
+		delete fixture.releaseGate;
+		fixture.assertions = fixture.assertions.filter(
+			(assertion: { kind: string }) => assertion.kind !== "workspace_manifest",
+		);
 		const url = await serveFixture(fixture);
 
 		await expect(
 			handleScenarioCommand("run", [url], { json: true }),
 		).rejects.toThrow(
 			`Remote scripted scenario ${url} assertion fixture-file-exists path must be absolute`,
+		);
+	});
+
+	it("rejects remote scripted scenarios with relative workspace manifests", async () => {
+		const fixture = JSON.parse(
+			readFileSync(
+				join(fixturesDir, "scripted-replay", "basic-tool-call.json"),
+				"utf8",
+			),
+		);
+		const url = await serveFixture(fixture);
+
+		await expect(
+			handleScenarioCommand("validate", [url], { json: true }),
+		).rejects.toThrow(
+			`Remote scripted scenario ${url} workspaceManifestPath must be absolute`,
 		);
 	});
 
@@ -185,8 +210,21 @@ describe("scenario command", () => {
 				toolCalls: 1,
 			},
 			counts: {
-				assertions: 5,
+				assertions: 6,
 				failed: 0,
+				workspaceFiles: 1,
+				toolAdapters: 1,
+			},
+			releaseGate: {
+				releaseBlocking: true,
+				satisfied: true,
+				missingArtifacts: [],
+				budgetViolations: [],
+				policyViolations: [],
+			},
+			workspace: {
+				manifestId: "workspace-scripted-basic-tool-call-1",
+				hydrationMode: "fixture_workspace",
 			},
 		});
 		expect(
@@ -196,6 +234,7 @@ describe("scenario command", () => {
 			"write-tool-not-called",
 			"fixture-file-exists",
 			"fixture-file-contains-schema",
+			"frozen-workspace-manifest-ready",
 			"audit-event-tagged",
 		]);
 	});

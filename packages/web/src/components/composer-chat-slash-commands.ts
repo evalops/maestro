@@ -169,7 +169,7 @@ export interface WebSlashCommandContext {
 	setApprovalModeStatus: (status: ApprovalModeStatusUpdate) => void;
 	setCleanMode: (mode: "off" | "soft" | "aggressive") => void;
 	setCurrentModel: (model: string) => void;
-	setFooterMode: (mode: "ensemble" | "solo") => void;
+	setFooterMode: (mode: "rich" | "solo") => void;
 	setInputValue: (text: string) => void;
 	setQueueMode: (mode: "one" | "all") => void;
 	setTransportPreference: (mode: "auto" | "sse" | "ws") => void;
@@ -2575,9 +2575,9 @@ export async function executeWebSlashCommand(
 			}
 			case "footer": {
 				if (!requireWritableSession("Footer mode")) break;
-				const mode = (args || "").toLowerCase() as "ensemble" | "solo";
-				if (!["ensemble", "solo"].includes(mode)) {
-					context.appendCommandOutput("Usage: /footer [ensemble|solo]", true);
+				const mode = (args || "").toLowerCase() as "rich" | "solo";
+				if (!["rich", "solo"].includes(mode)) {
+					context.appendCommandOutput("Usage: /footer [rich|solo]", true);
 					break;
 				}
 				const result = await context.apiClient.setFooterMode(mode, sessionId);

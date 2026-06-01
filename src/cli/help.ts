@@ -156,6 +156,10 @@ export function printHelp(
   # Confirm managed mode sinks and EvalOps org identity
   maestro status
 
+  # Check or install the newest published Maestro CLI
+  maestro update --check
+  maestro update
+
   # Inspect mode-level subagent model dispatch before running a swarm
   maestro modes describe smart
 
@@ -173,9 +177,11 @@ export function printHelp(
 
   # Export a portable JSON archive with secret redaction
   maestro export <session-id> ./session.json --format json --redact-secrets
+  maestro sessions export <session-id> ./session.json --format json --redact-secrets
 
   # Import a portable session log into this workspace
   maestro import ./session.json
+  maestro sessions import ./session.json
 
   # Scaffold and validate progressive skill packages
   maestro skill new processing-incidents --description "Process incident reports. Use when the user asks for incident triage."
@@ -196,6 +202,13 @@ export function printHelp(
   # Reconstruct the timeline, trajectory, and evidence coverage for a saved run
   maestro run inspect <session-id> --json
   maestro run promote <session-id>
+
+  # Discover saved sessions without opening the TUI
+  maestro sessions list --json
+  maestro sessions search "release verification"
+
+  # Stream machine-readable exec events
+  maestro exec --stream-json "Summarize recent changes"
 
   # Validate and run a deterministic scenario fixture
   maestro scenario validate ./test/fixtures/agent-trajectory-scenarios/local-diagnostic-success.json
@@ -233,9 +246,10 @@ export function printHelp(
 	)}`;
 	const execSection = `${sectionHeading("maestro exec")}${muted(
 		`  maestro exec "Summarize recent changes" --json
+  maestro exec --stream-json "Summarize recent changes"
 
   Flags:
-    --json                      Stream JSONL thread/turn events
+    --json, --stream-json       Stream JSONL thread/turn events
     --output-schema <file|json> Validate final assistant JSON against a schema
     --output-last-message <path> Write the final assistant message to disk
     --full-auto | --read-only   Force approval policy (auto or fail)
@@ -253,6 +267,8 @@ export function printHelp(
 	const portabilitySection = `${sectionHeading("Session Portability")}${muted(
 		`  maestro export <session-id> [output-path] --format json|jsonl [--redact-secrets]
  maestro import <file.json|file.jsonl>
+ maestro sessions export <session-id> [output-path] --format json|jsonl [--redact-secrets]
+ maestro sessions import <file.json|file.jsonl>
 
   Notes:
     - json preserves the full session in a portable wrapper object
@@ -328,7 +344,8 @@ export function printHelp(
   /sessions summarize <id>          Auto-summarize a saved session`,
 	)}`;
 	const sessionsDiscovery = `${sectionHeading("Session Commands")}${muted(
-		`  /session [info|favorite|unfavorite|summary "<text>"]
+		`  maestro sessions [list|search <query>|export <session-id>|import <file>] [--json]
+  /session [info|favorite|unfavorite|summary "<text>"]
   /sessions [list|load <id>|favorite <id>|unfavorite <id>|summarize <id>]
   (Also available via TUI command palette)`,
 	)}`;

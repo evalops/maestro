@@ -91,6 +91,11 @@ const EVIDENCE_SIGNING_KEY_FILE_ENV_VARS = [
 	"MAESTRO_A2A_LIVE_EVIDENCE_SIGNING_KEY_FILE",
 ] as const;
 
+const REALTIME_DELIVERY_EVIDENCE_FILE_ENV_VARS = [
+	"MAESTRO_A2A_LIVE_REALTIME_DELIVERY_EVIDENCE_FILE",
+	"MAESTRO_A2A_LIVE_DELIVERY_EVIDENCE_FILE",
+] as const;
+
 const EVIDENCE_SIGNATURE_PROTOCOL_VERSION =
 	"evalops.maestro.platform-a2a-live-evidence-signature.v1";
 
@@ -103,6 +108,83 @@ const TERMINAL_TASK_STATES = new Set([
 ]);
 
 type Env = Record<string, string | undefined>;
+
+export interface PlatformA2ARealtimeDeliveryEvidence {
+	stream: PlatformA2ARealtimeStreamEvidence;
+	push: PlatformA2ARealtimePushEvidence;
+	trace: PlatformA2ARealtimeTraceEvidence;
+	metrics: PlatformA2ARealtimeMetricsEvidence;
+}
+
+export interface PlatformA2ARealtimeStreamEvidence {
+	surface: "a2a-task-status-stream";
+	sourceEvidencePresent: boolean;
+	traceparent?: string;
+	terminalEventId: string;
+	artifactIds?: string[];
+	events: PlatformA2ARealtimeStreamEventEvidence[];
+}
+
+export interface PlatformA2ARealtimeStreamEventEvidence {
+	id: string;
+	type?: string;
+	taskId: string;
+	contextId?: string;
+	messageId?: string;
+	state?: string;
+	terminal: boolean;
+	artifactIds?: string[];
+	observedAt: string;
+}
+
+export interface PlatformA2ARealtimePushEvidence {
+	surface: "a2a-task-push-notification";
+	sourceEvidencePresent: boolean;
+	callbackAuditId: string;
+	traceparent?: string;
+	acceptedCount: number;
+	rejectedCount: number;
+	invalidTokenRejected: boolean;
+	terminalNotificationId: string;
+	notifications: PlatformA2ARealtimePushNotificationEvidence[];
+}
+
+export interface PlatformA2ARealtimePushNotificationEvidence {
+	id: string;
+	kind?: string;
+	type?: string;
+	taskId: string;
+	contextId?: string;
+	messageId?: string;
+	state?: string;
+	artifactIds?: string[];
+	accepted: boolean;
+	terminal: boolean;
+	errorClass?: string;
+	observedAt: string;
+}
+
+export interface PlatformA2ARealtimeTraceEvidence {
+	rootTraceId: string;
+	taskTraceId: string;
+	streamTraceId: string;
+	pushTraceId: string;
+	correlated: boolean;
+}
+
+export interface PlatformA2ARealtimeMetricsEvidence {
+	surface: "platform-observability-delivery-metrics";
+	sourceEvidencePresent: boolean;
+	queryId: string;
+	workspaceId: string;
+	windowStart: string;
+	windowEnd: string;
+	streamTerminalRate: number;
+	pushDeliveryLatencyMsP95: number;
+	callbackRejectionRate: number;
+	retryCount: number;
+	stuckDeliveryAlerts: number;
+}
 
 export interface PlatformA2ALiveSmokeEnv {
 	serviceUrl: string;
@@ -123,6 +205,8 @@ export interface PlatformA2ALiveSmokeEnv {
 	fetchAgentCard: boolean;
 	requireInvalidTokenProbe: boolean;
 	requireTerminalTask: boolean;
+	requireRealtimeDeliveryEvidence: boolean;
+	realtimeDeliveryEvidenceFile?: string;
 }
 
 export interface PlatformA2ALiveSmokeEvidence {
@@ -196,6 +280,7 @@ export interface PlatformA2ALiveSmokeEvidence {
 		errorClass: "unauthorized" | "forbidden";
 		observedAt: string;
 	};
+	realtimeDelivery?: PlatformA2ARealtimeDeliveryEvidence;
 	redaction: {
 		rawTokensWithheld: true;
 		rawPayloadsWithheld: true;
@@ -301,6 +386,19 @@ type PlatformA2APeerListOptions = {
 	signal?: AbortSignal;
 };
 
+export interface PlatformA2ARealtimeDeliveryCollectionInput {
+	env: PlatformA2ALiveSmokeEnv;
+	config: PlatformServiceConfig;
+	createdAt: string;
+	origin: PlatformAgentRegistryA2APeerCandidate;
+	target: PlatformAgentRegistryA2APeerCandidate;
+	delegation: NonNullable<PlatformAgentRegistryDelegateResult["delegation"]>;
+	graph: PlatformAgentRegistryGetA2ADelegationGraphResult;
+	control: PlatformAgentRegistryControlA2ADelegationTaskResult;
+	task: A2ATask;
+	terminal: boolean;
+}
+
 export interface PlatformA2ALiveSmokeDependencies {
 	resolveConfig: () => Promise<PlatformServiceConfig | null>;
 	listPeers: (
@@ -313,6 +411,9 @@ export interface PlatformA2ALiveSmokeDependencies {
 	getTask: typeof getA2ATask;
 	discoverAgentCard: typeof discoverA2AAgentCard;
 	gitSha: () => string;
+	collectRealtimeDeliveryEvidence: (
+		input: PlatformA2ARealtimeDeliveryCollectionInput,
+	) => Promise<PlatformA2ARealtimeDeliveryEvidence | undefined>;
 	writeEvidence: (
 		outputDir: string,
 		evidence: PlatformA2ALiveSmokeEvidence,
@@ -337,6 +438,7 @@ const defaultDependencies: PlatformA2ALiveSmokeDependencies = {
 	getTask: getA2ATask,
 	discoverAgentCard: discoverA2AAgentCard,
 	gitSha: readGitSha,
+	collectRealtimeDeliveryEvidence: collectRealtimeDeliveryEvidenceFromFile,
 	writeEvidence: writeEvidenceFile,
 	sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
 	now: () => new Date(),
@@ -356,6 +458,10 @@ export function resolvePlatformA2ALiveSmokeEnv(
 	const toAgentId = trimString(env.MAESTRO_A2A_LIVE_TO_AGENT_ID);
 	const skillId = trimString(env.MAESTRO_A2A_LIVE_SKILL_ID);
 	const capability = trimString(env.MAESTRO_A2A_LIVE_CAPABILITY);
+	const realtimeDeliveryEvidenceFile = firstEnv(
+		env,
+		REALTIME_DELIVERY_EVIDENCE_FILE_ENV_VARS,
+	);
 	const missing: string[] = [];
 	if (!serviceUrl) {
 		missing.push(`${SERVICE_URL_ENV_VARS[0]} or EVALOPS_BASE_URL`);
@@ -419,6 +525,9 @@ export function resolvePlatformA2ALiveSmokeEnv(
 		requireInvalidTokenProbe:
 			env.MAESTRO_A2A_LIVE_REQUIRE_INVALID_TOKEN_PROBE === "true",
 		requireTerminalTask: env.MAESTRO_A2A_LIVE_REQUIRE_TERMINAL_TASK !== "false",
+		requireRealtimeDeliveryEvidence:
+			env.MAESTRO_A2A_LIVE_REQUIRE_REALTIME_DELIVERY_EVIDENCE === "true",
+		realtimeDeliveryEvidenceFile,
 	};
 }
 
@@ -428,6 +537,7 @@ export async function runPlatformA2ADelegationLiveSmoke(
 	const rawEnv = options.env ?? process.env;
 	const env = resolvePlatformA2ALiveSmokeEnv(rawEnv);
 	const deps = { ...defaultDependencies, ...options.dependencies };
+	await assertRealtimeDeliveryEvidencePreflight(env, deps);
 	const config = await deps.resolveConfig();
 	const effectiveConfig: PlatformServiceConfig = {
 		...(config ?? {
@@ -525,7 +635,7 @@ export async function runPlatformA2ADelegationLiveSmoke(
 				a2aSkillId: env.skillId,
 				requiredCapability: env.capability,
 				evidenceContract:
-					"delegation-id,a2a-task-id,graph,control,task-state,git-sha",
+					buildEvidenceContract(env.requireRealtimeDeliveryEvidence),
 			},
 		},
 		{ config: effectiveConfig },
@@ -561,6 +671,26 @@ export async function runPlatformA2ADelegationLiveSmoke(
 			`Remote A2A task ${taskId} did not reach a terminal state after ${env.taskAttempts} attempts; last state ${taskState ?? "unknown"}`,
 		);
 	}
+	const realtimeDelivery = requireRealtimeDeliveryEvidenceSections(
+		await deps.collectRealtimeDeliveryEvidence({
+			env,
+			config: effectiveConfig,
+			createdAt,
+			origin,
+			target,
+			delegation: observedDelegation,
+			graph,
+			control,
+			task,
+			terminal,
+		}),
+		"realtime delivery evidence",
+	);
+	if (env.requireRealtimeDeliveryEvidence && !realtimeDelivery) {
+		throw new Error(
+			`Platform A2A live smoke requires realtime delivery evidence. Set ${REALTIME_DELIVERY_EVIDENCE_FILE_ENV_VARS[0]} to the collector output, or provide collectRealtimeDeliveryEvidence in tests, before enabling MAESTRO_A2A_LIVE_REQUIRE_REALTIME_DELIVERY_EVIDENCE=true.`,
+		);
+	}
 	const evidence = buildEvidence({
 		env,
 		config: effectiveConfig,
@@ -589,6 +719,7 @@ export async function runPlatformA2ADelegationLiveSmoke(
 		gitSha: deps.gitSha(),
 		github: buildGithubEvidence(rawEnv),
 		negativeAuthProbe,
+		realtimeDelivery,
 	});
 	const evidencePath = await deps.writeEvidence(env.outputDir, evidence, {
 		env: rawEnv,
@@ -942,6 +1073,408 @@ async function observeRemoteTask(
 	return lastTask;
 }
 
+async function collectRealtimeDeliveryEvidenceFromFile(
+	input: PlatformA2ARealtimeDeliveryCollectionInput,
+): Promise<PlatformA2ARealtimeDeliveryEvidence | undefined> {
+	const evidenceFile = input.env.realtimeDeliveryEvidenceFile;
+	if (!evidenceFile) {
+		return undefined;
+	}
+	return await readRealtimeDeliveryEvidenceFile(evidenceFile);
+}
+
+async function assertRealtimeDeliveryEvidencePreflight(
+	env: PlatformA2ALiveSmokeEnv,
+	deps: PlatformA2ALiveSmokeDependencies,
+): Promise<void> {
+	if (!env.requireRealtimeDeliveryEvidence) {
+		return;
+	}
+	if (
+		deps.collectRealtimeDeliveryEvidence !==
+		defaultDependencies.collectRealtimeDeliveryEvidence
+	) {
+		return;
+	}
+	const evidenceFile = env.realtimeDeliveryEvidenceFile;
+	if (!evidenceFile) {
+		throw new Error(
+			`Platform A2A live smoke requires ${REALTIME_DELIVERY_EVIDENCE_FILE_ENV_VARS[0]} when MAESTRO_A2A_LIVE_REQUIRE_REALTIME_DELIVERY_EVIDENCE=true and no custom realtime evidence collector is configured`,
+		);
+	}
+}
+
+async function readRealtimeDeliveryEvidenceFile(
+	evidenceFile: string,
+): Promise<PlatformA2ARealtimeDeliveryEvidence> {
+	const payload = JSON.parse(await readFile(evidenceFile, "utf8")) as unknown;
+	const evidence = requireRealtimeDeliveryEvidenceSections(
+		extractRealtimeDeliveryEvidence(payload, evidenceFile),
+		`realtime delivery evidence file ${evidenceFile}`,
+	);
+	if (!evidence) {
+		throw new Error(
+			`Platform A2A realtime delivery evidence file ${evidenceFile} did not contain realtimeDelivery evidence`,
+		);
+	}
+	return evidence;
+}
+
+function extractRealtimeDeliveryEvidence(
+	payload: unknown,
+	label: string,
+): PlatformA2ARealtimeDeliveryEvidence | undefined {
+	const record = asRecord(payload);
+	if (!record) {
+		throw new Error(
+			`Platform A2A ${label} must be a JSON object containing realtimeDelivery evidence`,
+		);
+	}
+	const direct = asRecord(record.realtimeDelivery);
+	if (direct) {
+		return direct as unknown as PlatformA2ARealtimeDeliveryEvidence;
+	}
+	const evidence = asRecord(record.evidence);
+	const nested = asRecord(evidence?.realtimeDelivery);
+	if (nested) {
+		return nested as unknown as PlatformA2ARealtimeDeliveryEvidence;
+	}
+	if (hasRealtimeDeliveryEvidenceSections(record)) {
+		return record as unknown as PlatformA2ARealtimeDeliveryEvidence;
+	}
+	throw new Error(
+		`Platform A2A ${label} must contain realtimeDelivery with stream, push, trace, and metrics sections`,
+	);
+}
+
+function requireRealtimeDeliveryEvidenceSections(
+	value: PlatformA2ARealtimeDeliveryEvidence | undefined,
+	label: string,
+): PlatformA2ARealtimeDeliveryEvidence | undefined {
+	if (!value) {
+		return undefined;
+	}
+	const record = asRecord(value);
+	if (!record || !hasRealtimeDeliveryEvidenceSections(record)) {
+		throw new Error(
+			`Platform A2A ${label} must contain stream, push, trace, and metrics sections`,
+		);
+	}
+	return sanitizeRealtimeDeliveryEvidence(record, label);
+}
+
+function hasRealtimeDeliveryEvidenceSections(
+	record: Record<string, unknown>,
+): boolean {
+	return Boolean(
+		asRecord(record.stream) &&
+			asRecord(record.push) &&
+			asRecord(record.trace) &&
+			asRecord(record.metrics),
+	);
+}
+
+function sanitizeRealtimeDeliveryEvidence(
+	record: Record<string, unknown>,
+	label: string,
+): PlatformA2ARealtimeDeliveryEvidence {
+	const stream = requireEvidenceRecord(record.stream, `${label}.stream`);
+	const push = requireEvidenceRecord(record.push, `${label}.push`);
+	const trace = requireEvidenceRecord(record.trace, `${label}.trace`);
+	const metrics = requireEvidenceRecord(record.metrics, `${label}.metrics`);
+	const streamSurface = requireEvidenceString(stream, "surface", `${label}.stream`);
+	if (streamSurface !== "a2a-task-status-stream") {
+		throw new Error(`Platform A2A ${label}.stream has unsupported surface`);
+	}
+	const pushSurface = requireEvidenceString(push, "surface", `${label}.push`);
+	if (pushSurface !== "a2a-task-push-notification") {
+		throw new Error(`Platform A2A ${label}.push has unsupported surface`);
+	}
+	const metricsSurface = requireEvidenceString(
+		metrics,
+		"surface",
+		`${label}.metrics`,
+	);
+	if (metricsSurface !== "platform-observability-delivery-metrics") {
+		throw new Error(`Platform A2A ${label}.metrics has unsupported surface`);
+	}
+	return {
+		stream: {
+			surface: "a2a-task-status-stream",
+			sourceEvidencePresent: requireEvidenceBoolean(
+				stream,
+				"sourceEvidencePresent",
+				`${label}.stream`,
+			),
+			traceparent: optionalEvidenceString(stream, "traceparent", `${label}.stream`),
+			terminalEventId: requireEvidenceString(
+				stream,
+				"terminalEventId",
+				`${label}.stream`,
+			),
+			artifactIds: optionalEvidenceStringArray(
+				stream,
+				"artifactIds",
+				`${label}.stream`,
+			),
+			events: requireEvidenceRecordArray(
+				stream,
+				"events",
+				`${label}.stream`,
+			).map((event, index) =>
+				sanitizeRealtimeStreamEventEvidence(event, `${label}.stream.events[${index}]`),
+			),
+		},
+		push: {
+			surface: "a2a-task-push-notification",
+			sourceEvidencePresent: requireEvidenceBoolean(
+				push,
+				"sourceEvidencePresent",
+				`${label}.push`,
+			),
+			callbackAuditId: requireEvidenceString(
+				push,
+				"callbackAuditId",
+				`${label}.push`,
+			),
+			traceparent: optionalEvidenceString(push, "traceparent", `${label}.push`),
+			acceptedCount: requireEvidenceNumber(push, "acceptedCount", `${label}.push`),
+			rejectedCount: requireEvidenceNumber(push, "rejectedCount", `${label}.push`),
+			invalidTokenRejected: requireEvidenceBoolean(
+				push,
+				"invalidTokenRejected",
+				`${label}.push`,
+			),
+			terminalNotificationId: requireEvidenceString(
+				push,
+				"terminalNotificationId",
+				`${label}.push`,
+			),
+			notifications: requireEvidenceRecordArray(
+				push,
+				"notifications",
+				`${label}.push`,
+			).map((notification, index) =>
+				sanitizeRealtimePushNotificationEvidence(
+					notification,
+					`${label}.push.notifications[${index}]`,
+				),
+			),
+		},
+		trace: {
+			rootTraceId: requireEvidenceString(trace, "rootTraceId", `${label}.trace`),
+			taskTraceId: requireEvidenceString(trace, "taskTraceId", `${label}.trace`),
+			streamTraceId: requireEvidenceString(
+				trace,
+				"streamTraceId",
+				`${label}.trace`,
+			),
+			pushTraceId: requireEvidenceString(trace, "pushTraceId", `${label}.trace`),
+			correlated: requireEvidenceBoolean(trace, "correlated", `${label}.trace`),
+		},
+		metrics: {
+			surface: "platform-observability-delivery-metrics",
+			sourceEvidencePresent: requireEvidenceBoolean(
+				metrics,
+				"sourceEvidencePresent",
+				`${label}.metrics`,
+			),
+			queryId: requireEvidenceString(metrics, "queryId", `${label}.metrics`),
+			workspaceId: requireEvidenceString(metrics, "workspaceId", `${label}.metrics`),
+			windowStart: requireEvidenceString(
+				metrics,
+				"windowStart",
+				`${label}.metrics`,
+			),
+			windowEnd: requireEvidenceString(metrics, "windowEnd", `${label}.metrics`),
+			streamTerminalRate: requireEvidenceNumber(
+				metrics,
+				"streamTerminalRate",
+				`${label}.metrics`,
+			),
+			pushDeliveryLatencyMsP95: requireEvidenceNumber(
+				metrics,
+				"pushDeliveryLatencyMsP95",
+				`${label}.metrics`,
+			),
+			callbackRejectionRate: requireEvidenceNumber(
+				metrics,
+				"callbackRejectionRate",
+				`${label}.metrics`,
+			),
+			retryCount: requireEvidenceNumber(metrics, "retryCount", `${label}.metrics`),
+			stuckDeliveryAlerts: requireEvidenceNumber(
+				metrics,
+				"stuckDeliveryAlerts",
+				`${label}.metrics`,
+			),
+		},
+	};
+}
+
+function sanitizeRealtimeStreamEventEvidence(
+	event: Record<string, unknown>,
+	label: string,
+): PlatformA2ARealtimeStreamEventEvidence {
+	return {
+		id: requireEvidenceString(event, "id", label),
+		type: optionalEvidenceString(event, "type", label),
+		taskId: requireEvidenceString(event, "taskId", label),
+		contextId: optionalEvidenceString(event, "contextId", label),
+		messageId: optionalEvidenceString(event, "messageId", label),
+		state: optionalEvidenceString(event, "state", label),
+		terminal: requireEvidenceBoolean(event, "terminal", label),
+		artifactIds: optionalEvidenceStringArray(event, "artifactIds", label),
+		observedAt: requireEvidenceString(event, "observedAt", label),
+	};
+}
+
+function sanitizeRealtimePushNotificationEvidence(
+	notification: Record<string, unknown>,
+	label: string,
+): PlatformA2ARealtimePushNotificationEvidence {
+	return {
+		id: requireEvidenceString(notification, "id", label),
+		kind: optionalEvidenceString(notification, "kind", label),
+		type: optionalEvidenceString(notification, "type", label),
+		taskId: requireEvidenceString(notification, "taskId", label),
+		contextId: optionalEvidenceString(notification, "contextId", label),
+		messageId: optionalEvidenceString(notification, "messageId", label),
+		state: optionalEvidenceString(notification, "state", label),
+		artifactIds: optionalRealtimePushArtifactIds(notification, label),
+		accepted: requireEvidenceBoolean(notification, "accepted", label),
+		terminal: requireEvidenceBoolean(notification, "terminal", label),
+		errorClass: optionalEvidenceString(notification, "errorClass", label),
+		observedAt: requireEvidenceString(notification, "observedAt", label),
+	};
+}
+
+function optionalRealtimePushArtifactIds(
+	notification: Record<string, unknown>,
+	label: string,
+): string[] | undefined {
+	const artifactIds = optionalEvidenceStringArray(notification, "artifactIds", label);
+	if (artifactIds && artifactIds.length > 0) {
+		return artifactIds;
+	}
+	const artifact = notification.artifact;
+	if (artifact === undefined || artifact === null) {
+		return artifactIds;
+	}
+	return [
+		requireEvidenceString(
+			requireEvidenceRecord(artifact, `${label}.artifact`),
+			"artifactId",
+			`${label}.artifact`,
+		),
+	];
+}
+
+function requireEvidenceRecord(
+	value: unknown,
+	label: string,
+): Record<string, unknown> {
+	const record = asRecord(value);
+	if (!record) {
+		throw new Error(`Platform A2A ${label} must be an object`);
+	}
+	return record;
+}
+
+function requireEvidenceRecordArray(
+	record: Record<string, unknown>,
+	key: string,
+	label: string,
+): Record<string, unknown>[] {
+	const value = record[key];
+	if (!Array.isArray(value)) {
+		throw new Error(`Platform A2A ${label}.${key} must be an array`);
+	}
+	return value.map((item, index) =>
+		requireEvidenceRecord(item, `${label}.${key}[${index}]`),
+	);
+}
+
+function requireEvidenceString(
+	record: Record<string, unknown>,
+	key: string,
+	label: string,
+): string {
+	const raw = record[key];
+	const value = typeof raw === "string" ? trimString(raw) : undefined;
+	if (!value) {
+		throw new Error(`Platform A2A ${label}.${key} is required`);
+	}
+	return value;
+}
+
+function optionalEvidenceString(
+	record: Record<string, unknown>,
+	key: string,
+	label: string,
+): string | undefined {
+	const raw = record[key];
+	if (raw === undefined || raw === null) {
+		return undefined;
+	}
+	const value = typeof raw === "string" ? trimString(raw) : undefined;
+	if (!value) {
+		throw new Error(`Platform A2A ${label}.${key} must be a string`);
+	}
+	return value;
+}
+
+function optionalEvidenceStringArray(
+	record: Record<string, unknown>,
+	key: string,
+	label: string,
+): string[] | undefined {
+	const value = record[key];
+	if (value === undefined || value === null) {
+		return undefined;
+	}
+	if (!Array.isArray(value)) {
+		throw new Error(`Platform A2A ${label}.${key} must be an array`);
+	}
+	return value.map((item, index) => {
+		const stringValue = typeof item === "string" ? trimString(item) : undefined;
+		if (!stringValue) {
+			throw new Error(`Platform A2A ${label}.${key}[${index}] must be a string`);
+		}
+		return stringValue;
+	});
+}
+
+function requireEvidenceBoolean(
+	record: Record<string, unknown>,
+	key: string,
+	label: string,
+): boolean {
+	const value = record[key];
+	if (typeof value !== "boolean") {
+		throw new Error(`Platform A2A ${label}.${key} must be a boolean`);
+	}
+	return value;
+}
+
+function requireEvidenceNumber(
+	record: Record<string, unknown>,
+	key: string,
+	label: string,
+): number {
+	const value = record[key];
+	if (typeof value !== "number" || !Number.isFinite(value)) {
+		throw new Error(`Platform A2A ${label}.${key} must be a finite number`);
+	}
+	return value;
+}
+
+function asRecord(value: unknown): Record<string, unknown> | undefined {
+	return value && typeof value === "object" && !Array.isArray(value)
+		? (value as Record<string, unknown>)
+		: undefined;
+}
+
 function buildA2AConfig(
 	peer: PlatformAgentRegistryA2APeerCandidate,
 	config: PlatformServiceConfig,
@@ -972,6 +1505,7 @@ function buildEvidence(input: {
 	gitSha: string;
 	github?: PlatformA2ALiveSmokeGithubEvidence;
 	negativeAuthProbe?: PlatformA2ALiveSmokeEvidence["negativeAuthProbe"];
+	realtimeDelivery?: PlatformA2ARealtimeDeliveryEvidence;
 }): PlatformA2ALiveSmokeEvidence {
 	const remoteTask = input.control.remoteTask;
 	return {
@@ -1042,11 +1576,26 @@ function buildEvidence(input: {
 			messageIds: nonEmptyArray(collectTaskMessageIds(input.task)),
 		},
 		negativeAuthProbe: input.negativeAuthProbe,
+		realtimeDelivery: input.realtimeDelivery,
 		redaction: {
 			rawTokensWithheld: true,
 			rawPayloadsWithheld: true,
 		},
 	};
+}
+
+function buildEvidenceContract(includeRealtimeDelivery: boolean): string {
+	return [
+		"delegation-id",
+		"a2a-task-id",
+		"graph",
+		"control",
+		"task-state",
+		"git-sha",
+		...(includeRealtimeDelivery
+			? ["stream-event-id", "push-notification-id", "delivery-metric-query-id"]
+			: []),
+	].join(",");
 }
 
 function collectTaskMessageIds(task: A2ATask): string[] {
@@ -1316,15 +1865,48 @@ export function sha256Hex(value: string): string {
 	return createHash("sha256").update(value).digest("hex");
 }
 
+export function formatPlatformA2ALiveSmokeUsage(): string {
+	return [
+		"Usage: tsx scripts/smoke-platform-a2a-delegation-live.ts",
+		"",
+		"Required environment:",
+		`  ${SERVICE_URL_ENV_VARS[0]} or EVALOPS_BASE_URL`,
+		`  ${SERVICE_TOKEN_ENV_VARS[0]} or EVALOPS_TOKEN`,
+		`  ${ORGANIZATION_ENV_VARS[0]} or EVALOPS_ORGANIZATION_ID`,
+		`  ${WORKSPACE_ENV_VARS[0]} or EVALOPS_WORKSPACE_ID`,
+		"  MAESTRO_A2A_LIVE_FROM_AGENT_ID",
+		"  MAESTRO_A2A_LIVE_TO_AGENT_ID",
+		"  MAESTRO_A2A_LIVE_SKILL_ID or MAESTRO_A2A_LIVE_CAPABILITY",
+		"",
+		"Useful optional environment:",
+		"  MAESTRO_A2A_LIVE_EVIDENCE_DIR",
+		"  MAESTRO_A2A_LIVE_REQUIRE_INVALID_TOKEN_PROBE=true",
+		"  MAESTRO_A2A_LIVE_REQUIRE_TERMINAL_TASK=false",
+		"  MAESTRO_A2A_LIVE_REQUIRE_REALTIME_DELIVERY_EVIDENCE=true",
+		`  ${REALTIME_DELIVERY_EVIDENCE_FILE_ENV_VARS[0]}=<collector-output.json>`,
+		"  MAESTRO_A2A_LIVE_EVIDENCE_SIGNING_PRIVATE_KEY_FILE",
+		"",
+		"After the smoke writes evidence, verify it with:",
+		"  npm run platform:a2a-evidence-verify -- <evidence.json> --require-negative-auth-probe --require-discovery-evidence --require-durable-a2a-ids",
+		"  npm run platform:a2a-evidence-verify -- <evidence.json> --require-realtime-delivery-evidence",
+	].join("\n");
+}
+
 function isEntrypoint(): boolean {
 	const entrypoint = process.argv[1];
 	return Boolean(entrypoint && import.meta.url === pathToFileURL(entrypoint).href);
 }
 
 if (isEntrypoint()) {
-	runPlatformA2ADelegationLiveSmoke().catch((error: unknown) => {
-		const message = error instanceof Error ? error.message : String(error);
-		console.error(message);
-		process.exitCode = 1;
-	});
+	const args = process.argv.slice(2);
+	if (args.includes("--help") || args.includes("-h")) {
+		console.log(formatPlatformA2ALiveSmokeUsage());
+		process.exitCode = 0;
+	} else {
+		runPlatformA2ADelegationLiveSmoke().catch((error: unknown) => {
+			const message = error instanceof Error ? error.message : String(error);
+			console.error(message);
+			process.exitCode = 1;
+		});
+	}
 }

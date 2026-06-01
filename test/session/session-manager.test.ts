@@ -8,11 +8,15 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AgentState } from "../../src/agent/types.js";
 import { UNIFIED_CONTEXT_MANIFEST_PROTOCOL } from "../../src/context/manifest-types.js";
 import { exportSessionToJson } from "../../src/export-html.js";
-import { SessionManager } from "../../src/session/manager.js";
+import {
+	SessionManager,
+	flushPendingSessionAutoPrunesForTests,
+	resetSessionAutoPruneForTests,
+} from "../../src/session/manager.js";
 import type { SessionHeaderEntry } from "../../src/session/types.js";
 
 // Helper to create a minimal agent state
@@ -135,6 +139,75 @@ describe("SessionManager - Deferred Session Creation", () => {
 	});
 
 	describe("Session metadata", () => {
+		it("does not keep short-lived processes alive for background auto-prune", () => {
+			const unref = vi.fn();
+			const setTimeoutSpy = vi
+				.spyOn(globalThis, "setTimeout")
+				.mockImplementation(
+					((
+						_handler: Parameters<typeof setTimeout>[0],
+						_timeout?: Parameters<typeof setTimeout>[1],
+						..._args: unknown[]
+					) =>
+						({
+							unref,
+						}) as unknown as ReturnType<
+							typeof setTimeout
+						>) as typeof setTimeout,
+				);
+
+			try {
+				const sessionManager = new SessionManager(false);
+				sessionManager.startSession(createMockState());
+
+				expect(setTimeoutSpy).toHaveBeenCalledWith(expect.any(Function), 5000);
+				expect(unref).toHaveBeenCalled();
+			} finally {
+				setTimeoutSpy.mockRestore();
+			}
+		});
+
+		it("preserves pending auto-prune for short-lived processes", () => {
+			const unref = vi.fn();
+			const setTimeoutSpy = vi
+				.spyOn(globalThis, "setTimeout")
+				.mockImplementation(
+					((
+						_handler: Parameters<typeof setTimeout>[0],
+						_timeout?: Parameters<typeof setTimeout>[1],
+						..._args: unknown[]
+					) =>
+						({
+							unref,
+						}) as unknown as ReturnType<
+							typeof setTimeout
+						>) as typeof setTimeout,
+				);
+
+			try {
+				const sessionManager = new SessionManager(false);
+				const pruneSpy = vi
+					.spyOn(sessionManager, "pruneSessions")
+					.mockReturnValue({ removed: 0, errors: 0 });
+
+				sessionManager.startSession(createMockState());
+
+				expect(setTimeoutSpy).toHaveBeenCalledWith(expect.any(Function), 5000);
+				expect(unref).toHaveBeenCalled();
+				expect(pruneSpy).not.toHaveBeenCalled();
+
+				flushPendingSessionAutoPrunesForTests();
+
+				expect(pruneSpy).toHaveBeenCalledTimes(1);
+
+				flushPendingSessionAutoPrunesForTests();
+
+				expect(pruneSpy).toHaveBeenCalledTimes(1);
+			} finally {
+				setTimeoutSpy.mockRestore();
+			}
+		});
+
 		it("derives summaries and toggles favorites", () => {
 			const sessionManager = new SessionManager(false);
 			const state = createMockState();
@@ -429,6 +502,7 @@ describe("SessionManager - Deferred Session Creation", () => {
 	});
 
 	afterEach(() => {
+		resetSessionAutoPruneForTests();
 		// Restore original state
 		process.chdir(originalCwd);
 		if (originalEnv === undefined) {

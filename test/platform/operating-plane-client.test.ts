@@ -167,7 +167,7 @@ describe("operating plane Platform client", () => {
 										summary: "Gateway model event metadata",
 									},
 								],
-								value_proof: {
+								runtime_signals: {
 									operation_id: "run_1",
 									operator_summary: "Gateway request is tied to Slack thread",
 									identity_bound: true,
@@ -201,7 +201,7 @@ describe("operating plane Platform client", () => {
 			identity: {
 				gateway_authenticated_subject: "user:alice",
 			},
-			value_proof: {
+			runtime_signals: {
 				identity_bound: true,
 				model_observed: true,
 				evidence_linked: true,

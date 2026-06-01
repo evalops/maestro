@@ -54,7 +54,7 @@ describe("operating plane status summary", () => {
 						estimated_cost_micros: 4567,
 						currency: "USD",
 					},
-					value_proof: {
+					runtime_signals: {
 						operation_id: "run_1",
 						operator_summary: "Gateway request is tied to Slack thread",
 						identity_bound: true,
@@ -64,7 +64,7 @@ describe("operating plane status summary", () => {
 						trace_linked: true,
 						evidence_linked: true,
 						cost_attributed: true,
-						missing_proof: ["tool ledger", "approval ledger"],
+						missing_signals: ["tool ledger", "approval ledger"],
 					},
 					withholding_reasons: ["customer_content"],
 					unavailable_sources: ["tool-execution"],

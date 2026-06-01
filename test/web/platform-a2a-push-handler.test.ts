@@ -123,6 +123,7 @@ describe("handlePlatformA2APushCallback", () => {
 						final: true,
 						status: { state: "TASK_STATE_COMPLETED" },
 						metadata: {
+							messageId: "message_1",
 							workspaceId: "ws_hosted",
 							organizationId: "org_1",
 							runtimeEventId: "event_1",
@@ -141,6 +142,8 @@ describe("handlePlatformA2APushCallback", () => {
 			accepted: true,
 			kind: "statusUpdate",
 			taskId: "run_1",
+			messageId: "message_1",
+			messageIds: ["message_1"],
 			state: "TASK_STATE_COMPLETED",
 			final: true,
 			runtimeEventId: "event_1",
@@ -148,10 +151,163 @@ describe("handlePlatformA2APushCallback", () => {
 		expect(ctx.hostedRunner?.lastPlatformA2APush).toMatchObject({
 			kind: "statusUpdate",
 			taskId: "run_1",
+			messageId: "message_1",
+			messageIds: ["message_1"],
 			workspaceId: "ws_hosted",
 			organizationId: "org_1",
 			state: "TASK_STATE_COMPLETED",
 			runtimeEventType: "RUNTIME_EVENT_TYPE_RUN_SUCCEEDED",
+		});
+	});
+
+	it("accepts message updates only for the hosted runner A2A message", async () => {
+		vi.stubEnv("MAESTRO_PLATFORM_A2A_CALLBACK_TOKEN", "callback-token");
+		const ctx = context();
+		if (ctx.hostedRunner) {
+			ctx.hostedRunner.a2aMessageId = "message_1";
+		}
+		const res = new MockResponse();
+
+		await handlePlatformA2APushCallback(
+			jsonRequest(
+				{
+					message: {
+						id: "message_1",
+						taskId: "run_1",
+						contextId: "ctx_1",
+						metadata: {
+							workspaceId: "ws_hosted",
+							organizationId: "org_1",
+						},
+					},
+				},
+				{ "x-a2a-notification-token": "callback-token" },
+			),
+			res as unknown as ServerResponse,
+			ctx,
+		);
+
+		expect(res.statusCode).toBe(202);
+		expect(JSON.parse(res.body)).toMatchObject({
+			accepted: true,
+			kind: "message",
+			taskId: "run_1",
+			messageId: "message_1",
+			messageIds: ["message_1"],
+		});
+		expect(ctx.hostedRunner?.lastPlatformA2APush).toMatchObject({
+			kind: "message",
+			taskId: "run_1",
+			messageId: "message_1",
+			messageIds: ["message_1"],
+		});
+	});
+
+	it("accepts message updates without task ids for the hosted runner A2A message", async () => {
+		vi.stubEnv("MAESTRO_PLATFORM_A2A_CALLBACK_TOKEN", "callback-token");
+		const ctx = context();
+		if (ctx.hostedRunner) {
+			ctx.hostedRunner.a2aMessageId = "message_1";
+		}
+		const res = new MockResponse();
+
+		await handlePlatformA2APushCallback(
+			jsonRequest(
+				{
+					message: {
+						id: "message_1",
+						contextId: "ctx_1",
+					},
+				},
+				{ "x-a2a-notification-token": "callback-token" },
+			),
+			res as unknown as ServerResponse,
+			ctx,
+		);
+
+		expect(res.statusCode).toBe(202);
+		expect(JSON.parse(res.body)).toMatchObject({
+			accepted: true,
+			kind: "message",
+			messageId: "message_1",
+			messageIds: ["message_1"],
+			contextId: "ctx_1",
+		});
+		expect(JSON.parse(res.body).taskId).toBeUndefined();
+		expect(ctx.hostedRunner?.lastPlatformA2APush).toMatchObject({
+			kind: "message",
+			messageId: "message_1",
+			messageIds: ["message_1"],
+			contextId: "ctx_1",
+		});
+		expect(ctx.hostedRunner?.lastPlatformA2APush?.taskId).toBeUndefined();
+	});
+
+	it("rejects unbound message-only pushes without correlation metadata", async () => {
+		vi.stubEnv("MAESTRO_PLATFORM_A2A_CALLBACK_TOKEN", "callback-token");
+		const ctx = context();
+		if (ctx.hostedRunner) {
+			ctx.hostedRunner.a2aMessageId = undefined;
+		}
+		const res = new MockResponse();
+
+		await expect(
+			handlePlatformA2APushCallback(
+				jsonRequest(
+					{
+						message: {
+							id: "message_misrouted",
+							contextId: "ctx_1",
+						},
+					},
+					{
+						"x-a2a-notification-token": "callback-token",
+						"x-evalops-agent-id": "agent_expected",
+					},
+				),
+				res as unknown as ServerResponse,
+				ctx,
+			),
+		).rejects.toMatchObject({ statusCode: 403 });
+
+		expect(ctx.hostedRunner?.a2aMessageId).toBeUndefined();
+		expect(ctx.hostedRunner?.lastPlatformA2APush).toBeUndefined();
+	});
+
+	it("binds an unclaimed hosted runner message when workspace metadata matches", async () => {
+		vi.stubEnv("MAESTRO_PLATFORM_A2A_CALLBACK_TOKEN", "callback-token");
+		const ctx = context();
+		if (ctx.hostedRunner) {
+			ctx.hostedRunner.a2aTaskId = undefined;
+			ctx.hostedRunner.a2aMessageId = undefined;
+		}
+		const res = new MockResponse();
+
+		await handlePlatformA2APushCallback(
+			jsonRequest(
+				{
+					message: {
+						id: "message_bound",
+						taskId: "run_bound",
+						contextId: "ctx_1",
+						metadata: {
+							workspaceId: "ws_hosted",
+						},
+					},
+				},
+				{ "x-a2a-notification-token": "callback-token" },
+			),
+			res as unknown as ServerResponse,
+			ctx,
+		);
+
+		expect(res.statusCode).toBe(202);
+		expect(ctx.hostedRunner?.a2aTaskId).toBe("run_bound");
+		expect(ctx.hostedRunner?.a2aMessageId).toBe("message_bound");
+		expect(ctx.hostedRunner?.lastPlatformA2APush).toMatchObject({
+			taskId: "run_bound",
+			messageId: "message_bound",
+			workspaceId: "ws_hosted",
 		});
 	});
 
@@ -213,6 +369,216 @@ describe("handlePlatformA2APushCallback", () => {
 			agentId: "agent_payload",
 			actorId: "actor_header",
 		});
+	});
+
+	it("rejects callbacks for a different hosted runner agent", async () => {
+		vi.stubEnv("MAESTRO_PLATFORM_A2A_CALLBACK_TOKEN", "callback-token");
+		const ctx = context();
+		if (ctx.hostedRunner) {
+			ctx.hostedRunner.agentId = "agent_expected";
+		}
+		const res = new MockResponse();
+
+		await expect(
+			handlePlatformA2APushCallback(
+				jsonRequest(
+					{
+						statusUpdate: {
+							taskId: "run_1",
+							contextId: "ctx_1",
+							status: { state: "TASK_STATE_WORKING" },
+							metadata: {
+								workspaceId: "ws_hosted",
+								agentId: "agent_other",
+							},
+						},
+					},
+					{ "x-a2a-notification-token": "callback-token" },
+				),
+				res as unknown as ServerResponse,
+				ctx,
+			),
+		).rejects.toMatchObject({ statusCode: 403 });
+
+		expect(ctx.hostedRunner?.lastPlatformA2APush).toBeUndefined();
+	});
+
+	it("rejects callbacks for a different nested hosted runner agent", async () => {
+		vi.stubEnv("MAESTRO_PLATFORM_A2A_CALLBACK_TOKEN", "callback-token");
+		const ctx = context();
+		if (ctx.hostedRunner) {
+			ctx.hostedRunner.agentId = "agent_expected";
+		}
+		const res = new MockResponse();
+
+		await expect(
+			handlePlatformA2APushCallback(
+				jsonRequest(
+					{
+						statusUpdate: {
+							taskId: "run_1",
+							contextId: "ctx_1",
+							status: {
+								state: "TASK_STATE_WORKING",
+								message: {
+									id: "agent_response_message",
+									metadata: {
+										agentId: "agent_other",
+									},
+								},
+							},
+							metadata: {
+								workspaceId: "ws_hosted",
+								agentId: "agent_expected",
+							},
+						},
+					},
+					{
+						"x-a2a-notification-token": "callback-token",
+						"x-evalops-agent-id": "agent_expected",
+					},
+				),
+				res as unknown as ServerResponse,
+				ctx,
+			),
+		).rejects.toMatchObject({ statusCode: 403 });
+
+		expect(ctx.hostedRunner?.lastPlatformA2APush).toBeUndefined();
+	});
+
+	it("does not reject status pushes for agent response message ids", async () => {
+		vi.stubEnv("MAESTRO_PLATFORM_A2A_CALLBACK_TOKEN", "callback-token");
+		const ctx = context();
+		if (ctx.hostedRunner) {
+			ctx.hostedRunner.a2aMessageId = "original_user_message";
+		}
+		const res = new MockResponse();
+
+		await handlePlatformA2APushCallback(
+			jsonRequest(
+				{
+					statusUpdate: {
+						taskId: "run_1",
+						contextId: "ctx_1",
+						status: {
+							state: "TASK_STATE_WORKING",
+							message: {
+								id: "agent_response_message",
+								taskId: "run_1",
+							},
+						},
+						metadata: {
+							workspaceId: "ws_hosted",
+						},
+					},
+				},
+				{ "x-a2a-notification-token": "callback-token" },
+			),
+			res as unknown as ServerResponse,
+			ctx,
+		);
+
+		expect(res.statusCode).toBe(202);
+		expect(JSON.parse(res.body)).toMatchObject({
+			accepted: true,
+			kind: "statusUpdate",
+			taskId: "run_1",
+			state: "TASK_STATE_WORKING",
+		});
+		expect(JSON.parse(res.body).messageId).toBeUndefined();
+		expect(ctx.hostedRunner?.a2aMessageId).toBe("original_user_message");
+		expect(ctx.hostedRunner?.lastPlatformA2APush).toMatchObject({
+			taskId: "run_1",
+			workspaceId: "ws_hosted",
+			state: "TASK_STATE_WORKING",
+		});
+		expect(ctx.hostedRunner?.lastPlatformA2APush?.messageId).toBeUndefined();
+	});
+
+	it("does not bind status push message metadata as the runner durable message", async () => {
+		vi.stubEnv("MAESTRO_PLATFORM_A2A_CALLBACK_TOKEN", "callback-token");
+		const ctx = context();
+		if (ctx.hostedRunner) {
+			ctx.hostedRunner.a2aMessageId = undefined;
+		}
+		const res = new MockResponse();
+
+		await handlePlatformA2APushCallback(
+			jsonRequest(
+				{
+					statusUpdate: {
+						taskId: "run_1",
+						contextId: "ctx_1",
+						status: { state: "TASK_STATE_WORKING" },
+						metadata: {
+							messageId: "agent_progress_message",
+							workspaceId: "ws_hosted",
+						},
+					},
+				},
+				{ "x-a2a-notification-token": "callback-token" },
+			),
+			res as unknown as ServerResponse,
+			ctx,
+		);
+
+		expect(res.statusCode).toBe(202);
+		expect(ctx.hostedRunner?.a2aMessageId).toBeUndefined();
+		expect(ctx.hostedRunner?.lastPlatformA2APush).toMatchObject({
+			kind: "statusUpdate",
+			taskId: "run_1",
+			messageId: "agent_progress_message",
+		});
+	});
+
+	it("does not reject task snapshots for agent response message ids", async () => {
+		vi.stubEnv("MAESTRO_PLATFORM_A2A_CALLBACK_TOKEN", "callback-token");
+		const ctx = context();
+		if (ctx.hostedRunner) {
+			ctx.hostedRunner.a2aMessageId = "original_user_message";
+		}
+		const res = new MockResponse();
+
+		await handlePlatformA2APushCallback(
+			jsonRequest(
+				{
+					task: {
+						id: "run_1",
+						contextId: "ctx_1",
+						status: {
+							state: "TASK_STATE_WORKING",
+							message: {
+								messageId: "agent_response_message",
+								taskId: "run_1",
+							},
+						},
+						metadata: {
+							workspaceId: "ws_hosted",
+						},
+					},
+				},
+				{ "x-a2a-notification-token": "callback-token" },
+			),
+			res as unknown as ServerResponse,
+			ctx,
+		);
+
+		expect(res.statusCode).toBe(202);
+		expect(JSON.parse(res.body)).toMatchObject({
+			accepted: true,
+			kind: "task",
+			taskId: "run_1",
+			state: "TASK_STATE_WORKING",
+		});
+		expect(JSON.parse(res.body).messageId).toBeUndefined();
+		expect(ctx.hostedRunner?.a2aMessageId).toBe("original_user_message");
+		expect(ctx.hostedRunner?.lastPlatformA2APush).toMatchObject({
+			kind: "task",
+			taskId: "run_1",
+			state: "TASK_STATE_WORKING",
+			workspaceId: "ws_hosted",
+		});
+		expect(ctx.hostedRunner?.lastPlatformA2APush?.messageId).toBeUndefined();
 	});
 
 	it("records snake_case trace metadata aliases", async () => {
@@ -324,6 +690,99 @@ describe("handlePlatformA2APushCallback", () => {
 				ctx,
 			),
 		).rejects.toMatchObject({ statusCode: 404 });
+	});
+
+	it("rejects callbacks for a different durable A2A message", async () => {
+		vi.stubEnv("MAESTRO_PLATFORM_A2A_CALLBACK_TOKEN", "callback-token");
+		const ctx = context();
+		if (ctx.hostedRunner) {
+			ctx.hostedRunner.a2aMessageId = "message_1";
+		}
+		const res = new MockResponse();
+
+		await expect(
+			handlePlatformA2APushCallback(
+				jsonRequest(
+					{
+						message: {
+							id: "message_other",
+							taskId: "run_1",
+							contextId: "ctx_1",
+							metadata: {
+								workspaceId: "ws_hosted",
+							},
+						},
+					},
+					{ "x-a2a-notification-token": "callback-token" },
+				),
+				res as unknown as ServerResponse,
+				ctx,
+			),
+		).rejects.toMatchObject({ statusCode: 404 });
+
+		expect(ctx.hostedRunner?.lastPlatformA2APush).toBeUndefined();
+	});
+
+	it("rejects callbacks whose durable A2A message differs only by case", async () => {
+		vi.stubEnv("MAESTRO_PLATFORM_A2A_CALLBACK_TOKEN", "callback-token");
+		const ctx = context();
+		if (ctx.hostedRunner) {
+			ctx.hostedRunner.a2aMessageId = "Message_1";
+		}
+		const res = new MockResponse();
+
+		await expect(
+			handlePlatformA2APushCallback(
+				jsonRequest(
+					{
+						message: {
+							id: "message_1",
+							taskId: "run_1",
+							contextId: "ctx_1",
+							metadata: {
+								workspaceId: "ws_hosted",
+							},
+						},
+					},
+					{ "x-a2a-notification-token": "callback-token" },
+				),
+				res as unknown as ServerResponse,
+				ctx,
+			),
+		).rejects.toMatchObject({ statusCode: 404 });
+
+		expect(ctx.hostedRunner?.lastPlatformA2APush).toBeUndefined();
+	});
+
+	it("rejects task snapshots whose durable message list excludes the hosted message", async () => {
+		vi.stubEnv("MAESTRO_PLATFORM_A2A_CALLBACK_TOKEN", "callback-token");
+		const ctx = context();
+		if (ctx.hostedRunner) {
+			ctx.hostedRunner.a2aMessageId = "message_1";
+		}
+		const res = new MockResponse();
+
+		await expect(
+			handlePlatformA2APushCallback(
+				jsonRequest(
+					{
+						task: {
+							id: "run_1",
+							contextId: "ctx_1",
+							messageIds: ["message_other"],
+							metadata: {
+								workspaceId: "ws_hosted",
+							},
+						},
+					},
+					{ "x-a2a-notification-token": "callback-token" },
+				),
+				res as unknown as ServerResponse,
+				ctx,
+			),
+		).rejects.toMatchObject({ statusCode: 404 });
+
+		expect(ctx.hostedRunner?.lastPlatformA2APush).toBeUndefined();
 	});
 
 	it("rejects callbacks with mismatched workspace metadata", async () => {

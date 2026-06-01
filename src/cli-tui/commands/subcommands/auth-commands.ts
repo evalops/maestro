@@ -14,17 +14,19 @@
 import type { CommandExecutionContext } from "../types.js";
 import { createSubcommandHandler } from "./utils.js";
 
+export interface AuthState {
+	authenticated: boolean;
+	provider?: string;
+	mode?: string;
+}
+
 export interface AuthCommandDeps {
 	handleLogin: (ctx: CommandExecutionContext) => Promise<void> | void;
 	handleLogout: (ctx: CommandExecutionContext) => Promise<void> | void;
 	handleSourceOfTruthPolicy?: (
 		ctx: CommandExecutionContext,
 	) => Promise<void> | void;
-	getAuthState: () => {
-		authenticated: boolean;
-		provider?: string;
-		mode?: string;
-	};
+	getAuthState: () => AuthState | Promise<AuthState>;
 }
 
 export function createAuthCommandHandler(deps: AuthCommandDeps) {
@@ -71,11 +73,11 @@ export function createAuthCommandHandler(deps: AuthCommandDeps) {
 	});
 }
 
-function showAuthStatus(
+async function showAuthStatus(
 	ctx: CommandExecutionContext,
 	deps: AuthCommandDeps,
-): void {
-	const state = deps.getAuthState();
+): Promise<void> {
+	const state = await deps.getAuthState();
 	if (state.authenticated) {
 		ctx.showInfo(`Authentication Status:
   Authenticated: yes

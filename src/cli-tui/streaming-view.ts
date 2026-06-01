@@ -21,6 +21,7 @@ interface StreamingViewOptions {
 	};
 	getCleanMode: () => CleanMode;
 	getHideThinkingBlocks?: () => boolean;
+	requestRender?: () => void;
 }
 
 export class StreamingView {
@@ -40,13 +41,15 @@ export class StreamingView {
 		});
 	}
 
-	updateAssistantMessage(message: AssistantMessage): void {
-		if (!this.streamingComponent) return;
+	updateAssistantMessage(message: AssistantMessage): boolean {
+		if (!this.streamingComponent) return false;
+		let changedVisibleContent = false;
 		if (this.options.lowBandwidth.enabled) {
 			this.bufferedMessages.push(message);
 			this.scheduleFlush();
 		} else {
 			this.applyUpdate(message);
+			changedVisibleContent = true;
 		}
 		for (const content of message.content) {
 			if (content.type === "toolCall") {
@@ -56,17 +59,24 @@ export class StreamingView {
 					content.arguments ?? {},
 				);
 				this.updatePartialArgs(content.id, content.arguments ?? {});
+				changedVisibleContent = true;
 			}
 		}
+		return changedVisibleContent;
 	}
 
 	finishAssistantMessage(message: AssistantMessage): void {
 		if (!this.streamingComponent) return;
 		if (this.options.lowBandwidth.enabled && this.bufferedMessages.length) {
-			for (const buffered of this.bufferedMessages) {
-				this.applyUpdate(buffered);
-			}
+			const latest = this.bufferedMessages.at(-1);
 			this.bufferedMessages = [];
+			if (this.flushTimer) {
+				clearTimeout(this.flushTimer);
+				this.flushTimer = null;
+			}
+			if (latest) {
+				this.applyUpdate(latest);
+			}
 		}
 		// Final render respects the configured clean mode so duplicate lines are
 		// collapsed consistently between streaming and final views.
@@ -158,12 +168,13 @@ export class StreamingView {
 		if (this.flushTimer) return;
 		this.flushTimer = setTimeout(() => {
 			this.flushTimer = null;
-			const batch = this.bufferedMessages.splice(0);
+			const latest = this.bufferedMessages.at(-1);
+			this.bufferedMessages = [];
 			if (!this.streamingComponent) return;
-			for (const msg of batch) {
-				this.applyUpdate(msg);
-			}
+			if (!latest) return;
+			this.applyUpdate(latest);
 			this.trimScrollback();
+			this.options.requestRender?.();
 		}, this.options.lowBandwidth.batchIntervalMs);
 	}
 

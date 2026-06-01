@@ -16,6 +16,7 @@ vi.mock("../../src/oauth/index.js", () => ({
 	migrateOAuthCredentials: vi.fn().mockResolvedValue(undefined),
 	listOAuthProviders: vi.fn().mockReturnValue([]),
 	listOAuthLogoutProviders: vi.fn().mockReturnValue([]),
+	listOAuthLogoutProvidersWithCodexAppServer: vi.fn().mockResolvedValue([]),
 	login: vi.fn().mockResolvedValue(undefined),
 	logout: vi.fn().mockResolvedValue(undefined),
 }));
@@ -214,6 +215,30 @@ describe("OAuthFlowController", () => {
 			expect(login).not.toHaveBeenCalled();
 		});
 
+		it("allows legacy OpenAI Codex Responses credential login", async () => {
+			const { getOAuthProviders, login } = await import(
+				"../../src/oauth/index.js"
+			);
+			(getOAuthProviders as Mock).mockReturnValue([
+				{ id: "openai-codex", available: true },
+				{ id: "openai", available: true },
+			]);
+
+			const controller = new OAuthFlowController({
+				modalManager: createMockModalManager(),
+				notificationView: createMockNotificationView(),
+				renderContext: createMockRenderContext(),
+				editorCallbacks: createMockEditorCallbacks(),
+			});
+
+			await controller.handleLoginCommand("openai-codex:responses", vi.fn());
+
+			expect(login).toHaveBeenCalledWith(
+				"openai-codex",
+				expect.objectContaining({ mode: "responses" }),
+			);
+		});
+
 		it("parses provider argument correctly", async () => {
 			const { getOAuthProviders, login } = await import(
 				"../../src/oauth/index.js"
@@ -262,10 +287,12 @@ describe("OAuthFlowController", () => {
 		});
 
 		it("shows info when no providers logged in", async () => {
-			const { listOAuthLogoutProviders } = await import(
+			const { listOAuthLogoutProvidersWithCodexAppServer } = await import(
 				"../../src/oauth/index.js"
 			);
-			(listOAuthLogoutProviders as Mock).mockReturnValue([]);
+			(listOAuthLogoutProvidersWithCodexAppServer as Mock).mockResolvedValue(
+				[],
+			);
 
 			const controller = new OAuthFlowController({
 				modalManager: createMockModalManager(),
@@ -283,10 +310,12 @@ describe("OAuthFlowController", () => {
 		});
 
 		it("shows error when specified provider not logged in", async () => {
-			const { listOAuthLogoutProviders } = await import(
+			const { listOAuthLogoutProvidersWithCodexAppServer } = await import(
 				"../../src/oauth/index.js"
 			);
-			(listOAuthLogoutProviders as Mock).mockReturnValue(["openai-codex"]);
+			(listOAuthLogoutProvidersWithCodexAppServer as Mock).mockResolvedValue([
+				"openai-codex",
+			]);
 
 			const controller = new OAuthFlowController({
 				modalManager: createMockModalManager(),
@@ -304,10 +333,11 @@ describe("OAuthFlowController", () => {
 		});
 
 		it("logs out from single logged-in provider", async () => {
-			const { listOAuthLogoutProviders, logout } = await import(
-				"../../src/oauth/index.js"
-			);
-			(listOAuthLogoutProviders as Mock).mockReturnValue(["openai-codex"]);
+			const { listOAuthLogoutProvidersWithCodexAppServer, logout } =
+				await import("../../src/oauth/index.js");
+			(listOAuthLogoutProvidersWithCodexAppServer as Mock).mockResolvedValue([
+				"openai-codex",
+			]);
 
 			const notificationView = createMockNotificationView();
 			const controller = new OAuthFlowController({
@@ -321,16 +351,71 @@ describe("OAuthFlowController", () => {
 
 			expect(logout).toHaveBeenCalledWith("openai-codex");
 			expect(notificationView.showToast).toHaveBeenCalledWith(
-				expect.stringContaining("credentials removed"),
+				expect.stringContaining("Signed out from openai-codex"),
 				"success",
 			);
 		});
 
+		it("logs out from Codex app-server sign-ins without stored OAuth credentials", async () => {
+			const {
+				listOAuthLogoutProviders,
+				listOAuthLogoutProvidersWithCodexAppServer,
+				logout,
+			} = await import("../../src/oauth/index.js");
+			(listOAuthLogoutProviders as Mock).mockReturnValue([]);
+			(listOAuthLogoutProvidersWithCodexAppServer as Mock).mockResolvedValue([
+				"openai-codex",
+			]);
+
+			const controller = new OAuthFlowController({
+				modalManager: createMockModalManager(),
+				notificationView: createMockNotificationView(),
+				renderContext: createMockRenderContext(),
+				editorCallbacks: createMockEditorCallbacks(),
+			});
+
+			await controller.handleLogoutCommand("openai-codex", vi.fn(), vi.fn());
+
+			expect(logout).toHaveBeenCalledWith("openai-codex");
+		});
+
+		it("keeps Codex app-server sign-ins in the logout selector", async () => {
+			const {
+				listOAuthLogoutProviders,
+				listOAuthLogoutProvidersWithCodexAppServer,
+				logout,
+			} = await import("../../src/oauth/index.js");
+			(listOAuthLogoutProviders as Mock).mockReturnValue(["openai"]);
+			(listOAuthLogoutProvidersWithCodexAppServer as Mock).mockResolvedValue([
+				"openai",
+				"openai-codex",
+			]);
+			const modalManager = createMockModalManager();
+
+			const controller = new OAuthFlowController({
+				modalManager,
+				notificationView: createMockNotificationView(),
+				renderContext: createMockRenderContext(),
+				editorCallbacks: createMockEditorCallbacks(),
+			});
+
+			await controller.handleLogoutCommand("", vi.fn(), vi.fn());
+			const selector = (modalManager.push as Mock).mock.calls[0]?.[0] as
+				| { handleInput(keyData: string): void }
+				| undefined;
+			selector?.handleInput("\x1b[B");
+			selector?.handleInput("\r");
+			await new Promise<void>((resolve) => setImmediate(resolve));
+
+			expect(logout).toHaveBeenCalledWith("openai-codex");
+		});
+
 		it("logs out from legacy Anthropic OAuth credentials", async () => {
-			const { listOAuthLogoutProviders, logout } = await import(
-				"../../src/oauth/index.js"
-			);
-			(listOAuthLogoutProviders as Mock).mockReturnValue(["anthropic"]);
+			const { listOAuthLogoutProvidersWithCodexAppServer, logout } =
+				await import("../../src/oauth/index.js");
+			(listOAuthLogoutProvidersWithCodexAppServer as Mock).mockResolvedValue([
+				"anthropic",
+			]);
 
 			const notificationView = createMockNotificationView();
 			const controller = new OAuthFlowController({

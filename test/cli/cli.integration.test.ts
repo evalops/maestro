@@ -1077,8 +1077,13 @@ describe("CLI integration", () => {
 
 	it("runs SessionEnd hooks after a CLI prompt completes", async () => {
 		let sessionEndInput: Record<string, unknown> | undefined;
+		const [{ registerHook: registerCurrentHook }, { main: currentMain }] =
+			await Promise.all([
+				import("../../src/hooks/index.js"),
+				import("../../src/main.js"),
+			]);
 
-		registerHook("SessionEnd", {
+		registerCurrentHook("SessionEnd", {
 			type: "callback",
 			callback: async (input) => {
 				sessionEndInput = input as Record<string, unknown>;
@@ -1086,7 +1091,7 @@ describe("CLI integration", () => {
 			},
 		});
 
-		await main(["hello"]);
+		await currentMain(["hello"]);
 
 		expect(sessionEndInput).toMatchObject({
 			hook_event_name: "SessionEnd",
@@ -1119,7 +1124,7 @@ describe("CLI integration", () => {
 		expect(Number(sessionEndInput?.duration_ms)).toBeGreaterThanOrEqual(0);
 	}, 60_000);
 
-	it("streams JSON events in composer exec", async () => {
+	it("streams only JSON events to stdout in composer exec json mode", async () => {
 		const originalWrite = process.stdout.write;
 		let streamed = "";
 		process.stdout.write = ((chunk: unknown) => {
@@ -1127,11 +1132,14 @@ describe("CLI integration", () => {
 			return true;
 		}) as typeof process.stdout.write;
 		try {
-			await main(["exec", "Plan work", "--json"]);
+			await main(["exec", "--tools", "read", "Plan work", "--json"]);
 		} finally {
 			process.stdout.write = originalWrite;
 		}
 		expect(streamed).toContain('"type":"thread"');
+		const lines = streamed.trim().split("\n").filter(Boolean);
+		expect(lines.length).toBeGreaterThan(0);
+		expect(() => lines.map((line) => JSON.parse(line))).not.toThrow();
 	});
 
 	it("validates schema in composer exec", async () => {

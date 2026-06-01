@@ -496,7 +496,7 @@ describe("bootstrapEvalOpsAgent", () => {
 		expect(result.traceIngestionStarted).toBe(false);
 	});
 
-	it("keeps registration durable when proof tools are unavailable", async () => {
+	it("keeps registration durable when control-plane status tools are unavailable", async () => {
 		const statuses: string[] = [];
 		const savedCredentials: OAuthCredentials[] = [];
 		const createMcpClient = vi.fn(

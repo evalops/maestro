@@ -17,6 +17,52 @@ versioning when releases are cut.
   and keep scheduled public runs inert so public publishing stays downstream of
   the internal source-of-truth release.
 
+## [0.10.48] - 2026-05-30
+
+### Changed
+
+- Gate public mirror published verification scripts (#2361). <!-- maestro-release-note:e47d3cb174d4 -->
+- Rerun release-auth checks. <!-- maestro-release-note:79b5f14693f4 -->
+- Remove timing flake from rust tui tests. <!-- maestro-release-note:6afafcde7a15 -->
+- Lock A2A stage gate evidence ids. <!-- maestro-release-note:73e227c68bf2 -->
+- Gate published replay evidence verifier. <!-- maestro-release-note:52a6ef07d804 -->
+- Give ghcr image builds more headroom. <!-- maestro-release-note:96aca1a604dc -->
+- Document live smoke evidence inputs. <!-- maestro-release-note:123a4a481fad -->
+- Move Slack scenarios to Platform runtime refs (#2347). <!-- maestro-release-note:61245c594cdb -->
+
+### Fixed
+
+- Refresh maestro from release metadata on startup (#2360). <!-- maestro-release-note:0a81cbc261ba -->
+- Verify full deprecation range on rerun. <!-- maestro-release-note:26ad24a575d0 -->
+- Make npm deprecation reruns idempotent. <!-- maestro-release-note:c8c4d44560c3 -->
+- Bundle Codex app-server integration. <!-- maestro-release-note:657ca196960f -->
+- Lock tui rust dependencies for public ci. <!-- maestro-release-note:3b7472e79f22 -->
+- Retire ensemble footer mode (#2350). <!-- maestro-release-note:c71b0f4cd7b8 -->
+- Consume runtime signals only (#2349). <!-- maestro-release-note:539894730a32 -->
+
+## [0.10.47] - 2026-05-29
+
+### Changed
+
+- Recover login when refresh fails (#2346). <!-- maestro-release-note:f2ceab065c0f -->
+- Rename sandbox proof surface to checks. <!-- maestro-release-note:efe1907cf01d -->
+- Avoid refreshing passive auth probes (#2345). <!-- maestro-release-note:00018d636738 -->
+- Surface app-server auth in tui status. <!-- maestro-release-note:d390030bc9f0 -->
+- Align login with app-server auth. <!-- maestro-release-note:a0131380881b -->
+- Keep ripgrep guard public-safe. <!-- maestro-release-note:db78b72d5fc6 -->
+- Mirror ripgrep helper release action. <!-- maestro-release-note:7255e7a9975e -->
+- Harden ripgrep setup and background log rotation. <!-- maestro-release-note:716e558f5c33 -->
+- Record Slack delivery runtime events (#2337). <!-- maestro-release-note:838e72f7d4c5 -->
+- Add teammate Slack delivery queue (#2331). <!-- maestro-release-note:d3e986d2bf10 -->
+- Smoke already-published registry releases (#2335). <!-- maestro-release-note:3d1f6d3a7cc5 -->
+- Cover legacy broken release range (#2334). <!-- maestro-release-note:22d7ef756cfe -->
+
+### Fixed
+
+- Preserve delivered slack finals. <!-- maestro-release-note:9478ca17aae6 -->
+- Bind durable a2a push message ids (#2336). <!-- maestro-release-note:4c34b9ff45d1 -->
+- Keep tag-release published no-op in source (#2333). <!-- maestro-release-note:6cba565f53bd -->
+
 ## [0.10.46] - 2026-05-28
 
 ### Fixed

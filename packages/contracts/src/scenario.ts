@@ -60,7 +60,9 @@ export interface MaestroScenarioPlatformLink {
 }
 
 export interface MaestroScenarioExternalRefs {
+	/** @deprecated Preserved only for archived evalops.maestro.scenario.v1 artifacts. */
 	ensembleTranscriptIds?: string[];
+	platformSlackEventIds?: string[];
 	platformTraceIds?: string[];
 	platformWorkEnvelopeIds?: string[];
 	slackThreadRefs?: string[];
@@ -215,6 +217,7 @@ export type MaestroScriptedScenarioAssertionKind =
 	| "tool_not_called"
 	| "file_exists"
 	| "file_contents"
+	| "workspace_manifest"
 	| "audit_event_emitted";
 
 export interface MaestroScriptedScenarioAssertion {
@@ -227,6 +230,12 @@ export interface MaestroScriptedScenarioAssertion {
 	contains?: string;
 	equals?: string;
 	eventType?: string;
+	requiredWorkspaceFiles?: string[];
+	requiredToolAdapters?: string[];
+	requiredHydrationModes?: MaestroScenarioWorkspaceHydrationMode[];
+	requiredReleaseGateTier?: MaestroScenarioGateTier;
+	minWorkspaceFiles?: number;
+	minToolAdapters?: number;
 	note?: string;
 }
 
@@ -235,6 +244,8 @@ export interface MaestroScriptedScenario {
 	id: string;
 	description: string;
 	expectedOutcome?: MaestroScenarioOutcome;
+	releaseGate?: MaestroScenarioReleaseGate;
+	workspaceManifestPath?: string;
 	metadata: {
 		recordedFrom?: string;
 		recordedAt: string;

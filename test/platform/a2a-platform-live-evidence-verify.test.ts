@@ -133,6 +133,107 @@ function evidence(
 	};
 }
 
+function realtimeDeliveryEvidence(
+	overrides: Record<string, unknown> = {},
+): Record<string, unknown> {
+	return {
+		stream: {
+			surface: "a2a-task-status-stream",
+			sourceEvidencePresent: true,
+			traceparent: "00-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-bbbbbbbbbbbbbbbb-01",
+			events: [
+				{
+					id: "stream_event_1",
+					type: "task-status",
+					taskId: "task_1",
+					contextId: "context_1",
+					messageId: "message_1",
+					state: "TASK_STATE_WORKING",
+					terminal: false,
+					observedAt: "2026-05-30T08:00:00.000Z",
+				},
+				{
+					id: "stream_event_2",
+					type: "task-artifact",
+					taskId: "task_1",
+					contextId: "context_1",
+					messageId: "message_1",
+					state: "TASK_STATE_COMPLETED",
+					terminal: true,
+					artifactIds: ["artifact_1"],
+					observedAt: "2026-05-30T08:00:01.000Z",
+				},
+			],
+			terminalEventId: "stream_event_2",
+			artifactIds: ["artifact_1"],
+		},
+		push: {
+			surface: "a2a-task-push-notification",
+			sourceEvidencePresent: true,
+			callbackAuditId: "callback_audit_1",
+			traceparent: "00-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-cccccccccccccccc-01",
+			acceptedCount: 2,
+			rejectedCount: 1,
+			invalidTokenRejected: true,
+			terminalNotificationId: "push_notification_2",
+			notifications: [
+				{
+					id: "push_notification_1",
+					taskId: "task_1",
+					contextId: "context_1",
+					messageId: "message_1",
+					state: "TASK_STATE_WORKING",
+					accepted: true,
+					terminal: false,
+					observedAt: "2026-05-30T08:00:00.500Z",
+				},
+				{
+					id: "push_notification_rejected_1",
+					taskId: "task_1",
+					contextId: "context_1",
+					messageId: "message_1",
+					state: "TASK_STATE_WORKING",
+					accepted: false,
+					terminal: false,
+					errorClass: "unauthorized",
+					observedAt: "2026-05-30T08:00:00.750Z",
+				},
+				{
+					id: "push_notification_2",
+					taskId: "task_1",
+					contextId: "context_1",
+					messageId: "message_1",
+					state: "TASK_STATE_COMPLETED",
+					accepted: true,
+					terminal: true,
+					observedAt: "2026-05-30T08:00:01.500Z",
+				},
+			],
+		},
+		trace: {
+			rootTraceId: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			taskTraceId: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			streamTraceId: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			pushTraceId: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			correlated: true,
+		},
+		metrics: {
+			surface: "platform-observability-delivery-metrics",
+			sourceEvidencePresent: true,
+			queryId: "delivery_metrics_query_1",
+			workspaceId: "ws_1",
+			windowStart: "2026-05-30T08:00:00.000Z",
+			windowEnd: "2026-05-30T08:01:00.000Z",
+			streamTerminalRate: 1,
+			pushDeliveryLatencyMsP95: 750,
+			callbackRejectionRate: 0.33,
+			retryCount: 1,
+			stuckDeliveryAlerts: 0,
+		},
+		...overrides,
+	};
+}
+
 async function writeEvidenceBundle(
 	dir: string,
 	payload: Record<string, unknown>,
@@ -358,6 +459,920 @@ describe("Platform A2A live evidence verifier", () => {
 					requireDurableA2AIds: true,
 				}),
 			).rejects.toThrow(/requires terminal task state/);
+		} finally {
+			await rm(dir, { force: true, recursive: true });
+		}
+	});
+
+	it("accepts strict realtime delivery evidence", async () => {
+		const dir = await mkdtemp(join(tmpdir(), "maestro-a2a-evidence-"));
+		try {
+			const path = await writeEvidenceBundle(
+				dir,
+				evidence({
+					realtimeDelivery: realtimeDeliveryEvidence(),
+				}),
+			);
+			await expect(
+				verifyPlatformA2ALiveEvidenceFile(path, {
+					requireRealtimeDeliveryEvidence: true,
+				}),
+			).resolves.toMatchObject({
+				realtimeDelivery: {
+					streamTerminalEventId: "stream_event_2",
+					pushTerminalNotificationId: "push_notification_2",
+					metricQueryId: "delivery_metrics_query_1",
+					rootTraceId: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+				},
+			});
+		} finally {
+			await rm(dir, { force: true, recursive: true });
+		}
+	});
+
+	it("accepts optional realtime status and push records without message ids", async () => {
+		const dir = await mkdtemp(join(tmpdir(), "maestro-a2a-evidence-"));
+		try {
+			const delivery = realtimeDeliveryEvidence();
+			const stream = delivery.stream as Record<string, unknown>;
+			const push = delivery.push as Record<string, unknown>;
+			const events = stream.events as Record<string, unknown>[];
+			const notifications = push.notifications as Record<string, unknown>[];
+			const path = await writeEvidenceBundle(
+				dir,
+				evidence({
+					realtimeDelivery: {
+						...delivery,
+						stream: {
+							...stream,
+							events: events.map(
+								({ messageId: _messageId, ...event }) => event,
+							),
+						},
+						push: {
+							...push,
+							notifications: notifications.map(
+								({ messageId: _messageId, ...notification }) => notification,
+							),
+						},
+					},
+				}),
+			);
+			await expect(
+				verifyPlatformA2ALiveEvidenceFile(path),
+			).resolves.toMatchObject({
+				realtimeDelivery: {
+					streamTerminalEventId: "stream_event_2",
+					pushTerminalNotificationId: "push_notification_2",
+				},
+			});
+		} finally {
+			await rm(dir, { force: true, recursive: true });
+		}
+	});
+
+	it("rejects realtime delivery without message ids when realtime delivery is required", async () => {
+		const dir = await mkdtemp(join(tmpdir(), "maestro-a2a-evidence-"));
+		try {
+			const delivery = realtimeDeliveryEvidence();
+			const stream = delivery.stream as Record<string, unknown>;
+			const push = delivery.push as Record<string, unknown>;
+			const events = stream.events as Record<string, unknown>[];
+			const notifications = push.notifications as Record<string, unknown>[];
+			const path = await writeEvidenceBundle(
+				dir,
+				evidence({
+					realtimeDelivery: {
+						...delivery,
+						stream: {
+							...stream,
+							events: events.map(
+								({ messageId: _messageId, ...event }) => event,
+							),
+						},
+						push: {
+							...push,
+							notifications: notifications.map(
+								({ messageId: _messageId, ...notification }) => notification,
+							),
+						},
+					},
+				}),
+			);
+			await expect(
+				verifyPlatformA2ALiveEvidenceFile(path, {
+					requireRealtimeDeliveryEvidence: true,
+				}),
+			).rejects.toThrow(/requires messageId/);
+		} finally {
+			await rm(dir, { force: true, recursive: true });
+		}
+	});
+
+	it("accepts realtime delivery records for later task message ids", async () => {
+		const dir = await mkdtemp(join(tmpdir(), "maestro-a2a-evidence-"));
+		try {
+			const delivery = realtimeDeliveryEvidence();
+			const stream = delivery.stream as Record<string, unknown>;
+			const push = delivery.push as Record<string, unknown>;
+			const events = stream.events as Record<string, unknown>[];
+			const notifications = push.notifications as Record<string, unknown>[];
+			const path = await writeEvidenceBundle(
+				dir,
+				evidence({
+					task: {
+						id: "task_1",
+						state: "TASK_STATE_COMPLETED",
+						terminal: true,
+						contextId: "context_1",
+						messageIds: ["message_1", "message_2"],
+					},
+					realtimeDelivery: {
+						...delivery,
+						stream: {
+							...stream,
+							events: events.map((event) => ({
+								...event,
+								messageId: "message_2",
+							})),
+						},
+						push: {
+							...push,
+							notifications: notifications.map((notification) => ({
+								...notification,
+								messageId: "message_2",
+							})),
+						},
+					},
+				}),
+			);
+			await expect(
+				verifyPlatformA2ALiveEvidenceFile(path, {
+					requireRealtimeDeliveryEvidence: true,
+				}),
+			).resolves.toMatchObject({
+				realtimeDelivery: {
+					streamTerminalEventId: "stream_event_2",
+					pushTerminalNotificationId: "push_notification_2",
+				},
+			});
+		} finally {
+			await rm(dir, { force: true, recursive: true });
+		}
+	});
+
+	it("rejects realtime delivery records for unknown task message ids", async () => {
+		const dir = await mkdtemp(join(tmpdir(), "maestro-a2a-evidence-"));
+		try {
+			const delivery = realtimeDeliveryEvidence();
+			const stream = delivery.stream as Record<string, unknown>;
+			const events = stream.events as Record<string, unknown>[];
+			const path = await writeEvidenceBundle(
+				dir,
+				evidence({
+					realtimeDelivery: {
+						...delivery,
+						stream: {
+							...stream,
+							events: events.map((event, index) =>
+								index === 1 ? { ...event, messageId: "message_2" } : event,
+							),
+						},
+					},
+				}),
+			);
+			await expect(
+				verifyPlatformA2ALiveEvidenceFile(path, {
+					requireRealtimeDeliveryEvidence: true,
+				}),
+			).rejects.toThrow(
+				/messageId message_2 is not present in task\.messageIds/,
+			);
+		} finally {
+			await rm(dir, { force: true, recursive: true });
+		}
+	});
+
+	it("accepts terminal realtime status events without artifact ids", async () => {
+		const dir = await mkdtemp(join(tmpdir(), "maestro-a2a-evidence-"));
+		try {
+			const delivery = realtimeDeliveryEvidence();
+			const stream = delivery.stream as Record<string, unknown>;
+			const events = stream.events as Record<string, unknown>[];
+			const path = await writeEvidenceBundle(
+				dir,
+				evidence({
+					realtimeDelivery: {
+						...delivery,
+						stream: {
+							...stream,
+							events: events.map((event, index) => {
+								if (index !== 1) {
+									return event;
+								}
+								const { artifactIds: _artifactIds, ...terminalStatusEvent } =
+									event;
+								return {
+									...terminalStatusEvent,
+									type: "statusUpdate",
+								};
+							}),
+						},
+					},
+				}),
+			);
+			await expect(
+				verifyPlatformA2ALiveEvidenceFile(path, {
+					requireRealtimeDeliveryEvidence: true,
+				}),
+			).resolves.toMatchObject({
+				realtimeDelivery: {
+					streamTerminalEventId: "stream_event_2",
+					pushTerminalNotificationId: "push_notification_2",
+				},
+			});
+		} finally {
+			await rm(dir, { force: true, recursive: true });
+		}
+	});
+
+	it("accepts terminal realtime artifact events without state", async () => {
+		const dir = await mkdtemp(join(tmpdir(), "maestro-a2a-evidence-"));
+		try {
+			const delivery = realtimeDeliveryEvidence();
+			const stream = delivery.stream as Record<string, unknown>;
+			const events = stream.events as Record<string, unknown>[];
+			const path = await writeEvidenceBundle(
+				dir,
+				evidence({
+					realtimeDelivery: {
+						...delivery,
+						stream: {
+							...stream,
+							events: events.map((event, index) => {
+								if (index !== 1) {
+									return event;
+								}
+								const { state: _state, ...terminalArtifactEvent } = event;
+								return {
+									...terminalArtifactEvent,
+									type: "artifactUpdate",
+								};
+							}),
+						},
+					},
+				}),
+			);
+			await expect(
+				verifyPlatformA2ALiveEvidenceFile(path, {
+					requireRealtimeDeliveryEvidence: true,
+				}),
+			).resolves.toMatchObject({
+				realtimeDelivery: {
+					streamTerminalEventId: "stream_event_2",
+					pushTerminalNotificationId: "push_notification_2",
+				},
+			});
+		} finally {
+			await rm(dir, { force: true, recursive: true });
+		}
+	});
+
+	it("accepts strict artifact stream events without message ids", async () => {
+		const dir = await mkdtemp(join(tmpdir(), "maestro-a2a-evidence-"));
+		try {
+			const delivery = realtimeDeliveryEvidence();
+			const stream = delivery.stream as Record<string, unknown>;
+			const events = stream.events as Record<string, unknown>[];
+			const path = await writeEvidenceBundle(
+				dir,
+				evidence({
+					realtimeDelivery: {
+						...delivery,
+						stream: {
+							...stream,
+							events: events.map((event, index) => {
+								if (index !== 1) {
+									return event;
+								}
+								const { messageId: _messageId, ...terminalArtifactEvent } =
+									event;
+								return terminalArtifactEvent;
+							}),
+						},
+					},
+				}),
+			);
+			await expect(
+				verifyPlatformA2ALiveEvidenceFile(path, {
+					requireRealtimeDeliveryEvidence: true,
+				}),
+			).resolves.toMatchObject({
+				realtimeDelivery: {
+					streamTerminalEventId: "stream_event_2",
+					pushTerminalNotificationId: "push_notification_2",
+				},
+			});
+		} finally {
+			await rm(dir, { force: true, recursive: true });
+		}
+	});
+
+	it("rejects non-terminal artifact stream events without artifact ids or message ids", async () => {
+		const dir = await mkdtemp(join(tmpdir(), "maestro-a2a-evidence-"));
+		try {
+			const delivery = realtimeDeliveryEvidence();
+			const stream = delivery.stream as Record<string, unknown>;
+			const events = stream.events as Record<string, unknown>[];
+			const path = await writeEvidenceBundle(
+				dir,
+				evidence({
+					realtimeDelivery: {
+						...delivery,
+						stream: {
+							...stream,
+							events: events.map((event, index) => {
+								if (index !== 0) {
+									return event;
+								}
+								const { messageId: _messageId, ...artifactEvent } = event;
+								return { ...artifactEvent, type: "artifactUpdate" };
+							}),
+						},
+					},
+				}),
+			);
+			await expect(
+				verifyPlatformA2ALiveEvidenceFile(path, {
+					requireRealtimeDeliveryEvidence: true,
+				}),
+			).rejects.toThrow(
+				/realtime stream event stream_event_1 requires messageId/,
+			);
+		} finally {
+			await rm(dir, { force: true, recursive: true });
+		}
+	});
+
+	it("accepts task-scoped realtime artifact push notifications without message ids", async () => {
+		const dir = await mkdtemp(join(tmpdir(), "maestro-a2a-evidence-"));
+		try {
+			const delivery = realtimeDeliveryEvidence();
+			const push = delivery.push as Record<string, unknown>;
+			const notifications = push.notifications as Record<string, unknown>[];
+			const path = await writeEvidenceBundle(
+				dir,
+				evidence({
+					realtimeDelivery: {
+						...delivery,
+						push: {
+							...push,
+							notifications: notifications.map((notification) => {
+								if (notification.id !== "push_notification_2") {
+									return notification;
+								}
+								const {
+									messageId: _messageId,
+									state: _state,
+									...artifactNotification
+								} = notification;
+								return {
+									...artifactNotification,
+									kind: "artifactUpdate",
+									artifactIds: ["artifact_1"],
+								};
+							}),
+						},
+					},
+				}),
+			);
+			await expect(
+				verifyPlatformA2ALiveEvidenceFile(path, {
+					requireRealtimeDeliveryEvidence: true,
+				}),
+			).resolves.toMatchObject({
+				realtimeDelivery: {
+					streamTerminalEventId: "stream_event_2",
+					pushTerminalNotificationId: "push_notification_2",
+				},
+			});
+		} finally {
+			await rm(dir, { force: true, recursive: true });
+		}
+	});
+
+	it("rejects realtime artifact push notifications without artifact identity or message ids", async () => {
+		const dir = await mkdtemp(join(tmpdir(), "maestro-a2a-evidence-"));
+		try {
+			const delivery = realtimeDeliveryEvidence();
+			const push = delivery.push as Record<string, unknown>;
+			const notifications = push.notifications as Record<string, unknown>[];
+			const path = await writeEvidenceBundle(
+				dir,
+				evidence({
+					realtimeDelivery: {
+						...delivery,
+						push: {
+							...push,
+							notifications: notifications.map((notification) => {
+								if (notification.id !== "push_notification_2") {
+									return notification;
+								}
+								const { messageId: _messageId, ...artifactNotification } =
+									notification;
+								return {
+									...artifactNotification,
+									kind: "artifactUpdate",
+								};
+							}),
+						},
+					},
+				}),
+			);
+			await expect(
+				verifyPlatformA2ALiveEvidenceFile(path, {
+					requireRealtimeDeliveryEvidence: true,
+				}),
+			).rejects.toThrow(
+				/realtime push notification push_notification_2 requires messageId/,
+			);
+		} finally {
+			await rm(dir, { force: true, recursive: true });
+		}
+	});
+
+	it("rejects unknown realtime stream event types", async () => {
+		const dir = await mkdtemp(join(tmpdir(), "maestro-a2a-evidence-"));
+		try {
+			const delivery = realtimeDeliveryEvidence();
+			const stream = delivery.stream as Record<string, unknown>;
+			const events = stream.events as Record<string, unknown>[];
+			const path = await writeEvidenceBundle(
+				dir,
+				evidence({
+					realtimeDelivery: {
+						...delivery,
+						stream: {
+							...stream,
+							events: events.map((event, index) =>
+								index === 0 ? { ...event, type: "noop" } : event,
+							),
+						},
+					},
+				}),
+			);
+			await expect(
+				verifyPlatformA2ALiveEvidenceFile(path, {
+					requireRealtimeDeliveryEvidence: true,
+				}),
+			).rejects.toThrow(/unsupported realtime stream event type noop/);
+		} finally {
+			await rm(dir, { force: true, recursive: true });
+		}
+	});
+
+	it("accepts task and message realtime stream event types", async () => {
+		const dir = await mkdtemp(join(tmpdir(), "maestro-a2a-evidence-"));
+		try {
+			const delivery = realtimeDeliveryEvidence();
+			const stream = delivery.stream as Record<string, unknown>;
+			const events = stream.events as Record<string, unknown>[];
+			const path = await writeEvidenceBundle(
+				dir,
+				evidence({
+					realtimeDelivery: {
+						...delivery,
+						stream: {
+							...stream,
+							events: [
+								{
+									id: "stream_event_task",
+									type: "task",
+									taskId: "task_1",
+									contextId: "context_1",
+									messageId: "message_1",
+									terminal: false,
+									observedAt: "2026-05-30T08:00:00.001Z",
+								},
+								{
+									id: "stream_event_message",
+									type: "message",
+									taskId: "task_1",
+									contextId: "context_1",
+									messageId: "message_1",
+									terminal: false,
+									observedAt: "2026-05-30T08:00:00.002Z",
+								},
+								...events,
+							],
+						},
+					},
+				}),
+			);
+			await expect(
+				verifyPlatformA2ALiveEvidenceFile(path, {
+					requireRealtimeDeliveryEvidence: true,
+				}),
+			).resolves.toMatchObject({
+				realtimeDelivery: {
+					streamTerminalEventId: "stream_event_2",
+				},
+			});
+		} finally {
+			await rm(dir, { force: true, recursive: true });
+		}
+	});
+
+	it("rejects missing realtime delivery evidence when required", async () => {
+		const dir = await mkdtemp(join(tmpdir(), "maestro-a2a-evidence-"));
+		try {
+			const path = await writeEvidenceBundle(dir, evidence());
+			await expect(
+				verifyPlatformA2ALiveEvidenceFile(path, {
+					requireRealtimeDeliveryEvidence: true,
+				}),
+			).rejects.toThrow(/requires realtime delivery evidence/);
+		} finally {
+			await rm(dir, { force: true, recursive: true });
+		}
+	});
+
+	it("rejects realtime stream events for a different task", async () => {
+		const dir = await mkdtemp(join(tmpdir(), "maestro-a2a-evidence-"));
+		try {
+			const delivery = realtimeDeliveryEvidence();
+			const stream = delivery.stream as Record<string, unknown>;
+			const events = stream.events as Record<string, unknown>[];
+			const path = await writeEvidenceBundle(
+				dir,
+				evidence({
+					realtimeDelivery: {
+						...delivery,
+						stream: {
+							...stream,
+							events: events.map((event, index) =>
+								index === 1 ? { ...event, taskId: "task_other" } : event,
+							),
+						},
+					},
+				}),
+			);
+			await expect(
+				verifyPlatformA2ALiveEvidenceFile(path, {
+					requireRealtimeDeliveryEvidence: true,
+				}),
+			).rejects.toThrow(/realtime stream event stream_event_2 taskId/);
+		} finally {
+			await rm(dir, { force: true, recursive: true });
+		}
+	});
+
+	it("rejects realtime stream events after the terminal event", async () => {
+		const dir = await mkdtemp(join(tmpdir(), "maestro-a2a-evidence-"));
+		try {
+			const delivery = realtimeDeliveryEvidence();
+			const stream = delivery.stream as Record<string, unknown>;
+			const events = stream.events as Record<string, unknown>[];
+			const path = await writeEvidenceBundle(
+				dir,
+				evidence({
+					realtimeDelivery: {
+						...delivery,
+						stream: {
+							...stream,
+							events: [events[1], events[0]],
+						},
+					},
+				}),
+			);
+			await expect(
+				verifyPlatformA2ALiveEvidenceFile(path, {
+					requireRealtimeDeliveryEvidence: true,
+				}),
+			).rejects.toThrow(/after terminalEventId stream_event_2/);
+		} finally {
+			await rm(dir, { force: true, recursive: true });
+		}
+	});
+
+	it("rejects terminal realtime status events without state", async () => {
+		const dir = await mkdtemp(join(tmpdir(), "maestro-a2a-evidence-"));
+		try {
+			const delivery = realtimeDeliveryEvidence();
+			const stream = delivery.stream as Record<string, unknown>;
+			const events = stream.events as Record<string, unknown>[];
+			const path = await writeEvidenceBundle(
+				dir,
+				evidence({
+					realtimeDelivery: {
+						...delivery,
+						stream: {
+							...stream,
+							events: events.map((event, index) => {
+								if (index !== 1) {
+									return event;
+								}
+								const {
+									artifactIds: _artifactIds,
+									state: _state,
+									...terminalStatusEvent
+								} = event;
+								return {
+									...terminalStatusEvent,
+									type: "statusUpdate",
+								};
+							}),
+						},
+					},
+				}),
+			);
+			await expect(
+				verifyPlatformA2ALiveEvidenceFile(path, {
+					requireRealtimeDeliveryEvidence: true,
+				}),
+			).rejects.toThrow(/realtime stream event stream_event_2 state missing/);
+		} finally {
+			await rm(dir, { force: true, recursive: true });
+		}
+	});
+
+	it("rejects terminal realtime artifact events without artifact ids", async () => {
+		const dir = await mkdtemp(join(tmpdir(), "maestro-a2a-evidence-"));
+		try {
+			const delivery = realtimeDeliveryEvidence();
+			const stream = delivery.stream as Record<string, unknown>;
+			const events = stream.events as Record<string, unknown>[];
+			const path = await writeEvidenceBundle(
+				dir,
+				evidence({
+					realtimeDelivery: {
+						...delivery,
+						stream: {
+							...stream,
+							events: events.map((event, index) => {
+								if (index !== 1) {
+									return event;
+								}
+								const { artifactIds: _artifactIds, ...terminalArtifactEvent } =
+									event;
+								return terminalArtifactEvent;
+							}),
+						},
+					},
+				}),
+			);
+			await expect(
+				verifyPlatformA2ALiveEvidenceFile(path, {
+					requireRealtimeDeliveryEvidence: true,
+				}),
+			).rejects.toThrow(
+				/realtime stream event stream_event_2 requires artifactIds/,
+			);
+		} finally {
+			await rm(dir, { force: true, recursive: true });
+		}
+	});
+
+	it("rejects realtime stream evidence without a traceparent", async () => {
+		const dir = await mkdtemp(join(tmpdir(), "maestro-a2a-evidence-"));
+		try {
+			const delivery = realtimeDeliveryEvidence();
+			const stream = delivery.stream as Record<string, unknown>;
+			const path = await writeEvidenceBundle(
+				dir,
+				evidence({
+					realtimeDelivery: {
+						...delivery,
+						stream: {
+							...stream,
+							traceparent: undefined,
+						},
+					},
+				}),
+			);
+			await expect(
+				verifyPlatformA2ALiveEvidenceFile(path, {
+					requireRealtimeDeliveryEvidence: true,
+				}),
+			).rejects.toThrow(/traceparent/);
+		} finally {
+			await rm(dir, { force: true, recursive: true });
+		}
+	});
+
+	it("rejects realtime stream evidence with a zero traceparent span id", async () => {
+		const dir = await mkdtemp(join(tmpdir(), "maestro-a2a-evidence-"));
+		try {
+			const delivery = realtimeDeliveryEvidence();
+			const stream = delivery.stream as Record<string, unknown>;
+			const path = await writeEvidenceBundle(
+				dir,
+				evidence({
+					realtimeDelivery: {
+						...delivery,
+						stream: {
+							...stream,
+							traceparent:
+								"00-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-0000000000000000-01",
+						},
+					},
+				}),
+			);
+			await expect(
+				verifyPlatformA2ALiveEvidenceFile(path, {
+					requireRealtimeDeliveryEvidence: true,
+				}),
+			).rejects.toThrow(/traceparent/);
+		} finally {
+			await rm(dir, { force: true, recursive: true });
+		}
+	});
+
+	it("rejects realtime delivery trace evidence without child trace ids", async () => {
+		const dir = await mkdtemp(join(tmpdir(), "maestro-a2a-evidence-"));
+		try {
+			const delivery = realtimeDeliveryEvidence();
+			const trace = delivery.trace as Record<string, unknown>;
+			const path = await writeEvidenceBundle(
+				dir,
+				evidence({
+					realtimeDelivery: {
+						...delivery,
+						trace: {
+							rootTraceId: trace.rootTraceId,
+							correlated: true,
+						},
+					},
+				}),
+			);
+			await expect(
+				verifyPlatformA2ALiveEvidenceFile(path, {
+					requireRealtimeDeliveryEvidence: true,
+				}),
+			).rejects.toThrow(/taskTraceId/);
+		} finally {
+			await rm(dir, { force: true, recursive: true });
+		}
+	});
+
+	it("rejects realtime push evidence whose rejected count has no notification record", async () => {
+		const dir = await mkdtemp(join(tmpdir(), "maestro-a2a-evidence-"));
+		try {
+			const delivery = realtimeDeliveryEvidence();
+			const push = delivery.push as Record<string, unknown>;
+			const notifications = push.notifications as Record<string, unknown>[];
+			const path = await writeEvidenceBundle(
+				dir,
+				evidence({
+					realtimeDelivery: {
+						...delivery,
+						push: {
+							...push,
+							notifications: notifications.filter(
+								(notification) => notification.accepted !== false,
+							),
+						},
+					},
+				}),
+			);
+			await expect(
+				verifyPlatformA2ALiveEvidenceFile(path, {
+					requireRealtimeDeliveryEvidence: true,
+				}),
+			).rejects.toThrow(/realtime push rejectedCount 1/);
+		} finally {
+			await rm(dir, { force: true, recursive: true });
+		}
+	});
+
+	it("rejects realtime push evidence without a traceparent", async () => {
+		const dir = await mkdtemp(join(tmpdir(), "maestro-a2a-evidence-"));
+		try {
+			const delivery = realtimeDeliveryEvidence();
+			const push = delivery.push as Record<string, unknown>;
+			const path = await writeEvidenceBundle(
+				dir,
+				evidence({
+					realtimeDelivery: {
+						...delivery,
+						push: {
+							...push,
+							traceparent: undefined,
+						},
+					},
+				}),
+			);
+			await expect(
+				verifyPlatformA2ALiveEvidenceFile(path, {
+					requireRealtimeDeliveryEvidence: true,
+				}),
+			).rejects.toThrow(/traceparent/);
+		} finally {
+			await rm(dir, { force: true, recursive: true });
+		}
+	});
+
+	it("rejects invalid-token push evidence without an auth rejected notification", async () => {
+		const dir = await mkdtemp(join(tmpdir(), "maestro-a2a-evidence-"));
+		try {
+			const delivery = realtimeDeliveryEvidence();
+			const push = delivery.push as Record<string, unknown>;
+			const notifications = push.notifications as Record<string, unknown>[];
+			const path = await writeEvidenceBundle(
+				dir,
+				evidence({
+					realtimeDelivery: {
+						...delivery,
+						push: {
+							...push,
+							notifications: notifications.map((notification) =>
+								notification.accepted === false
+									? { ...notification, errorClass: "timeout" }
+									: notification,
+							),
+						},
+					},
+				}),
+			);
+			await expect(
+				verifyPlatformA2ALiveEvidenceFile(path, {
+					requireRealtimeDeliveryEvidence: true,
+				}),
+			).rejects.toThrow(/invalidTokenRejected/);
+		} finally {
+			await rm(dir, { force: true, recursive: true });
+		}
+	});
+
+	it("rejects realtime delivery metrics that start after observed deliveries", async () => {
+		const dir = await mkdtemp(join(tmpdir(), "maestro-a2a-evidence-"));
+		try {
+			const delivery = realtimeDeliveryEvidence();
+			const metrics = delivery.metrics as Record<string, unknown>;
+			const path = await writeEvidenceBundle(
+				dir,
+				evidence({
+					realtimeDelivery: {
+						...delivery,
+						metrics: {
+							...metrics,
+							windowStart: "2026-05-30T08:00:00.250Z",
+						},
+					},
+				}),
+			);
+			await expect(
+				verifyPlatformA2ALiveEvidenceFile(path, {
+					requireRealtimeDeliveryEvidence: true,
+				}),
+			).rejects.toThrow(/metrics window must include observed/);
+		} finally {
+			await rm(dir, { force: true, recursive: true });
+		}
+	});
+
+	it("rejects realtime delivery metrics that end before observed deliveries", async () => {
+		const dir = await mkdtemp(join(tmpdir(), "maestro-a2a-evidence-"));
+		try {
+			const delivery = realtimeDeliveryEvidence();
+			const metrics = delivery.metrics as Record<string, unknown>;
+			const path = await writeEvidenceBundle(
+				dir,
+				evidence({
+					realtimeDelivery: {
+						...delivery,
+						metrics: {
+							...metrics,
+							windowEnd: "2026-05-30T08:00:01.250Z",
+						},
+					},
+				}),
+			);
+			await expect(
+				verifyPlatformA2ALiveEvidenceFile(path, {
+					requireRealtimeDeliveryEvidence: true,
+				}),
+			).rejects.toThrow(/metrics window must include observed/);
+		} finally {
+			await rm(dir, { force: true, recursive: true });
+		}
+	});
+
+	it("rejects realtime delivery evidence without operator metrics", async () => {
+		const dir = await mkdtemp(join(tmpdir(), "maestro-a2a-evidence-"));
+		try {
+			const delivery = realtimeDeliveryEvidence({ metrics: undefined });
+			const path = await writeEvidenceBundle(
+				dir,
+				evidence({
+					realtimeDelivery: delivery,
+				}),
+			);
+			await expect(
+				verifyPlatformA2ALiveEvidenceFile(path, {
+					requireRealtimeDeliveryEvidence: true,
+				}),
+			).rejects.toThrow(/realtime delivery metrics/);
 		} finally {
 			await rm(dir, { force: true, recursive: true });
 		}

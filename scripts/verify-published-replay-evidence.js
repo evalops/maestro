@@ -5,6 +5,10 @@ import { existsSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { assertPublishedReplayReleaseGate } from "./published-replay-evidence-gate.js";
+import {
+	REQUIRED_OBSERVABILITY_QUERY_TRACES,
+	releaseObservabilityQueryDescriptorIsValid,
+} from "./release-observability-query-contract.js";
 
 const EVIDENCE_SCHEMA = "evalops.maestro.published-replay-evidence.v1";
 const TRANSCRIPT_SCHEMA = "evalops.maestro.published-replay-transcript.v1";
@@ -30,17 +34,6 @@ const REQUIRED_RELEASE_GATE_CHECKS = [
 	"agentRuntimeLedger",
 	"agentRuntimeLifecycle",
 	"finalStatus",
-];
-const REQUIRED_OBSERVABILITY_QUERY_TRACES = [
-	"install",
-	"session",
-	"tool",
-	"search",
-	"approval",
-	"error",
-	"artifact",
-	"agent-runtime-lifecycle",
-	"final-status",
 ];
 const REQUIRED_AGENT_RUNTIME_WAIT_KINDS = ["approval", "tool_retry"];
 const TERMINAL_AGENT_RUNTIME_STATES = new Set([
@@ -142,6 +135,13 @@ function toolWorkItemsForMode(mode) {
 	return isObject(ledger.toolWorkItem) ? [ledger.toolWorkItem] : [];
 }
 
+function runStepsForMode(mode) {
+	const ledger = isObject(mode?.agentRuntimeLedger)
+		? mode.agentRuntimeLedger
+		: {};
+	return Array.isArray(ledger.runSteps) ? ledger.runSteps.filter(isObject) : [];
+}
+
 function evidenceRefsForMode(mode) {
 	return toolWorkItemsForMode(mode).flatMap((item) =>
 		filterPublishedReplayEvidenceRefs(item?.evidenceRefs),
@@ -208,6 +208,27 @@ function toolExecutionCoverageIsValid({ observability, modes }) {
 			modeCoverage
 		);
 	});
+}
+
+function agentRuntimeRunStepsAreValid(mode) {
+	const steps = runStepsForMode(mode);
+	if (steps.length === 0) {
+		return false;
+	}
+	const stepIds = new Set();
+	for (const step of steps) {
+		if (
+			typeof step.stepId !== "string" ||
+			typeof step.ledgerEntryId !== "string" ||
+			typeof step.kind !== "string" ||
+			typeof step.state !== "string" ||
+			typeof step.title !== "string"
+		) {
+			return false;
+		}
+		stepIds.add(step.stepId);
+	}
+	return stepIds.size === steps.length;
 }
 
 function modesWithEvidenceRefPrefix(modes, prefix) {
@@ -342,6 +363,10 @@ function queryIndexEntryHasRequiredModes(entry) {
 		REQUIRED_REPLAY_MODES.length;
 }
 
+function releaseQueryDescriptorIsValid(entry, traceType) {
+	return releaseObservabilityQueryDescriptorIsValid(entry, traceType);
+}
+
 function queryableObservabilityIndexIsValid({ observability, modes }) {
 	const queryIndex = Array.isArray(observability?.queryIndex)
 		? observability.queryIndex
@@ -353,7 +378,8 @@ function queryableObservabilityIndexIsValid({ observability, modes }) {
 					isObject(entry) &&
 					entry.traceType === traceType &&
 					entry.queryable === true &&
-					entry.status === "ok",
+					entry.status === "ok" &&
+					releaseQueryDescriptorIsValid(entry, traceType),
 			),
 		)
 	) {
@@ -985,8 +1011,17 @@ export function validatePublishedReplayEvidence(
 	);
 	pushUnless(
 		errors,
+		countModesWith(
+			observability?.agentRuntimeLedger?.runStepModes,
+			REQUIRED_REPLAY_MODES,
+		) === REQUIRED_REPLAY_MODES.length &&
+			modes.every(agentRuntimeRunStepsAreValid),
+		"observability.agentRuntimeLedger.runStepModes and mode agentRuntimeLedger.runSteps must include AgentRuntime run-step records for text, json, and rpc",
+	);
+	pushUnless(
+		errors,
 		queryableObservabilityIndexIsValid({ observability, modes }),
-		"observability.queryIndex must provide queryable install, session, tool, approval, error, artifact, and final-status traces",
+		"observability.queryIndex must provide queryable install, session, tool, approval, error, artifact, and final-status traces with release query descriptors",
 	);
 
 	if (errors.length > 0) {

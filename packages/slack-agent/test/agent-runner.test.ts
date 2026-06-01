@@ -175,6 +175,22 @@ describe("buildSystemPrompt", () => {
 		expect(prompt).toContain("evalops-production");
 		expect(prompt).toContain("Redact only actual secrets");
 	});
+
+	it("describes Slack delivery and mentions without bogus arguments", () => {
+		const prompt = buildSystemPrompt(
+			"/workspace",
+			"C123",
+			"",
+			{ type: "host" },
+			[],
+			[{ id: "U123", userName: "mario", displayName: "Mario" }],
+		);
+
+		expect(prompt).toContain("formatted like <@U123>");
+		expect(prompt).toContain("Do not mention display names or usernames");
+		expect(prompt).toContain("Slack delivery tools do not need an extra label");
+		expect(prompt).not.toContain('Each tool requires a "label" parameter');
+	});
 });
 
 describe("withRetry", () => {

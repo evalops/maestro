@@ -1,5 +1,5 @@
 import type { Component } from "@evalops/tui";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { AssistantMessage } from "../src/agent/types.js";
 import { StreamingView } from "../src/cli-tui/streaming-view.js";
 
@@ -106,6 +106,12 @@ const noopToolOutputView = {
 } as unknown as ToolOutputViewType;
 
 describe("StreamingView clean mode handling", () => {
+	afterEach(() => {
+		vi.clearAllTimers();
+		vi.useRealTimers();
+		vi.clearAllMocks();
+	});
+
 	it("applies clean mode on final render (dedupes streaming duplicates)", () => {
 		const chatContainer = new MockContainer();
 		const view = new StreamingView({
@@ -206,5 +212,47 @@ describe("StreamingView clean mode handling", () => {
 		expect(component.updatePartialArgs).toHaveBeenCalledWith({
 			path: "/tmp/two.txt",
 		});
+	});
+
+	it("coalesces low-bandwidth text updates and renders the latest batch", () => {
+		vi.useFakeTimers();
+		const chatContainer = new MockContainer();
+		const requestRender = vi.fn();
+		const view = new StreamingView({
+			chatContainer,
+			toolOutputView: noopToolOutputView,
+			pendingTools: new Map(),
+			lowBandwidth: { enabled: true, batchIntervalMs: 25, scrollbackLimit: 10 },
+			getCleanMode: () => "off",
+			requestRender,
+		});
+
+		updateContentMock.mockClear();
+		view.beginAssistantMessage(baseMessage);
+		updateContentMock.mockClear();
+
+		expect(
+			view.updateAssistantMessage({
+				...baseMessage,
+				content: [{ type: "text", text: "First partial" }],
+			}),
+		).toBe(false);
+		expect(
+			view.updateAssistantMessage({
+				...baseMessage,
+				content: [{ type: "text", text: "Second partial" }],
+			}),
+		).toBe(false);
+		expect(updateContentMock).not.toHaveBeenCalled();
+		expect(requestRender).not.toHaveBeenCalled();
+
+		vi.advanceTimersByTime(25);
+
+		expect(updateContentMock).toHaveBeenCalledTimes(1);
+		const flushedRenderable = updateContentMock.mock.calls.at(-1)?.[0] as {
+			textBlocks: string[];
+		};
+		expect(flushedRenderable.textBlocks[0]).toBe("Second partial");
+		expect(requestRender).toHaveBeenCalledTimes(1);
 	});
 });

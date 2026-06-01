@@ -1,3 +1,5 @@
+import { findA2ACommandTailFlag } from "./commands/a2a/args.js";
+
 export type Mode = "text" | "json" | "rpc" | "headless";
 
 export interface Args {
@@ -68,7 +70,9 @@ const COMMANDS = new Set([
 	"cost",
 	"stats",
 	"status",
+	"update",
 	"run",
+	"sessions",
 	"agents",
 	"a2a",
 	"operating-plane",
@@ -96,6 +100,7 @@ const SUBCOMMAND_COMMANDS = new Set([
 	"cost",
 	"stats",
 	"run",
+	"sessions",
 	"agents",
 	"anthropic",
 	"evalops",
@@ -162,10 +167,31 @@ function nextNonFlagToken(args: string[], start: number): string | undefined {
 	return undefined;
 }
 
+function streamJsonFlag(arg: string): string | undefined {
+	if (arg === "--stream-json" || arg.startsWith("--stream-json=")) {
+		return arg;
+	}
+	return undefined;
+}
+
+function commandTailStreamJsonFlag(
+	command: string,
+	args: string[],
+): string | undefined {
+	if (command === "a2a") {
+		return findA2ACommandTailFlag(args, streamJsonFlag);
+	}
+	const escapedTailIndex = args.indexOf("--");
+	const parseableArgs =
+		escapedTailIndex >= 0 ? args.slice(0, escapedTailIndex) : args;
+	return parseableArgs.find(streamJsonFlag);
+}
+
 export function parseArgs(args: string[]): Args {
 	const result: Args = {
 		messages: [],
 	};
+	let streamJsonRequested = false;
 
 	for (let i = 0; i < args.length; i++) {
 		const arg = args[i];
@@ -285,6 +311,8 @@ export function parseArgs(args: string[]): Args {
 			result.force = true;
 		} else if (arg === "--json") {
 			result.execJson = true;
+		} else if (arg === "--stream-json") {
+			streamJsonRequested = true;
 		} else if (arg === "--full-auto") {
 			result.execFullAuto = true;
 		} else if (arg === "--read-only") {
@@ -348,7 +376,7 @@ export function parseArgs(args: string[]): Args {
 		} else if (
 			result.command === "codex" &&
 			result.subcommand === "login" &&
-			(arg === "--device" || arg === "--device-code")
+			(arg === "--device" || arg === "--device-code" || arg === "--device-auth")
 		) {
 			if (!result.commandArgs) {
 				result.commandArgs = [];
@@ -389,9 +417,17 @@ export function parseArgs(args: string[]): Args {
 					arg === "hosted-runner" ||
 					arg === "init" ||
 					arg === "evalops" ||
+					arg === "update" ||
 					arg === "skill"
 				) {
 					result.commandArgs = args.slice(i + 1);
+					const commandTailStreamJson = commandTailStreamJsonFlag(
+						arg,
+						result.commandArgs,
+					);
+					if (commandTailStreamJson) {
+						result.error = `Unknown option: ${commandTailStreamJson}`;
+					}
 					break;
 				}
 			} else {
@@ -408,6 +444,14 @@ export function parseArgs(args: string[]): Args {
 	) {
 		result.subcommand = result.messages[0];
 		result.messages = result.messages.slice(1);
+	}
+
+	if (streamJsonRequested) {
+		if (result.command === "exec") {
+			result.execJson = true;
+		} else if (!result.error) {
+			result.error = "Unknown option: --stream-json";
+		}
 	}
 
 	return result;

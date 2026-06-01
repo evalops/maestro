@@ -104,6 +104,19 @@
 			]
 		},
 		{
+			"area": "toolexecution-bridge-retry-policy",
+			"evidenceType": "test",
+			"path": "test/agent/tool-execution-bridge.test.ts",
+			"lifecycle": ["tool-retries", "toolexecution-linkage"],
+			"anchors": [
+				"pins Platform retry policy to Maestro local retry ownership",
+				"retryPolicy: expectedRetryPolicy",
+				"maxAttempts: 1",
+				"allowNonIdempotentRetry: false",
+				"maestro_local_execution_authoritative"
+			]
+		},
+		{
 			"area": "live-platform-lifecycle-smoke",
 			"evidenceType": "live-smoke",
 			"path": "scripts/smoke-platform-agentruntime-lifecycle.ts",
@@ -128,11 +141,18 @@
 				"a2a-live-evidence",
 				"durable-a2a-ids",
 				"auth-boundaries",
-				"trace-correlation"
+				"trace-correlation",
+				"realtime-delivery"
 			],
 			"anchors": [
 				"requireDurableA2AIds",
 				"MAESTRO_A2A_LIVE_EVIDENCE_REQUIRE_DURABLE_A2A_IDS",
+				"requireRealtimeDeliveryEvidence",
+				"MAESTRO_A2A_LIVE_EVIDENCE_REQUIRE_REALTIME_DELIVERY_EVIDENCE",
+				"realtimeDelivery",
+				"streamTerminalEventId",
+				"pushTerminalNotificationId",
+				"metricQueryId",
 				"task.messageIds",
 				"delegation.a2aMessageId",
 				"task.contextId",
@@ -140,6 +160,42 @@
 				"requireDiscoveryEvidence",
 				"targetTraceId",
 				"originTraceId"
+			]
+		},
+		{
+			"area": "a2a-live-evidence-producer",
+			"evidenceType": "source",
+			"path": "scripts/smoke-platform-a2a-delegation-live.ts",
+			"lifecycle": [
+				"live-platform-smoke",
+				"a2a-live-evidence",
+				"realtime-delivery"
+			],
+			"anchors": [
+				"collectRealtimeDeliveryEvidence",
+				"MAESTRO_A2A_LIVE_REQUIRE_REALTIME_DELIVERY_EVIDENCE",
+				"MAESTRO_A2A_LIVE_REALTIME_DELIVERY_EVIDENCE_FILE",
+				"realtimeDelivery"
+			]
+		},
+		{
+			"area": "a2a-push-message-boundary",
+			"evidenceType": "test",
+			"path": "test/web/platform-a2a-push-handler.test.ts",
+			"lifecycle": [
+				"a2a-live-evidence",
+				"durable-a2a-ids",
+				"auth-boundaries",
+				"trace-correlation",
+				"push-notifications"
+			],
+			"anchors": [
+				"accepts message updates only for the hosted runner A2A message",
+				"binds an unclaimed hosted runner message when workspace metadata matches",
+				"rejects callbacks for a different durable A2A message",
+				"rejects callbacks for a different hosted runner agent",
+				"rejects task snapshots whose durable message list excludes the hosted message",
+				"records tenant and trace context from callback headers and payload metadata"
 			]
 		},
 		{

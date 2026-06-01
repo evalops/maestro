@@ -137,7 +137,7 @@ function summarizeOperatingPlaneRun(
 		channelThreadId: oneLine(run.channel_thread_id),
 		traceId: oneLine(run.trace_id),
 		identitySubject: operatingPlaneIdentitySubject(run),
-		operatorSummary: oneLine(run.value_proof?.operator_summary),
+		operatorSummary: oneLine(run.runtime_signals?.operator_summary),
 		signalsPresent,
 		signalsMissing,
 		artifactRefs: summarizeArtifactRefs(run.evidence_refs),
@@ -156,7 +156,7 @@ function summarizeValueSignals(run: OperatingPlaneRun): {
 	signalsPresent: string[];
 	signalsMissing: string[];
 } {
-	const signals = run.value_proof;
+	const signals = run.runtime_signals;
 	const fields: SignalField[] = [
 		{ label: "identity", value: signals?.identity_bound },
 		{ label: "model", value: signals?.model_observed },
@@ -173,7 +173,7 @@ function summarizeValueSignals(run: OperatingPlaneRun): {
 		...fields
 			.filter((field) => field.value !== true)
 			.map((field) => field.label),
-		...(signals?.missing_proof ?? []).map(operatorFacingSignalLabel),
+		...(signals?.missing_signals ?? []).map(operatorFacingSignalLabel),
 		signals ? undefined : "runtime signal unavailable",
 	]);
 	return { signalsPresent, signalsMissing };
@@ -246,9 +246,6 @@ function operatorFacingSignalLabel(value: string): string | undefined {
 	const normalized = oneLine(value);
 	if (!normalized) {
 		return undefined;
-	}
-	if (normalized === "value_proof unavailable") {
-		return "runtime signal unavailable";
 	}
 	return normalized
 		.replace(/\bproof\b/giu, "signal")
