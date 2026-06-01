@@ -56,7 +56,7 @@ Options:
   --dir <path>                 Base directory for 'new' (default: .maestro/skills)
   --description <text>         Description for 'new'
   --force                      Allow 'new' to overwrite an existing directory
-  --describe-toolbox           Run Toolbox describe checks during lint
+  --describe-toolbox           Eval/publish-check run describe; lint ignores it
   --help, -h                   Show this help`;
 }
 
@@ -284,7 +284,7 @@ async function handleLint(
 ) {
 	const lintPaths = paths.length > 0 ? paths : defaultLintPaths(workspaceDir);
 	const results = await lintSkillPaths(lintPaths, {
-		describeToolbox: options.describeToolbox,
+		describeToolbox: false,
 	});
 	if (options.json) {
 		console.log(JSON.stringify({ results }, null, 2));
