@@ -1007,6 +1007,35 @@ describe("A2A fleet delegation CLI", () => {
 		expect(JSON.stringify(ledger)).not.toContain("super-secret-token");
 	});
 
+	it("keeps default A2A sends non-blocking unless --wait is parsed", async () => {
+		const dir = await mkdtemp(join(tmpdir(), "maestro-a2a-send-nonblocking-"));
+		const registryPath = join(dir, "peers.json");
+		const tasksPath = join(dir, "tasks.json");
+		await writeRegistry(registryPath, baseUrl);
+		vi.stubEnv("MAC_MINI_A2A_TOKEN", "super-secret-token");
+
+		await handleA2ACommand([
+			"send",
+			"mac-mini",
+			"queue",
+			"repo",
+			"smoke",
+			"--registry",
+			registryPath,
+			"--tasks",
+			tasksPath,
+			"--timeout-ms",
+			"1000",
+		]);
+
+		expect(requests).toHaveLength(1);
+		expect(recordValue(requests[0]!.body, "configuration")).toEqual({
+			returnImmediately: true,
+		});
+		expect(taskFetches).toBe(0);
+		expect(plainLogs(logs)).toContain("Task task-mac-mini-1");
+	});
+
 	it("preserves an input-required delegated task and completes it after an operator reply", async () => {
 		const dir = await mkdtemp(join(tmpdir(), "maestro-a2a-input-required-"));
 		const registryPath = join(dir, "peers.json");

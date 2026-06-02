@@ -832,7 +832,7 @@ async function handleA2ASend(parsed: ParsedA2AArgs): Promise<void> {
 			text,
 			metadata,
 		}),
-		...(wait ? { configuration: { returnImmediately: true } } : {}),
+		configuration: { returnImmediately: true },
 	});
 	await persistA2ALedgerBestEffort("record sent task locally", () =>
 		recordA2ATaskStart({
