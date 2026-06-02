@@ -83,7 +83,32 @@ type NxTargetTimingRow = {
 	target: string;
 };
 
-function isPublicValidationWorkflow(workflow: Workflow): boolean {
+type ReleaseMirrorSourceIdentity = {
+	hasInternalReleaseMirrorManifest?: boolean;
+};
+
+const releaseMirrorManifestUrl = new URL(
+	"../../.github/release-mirror-manifest.json",
+	import.meta.url,
+);
+
+function hasInternalReleaseMirrorManifest(
+	identity: ReleaseMirrorSourceIdentity = {},
+): boolean {
+	return (
+		identity.hasInternalReleaseMirrorManifest ??
+		existsSync(releaseMirrorManifestUrl)
+	);
+}
+
+function isPublicValidationWorkflow(
+	workflow: Workflow,
+	identity: ReleaseMirrorSourceIdentity = {},
+): boolean {
+	if (hasInternalReleaseMirrorManifest(identity)) {
+		return false;
+	}
+
 	const runsOnValues = Object.values(workflow.jobs ?? {}).map((job) =>
 		String(job["runs-on"] ?? ""),
 	);
@@ -635,7 +660,7 @@ describe("planCiChecks", () => {
 });
 
 describe("ci workflow guardrails", () => {
-	it("recognizes public validation workflows by runner lane", () => {
+	it("recognizes public validation workflows by source identity and runner lane", () => {
 		const publicWorkflow = {
 			jobs: {
 				coverage: {
@@ -649,13 +674,42 @@ describe("ci workflow guardrails", () => {
 			},
 		} satisfies Workflow;
 
-		expect(isPublicValidationWorkflow(publicWorkflow)).toBe(true);
+		const publicTreeIdentity = {
+			hasInternalReleaseMirrorManifest: false,
+		};
+
+		expect(isPublicValidationWorkflow(publicWorkflow, publicTreeIdentity)).toBe(
+			true,
+		);
 		expect(
-			isPublicValidationWorkflow({
-				jobs: {
-					...publicWorkflow.jobs,
-					"public-release-mirror": {},
+			isPublicValidationWorkflow(
+				{
+					jobs: {
+						...publicWorkflow.jobs,
+						"public-release-mirror": {},
+					},
 				},
+				publicTreeIdentity,
+			),
+		).toBe(false);
+	});
+
+	it("keeps public validation detection tied to release mirror source identity", () => {
+		const publicRunnerWorkflow = {
+			jobs: {
+				coverage: {
+					"runs-on":
+						"${{ vars.PUBLIC_PR_VALIDATION_RUNNER || 'ubuntu-latest' }}",
+				},
+				"pr-checks": {
+					"runs-on":
+						"${{ vars.PUBLIC_PR_VALIDATION_RUNNER || 'ubuntu-latest' }}",
+				},
+			},
+		} satisfies Workflow;
+		expect(
+			isPublicValidationWorkflow(publicRunnerWorkflow, {
+				hasInternalReleaseMirrorManifest: true,
 			}),
 		).toBe(false);
 	});

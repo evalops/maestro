@@ -709,8 +709,30 @@ export class HeadlessSessionRuntime {
 		this.state.protocol_version = HEADLESS_PROTOCOL_VERSION;
 		this.state.session_id = this.sessionId;
 		this.state.cwd ??= this.workspaceRoot ?? process.cwd();
+		this.state.connection_count = 0;
+		this.state.subscriber_count = 0;
+		this.state.connections = [];
+		this.state.controller_connection_id = null;
+		this.state.controller_subscription_id = null;
+		this.state.client_protocol_version = undefined;
+		this.state.client_info = undefined;
+		this.state.capabilities = undefined;
+		this.state.opt_out_notifications = undefined;
+		this.state.connection_role = undefined;
 		this.state.is_ready = manifest.runtime.flush_status === "completed";
 		this.state.is_responding = false;
+		this.state.current_response = undefined;
+		this.state.active_tools = [];
+		this.state.active_utility_commands = [];
+		this.state.active_file_watches = [];
+		this.state.tracked_tools = [];
+		this.state.codex_subagent_edges = [];
+		this.state.pending_approvals = [];
+		this.state.pending_client_tools = [];
+		this.state.pending_mcp_elicitations = [];
+		this.state.pending_user_inputs = [];
+		this.state.pending_tool_retries = [];
+		syncHeadlessPendingRequests(this.state);
 		this.state.last_status = restoreLastStatus(manifest.runtime.flush_status);
 		const restoreError = restoreLastError(
 			manifest.runtime.flush_status,

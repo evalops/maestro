@@ -522,9 +522,9 @@
 			"path": "test/server/headless-runtime-service.test.ts",
 			"anchors": [
 				"restores runtime state and replay marker from a hosted runner drain manifest",
-				"restores $flushStatus manifest into inspectable not-ready state",
+				"restores $flushStatus manifest into inspect-only state without stale runtime resources",
 				"restored_from_snapshot",
-				"not ready for new attachments"
+				"pending_user_inputs: []"
 			]
 		},
 		{

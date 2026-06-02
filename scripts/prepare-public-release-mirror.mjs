@@ -59,6 +59,10 @@ const PUBLIC_INCLUDE_OVERRIDES = new Set([
 	".github/workflows/review-thread-guard.yml",
 ]);
 
+const STALE_PUBLIC_TARGET_DELETES = [
+	".github/release-mirror-manifest.json",
+];
+
 function parseArgs(argv) {
 	const args = {
 		check: false,
@@ -326,6 +330,13 @@ function buildMirrorPlan(sourceRoot, targetRoot, shouldExclude, packageName) {
 			continue;
 		}
 		deletedPaths.push(relativePath);
+	}
+
+	for (const relativePath of STALE_PUBLIC_TARGET_DELETES) {
+		const targetPath = resolve(targetRoot, relativePath);
+		if (existsSync(targetPath) && !deletedPaths.includes(relativePath)) {
+			deletedPaths.push(relativePath);
+		}
 	}
 
 	return {
