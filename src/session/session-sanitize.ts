@@ -9,7 +9,7 @@ import type {
 	Attachment,
 	UserMessageWithAttachments,
 } from "../agent/types.js";
-import { sanitizePayload } from "../safety/context-firewall.js";
+import { sanitizePayload } from "../safety/context-firewall-sanitize.js";
 
 export function isMessageWithAttachments(
 	message: AppMessage,
