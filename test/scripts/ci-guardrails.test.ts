@@ -834,6 +834,34 @@ describe("ci workflow guardrails", () => {
 		expect(coverageRunsOn).toContain("INTERNAL_CONFIRMATION_RUNNER");
 	});
 
+	it("runs workflow footgun guardrails in the CI infrastructure smoke lane", () => {
+		const workflow = parse(
+			readFileSync(new URL("../../.github/workflows/ci.yml", import.meta.url), {
+				encoding: "utf8",
+			}),
+		) as Workflow;
+		const prCheckSteps = workflow.jobs?.["pr-checks"]?.steps ?? [];
+		const setupBunStep = prCheckSteps.find(
+			(step) => step.uses === "./.github/actions/setup-bun-nx",
+		);
+		const smokeStep = prCheckSteps.find(
+			(step) => step.name === "Release readiness script smoke",
+		);
+
+		expect(smokeStep?.if).toContain("ci_infrastructure_only == 'true'");
+		expect(setupBunStep).toBeDefined();
+		expect(String(setupBunStep?.if ?? "")).not.toContain(
+			"ci_infrastructure_only != 'true'",
+		);
+		expect(smokeStep?.run).toContain(
+			"node --check scripts/check-workflow-footguns.mjs",
+		);
+		expect(smokeStep?.run).toContain("npm run check:workflow-footguns");
+		expect(smokeStep?.run).toContain(
+			"node ./scripts/run-vitest.js --run test/scripts/workflow-footguns.test.ts",
+		);
+	});
+
 	it("uses targeted release helper package smoke instead of duplicate release readiness", () => {
 		const workflow = parse(
 			readFileSync(new URL("../../.github/workflows/ci.yml", import.meta.url), {
