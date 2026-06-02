@@ -18,10 +18,8 @@ import type { AutomaticMemoryExtractionCoordinator } from "../memory/auto-extrac
 import type { RegisteredModel } from "../models/registry.js";
 import { checkSessionLimits } from "../safety/policy.js";
 import type { ScriptedScenarioRecorder } from "../server/scenario-recorder.js";
-import {
-	type SessionManager,
-	toSessionModelMetadata,
-} from "../session/manager.js";
+import type { SessionManager } from "../session/manager.js";
+import { toSessionModelMetadata } from "../session/model-metadata.js";
 import { createRuntimeSessionSummaryUpdater } from "../session/runtime-summary-updater.js";
 import {
 	type TurnTracker,

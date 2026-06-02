@@ -35,6 +35,8 @@ import { recordMaestroPromptVariantSelected } from "../telemetry/maestro-event-b
 import { createLogger } from "../utils/logger.js";
 import { resolveEnvPath } from "../utils/path-expansion.js";
 import { SessionFileWriter } from "./file-writer.js";
+import { toSessionModelMetadata } from "./model-metadata.js";
+export { toSessionModelMetadata } from "./model-metadata.js";
 import {
 	SessionMetadataCache,
 	type SessionModelMetadata,
@@ -220,22 +222,6 @@ export {
 	scheduleSessionMigration,
 	unregisterActiveSessionFile,
 } from "./migration.js";
-
-export function toSessionModelMetadata(
-	model: RegisteredModel,
-): SessionModelMetadata {
-	return {
-		provider: model.provider,
-		modelId: model.id,
-		providerName: model.providerName,
-		name: model.name,
-		baseUrl: model.baseUrl,
-		reasoning: model.reasoning,
-		contextWindow: model.contextWindow,
-		maxTokens: model.maxTokens,
-		source: model.source,
-	};
-}
 
 function findRegisteredModel(modelKey: string): RegisteredModel | undefined {
 	const [provider, modelId] = modelKey.split("/");
