@@ -1410,11 +1410,25 @@ export async function main(args: string[]) {
 	// - Message persistence in JSONL format
 	// - Session resume and continuation
 	// - Model/thinking level tracking across restarts
-	const { SessionManager } = await import("./session/manager.js");
-	const sessionManager = new SessionManager(
-		parsed.continue && !parsed.resume, // continueSession: auto-load most recent
-		parsed.session, // customSessionPath: explicit session file
-	);
+	const useFreshExecSessionManager =
+		parsed.command === "exec" &&
+		parsed.execJson &&
+		!willDispatchHeadlessMode &&
+		!parsed.continue &&
+		!parsed.resume &&
+		!parsed.session &&
+		!parsed.execResumeId &&
+		!parsed.execUseLast;
+	const sessionManager = (
+		useFreshExecSessionManager
+			? new (
+					await import("./session/fresh-exec-session-manager.js")
+				).FreshExecSessionManager()
+			: new (await import("./session/manager.js")).SessionManager(
+					parsed.continue && !parsed.resume, // continueSession: auto-load most recent
+					parsed.session, // customSessionPath: explicit session file
+				)
+	) as SessionManager;
 	let scenarioRecorder:
 		| import("./server/scenario-recorder.js").ScriptedScenarioRecorder
 		| undefined;
