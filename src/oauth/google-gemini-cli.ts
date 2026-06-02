@@ -10,19 +10,11 @@ import {
 	createServer,
 } from "node:http";
 import { createLogger } from "../utils/logger.js";
+import { loadGoogleInstalledAppOAuthConfig } from "./google-installed-app-config.js";
 import { type OAuthCredentials, saveOAuthCredentials } from "./storage.js";
 
 const logger = createLogger("oauth:google-gemini-cli");
 
-const decodeBase64 = (value: string): string =>
-	Buffer.from(value, "base64").toString("utf8");
-
-const CLIENT_ID = decodeBase64(
-	"NjgxMjU1ODA5Mzk1LW9vOGZ0Mm9wcmRybnA5ZTNhcWY2YXYzaG1kaWIxMzVqLmFwcHMuZ29vZ2xldXNlcmNvbnRlbnQuY29t",
-);
-const CLIENT_SECRET = decodeBase64(
-	"R09DU1BYLTR1SGdNUG0tMW83U2stZ2VWNkN1NWNsWEZzeGw=",
-);
 const REDIRECT_URI = "http://127.0.0.1:8085/oauth2callback";
 const SCOPES = [
 	"https://www.googleapis.com/auth/cloud-platform",
@@ -253,12 +245,14 @@ export async function refreshGoogleGeminiCliToken(
 		throw new Error("Missing projectId for Google OAuth refresh");
 	}
 
+	const { clientId, clientSecret } =
+		loadGoogleInstalledAppOAuthConfig("google-gemini-cli");
 	const response = await fetch(TOKEN_URL, {
 		method: "POST",
 		headers: { "Content-Type": "application/x-www-form-urlencoded" },
 		body: new URLSearchParams({
-			client_id: CLIENT_ID,
-			client_secret: CLIENT_SECRET,
+			client_id: clientId,
+			client_secret: clientSecret,
 			refresh_token: refreshToken,
 			grant_type: "refresh_token",
 		}),
@@ -291,6 +285,8 @@ export async function loginGoogleGeminiCli(
 	onAuthUrl: (url: string) => void,
 	onStatus?: (status: string) => void,
 ): Promise<void> {
+	const { clientId, clientSecret } =
+		loadGoogleInstalledAppOAuthConfig("google-gemini-cli");
 	const { verifier, challenge } = generatePkce();
 	// Generate separate state for CSRF protection - verifier must stay secret
 	const state = base64UrlEncode(randomBytes(32));
@@ -300,7 +296,7 @@ export async function loginGoogleGeminiCli(
 
 	try {
 		const authParams = new URLSearchParams({
-			client_id: CLIENT_ID,
+			client_id: clientId,
 			response_type: "code",
 			redirect_uri: REDIRECT_URI,
 			scope: SCOPES.join(" "),
@@ -325,8 +321,8 @@ export async function loginGoogleGeminiCli(
 			method: "POST",
 			headers: { "Content-Type": "application/x-www-form-urlencoded" },
 			body: new URLSearchParams({
-				client_id: CLIENT_ID,
-				client_secret: CLIENT_SECRET,
+				client_id: clientId,
+				client_secret: clientSecret,
 				code,
 				grant_type: "authorization_code",
 				redirect_uri: REDIRECT_URI,

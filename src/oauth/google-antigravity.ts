@@ -10,19 +10,11 @@ import {
 	createServer,
 } from "node:http";
 import { createLogger } from "../utils/logger.js";
+import { loadGoogleInstalledAppOAuthConfig } from "./google-installed-app-config.js";
 import { type OAuthCredentials, saveOAuthCredentials } from "./storage.js";
 
 const logger = createLogger("oauth:google-antigravity");
 
-const decodeBase64 = (value: string): string =>
-	Buffer.from(value, "base64").toString("utf8");
-
-const CLIENT_ID = decodeBase64(
-	"MTA3MTAwNjA2MDU5MS10bWhzc2luMmgyMWxjcmUyMzV2dG9sb2poNGc0MDNlcC5hcHBzLmdvb2dsZXVzZXJjb250ZW50LmNvbQ==",
-);
-const CLIENT_SECRET = decodeBase64(
-	"R09DU1BYLUs1OEZXUjQ4NkxkTEoxbUxCOHNYQzR6NnFEQWY=",
-);
 const REDIRECT_URI = "http://127.0.0.1:51121/oauth-callback";
 const SCOPES = [
 	"https://www.googleapis.com/auth/cloud-platform",
@@ -214,12 +206,14 @@ export async function refreshGoogleAntigravityToken(
 		throw new Error("Missing projectId for Antigravity OAuth refresh");
 	}
 
+	const { clientId, clientSecret } =
+		loadGoogleInstalledAppOAuthConfig("google-antigravity");
 	const response = await fetch(TOKEN_URL, {
 		method: "POST",
 		headers: { "Content-Type": "application/x-www-form-urlencoded" },
 		body: new URLSearchParams({
-			client_id: CLIENT_ID,
-			client_secret: CLIENT_SECRET,
+			client_id: clientId,
+			client_secret: clientSecret,
 			refresh_token: refreshToken,
 			grant_type: "refresh_token",
 		}),
@@ -252,6 +246,8 @@ export async function loginGoogleAntigravity(
 	onAuthUrl: (url: string) => void,
 	onStatus?: (status: string) => void,
 ): Promise<void> {
+	const { clientId, clientSecret } =
+		loadGoogleInstalledAppOAuthConfig("google-antigravity");
 	const { verifier, challenge } = generatePkce();
 	// Generate separate state for CSRF protection - verifier must stay secret
 	const state = base64UrlEncode(randomBytes(32));
@@ -261,7 +257,7 @@ export async function loginGoogleAntigravity(
 
 	try {
 		const authParams = new URLSearchParams({
-			client_id: CLIENT_ID,
+			client_id: clientId,
 			response_type: "code",
 			redirect_uri: REDIRECT_URI,
 			scope: SCOPES.join(" "),
@@ -286,8 +282,8 @@ export async function loginGoogleAntigravity(
 			method: "POST",
 			headers: { "Content-Type": "application/x-www-form-urlencoded" },
 			body: new URLSearchParams({
-				client_id: CLIENT_ID,
-				client_secret: CLIENT_SECRET,
+				client_id: clientId,
+				client_secret: clientSecret,
 				code,
 				grant_type: "authorization_code",
 				redirect_uri: REDIRECT_URI,

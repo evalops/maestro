@@ -461,6 +461,34 @@ describe("OAuth Index", () => {
 			expect(fetchMock).toHaveBeenCalledTimes(1);
 		});
 
+		it("preserves Google OAuth credentials when refresh config is missing", async () => {
+			vi.stubEnv("MAESTRO_GOOGLE_GEMINI_CLI_CLIENT_ID", "");
+			vi.stubEnv("MAESTRO_GOOGLE_GEMINI_CLI_CLIENT_SECRET", "");
+			const fetchMock = vi.fn();
+			vi.stubGlobal("fetch", fetchMock);
+
+			saveOAuthCredentials("google-gemini-cli", {
+				type: "oauth",
+				access: "expired-google-token",
+				refresh: "stored-refresh-token",
+				expires: Date.now() - 1000,
+				metadata: {
+					projectId: "test-project",
+				},
+			});
+
+			const token = await getOAuthToken("google-gemini-cli");
+
+			expect(token).toBeNull();
+			expect(fetchMock).not.toHaveBeenCalled();
+			expect(loadOAuthCredentials("google-gemini-cli")).toEqual(
+				expect.objectContaining({
+					access: "expired-google-token",
+					refresh: "stored-refresh-token",
+				}),
+			);
+		});
+
 		it("should refresh EvalOps credentials when the access token expires", async () => {
 			const expiresAt = new Date(Date.now() + 60 * 60 * 1000).toISOString();
 			const refreshExpiresAt = new Date(
