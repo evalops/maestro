@@ -178,6 +178,26 @@ describe("FreshExecSessionManager", () => {
 		rmSync(tempDir, { recursive: true, force: true });
 	});
 
+	it("uses a provided session id for fresh exec persistence", async () => {
+		const sessionId = "11111111-2222-4333-8444-555555555555";
+		const manager = new FreshExecSessionManager({
+			sessionDir: join(tempDir, "sessions"),
+			sessionId,
+		});
+
+		expect(manager.getSessionId()).toBe(sessionId);
+		expect(manager.getSessionFile()).toContain(sessionId);
+
+		manager.startSession(createMockState());
+		await manager.flush();
+
+		const [header] = readEntries(manager.getSessionFile());
+		expect(header).toMatchObject({
+			type: "session",
+			id: sessionId,
+		});
+	});
+
 	it("persists compaction entries for fresh exec sessions", async () => {
 		const manager = new FreshExecSessionManager({
 			sessionDir: join(tempDir, "sessions"),
