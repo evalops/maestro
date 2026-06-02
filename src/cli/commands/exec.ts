@@ -76,6 +76,7 @@ interface ExecCommandOptions {
 	sandboxMode?: string;
 	outputSchema?: string;
 	outputLastMessage?: string;
+	beforeFinalJsonlEvents?: () => Promise<void> | void;
 }
 
 const timestamp = (): string => new Date().toISOString();
@@ -243,6 +244,7 @@ export async function runExecCommand(
 			cwd: process.cwd(),
 			reason: runStatus === "error" ? "error" : "complete",
 		});
+		await options.beforeFinalJsonlEvents?.();
 		emitThreadEnd(jsonlWriter, threadId, runStatus, threadId);
 		jsonlWriter.emit({
 			type: "done",

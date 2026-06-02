@@ -117,9 +117,9 @@ import {
 } from "./cli/system-prompt.js";
 import { validateFrameworkPreference } from "./config/framework.js";
 import { loadRuntimeConfig } from "./config/runtime-config.js";
-import { loadUnifiedContextManifest } from "./context/manifest.js";
 import { loadEnv } from "./load-env.js";
 import { bootstrapLsp } from "./lsp/bootstrap.js";
+import type { McpConfig } from "./mcp/types.js";
 import { createLazyAutoMemoryCoordinators } from "./memory/lazy-auto-memory.js";
 import { ensureModelsLoaded } from "./models/builtin.js";
 import type { RegisteredModel } from "./models/registry.js";
@@ -1653,11 +1653,19 @@ export async function main(args: string[]) {
 				cwd: process.cwd(),
 			}),
 		);
-	const unifiedContextManifest = await withExecJsonStartupCleanup(() =>
-		loadUnifiedContextManifest(process.cwd(), {
-			projectDocs: promptContextManifest,
-		}),
-	);
+	const deferExecJsonContextManifest =
+		parsed.command === "exec" && parsed.execJson && !willDispatchHeadlessMode;
+	const backfillExecJsonContextManifest =
+		deferExecJsonContextManifest && !sessionManager.isInitialized();
+	const unifiedContextManifest = deferExecJsonContextManifest
+		? undefined
+		: await withExecJsonStartupCleanup(() =>
+				import("./context/manifest.js").then(({ loadUnifiedContextManifest }) =>
+					loadUnifiedContextManifest(process.cwd(), {
+						projectDocs: promptContextManifest,
+					}),
+				),
+			);
 	startupProfiler.checkpoint("prompt:assembled", {
 		system_bytes: systemPrompt.length,
 	});
@@ -1749,13 +1757,14 @@ export async function main(args: string[]) {
 	const { initializeMcpServers } = await withExecJsonStartupCleanup(
 		() => import("./bootstrap/mcp-setup.js"),
 	);
-	await withExecJsonStartupCleanup(() =>
-		initializeMcpServers({
-			agent,
-			baseTools: configuredAllTools,
-			cwd: process.cwd(),
-		}),
-	);
+	const execJsonMcpConfigSnapshot: McpConfig | undefined =
+		await withExecJsonStartupCleanup(() =>
+			initializeMcpServers({
+				agent,
+				baseTools: configuredAllTools,
+				cwd: process.cwd(),
+			}),
+		);
 	startupProfiler.checkpoint("mcp:bootstrap_queued");
 
 	// Determine mode early to know if we should print messages
@@ -1936,8 +1945,9 @@ export async function main(args: string[]) {
 			);
 		} else if (parsed.command === "exec") {
 			startupProfiler.terminal("exec:ready");
-			const { runExecCommand } = await (execCommandModulePromise ??
-				import("./cli/commands/exec.js"));
+			const { runExecCommand } = await withExecJsonStartupCleanup(
+				() => execCommandModulePromise ?? import("./cli/commands/exec.js"),
+			);
 			await runExecCommand({
 				agent,
 				sessionManager,
@@ -1947,6 +1957,22 @@ export async function main(args: string[]) {
 				sandboxMode: sandboxMode,
 				outputSchema: parsed.execOutputSchema,
 				outputLastMessage: parsed.execOutputLast,
+				beforeFinalJsonlEvents: backfillExecJsonContextManifest
+					? async () => {
+							const { loadUnifiedContextManifest } =
+								await withExecJsonStartupCleanup(
+									() => import("./context/manifest.js"),
+								);
+							await withExecJsonStartupCleanup(() =>
+								sessionManager.updateUnifiedContextManifest(
+									loadUnifiedContextManifest(process.cwd(), {
+										projectDocs: promptContextManifest,
+										mcpConfig: execJsonMcpConfigSnapshot,
+									}),
+								),
+							);
+						}
+					: undefined,
 			});
 		} else {
 			// CLI mode with messages
