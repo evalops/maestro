@@ -430,6 +430,39 @@ describe("CLI integration", () => {
 		throw new Error(`Timed out waiting for parseable JSON in ${path}${reason}`);
 	}
 
+	function overwriteSessionUnifiedContextManifest(
+		sessionFile: string,
+		manifest: unknown,
+	): void {
+		const entries = readFileSync(sessionFile, "utf8")
+			.trim()
+			.split("\n")
+			.filter(Boolean)
+			.map((line) => JSON.parse(line) as Record<string, unknown>);
+		const header = entries.find((entry) => entry.type === "session");
+		if (!header) {
+			throw new Error(`Missing session header in ${sessionFile}`);
+		}
+		header.unifiedContextManifest = manifest;
+		writeFileSync(
+			sessionFile,
+			`${entries.map((entry) => JSON.stringify(entry)).join("\n")}\n`,
+		);
+	}
+
+	function readSessionUnifiedContextManifest(sessionFile: string): unknown {
+		const entries = readFileSync(sessionFile, "utf8")
+			.trim()
+			.split("\n")
+			.filter(Boolean)
+			.map((line) => JSON.parse(line) as Record<string, unknown>);
+		const header = entries.find((entry) => entry.type === "session");
+		if (!header) {
+			throw new Error(`Missing session header in ${sessionFile}`);
+		}
+		return header.unifiedContextManifest;
+	}
+
 	it("emits JSON events in json mode", async () => {
 		await main(["--mode", "json", "hello"]);
 		// Should emit JSONL events like thread_start, turn, item, thread_end
@@ -1380,6 +1413,18 @@ describe("CLI integration", () => {
 		await main(["exec", "Initial run"]);
 		const [session] = await new SessionManager(false).listSessions();
 		expect(session).toBeDefined();
+		const sessionFile = new SessionManager(false).getSessionFileById(
+			session!.id,
+		);
+		expect(sessionFile).toBeTruthy();
+		const originalManifest = {
+			protocolVersion: "test.resume.manifest",
+			version: 1,
+			cwd: "/original/resume",
+			entries: [],
+			diagnostics: [],
+		};
+		overwriteSessionUnifiedContextManifest(sessionFile!, originalManifest);
 		output = [];
 
 		await main([
@@ -1413,12 +1458,27 @@ describe("CLI integration", () => {
 			threadId: session!.id,
 			sessionId: session!.id,
 		});
+		expect(readSessionUnifiedContextManifest(sessionFile!)).toEqual(
+			originalManifest,
+		);
 	});
 
 	it("uses the last exec session id for exec json thread start", async () => {
 		await main(["exec", "Initial run"]);
 		const [session] = await new SessionManager(false).listSessions();
 		expect(session).toBeDefined();
+		const sessionFile = new SessionManager(false).getSessionFileById(
+			session!.id,
+		);
+		expect(sessionFile).toBeTruthy();
+		const originalManifest = {
+			protocolVersion: "test.last.manifest",
+			version: 1,
+			cwd: "/original/last",
+			entries: [],
+			diagnostics: [],
+		};
+		overwriteSessionUnifiedContextManifest(sessionFile!, originalManifest);
 		output = [];
 
 		await main([
@@ -1451,6 +1511,104 @@ describe("CLI integration", () => {
 			threadId: session!.id,
 			sessionId: session!.id,
 		});
+		expect(readSessionUnifiedContextManifest(sessionFile!)).toEqual(
+			originalManifest,
+		);
+	});
+
+	it("backfills exec json manifest before final events with pre-dispatch MCP config snapshot", async () => {
+		const originalCwd = process.cwd();
+		const projectDir = mkdtempSync(join(tmpdir(), "composer-mcp-project-"));
+		const projectMcpDir = join(projectDir, ".maestro");
+		const projectMcpPath = join(projectMcpDir, "mcp.json");
+		let capturedSessionPath: string | null = null;
+		let manifestBeforeFinalEvent:
+			| {
+					entries?: Array<{ id: string; kind: string }>;
+			  }
+			| undefined;
+		mkdirSync(projectMcpDir, { recursive: true });
+		writeFileSync(
+			projectMcpPath,
+			JSON.stringify({
+				mcpServers: {
+					before_run: {
+						command: "node",
+						args: ["before.js"],
+					},
+				},
+			}),
+		);
+
+		vi.resetModules();
+		vi.doMock("../../src/cli/commands/exec.js", () => ({
+			runExecCommand: async (options: {
+				agent: { state: MockAgentState };
+				sessionManager: SessionManager;
+				beforeFinalJsonlEvents?: () => Promise<void> | void;
+			}) => {
+				options.sessionManager.startSession(options.agent.state, {
+					subject: "Mutate MCP",
+				});
+				options.sessionManager.saveSessionSummary(
+					"maestro exec session: Mutate MCP",
+				);
+				capturedSessionPath = options.sessionManager.getSessionFile();
+				writeFileSync(
+					projectMcpPath,
+					JSON.stringify({
+						mcpServers: {
+							after_run: {
+								command: "node",
+								args: ["after.js"],
+							},
+						},
+					}),
+				);
+				await options.beforeFinalJsonlEvents?.();
+				manifestBeforeFinalEvent = readSessionUnifiedContextManifest(
+					capturedSessionPath!,
+				) as typeof manifestBeforeFinalEvent;
+				process.stdout.write(`${JSON.stringify({ type: "done" })}\n`);
+			},
+		}));
+
+		try {
+			process.chdir(projectDir);
+			const { main: currentMain } = await import("../../src/main.js");
+			await currentMain(["exec", "--tools", "read", "Mutate MCP", "--json"]);
+		} finally {
+			process.chdir(originalCwd);
+			vi.doUnmock("../../src/cli/commands/exec.js");
+			vi.resetModules();
+			rmSync(projectDir, { recursive: true, force: true });
+		}
+
+		expect(capturedSessionPath).toBeDefined();
+		const sessionHeader = JSON.parse(
+			readFileSync(capturedSessionPath!, "utf8").split("\n")[0]!,
+		) as {
+			unifiedContextManifest?: {
+				entries?: Array<{ id: string; kind: string }>;
+			};
+		};
+		const mcpEntryIds =
+			sessionHeader.unifiedContextManifest?.entries
+				?.filter((entry) => entry.kind === "mcp_server")
+				.map((entry) => entry.id)
+				.sort() ?? [];
+		const mcpEntryIdsBeforeFinalEvent =
+			manifestBeforeFinalEvent?.entries
+				?.filter((entry) => entry.kind === "mcp_server")
+				.map((entry) => entry.id)
+				.sort() ?? [];
+
+		expect(mcpEntryIds).toContain("mcp_server:before_run");
+		expect(mcpEntryIds).not.toContain("mcp_server:after_run");
+		expect(mcpEntryIdsBeforeFinalEvent).toEqual(mcpEntryIds);
+		expect(output.map((chunk) => chunk.trim()).filter(Boolean)).toContain(
+			JSON.stringify({ type: "done" }),
+		);
 	});
 
 	it("validates schema in composer exec", async () => {

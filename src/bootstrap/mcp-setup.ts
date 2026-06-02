@@ -12,6 +12,7 @@ import { loadMcpConfig } from "../mcp/config.js";
 import { mcpManager } from "../mcp/manager.js";
 import { prefetchOfficialMcpRegistry } from "../mcp/official-registry.js";
 import { getAllMcpTools } from "../mcp/tool-bridge.js";
+import type { McpConfig } from "../mcp/types.js";
 import { syncRuntimeToolset } from "./runtime-toolset.js";
 
 /**
@@ -22,12 +23,12 @@ export function initializeMcpServers(params: {
 	agent: Agent;
 	baseTools: AgentTool[];
 	cwd: string;
-}): void {
+}): McpConfig {
 	const { agent, baseTools, cwd } = params;
 
 	const mcpConfig = loadMcpConfig(cwd, { includeEnvLimits: true });
 	if (mcpConfig.servers.length === 0) {
-		return;
+		return mcpConfig;
 	}
 	if (
 		mcpConfig.servers.some(
@@ -71,4 +72,5 @@ export function initializeMcpServers(params: {
 	mcpManager.configure(mcpConfig).catch((err) => {
 		console.warn("[mcp] Failed to initialize MCP servers:", err);
 	});
+	return mcpConfig;
 }

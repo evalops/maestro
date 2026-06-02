@@ -27,6 +27,7 @@ import type {
 	TextContent,
 } from "../agent/types.js";
 import { SESSION_CONFIG, getAgentDir } from "../config/constants.js";
+import type { UnifiedContextManifest } from "../context/manifest-types.js";
 import { getRegisteredModels } from "../models/registry.js";
 import type { RegisteredModel } from "../models/registry.js";
 import { queueSharedMemoryUpdate } from "../shared-memory/client.js";
@@ -460,6 +461,7 @@ export class SessionManager {
 
 	private rewriteSessionFile(): void {
 		if (!this.enabled || !this.sessionFile) return;
+		this.writer?.flushSync();
 		const content = `${this.fileEntries.map((e) => JSON.stringify(e)).join("\n")}\n`;
 		writeFileSync(this.sessionFile, content);
 	}
@@ -595,6 +597,24 @@ export class SessionManager {
 		if (sessionAutoPruneEnabled()) {
 			this.scheduleAutoPrune();
 		}
+	}
+
+	updateUnifiedContextManifest(manifest: UnifiedContextManifest): boolean {
+		if (!this.enabled || !this.sessionInitialized) return false;
+		const headerIndex = this.fileEntries.findIndex(
+			(entry) => entry.type === "session",
+		);
+		if (headerIndex < 0) return false;
+
+		const entry = {
+			...(this.fileEntries[headerIndex] as SessionHeaderEntry),
+			unifiedContextManifest: manifest,
+		};
+		this.fileEntries[headerIndex] = entry;
+		this.metadataCache.apply(entry);
+		this.rewriteSessionFile();
+		this.flushed = true;
+		return true;
 	}
 
 	private scheduleAutoPrune(): void {

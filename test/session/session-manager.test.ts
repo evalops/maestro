@@ -119,6 +119,14 @@ function readSessionHeader(filePath: string): SessionHeaderEntry {
 	return header;
 }
 
+function readSessionEntries(filePath: string) {
+	return readFileSync(filePath, "utf8")
+		.trim()
+		.split("\n")
+		.filter(Boolean)
+		.map((line) => JSON.parse(line));
+}
+
 describe("SessionManager - Deferred Session Creation", () => {
 	let testDir: string;
 	let originalEnv: string | undefined;
@@ -353,6 +361,114 @@ describe("SessionManager - Deferred Session Creation", () => {
 				readSessionHeader(sessionManager.getSessionFile())
 					.unifiedContextManifest,
 			).toEqual(state.unifiedContextManifest);
+		});
+
+		it("can backfill unified context manifest after the session starts", () => {
+			const sessionManager = new SessionManager(false);
+			const state = createMockState();
+			const promptContextManifest = createPromptContextManifest();
+			state.promptContextManifest = promptContextManifest;
+			const unifiedContextManifest = {
+				protocolVersion: UNIFIED_CONTEXT_MANIFEST_PROTOCOL,
+				version: 1,
+				cwd: "/repo",
+				projectDocs: promptContextManifest,
+				entries: [
+					{
+						id: "project_doc:project:AGENTS.md",
+						kind: "project_doc" as const,
+						source: "filesystem" as const,
+						status: "loaded" as const,
+						label: "AGENTS.md",
+						path: "/repo/AGENTS.md",
+						scopeDir: "/repo",
+						precedenceIndex: 0,
+						bytesRead: 10,
+						contentHash: "a".repeat(64),
+						metadata: {
+							sourceKind: "project",
+							truncated: false,
+						},
+					},
+				],
+				diagnostics: [],
+			};
+
+			sessionManager.startSession(state);
+			expect(
+				sessionManager.getHeader()?.unifiedContextManifest,
+			).toBeUndefined();
+
+			expect(
+				sessionManager.updateUnifiedContextManifest(unifiedContextManifest),
+			).toBe(true);
+
+			expect(sessionManager.getHeader()?.unifiedContextManifest).toEqual(
+				unifiedContextManifest,
+			);
+			expect(
+				readSessionHeader(sessionManager.getSessionFile())
+					.unifiedContextManifest,
+			).toEqual(unifiedContextManifest);
+		});
+
+		it("does not duplicate buffered entries when backfilling the unified context manifest", async () => {
+			const sessionManager = new SessionManager(false);
+			const promptContextManifest = createPromptContextManifest();
+			const state = createMockState();
+			state.promptContextManifest = promptContextManifest;
+			const userMessage = createUserMessage("Summarize release notes");
+			const assistantMessage = createAssistantMessage(
+				"Release notes summarized",
+			);
+			state.messages.push(userMessage, assistantMessage);
+			const unifiedContextManifest = {
+				protocolVersion: UNIFIED_CONTEXT_MANIFEST_PROTOCOL,
+				version: 1,
+				cwd: "/repo",
+				projectDocs: promptContextManifest,
+				entries: [
+					{
+						id: "project_doc:project:AGENTS.md",
+						kind: "project_doc" as const,
+						source: "filesystem" as const,
+						status: "loaded" as const,
+						label: "AGENTS.md",
+						path: "/repo/AGENTS.md",
+						scopeDir: "/repo",
+						precedenceIndex: 0,
+						bytesRead: 10,
+						contentHash: "a".repeat(64),
+						metadata: {
+							sourceKind: "project",
+							truncated: false,
+						},
+					},
+				],
+				diagnostics: [],
+			};
+
+			sessionManager.startSession(state);
+			sessionManager.saveMessage(userMessage);
+			sessionManager.saveMessage(assistantMessage);
+
+			expect(
+				sessionManager.updateUnifiedContextManifest(unifiedContextManifest),
+			).toBe(true);
+			await sessionManager.flush();
+
+			const entries = readSessionEntries(sessionManager.getSessionFile());
+			expect(entries.map((entry) => entry.type)).toEqual([
+				"session",
+				"message",
+				"message",
+			]);
+			expect(entries.filter((entry) => entry.type === "message")).toHaveLength(
+				2,
+			);
+			expect(readSessionHeader(sessionManager.getSessionFile())).toMatchObject({
+				unifiedContextManifest,
+			});
 		});
 	});
 
