@@ -20,6 +20,7 @@ import { join } from "node:path";
 import { SESSION_CONFIG, getAgentDir } from "../config/constants.js";
 import { recordSessionMigration } from "../telemetry.js";
 import { createLogger } from "../utils/logger.js";
+import { activeSessionFiles } from "./active-session-files.js";
 import {
 	CURRENT_SESSION_VERSION,
 	type CompactionEntry,
@@ -36,24 +37,10 @@ const logger = createLogger("session-migration");
 const MIGRATION_STATE_FILE = "session-migration-state.json";
 
 let migrationPromise: Promise<SessionMigrationState | null> | null = null;
-
-// Files to skip during migration (e.g., currently active session files)
-const skipFiles = new Set<string>();
-
-/**
- * Register a file to be skipped during migration.
- * Used to prevent race conditions with active session writers.
- */
-export function registerActiveSessionFile(filePath: string): void {
-	skipFiles.add(filePath);
-}
-
-/**
- * Unregister a file from the skip list.
- */
-export function unregisterActiveSessionFile(filePath: string): void {
-	skipFiles.delete(filePath);
-}
+export {
+	registerActiveSessionFile,
+	unregisterActiveSessionFile,
+} from "./active-session-files.js";
 
 /**
  * Get the session directory for the current working directory.
@@ -316,7 +303,7 @@ async function runSessionMigrationInternal(): Promise<SessionMigrationState | nu
 
 		for (const file of batch) {
 			// Skip files that are currently active (to prevent race conditions)
-			if (skipFiles.has(file)) {
+			if (activeSessionFiles.has(file)) {
 				state.skipped += 1;
 				continue;
 			}
