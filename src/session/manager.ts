@@ -30,7 +30,7 @@ import { SESSION_CONFIG, getAgentDir } from "../config/constants.js";
 import type { UnifiedContextManifest } from "../context/manifest-types.js";
 import { getRegisteredModels } from "../models/registry.js";
 import type { RegisteredModel } from "../models/registry.js";
-import { queueSharedMemoryUpdate } from "../shared-memory/client.js";
+import type { SharedMemoryUpdate } from "../shared-memory/client.js";
 import { recordMaestroPromptVariantSelected } from "../telemetry/maestro-event-bus.js";
 import { createLogger } from "../utils/logger.js";
 import { resolveEnvPath } from "../utils/path-expansion.js";
@@ -98,6 +98,23 @@ const PORTABLE_SESSION_EXPORT_FORMAT = "maestro-session-export.v1";
 const AUTO_PRUNE_DELAY_MS = 5000;
 const pendingAutoPruneManagers = new Set<SessionManager>();
 let autoPruneBeforeExitRegistered = false;
+
+let sharedMemoryClientPromise:
+	| Promise<typeof import("../shared-memory/client.js")>
+	| undefined;
+
+function queueSharedMemoryUpdateLazy(update: SharedMemoryUpdate): void {
+	sharedMemoryClientPromise ??= import("../shared-memory/client.js");
+	void sharedMemoryClientPromise
+		.then(({ queueSharedMemoryUpdate }) => {
+			queueSharedMemoryUpdate(update);
+		})
+		.catch((error) => {
+			logger.warn("Failed to queue shared memory update", {
+				error: error instanceof Error ? error.message : String(error),
+			});
+		});
+}
 
 function sessionAutoPruneEnabled(): boolean {
 	return (
@@ -562,7 +579,7 @@ export class SessionManager {
 			this.persistEntry(entry);
 		}
 
-		queueSharedMemoryUpdate({
+		queueSharedMemoryUpdateLazy({
 			sessionId: this.sessionId,
 			state: {
 				sessionId: this.sessionId,
@@ -642,7 +659,7 @@ export class SessionManager {
 
 		this.appendTreeEntry(entry);
 
-		queueSharedMemoryUpdate({
+		queueSharedMemoryUpdateLazy({
 			sessionId: this.sessionId,
 			state: {
 				sessionId: this.sessionId,
@@ -938,7 +955,7 @@ export class SessionManager {
 		this.appendSessionMetaEntry(target, { summary: trimmed });
 		this.syncSessionMemoryEntry(target);
 		if (target === this.sessionFile) {
-			queueSharedMemoryUpdate({
+			queueSharedMemoryUpdateLazy({
 				sessionId: this.sessionId,
 				state: {
 					sessionId: this.sessionId,

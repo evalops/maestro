@@ -34,7 +34,7 @@ type SharedMemoryEvent = {
 	actor?: string;
 };
 
-type SharedMemoryUpdate = {
+export type SharedMemoryUpdate = {
 	sessionId: string;
 	state?: Record<string, JsonValue>;
 	event?: SharedMemoryEvent;
