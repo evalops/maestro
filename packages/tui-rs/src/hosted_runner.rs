@@ -366,10 +366,6 @@ fn hosted_runner_error_from_async_transport(error: AsyncTransportError) -> Hoste
     HostedRunnerError::runtime_not_ready(format!("agent supervisor is not ready: {error}"))
 }
 
-fn json_value<T: Serialize>(value: &T) -> serde_json::Value {
-    serde_json::to_value(value).unwrap_or(serde_json::Value::Null)
-}
-
 fn json_string_value<T: Serialize>(value: &T) -> String {
     serde_json::to_value(value)
         .ok()

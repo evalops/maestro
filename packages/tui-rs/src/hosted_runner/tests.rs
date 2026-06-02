@@ -823,15 +823,55 @@ async fn restore_manifest_seeds_runtime_state_and_replay_marker() {
     let restored_cursor = drain["manifest"]["runtime"]["cursor"]
         .as_u64()
         .expect("manifest cursor");
+    let mut restore_manifest = drain["manifest"].clone();
+    restore_manifest["snapshot"]["state"]["pending_approvals"] = json!([{
+        "call_id": "completed-restore-approval-call",
+        "request_id": "completed-restore-approval",
+        "tool": "bash",
+        "args": {"cmd": "cat secret.txt"},
+        "started_at_ms": 1_771_000_002_000u64
+    }]);
+    restore_manifest["snapshot"]["state"]["pending_user_inputs"] = json!([{
+        "call_id": "completed-restore-input-call",
+        "request_id": "completed-restore-input",
+        "tool": "user_input",
+        "args": {"prompt": "enter secret"},
+        "started_at_ms": 1_771_000_002_100u64
+    }]);
+    restore_manifest["snapshot"]["state"]["pending_tool_retries"] = json!([{
+        "call_id": "completed-restore-retry-call",
+        "request_id": "completed-restore-retry",
+        "tool": "bash",
+        "args": {"stderr": "token in error"},
+        "started_at_ms": 1_771_000_002_200u64
+    }]);
+    restore_manifest["snapshot"]["state"]["active_tools"] = json!([{
+        "call_id": "completed-restore-active-call",
+        "tool": "bash",
+        "output": "secret active output"
+    }]);
+    tokio::fs::write(
+        &manifest_path,
+        serde_json::to_vec_pretty(&restore_manifest).expect("manifest json"),
+    )
+    .await
+    .expect("write restore manifest");
     handle.shutdown().await;
 
     let mut restore_config = test_config(workspace.path().to_path_buf());
     restore_config.runner_session_id = "mrs_restored".to_string();
     restore_config.maestro_session_id = None;
     restore_config.restore_manifest_path = Some(manifest_path);
-    let restored = start_hosted_runner(restore_config)
-        .await
-        .expect("start restored hosted runner");
+    let live_empty_state = AgentState {
+        is_ready: true,
+        ..AgentState::default()
+    };
+    let restored = start_hosted_runner_with_message_executor(
+        restore_config,
+        Arc::new(StatefulRuntimeExecutor::new(live_empty_state)),
+    )
+    .await
+    .expect("start restored hosted runner");
 
     let identity: HostedRunnerIdentity = client
         .get(format!(
@@ -863,6 +903,48 @@ async fn restore_manifest_seeds_runtime_state_and_replay_marker() {
     assert_eq!(state["cursor"], restored_cursor);
     assert_eq!(state["state"]["last_status"], "Restored from snapshot");
     assert_eq!(state["state"]["is_ready"], true);
+    assert_eq!(
+        state["state"]["pending_approvals"][0]["call_id"],
+        "completed-restore-approval-call"
+    );
+    assert_eq!(state["state"]["pending_approvals"][0]["args"], json!({}));
+    assert_eq!(
+        state["state"]["pending_user_inputs"][0]["call_id"],
+        "completed-restore-input-call"
+    );
+    assert_eq!(state["state"]["pending_user_inputs"][0]["args"], json!({}));
+    assert_eq!(
+        state["state"]["pending_tool_retries"][0]["call_id"],
+        "completed-restore-retry-call"
+    );
+    assert_eq!(state["state"]["pending_tool_retries"][0]["args"], json!({}));
+    assert_eq!(
+        state["state"]["active_tools"][0]["call_id"],
+        "completed-restore-active-call"
+    );
+    assert_eq!(state["state"]["active_tools"][0]["output"], "");
+
+    {
+        let mut restored_runner_state =
+            restored.shared.state.lock().expect("restored runner state");
+        restored_runner_state.cursor = restored_cursor + 1;
+    }
+    let cleared_state: serde_json::Value = client
+        .get(format!(
+            "{}/api/headless/sessions/sess_test/state",
+            restored.base_url()
+        ))
+        .send()
+        .await
+        .expect("cleared state response")
+        .json()
+        .await
+        .expect("cleared state json");
+    assert_eq!(cleared_state["cursor"], restored_cursor + 1);
+    assert_eq!(cleared_state["state"]["pending_approvals"], json!([]));
+    assert_eq!(cleared_state["state"]["pending_user_inputs"], json!([]));
+    assert_eq!(cleared_state["state"]["pending_tool_retries"], json!([]));
+    assert_eq!(cleared_state["state"]["active_tools"], json!([]));
 
     let mut events_response = client
         .get(format!(
@@ -1525,6 +1607,36 @@ async fn failed_restore_manifest_stays_not_ready_and_rejects_attach() {
     let mut partial_manifest = drain["manifest"].clone();
     partial_manifest["runtime"]["flush_status"] = json!("failed");
     partial_manifest["runtime"]["error"] = json!("flush timed out");
+    partial_manifest["snapshot"]["state"]["current_response"] = json!({
+        "response_id": "restore-response",
+        "text": "sensitive restored response"
+    });
+    partial_manifest["snapshot"]["state"]["pending_approvals"] = json!([{
+        "call_id": "restore-approval-call",
+        "request_id": "restore-approval",
+        "tool": "bash",
+        "args": {"cmd": "cat secret.txt"},
+        "started_at_ms": 1_771_000_001_000u64
+    }]);
+    partial_manifest["snapshot"]["state"]["pending_user_inputs"] = json!([{
+        "call_id": "restore-input-call",
+        "request_id": "restore-input",
+        "tool": "user_input",
+        "args": {"prompt": "enter secret"},
+        "started_at_ms": 1_771_000_001_100u64
+    }]);
+    partial_manifest["snapshot"]["state"]["pending_tool_retries"] = json!([{
+        "call_id": "restore-retry-call",
+        "request_id": "restore-retry",
+        "tool": "bash",
+        "args": {"stderr": "token in error"},
+        "started_at_ms": 1_771_000_001_200u64
+    }]);
+    partial_manifest["snapshot"]["state"]["active_tools"] = json!([{
+        "call_id": "restore-active-call",
+        "tool": "bash",
+        "output": "secret active output"
+    }]);
     tokio::fs::write(
         &manifest_path,
         serde_json::to_vec_pretty(&partial_manifest).expect("manifest json"),
@@ -1537,9 +1649,12 @@ async fn failed_restore_manifest_stays_not_ready_and_rejects_attach() {
     restore_config.runner_session_id = "mrs_partial_restored".to_string();
     restore_config.maestro_session_id = None;
     restore_config.restore_manifest_path = Some(manifest_path);
-    let restored = start_hosted_runner(restore_config)
-        .await
-        .expect("start restored hosted runner");
+    let restored = start_hosted_runner_with_message_executor(
+        restore_config,
+        Arc::new(StatefulRuntimeExecutor::new(AgentState::default())),
+    )
+    .await
+    .expect("start restored hosted runner");
 
     let identity: HostedRunnerIdentity = client
         .get(format!(
@@ -1576,6 +1691,39 @@ async fn failed_restore_manifest_stays_not_ready_and_rejects_attach() {
     assert_eq!(state["state"]["last_error"], "flush timed out");
     assert_eq!(state["state"]["last_error_type"], "protocol");
     assert_eq!(state["state"]["is_ready"], false);
+    assert!(state["state"]["current_response"].is_null());
+    assert_eq!(
+        state["state"]["pending_approvals"][0]["call_id"],
+        "restore-approval-call"
+    );
+    assert_eq!(
+        state["state"]["pending_approvals"][0]["request_id"],
+        "restore-approval"
+    );
+    assert_eq!(state["state"]["pending_approvals"][0]["args"], json!({}));
+    assert_eq!(
+        state["state"]["pending_user_inputs"][0]["call_id"],
+        "restore-input-call"
+    );
+    assert_eq!(
+        state["state"]["pending_user_inputs"][0]["request_id"],
+        "restore-input"
+    );
+    assert_eq!(state["state"]["pending_user_inputs"][0]["args"], json!({}));
+    assert_eq!(
+        state["state"]["pending_tool_retries"][0]["call_id"],
+        "restore-retry-call"
+    );
+    assert_eq!(
+        state["state"]["pending_tool_retries"][0]["request_id"],
+        "restore-retry"
+    );
+    assert_eq!(state["state"]["pending_tool_retries"][0]["args"], json!({}));
+    assert_eq!(
+        state["state"]["active_tools"][0]["call_id"],
+        "restore-active-call"
+    );
+    assert_eq!(state["state"]["active_tools"][0]["output"], "");
 
     let ready = client
         .get(format!("{}/readyz", restored.base_url()))
@@ -1789,10 +1937,20 @@ async fn message_executor_publishes_runtime_handled_events() {
 }
 
 #[tokio::test]
-async fn state_snapshot_merges_supervisor_agent_state_with_hosted_connections() {
+async fn state_snapshot_redacts_sensitive_supervisor_state() {
     let workspace = tempdir().expect("workspace");
     let mut current_response = crate::headless::StreamingResponse::new("resp-state-1".to_string());
     current_response.append("working on hosted state", false);
+    let mut active_tools = HashMap::new();
+    active_tools.insert(
+        "active-call-1".to_string(),
+        crate::headless::ActiveTool {
+            call_id: "active-call-1".to_string(),
+            tool: "bash".to_string(),
+            output: "secret command output".to_string(),
+            started: std::time::Instant::now(),
+        },
+    );
     let supervisor_state = AgentState {
         model: Some("gpt-5.4".to_string()),
         provider: Some("openai".to_string()),
@@ -1806,8 +1964,25 @@ async fn state_snapshot_merges_supervisor_agent_state_with_hosted_connections() 
             request_id: Some("approval-1".to_string()),
             tool: "bash".to_string(),
             args: json!({"cmd": "cargo test"}),
-            started_at_ms: Some(1_771_000_000_000),
+            started_at_ms: None,
         }],
+        pending_user_inputs: vec![crate::headless::PendingApproval {
+            call_id: "input-call-1".to_string(),
+            tool_execution_id: Some("input-exec-1".to_string()),
+            request_id: None,
+            tool: "user_input".to_string(),
+            args: json!({"prompt": "enter secret"}),
+            started_at_ms: Some(1_771_000_000_100),
+        }],
+        pending_tool_retries: vec![crate::headless::PendingApproval {
+            call_id: "retry-call-1".to_string(),
+            tool_execution_id: Some("retry-exec-1".to_string()),
+            request_id: Some("retry-1".to_string()),
+            tool: "bash".to_string(),
+            args: json!({"error": "token leaked in stderr"}),
+            started_at_ms: Some(1_771_000_000_200),
+        }],
+        active_tools,
         last_status: Some("thinking".to_string()),
         is_ready: true,
         is_responding: true,
@@ -1873,11 +2048,50 @@ async fn state_snapshot_merges_supervisor_agent_state_with_hosted_connections() 
     assert_eq!(state["state"]["session_id"], "supervisor-session-1");
     assert_eq!(state["state"]["cwd"], "/runtime/workspace");
     assert_eq!(state["state"]["git_branch"], "feature/runtime-state");
-    assert_eq!(
-        state["state"]["current_response"]["response_id"],
-        "resp-state-1"
-    );
+    assert!(state["state"]["current_response"].is_null());
     assert_eq!(state["state"]["pending_approvals"][0]["call_id"], "call-1");
+    assert_eq!(
+        state["state"]["pending_approvals"][0]["request_id"],
+        "approval-1"
+    );
+    assert_eq!(state["state"]["pending_approvals"][0]["tool"], "bash");
+    assert_eq!(state["state"]["pending_approvals"][0]["args"], json!({}));
+    assert!(state["state"]["pending_approvals"][0]
+        .get("tool_execution_id")
+        .is_none());
+    assert!(state["state"]["pending_approvals"][0]
+        .get("started_at_ms")
+        .is_none());
+    assert_eq!(state["state"]["pending_client_tools"], json!([]));
+    assert_eq!(state["state"]["pending_mcp_elicitations"], json!([]));
+    assert_eq!(
+        state["state"]["pending_user_inputs"][0]["call_id"],
+        "input-call-1"
+    );
+    assert_eq!(
+        state["state"]["pending_user_inputs"][0]["tool_execution_id"],
+        "input-exec-1"
+    );
+    assert_eq!(state["state"]["pending_user_inputs"][0]["args"], json!({}));
+    assert!(state["state"]["pending_user_inputs"][0]
+        .get("request_id")
+        .is_none());
+    assert_eq!(
+        state["state"]["pending_tool_retries"][0]["call_id"],
+        "retry-call-1"
+    );
+    assert_eq!(
+        state["state"]["pending_tool_retries"][0]["request_id"],
+        "retry-1"
+    );
+    assert_eq!(state["state"]["pending_tool_retries"][0]["args"], json!({}));
+    assert_eq!(state["state"]["tracked_tools"], json!([]));
+    assert_eq!(
+        state["state"]["active_tools"][0]["call_id"],
+        "active-call-1"
+    );
+    assert_eq!(state["state"]["active_tools"][0]["tool"], "bash");
+    assert_eq!(state["state"]["active_tools"][0]["output"], "");
     assert_eq!(state["state"]["last_status"], "thinking");
     assert_eq!(state["state"]["is_ready"], true);
     assert_eq!(state["state"]["is_responding"], true);

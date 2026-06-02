@@ -72,6 +72,7 @@ interface ExecCommandOptions {
 	sessionManager: SessionManager;
 	prompts: string[];
 	jsonl: boolean;
+	threadStartEmitted?: boolean;
 	sandboxMode?: string;
 	outputSchema?: string;
 	outputLastMessage?: string;
@@ -125,11 +126,13 @@ export async function runExecCommand(
 	}
 	const threadId = options.sessionManager.getSessionId();
 	const jsonlWriter = new JsonlEventWriter(options.jsonl ?? false);
-	emitThreadStart(jsonlWriter, threadId, {
-		sandboxMode: options.sandboxMode,
-		cwd: process.cwd(),
-		sessionId: threadId,
-	});
+	if (!options.threadStartEmitted) {
+		emitThreadStart(jsonlWriter, threadId, {
+			sandboxMode: options.sandboxMode,
+			cwd: process.cwd(),
+			sessionId: threadId,
+		});
+	}
 
 	let turnCounter = 0;
 	const nextTurnId = () => `turn-${++turnCounter}`;

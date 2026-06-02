@@ -2,7 +2,6 @@ import {
 	EVALOPS_ACCESS_TOKEN_ENV_VARS,
 	EVALOPS_ORGANIZATION_ID_ENV_VARS,
 } from "../evalops/env-aliases.js";
-import { getOAuthToken } from "../oauth/index.js";
 import { loadOAuthCredentials } from "../oauth/storage.js";
 import {
 	type DownstreamFailureMode,
@@ -135,7 +134,12 @@ export function resolveConfiguredToken(
 export async function resolvePlatformToken(
 	envVars: readonly string[] = DEFAULT_TOKEN_ENV_VARS,
 ): Promise<string | undefined> {
-	return getEnvValue(envVars) ?? (await getOAuthToken("evalops")) ?? undefined;
+	const envToken = getEnvValue(envVars);
+	if (envToken) {
+		return envToken;
+	}
+	const { getOAuthToken } = await import("../oauth/index.js");
+	return (await getOAuthToken("evalops")) ?? undefined;
 }
 
 export async function resolvePlatformServiceConfig(

@@ -114,6 +114,11 @@ impl SharedRunner {
             .restored_snapshot
             .as_ref()
             .map(|snapshot| &snapshot.state);
+        let restored_pending_state = state
+            .restored_snapshot
+            .as_ref()
+            .filter(|snapshot| state.cursor <= snapshot.cursor)
+            .map(|snapshot| &snapshot.state);
         let prefer_restored_host_state = state.restored_snapshot.is_some();
         let host_ready = state.ready && !state.draining;
         let controller_subscription_id = state
@@ -239,49 +244,28 @@ impl SharedRunner {
                     .or_else(|| restored_state.and_then(|state| state.cwd.clone()))
                     .or_else(|| Some(self.config.workspace_root.to_string_lossy().to_string())),
                 git_branch,
-                current_response: agent_state
-                    .and_then(|state| state.current_response.as_ref())
-                    .map(json_value)
-                    .or_else(|| restored_state.and_then(|state| state.current_response.clone())),
-                pending_approvals: agent_state
-                    .map(|state| state.pending_approvals.iter().map(json_value).collect())
-                    .or_else(|| restored_state.map(|state| state.pending_approvals.clone()))
+                current_response: None,
+                pending_approvals: redacted_pending_snapshot(
+                    agent_state.map(|state| state.pending_approvals.as_slice()),
+                    restored_pending_state.map(|state| state.pending_approvals.as_slice()),
+                ),
+                pending_client_tools: redacted_pending_snapshot(
+                    agent_state.map(|state| state.pending_client_tools.as_slice()),
+                    restored_pending_state.map(|state| state.pending_client_tools.as_slice()),
+                ),
+                pending_mcp_elicitations: restored_pending_state
+                    .map(|state| redacted_pending_request_values(&state.pending_mcp_elicitations))
                     .unwrap_or_default(),
-                pending_client_tools: agent_state
-                    .map(|state| state.pending_client_tools.iter().map(json_value).collect())
-                    .or_else(|| restored_state.map(|state| state.pending_client_tools.clone()))
-                    .unwrap_or_default(),
-                pending_mcp_elicitations: restored_state
-                    .map(|state| state.pending_mcp_elicitations.clone())
-                    .unwrap_or_default(),
-                pending_user_inputs: agent_state
-                    .map(|state| state.pending_user_inputs.iter().map(json_value).collect())
-                    .or_else(|| restored_state.map(|state| state.pending_user_inputs.clone()))
-                    .unwrap_or_default(),
-                pending_tool_retries: agent_state
-                    .map(|state| state.pending_tool_retries.iter().map(json_value).collect())
-                    .or_else(|| restored_state.map(|state| state.pending_tool_retries.clone()))
-                    .unwrap_or_default(),
-                tracked_tools: agent_state
-                    .map(|state| state.tracked_tools.values().map(json_value).collect())
-                    .or_else(|| restored_state.map(|state| state.tracked_tools.clone()))
-                    .unwrap_or_default(),
-                active_tools: agent_state
-                    .map(|state| {
-                        state
-                            .active_tools
-                            .values()
-                            .map(|tool| {
-                                json!({
-                                    "call_id": tool.call_id,
-                                    "tool": tool.tool,
-                                    "output": tool.output,
-                                })
-                            })
-                            .collect()
-                    })
-                    .or_else(|| restored_state.map(|state| state.active_tools.clone()))
-                    .unwrap_or_default(),
+                pending_user_inputs: redacted_pending_snapshot(
+                    agent_state.map(|state| state.pending_user_inputs.as_slice()),
+                    restored_pending_state.map(|state| state.pending_user_inputs.as_slice()),
+                ),
+                pending_tool_retries: redacted_pending_snapshot(
+                    agent_state.map(|state| state.pending_tool_retries.as_slice()),
+                    restored_pending_state.map(|state| state.pending_tool_retries.as_slice()),
+                ),
+                tracked_tools: Vec::new(),
+                active_tools: redacted_active_tool_snapshot(agent_state, restored_pending_state),
                 codex_subagent_edges: agent_state
                     .map(|state| state.codex_subagent_edges.clone())
                     .or_else(|| restored_state.map(|state| state.codex_subagent_edges.clone()))
@@ -443,4 +427,142 @@ impl SharedRunner {
             .cloned()
             .collect()
     }
+}
+
+fn redacted_pending_snapshot(
+    live: Option<&[crate::headless::PendingApproval]>,
+    restored: Option<&[serde_json::Value]>,
+) -> Vec<serde_json::Value> {
+    live.filter(|requests| !requests.is_empty())
+        .map(redacted_pending_requests)
+        .or_else(|| {
+            restored
+                .filter(|requests| !requests.is_empty())
+                .map(redacted_pending_request_values)
+        })
+        .unwrap_or_default()
+}
+
+fn redacted_pending_requests(
+    requests: &[crate::headless::PendingApproval],
+) -> Vec<serde_json::Value> {
+    requests
+        .iter()
+        .map(|request| {
+            let mut redacted = serde_json::Map::new();
+            redacted.insert(
+                "call_id".to_string(),
+                serde_json::Value::String(request.call_id.clone()),
+            );
+            if let Some(tool_execution_id) = request.tool_execution_id.as_ref() {
+                redacted.insert(
+                    "tool_execution_id".to_string(),
+                    serde_json::Value::String(tool_execution_id.clone()),
+                );
+            }
+            if let Some(request_id) = request.request_id.as_ref() {
+                redacted.insert(
+                    "request_id".to_string(),
+                    serde_json::Value::String(request_id.clone()),
+                );
+            }
+            redacted.insert(
+                "tool".to_string(),
+                serde_json::Value::String(request.tool.clone()),
+            );
+            redacted.insert("args".to_string(), serde_json::json!({}));
+            if let Some(started_at_ms) = request.started_at_ms {
+                redacted.insert(
+                    "started_at_ms".to_string(),
+                    serde_json::json!(started_at_ms),
+                );
+            }
+            serde_json::Value::Object(redacted)
+        })
+        .collect()
+}
+
+fn redacted_active_tool_snapshot(
+    live: Option<&crate::headless::AgentState>,
+    restored: Option<&RuntimeStateSnapshot>,
+) -> Vec<serde_json::Value> {
+    live.filter(|state| !state.active_tools.is_empty())
+        .map(|state| {
+            state
+                .active_tools
+                .values()
+                .map(|tool| {
+                    serde_json::json!({
+                        "call_id": tool.call_id,
+                        "tool": tool.tool,
+                        "output": "",
+                    })
+                })
+                .collect()
+        })
+        .or_else(|| {
+            restored
+                .filter(|state| !state.active_tools.is_empty())
+                .map(|state| redacted_active_tools(&state.active_tools))
+        })
+        .unwrap_or_default()
+}
+
+fn redacted_pending_request_values(requests: &[serde_json::Value]) -> Vec<serde_json::Value> {
+    requests
+        .iter()
+        .map(redacted_pending_request_value)
+        .collect()
+}
+
+fn redacted_pending_request_value(request: &serde_json::Value) -> serde_json::Value {
+    let mut redacted = serde_json::Map::new();
+    redacted.insert(
+        "call_id".to_string(),
+        request
+            .get("call_id")
+            .cloned()
+            .unwrap_or(serde_json::Value::Null),
+    );
+    insert_optional_json_field(&mut redacted, request, "tool_execution_id");
+    if let Some(request_id) = request
+        .get("request_id")
+        .or_else(|| request.get("id"))
+        .filter(|value| !value.is_null())
+    {
+        redacted.insert("request_id".to_string(), request_id.clone());
+    }
+    redacted.insert(
+        "tool".to_string(),
+        request
+            .get("tool")
+            .cloned()
+            .unwrap_or(serde_json::Value::Null),
+    );
+    redacted.insert("args".to_string(), serde_json::json!({}));
+    insert_optional_json_field(&mut redacted, request, "started_at_ms");
+    serde_json::Value::Object(redacted)
+}
+
+fn insert_optional_json_field(
+    target: &mut serde_json::Map<String, serde_json::Value>,
+    source: &serde_json::Value,
+    key: &str,
+) {
+    if let Some(value) = source.get(key).filter(|value| !value.is_null()) {
+        target.insert(key.to_string(), value.clone());
+    }
+}
+
+fn redacted_active_tools(tools: &[serde_json::Value]) -> Vec<serde_json::Value> {
+    tools
+        .iter()
+        .map(|tool| {
+            serde_json::json!({
+                "call_id": tool.get("call_id").cloned().unwrap_or(serde_json::Value::Null),
+                "tool": tool.get("tool").cloned().unwrap_or(serde_json::Value::Null),
+                "output": "",
+            })
+        })
+        .collect()
 }

@@ -1147,6 +1147,312 @@ describe("CLI integration", () => {
 		expect(() => lines.map((line) => JSON.parse(line))).not.toThrow();
 	});
 
+	it("emits one thread start for composer exec json mode", async () => {
+		await main([
+			"exec",
+			"--tools",
+			"read",
+			"--sandbox",
+			"local",
+			"Plan work",
+			"--json",
+		]);
+		const events = output
+			.flatMap((chunk) => chunk.trim().split("\n"))
+			.filter((line) => line.startsWith("{"))
+			.map((line) => JSON.parse(line) as Record<string, unknown>);
+		const threadStarts = events.filter(
+			(event) => event.type === "thread" && event.phase === "start",
+		);
+		expect(threadStarts).toHaveLength(1);
+		expect(events[0]).toMatchObject({
+			type: "thread",
+			phase: "start",
+			cwd: process.cwd(),
+			sandbox: "local",
+		});
+	});
+
+	it("closes early exec json thread start when startup fails after emission", async () => {
+		const exitSpy = vi.spyOn(process, "exit").mockImplementation((code) => {
+			throw new Error(`exit:${String(code ?? 0)}`);
+		});
+
+		await expect(
+			main(["exec", "--tools", "not-a-tool", "Plan work", "--json"]),
+		).rejects.toThrow("exit:1");
+
+		const events = output
+			.flatMap((chunk) => chunk.trim().split("\n"))
+			.filter((line) => line.startsWith("{"))
+			.map((line) => JSON.parse(line) as Record<string, unknown>);
+		const threadStarts = events.filter(
+			(event) => event.type === "thread" && event.phase === "start",
+		);
+		const threadEnds = events.filter(
+			(event) => event.type === "thread" && event.phase === "end",
+		);
+		const doneEvents = events.filter((event) => event.type === "done");
+		const errorEvents = events.filter((event) => event.type === "error");
+
+		expect(exitSpy).toHaveBeenCalledWith(1);
+		expect(threadStarts).toHaveLength(1);
+		expect(errorEvents.at(-1)).toMatchObject({
+			type: "error",
+		});
+		expect(threadEnds.at(-1)).toMatchObject({
+			type: "thread",
+			phase: "end",
+			threadId: threadStarts[0]?.threadId,
+			sessionId: threadStarts[0]?.sessionId,
+			status: "error",
+		});
+		expect(doneEvents.at(-1)).toMatchObject({
+			type: "done",
+			status: "error",
+			sessionId: threadStarts[0]?.sessionId,
+		});
+	});
+
+	it("closes early exec json thread when late startup setup fails", async () => {
+		vi.resetModules();
+		vi.doMock("../../src/bootstrap/session-restoration-setup.js", () => ({
+			restoreSessionState: vi
+				.fn()
+				.mockRejectedValue(new Error("late setup boom")),
+		}));
+		try {
+			const { main: currentMain } = await import("../../src/main.js");
+			const exitSpy = vi.spyOn(process, "exit").mockImplementation((code) => {
+				throw new Error(`exit:${String(code ?? 0)}`);
+			});
+
+			await expect(
+				currentMain([
+					"exec",
+					"--tools",
+					"read",
+					"--models",
+					"gpt",
+					"Plan work",
+					"--json",
+				]),
+			).rejects.toThrow("exit:1");
+
+			const events = output
+				.flatMap((chunk) => chunk.trim().split("\n"))
+				.filter((line) => line.startsWith("{"))
+				.map((line) => JSON.parse(line) as Record<string, unknown>);
+			const threadStarts = events.filter(
+				(event) => event.type === "thread" && event.phase === "start",
+			);
+			const threadEnds = events.filter(
+				(event) => event.type === "thread" && event.phase === "end",
+			);
+			const doneEvents = events.filter((event) => event.type === "done");
+			const errorEvents = events.filter((event) => event.type === "error");
+
+			expect(exitSpy).toHaveBeenCalledWith(1);
+			expect(threadStarts).toHaveLength(1);
+			expect(errorEvents.at(-1)).toMatchObject({
+				type: "error",
+				message: "late setup boom",
+			});
+			expect(threadEnds.at(-1)).toMatchObject({
+				type: "thread",
+				phase: "end",
+				threadId: threadStarts[0]?.threadId,
+				sessionId: threadStarts[0]?.sessionId,
+				status: "error",
+			});
+			expect(doneEvents.at(-1)).toMatchObject({
+				type: "done",
+				status: "error",
+				sessionId: threadStarts[0]?.sessionId,
+			});
+		} finally {
+			vi.doUnmock("../../src/bootstrap/session-restoration-setup.js");
+		}
+	});
+
+	it("does not start an exec json thread before no-prompt validation", async () => {
+		await expect(main(["exec", "--json"])).rejects.toThrow(
+			/maestro exec requires at least one prompt/,
+		);
+
+		const events = output
+			.flatMap((chunk) => chunk.trim().split("\n"))
+			.filter((line) => line.startsWith("{"))
+			.map((line) => JSON.parse(line) as Record<string, unknown>);
+		expect(
+			events.filter(
+				(event) => event.type === "thread" && event.phase === "start",
+			),
+		).toHaveLength(0);
+	});
+
+	it("emits terminal exec json events for blank prompts", async () => {
+		await expect(main(["exec", "--json", "   "])).rejects.toThrow(
+			/maestro exec requires at least one non-empty prompt/,
+		);
+
+		const events = output
+			.flatMap((chunk) => chunk.trim().split("\n"))
+			.filter((line) => line.startsWith("{"))
+			.map((line) => JSON.parse(line) as Record<string, unknown>);
+		const threadStarts = events.filter(
+			(event) => event.type === "thread" && event.phase === "start",
+		);
+		const threadEnds = events.filter(
+			(event) => event.type === "thread" && event.phase === "end",
+		);
+		const doneEvents = events.filter((event) => event.type === "done");
+		const errorEvents = events.filter((event) => event.type === "error");
+
+		expect(threadStarts).toHaveLength(1);
+		expect(errorEvents.at(-1)).toMatchObject({
+			type: "error",
+			message: "maestro exec requires at least one non-empty prompt",
+		});
+		expect(threadEnds.at(-1)).toMatchObject({
+			type: "thread",
+			phase: "end",
+			threadId: threadStarts[0]?.threadId,
+			sessionId: threadStarts[0]?.sessionId,
+			status: "error",
+		});
+		expect(doneEvents.at(-1)).toMatchObject({
+			type: "done",
+			status: "error",
+			sessionId: threadStarts[0]?.sessionId,
+		});
+	});
+
+	it.each([
+		["--headless exec --json", ["--headless", "exec", "--json", "Plan work"]],
+		["--headless exec --json without prompt", ["--headless", "exec", "--json"]],
+		[
+			"exec --mode headless --stream-json",
+			["exec", "--mode", "headless", "--stream-json", "Plan work"],
+		],
+		[
+			"exec --mode headless --stream-json without prompt",
+			["exec", "--mode", "headless", "--stream-json"],
+		],
+	])(
+		"does not emit exec JSON thread events before headless protocol messages for %s",
+		async (_label, args) => {
+			vi.doMock("../../src/cli/headless.js", () => ({
+				runHeadlessMode: async () => {
+					process.stdout.write(
+						`${JSON.stringify({
+							type: "ready",
+							protocol_version: "2026-04-02",
+							model: "claude-sonnet-4-5",
+							provider: "anthropic",
+							executor_type: "live",
+							session_id: "session-headless-test",
+						})}\n`,
+					);
+					process.stdout.write(
+						`${JSON.stringify({
+							type: "session_info",
+							session_id: "session-headless-test",
+							cwd: process.cwd(),
+						})}\n`,
+					);
+				},
+			}));
+
+			await main(args);
+
+			const events = output
+				.flatMap((chunk) => chunk.trim().split("\n"))
+				.filter((line) => line.startsWith("{"))
+				.map((line) => JSON.parse(line) as Record<string, unknown>);
+			expect(events.map((event) => event.type)).not.toContain("thread");
+			expect(events[0]).toMatchObject({ type: "ready" });
+			expect(events[1]).toMatchObject({ type: "session_info" });
+		},
+	);
+
+	it("uses the resumed session id for exec json thread start", async () => {
+		await main(["exec", "Initial run"]);
+		const [session] = await new SessionManager(false).listSessions();
+		expect(session).toBeDefined();
+		output = [];
+
+		await main([
+			"exec",
+			"--resume",
+			session!.id,
+			"--sandbox",
+			"local",
+			"--json",
+			"Follow up run",
+		]);
+
+		const events = output
+			.flatMap((chunk) => chunk.trim().split("\n"))
+			.filter((line) => line.startsWith("{"))
+			.map((line) => JSON.parse(line) as Record<string, unknown>);
+		const threadStarts = events.filter(
+			(event) => event.type === "thread" && event.phase === "start",
+		);
+		const threadEnds = events.filter(
+			(event) => event.type === "thread" && event.phase === "end",
+		);
+		expect(threadStarts).toHaveLength(1);
+		expect(threadStarts[0]).toMatchObject({
+			threadId: session!.id,
+			sessionId: session!.id,
+			cwd: process.cwd(),
+			sandbox: "local",
+		});
+		expect(threadEnds.at(-1)).toMatchObject({
+			threadId: session!.id,
+			sessionId: session!.id,
+		});
+	});
+
+	it("uses the last exec session id for exec json thread start", async () => {
+		await main(["exec", "Initial run"]);
+		const [session] = await new SessionManager(false).listSessions();
+		expect(session).toBeDefined();
+		output = [];
+
+		await main([
+			"exec",
+			"--last",
+			"--sandbox",
+			"local",
+			"--json",
+			"Follow up run",
+		]);
+
+		const events = output
+			.flatMap((chunk) => chunk.trim().split("\n"))
+			.filter((line) => line.startsWith("{"))
+			.map((line) => JSON.parse(line) as Record<string, unknown>);
+		const threadStarts = events.filter(
+			(event) => event.type === "thread" && event.phase === "start",
+		);
+		const threadEnds = events.filter(
+			(event) => event.type === "thread" && event.phase === "end",
+		);
+		expect(threadStarts).toHaveLength(1);
+		expect(threadStarts[0]).toMatchObject({
+			threadId: session!.id,
+			sessionId: session!.id,
+			cwd: process.cwd(),
+			sandbox: "local",
+		});
+		expect(threadEnds.at(-1)).toMatchObject({
+			threadId: session!.id,
+			sessionId: session!.id,
+		});
+	});
+
 	it("validates schema in composer exec", async () => {
 		await main([
 			"exec",
