@@ -48,6 +48,19 @@ const options = parseArgs(process.argv.slice(2));
 const sourceRoot = resolve(options.source);
 const targetRoot = resolve(options.target);
 const manifestPath = resolve(sourceRoot, options.manifest);
+const publicMirrorExcludePath = resolve(
+	sourceRoot,
+	".github/public-release-mirror.exclude",
+);
+if (!existsSync(manifestPath)) {
+	if (existsSync(publicMirrorExcludePath)) {
+		throw new Error(`Missing release mirror manifest: ${manifestPath}`);
+	}
+	console.log(
+		"Release mirror manifest is absent in this public tree; skipping helper sync.",
+	);
+	process.exit(0);
+}
 const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
 const files = Array.isArray(manifest.files) ? manifest.files : [];
 const changedFiles = [];
