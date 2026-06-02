@@ -12,6 +12,7 @@ import type {
 import {
 	HEADLESS_PROTOCOL_VERSION,
 	createHeadlessRuntimeState,
+	syncHeadlessPendingRequests,
 } from "../../src/cli/headless-protocol.js";
 import type { RegisteredModel } from "../../src/models/registry.js";
 import {
@@ -79,6 +80,100 @@ function buildRestoreManifest(input: {
 	restoredState.protocol_version = HEADLESS_PROTOCOL_VERSION;
 	restoredState.session_id = input.sessionId;
 	restoredState.cwd = input.workspaceRoot;
+	restoredState.connection_count = 2;
+	restoredState.subscriber_count = 1;
+	restoredState.controller_connection_id = "controller_restored";
+	restoredState.controller_subscription_id = "subscription_restored";
+	restoredState.client_protocol_version = "2026-04-02";
+	restoredState.client_info = { name: "stale-controller" };
+	restoredState.capabilities = {
+		server_requests: ["approval"],
+		utility_operations: ["command_exec"],
+		raw_agent_events: true,
+	};
+	restoredState.opt_out_notifications = ["heartbeat"];
+	restoredState.connection_role = "controller";
+	restoredState.connections = [
+		{
+			connection_id: "controller_restored",
+			role: "controller",
+			client_protocol_version: "2026-04-02",
+			client_info: { name: "stale-controller" },
+			capabilities: {
+				server_requests: ["approval"],
+				utility_operations: ["command_exec"],
+				raw_agent_events: true,
+			},
+			opt_out_notifications: ["heartbeat"],
+			subscription_count: 1,
+			attached_subscription_count: 1,
+			controller_lease_granted: true,
+		},
+		{
+			connection_id: "viewer_restored",
+			role: "viewer",
+			subscription_count: 1,
+			attached_subscription_count: 1,
+			controller_lease_granted: false,
+		},
+	];
+	restoredState.current_response = {
+		response_id: "response_restored",
+		text: "partial response",
+		thinking: "partial thought",
+	};
+	restoredState.active_tools = [
+		{
+			call_id: "call_active_tool",
+			tool: "shell",
+			output: "still running",
+		},
+	];
+	restoredState.active_utility_commands = [
+		{
+			command_id: "utility_command_restored",
+			command: "npm test",
+			cwd: input.workspaceRoot,
+			columns: 80,
+			output: "stale output",
+			owner_connection_id: "controller_restored",
+			pid: 1234,
+			rows: 24,
+			shell_mode: "shell",
+			terminal_mode: "pipe",
+		},
+	];
+	restoredState.active_file_watches = [
+		{
+			watch_id: "file_watch_restored",
+			root_dir: input.workspaceRoot,
+			include_patterns: ["src/**"],
+			exclude_patterns: [],
+			debounce_ms: 50,
+			owner_connection_id: "controller_restored",
+		},
+	];
+	restoredState.tracked_tools = [
+		{
+			call_id: "call_tracked_tool",
+			tool: "read_file",
+			args: { path: "README.md" },
+		},
+	];
+	restoredState.pending_client_tools = [
+		{
+			call_id: "call_client_tool",
+			tool: "artifacts",
+			args: { command: "create", filename: "report.txt" },
+		},
+	];
+	restoredState.pending_mcp_elicitations = [
+		{
+			call_id: "call_mcp_elicitation",
+			tool: "mcp.elicit",
+			args: { message: "Choose a workspace" },
+		},
+	];
 	restoredState.pending_user_inputs = [
 		{
 			call_id: "call_user_input",
@@ -86,6 +181,7 @@ function buildRestoreManifest(input: {
 			args: { question: "Continue?" },
 		},
 	];
+	syncHeadlessPendingRequests(restoredState);
 	const cursor = input.cursor ?? 7;
 	return {
 		protocol_version: "evalops.remote-runner.snapshot-manifest.v1",
@@ -215,12 +311,41 @@ describe("HeadlessRuntimeService restore manifests", () => {
 			state: {
 				is_ready: true,
 				last_status: "Restored from snapshot",
-				pending_user_inputs: [
-					{
-						call_id: "call_user_input",
-						tool: "ask_user",
-					},
-				],
+				connection_count: 0,
+				connections: [],
+				controller_connection_id: null,
+				controller_subscription_id: null,
+				client_protocol_version: undefined,
+				client_info: undefined,
+				capabilities: undefined,
+				opt_out_notifications: undefined,
+				connection_role: undefined,
+				current_response: undefined,
+				subscriber_count: 0,
+				active_tools: [],
+				active_file_watches: [],
+				active_utility_commands: [],
+				pending_approvals: [],
+				pending_client_tools: [],
+				pending_mcp_elicitations: [],
+				pending_requests: [],
+				pending_user_inputs: [],
+				pending_tool_retries: [],
+				tracked_tools: [],
+			},
+		});
+		expect(runtime.getFleetAgentInstance().activeTasks).toMatchObject({
+			activeTools: 0,
+			fileWatches: 0,
+			total: 0,
+			utilityCommands: 0,
+		});
+		expect(runtime.getFleetAgentInstance()).toMatchObject({
+			activeTasks: { total: 0 },
+			resourceUtilization: {
+				activeTasks: 0,
+				connections: 0,
+				subscribers: 0,
 			},
 		});
 		expect(runtime.replayFrom(0)).toEqual([
@@ -230,6 +355,23 @@ describe("HeadlessRuntimeService restore manifests", () => {
 				snapshot: expect.objectContaining({
 					session_id: sessionId,
 					cursor: 7,
+					state: expect.objectContaining({
+						connection_count: 0,
+						connections: [],
+						controller_connection_id: null,
+						controller_subscription_id: null,
+						client_protocol_version: undefined,
+						client_info: undefined,
+						capabilities: undefined,
+						opt_out_notifications: undefined,
+						connection_role: undefined,
+						current_response: undefined,
+						subscriber_count: 0,
+						active_tools: [],
+						active_file_watches: [],
+						active_utility_commands: [],
+						tracked_tools: [],
+					}),
 				}),
 			}),
 		]);
@@ -253,9 +395,49 @@ describe("HeadlessRuntimeService restore manifests", () => {
 				snapshot: expect.objectContaining({
 					session_id: sessionId,
 					cursor: 8,
+					state: expect.objectContaining({
+						connection_count: 0,
+						connections: [],
+						controller_connection_id: null,
+						controller_subscription_id: null,
+						client_protocol_version: undefined,
+						client_info: undefined,
+						capabilities: undefined,
+						opt_out_notifications: undefined,
+						connection_role: undefined,
+						current_response: undefined,
+						subscriber_count: 0,
+						active_tools: [],
+						active_file_watches: [],
+						active_utility_commands: [],
+						tracked_tools: [],
+					}),
 				}),
 			}),
 		]);
+		const subscription = runtime.createSubscription({
+			announceConnectionInfo: false,
+			role: "controller",
+		});
+		expect(subscription.opt_out_notifications).toBeUndefined();
+		expect(subscription.snapshot.state).toMatchObject({
+			client_protocol_version: undefined,
+			client_info: undefined,
+			capabilities: undefined,
+			opt_out_notifications: undefined,
+			connection_count: 1,
+			connections: [
+				expect.objectContaining({
+					client_protocol_version: undefined,
+					client_info: undefined,
+					capabilities: undefined,
+					opt_out_notifications: undefined,
+				}),
+			],
+		});
+		await runtime.disconnectConnection({
+			connectionId: subscription.connection_id,
+		});
 
 		await runtime.dispose();
 	});
@@ -280,7 +462,7 @@ describe("HeadlessRuntimeService restore manifests", () => {
 				"runtime flush was skipped; no runtime activity was persisted",
 		},
 	])(
-		"restores $flushStatus manifest into inspectable not-ready state",
+		"restores $flushStatus manifest into inspect-only state without stale runtime resources",
 		async (testCase) => {
 			const workspaceRoot = await mkdtemp(
 				join(tmpdir(), "maestro-headless-restore-incomplete-"),
@@ -336,12 +518,41 @@ describe("HeadlessRuntimeService restore manifests", () => {
 					last_status: testCase.expectedStatus,
 					last_error: testCase.expectedError,
 					last_error_type: "protocol",
-					pending_user_inputs: [
-						{
-							call_id: "call_user_input",
-							tool: "ask_user",
-						},
-					],
+					connection_count: 0,
+					connections: [],
+					controller_connection_id: null,
+					controller_subscription_id: null,
+					client_protocol_version: undefined,
+					client_info: undefined,
+					capabilities: undefined,
+					opt_out_notifications: undefined,
+					connection_role: undefined,
+					current_response: undefined,
+					subscriber_count: 0,
+					active_tools: [],
+					active_file_watches: [],
+					active_utility_commands: [],
+					pending_approvals: [],
+					pending_client_tools: [],
+					pending_mcp_elicitations: [],
+					pending_requests: [],
+					pending_user_inputs: [],
+					pending_tool_retries: [],
+					tracked_tools: [],
+				},
+			});
+			expect(runtime.getFleetAgentInstance().activeTasks).toMatchObject({
+				activeTools: 0,
+				fileWatches: 0,
+				total: 0,
+				utilityCommands: 0,
+			});
+			expect(runtime.getFleetAgentInstance()).toMatchObject({
+				activeTasks: { total: 0 },
+				resourceUtilization: {
+					activeTasks: 0,
+					connections: 0,
+					subscribers: 0,
 				},
 			});
 			expect(runtime.replayFrom(0)).toEqual([
@@ -355,6 +566,25 @@ describe("HeadlessRuntimeService restore manifests", () => {
 							is_ready: false,
 							last_status: testCase.expectedStatus,
 							last_error: testCase.expectedError,
+							connection_count: 0,
+							connections: [],
+							controller_connection_id: null,
+							controller_subscription_id: null,
+							client_protocol_version: undefined,
+							client_info: undefined,
+							capabilities: undefined,
+							opt_out_notifications: undefined,
+							connection_role: undefined,
+							current_response: undefined,
+							subscriber_count: 0,
+							active_tools: [],
+							active_file_watches: [],
+							active_utility_commands: [],
+							pending_client_tools: [],
+							pending_mcp_elicitations: [],
+							pending_requests: [],
+							pending_user_inputs: [],
+							tracked_tools: [],
 						}),
 					}),
 				}),
@@ -364,6 +594,13 @@ describe("HeadlessRuntimeService restore manifests", () => {
 			);
 			expect(() => runtime.registerConnection({ role: "controller" })).toThrow(
 				/not ready for new attachments/,
+			);
+			expect(runtime.getSnapshot().state.connection_count).toBe(0);
+			await expect(
+				runtime.send({ type: "prompt", content: "after incomplete restore" }),
+			).rejects.toThrow(/not ready for controller messages/);
+			await expect(runtime.send({ type: "interrupt" })).rejects.toThrow(
+				/not ready for controller messages/,
 			);
 			expect(runtime.getSnapshot().state.connection_count).toBe(0);
 			const replayStream = runtime.createImplicitStream({
@@ -379,17 +616,30 @@ describe("HeadlessRuntimeService restore manifests", () => {
 						state: expect.objectContaining({
 							is_ready: false,
 							last_status: testCase.expectedStatus,
+							connection_count: 0,
+							connections: [],
+							controller_connection_id: null,
+							controller_subscription_id: null,
+							client_protocol_version: undefined,
+							client_info: undefined,
+							capabilities: undefined,
+							opt_out_notifications: undefined,
+							connection_role: undefined,
+							current_response: undefined,
+							subscriber_count: 0,
+							active_tools: [],
+							active_file_watches: [],
+							active_utility_commands: [],
+							pending_client_tools: [],
+							pending_mcp_elicitations: [],
+							pending_requests: [],
+							pending_user_inputs: [],
+							tracked_tools: [],
 						}),
 					}),
 				}),
 			);
 			replayStream.close();
-			await expect(
-				runtime.send({ type: "prompt", content: "after incomplete restore" }),
-			).rejects.toThrow(/not ready for controller messages/);
-			await expect(runtime.send({ type: "interrupt" })).rejects.toThrow(
-				/not ready for controller messages/,
-			);
 			expect(() =>
 				runtime.assertCanSend("controller", null, null, {
 					allowNotReady: true,
