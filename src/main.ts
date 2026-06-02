@@ -820,9 +820,36 @@ export async function main(args: string[]) {
 			: runtimeConfig.config.model_reasoning_summary === "none"
 				? null
 				: runtimeConfig.config.model_reasoning_summary;
+	let earlyExecJsonThreadId: string | null = null;
 	const exitWithStartupError = async (error: unknown): Promise<never> => {
 		const message = error instanceof Error ? error.message : String(error);
 		const stack = error instanceof Error ? error.stack : undefined;
+		if (earlyExecJsonThreadId) {
+			const { JsonlEventWriter, emitThreadEnd } = await import(
+				"./cli/jsonl-writer.js"
+			);
+			const jsonlWriter = new JsonlEventWriter(true, process.stdout);
+			const timestamp = new Date().toISOString();
+			jsonlWriter.emit({
+				type: "error",
+				message,
+				timestamp,
+				stack,
+			});
+			emitThreadEnd(
+				jsonlWriter,
+				earlyExecJsonThreadId,
+				"error",
+				earlyExecJsonThreadId,
+			);
+			jsonlWriter.emit({
+				type: "done",
+				status: "error",
+				timestamp: new Date().toISOString(),
+				sessionId: earlyExecJsonThreadId,
+			});
+			earlyExecJsonThreadId = null;
+		}
 		if (isHeadlessMode) {
 			process.stdout.write(
 				`${JSON.stringify({
@@ -838,6 +865,18 @@ export async function main(args: string[]) {
 		}
 		await captureStartupError(error);
 		process.exit(1);
+	};
+	const withExecJsonStartupCleanup = async <T>(
+		operation: () => T | Promise<T>,
+	): Promise<T> => {
+		try {
+			return await operation();
+		} catch (error) {
+			if (earlyExecJsonThreadId) {
+				await exitWithStartupError(error);
+			}
+			throw error;
+		}
 	};
 
 	// ─────────────────────────────────────────────────────────────────────────────
@@ -1390,6 +1429,13 @@ export async function main(args: string[]) {
 	}
 	startupProfiler.checkpoint("session:created");
 
+	const execJsonThreadStartEmitted = Boolean(
+		parsed.command === "exec" &&
+			parsed.execJson &&
+			!willDispatchHeadlessMode &&
+			parsed.messages.some((message) => message.trim().length > 0),
+	);
+
 	let execResumeApplied = false;
 	if (parsed.command === "exec") {
 		let targetPath: string | null = null;
@@ -1418,6 +1464,27 @@ export async function main(args: string[]) {
 			sessionManager.setSessionFile(targetPath);
 			execResumeApplied = true;
 		}
+	}
+
+	if (
+		parsed.command === "exec" &&
+		!willDispatchHeadlessMode &&
+		parsed.messages.length === 0
+	) {
+		throw new Error("maestro exec requires at least one prompt");
+	}
+
+	if (execJsonThreadStartEmitted) {
+		const { JsonlEventWriter, emitThreadStart } = await import(
+			"./cli/jsonl-writer.js"
+		);
+		const threadId = sessionManager.getSessionId();
+		emitThreadStart(new JsonlEventWriter(true, process.stdout), threadId, {
+			sandboxMode: parsed.sandbox ?? process.env.MAESTRO_SANDBOX_MODE,
+			cwd: process.cwd(),
+			sessionId: threadId,
+		});
+		earlyExecJsonThreadId = threadId;
 	}
 
 	// Disable session saving if --no-session flag is set
@@ -1558,10 +1625,12 @@ export async function main(args: string[]) {
 	// Build the system prompt with project context after sandbox setup so runtime
 	// constraint fragments reflect the resolved sandbox state, not just the
 	// requested CLI mode.
-	const resolvedConstraintSandboxMode = await resolveConstraintSandboxMode({
-		sandbox,
-		sandboxMode,
-	});
+	const resolvedConstraintSandboxMode = await withExecJsonStartupCleanup(() =>
+		resolveConstraintSandboxMode({
+			sandbox,
+			sandboxMode,
+		}),
+	);
 	const systemPromptToolNames =
 		parsed.tools ??
 		(model.api === "openai-codex-app-server"
@@ -1575,22 +1644,28 @@ export async function main(args: string[]) {
 		readOnly: parsed.execReadOnly || parsed.readonly ? true : undefined,
 	});
 	const { systemPrompt, promptMetadata, promptContextManifest } =
-		await resolveMaestroSystemPrompt({
-			customPrompt: parsed.systemPrompt,
-			toolNames: systemPromptToolNames,
-			appendPrompt: parsed.appendSystemPrompt,
-			runtimeConstraints,
-			cwd: process.cwd(),
-		});
-	const unifiedContextManifest = loadUnifiedContextManifest(process.cwd(), {
-		projectDocs: promptContextManifest,
-	});
+		await withExecJsonStartupCleanup(() =>
+			resolveMaestroSystemPrompt({
+				customPrompt: parsed.systemPrompt,
+				toolNames: systemPromptToolNames,
+				appendPrompt: parsed.appendSystemPrompt,
+				runtimeConstraints,
+				cwd: process.cwd(),
+			}),
+		);
+	const unifiedContextManifest = await withExecJsonStartupCleanup(() =>
+		loadUnifiedContextManifest(process.cwd(), {
+			projectDocs: promptContextManifest,
+		}),
+	);
 	startupProfiler.checkpoint("prompt:assembled", {
 		system_bytes: systemPrompt.length,
 	});
-	const systemPromptSourcePaths = resolveExplicitSystemPromptSourcePaths(
-		parsed.systemPrompt,
-		parsed.appendSystemPrompt,
+	const systemPromptSourcePaths = await withExecJsonStartupCleanup(() =>
+		resolveExplicitSystemPromptSourcePaths(
+			parsed.systemPrompt,
+			parsed.appendSystemPrompt,
+		),
 	);
 	// Register sandbox cleanup on exit (only if sandbox is active)
 	if (sandbox && toolsResult.disposeSandbox) {
@@ -1613,62 +1688,74 @@ export async function main(args: string[]) {
 	// PHASE 12: Agent Creation
 	// ─────────────────────────────────────────────────────────────────────────────
 
-	const { createAgentInstance } = await import(
-		"./bootstrap/agent-creation-setup.js"
+	const { createAgentInstance } = await withExecJsonStartupCleanup(
+		() => import("./bootstrap/agent-creation-setup.js"),
 	);
-	const { setTaskBudgetTotal } = await import("./agent/task-budget-access.js");
+	const { setTaskBudgetTotal } = await withExecJsonStartupCleanup(
+		() => import("./agent/task-budget-access.js"),
+	);
 	const enterpriseUser = (() => {
 		const u = enterpriseContext.getUser();
 		return u ? { id: u.userId, orgId: u.orgId } : undefined;
 	})();
-	const { agent } = createAgentInstance({
-		systemPrompt,
-		promptMetadata,
-		systemPromptSourcePaths,
-		promptContextManifest,
-		unifiedContextManifest,
-		model,
-		reasoningSummary,
-		allTools: configuredAllTools,
-		sandbox,
-		sandboxMode: sandboxMode ?? null,
-		approvalService,
-		toolRetryService,
-		clientToolService:
-			headlessClientToolService ?? interactiveClientToolService,
-		requireCredential,
-		enterpriseUser,
-		readonly: parsed.readonly,
-		composer: parsed.composer,
-		cwd: process.cwd(),
-	});
-	setTaskBudgetTotal(agent, parsed.taskBudget);
+	const { agent } = await withExecJsonStartupCleanup(() =>
+		createAgentInstance({
+			systemPrompt,
+			promptMetadata,
+			systemPromptSourcePaths,
+			promptContextManifest,
+			unifiedContextManifest,
+			model,
+			reasoningSummary,
+			allTools: configuredAllTools,
+			sandbox,
+			sandboxMode: sandboxMode ?? null,
+			approvalService,
+			toolRetryService,
+			clientToolService:
+				headlessClientToolService ?? interactiveClientToolService,
+			requireCredential,
+			enterpriseUser,
+			readonly: parsed.readonly,
+			composer: parsed.composer,
+			cwd: process.cwd(),
+		}),
+	);
+	await withExecJsonStartupCleanup(() =>
+		setTaskBudgetTotal(agent, parsed.taskBudget),
+	);
 	startupProfiler.checkpoint("agent:ready");
 
 	// ─────────────────────────────────────────────────────────────────────────────
 	// PHASE 11.5: TypeScript Hooks Initialization
 	// ─────────────────────────────────────────────────────────────────────────────
 
-	const { initializeTypeScriptHooks } = await import(
-		"./bootstrap/hooks-setup.js"
+	const { initializeTypeScriptHooks } = await withExecJsonStartupCleanup(
+		() => import("./bootstrap/hooks-setup.js"),
 	);
-	const { tsHooks } = await initializeTypeScriptHooks({
-		agent,
-		sessionManager,
-		cwd: process.cwd(),
-		baseTools: configuredAllTools,
-	});
+	const { tsHooks } = await withExecJsonStartupCleanup(() =>
+		initializeTypeScriptHooks({
+			agent,
+			sessionManager,
+			cwd: process.cwd(),
+			baseTools: configuredAllTools,
+		}),
+	);
 
 	// ─────────────────────────────────────────────────────────────────────────────
 	// PHASE 12: MCP (Model Context Protocol) Integration
 	// ─────────────────────────────────────────────────────────────────────────────
 
-	const { initializeMcpServers } = await import("./bootstrap/mcp-setup.js");
-	initializeMcpServers({
-		agent,
-		baseTools: configuredAllTools,
-		cwd: process.cwd(),
-	});
+	const { initializeMcpServers } = await withExecJsonStartupCleanup(
+		() => import("./bootstrap/mcp-setup.js"),
+	);
+	await withExecJsonStartupCleanup(() =>
+		initializeMcpServers({
+			agent,
+			baseTools: configuredAllTools,
+			cwd: process.cwd(),
+		}),
+	);
 	startupProfiler.checkpoint("mcp:bootstrap_queued");
 
 	// Determine mode early to know if we should print messages
@@ -1719,63 +1806,71 @@ export async function main(args: string[]) {
 		Boolean(parsed.models?.length) ||
 		isFreshInteractiveSession;
 	if (needsSessionRestorationSetup) {
-		const { restoreSessionState } = await import(
-			"./bootstrap/session-restoration-setup.js"
+		const { restoreSessionState } = await withExecJsonStartupCleanup(
+			() => import("./bootstrap/session-restoration-setup.js"),
 		);
 		({ startupChangelogSummary, updateNotice, scopedModels } =
-			await restoreSessionState({
-				agent,
-				sessionManager,
-				shouldRestoreSession,
-				isContinueOrResume: Boolean(parsed.continue || parsed.resume),
-				shouldPrintMessages,
-				isFreshInteractiveSession,
-				version: VERSION,
-				models: parsed.models,
-			}));
+			await withExecJsonStartupCleanup(() =>
+				restoreSessionState({
+					agent,
+					sessionManager,
+					shouldRestoreSession,
+					isContinueOrResume: Boolean(parsed.continue || parsed.resume),
+					shouldPrintMessages,
+					isFreshInteractiveSession,
+					version: VERSION,
+					models: parsed.models,
+				}),
+			));
 	}
 
-	await applySessionStartHooks({
-		agent,
-		sessionManager,
-		cwd: process.cwd(),
-		source: resolveSessionStartHookSource({
-			mode,
-			command: parsed.command,
-			isInteractive,
-			headless: parsed.headless,
-			shouldRestoreSession,
+	await withExecJsonStartupCleanup(() =>
+		applySessionStartHooks({
+			agent,
+			sessionManager,
+			cwd: process.cwd(),
+			source: resolveSessionStartHookSource({
+				mode,
+				command: parsed.command,
+				isInteractive,
+				headless: parsed.headless,
+				shouldRestoreSession,
+			}),
 		}),
-	});
+	);
 
 	// ─────────────────────────────────────────────────────────────────────────────
 	// PHASE 14.5: Event Subscriptions
 	// ─────────────────────────────────────────────────────────────────────────────
 
-	const { setupEventSubscriptions } = await import(
-		"./bootstrap/event-subscriptions-setup.js"
+	const { setupEventSubscriptions } = await withExecJsonStartupCleanup(
+		() => import("./bootstrap/event-subscriptions-setup.js"),
 	);
-	const automaticMemory = createLazyAutoMemoryCoordinators({
-		cwd: process.cwd(),
-		getAuthContext: (provider) => requireCredential(provider, false),
-		getModel: () => agent.state.model as Model<Api>,
-		sessionManager,
-	});
-	setupEventSubscriptions({
-		agent,
-		sessionManager,
-		approvalMode: (approvalModeOverride ?? "prompt") as
-			| "auto"
-			| "prompt"
-			| "fail",
-		sandboxMode,
-		tsHookCount: tsHooks.length,
-		cwd: process.cwd(),
-		enterpriseContext,
-		automaticMemoryExtraction: automaticMemory.extraction,
-		scenarioReplay,
-		scenarioRecorder,
-	});
+	const automaticMemory = await withExecJsonStartupCleanup(() =>
+		createLazyAutoMemoryCoordinators({
+			cwd: process.cwd(),
+			getAuthContext: (provider) => requireCredential(provider, false),
+			getModel: () => agent.state.model as Model<Api>,
+			sessionManager,
+		}),
+	);
+	await withExecJsonStartupCleanup(() =>
+		setupEventSubscriptions({
+			agent,
+			sessionManager,
+			approvalMode: (approvalModeOverride ?? "prompt") as
+				| "auto"
+				| "prompt"
+				| "fail",
+			sandboxMode,
+			tsHookCount: tsHooks.length,
+			cwd: process.cwd(),
+			enterpriseContext,
+			automaticMemoryExtraction: automaticMemory.extraction,
+			scenarioReplay,
+			scenarioRecorder,
+		}),
+	);
 
 	// ─────────────────────────────────────────────────────────────────────────────
 	// PHASE 14: Runtime Mode Dispatch
@@ -1848,6 +1943,7 @@ export async function main(args: string[]) {
 				sessionManager,
 				prompts: parsed.messages,
 				jsonl: Boolean(parsed.execJson),
+				threadStartEmitted: execJsonThreadStartEmitted,
 				sandboxMode: sandboxMode,
 				outputSchema: parsed.execOutputSchema,
 				outputLastMessage: parsed.execOutputLast,
