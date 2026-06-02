@@ -6,7 +6,7 @@ import {
 	resolveSystemPromptOverride,
 } from "../cli/system-prompt.js";
 import { loadPromptProjectDocManifest } from "../config/index.js";
-import { resolvePromptTemplate } from "./service-client.js";
+import { hasPromptServiceBaseUrlSignal } from "./service-signal.js";
 import type { PromptMetadata, ResolvedSystemPrompt } from "./types.js";
 
 const DEFAULT_PROMPT_NAME = "maestro-system";
@@ -65,11 +65,15 @@ export async function resolveMaestroSystemPrompt(options?: {
 		};
 	}
 
-	const resolvedPrompt = await resolvePromptTemplate({
-		name: DEFAULT_PROMPT_NAME,
-		label: DEFAULT_PROMPT_LABEL,
-		surface: DEFAULT_PROMPT_SURFACE,
-	});
+	const resolvedPrompt = hasPromptServiceBaseUrlSignal()
+		? await import("./service-client.js").then(({ resolvePromptTemplate }) =>
+				resolvePromptTemplate({
+					name: DEFAULT_PROMPT_NAME,
+					label: DEFAULT_PROMPT_LABEL,
+					surface: DEFAULT_PROMPT_SURFACE,
+				}),
+			)
+		: null;
 	if (resolvedPrompt) {
 		return {
 			systemPrompt: finalizeSystemPrompt(
