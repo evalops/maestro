@@ -16,17 +16,17 @@ import type { UnifiedContextManifest } from "../context/manifest-types.js";
 import type { RegisteredModel } from "../models/registry.js";
 import type { SharedMemoryUpdate } from "../shared-memory/client.js";
 import { resolveEnvPath } from "../utils/path-expansion.js";
-import { SessionFileWriter } from "./file-writer.js";
 import {
 	registerActiveSessionFile,
 	unregisterActiveSessionFile,
-} from "./migration.js";
+} from "./active-session-files.js";
+import { SessionFileWriter } from "./file-writer.js";
 import { toSessionModelMetadata } from "./model-metadata.js";
 import { sanitizeSessionScope } from "./scope.js";
 import {
 	type SessionContextSnapshot,
 	buildSessionContextFromEntries,
-} from "./session-context.js";
+} from "./session-context-core.js";
 import { sanitizeMessageForSession } from "./session-sanitize.js";
 import {
 	CURRENT_SESSION_VERSION,
