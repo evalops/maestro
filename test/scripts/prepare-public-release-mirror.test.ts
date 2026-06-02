@@ -131,10 +131,12 @@ describe("prepare-public-release-mirror", () => {
 		write(join(source, "evals/internal/scenario.json"), "{}\n");
 		write(join(source, "scripts/internal/operator-tool.mjs"), "internal\n");
 		write(join(source, "test/internal/operator-tool.test.ts"), "internal\n");
+		write(join(source, ".github/release-mirror-manifest.json"), "{}\n");
 		write(join(source, ".github/public-release-mirror.exclude"), "");
 
 		write(join(target, "old.txt"), "stale\n");
 		write(join(target, ".github/workflows/ci.yml"), "public ci\n");
+		write(join(target, ".github/release-mirror-manifest.json"), "{}\n");
 		write(
 			join(target, ".github/workflows/review-thread-guard.yml"),
 			"stale guard\n",
@@ -220,6 +222,9 @@ describe("prepare-public-release-mirror", () => {
 		);
 		expect(
 			existsSync(join(target, "test/internal/operator-tool.test.ts")),
+		).toBe(false);
+		expect(
+			existsSync(join(target, ".github/release-mirror-manifest.json")),
 		).toBe(false);
 		expect(existsSync(join(target, ".husky/_/husky.sh"))).toBe(false);
 		expect(existsSync(join(target, "packages/contracts/dist/index.js"))).toBe(
