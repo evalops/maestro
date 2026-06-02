@@ -1441,18 +1441,19 @@ export async function main(args: string[]) {
 		);
 		earlyExecJsonThreadId = earlyFreshExecJsonThreadId;
 	}
-	const sessionManager = (
-		useFreshExecSessionManager
-			? new (
-					await import("./session/fresh-exec-session-manager.js")
-				).FreshExecSessionManager({
-					sessionId: earlyFreshExecJsonThreadId ?? undefined,
-				})
-			: new (await import("./session/manager.js")).SessionManager(
-					parsed.continue && !parsed.resume, // continueSession: auto-load most recent
-					parsed.session, // customSessionPath: explicit session file
-				)
-	) as SessionManager;
+	const sessionManager = await withExecJsonStartupCleanup(
+		async () =>
+			(useFreshExecSessionManager
+				? new (
+						await import("./session/fresh-exec-session-manager.js")
+					).FreshExecSessionManager({
+						sessionId: earlyFreshExecJsonThreadId ?? undefined,
+					})
+				: new (await import("./session/manager.js")).SessionManager(
+						parsed.continue && !parsed.resume, // continueSession: auto-load most recent
+						parsed.session, // customSessionPath: explicit session file
+					)) as SessionManager,
+	);
 	let scenarioRecorder:
 		| import("./server/scenario-recorder.js").ScriptedScenarioRecorder
 		| undefined;
