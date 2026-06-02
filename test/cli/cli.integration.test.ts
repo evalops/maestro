@@ -320,6 +320,7 @@ describe("CLI integration", () => {
 	const originalClaude = process.env.CLAUDE_CODE_TOKEN;
 	const originalSharedMemoryBase = process.env.MAESTRO_SHARED_MEMORY_BASE;
 	const originalSharedMemoryApiKey = process.env.MAESTRO_SHARED_MEMORY_API_KEY;
+	const originalSessionDir = process.env.MAESTRO_SESSION_DIR;
 	const originalLog = console.log;
 	const originalError = console.error;
 	const originalStdoutWrite = process.stdout.write;
@@ -391,6 +392,11 @@ describe("CLI integration", () => {
 			Reflect.deleteProperty(process.env, "MAESTRO_HOME");
 		} else {
 			process.env.MAESTRO_HOME = originalMaestroHome;
+		}
+		if (originalSessionDir === undefined) {
+			Reflect.deleteProperty(process.env, "MAESTRO_SESSION_DIR");
+		} else {
+			process.env.MAESTRO_SESSION_DIR = originalSessionDir;
 		}
 		if (tempAgentDir) {
 			rmSync(tempAgentDir, { recursive: true, force: true });
@@ -1291,6 +1297,50 @@ describe("CLI integration", () => {
 
 		await expect(
 			main(["exec", "--tools", "not-a-tool", "Plan work", "--json"]),
+		).rejects.toThrow("exit:1");
+
+		const events = output
+			.flatMap((chunk) => chunk.trim().split("\n"))
+			.filter((line) => line.startsWith("{"))
+			.map((line) => JSON.parse(line) as Record<string, unknown>);
+		const threadStarts = events.filter(
+			(event) => event.type === "thread" && event.phase === "start",
+		);
+		const threadEnds = events.filter(
+			(event) => event.type === "thread" && event.phase === "end",
+		);
+		const doneEvents = events.filter((event) => event.type === "done");
+		const errorEvents = events.filter((event) => event.type === "error");
+
+		expect(exitSpy).toHaveBeenCalledWith(1);
+		expect(threadStarts).toHaveLength(1);
+		expect(errorEvents.at(-1)).toMatchObject({
+			type: "error",
+		});
+		expect(threadEnds.at(-1)).toMatchObject({
+			type: "thread",
+			phase: "end",
+			threadId: threadStarts[0]?.threadId,
+			sessionId: threadStarts[0]?.sessionId,
+			status: "error",
+		});
+		expect(doneEvents.at(-1)).toMatchObject({
+			type: "done",
+			status: "error",
+			sessionId: threadStarts[0]?.sessionId,
+		});
+	});
+
+	it("closes early exec json thread when fresh session construction fails", async () => {
+		const blockedSessionRoot = join(tempAgentDir, "sessions-file");
+		writeFileSync(blockedSessionRoot, "not a directory");
+		process.env.MAESTRO_SESSION_DIR = blockedSessionRoot;
+		const exitSpy = vi.spyOn(process, "exit").mockImplementation((code) => {
+			throw new Error(`exit:${String(code ?? 0)}`);
+		});
+
+		await expect(
+			main(["exec", "--tools", "read", "Plan work", "--json"]),
 		).rejects.toThrow("exit:1");
 
 		const events = output
