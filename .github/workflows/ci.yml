@@ -74,6 +74,18 @@ jobs:
         if: ${{ github.event_name != 'pull_request' || (needs.changes.outputs.ci_infrastructure_only != 'true' && needs.changes.outputs.proof_harness_only != 'true') }}
         run: npm run release:check:ci
 
+      - name: Release readiness script smoke
+        if: ${{ github.event_name == 'pull_request' && needs.changes.outputs.ci_infrastructure_only == 'true' }}
+        run: |
+          set -euo pipefail
+          if [[ ! -f scripts/check-workflow-footguns.mjs ]]; then
+            echo "Workflow footgun guardrail script is not present on this public base; skipping."
+            exit 0
+          fi
+          node --check scripts/check-workflow-footguns.mjs
+          npm run check:workflow-footguns
+          node ./scripts/run-vitest.js --run test/scripts/workflow-footguns.test.ts
+
       - name: Upload Nx test logs (if any)
         if: ${{ always() && hashFiles('nx-tests-attempt-*.log', 'nx-tests-attempt-*.json') != '' }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
