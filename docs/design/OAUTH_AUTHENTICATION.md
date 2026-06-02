@@ -222,6 +222,26 @@ class GitHubCopilotOAuthProvider {
 }
 ```
 
+### Google Installed-App OAuth
+
+Google Gemini CLI and Google Antigravity use installed-app OAuth with PKCE and
+local loopback callbacks. Maestro does not ship Google OAuth client secrets.
+Operators must provide the installed-app client configuration through the
+runtime environment:
+
+```bash
+MAESTRO_GOOGLE_GEMINI_CLI_CLIENT_ID=...
+MAESTRO_GOOGLE_GEMINI_CLI_CLIENT_SECRET=...
+MAESTRO_GOOGLE_ANTIGRAVITY_CLIENT_ID=...
+MAESTRO_GOOGLE_ANTIGRAVITY_CLIENT_SECRET=...
+```
+
+If the matching client ID or secret is missing, `maestro login
+google-gemini-cli`, `maestro login google-antigravity`, and token refresh fail
+before starting the local callback server or sending a token request. The error
+names the required variables so deployment owners can wire them through the
+normal secret-management path.
+
 ## Local OAuth Server
 
 For CLI OAuth flows, a local server handles callbacks:

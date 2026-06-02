@@ -33,6 +33,7 @@ import {
 	loginGoogleGeminiCli,
 	refreshGoogleGeminiCliToken,
 } from "./google-gemini-cli.js";
+import { MissingGoogleInstalledAppOAuthConfigError } from "./google-installed-app-config.js";
 import { loginOpenAICodex, refreshOpenAICodexToken } from "./openai-codex.js";
 import {
 	loginOpenAI,
@@ -406,11 +407,12 @@ export async function getOAuthToken(
 		try {
 			return await refreshToken(provider);
 		} catch (error) {
-			logger.error(
-				"Failed to refresh OAuth token",
-				error instanceof Error ? error : new Error(String(error)),
-				{ provider },
-			);
+			const refreshError =
+				error instanceof Error ? error : new Error(String(error));
+			logger.error("Failed to refresh OAuth token", refreshError, { provider });
+			if (refreshError instanceof MissingGoogleInstalledAppOAuthConfigError) {
+				return null;
+			}
 			// Remove invalid credentials
 			removeOAuthCredentials(provider);
 			return null;
