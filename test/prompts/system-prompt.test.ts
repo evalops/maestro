@@ -105,6 +105,49 @@ describe("resolveMaestroSystemPrompt", () => {
 		);
 	});
 
+	it("does not import the prompts service client when no base URL is configured", async () => {
+		const sharedPlatformEnv = {
+			MAESTRO_PROMPTS_SERVICE_URL: process.env.MAESTRO_PROMPTS_SERVICE_URL,
+			MAESTRO_PLATFORM_BASE_URL: process.env.MAESTRO_PLATFORM_BASE_URL,
+			MAESTRO_EVALOPS_BASE_URL: process.env.MAESTRO_EVALOPS_BASE_URL,
+			EVALOPS_BASE_URL: process.env.EVALOPS_BASE_URL,
+		};
+		delete process.env.PROMPTS_SERVICE_URL;
+		delete process.env.MAESTRO_PROMPTS_SERVICE_URL;
+		delete process.env.MAESTRO_PLATFORM_BASE_URL;
+		delete process.env.MAESTRO_EVALOPS_BASE_URL;
+		delete process.env.EVALOPS_BASE_URL;
+		vi.resetModules();
+		const serviceClientState = { loaded: false };
+		vi.doMock("../../src/prompts/service-client.js", () => {
+			serviceClientState.loaded = true;
+			return {
+				resolvePromptTemplate: async () => {
+					throw new Error("prompts service client should stay lazy");
+				},
+			};
+		});
+		try {
+			const { resolveMaestroSystemPrompt: resolveIsolatedSystemPrompt } =
+				await import("../../src/prompts/system-prompt.js");
+
+			const result = await resolveIsolatedSystemPrompt({ toolNames: [] });
+
+			expect(result.promptMetadata.source).toBe("bundled");
+			expect(serviceClientState.loaded).toBe(false);
+		} finally {
+			vi.doUnmock("../../src/prompts/service-client.js");
+			vi.resetModules();
+			for (const [key, value] of Object.entries(sharedPlatformEnv)) {
+				if (value === undefined) {
+					Reflect.deleteProperty(process.env, key);
+				} else {
+					process.env[key] = value;
+				}
+			}
+		}
+	});
+
 	it("prefers an explicit custom prompt over the managed prompt service", async () => {
 		const fetchMock = vi.fn();
 		vi.stubGlobal("fetch", fetchMock);
