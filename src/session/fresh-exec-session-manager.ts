@@ -46,6 +46,7 @@ import {
 export interface FreshExecSessionManagerOptions {
 	sessionDir?: string;
 	sessionScope?: string;
+	sessionId?: string;
 }
 
 const AUTO_PRUNE_DELAY_MS = 5000;
@@ -202,7 +203,7 @@ export class FreshExecSessionManager {
 		this.sessionScope = options.sessionScope;
 		this.sessionDirOverride = options.sessionDir;
 		this.sessionDir = this.getSessionDirectory();
-		this.initNewSession();
+		this.initNewSession(options.sessionId);
 		this.initializeWriter();
 	}
 
@@ -249,8 +250,8 @@ export class FreshExecSessionManager {
 		return sessionDir;
 	}
 
-	private initNewSession(): void {
-		this.sessionId = uuidv4();
+	private initNewSession(sessionId = uuidv4()): void {
+		this.sessionId = sessionId;
 		const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
 		this.sessionFile = join(
 			this.sessionDir,

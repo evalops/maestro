@@ -1206,6 +1206,84 @@ describe("CLI integration", () => {
 		});
 	});
 
+	it("emits fresh exec json thread start before fresh session persistence construction", async () => {
+		vi.resetModules();
+		let threadStartBeforeConstructor: Record<string, unknown> | undefined;
+		let constructorSessionId: string | undefined;
+		vi.doMock(
+			"../../src/session/fresh-exec-session-manager.js",
+			async (importOriginal) => {
+				const actual =
+					await importOriginal<
+						typeof import("../../src/session/fresh-exec-session-manager.js")
+					>();
+				return {
+					...actual,
+					FreshExecSessionManager: class extends actual.FreshExecSessionManager {
+						constructor(
+							options?: ConstructorParameters<
+								typeof actual.FreshExecSessionManager
+							>[0],
+						) {
+							const events = output
+								.flatMap((chunk) => chunk.trim().split("\n"))
+								.filter((line) => line.startsWith("{"))
+								.map((line) => JSON.parse(line) as Record<string, unknown>);
+							threadStartBeforeConstructor = events.find(
+								(event) => event.type === "thread" && event.phase === "start",
+							);
+							constructorSessionId = options?.sessionId;
+							super(options);
+						}
+					},
+				};
+			},
+		);
+
+		try {
+			const { main: currentMain } = await import("../../src/main.js");
+			await currentMain([
+				"exec",
+				"--tools",
+				"read",
+				"--sandbox",
+				"local",
+				"Plan work",
+				"--json",
+			]);
+		} finally {
+			vi.doUnmock("../../src/session/fresh-exec-session-manager.js");
+			vi.resetModules();
+		}
+
+		expect(threadStartBeforeConstructor).toMatchObject({
+			type: "thread",
+			phase: "start",
+			cwd: process.cwd(),
+			sandbox: "local",
+		});
+		expect(constructorSessionId).toBe(threadStartBeforeConstructor?.threadId);
+
+		const events = output
+			.flatMap((chunk) => chunk.trim().split("\n"))
+			.filter((line) => line.startsWith("{"))
+			.map((line) => JSON.parse(line) as Record<string, unknown>);
+		const threadStarts = events.filter(
+			(event) => event.type === "thread" && event.phase === "start",
+		);
+		const threadEnds = events.filter(
+			(event) => event.type === "thread" && event.phase === "end",
+		);
+		expect(threadStarts).toHaveLength(1);
+		expect(threadEnds.at(-1)).toMatchObject({
+			type: "thread",
+			phase: "end",
+			threadId: constructorSessionId,
+			sessionId: constructorSessionId,
+			status: "ok",
+		});
+	});
+
 	it("closes early exec json thread start when startup fails after emission", async () => {
 		const exitSpy = vi.spyOn(process, "exit").mockImplementation((code) => {
 			throw new Error(`exit:${String(code ?? 0)}`);

@@ -1419,11 +1419,35 @@ export async function main(args: string[]) {
 		!parsed.session &&
 		!parsed.execResumeId &&
 		!parsed.execUseLast;
+	let earlyFreshExecJsonThreadId: string | null = null;
+	if (
+		useFreshExecSessionManager &&
+		parsed.messages.some((message) => message.trim().length > 0)
+	) {
+		const [{ randomUUID }, { JsonlEventWriter, emitThreadStart }] =
+			await Promise.all([
+				import("node:crypto"),
+				import("./cli/jsonl-writer.js"),
+			]);
+		earlyFreshExecJsonThreadId = randomUUID();
+		emitThreadStart(
+			new JsonlEventWriter(true, process.stdout),
+			earlyFreshExecJsonThreadId,
+			{
+				sandboxMode: parsed.sandbox ?? process.env.MAESTRO_SANDBOX_MODE,
+				cwd: process.cwd(),
+				sessionId: earlyFreshExecJsonThreadId,
+			},
+		);
+		earlyExecJsonThreadId = earlyFreshExecJsonThreadId;
+	}
 	const sessionManager = (
 		useFreshExecSessionManager
 			? new (
 					await import("./session/fresh-exec-session-manager.js")
-				).FreshExecSessionManager()
+				).FreshExecSessionManager({
+					sessionId: earlyFreshExecJsonThreadId ?? undefined,
+				})
 			: new (await import("./session/manager.js")).SessionManager(
 					parsed.continue && !parsed.resume, // continueSession: auto-load most recent
 					parsed.session, // customSessionPath: explicit session file
@@ -1443,11 +1467,15 @@ export async function main(args: string[]) {
 	}
 	startupProfiler.checkpoint("session:created");
 
-	const execJsonThreadStartEmitted = Boolean(
+	const shouldEmitExecJsonThreadStartAfterSession = Boolean(
 		parsed.command === "exec" &&
 			parsed.execJson &&
 			!willDispatchHeadlessMode &&
+			!earlyFreshExecJsonThreadId &&
 			parsed.messages.some((message) => message.trim().length > 0),
+	);
+	const execJsonThreadStartEmitted = Boolean(
+		earlyFreshExecJsonThreadId || shouldEmitExecJsonThreadStartAfterSession,
 	);
 
 	let execResumeApplied = false;
@@ -1488,7 +1516,7 @@ export async function main(args: string[]) {
 		throw new Error("maestro exec requires at least one prompt");
 	}
 
-	if (execJsonThreadStartEmitted) {
+	if (shouldEmitExecJsonThreadStartAfterSession) {
 		const { JsonlEventWriter, emitThreadStart } = await import(
 			"./cli/jsonl-writer.js"
 		);
