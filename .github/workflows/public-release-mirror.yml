@@ -86,6 +86,8 @@ jobs:
           private-key: ${{ secrets.PUBLIC_MIRROR_APP_PRIVATE_KEY }}
           owner: ${{ env.PUBLIC_REPO_OWNER }}
           repositories: ${{ env.PUBLIC_REPO_NAME }}
+          permission-contents: write
+          permission-workflows: write
 
       - name: Build production artifacts from internal source
         run: |

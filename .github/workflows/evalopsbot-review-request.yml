@@ -20,16 +20,20 @@ jobs:
       REQUESTED_REVIEWER: ${{ github.event.requested_reviewer.login }}
       RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
     steps:
-      - name: Require dispatch token
+      - name: Resolve dispatch token
+        id: dispatch-token
         shell: bash
         run: |
           set -euo pipefail
           if [ -z "${GH_TOKEN}" ]; then
-            echo "::error::Set EVALOPS_PR_LENS_TOKEN for immediate EvalOpsBot review dispatch."
-            exit 2
+            echo "::warning::EVALOPS_PR_LENS_TOKEN is not configured; skipping immediate EvalOpsBot review dispatch."
+            echo "configured=false" >> "$GITHUB_OUTPUT"
+            exit 0
           fi
+          echo "configured=true" >> "$GITHUB_OUTPUT"
 
       - name: Dispatch deep review
+        if: ${{ steps.dispatch-token.outputs.configured == 'true' }}
         shell: bash
         run: |
           set -euo pipefail
@@ -54,6 +58,7 @@ jobs:
           gh api --method POST repos/evalops/.github/dispatches --input - <<<"${dispatch_payload}"
 
       - name: Mark deep review queued
+        if: ${{ steps.dispatch-token.outputs.configured == 'true' }}
         shell: bash
         run: |
           set -euo pipefail
