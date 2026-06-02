@@ -66,6 +66,7 @@ function isNestedReadme(path, prefix) {
 
 const CI_GUARDRAIL_FILES = new Set([
 	"scripts/check-smoke-scripts.mjs",
+	"scripts/check-workflow-footguns.mjs",
 	"scripts/ci-nx-tests.sh",
 	"scripts/maestro-merge-queue-status.mjs",
 	"scripts/plan-ci-checks.mjs",
