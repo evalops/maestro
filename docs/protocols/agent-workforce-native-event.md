@@ -41,11 +41,13 @@ Credential authority is separated from event authorship:
 - With no Platform/Secret Broker/AgentRuntime/LLM Gateway/Meter join refs,
   `credential_assumption.proof_status` is `missing` and
   `credential_assumption.provenance_verified` is `false`.
-- If Maestro is given only declared credential metadata or unverified join refs,
-  `credential_assumption.declared_authority` records the declared source, but
-  `proof_status` remains `missing` and `verified_provenance` is omitted.
-- Verified credential authority requires Platform-owned join refs with
-  freshness, revocation, and joined evidence before
+- If Maestro is given only declared credential metadata or native caller-supplied
+  join refs, even refs that look verified by shape, `credential_assumption.declared_authority`
+  records the declared source, but `proof_status` remains `missing` and
+  `verified_provenance` is omitted.
+- Verified credential authority requires an explicit Platform ingestion/resolver
+  authority bundle with fresh `observed_at`/`expires_at`, revocation, and joined
+  identity, AgentRuntime, and Secret Broker evidence before
   `credential_assumption.verified_provenance` can be populated.
 
 Maestro should not infer credential authority from environment variables,

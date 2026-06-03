@@ -144,6 +144,7 @@ export {
 	type AgentWorkforceNativeEventType,
 	type AgentWorkforceNativeProjectionOptions,
 	type AgentWorkforcePolicy,
+	type AgentWorkforcePlatformCredentialAuthority,
 	type AgentWorkforceRun,
 	type AgentWorkforceSourceAuthority,
 	type AgentWorkforceTenant,

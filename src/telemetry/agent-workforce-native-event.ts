@@ -211,6 +211,17 @@ export interface AgentWorkforceVerifiedProvenance {
 	joined_evidence_refs: AgentWorkforceEvidenceRef[];
 }
 
+export interface AgentWorkforcePlatformCredentialAuthority {
+	source: "platform_ingestion" | "platform_resolver";
+	credential_subject?: string;
+	credential_assumption_ref?: string;
+	credential_assumption_id?: string;
+	grant_id?: string;
+	provider_ref_id?: string;
+	credential_name?: string;
+	verified_provenance: AgentWorkforceVerifiedProvenance;
+}
+
 export interface AgentWorkforceCredentialAssumption {
 	credential_subject: string;
 	credential_assumption_ref?: string;
@@ -295,6 +306,7 @@ export interface AgentWorkforceNativeProjectionOptions {
 	surface?: AgentWorkforceEmitter["surface"];
 	declaredCredential?: AgentWorkforceDeclaredCredential;
 	credentialJoinRefs?: AgentWorkforceCredentialJoinRef[];
+	platformCredentialAuthority?: AgentWorkforcePlatformCredentialAuthority;
 	clock?: () => Date;
 	makeEnvelopeId?: (event: AgentEvent, sequence: number) => string;
 }
@@ -329,14 +341,6 @@ type ParsedChainSignature = {
 	sequence: number;
 	previousHash?: string;
 	eventHash: string;
-};
-
-type FreshVerifiedCredentialJoinRef = AgentWorkforceCredentialJoinRef & {
-	verified: true;
-	observed_at: string;
-	expires_at: string;
-	ttl_seconds: number;
-	revocation_status: AgentWorkforceVerifiedRevocationStatus;
 };
 
 function hashStableValue(value: unknown): string {
@@ -649,95 +653,56 @@ function credentialDeclaredAuthority(
 	return "unknown";
 }
 
-function isFreshVerifiedCredentialJoin(
-	ref: AgentWorkforceCredentialJoinRef,
-): ref is FreshVerifiedCredentialJoinRef {
-	return Boolean(
-		ref.verified &&
-			ref.observed_at &&
-			ref.expires_at &&
-			typeof ref.ttl_seconds === "number" &&
-			ref.ttl_seconds > 0 &&
-			(ref.revocation_status === "active" ||
-				ref.revocation_status === "not_revoked"),
-	);
-}
-
-function verifiedCredentialJoinBundle(
-	refs: readonly AgentWorkforceCredentialJoinRef[],
-): FreshVerifiedCredentialJoinRef[] | undefined {
-	const verifiedRefs = refs.filter(isFreshVerifiedCredentialJoin);
-	const hasKind = (kind: AgentWorkforceCredentialJoinKind) =>
-		verifiedRefs.some((ref) => ref.kind === kind);
+function platformCredentialAuthorityIsComplete(
+	authority: AgentWorkforcePlatformCredentialAuthority | undefined,
+	now: Date,
+): authority is AgentWorkforcePlatformCredentialAuthority {
+	if (!authority) return false;
 	if (
-		!hasKind("identity") ||
-		!hasKind("agent_runtime") ||
-		!hasKind("secret_broker")
+		authority.source !== "platform_ingestion" &&
+		authority.source !== "platform_resolver"
 	) {
-		return undefined;
+		return false;
 	}
-	return verifiedRefs;
-}
-
-function verifiedCredentialAuthority(
-	declaredAuthority: AgentWorkforceCredentialDeclaredAuthority,
-	verifiedRefs: readonly FreshVerifiedCredentialJoinRef[],
-): {
-	authority: AgentWorkforceVerifiedCredentialAuthority;
-	ref: FreshVerifiedCredentialJoinRef;
-} {
-	const refForKind = (kind: AgentWorkforceCredentialJoinKind) =>
-		verifiedRefs.find((ref) => ref.kind === kind);
-	if (declaredAuthority === "identity") {
-		const identity = refForKind("identity");
-		if (identity) return { authority: "identity", ref: identity };
+	const provenance = authority.verified_provenance;
+	const observedAtMs = Date.parse(provenance.observed_at);
+	const expiresAtMs = Date.parse(provenance.expires_at);
+	if (
+		!provenance.authority_ref ||
+		!provenance.join_correlation_id ||
+		!provenance.observed_at ||
+		!provenance.expires_at ||
+		!Number.isFinite(observedAtMs) ||
+		!Number.isFinite(expiresAtMs) ||
+		observedAtMs > now.getTime() ||
+		expiresAtMs <= now.getTime() ||
+		provenance.ttl_seconds < 1 ||
+		(provenance.revocation_status !== "active" &&
+			provenance.revocation_status !== "not_revoked")
+	) {
+		return false;
 	}
-	if (declaredAuthority === "llm_gateway_vault") {
-		const llmGateway = refForKind("llm_gateway");
-		if (llmGateway) return { authority: "llm_gateway_vault", ref: llmGateway };
-	}
-	const secretBroker = refForKind("secret_broker");
-	if (!secretBroker) {
-		throw new Error(
-			"verified credential bundle is missing required Secret Broker evidence",
-		);
-	}
-	return { authority: "secret_broker", ref: secretBroker };
-}
-
-function verifiedCredentialJoinedEvidenceRefs(
-	verifiedRefs: readonly FreshVerifiedCredentialJoinRef[],
-): AgentWorkforceEvidenceRef[] {
-	return verifiedRefs.map((ref) => ({
-		kind: ref.kind,
-		ref: ref.evidence_id ?? ref.id,
-		observed_at: ref.observed_at,
-	}));
-}
-
-function joinCorrelationId(
-	options: AgentWorkforceNativeProjectionOptions,
-	verified: FreshVerifiedCredentialJoinRef,
-): string {
+	const joinedRefs = provenance.joined_evidence_refs;
+	const hasKind = (kind: AgentWorkforceEvidenceKind) =>
+		joinedRefs.some((ref) => ref.kind === kind && Boolean(ref.ref));
 	return (
-		verified.evidence_id ??
-		`join:maestro:${options.correlation.agent_run_id ?? options.correlation.session_id ?? "unknown"}:${verified.id}`
+		joinedRefs.length >= 3 &&
+		hasKind("identity") &&
+		hasKind("agent_runtime") &&
+		hasKind("secret_broker")
 	);
 }
 
 function credentialAssumption(
 	options: AgentWorkforceNativeProjectionOptions,
+	now: Date,
 ): AgentWorkforceCredentialAssumption {
-	const joinRefs = options.credentialJoinRefs ?? [];
 	const declared = options.declaredCredential;
-	const verifiedRefs = verifiedCredentialJoinBundle(joinRefs);
 	const declaredAuthority = credentialDeclaredAuthority(declared);
-	if (verifiedRefs) {
-		const verified = verifiedCredentialAuthority(
-			declaredAuthority,
-			verifiedRefs,
-		);
+	const platformAuthority = options.platformCredentialAuthority;
+	if (platformCredentialAuthorityIsComplete(platformAuthority, now)) {
 		const credentialSubject =
+			platformAuthority.credential_subject ??
 			declared?.credential_subject ??
 			(options.correlation.agent_id
 				? `agent:${options.correlation.agent_id}`
@@ -745,25 +710,20 @@ function credentialAssumption(
 		return {
 			credential_subject: credentialSubject,
 			credential_assumption_ref:
-				declared?.credential_assumption_ref ?? verified.ref.id,
-			credential_assumption_id: declared?.credential_id,
-			grant_id: declared?.grant_id,
-			provider_ref_id: declared?.provider_ref_id,
-			credential_name: declared?.credential_name,
+				platformAuthority.credential_assumption_ref ??
+				declared?.credential_assumption_ref ??
+				platformAuthority.verified_provenance.authority_ref,
+			credential_assumption_id:
+				platformAuthority.credential_assumption_id ?? declared?.credential_id,
+			grant_id: platformAuthority.grant_id ?? declared?.grant_id,
+			provider_ref_id:
+				platformAuthority.provider_ref_id ?? declared?.provider_ref_id,
+			credential_name:
+				platformAuthority.credential_name ?? declared?.credential_name,
 			proof_status: "proven",
-			declared_authority: verified.authority,
+			declared_authority: platformAuthority.verified_provenance.authority,
 			provenance_verified: true,
-			verified_provenance: {
-				authority: verified.authority,
-				authority_ref: verified.ref.id,
-				join_correlation_id: joinCorrelationId(options, verified.ref),
-				observed_at: verified.ref.observed_at!,
-				expires_at: verified.ref.expires_at!,
-				ttl_seconds: verified.ref.ttl_seconds!,
-				revocation_status: verified.ref.revocation_status!,
-				joined_evidence_refs:
-					verifiedCredentialJoinedEvidenceRefs(verifiedRefs),
-			},
+			verified_provenance: platformAuthority.verified_provenance,
 		};
 	}
 	return {
@@ -839,7 +799,11 @@ function runFromOptions(
 	};
 }
 
-function sourceEventRef(event: AgentEvent, run: AgentWorkforceRun): string {
+function sourceEventRef(
+	event: AgentEvent,
+	run: AgentWorkforceRun,
+	sequence: number,
+): string {
 	switch (event.type) {
 		case "tool_execution_start":
 			return `maestro.AgentEvent:tool_execution_start:${run.maestro_session_id ?? run.run_id}:${event.toolCallId}`;
@@ -849,13 +813,14 @@ function sourceEventRef(event: AgentEvent, run: AgentWorkforceRun): string {
 		case "action_approval_resolved":
 			return `maestro.AgentEvent:${event.type}:${run.maestro_session_id ?? run.run_id}:${event.request.id}`;
 		default:
-			return `maestro.AgentEvent:${event.type}:${run.maestro_session_id ?? run.run_id}:${run.turn_id ?? "run"}`;
+			return `maestro.AgentEvent:${event.type}:${run.maestro_session_id ?? run.run_id}:${run.turn_id ?? "run"}:${sequence}`;
 	}
 }
 
 function nativeActionCorrelationId(
 	event: AgentEvent,
 	run: AgentWorkforceRun,
+	sequence: number,
 ): string {
 	const base = [
 		run.maestro_session_id ?? run.run_id,
@@ -873,7 +838,7 @@ function nativeActionCorrelationId(
 		case "action_approval_resolved":
 			return `${base || run.run_id}/${event.request.id}`;
 		default:
-			return `${base || run.run_id}/${event.type}`;
+			return `${base || run.run_id}/${event.type}:${sequence}`;
 	}
 }
 
@@ -901,6 +866,8 @@ function evidenceRefs(input: {
 	policy?: AgentWorkforcePolicy;
 	modelUsage?: AgentWorkforceModelUsage;
 	credentialJoinRefs: readonly AgentWorkforceCredentialJoinRef[];
+	platformCredentialAuthority?: AgentWorkforcePlatformCredentialAuthority;
+	now: Date;
 }): AgentWorkforceEvidenceRef[] {
 	const refs: AgentWorkforceEvidenceRef[] = [
 		{
@@ -937,10 +904,30 @@ function evidenceRefs(input: {
 			observed_at: ref.observed_at,
 		});
 	}
+	if (
+		platformCredentialAuthorityIsComplete(
+			input.platformCredentialAuthority,
+			input.now,
+		)
+	) {
+		for (const ref of input.platformCredentialAuthority.verified_provenance
+			.joined_evidence_refs) {
+			if (
+				!refs.some(
+					(existing) => existing.kind === ref.kind && existing.ref === ref.ref,
+				)
+			) {
+				refs.push(ref);
+			}
+		}
+	}
 	return refs;
 }
 
-function policyForEvent(event: AgentEvent): AgentWorkforcePolicy | undefined {
+function policyForEvent(
+	event: AgentEvent,
+	resolvedApprovalDecision?: ActionApprovalDecision,
+): AgentWorkforcePolicy | undefined {
 	switch (event.type) {
 		case "action_approval_required":
 			return {
@@ -960,7 +947,11 @@ function policyForEvent(event: AgentEvent): AgentWorkforcePolicy | undefined {
 			return event.approvalRequestId
 				? {
 						approval_ref: event.approvalRequestId,
-						decision: event.isError ? "deny" : "allow",
+						decision: resolvedApprovalDecision
+							? resolvedApprovalDecision.approved
+								? "allow"
+								: "deny"
+							: "unknown",
 						risk: "unknown",
 					}
 				: undefined;
@@ -1079,6 +1070,10 @@ export class AgentWorkforceNativeEventProjector {
 	private currentTurnId: string | undefined;
 	private turnOrdinal = 0;
 	private readonly pendingTools = new Map<string, PendingToolProjection>();
+	private readonly resolvedApprovals = new Map<
+		string,
+		ActionApprovalDecision
+	>();
 
 	constructor(
 		private readonly options: AgentWorkforceNativeProjectionOptions,
@@ -1107,21 +1102,31 @@ export class AgentWorkforceNativeEventProjector {
 		if (event.type === "tool_execution_end") {
 			this.pendingTools.delete(event.toolCallId);
 		}
+		if (event.type === "action_approval_resolved") {
+			this.resolvedApprovals.set(event.request.id, event.decision);
+			const platformApprovalId = event.request.platform?.approvalRequestId;
+			if (platformApprovalId) {
+				this.resolvedApprovals.set(platformApprovalId, event.decision);
+			}
+		}
 
 		this.sequence += 1;
 		const sequence = this.sequence;
-		const observedAt = eventObservedAt(
-			event,
-			this.options.clock?.() ?? new Date(),
-		);
+		const now = this.options.clock?.() ?? new Date();
+		const observedAt = eventObservedAt(event, now);
 		const run = runFromOptions(
 			this.options,
 			this.currentTurnId,
 			eventStepId(event),
 		);
 		const action = actionForEvent(event, sequence, pendingTool);
-		const policy = policyForEvent(event);
-		const credential = credentialAssumption(this.options);
+		const policy = policyForEvent(
+			event,
+			event.type === "tool_execution_end" && event.approvalRequestId
+				? this.resolvedApprovals.get(event.approvalRequestId)
+				: undefined,
+		);
+		const credential = credentialAssumption(this.options, now);
 		const modelUsage =
 			event.type === "message_end" || event.type === "turn_end"
 				? usageFromAssistantMessage(
@@ -1129,7 +1134,7 @@ export class AgentWorkforceNativeEventProjector {
 						this.options.correlation.request_id,
 					)
 				: undefined;
-		const sourceRef = sourceEventRef(event, run);
+		const sourceRef = sourceEventRef(event, run, sequence);
 		const credentialJoinCorrelationId =
 			credential.verified_provenance?.join_correlation_id;
 		const eventEnvelope: AgentWorkforceNativeEvent = {
@@ -1159,7 +1164,11 @@ export class AgentWorkforceNativeEventProjector {
 			run,
 			timeline_correlation: {
 				source_event_ref: sourceRef,
-				native_action_correlation_id: nativeActionCorrelationId(event, run),
+				native_action_correlation_id: nativeActionCorrelationId(
+					event,
+					run,
+					sequence,
+				),
 				platform_action_correlation_id: platformActionCorrelationId(
 					run,
 					action,
@@ -1178,6 +1187,8 @@ export class AgentWorkforceNativeEventProjector {
 					policy,
 					modelUsage,
 					credentialJoinRefs: this.options.credentialJoinRefs ?? [],
+					platformCredentialAuthority: this.options.platformCredentialAuthority,
+					now,
 				}),
 				source_event_ref: sourceRef,
 				missing_evidence: missingCredentialEvidence(credential),
