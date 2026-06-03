@@ -1148,6 +1148,48 @@ describe("agent workforce native event projection", () => {
 		).toBe(false);
 	});
 
+	it("does not treat local fallback tool execution ids as AgentRuntime steps", () => {
+		const projected = projectAgentWorkforceNativeEvents(
+			[
+				{
+					type: "tool_execution_start",
+					toolCallId: "local-tool-call-with-run",
+					toolExecutionId: "local-tool-exec-local-tool-call-with-run",
+					toolName: "bash",
+					args: { command: "pwd" },
+				},
+			],
+			{
+				correlation: {
+					workspace_id: "workspace-1",
+					session_id: "session-local-fallback",
+					agent_run_id: "run-1",
+				},
+				chainId: "chain-local-fallback-tool-id",
+				clock: () => baseTime,
+				makeEnvelopeId: (_event, sequence) =>
+					`awf_evt_local_fallback_${sequence}`,
+			},
+		);
+
+		expect(projected[0]?.run).toMatchObject({
+			agent_run_id: "run-1",
+			agent_run_step_id: undefined,
+		});
+		expect(projected[0]?.action.tool_execution_id).toBe(
+			"local-tool-exec-local-tool-call-with-run",
+		);
+		expect(
+			projected[0]?.timeline_correlation.platform_action_correlation_id,
+		).toBeUndefined();
+		expect(
+			projected[0]?.evidence.refs.some((ref) => ref.kind === "agent_runtime"),
+		).toBe(false);
+		expect(JSON.stringify(projected[0])).not.toContain(
+			"agentruntime:run-1:local-tool-exec-local-tool-call-with-run",
+		);
+	});
+
 	it("requires a real run id before claiming AgentRuntime step evidence", () => {
 		const projected = projectAgentWorkforceNativeEvents(
 			[
@@ -1644,11 +1686,11 @@ describe("agent workforce native event projection", () => {
 		["type_text", { selector: "#name", text: "Ada" }],
 		["notebook_edit", { file_path: "analysis.ipynb" }],
 		["gh_pr", { action: "create", title: "Native event fix" }],
-		["gh_pr", { action: "comment", pr: 774 }],
-		["gh_pr", { action: "checkout", pr: 774 }],
-		["gh_issue", { action: "close", issue: 123 }],
-		["gh_repo", { action: "clone", repo: "evalops/maestro" }],
-		["gh_repo", { action: "fork", repo: "evalops/maestro" }],
+		["gh_pr", { action: "comment", number: 774 }],
+		["gh_pr", { action: "checkout", number: 774 }],
+		["gh_issue", { action: "close", number: 123 }],
+		["gh_repo", { action: "clone", repository: "evalops/maestro" }],
+		["gh_repo", { action: "fork", repository: "evalops/maestro" }],
 		["mcp__filesystem__edit", { path: "src/index.ts" }],
 		["mcp__filesystem__write", { path: "src/index.ts" }],
 		["mcp__fathom-cua__click", { element_ref: "button-1" }],
@@ -1693,7 +1735,7 @@ describe("agent workforce native event projection", () => {
 		["extract_links", {}],
 		["extract_table_data", {}],
 		["find_on_page", { text: "Done" }],
-		["gh_repo", { action: "view", repo: "evalops/maestro" }],
+		["gh_repo", { action: "view", repository: "evalops/maestro" }],
 		["list_mcp_tools", {}],
 		["navigate_to", { action: "listTabs" }],
 		["read_page", {}],
@@ -1780,6 +1822,69 @@ describe("agent workforce native event projection", () => {
 		);
 		expect(projected[0]?.action.resource_refs).toEqual(
 			projected[2]?.action.resource_refs,
+		);
+	});
+
+	it("preserves GitHub target ids in resource refs", () => {
+		const projected = project([
+			{
+				type: "tool_execution_start",
+				toolCallId: "tool-call-gh-pr-774",
+				toolExecutionId: "tool-exec-gh-pr-774",
+				toolName: "gh_pr",
+				args: { action: "comment", number: 774 },
+			},
+			{
+				type: "tool_execution_start",
+				toolCallId: "tool-call-gh-pr-775",
+				toolExecutionId: "tool-exec-gh-pr-775",
+				toolName: "gh_pr",
+				args: { action: "checkout", number: 775 },
+			},
+			{
+				type: "tool_execution_start",
+				toolCallId: "tool-call-gh-issue-774",
+				toolExecutionId: "tool-exec-gh-issue-774",
+				toolName: "gh_issue",
+				args: { action: "close", number: 774 },
+			},
+			{
+				type: "tool_execution_start",
+				toolCallId: "tool-call-gh-repo-clone",
+				toolExecutionId: "tool-exec-gh-repo-clone",
+				toolName: "gh_repo",
+				args: {
+					action: "clone",
+					repository: "evalops/maestro",
+					directory: "../maestro",
+				},
+			},
+			{
+				type: "tool_execution_start",
+				toolCallId: "tool-call-gh-repo-fork",
+				toolExecutionId: "tool-exec-gh-repo-fork",
+				toolName: "gh_repo",
+				args: { action: "fork", repository: "evalops/maestro" },
+			},
+		]);
+
+		expect(projected[0]?.action.safe_args_summary?.resource_kind).toBe(
+			"github_pr",
+		);
+		expect(projected[2]?.action.safe_args_summary?.resource_kind).toBe(
+			"github_issue",
+		);
+		expect(projected[3]?.action.safe_args_summary?.resource_kind).toBe(
+			"github_repo",
+		);
+		expect(projected[0]?.action.resource_refs).not.toEqual(
+			projected[1]?.action.resource_refs,
+		);
+		expect(projected[0]?.action.resource_refs).not.toEqual(
+			projected[2]?.action.resource_refs,
+		);
+		expect(projected[3]?.action.resource_refs).toEqual(
+			projected[4]?.action.resource_refs,
 		);
 	});
 

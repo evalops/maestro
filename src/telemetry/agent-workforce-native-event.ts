@@ -478,6 +478,19 @@ function readString(
 	return undefined;
 }
 
+function readIdentifier(
+	record: Record<string, unknown> | undefined,
+	keys: readonly string[],
+): string | undefined {
+	if (!record) return undefined;
+	for (const key of keys) {
+		const value = record[key];
+		if (typeof value === "string" && value.trim()) return value.trim();
+		if (typeof value === "number" && Number.isFinite(value)) return `${value}`;
+	}
+	return undefined;
+}
+
 function safeHash(value: unknown): string {
 	return `sha256:${hashStableValue(value)}`;
 }
@@ -669,6 +682,29 @@ function safeArgumentKey(key: string): string {
 		: key;
 }
 
+function githubResourceTarget(
+	lowerTool: string,
+	args?: Record<string, unknown>,
+): { kind: string; value: string } | undefined {
+	if (lowerTool === "gh_pr") {
+		const number = readIdentifier(args, ["number", "pr", "pull_request"]);
+		return number ? { kind: "github_pr", value: `pr:${number}` } : undefined;
+	}
+	if (lowerTool === "gh_issue") {
+		const number = readIdentifier(args, ["number", "issue"]);
+		return number
+			? { kind: "github_issue", value: `issue:${number}` }
+			: undefined;
+	}
+	if (lowerTool === "gh_repo") {
+		const repository = readIdentifier(args, ["repository", "repo"]);
+		return repository
+			? { kind: "github_repo", value: `repo:${repository}` }
+			: undefined;
+	}
+	return undefined;
+}
+
 function resourceProjection(
 	toolName: string | undefined,
 	args?: Record<string, unknown>,
@@ -688,21 +724,29 @@ function resourceProjection(
 		...(preferCommandResource ? [] : ["cwd"]),
 	]);
 	const url = readString(args, ["url", "uri", "endpoint"]);
+	const githubTarget = githubResourceTarget(lowerTool, args);
 	const mutatesResource = toolMutatesResource(lowerTool, args);
 	const resourceKind = preferCommandResource
 		? "command"
-		: filePath
-			? "file"
-			: url
-				? "url"
-				: command
-					? "command"
-					: toolName
-						? "tool"
-						: "unknown";
+		: githubTarget
+			? githubTarget.kind
+			: filePath
+				? "file"
+				: url
+					? "url"
+					: command
+						? "command"
+						: toolName
+							? "tool"
+							: "unknown";
 	const resourceValue = preferCommandResource
 		? command
-		: (filePath ?? url ?? command ?? toolName ?? "unknown");
+		: (githubTarget?.value ??
+			filePath ??
+			url ??
+			command ??
+			toolName ??
+			"unknown");
 	const argumentKeys = [
 		...new Set(Object.keys(args ?? {}).map(safeArgumentKey)),
 	].sort();
@@ -1196,7 +1240,11 @@ function platformActionCorrelationId(
 	action: AgentWorkforceAction,
 ): string | undefined {
 	const agentRunStepId = run.agent_run_step_id ?? action.tool_execution_id;
-	if (!run.agent_run_id || !agentRunStepId) {
+	if (
+		!run.agent_run_id ||
+		!agentRunStepId ||
+		isLocalToolExecutionId(agentRunStepId)
+	) {
 		return undefined;
 	}
 	return ["agentruntime", run.agent_run_id, agentRunStepId].join(":");
@@ -1378,16 +1426,23 @@ function approvalAction(
 }
 
 function eventStepId(event: AgentEvent): string | undefined {
-	switch (event.type) {
-		case "tool_execution_start":
-		case "tool_execution_end":
-			return event.toolExecutionId;
-		case "action_approval_required":
-		case "action_approval_resolved":
-			return event.request.platform?.toolExecutionId;
-		default:
-			return undefined;
-	}
+	const platformStepId = (() => {
+		switch (event.type) {
+			case "tool_execution_start":
+			case "tool_execution_end":
+				return event.toolExecutionId;
+			case "action_approval_required":
+			case "action_approval_resolved":
+				return event.request.platform?.toolExecutionId;
+			default:
+				return undefined;
+		}
+	})();
+	return isLocalToolExecutionId(platformStepId) ? undefined : platformStepId;
+}
+
+function isLocalToolExecutionId(id: string | undefined): boolean {
+	return id?.startsWith("local-tool-exec-") ?? false;
 }
 
 function actionForEvent(
