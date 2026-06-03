@@ -774,6 +774,51 @@ describe("agent workforce native event projection", () => {
 		);
 	});
 
+	it("keeps Platform credential authority missing when any joined evidence ref is malformed", () => {
+		const authorityWithMalformedExtraRef = platformCredentialAuthority(
+			baseTime.getTime() + 60_000,
+		);
+		authorityWithMalformedExtraRef.verified_provenance.joined_evidence_refs = [
+			...authorityWithMalformedExtraRef.verified_provenance
+				.joined_evidence_refs,
+			{
+				kind: "provider_proxy" as never,
+				ref: "join-provider-proxy",
+				observed_at: baseTime.toISOString(),
+			},
+		];
+
+		const projected = projectAgentWorkforceNativeEvents([nativeEvents()[6]!], {
+			correlation: {
+				workspace_id: "workspace-1",
+				session_id: "session-1",
+				agent_id: "agent-maestro-1",
+				agent_run_id: "run-1",
+			},
+			chainId: "chain-malformed-extra-evidence",
+			declaredCredential: {
+				credential_subject: "agent:agent-maestro-1",
+				credential_assumption_ref: "secretbroker:grant:grant-malformed-extra",
+				grant_id: "grant-malformed-extra",
+				credential_name: "github-pr-writer",
+				declared_authority: "secret_broker",
+			},
+			platformCredentialAuthority: authorityWithMalformedExtraRef,
+			clock: () => baseTime,
+			makeEnvelopeId: (_event, sequence) =>
+				`awf_evt_malformed_extra_evidence_${sequence}`,
+		});
+
+		expect(projected[0]?.credential_assumption).toMatchObject({
+			proof_status: "missing",
+			declared_authority: "secret_broker",
+			provenance_verified: false,
+		});
+		expect(projected[0]?.credential_assumption).not.toHaveProperty(
+			"verified_provenance",
+		);
+	});
+
 	it("omits reasoning token usage when Maestro has no separate observed count", () => {
 		const projected = project([nativeEvents()[6]!]);
 
@@ -974,6 +1019,9 @@ describe("agent workforce native event projection", () => {
 		["gh_issue", { action: "close", issue: 123 }],
 		["mcp__filesystem__edit", { path: "src/index.ts" }],
 		["mcp__filesystem__write", { path: "src/index.ts" }],
+		["mcp__fathom-cua__click", { element_ref: "button-1" }],
+		["mcp__fathom-cua__type_text", { text: "hello" }],
+		["mcp__fathom-cua__press_key", { key: "Enter" }],
 	])(
 		"classifies %s tool executions as resource mutations",
 		(toolName, args) => {
@@ -992,6 +1040,32 @@ describe("agent workforce native event projection", () => {
 				mutates_resource: true,
 				safe_args_summary: {
 					operation: "mutate",
+				},
+			});
+		},
+	);
+
+	it.each([
+		["mcp__fathom-cua__get_app_state", {}],
+		["mcp__fathom-cua__list_apps", {}],
+	])(
+		"keeps %s desktop observe tool executions non-mutating",
+		(toolName, args) => {
+			const projected = project([
+				{
+					type: "tool_execution_start",
+					toolCallId: `tool-call-${toolName}`,
+					toolExecutionId: `tool-exec-${toolName}`,
+					toolName,
+					args,
+				},
+			]);
+
+			expect(projected[0]?.action).toMatchObject({
+				tool_name: toolName,
+				mutates_resource: false,
+				safe_args_summary: {
+					operation: "read_or_unknown",
 				},
 			});
 		},

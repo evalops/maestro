@@ -395,6 +395,21 @@ function isVerifiedCredentialAuthority(
 	);
 }
 
+function isEvidenceKind(value: unknown): value is AgentWorkforceEvidenceKind {
+	return (
+		value === "native_event" ||
+		value === "agent_runtime" ||
+		value === "agent_registry" ||
+		value === "identity" ||
+		value === "secret_broker" ||
+		value === "llm_gateway" ||
+		value === "meter" ||
+		value === "approval" ||
+		value === "policy" ||
+		value === "source_event"
+	);
+}
+
 function eventHashPayload(event: AgentWorkforceNativeEvent): unknown {
 	return {
 		...event,
@@ -491,10 +506,49 @@ const MUTATING_GITHUB_ACTIONS = new Set([
 	"update",
 ]);
 
-function mcpToolVerb(lowerTool: string): string | undefined {
+const FATHOM_DESKTOP_ACTION_VERBS = new Set([
+	"activate_app",
+	"activate_menu_item",
+	"click",
+	"decrement_element",
+	"double_click",
+	"drag",
+	"focus_element",
+	"increment_element",
+	"move_mouse",
+	"open_context_menu",
+	"paste_text",
+	"perform_secondary_action",
+	"press_element",
+	"press_key",
+	"press_window_button",
+	"raise_window",
+	"scroll",
+	"scroll_to_element",
+	"select_context_menu_item",
+	"select_list_item",
+	"select_menu_option",
+	"select_radio_button",
+	"select_text",
+	"set_disclosure_expanded",
+	"set_slider_value",
+	"set_text_selection",
+	"set_toggle_state",
+	"set_value",
+	"set_window_bounds",
+	"set_window_minimized",
+	"type_text",
+]);
+
+function mcpToolParts(
+	lowerTool: string,
+): { server: string; verb: string } | undefined {
 	if (!lowerTool.startsWith("mcp__")) return undefined;
 	const parts = lowerTool.split("__").filter(Boolean);
-	return parts.length >= 3 ? parts.at(-1) : undefined;
+	if (parts.length < 3) return undefined;
+	const verb = parts.at(-1);
+	const server = parts[1];
+	return server && verb ? { server, verb } : undefined;
 }
 
 function toolMutatesResource(
@@ -502,8 +556,14 @@ function toolMutatesResource(
 	args?: Record<string, unknown>,
 ): boolean {
 	if (MUTATING_TOOL_NAMES.has(lowerTool)) return true;
-	const mcpVerb = mcpToolVerb(lowerTool);
-	if (mcpVerb && MUTATING_TOOL_NAMES.has(mcpVerb)) return true;
+	const mcp = mcpToolParts(lowerTool);
+	if (mcp?.verb && MUTATING_TOOL_NAMES.has(mcp.verb)) return true;
+	if (
+		mcp?.server === "fathom-cua" &&
+		FATHOM_DESKTOP_ACTION_VERBS.has(mcp.verb)
+	) {
+		return true;
+	}
 	if (lowerTool !== "gh_pr" && lowerTool !== "gh_issue") return false;
 	const action = readString(args, ["action"])?.toLowerCase();
 	return action ? MUTATING_GITHUB_ACTIONS.has(action) : false;
@@ -743,6 +803,17 @@ function platformCredentialAuthorityIsComplete(
 	) {
 		return false;
 	}
+	const allJoinedRefsAreValid = joinedRefs.every(
+		(ref) =>
+			isRecord(ref) &&
+			isEvidenceKind(ref.kind) &&
+			typeof ref.ref === "string" &&
+			Boolean(ref.ref.trim()) &&
+			(ref.observed_at === undefined || typeof ref.observed_at === "string"),
+	);
+	if (!allJoinedRefsAreValid) {
+		return false;
+	}
 	const authorityEvidenceKind =
 		provenance.authority === "llm_gateway_vault"
 			? "llm_gateway"
@@ -767,9 +838,7 @@ function platformCredentialAuthorityIsComplete(
 		return false;
 	}
 	const hasKind = (kind: AgentWorkforceEvidenceKind) =>
-		joinedRefs.some(
-			(ref) => isRecord(ref) && ref.kind === kind && Boolean(ref.ref),
-		);
+		joinedRefs.some((ref) => ref.kind === kind && Boolean(ref.ref));
 	return (
 		joinedRefs.length >= 3 &&
 		hasKind("identity") &&
