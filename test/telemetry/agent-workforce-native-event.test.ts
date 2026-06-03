@@ -1514,10 +1514,10 @@ describe("agent workforce native event projection", () => {
 	});
 
 	it.each([
-		["artifacts", { command: "create", path: "report.md" }],
-		["artifacts", { command: "delete", path: "report.md" }],
-		["artifacts", { command: "rewrite", path: "report.md" }],
-		["artifacts", { command: "update", path: "report.md" }],
+		["artifacts", { command: "create", filename: "report.md" }],
+		["artifacts", { command: "delete", filename: "report.md" }],
+		["artifacts", { command: "rewrite", filename: "report.md" }],
+		["artifacts", { command: "update", filename: "report.md" }],
 		["background_tasks", { action: "start", command: "touch tmp/output.txt" }],
 		["background_tasks", { action: "stop", taskId: "task-1" }],
 		["browser_operator", { phase: "act", goal: "Click submit" }],
@@ -1572,8 +1572,8 @@ describe("agent workforce native event projection", () => {
 	);
 
 	it.each([
-		["artifacts", { command: "get", path: "report.md" }],
-		["artifacts", { command: "logs", path: "report.md" }],
+		["artifacts", { command: "get", filename: "report.md" }],
+		["artifacts", { command: "logs", filename: "report.md" }],
 		["background_tasks", { action: "list" }],
 		["background_tasks", { action: "logs", taskId: "task-1" }],
 		["browser_operator", { phase: "observe", goal: "Read page state" }],
@@ -1609,6 +1609,70 @@ describe("agent workforce native event projection", () => {
 				operation: "read_or_unknown",
 			},
 		});
+	});
+
+	it("preserves artifact filenames in resource refs", () => {
+		const projected = project([
+			{
+				type: "tool_execution_start",
+				toolCallId: "tool-call-artifact-update-report",
+				toolExecutionId: "tool-exec-artifact-update-report",
+				toolName: "artifacts",
+				args: { command: "update", filename: "report.md" },
+			},
+			{
+				type: "tool_execution_start",
+				toolCallId: "tool-call-artifact-update-summary",
+				toolExecutionId: "tool-exec-artifact-update-summary",
+				toolName: "artifacts",
+				args: { command: "update", filename: "summary.md" },
+			},
+			{
+				type: "tool_execution_start",
+				toolCallId: "tool-call-artifact-get-report",
+				toolExecutionId: "tool-exec-artifact-get-report",
+				toolName: "artifacts",
+				args: { command: "get", filename: "report.md" },
+			},
+			{
+				type: "tool_execution_start",
+				toolCallId: "tool-call-manage-artifact",
+				toolExecutionId: "tool-exec-manage-artifact",
+				toolName: "manage_artifact",
+				args: { action: "update", filename: "report.md" },
+			},
+			{
+				type: "tool_execution_start",
+				toolCallId: "tool-call-patch-artifact",
+				toolExecutionId: "tool-exec-patch-artifact",
+				toolName: "patch_artifact",
+				args: { filename: "report.md", patch: "@@ -1 +1 @@" },
+			},
+		]);
+
+		expect(projected[0]?.action).toMatchObject({
+			mutates_resource: true,
+			safe_args_summary: {
+				resource_kind: "file",
+				operation: "mutate",
+			},
+		});
+		expect(projected[1]?.action.safe_args_summary.resource_kind).toBe("file");
+		expect(projected[2]?.action).toMatchObject({
+			mutates_resource: false,
+			safe_args_summary: {
+				resource_kind: "file",
+				operation: "read_or_unknown",
+			},
+		});
+		expect(projected[3]?.action.safe_args_summary.resource_kind).toBe("file");
+		expect(projected[4]?.action.safe_args_summary.resource_kind).toBe("file");
+		expect(projected[0]?.action.resource_refs).not.toEqual(
+			projected[1]?.action.resource_refs,
+		);
+		expect(projected[0]?.action.resource_refs).toEqual(
+			projected[2]?.action.resource_refs,
+		);
 	});
 
 	it.each([

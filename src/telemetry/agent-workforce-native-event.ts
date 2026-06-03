@@ -682,6 +682,7 @@ function resourceProjection(
 		"file",
 		"file_path",
 		"filepath",
+		"filename",
 		"target_file",
 		"directory",
 		...(preferCommandResource ? [] : ["cwd"]),
