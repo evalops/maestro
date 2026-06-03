@@ -489,6 +489,7 @@ const MUTATING_TOOL_NAMES = new Set([
 	"apply_patch",
 	"bash",
 	"shell",
+	"todo",
 	"exec",
 	"git_cmd",
 	"notebook_edit",
@@ -547,6 +548,11 @@ const COMMAND_RESOURCE_TOOL_NAMES = new Set([
 	"shell",
 ]);
 
+const FATHOM_SERVER_NAME_ENV_VARS = [
+	"MAESTRO_FATHOM_CUA_MCP_NAME",
+	"FATHOM_CUA_MCP_NAME",
+] as const;
+
 const FATHOM_DESKTOP_ACTION_VERBS = new Set([
 	"activate_app",
 	"activate_menu_item",
@@ -592,6 +598,13 @@ function mcpToolParts(
 	return server && verb ? { server, verb } : undefined;
 }
 
+function isFathomMcpServer(server: string): boolean {
+	if (server === "fathom-cua") return true;
+	return FATHOM_SERVER_NAME_ENV_VARS.some(
+		(name) => process.env[name]?.trim().toLowerCase() === server,
+	);
+}
+
 function toolMutatesResource(
 	lowerTool: string,
 	args?: Record<string, unknown>,
@@ -613,7 +626,8 @@ function toolMutatesResource(
 	const mcp = mcpToolParts(lowerTool);
 	if (mcp?.verb && MUTATING_TOOL_NAMES.has(mcp.verb)) return true;
 	if (
-		mcp?.server === "fathom-cua" &&
+		mcp &&
+		isFathomMcpServer(mcp.server) &&
 		FATHOM_DESKTOP_ACTION_VERBS.has(mcp.verb)
 	) {
 		return true;
@@ -1422,7 +1436,8 @@ export class AgentWorkforceNativeEventProjector {
 						this.options.correlation.request_id,
 					)
 				: undefined;
-		const sourceRef = sourceEventRef(event, run, sequence);
+		const sourceRef =
+			this.options.sourceRecordId ?? sourceEventRef(event, run, sequence);
 		const credentialJoinCorrelationId =
 			credential.verified_provenance?.join_correlation_id;
 		const eventEnvelope: AgentWorkforceNativeEvent = {

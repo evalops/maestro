@@ -951,6 +951,44 @@ describe("agent workforce native event projection", () => {
 		expect(projected[2]?.run.turn_id).toBeUndefined();
 	});
 
+	it("uses caller-provided source record ids before synthetic source refs", () => {
+		const projected = projectAgentWorkforceNativeEvents(
+			[
+				{
+					type: "tool_execution_start",
+					toolCallId: "tool-call-1",
+					toolName: "bash",
+				},
+			],
+			{
+				correlation: {
+					workspace_id: "workspace-1",
+					session_id: "session-1",
+				},
+				chainId: "chain-source-record",
+				sourceRecordId: "eventbus:maestro:record-123",
+				clock: () => baseTime,
+				makeEnvelopeId: (_event, sequence) =>
+					`awf_evt_source_record_${sequence}`,
+			},
+		);
+
+		expect(projected[0]?.timeline_correlation.source_event_ref).toBe(
+			"eventbus:maestro:record-123",
+		);
+		expect(projected[0]?.evidence.source_event_ref).toBe(
+			"eventbus:maestro:record-123",
+		);
+		expect(projected[0]?.evidence.refs).toEqual(
+			expect.arrayContaining([
+				expect.objectContaining({
+					kind: "native_event",
+					ref: "eventbus:maestro:record-123",
+				}),
+			]),
+		);
+	});
+
 	it("uses per-projection correlation for repeated assistant message usage events in one turn", () => {
 		const repeatedMessages: AgentEvent[] = [
 			{ type: "turn_start" },
@@ -1237,6 +1275,83 @@ describe("agent workforce native event projection", () => {
 		expect(projected[0]?.action.resource_refs).not.toEqual(
 			projected[1]?.action.resource_refs,
 		);
+	});
+
+	it("classifies todo writes as state mutations without raw task text", () => {
+		const projected = project([
+			{
+				type: "tool_execution_start",
+				toolCallId: "tool-call-todo",
+				toolExecutionId: "tool-exec-todo",
+				toolName: "todo",
+				args: {
+					goal: "Ship native event projection",
+					items: [
+						{
+							content: "Draft confidential launch checklist",
+							status: "pending",
+						},
+					],
+				},
+			},
+		]);
+
+		expect(projected[0]?.action).toMatchObject({
+			tool_name: "todo",
+			mutates_resource: true,
+			safe_args_summary: {
+				argument_keys: ["goal", "items"],
+				resource_kind: "tool",
+				operation: "mutate",
+			},
+		});
+		expect(JSON.stringify(projected[0]?.action)).not.toContain(
+			"Draft confidential launch checklist",
+		);
+	});
+
+	it("honors configured Fathom CUA MCP aliases for desktop mutations", () => {
+		const previous = process.env.MAESTRO_FATHOM_CUA_MCP_NAME;
+		process.env.MAESTRO_FATHOM_CUA_MCP_NAME = "desktop";
+		try {
+			const projected = project([
+				{
+					type: "tool_execution_start",
+					toolCallId: "tool-call-desktop-click",
+					toolExecutionId: "tool-exec-desktop-click",
+					toolName: "mcp__desktop__click",
+					args: { element_ref: "button-1" },
+				},
+				{
+					type: "tool_execution_start",
+					toolCallId: "tool-call-random-click",
+					toolExecutionId: "tool-exec-random-click",
+					toolName: "mcp__random__click",
+					args: { element_ref: "button-1" },
+				},
+			]);
+
+			expect(projected[0]?.action).toMatchObject({
+				tool_name: "mcp__desktop__click",
+				mutates_resource: true,
+				safe_args_summary: {
+					operation: "mutate",
+				},
+			});
+			expect(projected[1]?.action).toMatchObject({
+				tool_name: "mcp__random__click",
+				mutates_resource: false,
+				safe_args_summary: {
+					operation: "read_or_unknown",
+				},
+			});
+		} finally {
+			if (previous === undefined) {
+				delete process.env.MAESTRO_FATHOM_CUA_MCP_NAME;
+			} else {
+				process.env.MAESTRO_FATHOM_CUA_MCP_NAME = previous;
+			}
+		}
 	});
 
 	it.each([
