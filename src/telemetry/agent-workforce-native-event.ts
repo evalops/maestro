@@ -510,6 +510,35 @@ const MUTATING_GITHUB_REPO_ACTIONS = new Set(["clone", "fork"]);
 
 const MUTATING_BACKGROUND_TASK_ACTIONS = new Set(["start", "stop"]);
 
+const MUTATING_CONDUCTOR_TOOL_NAMES = new Set([
+	"click_element",
+	"highlight_element",
+	"keyboard_action",
+	"manage_artifact",
+	"mouse_action",
+	"native_click",
+	"native_key_down",
+	"native_key_up",
+	"native_press",
+	"native_type",
+	"open_links_in_tabs",
+	"patch_artifact",
+	"pointer_action",
+	"scroll_page",
+	"type_text",
+]);
+
+const MUTATING_CONDUCTOR_NAVIGATION_ACTIONS = new Set([
+	"back",
+	"closetab",
+	"forward",
+	"gotourl",
+	"open",
+	"opentab",
+	"reload",
+	"switchtotab",
+]);
+
 const FATHOM_DESKTOP_ACTION_VERBS = new Set([
 	"activate_app",
 	"activate_menu_item",
@@ -560,6 +589,15 @@ function toolMutatesResource(
 	args?: Record<string, unknown>,
 ): boolean {
 	if (MUTATING_TOOL_NAMES.has(lowerTool)) return true;
+	if (MUTATING_CONDUCTOR_TOOL_NAMES.has(lowerTool)) return true;
+	if (lowerTool === "browser_operator") {
+		const phase = readString(args, ["phase"])?.toLowerCase();
+		return phase === "act";
+	}
+	if (lowerTool === "navigate_to") {
+		const action = readString(args, ["action"])?.toLowerCase();
+		return action ? MUTATING_CONDUCTOR_NAVIGATION_ACTIONS.has(action) : false;
+	}
 	if (lowerTool === "background_tasks") {
 		const action = readString(args, ["action"])?.toLowerCase();
 		return action ? MUTATING_BACKGROUND_TASK_ACTIONS.has(action) : false;
@@ -739,6 +777,20 @@ function hasFailedStopReason(stopReason: unknown): boolean {
 	return stopReason === "error" || stopReason === "aborted";
 }
 
+function isPlatformPrepareDenial(
+	event: AgentEvent,
+	resolvedApprovalDecision?: ActionApprovalDecision,
+): boolean {
+	return (
+		event.type === "tool_execution_end" &&
+		event.isError === true &&
+		!!event.approvalRequestId &&
+		!event.errorCode &&
+		!event.governedOutcome &&
+		!resolvedApprovalDecision
+	);
+}
+
 function actionStatusFor(
 	event: AgentEvent,
 	resolvedApprovalDecision?: ActionApprovalDecision,
@@ -762,7 +814,8 @@ function actionStatusFor(
 				event.governedOutcome === "denied" ||
 				event.errorCode === "approval_denied" ||
 				event.errorCode === "governance_denied" ||
-				resolvedApprovalDecision?.approved === false
+				resolvedApprovalDecision?.approved === false ||
+				isPlatformPrepareDenial(event, resolvedApprovalDecision)
 			) {
 				return "denied";
 			}
@@ -1161,11 +1214,13 @@ function policyForEvent(
 			return event.approvalRequestId
 				? {
 						approval_ref: event.approvalRequestId,
-						decision: resolvedApprovalDecision
-							? resolvedApprovalDecision.approved
-								? "allow"
-								: "deny"
-							: "unknown",
+						decision: isPlatformPrepareDenial(event, resolvedApprovalDecision)
+							? "deny"
+							: resolvedApprovalDecision
+								? resolvedApprovalDecision.approved
+									? "allow"
+									: "deny"
+								: "unknown",
 						risk: "unknown",
 					}
 				: undefined;

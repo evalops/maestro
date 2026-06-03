@@ -1151,9 +1151,48 @@ describe("agent workforce native event projection", () => {
 		});
 	});
 
+	it("preserves Platform prepare-time approval denial before generic failure fallback", () => {
+		const projected = project([
+			{
+				type: "tool_execution_end",
+				toolCallId: "tool-call-1",
+				toolExecutionId: "tool-exec-1",
+				approvalRequestId: "platform-approval-1",
+				toolName: "bash",
+				result: toolResult(),
+				isError: true,
+			},
+		]);
+
+		expect(projected[0]).toMatchObject({
+			event_type: "tool.completed",
+			action: {
+				status: "denied",
+			},
+			policy: {
+				approval_ref: "platform-approval-1",
+				decision: "deny",
+			},
+		});
+	});
+
 	it.each([
 		["background_tasks", { action: "start", command: "touch tmp/output.txt" }],
 		["background_tasks", { action: "stop", taskId: "task-1" }],
+		["browser_operator", { phase: "act", goal: "Click submit" }],
+		["click_element", { selector: "#submit" }],
+		["highlight_element", { selector: "#submit" }],
+		["keyboard_action", { key: "Enter" }],
+		["manage_artifact", { action: "update", filename: "report.md" }],
+		["mouse_action", { action: "drag" }],
+		["native_click", { selector: "#submit" }],
+		["native_type", { text: "hello" }],
+		["navigate_to", { action: "goToUrl", url: "https://example.com" }],
+		["open_links_in_tabs", { urls: ["https://example.com"] }],
+		["patch_artifact", { filename: "report.md", patch: "@@ -1 +1 @@" }],
+		["pointer_action", { action: "click" }],
+		["scroll_page", { direction: "down" }],
+		["type_text", { selector: "#name", text: "Ada" }],
 		["notebook_edit", { file_path: "analysis.ipynb" }],
 		["gh_pr", { action: "create", title: "Native event fix" }],
 		["gh_pr", { action: "comment", pr: 774 }],
@@ -1192,7 +1231,21 @@ describe("agent workforce native event projection", () => {
 	it.each([
 		["background_tasks", { action: "list" }],
 		["background_tasks", { action: "logs", taskId: "task-1" }],
+		["browser_operator", { phase: "observe", goal: "Read page state" }],
+		["capture_console_errors", {}],
+		["capture_network", {}],
+		["capture_screenshot", {}],
+		["collect_diagnostics", {}],
+		["extract_document", { url: "https://example.com/report.pdf" }],
+		["extract_links", {}],
+		["extract_table_data", {}],
+		["find_on_page", { text: "Done" }],
 		["gh_repo", { action: "view", repo: "evalops/maestro" }],
+		["list_mcp_tools", {}],
+		["navigate_to", { action: "listTabs" }],
+		["read_page", {}],
+		["search_page", { query: "Done" }],
+		["wait_for_selector", { selector: "#result" }],
 	])("keeps %s read-only action executions non-mutating", (toolName, args) => {
 		const projected = project([
 			{
