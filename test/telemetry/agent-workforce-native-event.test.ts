@@ -333,10 +333,10 @@ describe("agent workforce native event projection", () => {
 				input_tokens: 120,
 				cached_input_tokens: 10,
 				output_tokens: 34,
-				reasoning_output_tokens: 0,
 				total_cost_usd: 0.00191,
 			},
 		});
+		expect(usage?.model_usage).not.toHaveProperty("reasoning_output_tokens");
 	});
 
 	it("keeps declared Secret Broker credential refs unproven without verified Platform joins", () => {
@@ -676,6 +676,39 @@ describe("agent workforce native event projection", () => {
 			},
 		});
 		expect(projected[0]?.evidence.missing_evidence).toEqual([]);
+	});
+
+	it("omits reasoning token usage when Maestro has no separate observed count", () => {
+		const projected = project([nativeEvents()[6]!]);
+
+		expect(projected[0]?.event_type).toBe("model.usage");
+		expect(projected[0]?.model_usage).toMatchObject({
+			input_tokens: 120,
+			output_tokens: 34,
+			total_cost_usd: 0.00191,
+		});
+		expect(projected[0]?.model_usage).not.toHaveProperty(
+			"reasoning_output_tokens",
+		);
+	});
+
+	it("does not use the local working directory as a fallback workspace id", () => {
+		const projected = projectAgentWorkforceNativeEvents([nativeEvents()[0]!], {
+			correlation: {
+				session_id: "session-1",
+				agent_id: "agent-maestro-1",
+			},
+			chainId: "chain-missing-workspace",
+			clock: () => baseTime,
+			makeEnvelopeId: (_event, sequence) =>
+				`awf_evt_missing_workspace_${sequence}`,
+		});
+
+		expect(projected[0]?.tenant).toEqual({
+			organization_id: "unknown",
+			workspace_id: "unknown",
+		});
+		expect(projected[0]?.tenant.workspace_id).not.toBe(process.cwd());
 	});
 
 	it("uses per-projection correlation for repeated assistant message usage events in one turn", () => {

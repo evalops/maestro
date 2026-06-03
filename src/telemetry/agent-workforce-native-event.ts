@@ -645,7 +645,6 @@ function usageFromAssistantMessage(
 		input_tokens: usage.input,
 		cached_input_tokens: usage.cacheRead,
 		output_tokens: usage.output,
-		reasoning_output_tokens: 0,
 		total_cost_usd: usage.cost.total,
 	};
 }
@@ -781,7 +780,7 @@ function tenantFromOptions(
 ): AgentWorkforceTenant {
 	return {
 		organization_id: options.correlation.organization_id ?? "unknown",
-		workspace_id: options.correlation.workspace_id ?? process.cwd(),
+		workspace_id: options.correlation.workspace_id ?? "unknown",
 	};
 }
 
