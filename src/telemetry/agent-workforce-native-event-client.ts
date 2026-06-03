@@ -69,6 +69,7 @@ const SIGNED_CREDENTIAL_EGRESS_KEYS = new Set([
 	"credential_subject",
 	"credential_assumption_ref",
 	"credential_assumption_id",
+	"credential_join_correlation_id",
 	"credential_name",
 ]);
 
@@ -138,6 +139,10 @@ export function sanitizeAgentWorkforceNativeEventForPlatformPost(
 export async function resolveAgentWorkforceNativeEventPlatformConfig(
 	overrides: Partial<AgentWorkforceNativeEventPlatformConfig> = {},
 ): Promise<AgentWorkforceNativeEventPlatformConfig | null> {
+	const overrideBaseUrl = trimString(overrides.baseUrl);
+	const overrideOrganizationId = trimString(overrides.organizationId);
+	const overrideWorkspaceId = trimString(overrides.workspaceId);
+	const overrideToken = trimString(overrides.token);
 	const configuredEndpoint =
 		trimString(overrides.endpointUrl) ??
 		getEnvValue(AGENT_WORKFORCE_INGEST_URL_ENV_VARS);
@@ -151,34 +156,37 @@ export async function resolveAgentWorkforceNativeEventPlatformConfig(
 		baseUrlSuffixes: [PLATFORM_HTTP_ROUTES.agentWorkforce.nativeEventBatch],
 		defaultTimeoutMs: DEFAULT_AGENT_WORKFORCE_NATIVE_EVENT_TIMEOUT_MS,
 		defaultMaxAttempts: DEFAULT_AGENT_WORKFORCE_NATIVE_EVENT_MAX_ATTEMPTS,
-		requireBaseUrl: !configuredEndpoint,
-		requireOrganizationId: true,
-		requireToken: true,
+		requireBaseUrl: !configuredEndpoint && !overrideBaseUrl,
+		requireOrganizationId: !overrideOrganizationId,
+		requireToken: !overrideToken,
 	});
-	if (!config?.organizationId || !config.workspaceId || !config.token) {
+	const organizationId = overrideOrganizationId ?? config?.organizationId;
+	const workspaceId = overrideWorkspaceId ?? config?.workspaceId;
+	const token = overrideToken ?? config?.token;
+	if (!organizationId || !workspaceId || !token) {
 		return null;
 	}
 
-	const baseUrl =
-		trimString(overrides.baseUrl ?? config.baseUrl) ?? config.baseUrl;
+	const baseConfig: PlatformServiceConfig = config ?? {
+		baseUrl: "",
+		timeoutMs: DEFAULT_AGENT_WORKFORCE_NATIVE_EVENT_TIMEOUT_MS,
+		maxAttempts: DEFAULT_AGENT_WORKFORCE_NATIVE_EVENT_MAX_ATTEMPTS,
+	};
+	const baseUrl = overrideBaseUrl ?? baseConfig.baseUrl;
 	const endpointUrl = configuredEndpoint
 		? normalizeBaseUrl(configuredEndpoint)
 		: `${normalizeBaseUrl(baseUrl)}${PLATFORM_HTTP_ROUTES.agentWorkforce.nativeEventBatch}`;
 
 	return {
-		...config,
+		...baseConfig,
 		baseUrl,
 		endpointUrl,
-		organizationId:
-			trimString(overrides.organizationId ?? config.organizationId) ??
-			config.organizationId,
-		workspaceId:
-			trimString(overrides.workspaceId ?? config.workspaceId) ??
-			config.workspaceId,
-		token: trimString(overrides.token ?? config.token) ?? config.token,
-		timeoutMs: overrides.timeoutMs ?? config.timeoutMs,
-		maxAttempts: overrides.maxAttempts ?? config.maxAttempts,
-		teamId: trimString(overrides.teamId ?? config.teamId),
+		organizationId,
+		workspaceId,
+		token,
+		timeoutMs: overrides.timeoutMs ?? baseConfig.timeoutMs,
+		maxAttempts: overrides.maxAttempts ?? baseConfig.maxAttempts,
+		teamId: trimString(overrides.teamId ?? baseConfig.teamId),
 	};
 }
 

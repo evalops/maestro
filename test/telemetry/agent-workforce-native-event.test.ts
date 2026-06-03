@@ -533,6 +533,45 @@ describe("agent workforce native event projection", () => {
 		expect(projected[0]?.evidence.missing_evidence).toEqual([]);
 	});
 
+	it("identifies the Platform-proven credential ref when declared refs mismatch", () => {
+		const authority = platformCredentialAuthority();
+		delete authority.credential_assumption_ref;
+		const projected = projectAgentWorkforceNativeEvents([nativeEvents()[6]!], {
+			correlation: {
+				workspace_id: "workspace-1",
+				session_id: "session-1",
+				agent_id: "agent-maestro-1",
+				agent_run_id: "run-1",
+			},
+			chainId: "chain-platform-credential-mismatch",
+			declaredCredential: {
+				credential_subject: "agent:agent-maestro-1",
+				credential_assumption_ref: "secretbroker:grant:grant-declared",
+				grant_id: "grant-declared",
+				credential_name: "github-pr-writer",
+				declared_authority: "secret_broker",
+			},
+			platformCredentialAuthority: authority,
+			clock: () => baseTime,
+			makeEnvelopeId: (_event, sequence) =>
+				`awf_evt_verified_mismatch_${sequence}`,
+		});
+
+		expect(projected[0]?.credential_assumption).toMatchObject({
+			credential_assumption_ref: "secretbroker:grant:grant-verified",
+			grant_id: "grant-verified",
+			proof_status: "proven",
+			provenance_verified: true,
+			verified_provenance: {
+				authority_ref: "secretbroker:grant:grant-verified",
+			},
+		});
+		expect(
+			projected[0]?.credential_assumption.credential_assumption_ref,
+		).not.toBe("secretbroker:grant:grant-declared");
+		expect(projected[0]?.evidence.missing_evidence).toEqual([]);
+	});
+
 	it("keeps expired Platform credential authority missing instead of treating positive ttl as fresh", () => {
 		const projected = projectAgentWorkforceNativeEvents([nativeEvents()[6]!], {
 			correlation: {

@@ -405,7 +405,11 @@ describe("agent workforce native event Platform client", () => {
 		const [posted] = requests[0]?.body.events ?? [];
 		expect(posted).toMatchObject({
 			event_type: "model.usage",
+			timeline_correlation: {
+				credential_join_correlation_id: "platform-join-secret",
+			},
 			credential_assumption: {
+				credential_assumption_ref: "secretbroker:grant:grant-verified",
 				proof_status: "proven",
 				declared_authority: "secret_broker",
 				provenance_verified: true,
@@ -493,10 +497,31 @@ describe("agent workforce native event Platform client", () => {
 		expect(delays).toEqual([50]);
 	});
 
+	it("resolves explicit override config without env credentials", async () => {
+		vi.stubEnv("MAESTRO_PLATFORM_BASE_URL", "");
+		vi.stubEnv("MAESTRO_EVALOPS_ACCESS_TOKEN", "");
+		vi.stubEnv("MAESTRO_EVALOPS_ORG_ID", "");
+		vi.stubEnv("MAESTRO_EVALOPS_WORKSPACE_ID", "");
+
+		await expect(
+			resolveAgentWorkforceNativeEventPlatformConfig({
+				endpointUrl: "https://override.test/native-events",
+				organizationId: "org_override",
+				workspaceId: "ws_override",
+				token: "override-token",
+			}),
+		).resolves.toMatchObject({
+			endpointUrl: "https://override.test/native-events",
+			organizationId: "org_override",
+			workspaceId: "ws_override",
+			token: "override-token",
+		});
+	});
+
 	it("drops raw sensitive extras before POST without changing contract fields", () => {
 		const [event] = projectAgentWorkforceNativeEvents(
 			[{ type: "message_end", message: usageMessage() }],
-			projectionOptions(),
+			projectionOptions(platformCredentialAuthority()),
 		);
 		if (!event) {
 			throw new Error("expected projected event");
@@ -529,6 +554,10 @@ describe("agent workforce native event Platform client", () => {
 		expect(sanitizedBody.events[0]?.credential_assumption).toEqual(
 			event.credential_assumption,
 		);
+		expect(
+			sanitizedBody.events[0]?.timeline_correlation
+				.credential_join_correlation_id,
+		).toBe("platform-join-secret");
 		expect(verifyAgentWorkforceNativeEventChain(sanitizedBody.events)).toEqual({
 			valid: true,
 		});
@@ -538,6 +567,7 @@ describe("agent workforce native event Platform client", () => {
 		expect(sanitizedJson).not.toContain("blocked-fixture-zeta");
 		expect(sanitizedJson).not.toContain("blocked-fixture-eta");
 		expect(sanitizedJson).not.toContain("openai-responses");
+		expect(sanitizedJson).toContain("credential_join_correlation_id");
 		expect(sanitizedJson).toContain("model_usage");
 	});
 });

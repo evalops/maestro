@@ -990,16 +990,11 @@ function credentialAssumption(
 		return {
 			credential_subject: credentialSubject,
 			credential_assumption_ref:
-				platformAuthority.credential_assumption_ref ??
-				declared?.credential_assumption_ref ??
 				platformAuthority.verified_provenance.authority_ref,
-			credential_assumption_id:
-				platformAuthority.credential_assumption_id ?? declared?.credential_id,
-			grant_id: platformAuthority.grant_id ?? declared?.grant_id,
-			provider_ref_id:
-				platformAuthority.provider_ref_id ?? declared?.provider_ref_id,
-			credential_name:
-				platformAuthority.credential_name ?? declared?.credential_name,
+			credential_assumption_id: platformAuthority.credential_assumption_id,
+			grant_id: platformAuthority.grant_id,
+			provider_ref_id: platformAuthority.provider_ref_id,
+			credential_name: platformAuthority.credential_name,
 			proof_status: "proven",
 			declared_authority: platformAuthority.verified_provenance.authority,
 			provenance_verified: true,
