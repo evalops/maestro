@@ -495,6 +495,8 @@ const MUTATING_TOOL_NAMES = new Set([
 	"exec",
 	"git_cmd",
 	"notebook_edit",
+	"pipeline_create_signal",
+	"pipeline_log_activity",
 ]);
 
 const MUTATING_GITHUB_ACTIONS = new Set([
@@ -512,6 +514,13 @@ const MUTATING_GITHUB_ACTIONS = new Set([
 const MUTATING_GITHUB_REPO_ACTIONS = new Set(["clone", "fork"]);
 
 const MUTATING_BACKGROUND_TASK_ACTIONS = new Set(["start", "stop"]);
+
+const MUTATING_ARTIFACT_COMMANDS = new Set([
+	"create",
+	"delete",
+	"rewrite",
+	"update",
+]);
 
 const MUTATING_CONDUCTOR_TOOL_NAMES = new Set([
 	"click_element",
@@ -627,6 +636,14 @@ function toolMutatesResource(
 	if (lowerTool === "background_tasks") {
 		const action = readString(args, ["action"])?.toLowerCase();
 		return action ? MUTATING_BACKGROUND_TASK_ACTIONS.has(action) : false;
+	}
+	if (lowerTool === "artifacts") {
+		const command = readString(args, [
+			"command",
+			"cmd",
+			"action",
+		])?.toLowerCase();
+		return command ? MUTATING_ARTIFACT_COMMANDS.has(command) : false;
 	}
 	const mcp = mcpToolParts(lowerTool);
 	if (mcp?.verb && MUTATING_TOOL_NAMES.has(mcp.verb)) return true;

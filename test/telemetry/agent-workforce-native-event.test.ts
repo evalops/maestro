@@ -1437,6 +1437,10 @@ describe("agent workforce native event projection", () => {
 	});
 
 	it.each([
+		["artifacts", { command: "create", path: "report.md" }],
+		["artifacts", { command: "delete", path: "report.md" }],
+		["artifacts", { command: "rewrite", path: "report.md" }],
+		["artifacts", { command: "update", path: "report.md" }],
 		["background_tasks", { action: "start", command: "touch tmp/output.txt" }],
 		["background_tasks", { action: "stop", taskId: "task-1" }],
 		["browser_operator", { phase: "act", goal: "Click submit" }],
@@ -1465,6 +1469,8 @@ describe("agent workforce native event projection", () => {
 		["mcp__fathom-cua__click", { element_ref: "button-1" }],
 		["mcp__fathom-cua__type_text", { text: "hello" }],
 		["mcp__fathom-cua__press_key", { key: "Enter" }],
+		["pipeline_create_signal", { signal: "native_event_ready" }],
+		["pipeline_log_activity", { activity: "native_event_projection" }],
 	])(
 		"classifies %s tool executions as resource mutations",
 		(toolName, args) => {
@@ -1489,6 +1495,8 @@ describe("agent workforce native event projection", () => {
 	);
 
 	it.each([
+		["artifacts", { command: "get", path: "report.md" }],
+		["artifacts", { command: "logs", path: "report.md" }],
 		["background_tasks", { action: "list" }],
 		["background_tasks", { action: "logs", taskId: "task-1" }],
 		["browser_operator", { phase: "observe", goal: "Read page state" }],
