@@ -1,0 +1,445 @@
+import { describe, expect, it } from "vitest";
+import type {
+	ActionApprovalDecision,
+	ActionApprovalRequest,
+} from "../../src/agent/action-approval.js";
+import type {
+	AgentEvent,
+	AssistantMessage,
+	ToolResultMessage,
+} from "../../src/agent/types.js";
+import {
+	AGENT_WORKFORCE_NATIVE_EVENT_SCHEMA_VERSION,
+	type AgentWorkforceNativeEvent,
+	projectAgentWorkforceNativeEvents,
+	verifyAgentWorkforceNativeEventChain,
+} from "../../src/telemetry/agent-workforce-native-event.js";
+
+const baseTime = new Date("2026-06-03T16:00:00.000Z");
+
+function usageMessage(): AssistantMessage {
+	return {
+		role: "assistant",
+		content: [{ type: "text", text: "Done." }],
+		api: "openai-responses",
+		provider: "openai",
+		model: "gpt-5.5",
+		usage: {
+			input: 120,
+			output: 34,
+			cacheRead: 10,
+			cacheWrite: 2,
+			cost: {
+				input: 0.0012,
+				output: 0.00068,
+				cacheRead: 0.00001,
+				cacheWrite: 0.00002,
+				total: 0.00191,
+			},
+		},
+		stopReason: "stop",
+		timestamp: baseTime.getTime() + 4_000,
+	};
+}
+
+function toolResult(): ToolResultMessage {
+	return {
+		role: "toolResult",
+		toolCallId: "tool-call-1",
+		toolName: "bash",
+		content: [{ type: "text", text: "Denied by approval policy" }],
+		isError: true,
+		timestamp: baseTime.getTime() + 3_000,
+	};
+}
+
+function approvalRequest(): ActionApprovalRequest {
+	return {
+		id: "local-approval-1",
+		toolName: "bash",
+		args: { command: "git push origin main" },
+		reason: "Protected branch mutation requires approval",
+		startedAtMs: baseTime.getTime() + 1_000,
+		platform: {
+			source: "tool_execution",
+			toolExecutionId: "tool-exec-1",
+			approvalRequestId: "platform-approval-1",
+		},
+	};
+}
+
+function approvalDecision(): ActionApprovalDecision {
+	return {
+		approved: false,
+		reason: "Protected branch writes are denied in this mode",
+		resolvedBy: "policy",
+		resolvedAtMs: baseTime.getTime() + 2_000,
+	};
+}
+
+function nativeEvents(): AgentEvent[] {
+	const request = approvalRequest();
+	return [
+		{ type: "agent_start" },
+		{ type: "turn_start" },
+		{
+			type: "tool_execution_start",
+			toolCallId: "tool-call-1",
+			toolExecutionId: "tool-exec-1",
+			toolName: "bash",
+			args: { command: "git push origin main" },
+		},
+		{
+			type: "action_approval_required",
+			request,
+		},
+		{
+			type: "action_approval_resolved",
+			request,
+			decision: approvalDecision(),
+		},
+		{
+			type: "tool_execution_end",
+			toolCallId: "tool-call-1",
+			toolExecutionId: "tool-exec-1",
+			approvalRequestId: "platform-approval-1",
+			errorCode: "approval_denied",
+			toolName: "bash",
+			result: toolResult(),
+			isError: true,
+		},
+		{
+			type: "message_end",
+			message: usageMessage(),
+		},
+	];
+}
+
+function project(events = nativeEvents()): AgentWorkforceNativeEvent[] {
+	return projectAgentWorkforceNativeEvents(events, {
+		correlation: {
+			organization_id: "org-1",
+			user_id: "user-1",
+			workspace_id: "workspace-1",
+			session_id: "session-1",
+			agent_run_id: "run-1",
+			agent_id: "agent-maestro-1",
+			trace_id: "trace-1",
+			traceparent: "00-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-bbbbbbbbbbbbbbbb-01",
+			request_id: "response-1",
+		},
+		principal: {
+			subject: "user:user-1",
+			user_id: "user-1",
+			organization_id: "org-1",
+			workspace_id: "workspace-1",
+		},
+		threadId: "thread-session-1",
+		chainId: "chain-1",
+		clock: () => baseTime,
+		makeEnvelopeId: (_event, sequence) => `awf_evt_maestro_${sequence}`,
+	});
+}
+
+describe("agent workforce native event projection", () => {
+	it("does not project agent prose or arbitrary status text as native evidence", () => {
+		const projected = projectAgentWorkforceNativeEvents(
+			[
+				{
+					type: "status",
+					status: "Agent claims it used prod-deploy credentials",
+					details: { note: "prose-only" },
+				},
+			],
+			{
+				correlation: {
+					workspace_id: "workspace-1",
+					session_id: "session-1",
+				},
+				chainId: "chain-prose",
+				clock: () => baseTime,
+			},
+		);
+
+		expect(projected).toEqual([]);
+	});
+
+	it("projects Platform contract fields for runtime-observed run, turn, tool, approval, and usage envelopes", () => {
+		const projected = project();
+		expect(projected.map((event) => event.event_type)).toEqual([
+			"run.started",
+			"turn.started",
+			"tool.attempted",
+			"approval.requested",
+			"approval.resolved",
+			"tool.completed",
+			"model.usage",
+		]);
+
+		const toolAttempt = projected.find(
+			(event) => event.event_type === "tool.attempted",
+		);
+		expect(toolAttempt).toMatchObject({
+			schema_version: AGENT_WORKFORCE_NATIVE_EVENT_SCHEMA_VERSION,
+			envelope_id: "awf_evt_maestro_3",
+			emitter: {
+				emitter: "evalops/maestro",
+				component: "maestro.telemetry.event_bus",
+				emitter_owner: "maestro.provider_event_bus",
+				agent_type: "maestro",
+				surface: "desktop",
+			},
+			source_authority: {
+				declared_authority: "native_observed",
+				evidence_authority: "native_observed",
+				provenance_verified: false,
+			},
+			tenant: {
+				organization_id: "org-1",
+				workspace_id: "workspace-1",
+			},
+			agent_instance_id: "agent-maestro-1",
+			associated_human: {
+				subject: "user:user-1",
+				user_id: "user-1",
+			},
+			run: {
+				run_id: "run-1",
+				agent_run_id: "run-1",
+				agent_run_step_id: "tool-exec-1",
+				turn_id: "session-1:turn:1",
+				thread_id: "thread-session-1",
+				maestro_session_id: "session-1",
+				trace_id: "trace-1",
+			},
+			timeline_correlation: {
+				source_event_ref:
+					"maestro.AgentEvent:tool_execution_start:session-1:tool-call-1",
+				native_action_correlation_id:
+					"session-1/run-1/tool-exec-1/session-1:turn:1/tool-call-1",
+				platform_action_correlation_id:
+					"agentruntime:run-1:tool-exec-1:tool-call-1",
+			},
+			action: {
+				sequence: 3,
+				action_kind: "tool",
+				status: "attempted",
+				tool_call_id: "tool-call-1",
+				tool_execution_id: "tool-exec-1",
+				tool_name: "bash",
+				mutates_resource: true,
+				safe_args_summary: {
+					argument_keys: ["command"],
+					resource_kind: "command",
+					operation: "mutate",
+				},
+			},
+			credential_assumption: {
+				credential_subject: "unknown",
+				proof_status: "missing",
+				declared_authority: "unknown",
+				provenance_verified: false,
+			},
+			evidence: {
+				refs: expect.arrayContaining([
+					expect.objectContaining({
+						kind: "native_event",
+						ref: "maestro.AgentEvent:tool_execution_start:session-1:tool-call-1",
+					}),
+					expect.objectContaining({
+						kind: "agent_runtime",
+						ref: "agentruntime:run-1:tool-exec-1",
+					}),
+				]),
+				missing_evidence: [
+					expect.objectContaining({
+						code: "credential_assumption.unproven",
+						severity: "blocking_for_platform_native",
+						owner: "platform.secret_broker",
+					}),
+				],
+				signature: expect.stringMatching(/^sha256-chain:v1:/),
+			},
+		});
+		expect(toolAttempt).not.toHaveProperty("native_event_type");
+		expect(toolAttempt).not.toHaveProperty("source");
+		expect(toolAttempt).not.toHaveProperty("integrity");
+
+		const approval = projected.find(
+			(event) => event.event_type === "approval.resolved",
+		);
+		expect(approval).toMatchObject({
+			policy: {
+				approval_ref: "platform-approval-1",
+				decision: "deny",
+			},
+			action: {
+				action_kind: "approval",
+				status: "denied",
+				tool_name: "bash",
+				tool_execution_id: "tool-exec-1",
+			},
+		});
+
+		const usage = projected.find((event) => event.event_type === "model.usage");
+		expect(usage).toMatchObject({
+			action: {
+				action_kind: "usage",
+				status: "completed",
+			},
+			model_usage: {
+				provider: "openai",
+				model: "gpt-5.5",
+				request_id: "response-1",
+				input_tokens: 120,
+				cached_input_tokens: 10,
+				output_tokens: 34,
+				reasoning_output_tokens: 0,
+				total_cost_usd: 0.00191,
+			},
+		});
+	});
+
+	it("keeps declared Secret Broker credential refs unproven without verified Platform joins", () => {
+		const projected = projectAgentWorkforceNativeEvents([nativeEvents()[6]!], {
+			correlation: {
+				workspace_id: "workspace-1",
+				session_id: "session-1",
+			},
+			chainId: "chain-credential",
+			declaredCredential: {
+				credential_subject: "agent:agent-maestro-1",
+				credential_assumption_ref: "secretbroker:grant:grant-declared",
+				grant_id: "grant-declared",
+				credential_name: "github-pr-writer",
+				declared_authority: "secret_broker",
+			},
+			credentialJoinRefs: [
+				{
+					kind: "secret_broker",
+					id: "secretbroker:grant:grant-declared",
+					service: "SecretBroker",
+				},
+			],
+			clock: () => baseTime,
+			makeEnvelopeId: (_event, sequence) => `awf_evt_credential_${sequence}`,
+		});
+
+		expect(projected[0]?.credential_assumption).toMatchObject({
+			credential_subject: "agent:agent-maestro-1",
+			credential_assumption_ref: "secretbroker:grant:grant-declared",
+			grant_id: "grant-declared",
+			credential_name: "github-pr-writer",
+			proof_status: "missing",
+			declared_authority: "secret_broker",
+			provenance_verified: false,
+		});
+		expect(projected[0]?.credential_assumption).not.toHaveProperty(
+			"verified_provenance",
+		);
+		expect(projected[0]?.evidence.missing_evidence).toEqual([
+			expect.objectContaining({ code: "credential_assumption.unproven" }),
+		]);
+	});
+
+	it("only marks credential provenance proven with a complete verified Platform join bundle", () => {
+		const projected = projectAgentWorkforceNativeEvents([nativeEvents()[6]!], {
+			correlation: {
+				workspace_id: "workspace-1",
+				session_id: "session-1",
+				agent_id: "agent-maestro-1",
+				agent_run_id: "run-1",
+			},
+			chainId: "chain-verified-credential",
+			declaredCredential: {
+				credential_subject: "agent:agent-maestro-1",
+				credential_assumption_ref: "secretbroker:grant:grant-verified",
+				grant_id: "grant-verified",
+				credential_name: "github-pr-writer",
+				declared_authority: "secret_broker",
+			},
+			credentialJoinRefs: [
+				{
+					kind: "identity",
+					id: "identity:user:user-1",
+					evidence_id: "join-identity",
+					verified: true,
+					observed_at: baseTime.toISOString(),
+					expires_at: new Date(baseTime.getTime() + 60_000).toISOString(),
+					ttl_seconds: 60,
+					revocation_status: "not_revoked",
+				},
+				{
+					kind: "agent_runtime",
+					id: "agentruntime:run-1:usage-step",
+					evidence_id: "join-runtime",
+					verified: true,
+					observed_at: baseTime.toISOString(),
+					expires_at: new Date(baseTime.getTime() + 60_000).toISOString(),
+					ttl_seconds: 60,
+					revocation_status: "not_revoked",
+				},
+				{
+					kind: "secret_broker",
+					id: "secretbroker:grant:grant-verified",
+					evidence_id: "join-secret",
+					verified: true,
+					observed_at: baseTime.toISOString(),
+					expires_at: new Date(baseTime.getTime() + 60_000).toISOString(),
+					ttl_seconds: 60,
+					revocation_status: "active",
+				},
+			],
+			clock: () => baseTime,
+			makeEnvelopeId: (_event, sequence) => `awf_evt_verified_${sequence}`,
+		});
+
+		expect(projected[0]?.credential_assumption).toMatchObject({
+			proof_status: "proven",
+			declared_authority: "secret_broker",
+			provenance_verified: true,
+			verified_provenance: {
+				authority: "secret_broker",
+				authority_ref: "secretbroker:grant:grant-verified",
+				join_correlation_id: "join-secret",
+				joined_evidence_refs: [
+					expect.objectContaining({ kind: "identity", ref: "join-identity" }),
+					expect.objectContaining({
+						kind: "agent_runtime",
+						ref: "join-runtime",
+					}),
+					expect.objectContaining({
+						kind: "secret_broker",
+						ref: "join-secret",
+					}),
+				],
+			},
+		});
+		expect(projected[0]?.timeline_correlation).toMatchObject({
+			credential_join_correlation_id: "join-secret",
+		});
+		expect(projected[0]?.evidence.missing_evidence).toEqual([]);
+	});
+
+	it("detects tampered and omitted events from the schema-compatible evidence signature chain", () => {
+		const projected = project();
+		expect(verifyAgentWorkforceNativeEventChain(projected)).toEqual({
+			valid: true,
+		});
+
+		const tampered = structuredClone(projected);
+		tampered[2]!.action.tool_name = "write";
+		expect(verifyAgentWorkforceNativeEventChain(tampered)).toMatchObject({
+			valid: false,
+			reason: "hash_mismatch",
+			index: 2,
+		});
+
+		const omitted = projected.filter((_event, index) => index !== 2);
+		expect(verifyAgentWorkforceNativeEventChain(omitted)).toMatchObject({
+			valid: false,
+			reason: "sequence_gap",
+			index: 2,
+		});
+	});
+});
