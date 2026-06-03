@@ -12,6 +12,7 @@ export const packageImpactingFiles = new Set([
 	"tsconfig.build.json",
 	"tsconfig.json",
 	"scripts/bundle-runtime-deps.mjs",
+	"scripts/cli-runtime-boundary-externals.mjs",
 	"scripts/copy-db-migrations.js",
 	"scripts/copy-themes.js",
 	"scripts/codegen-utils.mjs",
