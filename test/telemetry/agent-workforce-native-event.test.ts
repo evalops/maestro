@@ -572,6 +572,73 @@ describe("agent workforce native event projection", () => {
 		expect(projected[0]?.evidence.missing_evidence).toEqual([]);
 	});
 
+	it("normalizes verified provenance before signing projected events", () => {
+		const authority = platformCredentialAuthority();
+		const rawProvenance = authority.verified_provenance as unknown as Record<
+			string,
+			unknown
+		>;
+		rawProvenance.provider_response = {
+			authorization: "blocked-fixture-provider-response",
+		};
+		rawProvenance.secret_metadata = "blocked-fixture-secret-metadata";
+		const rawJoinedRef = authority.verified_provenance
+			.joined_evidence_refs[0] as unknown as Record<string, unknown>;
+		rawJoinedRef.provider_request = "blocked-fixture-joined-ref";
+
+		const projected = projectAgentWorkforceNativeEvents([nativeEvents()[6]!], {
+			correlation: {
+				workspace_id: "workspace-1",
+				session_id: "session-1",
+				agent_id: "agent-maestro-1",
+				agent_run_id: "run-1",
+			},
+			chainId: "chain-platform-normalized-provenance",
+			declaredCredential: {
+				credential_subject: "agent:agent-maestro-1",
+				credential_assumption_ref: "secretbroker:grant:grant-verified",
+				grant_id: "grant-verified",
+				credential_name: "github-pr-writer",
+				declared_authority: "secret_broker",
+			},
+			platformCredentialAuthority: authority,
+			clock: () => baseTime,
+			makeEnvelopeId: (_event, sequence) =>
+				`awf_evt_normalized_provenance_${sequence}`,
+		});
+
+		expect(projected[0]?.credential_assumption.verified_provenance).toEqual({
+			authority: "secret_broker",
+			authority_ref: "secretbroker:grant:grant-verified",
+			join_correlation_id: "platform-join-secret",
+			observed_at: authority.verified_provenance.observed_at,
+			expires_at: authority.verified_provenance.expires_at,
+			ttl_seconds: 60,
+			revocation_status: "active",
+			joined_evidence_refs: [
+				{
+					kind: "identity",
+					ref: "join-identity",
+					observed_at: baseTime.toISOString(),
+				},
+				{
+					kind: "agent_runtime",
+					ref: "join-runtime",
+					observed_at: baseTime.toISOString(),
+				},
+				{
+					kind: "secret_broker",
+					ref: "join-secret",
+					observed_at: baseTime.toISOString(),
+				},
+			],
+		});
+		expect(JSON.stringify(projected[0])).not.toContain("blocked-fixture");
+		expect(verifyAgentWorkforceNativeEventChain(projected)).toEqual({
+			valid: true,
+		});
+	});
+
 	it("uses the runtime agent subject when Platform proof omits credential_subject", () => {
 		const authority = platformCredentialAuthority();
 		delete authority.credential_subject;
@@ -1079,6 +1146,47 @@ describe("agent workforce native event projection", () => {
 		expect(
 			projected[0]?.evidence.refs.some((ref) => ref.kind === "agent_runtime"),
 		).toBe(false);
+	});
+
+	it("requires a real run id before claiming AgentRuntime step evidence", () => {
+		const projected = projectAgentWorkforceNativeEvents(
+			[
+				{
+					type: "tool_execution_start",
+					toolCallId: "platform-tool-call-without-run",
+					toolExecutionId: "platform-step-without-run",
+					toolName: "bash",
+					args: { command: "pwd" },
+				},
+			],
+			{
+				correlation: {
+					workspace_id: "workspace-1",
+					session_id: "session-platform-step-without-run",
+				},
+				chainId: "chain-platform-step-without-run",
+				clock: () => baseTime,
+				makeEnvelopeId: (_event, sequence) =>
+					`awf_evt_platform_step_without_run_${sequence}`,
+			},
+		);
+
+		expect(projected[0]?.run).toMatchObject({
+			agent_run_id: undefined,
+			agent_run_step_id: "platform-step-without-run",
+		});
+		expect(projected[0]?.action.tool_execution_id).toBe(
+			"platform-step-without-run",
+		);
+		expect(
+			projected[0]?.timeline_correlation.platform_action_correlation_id,
+		).toBeUndefined();
+		expect(
+			projected[0]?.evidence.refs.some((ref) => ref.kind === "agent_runtime"),
+		).toBe(false);
+		expect(JSON.stringify(projected[0])).not.toContain(
+			"agentruntime:unknown-run",
+		);
 	});
 
 	it("does not leak a previous turn id into a later run-start envelope", () => {

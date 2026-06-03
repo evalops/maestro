@@ -991,6 +991,32 @@ function platformCredentialAuthorityIsComplete(
 	);
 }
 
+function normalizeEvidenceRef(
+	ref: AgentWorkforceEvidenceRef,
+): AgentWorkforceEvidenceRef {
+	return {
+		kind: ref.kind,
+		ref: ref.ref,
+		...(ref.observed_at ? { observed_at: ref.observed_at } : {}),
+	};
+}
+
+function normalizeVerifiedProvenance(
+	provenance: AgentWorkforceVerifiedProvenance,
+): AgentWorkforceVerifiedProvenance {
+	return {
+		authority: provenance.authority,
+		authority_ref: provenance.authority_ref,
+		join_correlation_id: provenance.join_correlation_id,
+		observed_at: provenance.observed_at,
+		expires_at: provenance.expires_at,
+		ttl_seconds: provenance.ttl_seconds,
+		revocation_status: provenance.revocation_status,
+		joined_evidence_refs:
+			provenance.joined_evidence_refs.map(normalizeEvidenceRef),
+	};
+}
+
 function credentialAssumption(
 	options: AgentWorkforceNativeProjectionOptions,
 	now: Date,
@@ -999,6 +1025,9 @@ function credentialAssumption(
 	const declaredAuthority = credentialDeclaredAuthority(declared);
 	const platformAuthority = options.platformCredentialAuthority;
 	if (platformCredentialAuthorityIsComplete(platformAuthority, now)) {
+		const verifiedProvenance = normalizeVerifiedProvenance(
+			platformAuthority.verified_provenance,
+		);
 		const runtimeCredentialSubject = options.correlation.agent_id
 			? `agent:${options.correlation.agent_id}`
 			: undefined;
@@ -1007,16 +1036,15 @@ function credentialAssumption(
 		if (credentialSubject) {
 			return {
 				credential_subject: credentialSubject,
-				credential_assumption_ref:
-					platformAuthority.verified_provenance.authority_ref,
+				credential_assumption_ref: verifiedProvenance.authority_ref,
 				credential_assumption_id: platformAuthority.credential_assumption_id,
 				grant_id: platformAuthority.grant_id,
 				provider_ref_id: platformAuthority.provider_ref_id,
 				credential_name: platformAuthority.credential_name,
 				proof_status: "proven",
-				declared_authority: platformAuthority.verified_provenance.authority,
+				declared_authority: verifiedProvenance.authority,
 				provenance_verified: true,
-				verified_provenance: platformAuthority.verified_provenance,
+				verified_provenance: verifiedProvenance,
 			};
 		}
 	}
@@ -1168,12 +1196,10 @@ function platformActionCorrelationId(
 	action: AgentWorkforceAction,
 ): string | undefined {
 	const agentRunStepId = run.agent_run_step_id ?? action.tool_execution_id;
-	if (!agentRunStepId) {
+	if (!run.agent_run_id || !agentRunStepId) {
 		return undefined;
 	}
-	return ["agentruntime", run.agent_run_id ?? "unknown-run", agentRunStepId]
-		.filter(Boolean)
-		.join(":");
+	return ["agentruntime", run.agent_run_id, agentRunStepId].join(":");
 }
 
 function evidenceRefs(input: {
@@ -1193,10 +1219,10 @@ function evidenceRefs(input: {
 			observed_at: input.observedAt,
 		},
 	];
-	if (input.run.agent_run_step_id) {
+	if (input.run.agent_run_id && input.run.agent_run_step_id) {
 		refs.push({
 			kind: "agent_runtime",
-			ref: `agentruntime:${input.run.agent_run_id ?? "unknown-run"}:${input.run.agent_run_step_id}`,
+			ref: `agentruntime:${input.run.agent_run_id}:${input.run.agent_run_step_id}`,
 			observed_at: input.observedAt,
 		});
 	}
@@ -1227,8 +1253,9 @@ function evidenceRefs(input: {
 			input.now,
 		)
 	) {
-		for (const ref of input.platformCredentialAuthority.verified_provenance
-			.joined_evidence_refs) {
+		for (const ref of normalizeVerifiedProvenance(
+			input.platformCredentialAuthority.verified_provenance,
+		).joined_evidence_refs) {
 			if (
 				!refs.some(
 					(existing) => existing.kind === ref.kind && existing.ref === ref.ref,
