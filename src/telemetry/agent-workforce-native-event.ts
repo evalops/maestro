@@ -1128,7 +1128,7 @@ export class AgentWorkforceNativeEventProjector {
 		);
 		const credential = credentialAssumption(this.options, now);
 		const modelUsage =
-			event.type === "message_end" || event.type === "turn_end"
+			event.type === "message_end"
 				? usageFromAssistantMessage(
 						event.message as AppMessage,
 						this.options.correlation.request_id,

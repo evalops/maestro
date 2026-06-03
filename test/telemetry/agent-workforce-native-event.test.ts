@@ -558,6 +558,26 @@ describe("agent workforce native event projection", () => {
 		);
 	});
 
+	it("does not duplicate meterable model usage onto turn completion for the same assistant message", () => {
+		const completedAssistantMessage = usageMessage();
+		const projected = project([
+			{ type: "turn_start" },
+			{ type: "message_end", message: completedAssistantMessage },
+			{ type: "turn_end", message: completedAssistantMessage },
+		]);
+
+		const meterableUsageEvents = projected.filter(
+			(event) => event.model_usage !== undefined,
+		);
+		expect(meterableUsageEvents.map((event) => event.event_type)).toEqual([
+			"model.usage",
+		]);
+		expect(
+			projected.find((event) => event.event_type === "turn.completed")
+				?.model_usage,
+		).toBeUndefined();
+	});
+
 	it("does not infer approval denial from a failed execution after approval was allowed", () => {
 		const request = approvalRequest();
 		const approvedDecision: ActionApprovalDecision = {
