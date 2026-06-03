@@ -518,6 +518,18 @@ describe("agent workforce native event Platform client", () => {
 		});
 	});
 
+	it("requires an explicit workspace id instead of using the org fallback", async () => {
+		vi.stubEnv("MAESTRO_AGENT_WORKFORCE_WORKSPACE_ID", "");
+		vi.stubEnv("MAESTRO_EVALOPS_WORKSPACE_ID", "");
+		vi.stubEnv("EVALOPS_WORKSPACE_ID", "");
+		vi.stubEnv("MAESTRO_WORKSPACE_ID", "");
+		vi.stubEnv("MAESTRO_REMOTE_RUNNER_WORKSPACE_ID", "");
+
+		await expect(
+			resolveAgentWorkforceNativeEventPlatformConfig(),
+		).resolves.toBeNull();
+	});
+
 	it("drops raw sensitive extras before POST without changing contract fields", () => {
 		const [event] = projectAgentWorkforceNativeEvents(
 			[{ type: "message_end", message: usageMessage() }],

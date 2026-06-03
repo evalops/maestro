@@ -143,6 +143,8 @@ export async function resolveAgentWorkforceNativeEventPlatformConfig(
 	const overrideOrganizationId = trimString(overrides.organizationId);
 	const overrideWorkspaceId = trimString(overrides.workspaceId);
 	const overrideToken = trimString(overrides.token);
+	const explicitWorkspaceId =
+		overrideWorkspaceId ?? getEnvValue(AGENT_WORKFORCE_WORKSPACE_ENV_VARS);
 	const configuredEndpoint =
 		trimString(overrides.endpointUrl) ??
 		getEnvValue(AGENT_WORKFORCE_INGEST_URL_ENV_VARS);
@@ -161,9 +163,8 @@ export async function resolveAgentWorkforceNativeEventPlatformConfig(
 		requireToken: !overrideToken,
 	});
 	const organizationId = overrideOrganizationId ?? config?.organizationId;
-	const workspaceId = overrideWorkspaceId ?? config?.workspaceId;
 	const token = overrideToken ?? config?.token;
-	if (!organizationId || !workspaceId || !token) {
+	if (!organizationId || !explicitWorkspaceId || !token) {
 		return null;
 	}
 
@@ -182,7 +183,7 @@ export async function resolveAgentWorkforceNativeEventPlatformConfig(
 		baseUrl,
 		endpointUrl,
 		organizationId,
-		workspaceId,
+		workspaceId: explicitWorkspaceId,
 		token,
 		timeoutMs: overrides.timeoutMs ?? baseConfig.timeoutMs,
 		maxAttempts: overrides.maxAttempts ?? baseConfig.maxAttempts,
