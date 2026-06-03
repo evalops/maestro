@@ -716,6 +716,63 @@ describe("agent workforce native event projection", () => {
 		]);
 	});
 
+	it("keeps unsupported Platform credential authority values missing", () => {
+		const unsupportedAuthority = platformCredentialAuthority(
+			baseTime.getTime() + 60_000,
+		);
+		unsupportedAuthority.verified_provenance = {
+			...unsupportedAuthority.verified_provenance,
+			authority: "provider_proxy" as never,
+			joined_evidence_refs: [
+				{
+					kind: "identity",
+					ref: "join-identity",
+					observed_at: baseTime.toISOString(),
+				},
+				{
+					kind: "agent_runtime",
+					ref: "join-runtime",
+					observed_at: baseTime.toISOString(),
+				},
+				{
+					kind: "provider_proxy" as never,
+					ref: "join-provider-proxy",
+					observed_at: baseTime.toISOString(),
+				},
+			],
+		};
+
+		const projected = projectAgentWorkforceNativeEvents([nativeEvents()[6]!], {
+			correlation: {
+				workspace_id: "workspace-1",
+				session_id: "session-1",
+				agent_id: "agent-maestro-1",
+				agent_run_id: "run-1",
+			},
+			chainId: "chain-unsupported-platform-authority",
+			declaredCredential: {
+				credential_subject: "agent:agent-maestro-1",
+				credential_assumption_ref: "providerproxy:grant:grant-unsupported",
+				grant_id: "grant-unsupported",
+				credential_name: "provider-proxy",
+				declared_authority: "provider_proxy",
+			},
+			platformCredentialAuthority: unsupportedAuthority,
+			clock: () => baseTime,
+			makeEnvelopeId: (_event, sequence) =>
+				`awf_evt_unsupported_authority_${sequence}`,
+		});
+
+		expect(projected[0]?.credential_assumption).toMatchObject({
+			proof_status: "missing",
+			declared_authority: "provider_proxy",
+			provenance_verified: false,
+		});
+		expect(projected[0]?.credential_assumption).not.toHaveProperty(
+			"verified_provenance",
+		);
+	});
+
 	it("omits reasoning token usage when Maestro has no separate observed count", () => {
 		const projected = project([nativeEvents()[6]!]);
 
@@ -784,6 +841,35 @@ describe("agent workforce native event projection", () => {
 		expect(
 			projected[0]?.evidence.refs.some((ref) => ref.kind === "agent_runtime"),
 		).toBe(false);
+	});
+
+	it("does not leak a previous turn id into a later run-start envelope", () => {
+		const projected = projectAgentWorkforceNativeEvents(
+			[
+				{ type: "agent_start" },
+				{ type: "turn_start" },
+				{ type: "agent_start" },
+			],
+			{
+				correlation: {
+					workspace_id: "workspace-1",
+					session_id: "session-reused-projector",
+					agent_run_id: "run-reused-projector",
+				},
+				chainId: "chain-reused-projector",
+				clock: () => baseTime,
+				makeEnvelopeId: (_event, sequence) =>
+					`awf_evt_reused_projector_${sequence}`,
+			},
+		);
+
+		expect(projected.map((event) => event.event_type)).toEqual([
+			"run.started",
+			"turn.started",
+			"run.started",
+		]);
+		expect(projected[1]?.run.turn_id).toBe("session-reused-projector:turn:1");
+		expect(projected[2]?.run.turn_id).toBeUndefined();
 	});
 
 	it("uses per-projection correlation for repeated assistant message usage events in one turn", () => {

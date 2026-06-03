@@ -384,6 +384,16 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 	return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+function isVerifiedCredentialAuthority(
+	value: unknown,
+): value is AgentWorkforceVerifiedCredentialAuthority {
+	return (
+		value === "identity" ||
+		value === "secret_broker" ||
+		value === "llm_gateway_vault"
+	);
+}
+
 function eventHashPayload(event: AgentWorkforceNativeEvent): unknown {
 	return {
 		...event,
@@ -688,7 +698,7 @@ function platformCredentialAuthorityIsComplete(
 	}
 	const joinedRefs = provenance.joined_evidence_refs;
 	if (
-		typeof provenance.authority !== "string" ||
+		!isVerifiedCredentialAuthority(provenance.authority) ||
 		typeof provenance.authority_ref !== "string" ||
 		typeof provenance.join_correlation_id !== "string" ||
 		typeof provenance.observed_at !== "string" ||
@@ -822,7 +832,7 @@ function associatedHumanFromOptions(
 
 function runFromOptions(
 	options: AgentWorkforceNativeProjectionOptions,
-	currentTurnId: string | undefined,
+	turnId: string | undefined,
 	eventStepId: string | undefined,
 ): AgentWorkforceRun {
 	const sessionId = options.correlation.session_id ?? "unknown";
@@ -831,13 +841,27 @@ function runFromOptions(
 		run_id: agentRunId ?? sessionId,
 		agent_run_id: agentRunId,
 		agent_run_step_id: eventStepId ?? options.correlation.agent_run_step_id,
-		turn_id: options.turnId ?? currentTurnId,
+		turn_id: turnId,
 		thread_id:
 			options.threadId ?? options.correlation.conversation_id ?? sessionId,
 		maestro_session_id: sessionId,
 		trace_id: options.correlation.trace_id,
 		traceparent: options.correlation.traceparent,
 	};
+}
+
+function turnIdForEvent(
+	event: AgentEvent,
+	options: AgentWorkforceNativeProjectionOptions,
+	currentTurnId: string | undefined,
+): string | undefined {
+	switch (event.type) {
+		case "agent_start":
+		case "agent_end":
+			return undefined;
+		default:
+			return options.turnId ?? currentTurnId;
+	}
 }
 
 function sourceEventRef(
@@ -1120,6 +1144,10 @@ export class AgentWorkforceNativeEventProjector {
 		const eventType = nativeEventTypeFor(event);
 		if (!eventType) return null;
 
+		if (event.type === "agent_start") {
+			this.currentTurnId = undefined;
+		}
+
 		if (event.type === "turn_start") {
 			this.turnOrdinal += 1;
 			this.currentTurnId =
@@ -1153,7 +1181,7 @@ export class AgentWorkforceNativeEventProjector {
 		const observedAt = eventObservedAt(event, now);
 		const run = runFromOptions(
 			this.options,
-			this.currentTurnId,
+			turnIdForEvent(event, this.options, this.currentTurnId),
 			eventStepId(event),
 		);
 		const action = actionForEvent(event, sequence, pendingTool);
@@ -1242,6 +1270,9 @@ export class AgentWorkforceNativeEventProjector {
 			eventHash,
 		});
 		this.previousEventHash = eventHash;
+		if (event.type === "turn_end" || event.type === "agent_end") {
+			this.currentTurnId = undefined;
+		}
 		return eventEnvelope;
 	}
 }
