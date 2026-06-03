@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use sha1::{Digest, Sha1};
 use sha2::Sha256;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::env;
 use std::io::{Cursor, Read};
 use std::path::{Component, Path, PathBuf};
@@ -2897,8 +2897,24 @@ fn add_usage_to_bucket(bucket: &mut UsageBucket, cost: f64, tokens: u64, entry: 
     bucket.tokens_detailed.total += tokens;
 }
 
+fn allowed_run_scripts() -> HashSet<String> {
+    let configured =
+        env::var("MAESTRO_RUN_SCRIPT_ALLOWLIST").unwrap_or_else(|_| "db:migrate".to_string());
+    configured
+        .split(',')
+        .map(str::trim)
+        .filter(|script| !script.is_empty())
+        .map(ToOwned::to_owned)
+        .collect()
+}
+
 async fn package_scripts(cwd: &Path) -> Vec<String> {
-    let mut scripts: Vec<String> = package_script_map(cwd).await.into_keys().collect();
+    let allowlist = allowed_run_scripts();
+    let mut scripts: Vec<String> = package_script_map(cwd)
+        .await
+        .into_keys()
+        .filter(|script| allowlist.contains(script))
+        .collect();
     scripts.sort();
     scripts
 }
@@ -2946,9 +2962,26 @@ async fn run_script_response(cwd: &Path, request: RunScriptRequest) -> Vec<u8> {
         );
     }
 
+    let allowlist = allowed_run_scripts();
+    if !allowlist.contains(script) {
+        let mut allowed: Vec<String> = allowlist.iter().cloned().collect();
+        allowed.sort();
+        return json_response(
+            403,
+            &serde_json::json!({
+                "error": format!("Script \"{script}\" is not allowed in this environment"),
+                "allowed": allowed,
+            }),
+        );
+    }
+
     let available_scripts = package_script_map(cwd).await;
     if !available_scripts.contains_key(script) {
-        let mut available: Vec<String> = available_scripts.keys().cloned().collect();
+        let mut available: Vec<String> = available_scripts
+            .keys()
+            .filter(|name| allowlist.contains(*name))
+            .cloned()
+            .collect();
         available.sort();
         return json_response(
             400,
