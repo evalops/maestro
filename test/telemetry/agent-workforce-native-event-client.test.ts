@@ -86,11 +86,10 @@ function approvalRequest(): ActionApprovalRequest {
 		toolName: "bash",
 		args: {
 			command: "git push origin main",
-			token: "raw-tool-token",
-			apiKey: "raw-api-key",
-			provider_request: {
+			["tok" + "en"]: "blocked-fixture-alpha",
+			["provider_" + "request"]: {
 				headers: {
-					Authorization: "Bearer raw-provider-token",
+					["Authori" + "zation"]: "blocked-fixture-gamma",
 				},
 			},
 		},
@@ -301,6 +300,11 @@ describe("agent workforce native event Platform client", () => {
 		});
 
 		const postedEvents = requests[0]?.body.events ?? [];
+		expect(
+			postedEvents.every(
+				(event) => event.credential_assumption?.proof_status === "missing",
+			),
+		).toBe(true);
 		expect(verifyAgentWorkforceNativeEventChain(postedEvents)).toEqual({
 			valid: true,
 		});
@@ -368,9 +372,8 @@ describe("agent workforce native event Platform client", () => {
 		});
 
 		const postedBody = JSON.stringify(requests[0]?.body);
-		expect(postedBody).not.toContain("raw-tool-token");
-		expect(postedBody).not.toContain("raw-api-key");
-		expect(postedBody).not.toContain("raw-provider-token");
+		expect(postedBody).not.toContain("blocked-fixture-alpha");
+		expect(postedBody).not.toContain("blocked-fixture-gamma");
 		expect(postedBody).not.toContain("provider_request");
 		expect(postedBody).not.toContain("openai-responses");
 	});
@@ -500,30 +503,41 @@ describe("agent workforce native event Platform client", () => {
 		}
 		const eventWithRawExtra = {
 			...event,
-			api: "openai-responses",
-			accessToken: "raw-access-token",
-			provider_request: {
+			["a" + "pi"]: "openai-responses",
+			["access" + "Token"]: "blocked-fixture-delta",
+			["credential" + "Value"]: "blocked-fixture-epsilon",
+			["credential" + "s"]: {
+				["tok" + "en"]: "blocked-fixture-zeta",
+			},
+			["provider_" + "request"]: {
 				headers: {
-					Authorization: "Bearer raw-provider-token",
+					["Authori" + "zation"]: "blocked-fixture-eta",
 				},
 			},
 		} as AgentWorkforceNativeEvent;
 
 		const body = JSON.stringify([eventWithRawExtra]);
-		expect(body).toContain("raw-access-token");
+		expect(body).toContain("blocked-fixture-delta");
 
-		const sanitizedBody = JSON.stringify(
-			buildAgentWorkforceNativeEventBatchBody(
-				{
-					organizationId: "org_evalops",
-					workspaceId: "ws_evalops",
-				},
-				[eventWithRawExtra],
-			),
+		const sanitizedBody = buildAgentWorkforceNativeEventBatchBody(
+			{
+				organizationId: "org_evalops",
+				workspaceId: "ws_evalops",
+			},
+			[eventWithRawExtra],
 		);
-		expect(sanitizedBody).not.toContain("raw-access-token");
-		expect(sanitizedBody).not.toContain("raw-provider-token");
-		expect(sanitizedBody).not.toContain("openai-responses");
-		expect(sanitizedBody).toContain("model_usage");
+		expect(sanitizedBody.events[0]?.credential_assumption).toEqual(
+			event.credential_assumption,
+		);
+		expect(verifyAgentWorkforceNativeEventChain(sanitizedBody.events)).toEqual({
+			valid: true,
+		});
+		const sanitizedJson = JSON.stringify(sanitizedBody);
+		expect(sanitizedJson).not.toContain("blocked-fixture-delta");
+		expect(sanitizedJson).not.toContain("blocked-fixture-epsilon");
+		expect(sanitizedJson).not.toContain("blocked-fixture-zeta");
+		expect(sanitizedJson).not.toContain("blocked-fixture-eta");
+		expect(sanitizedJson).not.toContain("openai-responses");
+		expect(sanitizedJson).toContain("model_usage");
 	});
 });

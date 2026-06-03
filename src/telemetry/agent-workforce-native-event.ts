@@ -1082,7 +1082,7 @@ function runFromOptions(
 	return {
 		run_id: agentRunId ?? sessionId,
 		agent_run_id: agentRunId,
-		agent_run_step_id: eventStepId ?? options.correlation.agent_run_step_id,
+		agent_run_step_id: eventStepId,
 		turn_id: turnId,
 		thread_id:
 			options.threadId ?? options.correlation.conversation_id ?? sessionId,

@@ -62,7 +62,15 @@ const AGENT_WORKFORCE_MAX_ATTEMPTS_ENV_VARS = [
 ] as const;
 
 const SENSITIVE_EGRESS_KEY_PATTERN =
-	/(?:^|[_-])(?:api[_-]?key|access[_-]?token|refresh[_-]?token|token|secret|authorization|password|provider[_-]?(?:headers|request|response|token|secret|internal)|raw[_-]?provider|api)(?:$|[_-])/iu;
+	/(?:^|[_-])(?:api[_-]?key|access[_-]?token|refresh[_-]?token|token|secret|authorization|password|provider[_-]?(?:headers|request|response|token|secret|internal)|raw[_-]?provider|api|credentials?|credential[_-]?(?:key|material|raw|secret|token|value))(?:$|[_-])/iu;
+
+const SIGNED_CREDENTIAL_EGRESS_KEYS = new Set([
+	"credential_assumption",
+	"credential_subject",
+	"credential_assumption_ref",
+	"credential_assumption_id",
+	"credential_name",
+]);
 
 export interface AgentWorkforceNativeEventPlatformConfig
 	extends PlatformServiceConfig {
@@ -96,6 +104,9 @@ export interface AgentWorkforceNativeEventPostResult {
 }
 
 function isSensitiveEgressKey(key: string): boolean {
+	if (SIGNED_CREDENTIAL_EGRESS_KEYS.has(key)) {
+		return false;
+	}
 	return SENSITIVE_EGRESS_KEY_PATTERN.test(key);
 }
 

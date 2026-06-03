@@ -922,6 +922,49 @@ describe("agent workforce native event projection", () => {
 		).toBe(false);
 	});
 
+	it("does not promote correlation fallback step ids into AgentRuntime refs", () => {
+		const projected = projectAgentWorkforceNativeEvents(
+			[
+				{
+					type: "tool_execution_start",
+					toolCallId: "local-tool-call-from-correlation",
+					toolName: "bash",
+					args: { command: "pwd" },
+				},
+			],
+			{
+				correlation: {
+					workspace_id: "workspace-1",
+					session_id: "session-local-correlation",
+					agent_run_id: "run-1",
+					agent_run_step_id: "local-tool-call-from-correlation",
+				},
+				chainId: "chain-local-correlation-tool-only",
+				clock: () => baseTime,
+				makeEnvelopeId: (_event, sequence) =>
+					`awf_evt_local_correlation_${sequence}`,
+			},
+		);
+
+		expect(projected[0]?.run).toMatchObject({
+			agent_run_id: "run-1",
+			agent_run_step_id: undefined,
+		});
+		expect(projected[0]?.action).toMatchObject({
+			tool_call_id: "local-tool-call-from-correlation",
+			tool_execution_id: undefined,
+		});
+		expect(
+			projected[0]?.timeline_correlation.native_action_correlation_id,
+		).toContain("local-tool-call-from-correlation");
+		expect(
+			projected[0]?.timeline_correlation.platform_action_correlation_id,
+		).toBeUndefined();
+		expect(
+			projected[0]?.evidence.refs.some((ref) => ref.kind === "agent_runtime"),
+		).toBe(false);
+	});
+
 	it("does not leak a previous turn id into a later run-start envelope", () => {
 		const projected = projectAgentWorkforceNativeEvents(
 			[
