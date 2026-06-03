@@ -236,6 +236,8 @@ export interface AgentWorkforceCredentialAssumption {
 }
 
 export interface AgentWorkforceModelUsage {
+	usage_authority?: "maestro_local";
+	cost_reconciliation_status?: "unreconciled" | "reconciled";
 	meter_usage_ref?: string;
 	provider?: string;
 	model?: string;
@@ -548,6 +550,9 @@ const COMMAND_RESOURCE_TOOL_NAMES = new Set([
 	"shell",
 ]);
 
+const SENSITIVE_ARGUMENT_KEY_PATTERN =
+	/(?:^|[_-])(?:api[_-]?key|access[_-]?token|refresh[_-]?token|token|secret|authorization|password|credential|provider[_-]?(?:headers|request|response|token|secret|internal)|raw[_-]?provider|api)(?:$|[_-])/iu;
+
 const FATHOM_SERVER_NAME_ENV_VARS = [
 	"MAESTRO_FATHOM_CUA_MCP_NAME",
 	"FATHOM_CUA_MCP_NAME",
@@ -641,6 +646,12 @@ function toolMutatesResource(
 	return action ? MUTATING_GITHUB_ACTIONS.has(action) : false;
 }
 
+function safeArgumentKey(key: string): string {
+	return SENSITIVE_ARGUMENT_KEY_PATTERN.test(key)
+		? "redacted_sensitive_key"
+		: key;
+}
+
 function resourceProjection(
 	toolName: string | undefined,
 	args?: Record<string, unknown>,
@@ -674,7 +685,9 @@ function resourceProjection(
 	const resourceValue = preferCommandResource
 		? command
 		: (filePath ?? url ?? command ?? toolName ?? "unknown");
-	const argumentKeys = Object.keys(args ?? {}).sort();
+	const argumentKeys = [
+		...new Set(Object.keys(args ?? {}).map(safeArgumentKey)),
+	].sort();
 	return {
 		mutates_resource: mutatesResource,
 		resource_refs: [`${resourceKind}:${safeHash(resourceValue)}`],
@@ -859,6 +872,8 @@ function usageFromAssistantMessage(
 	if (!isAssistantMessage(message)) return undefined;
 	const usage = message.usage;
 	return {
+		usage_authority: "maestro_local",
+		cost_reconciliation_status: "unreconciled",
 		provider: message.provider,
 		model: message.model,
 		request_id: requestId,

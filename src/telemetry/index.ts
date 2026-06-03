@@ -155,6 +155,21 @@ export {
 } from "./agent-workforce-native-event.js";
 
 export {
+	AGENT_WORKFORCE_NATIVE_EVENT_BATCH_SCHEMA_VERSION,
+	DEFAULT_AGENT_WORKFORCE_NATIVE_EVENT_MAX_ATTEMPTS,
+	DEFAULT_AGENT_WORKFORCE_NATIVE_EVENT_TIMEOUT_MS,
+	buildAgentWorkforceNativeEventBatchBody,
+	mirrorAgentWorkforceNativeEventsToPlatform,
+	postAgentWorkforceNativeEventBatchToPlatform,
+	resolveAgentWorkforceNativeEventPlatformConfig,
+	sanitizeAgentWorkforceNativeEventForPlatformPost,
+	type AgentWorkforceNativeEventBatchBody,
+	type AgentWorkforceNativeEventPlatformConfig,
+	type AgentWorkforceNativeEventPostOptions,
+	type AgentWorkforceNativeEventPostResult,
+} from "./agent-workforce-native-event-client.js";
+
+export {
 	CANONICAL_MAESTRO_PUBLISHER_CONFORMANCE_FIXTURE_NAME,
 	buildCanonicalMaestroPublisherConformanceFixture,
 	canonicalMaestroPublisherConformanceFixtureJson,

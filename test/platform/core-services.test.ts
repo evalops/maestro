@@ -139,6 +139,12 @@ describe("Platform core service contract names", () => {
 		);
 	});
 
+	it("pins the Agent Workforce native event batch HTTP route", () => {
+		expect(PLATFORM_HTTP_ROUTES.agentWorkforce.nativeEventBatch).toBe(
+			"/v1/agent-workforce/native-events:batch",
+		);
+	});
+
 	it("pins identity HTTP routes used by EvalOps login and delegation", () => {
 		expect(PLATFORM_HTTP_ROUTES.identity.authGoogleStart).toBe(
 			"/v1/auth/google/start",

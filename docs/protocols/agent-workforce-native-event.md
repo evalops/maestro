@@ -69,20 +69,56 @@ Use `verifyAgentWorkforceNativeEventChain` as the local primitive. Platform can
 use the same check before comparing the chain to runtime-side AgentRuntime or
 tool-execution records.
 
-## Pending Platform Ingestion
+## Platform HTTP Ingestion
 
-This PR stops at the projector and verification primitive. When Platform
-ingestion is ready, wire the projector from the same runtime event boundary to
-the existing audit bus publisher or a dedicated ingestion client. The expected
-configuration hook should follow the existing EvalOps patterns:
+Maestro can now POST projected native-event batches through
+`src/telemetry/agent-workforce-native-event-client.ts`. Publishing is best
+effort: missing configuration is a no-op, and configured network failures are
+bounded by the downstream HTTP timeout/retry settings so local Maestro sessions
+do not depend on Platform availability.
 
-- `MAESTRO_AGENT_WORKFORCE_INGEST_URL` for a dedicated HTTP endpoint, or
-  `MAESTRO_PLATFORM_BASE_URL` when the endpoint is exposed as a Platform
-  Connect service.
-- `MAESTRO_EVALOPS_ACCESS_TOKEN` for auth.
-- `MAESTRO_EVALOPS_ORG_ID` and `MAESTRO_EVALOPS_WORKSPACE_ID` for tenant joins.
+Configure one of these endpoint shapes:
 
-The next PR should add the actual POST or event-bus subject only after Platform
-publishes the ingestion method. Platform #2856 is the downstream resolver for
-credential and cost joins; Maestro should not duplicate that authority joining
-in this projector.
+- `MAESTRO_AGENT_WORKFORCE_INGEST_URL` for an exact dedicated HTTP endpoint.
+- `MAESTRO_AGENT_WORKFORCE_BASE_URL`,
+  `MAESTRO_AGENT_WORKFORCE_SERVICE_URL`, or the shared
+  `MAESTRO_PLATFORM_BASE_URL`/`MAESTRO_EVALOPS_BASE_URL`/`EVALOPS_BASE_URL`
+  for the default POST route:
+  `/v1/agent-workforce/native-events:batch`.
+
+Authentication and tenancy follow the existing EvalOps aliases:
+
+- Token: `MAESTRO_AGENT_WORKFORCE_ACCESS_TOKEN`,
+  `MAESTRO_EVALOPS_ACCESS_TOKEN`, or `EVALOPS_TOKEN`.
+- Organization: `MAESTRO_AGENT_WORKFORCE_ORG_ID`,
+  `MAESTRO_EVALOPS_ORG_ID`, `EVALOPS_ORGANIZATION_ID`, `EVALOPS_ORG_ID`, or
+  `MAESTRO_ENTERPRISE_ORG_ID`.
+- Workspace: `MAESTRO_AGENT_WORKFORCE_WORKSPACE_ID`,
+  `MAESTRO_EVALOPS_WORKSPACE_ID`, `EVALOPS_WORKSPACE_ID`,
+  `MAESTRO_WORKSPACE_ID`, or `MAESTRO_REMOTE_RUNNER_WORKSPACE_ID`.
+- Bounds: `MAESTRO_AGENT_WORKFORCE_TIMEOUT_MS` defaults to `2000`, and
+  `MAESTRO_AGENT_WORKFORCE_MAX_ATTEMPTS` defaults to `2`.
+
+The request body is
+`agent_workforce_native_event_batch.v1` with `organization_id`,
+`workspace_id`, optional `batch_id`, `event_count`, and `events`. Each event is
+the hash-chained `agent_workforce_native_event.v1` envelope. The POST egress
+path drops raw sensitive extras such as token, secret, authorization,
+provider-request, and provider-response internals; tool arguments remain
+represented by safe key summaries and hashes instead of raw values.
+
+Model usage in these events is local Maestro-observed usage:
+`model_usage.usage_authority = maestro_local` and
+`model_usage.cost_reconciliation_status = unreconciled`. Platform may display
+that Maestro reported model usage and an unreconciled local cost estimate. It
+must not claim reconciled billing, provider-meter proof, or LLM Gateway
+authority until Platform joins the event to meter or gateway evidence.
+
+Credential proof remains separate from event transport. Platform/UI may claim
+that Maestro emitted a runtime-observed native event chain, that a tool or
+approval event occurred at Maestro's boundary, and that the hash chain is
+locally verifiable. Platform/UI must still label credential authority as
+`evidence missing` unless the event contains a fresh Platform ingestion/resolver
+authority bundle with valid identity, AgentRuntime, and Secret Broker or LLM
+Gateway joined evidence. Declared Secret Broker/LLM Gateway/caller refs alone
+remain unverified.
