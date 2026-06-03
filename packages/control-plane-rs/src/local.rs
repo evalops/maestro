@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::env;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
@@ -328,7 +328,12 @@ fn add_usage_to_bucket(bucket: &mut UsageBucket, cost: f64, tokens: u64, entry: 
 }
 
 pub(super) async fn package_scripts(cwd: &Path) -> Vec<String> {
-    let mut scripts: Vec<String> = package_script_map(cwd).await.into_keys().collect();
+    let allowlist = allowed_run_scripts();
+    let mut scripts: Vec<String> = package_script_map(cwd)
+        .await
+        .into_keys()
+        .filter(|script| allowlist.contains(script))
+        .collect();
     scripts.sort();
     scripts
 }
@@ -361,6 +366,36 @@ pub(super) struct RunScriptRequest {
     args: Option<String>,
 }
 
+fn allowed_run_scripts() -> HashSet<String> {
+    let configured =
+        env::var("MAESTRO_RUN_SCRIPT_ALLOWLIST").unwrap_or_else(|_| "db:migrate".to_string());
+    configured
+        .split(',')
+        .map(str::trim)
+        .filter(|script| !script.is_empty())
+        .map(ToOwned::to_owned)
+        .collect()
+}
+
+pub(super) fn runner_args_for_script(runner: &str, script: &str) -> Vec<String> {
+    let mut args = Vec::new();
+    if runner_supports_ignore_scripts(runner) {
+        args.push("--ignore-scripts".to_string());
+    }
+    args.push("run".to_string());
+    args.push(script.to_string());
+    args
+}
+
+pub(super) fn runner_supports_ignore_scripts(runner: &str) -> bool {
+    let executable_name = runner
+        .rsplit(['/', '\\'])
+        .next()
+        .unwrap_or(runner)
+        .to_ascii_lowercase();
+    matches!(executable_name.as_str(), "npm" | "npm.cmd")
+}
+
 pub(super) async fn run_script_response(cwd: &Path, request: RunScriptRequest) -> Vec<u8> {
     let script = request.script.trim();
     if script.is_empty() {
@@ -376,9 +411,26 @@ pub(super) async fn run_script_response(cwd: &Path, request: RunScriptRequest) -
         );
     }
 
+    let allowlist = allowed_run_scripts();
+    if !allowlist.contains(script) {
+        let mut allowed: Vec<String> = allowlist.iter().cloned().collect();
+        allowed.sort();
+        return json_response(
+            403,
+            &serde_json::json!({
+                "error": format!("Script \"{script}\" is not allowed in this environment"),
+                "allowed": allowed,
+            }),
+        );
+    }
+
     let available_scripts = package_script_map(cwd).await;
     if !available_scripts.contains_key(script) {
-        let mut available: Vec<String> = available_scripts.keys().cloned().collect();
+        let mut available: Vec<String> = available_scripts
+            .keys()
+            .filter(|name| allowlist.contains(*name))
+            .cloned()
+            .collect();
         available.sort();
         return json_response(
             400,
@@ -403,14 +455,14 @@ pub(super) async fn run_script_response(cwd: &Path, request: RunScriptRequest) -
         return json_response(
             503,
             &serde_json::json!({
-                "error": "No JavaScript package runner is available for /api/run. Install bun or npm, or set MAESTRO_SCRIPT_RUNNER."
+                "error": "No JavaScript package runner with lifecycle suppression is available for /api/run. Install npm or set MAESTRO_SCRIPT_RUNNER to an npm-compatible runner."
             }),
         );
     };
 
     let args = args.trim();
     let mut command = Command::new(&runner);
-    command.arg("run").arg(script);
+    command.args(runner_args_for_script(&runner, script));
     if !args.is_empty() {
         command.arg("--");
         command.args(args.split_whitespace());
@@ -544,14 +596,12 @@ pub(super) async fn approval_mode_for_session(
 async fn script_runner_command() -> Option<String> {
     if let Ok(runner) = env::var("MAESTRO_SCRIPT_RUNNER") {
         let runner = runner.trim();
-        if !runner.is_empty() {
+        if !runner.is_empty() && runner_supports_ignore_scripts(runner) {
             return Some(runner.to_string());
         }
     }
-    for candidate in ["bun", "npm"] {
-        if executable_on_path(candidate).await {
-            return Some(candidate.to_string());
-        }
+    if executable_on_path("npm").await {
+        return Some("npm".to_string());
     }
     None
 }

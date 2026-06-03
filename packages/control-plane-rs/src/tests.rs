@@ -7377,6 +7377,111 @@ fn validates_run_script_inputs() {
     assert!(!is_valid_script_name("build && rm -rf /"));
     assert!(contains_shell_metachars("foo; bar"));
     assert!(!contains_shell_metachars("--filter packages/web"));
+    assert_eq!(
+        runner_args_for_script("npm", "db:migrate"),
+        ["--ignore-scripts", "run", "db:migrate"]
+    );
+    assert_eq!(
+        runner_args_for_script("/tmp/bin/npm", "db:migrate"),
+        ["--ignore-scripts", "run", "db:migrate"]
+    );
+    assert_eq!(
+        runner_args_for_script("/tmp/custom-runner", "db:migrate"),
+        ["run", "db:migrate"]
+    );
+    assert!(!runner_supports_ignore_scripts("bun"));
+    assert!(!runner_supports_ignore_scripts("/tmp/bin/pnpm"));
+    assert!(runner_supports_ignore_scripts("/tmp/bin/npm"));
+    assert!(runner_supports_ignore_scripts(r"C:\tools\npm.cmd"));
+}
+
+#[tokio::test]
+async fn run_scripts_lists_only_allowlisted_package_scripts() {
+    let _guard = ENV_LOCK.lock().await;
+    let env_snapshot = snapshot_env(&["MAESTRO_RUN_SCRIPT_ALLOWLIST"]);
+    env::set_var("MAESTRO_RUN_SCRIPT_ALLOWLIST", "db:migrate, smoke");
+
+    let root = TestDir::new("run-script-list-allowlist");
+    fs::write(
+        root.path().join("package.json"),
+        r#"{"scripts":{"db:migrate":"echo migrate","smoke":"echo smoke","dev":"echo dev"}}"#,
+    )
+    .expect("package.json should be written");
+
+    let scripts = package_scripts(root.path()).await;
+
+    restore_env(env_snapshot);
+    assert_eq!(scripts, vec!["db:migrate", "smoke"]);
+}
+
+#[tokio::test]
+async fn run_script_response_rejects_scripts_outside_allowlist() {
+    let _guard = ENV_LOCK.lock().await;
+    let env_snapshot = snapshot_env(&["MAESTRO_RUN_SCRIPT_ALLOWLIST"]);
+    env::set_var("MAESTRO_RUN_SCRIPT_ALLOWLIST", "db:migrate");
+
+    let root = TestDir::new("run-script-rejects-unlisted");
+    fs::write(
+        root.path().join("package.json"),
+        r#"{"scripts":{"db:migrate":"echo migrate","dev":"echo dev"}}"#,
+    )
+    .expect("package.json should be written");
+    let request: RunScriptRequest = serde_json::from_value(serde_json::json!({ "script": "dev" }))
+        .expect("request should deserialize");
+
+    let response = run_script_response(root.path(), request).await;
+    let body = response_json(response.clone());
+
+    restore_env(env_snapshot);
+    assert_eq!(response_status(&response), 403);
+    assert_eq!(body["allowed"], serde_json::json!(["db:migrate"]));
+}
+
+#[tokio::test]
+async fn run_script_response_uses_ignore_scripts_for_npm_runner() {
+    let _guard = ENV_LOCK.lock().await;
+    let env_snapshot = snapshot_env(&["MAESTRO_RUN_SCRIPT_ALLOWLIST", "MAESTRO_SCRIPT_RUNNER"]);
+    env::set_var("MAESTRO_RUN_SCRIPT_ALLOWLIST", "db:migrate");
+
+    let root = TestDir::new("run-script-ignore-lifecycle");
+    fs::write(
+        root.path().join("package.json"),
+        r#"{"scripts":{"predb:migrate":"echo pre","db:migrate":"echo migrate","postdb:migrate":"echo post"}}"#,
+    )
+    .expect("package.json should be written");
+
+    let runner = root.path().join("npm");
+    let argv_file = root.path().join("argv.txt");
+    fs::write(
+        &runner,
+        format!(
+            "#!/bin/sh\nprintf '%s\\n' \"$@\" > {}\n",
+            argv_file.display()
+        ),
+    )
+    .expect("runner should be written");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut permissions = fs::metadata(&runner)
+            .expect("runner metadata should exist")
+            .permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(&runner, permissions).expect("runner should be executable");
+    }
+    env::set_var("MAESTRO_SCRIPT_RUNNER", &runner);
+
+    let request: RunScriptRequest =
+        serde_json::from_value(serde_json::json!({ "script": "db:migrate" }))
+            .expect("request should deserialize");
+    let response = run_script_response(root.path(), request).await;
+    let body = response_json(response.clone());
+    let argv = fs::read_to_string(argv_file).expect("runner argv should be captured");
+
+    restore_env(env_snapshot);
+    assert_eq!(response_status(&response), 200);
+    assert_eq!(body["success"], serde_json::json!(true));
+    assert_eq!(argv, "--ignore-scripts\nrun\ndb:migrate\n");
 }
 
 #[test]
