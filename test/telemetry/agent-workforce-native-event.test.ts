@@ -649,5 +649,16 @@ describe("agent workforce native event projection", () => {
 			reason: "sequence_gap",
 			index: 2,
 		});
+
+		const malformedSignature = structuredClone(projected);
+		malformedSignature[0]!.evidence.signature =
+			"sha256-chain:v1:%E0%A4%A:1:root:bad-hash";
+		expect(
+			verifyAgentWorkforceNativeEventChain(malformedSignature),
+		).toMatchObject({
+			valid: false,
+			reason: "signature_malformed",
+			index: 0,
+		});
 	});
 });

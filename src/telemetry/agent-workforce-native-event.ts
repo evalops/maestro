@@ -420,8 +420,14 @@ function parseChainSignature(
 	}
 	const sequence = Number(parts[3]);
 	if (!Number.isInteger(sequence) || sequence < 1) return null;
+	let chainId: string;
+	try {
+		chainId = decodeURIComponent(parts[2] ?? "");
+	} catch {
+		return null;
+	}
 	return {
-		chainId: decodeURIComponent(parts[2] ?? ""),
+		chainId,
 		sequence,
 		previousHash: parts[4] === "root" ? undefined : parts[4],
 		eventHash: parts[5] ?? "",
