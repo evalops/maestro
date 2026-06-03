@@ -616,6 +616,14 @@ attributes, so platform subscribers can join worker runs to issue/PR work.
 The Rust Ambient Agent daemon publishes session start/suspend/resume/close
 events with `source=maestro.ambient-agent` when the same event-bus NATS
 environment is configured.
+
+For Agent Workforce onboarding, Maestro also provides a local
+`agent_workforce_native_event.v1` projector over the same runtime event boundary.
+It is documented in
+[Agent Workforce Native Event Projection](agent-workforce-native-event.md). The
+projector records thread, turn, tool, approval, and model-usage envelopes plus a
+hash-chain verification primitive, but it remains Maestro runtime-observed
+self-report until Platform ingestion and credential join verification are wired.
 It also publishes plan-level routing and outcome events:
 
 - `maestro.ambient_agent.routing.selected`

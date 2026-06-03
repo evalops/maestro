@@ -300,6 +300,9 @@ export const PLATFORM_HTTP_ROUTES = {
 	agentRuntime: {
 		operatingPlaneRuns: "/v1/agent-operating-plane/runs",
 	},
+	agentWorkforce: {
+		nativeEventBatch: "/v1/agent-workforce/native-events:batch",
+	},
 	identity: {
 		apiKeys: "/v1/api-keys",
 		authGoogleStart: "/v1/auth/google/start",
