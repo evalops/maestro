@@ -985,6 +985,33 @@ describe("agent workforce native event projection", () => {
 		},
 	);
 
+	it.each(["error", "aborted"] as const)(
+		"marks turn completion with assistant stopReason %s as failed",
+		(stopReason) => {
+			const projected = project([
+				{
+					type: "turn_end",
+					message: {
+						...usageMessage(),
+						stopReason,
+						errorMessage:
+							stopReason === "error" ? "Provider stream failed" : undefined,
+					},
+					toolResults: [],
+				},
+			]);
+
+			expect(projected[0]).toMatchObject({
+				event_type: "turn.completed",
+				action: {
+					action_kind: "turn",
+					status: "failed",
+				},
+			});
+			expect(projected[0]?.model_usage).toBeUndefined();
+		},
+	);
+
 	it("does not infer approval denial from a failed execution after approval was allowed", () => {
 		const request = approvalRequest();
 		const approvedDecision: ActionApprovalDecision = {
@@ -1076,7 +1103,10 @@ describe("agent workforce native event projection", () => {
 		["notebook_edit", { file_path: "analysis.ipynb" }],
 		["gh_pr", { action: "create", title: "Native event fix" }],
 		["gh_pr", { action: "comment", pr: 774 }],
+		["gh_pr", { action: "checkout", pr: 774 }],
 		["gh_issue", { action: "close", issue: 123 }],
+		["gh_repo", { action: "clone", repo: "evalops/maestro" }],
+		["gh_repo", { action: "fork", repo: "evalops/maestro" }],
 		["mcp__filesystem__edit", { path: "src/index.ts" }],
 		["mcp__filesystem__write", { path: "src/index.ts" }],
 		["mcp__fathom-cua__click", { element_ref: "button-1" }],
@@ -1108,6 +1138,7 @@ describe("agent workforce native event projection", () => {
 	it.each([
 		["background_tasks", { action: "list" }],
 		["background_tasks", { action: "logs", taskId: "task-1" }],
+		["gh_repo", { action: "view", repo: "evalops/maestro" }],
 	])("keeps %s read-only action executions non-mutating", (toolName, args) => {
 		const projected = project([
 			{

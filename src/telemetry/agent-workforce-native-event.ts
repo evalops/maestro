@@ -496,6 +496,7 @@ const MUTATING_TOOL_NAMES = new Set([
 
 const MUTATING_GITHUB_ACTIONS = new Set([
 	"add_comment",
+	"checkout",
 	"close",
 	"comment",
 	"create",
@@ -504,6 +505,8 @@ const MUTATING_GITHUB_ACTIONS = new Set([
 	"reopen",
 	"update",
 ]);
+
+const MUTATING_GITHUB_REPO_ACTIONS = new Set(["clone", "fork"]);
 
 const MUTATING_BACKGROUND_TASK_ACTIONS = new Set(["start", "stop"]);
 
@@ -568,6 +571,10 @@ function toolMutatesResource(
 		FATHOM_DESKTOP_ACTION_VERBS.has(mcp.verb)
 	) {
 		return true;
+	}
+	if (lowerTool === "gh_repo") {
+		const action = readString(args, ["action"])?.toLowerCase();
+		return action ? MUTATING_GITHUB_REPO_ACTIONS.has(action) : false;
 	}
 	if (lowerTool !== "gh_pr" && lowerTool !== "gh_issue") return false;
 	const action = readString(args, ["action"])?.toLowerCase();
@@ -721,6 +728,13 @@ function actionKindFor(event: AgentEvent): AgentWorkforceAction["action_kind"] {
 	}
 }
 
+function hasFailedAssistantStopReason(message: AppMessage): boolean {
+	return (
+		isAssistantMessage(message) &&
+		(message.stopReason === "error" || message.stopReason === "aborted")
+	);
+}
+
 function actionStatusFor(
 	event: AgentEvent,
 	resolvedApprovalDecision?: ActionApprovalDecision,
@@ -733,6 +747,10 @@ function actionStatusFor(
 			return "attempted";
 		case "agent_end":
 			return event.aborted ? "failed" : "completed";
+		case "turn_end":
+			return hasFailedAssistantStopReason(event.message)
+				? "failed"
+				: "completed";
 		case "tool_execution_end":
 			if (
 				event.governedOutcome === "denied" ||
@@ -746,14 +764,9 @@ function actionStatusFor(
 		case "action_approval_resolved":
 			return event.decision.approved ? "completed" : "denied";
 		case "message_end":
-			if (
-				isAssistantMessage(event.message) &&
-				(event.message.stopReason === "error" ||
-					event.message.stopReason === "aborted")
-			) {
-				return "failed";
-			}
-			return "completed";
+			return hasFailedAssistantStopReason(event.message)
+				? "failed"
+				: "completed";
 		default:
 			return "completed";
 	}
