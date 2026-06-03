@@ -572,6 +572,83 @@ describe("agent workforce native event projection", () => {
 		expect(projected[0]?.evidence.missing_evidence).toEqual([]);
 	});
 
+	it("uses the runtime agent subject when Platform proof omits credential_subject", () => {
+		const authority = platformCredentialAuthority();
+		delete authority.credential_subject;
+		const projected = projectAgentWorkforceNativeEvents([nativeEvents()[6]!], {
+			correlation: {
+				workspace_id: "workspace-1",
+				session_id: "session-1",
+				agent_id: "agent-runtime-verified",
+				agent_run_id: "run-1",
+			},
+			chainId: "chain-platform-runtime-subject",
+			declaredCredential: {
+				credential_subject: "agent:declared-spoof",
+				credential_assumption_ref: "secretbroker:grant:grant-verified",
+				grant_id: "grant-verified",
+				credential_name: "github-pr-writer",
+				declared_authority: "secret_broker",
+			},
+			platformCredentialAuthority: authority,
+			clock: () => baseTime,
+			makeEnvelopeId: (_event, sequence) =>
+				`awf_evt_verified_runtime_subject_${sequence}`,
+		});
+
+		expect(projected[0]?.credential_assumption).toMatchObject({
+			credential_subject: "agent:agent-runtime-verified",
+			proof_status: "proven",
+			provenance_verified: true,
+			verified_provenance: {
+				authority_ref: "secretbroker:grant:grant-verified",
+			},
+		});
+		expect(projected[0]?.credential_assumption.credential_subject).not.toBe(
+			"agent:declared-spoof",
+		);
+		expect(projected[0]?.evidence.missing_evidence).toEqual([]);
+	});
+
+	it("does not mark declared credential subjects proven when Platform proof omits credential_subject", () => {
+		const authority = platformCredentialAuthority();
+		delete authority.credential_subject;
+		const projected = projectAgentWorkforceNativeEvents([nativeEvents()[6]!], {
+			correlation: {
+				workspace_id: "workspace-1",
+				session_id: "session-1",
+				agent_run_id: "run-1",
+			},
+			chainId: "chain-platform-missing-subject",
+			declaredCredential: {
+				credential_subject: "agent:declared-spoof",
+				credential_assumption_ref: "secretbroker:grant:grant-verified",
+				grant_id: "grant-verified",
+				credential_name: "github-pr-writer",
+				declared_authority: "secret_broker",
+			},
+			platformCredentialAuthority: authority,
+			clock: () => baseTime,
+			makeEnvelopeId: (_event, sequence) =>
+				`awf_evt_verified_missing_subject_${sequence}`,
+		});
+
+		expect(projected[0]?.credential_assumption).toMatchObject({
+			credential_subject: "agent:declared-spoof",
+			proof_status: "missing",
+			provenance_verified: false,
+		});
+		expect(projected[0]?.credential_assumption).not.toHaveProperty(
+			"verified_provenance",
+		);
+		expect(
+			projected[0]?.timeline_correlation.credential_join_correlation_id,
+		).toBeUndefined();
+		expect(projected[0]?.evidence.missing_evidence).toEqual([
+			expect.objectContaining({ code: "credential_assumption.unproven" }),
+		]);
+	});
+
 	it("keeps expired Platform credential authority missing instead of treating positive ttl as fresh", () => {
 		const projected = projectAgentWorkforceNativeEvents([nativeEvents()[6]!], {
 			correlation: {

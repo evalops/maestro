@@ -998,25 +998,26 @@ function credentialAssumption(
 	const declaredAuthority = credentialDeclaredAuthority(declared);
 	const platformAuthority = options.platformCredentialAuthority;
 	if (platformCredentialAuthorityIsComplete(platformAuthority, now)) {
+		const runtimeCredentialSubject = options.correlation.agent_id
+			? `agent:${options.correlation.agent_id}`
+			: undefined;
 		const credentialSubject =
-			platformAuthority.credential_subject ??
-			declared?.credential_subject ??
-			(options.correlation.agent_id
-				? `agent:${options.correlation.agent_id}`
-				: "unknown");
-		return {
-			credential_subject: credentialSubject,
-			credential_assumption_ref:
-				platformAuthority.verified_provenance.authority_ref,
-			credential_assumption_id: platformAuthority.credential_assumption_id,
-			grant_id: platformAuthority.grant_id,
-			provider_ref_id: platformAuthority.provider_ref_id,
-			credential_name: platformAuthority.credential_name,
-			proof_status: "proven",
-			declared_authority: platformAuthority.verified_provenance.authority,
-			provenance_verified: true,
-			verified_provenance: platformAuthority.verified_provenance,
-		};
+			platformAuthority.credential_subject ?? runtimeCredentialSubject;
+		if (credentialSubject) {
+			return {
+				credential_subject: credentialSubject,
+				credential_assumption_ref:
+					platformAuthority.verified_provenance.authority_ref,
+				credential_assumption_id: platformAuthority.credential_assumption_id,
+				grant_id: platformAuthority.grant_id,
+				provider_ref_id: platformAuthority.provider_ref_id,
+				credential_name: platformAuthority.credential_name,
+				proof_status: "proven",
+				declared_authority: platformAuthority.verified_provenance.authority,
+				provenance_verified: true,
+				verified_provenance: platformAuthority.verified_provenance,
+			};
+		}
 	}
 	return {
 		credential_subject: declared?.credential_subject ?? "unknown",
