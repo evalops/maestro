@@ -381,6 +381,38 @@ describe("agent workforce native event projection", () => {
 		]);
 	});
 
+	it("routes missing LLM Gateway credential evidence to the gateway owner", () => {
+		const projected = projectAgentWorkforceNativeEvents([nativeEvents()[6]!], {
+			correlation: {
+				workspace_id: "workspace-1",
+				session_id: "session-1",
+			},
+			chainId: "chain-llm-gateway-missing",
+			declaredCredential: {
+				credential_subject: "agent:agent-maestro-1",
+				credential_assumption_ref: "llmgateway:vault:grant-declared",
+				grant_id: "grant-declared",
+				credential_name: "model-access",
+				declared_authority: "llm_gateway_vault",
+			},
+			clock: () => baseTime,
+			makeEnvelopeId: (_event, sequence) =>
+				`awf_evt_llm_gateway_missing_${sequence}`,
+		});
+
+		expect(projected[0]?.credential_assumption).toMatchObject({
+			proof_status: "missing",
+			declared_authority: "llm_gateway_vault",
+			provenance_verified: false,
+		});
+		expect(projected[0]?.evidence.missing_evidence).toEqual([
+			expect.objectContaining({
+				code: "credential_assumption.unproven",
+				owner: "platform.llm_gateway",
+			}),
+		]);
+	});
+
 	it("does not self-upgrade caller-supplied verified-looking join refs into proven credential authority", () => {
 		const projected = projectAgentWorkforceNativeEvents([nativeEvents()[6]!], {
 			correlation: {
@@ -1009,6 +1041,28 @@ describe("agent workforce native event projection", () => {
 				},
 			});
 			expect(projected[0]?.model_usage).toBeUndefined();
+		},
+	);
+
+	it.each(["error", "aborted"] as const)(
+		"marks run completion with stopReason %s as failed",
+		(stopReason) => {
+			const projected = project([
+				{
+					type: "agent_end",
+					messages: [usageMessage()],
+					stopReason,
+					aborted: false,
+				},
+			]);
+
+			expect(projected[0]).toMatchObject({
+				event_type: "run.completed",
+				action: {
+					action_kind: "run",
+					status: "failed",
+				},
+			});
 		},
 	);
 

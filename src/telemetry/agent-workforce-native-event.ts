@@ -735,6 +735,10 @@ function hasFailedAssistantStopReason(message: AppMessage): boolean {
 	);
 }
 
+function hasFailedStopReason(stopReason: unknown): boolean {
+	return stopReason === "error" || stopReason === "aborted";
+}
+
 function actionStatusFor(
 	event: AgentEvent,
 	resolvedApprovalDecision?: ActionApprovalDecision,
@@ -746,7 +750,9 @@ function actionStatusFor(
 		case "action_approval_required":
 			return "attempted";
 		case "agent_end":
-			return event.aborted ? "failed" : "completed";
+			return event.aborted || hasFailedStopReason(event.stopReason)
+				? "failed"
+				: "completed";
 		case "turn_end":
 			return hasFailedAssistantStopReason(event.message)
 				? "failed"
@@ -934,11 +940,24 @@ function missingCredentialEvidence(
 		{
 			code: "credential_assumption.unproven",
 			severity: "blocking_for_platform_native",
-			owner: "platform.secret_broker",
+			owner: missingCredentialEvidenceOwner(assumption.declared_authority),
 			detail:
 				"Maestro emitted a runtime-observed native action timeline, but Platform has not joined it to credential authority evidence.",
 		},
 	];
+}
+
+function missingCredentialEvidenceOwner(
+	declaredAuthority: AgentWorkforceCredentialDeclaredAuthority,
+): AgentWorkforceMissingEvidence["owner"] {
+	switch (declaredAuthority) {
+		case "identity":
+			return "platform.identity";
+		case "llm_gateway_vault":
+			return "platform.llm_gateway";
+		default:
+			return "platform.secret_broker";
+	}
 }
 
 function tenantFromOptions(
