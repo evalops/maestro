@@ -1151,7 +1151,7 @@ describe("agent workforce native event projection", () => {
 		});
 	});
 
-	it("preserves Platform prepare-time approval denial before generic failure fallback", () => {
+	it("does not infer Platform prepare-time denial without an explicit denial signal", () => {
 		const projected = project([
 			{
 				type: "tool_execution_end",
@@ -1167,13 +1167,76 @@ describe("agent workforce native event projection", () => {
 		expect(projected[0]).toMatchObject({
 			event_type: "tool.completed",
 			action: {
-				status: "denied",
+				status: "failed",
 			},
 			policy: {
 				approval_ref: "platform-approval-1",
-				decision: "deny",
+				decision: "unknown",
 			},
 		});
+	});
+
+	it("uses command resource refs for command tools even when cwd is present", () => {
+		const projected = project([
+			{
+				type: "tool_execution_start",
+				toolCallId: "tool-call-command-1",
+				toolExecutionId: "tool-exec-command-1",
+				toolName: "bash",
+				args: {
+					command: "npm test -- --runInBand",
+					cwd: "/workspace/app",
+				},
+			},
+			{
+				type: "tool_execution_start",
+				toolCallId: "tool-call-command-2",
+				toolExecutionId: "tool-exec-command-2",
+				toolName: "bash",
+				args: {
+					command: "npm run lint",
+					cwd: "/workspace/app",
+				},
+			},
+			{
+				type: "tool_execution_start",
+				toolCallId: "tool-call-background",
+				toolExecutionId: "tool-exec-background",
+				toolName: "background_tasks",
+				args: {
+					action: "start",
+					command: "npm run dev",
+					cwd: "/workspace/app",
+				},
+			},
+		]);
+
+		expect(projected[0]?.action).toMatchObject({
+			tool_name: "bash",
+			mutates_resource: true,
+			safe_args_summary: {
+				argument_keys: ["command", "cwd"],
+				resource_kind: "command",
+				operation: "mutate",
+			},
+		});
+		expect(projected[1]?.action).toMatchObject({
+			tool_name: "bash",
+			safe_args_summary: {
+				resource_kind: "command",
+			},
+		});
+		expect(projected[2]?.action).toMatchObject({
+			tool_name: "background_tasks",
+			safe_args_summary: {
+				argument_keys: ["action", "command", "cwd"],
+				resource_kind: "command",
+				operation: "mutate",
+			},
+		});
+		expect(projected[0]?.action.resource_refs).not.toEqual(
+			projected[1]?.action.resource_refs,
+		);
 	});
 
 	it.each([

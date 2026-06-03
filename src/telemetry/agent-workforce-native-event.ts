@@ -539,6 +539,14 @@ const MUTATING_CONDUCTOR_NAVIGATION_ACTIONS = new Set([
 	"switchtotab",
 ]);
 
+const COMMAND_RESOURCE_TOOL_NAMES = new Set([
+	"background_tasks",
+	"bash",
+	"exec",
+	"git_cmd",
+	"shell",
+]);
+
 const FATHOM_DESKTOP_ACTION_VERBS = new Set([
 	"activate_app",
 	"activate_menu_item",
@@ -624,6 +632,9 @@ function resourceProjection(
 	args?: Record<string, unknown>,
 ): PendingToolProjection["action"] {
 	const lowerTool = toolName?.toLowerCase() ?? "";
+	const command = readString(args, ["cmd", "command", "script"]);
+	const preferCommandResource =
+		!!command && COMMAND_RESOURCE_TOOL_NAMES.has(lowerTool);
 	const filePath = readString(args, [
 		"path",
 		"file",
@@ -631,21 +642,24 @@ function resourceProjection(
 		"filepath",
 		"target_file",
 		"directory",
-		"cwd",
+		...(preferCommandResource ? [] : ["cwd"]),
 	]);
 	const url = readString(args, ["url", "uri", "endpoint"]);
-	const command = readString(args, ["cmd", "command", "script"]);
 	const mutatesResource = toolMutatesResource(lowerTool, args);
-	const resourceKind = filePath
-		? "file"
-		: url
-			? "url"
-			: command
-				? "command"
-				: toolName
-					? "tool"
-					: "unknown";
-	const resourceValue = filePath ?? url ?? command ?? toolName ?? "unknown";
+	const resourceKind = preferCommandResource
+		? "command"
+		: filePath
+			? "file"
+			: url
+				? "url"
+				: command
+					? "command"
+					: toolName
+						? "tool"
+						: "unknown";
+	const resourceValue = preferCommandResource
+		? command
+		: (filePath ?? url ?? command ?? toolName ?? "unknown");
 	const argumentKeys = Object.keys(args ?? {}).sort();
 	return {
 		mutates_resource: mutatesResource,
@@ -777,17 +791,16 @@ function hasFailedStopReason(stopReason: unknown): boolean {
 	return stopReason === "error" || stopReason === "aborted";
 }
 
-function isPlatformPrepareDenial(
+function isExplicitToolApprovalDenial(
 	event: AgentEvent,
 	resolvedApprovalDecision?: ActionApprovalDecision,
 ): boolean {
 	return (
 		event.type === "tool_execution_end" &&
-		event.isError === true &&
-		!!event.approvalRequestId &&
-		!event.errorCode &&
-		!event.governedOutcome &&
-		!resolvedApprovalDecision
+		(event.governedOutcome === "denied" ||
+			event.errorCode === "approval_denied" ||
+			event.errorCode === "governance_denied" ||
+			resolvedApprovalDecision?.approved === false)
 	);
 }
 
@@ -810,13 +823,7 @@ function actionStatusFor(
 				? "failed"
 				: "completed";
 		case "tool_execution_end":
-			if (
-				event.governedOutcome === "denied" ||
-				event.errorCode === "approval_denied" ||
-				event.errorCode === "governance_denied" ||
-				resolvedApprovalDecision?.approved === false ||
-				isPlatformPrepareDenial(event, resolvedApprovalDecision)
-			) {
+			if (isExplicitToolApprovalDenial(event, resolvedApprovalDecision)) {
 				return "denied";
 			}
 			return event.isError ? "failed" : "completed";
@@ -1214,7 +1221,10 @@ function policyForEvent(
 			return event.approvalRequestId
 				? {
 						approval_ref: event.approvalRequestId,
-						decision: isPlatformPrepareDenial(event, resolvedApprovalDecision)
+						decision: isExplicitToolApprovalDenial(
+							event,
+							resolvedApprovalDecision,
+						)
 							? "deny"
 							: resolvedApprovalDecision
 								? resolvedApprovalDecision.approved
