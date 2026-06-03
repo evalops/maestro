@@ -617,6 +617,13 @@ function actionStatusFor(event: AgentEvent): AgentWorkforceAction["status"] {
 		case "agent_end":
 			return event.aborted ? "failed" : "completed";
 		case "tool_execution_end":
+			if (
+				event.governedOutcome === "denied" ||
+				event.errorCode === "approval_denied" ||
+				event.errorCode === "governance_denied"
+			) {
+				return "denied";
+			}
 			return event.isError ? "failed" : "completed";
 		case "action_approval_resolved":
 			return event.decision.approved ? "completed" : "denied";
@@ -682,7 +689,9 @@ function platformCredentialAuthorityIsComplete(
 		!Number.isFinite(expiresAtMs) ||
 		observedAtMs > now.getTime() ||
 		expiresAtMs <= now.getTime() ||
+		typeof provenance.ttl_seconds !== "number" ||
 		provenance.ttl_seconds < 1 ||
+		observedAtMs + provenance.ttl_seconds * 1000 <= now.getTime() ||
 		(provenance.revocation_status !== "active" &&
 			provenance.revocation_status !== "not_revoked")
 	) {

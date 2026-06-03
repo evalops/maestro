@@ -537,6 +537,45 @@ describe("agent workforce native event projection", () => {
 		]);
 	});
 
+	it("keeps stale Platform credential TTL windows missing even with future expires_at", () => {
+		const staleAuthority = platformCredentialAuthority(
+			baseTime.getTime() + 60_000,
+		);
+		staleAuthority.verified_provenance.observed_at = new Date(
+			baseTime.getTime() - 120_000,
+		).toISOString();
+		staleAuthority.verified_provenance.ttl_seconds = 60;
+
+		const projected = projectAgentWorkforceNativeEvents([nativeEvents()[6]!], {
+			correlation: {
+				workspace_id: "workspace-1",
+				session_id: "session-1",
+				agent_id: "agent-maestro-1",
+				agent_run_id: "run-1",
+			},
+			chainId: "chain-stale-ttl-credential",
+			declaredCredential: {
+				credential_subject: "agent:agent-maestro-1",
+				credential_assumption_ref: "secretbroker:grant:grant-stale",
+				grant_id: "grant-stale",
+				credential_name: "github-pr-writer",
+				declared_authority: "secret_broker",
+			},
+			platformCredentialAuthority: staleAuthority,
+			clock: () => baseTime,
+			makeEnvelopeId: (_event, sequence) => `awf_evt_stale_${sequence}`,
+		});
+
+		expect(projected[0]?.credential_assumption).toMatchObject({
+			proof_status: "missing",
+			declared_authority: "secret_broker",
+			provenance_verified: false,
+		});
+		expect(projected[0]?.credential_assumption).not.toHaveProperty(
+			"verified_provenance",
+		);
+	});
+
 	it("uses per-projection correlation for repeated assistant message usage events in one turn", () => {
 		const repeatedMessages: AgentEvent[] = [
 			{ type: "turn_start" },
@@ -625,6 +664,30 @@ describe("agent workforce native event projection", () => {
 			policy: {
 				approval_ref: "platform-approval-1",
 				decision: "allow",
+			},
+		});
+	});
+
+	it("preserves explicit governed denial status instead of generic execution failure", () => {
+		const projected = project([
+			{
+				type: "tool_execution_end",
+				toolCallId: "tool-call-denied",
+				toolExecutionId: "tool-exec-denied",
+				errorCode: "governance_denied",
+				governedOutcome: "denied",
+				toolName: "bash",
+				result: toolResult(),
+				isError: true,
+			},
+		]);
+
+		expect(projected[0]).toMatchObject({
+			event_type: "tool.completed",
+			action: {
+				status: "denied",
+				tool_call_id: "tool-call-denied",
+				tool_execution_id: "tool-exec-denied",
 			},
 		});
 	});
