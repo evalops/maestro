@@ -331,6 +331,7 @@ describe("agent workforce native event projection", () => {
 				request_id: "response-1",
 				input_tokens: 120,
 				cached_input_tokens: 10,
+				cache_write_tokens: 2,
 				output_tokens: 34,
 				total_cost_usd: 0.00191,
 			},
@@ -779,6 +780,7 @@ describe("agent workforce native event projection", () => {
 		expect(projected[0]?.event_type).toBe("model.usage");
 		expect(projected[0]?.model_usage).toMatchObject({
 			input_tokens: 120,
+			cache_write_tokens: 2,
 			output_tokens: 34,
 			total_cost_usd: 0.00191,
 		});
@@ -967,6 +969,11 @@ describe("agent workforce native event projection", () => {
 	it.each([
 		["background_tasks", { command: "touch tmp/output.txt" }],
 		["notebook_edit", { file_path: "analysis.ipynb" }],
+		["gh_pr", { action: "create", title: "Native event fix" }],
+		["gh_pr", { action: "comment", pr: 774 }],
+		["gh_issue", { action: "close", issue: 123 }],
+		["mcp__filesystem__edit", { path: "src/index.ts" }],
+		["mcp__filesystem__write", { path: "src/index.ts" }],
 	])(
 		"classifies %s tool executions as resource mutations",
 		(toolName, args) => {

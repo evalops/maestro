@@ -242,6 +242,7 @@ export interface AgentWorkforceModelUsage {
 	request_id?: string;
 	input_tokens?: number;
 	cached_input_tokens?: number;
+	cache_write_tokens?: number;
 	output_tokens?: number;
 	reasoning_output_tokens?: number;
 	total_cost_usd?: number;
@@ -464,6 +465,50 @@ function safeHash(value: unknown): string {
 	return `sha256:${hashStableValue(value)}`;
 }
 
+const MUTATING_TOOL_NAMES = new Set([
+	"write",
+	"edit",
+	"delete",
+	"delete_file",
+	"move_file",
+	"apply_patch",
+	"bash",
+	"background_tasks",
+	"shell",
+	"exec",
+	"git_cmd",
+	"notebook_edit",
+]);
+
+const MUTATING_GITHUB_ACTIONS = new Set([
+	"add_comment",
+	"close",
+	"comment",
+	"create",
+	"edit",
+	"merge",
+	"reopen",
+	"update",
+]);
+
+function mcpToolVerb(lowerTool: string): string | undefined {
+	if (!lowerTool.startsWith("mcp__")) return undefined;
+	const parts = lowerTool.split("__").filter(Boolean);
+	return parts.length >= 3 ? parts.at(-1) : undefined;
+}
+
+function toolMutatesResource(
+	lowerTool: string,
+	args?: Record<string, unknown>,
+): boolean {
+	if (MUTATING_TOOL_NAMES.has(lowerTool)) return true;
+	const mcpVerb = mcpToolVerb(lowerTool);
+	if (mcpVerb && MUTATING_TOOL_NAMES.has(mcpVerb)) return true;
+	if (lowerTool !== "gh_pr" && lowerTool !== "gh_issue") return false;
+	const action = readString(args, ["action"])?.toLowerCase();
+	return action ? MUTATING_GITHUB_ACTIONS.has(action) : false;
+}
+
 function resourceProjection(
 	toolName: string | undefined,
 	args?: Record<string, unknown>,
@@ -480,19 +525,7 @@ function resourceProjection(
 	]);
 	const url = readString(args, ["url", "uri", "endpoint"]);
 	const command = readString(args, ["cmd", "command", "script"]);
-	const mutationTools = new Set([
-		"write",
-		"edit",
-		"delete",
-		"apply_patch",
-		"bash",
-		"background_tasks",
-		"shell",
-		"exec",
-		"git_cmd",
-		"notebook_edit",
-	]);
-	const mutatesResource = mutationTools.has(lowerTool);
+	const mutatesResource = toolMutatesResource(lowerTool, args);
 	const resourceKind = filePath
 		? "file"
 		: url
@@ -660,6 +693,7 @@ function usageFromAssistantMessage(
 		request_id: requestId,
 		input_tokens: usage.input,
 		cached_input_tokens: usage.cacheRead,
+		cache_write_tokens: usage.cacheWrite,
 		output_tokens: usage.output,
 		total_cost_usd: usage.cost.total,
 	};
