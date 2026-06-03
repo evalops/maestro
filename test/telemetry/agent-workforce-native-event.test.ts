@@ -576,6 +576,108 @@ describe("agent workforce native event projection", () => {
 		);
 	});
 
+	it("keeps Platform credential authority missing when ttl_seconds is not finite", () => {
+		const malformedAuthority = platformCredentialAuthority(
+			baseTime.getTime() + 60_000,
+		);
+		malformedAuthority.verified_provenance.ttl_seconds = Number.NaN;
+
+		const projected = projectAgentWorkforceNativeEvents([nativeEvents()[6]!], {
+			correlation: {
+				workspace_id: "workspace-1",
+				session_id: "session-1",
+				agent_id: "agent-maestro-1",
+				agent_run_id: "run-1",
+			},
+			chainId: "chain-nonfinite-ttl-credential",
+			declaredCredential: {
+				credential_subject: "agent:agent-maestro-1",
+				credential_assumption_ref: "secretbroker:grant:grant-nonfinite",
+				grant_id: "grant-nonfinite",
+				credential_name: "github-pr-writer",
+				declared_authority: "secret_broker",
+			},
+			platformCredentialAuthority: malformedAuthority,
+			clock: () => baseTime,
+			makeEnvelopeId: (_event, sequence) => `awf_evt_nonfinite_${sequence}`,
+		});
+
+		expect(projected[0]?.credential_assumption).toMatchObject({
+			proof_status: "missing",
+			declared_authority: "secret_broker",
+			provenance_verified: false,
+		});
+		expect(projected[0]?.credential_assumption).not.toHaveProperty(
+			"verified_provenance",
+		);
+	});
+
+	it("accepts fresh Platform LLM Gateway authority with matching joined evidence", () => {
+		const llmGatewayAuthority = platformCredentialAuthority(
+			baseTime.getTime() + 60_000,
+		);
+		llmGatewayAuthority.credential_assumption_ref =
+			"llmgateway:vault:grant-verified";
+		llmGatewayAuthority.verified_provenance = {
+			...llmGatewayAuthority.verified_provenance,
+			authority: "llm_gateway_vault",
+			authority_ref: "llmgateway:vault:grant-verified",
+			join_correlation_id: "platform-join-llm-gateway",
+			joined_evidence_refs: [
+				{
+					kind: "identity",
+					ref: "join-identity",
+					observed_at: baseTime.toISOString(),
+				},
+				{
+					kind: "agent_runtime",
+					ref: "join-runtime",
+					observed_at: baseTime.toISOString(),
+				},
+				{
+					kind: "llm_gateway",
+					ref: "join-llm-gateway",
+					observed_at: baseTime.toISOString(),
+				},
+			],
+		};
+
+		const projected = projectAgentWorkforceNativeEvents([nativeEvents()[6]!], {
+			correlation: {
+				workspace_id: "workspace-1",
+				session_id: "session-1",
+				agent_id: "agent-maestro-1",
+				agent_run_id: "run-1",
+			},
+			chainId: "chain-llm-gateway-credential",
+			declaredCredential: {
+				credential_subject: "agent:agent-maestro-1",
+				credential_assumption_ref: "llmgateway:vault:grant-verified",
+				grant_id: "grant-verified",
+				credential_name: "model-access",
+				declared_authority: "llm_gateway_vault",
+			},
+			platformCredentialAuthority: llmGatewayAuthority,
+			clock: () => baseTime,
+			makeEnvelopeId: (_event, sequence) => `awf_evt_llm_gateway_${sequence}`,
+		});
+
+		expect(projected[0]?.credential_assumption).toMatchObject({
+			proof_status: "proven",
+			declared_authority: "llm_gateway_vault",
+			provenance_verified: true,
+			verified_provenance: {
+				authority: "llm_gateway_vault",
+				authority_ref: "llmgateway:vault:grant-verified",
+				join_correlation_id: "platform-join-llm-gateway",
+				joined_evidence_refs: expect.arrayContaining([
+					expect.objectContaining({ kind: "llm_gateway" }),
+				]),
+			},
+		});
+		expect(projected[0]?.evidence.missing_evidence).toEqual([]);
+	});
+
 	it("uses per-projection correlation for repeated assistant message usage events in one turn", () => {
 		const repeatedMessages: AgentEvent[] = [
 			{ type: "turn_start" },

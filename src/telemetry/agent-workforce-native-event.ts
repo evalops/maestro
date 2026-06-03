@@ -678,6 +678,10 @@ function platformCredentialAuthorityIsComplete(
 		return false;
 	}
 	const provenance = authority.verified_provenance;
+	const authorityEvidenceKind =
+		provenance.authority === "llm_gateway_vault"
+			? "llm_gateway"
+			: provenance.authority;
 	const observedAtMs = Date.parse(provenance.observed_at);
 	const expiresAtMs = Date.parse(provenance.expires_at);
 	if (
@@ -690,6 +694,7 @@ function platformCredentialAuthorityIsComplete(
 		observedAtMs > now.getTime() ||
 		expiresAtMs <= now.getTime() ||
 		typeof provenance.ttl_seconds !== "number" ||
+		!Number.isFinite(provenance.ttl_seconds) ||
 		provenance.ttl_seconds < 1 ||
 		observedAtMs + provenance.ttl_seconds * 1000 <= now.getTime() ||
 		(provenance.revocation_status !== "active" &&
@@ -704,7 +709,7 @@ function platformCredentialAuthorityIsComplete(
 		joinedRefs.length >= 3 &&
 		hasKind("identity") &&
 		hasKind("agent_runtime") &&
-		hasKind("secret_broker")
+		hasKind(authorityEvidenceKind)
 	);
 }
 
