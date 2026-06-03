@@ -256,8 +256,7 @@ describe("agent workforce native event projection", () => {
 					"maestro.AgentEvent:tool_execution_start:session-1:tool-call-1",
 				native_action_correlation_id:
 					"session-1/run-1/tool-exec-1/session-1:turn:1/tool-call-1",
-				platform_action_correlation_id:
-					"agentruntime:run-1:tool-exec-1:tool-call-1",
+				platform_action_correlation_id: "agentruntime:run-1:tool-exec-1",
 			},
 			action: {
 				sequence: 3,
@@ -678,6 +677,45 @@ describe("agent workforce native event projection", () => {
 		expect(projected[0]?.evidence.missing_evidence).toEqual([]);
 	});
 
+	it("keeps malformed Platform resolver provenance missing instead of throwing", () => {
+		const malformedResolverAuthority = {
+			source: "platform_resolver",
+			credential_subject: "agent:agent-maestro-1",
+		} as unknown as AgentWorkforcePlatformCredentialAuthority;
+
+		const projected = projectAgentWorkforceNativeEvents([nativeEvents()[6]!], {
+			correlation: {
+				workspace_id: "workspace-1",
+				session_id: "session-1",
+				agent_id: "agent-maestro-1",
+				agent_run_id: "run-1",
+			},
+			chainId: "chain-malformed-platform-resolver",
+			declaredCredential: {
+				credential_subject: "agent:agent-maestro-1",
+				credential_assumption_ref: "secretbroker:grant:grant-malformed",
+				grant_id: "grant-malformed",
+				credential_name: "github-pr-writer",
+				declared_authority: "secret_broker",
+			},
+			platformCredentialAuthority: malformedResolverAuthority,
+			clock: () => baseTime,
+			makeEnvelopeId: (_event, sequence) => `awf_evt_malformed_${sequence}`,
+		});
+
+		expect(projected[0]?.credential_assumption).toMatchObject({
+			proof_status: "missing",
+			declared_authority: "secret_broker",
+			provenance_verified: false,
+		});
+		expect(projected[0]?.credential_assumption).not.toHaveProperty(
+			"verified_provenance",
+		);
+		expect(projected[0]?.evidence.missing_evidence).toEqual([
+			expect.objectContaining({ code: "credential_assumption.unproven" }),
+		]);
+	});
+
 	it("omits reasoning token usage when Maestro has no separate observed count", () => {
 		const projected = project([nativeEvents()[6]!]);
 
@@ -709,6 +747,43 @@ describe("agent workforce native event projection", () => {
 			workspace_id: "unknown",
 		});
 		expect(projected[0]?.tenant.workspace_id).not.toBe(process.cwd());
+	});
+
+	it("does not fabricate AgentRuntime refs from local-only native tool ids", () => {
+		const projected = projectAgentWorkforceNativeEvents(
+			[
+				{
+					type: "tool_execution_start",
+					toolCallId: "native-tool-call-only",
+					toolName: "bash",
+					args: { command: "pwd" },
+				},
+			],
+			{
+				correlation: {
+					workspace_id: "workspace-1",
+					session_id: "session-local-only",
+				},
+				chainId: "chain-local-tool-only",
+				clock: () => baseTime,
+				makeEnvelopeId: (_event, sequence) => `awf_evt_local_${sequence}`,
+			},
+		);
+
+		expect(projected[0]?.run.agent_run_step_id).toBeUndefined();
+		expect(projected[0]?.action).toMatchObject({
+			tool_call_id: "native-tool-call-only",
+			tool_execution_id: undefined,
+		});
+		expect(
+			projected[0]?.timeline_correlation.native_action_correlation_id,
+		).toContain("native-tool-call-only");
+		expect(
+			projected[0]?.timeline_correlation.platform_action_correlation_id,
+		).toBeUndefined();
+		expect(
+			projected[0]?.evidence.refs.some((ref) => ref.kind === "agent_runtime"),
+		).toBe(false);
 	});
 
 	it("uses per-projection correlation for repeated assistant message usage events in one turn", () => {

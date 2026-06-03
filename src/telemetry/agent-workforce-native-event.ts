@@ -380,6 +380,10 @@ function compactRecord<T extends Record<string, unknown>>(
 		: undefined;
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+	return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
 function eventHashPayload(event: AgentWorkforceNativeEvent): unknown {
 	return {
 		...event,
@@ -679,6 +683,22 @@ function platformCredentialAuthorityIsComplete(
 		return false;
 	}
 	const provenance = authority.verified_provenance;
+	if (!isRecord(provenance)) {
+		return false;
+	}
+	const joinedRefs = provenance.joined_evidence_refs;
+	if (
+		typeof provenance.authority !== "string" ||
+		typeof provenance.authority_ref !== "string" ||
+		typeof provenance.join_correlation_id !== "string" ||
+		typeof provenance.observed_at !== "string" ||
+		typeof provenance.expires_at !== "string" ||
+		typeof provenance.ttl_seconds !== "number" ||
+		typeof provenance.revocation_status !== "string" ||
+		!Array.isArray(joinedRefs)
+	) {
+		return false;
+	}
 	const authorityEvidenceKind =
 		provenance.authority === "llm_gateway_vault"
 			? "llm_gateway"
@@ -694,7 +714,6 @@ function platformCredentialAuthorityIsComplete(
 		!Number.isFinite(expiresAtMs) ||
 		observedAtMs > now.getTime() ||
 		expiresAtMs <= now.getTime() ||
-		typeof provenance.ttl_seconds !== "number" ||
 		!Number.isFinite(provenance.ttl_seconds) ||
 		provenance.ttl_seconds < 1 ||
 		observedAtMs + provenance.ttl_seconds * 1000 <= now.getTime() ||
@@ -703,9 +722,10 @@ function platformCredentialAuthorityIsComplete(
 	) {
 		return false;
 	}
-	const joinedRefs = provenance.joined_evidence_refs;
 	const hasKind = (kind: AgentWorkforceEvidenceKind) =>
-		joinedRefs.some((ref) => ref.kind === kind && Boolean(ref.ref));
+		joinedRefs.some(
+			(ref) => isRecord(ref) && ref.kind === kind && Boolean(ref.ref),
+		);
 	return (
 		joinedRefs.length >= 3 &&
 		hasKind("identity") &&
@@ -867,15 +887,11 @@ function platformActionCorrelationId(
 	run: AgentWorkforceRun,
 	action: AgentWorkforceAction,
 ): string | undefined {
-	if (!run.agent_run_id && !run.agent_run_step_id && !action.tool_call_id) {
+	const agentRunStepId = run.agent_run_step_id ?? action.tool_execution_id;
+	if (!agentRunStepId) {
 		return undefined;
 	}
-	return [
-		"agentruntime",
-		run.agent_run_id ?? "unknown-run",
-		run.agent_run_step_id ?? "unknown-step",
-		action.tool_call_id,
-	]
+	return ["agentruntime", run.agent_run_id ?? "unknown-run", agentRunStepId]
 		.filter(Boolean)
 		.join(":");
 }
@@ -897,10 +913,10 @@ function evidenceRefs(input: {
 			observed_at: input.observedAt,
 		},
 	];
-	if (input.run.agent_run_id || input.run.agent_run_step_id) {
+	if (input.run.agent_run_step_id) {
 		refs.push({
 			kind: "agent_runtime",
-			ref: `agentruntime:${input.run.agent_run_id ?? "unknown-run"}:${input.run.agent_run_step_id ?? "unknown-step"}`,
+			ref: `agentruntime:${input.run.agent_run_id ?? "unknown-run"}:${input.run.agent_run_step_id}`,
 			observed_at: input.observedAt,
 		});
 	}
@@ -1053,7 +1069,7 @@ function eventStepId(event: AgentEvent): string | undefined {
 	switch (event.type) {
 		case "tool_execution_start":
 		case "tool_execution_end":
-			return event.toolExecutionId ?? event.toolCallId;
+			return event.toolExecutionId;
 		case "action_approval_required":
 		case "action_approval_resolved":
 			return event.request.platform?.toolExecutionId;
