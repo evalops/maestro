@@ -803,6 +803,32 @@ describe("agent workforce native event projection", () => {
 		});
 	});
 
+	it.each([
+		["background_tasks", { command: "touch tmp/output.txt" }],
+		["notebook_edit", { file_path: "analysis.ipynb" }],
+	])(
+		"classifies %s tool executions as resource mutations",
+		(toolName, args) => {
+			const projected = project([
+				{
+					type: "tool_execution_start",
+					toolCallId: `tool-call-${toolName}`,
+					toolExecutionId: `tool-exec-${toolName}`,
+					toolName,
+					args,
+				},
+			]);
+
+			expect(projected[0]?.action).toMatchObject({
+				tool_name: toolName,
+				mutates_resource: true,
+				safe_args_summary: {
+					operation: "mutate",
+				},
+			});
+		},
+	);
+
 	it("preserves explicit governed denial status instead of generic execution failure", () => {
 		const projected = project([
 			{

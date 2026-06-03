@@ -472,9 +472,11 @@ function resourceProjection(
 		"delete",
 		"apply_patch",
 		"bash",
+		"background_tasks",
 		"shell",
 		"exec",
 		"git_cmd",
+		"notebook_edit",
 	]);
 	const mutatesResource = mutationTools.has(lowerTool);
 	const resourceKind = filePath
