@@ -960,6 +960,31 @@ describe("agent workforce native event projection", () => {
 		).toBeUndefined();
 	});
 
+	it.each(["error", "aborted"] as const)(
+		"marks assistant usage with stopReason %s as failed",
+		(stopReason) => {
+			const projected = project([
+				{
+					type: "message_end",
+					message: {
+						...usageMessage(),
+						stopReason,
+						errorMessage:
+							stopReason === "error" ? "Provider stream failed" : undefined,
+					},
+				},
+			]);
+
+			expect(projected[0]).toMatchObject({
+				event_type: "model.usage",
+				action: {
+					action_kind: "usage",
+					status: "failed",
+				},
+			});
+		},
+	);
+
 	it("does not infer approval denial from a failed execution after approval was allowed", () => {
 		const request = approvalRequest();
 		const approvedDecision: ActionApprovalDecision = {
@@ -1011,8 +1036,43 @@ describe("agent workforce native event projection", () => {
 		});
 	});
 
+	it("preserves resolved approval denial on tool completion without denial error codes", () => {
+		const request = approvalRequest();
+		const projected = project([
+			{
+				type: "action_approval_resolved",
+				request,
+				decision: approvalDecision(),
+			},
+			{
+				type: "tool_execution_end",
+				toolCallId: "tool-call-1",
+				toolExecutionId: "tool-exec-1",
+				approvalRequestId: "platform-approval-1",
+				toolName: "bash",
+				result: toolResult(),
+				isError: true,
+			},
+		]);
+
+		const toolCompleted = projected.find(
+			(event) => event.event_type === "tool.completed",
+		);
+
+		expect(toolCompleted).toMatchObject({
+			action: {
+				status: "denied",
+			},
+			policy: {
+				approval_ref: "platform-approval-1",
+				decision: "deny",
+			},
+		});
+	});
+
 	it.each([
-		["background_tasks", { command: "touch tmp/output.txt" }],
+		["background_tasks", { action: "start", command: "touch tmp/output.txt" }],
+		["background_tasks", { action: "stop", taskId: "task-1" }],
 		["notebook_edit", { file_path: "analysis.ipynb" }],
 		["gh_pr", { action: "create", title: "Native event fix" }],
 		["gh_pr", { action: "comment", pr: 774 }],
@@ -1044,6 +1104,29 @@ describe("agent workforce native event projection", () => {
 			});
 		},
 	);
+
+	it.each([
+		["background_tasks", { action: "list" }],
+		["background_tasks", { action: "logs", taskId: "task-1" }],
+	])("keeps %s read-only action executions non-mutating", (toolName, args) => {
+		const projected = project([
+			{
+				type: "tool_execution_start",
+				toolCallId: `tool-call-${toolName}-${args.action}`,
+				toolExecutionId: `tool-exec-${toolName}-${args.action}`,
+				toolName,
+				args,
+			},
+		]);
+
+		expect(projected[0]?.action).toMatchObject({
+			tool_name: toolName,
+			mutates_resource: false,
+			safe_args_summary: {
+				operation: "read_or_unknown",
+			},
+		});
+	});
 
 	it.each([
 		["mcp__fathom-cua__get_app_state", {}],

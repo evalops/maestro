@@ -488,7 +488,6 @@ const MUTATING_TOOL_NAMES = new Set([
 	"move_file",
 	"apply_patch",
 	"bash",
-	"background_tasks",
 	"shell",
 	"exec",
 	"git_cmd",
@@ -505,6 +504,8 @@ const MUTATING_GITHUB_ACTIONS = new Set([
 	"reopen",
 	"update",
 ]);
+
+const MUTATING_BACKGROUND_TASK_ACTIONS = new Set(["start", "stop"]);
 
 const FATHOM_DESKTOP_ACTION_VERBS = new Set([
 	"activate_app",
@@ -556,6 +557,10 @@ function toolMutatesResource(
 	args?: Record<string, unknown>,
 ): boolean {
 	if (MUTATING_TOOL_NAMES.has(lowerTool)) return true;
+	if (lowerTool === "background_tasks") {
+		const action = readString(args, ["action"])?.toLowerCase();
+		return action ? MUTATING_BACKGROUND_TASK_ACTIONS.has(action) : false;
+	}
 	const mcp = mcpToolParts(lowerTool);
 	if (mcp?.verb && MUTATING_TOOL_NAMES.has(mcp.verb)) return true;
 	if (
@@ -716,7 +721,10 @@ function actionKindFor(event: AgentEvent): AgentWorkforceAction["action_kind"] {
 	}
 }
 
-function actionStatusFor(event: AgentEvent): AgentWorkforceAction["status"] {
+function actionStatusFor(
+	event: AgentEvent,
+	resolvedApprovalDecision?: ActionApprovalDecision,
+): AgentWorkforceAction["status"] {
 	switch (event.type) {
 		case "agent_start":
 		case "turn_start":
@@ -729,13 +737,23 @@ function actionStatusFor(event: AgentEvent): AgentWorkforceAction["status"] {
 			if (
 				event.governedOutcome === "denied" ||
 				event.errorCode === "approval_denied" ||
-				event.errorCode === "governance_denied"
+				event.errorCode === "governance_denied" ||
+				resolvedApprovalDecision?.approved === false
 			) {
 				return "denied";
 			}
 			return event.isError ? "failed" : "completed";
 		case "action_approval_resolved":
 			return event.decision.approved ? "completed" : "denied";
+		case "message_end":
+			if (
+				isAssistantMessage(event.message) &&
+				(event.message.stopReason === "error" ||
+					event.message.stopReason === "aborted")
+			) {
+				return "failed";
+			}
+			return "completed";
 		default:
 			return "completed";
 	}
@@ -1209,11 +1227,12 @@ function actionForEvent(
 	event: AgentEvent,
 	sequence: number,
 	pendingTool: PendingToolProjection | undefined,
+	resolvedApprovalDecision?: ActionApprovalDecision,
 ): AgentWorkforceAction {
 	const base: AgentWorkforceAction = {
 		sequence,
 		action_kind: actionKindFor(event),
-		status: actionStatusFor(event),
+		status: actionStatusFor(event, resolvedApprovalDecision),
 	};
 	switch (event.type) {
 		case "tool_execution_start":
@@ -1287,13 +1306,17 @@ export class AgentWorkforceNativeEventProjector {
 			turnIdForEvent(event, this.options, this.currentTurnId),
 			eventStepId(event),
 		);
-		const action = actionForEvent(event, sequence, pendingTool);
-		const policy = policyForEvent(
-			event,
+		const resolvedApprovalDecision =
 			event.type === "tool_execution_end" && event.approvalRequestId
 				? this.resolvedApprovals.get(event.approvalRequestId)
-				: undefined,
+				: undefined;
+		const action = actionForEvent(
+			event,
+			sequence,
+			pendingTool,
+			resolvedApprovalDecision,
 		);
+		const policy = policyForEvent(event, resolvedApprovalDecision);
 		const credential = credentialAssumption(this.options, now);
 		const modelUsage =
 			event.type === "message_end"
