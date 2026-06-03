@@ -388,7 +388,12 @@ pub(super) fn runner_args_for_script(runner: &str, script: &str) -> Vec<String> 
 }
 
 pub(super) fn runner_supports_ignore_scripts(runner: &str) -> bool {
-    runner.ends_with("npm") || runner.ends_with("npm.cmd")
+    let executable_name = runner
+        .rsplit(['/', '\\'])
+        .next()
+        .unwrap_or(runner)
+        .to_ascii_lowercase();
+    matches!(executable_name.as_str(), "npm" | "npm.cmd")
 }
 
 pub(super) async fn run_script_response(cwd: &Path, request: RunScriptRequest) -> Vec<u8> {

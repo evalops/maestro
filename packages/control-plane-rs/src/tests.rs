@@ -7390,7 +7390,9 @@ fn validates_run_script_inputs() {
         ["run", "db:migrate"]
     );
     assert!(!runner_supports_ignore_scripts("bun"));
+    assert!(!runner_supports_ignore_scripts("/tmp/bin/pnpm"));
     assert!(runner_supports_ignore_scripts("/tmp/bin/npm"));
+    assert!(runner_supports_ignore_scripts(r"C:\tools\npm.cmd"));
 }
 
 #[tokio::test]
