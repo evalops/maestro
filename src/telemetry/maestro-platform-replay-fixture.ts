@@ -167,6 +167,62 @@ export type MaestroPlatformReplayFixtureEvent = MaestroCloudEvent<
 	Record<string, unknown>
 >;
 
+type AgentRuntimeRecordRunEventType =
+	| "RUNTIME_EVENT_TYPE_TOOL_CALL_RECORDED"
+	| "RUNTIME_EVENT_TYPE_TOOL_RESULT_RECORDED"
+	| "RUNTIME_EVENT_TYPE_APPROVAL_REQUESTED"
+	| "RUNTIME_EVENT_TYPE_MODEL_RESPONSE_RECORDED";
+
+type NativeEvidencePrimitive =
+	| "NativeToolAttemptEvidence"
+	| "NativeAgentEventEvidence";
+
+type NativeEvidenceState =
+	| "RUNTIME_EVIDENCE_STATE_NATIVE_OBSERVED"
+	| "RUNTIME_EVIDENCE_STATE_MISSING";
+
+type SafeProjectionGapKind = "principal" | "credential" | "cost" | "approval";
+
+interface SafeProjectionGapAssertion {
+	gap: SafeProjectionGapKind;
+	evidence_state: NativeEvidenceState;
+	reason:
+		| "RUNTIME_EVIDENCE_GAP_REASON_PRINCIPAL_UNRESOLVED"
+		| "RUNTIME_EVIDENCE_GAP_REASON_CREDENTIAL_UNVERIFIED"
+		| "RUNTIME_EVIDENCE_GAP_REASON_COST_UNRECORDED"
+		| "approval_record_unjoined";
+	approval_blocking: boolean;
+	join_required:
+		| "Identity principal resolver"
+		| "Secret Broker/Gateway credential evidence"
+		| "Meter cost record"
+		| "Platform approval record";
+}
+
+interface SafeProjectionMappingAssertion {
+	source:
+		| MaestroBusEventType.ToolCallAttempted
+		| MaestroBusEventType.ToolCallCompleted
+		| MaestroBusEventType.ApprovalHit
+		| "maestro.native.model_usage.observed";
+	source_event_id: string;
+	source_event_time: string;
+	record_run_event_type: AgentRuntimeRecordRunEventType;
+	native_evidence: NativeEvidencePrimitive;
+	native_kind:
+		| "maestro_tool_attempt"
+		| "maestro_tool_result"
+		| "maestro_approval_observation"
+		| "maestro_model_usage";
+	evidence_state: "RUNTIME_EVIDENCE_STATE_NATIVE_OBSERVED";
+	principal_evidence_state: "RUNTIME_EVIDENCE_STATE_MISSING";
+	credential_evidence_state: "RUNTIME_EVIDENCE_STATE_MISSING";
+	cost_evidence_state: "RUNTIME_EVIDENCE_STATE_MISSING";
+	approval_readiness_state: "RUNTIME_EVIDENCE_STATE_MISSING";
+	joins_required: readonly SafeProjectionGapAssertion["join_required"][];
+	product_payload_fields: readonly string[];
+}
+
 export interface MaestroPlatformReplayFixture {
 	fixture_version: "maestro-platform-replay/v1";
 	name: typeof CANONICAL_MAESTRO_PLATFORM_REPLAY_FIXTURE_NAME;
@@ -183,6 +239,21 @@ export interface MaestroPlatformReplayFixture {
 			title: string;
 			visible: boolean;
 		}>;
+		agent_runtime_safe_projection: {
+			platform_reference: {
+				service: "agentruntime.v1.AgentRuntimeService";
+				rpc: "RecordRunEvent";
+				request: "agentruntime.v1.RecordRunEventRequest";
+				native_primitives: readonly NativeEvidencePrimitive[];
+			};
+			authority_boundary: string;
+			required_gaps: SafeProjectionGapAssertion[];
+			mappings: SafeProjectionMappingAssertion[];
+			product_payload_policy: {
+				allowed_payload_basis: "redaction-safe identifiers, counts, summaries, and digest refs only";
+				forbidden_payload_classes: readonly string[];
+			};
+		};
 	};
 }
 
@@ -497,6 +568,7 @@ function buildEvents(): MaestroPlatformReplayFixtureEvent[] {
 export function buildCanonicalMaestroPlatformReplayFixture(): MaestroPlatformReplayFixture {
 	const events = buildEvents();
 	const subjects = eventPlan.map((event) => event.type);
+	const requiredGaps = buildSafeProjectionGaps();
 	return {
 		fixture_version: "maestro-platform-replay/v1",
 		name: CANONICAL_MAESTRO_PLATFORM_REPLAY_FIXTURE_NAME,
@@ -569,8 +641,195 @@ export function buildCanonicalMaestroPlatformReplayFixture(): MaestroPlatformRep
 					visible: true,
 				},
 			],
+			agent_runtime_safe_projection: {
+				platform_reference: {
+					service: "agentruntime.v1.AgentRuntimeService",
+					rpc: "RecordRunEvent",
+					request: "agentruntime.v1.RecordRunEventRequest",
+					native_primitives: [
+						"NativeToolAttemptEvidence",
+						"NativeAgentEventEvidence",
+					],
+				},
+				authority_boundary:
+					"Maestro native chronology is observation. Approval readiness requires fresh Platform joins to Identity, AgentRuntime, Secret Broker/Gateway, Meter, and approval records.",
+				required_gaps: requiredGaps,
+				mappings: [
+					{
+						source: MaestroBusEventType.ToolCallAttempted,
+						source_event_id: "evt_maestro_replay_007_eval_tool_call_attempted",
+						source_event_time: eventPlan[6].time,
+						record_run_event_type: "RUNTIME_EVENT_TYPE_TOOL_CALL_RECORDED",
+						native_evidence: "NativeToolAttemptEvidence",
+						native_kind: "maestro_tool_attempt",
+						evidence_state: "RUNTIME_EVIDENCE_STATE_NATIVE_OBSERVED",
+						principal_evidence_state: "RUNTIME_EVIDENCE_STATE_MISSING",
+						credential_evidence_state: "RUNTIME_EVIDENCE_STATE_MISSING",
+						cost_evidence_state: "RUNTIME_EVIDENCE_STATE_MISSING",
+						approval_readiness_state: "RUNTIME_EVIDENCE_STATE_MISSING",
+						joins_required: requiredGaps.map((gap) => gap.join_required),
+						product_payload_fields: [
+							"source_event_id",
+							"source_event_type",
+							"workspace_id",
+							"session_id",
+							"agent_run_id",
+							"agent_run_step_id",
+							"tool_call_id",
+							"tool_execution_id",
+							"tool_name",
+							"capability",
+							"risk_level",
+							"safe_arguments_ref",
+							"safe_arguments_sha256",
+							"safe_arguments_key_count",
+							"redactions",
+							"evidence_gaps",
+						],
+					},
+					{
+						source: MaestroBusEventType.ToolCallCompleted,
+						source_event_id: "evt_maestro_replay_008_eval_tool_call_completed",
+						source_event_time: eventPlan[7].time,
+						record_run_event_type: "RUNTIME_EVENT_TYPE_TOOL_RESULT_RECORDED",
+						native_evidence: "NativeAgentEventEvidence",
+						native_kind: "maestro_tool_result",
+						evidence_state: "RUNTIME_EVIDENCE_STATE_NATIVE_OBSERVED",
+						principal_evidence_state: "RUNTIME_EVIDENCE_STATE_MISSING",
+						credential_evidence_state: "RUNTIME_EVIDENCE_STATE_MISSING",
+						cost_evidence_state: "RUNTIME_EVIDENCE_STATE_MISSING",
+						approval_readiness_state: "RUNTIME_EVIDENCE_STATE_MISSING",
+						joins_required: requiredGaps.map((gap) => gap.join_required),
+						product_payload_fields: [
+							"source_event_id",
+							"source_event_type",
+							"workspace_id",
+							"session_id",
+							"agent_run_id",
+							"agent_run_step_id",
+							"tool_call_id",
+							"tool_execution_id",
+							"tool_name",
+							"status",
+							"safe_output_ref",
+							"safe_output_sha256",
+							"safe_output_key_count",
+							"redactions",
+							"evidence_gaps",
+						],
+					},
+					{
+						source: MaestroBusEventType.ApprovalHit,
+						source_event_id: "evt_maestro_replay_006_approval_hit",
+						source_event_time: eventPlan[5].time,
+						record_run_event_type: "RUNTIME_EVENT_TYPE_APPROVAL_REQUESTED",
+						native_evidence: "NativeAgentEventEvidence",
+						native_kind: "maestro_approval_observation",
+						evidence_state: "RUNTIME_EVIDENCE_STATE_NATIVE_OBSERVED",
+						principal_evidence_state: "RUNTIME_EVIDENCE_STATE_MISSING",
+						credential_evidence_state: "RUNTIME_EVIDENCE_STATE_MISSING",
+						cost_evidence_state: "RUNTIME_EVIDENCE_STATE_MISSING",
+						approval_readiness_state: "RUNTIME_EVIDENCE_STATE_MISSING",
+						joins_required: requiredGaps.map((gap) => gap.join_required),
+						product_payload_fields: [
+							"source_event_id",
+							"source_event_type",
+							"workspace_id",
+							"session_id",
+							"agent_run_id",
+							"agent_run_step_id",
+							"tool_call_id",
+							"tool_name",
+							"approval_request_id",
+							"risk_level",
+							"policy_id",
+							"safe_arguments_ref",
+							"safe_arguments_sha256",
+							"evidence_gaps",
+						],
+					},
+					{
+						source: "maestro.native.model_usage.observed",
+						source_event_id: "native_maestro_replay_model_usage_observed_001",
+						source_event_time: eventPlan[10].time,
+						record_run_event_type: "RUNTIME_EVENT_TYPE_MODEL_RESPONSE_RECORDED",
+						native_evidence: "NativeAgentEventEvidence",
+						native_kind: "maestro_model_usage",
+						evidence_state: "RUNTIME_EVIDENCE_STATE_NATIVE_OBSERVED",
+						principal_evidence_state: "RUNTIME_EVIDENCE_STATE_MISSING",
+						credential_evidence_state: "RUNTIME_EVIDENCE_STATE_MISSING",
+						cost_evidence_state: "RUNTIME_EVIDENCE_STATE_MISSING",
+						approval_readiness_state: "RUNTIME_EVIDENCE_STATE_MISSING",
+						joins_required: requiredGaps.map((gap) => gap.join_required),
+						product_payload_fields: [
+							"source_event_id",
+							"source_event_type",
+							"workspace_id",
+							"session_id",
+							"agent_run_id",
+							"agent_run_step_id",
+							"provider",
+							"model",
+							"input_tokens",
+							"output_tokens",
+							"total_tokens",
+							"meter_ref",
+							"evidence_gaps",
+						],
+					},
+				],
+				product_payload_policy: {
+					allowed_payload_basis:
+						"redaction-safe identifiers, counts, summaries, and digest refs only",
+					forbidden_payload_classes: [
+						"prompts",
+						"tool args/results",
+						"MCP bodies/results",
+						"transcripts",
+						"images",
+						"provider raw payloads",
+						"env",
+						"secrets",
+						"token values",
+						"stdout/stderr",
+					],
+				},
+			},
 		},
 	};
+}
+
+function buildSafeProjectionGaps(): SafeProjectionGapAssertion[] {
+	return [
+		{
+			gap: "principal",
+			evidence_state: "RUNTIME_EVIDENCE_STATE_MISSING",
+			reason: "RUNTIME_EVIDENCE_GAP_REASON_PRINCIPAL_UNRESOLVED",
+			approval_blocking: true,
+			join_required: "Identity principal resolver",
+		},
+		{
+			gap: "credential",
+			evidence_state: "RUNTIME_EVIDENCE_STATE_MISSING",
+			reason: "RUNTIME_EVIDENCE_GAP_REASON_CREDENTIAL_UNVERIFIED",
+			approval_blocking: true,
+			join_required: "Secret Broker/Gateway credential evidence",
+		},
+		{
+			gap: "cost",
+			evidence_state: "RUNTIME_EVIDENCE_STATE_MISSING",
+			reason: "RUNTIME_EVIDENCE_GAP_REASON_COST_UNRECORDED",
+			approval_blocking: true,
+			join_required: "Meter cost record",
+		},
+		{
+			gap: "approval",
+			evidence_state: "RUNTIME_EVIDENCE_STATE_MISSING",
+			reason: "approval_record_unjoined",
+			approval_blocking: true,
+			join_required: "Platform approval record",
+		},
+	];
 }
 
 export function canonicalMaestroPlatformReplayFixtureJson(): string {
