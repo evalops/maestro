@@ -23,6 +23,39 @@ const FORBIDDEN_FIXTURE_KEYS = new Set([
 	"access_token",
 	"withheld_content",
 	"withheld_vfs_bytes",
+	"mcp_body",
+	"mcp_result",
+	"transcript",
+	"image",
+	"provider_raw_payload",
+	"env",
+	"secret",
+	"token_value",
+]);
+
+const FORBIDDEN_PRODUCT_PAYLOAD_FIELDS = new Set([
+	"prompt",
+	"raw_prompt",
+	"messages",
+	"tool_args",
+	"tool_arguments",
+	"args",
+	"tool_result",
+	"result",
+	"mcp_body",
+	"mcp_result",
+	"transcript",
+	"image",
+	"provider_raw_payload",
+	"env",
+	"secret",
+	"secrets",
+	"api_key",
+	"access_token",
+	"token",
+	"token_value",
+	"stdout",
+	"stderr",
 ]);
 
 function collectObjectKeys(
@@ -335,6 +368,172 @@ describe("canonical Maestro Platform replay fixture", () => {
 				skill_id: "skill_incident_review",
 			},
 		});
+	});
+
+	it("pins AgentRuntime safe projection gaps until Platform authority joins them", () => {
+		const fixture = buildCanonicalMaestroPlatformReplayFixture();
+		const projection =
+			fixture.expected_assertions.agent_runtime_safe_projection;
+		const sourceEventIds = new Set(fixture.events.map((event) => event.id));
+
+		expect(projection.platform_reference).toEqual({
+			service: "agentruntime.v1.AgentRuntimeService",
+			rpc: "RecordRunEvent",
+			request: "agentruntime.v1.RecordRunEventRequest",
+			native_primitives: [
+				"NativeToolAttemptEvidence",
+				"NativeAgentEventEvidence",
+			],
+		});
+		expect(projection.authority_boundary).toBe(
+			"Maestro native chronology is observation. Approval readiness requires fresh Platform joins to Identity, AgentRuntime, Secret Broker/Gateway, Meter, and approval records.",
+		);
+		expect(projection.required_gaps).toEqual([
+			{
+				gap: "principal",
+				evidence_state: "RUNTIME_EVIDENCE_STATE_MISSING",
+				reason: "RUNTIME_EVIDENCE_GAP_REASON_PRINCIPAL_UNRESOLVED",
+				approval_blocking: true,
+				join_required: "Identity principal resolver",
+			},
+			{
+				gap: "credential",
+				evidence_state: "RUNTIME_EVIDENCE_STATE_MISSING",
+				reason: "RUNTIME_EVIDENCE_GAP_REASON_CREDENTIAL_UNVERIFIED",
+				approval_blocking: true,
+				join_required: "Secret Broker/Gateway credential evidence",
+			},
+			{
+				gap: "cost",
+				evidence_state: "RUNTIME_EVIDENCE_STATE_MISSING",
+				reason: "RUNTIME_EVIDENCE_GAP_REASON_COST_UNRECORDED",
+				approval_blocking: true,
+				join_required: "Meter cost record",
+			},
+			{
+				gap: "approval",
+				evidence_state: "RUNTIME_EVIDENCE_STATE_MISSING",
+				reason: "approval_record_unjoined",
+				approval_blocking: true,
+				join_required: "Platform approval record",
+			},
+		]);
+
+		expect(projection.mappings).toMatchObject([
+			{
+				source: "maestro.native.model_usage.observed",
+				source_event_id: "native_maestro_replay_model_usage_observed_001",
+				source_event_time: "2026-04-23T18:01:30.000Z",
+				record_run_event_type: "RUNTIME_EVENT_TYPE_MODEL_RESPONSE_RECORDED",
+				native_evidence: "NativeAgentEventEvidence",
+				native_kind: "maestro_model_usage",
+			},
+			{
+				source: MaestroBusEventType.ToolCallAttempted,
+				source_event_id: "evt_maestro_replay_003_skill_tool_call_attempted",
+				source_event_time: "2026-04-23T18:02:00.000Z",
+				record_run_event_type: "RUNTIME_EVENT_TYPE_TOOL_CALL_RECORDED",
+				native_evidence: "NativeToolAttemptEvidence",
+				native_kind: "maestro_tool_attempt",
+			},
+			{
+				source: MaestroBusEventType.ToolCallCompleted,
+				source_event_id: "evt_maestro_replay_004_skill_tool_call_completed",
+				source_event_time: "2026-04-23T18:03:00.000Z",
+				record_run_event_type: "RUNTIME_EVENT_TYPE_TOOL_RESULT_RECORDED",
+				native_evidence: "NativeAgentEventEvidence",
+				native_kind: "maestro_tool_result",
+			},
+			{
+				source: MaestroBusEventType.ApprovalHit,
+				source_event_id: "evt_maestro_replay_006_approval_hit",
+				source_event_time: "2026-04-23T18:05:00.000Z",
+				record_run_event_type: "RUNTIME_EVENT_TYPE_APPROVAL_REQUESTED",
+				native_evidence: "NativeAgentEventEvidence",
+				native_kind: "maestro_approval_observation",
+			},
+			{
+				source: MaestroBusEventType.ToolCallAttempted,
+				source_event_id: "evt_maestro_replay_007_eval_tool_call_attempted",
+				source_event_time: "2026-04-23T18:06:00.000Z",
+				record_run_event_type: "RUNTIME_EVENT_TYPE_TOOL_CALL_RECORDED",
+				native_evidence: "NativeToolAttemptEvidence",
+				native_kind: "maestro_tool_attempt",
+			},
+			{
+				source: MaestroBusEventType.ToolCallCompleted,
+				source_event_id: "evt_maestro_replay_008_eval_tool_call_completed",
+				source_event_time: "2026-04-23T18:07:00.000Z",
+				record_run_event_type: "RUNTIME_EVENT_TYPE_TOOL_RESULT_RECORDED",
+				native_evidence: "NativeAgentEventEvidence",
+				native_kind: "maestro_tool_result",
+			},
+		]);
+		expect(
+			projection.mappings.map((mapping) => mapping.source_event_time),
+		).toEqual([
+			"2026-04-23T18:01:30.000Z",
+			"2026-04-23T18:02:00.000Z",
+			"2026-04-23T18:03:00.000Z",
+			"2026-04-23T18:05:00.000Z",
+			"2026-04-23T18:06:00.000Z",
+			"2026-04-23T18:07:00.000Z",
+		]);
+		expect(
+			projection.mappings.map((mapping) => mapping.source_event_time),
+		).toEqual(
+			[...projection.mappings]
+				.map((mapping) => mapping.source_event_time)
+				.sort(),
+		);
+
+		for (const mapping of projection.mappings) {
+			expect(mapping.evidence_state).toBe(
+				"RUNTIME_EVIDENCE_STATE_NATIVE_OBSERVED",
+			);
+			expect(mapping.principal_evidence_state).toBe(
+				"RUNTIME_EVIDENCE_STATE_MISSING",
+			);
+			expect(mapping.credential_evidence_state).toBe(
+				"RUNTIME_EVIDENCE_STATE_MISSING",
+			);
+			expect(mapping.cost_evidence_state).toBe(
+				"RUNTIME_EVIDENCE_STATE_MISSING",
+			);
+			expect(mapping.approval_readiness_state).toBe(
+				"RUNTIME_EVIDENCE_STATE_MISSING",
+			);
+			expect(mapping.joins_required).toEqual([
+				"Identity principal resolver",
+				"Secret Broker/Gateway credential evidence",
+				"Meter cost record",
+				"Platform approval record",
+			]);
+			for (const field of mapping.product_payload_fields) {
+				expect(FORBIDDEN_PRODUCT_PAYLOAD_FIELDS.has(field)).toBe(false);
+			}
+		}
+		expect(
+			projection.mappings
+				.filter(
+					(mapping) => mapping.source !== "maestro.native.model_usage.observed",
+				)
+				.every((mapping) => sourceEventIds.has(mapping.source_event_id)),
+		).toBe(true);
+		expect(projection.product_payload_policy.forbidden_payload_classes).toEqual(
+			[
+				"prompts",
+				"tool args/results",
+				"MCP bodies/results",
+				"transcripts",
+				"images",
+				"provider raw payloads",
+				"env",
+				"secrets",
+				"token values",
+				"stdout/stderr",
+			],
+		);
 	});
 
 	it("uses event-specific Maestro correlation step ids", () => {
