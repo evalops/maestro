@@ -405,6 +405,28 @@ describe("release impact filter", () => {
 		expect(packageChangedSinceTag({ cwd: root, tagTarget })).toBe(true);
 	});
 
+	it("treats CLI runtime boundary externals edits as package-impacting", () => {
+		const root = makeRepo();
+		writeFixtureFile(
+			root,
+			"scripts/cli-runtime-boundary-externals.mjs",
+			"export const cliRuntimeBoundaryExternals = [];\n",
+		);
+		const tagTarget = commit(root, "initial cli runtime externals");
+
+		writeFixtureFile(
+			root,
+			"scripts/cli-runtime-boundary-externals.mjs",
+			'export const cliRuntimeBoundaryExternals = ["tree-sitter"];\n',
+		);
+		commit(root, "change cli runtime externals");
+
+		expect(
+			isPackageImpactingPath("scripts/cli-runtime-boundary-externals.mjs"),
+		).toBe(true);
+		expect(packageChangedSinceTag({ cwd: root, tagTarget })).toBe(true);
+	});
+
 	it("does not make release guard helper edits require a package version bump", () => {
 		const root = makeRepo();
 		writeFixtureFile(

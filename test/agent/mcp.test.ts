@@ -11,6 +11,8 @@ const PLATFORM_MCP_ENV_KEYS = [
 	"MAESTRO_AGENT_MCP_ENABLED",
 	"MAESTRO_HOME",
 	"MAESTRO_AGENT_DIR",
+	"MAESTRO_ENTERPRISE_MCP_PATH",
+	"MAESTRO_USER_MCP_PATH",
 	"MAESTRO_PLATFORM_MCP_URL",
 	"MAESTRO_AGENT_MCP_URL",
 	"MAESTRO_EVALOPS_AGENT_MCP_URL",
@@ -284,7 +286,7 @@ describe("MCP config loader", () => {
 		const configDir = join(testDir, ".maestro");
 		mkdirSync(configDir, { recursive: true });
 		writeFileSync(
-			join(configDir, "mcp.json"),
+			join(configDir, "mcp.local.json"),
 			JSON.stringify({
 				mcpServers: {
 					docs: {
@@ -305,7 +307,7 @@ describe("MCP config loader", () => {
 		const configDir = join(testDir, ".maestro");
 		mkdirSync(configDir, { recursive: true });
 		writeFileSync(
-			join(configDir, "mcp.json"),
+			join(configDir, "mcp.local.json"),
 			JSON.stringify({
 				mcpServers: {
 					docs: {
@@ -333,6 +335,13 @@ describe("MCP config loader", () => {
 						url: "https://example.com/mcp",
 					},
 				},
+				authPresets: {
+					"docs-auth": {
+						headers: {
+							Authorization: "Bearer token",
+						},
+					},
+				},
 				trustedWorkspaces: {
 					docs: [
 						{
@@ -348,8 +357,116 @@ describe("MCP config loader", () => {
 		const config = loadMcpConfig(testDir);
 		expect(config.servers).toHaveLength(1);
 		expect(config.servers[0]!.name).toBe("docs");
+		expect(config.authPresets).toHaveLength(1);
+		expect(config.authPresets[0]!.name).toBe("docs-auth");
 		expect(config.trustedWorkspaces).toBeUndefined();
 		expect(config.workspaceTrustDefault).toBeUndefined();
+	});
+
+	it("loads workspace trust policy from user config", () => {
+		const userConfigPath = join(testDir, "user-mcp.json");
+		process.env.MAESTRO_USER_MCP_PATH = userConfigPath;
+		writeFileSync(
+			userConfigPath,
+			JSON.stringify({
+				mcpServers: {
+					docs: {
+						url: "https://example.com/mcp",
+					},
+				},
+				trustedWorkspaces: {
+					docs: [
+						{
+							workspaceUri: "git:https://github.com/evalops/platform.git",
+							mode: "trusted",
+						},
+					],
+				},
+				workspaceTrustDefault: "untrusted",
+			}),
+		);
+
+		const config = loadMcpConfig(testDir);
+		expect(config.servers).toHaveLength(1);
+		expect(config.servers[0]!.scope).toBe("user");
+		expect(config.trustedWorkspaces).toEqual({
+			docs: [
+				{
+					workspaceUri: "git:https://github.com/evalops/platform.git",
+					mode: "trusted",
+				},
+			],
+		});
+		expect(config.workspaceTrustDefault).toBe("untrusted");
+	});
+
+	it("loads workspace trust policy from enterprise config", () => {
+		const enterpriseConfigPath = join(testDir, "enterprise-mcp.json");
+		process.env.MAESTRO_ENTERPRISE_MCP_PATH = enterpriseConfigPath;
+		writeFileSync(
+			enterpriseConfigPath,
+			JSON.stringify({
+				mcpServers: {
+					"enterprise-docs": {
+						url: "https://example.com/enterprise-mcp",
+					},
+				},
+				trustedWorkspaces: {
+					"enterprise-docs": [
+						{
+							workspaceUri: "git:https://github.com/evalops/maestro.git",
+							mode: "trusted",
+						},
+					],
+				},
+				workspaceTrustDefault: "trusted",
+			}),
+		);
+
+		const config = loadMcpConfig(testDir);
+		expect(config.servers).toHaveLength(1);
+		expect(config.servers[0]!.scope).toBe("enterprise");
+		expect(config.trustedWorkspaces).toEqual({
+			"enterprise-docs": [
+				{
+					workspaceUri: "git:https://github.com/evalops/maestro.git",
+					mode: "trusted",
+				},
+			],
+		});
+		expect(config.workspaceTrustDefault).toBe("trusted");
+	});
+
+	it("keeps plugin MCP servers available while ignoring project trust policy", () => {
+		const configDir = join(testDir, ".maestro");
+		mkdirSync(configDir, { recursive: true });
+		writeFileSync(
+			join(configDir, "mcp.json"),
+			JSON.stringify({
+				trustedWorkspaces: {
+					"plugin-docs": [
+						{
+							workspaceUri: "git:https://github.com/evalops/platform.git",
+							mode: "trusted",
+						},
+					],
+				},
+			}),
+		);
+
+		const config = loadMcpConfig(testDir, {
+			pluginServers: [
+				{
+					name: "plugin-docs",
+					scope: "plugin",
+					transport: "http",
+					url: "https://example.com/plugin-mcp",
+				},
+			],
+		});
+		expect(config.servers).toHaveLength(1);
+		expect(config.servers[0]!.scope).toBe("plugin");
+		expect(config.trustedWorkspaces).toBeUndefined();
 	});
 
 	it("detects SSE transport when URL ends with /sse", () => {

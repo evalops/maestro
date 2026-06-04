@@ -7386,13 +7386,21 @@ fn validates_run_script_inputs() {
         ["--ignore-scripts", "run", "db:migrate"]
     );
     assert_eq!(
+        runner_args_for_script(r"C:\tools\NPM.CMD", "db:migrate"),
+        ["--ignore-scripts", "run", "db:migrate"]
+    );
+    assert_eq!(
         runner_args_for_script("/tmp/custom-runner", "db:migrate"),
         ["run", "db:migrate"]
     );
     assert!(!runner_supports_ignore_scripts("bun"));
+    assert!(!runner_supports_ignore_scripts("pnpm"));
     assert!(!runner_supports_ignore_scripts("/tmp/bin/pnpm"));
+    assert!(!runner_supports_ignore_scripts("/tmp/bin/my-npm"));
     assert!(runner_supports_ignore_scripts("/tmp/bin/npm"));
     assert!(runner_supports_ignore_scripts(r"C:\tools\npm.cmd"));
+    assert!(runner_supports_ignore_scripts(r"C:\tools\NPM.CMD"));
+    assert!(runner_supports_ignore_scripts("/tmp/bin/npm.CMD"));
 }
 
 #[tokio::test]
@@ -7482,6 +7490,106 @@ async fn run_script_response_uses_ignore_scripts_for_npm_runner() {
     assert_eq!(response_status(&response), 200);
     assert_eq!(body["success"], serde_json::json!(true));
     assert_eq!(argv, "--ignore-scripts\nrun\ndb:migrate\n");
+}
+
+#[tokio::test]
+async fn run_script_response_uses_ignore_scripts_for_case_variant_npm_cmd_runner() {
+    let _guard = ENV_LOCK.lock().await;
+    let env_snapshot = snapshot_env(&["MAESTRO_RUN_SCRIPT_ALLOWLIST", "MAESTRO_SCRIPT_RUNNER"]);
+    env::set_var("MAESTRO_RUN_SCRIPT_ALLOWLIST", "db:migrate");
+
+    let root = TestDir::new("run-script-ignore-lifecycle-npm-cmd");
+    fs::write(
+        root.path().join("package.json"),
+        r#"{"scripts":{"predb:migrate":"echo pre","db:migrate":"echo migrate","postdb:migrate":"echo post"}}"#,
+    )
+    .expect("package.json should be written");
+
+    let runner = root.path().join("NPM.CMD");
+    let argv_file = root.path().join("argv.txt");
+    fs::write(
+        &runner,
+        format!(
+            "#!/bin/sh\nprintf '%s\\n' \"$@\" > {}\n",
+            argv_file.display()
+        ),
+    )
+    .expect("runner should be written");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut permissions = fs::metadata(&runner)
+            .expect("runner metadata should exist")
+            .permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(&runner, permissions).expect("runner should be executable");
+    }
+    env::set_var("MAESTRO_SCRIPT_RUNNER", &runner);
+
+    let request: RunScriptRequest =
+        serde_json::from_value(serde_json::json!({ "script": "db:migrate" }))
+            .expect("request should deserialize");
+    let response = run_script_response(root.path(), request).await;
+    let body = response_json(response.clone());
+    let argv = fs::read_to_string(argv_file).expect("runner argv should be captured");
+
+    restore_env(env_snapshot);
+    assert_eq!(response_status(&response), 200);
+    assert_eq!(body["success"], serde_json::json!(true));
+    assert_eq!(argv, "--ignore-scripts\nrun\ndb:migrate\n");
+}
+
+#[tokio::test]
+async fn run_script_response_rejects_pnpm_runner_without_executing() {
+    let _guard = ENV_LOCK.lock().await;
+    let env_snapshot = snapshot_env(&["MAESTRO_RUN_SCRIPT_ALLOWLIST", "MAESTRO_SCRIPT_RUNNER"]);
+    env::set_var("MAESTRO_RUN_SCRIPT_ALLOWLIST", "db:migrate");
+
+    let root = TestDir::new("run-script-rejects-pnpm-runner");
+    fs::write(
+        root.path().join("package.json"),
+        r#"{"scripts":{"predb:migrate":"echo pre","db:migrate":"echo migrate","postdb:migrate":"echo post"}}"#,
+    )
+    .expect("package.json should be written");
+
+    let runner = root.path().join("pnpm");
+    let executed_file = root.path().join("pnpm-executed.txt");
+    fs::write(
+        &runner,
+        format!(
+            "#!/bin/sh\nprintf 'executed\\n' > {}\n",
+            executed_file.display()
+        ),
+    )
+    .expect("runner should be written");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut permissions = fs::metadata(&runner)
+            .expect("runner metadata should exist")
+            .permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(&runner, permissions).expect("runner should be executable");
+    }
+    env::set_var("MAESTRO_SCRIPT_RUNNER", &runner);
+
+    let request: RunScriptRequest =
+        serde_json::from_value(serde_json::json!({ "script": "db:migrate" }))
+            .expect("request should deserialize");
+    let response = run_script_response(root.path(), request).await;
+    let body = response_json(response.clone());
+    let runner_executed = executed_file.exists();
+
+    restore_env(env_snapshot);
+    assert_eq!(response_status(&response), 503);
+    assert!(
+        body["error"]
+            .as_str()
+            .expect("error should be a string")
+            .contains("lifecycle suppression"),
+        "unexpected error body: {body}"
+    );
+    assert!(!runner_executed);
 }
 
 #[test]

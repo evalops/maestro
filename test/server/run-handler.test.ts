@@ -132,7 +132,7 @@ describe.sequential("handleRun", () => {
 		);
 	});
 
-	it("does not treat pnpm as npm-compatible for lifecycle suppression", async () => {
+	it("rejects configured pnpm instead of falling back to npm", async () => {
 		process.env.MAESTRO_RUN_SCRIPT_ALLOWLIST = "db:migrate";
 		writePackageJson({
 			"db:migrate": "echo migrate",
@@ -165,18 +165,14 @@ describe.sequential("handleRun", () => {
 
 		await handleRun(request("POST", "/api/run"), {} as ServerResponse, {});
 
-		expect(readFileSync(argvFile, "utf-8")).toBe(
-			"npm\n--ignore-scripts\nrun\ndb:migrate\n",
-		);
+		expect(existsSync(argvFile)).toBe(false);
 		expect(sendJson).toHaveBeenCalledWith(
 			expect.anything(),
-			200,
-			expect.objectContaining({
-				success: true,
-				exitCode: 0,
-				stdout: "ok stdout",
-				command: "npm run db:migrate",
-			}),
+			503,
+			{
+				error:
+					"No JavaScript package runner with lifecycle suppression is available for /api/run. Install npm or set MAESTRO_SCRIPT_RUNNER to an npm-compatible runner.",
+			},
 			{},
 		);
 	});

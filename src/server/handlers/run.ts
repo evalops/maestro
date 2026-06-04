@@ -78,8 +78,10 @@ type ScriptRunner = {
 
 async function scriptRunnerCommand(): Promise<ScriptRunner | null> {
 	const configured = process.env.MAESTRO_SCRIPT_RUNNER?.trim();
-	if (configured && runnerSupportsIgnoreScripts(configured)) {
-		return { executable: configured, displayName: configured };
+	if (configured) {
+		return runnerSupportsIgnoreScripts(configured)
+			? { executable: configured, displayName: configured }
+			: null;
 	}
 	const npmPath = await executableOnPath("npm");
 	return npmPath ? { executable: npmPath, displayName: "npm" } : null;
