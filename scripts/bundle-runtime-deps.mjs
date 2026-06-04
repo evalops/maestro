@@ -8,6 +8,7 @@ import {
 	getRuntimeWorkspaceNames,
 	getRuntimeWorkspacePackages,
 } from "./runtime-workspaces.mjs";
+import { cliRuntimeBoundaryExternals } from "./cli-runtime-boundary-externals.mjs";
 
 const bundledPackages = new Set(["@google/genai", "google-auth-library"]);
 const entryPoints = [
@@ -39,7 +40,7 @@ for (const entryPoint of entryPoints) {
 			js: 'import { createRequire as __bundleCreateRequire } from "node:module"; const require = __bundleCreateRequire(import.meta.url);',
 		},
 		bundle: true,
-		external,
+		external: [...external, ...cliRuntimeBoundaryExternals],
 		format: "esm",
 		legalComments: "none",
 		logLevel: "silent",
