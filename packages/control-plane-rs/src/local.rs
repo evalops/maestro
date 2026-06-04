@@ -388,12 +388,9 @@ pub(super) fn runner_args_for_script(runner: &str, script: &str) -> Vec<String> 
 }
 
 pub(super) fn runner_supports_ignore_scripts(runner: &str) -> bool {
-    let executable_name = runner
-        .rsplit(['/', '\\'])
-        .next()
-        .unwrap_or(runner)
-        .to_ascii_lowercase();
-    matches!(executable_name.as_str(), "npm" | "npm.cmd")
+    let command_name = runner.trim().rsplit(['/', '\\']).next().unwrap_or(runner);
+    let command_name = command_name.to_ascii_lowercase();
+    matches!(command_name.as_str(), "npm" | "npm.cmd")
 }
 
 pub(super) async fn run_script_response(cwd: &Path, request: RunScriptRequest) -> Vec<u8> {
@@ -596,8 +593,8 @@ pub(super) async fn approval_mode_for_session(
 async fn script_runner_command() -> Option<String> {
     if let Ok(runner) = env::var("MAESTRO_SCRIPT_RUNNER") {
         let runner = runner.trim();
-        if !runner.is_empty() && runner_supports_ignore_scripts(runner) {
-            return Some(runner.to_string());
+        if !runner.is_empty() {
+            return runner_supports_ignore_scripts(runner).then(|| runner.to_string());
         }
     }
     if executable_on_path("npm").await {
