@@ -421,15 +421,25 @@ describe("canonical Maestro Platform replay fixture", () => {
 
 		expect(projection.mappings).toMatchObject([
 			{
+				source: "maestro.native.model_usage.observed",
+				source_event_id: "native_maestro_replay_model_usage_observed_001",
+				source_event_time: "2026-04-23T18:01:30.000Z",
+				record_run_event_type: "RUNTIME_EVENT_TYPE_MODEL_RESPONSE_RECORDED",
+				native_evidence: "NativeAgentEventEvidence",
+				native_kind: "maestro_model_usage",
+			},
+			{
 				source: MaestroBusEventType.ToolCallAttempted,
-				source_event_id: "evt_maestro_replay_007_eval_tool_call_attempted",
+				source_event_id: "evt_maestro_replay_003_skill_tool_call_attempted",
+				source_event_time: "2026-04-23T18:02:00.000Z",
 				record_run_event_type: "RUNTIME_EVENT_TYPE_TOOL_CALL_RECORDED",
 				native_evidence: "NativeToolAttemptEvidence",
 				native_kind: "maestro_tool_attempt",
 			},
 			{
 				source: MaestroBusEventType.ToolCallCompleted,
-				source_event_id: "evt_maestro_replay_008_eval_tool_call_completed",
+				source_event_id: "evt_maestro_replay_004_skill_tool_call_completed",
+				source_event_time: "2026-04-23T18:03:00.000Z",
 				record_run_event_type: "RUNTIME_EVENT_TYPE_TOOL_RESULT_RECORDED",
 				native_evidence: "NativeAgentEventEvidence",
 				native_kind: "maestro_tool_result",
@@ -437,18 +447,45 @@ describe("canonical Maestro Platform replay fixture", () => {
 			{
 				source: MaestroBusEventType.ApprovalHit,
 				source_event_id: "evt_maestro_replay_006_approval_hit",
+				source_event_time: "2026-04-23T18:05:00.000Z",
 				record_run_event_type: "RUNTIME_EVENT_TYPE_APPROVAL_REQUESTED",
 				native_evidence: "NativeAgentEventEvidence",
 				native_kind: "maestro_approval_observation",
 			},
 			{
-				source: "maestro.native.model_usage.observed",
-				source_event_id: "native_maestro_replay_model_usage_observed_001",
-				record_run_event_type: "RUNTIME_EVENT_TYPE_MODEL_RESPONSE_RECORDED",
+				source: MaestroBusEventType.ToolCallAttempted,
+				source_event_id: "evt_maestro_replay_007_eval_tool_call_attempted",
+				source_event_time: "2026-04-23T18:06:00.000Z",
+				record_run_event_type: "RUNTIME_EVENT_TYPE_TOOL_CALL_RECORDED",
+				native_evidence: "NativeToolAttemptEvidence",
+				native_kind: "maestro_tool_attempt",
+			},
+			{
+				source: MaestroBusEventType.ToolCallCompleted,
+				source_event_id: "evt_maestro_replay_008_eval_tool_call_completed",
+				source_event_time: "2026-04-23T18:07:00.000Z",
+				record_run_event_type: "RUNTIME_EVENT_TYPE_TOOL_RESULT_RECORDED",
 				native_evidence: "NativeAgentEventEvidence",
-				native_kind: "maestro_model_usage",
+				native_kind: "maestro_tool_result",
 			},
 		]);
+		expect(
+			projection.mappings.map((mapping) => mapping.source_event_time),
+		).toEqual([
+			"2026-04-23T18:01:30.000Z",
+			"2026-04-23T18:02:00.000Z",
+			"2026-04-23T18:03:00.000Z",
+			"2026-04-23T18:05:00.000Z",
+			"2026-04-23T18:06:00.000Z",
+			"2026-04-23T18:07:00.000Z",
+		]);
+		expect(
+			projection.mappings.map((mapping) => mapping.source_event_time),
+		).toEqual(
+			[...projection.mappings]
+				.map((mapping) => mapping.source_event_time)
+				.sort(),
+		);
 
 		for (const mapping of projection.mappings) {
 			expect(mapping.evidence_state).toBe(
