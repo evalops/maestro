@@ -74,7 +74,7 @@ describe("MCP config loader", () => {
 		const configDir = join(testDir, ".maestro");
 		mkdirSync(configDir, { recursive: true });
 		writeFileSync(
-			join(configDir, "mcp.json"),
+			join(configDir, "mcp.local.json"),
 			JSON.stringify({
 				servers: [
 					{
@@ -129,7 +129,7 @@ describe("MCP config loader", () => {
 		const configDir = join(testDir, ".maestro");
 		mkdirSync(configDir, { recursive: true });
 		writeFileSync(
-			join(configDir, "mcp.json"),
+			join(configDir, "mcp.local.json"),
 			JSON.stringify({
 				mcpServers: {
 					"my-server": {
@@ -151,7 +151,7 @@ describe("MCP config loader", () => {
 		const configDir = join(testDir, ".maestro");
 		mkdirSync(configDir, { recursive: true });
 		writeFileSync(
-			join(configDir, "mcp.json"),
+			join(configDir, "mcp.local.json"),
 			JSON.stringify({
 				mcpServers: {
 					enabled: { command: "node", args: [] },
@@ -169,7 +169,7 @@ describe("MCP config loader", () => {
 		const configDir = join(testDir, ".maestro");
 		mkdirSync(configDir, { recursive: true });
 		writeFileSync(
-			join(configDir, "mcp.json"),
+			join(configDir, "mcp.local.json"),
 			JSON.stringify({
 				mcpServers: {
 					remote: { url: "http://localhost:3000/mcp" },
@@ -241,7 +241,7 @@ describe("MCP config loader", () => {
 		const configDir = join(testDir, ".maestro");
 		mkdirSync(configDir, { recursive: true });
 		writeFileSync(
-			join(configDir, "mcp.json"),
+			join(configDir, "mcp.local.json"),
 			JSON.stringify({
 				mcpServers: {
 					docs: {
@@ -319,6 +319,36 @@ describe("MCP config loader", () => {
 		const config = loadMcpConfig(testDir);
 		expect(config.servers).toHaveLength(1);
 		expect(config.servers[0]!.name).toBe("docs");
+		expect(config.workspaceTrustDefault).toBeUndefined();
+	});
+
+	it("does not load workspace trust policy from project config", () => {
+		const configDir = join(testDir, ".maestro");
+		mkdirSync(configDir, { recursive: true });
+		writeFileSync(
+			join(configDir, "mcp.json"),
+			JSON.stringify({
+				mcpServers: {
+					docs: {
+						url: "https://example.com/mcp",
+					},
+				},
+				trustedWorkspaces: {
+					docs: [
+						{
+							workspaceUri: "git:https://github.com/evalops/platform.git",
+							mode: "trusted",
+						},
+					],
+				},
+				workspaceTrustDefault: "untrusted",
+			}),
+		);
+
+		const config = loadMcpConfig(testDir);
+		expect(config.servers).toHaveLength(1);
+		expect(config.servers[0]!.name).toBe("docs");
+		expect(config.trustedWorkspaces).toBeUndefined();
 		expect(config.workspaceTrustDefault).toBeUndefined();
 	});
 

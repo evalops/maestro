@@ -600,16 +600,22 @@ function parseConfigFile(path: string, scope: McpScope): ParsedConfig {
 		return {
 			servers,
 			authPresets,
-			trustedWorkspaces: normalizeTrustedWorkspaces(
-				parsed.data.trustedWorkspaces,
-				scope,
-				path,
-			),
-			workspaceTrustDefault: normalizeWorkspaceTrustDefault(
-				parsed.data.workspaceTrustDefault,
-				scope,
-				path,
-			),
+			trustedWorkspaces:
+				scope === "project"
+					? {}
+					: normalizeTrustedWorkspaces(
+							parsed.data.trustedWorkspaces,
+							scope,
+							path,
+						),
+			workspaceTrustDefault:
+				scope === "project"
+					? undefined
+					: normalizeWorkspaceTrustDefault(
+							parsed.data.workspaceTrustDefault,
+							scope,
+							path,
+						),
 		};
 	} catch (error) {
 		logger.warn("Failed to parse MCP config file", {
