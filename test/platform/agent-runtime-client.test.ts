@@ -1017,13 +1017,21 @@ describe("agent runtime service client", () => {
 							payload: {
 								maestroSessionId: "session_1",
 								metadata: {
-									prompt: "triage pipeline regressions",
+									prompt: {
+										redacted: true,
+										valueType: "string",
+										charCount: 27,
+									},
 									workspace_root: "/repo/platform",
 								},
 								facts_context: {
 									provider: "cerebro",
 									workspaceId: "ws_env",
-									query: "triage pipeline regressions",
+									query: {
+										redacted: true,
+										valueType: "string",
+										charCount: 27,
+									},
 									thingIds: [
 										"thing_pipeline",
 										"thing_pipeline_canonical",
@@ -1321,7 +1329,13 @@ describe("agent runtime service client", () => {
 							workspaceId: "ws_env",
 							payload: {
 								maestroSessionId: "session_1",
-								metadata: { prompt: "triage pipeline regressions" },
+								metadata: {
+									prompt: {
+										redacted: true,
+										valueType: "string",
+										charCount: 27,
+									},
+								},
 							},
 						},
 					});

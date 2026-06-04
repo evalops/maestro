@@ -454,6 +454,136 @@ export interface RecordMaestroToolCallAttemptInput {
 	env?: Env;
 }
 
+const SAFE_TOOL_ARGUMENT_PROJECTION_VERSION = "maestro.safe_tool_arguments.v1";
+const SENSITIVE_ARGUMENT_KEY_PATTERN =
+	/(?:api[_-]?key|authorization|bearer|cookie|credential|password|passwd|private[_-]?key|pwd|secret|session[_-]?token|token)/i;
+
+type SafeToolArgumentProjection = {
+	safe_arguments: Record<string, unknown>;
+	redactions: string[];
+};
+
+function stableTelemetryValue(
+	value: unknown,
+	seen = new WeakSet<object>(),
+): unknown {
+	if (
+		value === null ||
+		typeof value === "string" ||
+		typeof value === "number" ||
+		typeof value === "boolean"
+	) {
+		return value;
+	}
+	if (typeof value === "bigint") {
+		return { type: "bigint", value: value.toString() };
+	}
+	if (typeof value === "undefined") {
+		return { type: "undefined" };
+	}
+	if (typeof value === "function" || typeof value === "symbol") {
+		return { type: typeof value };
+	}
+	if (Array.isArray(value)) {
+		return value.map((entry) => stableTelemetryValue(entry, seen));
+	}
+	if (value instanceof Date) {
+		return { type: "date", value: value.toISOString() };
+	}
+	if (typeof value === "object") {
+		if (seen.has(value)) {
+			return { type: "circular" };
+		}
+		seen.add(value);
+		const sorted: Record<string, unknown> = {};
+		for (const key of Object.keys(value).sort()) {
+			sorted[key] = stableTelemetryValue(
+				(value as Record<string, unknown>)[key],
+				seen,
+			);
+		}
+		seen.delete(value);
+		return sorted;
+	}
+	return { type: typeof value };
+}
+
+function safeToolArgumentDigest(value: unknown): string {
+	return `sha256:${createHash("sha256")
+		.update(JSON.stringify(stableTelemetryValue(value)))
+		.digest("hex")}`;
+}
+
+function telemetryValueKind(value: unknown): string {
+	if (value === null) return "null";
+	if (Array.isArray(value)) return "array";
+	if (value instanceof Date) return "date";
+	return typeof value;
+}
+
+function safeToolArgumentKey(key: string, redactedOrdinal: number) {
+	if (SENSITIVE_ARGUMENT_KEY_PATTERN.test(key)) {
+		return {
+			key: `redacted_sensitive_key_${redactedOrdinal}`,
+			redacted: true,
+		};
+	}
+	const normalized = key.replace(/[^\w.-]/g, "_").slice(0, 80);
+	return { key: normalized || "unnamed_argument", redacted: false };
+}
+
+export function projectSafeToolCallArguments(
+	args: Record<string, unknown> | undefined,
+): SafeToolArgumentProjection {
+	const sourceArgs = args ?? {};
+	const argumentKeys: string[] = [];
+	const argumentValueKinds: Record<string, string> = {};
+	const nestedKeyCounts: Record<string, number> = {};
+	const arrayLengths: Record<string, number> = {};
+	const redactions = new Set<string>(["tool_arguments.values"]);
+	let redactedKeyCount = 0;
+
+	for (const rawKey of Object.keys(sourceArgs).sort()) {
+		const keyProjection = safeToolArgumentKey(rawKey, redactedKeyCount + 1);
+		if (keyProjection.redacted) {
+			redactedKeyCount += 1;
+			redactions.add("tool_arguments.sensitive_key_names");
+		}
+		const safeKey = keyProjection.key;
+		const value = sourceArgs[rawKey];
+		argumentKeys.push(safeKey);
+		argumentValueKinds[safeKey] = telemetryValueKind(value);
+		if (Array.isArray(value)) {
+			arrayLengths[safeKey] = value.length;
+		} else if (value && typeof value === "object" && !(value instanceof Date)) {
+			nestedKeyCounts[safeKey] = Object.keys(value).length;
+		}
+	}
+
+	const safeArguments: Record<string, unknown> = {
+		projection_version: SAFE_TOOL_ARGUMENT_PROJECTION_VERSION,
+		argument_count: argumentKeys.length,
+		argument_keys: argumentKeys,
+		argument_value_kinds: argumentValueKinds,
+		values_redacted: true,
+	};
+	if (Object.keys(nestedKeyCounts).length > 0) {
+		safeArguments.nested_key_counts = nestedKeyCounts;
+	}
+	if (Object.keys(arrayLengths).length > 0) {
+		safeArguments.array_lengths = arrayLengths;
+	}
+	if (redactedKeyCount > 0) {
+		safeArguments.redacted_sensitive_key_count = redactedKeyCount;
+	}
+	safeArguments.argument_digest = safeToolArgumentDigest(safeArguments);
+
+	return {
+		safe_arguments: safeArguments,
+		redactions: [...redactions].sort(),
+	};
+}
+
 export interface RecordMaestroToolCallCompletedInput {
 	event_id?: string;
 	tool_call_id: string;

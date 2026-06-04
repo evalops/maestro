@@ -648,6 +648,84 @@ function compactStringRecord(
 	return Object.keys(compacted).length > 0 ? compacted : undefined;
 }
 
+function shouldRedactRuntimePayloadKey(key: string): boolean {
+	return /(?:prompt|query|transcript|messages?|content|text|body|args|arguments|command|stdout|stderr|tool_?(?:args|arguments|output|result)|mcp|image|provider_?(?:request|response)|env|secret|token|request_body|response_body|output|result)/i.test(
+		key,
+	);
+}
+
+function redactedRuntimePayloadValue(value: unknown): Record<string, unknown> {
+	if (typeof value === "string") {
+		return {
+			redacted: true,
+			valueType: "string",
+			charCount: value.length,
+		};
+	}
+	if (Array.isArray(value)) {
+		return {
+			redacted: true,
+			valueType: "array",
+			itemCount: value.length,
+		};
+	}
+	if (value && typeof value === "object") {
+		return {
+			redacted: true,
+			valueType: "object",
+			fieldCount: Object.keys(value).length,
+		};
+	}
+	return {
+		redacted: true,
+		valueType: value === null ? "null" : typeof value,
+	};
+}
+
+function sanitizeRuntimePayloadValue(key: string, value: unknown): unknown {
+	if (shouldRedactRuntimePayloadKey(key)) {
+		return redactedRuntimePayloadValue(value);
+	}
+	if (Array.isArray(value)) {
+		return value.map((item) =>
+			typeof item === "object" && item !== null
+				? sanitizeRuntimePayloadRecord(item as Record<string, unknown>)
+				: item,
+		);
+	}
+	if (value && typeof value === "object") {
+		return sanitizeRuntimePayloadRecord(value as Record<string, unknown>);
+	}
+	return value;
+}
+
+function sanitizeRuntimePayloadRecord(
+	record: Record<string, unknown>,
+): Record<string, unknown> {
+	return Object.fromEntries(
+		Object.entries(record).map(([key, value]) => [
+			key,
+			sanitizeRuntimePayloadValue(key, value),
+		]),
+	);
+}
+
+function sanitizedRuntimeMetadata(
+	metadata: Record<string, unknown> | undefined,
+): Record<string, unknown> | undefined {
+	return metadata ? sanitizeRuntimePayloadRecord(metadata) : undefined;
+}
+
+function sanitizedFactsContext(
+	factsContext: MaestroFactsContext | undefined,
+): Record<string, unknown> | undefined {
+	return factsContext
+		? sanitizeRuntimePayloadRecord(
+				factsContext as unknown as Record<string, unknown>,
+			)
+		: undefined;
+}
+
 function normalizeLease(value: unknown): PlatformAgentRunLease | undefined {
 	if (!value || typeof value !== "object" || Array.isArray(value)) {
 		return undefined;
@@ -962,6 +1040,8 @@ export function buildMaestroSessionRuntimeTrigger(
 		trimString(input.correlationId) ?? ["maestro-session", sessionId].join(":");
 	const actorId = trimString(input.actorId);
 	const traceContext = maestroRuntimeTraceContext(input);
+	const metadata = sanitizedRuntimeMetadata(input.metadata);
+	const factsContext = sanitizedFactsContext(input.factsContext);
 	// Session starts are idempotent per workspace/session pair. The channel and
 	// payload stay Maestro-shaped, while Platform receives enough typed linkage
 	// to build timelines, traces, and support views around the same session.
@@ -993,8 +1073,8 @@ export function buildMaestroSessionRuntimeTrigger(
 		payload: {
 			maestroSessionId: sessionId,
 			...(traceContext ? { trace_context: traceContext } : {}),
-			...(input.metadata ? { metadata: input.metadata } : {}),
-			...(input.factsContext ? { facts_context: input.factsContext } : {}),
+			...(metadata ? { metadata } : {}),
+			...(factsContext ? { facts_context: factsContext } : {}),
 		},
 	};
 }
@@ -1430,6 +1510,8 @@ async function recordMaestroSessionRuntimeTriggerViaA2A(
 		trimString(input.correlationId) ?? ["maestro-session", sessionId].join(":");
 	const traceContext = maestroRuntimeTraceContext(input);
 	const pushNotificationConfig = platformA2APushNotificationConfig(sessionId);
+	const metadata = sanitizedRuntimeMetadata(input.metadata);
+	const safeFactsContext = sanitizedFactsContext(factsContext);
 	try {
 		const sent = await sendA2AMessage(
 			config,
@@ -1452,8 +1534,8 @@ async function recordMaestroSessionRuntimeTriggerViaA2A(
 							: {}),
 						sourceEventId: trimString(input.sourceEventId) ?? idempotencyKey,
 						sourceEventType: MaestroAgentRuntimeSourceEventType.SessionStarted,
-						metadata: input.metadata,
-						...(factsContext ? { facts_context: factsContext } : {}),
+						...(metadata ? { metadata } : {}),
+						...(safeFactsContext ? { facts_context: safeFactsContext } : {}),
 					},
 				}),
 				configuration: {
