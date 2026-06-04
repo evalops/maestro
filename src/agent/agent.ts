@@ -88,6 +88,7 @@ import {
 } from "../lsp/diagnostic-repair.js";
 import type { SkillArtifactMetadata } from "../skills/artifact-metadata.js";
 import {
+	projectSafeToolCallArguments,
 	recordMaestroEvalScored,
 	recordMaestroSkillInvoked,
 	recordMaestroSkillOutcome,
@@ -2066,12 +2067,14 @@ export class Agent {
 			displayName,
 			summaryLabel,
 		});
+		const safeArgumentProjection = projectSafeToolCallArguments(event.args);
 		recordMaestroToolCallAttempt({
 			tool_call_id: event.toolCallId,
 			tool_execution_id: event.toolExecutionId,
 			prompt_metadata: this._state.promptMetadata,
 			tool_name: event.toolName,
-			safe_arguments: event.args,
+			safe_arguments: safeArgumentProjection.safe_arguments,
+			redactions: safeArgumentProjection.redactions,
 			correlation: {
 				session_id: this._state.session?.id,
 				agent_run_step_id: event.toolCallId,

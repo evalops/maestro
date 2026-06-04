@@ -136,6 +136,12 @@ describe("hosted AgentRuntime progress recorder", () => {
 					id: "maestro:session_1:turn:1",
 					stepKind: PlatformAgentRunStepKindValue.ModelCall,
 					state: PlatformAgentRunStepStateValue.Running,
+					attempt: 1,
+					startedAt: expect.any(String),
+					input: expect.objectContaining({
+						lifecycle_status: "running",
+						observation_authority: "maestro_local_unverified",
+					}),
 				}),
 			}),
 		);
@@ -147,8 +153,13 @@ describe("hosted AgentRuntime progress recorder", () => {
 					name: "Shell",
 					stepKind: PlatformAgentRunStepKindValue.ToolCallIntent,
 					state: PlatformAgentRunStepStateValue.Running,
+					attempt: 1,
+					startedAt: expect.any(String),
 					input: expect.objectContaining({
 						arg_keys: ["command", "secret"],
+						arg_count: 2,
+						lifecycle_status: "running",
+						observation_authority: "maestro_local_unverified",
 						maestro_session_id: "session_1",
 					}),
 				}),
@@ -161,6 +172,15 @@ describe("hosted AgentRuntime progress recorder", () => {
 					id: "maestro:session_1:tool:call_1",
 					stepKind: PlatformAgentRunStepKindValue.ToolResult,
 					state: PlatformAgentRunStepStateValue.Succeeded,
+					attempt: 1,
+					startedAt: expect.any(String),
+					endedAt: expect.any(String),
+					output: expect.objectContaining({
+						lifecycle_status: "succeeded",
+						result_error: false,
+						duration_ms: expect.any(Number),
+						observation_authority: "maestro_local_unverified",
+					}),
 				}),
 			}),
 		);
@@ -360,7 +380,7 @@ describe("hosted AgentRuntime progress recorder", () => {
 				kind: PlatformAgentWorkItemKindValue.ChildRun,
 				state: PlatformAgentWorkItemStateValue.Running,
 				title: "Codex subagent: spawn agent",
-				goal: "Inspect platform remote runner wiring",
+				goal: "[redacted]",
 				nextAction: "wait for child agent initialization or completion",
 				evidenceRefs: [
 					"codex-tool-call:collab-call-1",
@@ -386,6 +406,8 @@ describe("hosted AgentRuntime progress recorder", () => {
 						],
 					}),
 					linked_work_item_ids: [],
+					prompt_present: true,
+					prompt_char_count: 37,
 					model: "gpt-5.3-codex",
 					reasoning_effort: "high",
 					maestro_session_id: "session_1",
@@ -526,8 +548,7 @@ describe("hosted AgentRuntime progress recorder", () => {
 				fromAgentId: "maestro-codex-parent",
 				requiredCapability: "code:review",
 				a2aSkillId: "maestro.subagent.code-review",
-				reason:
-					"Codex subagent spawn requested by Maestro: Audit remote runner drain behavior",
+				reason: "Codex subagent spawn requested by Maestro: [redacted]",
 				contextPayload: expect.objectContaining({
 					event_type: "codex_subagent_delegation_requested",
 					agent_id: "maestro-codex-parent",
@@ -546,6 +567,9 @@ describe("hosted AgentRuntime progress recorder", () => {
 					}),
 					required_capability: "code:review",
 					a2a_skill_id: "maestro.subagent.code-review",
+					prompt: "[redacted]",
+					prompt_present: true,
+					prompt_char_count: 34,
 				}),
 			}),
 		);
@@ -5308,13 +5332,12 @@ describe("hosted AgentRuntime progress recorder", () => {
 		);
 	});
 
-	it("preserves benign delegation prompts beyond telemetry label length", async () => {
+	it("redacts benign delegation prompts while preserving bounded prompt counts", async () => {
 		const { recorder, recordWorkItem, delegateAgent } = createRecorder();
 		const longPrompt =
 			"Review the hosted progress redaction behavior and summarize the routing context for the release steward. ".repeat(
 				6,
 			);
-		const expectedDelegationPrompt = longPrompt.slice(0, 512);
 
 		recorder.recordAgentEvent({
 			type: "tool_execution_start",
@@ -5334,20 +5357,22 @@ describe("hosted AgentRuntime progress recorder", () => {
 		expect(recordWorkItem).toHaveBeenCalledWith(
 			expect.objectContaining({
 				workItem: expect.objectContaining({
-					goal: `${longPrompt.slice(0, 159)}…`,
+					goal: "[redacted]",
+					payload: expect.objectContaining({
+						prompt_present: true,
+						prompt_char_count: 512,
+					}),
 				}),
 			}),
 		);
 		expect(delegateAgent).toHaveBeenCalledWith(
 			expect.objectContaining({
 				contextPayload: expect.objectContaining({
-					prompt: expectedDelegationPrompt,
+					prompt: "[redacted]",
+					prompt_present: true,
+					prompt_char_count: 512,
 				}),
-				reason:
-					`Codex subagent spawn requested by Maestro: ${expectedDelegationPrompt}`.slice(
-						0,
-						512,
-					),
+				reason: "Codex subagent spawn requested by Maestro: [redacted]",
 			}),
 		);
 	});

@@ -12,6 +12,7 @@ import type {
 import type { SkillArtifactMetadata } from "../../src/skills/artifact-metadata.js";
 import {
 	closeMaestroEventBusTransport,
+	projectSafeToolCallArguments,
 	setMaestroEventBusTransportForTests,
 } from "../../src/telemetry/maestro-event-bus.js";
 
@@ -292,6 +293,73 @@ class SkillSelectionTransport implements AgentTransport {
 	}
 }
 
+class SensitiveToolAttemptTransport implements AgentTransport {
+	async *continue(): AsyncGenerator<AgentEvent, void, unknown> {}
+
+	async *run(
+		_messages: Message[],
+		userMessage: Message,
+		_config: AgentRunConfig,
+	): AsyncGenerator<AgentEvent, void, unknown> {
+		yield { type: "message_start", message: userMessage };
+		yield { type: "message_end", message: userMessage };
+
+		const toolCallId = "tool-sensitive-1";
+		const toolExecutionId = "tool-exec-sensitive-1";
+		const toolCallMessage = createAssistantGenericToolCallMessage(
+			toolCallId,
+			"Bash",
+			{
+				command:
+					"curl https://api.example.test -H 'Authorization: Bearer COMMAND_SECRET_VALUE'",
+				env: {
+					PROVIDER_SECRET_ENV: "ENV_SECRET_VALUE",
+					SAFE_FLAG: "1",
+				},
+				timeout: 30,
+				token: "TOKEN_VALUE",
+			},
+		);
+		yield { type: "message_start", message: toolCallMessage };
+		yield { type: "message_end", message: toolCallMessage };
+		yield {
+			type: "tool_execution_start",
+			toolCallId,
+			toolExecutionId,
+			toolName: "Bash",
+			args: {
+				command:
+					"curl https://api.example.test -H 'Authorization: Bearer COMMAND_SECRET_VALUE'",
+				env: {
+					PROVIDER_SECRET_ENV: "ENV_SECRET_VALUE",
+					SAFE_FLAG: "1",
+				},
+				timeout: 30,
+				token: "TOKEN_VALUE",
+			},
+		};
+
+		const toolResult: ToolResultMessage = {
+			role: "toolResult",
+			toolCallId,
+			toolName: "Bash",
+			content: [{ type: "text", text: "completed" }],
+			isError: false,
+			timestamp: Date.now(),
+		};
+		yield { type: "message_start", message: toolResult };
+		yield { type: "message_end", message: toolResult };
+		yield {
+			type: "tool_execution_end",
+			toolCallId,
+			toolExecutionId,
+			toolName: "Bash",
+			result: toolResult,
+			isError: false,
+		};
+	}
+}
+
 describe("skill outcome telemetry", () => {
 	const originalEventBusUrl = process.env.MAESTRO_EVENT_BUS_URL;
 
@@ -371,6 +439,124 @@ describe("skill outcome telemetry", () => {
 				},
 			},
 		});
+	});
+
+	it("publishes first tool attempts with redaction-safe argument metadata", async () => {
+		const published: Array<{ subject: string; payload: string }> = [];
+		process.env.MAESTRO_EVENT_BUS_URL = "nats://bus.example:4222";
+		setMaestroEventBusTransportForTests({
+			async publish(subject, payload) {
+				published.push({ subject, payload });
+			},
+		});
+
+		const agent = new Agent({
+			transport: new SensitiveToolAttemptTransport(),
+			initialState: {
+				model: mockModel,
+				tools: [],
+				session: {
+					id: "session_sensitive",
+					startedAt: new Date("2026-04-23T18:00:00.000Z"),
+				},
+				promptMetadata: {
+					name: "maestro-system",
+					label: "production",
+					surface: "maestro",
+					version: 9,
+					versionId: "ver_9",
+					hash: "hash_prompt_123",
+					source: "service",
+				},
+			},
+		});
+
+		await agent.prompt("run the sensitive tool attempt");
+
+		const payloads = published.map(({ payload }) => JSON.parse(payload));
+		expect(payloads.map((payload) => payload.type)).toEqual([
+			"maestro.events.tool_call.attempted",
+			"maestro.events.tool_call.completed",
+		]);
+		const attempt = payloads[0];
+		expect(attempt).toMatchObject({
+			data: {
+				tool_call_id: "tool-sensitive-1",
+				tool_execution_id: "tool-exec-sensitive-1",
+				tool_name: "Bash",
+				correlation: {
+					session_id: "session_sensitive",
+					agent_run_step_id: "tool-sensitive-1",
+				},
+				prompt_metadata: {
+					name: "maestro-system",
+					versionId: "ver_9",
+				},
+				safe_arguments: {
+					projection_version: "maestro.safe_tool_arguments.v1",
+					argument_count: 4,
+					argument_keys: [
+						"command",
+						"env",
+						"timeout",
+						"redacted_sensitive_key_1",
+					],
+					argument_value_kinds: {
+						command: "string",
+						env: "object",
+						timeout: "number",
+						redacted_sensitive_key_1: "string",
+					},
+					nested_key_counts: { env: 2 },
+					redacted_sensitive_key_count: 1,
+					values_redacted: true,
+				},
+				redactions: [
+					"tool_arguments.sensitive_key_names",
+					"tool_arguments.values",
+				],
+			},
+		});
+		expect(attempt.data.safe_arguments.argument_digest).toMatch(
+			/^sha256:[a-f0-9]{64}$/,
+		);
+		const sameSafeShapeProjection = projectSafeToolCallArguments({
+			command:
+				"curl https://other.example.test -H 'Authorization: Bearer DIFFERENT_COMMAND_SECRET'",
+			env: {
+				PROVIDER_SECRET_ENV: "DIFFERENT_ENV_SECRET",
+				SAFE_FLAG: "0",
+			},
+			timeout: 999,
+			token: "ALT_TOKEN_VALUE",
+		});
+		const changedSafeShapeProjection = projectSafeToolCallArguments({
+			command:
+				"curl https://other.example.test -H 'Authorization: Bearer DIFFERENT_COMMAND_SECRET'",
+			env: {
+				PROVIDER_SECRET_ENV: "DIFFERENT_ENV_SECRET",
+				SAFE_FLAG: "0",
+			},
+			retry: true,
+			timeout: 999,
+			token: "ALT_TOKEN_VALUE",
+		});
+		expect(sameSafeShapeProjection.safe_arguments.argument_digest).toBe(
+			attempt.data.safe_arguments.argument_digest,
+		);
+		expect(changedSafeShapeProjection.safe_arguments.argument_digest).not.toBe(
+			attempt.data.safe_arguments.argument_digest,
+		);
+		const serializedAttempt = JSON.stringify(attempt);
+		expect(serializedAttempt).not.toContain("curl https://api.example.test");
+		expect(serializedAttempt).not.toContain("Authorization");
+		expect(serializedAttempt).not.toContain("COMMAND_SECRET_VALUE");
+		expect(serializedAttempt).not.toContain("PROVIDER_SECRET_ENV");
+		expect(serializedAttempt).not.toContain("ENV_SECRET_VALUE");
+		expect(serializedAttempt).not.toContain("TOKEN_VALUE");
+		expect(attempt.data).not.toHaveProperty("credential_assumption");
+		expect(attempt.data).not.toHaveProperty("run_as");
+		expect(attempt.data).not.toHaveProperty("cost");
 	});
 
 	it("publishes eval scored events with selected skill identity", async () => {

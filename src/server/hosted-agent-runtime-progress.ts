@@ -482,6 +482,12 @@ function codexSubagentDelegationReason(prompt: string | undefined): string {
 	return `Codex subagent spawn requested by Maestro: ${prompt}`.slice(0, 512);
 }
 
+function redactedPromptLength(prompt: string | undefined): number | undefined {
+	return prompt
+		? Math.min(prompt.length, MAX_DELEGATION_PROMPT_LENGTH)
+		: undefined;
+}
+
 function codexSubagentOperation(tool: string): string | undefined {
 	return codexSubagentOperationName(tool);
 }
@@ -2077,12 +2083,7 @@ function sanitizeDelegationPrompt(
 	if (!text) {
 		return undefined;
 	}
-	if (shouldRedactOutboundText(text)) {
-		return REDACTED;
-	}
-	return text.length > MAX_DELEGATION_PROMPT_LENGTH
-		? text.slice(0, MAX_DELEGATION_PROMPT_LENGTH)
-		: text;
+	return REDACTED;
 }
 
 function isShellToolName(toolName: string | undefined): boolean {
@@ -2339,6 +2340,10 @@ export class HostedAgentRuntimeProgressRecorder {
 		string,
 		Record<string, unknown>
 	>();
+	private readonly turnStartedAtMs = new Map<number, number>();
+	private readonly toolStartedAtMs = new Map<string, number>();
+	private readonly toolAttemptCounts = new Map<string, number>();
+	private agentStartedAtMs?: number;
 	private readonly recordedTaskWorkItemIds = new Set<string>();
 	private pending: Promise<void> = Promise.resolve();
 	private turnIndex = 0;
@@ -2375,35 +2380,50 @@ export class HostedAgentRuntimeProgressRecorder {
 	recordAgentEvent(event: AgentEvent): void {
 		switch (event.type) {
 			case "agent_start":
+				this.agentStartedAtMs = Date.now();
 				this.recordStep({
 					id: this.stepId("agent", `start-${this.turnIndex + 1}`),
 					name: event.continuation ? "Agent continuation" : "Agent run",
 					stepKind: PlatformAgentRunStepKindValue.System,
 					state: PlatformAgentRunStepStateValue.Running,
+					startedAt: this.isoTime(this.agentStartedAtMs),
 					input: this.basePayload({
 						event_type: event.type,
 						continuation: event.continuation ?? false,
+						lifecycle_status: "running",
+						observation_authority: "maestro_local_unverified",
 					}),
 				});
 				return;
 			case "agent_end":
 				{
+					const endedAtMs = Date.now();
 					const stepId = this.stepId("agent", `end-${this.turnIndex}`);
+					const failed = event.aborted || event.stopReason === "error";
 					this.recordStep({
 						id: stepId,
 						name: "Agent run completed",
-						stepKind:
-							event.aborted || event.stopReason === "error"
-								? PlatformAgentRunStepKindValue.Error
-								: PlatformAgentRunStepKindValue.System,
-						state:
-							event.aborted || event.stopReason === "error"
-								? PlatformAgentRunStepStateValue.Failed
-								: PlatformAgentRunStepStateValue.Succeeded,
+						stepKind: failed
+							? PlatformAgentRunStepKindValue.Error
+							: PlatformAgentRunStepKindValue.System,
+						state: failed
+							? PlatformAgentRunStepStateValue.Failed
+							: PlatformAgentRunStepStateValue.Succeeded,
+						startedAt: this.isoTime(this.agentStartedAtMs),
+						endedAt: this.isoTime(endedAtMs),
+						errorMessage: failed
+							? (event.stopReason ?? "agent execution failed")
+							: undefined,
 						output: this.basePayload({
 							event_type: event.type,
 							aborted: event.aborted ?? false,
 							stop_reason: event.stopReason,
+							lifecycle_status: failed ? "failed" : "succeeded",
+							duration_ms: this.durationMs(this.agentStartedAtMs, endedAtMs),
+							error_class: failed
+								? (event.stopReason ?? "agent_execution_failed")
+								: undefined,
+							observation_authority: "maestro_local_unverified",
 						}),
 					});
 					this.recordFinalStatusEvent(event, stepId);
@@ -2455,86 +2475,145 @@ export class HostedAgentRuntimeProgressRecorder {
 				return;
 			case "turn_start":
 				this.turnIndex += 1;
+				this.turnStartedAtMs.set(this.turnIndex, Date.now());
 				this.recordStep({
 					id: this.stepId("turn", String(this.turnIndex)),
 					name: `Turn ${this.turnIndex}`,
 					stepKind: PlatformAgentRunStepKindValue.ModelCall,
 					state: PlatformAgentRunStepStateValue.Running,
-					input: this.basePayload({ event_type: event.type }),
+					attempt: this.turnIndex,
+					startedAt: this.isoTime(this.turnStartedAtMs.get(this.turnIndex)),
+					input: this.basePayload({
+						event_type: event.type,
+						turn_index: this.turnIndex,
+						lifecycle_status: "running",
+						observation_authority: "maestro_local_unverified",
+					}),
 				});
 				return;
 			case "turn_end":
-				this.recordStep({
-					id: this.stepId("turn", String(this.turnIndex)),
-					name: `Turn ${this.turnIndex}`,
-					stepKind: PlatformAgentRunStepKindValue.ModelCall,
-					state: PlatformAgentRunStepStateValue.Succeeded,
-					output: this.basePayload({
-						event_type: event.type,
-						tool_result_count: event.toolResults.length,
-					}),
-				});
-				this.recordModelUsageEvent(event.message);
+				{
+					const turnStartedAtMs = this.turnStartedAtMs.get(this.turnIndex);
+					const endedAtMs = Date.now();
+					this.turnStartedAtMs.delete(this.turnIndex);
+					this.recordStep({
+						id: this.stepId("turn", String(this.turnIndex)),
+						name: `Turn ${this.turnIndex}`,
+						stepKind: PlatformAgentRunStepKindValue.ModelCall,
+						state: PlatformAgentRunStepStateValue.Succeeded,
+						attempt: this.turnIndex,
+						startedAt: this.isoTime(turnStartedAtMs),
+						endedAt: this.isoTime(endedAtMs),
+						output: this.basePayload({
+							event_type: event.type,
+							turn_index: this.turnIndex,
+							lifecycle_status: "succeeded",
+							tool_result_count: event.toolResults.length,
+							duration_ms: this.durationMs(turnStartedAtMs, endedAtMs),
+							observation_authority: "maestro_local_unverified",
+						}),
+					});
+					this.recordModelUsageEvent(event.message);
+				}
 				return;
 			case "tool_execution_start":
-				this.toolArgsByCallId.set(event.toolCallId, event.args);
-				this.recordStep({
-					id: this.toolStepId(event.toolCallId),
-					name: sanitizedToolDisplayName(event),
-					stepKind: PlatformAgentRunStepKindValue.ToolCallIntent,
-					state: PlatformAgentRunStepStateValue.Running,
-					input: this.basePayload({
-						event_type: event.type,
-						tool_call_id: event.toolCallId,
-						tool_execution_id: materializedToolExecutionId(event),
-						tool_name: event.toolName,
-						display_name: sanitizeToolOutboundText(
-							event.toolName,
-							event.displayName,
-						),
-						summary_label: sanitizeToolOutboundText(
-							event.toolName,
-							event.summaryLabel,
-						),
-						arg_keys: objectKeys(event.args),
-					}),
-				});
-				this.recordCodexSubagentWorkItem(event);
+				{
+					this.toolArgsByCallId.set(event.toolCallId, event.args);
+					this.toolStartedAtMs.set(event.toolCallId, Date.now());
+					const attempt =
+						(this.toolAttemptCounts.get(event.toolCallId) ?? 0) + 1;
+					this.toolAttemptCounts.set(event.toolCallId, attempt);
+					this.recordStep({
+						id: this.toolStepId(event.toolCallId),
+						name: sanitizedToolDisplayName(event),
+						stepKind: PlatformAgentRunStepKindValue.ToolCallIntent,
+						state: PlatformAgentRunStepStateValue.Running,
+						attempt,
+						startedAt: this.isoTime(this.toolStartedAtMs.get(event.toolCallId)),
+						input: this.basePayload({
+							event_type: event.type,
+							tool_call_id: event.toolCallId,
+							tool_execution_id: materializedToolExecutionId(event),
+							tool_name: event.toolName,
+							tool_attempt: attempt,
+							lifecycle_status: "running",
+							display_name: sanitizeToolOutboundText(
+								event.toolName,
+								event.displayName,
+							),
+							summary_label: sanitizeToolOutboundText(
+								event.toolName,
+								event.summaryLabel,
+							),
+							arg_keys: objectKeys(event.args),
+							arg_count: objectKeys(event.args)?.length ?? 0,
+							observation_authority: "maestro_local_unverified",
+						}),
+					});
+					this.recordCodexSubagentWorkItem(event);
+				}
 				return;
 			case "tool_execution_end":
-				this.recordStep({
-					id: this.toolStepId(event.toolCallId),
-					name: sanitizedToolDisplayName(event),
-					stepKind: event.isError
-						? PlatformAgentRunStepKindValue.Error
-						: PlatformAgentRunStepKindValue.ToolResult,
-					state: event.isError
-						? PlatformAgentRunStepStateValue.Failed
-						: PlatformAgentRunStepStateValue.Succeeded,
-					errorMessage: event.isError
-						? (event.errorCode ?? event.governedOutcome ?? "tool failed")
-						: undefined,
-					output: this.basePayload({
-						event_type: event.type,
-						tool_call_id: event.toolCallId,
-						tool_execution_id: materializedToolExecutionId(event),
-						approval_request_id: event.approvalRequestId,
-						tool_name: event.toolName,
-						display_name: sanitizeToolOutboundText(
-							event.toolName,
-							event.displayName,
-						),
-						summary_label: sanitizeToolOutboundText(
-							event.toolName,
-							event.summaryLabel,
-						),
-						error_code: event.errorCode,
-						governed_outcome: event.governedOutcome,
-					}),
-				});
-				this.updateCodexSubagentWorkItem(event);
-				this.recordToolDerivedTaskProgress(event);
-				this.recordToolArtifactEvent(event);
+				{
+					const toolStartedAtMs = this.toolStartedAtMs.get(event.toolCallId);
+					const endedAtMs = Date.now();
+					this.toolStartedAtMs.delete(event.toolCallId);
+					const attempt = this.toolAttemptCounts.get(event.toolCallId);
+					const errorClass = event.isError
+						? (compactString(event.errorCode ?? event.governedOutcome, 96) ??
+							"tool_execution_failed")
+						: undefined;
+					this.recordStep({
+						id: this.toolStepId(event.toolCallId),
+						name: sanitizedToolDisplayName(event),
+						stepKind: event.isError
+							? PlatformAgentRunStepKindValue.Error
+							: PlatformAgentRunStepKindValue.ToolResult,
+						state: event.isError
+							? PlatformAgentRunStepStateValue.Failed
+							: PlatformAgentRunStepStateValue.Succeeded,
+						errorMessage: event.isError
+							? (event.errorCode ?? event.governedOutcome ?? "tool failed")
+							: undefined,
+						attempt,
+						startedAt: this.isoTime(toolStartedAtMs),
+						endedAt: this.isoTime(endedAtMs),
+						output: this.basePayload({
+							event_type: event.type,
+							tool_call_id: event.toolCallId,
+							tool_execution_id: materializedToolExecutionId(event),
+							approval_request_id: event.approvalRequestId,
+							tool_name: event.toolName,
+							tool_attempt: attempt,
+							lifecycle_status: event.isError ? "failed" : "succeeded",
+							display_name: sanitizeToolOutboundText(
+								event.toolName,
+								event.displayName,
+							),
+							summary_label: sanitizeToolOutboundText(
+								event.toolName,
+								event.summaryLabel,
+							),
+							error_code: event.errorCode,
+							governed_outcome: event.governedOutcome,
+							error_class: errorClass,
+							result_error: event.isError,
+							result_content_count: Array.isArray(event.result.content)
+								? event.result.content.length
+								: undefined,
+							result_detail_keys: objectKeys(
+								isRecord(event.result.details)
+									? event.result.details
+									: undefined,
+							),
+							duration_ms: this.durationMs(toolStartedAtMs, endedAtMs),
+							observation_authority: "maestro_local_unverified",
+						}),
+					});
+					this.updateCodexSubagentWorkItem(event);
+					this.recordToolDerivedTaskProgress(event);
+					this.recordToolArtifactEvent(event);
+				}
 				return;
 			case "action_approval_required":
 				this.recordApprovalWait({
@@ -3503,8 +3582,9 @@ export class HostedAgentRuntimeProgressRecorder {
 		}
 		const toolExecutionId = materializedToolExecutionId(event);
 		const prompt = nonEmptyString(event.args.prompt);
-		const sanitizedPrompt = sanitizeOutboundText(prompt);
+		const sanitizedPrompt = sanitizeDelegationPrompt(prompt);
 		const delegationPrompt = sanitizeDelegationPrompt(prompt);
+		const promptCharCount = redactedPromptLength(prompt);
 		const model = nonEmptyString(event.args.model);
 		const reasoningEffort = nonEmptyString(event.args.reasoningEffort);
 		const codexSubagentOperationName = codexSubagentOperation(codexTool);
@@ -3552,6 +3632,8 @@ export class HostedAgentRuntimeProgressRecorder {
 				child_run_ids: childRunIds,
 				codex_work_graph: workGraph,
 				linked_work_item_ids: linkedWorkItemIds,
+				prompt_present: Boolean(prompt),
+				prompt_char_count: promptCharCount,
 				model,
 				reasoning_effort: reasoningEffort,
 				arg_keys: objectKeys(event.args),
@@ -3629,6 +3711,10 @@ export class HostedAgentRuntimeProgressRecorder {
 					codex_work_graph: input.workGraph,
 					linked_work_item_ids: input.linkedWorkItemIds,
 					prompt: input.prompt,
+					prompt_present: Boolean(input.prompt),
+					prompt_char_count: redactedPromptLength(
+						nonEmptyString(input.event.args.prompt),
+					),
 					model: input.model,
 					reasoning_effort: input.reasoningEffort,
 					arg_keys: objectKeys(input.event.args),
@@ -4087,6 +4173,21 @@ export class HostedAgentRuntimeProgressRecorder {
 
 	private workItemId(toolCallId: string): string {
 		return this.stepId("work", toolCallId);
+	}
+
+	private isoTime(value: number | undefined): string | undefined {
+		return typeof value === "number" && Number.isFinite(value)
+			? new Date(value).toISOString()
+			: undefined;
+	}
+
+	private durationMs(
+		startedAtMs: number | undefined,
+		endedAtMs: number,
+	): number | undefined {
+		return typeof startedAtMs === "number" && Number.isFinite(startedAtMs)
+			? Math.max(0, endedAtMs - startedAtMs)
+			: undefined;
 	}
 
 	private resolveAutoRetryStartSequence(attempt: number): number {

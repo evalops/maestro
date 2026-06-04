@@ -76,7 +76,7 @@ describe("MCP config loader", () => {
 		const configDir = join(testDir, ".maestro");
 		mkdirSync(configDir, { recursive: true });
 		writeFileSync(
-			join(configDir, "mcp.local.json"),
+			join(configDir, "mcp.json"),
 			JSON.stringify({
 				servers: [
 					{
@@ -131,7 +131,7 @@ describe("MCP config loader", () => {
 		const configDir = join(testDir, ".maestro");
 		mkdirSync(configDir, { recursive: true });
 		writeFileSync(
-			join(configDir, "mcp.local.json"),
+			join(configDir, "mcp.json"),
 			JSON.stringify({
 				mcpServers: {
 					"my-server": {
@@ -153,7 +153,7 @@ describe("MCP config loader", () => {
 		const configDir = join(testDir, ".maestro");
 		mkdirSync(configDir, { recursive: true });
 		writeFileSync(
-			join(configDir, "mcp.local.json"),
+			join(configDir, "mcp.json"),
 			JSON.stringify({
 				mcpServers: {
 					enabled: { command: "node", args: [] },
@@ -171,7 +171,7 @@ describe("MCP config loader", () => {
 		const configDir = join(testDir, ".maestro");
 		mkdirSync(configDir, { recursive: true });
 		writeFileSync(
-			join(configDir, "mcp.local.json"),
+			join(configDir, "mcp.json"),
 			JSON.stringify({
 				mcpServers: {
 					remote: { url: "http://localhost:3000/mcp" },
