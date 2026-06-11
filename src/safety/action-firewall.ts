@@ -53,8 +53,10 @@ import type {
 	WorkflowStateSnapshot,
 } from "../agent/action-approval.js";
 export type { ActionApprovalContext } from "../agent/action-approval.js";
+import { isMcpTool } from "../mcp/names.js";
 import { parseApplyPatchPaths } from "../tools/apply-patch-parser.js";
 import { createLogger } from "../utils/logger.js";
+import { normalizeSafetyText } from "../utils/safety-normalization.js";
 import { isCommandAllowlisted } from "./bash-allowlist.js";
 import {
 	analyzeCommandSafety,
@@ -266,14 +268,6 @@ function isHumanFacingTool(toolName: string): boolean {
 	return false;
 }
 
-function getAnnotations(context: ActionApprovalContext) {
-	return context.metadata?.annotations;
-}
-
-function isMcpTool(toolName: string): boolean {
-	return toolName.startsWith("mcp_");
-}
-
 /**
  * Generate rules from dangerous patterns (regex-based)
  */
@@ -294,7 +288,7 @@ const dangerousCommandRules: ActionFirewallRule[] = Object.entries(
 		if (!command) return { allowed: true };
 		const unwrapped = unwrapShellCommand(command) ?? command;
 		if (isCommandAllowlisted(unwrapped)) return { allowed: true };
-		if (!pattern.test(unwrapped)) {
+		if (!pattern.test(normalizeSafetyText(unwrapped))) {
 			return { allowed: true };
 		}
 		return {
@@ -650,16 +644,19 @@ export const defaultFirewallRules: ActionFirewallRule[] = [
 	},
 	{
 		id: "mcp-destructive-tool",
-		description: "MCP tools marked as destructive require approval",
+		description: "MCP server tools require approval by default",
 		action: "require_approval",
-		match: (ctx) => {
-			if (!isMcpTool(ctx.toolName)) return false;
-			const annotations = getAnnotations(ctx);
-			// Require approval if destructiveHint is true and readOnlyHint is not true
-			return annotations?.destructiveHint === true;
-		},
+		match: (ctx) => isMcpTool(ctx.toolName),
 		reason: (ctx) =>
-			`MCP tool "${ctx.toolName}" is marked as destructive and requires approval`,
+			`MCP tool "${ctx.toolName}" requires approval by default; server-supplied annotations cannot lower approval requirements`,
+	},
+	{
+		id: "destructive-tool-annotation",
+		description: "Tools marked destructive require approval",
+		action: "require_approval",
+		match: (ctx) => ctx.metadata?.annotations?.destructiveHint === true,
+		reason: (ctx) =>
+			`Tool "${ctx.toolName}" is marked as destructive and requires approval`,
 	},
 	{
 		id: "plan-mode-confirm",

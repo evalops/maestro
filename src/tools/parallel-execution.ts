@@ -33,6 +33,7 @@ import type {
 	ToolAnnotations,
 	ToolSourceMetadata,
 } from "../agent/types.js";
+import { isMcpTool } from "../mcp/names.js";
 
 /**
  * Set of known read-only tool names.
@@ -108,6 +109,10 @@ export function isReadOnlyTool(
 	annotations?: ToolAnnotations,
 	_source?: ToolSourceMetadata,
 ): boolean {
+	if (isMcpTool(toolName)) {
+		return false;
+	}
+
 	// Check explicit annotation first
 	if (annotations?.readOnlyHint === true) {
 		return true;
@@ -120,12 +125,26 @@ export function isReadOnlyTool(
 	return READ_ONLY_TOOLS.has(toolName);
 }
 
+export function isParallelReadOnlyTool(
+	toolName: string,
+	annotations?: ToolAnnotations,
+	source?: ToolSourceMetadata,
+): boolean {
+	if (isMcpTool(toolName)) {
+		return false;
+	}
+	return isReadOnlyTool(toolName, annotations, source);
+}
+
 export function isParallelSafeTool(
 	toolName: string,
 	annotations?: ToolAnnotations,
 	source?: ToolSourceMetadata,
 ): boolean {
-	if (isReadOnlyTool(toolName, annotations, source)) {
+	if (isMcpTool(toolName)) {
+		return false;
+	}
+	if (isParallelReadOnlyTool(toolName, annotations, source)) {
 		return true;
 	}
 	if (annotations?.destructiveHint === true) {
@@ -204,7 +223,11 @@ export function getOptimalConcurrency(
 	// Check if all tools are read-only
 	const allReadOnly = toolCalls.every((call) => {
 		const metadata = toolMetadata.get(call.name);
-		return isReadOnlyTool(call.name, metadata?.annotations, metadata?.source);
+		return isParallelReadOnlyTool(
+			call.name,
+			metadata?.annotations,
+			metadata?.source,
+		);
 	});
 
 	if (allReadOnly) {
@@ -246,7 +269,9 @@ export function partitionToolCalls<T extends { name: string }>(
 
 	for (const call of toolCalls) {
 		const metadata = toolMetadata.get(call.name);
-		if (isReadOnlyTool(call.name, metadata?.annotations, metadata?.source)) {
+		if (
+			isParallelReadOnlyTool(call.name, metadata?.annotations, metadata?.source)
+		) {
 			readOnly.push(call);
 		} else {
 			write.push(call);

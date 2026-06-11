@@ -419,7 +419,11 @@ async function getRegisteredModel(input: string | null | undefined) {
 	if (registeredModel.api !== "openai-codex-app-server") {
 		await ensureCredential(registeredModel.provider);
 	}
-	modelSelectionStore.set(registeredModel);
+	// Do NOT store into the shared modelSelectionStore here: every request
+	// that resolves a model would overwrite the global, causing the selection
+	// of one tenant/session to bleed into another request that omits a model
+	// (fixes #2539 cross-tenant model-selection bleed).  The store is written
+	// only by explicit setModelSelection() calls from UI-driven model picker.
 	return registeredModel;
 }
 
@@ -590,6 +594,14 @@ const __dirname = dirname(__filename);
 const WEB_ROOT = resolveWebRoot({ baseDir: __dirname });
 const ALLOWED_ORIGIN = DEFAULT_WEB_ORIGIN;
 const CORS_HEADERS = createCorsHeaders(ALLOWED_ORIGIN);
+
+export function isAllowedWebSocketOrigin(
+	origin: string | string[] | undefined,
+	allowedOrigin = ALLOWED_ORIGIN,
+): boolean {
+	return allowedOrigin === "*" || origin === allowedOrigin;
+}
+
 const SECURITY_HEADERS: Record<string, string> =
 	PROD_PROFILE || process.env.MAESTRO_WEB_CSP?.trim()
 		? {
@@ -912,12 +924,10 @@ export async function startWebServer(
 			return;
 		}
 
-		if (ALLOWED_ORIGIN !== "*" && req.headers.origin) {
-			if (req.headers.origin !== ALLOWED_ORIGIN) {
-				socket.write("HTTP/1.1 403 Forbidden\r\n\r\n");
-				socket.destroy();
-				return;
-			}
+		if (!isAllowedWebSocketOrigin(req.headers.origin)) {
+			socket.write("HTTP/1.1 403 Forbidden\r\n\r\n");
+			socket.destroy();
+			return;
 		}
 
 		const auth = await checkApiAuth(req);

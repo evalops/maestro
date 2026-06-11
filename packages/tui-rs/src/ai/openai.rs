@@ -519,21 +519,19 @@ fn is_groq_model(model: &str, base_url: Option<&str>) -> bool {
     if model_lower.starts_with("groq/") {
         return true;
     }
-    // Check base URL
+    // A custom base URL pins the provider: only Groq's host is Groq. This keeps
+    // Groq-specific request shaping (e.g. omitting parallel_tool_calls) off the
+    // direct DeepSeek/DashScope/etc. clients, whose ids also contain "deepseek"
+    // or "qwen".
     if let Some(url) = base_url {
-        if url.contains("groq.com") {
-            return true;
-        }
+        return url.contains("groq.com");
     }
-    // Llama models are commonly hosted on Groq
-    if model_lower.starts_with("llama-") || model_lower.starts_with("llama3") {
-        return true;
-    }
-    // DeepSeek and Qwen models
-    if model_lower.contains("deepseek") || model_lower.contains("qwen") {
-        return true;
-    }
-    false
+    // No custom base URL: fall back to model-name heuristics for the open models
+    // commonly hosted on Groq (Llama, and DeepSeek/Qwen distill/coder variants).
+    model_lower.starts_with("llama-")
+        || model_lower.starts_with("llama3")
+        || model_lower.contains("deepseek")
+        || model_lower.contains("qwen")
 }
 
 /// Normalize a tool call ID for Mistral compatibility.
@@ -640,6 +638,58 @@ impl OpenAiClient {
         let api_key =
             std::env::var("GROQ_API_KEY").context("GROQ_API_KEY environment variable not set")?;
         Self::with_base_url(api_key, "https://api.groq.com/openai/v1")
+    }
+
+    /// Create a new DeepSeek client from environment variable.
+    ///
+    /// DeepSeek exposes an OpenAI-compatible API at `https://api.deepseek.com/v1`.
+    pub fn deepseek_from_env() -> Result<Self> {
+        let api_key = std::env::var("DEEPSEEK_API_KEY")
+            .context("DEEPSEEK_API_KEY environment variable not set")?;
+        Self::with_base_url(api_key, "https://api.deepseek.com/v1")
+    }
+
+    /// Create a new Moonshot (Kimi) client from environment variable.
+    ///
+    /// Uses the international endpoint `https://api.moonshot.ai/v1`. Accepts
+    /// `MOONSHOT_API_KEY` or, as a fallback, `KIMI_API_KEY`.
+    pub fn moonshot_from_env() -> Result<Self> {
+        let api_key = std::env::var("MOONSHOT_API_KEY")
+            .or_else(|_| std::env::var("KIMI_API_KEY"))
+            .context("MOONSHOT_API_KEY (or KIMI_API_KEY) environment variable not set")?;
+        Self::with_base_url(api_key, "https://api.moonshot.ai/v1")
+    }
+
+    /// Create a new Alibaba Qwen (DashScope) client from environment variable.
+    ///
+    /// Uses the international compatible-mode endpoint. Accepts
+    /// `DASHSCOPE_API_KEY` or, as a fallback, `QWEN_API_KEY`.
+    pub fn qwen_from_env() -> Result<Self> {
+        let api_key = std::env::var("DASHSCOPE_API_KEY")
+            .or_else(|_| std::env::var("QWEN_API_KEY"))
+            .context("DASHSCOPE_API_KEY (or QWEN_API_KEY) environment variable not set")?;
+        Self::with_base_url(
+            api_key,
+            "https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
+        )
+    }
+
+    /// Create a new MiniMax client from environment variable.
+    ///
+    /// Uses the international endpoint `https://api.minimax.io/v1`.
+    pub fn minimax_from_env() -> Result<Self> {
+        let api_key = std::env::var("MINIMAX_API_KEY")
+            .context("MINIMAX_API_KEY environment variable not set")?;
+        Self::with_base_url(api_key, "https://api.minimax.io/v1")
+    }
+
+    /// Create a new Z.ai / Zhipu GLM client from environment variable.
+    ///
+    /// Uses the international endpoint `https://api.z.ai/api/coding/paas/v4`.
+    pub fn zai_from_env() -> Result<Self> {
+        let api_key =
+            std::env::var("ZAI_API_KEY").context("ZAI_API_KEY environment variable not set")?;
+        Self::with_base_url(api_key, "https://api.z.ai/api/coding/paas/v4")
     }
 
     /// Build request headers
@@ -1094,6 +1144,28 @@ impl OpenAiClient {
             self.build_chat_request_body(messages, config)
         }
     }
+
+    /// Resolve the full request URL for a model.
+    ///
+    /// When a custom `base_url` is configured (Mistral, Groq, DeepSeek, Moonshot,
+    /// DashScope, MiniMax, Z.ai, and other OpenAI-compatible providers), the
+    /// request must target that provider's endpoint rather than the hardcoded
+    /// OpenAI host. We append the OpenAI-compatible path (`/chat/completions` or
+    /// `/responses`) to the configured base. Without a custom base, fall back to
+    /// the OpenAI defaults.
+    fn request_url(&self, model: &str) -> String {
+        match &self.base_url {
+            Some(base) => {
+                let trimmed = base.trim_end_matches('/');
+                if uses_responses_api(model) {
+                    format!("{trimmed}/responses")
+                } else {
+                    format!("{trimmed}/chat/completions")
+                }
+            }
+            None => api_url_for_model(model).to_string(),
+        }
+    }
 }
 
 impl AiClient for OpenAiClient {
@@ -1111,13 +1183,14 @@ impl AiClient for OpenAiClient {
         // Build request body
         let body = self.build_request_body(messages, config);
 
-        // Get the appropriate API URL for this model
-        let api_url = api_url_for_model(&config.model);
+        // Get the appropriate API URL for this model, honoring any custom
+        // provider base URL (Mistral/Groq/DeepSeek/Moonshot/DashScope/etc.).
+        let api_url = self.request_url(&config.model);
 
         // Make request
         let response = self
             .client
-            .post(api_url)
+            .post(&api_url)
             .headers(self.headers())
             .json(&body)
             .send()
@@ -1819,6 +1892,34 @@ mod tests {
     }
 
     #[test]
+    fn test_request_url_honors_custom_base_url() {
+        // Default client (no base URL) targets OpenAI.
+        let openai = OpenAiClient::new("k").unwrap();
+        assert_eq!(
+            openai.request_url("gpt-4o"),
+            "https://api.openai.com/v1/chat/completions"
+        );
+
+        // Custom OpenAI-compatible providers must hit their own endpoint, not
+        // OpenAI. A trailing slash on the base URL is tolerated.
+        let deepseek = OpenAiClient::with_base_url("k", "https://api.deepseek.com/v1").unwrap();
+        assert_eq!(
+            deepseek.request_url("deepseek-chat"),
+            "https://api.deepseek.com/v1/chat/completions"
+        );
+        let zai = OpenAiClient::with_base_url("k", "https://api.z.ai/api/coding/paas/v4/").unwrap();
+        assert_eq!(
+            zai.request_url("glm-4.6"),
+            "https://api.z.ai/api/coding/paas/v4/chat/completions"
+        );
+        let groq = OpenAiClient::with_base_url("k", "https://api.groq.com/openai/v1").unwrap();
+        assert_eq!(
+            groq.request_url("llama-3.3-70b-versatile"),
+            "https://api.groq.com/openai/v1/chat/completions"
+        );
+    }
+
+    #[test]
     fn test_has_incompatible_schema() {
         // Simple schema is compatible
         let simple = serde_json::json!({
@@ -2281,6 +2382,17 @@ mod tests {
         assert!(!is_groq_model("gpt-4o", None));
         assert!(!is_groq_model("claude-opus-4-5", None));
         assert!(!is_groq_model("gemini-pro", None));
+
+        // A custom non-Groq base URL pins the provider, so deepseek/qwen ids do
+        // NOT get Groq-specific request shaping on direct provider clients.
+        assert!(!is_groq_model(
+            "deepseek-chat",
+            Some("https://api.deepseek.com/v1")
+        ));
+        assert!(!is_groq_model(
+            "qwen3-max",
+            Some("https://dashscope-intl.aliyuncs.com/compatible-mode/v1")
+        ));
     }
 
     #[test]

@@ -16,8 +16,14 @@ headlessRuntime:
 
 image:
   repository: ghcr.io/evalops/maestro
-  tag: latest
+  # Defaults to Chart.appVersion when empty. Prefer immutable sha-* tags or digest.
+  tag: ""
+  digest: ""
   pullPolicy: IfNotPresent
+
+auth:
+  # Leave empty to generate an API key on first install and preserve it on upgrades.
+  apiKey: ""
 
 service:
   type: ClusterIP
@@ -113,6 +119,7 @@ env:
   IDENTITY_URL: ""
   KEYS_URL: ""
   LLM_GATEWAY_URL: ""
+  MAESTRO_CONTROL_HOST: "0.0.0.0"
   MEMORY_URL: ""
   TMPDIR: "/tmp"
   XDG_CACHE_HOME: "/tmp/.cache"

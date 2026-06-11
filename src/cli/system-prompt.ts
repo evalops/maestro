@@ -437,15 +437,25 @@ function formatProjectContextFile(
 ): string {
 	const filename = basename(file.path);
 	const dir = dirname(file.path);
+	const content = escapeXml(file.content.trimEnd());
 	return [
 		`# ${filename} instructions for ${dir}`,
 		"",
 		"<INSTRUCTIONS>",
-		file.content.trimEnd(),
+		content,
 		"</INSTRUCTIONS>",
 		"",
 		"",
 	].join("\n");
+}
+
+function escapeXml(str: string): string {
+	return str
+		.replace(/&/g, "&amp;")
+		.replace(/</g, "&lt;")
+		.replace(/>/g, "&gt;")
+		.replace(/"/g, "&quot;")
+		.replace(/'/g, "&#39;");
 }
 
 // Default tool names when no filter is applied

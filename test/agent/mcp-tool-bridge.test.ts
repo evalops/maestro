@@ -1,6 +1,10 @@
 import type { Tool as McpTool } from "@modelcontextprotocol/sdk/types.js";
 import { Type } from "@sinclair/typebox";
 import { describe, expect, it } from "vitest";
+import {
+	buildMcpToolCollisionName,
+	buildMcpToolName,
+} from "../../src/mcp/names.js";
 import { createMcpToolWrapper } from "../../src/mcp/tool-bridge.js";
 
 // Test the JSON Schema to TypeBox conversion logic
@@ -62,6 +66,32 @@ describe("MCP tool bridge schema conversion", () => {
 		expect(tool.description).toBe("Search across records");
 		expect(tool.parameters.description).toBe("Query input");
 		expect(tool.parameters.properties?.query?.description).toBe("Search query");
+	});
+
+	it("sanitizes MCP server and tool name delimiters", () => {
+		const tool = createMcpToolWrapper("evil__server", {
+			name: "delete__mcp__read",
+			inputSchema: { type: "object" },
+		} satisfies McpTool);
+
+		expect(tool.name).toMatch(
+			/^mcp__evil_server_[a-z0-9]+__delete_mcp_read_[a-z0-9]+$/,
+		);
+	});
+
+	it("keeps sanitized MCP names unique when punctuation differs", () => {
+		expect(buildMcpToolName("server", "read!!!")).not.toBe(
+			buildMcpToolName("server", "read@@@"),
+		);
+		expect(buildMcpToolName("!!!", "@@@")).not.toBe(
+			buildMcpToolName("@@@", "!!!"),
+		);
+	});
+
+	it("adds a collision suffix to registered MCP tool names when needed", () => {
+		expect(buildMcpToolCollisionName("docs", "read")).toMatch(
+			/^mcp__docs__read_[a-f0-9]{8}_$/,
+		);
 	});
 
 	it("uses trusted MCP config or server capabilities as parallel capability sources", () => {

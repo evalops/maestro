@@ -21,10 +21,17 @@ export function openExternalEditor(
 		};
 	}
 
-	const tempFile = path.join(os.tmpdir(), `composer-editor-${Date.now()}.md`);
+	let tempDir: string | undefined;
 
 	try {
-		fs.writeFileSync(tempFile, currentText, "utf-8");
+		tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "composer-editor-"));
+		const tempFile = path.join(tempDir, "input.md");
+		const fd = fs.openSync(tempFile, "wx", 0o600);
+		try {
+			fs.writeFileSync(fd, currentText, "utf-8");
+		} finally {
+			fs.closeSync(fd);
+		}
 
 		ui.stop();
 
@@ -46,10 +53,12 @@ export function openExternalEditor(
 		}
 		return {};
 	} finally {
-		try {
-			fs.unlinkSync(tempFile);
-		} catch {
-			// Ignore cleanup errors
+		if (tempDir) {
+			try {
+				fs.rmSync(tempDir, { recursive: true, force: true });
+			} catch {
+				// Ignore cleanup errors
+			}
 		}
 
 		ui.start();

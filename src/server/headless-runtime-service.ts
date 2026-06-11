@@ -2281,7 +2281,6 @@ export class HeadlessSessionRuntime {
 			);
 			return;
 		}
-
 		for (const message of this.translator.handleAgentEvent(event)) {
 			if (message.type === "server_request_resolved") {
 				continue;

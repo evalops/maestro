@@ -15,6 +15,11 @@ Shared Maestro AI SDK providing model registry, multi-provider transport, and ag
 | **Cerebras** | OpenAI-compatible models | `CEREBRAS_API_KEY` |
 | **AWS Bedrock** | Claude via AWS | AWS credentials |
 | **Azure OpenAI** | OpenAI-compatible deployments | `AZURE_OPENAI_API_KEY` |
+| **DeepSeek** | `deepseek-chat`, `deepseek-reasoner`, V4 | `DEEPSEEK_API_KEY` |
+| **Moonshot (Kimi)** | Kimi K2 / K2.5 / K2.6, `moonshot-v1-*` | `MOONSHOT_API_KEY` / `KIMI_API_KEY` |
+| **Alibaba Qwen (DashScope)** | `qwen3-max`, `qwen3-coder-plus`, `qwq-32b` | `DASHSCOPE_API_KEY` / `QWEN_API_KEY` |
+| **MiniMax** | `MiniMax-M2`, M2.5 / M2.7 | `MINIMAX_API_KEY` |
+| **Z.ai (Zhipu GLM)** | GLM-4.5 / GLM-4.6 family | `ZAI_API_KEY` |
 
 ## Installation
 

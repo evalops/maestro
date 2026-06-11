@@ -49,6 +49,7 @@ import {
 	ChatRequestSchema,
 	validatePayload,
 } from "../validation.js";
+import { verifySessionOwnership } from "./sessions.js";
 
 const logger = createLogger("web:chat-ws");
 
@@ -425,6 +426,23 @@ export function handleChatWebSocket(
 					if (sessionFile) {
 						sessionManager.setSessionFile(sessionFile);
 						existingSessionLoaded = true;
+					}
+				}
+				if (existingSessionLoaded) {
+					const resumedSession = await sessionManager.loadSession(
+						chatReq.sessionId,
+						{ messagesView: "notLoaded" },
+					);
+					if (
+						!resumedSession ||
+						!verifySessionOwnership(resumedSession, subject)
+					) {
+						sendErrorAndClose("Access denied: session belongs to another user");
+						if (sseLease && releaseSse) {
+							releaseSse(sseLease);
+							sseLease = null;
+						}
+						return;
 					}
 				}
 			}

@@ -178,7 +178,7 @@ Timeout: 90s default, 600s max. Output truncates at 40KB.`,
 	) {
 		// Step 1: Interpolate variables in the command string
 		// Replaces ${cwd}, ${home}, ${env.VAR} with actual values
-		const interpolatedCommand = interpolateContext(command);
+		const interpolatedCommand = interpolateContext(command, env);
 
 		// Step 2: Check execpolicy for command approval
 		// Policies in ~/.maestro/execpolicy and .maestro/execpolicy

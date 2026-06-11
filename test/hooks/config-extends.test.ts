@@ -197,4 +197,68 @@ describe("hooks/config extends", () => {
 				expect(hook.command).toBe("user.sh");
 			},
 		));
+
+	it("rejects unsupported prompt hooks at config load with a named error", () =>
+		withEnv(
+			{
+				HOME: homeDir,
+				MAESTRO_HOOKS_PRE_TOOL_USE: originalPreToolUse,
+			},
+			() => {
+				const configPath = join(workspaceDir, ".maestro", "hooks.json");
+				writeFileSync(
+					configPath,
+					JSON.stringify(
+						{
+							hooks: {
+								PreToolUse: [
+									{
+										matcher: "bash",
+										hooks: [{ type: "prompt", prompt: "review this command" }],
+									},
+								],
+							},
+						},
+						null,
+						2,
+					),
+				);
+
+				expect(() => loadHookConfiguration(workspaceDir)).toThrow(
+					`Unsupported hook type "prompt" in ${configPath} at PreToolUse matcher "bash" hook #1`,
+				);
+			},
+		));
+
+	it("rejects unsupported agent hooks at config load with a named error", () =>
+		withEnv(
+			{
+				HOME: homeDir,
+				MAESTRO_HOOKS_PRE_TOOL_USE: originalPreToolUse,
+			},
+			() => {
+				const configPath = join(workspaceDir, ".maestro", "hooks.json");
+				writeFileSync(
+					configPath,
+					JSON.stringify(
+						{
+							hooks: {
+								UserPromptSubmit: [
+									{
+										matcher: "*",
+										hooks: [{ type: "agent", prompt: "review this prompt" }],
+									},
+								],
+							},
+						},
+						null,
+						2,
+					),
+				);
+
+				expect(() => loadHookConfiguration(workspaceDir)).toThrow(
+					`Unsupported hook type "agent" in ${configPath} at UserPromptSubmit matcher "*" hook #1`,
+				);
+			},
+		));
 });

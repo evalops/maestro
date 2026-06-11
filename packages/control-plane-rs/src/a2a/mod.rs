@@ -15,9 +15,9 @@ pub(crate) use ledger::{
 pub(crate) use native_turn::{run_a2a_native_turn, A2ATurnResult};
 pub(crate) use push_notifications::{
     a2a_push_authorization_header, a2a_push_ip_is_private, a2a_push_notification_payloads,
-    apply_platform_a2a_artifact_update, apply_platform_a2a_status_update,
-    handle_platform_a2a_push_endpoint, is_platform_a2a_push_endpoint,
-    normalize_a2a_push_notification_config,
+    a2a_push_select_pinned_addr, apply_platform_a2a_artifact_update,
+    apply_platform_a2a_status_update, handle_platform_a2a_push_endpoint,
+    is_platform_a2a_push_endpoint, normalize_a2a_push_notification_config,
 };
 pub(crate) use tasks::{
     a2a_agent_message, a2a_context_id, a2a_return_immediately, a2a_task_is_terminal,

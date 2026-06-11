@@ -8,6 +8,8 @@
  * module owns bash-focused analysis utilities.
  */
 
+import { normalizeSafetyText } from "../utils/safety-normalization.js";
+
 export {
 	analyzeCommandSafety,
 	isKnownSafeCommand,
@@ -40,37 +42,41 @@ export function hasUnquotedBraces(command: string): boolean {
 }
 
 export function hasRiskyBashSyntax(command: string): boolean {
+	const normalized = normalizeSafetyText(command);
 	return (
-		/[|;&`]/.test(command) ||
-		/>>|<</.test(command) ||
-		/[<>]/.test(command) ||
-		/[()]/.test(command) ||
-		hasUnquotedBraces(command) ||
-		/\$[A-Za-z_0-9{@*?!$-]/.test(command) ||
-		/\$\(/.test(command) ||
-		/[\n\r\t]/.test(command)
+		/[|;&`]/.test(normalized) ||
+		/>>|<</.test(normalized) ||
+		/[<>]/.test(normalized) ||
+		/[()]/.test(normalized) ||
+		hasUnquotedBraces(normalized) ||
+		/\$[A-Za-z_0-9{@*?!$-]/.test(normalized) ||
+		/\$\(/.test(normalized) ||
+		/[\n\r\t]/.test(normalized)
 	);
 }
 
 export function hasEgressPrimitives(command: string): boolean {
+	const normalized = normalizeSafetyText(command);
 	return (
 		/\b(curl|wget|nc|ncat|netcat|nc6|socat|telnet|ssh|scp|sftp)\b/i.test(
-			command,
-		) || /\/dev\/tcp\//i.test(command)
+			normalized,
+		) || /\/dev\/tcp\//i.test(normalized)
 	);
 }
 
 // Minimal tokenization that respects simple quoted segments; not a full shell parser.
 export function tokenizeSimple(command: string): string[] {
+	const normalized = normalizeSafetyText(command);
 	return (
-		command
+		normalized
 			.match(/"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|\S+/g)
 			?.filter(Boolean) ?? []
 	);
 }
 
 export function isDestructiveSimpleCommand(tokens: string[]): boolean {
-	const rawProgram = tokens[0] ?? "";
+	const normalizedTokens = tokens.map((token) => normalizeSafetyText(token));
+	const rawProgram = normalizedTokens[0] ?? "";
 	const stripped = rawProgram
 		.replace(/^["'\\]+/, "")
 		.replace(/["'\\]+$/, "")
@@ -125,13 +131,13 @@ export function isDestructiveSimpleCommand(tokens: string[]): boolean {
 	) {
 		return true;
 	}
-	if (tokens.some((t) => t.includes("${"))) {
+	if (normalizedTokens.some((t) => t.includes("${"))) {
 		return true;
 	}
 	if (program === "git") {
 		let sub: string | undefined;
-		for (let i = 1; i < tokens.length; i += 1) {
-			const token = tokens[i];
+		for (let i = 1; i < normalizedTokens.length; i += 1) {
+			const token = normalizedTokens[i];
 			if (!token) continue;
 			// git flags that take a value; skip the following token as well
 			const flagConsumesNext =
@@ -143,15 +149,15 @@ export function isDestructiveSimpleCommand(tokens: string[]): boolean {
 			if (flagConsumesNext) {
 				i += 1;
 				// If the consumed value starts a quoted string, skip until the closing quote
-				const consumedToken = tokens[i];
+				const consumedToken = normalizedTokens[i];
 				if (
-					i < tokens.length &&
+					i < normalizedTokens.length &&
 					consumedToken &&
 					/^["']/.test(consumedToken) &&
 					!/["']$/.test(consumedToken)
 				) {
-					while (i + 1 < tokens.length) {
-						const currentToken = tokens[i];
+					while (i + 1 < normalizedTokens.length) {
+						const currentToken = normalizedTokens[i];
 						if (!currentToken || /["']$/.test(currentToken)) break;
 						i += 1;
 					}

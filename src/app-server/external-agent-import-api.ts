@@ -204,6 +204,10 @@ function mergeRecords(
 ): UnknownRecord {
 	const merged: UnknownRecord = { ...base };
 	for (const [key, value] of Object.entries(incoming)) {
+		// Skip prototype-polluting keys (fixes #2542 defense-in-depth).
+		if (key === "__proto__" || key === "constructor" || key === "prototype") {
+			continue;
+		}
 		const current = merged[key];
 		if (isRecord(current) && isRecord(value)) {
 			merged[key] = mergeRecords(current, value);

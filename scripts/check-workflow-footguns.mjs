@@ -109,10 +109,37 @@ function evaluatePublicReleaseMirrorWorkflowPermission(root) {
 	return failures;
 }
 
+function evaluatePullRequestRunnerOverrides(root) {
+	const failures = [];
+	const workflowFiles = [
+		".github/workflows/ci.yml",
+		".github/workflows/rust.yml",
+	];
+	const disallowedVariables = [
+		"PR_CHECKS_RUNNER",
+		"PR_COVERAGE_RUNNER",
+		"PR_RUST_RUNNER",
+	];
+
+	for (const workflowFile of workflowFiles) {
+		const workflowText = readIfExists(join(root, workflowFile));
+		for (const variable of disallowedVariables) {
+			if (new RegExp(`\\bvars\\.${variable}\\b`).test(workflowText)) {
+				failures.push(
+					`${workflowFile}: pull_request jobs must not use vars.${variable}; keep PR CI on evalops-private-ci or evalops-private-heavy so internal smoke runners stay available`,
+				);
+			}
+		}
+	}
+
+	return failures;
+}
+
 export function evaluateWorkflowFootguns({ root = defaultRoot } = {}) {
 	return [
 		...evaluateEvalOpsBotDispatch(root),
 		...evaluatePublicReleaseMirrorWorkflowPermission(root),
+		...evaluatePullRequestRunnerOverrides(root),
 	];
 }
 

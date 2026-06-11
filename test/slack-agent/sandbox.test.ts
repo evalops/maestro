@@ -2,12 +2,20 @@
  * Tests for sandbox.ts - Host and Docker executor functionality
  */
 
+import { spawnSync } from "node:child_process";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
 	type SandboxConfig,
 	createExecutor,
 	parseSandboxArg,
 } from "../../packages/slack-agent/src/sandbox.js";
+
+function isDockerAvailable(): boolean {
+	const result = spawnSync("docker", ["info"], { stdio: "ignore" });
+	return result.status === 0;
+}
+
+const hasDocker = isDockerAvailable();
 
 describe("sandbox", () => {
 	beforeEach(() => {
@@ -381,18 +389,21 @@ describe("sandbox", () => {
 			expect(executor.getWorkspacePath("/any/path")).toBe("/workspace");
 		});
 
-		// Note: Actual Docker execution tests would require Docker to be running
-		// These are skipped in CI but can be run locally
-		it.skip("executes commands in docker container", async () => {
+		// Capability skip tracked by evalops/maestro-internal#2582.
+		it.skipIf(!hasDocker)("executes commands in docker container", async () => {
 			const config: SandboxConfig = {
 				type: "docker",
-				container: "test-sandbox",
+				autoCreate: true,
+				image: "alpine:3.20",
 			};
 			const executor = createExecutor(config);
-
-			const result = await executor.exec("echo hello from docker");
-			expect(result.code).toBe(0);
-			expect(result.stdout.trim()).toBe("hello from docker");
+			try {
+				const result = await executor.exec("echo hello from docker");
+				expect(result.code).toBe(0);
+				expect(result.stdout.trim()).toBe("hello from docker");
+			} finally {
+				await executor.dispose();
+			}
 		});
 	});
 });

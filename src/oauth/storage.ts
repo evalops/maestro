@@ -1,13 +1,8 @@
-import {
-	chmodSync,
-	existsSync,
-	mkdirSync,
-	readFileSync,
-	writeFileSync,
-} from "node:fs";
+import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { getAgentDir } from "../config/constants.js";
 import { createLogger } from "../utils/logger.js";
+import { writePrivateFileSync } from "./private-file.js";
 
 const logger = createLogger("oauth:storage");
 
@@ -75,9 +70,7 @@ function loadStorage(): OAuthStorageFormat {
 function saveStorage(storage: OAuthStorageFormat): void {
 	ensureConfigDir();
 	const filePath = getOAuthFilePath();
-	writeFileSync(filePath, JSON.stringify(storage, null, 2), "utf-8");
-	// Set permissions to owner read/write only
-	chmodSync(filePath, 0o600);
+	writePrivateFileSync(filePath, JSON.stringify(storage, null, 2));
 }
 
 /**

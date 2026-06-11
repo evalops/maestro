@@ -1,6 +1,6 @@
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import type { IncomingMessage, ServerResponse } from "node:http";
-import { resolve } from "node:path";
+import { isAbsolute, relative, resolve } from "node:path";
 import {
 	type MemoryStore,
 	addMemory,
@@ -22,6 +22,36 @@ import {
 	respondWithApiError,
 	sendJson,
 } from "../server-utils.js";
+
+function resolveMemoryTransferPath(
+	requestPath: string | undefined,
+	fallbackName: string,
+): { ok: true; path: string } | { ok: false; error: string } {
+	const rawPath = (requestPath?.trim() || fallbackName).trim();
+	if (!rawPath) {
+		return { ok: false, error: "Path is required" };
+	}
+	if (isAbsolute(rawPath)) {
+		return {
+			ok: false,
+			error: "Path must be relative to the current workspace",
+		};
+	}
+	const baseDir = process.cwd();
+	const resolvedPath = resolve(baseDir, rawPath);
+	const relativePath = relative(baseDir, resolvedPath);
+	if (
+		relativePath === "" ||
+		relativePath.startsWith("..") ||
+		isAbsolute(relativePath)
+	) {
+		return {
+			ok: false,
+			error: "Path must stay within the current workspace",
+		};
+	}
+	return { ok: true, path: resolvedPath };
+}
 
 export async function handleMemory(
 	req: IncomingMessage,
@@ -166,9 +196,15 @@ export async function handleMemory(
 				}
 			} else if (action === "export") {
 				const store = exportMemories();
-				const outputPath = data.path
-					? resolve(process.cwd(), data.path)
-					: resolve(process.cwd(), "maestro-memories.json");
+				const output = resolveMemoryTransferPath(
+					data.path,
+					"maestro-memories.json",
+				);
+				if (!output.ok) {
+					sendJson(res, 400, { error: output.error }, corsHeaders);
+					return;
+				}
+				const outputPath = output.path;
 				writeFileSync(outputPath, JSON.stringify(store, null, 2), "utf-8");
 				sendJson(
 					res,
@@ -185,14 +221,14 @@ export async function handleMemory(
 					sendJson(res, 400, { error: "Path is required" }, corsHeaders);
 					return;
 				}
-				const inputPath = resolve(process.cwd(), data.path);
+				const input = resolveMemoryTransferPath(data.path, "");
+				if (!input.ok) {
+					sendJson(res, 400, { error: input.error }, corsHeaders);
+					return;
+				}
+				const inputPath = input.path;
 				if (!existsSync(inputPath)) {
-					sendJson(
-						res,
-						404,
-						{ error: `File not found: ${inputPath}` },
-						corsHeaders,
-					);
+					sendJson(res, 404, { error: "File not found" }, corsHeaders);
 					return;
 				}
 				const content = readFileSync(inputPath, "utf-8");
@@ -200,12 +236,7 @@ export async function handleMemory(
 				try {
 					store = JSON.parse(content) as MemoryStore;
 				} catch {
-					sendJson(
-						res,
-						400,
-						{ error: `Invalid JSON in file: ${inputPath}` },
-						corsHeaders,
-					);
+					sendJson(res, 400, { error: "Invalid JSON in file" }, corsHeaders);
 					return;
 				}
 				const result = importMemories(store);

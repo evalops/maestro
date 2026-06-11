@@ -145,7 +145,7 @@ fn print_cli_help() {
     println!(
         "Maestro Rust control plane\n\n\
 Usage:\n  maestro-control-plane [--help] [--version]\n\n\
-Environment:\n  MAESTRO_CONTROL_HOST  bind host (default: 0.0.0.0)\n  PORT                  bind port (default: 8080)\n  MAESTRO_HOME          state directory for sessions, usage, and preferences\n  MAESTRO_WEB_API_KEY   API key accepted via Bearer or x-maestro-api-key\n  MAESTRO_WEB_REQUIRE_KEY=0 disables API-key auth for local development\n"
+Environment:\n  MAESTRO_CONTROL_HOST  bind host (default: 127.0.0.1)\n  PORT                  bind port (default: 8080)\n  MAESTRO_HOME          state directory for sessions, usage, and preferences\n  MAESTRO_WEB_API_KEY   API key accepted via Bearer or x-maestro-api-key\n  MAESTRO_WEB_REQUIRE_KEY=0 disables API-key auth for local development\n"
     );
 }
 
@@ -190,7 +190,7 @@ impl Config {
             .is_some_and(is_openrouter_models_url);
 
         Self {
-            listen_host: env::var("MAESTRO_CONTROL_HOST").unwrap_or_else(|_| "0.0.0.0".into()),
+            listen_host: env::var("MAESTRO_CONTROL_HOST").unwrap_or_else(|_| "127.0.0.1".into()),
             listen_port,
             api_key: env::var("MAESTRO_WEB_API_KEY")
                 .ok()
@@ -234,6 +234,13 @@ impl Config {
 
     fn listen_addr(&self) -> String {
         format!("{}:{}", self.listen_host, self.listen_port)
+    }
+
+    fn validate_startup(&self) -> Result<(), String> {
+        if self.require_key && !auth_is_configured(self) {
+            return Err("web auth is required when MAESTRO_WEB_REQUIRE_KEY is enabled; set MAESTRO_WEB_API_KEY, MAESTRO_AUTH_SHARED_SECRET, MAESTRO_JWT_SECRET, MAESTRO_JWT_JWKS_URL, or MAESTRO_WEB_TRUST_PROXY_AUTH_TOKEN".into());
+        }
+        Ok(())
     }
 }
 
@@ -393,6 +400,10 @@ async fn main() -> anyhow::Result<()> {
     }
 
     let config = Arc::new(Config::from_env());
+    if let Err(error) = config.validate_startup() {
+        eprintln!("{error}");
+        process::exit(2);
+    }
     let listener = TcpListener::bind(config.listen_addr()).await?;
     println!(
         "maestro rust server listening on http://{}",

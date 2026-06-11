@@ -10,6 +10,7 @@ import {
 } from "node:fs";
 import { join, resolve } from "node:path";
 import { v4 as uuidv4 } from "uuid";
+import { isToolResultMessage } from "../agent/type-guards.js";
 import type { AgentState, AppMessage } from "../agent/types.js";
 import { SESSION_CONFIG, getAgentDir } from "../config/constants.js";
 import type { UnifiedContextManifest } from "../context/manifest-types.js";
@@ -386,6 +387,17 @@ export class FreshExecSessionManager {
 
 	saveMessage(message: AppMessage): void {
 		if (!this.enabled) return;
+		if (
+			isToolResultMessage(message) &&
+			this.fileEntries.some(
+				(entry) =>
+					entry.type === "message" &&
+					isToolResultMessage(entry.message) &&
+					entry.message.toolCallId === message.toolCallId,
+			)
+		) {
+			return;
+		}
 		const sanitizedMessage = sanitizeMessageForSession(message);
 		const entry: SessionMessageEntry = {
 			type: "message",

@@ -59,6 +59,7 @@
 		"../../src/training.ts",
 		"../../src/timeline/**/*.ts",
 		"../../src/mcp/elicitation.ts",
+		"../../src/mcp/names.ts",
 		"../../src/guardian/**/*.ts",
 		"../../src/lsp/**/*.ts",
 		"../../src/ide/**/*.ts",

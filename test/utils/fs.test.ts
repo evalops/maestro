@@ -443,6 +443,23 @@ describe("fs utilities", () => {
 			expect(tempFiles).toHaveLength(0);
 		});
 
+		it("uses unique temp names for same-millisecond writes", () => {
+			const now = vi.spyOn(Date, "now").mockReturnValue(1_700_000_000_000);
+			try {
+				const filePath = join(testDir, "atomic-same-ms.txt");
+
+				writeTextFileAtomic(filePath, "first");
+				writeTextFileAtomic(filePath, "second");
+
+				expect(readTextFile(filePath)).toBe("second");
+				const files = readdirSync(testDir);
+				const tempFiles = files.filter((f: string) => f.includes(".tmp."));
+				expect(tempFiles).toHaveLength(0);
+			} finally {
+				now.mockRestore();
+			}
+		});
+
 		it("should overwrite existing file atomically", () => {
 			const filePath = join(testDir, "atomic-overwrite.txt");
 			writeFileSync(filePath, "old content");

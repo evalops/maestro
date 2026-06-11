@@ -921,6 +921,10 @@ function deepMerge<T extends object>(target: T, source: Partial<T>): T {
 	const result = { ...target } as Record<string, unknown>;
 
 	for (const key of Object.keys(source)) {
+		// Skip prototype-polluting keys (fixes #2542 defense-in-depth).
+		if (key === "__proto__" || key === "constructor" || key === "prototype") {
+			continue;
+		}
 		const sourceValue = (source as Record<string, unknown>)[key];
 		const targetValue = result[key];
 

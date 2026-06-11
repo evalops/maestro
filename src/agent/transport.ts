@@ -71,8 +71,8 @@ import {
 import {
 	type PathScopedMutation,
 	getPathScopedMutation,
+	isParallelReadOnlyTool,
 	isParallelSafeTool,
-	isReadOnlyTool,
 	pathScopesOverlap,
 } from "../tools/parallel-execution.js";
 import { trackUsage } from "../tracking/cost-tracker.js";
@@ -539,16 +539,24 @@ export class ProviderTransport implements AgentTransport {
 					return dynamicToolError("Dynamic tool execution was blocked");
 				}
 				const message = "message" in outcome ? outcome.message : outcome;
+				const toolExecutionId =
+					"message" in outcome ? outcome.toolExecutionId : undefined;
+				const approvalRequestId =
+					"message" in outcome ? outcome.approvalRequestId : undefined;
+				const details =
+					message.details && (toolExecutionId || approvalRequestId)
+						? {
+								...message.details,
+								...(toolExecutionId ? { toolExecutionId } : {}),
+								...(approvalRequestId ? { approvalRequestId } : {}),
+							}
+						: message.details;
 				return {
 					content: message.content,
 					isError: "message" in outcome ? outcome.isError : message.isError,
-					details: message.details,
-					...("message" in outcome && outcome.toolExecutionId
-						? { toolExecutionId: outcome.toolExecutionId }
-						: {}),
-					...("message" in outcome && outcome.approvalRequestId
-						? { approvalRequestId: outcome.approvalRequestId }
-						: {}),
+					details,
+					...(toolExecutionId ? { toolExecutionId } : {}),
+					...(approvalRequestId ? { approvalRequestId } : {}),
 				};
 			};
 			const emitDynamicToolResult = (
@@ -1251,7 +1259,11 @@ export class ProviderTransport implements AgentTransport {
 				const isReadOnlyToolCall = (toolCall: ToolCall): boolean => {
 					const toolDef = toolDefinitionsByName.get(toolCall.name);
 					return toolDef
-						? isReadOnlyTool(toolDef.name, toolDef.annotations, toolDef.source)
+						? isParallelReadOnlyTool(
+								toolDef.name,
+								toolDef.annotations,
+								toolDef.source,
+							)
 						: false;
 				};
 				const isParallelSafeToolCall = (
@@ -1342,7 +1354,8 @@ export class ProviderTransport implements AgentTransport {
 				const isMcpParallelOptIn = (toolDef: AgentTool): boolean =>
 					toolDef.source?.type === "mcp" &&
 					toolDef.source.supportsParallelToolCalls === true &&
-					toolDef.annotations?.destructiveHint !== true;
+					toolDef.annotations?.destructiveHint !== true &&
+					isParallelSafeTool(toolDef.name, toolDef.annotations, toolDef.source);
 
 				const buildToolPhaseSummary = () =>
 					buildToolPhaseSummaryEvent(toolSchedulingDecisions.values());
@@ -1380,7 +1393,11 @@ export class ProviderTransport implements AgentTransport {
 						);
 						return (
 							!!toolDef &&
-							!isReadOnlyTool(toolDef.name, toolDef.annotations, toolDef.source)
+							!isParallelReadOnlyTool(
+								toolDef.name,
+								toolDef.annotations,
+								toolDef.source,
+							)
 						);
 					}).length;
 
@@ -1490,7 +1507,7 @@ export class ProviderTransport implements AgentTransport {
 						const toolDef = toolMetadataCache.get(execution.toolCall.name);
 						return (
 							!!toolDef &&
-							!isReadOnlyTool(
+							!isParallelReadOnlyTool(
 								toolDef.name,
 								toolDef.annotations,
 								toolDef.source,
@@ -1512,7 +1529,7 @@ export class ProviderTransport implements AgentTransport {
 					const toolDef = toolMetadataCache.get(execution.toolCall.name);
 					return (
 						!!toolDef &&
-						!isReadOnlyTool(
+						!isParallelReadOnlyTool(
 							toolDef.name,
 							toolDef.annotations,
 							toolDef.source,
@@ -1531,7 +1548,11 @@ export class ProviderTransport implements AgentTransport {
 					toolDef = toolMetadataCache.get(toolCall.name),
 				): boolean =>
 					!!toolDef &&
-					!isReadOnlyTool(toolDef.name, toolDef.annotations, toolDef.source) &&
+					!isParallelReadOnlyTool(
+						toolDef.name,
+						toolDef.annotations,
+						toolDef.source,
+					) &&
 					isParallelSafeTool(
 						toolDef.name,
 						toolDef.annotations,
@@ -2069,7 +2090,7 @@ export class ProviderTransport implements AgentTransport {
 						sanitizedExecutionArgs,
 					} = safetyVerdict;
 					const effectiveToolCallReadOnly =
-						isReadOnlyTool(tool.name, tool.annotations, tool.source) &&
+						isParallelReadOnlyTool(tool.name, tool.annotations, tool.source) &&
 						tool.annotations?.destructiveHint !== true;
 					const effectiveToolCallParallelSafe = isParallelSafeTool(
 						tool.name,

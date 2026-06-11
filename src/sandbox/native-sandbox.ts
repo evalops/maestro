@@ -25,8 +25,8 @@ import {
 	rmSync,
 	writeFileSync,
 } from "node:fs";
-import { platform } from "node:os";
-import { basename, dirname, isAbsolute, join, resolve } from "node:path";
+import { homedir, platform } from "node:os";
+import { basename, dirname, isAbsolute, join, parse, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { isPathWithin } from "../utils/path-containment.js";
@@ -54,6 +54,8 @@ export interface NativeSandboxPolicy {
 	excludeTmpdir?: boolean;
 	/** Exclude /tmp from writable roots */
 	excludeSlashTmp?: boolean;
+	/** Additional files or directories that sandboxed code may not read */
+	denyRead?: string[];
 }
 
 export interface WritableRoot {
@@ -193,6 +195,8 @@ const SEATBELT_NETWORK_POLICY = `
 
 const SEATBELT_EXECUTABLE = "/usr/bin/sandbox-exec";
 const SANDBOX_ENV_VAR = "MAESTRO_SANDBOX";
+const LINUX_NATIVE_UNIMPLEMENTED_MESSAGE =
+	"Linux native sandbox enforcement is not implemented in the TypeScript runtime. Refusing to run unsandboxed.";
 
 // ─────────────────────────────────────────────────────────────
 // Helper Functions
@@ -334,6 +338,89 @@ function isSymbolicLinkPath(path: string): boolean {
 	}
 }
 
+function uniqueCanonicalPaths(paths: string[]): string[] {
+	return [...new Set(paths.map((path) => canonicalizeForAccess(path)))];
+}
+
+function getDefaultDenyReadRoots(): string[] {
+	const home = homedir();
+	return [
+		join(home, ".aws"),
+		join(home, ".ssh"),
+		join(home, ".config", "gh"),
+		join(home, ".netrc"),
+		join(home, ".codex"),
+		join(home, ".claude"),
+		join(home, ".maestro"),
+		join(home, ".config", "maestro"),
+		join(home, ".config", "evalops"),
+	];
+}
+
+function getConfiguredDenyReadRoots(
+	policy: NativeSandboxPolicy,
+	cwd: string,
+): string[] {
+	if (policy.mode === "danger-full-access") {
+		return [];
+	}
+	return uniqueCanonicalPaths(
+		(policy.denyRead ?? []).map((path) =>
+			isAbsolute(path) ? resolve(path) : resolve(cwd, path),
+		),
+	);
+}
+
+function getDefaultDenyReadCarveOutRoots(
+	policy: NativeSandboxPolicy,
+	cwd: string,
+): string[] {
+	if (policy.mode === "danger-full-access") {
+		return [];
+	}
+	if (policy.mode === "workspace-write") {
+		return uniqueCanonicalPaths(
+			getWritableRootsWithCwd(policy, cwd).map((root) => root.root),
+		);
+	}
+	return uniqueCanonicalPaths([cwd, ...(policy.writableRoots ?? [])]);
+}
+
+function getDefaultDenyReadRootsWithCarveOuts(
+	policy: NativeSandboxPolicy,
+	cwd: string,
+): Array<{ root: string; carveOutRoots: string[] }> {
+	if (policy.mode === "danger-full-access") {
+		return [];
+	}
+
+	const carveOutRoots = getDefaultDenyReadCarveOutRoots(policy, cwd);
+	return uniqueCanonicalPaths(getDefaultDenyReadRoots()).map((root) => ({
+		root,
+		carveOutRoots: carveOutRoots.filter((carveOutRoot) =>
+			isPathWithin(carveOutRoot, root),
+		),
+	}));
+}
+
+function getReadableRootsWithCwd(
+	policy: NativeSandboxPolicy,
+	cwd: string,
+): string[] {
+	if (policy.mode === "danger-full-access") {
+		return [];
+	}
+	if (policy.mode === "workspace-write") {
+		return uniqueCanonicalPaths(
+			getWritableRootsWithCwd(policy, cwd).map((root) => root.root),
+		);
+	}
+	if (policy.mode === "read-only") {
+		return [parse(cwd).root];
+	}
+	return uniqueCanonicalPaths([cwd, ...(policy.writableRoots ?? [])]);
+}
+
 // ─────────────────────────────────────────────────────────────
 // Seatbelt Implementation (macOS)
 // ─────────────────────────────────────────────────────────────
@@ -385,6 +472,36 @@ function createSeatbeltArgs(
 	// Always allow file reads - the difference between modes is about WRITE permissions
 	const fileReadPolicy =
 		"; allow read-only file operations\n(allow file-read*)";
+	const deniedReadParams: [string, string][] = [];
+	const deniedReadPolicies: string[] = [];
+
+	for (const deniedRoot of getConfiguredDenyReadRoots(policy, cwd)) {
+		const denyParam = `DENY_READ_${deniedReadParams.length}`;
+		deniedReadParams.push([denyParam, deniedRoot]);
+		deniedReadPolicies.push(`(subpath (param "${denyParam}"))`);
+	}
+
+	for (const deniedRoot of getDefaultDenyReadRootsWithCarveOuts(policy, cwd)) {
+		const denyParam = `DENY_READ_${deniedReadParams.length}`;
+		deniedReadParams.push([denyParam, deniedRoot.root]);
+
+		if (deniedRoot.carveOutRoots.length === 0) {
+			deniedReadPolicies.push(`(subpath (param "${denyParam}"))`);
+			continue;
+		}
+
+		const requireParts = [`(subpath (param "${denyParam}"))`];
+		for (const carveOutRoot of deniedRoot.carveOutRoots) {
+			const carveOutParam = `DENY_READ_EXEMPT_${deniedReadParams.length}`;
+			deniedReadParams.push([carveOutParam, carveOutRoot]);
+			requireParts.push(`(require-not (subpath (param "${carveOutParam}")))`);
+		}
+		deniedReadPolicies.push(`(require-all ${requireParts.join(" ")} )`);
+	}
+	const denyReadPolicy =
+		deniedReadPolicies.length > 0
+			? `(deny file-read*\n${deniedReadPolicies.join(" ")}\n)`
+			: "";
 
 	const networkPolicy = policy.networkAccess ? SEATBELT_NETWORK_POLICY : "";
 
@@ -394,12 +511,14 @@ function createSeatbeltArgs(
 		params.push(["DARWIN_USER_CACHE_DIR", canonicalize(darwinCacheDir)]);
 	}
 
-	const fullPolicy = `${SEATBELT_BASE_POLICY}\n${fileReadPolicy}\n${fileWritePolicy}\n${networkPolicy}`;
+	// Keep specific read denies after the blanket read allow so denied roots
+	// still win under Seatbelt's rule-matching semantics.
+	const fullPolicy = `${SEATBELT_BASE_POLICY}\n${fileReadPolicy}\n${denyReadPolicy}\n${fileWritePolicy}\n${networkPolicy}`;
 
 	const args = ["-p", fullPolicy];
 
 	// Add parameter definitions
-	for (const [key, value] of params) {
+	for (const [key, value] of [...params, ...deniedReadParams]) {
 		args.push(`-D${key}=${value}`);
 	}
 
@@ -431,19 +550,8 @@ export class NativeSandbox implements Sandbox {
 			);
 		}
 
-		// On Linux, we would verify Landlock support here
 		if (platform() === "linux") {
-			// Check for Landlock support by reading /sys/kernel/security/lsm
-			try {
-				const lsm = readFileSync("/sys/kernel/security/lsm", "utf-8");
-				if (!lsm.includes("landlock")) {
-					console.warn(
-						"[native-sandbox] Landlock not available on this Linux system",
-					);
-				}
-			} catch {
-				console.warn("[native-sandbox] Could not verify Landlock support");
-			}
+			console.warn(`[native-sandbox] ${LINUX_NATIVE_UNIMPLEMENTED_MESSAGE}`);
 		}
 	}
 
@@ -481,23 +589,15 @@ export class NativeSandbox implements Sandbox {
 					env: mergedEnv,
 				});
 			} else if (platform() === "linux") {
-				// On Linux, spawn directly (Landlock would need kernel support or helper binary)
-				console.warn(
-					"[native-sandbox] Linux native sandbox requires Landlock helper binary",
-				);
-				child = spawn("sh", ["-c", command], {
-					cwd: workingDir,
-					env: mergedEnv,
-				});
+				reject(new Error(LINUX_NATIVE_UNIMPLEMENTED_MESSAGE));
+				return;
 			} else {
-				// Unsupported platform
-				console.warn(
-					`[native-sandbox] Platform ${platform()} not supported, running unsandboxed`,
+				reject(
+					new Error(
+						`Native sandbox is not supported on platform ${platform()}. Refusing to run unsandboxed.`,
+					),
 				);
-				child = spawn("sh", ["-c", command], {
-					cwd: workingDir,
-					env: mergedEnv,
-				});
+				return;
 			}
 
 			this.activeProcesses.add(child);
@@ -562,15 +662,15 @@ export class NativeSandbox implements Sandbox {
 				);
 				child = spawn(SEATBELT_EXECUTABLE, seatbeltArgs, mergedOptions);
 			} else if (platform() === "linux") {
-				console.warn(
-					"[native-sandbox] Linux native sandbox requires Landlock helper binary",
-				);
-				child = spawn(command, args, mergedOptions);
+				reject(new Error(LINUX_NATIVE_UNIMPLEMENTED_MESSAGE));
+				return;
 			} else {
-				console.warn(
-					`[native-sandbox] Platform ${platform()} not supported, running unsandboxed`,
+				reject(
+					new Error(
+						`Native sandbox is not supported on platform ${platform()}. Refusing to run unsandboxed.`,
+					),
 				);
-				child = spawn(command, args, mergedOptions);
+				return;
 			}
 
 			this.activeProcesses.add(child);
@@ -607,7 +707,8 @@ export class NativeSandbox implements Sandbox {
 	 */
 	async readFile(path: string): Promise<string> {
 		const fullPath = this.resolvePath(path);
-		return readFileSync(fullPath, "utf-8");
+		const checkedPath = this.assertReadablePath(fullPath);
+		return readFileSync(checkedPath, "utf-8");
 	}
 
 	/**
@@ -619,15 +720,15 @@ export class NativeSandbox implements Sandbox {
 		}
 
 		const fullPath = this.resolvePath(path);
-		this.assertWritablePath(fullPath);
+		const checkedPath = this.assertWritablePath(fullPath);
 
 		// Ensure parent directory exists
-		const dir = dirname(fullPath);
+		const dir = dirname(checkedPath);
 		if (!existsSync(dir)) {
 			mkdirSync(dir, { recursive: true });
 		}
 
-		writeFileSync(fullPath, content, "utf-8");
+		writeFileSync(checkedPath, content, "utf-8");
 	}
 
 	/**
@@ -635,7 +736,8 @@ export class NativeSandbox implements Sandbox {
 	 */
 	async exists(path: string): Promise<boolean> {
 		const fullPath = this.resolvePath(path);
-		return existsSync(fullPath);
+		const checkedPath = this.assertReadablePath(fullPath);
+		return existsSync(checkedPath);
 	}
 
 	/**
@@ -643,7 +745,8 @@ export class NativeSandbox implements Sandbox {
 	 */
 	async list(path: string): Promise<string[]> {
 		const fullPath = this.resolvePath(path);
-		return readdirSync(fullPath);
+		const checkedPath = this.assertReadablePath(fullPath);
+		return readdirSync(checkedPath);
 	}
 
 	/**
@@ -676,9 +779,50 @@ export class NativeSandbox implements Sandbox {
 	private resolvePath(path: string): string {
 		// If absolute, use as-is; otherwise resolve relative to cwd
 		if (isAbsolute(path)) {
-			return path;
+			return resolve(path);
 		}
-		return join(this.cwd, path);
+		return resolve(this.cwd, path);
+	}
+
+	private assertReadablePath(path: string): string {
+		const targetPath = canonicalizeForAccess(path);
+
+		if (this.policy.mode === "danger-full-access") {
+			return targetPath;
+		}
+
+		const readableRoots = getReadableRootsWithCwd(this.policy, this.cwd);
+		for (const deniedRoot of getConfiguredDenyReadRoots(
+			this.policy,
+			this.cwd,
+		)) {
+			if (isPathWithin(targetPath, deniedRoot)) {
+				throw new Error(`Sandbox read denied: ${path}`);
+			}
+		}
+
+		for (const deniedRoot of getDefaultDenyReadRootsWithCarveOuts(
+			this.policy,
+			this.cwd,
+		)) {
+			if (!isPathWithin(targetPath, deniedRoot.root)) {
+				continue;
+			}
+			if (
+				deniedRoot.carveOutRoots.some((carveOutRoot) =>
+					isPathWithin(targetPath, carveOutRoot),
+				)
+			) {
+				continue;
+			}
+			throw new Error(`Sandbox read denied: ${path}`);
+		}
+
+		if (readableRoots.some((root) => isPathWithin(targetPath, root))) {
+			return targetPath;
+		}
+
+		throw new Error(`Sandbox read outside allowed roots: ${path}`);
 	}
 
 	private resolveWorkingDir(cwd?: string | URL): string {
@@ -717,9 +861,9 @@ export class NativeSandbox implements Sandbox {
 			blockReadOnlyDescendants?: boolean;
 			canonicalizeTarget?: (path: string) => string;
 		},
-	): void {
+	): string {
 		if (this.policy.mode === "danger-full-access") {
-			return;
+			return canonicalizeForAccess(path);
 		}
 
 		const targetPath = (options?.canonicalizeTarget ?? canonicalizeForAccess)(
@@ -755,6 +899,8 @@ export class NativeSandbox implements Sandbox {
 				`Cannot write outside writable roots in ${this.policy.mode} sandbox mode: ${path}`,
 			);
 		}
+
+		return targetPath;
 	}
 
 	private getSandboxType(): string {

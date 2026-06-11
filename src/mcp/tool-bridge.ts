@@ -13,7 +13,7 @@ import { createTool } from "../tools/tool-dsl.js";
 import { promptSafeText } from "../utils/prompt-safe-text.js";
 import { mcpManager } from "./manager.js";
 import type { McpToolCallResult } from "./manager.js";
-import { buildMcpToolName } from "./names.js";
+import { buildMcpToolCanonicalNames, buildMcpToolName } from "./names.js";
 import { classifyToolCapability } from "./tool-capabilities.js";
 import type { McpToolParallelSafety } from "./types.js";
 
@@ -419,11 +419,13 @@ export function createMcpToolWrapper(
 	serverName: string,
 	mcpTool: McpTool,
 	options?: {
+		canonicalName?: string;
 		supportsParallelToolCalls?: boolean;
 		parallelSafety?: McpToolParallelSafety;
 	},
 ) {
-	const toolName = buildMcpToolName(serverName, mcpTool.name);
+	const toolName =
+		options?.canonicalName ?? buildMcpToolName(serverName, mcpTool.name);
 	const schema = mcpTool.inputSchema
 		? convertJsonSchemaToTypebox(mcpTool.inputSchema)
 		: Type.Object({});
@@ -520,38 +522,42 @@ export function createMcpToolWrapper(
 	});
 }
 
+function createMcpToolWrappers(
+	mcpTools: ReturnType<typeof mcpManager.getAllTools>,
+): AgentTool[] {
+	const canonicalNames = buildMcpToolCanonicalNames(
+		mcpTools,
+		({ server }) => server,
+		({ tool }) => tool.name,
+	);
+
+	return mcpTools.map(
+		({ server, tool, supportsParallelToolCalls, parallelSafety }, index) => {
+			const wrapper = createMcpToolWrapper(server, tool, {
+				canonicalName:
+					canonicalNames[index] ?? buildMcpToolName(server, tool.name),
+				supportsParallelToolCalls,
+				parallelSafety,
+			});
+			return wrapper;
+		},
+	);
+}
+
 export function getAllMcpTools(): AgentTool[] {
 	const mcpTools = mcpManager.getAllTools();
-	return [
-		...mcpTools.map(
-			({ server, tool, supportsParallelToolCalls, parallelSafety }) =>
-				createMcpToolWrapper(server, tool, {
-					supportsParallelToolCalls,
-					parallelSafety,
-				}),
-		),
-		...getMcpHelperTools(),
-	];
+	return [...createMcpToolWrappers(mcpTools), ...getMcpHelperTools()];
 }
 
 export function getMcpToolMap(): Map<string, AgentTool> {
 	const map = new Map<string, AgentTool>();
-	const mcpTools = mcpManager.getAllTools();
+	const wrappers = createMcpToolWrappers(mcpManager.getAllTools());
 
 	for (const tool of getMcpHelperTools()) {
 		map.set(tool.name, tool);
 	}
 
-	for (const {
-		server,
-		tool,
-		supportsParallelToolCalls,
-		parallelSafety,
-	} of mcpTools) {
-		const wrapper = createMcpToolWrapper(server, tool, {
-			supportsParallelToolCalls,
-			parallelSafety,
-		});
+	for (const wrapper of wrappers) {
 		map.set(wrapper.name, wrapper);
 	}
 

@@ -13,6 +13,7 @@
  */
 
 import { createLogger } from "../utils/logger.js";
+import { normalizeToolNameForSafety } from "../utils/safety-normalization.js";
 
 const logger = createLogger("agent:subagent-specs");
 
@@ -191,14 +192,17 @@ export function isToolAllowed(
 	const spec = customSpec
 		? { ...SUBAGENT_SPECS[type], ...customSpec }
 		: SUBAGENT_SPECS[type];
+	const normalizedToolName = normalizeToolNameForSafety(toolName);
+	const deniedTools = spec.deniedTools?.map(normalizeToolNameForSafety) ?? [];
+	const allowedTools = spec.allowedTools.map(normalizeToolNameForSafety);
 
 	// Denied tools take precedence
-	if (spec.deniedTools?.includes(toolName)) {
+	if (deniedTools.includes(normalizedToolName)) {
 		return false;
 	}
 
 	// Check if in allowed list
-	return spec.allowedTools.includes(toolName);
+	return allowedTools.includes(normalizedToolName);
 }
 
 /**
@@ -212,14 +216,17 @@ export function getAllowedTools(
 		? { ...SUBAGENT_SPECS[type], ...customSpec }
 		: SUBAGENT_SPECS[type];
 
-	let tools = [...spec.allowedTools];
+	let tools = spec.allowedTools.map(normalizeToolNameForSafety);
 
 	// Remove denied tools
 	if (spec.deniedTools) {
-		tools = tools.filter((t) => !spec.deniedTools?.includes(t));
+		const deniedTools = new Set(
+			spec.deniedTools.map(normalizeToolNameForSafety),
+		);
+		tools = tools.filter((t) => !deniedTools.has(t));
 	}
 
-	return tools;
+	return [...new Set(tools)];
 }
 
 /**
@@ -233,7 +240,7 @@ export function filterToolsForSubagent<T extends { name: string }>(
 	const allowedTools = getAllowedTools(type, customSpec);
 
 	return tools.filter((tool) => {
-		const toolName = tool.name.toLowerCase().replace(/-/g, "_");
+		const toolName = normalizeToolNameForSafety(tool.name);
 		return allowedTools.includes(toolName);
 	});
 }
@@ -262,7 +269,7 @@ export function setCurrentSubagentType(type: SubagentType): void {
  * Parse subagent type from string.
  */
 export function parseSubagentType(typeStr: string): SubagentType | null {
-	const normalized = typeStr.toLowerCase().trim();
+	const normalized = normalizeToolNameForSafety(typeStr);
 	if (normalized in SUBAGENT_SPECS) {
 		return normalized as SubagentType;
 	}

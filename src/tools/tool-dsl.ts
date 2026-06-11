@@ -320,6 +320,7 @@ export function createTool<Schema extends TSchema, Details = undefined>(
 
 import { getHomeDir } from "../utils/path-expansion.js";
 import { expandUserPath as expandUserPathBase } from "../utils/path-validation.js";
+import { resolveShellEnvironment } from "../utils/shell-env.js";
 
 // Re-export shared path expansion utility to keep tool-dsl API stable
 export const expandUserPath = expandUserPathBase;
@@ -328,9 +329,15 @@ export const expandUserPath = expandUserPathBase;
  * Interpolate environment variables and context in a string.
  * Supports: ${env.VAR}, ${cwd}, ${home}
  */
-export function interpolateContext(value: string): string {
+export function interpolateContext(
+	value: string,
+	envOverrides?: Record<string, string>,
+): string {
+	const env = resolveShellEnvironment(envOverrides, {
+		workspaceDir: process.cwd(),
+	});
 	return value
-		.replace(/\$\{env\.([^}]+)\}/g, (_, varName) => process.env[varName] ?? "")
+		.replace(/\$\{env\.([^}]+)\}/g, (_, varName) => env[varName] ?? "")
 		.replace(/\$\{cwd\}/g, process.cwd())
 		.replace(/\$\{home\}/g, getHomeDir());
 }

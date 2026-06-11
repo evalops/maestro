@@ -186,6 +186,16 @@ describe("bash tool", () => {
 			expect(output).toContain("test_value");
 		});
 
+		it("uses custom environment variables during interpolation", async () => {
+			const result = await bashTool.execute("bash-env-interpolation", {
+				command: 'echo "Value: ${env.MY_VAR}"',
+				env: { MY_VAR: "interpolated_value" },
+			});
+
+			const output = getTextOutput(result);
+			expect(output).toContain("interpolated_value");
+		});
+
 		it("inherits existing environment", async () => {
 			const result = await bashTool.execute("bash-8", {
 				command: 'echo "Home: $HOME"',

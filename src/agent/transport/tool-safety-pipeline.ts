@@ -37,6 +37,7 @@ import {
 } from "../../utils/tool-use-summary.js";
 import type {
 	ActionApprovalDecision,
+	ActionApprovalRequest,
 	ActionApprovalService,
 	ActionFirewallVerdict,
 } from "../action-approval.js";
@@ -817,6 +818,8 @@ export async function* evaluateToolSafety(
 	) {
 		const localApprovalReason =
 			verdict.action === "require_approval" ? verdict.reason : undefined;
+		let hookRewriteApprovalReason: string | undefined;
+		let permissionHookRewroteInput = false;
 		let permissionHookMadeDecision = false;
 		if (hookService?.runPermissionRequestHooks) {
 			const permissionHookResult = await hookService.runPermissionRequestHooks(
@@ -829,6 +832,7 @@ export async function* evaluateToolSafety(
 				signal,
 			);
 			if (permissionHookResult.updatedInput && !guardedFileApprovalRequired) {
+				permissionHookRewroteInput = true;
 				effectiveToolCall = {
 					...effectiveToolCall,
 					arguments: permissionHookResult.updatedInput,
@@ -858,6 +862,16 @@ export async function* evaluateToolSafety(
 						rateLimitUpdate: blocked.rateLimitUpdate,
 					};
 				}
+				// If the re-evaluated verdict now requires approval, honour it:
+				// a hook must not self-approve args it just mutated into a
+				// require_approval outcome (fixes #2538 approval-bypass).
+				hookRewriteApprovalReason =
+					rewrittenVerdict.action === "require_approval" &&
+					verdict.action !== "require_approval"
+						? (rewrittenVerdict.reason ??
+							localApprovalReason ??
+							"Approval required after hook arg rewrite")
+						: undefined;
 				const guardedMatch = findGuardedToolCallMatch(
 					effectiveToolCall.name,
 					effectiveToolCall.arguments,
@@ -884,7 +898,9 @@ export async function* evaluateToolSafety(
 				}
 			}
 			if (permissionHookResult.decision === "allow") {
-				if (!guardedFileApprovalRequired) {
+				// Only allow the hook to self-approve if the (potentially rewritten)
+				// args do NOT require approval per the firewall — prevents #2538.
+				if (!guardedFileApprovalRequired && !hookRewriteApprovalReason) {
 					permissionHookMadeDecision = true;
 					approvalAllowed = true;
 					approvalReason = permissionHookResult.decisionReason;
@@ -931,7 +947,7 @@ export async function* evaluateToolSafety(
 		) {
 			approvalAllowed = false;
 			if (!permissionHookMadeDecision) {
-				approvalReason = `${guardedFileApprovalReason ?? localApprovalReason ?? "Guarded file access requires explicit approval"} Approval mode must be prompt for guarded file access.`;
+				approvalReason = `${guardedFileApprovalReason ?? hookRewriteApprovalReason ?? localApprovalReason ?? "Guarded file access requires explicit approval"} Approval mode must be prompt for guarded file access.`;
 			}
 			const sanitizedApprovalArgs = safetyMiddleware.sanitizeForLogging(
 				effectiveToolCall.arguments as Record<string, unknown>,
@@ -966,20 +982,29 @@ export async function* evaluateToolSafety(
 			const sanitizedApprovalArgs = safetyMiddleware.sanitizeForLogging(
 				effectiveToolCall.arguments as Record<string, unknown>,
 			);
-			const request =
-				!guardedFileApprovalRequired && platformApprovalRequest
-					? platformApprovalRequest
-					: ({
-							id: toolCall.id,
-							toolName: toolCall.name,
-							...describeArgs(sanitizedApprovalArgs),
-							args: sanitizedApprovalArgs,
-							reason:
-								guardedFileApprovalReason ??
-								localApprovalReason ??
-								"Approval required",
-							startedAtMs: clock.now(),
-						} satisfies import("../action-approval.js").ActionApprovalRequest);
+			const shouldReusePlatformApprovalRequest =
+				!guardedFileApprovalRequired &&
+				platformApprovalRequest !== undefined &&
+				!permissionHookRewroteInput;
+			let request: ActionApprovalRequest;
+			if (shouldReusePlatformApprovalRequest && platformApprovalRequest) {
+				request = platformApprovalRequest;
+			} else {
+				request = {
+					id: platformApprovalRequest?.id ?? toolCall.id,
+					toolName: effectiveToolCall.name,
+					...describeArgs(sanitizedApprovalArgs),
+					args: sanitizedApprovalArgs,
+					reason:
+						guardedFileApprovalReason ??
+						hookRewriteApprovalReason ??
+						localApprovalReason ??
+						platformApprovalRequest?.reason ??
+						"Approval required",
+					startedAtMs: platformApprovalRequest?.startedAtMs ?? clock.now(),
+					platform: platformApprovalRequest?.platform,
+				};
+			}
 			const shouldEmitEvents = approvalService.requiresUserInteraction();
 			const decisionPromise = approvalService.requestApproval(
 				request,
@@ -1063,7 +1088,8 @@ export async function* evaluateToolSafety(
 
 			if (!decision.approved) {
 				approvalAllowed = false;
-				approvalReason = decision.reason ?? localApprovalReason;
+				approvalReason =
+					decision.reason ?? hookRewriteApprovalReason ?? localApprovalReason;
 			}
 		}
 	}

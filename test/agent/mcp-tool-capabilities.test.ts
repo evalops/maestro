@@ -62,6 +62,20 @@ describe("MCP tool capability contract", () => {
 		});
 	});
 
+	it("does not let generic MCP read-only hints lower risk", () => {
+		expect(
+			classifyToolCapability({
+				server: "generic-mcp",
+				toolName: "delete_record",
+				annotations: { readOnlyHint: true },
+			}),
+		).toMatchObject({
+			domain: "unknown",
+			toolLane: "unknown",
+			riskClass: "medium",
+		});
+	});
+
 	it("recognizes configured Fathom server aliases", () => {
 		const previousName = process.env.MAESTRO_FATHOM_CUA_MCP_NAME;
 		process.env.MAESTRO_FATHOM_CUA_MCP_NAME = "desktop-cua";

@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { mcpManager } from "../../src/mcp/manager.js";
-import { getAllMcpTools } from "../../src/mcp/tool-bridge.js";
+import { buildMcpToolCollisionName } from "../../src/mcp/names.js";
+import { getAllMcpTools, getMcpToolMap } from "../../src/mcp/tool-bridge.js";
 
 vi.mock("../../src/mcp/manager.js", () => ({
 	mcpManager: {
@@ -81,5 +82,47 @@ describe("MCP helper tools", () => {
 		expect(result.content[0]?.text).toContain("Description: Summarize docs");
 		expect(result.content[0]?.text).toContain("[user]");
 		expect(result.content[0]?.text).toContain("Summarize MCP");
+	});
+
+	it("preserves colliding sanitized MCP tool names in the tool map", () => {
+		vi.mocked(mcpManager.getAllTools).mockReturnValue([
+			{
+				server: "docs",
+				tool: {
+					name: "read",
+					inputSchema: { type: "object" },
+				},
+				supportsParallelToolCalls: false,
+				parallelSafety: {
+					supportsParallelToolCalls: false,
+					provenance: "none",
+				},
+			},
+			{
+				server: "docs",
+				tool: {
+					name: "read",
+					inputSchema: { type: "object" },
+				},
+				supportsParallelToolCalls: false,
+				parallelSafety: {
+					supportsParallelToolCalls: false,
+					provenance: "none",
+				},
+			},
+		]);
+
+		const toolNames = [...getMcpToolMap().keys()].filter((name) =>
+			name.startsWith("mcp__docs__read"),
+		);
+
+		expect(toolNames).toHaveLength(2);
+		expect(new Set(toolNames).size).toBe(2);
+		expect(toolNames).toContain(
+			`${buildMcpToolCollisionName("docs", "read")}1_`,
+		);
+		expect(toolNames).toContain(
+			`${buildMcpToolCollisionName("docs", "read")}2_`,
+		);
 	});
 });

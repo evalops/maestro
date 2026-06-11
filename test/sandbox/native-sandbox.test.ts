@@ -7,13 +7,14 @@
 import {
 	existsSync,
 	mkdirSync,
+	readFileSync,
 	rmSync,
 	symlinkSync,
 	writeFileSync,
 } from "node:fs";
-import { platform } from "node:os";
+import { homedir, platform } from "node:os";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { createSandbox } from "../../src/sandbox/index.js";
@@ -120,6 +121,28 @@ describe("Native Sandbox", () => {
 				await sandbox.dispose();
 			});
 
+			it("allows parent-process reads from implicit tmp roots", async () => {
+				const tmpWorkspace = join(tmpdir(), `sandbox-parent-tmp-${Date.now()}`);
+				const tmpDir = join(tmpWorkspace, "nested");
+				const tmpFile = join(tmpDir, "tmp.txt");
+				mkdirSync(tmpDir, { recursive: true });
+				const sandbox = createNativeSandbox(
+					{ mode: "workspace-write" },
+					testDir,
+				);
+				await sandbox.initialize();
+
+				try {
+					await sandbox.writeFile(tmpFile, "tmp content");
+					expect(await sandbox.readFile(tmpFile)).toBe("tmp content");
+					expect(await sandbox.exists(tmpFile)).toBe(true);
+					expect(await sandbox.list(tmpDir)).toContain("tmp.txt");
+				} finally {
+					await sandbox.dispose();
+					rmSync(tmpWorkspace, { recursive: true, force: true });
+				}
+			});
+
 			it("blocks command cwd outside workspace-write execution roots", async () => {
 				const outsideDir = join(tmpdir(), `sandbox-cwd-outside-${Date.now()}`);
 				mkdirSync(outsideDir, { recursive: true });
@@ -144,6 +167,8 @@ describe("Native Sandbox", () => {
 			});
 
 			it("allows command cwd inside implicit tmp roots", async () => {
+				if (!isNativeSandboxAvailable()) return;
+
 				const tmpWorkspace = join(tmpdir(), `sandbox-cwd-tmp-${Date.now()}`);
 				mkdirSync(tmpWorkspace, { recursive: true });
 				const sandbox = createNativeSandbox(
@@ -213,6 +238,35 @@ describe("Native Sandbox", () => {
 						"Cannot write outside writable roots in workspace-write sandbox mode",
 					);
 					expect(existsSync(outsidePath)).toBe(false);
+				} finally {
+					await sandbox.dispose();
+					rmSync(outsideDir, { recursive: true, force: true });
+				}
+			});
+
+			it("blocks parent-process writes through final symlinks outside writable roots", async () => {
+				const outsideDir = join(tmpdir(), `sandbox-link-target-${Date.now()}`);
+				mkdirSync(outsideDir, { recursive: true });
+				const outsidePath = join(outsideDir, "target.txt");
+				writeFileSync(outsidePath, "keep me", "utf-8");
+				symlinkSync(outsidePath, join(testDir, "outside-final-link.txt"));
+				const sandbox = createNativeSandbox(
+					{
+						mode: "workspace-write",
+						excludeSlashTmp: true,
+						excludeTmpdir: true,
+					},
+					testDir,
+				);
+				await sandbox.initialize();
+
+				try {
+					await expect(
+						sandbox.writeFile("outside-final-link.txt", "blocked"),
+					).rejects.toThrow(
+						"Cannot write outside writable roots in workspace-write sandbox mode",
+					);
+					expect(readFileSync(outsidePath, "utf-8")).toBe("keep me");
 				} finally {
 					await sandbox.dispose();
 					rmSync(outsideDir, { recursive: true, force: true });
@@ -345,6 +399,93 @@ describe("Native Sandbox", () => {
 				await sandbox.dispose();
 			});
 
+			it("allows full-disk reads in read-only mode", async () => {
+				const outsideFile = join(tmpdir(), `sandbox-outside-${Date.now()}`);
+				writeFileSync(outsideFile, "outside", "utf-8");
+				const sandbox = createNativeSandbox({ mode: "read-only" }, testDir);
+				await sandbox.initialize();
+
+				try {
+					expect(await sandbox.readFile(outsideFile)).toBe("outside");
+				} finally {
+					rmSync(outsideFile, { force: true });
+					await sandbox.dispose();
+				}
+			});
+
+			it("denies configured read-deny paths inside allowed roots", async () => {
+				const secretFile = join(testDir, "secret.txt");
+				writeFileSync(secretFile, "secret", "utf-8");
+				const sandbox = createNativeSandbox(
+					{ mode: "workspace-write", denyRead: ["secret.txt"] },
+					testDir,
+				);
+				await sandbox.initialize();
+
+				await expect(sandbox.readFile("secret.txt")).rejects.toThrow(
+					/Sandbox read denied/,
+				);
+
+				await sandbox.dispose();
+			});
+
+			it("allows workspace reads under default denied roots", async () => {
+				const workspaceRoot = join(
+					homedir(),
+					".maestro",
+					`native-sandbox-workspace-${Date.now()}`,
+				);
+				const nestedDir = join(workspaceRoot, "nested");
+				const workspaceFile = join(nestedDir, "workspace.txt");
+				mkdirSync(nestedDir, { recursive: true });
+				writeFileSync(workspaceFile, "workspace", "utf-8");
+				const sandbox = createNativeSandbox(
+					{
+						mode: "workspace-write",
+						excludeSlashTmp: true,
+						excludeTmpdir: true,
+					},
+					workspaceRoot,
+				);
+				await sandbox.initialize();
+
+				try {
+					expect(await sandbox.readFile("nested/workspace.txt")).toBe(
+						"workspace",
+					);
+					expect(await sandbox.exists("nested/workspace.txt")).toBe(true);
+					expect(await sandbox.list("nested")).toContain("workspace.txt");
+				} finally {
+					await sandbox.dispose();
+					rmSync(workspaceRoot, { recursive: true, force: true });
+				}
+			});
+
+			it("can read default temp writable roots through file APIs", async () => {
+				const tempFile = join(
+					"/tmp",
+					`sandbox-default-temp-read-${process.pid}-${Date.now()}.txt`,
+				);
+				const sandbox = createNativeSandbox(
+					{ mode: "workspace-write" },
+					testDir,
+				);
+				await sandbox.initialize();
+
+				try {
+					await sandbox.writeFile(tempFile, "temporary");
+
+					expect(await sandbox.exists(tempFile)).toBe(true);
+					expect(await sandbox.readFile(tempFile)).toBe("temporary");
+					expect(await sandbox.list(dirname(tempFile))).toContain(
+						basename(tempFile),
+					);
+				} finally {
+					rmSync(tempFile, { force: true });
+					await sandbox.dispose();
+				}
+			});
+
 			it("checks file existence", async () => {
 				const testFile = join(testDir, "existing.txt");
 				writeFileSync(testFile, "exists", "utf-8");
@@ -470,6 +611,8 @@ describe("Native Sandbox", () => {
 
 		describe("command execution", () => {
 			it("executes simple commands", async () => {
+				if (!isNativeSandboxAvailable()) return;
+
 				const sandbox = createNativeSandbox(
 					{ mode: "workspace-write" },
 					testDir,
@@ -484,6 +627,8 @@ describe("Native Sandbox", () => {
 			});
 
 			it("captures stderr", async () => {
+				if (!isNativeSandboxAvailable()) return;
+
 				const sandbox = createNativeSandbox(
 					{ mode: "workspace-write" },
 					testDir,
@@ -498,6 +643,8 @@ describe("Native Sandbox", () => {
 			});
 
 			it("returns non-zero exit code on failure", async () => {
+				if (!isNativeSandboxAvailable()) return;
+
 				const sandbox = createNativeSandbox(
 					{ mode: "workspace-write" },
 					testDir,
@@ -511,6 +658,8 @@ describe("Native Sandbox", () => {
 			});
 
 			it("respects cwd parameter", async () => {
+				if (!isNativeSandboxAvailable()) return;
+
 				const subDir = join(testDir, "subdir");
 				mkdirSync(subDir);
 				writeFileSync(join(subDir, "marker.txt"), "found", "utf-8");
@@ -528,6 +677,8 @@ describe("Native Sandbox", () => {
 			});
 
 			it("respects URL cwd parameter in execWithArgs", async () => {
+				if (!isNativeSandboxAvailable()) return;
+
 				const subDir = join(testDir, "url-subdir");
 				mkdirSync(subDir);
 				writeFileSync(join(subDir, "marker.txt"), "found-url", "utf-8");
@@ -547,6 +698,8 @@ describe("Native Sandbox", () => {
 			});
 
 			it("passes environment variables", async () => {
+				if (!isNativeSandboxAvailable()) return;
+
 				const sandbox = createNativeSandbox(
 					{ mode: "workspace-write" },
 					testDir,
@@ -562,6 +715,8 @@ describe("Native Sandbox", () => {
 			});
 
 			it("sets MAESTRO_SANDBOX env var", async () => {
+				if (!isNativeSandboxAvailable()) return;
+
 				const sandbox = createNativeSandbox(
 					{ mode: "workspace-write" },
 					testDir,
@@ -578,6 +733,98 @@ describe("Native Sandbox", () => {
 				expect(result.stdout.trim()).toBe(expectedType);
 
 				await sandbox.dispose();
+			});
+
+			it("enforces denyRead for sandboxed command reads", async () => {
+				if (!isNativeSandboxAvailable()) return;
+
+				const secretFile = join(testDir, "command-secret.txt");
+				writeFileSync(secretFile, "secret", "utf-8");
+				const sandbox = createNativeSandbox(
+					{ mode: "workspace-write", denyRead: [secretFile] },
+					testDir,
+				);
+				await sandbox.initialize();
+
+				const result = await sandbox.exec("cat command-secret.txt");
+				expect(result.exitCode).not.toBe(0);
+
+				await sandbox.dispose();
+			});
+
+			it("allows sandboxed command reads under default denied roots", async () => {
+				if (!isNativeSandboxAvailable()) return;
+
+				const workspaceRoot = join(
+					homedir(),
+					".maestro",
+					`native-sandbox-command-workspace-${Date.now()}`,
+				);
+				const workspaceFile = join(workspaceRoot, "workspace.txt");
+				mkdirSync(workspaceRoot, { recursive: true });
+				writeFileSync(workspaceFile, "command-workspace", "utf-8");
+				const sandbox = createNativeSandbox(
+					{
+						mode: "workspace-write",
+						excludeSlashTmp: true,
+						excludeTmpdir: true,
+					},
+					workspaceRoot,
+				);
+				await sandbox.initialize();
+
+				try {
+					const result = await sandbox.exec("cat workspace.txt");
+					expect(result.exitCode).toBe(0);
+					expect(result.stdout.trim()).toBe("command-workspace");
+				} finally {
+					await sandbox.dispose();
+					rmSync(workspaceRoot, { recursive: true, force: true });
+				}
+			});
+
+			it("refuses to execute when native enforcement is unavailable", async () => {
+				if (isNativeSandboxAvailable()) return;
+
+				const sandbox = createNativeSandbox(
+					{ mode: "workspace-write" },
+					testDir,
+				);
+				await sandbox.initialize();
+
+				await expect(sandbox.exec("echo unsandboxed")).rejects.toThrow(
+					/Refusing to run unsandboxed|Native sandbox is not supported/,
+				);
+
+				await sandbox.dispose();
+			});
+
+			it("does not allow Linux workspace-write commands to write outside writable roots", async () => {
+				if (platform() !== "linux") return;
+
+				const probePath = join(
+					homedir(),
+					`maestro-native-sandbox-should-not-write-${Date.now()}`,
+				);
+				const sandbox = createNativeSandbox(
+					{
+						mode: "workspace-write",
+						excludeTmpdir: true,
+						excludeSlashTmp: true,
+					},
+					testDir,
+				);
+				await sandbox.initialize();
+
+				try {
+					await expect(
+						sandbox.exec(`printf blocked > ${JSON.stringify(probePath)}`),
+					).rejects.toThrow(/Refusing to run unsandboxed/);
+					expect(existsSync(probePath)).toBe(false);
+				} finally {
+					rmSync(probePath, { force: true });
+					await sandbox.dispose();
+				}
 			});
 		});
 
@@ -695,23 +942,32 @@ describe("Native Sandbox", () => {
 			await sandbox?.dispose();
 		});
 
-		it("falls back to local when native not available", async () => {
-			// This test is platform-dependent
-			// On unsupported platforms, native should fall back to local
-			const originalPlatform = process.platform;
+		it("fails closed when native backend mode is not available", async () => {
+			if (isNativeSandboxAvailable()) {
+				return;
+			}
 
-			// We can't easily mock platform(), so just verify the fallback logic exists
+			await expect(
+				createSandbox({
+					mode: "native",
+					cwd: testDir,
+				}),
+			).rejects.toThrow(/Refusing to fall back to unsandboxed execution/);
+		});
+
+		it("falls back to local only with explicit unsafe opt-in", async () => {
+			if (isNativeSandboxAvailable()) {
+				return;
+			}
+
 			const sandbox = await createSandbox({
 				mode: "native",
 				cwd: testDir,
+				allowUnsafeLocalFallback: true,
 			});
 
-			if (sandbox) {
-				// Should either be NativeSandbox or LocalSandbox
-				expect(sandbox.exec).toBeDefined();
-				expect(sandbox.dispose).toBeDefined();
-				await sandbox.dispose();
-			}
+			expect(sandbox?.exec).toBeDefined();
+			await sandbox?.dispose();
 		});
 	});
 });

@@ -1899,6 +1899,11 @@ fn provider_id(provider: AiProvider) -> &'static str {
         AiProvider::Google => "google",
         AiProvider::Groq => "groq",
         AiProvider::VertexAi => "vertex-ai",
+        AiProvider::DeepSeek => "deepseek",
+        AiProvider::Moonshot => "moonshot",
+        AiProvider::Qwen => "dashscope",
+        AiProvider::MiniMax => "minimax",
+        AiProvider::Zai => "zai",
     }
 }
 

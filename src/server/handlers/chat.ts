@@ -81,6 +81,7 @@ import {
 	ChatRequestSchema,
 	parseAndValidateJson,
 } from "../validation.js";
+import { verifySessionOwnership } from "./sessions.js";
 
 const logger = createLogger("web:chat");
 
@@ -292,6 +293,27 @@ export async function handleChat(
 				if (sessionFile) {
 					sessionManager.setSessionFile(sessionFile);
 					existingSessionLoaded = true;
+				}
+			}
+			if (existingSessionLoaded) {
+				const resumedSession = await sessionManager.loadSession(
+					chatReq.sessionId,
+					{
+						messagesView: "notLoaded",
+					},
+				);
+				if (
+					!resumedSession ||
+					!verifySessionOwnership(resumedSession, subject)
+				) {
+					sendJson(
+						res,
+						403,
+						{ error: "Access denied: session belongs to another user" },
+						cors,
+						req,
+					);
+					return;
 				}
 			}
 		}

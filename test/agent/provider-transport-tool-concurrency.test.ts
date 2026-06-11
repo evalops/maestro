@@ -265,10 +265,10 @@ describe("ProviderTransport tool scheduling", () => {
 
 		expect(phaseSummary).toMatchObject({
 			modelToolCallCount: 7,
-			schedulableWaveCount: 4,
-			parallelizedCallCount: 5,
+			schedulableWaveCount: 5,
+			parallelizedCallCount: 4,
 			blockedByMutationCount: 2,
-			mcpOptInCallCount: 2,
+			mcpOptInCallCount: 0,
 			cacheHitCount: 0,
 		});
 		expect(phaseSummary?.decisions).toEqual(
@@ -295,8 +295,8 @@ describe("ProviderTransport tool scheduling", () => {
 				}),
 				expect.objectContaining({
 					toolCallId: "trusted-2",
-					outcome: "parallelized",
-					reason: "mcp_parallel_opt_in",
+					outcome: "serialized",
+					reason: "serialized_tool",
 				}),
 			]),
 		);
@@ -866,7 +866,6 @@ describe("ProviderTransport tool scheduling", () => {
 					toolCallId: "mcp-1",
 					outcome: "serialized",
 					reason: "workflow_state_serialized",
-					mcpOptIn: true,
 				}),
 			]),
 		);
@@ -1443,7 +1442,7 @@ describe("ProviderTransport tool scheduling", () => {
 		);
 	});
 
-	it("reports unknown write set when scoped writes wait behind unscoped parallel-safe mutations", async () => {
+	it("serializes scoped writes after approval-gated unscoped MCP mutations", async () => {
 		const records: TimedToolRecord[] = [];
 		const parallelSafeMutationTool = {
 			name: "mcp__trusted_remote__mutate",
@@ -1601,31 +1600,31 @@ describe("ProviderTransport tool scheduling", () => {
 		expect(records).toHaveLength(3);
 		expect(phaseSummary).toMatchObject({
 			modelToolCallCount: 3,
-			parallelizedCallCount: 2,
-			serializedCallCount: 1,
-			blockedByMutationCount: 1,
+			parallelizedCallCount: 0,
+			serializedCallCount: 3,
+			blockedByMutationCount: 0,
 			serializationReasons: {
-				mutation_unknown_write_set: 1,
+				path_scoped_mutation: 1,
+				serialized_tool: 2,
 			},
 		});
 		expect(phaseSummary?.decisions).toEqual(
 			expect.arrayContaining([
 				expect.objectContaining({
 					toolCallId: "write-a",
-					outcome: "delayed",
-					reason: "mutation_unknown_write_set",
-					blockedByMutation: true,
+					outcome: "serialized",
+					reason: "path_scoped_mutation",
 				}),
 			]),
 		);
 		expect(schedulingById.get("write-a")).toMatchObject({
 			classification: "path_scoped_mutation",
-			reason: "pending_mutation",
-			pendingMutations: 1,
+			reason: "path_scope_available",
+			pendingMutations: 0,
 		});
 	});
 
-	it("runs trusted MCP reads and disjoint path mutations without unsafe overlap", async () => {
+	it("serializes trusted MCP reads while keeping disjoint path mutations safe", async () => {
 		const records: Array<
 			TimedToolRecord & { path?: string; trustedMcp?: boolean }
 		> = [];
@@ -1928,9 +1927,9 @@ describe("ProviderTransport tool scheduling", () => {
 
 		expect(toolResults).toHaveLength(9);
 		expect(schedulingById.get("trusted-2")).toMatchObject({
-			decision: "parallelized",
-			reason: "mcp_parallel_opt_in",
-			mcpOptIn: true,
+			decision: "serialized",
+			reason: "serialized_tool",
+			mcpOptIn: false,
 		});
 		expect(schedulingById.get("write-b")).toMatchObject({
 			decision: "parallelized",
@@ -1946,7 +1945,7 @@ describe("ProviderTransport tool scheduling", () => {
 			reason: "pending_mutation",
 			blockedByMutation: true,
 		});
-		expect(trustedMcpSpread).toBeLessThan(40);
+		expect(trustedMcpSpread).toBeGreaterThanOrEqual(25);
 		expect(untrustedMcpSpread).toBeGreaterThanOrEqual(25);
 		expect(disjointMutationSpread).toBeLessThan(40);
 		expect(overlappingWriteRecord.startedAt).toBeGreaterThanOrEqual(
@@ -1955,7 +1954,7 @@ describe("ProviderTransport tool scheduling", () => {
 		expect(verifyStartGap).toBeLessThan(25);
 		expect(unsafeOverlapCount).toBe(0);
 		expect(toolResultsById.get("trusted-1")?.scheduling?.classification).toBe(
-			"parallel_safe_mutation",
+			"serialized_mutation",
 		);
 		expect(toolResultsById.get("write-b")?.scheduling?.reason).toBe(
 			"path_scope_disjoint",
@@ -1968,7 +1967,7 @@ describe("ProviderTransport tool scheduling", () => {
 		);
 	});
 
-	it("labels path-scoped mutations blocked by unscoped pending mutations", async () => {
+	it("runs path-scoped mutations after approval-gated unscoped MCP mutations", async () => {
 		const unscopedMutationTool = {
 			name: "mcp__trusted_remote__unscoped_write",
 			description: "Mutation without path-scope metadata.",
@@ -2094,8 +2093,8 @@ describe("ProviderTransport tool scheduling", () => {
 
 		expect(toolResultsById.get("path-2")?.scheduling).toMatchObject({
 			classification: "path_scoped_mutation",
-			reason: "pending_mutation",
-			pendingMutations: 1,
+			reason: "path_scope_available",
+			pendingMutations: 0,
 			pathArgumentKeys: ["path"],
 		});
 	});
@@ -2692,16 +2691,16 @@ describe("ProviderTransport tool scheduling", () => {
 		expect(pathExecutionCount).toBe(0);
 		expect(toolStartsById.get("path-2")?.scheduling).toMatchObject({
 			classification: "path_scoped_mutation",
-			reason: "pending_mutation",
-			queueDepth: 1,
-			pendingMutations: 1,
+			reason: "path_scope_available",
+			queueDepth: 0,
+			pendingMutations: 0,
 			pathArgumentKeys: ["path"],
 		});
 		expect(toolResultsById.get("path-2")?.scheduling).toMatchObject({
 			classification: "path_scoped_mutation",
-			reason: "pending_mutation",
-			queueDepth: 1,
-			pendingMutations: 1,
+			reason: "path_scope_available",
+			queueDepth: 0,
+			pendingMutations: 0,
 			pathArgumentKeys: ["path"],
 		});
 		expect(toolResultsById.get("path-2")?.result.content).toEqual([
@@ -2885,14 +2884,14 @@ describe("ProviderTransport tool scheduling", () => {
 			concurrencyLimit: 2,
 		});
 		expect(toolStartsById.get("trusted-3")?.scheduling).toMatchObject({
-			classification: "parallel_safe_mutation",
-			reason: "mcp_parallel_opt_in",
-			concurrencyLimit: 2,
+			classification: "serialized_mutation",
+			reason: "mutating_tool",
+			concurrencyLimit: 1,
 		});
 		expect(toolResultsById.get("trusted-3")?.scheduling).toMatchObject({
-			classification: "parallel_safe_mutation",
-			reason: "mcp_parallel_opt_in",
-			concurrencyLimit: 2,
+			classification: "serialized_mutation",
+			reason: "mutating_tool",
+			concurrencyLimit: 1,
 		});
 		expect(toolStartsById.get("write-4")?.scheduling).toMatchObject({
 			classification: "serialized_mutation",
@@ -5138,7 +5137,7 @@ describe("ProviderTransport tool scheduling", () => {
 		);
 	});
 
-	it("applies MCP max concurrency cap to read-only lanes", async () => {
+	it("serializes approval-gated MCP reads despite server concurrency caps", async () => {
 		const records: TimedToolRecord[] = [];
 		let activeReads = 0;
 		let maxActiveReads = 0;
@@ -5258,8 +5257,8 @@ describe("ProviderTransport tool scheduling", () => {
 		expect(maxActiveReads).toBe(1);
 		for (const slot of [1, 2, 3]) {
 			expect(toolStartsById.get(`read-${slot}`)?.scheduling).toMatchObject({
-				classification: "read_only",
-				reason: "read_only_tool",
+				classification: "serialized_mutation",
+				reason: "mutating_tool",
 				concurrencyLimit: 1,
 			});
 		}

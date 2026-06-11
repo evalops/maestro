@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import type { AgentEvent } from "../src/agent/types.js";
-import { SseSession } from "../src/web-server.js";
+import { SseSession, isAllowedWebSocketOrigin } from "../src/web-server.js";
 
 interface MockResponse {
 	writable: boolean;
@@ -68,5 +68,17 @@ describe("SseSession", () => {
 		expect(() => session.end()).not.toThrow();
 		const metrics = session.getMetrics();
 		expect(metrics.skipped).toBeGreaterThanOrEqual(1);
+	});
+});
+
+describe("isAllowedWebSocketOrigin", () => {
+	it("rejects missing origins when an allowlist is configured", () => {
+		expect(isAllowedWebSocketOrigin(undefined, "https://app.example.com")).toBe(
+			false,
+		);
+	});
+
+	it("allows missing origins only when all origins are explicitly allowed", () => {
+		expect(isAllowedWebSocketOrigin(undefined, "*")).toBe(true);
 	});
 });

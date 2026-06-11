@@ -104,6 +104,44 @@ function createAssistantMessage(text: string) {
 	};
 }
 
+function createAssistantToolCallMessage() {
+	return {
+		role: "assistant" as const,
+		content: [
+			{ type: "text" as const, text: "Reading the file" },
+			{
+				type: "toolCall" as const,
+				id: "call_1",
+				name: "read",
+				arguments: { path: "README.md" },
+			},
+		],
+		api: "anthropic-messages" as const,
+		provider: "anthropic",
+		model: "claude-sonnet-4",
+		stopReason: "toolUse" as const,
+		timestamp: Date.now(),
+		usage: {
+			input: 100,
+			output: 50,
+			cacheRead: 0,
+			cacheWrite: 0,
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+		},
+	};
+}
+
+function createToolResultMessage() {
+	return {
+		role: "toolResult" as const,
+		toolCallId: "call_1",
+		toolName: "read",
+		content: [{ type: "text" as const, text: "file contents" }],
+		isError: false,
+		timestamp: Date.now(),
+	};
+}
+
 function readSessionHeader(filePath: string): SessionHeaderEntry {
 	const header = readFileSync(filePath, "utf8")
 		.trim()
@@ -834,6 +872,32 @@ describe("SessionManager - Deferred Session Creation", () => {
 	});
 
 	describe("Session Sanitization", () => {
+		it("persists a late tool result after the assistant message and de-duplicates replay", async () => {
+			const sessionManager = new SessionManager(false);
+			const state = createMockState();
+			sessionManager.startSession(state);
+
+			sessionManager.saveMessage(createAssistantToolCallMessage());
+			sessionManager.saveMessage(createToolResultMessage());
+			sessionManager.saveMessage(createToolResultMessage());
+			await sessionManager.flush();
+
+			const entries = readSessionEntries(sessionManager.getSessionFile());
+			const messages = entries
+				.filter((entry) => entry.type === "message")
+				.map((entry) => entry.message);
+			const toolResults = messages.filter(
+				(message) =>
+					message.role === "toolResult" && message.toolCallId === "call_1",
+			);
+
+			expect(toolResults).toHaveLength(1);
+			expect(messages.map((message) => message.role)).toEqual([
+				"assistant",
+				"toolResult",
+			]);
+		});
+
 		it("redacts secrets in tool results before persistence", () => {
 			const sessionManager = new SessionManager(false);
 			const state = createMockState();

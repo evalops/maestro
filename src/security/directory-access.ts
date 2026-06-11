@@ -57,12 +57,17 @@ const CACHE_TIMEOUT = 5 * 60 * 1000; // 5 minutes
 function matchesPattern(path: string, pattern: string): boolean {
 	const normalizedPath = path.replace(/\\/g, "/");
 	const normalizedPattern = pattern.replace(/\\/g, "/");
-	return minimatch(normalizedPath, normalizedPattern, {
-		dot: true,
-		matchBase: false,
-		nocomment: true,
-		nocase: process.platform === "win32",
-	});
+	const patternVariants = normalizedPattern.endsWith("/**")
+		? [normalizedPattern, normalizedPattern.slice(0, -3)]
+		: [normalizedPattern];
+	return patternVariants.some((variant) =>
+		minimatch(normalizedPath, variant, {
+			dot: true,
+			matchBase: false,
+			nocomment: true,
+			nocase: process.platform === "win32" || process.platform === "darwin",
+		}),
+	);
 }
 
 async function getRules(orgId: string): Promise<AccessRule[]> {

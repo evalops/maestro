@@ -1,11 +1,48 @@
 import { tmpdir } from "node:os";
-import { describe, expect, it } from "vitest";
+import { join } from "node:path";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
+	checkDirectoryAccess,
+	clearDirectoryRulesCache,
 	getDefaultRestrictedDirectories,
 	getDefaultSafeDirectories,
 } from "../../src/security/directory-access.js";
 
+const { findManyMock } = vi.hoisted(() => ({
+	findManyMock: vi.fn(),
+}));
+
+vi.mock("../../src/db/client.js", () => ({
+	getDb: () => ({
+		query: {
+			directoryAccessRules: {
+				findMany: findManyMock,
+			},
+		},
+	}),
+}));
+
 describe("Directory Access Control", () => {
+	const originalPlatform = Object.getOwnPropertyDescriptor(process, "platform");
+
+	beforeEach(() => {
+		findManyMock.mockReset();
+		clearDirectoryRulesCache();
+	});
+
+	afterEach(() => {
+		clearDirectoryRulesCache();
+		if (originalPlatform) {
+			Object.defineProperty(process, "platform", originalPlatform);
+		}
+	});
+
+	function stubPlatform(platform: NodeJS.Platform): void {
+		Object.defineProperty(process, "platform", {
+			value: platform,
+		});
+	}
+
 	describe("getDefaultSafeDirectories", () => {
 		it("includes tmpdir()", () => {
 			const dirs = getDefaultSafeDirectories();
@@ -48,6 +85,58 @@ describe("Directory Access Control", () => {
 		it("includes .git pattern", () => {
 			const dirs = getDefaultRestrictedDirectories();
 			expect(dirs).toContain("**/.git/**");
+		});
+	});
+
+	describe("checkDirectoryAccess", () => {
+		const context = {
+			userId: "user-1",
+			orgId: "org-1",
+			roleId: "role-1",
+		};
+
+		it("denies bare directory nodes matched by /** rules", async () => {
+			findManyMock.mockResolvedValue([
+				{
+					pattern: "**/.git/**",
+					isAllowed: false,
+					priority: 50,
+					roleIds: null,
+					description: "Git metadata",
+				},
+			]);
+
+			const result = await checkDirectoryAccess(
+				context,
+				join(tmpdir(), "project", ".git"),
+			);
+
+			expect(result).toMatchObject({
+				allowed: false,
+				matchedRule: "**/.git/**",
+				reason: "Path denied by access rule",
+			});
+		});
+
+		it("matches deny rules case-insensitively on macOS", async () => {
+			stubPlatform("darwin");
+			findManyMock.mockResolvedValue([
+				{
+					pattern: "/tmp/secrets/**",
+					isAllowed: false,
+					priority: 50,
+					roleIds: null,
+					description: "Secrets",
+				},
+			]);
+
+			const result = await checkDirectoryAccess(context, "/TMP/SECRETS/key");
+
+			expect(result).toMatchObject({
+				allowed: false,
+				matchedRule: "/tmp/secrets/**",
+				reason: "Path denied by access rule",
+			});
 		});
 	});
 });

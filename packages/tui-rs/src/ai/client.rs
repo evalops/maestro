@@ -24,9 +24,56 @@ pub enum AiProvider {
     Groq,
     /// Google Vertex AI - enterprise Gemini via GCP
     VertexAi,
+    /// DeepSeek - OpenAI-compatible API (api.deepseek.com)
+    DeepSeek,
+    /// Moonshot AI / Kimi - OpenAI-compatible API (api.moonshot.ai)
+    Moonshot,
+    /// Alibaba Qwen via DashScope - OpenAI-compatible API
+    Qwen,
+    /// MiniMax - OpenAI-compatible API (api.minimax.io)
+    MiniMax,
+    /// Z.ai / Zhipu GLM - OpenAI-compatible API (api.z.ai)
+    Zai,
 }
 
 impl AiProvider {
+    fn direct_provider_from_bare_model(model_lower: &str) -> Option<Self> {
+        if matches!(model_lower, "deepseek-chat" | "deepseek-reasoner")
+            || model_lower.starts_with("deepseek-v")
+        {
+            return Some(Self::DeepSeek);
+        }
+
+        if model_lower.starts_with("kimi-")
+            || model_lower == "kimi-latest"
+            || model_lower.starts_with("moonshot-v1-")
+        {
+            return Some(Self::Moonshot);
+        }
+
+        if model_lower.starts_with("qwen3-")
+            || matches!(
+                model_lower,
+                "qwen-max" | "qwen-plus" | "qwen-turbo" | "qwen-vl-max" | "qwq-32b"
+            )
+        {
+            return Some(Self::Qwen);
+        }
+
+        if matches!(
+            model_lower,
+            "minimax-m2" | "minimax-m2.5" | "minimax-m2.7" | "minimax-text-01"
+        ) {
+            return Some(Self::MiniMax);
+        }
+
+        if model_lower.starts_with("glm-") {
+            return Some(Self::Zai);
+        }
+
+        None
+    }
+
     /// Parse provider from model name
     #[must_use]
     pub fn from_model(model: &str) -> Self {
@@ -39,7 +86,16 @@ impl AiProvider {
             Some("mistral") => return AiProvider::Mistral,
             Some("groq") => return AiProvider::Groq,
             Some("vertex-ai" | "vertex") => return AiProvider::VertexAi,
+            Some("deepseek") => return AiProvider::DeepSeek,
+            Some("moonshot" | "kimi") => return AiProvider::Moonshot,
+            Some("dashscope" | "qwen") => return AiProvider::Qwen,
+            Some("minimax") => return AiProvider::MiniMax,
+            Some("zai" | "zhipu") => return AiProvider::Zai,
             _ => {}
+        }
+
+        if let Some(provider) = Self::direct_provider_from_bare_model(&model_lower) {
+            return provider;
         }
 
         if model_lower.starts_with("claude") || model_lower.starts_with("anthropic") {
@@ -64,8 +120,11 @@ impl AiProvider {
             || model_lower.contains("deepseek")
             || model_lower.contains("qwen")
         {
-            // Groq hosts Llama, DeepSeek, Qwen models with fast inference
-            // Models prefixed with "groq/" explicitly use Groq
+            // Groq hosts Llama, DeepSeek, Qwen models with fast inference.
+            // Direct-provider bare ids are handled earlier by
+            // `direct_provider_from_bare_model`, so the Groq-hosted distill/coder
+            // variants (deepseek-r1-distill-llama-70b, qwen-2.5-coder-32b,
+            // qwen-qwq-32b) are what remain here.
             AiProvider::Groq
         } else {
             // Default to OpenAI/Codex for unknown models
@@ -88,7 +147,8 @@ pub fn provider_model_name(model: &str) -> String {
 
     match provider.to_ascii_lowercase().as_str() {
         "anthropic" | "openai" | "azure-openai" | "azure" | "google" | "gemini" | "mistral"
-        | "groq" | "vertex-ai" | "vertex" => model_id.to_string(),
+        | "groq" | "vertex-ai" | "vertex" | "deepseek" | "moonshot" | "kimi" | "dashscope"
+        | "qwen" | "minimax" | "zai" | "zhipu" => model_id.to_string(),
         _ => trimmed.to_string(),
     }
 }
@@ -119,6 +179,16 @@ pub enum UnifiedClient {
     Groq(OpenAiClient),
     /// Google Vertex AI for enterprise Gemini
     VertexAi(VertexAiClient),
+    /// DeepSeek uses `OpenAI` client with custom base URL
+    DeepSeek(OpenAiClient),
+    /// Moonshot / Kimi uses `OpenAI` client with custom base URL
+    Moonshot(OpenAiClient),
+    /// Alibaba Qwen (DashScope) uses `OpenAI` client with custom base URL
+    Qwen(OpenAiClient),
+    /// MiniMax uses `OpenAI` client with custom base URL
+    MiniMax(OpenAiClient),
+    /// Z.ai / Zhipu GLM uses `OpenAI` client with custom base URL
+    Zai(OpenAiClient),
 }
 
 impl UnifiedClient {
@@ -152,6 +222,31 @@ impl UnifiedClient {
         Ok(Self::VertexAi(VertexAiClient::from_env()?))
     }
 
+    /// Create client for DeepSeek
+    pub fn deepseek() -> Result<Self> {
+        Ok(Self::DeepSeek(OpenAiClient::deepseek_from_env()?))
+    }
+
+    /// Create client for Moonshot / Kimi
+    pub fn moonshot() -> Result<Self> {
+        Ok(Self::Moonshot(OpenAiClient::moonshot_from_env()?))
+    }
+
+    /// Create client for Alibaba Qwen (DashScope)
+    pub fn qwen() -> Result<Self> {
+        Ok(Self::Qwen(OpenAiClient::qwen_from_env()?))
+    }
+
+    /// Create client for MiniMax
+    pub fn minimax() -> Result<Self> {
+        Ok(Self::MiniMax(OpenAiClient::minimax_from_env()?))
+    }
+
+    /// Create client for Z.ai / Zhipu GLM
+    pub fn zai() -> Result<Self> {
+        Ok(Self::Zai(OpenAiClient::zai_from_env()?))
+    }
+
     /// Create client based on provider
     pub fn from_provider(provider: AiProvider) -> Result<Self> {
         match provider {
@@ -161,6 +256,11 @@ impl UnifiedClient {
             AiProvider::Google => Self::google(),
             AiProvider::Groq => Self::groq(),
             AiProvider::VertexAi => Self::vertex_ai(),
+            AiProvider::DeepSeek => Self::deepseek(),
+            AiProvider::Moonshot => Self::moonshot(),
+            AiProvider::Qwen => Self::qwen(),
+            AiProvider::MiniMax => Self::minimax(),
+            AiProvider::Zai => Self::zai(),
         }
     }
 
@@ -179,6 +279,11 @@ impl UnifiedClient {
             Self::Google(_) => AiProvider::Google,
             Self::Groq(_) => AiProvider::Groq,
             Self::VertexAi(_) => AiProvider::VertexAi,
+            Self::DeepSeek(_) => AiProvider::DeepSeek,
+            Self::Moonshot(_) => AiProvider::Moonshot,
+            Self::Qwen(_) => AiProvider::Qwen,
+            Self::MiniMax(_) => AiProvider::MiniMax,
+            Self::Zai(_) => AiProvider::Zai,
         }
     }
 
@@ -195,6 +300,11 @@ impl UnifiedClient {
             Self::Google(client) => client.stream(messages, config).await,
             Self::Groq(client) => client.stream(messages, config).await,
             Self::VertexAi(client) => client.stream(messages, config).await,
+            Self::DeepSeek(client) => client.stream(messages, config).await,
+            Self::Moonshot(client) => client.stream(messages, config).await,
+            Self::Qwen(client) => client.stream(messages, config).await,
+            Self::MiniMax(client) => client.stream(messages, config).await,
+            Self::Zai(client) => client.stream(messages, config).await,
         }
     }
 }
@@ -314,6 +424,78 @@ mod tests {
         );
         // Case insensitive
         assert_eq!(AiProvider::from_model("Llama-3.1-8B"), AiProvider::Groq);
+    }
+
+    #[test]
+    fn test_provider_from_model_chinese_providers() {
+        // Explicit provider prefixes route to the direct provider.
+        assert_eq!(
+            AiProvider::from_model("deepseek/deepseek-chat"),
+            AiProvider::DeepSeek
+        );
+        assert_eq!(
+            AiProvider::from_model("moonshot/kimi-k2.6"),
+            AiProvider::Moonshot
+        );
+        assert_eq!(
+            AiProvider::from_model("kimi/kimi-k2-thinking"),
+            AiProvider::Moonshot
+        );
+        assert_eq!(
+            AiProvider::from_model("dashscope/qwen3-max"),
+            AiProvider::Qwen
+        );
+        assert_eq!(
+            AiProvider::from_model("qwen/qwen3-coder-plus"),
+            AiProvider::Qwen
+        );
+        assert_eq!(
+            AiProvider::from_model("minimax/MiniMax-M2"),
+            AiProvider::MiniMax
+        );
+        assert_eq!(AiProvider::from_model("zai/glm-4.6"), AiProvider::Zai);
+        assert_eq!(AiProvider::from_model("zhipu/glm-4.6"), AiProvider::Zai);
+
+        // Bare direct-provider ids (from model selectors / config presets) route
+        // to the direct provider even without an explicit prefix.
+        assert_eq!(
+            AiProvider::from_model("deepseek-chat"),
+            AiProvider::DeepSeek
+        );
+        assert_eq!(
+            AiProvider::from_model("deepseek-reasoner"),
+            AiProvider::DeepSeek
+        );
+        assert_eq!(AiProvider::from_model("kimi-k2.6"), AiProvider::Moonshot);
+        assert_eq!(
+            AiProvider::from_model("moonshot-v1-128k"),
+            AiProvider::Moonshot
+        );
+        assert_eq!(AiProvider::from_model("qwen3-max"), AiProvider::Qwen);
+        assert_eq!(AiProvider::from_model("qwq-32b"), AiProvider::Qwen);
+        assert_eq!(AiProvider::from_model("MiniMax-M2"), AiProvider::MiniMax);
+        assert_eq!(AiProvider::from_model("glm-4.6"), AiProvider::Zai);
+
+        // Bare Groq-hosted distill/coder names still route to Groq for
+        // backward compatibility (no explicit provider prefix).
+        assert_eq!(
+            AiProvider::from_model("deepseek-r1-distill-llama-70b"),
+            AiProvider::Groq
+        );
+        assert_eq!(
+            AiProvider::from_model("qwen-2.5-coder-32b"),
+            AiProvider::Groq
+        );
+
+        // Prefix stripping yields the upstream-native model id.
+        assert_eq!(
+            provider_model_name("deepseek/deepseek-reasoner"),
+            "deepseek-reasoner"
+        );
+        assert_eq!(provider_model_name("moonshot/kimi-k2.6"), "kimi-k2.6");
+        assert_eq!(provider_model_name("dashscope/qwen3-max"), "qwen3-max");
+        assert_eq!(provider_model_name("minimax/MiniMax-M2"), "MiniMax-M2");
+        assert_eq!(provider_model_name("zai/glm-4.6"), "glm-4.6");
     }
 
     #[test]

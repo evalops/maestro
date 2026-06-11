@@ -119,6 +119,26 @@ export type CustomModelConfig = Static<typeof configSchema>;
 export type CustomProvider = Static<typeof providerSchema>;
 export type CustomModel = Static<typeof modelSchema>;
 
+export type ConfigPathScope = "global" | "project" | "legacy" | "env";
+
+export interface ConfigPathEntry {
+	path: string;
+	scope: ConfigPathScope;
+	trusted: boolean;
+}
+
+const TRUST_PROJECT_MODEL_CONFIG_ENV = "MAESTRO_TRUST_PROJECT_MODEL_CONFIG";
+const TRUE_ENV_VALUES = new Set(["1", "true", "yes", "on"]);
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+	return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function isProjectModelConfigTrusted(): boolean {
+	const value = process.env[TRUST_PROJECT_MODEL_CONFIG_ENV];
+	return value !== undefined && TRUE_ENV_VALUES.has(value.toLowerCase());
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Provider Loaders
 // ─────────────────────────────────────────────────────────────────────────────
@@ -181,6 +201,11 @@ export function mergeDeep<T>(target: T, source: Partial<T>): T {
 		const sourceRecord = source as Record<string, unknown>;
 		const outputRecord = output as Record<string, unknown>;
 		for (const key of Object.keys(sourceRecord)) {
+			// Skip prototype-polluting keys to guard against __proto__/constructor
+			// injection via untrusted JSON config (fixes #2542).
+			if (key === "__proto__" || key === "constructor" || key === "prototype") {
+				continue;
+			}
 			const sourceValue = sourceRecord[key];
 			const targetValue = outputRecord[key];
 
@@ -273,41 +298,66 @@ export function setCachedConfig(config: CustomModelConfig): void {
 /**
  * Config file paths in order of precedence (last wins)
  */
-export function getConfigPaths(): string[] {
-	const paths: string[] = [];
+export function getConfigPathEntries(): ConfigPathEntry[] {
+	const paths: ConfigPathEntry[] = [];
 
 	// 1. Global config
-	paths.push(join(PATHS.MAESTRO_HOME, "config.json"));
-	paths.push(join(PATHS.MAESTRO_HOME, "local.json"));
+	paths.push({
+		path: join(PATHS.MAESTRO_HOME, "config.json"),
+		scope: "global",
+		trusted: true,
+	});
+	paths.push({
+		path: join(PATHS.MAESTRO_HOME, "local.json"),
+		scope: "global",
+		trusted: true,
+	});
 
 	// 2. Project config (current directory)
+	const projectTrusted = isProjectModelConfigTrusted();
 	const projectConfig = join(process.cwd(), ".maestro", "config.json");
 	if (existsSync(projectConfig)) {
-		paths.push(projectConfig);
+		paths.push({
+			path: projectConfig,
+			scope: "project",
+			trusted: projectTrusted,
+		});
 	}
 	const projectLocal = join(process.cwd(), ".maestro", "local.json");
 	if (existsSync(projectLocal)) {
-		paths.push(projectLocal);
+		paths.push({
+			path: projectLocal,
+			scope: "project",
+			trusted: projectTrusted,
+		});
 	}
 
 	// 3. Legacy path for backward compatibility
 	const legacyPath = join(PATHS.MAESTRO_HOME, "models.json");
 	if (existsSync(legacyPath)) {
-		paths.push(legacyPath);
+		paths.push({
+			path: legacyPath,
+			scope: "legacy",
+			trusted: true,
+		});
 	}
 
 	// 4. Environment variable override
 	if (process.env.MAESTRO_MODELS_FILE) {
 		const override = resolveEnvPath(process.env.MAESTRO_MODELS_FILE);
-		if (override) paths.push(override);
+		if (override) paths.push({ path: override, scope: "env", trusted: true });
 	}
 
 	if (process.env.MAESTRO_CONFIG) {
 		const override = resolveEnvPath(process.env.MAESTRO_CONFIG);
-		if (override) paths.push(override);
+		if (override) paths.push({ path: override, scope: "env", trusted: true });
 	}
 
 	return paths;
+}
+
+export function getConfigPaths(): string[] {
+	return getConfigPathEntries().map((entry) => entry.path);
 }
 
 export function configPath(): string {
@@ -371,19 +421,25 @@ export function readJsonFile(filePath: string): string | null {
 /**
  * Load and parse a single config file
  */
-export function loadConfigFile(path: string): CustomModelConfig | null {
+function loadConfigFileWithOptions(
+	path: string,
+	options?: { expandReferences?: boolean },
+): CustomModelConfig | null {
 	const raw = existsSync(path) ? readJsonFile(path) : null;
 	if (!raw) {
 		return null;
 	}
 
 	try {
-		// Process file references first (before env vars, so file contents can have env vars)
-		const configDir = dirname(path);
-		let processed = substituteFileRefs(raw, configDir);
+		let processed = raw;
+		if (options?.expandReferences !== false) {
+			// Process file references first (before env vars, so file contents can have env vars)
+			const configDir = dirname(path);
+			processed = substituteFileRefs(processed, configDir);
 
-		// Process environment variable substitution
-		processed = substituteEnvVars(processed, logger);
+			// Process environment variable substitution
+			processed = substituteEnvVars(processed, logger);
+		}
 
 		// Parse JSONC (supports comments and trailing commas)
 		const data = parseJsoncWithErrors(processed, path);
@@ -398,6 +454,62 @@ export function loadConfigFile(path: string): CustomModelConfig | null {
 			`Failed to parse config at ${path}: ${error instanceof Error ? error.message : String(error)}`,
 		);
 	}
+}
+
+export function loadConfigFile(
+	path: string,
+	options?: { expandReferences?: boolean },
+): CustomModelConfig | null {
+	return loadConfigFileWithOptions(path, options);
+}
+
+export function loadUntrustedProjectConfigFile(
+	path: string,
+): CustomModelConfig | null {
+	const raw = existsSync(path) ? readJsonFile(path) : null;
+	if (!raw) {
+		return null;
+	}
+
+	try {
+		const data = parseJsoncWithErrors(raw, path);
+		return sanitizeUntrustedProjectConfig(data, path);
+	} catch (error) {
+		logger.warn("Ignoring invalid untrusted project model config", {
+			path,
+			trustEnv: TRUST_PROJECT_MODEL_CONFIG_ENV,
+			error: error instanceof Error ? error.message : String(error),
+		});
+		return { providers: [] };
+	}
+}
+
+export function sanitizeUntrustedProjectConfig(
+	config: unknown,
+	path: string,
+): CustomModelConfig {
+	const providers: CustomProvider[] = [];
+	if (!isRecord(config)) {
+		logger.warn("Ignoring invalid untrusted project model config", {
+			path,
+			trustEnv: TRUST_PROJECT_MODEL_CONFIG_ENV,
+		});
+		return { providers };
+	}
+
+	const sanitized =
+		"providers" in config ||
+		"aliases" in config ||
+		Object.keys(config).some((key) => key !== "$schema");
+
+	if (sanitized) {
+		logger.warn("Ignoring sensitive project model config fields", {
+			path,
+			trustEnv: TRUST_PROJECT_MODEL_CONFIG_ENV,
+		});
+	}
+
+	return { providers };
 }
 
 /**
@@ -462,11 +574,14 @@ export function loadConfig(
 	}
 
 	// Try loading from hierarchy
-	const paths = getConfigPaths();
+	const paths = getConfigPathEntries();
 	let mergedConfig: CustomModelConfig = { providers: [] };
 
-	for (const path of paths) {
-		const config = loadConfigFile(path);
+	for (const entry of paths) {
+		const untrustedProject = entry.scope === "project" && !entry.trusted;
+		const config = untrustedProject
+			? loadUntrustedProjectConfigFile(entry.path)
+			: loadConfigFile(entry.path);
 		if (config) {
 			mergedConfig = mergeDeep(mergedConfig, config);
 		}

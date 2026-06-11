@@ -95,6 +95,13 @@ When connected to the Maestro server, the plugin provides IDE-aware tools:
 
 ## Development
 
+### Status
+
+The JetBrains plugin is kept as an active package. Pull requests that touch
+`packages/jetbrains-plugin/`, the shared headless proto, or the JetBrains
+workflow run `.github/workflows/jetbrains-plugin.yml`, which executes
+`./gradlew check buildPlugin --no-daemon`.
+
 ### Build
 
 ```bash

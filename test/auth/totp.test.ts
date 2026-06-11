@@ -10,6 +10,7 @@ import {
 	verifyBackupCode,
 	verifyTotpCode,
 } from "../../src/auth/totp.js";
+import { getDb, isDbAvailable } from "../../src/db/client.js";
 
 // Mock DB
 vi.mock("../../src/db/client.js", () => ({
@@ -23,7 +24,10 @@ vi.mock("../../src/db/client.js", () => ({
 		})),
 		insert: vi.fn(() => ({
 			values: vi.fn(() => ({
-				onConflictDoNothing: vi.fn(() => Promise.resolve()),
+				onConflictDoNothing: vi.fn(() => ({
+					returning: vi.fn(() => Promise.resolve([{ id: "used-code" }])),
+				})),
+				onConflictDoUpdate: vi.fn(() => Promise.resolve()),
 			})),
 		})),
 		delete: vi.fn(() => ({
@@ -36,6 +40,37 @@ vi.mock("../../src/db/client.js", () => ({
 }));
 
 describe("TOTP Service", () => {
+	const mockedGetDb = vi.mocked(getDb);
+	const mockedIsDbAvailable = vi.mocked(isDbAvailable);
+
+	function createMockDb(
+		usedCodeReturning: () => Promise<Array<{ id: string }>> = () =>
+			Promise.resolve([{ id: "used-code" }]),
+	) {
+		return {
+			select: vi.fn(() => ({
+				from: vi.fn(() => ({
+					where: vi.fn(() => ({
+						limit: vi.fn(() => Promise.resolve([])),
+					})),
+				})),
+			})),
+			insert: vi.fn(() => ({
+				values: vi.fn(() => ({
+					onConflictDoNothing: vi.fn(() => ({
+						returning: usedCodeReturning,
+					})),
+					onConflictDoUpdate: vi.fn(() => Promise.resolve()),
+				})),
+			})),
+			delete: vi.fn(() => ({
+				where: vi.fn(() => ({
+					returning: vi.fn(() => Promise.resolve([])),
+				})),
+			})),
+		};
+	}
+
 	async function findInvalidTotpCode(secret: string): Promise<string> {
 		for (let i = 0; i < 10; i++) {
 			const code = `${i}`.repeat(6);
@@ -49,6 +84,8 @@ describe("TOTP Service", () => {
 
 	beforeEach(() => {
 		_resetRateLimitsForTesting();
+		mockedIsDbAvailable.mockReturnValue(false);
+		mockedGetDb.mockReturnValue(createMockDb() as never);
 	});
 
 	afterEach(() => {
@@ -97,6 +134,44 @@ describe("TOTP Service", () => {
 			const result = await verifyTotpCode("user-1", secret, invalidTotpCode);
 			expect(result.valid).toBe(false);
 			expect(result.error).toBe("invalid_code");
+		});
+
+		it("allows exactly one concurrent redemption of the same code", async () => {
+			const usedCodeReturning = vi
+				.fn<() => Promise<Array<{ id: string }>>>()
+				.mockResolvedValueOnce([{ id: "first" }])
+				.mockResolvedValueOnce([]);
+			mockedIsDbAvailable.mockReturnValue(true);
+			mockedGetDb.mockReturnValue(createMockDb(usedCodeReturning) as never);
+
+			const secret = generateTotpSecret();
+			const code = generateTotpCode(secret);
+			const results = await Promise.all([
+				verifyTotpCode("user-replay", secret, code),
+				verifyTotpCode("user-replay", secret, code),
+			]);
+
+			expect(results.filter((result) => result.valid)).toHaveLength(1);
+			expect(
+				results.filter((result) => result.error === "code_reused"),
+			).toHaveLength(1);
+			expect(usedCodeReturning).toHaveBeenCalledTimes(2);
+		});
+
+		it("does not classify insert failures as code reuse", async () => {
+			const usedCodeReturning = vi
+				.fn<() => Promise<Array<{ id: string }>>>()
+				.mockRejectedValue(new Error("insert failed"));
+			mockedIsDbAvailable.mockReturnValue(true);
+			mockedGetDb.mockReturnValue(createMockDb(usedCodeReturning) as never);
+
+			const secret = generateTotpSecret();
+			const code = generateTotpCode(secret);
+			const result = await verifyTotpCode("user-mark-failure", secret, code);
+
+			expect(result.valid).toBe(false);
+			expect(result.error).toBe("invalid_code");
+			expect(isRateLimited("user-mark-failure").limited).toBe(false);
 		});
 	});
 

@@ -750,9 +750,7 @@ export async function executeHook(
 			return parseStructuredHookOutput(output, hookName, input.hook_event_name);
 		}
 
-		// Prompt and agent hooks not yet implemented for execution
-		logger.warn(`Hook type ${hook.type} not yet implemented for execution`);
-		return null;
+		throw new Error(`Unsupported hook type for execution: ${hook.type}`);
 	} catch (error) {
 		logger.error(
 			"Hook execution failed",

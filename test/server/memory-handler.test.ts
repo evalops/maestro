@@ -1,5 +1,7 @@
+import { rmSync } from "node:fs";
 import type { IncomingMessage, ServerResponse } from "node:http";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { join } from "node:path";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("../../src/memory/index.js", () => ({
 	addMemory: vi.fn(),
@@ -38,6 +40,10 @@ describe("handleMemory", () => {
 		vi.mocked(exportMemories).mockReturnValue({ entries: [] });
 	});
 
+	afterEach(() => {
+		rmSync(join(process.cwd(), "maestro-memories.json"), { force: true });
+	});
+
 	it("uses a maestro filename when exporting without an explicit path", async () => {
 		vi.mocked(readJsonBody).mockResolvedValue({ action: "export" });
 		const req = {
@@ -66,6 +72,52 @@ describe("handleMemory", () => {
 			}),
 			{},
 		);
+	});
+
+	it("rejects absolute export paths", async () => {
+		vi.mocked(readJsonBody).mockResolvedValue({
+			action: "export",
+			path: "/tmp/maestro-memories.json",
+		});
+		const req = {
+			method: "POST",
+			headers: { host: "localhost" },
+			url: "/api/memory",
+		} as IncomingMessage;
+		const res = {} as ServerResponse;
+
+		await handleMemory(req, res, {});
+
+		expect(sendJson).toHaveBeenCalledWith(
+			res,
+			400,
+			{ error: "Path must be relative to the current workspace" },
+			{},
+		);
+	});
+
+	it("rejects import paths that escape the workspace without leaking the resolved path", async () => {
+		vi.mocked(readJsonBody).mockResolvedValue({
+			action: "import",
+			path: "../outside.json",
+		});
+		const req = {
+			method: "POST",
+			headers: { host: "localhost" },
+			url: "/api/memory",
+		} as IncomingMessage;
+		const res = {} as ServerResponse;
+
+		await handleMemory(req, res, {});
+
+		expect(sendJson).toHaveBeenCalledWith(
+			res,
+			400,
+			{ error: "Path must stay within the current workspace" },
+			{},
+		);
+		const responses = vi.mocked(sendJson).mock.calls.map((call) => call[2]);
+		expect(JSON.stringify(responses)).not.toContain(process.cwd());
 	});
 
 	it("passes session id filters through read actions", async () => {

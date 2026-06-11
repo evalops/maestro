@@ -98,11 +98,30 @@ providing an extra layer of protection when exploring untrusted code.
 
 ### Available Modes
 
-| Mode    | Description                                           |
-| ------- | ----------------------------------------------------- |
-| `none`  | No sandbox (default) - tools run directly on the host |
-| `local` | Local sandbox - minimal isolation (same as `none`)    |
-| `docker`| Docker container - full isolation                     |
+| Mode     | Description                                           |
+| -------- | ----------------------------------------------------- |
+| `none`   | No sandbox (default) - tools run directly on the host |
+| `local`  | Local sandbox - minimal isolation (same as `none`)    |
+| `native` | OS-native sandbox where enforcement is implemented    |
+| `docker` | Docker container - full isolation                     |
+
+### Platform Enforcement
+
+| Runtime         | Platform | Native enforcement                   |
+| --------------- | -------- | ------------------------------------ |
+| TypeScript CLI  | macOS    | Seatbelt via `/usr/bin/sandbox-exec` |
+| TypeScript CLI  | Linux    | Not enforced; requests fail closed   |
+| TypeScript CLI  | Other    | Not supported                        |
+| Rust TUI native | Linux    | Landlock + seccomp backend           |
+
+If a requested `native` or `docker` sandbox cannot be enforced, Maestro fails
+closed instead of silently running with host permissions. To deliberately keep
+legacy local/none fallback behavior, pass `allowUnsafeLocalFallback` from code or
+set:
+
+```bash
+export MAESTRO_ALLOW_UNSANDBOXED_SANDBOX_FALLBACK=1
+```
 
 ### Enabling Sandbox Mode
 
@@ -141,7 +160,8 @@ Requirements:
 - Docker must be installed and running
 - Current user must have permission to run Docker commands
 
-If Docker is unavailable, Maestro falls back to local mode with a warning.
+If Docker is unavailable, Maestro fails closed unless unsafe fallback is
+explicitly enabled.
 
 ## Best Practices
 

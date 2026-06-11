@@ -343,6 +343,7 @@ export interface McpServerStatus {
 	tools?:
 		| Array<{
 				name: string;
+				canonicalName?: string;
 				description?: string;
 				inputSchema?: unknown;
 				annotations?: Record<string, unknown>;

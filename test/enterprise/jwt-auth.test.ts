@@ -1,8 +1,23 @@
-import { describe, expect, it } from "vitest";
+import jsonwebtoken from "jsonwebtoken";
+import { describe, expect, it, vi } from "vitest";
+
+const { jwtSecret } = vi.hoisted(() => {
+	const jwtSecret = "test-jwt-secret-for-alg-pinning-123456";
+	process.env.MAESTRO_JWT_SECRET = jwtSecret;
+	return { jwtSecret };
+});
+
+vi.mock("../../src/auth/token-revocation.js", () => ({
+	isTokenIssuedBeforeRevocation: vi.fn(() => false),
+	isTokenRevoked: vi.fn(async () => false),
+	isTokenRevokedSync: vi.fn(() => false),
+}));
+
 import {
 	extractBearerToken,
 	generateTokenPair,
 	verifyToken,
+	verifyTokenAsync,
 } from "../../src/auth/jwt.js";
 
 describe("JWT Authentication", () => {
@@ -56,6 +71,17 @@ describe("JWT Authentication", () => {
 		it("returns null for empty token", () => {
 			const payload = verifyToken("");
 			expect(payload).toBeNull();
+		});
+
+		it("rejects tokens signed with a mismatched algorithm", async () => {
+			const token = jsonwebtoken.sign(
+				{ ...testPayload, type: "access" },
+				jwtSecret,
+				{ algorithm: "HS384" },
+			);
+
+			expect(verifyToken(token)).toBeNull();
+			await expect(verifyTokenAsync(token)).resolves.toBeNull();
 		});
 	});
 

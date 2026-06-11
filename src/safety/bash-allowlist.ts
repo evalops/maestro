@@ -4,6 +4,8 @@ import { minimatch } from "minimatch";
 import { PATHS } from "../config/constants.js";
 import { createLogger } from "../utils/logger.js";
 import { resolveEnvPath } from "../utils/path-expansion.js";
+import { normalizeSafetyText } from "../utils/safety-normalization.js";
+import { tokenizeSimple } from "./bash-safety-analyzer.js";
 
 const logger = createLogger("safety:bash-allowlist");
 
@@ -75,10 +77,29 @@ function loadConfig(): string[] {
 
 export function isCommandAllowlisted(command: string): boolean {
 	const patterns = loadConfig();
+	const commandTokens = tokenizeSimple(command);
 	return patterns.some((pattern) =>
-		minimatch(command, pattern, {
-			nocase: true,
+		commandMatchesAllowlistPattern(commandTokens, pattern),
+	);
+}
+
+function commandMatchesAllowlistPattern(
+	commandTokens: string[],
+	pattern: string,
+): boolean {
+	const patternTokens = tokenizeSimple(pattern);
+	if (
+		patternTokens.length === 0 ||
+		patternTokens.length !== commandTokens.length
+	) {
+		return false;
+	}
+	return patternTokens.every((patternToken, index) =>
+		minimatch(normalizeSafetyText(commandTokens[index] ?? ""), patternToken, {
 			dot: true,
+			nocase: false,
+			nocomment: true,
+			nonegate: true,
 		}),
 	);
 }

@@ -35,10 +35,14 @@
 //! # }
 //! ```
 
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::time::Instant;
 
 use futures::StreamExt;
+use reqwest::header::LOCATION;
+use reqwest::StatusCode;
 use serde::{Deserialize, Serialize};
+use tokio::net::lookup_host;
 
 use super::details::WebFetchDetails;
 use crate::agent::ToolResult;
@@ -50,6 +54,8 @@ const DEFAULT_TIMEOUT_SECS: u64 = 30;
 const MAX_BODY_SIZE: usize = 1_000_000;
 /// Maximum output size after processing (50KB)
 const MAX_OUTPUT_SIZE: usize = 50_000;
+/// Maximum redirect hops to follow.
+const MAX_REDIRECTS: usize = 10;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // UTF-8 SAFE CASE-INSENSITIVE SEARCH
@@ -110,6 +116,200 @@ fn truncate_utf8(input: &str, max_bytes: usize) -> &str {
     &input[..end]
 }
 
+fn normalize_web_fetch_url(input: &str) -> Result<reqwest::Url, String> {
+    let parsed = match reqwest::Url::parse(input) {
+        Ok(url) if matches!(url.scheme(), "http" | "https") => url,
+        Ok(_) if !input.contains("://") => reqwest::Url::parse(&format!("https://{input}"))
+            .map_err(|err| format!("Invalid URL: {err}"))?,
+        Ok(url) => url,
+        Err(parse_err) => {
+            if input.starts_with("http://") || input.starts_with("https://") {
+                return Err(format!("Invalid URL: {parse_err}"));
+            }
+            reqwest::Url::parse(&format!("https://{input}"))
+                .map_err(|err| format!("Invalid URL: {err}"))?
+        }
+    };
+
+    validate_web_fetch_url(&parsed)?;
+    Ok(parsed)
+}
+
+fn validate_web_fetch_url(url: &reqwest::Url) -> Result<(), String> {
+    match url.scheme() {
+        "http" | "https" => {}
+        scheme => {
+            return Err(format!(
+                "Unsupported URL scheme '{scheme}': only http and https are allowed"
+            ));
+        }
+    }
+
+    if url.host_str().is_none() {
+        return Err("Invalid URL: missing host".to_string());
+    }
+
+    Ok(())
+}
+
+async fn fetch_with_validated_redirects(
+    initial_url: reqwest::Url,
+) -> Result<reqwest::Response, String> {
+    let mut current_url = initial_url;
+
+    for redirect_count in 0..=MAX_REDIRECTS {
+        let resolved_addr = resolve_public_endpoint(&current_url).await?;
+        let response = pinned_client(&current_url, resolved_addr)?
+            .get(current_url.clone())
+            .send()
+            .await
+            .map_err(|err| err.to_string())?;
+
+        if !is_redirect_status(response.status()) {
+            return Ok(response);
+        }
+
+        if redirect_count == MAX_REDIRECTS {
+            return Err(format!("too many redirects (max {MAX_REDIRECTS})"));
+        }
+
+        let location = response
+            .headers()
+            .get(LOCATION)
+            .ok_or_else(|| format!("redirect from {current_url} missing Location header"))?;
+        let location = location
+            .to_str()
+            .map_err(|_| "redirect Location header is not valid UTF-8".to_string())?;
+
+        current_url = redirect_target_url(&current_url, location)?;
+    }
+
+    unreachable!("redirect loop exits by returning a response or max-redirect error");
+}
+
+fn pinned_client(url: &reqwest::Url, addr: SocketAddr) -> Result<reqwest::Client, String> {
+    let host = url
+        .host_str()
+        .ok_or_else(|| "Invalid URL: missing host".to_string())?;
+
+    reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(DEFAULT_TIMEOUT_SECS))
+        .redirect(reqwest::redirect::Policy::none())
+        .user_agent("Mozilla/5.0 (compatible; ComposerAgent/1.0)")
+        .resolve_to_addrs(host, &[addr])
+        .build()
+        .map_err(|err| err.to_string())
+}
+
+async fn resolve_public_endpoint(url: &reqwest::Url) -> Result<SocketAddr, String> {
+    validate_web_fetch_url(url)?;
+    let host = url
+        .host_str()
+        .ok_or_else(|| "Invalid URL: missing host".to_string())?;
+    let port = url
+        .port_or_known_default()
+        .ok_or_else(|| "Invalid URL: missing port".to_string())?;
+
+    if let Some(ip) = parse_host_ip(host) {
+        if is_blocked_ip(ip) {
+            return Err(format!("blocked network target: {ip}"));
+        }
+        return Ok(SocketAddr::new(ip, port));
+    }
+
+    let addrs: Vec<SocketAddr> = lookup_host((host, port))
+        .await
+        .map_err(|err| format!("failed to resolve {host}: {err}"))?
+        .collect();
+
+    if addrs.is_empty() {
+        return Err(format!("failed to resolve {host}: no addresses returned"));
+    }
+
+    if let Some(blocked) = addrs.iter().copied().find(|addr| is_blocked_ip(addr.ip())) {
+        return Err(format!("blocked network target: {}", blocked.ip()));
+    }
+
+    addrs
+        .into_iter()
+        .next()
+        .ok_or_else(|| format!("failed to resolve {host}: no addresses returned"))
+}
+
+fn redirect_target_url(current_url: &reqwest::Url, location: &str) -> Result<reqwest::Url, String> {
+    let next = current_url
+        .join(location)
+        .map_err(|err| format!("invalid redirect target: {err}"))?;
+    validate_web_fetch_url(&next)?;
+    Ok(next)
+}
+
+fn is_redirect_status(status: StatusCode) -> bool {
+    matches!(
+        status,
+        StatusCode::MOVED_PERMANENTLY
+            | StatusCode::FOUND
+            | StatusCode::SEE_OTHER
+            | StatusCode::TEMPORARY_REDIRECT
+            | StatusCode::PERMANENT_REDIRECT
+    )
+}
+
+fn parse_host_ip(host: &str) -> Option<IpAddr> {
+    host.parse::<IpAddr>().ok().or_else(|| {
+        host.strip_prefix('[')
+            .and_then(|trimmed| trimmed.strip_suffix(']'))
+            .and_then(|trimmed| trimmed.parse::<IpAddr>().ok())
+    })
+}
+
+fn is_blocked_ip(ip: IpAddr) -> bool {
+    match ip {
+        IpAddr::V4(addr) => is_blocked_ipv4(addr),
+        IpAddr::V6(addr) => {
+            addr.to_ipv4_mapped().is_some_and(is_blocked_ipv4)
+                || ipv4_compatible_addr(addr).is_some_and(is_blocked_ipv4)
+                || is_blocked_ipv6(addr)
+        }
+    }
+}
+
+fn ipv4_compatible_addr(addr: Ipv6Addr) -> Option<Ipv4Addr> {
+    let octets = addr.octets();
+    if octets[..12].iter().all(|octet| *octet == 0) {
+        Some(Ipv4Addr::new(
+            octets[12], octets[13], octets[14], octets[15],
+        ))
+    } else {
+        None
+    }
+}
+
+fn is_blocked_ipv4(addr: Ipv4Addr) -> bool {
+    addr.is_private()
+        || addr.is_loopback()
+        || addr.is_link_local()
+        || addr.is_multicast()
+        || addr.is_broadcast()
+        || addr.is_unspecified()
+}
+
+fn is_blocked_ipv6(addr: Ipv6Addr) -> bool {
+    addr.is_loopback()
+        || addr.is_unspecified()
+        || addr.is_multicast()
+        || is_unique_local_ipv6(addr)
+        || is_unicast_link_local_ipv6(addr)
+}
+
+fn is_unique_local_ipv6(addr: Ipv6Addr) -> bool {
+    (addr.segments()[0] & 0xfe00) == 0xfc00
+}
+
+fn is_unicast_link_local_ipv6(addr: Ipv6Addr) -> bool {
+    (addr.segments()[0] & 0xffc0) == 0xfe80
+}
+
 /// Arguments for web fetch execution
 #[derive(Debug, Serialize, Deserialize)]
 pub struct WebFetchArgs {
@@ -134,7 +334,7 @@ impl WebFetchTool {
     pub fn new() -> Self {
         let client = reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(DEFAULT_TIMEOUT_SECS))
-            .redirect(reqwest::redirect::Policy::limited(10))
+            .redirect(reqwest::redirect::Policy::none())
             .user_agent("Mozilla/5.0 (compatible; ComposerAgent/1.0)")
             .build();
 
@@ -183,36 +383,26 @@ impl WebFetchTool {
             return ToolResult::failure("URL is required");
         }
 
-        let client = match &self.client {
-            Some(client) => client,
-            None => {
-                return self.build_init_error(url, start_time);
-            }
-        };
-
-        // Ensure URL has a scheme
-        let url = if !url.starts_with("http://") && !url.starts_with("https://") {
-            format!("https://{url}")
-        } else {
-            url.to_string()
-        };
+        if self.client.is_none() {
+            return self.build_init_error(url, start_time);
+        }
 
         // Parse and validate URL
-        let parsed_url = match reqwest::Url::parse(&url) {
+        let parsed_url = match normalize_web_fetch_url(url) {
             Ok(u) => u,
             Err(e) => {
-                let details = WebFetchDetails::new(&url)
+                let details = WebFetchDetails::new(url)
                     .with_duration(start_time.elapsed().as_millis() as u64);
-                return ToolResult::failure(format!("Invalid URL: {e}"))
-                    .with_details(details.to_json());
+                return ToolResult::failure(e).with_details(details.to_json());
             }
         };
+        let normalized_url = parsed_url.to_string();
 
-        // Fetch the URL
-        let response = match client.get(parsed_url.clone()).send().await {
+        // Fetch the URL, validating and pinning each hop before connecting.
+        let response = match fetch_with_validated_redirects(parsed_url.clone()).await {
             Ok(r) => r,
             Err(e) => {
-                let details = WebFetchDetails::new(&url)
+                let details = WebFetchDetails::new(&normalized_url)
                     .with_duration(start_time.elapsed().as_millis() as u64);
                 return ToolResult::failure(format!("Failed to fetch URL: {e}"))
                     .with_details(details.to_json());
@@ -223,10 +413,10 @@ impl WebFetchTool {
         let status = response.status();
         let final_url = response.url().to_string();
         if !status.is_success() {
-            let mut details = WebFetchDetails::new(&url)
+            let mut details = WebFetchDetails::new(&normalized_url)
                 .with_status(status.as_u16())
                 .with_duration(start_time.elapsed().as_millis() as u64);
-            if final_url != url {
+            if final_url != normalized_url {
                 details = details.with_final_url(&final_url);
             }
             return ToolResult::failure(format!(
@@ -248,7 +438,7 @@ impl WebFetchTool {
         // Check content-length before reading (if provided)
         if let Some(length) = response.content_length() {
             if length as usize > MAX_BODY_SIZE {
-                let details = WebFetchDetails::new(&url)
+                let details = WebFetchDetails::new(&normalized_url)
                     .with_status(status.as_u16())
                     .with_content_type(&content_type)
                     .with_body_size(length as usize)
@@ -268,7 +458,7 @@ impl WebFetchTool {
                 Ok(bytes) => {
                     let new_size = body_bytes.len() + bytes.len();
                     if new_size > MAX_BODY_SIZE {
-                        let details = WebFetchDetails::new(&url)
+                        let details = WebFetchDetails::new(&normalized_url)
                             .with_status(status.as_u16())
                             .with_content_type(&content_type)
                             .with_body_size(new_size)
@@ -281,7 +471,7 @@ impl WebFetchTool {
                     body_bytes.extend_from_slice(&bytes);
                 }
                 Err(e) => {
-                    let details = WebFetchDetails::new(&url)
+                    let details = WebFetchDetails::new(&normalized_url)
                         .with_status(status.as_u16())
                         .with_content_type(&content_type)
                         .with_duration(start_time.elapsed().as_millis() as u64);
@@ -323,7 +513,7 @@ impl WebFetchTool {
         };
 
         // Build WebFetchDetails
-        let mut details = WebFetchDetails::new(&url)
+        let mut details = WebFetchDetails::new(&normalized_url)
             .with_status(status.as_u16())
             .with_content_type(&content_type)
             .with_body_size(body_bytes.len())
@@ -331,7 +521,7 @@ impl WebFetchTool {
         if truncated {
             details = details.with_truncation();
         }
-        if final_url != url {
+        if final_url != normalized_url {
             details = details.with_final_url(&final_url);
         }
         if let Some(ref prompt) = args.prompt {
@@ -708,6 +898,85 @@ mod tests {
         let url = "example.com";
         let normalized = format!("https://{}", url);
         assert_eq!(normalized, "https://example.com");
+    }
+
+    #[test]
+    fn test_normalize_rejects_non_http_schemes() {
+        let err = normalize_web_fetch_url("file:///etc/passwd").unwrap_err();
+        assert!(err.contains("Unsupported URL scheme"));
+    }
+
+    #[test]
+    fn test_normalize_allows_scheme_less_host_and_port() {
+        let url = normalize_web_fetch_url("example.com:8080").unwrap();
+        assert_eq!(url.as_str(), "https://example.com:8080/");
+    }
+
+    #[test]
+    fn test_normalize_allows_scheme_less_ipv6_host_and_port() {
+        let url = normalize_web_fetch_url("[2001:db8::1]:8080").unwrap();
+        assert_eq!(url.as_str(), "https://[2001:db8::1]:8080/");
+    }
+
+    #[test]
+    fn test_redirect_target_rejects_non_http_schemes() {
+        let current = reqwest::Url::parse("https://example.com/start").unwrap();
+        let err = redirect_target_url(&current, "file:///etc/passwd").unwrap_err();
+        assert!(err.contains("Unsupported URL scheme"));
+    }
+
+    #[test]
+    fn test_redirect_target_allows_relative_http_hop() {
+        let current = reqwest::Url::parse("https://example.com/path/start").unwrap();
+        let next = redirect_target_url(&current, "../next").unwrap();
+        assert_eq!(next.as_str(), "https://example.com/next");
+    }
+
+    #[test]
+    fn test_blocks_private_and_local_addresses() {
+        assert!(is_blocked_ip(IpAddr::V4(Ipv4Addr::LOCALHOST)));
+        assert!(is_blocked_ip(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1))));
+        assert!(is_blocked_ip(IpAddr::V4(Ipv4Addr::new(172, 16, 0, 1))));
+        assert!(is_blocked_ip(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1))));
+        assert!(is_blocked_ip(IpAddr::V4(Ipv4Addr::new(169, 254, 169, 254))));
+        assert!(is_blocked_ip(IpAddr::V6(Ipv6Addr::LOCALHOST)));
+        assert!(is_blocked_ip(IpAddr::V6(
+            "fd00::1".parse::<Ipv6Addr>().unwrap()
+        )));
+        assert!(is_blocked_ip(IpAddr::V6(
+            "::ffff:127.0.0.1".parse::<Ipv6Addr>().unwrap()
+        )));
+        assert!(is_blocked_ip(IpAddr::V6(
+            "::127.0.0.1".parse::<Ipv6Addr>().unwrap()
+        )));
+        assert!(is_blocked_ip(IpAddr::V6(
+            "::10.0.0.1".parse::<Ipv6Addr>().unwrap()
+        )));
+        assert!(!is_blocked_ip(IpAddr::V4(Ipv4Addr::new(93, 184, 216, 34))));
+        assert!(!is_blocked_ip(IpAddr::V6(
+            "::93.184.216.34".parse::<Ipv6Addr>().unwrap()
+        )));
+    }
+
+    #[tokio::test]
+    async fn test_resolve_rejects_loopback_literal() {
+        let url = reqwest::Url::parse("http://127.0.0.1/metadata").unwrap();
+        let err = resolve_public_endpoint(&url).await.unwrap_err();
+        assert!(err.contains("blocked network target"));
+    }
+
+    #[tokio::test]
+    async fn test_resolve_rejects_ipv4_compatible_loopback_literal() {
+        let url = reqwest::Url::parse("http://[::127.0.0.1]/metadata").unwrap();
+        let err = resolve_public_endpoint(&url).await.unwrap_err();
+        assert!(err.contains("blocked network target"));
+    }
+
+    #[tokio::test]
+    async fn test_resolve_rejects_ipv6_loopback_literal() {
+        let url = reqwest::Url::parse("http://[::1]/metadata").unwrap();
+        let err = resolve_public_endpoint(&url).await.unwrap_err();
+        assert!(err.contains("blocked network target"));
     }
 
     #[tokio::test]

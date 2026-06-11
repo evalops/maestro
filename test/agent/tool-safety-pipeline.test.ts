@@ -5,6 +5,7 @@ import {
 	type ActionApprovalRequest,
 	ActionApprovalService,
 } from "../../src/agent/action-approval.js";
+import type { PlatformToolExecutionBridge } from "../../src/agent/transport/tool-execution-bridge.js";
 import { evaluateToolSafety } from "../../src/agent/transport/tool-safety-pipeline.js";
 import type {
 	AgentEvent,
@@ -59,6 +60,9 @@ function createBaseSafetyContext(options: {
 	path: string;
 	approvalService?: Parameters<typeof evaluateToolSafety>[0]["approvalService"];
 	hookService?: Parameters<typeof evaluateToolSafety>[0]["hookService"];
+	toolExecutionBridge?: Parameters<
+		typeof evaluateToolSafety
+	>[0]["toolExecutionBridge"];
 	firewall?: ActionFirewall;
 	cfg?: Partial<AgentRunConfig>;
 }): Parameters<typeof evaluateToolSafety>[0] {
@@ -86,6 +90,7 @@ function createBaseSafetyContext(options: {
 		adaptiveThresholds: new AdaptiveThresholds(),
 		approvalService: options.approvalService,
 		hookService: options.hookService,
+		toolExecutionBridge: options.toolExecutionBridge,
 		firewall: options.firewall ?? new ActionFirewall(),
 		rateLimitState: {
 			recentToolTimestamps: new Map(),
@@ -212,6 +217,116 @@ describe("evaluateToolSafety permission hooks", () => {
 			path: "/tmp/approved.txt",
 		});
 		expect(approvalService.requestApproval).not.toHaveBeenCalled();
+	});
+
+	it("shows rewritten args for platform approval requests", async () => {
+		clearHookConfigCache();
+		clearRegisteredHooks();
+
+		registerHook("PermissionRequest", {
+			type: "callback",
+			callback: async () => ({
+				reason: "Trusted rewrite policy",
+				hookSpecificOutput: {
+					hookEventName: "PermissionRequest",
+					decision: {
+						behavior: "allow",
+						updatedInput: { path: "/tmp/rewritten.txt" },
+					},
+				},
+			}),
+		});
+
+		const readTool = createReadTool();
+		const approvalService = {
+			requiresUserInteraction: () => true,
+			requestApproval: vi.fn(async (_request: ActionApprovalRequest) => ({
+				approved: true,
+				resolvedBy: "user" as const,
+			})),
+		};
+		const platformBridge: PlatformToolExecutionBridge = {
+			prepare: vi.fn(async () => ({
+				status: "wait_approval" as const,
+				plan: {
+					kind: "governed",
+					metadata: {
+						approvalRequestId: "platform-approval-1",
+						toolExecutionId: "tool-exec-1",
+					},
+				} as never,
+				request: {
+					id: "platform-approval-1",
+					toolName: "read",
+					args: { path: "/tmp/original.txt" },
+					reason: "Platform approval required",
+					startedAtMs: 100,
+					platform: {
+						source: "tool_execution",
+						toolExecutionId: "tool-exec-1",
+						approvalRequestId: "platform-approval-1",
+					},
+				},
+			})),
+			resolveApproval: vi.fn(async (_input, plan) => ({
+				status: "allow" as const,
+				plan,
+			})),
+			recordObservation: vi.fn(async () => ({ metadata: {} })),
+			recordGovernedOutput: vi.fn(async () => ({ metadata: {} })),
+		};
+
+		const { result } = await collectSafetyResult(
+			createBaseSafetyContext({
+				tool: readTool,
+				path: "/tmp/original.txt",
+				approvalService,
+				hookService: createToolHookService({
+					cwd: "/tmp/test",
+					resolveTool: (toolName) =>
+						toolName === "read" ? readTool : undefined,
+				}),
+				toolExecutionBridge: platformBridge,
+				firewall: new ActionFirewall([
+					{
+						name: "require-rewritten-approval",
+						description: "require approval for rewritten path",
+						action: "require_approval",
+						evaluate: async (ctx) => ({
+							allowed:
+								(ctx.args as { path?: string }).path !== "/tmp/rewritten.txt",
+							reason: "Rewritten path approval",
+						}),
+					},
+				]),
+			}),
+		);
+
+		expect(result.verdict.outcome).toBe("proceed");
+		expect(approvalService.requestApproval).toHaveBeenCalledWith(
+			expect.objectContaining({
+				id: "platform-approval-1",
+				args: { path: "/tmp/rewritten.txt" },
+				reason: "Rewritten path approval",
+				startedAtMs: 100,
+				platform: {
+					source: "tool_execution",
+					toolExecutionId: "tool-exec-1",
+					approvalRequestId: "platform-approval-1",
+				},
+			}),
+			undefined,
+			expect.objectContaining({
+				now: expect.any(Function),
+			}),
+		);
+		expect(platformBridge.resolveApproval).toHaveBeenCalled();
+		if (result.verdict.outcome !== "proceed") {
+			throw new Error("Expected rewritten platform approval to proceed");
+		}
+		expect(result.verdict.effectiveToolCall.arguments).toEqual({
+			path: "/tmp/rewritten.txt",
+		});
 	});
 
 	it("blocks when PermissionRequest hooks deny before approval UI", async () => {
@@ -640,6 +755,143 @@ describe("evaluateToolSafety guarded files", () => {
 		);
 		expect(result.verdict.effectiveToolCall.arguments).toEqual({
 			path: "~/.ssh/config",
+		});
+	});
+
+	it("refreshes platform approval requests after PermissionRequest hooks rewrite inputs", async () => {
+		clearHookConfigCache();
+		clearRegisteredHooks();
+
+		registerHook("PermissionRequest", {
+			type: "callback",
+			callback: async () => ({
+				reason: "Trusted rewrite policy",
+				hookSpecificOutput: {
+					hookEventName: "PermissionRequest",
+					decision: {
+						behavior: "allow",
+						updatedInput: { path: "/tmp/rewritten-secret.txt" },
+					},
+				},
+			}),
+		});
+
+		const readTool = createReadTool();
+		const approvalService = {
+			requiresUserInteraction: () => true,
+			requestApproval: vi.fn(async (_request: ActionApprovalRequest) => ({
+				approved: true,
+				resolvedBy: "user" as const,
+			})),
+		};
+		const toolExecutionBridge = {
+			prepare: vi.fn(async () => ({
+				status: "wait_approval" as const,
+				plan: {
+					kind: "governed" as const,
+					mode: "governed" as const,
+					classification: {} as never,
+					config: {} as never,
+					request: {} as never,
+					metadata: {
+						toolExecutionId: "platform-exec-1",
+						approvalRequestId: "platform-approval-1",
+					},
+					resumeToken: "platform-resume-1",
+				},
+				request: {
+					id: "platform-approval-1",
+					toolName: "read",
+					summaryLabel: "Read original.txt",
+					actionDescription: "Reading original.txt",
+					args: { path: "/tmp/original.txt" },
+					reason: "Original platform approval reason",
+					platform: {
+						source: "tool_execution" as const,
+						toolExecutionId: "platform-exec-1",
+						approvalRequestId: "platform-approval-1",
+					},
+				},
+			})),
+			resolveApproval: vi.fn(async (_input, plan) => ({
+				status: "allow" as const,
+				plan,
+			})),
+			recordObservation: vi.fn(async () => ({
+				metadata: {},
+			})),
+			recordGovernedOutput: vi.fn(async () => ({
+				metadata: {},
+			})),
+		} satisfies NonNullable<
+			Parameters<typeof evaluateToolSafety>[0]["toolExecutionBridge"]
+		>;
+
+		const { events, result } = await collectSafetyResult({
+			...createBaseSafetyContext({
+				tool: readTool,
+				path: "/tmp/original.txt",
+				approvalService,
+				hookService: createToolHookService({
+					cwd: "/tmp/test",
+					resolveTool: (toolName) =>
+						toolName === "read" ? readTool : undefined,
+				}),
+				firewall: new ActionFirewall([
+					{
+						name: "rewrite-requires-approval",
+						description: "require approval after rewrite",
+						action: "require_approval",
+						evaluate: async (ctx) => ({
+							allowed:
+								(ctx.args as { path?: string }).path !==
+								"/tmp/rewritten-secret.txt",
+							reason: "Hook rewrite requires approval",
+						}),
+					},
+				]),
+			}),
+			toolExecutionBridge,
+		});
+
+		expect(result.verdict.outcome).toBe("proceed");
+		if (result.verdict.outcome !== "proceed") {
+			throw new Error("Expected rewritten platform approval to proceed");
+		}
+		expect(result.verdict.effectiveToolCall.arguments).toEqual({
+			path: "/tmp/rewritten-secret.txt",
+		});
+		expect(approvalService.requestApproval).toHaveBeenCalledTimes(1);
+		expect(approvalService.requestApproval).toHaveBeenCalledWith(
+			expect.objectContaining({
+				id: "platform-approval-1",
+				args: { path: "/tmp/rewritten-secret.txt" },
+				summaryLabel: "Read rewritten-secret.txt",
+				actionDescription: "Reading rewritten-secret.txt",
+				reason: "Hook rewrite requires approval",
+				platform: {
+					source: "tool_execution",
+					toolExecutionId: "platform-exec-1",
+					approvalRequestId: "platform-approval-1",
+				},
+			}),
+			undefined,
+			expect.objectContaining({
+				now: expect.any(Function),
+			}),
+		);
+		const approvalRequiredEvent = events.find(
+			(event) => event.type === "action_approval_required",
+		);
+		expect(approvalRequiredEvent).toMatchObject({
+			type: "action_approval_required",
+			request: {
+				id: "platform-approval-1",
+				args: { path: "/tmp/rewritten-secret.txt" },
+				summaryLabel: "Read rewritten-secret.txt",
+				actionDescription: "Reading rewritten-secret.txt",
+				reason: "Hook rewrite requires approval",
+			},
 		});
 	});
 

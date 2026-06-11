@@ -20,6 +20,7 @@ import { handleClientToolResult } from "../../src/server/handlers/client-tools.j
 import { handleSessions } from "../../src/server/handlers/sessions.js";
 import { handleToolRetry } from "../../src/server/handlers/tool-retry.js";
 import { serverRequestManager } from "../../src/server/server-request-manager.js";
+import * as sessionScope from "../../src/server/session-scope.js";
 
 const mockModel: RegisteredModel = {
 	id: "claude-sonnet-4-5",
@@ -151,6 +152,7 @@ async function waitForWebSocketMessage(
 
 describe("handleChat", () => {
 	afterEach(() => {
+		vi.restoreAllMocks();
 		resetApprovalModeStore();
 		clearRegisteredHooks();
 		for (const request of serverRequestManager.listPending()) {
@@ -187,6 +189,113 @@ describe("handleChat", () => {
 
 		expect(res.statusCode).toBe(400);
 		expect(res.body).toContain("No messages supplied");
+	});
+
+	it("rejects HTTP resume when the session belongs to another subject", async () => {
+		const sessionManager = {
+			getSessionFileById: vi.fn(() => "victim.jsonl"),
+			setSessionFile: vi.fn(),
+			loadSession: vi.fn(async () => ({
+				id: "victim",
+				owner: "other-subject",
+				messages: [],
+				createdAt: new Date().toISOString(),
+				updatedAt: new Date().toISOString(),
+				messageCount: 0,
+				favorite: false,
+				messagesView: "notLoaded",
+			})),
+		};
+		vi.spyOn(sessionScope, "createWebSessionManagerForRequest").mockReturnValue(
+			sessionManager as unknown as ReturnType<
+				typeof sessionScope.createWebSessionManagerForRequest
+			>,
+		);
+		const req = new PassThrough() as MockPassThrough;
+		req.method = "POST";
+		req.url = "/api/chat";
+		req.headers = { authorization: "Bearer requester-token" };
+		req.end(
+			JSON.stringify({
+				sessionId: "victim",
+				messages: [{ role: "user", content: "continue" }],
+			}),
+		);
+		const res = makeRes();
+		const createAgent = vi.fn();
+
+		await handleChat(
+			req as unknown as IncomingMessage,
+			res as unknown as ServerResponse,
+			{
+				createAgent,
+				getRegisteredModel: async () => mockModel,
+				defaultApprovalMode: "prompt",
+				defaultProvider: "anthropic",
+				defaultModelId: mockModel.id,
+				corsHeaders: cors,
+			} as unknown as WebServerContext,
+		);
+
+		expect(res.statusCode).toBe(403);
+		expect(res.body).toContain("session belongs to another user");
+		expect(createAgent).not.toHaveBeenCalled();
+	});
+
+	it("rejects WebSocket resume when the session belongs to another subject", async () => {
+		const sessionManager = {
+			getSessionFileById: vi.fn(() => "victim.jsonl"),
+			setSessionFile: vi.fn(),
+			loadSession: vi.fn(async () => ({
+				id: "victim",
+				owner: "other-subject",
+				messages: [],
+				createdAt: new Date().toISOString(),
+				updatedAt: new Date().toISOString(),
+				messageCount: 0,
+				favorite: false,
+				messagesView: "notLoaded",
+			})),
+		};
+		vi.spyOn(sessionScope, "createWebSessionManagerForRequest").mockReturnValue(
+			sessionManager as unknown as ReturnType<
+				typeof sessionScope.createWebSessionManagerForRequest
+			>,
+		);
+		const req = new PassThrough() as MockPassThrough;
+		req.method = "GET";
+		req.url = "/api/chat/ws";
+		req.headers = {
+			authorization: "Bearer requester-token",
+			host: "localhost",
+		};
+		const ws = new MockWebSocket();
+		const createAgent = vi.fn();
+
+		handleChatWebSocket(
+			ws as unknown as Parameters<typeof handleChatWebSocket>[0],
+			req as unknown as IncomingMessage,
+			{
+				createAgent,
+				getRegisteredModel: async () => mockModel,
+				defaultApprovalMode: "prompt",
+				defaultProvider: "anthropic",
+				defaultModelId: mockModel.id,
+				corsHeaders: cors,
+			} as unknown as WebServerContext,
+		);
+		ws.emit(
+			"message",
+			JSON.stringify({
+				sessionId: "victim",
+				messages: [{ role: "user", content: "continue" }],
+			}),
+		);
+
+		await waitForWebSocketMessage(ws, (payload) =>
+			payload.includes("session belongs to another user"),
+		);
+		expect(createAgent).not.toHaveBeenCalled();
 	});
 
 	it("streams DONE for valid request", async () => {
@@ -1814,6 +1923,129 @@ describe("handleChat", () => {
 			.filter((entry) => entry.type === "message")
 			.map((entry) => entry.message);
 		expect(messages.some((msg) => msg.role === "user")).toBe(true);
+	});
+
+	it("persists provider tool results after the owning assistant message", async () => {
+		const composerHome = mkdtempSync(join(tmpdir(), "composer-home-"));
+		vi.stubEnv("MAESTRO_HOME", composerHome);
+
+		const req = new PassThrough() as MockPassThrough;
+		req.method = "POST";
+		req.url = "/api/chat";
+		req.headers = {};
+		req.end(
+			JSON.stringify({ messages: [{ role: "user", content: "delegate" }] }),
+		);
+
+		const res = makeRes();
+
+		const context: Partial<WebServerContext> = {
+			createAgent: async () => {
+				type EventCallback = (e: unknown) => void;
+				let subscriber: EventCallback | undefined;
+				const state = {
+					systemPrompt: "",
+					model: mockModel,
+					thinkingLevel: "off",
+					tools: [],
+					messages: [] as unknown[],
+					isStreaming: false,
+					streamMessage: null,
+					pendingToolCalls: new Map(),
+				};
+				return {
+					state,
+					subscribe: (fn: EventCallback) => {
+						subscriber = fn;
+						return () => {
+							subscriber = undefined;
+						};
+					},
+					replaceMessages: () => {},
+					clearMessages: () => {},
+					prompt: async () => {
+						const assistantMessage = {
+							role: "assistant",
+							content: [
+								{
+									type: "toolCall",
+									id: "call_1",
+									name: "codex.subagent.spawnAgent",
+									arguments: {},
+								},
+							],
+							api: mockModel.api,
+							provider: mockModel.provider,
+							model: mockModel.id,
+							usage: {
+								input: 1,
+								output: 1,
+								cacheRead: 0,
+								cacheWrite: 0,
+								cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+							},
+							stopReason: "tool_use",
+							timestamp: Date.now(),
+						};
+						const toolResultMessage = {
+							role: "toolResult" as const,
+							toolCallId: "call_1",
+							toolName: "codex.subagent.spawnAgent",
+							content: [{ type: "text" as const, text: "completed" }],
+							isError: false,
+							timestamp: Date.now(),
+						};
+						state.messages = [assistantMessage, toolResultMessage];
+						subscriber?.({
+							type: "tool_execution_end",
+							toolCallId: "call_1",
+							toolName: "codex.subagent.spawnAgent",
+							result: toolResultMessage,
+							isError: false,
+						});
+						subscriber?.({
+							type: "message_end",
+							message: assistantMessage,
+						});
+						subscriber?.({
+							type: "message_end",
+							message: toolResultMessage,
+						});
+					},
+					abort: () => {},
+				} as unknown as Agent;
+			},
+			getRegisteredModel: async () => mockModel,
+			defaultApprovalMode: "prompt",
+			defaultProvider: "anthropic",
+			defaultModelId: mockModel.id,
+			corsHeaders: cors,
+		};
+
+		await handleChat(
+			req as unknown as IncomingMessage,
+			res as unknown as ServerResponse,
+			context as WebServerContext,
+		);
+
+		const sessionDir = join(composerHome, "agent", "sessions");
+		const sessionFiles = findJsonlFiles(sessionDir);
+		expect(sessionFiles.length).toBeGreaterThan(0);
+
+		const entries = readFileSync(sessionFiles[0]!, "utf8")
+			.trim()
+			.split("\n")
+			.filter(Boolean)
+			.map((line) => JSON.parse(line))
+			.filter((entry) => entry.type === "message");
+
+		expect(entries).toHaveLength(2);
+		expect(entries.map((entry) => entry.message.role)).toEqual([
+			"assistant",
+			"toolResult",
+		]);
+		expect(entries[1]?.parentId).toBe(entries[0]?.id);
+		expect(entries[1]?.message.toolCallId).toBe("call_1");
 	});
 
 	it("slims toolcall update events when header is set", async () => {
