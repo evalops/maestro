@@ -3,6 +3,7 @@
  * Replaces scattered readFileSync/writeFileSync/existsSync calls.
  */
 
+import { randomBytes } from "node:crypto";
 import {
 	constants,
 	existsSync,
@@ -13,7 +14,7 @@ import {
 	writeFileSync,
 } from "node:fs";
 import { access } from "node:fs/promises";
-import { dirname } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { safeJsonParse, safeJsonStringify } from "./json.js";
 import { createLogger } from "./logger.js";
 
@@ -281,10 +282,14 @@ export function writeTextFileAtomic(
 	options: { encoding?: BufferEncoding } = {},
 ): void {
 	const { encoding = "utf-8" } = options;
-	const tempPath = `${path}.tmp.${Date.now()}`;
+	const tempPath = join(
+		dirname(path),
+		`.${basename(path)}.tmp.${process.pid}.${Date.now()}.${randomBytes(6).toString("hex")}`,
+	);
 
 	try {
-		writeTextFile(tempPath, content, { encoding });
+		ensureDir(dirname(path));
+		writeFileSync(tempPath, content, { encoding, flag: "wx" });
 		// Rename is atomic on most filesystems
 		renameSync(tempPath, path);
 	} catch (error) {

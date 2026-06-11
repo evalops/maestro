@@ -47,14 +47,34 @@ interface RawHooksConfig {
 			Array<{
 				matcher?: string;
 				hooks: Array<{
-					type?: "command" | "prompt" | "agent";
+					type?: string;
 					command?: string;
 					prompt?: string;
+					agent?: string;
 					timeout?: number;
 				}>;
 			}>
 		>
 	>;
+}
+
+export class UnsupportedHookTypeError extends Error {
+	constructor(
+		type: string,
+		params: {
+			eventType: string;
+			matcher?: string;
+			hookIndex: number;
+			sourcePath?: string;
+		},
+	) {
+		const matcher = params.matcher || "*";
+		const source = params.sourcePath ? ` in ${params.sourcePath}` : "";
+		super(
+			`Unsupported hook type "${type}"${source} at ${params.eventType} matcher "${matcher}" hook #${params.hookIndex + 1}. Only command hooks are supported in hooks.json.`,
+		);
+		this.name = "UnsupportedHookTypeError";
+	}
 }
 
 /**
@@ -142,6 +162,7 @@ function maybeResolveCommand(command: string, sourceDir: string): string {
 function parseRawHooksConfig(
 	raw: RawHooksConfig,
 	sourceDir?: string,
+	sourcePath?: string,
 ): HookConfiguration {
 	const result: HookConfiguration = {};
 
@@ -167,8 +188,19 @@ function parseRawHooksConfig(
 				continue;
 			}
 
-			for (const hookDef of matcher.hooks) {
-				if (hookDef.type === "command" || hookDef.command) {
+			for (const [hookIndex, hookDef] of matcher.hooks.entries()) {
+				const explicitType =
+					typeof hookDef.type === "string" ? hookDef.type : undefined;
+				if (explicitType && explicitType !== "command") {
+					throw new UnsupportedHookTypeError(explicitType, {
+						eventType,
+						matcher: matcher.matcher,
+						hookIndex,
+						sourcePath,
+					});
+				}
+
+				if (explicitType === "command" || hookDef.command) {
 					if (!hookDef.command) {
 						logger.warn("Command hook missing command field");
 						continue;
@@ -181,17 +213,20 @@ function parseRawHooksConfig(
 						command,
 						timeout: hookDef.timeout,
 					} satisfies HookCommandConfig);
-				} else if (hookDef.type === "prompt" || hookDef.prompt) {
-					if (!hookDef.prompt) {
-						logger.warn("Prompt hook missing prompt field");
-						continue;
-					}
-					hooks.push({
-						type: "prompt",
-						prompt: hookDef.prompt,
-					});
+					continue;
 				}
-				// Agent hooks are not loaded from config files (security)
+				const hookType =
+					hookDef.prompt !== undefined
+						? "prompt"
+						: hookDef.agent !== undefined
+							? "agent"
+							: "unknown";
+				throw new UnsupportedHookTypeError(hookType, {
+					eventType,
+					matcher: matcher.matcher,
+					hookIndex,
+					sourcePath,
+				});
 			}
 
 			if (hooks.length > 0) {
@@ -371,9 +406,12 @@ function loadHooksFromFileWithExtends(
 			resolvedExtends.push(loadHooksFromFileWithExtends(target, nextState));
 		}
 
-		const self = parseRawHooksConfig(raw, sourceDir);
+		const self = parseRawHooksConfig(raw, sourceDir, resolvedPath);
 		return mergeHookConfigs(...resolvedExtends, self);
 	} catch (error) {
+		if (error instanceof UnsupportedHookTypeError) {
+			throw error;
+		}
 		logger.warn(`Failed to load hooks from ${path}`, {
 			error: error instanceof Error ? error.message : String(error),
 		});

@@ -318,65 +318,36 @@ function hashCode(code: string): string {
 	return crypto.createHash("sha256").update(code).digest("hex");
 }
 
-async function isCodeUsed(
-	userId: string,
-	code: string,
-	drift: number,
-): Promise<boolean> {
-	if (!isDbAvailable()) {
-		logger.warn("Database unavailable, replay protection disabled");
-		return false;
-	}
-
-	try {
-		const db = getDb();
-		const codeHash = hashCode(code);
-		const windowStart = getWindowStart(drift);
-
-		const [existing] = await db
-			.select({ id: totpUsedCodes.id })
-			.from(totpUsedCodes)
-			.where(
-				and(
-					eq(totpUsedCodes.userId, userId),
-					eq(totpUsedCodes.codeHash, codeHash),
-					eq(totpUsedCodes.windowStart, windowStart),
-				),
-			)
-			.limit(1);
-
-		return !!existing;
-	} catch (error) {
-		logger.error(
-			"Failed to check used code",
-			error instanceof Error ? error : undefined,
-		);
-		return false;
-	}
-}
+type MarkCodeUsedResult = "marked" | "reused" | "error";
 
 async function markCodeUsed(
 	userId: string,
 	code: string,
 	drift: number,
-): Promise<void> {
-	if (!isDbAvailable()) return;
+): Promise<MarkCodeUsedResult> {
+	if (!isDbAvailable()) {
+		logger.warn("Database unavailable, replay protection disabled");
+		return "marked";
+	}
 
 	try {
 		const db = getDb();
-		await db
+		const inserted = await db
 			.insert(totpUsedCodes)
 			.values({
 				userId,
 				codeHash: hashCode(code),
 				windowStart: getWindowStart(drift),
 			})
-			.onConflictDoNothing();
+			.onConflictDoNothing()
+			.returning({ id: totpUsedCodes.id });
+		return inserted.length > 0 ? "marked" : "reused";
 	} catch (error) {
 		logger.error(
 			"Failed to mark code used",
 			error instanceof Error ? error : undefined,
 		);
+		return "error";
 	}
 }
 
@@ -415,16 +386,19 @@ export async function verifyTotpCode(
 	}
 	const delta = verification.delta;
 
-	// Check replay
-	const wasUsed = await isCodeUsed(userId, code, delta);
-	if (wasUsed) {
+	// Mark as used atomically. A conflict means this valid code was already
+	// redeemed in the same TOTP window.
+	const markResult = await markCodeUsed(userId, code, delta);
+	if (markResult === "reused") {
 		logger.warn("TOTP code reuse detected", { userId });
 		await recordAttempt(userId, false);
 		return { valid: false, error: "code_reused" };
 	}
+	if (markResult === "error") {
+		return { valid: false, error: "invalid_code" };
+	}
 
-	// Mark as used and clear rate limit
-	await markCodeUsed(userId, code, delta);
+	// Clear rate limit on success
 	await recordAttempt(userId, true);
 
 	return { valid: true };

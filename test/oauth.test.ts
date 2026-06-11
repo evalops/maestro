@@ -1453,6 +1453,28 @@ describe("OpenAI OAuth", () => {
 		expect(module.refreshOpenAICodexToken).toBeDefined();
 		expect(module.extractOpenAICodexAccountId).toBeDefined();
 	});
+
+	it("requires matching state for OpenAI Codex pasted authorization input", async () => {
+		const { parseValidatedOpenAICodexAuthorizationInput } = await import(
+			"../src/oauth/openai-codex.js"
+		);
+
+		expect(
+			parseValidatedOpenAICodexAuthorizationInput(
+				"code=abc&state=expected",
+				"expected",
+			),
+		).toBe("abc");
+		expect(() =>
+			parseValidatedOpenAICodexAuthorizationInput("bare-code", "expected"),
+		).toThrow("State mismatch");
+		expect(() =>
+			parseValidatedOpenAICodexAuthorizationInput(
+				"code=abc&state=attacker",
+				"expected",
+			),
+		).toThrow("State mismatch");
+	});
 });
 
 describe("Anthropic OAuth removal", () => {

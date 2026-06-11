@@ -223,6 +223,11 @@ export const diffTool = createTool<typeof diffSchema, DiffToolDetails>({
 
 		const args = ["diff"];
 
+		// Always disable textconv and external-diff drivers regardless of
+		// .gitattributes config — prevents RCE via attacker-controlled git
+		// config in untrusted repositories (fixes #2540).
+		args.push("--no-textconv", "--no-ext-diff");
+
 		if (!wordDiff) {
 			args.push("--no-color");
 		}

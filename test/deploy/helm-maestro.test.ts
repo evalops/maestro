@@ -31,6 +31,10 @@ describe("maestro Helm chart", () => {
 		const result = renderChart();
 
 		expect(result.status).toBe(0);
+		expect(result.stdout).toContain('image: "ghcr.io/evalops/maestro:0.1.0"');
+		expect(result.stdout).toContain("name: MAESTRO_CONTROL_HOST");
+		expect(result.stdout).toContain('value: "0.0.0.0"');
+		expect(result.stdout).toContain("stringData: {}");
 		expect(result.stdout).toContain("kind: PodDisruptionBudget");
 		expect(result.stdout).toMatch(/automountServiceAccountToken:\s+false/);
 		expect(result.stdout).toMatch(/terminationGracePeriodSeconds:\s+45/);
@@ -46,6 +50,37 @@ describe("maestro Helm chart", () => {
 		expect(result.stdout).toContain("/.well-known/evalops/remote-runner/drain");
 		expect(result.stdout).toContain("kubernetes_prestop");
 	});
+
+	helmIt(
+		"keeps offline template renders stable without an explicit API key",
+		() => {
+			const first = renderChart();
+			const second = renderChart();
+
+			expect(first.status).toBe(0);
+			expect(second.status).toBe(0);
+			expect(first.stdout).toBe(second.stdout);
+			expect(first.stdout).not.toContain("MAESTRO_WEB_API_KEY:");
+		},
+	);
+
+	helmIt(
+		"renders explicit API keys and immutable digest image references",
+		() => {
+			const result = renderChart([
+				"--set",
+				"auth.apiKey=provided-key",
+				"--set",
+				"image.digest=sha256:0123456789abcdef",
+			]);
+
+			expect(result.status).toBe(0);
+			expect(result.stdout).toContain('MAESTRO_WEB_API_KEY: "provided-key"');
+			expect(result.stdout).toContain(
+				'image: "ghcr.io/evalops/maestro@sha256:0123456789abcdef"',
+			);
+		},
+	);
 
 	helmIt("can render an HPA without a fixed deployment replica count", () => {
 		const result = renderChart([

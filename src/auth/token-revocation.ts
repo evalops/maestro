@@ -38,13 +38,13 @@ const userRevocationTimestamps = new Map<string, number>();
 
 export function isTokenIssuedBeforeRevocation(
 	userId: string,
-	issuedAt: number, // JWT iat claim - in seconds per RFC 7519
+	issuedAt: number | undefined, // JWT iat claim - in seconds per RFC 7519
 ): boolean {
 	const revokedBefore = userRevocationTimestamps.get(userId);
 	if (!revokedBefore) return false;
-	// Convert stored milliseconds to seconds for comparison with JWT iat
-	const revokedBeforeSeconds = Math.floor(revokedBefore / 1000);
-	return issuedAt < revokedBeforeSeconds;
+	if (typeof issuedAt !== "number" || !Number.isFinite(issuedAt)) return true;
+	const issuedAtMs = issuedAt * 1000;
+	return issuedAtMs <= revokedBefore;
 }
 
 export function setUserRevocationTimestamp(
@@ -424,4 +424,5 @@ export function _resetCacheForTesting(): void {
 		cache.destroy();
 		cache = null;
 	}
+	userRevocationTimestamps.clear();
 }

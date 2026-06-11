@@ -10,6 +10,10 @@ versioning when releases are cut.
 
 - Added a weekly internal patch-release cadence that opens or refreshes release
   PRs with generated changelog entries from commits since the latest semver tag.
+- Added first-class support for the major Chinese model providers — DeepSeek,
+  Moonshot/Kimi, Alibaba Qwen (DashScope), MiniMax, and Z.ai/Zhipu GLM — across
+  the model registry, API-key resolution, `/config` presets, and the native Rust
+  TUI, including DeepSeek's previously missing `DEEPSEEK_API_KEY` lookup.
 
 ### Changed
 

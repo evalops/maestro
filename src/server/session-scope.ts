@@ -7,9 +7,8 @@ import {
 	sanitizeSessionScope,
 } from "../session/scope.js";
 import { getArtifactAccessGrantFromRequest } from "./artifact-access.js";
-import { getAuthScopeKey, getAuthSubject } from "./authz.js";
+import { getAuthScopeKey, getAuthSubject, hasConfiguredAuth } from "./authz.js";
 import { HostedSessionManager } from "./hosted-session-manager.js";
-import { getRequestToken } from "./server-utils.js";
 
 const SESSION_SCOPE_MODE = (
 	process.env.MAESTRO_SESSION_SCOPE ||
@@ -22,7 +21,13 @@ const SESSION_SCOPE_MODE = (
 const SESSION_SCOPE_ENABLED =
 	SESSION_SCOPE_MODE === "auth" ||
 	SESSION_SCOPE_MODE === "true" ||
-	SESSION_SCOPE_MODE === "1";
+	SESSION_SCOPE_MODE === "1" ||
+	(SESSION_SCOPE_MODE !== "false" &&
+		SESSION_SCOPE_MODE !== "0" &&
+		SESSION_SCOPE_MODE !== "off" &&
+		SESSION_SCOPE_MODE !== "none" &&
+		SESSION_SCOPE_MODE !== "global" &&
+		hasConfiguredAuth());
 
 export function resolveSessionScope(req: IncomingMessage): string | null {
 	if (!SESSION_SCOPE_ENABLED) return null;
@@ -30,9 +35,8 @@ export function resolveSessionScope(req: IncomingMessage): string | null {
 	if (artifactAccess) {
 		return artifactAccess.scope ?? null;
 	}
-	if (!getRequestToken(req)) return null;
 	const scopeKey = getAuthScopeKey(req);
-	if (!scopeKey) return null;
+	if (!scopeKey || scopeKey === "anon") return null;
 	return sanitizeSessionScope(scopeKey) || null;
 }
 

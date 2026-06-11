@@ -1761,4 +1761,47 @@ mod tests {
         let parsed: SandboxPolicy = serde_json::from_str(&json).unwrap();
         assert_eq!(policy, parsed);
     }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn linux_workspace_write_blocks_home_writes() {
+        if !is_sandbox_available() {
+            return;
+        }
+
+        let workspace = tempfile::tempdir().unwrap();
+        let home = std::env::var("HOME").unwrap_or_default();
+        if home.is_empty() || home.starts_with("/tmp") {
+            return;
+        }
+
+        let probe = PathBuf::from(home).join(format!(
+            "maestro-rust-sandbox-should-not-write-{}",
+            std::process::id()
+        ));
+        let policy = SandboxPolicy::WorkspaceWrite {
+            writable_roots: Vec::new(),
+            network_access: false,
+            exclude_tmpdir_env_var: true,
+            exclude_slash_tmp: true,
+        };
+
+        let child = spawn_sandboxed_command(
+            vec![
+                "sh".to_string(),
+                "-c".to_string(),
+                format!("printf blocked > {}", probe.to_string_lossy()),
+            ],
+            workspace.path().to_path_buf(),
+            &policy,
+            HashMap::new(),
+        )
+        .await
+        .unwrap();
+        let output = child.wait_with_output().await.unwrap();
+
+        assert!(!output.status.success());
+        assert!(!probe.exists());
+        let _ = std::fs::remove_file(probe);
+    }
 }

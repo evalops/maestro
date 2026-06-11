@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { and, asc, desc, eq, gte, isNull, sql } from "drizzle-orm";
+import { isToolResultMessage } from "../agent/type-guards.js";
 import type { AgentState, AppMessage } from "../agent/types.js";
 import { getDb } from "../db/client.js";
 import { hostedSessionEntries, hostedSessions } from "../db/schema.js";
@@ -630,6 +631,17 @@ export class HostedSessionManager {
 	}
 
 	saveMessage(message: AppMessage): void {
+		if (
+			isToolResultMessage(message) &&
+			this.entries.some(
+				(entry) =>
+					entry.type === "message" &&
+					isToolResultMessage(entry.message) &&
+					entry.message.toolCallId === message.toolCallId,
+			)
+		) {
+			return;
+		}
 		const sanitizedMessage = sanitizeMessageForSession(message);
 		const entry: SessionTreeEntry = {
 			type: "message",

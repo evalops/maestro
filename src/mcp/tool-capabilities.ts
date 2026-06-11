@@ -249,7 +249,7 @@ export function classifyToolCapability(
 		...base,
 		domain: "unknown",
 		toolLane: "unknown",
-		riskClass: readOnlyHint(input.annotations) === true ? "observe" : "medium",
+		riskClass: "medium",
 		requiresReceipt: false,
 		proofRequired: false,
 		mutatesDesktop: false,

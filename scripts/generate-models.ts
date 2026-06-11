@@ -58,9 +58,13 @@ const BASE_URLS: Record<string, string> = {
 	anthropic: "https://api.anthropic.com",
 	google: "https://generativelanguage.googleapis.com/v1beta",
 	cerebras: "https://api.cerebras.ai/v1",
-	zai: "https://api.zaidomain.com/v1",
+	zai: "https://api.z.ai/api/coding/paas/v4",
 	mistral: "https://api.mistral.ai/v1",
 	writer: "https://api.writer.com/v1",
+	deepseek: "https://api.deepseek.com/v1",
+	moonshotai: "https://api.moonshot.ai/v1",
+	alibaba: "https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
+	minimax: "https://api.minimax.io/v1",
 };
 
 const API_BY_PROVIDER: Record<string, string> = {
@@ -71,6 +75,10 @@ const API_BY_PROVIDER: Record<string, string> = {
 	zai: "openai-completions",
 	mistral: "openai-completions",
 	writer: "openai-completions",
+	deepseek: "openai-completions",
+	moonshotai: "openai-completions",
+	alibaba: "openai-completions",
+	minimax: "openai-completions",
 	anthropic: "anthropic-messages",
 	google: "google-generative-ai",
 };

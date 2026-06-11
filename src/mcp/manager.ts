@@ -68,6 +68,7 @@ import {
 	normalizeMcpElicitationArgs,
 	parseMcpElicitationClientToolResult,
 } from "./elicitation.js";
+import { buildMcpToolCanonicalNames } from "./names.js";
 import {
 	getMcpRemoteHost,
 	getOfficialMcpRegistryMatch,
@@ -1454,6 +1455,18 @@ export class McpClientManager extends EventEmitter {
 				officialRegistry: remoteRegistryMatch?.info,
 				projectApproval,
 			});
+		}
+
+		const statusTools = servers.flatMap((server) =>
+			server.tools.map((tool) => ({ server, tool })),
+		);
+		const canonicalNames = buildMcpToolCanonicalNames(
+			statusTools,
+			({ server }) => server.name,
+			({ tool }) => tool.name,
+		);
+		for (const [index, { tool }] of statusTools.entries()) {
+			tool.canonicalName = canonicalNames[index];
 		}
 
 		return { servers, authPresets };

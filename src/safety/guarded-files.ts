@@ -12,6 +12,7 @@ import {
 	expandTildePathWithHomeDir,
 	getOsHomeDir,
 } from "../utils/path-expansion.js";
+import { normalizeToolNameForSafety } from "../utils/safety-normalization.js";
 import { tokenizeSimple, unwrapShellCommand } from "./bash-safety-analyzer.js";
 
 export const DEFAULT_GUARDED_FILE_RULE_ID = "default-guarded-file";
@@ -47,7 +48,7 @@ export interface GuardedFileMatchOptions {
 export function classifyGuardedFileAccessAction(
 	toolName: string,
 ): GuardedFileAccessAction {
-	const normalizedToolName = toolName.toLowerCase();
+	const normalizedToolName = normalizeToolNameForSafety(toolName);
 	if (
 		[
 			"write",
@@ -453,7 +454,7 @@ function extractGuardedToolCallPaths(
 		return [];
 	}
 	const paths: string[] = [];
-	const normalizedToolName = toolName.toLowerCase();
+	const normalizedToolName = normalizeToolNameForSafety(toolName);
 	if (["read", "write", "edit"].includes(normalizedToolName)) {
 		const path =
 			getStringArg(argsObject, "file_path") || getStringArg(argsObject, "path");

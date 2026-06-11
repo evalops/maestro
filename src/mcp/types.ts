@@ -150,6 +150,7 @@ export interface McpConfig {
 }
 
 export type McpToolStatus = McpTool & {
+	canonicalName?: string;
 	capability?: ToolCapabilityMetadata;
 };
 

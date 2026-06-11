@@ -318,7 +318,12 @@ function materializeStagedFiles(root: string, files: string[]): string | null {
 		const target = join(tempDir, relative);
 		const dir = dirname(target);
 		mkdirSync(dir, { recursive: true });
-		const show = runCommand("git", ["show", `:${relative}`], root, 5_000);
+		const show = runCommand(
+			"git",
+			["show", "--no-textconv", "--no-ext-diff", `:${relative}`],
+			root,
+			5_000,
+		);
 		if (show.exitCode !== 0) {
 			// skip files we fail to read from index
 			continue;

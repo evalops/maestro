@@ -99,7 +99,11 @@ export interface OpenAICompatOverrides {
  * - `groq` - Groq
  * - `cerebras` - Cerebras
  * - `openrouter` - OpenRouter (aggregator)
- * - `zai` - ZAI
+ * - `zai` - Z.ai (Zhipu GLM)
+ * - `deepseek` - DeepSeek
+ * - `moonshot` - Moonshot AI (Kimi)
+ * - `dashscope` - Alibaba Qwen (DashScope)
+ * - `minimax` - MiniMax
  */
 export type KnownProvider =
 	| "anthropic"
@@ -113,7 +117,11 @@ export type KnownProvider =
 	| "groq"
 	| "cerebras"
 	| "openrouter"
-	| "zai";
+	| "zai"
+	| "deepseek"
+	| "moonshot"
+	| "dashscope"
+	| "minimax";
 
 /**
  * Provider identifier - either a known provider or a custom string.

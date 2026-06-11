@@ -68,10 +68,63 @@ use maestro_tui::hosted_runner_cli::run_hosted_runner_cli_from_env;
 /// # Returns
 ///
 /// A static string identifying the provider (e.g., "openai", "anthropic")
+fn infer_direct_provider_from_bare_model(model_lower: &str) -> Option<&'static str> {
+    if matches!(model_lower, "deepseek-chat" | "deepseek-reasoner")
+        || model_lower.starts_with("deepseek-v")
+    {
+        return Some("deepseek");
+    }
+
+    if model_lower.starts_with("kimi-")
+        || model_lower == "kimi-latest"
+        || model_lower.starts_with("moonshot-v1-")
+    {
+        return Some("moonshot");
+    }
+
+    if model_lower.starts_with("qwen3-")
+        || matches!(
+            model_lower,
+            "qwen-max" | "qwen-plus" | "qwen-turbo" | "qwen-vl-max" | "qwq-32b"
+        )
+    {
+        return Some("dashscope");
+    }
+
+    if matches!(
+        model_lower,
+        "minimax-m2" | "minimax-m2.5" | "minimax-m2.7" | "minimax-text-01"
+    ) {
+        return Some("minimax");
+    }
+
+    if model_lower.starts_with("glm-") {
+        return Some("zai");
+    }
+
+    None
+}
+
 fn infer_provider_from_model(model: &str) -> &'static str {
     // Convert to lowercase for case-insensitive matching.
     // Note: This allocates a new String on the heap.
     let model_lower = model.to_lowercase();
+
+    // Explicit "provider/model" prefixes win over heuristic name matching.
+    if let Some((prefix, _)) = model_lower.split_once('/') {
+        match prefix {
+            "deepseek" => return "deepseek",
+            "moonshot" | "kimi" => return "moonshot",
+            "dashscope" | "qwen" => return "dashscope",
+            "minimax" => return "minimax",
+            "zai" | "zhipu" => return "zai",
+            _ => {}
+        }
+    }
+
+    if let Some(provider) = infer_direct_provider_from_bare_model(&model_lower) {
+        return provider;
+    }
 
     // OpenAI models - check various prefixes that indicate OpenAI
     // The `||` operator short-circuits: if the first condition is true,
@@ -104,8 +157,17 @@ fn infer_provider_from_model(model: &str) -> &'static str {
         return "xai";
     }
 
-    // Groq models (they host llama, mixtral, etc.)
-    if model_lower.contains("groq") {
+    // Groq hosts Llama plus DeepSeek/Qwen distill/coder variants. Direct-provider
+    // bare ids are handled earlier by `infer_direct_provider_from_bare_model`, so
+    // these heuristics mirror the Groq fallback in `AiProvider::from_model` and
+    // keep `--api-key` env wiring aligned with the client that actually runs
+    // (e.g. deepseek-r1-distill-llama-70b, qwen-2.5-coder-32b -> GROQ_API_KEY).
+    if model_lower.contains("groq")
+        || model_lower.starts_with("llama-")
+        || model_lower.starts_with("llama3")
+        || model_lower.contains("deepseek")
+        || model_lower.contains("qwen")
+    {
         return "groq";
     }
 
@@ -267,6 +329,11 @@ async fn main() -> Result<()> {
             "groq" => std::env::set_var("GROQ_API_KEY", api_key),
             "cerebras" => std::env::set_var("CEREBRAS_API_KEY", api_key),
             "openrouter" => std::env::set_var("OPENROUTER_API_KEY", api_key),
+            "deepseek" => std::env::set_var("DEEPSEEK_API_KEY", api_key),
+            "moonshot" | "kimi" => std::env::set_var("MOONSHOT_API_KEY", api_key),
+            "dashscope" | "qwen" => std::env::set_var("DASHSCOPE_API_KEY", api_key),
+            "minimax" => std::env::set_var("MINIMAX_API_KEY", api_key),
+            "zai" | "zhipu" => std::env::set_var("ZAI_API_KEY", api_key),
             // `_` matches anything not explicitly handled above
             _ => std::env::set_var("ANTHROPIC_API_KEY", api_key),
         }
@@ -338,6 +405,27 @@ mod tests {
     fn codex_models_infer_openai_provider() {
         assert_eq!(infer_provider_from_model("gpt-5.1-codex-max"), "openai");
         assert_eq!(infer_provider_from_model("codex-mini-latest"), "openai");
+    }
+
+    #[test]
+    fn chinese_bare_models_infer_direct_provider() {
+        assert_eq!(infer_provider_from_model("deepseek-chat"), "deepseek");
+        assert_eq!(infer_provider_from_model("kimi-k2.6"), "moonshot");
+        assert_eq!(infer_provider_from_model("qwen3-max"), "dashscope");
+        assert_eq!(infer_provider_from_model("MiniMax-M2"), "minimax");
+        assert_eq!(infer_provider_from_model("glm-4.6"), "zai");
+    }
+
+    #[test]
+    fn groq_hosted_bare_models_infer_groq() {
+        // Key inference must mirror AiProvider::from_model so --api-key writes the
+        // env var the actually-selected client reads.
+        assert_eq!(
+            infer_provider_from_model("deepseek-r1-distill-llama-70b"),
+            "groq"
+        );
+        assert_eq!(infer_provider_from_model("qwen-2.5-coder-32b"), "groq");
+        assert_eq!(infer_provider_from_model("llama-3.3-70b-versatile"), "groq");
     }
 
     #[test]

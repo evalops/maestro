@@ -189,4 +189,84 @@ describe("workflow footgun guardrails", () => {
 
 		expect(evaluateWorkflowFootguns({ root })).toEqual([]);
 	});
+
+	it("rejects pull request runner override variables that can route PR CI onto internal smoke runners", () => {
+		const root = makeFixture();
+		write(
+			join(root, ".github/workflows/ci.yml"),
+			[
+				"name: ci",
+				"jobs:",
+				"  pr-checks:",
+				"    runs-on: ${{ github.event_name == 'pull_request' && (vars.PR_CHECKS_RUNNER || 'evalops-private-heavy') || 'evalops-internal' }}",
+				"    steps:",
+				"      - run: echo ok",
+				"  coverage:",
+				"    runs-on: ${{ github.event_name == 'pull_request' && (vars.PR_COVERAGE_RUNNER || 'evalops-private-heavy') || 'evalops-internal' }}",
+				"    steps:",
+				"      - run: echo ok",
+				"",
+			].join("\n"),
+		);
+		write(
+			join(root, ".github/workflows/rust.yml"),
+			[
+				"name: Rust TUI",
+				"jobs:",
+				"  build:",
+				"    runs-on: ${{ github.event_name == 'pull_request' && (vars.PR_RUST_RUNNER || 'evalops-private-heavy') || 'evalops-internal' }}",
+				"    steps:",
+				"      - run: echo ok",
+				"",
+			].join("\n"),
+		);
+
+		expect(evaluateWorkflowFootguns({ root })).toEqual(
+			expect.arrayContaining([
+				expect.stringContaining(
+					"ci.yml: pull_request jobs must not use vars.PR_CHECKS_RUNNER",
+				),
+				expect.stringContaining(
+					"ci.yml: pull_request jobs must not use vars.PR_COVERAGE_RUNNER",
+				),
+				expect.stringContaining(
+					"rust.yml: pull_request jobs must not use vars.PR_RUST_RUNNER",
+				),
+			]),
+		);
+	});
+
+	it("accepts pull request workflows pinned to private CI lanes", () => {
+		const root = makeFixture();
+		write(
+			join(root, ".github/workflows/ci.yml"),
+			[
+				"name: ci",
+				"jobs:",
+				"  pr-checks:",
+				"    runs-on: ${{ github.event_name == 'pull_request' && 'evalops-private-heavy' || 'evalops-internal' }}",
+				"    steps:",
+				"      - run: echo ok",
+				"  coverage:",
+				"    runs-on: ${{ github.event_name == 'pull_request' && 'evalops-private-heavy' || 'evalops-internal' }}",
+				"    steps:",
+				"      - run: echo ok",
+				"",
+			].join("\n"),
+		);
+		write(
+			join(root, ".github/workflows/rust.yml"),
+			[
+				"name: Rust TUI",
+				"jobs:",
+				"  build:",
+				"    runs-on: ${{ github.event_name == 'pull_request' && 'evalops-private-heavy' || 'evalops-internal' }}",
+				"    steps:",
+				"      - run: echo ok",
+				"",
+			].join("\n"),
+		);
+
+		expect(evaluateWorkflowFootguns({ root })).toEqual([]);
+	});
 });

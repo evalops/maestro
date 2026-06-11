@@ -13,6 +13,7 @@ describe("bash-safety-analyzer (heuristics)", () => {
 
 	it("detects destructive simple commands", () => {
 		expect(isDestructiveSimpleCommand(["rm", "-rf", "/"])).toBe(true);
+		expect(isDestructiveSimpleCommand(["r\u200bm", "-rf", "/"])).toBe(true);
 		expect(isDestructiveSimpleCommand(["git", "push"])).toBe(true);
 		expect(isDestructiveSimpleCommand(["git", "status"])).toBe(false);
 		expect(isDestructiveSimpleCommand(["echo", "hello"])).toBe(false);
@@ -22,11 +23,13 @@ describe("bash-safety-analyzer (heuristics)", () => {
 		expect(isSimpleBenignBash("echo hello")).toBe(true);
 		expect(isSimpleBenignBash("timeout 10 echo hello")).toBe(true);
 		expect(isSimpleBenignBash("timeout 10 rm -rf /")).toBe(false);
+		expect(isSimpleBenignBash("timeout 10 r\u200bm -rf /")).toBe(false);
 		expect(isSimpleBenignBash("echo hello | cat")).toBe(false);
 	});
 
 	it("detects egress primitives", () => {
 		expect(hasEgressPrimitives("curl https://example.com")).toBe(true);
+		expect(hasEgressPrimitives("cu\u200brl https://example.com")).toBe(true);
 		expect(hasEgressPrimitives("bash -lc 'echo hi'")).toBe(false);
 		expect(hasEgressPrimitives("cat </dev/tcp/127.0.0.1/80")).toBe(true);
 	});

@@ -23,6 +23,10 @@
  * | openrouter | OPENROUTER_API_KEY                        |
  * | zai        | ZAI_API_KEY                               |
  * | mistral    | MISTRAL_API_KEY                           |
+ * | deepseek   | DEEPSEEK_API_KEY                          |
+ * | moonshot   | MOONSHOT_API_KEY, KIMI_API_KEY            |
+ * | dashscope  | DASHSCOPE_API_KEY, QWEN_API_KEY           |
+ * | minimax    | MINIMAX_API_KEY                           |
  *
  * ## Key Sources
  *
@@ -90,6 +94,10 @@ export const envApiKeyMap = {
 	openrouter: ["OPENROUTER_API_KEY"],
 	zai: ["ZAI_API_KEY"],
 	mistral: ["MISTRAL_API_KEY"],
+	deepseek: ["DEEPSEEK_API_KEY"],
+	moonshot: ["MOONSHOT_API_KEY", "KIMI_API_KEY"],
+	dashscope: ["DASHSCOPE_API_KEY", "QWEN_API_KEY"],
+	minimax: ["MINIMAX_API_KEY"],
 } as const satisfies Record<string, readonly string[]>;
 
 export type KnownProvider = keyof typeof envApiKeyMap;

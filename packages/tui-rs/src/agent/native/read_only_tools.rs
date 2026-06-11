@@ -65,7 +65,7 @@ fn is_known_native_read_only_tool(tool_name: &str) -> bool {
 pub(super) fn is_native_parallel_read_only_tool_call(
     tool_name: &str,
     requires_approval: bool,
-    annotations: Option<&McpToolAnnotations>,
+    _annotations: Option<&McpToolAnnotations>,
     explicit_inline_read_only: bool,
 ) -> bool {
     if requires_approval {
@@ -78,9 +78,7 @@ pub(super) fn is_native_parallel_read_only_tool_call(
     }
 
     if tool_key.starts_with("mcp__") {
-        return annotations.is_some_and(|annotation| {
-            annotation.read_only_hint == Some(true) && annotation.destructive_hint != Some(true)
-        });
+        return false;
     }
 
     explicit_inline_read_only
@@ -164,7 +162,7 @@ mod tests {
             destructive_hint: Some(false),
             ..Default::default()
         };
-        assert!(is_native_parallel_read_only_tool_call(
+        assert!(!is_native_parallel_read_only_tool_call(
             "mcp__repo__inspect",
             false,
             Some(&read_only_mcp),

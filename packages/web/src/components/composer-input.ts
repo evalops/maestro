@@ -44,12 +44,24 @@ interface McpToolItem {
 	badge: string;
 }
 
-function sanitizeMcpName(value: string): string {
-	return value.replace(/[^a-zA-Z0-9_-]/g, "_");
+function buildMcpToolName(server: string, tool: string): string {
+	return `mcp__${sanitizeMcpSegment(server)}__${sanitizeMcpSegment(tool)}`;
 }
 
-function buildMcpToolName(server: string, tool: string): string {
-	return `mcp__${sanitizeMcpName(server)}__${tool}`;
+function sanitizeMcpSegment(value: string): string {
+	const sanitized =
+		value.replace(/[^a-zA-Z0-9-]+/g, "_").replace(/^_+|_+$/g, "") || "unnamed";
+	if (sanitized === value) return sanitized;
+	return `${sanitized}_${shortStableHash(value)}`;
+}
+
+function shortStableHash(value: string): string {
+	let hash = 0x811c9dc5;
+	for (let index = 0; index < value.length; index += 1) {
+		hash ^= value.charCodeAt(index);
+		hash = Math.imul(hash, 0x01000193);
+	}
+	return (hash >>> 0).toString(36).slice(0, 6);
 }
 
 function getMcpBadge(
@@ -701,7 +713,8 @@ export class ComposerInput extends LitElement {
 						if (!server.connected || !Array.isArray(server.tools)) continue;
 						for (const tool of server.tools) {
 							if (!tool?.name) continue;
-							const id = buildMcpToolName(server.name, tool.name);
+							const id =
+								tool.canonicalName ?? buildMcpToolName(server.name, tool.name);
 							if (seen.has(id)) continue;
 							seen.add(id);
 							tools.push({

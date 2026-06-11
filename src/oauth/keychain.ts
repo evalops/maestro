@@ -32,24 +32,19 @@
  * AES-256-GCM encrypted file storage with a machine-derived key.
  */
 
-import { execSync } from "node:child_process";
+import { execFileSync } from "node:child_process";
 import {
 	createCipheriv,
 	createDecipheriv,
 	randomBytes,
 	scryptSync,
 } from "node:crypto";
-import {
-	chmodSync,
-	existsSync,
-	mkdirSync,
-	readFileSync,
-	writeFileSync,
-} from "node:fs";
+import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { hostname, userInfo } from "node:os";
 import { join } from "node:path";
 import { getAgentDir } from "../config/constants.js";
 import { createLogger } from "../utils/logger.js";
+import { writePrivateFileSync } from "./private-file.js";
 
 const logger = createLogger("oauth:keychain");
 
@@ -84,7 +79,7 @@ function isMacOS(): boolean {
 function hasMacOSKeychain(): boolean {
 	if (!isMacOS()) return false;
 	try {
-		execSync("which security", { stdio: "ignore" });
+		execFileSync("which", ["security"], { stdio: "ignore" });
 		return true;
 	} catch {
 		return false;
@@ -144,8 +139,23 @@ function saveEncryptedStore(store: EncryptedStore): void {
 	}
 
 	const storePath = getEncryptedStorePath();
-	writeFileSync(storePath, JSON.stringify(store, null, 2), "utf-8");
-	chmodSync(storePath, 0o600);
+	writePrivateFileSync(storePath, JSON.stringify(store, null, 2));
+}
+
+let encryptedStoreMutationQueue: Promise<void> = Promise.resolve();
+
+async function mutateEncryptedStore<T>(mutation: () => T): Promise<T> {
+	const previous = encryptedStoreMutationQueue;
+	let release!: () => void;
+	encryptedStoreMutationQueue = new Promise<void>((resolve) => {
+		release = resolve;
+	});
+	await previous;
+	try {
+		return mutation();
+	} finally {
+		release();
+	}
 }
 
 /**
@@ -186,15 +196,52 @@ function decryptValue(
 	return decrypted;
 }
 
+function extractKeychainAttribute(
+	line: string,
+	attribute: string,
+): string | null {
+	const match = line.match(new RegExp(`"${attribute}"[^=]*="(.*)"`));
+	return match?.[1] ?? null;
+}
+
+function parseMacOSKeychainAccounts(output: string): string[] {
+	const accounts: string[] = [];
+	const lines = output.split(/\r?\n/);
+
+	for (let index = 0; index < lines.length; index++) {
+		if (extractKeychainAttribute(lines[index] ?? "", "svce") !== SERVICE_NAME) {
+			continue;
+		}
+
+		for (
+			let accountIndex = index + 1;
+			accountIndex < Math.min(lines.length, index + 5);
+			accountIndex++
+		) {
+			const account = extractKeychainAttribute(
+				lines[accountIndex] ?? "",
+				"acct",
+			);
+			if (account) {
+				accounts.push(account);
+				break;
+			}
+		}
+	}
+
+	return accounts;
+}
+
 /**
  * macOS Keychain operations using security command
  */
 const macOSKeychain = {
 	async get(key: string): Promise<string | null> {
 		try {
-			const result = execSync(
-				`security find-generic-password -s "${SERVICE_NAME}" -a "${key}" -w 2>/dev/null`,
-				{ encoding: "utf8" },
+			const result = execFileSync(
+				"security",
+				["find-generic-password", "-s", SERVICE_NAME, "-a", key, "-w"],
+				{ encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] },
 			);
 			return result.trim();
 		} catch {
@@ -205,8 +252,9 @@ const macOSKeychain = {
 	async set(key: string, value: string): Promise<void> {
 		// Delete existing entry first (if any)
 		try {
-			execSync(
-				`security delete-generic-password -s "${SERVICE_NAME}" -a "${key}" 2>/dev/null`,
+			execFileSync(
+				"security",
+				["delete-generic-password", "-s", SERVICE_NAME, "-a", key],
 				{ stdio: "ignore" },
 			);
 		} catch {
@@ -214,16 +262,18 @@ const macOSKeychain = {
 		}
 
 		// Add new entry
-		execSync(
-			`security add-generic-password -s "${SERVICE_NAME}" -a "${key}" -w "${value.replace(/"/g, '\\"')}"`,
+		execFileSync(
+			"security",
+			["add-generic-password", "-s", SERVICE_NAME, "-a", key, "-w", value],
 			{ stdio: "ignore" },
 		);
 	},
 
 	async delete(key: string): Promise<void> {
 		try {
-			execSync(
-				`security delete-generic-password -s "${SERVICE_NAME}" -a "${key}" 2>/dev/null`,
+			execFileSync(
+				"security",
+				["delete-generic-password", "-s", SERVICE_NAME, "-a", key],
 				{ stdio: "ignore" },
 			);
 		} catch {
@@ -233,11 +283,11 @@ const macOSKeychain = {
 
 	async list(): Promise<string[]> {
 		try {
-			const result = execSync(
-				`security dump-keychain 2>/dev/null | grep -A4 'svce.*="${SERVICE_NAME}"' | grep 'acct' | sed 's/.*="\\(.*\\)"/\\1/'`,
-				{ encoding: "utf8" },
-			);
-			return result.trim().split("\n").filter(Boolean);
+			const result = execFileSync("security", ["dump-keychain"], {
+				encoding: "utf8",
+				stdio: ["ignore", "pipe", "ignore"],
+			});
+			return parseMacOSKeychainAccounts(result);
 		} catch {
 			return [];
 		}
@@ -267,18 +317,22 @@ const encryptedFileStore = {
 	},
 
 	async set(key: string, value: string): Promise<void> {
-		const store = loadEncryptedStore();
-		const salt = Buffer.from(store.salt, "hex");
-		const encKey = deriveMachineKey(salt);
+		await mutateEncryptedStore(() => {
+			const store = loadEncryptedStore();
+			const salt = Buffer.from(store.salt, "hex");
+			const encKey = deriveMachineKey(salt);
 
-		store.credentials[key] = encryptValue(value, encKey);
-		saveEncryptedStore(store);
+			store.credentials[key] = encryptValue(value, encKey);
+			saveEncryptedStore(store);
+		});
 	},
 
 	async delete(key: string): Promise<void> {
-		const store = loadEncryptedStore();
-		delete store.credentials[key];
-		saveEncryptedStore(store);
+		await mutateEncryptedStore(() => {
+			const store = loadEncryptedStore();
+			delete store.credentials[key];
+			saveEncryptedStore(store);
+		});
 	},
 
 	async list(): Promise<string[]> {

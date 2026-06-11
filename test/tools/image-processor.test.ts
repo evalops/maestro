@@ -116,7 +116,7 @@ describe("image-processor", () => {
 	});
 });
 
-// Conditional tests that only run if sharp is available
+// Capability skips in this block are tracked by evalops/maestro-internal#2582.
 describe("image-processor with sharp", async () => {
 	const sharpAvailable = await isSharpAvailable();
 

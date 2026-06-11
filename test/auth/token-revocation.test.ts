@@ -3,8 +3,10 @@ import {
 	_resetCacheForTesting,
 	getRevocationMetrics,
 	hashToken,
+	isTokenIssuedBeforeRevocation,
 	isTokenRevokedSync,
 	revokeToken,
+	setUserRevocationTimestamp,
 } from "../../src/auth/token-revocation.js";
 
 // Mock the database client
@@ -183,6 +185,28 @@ describe("Token Revocation Service", () => {
 
 			const metrics = getRevocationMetrics();
 			expect(metrics.cacheSize).toBe(3);
+		});
+	});
+
+	describe("user-wide revocation timestamps", () => {
+		it("revokes tokens issued in the same second as the revoke-all timestamp", () => {
+			setUserRevocationTimestamp("user-1", 1_700_000_000_500);
+
+			expect(isTokenIssuedBeforeRevocation("user-1", 1_700_000_000)).toBe(true);
+			expect(isTokenIssuedBeforeRevocation("user-1", 1_700_000_001)).toBe(
+				false,
+			);
+		});
+
+		it("treats missing or invalid iat as revoked after revoke-all", () => {
+			setUserRevocationTimestamp("user-1", 1_700_000_000_500);
+
+			expect(isTokenIssuedBeforeRevocation("user-1", undefined)).toBe(true);
+			expect(isTokenIssuedBeforeRevocation("user-1", Number.NaN)).toBe(true);
+		});
+
+		it("does not reject missing iat when the user has no revoke-all timestamp", () => {
+			expect(isTokenIssuedBeforeRevocation("user-1", undefined)).toBe(false);
 		});
 	});
 

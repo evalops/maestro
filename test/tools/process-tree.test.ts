@@ -5,6 +5,8 @@ import {
 	isProcessAlive,
 	killProcessTreeGracefully,
 	killProcessTreeImmediate,
+	parseLinuxProcessStat,
+	processIdentityMatchesSnapshot,
 	processRegistry,
 } from "../../src/tools/process-tree.js";
 
@@ -46,6 +48,101 @@ describe("process-tree", () => {
 				spawnedPids.push(child.pid);
 				expect(isProcessAlive(child.pid)).toBe(true);
 			}
+		});
+	});
+
+	describe("parseLinuxProcessStat", () => {
+		it("parses ppid and start time when comm contains spaces and parentheses", () => {
+			const fields = [
+				"S",
+				"45",
+				"1",
+				"2",
+				"3",
+				"4",
+				"5",
+				"6",
+				"7",
+				"8",
+				"9",
+				"10",
+				"11",
+				"12",
+				"13",
+				"14",
+				"15",
+				"16",
+				"17",
+				"123456789",
+			];
+			const stat = `123 (worker with ) chars) ${fields.join(" ")}`;
+
+			expect(parseLinuxProcessStat(stat)).toEqual({
+				ppid: 45,
+				startTime: "123456789",
+			});
+		});
+
+		it("rejects malformed stat contents", () => {
+			expect(parseLinuxProcessStat("123 worker S 1")).toBeNull();
+			expect(parseLinuxProcessStat("123 (worker) S")).toBeNull();
+		});
+	});
+
+	describe("processIdentityMatchesSnapshot", () => {
+		it("matches linux processes by pid and start time", () => {
+			const snapshot = {
+				platform: "linux" as const,
+				pid: 123,
+				ppid: 10,
+				startTime: "555",
+			};
+
+			expect(
+				processIdentityMatchesSnapshot(snapshot, {
+					platform: "linux",
+					pid: 123,
+					ppid: 1,
+					startTime: "555",
+				}),
+			).toBe(true);
+
+			expect(
+				processIdentityMatchesSnapshot(snapshot, {
+					platform: "linux",
+					pid: 123,
+					ppid: 10,
+					startTime: "556",
+				}),
+			).toBe(false);
+		});
+
+		it("does not match a reused pid or missing snapshot", () => {
+			expect(
+				processIdentityMatchesSnapshot(
+					{
+						platform: "linux",
+						pid: 123,
+						ppid: 10,
+						startTime: "555",
+					},
+					{
+						platform: "linux",
+						pid: 124,
+						ppid: 10,
+						startTime: "555",
+					},
+				),
+			).toBe(false);
+
+			expect(
+				processIdentityMatchesSnapshot(null, {
+					platform: "linux",
+					pid: 123,
+					ppid: 10,
+					startTime: "555",
+				}),
+			).toBe(false);
 		});
 	});
 

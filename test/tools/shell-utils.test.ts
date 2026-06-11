@@ -253,24 +253,30 @@ describe("shell-utils", () => {
 			expect(env.GITHUB_TOKEN).toBeUndefined();
 		});
 
-		it("restores scoped tool credentials for the trusted Platform worker surface", () => {
+		it("restores non-secret tool env for the trusted Platform worker surface", () => {
 			const baseEnv = {
 				PATH: "/usr/bin",
 				MAESTRO_SURFACE: "platform-agent-runtime",
 				MAESTRO_PLATFORM_TRUSTED_TOOL_ENV: "true",
+				CODEX_WORKER_GIT_USERNAME: "x-access-token",
+				GIT_ASKPASS: "/tmp/git-askpass",
+				GIT_TERMINAL_PROMPT: "0",
 				GH_TOKEN: SAMPLE_GH_TOKEN,
 				GITHUB_TOKEN: SAMPLE_GITHUB_TOKEN,
 				CODEX_WORKER_RUNTIME_TOKEN: "runtime-token",
+				MAESTRO_PLATFORM_A2A_TOKEN: "a2a-token",
 				MAESTRO_PLATFORM_A2A_ENABLED: "true",
 				OPENAI_API_KEY: "sk-test",
 			};
 			const env = applyShellEnvironmentPolicy(baseEnv);
 			expect(env.PATH).toBe("/usr/bin");
-			expect(env.GH_TOKEN).toBe(baseEnv.GH_TOKEN);
-			expect(env.GITHUB_TOKEN).toBe(baseEnv.GITHUB_TOKEN);
-			expect(env.CODEX_WORKER_RUNTIME_TOKEN).toBe(
-				baseEnv.CODEX_WORKER_RUNTIME_TOKEN,
-			);
+			expect(env.CODEX_WORKER_GIT_USERNAME).toBe("x-access-token");
+			expect(env.GIT_ASKPASS).toBe("/tmp/git-askpass");
+			expect(env.GIT_TERMINAL_PROMPT).toBe("0");
+			expect(env.GH_TOKEN).toBeUndefined();
+			expect(env.GITHUB_TOKEN).toBeUndefined();
+			expect(env.CODEX_WORKER_RUNTIME_TOKEN).toBeUndefined();
+			expect(env.MAESTRO_PLATFORM_A2A_TOKEN).toBeUndefined();
 			expect(env.MAESTRO_PLATFORM_A2A_ENABLED).toBe("true");
 			expect(env.OPENAI_API_KEY).toBeUndefined();
 		});
@@ -291,7 +297,7 @@ describe("shell-utils", () => {
 			expect(env.GITHUB_TOKEN).toBeUndefined();
 		});
 
-		it("restores only trusted Platform worker credentials allowed by include_only", () => {
+		it("does not restore token env even when allowed by include_only", () => {
 			const baseEnv = {
 				PATH: "/usr/bin",
 				MAESTRO_SURFACE: "platform-agent-runtime",
@@ -301,41 +307,41 @@ describe("shell-utils", () => {
 			};
 			const env = applyShellEnvironmentPolicy(baseEnv, {
 				include_only: ["PATH", "GH_TOKEN"],
-			});
-			expect(env.PATH).toBe("/usr/bin");
-			expect(env.GH_TOKEN).toBe(SAMPLE_GH_TOKEN);
-			expect(env.GITHUB_TOKEN).toBeUndefined();
-		});
-
-		it("honors explicit excludes before restoring trusted Platform worker credentials", () => {
-			const baseEnv = {
-				PATH: "/usr/bin",
-				MAESTRO_SURFACE: "platform-agent-runtime",
-				MAESTRO_PLATFORM_TRUSTED_TOOL_ENV: "true",
-				GH_TOKEN: SAMPLE_GH_TOKEN,
-				GITHUB_TOKEN: SAMPLE_GITHUB_TOKEN,
-			};
-			const env = applyShellEnvironmentPolicy(baseEnv, {
-				exclude: ["GH_TOKEN"],
 			});
 			expect(env.PATH).toBe("/usr/bin");
 			expect(env.GH_TOKEN).toBeUndefined();
-			expect(env.GITHUB_TOKEN).toBe(SAMPLE_GITHUB_TOKEN);
+			expect(env.GITHUB_TOKEN).toBeUndefined();
 		});
 
-		it("honors explicit set values before restoring trusted Platform worker credentials", () => {
+		it("honors explicit excludes before restoring trusted Platform worker env", () => {
 			const baseEnv = {
 				PATH: "/usr/bin",
 				MAESTRO_SURFACE: "platform-agent-runtime",
 				MAESTRO_PLATFORM_TRUSTED_TOOL_ENV: "true",
-				GH_TOKEN: SAMPLE_GH_TOKEN,
+				GIT_ASKPASS: "/tmp/git-askpass",
+				MAESTRO_PLATFORM_A2A_ENABLED: "true",
 			};
 			const env = applyShellEnvironmentPolicy(baseEnv, {
-				include_only: ["PATH", "GH_TOKEN"],
-				set: { GH_TOKEN: "policy-token" },
+				exclude: ["GIT_ASKPASS"],
 			});
 			expect(env.PATH).toBe("/usr/bin");
-			expect(env.GH_TOKEN).toBe("policy-token");
+			expect(env.GIT_ASKPASS).toBeUndefined();
+			expect(env.MAESTRO_PLATFORM_A2A_ENABLED).toBe("true");
+		});
+
+		it("honors explicit set values before restoring trusted Platform worker env", () => {
+			const baseEnv = {
+				PATH: "/usr/bin",
+				MAESTRO_SURFACE: "platform-agent-runtime",
+				MAESTRO_PLATFORM_TRUSTED_TOOL_ENV: "true",
+				GIT_ASKPASS: "/tmp/git-askpass",
+			};
+			const env = applyShellEnvironmentPolicy(baseEnv, {
+				include_only: ["PATH", "GIT_ASKPASS"],
+				set: { GIT_ASKPASS: "/policy/git-askpass" },
+			});
+			expect(env.PATH).toBe("/usr/bin");
+			expect(env.GIT_ASKPASS).toBe("/policy/git-askpass");
 		});
 
 		it("honors inherit none before restoring trusted Platform worker credentials", () => {
@@ -363,18 +369,18 @@ describe("shell-utils", () => {
 			expect(env.GH_TOKEN).toBeUndefined();
 		});
 
-		it("restores scoped tool credentials when include_only policy is empty", () => {
+		it("restores non-secret tool env when include_only policy is empty", () => {
 			const baseEnv = {
 				PATH: "/usr/bin",
 				MAESTRO_SURFACE: "platform-agent-runtime",
 				MAESTRO_PLATFORM_TRUSTED_TOOL_ENV: "true",
-				GH_TOKEN: SAMPLE_GH_TOKEN,
+				GIT_ASKPASS: "/tmp/git-askpass",
 			};
 			const env = applyShellEnvironmentPolicy(baseEnv, {
 				include_only: [],
 			});
 			expect(env.PATH).toBe("/usr/bin");
-			expect(env.GH_TOKEN).toBe(baseEnv.GH_TOKEN);
+			expect(env.GIT_ASKPASS).toBe(baseEnv.GIT_ASKPASS);
 		});
 
 		it("keeps secret-like variables when ignore_default_excludes is true", () => {

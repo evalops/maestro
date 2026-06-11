@@ -162,6 +162,23 @@ describe("createAuthMiddleware", () => {
 		expect(JSON.parse(res.body)).toEqual({ error: "Unauthorized" });
 	});
 
+	it("protects metrics routes with configured auth", async () => {
+		const { createAuthMiddleware } = await importMiddlewares({
+			MAESTRO_AUTH_SHARED_SECRET: "shared-test-secret",
+		});
+		const middleware = createAuthMiddleware(null, corsHeaders, false);
+		const res = makeRes();
+		let nextCalled = false;
+
+		await middleware(makeReq({}, "/api/metrics"), res, () => {
+			nextCalled = true;
+		});
+
+		expect(nextCalled).toBe(false);
+		expect(res.statusCode).toBe(401);
+		expect(JSON.parse(res.body)).toEqual({ error: "Unauthorized" });
+	});
+
 	it("does not let artifact access grants bypass debug route auth", async () => {
 		const { createAuthMiddleware } = await importMiddlewares({
 			MAESTRO_AUTH_SHARED_SECRET: "shared-test-secret",

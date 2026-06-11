@@ -50,6 +50,39 @@ Service account name
 {{- end }}
 
 {{/*
+Resolve the container image reference. image.digest wins; otherwise an empty
+image.tag falls back to Chart.appVersion so the chart never defaults to latest.
+*/}}
+{{- define "maestro.image" -}}
+{{- if .Values.image.digest -}}
+{{- printf "%s@%s" .Values.image.repository .Values.image.digest -}}
+{{- else -}}
+{{- printf "%s:%s" .Values.image.repository (default .Chart.AppVersion .Values.image.tag) -}}
+{{- end -}}
+{{- end }}
+
+{{/*
+Resolve the web API key for the Secret. Explicit values win; otherwise preserve
+an existing Secret value on upgrade and generate one on first install.
+*/}}
+{{- define "maestro.webApiKey" -}}
+{{- $auth := default dict (get .Values "auth") -}}
+{{- $configured := default "" (get $auth "apiKey") -}}
+{{- if $configured -}}
+{{- $configured -}}
+{{- else -}}
+{{- $existing := lookup "v1" "Secret" .Release.Namespace (include "maestro.fullname" .) -}}
+{{- if and $existing $existing.data (hasKey $existing.data "MAESTRO_WEB_API_KEY") -}}
+{{- index $existing.data "MAESTRO_WEB_API_KEY" | b64dec -}}
+{{- else if (lookup "v1" "Namespace" "" "default") -}}
+{{- randAlphaNum 48 -}}
+{{- else -}}
+{{- "" -}}
+{{- end -}}
+{{- end -}}
+{{- end }}
+
+{{/*
 Validate process-local headless runtime routing before rendering workload
 resources. Multi-replica web/headless deployments need sticky sessions or a
 durable owner router; otherwise clients can land on a pod that does not own the

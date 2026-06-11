@@ -122,6 +122,17 @@ export function parseOpenAICodexAuthorizationInput(input: string): {
 	return { code: value };
 }
 
+export function parseValidatedOpenAICodexAuthorizationInput(
+	input: string,
+	state: string,
+): string | null {
+	const parsed = parseOpenAICodexAuthorizationInput(input);
+	if (!parsed.state || !safeTimingEqual(parsed.state, state)) {
+		throw new Error("State mismatch in OpenAI Codex OAuth callback");
+	}
+	return parsed.code ?? null;
+}
+
 function decodeJwt(token: string): CodexJwtPayload | null {
 	try {
 		const parts = token.split(".");
@@ -313,11 +324,7 @@ async function waitForPromptCode(
 	state: string,
 ): Promise<string | null> {
 	const input = await onPromptCode();
-	const parsed = parseOpenAICodexAuthorizationInput(input);
-	if (parsed.state && !safeTimingEqual(parsed.state, state)) {
-		throw new Error("State mismatch in OpenAI Codex OAuth callback");
-	}
-	return parsed.code ?? null;
+	return parseValidatedOpenAICodexAuthorizationInput(input, state);
 }
 
 export async function loginOpenAICodex(

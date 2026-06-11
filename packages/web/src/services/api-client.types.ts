@@ -498,6 +498,7 @@ export interface TrajectoryReplayLabFinding {
 
 export interface McpToolDefinition {
 	name: string;
+	canonicalName?: string;
 	description?: string;
 	inputSchema?: unknown;
 	annotations?: Record<string, unknown>;

@@ -2,6 +2,7 @@ import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { resolve as resolvePath } from "node:path";
+import { isMcpTool } from "../../mcp/names.js";
 import { isReadOnlyTool } from "../../tools/parallel-execution.js";
 import type { AgentTool, ToolCall, ToolResultMessage } from "../types.js";
 import { stableStringify } from "./stable-stringify.js";
@@ -393,9 +394,13 @@ function isReadOnlyToolCallForCacheInvalidation(
 	tools: ToolDefinitionLookup | ToolMetadataCache,
 ): boolean {
 	const tool = getToolDefinition(tools, toolCall.name);
-	return tool
-		? isReadOnlyTool(tool.name, tool.annotations, tool.source)
-		: false;
+	if (!tool || tool.annotations?.destructiveHint === true) {
+		return false;
+	}
+	if (isMcpTool(tool.name)) {
+		return tool.annotations?.readOnlyHint === true;
+	}
+	return isReadOnlyTool(tool.name, tool.annotations, tool.source);
 }
 
 function cloneToolResultForCache(

@@ -12,6 +12,21 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 	return Boolean(value && typeof value === "object" && !Array.isArray(value));
 }
 
+/**
+ * Strip Unicode characters that could deceive a human approver:
+ *  - Bidi-override / embedding controls (U+202A–U+202E, U+2066–U+2069)
+ *  - Zero-width / invisible characters (U+200B–U+200F, U+FEFF, U+FFFE)
+ * Applied server-side before the approval payload is serialised, so both
+ * the TUI Name line and the web approval card are protected.
+ */
+function sanitizeDisplayString(value: string): string {
+	// Remove bidi-override, bidi-embedding, and isolate controls
+	// Remove zero-width space/non-joiner/joiner, left-to-right/right-to-left marks, BOM
+	return value
+		.normalize("NFKC")
+		.replace(/[\u202a-\u202e\u2066-\u2069\u200b-\u200f\ufeff\ufffe]/gu, "");
+}
+
 function getToolRetryPayload(args: unknown): Record<string, unknown> {
 	return isRecord(args) ? args : {};
 }
@@ -43,11 +58,23 @@ function mapPendingComposerRequests(
 			sessionId: entry.sessionId,
 			toolCallId: entry.callId,
 			toolName: entry.toolName,
-			displayName: entry.displayName,
-			summaryLabel: entry.summaryLabel,
-			actionDescription: entry.actionDescription,
+			displayName:
+				typeof entry.displayName === "string"
+					? sanitizeDisplayString(entry.displayName)
+					: entry.displayName,
+			summaryLabel:
+				typeof entry.summaryLabel === "string"
+					? sanitizeDisplayString(entry.summaryLabel)
+					: entry.summaryLabel,
+			actionDescription:
+				typeof entry.actionDescription === "string"
+					? sanitizeDisplayString(entry.actionDescription)
+					: entry.actionDescription,
 			args: pendingRequestArgs(entry),
-			reason: entry.reason,
+			reason:
+				typeof entry.reason === "string"
+					? sanitizeDisplayString(entry.reason)
+					: entry.reason,
 			createdAt,
 			expiresAt,
 			source: entry.platform ? "platform" : "local",
@@ -80,11 +107,23 @@ export function getPendingServerRequestPayload(
 		.map((entry) => ({
 			id: entry.id,
 			toolName: entry.toolName,
-			displayName: entry.displayName,
-			summaryLabel: entry.summaryLabel,
-			actionDescription: entry.actionDescription,
+			displayName:
+				typeof entry.displayName === "string"
+					? sanitizeDisplayString(entry.displayName)
+					: entry.displayName,
+			summaryLabel:
+				typeof entry.summaryLabel === "string"
+					? sanitizeDisplayString(entry.summaryLabel)
+					: entry.summaryLabel,
+			actionDescription:
+				typeof entry.actionDescription === "string"
+					? sanitizeDisplayString(entry.actionDescription)
+					: entry.actionDescription,
 			args: entry.args,
-			reason: entry.reason,
+			reason:
+				typeof entry.reason === "string"
+					? sanitizeDisplayString(entry.reason)
+					: entry.reason,
 			platform: entry.platform,
 		}));
 

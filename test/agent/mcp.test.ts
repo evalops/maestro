@@ -860,7 +860,7 @@ describe("MCP client manager", () => {
 		expect(statusTool?.capability).toMatchObject({
 			toolName: "status_report",
 			readOnlyHint: true,
-			riskClass: "observe",
+			riskClass: "medium",
 		});
 	});
 

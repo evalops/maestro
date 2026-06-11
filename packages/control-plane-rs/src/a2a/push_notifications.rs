@@ -1,5 +1,5 @@
 use serde_json::{Map, Value};
-use std::net::{IpAddr, ToSocketAddrs};
+use std::net::{IpAddr, SocketAddr, ToSocketAddrs};
 use std::time::Duration;
 use tokio::net::TcpStream;
 
@@ -437,18 +437,20 @@ fn send_a2a_push_notification(payload: &Value, config: &Value) {
     let Some(url) = config.get("url").and_then(Value::as_str) else {
         return;
     };
-    if validate_a2a_push_notification_url(url, true).is_err() {
+    let Ok(pinned_addr) = a2a_push_notification_pinned_addr(url) else {
         return;
-    }
+    };
     let timeout = Duration::from_millis(env_u64(
         "MAESTRO_A2A_PUSH_TIMEOUT_MS",
         A2A_DEFAULT_PUSH_TIMEOUT_MS,
     ));
-    let Ok(client) = reqwest::blocking::Client::builder()
+    let mut builder = reqwest::blocking::Client::builder()
         .timeout(timeout)
-        .redirect(reqwest::redirect::Policy::none())
-        .build()
-    else {
+        .redirect(reqwest::redirect::Policy::none());
+    if let Some((host, addr)) = pinned_addr {
+        builder = builder.resolve(&host, addr);
+    }
+    let Ok(client) = builder.build() else {
         return;
     };
     let Ok(body) = serde_json::to_vec(payload) else {
@@ -658,6 +660,18 @@ pub(crate) fn validate_a2a_push_notification_url(
     url: &str,
     resolve_dns: bool,
 ) -> Result<(), String> {
+    a2a_push_notification_resolution(url, resolve_dns, false).map(|_| ())
+}
+
+fn a2a_push_notification_pinned_addr(url: &str) -> Result<Option<(String, SocketAddr)>, String> {
+    a2a_push_notification_resolution(url, true, true)
+}
+
+fn a2a_push_notification_resolution(
+    url: &str,
+    resolve_dns: bool,
+    require_resolution: bool,
+) -> Result<Option<(String, SocketAddr)>, String> {
     let parsed = reqwest::Url::parse(url)
         .map_err(|error| format!("A2A push notification config url is invalid: {error}"))?;
     match parsed.scheme() {
@@ -674,16 +688,27 @@ pub(crate) fn validate_a2a_push_notification_url(
         .host_str()
         .ok_or_else(|| "A2A push notification config url must include a host".to_string())?;
     let port = parsed.port_or_known_default().unwrap_or(443);
-    if !truthy_env("MAESTRO_A2A_PUSH_ALLOW_PRIVATE")
-        && (a2a_push_host_is_private(host)
-            || (resolve_dns && a2a_push_host_resolves_private(host, port)))
-    {
+    let allow_private = truthy_env("MAESTRO_A2A_PUSH_ALLOW_PRIVATE");
+    if !allow_private && a2a_push_host_is_private(host) {
         return Err(
             "A2A push notification config url host is private; set MAESTRO_A2A_PUSH_ALLOW_PRIVATE=1 for local development"
                 .to_string(),
         );
     }
-    Ok(())
+    if !resolve_dns || host.parse::<IpAddr>().is_ok() {
+        return Ok(None);
+    }
+    let addresses = match (host, port).to_socket_addrs() {
+        Ok(addresses) => addresses.collect::<Vec<_>>(),
+        Err(error) if require_resolution => {
+            return Err(format!(
+                "A2A push notification config url host could not be resolved: {error}"
+            ));
+        }
+        Err(_) => return Ok(None),
+    };
+    a2a_push_select_pinned_addr(host, addresses, allow_private)
+        .map(|addr| Some((host.to_string(), addr)))
 }
 
 fn a2a_push_host_is_private(host: &str) -> bool {
@@ -694,15 +719,28 @@ fn a2a_push_host_is_private(host: &str) -> bool {
     host.parse::<IpAddr>().is_ok_and(a2a_push_ip_is_private)
 }
 
-fn a2a_push_host_resolves_private(host: &str, port: u16) -> bool {
-    if host.parse::<IpAddr>().is_ok() {
-        return false;
+pub(crate) fn a2a_push_select_pinned_addr(
+    host: &str,
+    addresses: Vec<SocketAddr>,
+    allow_private: bool,
+) -> Result<SocketAddr, String> {
+    if addresses.is_empty() {
+        return Err(format!(
+            "A2A push notification config url host \"{host}\" did not resolve to any address"
+        ));
     }
-    (host, port).to_socket_addrs().is_ok_and(|addresses| {
-        addresses
-            .map(|address| address.ip())
+    if !allow_private
+        && addresses
+            .iter()
+            .map(SocketAddr::ip)
             .any(a2a_push_ip_is_private)
-    })
+    {
+        return Err(
+            "A2A push notification config url host is private; set MAESTRO_A2A_PUSH_ALLOW_PRIVATE=1 for local development"
+                .to_string(),
+        );
+    }
+    Ok(addresses[0])
 }
 
 pub(crate) fn a2a_push_ip_is_private(addr: IpAddr) -> bool {

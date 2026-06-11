@@ -100,6 +100,7 @@ const RUNTIME_PACKAGE_VALIDATOR_FILES = new Set([
 	"scripts/workspace-utils.js",
 ]);
 const RELEASE_HELPER_PACKAGE_FILES = new Set([
+	"scripts/build-release-binary.mjs",
 	"scripts/configure-npm-trusted-publisher.mjs",
 	"scripts/check-package-cutover-readiness.js",
 	"scripts/check-release-surface-conformance.mjs",
@@ -112,6 +113,7 @@ const RELEASE_HELPER_PACKAGE_FILES = new Set([
 	"scripts/smoke-packed-cli.js",
 	"scripts/smoke-published-replay-e2e.js",
 	"scripts/smoke-registry-install.js",
+	"scripts/smoke-release-binary.mjs",
 	"scripts/verify-published-replay-evidence.js",
 	"scripts/workspace-utils.js",
 ]);

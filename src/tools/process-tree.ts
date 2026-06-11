@@ -35,6 +35,23 @@ interface ProcessInfo {
 	command?: string;
 }
 
+export interface LinuxProcessStat {
+	ppid: number;
+	startTime: string;
+}
+
+export type ProcessIdentity =
+	| {
+			platform: "linux";
+			pid: number;
+			ppid: number;
+			startTime: string;
+	  }
+	| {
+			platform: "unsupported";
+			pid: number;
+	  };
+
 /**
  * Registry of spawned processes for tracking
  */
@@ -151,6 +168,78 @@ export function isProcessAlive(pid: number): boolean {
 }
 
 /**
+ * Parse /proc/<pid>/stat.
+ *
+ * The comm field is wrapped in parentheses and may contain spaces or
+ * parentheses, so split from the final ")" rather than tokenizing naively.
+ */
+export function parseLinuxProcessStat(stat: string): LinuxProcessStat | null {
+	const commandEnd = stat.lastIndexOf(")");
+	if (commandEnd === -1) {
+		return null;
+	}
+
+	const fields = stat
+		.slice(commandEnd + 1)
+		.trim()
+		.split(/\s+/);
+	const ppid = Number.parseInt(fields[1] ?? "", 10);
+	const startTime = fields[19];
+
+	if (!Number.isFinite(ppid) || !startTime) {
+		return null;
+	}
+
+	return { ppid, startTime };
+}
+
+function getProcessIdentity(pid: number): ProcessIdentity | null {
+	if (pid <= 0) {
+		return null;
+	}
+
+	if (process.platform !== "linux" || !existsSync("/proc")) {
+		return { platform: "unsupported", pid };
+	}
+
+	try {
+		const stat = readFileSync(`/proc/${pid}/stat`, "utf-8");
+		const parsed = parseLinuxProcessStat(stat);
+		if (!parsed) {
+			return null;
+		}
+
+		return {
+			platform: "linux",
+			pid,
+			ppid: parsed.ppid,
+			startTime: parsed.startTime,
+		};
+	} catch {
+		return null;
+	}
+}
+
+export function processIdentityMatchesSnapshot(
+	snapshot: ProcessIdentity | null | undefined,
+	current: ProcessIdentity | null | undefined,
+): boolean {
+	if (!snapshot) {
+		return false;
+	}
+
+	if (snapshot.platform === "unsupported") {
+		return current?.platform === "unsupported";
+	}
+
+	return (
+		current?.platform === "linux" &&
+		current.pid === snapshot.pid &&
+		current.startTime === snapshot.startTime
+	);
+}
+
+/**
  * Get all descendant PIDs of a process (Linux)
  */
 function getDescendantPidsLinux(pid: number): number[] {
@@ -175,17 +264,14 @@ function getDescendantPidsLinux(pid: number): number[] {
 
 			try {
 				const stat = readFileSync(statPath, "utf-8");
-				// Format: pid (comm) state ppid ...
-				// The comm can contain spaces and parentheses, so parse carefully
-				const match = stat.match(/^\d+\s+\([^)]*\)\s+\S+\s+(\d+)/);
-				if (match) {
-					const ppid = Number.parseInt(match[1]!, 10);
+				const parsed = parseLinuxProcessStat(stat);
+				if (parsed) {
 					const childPid = Number.parseInt(entry, 10);
 
-					if (!children.has(ppid)) {
-						children.set(ppid, []);
+					if (!children.has(parsed.ppid)) {
+						children.set(parsed.ppid, []);
 					}
-					children.get(ppid)!.push(childPid);
+					children.get(parsed.ppid)!.push(childPid);
 				}
 			} catch {
 				// Skip unreadable process
@@ -363,6 +449,9 @@ export async function killProcessTreeGracefully(
 
 	// Kill in reverse order (children before parents)
 	const allPids = [...descendants.reverse(), pid];
+	const identities = new Map(
+		allPids.map((targetPid) => [targetPid, getProcessIdentity(targetPid)]),
+	);
 
 	logger.debug("Killing process tree", {
 		rootPid: pid,
@@ -381,6 +470,20 @@ export async function killProcessTreeGracefully(
 	// Phase 3: SIGKILL any remaining
 	for (const targetPid of allPids) {
 		if (isProcessAlive(targetPid)) {
+			const snapshot = identities.get(targetPid);
+			const currentIdentity = getProcessIdentity(targetPid);
+			if (
+				snapshot?.platform === "linux" &&
+				currentIdentity?.platform === "linux" &&
+				!processIdentityMatchesSnapshot(snapshot, currentIdentity)
+			) {
+				logger.warn("Skipping SIGKILL because process identity changed", {
+					pid: targetPid,
+				});
+				result.killed.push(targetPid);
+				continue;
+			}
+
 			if (safeKill(targetPid, "SIGKILL")) {
 				// Give a brief moment for SIGKILL to take effect
 				await waitForExit(targetPid, 100);
@@ -482,8 +585,8 @@ export function findOrphanedProcesses(): number[] {
 		try {
 			if (process.platform === "linux") {
 				const stat = readFileSync(`/proc/${pid}/stat`, "utf-8");
-				const match = stat.match(/^\d+\s+\([^)]*\)\s+\S+\s+(\d+)/);
-				if (match && Number.parseInt(match[1]!, 10) === 1) {
+				const parsed = parseLinuxProcessStat(stat);
+				if (parsed?.ppid === 1) {
 					orphans.push(pid);
 				}
 			} else if (process.platform === "darwin") {

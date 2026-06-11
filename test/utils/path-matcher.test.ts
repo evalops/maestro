@@ -71,6 +71,19 @@ describe("resolveRealPath", () => {
 
 describe("matchesPathPattern", () => {
 	const cwd = process.cwd();
+	const originalPlatform = Object.getOwnPropertyDescriptor(process, "platform");
+
+	afterEach(() => {
+		if (originalPlatform) {
+			Object.defineProperty(process, "platform", originalPlatform);
+		}
+	});
+
+	function stubPlatform(platform: NodeJS.Platform): void {
+		Object.defineProperty(process, "platform", {
+			value: platform,
+		});
+	}
 
 	describe("glob patterns", () => {
 		it("matches single wildcard", () => {
@@ -104,6 +117,16 @@ describe("matchesPathPattern", () => {
 				matchesPathPattern("/home/user/file.js", ["/home/user/*.txt"]),
 			).toBe(false);
 		});
+
+		it("matches case variants on macOS glob patterns", () => {
+			stubPlatform("darwin");
+
+			expect(
+				matchesPathPattern("/Users/alice/.SSH/id_rsa", [
+					"/Users/alice/.ssh/**",
+				]),
+			).toBe(true);
+		});
 	});
 
 	describe("directory patterns", () => {
@@ -131,6 +154,14 @@ describe("matchesPathPattern", () => {
 
 		it("does not match parent directory", () => {
 			expect(matchesPathPattern("/home", ["/home/user"])).toBe(false);
+		});
+
+		it("matches case variants on macOS directory patterns", () => {
+			stubPlatform("darwin");
+
+			expect(
+				matchesPathPattern("/Users/alice/.SSH/id_rsa", ["/Users/alice/.ssh"]),
+			).toBe(true);
 		});
 	});
 

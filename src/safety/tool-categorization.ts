@@ -6,6 +6,8 @@
  * @module safety/tool-categorization
  */
 
+import { normalizeToolNameForSafety } from "../utils/safety-normalization.js";
+
 /**
  * Tool tags for categorization
  */
@@ -50,17 +52,19 @@ export const TOOL_TAGS: Record<string, string[]> = {
  * - "reader" should NOT match "read" (pattern is substring, not word)
  */
 export function matchesToolPattern(toolName: string, pattern: string): boolean {
+	const normalizedToolName = normalizeToolNameForSafety(toolName);
+	const normalizedPattern = normalizeToolNameForSafety(pattern);
 	// Exact match
-	if (toolName === pattern) {
+	if (normalizedToolName === normalizedPattern) {
 		return true;
 	}
 
 	// Word-boundary match using regex
 	// Match pattern at start, end, or surrounded by word separators (_, -)
-	const escaped = pattern.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+	const escaped = normalizedPattern.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 	const wordBoundaryRegex = new RegExp(`(?:^|[_-])${escaped}(?:[_-]|$)`, "i");
 
-	return wordBoundaryRegex.test(toolName);
+	return wordBoundaryRegex.test(normalizedToolName);
 }
 
 /**
@@ -69,7 +73,7 @@ export function matchesToolPattern(toolName: string, pattern: string): boolean {
 export function getToolTags(toolName: string): Set<string> {
 	const tags = new Set<string>();
 
-	const normalizedName = toolName.toLowerCase();
+	const normalizedName = normalizeToolNameForSafety(toolName);
 
 	for (const [tag, patterns] of Object.entries(TOOL_TAGS)) {
 		if (patterns.some((p) => matchesToolPattern(normalizedName, p))) {

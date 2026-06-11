@@ -71,7 +71,7 @@ function verifySharedToken(token: string): string | null {
 	return userId;
 }
 
-function hasConfiguredAuth(apiKey = WEB_API_KEY): boolean {
+export function hasConfiguredAuth(apiKey = WEB_API_KEY): boolean {
 	return Boolean(apiKey || SHARED_SECRET || JWT_SECRET || JWT_JWKS_URL);
 }
 

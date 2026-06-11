@@ -47,6 +47,7 @@ describe("find tool", () => {
 		rmSync(testDir, { recursive: true, force: true });
 	});
 
+	// Capability skips in this file are tracked by evalops/maestro-internal#2582.
 	describe.skipIf(!hasFd)("basic glob patterns", () => {
 		it("finds files matching simple pattern", async () => {
 			writeFileSync(join(testDir, "file1.ts"), "");

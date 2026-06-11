@@ -31,6 +31,7 @@ if (envSecret && envSecret.trim().length >= 32) {
 
 const JWT_EXPIRY = process.env.MAESTRO_JWT_EXPIRY || "24h";
 const REFRESH_TOKEN_EXPIRY = "7d";
+const JWT_ALGORITHM = "HS256";
 
 export interface JwtPayload {
 	userId: string;
@@ -86,15 +87,12 @@ export function verifyToken(token: string): JwtPayload | null {
 			return null;
 		}
 
-		const decoded = jwt.verify(token, JWT_SECRET) as JwtPayload & {
-			iat?: number;
-		};
+		const decoded = jwt.verify(token, JWT_SECRET, {
+			algorithms: [JWT_ALGORITHM],
+		}) as JwtPayload & { iat?: number };
 
 		// Check if user has a "revoke all before" timestamp
-		if (
-			decoded.iat &&
-			isTokenIssuedBeforeRevocation(decoded.userId, decoded.iat)
-		) {
+		if (isTokenIssuedBeforeRevocation(decoded.userId, decoded.iat)) {
 			logger.debug("Token was issued before user revocation timestamp");
 			return null;
 		}
@@ -128,15 +126,12 @@ export async function verifyTokenAsync(
 			return null;
 		}
 
-		const decoded = jwt.verify(token, JWT_SECRET) as JwtPayload & {
-			iat?: number;
-		};
+		const decoded = jwt.verify(token, JWT_SECRET, {
+			algorithms: [JWT_ALGORITHM],
+		}) as JwtPayload & { iat?: number };
 
 		// Check if user has a "revoke all before" timestamp
-		if (
-			decoded.iat &&
-			isTokenIssuedBeforeRevocation(decoded.userId, decoded.iat)
-		) {
+		if (isTokenIssuedBeforeRevocation(decoded.userId, decoded.iat)) {
 			logger.debug("Token was issued before user revocation timestamp");
 			return null;
 		}

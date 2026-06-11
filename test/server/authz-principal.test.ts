@@ -246,6 +246,49 @@ describe("verified request principals", () => {
 		expect(resolveSessionScope(req)).toBe("user_alice");
 	});
 
+	it("defaults session scoping on when auth is configured", async () => {
+		process.env = {
+			...originalEnv,
+			MAESTRO_AUTH_SHARED_SECRET: "shared-secret",
+		};
+		vi.resetModules();
+		const { checkApiAuth } = await import("../../src/server/authz.js");
+		const { resolveSessionScope } = await import(
+			"../../src/server/session-scope.js"
+		);
+		const token = createSharedToken(
+			"alice",
+			process.env.MAESTRO_AUTH_SHARED_SECRET!,
+		);
+		const req = createRequest({ authorization: `Bearer ${token}` });
+
+		await checkApiAuth(req);
+
+		expect(resolveSessionScope(req)).toBe("user_alice");
+	});
+
+	it("allows explicit global session scope when auth is configured", async () => {
+		process.env = {
+			...originalEnv,
+			MAESTRO_AUTH_SHARED_SECRET: "shared-secret",
+			MAESTRO_SESSION_SCOPE: "global",
+		};
+		vi.resetModules();
+		const { checkApiAuth } = await import("../../src/server/authz.js");
+		const { resolveSessionScope } = await import(
+			"../../src/server/session-scope.js"
+		);
+		const token = createSharedToken(
+			"alice",
+			process.env.MAESTRO_AUTH_SHARED_SECRET!,
+		);
+		const req = createRequest({ authorization: `Bearer ${token}` });
+
+		await checkApiAuth(req);
+
+		expect(resolveSessionScope(req)).toBeNull();
+	});
+
 	it("treats the web API key as a single-user scoped principal", async () => {
 		process.env = {
 			...originalEnv,

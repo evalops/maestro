@@ -58,7 +58,31 @@ describe("policy sandbox fallback behavior", () => {
 		).resolves.toBeUndefined();
 	});
 
-	it("keeps legacy native backend fallback when native sandboxing is unavailable", async () => {
+	it("refuses legacy native backend fallback when native sandboxing is unavailable", async () => {
+		vi.resetModules();
+		vi.doMock(nativeSandboxModule, async () => {
+			const actual =
+				await vi.importActual<
+					typeof import("../../src/sandbox/native-sandbox.js")
+				>(nativeSandboxModule);
+			return {
+				...actual,
+				isNativeSandboxAvailable: () => false,
+				getNativeSandboxType: () => "none",
+			};
+		});
+
+		const { createSandbox } = await import("../../src/sandbox/index.js");
+
+		await expect(
+			createSandbox({
+				mode: "native",
+				cwd: "/tmp/maestro-policy-test",
+			}),
+		).rejects.toThrow(/Refusing to fall back to unsandboxed execution/);
+	});
+
+	it("allows legacy native backend fallback only with explicit unsafe opt-in", async () => {
 		vi.resetModules();
 		vi.doMock(nativeSandboxModule, async () => {
 			const actual =
@@ -80,6 +104,7 @@ describe("policy sandbox fallback behavior", () => {
 		const sandbox = await createSandbox({
 			mode: "native",
 			cwd: "/tmp/maestro-policy-test",
+			allowUnsafeLocalFallback: true,
 		});
 
 		expect(sandbox).toBeInstanceOf(LocalSandbox);

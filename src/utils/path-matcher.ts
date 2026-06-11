@@ -29,6 +29,26 @@ import { minimatch } from "minimatch";
 import { expandTildePathWithHomeDir, getOsHomeDir } from "./path-expansion.js";
 
 const normalizeForMatch = (value: string): string => value.replace(/\\/g, "/");
+const isCaseInsensitivePathPlatform = (): boolean =>
+	process.platform === "win32" || process.platform === "darwin";
+
+function equalsForPathMatch(left: string, right: string): boolean {
+	if (isCaseInsensitivePathPlatform()) {
+		return left.toLowerCase() === right.toLowerCase();
+	}
+	return left === right;
+}
+
+function startsWithDirectoryForPathMatch(
+	path: string,
+	directory: string,
+): boolean {
+	const prefix = `${directory}/`;
+	if (isCaseInsensitivePathPlatform()) {
+		return path.toLowerCase().startsWith(prefix.toLowerCase());
+	}
+	return path.startsWith(prefix);
+}
 
 /**
  * Expand ~ to user's home directory.
@@ -144,7 +164,7 @@ export function matchesPathPattern(
 			if (
 				minimatch(normalizedPath, normalizedPattern, {
 					dot: true,
-					nocase: process.platform === "win32",
+					nocase: isCaseInsensitivePathPlatform(),
 				})
 			) {
 				return true;
@@ -154,8 +174,8 @@ export function matchesPathPattern(
 			// This handles cases like "/home/user" matching "/home/user/file.txt"
 			if (!isGlob) {
 				if (
-					normalizedPath === normalizedPattern ||
-					normalizedPath.startsWith(`${normalizedPattern}/`)
+					equalsForPathMatch(normalizedPath, normalizedPattern) ||
+					startsWithDirectoryForPathMatch(normalizedPath, normalizedPattern)
 				) {
 					return true;
 				}

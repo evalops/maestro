@@ -30,17 +30,30 @@ This README is intentionally short. Use it to get running, then jump into the do
 
 ## Install
 
-### Bun (recommended)
+### Release Binary (recommended)
+
+Download the binary for your platform from the latest GitHub release:
+
+```bash
+# macOS Apple Silicon
+curl -L https://github.com/evalops/maestro/releases/latest/download/maestro-darwin-arm64 -o maestro
+chmod +x ./maestro
+
+# Linux x64
+curl -L https://github.com/evalops/maestro/releases/latest/download/maestro-linux-x64 -o maestro
+chmod +x ./maestro
+```
+
+### Package Managers (dev/source workflows)
 
 ```bash
 bun install -g @evalops/maestro
-```
-
-### npm
-
-```bash
 npm install -g @evalops/maestro
 ```
+
+Package-manager installs are kept for contributors and source-based workflows.
+Release binaries are the primary install artifact and are smoke-tested directly
+with `maestro --version` and a headless protocol handshake before attachment.
 
 If a global install fails while resolving `@evalops/tui` or
 `@evalops/contracts`, you are installing a deprecated 0.10.8-0.10.20 package
@@ -66,7 +79,7 @@ maestro codex login
 packaged `@openai/codex` app-server and source checkouts fall back to a `codex`
 binary on `PATH`, so an existing `codex login` is reused automatically.
 
-Bare `maestro` defaults to `openai-codex/gpt-5.5`. Maestro also supports OpenAI API keys, Anthropic, Google, OpenRouter, Azure OpenAI, GitHub Copilot, Groq, xAI, Cerebras, and managed EvalOps auth. See [Models](docs/MODELS.md) for provider-specific setup and overrides.
+Bare `maestro` defaults to `openai-codex/gpt-5.5`. Maestro also supports OpenAI API keys, Anthropic, Google, OpenRouter, Azure OpenAI, GitHub Copilot, Groq, xAI, Cerebras, the major Chinese model providers (DeepSeek, Moonshot/Kimi, Alibaba Qwen via DashScope, MiniMax, and Z.ai/Zhipu GLM), and managed EvalOps auth. See [Models](docs/MODELS.md) for provider-specific setup and overrides.
 
 For another Codex subscription model, select models under the `openai-codex` provider such as `openai-codex/gpt-5.5`.
 

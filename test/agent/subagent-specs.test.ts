@@ -101,6 +101,11 @@ describe("subagent-specs", () => {
 			expect(isToolAllowed("oracle", "explorer")).toBe(false);
 		});
 
+		it("normalizes tool names before allowed and denied checks", () => {
+			expect(isToolAllowed("re\u200bad", "explorer")).toBe(true);
+			expect(isToolAllowed("or\u200bacle", "explorer")).toBe(false);
+		});
+
 		it("should respect custom spec overrides", () => {
 			expect(
 				isToolAllowed("bash", "explorer", { allowedTools: ["bash"] }),
@@ -119,6 +124,14 @@ describe("subagent-specs", () => {
 		it("should return allowed tools for coder", () => {
 			const tools = getAllowedTools("coder");
 			expect(tools.length).toBeGreaterThan(10);
+		});
+
+		it("normalizes custom allow and deny lists", () => {
+			const tools = getAllowedTools("coder", {
+				allowedTools: ["apply-patch", "read", "rea\u200bd"],
+				deniedTools: ["appl\u200by_patch"],
+			});
+			expect(tools).toEqual(["read"]);
 		});
 	});
 
@@ -139,6 +152,31 @@ describe("subagent-specs", () => {
 			expect(names).not.toContain("bash");
 		});
 
+		it("normalizes tool names when filtering", () => {
+			const filtered = filterToolsForSubagent(
+				[
+					{ name: "rea\u200bd", run: () => {} },
+					{ name: "ba\u200bsh", run: () => {} },
+				],
+				"explorer",
+			);
+			expect(filtered.map((tool) => tool.name)).toEqual(["rea\u200bd"]);
+		});
+
+		it("respects normalized custom allowlists", () => {
+			const filtered = filterToolsForSubagent(
+				[{ name: "apply_patch", run: () => {} }],
+				"explorer",
+				{ allowedTools: ["apply-patch"] },
+			);
+			expect(filtered.map((tool) => tool.name)).toEqual(["apply_patch"]);
+			expect(
+				isToolAllowed("apply_patch", "explorer", {
+					allowedTools: ["apply-patch"],
+				}),
+			).toBe(true);
+		});
+
 		it("should allow all tools for coder", () => {
 			const filtered = filterToolsForSubagent(mockTools, "coder");
 			expect(filtered.length).toBe(4);
@@ -150,6 +188,7 @@ describe("subagent-specs", () => {
 			expect(parseSubagentType("explorer")).toBe("explorer");
 			expect(parseSubagentType("CODER")).toBe("coder");
 			expect(parseSubagentType("  planner  ")).toBe("planner");
+			expect(parseSubagentType("co\u200bder")).toBe("coder");
 		});
 
 		it("should return null for invalid types", () => {

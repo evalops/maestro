@@ -98,6 +98,12 @@ export interface RateLimitResult {
 	limit: number;
 }
 
+export type RateLimitBackend = "redis" | "memory";
+
+export interface ConsumedRateLimitResult extends RateLimitResult {
+	backend: RateLimitBackend;
+}
+
 // ============================================================================
 // REDIS CONNECTION (shared singleton)
 // ============================================================================
@@ -205,6 +211,7 @@ initRedis().catch((err) => {
 
 export class RateLimiter {
 	private clients = new Map<string, ClientState>();
+	private pendingRedisRefunds = new Map<string, number>();
 	private windowMs: number;
 	private max: number;
 	private refillRate: number; // tokens per ms
@@ -229,16 +236,83 @@ export class RateLimiter {
 	 * Check rate limit (async to support Redis).
 	 */
 	async checkAsync(ip: string): Promise<RateLimitResult> {
+		return this.consumeAsync(ip);
+	}
+
+	async consumeAsync(ip: string): Promise<ConsumedRateLimitResult> {
 		if (redis && redisAvailable) {
 			try {
-				return await this.checkRedis(ip);
+				await this.flushPendingRedisRefund(ip);
+			} catch (error) {
+				logger.warn(
+					"Redis refund flush failed, failing rate-limit check closed",
+					{
+						error: error instanceof Error ? error.message : String(error),
+					},
+				);
+				return {
+					allowed: false,
+					remaining: 0,
+					reset: Date.now() + this.windowMs,
+					limit: this.max,
+					backend: "redis",
+				};
+			}
+			try {
+				return { ...(await this.checkRedis(ip)), backend: "redis" };
 			} catch (error) {
 				logger.debug("Redis check failed, using memory fallback", {
 					error: error instanceof Error ? error.message : String(error),
 				});
 			}
 		}
-		return this.checkMemory(ip);
+		return { ...this.checkMemory(ip), backend: "memory" };
+	}
+
+	async consumePairRedisAsync(
+		ip: string,
+		peer: RateLimiter,
+		peerIp: string,
+	): Promise<RateLimitResult | null> {
+		if (!redis || !redisAvailable) {
+			return null;
+		}
+
+		try {
+			await this.flushPendingRedisRefund(ip);
+			await peer.flushPendingRedisRefund(peerIp);
+			return await this.checkRedisPair(ip, peer, peerIp);
+		} catch (error) {
+			logger.warn("Redis tiered rate-limit check failed closed", {
+				error: error instanceof Error ? error.message : String(error),
+			});
+			return {
+				allowed: false,
+				remaining: 0,
+				reset: Date.now() + Math.max(this.windowMs, peer.windowMs),
+				limit: Math.min(this.max, peer.max),
+			};
+		}
+	}
+
+	async refundAsync(ip: string, backend: RateLimitBackend): Promise<boolean> {
+		if (backend === "redis") {
+			const pendingRefunds = this.pendingRedisRefunds.get(ip) ?? 0;
+			try {
+				await this.refundRedis(ip, pendingRefunds + 1);
+				this.pendingRedisRefunds.delete(ip);
+				return true;
+			} catch (error) {
+				this.pendingRedisRefunds.set(ip, pendingRefunds + 1);
+				logger.warn("Redis refund failed, queued for retry", {
+					error: error instanceof Error ? error.message : String(error),
+					pendingRefunds: pendingRefunds + 1,
+				});
+				return false;
+			}
+		}
+		this.refundMemory(ip);
+		return true;
 	}
 
 	/**
@@ -246,6 +320,10 @@ export class RateLimiter {
 	 */
 	check(ip: string): RateLimitResult {
 		return this.checkMemory(ip);
+	}
+
+	refund(ip: string): void {
+		this.refundMemory(ip);
 	}
 
 	private async checkRedis(ip: string): Promise<RateLimitResult> {
@@ -318,6 +396,160 @@ export class RateLimiter {
 		};
 	}
 
+	private async refundRedis(ip: string, refundCount = 1): Promise<void> {
+		const key = `${this.keyPrefix}:${ip}`;
+		const now = Date.now();
+		const script = `
+			local key = KEYS[1]
+			local max = tonumber(ARGV[1])
+			local refillRate = tonumber(ARGV[2])
+			local now = tonumber(ARGV[3])
+			local windowMs = tonumber(ARGV[4])
+			local refundCount = tonumber(ARGV[5]) or 1
+
+			local data = redis.call('HMGET', key, 'tokens', 'lastRefill')
+			local tokens = tonumber(data[1]) or max
+			local lastRefill = tonumber(data[2]) or now
+			local timePassed = now - lastRefill
+			tokens = math.min(max, tokens + (timePassed * refillRate) + refundCount)
+
+			redis.call('HMSET', key, 'tokens', tokens, 'lastRefill', now)
+			redis.call('PEXPIRE', key, windowMs)
+			return tokens
+		`;
+		if (!redis) {
+			throw new Error("Redis not available");
+		}
+		await redis.eval(
+			script,
+			1,
+			key,
+			this.max,
+			this.refillRate,
+			now,
+			this.windowMs,
+			refundCount,
+		);
+	}
+
+	private async checkRedisPair(
+		ip: string,
+		peer: RateLimiter,
+		peerIp: string,
+	): Promise<RateLimitResult> {
+		const globalKey = `${this.keyPrefix}:${ip}`;
+		const endpointKey = `${peer.keyPrefix}:${peerIp}`;
+		const now = Date.now();
+		const script = `
+			local globalKey = KEYS[1]
+			local endpointKey = KEYS[2]
+			local globalMax = tonumber(ARGV[1])
+			local globalRefillRate = tonumber(ARGV[2])
+			local globalWindowMs = tonumber(ARGV[3])
+			local endpointMax = tonumber(ARGV[4])
+			local endpointRefillRate = tonumber(ARGV[5])
+			local endpointWindowMs = tonumber(ARGV[6])
+			local now = tonumber(ARGV[7])
+
+			local function currentTokens(key, max, refillRate)
+				local data = redis.call('HMGET', key, 'tokens', 'lastRefill')
+				local tokens = tonumber(data[1]) or max
+				local lastRefill = tonumber(data[2]) or now
+				local timePassed = now - lastRefill
+				return math.min(max, tokens + (timePassed * refillRate))
+			end
+
+			local globalTokens = currentTokens(globalKey, globalMax, globalRefillRate)
+			local endpointTokens = currentTokens(endpointKey, endpointMax, endpointRefillRate)
+			local globalAllowed = globalTokens >= 1
+			local endpointAllowed = endpointTokens >= 1
+
+			if globalAllowed and endpointAllowed then
+				globalTokens = globalTokens - 1
+				endpointTokens = endpointTokens - 1
+			end
+
+			redis.call('HMSET', globalKey, 'tokens', globalTokens, 'lastRefill', now)
+			redis.call('PEXPIRE', globalKey, globalWindowMs)
+			redis.call('HMSET', endpointKey, 'tokens', endpointTokens, 'lastRefill', now)
+			redis.call('PEXPIRE', endpointKey, endpointWindowMs)
+
+			return {
+				globalAllowed and 1 or 0,
+				endpointAllowed and 1 or 0,
+				math.floor(globalTokens),
+				math.floor(endpointTokens),
+				now
+			}
+		`;
+
+		if (!redis) {
+			throw new Error("Redis not available");
+		}
+		const [globalAllowed, endpointAllowed, globalRemaining, endpointRemaining] =
+			(await redis.eval(
+				script,
+				2,
+				globalKey,
+				endpointKey,
+				this.max,
+				this.refillRate,
+				this.windowMs,
+				peer.max,
+				peer.refillRate,
+				peer.windowMs,
+				now,
+			)) as [number, number, number, number, number];
+
+		if (endpointAllowed !== 1) {
+			const tokensNeeded = 1 - endpointRemaining;
+			const msNeeded = tokensNeeded / peer.refillRate;
+			return {
+				allowed: false,
+				remaining: 0,
+				reset: now + msNeeded,
+				limit: peer.max,
+			};
+		}
+
+		if (globalAllowed !== 1) {
+			const tokensNeeded = 1 - globalRemaining;
+			const msNeeded = tokensNeeded / this.refillRate;
+			return {
+				allowed: false,
+				remaining: 0,
+				reset: now + msNeeded,
+				limit: this.max,
+			};
+		}
+
+		const globalResult = {
+			allowed: true,
+			remaining: globalRemaining,
+			reset: now + Math.max(0, (1 - globalRemaining) / this.refillRate),
+			limit: this.max,
+		};
+		const endpointResult = {
+			allowed: true,
+			remaining: endpointRemaining,
+			reset: now + Math.max(0, (1 - endpointRemaining) / peer.refillRate),
+			limit: peer.max,
+		};
+
+		return globalResult.remaining <= endpointResult.remaining
+			? globalResult
+			: endpointResult;
+	}
+
+	private async flushPendingRedisRefund(ip: string): Promise<void> {
+		const pendingRefunds = this.pendingRedisRefunds.get(ip);
+		if (!pendingRefunds) {
+			return;
+		}
+		await this.refundRedis(ip, pendingRefunds);
+		this.pendingRedisRefunds.delete(ip);
+	}
+
 	private checkMemory(ip: string): RateLimitResult {
 		const now = Date.now();
 		let client = this.clients.get(ip);
@@ -357,6 +589,20 @@ export class RateLimiter {
 			reset: now + msNeeded,
 			limit: this.max,
 		};
+	}
+
+	private refundMemory(ip: string): void {
+		const now = Date.now();
+		let client = this.clients.get(ip);
+		if (!client) {
+			client = { tokens: this.max, lastRefill: now };
+			this.clients.set(ip, client);
+		}
+
+		const timePassed = now - client.lastRefill;
+		const refillAmount = timePassed * this.refillRate;
+		client.tokens = Math.min(this.max, client.tokens + refillAmount + 1);
+		client.lastRefill = now;
 	}
 
 	getConfig(): RateLimitConfig {
@@ -411,6 +657,7 @@ export class RateLimiter {
 	async reset(ip?: string): Promise<void> {
 		if (ip) {
 			this.clients.delete(ip);
+			this.pendingRedisRefunds.delete(ip);
 			if (redis && redisAvailable) {
 				await redis.del(`${this.keyPrefix}:${ip}`).catch((err) => {
 					logger.debug("Redis del failed during reset", {
@@ -420,6 +667,7 @@ export class RateLimiter {
 			}
 		} else {
 			this.clients.clear();
+			this.pendingRedisRefunds.clear();
 			if (redis && redisAvailable) {
 				// Use SCAN instead of KEYS to avoid blocking Redis
 				let cursor = "0";
@@ -492,17 +740,10 @@ export class TieredRateLimiter {
 	 * Check rate limit for a specific IP and endpoint (async, uses Redis if available).
 	 * Returns the most restrictive result between global and endpoint limits.
 	 *
-	 * Uses peek-then-consume pattern to avoid token leaks:
-	 * - First peeks at both limits without consuming
-	 * - Only consumes tokens if both limits allow the request
+	 * Uses an atomic Redis pair check when Redis is available. Memory fallback
+	 * consumes endpoint first and refunds it if the global limiter rejects.
 	 */
 	async checkAsync(ip: string, endpoint: string): Promise<RateLimitResult> {
-		// Peek at global limit first (no consumption)
-		const globalPeek = this.globalLimiter.peek(ip);
-		if (!globalPeek.allowed) {
-			return globalPeek;
-		}
-
 		// Find matching endpoint limiter and pattern
 		const match = this.findEndpointLimiter(endpoint);
 		if (!match) {
@@ -513,17 +754,36 @@ export class TieredRateLimiter {
 		// Use the matched pattern (not full path) for the key so all sub-routes
 		// share the same bucket. E.g., /api/chat/approval uses key "ip:/api/chat"
 		const endpointKey = `${ip}:${match.pattern}`;
-		const endpointPeek = match.limiter.peek(endpointKey);
-		if (!endpointPeek.allowed) {
-			// Endpoint limit would reject - return without consuming global token
-			return endpointPeek;
+		const redisPairResult = await this.globalLimiter.consumePairRedisAsync(
+			ip,
+			match.limiter,
+			endpointKey,
+		);
+		if (redisPairResult) {
+			return redisPairResult;
 		}
 
-		// Both limits allow - consume tokens from both
-		const [globalResult, endpointResult] = await Promise.all([
-			this.globalLimiter.checkAsync(ip),
-			match.limiter.checkAsync(endpointKey),
-		]);
+		const endpointResult = await match.limiter.consumeAsync(endpointKey);
+		if (!endpointResult.allowed) {
+			return endpointResult;
+		}
+
+		const globalResult = await this.globalLimiter.checkAsync(ip);
+		if (!globalResult.allowed) {
+			const refunded = await match.limiter.refundAsync(
+				endpointKey,
+				endpointResult.backend,
+			);
+			if (!refunded) {
+				return {
+					allowed: false,
+					remaining: 0,
+					reset: Math.max(globalResult.reset, endpointResult.reset),
+					limit: Math.min(globalResult.limit, endpointResult.limit),
+				};
+			}
+			return globalResult;
+		}
 
 		// Return the more restrictive result
 		return globalResult.remaining <= endpointResult.remaining
@@ -535,17 +795,9 @@ export class TieredRateLimiter {
 	 * Check rate limit for a specific IP and endpoint (sync, memory only).
 	 * Returns the most restrictive result between global and endpoint limits.
 	 *
-	 * Uses peek-then-consume pattern to avoid token leaks:
-	 * - First peeks at both limits without consuming
-	 * - Only consumes tokens if both limits allow the request
+	 * Consumes endpoint first and refunds it if the global limiter rejects.
 	 */
 	check(ip: string, endpoint: string): RateLimitResult {
-		// Peek at global limit first (no consumption)
-		const globalPeek = this.globalLimiter.peek(ip);
-		if (!globalPeek.allowed) {
-			return globalPeek;
-		}
-
 		// Find matching endpoint limiter and pattern
 		const match = this.findEndpointLimiter(endpoint);
 		if (!match) {
@@ -556,15 +808,16 @@ export class TieredRateLimiter {
 		// Use the matched pattern (not full path) for the key so all sub-routes
 		// share the same bucket. E.g., /api/chat/approval uses key "ip:/api/chat"
 		const endpointKey = `${ip}:${match.pattern}`;
-		const endpointPeek = match.limiter.peek(endpointKey);
-		if (!endpointPeek.allowed) {
-			// Endpoint limit would reject - return without consuming global token
-			return endpointPeek;
+		const endpointResult = match.limiter.check(endpointKey);
+		if (!endpointResult.allowed) {
+			return endpointResult;
 		}
 
-		// Both limits allow - consume tokens from both
 		const globalResult = this.globalLimiter.check(ip);
-		const endpointResult = match.limiter.check(endpointKey);
+		if (!globalResult.allowed) {
+			match.limiter.refund(endpointKey);
+			return globalResult;
+		}
 
 		// Return the more restrictive result
 		return globalResult.remaining <= endpointResult.remaining
@@ -589,10 +842,10 @@ export class TieredRateLimiter {
 			};
 		}
 
-		// Prefix match (e.g., /api/files/read matches /api/files)
+		// Segment-boundary prefix match (e.g., /api/files/read matches /api/files)
 		// All sub-routes share the same bucket under the pattern
 		for (const [pattern, limiter] of this.endpointLimiters) {
-			if (endpoint.startsWith(pattern)) {
+			if (endpoint.startsWith(`${pattern}/`)) {
 				return { limiter, pattern };
 			}
 		}

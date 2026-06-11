@@ -145,6 +145,62 @@ map injects defaults:
 | `groq`     | Auto-enables when `GROQ_API_KEY` is present                   |
 | ...        | (See `src/models/registry.ts` for the full list)              |
 
+## Chinese Model Providers (DeepSeek, Kimi, Qwen, MiniMax, GLM)
+
+Maestro ships built-in support for the major Chinese frontier providers. All of
+them expose OpenAI-compatible Chat Completions endpoints, so they use
+`api: "openai-completions"` and the standard OpenAI request shape (no custom
+`compat` flags required). Reasoning models that stream a `reasoning_content`
+field (DeepSeek Reasoner, Kimi Thinking, MiniMax M-series, GLM) surface their
+chain-of-thought automatically.
+
+| Provider | `provider` id | Default base URL (international) | China-mainland base URL | API key env |
+| --- | --- | --- | --- | --- |
+| **DeepSeek** | `deepseek` | `https://api.deepseek.com/v1` | (same) | `DEEPSEEK_API_KEY` |
+| **Moonshot (Kimi)** | `moonshot` | `https://api.moonshot.ai/v1` | `https://api.moonshot.cn/v1` | `MOONSHOT_API_KEY` (or `KIMI_API_KEY`) |
+| **Alibaba Qwen (DashScope)** | `dashscope` | `https://dashscope-intl.aliyuncs.com/compatible-mode/v1` | `https://dashscope.aliyuncs.com/compatible-mode/v1` | `DASHSCOPE_API_KEY` (or `QWEN_API_KEY`) |
+| **MiniMax** | `minimax` | `https://api.minimax.io/v1` | `https://api.minimaxi.com/v1` | `MINIMAX_API_KEY` |
+| **Z.ai (Zhipu GLM)** | `zai` | `https://api.z.ai/api/coding/paas/v4` | `https://open.bigmodel.cn/api/paas/v4` | `ZAI_API_KEY` |
+
+Representative built-in models:
+
+- **DeepSeek:** `deepseek-chat` (non-thinking), `deepseek-reasoner` (thinking),
+  `deepseek-v4-flash`, `deepseek-v4-pro`. `deepseek-chat` / `deepseek-reasoner`
+  are stable aliases DeepSeek keeps pointed at the latest weights.
+- **Moonshot:** `kimi-k2.6`, `kimi-k2.5`, `kimi-k2-thinking`,
+  `kimi-k2-0905-preview`, `kimi-k2-turbo-preview`, `kimi-latest`,
+  `moonshot-v1-128k`.
+- **Qwen:** `qwen3-max`, `qwen-max`, `qwen-plus`, `qwen-turbo`,
+  `qwen3-coder-plus`, `qwen3-coder-flash`, `qwq-32b`, `qwen-vl-max`.
+- **MiniMax:** `MiniMax-M2`, `MiniMax-M2.5`, `MiniMax-M2.7`, `MiniMax-Text-01`.
+- **GLM:** `glm-4.6`, `glm-4.5`, `glm-4.5-air`, `glm-4.5v`, `glm-4.5-flash`.
+
+Usage:
+
+```bash
+export DEEPSEEK_API_KEY=sk-...
+maestro --model deepseek/deepseek-reasoner
+
+export MOONSHOT_API_KEY=sk-...      # KIMI_API_KEY also works
+maestro --model moonshot/kimi-k2.6
+```
+
+To point a provider at its mainland (or a self-hosted) endpoint without editing
+the registry, add an override-only entry in `~/.maestro/config.json`:
+
+```json
+{
+  "providers": [
+    { "id": "moonshot", "name": "Moonshot", "baseUrl": "https://api.moonshot.cn/v1" }
+  ]
+}
+```
+
+The override `baseUrl` is applied to every built-in model for that provider.
+Both Moonshot/DeepSeek/MiniMax and GLM additionally offer Anthropic-compatible
+endpoints (`/anthropic`); to use those, define a custom provider with
+`api: "anthropic-messages"` pointed at that base URL.
+
 ## Built-in Overlays (Responses API)
 
 Maestro seeds a few Responses-capable models that aren’t yet emitted by the

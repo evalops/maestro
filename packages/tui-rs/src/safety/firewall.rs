@@ -498,18 +498,11 @@ impl ActionFirewall {
         }
 
         if is_mcp_tool_name(tool_name) {
-            if let Some(annotations) = context.annotations {
-                if annotations.destructive_hint == Some(true)
-                    && annotations.read_only_hint != Some(true)
-                {
-                    return FirewallVerdict::RequireApproval {
-                        reason: format!(
-                            "MCP tool \"{tool_name}\" is marked as destructive and requires approval"
-                        ),
-                    };
-                }
-            }
-            return FirewallVerdict::Allow;
+            return FirewallVerdict::RequireApproval {
+                reason: format!(
+                    "MCP tool \"{tool_name}\" requires approval by default; server-supplied annotations cannot lower approval requirements"
+                ),
+            };
         }
 
         // Handle specific tools
@@ -1248,6 +1241,40 @@ mod tests {
     }
 
     #[test]
+    fn test_check_tool_mcp_requires_approval_by_default() {
+        let fw = test_firewall();
+
+        let verdict = fw.check_tool("mcp__repo__inspect", &json!({}));
+
+        assert!(verdict.requires_approval());
+        assert!(verdict
+            .reason()
+            .is_some_and(|reason| reason.contains("requires approval by default")));
+    }
+
+    #[test]
+    fn test_check_tool_mcp_destructive_hint_still_requires_approval() {
+        let fw = test_firewall();
+        let annotations = McpToolAnnotations {
+            read_only_hint: Some(true),
+            destructive_hint: Some(true),
+            ..Default::default()
+        };
+
+        let verdict = fw.check_tool_with_context(FirewallContext {
+            tool_name: "mcp__repo__mutate",
+            args: &json!({}),
+            workflow_state: None,
+            annotations: Some(&annotations),
+        });
+
+        assert!(verdict.requires_approval());
+        assert!(verdict
+            .reason()
+            .is_some_and(|reason| reason.contains("cannot lower approval requirements")));
+    }
+
+    #[test]
     fn test_check_tool_search_validates_cwd() {
         let fw = test_firewall();
         let verdict = fw.check_tool(
@@ -1428,6 +1455,46 @@ mod tests {
             FirewallVerdict::Allow,
             FirewallVerdict::Block { reason: "x".into() }
         );
+    }
+
+    #[test]
+    fn test_mcp_server_tools_require_approval_by_default() {
+        let fw = test_firewall();
+        let annotations = McpToolAnnotations {
+            read_only_hint: Some(true),
+            destructive_hint: Some(false),
+            idempotent_hint: Some(true),
+            open_world_hint: Some(false),
+        };
+
+        let verdict = fw.check_tool_with_context(FirewallContext {
+            tool_name: "mcp__github__search_issues",
+            args: &json!({}),
+            workflow_state: None,
+            annotations: Some(&annotations),
+        });
+
+        assert!(
+            verdict.requires_approval(),
+            "server MCP tools must require approval even with read-only annotations"
+        );
+        assert!(verdict
+            .reason()
+            .is_some_and(|reason| reason.contains("requires approval by default")));
+    }
+
+    #[test]
+    fn test_builtin_mcp_helper_tools_do_not_use_server_tool_gate() {
+        let fw = test_firewall();
+
+        let verdict = fw.check_tool_with_context(FirewallContext {
+            tool_name: "mcp_list_resources",
+            args: &json!({}),
+            workflow_state: None,
+            annotations: None,
+        });
+
+        assert!(verdict.is_allowed());
     }
 
     // ========================================================================

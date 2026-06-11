@@ -1,6 +1,10 @@
 // @vitest-environment happy-dom
 import { afterEach, describe, expect, it, vi } from "vitest";
 import "../../packages/web/src/components/composer-input.js";
+import {
+	buildMcpToolCollisionName,
+	buildMcpToolName,
+} from "../../src/mcp/names.js";
 
 function createDeferred<T>() {
 	let resolve!: (value: T | PromiseLike<T>) => void;
@@ -139,6 +143,9 @@ describe("composer-input mention lookup", () => {
 	});
 
 	it("loads MCP tools into the picker and inserts the canonical tool mention", async () => {
+		const serverName = "evil__server";
+		const toolName = "delete__mcp__read";
+		const canonicalToolName = buildMcpToolName(serverName, toolName);
 		const el = document.createElement("composer-input") as HTMLElement & {
 			apiClient: {
 				getFiles: ReturnType<typeof vi.fn>;
@@ -152,11 +159,16 @@ describe("composer-input mention lookup", () => {
 			getMcpStatus: vi.fn().mockResolvedValue({
 				servers: [
 					{
-						name: "github",
+						name: serverName,
 						connected: true,
 						scope: "project",
 						transport: "http",
-						tools: [{ name: "search", description: "Search repository code" }],
+						tools: [
+							{
+								name: toolName,
+								description: "Search repository code",
+							},
+						],
 						resources: [],
 						prompts: [],
 					},
@@ -179,7 +191,7 @@ describe("composer-input mention lookup", () => {
 						?.querySelector(".suggestion-label")
 						?.textContent?.trim() ?? "",
 			)
-			.toBe("github/search");
+			.toBe(`${serverName}/${toolName}`);
 
 		expect(
 			el.shadowRoot?.querySelector(".suggestion-badge")?.textContent?.trim(),
@@ -199,7 +211,76 @@ describe("composer-input mention lookup", () => {
 						) as HTMLTextAreaElement | null
 					)?.value ?? "",
 			)
-			.toBe("@mcp__github__search ");
+			.toBe(`@${canonicalToolName} `);
+	});
+
+	it("uses the resolved MCP tool name when status includes a collision suffix", async () => {
+		const serverName = "docs";
+		const toolName = "read";
+		const canonicalToolName = buildMcpToolCollisionName(serverName, toolName);
+		const el = document.createElement("composer-input") as HTMLElement & {
+			apiClient: {
+				getFiles: ReturnType<typeof vi.fn>;
+				getMcpStatus: ReturnType<typeof vi.fn>;
+			};
+			updateComplete?: Promise<void>;
+		};
+
+		el.apiClient = {
+			getFiles: vi.fn().mockResolvedValue([]),
+			getMcpStatus: vi.fn().mockResolvedValue({
+				servers: [
+					{
+						name: serverName,
+						connected: true,
+						scope: "project",
+						transport: "http",
+						tools: [
+							{
+								name: toolName,
+								canonicalName: canonicalToolName,
+								description: "Read documentation",
+							},
+						],
+						resources: [],
+						prompts: [],
+					},
+				],
+			}),
+		};
+
+		document.body.appendChild(el);
+		await el.updateComplete;
+
+		const button = el.shadowRoot?.querySelector(
+			".mcp-button",
+		) as HTMLButtonElement;
+		button.click();
+
+		await expect
+			.poll(
+				() =>
+					el.shadowRoot
+						?.querySelector(".suggestion-label")
+						?.textContent?.trim() ?? "",
+			)
+			.toBe(`${serverName}/${toolName}`);
+
+		const suggestion = el.shadowRoot?.querySelector(
+			".suggestion-item",
+		) as HTMLDivElement;
+		suggestion.click();
+
+		await expect
+			.poll(
+				() =>
+					(
+						el.shadowRoot?.querySelector(
+							"textarea",
+						) as HTMLTextAreaElement | null
+					)?.value ?? "",
+			)
+			.toBe(`@${canonicalToolName} `);
 	});
 
 	it("shows an MCP picker error when tool status cannot be loaded", async () => {

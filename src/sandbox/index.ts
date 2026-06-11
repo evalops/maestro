@@ -39,6 +39,8 @@ export interface NativeSandboxConfig {
 	excludeTmpdir?: boolean;
 	/** Exclude /tmp from writable roots */
 	excludeSlashTmp?: boolean;
+	/** Additional files or directories that sandboxed code may not read */
+	denyRead?: string[];
 }
 
 export interface SandboxConfig {
@@ -113,6 +115,36 @@ export interface CreateSandboxOptions {
 	docker?: DockerSandboxConfig;
 	/** Native sandbox configuration */
 	native?: NativeSandboxConfig;
+	/** Explicitly allow falling back to unsandboxed local/none execution */
+	allowUnsafeLocalFallback?: boolean;
+}
+
+function isUnsafeSandboxFallbackAllowed(
+	options: CreateSandboxOptions,
+): boolean {
+	if (options.allowUnsafeLocalFallback) {
+		return true;
+	}
+
+	const raw = process.env.MAESTRO_ALLOW_UNSANDBOXED_SANDBOX_FALLBACK;
+	return raw === "1" || raw?.toLowerCase() === "true";
+}
+
+function unavailableSandboxError(
+	mode: SandboxBackendMode,
+	reason: string,
+): Error {
+	return new Error(
+		`Requested ${mode} sandbox is unavailable: ${reason}. Refusing to fall back to unsandboxed execution. Set MAESTRO_ALLOW_UNSANDBOXED_SANDBOX_FALLBACK=1 or pass allowUnsafeLocalFallback to opt in explicitly.`,
+	);
+}
+
+function unsafeFallbackSandbox(isWebServer: boolean): Sandbox | undefined {
+	const fallback = isWebServer ? "none" : "local";
+	console.warn(
+		`[sandbox] MAESTRO_ALLOW_UNSANDBOXED_SANDBOX_FALLBACK enabled. Falling back to ${fallback} sandbox.`,
+	);
+	return isWebServer ? undefined : new LocalSandbox();
 }
 
 /**
@@ -138,6 +170,7 @@ export async function createSandbox(
 ): Promise<Sandbox | undefined> {
 	const cwd = options.cwd ?? process.cwd();
 	const isWebServer = process.env.MAESTRO_WEB_SERVER === "1";
+	const allowUnsafeLocalFallback = isUnsafeSandboxFallbackAllowed(options);
 
 	// Priority: explicit mode > env var > config file > auto-detect
 	let mode: SandboxMode = options.mode ?? "none";
@@ -190,17 +223,17 @@ export async function createSandbox(
 			// Check native sandbox availability
 			if (!isNativeSandboxAvailable()) {
 				const sandboxType = getNativeSandboxType();
-				console.warn(
-					`[sandbox] Native sandbox (${sandboxType}) not available on this platform.`,
-				);
+				const reason = `native sandbox (${sandboxType}) is not enforced on this platform`;
 				if (policyModeRequested) {
 					throw new Error(
 						`Native sandbox policy mode "${nativePolicy}" requires native sandbox support; refusing to fall back to local execution.`,
 					);
 				}
-				const fallback = isWebServer ? "none" : "local";
-				console.warn(`[sandbox] Falling back to ${fallback} sandbox.`);
-				return isWebServer ? undefined : new LocalSandbox();
+				if (allowUnsafeLocalFallback) {
+					console.warn(`[sandbox] ${reason}.`);
+					return unsafeFallbackSandbox(isWebServer);
+				}
+				throw unavailableSandboxError("native", reason);
 			}
 
 			const policy: NativeSandboxPolicy = buildNativeSandboxPolicy(
@@ -213,6 +246,7 @@ export async function createSandbox(
 				},
 				cwd,
 			);
+			policy.denyRead = nativeConfig?.denyRead;
 
 			const sandbox = createNativeSandbox(policy, cwd);
 
@@ -230,9 +264,11 @@ export async function createSandbox(
 						{ cause: error },
 					);
 				}
-				const fallback = isWebServer ? "none" : "local";
-				console.warn(`[sandbox] Falling back to ${fallback} sandbox.`);
-				return isWebServer ? undefined : new LocalSandbox();
+				const reason = error instanceof Error ? error.message : String(error);
+				if (allowUnsafeLocalFallback) {
+					return unsafeFallbackSandbox(isWebServer);
+				}
+				throw unavailableSandboxError("native", reason);
 			}
 		}
 
@@ -240,11 +276,12 @@ export async function createSandbox(
 			// Check Docker availability
 			const dockerAvailable = await isDockerAvailable();
 			if (!dockerAvailable) {
-				const fallback = isWebServer ? "none" : "local";
-				console.warn(
-					`[sandbox] Docker not available. Falling back to ${fallback} sandbox.`,
-				);
-				return isWebServer ? undefined : new LocalSandbox();
+				const reason = "Docker is not available";
+				if (allowUnsafeLocalFallback) {
+					console.warn(`[sandbox] ${reason}.`);
+					return unsafeFallbackSandbox(isWebServer);
+				}
+				throw unavailableSandboxError("docker", reason);
 			}
 
 			const sandbox = new DockerSandbox({
@@ -261,9 +298,11 @@ export async function createSandbox(
 					"[sandbox] Failed to initialize Docker sandbox:",
 					error instanceof Error ? error.message : String(error),
 				);
-				const fallback = isWebServer ? "none" : "local";
-				console.warn(`[sandbox] Falling back to ${fallback} sandbox.`);
-				return isWebServer ? undefined : new LocalSandbox();
+				const reason = error instanceof Error ? error.message : String(error);
+				if (allowUnsafeLocalFallback) {
+					return unsafeFallbackSandbox(isWebServer);
+				}
+				throw unavailableSandboxError("docker", reason);
 			}
 		}
 

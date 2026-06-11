@@ -6,7 +6,13 @@
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { dirname, isAbsolute, join } from "node:path";
 import { expandTildePath } from "../utils/path-expansion.js";
-import { getConfigPaths, loadConfig, loadConfigFile } from "./config-loader.js";
+import {
+	getConfigPathEntries,
+	getConfigPaths,
+	loadConfig,
+	loadConfigFile,
+	loadUntrustedProjectConfigFile,
+} from "./config-loader.js";
 import { ensureFactoryData } from "./factory-integration.js";
 import { isLocalBaseUrl } from "./url-normalize.js";
 
@@ -40,10 +46,11 @@ export function validateConfig(): ConfigValidationResult {
 		},
 	};
 
-	const paths = getConfigPaths();
+	const pathEntries = getConfigPathEntries();
 
 	// Check each config file
-	for (const path of paths) {
+	for (const entry of pathEntries) {
+		const { path } = entry;
 		if (!existsSync(path)) {
 			continue;
 		}
@@ -52,39 +59,44 @@ export function validateConfig(): ConfigValidationResult {
 
 		try {
 			const raw = readFileSync(path, "utf-8");
+			const canInspectReferences = canInspectConfigReferences(entry);
 
 			// Find file references
-			const fileMatches = [...raw.matchAll(/\{file:([^}]+)\}/g)];
-			for (const match of fileMatches) {
-				const matchedPath = match[1];
-				if (!matchedPath) continue;
-				let filePath = expandTildePath(matchedPath);
-				if (!isAbsolute(filePath)) {
-					filePath = join(dirname(path), filePath);
+			if (canInspectReferences) {
+				const fileMatches = [...raw.matchAll(/\{file:([^}]+)\}/g)];
+				for (const match of fileMatches) {
+					const matchedPath = match[1];
+					if (!matchedPath) continue;
+					let filePath = expandTildePath(matchedPath);
+					if (!isAbsolute(filePath)) {
+						filePath = join(dirname(path), filePath);
+					}
+
+					result.summary.fileReferences.push(filePath);
+
+					if (!existsSync(filePath)) {
+						result.errors.push(`File reference not found: ${filePath}`);
+						result.valid = false;
+					}
 				}
 
-				result.summary.fileReferences.push(filePath);
+				// Find env vars
+				const envMatches = [...raw.matchAll(/\{env:([^}]+)\}/g)];
+				for (const match of envMatches) {
+					const varName = match[1];
+					if (!varName) continue;
+					result.summary.envVars.push(varName);
 
-				if (!existsSync(filePath)) {
-					result.errors.push(`File reference not found: ${filePath}`);
-					result.valid = false;
-				}
-			}
-
-			// Find env vars
-			const envMatches = [...raw.matchAll(/\{env:([^}]+)\}/g)];
-			for (const match of envMatches) {
-				const varName = match[1];
-				if (!varName) continue;
-				result.summary.envVars.push(varName);
-
-				if (!process.env[varName]) {
-					result.warnings.push(`Environment variable not set: ${varName}`);
+					if (!process.env[varName]) {
+						result.warnings.push(`Environment variable not set: ${varName}`);
+					}
 				}
 			}
 
 			// Try parsing
-			const config = loadConfigFile(path);
+			const config = canInspectReferences
+				? loadConfigFile(path)
+				: loadUntrustedProjectConfigFile(path);
 			if (config) {
 				result.summary.providers += config.providers.length;
 				for (const provider of config.providers) {
@@ -110,6 +122,13 @@ export function validateConfig(): ConfigValidationResult {
 	}
 
 	return result;
+}
+
+function canInspectConfigReferences(entry: {
+	scope: string;
+	trusted: boolean;
+}): boolean {
+	return entry.scope !== "project" || entry.trusted;
 }
 
 /**
@@ -150,7 +169,7 @@ export interface ConfigInspection {
 }
 
 export function inspectConfig(): ConfigInspection {
-	const paths = getConfigPaths();
+	const pathEntries = getConfigPathEntries();
 	const config = loadConfig(true, ensureFactoryData);
 
 	const inspection: ConfigInspection = {
@@ -161,7 +180,8 @@ export function inspectConfig(): ConfigInspection {
 	};
 
 	// Track sources
-	for (const path of paths) {
+	for (const entry of pathEntries) {
+		const { path } = entry;
 		const exists = existsSync(path);
 		inspection.sources.push({
 			path,
@@ -204,8 +224,10 @@ export function inspectConfig(): ConfigInspection {
 	}
 
 	// Track file references (scan all config files)
-	for (const path of paths) {
+	for (const entry of pathEntries) {
+		const { path } = entry;
 		if (!existsSync(path)) continue;
+		if (!canInspectConfigReferences(entry)) continue;
 
 		const raw = readFileSync(path, "utf-8");
 		const fileMatches = [...raw.matchAll(/\{file:([^}]+)\}/g)];
@@ -239,8 +261,10 @@ export function inspectConfig(): ConfigInspection {
 
 	// Track env vars
 	const envVarsSet = new Set<string>();
-	for (const path of paths) {
+	for (const entry of pathEntries) {
+		const { path } = entry;
 		if (!existsSync(path)) continue;
+		if (!canInspectConfigReferences(entry)) continue;
 
 		const raw = readFileSync(path, "utf-8");
 		const envMatches = [...raw.matchAll(/\{env:([^}]+)\}/g)];

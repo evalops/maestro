@@ -1,4 +1,5 @@
 use super::*;
+use crate::a2a::a2a_push_select_pinned_addr;
 use std::fs;
 use std::io::{Read, Write};
 use std::net::TcpListener as StdTcpListener;
@@ -81,6 +82,13 @@ const A2A_PLATFORM_ENV_NAMES: &[&str] = &[
     "PORT",
     "MAESTRO_CONTROL_HOST",
 ];
+const CONTROL_PLANE_ENV_NAMES: &[&str] = &[
+    "MAESTRO_CONTROL_HOST",
+    "MAESTRO_WEB_API_KEY",
+    "MAESTRO_WEB_REQUIRE_KEY",
+    "NODE_ENV",
+    "PORT",
+];
 
 fn snapshot_env(names: &'static [&'static str]) -> Vec<(&'static str, Option<std::ffi::OsString>)> {
     names
@@ -103,6 +111,38 @@ fn clear_env(names: &[&str]) {
     for name in names {
         env::remove_var(name);
     }
+}
+
+#[test]
+fn control_plane_defaults_to_loopback_bind() {
+    let _guard = ENV_LOCK.blocking_lock();
+    let snapshot = snapshot_env(CONTROL_PLANE_ENV_NAMES);
+    clear_env(CONTROL_PLANE_ENV_NAMES);
+
+    let config = Config::from_env();
+
+    assert_eq!(config.listen_host, "127.0.0.1");
+    restore_env(snapshot);
+}
+
+#[test]
+fn control_plane_requires_api_key_when_auth_required() {
+    let _guard = ENV_LOCK.blocking_lock();
+    let snapshot = snapshot_env(CONTROL_PLANE_ENV_NAMES);
+    clear_env(CONTROL_PLANE_ENV_NAMES);
+
+    env::set_var("MAESTRO_WEB_REQUIRE_KEY", "1");
+    let config = Config::from_env();
+
+    assert_eq!(
+        config.validate_startup().unwrap_err(),
+        "web auth is required when MAESTRO_WEB_REQUIRE_KEY is enabled; set MAESTRO_WEB_API_KEY, MAESTRO_AUTH_SHARED_SECRET, MAESTRO_JWT_SECRET, MAESTRO_JWT_JWKS_URL, or MAESTRO_WEB_TRUST_PROXY_AUTH_TOKEN"
+    );
+
+    env::set_var("MAESTRO_WEB_API_KEY", "secret");
+    let config = Config::from_env();
+    assert!(config.validate_startup().is_ok());
+    restore_env(snapshot);
 }
 
 #[derive(Debug)]
@@ -3486,6 +3526,47 @@ fn a2a_push_private_ip_check_includes_ipv4_mapped_ipv6() {
         .expect("mapped IPv6 parses");
 
     assert!(a2a_push_ip_is_private(mapped_loopback));
+}
+
+#[test]
+fn a2a_push_pinned_addr_rejects_any_private_resolved_address() {
+    let addresses = vec![
+        "93.184.216.34:443"
+            .parse()
+            .expect("public socket addr parses"),
+        "169.254.169.254:443"
+            .parse()
+            .expect("metadata socket addr parses"),
+    ];
+
+    let error = a2a_push_select_pinned_addr("hooks.example", addresses, false)
+        .expect_err("mixed private resolution should be rejected");
+
+    assert!(error.contains("host is private"));
+}
+
+#[test]
+fn a2a_push_pinned_addr_selects_public_resolved_address() {
+    let expected = "93.184.216.34:443"
+        .parse()
+        .expect("public socket addr parses");
+
+    let selected = a2a_push_select_pinned_addr("hooks.example", vec![expected], false)
+        .expect("public resolution should be accepted");
+
+    assert_eq!(selected, expected);
+}
+
+#[test]
+fn a2a_push_pinned_addr_allows_private_when_explicitly_enabled() {
+    let expected = "127.0.0.1:443"
+        .parse()
+        .expect("loopback socket addr parses");
+
+    let selected = a2a_push_select_pinned_addr("local.test", vec![expected], true)
+        .expect("private resolution should be accepted when explicitly enabled");
+
+    assert_eq!(selected, expected);
 }
 
 #[test]

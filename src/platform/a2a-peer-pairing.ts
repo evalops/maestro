@@ -669,7 +669,13 @@ function rejectSecretBearingFields(value: unknown, path = "$"): void {
 }
 
 function isSecretLikeKey(key: string): boolean {
-	const normalized = key.toLowerCase().replace(/[-_]/gu, "");
+	// NFKC-normalize first so that fullwidth/homoglyph variants (e.g.
+	// Cyrillic "о", fullwidth "ｔｏｋｅｎ") are folded to their ASCII
+	// equivalents before comparison, preventing denylist bypass (#2541).
+	const normalized = key
+		.normalize("NFKC")
+		.toLowerCase()
+		.replace(/[-_\s]/gu, "");
 	return (
 		normalized === "authorization" ||
 		normalized === "token" ||

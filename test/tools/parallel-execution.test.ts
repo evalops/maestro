@@ -6,6 +6,7 @@ import {
 	WRITE_TOOLS,
 	getOptimalConcurrency,
 	getPathScopedMutation,
+	isParallelReadOnlyTool,
 	isParallelSafeTool,
 	isReadOnlyTool,
 	isWriteTool,
@@ -59,6 +60,12 @@ describe("parallel-execution", () => {
 			expect(isReadOnlyTool("Read", { readOnlyHint: false })).toBe(false);
 		});
 
+		it("does not allow MCP annotations to lower approval requirements", () => {
+			expect(
+				isReadOnlyTool("mcp__workspace__inspect", { readOnlyHint: true }),
+			).toBe(false);
+		});
+
 		it("returns false for unknown tools without annotation", () => {
 			expect(isReadOnlyTool("unknown_tool")).toBe(false);
 		});
@@ -76,7 +83,7 @@ describe("parallel-execution", () => {
 	});
 
 	describe("isParallelSafeTool", () => {
-		it("allows server-opted MCP tools to run in parallel without marking them read-only", () => {
+		it("keeps approval-gated MCP tools out of parallel lanes", () => {
 			const source = {
 				type: "mcp" as const,
 				server: "workspace",
@@ -84,12 +91,12 @@ describe("parallel-execution", () => {
 				supportsParallelToolCalls: true,
 			};
 
-			expect(
-				isReadOnlyTool("mcp__workspace__mutate_state", undefined, source),
-			).toBe(false);
+			expect(isParallelReadOnlyTool("mcp__workspace__mutate_state")).toBe(
+				false,
+			);
 			expect(
 				isParallelSafeTool("mcp__workspace__mutate_state", undefined, source),
-			).toBe(true);
+			).toBe(false);
 		});
 
 		it("does not allow destructive MCP tools into parallel-safe waves", () => {
@@ -101,6 +108,21 @@ describe("parallel-execution", () => {
 						type: "mcp",
 						server: "workspace",
 						tool: "delete",
+						supportsParallelToolCalls: true,
+					},
+				),
+			).toBe(false);
+		});
+
+		it("does not classify read-only hinted MCP tools as parallel read-only", () => {
+			expect(
+				isParallelReadOnlyTool(
+					"mcp__workspace__read_state",
+					{ readOnlyHint: true },
+					{
+						type: "mcp",
+						server: "workspace",
+						tool: "read_state",
 						supportsParallelToolCalls: true,
 					},
 				),
@@ -173,6 +195,26 @@ describe("parallel-execution", () => {
 			const concurrency = getOptimalConcurrency(toolCalls, mockTools);
 			expect(concurrency).toBeGreaterThanOrEqual(1);
 		});
+
+		it("keeps approval-gated MCP reads at base concurrency", () => {
+			const mcpReadTool = {
+				name: "mcp__remote__read",
+				description: "",
+				parameters: {},
+				annotations: { readOnlyHint: true },
+				source: {
+					type: "mcp" as const,
+					server: "remote",
+					tool: "read",
+					supportsParallelToolCalls: true,
+				},
+			} as AgentTool;
+			const concurrency = getOptimalConcurrency(
+				[{ name: "mcp__remote__read" }, { name: "mcp__remote__read" }],
+				[mcpReadTool],
+			);
+			expect(concurrency).toBe(2);
+		});
 	});
 
 	describe("partitionToolCalls", () => {
@@ -208,6 +250,29 @@ describe("parallel-execution", () => {
 			const { readOnly, write } = partitionToolCalls([], mockTools);
 			expect(readOnly).toHaveLength(0);
 			expect(write).toHaveLength(0);
+		});
+
+		it("does not place approval-gated MCP reads into the read-only partition", () => {
+			const toolCalls = [{ name: "mcp__remote__read", id: "1" }];
+			const tools = [
+				{
+					name: "mcp__remote__read",
+					description: "",
+					parameters: {},
+					annotations: { readOnlyHint: true },
+					source: {
+						type: "mcp" as const,
+						server: "remote",
+						tool: "read",
+						supportsParallelToolCalls: true,
+					},
+				} as AgentTool,
+			];
+
+			const { readOnly, write } = partitionToolCalls(toolCalls, tools);
+
+			expect(readOnly).toHaveLength(0);
+			expect(write).toHaveLength(1);
 		});
 	});
 

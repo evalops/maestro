@@ -52,7 +52,7 @@ require_text "package.json" "bun run --filter @evalops/maestro-web build"
 require_text "package.json" "\"bun:lint\""
 require_text "package.json" "\"test:fast\""
 
-require_text "nx.json" "\"cacheableOperations\": [\"build\", \"test\", \"lint\", \"evals\"]"
+require_text "nx.json" "\"cacheableOperations\": [\"build\", \"test\", \"lint\"]"
 require_text "project.json" "\"name\": \"maestro\""
 require_text "project.json" "\"build:all\""
 

@@ -18,7 +18,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 const DB_URL = process.env.MAESTRO_DATABASE_URL || process.env.DATABASE_URL;
 const skipDb = !DB_URL;
 
-// Conditional test wrapper
+// Capability skip tracked by evalops/maestro-internal#2582.
 const describeDb = skipDb ? describe.skip : describe;
 
 describeDb("Database Integration Tests", () => {
@@ -29,7 +29,10 @@ describeDb("Database Integration Tests", () => {
 	beforeAll(async () => {
 		// Dynamically import to avoid errors when DB not configured
 		const clientModule = await import("../../src/db/client.js");
+		const migrateModule = await import("../../src/db/migrate.js");
 		const schemaModule = await import("../../src/db/schema.js");
+
+		await migrateModule.migrate();
 
 		getDb = clientModule.getDb;
 		closeDb = clientModule.closeDb;

@@ -142,6 +142,403 @@ describe.skipIf(!REDIS_URL)("Redis Rate Limiter Integration", () => {
 			limiter.stop();
 		});
 	});
+
+	describe("TieredRateLimiter with Redis backend", () => {
+		it("does not drain endpoint quota when the global limit rejects", async () => {
+			const client = getRedisClient();
+			expect(client).not.toBeNull();
+			const ip = "192.168.4.1";
+			await client!.del(`rl:${ip}`, `rl:${ip}:/api/chat`);
+
+			const tieredLimiter = new TieredRateLimiter(
+				{ windowMs: 60000, max: 1 },
+				{
+					"/api/chat": { windowMs: 60000, max: 2 },
+				},
+			);
+
+			try {
+				expect((await tieredLimiter.checkAsync(ip, "/api/chat")).allowed).toBe(
+					true,
+				);
+				expect((await tieredLimiter.checkAsync(ip, "/api/chat")).allowed).toBe(
+					false,
+				);
+
+				const endpointTokens = await client!.hget(
+					`rl:${ip}:/api/chat`,
+					"tokens",
+				);
+				expect(Number(endpointTokens)).toBeGreaterThanOrEqual(1);
+			} finally {
+				tieredLimiter.stop();
+				await client!.del(`rl:${ip}`, `rl:${ip}:/api/chat`);
+			}
+		});
+	});
+});
+
+describe("RateLimiter Redis refund recovery", () => {
+	afterEach(() => {
+		vi.unstubAllEnvs();
+		vi.doUnmock("ioredis");
+		vi.resetModules();
+	});
+
+	it("replays queued Redis refunds before the next consume", async () => {
+		vi.resetModules();
+		vi.stubEnv("MAESTRO_REDIS_URL", "redis://localhost:6379");
+
+		const tokens = new Map<string, number>();
+		let failRefund = true;
+
+		class MockRedis {
+			private handlers = new Map<string, Array<() => void>>();
+
+			on(event: string, handler: () => void): this {
+				const handlers = this.handlers.get(event) ?? [];
+				handlers.push(handler);
+				this.handlers.set(event, handlers);
+				return this;
+			}
+
+			async connect(): Promise<void> {
+				for (const handler of this.handlers.get("connect") ?? []) {
+					handler();
+				}
+			}
+
+			async eval(
+				_script: string,
+				_numKeys: number,
+				key: string,
+				max: number,
+				_refillRate: number,
+				now: number,
+				_windowMs: number,
+				refundCount?: number,
+			): Promise<number | [number, number, number]> {
+				const currentTokens = tokens.get(key) ?? max;
+
+				if (typeof refundCount === "number") {
+					if (failRefund) {
+						throw new Error("refund failed");
+					}
+					const nextTokens = Math.min(max, currentTokens + refundCount);
+					tokens.set(key, nextTokens);
+					return nextTokens;
+				}
+
+				if (currentTokens >= 1) {
+					const nextTokens = currentTokens - 1;
+					tokens.set(key, nextTokens);
+					return [1, Math.floor(nextTokens), now];
+				}
+
+				tokens.set(key, currentTokens);
+				return [0, 0, now];
+			}
+
+			async del(...keys: string[]): Promise<number> {
+				for (const key of keys) {
+					tokens.delete(key);
+				}
+				return keys.length;
+			}
+
+			async scan(): Promise<[string, string[]]> {
+				return ["0", []];
+			}
+
+			async quit(): Promise<void> {}
+		}
+
+		vi.doMock("ioredis", () => ({ Redis: MockRedis }));
+
+		const rateLimiterModule = await import("../../src/server/rate-limiter.js");
+		await rateLimiterModule.initRedis();
+
+		const limiter = new rateLimiterModule.RateLimiter(
+			{ windowMs: 60000, max: 2 },
+			"queued-refund",
+		);
+		const ip = "192.168.10.10:/api/chat";
+		const redisKey = `queued-refund:${ip}`;
+
+		try {
+			const first = await limiter.consumeAsync(ip);
+			expect(first.allowed).toBe(true);
+			expect(first.backend).toBe("redis");
+			expect(first.remaining).toBe(1);
+
+			await limiter.refundAsync(ip, "redis");
+			expect(tokens.get(redisKey)).toBe(1);
+
+			failRefund = false;
+
+			const second = await limiter.consumeAsync(ip);
+			expect(second.allowed).toBe(true);
+			expect(second.backend).toBe("redis");
+			expect(second.remaining).toBe(1);
+			expect(tokens.get(redisKey)).toBe(1);
+		} finally {
+			limiter.stop();
+			await rateLimiterModule.shutdownRedis();
+		}
+	});
+
+	it("fails closed when queued Redis refunds cannot be replayed", async () => {
+		vi.resetModules();
+		vi.stubEnv("MAESTRO_REDIS_URL", "redis://localhost:6379");
+
+		const tokens = new Map<string, number>();
+
+		class MockRedis {
+			private handlers = new Map<string, Array<() => void>>();
+
+			on(event: string, handler: () => void): this {
+				const handlers = this.handlers.get(event) ?? [];
+				handlers.push(handler);
+				this.handlers.set(event, handlers);
+				return this;
+			}
+
+			async connect(): Promise<void> {
+				for (const handler of this.handlers.get("connect") ?? []) {
+					handler();
+				}
+			}
+
+			async eval(
+				_script: string,
+				_numKeys: number,
+				key: string,
+				max: number,
+				_refillRate: number,
+				now: number,
+				_windowMs: number,
+				refundCount?: number,
+			): Promise<number | [number, number, number]> {
+				const currentTokens = tokens.get(key) ?? max;
+
+				if (typeof refundCount === "number") {
+					throw new Error("refund failed");
+				}
+
+				if (currentTokens >= 1) {
+					const nextTokens = currentTokens - 1;
+					tokens.set(key, nextTokens);
+					return [1, Math.floor(nextTokens), now];
+				}
+
+				return [0, 0, now];
+			}
+
+			async del(...keys: string[]): Promise<number> {
+				for (const key of keys) {
+					tokens.delete(key);
+				}
+				return keys.length;
+			}
+
+			async scan(): Promise<[string, string[]]> {
+				return ["0", []];
+			}
+
+			async quit(): Promise<void> {}
+		}
+
+		vi.doMock("ioredis", () => ({ Redis: MockRedis }));
+
+		const rateLimiterModule = await import("../../src/server/rate-limiter.js");
+		await rateLimiterModule.initRedis();
+
+		const limiter = new rateLimiterModule.RateLimiter(
+			{ windowMs: 60000, max: 2 },
+			"queued-refund-closed",
+		);
+		const ip = "192.168.10.11:/api/chat";
+		const redisKey = `queued-refund-closed:${ip}`;
+
+		try {
+			const first = await limiter.consumeAsync(ip);
+			expect(first.allowed).toBe(true);
+			expect(first.backend).toBe("redis");
+			expect(first.remaining).toBe(1);
+
+			await limiter.refundAsync(ip, "redis");
+			expect(tokens.get(redisKey)).toBe(1);
+
+			const second = await limiter.consumeAsync(ip);
+			expect(second.allowed).toBe(false);
+			expect(second.backend).toBe("redis");
+			expect(second.remaining).toBe(0);
+			expect(tokens.get(redisKey)).toBe(1);
+		} finally {
+			limiter.stop();
+			await rateLimiterModule.shutdownRedis();
+		}
+	});
+
+	it("replays queued Redis refunds before pair consumes", async () => {
+		vi.resetModules();
+		vi.stubEnv("MAESTRO_REDIS_URL", "redis://localhost:6379");
+
+		const tokens = new Map<string, number>();
+		let failRefund = true;
+
+		class MockRedis {
+			private handlers = new Map<string, Array<() => void>>();
+
+			on(event: string, handler: () => void): this {
+				const handlers = this.handlers.get(event) ?? [];
+				handlers.push(handler);
+				this.handlers.set(event, handlers);
+				return this;
+			}
+
+			async connect(): Promise<void> {
+				for (const handler of this.handlers.get("connect") ?? []) {
+					handler();
+				}
+			}
+
+			async eval(
+				_script: string,
+				numKeys: number,
+				...args: Array<number | string>
+			): Promise<
+				| number
+				| [number, number, number]
+				| [number, number, number, number, number]
+			> {
+				if (numKeys === 2) {
+					const [
+						globalKey,
+						endpointKey,
+						globalMax,
+						_globalRefillRate,
+						_globalWindowMs,
+						endpointMax,
+						_endpointRefillRate,
+						_endpointWindowMs,
+						now,
+					] = args as [
+						string,
+						string,
+						number,
+						number,
+						number,
+						number,
+						number,
+						number,
+						number,
+					];
+					let globalTokens = tokens.get(globalKey) ?? globalMax;
+					let endpointTokens = tokens.get(endpointKey) ?? endpointMax;
+					const globalAllowed = globalTokens >= 1;
+					const endpointAllowed = endpointTokens >= 1;
+					if (globalAllowed && endpointAllowed) {
+						globalTokens -= 1;
+						endpointTokens -= 1;
+					}
+					tokens.set(globalKey, globalTokens);
+					tokens.set(endpointKey, endpointTokens);
+					return [
+						globalAllowed ? 1 : 0,
+						endpointAllowed ? 1 : 0,
+						Math.floor(globalTokens),
+						Math.floor(endpointTokens),
+						now,
+					];
+				}
+
+				const [key, max, _refillRate, now, _windowMs, refundCount] = args as [
+					string,
+					number,
+					number,
+					number,
+					number,
+					number | undefined,
+				];
+				const currentTokens = tokens.get(key) ?? max;
+
+				if (typeof refundCount === "number") {
+					if (failRefund) {
+						throw new Error("refund failed");
+					}
+					const nextTokens = Math.min(max, currentTokens + refundCount);
+					tokens.set(key, nextTokens);
+					return nextTokens;
+				}
+
+				if (currentTokens >= 1) {
+					const nextTokens = currentTokens - 1;
+					tokens.set(key, nextTokens);
+					return [1, Math.floor(nextTokens), now];
+				}
+
+				return [0, 0, now];
+			}
+
+			async del(...keys: string[]): Promise<number> {
+				for (const key of keys) {
+					tokens.delete(key);
+				}
+				return keys.length;
+			}
+
+			async scan(): Promise<[string, string[]]> {
+				return ["0", []];
+			}
+
+			async quit(): Promise<void> {}
+		}
+
+		vi.doMock("ioredis", () => ({ Redis: MockRedis }));
+
+		const rateLimiterModule = await import("../../src/server/rate-limiter.js");
+		await rateLimiterModule.initRedis();
+
+		const globalLimiter = new rateLimiterModule.RateLimiter(
+			{ windowMs: 60000, max: 10 },
+			"queued-pair-global",
+		);
+		const endpointLimiter = new rateLimiterModule.RateLimiter(
+			{ windowMs: 60000, max: 2 },
+			"queued-pair-endpoint",
+		);
+		const ip = "192.168.10.12";
+		const endpointIp = `${ip}:/api/chat`;
+		const endpointKey = `queued-pair-endpoint:${endpointIp}`;
+
+		try {
+			const first = await globalLimiter.consumePairRedisAsync(
+				ip,
+				endpointLimiter,
+				endpointIp,
+			);
+			expect(first?.allowed).toBe(true);
+			expect(tokens.get(endpointKey)).toBe(1);
+
+			await endpointLimiter.refundAsync(endpointIp, "redis");
+			expect(tokens.get(endpointKey)).toBe(1);
+
+			failRefund = false;
+
+			const second = await globalLimiter.consumePairRedisAsync(
+				ip,
+				endpointLimiter,
+				endpointIp,
+			);
+			expect(second?.allowed).toBe(true);
+			expect(tokens.get(endpointKey)).toBe(1);
+		} finally {
+			globalLimiter.stop();
+			endpointLimiter.stop();
+			await rateLimiterModule.shutdownRedis();
+		}
+	});
 });
 
 describe("Rate Limiter (in-memory only)", () => {
@@ -254,6 +651,42 @@ describe("TieredRateLimiter (in-memory)", () => {
 		expect(result.allowed).toBe(true);
 	});
 
+	it("does not apply endpoint limits to sibling path prefixes", () => {
+		const tieredLimiter = new TieredRateLimiter(
+			{ windowMs: 60000, max: 100 },
+			{
+				"/api/chat": { windowMs: 60000, max: 1 },
+			},
+		);
+		activeLimiters.push(tieredLimiter);
+
+		expect(tieredLimiter.check("192.168.2.6", "/api/chat").allowed).toBe(true);
+		expect(tieredLimiter.check("192.168.2.6", "/api/chat").allowed).toBe(false);
+		expect(tieredLimiter.check("192.168.2.6", "/api/chatx").allowed).toBe(true);
+		expect(tieredLimiter.check("192.168.2.6", "/api/chat/stream").allowed).toBe(
+			false,
+		);
+	});
+
+	it("does not let concurrent async bursts exceed endpoint limits", async () => {
+		const tieredLimiter = new TieredRateLimiter(
+			{ windowMs: 60000, max: 100 },
+			{
+				"/api/chat": { windowMs: 60000, max: 1 },
+			},
+		);
+		activeLimiters.push(tieredLimiter);
+
+		const results = await Promise.all(
+			Array.from({ length: 8 }, () =>
+				tieredLimiter.checkAsync("192.168.2.7", "/api/chat"),
+			),
+		);
+
+		expect(results.filter((result) => result.allowed)).toHaveLength(1);
+		expect(results.filter((result) => !result.allowed)).toHaveLength(7);
+	});
+
 	it("respects global limit across endpoints", () => {
 		const tieredLimiter = new TieredRateLimiter(
 			{ windowMs: 60000, max: 10 }, // Very strict global
@@ -271,6 +704,34 @@ describe("TieredRateLimiter (in-memory)", () => {
 		// Should be blocked by global limit
 		const result = tieredLimiter.check("192.168.2.3", "/api/status");
 		expect(result.allowed).toBe(false);
+	});
+
+	it("does not drain endpoint quota when async global check rejects", async () => {
+		vi.useFakeTimers();
+		try {
+			const tieredLimiter = new TieredRateLimiter(
+				{ windowMs: 50, max: 1 },
+				{
+					"/api/chat": { windowMs: 60000, max: 2 },
+				},
+			);
+			activeLimiters.push(tieredLimiter);
+
+			expect(
+				(await tieredLimiter.checkAsync("192.168.2.8", "/api/chat")).allowed,
+			).toBe(true);
+			expect(
+				(await tieredLimiter.checkAsync("192.168.2.8", "/api/chat")).allowed,
+			).toBe(false);
+
+			await vi.advanceTimersByTimeAsync(60);
+
+			expect(
+				(await tieredLimiter.checkAsync("192.168.2.8", "/api/chat")).allowed,
+			).toBe(true);
+		} finally {
+			vi.useRealTimers();
+		}
 	});
 
 	it("returns correct limit information", () => {

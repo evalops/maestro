@@ -239,6 +239,22 @@ describe("interpolateContext", () => {
 		Reflect.deleteProperty(process.env, "TEST_VAR");
 	});
 
+	it("interpolates command-specific environment overrides", () => {
+		process.env.TEST_VAR = "process-value";
+		const result = interpolateContext("Value: ${env.TEST_VAR}", {
+			TEST_VAR: "override-value",
+		});
+		expect(result).toBe("Value: override-value");
+		Reflect.deleteProperty(process.env, "TEST_VAR");
+	});
+
+	it("does not interpolate env vars removed by the shell environment policy", () => {
+		process.env.TEST_SECRET_KEY = "should-not-leak";
+		const result = interpolateContext("Value: ${env.TEST_SECRET_KEY}");
+		expect(result).toBe("Value: ");
+		Reflect.deleteProperty(process.env, "TEST_SECRET_KEY");
+	});
+
 	it("returns empty string for missing env vars", () => {
 		const result = interpolateContext("Value: ${env.NONEXISTENT_VAR_XYZ}");
 		expect(result).toBe("Value: ");

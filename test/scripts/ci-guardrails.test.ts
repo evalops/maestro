@@ -61,6 +61,7 @@ type Workflow = {
 		string,
 		{
 			env?: Record<string, unknown>;
+			needs?: string | string[];
 			outputs?: Record<string, unknown>;
 			services?: Record<string, { ports?: Array<number | string> }>;
 			steps?: WorkflowStep[];
@@ -68,6 +69,8 @@ type Workflow = {
 			"runs-on"?: unknown;
 		}
 	>;
+	on?: Record<string, unknown>;
+	permissions?: Record<string, unknown>;
 };
 
 const node24CreateGitHubAppTokenPin =
@@ -137,7 +140,7 @@ function expectRustTuiRunnerLane(runsOn: string): void {
 		return;
 	}
 
-	expect(runsOn).toContain("PR_RUST_RUNNER");
+	expect(runsOn).not.toContain("PR_RUST_RUNNER");
 	expect(runsOn).toContain("evalops-private-heavy");
 	expect(runsOn).toContain("INTERNAL_CONFIRMATION_RUNNER");
 }
@@ -826,6 +829,24 @@ describe("ci workflow guardrails", () => {
 		);
 	});
 
+	it("runs root lint as a first-class CI job", () => {
+		const workflow = parse(
+			readFileSync(new URL("../../.github/workflows/ci.yml", import.meta.url), {
+				encoding: "utf8",
+			}),
+		) as Workflow;
+		if (isPublicValidationWorkflow(workflow)) {
+			expect(workflow.jobs?.lint).toBeUndefined();
+			return;
+		}
+		const lintJob = workflow.jobs?.lint;
+		const lintStep = lintJob?.steps?.find((step) => step.name === "Lint");
+
+		expect(lintJob).toBeDefined();
+		expect(lintJob?.needs).toBe("changes");
+		expect(lintStep?.run).toBe("npx nx run maestro:lint");
+	});
+
 	it("uploads machine-readable Nx attempt summaries with test logs", () => {
 		const workflow = parse(
 			readFileSync(new URL("../../.github/workflows/ci.yml", import.meta.url), {
@@ -879,11 +900,11 @@ describe("ci workflow guardrails", () => {
 		expect(prChecksRunsOn).toContain("ubuntu-latest");
 		expect(prChecksRunsOn).toContain("light_pr_checks");
 		expect(prChecksRunsOn).toContain("evalops-private-ci");
-		expect(prChecksRunsOn).toContain("PR_CHECKS_RUNNER");
-		expect(prChecksRunsOn).toContain("evalops-private-ci");
+		expect(prChecksRunsOn).not.toContain("PR_CHECKS_RUNNER");
+		expect(prChecksRunsOn).toContain("evalops-private-heavy");
 		expect(prChecksRunsOn).toContain("INTERNAL_CONFIRMATION_RUNNER");
 		expect(coverageRunsOn).toContain("ubuntu-latest");
-		expect(coverageRunsOn).toContain("PR_COVERAGE_RUNNER");
+		expect(coverageRunsOn).not.toContain("PR_COVERAGE_RUNNER");
 		expect(coverageRunsOn).toContain("evalops-private-heavy");
 		expect(coverageRunsOn).toContain("INTERNAL_CONFIRMATION_RUNNER");
 	});
@@ -1567,6 +1588,128 @@ describe("ci workflow guardrails", () => {
 		});
 		expect(timeouts.get("Run tests")).toBeGreaterThanOrEqual(20);
 		expect(timeouts.get("Run evals chunk")).toBe(45);
+	});
+
+	it("runs PR evals for sensitive changes before auto-labeling catches up", () => {
+		const ciWorkflow = parse(
+			readFileSync(new URL("../../.github/workflows/ci.yml", import.meta.url), {
+				encoding: "utf8",
+			}),
+		) as Workflow;
+		if (isPublicValidationWorkflow(ciWorkflow)) {
+			return;
+		}
+		const workflow = parse(
+			readFileSync(
+				new URL("../../.github/workflows/evals.yml", import.meta.url),
+				{
+					encoding: "utf8",
+				},
+			),
+		) as Workflow;
+		const pullRequest = workflow.on?.pull_request as
+			| { types?: string[] }
+			| undefined;
+		const detectJob = workflow.jobs?.["detect-pr-evals"];
+		const detectStep = detectJob?.steps?.find((step) => step.id === "detect");
+		const detectScript = detectStep?.with?.script;
+
+		expect(pullRequest?.types).toEqual(
+			expect.arrayContaining([
+				"opened",
+				"reopened",
+				"ready_for_review",
+				"labeled",
+				"synchronize",
+			]),
+		);
+		expect(workflow.permissions).toMatchObject({
+			contents: "read",
+			"pull-requests": "read",
+		});
+		expect(detectJob?.outputs).toMatchObject({
+			should_run: "${{ steps.detect.outputs.result }}",
+		});
+		expect(detectJob?.["runs-on"]).toBe("ubuntu-latest");
+		expect(detectStep?.uses).toBe(
+			"actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea",
+		);
+		expect(detectStep?.with?.["result-encoding"]).toBe("string");
+		expect(detectScript).toContain('context.eventName !== "pull_request"');
+		expect(detectScript).toContain('labels.has("run-evals")');
+		expect(detectScript).toContain("github.rest.pulls.listFiles");
+		expect(detectScript).toContain("src/agent/");
+		expect(detectScript).toContain("src/models/");
+		expect(detectScript).toContain("src/prompts/");
+		expect(detectScript).toContain("src/providers/");
+		expect(workflow.jobs?.["run-evals"]?.if).toBe(
+			"${{ needs.detect-pr-evals.outputs.should_run == 'true' }}",
+		);
+	});
+
+	it("keeps live evals out of the Nx cache", () => {
+		const nxConfig = JSON.parse(
+			readFileSync(new URL("../../nx.json", import.meta.url), {
+				encoding: "utf8",
+			}),
+		) as {
+			targetDefaults?: Record<string, { dependsOn?: string[] }>;
+			tasksRunnerOptions?: {
+				default?: { options?: { cacheableOperations?: string[] } };
+			};
+		};
+
+		expect(
+			nxConfig.tasksRunnerOptions?.default?.options?.cacheableOperations ?? [],
+		).not.toContain("evals");
+		expect(nxConfig.targetDefaults?.evals).toMatchObject({
+			dependsOn: ["build"],
+		});
+	});
+
+	it("auto-labels eval-sensitive pull requests without checking out PR code", () => {
+		const ciWorkflow = parse(
+			readFileSync(new URL("../../.github/workflows/ci.yml", import.meta.url), {
+				encoding: "utf8",
+			}),
+		) as Workflow;
+		if (isPublicValidationWorkflow(ciWorkflow)) {
+			return;
+		}
+		const workflow = parse(
+			readFileSync(
+				new URL("../../.github/workflows/eval-label.yml", import.meta.url),
+				{
+					encoding: "utf8",
+				},
+			),
+		) as Workflow;
+		const labelJob = workflow.jobs?.["label-run-evals"];
+		const steps = labelJob?.steps ?? [];
+		const scriptStep = steps.find(
+			(step) => step.name === "Label eval-sensitive PRs",
+		);
+		const script = scriptStep?.with?.script;
+
+		expect(workflow.on).toHaveProperty("pull_request_target");
+		expect(workflow.permissions).toMatchObject({
+			issues: "write",
+			"pull-requests": "read",
+		});
+		expect(labelJob?.["runs-on"]).toBe("ubuntu-latest");
+		expect(
+			steps.some((step) => step.uses?.startsWith("actions/checkout@")),
+		).toBe(false);
+		expect(scriptStep?.uses).toBe(
+			"actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea",
+		);
+		expect(script).toContain("github.rest.pulls.listFiles");
+		expect(script).toContain("github.rest.issues.addLabels");
+		expect(script).toContain("run-evals");
+		expect(script).toContain("src/agent/");
+		expect(script).toContain("src/models/");
+		expect(script).toContain("src/prompts/");
+		expect(script).toContain("src/providers/");
 	});
 
 	it("sets up Java before Nx can run Gradle-backed tests", () => {
