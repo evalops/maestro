@@ -1,7 +1,5 @@
 import { createRequire } from "node:module";
 
-declare const MAESTRO_RELEASE_VERSION: string | undefined;
-
 type RootPackageMetadata = {
 	name?: string;
 	version?: string;
@@ -34,14 +32,7 @@ function loadPackageMetadata(): RootPackageMetadata {
 export function getPackageVersion(
 	env: NodeJS.ProcessEnv = process.env,
 ): string {
-	return (
-		env.MAESTRO_VERSION ??
-		(typeof MAESTRO_RELEASE_VERSION !== "undefined"
-			? MAESTRO_RELEASE_VERSION
-			: undefined) ??
-		loadPackageMetadata().version ??
-		"unknown"
-	);
+	return env.MAESTRO_VERSION ?? loadPackageMetadata().version ?? "unknown";
 }
 
 export function getPackageName(env: NodeJS.ProcessEnv = process.env): string {
