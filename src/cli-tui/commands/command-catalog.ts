@@ -747,9 +747,15 @@ export const POST_SUITE_COMMAND_CATALOG: readonly CommandCatalogEntry[] = [
 	}),
 	withArgs("skills", "skills", {
 		description: "List or manage skills from SKILL.md",
-		usage: "/skills [list|activate|deactivate|reload|info] [skill-name]",
+		usage: "/skills [list|activate|deactivate|reload|info|trust] [skill-name]",
 		tags: ["tools"],
 		aliases: ["skill"],
-		examples: ["/skills", "/skills info my-skill", "/skills activate my-skill"],
+		examples: [
+			"/skills",
+			"/skills info my-skill",
+			"/skills activate my-skill",
+			"/skills trust",
+			"/skills trust approve my-skill",
+		],
 	}),
 ];
