@@ -10,6 +10,7 @@
 
 import type { AgentTool, AgentToolResult } from "../agent/types.js";
 import { createLogger } from "../utils/logger.js";
+import { sanitizeWithStaticMask } from "../utils/secret-redactor.js";
 import type {
 	OnErrorAction,
 	StepResult,
@@ -212,7 +213,9 @@ function evaluateCondition(
 	} catch (error) {
 		logger.warn("Failed to evaluate condition", {
 			condition,
-			error: error instanceof Error ? error.message : String(error),
+			error: sanitizeWithStaticMask(
+				error instanceof Error ? error.message : String(error),
+			),
 		});
 		return false;
 	}
@@ -437,7 +440,9 @@ export async function executeWorkflow(
 			status: "failed",
 			steps: {},
 			duration: performance.now() - startTime,
-			error: error instanceof Error ? error.message : String(error),
+			error: sanitizeWithStaticMask(
+				error instanceof Error ? error.message : String(error),
+			),
 		};
 	}
 

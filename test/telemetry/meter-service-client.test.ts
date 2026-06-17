@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { resetOAuthStorageForTests } from "../../src/oauth/storage.js";
 import {
 	hasRemoteMeterDestination,
 	mirrorCanonicalTurnEventToMeter,
@@ -46,13 +47,26 @@ function createCanonicalTurnEvent() {
 
 describe("meter telemetry client", () => {
 	beforeEach(() => {
-		vi.stubEnv("MAESTRO_HOME", `/tmp/maestro-meter-test-${Date.now()}`);
+		vi.stubEnv(
+			"MAESTRO_HOME",
+			`/tmp/maestro-meter-test-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+		);
+		// Force file-mode OAuth storage so the OS keychain can't leak a
+		// stale `evalops` credential into `hasRemoteMeterDestination()` /
+		// `resolvePlatformToken("evalops")` calls — the same root cause
+		// PR #2752 fixed across mcp-config-write / mcp-platform-plugin /
+		// service-client / agent-runtime-client. Without this the
+		// "skips remote mirroring when required meter config is missing"
+		// test sees a refreshable OAuth token in the keychain and
+		// asserts `false` against a backend that says `true`.
+		vi.stubEnv("MAESTRO_DISABLE_KEYCHAIN", "1");
 		vi.stubEnv("MAESTRO_PLATFORM_BASE_URL", "");
 		vi.stubEnv("MAESTRO_EVALOPS_BASE_URL", "");
 		vi.stubEnv("EVALOPS_BASE_URL", "");
 		vi.stubEnv("MAESTRO_EVALOPS_ACCESS_TOKEN", "");
 		vi.stubEnv("EVALOPS_TOKEN", "");
 		vi.stubEnv("EVALOPS_ORGANIZATION_ID", "");
+		vi.stubEnv("EVALOPS_ORG_ID", "");
 		vi.stubEnv("MAESTRO_ENTERPRISE_ORG_ID", "");
 		vi.stubEnv("MAESTRO_METER_BASE", "http://meter.test/");
 		vi.stubEnv("MAESTRO_METER_ACCESS_TOKEN", "meter-token");
@@ -60,11 +74,16 @@ describe("meter telemetry client", () => {
 		vi.stubEnv("MAESTRO_EVALOPS_TEAM_ID", "team_ops");
 		vi.stubEnv("MAESTRO_METER_TIMEOUT_MS", "2500");
 		vi.unstubAllGlobals();
+		resetOAuthStorageForTests();
 	});
 
 	afterEach(() => {
 		vi.unstubAllEnvs();
 		vi.unstubAllGlobals();
+		// `cachedMode` in `src/oauth/storage.ts` is a module-level
+		// singleton; reset on teardown so a later test in the same
+		// worker re-resolves storage mode from its own (restored) env.
+		resetOAuthStorageForTests();
 	});
 
 	it("detects when remote meter mirroring is configured", () => {
@@ -228,6 +247,7 @@ describe("meter telemetry client", () => {
 		vi.stubEnv("MAESTRO_METER_ORGANIZATION_ID", "");
 		vi.stubEnv("MAESTRO_EVALOPS_ORG_ID", "");
 		vi.stubEnv("EVALOPS_ORGANIZATION_ID", "");
+		vi.stubEnv("EVALOPS_ORG_ID", "");
 		vi.stubEnv("MAESTRO_ENTERPRISE_ORG_ID", "");
 		const fetchMock = vi.fn();
 		vi.stubGlobal("fetch", fetchMock);

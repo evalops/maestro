@@ -23,17 +23,23 @@ import {
 	readlinkSync,
 	realpathSync,
 	rmSync,
-	writeFileSync,
 } from "node:fs";
 import { homedir, platform } from "node:os";
 import { basename, dirname, isAbsolute, join, parse, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
+import { writeTextFileAtomic } from "../utils/fs.js";
 import { isPathWithin } from "../utils/path-containment.js";
 import { resolveShellEnvironment } from "../utils/shell-env.js";
+import {
+	appendCapturedOutput,
+	createOutputCapture,
+	finalizeCapturedOutput,
+} from "./output-capture.js";
 import type { ExecResult, Sandbox } from "./types.js";
 
 const _execAsync = promisify(exec);
+const EXEC_WITH_ARGS_MAX_BUFFER = 1024 * 1024;
 
 // ─────────────────────────────────────────────────────────────
 // Sandbox Policy Types
@@ -202,27 +208,78 @@ const LINUX_NATIVE_UNIMPLEMENTED_MESSAGE =
 // Helper Functions
 // ─────────────────────────────────────────────────────────────
 
+/**
+ * Compute every path that must be denied for writes in order to keep
+ * `.git/hooks/*` (and the rest of git's state) safe from arbitrary
+ * sandboxed code execution. Returns:
+ *
+ *   - `<cwd>/.git` — the literal path (file OR directory, depending
+ *     on whether this checkout is a worktree).
+ *   - The canonicalized form of `<cwd>/.git` (when it's a symlink
+ *     or git-file, this is a different path that the OS will reach
+ *     at open time).
+ *   - The worktree's resolved `gitdir` (for git-file worktrees).
+ *   - The worktree's resolved `commondir` (the shared `.git` of the
+ *     primary repo; this is where the hooks actually live).
+ *
+ * See #2482 — the previous implementation only returned the literal
+ * `<cwd>/.git` and (sometimes) the gitdir, and the downstream filter
+ * dropped paths that weren't lexically inside the writable root.
+ * Worktree repos were effectively unprotected.
+ */
 function getGitReadOnlySubpaths(cwd: string): string[] {
 	const gitPath = join(cwd, ".git");
 	if (!existsSync(gitPath)) {
 		return [];
 	}
 
-	const readOnlySubpaths = [gitPath];
+	const subpaths = new Set<string>();
+	subpaths.add(gitPath);
+	// Canonicalized form: when `<cwd>/.git` is a symlink, the kernel
+	// will resolve to this target at open time. The seatbelt deny
+	// rule must reference the resolved path or it won't fire.
+	subpaths.add(canonicalizeForAccess(gitPath));
+
 	try {
 		const gitFile = readFileSync(gitPath, "utf-8");
 		const match = gitFile.match(/^gitdir:\s*(.+?)\s*$/m);
 		const gitDir = match?.[1];
 		if (gitDir) {
-			readOnlySubpaths.push(
-				isAbsolute(gitDir) ? resolve(gitDir) : resolve(cwd, gitDir),
-			);
+			const resolvedGitDir = isAbsolute(gitDir)
+				? resolve(gitDir)
+				: resolve(cwd, gitDir);
+			subpaths.add(resolvedGitDir);
+			subpaths.add(canonicalizeForAccess(resolvedGitDir));
+
+			// In a linked worktree, `<gitdir>/commondir` is a file
+			// whose contents point at the *primary* repository's `.git`.
+			// Hooks live in the commondir's `hooks/` directory, not in
+			// the per-worktree gitdir. Without this, the real hook
+			// path stays unprotected.
+			try {
+				const commondirFile = readFileSync(
+					join(resolvedGitDir, "commondir"),
+					"utf-8",
+				).trim();
+				if (commondirFile) {
+					const resolvedCommondir = isAbsolute(commondirFile)
+						? resolve(commondirFile)
+						: resolve(resolvedGitDir, commondirFile);
+					subpaths.add(resolvedCommondir);
+					subpaths.add(canonicalizeForAccess(resolvedCommondir));
+				}
+			} catch {
+				// No `commondir` file → this is the primary worktree,
+				// no separate commondir to protect.
+			}
 		}
 	} catch {
-		// .git is usually a directory; only worktree gitfiles need parsing.
+		// `.git` is usually a directory; only worktree gitfiles need
+		// parsing. Reads that fail are harmless — the literal gitPath
+		// is already in the deny set.
 	}
 
-	return readOnlySubpaths;
+	return [...subpaths];
 }
 
 function getWritableRootsWithCwd(
@@ -265,14 +322,18 @@ function getWritableRootsWithCwd(
 		return roots;
 	}
 
+	// Apply the git read-only set to EVERY writable root. The previous
+	// implementation filtered each subpath by lexical containment in
+	// the root — which silently dropped the resolved worktree gitdir
+	// and commondir (they live outside cwd by design), leaving
+	// `.git/hooks/*` writable in worktrees (#2482). Including a
+	// subpath in a root that doesn't contain it is a no-op for the
+	// seatbelt rule generator (the `(require-not (subpath X))` clause
+	// fires only when the request path is actually inside X), so
+	// applying them universally is safe and correct.
 	return roots.map((root) => ({
 		...root,
-		readOnlySubpaths: readOnlySubpaths.filter((readOnlySubpath) =>
-			isPathWithin(
-				canonicalizeForAccess(readOnlySubpath),
-				canonicalizeForAccess(root.root),
-			),
-		),
+		readOnlySubpaths: [...readOnlySubpaths],
 	}));
 }
 
@@ -563,6 +624,7 @@ export class NativeSandbox implements Sandbox {
 		command: string,
 		cwd?: string,
 		env?: Record<string, string>,
+		signal?: AbortSignal,
 	): Promise<ExecResult> {
 		const workingDir = this.resolveWorkingDir(cwd);
 		this.assertExecutionCwd(workingDir);
@@ -587,6 +649,7 @@ export class NativeSandbox implements Sandbox {
 				child = spawn(SEATBELT_EXECUTABLE, seatbeltArgs, {
 					cwd: workingDir,
 					env: mergedEnv,
+					signal,
 				});
 			} else if (platform() === "linux") {
 				reject(new Error(LINUX_NATIVE_UNIMPLEMENTED_MESSAGE));
@@ -618,7 +681,7 @@ export class NativeSandbox implements Sandbox {
 				resolve({
 					stdout,
 					stderr,
-					exitCode: code ?? 0,
+					exitCode: code ?? 1,
 				});
 			});
 
@@ -635,71 +698,93 @@ export class NativeSandbox implements Sandbox {
 	async execWithArgs(
 		command: string,
 		args: string[] = [],
-		options: SpawnOptions = {},
+		options: SpawnOptions & { maxBuffer?: number } = {},
 	): Promise<ExecResult> {
-		const fullCommand = [command, ...args];
-		const workingDir = this.resolveWorkingDir(options.cwd);
-		this.assertExecutionCwd(workingDir);
-		const mergedOptions: SpawnOptions = {
-			...options,
-			cwd: workingDir,
-			env: {
-				...resolveShellEnvironment(options.env, {
-					workspaceDir: this.cwd,
-				}),
-				[SANDBOX_ENV_VAR]: this.getSandboxType(),
-			},
-		};
+		try {
+			const { maxBuffer = EXEC_WITH_ARGS_MAX_BUFFER, ...spawnOptions } =
+				options;
+			const fullCommand = [command, ...args];
+			const workingDir = this.resolveWorkingDir(spawnOptions.cwd);
+			this.assertExecutionCwd(workingDir);
+			const mergedOptions: SpawnOptions = {
+				...spawnOptions,
+				cwd: workingDir,
+				env: {
+					...resolveShellEnvironment(spawnOptions.env, {
+						workspaceDir: this.cwd,
+					}),
+					[SANDBOX_ENV_VAR]: this.getSandboxType(),
+				},
+			};
 
-		return new Promise((resolve, reject) => {
-			let child: ChildProcess;
+			return await new Promise<ExecResult>((resolve, reject) => {
+				let child: ChildProcess;
 
-			if (platform() === "darwin") {
-				const seatbeltArgs = createSeatbeltArgs(
-					fullCommand,
-					this.policy,
-					this.cwd,
-				);
-				child = spawn(SEATBELT_EXECUTABLE, seatbeltArgs, mergedOptions);
-			} else if (platform() === "linux") {
-				reject(new Error(LINUX_NATIVE_UNIMPLEMENTED_MESSAGE));
-				return;
-			} else {
-				reject(
-					new Error(
-						`Native sandbox is not supported on platform ${platform()}. Refusing to run unsandboxed.`,
-					),
-				);
-				return;
-			}
+				if (platform() === "darwin") {
+					const seatbeltArgs = createSeatbeltArgs(
+						fullCommand,
+						this.policy,
+						this.cwd,
+					);
+					child = spawn(SEATBELT_EXECUTABLE, seatbeltArgs, mergedOptions);
+				} else if (platform() === "linux") {
+					reject(new Error(LINUX_NATIVE_UNIMPLEMENTED_MESSAGE));
+					return;
+				} else {
+					reject(
+						new Error(
+							`Native sandbox is not supported on platform ${platform()}. Refusing to run unsandboxed.`,
+						),
+					);
+					return;
+				}
 
-			this.activeProcesses.add(child);
+				this.activeProcesses.add(child);
 
-			let stdout = "";
-			let stderr = "";
+				const stdoutCapture = createOutputCapture();
+				const stderrCapture = createOutputCapture();
 
-			child.stdout?.on("data", (data: Buffer) => {
-				stdout += data.toString();
-			});
+				child.stdout?.on("data", (data: Buffer) => {
+					appendCapturedOutput(stdoutCapture, data, maxBuffer);
+				});
 
-			child.stderr?.on("data", (data: Buffer) => {
-				stderr += data.toString();
-			});
+				child.stderr?.on("data", (data: Buffer) => {
+					appendCapturedOutput(stderrCapture, data, maxBuffer);
+				});
 
-			child.on("close", (code) => {
-				this.activeProcesses.delete(child);
-				resolve({
-					stdout,
-					stderr,
-					exitCode: code ?? 0,
+				child.on("close", (code) => {
+					this.activeProcesses.delete(child);
+					resolve({
+						stdout: finalizeCapturedOutput(stdoutCapture),
+						stderr: finalizeCapturedOutput(stderrCapture),
+						exitCode: code ?? 1,
+					});
+				});
+
+				child.on("error", (error) => {
+					this.activeProcesses.delete(child);
+					const execError = error as Error & {
+						stdout?: string;
+						stderr?: string;
+					};
+					execError.stdout = finalizeCapturedOutput(stdoutCapture);
+					execError.stderr = finalizeCapturedOutput(stderrCapture);
+					reject(execError);
 				});
 			});
-
-			child.on("error", (error) => {
-				this.activeProcesses.delete(child);
-				reject(error);
-			});
-		});
+		} catch (error: unknown) {
+			const execError = error as {
+				stdout?: string;
+				stderr?: string;
+				code?: number | string;
+				message?: string;
+			};
+			return {
+				stdout: execError.stdout || "",
+				stderr: execError.stderr || execError.message || "",
+				exitCode: typeof execError.code === "number" ? execError.code : 1,
+			};
+		}
 	}
 
 	/**
@@ -728,7 +813,7 @@ export class NativeSandbox implements Sandbox {
 			mkdirSync(dir, { recursive: true });
 		}
 
-		writeFileSync(checkedPath, content, "utf-8");
+		writeTextFileAtomic(checkedPath, content, { encoding: "utf-8" });
 	}
 
 	/**

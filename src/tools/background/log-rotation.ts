@@ -17,6 +17,7 @@ import { createGzip } from "node:zlib";
 
 import { isErrno } from "../../utils/fs.js";
 import { createLogger } from "../../utils/logger.js";
+import { sanitizeWithStaticMask } from "../../utils/secret-redactor.js";
 
 /**
  * Options for creating a RotatingLogWriter.
@@ -365,7 +366,9 @@ export class RotatingLogWriter extends Writable {
 		this.markTruncated();
 		this.rejectRotationWaiters("Log rotation failed");
 		this.logger.warn("Failed to write to log", {
-			error: error instanceof Error ? error.message : String(error),
+			error: sanitizeWithStaticMask(
+				error instanceof Error ? error.message : String(error),
+			),
 		});
 	}
 }

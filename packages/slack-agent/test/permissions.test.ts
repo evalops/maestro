@@ -22,9 +22,9 @@ describe("PermissionManager", () => {
 	});
 
 	describe("getUser", () => {
-		it("creates new user with default role", async () => {
+		it("creates new user with read-only default role", async () => {
 			const user = manager.getUser("U123");
-			expect(user.role).toBe("user");
+			expect(user.role).toBe("viewer");
 			expect(user.isBlocked).toBe(false);
 		});
 
@@ -57,14 +57,34 @@ describe("PermissionManager", () => {
 			expect(result.reason).toBe("Test block");
 		});
 
-		it("user can execute allowed tools", async () => {
+		it("default viewer can execute read tools", async () => {
 			const result = manager.check("U123", "execute_tool", "read");
 			expect(result.allowed).toBe(true);
 		});
 
+		it("default viewer cannot execute write, edit, or bash tools", async () => {
+			expect(manager.check("U123", "execute_tool", "write").allowed).toBe(
+				false,
+			);
+			expect(manager.check("U123", "execute_tool", "edit").allowed).toBe(false);
+			expect(manager.check("U123", "execute_tool", "bash").allowed).toBe(false);
+		});
+
 		it("user cannot execute admin-only tools", async () => {
-			const result = manager.check("U123", "clear_context");
+			const userManager = new PermissionManager(dir, { defaultRole: "user" });
+			const result = userManager.check("U123", "clear_context");
 			expect(result.allowed).toBe(false);
+		});
+
+		it("only elevated users can manage webhook triggers", async () => {
+			const userManager = new PermissionManager(dir, { defaultRole: "user" });
+			const powerManager = new PermissionManager(dir, {
+				defaultRole: "power_user",
+			});
+
+			expect(manager.check("viewer", "manage_triggers").allowed).toBe(false);
+			expect(userManager.check("user", "manage_triggers").allowed).toBe(false);
+			expect(powerManager.check("power", "manage_triggers").allowed).toBe(true);
 		});
 
 		it("viewer has read-only access", async () => {
@@ -91,7 +111,8 @@ describe("PermissionManager", () => {
 
 	describe("canExecuteTool", () => {
 		it("user can execute common tools", async () => {
-			const readResult = manager.canExecuteTool("U123", "read");
+			const userManager = new PermissionManager(dir, { defaultRole: "user" });
+			const readResult = userManager.canExecuteTool("U123", "read");
 			expect(readResult.allowed).toBe(true);
 		});
 
@@ -120,7 +141,8 @@ describe("PermissionManager", () => {
 		});
 
 		it("user can cancel own task", async () => {
-			const result = manager.canCancelTask("U123", "U123");
+			const userManager = new PermissionManager(dir, { defaultRole: "user" });
+			const result = userManager.canCancelTask("U123", "U123");
 			expect(result.allowed).toBe(true);
 		});
 

@@ -7,7 +7,7 @@
  * @module safety/credential-patterns
  */
 
-import { createHash } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 
 // ============================================================================
 // TYPES
@@ -159,7 +159,7 @@ export const CREDENTIAL_PATTERN_DEFS: CredentialPatternDef[] = [
 		name: "AWS Secret Access Key",
 		type: "aws_secret",
 		source:
-			"(?:aws[_-]?secret[_-]?(?:access[_-]?)?key|secret[_-]?key)[':\"\\s=]+['\"]?([a-zA-Z0-9/+=]{40})",
+			"(?:aws[_-]?secret[_-]?(?:access[_-]?)?key|secret[_-]?(?:access[_-]?)?key)[':\"\\s=]+['\"]?([a-zA-Z0-9/+=]{40})",
 		flags: "gi",
 		severity: "high",
 	},
@@ -184,7 +184,12 @@ export const CREDENTIAL_PATTERN_DEFS: CredentialPatternDef[] = [
 	{
 		name: "JWT Token",
 		type: "jwt_token",
-		source: "eyJ[a-zA-Z0-9_-]*\\.eyJ[a-zA-Z0-9_-]*\\.[a-zA-Z0-9_-]*",
+		// IETF JWTs use URL-safe base64 in the header and payload, but
+		// real-world signers occasionally emit standard base64 (`+`, `/`,
+		// padding) in the signature segment. Accept both so the mask covers
+		// the full token instead of truncating at the first non-URL-safe
+		// byte and leaking the rest.
+		source: "eyJ[a-zA-Z0-9_-]*\\.eyJ[a-zA-Z0-9_-]*\\.[a-zA-Z0-9_\\-+/=]*",
 		flags: "g",
 		severity: "medium",
 	},
@@ -193,7 +198,7 @@ export const CREDENTIAL_PATTERN_DEFS: CredentialPatternDef[] = [
 	{
 		name: "Password in URL",
 		type: "password",
-		source: ":\\/\\/[^:]+:([^@]+)@",
+		source: ":\\/\\/([^:]+:[^@]+)@",
 		flags: "g",
 		severity: "high",
 	},
@@ -209,7 +214,22 @@ export const CREDENTIAL_PATTERN_DEFS: CredentialPatternDef[] = [
 	{
 		name: "Bearer Token",
 		type: "generic_secret",
-		source: "Bearer\\s+[a-zA-Z0-9_\\-\\.]+",
+		// Match the Authorization Header char class — base64-padded JWT
+		// signatures contain `+`, `/`, `=`, so a narrower class truncates the
+		// mask and leaks the signature tail.
+		source: "Bearer\\s+([a-zA-Z0-9_\\-\\./+=]+)",
+		flags: "gi",
+		severity: "medium",
+	},
+	{
+		name: "Basic Auth Token",
+		type: "generic_secret",
+		// Require ≥16 base64 chars so benign English like "Basic
+		// authentication" / "Basic Auth overview" doesn't trip the mask.
+		// Real Basic credentials are `base64(user:password)` and almost
+		// always longer than this threshold; the hosted recorder enforces
+		// the same minimum in its literal pattern list.
+		source: "Basic\\s+([A-Za-z0-9+/=]{16,})",
 		flags: "gi",
 		severity: "medium",
 	},
@@ -217,7 +237,7 @@ export const CREDENTIAL_PATTERN_DEFS: CredentialPatternDef[] = [
 		name: "Authorization Header",
 		type: "generic_secret",
 		source:
-			"Authorization[':\"\\s]+['\"]?(?:Basic|Bearer|Token)\\s+[a-zA-Z0-9_\\-\\./+=]+",
+			"Authorization[':\"\\s]+['\"]?(?:Basic\\s+([A-Za-z0-9+/=]{16,})|(?:Bearer|Token)\\s+([a-zA-Z0-9_\\-\\./+=]+))",
 		flags: "gi",
 		severity: "medium",
 	},
@@ -329,9 +349,55 @@ export const CREDENTIAL_PATTERN_DEFS: CredentialPatternDef[] = [
 	},
 ];
 
+export const STATIC_SECRET_REDACTION_PATTERN_DEFS: CredentialPatternDef[] = [
+	...CREDENTIAL_PATTERN_DEFS,
+	{
+		name: "Static Secret Token",
+		type: "api_key",
+		source: "sk-[A-Za-z0-9-_]{16,}",
+		flags: "gi",
+		severity: "low",
+	},
+	{
+		name: "Static Keyword Secret",
+		type: "generic_secret",
+		source:
+			"\\b(?:token|secret|password|key)[^\\S\\r\\n]*[:=][^\\S\\r\\n]*([^\\s\"']{8,})",
+		flags: "gi",
+		severity: "low",
+	},
+	{
+		name: "Static AWS Access Key ID",
+		type: "aws_secret",
+		source: "\\b(?:A3T[A-Z]|AKIA|ASIA|AGPA|AIDA|ANPA|ANVA|AROA)[A-Z0-9]{16}\\b",
+		flags: "g",
+		severity: "low",
+	},
+	{
+		name: "Long Hex Secret",
+		type: "generic_secret",
+		source: "\\b[a-fA-F0-9]{64,}\\b",
+		flags: "g",
+		severity: "low",
+	},
+	{
+		name: "Static JWT Token",
+		type: "jwt_token",
+		source:
+			"\\beyJ[A-Za-z0-9_-]{10,}\\.[A-Za-z0-9_-]{10,}\\.[A-Za-z0-9_-]{10,}\\b",
+		flags: "g",
+		severity: "low",
+	},
+];
+
 // ============================================================================
 // PATTERN UTILITIES
 // ============================================================================
+
+export type CredentialPatternMasker = (
+	secret: string,
+	def: CredentialPatternDef,
+) => string;
 
 /**
  * Create a fresh regex from pattern definition
@@ -339,6 +405,79 @@ export const CREDENTIAL_PATTERN_DEFS: CredentialPatternDef[] = [
  */
 export function createPatternRegex(def: CredentialPatternDef): RegExp {
 	return new RegExp(def.source, def.flags);
+}
+
+function createGlobalPatternRegex(def: CredentialPatternDef): RegExp {
+	const flags = def.flags.includes("g") ? def.flags : `${def.flags}g`;
+	return new RegExp(def.source, flags);
+}
+
+function captureArgs(args: unknown[]): string[] {
+	const lastArg = args[args.length - 1];
+	const hasNamedGroups =
+		lastArg !== null && typeof lastArg === "object" && !Array.isArray(lastArg);
+	const captureEnd = args.length - (hasNamedGroups ? 3 : 2);
+	return args
+		.slice(1, captureEnd)
+		.filter(
+			(capture): capture is string =>
+				typeof capture === "string" && capture.length > 0,
+		);
+}
+
+function replaceLiteral(
+	value: string,
+	search: string,
+	replacement: string,
+): string {
+	return search.length === 0 ? value : value.split(search).join(replacement);
+}
+
+export function replaceCredentialPatternMatches(
+	value: string,
+	maskSecret: CredentialPatternMasker,
+	patternDefs: readonly CredentialPatternDef[] = STATIC_SECRET_REDACTION_PATTERN_DEFS,
+): string {
+	let result = value;
+	const stagedReplacements = new Map<string, string>();
+	let stagedReplacementIndex = 0;
+	// Per-call random nonce so attacker input containing a literal sentinel
+	// cannot collide with our staged replacements. Without this, an input
+	// like `<<MSTR RPL 0>>` would be substituted with the first staged
+	// credential reference during the finalization split/join, which in
+	// vault mode (`{{CRED:...}}`) lets attacker-controlled text inject a
+	// stored credential at the resolver. 12 bytes hex = 96 bits, far more
+	// than enough to make collision negligible.
+	const nonce = randomBytes(12).toString("hex");
+	const stageReplacement = (replacement: string): string => {
+		const sentinel = `<<MSTR-RPL-${nonce}-${stagedReplacementIndex++}>>`;
+		stagedReplacements.set(sentinel, replacement);
+		return sentinel;
+	};
+
+	for (const def of patternDefs) {
+		const pattern = createGlobalPatternRegex(def);
+		result = result.replace(pattern, (...args: unknown[]) => {
+			const match = args[0] as string;
+			const captures = captureArgs(args);
+			if (captures.length === 0) {
+				return stageReplacement(maskSecret(match, def));
+			}
+			let redacted = match;
+			for (const capture of captures) {
+				redacted = replaceLiteral(
+					redacted,
+					capture,
+					stageReplacement(maskSecret(capture, def)),
+				);
+			}
+			return redacted;
+		});
+	}
+	for (const [sentinel, replacement] of stagedReplacements) {
+		result = replaceLiteral(result, sentinel, replacement);
+	}
+	return result;
 }
 
 /**

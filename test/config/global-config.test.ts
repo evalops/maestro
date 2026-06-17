@@ -9,6 +9,7 @@ import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { trustProjectInGlobalConfig } from "../utils/project-trust.js";
 
 // Test directory paths - set before vi.mock
 let testDir: string;
@@ -262,6 +263,7 @@ args = ["-y", "project-mcp"]
 command = "project-cmd"
 `,
 		);
+		trustProjectInGlobalConfig(projectDir);
 
 		const config = loadConfig(projectDir);
 		// Global server preserved
@@ -300,6 +302,7 @@ base_url = "https://custom.api.com"
 name = "Anthropic Project"
 `,
 		);
+		trustProjectInGlobalConfig(projectDir);
 
 		const config = loadConfig(projectDir);
 		// Global provider preserved

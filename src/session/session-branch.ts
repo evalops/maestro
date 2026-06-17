@@ -3,13 +3,18 @@
  * Pure functions for creating branched session files from an existing session.
  */
 
-import { appendFileSync, existsSync, renameSync, unlinkSync } from "node:fs";
+import { existsSync, renameSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
 import { v4 as uuidv4 } from "uuid";
 import type { AgentState } from "../agent/types.js";
 import type { SessionModelMetadata } from "./metadata-cache.js";
+import { appendPrivateSessionFile } from "./private-permissions.js";
 import { generateEntryId } from "./session-context.js";
 import type { SessionContextSnapshot } from "./session-context.js";
+import {
+	sanitizeCustomMessageEntryForSession,
+	sanitizeMessageForSession,
+} from "./session-sanitize.js";
 import type {
 	LabelEntry,
 	SessionHeaderEntry,
@@ -77,6 +82,11 @@ export function createBranchedSessionFromLeaf(
 		promptMetadata: ctx.header?.promptMetadata,
 		promptContextManifest: getPersistedSessionPromptContextManifest(ctx.header),
 		unifiedContextManifest: ctx.header?.unifiedContextManifest,
+		systemPromptSourcePaths:
+			ctx.header?.systemPromptSourcePaths &&
+			ctx.header.systemPromptSourcePaths.length > 0
+				? [...ctx.header.systemPromptSourcePaths]
+				: undefined,
 		tools: ctx.header?.tools,
 		branchedFrom: ctx.sessionFile,
 		parentSession: ctx.sessionId,
@@ -90,9 +100,12 @@ export function createBranchedSessionFromLeaf(
 		}
 	}
 
-	appendFileSync(newSessionFile, `${JSON.stringify(header)}\n`);
+	appendPrivateSessionFile(newSessionFile, `${JSON.stringify(header)}\n`);
 	for (const entry of pathWithoutLabels) {
-		appendFileSync(newSessionFile, `${JSON.stringify(entry)}\n`);
+		appendPrivateSessionFile(
+			newSessionFile,
+			`${JSON.stringify(sanitizeBranchEntryForSession(entry))}\n`,
+		);
 	}
 	let parentId = pathWithoutLabels[pathWithoutLabels.length - 1]?.id ?? null;
 	for (const { targetId, label } of labelsToWrite) {
@@ -104,12 +117,39 @@ export function createBranchedSessionFromLeaf(
 			targetId,
 			label,
 		};
-		appendFileSync(newSessionFile, `${JSON.stringify(labelEntry)}\n`);
+		appendPrivateSessionFile(newSessionFile, `${JSON.stringify(labelEntry)}\n`);
 		pathEntryIds.add(labelEntry.id);
 		parentId = labelEntry.id;
 	}
 
 	return newSessionFile;
+}
+
+function sanitizeBranchEntryForSession(
+	entry: SessionTreeEntry,
+): SessionTreeEntry {
+	switch (entry.type) {
+		case "message": {
+			const message = sanitizeMessageForSession(entry.message);
+			return message === entry.message ? entry : { ...entry, message };
+		}
+		case "custom_message": {
+			const sanitized = sanitizeCustomMessageEntryForSession(
+				entry.content,
+				entry.details,
+			);
+			return sanitized.content === entry.content &&
+				sanitized.details === entry.details
+				? entry
+				: {
+						...entry,
+						content: sanitized.content,
+						details: sanitized.details,
+					};
+		}
+		default:
+			return entry;
+	}
 }
 
 export function createBranchedSessionFromState(
@@ -148,10 +188,15 @@ export function createBranchedSessionFromState(
 			promptMetadata: state.promptMetadata,
 			promptContextManifest: getPersistedSessionPromptContextManifest(state),
 			unifiedContextManifest: state.unifiedContextManifest,
+			systemPromptSourcePaths:
+				state.systemPromptSourcePaths &&
+				state.systemPromptSourcePaths.length > 0
+					? [...state.systemPromptSourcePaths]
+					: undefined,
 			branchedFrom: ctx.sessionFile,
 			parentSession: ctx.sessionId,
 		};
-		appendFileSync(tempFile, `${JSON.stringify(entry)}\n`);
+		appendPrivateSessionFile(tempFile, `${JSON.stringify(entry)}\n`);
 
 		let parentId: string | null = null;
 		if (branchFromIndex > 0) {
@@ -163,11 +208,11 @@ export function createBranchedSessionFromState(
 					id: generateEntryId(ids),
 					parentId,
 					timestamp: new Date().toISOString(),
-					message,
+					message: sanitizeMessageForSession(message),
 				};
 				ids.add(messageEntry.id);
 				parentId = messageEntry.id;
-				appendFileSync(tempFile, `${JSON.stringify(messageEntry)}\n`);
+				appendPrivateSessionFile(tempFile, `${JSON.stringify(messageEntry)}\n`);
 			}
 		}
 

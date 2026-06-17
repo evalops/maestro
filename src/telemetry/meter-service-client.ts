@@ -17,6 +17,7 @@ import {
 	platformConnectServicePath,
 } from "../platform/core-services.js";
 import { createLogger } from "../utils/logger.js";
+import { sanitizeWithStaticMask } from "../utils/secret-redactor.js";
 import type { CanonicalTurnEvent } from "./wide-events.js";
 
 const logger = createLogger("telemetry:meter");
@@ -268,7 +269,9 @@ export async function mirrorCanonicalTurnEventToMeter(
 		logger.debug(
 			"Failed to mirror canonical turn to meter; retaining local telemetry sinks",
 			{
-				error: error instanceof Error ? error.message : String(error),
+				error: sanitizeWithStaticMask(
+					error instanceof Error ? error.message : String(error),
+				),
 				sessionId: event.sessionId,
 				turnId: event.turnId,
 			},

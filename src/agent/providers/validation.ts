@@ -9,6 +9,7 @@ import addFormatsModule, { type FormatsPlugin } from "ajv-formats";
 import { sanitizePayload } from "../../safety/context-firewall.js";
 import { createLogger } from "../../utils/logger.js";
 import { resolveDefaultExport } from "../../utils/module-interop.js";
+import { sanitizeWithStaticMask } from "../../utils/secret-redactor.js";
 import type { AgentTool, ToolCall } from "../types.js";
 
 const logger = createLogger("agent:providers:validation");
@@ -74,7 +75,9 @@ export function validateToolArguments(
 			}
 		} catch (error) {
 			logger.warn("TypeBox validation failed in CSP-safe mode", {
-				error: error instanceof Error ? error.message : String(error),
+				error: sanitizeWithStaticMask(
+					error instanceof Error ? error.message : String(error),
+				),
 				tool: tool.name,
 			});
 		}

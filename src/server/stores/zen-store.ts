@@ -1,6 +1,7 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { dirname, resolve } from "node:path";
+import { existsSync, readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { getAgentDir } from "../../config/constants.js";
+import { writeJsonFile } from "../../utils/fs.js";
 import { isPlainObject, tryParseJson } from "../../utils/json.js";
 import { resolveEnvPath } from "../../utils/path-expansion.js";
 
@@ -27,6 +28,5 @@ export function saveZenState(state: Record<string, boolean>): void {
 	for (const [k, v] of Object.entries(state)) {
 		if (KEY_REGEX.test(k) && typeof v === "boolean") cleaned[k] = v;
 	}
-	mkdirSync(dirname(ZEN_STATE_PATH), { recursive: true });
-	writeFileSync(ZEN_STATE_PATH, JSON.stringify(cleaned, null, 2), "utf-8");
+	writeJsonFile(ZEN_STATE_PATH, cleaned);
 }

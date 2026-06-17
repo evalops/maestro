@@ -6,6 +6,7 @@ function createMockSessionManager() {
 	return {
 		loadSession: vi.fn().mockResolvedValue({
 			id: "test-session-1",
+			owner: "anon",
 			messages: [
 				{
 					role: "user",

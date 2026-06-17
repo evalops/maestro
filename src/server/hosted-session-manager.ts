@@ -13,6 +13,7 @@ import {
 import {
 	applyAttachmentExtracts,
 	sanitizeMessageForSession,
+	sanitizeSessionTextForPersistence,
 } from "../session/session-sanitize.js";
 import type { SessionMetadata } from "../session/types.js";
 import {
@@ -33,6 +34,11 @@ import {
 } from "../session/types.js";
 import { queueSharedMemoryUpdate } from "../shared-memory/client.js";
 import { recordMaestroPromptVariantSelected } from "../telemetry/maestro-event-bus.js";
+import {
+	type RequestContext,
+	SINGLE_USER_CONTEXT,
+	getSessionAccessControl,
+} from "./access-control.js";
 
 type SessionRow = typeof hostedSessions.$inferSelect;
 
@@ -52,11 +58,31 @@ export interface HostedSessionMetadataUpdate {
 	tags?: string[];
 }
 
+export interface HostedSessionManagerHooks {
+	/**
+	 * Called immediately after a session row is soft-deleted. The
+	 * daemon binds this to `admin.forgetSessionOwner` so the
+	 * `MultiClientSessionAccessControl` owner map sheds the entry —
+	 * preventing ghost-ownership on resurrection and unbounded map
+	 * growth. (Round-2-review fix.)
+	 */
+	onSessionDestroyed?: (sessionId: string) => void;
+	/**
+	 * Called immediately after a fresh session id is generated (either
+	 * via `createSession` or `createBranchedSessionFromState`). The
+	 * daemon binds this to `admin.recordSessionOwner` so the creating
+	 * caller's subsequent `assertSessionWritable(newId, ctx)` finds
+	 * the seeded owner instead of refusing. (Round-2-review fix.)
+	 */
+	onSessionCreated?: (sessionId: string, ctx: RequestContext) => void;
+}
+
 export class HostedSessionManager {
 	readonly storageKind = "database" as const;
 
 	private readonly scope: string;
 	private readonly subject?: string;
+	private readonly hooks: HostedSessionManagerHooks;
 	private sessionId: string = randomUUID();
 	private entries: SessionEntry[] = [];
 	private byId: Map<string, SessionTreeEntry> = new Map();
@@ -68,9 +94,14 @@ export class HostedSessionManager {
 	private snapshot?: AgentState;
 	private lastModelMetadata?: SessionModelMetadata;
 
-	constructor(options: { scope: string; subject?: string }) {
+	constructor(options: {
+		scope: string;
+		subject?: string;
+		hooks?: HostedSessionManagerHooks;
+	}) {
 		this.scope = options.scope;
 		this.subject = options.subject;
+		this.hooks = options.hooks ?? {};
 	}
 
 	private toModelMetadata(model: AgentState["model"]): SessionModelMetadata {
@@ -262,7 +293,11 @@ export class HostedSessionManager {
 		return entries;
 	}
 
-	async loadEntries(sessionId: string): Promise<SessionEntry[] | null> {
+	async loadEntries(
+		sessionId: string,
+		ctx: RequestContext = SINGLE_USER_CONTEXT,
+	): Promise<SessionEntry[] | null> {
+		await getSessionAccessControl().assertSessionReadable(sessionId, ctx);
 		const row = await this.loadRow(sessionId);
 		if (!row) {
 			return null;
@@ -270,7 +305,11 @@ export class HostedSessionManager {
 		return this.loadEntriesForSession(sessionId);
 	}
 
-	async resumeSession(sessionId: string): Promise<boolean> {
+	async resumeSession(
+		sessionId: string,
+		ctx: RequestContext = SINGLE_USER_CONTEXT,
+	): Promise<boolean> {
+		await getSessionAccessControl().assertSessionReadable(sessionId, ctx);
 		await this.flush();
 		const row = await this.loadRow(sessionId);
 		if (!row) {
@@ -343,7 +382,10 @@ export class HostedSessionManager {
 
 	async loadSession(
 		sessionId: string,
-		options: { messagesView?: SessionMessagesView } = {},
+		options: {
+			messagesView?: SessionMessagesView;
+			ctx?: RequestContext;
+		} = {},
 	): Promise<{
 		id: string;
 		subject?: string;
@@ -359,6 +401,10 @@ export class HostedSessionManager {
 		tags?: string[];
 		messagesView: SessionMessagesView;
 	} | null> {
+		await getSessionAccessControl().assertSessionReadable(
+			sessionId,
+			options.ctx ?? SINGLE_USER_CONTEXT,
+		);
 		await this.flush();
 		const row = await this.loadRow(sessionId);
 		if (!row) {
@@ -391,7 +437,10 @@ export class HostedSessionManager {
 				entry.attachmentId &&
 				entry.extractedText
 			) {
-				extractedById.set(entry.attachmentId, entry.extractedText);
+				extractedById.set(
+					entry.attachmentId,
+					sanitizeSessionTextForPersistence(entry.extractedText),
+				);
 			}
 		}
 		const messages =
@@ -423,7 +472,10 @@ export class HostedSessionManager {
 		};
 	}
 
-	async createSession(options?: { title?: string }): Promise<{
+	async createSession(
+		options?: { title?: string },
+		ctx: RequestContext = SINGLE_USER_CONTEXT,
+	): Promise<{
 		id: string;
 		title?: string;
 		resumeSummary?: string;
@@ -438,6 +490,12 @@ export class HostedSessionManager {
 		this.sessionId = randomUUID();
 		this.entries = [];
 		this.rebuildIndex([]);
+		// Seed owner FIRST so the gate accepts the immediate write that
+		// follows (`ensureSessionRow` enqueues into our own write
+		// chain; downstream callers issuing `assertSessionWritable`
+		// would otherwise see an un-owned session and refuse). Round-2-
+		// review fix.
+		this.hooks.onSessionCreated?.(this.sessionId, ctx);
 		const now = new Date();
 		await this.ensureSessionRow(this.sessionId, {
 			title: options?.title,
@@ -457,7 +515,11 @@ export class HostedSessionManager {
 		};
 	}
 
-	async deleteSession(sessionId: string): Promise<void> {
+	async deleteSession(
+		sessionId: string,
+		ctx: RequestContext = SINGLE_USER_CONTEXT,
+	): Promise<void> {
+		await getSessionAccessControl().assertSessionWritable(sessionId, ctx);
 		await this.flush();
 		await getDb()
 			.update(hostedSessions)
@@ -468,14 +530,25 @@ export class HostedSessionManager {
 					eq(hostedSessions.scope, this.scope),
 				),
 			);
+		// Drop the ownership record so the map doesn't grow unbounded
+		// across destroyed sessions, and so a resurrected session can't
+		// be reached by the original owner's `clientId` after admin
+		// handoff (round-2-review fix). No-op in single-user mode.
+		this.hooks.onSessionDestroyed?.(sessionId);
 	}
 
 	async createBranchedSessionFromState(
 		state: AgentState,
 		branchFromIndex: number,
+		ctx: RequestContext = SINGLE_USER_CONTEXT,
 	): Promise<string> {
 		await this.flush();
 		const newSessionId = randomUUID();
+		// Seed owner before any writes to the new session id (round-2-
+		// review fix). Without this, the branched session is unowned;
+		// subsequent `assertSessionWritable(newSessionId, ctx)` refuses
+		// and the creator is locked out of their own branch.
+		this.hooks.onSessionCreated?.(newSessionId, ctx);
 		const timestamp = new Date().toISOString();
 		const modelKey = `${state.model.provider}/${state.model.id}`;
 		const branchEntries: SessionEntry[] = [
@@ -493,6 +566,11 @@ export class HostedSessionManager {
 				promptMetadata: state.promptMetadata,
 				promptContextManifest: getPersistedSessionPromptContextManifest(state),
 				unifiedContextManifest: state.unifiedContextManifest,
+				systemPromptSourcePaths:
+					state.systemPromptSourcePaths &&
+					state.systemPromptSourcePaths.length > 0
+						? [...state.systemPromptSourcePaths]
+						: undefined,
 				tools: state.tools.map((tool) => ({
 					name: tool.name,
 					label: tool.label,
@@ -554,7 +632,9 @@ export class HostedSessionManager {
 	async updateSessionMetadata(
 		sessionId: string,
 		updates: HostedSessionMetadataUpdate,
+		ctx: RequestContext = SINGLE_USER_CONTEXT,
 	): Promise<void> {
+		await getSessionAccessControl().assertSessionWritable(sessionId, ctx);
 		const set: Partial<typeof hostedSessions.$inferInsert> = {};
 		if (updates.title !== undefined) set.title = updates.title;
 		if (updates.favorite !== undefined) set.favorite = updates.favorite;
@@ -591,6 +671,11 @@ export class HostedSessionManager {
 			promptMetadata: state.promptMetadata,
 			promptContextManifest: getPersistedSessionPromptContextManifest(state),
 			unifiedContextManifest: state.unifiedContextManifest,
+			systemPromptSourcePaths:
+				state.systemPromptSourcePaths &&
+				state.systemPromptSourcePaths.length > 0
+					? [...state.systemPromptSourcePaths]
+					: undefined,
 			tools: state.tools.map((tool) => ({
 				name: tool.name,
 				label: tool.label,
@@ -704,22 +789,53 @@ export class HostedSessionManager {
 		this.appendEntry(entry);
 	}
 
+	/**
+	 * Sync gate helper for the fire-and-forget setter methods. The
+	 * `assertSessionWritableSync` form throws synchronously; callers
+	 * don't have to await the gate before scheduling their DB write.
+	 * (#2641 adversarial review.)
+	 */
+	private assertWritableForRefSync(
+		sessionRef: string | undefined,
+		ctx: RequestContext,
+	): string {
+		const sessionId = this.resolveSessionId(sessionRef);
+		getSessionAccessControl().assertSessionWritableSync(sessionId, ctx);
+		return sessionId;
+	}
+
 	saveAttachmentExtraction(
 		sessionRef: string,
 		attachmentId: string,
 		text: string,
+		ctx: RequestContext = SINGLE_USER_CONTEXT,
 	): void {
 		if (!attachmentId || !text) return;
+		// Round-2-review fixes:
+		//   1. The previous `targetSessionId && targetSessionId !==
+		//      this.sessionId` guard short-circuited on empty-string
+		//      `sessionRef`, silently routing the write to whatever
+		//      session the manager was currently bound to — a cross-
+		//      tenant write hole once the daemon ships. Normalize
+		//      through `resolveSessionId` so empty/missing refs
+		//      deterministically target the bound session, matching
+		//      every other `*sessionRef?` setter on this class.
+		//   2. The same-session bypass was TOCTOU-vulnerable through
+		//      `setSessionFile`: an in-process caller could flip
+		//      `this.sessionId` to a target it owned, have that
+		//      ownership revoked, and keep writing because the
+		//      "same-session" branch skipped the gate. Always gate
+		//      now; the cost is one map lookup.
+		const targetSessionId = this.resolveSessionId(sessionRef || undefined);
+		getSessionAccessControl().assertSessionWritableSync(targetSessionId, ctx);
+
 		const entry: AttachmentExtractedEntry = {
 			type: "attachment_extract",
 			timestamp: new Date().toISOString(),
 			attachmentId,
-			extractedText: text,
+			extractedText: sanitizeSessionTextForPersistence(text),
 		};
-		const targetSessionId = sessionRef.startsWith("db:")
-			? sessionRef.slice("db:".length)
-			: sessionRef;
-		if (targetSessionId && targetSessionId !== this.sessionId) {
+		if (targetSessionId !== this.sessionId) {
 			this.enqueue(async () => {
 				await getDb().insert(hostedSessionEntries).values({
 					sessionId: targetSessionId,
@@ -742,10 +858,14 @@ export class HostedSessionManager {
 		this.appendEntry(entry);
 	}
 
-	saveSessionSummary(summary: string, sessionRef?: string): void {
+	saveSessionSummary(
+		summary: string,
+		sessionRef?: string,
+		ctx: RequestContext = SINGLE_USER_CONTEXT,
+	): void {
 		const trimmed = summary.trim();
 		if (!trimmed) return;
-		const sessionId = this.resolveSessionId(sessionRef);
+		const sessionId = this.assertWritableForRefSync(sessionRef, ctx);
 		this.appendSessionMetaEntry(
 			sessionId,
 			{ summary: trimmed },
@@ -753,10 +873,14 @@ export class HostedSessionManager {
 		);
 	}
 
-	saveSessionResumeSummary(summary: string, sessionRef?: string): void {
+	saveSessionResumeSummary(
+		summary: string,
+		sessionRef?: string,
+		ctx: RequestContext = SINGLE_USER_CONTEXT,
+	): void {
 		const trimmed = summary.trim();
 		if (!trimmed) return;
-		const sessionId = this.resolveSessionId(sessionRef);
+		const sessionId = this.assertWritableForRefSync(sessionRef, ctx);
 		this.appendSessionMetaEntry(
 			sessionId,
 			{ resumeSummary: trimmed },
@@ -764,10 +888,14 @@ export class HostedSessionManager {
 		);
 	}
 
-	saveSessionMemoryExtractionHash(hash: string, sessionRef?: string): void {
+	saveSessionMemoryExtractionHash(
+		hash: string,
+		sessionRef?: string,
+		ctx: RequestContext = SINGLE_USER_CONTEXT,
+	): void {
 		const trimmed = hash.trim();
 		if (!trimmed) return;
-		const sessionId = this.resolveSessionId(sessionRef);
+		const sessionId = this.assertWritableForRefSync(sessionRef, ctx);
 		this.appendSessionMetaEntry(
 			sessionId,
 			{ memoryExtractionHash: trimmed },
@@ -775,37 +903,40 @@ export class HostedSessionManager {
 		);
 	}
 
-	setSessionFavorite(sessionRef: string, favorite: boolean): void {
-		this.appendSessionMetaEntry(
-			this.resolveSessionId(sessionRef),
-			{ favorite },
-			{ favorite },
-		);
+	setSessionFavorite(
+		sessionRef: string,
+		favorite: boolean,
+		ctx: RequestContext = SINGLE_USER_CONTEXT,
+	): void {
+		const sessionId = this.assertWritableForRefSync(sessionRef, ctx);
+		this.appendSessionMetaEntry(sessionId, { favorite }, { favorite });
 	}
 
-	setSessionTitle(sessionRef: string, title: string): void {
-		this.appendSessionMetaEntry(
-			this.resolveSessionId(sessionRef),
-			{ title },
-			{ title },
-		);
+	setSessionTitle(
+		sessionRef: string,
+		title: string,
+		ctx: RequestContext = SINGLE_USER_CONTEXT,
+	): void {
+		const sessionId = this.assertWritableForRefSync(sessionRef, ctx);
+		this.appendSessionMetaEntry(sessionId, { title }, { title });
 	}
 
-	setSessionTags(sessionRef: string, tags: string[]): void {
-		this.appendSessionMetaEntry(
-			this.resolveSessionId(sessionRef),
-			{ tags },
-			{ tags },
-		);
+	setSessionTags(
+		sessionRef: string,
+		tags: string[],
+		ctx: RequestContext = SINGLE_USER_CONTEXT,
+	): void {
+		const sessionId = this.assertWritableForRefSync(sessionRef, ctx);
+		this.appendSessionMetaEntry(sessionId, { tags }, { tags });
 	}
 
 	setSessionAppServerGoal(
 		sessionRef: string,
 		goal: NonNullable<SessionMetaEntry["appServerGoal"]> | null,
+		ctx: RequestContext = SINGLE_USER_CONTEXT,
 	): void {
-		this.appendSessionMetaEntry(this.resolveSessionId(sessionRef), {
-			appServerGoal: goal,
-		});
+		const sessionId = this.assertWritableForRefSync(sessionRef, ctx);
+		this.appendSessionMetaEntry(sessionId, { appServerGoal: goal });
 	}
 
 	getSessionId(): string {
@@ -831,13 +962,21 @@ export class HostedSessionManager {
 		return `db:${sessionId}`;
 	}
 
-	setSessionFile(sessionRef: string): void {
+	setSessionFile(
+		sessionRef: string,
+		ctx: RequestContext = SINGLE_USER_CONTEXT,
+	): void {
 		const sessionId = sessionRef.startsWith("db:")
 			? sessionRef.slice("db:".length)
 			: sessionRef;
-		if (sessionId) {
-			this.sessionId = sessionId;
-		}
+		if (!sessionId) return;
+		// Adversarial-review fix: this method flips the manager's
+		// active sessionId from caller-controlled input. Without the
+		// gate, an in-process caller (a tool, a plugin) could redirect
+		// the manager onto another tenant's session and have
+		// subsequent writes land on it. Require write access first.
+		getSessionAccessControl().assertSessionWritableSync(sessionId, ctx);
+		this.sessionId = sessionId;
 	}
 
 	isInitialized(): boolean {

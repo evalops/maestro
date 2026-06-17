@@ -35,6 +35,11 @@
  * ```
  */
 
+import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
+import { chmodSync, existsSync, mkdirSync, readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { getComposerHome } from "../config/constants.js";
+import { writePrivateFileSync } from "../oauth/private-file.js";
 import { createLogger } from "../utils/logger.js";
 
 const logger = createLogger("safety:nested-agent-guard");
@@ -44,7 +49,89 @@ const logger = createLogger("safety:nested-agent-guard");
  */
 const PARENT_PID_ENV = "MAESTRO_PARENT_PID";
 const AGENT_DEPTH_ENV = "MAESTRO_AGENT_DEPTH";
+/**
+ * HMAC-signed depth token (#2481 part 2). The signature binds the
+ * claimed depth value to a per-host secret stored in
+ * `<MAESTRO_HOME>/.runtime-trust-key` (mode 0o600). A child cannot
+ * fabricate a lower depth by setting `MAESTRO_AGENT_DEPTH=0` because
+ * the signature wouldn't verify — it would need the trust key.
+ *
+ * Stripping the env entirely is still possible
+ * (`unset MAESTRO_AGENT_DEPTH MAESTRO_AGENT_DEPTH_TOKEN`), but in that
+ * case the PPID-fallback below fires: if our parent process is
+ * itself an agent binary we treat ourselves as nested at max depth
+ * regardless of the env.
+ */
+const AGENT_DEPTH_TOKEN_ENV = "MAESTRO_AGENT_DEPTH_TOKEN";
 const MAX_AGENT_DEPTH = 2; // Allow one level of nesting for legitimate use cases
+
+function getTrustKeyPath(): string {
+	return join(getComposerHome(), ".runtime-trust-key");
+}
+
+/**
+ * Load (or lazily create) the per-host HMAC key used to sign depth
+ * claims. The key is 32 random bytes, persisted with mode 0o600 so
+ * other local users cannot read it. Persistent because child agent
+ * processes need to verify signatures their parent created and to
+ * sign their own outgoing tokens.
+ */
+function getOrCreateTrustKey(): Buffer {
+	const keyPath = getTrustKeyPath();
+	if (existsSync(keyPath)) {
+		try {
+			const hex = readFileSync(keyPath, "utf-8").trim();
+			if (hex.length === 64) {
+				return Buffer.from(hex, "hex");
+			}
+		} catch (error) {
+			logger.warn("Failed to read runtime trust key; rotating", {
+				errorType: error instanceof Error ? error.name : "unknown",
+			});
+		}
+	}
+	const dir = dirname(keyPath);
+	if (!existsSync(dir)) {
+		mkdirSync(dir, { recursive: true, mode: 0o700 });
+	}
+	const fresh = randomBytes(32);
+	writePrivateFileSync(keyPath, fresh.toString("hex"));
+	try {
+		chmodSync(keyPath, 0o600);
+	} catch {
+		// Best-effort — writePrivateFileSync already applies 0o600.
+	}
+	return fresh;
+}
+
+function signDepth(depth: number, key: Buffer): string {
+	const mac = createHmac("sha256", key).update(String(depth)).digest("hex");
+	return `${depth}.${mac}`;
+}
+
+function verifyDepth(token: string, key: Buffer): number | null {
+	const dot = token.indexOf(".");
+	if (dot <= 0) return null;
+	const claimedStr = token.slice(0, dot);
+	const sig = token.slice(dot + 1);
+	const depth = Number.parseInt(claimedStr, 10);
+	if (Number.isNaN(depth) || depth < 0) return null;
+	const expected = createHmac("sha256", key).update(String(depth)).digest();
+	// Decode the supplied signature to a buffer of the same length as
+	// `expected`. A wrong length is a verification failure, but we
+	// still feed `timingSafeEqual` two equal-length buffers so the
+	// length-mismatch path does not leak via early-return timing.
+	let sigBuf: Buffer;
+	try {
+		sigBuf = Buffer.from(sig, "hex");
+	} catch {
+		sigBuf = Buffer.alloc(0);
+	}
+	const padded =
+		sigBuf.length === expected.length ? sigBuf : Buffer.alloc(expected.length);
+	const matched = timingSafeEqual(expected, padded);
+	return matched && sigBuf.length === expected.length ? depth : null;
+}
 
 /**
  * Command patterns that spawn agent instances.
@@ -111,8 +198,25 @@ class NestedAgentGuard {
 	private parentPid: number | null = null;
 	private childProcesses: ChildProcessRecord[] = [];
 	private agentSpawnCount = 0;
+	/**
+	 * Generic descendant-process counter. Tracks every bash command
+	 * the guard sees, not just commands that match an agent-spawn
+	 * regex. This is the fail-closed defense against fork bombs that
+	 * obfuscate the agent-spawn so the regex never matches: even if
+	 * we can't tell what they're running, we cap the total number of
+	 * subprocesses per session (#2481).
+	 */
+	private totalBashSpawnCount = 0;
+	/**
+	 * Rolling window of bash-spawn timestamps. Used to enforce a
+	 * spawn-rate cap independent of total count, so a slow-burn fork
+	 * bomb still triggers.
+	 */
+	private bashSpawnTimestamps: number[] = [];
 	private readonly maxAgentSpawns = 3; // Max agent spawns per session
 	private readonly childProcessWindowMs = 60_000; // 1 minute window
+	private readonly maxTotalBashSpawns = 500; // Hard cap per session
+	private readonly maxBashSpawnsPerMinute = 120; // Rate cap
 
 	/**
 	 * Initialize the guard on startup.
@@ -121,25 +225,83 @@ class NestedAgentGuard {
 	initialize(): void {
 		if (this.initialized) return;
 
-		// Check if we're running inside another agent
+		// Read the inherited env. The token binds depth to the host
+		// trust key, so a child cannot lower its depth without the key.
 		const parentPidStr = process.env[PARENT_PID_ENV];
 		const depthStr = process.env[AGENT_DEPTH_ENV];
+		const tokenStr = process.env[AGENT_DEPTH_TOKEN_ENV];
 
 		if (parentPidStr) {
 			this.parentPid = Number.parseInt(parentPidStr, 10);
 			this.isNested = !Number.isNaN(this.parentPid);
 		}
 
-		if (depthStr) {
-			this.agentDepth = Number.parseInt(depthStr, 10);
-			if (Number.isNaN(this.agentDepth)) {
-				this.agentDepth = 0;
-			}
+		let key: Buffer;
+		try {
+			key = getOrCreateTrustKey();
+		} catch (error) {
+			// If we can't acquire the trust key for any reason, fail
+			// closed: assume we're at max depth so spawn-checks block.
+			logger.warn("Failed to acquire runtime trust key; failing closed", {
+				errorType: error instanceof Error ? error.name : "unknown",
+			});
+			this.agentDepth = MAX_AGENT_DEPTH;
+			this.isNested = true;
+			process.env[PARENT_PID_ENV] = String(process.pid);
+			process.env[AGENT_DEPTH_ENV] = String(MAX_AGENT_DEPTH);
+			this.initialized = true;
+			return;
 		}
 
-		// Set environment for our children
+		if (tokenStr) {
+			const verified = verifyDepth(tokenStr, key);
+			if (verified === null) {
+				// Token present but doesn't verify — someone tampered.
+				// Fail closed at max depth so we refuse to spawn further.
+				logger.warn(
+					"MAESTRO_AGENT_DEPTH_TOKEN failed to verify; failing closed at max depth",
+				);
+				this.agentDepth = MAX_AGENT_DEPTH;
+				this.isNested = true;
+			} else {
+				this.agentDepth = verified;
+				this.isNested = true;
+			}
+		} else if (depthStr) {
+			// Depth claimed without a signing token. Older releases
+			// didn't issue tokens, but the issue (#2481) requires we
+			// not trust un-signed depth claims. Fail closed.
+			logger.warn(
+				"MAESTRO_AGENT_DEPTH set without signing token; failing closed at max depth",
+			);
+			this.agentDepth = MAX_AGENT_DEPTH;
+			this.isNested = true;
+		}
+		// Adversarial review: the PPID-comm heuristic that used to live
+		// here was both bypassable (`bash -c "unset MAESTRO_*; exec
+		// maestro"` produces a PPID whose comm is not in
+		// AGENT_BINARY_NAMES) and false-positive-prone (anyone running
+		// maestro from a Cursor / VS Code / claude-code terminal got
+		// the PPID's comm matching `cursor-*` / `claude-code-*` and
+		// was flagged nested with no opt-out). The hard bash-spawn
+		// rate cap (recordBashSpawn + maxBashSpawnsPerMinute /
+		// maxTotalBashSpawns) is the real defense against fork bombs
+		// regardless of how the agent identifies itself. The signed
+		// depth token covers env-fabrication; env-stripping is
+		// genuinely undetectable in-process from inside a child, and
+		// the spawn cap stops the damage either way.
+
+		// Set environment for our children — both depth AND token.
+		// Cap at MAX_AGENT_DEPTH so a max-depth process does NOT mint
+		// a legitimately-signed depth+1 token. The bash-tool firewall
+		// gates on `>=`, but anything that spawns a child outside the
+		// firewall (a direct `spawn` from another tool) would happily
+		// pass the signed token along. Capping ensures the chain stays
+		// at the limit forever once we hit it.
+		const nextDepth = Math.min(this.agentDepth + 1, MAX_AGENT_DEPTH);
 		process.env[PARENT_PID_ENV] = String(process.pid);
-		process.env[AGENT_DEPTH_ENV] = String(this.agentDepth + 1);
+		process.env[AGENT_DEPTH_ENV] = String(nextDepth);
+		process.env[AGENT_DEPTH_TOKEN_ENV] = signDepth(nextDepth, key);
 
 		if (this.isNested) {
 			logger.warn("Running as nested agent instance", {
@@ -178,6 +340,37 @@ class NestedAgentGuard {
 	checkCommand(command: string): CommandCheckResult {
 		// Clean up old child process records
 		this.cleanupOldRecords();
+		this.cleanupOldBashSpawnTimestamps();
+
+		// Hard descendant cap — applied to EVERY bash command before
+		// any pattern match. This is the fail-closed defense against
+		// fork bombs that hide the agent name (e.g. `$(echo cl)aude`,
+		// base64-decode-to-sh) so the regex never matches. See #2481.
+		if (this.totalBashSpawnCount >= this.maxTotalBashSpawns) {
+			logger.warn("Bash command blocked: session spawn cap reached", {
+				commandPreview: command.slice(0, 100),
+				totalBashSpawnCount: this.totalBashSpawnCount,
+				maxTotalBashSpawns: this.maxTotalBashSpawns,
+			});
+			return {
+				allowed: false,
+				reason: `Blocked: maximum bash subprocesses per session (${this.maxTotalBashSpawns}) reached. This prevents fork-bomb-style runaway spawning regardless of command shape.`,
+				severity: "error",
+			};
+		}
+		if (this.bashSpawnTimestamps.length >= this.maxBashSpawnsPerMinute) {
+			logger.warn("Bash command blocked: spawn-rate cap reached", {
+				commandPreview: command.slice(0, 100),
+				windowMs: this.childProcessWindowMs,
+				recentSpawns: this.bashSpawnTimestamps.length,
+				maxBashSpawnsPerMinute: this.maxBashSpawnsPerMinute,
+			});
+			return {
+				allowed: false,
+				reason: `Blocked: bash spawn rate cap (${this.maxBashSpawnsPerMinute}/min) reached. This prevents slow-burn fork bombs regardless of command shape.`,
+				severity: "error",
+			};
+		}
 
 		// Check for high-risk patterns first
 		for (const pattern of HIGH_RISK_PATTERNS) {
@@ -250,6 +443,17 @@ class NestedAgentGuard {
 	}
 
 	/**
+	 * Record that a bash command is about to be executed. Caller is
+	 * the bash-tool firewall layer. Increments the generic descendant
+	 * counter independent of pattern matching, so a fork bomb that
+	 * obfuscates the agent name still trips the hard cap. See #2481.
+	 */
+	recordBashSpawn(): void {
+		this.totalBashSpawnCount++;
+		this.bashSpawnTimestamps.push(Date.now());
+	}
+
+	/**
 	 * Record a child process spawn.
 	 */
 	recordChildProcess(
@@ -290,6 +494,16 @@ class NestedAgentGuard {
 	}
 
 	/**
+	 * Drop bash-spawn timestamps outside the rolling rate window.
+	 */
+	private cleanupOldBashSpawnTimestamps(): void {
+		const cutoff = Date.now() - this.childProcessWindowMs;
+		this.bashSpawnTimestamps = this.bashSpawnTimestamps.filter(
+			(ts) => ts > cutoff,
+		);
+	}
+
+	/**
 	 * Get statistics about child processes.
 	 */
 	getStats(): {
@@ -314,7 +528,21 @@ class NestedAgentGuard {
 	 */
 	resetSpawnCount(): void {
 		this.agentSpawnCount = 0;
+		this.totalBashSpawnCount = 0;
+		this.bashSpawnTimestamps = [];
 		logger.info("Agent spawn count reset");
+	}
+
+	/** Test helper — force re-initialization on next `initialize()`. */
+	resetForTests(): void {
+		this.initialized = false;
+		this.isNested = false;
+		this.agentDepth = 0;
+		this.parentPid = null;
+		this.agentSpawnCount = 0;
+		this.totalBashSpawnCount = 0;
+		this.bashSpawnTimestamps = [];
+		this.childProcesses = [];
 	}
 
 	/**

@@ -42,6 +42,13 @@ export default defineConfig({
 			"test/setup/restore-timers.ts",
 			"test/setup/reset-safety-state.ts",
 			"test/setup/restore-env.ts",
+			// Kills the OAuth/keychain-leak class that has been re-discovered
+			// individually in six test files (mcp-config-write,
+			// mcp-platform-plugin, prompts/service-client,
+			// platform/agent-runtime-client, telemetry/meter-service-client,
+			// cli/cli.integration). Forces file-mode OAuth by default and
+			// resets the module-level cache between tests.
+			"test/setup/restore-oauth-storage.ts",
 		],
 		// Disable file parallelism by default to reduce memory pressure and prevent test hangs
 		// Set VITEST_FAST=1 to opt into parallelism for local runs

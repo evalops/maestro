@@ -1,6 +1,19 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 describe("logger stream routing", () => {
+	beforeEach(() => {
+		// The global setup file `restore-oauth-storage.ts` imports
+		// `src/oauth/storage.ts`, which transitively imports
+		// `src/utils/logger.ts` and instantiates `export const logger`
+		// with the env-at-setup-time (MAESTRO_LOG_LEVEL=warn from
+		// `suppress-warnings.ts`). Without resetting the module cache,
+		// `await import("../../src/utils/logger.js")` below returns the
+		// already-cached Logger whose `minLevel` was frozen at "warn"
+		// and `splitStreams=false`, so the per-test env stubs never
+		// take effect.
+		vi.resetModules();
+	});
+
 	afterEach(() => {
 		Reflect.deleteProperty(process.env, "MAESTRO_LOG_JSON");
 		Reflect.deleteProperty(process.env, "MAESTRO_LOG_LEVEL");

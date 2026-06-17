@@ -1,10 +1,10 @@
-import { writeFileSync } from "node:fs";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import {
 	getComposerCustomConfig,
 	getCustomConfigPath,
 	reloadModelConfig,
 } from "../../models/registry.js";
+import { writeTextFileAtomic } from "../../utils/fs.js";
 import {
 	ApiError,
 	readJsonBody,
@@ -43,7 +43,7 @@ export async function handleConfig(
 			throw new ApiError(413, "Config exceeds maximum allowed size");
 		}
 		const configPath = getCustomConfigPath();
-		writeFileSync(configPath, serialized, "utf-8");
+		writeTextFileAtomic(configPath, serialized, { encoding: "utf-8" });
 		await reloadModelConfig();
 		sendJson(res, 200, { success: true }, cors, req);
 	}

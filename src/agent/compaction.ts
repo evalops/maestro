@@ -36,14 +36,18 @@
 import { realpathSync } from "node:fs";
 import { resolve as resolvePath } from "node:path";
 import {
-	resolveLoadedAppendSystemPromptPath,
+	resolveExistingAppendSystemPromptPaths,
 	resolvePromptLoadedProjectDocPaths,
 } from "../config/index.js";
-import type { PromptProjectDocManifest } from "../config/index.js";
+import type {
+	ComposerConfig,
+	PromptProjectDocManifest,
+} from "../config/index.js";
 import { getSkillArtifactMetadataFromDetails } from "../skills/artifact-metadata.js";
 import { readTool } from "../tools/read.js";
 import { createLogger } from "../utils/logger.js";
 import { expandUserPath } from "../utils/path-validation.js";
+import { sanitizeWithStaticMask } from "../utils/secret-redactor.js";
 import { runPostCompactionCleanup } from "./compaction-cleanup.js";
 import {
 	type CompactionHookContext,
@@ -221,14 +225,19 @@ function normalizeComparableReadPath(path: string): string {
 
 function getExcludedReadRestorePaths(
 	additionalPaths: string[] = [],
+	profileName?: string,
+	cwd: string = process.cwd(),
+	cliOverrides?: Partial<ComposerConfig>,
 ): Set<string> {
-	const loadedAppendSystemPromptPath = resolveLoadedAppendSystemPromptPath(
-		process.cwd(),
+	const appendSystemPromptPaths = resolveExistingAppendSystemPromptPaths(
+		cwd,
+		profileName,
+		cliOverrides,
 	);
 	const trackedPlanFilePath = getPlanFilePathForCompactionRestore();
 	return new Set(
 		[
-			...(loadedAppendSystemPromptPath ? [loadedAppendSystemPromptPath] : []),
+			...appendSystemPromptPaths,
 			...(trackedPlanFilePath ? [trackedPlanFilePath] : []),
 			...additionalPaths,
 		].map((path) => normalizeComparableReadPath(path)),
@@ -566,7 +575,9 @@ async function refreshReadRestoreContent(
 		logger.warn("Failed to refresh read restore content during compaction", {
 			filePath: request.path,
 			toolCallId,
-			error: error instanceof Error ? error.message : String(error),
+			error: sanitizeWithStaticMask(
+				error instanceof Error ? error.message : String(error),
+			),
 		});
 		return null;
 	}
@@ -913,11 +924,19 @@ async function collectRecentReadRestoreMessages(
 	preservedMessages: AppMessage[],
 	additionalExcludedPaths: string[] = [],
 	readRestoreExecute: ReadRestoreExecutor = readTool.execute,
+	profileName?: string,
+	cwd: string = process.cwd(),
+	cliOverrides?: Partial<ComposerConfig>,
 ): Promise<AppMessage[]> {
 	const visiblePaths = collectVisibleReadPaths(preservedMessages);
 	const requestsByCallId =
 		collectReadRestoreRequestsByCallId(compactedMessages);
-	const excludedPaths = getExcludedReadRestorePaths(additionalExcludedPaths);
+	const excludedPaths = getExcludedReadRestorePaths(
+		additionalExcludedPaths,
+		profileName,
+		cwd,
+		cliOverrides,
+	);
 	const restoredMessages: AppMessage[] = [];
 	const seenPaths = new Set<string>();
 	let usedTokens = 0;
@@ -1853,6 +1872,8 @@ export async function performCompaction(params: {
 	) => Promise<AppMessage[]>;
 	renderSummaryText?: (message: AssistantMessage) => string;
 	readRestoreExecute?: ReadRestoreExecutor;
+	profileName?: string;
+	cliOverrides?: Partial<ComposerConfig>;
 }): Promise<PerformCompactionResult> {
 	const {
 		agent,
@@ -1866,6 +1887,8 @@ export async function performCompaction(params: {
 		getPostKeepMessages,
 		renderSummaryText,
 		readRestoreExecute = readTool.execute,
+		profileName,
+		cliOverrides,
 	} = params;
 	const messages = [...agent.state.messages];
 	const keepCount = 6;
@@ -1893,14 +1916,18 @@ export async function performCompaction(params: {
 		return { success: false, error: "No earlier messages to compact" };
 	}
 	const keep = stripRuntimeRestoreMessages(messages.slice(boundary));
+	const workspaceCwd = hookContext?.cwd ?? process.cwd();
 	const promptContextPaths = agent.state.promptContextManifest
 		? agent.state.promptContextManifest.entries.map((entry) => entry.path)
-		: resolvePromptLoadedProjectDocPaths(process.cwd());
+		: resolvePromptLoadedProjectDocPaths(workspaceCwd);
 	const restoredReadMessages = await collectRecentReadRestoreMessages(
 		older,
 		keep,
 		[...promptContextPaths, ...(agent.state.systemPromptSourcePaths ?? [])],
 		readRestoreExecute,
+		profileName,
+		workspaceCwd,
+		cliOverrides,
 	);
 	const readPathsRestoredAfterCompaction =
 		collectRestoredReadPaths(restoredReadMessages);

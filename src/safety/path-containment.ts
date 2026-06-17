@@ -2,6 +2,7 @@ import { existsSync, realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, relative, resolve } from "node:path";
 import { getFirewallConfig } from "../config/firewall-config.js";
+import { normalizePath } from "../utils/path-validation.js";
 
 /**
  * Protected system paths that should never be modified.
@@ -100,7 +101,7 @@ export function getSystemPaths(): string[] {
 }
 
 export function isSystemPath(filePath: string): boolean {
-	const normalized = resolve(filePath);
+	const normalized = normalizePath(filePath);
 	const realPath = resolveRealPath(normalized) ?? normalized;
 	const normalizedPath =
 		process.platform === "win32" ? normalized.toLowerCase() : normalized;
@@ -141,7 +142,7 @@ export function getSafePathSummary(): SafePathSummary {
 	}
 	const config = getFirewallConfig();
 	const trustedPaths = (config.containment?.trustedPaths ?? []).map((path) =>
-		resolve(path),
+		normalizePath(path),
 	);
 	const trustedPathsReal = trustedPaths.map((path) => {
 		try {
@@ -198,7 +199,7 @@ export function getSafePathMatch(
 	filePath: string,
 	summary: SafePathSummary = getSafePathSummary(),
 ): "workspace" | "temp" | "trusted" | null {
-	const resolvedPath = resolve(filePath);
+	const resolvedPath = normalizePath(filePath);
 	const realFilePath = resolveRealPath(resolvedPath) ?? resolvedPath;
 
 	const isInsideWorkspace =

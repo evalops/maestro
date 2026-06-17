@@ -1,6 +1,7 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { type Static, Type } from "@sinclair/typebox";
 import {
+	type ComposerConfig,
 	type WritablePackageScope,
 	addConfiguredPackageSpecToConfig,
 	removeConfiguredPackageSpecFromConfig,
@@ -44,6 +45,11 @@ const PackageRefreshSchema = Type.Object({
 
 type PackageSourceInput = Static<typeof PackageSourceSchema>;
 type PackageRefreshInput = Static<typeof PackageRefreshSchema>;
+
+interface PackageStatusOptions {
+	profileName?: string;
+	cliOverrides?: Partial<ComposerConfig>;
+}
 
 function getWritableScope(
 	scope: WritablePackageScope | undefined,
@@ -184,6 +190,7 @@ export async function handlePackageStatus(
 	req: IncomingMessage,
 	res: ServerResponse,
 	corsHeaders: Record<string, string>,
+	options: PackageStatusOptions = {},
 ): Promise<void> {
 	try {
 		const projectRoot = process.cwd();
@@ -201,7 +208,7 @@ export async function handlePackageStatus(
 			if (action !== "list" && action !== "status") {
 				throw new ApiError(400, `Unknown package action: ${action}`);
 			}
-			const reports = await listConfiguredPackageReports(projectRoot);
+			const reports = await listConfiguredPackageReports(projectRoot, options);
 			sendJson(
 				res,
 				200,
@@ -247,7 +254,10 @@ export async function handlePackageStatus(
 		}
 
 		if (action === "refresh-all") {
-			const refreshed = await refreshConfiguredRemotePackages(projectRoot);
+			const refreshed = await refreshConfiguredRemotePackages(
+				projectRoot,
+				options,
+			);
 			sendJson(
 				res,
 				200,
@@ -264,7 +274,7 @@ export async function handlePackageStatus(
 		}
 
 		if (action === "prune-cache") {
-			const pruned = pruneUnconfiguredRemotePackageCaches(projectRoot);
+			const pruned = pruneUnconfiguredRemotePackageCaches(projectRoot, options);
 			sendJson(res, 200, serializePackageCachePruneReport(pruned), corsHeaders);
 			return;
 		}
@@ -292,11 +302,23 @@ export async function handlePackageStatus(
 				req,
 				PackageSourceSchema,
 			);
-			const result = addConfiguredPackageSpecToConfig({
-				workspaceDir: projectRoot,
-				scope: getWritableScope(input.scope),
-				spec: input.source,
-			});
+			let result: ReturnType<typeof addConfiguredPackageSpecToConfig>;
+			try {
+				result = addConfiguredPackageSpecToConfig({
+					workspaceDir: projectRoot,
+					scope: getWritableScope(input.scope),
+					spec: input.source,
+					profileName: options.profileName,
+					cliOverrides: options.cliOverrides,
+				});
+			} catch (error) {
+				throw new ApiError(
+					400,
+					error instanceof Error
+						? error.message
+						: "Failed to add configured package.",
+				);
+			}
 			sendJson(
 				res,
 				200,
@@ -320,8 +342,10 @@ export async function handlePackageStatus(
 				workspaceDir: projectRoot,
 				scope: input.scope,
 				spec: input.source,
+				profileName: options.profileName,
+				cliOverrides: options.cliOverrides,
 			});
-			const reports = await listConfiguredPackageReports(projectRoot);
+			const reports = await listConfiguredPackageReports(projectRoot, options);
 			sendJson(
 				res,
 				200,

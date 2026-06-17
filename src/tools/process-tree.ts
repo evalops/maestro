@@ -23,6 +23,7 @@
 import { execSync, spawnSync } from "node:child_process";
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { createLogger } from "../utils/logger.js";
+import { sanitizeWithStaticMask } from "../utils/secret-redactor.js";
 
 const logger = createLogger("tools:process-tree");
 
@@ -293,7 +294,9 @@ function getDescendantPidsLinux(pid: number): number[] {
 	} catch (error) {
 		logger.debug("Failed to read /proc for descendants", {
 			pid,
-			error: error instanceof Error ? error.message : String(error),
+			error: sanitizeWithStaticMask(
+				error instanceof Error ? error.message : String(error),
+			),
 		});
 	}
 
@@ -332,7 +335,9 @@ function getDescendantPidsMacOS(pid: number): number[] {
 	} catch (error) {
 		logger.debug("Failed to get descendants via pgrep", {
 			pid,
-			error: error instanceof Error ? error.message : String(error),
+			error: sanitizeWithStaticMask(
+				error instanceof Error ? error.message : String(error),
+			),
 		});
 	}
 

@@ -8,7 +8,7 @@ import {
 	fetchDownstream,
 } from "../utils/downstream-http.js";
 import * as downstream from "../utils/downstream.js";
-import type { LoadedSkill } from "./loader.js";
+import { type LoadedSkill, computeSkillTrustSha } from "./loader.js";
 
 const CONNECT_PROTOCOL_VERSION = "1";
 const DEFAULT_LIMIT = 100;
@@ -336,6 +336,13 @@ function toLoadedSkill(skill: SkillsServiceSkill): LoadedSkill | null {
 		name,
 		description: trimString(skill.description) ?? "Skill from skills service",
 		content,
+		// Match the local-skill trust-hash schema so the same approval
+		// model applies to service-loaded skills: bind `name` and (an
+		// empty set of) resources so an attacker can't ship a
+		// "rogue-clone" with the same body and inherit the user's
+		// approval of "trusted-helper". Closes the round-3 gap left by
+		// PRs #2629/#2749/#2753 in the service-client code path.
+		contentSha: computeSkillTrustSha(name, content, [], {}),
 		metadata,
 		tags: normalizeTags(skill.tags),
 		sourcePath: `skills-service://${id}`,
@@ -344,6 +351,8 @@ function toLoadedSkill(skill: SkillsServiceSkill): LoadedSkill | null {
 		resourceDirs: {},
 	};
 }
+
+export const __TEST_ONLY_toLoadedSkill = toLoadedSkill;
 
 export async function loadSkillsFromService(
 	config: ResolvedSkillsServiceConfig,

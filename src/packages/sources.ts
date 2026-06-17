@@ -22,6 +22,19 @@ import type {
 
 const logger = createLogger("packages:sources");
 const resolvedPackageSourcePaths = new Map<string, string>();
+// Allow the punctuation that git itself permits in branch/tag refs (see
+// git-check-ref-format) such as "%", ",", and "=". Revision expressions that
+// git checkout accepts, like "~" and "^", are also allowed. Shell
+// metacharacters are still excluded as defense-in-depth even though refs are
+// passed via execFile (no shell), and a leading "-" is rejected separately to
+// prevent option injection.
+const SAFE_GIT_REF_PATTERN = /^[\w./+%,=~^-]+$/;
+const GIT_SAFE_CLONE_CONFIG = [
+	"-c",
+	"protocol.ext.allow=never",
+	"-c",
+	"protocol.file.allow=user",
+] as const;
 
 /**
  * Parse a package source string into structured format
@@ -52,12 +65,16 @@ export function parsePackageSource(
 		};
 	}
 
-	if (sourceSpec.startsWith("git:")) {
+	// "git:" is Maestro's package prefix, but "git://" is the native git
+	// transport scheme and must not have its scheme stripped as if it were the
+	// prefix.
+	if (sourceSpec.startsWith("git:") && !sourceSpec.startsWith("git://")) {
 		const gitSpec = sourceSpec.slice(4); // Remove "git:" prefix
-		const [url, ref] = gitSpec.split("@");
+		const { url, ref } = parseGitSourceSpec(gitSpec);
 		if (!url) {
 			throw new Error(`Invalid package source format: ${sourceSpec}`);
 		}
+		validateGitRef(ref, sourceSpec);
 		return {
 			type: "git",
 			url,
@@ -112,15 +129,17 @@ export function parsePackageSource(
 
 	// If it looks like a git URL
 	if (
+		sourceSpec.startsWith("git://") ||
 		sourceSpec.includes("github.com/") ||
 		sourceSpec.includes("gitlab.com/") ||
 		sourceSpec.includes("bitbucket.org/") ||
-		sourceSpec.endsWith(".git")
+		(sourceSpec.endsWith(".git") && !sourceSpec.startsWith("@"))
 	) {
-		const [url, ref] = sourceSpec.split("@");
+		const { url, ref } = parseGitSourceSpec(sourceSpec);
 		if (!url) {
 			throw new Error(`Invalid package source format: ${sourceSpec}`);
 		}
+		validateGitRef(ref, sourceSpec);
 		return {
 			type: "git",
 			url,
@@ -265,6 +284,7 @@ function resolveLocalSource(source: LocalSource): string {
  * Resolve git repository source
  */
 function resolveGitSourceSync(source: GitSource, cacheDir?: string): string {
+	validateGitRef(source.ref, formatPackageSource(source));
 	const cachePath = getCachedSourcePath(
 		"git",
 		`${source.url}@${source.ref ?? ""}`,
@@ -281,6 +301,7 @@ function resolveGitSourceSync(source: GitSource, cacheDir?: string): string {
 		if (source.ref) {
 			try {
 				runSyncCommand("git", [
+					...GIT_SAFE_CLONE_CONFIG,
 					"clone",
 					"--depth",
 					"1",
@@ -290,11 +311,23 @@ function resolveGitSourceSync(source: GitSource, cacheDir?: string): string {
 					cachePath,
 				]);
 			} catch {
-				runSyncCommand("git", ["clone", cloneTarget, cachePath]);
+				runSyncCommand("git", [
+					...GIT_SAFE_CLONE_CONFIG,
+					"clone",
+					cloneTarget,
+					cachePath,
+				]);
 				runSyncCommand("git", ["-C", cachePath, "checkout", "-f", source.ref]);
 			}
 		} else {
-			runSyncCommand("git", ["clone", "--depth", "1", cloneTarget, cachePath]);
+			runSyncCommand("git", [
+				...GIT_SAFE_CLONE_CONFIG,
+				"clone",
+				"--depth",
+				"1",
+				cloneTarget,
+				cachePath,
+			]);
 		}
 	} catch (error) {
 		rmSync(cachePath, { recursive: true, force: true });
@@ -409,19 +442,57 @@ function getRemoteSourceIdentity(
 	}
 }
 
-function normalizeGitCloneUrl(url: string): string {
+export function normalizeGitCloneUrl(url: string): string {
+	// Reject remote-helper transports like ext::command or 9p::payload without
+	// blocking IPv6 literals in standard URLs such as
+	// ssh://git@[2001:db8::1]/repo.git, or local paths with a slash before "::".
+	const remoteHelperSeparatorIndex = url.indexOf("::");
+	const firstSlashIndex = url.search(/[\\/]/);
+	const remoteHelperTransport =
+		remoteHelperSeparatorIndex >= 0
+			? url.slice(0, remoteHelperSeparatorIndex)
+			: "";
 	if (
-		url.startsWith("http://") ||
-		url.startsWith("https://") ||
-		url.startsWith("ssh://") ||
+		remoteHelperSeparatorIndex !== -1 &&
+		(firstSlashIndex === -1 || remoteHelperSeparatorIndex < firstSlashIndex) &&
+		/^[a-z0-9][a-z0-9+._-]*$/i.test(remoteHelperTransport)
+	) {
+		throw new Error(`Unsupported git package source URL: ${url}`);
+	}
+
+	if (
 		url.startsWith("git@") ||
 		url.startsWith("/") ||
+		/^[a-z]:[\\/]/i.test(url) ||
+		url.startsWith("\\\\") ||
 		url.startsWith("./") ||
 		url.startsWith("../")
 	) {
 		return url;
 	}
 
+	if (/^[a-z][a-z0-9+.-]*:\/\//i.test(url)) {
+		const protocol = new URL(url).protocol;
+		const normalizedProtocol = protocol.startsWith("git+")
+			? protocol.slice(4)
+			: protocol;
+		if (
+			normalizedProtocol === "git:" ||
+			normalizedProtocol === "http:" ||
+			normalizedProtocol === "https:" ||
+			normalizedProtocol === "ssh:"
+		) {
+			return protocol.startsWith("git+") ? url.replace(/^git\+/i, "") : url;
+		}
+		throw new Error(
+			`Unsupported git package source URL scheme: ${protocol.replace(":", "")}`,
+		);
+	}
+
+	// Known shorthand "host/path" forms (no scheme, no scp ":") are promoted to https.
+	// A ":" before the first "/" means git treats it as an scp-style SSH remote
+	// (e.g. "host:port/path" is host "host", path "port/path"), so those are left
+	// untouched and handled by the scp branch below.
 	if (
 		url.startsWith("github.com/") ||
 		url.startsWith("gitlab.com/") ||
@@ -430,7 +501,75 @@ function normalizeGitCloneUrl(url: string): string {
 		return `https://${url}`;
 	}
 
-	return url;
+	const firstColonIndex = url.indexOf(":");
+	if (
+		firstColonIndex !== -1 &&
+		firstSlashIndex !== -1 &&
+		firstSlashIndex < firstColonIndex
+	) {
+		return url;
+	}
+
+	if (
+		/^(?:[^@/:]+@)?github\.com:.+/.test(url) ||
+		/^(?:[^@/:]+@)?gitlab\.com:.+/.test(url) ||
+		/^(?:[^@/:]+@)?bitbucket\.org:.+/.test(url) ||
+		/^(?:[^@/:]+@)?[a-z0-9][a-z0-9._-]*:.+/i.test(url) ||
+		/^(?:[^@/:]+@)?(?:localhost|[a-z0-9][a-z0-9.-]*\.[a-z0-9-]+):.+/i.test(url)
+	) {
+		return url;
+	}
+
+	// Relative local repositories (e.g. "repo.git" or "sub/repo.git") have no
+	// scheme and no scp ":" separator. git clone accepts them as local paths
+	// resolved against the working directory, so pass them through unchanged.
+	if (!url.includes(":")) {
+		return url;
+	}
+
+	throw new Error(`Unsupported git package source URL: ${url}`);
+}
+
+function parseGitSourceSpec(gitSpec: string): {
+	url: string;
+	ref: string | undefined;
+} {
+	const atIndex = gitSpec.lastIndexOf("@");
+	const firstAtIndex = gitSpec.indexOf("@");
+	const schemeSeparatorIndex = gitSpec.indexOf("://");
+	const firstSlashAfterAuthority =
+		schemeSeparatorIndex >= 0
+			? gitSpec.indexOf("/", schemeSeparatorIndex + 3)
+			: -1;
+	const scpSeparatorIndex =
+		schemeSeparatorIndex === -1 && !/^[a-z]:[\\/]/i.test(gitSpec)
+			? gitSpec.indexOf(":")
+			: -1;
+	const hasUrlUserInfoSeparator =
+		schemeSeparatorIndex >= 0 &&
+		(firstSlashAfterAuthority === -1 || atIndex < firstSlashAfterAuthority);
+	const hasScpUserHostSeparator =
+		scpSeparatorIndex > 0 &&
+		firstAtIndex === atIndex &&
+		atIndex < scpSeparatorIndex &&
+		/^(?:[^@/:]+@)?[^@/:]+:.+/.test(gitSpec);
+	if (atIndex <= 0 || hasUrlUserInfoSeparator || hasScpUserHostSeparator) {
+		return { url: gitSpec, ref: undefined };
+	}
+
+	return {
+		url: gitSpec.slice(0, atIndex),
+		ref: gitSpec.slice(atIndex + 1),
+	};
+}
+
+function validateGitRef(ref: string | undefined, sourceSpec: string): void {
+	if (!ref) {
+		return;
+	}
+	if (ref.startsWith("-") || !SAFE_GIT_REF_PATTERN.test(ref)) {
+		throw new Error(`Invalid git package ref in source: ${sourceSpec}`);
+	}
 }
 
 function looksLikeRegistryPackageName(value: string): boolean {

@@ -3,6 +3,7 @@ import {
 	mkdirSync,
 	readFileSync,
 	rmSync,
+	statSync,
 	utimesSync,
 	writeFileSync,
 } from "node:fs";
@@ -196,6 +197,21 @@ describe("FreshExecSessionManager", () => {
 			type: "session",
 			id: sessionId,
 		});
+	});
+
+	it("creates session directories and files with owner-only permissions", async () => {
+		if (process.platform === "win32") return;
+		const manager = new FreshExecSessionManager({
+			sessionDir: join(tempDir, "sessions"),
+		});
+
+		manager.startSession(createMockState());
+		await manager.flush();
+
+		expect(statSync(dirname(manager.getSessionFile())).mode & 0o777).toBe(
+			0o700,
+		);
+		expect(statSync(manager.getSessionFile()).mode & 0o777).toBe(0o600);
 	});
 
 	it("persists compaction entries for fresh exec sessions", async () => {

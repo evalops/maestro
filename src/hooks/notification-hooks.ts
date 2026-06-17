@@ -27,6 +27,7 @@ import { PATHS } from "../config/constants.js";
 import { getTimeSinceLastUserInteraction } from "../interaction/user-interaction.js";
 import type { SkillArtifactMetadata } from "../skills/artifact-metadata.js";
 import { createLogger } from "../utils/logger.js";
+import { sanitizeWithStaticMask } from "../utils/secret-redactor.js";
 import type { SessionHookService } from "./session-integration.js";
 
 const logger = createLogger("hooks:notify");
@@ -237,7 +238,9 @@ export async function sendNotification(
 	} catch (error) {
 		logger.warn("Notification hook failed", {
 			program: config.program,
-			error: error instanceof Error ? error.message : String(error),
+			error: sanitizeWithStaticMask(
+				error instanceof Error ? error.message : String(error),
+			),
 		});
 	}
 }
@@ -453,7 +456,9 @@ export function dispatchAgentNotification(
 			.catch((error) => {
 				options.logger?.warn("Notification hooks failed", {
 					type: payload.type,
-					error: error instanceof Error ? error.message : String(error),
+					error: sanitizeWithStaticMask(
+						error instanceof Error ? error.message : String(error),
+					),
 				});
 			});
 	}

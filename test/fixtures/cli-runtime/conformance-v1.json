@@ -158,7 +158,8 @@
 			"path": "src/main.ts",
 			"anchors": [
 				"mode === \"rpc\"",
-				"runRpcMode(agent, sessionManager)",
+				"runRpcMode(",
+				"runtimeConfig.explicitProfileName",
 				"mode === \"headless\" || parsed.headless",
 				"runHeadlessMode("
 			]

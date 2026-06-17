@@ -1,6 +1,7 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { dirname, resolve } from "node:path";
+import { existsSync, readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { getAgentDir } from "../../config/constants.js";
+import { writeJsonFile } from "../../utils/fs.js";
 import { tryParseJson } from "../../utils/json.js";
 import { resolveEnvPath } from "../../utils/path-expansion.js";
 
@@ -99,8 +100,7 @@ export function saveQueueState(state: QueueStateFile): void {
 			return now - p.createdAt <= MAX_AGE_MS;
 		});
 	}
-	mkdirSync(dirname(QUEUE_STATE_PATH), { recursive: true });
-	writeFileSync(QUEUE_STATE_PATH, JSON.stringify(normalized, null, 2), "utf-8");
+	writeJsonFile(QUEUE_STATE_PATH, normalized);
 }
 
 export function getSessionQueue(

@@ -19,6 +19,7 @@ import {
 import { decryptOrgSettings } from "../db/settings-encryption.js";
 import { fetchDownstream } from "../utils/downstream-http.js";
 import { createLogger } from "../utils/logger.js";
+import { sanitizeWithStaticMask } from "../utils/secret-redactor.js";
 
 // Unique identifier for this process instance
 const INSTANCE_ID = `${process.pid}-${crypto.randomUUID().slice(0, 8)}`;
@@ -194,7 +195,9 @@ async function deliverHttp(
 		return {
 			success: false,
 			responseTimeMs,
-			error: error instanceof Error ? error.message : "Unknown error",
+			error: sanitizeWithStaticMask(
+				error instanceof Error ? error.message : "Unknown error",
+			),
 		};
 	}
 }

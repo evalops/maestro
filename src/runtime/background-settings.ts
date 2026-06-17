@@ -5,13 +5,14 @@ import {
 	readFileSync,
 	statSync,
 	watch,
-	writeFileSync,
 } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 
 import { getAgentDir } from "../config/constants.js";
+import { writeTextFileAtomic } from "../utils/fs.js";
 import { createLogger } from "../utils/logger.js";
 import { expandUserPath, safejoin } from "../utils/path-validation.js";
+import { sanitizeWithStaticMask } from "../utils/secret-redactor.js";
 
 const logger = createLogger("runtime:background-settings");
 
@@ -64,7 +65,9 @@ function resolveEnvPath(raw: string): string | null {
 	} catch (error) {
 		logger.warn("Ignoring unsafe MAESTRO_BACKGROUND_SETTINGS path", {
 			path: trimmed,
-			error: error instanceof Error ? error.message : String(error),
+			error: sanitizeWithStaticMask(
+				error instanceof Error ? error.message : String(error),
+			),
 		});
 		return null;
 	}
@@ -91,7 +94,7 @@ export function getBackgroundSettingsPath(): string {
 function persistSettings(settings: BackgroundTaskSettings): void {
 	const path = getSettingsPath();
 	mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
-	writeFileSync(path, JSON.stringify(settings, null, 2), {
+	writeTextFileAtomic(path, JSON.stringify(settings, null, 2), {
 		encoding: "utf-8",
 		mode: 0o600,
 	});
@@ -144,7 +147,9 @@ function loadSettings(retry = 0): {
 		};
 	} catch (error) {
 		logger.warn("Failed to load background settings; using defaults", {
-			error: error instanceof Error ? error.message : String(error),
+			error: sanitizeWithStaticMask(
+				error instanceof Error ? error.message : String(error),
+			),
 		});
 		return { settings: { ...DEFAULT_SETTINGS }, mtime: null, size: null };
 	}
@@ -178,13 +183,17 @@ function ensureWatcher(): void {
 		});
 		watcher.on("error", (error) => {
 			logger.warn("Background settings watcher error", {
-				error: error instanceof Error ? error.message : String(error),
+				error: sanitizeWithStaticMask(
+					error instanceof Error ? error.message : String(error),
+				),
 			});
 			watcher = null;
 		});
 	} catch (error) {
 		logger.warn("Unable to watch background settings; falling back to stat", {
-			error: error instanceof Error ? error.message : String(error),
+			error: sanitizeWithStaticMask(
+				error instanceof Error ? error.message : String(error),
+			),
 		});
 		watcher = null;
 	}
@@ -224,7 +233,9 @@ function maybeReloadSettingsFromDisk(): void {
 		emit(settingsCache);
 	} catch (error) {
 		logger.warn("Failed to reload background settings; keeping cache", {
-			error: error instanceof Error ? error.message : String(error),
+			error: sanitizeWithStaticMask(
+				error instanceof Error ? error.message : String(error),
+			),
 		});
 	}
 }
@@ -314,7 +325,9 @@ export function overrideBackgroundTaskSettingsPath(path: string | null): void {
 					"Ignoring unsafe background settings override outside composer directory",
 					{
 						path,
-						error: error instanceof Error ? error.message : String(error),
+						error: sanitizeWithStaticMask(
+							error instanceof Error ? error.message : String(error),
+						),
 					},
 				);
 				return;

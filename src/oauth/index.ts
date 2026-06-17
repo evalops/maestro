@@ -8,11 +8,13 @@ import {
 	isEvalOpsManagedGatewayEnabled,
 } from "../providers/evalops-managed.js";
 import { createLogger } from "../utils/logger.js";
+import { sanitizeWithStaticMask } from "../utils/secret-redactor.js";
 import {
 	revokeOAuthProviderConnection,
 	syncOAuthProviderConnection,
 	syncStoredOAuthProviderConnection,
 } from "./connectors.js";
+import { isDefinitiveOAuthRefreshFailure } from "./errors.js";
 import {
 	buildEvalOpsDelegationEnvironment,
 	issueEvalOpsDelegationToken,
@@ -280,7 +282,9 @@ export async function logout(provider: OAuthLogoutProvider): Promise<void> {
 			await revokeEvalOpsToken(credentials.refresh, credentials.metadata);
 		} catch (error) {
 			logger.warn("Failed to revoke EvalOps refresh token during logout", {
-				error: error instanceof Error ? error.message : String(error),
+				error: sanitizeWithStaticMask(
+					error instanceof Error ? error.message : String(error),
+				),
 				provider,
 			});
 		}
@@ -413,8 +417,9 @@ export async function getOAuthToken(
 			if (refreshError instanceof MissingGoogleInstalledAppOAuthConfigError) {
 				return null;
 			}
-			// Remove invalid credentials
-			removeOAuthCredentials(provider);
+			if (isDefinitiveOAuthRefreshFailure(refreshError)) {
+				removeOAuthCredentials(provider);
+			}
 			return null;
 		}
 	}

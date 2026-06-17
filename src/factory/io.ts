@@ -1,5 +1,6 @@
-import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync } from "node:fs";
 import { dirname } from "node:path";
+import { writeTextFileAtomic } from "../utils/fs.js";
 
 const FACTORY_SETTINGS_TEMPLATE = (
 	defaultModel: string,
@@ -69,7 +70,9 @@ export function ensureParentDir(filePath: string): void {
 
 export function writeJsonFile(path: string, value: unknown): void {
 	ensureParentDir(path);
-	writeFileSync(path, JSON.stringify(value, null, 2), "utf-8");
+	writeTextFileAtomic(path, JSON.stringify(value, null, 2), {
+		encoding: "utf-8",
+	});
 }
 
 export function ensureFactorySettings(
@@ -79,11 +82,9 @@ export function ensureFactorySettings(
 	const existed = existsSync(settingsPath);
 	if (!existed) {
 		ensureParentDir(settingsPath);
-		writeFileSync(
-			settingsPath,
-			FACTORY_SETTINGS_TEMPLATE(defaultModel),
-			"utf-8",
-		);
+		writeTextFileAtomic(settingsPath, FACTORY_SETTINGS_TEMPLATE(defaultModel), {
+			encoding: "utf-8",
+		});
 	}
 	return { created: !existed };
 }

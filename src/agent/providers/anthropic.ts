@@ -105,6 +105,7 @@
  * @module agent/providers/anthropic
  */
 
+import { isInternalModelBaseUrl } from "../../models/url-policy.js";
 import { fetchWithRetry } from "../../providers/network-config.js";
 import {
 	createTimeoutReader,
@@ -702,7 +703,10 @@ export async function* streamAnthropic(
 			signal: options.signal,
 		},
 		model.provider,
-		{ modelId: model.id },
+		{
+			modelId: model.id,
+			allowInternalBaseUrl: isInternalModelBaseUrl(model.baseUrl),
+		},
 	);
 
 	if (!response.ok) {

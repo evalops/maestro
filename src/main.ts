@@ -111,13 +111,14 @@ import {
 	willDispatchHeadlessRuntime,
 } from "./cli/headless-runtime-selection.js";
 import { printHelp } from "./cli/help.js";
-import {
-	detectRuntimeConstraintContext,
-	resolveExplicitSystemPromptSourcePaths,
-} from "./cli/system-prompt.js";
+import { detectRuntimeConstraintContext } from "./cli/system-prompt.js";
 import { validateFrameworkPreference } from "./config/framework.js";
-import { loadRuntimeConfig } from "./config/runtime-config.js";
-import { loadEnv } from "./load-env.js";
+import type { ComposerConfig } from "./config/index.js";
+import {
+	buildCliConfigOverrides,
+	loadRuntimeConfig,
+} from "./config/runtime-config.js";
+import { loadEnv, scrubLoadedSecurityOverrideEnv } from "./load-env.js";
 import { bootstrapLsp } from "./lsp/bootstrap.js";
 import type { McpConfig } from "./mcp/types.js";
 import { createLazyAutoMemoryCoordinators } from "./memory/lazy-auto-memory.js";
@@ -125,6 +126,7 @@ import { ensureModelsLoaded } from "./models/builtin.js";
 import type { RegisteredModel } from "./models/registry.js";
 import { reloadModelConfig } from "./models/registry.js";
 import { getPackageVersion } from "./package-metadata.js";
+import { setConfiguredPackageRuntimeContext } from "./packages/runtime.js";
 import { resolveMaestroSystemPrompt } from "./prompts/system-prompt.js";
 import type { AuthMode } from "./providers/auth.js";
 import { configureSafeMode } from "./safety/safe-mode.js";
@@ -272,6 +274,8 @@ async function runInteractiveMode(
 	toolRetryService: ToolRetryService,
 	explicitApiKey?: string,
 	options: InteractiveOptions = {},
+	profileName?: string,
+	cliOverrides?: Partial<ComposerConfig>,
 ): Promise<void> {
 	// Redirect logs to file to avoid polluting the TUI
 	const { redirectLoggerToFile } = await import("./utils/logger.js");
@@ -291,12 +295,14 @@ async function runInteractiveMode(
 			approvalService,
 			toolRetryService,
 			explicitApiKey,
-			options,
+			{ ...options, profileName, cliOverrides },
 		);
 		const runtime = new AgentRuntimeController({
 			agent,
 			sessionManager,
 			renderer,
+			profileName,
+			cliOverrides,
 			onError: (error) => {
 				const message =
 					error instanceof Error ? error.message : "Unknown error occurred";
@@ -383,6 +389,8 @@ async function runSingleShotMode(
 	sessionManager: SessionManager,
 	messages: string[],
 	mode: Extract<Mode, "text" | "json">,
+	profileName?: string,
+	cliOverrides?: Partial<ComposerConfig>,
 ): Promise<void> {
 	const {
 		JsonlEventWriter,
@@ -439,6 +447,8 @@ async function runSingleShotMode(
 				prompt: message,
 				execute: () => agent.prompt(message),
 				getPostKeepMessages: withMcpPostKeepMessages(),
+				profileName,
+				cliOverrides,
 			});
 		}
 
@@ -575,6 +585,7 @@ export async function main(args: string[]) {
 
 	// Parse arguments early to check for version/help flags before heavy initialization
 	const parsed = parseArgs(args);
+	scrubLoadedSecurityOverrideEnv();
 	startupProfiler.checkpoint("cli:parsed");
 	const startupTelemetry = import("./telemetry/cli-startup.js")
 		.then(({ recordCliStartupTelemetry }) =>
@@ -728,12 +739,20 @@ export async function main(args: string[]) {
 			process.exit(1);
 		}
 
-		const { startWebServer } = await import("./web-server.js");
-		const { migrate } = await import("./db/migrate.js");
 		const port =
 			parsed.port ?? (Number.parseInt(process.env.PORT || "8080", 10) || 8080);
+		const webRuntimeConfig = loadRuntimeConfig(parsed, process.cwd());
+		if (parsed.profile) {
+			process.env.MAESTRO_PROFILE = parsed.profile;
+		}
+		const { startWebServer } = await import("./web-server.js");
+		const { migrate } = await import("./db/migrate.js");
 		await migrate();
-		await startWebServer(port, { skipStartupMigration: true });
+		await startWebServer(port, {
+			profileName: webRuntimeConfig.explicitProfileName,
+			cliOverrides: webRuntimeConfig.explicitCliOverrides,
+			skipStartupMigration: true,
+		});
 		return;
 	}
 
@@ -781,7 +800,16 @@ export async function main(args: string[]) {
 
 	if (parsed.command === "skill") {
 		const { handleSkillCommand } = await import("./cli/commands/skill.js");
-		await handleSkillCommand(parsed.subcommand, parsed.commandArgs ?? []);
+		const cliOverrides = buildCliConfigOverrides(parsed);
+		const overrideProfile =
+			typeof cliOverrides.profile === "string"
+				? cliOverrides.profile
+				: undefined;
+		const profileName = parsed.profile ?? overrideProfile;
+		await handleSkillCommand(parsed.subcommand, parsed.commandArgs ?? [], {
+			profileName,
+			cliOverrides,
+		});
 		return;
 	}
 
@@ -813,6 +841,10 @@ export async function main(args: string[]) {
 	recordHeadlessRuntimeSelection(headlessRuntimeSelection);
 
 	const runtimeConfig = loadRuntimeConfig(parsed, process.cwd());
+	setConfiguredPackageRuntimeContext(process.cwd(), {
+		profileName: runtimeConfig.explicitProfileName,
+		cliOverrides: runtimeConfig.explicitCliOverrides,
+	});
 	startupProfiler.checkpoint("config:loaded");
 	const reasoningSummary =
 		runtimeConfig.config.model_supports_reasoning_summaries === false
@@ -1686,16 +1718,35 @@ export async function main(args: string[]) {
 			Boolean(sandbox) && resolvedConstraintSandboxMode !== "local",
 		readOnly: parsed.execReadOnly || parsed.readonly ? true : undefined,
 	});
-	const { systemPrompt, promptMetadata, promptContextManifest } =
-		await withExecJsonStartupCleanup(() =>
-			resolveMaestroSystemPrompt({
-				customPrompt: parsed.systemPrompt,
-				toolNames: systemPromptToolNames,
-				appendPrompt: parsed.appendSystemPrompt,
-				runtimeConstraints,
-				cwd: process.cwd(),
-			}),
-		);
+	const {
+		systemPrompt,
+		promptMetadata,
+		promptContextManifest,
+		systemPromptSourcePaths: freshSystemPromptSourcePaths,
+	} = await withExecJsonStartupCleanup(() =>
+		resolveMaestroSystemPrompt({
+			customPrompt: parsed.systemPrompt,
+			toolNames: systemPromptToolNames,
+			appendPrompt: parsed.appendSystemPrompt,
+			runtimeConstraints,
+			cwd: process.cwd(),
+			profileName: runtimeConfig.explicitProfileName,
+			cliOverrides: runtimeConfig.explicitCliOverrides,
+		}),
+	);
+	// Preserve any prompt source paths recorded by a previously saved session
+	// header. When `maestro -c` / `-r` resumes a session whose append prompt
+	// or context-doc was deleted in between runs, the fresh resolve above can
+	// no longer return that path, but a read-restore at compaction time would
+	// otherwise re-surface stale content from it. See #2602.
+	const persistedSystemPromptSourcePaths =
+		sessionManager.getHeader?.()?.systemPromptSourcePaths ?? [];
+	const systemPromptSourcePaths = Array.from(
+		new Set([
+			...freshSystemPromptSourcePaths,
+			...persistedSystemPromptSourcePaths,
+		]),
+	);
 	const deferExecJsonContextManifest =
 		parsed.command === "exec" && parsed.execJson && !willDispatchHeadlessMode;
 	const backfillExecJsonContextManifest =
@@ -1712,12 +1763,6 @@ export async function main(args: string[]) {
 	startupProfiler.checkpoint("prompt:assembled", {
 		system_bytes: systemPrompt.length,
 	});
-	const systemPromptSourcePaths = await withExecJsonStartupCleanup(() =>
-		resolveExplicitSystemPromptSourcePaths(
-			parsed.systemPrompt,
-			parsed.appendSystemPrompt,
-		),
-	);
 	// Register sandbox cleanup on exit (only if sandbox is active)
 	if (sandbox && toolsResult.disposeSandbox) {
 		const cleanupSandbox = toolsResult.disposeSandbox;
@@ -1951,6 +1996,8 @@ export async function main(args: string[]) {
 				sessionManager,
 				[agentsInitPrompt],
 				runMode,
+				runtimeConfig.explicitProfileName,
+				runtimeConfig.explicitCliOverrides,
 			);
 			console.log(chalk.dim(`AGENTS.md generated at ${displayPath}`));
 		} else if (mode === "headless" || parsed.headless) {
@@ -1962,13 +2009,22 @@ export async function main(args: string[]) {
 				sessionManager,
 				approvalService,
 				toolRetryService,
-				{ runtimeSelection: headlessRuntimeSelection },
+				{
+					runtimeSelection: headlessRuntimeSelection,
+					profileName: runtimeConfig.explicitProfileName,
+					cliOverrides: runtimeConfig.explicitCliOverrides,
+				},
 			);
 		} else if (mode === "rpc") {
 			// RPC mode - headless operation
 			startupProfiler.terminal("rpc:ready");
 			const { runRpcMode } = await import("./cli/rpc-mode.js");
-			await runRpcMode(agent, sessionManager);
+			await runRpcMode(
+				agent,
+				sessionManager,
+				runtimeConfig.explicitProfileName,
+				runtimeConfig.explicitCliOverrides,
+			);
 		} else if (isInteractive) {
 			// No messages and not RPC - use TUI
 			startupProfiler.terminal("ui:ready");
@@ -1985,6 +2041,8 @@ export async function main(args: string[]) {
 					startupChangelogSummary,
 					updateNotice,
 				},
+				runtimeConfig.explicitProfileName,
+				runtimeConfig.explicitCliOverrides,
 			);
 		} else if (parsed.command === "exec") {
 			startupProfiler.terminal("exec:ready");
@@ -2000,6 +2058,8 @@ export async function main(args: string[]) {
 				sandboxMode: sandboxMode,
 				outputSchema: parsed.execOutputSchema,
 				outputLastMessage: parsed.execOutputLast,
+				profileName: runtimeConfig.explicitProfileName,
+				cliOverrides: runtimeConfig.explicitCliOverrides,
 				beforeFinalJsonlEvents: backfillExecJsonContextManifest
 					? async () => {
 							const { loadUnifiedContextManifest } =
@@ -2020,7 +2080,14 @@ export async function main(args: string[]) {
 		} else {
 			// CLI mode with messages
 			startupProfiler.terminal("cli:ready");
-			await runSingleShotMode(agent, sessionManager, parsed.messages, mode);
+			await runSingleShotMode(
+				agent,
+				sessionManager,
+				parsed.messages,
+				mode,
+				runtimeConfig.explicitProfileName,
+				runtimeConfig.explicitCliOverrides,
+			);
 		}
 	} finally {
 		await automaticMemory.flush();

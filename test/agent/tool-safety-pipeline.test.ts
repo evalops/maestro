@@ -27,6 +27,7 @@ import {
 import { AdaptiveThresholds } from "../../src/safety/adaptive-thresholds.js";
 import { SafetyMiddleware } from "../../src/safety/safety-middleware.js";
 import { WorkflowStateTracker } from "../../src/safety/workflow-state.js";
+import { CONTEXT_INTERPOLATED_MARKER } from "../../src/tools/tool-dsl.js";
 
 async function collectSafetyResult(
 	context: Parameters<typeof evaluateToolSafety>[0],
@@ -55,15 +56,31 @@ function createReadTool(): AgentTool {
 	};
 }
 
+function createBashTool(): AgentTool {
+	return {
+		name: "bash",
+		description: "Run a shell command",
+		parameters: Type.Object({
+			command: Type.String(),
+			env: Type.Optional(Type.Record(Type.String(), Type.String())),
+		}),
+		execute: async () => ({
+			content: [{ type: "text", text: "ok" }],
+		}),
+	};
+}
+
 function createBaseSafetyContext(options: {
 	tool: AgentTool;
-	path: string;
+	path?: string;
+	args?: Record<string, unknown>;
 	approvalService?: Parameters<typeof evaluateToolSafety>[0]["approvalService"];
 	hookService?: Parameters<typeof evaluateToolSafety>[0]["hookService"];
 	toolExecutionBridge?: Parameters<
 		typeof evaluateToolSafety
 	>[0]["toolExecutionBridge"];
 	firewall?: ActionFirewall;
+	safetyMiddleware?: SafetyMiddleware;
 	cfg?: Partial<AgentRunConfig>;
 }): Parameters<typeof evaluateToolSafety>[0] {
 	return {
@@ -71,7 +88,7 @@ function createBaseSafetyContext(options: {
 			type: "toolCall",
 			id: "call-1",
 			name: options.tool.name,
-			arguments: { path: options.path },
+			arguments: options.args ?? { path: options.path },
 		},
 		tools: [options.tool],
 		userMessage: {
@@ -81,11 +98,13 @@ function createBaseSafetyContext(options: {
 		} satisfies Message,
 		cfg: { tools: [options.tool], ...options.cfg } as AgentRunConfig,
 		clock: { now: () => Date.now() },
-		safetyMiddleware: new SafetyMiddleware({
-			enableContextFirewall: false,
-			enableLoopDetection: false,
-			enableSequenceAnalysis: false,
-		}),
+		safetyMiddleware:
+			options.safetyMiddleware ??
+			new SafetyMiddleware({
+				enableContextFirewall: false,
+				enableLoopDetection: false,
+				enableSequenceAnalysis: false,
+			}),
 		workflowState: new WorkflowStateTracker(),
 		adaptiveThresholds: new AdaptiveThresholds(),
 		approvalService: options.approvalService,
@@ -112,6 +131,302 @@ function createBaseSafetyContext(options: {
 }
 
 describe("evaluateToolSafety permission hooks", () => {
+	it("evaluates bash firewall approval against interpolated commands", async () => {
+		const previousValue = process.env.MAESTRO_TEST_DANGEROUS_COMMAND;
+		process.env.MAESTRO_TEST_DANGEROUS_COMMAND = "rm -rf /tmp/nope";
+		try {
+			const bashTool = createBashTool();
+			const approvalService = {
+				requiresUserInteraction: () => true,
+				requestApproval: vi.fn(async (_request: ActionApprovalRequest) => ({
+					approved: true,
+					resolvedBy: "user" as const,
+				})),
+			};
+
+			const { result } = await collectSafetyResult(
+				createBaseSafetyContext({
+					tool: bashTool,
+					args: { command: "${env.MAESTRO_TEST_DANGEROUS_COMMAND}" },
+					approvalService,
+				}),
+			);
+
+			expect(result.verdict.outcome).toBe("proceed");
+			expect(approvalService.requestApproval).toHaveBeenCalledTimes(1);
+			expect(approvalService.requestApproval).toHaveBeenCalledWith(
+				expect.objectContaining({
+					args: { command: "rm -rf /tmp/nope" },
+					reason: expect.stringContaining("rm -rf /tmp/nope"),
+				}),
+				undefined,
+				expect.objectContaining({
+					now: expect.any(Function),
+				}),
+			);
+			if (result.verdict.outcome !== "proceed") {
+				throw new Error("Expected approved interpolated command to proceed");
+			}
+			expect(result.verdict.effectiveToolCall.arguments).toEqual({
+				command: "rm -rf /tmp/nope",
+				[CONTEXT_INTERPOLATED_MARKER]: true,
+			});
+		} finally {
+			if (previousValue === undefined) {
+				delete process.env.MAESTRO_TEST_DANGEROUS_COMMAND;
+			} else {
+				process.env.MAESTRO_TEST_DANGEROUS_COMMAND = previousValue;
+			}
+		}
+	});
+
+	it("uses bash env overrides when interpolating approval commands", async () => {
+		const previousValue = process.env.MAESTRO_TEST_OVERRIDE_COMMAND;
+		process.env.MAESTRO_TEST_OVERRIDE_COMMAND = "echo safe";
+		try {
+			const bashTool = createBashTool();
+			const approvalService = {
+				requiresUserInteraction: () => true,
+				requestApproval: vi.fn(async (_request: ActionApprovalRequest) => ({
+					approved: true,
+					resolvedBy: "user" as const,
+				})),
+			};
+
+			const { result } = await collectSafetyResult(
+				createBaseSafetyContext({
+					tool: bashTool,
+					args: {
+						command: "${env.MAESTRO_TEST_OVERRIDE_COMMAND}",
+						env: {
+							MAESTRO_TEST_OVERRIDE_COMMAND: "rm -rf /tmp/override",
+						},
+					},
+					approvalService,
+				}),
+			);
+
+			expect(result.verdict.outcome).toBe("proceed");
+			expect(approvalService.requestApproval).toHaveBeenCalledWith(
+				expect.objectContaining({
+					args: {
+						command: "rm -rf /tmp/override",
+						env: {
+							MAESTRO_TEST_OVERRIDE_COMMAND: "rm -rf /tmp/override",
+						},
+					},
+					reason: expect.stringContaining("rm -rf /tmp/override"),
+				}),
+				undefined,
+				expect.objectContaining({
+					now: expect.any(Function),
+				}),
+			);
+			if (result.verdict.outcome !== "proceed") {
+				throw new Error("Expected approved override command to proceed");
+			}
+			expect(result.verdict.effectiveToolCall.arguments).toEqual({
+				command: "rm -rf /tmp/override",
+				env: {
+					MAESTRO_TEST_OVERRIDE_COMMAND: "rm -rf /tmp/override",
+				},
+				[CONTEXT_INTERPOLATED_MARKER]: true,
+			});
+		} finally {
+			if (previousValue === undefined) {
+				delete process.env.MAESTRO_TEST_OVERRIDE_COMMAND;
+			} else {
+				process.env.MAESTRO_TEST_OVERRIDE_COMMAND = previousValue;
+			}
+		}
+	});
+
+	it("passes interpolated bash args to the platform bridge", async () => {
+		const previousValue = process.env.MAESTRO_TEST_BRIDGE_COMMAND;
+		process.env.MAESTRO_TEST_BRIDGE_COMMAND = "pwd";
+		try {
+			const prepare = vi.fn(async () => ({ status: "skip" as const }));
+			const toolExecutionBridge: PlatformToolExecutionBridge = {
+				prepare,
+				resolveApproval: vi.fn(async (_input, plan) => ({
+					status: "allow" as const,
+					plan,
+				})),
+				recordObservation: vi.fn(async () => ({ metadata: {} })),
+				recordGovernedOutput: vi.fn(async () => ({ metadata: {} })),
+			};
+
+			const { result } = await collectSafetyResult(
+				createBaseSafetyContext({
+					tool: createBashTool(),
+					args: { command: "${env.MAESTRO_TEST_BRIDGE_COMMAND}" },
+					toolExecutionBridge,
+				}),
+			);
+
+			expect(result.verdict.outcome).toBe("proceed");
+			expect(prepare).toHaveBeenCalledWith(
+				expect.objectContaining({
+					toolCall: expect.objectContaining({
+						arguments: {
+							command: "pwd",
+							[CONTEXT_INTERPOLATED_MARKER]: true,
+						},
+					}),
+					sanitizedArgs: { command: "pwd" },
+				}),
+				undefined,
+			);
+		} finally {
+			if (previousValue === undefined) {
+				delete process.env.MAESTRO_TEST_BRIDGE_COMMAND;
+			} else {
+				process.env.MAESTRO_TEST_BRIDGE_COMMAND = previousValue;
+			}
+		}
+	});
+
+	it("shows exact bash execution args in approval prompts", async () => {
+		const bashTool = createBashTool();
+		const approvalService = {
+			requiresUserInteraction: () => true,
+			requestApproval: vi.fn(async (_request: ActionApprovalRequest) => ({
+				approved: true,
+				resolvedBy: "user" as const,
+			})),
+		};
+		const safetyMiddleware = new SafetyMiddleware({
+			enableContextFirewall: false,
+			enableLoopDetection: false,
+			enableSequenceAnalysis: false,
+		});
+		vi.spyOn(safetyMiddleware, "sanitizeForLogging").mockImplementation(
+			(args) => ({
+				...args,
+				command: "[REDACTED]",
+			}),
+		);
+
+		const { result } = await collectSafetyResult(
+			createBaseSafetyContext({
+				tool: bashTool,
+				args: { command: "rm -rf /tmp/nope" },
+				approvalService,
+				safetyMiddleware,
+			}),
+		);
+
+		expect(result.verdict.outcome).toBe("proceed");
+		expect(approvalService.requestApproval).toHaveBeenCalledTimes(1);
+		expect(approvalService.requestApproval).toHaveBeenCalledWith(
+			expect.objectContaining({
+				actionDescription: expect.stringContaining("rm -rf /tmp/nope"),
+				args: { command: "rm -rf /tmp/nope" },
+				summaryLabel: expect.stringContaining("rm -rf /tmp/nope"),
+			}),
+			undefined,
+			expect.objectContaining({
+				now: expect.any(Function),
+			}),
+		);
+		if (result.verdict.outcome !== "proceed") {
+			throw new Error("Expected approved raw command to proceed");
+		}
+		expect(result.verdict.effectiveToolCall.arguments).toEqual({
+			command: "rm -rf /tmp/nope",
+		});
+	});
+
+	it("rebinds reused platform approval requests to exact bash args", async () => {
+		const bashTool = createBashTool();
+		const approvalService = {
+			requiresUserInteraction: () => true,
+			requestApproval: vi.fn(async (_request: ActionApprovalRequest) => ({
+				approved: true,
+				resolvedBy: "user" as const,
+			})),
+		};
+		const safetyMiddleware = new SafetyMiddleware({
+			enableContextFirewall: false,
+			enableLoopDetection: false,
+			enableSequenceAnalysis: false,
+		});
+		vi.spyOn(safetyMiddleware, "sanitizeForLogging").mockImplementation(
+			(args) => ({
+				...args,
+				command: "[REDACTED]",
+			}),
+		);
+		const toolExecutionBridge: PlatformToolExecutionBridge = {
+			prepare: vi.fn(async () => ({
+				status: "wait_approval" as const,
+				plan: {
+					kind: "governed",
+					metadata: {
+						approvalRequestId: "platform-approval-1",
+						toolExecutionId: "tool-exec-1",
+					},
+				} as never,
+				request: {
+					id: "platform-approval-1",
+					toolName: "bash",
+					summaryLabel: "Bash: [REDACTED]",
+					actionDescription: "Running: [REDACTED]",
+					args: { command: "[REDACTED]" },
+					reason: "Platform approval required",
+					startedAtMs: 100,
+					platform: {
+						source: "tool_execution",
+						toolExecutionId: "tool-exec-1",
+						approvalRequestId: "platform-approval-1",
+					},
+				},
+			})),
+			resolveApproval: vi.fn(async (_input, plan) => ({
+				status: "allow" as const,
+				plan,
+			})),
+			recordObservation: vi.fn(async () => ({ metadata: {} })),
+			recordGovernedOutput: vi.fn(async () => ({ metadata: {} })),
+		};
+
+		const { result } = await collectSafetyResult(
+			createBaseSafetyContext({
+				tool: bashTool,
+				args: { command: "rm -rf /tmp/nope" },
+				approvalService,
+				safetyMiddleware,
+				toolExecutionBridge,
+			}),
+		);
+
+		expect(result.verdict.outcome).toBe("proceed");
+		expect(approvalService.requestApproval).toHaveBeenCalledWith(
+			expect.objectContaining({
+				id: "platform-approval-1",
+				args: { command: "rm -rf /tmp/nope" },
+				summaryLabel: expect.stringContaining("rm -rf /tmp/nope"),
+				actionDescription: expect.stringContaining("rm -rf /tmp/nope"),
+				platform: {
+					source: "tool_execution",
+					toolExecutionId: "tool-exec-1",
+					approvalRequestId: "platform-approval-1",
+				},
+			}),
+			undefined,
+			expect.objectContaining({
+				now: expect.any(Function),
+			}),
+		);
+		expect(toolExecutionBridge.resolveApproval).toHaveBeenCalled();
+		if (result.verdict.outcome !== "proceed") {
+			throw new Error("Expected platform-approved bash command to proceed");
+		}
+		expect(result.verdict.effectiveToolCall.arguments).toEqual({
+			command: "rm -rf /tmp/nope",
+		});
+	});
+
 	it("allows trusted PermissionRequest hooks to bypass user approval", async () => {
 		clearHookConfigCache();
 		clearRegisteredHooks();

@@ -15,6 +15,7 @@ vi.mock("../../src/server/session-serialization.js", () => ({
 }));
 
 import {
+	handleSessionArtifactsEvents,
 	handleSessionArtifactsIndex,
 	handleSessionArtifactsZip,
 } from "../../src/server/handlers/session-artifacts.js";
@@ -57,6 +58,7 @@ function makeRes(): {
 describe("session artifacts index", () => {
 	beforeEach(() => {
 		mockLoadSession.mockResolvedValue({
+			owner: "anon",
 			messages: [
 				{
 					role: "assistant",
@@ -133,5 +135,25 @@ describe("session artifacts index", () => {
 		expect(zip.includes(Buffer.from("report.txt"))).toBe(true);
 		expect(zip.includes(Buffer.from("../secret.txt"))).toBe(false);
 		expect(zip.includes(Buffer.from("nested/report.txt"))).toBe(false);
+	});
+
+	it("rejects artifact event streams for non-owners without an access grant", async () => {
+		mockLoadSession.mockResolvedValueOnce({
+			owner: "user:owner-1",
+			messages: [],
+		});
+		const response = makeRes();
+
+		await handleSessionArtifactsEvents(
+			makeReq("/api/sessions/session-1/artifacts/events"),
+			response.res,
+			{ id: "session-1" },
+			{ "Access-Control-Allow-Origin": "*" },
+		);
+
+		expect(response.getStatus()).toBe(404);
+		expect(JSON.parse(response.getBody().toString("utf8"))).toEqual({
+			error: "Session not found",
+		});
 	});
 });

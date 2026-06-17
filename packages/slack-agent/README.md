@@ -209,7 +209,9 @@ Invite the bot to channels where you want it to operate:
 | `ANTHROPIC_OAUTH_TOKEN` | Yes* | - | Alternative: Anthropic OAuth token |
 | `SLACK_AGENT_MODEL` | No | claude-opus-4-6 | Anthropic model ID for the main Slack agent |
 | `SLACK_AGENT_DEFAULT_TIMEZONE` | No | UTC | Default timezone for scheduled tasks (IANA name) |
-| `SLACK_AGENT_DEFAULT_ROLE` | No | user | Default role for new users (admin, power_user, user, viewer) |
+| `SLACK_AGENT_DEFAULT_ROLE` | No | viewer | Default role for new users (admin, power_user, user, viewer) |
+| `SLACK_AGENT_ALLOWED_USERS` | No | - | Optional comma-separated Slack user IDs allowed to interact with the agent |
+| `SLACK_AGENT_ALLOW_HOST_SANDBOX` | No | false | Set to `true` to explicitly allow `--sandbox=host` |
 | `SLACK_AGENT_HISTORY_LIMIT` | No | 15 | Max messages per conversations.history request |
 | `SLACK_AGENT_HISTORY_PAGES` | No | 3 | Max pages to backfill per channel |
 | `SLACK_AGENT_BACKFILL_ON_STARTUP` | No | true | Toggle history backfill on startup |
@@ -237,7 +239,7 @@ When `SLACK_AGENT_PLATFORM_RUNTIME_URL` is set, each Slack-originated run is rec
 slack-agent [options] <working-directory>
 
 Options:
-  --sandbox=host                  Run tools directly on host (not recommended)
+  --sandbox=host                  Run tools directly on host (requires SLACK_AGENT_ALLOW_HOST_SANDBOX=true)
   --sandbox=docker:<container>    Run tools in existing Docker container
   --sandbox=docker:auto           Auto-create container with node:20-slim
   --sandbox=docker:auto:<image>   Auto-create with specific image
@@ -256,10 +258,11 @@ Examples:
 ### Host Mode (Not Recommended)
 
 ```bash
+export SLACK_AGENT_ALLOW_HOST_SANDBOX=true
 slack-agent --sandbox=host ./data
 ```
 
-Commands execute directly on your machine with your user permissions. Only use this in trusted, isolated environments.
+Commands execute directly on your machine with your user permissions. Host mode is blocked unless `SLACK_AGENT_ALLOW_HOST_SANDBOX=true` is set. Only use this in trusted, isolated single-user environments.
 
 ### Docker Mode (Recommended)
 
@@ -1174,7 +1177,7 @@ Control user permissions with four built-in roles:
 import { PermissionManager } from '@evalops/slack-agent';
 
 const permissions = new PermissionManager('./data', {
-  defaultRole: 'user',
+  defaultRole: 'viewer',
 });
 
 // Check permissions

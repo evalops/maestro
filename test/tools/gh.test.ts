@@ -1,14 +1,19 @@
 import { describe, expect, it, vi } from "vitest";
+import type { Sandbox } from "../../src/sandbox/types.js";
 import { ghIssueTool, ghPrTool, ghRepoTool } from "../../src/tools/gh.js";
+
+const executeGhCommandMock = vi.hoisted(() =>
+	vi.fn((_id: string, args: string[]) => ({
+		content: [{ type: "text", text: `Executed: ${args.join(" ")}` }],
+		isError: false,
+		details: { command: args },
+	})),
+);
 
 // Mock the gh-helpers module to avoid needing actual gh CLI
 vi.mock("../../src/tools/gh-helpers.js", () => ({
 	checkGhCliAvailable: vi.fn().mockResolvedValue(null),
-	executeGhCommand: vi.fn().mockImplementation((_id, cmd) => ({
-		content: [{ type: "text", text: `Executed: ${cmd}` }],
-		isError: false,
-		details: { command: cmd },
-	})),
+	executeGhCommand: executeGhCommandMock,
 }));
 
 describe("gh PR tool", () => {
@@ -151,6 +156,23 @@ describe("gh PR tool", () => {
 				expect(text.text).toContain("name-only");
 			}
 		});
+
+		it("passes metacharacter-heavy PR bodies as one argv entry", async () => {
+			const body = 'body $(touch /tmp/pwned) `whoami` \\ "quoted"';
+
+			await ghPrTool.execute("gh-pr-metachar", {
+				action: "create",
+				title: "Safe title",
+				body,
+			});
+
+			expect(executeGhCommandMock).toHaveBeenLastCalledWith(
+				"gh-pr-create",
+				["pr", "create", "--title", "Safe title", "--body", body],
+				undefined,
+				undefined,
+			);
+		});
 	});
 });
 
@@ -228,6 +250,23 @@ describe("gh Issue tool", () => {
 				expect(text.text).toContain("25");
 			}
 		});
+
+		it("passes metacharacter-heavy issue bodies as one argv entry", async () => {
+			const body = 'issue $(touch /tmp/pwned) `whoami` \\ "quoted"';
+
+			await ghIssueTool.execute("gh-issue-metachar", {
+				action: "create",
+				title: "Safe title",
+				body,
+			});
+
+			expect(executeGhCommandMock).toHaveBeenLastCalledWith(
+				"gh-issue-create",
+				["issue", "create", "--title", "Safe title", "--body", body],
+				undefined,
+				undefined,
+			);
+		});
 	});
 });
 
@@ -272,6 +311,50 @@ describe("gh Repo tool", () => {
 				expect(text.text).toContain("owner/repo");
 				expect(text.text).toContain("my-dir");
 			}
+		});
+
+		it("passes metacharacter-heavy repository names as one argv entry", async () => {
+			const repository = "owner/repo$(touch /tmp/pwned)`whoami`\\";
+
+			await ghRepoTool.execute("gh-repo-metachar", {
+				action: "clone",
+				repository,
+				directory: "target",
+			});
+
+			expect(executeGhCommandMock).toHaveBeenLastCalledWith(
+				"gh-repo-clone",
+				["repo", "clone", repository, "target"],
+				undefined,
+				undefined,
+			);
+		});
+
+		it("passes sandbox context through to gh execution", async () => {
+			const sandbox = {
+				exec: vi.fn(),
+				readFile: vi.fn(),
+				writeFile: vi.fn(),
+				exists: vi.fn(),
+				dispose: vi.fn(),
+			} as unknown as Sandbox;
+
+			await ghRepoTool.execute(
+				"gh-repo-sandbox",
+				{
+					action: "clone",
+					repository: "owner/repo",
+				},
+				undefined,
+				{ sandbox },
+			);
+
+			expect(executeGhCommandMock).toHaveBeenLastCalledWith(
+				"gh-repo-clone",
+				["repo", "clone", "owner/repo"],
+				undefined,
+				sandbox,
+			);
 		});
 
 		it("builds fork command", async () => {

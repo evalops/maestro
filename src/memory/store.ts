@@ -5,10 +5,12 @@
  * with simple text-based search capabilities.
  */
 
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { PATHS } from "../config/constants.js";
+import { writeJsonFile } from "../utils/fs.js";
 import { createLogger } from "../utils/logger.js";
+import { sanitizeWithStaticMask } from "../utils/secret-redactor.js";
 import { getMemoryProjectScope } from "./team-memory.js";
 import type {
 	MemoryEntry,
@@ -66,7 +68,9 @@ function loadStore(): MemoryStore {
 		return store;
 	} catch (error) {
 		logger.warn("Failed to load memory store, starting fresh", {
-			error: error instanceof Error ? error.message : String(error),
+			error: sanitizeWithStaticMask(
+				error instanceof Error ? error.message : String(error),
+			),
 		});
 		return { entries: [], version: CURRENT_VERSION };
 	}
@@ -80,7 +84,7 @@ function saveStore(store: MemoryStore): void {
 	const storeFile = getStoreFile();
 
 	try {
-		writeFileSync(storeFile, JSON.stringify(store, null, 2), "utf-8");
+		writeJsonFile(storeFile, store);
 	} catch (error) {
 		logger.error(
 			"Failed to save memory store",

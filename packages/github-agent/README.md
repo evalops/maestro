@@ -103,7 +103,8 @@ jobs:
             --working-dir ${{ github.workspace }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          MAESTRO_EVALOPS_ACCESS_TOKEN: ${{ secrets.MAESTRO_EVALOPS_ACCESS_TOKEN }}
+          MAESTRO_EVALOPS_ORG_ID: ${{ secrets.MAESTRO_EVALOPS_ORG_ID }}
 ```
 
 ## Configuration
@@ -114,6 +115,7 @@ jobs:
 |--------|-------------|---------|
 | `--working-dir` | Repository working directory | `./workspace` |
 | `--memory-dir` | Memory storage directory | `./memory` |
+| `--maestro-sandbox` | Sandbox for delegated `maestro exec`: `docker`, `native`, or `workspace-write` | `docker` |
 | `--labels` | Issue labels to watch (comma-separated) | `composer-task` |
 | `--poll-interval` | Poll interval in ms | `60000` |
 | `--max-attempts` | Max retry attempts per task | `3` |
@@ -161,7 +163,9 @@ jobs:
 | `GITHUB_WEBHOOK_MODE` | Optional | `poll` / `webhook` / `hybrid` |
 | `GITHUB_WEBHOOK_ID` | Optional | Webhook ID (for redelivery) |
 | `GITHUB_WEBHOOK_REDELIVERY_INTERVAL` | Optional | Webhook redelivery interval in ms |
-| `ANTHROPIC_API_KEY` | Yes | Anthropic API key for Maestro |
+| `GITHUB_AGENT_MAESTRO_SANDBOX` | Optional | Delegated `maestro exec` sandbox: `docker`, `native`, or `workspace-write` |
+| `MAESTRO_EVALOPS_ACCESS_TOKEN` | Yes | Parent token used to request scoped delegation tokens for autonomous Maestro runs |
+| `MAESTRO_EVALOPS_ORG_ID` | Yes | EvalOps organization id for scoped delegation |
 
 ## How It Works
 
@@ -178,7 +182,7 @@ When a new issue is labeled with `composer-task`:
 For each task:
 
 1. **Branch creation**: Creates a feature branch from main
-2. **Maestro execution**: Runs `maestro exec --full-auto` with the task
+2. **Maestro execution**: Runs `maestro exec --full-auto --sandbox <mode>` with the task
 3. **Quality gates**: Tests, lint, and type checking must pass
 4. **Self-review**: Optional second pass to catch issues
 5. **PR creation**: Opens a PR with proper formatting
@@ -218,6 +222,7 @@ This context is injected into future prompts to improve success rate.
 - **Attempt limits**: Tasks fail after max retries
 - **Quality gates**: All PRs must pass tests/lint/types
 - **Self-review**: Optional second pass catches mistakes
+- **Scoped delegated runs**: Autonomous Maestro runs receive fenced GitHub content, an isolated HOME, a sandbox, and scoped EvalOps delegation instead of inherited host credentials
 - **No force push**: Never rewrites history
 - **Branch protection**: Works with protected branches
 

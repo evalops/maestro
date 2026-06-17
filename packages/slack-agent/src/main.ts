@@ -10,6 +10,12 @@ import { existsSync, readFileSync, rmSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { WebClient } from "@slack/web-api";
 import { DateTime } from "luxon";
+import {
+	formatSlackUserAccessDenied,
+	getHostSandboxGateError,
+	isSlackUserAllowed,
+	parseSlackUserAllowList,
+} from "./access-control.js";
 import { type AgentRunner, createAgentRunner } from "./agent-runner.js";
 import { ApprovalManager } from "./approval.js";
 import { ConnectorManager } from "./connectors/connector-manager.js";
@@ -42,6 +48,7 @@ import {
 	SlackBot,
 	type SlackContext,
 } from "./slack/bot.js";
+import { requiredPermissionForSlashCommand } from "./slash-permissions.js";
 import { FileStorageBackend } from "./storage.js";
 import { ChannelStore } from "./store.js";
 import { ThreadMemoryManager } from "./thread-memory.js";
@@ -66,6 +73,9 @@ const SLACK_AGENT_BACKFILL_EXCLUDE_CHANNELS =
 const SLACK_AGENT_BACKFILL_CONCURRENCY =
 	process.env.SLACK_AGENT_BACKFILL_CONCURRENCY;
 const SLACK_AGENT_UI_PUBLIC_URL = process.env.SLACK_AGENT_UI_PUBLIC_URL;
+const SLACK_AGENT_ALLOWED_USERS = process.env.SLACK_AGENT_ALLOWED_USERS;
+const SLACK_AGENT_ALLOW_HOST_SANDBOX =
+	process.env.SLACK_AGENT_ALLOW_HOST_SANDBOX;
 
 type ConnectorCapabilityCategory = "read" | "write" | "delete";
 
@@ -145,7 +155,7 @@ function parseCommaList(value?: string): string[] | undefined {
 
 function parseArgs(): { workingDir: string; sandbox: SandboxConfig } {
 	const args = process.argv.slice(2);
-	let sandbox: SandboxConfig = { type: "host" };
+	let sandbox: SandboxConfig = { type: "docker", autoCreate: true };
 	let workingDir: string | undefined;
 
 	for (let i = 0; i < args.length; i++) {
@@ -186,13 +196,13 @@ function printUsage(): void {
 	console.error("");
 	console.error("Options:");
 	console.error(
-		"  --sandbox=host                  Run tools directly on host (default, not recommended)",
+		"  --sandbox=host                  Run tools directly on host (requires SLACK_AGENT_ALLOW_HOST_SANDBOX=true)",
 	);
 	console.error(
 		"  --sandbox=docker:<container>    Run tools in existing Docker container",
 	);
 	console.error(
-		"  --sandbox=docker:auto           Auto-create Docker container (recommended)",
+		"  --sandbox=docker:auto           Auto-create Docker container (default, recommended)",
 	);
 	console.error(
 		"  --sandbox=docker:auto:<image>   Auto-create with specific image",
@@ -227,6 +237,12 @@ function printUsage(): void {
 	);
 	console.error(
 		"  SLACK_AGENT_DEFAULT_ROLE Default role for new users (admin, power_user, user, viewer)",
+	);
+	console.error(
+		"  SLACK_AGENT_ALLOWED_USERS Optional comma-separated Slack user ID allow-list",
+	);
+	console.error(
+		"  SLACK_AGENT_ALLOW_HOST_SANDBOX Set true to explicitly allow --sandbox=host",
 	);
 	console.error(
 		"  SLACK_AGENT_HISTORY_LIMIT Max messages per conversations.history request (default: 15)",
@@ -313,6 +329,18 @@ if (useMultiWorkspace && !hasAnyWorkspaceInstalled && !canInstallViaUi) {
 	process.exit(1);
 }
 
+const hostSandboxGateError = getHostSandboxGateError(
+	sandbox,
+	parseBoolean(
+		SLACK_AGENT_ALLOW_HOST_SANDBOX,
+		"SLACK_AGENT_ALLOW_HOST_SANDBOX",
+	) === true,
+);
+if (hostSandboxGateError) {
+	console.error(hostSandboxGateError);
+	process.exit(1);
+}
+
 await validateSandbox(sandbox);
 
 // Create the executor (manages container lifecycle for auto mode)
@@ -322,6 +350,7 @@ const executor: Executor = createExecutor(sandbox);
 registerBuiltInConnectors();
 
 const defaultRole = parseDefaultRole(SLACK_AGENT_DEFAULT_ROLE);
+const allowedSlackUsers = parseSlackUserAllowList(SLACK_AGENT_ALLOWED_USERS);
 
 type WorkspaceRuntime = {
 	teamId: string;
@@ -516,6 +545,39 @@ async function ensureNotBlocked(
 		return false;
 	}
 	return true;
+}
+
+async function ensureSlackUserAllowed(
+	userId: string,
+	respond: (text: string) => Promise<void>,
+): Promise<boolean> {
+	if (isSlackUserAllowed(userId, allowedSlackUsers)) {
+		return true;
+	}
+	await respond(formatSlackUserAccessDenied());
+	return false;
+}
+
+function checkScheduledTaskCreatorAccess(
+	rt: WorkspaceRuntime,
+	task: ScheduledTask,
+): { allowed: true } | { allowed: false; error: string; logDetail: string } {
+	const creator = rt.permissionManager.getUser(task.createdBy);
+	if (creator.isBlocked) {
+		return {
+			allowed: false,
+			error: creator.blockedReason ?? "User is blocked",
+			logDetail: "creator blocked",
+		};
+	}
+	if (!isSlackUserAllowed(task.createdBy, allowedSlackUsers)) {
+		return {
+			allowed: false,
+			error: "User is not in SLACK_AGENT_ALLOWED_USERS",
+			logDetail: "creator not allowed",
+		};
+	}
+	return { allowed: true };
 }
 
 function canViewCosts(
@@ -733,15 +795,15 @@ async function handleScheduledTask(
 	task: ScheduledTask,
 ): Promise<{ success: boolean; error?: string }> {
 	const channelId = task.channelId;
-	const creator = rt.permissionManager.getUser(task.createdBy);
-	if (creator.isBlocked) {
-		const reason = creator.blockedReason ?? "User is blocked";
+	const creatorAccess = checkScheduledTaskCreatorAccess(rt, task);
+	if (!creatorAccess.allowed) {
 		logger.logWarning(
-			`Skipping scheduled task ${task.id} - creator blocked`,
-			reason,
+			`Skipping scheduled task ${task.id} - ${creatorAccess.logDetail}`,
+			creatorAccess.error,
 		);
-		return { success: false, error: reason };
+		return { success: false, error: creatorAccess.error };
 	}
+	const creator = rt.permissionManager.getUser(task.createdBy);
 
 	// Check if already running in this channel (atomic check-and-mark)
 	if (!tryStartRun(rt, channelId)) {
@@ -950,6 +1012,9 @@ async function handleMessage(
 	if (!(await ensureNotBlocked(rt, userId, ctx.respond))) {
 		return;
 	}
+	if (!(await ensureSlackUserAllowed(userId, ctx.respond))) {
+		return;
+	}
 
 	// Handle simple /tasks text commands (not Slack-registered slash commands).
 	if (await handleTasksCommand(rt, ctx)) {
@@ -1096,6 +1161,9 @@ async function handleTasksCommand(
 	if (!(await ensureNotBlocked(rt, userId, ctx.respond))) {
 		return true;
 	}
+	if (!(await ensureSlackUserAllowed(userId, ctx.respond))) {
+		return true;
+	}
 
 	const channelId = ctx.message.channel;
 
@@ -1196,6 +1264,13 @@ async function handleTasksCommand(
 			if (rt.activeRuns.has(channelId) || rt.startingRuns.has(channelId)) {
 				await ctx.respond(
 					"_This channel is busy. Say `stop` first before running a task now._",
+				);
+				return true;
+			}
+			const creatorAccess = checkScheduledTaskCreatorAccess(rt, task);
+			if (!creatorAccess.allowed) {
+				await ctx.respond(
+					`_Could not run task ${taskId}: ${creatorAccess.error}_`,
 				);
 				return true;
 			}
@@ -1396,6 +1471,9 @@ async function handleReaction(ctx: ReactionContext): Promise<void> {
 	const respond = (text: string) => ctx.postMessage(channelId, text);
 
 	if (!(await ensureNotBlocked(rt, ctx.user, respond))) {
+		return;
+	}
+	if (!(await ensureSlackUserAllowed(ctx.user, respond))) {
 		return;
 	}
 
@@ -1615,6 +1693,22 @@ const bot = new SlackBot(
 			ctx.source = "slash";
 			const cmd = command.toLowerCase();
 			if (!(await ensureNotBlocked(rt, ctx.message.user, ctx.respond))) {
+				return;
+			}
+			if (!(await ensureSlackUserAllowed(ctx.message.user, ctx.respond))) {
+				return;
+			}
+			const requiredPermission = requiredPermissionForSlashCommand(cmd, text);
+			if (
+				requiredPermission &&
+				!(await requirePermission(
+					rt,
+					ctx.message.user,
+					requiredPermission.action,
+					ctx.respond,
+					requiredPermission.resource,
+				))
+			) {
 				return;
 			}
 

@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { type Container, Spacer, type TUI, Text } from "@evalops/tui";
 import type { AgentState } from "../agent/types.js";
 import { PATHS } from "../config/constants.js";
@@ -9,6 +9,7 @@ import {
 	muted,
 	separator as themedSeparator,
 } from "../style/theme.js";
+import { writeTextFileAtomic } from "../utils/fs.js";
 
 export const TOOL_FAILURE_LOG_PATH = PATHS.TOOL_FAILURE_LOG;
 
@@ -70,7 +71,7 @@ export class ToolStatusView {
 				return;
 			}
 			try {
-				writeFileSync(TOOL_FAILURE_LOG_PATH, "");
+				writeTextFileAtomic(TOOL_FAILURE_LOG_PATH, "");
 				this.options.showInfoMessage("Cleared tool failure log.");
 			} catch (error) {
 				const message =

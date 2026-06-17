@@ -61,10 +61,18 @@ export interface SessionStateControllerOptions {
 export class SessionStateController {
 	private readonly deps: SessionStateControllerDeps;
 	private readonly callbacks: SessionStateControllerCallbacks;
+	private readonly baseSystemPrompt: string;
+	private readonly baseSystemPromptSourcePaths: string[] | undefined;
 
 	constructor(options: SessionStateControllerOptions) {
 		this.deps = options.deps;
 		this.callbacks = options.callbacks;
+		this.baseSystemPrompt = options.deps.agent.state.systemPrompt;
+		this.baseSystemPromptSourcePaths =
+			options.deps.agent.state.systemPromptSourcePaths &&
+			options.deps.agent.state.systemPromptSourcePaths.length > 0
+				? [...options.deps.agent.state.systemPromptSourcePaths]
+				: undefined;
 	}
 
 	renderInitialMessages(state: AgentState): void {
@@ -158,6 +166,10 @@ export class SessionStateController {
 	): void {
 		if (!options?.preserveSession) {
 			this.deps.sessionManager.startFreshSession();
+			this.deps.agent.setSystemPrompt(this.baseSystemPrompt);
+			this.deps.agent.setSystemPromptSourcePaths(
+				this.baseSystemPromptSourcePaths,
+			);
 		}
 		this.deps.agent.clearMessages();
 		this.deps.sessionContext.resetArtifacts();
@@ -189,6 +201,14 @@ export class SessionStateController {
 
 	applyLoadedSessionContext(): void {
 		this.deps.sessionContext.resetArtifacts();
+		const header = this.deps.sessionManager.getHeader();
+		if (header?.systemPrompt !== undefined) {
+			this.deps.agent.setSystemPrompt(header.systemPrompt);
+		}
+		const systemPromptSourcePaths = header?.systemPromptSourcePaths;
+		if (systemPromptSourcePaths !== undefined) {
+			this.deps.agent.setSystemPromptSourcePaths(systemPromptSourcePaths);
+		}
 		const thinking = this.deps.sessionManager.loadThinkingLevel();
 		if (thinking) {
 			this.deps.agent.setThinkingLevel(thinking as ThinkingLevel);

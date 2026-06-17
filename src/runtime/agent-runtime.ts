@@ -5,6 +5,7 @@ import { runUserPromptWithRecovery } from "../agent/user-prompt-runtime.js";
 import { type PromptPayload, PromptQueue } from "../cli-tui/prompt-queue.js";
 import type { TuiRenderer } from "../cli-tui/tui-renderer.js";
 import { composerManager } from "../composers/index.js";
+import type { ComposerConfig } from "../config/index.js";
 import { withMcpPostKeepMessages } from "../mcp/prompt-recovery.js";
 import type { SessionManager } from "../session/manager.js";
 import { createLogger } from "../utils/logger.js";
@@ -24,6 +25,8 @@ export interface InterruptResult {
 interface AgentRuntimeControllerOptions {
 	agent: Agent;
 	sessionManager: SessionManager;
+	profileName?: string;
+	cliOverrides?: Partial<ComposerConfig>;
 	renderer?: TuiRenderer;
 	onError?: (error: unknown) => void;
 }
@@ -105,6 +108,8 @@ export class AgentRuntimeController {
 							);
 						},
 					},
+					profileName: this.options.profileName,
+					cliOverrides: this.options.cliOverrides,
 				});
 			},
 			(error) => {

@@ -2,6 +2,7 @@ import {
 	CircuitBreaker,
 	type CircuitBreakerConfig,
 } from "../safety/circuit-breaker.js";
+import { sanitizeWithStaticMask } from "../utils/secret-redactor.js";
 import { isAbortError } from "./abort-error.js";
 import { createLogger } from "./logger.js";
 
@@ -52,7 +53,9 @@ export class DownstreamClient {
 				logger.warn("Downstream call failed (fail-open)", {
 					downstream: this.name,
 					op,
-					error: error instanceof Error ? error.message : String(error),
+					error: sanitizeWithStaticMask(
+						error instanceof Error ? error.message : String(error),
+					),
 				});
 				return failOpenValue();
 			}

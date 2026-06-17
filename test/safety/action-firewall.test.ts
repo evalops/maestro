@@ -117,6 +117,37 @@ function makeApplyPatchContext(path: string): ActionApprovalContext {
 	};
 }
 
+function makeApplyPatchAddContext(path: string): ActionApprovalContext {
+	return {
+		toolName: "apply_patch",
+		args: {
+			patch: [
+				"*** Begin Patch",
+				`*** Add File: ${path}`,
+				"+test-key",
+				"*** End Patch",
+			].join("\n"),
+		},
+	};
+}
+
+function makeApplyPatchMoveContext(
+	source: string,
+	destination: string,
+): ActionApprovalContext {
+	return {
+		toolName: "apply_patch",
+		args: {
+			patch: [
+				"*** Begin Patch",
+				`*** Update File: ${source}`,
+				`*** Move to: ${destination}`,
+				"*** End Patch",
+			].join("\n"),
+		},
+	};
+}
+
 function makeReadPathContext(path: string): ActionApprovalContext {
 	return { toolName: "read", args: { path } };
 }
@@ -339,6 +370,36 @@ describe("ActionFirewall", () => {
 			makeApplyPatchContext("~/.ssh/config"),
 		);
 		expect(applyPatchVerdict).toMatchObject({
+			action: "require_approval",
+			ruleId: "default-guarded-file",
+		});
+	});
+
+	it("requires approval for apply_patch add paths under expanded home guards", async () => {
+		const verdict = await defaultActionFirewall.evaluate(
+			makeApplyPatchAddContext("~/.ssh/authorized_keys"),
+		);
+		expect(verdict).toMatchObject({
+			action: "require_approval",
+			ruleId: "default-guarded-file",
+		});
+	});
+
+	it("requires approval for apply_patch add paths outside the workspace after home expansion", async () => {
+		const verdict = await defaultActionFirewall.evaluate(
+			makeApplyPatchAddContext("~/maestro-outside-workspace.txt"),
+		);
+		expect(verdict).toMatchObject({
+			action: "require_approval",
+			ruleId: "workspace-containment",
+		});
+	});
+
+	it("requires approval for apply_patch move targets under expanded home guards", async () => {
+		const verdict = await defaultActionFirewall.evaluate(
+			makeApplyPatchMoveContext("src/key.txt", "~/.ssh/authorized_keys"),
+		);
+		expect(verdict).toMatchObject({
 			action: "require_approval",
 			ruleId: "default-guarded-file",
 		});

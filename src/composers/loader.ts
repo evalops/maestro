@@ -4,6 +4,7 @@ import { basename, extname, isAbsolute, join, relative, sep } from "node:path";
 import yaml from "js-yaml";
 import { PATHS } from "../config/constants.js";
 import { createLogger } from "../utils/logger.js";
+import { sanitizeWithStaticMask } from "../utils/secret-redactor.js";
 import { getBuiltinAgents } from "./builtin.js";
 import type {
 	AgentMode,
@@ -194,7 +195,9 @@ function parseComposerFile(
 	} catch (error) {
 		logger.warn("Failed to parse composer file", {
 			filePath,
-			error: error instanceof Error ? error.message : String(error),
+			error: sanitizeWithStaticMask(
+				error instanceof Error ? error.message : String(error),
+			),
 		});
 		return null;
 	}

@@ -103,8 +103,16 @@ export function resolveExplicitSystemPromptSourcePaths(
 	];
 }
 
-function loadAppendSystemPrompt(cwd: string): string | null {
-	const appendSystemPath = resolveLoadedAppendSystemPromptPath(cwd);
+function loadAppendSystemPrompt(
+	cwd: string,
+	profileName?: string,
+	cliOverrides?: Partial<ComposerConfig>,
+): string | null {
+	const appendSystemPath = resolveLoadedAppendSystemPromptPath(
+		cwd,
+		profileName,
+		cliOverrides,
+	);
 	return appendSystemPath
 		? resolveSystemPromptOverride(appendSystemPath)
 		: null;
@@ -121,6 +129,8 @@ interface RuntimeConstraintDetectionOptions {
 export interface FinalizeSystemPromptOptions {
 	runtimeConstraints?: RuntimeConstraintContext | null;
 	promptContextManifest?: PromptProjectDocManifest;
+	profileName?: string;
+	cliOverrides?: Partial<ComposerConfig>;
 }
 
 function readEnvFlag(
@@ -647,8 +657,10 @@ function collectGuardedWorkspaceCategories(
 			for (const rule of absoluteRules) {
 				if (matchesGuardedAbsolutePath(normalizedPath, rule)) {
 					addGuardedCategory(categories, rule.key);
+					break;
 				}
 			}
+
 			if (
 				entry.isDirectory() &&
 				!GUARDED_WORKSPACE_SCAN_IGNORES.has(entry.name)
@@ -713,7 +725,8 @@ export function finalizeSystemPrompt(
 	options: FinalizeSystemPromptOptions = {},
 ): string {
 	const appendSource =
-		resolveSystemPromptOverride(appendPrompt) ?? loadAppendSystemPrompt(cwd);
+		resolveSystemPromptOverride(appendPrompt) ??
+		loadAppendSystemPrompt(cwd, options.profileName, options.cliOverrides);
 	const appendText = appendSource?.trim();
 	let prompt = basePrompt;
 	const contextFiles =

@@ -57,6 +57,7 @@ import { isMcpTool } from "../mcp/names.js";
 import { parseApplyPatchPaths } from "../tools/apply-patch-parser.js";
 import { createLogger } from "../utils/logger.js";
 import { normalizeSafetyText } from "../utils/safety-normalization.js";
+import { sanitizeWithStaticMask } from "../utils/secret-redactor.js";
 import { isCommandAllowlisted } from "./bash-allowlist.js";
 import {
 	analyzeCommandSafety,
@@ -889,7 +890,7 @@ export class ActionFirewall {
 			logger.warn(
 				"Failed to evaluate action with governance service; falling back to local firewall rules",
 				{
-					error: message,
+					error: sanitizeWithStaticMask(message),
 					toolName: context.toolName,
 				},
 			);

@@ -5,10 +5,10 @@ import {
 	readFileSync,
 	readdirSync,
 	statSync,
-	writeFileSync,
 } from "node:fs";
 import { constants, access } from "node:fs/promises";
 import { basename, extname, join, resolve } from "node:path";
+import { writeTextFileAtomic } from "../utils/fs.js";
 import {
 	SKILL_FRONTMATTER_FIELDS,
 	findSkillMd,
@@ -695,7 +695,7 @@ export function scaffoldSkill(
 	const escapedDescription = description
 		.replace(/\\/g, "\\\\")
 		.replace(/"/g, '\\"');
-	writeFileSync(
+	writeTextFileAtomic(
 		skillMd,
 		[
 			"---",
@@ -724,28 +724,28 @@ export function scaffoldSkill(
 	files.push(skillMd);
 
 	const reference = join(directory, "reference", "overview.md");
-	writeFileSync(
+	writeTextFileAtomic(
 		reference,
 		`# ${name} Reference\n\nAdd deeper examples, protocol notes, and troubleshooting details here. Keep this out of SKILL.md until needed.\n`,
 	);
 	files.push(reference);
 
 	const scriptsReadme = join(directory, "scripts", "README.md");
-	writeFileSync(
+	writeTextFileAtomic(
 		scriptsReadme,
 		"# Scripts\n\nPut deterministic helper scripts here. Agents should run these instead of retyping long workflows.\n",
 	);
 	files.push(scriptsReadme);
 
 	const toolboxReadme = join(directory, "toolbox", "README.md");
-	writeFileSync(
+	writeTextFileAtomic(
 		toolboxReadme,
 		"# Toolbox\n\nPut executable Toolbox protocol commands here. Each executable should support `MAESTRO_TOOLBOX_ACTION=describe`.\n",
 	);
 	files.push(toolboxReadme);
 
 	const mcpJson = join(directory, "mcp.json.example");
-	writeFileSync(
+	writeTextFileAtomic(
 		mcpJson,
 		'{\n  "example-server": {\n    "command": "npx",\n    "args": ["-y", "example-mcp-server"],\n    "includeTools": ["example_tool"]\n  }\n}\n',
 	);

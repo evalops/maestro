@@ -1,8 +1,9 @@
 import { randomUUID } from "node:crypto";
-import { readFileSync, writeFileSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import type { Container, TUI } from "@evalops/tui";
 import { Spacer, Text } from "@evalops/tui";
 import chalk from "chalk";
+import { writeJsonFile } from "../utils/fs.js";
 
 const PLAN_STATUS_SYMBOLS = {
 	pending: "[ ]",
@@ -458,7 +459,7 @@ export function loadTodoStore(filePath: string): TodoStore {
 }
 
 export function saveTodoStore(filePath: string, store: TodoStore): void {
-	writeFileSync(filePath, JSON.stringify(store, null, 2));
+	writeJsonFile(filePath, store);
 }
 
 export function calculatePlanHint(store: TodoStore): string | null {

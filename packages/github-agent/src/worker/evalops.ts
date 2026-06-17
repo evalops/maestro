@@ -9,6 +9,13 @@ const DEFAULT_PROVIDER_REF_PROVIDER = "openai";
 const DEFAULT_PROVIDER_REF_ENVIRONMENT = "prod";
 const DEFAULT_DELEGATION_TTL_SECONDS = 60 * 60;
 const GITHUB_AGENT_EVENT_BUS_SOURCE = "maestro.github-agent";
+const GITHUB_AGENT_CHILD_RUNTIME_ENV_NAMES = [
+	"PATH",
+	"SystemRoot",
+	"WINDIR",
+	"COMSPEC",
+	"PATHEXT",
+] as const;
 
 interface EvalOpsProviderRef {
 	provider: string;
@@ -29,6 +36,17 @@ function cloneEnv(env: NodeJS.ProcessEnv): Record<string, string> {
 			(entry): entry is [string, string] => typeof entry[1] === "string",
 		),
 	);
+}
+
+function cloneChildRuntimeEnv(env: NodeJS.ProcessEnv): Record<string, string> {
+	const childEnv: Record<string, string> = {};
+	for (const name of GITHUB_AGENT_CHILD_RUNTIME_ENV_NAMES) {
+		const value = env[name];
+		if (typeof value === "string" && value.length > 0) {
+			childEnv[name] = value;
+		}
+	}
+	return childEnv;
 }
 
 function getEnvValue(
@@ -244,7 +262,7 @@ export async function buildGitHubTaskEnvironment(
 	onWarning?: (message: string) => void,
 ): Promise<Record<string, string>> {
 	const baseEnv = {
-		...cloneEnv(env),
+		...cloneChildRuntimeEnv(env),
 		...buildGitHubTaskRuntimeEnvironment(task),
 	};
 	if (config.maxTokensPerTask && !baseEnv.MAESTRO_MAX_OUTPUT_TOKENS) {
@@ -301,7 +319,7 @@ export async function buildGitHubTaskEnvironment(
 	} catch (error) {
 		const message = error instanceof Error ? error.message : String(error);
 		onWarning?.(
-			`Failed to issue delegated EvalOps token for GitHub worker; using inherited auth: ${message}`,
+			`Failed to issue delegated EvalOps token for GitHub worker; continuing without inherited host auth: ${message}`,
 		);
 		return baseEnv;
 	}

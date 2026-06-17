@@ -21,6 +21,7 @@
 
 import { type Clock, systemClock } from "../utils/clock.js";
 import { createLogger } from "../utils/logger.js";
+import { sanitizeWithStaticMask } from "../utils/secret-redactor.js";
 
 const logger = createLogger("context-manager");
 
@@ -266,7 +267,9 @@ export class AgentContextManager {
 					}
 
 					logger.warn(`Context source '${source.name}' failed`, {
-						error: error instanceof Error ? error.message : String(error),
+						error: sanitizeWithStaticMask(
+							error instanceof Error ? error.message : String(error),
+						),
 						stack: error instanceof Error ? error.stack : undefined,
 						durationMs,
 					});
@@ -276,7 +279,9 @@ export class AgentContextManager {
 						durationMs,
 						cached: false,
 						content: null,
-						error: error instanceof Error ? error.message : String(error),
+						error: sanitizeWithStaticMask(
+							error instanceof Error ? error.message : String(error),
+						),
 					};
 				}
 			}),

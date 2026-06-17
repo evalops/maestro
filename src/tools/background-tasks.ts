@@ -85,10 +85,7 @@ import {
 import { createLogger } from "../utils/logger.js";
 import { resolveEnvPath } from "../utils/path-expansion.js";
 import { safejoin } from "../utils/path-validation.js";
-import {
-	redactSecrets,
-	sanitizeWithStaticMask,
-} from "../utils/secret-redactor.js";
+import { sanitizeWithStaticMask } from "../utils/secret-redactor.js";
 import { resolveShellEnvironment } from "../utils/shell-env.js";
 import {
 	type RestartPolicy,
@@ -115,6 +112,10 @@ import {
 	type TaskStartOptions,
 	formatTaskSummary,
 } from "./background/task-types.js";
+import {
+	type SecretScrubberFailureContext,
+	scrubOutputFailClosed,
+} from "./output-scrubber.js";
 import { killProcessTree, validateShellParams } from "./shell-utils.js";
 import { ToolError } from "./tool-dsl.js";
 
@@ -183,6 +184,9 @@ class BackgroundTaskManager extends EventEmitter {
 			this.notifyFailure(task, code, signal),
 		scheduleCleanup: (task) => this.scheduleCleanup(task),
 		setFailureReason: (task, reason) => this.setFailureReason(task, reason),
+		maskSecret: (secret) => this.maskSecret(secret),
+		handleOutputScrubberFailure: (task, error, context) =>
+			this.handleOutputScrubberFailure(task, error, context),
 	});
 
 	private ensureSettingsSubscription(): void {
@@ -488,7 +492,48 @@ class BackgroundTaskManager extends EventEmitter {
 		if (!value) {
 			return value;
 		}
-		return redactSecrets(value, (secret) => this.maskSecret(secret));
+		return scrubOutputFailClosed(value, {
+			maskSecret: (secret) => this.maskSecret(secret),
+			surface: "background_tasks",
+		});
+	}
+
+	private handleOutputScrubberFailure(
+		task: BackgroundTask,
+		error: unknown,
+		context: SecretScrubberFailureContext,
+	): void {
+		task.outputScrubberFailed = true;
+		task.logTruncated = true;
+		if (!task.outputScrubberFailureNotified) {
+			task.outputScrubberFailureNotified = true;
+			this.emitTaskNotification({
+				taskId: task.id,
+				status: task.status,
+				command: task.command,
+				kind: "failure",
+				level: "warn",
+				reason:
+					error instanceof Error ? error.message : "secret scrubber failure",
+				message: context.strict
+					? "output scrubber failed; terminating"
+					: "output scrubber failed; redacted affected chunk",
+			});
+		}
+		if (!context.strict) {
+			return;
+		}
+		this.setFailureReason(
+			task,
+			"Output scrubber failed; aborting to avoid leaking raw shell output",
+		);
+		if (task.pid) {
+			try {
+				killProcessTree(task.pid);
+			} catch {
+				task.logTruncated = true;
+			}
+		}
 	}
 
 	private sanitizeFailureReason(reason?: string | null): string | undefined {
@@ -629,6 +674,9 @@ class BackgroundTaskManager extends EventEmitter {
 					}
 					if (task.logTruncated) {
 						issues.push("Logs truncated");
+					}
+					if (task.outputScrubberFailed) {
+						issues.push("Output scrubber failed; affected log chunk redacted");
 					}
 					const restarts = task.restartPolicy
 						? `${task.restartPolicy.attempts}/${task.restartPolicy.maxAttempts}`

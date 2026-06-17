@@ -9,6 +9,7 @@ import type { HookMessage } from "../agent/types.js";
 import type { HookMessageRenderer } from "../hooks/types.js";
 import { getMarkdownTheme, theme } from "../theme/theme.js";
 import { createLogger } from "../utils/logger.js";
+import { sanitizeWithStaticMask } from "../utils/secret-redactor.js";
 import { BorderedBox } from "./utils/borders.js";
 
 const logger = createLogger("tui:hook-message");
@@ -51,7 +52,9 @@ export class HookMessageComponent extends Container {
 			} catch (error) {
 				logger.warn("Hook message renderer failed", {
 					customType: this.message.customType,
-					error: error instanceof Error ? error.message : String(error),
+					error: sanitizeWithStaticMask(
+						error instanceof Error ? error.message : String(error),
+					),
 				});
 			}
 		}

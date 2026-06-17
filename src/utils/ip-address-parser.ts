@@ -1,3 +1,5 @@
+import { isIP } from "node:net";
+
 /**
  * IP Address Parsing Utilities
  *
@@ -76,6 +78,10 @@ export function isPrivateIPv4(octets: number[]): boolean {
 	);
 }
 
+function isUnspecifiedIPv4Octets(octets: number[]): boolean {
+	return octets.every((octet) => octet === 0);
+}
+
 /**
  * Parse an IPv4-mapped IPv6 address in hex format.
  *
@@ -88,8 +94,10 @@ export function isPrivateIPv4(octets: number[]): boolean {
  * @returns Array of 4 IPv4 octets if valid mapped address, null otherwise
  */
 export function parseIPv4MappedHex(host: string): number[] | null {
-	// Match ::ffff:XXXX:XXXX format (hex representation of IPv4)
-	const match = host.match(/^::ffff:([0-9a-f]{1,4}):([0-9a-f]{1,4})$/i);
+	// Match ::ffff:XXXX:XXXX and expanded 0:0:0:0:0:ffff:XXXX:XXXX.
+	const match = host.match(
+		/^(?:::ffff:|(?:0{1,4}:){5}ffff:)([0-9a-f]{1,4}):([0-9a-f]{1,4})$/i,
+	);
 	if (!match || !match[1] || !match[2]) return null;
 
 	const high = Number.parseInt(match[1], 16);
@@ -112,7 +120,49 @@ export function parseIPv4MappedHex(host: string): number[] | null {
  * @returns Array of 4 IPv4 octets if valid mapped address, null otherwise
  */
 export function parseIPv4MappedDecimal(host: string): number[] | null {
-	const match = host.match(/^::ffff:(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})$/i);
+	const match = host.match(
+		/^(?:::ffff:|(?:0{1,4}:){5}ffff:)(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})$/i,
+	);
+	if (!match || !match[1]) return null;
+	return parseIPv4(match[1]);
+}
+
+/**
+ * Parse an IPv4-compatible IPv6 address in hex format.
+ *
+ * Handles deprecated compatibility forms such as ::7f00:1 and
+ * 0:0:0:0:0:0:a9fe:a9fe.
+ *
+ * @param host - IPv6 address string
+ * @returns Array of 4 IPv4 octets if valid compatible address, null otherwise
+ */
+export function parseIPv4CompatibleHex(host: string): number[] | null {
+	const match = host.match(
+		/^(?:::|(?:0{1,4}:){6})([0-9a-f]{1,4}):([0-9a-f]{1,4})$/i,
+	);
+	if (!match || !match[1] || !match[2]) return null;
+
+	const high = Number.parseInt(match[1], 16);
+	const low = Number.parseInt(match[2], 16);
+
+	if (Number.isNaN(high) || Number.isNaN(low)) return null;
+
+	return [(high >> 8) & 0xff, high & 0xff, (low >> 8) & 0xff, low & 0xff];
+}
+
+/**
+ * Parse an IPv4-compatible IPv6 address in dotted-decimal format.
+ *
+ * Handles deprecated compatibility forms such as ::127.0.0.1 and
+ * 0:0:0:0:0:0:169.254.169.254.
+ *
+ * @param host - IPv6 address string
+ * @returns Array of 4 IPv4 octets if valid compatible address, null otherwise
+ */
+export function parseIPv4CompatibleDecimal(host: string): number[] | null {
+	const match = host.match(
+		/^(?:::|(?:0{1,4}:){6})(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})$/i,
+	);
 	if (!match || !match[1]) return null;
 	return parseIPv4(match[1]);
 }
@@ -141,6 +191,15 @@ export function isLoopbackIP(ip: string): boolean {
 	const mappedDecimalOctets = parseIPv4MappedDecimal(ip);
 	if (mappedDecimalOctets && isLoopbackIPv4(mappedDecimalOctets)) return true;
 
+	// Check deprecated IPv4-compatible localhost forms.
+	const compatibleHexOctets = parseIPv4CompatibleHex(ip);
+	if (compatibleHexOctets && isLoopbackIPv4(compatibleHexOctets)) return true;
+
+	const compatibleDecimalOctets = parseIPv4CompatibleDecimal(ip);
+	if (compatibleDecimalOctets && isLoopbackIPv4(compatibleDecimalOctets)) {
+		return true;
+	}
+
 	// Check IPv6 loopback variants
 	if (
 		ip === "::1" ||
@@ -151,6 +210,45 @@ export function isLoopbackIP(ip: string): boolean {
 	}
 
 	return false;
+}
+
+/**
+ * Check if an IP address string is an unspecified address.
+ *
+ * Detects:
+ * - IPv4 unspecified: 0.0.0.0
+ * - IPv6 unspecified: :: and expanded/compressed all-zero forms
+ * - IPv4-mapped or IPv4-compatible all-zero forms
+ *
+ * @param ip - IP address string (IPv4 or IPv6)
+ * @returns true if unspecified
+ */
+export function isUnspecifiedIP(ip: string): boolean {
+	const ipv4Octets = parseIPv4(ip);
+	if (ipv4Octets && isUnspecifiedIPv4Octets(ipv4Octets)) return true;
+
+	const mappedHexOctets = parseIPv4MappedHex(ip);
+	if (mappedHexOctets && isUnspecifiedIPv4Octets(mappedHexOctets)) return true;
+
+	const mappedDecimalOctets = parseIPv4MappedDecimal(ip);
+	if (mappedDecimalOctets && isUnspecifiedIPv4Octets(mappedDecimalOctets)) {
+		return true;
+	}
+
+	const compatibleHexOctets = parseIPv4CompatibleHex(ip);
+	if (compatibleHexOctets && isUnspecifiedIPv4Octets(compatibleHexOctets)) {
+		return true;
+	}
+
+	const compatibleDecimalOctets = parseIPv4CompatibleDecimal(ip);
+	if (
+		compatibleDecimalOctets &&
+		isUnspecifiedIPv4Octets(compatibleDecimalOctets)
+	) {
+		return true;
+	}
+
+	return isIP(ip) === 6 && /^[0:]+$/i.test(ip);
 }
 
 /**
@@ -179,6 +277,15 @@ export function isPrivateIP(ip: string): boolean {
 	// Check IPv4-mapped private (decimal format)
 	const mappedDecimalOctets = parseIPv4MappedDecimal(ip);
 	if (mappedDecimalOctets && isPrivateIPv4(mappedDecimalOctets)) return true;
+
+	// Check deprecated IPv4-compatible private forms.
+	const compatibleHexOctets = parseIPv4CompatibleHex(ip);
+	if (compatibleHexOctets && isPrivateIPv4(compatibleHexOctets)) return true;
+
+	const compatibleDecimalOctets = parseIPv4CompatibleDecimal(ip);
+	if (compatibleDecimalOctets && isPrivateIPv4(compatibleDecimalOctets)) {
+		return true;
+	}
 
 	// Check IPv6 private ranges
 	// Note: IPv6 allows leading zeros to be omitted (RFC 5952), so fc00:: can be fc0:: or fc::

@@ -8,6 +8,8 @@ import type { ToolRetryService } from "../agent/tool-retry.js";
 import type { ClientToolExecutionService } from "../agent/transport.js";
 import type { PlatformToolExecutionBridge } from "../agent/transport/tool-execution-bridge.js";
 import type { ThinkingLevel } from "../agent/types.js";
+import type { ComposerManager } from "../composers/manager.js";
+import type { ComposerConfig } from "../config/index.js";
 import type { RegisteredModel } from "../models/registry.js";
 import type { AuthCredential } from "../providers/auth.js";
 import type { HeadlessRuntimeService } from "./headless-runtime-service.js";
@@ -19,6 +21,8 @@ export interface WebServerConfig {
 	defaultApprovalMode: ApprovalMode;
 	defaultProvider: string;
 	defaultModelId: string;
+	profileName?: string;
+	cliOverrides?: Partial<ComposerConfig>;
 	hostedRunner?: HostedRunnerContext;
 }
 
@@ -79,6 +83,7 @@ export interface WebServerServices {
 		approval: ApprovalMode,
 		options?: {
 			cwd?: string;
+			persistedSystemPromptSourcePaths?: string[];
 			enableClientTools?: boolean;
 			useClientAskUser?: boolean;
 			includeVscodeTools?: boolean;
@@ -88,6 +93,8 @@ export interface WebServerServices {
 			clientToolService?: ClientToolExecutionService;
 			toolRetryService?: ToolRetryService;
 			platformToolExecutionBridge?: PlatformToolExecutionBridge | false;
+			profileName?: string;
+			cliOverrides?: Partial<ComposerConfig>;
 		},
 	) => Promise<Agent>;
 	createBackgroundAgent: (
@@ -106,6 +113,23 @@ export interface WebServerServices {
 	acquireSse: () => symbol | null;
 	releaseSse: (token: symbol | null) => void;
 	headlessRuntimeService: HeadlessRuntimeService;
+	composerManagers?: {
+		bindAgentSession: (
+			agent: Agent,
+			subject: string,
+			sessionId: string,
+		) => boolean;
+		unbindAgentSession?: (
+			agent: Agent,
+			subject: string,
+			sessionId: string,
+		) => void;
+		get: (subject: string, sessionId: string) => ComposerManager | undefined;
+		getOrCreate?: (subject: string, sessionId: string) => ComposerManager;
+		getLatestForSubject?: (
+			subject: string,
+		) => { sessionId: string; manager: ComposerManager } | undefined;
+	};
 }
 
 export type WebServerContext = WebServerConfig & WebServerServices;

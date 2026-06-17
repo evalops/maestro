@@ -14,6 +14,7 @@ import {
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { cachedConfig } from "../../src/models/config-loader.js";
 import {
 	type ConfigInspection,
 	type ConfigValidationResult,
@@ -676,6 +677,532 @@ describe("Config Features", () => {
 			expect(result.summary.models).toBe(1);
 		});
 
+		it("should validate providers against allowedBaseUrls after config layers merge", () => {
+			const homeDir = join(testDir, "home");
+			const projectDir = join(testDir, "project");
+			writeConfigFile(join(homeDir, "config.json"), {
+				allowedBaseUrls: ["https://trusted.example/v1"],
+				providers: [],
+			});
+			writeConfigFile(join(projectDir, ".maestro", "config.json"), {
+				providers: [
+					{
+						id: "custom",
+						name: "Custom",
+						baseUrl: "https://attacker.example/v1",
+						api: "openai-responses",
+						models: [
+							{
+								id: "custom/model",
+								name: "Custom model",
+								contextWindow: 100000,
+								maxTokens: 4096,
+							},
+						],
+					},
+				],
+			});
+			process.env.MAESTRO_HOME = homeDir;
+			process.env.MAESTRO_TRUST_PROJECT_MODEL_CONFIG = "1";
+			process.chdir(projectDir);
+
+			expect(() => reloadModelConfig()).toThrow(/allowedBaseUrls/);
+			const validation = validateConfig();
+			expect(validation.valid).toBe(false);
+			expect(
+				validation.errors.some((error) => error.includes("allowedBaseUrls")),
+			).toBe(true);
+		});
+
+		it("should ignore disabled providers when validating merged URL policy", () => {
+			const configPath = join(testDir, "disabled-url-policy.json");
+			writeConfigFile(configPath, {
+				allowedBaseUrls: ["https://trusted.example/v1"],
+				providers: [
+					{
+						id: "disabled",
+						name: "Disabled Provider",
+						enabled: false,
+						baseUrl: "https://attacker.example/v1",
+						api: "openai-responses",
+						models: [
+							{
+								id: "disabled/model",
+								name: "Disabled model",
+								contextWindow: 100000,
+								maxTokens: 4096,
+							},
+						],
+					},
+					{
+						id: "enabled",
+						name: "Enabled Provider",
+						baseUrl: "https://trusted.example/v1/responses",
+						api: "openai-responses",
+						models: [
+							{
+								id: "enabled/model",
+								name: "Enabled model",
+								contextWindow: 100000,
+								maxTokens: 4096,
+							},
+						],
+					},
+				],
+			});
+			process.env.MAESTRO_CONFIG = configPath;
+
+			expect(() => reloadModelConfig()).not.toThrow();
+			expect(
+				getRegisteredModels().some(
+					(model) =>
+						model.provider === "enabled" && model.id === "enabled/model",
+				),
+			).toBe(true);
+			expect(
+				getRegisteredModels().some(
+					(model) =>
+						model.provider === "disabled" && model.id === "disabled/model",
+				),
+			).toBe(false);
+
+			const validation = validateConfig();
+			expect(validation.valid).toBe(true);
+			expect(validation.errors).toEqual([]);
+			expect(cachedConfig?.providers.map((provider) => provider.id)).toEqual([
+				"enabled",
+			]);
+
+			const inspection = inspectConfig();
+			const disabledProvider = inspection.providers.find(
+				(provider) => provider.id === "disabled",
+			);
+			expect(disabledProvider).toBeDefined();
+			expect(disabledProvider?.enabled).toBe(false);
+		});
+
+		it("should not let later trusted layers widen allowedBaseUrls", () => {
+			const homeDir = join(testDir, "home");
+			const projectDir = join(testDir, "project");
+			writeConfigFile(join(homeDir, "config.json"), {
+				allowedBaseUrls: ["https://trusted.example/v1"],
+				providers: [],
+			});
+			writeConfigFile(join(projectDir, ".maestro", "config.json"), {
+				allowedBaseUrls: ["https://attacker.example/v1"],
+				providers: [
+					{
+						id: "custom",
+						name: "Custom",
+						baseUrl: "https://attacker.example/v1",
+						api: "openai-responses",
+						models: [
+							{
+								id: "custom/model",
+								name: "Custom model",
+								contextWindow: 100000,
+								maxTokens: 4096,
+							},
+						],
+					},
+				],
+			});
+			process.env.MAESTRO_HOME = homeDir;
+			process.env.MAESTRO_TRUST_PROJECT_MODEL_CONFIG = "1";
+			process.chdir(projectDir);
+
+			expect(() => reloadModelConfig()).toThrow(/allowedBaseUrls/);
+			const validation = validateConfig();
+			expect(validation.valid).toBe(false);
+			expect(
+				validation.errors.some((error) => error.includes("allowedBaseUrls")),
+			).toBe(true);
+		});
+
+		it("should keep existing allowedBaseUrls when a later layer has no overlap", () => {
+			const homeDir = join(testDir, "home");
+			const projectDir = join(testDir, "project");
+			writeConfigFile(join(homeDir, "config.json"), {
+				allowedBaseUrls: ["https://trusted.example/v1"],
+				providers: [
+					{
+						id: "custom",
+						name: "Custom",
+						baseUrl: "https://trusted.example/v1/responses",
+						api: "openai-responses",
+						models: [
+							{
+								id: "custom/model",
+								name: "Custom model",
+								contextWindow: 100000,
+								maxTokens: 4096,
+							},
+						],
+					},
+				],
+			});
+			writeConfigFile(join(projectDir, ".maestro", "config.json"), {
+				allowedBaseUrls: ["https://attacker.example/v1"],
+				providers: [],
+			});
+			process.env.MAESTRO_HOME = homeDir;
+			process.env.MAESTRO_TRUST_PROJECT_MODEL_CONFIG = "1";
+			process.chdir(projectDir);
+
+			expect(() => reloadModelConfig()).not.toThrow();
+			expect(
+				getRegisteredModels().some(
+					(model) =>
+						model.provider === "custom" &&
+						model.baseUrl === "https://trusted.example/v1/responses",
+				),
+			).toBe(true);
+		});
+
+		it("should report invalid merged allowedBaseUrls without crashing", () => {
+			const homeDir = join(testDir, "home");
+			const projectDir = join(testDir, "project");
+			writeConfigFile(join(homeDir, "config.json"), {
+				allowedBaseUrls: ["https://trusted.example/v1"],
+				providers: [],
+			});
+			writeConfigFile(join(projectDir, ".maestro", "config.json"), {
+				allowedBaseUrls: ["not a url"],
+				providers: [],
+			});
+			process.env.MAESTRO_HOME = homeDir;
+			process.env.MAESTRO_TRUST_PROJECT_MODEL_CONFIG = "1";
+			process.chdir(projectDir);
+
+			let validation: ConfigValidationResult | undefined;
+			expect(() => {
+				validation = validateConfig();
+			}).not.toThrow();
+			expect(validation?.valid).toBe(false);
+			expect(
+				validation?.errors.some((error) => error.includes("allowedBaseUrls")),
+			).toBe(true);
+		});
+
+		it("should not let later trusted layers widen internalBaseUrlAllowList", () => {
+			const homeDir = join(testDir, "home");
+			const projectDir = join(testDir, "project");
+			writeConfigFile(join(homeDir, "config.json"), {
+				internalBaseUrlAllowList: ["http://localhost:11434/v1"],
+				providers: [],
+			});
+			writeConfigFile(join(projectDir, ".maestro", "config.json"), {
+				internalBaseUrlAllowList: [
+					"http://localhost:11434/v1",
+					"http://169.254.169.254/latest/meta-data",
+				],
+				providers: [
+					{
+						id: "custom",
+						name: "Custom",
+						baseUrl: "http://169.254.169.254/latest/meta-data",
+						api: "openai-responses",
+						models: [
+							{
+								id: "custom/model",
+								name: "Custom model",
+								contextWindow: 100000,
+								maxTokens: 4096,
+							},
+						],
+					},
+				],
+			});
+			process.env.MAESTRO_HOME = homeDir;
+			process.env.MAESTRO_TRUST_PROJECT_MODEL_CONFIG = "1";
+			process.chdir(projectDir);
+
+			expect(() => reloadModelConfig()).toThrow(/internal host/);
+			const validation = validateConfig();
+			expect(validation.valid).toBe(false);
+			expect(
+				validation.errors.some((error) => error.includes("internal host")),
+			).toBe(true);
+		});
+
+		it("should keep existing internalBaseUrlAllowList when a later layer has no overlap", () => {
+			const homeDir = join(testDir, "home");
+			const projectDir = join(testDir, "project");
+			writeConfigFile(join(homeDir, "config.json"), {
+				internalBaseUrlAllowList: ["http://localhost:11434/v1"],
+				providers: [
+					{
+						id: "local",
+						name: "Local",
+						baseUrl: "http://localhost:11434/v1",
+						api: "openai-responses",
+						models: [
+							{
+								id: "local/model",
+								name: "Local model",
+								contextWindow: 100000,
+								maxTokens: 4096,
+							},
+						],
+					},
+				],
+			});
+			writeConfigFile(join(projectDir, ".maestro", "config.json"), {
+				internalBaseUrlAllowList: ["http://169.254.169.254/latest/meta-data"],
+				providers: [],
+			});
+			process.env.MAESTRO_HOME = homeDir;
+			process.env.MAESTRO_TRUST_PROJECT_MODEL_CONFIG = "1";
+			process.chdir(projectDir);
+
+			expect(() => reloadModelConfig()).not.toThrow();
+			expect(validateConfig().valid).toBe(true);
+		});
+
+		it("should report a structured error for invalid allowedBaseUrls during merge", () => {
+			const homeDir = join(testDir, "home");
+			const projectDir = join(testDir, "project");
+			writeConfigFile(join(homeDir, "config.json"), {
+				allowedBaseUrls: ["https://trusted.example/v1"],
+				providers: [
+					{
+						id: "custom",
+						name: "Custom",
+						baseUrl: "https://trusted.example/v1/responses",
+						api: "openai-responses",
+						models: [
+							{
+								id: "custom/model",
+								name: "Custom model",
+								contextWindow: 100000,
+								maxTokens: 4096,
+							},
+						],
+					},
+				],
+			});
+			writeConfigFile(join(projectDir, ".maestro", "config.json"), {
+				allowedBaseUrls: ["not a valid url"],
+				providers: [],
+			});
+			process.env.MAESTRO_HOME = homeDir;
+			process.env.MAESTRO_TRUST_PROJECT_MODEL_CONFIG = "1";
+			process.chdir(projectDir);
+
+			expect(() => reloadModelConfig()).toThrow(/must be a valid URL/);
+			const validation = validateConfig();
+			expect(validation.valid).toBe(false);
+			expect(
+				validation.errors.some((error) =>
+					error.includes("must be a valid URL"),
+				),
+			).toBe(true);
+		});
+
+		it("should report a structured error for invalid internalBaseUrlAllowList during merge", () => {
+			const homeDir = join(testDir, "home");
+			const projectDir = join(testDir, "project");
+			writeConfigFile(join(homeDir, "config.json"), {
+				internalBaseUrlAllowList: ["http://localhost:11434/v1"],
+				providers: [
+					{
+						id: "local",
+						name: "Local",
+						baseUrl: "http://localhost:11434/v1",
+						api: "openai-responses",
+						models: [
+							{
+								id: "local/model",
+								name: "Local model",
+								contextWindow: 100000,
+								maxTokens: 4096,
+							},
+						],
+					},
+				],
+			});
+			writeConfigFile(join(projectDir, ".maestro", "config.json"), {
+				internalBaseUrlAllowList: ["not a valid url"],
+				providers: [],
+			});
+			process.env.MAESTRO_HOME = homeDir;
+			process.env.MAESTRO_TRUST_PROJECT_MODEL_CONFIG = "1";
+			process.chdir(projectDir);
+
+			expect(() => reloadModelConfig()).toThrow(/must be a valid URL/);
+			const validation = validateConfig();
+			expect(validation.valid).toBe(false);
+			expect(
+				validation.errors.some((error) =>
+					error.includes("must be a valid URL"),
+				),
+			).toBe(true);
+		});
+
+		it("should allow a trusted project provider to use an earlier internalBaseUrlAllowList", () => {
+			const homeDir = join(testDir, "home");
+			const projectDir = join(testDir, "project");
+			writeConfigFile(join(homeDir, "config.json"), {
+				internalBaseUrlAllowList: ["http://localhost:11434/v1"],
+				providers: [],
+			});
+			writeConfigFile(join(projectDir, ".maestro", "config.json"), {
+				providers: [
+					{
+						id: "local",
+						name: "Local",
+						baseUrl: "http://localhost:11434/v1",
+						api: "openai-responses",
+						models: [
+							{
+								id: "local/model",
+								name: "Local model",
+								contextWindow: 100000,
+								maxTokens: 4096,
+							},
+						],
+					},
+				],
+			});
+			process.env.MAESTRO_HOME = homeDir;
+			process.env.MAESTRO_TRUST_PROJECT_MODEL_CONFIG = "1";
+			process.chdir(projectDir);
+
+			expect(() => reloadModelConfig()).not.toThrow();
+			expect(validateConfig().valid).toBe(true);
+		});
+
+		it("should refresh or clear the merged config cache during validation", () => {
+			const configPath = join(testDir, "cache-refresh.json");
+			process.env.MAESTRO_CONFIG = configPath;
+			writeConfigFile(configPath, {
+				allowedBaseUrls: ["https://stale.example/v1"],
+				providers: [
+					{
+						id: "stale",
+						name: "Stale",
+						baseUrl: "https://stale.example/v1",
+						api: "openai-responses",
+						models: [
+							{
+								id: "stale/model",
+								name: "Stale model",
+								contextWindow: 100000,
+								maxTokens: 4096,
+							},
+						],
+					},
+				],
+			});
+			reloadModelConfig();
+			expect(cachedConfig?.providers[0]?.id).toBe("stale");
+
+			writeConfigFile(configPath, {
+				allowedBaseUrls: ["https://fresh.example/v1"],
+				providers: [
+					{
+						id: "fresh",
+						name: "Fresh",
+						baseUrl: "https://blocked.example/v1",
+						api: "openai-responses",
+						models: [
+							{
+								id: "fresh/model",
+								name: "Fresh model",
+								contextWindow: 100000,
+								maxTokens: 4096,
+							},
+						],
+					},
+				],
+			});
+			const invalid = validateConfig();
+			expect(invalid.valid).toBe(false);
+			expect(cachedConfig).toBeNull();
+
+			writeConfigFile(configPath, {
+				allowedBaseUrls: ["https://fresh.example/v1"],
+				providers: [
+					{
+						id: "fresh",
+						name: "Fresh",
+						baseUrl: "https://fresh.example/v1",
+						api: "openai-responses",
+						models: [
+							{
+								id: "fresh/model",
+								name: "Fresh model",
+								contextWindow: 100000,
+								maxTokens: 4096,
+							},
+						],
+					},
+				],
+			});
+			const valid = validateConfig();
+			expect(valid.valid).toBe(true);
+			expect(cachedConfig?.providers.map((provider) => provider.id)).toEqual([
+				"fresh",
+			]);
+		});
+
+		it("should refresh registered models after successful validation", () => {
+			const configPath = join(testDir, "registry-refresh.json");
+			process.env.MAESTRO_CONFIG = configPath;
+			writeConfigFile(configPath, {
+				allowedBaseUrls: ["https://stale.example/v1"],
+				providers: [
+					{
+						id: "stale",
+						name: "Stale",
+						baseUrl: "https://stale.example/v1",
+						api: "openai-responses",
+						models: [
+							{
+								id: "stale/model",
+								name: "Stale model",
+								contextWindow: 100000,
+								maxTokens: 4096,
+							},
+						],
+					},
+				],
+			});
+			reloadModelConfig();
+			expect(
+				getRegisteredModels().some((model) => model.provider === "stale"),
+			).toBe(true);
+
+			writeConfigFile(configPath, {
+				allowedBaseUrls: ["https://fresh.example/v1"],
+				providers: [
+					{
+						id: "fresh",
+						name: "Fresh",
+						baseUrl: "https://fresh.example/v1",
+						api: "openai-responses",
+						models: [
+							{
+								id: "fresh/model",
+								name: "Fresh model",
+								contextWindow: 100000,
+								maxTokens: 4096,
+							},
+						],
+					},
+				],
+			});
+
+			const validation = validateConfig();
+			expect(validation.valid).toBe(true);
+			expect(
+				getRegisteredModels().some((model) => model.provider === "stale"),
+			).toBe(false);
+			expect(
+				getRegisteredModels().some((model) => model.provider === "fresh"),
+			).toBe(true);
+		});
+
 		it("should report warnings for missing env vars", () => {
 			const configPath = join(testDir, "missing-vars.json");
 			const config = {
@@ -722,6 +1249,219 @@ describe("Config Features", () => {
 			const result = validateConfig();
 			expect(result.warnings.some((w) => w.includes("no effect"))).toBe(true);
 		});
+
+		it("should refresh cached merged config after successful validation", async () => {
+			const configPath = join(testDir, "cache-refresh.json");
+			writeConfigFile(configPath, {
+				providers: [
+					{
+						id: "test",
+						name: "Test",
+						baseUrl: "https://api.initial.example/v1",
+						api: "anthropic-messages",
+						models: [
+							{
+								id: "model-1",
+								name: "Model 1",
+								contextWindow: 100000,
+								maxTokens: 4096,
+							},
+						],
+					},
+				],
+			});
+			process.env.MAESTRO_CONFIG = configPath;
+			reloadModelConfig();
+
+			writeConfigFile(configPath, {
+				providers: [
+					{
+						id: "test",
+						name: "Test",
+						baseUrl: "https://api.updated.example/v1",
+						api: "anthropic-messages",
+						models: [
+							{
+								id: "model-1",
+								name: "Model 1",
+								contextWindow: 100000,
+								maxTokens: 4096,
+							},
+						],
+					},
+				],
+			});
+
+			expect(validateConfig().valid).toBe(true);
+			const { loadConfig } = await import("../../src/models/config-loader.js");
+			expect(loadConfig().providers[0]?.baseUrl).toBe(
+				"https://api.updated.example/v1",
+			);
+		});
+
+		it("should clear cached merged config after failed merged validation", async () => {
+			const configPath = join(testDir, "cache-invalid.json");
+			writeConfigFile(configPath, {
+				allowedBaseUrls: ["https://trusted.example/v1"],
+				providers: [
+					{
+						id: "test",
+						name: "Test",
+						baseUrl: "https://trusted.example/v1",
+						api: "anthropic-messages",
+						models: [
+							{
+								id: "model-1",
+								name: "Model 1",
+								contextWindow: 100000,
+								maxTokens: 4096,
+							},
+						],
+					},
+				],
+			});
+			process.env.MAESTRO_CONFIG = configPath;
+			reloadModelConfig();
+
+			writeConfigFile(configPath, {
+				allowedBaseUrls: ["https://trusted.example/v1"],
+				providers: [
+					{
+						id: "test",
+						name: "Test",
+						baseUrl: "https://attacker.example/v1",
+						api: "anthropic-messages",
+						models: [
+							{
+								id: "model-1",
+								name: "Model 1",
+								contextWindow: 100000,
+								maxTokens: 4096,
+							},
+						],
+					},
+				],
+			});
+
+			const validation = validateConfig();
+			expect(validation.valid).toBe(false);
+			const { loadConfig } = await import("../../src/models/config-loader.js");
+			expect(() => loadConfig()).toThrow(/allowedBaseUrls/);
+		});
+
+		it("should keep the last registered models after failed merged validation", () => {
+			const configPath = join(testDir, "registry-invalid.json");
+			writeConfigFile(configPath, {
+				allowedBaseUrls: ["https://trusted.example/v1"],
+				providers: [
+					{
+						id: "stable",
+						name: "Stable",
+						baseUrl: "https://trusted.example/v1",
+						api: "openai-responses",
+						models: [
+							{
+								id: "stable/model",
+								name: "Stable model",
+								contextWindow: 100000,
+								maxTokens: 4096,
+							},
+						],
+					},
+				],
+			});
+			process.env.MAESTRO_CONFIG = configPath;
+			reloadModelConfig();
+			expect(
+				getRegisteredModels().some((model) => model.provider === "stable"),
+			).toBe(true);
+
+			writeConfigFile(configPath, {
+				allowedBaseUrls: ["https://trusted.example/v1"],
+				providers: [
+					{
+						id: "stable",
+						name: "Stable",
+						baseUrl: "https://blocked.example/v1",
+						api: "openai-responses",
+						models: [
+							{
+								id: "stable/model",
+								name: "Stable model",
+								contextWindow: 100000,
+								maxTokens: 4096,
+							},
+						],
+					},
+				],
+			});
+
+			const validation = validateConfig();
+			expect(validation.valid).toBe(false);
+			expect(() => getRegisteredModels()).not.toThrow();
+			expect(
+				getRegisteredModels().some((model) => model.provider === "stable"),
+			).toBe(true);
+		});
+
+		it("should still load URL policy data after failed merged validation", async () => {
+			const configPath = join(testDir, "policy-invalid.json");
+			writeConfigFile(configPath, {
+				allowedBaseUrls: ["https://trusted.example/v1"],
+				providers: [
+					{
+						id: "stable",
+						name: "Stable",
+						baseUrl: "https://trusted.example/v1",
+						api: "openai-responses",
+						models: [
+							{
+								id: "stable/model",
+								name: "Stable model",
+								contextWindow: 100000,
+								maxTokens: 4096,
+							},
+						],
+					},
+				],
+			});
+			process.env.MAESTRO_CONFIG = configPath;
+			reloadModelConfig();
+			expect(
+				getRegisteredModels().some((model) => model.provider === "stable"),
+			).toBe(true);
+
+			writeConfigFile(configPath, {
+				allowedBaseUrls: ["https://trusted.example/v1"],
+				providers: [
+					{
+						id: "stable",
+						name: "Stable",
+						baseUrl: "https://blocked.example/v1",
+						api: "openai-responses",
+						models: [
+							{
+								id: "stable/model",
+								name: "Stable model",
+								contextWindow: 100000,
+								maxTokens: 4096,
+							},
+						],
+					},
+				],
+			});
+
+			const validation = validateConfig();
+			expect(validation.valid).toBe(false);
+
+			const { getMergedCustomModelUrlPolicyConfig } = await import(
+				"../../src/models/config-loader.js"
+			);
+			expect(() => getMergedCustomModelUrlPolicyConfig()).not.toThrow();
+			expect(getMergedCustomModelUrlPolicyConfig()).toEqual({
+				allowedBaseUrls: ["https://trusted.example/v1"],
+			});
+		});
 	});
 
 	describe("Config Inspection", () => {
@@ -767,6 +1507,93 @@ describe("Config Features", () => {
 			expect(provider?.name).toBe("Test Provider");
 			expect(provider?.modelCount).toBe(2);
 		});
+
+		it("should inspect providers even when merged URL validation fails", () => {
+			const configPath = join(testDir, "inspect-invalid-merged-url.json");
+			writeConfigFile(configPath, {
+				allowedBaseUrls: ["https://trusted.example/v1"],
+				providers: [
+					{
+						id: "blocked",
+						name: "Blocked Provider",
+						baseUrl: "https://blocked.example/v1",
+						api: "openai-responses",
+						models: [
+							{
+								id: "blocked/model",
+								name: "Blocked model",
+								contextWindow: 100000,
+								maxTokens: 4096,
+							},
+						],
+					},
+				],
+			});
+			process.env.MAESTRO_CONFIG = configPath;
+
+			const validation = validateConfig();
+			expect(validation.valid).toBe(false);
+			expect(
+				validation.errors.some((error) => error.includes("allowedBaseUrls")),
+			).toBe(true);
+
+			const inspection = inspectConfig();
+			const provider = inspection.providers.find(
+				(item) => item.id === "blocked",
+			);
+			expect(provider).toBeDefined();
+			expect(provider?.baseUrl).toBe("https://blocked.example/v1");
+			expect(provider?.enabled).toBe(true);
+		});
+
+		it("should inspect disabled providers without enforcing URL policy", () => {
+			const configPath = join(testDir, "inspect-disabled-url-policy.json");
+			writeConfigFile(configPath, {
+				allowedBaseUrls: ["https://trusted.example/v1"],
+				providers: [
+					{
+						id: "disabled",
+						name: "Disabled Provider",
+						enabled: false,
+						baseUrl: "https://blocked.example/v1",
+						api: "openai-responses",
+						models: [
+							{
+								id: "disabled/model",
+								name: "Disabled model",
+								contextWindow: 100000,
+								maxTokens: 4096,
+							},
+						],
+					},
+					{
+						id: "enabled",
+						name: "Enabled Provider",
+						baseUrl: "https://trusted.example/v1/responses",
+						api: "openai-responses",
+						models: [
+							{
+								id: "enabled/model",
+								name: "Enabled model",
+								contextWindow: 100000,
+								maxTokens: 4096,
+							},
+						],
+					},
+				],
+			});
+			process.env.MAESTRO_CONFIG = configPath;
+
+			const inspection = inspectConfig();
+			const disabled = inspection.providers.find(
+				(provider) => provider.id === "disabled",
+			);
+			expect(disabled).toBeDefined();
+			expect(disabled?.enabled).toBe(false);
+			expect(
+				inspection.providers.some((provider) => provider.id === "enabled"),
+			).toBe(true);
+		});
 	});
 
 	describe("Built-in provider overrides", () => {
@@ -774,6 +1601,7 @@ describe("Config Features", () => {
 			const configPath = join(testDir, "override-baseurl.json");
 			const overrideUrl = "http://localhost:7777/v1/messages";
 			const config = {
+				internalBaseUrlAllowList: [overrideUrl],
 				providers: [
 					{
 						id: "anthropic",
@@ -827,6 +1655,7 @@ describe("Config Features", () => {
 		it("should mark localhost providers as local in inspection", () => {
 			const configPath = join(testDir, "local-provider.json");
 			const config = {
+				internalBaseUrlAllowList: ["http://127.0.0.1:1234/v1"],
 				providers: [
 					{
 						id: "lmstudio",
@@ -858,6 +1687,7 @@ describe("Config Features", () => {
 		it("should set isLocal flag on registered models with localhost base URLs", () => {
 			const configPath = join(testDir, "local-model.json");
 			const config = {
+				internalBaseUrlAllowList: ["http://localhost:7777/v1"],
 				providers: [
 					{
 						id: "custom",

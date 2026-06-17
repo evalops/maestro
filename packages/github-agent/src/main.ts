@@ -9,7 +9,13 @@
 
 import { resolve } from "node:path";
 import { Orchestrator, type OrchestratorConfig } from "./orchestrator.js";
-import { DEFAULT_CONFIG } from "./types.js";
+import { DEFAULT_CONFIG, type GitHubAgentMaestroSandboxMode } from "./types.js";
+
+const GITHUB_AGENT_MAESTRO_SANDBOX_MODES = [
+	"docker",
+	"native",
+	"workspace-write",
+] as const satisfies readonly GitHubAgentMaestroSandboxMode[];
 
 function printUsage(): void {
 	console.error("GitHub Agent - Maestro building Maestro");
@@ -22,6 +28,9 @@ function printUsage(): void {
 	);
 	console.error(
 		"  --memory-dir <path>     Memory storage directory (default: ./memory)",
+	);
+	console.error(
+		"  --maestro-sandbox <mode> Sandbox for delegated maestro exec: docker | native | workspace-write (default: docker)",
 	);
 	console.error(
 		"  --labels <labels>       Comma-separated issue labels to watch (default: composer-task)",
@@ -115,7 +124,10 @@ function printUsage(): void {
 		"  GITHUB_WEBHOOK_REDELIVERY_INTERVAL  Webhook redelivery interval in ms",
 	);
 	console.error(
-		"  ANTHROPIC_API_KEY       Anthropic API key (required for composer)",
+		"  GITHUB_AGENT_MAESTRO_SANDBOX  Delegated maestro exec sandbox: docker | native | workspace-write",
+	);
+	console.error(
+		"  MAESTRO_EVALOPS_ACCESS_TOKEN + MAESTRO_EVALOPS_ORG_ID  Required for scoped delegated composer auth",
 	);
 	console.error("");
 	console.error("Examples:");
@@ -129,12 +141,32 @@ function printUsage(): void {
 	);
 }
 
+function parseMaestroSandboxMode(
+	value: string | undefined,
+	source: string,
+): GitHubAgentMaestroSandboxMode | undefined {
+	const normalized = value?.trim();
+	if (!normalized) return undefined;
+	if (
+		GITHUB_AGENT_MAESTRO_SANDBOX_MODES.includes(
+			normalized as GitHubAgentMaestroSandboxMode,
+		)
+	) {
+		return normalized as GitHubAgentMaestroSandboxMode;
+	}
+	console.error(
+		`Error: ${source} must be one of ${GITHUB_AGENT_MAESTRO_SANDBOX_MODES.join(", ")}. Received: ${normalized}`,
+	);
+	process.exit(1);
+}
+
 function parseArgs(): {
 	config: Partial<OrchestratorConfig>;
 	singleIssue?: number;
 } {
 	const args = process.argv.slice(2);
 	const config: Partial<OrchestratorConfig> = { ...DEFAULT_CONFIG };
+	config.maestroSandboxMode = undefined;
 	let singleIssue: number | undefined;
 
 	// Helper to get and validate the next argument value
@@ -175,6 +207,12 @@ function parseArgs(): {
 			i++;
 		} else if (arg === "--memory-dir") {
 			config.memoryDir = resolve(requireArg(arg, i));
+			i++;
+		} else if (arg === "--maestro-sandbox") {
+			config.maestroSandboxMode = parseMaestroSandboxMode(
+				requireArg(arg, i),
+				arg,
+			);
 			i++;
 		} else if (arg === "--labels") {
 			config.issueLabels = requireArg(arg, i)
@@ -344,6 +382,7 @@ async function main(): Promise<void> {
 	const webhookId = process.env.GITHUB_WEBHOOK_ID;
 	const webhookRedeliveryInterval =
 		process.env.GITHUB_WEBHOOK_REDELIVERY_INTERVAL;
+	const maestroSandboxMode = process.env.GITHUB_AGENT_MAESTRO_SANDBOX;
 
 	config.githubToken = config.githubToken ?? githubToken;
 	config.githubAppId = config.githubAppId ?? appId;
@@ -372,6 +411,9 @@ async function main(): Promise<void> {
 			"GITHUB_WEBHOOK_REDELIVERY_INTERVAL",
 			{ min: 1 },
 		);
+	config.maestroSandboxMode =
+		config.maestroSandboxMode ??
+		parseMaestroSandboxMode(maestroSandboxMode, "GITHUB_AGENT_MAESTRO_SANDBOX");
 
 	if (
 		!config.githubToken &&
@@ -386,8 +428,17 @@ async function main(): Promise<void> {
 		process.exit(1);
 	}
 
-	if (!process.env.ANTHROPIC_API_KEY) {
-		console.error("Error: ANTHROPIC_API_KEY environment variable is required");
+	if (
+		!process.env.MAESTRO_EVALOPS_ACCESS_TOKEN ||
+		!(
+			process.env.MAESTRO_EVALOPS_ORG_ID ||
+			process.env.EVALOPS_ORGANIZATION_ID ||
+			process.env.MAESTRO_ENTERPRISE_ORG_ID
+		)
+	) {
+		console.error(
+			"Error: MAESTRO_EVALOPS_ACCESS_TOKEN and MAESTRO_EVALOPS_ORG_ID are required for isolated delegated composer runs",
+		);
 		process.exit(1);
 	}
 

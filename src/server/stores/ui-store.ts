@@ -1,7 +1,8 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { dirname, resolve } from "node:path";
+import { existsSync, readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import type { UiState } from "../../cli-tui/ui-state.js";
 import { getAgentDir } from "../../config/constants.js";
+import { writeJsonFile } from "../../utils/fs.js";
 import { tryParseJson } from "../../utils/json.js";
 import { resolveEnvPath } from "../../utils/path-expansion.js";
 
@@ -62,8 +63,7 @@ export function loadWebUiState(): UiStateFile {
 
 export function saveWebUiState(state: UiStateFile): void {
 	const normalized = normalize(state);
-	mkdirSync(dirname(UI_STATE_PATH), { recursive: true });
-	writeFileSync(UI_STATE_PATH, JSON.stringify(normalized, null, 2), "utf-8");
+	writeJsonFile(UI_STATE_PATH, normalized);
 }
 
 export function getSessionUiState(

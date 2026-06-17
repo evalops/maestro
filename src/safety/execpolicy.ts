@@ -30,16 +30,12 @@
  * - .maestro/execpolicy (project - evaluated after global)
  */
 
-import {
-	appendFileSync,
-	existsSync,
-	mkdirSync,
-	readFileSync,
-	writeFileSync,
-} from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readFileSync } from "node:fs";
 import { basename, dirname, join, win32 } from "node:path";
 import { PATHS } from "../config/constants.js";
+import { writeTextFileAtomic } from "../utils/fs.js";
 import { createLogger } from "../utils/logger.js";
+import { sanitizeWithStaticMask } from "../utils/secret-redactor.js";
 
 const logger = createLogger("safety:execpolicy");
 
@@ -105,6 +101,7 @@ export interface Evaluation {
 
 export interface PolicyCheckOptions {
 	resolveHostExecutables?: boolean;
+	suppressHeuristicsFallback?: boolean;
 }
 
 /**
@@ -240,8 +237,20 @@ export class Policy {
 		options: PolicyCheckOptions = {},
 	): Evaluation {
 		const matchedRules = commands.flatMap((cmd) =>
-			this.matchesForCommand(cmd, heuristicsFallback, options),
+			this.matchesForCommand(cmd, heuristicsFallback, {
+				...options,
+				suppressHeuristicsFallback:
+					options.suppressHeuristicsFallback ||
+					isKnownCommandWrapperPolicySequence(cmd),
+			}),
 		);
+		if (matchedRules.length === 0 && commands.length > 0) {
+			matchedRules.push({
+				type: "heuristics",
+				command: commands[0] ?? [],
+				decision: heuristicsFallback?.(commands[0] ?? []) ?? "prompt",
+			});
+		}
 		return this.evaluationFromMatches(matchedRules);
 	}
 
@@ -283,11 +292,11 @@ export class Policy {
 			}
 		}
 
-		if (matched.length === 0 && heuristicsFallback) {
+		if (matched.length === 0 && options.suppressHeuristicsFallback !== true) {
 			matched.push({
 				type: "heuristics",
 				command: cmd,
-				decision: heuristicsFallback(cmd),
+				decision: heuristicsFallback?.(cmd) ?? "prompt",
 			});
 		}
 
@@ -380,7 +389,9 @@ export function parsePolicy(content: string, identifier: string): Policy {
 			policy.addHostExecutable(parsed.name, parsed.paths);
 		} catch (error) {
 			logger.warn(`Failed to parse host executable in ${identifier}`, {
-				error: error instanceof Error ? error.message : String(error),
+				error: sanitizeWithStaticMask(
+					error instanceof Error ? error.message : String(error),
+				),
 				args: args.slice(0, 100),
 			});
 		}
@@ -445,7 +456,9 @@ export function parsePolicy(content: string, identifier: string): Policy {
 			}
 		} catch (error) {
 			logger.warn(`Failed to parse rule in ${identifier}`, {
-				error: error instanceof Error ? error.message : String(error),
+				error: sanitizeWithStaticMask(
+					error instanceof Error ? error.message : String(error),
+				),
 				args: args.slice(0, 100),
 			});
 		}
@@ -758,7 +771,9 @@ export function loadPolicy(workspaceDir: string): Policy {
 			logger.debug("Loaded global execpolicy", { path: globalPath });
 		} catch (error) {
 			logger.warn("Failed to load global execpolicy", {
-				error: error instanceof Error ? error.message : String(error),
+				error: sanitizeWithStaticMask(
+					error instanceof Error ? error.message : String(error),
+				),
 			});
 		}
 	}
@@ -779,7 +794,9 @@ export function loadPolicy(workspaceDir: string): Policy {
 			logger.debug("Loaded project execpolicy", { path: projectPath });
 		} catch (error) {
 			logger.warn("Failed to load project execpolicy", {
-				error: error instanceof Error ? error.message : String(error),
+				error: sanitizeWithStaticMask(
+					error instanceof Error ? error.message : String(error),
+				),
 			});
 		}
 	}
@@ -826,7 +843,7 @@ export function appendAllowPrefixRule(
 		}
 		appendFileSync(policyPath, `${rule}\n`);
 	} else {
-		writeFileSync(policyPath, `${rule}\n`);
+		writeTextFileAtomic(policyPath, `${rule}\n`);
 	}
 
 	// Clear cache since policy changed
@@ -846,7 +863,10 @@ export function parseCommand(command: string): string[] {
 	return parseCommandSequence(command)[0] ?? [];
 }
 
-function parseCommandSequence(command: string): string[][] {
+function parseCommandSequence(
+	command: string,
+	options: { preserveWrapperCommands?: boolean } = {},
+): string[][] {
 	const commands: string[][] = [];
 	const tokens: string[] = [];
 	let current = "";
@@ -861,9 +881,19 @@ function parseCommandSequence(command: string): string[][] {
 	};
 	const flushCommand = () => {
 		flushToken();
-		const commandTokens = normalizeShellCommandTokens(tokens);
-		if (commandTokens.length > 0) {
+		const commandTokenSequences = normalizeShellCommandTokenSequences(
+			tokens,
+			options,
+		);
+		for (const commandTokens of commandTokenSequences) {
+			const innerShellCommand = extractShellCommandString(commandTokens);
 			commands.push(commandTokens);
+			if (innerShellCommand !== null) {
+				const innerCommands = parseCommandSequence(innerShellCommand, options);
+				if (innerCommands.length > 0) {
+					commands.push(...innerCommands);
+				}
+			}
 		}
 		tokens.length = 0;
 	};
@@ -940,7 +970,10 @@ function isShellCommandSeparator(command: string, index: number): boolean {
 	);
 }
 
-function normalizeShellCommandTokens(tokens: string[]): string[] {
+function normalizeShellCommandTokenSequences(
+	tokens: string[],
+	options: { preserveWrapperCommands?: boolean } = {},
+): string[][] {
 	const normalized: string[] = [];
 	let commandStarted = false;
 	for (let i = 0; i < tokens.length; i++) {
@@ -958,7 +991,506 @@ function normalizeShellCommandTokens(tokens: string[]): string[] {
 		normalized.push(token);
 		commandStarted = true;
 	}
-	return normalized;
+	return unwrapCommandWrapperSequences(normalized, options);
+}
+
+function extractShellCommandString(tokens: string[]): string | null {
+	const program = hostExecutableBasename(tokens[0] ?? "");
+	if (!["bash", "sh", "zsh", "dash", "ksh"].includes(program)) {
+		return null;
+	}
+	for (let index = 1; index < tokens.length; index++) {
+		const token = tokens[index]!;
+		if (token === "--") {
+			continue;
+		}
+		if (SHELL_OPTIONS_WITH_VALUES.has(token)) {
+			index++;
+			continue;
+		}
+		if (
+			SHELL_OPTIONS_WITH_INLINE_VALUES.some((option) =>
+				token.startsWith(`${option}=`),
+			)
+		) {
+			continue;
+		}
+		if (isShellCommandStringFlag(token)) {
+			let commandIndex = index + 1;
+			while (tokens[commandIndex] === "--") {
+				commandIndex++;
+			}
+			return tokens[commandIndex] ?? null;
+		}
+		if (!token.startsWith("-")) {
+			return null;
+		}
+	}
+	return null;
+}
+
+function tokensEqual(left: string[], right: string[]): boolean {
+	return (
+		left.length === right.length &&
+		left.every((token, index) => token === right[index])
+	);
+}
+
+function isKnownCommandWrapperPolicySequence(tokens: string[]): boolean {
+	const program = hostExecutableBasename(tokens[0] ?? "");
+	return COMMAND_WRAPPER_PROGRAMS.has(program);
+}
+
+function isShellCommandStringFlag(token: string): boolean {
+	if (token === "-c") {
+		return true;
+	}
+	if (!/^-([A-Za-z]+)$/.test(token)) {
+		return false;
+	}
+	const flags = [...token.slice(1)];
+	const commandStringFlagIndex = flags.indexOf("c");
+	if (commandStringFlagIndex === -1) {
+		return false;
+	}
+	return flags.every(
+		(flag, index) =>
+			(index === commandStringFlagIndex && flag === "c") ||
+			SHELL_COMBINABLE_COMMAND_STRING_FLAGS.has(flag),
+	);
+}
+
+const SHELL_OPTIONS_WITH_VALUES = new Set([
+	"--init-file",
+	"--rcfile",
+	"-init-file",
+	"-rcfile",
+	"-O",
+	"+O",
+]);
+const SHELL_OPTIONS_WITH_INLINE_VALUES = ["--init-file", "--rcfile"];
+const COMMAND_WRAPPER_PROGRAMS = new Set([
+	"command",
+	"env",
+	"ionice",
+	"nice",
+	"nohup",
+	"setsid",
+	"stdbuf",
+	"time",
+	"timeout",
+	"xargs",
+]);
+const SHELL_COMBINABLE_COMMAND_STRING_FLAGS = new Set([
+	"a",
+	"b",
+	"e",
+	"f",
+	"h",
+	"i",
+	"k",
+	"l",
+	"m",
+	"n",
+	"p",
+	"r",
+	"s",
+	"t",
+	"u",
+	"v",
+	"x",
+	"B",
+	"C",
+	"E",
+	"H",
+	"P",
+	"T",
+]);
+
+function unwrapCommandWrapperSequences(
+	tokens: string[],
+	options: { preserveWrapperCommands?: boolean } = {},
+): string[][] {
+	let currentSequences = [tokens];
+	const preservedSequences: string[][] = [];
+	while (true) {
+		let changed = false;
+		const nextSequences: string[][] = [];
+		for (const current of currentSequences) {
+			const splitEnvSequences = unwrapEnvSplitCommand(current);
+			if (splitEnvSequences && splitEnvSequences.length > 0) {
+				if (options.preserveWrapperCommands) {
+					pushUniqueCommandTokens(preservedSequences, current);
+				}
+				nextSequences.push(...splitEnvSequences);
+				changed = true;
+				continue;
+			}
+
+			const next = unwrapOneCommandWrapper(current);
+			if (!next || next.length === 0) {
+				nextSequences.push(current);
+				continue;
+			}
+			if (next.length === current.length && tokensEqual(next, current)) {
+				nextSequences.push(current);
+				continue;
+			}
+			if (options.preserveWrapperCommands) {
+				pushUniqueCommandTokens(preservedSequences, current);
+			}
+			nextSequences.push(next);
+			changed = true;
+		}
+		currentSequences = nextSequences.filter((sequence) => sequence.length > 0);
+		if (!changed) {
+			if (!options.preserveWrapperCommands) {
+				return currentSequences;
+			}
+			for (const sequence of currentSequences) {
+				pushUniqueCommandTokens(preservedSequences, sequence);
+			}
+			return preservedSequences;
+		}
+	}
+}
+
+function pushUniqueCommandTokens(sequences: string[][], next: string[]): void {
+	if (!sequences.some((sequence) => tokensEqual(sequence, next))) {
+		sequences.push(next);
+	}
+}
+
+function unwrapOneCommandWrapper(tokens: string[]): string[] | null {
+	const program = hostExecutableBasename(tokens[0] ?? "");
+	switch (program) {
+		case "command":
+			return unwrapCommandBuiltin(tokens);
+		case "env":
+			return unwrapEnvCommand(tokens);
+		case "nice":
+			return unwrapNiceCommand(tokens);
+		case "nohup":
+			return tokens.slice(1);
+		case "setsid":
+		case "time":
+			return unwrapOptionsThenCommand(tokens, 1, new Set());
+		case "timeout":
+			return unwrapTimeoutCommand(tokens);
+		case "stdbuf":
+			return unwrapOptionsThenCommand(
+				tokens,
+				1,
+				new Set(["-i", "-o", "-e"]),
+				new Map([
+					["-i", isStdbufModeToken],
+					["-o", isStdbufModeToken],
+					["-e", isStdbufModeToken],
+				]),
+			);
+		case "ionice":
+			return unwrapOptionsThenCommand(
+				tokens,
+				1,
+				new Set(["-c", "-n", "-p"]),
+				new Map([
+					["-c", isIoniceClassToken],
+					["-n", isUnsignedIntegerToken],
+					["-p", isUnsignedIntegerToken],
+				]),
+			);
+		case "xargs":
+			return unwrapOptionsThenCommand(
+				tokens,
+				1,
+				new Set(["-a", "-d", "-E", "-I", "-n", "-P", "-s"]),
+				new Map([
+					["-n", isUnsignedIntegerToken],
+					["-P", isUnsignedIntegerToken],
+					["-s", isUnsignedIntegerToken],
+				]),
+			);
+		default:
+			return null;
+	}
+}
+
+function unwrapCommandBuiltin(tokens: string[]): string[] {
+	let index = 1;
+	while (index < tokens.length) {
+		const token = tokens[index]!;
+		if (token === "--") {
+			index++;
+			break;
+		}
+		if (token === "-v" || token === "-V") {
+			return tokens;
+		}
+		if (token === "-p") {
+			index++;
+			continue;
+		}
+		break;
+	}
+	return tokens.slice(index);
+}
+
+function unwrapEnvCommand(tokens: string[]): string[] {
+	let index = 1;
+	while (index < tokens.length) {
+		const token = tokens[index]!;
+		if (token === "--") {
+			index++;
+			break;
+		}
+		if (isShellAssignment(token)) {
+			index++;
+			continue;
+		}
+		if (
+			token === "-u" ||
+			token === "--unset" ||
+			token === "-C" ||
+			token === "--chdir"
+		) {
+			index += 2;
+			continue;
+		}
+		if (token === "-S" || token === "--split-string") {
+			return (
+				splitEnvCommandStringToSequences(
+					tokens[index + 1],
+					tokens.slice(index + 2),
+				)[0] ?? []
+			);
+		}
+		if (token.startsWith("--unset=") || token.startsWith("--chdir=")) {
+			index++;
+			continue;
+		}
+		if (token.startsWith("--split-string=")) {
+			return (
+				splitEnvCommandStringToSequences(
+					token.slice("--split-string=".length),
+					tokens.slice(index + 1),
+				)[0] ?? []
+			);
+		}
+		if (token.startsWith("-")) {
+			index++;
+			continue;
+		}
+		break;
+	}
+	return tokens.slice(index);
+}
+
+function unwrapEnvSplitCommand(tokens: string[]): string[][] | null {
+	if (hostExecutableBasename(tokens[0] ?? "") !== "env") {
+		return null;
+	}
+
+	let index = 1;
+	while (index < tokens.length) {
+		const token = tokens[index]!;
+		if (token === "--") {
+			return null;
+		}
+		if (isShellAssignment(token)) {
+			index++;
+			continue;
+		}
+		if (
+			token === "-u" ||
+			token === "--unset" ||
+			token === "-C" ||
+			token === "--chdir"
+		) {
+			index += 2;
+			continue;
+		}
+		if (token === "-S" || token === "--split-string") {
+			return splitEnvCommandStringToSequences(
+				tokens[index + 1],
+				tokens.slice(index + 2),
+			);
+		}
+		if (token.startsWith("--unset=") || token.startsWith("--chdir=")) {
+			index++;
+			continue;
+		}
+		if (token.startsWith("--split-string=")) {
+			return splitEnvCommandStringToSequences(
+				token.slice("--split-string=".length),
+				tokens.slice(index + 1),
+			);
+		}
+		return null;
+	}
+	return null;
+}
+
+function splitEnvCommandStringToSequences(
+	splitString: string | undefined,
+	remainingTokens: string[],
+): string[][] {
+	if (!splitString) {
+		return remainingTokens.length > 0 ? [remainingTokens] : [];
+	}
+	const splitSequences = parseCommandSequence(splitString, {
+		preserveWrapperCommands: true,
+	});
+	if (splitSequences.length === 0) {
+		return remainingTokens.length > 0 ? [remainingTokens] : [];
+	}
+	if (remainingTokens.length > 0) {
+		const lastIndex = splitSequences.length - 1;
+		splitSequences[lastIndex] = [
+			...splitSequences[lastIndex]!,
+			...remainingTokens,
+		];
+	}
+	return splitSequences;
+}
+
+function unwrapNiceCommand(tokens: string[]): string[] {
+	let index = 1;
+	while (index < tokens.length) {
+		const token = tokens[index]!;
+		if (token === "--") {
+			index++;
+			break;
+		}
+		if (token === "-n") {
+			index += isSignedIntegerToken(tokens[index + 1]) ? 2 : 1;
+			continue;
+		}
+		if (/^-\d+$/.test(token) || /^-n[+-]?\d+$/.test(token)) {
+			index++;
+			continue;
+		}
+		break;
+	}
+	return tokens.slice(index);
+}
+
+function unwrapTimeoutCommand(tokens: string[]): string[] {
+	let index = 1;
+	while (index < tokens.length) {
+		const token = tokens[index]!;
+		if (token === "--") {
+			index++;
+			break;
+		}
+		if (
+			token === "-k" ||
+			token === "--kill-after" ||
+			token === "-s" ||
+			token === "--signal"
+		) {
+			index += 2;
+			continue;
+		}
+		if (token.startsWith("--kill-after=") || token.startsWith("--signal=")) {
+			index++;
+			continue;
+		}
+		if (token.startsWith("-")) {
+			index++;
+			continue;
+		}
+		if (isTimeoutDuration(token)) {
+			index++;
+		}
+		break;
+	}
+	return tokens.slice(index);
+}
+
+function isTimeoutDuration(token: string): boolean {
+	return /^\d+(?:\.\d+)?[smhd]?$/.test(token);
+}
+
+type OptionArgumentValidator = (token: string) => boolean;
+
+function unwrapOptionsThenCommand(
+	tokens: string[],
+	startIndex: number,
+	optionsWithArgs: Set<string>,
+	optionArgumentValidators?: Map<string, OptionArgumentValidator>,
+): string[] {
+	let index = startIndex;
+	while (index < tokens.length) {
+		const token = tokens[index]!;
+		if (token === "--") {
+			index++;
+			break;
+		}
+		if (optionsWithArgs.has(token)) {
+			if (
+				shouldConsumeOptionArgument(
+					token,
+					tokens[index + 1],
+					optionArgumentValidators,
+				)
+			) {
+				index += 2;
+				continue;
+			}
+			index++;
+			continue;
+		}
+		if (optionHasInlineArgument(token, optionsWithArgs)) {
+			index++;
+			continue;
+		}
+		if (token.startsWith("-")) {
+			index++;
+			continue;
+		}
+		break;
+	}
+	return tokens.slice(index);
+}
+
+function shouldConsumeOptionArgument(
+	option: string,
+	token: string | undefined,
+	optionArgumentValidators?: Map<string, OptionArgumentValidator>,
+): boolean {
+	if (!token) {
+		return false;
+	}
+	const validator = optionArgumentValidators?.get(option);
+	return validator ? validator(token) : true;
+}
+
+function optionHasInlineArgument(
+	token: string,
+	optionsWithArgs: Set<string>,
+): boolean {
+	for (const option of optionsWithArgs) {
+		if (token.startsWith(option) && token.length > option.length) {
+			return true;
+		}
+	}
+	return false;
+}
+
+function isSignedIntegerToken(token: string | undefined): token is string {
+	return typeof token === "string" && /^[+-]?\d+$/.test(token);
+}
+
+function isUnsignedIntegerToken(token: string): boolean {
+	return /^\d+$/.test(token);
+}
+
+function isIoniceClassToken(token: string): boolean {
+	return /^(?:[0-3]|none|realtime|best-effort|idle)$/i.test(token);
+}
+
+function isStdbufModeToken(token: string): boolean {
+	return /^(?:[0L]|[0-9]+[KMGT]?B?)$/i.test(token);
 }
 
 function isShellAssignment(token: string): boolean {
@@ -1023,7 +1555,9 @@ export function checkCommand(
 	heuristicsFallback?: (cmd: string[]) => Decision,
 ): Evaluation {
 	const policy = loadPolicy(workspaceDir);
-	const commands = parseCommandSequence(command);
+	const commands = parseCommandSequence(command, {
+		preserveWrapperCommands: true,
+	});
 	return policy.checkMultiple(commands, heuristicsFallback, {
 		resolveHostExecutables: true,
 	});

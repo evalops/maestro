@@ -96,15 +96,199 @@ describe("guardian runner", () => {
 		Reflect.deleteProperty(process.env, "MAESTRO_GUARDIAN");
 	});
 
-	it("respects inline disable flag for commit/push detection", () => {
-		const result = shouldGuardCommand('MAESTRO_GUARDIAN=0 git commit -m "msg"');
-		expect(result.shouldGuard).toBe(false);
+	it("ignores inline disable text for commit/push detection", () => {
+		const commented = shouldGuardCommand(
+			"git push origin main # MAESTRO_GUARDIAN=0",
+		);
+		expect(commented.shouldGuard).toBe(true);
+		expect(commented.trigger).toBe("git push");
+
+		const assignment = shouldGuardCommand(
+			'MAESTRO_GUARDIAN=0 git commit -m "msg"',
+		);
+		expect(assignment.shouldGuard).toBe(true);
+		expect(assignment.trigger).toBe("git commit");
+	});
+
+	it("detects wrapped git commands", () => {
+		const cases = [
+			{ command: "git -C packages/tui-rs push", trigger: "git push" },
+			{ command: "command git push origin main", trigger: "git push" },
+			{ command: 'command -- git commit -m "msg"', trigger: "git commit" },
+			{ command: 'sudo -- git commit -m "msg"', trigger: "git commit" },
+			{ command: "sudo -u root -- git push origin main", trigger: "git push" },
+			{ command: "/usr/bin/git push origin main", trigger: "git push" },
+			{ command: '( git commit -m "msg" )', trigger: "git commit" },
+			{ command: 'echo "$(git commit -m msg)"', trigger: "git commit" },
+			{ command: "echo $(git push origin main)", trigger: "git push" },
+			{ command: "echo `git push origin main`", trigger: "git push" },
+			{ command: "cat <(git push origin main)", trigger: "git push" },
+			{ command: "diff <(echo ok) <(rm -rf /tmp/x)", trigger: "rm -rf" },
+			{ command: "echo $(rm -rf /tmp/x)", trigger: "rm -rf" },
+			{ command: "echo `rm -r /tmp/x`", trigger: "rm -r" },
+			{ command: "echo $(echo $(git push origin main))", trigger: "git push" },
+			{ command: "echo $(echo $(rm -rf /tmp/x))", trigger: "rm -rf" },
+			{ command: "eval 'git push origin main'", trigger: "git push" },
+			{ command: 'eval "rm -rf /tmp/x"', trigger: "rm -rf" },
+			{
+				command: 'env GIT_CONFIG_GLOBAL=/tmp/gitconfig git commit -m "msg"',
+				trigger: "git commit",
+			},
+		];
+
+		for (const { command, trigger } of cases) {
+			const result = shouldGuardCommand(command);
+			expect(result.shouldGuard).toBe(true);
+			expect(result.trigger).toBe(trigger);
+		}
+	});
+
+	it("detects guarded commands past shallow substitution nesting", () => {
+		let gitCommand = "git push origin main";
+		let rmCommand = "rm -rf /tmp/x";
+		for (let index = 0; index < 12; index += 1) {
+			gitCommand = `echo $(${gitCommand})`;
+			rmCommand = `echo $(${rmCommand})`;
+		}
+
+		expect(shouldGuardCommand(gitCommand)).toEqual({
+			shouldGuard: true,
+			trigger: "git push",
+		});
+		expect(shouldGuardCommand(rmCommand)).toEqual({
+			shouldGuard: true,
+			trigger: "rm -rf",
+		});
+	});
+
+	it("detects later guarded git commands in a token sequence", () => {
+		const cases = [
+			{
+				command: "git submodule foreach git commit -m update",
+				trigger: "git commit",
+			},
+			{
+				command: `sh -c 'git status
+git commit -m "msg"'`,
+				trigger: "git commit",
+			},
+		];
+
+		for (const { command, trigger } of cases) {
+			const result = shouldGuardCommand(command);
+			expect(result.shouldGuard).toBe(true);
+			expect(result.trigger).toBe(trigger);
+		}
+	});
+
+	it("detects guarded commands inside shell -c scripts", () => {
+		const cases = [
+			{ command: `sh -c 'git commit -m "msg"'`, trigger: "git commit" },
+			{ command: `sh -c'git push origin main'`, trigger: "git push" },
+			{ command: `sh.exe -c 'git push origin main'`, trigger: "git push" },
+			{ command: `bash -lc 'git push origin main'`, trigger: "git push" },
+			{ command: `bash -lc'git push origin main'`, trigger: "git push" },
+			{ command: `fish -c 'git push origin main'`, trigger: "git push" },
+			{
+				command: `bash -norc -c 'git push origin main'`,
+				trigger: "git push",
+			},
+			{ command: `su -c 'git push origin main'`, trigger: "git push" },
+			{
+				command: `docker run image sh -c 'git push origin main'`,
+				trigger: "git push",
+			},
+			{
+				command: `docker run --rm ubuntu sh -c 'git commit -m "msg"'`,
+				trigger: "git commit",
+			},
+			{ command: `bash -c 'rm -rf /tmp/x'`, trigger: "rm -rf" },
+			{ command: `sh -c'rm -rf /tmp/x'`, trigger: "rm -rf" },
+			{ command: `sh -c -- 'rm -rf /tmp/x'`, trigger: "rm -rf" },
+			{ command: `sh -ec 'rm -r /tmp/y'`, trigger: "rm -r" },
+			{ command: `sh -cx 'git push origin main'`, trigger: "git push" },
+			{ command: `bash -xce 'git commit -m "msg"'`, trigger: "git commit" },
+			{ command: `fish -c 'git push origin main'`, trigger: "git push" },
+			{ command: `su -c 'git push origin main'`, trigger: "git push" },
+			{ command: `su root -c 'git commit -m "msg"'`, trigger: "git commit" },
+			{
+				command: `ssh deploy@example.com 'git push origin main'`,
+				trigger: "git push",
+			},
+			{
+				command: `ssh deploy@example.com'git push origin main'`,
+				trigger: "git push",
+			},
+			{
+				command: `ssh -p 2222 host 'git commit -m "msg"'`,
+				trigger: "git commit",
+			},
+			{ command: `ssh host 'rm -rf /tmp/x'`, trigger: "rm -rf" },
+			{ command: `sh -c 'echo $(git push origin main)'`, trigger: "git push" },
+			{ command: `eval 'echo $(rm -rf /tmp/x)'`, trigger: "rm -rf" },
+		];
+
+		for (const { command, trigger } of cases) {
+			const result = shouldGuardCommand(command);
+			expect(result.shouldGuard).toBe(true);
+			expect(result.trigger).toBe(trigger);
+		}
+	});
+
+	it("detects guarded substitutions inside inline shell scripts", () => {
+		const cases = [
+			{
+				command: `sh -c 'echo $(git push origin main)'`,
+				trigger: "git push",
+			},
+			{
+				command: `bash -lc 'echo $(git commit -m "msg")'`,
+				trigger: "git commit",
+			},
+			{
+				command: `eval 'echo $(rm -rf /tmp/x)'`,
+				trigger: "rm -rf",
+			},
+		];
+
+		for (const { command, trigger } of cases) {
+			const result = shouldGuardCommand(command);
+			expect(result.shouldGuard).toBe(true);
+			expect(result.trigger).toBe(trigger);
+		}
+	});
+
+	it("detects guarded quoted command args for non-shell launchers", () => {
+		const cases = [
+			{
+				command: `ssh host 'git push origin main'`,
+				trigger: "git push",
+			},
+			{
+				command: `runuser -u deploy -- 'git commit -m "msg"'`,
+				trigger: "git commit",
+			},
+			{
+				command: `script -qc 'rm -rf /tmp/x' /dev/null`,
+				trigger: "rm -rf",
+			},
+		];
+
+		for (const { command, trigger } of cases) {
+			const result = shouldGuardCommand(command);
+			expect(result.shouldGuard).toBe(true);
+			expect(result.trigger).toBe(trigger);
+		}
 	});
 
 	it("detects destructive commands", () => {
 		const commands = [
 			"rm -rf /tmp/x",
+			"/usr/bin/rm -rf /tmp/x",
+			"rm -fr /tmp/x",
+			"rm --recursive --force /tmp/x",
 			"sudo rm -r /tmp/y",
+			"find . -exec rm -rf {} ;",
 			"find . -delete",
 			"chmod 000 secret",
 			"dd if=/dev/zero of=/dev/sda",
@@ -117,12 +301,40 @@ describe("guardian runner", () => {
 		}
 	});
 
+	it("does not merge destructive regexes across command separators", () => {
+		const commands = ["find; echo -delete", "chmod; 000"];
+
+		for (const cmd of commands) {
+			const result = shouldGuardCommand(cmd);
+			expect(result.shouldGuard).toBe(false);
+			expect(result.trigger).toBeNull();
+		}
+	});
+
 	it("does not flag rm without recursive flag", () => {
-		const commands = ["rm -v /home/user/file.txt", "rm -i parent/child"];
+		const commands = [
+			"rm -v /home/user/file.txt",
+			"rm -i parent/child",
+			"rm -- -rf",
+			"rm -- --recursive --force",
+		];
 		for (const cmd of commands) {
 			const result = shouldGuardCommand(cmd);
 			expect(result.shouldGuard).toBe(false);
 		}
+	});
+
+	it("stops parsing rm options at double dash", () => {
+		const result = shouldGuardCommand("rm -r -- -f");
+
+		expect(result.shouldGuard).toBe(true);
+		expect(result.trigger).toBe("rm -r");
+	});
+
+	it("does not flag literal git commands in single-quoted strings", () => {
+		const result = shouldGuardCommand("echo '$(git push origin main)'");
+
+		expect(result.shouldGuard).toBe(false);
 	});
 
 	it("skips when MAESTRO_GUARDIAN=0 env is set", async () => {

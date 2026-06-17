@@ -19,30 +19,53 @@ import {
 	updateMcpAuthPresetInConfig,
 	updateMcpServerInConfig,
 } from "../../src/mcp/config.js";
+import { resetOAuthStorageForTests } from "../../src/oauth/storage.js";
 
 describe("MCP config writing", () => {
 	let testDir: string;
 	let previousHome: string | undefined;
 	let previousMaestroHome: string | undefined;
 	let previousUserMcpPath: string | undefined;
+	let previousAgentDir: string | undefined;
+	let previousPlatformMcpEnabled: string | undefined;
+	let previousDisableKeychain: string | undefined;
 
 	beforeEach(() => {
 		testDir = join(tmpdir(), `mcp-config-write-${Date.now()}`);
 		mkdirSync(testDir, { recursive: true });
 		const homeDir = join(testDir, "home");
 		mkdirSync(homeDir, { recursive: true });
+		const agentDir = join(testDir, "agent");
+		mkdirSync(agentDir, { recursive: true });
 		previousHome = process.env.HOME;
 		previousMaestroHome = process.env.MAESTRO_HOME;
 		previousUserMcpPath = process.env.MAESTRO_USER_MCP_PATH;
+		previousAgentDir = process.env.MAESTRO_AGENT_DIR;
+		previousPlatformMcpEnabled = process.env.MAESTRO_PLATFORM_MCP_ENABLED;
+		previousDisableKeychain = process.env.MAESTRO_DISABLE_KEYCHAIN;
 		process.env.HOME = homeDir;
+		process.env.MAESTRO_AGENT_DIR = agentDir;
+		process.env.MAESTRO_PLATFORM_MCP_ENABLED = "false";
+		// Force file-mode OAuth storage so the OS keychain can't leak a
+		// stale evalops credential into platform-MCP plugin discovery.
+		process.env.MAESTRO_DISABLE_KEYCHAIN = "1";
 		delete process.env.MAESTRO_HOME;
 		delete process.env.MAESTRO_USER_MCP_PATH;
+		resetOAuthStorageForTests();
 	});
 
 	afterEach(() => {
 		restoreEnv("HOME", previousHome);
 		restoreEnv("MAESTRO_HOME", previousMaestroHome);
 		restoreEnv("MAESTRO_USER_MCP_PATH", previousUserMcpPath);
+		restoreEnv("MAESTRO_AGENT_DIR", previousAgentDir);
+		restoreEnv("MAESTRO_PLATFORM_MCP_ENABLED", previousPlatformMcpEnabled);
+		restoreEnv("MAESTRO_DISABLE_KEYCHAIN", previousDisableKeychain);
+		// `cachedMode` inside `src/oauth/storage.ts` is a module-level
+		// singleton; without re-resetting it on teardown a later test
+		// in the same worker would keep using the file backend even
+		// after MAESTRO_DISABLE_KEYCHAIN is gone.
+		resetOAuthStorageForTests();
 		rmSync(testDir, { recursive: true, force: true });
 	});
 

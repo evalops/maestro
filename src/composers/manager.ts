@@ -70,6 +70,7 @@ export class ComposerManager extends EventEmitter {
 	private baseTopP: number | undefined = undefined;
 	private baseThinkingLevel: string | undefined = undefined;
 	private agent: Agent | null = null;
+	private projectRoot: string | undefined = undefined;
 
 	/**
 	 * Initialize the composer manager with base configuration
@@ -87,6 +88,7 @@ export class ComposerManager extends EventEmitter {
 		this.baseTemperature = agent.state.temperature;
 		this.baseTopP = agent.state.topP;
 		this.baseThinkingLevel = agent.state.thinkingLevel;
+		this.projectRoot = projectRoot;
 		this.state.available = loadComposers(projectRoot).map(cloneComposer);
 	}
 
@@ -101,7 +103,8 @@ export class ComposerManager extends EventEmitter {
 	 * Reload available composers from disk
 	 */
 	reload(projectRoot?: string): void {
-		this.state.available = loadComposers(projectRoot).map(cloneComposer);
+		this.projectRoot = projectRoot ?? this.projectRoot;
+		this.state.available = loadComposers(this.projectRoot).map(cloneComposer);
 	}
 
 	private resolveComposerTools(composer: LoadedComposer): AgentTool[] {
@@ -137,11 +140,15 @@ export class ComposerManager extends EventEmitter {
 		this.agent.setTools(tools);
 	}
 
+	detachAgent(): void {
+		this.agent = null;
+	}
+
 	/**
 	 * Activate a composer by name
 	 */
 	activate(name: string, projectRoot?: string): boolean {
-		const composer = getComposerByName(name, projectRoot);
+		const composer = getComposerByName(name, projectRoot ?? this.projectRoot);
 		if (!composer) {
 			this.emit("error", new Error(`Composer '${name}' not found`));
 			return false;
@@ -260,11 +267,10 @@ export class ComposerManager extends EventEmitter {
 
 	private activateComposer(composer: LoadedComposer): boolean {
 		if (!this.agent) {
-			this.emit(
-				"error",
-				new Error("ComposerManager not initialized with agent"),
-			);
-			return false;
+			const activeComposer = cloneComposer(composer);
+			this.state.active = activeComposer;
+			this.emit("activated", cloneComposer(activeComposer));
+			return true;
 		}
 
 		// Build the new system prompt

@@ -25,6 +25,7 @@
  */
 
 import { GoogleAuth } from "google-auth-library";
+import { fetchWithRetry } from "../../providers/network-config.js";
 import {
 	isStreamIdleTimeoutError,
 	withAbortableIdleTimeout,
@@ -104,6 +105,17 @@ async function getAuthClient(): Promise<GoogleAuth> {
 	return authClient;
 }
 
+// GCP location IDs and project IDs both follow a strict character set
+// (lowercase letters, digits, dashes; projects also allow a colon for the
+// domain-qualified form). Anything outside this set is rejected before the
+// value is interpolated into the endpoint URL — otherwise a value like
+// `evil.com#` or `evil.com@` could redirect the Bearer-authenticated request
+// to an attacker host.
+const VERTEX_LOCATION_PATTERN = /^[a-z0-9-]{1,40}$/;
+const VERTEX_PROJECT_PATTERN =
+	/^[a-z][a-z0-9-]{4,28}[a-z0-9](?::[a-z][a-z0-9-]{4,28}[a-z0-9])?$/;
+const VERTEX_MODEL_PATTERN = /^[A-Za-z0-9._-]{1,256}$/;
+
 /**
  * Build the Vertex AI endpoint URL.
  */
@@ -112,8 +124,17 @@ function getVertexEndpoint(
 	location: string,
 	modelId: string,
 ): string {
+	if (!VERTEX_LOCATION_PATTERN.test(location)) {
+		throw new Error(`Invalid Vertex location: ${location}`);
+	}
+	if (!VERTEX_PROJECT_PATTERN.test(projectId)) {
+		throw new Error(`Invalid Vertex projectId: ${projectId}`);
+	}
 	// Extract just the model name if it includes provider prefix
 	const modelName = modelId.includes("/") ? modelId.split("/").pop() : modelId;
+	if (!modelName || !VERTEX_MODEL_PATTERN.test(modelName)) {
+		throw new Error(`Invalid Vertex modelId: ${modelId}`);
+	}
 	return `https://${location}-aiplatform.googleapis.com/v1/projects/${projectId}/locations/${location}/publishers/google/models/${modelName}:streamGenerateContent`;
 }
 
@@ -343,15 +364,22 @@ export async function* streamVertex(
 	yield { type: "start", partial };
 
 	try {
-		const response = await fetch(endpoint, {
-			method: "POST",
-			headers: {
-				Authorization: `Bearer ${accessToken}`,
-				"Content-Type": "application/json",
+		const response = await fetchWithRetry(
+			endpoint,
+			{
+				method: "POST",
+				headers: {
+					Authorization: `Bearer ${accessToken}`,
+					"Content-Type": "application/json",
+				},
+				body: JSON.stringify(requestBody),
+				signal: options.signal,
 			},
-			body: JSON.stringify(requestBody),
-			signal: options.signal,
-		});
+			model.provider,
+			{
+				modelId: model.id,
+			},
+		);
 
 		if (!response.ok) {
 			const errorText = await response.text();

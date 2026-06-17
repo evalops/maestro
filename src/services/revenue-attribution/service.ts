@@ -3,6 +3,7 @@ import { type SQL, sql } from "drizzle-orm";
 import { type DbClient, getDb, isDatabaseConfigured } from "../../db/client.js";
 import { revenueAttribution } from "../../db/schema.js";
 import { createLogger } from "../../utils/logger.js";
+import { sanitizeWithStaticMask } from "../../utils/secret-redactor.js";
 import {
 	normalizeRevenueAttributionRoiQuery,
 	normalizeRevenueOutcomeInput,
@@ -233,7 +234,9 @@ export class RevenueAttributionService {
 					};
 		} catch (error) {
 			logger.warn("Failed to record revenue attribution outcome", {
-				error: error instanceof Error ? error.message : String(error),
+				error: sanitizeWithStaticMask(
+					error instanceof Error ? error.message : String(error),
+				),
 				workspaceId: outcome.workspaceId,
 				agentId: outcome.agentId,
 				outcomeId: outcome.outcomeId,

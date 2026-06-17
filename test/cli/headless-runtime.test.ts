@@ -2034,6 +2034,9 @@ describe("runHeadlessMode", () => {
 			{
 				getSessionId: () => "session-headless-test",
 			} as never,
+			undefined,
+			undefined,
+			{ profileName: "work" },
 		);
 
 		await vi.waitFor(() => {
@@ -2062,6 +2065,7 @@ describe("runHeadlessMode", () => {
 		expect(runUserPromptWithRecovery).toHaveBeenCalledWith(
 			expect.objectContaining({
 				attachmentNames: ["plan.md"],
+				profileName: "work",
 			}),
 		);
 	});

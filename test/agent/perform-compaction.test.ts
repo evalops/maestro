@@ -2034,6 +2034,10 @@ describe("performCompaction", () => {
 		const appendSystemPath = join(workspaceDir, ".maestro", "APPEND_SYSTEM.md");
 		mkdirSync(join(workspaceDir, ".maestro"), { recursive: true });
 		writeFileSync(appendSystemPath, "Append these extra system instructions.");
+		writeFileSync(
+			join(workspaceDir, ".maestro", "config.local.toml"),
+			`[projects.${JSON.stringify(workspaceDir)}]\ntrust_level = "trusted"\n`,
+		);
 		process.chdir(workspaceDir);
 		clearConfigCache();
 
@@ -2050,6 +2054,309 @@ describe("performCompaction", () => {
 					appendSystemPath,
 					"call-read-append-system-prompt",
 					"Append these extra system instructions.",
+				),
+			);
+			const agent = createMockAgentWithoutAppendMessage(messages, {
+				systemPromptSourcePaths: [appendSystemPath],
+			});
+			const sessionManager = createMockSessionManager();
+
+			const result = await performCompaction({ agent, sessionManager });
+
+			expect(result.success).toBe(true);
+			expect(getReplacedMessages(agent)).not.toContainEqual(
+				expect.objectContaining({
+					role: "hookMessage",
+					customType: "read-file",
+					details: { filePath: appendSystemPath },
+				}),
+			);
+		} finally {
+			process.chdir(originalCwd);
+			clearConfigCache();
+		}
+	});
+
+	it("resolves append system prompt exclusions against the agent workspace", async () => {
+		const originalCwd = process.cwd();
+		const serverDir = mkdtempSync(join(tmpdir(), "maestro-server-cwd-"));
+		const workspaceDir = mkdtempSync(
+			join(tmpdir(), "maestro-workspace-append-system-"),
+		);
+		const appendSystemPath = join(workspaceDir, ".maestro", "APPEND_SYSTEM.md");
+		mkdirSync(join(workspaceDir, ".maestro"), { recursive: true });
+		writeFileSync(appendSystemPath, "Workspace append system instructions.");
+		writeFileSync(
+			join(workspaceDir, ".maestro", "config.local.toml"),
+			`[projects.${JSON.stringify(workspaceDir)}]\ntrust_level = "trusted"\n`,
+		);
+		process.chdir(serverDir);
+		clearConfigCache();
+
+		try {
+			const messages = buildConversation(10);
+			messages.splice(
+				2,
+				0,
+				createReadToolCallMessage(
+					appendSystemPath,
+					"call-read-workspace-append-system-prompt",
+				),
+				createReadToolResultMessage(
+					appendSystemPath,
+					"call-read-workspace-append-system-prompt",
+					"Workspace append system instructions.",
+				),
+			);
+			const agent = createMockAgentWithoutAppendMessage(messages);
+			const sessionManager = createMockSessionManager();
+
+			const result = await performCompaction({
+				agent,
+				sessionManager,
+				hookContext: { cwd: workspaceDir },
+			});
+
+			expect(result.success).toBe(true);
+			expect(getReplacedMessages(agent)).not.toContainEqual(
+				expect.objectContaining({
+					role: "hookMessage",
+					customType: "read-file",
+					details: { filePath: appendSystemPath },
+				}),
+			);
+		} finally {
+			process.chdir(originalCwd);
+			rmSync(serverDir, { recursive: true, force: true });
+			rmSync(workspaceDir, { recursive: true, force: true });
+			clearConfigCache();
+		}
+	});
+
+	it("does not restore untrusted project append system prompt reads", async () => {
+		const originalCwd = process.cwd();
+		const workspaceDir = mkdtempSync(
+			join(tmpdir(), "maestro-untrusted-append-system-"),
+		);
+		const appendSystemPath = join(workspaceDir, ".maestro", "APPEND_SYSTEM.md");
+		mkdirSync(join(workspaceDir, ".maestro"), { recursive: true });
+		writeFileSync(appendSystemPath, "Untrusted append system instructions.");
+		process.chdir(workspaceDir);
+		clearConfigCache();
+
+		try {
+			const messages = buildConversation(10);
+			messages.splice(
+				2,
+				0,
+				createReadToolCallMessage(
+					appendSystemPath,
+					"call-read-untrusted-append-system-prompt",
+				),
+				createReadToolResultMessage(
+					appendSystemPath,
+					"call-read-untrusted-append-system-prompt",
+					"Untrusted append system instructions.",
+				),
+			);
+			const agent = createMockAgentWithoutAppendMessage(messages);
+			const sessionManager = createMockSessionManager();
+
+			const result = await performCompaction({ agent, sessionManager });
+
+			expect(result.success).toBe(true);
+			expect(getReplacedMessages(agent)).not.toContainEqual(
+				expect.objectContaining({
+					role: "hookMessage",
+					customType: "read-file",
+					details: { filePath: appendSystemPath },
+				}),
+			);
+		} finally {
+			process.chdir(originalCwd);
+			clearConfigCache();
+		}
+	});
+
+	it("uses CLI trust overrides when deciding append system prompt restore exclusions", async () => {
+		const originalCwd = process.cwd();
+		const previousAgentDir = process.env.MAESTRO_AGENT_DIR;
+		const workspaceDir = mkdtempSync(join(tmpdir(), "maestro-cli-append-"));
+		const agentDir = join(workspaceDir, ".maestro-agent");
+		const projectAppendSystemPath = join(
+			workspaceDir,
+			".maestro",
+			"APPEND_SYSTEM.md",
+		);
+		const globalAppendSystemPath = join(agentDir, "APPEND_SYSTEM.md");
+		mkdirSync(join(workspaceDir, ".maestro"), { recursive: true });
+		mkdirSync(agentDir, { recursive: true });
+		writeFileSync(projectAppendSystemPath, "Project append instructions.");
+		writeFileSync(globalAppendSystemPath, "Global append notes read by user.");
+		process.env.MAESTRO_AGENT_DIR = agentDir;
+		process.chdir(workspaceDir);
+		clearConfigCache();
+
+		try {
+			const messages = buildConversation(10);
+			messages.splice(
+				2,
+				0,
+				createReadToolCallMessage(
+					globalAppendSystemPath,
+					"call-read-global-append-system-prompt",
+				),
+				createReadToolResultMessage(
+					globalAppendSystemPath,
+					"call-read-global-append-system-prompt",
+					"Global append notes read by user.",
+				),
+			);
+			const agent = createMockAgentWithoutAppendMessage(messages);
+			const sessionManager = createMockSessionManager();
+			const readRestoreExecute = vi.fn(async () => ({
+				content: [
+					{ type: "text" as const, text: "Global append notes read by user." },
+				],
+				isError: false,
+			}));
+
+			const result = await performCompaction({
+				agent,
+				sessionManager,
+				hookContext: { cwd: workspaceDir },
+				readRestoreExecute,
+				cliOverrides: {
+					projects: {
+						[workspaceDir]: { trust_level: "trusted" },
+					},
+				},
+			});
+
+			expect(result.success).toBe(true);
+			expect(readRestoreExecute).toHaveBeenCalled();
+			const summaryInput = vi.mocked(agent.generateSummary).mock.calls[0]?.[0];
+			expect(JSON.stringify(summaryInput)).not.toContain(
+				"Global append notes read by user.",
+			);
+		} finally {
+			process.chdir(originalCwd);
+			if (previousAgentDir === undefined) {
+				delete process.env.MAESTRO_AGENT_DIR;
+			} else {
+				process.env.MAESTRO_AGENT_DIR = previousAgentDir;
+			}
+			rmSync(workspaceDir, { recursive: true, force: true });
+			clearConfigCache();
+		}
+	});
+
+	it("does not restore profile-trusted append system prompt files already layered into the prompt", async () => {
+		const originalCwd = process.cwd();
+		const previousHome = process.env.HOME;
+		const previousMaestroHome = process.env.MAESTRO_HOME;
+		const workspaceDir = mkdtempSync(
+			join(tmpdir(), "maestro-profile-append-system-"),
+		);
+		const appendSystemPath = join(workspaceDir, ".maestro", "APPEND_SYSTEM.md");
+		mkdirSync(join(workspaceDir, ".maestro"), { recursive: true });
+		writeFileSync(
+			appendSystemPath,
+			"Profile-scoped append system instructions.",
+		);
+		writeFileSync(
+			join(workspaceDir, ".maestro", "config.local.toml"),
+			`[profiles.work.projects.${JSON.stringify(workspaceDir)}]\ntrust_level = "trusted"\n`,
+		);
+		process.env.HOME = workspaceDir;
+		process.chdir(workspaceDir);
+		clearConfigCache();
+
+		try {
+			const messages = buildConversation(10);
+			messages.splice(
+				2,
+				0,
+				createReadToolCallMessage(
+					appendSystemPath,
+					"call-read-profile-append-system-prompt",
+				),
+				createReadToolResultMessage(
+					appendSystemPath,
+					"call-read-profile-append-system-prompt",
+					"Profile-scoped append system instructions.",
+				),
+			);
+			const agent = createMockAgentWithoutAppendMessage(messages, {
+				systemPromptSourcePaths: [appendSystemPath],
+			});
+			const sessionManager = createMockSessionManager();
+
+			const result = await performCompaction({
+				agent,
+				sessionManager,
+				profileName: "work",
+			});
+
+			expect(result.success).toBe(true);
+			expect(getReplacedMessages(agent)).not.toContainEqual(
+				expect.objectContaining({
+					role: "hookMessage",
+					customType: "read-file",
+					details: { filePath: appendSystemPath },
+				}),
+			);
+		} finally {
+			process.chdir(originalCwd);
+			if (previousHome === undefined) {
+				delete process.env.HOME;
+			} else {
+				process.env.HOME = previousHome;
+			}
+			if (previousMaestroHome === undefined) {
+				delete process.env.MAESTRO_HOME;
+			} else {
+				process.env.MAESTRO_HOME = previousMaestroHome;
+			}
+			clearConfigCache();
+		}
+	});
+
+	it("does not restore append system prompt files selected by a project-default profile", async () => {
+		const originalCwd = process.cwd();
+		const workspaceDir = mkdtempSync(
+			join(tmpdir(), "maestro-profile-default-append-system-"),
+		);
+		const appendSystemPath = join(workspaceDir, ".maestro", "APPEND_SYSTEM.md");
+		mkdirSync(join(workspaceDir, ".maestro"), { recursive: true });
+		writeFileSync(
+			appendSystemPath,
+			"Project-default profile append system instructions.",
+		);
+		writeFileSync(
+			join(workspaceDir, ".maestro", "config.toml"),
+			'profile = "work"\n',
+		);
+		writeFileSync(
+			join(workspaceDir, ".maestro", "config.local.toml"),
+			`[profiles.work.projects.${JSON.stringify(workspaceDir)}]\ntrust_level = "trusted"\n`,
+		);
+		process.chdir(workspaceDir);
+		clearConfigCache();
+
+		try {
+			const messages = buildConversation(10);
+			messages.splice(
+				2,
+				0,
+				createReadToolCallMessage(
+					appendSystemPath,
+					"call-read-project-default-profile-append-system-prompt",
+				),
+				createReadToolResultMessage(
+					appendSystemPath,
+					"call-read-project-default-profile-append-system-prompt",
+					"Project-default profile append system instructions.",
 				),
 			);
 			const agent = createMockAgentWithoutAppendMessage(messages);

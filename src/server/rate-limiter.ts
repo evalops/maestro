@@ -52,6 +52,7 @@
  */
 import { Redis } from "ioredis";
 import { createLogger } from "../utils/logger.js";
+import { sanitizeWithStaticMask } from "../utils/secret-redactor.js";
 
 const logger = createLogger("rate-limiter");
 
@@ -157,7 +158,9 @@ export async function initRedis(): Promise<boolean> {
 			return true;
 		} catch (error) {
 			logger.warn("Redis connection failed, using in-memory fallback", {
-				error: error instanceof Error ? error.message : String(error),
+				error: sanitizeWithStaticMask(
+					error instanceof Error ? error.message : String(error),
+				),
 			});
 			redis = null;
 			redisAvailable = false;
@@ -247,7 +250,9 @@ export class RateLimiter {
 				logger.warn(
 					"Redis refund flush failed, failing rate-limit check closed",
 					{
-						error: error instanceof Error ? error.message : String(error),
+						error: sanitizeWithStaticMask(
+							error instanceof Error ? error.message : String(error),
+						),
 					},
 				);
 				return {
@@ -262,7 +267,9 @@ export class RateLimiter {
 				return { ...(await this.checkRedis(ip)), backend: "redis" };
 			} catch (error) {
 				logger.debug("Redis check failed, using memory fallback", {
-					error: error instanceof Error ? error.message : String(error),
+					error: sanitizeWithStaticMask(
+						error instanceof Error ? error.message : String(error),
+					),
 				});
 			}
 		}
@@ -284,7 +291,9 @@ export class RateLimiter {
 			return await this.checkRedisPair(ip, peer, peerIp);
 		} catch (error) {
 			logger.warn("Redis tiered rate-limit check failed closed", {
-				error: error instanceof Error ? error.message : String(error),
+				error: sanitizeWithStaticMask(
+					error instanceof Error ? error.message : String(error),
+				),
 			});
 			return {
 				allowed: false,
@@ -305,7 +314,9 @@ export class RateLimiter {
 			} catch (error) {
 				this.pendingRedisRefunds.set(ip, pendingRefunds + 1);
 				logger.warn("Redis refund failed, queued for retry", {
-					error: error instanceof Error ? error.message : String(error),
+					error: sanitizeWithStaticMask(
+						error instanceof Error ? error.message : String(error),
+					),
 					pendingRefunds: pendingRefunds + 1,
 				});
 				return false;

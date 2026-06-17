@@ -1,5 +1,6 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import type { ApprovalMode } from "../../agent/action-approval.js";
+import { sanitizeWithStaticMask } from "../../utils/secret-redactor.js";
 import type { WebServerContext } from "../app-context.js";
 import {
 	getApprovalModeForSession,
@@ -54,8 +55,8 @@ async function ensureApprovalSessionAccess(
 
 	if (!verifySessionOwnership(session, subject)) {
 		return {
-			statusCode: 403,
-			error: "Access denied: session belongs to another user",
+			statusCode: 404,
+			error: "Session not found",
 		};
 	}
 
@@ -112,7 +113,11 @@ export async function handleApprovals(
 			sendJson(
 				res,
 				400,
-				{ error: error instanceof Error ? error.message : String(error) },
+				{
+					error: sanitizeWithStaticMask(
+						error instanceof Error ? error.message : String(error),
+					),
+				},
 				corsHeaders,
 			);
 		}

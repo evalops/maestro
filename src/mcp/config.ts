@@ -63,6 +63,7 @@ import { readJsonFile, writeJsonFile } from "../utils/fs.js";
 import { createLogger } from "../utils/logger.js";
 import { getHomeDir, resolveEnvPath } from "../utils/path-expansion.js";
 import { uniquePaths } from "../utils/path-utils.js";
+import { sanitizeWithStaticMask } from "../utils/secret-redactor.js";
 import { defaultEnvValidators, evaluateEnvValidators } from "./env-limits.js";
 import { getFathomCuaPluginServers } from "./fathom-cua.js";
 import { getPlatformMcpPluginServers } from "./platform-plugin.js";
@@ -597,31 +598,28 @@ function parseConfigFile(path: string, scope: McpScope): ParsedConfig {
 				if (normalized) authPresets.push(normalized);
 			}
 		}
+		const canGrantWorkspaceTrust = scope !== "project" && scope !== "local";
 		return {
 			servers,
 			authPresets,
-			trustedWorkspaces:
-				scope === "project"
-					? {}
-					: normalizeTrustedWorkspaces(
-							parsed.data.trustedWorkspaces,
-							scope,
-							path,
-						),
-			workspaceTrustDefault:
-				scope === "project"
-					? undefined
-					: normalizeWorkspaceTrustDefault(
-							parsed.data.workspaceTrustDefault,
-							scope,
-							path,
-						),
+			trustedWorkspaces: canGrantWorkspaceTrust
+				? normalizeTrustedWorkspaces(parsed.data.trustedWorkspaces, scope, path)
+				: {},
+			workspaceTrustDefault: canGrantWorkspaceTrust
+				? normalizeWorkspaceTrustDefault(
+						parsed.data.workspaceTrustDefault,
+						scope,
+						path,
+					)
+				: undefined,
 		};
 	} catch (error) {
 		logger.warn("Failed to parse MCP config file", {
 			path,
 			scope,
-			error: error instanceof Error ? error.message : String(error),
+			error: sanitizeWithStaticMask(
+				error instanceof Error ? error.message : String(error),
+			),
 			stack: error instanceof Error ? error.stack : undefined,
 		});
 		return { servers: [], authPresets: [], trustedWorkspaces: {} };

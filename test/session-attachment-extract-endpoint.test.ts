@@ -110,6 +110,7 @@ describe("Session Attachment Extract Endpoint", () => {
 
 		loadedSession = {
 			id: "test-session-1",
+			owner: "anon",
 			messages: [
 				{
 					role: "user",

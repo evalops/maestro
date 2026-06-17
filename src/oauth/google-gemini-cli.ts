@@ -10,12 +10,15 @@ import {
 	createServer,
 } from "node:http";
 import { createLogger } from "../utils/logger.js";
+import { rejectDisallowedLoopbackHost } from "../utils/loopback-http.js";
 import { loadGoogleInstalledAppOAuthConfig } from "./google-installed-app-config.js";
 import { type OAuthCredentials, saveOAuthCredentials } from "./storage.js";
 
 const logger = createLogger("oauth:google-gemini-cli");
 
-const REDIRECT_URI = "http://127.0.0.1:8085/oauth2callback";
+const CALLBACK_PORT = 8085;
+const CALLBACK_PATH = "/oauth2callback";
+const REDIRECT_URI = `http://127.0.0.1:${CALLBACK_PORT}${CALLBACK_PATH}`;
 const SCOPES = [
 	"https://www.googleapis.com/auth/cloud-platform",
 	"https://www.googleapis.com/auth/userinfo.email",
@@ -41,6 +44,15 @@ function generatePkce(): { verifier: string; challenge: string } {
 	return { verifier, challenge };
 }
 
+function safeTimingEqual(left: string, right: string): boolean {
+	const leftBuffer = Buffer.from(left);
+	const rightBuffer = Buffer.from(right);
+	return (
+		leftBuffer.length === rightBuffer.length &&
+		timingSafeEqual(leftBuffer, rightBuffer)
+	);
+}
+
 async function startCallbackServer(): Promise<{
 	server: Server;
 	getCode: () => Promise<{ code: string; state: string }>;
@@ -57,8 +69,11 @@ async function startCallbackServer(): Promise<{
 		);
 
 		const server = createServer((req: IncomingMessage, res: ServerResponse) => {
+			if (rejectDisallowedLoopbackHost(req, res, CALLBACK_PORT)) {
+				return;
+			}
 			const url = new URL(req.url ?? "", REDIRECT_URI);
-			if (url.pathname !== "/oauth2callback") {
+			if (url.pathname !== CALLBACK_PATH) {
 				res.writeHead(404);
 				res.end();
 				return;
@@ -104,7 +119,7 @@ async function startCallbackServer(): Promise<{
 			}
 			reject(err);
 		});
-		server.listen(8085, "127.0.0.1", () => {
+		server.listen(CALLBACK_PORT, "127.0.0.1", () => {
 			resolve({ server, getCode: () => codePromise });
 		});
 	});
@@ -312,7 +327,7 @@ export async function loginGoogleGeminiCli(
 
 		onStatus?.("Waiting for OAuth callback...");
 		const { code, state: returnedState } = await getCode();
-		if (!timingSafeEqual(Buffer.from(returnedState), Buffer.from(state))) {
+		if (!safeTimingEqual(returnedState, state)) {
 			throw new Error("OAuth state mismatch - possible CSRF attack");
 		}
 

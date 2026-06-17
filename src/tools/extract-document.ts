@@ -1,8 +1,27 @@
+import { lookup } from "node:dns/promises";
+import { isIP } from "node:net";
 import { Type } from "@sinclair/typebox";
 import { extractDocumentText } from "../utils/document-extractor.js";
+import { fetchWithPinnedAddress } from "../utils/fetch-with-pinned-address.js";
+import {
+	isLocalhostAlias,
+	isLoopbackIP,
+	isPrivateIP,
+	isUnspecifiedIP,
+} from "../utils/ip-address-parser.js";
 import { createTool } from "./tool-dsl.js";
 
 const MAX_DOWNLOAD_BYTES = 50 * 1024 * 1024;
+const MAX_REDIRECTS = 5;
+const ALLOWED_DOCUMENT_MIME_TYPES = new Set([
+	"application/json",
+	"application/pdf",
+	"application/vnd.openxmlformats-officedocument.presentationml.presentation",
+	"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+	"application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+	"application/xml",
+	"application/yaml",
+]);
 
 const extractDocumentSchema = Type.Object({
 	url: Type.String({
@@ -49,6 +68,154 @@ function parseContentDispositionFileName(header: string | null): string | null {
 	}
 }
 
+function normalizeUrlHost(url: URL): string {
+	return url.hostname
+		.replace(/^\[|\]$/g, "")
+		.replace(/\.$/, "")
+		.toLowerCase();
+}
+
+function isBlockedDocumentAddress(address: string): boolean {
+	return (
+		isLocalhostAlias(address) ||
+		isLoopbackIP(address) ||
+		isPrivateIP(address) ||
+		isUnspecifiedIP(address)
+	);
+}
+
+function createAbortError(): Error {
+	const error = new Error("The operation was aborted");
+	error.name = "AbortError";
+	return error;
+}
+
+function throwIfAborted(signal?: AbortSignal): void {
+	if (signal?.aborted) {
+		throw createAbortError();
+	}
+}
+
+async function lookupDocumentHost(
+	host: string,
+	signal?: AbortSignal,
+): Promise<Array<{ address: string }>> {
+	if (isIP(host) !== 0) {
+		return [{ address: host }];
+	}
+	throwIfAborted(signal);
+	if (!signal) {
+		return lookup(host, { all: true });
+	}
+	return new Promise((resolve, reject) => {
+		const onAbort = () => reject(createAbortError());
+		signal.addEventListener("abort", onAbort, { once: true });
+		lookup(host, { all: true }).then(
+			(addresses) => {
+				signal.removeEventListener("abort", onAbort);
+				if (signal.aborted) {
+					reject(createAbortError());
+					return;
+				}
+				resolve(addresses);
+			},
+			(error) => {
+				signal.removeEventListener("abort", onAbort);
+				reject(error);
+			},
+		);
+	});
+}
+
+async function resolvePublicDocumentUrl(
+	url: URL,
+	signal?: AbortSignal,
+): Promise<{
+	originalHost: string;
+	resolvedAddresses: string[];
+}> {
+	throwIfAborted(signal);
+	if (url.protocol !== "http:" && url.protocol !== "https:") {
+		throw new Error("Only http(s) URLs are supported");
+	}
+
+	const host = normalizeUrlHost(url);
+	if (isBlockedDocumentAddress(host)) {
+		throw new Error("Blocked document URL host: private or local address");
+	}
+
+	const addresses = await lookupDocumentHost(host, signal);
+	if (addresses.length === 0) {
+		throw new Error(`Unable to resolve document URL host: ${url.hostname}`);
+	}
+	const resolvedAddresses = addresses.map(({ address }) =>
+		address.toLowerCase(),
+	);
+	for (const address of resolvedAddresses) {
+		if (isBlockedDocumentAddress(address)) {
+			throw new Error("Blocked document URL host: private or local address");
+		}
+	}
+	return {
+		originalHost: host,
+		resolvedAddresses,
+	};
+}
+
+async function fetchDocumentUrl(
+	initialUrl: URL,
+	signal?: AbortSignal,
+): Promise<{ response: Response; finalUrl: URL }> {
+	let currentUrl = initialUrl;
+	for (
+		let redirectCount = 0;
+		redirectCount <= MAX_REDIRECTS;
+		redirectCount += 1
+	) {
+		const { originalHost, resolvedAddresses } = await resolvePublicDocumentUrl(
+			currentUrl,
+			signal,
+		);
+		const response = await fetchWithPinnedAddress(
+			currentUrl.toString(),
+			{ redirect: "manual", signal },
+			{
+				originalHost,
+				resolvedAddress: resolvedAddresses[0],
+				resolvedAddresses,
+			},
+		);
+		if (response.status < 300 || response.status >= 400) {
+			return { response, finalUrl: currentUrl };
+		}
+		if (redirectCount === MAX_REDIRECTS) {
+			await response.body?.cancel();
+			throw new Error(
+				`Document URL redirected more than ${MAX_REDIRECTS} times`,
+			);
+		}
+
+		const location = response.headers.get("location");
+		await response.body?.cancel();
+		if (!location) {
+			throw new Error(
+				`Unable to download document (${response.status} ${response.statusText})`,
+			);
+		}
+		currentUrl = new URL(location, currentUrl);
+	}
+
+	throw new Error(`Document URL redirected more than ${MAX_REDIRECTS} times`);
+}
+
+function normalizeDocumentMimeType(header: string | null): string | undefined {
+	const type = header?.split(";")[0]?.trim().toLowerCase();
+	if (!type) return undefined;
+	if (type.startsWith("text/")) return type;
+	if (ALLOWED_DOCUMENT_MIME_TYPES.has(type)) return type;
+	return undefined;
+}
+
 export const extractDocumentTool = createTool<
 	typeof extractDocumentSchema,
 	ExtractDocumentDetails
@@ -66,11 +233,8 @@ export const extractDocumentTool = createTool<
 		} catch {
 			throw new Error(`Invalid URL: ${rawUrl}`);
 		}
-		if (url.protocol !== "http:" && url.protocol !== "https:") {
-			throw new Error("Only http(s) URLs are supported");
-		}
 
-		const response = await fetch(url, { signal });
+		const { response, finalUrl } = await fetchDocumentUrl(url, signal);
 		if (!response.ok) {
 			throw new Error(
 				`Unable to download document (${response.status} ${response.statusText})`,
@@ -94,20 +258,20 @@ export const extractDocumentTool = createTool<
 			);
 		}
 
-		const mimeType = response.headers
-			.get("content-type")
-			?.split(";")[0]
-			?.trim();
+		const mimeType = normalizeDocumentMimeType(
+			response.headers.get("content-type"),
+		);
 		const contentDisposition = response.headers.get("content-disposition");
 		const fileName =
 			parseContentDispositionFileName(contentDisposition) ??
-			guessFileNameFromUrl(url);
+			guessFileNameFromUrl(finalUrl);
 
 		const extracted = await extractDocumentText({
 			buffer: Buffer.from(arrayBuffer),
 			fileName,
 			mimeType,
 			maxChars: params.maxChars,
+			allowMarkitdown: false,
 		});
 
 		if (!extracted.extractedText && extracted.format === "unknown") {
@@ -118,7 +282,7 @@ export const extractDocumentTool = createTool<
 
 		respond.text(extracted.extractedText || "");
 		return respond.detail({
-			url: url.toString(),
+			url: finalUrl.toString(),
 			fileName,
 			mimeType,
 			format: extracted.format,

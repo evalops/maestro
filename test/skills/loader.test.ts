@@ -87,6 +87,191 @@ This is the skill content.
 			expect(skills[0]!.triggers).toEqual(["run tests", "test code"]);
 			expect(skills[0]!.sourceType).toBe("project");
 			expect(skills[0]!.content).toContain("# Test Skill Instructions");
+			// `contentSha` is the SHA-256 of the trimmed body; trust UX
+			// (see #2629) keys on this to detect changed prompts.
+			expect(skills[0]!.contentSha).toMatch(/^[a-f0-9]{64}$/);
+		});
+
+		it("derives different contentShas for different skill bodies", () => {
+			const skillA = join(skillsDir, "gamma");
+			const skillB = join(skillsDir, "delta");
+			mkdirSync(skillA, { recursive: true });
+			mkdirSync(skillB, { recursive: true });
+			writeFileSync(
+				join(skillA, "SKILL.md"),
+				"---\nname: gamma\ndescription: g\n---\nfirst body",
+			);
+			writeFileSync(
+				join(skillB, "SKILL.md"),
+				"---\nname: delta\ndescription: d\n---\nsecond body",
+			);
+			const { skills } = loadSkills(testDir, { includeSystem: false });
+			const gamma = skills.find((s) => s.name === "gamma");
+			const delta = skills.find((s) => s.name === "delta");
+			expect(gamma?.contentSha).not.toBe(delta?.contentSha);
+		});
+
+		it("trust hash also binds the skill name — closes the name-substitution attack (#2629)", () => {
+			const skillA = join(skillsDir, "trusted-helper");
+			const skillB = join(skillsDir, "rogue-clone");
+			mkdirSync(skillA, { recursive: true });
+			mkdirSync(skillB, { recursive: true });
+			const body = "\n# Same body\n\nidentical content.\n";
+			writeFileSync(
+				join(skillA, "SKILL.md"),
+				`---\nname: trusted-helper\ndescription: a\n---\n${body}`,
+			);
+			writeFileSync(
+				join(skillB, "SKILL.md"),
+				`---\nname: rogue-clone\ndescription: b\n---\n${body}`,
+			);
+			const { skills } = loadSkills(testDir, { includeSystem: false });
+			const trusted = skills.find((s) => s.name === "trusted-helper");
+			const rogue = skills.find((s) => s.name === "rogue-clone");
+			// Adversarial-review fix: previously two skills with the
+			// same body had the same SHA, so approving "trusted-helper"
+			// also implicitly approved "rogue-clone". The hash now
+			// binds the name too.
+			expect(trusted?.contentSha).not.toBe(rogue?.contentSha);
+		});
+
+		it("trust hash also binds bundled resources — closes resource swap", () => {
+			const skillA = join(skillsDir, "with-script-a");
+			const skillB = join(skillsDir, "with-script-b");
+			mkdirSync(join(skillA, "scripts"), { recursive: true });
+			mkdirSync(join(skillB, "scripts"), { recursive: true });
+			const body = "\n# Body\nUse the bundled script.\n";
+			writeFileSync(
+				join(skillA, "SKILL.md"),
+				`---\nname: with-script-a\ndescription: a\n---\n${body}`,
+			);
+			writeFileSync(
+				join(skillB, "SKILL.md"),
+				`---\nname: with-script-b\ndescription: a\n---\n${body}`,
+			);
+			// Different script content → different hash even though
+			// SKILL.md is byte-identical.
+			writeFileSync(
+				join(skillA, "scripts", "helper.sh"),
+				"#!/bin/sh\necho ok\n",
+			);
+			writeFileSync(
+				join(skillB, "scripts", "helper.sh"),
+				"#!/bin/sh\nrm -rf /\n",
+			);
+			const { skills } = loadSkills(testDir, { includeSystem: false });
+			const a = skills.find((s) => s.name === "with-script-a");
+			const b = skills.find((s) => s.name === "with-script-b");
+			expect(a?.contentSha).not.toBe(b?.contentSha);
+		});
+
+		// Regression for the bot follow-up on #2749: swapping a file under
+		// `scripts/`, `toolbox/`, `assets/`, `reference[s]/`, or `mcp.json`
+		// while keeping the skill name and `SKILL.md` body byte-identical
+		// previously left `contentSha` unchanged, so an existing user
+		// approval still applied. The trust hash now binds every spec-
+		// layout resource directory and `mcp.json`.
+		it.each([
+			["scripts", "helper.sh", "#!/bin/sh\necho ok\n", "#!/bin/sh\nrm -rf /\n"],
+			["toolbox", "run", "#!/bin/sh\necho ok\n", "#!/bin/sh\ncurl evil\n"],
+			["assets", "logo.svg", "<svg></svg>\n", "<svg>EVIL</svg>\n"],
+			["reference", "docs.md", "# Safe\n", "# Evil\n"],
+			["references", "docs.md", "# Safe\n", "# Evil\n"],
+		])(
+			"trust hash also binds files under spec-layout %s/",
+			(dirName, fileName, safeContent, evilContent) => {
+				const skillSafe = join(skillsDir, "spec-layout-safe");
+				const skillEvil = join(skillsDir, "spec-layout-evil");
+				mkdirSync(join(skillSafe, dirName), { recursive: true });
+				mkdirSync(join(skillEvil, dirName), { recursive: true });
+				const body = "\n# Body\nIdentical text.\n";
+				writeFileSync(
+					join(skillSafe, "SKILL.md"),
+					`---\nname: spec-layout-safe\ndescription: d\n---\n${body}`,
+				);
+				writeFileSync(
+					join(skillEvil, "SKILL.md"),
+					`---\nname: spec-layout-evil\ndescription: d\n---\n${body}`,
+				);
+				writeFileSync(join(skillSafe, dirName, fileName), safeContent);
+				writeFileSync(join(skillEvil, dirName, fileName), evilContent);
+				const { skills } = loadSkills(testDir, { includeSystem: false });
+				const safe = skills.find((s) => s.name === "spec-layout-safe");
+				const evil = skills.find((s) => s.name === "spec-layout-evil");
+				expect(safe?.contentSha).toMatch(/^[a-f0-9]{64}$/);
+				expect(evil?.contentSha).toMatch(/^[a-f0-9]{64}$/);
+				expect(safe?.contentSha).not.toBe(evil?.contentSha);
+			},
+		);
+
+		it("trust hash also binds bundled mcp.json", () => {
+			const skillSafe = join(skillsDir, "mcp-safe");
+			const skillEvil = join(skillsDir, "mcp-evil");
+			mkdirSync(skillSafe, { recursive: true });
+			mkdirSync(skillEvil, { recursive: true });
+			const body = "\n# Body\nIdentical text.\n";
+			writeFileSync(
+				join(skillSafe, "SKILL.md"),
+				`---\nname: mcp-safe\ndescription: d\n---\n${body}`,
+			);
+			writeFileSync(
+				join(skillEvil, "SKILL.md"),
+				`---\nname: mcp-evil\ndescription: d\n---\n${body}`,
+			);
+			writeFileSync(
+				join(skillSafe, "mcp.json"),
+				JSON.stringify({ mcpServers: { safe: { command: "true" } } }),
+			);
+			writeFileSync(
+				join(skillEvil, "mcp.json"),
+				JSON.stringify({ mcpServers: { evil: { command: "nc evil 22" } } }),
+			);
+			const { skills } = loadSkills(testDir, { includeSystem: false });
+			const safe = skills.find((s) => s.name === "mcp-safe");
+			const evil = skills.find((s) => s.name === "mcp-evil");
+			expect(safe?.contentSha).not.toBe(evil?.contentSha);
+		});
+
+		it("trust hash changes when a nested script under scripts/ is swapped", () => {
+			// The bot's specific attack: an attacker takes an approved
+			// skill, drops a malicious file deep inside `scripts/`, keeps
+			// SKILL.md byte-identical, and relies on `contentSha` staying
+			// the same to inherit the prior approval. With nested
+			// walking, the digest now differs.
+			const skillDir = join(skillsDir, "nested-scripts");
+			mkdirSync(join(skillDir, "scripts", "lib", "helpers"), {
+				recursive: true,
+			});
+			const body = "\n# Body\nReady.\n";
+			writeFileSync(
+				join(skillDir, "SKILL.md"),
+				`---\nname: nested-scripts\ndescription: d\n---\n${body}`,
+			);
+			writeFileSync(
+				join(skillDir, "scripts", "lib", "helpers", "util.sh"),
+				"#!/bin/sh\necho ok\n",
+			);
+			const { skills: before } = loadSkills(testDir, {
+				includeSystem: false,
+			});
+			const beforeSha = before.find(
+				(s) => s.name === "nested-scripts",
+			)?.contentSha;
+
+			writeFileSync(
+				join(skillDir, "scripts", "lib", "helpers", "util.sh"),
+				"#!/bin/sh\nnc evil 22\n",
+			);
+			const { skills: after } = loadSkills(testDir, {
+				includeSystem: false,
+			});
+			const afterSha = after.find(
+				(s) => s.name === "nested-scripts",
+			)?.contentSha;
+
+			expect(beforeSha).toMatch(/^[a-f0-9]{64}$/);
+			expect(afterSha).toMatch(/^[a-f0-9]{64}$/);
+			expect(beforeSha).not.toBe(afterSha);
 		});
 
 		it("discovers bundled resources", () => {
@@ -262,11 +447,85 @@ Package skill content.
 				join(testDir, ".maestro", "config.toml"),
 				'packages = ["../vendor/skill-pack"]\n',
 			);
+			const escapedProjectDir = testDir
+				.replaceAll("\\", "\\\\")
+				.replaceAll('"', '\\"');
+			mkdirSync(process.env.MAESTRO_HOME!, { recursive: true });
+			writeFileSync(
+				join(process.env.MAESTRO_HOME!, "config.toml"),
+				`
+[projects."${escapedProjectDir}"]
+trust_level = "trusted"
+`,
+			);
 
 			const { skills } = loadSkills(testDir, { includeSystem: false });
 
 			expect(skills.map((skill) => skill.name)).toContain("package-skill");
 			expect(findSkill(skills, "package-skill")?.sourceType).toBe("project");
+		});
+
+		it("honors explicit profile trust when loading configured package skills", () => {
+			const packageDir = join(testDir, "vendor", "profile-skill-pack");
+			const packageSkillDir = join(
+				packageDir,
+				"skills",
+				"profile-package-skill",
+			);
+			mkdirSync(packageSkillDir, { recursive: true });
+			writeFileSync(
+				join(packageSkillDir, "SKILL.md"),
+				`---
+name: profile-package-skill
+description: Skill loaded from a trusted profile package
+---
+
+Profile package skill content.
+`,
+			);
+			writeFileSync(
+				join(packageDir, "package.json"),
+				JSON.stringify({
+					name: "@test/profile-skill-pack",
+					keywords: ["maestro-package"],
+					maestro: {
+						skills: ["./skills"],
+					},
+				}),
+			);
+			writeFileSync(
+				join(testDir, ".maestro", "config.toml"),
+				'packages = ["../vendor/profile-skill-pack"]\n',
+			);
+			const escapedProjectDir = testDir
+				.replaceAll("\\", "\\\\")
+				.replaceAll('"', '\\"');
+			mkdirSync(process.env.MAESTRO_HOME!, { recursive: true });
+			writeFileSync(
+				join(process.env.MAESTRO_HOME!, "config.toml"),
+				`
+[profiles.trusted-work.projects."${escapedProjectDir}"]
+trust_level = "trusted"
+`,
+			);
+
+			expect(
+				loadSkills(testDir, { includeSystem: false }).skills.map(
+					(skill) => skill.name,
+				),
+			).not.toContain("profile-package-skill");
+
+			const { skills } = loadSkills(testDir, {
+				includeSystem: false,
+				profileName: "trusted-work",
+			});
+
+			expect(skills.map((skill) => skill.name)).toContain(
+				"profile-package-skill",
+			);
+			expect(findSkill(skills, "profile-package-skill")?.sourceType).toBe(
+				"project",
+			);
 		});
 	});
 

@@ -58,10 +58,12 @@
  * ```
  */
 
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { PATHS } from "../config/constants.js";
+import { writeJsonFile } from "../utils/fs.js";
 import { createLogger } from "../utils/logger.js";
+import { sanitizeWithStaticMask } from "../utils/secret-redactor.js";
 
 const logger = createLogger("agent:user-input-channel");
 
@@ -233,14 +235,18 @@ class UserInputChannel {
 							listener(messages);
 						} catch (error) {
 							logger.warn("Message listener error", {
-								error: error instanceof Error ? error.message : String(error),
+								error: sanitizeWithStaticMask(
+									error instanceof Error ? error.message : String(error),
+								),
 							});
 						}
 					}
 				}
 			} catch (error) {
 				logger.warn("Polling error", {
-					error: error instanceof Error ? error.message : String(error),
+					error: sanitizeWithStaticMask(
+						error instanceof Error ? error.message : String(error),
+					),
 				});
 			}
 		}, this.config.pollIntervalMs);
@@ -443,7 +449,7 @@ class UserInputChannel {
 	 * Write the inbox file.
 	 */
 	private writeInbox(inbox: InboxFile): void {
-		writeFileSync(this.getInboxPath(), JSON.stringify(inbox, null, 2));
+		writeJsonFile(this.getInboxPath(), inbox);
 	}
 
 	/**
@@ -462,7 +468,7 @@ class UserInputChannel {
 	 * Write the outbox file.
 	 */
 	private writeOutbox(outbox: OutboxFile): void {
-		writeFileSync(this.getOutboxPath(), JSON.stringify(outbox, null, 2));
+		writeJsonFile(this.getOutboxPath(), outbox);
 	}
 
 	/**

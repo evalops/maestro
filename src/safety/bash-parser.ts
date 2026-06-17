@@ -48,6 +48,7 @@
 
 import { basename } from "node:path";
 import { createLogger } from "../utils/logger.js";
+import { sanitizeWithStaticMask } from "../utils/secret-redactor.js";
 
 const logger = createLogger("safety:bash-parser");
 const isTestEnv =
@@ -131,7 +132,9 @@ async function initParser(): Promise<boolean> {
 		const message =
 			"Tree-sitter bash parser not available (native bindings missing)";
 		const context = {
-			error: error instanceof Error ? error.message : String(error),
+			error: sanitizeWithStaticMask(
+				error instanceof Error ? error.message : String(error),
+			),
 		};
 		if (isTestEnv) {
 			logger.debug(message, context);
@@ -443,7 +446,9 @@ export function parseBashCommand(command: string): BashParseResult {
 			hasSubshell: false,
 			hasBackgroundJob: false,
 			hasCommandSubstitution: false,
-			error: error instanceof Error ? error.message : String(error),
+			error: sanitizeWithStaticMask(
+				error instanceof Error ? error.message : String(error),
+			),
 		};
 	}
 }

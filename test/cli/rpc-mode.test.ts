@@ -187,7 +187,7 @@ describe("runRpcMode", () => {
 		};
 		const sessionManager = {};
 
-		void runRpcMode(agent as never, sessionManager as never);
+		void runRpcMode(agent as never, sessionManager as never, "runRpcMode");
 		await vi.waitFor(() => expect(lineHandler).toBeTypeOf("function"));
 		await lineHandler?.(JSON.stringify({ type: "prompt", message: "hello" }));
 
@@ -200,6 +200,7 @@ describe("runRpcMode", () => {
 		]);
 		expect(collectMcpMessagesForCompaction).toHaveBeenCalledWith([], []);
 		expect(mcpManager.getStatus).toHaveBeenCalled();
+		expect(params?.profileName).toBe("runRpcMode");
 	});
 
 	it("passes plan and compact SessionStart restoration messages into performCompaction", async () => {

@@ -18,6 +18,7 @@ import type {
 	AgentConfig,
 	CheckRunEvent,
 	CheckRunSummary,
+	GitHubAuthorAssociation,
 	GitHubIssue,
 	GitHubPR,
 	IssueComment,
@@ -38,6 +39,17 @@ export interface OrchestratorConfig extends AgentConfig {
 const COMMENT_TRIGGER_PATTERN = /(^|\s)(@composer|\/composer)\b/i;
 const MAX_PROCESSED_COMMENTS = 5000;
 const PROCESSED_COMMENT_TTL_MS = 1000 * 60 * 60 * 24 * 7;
+const AUTHORIZED_TRIGGER_ASSOCIATIONS = new Set<GitHubAuthorAssociation>([
+	"COLLABORATOR",
+	"MEMBER",
+	"OWNER",
+]);
+
+function isAuthorizedTriggerAssociation(
+	association?: GitHubAuthorAssociation | null,
+): boolean {
+	return association ? AUTHORIZED_TRIGGER_ASSOCIATIONS.has(association) : false;
+}
 
 export class Orchestrator {
 	private config: OrchestratorConfig;
@@ -253,6 +265,19 @@ export class Orchestrator {
 		if (this.processedIssueComments.has(comment.id)) {
 			return;
 		}
+		// Authorize BEFORE marking the comment as processed. Otherwise an
+		// unauthorized comment (e.g. from a NONE/CONTRIBUTOR association)
+		// poisons the dedupe map for the TTL window, so a later poll or
+		// webhook delivery with a corrected `author_association` — or after
+		// the user is granted collaborator access — would be silently
+		// ignored. Authorization is a cheap O(1) string check; re-running it
+		// on the (rare) repeated spam attempt is harmless.
+		if (!isAuthorizedTriggerAssociation(comment.authorAssociation)) {
+			console.warn(
+				`[orchestrator] Ignoring unauthorized issue comment trigger on #${issue.number} by ${comment.author} (${comment.authorAssociation ?? "unknown"})`,
+			);
+			return;
+		}
 		this.processedIssueComments.set(comment.id, Date.now());
 		this.pruneProcessedIssueComments();
 		console.log(
@@ -308,6 +333,12 @@ export class Orchestrator {
 		console.log(
 			`[orchestrator] PR review: #${pr.number} - ${review.state} by ${review.author}`,
 		);
+		if (!isAuthorizedTriggerAssociation(review.authorAssociation)) {
+			console.warn(
+				`[orchestrator] Ignoring unauthorized PR review on #${pr.number} by ${review.author} (${review.authorAssociation ?? "unknown"})`,
+			);
+			return;
+		}
 
 		const task = this.findTaskByPR(pr.number);
 		if (task) {
@@ -358,6 +389,12 @@ export class Orchestrator {
 		console.log(
 			`[orchestrator] PR comment: #${pr.number} by ${comment.author}`,
 		);
+		if (!isAuthorizedTriggerAssociation(comment.authorAssociation)) {
+			console.warn(
+				`[orchestrator] Ignoring unauthorized PR comment on #${pr.number} by ${comment.author} (${comment.authorAssociation ?? "unknown"})`,
+			);
+			return;
+		}
 
 		const task = this.findTaskByPR(pr.number);
 		if (task) {

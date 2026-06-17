@@ -4,11 +4,11 @@ import {
 	mkdirSync,
 	readFileSync,
 	rmSync,
-	writeFileSync,
 } from "node:fs";
 import { dirname } from "node:path";
 import type { ToolResultMessage } from "../../agent/types.js";
 import { PATHS } from "../../config/constants.js";
+import { writeTextFileAtomic } from "../../utils/fs.js";
 import { summarizeToolUse } from "../../utils/tool-use-summary.js";
 import {
 	type HistoryPersistence,
@@ -220,11 +220,11 @@ export class ToolHistoryStore {
 		try {
 			this.ensureDir();
 			if (this.entries.length === 0) {
-				writeFileSync(this.filePath, "", "utf-8");
+				writeTextFileAtomic(this.filePath, "");
 				return;
 			}
 			const lines = this.entries.map((entry) => JSON.stringify(entry));
-			writeFileSync(this.filePath, `${lines.join("\n")}\n`, "utf-8");
+			writeTextFileAtomic(this.filePath, `${lines.join("\n")}\n`);
 		} catch {
 			// best-effort persistence
 		}

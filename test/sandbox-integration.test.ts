@@ -33,6 +33,24 @@ describe("Sandbox", () => {
 			expect(result.exitCode).toBe(1);
 		});
 
+		it("should cap execWithArgs output instead of failing on large output", async () => {
+			const testDir = join(tmpdir(), `sandbox-test-${Date.now()}`);
+			mkdirSync(testDir, { recursive: true });
+			const scriptPath = join(testDir, "large-output.js");
+			writeFileSync(
+				scriptPath,
+				`process.stdout.write("x".repeat(${1024 * 1024 + 1024}));`,
+			);
+
+			try {
+				const result = await sandbox.execWithArgs("node", [scriptPath]);
+				expect(result.exitCode).toBe(0);
+				expect(result.stdout.length).toBe(1024 * 1024);
+			} finally {
+				rmSync(testDir, { recursive: true, force: true });
+			}
+		});
+
 		it("should read files", async () => {
 			const testDir = join(tmpdir(), `sandbox-test-${Date.now()}`);
 			mkdirSync(testDir, { recursive: true });

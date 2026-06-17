@@ -1,11 +1,5 @@
 import { spawnSync } from "node:child_process";
-import {
-	existsSync,
-	mkdirSync,
-	readFileSync,
-	realpathSync,
-	writeFileSync,
-} from "node:fs";
+import { existsSync, mkdirSync, realpathSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 import { parseArgs } from "../cli/args.js";
 import { getAgentDir } from "../config/constants.js";
@@ -14,6 +8,7 @@ import {
 	getPackageName,
 } from "../package-metadata.js";
 import { withTimeout } from "../utils/async.js";
+import { readJsonFile, writeTextFileAtomic } from "../utils/fs.js";
 import {
 	type UpdateCheckResult,
 	checkForUpdate,
@@ -343,16 +338,19 @@ const readState = (path: string): StartupUpdateState | null => {
 	if (!existsSync(path)) {
 		return null;
 	}
-	try {
-		return JSON.parse(readFileSync(path, "utf-8")) as StartupUpdateState;
-	} catch {
-		return null;
-	}
+	const fallback = Symbol("missing");
+	const data = readJsonFile<StartupUpdateState | typeof fallback>(path, {
+		fallback,
+		rotateOnParseFail: true,
+	});
+	return data === fallback ? null : (data as StartupUpdateState);
 };
 
 const writeState = (path: string, state: StartupUpdateState): void => {
 	mkdirSync(dirname(path), { recursive: true });
-	writeFileSync(path, JSON.stringify(state, null, 2), "utf-8");
+	writeTextFileAtomic(path, JSON.stringify(state, null, 2), {
+		encoding: "utf-8",
+	});
 };
 
 const retryMsFromEnv = (env: NodeJS.ProcessEnv): number => {

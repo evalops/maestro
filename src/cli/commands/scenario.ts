@@ -1,4 +1,4 @@
-import { mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync } from "node:fs";
 import { dirname, isAbsolute, resolve } from "node:path";
 import { MAESTRO_SCRIPTED_SCENARIO_SCHEMA } from "@evalops/contracts";
 import chalk from "chalk";
@@ -20,6 +20,7 @@ import {
 	evaluateScriptedScenario,
 	scriptedScenarioResultToJunit,
 } from "../../server/scripted-scenario-runner.js";
+import { writeTextFileAtomic } from "../../utils/fs.js";
 
 type ScriptedScenario = ReturnType<typeof parseScriptedScenario>;
 
@@ -69,7 +70,7 @@ function positionalArgs(args: string[]): string[] {
 function writeJunit(path: string, content: string): void {
 	const fullPath = resolve(path);
 	mkdirSync(dirname(fullPath), { recursive: true });
-	writeFileSync(fullPath, content);
+	writeTextFileAtomic(fullPath, content);
 }
 
 function isScriptedReplayJson(value: unknown): boolean {

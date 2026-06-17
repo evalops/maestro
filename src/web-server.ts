@@ -37,11 +37,11 @@ import {
 	initCheckpointService,
 } from "./checkpoints/index.js";
 import { detectRuntimeConstraintContext } from "./cli/system-prompt.js";
-import { composerManager } from "./composers/index.js";
 import { resolveDefaultApprovalMode } from "./config/default-approval-mode.js";
+import type { ComposerConfig } from "./config/index.js";
 import { loadUnifiedContextManifest } from "./context/manifest.js";
 import { initLifecycle, shutdownLifecycle } from "./lifecycle.js";
-import { loadEnv } from "./load-env.js";
+import { loadEnv, scrubLoadedSecurityOverrideEnv } from "./load-env.js";
 import { bootstrapLsp } from "./lsp/bootstrap.js";
 import { loadMcpConfig, mcpManager } from "./mcp/index.js";
 import { prefetchOfficialMcpRegistry } from "./mcp/official-registry.js";
@@ -53,6 +53,7 @@ import {
 	reloadModelConfig,
 } from "./models/registry.js";
 import { initOpenTelemetry } from "./opentelemetry.js";
+import { setConfiguredPackageRuntimeContext } from "./packages/runtime.js";
 import { resolveMaestroSystemPrompt } from "./prompts/system-prompt.js";
 import { getEnvVarsForProvider } from "./providers/api-keys.js";
 import {
@@ -83,12 +84,15 @@ import {
 } from "./tools/index.js";
 import { javascriptReplClientTool } from "./tools/javascript-repl-client.js";
 import { createLogger } from "./utils/logger.js";
+import { sanitizeWithStaticMask } from "./utils/secret-redactor.js";
 
 const logger = createLogger("web-server");
 
 interface StartWebServerOptions {
 	host?: string;
 	hostedRunner?: HostedRunnerContext;
+	profileName?: string;
+	cliOverrides?: Partial<ComposerConfig>;
 	skipStartupMigration?: boolean;
 }
 
@@ -176,12 +180,14 @@ import {
 } from "./server/server-utils.js";
 import { createWebSessionManagerForRequest } from "./server/session-scope.js";
 import { serveStatic } from "./server/static-server.js";
+import { webComposerManagers } from "./server/web-composer-registry.js";
 import { resolveWebRoot } from "./server/web-root.js";
 
 // Re-export for existing test imports
 export { SseSession } from "./server/sse-session.js";
 
 loadEnv();
+scrubLoadedSecurityOverrideEnv();
 void initOpenTelemetry("composer-web-server");
 initSentry("maestro-web-server");
 
@@ -229,32 +235,11 @@ function normalizeAuthMode(value?: string | null): AuthMode {
 	return "auto";
 }
 
-const PROFILE = (
-	process.env.MAESTRO_PROFILE ||
-	process.env.MAESTRO_WEB_PROFILE ||
-	""
-)
-	.trim()
-	.toLowerCase();
-const PROD_PROFILE =
-	PROFILE === "prod" ||
-	PROFILE === "production" ||
-	PROFILE === "secure" ||
-	PROFILE === "hardened";
-
-const DEFAULT_APPROVAL_MODE = resolveDefaultApprovalMode({
-	profile: PROFILE,
-	explicitApprovalMode: process.env.MAESTRO_APPROVAL_MODE,
-});
 const AUTH_MODE = normalizeAuthMode(process.env.MAESTRO_AUTH_MODE);
 const WEB_API_KEY = process.env.MAESTRO_WEB_API_KEY?.trim() || null;
 const requireKeyEnv = process.env.MAESTRO_WEB_REQUIRE_KEY;
 const requireRedisEnv = process.env.MAESTRO_WEB_REQUIRE_REDIS;
-const CSRF_TOKEN = process.env.MAESTRO_WEB_CSRF_TOKEN?.trim() || null;
 const AUTH_BOUNDARY_EXEMPT_PATHS = platformA2APushAuthBoundaryExemptPaths();
-const REQUIRE_CSRF =
-	(PROD_PROFILE && process.env.MAESTRO_WEB_REQUIRE_CSRF !== "0") ||
-	Boolean(process.env.MAESTRO_WEB_CSRF_TOKEN);
 // Default: require in normal runtime, but don't break tests unless explicitly opted in.
 const REQUIRE_WEB_API_KEY =
 	(requireKeyEnv ?? (process.env.NODE_ENV === "test" ? "0" : "1")) !== "0";
@@ -262,6 +247,105 @@ const REQUIRE_REDIS =
 	(requireRedisEnv ?? (process.env.NODE_ENV === "test" ? "0" : "1")) !== "0";
 const DEFAULT_WEB_ORIGIN =
 	process.env.MAESTRO_WEB_ORIGIN?.trim() || "http://localhost:4173";
+
+function normalizeProfileName(profileName?: string | null): string {
+	return (
+		profileName ||
+		process.env.MAESTRO_PROFILE ||
+		process.env.MAESTRO_WEB_PROFILE ||
+		""
+	)
+		.trim()
+		.toLowerCase();
+}
+
+function isProductionProfile(profileName: string): boolean {
+	return (
+		profileName === "prod" ||
+		profileName === "production" ||
+		profileName === "secure" ||
+		profileName === "hardened"
+	);
+}
+
+const profileManagedSecurityEnvVars = [
+	"MAESTRO_FAIL_UNTAGGED_EGRESS",
+	"MAESTRO_BACKGROUND_SHELL_DISABLE",
+] as const;
+const autoEnabledProfileSecurityEnvVars = new Set<string>();
+
+function applyProfileSecurityEnvDefaults(prodProfile: boolean): void {
+	for (const envKey of profileManagedSecurityEnvVars) {
+		if (prodProfile) {
+			if (!process.env[envKey]) {
+				process.env[envKey] = "1";
+				autoEnabledProfileSecurityEnvVars.add(envKey);
+			}
+			continue;
+		}
+		if (
+			autoEnabledProfileSecurityEnvVars.has(envKey) &&
+			process.env[envKey] === "1"
+		) {
+			delete process.env[envKey];
+		}
+		autoEnabledProfileSecurityEnvVars.delete(envKey);
+	}
+}
+
+function resolveProfileSecurityConfig(profileName?: string | null): {
+	defaultApprovalMode: ApprovalMode;
+	csrfToken: string | null;
+	requireCsrf: boolean;
+	securityHeaders: Record<string, string>;
+} {
+	const profile = normalizeProfileName(profileName);
+	const prodProfile = isProductionProfile(profile);
+	const csrfToken = process.env.MAESTRO_WEB_CSRF_TOKEN?.trim() || null;
+	const requireCsrf =
+		(prodProfile && process.env.MAESTRO_WEB_REQUIRE_CSRF !== "0") ||
+		Boolean(process.env.MAESTRO_WEB_CSRF_TOKEN);
+
+	applyProfileSecurityEnvDefaults(prodProfile);
+	if (requireCsrf && !csrfToken) {
+		throw new Error(
+			"MAESTRO_WEB_CSRF_TOKEN is required when CSRF enforcement is enabled (MAESTRO_PROFILE=prod or MAESTRO_WEB_REQUIRE_CSRF=1).",
+		);
+	}
+
+	return {
+		defaultApprovalMode: resolveDefaultApprovalMode({
+			profile,
+			explicitApprovalMode: process.env.MAESTRO_APPROVAL_MODE,
+		}),
+		csrfToken,
+		requireCsrf,
+		securityHeaders:
+			prodProfile || process.env.MAESTRO_WEB_CSP?.trim()
+				? {
+						"Content-Security-Policy":
+							process.env.MAESTRO_WEB_CSP ||
+							[
+								"default-src 'none'",
+								`connect-src 'self' ${DEFAULT_WEB_ORIGIN}`,
+								"img-src 'self' data:",
+								"style-src 'self' 'unsafe-inline'",
+								"script-src 'self'",
+								"font-src 'self' data:",
+								"frame-ancestors 'none'",
+								"base-uri 'self'",
+								"form-action 'self'",
+							].join("; "),
+						"Referrer-Policy": "no-referrer",
+						"X-Content-Type-Options": "nosniff",
+						"Permissions-Policy":
+							"geolocation=(), microphone=(self), camera=()",
+					}
+				: {},
+	};
+}
+
+let profileSecurityConfig = resolveProfileSecurityConfig();
 const STATIC_MAX_AGE =
 	Number.parseInt(
 		process.env.MAESTRO_STATIC_MAX_AGE ||
@@ -279,17 +363,6 @@ process.env.MAESTRO_WEB_SERVER = "1";
 if (!process.env.MAESTRO_SAFE_MODE) process.env.MAESTRO_SAFE_MODE = "1";
 if (!process.env.MAESTRO_SAFE_REQUIRE_PLAN)
 	process.env.MAESTRO_SAFE_REQUIRE_PLAN = "1";
-if (PROD_PROFILE && !process.env.MAESTRO_FAIL_UNTAGGED_EGRESS) {
-	process.env.MAESTRO_FAIL_UNTAGGED_EGRESS = "1";
-}
-if (PROD_PROFILE && !process.env.MAESTRO_BACKGROUND_SHELL_DISABLE) {
-	process.env.MAESTRO_BACKGROUND_SHELL_DISABLE = "1";
-}
-if (REQUIRE_CSRF && !CSRF_TOKEN) {
-	throw new Error(
-		"MAESTRO_WEB_CSRF_TOKEN is required when CSRF enforcement is enabled (MAESTRO_PROFILE=prod or MAESTRO_WEB_REQUIRE_CSRF=1).",
-	);
-}
 
 // Parse and validate TRUST_PROXY setting
 // WARNING: Only enable if behind a trusted reverse proxy that sets X-Forwarded-For
@@ -438,9 +511,10 @@ function getCurrentSelection(): { provider: string; modelId: string } {
 async function createAgent(
 	registeredModel: RegisteredModel,
 	thinkingLevel: ThinkingLevel = "off",
-	approvalMode: ApprovalMode = DEFAULT_APPROVAL_MODE,
+	approvalMode: ApprovalMode = profileSecurityConfig.defaultApprovalMode,
 	options?: {
 		cwd?: string;
+		persistedSystemPromptSourcePaths?: string[];
 		enableClientTools?: boolean;
 		useClientAskUser?: boolean;
 		includeVscodeTools?: boolean;
@@ -450,6 +524,8 @@ async function createAgent(
 		clientToolService?: ClientToolExecutionService;
 		toolRetryService?: ToolRetryService;
 		platformToolExecutionBridge?: PlatformToolExecutionBridge | false;
+		profileName?: string;
+		cliOverrides?: Partial<ComposerConfig>;
 	},
 ): Promise<Agent> {
 	const cwd = options?.cwd ?? process.cwd();
@@ -461,7 +537,9 @@ async function createAgent(
 			return await getSessionTokenCount(sessionId);
 		} catch (error) {
 			logger.warn("Failed to get session token count", {
-				error: error instanceof Error ? error.message : String(error),
+				error: sanitizeWithStaticMask(
+					error instanceof Error ? error.message : String(error),
+				),
 			});
 			return null;
 		}
@@ -485,7 +563,9 @@ async function createAgent(
 			);
 		} catch (error) {
 			logger.warn("Failed to log tool execution", {
-				error: error instanceof Error ? error.message : String(error),
+				error: sanitizeWithStaticMask(
+					error instanceof Error ? error.message : String(error),
+				),
 				toolName: entry.toolName,
 			});
 		}
@@ -511,11 +591,23 @@ async function createAgent(
 		cwd,
 		sandboxMode: process.env.MAESTRO_SANDBOX_MODE ?? null,
 	});
-	const { systemPrompt, promptMetadata, promptContextManifest } =
-		await resolveMaestroSystemPrompt({
-			cwd,
-			runtimeConstraints,
-		});
+	const {
+		systemPrompt,
+		promptMetadata,
+		promptContextManifest,
+		systemPromptSourcePaths: freshSystemPromptSourcePaths,
+	} = await resolveMaestroSystemPrompt({
+		cwd,
+		profileName: options?.profileName ?? context.profileName,
+		cliOverrides: options?.cliOverrides ?? context.cliOverrides,
+		runtimeConstraints,
+	});
+	const systemPromptSourcePaths = Array.from(
+		new Set([
+			...freshSystemPromptSourcePaths,
+			...(options?.persistedSystemPromptSourcePaths ?? []),
+		]),
+	);
 	const unifiedContextManifest = loadUnifiedContextManifest(cwd, {
 		projectDocs: promptContextManifest,
 	});
@@ -548,6 +640,7 @@ async function createAgent(
 		initialState: {
 			systemPrompt,
 			promptMetadata,
+			systemPromptSourcePaths,
 			promptContextManifest,
 			unifiedContextManifest,
 			model: registeredModel,
@@ -568,8 +661,8 @@ async function createAgent(
 		],
 	});
 
-	// Initialize composer manager for this agent (enables sub-agents/composers)
-	composerManager.initialize(agent, systemPrompt, tools, cwd);
+	// Initialize a session-scoped composer manager for this web agent.
+	webComposerManagers.initializeAgent(agent, systemPrompt, tools, cwd);
 
 	return agent;
 }
@@ -602,36 +695,15 @@ export function isAllowedWebSocketOrigin(
 	return allowedOrigin === "*" || origin === allowedOrigin;
 }
 
-const SECURITY_HEADERS: Record<string, string> =
-	PROD_PROFILE || process.env.MAESTRO_WEB_CSP?.trim()
-		? {
-				"Content-Security-Policy":
-					process.env.MAESTRO_WEB_CSP ||
-					[
-						"default-src 'none'",
-						`connect-src 'self' ${ALLOWED_ORIGIN}`,
-						"img-src 'self' data:",
-						"style-src 'self' 'unsafe-inline'",
-						"script-src 'self'",
-						"font-src 'self' data:",
-						"frame-ancestors 'none'",
-						"base-uri 'self'",
-						"form-action 'self'",
-					].join("; "),
-				"Referrer-Policy": "no-referrer",
-				"X-Content-Type-Options": "nosniff",
-				"Permissions-Policy": "geolocation=(), microphone=(self), camera=()",
-			}
-		: {};
-
 const headlessRuntimeService = new HeadlessRuntimeService();
 
 const context: WebServerContext = {
 	corsHeaders: CORS_HEADERS,
 	staticMaxAge: STATIC_MAX_AGE,
-	defaultApprovalMode: DEFAULT_APPROVAL_MODE,
+	defaultApprovalMode: profileSecurityConfig.defaultApprovalMode,
 	defaultProvider: DEFAULT_PROVIDER,
 	defaultModelId: DEFAULT_MODEL_ID,
+	profileName: process.env.MAESTRO_PROFILE,
 	createAgent,
 	createBackgroundAgent,
 	getRegisteredModel,
@@ -641,6 +713,7 @@ const context: WebServerContext = {
 	acquireSse: () => sseLimiter.tryAcquire(),
 	releaseSse: (token) => sseLimiter.release(token),
 	headlessRuntimeService,
+	composerManagers: webComposerManagers,
 };
 
 const routes = createRoutes(context);
@@ -656,7 +729,7 @@ const router = createRequestHandler(
 			webRoot: WEB_ROOT,
 			corsHeaders: CORS_HEADERS,
 			maxAgeSeconds: STATIC_MAX_AGE,
-			securityHeaders: SECURITY_HEADERS,
+			securityHeaders: profileSecurityConfig.securityHeaders,
 			spaFallback: true,
 		});
 	},
@@ -764,10 +837,16 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
 			createCorsMiddleware(CORS_HEADERS),
 			createAuthMiddleware(WEB_API_KEY, CORS_HEADERS, REQUIRE_WEB_API_KEY, {
 				exemptPaths: AUTH_BOUNDARY_EXEMPT_PATHS,
+				routes,
 			}),
-			createCsrfMiddleware(CSRF_TOKEN, CORS_HEADERS, REQUIRE_CSRF, {
-				exemptPaths: AUTH_BOUNDARY_EXEMPT_PATHS,
-			}),
+			createCsrfMiddleware(
+				profileSecurityConfig.csrfToken,
+				CORS_HEADERS,
+				profileSecurityConfig.requireCsrf,
+				{
+					exemptPaths: AUTH_BOUNDARY_EXEMPT_PATHS,
+				},
+			),
 			createWorkspaceConfigMiddleware(CORS_HEADERS),
 			createRouterMiddleware(router),
 		]);
@@ -796,9 +875,23 @@ export async function startWebServer(
 	port = 8080,
 	options: StartWebServerOptions = {},
 ) {
+	profileSecurityConfig = resolveProfileSecurityConfig(options.profileName);
+	context.defaultApprovalMode = profileSecurityConfig.defaultApprovalMode;
 	if (options.hostedRunner) {
 		context.hostedRunner = options.hostedRunner;
 	}
+	const resolvedProfileName =
+		options.profileName ?? process.env.MAESTRO_PROFILE;
+	if (resolvedProfileName) {
+		context.profileName = resolvedProfileName;
+	} else {
+		delete context.profileName;
+	}
+	context.cliOverrides = options.cliOverrides;
+	setConfiguredPackageRuntimeContext(process.cwd(), {
+		profileName: resolvedProfileName,
+		cliOverrides: options.cliOverrides,
+	});
 
 	registerCrashHandlers();
 	if (!options.skipStartupMigration) {
@@ -835,7 +928,9 @@ export async function startWebServer(
 			logger.info("Enterprise features initialized");
 		} catch (error) {
 			logger.warn("Failed to initialize enterprise features", {
-				error: error instanceof Error ? error.message : String(error),
+				error: sanitizeWithStaticMask(
+					error instanceof Error ? error.message : String(error),
+				),
 			});
 		}
 	}
@@ -878,7 +973,9 @@ export async function startWebServer(
 		}
 	} catch (error) {
 		logger.warn("Failed to initialize MCP servers", {
-			error: error instanceof Error ? error.message : String(error),
+			error: sanitizeWithStaticMask(
+				error instanceof Error ? error.message : String(error),
+			),
 		});
 	}
 
@@ -1018,7 +1115,9 @@ export async function startWebServer(
 						context.hostedRunner.draining = true;
 						logger.warn("Hosted runner shutdown drain failed", {
 							runnerSessionId: context.hostedRunner.runnerSessionId,
-							error: error instanceof Error ? error.message : String(error),
+							error: sanitizeWithStaticMask(
+								error instanceof Error ? error.message : String(error),
+							),
 						});
 					}
 				}

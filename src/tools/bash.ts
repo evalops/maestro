@@ -30,6 +30,7 @@
  */
 
 import { spawn } from "node:child_process";
+import { StringDecoder } from "node:string_decoder";
 import { Type } from "@sinclair/typebox";
 import {
 	formatGuardianResult,
@@ -37,17 +38,27 @@ import {
 	shouldGuardCommand,
 } from "../guardian/index.js";
 import { checkCommand } from "../safety/execpolicy.js";
-import { checkBashCommandForNestedAgent } from "../safety/nested-agent-guard.js";
+import {
+	checkBashCommandForNestedAgent,
+	nestedAgentGuard,
+} from "../safety/nested-agent-guard.js";
 import { requirePlanCheck } from "../safety/safe-mode.js";
-import { sanitizeWithStaticMask } from "../utils/secret-redactor.js";
 import { resolveShellEnvironment } from "../utils/shell-env.js";
 import { backgroundTaskManager } from "./background-tasks.js";
+import {
+	SecretOutputScrubber,
+	scrubOutputFailClosed,
+} from "./output-scrubber.js";
 import {
 	getShellConfig,
 	killProcessTree,
 	validateShellParams,
 } from "./shell-utils.js";
-import { createTool, interpolateContext } from "./tool-dsl.js";
+import {
+	createTool,
+	hasContextInterpolationMarker,
+	interpolateContext,
+} from "./tool-dsl.js";
 
 /**
  * Schema for bash tool parameters.
@@ -96,7 +107,91 @@ const MAX_TIMEOUT_SECONDS = 600;
 const MAX_BUFFER = 40 * 1024;
 
 function sanitizeToolOutput(value: string): string {
-	return sanitizeWithStaticMask(value);
+	return scrubOutputFailClosed(value, { surface: "bash" });
+}
+
+type OutputCapture = {
+	text: string;
+	bytes: number;
+	truncated: boolean;
+	decoder: StringDecoder;
+	scrubber: SecretOutputScrubber;
+};
+
+function createOutputCapture(): OutputCapture {
+	return {
+		text: "",
+		bytes: 0,
+		truncated: false,
+		decoder: new StringDecoder("utf8"),
+		scrubber: new SecretOutputScrubber({ surface: "bash" }),
+	};
+}
+
+function appendScrubbedOutput(capture: OutputCapture, value: string): void {
+	if (value) {
+		capture.text += value;
+	}
+}
+
+function appendCapturedOutput(capture: OutputCapture, data: Buffer): void {
+	if (capture.bytes >= MAX_BUFFER) {
+		capture.truncated = true;
+		return;
+	}
+
+	const remainingBytes = MAX_BUFFER - capture.bytes;
+	if (data.length <= remainingBytes) {
+		appendScrubbedOutput(
+			capture,
+			capture.scrubber.write(capture.decoder.write(data)),
+		);
+		capture.bytes += data.length;
+		return;
+	}
+
+	appendScrubbedOutput(
+		capture,
+		capture.scrubber.write(
+			capture.decoder.write(data.subarray(0, remainingBytes)),
+		),
+	);
+	capture.bytes = MAX_BUFFER;
+	capture.truncated = true;
+}
+
+function finalizeCapturedOutput(capture: OutputCapture): string {
+	if (!capture.truncated) {
+		appendScrubbedOutput(
+			capture,
+			capture.scrubber.write(capture.decoder.end()),
+		);
+	}
+	appendScrubbedOutput(capture, capture.scrubber.flush());
+	return capture.text;
+}
+
+function redactTrailingPartialSecret(value: string): string {
+	return value
+		.replace(
+			/\b(?:token|secret|password|key)[^\S\r\n]*[:=][^\S\r\n]*[^\s"']*$/gi,
+			(match) => match.replace(/([:=][^\S\r\n]*)[^\s"']*$/u, "$1[secret]"),
+		)
+		.replace(/\bgh[opsr]_[A-Za-z0-9]*$/g, "[secret]")
+		.replace(/\bsk-[A-Za-z0-9_-]*$/g, "[secret]")
+		.replace(
+			/\b(?:A3T[A-Z]?|AKIA|ASIA|AGPA|AIDA|ANPA|ANVA|AROA)[A-Z0-9]*$/g,
+			"[secret]",
+		)
+		.replace(/\beyJ[A-Za-z0-9_-]*(?:\.[A-Za-z0-9_-]*){0,2}$/g, "[secret]")
+		.replace(/\b[A-Fa-f0-9]{16,}$/g, "[secret]")
+		.replace(/\bBearer\s+[A-Za-z0-9._-]*$/gi, "Bearer [secret]")
+		.replace(/\bBasic\s+[A-Za-z0-9+/=]*$/gi, "Basic [secret]");
+}
+
+function sanitizeCapturedOutput(capture: OutputCapture): string {
+	const output = finalizeCapturedOutput(capture);
+	return capture.truncated ? redactTrailingPartialSecret(output) : output;
 }
 
 /**
@@ -172,37 +267,49 @@ Supports interpolation in command:
 
 Timeout: 90s default, 600s max. Output truncates at 40KB.`,
 	schema: bashSchema,
-	async run(
-		{ command, timeout, cwd, env, runInBackground },
-		{ signal, sandbox, respond },
-	) {
+	async run(params, { signal, sandbox, respond }) {
+		const { command, timeout, cwd, env, runInBackground } = params;
 		// Step 1: Interpolate variables in the command string
 		// Replaces ${cwd}, ${home}, ${env.VAR} with actual values
-		const interpolatedCommand = interpolateContext(command, env);
+		const interpolatedCommand = hasContextInterpolationMarker(
+			params as Record<string, unknown>,
+		)
+			? command
+			: interpolateContext(command, env);
 
 		// Step 2: Check execpolicy for command approval
 		// Policies in ~/.maestro/execpolicy and .maestro/execpolicy
 		const policyResult = checkCommand(interpolatedCommand, process.cwd());
 		if (policyResult.decision === "forbidden") {
+			const redactedCommand = sanitizeToolOutput(interpolatedCommand);
 			const matchInfo = policyResult.matchedRules
-				.map((r) =>
-					r.type === "prefix"
-						? `prefix: ${r.matchedPrefix.join(" ")}`
-						: `heuristic: ${r.command.join(" ")}`,
-				)
+				.map((r) => {
+					const rawMatch =
+						r.type === "prefix"
+							? `prefix: ${r.matchedPrefix.join(" ")}`
+							: `heuristic: ${r.command.join(" ")}`;
+					return sanitizeToolOutput(rawMatch);
+				})
 				.join(", ");
 			return respond.text(
-				`Command blocked by execpolicy: ${interpolatedCommand}\n\nDecision: forbidden\nMatched rules: ${matchInfo || "none"}\n\nTo allow this command, add a prefix_rule to .maestro/execpolicy`,
+				`Command blocked by execpolicy: ${redactedCommand}\n\nDecision: forbidden\nMatched rules: ${matchInfo || "none"}\n\nTo allow this command, add a prefix_rule to .maestro/execpolicy`,
 			);
 		}
 
-		// Step 2.5: Check for nested agent spawning
-		// Prevents CPU exhaustion from recursive agent spawning
+		// Step 2.5: Check for nested agent spawning + hard descendant cap.
+		// `checkBashCommandForNestedAgent` consults both the regex
+		// patterns (advisory; trivially obfuscatable) and the generic
+		// per-session spawn count / rate cap (#2481). The cap is the
+		// fail-closed defense against fork bombs that hide the agent
+		// name behind shell tricks. Record the spawn before the check so
+		// the cap fires on the call that would breach the limit.
+		nestedAgentGuard.recordBashSpawn();
 		const nestedAgentError =
 			checkBashCommandForNestedAgent(interpolatedCommand);
 		if (nestedAgentError) {
+			const redactedCommand = sanitizeToolOutput(interpolatedCommand);
 			return respond.text(
-				`${nestedAgentError}\n\nCommand: ${interpolatedCommand.slice(0, 100)}...`,
+				`${nestedAgentError}\n\nCommand: ${redactedCommand.slice(0, 100)}...`,
 			);
 		}
 
@@ -285,16 +392,16 @@ Timeout: 90s default, 600s max. Output truncates at 40KB.`,
 		// ============================================
 		if (sandbox) {
 			// Execute in isolated sandbox environment (e.g., Docker container)
-			const result = await sandbox.exec(interpolatedCommand, cwd, env);
+			const result = await sandbox.exec(interpolatedCommand, cwd, env, signal);
 
 			// Combine stdout and stderr for output
 			let output = "";
 			if (result.stdout) {
-				output += result.stdout;
+				output += sanitizeToolOutput(result.stdout);
 			}
 			if (result.stderr) {
 				if (output) output += "\n";
-				output += result.stderr;
+				output += sanitizeToolOutput(result.stderr);
 			}
 
 			// Include exit code for non-zero exits to help with debugging
@@ -306,9 +413,7 @@ Timeout: 90s default, 600s max. Output truncates at 40KB.`,
 				content: [
 					{
 						type: "text",
-						text:
-							sanitizeToolOutput(output).trim() ||
-							"Command executed successfully (no output)",
+						text: output.trim() || "Command executed successfully (no output)",
 					},
 				],
 				details: undefined,
@@ -348,11 +453,10 @@ Timeout: 90s default, 600s max. Output truncates at 40KB.`,
 			});
 
 			// Output buffers with truncation tracking
-			let stdout = "";
-			let stderr = "";
+			const stdoutCapture = createOutputCapture();
+			const stderrCapture = createOutputCapture();
 			let timedOut = false;
-			let stdoutTruncated = false;
-			let stderrTruncated = false;
+			let settled = false;
 
 			// Set up timeout handler
 			let timeoutHandle: NodeJS.Timeout | undefined;
@@ -380,13 +484,36 @@ Timeout: 90s default, 600s max. Output truncates at 40KB.`,
 				}
 			};
 
+			const rejectOnce = (error: unknown, terminate = false) => {
+				if (settled) {
+					return;
+				}
+				settled = true;
+				cleanup();
+				if (terminate && child.pid) {
+					killProcessTree(child.pid);
+				}
+				reject(error instanceof Error ? error : new Error(String(error)));
+			};
+
+			const resolveOnce = (value: {
+				content: Array<{ type: "text"; text: string }>;
+				details: undefined;
+			}) => {
+				if (settled) {
+					return;
+				}
+				settled = true;
+				resolve(value);
+			};
+
 			// Capture stdout with buffer limit
 			if (child.stdout) {
 				child.stdout.on("data", (data) => {
-					if (stdout.length < MAX_BUFFER) {
-						stdout += data.toString();
-					} else {
-						stdoutTruncated = true;
+					try {
+						appendCapturedOutput(stdoutCapture, Buffer.from(data));
+					} catch (error) {
+						rejectOnce(error, true);
 					}
 				});
 			}
@@ -394,67 +521,74 @@ Timeout: 90s default, 600s max. Output truncates at 40KB.`,
 			// Capture stderr with buffer limit
 			if (child.stderr) {
 				child.stderr.on("data", (data) => {
-					if (stderr.length < MAX_BUFFER) {
-						stderr += data.toString();
-					} else {
-						stderrTruncated = true;
+					try {
+						appendCapturedOutput(stderrCapture, Buffer.from(data));
+					} catch (error) {
+						rejectOnce(error, true);
 					}
 				});
 			}
 
 			// Handle spawn errors (e.g., command not found)
 			child.on("error", (error) => {
-				cleanup();
-				reject(error);
+				rejectOnce(error);
 			});
 
 			// Handle process completion
 			child.on("close", (code) => {
+				if (settled) {
+					return;
+				}
 				cleanup();
+				try {
+					// Combine stdout and stderr
+					const stdout = sanitizeCapturedOutput(stdoutCapture);
+					const stderr = sanitizeCapturedOutput(stderrCapture);
+					let output = stdout;
+					if (stderr) {
+						if (output) output += "\n";
+						output += stderr;
+					}
 
-				// Combine stdout and stderr
-				let output = stdout;
-				if (stderr) {
-					if (output) output += "\n";
-					output += stderr;
-				}
+					// Provide helpful truncation feedback
+					const truncationMessages: string[] = [];
+					if (stdoutCapture.truncated) {
+						const displayedKB = Math.round(MAX_BUFFER / 1024);
+						truncationMessages.push(
+							`stdout exceeded ${displayedKB}KB limit and was truncated`,
+						);
+					}
+					if (stderrCapture.truncated) {
+						const displayedKB = Math.round(MAX_BUFFER / 1024);
+						truncationMessages.push(
+							`stderr exceeded ${displayedKB}KB limit and was truncated`,
+						);
+					}
+					if (truncationMessages.length > 0) {
+						output += `\n\n⚠️ Output truncated: ${truncationMessages.join("; ")}. Consider piping output to a file or using head/tail.`;
+					}
 
-				// Provide helpful truncation feedback
-				const truncationMessages: string[] = [];
-				if (stdoutTruncated) {
-					const displayedKB = Math.round(MAX_BUFFER / 1024);
-					truncationMessages.push(
-						`stdout exceeded ${displayedKB}KB limit and was truncated`,
-					);
-				}
-				if (stderrTruncated) {
-					const displayedKB = Math.round(MAX_BUFFER / 1024);
-					truncationMessages.push(
-						`stderr exceeded ${displayedKB}KB limit and was truncated`,
-					);
-				}
-				if (truncationMessages.length > 0) {
-					output += `\n\n⚠️ Output truncated: ${truncationMessages.join("; ")}. Consider piping output to a file or using head/tail.`;
-				}
+					// Add timeout or exit code information
+					if (timedOut) {
+						output += `\n\n⏱️ Command timed out after ${effectiveTimeout}s`;
+					} else if (code !== 0) {
+						output += `\n\nExit code: ${code}`;
+					}
 
-				// Add timeout or exit code information
-				if (timedOut) {
-					output += `\n\n⏱️ Command timed out after ${effectiveTimeout}s`;
-				} else if (code !== 0) {
-					output += `\n\nExit code: ${code}`;
+					resolveOnce({
+						content: [
+							{
+								type: "text",
+								text:
+									sanitizeToolOutput(output).trim() ||
+									"Command executed successfully (no output)",
+							},
+						],
+						details: undefined,
+					});
+				} catch (error) {
+					rejectOnce(error);
 				}
-
-				resolve({
-					content: [
-						{
-							type: "text",
-							text:
-								sanitizeToolOutput(output).trim() ||
-								"Command executed successfully (no output)",
-						},
-					],
-					details: undefined,
-				});
 			});
 
 			// Allow external abort signal to cancel execution

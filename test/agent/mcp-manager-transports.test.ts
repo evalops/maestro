@@ -232,6 +232,7 @@ describe("MCP manager remote transports", () => {
 		vi.stubEnv("MAESTRO_VERSION", "0.10.18-test");
 
 		await manager.configure({
+			workspaceTrustDefault: "trusted",
 			servers: [
 				{
 					name: "remote-http",
@@ -339,6 +340,43 @@ describe("MCP manager remote transports", () => {
 		expect(result.content).toEqual([{ type: "text", text: "ok" }]);
 	});
 
+	it("prompts by default when MCP workspace trust is unconfigured", async () => {
+		const requestExecution = vi.fn().mockResolvedValue({
+			content: [
+				{
+					type: "text",
+					text: JSON.stringify({
+						action: "accept",
+						content: { decision: "trust_once" },
+					}),
+				},
+			],
+			isError: false,
+		});
+
+		await manager.configure({
+			projectRoot: tempDir,
+			servers: [
+				{
+					name: "remote-http",
+					transport: "http",
+					url: "https://example.com/mcp",
+				},
+			],
+			authPresets: [],
+		});
+
+		await runWithMcpClientToolService({ requestExecution }, () =>
+			manager.callTool("remote-http", "search", { query: "docs" }),
+		);
+
+		expect(requestExecution).toHaveBeenCalledTimes(1);
+		expect(mockCallTool).toHaveBeenCalledWith({
+			name: "search",
+			arguments: { query: "docs" },
+		});
+	});
+
 	it("does not invoke MCP tools when workspace trust is denied", async () => {
 		const requestExecution = vi.fn().mockResolvedValue({
 			content: [
@@ -407,6 +445,45 @@ describe("MCP manager remote transports", () => {
 			manager.callTool("remote-http", "search", { query: "docs" }),
 		).rejects.toThrow("is not trusted");
 		expect(mockCallTool).not.toHaveBeenCalled();
+	});
+
+	it("ignores legacy ask trust entries without server fingerprints", async () => {
+		writeFileSync(
+			join(tempDir, "workspace-trust.json"),
+			JSON.stringify({
+				version: 1,
+				servers: {
+					"remote-http": [
+						{
+							workspaceUri: `file:${tempDir}`,
+							mode: "ask",
+							grantedBy: "user",
+							grantedAt: "2026-05-07T00:00:00.000Z",
+						},
+					],
+				},
+			}),
+		);
+
+		await manager.configure({
+			workspaceTrustDefault: "trusted",
+			projectRoot: tempDir,
+			servers: [
+				{
+					name: "remote-http",
+					transport: "http",
+					url: "https://example.com/mcp",
+				},
+			],
+			authPresets: [],
+		});
+
+		await manager.callTool("remote-http", "search", { query: "docs" });
+
+		expect(mockCallTool).toHaveBeenCalledWith({
+			name: "search",
+			arguments: { query: "docs" },
+		});
 	});
 
 	it("blocks ask-mode MCP calls when no MCP elicitation client is connected", async () => {
@@ -707,8 +784,19 @@ describe("MCP manager remote transports", () => {
 		});
 	});
 
-	it("keeps trustedWorkspaces entries scoped to their server", async () => {
-		const requestExecution = vi.fn();
+	it("prompts when trustedWorkspaces entries belong to another server", async () => {
+		const requestExecution = vi.fn().mockResolvedValue({
+			content: [
+				{
+					type: "text",
+					text: JSON.stringify({
+						action: "accept",
+						content: { decision: "trust_once" },
+					}),
+				},
+			],
+			isError: false,
+		});
 
 		await manager.configure({
 			projectRoot: tempDir,
@@ -736,7 +824,7 @@ describe("MCP manager remote transports", () => {
 			manager.callTool("remote-http", "search", { query: "docs" }),
 		);
 
-		expect(requestExecution).not.toHaveBeenCalled();
+		expect(requestExecution).toHaveBeenCalledTimes(1);
 		expect(mockCallTool).toHaveBeenCalledWith({
 			name: "search",
 			arguments: { query: "docs" },

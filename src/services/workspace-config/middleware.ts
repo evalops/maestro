@@ -3,6 +3,7 @@ import type { Middleware } from "../../server/middleware.js";
 import { setWorkspaceConfigContext } from "../../server/request-context.js";
 import { sendJson } from "../../server/server-utils.js";
 import { createLogger } from "../../utils/logger.js";
+import { sanitizeWithStaticMask } from "../../utils/secret-redactor.js";
 import { WorkspaceConfigValidationError } from "./normalize.js";
 import {
 	WorkspaceConfigUnavailableError,
@@ -101,7 +102,9 @@ export function createWorkspaceConfigMiddleware(
 				return;
 			}
 			logger.warn("Failed to load workspace config", {
-				error: error instanceof Error ? error.message : String(error),
+				error: sanitizeWithStaticMask(
+					error instanceof Error ? error.message : String(error),
+				),
 				workspaceId,
 			});
 			sendJson(

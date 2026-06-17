@@ -27,6 +27,7 @@ import type {
 } from "../../session/types.js";
 import { theme } from "../../theme/theme.js";
 import { createLogger } from "../../utils/logger.js";
+import { sanitizeWithStaticMask } from "../../utils/secret-redactor.js";
 import type { CustomEditor } from "../custom-editor.js";
 import { HookInputModal } from "../hooks/hook-input-modal.js";
 import type { ModalManager } from "../modal-manager.js";
@@ -232,7 +233,9 @@ export class TreeSelectorView {
 			await executeHooks(input, process.cwd(), signal);
 		} catch (error) {
 			logger.warn("SessionTree hook execution failed", {
-				error: error instanceof Error ? error.message : String(error),
+				error: sanitizeWithStaticMask(
+					error instanceof Error ? error.message : String(error),
+				),
 			});
 		}
 	}
@@ -275,7 +278,9 @@ export class TreeSelectorView {
 				throw error;
 			}
 			logger.warn("Branch summarization failed", {
-				error: error instanceof Error ? error.message : String(error),
+				error: sanitizeWithStaticMask(
+					error instanceof Error ? error.message : String(error),
+				),
 			});
 		}
 

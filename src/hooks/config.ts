@@ -17,6 +17,7 @@ import {
 	expandTildePathWithHomeDir,
 	getHomeDir,
 } from "../utils/path-expansion.js";
+import { sanitizeWithStaticMask } from "../utils/secret-redactor.js";
 import type {
 	HookCommandConfig,
 	HookConfig,
@@ -413,7 +414,9 @@ function loadHooksFromFileWithExtends(
 			throw error;
 		}
 		logger.warn(`Failed to load hooks from ${path}`, {
-			error: error instanceof Error ? error.message : String(error),
+			error: sanitizeWithStaticMask(
+				error instanceof Error ? error.message : String(error),
+			),
 		});
 		return {};
 	}

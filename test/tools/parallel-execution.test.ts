@@ -447,5 +447,39 @@ describe("parallel-execution", () => {
 				resolve(cwd, "src/b.ts").toLowerCase(),
 			]);
 		});
+
+		it("does not path-scope bash commands from partial shell heuristics", () => {
+			const cwd = resolve("/tmp/maestro-shell-path-scope");
+			const scope = getPathScopedMutation(
+				{
+					name: "bash",
+					arguments: {
+						command:
+							"echo updated > src/a.ts; printf more >> 'src/b.ts'; touch src/c.ts",
+					},
+				},
+				undefined,
+				cwd,
+			);
+
+			expect(scope).toBeUndefined();
+		});
+
+		it("does not path-scope background task commands from partial shell heuristics", () => {
+			const cwd = resolve("/tmp/maestro-background-path-scope");
+			const scope = getPathScopedMutation(
+				{
+					name: "background_tasks",
+					arguments: {
+						action: "start",
+						command: "node scripts/build.js | tee tmp/build.log",
+					},
+				},
+				undefined,
+				cwd,
+			);
+
+			expect(scope).toBeUndefined();
+		});
 	});
 });

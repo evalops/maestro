@@ -2,6 +2,7 @@ import { EventEmitter } from "node:events";
 import { extname, resolve } from "node:path";
 import { sleep } from "../utils/async.js";
 import { createLogger } from "../utils/logger.js";
+import { sanitizeWithStaticMask } from "../utils/secret-redactor.js";
 import type { LspClient } from "./client.js";
 import { spawnLspClient } from "./spawn.js";
 import type { LspServerConfig, RootResolver } from "./types.js";
@@ -242,7 +243,9 @@ export class LspClientManager extends EventEmitter {
 			} else {
 				logger.warn("Root resolver failed", {
 					label,
-					error: error instanceof Error ? error.message : String(error),
+					error: sanitizeWithStaticMask(
+						error instanceof Error ? error.message : String(error),
+					),
 				});
 			}
 			return undefined;
