@@ -20,6 +20,7 @@
 
 import type { RetryConfig } from "../config/toml-config.js";
 import { createLogger } from "../utils/logger.js";
+import { sanitizeWithStaticMask } from "../utils/secret-redactor.js";
 import type { Agent } from "./agent.js";
 import { isRetryableError } from "./context-overflow.js";
 import type { AgentEvent, AssistantMessage } from "./types.js";
@@ -287,7 +288,9 @@ export class AutoRetryController {
 		setTimeout(() => {
 			agent.continue().catch((error: unknown) => {
 				logger.warn("Retry continue() failed", {
-					error: error instanceof Error ? error.message : String(error),
+					error: sanitizeWithStaticMask(
+						error instanceof Error ? error.message : String(error),
+					),
 				});
 			});
 		}, 0);

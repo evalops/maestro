@@ -84,6 +84,8 @@ import {
 import { verifySessionOwnership } from "./sessions.js";
 
 const logger = createLogger("web:chat");
+const composerBindErrorMessage =
+	"Failed to restore the active composer for this session";
 
 const noopAutomaticMemoryExtraction = {
 	schedule: (_sessionPath?: string | null) => {},
@@ -306,13 +308,7 @@ export async function handleChat(
 					!resumedSession ||
 					!verifySessionOwnership(resumedSession, subject)
 				) {
-					sendJson(
-						res,
-						403,
-						{ error: "Access denied: session belongs to another user" },
-						cors,
-						req,
-					);
+					sendJson(res, 404, { error: "Session not found" }, cors, req);
 					return;
 				}
 			}
@@ -414,12 +410,16 @@ export async function handleChat(
 			"prompt",
 			sessionIdProvider,
 		);
+		const persistedSystemPromptSourcePaths = existingSessionLoaded
+			? sessionManager.getHeader()?.systemPromptSourcePaths
+			: undefined;
 
 		const agent = await createAgent(
 			registeredModel,
 			chatReq.thinkingLevel || "off",
 			effectiveApproval,
 			{
+				persistedSystemPromptSourcePaths,
 				approvalService: requestApprovalService,
 				toolRetryService,
 				...(clientToolsHeader
@@ -480,6 +480,7 @@ export async function handleChat(
 		// Track cleanup state to prevent double-cleanup
 		let cleanedUp = false;
 		let cleanupPromise: Promise<void> | null = null;
+		let boundComposerSessionId: string | null = null;
 
 		// ===== Phase 5: Agent Event Subscription =====
 		// Subscribe to agent events and forward them to the SSE stream
@@ -522,6 +523,31 @@ export async function handleChat(
 			}
 			return;
 		}
+		const initializedSessionId = sessionManager.getSessionId();
+		const composerBindResult = context.composerManagers
+			? context.composerManagers.bindAgentSession(
+					agent,
+					subject,
+					initializedSessionId,
+				)
+			: true;
+		if (!composerBindResult) {
+			logger.error("Failed to bind chat composer session", undefined, {
+				sessionId: initializedSessionId,
+				subject,
+			});
+			sendSSE(sseSession, {
+				type: "error",
+				message: composerBindErrorMessage,
+			});
+			sseSession.end();
+			if (sseLease && releaseSse) {
+				releaseSse(sseLease);
+				sseLease = null;
+			}
+			return;
+		}
+		boundComposerSessionId = initializedSessionId;
 
 		const toolArgsByCallId = new Map<string, Record<string, unknown>>();
 		const storeToolArgs = (toolCallId: string, args: unknown) => {
@@ -840,6 +866,13 @@ export async function handleChat(
 				res.off("close", handleConnectionClose);
 				unsubscribe();
 				unsubscribeMcpElicitationBridge();
+				if (boundComposerSessionId) {
+					context.composerManagers?.unbindAgentSession?.(
+						agent,
+						subject,
+						boundComposerSessionId,
+					);
+				}
 
 				await automaticMemoryExtraction.flush();
 				await automaticMemoryConsolidation.flush();
@@ -878,6 +911,8 @@ export async function handleChat(
 				attachmentNames: attachmentsToSend?.map(
 					(attachment) => attachment.fileName,
 				),
+				profileName: context.profileName,
+				cliOverrides: context.cliOverrides,
 				execute: () =>
 					breaker.execute(() => agent.prompt(userInput, attachmentsToSend)),
 				getPostKeepMessages: withMcpPostKeepMessages(),

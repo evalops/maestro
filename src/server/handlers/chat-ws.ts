@@ -52,6 +52,8 @@ import {
 import { verifySessionOwnership } from "./sessions.js";
 
 const logger = createLogger("web:chat-ws");
+const composerBindErrorMessage =
+	"Failed to restore the active composer for this session";
 
 const noopAutomaticMemoryExtraction = {
 	schedule: (_sessionPath?: string | null) => {},
@@ -230,6 +232,7 @@ export function handleChatWebSocket(
 	let sseLease: symbol | null = null;
 	let cleanedUp = false;
 	let cleanupPromise: Promise<void> | null = null;
+	let boundComposerSessionId: string | null = null;
 	let requestHandled = false;
 
 	const url = new URL(
@@ -437,7 +440,7 @@ export function handleChatWebSocket(
 						!resumedSession ||
 						!verifySessionOwnership(resumedSession, subject)
 					) {
-						sendErrorAndClose("Access denied: session belongs to another user");
+						sendErrorAndClose("Session not found");
 						if (sseLease && releaseSse) {
 							releaseSse(sseLease);
 							sseLease = null;
@@ -502,12 +505,16 @@ export function handleChatWebSocket(
 				"prompt",
 				sessionIdProvider,
 			);
+			const persistedSystemPromptSourcePaths = existingSessionLoaded
+				? sessionManager.getHeader()?.systemPromptSourcePaths
+				: undefined;
 
 			const agent = await createAgent(
 				registeredModel,
 				chatReq.thinkingLevel || "off",
 				effectiveApproval,
 				{
+					persistedSystemPromptSourcePaths,
 					approvalService: requestApprovalService,
 					toolRetryService,
 					...(clientToolsHeader
@@ -576,6 +583,37 @@ export function handleChatWebSocket(
 				}
 				return;
 			}
+			const initializedSessionId = sessionManager.getSessionId();
+			const composerBindResult =
+				initializedSessionId && context.composerManagers
+					? context.composerManagers.bindAgentSession(
+							agent,
+							subject,
+							initializedSessionId,
+						)
+					: true;
+			if (!composerBindResult) {
+				logger.error(
+					"Failed to bind chat websocket composer session",
+					undefined,
+					{
+						sessionId: initializedSessionId,
+						subject,
+					},
+				);
+				wsSession.sendEvent({
+					type: "error",
+					message: composerBindErrorMessage,
+				});
+				wsSession.sendDone();
+				wsSession.end();
+				if (sseLease && releaseSse) {
+					releaseSse(sseLease);
+					sseLease = null;
+				}
+				return;
+			}
+			boundComposerSessionId = initializedSessionId;
 
 			const toolArgsByCallId = new Map<string, Record<string, unknown>>();
 			const storeToolArgs = (toolCallId: string, args: unknown) => {
@@ -853,6 +891,13 @@ export function handleChatWebSocket(
 					cleanedUp = true;
 					unsubscribe();
 					unsubscribeMcpElicitationBridge();
+					if (boundComposerSessionId) {
+						context.composerManagers?.unbindAgentSession?.(
+							agent,
+							subject,
+							boundComposerSessionId,
+						);
+					}
 					await automaticMemoryExtraction.flush();
 					await automaticMemoryConsolidation.flush();
 					await sessionManager.flush();
@@ -880,6 +925,8 @@ export function handleChatWebSocket(
 					attachmentNames: attachmentsToSend?.map(
 						(attachment) => attachment.fileName,
 					),
+					profileName: context.profileName,
+					cliOverrides: context.cliOverrides,
 					execute: () =>
 						breaker.execute(() => agent.prompt(userInput, attachmentsToSend)),
 					getPostKeepMessages: withMcpPostKeepMessages(),

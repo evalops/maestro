@@ -1,6 +1,7 @@
 import { createSessionHookService } from "../hooks/session-integration.js";
 import type { SessionEndHookInput } from "../hooks/types.js";
 import { createLogger } from "../utils/logger.js";
+import { sanitizeWithStaticMask } from "../utils/secret-redactor.js";
 import type { Agent } from "./agent.js";
 
 const logger = createLogger("session-lifecycle-hooks");
@@ -81,7 +82,9 @@ export async function applySessionEndHooks(params: {
 	} catch (error) {
 		logger.warn("SessionEnd hooks failed", {
 			reason: params.reason,
-			error: error instanceof Error ? error.message : String(error),
+			error: sanitizeWithStaticMask(
+				error instanceof Error ? error.message : String(error),
+			),
 		});
 	}
 }

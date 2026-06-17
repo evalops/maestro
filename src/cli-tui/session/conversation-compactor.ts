@@ -7,6 +7,7 @@ import {
 	performCompaction,
 } from "../../agent/compaction.js";
 import type { AppMessage, AssistantMessage } from "../../agent/types.js";
+import type { ComposerConfig } from "../../config/index.js";
 import {
 	createRenderableMessage,
 	renderMessageToPlainText,
@@ -25,6 +26,8 @@ interface ConversationCompactorOptions {
 	toolComponents: Set<ToolExecutionComponent>;
 	renderMessages: () => void;
 	showInfoMessage: (message: string) => void;
+	profileName?: string;
+	cliOverrides?: Partial<ComposerConfig>;
 	getPostKeepMessages?: (
 		source: string,
 		preservedMessages: AppMessage[],
@@ -103,6 +106,8 @@ export class ConversationCompactor {
 						preservedMessages,
 					)) ?? [],
 				customInstructions: options?.customInstructions,
+				profileName: this.options.profileName,
+				cliOverrides: this.options.cliOverrides,
 				renderSummaryText: (summary: AssistantMessage) => {
 					const renderable = createRenderableMessage(summary as AppMessage);
 					return renderable ? renderMessageToPlainText(renderable).trim() : "";

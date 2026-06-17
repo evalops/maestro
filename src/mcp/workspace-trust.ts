@@ -125,7 +125,7 @@ function latestMatchingEntry(
 			options.serverFingerprint &&
 			entry.serverFingerprint !== options.serverFingerprint
 		) {
-			if (entry.serverFingerprint || entry.mode === "trusted") {
+			if (entry.serverFingerprint || entry.mode !== "blocked") {
 				continue;
 			}
 		}
@@ -160,9 +160,6 @@ function resolveConfiguredMcpWorkspaceTrust(options: {
 	);
 	if (stored) {
 		return stored.mode;
-	}
-	if (!options.config.workspaceTrustDefault && !configuredEntries?.length) {
-		return "trusted";
 	}
 	return options.config.workspaceTrustDefault ?? "ask";
 }
@@ -309,13 +306,6 @@ export async function ensureMcpWorkspaceTrusted(options: {
 	clientToolService?: ClientToolExecutionService;
 }): Promise<void> {
 	const storedTrust = readStore().servers;
-	if (
-		!options.config.workspaceTrustDefault &&
-		!options.config.trustedWorkspaces?.[options.server.name]?.length &&
-		!storedTrust[options.server.name]?.length
-	) {
-		return;
-	}
 	const workspaceUri = await resolveMcpWorkspaceUri(options.config.projectRoot);
 	const serverFingerprint = fingerprintMcpServer(options.server);
 	const mode = resolveConfiguredMcpWorkspaceTrust({

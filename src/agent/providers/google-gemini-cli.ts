@@ -10,6 +10,16 @@ import {
 	type Part,
 	type ThinkingConfig,
 } from "@google/genai";
+import { getMergedCustomModelUrlPolicyConfig } from "../../models/config-loader.js";
+import {
+	checkModelRequestUrlPolicy,
+	isInternalModelBaseUrl,
+	recordCustomModelUrlPolicyBlock,
+} from "../../models/url-policy.js";
+import {
+	fetchWithModelRequestPolicyRedirects,
+	isModelRequestUrlPolicyError,
+} from "../../providers/network-config.js";
 import { createLogger } from "../../utils/logger.js";
 import { mapThinkingLevelToGoogleBudget } from "../thinking-level-mapper.js";
 import type {
@@ -258,6 +268,7 @@ export async function* streamGoogleGeminiCli(
 		const url = `${endpoint}/v1internal:streamGenerateContent?alt=sse`;
 		const isAntigravity = endpoint.includes("sandbox.googleapis.com");
 		const headers = isAntigravity ? ANTIGRAVITY_HEADERS : GEMINI_CLI_HEADERS;
+		const urlPolicyConfig = getMergedCustomModelUrlPolicyConfig();
 
 		let response: Response | undefined;
 		let lastError: Error | undefined;
@@ -268,18 +279,42 @@ export async function* streamGoogleGeminiCli(
 			}
 
 			try {
-				response = await fetch(url, {
-					method: "POST",
-					headers: {
-						Authorization: `Bearer ${accessToken}`,
-						"Content-Type": "application/json",
-						Accept: "text/event-stream",
-						...headers,
-						...(options.headers ?? {}),
-					},
-					body: JSON.stringify(requestBody),
-					signal: options.signal,
+				const urlPolicy = await checkModelRequestUrlPolicy(url, {
+					allowInternalBaseUrl: isInternalModelBaseUrl(url),
+					internalBaseUrl: url,
+					policy: urlPolicyConfig,
 				});
+				if (!urlPolicy.allowed) {
+					recordCustomModelUrlPolicyBlock({
+						provider: model.provider,
+						modelId: model.id,
+						reason: urlPolicy.reason,
+					});
+					throw new Error(
+						`Model request blocked by URL policy: ${urlPolicy.reason ?? "unknown_reason"}`,
+					);
+				}
+				response = await fetchWithModelRequestPolicyRedirects(
+					url,
+					{
+						method: "POST",
+						headers: {
+							Authorization: `Bearer ${accessToken}`,
+							"Content-Type": "application/json",
+							Accept: "text/event-stream",
+							...headers,
+							...(options.headers ?? {}),
+						},
+						body: JSON.stringify(requestBody),
+						signal: options.signal,
+					},
+					urlPolicy,
+					{
+						allowInternalBaseUrl: isInternalModelBaseUrl(url),
+						internalBaseUrl: url,
+						policy: urlPolicyConfig,
+					},
+				);
 
 				if (response.ok) {
 					break;
@@ -301,6 +336,9 @@ export async function* streamGoogleGeminiCli(
 				);
 			} catch (error) {
 				if (error instanceof Error && error.message === "Request was aborted") {
+					throw error;
+				}
+				if (isModelRequestUrlPolicyError(error)) {
 					throw error;
 				}
 				lastError = error instanceof Error ? error : new Error(String(error));

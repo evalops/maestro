@@ -6,15 +6,11 @@
  */
 
 import { execSync } from "node:child_process";
-import {
-	existsSync,
-	mkdirSync,
-	readFileSync,
-	unlinkSync,
-	writeFileSync,
-} from "node:fs";
+import { existsSync, mkdirSync, readFileSync, unlinkSync } from "node:fs";
 import { dirname } from "node:path";
+import { writeTextFileAtomic } from "../utils/fs.js";
 import { createLogger } from "../utils/logger.js";
+import { sanitizeWithStaticMask } from "../utils/secret-redactor.js";
 import type {
 	ChangeTrackerState,
 	ChangeType,
@@ -99,7 +95,9 @@ export class ChangeTracker {
 			} catch (error) {
 				logger.warn("Failed to read file for undo tracking", {
 					path,
-					error: error instanceof Error ? error.message : String(error),
+					error: sanitizeWithStaticMask(
+						error instanceof Error ? error.message : String(error),
+					),
 				});
 			}
 		}
@@ -151,7 +149,9 @@ export class ChangeTracker {
 			} catch (error) {
 				logger.warn("Failed to read file after change", {
 					path: change.path,
-					error: error instanceof Error ? error.message : String(error),
+					error: sanitizeWithStaticMask(
+						error instanceof Error ? error.message : String(error),
+					),
 				});
 			}
 		}
@@ -276,7 +276,9 @@ export class ChangeTracker {
 					case "modify":
 						// Restore previous content
 						if (change.before !== null) {
-							writeFileSync(change.path, change.before, "utf-8");
+							writeTextFileAtomic(change.path, change.before, {
+								encoding: "utf-8",
+							});
 							undone++;
 						} else {
 							skipped++;
@@ -288,7 +290,9 @@ export class ChangeTracker {
 						// Recreate the deleted file
 						if (change.before !== null) {
 							mkdirSync(dirname(change.path), { recursive: true });
-							writeFileSync(change.path, change.before, "utf-8");
+							writeTextFileAtomic(change.path, change.before, {
+								encoding: "utf-8",
+							});
 							undone++;
 						} else {
 							skipped++;

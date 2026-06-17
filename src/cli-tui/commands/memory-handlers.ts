@@ -12,7 +12,7 @@
  * - /memory clear - Clear all memories
  */
 
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import chalk from "chalk";
 import {
@@ -30,6 +30,7 @@ import {
 	listTopics,
 	searchMemories,
 } from "../../memory/index.js";
+import { writeTextFileAtomic } from "../../utils/fs.js";
 
 export interface MemoryRenderContext {
 	rawInput: string;
@@ -360,7 +361,9 @@ function handleExport(ctx: MemoryRenderContext, path?: string): void {
 		: resolve(ctx.cwd, "maestro-memories.json");
 
 	try {
-		writeFileSync(outputPath, JSON.stringify(store, null, 2), "utf-8");
+		writeTextFileAtomic(outputPath, JSON.stringify(store, null, 2), {
+			encoding: "utf-8",
+		});
 		ctx.showSuccess(
 			`Exported ${store.entries.length} memories to ${outputPath}`,
 		);

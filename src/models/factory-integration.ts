@@ -10,14 +10,20 @@ import type { Api } from "../agent/types.js";
 import { parseJsonOr, safeJsonParse } from "../utils/json.js";
 import { createLogger } from "../utils/logger.js";
 import { getHomeDir, resolveEnvPath } from "../utils/path-expansion.js";
+import { sanitizeWithStaticMask } from "../utils/secret-redactor.js";
 import {
 	type CustomModel,
 	type CustomModelConfig,
 	type CustomProvider,
 	applyProviderLoader,
+	getMergedCustomModelUrlPolicyConfig,
 	readJsonFile,
 } from "./config-loader.js";
 import { normalizeBaseUrl } from "./url-normalize.js";
+import {
+	type CustomModelUrlPolicyConfig,
+	validateCustomModelBaseUrl,
+} from "./url-policy.js";
 
 const logger = createLogger("models:registry");
 
@@ -31,9 +37,11 @@ export let factoryDataCache:
 	| { config: CustomModelConfig; modelProviderMap: Map<string, string> }
 	| null
 	| undefined;
+let factoryDataCacheKey: string | undefined;
 
 export function clearFactoryCache(): void {
 	factoryDataCache = undefined;
+	factoryDataCacheKey = undefined;
 }
 
 interface FactoryModelEntry {
@@ -94,6 +102,20 @@ export function buildFactoryData(): {
 	config: CustomModelConfig;
 	modelProviderMap: Map<string, string>;
 } | null {
+	return buildFactoryDataWithPolicy({});
+}
+
+function policyCacheKey(policy: CustomModelUrlPolicyConfig): string {
+	return JSON.stringify({
+		allowedBaseUrls: policy.allowedBaseUrls ?? [],
+		internalBaseUrlAllowList: policy.internalBaseUrlAllowList ?? [],
+	});
+}
+
+function buildFactoryDataWithPolicy(policy: CustomModelUrlPolicyConfig): {
+	config: CustomModelConfig;
+	modelProviderMap: Map<string, string>;
+} | null {
 	if (!existsSync(FACTORY_CONFIG_PATH)) {
 		return null;
 	}
@@ -124,8 +146,26 @@ export function buildFactoryData(): {
 				continue;
 			}
 
-			// Normalize provider base URLs using shared function
 			const api = deriveProviderApi(entry.provider);
+			try {
+				validateCustomModelBaseUrl(entry.base_url, policy, {
+					providerId: entry.provider ?? "factory",
+					api,
+					field: `custom_models.${entry.model}.base_url`,
+					source: FACTORY_CONFIG_PATH,
+				});
+			} catch (error) {
+				logger.warn("Ignoring unsafe Factory custom model base URL", {
+					model: entry.model,
+					provider: entry.provider,
+					error: sanitizeWithStaticMask(
+						error instanceof Error ? error.message : String(error),
+					),
+				});
+				continue;
+			}
+
+			// Normalize provider base URLs using shared function
 			const normalizedBaseUrl = normalizeBaseUrl(
 				entry.base_url,
 				entry.provider ?? "factory",
@@ -197,8 +237,19 @@ export function ensureFactoryData(): {
 	config: CustomModelConfig;
 	modelProviderMap: Map<string, string>;
 } | null {
-	if (factoryDataCache === undefined) {
-		factoryDataCache = buildFactoryData();
+	return ensureFactoryDataWithPolicy({});
+}
+
+export function ensureFactoryDataWithPolicy(
+	policy: CustomModelUrlPolicyConfig,
+): {
+	config: CustomModelConfig;
+	modelProviderMap: Map<string, string>;
+} | null {
+	const cacheKey = policyCacheKey(policy);
+	if (factoryDataCache === undefined || factoryDataCacheKey !== cacheKey) {
+		factoryDataCache = buildFactoryDataWithPolicy(policy);
+		factoryDataCacheKey = cacheKey;
 	}
 	return factoryDataCache ?? null;
 }
@@ -261,7 +312,9 @@ export function getFactoryDefaultModelSelection(): {
 	if (!selection) {
 		return null;
 	}
-	const factoryData = ensureFactoryData();
+	const factoryData = ensureFactoryDataWithPolicy(
+		getMergedCustomModelUrlPolicyConfig(),
+	);
 	if (!factoryData) {
 		return null;
 	}
@@ -273,10 +326,9 @@ export function getFactoryDefaultModelSelection(): {
 }
 
 export function readFactoryConfigSnapshot(): CustomModelConfig | null {
-	const data = buildFactoryData();
-	if (data) {
-		factoryDataCache = data;
-	}
+	const data = ensureFactoryDataWithPolicy(
+		getMergedCustomModelUrlPolicyConfig(),
+	);
 	return data?.config ?? null;
 }
 

@@ -18,6 +18,7 @@ import {
 	refreshHostedRunnerLease,
 } from "../server/hosted-runner-lease.js";
 import { ApiError } from "../server/server-utils.js";
+import { sanitizeWithStaticMask } from "../utils/secret-redactor.js";
 
 type UnknownRecord = Record<string, unknown>;
 type DrainRunner = typeof drainHostedRunner;
@@ -200,7 +201,9 @@ async function remoteControlStatus(
 		return {
 			...base,
 			status: "unavailable",
-			error: error instanceof Error ? error.message : String(error),
+			error: sanitizeWithStaticMask(
+				error instanceof Error ? error.message : String(error),
+			),
 		};
 	}
 }

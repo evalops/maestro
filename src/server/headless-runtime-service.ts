@@ -64,6 +64,7 @@ import type { SessionManager } from "../session/manager.js";
 import { toSessionModelMetadata } from "../session/manager.js";
 import { createRuntimeSessionSummaryUpdater } from "../session/runtime-summary-updater.js";
 import { createLogger } from "../utils/logger.js";
+import { sanitizeWithStaticMask } from "../utils/secret-redactor.js";
 import type { WebServerContext } from "./app-context.js";
 import { WebActionApprovalService } from "./approval-service.js";
 import { getAgentCircuitBreaker } from "./circuit-breaker.js";
@@ -523,7 +524,11 @@ type RuntimeOptions = {
 	restoreManifest?: HostedRunnerRestoreManifest;
 	context: Pick<
 		WebServerContext,
-		"createAgent" | "createBackgroundAgent" | "hostedRunner"
+		| "createAgent"
+		| "createBackgroundAgent"
+		| "hostedRunner"
+		| "profileName"
+		| "cliOverrides"
 	>;
 	sessionManager: SessionManager;
 };
@@ -541,6 +546,8 @@ export class HeadlessSessionRuntime {
 	private readonly sessionId: string;
 	private readonly scopeKey: string;
 	private readonly workspaceRoot?: string;
+	private readonly profileName?: string;
+	private readonly cliOverrides?: WebServerContext["cliOverrides"];
 	private readonly publishedServerRequestIds = new Set<string>();
 	private readonly suppressedApprovalResolutionIds = new Set<string>();
 	private readonly unsubscribeServerRequestEvents: () => void;
@@ -579,6 +586,8 @@ export class HeadlessSessionRuntime {
 		this.registeredModel = options.registeredModel;
 		this.subject = options.subject;
 		this.workspaceRoot = options.workspaceRoot ?? getHostedWorkspaceRoot();
+		this.profileName = options.context.profileName;
+		this.cliOverrides = options.context.cliOverrides;
 		this.approvalService = approvalService;
 		this.toolRetryService = toolRetryService;
 		this.agent = agent;
@@ -778,6 +787,8 @@ export class HeadlessSessionRuntime {
 			negotiatedServerRequests.includes("tool_retry") ? "prompt" : "skip",
 			options.session_id,
 		);
+		const persistedSystemPromptSourcePaths =
+			options.sessionManager.getHeader()?.systemPromptSourcePaths;
 		const agent = await options.context.createAgent(
 			options.registeredModel,
 			options.thinkingLevel,
@@ -797,6 +808,9 @@ export class HeadlessSessionRuntime {
 				platformToolExecutionBridge: createHostedRunnerToolExecutionBridge(
 					options.context.hostedRunner,
 				),
+				persistedSystemPromptSourcePaths,
+				profileName: options.context.profileName,
+				cliOverrides: options.context.cliOverrides,
 			},
 		);
 		const automaticMemoryConsolidation =
@@ -911,13 +925,17 @@ export class HeadlessSessionRuntime {
 			this.cancelPendingServerRequests(reason);
 		} catch (error) {
 			logger.warn("Failed to cancel pending headless server requests", {
-				error: error instanceof Error ? error.message : String(error),
+				error: sanitizeWithStaticMask(
+					error instanceof Error ? error.message : String(error),
+				),
 				sessionId: this.sessionId,
 			});
 		}
 		void this.utilityCommands.dispose(reason).catch((error) => {
 			logger.warn("Failed to dispose headless utility commands", {
-				error: error instanceof Error ? error.message : String(error),
+				error: sanitizeWithStaticMask(
+					error instanceof Error ? error.message : String(error),
+				),
 				sessionId: this.sessionId,
 			});
 		});
@@ -925,7 +943,9 @@ export class HeadlessSessionRuntime {
 			this.fileWatches.dispose(reason);
 		} catch (error) {
 			logger.warn("Failed to dispose headless file watches", {
-				error: error instanceof Error ? error.message : String(error),
+				error: sanitizeWithStaticMask(
+					error instanceof Error ? error.message : String(error),
+				),
 				sessionId: this.sessionId,
 			});
 		}
@@ -933,7 +953,9 @@ export class HeadlessSessionRuntime {
 			this.agent.abort();
 		} catch (error) {
 			logger.warn("Failed to abort disposed headless agent", {
-				error: error instanceof Error ? error.message : String(error),
+				error: sanitizeWithStaticMask(
+					error instanceof Error ? error.message : String(error),
+				),
 				sessionId: this.sessionId,
 			});
 		}
@@ -2146,6 +2168,8 @@ export class HeadlessSessionRuntime {
 				prompt: content,
 				attachmentCount: attachments?.length ?? 0,
 				attachmentNames: attachments?.map((attachment) => attachment.fileName),
+				profileName: this.profileName,
+				cliOverrides: this.cliOverrides,
 				execute: () =>
 					breaker.execute(() => this.agent.prompt(content, attachments)),
 				getPostKeepMessages: withHeadlessPostKeepMessages(() => this.state),
@@ -2307,7 +2331,9 @@ export class HeadlessSessionRuntime {
 					).length;
 				} catch (error) {
 					logger.warn("Failed to count active sessions for headless runtime", {
-						error: error instanceof Error ? error.message : String(error),
+						error: sanitizeWithStaticMask(
+							error instanceof Error ? error.message : String(error),
+						),
 					});
 				}
 
@@ -2545,7 +2571,11 @@ export type EnsureRuntimeOptions = {
 	registerConnection?: boolean;
 	context: Pick<
 		WebServerContext,
-		"createAgent" | "createBackgroundAgent" | "hostedRunner"
+		| "createAgent"
+		| "createBackgroundAgent"
+		| "hostedRunner"
+		| "profileName"
+		| "cliOverrides"
 	>;
 	sessionManager: SessionManager;
 };
@@ -2729,7 +2759,9 @@ export class HeadlessRuntimeService {
 				this.cleanupFailures.set(key, failures);
 				logger.warn("Failed to cleanup headless runtime", {
 					attempts: failures,
-					error: error instanceof Error ? error.message : String(error),
+					error: sanitizeWithStaticMask(
+						error instanceof Error ? error.message : String(error),
+					),
 					sessionId: runtime.id(),
 					scopeKey: key,
 				});

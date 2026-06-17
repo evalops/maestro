@@ -1,7 +1,8 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { getAgentDir } from "../config/constants.js";
+import { readJsonFile, writeTextFileAtomic } from "../utils/fs.js";
 import { resolveEnvPath } from "../utils/path-expansion.js";
 
 export interface ChangelogEntry {
@@ -146,16 +147,14 @@ export function readLastShownChangelogVersion(): string | null {
 	if (!existsSync(path)) {
 		return null;
 	}
-	try {
-		const raw = readFileSync(path, "utf-8");
-		const parsed = JSON.parse(raw) as { version?: string };
-		if (typeof parsed.version === "string" && parsed.version.trim()) {
-			return parsed.version.trim();
-		}
-		return null;
-	} catch {
-		return null;
+	const parsed = readJsonFile<{ version?: string }>(path, {
+		fallback: {},
+		rotateOnParseFail: true,
+	});
+	if (typeof parsed.version === "string" && parsed.version.trim()) {
+		return parsed.version.trim();
 	}
+	return null;
 }
 
 export function writeLastShownChangelogVersion(version: string): void {
@@ -164,5 +163,7 @@ export function writeLastShownChangelogVersion(version: string): void {
 	}
 	const path = resolveStatePath();
 	mkdirSync(dirname(path), { recursive: true });
-	writeFileSync(path, JSON.stringify({ version }, null, 2), "utf-8");
+	writeTextFileAtomic(path, JSON.stringify({ version }, null, 2), {
+		encoding: "utf-8",
+	});
 }

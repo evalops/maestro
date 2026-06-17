@@ -114,13 +114,19 @@ import { handleWorkspaceConfig } from "./handlers/workspace-config.js";
 import { handleZen } from "./handlers/zen.js";
 import { getPrometheusMetrics } from "./logger.js";
 import { requestTracker } from "./request-tracker.js";
+import {
+	ENTERPRISE_ROUTE_AUTH_POLICIES,
+	ROUTE_AUTH_POLICIES,
+	withRouteAuthPolicies,
+} from "./route-auth.js";
 import type { Route } from "./router.js";
 import { sendJson } from "./server-utils.js";
 
 export function createRoutes(context: WebServerContext): Route[] {
 	const { corsHeaders } = context;
+	const databaseConfigured = isDatabaseConfigured();
 
-	return [
+	const routes: Route[] = [
 		{
 			method: "GET",
 			path: "/healthz",
@@ -338,12 +344,20 @@ export function createRoutes(context: WebServerContext): Route[] {
 		{
 			method: "GET",
 			path: "/api/package",
-			handler: (req, res) => handlePackageStatus(req, res, corsHeaders),
+			handler: (req, res) =>
+				handlePackageStatus(req, res, corsHeaders, {
+					profileName: context.profileName,
+					cliOverrides: context.cliOverrides,
+				}),
 		},
 		{
 			method: "POST",
 			path: "/api/package",
-			handler: (req, res) => handlePackageStatus(req, res, corsHeaders),
+			handler: (req, res) =>
+				handlePackageStatus(req, res, corsHeaders, {
+					profileName: context.profileName,
+					cliOverrides: context.cliOverrides,
+				}),
 		},
 		{
 			method: "GET",
@@ -649,12 +663,12 @@ export function createRoutes(context: WebServerContext): Route[] {
 		{
 			method: "GET",
 			path: "/api/composer",
-			handler: (req, res) => handleComposer(req, res, corsHeaders),
+			handler: (req, res) => handleComposer(req, res, context),
 		},
 		{
 			method: "POST",
 			path: "/api/composer",
-			handler: (req, res) => handleComposer(req, res, corsHeaders),
+			handler: (req, res) => handleComposer(req, res, context),
 		},
 		{
 			method: "GET",
@@ -973,6 +987,11 @@ export function createRoutes(context: WebServerContext): Route[] {
 			handler: (req, res) => handleAdminWarmCaches(req, res, corsHeaders),
 		},
 		// Add enterprise routes when database is configured
-		...(isDatabaseConfigured() ? createEnterpriseRoutes(corsHeaders) : []),
+		...(databaseConfigured ? createEnterpriseRoutes(corsHeaders) : []),
 	];
+
+	const policies = databaseConfigured
+		? [...ROUTE_AUTH_POLICIES, ...ENTERPRISE_ROUTE_AUTH_POLICIES]
+		: ROUTE_AUTH_POLICIES;
+	return withRouteAuthPolicies(routes, policies);
 }

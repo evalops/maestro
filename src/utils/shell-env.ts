@@ -24,7 +24,64 @@ const CORE_ENV_VARS = [
 	"TMP",
 ];
 
-const DEFAULT_EXCLUDES = ["*KEY*", "*SECRET*", "*TOKEN*"];
+/**
+ * Default denylist of env-var name patterns that almost always carry
+ * credentials. This is a defense-in-depth pattern — not a complete
+ * secret blocker (denylists never are). Operators handling untrusted
+ * code should set `shell_environment_policy.inherit = "core"` plus an
+ * explicit `include_only` allowlist; see SECURITY.md.
+ *
+ * Widened in #2471 from the original 3-pattern list (`KEY`, `SECRET`,
+ * `TOKEN`) to also cover:
+ *
+ *   - common credential nouns (`PASSWORD`, `PASSWD`, `CREDENTIAL`,
+ *     `PRIVATE`, `PAT`, `AUTH`, `SESSION`)
+ *   - DSN/connection-string vars whose value embeds creds even when
+ *     the name doesn't (`DATABASE_URL`, `*_DSN`, `CONNECTION_STRING`)
+ *   - common provider prefixes that hold long-lived creds
+ *     (`AWS_*`, `AZURE_*`, `GCP_*`, `GOOGLE_*`, `OPENAI_*`,
+ *     `ANTHROPIC_*`, `GH_*`, `GITHUB_*`, `STRIPE_*`, `TWILIO_*`,
+ *     `SLACK_*`, `OP_*` for 1Password CLI)
+ */
+const DEFAULT_EXCLUDES = [
+	// Original triad — broad credential nouns
+	"*KEY*",
+	"*SECRET*",
+	"*TOKEN*",
+	// Additional credential nouns (#2471)
+	"*PASSWORD*",
+	"*PASSWD*",
+	"*CREDENTIAL*",
+	"*PRIVATE*",
+	"*_PAT", // GITHUB_PAT, GH_PAT, etc. (tighter than *PAT* which would catch PATH)
+	"PAT_*",
+	"*_AUTH",
+	"*_AUTH_*",
+	"AUTH_*",
+	// DSN / connection-string env vars — name doesn't say "secret"
+	// but the value embeds inline creds.
+	"DATABASE_URL",
+	"*_DATABASE_URL",
+	"DB_URL",
+	"*_DB_URL",
+	"*_DSN",
+	"CONNECTION_STRING",
+	"*_CONNECTION_STRING",
+	// Provider prefixes whose * is almost always a credential. We
+	// deliberately exclude GITHUB_*/GH_* here because CI commonly
+	// sets non-secret vars (`GITHUB_REPOSITORY`, `GH_PAGER`) under
+	// these prefixes; the secret-shaped ones still get caught by
+	// *TOKEN*/*_PAT/*KEY*.
+	"AWS_*",
+	"AZURE_*",
+	"GCP_*",
+	"OPENAI_*",
+	"ANTHROPIC_*",
+	"STRIPE_*",
+	"TWILIO_*",
+	"SLACK_*",
+	"OP_*", // 1Password CLI session vars
+];
 const PLATFORM_WORKER_SURFACE = "platform-agent-runtime";
 const PLATFORM_TRUSTED_TOOL_ENV_FLAG = "MAESTRO_PLATFORM_TRUSTED_TOOL_ENV";
 const PLATFORM_TRUSTED_TOOL_ENV_ALLOWLIST = [

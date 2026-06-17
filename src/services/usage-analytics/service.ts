@@ -2,6 +2,7 @@ import { type SQL, sql } from "drizzle-orm";
 import { type DbClient, getDb, isDatabaseConfigured } from "../../db/client.js";
 import { usageMetrics } from "../../db/schema.js";
 import { createLogger } from "../../utils/logger.js";
+import { sanitizeWithStaticMask } from "../../utils/secret-redactor.js";
 import {
 	createUsageAnalyticsReport,
 	normalizeUsageMetricInput,
@@ -156,7 +157,9 @@ export class UsageAnalyticsService {
 			return { recorded: true };
 		} catch (error) {
 			logger.warn("Failed to record usage analytics", {
-				error: error instanceof Error ? error.message : String(error),
+				error: sanitizeWithStaticMask(
+					error instanceof Error ? error.message : String(error),
+				),
 				workspaceId: normalized.workspaceId,
 				agentId: normalized.agentId,
 				provider: normalized.provider,

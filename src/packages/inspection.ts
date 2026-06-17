@@ -1,6 +1,7 @@
 import { existsSync, statSync } from "node:fs";
 import { join } from "node:path";
 import {
+	type ComposerConfig,
 	type ConfiguredPackageSpec,
 	loadConfiguredPackageSpecs,
 } from "../config/toml-config.js";
@@ -34,6 +35,11 @@ export interface ConfiguredPackageReport {
 	filters?: ResourceFilters;
 	inspected?: InspectedPackage;
 	error?: string;
+}
+
+export interface ConfiguredPackageReportOptions {
+	profileName?: string;
+	cliOverrides?: Partial<ComposerConfig>;
 }
 
 export async function inspectPackageSource(
@@ -116,8 +122,13 @@ function collectManifestPathIssues(
 
 export async function listConfiguredPackageReports(
 	workspaceDir: string,
+	options: ConfiguredPackageReportOptions = {},
 ): Promise<ConfiguredPackageReport[]> {
-	const configured = loadConfiguredPackageSpecs(workspaceDir);
+	const configured = loadConfiguredPackageSpecs(
+		workspaceDir,
+		options.profileName,
+		options.cliOverrides,
+	);
 	const reports: ConfiguredPackageReport[] = [];
 	for (const entry of configured) {
 		const [sourceSpec, filters] = parsePackageSpec(entry.spec, entry.cwd);

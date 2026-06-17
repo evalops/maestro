@@ -8,6 +8,7 @@ import { EVALOPS_ORGANIZATION_ID_ENV_VARS } from "../evalops/env-aliases.js";
 import { PLATFORM_HTTP_ROUTES } from "../platform/core-services.js";
 import { fetchDownstream } from "../utils/downstream-http.js";
 import { createLogger } from "../utils/logger.js";
+import { rejectDisallowedLoopbackHost } from "../utils/loopback-http.js";
 import {
 	buildDesktopDeviceProof,
 	buildEnrolledDesktopDeviceProof,
@@ -523,6 +524,9 @@ async function startCallbackServer(): Promise<{
 		});
 
 		const server = createServer((req: IncomingMessage, res: ServerResponse) => {
+			if (rejectDisallowedLoopbackHost(req, res, CALLBACK_PORT)) {
+				return;
+			}
 			const requestUrl = new URL(req.url ?? "", CALLBACK_ORIGIN);
 			if (requestUrl.pathname !== CALLBACK_PATH) {
 				res.writeHead(404);

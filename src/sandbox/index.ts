@@ -1,6 +1,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { buildNativeSandboxPolicy } from "../safety/permission-profile.js";
+import { sanitizeWithStaticMask } from "../utils/secret-redactor.js";
 import { DockerSandbox, type DockerSandboxConfig } from "./docker-sandbox.js";
 import { LocalSandbox } from "./local-sandbox.js";
 import {
@@ -65,7 +66,9 @@ export function loadSandboxConfig(cwd: string): SandboxConfig | undefined {
 	} catch (error) {
 		console.warn("[sandbox] Failed to load sandbox config", {
 			configPath,
-			error: error instanceof Error ? error.message : String(error),
+			error: sanitizeWithStaticMask(
+				error instanceof Error ? error.message : String(error),
+			),
 		});
 		return undefined;
 	}

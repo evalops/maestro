@@ -1,5 +1,11 @@
 import { execSync } from "node:child_process";
-import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import {
+	chmodSync,
+	mkdirSync,
+	mkdtempSync,
+	rmSync,
+	writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -243,6 +249,7 @@ describe("getGitSnapshot", () => {
 			);
 			expect(snapshot).toContain("Git user is configured for this repository.");
 			expect(snapshot).toContain("Working tree: dirty");
+			expect(snapshot).toContain("Upstream:");
 			expect(snapshot).toContain("Status:");
 			expect(snapshot).toContain("modified.txt");
 			expect(snapshot).toContain("Recent commits:");
@@ -252,7 +259,7 @@ describe("getGitSnapshot", () => {
 		}
 	});
 
-	it("uses porcelain status so color config does not leak ANSI into snapshots", () => {
+	it("parses status snapshots when color config is enabled", () => {
 		const dir = mkdtempSync(join(tmpdir(), "composer-git-snapshot-"));
 
 		try {
@@ -292,6 +299,82 @@ describe("getGitSnapshot", () => {
 			rmSync(dir, { recursive: true, force: true });
 		}
 	});
+
+	it("includes untracked files outside the launch subdirectory", () => {
+		const dir = mkdtempSync(join(tmpdir(), "composer-git-snapshot-"));
+
+		try {
+			initGitRepo(dir);
+			commitFile(dir, "tracked.txt", "tracked\n", "initial commit");
+			mkdirSync(join(dir, "packages", "app"), { recursive: true });
+			mkdirSync(join(dir, "scratch"), { recursive: true });
+			writeFileSync(join(dir, "scratch", "notes.txt"), "pending\n");
+
+			const snapshot = getGitSnapshot(join(dir, "packages", "app"));
+
+			expect(snapshot).toContain("Working tree: dirty");
+			expect(snapshot).toContain("?? scratch/");
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
+	it("reports untracked changes inside tracked submodules", () => {
+		const dir = mkdtempSync(join(tmpdir(), "composer-git-snapshot-"));
+		const submoduleSource = mkdtempSync(join(tmpdir(), "composer-submodule-"));
+
+		try {
+			initGitRepo(dir);
+			initGitRepo(submoduleSource);
+			commitFile(submoduleSource, "tracked.txt", "tracked\n", "initial commit");
+			execSync(
+				`git -c protocol.file.allow=always submodule add ${submoduleSource} deps/sub`,
+				{ cwd: dir, stdio: "ignore" },
+			);
+			execSync('git commit -am "add submodule"', {
+				cwd: dir,
+				stdio: "ignore",
+			});
+			writeFileSync(join(dir, "deps", "sub", "notes.txt"), "pending\n");
+
+			const snapshot = getGitSnapshot(dir);
+
+			expect(snapshot).toContain("Working tree: dirty");
+			expect(snapshot).toContain("Status:\nM deps/sub");
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+			rmSync(submoduleSource, { recursive: true, force: true });
+		}
+	});
+
+	it("reports tracked changes inside tracked submodules as modified", () => {
+		const dir = mkdtempSync(join(tmpdir(), "composer-git-snapshot-"));
+		const submoduleSource = mkdtempSync(join(tmpdir(), "composer-submodule-"));
+
+		try {
+			initGitRepo(dir);
+			initGitRepo(submoduleSource);
+			commitFile(submoduleSource, "tracked.txt", "tracked\n", "initial commit");
+			execSync(
+				`git -c protocol.file.allow=always submodule add ${submoduleSource} deps/sub`,
+				{ cwd: dir, stdio: "ignore" },
+			);
+			execSync('git commit -am "add submodule"', {
+				cwd: dir,
+				stdio: "ignore",
+			});
+			writeFileSync(join(dir, "deps", "sub", "tracked.txt"), "pending\n");
+
+			const snapshot = getGitSnapshot(dir);
+
+			expect(snapshot).toContain("Working tree: dirty");
+			expect(snapshot).toContain("Status:\nM deps/sub");
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+			rmSync(submoduleSource, { recursive: true, force: true });
+		}
+	});
+
 	it("reports git log failures separately from empty history", () => {
 		const dir = mkdtempSync(join(tmpdir(), "composer-git-snapshot-"));
 		const binDir = mkdtempSync(join(tmpdir(), "composer-fake-git-bin-"));
@@ -304,6 +387,14 @@ describe("getGitSnapshot", () => {
 				`#!/bin/sh
 args="$*"
 case "$args" in
+  "rev-parse --is-inside-work-tree")
+    printf 'true\\n'
+    exit 0
+    ;;
+  "rev-parse --show-toplevel")
+    printf '%s\\n' "$PWD"
+    exit 0
+    ;;
   "--no-optional-locks status --porcelain=v1 --branch")
     printf '## main...origin/main [ahead 2, behind 1]\\n M tracked.txt\\n'
     exit 0
@@ -346,6 +437,128 @@ exit 1
 		}
 	});
 
+	it("keeps collecting a snapshot when repo detection fails but status works", () => {
+		const dir = mkdtempSync(join(tmpdir(), "composer-git-snapshot-"));
+		const binDir = mkdtempSync(join(tmpdir(), "composer-fake-git-bin-"));
+		const gitPath = join(binDir, "git");
+		const originalPath = process.env.PATH;
+
+		try {
+			writeFileSync(
+				gitPath,
+				`#!/bin/sh
+args="$*"
+case "$args" in
+  "rev-parse --is-inside-work-tree")
+    printf 'fatal: optional lock failure\\n' >&2
+    exit 1
+    ;;
+  "rev-parse --show-toplevel")
+    printf '%s\\n' "$PWD"
+    exit 0
+    ;;
+  "--no-optional-locks status --porcelain=v1 --branch")
+    printf '## main...origin/main\\n M tracked.txt\\n'
+    exit 0
+    ;;
+  "symbolic-ref --short refs/remotes/origin/HEAD")
+    printf 'origin/main\\n'
+    exit 0
+    ;;
+  "config user.name")
+    printf 'Test User\\n'
+    exit 0
+    ;;
+  "--no-optional-locks log --oneline -n 5")
+    printf 'abc1234 initial commit\\n'
+    exit 0
+    ;;
+esac
+
+printf 'unexpected args: %s\\n' "$args" >&2
+exit 1
+`,
+			);
+			chmodSync(gitPath, 0o755);
+			process.env.PATH = `${binDir}:${originalPath ?? ""}`;
+
+			const snapshot = getGitSnapshot(dir);
+
+			expect(snapshot).toContain("Current branch: main");
+			expect(snapshot).toContain("Working tree: dirty");
+			expect(snapshot).toContain("Status:\nM tracked.txt");
+			expect(snapshot).toContain("Recent commits:\nabc1234 initial commit");
+		} finally {
+			if (originalPath === undefined) {
+				Reflect.deleteProperty(process.env, "PATH");
+			} else {
+				process.env.PATH = originalPath;
+			}
+			rmSync(binDir, { recursive: true, force: true });
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+	it("reports unavailable status when every status command fails", () => {
+		const dir = mkdtempSync(join(tmpdir(), "composer-git-snapshot-"));
+		const binDir = mkdtempSync(join(tmpdir(), "composer-fake-git-bin-"));
+		const gitPath = join(binDir, "git");
+		const originalPath = process.env.PATH;
+
+		try {
+			writeFileSync(
+				gitPath,
+				`#!/bin/sh
+args="$*"
+case "$args" in
+  "rev-parse --is-inside-work-tree")
+    printf 'true\\n'
+    exit 0
+    ;;
+  "rev-parse --show-toplevel")
+    printf '%s\\n' "$PWD"
+    exit 0
+    ;;
+  "--no-optional-locks status --porcelain=v1 --branch")
+    printf 'fatal: cannot read status\\n' >&2
+    exit 1
+    ;;
+  "symbolic-ref --short refs/remotes/origin/HEAD")
+    printf 'origin/main\\n'
+    exit 0
+    ;;
+  "config user.name")
+    printf 'Test User\\n'
+    exit 0
+    ;;
+  "--no-optional-locks log --oneline -n 5")
+    printf 'abc1234 initial commit\\n'
+    exit 0
+    ;;
+esac
+
+printf 'unexpected args: %s\\n' "$args" >&2
+exit 1
+`,
+			);
+			chmodSync(gitPath, 0o755);
+			process.env.PATH = `${binDir}:${originalPath ?? ""}`;
+
+			const snapshot = getGitSnapshot(dir);
+
+			expect(snapshot).toContain("Working tree: unavailable");
+			expect(snapshot).toContain("Status:\n(git status unavailable)");
+			expect(snapshot).toContain("Recent commits:\nabc1234 initial commit");
+		} finally {
+			if (originalPath === undefined) {
+				Reflect.deleteProperty(process.env, "PATH");
+			} else {
+				process.env.PATH = originalPath;
+			}
+			rmSync(binDir, { recursive: true, force: true });
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
 	it("preserves gone upstream status in snapshots", () => {
 		const dir = mkdtempSync(join(tmpdir(), "composer-git-snapshot-"));
 		const binDir = mkdtempSync(join(tmpdir(), "composer-fake-git-bin-"));
@@ -358,6 +571,14 @@ exit 1
 				`#!/bin/sh
 args="$*"
 case "$args" in
+  "rev-parse --is-inside-work-tree")
+    printf 'true\\n'
+    exit 0
+    ;;
+  "rev-parse --show-toplevel")
+    printf '%s\\n' "$PWD"
+    exit 0
+    ;;
   "--no-optional-locks status --porcelain=v1 --branch")
     printf '## main...origin/main [gone]\\n'
     exit 0

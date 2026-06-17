@@ -345,6 +345,7 @@ export class GitHubWatcher {
 					await this.events.onPRReview(pr, {
 						id: review.id,
 						author: review.author || "unknown",
+						authorAssociation: review.authorAssociation,
 						state: reviewState,
 						body: review.body,
 						submittedAt: review.submittedAt,
@@ -366,6 +367,7 @@ export class GitHubWatcher {
 				await this.events.onPRComment(pr, {
 					id: comment.id,
 					author: comment.author || "unknown",
+					authorAssociation: comment.authorAssociation,
 					body: comment.body,
 					path: comment.path ?? null,
 					line: comment.line ?? null,
@@ -444,9 +446,10 @@ export class GitHubWatcher {
 					id: comment.id,
 					issueNumber: issue.number,
 					author: comment.author,
+					authorAssociation: comment.authorAssociation,
 					body: comment.body,
 					createdAt: comment.createdAt,
-					url: issue.url,
+					url: comment.url,
 				});
 			}
 			return maxIsoTimestamp(pollStartedAt, maxUpdatedAt);

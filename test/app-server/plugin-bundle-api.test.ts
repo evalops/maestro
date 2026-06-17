@@ -12,6 +12,17 @@ import {
 import { SessionManager } from "../../src/session/manager.js";
 import { loadSkills } from "../../src/skills/loader.js";
 
+function writeTrustedGlobalConfig(projectRoot: string): void {
+	const home = process.env.MAESTRO_HOME!;
+	mkdirSync(home, { recursive: true });
+	const escaped = projectRoot.replaceAll("\\", "\\\\").replaceAll('"', '\\"');
+	writeFileSync(
+		join(home, "config.toml"),
+		`[projects."${escaped}"]\ntrust_level = "trusted"\n`,
+		"utf8",
+	);
+}
+
 function writePluginBundle(root: string): string {
 	const packageDir = join(root, "vendor", "review-bundle");
 	const skillDir = join(packageDir, "skills", "reviewing");
@@ -129,6 +140,9 @@ describe("Maestro app-server plugin bundle lifecycle API", () => {
 	it("installs, lists, loads, and removes a local plugin bundle", async () => {
 		const projectRoot = join(testDir, "project");
 		const packageDir = writePluginBundle(projectRoot);
+		// Plugin bundles execute code, so the workspace must be trusted for the
+		// configured packages to be listed and loaded.
+		writeTrustedGlobalConfig(projectRoot);
 		const manager = new SessionManager(false, undefined, {
 			sessionDir: join(testDir, "sessions"),
 		});
@@ -241,6 +255,7 @@ describe("Maestro app-server plugin bundle lifecycle API", () => {
 		const projectRoot = join(testDir, "server-project");
 		mkdirSync(serverRoot, { recursive: true });
 		const packageDir = writePluginBundle(projectRoot);
+		writeTrustedGlobalConfig(projectRoot);
 		const manager = new SessionManager(false, undefined, {
 			sessionDir: join(testDir, "server-root-sessions"),
 		});

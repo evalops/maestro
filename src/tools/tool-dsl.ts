@@ -342,6 +342,24 @@ export function interpolateContext(
 		.replace(/\$\{home\}/g, getHomeDir());
 }
 
+export const CONTEXT_INTERPOLATED_MARKER = "__maestroContextInterpolated";
+
+export function hasContextInterpolationMarker(
+	args: Record<string, unknown>,
+): boolean {
+	return args[CONTEXT_INTERPOLATED_MARKER] === true;
+}
+
+export function stripContextInterpolationMarker(
+	args: Record<string, unknown>,
+): Record<string, unknown> {
+	if (!hasContextInterpolationMarker(args)) {
+		return args;
+	}
+	const { [CONTEXT_INTERPOLATED_MARKER]: _marker, ...rest } = args;
+	return rest;
+}
+
 export interface CreateTextToolOptions<Schema extends TSchema, Details>
 	extends Omit<CreateToolOptions<Schema, Details>, "run"> {
 	run: (

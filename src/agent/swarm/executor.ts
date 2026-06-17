@@ -52,6 +52,7 @@ import {
 	recordSubagentDispatch,
 } from "../../telemetry.js";
 import { createLogger } from "../../utils/logger.js";
+import { sanitizeWithStaticMask } from "../../utils/secret-redactor.js";
 import {
 	type AgentMode,
 	type ModelProvider,
@@ -561,7 +562,9 @@ export class SwarmExecutor {
 				return cancelledTask;
 			} catch (error) {
 				logger.warn("Failed to cancel remote A2A swarm task", {
-					error: error instanceof Error ? error.message : String(error),
+					error: sanitizeWithStaticMask(
+						error instanceof Error ? error.message : String(error),
+					),
 					swarmId: this.state.id,
 					teammateId,
 					remoteTaskId: remoteTask.taskId,
@@ -1669,7 +1672,9 @@ export class SwarmExecutor {
 							success: a2aStateCompleted(cancelledTask?.status.state),
 							durationMs: Math.max(0, Date.now() - startedAt),
 							metadata: {
-								error: error instanceof Error ? error.message : String(error),
+								error: sanitizeWithStaticMask(
+									error instanceof Error ? error.message : String(error),
+								),
 							},
 						},
 					);
@@ -1977,7 +1982,9 @@ export class SwarmExecutor {
 			});
 		} catch (error) {
 			logger.warn("Failed to record remote A2A swarm task in local ledger", {
-				error: error instanceof Error ? error.message : String(error),
+				error: sanitizeWithStaticMask(
+					error instanceof Error ? error.message : String(error),
+				),
 				swarmId: this.state.id,
 				taskId: task.id,
 				peer: route.name,
@@ -1997,7 +2004,9 @@ export class SwarmExecutor {
 			});
 		} catch (error) {
 			logger.warn("Failed to update remote A2A swarm task in local ledger", {
-				error: error instanceof Error ? error.message : String(error),
+				error: sanitizeWithStaticMask(
+					error instanceof Error ? error.message : String(error),
+				),
 				swarmId: this.state.id,
 				remoteTaskId: remoteTask.id,
 				peer: route.name,

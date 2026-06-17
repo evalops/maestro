@@ -1,3 +1,4 @@
+import type { ComposerConfig } from "../config/index.js";
 import { createSessionHookService } from "../hooks/session-integration.js";
 import { buildRelevantMemoryPromptAdditionAsync } from "../memory/relevant-recall.js";
 import { createLogger } from "../utils/logger.js";
@@ -553,6 +554,8 @@ async function applyTokenBudgetContinuations(params: {
 	) => Promise<AppMessage[]>;
 	callbacks?: PromptRecoveryCallbacks;
 	maxOutputContinuations?: number;
+	profileName?: string;
+	cliOverrides?: Partial<ComposerConfig>;
 	signal?: AbortSignal;
 }): Promise<void> {
 	const budget = parseTokenBudget(params.prompt);
@@ -653,6 +656,8 @@ async function applyTokenBudgetContinuations(params: {
 				}),
 			callbacks: params.callbacks,
 			maxOutputContinuations: params.maxOutputContinuations,
+			profileName: params.profileName,
+			cliOverrides: params.cliOverrides,
 		});
 
 		throwIfAborted(params.signal);
@@ -673,6 +678,8 @@ export async function runUserPromptWithRecovery(params: {
 	) => Promise<AppMessage[]>;
 	callbacks?: PromptRecoveryCallbacks;
 	maxOutputContinuations?: number;
+	profileName?: string;
+	cliOverrides?: Partial<ComposerConfig>;
 }): Promise<void> {
 	const messageStartIndex = params.agent.state.messages.length;
 	const turnStartedAt = Date.now();
@@ -745,6 +752,8 @@ export async function runUserPromptWithRecovery(params: {
 				callbacks: params.callbacks,
 				getPostKeepMessages: collectPostKeepMessages,
 				maxOutputContinuations: params.maxOutputContinuations,
+				profileName: params.profileName,
+				cliOverrides: params.cliOverrides,
 			});
 		} catch (error) {
 			if (params.agent.state.messages.length === messageStartIndex) {
@@ -763,6 +772,8 @@ export async function runUserPromptWithRecovery(params: {
 			getPostKeepMessages: params.getPostKeepMessages,
 			callbacks: params.callbacks,
 			maxOutputContinuations: params.maxOutputContinuations,
+			profileName: params.profileName,
+			cliOverrides: params.cliOverrides,
 			signal: params.signal,
 		});
 		throwIfAborted(params.signal);

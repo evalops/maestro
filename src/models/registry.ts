@@ -21,6 +21,7 @@
  * ```jsonc
  * {
  *   "$schema": "https://example.com/models.schema.json",
+ *   "internalBaseUrlAllowList": ["http://localhost:8080/v1"],
  *   "providers": [
  *     {
  *       "id": "my-provider",
@@ -83,6 +84,7 @@ import {
 	type CustomModel,
 	type CustomModelConfig,
 	type CustomProvider,
+	cachedConfig,
 	clearCachedConfig,
 	configPath,
 	fileSnapshots,
@@ -93,7 +95,7 @@ import {
 	FACTORY_CONFIG_PATH,
 	FACTORY_SETTINGS_PATH,
 	clearFactoryCache,
-	ensureFactoryData,
+	ensureFactoryDataWithPolicy,
 } from "./factory-integration.js";
 import { isLocalBaseUrl, normalizeBaseUrl } from "./url-normalize.js";
 
@@ -147,6 +149,7 @@ export interface ProviderMetadata {
 }
 
 let cachedProviders: RegisteredModel[] | null = null;
+let cachedProvidersConfig: CustomModelConfig | null = null;
 const customProviderMetadata = new Map<string, ProviderMetadata>();
 
 function getExpectedUrlFormat(providerId: string, api?: Api): string {
@@ -202,7 +205,7 @@ function toModel(provider: CustomProvider, model: CustomModel): Model<Api> {
 // ─────────────────────────────────────────────────────────────────────────────
 
 function loadConfig(includeDisabled = false): CustomModelConfig {
-	return loadConfigRaw(includeDisabled, ensureFactoryData);
+	return loadConfigRaw(includeDisabled, ensureFactoryDataWithPolicy);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -283,8 +286,12 @@ function buildRegistry(): RegisteredModel[] {
 }
 
 export function getRegisteredModels(): RegisteredModel[] {
-	if (!cachedProviders) {
+	if (
+		!cachedProviders ||
+		(cachedConfig !== null && cachedProvidersConfig !== cachedConfig)
+	) {
 		cachedProviders = buildRegistry();
+		cachedProvidersConfig = cachedConfig;
 	}
 	return cachedProviders;
 }
@@ -292,6 +299,7 @@ export function getRegisteredModels(): RegisteredModel[] {
 export function reloadModelConfig(): void {
 	clearCachedConfig();
 	cachedProviders = null;
+	cachedProvidersConfig = null;
 	customProviderMetadata.clear();
 	clearFactoryCache();
 	fileSnapshots.delete(configPath());

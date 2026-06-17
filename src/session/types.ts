@@ -41,6 +41,12 @@ export interface SessionHeaderEntry {
 	tools?: SessionToolInfo[];
 	branchedFrom?: string;
 	parentSession?: string;
+	// Snapshot of the prompt source paths that contributed to `systemPrompt`
+	// (e.g. the loaded `APPEND_SYSTEM.md`). Preserved across resume so the
+	// compaction read-restore exclusion set still contains the path that was
+	// actually loaded, even if that file is later deleted or moved while a
+	// session is paused. See #2602.
+	systemPromptSourcePaths?: string[];
 }
 
 function resolveSessionPromptContextManifest(

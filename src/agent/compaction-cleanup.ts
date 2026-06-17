@@ -1,4 +1,5 @@
 import { createLogger } from "../utils/logger.js";
+import { sanitizeWithStaticMask } from "../utils/secret-redactor.js";
 
 const logger = createLogger("compaction-cleanup");
 
@@ -38,7 +39,9 @@ export async function runPostCompactionCleanup(
 		} catch (error) {
 			logger.warn("Post-compaction cleanup handler failed", {
 				handlerId: id,
-				error: error instanceof Error ? error.message : String(error),
+				error: sanitizeWithStaticMask(
+					error instanceof Error ? error.message : String(error),
+				),
 				stack: error instanceof Error ? error.stack : undefined,
 				compactedCount: context.compactedCount,
 				firstKeptEntryIndex: context.firstKeptEntryIndex,

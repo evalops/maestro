@@ -151,6 +151,12 @@ describe("context-firewall", () => {
 			const findings = detectSensitiveContent(payload);
 			expect(findings).toHaveLength(0);
 		});
+
+		it("does not flag benign Basic auth prose", () => {
+			const payload = { note: "Document Authorization: Basic flow" };
+			const findings = detectSensitiveContent(payload);
+			expect(findings).toHaveLength(0);
+		});
 	});
 
 	describe("sanitizePayload", () => {
@@ -158,6 +164,14 @@ describe("context-firewall", () => {
 			const payload = { data: "Hello\x00World\x1F!" };
 			const sanitized = sanitizePayload(payload) as { data: string };
 			expect(sanitized.data).toBe("HelloWorld!");
+		});
+
+		it("redacts usernames and passwords embedded in URLs", () => {
+			const payload = { url: "https://alice:secretpassword@example.com/api" };
+			const sanitized = sanitizePayload(payload) as { url: string };
+			expect(sanitized.url).not.toContain("alice");
+			expect(sanitized.url).not.toContain("secretpassword");
+			expect(sanitized.url).toContain("[REDACTED:password:");
 		});
 
 		it("redacts API keys", () => {
@@ -327,6 +341,22 @@ describe("context-firewall", () => {
 			expect(vaulted.header).not.toContain("abc123def456");
 
 			const resolved = store.resolveInObject(vaulted) as { header: string };
+			expect(resolved).toEqual(payload);
+		});
+
+		it("vaults usernames and passwords embedded in URLs", () => {
+			const store = createCredentialStore();
+			const payload = {
+				url: "https://alice:secretpassword@example.com/api",
+			};
+			const vaulted = vaultCredentialsInPayload(payload, store) as {
+				url: string;
+			};
+			expect(vaulted.url).not.toContain("alice");
+			expect(vaulted.url).not.toContain("secretpassword");
+			expect(vaulted.url).toContain("{{CRED:");
+
+			const resolved = store.resolveInObject(vaulted) as { url: string };
 			expect(resolved).toEqual(payload);
 		});
 	});

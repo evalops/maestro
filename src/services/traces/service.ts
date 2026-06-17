@@ -2,6 +2,7 @@ import { type SQL, eq, sql } from "drizzle-orm";
 import { type DbClient, getDb, isDatabaseConfigured } from "../../db/client.js";
 import { executionTraces } from "../../db/schema.js";
 import { createLogger } from "../../utils/logger.js";
+import { sanitizeWithStaticMask } from "../../utils/secret-redactor.js";
 import {
 	countTraceSpans,
 	normalizeExecutionTraceInput,
@@ -138,7 +139,9 @@ export class TracesService {
 			return row ? traceFromRow(row) : trace;
 		} catch (error) {
 			logger.warn("Failed to record execution trace", {
-				error: error instanceof Error ? error.message : String(error),
+				error: sanitizeWithStaticMask(
+					error instanceof Error ? error.message : String(error),
+				),
 				traceId: trace.traceId,
 				workspaceId: trace.workspaceId,
 				agentId: trace.agentId,

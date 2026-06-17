@@ -1,4 +1,5 @@
 import { isAbortError } from "../utils/abort-error.js";
+import { sanitizeWithStaticMask } from "../utils/secret-redactor.js";
 import { type A2AAgentCard, discoverA2AAgentCard } from "./a2a-client.js";
 import {
 	type A2AOwnershipScope,
@@ -158,7 +159,9 @@ async function inspectPeer(
 		return {
 			...base,
 			status: "unreachable",
-			error: error instanceof Error ? error.message : String(error),
+			error: sanitizeWithStaticMask(
+				error instanceof Error ? error.message : String(error),
+			),
 		};
 	}
 }

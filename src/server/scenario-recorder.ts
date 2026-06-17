@@ -1,7 +1,8 @@
-import { mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { MAESTRO_SCRIPTED_SCENARIO_SCHEMA } from "@evalops/contracts";
 import type { AssistantMessage, ToolCall } from "../agent/types.js";
+import { writeTextFileAtomic } from "../utils/fs.js";
 
 export interface ScriptedScenarioRecorderOptions {
 	outPath: string;
@@ -169,7 +170,7 @@ export class ScriptedScenarioRecorder {
 
 	private write(): void {
 		mkdirSync(dirname(this.outPath), { recursive: true });
-		writeFileSync(
+		writeTextFileAtomic(
 			this.outPath,
 			`${JSON.stringify(this.toScenario(), null, 2)}\n`,
 		);

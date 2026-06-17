@@ -1,8 +1,10 @@
 import { Octokit } from "@octokit/rest";
 import type {
 	CheckRunSummary,
+	GitHubAuthorAssociation,
 	GitHubIssue,
 	GitHubPR,
+	IssueComment,
 	PRComment,
 	PRReview,
 	PRReviewThread,
@@ -273,11 +275,12 @@ export class GitHubApiClient {
 
 	async listIssueCommentsSince(
 		since: string,
-	): Promise<Array<{ issue: GitHubIssue; comment: PRComment }>> {
+	): Promise<Array<{ issue: GitHubIssue; comment: IssueComment }>> {
 		const comments = await this.paginate<{
 			issue_url: string;
 			id: number;
 			user: { login: string } | null;
+			author_association: GitHubAuthorAssociation | null;
 			body: string;
 			html_url: string;
 			created_at: string;
@@ -301,9 +304,9 @@ export class GitHubApiClient {
 			}
 		}
 
-		const results: Array<{ issue: GitHubIssue; comment: PRComment }> = [];
+		const results: Array<{ issue: GitHubIssue; comment: IssueComment }> = [];
 		const missingIssues = new Set<number>();
-		const entries: Array<{ issueNumber: number; comment: PRComment }> = [];
+		const entries: Array<{ issueNumber: number; comment: IssueComment }> = [];
 		for (const comment of comments) {
 			const issueFromUrl = issueByApiUrl.get(comment.issue_url);
 			const issueNumber =
@@ -313,11 +316,12 @@ export class GitHubApiClient {
 				issueNumber,
 				comment: {
 					id: comment.id,
+					issueNumber,
 					author: comment.user?.login || "unknown",
+					authorAssociation: comment.author_association,
 					body: comment.body,
-					path: null,
-					line: null,
 					createdAt: comment.created_at,
+					url: comment.html_url,
 				},
 			});
 			if (!issueByNumber.has(issueNumber)) {
@@ -559,6 +563,7 @@ export class GitHubApiClient {
 		const reviews = await this.paginate<{
 			id: number;
 			user: { login: string } | null;
+			author_association: GitHubAuthorAssociation | null;
 			state: PRReview["state"];
 			body: string | null;
 			submitted_at: string | null;
@@ -576,6 +581,7 @@ export class GitHubApiClient {
 			.map((review) => ({
 				id: review.id,
 				author: review.user?.login || "unknown",
+				authorAssociation: review.author_association,
 				state: review.state,
 				body: review.body,
 				submittedAt: review.submitted_at ?? "",
@@ -589,6 +595,7 @@ export class GitHubApiClient {
 		const comments = await this.paginate<{
 			id: number;
 			user: { login: string } | null;
+			author_association: GitHubAuthorAssociation | null;
 			body: string;
 			path: string | null;
 			line: number | null;
@@ -606,6 +613,7 @@ export class GitHubApiClient {
 		return comments.map((comment) => ({
 			id: comment.id,
 			author: comment.user?.login || "unknown",
+			authorAssociation: comment.author_association,
 			body: comment.body,
 			path: comment.path ?? null,
 			line: comment.line ?? null,

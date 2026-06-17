@@ -11,6 +11,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { findPrompt, loadPrompts } from "../../src/commands/catalog.js";
 import { clearResolvedPackageSourceCache } from "../../src/packages/index.js";
+import { trustProjectInGlobalConfig } from "../utils/project-trust.js";
 
 describe("commands/prompts frontmatter", () => {
 	const originalHome = process.env.HOME;
@@ -84,6 +85,7 @@ Draft the release note.
 			join(workspaceDir, ".maestro", "config.toml"),
 			'packages = ["../vendor/prompt-pack"]\n',
 		);
+		trustProjectInGlobalConfig(workspaceDir);
 
 		const prompts = loadPrompts(workspaceDir);
 
@@ -123,6 +125,7 @@ Draft the git-based release note.
 			join(workspaceDir, ".maestro", "config.toml"),
 			`packages = ["git:${repoDir}"]\n`,
 		);
+		trustProjectInGlobalConfig(workspaceDir);
 
 		const prompts = loadPrompts(workspaceDir);
 

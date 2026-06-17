@@ -5,6 +5,7 @@ import { PATHS } from "../config/constants.js";
 import { createLogger } from "../utils/logger.js";
 import { resolveEnvPath } from "../utils/path-expansion.js";
 import { normalizeSafetyText } from "../utils/safety-normalization.js";
+import { sanitizeWithStaticMask } from "../utils/secret-redactor.js";
 import { tokenizeSimple } from "./bash-safety-analyzer.js";
 
 const logger = createLogger("safety:bash-allowlist");
@@ -37,7 +38,9 @@ function loadConfig(): string[] {
 		} catch (error) {
 			logger.warn("Failed to stat bash allowlist file", {
 				path,
-				error: error instanceof Error ? error.message : String(error),
+				error: sanitizeWithStaticMask(
+					error instanceof Error ? error.message : String(error),
+				),
 			});
 		}
 	}
@@ -65,7 +68,9 @@ function loadConfig(): string[] {
 		} catch (error) {
 			logger.warn("Failed to load bash allowlist", {
 				path,
-				error: error instanceof Error ? error.message : String(error),
+				error: sanitizeWithStaticMask(
+					error instanceof Error ? error.message : String(error),
+				),
 			});
 		}
 	}

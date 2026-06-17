@@ -23,6 +23,7 @@ import type {
 } from "../agent/tool-retry.js";
 import type { AgentEvent, AgentState, AppMessage } from "../agent/types.js";
 import { PATHS } from "../config/constants.js";
+import type { ComposerConfig } from "../config/index.js";
 import type { CleanMode } from "../conversation/render-model.js";
 import { mcpManager } from "../mcp/index.js";
 import { withMcpPostKeepMessages } from "../mcp/prompt-recovery.js";
@@ -454,6 +455,8 @@ export class TuiRenderer {
 	private slashHintController!: SlashHintController;
 	private customCommandsController?: CustomCommandsController;
 	private lastKeybindingIssueSummary: string | null = null;
+	private readonly profileName?: string;
+	private readonly cliOverrides?: Partial<ComposerConfig>;
 
 	constructor(
 		agent: Agent,
@@ -469,8 +472,12 @@ export class TuiRenderer {
 			startupChangelogSummary?: string | null;
 			updateNotice?: UpdateCheckResult | null;
 			retryConfig?: import("../config/toml-config.js").RetryConfig;
+			profileName?: string;
+			cliOverrides?: Partial<ComposerConfig>;
 		} = {},
 	) {
+		this.profileName = options.profileName;
+		this.cliOverrides = options.cliOverrides;
 		const initialPrefs = loadInitialTuiRendererPreferences();
 		this.uiState = initialPrefs.uiState;
 		const initialSteeringMode: QueueMode = initialPrefs.initialSteeringMode;
@@ -1064,6 +1071,8 @@ export class TuiRenderer {
 			toolComponents: this.toolOutputView.getTrackedComponents(),
 			renderMessages: () => this.renderInitialMessages(this.agent.state),
 			showInfoMessage: (message) => this.notificationView.showInfo(message),
+			profileName: options.profileName,
+			cliOverrides: options.cliOverrides,
 			getPostKeepMessages: async (source, preservedMessages) => {
 				const restorationMessages =
 					source === "compact"
@@ -2072,6 +2081,8 @@ export class TuiRenderer {
 										preservedMessages,
 									),
 							),
+							profileName: this.profileName,
+							cliOverrides: this.cliOverrides,
 						}).catch((error) => {
 							this.restoreQueuedPromptBatchToEditor(steeringBatch);
 							const message =
@@ -2188,6 +2199,8 @@ export class TuiRenderer {
 				getPostKeepMessages: withMcpPostKeepMessages((preservedMessages) =>
 					this.collectActiveSkillMessagesForCompaction(preservedMessages),
 				),
+				profileName: this.profileName,
+				cliOverrides: this.cliOverrides,
 			});
 		} catch (error) {
 			const message =

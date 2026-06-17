@@ -17,7 +17,10 @@ import {
 	buildSessionContextFromEntries,
 	selectSessionMessagesForView,
 } from "./session-context-core.js";
-import { applyAttachmentExtracts } from "./session-sanitize.js";
+import {
+	applyAttachmentExtracts,
+	sanitizeSessionTextForPersistence,
+} from "./session-sanitize.js";
 import type { SessionEntry, SessionMessagesView } from "./types.js";
 import { tryParseSessionEntry } from "./types.js";
 
@@ -133,7 +136,10 @@ export function buildSessionFileInfo(
 				break;
 			case "attachment_extract":
 				if (entry.attachmentId && entry.extractedText) {
-					extractedById.set(entry.attachmentId, entry.extractedText);
+					extractedById.set(
+						entry.attachmentId,
+						sanitizeSessionTextForPersistence(entry.extractedText),
+					);
 				}
 				break;
 			case "session_meta":

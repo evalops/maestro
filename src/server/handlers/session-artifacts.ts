@@ -15,6 +15,7 @@ import {
 	issueArtifactAccessGrant,
 } from "../artifact-access.js";
 import { subscribeArtifactUpdates } from "../artifacts-live-reload.js";
+import { getAuthSubject } from "../authz.js";
 import {
 	ApiError,
 	buildContentDisposition,
@@ -25,6 +26,7 @@ import {
 	resolveSessionScope,
 } from "../session-scope.js";
 import { convertAppMessagesToComposer } from "../session-serialization.js";
+import { verifySessionOwnership } from "./sessions.js";
 
 const logger = createLogger("session-artifacts");
 const sessionIdPattern = /^[a-zA-Z0-9._-]+$/;
@@ -192,6 +194,12 @@ async function loadComposerMessages(
 	const session = await sessionManager.loadSession(sessionId);
 	if (!session) {
 		throw new ApiError(404, "Session not found");
+	}
+	if (!getArtifactAccessGrantFromRequest(req)) {
+		const subject = getAuthSubject(req);
+		if (!verifySessionOwnership(session, subject)) {
+			throw new ApiError(404, "Session not found");
+		}
 	}
 	return convertAppMessagesToComposer(session.messages || []);
 }
@@ -795,6 +803,7 @@ export async function handleSessionArtifactsEvents(
 
 		const url = new URL(req.url || "", "http://localhost");
 		const filenameFilter = url.searchParams.get("filename");
+		await loadComposerMessages(req, sessionId);
 
 		res.writeHead(200, {
 			"Content-Type": "text/event-stream",

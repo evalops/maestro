@@ -602,6 +602,47 @@ export function getWebviewScript(): string {
 			return text.replace(/</g, '&lt;');
 		}
 
+		function stringifyToolValue(value) {
+			if (value === undefined || value === null) return '';
+			if (typeof value === 'string') return value;
+			try {
+				return JSON.stringify(value, null, 2) || '';
+			} catch (_error) {
+				return String(value);
+			}
+		}
+
+		function appendElement(parent, tagName, className, text) {
+			const element = document.createElement(tagName);
+			if (className) element.className = className;
+			if (text !== undefined) element.textContent = text;
+			parent.appendChild(element);
+			return element;
+		}
+
+		function appendToolHeader(toolDiv, label, statusText) {
+			const header = appendElement(toolDiv, 'div', 'tool-header');
+			header.addEventListener('click', () => {
+				toolDiv.classList.toggle('expanded');
+			});
+			const nameEl = appendElement(header, 'span', 'tool-name', label || 'Tool');
+			nameEl.title = label || 'Tool';
+			appendElement(header, 'span', 'tool-status', statusText);
+		}
+
+		function appendToolSection(body, title, value, configureCode) {
+			const section = appendElement(body, 'div', 'tool-section');
+			appendElement(section, 'div', 'tool-section-title', title);
+			const code = appendElement(
+				section,
+				'div',
+				'tool-code',
+				stringifyToolValue(value),
+			);
+			if (configureCode) configureCode(code);
+			return section;
+		}
+
 		function loadHistory(messages) {
 			const container = document.getElementById('messages');
 			if (!container) return;
@@ -624,26 +665,15 @@ export function getWebviewScript(): string {
 						msg.tools.forEach(tool => {
 							const toolDiv = document.createElement('div');
 							toolDiv.className = 'tool-call';
-							toolDiv.innerHTML = \`
-								<div class="tool-header" onclick="this.parentElement.classList.toggle('expanded')">
-									<span class="tool-name" title="\${tool.name}">\${tool.summaryLabel || tool.displayName || tool.name}</span>
-									<span class="tool-status">Completed</span>
-								</div>
-								<div class="tool-body">
-									<div class="tool-section">
-										<div class="tool-section-title">Tool</div>
-										<div class="tool-code">\${tool.name}</div>
-									</div>
-									<div class="tool-section">
-										<div class="tool-section-title">Arguments</div>
-										<div class="tool-code">\${JSON.stringify(tool.args, null, 2)}</div>
-									</div>
-									<div class="tool-section">
-										<div class="tool-section-title">Result</div>
-										<div class="tool-code">\${JSON.stringify(tool.result, null, 2)}</div>
-									</div>
-								</div>
-							\`;
+							appendToolHeader(
+								toolDiv,
+								tool.summaryLabel || tool.displayName || tool.name,
+								'Completed',
+							);
+							const body = appendElement(toolDiv, 'div', 'tool-body');
+							appendToolSection(body, 'Tool', tool.name);
+							appendToolSection(body, 'Arguments', tool.args);
+							appendToolSection(body, 'Result', tool.result);
 							content.appendChild(toolDiv);
 						});
 					}
@@ -699,22 +729,10 @@ export function getWebviewScript(): string {
 
 			const toolDiv = document.createElement('div');
 			toolDiv.className = 'tool-call';
-			toolDiv.innerHTML = \`
-				<div class="tool-header" onclick="this.parentElement.classList.toggle('expanded')">
-					<span class="tool-name" title="\${name}">\${summaryLabel || displayName || name}</span>
-					<span class="tool-status">Running...</span>
-				</div>
-				<div class="tool-body">
-					<div class="tool-section">
-						<div class="tool-section-title">Tool</div>
-						<div class="tool-code">\${name}</div>
-					</div>
-					<div class="tool-section">
-						<div class="tool-section-title">Arguments</div>
-						<div class="tool-code">\${JSON.stringify(args, null, 2)}</div>
-					</div>
-				</div>
-			\`;
+			appendToolHeader(toolDiv, summaryLabel || displayName || name, 'Running...');
+			const body = appendElement(toolDiv, 'div', 'tool-body');
+			appendToolSection(body, 'Tool', name);
+			appendToolSection(body, 'Arguments', args);
 			content.appendChild(toolDiv);
 			activeToolCalls.set(id, toolDiv);
 
@@ -760,31 +778,48 @@ export function getWebviewScript(): string {
 			if (!currentAssistantMessage) createAssistantMessage();
 			const content = currentAssistantMessage.querySelector('.message-content');
 			const toolTitle = msg.summaryLabel || msg.displayName || msg.toolName;
-			const toolMeta =
-				msg.displayName && msg.displayName !== msg.toolName
-					? '<div class="approval-reason" style="margin-bottom: 8px">' + msg.toolName + '</div>'
-					: '';
-			const actionDescription = msg.actionDescription
-				? '<div class="approval-reason">' + msg.actionDescription + '</div>'
-				: '';
 
 			const div = document.createElement('div');
 			div.id = 'approval-' + msg.requestId;
 			div.className = 'approval-request';
-			div.innerHTML = \`
-				<div class="approval-header">
-					<span>Approval Required</span>
-					<span class="tool-name">\${toolTitle}</span>
-				</div>
-				\${toolMeta}
-				<div class="tool-code" style="margin-bottom: 8px; font-size: 11px">\${JSON.stringify(msg.args, null, 2)}</div>
-				\${actionDescription}
-				<div class="approval-reason">\${msg.reason || 'Requires confirmation'}</div>
-				<div class="approval-actions">
-					<button class="btn-approve" onclick="submitApproval('\${msg.requestId}', 'approved')">Approve</button>
-					<button class="btn-deny" onclick="submitApproval('\${msg.requestId}', 'denied')">Deny</button>
-				</div>
-			\`;
+			const header = appendElement(div, 'div', 'approval-header');
+			appendElement(header, 'span', '', 'Approval Required');
+			appendElement(header, 'span', 'tool-name', toolTitle || 'Tool');
+			if (msg.displayName && msg.displayName !== msg.toolName) {
+				const toolMeta = appendElement(
+					div,
+					'div',
+					'approval-reason',
+					msg.toolName,
+				);
+				toolMeta.style.marginBottom = '8px';
+			}
+			const argsCode = appendElement(
+				div,
+				'div',
+				'tool-code',
+				stringifyToolValue(msg.args),
+			);
+			argsCode.style.marginBottom = '8px';
+			argsCode.style.fontSize = '11px';
+			if (msg.actionDescription) {
+				appendElement(div, 'div', 'approval-reason', msg.actionDescription);
+			}
+			appendElement(
+				div,
+				'div',
+				'approval-reason',
+				msg.reason || 'Requires confirmation',
+			);
+			const actions = appendElement(div, 'div', 'approval-actions');
+			const approve = appendElement(actions, 'button', 'btn-approve', 'Approve');
+			approve.addEventListener('click', () => {
+				submitApproval(msg.requestId, 'approved');
+			});
+			const deny = appendElement(actions, 'button', 'btn-deny', 'Deny');
+			deny.addEventListener('click', () => {
+				submitApproval(msg.requestId, 'denied');
+			});
 			content.appendChild(div);
 			const messages = document.getElementById('messages');
 			messages.scrollTop = messages.scrollHeight;
@@ -796,13 +831,11 @@ export function getWebviewScript(): string {
 
 			const isApproved = decision.approved;
 			div.style.borderColor = isApproved ? '#10b981' : '#ef4444';
-			div.innerHTML = \`
-				<div class="approval-header">
-					<span>\${isApproved ? 'Approved' : 'Denied'}</span>
-					<span class="tool-name"></span>
-				</div>
-				<div class="approval-reason">\${decision.reason || ''}</div>
-			\`;
+			div.textContent = '';
+			const header = appendElement(div, 'div', 'approval-header');
+			appendElement(header, 'span', '', isApproved ? 'Approved' : 'Denied');
+			appendElement(header, 'span', 'tool-name', '');
+			appendElement(div, 'div', 'approval-reason', decision.reason || '');
 		}
 
 		window.submitApproval = (requestId, decision) => {
@@ -1054,7 +1087,7 @@ export function getWebviewHtml(options: WebviewTemplateOptions): string {
 		<html lang="en">
 		<head>
 			<meta charset="UTF-8">
-			<meta http-equiv="Content-Security-Policy" content="default-src 'none'; connect-src ${cspConnect} https: http: wss: ws:; style-src ${cspSource} 'unsafe-inline'; script-src 'nonce-${nonce}' ${cspSource};">
+			<meta http-equiv="Content-Security-Policy" content="default-src 'none'; connect-src ${cspConnect}; style-src ${cspSource} 'unsafe-inline'; script-src 'nonce-${nonce}' ${cspSource};">
 			<meta name="viewport" content="width=device-width, initial-scale=1.0">
 			<title>Maestro Chat</title>
 			<link href="${styleUri}" rel="stylesheet">

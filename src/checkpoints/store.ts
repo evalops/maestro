@@ -11,10 +11,11 @@ import {
 	readFileSync,
 	statSync,
 	unlinkSync,
-	writeFileSync,
 } from "node:fs";
 import { dirname, join } from "node:path";
+import { readJsonFile, writeTextFileAtomic } from "../utils/fs.js";
 import { createLogger } from "../utils/logger.js";
+import { sanitizeWithStaticMask } from "../utils/secret-redactor.js";
 import type {
 	Checkpoint,
 	CheckpointEvent,
@@ -75,7 +76,9 @@ export class CheckpointStore {
 				listener(event);
 			} catch (error) {
 				logger.warn("Checkpoint event listener error", {
-					error: error instanceof Error ? error.message : String(error),
+					error: sanitizeWithStaticMask(
+						error instanceof Error ? error.message : String(error),
+					),
 				});
 			}
 		}
@@ -111,7 +114,9 @@ export class CheckpointStore {
 		} catch (error) {
 			logger.warn("Failed to snapshot file", {
 				filePath,
-				error: error instanceof Error ? error.message : String(error),
+				error: sanitizeWithStaticMask(
+					error instanceof Error ? error.message : String(error),
+				),
 			});
 			return null;
 		}
@@ -242,7 +247,9 @@ export class CheckpointStore {
 					if (!existsSync(dir)) {
 						mkdirSync(dir, { recursive: true });
 					}
-					writeFileSync(snapshot.path, snapshot.content, "utf-8");
+					writeTextFileAtomic(snapshot.path, snapshot.content, {
+						encoding: "utf-8",
+					});
 					restoredFiles.push(snapshot.path);
 				} else if (!snapshot.existed && existsSync(snapshot.path)) {
 					// File was created after checkpoint - delete it
@@ -252,7 +259,9 @@ export class CheckpointStore {
 			} catch (error) {
 				failedFiles.push({
 					path: snapshot.path,
-					error: error instanceof Error ? error.message : String(error),
+					error: sanitizeWithStaticMask(
+						error instanceof Error ? error.message : String(error),
+					),
 				});
 			}
 		}
@@ -321,7 +330,9 @@ export class CheckpointStore {
 					if (!existsSync(dir)) {
 						mkdirSync(dir, { recursive: true });
 					}
-					writeFileSync(snapshot.path, snapshot.content, "utf-8");
+					writeTextFileAtomic(snapshot.path, snapshot.content, {
+						encoding: "utf-8",
+					});
 					restoredFiles.push(snapshot.path);
 				} else if (!snapshot.existed && existsSync(snapshot.path)) {
 					unlinkSync(snapshot.path);
@@ -330,7 +341,9 @@ export class CheckpointStore {
 			} catch (error) {
 				failedFiles.push({
 					path: snapshot.path,
-					error: error instanceof Error ? error.message : String(error),
+					error: sanitizeWithStaticMask(
+						error instanceof Error ? error.message : String(error),
+					),
 				});
 			}
 		}
@@ -415,14 +428,16 @@ export class CheckpointStore {
 				savedAt: Date.now(),
 			};
 
-			writeFileSync(
+			writeTextFileAtomic(
 				join(dir, "checkpoints.json"),
 				JSON.stringify(data, null, 2),
-				"utf-8",
+				{ encoding: "utf-8" },
 			);
 		} catch (error) {
 			logger.warn("Failed to save checkpoints to disk", {
-				error: error instanceof Error ? error.message : String(error),
+				error: sanitizeWithStaticMask(
+					error instanceof Error ? error.message : String(error),
+				),
 			});
 		}
 	}
@@ -431,25 +446,29 @@ export class CheckpointStore {
 	 * Load checkpoints from disk.
 	 */
 	private loadFromDisk(): void {
-		try {
-			const filePath = join(this.options.persistDir, "checkpoints.json");
-			if (!existsSync(filePath)) {
-				return;
-			}
-
-			const data = JSON.parse(readFileSync(filePath, "utf-8"));
-			this.checkpoints = data.checkpoints ?? [];
-			this.redoStack = data.redoStack ?? [];
-			this.currentIndex = data.currentIndex ?? -1;
-
-			logger.debug("Loaded checkpoints from disk", {
-				count: this.checkpoints.length,
-			});
-		} catch (error) {
-			logger.warn("Failed to load checkpoints from disk", {
-				error: error instanceof Error ? error.message : String(error),
-			});
+		const filePath = join(this.options.persistDir, "checkpoints.json");
+		if (!existsSync(filePath)) {
+			return;
 		}
+		// `rotateOnParseFail` (#2631): a corrupted checkpoints index
+		// loses every undo/redo entry. Rotate the bad file aside so a
+		// crash mid-write leaves forensic evidence instead of silently
+		// resetting history on the next save.
+		const data = readJsonFile<{
+			checkpoints?: Checkpoint[];
+			redoStack?: Checkpoint[];
+			currentIndex?: number;
+		}>(filePath, {
+			fallback: {},
+			rotateOnParseFail: true,
+		});
+		this.checkpoints = data.checkpoints ?? [];
+		this.redoStack = data.redoStack ?? [];
+		this.currentIndex = data.currentIndex ?? -1;
+
+		logger.debug("Loaded checkpoints from disk", {
+			count: this.checkpoints.length,
+		});
 	}
 }
 

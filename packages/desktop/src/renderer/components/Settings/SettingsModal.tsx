@@ -188,7 +188,20 @@ export function SettingsModal({
 					apiClient.getLspStatus(),
 					apiClient.getMcpStatus(),
 					apiClient.getPackageStatus(),
-					apiClient.getComposers(),
+					// Maestro session APIs follow a `falsy = latest session`
+					// contract on the server (see
+					// `resolveComposerManagerForSession`'s
+					// `allowLatestSessionFallback`). The local approval-mode
+					// "default" bucket cannot leak in: the server tries to
+					// `loadSession("default")` and 404s. Pass the raw
+					// `sessionId` here. Both surfaces agree when `sessionId`
+					// is set; when it isn't, approval keys to "default"
+					// locally while `getComposers` asks the server for its
+					// latest — which IS the same user-perceived current
+					// session unless the user has actively switched. This
+					// was a round-3 bot finding on the public mirror PR
+					// #781.
+					apiClient.getComposers(sessionId),
 				]);
 				if (!active) return;
 
@@ -254,6 +267,16 @@ export function SettingsModal({
 				}
 				if (composerRes.status === "fulfilled") {
 					setComposerStatus(composerRes.value);
+				} else {
+					// Round-2 finding on the mirror PR: a failed
+					// `getComposers` call previously left the prior session's
+					// state on screen because only the `fulfilled` branch
+					// updated `composerStatus`. Switching sessions or
+					// refreshing settings then displayed the wrong active
+					// composer. Clear the state on failure so the panel
+					// either renders empty or surfaces the load error,
+					// rather than misrepresenting the new session.
+					setComposerStatus(null);
 				}
 
 				if (!models?.length) {
@@ -327,7 +350,11 @@ export function SettingsModal({
 		return () => {
 			active = false;
 		};
-	}, [open, sessionKey, hasSession, models?.length]);
+		// `sessionKey` covers `null|undefined → "default"` transitions
+		// for approval-mode keying; `sessionId` is listed separately so
+		// composer calls (which use the raw nullable) re-run when the
+		// underlying session id actually changes.
+	}, [open, sessionKey, sessionId, hasSession, models?.length]);
 
 	useEffect(() => {
 		if (!composerStatus) return;
@@ -897,9 +924,12 @@ export function SettingsModal({
 
 	const refreshComposers = async () => {
 		try {
-			const status = await apiClient.getComposers();
+			const status = await apiClient.getComposers(sessionId);
 			setComposerStatus(status);
 		} catch (err) {
+			// Mirror the initial-load semantics: a failed refresh must not
+			// leave a previous session's composer state on screen.
+			setComposerStatus(null);
 			setError(
 				err instanceof Error ? err.message : "Failed to load composer profiles",
 			);
@@ -909,7 +939,7 @@ export function SettingsModal({
 	const activateComposer = async () => {
 		if (!selectedComposer) return;
 		try {
-			await apiClient.activateComposer(selectedComposer);
+			await apiClient.activateComposer(selectedComposer, sessionId);
 			await refreshComposers();
 		} catch (err) {
 			setError(
@@ -920,7 +950,7 @@ export function SettingsModal({
 
 	const deactivateComposer = async () => {
 		try {
-			await apiClient.deactivateComposer();
+			await apiClient.deactivateComposer(sessionId);
 			await refreshComposers();
 		} catch (err) {
 			setError(

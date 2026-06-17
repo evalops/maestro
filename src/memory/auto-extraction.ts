@@ -5,6 +5,7 @@ import { buildSessionMemoryContent } from "../session/session-memory.js";
 import { recordMaestroLearnedContext } from "../telemetry/maestro-event-bus.js";
 import { safeJsonParse } from "../utils/json.js";
 import { createLogger } from "../utils/logger.js";
+import { sanitizeWithStaticMask } from "../utils/secret-redactor.js";
 import { getDurableMemoryBackend } from "./backend.js";
 import { upsertDurableMemory } from "./store.js";
 import { getMemoryProjectScope } from "./team-memory.js";
@@ -359,7 +360,9 @@ export function createAutomaticMemoryExtractionCoordinator(
 							logger.warn("Failed to mirror durable memory to remote service", {
 								sessionId: snapshot.sessionId,
 								topic: memory.topic,
-								error: error instanceof Error ? error.message : String(error),
+								error: sanitizeWithStaticMask(
+									error instanceof Error ? error.message : String(error),
+								),
 							});
 						}
 						const result = upsertDurableMemory(memory.topic, memory.content, {
@@ -395,7 +398,9 @@ export function createAutomaticMemoryExtractionCoordinator(
 				} catch (error) {
 					logger.warn("Automatic durable memory extraction failed", {
 						sessionPath,
-						error: error instanceof Error ? error.message : String(error),
+						error: sanitizeWithStaticMask(
+							error instanceof Error ? error.message : String(error),
+						),
 					});
 				}
 			}

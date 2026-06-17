@@ -1,7 +1,7 @@
 /**
  * Tests for SessionFileWriter - Buffered JSONL writer
  */
-import { existsSync, mkdirSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -58,6 +58,17 @@ describe("SessionFileWriter", () => {
 
 		const contents = readFileSync(testFile, "utf8");
 		expect(contents).toContain('"type":"thinking_level_change"');
+		writer.dispose();
+	});
+
+	it("creates session files with owner-only permissions", () => {
+		if (process.platform === "win32") return;
+		const writer = new SessionFileWriter(testFile);
+
+		writer.write(createMessageEntry("private"));
+		writer.flushSync();
+
+		expect(statSync(testFile).mode & 0o777).toBe(0o600);
 		writer.dispose();
 	});
 

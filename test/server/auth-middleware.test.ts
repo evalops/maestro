@@ -208,6 +208,64 @@ describe("createAuthMiddleware", () => {
 		expect(JSON.parse(res.body)).toEqual({ error: "Unauthorized" });
 	});
 
+	it("only lets artifact access grants bypass routes that opt in", async () => {
+		const { createAuthMiddleware } = await importMiddlewares({});
+		const { issueArtifactAccessGrant } = await import(
+			"../../src/server/artifact-access.js"
+		);
+		const middleware = createAuthMiddleware("web-api-key", corsHeaders, false, {
+			routes: [
+				{
+					method: "GET",
+					path: "/api/sessions/:id/artifacts/:filename/view",
+					auth: { level: "owner", allowArtifactAccess: true },
+					handler: () => {},
+				},
+				{
+					method: "GET",
+					path: "/api/status",
+					auth: { level: "authenticated" },
+					handler: () => {},
+				},
+			],
+		});
+		const grant = issueArtifactAccessGrant({
+			sessionId: "session-1",
+			actions: ["view"],
+			filename: "report.txt",
+		});
+
+		const artifactRes = makeRes();
+		let artifactNextCalled = false;
+		await middleware(
+			makeReq(
+				{ [ARTIFACT_ACCESS_HEADER]: grant.token },
+				"/api/sessions/session-1/artifacts/report.txt/view",
+			),
+			artifactRes,
+			() => {
+				artifactNextCalled = true;
+			},
+		);
+
+		expect(artifactNextCalled).toBe(true);
+		expect(artifactRes.writableEnded).toBe(false);
+
+		const statusRes = makeRes();
+		let statusNextCalled = false;
+		await middleware(
+			makeReq({ [ARTIFACT_ACCESS_HEADER]: grant.token }, "/api/status"),
+			statusRes,
+			() => {
+				statusNextCalled = true;
+			},
+		);
+
+		expect(statusNextCalled).toBe(false);
+		expect(statusRes.statusCode).toBe(401);
+		expect(JSON.parse(statusRes.body)).toEqual({ error: "Unauthorized" });
+	});
+
 	it("can exempt an internal callback path from API key auth", async () => {
 		const { createAuthMiddleware } = await importMiddlewares({});
 		const middleware = createAuthMiddleware("web-api-key", corsHeaders, true, {

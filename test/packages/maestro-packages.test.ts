@@ -10,13 +10,14 @@
 
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { addConfiguredPackageSpecToConfig } from "../../src/config/index.js";
 import {
 	clearResolvedPackageSourceCache,
 	discoverPackage,
 	filterResources,
+	getCachedRemotePackageSourcePath,
 	isValidMaestroPackage,
 	loadConfiguredPackageResources,
 	loadPackage,
@@ -24,9 +25,18 @@ import {
 	matchesAnyPattern,
 	parsePackageSource,
 	parsePackageSpec,
+	refreshConfiguredRemotePackages,
 	refreshPackageSourceSync,
 } from "../../src/packages/index.js";
-import { clearConfiguredRemotePackageAutoSyncState } from "../../src/packages/maintenance.js";
+import {
+	clearConfiguredRemotePackageAutoSyncState,
+	pruneUnconfiguredRemotePackageCaches,
+} from "../../src/packages/maintenance.js";
+import {
+	clearConfiguredPackageRuntimeContext,
+	setConfiguredPackageRuntimeContext,
+} from "../../src/packages/runtime.js";
+import { normalizeGitCloneUrl } from "../../src/packages/sources.js";
 
 async function waitForCondition(
 	check: () => boolean,
@@ -60,6 +70,7 @@ describe("Maestro Packages", () => {
 		mkdirSync(testDir, { recursive: true });
 		clearResolvedPackageSourceCache();
 		clearConfiguredRemotePackageAutoSyncState();
+		clearConfiguredPackageRuntimeContext();
 	});
 
 	afterEach(() => {
@@ -70,6 +81,7 @@ describe("Maestro Packages", () => {
 		}
 		clearResolvedPackageSourceCache();
 		clearConfiguredRemotePackageAutoSyncState();
+		clearConfiguredPackageRuntimeContext();
 		if (existsSync(testDir)) {
 			rmSync(testDir, { recursive: true, force: true });
 		}
@@ -167,10 +179,301 @@ describe("Maestro Packages", () => {
 			});
 		});
 
+		it("should handle git refs that contain slashes", () => {
+			const source = parsePackageSource("git:github.com/user/repo@feature/foo");
+			expect(source).toMatchObject({
+				type: "git",
+				url: "github.com/user/repo",
+				ref: "feature/foo",
+			});
+		});
+
+		it("should handle git refs that contain plus signs", () => {
+			const source = parsePackageSource(
+				"git:github.com/user/repo@v1.0.0+maestro.1",
+			);
+			expect(source).toMatchObject({
+				type: "git",
+				url: "github.com/user/repo",
+				ref: "v1.0.0+maestro.1",
+			});
+		});
+
+		it("should accept git refs with git-valid punctuation", () => {
+			expect(
+				parsePackageSource("git:github.com/user/repo@release%2026"),
+			).toMatchObject({
+				type: "git",
+				url: "github.com/user/repo",
+				ref: "release%2026",
+			});
+			expect(
+				parsePackageSource("git:github.com/user/repo@build=prod"),
+			).toMatchObject({
+				type: "git",
+				url: "github.com/user/repo",
+				ref: "build=prod",
+			});
+			expect(
+				parsePackageSource("git:github.com/user/repo@release,candidate"),
+			).toMatchObject({
+				type: "git",
+				url: "github.com/user/repo",
+				ref: "release,candidate",
+			});
+		});
+
+		it("should accept git revision expressions that checkout supports", () => {
+			expect(
+				parsePackageSource("git:github.com/user/repo@main~1"),
+			).toMatchObject({
+				type: "git",
+				url: "github.com/user/repo",
+				ref: "main~1",
+			});
+			expect(
+				parsePackageSource("git:github.com/user/repo@v1.0.0^"),
+			).toMatchObject({
+				type: "git",
+				url: "github.com/user/repo",
+				ref: "v1.0.0^",
+			});
+		});
+
+		it("should parse bare native git:// URLs without stripping the scheme", () => {
+			const prefixed = parsePackageSource(
+				"git:git://git.kernel.org/pub/scm/git/git.git",
+			);
+			const bare = parsePackageSource(
+				"git://git.kernel.org/pub/scm/git/git.git",
+			);
+			for (const source of [prefixed, bare]) {
+				expect(source).toMatchObject({
+					type: "git",
+					url: "git://git.kernel.org/pub/scm/git/git.git",
+				});
+				expect(normalizeGitCloneUrl(source.url)).toBe(
+					"git://git.kernel.org/pub/scm/git/git.git",
+				);
+			}
+		});
+
+		it("should preserve relative local git repositories", () => {
+			expect(parsePackageSource("git:repo.git")).toMatchObject({
+				type: "git",
+				url: "repo.git",
+			});
+			expect(parsePackageSource("repo.git")).toMatchObject({
+				type: "git",
+				url: "repo.git",
+			});
+			expect(normalizeGitCloneUrl("repo.git")).toBe("repo.git");
+			expect(normalizeGitCloneUrl("sub/repo.git")).toBe("sub/repo.git");
+			expect(normalizeGitCloneUrl("vendor.v1/repo.git")).toBe(
+				"vendor.v1/repo.git",
+			);
+			expect(normalizeGitCloneUrl("vendor/repo:v1.git")).toBe(
+				"vendor/repo:v1.git",
+			);
+			expect(parsePackageSource("git:foo/bar:baz.git")).toMatchObject({
+				type: "git",
+				url: "foo/bar:baz.git",
+			});
+			expect(normalizeGitCloneUrl("foo/bar::baz.git")).toBe("foo/bar::baz.git");
+		});
+
+		it("should preserve scp-style remotes whose path starts with digits", () => {
+			expect(normalizeGitCloneUrl("git.example.com:2222/repo.git")).toBe(
+				"git.example.com:2222/repo.git",
+			);
+		});
+
+		it("should parse scp-style git URLs without treating the host separator as a ref", () => {
+			const source = parsePackageSource("git:git@github.com:user/repo.git");
+			expect(source).toMatchObject({
+				type: "git",
+				url: "git@github.com:user/repo.git",
+			});
+			expect(source.ref).toBeUndefined();
+		});
+
+		it("should parse refs on scp-style git URLs", () => {
+			const source = parsePackageSource("git:github.com:user/repo.git@v1.0.0");
+			expect(source).toMatchObject({
+				type: "git",
+				url: "github.com:user/repo.git",
+				ref: "v1.0.0",
+			});
+		});
+
+		it("should parse slash refs on scp-style git URLs with userinfo", () => {
+			const source = parsePackageSource(
+				"git:git@github.com:user/repo.git@feature/foo",
+			);
+			expect(source).toMatchObject({
+				type: "git",
+				url: "git@github.com:user/repo.git",
+				ref: "feature/foo",
+			});
+		});
+
+		it("should parse ssh git URLs without treating userinfo as a ref", () => {
+			const source = parsePackageSource(
+				"git:ssh://git@github.com/user/repo.git",
+			);
+			expect(source).toMatchObject({
+				type: "git",
+				url: "ssh://git@github.com/user/repo.git",
+			});
+			expect(source.ref).toBeUndefined();
+		});
+
+		it("should treat scoped package names ending in .git as npm sources", () => {
+			expect(parsePackageSource("@scope/pkg.git")).toMatchObject({
+				type: "npm",
+				name: "@scope/pkg.git",
+			});
+			expect(parsePackageSource("@scope/pkg.git@1.2.3")).toMatchObject({
+				type: "npm",
+				name: "@scope/pkg.git",
+				version: "1.2.3",
+			});
+		});
+
 		it("should reject invalid source formats", () => {
 			expect(() => parsePackageSource("invalid::source")).toThrow(
 				"Invalid package source format",
 			);
+		});
+
+		it("should reject unsafe git transport helpers before clone", () => {
+			for (const source of [
+				parsePackageSource("git:ext::sh -c 'touch /tmp/pwned'"),
+				parsePackageSource("git:9p::payload"),
+			]) {
+				expect(() => refreshPackageSourceSync(source)).toThrow(
+					"Unsupported git package source URL",
+				);
+			}
+		});
+
+		it("should allow IPv6 literal git URLs that git clone accepts", () => {
+			const sshSource = parsePackageSource(
+				"git:ssh://git@[2001:db8::1]/user/repo.git",
+			);
+			expect(sshSource).toMatchObject({
+				type: "git",
+				url: "ssh://git@[2001:db8::1]/user/repo.git",
+			});
+			expect(normalizeGitCloneUrl(sshSource.url)).toBe(
+				"ssh://git@[2001:db8::1]/user/repo.git",
+			);
+
+			const httpsSource = parsePackageSource(
+				"git:https://[2001:db8::1]/user/repo.git",
+			);
+			expect(httpsSource).toMatchObject({
+				type: "git",
+				url: "https://[2001:db8::1]/user/repo.git",
+			});
+			expect(normalizeGitCloneUrl(httpsSource.url)).toBe(
+				"https://[2001:db8::1]/user/repo.git",
+			);
+		});
+
+		it("should reject unsupported git URL schemes before clone", () => {
+			const source = parsePackageSource("git:file:///tmp/package-repo");
+
+			expect(() => refreshPackageSourceSync(source)).toThrow(
+				"Unsupported git package source URL scheme: file",
+			);
+		});
+
+		it("should strip npm-style git-plus prefixes before git clone", () => {
+			expect(normalizeGitCloneUrl("git+https://github.com/user/repo.git")).toBe(
+				"https://github.com/user/repo.git",
+			);
+			expect(
+				normalizeGitCloneUrl("git+ssh://git@github.com/user/repo.git"),
+			).toBe("ssh://git@github.com/user/repo.git");
+		});
+
+		it("should allow native git protocol URLs that git clone accepts", () => {
+			const source = parsePackageSource(
+				"git:git://git.kernel.org/pub/scm/git/git.git",
+			);
+			expect(source).toMatchObject({
+				type: "git",
+				url: "git://git.kernel.org/pub/scm/git/git.git",
+			});
+			expect(normalizeGitCloneUrl(source.url)).toBe(
+				"git://git.kernel.org/pub/scm/git/git.git",
+			);
+		});
+
+		it("should allow scp-style git URLs that git clone accepts", () => {
+			expect(normalizeGitCloneUrl("github.com:user/repo.git")).toBe(
+				"github.com:user/repo.git",
+			);
+			expect(
+				normalizeGitCloneUrl("token@github.com:acme/private-repo.git"),
+			).toBe("token@github.com:acme/private-repo.git");
+			expect(normalizeGitCloneUrl("github-work:team/skills.git")).toBe(
+				"github-work:team/skills.git",
+			);
+			expect(normalizeGitCloneUrl("git@github-work:team/skills.git")).toBe(
+				"git@github-work:team/skills.git",
+			);
+		});
+
+		it("should preserve parsed dotted git paths outside the shorthand allowlist", () => {
+			const gistSource = parsePackageSource(
+				"git:gist.github.com/user/repo.git",
+			);
+			expect(gistSource).toMatchObject({
+				type: "git",
+				url: "gist.github.com/user/repo.git",
+			});
+			expect(normalizeGitCloneUrl(gistSource.url)).toBe(
+				"gist.github.com/user/repo.git",
+			);
+
+			const codebergSource = parsePackageSource("codeberg.org:user/repo.git");
+			expect(codebergSource).toMatchObject({
+				type: "git",
+				url: "codeberg.org:user/repo.git",
+			});
+			expect(normalizeGitCloneUrl(codebergSource.url)).toBe(
+				"codeberg.org:user/repo.git",
+			);
+		});
+
+		it("should allow self-hosted scp-style git remotes", () => {
+			const source = parsePackageSource(
+				"git:deploy@git.example.com:team/skills.git",
+			);
+			expect(source).toMatchObject({
+				type: "git",
+				url: "deploy@git.example.com:team/skills.git",
+			});
+			expect(normalizeGitCloneUrl(source.url)).toBe(
+				"deploy@git.example.com:team/skills.git",
+			);
+		});
+
+		it("should allow absolute Windows paths as local git sources", () => {
+			expect(normalizeGitCloneUrl("C:\\repo\\package")).toBe(
+				"C:\\repo\\package",
+			);
+		});
+
+		it("should reject unsafe git refs", () => {
+			expect(() =>
+				parsePackageSource("git:github.com/user/repo@-upload-pack=sh"),
+			).toThrow("Invalid git package ref");
+			expect(() =>
+				parsePackageSource("git:github.com/user/repo@main;touch-pwned"),
+			).toThrow("Invalid git package ref");
 		});
 
 		it("should load git repositories from a local path", async () => {
@@ -570,6 +873,7 @@ describe("Maestro Packages", () => {
 			);
 			createCommittedGitRepo(pkgDir);
 
+			trustWorkspaceViaGlobalConfig(testDir);
 			addConfiguredPackageSpecToConfig({
 				workspaceDir: testDir,
 				scope: "local",
@@ -602,6 +906,268 @@ describe("Maestro Packages", () => {
 					path.includes("deploy-skill"),
 				),
 			).toBe(true);
+		});
+
+		it("does not remote-refresh project package entries denied by the active profile", async () => {
+			const pkgDir = join(testDir, "profile-denied-package");
+			mkdirSync(join(pkgDir, "skills", "review-skill"), { recursive: true });
+			writeFileSync(
+				join(pkgDir, "skills", "review-skill", "SKILL.md"),
+				"# Review Skill\n",
+			);
+			writeFileSync(
+				join(pkgDir, "package.json"),
+				JSON.stringify({
+					name: "@test/profile-denied-package",
+					version: "1.0.0",
+					keywords: ["maestro-package"],
+					maestro: { skills: ["./skills"] },
+				}),
+			);
+			createCommittedGitRepo(pkgDir);
+
+			// Globally trusted, but the "locked" profile downgrades trust.
+			trustWorkspaceViaGlobalConfig(testDir, { locked: "untrusted" });
+			addConfiguredPackageSpecToConfig({
+				workspaceDir: testDir,
+				scope: "project",
+				spec: `git:${pkgDir}`,
+			});
+
+			// Without the denying profile the remote entry is a refresh target.
+			const trustedRefresh = await refreshConfiguredRemotePackages(testDir);
+			expect(trustedRefresh.remoteCount).toBe(1);
+
+			// With the denying profile active, the same untrusted project entry
+			// must not be fetched/refreshed, mirroring the gated load.
+			const deniedRefresh = await refreshConfiguredRemotePackages(testDir, {
+				profileName: "locked",
+			});
+			expect(deniedRefresh.remoteCount).toBe(0);
+		});
+
+		it("re-runs auto-sync when trust context changes", async () => {
+			const pkgDir = join(testDir, "profile-switch-package");
+			mkdirSync(join(pkgDir, "skills", "review-skill"), { recursive: true });
+			writeFileSync(
+				join(pkgDir, "skills", "review-skill", "SKILL.md"),
+				"# Review Skill\n",
+			);
+			writeFileSync(
+				join(pkgDir, "package.json"),
+				JSON.stringify({
+					name: "@test/profile-switch-package",
+					version: "1.0.0",
+					keywords: ["maestro-package"],
+					maestro: { skills: ["./skills"] },
+				}),
+			);
+			createCommittedGitRepo(pkgDir);
+
+			trustWorkspaceViaGlobalConfig(testDir, { locked: "untrusted" });
+			addConfiguredPackageSpecToConfig({
+				workspaceDir: testDir,
+				scope: "project",
+				spec: `git:${pkgDir}`,
+			});
+
+			refreshPackageSourceSync(parsePackageSource(`git:${pkgDir}`, testDir));
+
+			mkdirSync(join(pkgDir, "skills", "deploy-skill"), { recursive: true });
+			writeFileSync(
+				join(pkgDir, "skills", "deploy-skill", "SKILL.md"),
+				"# Deploy Skill\n",
+			);
+			commitGitRepoChanges(pkgDir, "add deploy skill");
+
+			clearConfiguredRemotePackageAutoSyncState(testDir);
+			const deniedResources = loadConfiguredPackageResources(testDir, {
+				profileName: "locked",
+			});
+			expect(deniedResources.skills.project).toHaveLength(0);
+
+			loadConfiguredPackageResources(testDir);
+
+			await waitForCondition(() =>
+				loadConfiguredPackageResources(testDir).skills.project.some((path) =>
+					path.includes("deploy-skill"),
+				),
+			);
+
+			const refreshedResources = loadConfiguredPackageResources(testDir);
+			expect(refreshedResources.skills.project).toHaveLength(2);
+		});
+
+		it("uses runtime package profile context when explicit options are omitted", () => {
+			const pkgDir = join(testDir, "runtime-profile-package");
+			mkdirSync(join(pkgDir, "skills", "review-skill"), { recursive: true });
+			writeFileSync(
+				join(pkgDir, "skills", "review-skill", "SKILL.md"),
+				"# Review Skill\n",
+			);
+			writeFileSync(
+				join(pkgDir, "package.json"),
+				JSON.stringify({
+					name: "@test/runtime-profile-package",
+					version: "1.0.0",
+					keywords: ["maestro-package"],
+					maestro: { skills: ["./skills"] },
+				}),
+			);
+			mkdirSync(process.env.MAESTRO_HOME!, { recursive: true });
+			writeFileSync(
+				join(process.env.MAESTRO_HOME!, "config.toml"),
+				`[profiles.trusted-packages.projects.${JSON.stringify(resolve(testDir))}]\ntrust_level = "trusted"\n`,
+			);
+			mkdirSync(join(testDir, ".maestro"), { recursive: true });
+			writeFileSync(
+				join(testDir, ".maestro", "config.toml"),
+				'packages = ["../runtime-profile-package"]\n',
+			);
+
+			expect(
+				loadConfiguredPackageResources(testDir).skills.project,
+			).toHaveLength(0);
+
+			setConfiguredPackageRuntimeContext(testDir, {
+				profileName: "trusted-packages",
+			});
+
+			expect(loadConfiguredPackageResources(testDir).skills.project).toEqual(
+				expect.arrayContaining([join(pkgDir, "skills", "review-skill")]),
+			);
+		});
+
+		it("uses runtime package profile context when refreshing configured remotes", async () => {
+			const pkgDir = join(testDir, "runtime-refresh-package");
+			mkdirSync(join(pkgDir, "skills", "review-skill"), { recursive: true });
+			writeFileSync(
+				join(pkgDir, "skills", "review-skill", "SKILL.md"),
+				"# Review Skill\n",
+			);
+			writeFileSync(
+				join(pkgDir, "package.json"),
+				JSON.stringify({
+					name: "@test/runtime-refresh-package",
+					version: "1.0.0",
+					keywords: ["maestro-package"],
+					maestro: { skills: ["./skills"] },
+				}),
+			);
+			createCommittedGitRepo(pkgDir);
+			mkdirSync(process.env.MAESTRO_HOME!, { recursive: true });
+			writeFileSync(
+				join(process.env.MAESTRO_HOME!, "config.toml"),
+				`[profiles.trusted-packages.projects.${JSON.stringify(resolve(testDir))}]\ntrust_level = "trusted"\n`,
+			);
+			mkdirSync(join(testDir, ".maestro"), { recursive: true });
+			writeFileSync(
+				join(testDir, ".maestro", "config.toml"),
+				`packages = ["git:${pkgDir}"]\n`,
+			);
+
+			expect((await refreshConfiguredRemotePackages(testDir)).remoteCount).toBe(
+				0,
+			);
+
+			setConfiguredPackageRuntimeContext(testDir, {
+				profileName: "trusted-packages",
+			});
+
+			await expect(
+				refreshConfiguredRemotePackages(testDir),
+			).resolves.toMatchObject({
+				remoteCount: 1,
+				refreshed: [
+					{
+						source: `git:${pkgDir}`,
+						sourceType: "git",
+						scopes: ["project"],
+						error: null,
+					},
+				],
+			});
+		});
+
+		it("uses runtime package profile context when pruning configured remote caches", () => {
+			const referencedRepo = join(testDir, "runtime-prune-package");
+			mkdirSync(join(referencedRepo, "skills", "review-skill"), {
+				recursive: true,
+			});
+			writeFileSync(
+				join(referencedRepo, "skills", "review-skill", "SKILL.md"),
+				"# Review Skill\n",
+			);
+			writeFileSync(
+				join(referencedRepo, "package.json"),
+				JSON.stringify({
+					name: "@test/runtime-prune-package",
+					version: "1.0.0",
+					keywords: ["maestro-package"],
+					maestro: { skills: ["./skills"] },
+				}),
+			);
+			createCommittedGitRepo(referencedRepo);
+
+			const orphanRepo = join(testDir, "runtime-prune-orphan-package");
+			mkdirSync(join(orphanRepo, "skills", "orphan-skill"), {
+				recursive: true,
+			});
+			writeFileSync(
+				join(orphanRepo, "skills", "orphan-skill", "SKILL.md"),
+				"# Orphan Skill\n",
+			);
+			writeFileSync(
+				join(orphanRepo, "package.json"),
+				JSON.stringify({
+					name: "@test/runtime-prune-orphan-package",
+					version: "1.0.0",
+					keywords: ["maestro-package"],
+					maestro: { skills: ["./skills"] },
+				}),
+			);
+			createCommittedGitRepo(orphanRepo);
+
+			mkdirSync(process.env.MAESTRO_HOME!, { recursive: true });
+			writeFileSync(
+				join(process.env.MAESTRO_HOME!, "config.toml"),
+				`[profiles.trusted-packages.projects.${JSON.stringify(resolve(testDir))}]\ntrust_level = "trusted"\n`,
+			);
+			mkdirSync(join(testDir, ".maestro"), { recursive: true });
+			writeFileSync(
+				join(testDir, ".maestro", "config.toml"),
+				`packages = ["git:${referencedRepo}"]\n`,
+			);
+
+			refreshPackageSourceSync(
+				parsePackageSource(`git:${referencedRepo}`, testDir),
+			);
+			refreshPackageSourceSync(
+				parsePackageSource(`git:${orphanRepo}`, testDir),
+			);
+
+			setConfiguredPackageRuntimeContext(testDir, {
+				profileName: "trusted-packages",
+			});
+
+			expect(pruneUnconfiguredRemotePackageCaches(testDir)).toMatchObject({
+				referencedCount: 1,
+				removedCount: 1,
+			});
+			expect(
+				existsSync(
+					getCachedRemotePackageSourcePath(
+						parsePackageSource(`git:${referencedRepo}`, testDir),
+					),
+				),
+			).toBe(true);
+			expect(
+				existsSync(
+					getCachedRemotePackageSourcePath(
+						parsePackageSource(`git:${orphanRepo}`, testDir),
+					),
+				),
+			).toBe(false);
 		});
 	});
 
@@ -659,6 +1225,23 @@ describe("Maestro Packages", () => {
 		});
 	});
 });
+
+function trustWorkspaceViaGlobalConfig(
+	workspaceDir: string,
+	profiles?: Record<string, "trusted" | "untrusted">,
+): void {
+	const home = process.env.MAESTRO_HOME;
+	if (!home) {
+		throw new Error("MAESTRO_HOME must be set before trusting a workspace");
+	}
+	mkdirSync(home, { recursive: true });
+	const quotedDir = JSON.stringify(resolve(workspaceDir));
+	let config = `[projects.${quotedDir}]\ntrust_level = "trusted"\n`;
+	for (const [profile, level] of Object.entries(profiles ?? {})) {
+		config += `\n[profiles.${profile}.projects.${quotedDir}]\ntrust_level = "${level}"\n`;
+	}
+	writeFileSync(join(home, "config.toml"), config);
+}
 
 function createCommittedGitRepo(dir: string): void {
 	execFileSync("git", ["init", "--initial-branch=main"], {

@@ -206,6 +206,40 @@ describe("Provider Network Config", () => {
 		});
 	});
 
+	describe("isModelRequestUrlPolicyError", () => {
+		it("matches the fail-closed policy-denial error prefix", async () => {
+			const { isModelRequestUrlPolicyError } = await import(
+				"../../src/providers/network-config.js"
+			);
+
+			expect(
+				isModelRequestUrlPolicyError(
+					new Error(
+						"Model request blocked by URL policy: not_in_allowed_base_urls",
+					),
+				),
+			).toBe(true);
+			expect(
+				isModelRequestUrlPolicyError(
+					new Error("Model request blocked by URL policy: unknown_reason"),
+				),
+			).toBe(true);
+		});
+
+		it("does not match generic fetch errors", async () => {
+			const { isModelRequestUrlPolicyError } = await import(
+				"../../src/providers/network-config.js"
+			);
+
+			expect(isModelRequestUrlPolicyError(new Error("fetch failed"))).toBe(
+				false,
+			);
+			expect(isModelRequestUrlPolicyError(new Error("ECONNRESET"))).toBe(false);
+			expect(isModelRequestUrlPolicyError("string error")).toBe(false);
+			expect(isModelRequestUrlPolicyError(null)).toBe(false);
+		});
+	});
+
 	describe("isRetryableStatus", () => {
 		it("should return true for retryable status codes", async () => {
 			const { isRetryableStatus } = await import(
@@ -229,6 +263,349 @@ describe("Provider Network Config", () => {
 			expect(isRetryableStatus(401)).toBe(false);
 			expect(isRetryableStatus(403)).toBe(false);
 			expect(isRetryableStatus(404)).toBe(false);
+		});
+	});
+
+	describe("fetchWithPinnedModelRequestDns", () => {
+		it("pins fetch lookups to policy-approved addresses", async () => {
+			type PinnedLookup = (
+				hostname: string,
+				options: { all?: boolean; family?: number },
+				callback: (
+					error: NodeJS.ErrnoException | null,
+					address: string | Array<{ address: string; family: number }>,
+					family?: number,
+				) => void,
+			) => void;
+			type MockAgentInstance = {
+				options: { connect?: { lookup?: PinnedLookup } };
+				close: ReturnType<typeof vi.fn>;
+			};
+
+			const createdAgents: MockAgentInstance[] = [];
+			class MockAgent implements MockAgentInstance {
+				close = vi.fn().mockResolvedValue(undefined);
+
+				constructor(public options: MockAgentInstance["options"]) {
+					createdAgents.push(this);
+				}
+			}
+
+			vi.doMock("undici", () => ({ Agent: MockAgent }));
+			vi.resetModules();
+			const fetchMock = vi.fn().mockResolvedValue(new Response("ok"));
+			vi.stubGlobal("fetch", fetchMock);
+
+			try {
+				const { fetchWithPinnedModelRequestDns } = await import(
+					"../../src/providers/network-config.js"
+				);
+
+				await fetchWithPinnedModelRequestDns(
+					"https://api.example.test/v1/messages",
+					{ method: "POST", redirect: "follow" },
+					{
+						allowed: true,
+						hostname: "api.example.test",
+						resolvedAddresses: [
+							"93.184.216.34",
+							"2606:2800:220:1:248:1893:25c8:1946",
+						],
+					},
+				);
+
+				expect(fetchMock).toHaveBeenCalledTimes(1);
+				expect(createdAgents).toHaveLength(1);
+				const fetchInit = fetchMock.mock.calls[0]?.[1] as
+					| (RequestInit & { dispatcher?: unknown })
+					| undefined;
+				expect(fetchInit?.dispatcher).toBe(createdAgents[0]);
+				expect(fetchInit?.redirect).toBe("manual");
+
+				const lookup = createdAgents[0]?.options.connect?.lookup;
+				expect(lookup).toBeTypeOf("function");
+				if (!lookup) return;
+
+				const allAddresses = await new Promise<
+					Array<{ address: string; family: number }>
+				>((resolve, reject) => {
+					lookup("api.example.test", { all: true }, (error, address) => {
+						if (error) {
+							reject(error);
+							return;
+						}
+						resolve(address as Array<{ address: string; family: number }>);
+					});
+				});
+				expect(allAddresses).toEqual([
+					{ address: "93.184.216.34", family: 4 },
+					{ address: "2606:2800:220:1:248:1893:25c8:1946", family: 6 },
+				]);
+
+				const ipv4Address = await new Promise<{
+					address: string;
+					family?: number;
+				}>((resolve, reject) => {
+					lookup(
+						"api.example.test",
+						{ family: 4 },
+						(error, address, family) => {
+							if (error) {
+								reject(error);
+								return;
+							}
+							resolve({ address: String(address), family });
+						},
+					);
+				});
+				expect(ipv4Address).toEqual({
+					address: "93.184.216.34",
+					family: 4,
+				});
+
+				const mismatchCode = await new Promise<string | undefined>(
+					(resolve) => {
+						lookup("other.example.test", {}, (error) => resolve(error?.code));
+					},
+				);
+				expect(mismatchCode).toBe("ERR_DNS_PINNED_HOST_MISMATCH");
+				expect(createdAgents[0]?.close).toHaveBeenCalledTimes(1);
+			} finally {
+				vi.unstubAllGlobals();
+				vi.doUnmock("undici");
+				vi.resetModules();
+			}
+		});
+
+		it("follows redirects only after re-checking URL policy", async () => {
+			type MockAgentInstance = {
+				close: ReturnType<typeof vi.fn>;
+			};
+
+			const createdAgents: MockAgentInstance[] = [];
+			class MockAgent implements MockAgentInstance {
+				close = vi.fn().mockResolvedValue(undefined);
+
+				constructor(_options: unknown) {
+					createdAgents.push(this);
+				}
+			}
+
+			vi.doMock("undici", () => ({ Agent: MockAgent }));
+			vi.resetModules();
+			const fetchMock = vi
+				.fn()
+				.mockResolvedValueOnce(
+					new Response(null, {
+						status: 302,
+						headers: {
+							location: "https://93.184.216.34/v1/messages",
+						},
+					}),
+				)
+				.mockResolvedValueOnce(new Response("ok"));
+			vi.stubGlobal("fetch", fetchMock);
+
+			try {
+				const { fetchWithModelRequestPolicyRedirects } = await import(
+					"../../src/providers/network-config.js"
+				);
+
+				const response = await fetchWithModelRequestPolicyRedirects(
+					"https://api.example.test/v1/messages",
+					{ method: "POST", body: JSON.stringify({ hello: "world" }) },
+					{
+						allowed: true,
+						hostname: "api.example.test",
+						resolvedAddresses: ["93.184.216.34"],
+					},
+				);
+
+				expect(await response.text()).toBe("ok");
+				expect(fetchMock).toHaveBeenCalledTimes(2);
+				expect(fetchMock.mock.calls[0]?.[1]).toMatchObject({
+					redirect: "manual",
+				});
+				expect(fetchMock.mock.calls[1]?.[0]).toBe(
+					"https://93.184.216.34/v1/messages",
+				);
+				expect(fetchMock.mock.calls[1]?.[1]).toMatchObject({
+					redirect: "manual",
+				});
+				expect(createdAgents[0]?.close).toHaveBeenCalledTimes(1);
+			} finally {
+				vi.unstubAllGlobals();
+				vi.doUnmock("undici");
+				vi.resetModules();
+			}
+		});
+
+		it("blocks redirects to internal hosts before following them", async () => {
+			type MockAgentInstance = {
+				close: ReturnType<typeof vi.fn>;
+			};
+
+			const createdAgents: MockAgentInstance[] = [];
+			class MockAgent implements MockAgentInstance {
+				close = vi.fn().mockResolvedValue(undefined);
+
+				constructor(_options: unknown) {
+					createdAgents.push(this);
+				}
+			}
+
+			vi.doMock("undici", () => ({ Agent: MockAgent }));
+			vi.resetModules();
+			const fetchMock = vi.fn().mockResolvedValue(
+				new Response(null, {
+					status: 302,
+					headers: {
+						location: "http://127.0.0.1:8080/v1/messages",
+					},
+				}),
+			);
+			vi.stubGlobal("fetch", fetchMock);
+
+			try {
+				const { fetchWithModelRequestPolicyRedirects } = await import(
+					"../../src/providers/network-config.js"
+				);
+
+				await expect(
+					fetchWithModelRequestPolicyRedirects(
+						"https://api.example.test/v1/messages",
+						{ method: "POST" },
+						{
+							allowed: true,
+							hostname: "api.example.test",
+							resolvedAddresses: ["93.184.216.34"],
+						},
+					),
+				).rejects.toThrow(/internal_host/);
+
+				expect(fetchMock).toHaveBeenCalledTimes(1);
+				expect(createdAgents[0]?.close).toHaveBeenCalledTimes(1);
+			} finally {
+				vi.unstubAllGlobals();
+				vi.doUnmock("undici");
+				vi.resetModules();
+			}
+		});
+
+		it("does not reuse internal base URL allowance for other redirect targets", async () => {
+			type MockAgentInstance = {
+				close: ReturnType<typeof vi.fn>;
+			};
+
+			const createdAgents: MockAgentInstance[] = [];
+			class MockAgent implements MockAgentInstance {
+				close = vi.fn().mockResolvedValue(undefined);
+
+				constructor(_options: unknown) {
+					createdAgents.push(this);
+				}
+			}
+
+			vi.doMock("undici", () => ({ Agent: MockAgent }));
+			vi.resetModules();
+			const fetchMock = vi.fn().mockResolvedValue(
+				new Response(null, {
+					status: 302,
+					headers: {
+						location: "http://127.0.0.1:8080/v1/messages",
+					},
+				}),
+			);
+			vi.stubGlobal("fetch", fetchMock);
+
+			try {
+				const { fetchWithModelRequestPolicyRedirects } = await import(
+					"../../src/providers/network-config.js"
+				);
+
+				await expect(
+					fetchWithModelRequestPolicyRedirects(
+						"http://localhost:11434/v1/messages",
+						{ method: "POST" },
+						{
+							allowed: true,
+							hostname: "localhost",
+							resolvedAddresses: ["127.0.0.1"],
+						},
+						{
+							allowInternalBaseUrl: true,
+							internalBaseUrl: "http://localhost:11434/v1",
+							policy: {
+								internalBaseUrlAllowList: ["http://localhost:11434/v1"],
+							},
+						},
+					),
+				).rejects.toThrow(/internal_host/);
+
+				expect(fetchMock).toHaveBeenCalledTimes(1);
+				expect(createdAgents[0]?.close).toHaveBeenCalledTimes(1);
+			} finally {
+				vi.unstubAllGlobals();
+				vi.doUnmock("undici");
+				vi.resetModules();
+			}
+		});
+
+		it("blocks redirects that leave the configured public allowlist", async () => {
+			type MockAgentInstance = {
+				close: ReturnType<typeof vi.fn>;
+			};
+
+			const createdAgents: MockAgentInstance[] = [];
+			class MockAgent implements MockAgentInstance {
+				close = vi.fn().mockResolvedValue(undefined);
+
+				constructor(_options: unknown) {
+					createdAgents.push(this);
+				}
+			}
+
+			vi.doMock("undici", () => ({ Agent: MockAgent }));
+			vi.resetModules();
+			const fetchMock = vi.fn().mockResolvedValue(
+				new Response(null, {
+					status: 302,
+					headers: {
+						location: "https://attacker.example/v1/messages",
+					},
+				}),
+			);
+			vi.stubGlobal("fetch", fetchMock);
+
+			try {
+				const { fetchWithModelRequestPolicyRedirects } = await import(
+					"../../src/providers/network-config.js"
+				);
+
+				await expect(
+					fetchWithModelRequestPolicyRedirects(
+						"https://trusted.example/v1/messages",
+						{ method: "POST" },
+						{
+							allowed: true,
+							hostname: "trusted.example",
+							resolvedAddresses: ["93.184.216.34"],
+						},
+						{
+							policy: {
+								allowedBaseUrls: ["https://trusted.example/v1"],
+							},
+						},
+					),
+				).rejects.toThrow(/not_in_allowed_base_urls/);
+
+				expect(fetchMock).toHaveBeenCalledTimes(1);
+				expect(createdAgents[0]?.close).toHaveBeenCalledTimes(1);
+			} finally {
+				vi.unstubAllGlobals();
+				vi.doUnmock("undici");
+				vi.resetModules();
+			}
 		});
 	});
 

@@ -7,10 +7,10 @@ import {
 	readFileSync,
 	rmSync,
 	statSync,
-	writeFileSync,
 } from "node:fs";
 import os from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
+import { writeTextFileAtomic } from "../utils/fs.js";
 import { resolveGuardianConfig } from "./config.js";
 import { loadGuardianState, recordGuardianRun } from "./state.js";
 import { DEFAULT_EXCLUDES } from "./types.js";
@@ -329,7 +329,7 @@ function materializeStagedFiles(root: string, files: string[]): string | null {
 			continue;
 		}
 		try {
-			writeFileSync(target, show.stdout, "utf-8");
+			writeTextFileAtomic(target, show.stdout, { encoding: "utf-8" });
 		} catch {
 			// ignore write errors for problematic files
 		}
@@ -844,21 +844,39 @@ export function shouldGuardCommand(command: string): {
 	shouldGuard: boolean;
 	trigger: string | null;
 } {
-	const inlineDisable = /MAESTRO_GUARDIAN\s*=\s*(0|false|off|no)/i;
-	if (inlineDisable.test(command)) {
-		return { shouldGuard: false, trigger: null };
+	const commandSequences = tokenizeGuardianCommand(command);
+	const normalizedSequences =
+		normalizeGuardianCommandSequences(commandSequences);
+
+	const trigger = findGuardTriggerInSequences(normalizedSequences);
+	if (trigger) {
+		return { shouldGuard: true, trigger };
 	}
-	const gitMatch = command.match(/\bgit\s+(commit|push)\b/i);
-	if (gitMatch?.[1]) {
-		return { shouldGuard: true, trigger: `git ${gitMatch[1].toLowerCase()}` };
+
+	const nestedTrigger = findNestedGuardTrigger(command);
+	if (nestedTrigger) {
+		return { shouldGuard: true, trigger: nestedTrigger };
+	}
+
+	return { shouldGuard: false, trigger: null };
+}
+
+function findGuardTriggerInSequences(
+	normalizedSequences: string[][],
+): string | null {
+	for (const tokens of normalizedSequences) {
+		const gitSubcommand = findGitSubcommand(tokens);
+		if (gitSubcommand === "commit" || gitSubcommand === "push") {
+			return `git ${gitSubcommand}`;
+		}
+
+		const rmTrigger = findRmTrigger(tokens);
+		if (rmTrigger) {
+			return rmTrigger;
+		}
 	}
 
 	const destructivePatterns: Array<{ regex: RegExp; label: string }> = [
-		{ regex: /\brm\s+-rf\b/i, label: "rm -rf" },
-		{
-			regex: /\brm\s+(?:-[a-z]*r[a-z]*\b|--recursive\b)/i,
-			label: "rm -r",
-		},
 		{ regex: /\bfind\s+[^\n]*-delete\b/i, label: "find -delete" },
 		{ regex: /\bchmod\s+0{3,4}\b/i, label: "chmod 000" },
 		{ regex: /\bchown\b[^\n]*\broot\b/i, label: "chown root" },
@@ -867,13 +885,738 @@ export function shouldGuardCommand(command: string): {
 		{ regex: /\btruncate\s+-s\s+0\b/i, label: "truncate -s 0" },
 	];
 
-	for (const pattern of destructivePatterns) {
-		if (pattern.regex.test(command)) {
-			return { shouldGuard: true, trigger: pattern.label };
+	for (const tokens of normalizedSequences) {
+		const parsedCommand = tokens.join(" ");
+		for (const pattern of destructivePatterns) {
+			if (pattern.regex.test(parsedCommand)) {
+				return pattern.label;
+			}
 		}
 	}
 
-	return { shouldGuard: false, trigger: null };
+	return null;
+}
+
+function findNestedGuardTrigger(command: string): string | null {
+	const pending = [
+		...extractShellSubstitutions(command),
+		...extractNestedInlineGuardianCommands(command),
+	];
+	const seen = new Set<string>();
+
+	while (pending.length > 0) {
+		const nestedCommand = pending.pop();
+		if (!nestedCommand || seen.has(nestedCommand)) {
+			continue;
+		}
+		seen.add(nestedCommand);
+
+		const normalizedSequences = normalizeGuardianCommandSequences(
+			tokenizeGuardianCommand(nestedCommand),
+		);
+		const trigger = findGuardTriggerInSequences(normalizedSequences);
+		if (trigger) {
+			return trigger;
+		}
+
+		pending.push(...extractShellSubstitutions(nestedCommand));
+		pending.push(...extractNestedInlineGuardianCommands(nestedCommand));
+	}
+	return null;
+}
+
+function extractNestedInlineGuardianCommands(command: string): string[] {
+	return tokenizeGuardianCommand(command).flatMap((tokens) => {
+		const normalized = normalizeGuardianCommandTokens(tokens);
+		if (normalized.length === 0) {
+			return [];
+		}
+		return [
+			...extractInlineShellCommands(normalized),
+			...extractEvalCommands(normalized),
+		];
+	});
+}
+
+function extractShellSubstitutions(command: string): string[] {
+	const substitutions: string[] = [];
+	let quote: "'" | '"' | null = null;
+
+	for (let index = 0; index < command.length; index += 1) {
+		const char = command[index];
+		if (char === "\\") {
+			index += 1;
+			continue;
+		}
+		if (quote === "'") {
+			if (char === "'") {
+				quote = null;
+			}
+			continue;
+		}
+		if (quote === '"' && char === '"') {
+			quote = null;
+			continue;
+		}
+		if (!quote && char === "'") {
+			quote = char;
+			continue;
+		}
+		if (!quote && char === '"') {
+			quote = char;
+			continue;
+		}
+		if (char === "`") {
+			const end = findBacktickEnd(command, index + 1);
+			if (end !== -1) {
+				substitutions.push(command.slice(index + 1, end));
+				index = end;
+			}
+			continue;
+		}
+		if (char === "$" && command[index + 1] === "(") {
+			const end = findCommandSubstitutionEnd(command, index + 2);
+			if (end !== -1) {
+				substitutions.push(command.slice(index + 2, end));
+				index = end;
+			}
+			continue;
+		}
+		if ((char === "<" || char === ">") && command[index + 1] === "(") {
+			const end = findCommandSubstitutionEnd(command, index + 2);
+			if (end !== -1) {
+				substitutions.push(command.slice(index + 2, end));
+				index = end;
+			}
+		}
+	}
+
+	return substitutions;
+}
+
+function findBacktickEnd(command: string, start: number): number {
+	for (let index = start; index < command.length; index += 1) {
+		if (command[index] === "\\") {
+			index += 1;
+			continue;
+		}
+		if (command[index] === "`") {
+			return index;
+		}
+	}
+	return -1;
+}
+
+function findCommandSubstitutionEnd(command: string, start: number): number {
+	let depth = 1;
+	let quote: "'" | '"' | "`" | null = null;
+	let escaped = false;
+
+	for (let index = start; index < command.length; index += 1) {
+		const char = command[index];
+		if (char === undefined) {
+			continue;
+		}
+
+		if (escaped) {
+			escaped = false;
+			continue;
+		}
+		if (char === "\\") {
+			escaped = true;
+			continue;
+		}
+		if (quote) {
+			if (char === quote) {
+				quote = null;
+			}
+			continue;
+		}
+		if (char === "'" || char === '"' || char === "`") {
+			quote = char;
+			continue;
+		}
+		if (char === "(") {
+			depth += 1;
+			continue;
+		}
+		if (char === ")") {
+			depth -= 1;
+			if (depth === 0) {
+				return index;
+			}
+		}
+	}
+
+	return -1;
+}
+
+function tokenizeGuardianCommand(command: string): string[][] {
+	const sequences: string[][] = [];
+	let tokens: string[] = [];
+	let current = "";
+	let quote: "'" | '"' | null = null;
+	let escaped = false;
+
+	const pushToken = () => {
+		if (current.length > 0) {
+			tokens.push(current);
+			current = "";
+		}
+	};
+	const pushSequence = () => {
+		pushToken();
+		if (tokens.length > 0) {
+			sequences.push(tokens);
+			tokens = [];
+		}
+	};
+
+	for (let index = 0; index < command.length; index += 1) {
+		const char = command[index];
+		if (char === undefined) {
+			continue;
+		}
+
+		if (escaped) {
+			current += char;
+			escaped = false;
+			continue;
+		}
+
+		if (quote) {
+			if (quote === '"' && char === "\\") {
+				escaped = true;
+				continue;
+			}
+			if (char === quote) {
+				quote = null;
+				continue;
+			}
+			current += char;
+			continue;
+		}
+
+		if (char === "\\") {
+			escaped = true;
+			continue;
+		}
+		if (char === "'" || char === '"') {
+			if (current.length > 0) {
+				pushToken();
+			}
+			quote = char;
+			continue;
+		}
+		if (char === "#" && current.length === 0) {
+			while (index + 1 < command.length && command[index + 1] !== "\n") {
+				index += 1;
+			}
+			continue;
+		}
+		if (/\s/.test(char)) {
+			pushToken();
+			continue;
+		}
+		if (char === ";" || char === "|" || char === "&") {
+			pushSequence();
+			if (command[index + 1] === char) {
+				index += 1;
+			}
+			continue;
+		}
+
+		current += char;
+	}
+
+	pushSequence();
+	return sequences;
+}
+
+function normalizeGuardianCommandSequences(
+	commandSequences: string[][],
+): string[][] {
+	return commandSequences.flatMap((tokens) =>
+		expandGuardianCommandTokens(tokens),
+	);
+}
+
+function expandGuardianCommandTokens(tokens: string[]): string[][] {
+	const normalized = normalizeGuardianCommandTokens(tokens);
+	if (normalized.length === 0) {
+		return [];
+	}
+
+	const inlineCommands = [
+		...extractInlineShellCommands(normalized),
+		...extractEvalCommands(normalized),
+		...extractRemoteShellCommands(normalized),
+		...extractCompoundGuardianCommands(normalized),
+	];
+	return [
+		normalized,
+		...inlineCommands.flatMap((command) =>
+			expandGuardianInlineCommand(command),
+		),
+	];
+}
+
+function expandGuardianInlineCommand(
+	command: string,
+	seen = new Set<string>(),
+): string[][] {
+	if (seen.has(command)) {
+		return [];
+	}
+	seen.add(command);
+
+	return [
+		...normalizeGuardianCommandSequences(tokenizeGuardianCommand(command)),
+		...extractShellSubstitutions(command).flatMap((nestedCommand) =>
+			expandGuardianInlineCommand(nestedCommand, seen),
+		),
+	];
+}
+
+function normalizeGuardianCommandTokens(tokens: string[]): string[] {
+	let normalized = tokens.slice();
+	let changed = true;
+
+	while (changed) {
+		changed = false;
+		normalized = stripLeadingAssignments(normalized);
+		if (normalized.length === 0) {
+			return normalized;
+		}
+
+		const command = normalized[0]?.toLowerCase();
+		if (command === "command") {
+			normalized = unwrapCommandBuiltin(normalized);
+			changed = true;
+			continue;
+		}
+		if (command === "nohup" || command === "time") {
+			normalized =
+				normalized[1] === "--" ? normalized.slice(2) : normalized.slice(1);
+			changed = true;
+			continue;
+		}
+		if (command === "sudo") {
+			normalized = unwrapSudoCommand(normalized);
+			changed = true;
+			continue;
+		}
+		if (command === "env") {
+			normalized = unwrapEnvCommand(normalized);
+			changed = true;
+		}
+	}
+
+	return normalized;
+}
+
+function unwrapCommandBuiltin(tokens: string[]): string[] {
+	let index = 1;
+	while (index < tokens.length) {
+		const token = tokens[index];
+		if (token === "--") {
+			index += 1;
+			break;
+		}
+		if (token === "-p") {
+			index += 1;
+			continue;
+		}
+		break;
+	}
+	return tokens.slice(index);
+}
+
+function stripLeadingAssignments(tokens: string[]): string[] {
+	const firstCommandIndex = tokens.findIndex(
+		(token) => !isEnvAssignment(token),
+	);
+	return firstCommandIndex === -1 ? [] : tokens.slice(firstCommandIndex);
+}
+
+function unwrapSudoCommand(tokens: string[]): string[] {
+	let index = 1;
+	while (index < tokens.length) {
+		const token = tokens[index];
+		if (token === "--") {
+			index += 1;
+			break;
+		}
+		if (!token?.startsWith("-")) {
+			break;
+		}
+		index += ["-C", "-g", "-h", "-p", "-u"].includes(token) ? 2 : 1;
+	}
+	return tokens.slice(index);
+}
+
+function unwrapEnvCommand(tokens: string[]): string[] {
+	let index = 1;
+	while (index < tokens.length) {
+		const token = tokens[index];
+		if (!token) {
+			break;
+		}
+		if (isEnvAssignment(token)) {
+			index += 1;
+			continue;
+		}
+		if (token === "-u" || token === "--unset") {
+			index += 2;
+			continue;
+		}
+		if (token.startsWith("--unset=") || token === "-i" || token === "-0") {
+			index += 1;
+			continue;
+		}
+		if (token.startsWith("-")) {
+			index += 1;
+			continue;
+		}
+		break;
+	}
+	return tokens.slice(index);
+}
+
+function isEnvAssignment(token: string): boolean {
+	return /^[A-Za-z_][A-Za-z0-9_]*=.*/.test(token);
+}
+
+const INLINE_SHELL_COMMANDS = new Set([
+	"ash",
+	"bash",
+	"dash",
+	"fish",
+	"ksh",
+	"sh",
+	"su",
+	"zsh",
+]);
+
+const REMOTE_SHELL_COMMANDS = new Set(["ssh"]);
+const SSH_OPTIONS_WITH_VALUES = new Set([
+	"-b",
+	"-c",
+	"-D",
+	"-E",
+	"-F",
+	"-i",
+	"-J",
+	"-L",
+	"-l",
+	"-m",
+	"-O",
+	"-o",
+	"-p",
+	"-Q",
+	"-R",
+	"-S",
+	"-W",
+	"-w",
+]);
+
+const SHELL_OPTIONS_WITH_VALUES = new Set([
+	"-O",
+	"+O",
+	"-o",
+	"--init-file",
+	"--rcfile",
+	"-init-file",
+	"-rcfile",
+]);
+const SHELL_COMBINABLE_COMMAND_STRING_FLAGS = new Set([
+	"a",
+	"b",
+	"e",
+	"f",
+	"h",
+	"i",
+	"k",
+	"l",
+	"m",
+	"n",
+	"p",
+	"r",
+	"s",
+	"t",
+	"u",
+	"v",
+	"x",
+	"B",
+	"C",
+	"E",
+	"H",
+	"P",
+	"T",
+]);
+
+function stripGuardianGrouping(token: string): string {
+	return token.replace(/^[({]+/, "").replace(/[)}]+$/, "");
+}
+
+function guardianCommandBasename(token: string): string {
+	const stripped = stripGuardianGrouping(token);
+	if (stripped.length === 0) {
+		return "";
+	}
+	const normalized = basename(stripped).split(/[/\\]/).pop() ?? "";
+	return normalized.toLowerCase().replace(/\.exe$/, "");
+}
+
+function extractInlineShellCommands(tokens: string[]): string[] {
+	const commands: string[] = [];
+
+	for (let commandIndex = 0; commandIndex < tokens.length; commandIndex += 1) {
+		const shell = guardianCommandBasename(tokens[commandIndex] ?? "");
+		if (!INLINE_SHELL_COMMANDS.has(shell)) {
+			continue;
+		}
+		const scanPastNonOptions = shell === "su";
+
+		for (let index = commandIndex + 1; index < tokens.length - 1; index += 1) {
+			const token = stripGuardianGrouping(tokens[index] ?? "");
+			if (token.length === 0) {
+				continue;
+			}
+			if (token === "--") {
+				break;
+			}
+			if (isShellCommandStringFlag(token)) {
+				let commandStringIndex = index + 1;
+				while (tokens[commandStringIndex] === "--") {
+					commandStringIndex += 1;
+				}
+				const inlineCommand = tokens[commandStringIndex];
+				if (inlineCommand) {
+					commands.push(inlineCommand);
+				}
+				break;
+			}
+			if (SHELL_OPTIONS_WITH_VALUES.has(token)) {
+				index += 1;
+				continue;
+			}
+			if (token.startsWith("-") || token.startsWith("+")) {
+				continue;
+			}
+			if (scanPastNonOptions) {
+				continue;
+			}
+			break;
+		}
+	}
+
+	return commands;
+}
+
+function isShellCommandStringFlag(token: string): boolean {
+	if (token === "-c") {
+		return true;
+	}
+	if (!/^-([A-Za-z]+)$/.test(token)) {
+		return false;
+	}
+	const flags = [...token.slice(1)];
+	const commandStringFlagIndex = flags.indexOf("c");
+	if (commandStringFlagIndex === -1) {
+		return false;
+	}
+	return flags.every(
+		(flag, index) =>
+			(index === commandStringFlagIndex && flag === "c") ||
+			SHELL_COMBINABLE_COMMAND_STRING_FLAGS.has(flag),
+	);
+}
+
+function extractEvalCommands(tokens: string[]): string[] {
+	if (guardianCommandBasename(tokens[0] ?? "") !== "eval") {
+		return [];
+	}
+
+	const command = tokens
+		.slice(1)
+		.filter((token) => token.length > 0)
+		.join(" ");
+	return command ? [command] : [];
+}
+
+function extractRemoteShellCommands(tokens: string[]): string[] {
+	const commands: string[] = [];
+
+	for (let commandIndex = 0; commandIndex < tokens.length; commandIndex += 1) {
+		const command = guardianCommandBasename(tokens[commandIndex] ?? "");
+		if (!REMOTE_SHELL_COMMANDS.has(command)) {
+			continue;
+		}
+
+		let index = commandIndex + 1;
+		while (index < tokens.length) {
+			const token = stripGuardianGrouping(tokens[index] ?? "");
+			if (!token) {
+				index += 1;
+				continue;
+			}
+			if (token === "--") {
+				index += 1;
+				break;
+			}
+			if (SSH_OPTIONS_WITH_VALUES.has(token)) {
+				index += 2;
+				continue;
+			}
+			if (SSH_OPTIONS_WITH_VALUES.has(token.slice(0, 2))) {
+				index += 1;
+				continue;
+			}
+			if (token.startsWith("-")) {
+				index += 1;
+				continue;
+			}
+			index += 1;
+			break;
+		}
+
+		const remoteCommand = tokens
+			.slice(index)
+			.filter((token) => token.trim().length > 0)
+			.join(" ");
+		if (remoteCommand) {
+			commands.push(remoteCommand);
+		}
+	}
+
+	return commands;
+}
+
+function extractCompoundGuardianCommands(tokens: string[]): string[] {
+	return tokens.filter((token) => isCompoundGuardianToken(token));
+}
+
+function isCompoundGuardianToken(token: string): boolean {
+	if (token.length === 0) {
+		return false;
+	}
+	const trimmed = token.trimStart();
+	if (
+		trimmed.startsWith("$(") ||
+		trimmed.startsWith("`") ||
+		trimmed.startsWith("<(") ||
+		trimmed.startsWith(">(")
+	) {
+		return false;
+	}
+	const sequences = tokenizeGuardianCommand(token);
+	if (sequences.length !== 1) {
+		return true;
+	}
+	const [sequence] = sequences;
+	return sequence?.length !== 1 || sequence[0] !== token;
+}
+
+function findGitSubcommand(tokens: string[]): string | null {
+	for (let commandIndex = 0; commandIndex < tokens.length; commandIndex += 1) {
+		if (guardianCommandBasename(tokens[commandIndex] ?? "") !== "git") {
+			continue;
+		}
+		const subcommand = findGitSubcommandFrom(tokens, commandIndex);
+		if (subcommand === "commit" || subcommand === "push") {
+			return subcommand;
+		}
+	}
+	return null;
+}
+
+function findGitSubcommandFrom(
+	tokens: string[],
+	commandIndex: number,
+): string | null {
+	for (let index = commandIndex + 1; index < tokens.length; index += 1) {
+		const token = stripGuardianGrouping(tokens[index] ?? "");
+		if (!token) {
+			continue;
+		}
+		if (GIT_OPTIONS_WITH_VALUES.has(token)) {
+			index += 1;
+			continue;
+		}
+		if (
+			GIT_OPTIONS_WITH_OPTIONAL_INLINE_VALUES.some((option) =>
+				token.startsWith(`${option}=`),
+			)
+		) {
+			continue;
+		}
+		if (token.startsWith("-")) {
+			continue;
+		}
+		return token.toLowerCase();
+	}
+
+	return null;
+}
+
+const GIT_OPTIONS_WITH_VALUES = new Set([
+	"-C",
+	"-c",
+	"--config-env",
+	"--exec-path",
+	"--git-dir",
+	"--namespace",
+	"--work-tree",
+]);
+
+const GIT_OPTIONS_WITH_OPTIONAL_INLINE_VALUES = [
+	"--config-env",
+	"--exec-path",
+	"--git-dir",
+	"--namespace",
+	"--work-tree",
+];
+
+function findRmTrigger(tokens: string[]): string | null {
+	for (let index = 0; index < tokens.length; index += 1) {
+		if (guardianCommandBasename(tokens[index] ?? "") !== "rm") {
+			continue;
+		}
+		const trigger = findRmTriggerFromArgs(tokens.slice(index + 1));
+		if (trigger) {
+			return trigger;
+		}
+	}
+	return null;
+}
+
+function findRmTriggerFromArgs(args: string[]): string | null {
+	let force = false;
+	let recursive = false;
+	for (const token of args) {
+		if (token === "--") {
+			break;
+		}
+		if (token === "--force") {
+			force = true;
+			continue;
+		}
+		if (token === "--recursive") {
+			recursive = true;
+			continue;
+		}
+		if (/^-[^-]/.test(token)) {
+			const flags = token.slice(1);
+			force ||= flags.includes("f");
+			recursive ||= flags.includes("r") || flags.includes("R");
+		}
+	}
+
+	if (!recursive) {
+		return null;
+	}
+	return force ? "rm -rf" : "rm -r";
 }
 
 export async function runGuardian(

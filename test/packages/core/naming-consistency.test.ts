@@ -178,6 +178,12 @@ describe("Naming Consistency", () => {
 					!line.includes("composers/") && // domain concept directory
 					!line.includes("composerManager") &&
 					!line.includes("isComposerError") &&
+					// The github-agent passthrough-env constant carries `COMPOSER_`
+					// in its identifier because the agent spawns the maestro
+					// composer child process. It's a constant name, not an env
+					// var, so it's a legitimate use that the bare-string grep
+					// otherwise catches.
+					!line.includes("GITHUB_AGENT_COMPOSER_ENV_NAMES") &&
 					!line.includes("//") && // comments about migration
 					!line.includes("test"),
 			);

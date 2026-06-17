@@ -7,6 +7,7 @@
  */
 import type { EditorTheme, MarkdownTheme, SelectListTheme } from "@evalops/tui";
 import chalk from "chalk";
+import { sanitizeWithStaticMask } from "../utils/secret-redactor.js";
 import {
 	type ColorMode,
 	bgAnsi,
@@ -217,7 +218,9 @@ export function setTheme(name: string): { success: boolean; error?: string } {
 		// Don't start watcher for fallback theme
 		return {
 			success: false,
-			error: error instanceof Error ? error.message : String(error),
+			error: sanitizeWithStaticMask(
+				error instanceof Error ? error.message : String(error),
+			),
 		};
 	}
 }

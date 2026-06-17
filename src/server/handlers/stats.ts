@@ -1,4 +1,5 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
+import { sanitizeWithStaticMask } from "../../utils/secret-redactor.js";
 import { sendJson } from "../server-utils.js";
 import { getStatusSnapshot } from "./status.js";
 import { getUsageSnapshot } from "./usage.js";
@@ -31,7 +32,11 @@ export async function handleStats(
 		sendJson(
 			res,
 			500,
-			{ error: error instanceof Error ? error.message : String(error) },
+			{
+				error: sanitizeWithStaticMask(
+					error instanceof Error ? error.message : String(error),
+				),
+			},
 			corsHeaders,
 			req,
 		);

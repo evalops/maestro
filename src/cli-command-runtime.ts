@@ -9,6 +9,8 @@ export async function runCliCommandRuntime(args: string[]): Promise<boolean> {
 	}
 	const { parseArgs } = await import("./cli/args.js");
 	const parsed = parseArgs(args);
+	const { scrubLoadedSecurityOverrideEnv } = await import("./load-env.js");
+	scrubLoadedSecurityOverrideEnv();
 	if (parsed.error || !isDirectRuntimeCommand(parsed.command)) {
 		return false;
 	}
@@ -34,8 +36,20 @@ export async function runCliCommandRuntime(args: string[]): Promise<boolean> {
 			return true;
 		}
 		case "skill": {
+			const { buildCliConfigOverrides } = await import(
+				"./config/runtime-config.js"
+			);
 			const { handleSkillCommand } = await import("./cli/commands/skill.js");
-			await handleSkillCommand(parsed.subcommand, parsed.commandArgs ?? []);
+			const cliOverrides = buildCliConfigOverrides(parsed);
+			const overrideProfile =
+				typeof cliOverrides.profile === "string"
+					? cliOverrides.profile
+					: undefined;
+			const profileName = parsed.profile ?? overrideProfile;
+			await handleSkillCommand(parsed.subcommand, parsed.commandArgs ?? [], {
+				profileName,
+				cliOverrides,
+			});
 			return true;
 		}
 	}

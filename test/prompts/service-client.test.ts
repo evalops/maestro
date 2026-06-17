@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+import { resetOAuthStorageForTests } from "../../src/oauth/storage.js";
 import { resolvePromptTemplate } from "../../src/prompts/service-client.js";
 
 const PROMPTS_ENV_KEYS = [
@@ -20,6 +21,8 @@ const PROMPTS_ENV_KEYS = [
 	"EVALOPS_ORGANIZATION_ID",
 	"MAESTRO_ENTERPRISE_ORG_ID",
 	"MAESTRO_HOME",
+	"MAESTRO_AGENT_DIR",
+	"MAESTRO_DISABLE_KEYCHAIN",
 ] as const;
 
 describe("prompts service client", () => {
@@ -32,12 +35,20 @@ describe("prompts service client", () => {
 		for (const key of PROMPTS_ENV_KEYS) {
 			Reflect.deleteProperty(process.env, key);
 		}
-		process.env.MAESTRO_HOME = `/tmp/maestro-prompts-test-${Date.now()}`;
+		process.env.MAESTRO_HOME = `/tmp/maestro-prompts-test-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+		// Force file-mode OAuth storage so the OS keychain (which can
+		// hold stale evalops credentials from prior CI runs / dev
+		// laptops) does NOT leak a refresh-able token into these
+		// tests via `getOAuthToken("evalops")`. Without this, every
+		// `resolvePlatformToken` call hits the real identity service
+		// in CI.
+		process.env.MAESTRO_DISABLE_KEYCHAIN = "1";
 		process.env.PROMPTS_SERVICE_URL = "http://prompts.test/";
 		process.env.PROMPTS_SERVICE_TOKEN = "prompts-token";
 		process.env.PROMPTS_SERVICE_ORGANIZATION_ID = "org_123";
 		process.env.PROMPTS_SERVICE_TIMEOUT_MS = "2400";
 		vi.unstubAllGlobals();
+		resetOAuthStorageForTests();
 	});
 
 	afterEach(() => {
@@ -51,6 +62,9 @@ describe("prompts service client", () => {
 		}
 		vi.restoreAllMocks();
 		vi.unstubAllGlobals();
+		// `cachedMode` is a module-level singleton; reset so the next
+		// test re-resolves storage mode from its own (restored) env.
+		resetOAuthStorageForTests();
 	});
 
 	it("resolves a prompt version with org-scoped headers", async () => {
@@ -212,7 +226,14 @@ describe("prompts service client", () => {
 
 	it("warns when configured prompt service is missing an access token", async () => {
 		delete process.env.PROMPTS_SERVICE_TOKEN;
-		process.env.MAESTRO_HOME = "/tmp/maestro-prompts-test-no-oauth";
+		// Use a unique MAESTRO_HOME per run so stale `oauth.json` /
+		// `oauth-providers.json` left by a previous CI run can't leak a
+		// stored access token into this assertion's environment. Reset
+		// the OAuth storage cache again so the new MAESTRO_HOME is
+		// re-resolved on the next access.
+		process.env.MAESTRO_HOME = `/tmp/maestro-prompts-test-no-oauth-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+		process.env.MAESTRO_DISABLE_KEYCHAIN = "1";
+		resetOAuthStorageForTests();
 		const logSpy = vi.spyOn(console, "error").mockImplementation(() => {});
 		const fetchMock = vi.fn();
 		vi.stubGlobal("fetch", fetchMock);

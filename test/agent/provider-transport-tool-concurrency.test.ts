@@ -1921,6 +1921,16 @@ describe("ProviderTransport tool scheduling", () => {
 			(event): event is Extract<AgentEvent, { type: "tool_phase_summary" }> =>
 				event.type === "tool_phase_summary",
 		);
+		const gatedEvents = events.filter(
+			(event): event is Extract<AgentEvent, { type: "parallelism_gated" }> =>
+				event.type === "parallelism_gated",
+		);
+		const conflictEvents = events.filter(
+			(
+				event,
+			): event is Extract<AgentEvent, { type: "parallel_conflict_detected" }> =>
+				event.type === "parallel_conflict_detected",
+		);
 		const schedulingById = new Map(
 			summary?.decisions.map((decision) => [decision.toolCallId, decision]),
 		);
@@ -1945,6 +1955,41 @@ describe("ProviderTransport tool scheduling", () => {
 			reason: "pending_mutation",
 			blockedByMutation: true,
 		});
+		expect(gatedEvents).toEqual(
+			expect.arrayContaining([
+				expect.objectContaining({
+					type: "parallelism_gated",
+					toolCallId: "write-b-overlap",
+					toolName: "path_write",
+					reason: "mutation_scope_overlap",
+					pendingToolCallIds: ["write-b"],
+					pendingToolNames: ["path_write"],
+					pathArgumentKeys: ["path"],
+					pathScope: [resolve(process.cwd(), "src/b.ts").toLowerCase()],
+				}),
+			]),
+		);
+		expect(gatedEvents).not.toEqual(
+			expect.arrayContaining([
+				expect.objectContaining({
+					type: "parallelism_gated",
+					toolCallId: "write-b",
+				}),
+			]),
+		);
+		expect(conflictEvents).toEqual([
+			expect.objectContaining({
+				type: "parallel_conflict_detected",
+				toolCallId: "write-b-overlap",
+				toolName: "path_write",
+				conflictingToolCallId: "write-b",
+				conflictingToolName: "path_write",
+				pathScope: [resolve(process.cwd(), "src/b.ts").toLowerCase()],
+				conflictingPathScope: [
+					resolve(process.cwd(), "src/b.ts").toLowerCase(),
+				],
+			}),
+		]);
 		expect(trustedMcpSpread).toBeGreaterThanOrEqual(25);
 		expect(untrustedMcpSpread).toBeGreaterThanOrEqual(25);
 		expect(disjointMutationSpread).toBeLessThan(40);

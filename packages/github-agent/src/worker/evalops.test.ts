@@ -41,11 +41,14 @@ describe("buildGitHubTaskEnvironment", () => {
 		await closeMaestroEventBusTransport();
 	});
 
-	it("returns inherited env when EvalOps auth is not configured", async () => {
+	it("returns runtime env without inherited auth when EvalOps auth is not configured", async () => {
 		const env = await buildGitHubTaskEnvironment(
 			createTask(),
 			createMockConfig(),
 			{
+				ANTHROPIC_API_KEY: "host-anthropic-key",
+				GITHUB_TOKEN: "host-github-token",
+				MAESTRO_EVALOPS_ACCESS_TOKEN: "parent-token",
 				PATH: "/usr/bin",
 			},
 		);
@@ -65,6 +68,9 @@ describe("buildGitHubTaskEnvironment", () => {
 			MAESTRO_SESSION_ID: "task-123",
 			MAESTRO_SURFACE: "github-agent",
 		});
+		expect(env.ANTHROPIC_API_KEY).toBeUndefined();
+		expect(env.GITHUB_TOKEN).toBeUndefined();
+		expect(env.MAESTRO_EVALOPS_ACCESS_TOKEN).toBeUndefined();
 	});
 
 	it("requests a delegated token and overlays the child auth env", async () => {
@@ -131,7 +137,7 @@ describe("buildGitHubTaskEnvironment", () => {
 		});
 	});
 
-	it("falls back to inherited auth and warns when delegation fails", async () => {
+	it("falls back to runtime env and warns when delegation fails", async () => {
 		fetchMock.mockResolvedValue({
 			ok: false,
 			json: async () => ({
@@ -144,6 +150,8 @@ describe("buildGitHubTaskEnvironment", () => {
 			createTask(),
 			createMockConfig(),
 			{
+				ANTHROPIC_API_KEY: "host-anthropic-key",
+				GITHUB_TOKEN: "host-github-token",
 				MAESTRO_EVALOPS_ACCESS_TOKEN: "parent-token",
 				MAESTRO_EVALOPS_ORG_ID: "org_123",
 				PATH: "/usr/bin",
@@ -154,8 +162,6 @@ describe("buildGitHubTaskEnvironment", () => {
 		expect(env).toMatchObject({
 			MAESTRO_AGENT_ID: "github_issue_worker",
 			MAESTRO_AGENT_RUN_ID: "task-123",
-			MAESTRO_EVALOPS_ACCESS_TOKEN: "parent-token",
-			MAESTRO_EVALOPS_ORG_ID: "org_123",
 			MAESTRO_EVENT_BUS_ATTR_SOURCE_ISSUE: "42",
 			MAESTRO_EVENT_BUS_ATTR_TASK_ID: "task-123",
 			MAESTRO_EVENT_BUS_ATTR_TASK_TYPE: "issue",
@@ -167,9 +173,13 @@ describe("buildGitHubTaskEnvironment", () => {
 			MAESTRO_SURFACE: "github-agent",
 			PATH: "/usr/bin",
 		});
+		expect(env.ANTHROPIC_API_KEY).toBeUndefined();
+		expect(env.GITHUB_TOKEN).toBeUndefined();
+		expect(env.MAESTRO_EVALOPS_ACCESS_TOKEN).toBeUndefined();
+		expect(env.MAESTRO_EVALOPS_ORG_ID).toBeUndefined();
 		expect(warnings).toEqual([
 			expect.stringContaining(
-				"Failed to issue delegated EvalOps token for GitHub worker; using inherited auth: identity unavailable",
+				"Failed to issue delegated EvalOps token for GitHub worker; continuing without inherited host auth: identity unavailable",
 			),
 		]);
 	});

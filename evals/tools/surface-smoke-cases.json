@@ -110,13 +110,12 @@
 		}
 	},
 	{
-		"name": "extract_document reads a local smoke fixture",
+		"name": "extract_document blocks a local smoke fixture",
 		"kind": "extractDocument",
-		"judgeRubric": "extract_document should preserve the text payload, recognize the text format, and report the downloaded filename.",
+		"judgeRubric": "extract_document should reject private or local document URLs instead of downloading them.",
 		"expected": {
-			"text": "Maestro extract document smoke test",
-			"format": "text",
-			"fileName": "fixture.txt"
+			"blocked": true,
+			"message": "Blocked document URL host: private or local address"
 		}
 	},
 	{

@@ -3187,6 +3187,59 @@ describe("headless session handlers", () => {
 		);
 	});
 
+	it("passes persisted system prompt source paths when resuming a headless session", async () => {
+		const persistedPaths = ["/tmp/APPEND_SYSTEM.md"];
+		const sessionDir = await mkdtemp(
+			join(tmpdir(), "maestro-headless-prompt-paths-"),
+		);
+		const seedAgent = new FakeAgent();
+
+		try {
+			const sessionManager = new SessionManager(false, undefined, {
+				sessionDir,
+			});
+			sessionManager.startSession({
+				...seedAgent.state,
+				systemPromptSourcePaths: persistedPaths,
+			} as typeof seedAgent.state & { systemPromptSourcePaths: string[] });
+			const sessionId = sessionManager.getSessionId();
+			const sessionFile = sessionManager.getSessionFile();
+			const sessionLookupSpy = vi
+				.spyOn(SessionManager.prototype, "getSessionFileById")
+				.mockImplementation((id) => (id === sessionId ? sessionFile : null));
+
+			try {
+				const createAgent = vi.fn().mockResolvedValue(new FakeAgent());
+				const context = createContext({ createAgent });
+				const req = createJsonRequest("POST", "/api/headless/sessions", {
+					model: TEST_MODEL.id,
+					sessionId,
+				});
+				const res = new MockResponse();
+				res.req = req;
+
+				await handleHeadlessSessionCreate(
+					req,
+					res as unknown as ServerResponse,
+					context,
+				);
+
+				expect(createAgent).toHaveBeenCalledWith(
+					TEST_MODEL,
+					"off",
+					"prompt",
+					expect.objectContaining({
+						persistedSystemPromptSourcePaths: persistedPaths,
+					}),
+				);
+			} finally {
+				sessionLookupSpy.mockRestore();
+			}
+		} finally {
+			await rm(sessionDir, { recursive: true, force: true });
+		}
+	});
+
 	it("uses an explicit workspace root for agent creation and session state", async () => {
 		const workspaceRoot = await mkdtemp(
 			join(tmpdir(), "maestro-headless-workspace-root-"),

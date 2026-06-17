@@ -1,18 +1,32 @@
-import { mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { loadMcpConfig } from "../../src/mcp/config.js";
 import { getPlatformMcpPluginServers } from "../../src/mcp/platform-plugin.js";
-import { saveOAuthCredentials } from "../../src/oauth/storage.js";
+import {
+	resetOAuthStorageForTests,
+	saveOAuthCredentials,
+} from "../../src/oauth/storage.js";
 
 describe("platform MCP plugin servers", () => {
 	let projectDir: string;
+	let previousAgentDir: string | undefined;
+	let previousDisableKeychain: string | undefined;
 
 	beforeEach(() => {
-		projectDir = join(tmpdir(), `mcp-platform-plugin-${Date.now()}`);
+		projectDir = join(
+			tmpdir(),
+			`mcp-platform-plugin-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+		);
 		mkdirSync(join(projectDir, ".maestro"), { recursive: true });
+		previousAgentDir = process.env.MAESTRO_AGENT_DIR;
+		previousDisableKeychain = process.env.MAESTRO_DISABLE_KEYCHAIN;
 		process.env.MAESTRO_AGENT_DIR = join(projectDir, "agent");
+		// Force file-mode OAuth storage so the OS keychain can't leak a
+		// stale evalops credential into Platform MCP header building.
+		process.env.MAESTRO_DISABLE_KEYCHAIN = "1";
+		resetOAuthStorageForTests();
 		for (const name of [
 			"MAESTRO_AGENT_DIR",
 			"MAESTRO_PLATFORM_MCP_ENABLED",
@@ -65,7 +79,21 @@ describe("platform MCP plugin servers", () => {
 	});
 
 	afterEach(() => {
-		// leave temp dirs for the OS to clean up
+		if (previousAgentDir === undefined) {
+			Reflect.deleteProperty(process.env, "MAESTRO_AGENT_DIR");
+		} else {
+			process.env.MAESTRO_AGENT_DIR = previousAgentDir;
+		}
+		if (previousDisableKeychain === undefined) {
+			Reflect.deleteProperty(process.env, "MAESTRO_DISABLE_KEYCHAIN");
+		} else {
+			process.env.MAESTRO_DISABLE_KEYCHAIN = previousDisableKeychain;
+		}
+		rmSync(projectDir, { recursive: true, force: true });
+		// `cachedMode` is a module-level singleton; reset it on teardown
+		// so a later test in the same worker re-resolves storage mode
+		// from the restored env instead of staying on file mode.
+		resetOAuthStorageForTests();
 	});
 
 	it("builds a plugin-scoped Platform MCP server with auth and correlation headers", () => {

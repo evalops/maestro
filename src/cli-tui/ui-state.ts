@@ -1,7 +1,7 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { dirname } from "node:path";
+import { existsSync, readFileSync } from "node:fs";
 import { PATHS } from "../config/constants.js";
 import type { CleanMode } from "../conversation/render-model.js";
+import { writeJsonFile } from "../utils/fs.js";
 import { resolveEnvPath } from "../utils/path-expansion.js";
 import type { FooterMode } from "./utils/footer-utils.js";
 
@@ -94,8 +94,7 @@ export function saveUiState(partial: UiState): void {
 	const current = loadUiState();
 	const next: UiState = { ...current, ...partial };
 	const uiStatePath = getUiStatePath();
-	mkdirSync(dirname(uiStatePath), { recursive: true });
-	writeFileSync(uiStatePath, JSON.stringify(next, null, 2), "utf-8");
+	writeJsonFile(uiStatePath, next);
 }
 
 export function loadCommandPrefs(): {
@@ -130,6 +129,5 @@ export function saveCommandPrefs(prefs: {
 	recents: string[];
 }): void {
 	const prefsPath = getCommandPrefsPath();
-	mkdirSync(dirname(prefsPath), { recursive: true });
-	writeFileSync(prefsPath, JSON.stringify(prefs, null, 2), "utf-8");
+	writeJsonFile(prefsPath, prefs);
 }

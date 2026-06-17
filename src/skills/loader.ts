@@ -17,11 +17,13 @@
  * - Optional: scripts/, references/, assets/ directories
  */
 
+import { createHash } from "node:crypto";
 import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { load as loadYaml } from "js-yaml";
 import { PATHS } from "../config/constants.js";
+import type { ComposerConfig } from "../config/toml-config.js";
 import { loadConfiguredPackageResources } from "../packages/runtime.js";
 import { createLogger } from "../utils/logger.js";
 import { promptSafeText } from "../utils/prompt-safe-text.js";
@@ -111,10 +113,136 @@ export interface LoadedSkill extends SkillDefinition {
 	sourceType: "user" | "project" | "system" | "service";
 	/** Full markdown content (without frontmatter) */
 	content: string;
+	/**
+	 * SHA-256 of the prompt body. Stable identifier for the skill's
+	 * instructions independent of its source path. Trust UX (see #2629)
+	 * keys on this: a non-builtin skill whose `contentSha` changes between
+	 * loads is a "skill content changed; approve" trigger.
+	 */
+	contentSha: string;
 	/** List of bundled resource files */
 	resources: SkillResource[];
 	/** Resource directories */
 	resourceDirs: SkillResourceDirs;
+}
+
+/**
+ * Hash a single bundled resource file. Errors (missing file,
+ * unreadable) yield a sentinel marker so the parent hash changes —
+ * an unhashable resource invalidates the approval rather than
+ * silently dropping out of the hash.
+ */
+function hashSkillResourceFile(filePath: string): string {
+	try {
+		return createHash("sha256").update(readFileSync(filePath)).digest("hex");
+	} catch {
+		return "UNHASHABLE";
+	}
+}
+
+/**
+ * Walk a directory tree and feed every regular file's (relative path,
+ * content) pair into `hash` in a deterministic, alpha-sorted order.
+ * Used by `computeSkillTrustSha` to bind every spec-layout resource
+ * directory (`scripts/`, `toolbox/`, `assets/`, …) into the trust
+ * digest, so swapping a bundled script while keeping the same skill
+ * name and `SKILL.md` body invalidates the prior approval.
+ *
+ * Symlinks are followed: the runtime executes them, so the digest
+ * should reflect what would actually run. The skills loader enforces
+ * path confinement (#2746) separately, so any escape attempt is
+ * rejected before we get here.
+ */
+function hashSkillDirectoryInto(
+	hash: ReturnType<typeof createHash>,
+	rootDir: string,
+	currentDir: string,
+): void {
+	let entries: string[];
+	try {
+		entries = readdirSync(currentDir).sort();
+	} catch {
+		return;
+	}
+	for (const entry of entries) {
+		const fullPath = join(currentDir, entry);
+		let stat: ReturnType<typeof statSync>;
+		try {
+			stat = statSync(fullPath);
+		} catch {
+			continue;
+		}
+		const relPath = fullPath.slice(rootDir.length);
+		if (stat.isDirectory()) {
+			hash.update(`\0dir:${relPath}\0`);
+			hashSkillDirectoryInto(hash, rootDir, fullPath);
+		} else if (stat.isFile()) {
+			hash.update(`\0file:${relPath}\0`);
+			hash.update(hashSkillResourceFile(fullPath));
+		}
+	}
+}
+
+/**
+ * Bind the trust hash to (name + content + bundled resources + spec-
+ * layout resource directories), not just content. The adversarial
+ * review (#2629) showed that hashing content alone enables a
+ * name-substitution attack: an attacker ships a malicious skill whose
+ * BODY is byte-identical to a popular approved skill but registers a
+ * different name and ships malicious scripts in `scripts/` (which the
+ * agent invokes via the runtime activation manifest).
+ *
+ * A follow-up review (#2749) pointed out that the previous fix only
+ * covered the legacy flat resources list — files under `scripts/`,
+ * `toolbox/`, `assets/`, the reference dirs, and `mcp.json` were all
+ * still excluded from the trust digest, so swapping any of those
+ * while keeping the SKILL.md body identical left `contentSha`
+ * unchanged and the prior user approval still applied. We now hash
+ * every resource-bearing path so a swap of any bundled file
+ * invalidates the approval.
+ *
+ * Resources and directories are sorted so the hash is deterministic.
+ */
+export function computeSkillTrustSha(
+	name: string,
+	body: string,
+	resources: SkillResource[],
+	resourceDirs: SkillResourceDirs,
+): string {
+	const sortedResources = [...resources].sort((a, b) =>
+		a.path.localeCompare(b.path),
+	);
+	const hash = createHash("sha256");
+	hash.update("name:");
+	hash.update(name, "utf8");
+	hash.update("\0body:");
+	hash.update(body, "utf8");
+	hash.update("\0resources:");
+	for (const resource of sortedResources) {
+		hash.update(`\0${resource.name}\0${resource.type}\0`);
+		hash.update(hashSkillResourceFile(resource.path));
+	}
+	hash.update("\0resourceDirs:");
+	const dirEntries: Array<[string, string | undefined, "file" | "dir"]> = [
+		["assetsDir", resourceDirs.assetsDir, "dir"],
+		["mcpJsonPath", resourceDirs.mcpJsonPath, "file"],
+		["referenceDir", resourceDirs.referenceDir, "dir"],
+		["referencesDir", resourceDirs.referencesDir, "dir"],
+		["scriptsDir", resourceDirs.scriptsDir, "dir"],
+		["toolboxDir", resourceDirs.toolboxDir, "dir"],
+	];
+	for (const [label, path, kind] of dirEntries) {
+		if (!path) {
+			continue;
+		}
+		hash.update(`\0${label}\0`);
+		if (kind === "file") {
+			hash.update(hashSkillResourceFile(path));
+		} else {
+			hashSkillDirectoryInto(hash, path, path);
+		}
+	}
+	return hash.digest("hex");
 }
 
 /**
@@ -559,6 +687,12 @@ function loadSkillFromDirectory(
 			sourcePath: skillDir,
 			sourceType,
 			content: body.trim(),
+			contentSha: computeSkillTrustSha(
+				name,
+				body.trim(),
+				resources,
+				resourceDirs,
+			),
 			resources,
 			resourceDirs,
 		};
@@ -673,7 +807,11 @@ function getSystemSkillsDir(): string {
  */
 export function loadSkills(
 	workspaceDir: string,
-	options?: { includeSystem?: boolean },
+	options?: {
+		includeSystem?: boolean;
+		profileName?: string;
+		cliOverrides?: Partial<ComposerConfig>;
+	},
 ): {
 	skills: LoadedSkill[];
 	errors: SkillLoadError[];
@@ -682,7 +820,10 @@ export function loadSkills(
 	const systemSkillsDir = includeSystem ? getSystemSkillsDir() : null;
 	const userSkillsDir = join(PATHS.MAESTRO_HOME, "skills");
 	const projectSkillsDir = join(workspaceDir, ".maestro", "skills");
-	const packageResources = loadConfiguredPackageResources(workspaceDir);
+	const packageResources = loadConfiguredPackageResources(workspaceDir, {
+		profileName: options?.profileName,
+		cliOverrides: options?.cliOverrides,
+	});
 	const userPackageSkillDirs = packageResources.skills.user;
 	const projectPackageSkillDirs = packageResources.skills.project;
 
@@ -931,6 +1072,12 @@ export function formatSkillForInjection(skill: LoadedSkill): string {
 	lines.push(`# Skill: ${skill.name}`);
 	lines.push("");
 	lines.push(`> ${skill.description}`);
+	lines.push("");
+	// Provenance line: lets the model and any human reading the transcript
+	// correlate this skill activation to a specific prompt body. `source`
+	// distinguishes built-in / project / user / service. `contentSha` is
+	// stable per body (see #2629 — trust UX keys on this).
+	lines.push(`<!-- source=${skill.sourceType} sha=${skill.contentSha} -->`);
 	lines.push("");
 
 	if (skill.tags?.length) {

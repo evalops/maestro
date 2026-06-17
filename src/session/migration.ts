@@ -9,16 +9,11 @@
  * - Persistent state to avoid re-running
  */
 
-import {
-	existsSync,
-	mkdirSync,
-	readFileSync,
-	readdirSync,
-	writeFileSync,
-} from "node:fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { SESSION_CONFIG, getAgentDir } from "../config/constants.js";
 import { recordSessionMigration } from "../telemetry.js";
+import { writeJsonFile, writeTextFileAtomic } from "../utils/fs.js";
 import { createLogger } from "../utils/logger.js";
 import { activeSessionFiles } from "./active-session-files.js";
 import {
@@ -85,7 +80,7 @@ function loadMigrationState(): SessionMigrationState | null {
 function persistMigrationState(state: SessionMigrationState): void {
 	try {
 		const statePath = getMigrationStatePath();
-		writeFileSync(statePath, JSON.stringify(state, null, 2));
+		writeJsonFile(statePath, state);
 	} catch (error) {
 		logger.warn("Failed to persist migration state", { error });
 	}
@@ -231,7 +226,7 @@ function migrateSessionFile(filePath: string): {
 		const migrated = migrateToCurrentVersion(entries);
 		if (migrated) {
 			const content = `${entries.map((e) => JSON.stringify(e)).join("\n")}\n`;
-			writeFileSync(filePath, content);
+			writeTextFileAtomic(filePath, content);
 		}
 
 		return { migrated };
@@ -403,7 +398,7 @@ export function resetMigrationState(): void {
 				skipped: 0,
 				total: 0,
 			};
-			writeFileSync(statePath, JSON.stringify(resetState, null, 2));
+			writeJsonFile(statePath, resetState);
 		} catch {
 			// Ignore errors
 		}

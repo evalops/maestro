@@ -1,6 +1,7 @@
 import {
 	existsSync,
 	mkdtempSync,
+	readFileSync,
 	rmSync,
 	statSync,
 	utimesSync,
@@ -628,6 +629,31 @@ describe("backgroundTasksTool", () => {
 		await backgroundTaskManager.stopTask(taskId);
 	});
 
+	it("persists only scrubbed bytes to background log files", async () => {
+		const startResult = await backgroundTasksTool.execute("bg-redact-persist", {
+			action: "start",
+			command: `node -e "console.log('${SAMPLE_REDACTED_TOKEN}')"`,
+		});
+		const taskId = (startResult.details as TaskDetails)?.id as string;
+		await waitForCondition(() => {
+			const task = backgroundTaskManager.getTask(taskId);
+			return task?.status === "exited" || task?.status === "failed";
+		});
+		const task = backgroundTaskManager.getTask(taskId);
+		expect(task).toBeTruthy();
+		await waitForCondition(() => {
+			if (!task?.logPath || !existsSync(task.logPath)) {
+				return false;
+			}
+			return readFileSync(task.logPath, "utf8").includes("[secret:");
+		});
+
+		const persistedLog = readFileSync(task!.logPath, "utf8");
+		expect(persistedLog).toContain("[secret:");
+		expect(persistedLog).not.toContain(SAMPLE_REDACTED_TOKEN);
+		await backgroundTaskManager.stopTask(taskId);
+	});
+
 	it("hides task details when status details are disabled", async () => {
 		updateBackgroundTaskSettings({ statusDetailsEnabled: false });
 		const startResult = await backgroundTasksTool.execute("bg-redacted", {
@@ -676,7 +702,7 @@ describe("backgroundTasksTool", () => {
 		const startResult = await backgroundTasksTool.execute("bg-rotate", {
 			action: "start",
 			command:
-				"node -e \"const chunk = 'A'.repeat(512); let count = 0; const timer = setInterval(() => { process.stdout.write(chunk); count += 1; if (count === 3) { clearInterval(timer); process.exit(0); } }, 20);\"",
+				"node -e \"const chunk = 'Q'.repeat(512); let count = 0; const timer = setInterval(() => { process.stdout.write(chunk); count += 1; if (count === 3) { clearInterval(timer); process.exit(0); } }, 20);\"",
 			limits: { logSizeLimit: 1024, logSegments: 2 },
 		});
 		const taskId = (startResult.details as TaskDetails)?.id as string;

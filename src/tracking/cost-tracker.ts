@@ -1,9 +1,10 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { PATHS } from "../config/constants.js";
-import { parseJsonOr } from "../utils/json.js";
+import { readJsonFile, writeTextFileAtomic } from "../utils/fs.js";
 import { createLogger } from "../utils/logger.js";
 import { resolveEnvPath } from "../utils/path-expansion.js";
+import { sanitizeWithStaticMask } from "../utils/secret-redactor.js";
 
 const logger = createLogger("cost-tracker");
 
@@ -80,12 +81,15 @@ function loadUsage(): UsageEntry[] {
 		if (!existsSync(usageFile)) {
 			return [];
 		}
-
-		const data = readFileSync(usageFile, "utf-8");
-		return parseJsonOr<UsageEntry[]>(data, []);
+		return readJsonFile<UsageEntry[]>(usageFile, {
+			fallback: [],
+			rotateOnParseFail: true,
+		});
 	} catch (error) {
 		logger.warn("Failed to load usage data", {
-			error: error instanceof Error ? error.message : String(error),
+			error: sanitizeWithStaticMask(
+				error instanceof Error ? error.message : String(error),
+			),
 			stack: error instanceof Error ? error.stack : undefined,
 		});
 		return [];
@@ -119,10 +123,12 @@ function saveUsage(entries: UsageEntry[]): void {
 			mkdirSync(dir, { recursive: true });
 		}
 
-		writeFileSync(usageFile, JSON.stringify(entries, null, 2));
+		writeTextFileAtomic(usageFile, JSON.stringify(entries, null, 2));
 	} catch (error) {
 		logger.warn("Failed to save usage data", {
-			error: error instanceof Error ? error.message : String(error),
+			error: sanitizeWithStaticMask(
+				error instanceof Error ? error.message : String(error),
+			),
 			stack: error instanceof Error ? error.stack : undefined,
 		});
 	}

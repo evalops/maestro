@@ -3,9 +3,14 @@ import type { RuntimeConstraintContext } from "@evalops/contracts";
 import {
 	buildBundledSystemPromptBase,
 	finalizeSystemPrompt,
+	resolveExplicitSystemPromptSourcePaths,
 	resolveSystemPromptOverride,
 } from "../cli/system-prompt.js";
-import { loadPromptProjectDocManifest } from "../config/index.js";
+import type { ComposerConfig } from "../config/index.js";
+import {
+	loadPromptProjectDocManifest,
+	resolveLoadedAppendSystemPromptPath,
+} from "../config/index.js";
 import { hasPromptServiceBaseUrlSignal } from "./service-signal.js";
 import type { PromptMetadata, ResolvedSystemPrompt } from "./types.js";
 
@@ -36,18 +41,54 @@ function buildPromptMetadata(
 	};
 }
 
-export async function resolveMaestroSystemPrompt(options?: {
+interface ResolveMaestroSystemPromptOptions {
 	customPrompt?: string;
 	toolNames?: string[];
 	appendPrompt?: string;
 	runtimeConstraints?: RuntimeConstraintContext | null;
 	cwd?: string;
-}): Promise<ResolvedSystemPrompt> {
+	profileName?: string;
+	cliOverrides?: Partial<ComposerConfig>;
+}
+
+function resolveSystemPromptSourcePaths(
+	cwd: string,
+	options?: ResolveMaestroSystemPromptOptions,
+): string[] {
+	const explicitSourcePaths = resolveExplicitSystemPromptSourcePaths(
+		options?.customPrompt,
+		options?.appendPrompt,
+	);
+	const appendPromptOverride = resolveSystemPromptOverride(
+		options?.appendPrompt,
+	);
+	const loadedAppendSystemPromptPath = appendPromptOverride
+		? null
+		: resolveLoadedAppendSystemPromptPath(
+				cwd,
+				options?.profileName,
+				options?.cliOverrides,
+			);
+	return [
+		...new Set(
+			[...explicitSourcePaths, loadedAppendSystemPromptPath].filter(
+				(value): value is string => typeof value === "string",
+			),
+		),
+	];
+}
+
+export async function resolveMaestroSystemPrompt(
+	options?: ResolveMaestroSystemPromptOptions,
+): Promise<ResolvedSystemPrompt> {
 	const cwd = options?.cwd ?? process.cwd();
 	const promptContextManifest = loadPromptProjectDocManifest(cwd);
+	const systemPromptSourcePaths = resolveSystemPromptSourcePaths(cwd, options);
 	const finalizeOptions = {
 		runtimeConstraints: options?.runtimeConstraints,
 		promptContextManifest,
+		profileName: options?.profileName,
+		cliOverrides: options?.cliOverrides,
 	};
 	const overridePrompt = resolveSystemPromptOverride(options?.customPrompt);
 	if (overridePrompt) {
@@ -62,6 +103,7 @@ export async function resolveMaestroSystemPrompt(options?: {
 				source: "override",
 			}),
 			promptContextManifest,
+			systemPromptSourcePaths,
 		};
 	}
 
@@ -88,6 +130,7 @@ export async function resolveMaestroSystemPrompt(options?: {
 				versionId: resolvedPrompt.versionId,
 			}),
 			promptContextManifest,
+			systemPromptSourcePaths,
 		};
 	}
 
@@ -103,5 +146,6 @@ export async function resolveMaestroSystemPrompt(options?: {
 			source: "bundled",
 		}),
 		promptContextManifest,
+		systemPromptSourcePaths,
 	};
 }

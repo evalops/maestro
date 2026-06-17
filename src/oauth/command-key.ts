@@ -36,6 +36,7 @@
 
 import { execSync } from "node:child_process";
 import { createLogger } from "../utils/logger.js";
+import { sanitizeWithStaticMask } from "../utils/secret-redactor.js";
 
 const logger = createLogger("oauth:command-key");
 
@@ -242,7 +243,9 @@ export function validateCommandKey(value: string): {
 	} catch (error) {
 		return {
 			valid: false,
-			error: error instanceof Error ? error.message : String(error),
+			error: sanitizeWithStaticMask(
+				error instanceof Error ? error.message : String(error),
+			),
 		};
 	}
 }

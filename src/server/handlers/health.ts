@@ -5,6 +5,7 @@ import {
 	CRITICAL_DATABASE_TABLES,
 	checkCriticalTables,
 } from "../../db/health.js";
+import { sanitizeWithStaticMask } from "../../utils/secret-redactor.js";
 import type { HostedRunnerContext } from "../app-context.js";
 import { sendJson } from "../server-utils.js";
 
@@ -113,7 +114,9 @@ export async function checkHostedRunnerReadiness(
 		return {
 			...base,
 			status: "unavailable",
-			error: error instanceof Error ? error.message : String(error),
+			error: sanitizeWithStaticMask(
+				error instanceof Error ? error.message : String(error),
+			),
 		};
 	}
 }
@@ -161,7 +164,9 @@ export async function runHealthChecks(
 					status: "error",
 					checked: [...CRITICAL_DATABASE_TABLES],
 					missing: [...CRITICAL_DATABASE_TABLES],
-					error: error instanceof Error ? error.message : String(error),
+					error: sanitizeWithStaticMask(
+						error instanceof Error ? error.message : String(error),
+					),
 				};
 				overallStatus = "unhealthy";
 			}

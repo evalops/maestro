@@ -17,6 +17,7 @@ import { createAutomaticMemoryExtractionCoordinator } from "../../memory/auto-ex
 import type { RegisteredModel } from "../../models/registry.js";
 import { createRuntimeSessionSummaryUpdater } from "../../session/runtime-summary-updater.js";
 import { createLogger } from "../../utils/logger.js";
+import { sanitizeWithStaticMask } from "../../utils/secret-redactor.js";
 import type { WebServerContext } from "../app-context.js";
 import { createSessionManagerForScope } from "../session-scope.js";
 import {
@@ -336,7 +337,9 @@ async function checkAutomations(context: WebServerContext): Promise<void> {
 			} catch (error) {
 				logger.warn("Failed to compute next run", {
 					automationId: task.id,
-					error: error instanceof Error ? error.message : String(error),
+					error: sanitizeWithStaticMask(
+						error instanceof Error ? error.message : String(error),
+					),
 				});
 			}
 			continue;
@@ -461,22 +464,43 @@ async function executeAutomation(
 	const approvalMode =
 		defaultApprovalMode === "prompt" ? "auto" : defaultApprovalMode;
 
+	const sessionManager = createSessionManagerForScope(null, false);
+	let sessionId = task.sessionId || null;
+
+	// When resuming an existing automation session, load the session header
+	// up-front so we can pass the persisted prompt source paths to
+	// createAgent. Otherwise the freshly resolved systemPromptSourcePaths
+	// would replace the original snapshot, and a compaction during this
+	// automation would lose the exclusion if the source APPEND_SYSTEM.md was
+	// removed between runs.
+	let persistedSystemPromptSourcePaths: string[] | undefined;
+	let resumedSessionFile: string | null = null;
+	if (task.sessionMode !== "new" && sessionId) {
+		const sessionFile = sessionManager.getSessionFileById(sessionId);
+		if (sessionFile) {
+			sessionManager.setSessionFile(sessionFile);
+			persistedSystemPromptSourcePaths =
+				sessionManager.getHeader?.()?.systemPromptSourcePaths;
+			resumedSessionFile = sessionFile;
+		}
+	}
+
 	const agent = await createAgent(
 		registeredModel,
 		task.thinkingLevel || "off",
 		approvalMode,
+		{
+			profileName: context.profileName,
+			cliOverrides: context.cliOverrides,
+			persistedSystemPromptSourcePaths,
+		},
 	);
-
-	const sessionManager = createSessionManagerForScope(null, false);
-	let sessionId = task.sessionId || null;
 
 	if (task.sessionMode === "new") {
 		await sessionManager.createSession({ title: task.name });
 		sessionId = sessionManager.getSessionId();
 	} else if (sessionId) {
-		const sessionFile = sessionManager.getSessionFileById(sessionId);
-		if (sessionFile) {
-			sessionManager.setSessionFile(sessionFile);
+		if (resumedSessionFile) {
 			const session = await sessionManager.loadSession(sessionId);
 			if (session?.messages?.length) {
 				agent.replaceMessages(session.messages);
@@ -538,6 +562,8 @@ async function executeAutomation(
 			sessionManager,
 			cwd: process.cwd(),
 			prompt: userInput,
+			profileName: context.profileName,
+			cliOverrides: context.cliOverrides,
 			execute: () => agent.prompt(userInput),
 			getPostKeepMessages: withMcpPostKeepMessages(),
 		});
@@ -553,7 +579,9 @@ async function executeAutomation(
 		unsubscribe();
 		return {
 			success: false,
-			error: error instanceof Error ? error.message : String(error),
+			error: sanitizeWithStaticMask(
+				error instanceof Error ? error.message : String(error),
+			),
 			output: lastAssistantOutput,
 			sessionId,
 		};

@@ -1,6 +1,7 @@
 import type { IncomingMessage } from "node:http";
 import type { AgentEvent, AssistantMessage } from "../../agent/types.js";
 import { createLogger } from "../../utils/logger.js";
+import { sanitizeWithStaticMask } from "../../utils/secret-redactor.js";
 import {
 	resolveUsageAgentId,
 	resolveUsageWorkspaceId,
@@ -42,7 +43,9 @@ export function trackComplianceAgentAction(input: AgentActionInput): void {
 		getComplianceService().trackAgentAction(input);
 	} catch (error) {
 		logger.warn("Compliance action tracking failed", {
-			error: error instanceof Error ? error.message : String(error),
+			error: sanitizeWithStaticMask(
+				error instanceof Error ? error.message : String(error),
+			),
 			type: input.type,
 			workspaceId: input.workspaceId,
 			agentId: input.agentId,
@@ -57,7 +60,9 @@ export function trackComplianceGovernanceEvaluation(
 		getComplianceService().trackGovernanceEvaluation(input);
 	} catch (error) {
 		logger.warn("Compliance governance tracking failed", {
-			error: error instanceof Error ? error.message : String(error),
+			error: sanitizeWithStaticMask(
+				error instanceof Error ? error.message : String(error),
+			),
 			actionType: input.actionType,
 			workspaceId: input.workspaceId,
 			agentId: input.agentId,

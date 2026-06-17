@@ -1,4 +1,10 @@
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import {
+	existsSync,
+	mkdtempSync,
+	rmSync,
+	statSync,
+	writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -142,6 +148,19 @@ describe("Plan Mode Persistence", () => {
 
 			expect(existsSync(state.filePath)).toBe(true);
 		});
+
+		it.skipIf(process.platform === "win32")(
+			"creates new plan files with shared read permissions",
+			() => {
+				const state = enterPlanMode({
+					name: "Test Feature",
+					config: testConfig,
+				});
+
+				const expectedMode = 0o666 & ~process.umask();
+				expect(statSync(state.filePath).mode & 0o777).toBe(expectedMode);
+			},
+		);
 
 		it("resumes existing active plan", () => {
 			const first = enterPlanMode({

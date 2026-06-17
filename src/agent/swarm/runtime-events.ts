@@ -1,4 +1,5 @@
 import { createLogger } from "../../utils/logger.js";
+import { sanitizeWithStaticMask } from "../../utils/secret-redactor.js";
 import type { SwarmEvent } from "./types.js";
 
 const logger = createLogger("agent:swarm:runtime-events");
@@ -29,7 +30,9 @@ export function publishSwarmRuntimeEvent(event: SwarmRuntimeEvent): void {
 			handler(event);
 		} catch (error) {
 			logger.warn("Swarm runtime event handler failed", {
-				error: error instanceof Error ? error.message : String(error),
+				error: sanitizeWithStaticMask(
+					error instanceof Error ? error.message : String(error),
+				),
 				parentSessionId: event.parentSessionId,
 				planFile: event.planFile,
 				swarmId: event.event.swarmId,

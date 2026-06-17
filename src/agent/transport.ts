@@ -1386,20 +1386,19 @@ export class ProviderTransport implements AgentTransport {
 					);
 				};
 
+				const isPendingMutatingExecution = (
+					execution: PendingExecution,
+				): boolean => {
+					const toolDef = toolMetadataCache.get(execution.toolCall.name);
+					return !isParallelReadOnlyTool(
+						execution.toolCall.name,
+						toolDef?.annotations,
+						toolDef?.source,
+					);
+				};
+
 				const pendingMutationCount = (): number =>
-					pendingExecutions.filter((execution) => {
-						const toolDef = toolMetadataCache.definitions.get(
-							execution.toolCall.name,
-						);
-						return (
-							!!toolDef &&
-							!isParallelReadOnlyTool(
-								toolDef.name,
-								toolDef.annotations,
-								toolDef.source,
-							)
-						);
-					}).length;
+					pendingExecutions.filter(isPendingMutatingExecution).length;
 
 				const mergeToolSchedulingMetadata = (
 					toolCallId: string,
@@ -1503,25 +1502,82 @@ export class ProviderTransport implements AgentTransport {
 				};
 
 				const hasPendingUnscopedMutation = (): boolean =>
-					pendingExecutions.some((execution) => {
-						const toolDef = toolMetadataCache.get(execution.toolCall.name);
-						return (
-							!!toolDef &&
-							!isParallelReadOnlyTool(
-								toolDef.name,
-								toolDef.annotations,
-								toolDef.source,
-							) &&
-							!pendingMutationScopes.has(execution)
-						);
-					});
+					pendingExecutions.some(
+						(execution) =>
+							isPendingMutatingExecution(execution) &&
+							!pendingMutationScopes.has(execution),
+					);
 
 				const mutationBlockReason = (
 					scope: PathScopedMutation | undefined,
-				): string =>
+				): "mutation_scope_overlap" | "mutation_unknown_write_set" =>
 					scope && !hasPendingUnscopedMutation()
 						? "mutation_scope_overlap"
 						: "mutation_unknown_write_set";
+
+				const pendingMutatingExecutions = (): PendingExecution[] =>
+					pendingExecutions.filter(isPendingMutatingExecution);
+
+				const pathScopeEventMetadata = (
+					scope: PathScopedMutation | undefined,
+				):
+					| {
+							pathScope: string[];
+							pathScopeSource: PathScopedMutation["source"];
+							pathArgumentKeys?: string[];
+					  }
+					| Record<string, never> =>
+					scope
+						? {
+								pathScope: scope.paths,
+								pathScopeSource: scope.source,
+								pathArgumentKeys: scope.argumentKeys,
+							}
+						: {};
+
+				const buildParallelismGateEvents = (
+					toolCall: ToolCall,
+					reason: "mutation_scope_overlap" | "mutation_unknown_write_set",
+					scope: PathScopedMutation | undefined,
+				): AgentEvent[] => {
+					const pendingMutations = pendingMutatingExecutions();
+					const events: AgentEvent[] = [
+						{
+							type: "parallelism_gated",
+							toolCallId: toolCall.id,
+							toolName: toolCall.name,
+							reason,
+							queueDepth: pendingExecutions.length,
+							pendingMutations: pendingMutations.length,
+							pendingToolCallIds: pendingMutations.map(
+								(execution) => execution.toolCall.id,
+							),
+							pendingToolNames: pendingMutations.map(
+								(execution) => execution.toolCall.name,
+							),
+							...pathScopeEventMetadata(scope),
+						},
+					];
+					if (scope) {
+						for (const execution of pendingMutations) {
+							const pendingScope = pendingMutationScopes.get(execution);
+							if (!pendingScope || !pathScopesOverlap(scope, pendingScope)) {
+								continue;
+							}
+							events.push({
+								type: "parallel_conflict_detected",
+								toolCallId: toolCall.id,
+								toolName: toolCall.name,
+								conflictingToolCallId: execution.toolCall.id,
+								conflictingToolName: execution.toolCall.name,
+								conflictingPathScope: pendingScope.paths,
+								conflictingPathScopeSource: pendingScope.source,
+								...pathScopeEventMetadata(scope),
+							});
+						}
+					}
+					return events;
+				};
 
 				const isPendingParallelSafeMutation = (
 					execution: PendingExecution,
@@ -1925,7 +1981,15 @@ export class ProviderTransport implements AgentTransport {
 								toolMetadataCache,
 							)
 						) {
-							noteMutationDelay(mutationBlockReason(originalMutationScope));
+							const reason = mutationBlockReason(originalMutationScope);
+							noteMutationDelay(reason);
+							for (const event of buildParallelismGateEvents(
+								toolCall,
+								reason,
+								originalMutationScope,
+							)) {
+								yield event;
+							}
 						}
 						const events = await drainPendingExecutions();
 						for (const event of events) {
@@ -2136,7 +2200,15 @@ export class ProviderTransport implements AgentTransport {
 								toolMetadataCache,
 							)
 						) {
-							noteMutationDelay(mutationBlockReason(effectiveMutationScope));
+							const reason = mutationBlockReason(effectiveMutationScope);
+							noteMutationDelay(reason);
+							for (const event of buildParallelismGateEvents(
+								effectiveToolCall,
+								reason,
+								effectiveMutationScope,
+							)) {
+								yield event;
+							}
 						}
 						const events = await drainPendingExecutions();
 						for (const event of events) {

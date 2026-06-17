@@ -6,11 +6,11 @@ import {
 	readFileSync,
 	readdirSync,
 	realpathSync,
-	writeFileSync,
 } from "node:fs";
 import { basename, dirname, join, resolve, sep } from "node:path";
 import { PATHS } from "../config/constants.js";
 import { scanOutboundSensitiveContent } from "../safety/outbound-secret-preflight.js";
+import { writeTextFileAtomic } from "../utils/fs.js";
 import { getGitRoot } from "../utils/git.js";
 import { scanTeamMemorySecrets } from "./team-memory-secret-scan.js";
 
@@ -257,7 +257,9 @@ export function ensureTeamMemoryEntrypoint(
 
 	mkdirSync(location.directory, { recursive: true });
 	if (!existsSync(location.entrypoint)) {
-		writeFileSync(location.entrypoint, TEAM_MEMORY_TEMPLATE, "utf-8");
+		writeTextFileAtomic(location.entrypoint, TEAM_MEMORY_TEMPLATE, {
+			encoding: "utf-8",
+		});
 	}
 
 	return location;

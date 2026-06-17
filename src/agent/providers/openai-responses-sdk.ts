@@ -10,7 +10,14 @@ import type {
 	ResponseOutputMessage,
 	ResponseReasoningItem,
 } from "openai/resources/responses/responses.js";
+import { getMergedCustomModelUrlPolicyConfig } from "../../models/config-loader.js";
 import { normalizeLLMBaseUrl } from "../../models/url-normalize.js";
+import {
+	checkModelRequestUrlPolicy,
+	isInternalModelBaseUrl,
+	recordCustomModelUrlPolicyBlock,
+} from "../../models/url-policy.js";
+import { fetchWithModelRequestPolicyRedirects } from "../../providers/network-config.js";
 import {
 	isStreamIdleTimeoutError,
 	withAbortableIdleTimeout,
@@ -51,6 +58,28 @@ export async function* streamResponsesApiSdk(
 	}
 
 	const baseUrl = normalizeLLMBaseUrl(model.baseUrl, model.provider, model.api);
+	const urlPolicyConfig = getMergedCustomModelUrlPolicyConfig();
+	const allowInternalBaseUrl = isInternalModelBaseUrl(baseUrl);
+	const assertAllowedRequestUrl = async (requestUrl: string) => {
+		const requestUrlPolicy = await checkModelRequestUrlPolicy(requestUrl, {
+			allowInternalBaseUrl,
+			internalBaseUrl: baseUrl,
+			policy: urlPolicyConfig,
+		});
+		if (!requestUrlPolicy.allowed) {
+			recordCustomModelUrlPolicyBlock({
+				provider: model.provider,
+				modelId: model.id,
+				reason: requestUrlPolicy.reason,
+			});
+			throw new Error(
+				`Model request blocked by URL policy: ${requestUrlPolicy.reason ?? "unknown_reason"}`,
+			);
+		}
+
+		return requestUrlPolicy;
+	};
+	const urlPolicy = await assertAllowedRequestUrl(baseUrl);
 	const headers = options.headers ? { ...options.headers } : {};
 	if (model.provider === "github-copilot") {
 		const messages = context.messages ?? [];
@@ -64,6 +93,21 @@ export async function* streamResponsesApiSdk(
 		baseURL: baseUrl.replace("/responses", ""), // SDK adds the endpoint
 		dangerouslyAllowBrowser: true,
 		defaultHeaders: Object.keys(headers).length > 0 ? headers : undefined,
+		fetch: async (input, init) => {
+			const requestUrlPolicy = await assertAllowedRequestUrl(
+				requestUrlFromFetchInput(input),
+			);
+			return fetchWithModelRequestPolicyRedirects(
+				requestUrlFromFetchInput(input),
+				init,
+				requestUrlPolicy,
+				{
+					allowInternalBaseUrl,
+					internalBaseUrl: baseUrl,
+					policy: urlPolicyConfig,
+				},
+			);
+		},
 	});
 
 	// Build input messages
@@ -510,6 +554,16 @@ export async function* streamResponsesApiSdk(
 			yield { type: "error", reason: "error", error: output };
 		}
 	}
+}
+
+function requestUrlFromFetchInput(input: Parameters<typeof fetch>[0]): string {
+	if (typeof input === "string") {
+		return input;
+	}
+	if (input instanceof URL) {
+		return input.toString();
+	}
+	return input.url;
 }
 
 function buildInput(

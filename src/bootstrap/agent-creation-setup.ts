@@ -31,6 +31,7 @@ import type { PromptMetadata } from "../prompts/types.js";
 import type { AuthCredential } from "../providers/auth.js";
 import type { Sandbox } from "../sandbox/types.js";
 import { createLogger } from "../utils/logger.js";
+import { sanitizeWithStaticMask } from "../utils/secret-redactor.js";
 
 const logger = createLogger("agent-creation");
 
@@ -134,7 +135,9 @@ export function createAgentInstance(params: {
 			return await getSessionTokenCount(sessionId);
 		} catch (error) {
 			logger.warn("Failed to get session token count", {
-				error: error instanceof Error ? error.message : String(error),
+				error: sanitizeWithStaticMask(
+					error instanceof Error ? error.message : String(error),
+				),
 			});
 			return null;
 		}
@@ -159,7 +162,9 @@ export function createAgentInstance(params: {
 			);
 		} catch (error) {
 			logger.warn("Failed to log tool execution", {
-				error: error instanceof Error ? error.message : String(error),
+				error: sanitizeWithStaticMask(
+					error instanceof Error ? error.message : String(error),
+				),
 				toolName: entry.toolName,
 			});
 		}

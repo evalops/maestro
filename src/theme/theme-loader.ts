@@ -5,6 +5,7 @@ import { getAgentDir } from "../config/constants.js";
 import { loadConfiguredPackageResources } from "../packages/runtime.js";
 import { createLogger } from "../utils/logger.js";
 import { resolveEnvPath } from "../utils/path-expansion.js";
+import { sanitizeWithStaticMask } from "../utils/secret-redactor.js";
 import { embeddedThemes } from "./embedded-themes.js";
 import { type ThemeJson, validateThemeJson } from "./theme-schema.js";
 
@@ -58,7 +59,9 @@ function getBuiltinThemes(): Record<string, ThemeJson> {
 						{
 							themePath,
 							name,
-							error: error instanceof Error ? error.message : String(error),
+							error: sanitizeWithStaticMask(
+								error instanceof Error ? error.message : String(error),
+							),
 						},
 					);
 				}

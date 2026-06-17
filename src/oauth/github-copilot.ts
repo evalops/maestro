@@ -12,6 +12,8 @@
  */
 
 import { createLogger } from "../utils/logger.js";
+import { sanitizeWithStaticMask } from "../utils/secret-redactor.js";
+import { OAuthRefreshError } from "./errors.js";
 import {
 	type OAuthCredentials,
 	loadOAuthCredentials,
@@ -179,6 +181,7 @@ async function pollForAccessToken(
  */
 async function getCopilotToken(
 	githubToken: string,
+	options: { classifyRefreshFailure?: boolean } = {},
 ): Promise<CopilotTokenResponse | null> {
 	try {
 		const response = await fetch(COPILOT_TOKEN_URL, {
@@ -192,17 +195,38 @@ async function getCopilotToken(
 		});
 
 		if (!response.ok) {
+			const body = await response.text().catch(() => "");
 			logger.warn("Failed to get Copilot token", {
 				status: response.status,
 			});
+			if (
+				options.classifyRefreshFailure === true &&
+				(response.status === 400 ||
+					response.status === 401 ||
+					response.status === 403)
+			) {
+				throw new OAuthRefreshError(
+					`GitHub Copilot token refresh failed (${response.status}): ${body}`,
+					{
+						status: response.status,
+						body,
+						definitive: true,
+					},
+				);
+			}
 			return null;
 		}
 
 		const data = (await response.json()) as CopilotTokenResponse;
 		return data;
 	} catch (error) {
+		if (error instanceof OAuthRefreshError) {
+			throw error;
+		}
 		logger.warn("Error getting Copilot token", {
-			error: error instanceof Error ? error.message : String(error),
+			error: sanitizeWithStaticMask(
+				error instanceof Error ? error.message : String(error),
+			),
 		});
 		return null;
 	}
@@ -269,7 +293,9 @@ export async function refreshGitHubCopilotToken(
 	const githubToken = (metadata?.githubToken as string) ?? _refreshToken;
 
 	// Get fresh Copilot token
-	const copilotToken = await getCopilotToken(githubToken);
+	const copilotToken = await getCopilotToken(githubToken, {
+		classifyRefreshFailure: true,
+	});
 
 	if (!copilotToken) {
 		throw new Error(

@@ -17,9 +17,9 @@
  * @module session/file-writer
  */
 
-import { appendFileSync } from "node:fs";
 import { SESSION_CONFIG } from "../config/constants.js";
 import { createLogger } from "../utils/logger.js";
+import { appendPrivateSessionFile } from "./private-permissions.js";
 import type { SessionEntry } from "./types.js";
 
 const logger = createLogger("session:file-writer");
@@ -134,7 +134,7 @@ export class SessionFileWriter {
 	 */
 	private writeChunkSync(chunk: string): void {
 		try {
-			appendFileSync(this.filePath, chunk);
+			appendPrivateSessionFile(this.filePath, chunk);
 		} catch (error) {
 			logger.error(
 				"Failed to write session chunk",

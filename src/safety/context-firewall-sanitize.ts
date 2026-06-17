@@ -15,9 +15,9 @@ import {
 import {
 	CREDENTIAL_PATTERN_DEFS,
 	type SanitizeOptions,
-	createPatternRegex,
 	isLargeBase64Blob,
 	removeControlChars,
+	replaceCredentialPatternMatches,
 } from "./credential-patterns.js";
 import type { CredentialStore } from "./credential-store.js";
 
@@ -179,19 +179,18 @@ function sanitizeString(
 				"credentialStore is required when vaultCredentials is true",
 			);
 		}
-		for (const def of CREDENTIAL_PATTERN_DEFS) {
-			const pattern = createPatternRegex(def);
-			result = result.replace(pattern, (match) =>
-				vaultSensitiveValue(match, def.type, options.credentialStore!),
-			);
-		}
+		result = replaceCredentialPatternMatches(
+			result,
+			(secret, def) =>
+				vaultSensitiveValue(secret, def.type, options.credentialStore!),
+			CREDENTIAL_PATTERN_DEFS,
+		);
 	} else if (options.redactSecrets) {
-		for (const def of CREDENTIAL_PATTERN_DEFS) {
-			const pattern = createPatternRegex(def);
-			result = result.replace(pattern, (match) =>
-				redactSensitiveValue(match, def.type),
-			);
-		}
+		result = replaceCredentialPatternMatches(
+			result,
+			(secret, def) => redactSensitiveValue(secret, def.type),
+			CREDENTIAL_PATTERN_DEFS,
+		);
 	}
 
 	if (options.truncateLargeBlobs && isLargeBase64Blob(result)) {

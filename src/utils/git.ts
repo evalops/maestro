@@ -86,6 +86,7 @@ interface GitStatusSnapshot {
 	ahead?: number;
 	behind?: number;
 	isDirty: boolean;
+	statusUnavailable?: boolean;
 	statusText: string;
 }
 
@@ -154,6 +155,7 @@ function getGitStatusSnapshot(
 		return isInsideGitRepository(cwd)
 			? {
 					isDirty: false,
+					statusUnavailable: true,
 					statusText: "(git status unavailable)",
 				}
 			: null;
@@ -406,15 +408,17 @@ export function getGitSnapshot(
 	cwd: string = process.cwd(),
 	options: GitSnapshotOptions = {},
 ): string | null {
+	const gitRoot = getGitRoot(cwd) ?? cwd;
+
 	const maxStatusChars = options.maxStatusChars ?? DEFAULT_GIT_STATUS_MAX_CHARS;
 	const recentCommitCount =
 		options.recentCommitCount ?? DEFAULT_GIT_RECENT_COMMIT_COUNT;
-	const statusSnapshot = getGitStatusSnapshot(cwd, maxStatusChars);
+	const statusSnapshot = getGitStatusSnapshot(gitRoot, maxStatusChars);
 	if (!statusSnapshot) {
 		return null;
 	}
 
-	const logResult = runGitText(cwd, [
+	const logResult = runGitText(gitRoot, [
 		"--no-optional-locks",
 		"log",
 		"--oneline",
@@ -426,15 +430,19 @@ export function getGitSnapshot(
 		? logResult.stdout || "(no commits yet)"
 		: "(git log unavailable)";
 
+	const defaultBranch = getDefaultBranch(gitRoot);
+	const gitUser = getGitUserName(gitRoot);
 	const branch = statusSnapshot.branch ?? "(detached HEAD)";
-	const defaultBranch = getDefaultBranch(cwd);
-	const gitUser = getGitUserName(cwd);
 	const upstream = statusSnapshot.upstream
 		? statusSnapshot.upstreamGone
 			? `Upstream: ${statusSnapshot.upstream} (gone)`
 			: `Upstream: ${statusSnapshot.upstream} (ahead ${statusSnapshot.ahead ?? 0}, behind ${statusSnapshot.behind ?? 0})`
 		: "Upstream: (none)";
-	const workingTree = statusSnapshot.isDirty ? "dirty" : "clean";
+	const workingTree = statusSnapshot.statusUnavailable
+		? "unavailable"
+		: statusSnapshot.isDirty
+			? "dirty"
+			: "clean";
 
 	return [
 		"# Repository Snapshot",

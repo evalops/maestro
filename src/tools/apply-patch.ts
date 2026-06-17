@@ -9,7 +9,7 @@ import {
 	unlink,
 	writeFile,
 } from "node:fs/promises";
-import { dirname, resolve as resolvePath } from "node:path";
+import { dirname, posix, resolve as resolvePath } from "node:path";
 import { Type } from "@sinclair/typebox";
 import {
 	captureDiagnosticBaseline,
@@ -21,6 +21,7 @@ import {
 	formatDiagnosticDeltaForToolOutput,
 } from "../lsp/diagnostic-repair.js";
 import { assertTeamMemoryContentSafe } from "../memory/team-memory.js";
+import { isContainedInWorkspace } from "../safety/path-containment.js";
 import {
 	requirePlanCheck,
 	runValidatorsOnSuccess,
@@ -107,6 +108,59 @@ class ApplyPatchConflictError extends ToolError {
 	constructor(message: string, details: ApplyPatchToolDetails) {
 		super(message, "APPLY_PATCH_CONFLICT", details);
 	}
+}
+
+function emptyApplyPatchDetails(mode?: "sandbox"): ApplyPatchToolDetails {
+	return {
+		filesModified: [],
+		filesCreated: [],
+		filesDeleted: [],
+		hunksApplied: 0,
+		hunksFailed: 0,
+		editGrammar: "apply_patch",
+		...(mode ? { mode } : {}),
+	};
+}
+
+function assertApplyPatchPathContained(
+	path: string,
+	absolutePath: string,
+	mode?: "sandbox",
+): void {
+	if (mode === "sandbox") {
+		assertSandboxApplyPatchPathContained(path);
+		return;
+	}
+	if (isContainedInWorkspace(absolutePath)) {
+		return;
+	}
+	throwApplyPatchPathOutsideWorkspace(path, mode);
+}
+
+function assertSandboxApplyPatchPathContained(path: string): void {
+	const containmentPath = path.replaceAll("\\", "/");
+	if (posix.isAbsolute(containmentPath)) {
+		if (!containmentPath.split("/").includes("..")) {
+			return;
+		}
+		throwApplyPatchPathOutsideWorkspace(path, "sandbox");
+	}
+	const normalized = normalizeSandboxPathKey(containmentPath);
+	if (normalized !== ".." && !normalized.startsWith("../")) {
+		return;
+	}
+	throwApplyPatchPathOutsideWorkspace(path, "sandbox");
+}
+
+function throwApplyPatchPathOutsideWorkspace(
+	path: string,
+	mode?: "sandbox",
+): never {
+	throw new ToolError(
+		`apply_patch path is outside the workspace: ${path}`,
+		"APPLY_PATCH_PATH_OUTSIDE_WORKSPACE",
+		emptyApplyPatchDetails(mode),
+	);
 }
 
 export const applyPatchTool = createTool<
@@ -196,6 +250,7 @@ async function planFilesystemPatch(
 	const stagedFiles = new Map<string, StagedFileState>();
 	const getState = async (path: string): Promise<StagedFileState> => {
 		const absolutePath = resolvePath(expandUserPath(path));
+		assertApplyPatchPathContained(path, absolutePath);
 		const cached = stagedFiles.get(absolutePath);
 		if (cached) {
 			return cached;
@@ -315,7 +370,8 @@ async function planSandboxPatch(
 	const plan = emptyPlan();
 	const stagedFiles = new Map<string, StagedFileState>();
 	const getState = async (path: string): Promise<StagedFileState> => {
-		const absolutePath = resolvePath(expandUserPath(path));
+		const absolutePath = path;
+		assertApplyPatchPathContained(path, absolutePath, "sandbox");
 		const cacheKey = normalizeSandboxPathKey(path);
 		const cached = stagedFiles.get(cacheKey);
 		if (cached) {

@@ -1,11 +1,13 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { extractDocumentText } from "../../utils/document-extractor.js";
+import { getAuthSubject } from "../authz.js";
 import {
 	buildContentDisposition,
 	respondWithApiError,
 	sendJson,
 } from "../server-utils.js";
 import { createWebSessionManagerForRequest } from "../session-scope.js";
+import { verifySessionOwnership } from "./sessions.js";
 
 const sessionIdPattern = /^[a-zA-Z0-9._-]+$/;
 const attachmentIdPattern = /^[a-zA-Z0-9._-]+$/;
@@ -89,6 +91,10 @@ export async function handleSessionAttachment(
 			sendJson(res, 404, { error: "Session not found" }, cors, req);
 			return;
 		}
+		if (!verifySessionOwnership(session, getAuthSubject(req))) {
+			sendJson(res, 404, { error: "Session not found" }, cors, req);
+			return;
+		}
 
 		const attachment = findAttachmentInSession(session, attachmentId);
 		if (!attachment) {
@@ -151,6 +157,10 @@ export async function handleSessionAttachmentExtract(
 
 		const session = await sessionManager.loadSession(sessionId);
 		if (!session) {
+			sendJson(res, 404, { error: "Session not found" }, cors, req);
+			return;
+		}
+		if (!verifySessionOwnership(session, getAuthSubject(req))) {
 			sendJson(res, 404, { error: "Session not found" }, cors, req);
 			return;
 		}

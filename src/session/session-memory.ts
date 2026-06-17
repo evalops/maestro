@@ -1,6 +1,7 @@
 import { existsSync, statSync } from "node:fs";
 import { type MemoryEntry, upsertScopedMemory } from "../memory/index.js";
 import { createLogger } from "../utils/logger.js";
+import { sanitizeWithStaticMask } from "../utils/secret-redactor.js";
 import {
 	buildSessionFileInfo,
 	extractTextFromContent,
@@ -84,7 +85,9 @@ export function buildSessionMemoryContent(sessionPath: string): {
 	const entries = safeReadSessionEntries(sessionPath, (error) => {
 		logger.warn("Failed to read session while building session memory", {
 			sessionPath,
-			error: error instanceof Error ? error.message : String(error),
+			error: sanitizeWithStaticMask(
+				error instanceof Error ? error.message : String(error),
+			),
 		});
 	});
 	const info = buildSessionFileInfo(entries, stats);

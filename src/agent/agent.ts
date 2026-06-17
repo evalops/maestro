@@ -97,6 +97,7 @@ import {
 } from "../telemetry/maestro-event-bus.js";
 import { createQueryProfilerFromEnv } from "../utils/checkpoint-profiler.js";
 import { createLogger } from "../utils/logger.js";
+import { sanitizeWithStaticMask } from "../utils/secret-redactor.js";
 import {
 	describeToolActivity,
 	describeToolDisplayName,
@@ -873,6 +874,11 @@ export class Agent {
 	 */
 	setSystemPrompt(v: string): void {
 		this._state.systemPrompt = v;
+	}
+
+	setSystemPromptSourcePaths(paths: string[] | undefined): void {
+		this._state.systemPromptSourcePaths =
+			paths && paths.length > 0 ? [...paths] : undefined;
 	}
 
 	/**
@@ -1703,7 +1709,9 @@ export class Agent {
 				}
 			} catch (error) {
 				logger.warn("Failed to inject environmental context", {
-					error: error instanceof Error ? error.message : String(error),
+					error: sanitizeWithStaticMask(
+						error instanceof Error ? error.message : String(error),
+					),
 					stack: error instanceof Error ? error.stack : undefined,
 				});
 			}
@@ -1913,7 +1921,9 @@ export class Agent {
 				}
 			} catch (error) {
 				logger.warn("Failed to inject environmental context", {
-					error: error instanceof Error ? error.message : String(error),
+					error: sanitizeWithStaticMask(
+						error instanceof Error ? error.message : String(error),
+					),
 				});
 			}
 			queryProfiler.checkpoint("prompt:assembled", {

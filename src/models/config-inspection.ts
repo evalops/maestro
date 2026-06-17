@@ -7,13 +7,15 @@ import { existsSync, readFileSync, statSync } from "node:fs";
 import { dirname, isAbsolute, join } from "node:path";
 import { expandTildePath } from "../utils/path-expansion.js";
 import {
+	clearCachedConfig,
+	fileSnapshots,
 	getConfigPathEntries,
 	getConfigPaths,
 	loadConfig,
 	loadConfigFile,
 	loadUntrustedProjectConfigFile,
 } from "./config-loader.js";
-import { ensureFactoryData } from "./factory-integration.js";
+import { ensureFactoryDataWithPolicy } from "./factory-integration.js";
 import { isLocalBaseUrl } from "./url-normalize.js";
 
 /**
@@ -121,6 +123,25 @@ export function validateConfig(): ConfigValidationResult {
 		result.warnings.push("No config files found");
 	}
 
+	for (const { path } of pathEntries) {
+		fileSnapshots.delete(path);
+	}
+
+	if (result.valid) {
+		clearCachedConfig();
+		try {
+			loadConfig(false, ensureFactoryDataWithPolicy);
+		} catch (error) {
+			clearCachedConfig();
+			result.errors.push(
+				`Merged configuration validation failed: ${error instanceof Error ? error.message : String(error)}`,
+			);
+			result.valid = false;
+		}
+	} else {
+		clearCachedConfig();
+	}
+
 	return result;
 }
 
@@ -170,7 +191,9 @@ export interface ConfigInspection {
 
 export function inspectConfig(): ConfigInspection {
 	const pathEntries = getConfigPathEntries();
-	const config = loadConfig(true, ensureFactoryData);
+	const config = loadConfig(true, ensureFactoryDataWithPolicy, {
+		validateUrls: false,
+	});
 
 	const inspection: ConfigInspection = {
 		sources: [],

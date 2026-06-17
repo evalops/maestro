@@ -6,12 +6,15 @@ import { checkApiAuth } from "./authz.js";
 import { isOverloaded, logRequest } from "./logger.js";
 import type { Middleware } from "./middleware.js";
 import type { RateLimiter, TieredRateLimiter } from "./rate-limiter.js";
+import { findRouteAuthPolicy } from "./route-auth.js";
+import type { Route } from "./router.js";
 import { getRequestHeader, secureCompare, sendJson } from "./server-utils.js";
 
 const logger = createLogger("middleware:ip-access");
 
 interface AuthBoundaryOptions {
 	exemptPaths?: readonly string[];
+	routes?: readonly Route[];
 }
 
 // Helper for consistent safe URL parsing
@@ -210,9 +213,19 @@ export function createAuthMiddleware(
 ): Middleware {
 	return async (req, res, next) => {
 		const pathname = getPathname(req);
+		const routeAuth = options.routes
+			? findRouteAuthPolicy(req.method || "GET", pathname, options.routes)
+			: null;
+		if (routeAuth?.level === "public") {
+			return next();
+		}
 		const isApiRoute = pathname.startsWith("/api");
 		const isDebugRoute = pathname.startsWith("/debug");
-		const requiresAuthBoundary = isApiRoute || isDebugRoute;
+		const requiresAuthBoundary =
+			routeAuth?.level === "authenticated" ||
+			routeAuth?.level === "owner" ||
+			isApiRoute ||
+			isDebugRoute;
 		if (requiresAuthBoundary) {
 			if (options.exemptPaths?.includes(pathname)) {
 				return next();
@@ -250,7 +263,10 @@ export function createAuthMiddleware(
 			}
 
 			// Key provided: validate it.
-			if (isApiRoute && getArtifactAccessGrantFromRequest(req)) {
+			if (
+				routeAuth?.allowArtifactAccess &&
+				getArtifactAccessGrantFromRequest(req)
+			) {
 				return next();
 			}
 			const auth = await checkApiAuth(req, { apiKey });

@@ -8,16 +8,11 @@
  * - Maintaining context across sessions
  */
 
-import {
-	constants,
-	access,
-	mkdir,
-	readFile,
-	writeFile,
-} from "node:fs/promises";
+import { constants, access, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
 import { type Clock, systemClock } from "../utils/clock.js";
+import { writeJsonFile } from "../utils/fs.js";
 import { type IdGenerator, systemIdGenerator } from "../utils/ids.js";
 import { getHomeDir, resolveEnvPath } from "../utils/path-expansion.js";
 import type { AppMessage, Message } from "./types.js";
@@ -97,8 +92,7 @@ export class FileTranscriptStore implements TranscriptStore {
 
 	async save(transcript: AgentTranscript): Promise<void> {
 		const path = this.getPath(transcript.id);
-		await mkdir(dirname(path), { recursive: true });
-		await writeFile(path, JSON.stringify(transcript, null, 2));
+		writeJsonFile(path, transcript);
 	}
 
 	async load(id: string): Promise<AgentTranscript | null> {

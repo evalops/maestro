@@ -4,10 +4,10 @@ import {
 	mkdirSync,
 	readFileSync,
 	rmSync,
-	writeFileSync,
 } from "node:fs";
 import { dirname } from "node:path";
 import { PATHS } from "../../config/constants.js";
+import { writeTextFileAtomic } from "../../utils/fs.js";
 import {
 	type HistoryPersistence,
 	resolveHistorySettings,
@@ -132,11 +132,11 @@ export class PromptHistoryStore {
 		try {
 			this.ensureDir();
 			if (this.entries.length === 0) {
-				writeFileSync(this.filePath, "", "utf-8");
+				writeTextFileAtomic(this.filePath, "");
 				return;
 			}
 			const lines = this.entries.map((entry) => JSON.stringify(entry));
-			writeFileSync(this.filePath, `${lines.join("\n")}\n`, "utf-8");
+			writeTextFileAtomic(this.filePath, `${lines.join("\n")}\n`);
 		} catch {
 			// best-effort persistence
 		}

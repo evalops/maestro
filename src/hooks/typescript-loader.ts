@@ -18,6 +18,7 @@ import { loadConfiguredPackageResources } from "../packages/runtime.js";
 import { theme } from "../theme/theme.js";
 import { createLogger } from "../utils/logger.js";
 import { expandTildePath } from "../utils/path-expansion.js";
+import { sanitizeWithStaticMask } from "../utils/secret-redactor.js";
 import type {
 	ExecResult,
 	HookAPI,
@@ -145,7 +146,9 @@ function discoverHooksInDir(dir: string): string[] {
 	} catch (error) {
 		logger.warn("Failed to read hooks directory", {
 			dir: expanded,
-			error: error instanceof Error ? error.message : String(error),
+			error: sanitizeWithStaticMask(
+				error instanceof Error ? error.message : String(error),
+			),
 		});
 		return [];
 	}

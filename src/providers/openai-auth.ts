@@ -50,10 +50,15 @@
  */
 
 import { createHash, randomBytes } from "node:crypto";
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync } from "node:fs";
 import { rm } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { getAgentDir } from "../config/constants.js";
+import {
+	OAuthRefreshError,
+	isDefinitiveOAuthRefreshFailure,
+} from "../oauth/errors.js";
+import { writeTextFileAtomic } from "../utils/fs.js";
 import { safeJsonParse } from "../utils/json.js";
 
 export type OpenAILoginMode = "openai-oauth";
@@ -156,8 +161,8 @@ export async function saveOpenAIOAuthCredential(
 	credential: OpenAIOAuthCredential,
 ): Promise<void> {
 	ensureAuthDir();
-	writeFileSync(AUTH_FILE, JSON.stringify(credential, null, 2), {
-		encoding: "utf8",
+	writeTextFileAtomic(AUTH_FILE, JSON.stringify(credential, null, 2), {
+		encoding: "utf-8",
 		mode: 0o600,
 	});
 }
@@ -178,7 +183,17 @@ export async function getFreshOpenAIOAuthCredential(): Promise<OpenAIOAuthCreden
 	if (stored.expiresAt - Date.now() > 60_000) {
 		return stored;
 	}
-	const refreshed = await refreshOpenAIOAuthToken(stored.refreshToken);
+	let refreshed: Awaited<ReturnType<typeof refreshOpenAIOAuthToken>>;
+	try {
+		refreshed = await refreshOpenAIOAuthToken(stored.refreshToken);
+	} catch (error) {
+		const refreshError =
+			error instanceof Error ? error : new Error(String(error));
+		if (isDefinitiveOAuthRefreshFailure(refreshError)) {
+			await deleteOpenAIOAuthCredential();
+		}
+		return null;
+	}
 	if (!refreshed) {
 		await deleteOpenAIOAuthCredential();
 		return null;
@@ -282,11 +297,21 @@ export async function refreshOpenAIOAuthToken(refreshToken: string): Promise<{
 		}).toString(),
 	});
 	if (!response.ok) {
-		return null;
+		const body = await response.text().catch(() => "");
+		throw new OAuthRefreshError(
+			`OpenAI OAuth token refresh failed (${response.status}): ${body}`,
+			{ status: response.status, body },
+		);
 	}
 	const payload = (await response.json()) as OpenAITokenResponse;
 	if (!payload.access_token) {
-		return null;
+		throw new OAuthRefreshError(
+			"OpenAI OAuth refresh response was missing access token",
+			{
+				body: JSON.stringify(payload),
+				definitive: true,
+			},
+		);
 	}
 	return {
 		accessToken: payload.access_token,

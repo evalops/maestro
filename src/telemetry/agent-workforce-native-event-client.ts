@@ -15,6 +15,7 @@ import {
 import { PLATFORM_HTTP_ROUTES } from "../platform/core-services.js";
 import { fetchDownstream } from "../utils/downstream-http.js";
 import { createLogger } from "../utils/logger.js";
+import { sanitizeWithStaticMask } from "../utils/secret-redactor.js";
 import {
 	type AgentWorkforceNativeEvent,
 	type AgentWorkforceNativeProjectionOptions,
@@ -293,7 +294,9 @@ export async function mirrorAgentWorkforceNativeEventsToPlatform(
 		logger.debug(
 			"Failed to mirror Agent Workforce native events to Platform; retaining local projection",
 			{
-				error: error instanceof Error ? error.message : String(error),
+				error: sanitizeWithStaticMask(
+					error instanceof Error ? error.message : String(error),
+				),
 				eventCount: projected.length,
 			},
 		);

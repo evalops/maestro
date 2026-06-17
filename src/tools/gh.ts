@@ -76,8 +76,8 @@ Examples:
 	maxRetries: 2,
 	retryDelayMs: 1000,
 	shouldRetry: isGhRetryable,
-	async run(params, { signal, respond }) {
-		const check = await checkGhCliAvailable(signal);
+	async run(params, { signal, respond, sandbox }) {
+		const check = await checkGhCliAvailable(signal, sandbox);
 		if (check) return check;
 
 		const args: string[] = ["pr", params.action];
@@ -126,8 +126,7 @@ Examples:
 			if (params.nameOnly) args.push("--name-only");
 		}
 
-		const cmd = `gh ${args.map((a) => `"${a.replace(/"/g, '\\"')}"`).join(" ")}`;
-		return executeGhCommand(`gh-pr-${params.action}`, cmd, signal);
+		return executeGhCommand(`gh-pr-${params.action}`, args, signal, sandbox);
 	},
 });
 
@@ -180,8 +179,8 @@ Examples:
 	maxRetries: 2,
 	retryDelayMs: 1000,
 	shouldRetry: isGhRetryable,
-	async run(params, { signal }) {
-		const check = await checkGhCliAvailable(signal);
+	async run(params, { signal, sandbox }) {
+		const check = await checkGhCliAvailable(signal, sandbox);
 		if (check) return check;
 
 		const args: string[] = ["issue", params.action];
@@ -211,8 +210,7 @@ Examples:
 			args.push(String(params.number));
 		}
 
-		const cmd = `gh ${args.map((a) => `"${a.replace(/"/g, '\\"')}"`).join(" ")}`;
-		return executeGhCommand(`gh-issue-${params.action}`, cmd, signal);
+		return executeGhCommand(`gh-issue-${params.action}`, args, signal, sandbox);
 	},
 });
 
@@ -249,8 +247,8 @@ Examples:
 	maxRetries: 2,
 	retryDelayMs: 1000,
 	shouldRetry: isGhRetryable,
-	async run(params, { signal }) {
-		const check = await checkGhCliAvailable(signal);
+	async run(params, { signal, sandbox }) {
+		const check = await checkGhCliAvailable(signal, sandbox);
 		if (check) return check;
 
 		const args: string[] = ["repo", params.action];
@@ -266,7 +264,6 @@ Examples:
 		}
 		// fork has no additional params
 
-		const cmd = `gh ${args.map((a) => `"${a.replace(/"/g, '\\"')}"`).join(" ")}`;
-		return executeGhCommand(`gh-repo-${params.action}`, cmd, signal);
+		return executeGhCommand(`gh-repo-${params.action}`, args, signal, sandbox);
 	},
 });

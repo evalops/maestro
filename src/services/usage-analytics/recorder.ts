@@ -1,6 +1,7 @@
 import type { IncomingMessage } from "node:http";
 import type { AssistantMessage } from "../../agent/types.js";
 import { createLogger } from "../../utils/logger.js";
+import { sanitizeWithStaticMask } from "../../utils/secret-redactor.js";
 import { getUsageAnalyticsService } from "./service.js";
 
 const logger = createLogger("usage-analytics:recorder");
@@ -151,7 +152,9 @@ export function recordAssistantUsageMetric(params: {
 		.catch((error) => {
 			forgetUsageEvent(eventKey);
 			logger.warn("Usage analytics recording failed", {
-				error: error instanceof Error ? error.message : String(error),
+				error: sanitizeWithStaticMask(
+					error instanceof Error ? error.message : String(error),
+				),
 				sessionId: params.sessionId,
 				provider: message.provider,
 				model: message.model,

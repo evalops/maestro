@@ -2,6 +2,7 @@ import type { IncomingMessage } from "node:http";
 import type { AssistantMessage } from "../../agent/types.js";
 import { getRegisteredModels } from "../../models/registry.js";
 import { createLogger } from "../../utils/logger.js";
+import { sanitizeWithStaticMask } from "../../utils/secret-redactor.js";
 import { getIntelligentRouterService } from "./service.js";
 import { ROUTING_STRATEGIES } from "./types.js";
 import type {
@@ -125,7 +126,9 @@ export function recordIntelligentRouterChatMetric(params: {
 		})
 		.catch((error) => {
 			logger.warn("Intelligent router metric recording failed", {
-				error: error instanceof Error ? error.message : String(error),
+				error: sanitizeWithStaticMask(
+					error instanceof Error ? error.message : String(error),
+				),
 				taskType: params.taskType,
 				provider: params.provider,
 				model: params.model,

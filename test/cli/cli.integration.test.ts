@@ -14,7 +14,9 @@ import { Value } from "@sinclair/typebox/value";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { clearRegisteredHooks, registerHook } from "../../src/hooks/index.js";
 import { main } from "../../src/main.js";
+import { resetOAuthStorageForTests } from "../../src/oauth/storage.js";
 import { SessionManager } from "../../src/session/manager.js";
+import { resetGlobalCliCommandAggregatorForTests } from "../../src/telemetry/index.js";
 
 interface MockAgentState {
 	model?: unknown;
@@ -321,6 +323,8 @@ describe("CLI integration", () => {
 	const originalSharedMemoryBase = process.env.MAESTRO_SHARED_MEMORY_BASE;
 	const originalSharedMemoryApiKey = process.env.MAESTRO_SHARED_MEMORY_API_KEY;
 	const originalSessionDir = process.env.MAESTRO_SESSION_DIR;
+	const originalMaestroProfile = process.env.MAESTRO_PROFILE;
+	const originalDisableKeychain = process.env.MAESTRO_DISABLE_KEYCHAIN;
 	const originalLog = console.log;
 	const originalError = console.error;
 	const originalStdoutWrite = process.stdout.write;
@@ -333,8 +337,20 @@ describe("CLI integration", () => {
 		process.env.MAESTRO_HOME = tempAgentDir;
 		process.env.MAESTRO_AGENT_DIR = tempAgentDir;
 		process.env.ANTHROPIC_API_KEY = "test-key";
+		// Force file-mode OAuth storage so the OS keychain can't leak a
+		// stale `evalops` credential into provider-discovery / beacon
+		// configuration when CI test ordering differs from local
+		// (PR #2752 root-caused this pattern across other test files).
+		process.env.MAESTRO_DISABLE_KEYCHAIN = "1";
 		Reflect.deleteProperty(process.env, "OPENAI_API_KEY");
 		Reflect.deleteProperty(process.env, "CLAUDE_CODE_TOKEN");
+		resetGlobalCliCommandAggregatorForTests();
+		// `cachedMode` in `src/oauth/storage.ts` is a module-level
+		// singleton; if a prior test in the same vitest worker already
+		// cached the keychain backend, just setting the env var here
+		// doesn't switch storage mode. Call the reset explicitly so the
+		// new `MAESTRO_DISABLE_KEYCHAIN=1` value takes effect.
+		resetOAuthStorageForTests();
 		output = [];
 		console.log = (...args: unknown[]) => {
 			output.push(args.map((arg) => String(arg)).join(" "));
@@ -398,12 +414,26 @@ describe("CLI integration", () => {
 		} else {
 			process.env.MAESTRO_SESSION_DIR = originalSessionDir;
 		}
+		if (originalMaestroProfile === undefined) {
+			Reflect.deleteProperty(process.env, "MAESTRO_PROFILE");
+		} else {
+			process.env.MAESTRO_PROFILE = originalMaestroProfile;
+		}
+		if (originalDisableKeychain === undefined) {
+			Reflect.deleteProperty(process.env, "MAESTRO_DISABLE_KEYCHAIN");
+		} else {
+			process.env.MAESTRO_DISABLE_KEYCHAIN = originalDisableKeychain;
+		}
 		if (tempAgentDir) {
 			rmSync(tempAgentDir, { recursive: true, force: true });
 		}
 		clearRegisteredHooks();
 		vi.restoreAllMocks();
 		vi.resetModules();
+		// Re-clear the OAuth storage cache so the restored env (without
+		// our forced `MAESTRO_DISABLE_KEYCHAIN`) is honored by the next
+		// test in the same worker.
+		resetOAuthStorageForTests();
 	});
 
 	async function waitForFile(path: string): Promise<void> {
@@ -434,6 +464,34 @@ describe("CLI integration", () => {
 		}
 		const reason = lastError instanceof Error ? `: ${lastError.message}` : "";
 		throw new Error(`Timed out waiting for parseable JSON in ${path}${reason}`);
+	}
+
+	async function readJsonLinesEventually<T>(path: string): Promise<T[]> {
+		const deadline = Date.now() + 1000;
+		let lastError: unknown;
+		while (Date.now() < deadline) {
+			if (existsSync(path)) {
+				const lines = readFileSync(path, "utf8")
+					.trim()
+					.split("\n")
+					.filter(Boolean);
+				if (lines.length > 0) {
+					try {
+						return lines.flatMap((line) => {
+							const parsed = JSON.parse(line) as T | T[];
+							return Array.isArray(parsed) ? parsed : [parsed];
+						});
+					} catch (error) {
+						lastError = error;
+					}
+				}
+			}
+			await new Promise((resolve) => setTimeout(resolve, 10));
+		}
+		const reason = lastError instanceof Error ? `: ${lastError.message}` : "";
+		throw new Error(
+			`Timed out waiting for parseable JSONL in ${path}${reason}`,
+		);
 	}
 
 	function overwriteSessionUnifiedContextManifest(
@@ -748,10 +806,14 @@ describe("CLI integration", () => {
 			const combined = output.join("\n");
 			expect(combined).toContain("Maestro v");
 			expect(combined).not.toContain("Composer v");
-			const [startupEvent] =
-				await readJsonFileEventually<[{ feature: string; action: string }]>(
-					beaconFile,
-				);
+			const startupEvents = await readJsonLinesEventually<{
+				feature: string;
+				action: string;
+			}>(beaconFile);
+			const startupEvent = startupEvents.find(
+				(event) =>
+					event.feature === "cli.startup" && event.action === "version",
+			);
 			const commandBuffer = await readJsonFileEventually<{
 				counts: Record<string, number>;
 			}>(bufferFile);
@@ -759,9 +821,7 @@ describe("CLI integration", () => {
 				feature: "cli.startup",
 				action: "version",
 			});
-			expect(commandBuffer.counts).toEqual({
-				"cli.command.version": 1,
-			});
+			expect(commandBuffer.counts["cli.command.version"]).toBe(1);
 		} finally {
 			if (originalTelemetry === undefined) {
 				Reflect.deleteProperty(process.env, "MAESTRO_TELEMETRY");
@@ -891,6 +951,134 @@ describe("CLI integration", () => {
 		exitSpy.mockRestore();
 	});
 
+	async function runWebCommandAndAwaitStartupTelemetry(
+		args: string[],
+	): Promise<void> {
+		const originalTelemetry = process.env.MAESTRO_TELEMETRY;
+		const originalBeaconFile = process.env.MAESTRO_BEACON_FILE;
+		const originalBufferFile =
+			process.env.MAESTRO_CLI_COMMAND_BEACON_BUFFER_FILE;
+		const beaconFile = join(tempAgentDir, "web-command-beacon.jsonl");
+		const bufferFile = join(tempAgentDir, "web-command-buffer.json");
+		process.env.MAESTRO_TELEMETRY = "1";
+		process.env.MAESTRO_BEACON_FILE = beaconFile;
+		process.env.MAESTRO_CLI_COMMAND_BEACON_BUFFER_FILE = bufferFile;
+		try {
+			await main(args);
+			await waitForFile(beaconFile);
+			await readJsonFileEventually<{ counts: Record<string, number> }>(
+				bufferFile,
+			);
+		} finally {
+			if (originalTelemetry === undefined) {
+				Reflect.deleteProperty(process.env, "MAESTRO_TELEMETRY");
+			} else {
+				process.env.MAESTRO_TELEMETRY = originalTelemetry;
+			}
+			if (originalBeaconFile === undefined) {
+				Reflect.deleteProperty(process.env, "MAESTRO_BEACON_FILE");
+			} else {
+				process.env.MAESTRO_BEACON_FILE = originalBeaconFile;
+			}
+			if (originalBufferFile === undefined) {
+				Reflect.deleteProperty(
+					process.env,
+					"MAESTRO_CLI_COMMAND_BEACON_BUFFER_FILE",
+				);
+			} else {
+				process.env.MAESTRO_CLI_COMMAND_BEACON_BUFFER_FILE = originalBufferFile;
+			}
+		}
+	}
+
+	it("seeds config-selected profiles before importing the web server", async () => {
+		const startWebServer = vi.fn(async () => undefined);
+		const migrate = vi.fn(async () => 0);
+		const originalProfile = process.env.MAESTRO_PROFILE;
+		let importedProfile: string | undefined;
+		process.env.MAESTRO_PROFILE = "shell-profile";
+		vi.doMock("../../src/web-server.js", () => {
+			importedProfile = process.env.MAESTRO_PROFILE;
+			return { startWebServer };
+		});
+		vi.doMock("../../src/db/migrate.js", () => ({ migrate }));
+
+		try {
+			await runWebCommandAndAwaitStartupTelemetry([
+				"web",
+				"--config",
+				"profile=trusted-packages",
+			]);
+		} finally {
+			if (originalProfile === undefined) {
+				Reflect.deleteProperty(process.env, "MAESTRO_PROFILE");
+			} else {
+				process.env.MAESTRO_PROFILE = originalProfile;
+			}
+			vi.doUnmock("../../src/web-server.js");
+			vi.doUnmock("../../src/db/migrate.js");
+		}
+
+		expect(importedProfile).toBe("trusted-packages");
+		expect(migrate).toHaveBeenCalledOnce();
+		expect(startWebServer).toHaveBeenCalledWith(8080, {
+			profileName: undefined,
+			cliOverrides: { profile: "trusted-packages" },
+			skipStartupMigration: true,
+		});
+	});
+
+	it("passes explicit profiles into web server startup", async () => {
+		const startWebServer = vi.fn(async () => undefined);
+		const migrate = vi.fn(async () => 0);
+		vi.doMock("../../src/web-server.js", () => ({ startWebServer }));
+		vi.doMock("../../src/db/migrate.js", () => ({ migrate }));
+
+		try {
+			await main(["web", "--profile", "work"]);
+		} finally {
+			vi.doUnmock("../../src/web-server.js");
+			vi.doUnmock("../../src/db/migrate.js");
+		}
+
+		expect(process.env.MAESTRO_PROFILE).toBe("work");
+		expect(migrate).toHaveBeenCalledOnce();
+		expect(startWebServer).toHaveBeenCalledWith(8080, {
+			profileName: "work",
+			cliOverrides: {},
+			skipStartupMigration: true,
+		});
+	});
+
+	it("passes config overrides into web server startup", async () => {
+		const startWebServer = vi.fn(async () => undefined);
+		const migrate = vi.fn(async () => 0);
+		const projectPath = join(tempAgentDir, "project.v1");
+		vi.doMock("../../src/web-server.js", () => ({ startWebServer }));
+		vi.doMock("../../src/db/migrate.js", () => ({ migrate }));
+
+		try {
+			await main([
+				"web",
+				"--config",
+				`projects.${JSON.stringify(projectPath)}.trust_level="trusted"`,
+			]);
+		} finally {
+			vi.doUnmock("../../src/web-server.js");
+			vi.doUnmock("../../src/db/migrate.js");
+		}
+
+		expect(startWebServer).toHaveBeenCalledWith(8080, {
+			profileName: undefined,
+			cliOverrides: {
+				projects: {
+					[projectPath]: { trust_level: "trusted" },
+				},
+			},
+			skipStartupMigration: true,
+		});
+	});
+
 	it("prints providers summary for filter", async () => {
 		const originalTelemetry = process.env.MAESTRO_TELEMETRY;
 		const originalBeaconFile = process.env.MAESTRO_BEACON_FILE;
@@ -912,19 +1100,19 @@ describe("CLI integration", () => {
 			await main(["models", "providers", "--provider", "openrouter"]);
 			expect(exitCodes).toEqual([0]);
 			expect(output.join("\n")).toContain("openrouter");
-			await waitForFile(beaconFile);
 			const commandBuffer = await readJsonFileEventually<{
 				counts: Record<string, number>;
 			}>(bufferFile);
-			const [startupEvent] = JSON.parse(
-				readFileSync(beaconFile, "utf8").trim(),
-			) as [
-				{
-					feature: string;
-					action: string;
-					parameters?: { metadata?: Record<string, unknown> };
-				},
-			];
+			const startupEvents = await readJsonLinesEventually<{
+				feature: string;
+				action: string;
+				parameters?: { metadata?: Record<string, unknown> };
+			}>(beaconFile);
+			const startupEvent = startupEvents.find(
+				(event) =>
+					event.feature === "cli.startup" &&
+					event.action === "models.providers",
+			);
 			expect(startupEvent).toMatchObject({
 				feature: "cli.startup",
 				action: "models.providers",
@@ -934,9 +1122,7 @@ describe("CLI integration", () => {
 					},
 				},
 			});
-			expect(commandBuffer.counts).toEqual({
-				"cli.command.models.providers": 1,
-			});
+			expect(commandBuffer.counts["cli.command.models.providers"]).toBe(1);
 		} finally {
 			if (originalTelemetry === undefined) {
 				Reflect.deleteProperty(process.env, "MAESTRO_TELEMETRY");

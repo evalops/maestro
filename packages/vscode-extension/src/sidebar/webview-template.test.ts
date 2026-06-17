@@ -32,6 +32,37 @@ describe("webview template", () => {
 		expect(html).toContain("summaryLabel || displayName || name");
 	});
 
+	it("renders tool and approval fields through text-node helpers", () => {
+		const html = getWebviewHtml({
+			nonce: "nonce",
+			vendorUri: { toString: () => "vendor.js" } as never,
+			styleUri: { toString: () => "style.css" } as never,
+			cspSource: "vscode-resource:",
+			cspConnect: "http://localhost:8080",
+		});
+
+		expect(html).toContain("appendToolSection(body, 'Arguments', args)");
+		expect(html).toContain("appendToolSection(body, 'Result', tool.result)");
+		expect(html).toContain("approve.addEventListener('click'");
+		expect(html).toContain("deny.addEventListener('click'");
+		expect(html).not.toContain("${JSON.stringify(args, null, 2)}</div>");
+		expect(html).not.toContain("${msg.reason || 'Requires confirmation'}");
+		expect(html).not.toContain('onclick="submitApproval');
+	});
+
+	it("scopes the sidebar CSP connect-src to the configured API origin", () => {
+		const html = getWebviewHtml({
+			nonce: "nonce",
+			vendorUri: { toString: () => "vendor.js" } as never,
+			styleUri: { toString: () => "style.css" } as never,
+			cspSource: "vscode-resource:",
+			cspConnect: "http://localhost:8080",
+		});
+
+		expect(html).toContain("connect-src http://localhost:8080;");
+		expect(html).not.toContain("https: http: wss: ws:");
+	});
+
 	it("renders runtime status UI hooks", () => {
 		const html = getWebviewHtml({
 			nonce: "nonce",

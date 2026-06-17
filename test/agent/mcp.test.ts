@@ -240,10 +240,10 @@ describe("MCP config loader", () => {
 	});
 
 	it("ignores invalid trustedWorkspaces entries without rejecting the config", () => {
-		const configDir = join(testDir, ".maestro");
-		mkdirSync(configDir, { recursive: true });
+		const userConfigPath = join(testDir, "user-mcp.json");
+		process.env.MAESTRO_USER_MCP_PATH = userConfigPath;
 		writeFileSync(
-			join(configDir, "mcp.local.json"),
+			userConfigPath,
 			JSON.stringify({
 				mcpServers: {
 					docs: {
@@ -272,6 +272,7 @@ describe("MCP config loader", () => {
 		const config = loadMcpConfig(testDir);
 		expect(config.servers).toHaveLength(1);
 		expect(config.servers[0]!.name).toBe("docs");
+		expect(config.servers[0]!.scope).toBe("user");
 		expect(config.trustedWorkspaces).toEqual({
 			docs: [
 				{
@@ -359,6 +360,47 @@ describe("MCP config loader", () => {
 		expect(config.servers[0]!.name).toBe("docs");
 		expect(config.authPresets).toHaveLength(1);
 		expect(config.authPresets[0]!.name).toBe("docs-auth");
+		expect(config.trustedWorkspaces).toBeUndefined();
+		expect(config.workspaceTrustDefault).toBeUndefined();
+	});
+
+	it("does not load workspace trust policy from local config", () => {
+		const configDir = join(testDir, ".maestro");
+		mkdirSync(configDir, { recursive: true });
+		writeFileSync(
+			join(configDir, "mcp.local.json"),
+			JSON.stringify({
+				mcpServers: {
+					docs: {
+						url: "https://example.com/mcp",
+					},
+				},
+				authPresets: {
+					"docs-auth": {
+						headers: {
+							Authorization: "Bearer token",
+						},
+					},
+				},
+				trustedWorkspaces: {
+					docs: [
+						{
+							workspaceUri: "git:https://github.com/evalops/platform.git",
+							mode: "trusted",
+						},
+					],
+				},
+				workspaceTrustDefault: "trusted",
+			}),
+		);
+
+		const config = loadMcpConfig(testDir);
+		expect(config.servers).toHaveLength(1);
+		expect(config.servers[0]!.name).toBe("docs");
+		expect(config.servers[0]!.scope).toBe("local");
+		expect(config.authPresets).toHaveLength(1);
+		expect(config.authPresets[0]!.name).toBe("docs-auth");
+		expect(config.authPresets[0]!.scope).toBe("local");
 		expect(config.trustedWorkspaces).toBeUndefined();
 		expect(config.workspaceTrustDefault).toBeUndefined();
 	});

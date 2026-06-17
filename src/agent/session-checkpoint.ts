@@ -32,16 +32,12 @@
  * ```
  */
 
-import {
-	existsSync,
-	mkdirSync,
-	readFileSync,
-	readdirSync,
-	writeFileSync,
-} from "node:fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { PATHS } from "../config/constants.js";
+import { writeJsonFile } from "../utils/fs.js";
 import { createLogger } from "../utils/logger.js";
+import { sanitizeWithStaticMask } from "../utils/secret-redactor.js";
 
 const logger = createLogger("agent:session-checkpoint");
 
@@ -175,7 +171,9 @@ class SessionCheckpointManager {
 				});
 			} catch (error) {
 				logger.warn("Auto-checkpoint failed", {
-					error: error instanceof Error ? error.message : String(error),
+					error: sanitizeWithStaticMask(
+						error instanceof Error ? error.message : String(error),
+					),
 				});
 			}
 		}, this.config.intervalMs);
@@ -233,7 +231,7 @@ class SessionCheckpointManager {
 		// Save checkpoint
 		const filename = `${String(this.sequence).padStart(4, "0")}_${checkpoint.id}.json`;
 		const filepath = join(this.checkpointDir, filename);
-		writeFileSync(filepath, JSON.stringify(checkpoint, null, 2));
+		writeJsonFile(filepath, checkpoint);
 
 		// Cleanup old checkpoints
 		await this.cleanupOldCheckpoints();

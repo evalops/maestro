@@ -6,10 +6,14 @@
 import { randomBytes } from "node:crypto";
 import {
 	constants,
+	closeSync,
 	existsSync,
+	fsyncSync,
 	mkdirSync,
+	openSync,
 	readFileSync,
 	renameSync,
+	statSync,
 	unlinkSync,
 	writeFileSync,
 } from "node:fs";
@@ -162,13 +166,23 @@ function isErrno(error: unknown): error is NodeJS.ErrnoException {
 export { isErrno };
 
 /**
- * Read JSON file with parsing and error handling
+ * Read JSON file with parsing and error handling.
+ *
+ * When `rotateOnParseFail` is enabled, a file whose content fails to
+ * parse as JSON is moved to a `<file>.corrupt.<iso-ts>` sibling
+ * before the fallback is returned (#2631). This preserves forensic
+ * evidence — instead of silently replacing user data with empty
+ * state on the next write — and surfaces the bug in monitoring.
+ *
+ * The rotation does NOT fire on "file not present" (returns fallback
+ * directly) or on "file is empty string" (also returns fallback);
+ * it only fires when bytes exist but don't parse.
  */
 export function readJsonFile<T = unknown>(
 	path: string,
-	options: { fallback?: T } = {},
+	options: { fallback?: T; rotateOnParseFail?: boolean } = {},
 ): T {
-	const { fallback } = options;
+	const { fallback, rotateOnParseFail = false } = options;
 
 	try {
 		const content = readTextFile(path, {
@@ -186,6 +200,9 @@ export function readJsonFile<T = unknown>(
 					path,
 					error: result.error.message,
 				});
+				if (rotateOnParseFail) {
+					rotateCorruptJsonFile(path);
+				}
 				return fallback;
 			}
 			throw result.error;
@@ -198,6 +215,42 @@ export function readJsonFile<T = unknown>(
 			return fallback;
 		}
 		throw error;
+	}
+}
+
+/**
+ * Rename a corrupt JSON state file to `<file>.corrupt.<iso-ts>` so
+ * subsequent writes create a fresh valid file while the corrupted
+ * bytes are preserved for forensics (#2631). Best-effort: failures
+ * are logged and swallowed because rotation is a hygiene step, not
+ * a load-bearing operation.
+ *
+ * Returns the rotated path on success, `null` if the source file
+ * didn't exist or the rotation failed.
+ */
+export function rotateCorruptJsonFile(path: string): string | null {
+	if (!fileExists(path)) return null;
+	const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
+	// Append per-call randomness so two processes parsing the same
+	// corrupt file in the same millisecond produce different rotated
+	// names. `renameSync` overwrites the destination on POSIX, so
+	// without the random suffix the second rename would clobber the
+	// first's forensic evidence.
+	const nonce = randomBytes(4).toString("hex");
+	const rotatedPath = `${path}.corrupt.${timestamp}.${nonce}`;
+	try {
+		renameSync(path, rotatedPath);
+		logger.warn("Rotated corrupt JSON file aside; starting fresh", {
+			from: path,
+			to: rotatedPath,
+		});
+		return rotatedPath;
+	} catch (error) {
+		logger.warn("Failed to rotate corrupt JSON file", {
+			path,
+			error: error instanceof Error ? error.message : String(error),
+		});
+		return null;
 	}
 }
 
@@ -216,7 +269,7 @@ export function writeJsonFile(
 			? JSON.stringify(data, null, 2)
 			: safeJsonStringify(data);
 
-		writeTextFile(path, content, { createDirs });
+		writeTextFileAtomic(path, content, { createDirs });
 	} catch (error) {
 		throw new FileSystemError(
 			`Failed to write JSON file: ${path}`,
@@ -225,6 +278,14 @@ export function writeJsonFile(
 			error instanceof Error ? error : undefined,
 		);
 	}
+}
+
+export function writeJsonFileAtomic(
+	path: string,
+	data: unknown,
+	options: { pretty?: boolean; createDirs?: boolean } = {},
+): void {
+	writeJsonFile(path, data, options);
 }
 
 /**
@@ -279,19 +340,33 @@ export function appendTextFile(
 export function writeTextFileAtomic(
 	path: string,
 	content: string,
-	options: { encoding?: BufferEncoding } = {},
+	options: {
+		encoding?: BufferEncoding;
+		createDirs?: boolean;
+		fsync?: boolean;
+		mode?: number;
+	} = {},
 ): void {
-	const { encoding = "utf-8" } = options;
+	const { encoding = "utf-8", createDirs = true, fsync = true } = options;
 	const tempPath = join(
 		dirname(path),
 		`.${basename(path)}.tmp.${process.pid}.${Date.now()}.${randomBytes(6).toString("hex")}`,
 	);
 
 	try {
-		ensureDir(dirname(path));
-		writeFileSync(tempPath, content, { encoding, flag: "wx" });
+		if (createDirs) {
+			ensureDir(dirname(path));
+		}
+		const mode = options.mode ?? existingFileMode(path) ?? 0o600;
+		writeFileSync(tempPath, content, { encoding, flag: "wx", mode });
+		if (fsync) {
+			syncFile(tempPath);
+		}
 		// Rename is atomic on most filesystems
 		renameSync(tempPath, path);
+		if (fsync) {
+			syncDirectory(dirname(path));
+		}
 	} catch (error) {
 		// Clean up temp file if it exists
 		try {
@@ -307,5 +382,42 @@ export function writeTextFileAtomic(
 			"write-atomic",
 			error instanceof Error ? error : undefined,
 		);
+	}
+}
+
+function existingFileMode(path: string): number | undefined {
+	try {
+		if (!fileExists(path)) return undefined;
+		return statSync(path).mode & 0o777;
+	} catch {
+		return undefined;
+	}
+}
+
+function syncFile(path: string): void {
+	const fd = openSync(path, "r+");
+	try {
+		fsyncSync(fd);
+	} finally {
+		closeSync(fd);
+	}
+}
+
+function syncDirectory(path: string): void {
+	if (process.platform === "win32") return;
+	let fd: number | undefined;
+	try {
+		fd = openSync(path, "r");
+		fsyncSync(fd);
+	} catch (error) {
+		logger.debug("Directory fsync failed", { path, error });
+	} finally {
+		if (fd !== undefined) {
+			try {
+				closeSync(fd);
+			} catch (error) {
+				logger.debug("Directory fd close failed", { path, error });
+			}
+		}
 	}
 }

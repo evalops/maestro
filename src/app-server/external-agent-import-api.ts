@@ -35,6 +35,7 @@ import {
 	normalizeSessionEntry,
 	tryParseSessionEntry,
 } from "../session/types.js";
+import { writeTextFileAtomic } from "../utils/fs.js";
 
 type UnknownRecord = Record<string, unknown>;
 const PORTABLE_SESSION_EXPORT_FORMAT = "maestro-session-export.v1";
@@ -195,7 +196,9 @@ function readJsonObject(path: string): UnknownRecord {
 
 function writeJsonObject(path: string, value: UnknownRecord): void {
 	mkdirSync(dirname(path), { recursive: true });
-	writeFileSync(path, `${JSON.stringify(value, null, 2)}\n`, "utf8");
+	writeTextFileAtomic(path, `${JSON.stringify(value, null, 2)}\n`, {
+		encoding: "utf-8",
+	});
 }
 
 function mergeRecords(
@@ -254,7 +257,9 @@ function writeConfigImport(
 	if (!dryRun) {
 		mkdirSync(dirname(path), { recursive: true });
 		const rendered = stringifyTOML(merged).trim();
-		writeFileSync(path, rendered ? `${rendered}\n` : "", "utf8");
+		writeTextFileAtomic(path, rendered ? `${rendered}\n` : "", {
+			encoding: "utf-8",
+		});
 		clearConfigCache();
 	}
 	return {

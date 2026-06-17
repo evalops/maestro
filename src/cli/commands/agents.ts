@@ -6,7 +6,6 @@ import {
 	readdirSync,
 	realpathSync,
 	statSync,
-	writeFileSync,
 } from "node:fs";
 import type { Dirent } from "node:fs";
 import {
@@ -18,6 +17,7 @@ import {
 	resolve,
 } from "node:path";
 import * as Diff from "diff";
+import { writeTextFileAtomic } from "../../utils/fs.js";
 import { truncateUtf8 } from "../system-prompt.js";
 
 const TEMPLATE = `# Repository Guidelines
@@ -376,7 +376,7 @@ export function handleAgentsInit(
 			};
 		}
 		mkdirSync(directory, { recursive: true });
-		writeFileSync(target, nextContent, "utf-8");
+		writeTextFileAtomic(target, nextContent, { encoding: "utf-8" });
 		return {
 			path: target,
 			action: "updated",
@@ -385,7 +385,7 @@ export function handleAgentsInit(
 		};
 	}
 	mkdirSync(directory, { recursive: true });
-	writeFileSync(target, nextContent, "utf-8");
+	writeTextFileAtomic(target, nextContent, { encoding: "utf-8" });
 	return {
 		path: target,
 		action: "created",

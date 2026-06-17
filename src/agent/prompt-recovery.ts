@@ -1,6 +1,8 @@
+import type { ComposerConfig } from "../config/index.js";
 import { isAbortError } from "../utils/abort-error.js";
 import { isContextOverflow as isOverflowError } from "../utils/context-overflow.js";
 import { createLogger } from "../utils/logger.js";
+import { sanitizeWithStaticMask } from "../utils/secret-redactor.js";
 import type { Agent } from "./agent.js";
 import * as compactionHooks from "./compaction-hooks.js";
 import type {
@@ -52,6 +54,8 @@ export interface RunWithPromptRecoveryOptions {
 	agent: Agent;
 	sessionManager: CompactionSessionManager;
 	execute: () => Promise<void>;
+	profileName?: string;
+	cliOverrides?: Partial<ComposerConfig>;
 	hookContext?: CompactionHookContext;
 	hookService?: CompactionHookService;
 	overflowHookService?: OverflowHookService;
@@ -354,7 +358,9 @@ async function runStopFailureHooks(
 		}
 	} catch (error) {
 		logger.warn("StopFailure hooks failed", {
-			error: error instanceof Error ? error.message : String(error),
+			error: sanitizeWithStaticMask(
+				error instanceof Error ? error.message : String(error),
+			),
 			stopFailureCode: params.error,
 		});
 	}
@@ -448,7 +454,9 @@ export async function recoverFromMaxOutput(
 				logger.warn(
 					"Escalated max-output continuation failed; falling back to prompt continuation",
 					{
-						error: error instanceof Error ? error.message : String(error),
+						error: sanitizeWithStaticMask(
+							error instanceof Error ? error.message : String(error),
+						),
 						stack: error instanceof Error ? error.stack : undefined,
 					},
 				);
@@ -545,6 +553,8 @@ async function recoverFromPromptOverflow(
 		| ((preservedMessages: AppMessage[]) => Promise<AppMessage[]>)
 		| undefined,
 	preCompactContextTokens: number | undefined,
+	profileName: string | undefined,
+	cliOverrides: Partial<ComposerConfig> | undefined,
 	callbacks?: PromptRecoveryCallbacks,
 ): Promise<boolean> {
 	callbacks?.onCompacting?.();
@@ -561,6 +571,8 @@ async function recoverFromPromptOverflow(
 			customInstructions,
 			persistCustomInstructions,
 			getPostKeepMessages,
+			profileName,
+			cliOverrides,
 		});
 	} catch (error) {
 		const message = error instanceof Error ? error.message : String(error);
@@ -650,6 +662,8 @@ export async function runWithPromptRecovery(
 				overflowHookGuidance === undefined,
 				options.getPostKeepMessages,
 				preCompactContextTokens,
+				options.profileName,
+				options.cliOverrides,
 				callbacks,
 			);
 			if (recovered) {
@@ -761,7 +775,9 @@ export async function runWithPromptRecovery(
 					});
 			await reportStopFailure(stopFailure);
 			logger.warn("Prompt overflow recovery continuation failed", {
-				error: error instanceof Error ? error.message : String(error),
+				error: sanitizeWithStaticMask(
+					error instanceof Error ? error.message : String(error),
+				),
 				stack: error instanceof Error ? error.stack : undefined,
 			});
 			throw error;
