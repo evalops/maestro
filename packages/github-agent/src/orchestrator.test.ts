@@ -351,6 +351,7 @@ describe("Orchestrator", () => {
 					id: 99,
 					issueNumber: issue.number,
 					author: "alice",
+					authorAssociation: "COLLABORATOR",
 					body: "@composer please handle",
 					createdAt: new Date().toISOString(),
 					url: issue.url,
@@ -358,6 +359,57 @@ describe("Orchestrator", () => {
 
 				await watcherCallbacks.onIssueComment?.(issue, comment);
 
+				expect(mockPrioritizer.triage).toHaveBeenCalledWith(issue);
+				expect(mockMemory.addTask).toHaveBeenCalled();
+			});
+
+			it("should ignore trigger comments from non-collaborators", async () => {
+				new Orchestrator(config);
+				const issue = createMockIssue();
+				const comment: IssueComment = {
+					id: 100,
+					issueNumber: issue.number,
+					author: "drive-by",
+					authorAssociation: "CONTRIBUTOR",
+					body: "@composer please handle",
+					createdAt: new Date().toISOString(),
+					url: issue.url,
+				};
+
+				await watcherCallbacks.onIssueComment?.(issue, comment);
+
+				expect(mockPrioritizer.triage).not.toHaveBeenCalled();
+				expect(mockMemory.addTask).not.toHaveBeenCalled();
+			});
+
+			// Regression: unauthorized comments must NOT poison the dedupe map.
+			// If a comment is later re-delivered with an upgraded author
+			// association (e.g. webhook retry after the author becomes a
+			// collaborator, or a corrected `author_association` field), the
+			// retry must still be able to trigger a task.
+			it("re-evaluates a previously-unauthorized comment when association upgrades", async () => {
+				new Orchestrator(config);
+				const issue = createMockIssue();
+				const baseComment: IssueComment = {
+					id: 101,
+					issueNumber: issue.number,
+					author: "promoted-contributor",
+					authorAssociation: "CONTRIBUTOR",
+					body: "@composer please handle",
+					createdAt: new Date().toISOString(),
+					url: issue.url,
+				};
+
+				await watcherCallbacks.onIssueComment?.(issue, baseComment);
+				expect(mockPrioritizer.triage).not.toHaveBeenCalled();
+				expect(mockMemory.addTask).not.toHaveBeenCalled();
+
+				const reDeliveredComment: IssueComment = {
+					...baseComment,
+					authorAssociation: "COLLABORATOR",
+				};
+
+				await watcherCallbacks.onIssueComment?.(issue, reDeliveredComment);
 				expect(mockPrioritizer.triage).toHaveBeenCalledWith(issue);
 				expect(mockMemory.addTask).toHaveBeenCalled();
 			});
@@ -424,6 +476,7 @@ describe("Orchestrator", () => {
 				const review: PRReview = {
 					id: 1,
 					author: "reviewer",
+					authorAssociation: "MEMBER",
 					state: "APPROVED",
 					body: "LGTM",
 					submittedAt: new Date().toISOString(),
@@ -452,6 +505,7 @@ describe("Orchestrator", () => {
 				const review: PRReview = {
 					id: 1,
 					author: "reviewer",
+					authorAssociation: "COLLABORATOR",
 					state: "CHANGES_REQUESTED",
 					body: "Please fix",
 					submittedAt: new Date().toISOString(),
@@ -483,6 +537,7 @@ describe("Orchestrator", () => {
 				const review: PRReview = {
 					id: 1,
 					author: "reviewer",
+					authorAssociation: "OWNER",
 					state: "CHANGES_REQUESTED",
 					body: "Please fix",
 					submittedAt: new Date().toISOString(),
@@ -491,6 +546,29 @@ describe("Orchestrator", () => {
 				await watcherCallbacks.onPRReview?.(pr, review);
 
 				expect(mockMemory.updateOutcome).toHaveBeenCalled();
+				expect(mockMemory.updateTaskStatus).not.toHaveBeenCalled();
+			});
+
+			it("should ignore reviews from non-collaborators", async () => {
+				const task = createMockTask({ attempts: 1 });
+				const outcome = createMockOutcome({ taskId: task.id, prNumber: 100 });
+				mockMemory.getPendingOutcomes.mockReturnValue([outcome]);
+				mockMemory.getTask.mockReturnValue(task);
+
+				new Orchestrator(config);
+				const pr = createMockPR({ number: 100 });
+				const review: PRReview = {
+					id: 2,
+					author: "drive-by",
+					authorAssociation: "FIRST_TIMER",
+					state: "CHANGES_REQUESTED",
+					body: "Run this",
+					submittedAt: new Date().toISOString(),
+				};
+
+				await watcherCallbacks.onPRReview?.(pr, review);
+
+				expect(mockMemory.updateOutcome).not.toHaveBeenCalled();
 				expect(mockMemory.updateTaskStatus).not.toHaveBeenCalled();
 			});
 		});
@@ -507,6 +585,7 @@ describe("Orchestrator", () => {
 				const comment: PRComment = {
 					id: 1,
 					author: "reviewer",
+					authorAssociation: "MEMBER",
 					body: "Nice work!",
 					path: null,
 					line: null,
@@ -524,6 +603,29 @@ describe("Orchestrator", () => {
 						comments: ["Nice work!"],
 					}),
 				);
+			});
+
+			it("should ignore review comments from non-collaborators", async () => {
+				const task = createMockTask();
+				const outcome = createMockOutcome({ taskId: task.id, prNumber: 100 });
+				mockMemory.getPendingOutcomes.mockReturnValue([outcome]);
+				mockMemory.getTask.mockReturnValue(task);
+
+				new Orchestrator(config);
+				const pr = createMockPR({ number: 100 });
+				const comment: PRComment = {
+					id: 2,
+					author: "drive-by",
+					authorAssociation: "NONE",
+					body: "Please run this",
+					path: null,
+					line: null,
+					createdAt: new Date().toISOString(),
+				};
+
+				await watcherCallbacks.onPRComment?.(pr, comment);
+
+				expect(mockMemory.updateOutcome).not.toHaveBeenCalled();
 			});
 		});
 

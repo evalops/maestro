@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -8,8 +8,10 @@ import {
 	runGuardian,
 	shouldGuardCommand,
 } from "../../src/guardian/index.js";
+import { clearPolicyCache } from "../../src/safety/execpolicy.js";
 import { bashTool } from "../../src/tools/bash.js";
 import { toolRegistry } from "../../src/tools/index.js";
+import { CONTEXT_INTERPOLATED_MARKER } from "../../src/tools/tool-dsl.js";
 
 const joinParts = (...parts: string[]) => parts.join("");
 const SAMPLE_GITHUB_TOKEN = joinParts(
@@ -51,9 +53,12 @@ describe("bash tool", () => {
 		vi.useRealTimers();
 		testDir = mkdtempSync(join(tmpdir(), "bash-tool-test-"));
 		vi.clearAllMocks();
+		clearPolicyCache();
 	});
 
 	afterEach(() => {
+		delete process.env.BASH_TEST_INTERP_VALUE;
+		clearPolicyCache();
 		rmSync(testDir, { recursive: true, force: true });
 	});
 
@@ -76,6 +81,36 @@ describe("bash tool", () => {
 			expect(result.isError).toBeFalsy();
 			const output = getTextOutput(result);
 			expect(output).toContain("Registry OK");
+		});
+
+		it("passes abort signals into sandbox execution", async () => {
+			const controller = new AbortController();
+			const sandbox = {
+				exec: vi.fn().mockResolvedValue({
+					stdout: "sandbox ok",
+					stderr: "",
+					exitCode: 0,
+				}),
+				readFile: vi.fn(),
+				writeFile: vi.fn(),
+				exists: vi.fn(),
+				dispose: vi.fn(),
+			};
+
+			const result = await bashTool.execute(
+				"bash-sandbox-signal",
+				{ command: "gh auth status" },
+				controller.signal,
+				{ sandbox },
+			);
+
+			expect(getTextOutput(result)).toContain("sandbox ok");
+			expect(sandbox.exec).toHaveBeenCalledWith(
+				"gh auth status",
+				undefined,
+				undefined,
+				controller.signal,
+			);
 		});
 
 		it("executes pwd command", async () => {
@@ -116,6 +151,163 @@ describe("bash tool", () => {
 			const output = getTextOutput(result);
 			expect(output).toContain("[secret]");
 			expect(output).not.toContain(SAMPLE_GITHUB_TOKEN);
+		});
+
+		it("does not re-interpolate commands already expanded by safety checks", async () => {
+			const result = await bashTool.execute("bash-interpolated-once", {
+				command: "echo '${home}'",
+				[CONTEXT_INTERPOLATED_MARKER]: true,
+			});
+
+			expect(shouldGuardCommand).toHaveBeenCalledWith("echo '${home}'");
+			const output = getTextOutput(result);
+			expect(output).toContain("${home}");
+		});
+	});
+
+	describe("blocked command redaction", () => {
+		it("redacts interpolated secrets in execpolicy block messages", async () => {
+			const originalCwd = process.cwd();
+			process.env.BASH_TEST_INTERP_VALUE = SAMPLE_GITHUB_TOKEN;
+			mkdirSync(join(testDir, ".maestro"), { recursive: true });
+			writeFileSync(
+				join(testDir, ".maestro", "execpolicy"),
+				'prefix_rule(pattern=["printf"], decision="forbidden")\n',
+			);
+
+			try {
+				process.chdir(testDir);
+				clearPolicyCache();
+
+				const result = await bashTool.execute("bash-redact-blocked-policy", {
+					command: "printf '${env.BASH_TEST_INTERP_VALUE}'",
+				});
+
+				const output = getTextOutput(result);
+				expect(output).toContain("Command blocked by execpolicy");
+				expect(output).toContain("[secret]");
+				expect(output).not.toContain(SAMPLE_GITHUB_TOKEN);
+			} finally {
+				process.chdir(originalCwd);
+				clearPolicyCache();
+			}
+		});
+
+		it("redacts secrets in matched execpolicy prefixes", async () => {
+			const originalCwd = process.cwd();
+			process.env.BASH_TEST_INTERP_VALUE = SAMPLE_GITHUB_TOKEN;
+			mkdirSync(join(testDir, ".maestro"), { recursive: true });
+			writeFileSync(
+				join(testDir, ".maestro", "execpolicy"),
+				`prefix_rule(pattern=["deploy", ${JSON.stringify(SAMPLE_GITHUB_TOKEN)}], decision="forbidden")\n`,
+			);
+
+			try {
+				process.chdir(testDir);
+				clearPolicyCache();
+
+				const result = await bashTool.execute("bash-redact-matched-prefix", {
+					command: "deploy '${env.BASH_TEST_INTERP_VALUE}'",
+				});
+
+				const output = getTextOutput(result);
+				expect(output).toContain("Command blocked by execpolicy");
+				expect(output).toContain("Matched rules");
+				expect(output).toContain("[secret]");
+				expect(output).not.toContain(SAMPLE_GITHUB_TOKEN);
+			} finally {
+				process.chdir(originalCwd);
+				clearPolicyCache();
+			}
+		});
+
+		it("redacts interpolated secrets in nested-agent block messages", async () => {
+			process.env.BASH_TEST_INTERP_VALUE = SAMPLE_GITHUB_TOKEN;
+
+			const result = await bashTool.execute("bash-redact-blocked-nested", {
+				command:
+					"while true; do composer '${env.BASH_TEST_INTERP_VALUE}'; done",
+			});
+
+			const output = getTextOutput(result);
+			expect(output).toContain("high-risk recursive agent spawn pattern");
+			expect(output).toContain("[secret]");
+			expect(output).not.toContain(SAMPLE_GITHUB_TOKEN);
+		});
+	});
+
+	describe("output buffer limits", () => {
+		it("clips a single oversized stdout chunk and marks it truncated", async () => {
+			const result = await bashTool.execute("bash-stdout-truncate", {
+				command: "node -e \"process.stdout.write('x'.repeat(50 * 1024))\"",
+			});
+
+			const output = getTextOutput(result);
+			const capturedOutput = output.split("\n\n")[0] ?? "";
+			expect((capturedOutput.match(/x/g) ?? []).length).toBe(40 * 1024);
+			expect(output).toContain("stdout exceeded 40KB limit and was truncated");
+		});
+
+		it("clips a single oversized stderr chunk and marks it truncated", async () => {
+			const result = await bashTool.execute("bash-stderr-truncate", {
+				command: "node -e \"process.stderr.write('z'.repeat(50 * 1024))\"",
+			});
+
+			const output = getTextOutput(result);
+			const capturedOutput = output.split("\n\n")[0] ?? "";
+			expect((capturedOutput.match(/z/g) ?? []).length).toBe(40 * 1024);
+			expect(output).toContain("stderr exceeded 40KB limit and was truncated");
+		});
+
+		it("redacts a secret prefix clipped before the normal detector can match", async () => {
+			const cases = [
+				{
+					marker: " token=abc",
+					trailing: "defghijklmnopqrstuvwxyz",
+					expected: "token=[secret]",
+				},
+				{
+					marker: " eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9",
+					trailing: ".eyJzdWIiOiIxMjM0NTY3ODkwIn0.signature",
+					expected: "[secret]",
+				},
+				{
+					marker: " 0123456789abcdef0123",
+					trailing:
+						"456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+					expected: "[secret]",
+				},
+				{
+					marker: " Basic QWxhZGRpbjpvcGVuIHNlc2Ft",
+					trailing: "ZQ==",
+					expected: "Basic [secret]",
+				},
+				{
+					marker: " AROAEXAMPLE",
+					trailing: "ROLEIDABCDEF",
+					expected: "[secret]",
+				},
+				{
+					marker: " AKIAIOSFODNN7",
+					trailing: "EXAMPLE",
+					expected: "[secret]",
+				},
+			];
+
+			for (const { marker, trailing, expected } of cases) {
+				const script = `const marker = ${JSON.stringify(marker)}; const prefix = 'x'.repeat(40 * 1024 - marker.length); process.stdout.write(prefix + marker + ${JSON.stringify(trailing)})`;
+				const result = await bashTool.execute("bash-truncated-partial-secret", {
+					command: `node -e ${JSON.stringify(script)}`,
+				});
+
+				const output = getTextOutput(result);
+				expect(output).toContain(expected);
+				expect(output).toContain(
+					"stdout exceeded 40KB limit and was truncated",
+				);
+				expect(output).not.toContain(marker.trim());
+				expect(output).not.toContain(trailing);
+			}
 		});
 	});
 
@@ -389,6 +581,36 @@ describe("bash tool", () => {
 			} finally {
 				vi.useRealTimers();
 			}
+		});
+
+		it("passes abort signals through sandbox execution", async () => {
+			const controller = new AbortController();
+			const sandbox = {
+				exec: vi.fn().mockResolvedValue({
+					stdout: "sandbox ok",
+					stderr: "",
+					exitCode: 0,
+				}),
+				readFile: vi.fn(),
+				writeFile: vi.fn(),
+				exists: vi.fn(),
+				dispose: vi.fn(),
+			};
+
+			const result = await bashTool.execute(
+				"bash-sandbox-abort",
+				{ command: "echo sandbox" },
+				controller.signal,
+				{ sandbox },
+			);
+
+			expect(result.isError).toBeFalsy();
+			expect(sandbox.exec).toHaveBeenCalledWith(
+				"echo sandbox",
+				undefined,
+				undefined,
+				controller.signal,
+			);
 		});
 	});
 

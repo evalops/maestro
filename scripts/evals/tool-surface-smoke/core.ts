@@ -228,17 +228,20 @@ async function evaluateExtractDocumentCase(): Promise<unknown> {
 			throw new Error("Failed to resolve extract document smoke server address");
 		}
 
-		const result = await extractDocumentTool.execute(
-			"tool-surface-extract-document",
-			{
+		try {
+			await extractDocumentTool.execute("tool-surface-extract-document", {
 				url: `http://127.0.0.1:${address.port}/fixture.txt`,
-			},
-		);
+			});
+		} catch (error) {
+			return {
+				blocked: true,
+				message: error instanceof Error ? error.message : String(error),
+			};
+		}
 
 		return {
-			text: getToolTextOutput(result).trim(),
-			format: (result.details as { format?: string } | undefined)?.format,
-			fileName: (result.details as { fileName?: string } | undefined)?.fileName,
+			blocked: false,
+			message: "local document URL was not blocked",
 		};
 	} finally {
 		await new Promise<void>((resolvePromise, reject) => {

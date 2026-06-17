@@ -9,6 +9,7 @@ import {
 	executeHooks,
 } from "../../src/hooks/index.js";
 import type { SessionBeforeTreeHookInput } from "../../src/hooks/types.js";
+import { trustProjectInGlobalConfig } from "../utils/project-trust.js";
 
 describe("TypeScript hook loader", () => {
 	let testDir: string;
@@ -129,6 +130,7 @@ describe("TypeScript hook loader", () => {
 			join(testDir, ".maestro", "config.toml"),
 			'packages = ["../vendor/hook-pack"]\n',
 		);
+		trustProjectInGlobalConfig(testDir);
 
 		const result = await discoverAndLoadTypeScriptHooks([], testDir);
 

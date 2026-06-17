@@ -1,4 +1,10 @@
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+	mkdtempSync,
+	readFileSync,
+	rmSync,
+	statSync,
+	writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -242,6 +248,27 @@ describe("notebook edit tool", () => {
 			expect(created.cells).toHaveLength(1);
 			expect(created.cells[0].cell_type).toBe("code");
 		});
+
+		const shouldCheckModes = process.platform !== "win32";
+
+		it.skipIf(!shouldCheckModes)(
+			"creates new notebooks with the standard umask-adjusted mode",
+			async () => {
+				const notebookPath = join(testDir, "mode.ipynb");
+
+				const result = await notebookEditTool.execute("nb-9b", {
+					path: notebookPath,
+					new_source: "print('hello')",
+					cell_type: "code",
+					edit_mode: "insert",
+				});
+
+				expect(result.isError).toBeFalsy();
+				expect(statSync(notebookPath).mode & 0o777).toBe(
+					0o666 & ~process.umask(),
+				);
+			},
+		);
 	});
 
 	describe("delete mode", () => {

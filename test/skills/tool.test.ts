@@ -3,13 +3,19 @@ import {
 	existsSync,
 	mkdirSync,
 	rmSync,
+	symlinkSync,
 	writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { loadSkills } from "../../src/skills/loader.js";
 import { resetSkillsDownstreamForTests } from "../../src/skills/service-client.js";
 import { createSkillTool } from "../../src/skills/tool.js";
+import {
+	recordPromptApproval,
+	resetTrustCacheForTests,
+} from "../../src/skills/trust-cache.js";
 
 /**
  * Extract text content from tool result.
@@ -709,6 +715,85 @@ cd {{project}} && npm install
 			expect(text).toContain("cd my-app && npm install");
 			expect(text).not.toContain("{{project}}");
 		});
+
+		it("skips unsafe arg keys (non-alphanumeric)", async () => {
+			// Keys with special chars and reserved names like __proto__
+			// must be silently skipped during substitution.
+			const dir = join(skillsDir, "unsafe-keys");
+			mkdirSync(dir, { recursive: true });
+			writeFileSync(
+				join(dir, "SKILL.md"),
+				`---
+name: unsafe-keys
+description: Skill for testing unsafe key rejection
+---
+
+# Value: {{__proto__}}; {{$1}}; {{foo.bar}}; {{normal_key}}
+`,
+			);
+
+			const tool = createSkillTool(testDir, { includeSystem: false });
+			const args = {
+				$1: "BACKREF_INJECTION",
+				"foo.bar": "DOT_INJECTION",
+				normal_key: "safe-value",
+			};
+			Object.defineProperty(args, "__proto__", {
+				value: "POLLUTED",
+				enumerable: true,
+				configurable: true,
+				writable: true,
+			});
+			expect(Object.entries(args)).toContainEqual(["__proto__", "POLLUTED"]);
+			const result = await tool.execute("test-unsafe-keys", {
+				skill: "unsafe-keys",
+				args,
+			});
+			const text = getResultText(result);
+
+			expect(result.isError).toBeUndefined();
+			// Unsafe keys must NOT be substituted — their placeholders remain
+			expect(text).toContain("{{__proto__}}");
+			expect(text).toContain("{{$1}}");
+			expect(text).toContain("{{foo.bar}}");
+			// Safe key IS substituted
+			expect(text).toContain("safe-value");
+			expect(text).not.toContain("{{normal_key}}");
+			// No injection values appear
+			expect(text).not.toContain("POLLUTED");
+			expect(text).not.toContain("BACKREF_INJECTION");
+			expect(text).not.toContain("DOT_INJECTION");
+		});
+
+		it("prevents back-reference substitution in arg values", async () => {
+			// Values containing $1, $&, etc. must not trigger regex
+			// back-reference expansion. The fix uses () => value instead
+			// of passing value as a string replacement.
+			const dir = join(skillsDir, "backref-safe");
+			mkdirSync(dir, { recursive: true });
+			writeFileSync(
+				join(dir, "SKILL.md"),
+				`---
+name: backref-safe
+description: Skill for testing backreference safety
+---
+
+# Value: {{key}}
+`,
+			);
+
+			const tool = createSkillTool(testDir, { includeSystem: false });
+			const result = await tool.execute("test-backref", {
+				skill: "backref-safe",
+				args: { key: "$1 $& $` $'" },
+			});
+			const text = getResultText(result);
+
+			expect(result.isError).toBeUndefined();
+			// The literal string must appear, NOT expanded backreferences
+			expect(text).toContain("# Value: $1 $& $` $'");
+			expect(text).not.toContain("{{key}}");
+		});
 	});
 
 	describe("bundled resources", () => {
@@ -738,6 +823,148 @@ Use the bundled scripts.
 			expect(text).toContain("setup.sh");
 			expect(text).toContain("(script)");
 			expect(text).toContain("config.json");
+		});
+	});
+
+	describe("trust-cache gating (#2629)", () => {
+		beforeEach(() => {
+			resetTrustCacheForTests();
+		});
+
+		afterEach(() => {
+			delete process.env.MAESTRO_SKILL_TRUST_STRICT;
+			resetTrustCacheForTests();
+		});
+
+		it("prepends an unapproved-trust banner for project skills in default mode", async () => {
+			createTestSkill(
+				"untrusted-skill",
+				"A repo-committed skill",
+				"do something",
+			);
+			const tool = createSkillTool(testDir, { includeSystem: false });
+			const result = await tool.execute("test-trust-1", {
+				skill: "untrusted-skill",
+			});
+			const text = getResultText(result);
+
+			expect(result.isError).toBeUndefined();
+			expect(text).toContain("maestro-skill-trust: unapproved");
+			expect(text).toContain("has not been approved");
+		});
+
+		it("refuses to invoke unapproved project skill in strict mode", async () => {
+			process.env.MAESTRO_SKILL_TRUST_STRICT = "1";
+			createTestSkill("strict-skill", "Unreviewed prompt body", "do something");
+
+			const tool = createSkillTool(testDir, { includeSystem: false });
+			const result = await tool.execute("test-trust-2", {
+				skill: "strict-skill",
+			});
+			const text = getResultText(result);
+
+			expect(result.isError).toBe(true);
+			expect(text).toContain("not been approved");
+			expect(text).toContain("MAESTRO_SKILL_TRUST_STRICT");
+		});
+
+		it("invokes normally once the prompt sha is approved", async () => {
+			createTestSkill(
+				"approved-skill",
+				"A reviewed skill body",
+				"approved content",
+			);
+
+			const { skills } = loadSkills(testDir, { includeSystem: false });
+			const skill = skills.find((s) => s.name === "approved-skill");
+			expect(skill).toBeDefined();
+			if (!skill) return;
+			recordPromptApproval({
+				name: skill.name,
+				contentSha: skill.contentSha,
+				sourceType: skill.sourceType as "project",
+			});
+
+			const tool = createSkillTool(testDir, { includeSystem: false });
+			const result = await tool.execute("test-trust-3", {
+				skill: "approved-skill",
+			});
+			const text = getResultText(result);
+
+			expect(result.isError).toBeUndefined();
+			expect(text).not.toContain("maestro-skill-trust: unapproved");
+			expect(text).toContain("approved content");
+		});
+
+		it("strict mode passes an approved skill through", async () => {
+			process.env.MAESTRO_SKILL_TRUST_STRICT = "1";
+			createTestSkill(
+				"strict-approved",
+				"Reviewed prompt body",
+				"strict approved content",
+			);
+
+			const { skills } = loadSkills(testDir, { includeSystem: false });
+			const skill = skills.find((s) => s.name === "strict-approved");
+			expect(skill).toBeDefined();
+			if (!skill) return;
+			recordPromptApproval({
+				name: skill.name,
+				contentSha: skill.contentSha,
+				sourceType: skill.sourceType as "project",
+			});
+
+			const tool = createSkillTool(testDir, { includeSystem: false });
+			const result = await tool.execute("test-trust-4", {
+				skill: "strict-approved",
+			});
+			const text = getResultText(result);
+
+			expect(result.isError).toBeUndefined();
+			expect(text).toContain("strict approved content");
+			expect(text).not.toContain("maestro-skill-trust: unapproved");
+		});
+	});
+
+	describe("path confinement (adversarial review)", () => {
+		it("rejects a symlinked skill that points outside the workspace", async () => {
+			// Create a skill in a directory outside the workspace
+			const outsideDir = join(tmpdir(), `maestro-test-outside-${Date.now()}`);
+			mkdirSync(outsideDir, { recursive: true });
+			const symlinkPath = join(skillsDir, "symlink-escape");
+			try {
+				writeFileSync(
+					join(outsideDir, "SKILL.md"),
+					`---
+name: symlink-escape
+description: Symlinked skill outside workspace
+---
+
+# Escaped
+`,
+				);
+
+				// Create a symlink inside the workspace pointing outside
+				symlinkSync(outsideDir, symlinkPath, "dir");
+
+				const tool = createSkillTool(testDir, { includeSystem: false });
+				const result = await tool.execute("test-symlink", {
+					skill: "symlink-escape",
+				});
+				const text = getResultText(result);
+
+				// Skill loaded from outside the workspace via symlink must be
+				// rejected with a confinement error
+				expect(result.isError).toBe(true);
+				expect(text).toContain("scoped to a different project");
+			} finally {
+				try {
+					rmSync(symlinkPath, { recursive: true, force: true });
+				} catch {}
+				try {
+					rmSync(outsideDir, { recursive: true, force: true });
+				} catch {}
+			}
 		});
 	});
 });

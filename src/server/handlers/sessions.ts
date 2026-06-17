@@ -347,13 +347,7 @@ export async function handleSessions(
 			// Verify session ownership to prevent IDOR attacks
 			const subject = getAuthSubject(req);
 			if (!verifySessionOwnership(session, subject)) {
-				sendJson(
-					res,
-					403,
-					{ error: "Access denied: session belongs to another user" },
-					cors,
-					req,
-				);
+				sendJson(res, 404, { error: "Session not found" }, cors, req);
 				return;
 			}
 
@@ -410,13 +404,7 @@ export async function handleSessions(
 			// Verify session ownership to prevent IDOR attacks
 			const subject = getAuthSubject(req);
 			if (!verifySessionOwnership(session, subject)) {
-				sendJson(
-					res,
-					403,
-					{ error: "Access denied: session belongs to another user" },
-					cors,
-					req,
-				);
+				sendJson(res, 404, { error: "Session not found" }, cors, req);
 				return;
 			}
 
@@ -473,13 +461,7 @@ export async function handleSessions(
 			// Verify session ownership to prevent IDOR attacks
 			const subject = getAuthSubject(req);
 			if (!verifySessionOwnership(session, subject)) {
-				sendJson(
-					res,
-					403,
-					{ error: "Access denied: session belongs to another user" },
-					cors,
-					req,
-				);
+				sendJson(res, 404, { error: "Session not found" }, cors, req);
 				return;
 			}
 
@@ -539,13 +521,7 @@ export async function handleSessionShare(
 		// Verify session ownership to prevent sharing others' sessions
 		const subject = getAuthSubject(req);
 		if (!verifySessionOwnership(session, subject)) {
-			sendJson(
-				res,
-				403,
-				{ error: "Access denied: session belongs to another user" },
-				cors,
-				req,
-			);
+			sendJson(res, 404, { error: "Session not found" }, cors, req);
 			return;
 		}
 
@@ -773,13 +749,7 @@ export async function handleSessionExport(
 		// Verify session ownership to prevent exporting others' sessions
 		const subject = getAuthSubject(req);
 		if (!verifySessionOwnership(session, subject)) {
-			sendJson(
-				res,
-				403,
-				{ error: "Access denied: session belongs to another user" },
-				cors,
-				req,
-			);
+			sendJson(res, 404, { error: "Session not found" }, cors, req);
 			return;
 		}
 

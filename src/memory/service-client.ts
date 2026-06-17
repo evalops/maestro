@@ -16,6 +16,7 @@ import {
 	resolveTeamId,
 } from "../platform/client.js";
 import { createLogger } from "../utils/logger.js";
+import { sanitizeWithStaticMask } from "../utils/secret-redactor.js";
 import { MemoryClient, MemoryType } from "./platform-memory-client.js";
 import { getMemoryProjectScope } from "./team-memory.js";
 import type { MemoryEntry, MemorySearchResult } from "./types.js";
@@ -779,7 +780,9 @@ export async function recallRemoteDurableMemories(
 			}));
 	} catch (error) {
 		logger.warn("Remote memory recall failed; using local fallback", {
-			error: error instanceof Error ? error.message : String(error),
+			error: sanitizeWithStaticMask(
+				error instanceof Error ? error.message : String(error),
+			),
 			projectId: scope.projectId,
 		});
 		return null;

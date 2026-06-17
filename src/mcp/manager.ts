@@ -62,6 +62,7 @@ import {
 import { parseCommandArguments } from "../tools/shell-utils.js";
 import { createLogger } from "../utils/logger.js";
 import { getHomeDir } from "../utils/path-expansion.js";
+import { sanitizeWithStaticMask } from "../utils/secret-redactor.js";
 import {
 	buildMcpElicitationToolCallId,
 	getCurrentMcpClientToolService,
@@ -469,7 +470,9 @@ async function resolveHeadersHelper(
 	} catch (error) {
 		logger.warn("Invalid MCP headers helper command", {
 			name: config.name,
-			error: error instanceof Error ? error.message : String(error),
+			error: sanitizeWithStaticMask(
+				error instanceof Error ? error.message : String(error),
+			),
 		});
 		return undefined;
 	}
@@ -516,7 +519,9 @@ async function resolveHeadersHelper(
 	} catch (error) {
 		logger.warn("Failed to resolve MCP headers helper", {
 			name: config.name,
-			error: error instanceof Error ? error.message : String(error),
+			error: sanitizeWithStaticMask(
+				error instanceof Error ? error.message : String(error),
+			),
 		});
 		return undefined;
 	}
@@ -891,7 +896,9 @@ export class McpClientManager extends EventEmitter {
 				} catch (error) {
 					logger.warn("Failed to resolve MCP elicitation request", {
 						name,
-						error: error instanceof Error ? error.message : String(error),
+						error: sanitizeWithStaticMask(
+							error instanceof Error ? error.message : String(error),
+						),
 					});
 					return { action: "cancel" };
 				}
@@ -1275,7 +1282,9 @@ export class McpClientManager extends EventEmitter {
 		} catch (error) {
 			logger.warn("Error closing client", {
 				name,
-				error: error instanceof Error ? error.message : String(error),
+				error: sanitizeWithStaticMask(
+					error instanceof Error ? error.message : String(error),
+				),
 			});
 		}
 
@@ -1285,7 +1294,9 @@ export class McpClientManager extends EventEmitter {
 		} catch (error) {
 			logger.warn("Error closing transport", {
 				name,
-				error: error instanceof Error ? error.message : String(error),
+				error: sanitizeWithStaticMask(
+					error instanceof Error ? error.message : String(error),
+				),
 			});
 		}
 

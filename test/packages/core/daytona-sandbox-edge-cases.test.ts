@@ -185,6 +185,44 @@ describe("DaytonaSandbox Edge Cases", () => {
 		});
 	});
 
+	describe("abortable exec fallbacks", () => {
+		it("falls back to plain executeCommand when signal is passed but session APIs are unavailable", async () => {
+			// PR #2765 changed execWithArgs to mirror exec's gate: if the
+			// caller passes a signal but the Daytona build doesn't expose
+			// session APIs (no executeSession/createSession), fall back to
+			// non-abortable executeCommand rather than throwing. This file
+			// still asserted the old throwing behavior — flip it.
+			const handle = createMockHandle();
+			const sandbox = await createTestSandbox(handle);
+			const controller = new AbortController();
+
+			const result = await sandbox.execWithArgs("gh", ["pr", "view", "1"], {
+				signal: controller.signal,
+			});
+
+			expect(result).toEqual({
+				stdout: "",
+				stderr: "",
+				exitCode: 0,
+			});
+			expect(handle.process.executeCommand).toHaveBeenCalledTimes(1);
+		});
+
+		it("returns a cancelled result when signal is already aborted, even without session APIs", async () => {
+			const handle = createMockHandle();
+			const sandbox = await createTestSandbox(handle);
+			const controller = new AbortController();
+			controller.abort();
+
+			const result = await sandbox.execWithArgs("gh", ["pr", "view", "1"], {
+				signal: controller.signal,
+			});
+
+			expect(result.exitCode).toBe(1);
+			expect(handle.process.executeCommand).not.toHaveBeenCalled();
+		});
+	});
+
 	describe("writeFile — edge cases", () => {
 		it("handles empty content", async () => {
 			const handle = createMockHandle();

@@ -1,6 +1,7 @@
 import type { EnterpriseSession } from "../enterprise/context.js";
 import { checkSessionLimits } from "../safety/policy.js";
 import { recordMaestroSessionEvent } from "../telemetry/maestro-event-bus.js";
+import { sanitizeWithStaticMask } from "../utils/secret-redactor.js";
 import { webSessionEventEnv } from "./session-event-env.js";
 
 type SessionState = Parameters<SessionInitializationManager["startSession"]>[0];
@@ -72,7 +73,9 @@ export async function startSessionWithPolicy(params: {
 		}
 	} catch (error) {
 		logger.warn("Failed to count active sessions", {
-			error: error instanceof Error ? error.message : String(error),
+			error: sanitizeWithStaticMask(
+				error instanceof Error ? error.message : String(error),
+			),
 		});
 	}
 

@@ -50,6 +50,12 @@ export {
 	stringArrayValue,
 } from "./loader.js";
 
+export { composeSkill } from "./composer.js";
+export {
+	type ScaffoldSkillOptions,
+	type ScaffoldSkillResult,
+	scaffoldSkillWithBody,
+} from "./scaffolder.js";
 export { createSkillTool, invalidateSkillCache } from "./tool.js";
 export {
 	type SkillRuntimeActivation,

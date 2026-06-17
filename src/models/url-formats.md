@@ -92,3 +92,29 @@ The model registry automatically normalizes incomplete URLs:
 - Vertex AI: Validates base domain (but cannot auto-complete project/location)
 
 Warnings are logged when auto-normalization occurs.
+
+## Custom Model URL Policy
+
+Custom model `baseUrl` values are validated before the model is registered:
+
+- Public endpoints must use `https://`
+- URLs must not include embedded username/password credentials
+- `localhost`, loopback, private IP, and link-local hosts are blocked by default
+- `Authorization`, `Host`, `Cookie`, `X-Forwarded-*`, and `X-Real-*` custom headers are reserved
+
+Local gateways such as Ollama, LM Studio, and LiteLLM require an explicit URL prefix in `internalBaseUrlAllowList`:
+
+```json
+{
+  "internalBaseUrlAllowList": ["http://localhost:11434/v1"],
+  "providers": [{
+    "id": "ollama",
+    "name": "Ollama",
+    "api": "openai-completions",
+    "baseUrl": "http://localhost:11434/v1",
+    "models": [...]
+  }]
+}
+```
+
+Admins can restrict public endpoints with `allowedBaseUrls`. Matching is by exact origin plus path prefix, so `https://api.openai.com/v1` allows `https://api.openai.com/v1/responses` but not `https://api.openai.com.evil.test/v1`.

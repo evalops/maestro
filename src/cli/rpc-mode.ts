@@ -39,6 +39,7 @@ import {
 	collectPersistedSessionStartHookMessages,
 	runUserPromptWithRecovery,
 } from "../agent/user-prompt-runtime.js";
+import type { ComposerConfig } from "../config/index.js";
 import {
 	createRenderableMessage,
 	renderMessageToPlainText,
@@ -91,6 +92,8 @@ async function collectRpcPostKeepMessages(
 export async function runRpcMode(
 	agent: Agent,
 	sessionManager: SessionManager,
+	profileName?: string,
+	cliOverrides?: Partial<ComposerConfig>,
 ): Promise<void> {
 	// Subscribe to all events and emit as JSON for client consumption
 	agent.subscribe((event) => {
@@ -122,6 +125,8 @@ export async function runRpcMode(
 					prompt: input.message,
 					execute: () => agent.prompt(input.message),
 					getPostKeepMessages: withMcpPostKeepMessages(),
+					profileName,
+					cliOverrides,
 					callbacks: {
 						onCompacted: (result) => {
 							console.log(
@@ -173,6 +178,8 @@ export async function runRpcMode(
 							process.cwd(),
 							preservedMessages,
 						),
+					profileName,
+					cliOverrides,
 					callbacks: {
 						onCompacted: (result) => {
 							console.log(
@@ -202,12 +209,14 @@ export async function runRpcMode(
 							preservedMessages,
 						),
 					customInstructions,
+					cliOverrides,
 					renderSummaryText: (summary: AssistantMessage) => {
 						const renderable = createRenderableMessage(summary as AppMessage);
 						return renderable
 							? renderMessageToPlainText(renderable).trim()
 							: "";
 					},
+					profileName,
 				});
 
 				if (!result.success) {

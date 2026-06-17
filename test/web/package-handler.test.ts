@@ -8,10 +8,11 @@ import {
 } from "node:fs";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { PassThrough } from "node:stream";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { handlePackageStatus } from "../../src/server/handlers/package.js";
+import { trustProjectInGlobalConfig } from "../utils/project-trust.js";
 
 const corsHeaders = { "Access-Control-Allow-Origin": "*" };
 const originalMaestroHome = process.env.MAESTRO_HOME;
@@ -74,6 +75,7 @@ const tempDirs: string[] = [];
 
 function createTempProject(): string {
 	const dir = mkdtempSync(join(tmpdir(), "maestro-package-handler-"));
+	process.env.MAESTRO_HOME = join(dir, ".maestro-home");
 	tempDirs.push(dir);
 	return dir;
 }
@@ -148,6 +150,7 @@ describe("handlePackageStatus", () => {
 			'packages = ["../vendor/pack"]\n',
 			"utf-8",
 		);
+		trustProjectInGlobalConfig(root);
 		vi.spyOn(process, "cwd").mockReturnValue(root);
 
 		const req = makeReq("/api/package");
@@ -230,6 +233,7 @@ describe("handlePackageStatus", () => {
 	it("adds a configured package using the local scope by default", async () => {
 		const root = createTempProject();
 		createMaestroPackage(root);
+		trustProjectInGlobalConfig(root);
 		vi.spyOn(process, "cwd").mockReturnValue(root);
 
 		const req = makeReq("/api/package?action=add", {
@@ -255,6 +259,74 @@ describe("handlePackageStatus", () => {
 		).toContain("../vendor/pack");
 	});
 
+	it("rejects local package adds when project package config is untrusted", async () => {
+		const root = createTempProject();
+		createMaestroPackage(root);
+		vi.spyOn(process, "cwd").mockReturnValue(root);
+
+		const req = makeReq("/api/package?action=add", {
+			method: "POST",
+			body: { source: "./vendor/pack" },
+		});
+		const res = makeRes();
+
+		await handlePackageStatus(
+			req as unknown as IncomingMessage,
+			res as unknown as ServerResponse,
+			corsHeaders,
+		);
+
+		expect(res.statusCode).toBe(400);
+		expect(JSON.parse(res.body)).toMatchObject({
+			error: expect.stringContaining(
+				"Adding package to local config requires a trusted workspace",
+			),
+		});
+	});
+
+	it("honors web profiles before local package trust checks", async () => {
+		const root = createTempProject();
+		createMaestroPackage(root);
+		const profileName = "trusted-packages";
+		const escapedRoot = resolve(root)
+			.replaceAll("\\", "\\\\")
+			.replaceAll('"', '\\"');
+		const maestroHome = process.env.MAESTRO_HOME;
+		if (!maestroHome) {
+			throw new Error("Expected MAESTRO_HOME to be set by createTempProject");
+		}
+		mkdirSync(maestroHome, { recursive: true });
+		writeFileSync(
+			join(maestroHome, "config.toml"),
+			`
+[profiles.${profileName}.projects."${escapedRoot}"]
+trust_level = "trusted"
+`,
+			"utf-8",
+		);
+		vi.spyOn(process, "cwd").mockReturnValue(root);
+
+		const req = makeReq("/api/package?action=add", {
+			method: "POST",
+			body: { source: "./vendor/pack" },
+		});
+		const res = makeRes();
+
+		await handlePackageStatus(
+			req as unknown as IncomingMessage,
+			res as unknown as ServerResponse,
+			corsHeaders,
+			{ profileName },
+		);
+
+		expect(res.statusCode).toBe(200);
+		expect(JSON.parse(res.body)).toMatchObject({
+			path: join(root, ".maestro", "config.local.toml"),
+			scope: "local",
+			spec: "../vendor/pack",
+		});
+	});
+
 	it("removes a configured package and returns the remaining fallback scope", async () => {
 		const root = createTempProject();
 		createMaestroPackage(root);
@@ -269,6 +341,7 @@ describe("handlePackageStatus", () => {
 			'packages = ["../vendor/pack"]\n',
 			"utf-8",
 		);
+		trustProjectInGlobalConfig(root);
 		vi.spyOn(process, "cwd").mockReturnValue(root);
 
 		const req = makeReq("/api/package?action=remove", {
@@ -397,6 +470,7 @@ describe("handlePackageStatus", () => {
 			`packages = ["../vendor/pack", "git:${packageDir}"]\n`,
 			"utf-8",
 		);
+		trustProjectInGlobalConfig(root);
 		vi.spyOn(process, "cwd").mockReturnValue(root);
 
 		const inspectRes = makeRes();
@@ -506,6 +580,7 @@ describe("handlePackageStatus", () => {
 			`packages = ["git:${referencedRepo}"]\n`,
 			"utf-8",
 		);
+		trustProjectInGlobalConfig(root);
 		vi.spyOn(process, "cwd").mockReturnValue(root);
 
 		for (const source of [`git:${referencedRepo}`, `git:${orphanRepo}`]) {

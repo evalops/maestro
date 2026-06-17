@@ -18,6 +18,7 @@ import {
 } from "../platform/core-services.js";
 import { fetchDownstream } from "../utils/downstream-http.js";
 import { createLogger } from "../utils/logger.js";
+import { sanitizeWithStaticMask } from "../utils/secret-redactor.js";
 import type {
 	ResolvePromptTemplateInput,
 	ResolvedPromptTemplate,
@@ -259,7 +260,9 @@ export async function resolvePromptTemplate(
 		return normalizeResolvedPrompt(input, payload);
 	} catch (error) {
 		logger.warn("Failed to resolve prompt template; retaining bundled prompt", {
-			error: error instanceof Error ? error.message : String(error),
+			error: sanitizeWithStaticMask(
+				error instanceof Error ? error.message : String(error),
+			),
 			name,
 			label: trimString(input.label) ?? "production",
 			surface: trimString(input.surface),

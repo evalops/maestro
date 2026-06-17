@@ -237,8 +237,8 @@ describe("handleChat", () => {
 			} as unknown as WebServerContext,
 		);
 
-		expect(res.statusCode).toBe(403);
-		expect(res.body).toContain("session belongs to another user");
+		expect(res.statusCode).toBe(404);
+		expect(res.body).toContain("Session not found");
 		expect(createAgent).not.toHaveBeenCalled();
 	});
 
@@ -293,9 +293,150 @@ describe("handleChat", () => {
 		);
 
 		await waitForWebSocketMessage(ws, (payload) =>
-			payload.includes("session belongs to another user"),
+			payload.includes("Session not found"),
 		);
 		expect(createAgent).not.toHaveBeenCalled();
+	});
+
+	it("passes persisted system prompt source paths when resuming SSE chat", async () => {
+		vi.stubEnv("MAESTRO_STRICT_SESSION_ACCESS", "false");
+		const persistedPaths = ["/tmp/APPEND_SYSTEM.md"];
+		const sessionManager = {
+			getSessionFileById: vi.fn(() => "session.jsonl"),
+			setSessionFile: vi.fn(),
+			loadSession: vi.fn(async () => ({
+				id: "session-1",
+				messages: [],
+				createdAt: new Date().toISOString(),
+				updatedAt: new Date().toISOString(),
+				messageCount: 0,
+				favorite: false,
+				messagesView: "notLoaded",
+			})),
+			getHeader: vi.fn(() => ({
+				type: "session",
+				id: "session-1",
+				timestamp: new Date().toISOString(),
+				cwd: "/workspace",
+				systemPromptSourcePaths: persistedPaths,
+			})),
+		};
+		vi.spyOn(sessionScope, "createWebSessionManagerForRequest").mockReturnValue(
+			sessionManager as unknown as ReturnType<
+				typeof sessionScope.createWebSessionManagerForRequest
+			>,
+		);
+		const req = new PassThrough() as MockPassThrough;
+		req.method = "POST";
+		req.url = "/api/chat";
+		req.headers = {};
+		req.end(
+			JSON.stringify({
+				sessionId: "session-1",
+				messages: [{ role: "user", content: "continue" }],
+			}),
+		);
+		const res = makeRes();
+		let receivedOptions: Parameters<WebServerContext["createAgent"]>[3];
+		const createAgent: WebServerContext["createAgent"] = async (
+			_model,
+			_thinking,
+			_approval,
+			options,
+		) => {
+			receivedOptions = options;
+			throw new Error("stop after capturing createAgent options");
+		};
+
+		await handleChat(
+			req as unknown as IncomingMessage,
+			res as unknown as ServerResponse,
+			{
+				createAgent,
+				getRegisteredModel: async () => mockModel,
+				defaultApprovalMode: "prompt",
+				defaultProvider: "anthropic",
+				defaultModelId: mockModel.id,
+				corsHeaders: cors,
+			} as unknown as WebServerContext,
+		);
+
+		expect(receivedOptions?.persistedSystemPromptSourcePaths).toEqual(
+			persistedPaths,
+		);
+	});
+
+	it("passes persisted system prompt source paths when resuming WebSocket chat", async () => {
+		vi.stubEnv("MAESTRO_STRICT_SESSION_ACCESS", "false");
+		const persistedPaths = ["/tmp/APPEND_SYSTEM.md"];
+		const sessionManager = {
+			getSessionFileById: vi.fn(() => "session.jsonl"),
+			setSessionFile: vi.fn(),
+			loadSession: vi.fn(async () => ({
+				id: "session-1",
+				messages: [],
+				createdAt: new Date().toISOString(),
+				updatedAt: new Date().toISOString(),
+				messageCount: 0,
+				favorite: false,
+				messagesView: "notLoaded",
+			})),
+			getHeader: vi.fn(() => ({
+				type: "session",
+				id: "session-1",
+				timestamp: new Date().toISOString(),
+				cwd: "/workspace",
+				systemPromptSourcePaths: persistedPaths,
+			})),
+		};
+		vi.spyOn(sessionScope, "createWebSessionManagerForRequest").mockReturnValue(
+			sessionManager as unknown as ReturnType<
+				typeof sessionScope.createWebSessionManagerForRequest
+			>,
+		);
+		const req = new PassThrough() as MockPassThrough;
+		req.method = "GET";
+		req.url = "/api/chat/ws";
+		req.headers = { host: "localhost" };
+		const ws = new MockWebSocket();
+		let receivedOptions: Parameters<WebServerContext["createAgent"]>[3];
+		const createAgent: WebServerContext["createAgent"] = async (
+			_model,
+			_thinking,
+			_approval,
+			options,
+		) => {
+			receivedOptions = options;
+			throw new Error("stop after capturing createAgent options");
+		};
+
+		handleChatWebSocket(
+			ws as unknown as Parameters<typeof handleChatWebSocket>[0],
+			req as unknown as IncomingMessage,
+			{
+				createAgent,
+				getRegisteredModel: async () => mockModel,
+				defaultApprovalMode: "prompt",
+				defaultProvider: "anthropic",
+				defaultModelId: mockModel.id,
+				corsHeaders: cors,
+			} as unknown as WebServerContext,
+		);
+		ws.emit(
+			"message",
+			JSON.stringify({
+				sessionId: "session-1",
+				messages: [{ role: "user", content: "continue" }],
+			}),
+		);
+
+		for (let attempt = 0; attempt < 50 && !receivedOptions; attempt += 1) {
+			await new Promise((resolve) => setTimeout(resolve, 10));
+		}
+
+		expect(receivedOptions?.persistedSystemPromptSourcePaths).toEqual(
+			persistedPaths,
+		);
 	});
 
 	it("streams DONE for valid request", async () => {
@@ -358,6 +499,65 @@ describe("handleChat", () => {
 		// SSE stream writes contain DONE marker
 		expect(res.body).toContain("[DONE]");
 		expect(res.statusCode).toBe(200);
+	});
+
+	it("ends SSE chat when restoring the session composer fails", async () => {
+		const req = new PassThrough() as MockPassThrough;
+		req.method = "POST";
+		req.url = "/api/chat";
+		req.headers = {};
+		req.end(
+			JSON.stringify({
+				messages: [{ role: "user", content: "hi" }],
+			}),
+		);
+
+		const res = makeRes();
+		const prompt = vi.fn();
+		const bindAgentSession = vi.fn(() => false);
+
+		const context: Partial<WebServerContext> = {
+			createAgent: async () =>
+				({
+					state: {
+						systemPrompt: "",
+						model: mockModel,
+						thinkingLevel: "off",
+						tools: [],
+						messages: [],
+						isStreaming: false,
+						streamMessage: null,
+						pendingToolCalls: new Map(),
+					},
+					subscribe: () => () => {},
+					replaceMessages: () => {},
+					clearMessages: () => {},
+					prompt,
+					abort: () => {},
+				}) as unknown as Agent,
+			getRegisteredModel: async () => mockModel,
+			defaultApprovalMode: "prompt",
+			defaultProvider: "anthropic",
+			defaultModelId: mockModel.id,
+			corsHeaders: cors,
+			composerManagers: {
+				bindAgentSession,
+				get: () => undefined,
+			},
+		};
+
+		await handleChat(
+			req as unknown as IncomingMessage,
+			res as unknown as ServerResponse,
+			context as WebServerContext,
+		);
+
+		expect(bindAgentSession).toHaveBeenCalled();
+		expect(prompt).not.toHaveBeenCalled();
+		expect(res.body).toContain(
+			"Failed to restore the active composer for this session",
+		);
+		expect(res.body).not.toContain("[DONE]");
 	});
 
 	it("resolves approval requests through the shared approval endpoint during SSE chat", async () => {
@@ -964,6 +1164,7 @@ describe("handleChat", () => {
 		req.url = "/api/chat/ws?clientTools=1";
 		req.headers = { host: "localhost" };
 		const ws = new MockWebSocket();
+		const bindAgentSession = vi.fn(() => true);
 
 		const createAgent: WebServerContext["createAgent"] = async (
 			_model,
@@ -1056,6 +1257,10 @@ describe("handleChat", () => {
 			defaultProvider: "anthropic",
 			defaultModelId: mockModel.id,
 			corsHeaders: cors,
+			composerManagers: {
+				bindAgentSession,
+				get: () => undefined,
+			},
 		};
 
 		handleChatWebSocket(
@@ -1079,6 +1284,11 @@ describe("handleChat", () => {
 		});
 		expect(typeof pendingRequest.sessionId).toBe("string");
 		expect(pendingRequest.sessionId).toBeTruthy();
+		expect(bindAgentSession).toHaveBeenCalledWith(
+			expect.anything(),
+			expect.any(String),
+			pendingRequest.sessionId,
+		);
 
 		const sessionUpdate = await waitForWebSocketMessage(
 			ws,
@@ -1131,6 +1341,71 @@ describe("handleChat", () => {
 			payload.includes('"type":"done"'),
 		);
 		expect(serverRequestManager.listPending()).toEqual([]);
+	});
+
+	it("ends websocket chat when restoring the session composer fails", async () => {
+		const req = new PassThrough() as MockPassThrough;
+		req.method = "GET";
+		req.url = "/api/chat/ws";
+		req.headers = { host: "localhost" };
+		const ws = new MockWebSocket();
+		const prompt = vi.fn();
+		const bindAgentSession = vi.fn(() => false);
+
+		const context: Partial<WebServerContext> = {
+			createAgent: async () =>
+				({
+					state: {
+						systemPrompt: "",
+						model: mockModel,
+						thinkingLevel: "off",
+						tools: [],
+						messages: [],
+						isStreaming: false,
+						streamMessage: null,
+						pendingToolCalls: new Map(),
+					},
+					subscribe: () => () => {},
+					replaceMessages: () => {},
+					clearMessages: () => {},
+					prompt,
+					abort: () => {},
+				}) as unknown as Agent,
+			getRegisteredModel: async () => mockModel,
+			defaultApprovalMode: "prompt",
+			defaultProvider: "anthropic",
+			defaultModelId: mockModel.id,
+			corsHeaders: cors,
+			composerManagers: {
+				bindAgentSession,
+				get: () => undefined,
+			},
+		};
+
+		handleChatWebSocket(
+			ws as unknown as Parameters<typeof handleChatWebSocket>[0],
+			req as unknown as IncomingMessage,
+			context as WebServerContext,
+		);
+
+		ws.emit(
+			"message",
+			JSON.stringify({
+				messages: [{ role: "user", content: "help me choose" }],
+			}),
+		);
+
+		await waitForWebSocketMessage(ws, (payload) =>
+			payload.includes(
+				"Failed to restore the active composer for this session",
+			),
+		);
+		await waitForWebSocketMessage(ws, (payload) =>
+			payload.includes('"type":"done"'),
+		);
+
+		expect(bindAgentSession).toHaveBeenCalled();
+		expect(prompt).not.toHaveBeenCalled();
 	});
 
 	it("creates a recoverable session before first-turn approval requests over websocket", async () => {

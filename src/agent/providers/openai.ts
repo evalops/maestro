@@ -94,6 +94,7 @@
 
 import crypto from "node:crypto";
 import { normalizeLLMBaseUrl } from "../../models/url-normalize.js";
+import { isInternalModelBaseUrl } from "../../models/url-policy.js";
 import { fetchWithRetry } from "../../providers/network-config.js";
 import {
 	createTimeoutReader,
@@ -971,7 +972,10 @@ export async function* streamOpenAI(
 			signal: options.signal,
 		},
 		model.provider,
-		{ modelId: model.id },
+		{
+			modelId: model.id,
+			allowInternalBaseUrl: isInternalModelBaseUrl(targetUrl),
+		},
 	);
 
 	if (!response.ok) {

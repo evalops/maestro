@@ -60,6 +60,8 @@ export interface BackgroundTask {
 	terminatingForLimits?: boolean;
 	failureReason?: string;
 	lastLimitBreach?: ResourceLimitBreach;
+	outputScrubberFailed?: boolean;
+	outputScrubberFailureNotified?: boolean;
 }
 
 export interface TaskStartOptions {

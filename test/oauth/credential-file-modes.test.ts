@@ -30,10 +30,15 @@ describe("credential file permissions", () => {
 		vi.resetModules();
 		testDir = join(tmpdir(), `maestro-credential-modes-${Date.now()}`);
 		process.env.MAESTRO_AGENT_DIR = join(testDir, "agent");
+		// File mode pin — this suite specifically tests
+		// `oauth.json` permission bits, which only exist in file
+		// mode (#2611).
+		process.env.MAESTRO_OAUTH_STORAGE_MODE = "file";
 		mkdirSync(testDir, { recursive: true, mode: 0o700 });
 	});
 
 	afterEach(() => {
+		delete process.env.MAESTRO_OAUTH_STORAGE_MODE;
 		if (originalPlatform) {
 			Object.defineProperty(process, "platform", originalPlatform);
 		}

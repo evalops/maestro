@@ -85,7 +85,7 @@ export async function handleSessionTimeline(
 
 		const subject = getAuthSubject(req);
 		if (!verifySessionOwnership(session, subject)) {
-			throw new ApiError(403, "Access denied: session belongs to another user");
+			throw new ApiError(404, "Session not found");
 		}
 
 		const sessionPath = sessionManager.getSessionFileById(sessionId);

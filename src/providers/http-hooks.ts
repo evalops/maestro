@@ -36,6 +36,7 @@
 
 import type { Provider } from "../agent/types.js";
 import { createLogger } from "../utils/logger.js";
+import { sanitizeWithStaticMask } from "../utils/secret-redactor.js";
 
 const logger = createLogger("providers:http-hooks");
 
@@ -289,7 +290,9 @@ class HttpHooksManager {
 				}
 			} catch (error) {
 				logger.warn("Request hook handler error", {
-					error: error instanceof Error ? error.message : String(error),
+					error: sanitizeWithStaticMask(
+						error instanceof Error ? error.message : String(error),
+					),
 					requestId,
 				});
 			}

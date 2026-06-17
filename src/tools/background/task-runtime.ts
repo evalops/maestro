@@ -4,7 +4,13 @@ import {
 	spawn,
 } from "node:child_process";
 import { existsSync, statSync } from "node:fs";
+import { StringDecoder } from "node:string_decoder";
 
+import {
+	SecretOutputScrubber,
+	SecretScrubberError,
+	type SecretScrubberFailureContext,
+} from "../output-scrubber.js";
 import {
 	getShellConfig,
 	killProcessTree,
@@ -44,6 +50,12 @@ export interface BackgroundTaskRuntimeHooks {
 	) => void;
 	scheduleCleanup: (task: BackgroundTask) => void;
 	setFailureReason: (task: BackgroundTask, reason: string) => void;
+	maskSecret: (secret: string) => string;
+	handleOutputScrubberFailure: (
+		task: BackgroundTask,
+		error: unknown,
+		context: SecretScrubberFailureContext,
+	) => void;
 }
 
 export class BackgroundTaskRuntime {
@@ -389,6 +401,8 @@ export class BackgroundTaskRuntime {
 		task.logWriter = writer;
 
 		let closed = false;
+		let childClosed = false;
+		let openSources = 0;
 		const closeStream = () => {
 			if (closed) {
 				return;
@@ -396,22 +410,78 @@ export class BackgroundTaskRuntime {
 			closed = true;
 			writer.end();
 		};
+		const maybeCloseStream = () => {
+			if (childClosed && openSources === 0) {
+				closeStream();
+			}
+		};
 
 		const attach = (source?: NodeJS.ReadableStream | null) => {
 			if (!source) {
 				return;
 			}
-			source.pipe(writer, { end: false });
+			openSources += 1;
+			let sourceClosed = false;
+			const closeSource = () => {
+				if (sourceClosed) {
+					return;
+				}
+				sourceClosed = true;
+				openSources = Math.max(0, openSources - 1);
+				maybeCloseStream();
+			};
+			const decoder = new StringDecoder("utf8");
+			const scrubber = new SecretOutputScrubber({
+				maskSecret: (secret) => this.hooks.maskSecret(secret),
+				surface: "background_tasks",
+				windowSize: 256,
+				onFailure: (error, context) =>
+					this.hooks.handleOutputScrubberFailure(task, error, context),
+			});
+			const writeSafeOutput = (value: string) => {
+				if (value && !closed) {
+					writer.write(value);
+				}
+			};
+			const handleScrubError = (error: unknown) => {
+				task.logTruncated = true;
+				if (error instanceof SecretScrubberError) {
+					closeStream();
+				}
+			};
+			source.on("data", (data) => {
+				try {
+					const buffer = Buffer.isBuffer(data) ? data : Buffer.from(data);
+					writeSafeOutput(scrubber.write(decoder.write(buffer)));
+				} catch (error) {
+					handleScrubError(error);
+				}
+			});
+			source.on("end", () => {
+				try {
+					writeSafeOutput(scrubber.write(decoder.end()));
+					writeSafeOutput(scrubber.flush());
+				} catch (error) {
+					handleScrubError(error);
+				}
+				closeSource();
+			});
 			source.on("error", () => {
 				task.logTruncated = true;
-				closeStream();
+				closeSource();
 			});
 		};
 
 		attach(child.stdout);
 		attach(child.stderr);
 
-		child.once("close", closeStream);
-		child.once("error", closeStream);
+		child.once("close", () => {
+			childClosed = true;
+			maybeCloseStream();
+		});
+		child.once("error", () => {
+			childClosed = true;
+			maybeCloseStream();
+		});
 	}
 }

@@ -6,7 +6,9 @@ import { PATHS } from "../../config/constants.js";
 import {
 	type WritablePackageScope,
 	addConfiguredPackageSpecToConfig,
+	isWorkspacePackageConfigTrusted,
 } from "../../config/index.js";
+import type { ComposerConfig } from "../../config/toml-config.js";
 import {
 	buildSkillPackagePublishContract,
 	buildSkillRuntimeActivation,
@@ -36,6 +38,8 @@ interface SkillCommandOptions {
 interface SkillCommandContext {
 	workspaceDir?: string;
 	includeSystemSkills?: boolean;
+	profileName?: string;
+	cliOverrides?: Partial<ComposerConfig>;
 }
 
 function formatSkillHelp(): string {
@@ -132,9 +136,23 @@ async function handleInstall(
 	workspaceDir: string,
 	sourceSpec: string | undefined,
 	options: SkillCommandOptions,
+	context: SkillCommandContext,
 ) {
 	if (!sourceSpec) {
 		throw new Error("maestro skill install requires a package source");
+	}
+	const scope = options.scope ?? "local";
+	if (
+		scope !== "user" &&
+		!isWorkspacePackageConfigTrusted(
+			workspaceDir,
+			context.profileName,
+			context.cliOverrides,
+		)
+	) {
+		throw new Error(
+			`maestro skill install --scope ${scope} requires a trusted workspace because ${scope} package config is ignored until trust is granted. Use --scope user or trust this workspace in global config.`,
+		);
 	}
 	const contract = await buildSkillPackagePublishContract(sourceSpec, {
 		cwd: workspaceDir,
@@ -155,8 +173,10 @@ async function handleInstall(
 
 	const installed = addConfiguredPackageSpecToConfig({
 		workspaceDir,
-		scope: options.scope ?? "local",
+		scope,
 		spec: sourceSpec,
+		profileName: context.profileName,
+		cliOverrides: context.cliOverrides,
 	});
 	if (options.json) {
 		console.log(
@@ -204,8 +224,15 @@ async function handleList(
 	const result = loadSkills(
 		workspaceDir,
 		context.includeSystemSkills === undefined
-			? undefined
-			: { includeSystem: context.includeSystemSkills },
+			? {
+					profileName: context.profileName,
+					cliOverrides: context.cliOverrides,
+				}
+			: {
+					includeSystem: context.includeSystemSkills,
+					profileName: context.profileName,
+					cliOverrides: context.cliOverrides,
+				},
 	);
 	if (options.json) {
 		console.log(
@@ -247,11 +274,15 @@ async function handleInspect(
 	workspaceDir: string,
 	name: string | undefined,
 	options: SkillCommandOptions,
+	context: SkillCommandContext,
 ) {
 	if (!name) {
 		throw new Error("maestro skill inspect requires a skill name");
 	}
-	const result = loadSkills(workspaceDir);
+	const result = loadSkills(workspaceDir, {
+		profileName: context.profileName,
+		cliOverrides: context.cliOverrides,
+	});
 	const skill = findSkill(result.skills, name);
 	if (!skill) {
 		throw new Error(`Skill '${name}' not found`);
@@ -368,10 +399,10 @@ export async function handleSkillCommand(
 			await handleList(workspaceDir, parsedOptions, options);
 			return;
 		case "inspect":
-			await handleInspect(workspaceDir, positionals[0], parsedOptions);
+			await handleInspect(workspaceDir, positionals[0], parsedOptions, options);
 			return;
 		case "install":
-			await handleInstall(workspaceDir, positionals[0], parsedOptions);
+			await handleInstall(workspaceDir, positionals[0], parsedOptions, options);
 			return;
 		case "publish-check":
 			await handlePublishCheck(workspaceDir, positionals[0], parsedOptions);

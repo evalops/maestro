@@ -43,14 +43,34 @@ import type { AgentTool, ToolAnnotations } from "../agent/types.js";
 import { PATHS } from "../config/constants.js";
 import { createLogger } from "../utils/logger.js";
 import { expandTildePath } from "../utils/path-expansion.js";
-import { sanitizeWithStaticMask } from "../utils/secret-redactor.js";
 import { resolveShellEnvironment } from "../utils/shell-env.js";
+import {
+	SecretScrubberError,
+	scrubOutputFailClosed,
+} from "./output-scrubber.js";
 import { createTool } from "./tool-dsl.js";
 
 const logger = createLogger("inline-tools");
 
 // Output buffer limit (40KB) to prevent memory exhaustion from verbose inline tools.
 const MAX_INLINE_BUFFER = 40 * 1024;
+
+function sanitizeInlineOutput(value: string): string {
+	return scrubOutputFailClosed(value, { surface: "inline-tools" });
+}
+
+function sanitizeInlineErrorMessage(error: unknown): string {
+	if (error instanceof SecretScrubberError) {
+		return error.message;
+	}
+	try {
+		return sanitizeInlineOutput(
+			error instanceof Error ? error.message : String(error),
+		);
+	} catch {
+		return "Output scrubber failed; aborting to avoid leaking raw shell output";
+	}
+}
 
 /**
  * JSON Schema parameter definition (simplified subset)
@@ -363,8 +383,8 @@ function createInlineTool(def: InlineToolDef): AgentTool {
 						`stderr exceeded ${displayedKB}KB limit and was truncated`,
 					);
 				}
-				const stdout = sanitizeWithStaticMask(result.stdout);
-				const stderr = sanitizeWithStaticMask(result.stderr);
+				const stdout = sanitizeInlineOutput(result.stdout);
+				const stderr = sanitizeInlineOutput(result.stderr);
 				const truncationNotice =
 					truncationMessages.length > 0
 						? `Warning: Output truncated: ${truncationMessages.join(
@@ -400,9 +420,7 @@ function createInlineTool(def: InlineToolDef): AgentTool {
 				}
 				return context.respond.text(output || "(no output)");
 			} catch (error) {
-				const message = sanitizeWithStaticMask(
-					error instanceof Error ? error.message : String(error),
-				);
+				const message = sanitizeInlineErrorMessage(error);
 				return context.respond.error(`Failed to execute command: ${message}`);
 			}
 		},

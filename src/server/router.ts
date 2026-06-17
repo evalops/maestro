@@ -95,8 +95,19 @@ export interface Route {
 	method: string;
 	/** URL path pattern, may include `:param` segments for dynamic matching */
 	path: string;
+	/** Explicit auth policy attached by the route auth registry. */
+	auth?: RouteAuthPolicy;
 	/** Handler function to process matching requests */
 	handler: RouteHandler;
+}
+
+export type RouteAuthLevel = "public" | "authenticated" | "owner";
+
+export interface RouteAuthPolicy {
+	/** Boundary enforced before the handler runs. */
+	level: RouteAuthLevel;
+	/** Allow a scoped artifact access grant to satisfy auth for this route. */
+	allowArtifactAccess?: boolean;
 }
 
 /**

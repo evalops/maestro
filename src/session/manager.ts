@@ -9,15 +9,7 @@
  * pointer without modifying history.
  */
 
-import {
-	appendFileSync,
-	existsSync,
-	mkdirSync,
-	readFileSync,
-	readdirSync,
-	statSync,
-	writeFileSync,
-} from "node:fs";
+import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { extname, join, resolve } from "node:path";
 import { v4 as uuidv4 } from "uuid";
 import { isToolResultMessage } from "../agent/type-guards.js";
@@ -35,6 +27,7 @@ import type { SharedMemoryUpdate } from "../shared-memory/client.js";
 import { recordMaestroPromptVariantSelected } from "../telemetry/maestro-event-bus.js";
 import { createLogger } from "../utils/logger.js";
 import { resolveEnvPath } from "../utils/path-expansion.js";
+import { sanitizeWithStaticMask } from "../utils/secret-redactor.js";
 import { SessionFileWriter } from "./file-writer.js";
 import { toSessionModelMetadata } from "./model-metadata.js";
 export { toSessionModelMetadata } from "./model-metadata.js";
@@ -48,6 +41,11 @@ import {
 	scheduleSessionMigration,
 	unregisterActiveSessionFile,
 } from "./migration.js";
+import {
+	appendPrivateSessionFile,
+	ensurePrivateSessionDirectory,
+	writePrivateSessionFile,
+} from "./private-permissions.js";
 import { sanitizeSessionScope } from "./scope.js";
 import {
 	createBranchedSessionFromLeaf as createBranchedSessionFromLeafFn,
@@ -63,7 +61,9 @@ import {
 import { syncSessionMemory } from "./session-memory.js";
 import {
 	applyAttachmentExtracts,
+	sanitizeCustomMessageEntryForSession,
 	sanitizeMessageForSession,
+	sanitizeSessionTextForPersistence,
 } from "./session-sanitize.js";
 import {
 	type AttachmentExtractedEntry,
@@ -114,7 +114,9 @@ function queueSharedMemoryUpdateLazy(update: SharedMemoryUpdate): void {
 		})
 		.catch((error) => {
 			logger.warn("Failed to queue shared memory update", {
-				error: error instanceof Error ? error.message : String(error),
+				error: sanitizeWithStaticMask(
+					error instanceof Error ? error.message : String(error),
+				),
 			});
 		});
 }
@@ -354,9 +356,7 @@ export class SessionManager {
 		const sessionDir = scope
 			? join(baseDir, scope, safePath)
 			: join(baseDir, safePath);
-		if (!existsSync(sessionDir)) {
-			mkdirSync(sessionDir, { recursive: true });
-		}
+		ensurePrivateSessionDirectory(sessionDir);
 		return sessionDir;
 	}
 
@@ -467,7 +467,7 @@ export class SessionManager {
 		if (!this.enabled || !this.sessionFile) return;
 		this.writer?.flushSync();
 		const content = `${this.fileEntries.map((e) => JSON.stringify(e)).join("\n")}\n`;
-		writeFileSync(this.sessionFile, content);
+		writePrivateSessionFile(this.sessionFile, content);
 	}
 
 	private persistEntry(entry: SessionEntry): void {
@@ -545,6 +545,11 @@ export class SessionManager {
 			promptMetadata: state.promptMetadata,
 			promptContextManifest: getPersistedSessionPromptContextManifest(state),
 			unifiedContextManifest: state.unifiedContextManifest,
+			systemPromptSourcePaths:
+				state.systemPromptSourcePaths &&
+				state.systemPromptSourcePaths.length > 0
+					? [...state.systemPromptSourcePaths]
+					: undefined,
 			tools: state.tools.map((tool) => ({
 				name: tool.name,
 				label: tool.label,
@@ -727,12 +732,13 @@ export class SessionManager {
 		details?: T,
 	): void {
 		if (!this.enabled) return;
+		const sanitized = sanitizeCustomMessageEntryForSession(content, details);
 		const entry: CustomMessageEntry<T> = {
 			type: "custom_message",
 			customType,
-			content,
+			content: sanitized.content,
 			display,
-			details,
+			details: sanitized.details,
 			id: this.createTreeEntryId(),
 			parentId: this.leafId,
 			timestamp: new Date().toISOString(),
@@ -891,7 +897,7 @@ export class SessionManager {
 			...meta,
 		};
 		try {
-			appendFileSync(targetFile, `${JSON.stringify(entry)}\n`);
+			appendPrivateSessionFile(targetFile, `${JSON.stringify(entry)}\n`);
 			if (resolve(targetFile) === this.sessionFile) {
 				this.fileEntries.push(entry);
 			}
@@ -913,10 +919,10 @@ export class SessionManager {
 			type: "attachment_extract",
 			timestamp: new Date().toISOString(),
 			attachmentId: payload.attachmentId,
-			extractedText: payload.extractedText,
+			extractedText: sanitizeSessionTextForPersistence(payload.extractedText),
 		};
 		try {
-			appendFileSync(targetFile, `${JSON.stringify(entry)}\n`);
+			appendPrivateSessionFile(targetFile, `${JSON.stringify(entry)}\n`);
 			return entry;
 		} catch (error) {
 			logger.error(
@@ -1028,7 +1034,9 @@ export class SessionManager {
 		} catch (error) {
 			logger.warn("Failed to sync session memory", {
 				sessionPath,
-				error: error instanceof Error ? error.message : String(error),
+				error: sanitizeWithStaticMask(
+					error instanceof Error ? error.message : String(error),
+				),
 			});
 		}
 	}
@@ -1049,7 +1057,10 @@ export class SessionManager {
 		for (const entry of this.fileEntries) {
 			if (entry.type === "attachment_extract") {
 				if (entry.attachmentId && entry.extractedText) {
-					extractedById.set(entry.attachmentId, entry.extractedText);
+					extractedById.set(
+						entry.attachmentId,
+						sanitizeSessionTextForPersistence(entry.extractedText),
+					);
 				}
 			}
 		}
@@ -1587,10 +1598,9 @@ export class SessionManager {
 			index === headerIndex ? importedHeader : entry,
 		);
 
-		writeFileSync(
+		writePrivateSessionFile(
 			targetFile,
 			`${importedEntries.map((entry) => JSON.stringify(entry)).join("\n")}\n`,
-			"utf8",
 		);
 
 		return {
@@ -1674,10 +1684,9 @@ export class SessionManager {
 				index === headerIndex ? importedHeader : entry,
 			);
 
-			writeFileSync(
+			writePrivateSessionFile(
 				targetFile,
 				`${importedEntries.map((entry) => JSON.stringify(entry)).join("\n")}\n`,
-				"utf8",
 			);
 			importedIds.set(session.sessionId, importedSessionId);
 			importedFiles.set(session.sessionId, targetFile);

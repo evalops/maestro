@@ -195,11 +195,21 @@ export class CliCommandAggregator {
 		return this.lockTimeoutMs + LOCK_STALE_GRACE_MS;
 	}
 
-	async dispose(): Promise<void> {
+	/**
+	 * Clear the background flush timer synchronously. Safe to call
+	 * from a sync reset path (e.g. `resetGlobalCliCommandAggregatorForTests`)
+	 * to guarantee the interval cannot fire after the singleton is
+	 * replaced. `dispose()` still does this plus a final async flush.
+	 */
+	clearTimer(): void {
 		if (this.timer) {
 			clearInterval(this.timer);
 			this.timer = null;
 		}
+	}
+
+	async dispose(): Promise<void> {
+		this.clearTimer();
 		await this.flush();
 	}
 
@@ -316,7 +326,19 @@ export function getGlobalCliCommandAggregator(
 }
 
 export function resetGlobalCliCommandAggregatorForTests(): void {
+	const previous = globalAggregator;
 	globalAggregator = null;
+	if (previous) {
+		// Stop the background flush interval synchronously — without this,
+		// the timer keeps firing into the next test's `bufferFile` /
+		// `MAESTRO_BEACON_FILE` env and races the new aggregator. Mirror
+		// the dispose path's async best-effort final flush; intentionally
+		// swallow errors so a stale bufferFile (e.g. removed when the
+		// prior test's tempDir was cleaned up) does not bleed into the
+		// caller.
+		previous.clearTimer();
+		void previous.dispose().catch(() => undefined);
+	}
 }
 
 export function normalizeCommandAction(command: string): string {

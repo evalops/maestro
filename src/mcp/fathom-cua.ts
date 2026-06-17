@@ -1,6 +1,7 @@
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { createLogger } from "../utils/logger.js";
+import { sanitizeWithStaticMask } from "../utils/secret-redactor.js";
 import type { McpServerConfig } from "./types.js";
 
 const logger = createLogger("mcp:fathom-cua");
@@ -110,7 +111,9 @@ function parseArgsJson(raw: string | undefined): string[] {
 		});
 	} catch (error) {
 		logger.warn("Ignoring invalid Fathom CUA MCP args JSON", {
-			error: error instanceof Error ? error.message : String(error),
+			error: sanitizeWithStaticMask(
+				error instanceof Error ? error.message : String(error),
+			),
 		});
 		return [];
 	}

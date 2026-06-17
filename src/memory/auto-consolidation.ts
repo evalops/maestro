@@ -11,8 +11,10 @@ import { join } from "node:path";
 import { getLastAssistantMessage } from "../agent/index.js";
 import type { Agent, Api, Model, TextContent } from "../agent/index.js";
 import { PATHS } from "../config/constants.js";
+import { writeTextFileAtomic } from "../utils/fs.js";
 import { safeJsonParse } from "../utils/json.js";
 import { createLogger } from "../utils/logger.js";
+import { sanitizeWithStaticMask } from "../utils/secret-redactor.js";
 import { getDurableMemoryBackend } from "./backend.js";
 import {
 	applyAutoMemoryConsolidation,
@@ -136,7 +138,9 @@ function loadState(): ConsolidationState {
 		) as ConsolidationState;
 	} catch (error) {
 		logger.warn("Failed to load memory consolidation state", {
-			error: error instanceof Error ? error.message : String(error),
+			error: sanitizeWithStaticMask(
+				error instanceof Error ? error.message : String(error),
+			),
 		});
 		return {};
 	}
@@ -184,10 +188,10 @@ function setScopeState(
 
 function saveState(state: ConsolidationState): void {
 	ensureMemoryDir();
-	writeFileSync(
+	writeTextFileAtomic(
 		CONSOLIDATION_STATE_FILE,
 		JSON.stringify(state, null, 2),
-		"utf8",
+		{ encoding: "utf-8" },
 	);
 }
 
@@ -222,7 +226,9 @@ function releaseLock(): void {
 		}
 	} catch (error) {
 		logger.warn("Failed to release memory consolidation lock", {
-			error: error instanceof Error ? error.message : String(error),
+			error: sanitizeWithStaticMask(
+				error instanceof Error ? error.message : String(error),
+			),
 		});
 	}
 }
@@ -484,7 +490,9 @@ export function createAutomaticMemoryConsolidationCoordinator(
 						logger.warn("Automatic durable memory consolidation failed", {
 							projectId: group.projectId,
 							projectName: group.projectName,
-							error: error instanceof Error ? error.message : String(error),
+							error: sanitizeWithStaticMask(
+								error instanceof Error ? error.message : String(error),
+							),
 						});
 					} finally {
 						releaseLock();

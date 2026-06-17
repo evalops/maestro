@@ -79,7 +79,7 @@ export async function buildSessionReplayLabForRequest(
 
 	const subject = getAuthSubject(req);
 	if (!verifySessionOwnership(session, subject)) {
-		throw new ApiError(403, "Access denied: session belongs to another user");
+		throw new ApiError(404, "Session not found");
 	}
 
 	const entries = (await sessionManager.loadEntries(sessionId)) ?? [];

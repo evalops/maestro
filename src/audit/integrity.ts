@@ -12,6 +12,7 @@ import { desc, eq } from "drizzle-orm";
 import { getDb, isDbAvailable } from "../db/client.js";
 import { auditHashCache, auditLogs } from "../db/schema.js";
 import { createLogger } from "../utils/logger.js";
+import { sanitizeWithStaticMask } from "../utils/secret-redactor.js";
 
 const logger = createLogger("audit:integrity");
 
@@ -324,7 +325,9 @@ export async function verifyAuditChain(
 		return {
 			valid: false,
 			entriesChecked: 0,
-			error: error instanceof Error ? error.message : "Unknown error",
+			error: sanitizeWithStaticMask(
+				error instanceof Error ? error.message : "Unknown error",
+			),
 		};
 	}
 }

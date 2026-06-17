@@ -388,6 +388,118 @@ describe("Native Sandbox", () => {
 				}
 			});
 
+			// #2482 — `.git/hooks/*` writable on the next git operation =
+			// arbitrary code execution. Regression suite for the three
+			// shapes `.git` can take.
+
+			it("blocks writes to .git/hooks/pre-commit in a regular repo", async () => {
+				const gitDir = join(testDir, ".git");
+				mkdirSync(join(gitDir, "hooks"), { recursive: true });
+				const sandbox = createNativeSandbox(
+					{ mode: "workspace-write" },
+					testDir,
+				);
+				await sandbox.initialize();
+
+				try {
+					await expect(
+						sandbox.writeFile(".git/hooks/pre-commit", "#!/bin/sh\nbad\n"),
+					).rejects.toThrow(
+						"Cannot write outside writable roots in workspace-write sandbox mode",
+					);
+				} finally {
+					await sandbox.dispose();
+				}
+			});
+
+			it("blocks writes to .git/hooks/* in a linked worktree (gitfile case)", async () => {
+				// Set up: testDir is a worktree. `<testDir>/.git` is a
+				// regular file whose contents point at a separate dir.
+				// `<gitdir>/commondir` points at a primary-repo `.git`.
+				const primaryGitDir = join(
+					tmpdir(),
+					`sandbox-primary-git-${Date.now()}`,
+				);
+				const worktreeGitDir = join(
+					primaryGitDir,
+					"worktrees",
+					basename(testDir),
+				);
+				mkdirSync(join(primaryGitDir, "hooks"), { recursive: true });
+				mkdirSync(worktreeGitDir, { recursive: true });
+				writeFileSync(
+					join(worktreeGitDir, "commondir"),
+					primaryGitDir,
+					"utf-8",
+				);
+				writeFileSync(join(testDir, ".git"), `gitdir: ${worktreeGitDir}\n`);
+
+				const sandbox = createNativeSandbox(
+					{ mode: "workspace-write" },
+					testDir,
+				);
+				await sandbox.initialize();
+
+				try {
+					// 1. Literal `.git/hooks/pre-commit` write is refused
+					await expect(
+						sandbox.writeFile(".git/hooks/pre-commit", "#!/bin/sh\nbad\n"),
+					).rejects.toThrow(
+						"Cannot write outside writable roots in workspace-write sandbox mode",
+					);
+
+					// 2. The per-worktree gitdir hooks path is refused
+					await expect(
+						sandbox.writeFile(
+							join(worktreeGitDir, "hooks/pre-commit"),
+							"#!/bin/sh\nbad\n",
+						),
+					).rejects.toThrow(
+						"Cannot write outside writable roots in workspace-write sandbox mode",
+					);
+
+					// 3. The commondir hooks path (where the hook ACTUALLY
+					// lives in a worktree) is refused — this is the
+					// `.git/hooks/*` arbitrary-execution path the issue
+					// flags as severity:high.
+					await expect(
+						sandbox.writeFile(
+							join(primaryGitDir, "hooks/pre-commit"),
+							"#!/bin/sh\nbad\n",
+						),
+					).rejects.toThrow(
+						"Cannot write outside writable roots in workspace-write sandbox mode",
+					);
+				} finally {
+					await sandbox.dispose();
+					rmSync(primaryGitDir, { recursive: true, force: true });
+				}
+			});
+
+			it("blocks writes when .git is a symlink to an outside path", async () => {
+				if (platform() === "win32") return;
+				const realGitDir = join(tmpdir(), `sandbox-symlink-git-${Date.now()}`);
+				mkdirSync(join(realGitDir, "hooks"), { recursive: true });
+				symlinkSync(realGitDir, join(testDir, ".git"));
+
+				const sandbox = createNativeSandbox(
+					{ mode: "workspace-write" },
+					testDir,
+				);
+				await sandbox.initialize();
+
+				try {
+					await expect(
+						sandbox.writeFile(".git/hooks/pre-commit", "#!/bin/sh\nbad\n"),
+					).rejects.toThrow(
+						"Cannot write outside writable roots in workspace-write sandbox mode",
+					);
+				} finally {
+					await sandbox.dispose();
+					rmSync(realGitDir, { recursive: true, force: true });
+				}
+			});
+
 			it("throws on write in read-only mode", async () => {
 				const sandbox = createNativeSandbox({ mode: "read-only" }, testDir);
 				await sandbox.initialize();
@@ -695,6 +807,27 @@ describe("Native Sandbox", () => {
 				expect(result.stdout.trim()).toBe("found-url");
 
 				await sandbox.dispose();
+			});
+
+			it("returns an ExecResult when execWithArgs is unsupported", async () => {
+				if (platform() === "darwin" && isNativeSandboxAvailable()) return;
+
+				const sandbox = createNativeSandbox(
+					{ mode: "workspace-write" },
+					testDir,
+				);
+				await sandbox.initialize();
+
+				try {
+					const result = await sandbox.execWithArgs("gh", ["--version"]);
+					expect(result.stdout).toBe("");
+					expect(result.stderr).toMatch(
+						/Refusing to run unsandboxed|not supported on platform/,
+					);
+					expect(result.exitCode).toBe(1);
+				} finally {
+					await sandbox.dispose();
+				}
 			});
 
 			it("passes environment variables", async () => {

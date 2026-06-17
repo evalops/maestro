@@ -36,7 +36,7 @@ import {
 import {
 	CREDENTIAL_PATTERN_DEFS,
 	type SanitizeOptions,
-	createPatternRegex,
+	replaceCredentialPatternMatches,
 } from "./credential-patterns.js";
 import {
 	type CredentialStore,
@@ -115,14 +115,11 @@ function vaultCredentialsInValue(
 	}
 
 	if (typeof value === "string") {
-		let result = value;
-		for (const def of CREDENTIAL_PATTERN_DEFS) {
-			const pattern = createPatternRegex(def);
-			result = result.replace(pattern, (match) =>
-				vaultSensitiveValue(match, def.type, store),
-			);
-		}
-		return result;
+		return replaceCredentialPatternMatches(
+			value,
+			(secret, def) => vaultSensitiveValue(secret, def.type, store),
+			CREDENTIAL_PATTERN_DEFS,
+		);
 	}
 
 	if (Array.isArray(value)) {

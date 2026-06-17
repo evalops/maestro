@@ -6,6 +6,7 @@
 import crypto from "node:crypto";
 import jwt from "jsonwebtoken";
 import { createLogger } from "../utils/logger.js";
+import { sanitizeWithStaticMask } from "../utils/secret-redactor.js";
 import {
 	isTokenIssuedBeforeRevocation,
 	isTokenRevokedSync,
@@ -100,7 +101,9 @@ export function verifyToken(token: string): JwtPayload | null {
 		return decoded;
 	} catch (error) {
 		logger.debug("Token verification failed", {
-			error: error instanceof Error ? error.message : String(error),
+			error: sanitizeWithStaticMask(
+				error instanceof Error ? error.message : String(error),
+			),
 		});
 		return null;
 	}
@@ -139,7 +142,9 @@ export async function verifyTokenAsync(
 		return decoded;
 	} catch (error) {
 		logger.debug("Token verification failed", {
-			error: error instanceof Error ? error.message : String(error),
+			error: sanitizeWithStaticMask(
+				error instanceof Error ? error.message : String(error),
+			),
 		});
 		return null;
 	}

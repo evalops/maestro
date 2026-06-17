@@ -16,6 +16,7 @@ import {
 import { getGitSnapshot } from "../utils/git.js";
 import { createLogger } from "../utils/logger.js";
 import { isWithinCwd } from "../utils/path-validation.js";
+import { sanitizeWithStaticMask } from "../utils/secret-redactor.js";
 import type { AgentContextSource } from "./context-manager.js";
 
 const logger = createLogger("context-providers");
@@ -65,7 +66,9 @@ export class TodoContextSource implements AgentContextSource {
 			return null;
 		} catch (error) {
 			logger.warn("Failed to load todo context", {
-				error: error instanceof Error ? error.message : String(error),
+				error: sanitizeWithStaticMask(
+					error instanceof Error ? error.message : String(error),
+				),
 				stack: error instanceof Error ? error.stack : undefined,
 			});
 			return null;
@@ -81,7 +84,9 @@ export class BackgroundTaskContextSource implements AgentContextSource {
 			return formatTaskFailures();
 		} catch (error) {
 			logger.warn("Failed to load background task context", {
-				error: error instanceof Error ? error.message : String(error),
+				error: sanitizeWithStaticMask(
+					error instanceof Error ? error.message : String(error),
+				),
 				stack: error instanceof Error ? error.stack : undefined,
 			});
 			return null;
@@ -175,7 +180,9 @@ export class LspContextSource implements AgentContextSource {
 			return `# Workspace Health\n${summary}`;
 		} catch (error) {
 			logger.warn("Failed to load LSP context", {
-				error: error instanceof Error ? error.message : String(error),
+				error: sanitizeWithStaticMask(
+					error instanceof Error ? error.message : String(error),
+				),
 				stack: error instanceof Error ? error.stack : undefined,
 			});
 			return null;
@@ -205,7 +212,9 @@ export class TeamMemoryContextSource implements AgentContextSource {
 			return buildTeamMemoryPromptContext(this.cwd);
 		} catch (error) {
 			logger.warn("Failed to load team memory context", {
-				error: error instanceof Error ? error.message : String(error),
+				error: sanitizeWithStaticMask(
+					error instanceof Error ? error.message : String(error),
+				),
 			});
 			return null;
 		}
@@ -245,7 +254,9 @@ export class IDEContextSource implements AgentContextSource {
 			return `# Development Environment\n${parts.join("\n")}`;
 		} catch (error) {
 			logger.warn("Failed to load IDE context", {
-				error: error instanceof Error ? error.message : String(error),
+				error: sanitizeWithStaticMask(
+					error instanceof Error ? error.message : String(error),
+				),
 			});
 			return null;
 		}

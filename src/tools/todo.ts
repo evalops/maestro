@@ -62,13 +62,14 @@
  */
 
 import { randomUUID } from "node:crypto";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile } from "node:fs/promises";
 import { dirname } from "node:path";
 import { Type } from "@sinclair/typebox";
 import type { Static } from "@sinclair/typebox";
 import { Value } from "@sinclair/typebox/value";
 import { PATHS } from "../config/constants.js";
 import { setPlanSatisfied } from "../safety/safe-mode.js";
+import { writeJsonFile } from "../utils/fs.js";
 import { safeJsonParse } from "../utils/json.js";
 import { createLogger } from "../utils/logger.js";
 import { resolveEnvPath } from "../utils/path-expansion.js";
@@ -296,7 +297,7 @@ export async function loadStore(): Promise<TodoStore> {
 export async function saveStore(store: TodoStore): Promise<void> {
 	const storePath = getStorePath();
 	await ensureParentDirectory(storePath);
-	await writeFile(storePath, `${JSON.stringify(store, null, 2)}\n`, "utf-8");
+	writeJsonFile(storePath, store);
 }
 
 function normalizeItems(

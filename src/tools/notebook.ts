@@ -4,9 +4,10 @@
  */
 
 import { constants } from "node:fs";
-import { access, readFile, writeFile } from "node:fs/promises";
+import { access, readFile } from "node:fs/promises";
 import { extname, resolve as resolvePath } from "node:path";
 import { Type } from "@sinclair/typebox";
+import { writeTextFileAtomic } from "../utils/fs.js";
 import { createTool, expandUserPath } from "./tool-dsl.js";
 
 // Jupyter notebook cell types
@@ -192,7 +193,13 @@ Use 'read' tool first to view notebook structure and get cell IDs/indices.`,
 					nbformat: 4,
 					nbformat_minor: 5,
 				};
-				await writeFile(absolutePath, JSON.stringify(newNotebook, null, 1));
+				writeTextFileAtomic(
+					absolutePath,
+					JSON.stringify(newNotebook, null, 1),
+					{
+						mode: 0o666,
+					},
+				);
 				return respond
 					.text(
 						`Created new notebook with 1 ${cell_type || "code"} cell: ${path}`,
@@ -304,7 +311,7 @@ Use 'read' tool first to view notebook structure and get cell IDs/indices.`,
 		}
 
 		// Write updated notebook
-		await writeFile(absolutePath, JSON.stringify(notebook, null, 1));
+		writeTextFileAtomic(absolutePath, JSON.stringify(notebook, null, 1));
 
 		return respond.text(resultMessage).detail({
 			cellIndex: targetIndex,

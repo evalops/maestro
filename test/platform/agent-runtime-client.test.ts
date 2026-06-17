@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { resetOAuthStorageForTests } from "../../src/oauth/storage.js";
 import {
 	MaestroAgentRuntimeSourceEventType,
 	PlatformAgentRunStateValue,
@@ -40,7 +41,26 @@ function parseRequestBody(
 }
 
 describe("agent runtime service client", () => {
+	let previousAgentDir: string | undefined;
+	let previousMaestroHome: string | undefined;
+	let previousDisableKeychain: string | undefined;
+
 	beforeEach(() => {
+		// Isolate OAuth + MAESTRO_HOME so a stale credential left by a
+		// prior test file in the same vitest worker can't slip an
+		// Authorization header onto the authless-A2A path and change the
+		// expected request count.
+		previousAgentDir = process.env.MAESTRO_AGENT_DIR;
+		previousMaestroHome = process.env.MAESTRO_HOME;
+		previousDisableKeychain = process.env.MAESTRO_DISABLE_KEYCHAIN;
+		Reflect.deleteProperty(process.env, "MAESTRO_AGENT_DIR");
+		process.env.MAESTRO_HOME = `/tmp/maestro-runtime-test-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+		// Force file-mode OAuth storage so the OS keychain can't leak a
+		// stale evalops/anthropic credential into `getOAuthToken` calls
+		// downstream of `resolvePlatformToken`.
+		process.env.MAESTRO_DISABLE_KEYCHAIN = "1";
+		resetOAuthStorageForTests();
+
 		for (const name of [
 			"MAESTRO_AGENT_RUNTIME_SERVICE_URL",
 			"MAESTRO_AGENT_RUNTIME_A2A_ENABLED",
@@ -106,6 +126,25 @@ describe("agent runtime service client", () => {
 	afterEach(() => {
 		vi.unstubAllEnvs();
 		vi.unstubAllGlobals();
+		if (previousAgentDir === undefined) {
+			Reflect.deleteProperty(process.env, "MAESTRO_AGENT_DIR");
+		} else {
+			process.env.MAESTRO_AGENT_DIR = previousAgentDir;
+		}
+		if (previousMaestroHome === undefined) {
+			Reflect.deleteProperty(process.env, "MAESTRO_HOME");
+		} else {
+			process.env.MAESTRO_HOME = previousMaestroHome;
+		}
+		if (previousDisableKeychain === undefined) {
+			Reflect.deleteProperty(process.env, "MAESTRO_DISABLE_KEYCHAIN");
+		} else {
+			process.env.MAESTRO_DISABLE_KEYCHAIN = previousDisableKeychain;
+		}
+		// `cachedMode` is a module-level singleton; reset so a later
+		// test in the same worker re-resolves storage mode from its
+		// own (restored) env.
+		resetOAuthStorageForTests();
 	});
 
 	it("builds enum-backed Maestro session triggers for Platform agent-runtime", () => {

@@ -8,6 +8,7 @@ import {
 	loadThemeJson,
 	resolveThemeFilePath,
 } from "../../src/theme/theme-loader.js";
+import { trustProjectInGlobalConfig } from "../utils/project-trust.js";
 
 describe("theme-loader", () => {
 	let testDir: string;
@@ -53,6 +54,7 @@ describe("theme-loader", () => {
 			join(workspaceDir, ".maestro", "config.toml"),
 			'packages = ["../vendor/theme-pack"]\n',
 		);
+		trustProjectInGlobalConfig(workspaceDir);
 
 		expect(getAvailableThemes(workspaceDir)).toContain("sunrise");
 		expect(resolveThemeFilePath("sunrise", workspaceDir)).toBe(

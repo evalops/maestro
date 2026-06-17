@@ -16,6 +16,7 @@ import type { Agent } from "../agent/index.js";
 import { buildCompactionEvent } from "../agent/prompt-recovery.js";
 import type { ToolRetryService } from "../agent/tool-retry.js";
 import { runUserPromptWithRecovery } from "../agent/user-prompt-runtime.js";
+import type { ComposerConfig } from "../config/index.js";
 import { withHeadlessPostKeepMessages } from "../headless/prompt-recovery.js";
 import { HeadlessUtilityCommandManager } from "../headless/utility-command-manager.js";
 import { readWorkspaceFile } from "../headless/utility-file-read.js";
@@ -57,6 +58,8 @@ const LOCAL_HEADLESS_CONNECTION_ID = "local";
 
 export interface RunHeadlessModeOptions {
 	runtimeSelection?: HeadlessRuntimeSelection;
+	profileName?: string;
+	cliOverrides?: Partial<ComposerConfig>;
 }
 
 function send(msg: HeadlessFromAgentMessage): void {
@@ -456,6 +459,8 @@ export async function runHeadlessMode(
 						attachmentCount: msg.attachments?.length ?? 0,
 						attachmentNames: msg.attachments?.map((path) => basename(path)),
 						getPostKeepMessages: withHeadlessPostKeepMessages(() => state),
+						profileName: options.profileName,
+						cliOverrides: options.cliOverrides,
 						execute: async () => {
 							if (msg.attachments && msg.attachments.length > 0) {
 								const loaded = await loadPromptAttachments(

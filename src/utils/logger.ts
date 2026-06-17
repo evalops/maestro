@@ -64,15 +64,34 @@ const LOG_SEVERITIES: Record<LogLevel, string> = {
 };
 
 class Logger {
-	private config: LoggerConfig;
+	private explicitConfig: Partial<LoggerConfig>;
 
 	constructor(config?: Partial<LoggerConfig>) {
-		this.config = {
-			minLevel: (process.env.MAESTRO_LOG_LEVEL as LogLevel) ?? "info",
-			jsonFormat: process.env.MAESTRO_LOG_JSON === "1",
-			splitStreams: process.env.MAESTRO_LOG_SPLIT_STREAMS === "1",
-			timestamps: true,
-			...config,
+		// Store only explicit overrides; the env-driven defaults are
+		// re-read on every access through `this.config`. This keeps the
+		// module-level `export const logger = new Logger()` reactive to
+		// env mutations that happen AFTER import — without it, any
+		// transitive setup-time import (see `restore-oauth-storage.ts`
+		// pulling in `oauth/storage.ts` → `utils/logger.ts`) freezes the
+		// global Logger's `minLevel` / `splitStreams` / `jsonFormat` to
+		// whatever the env was at setup time and silently drops later
+		// per-test stubs.
+		this.explicitConfig = { ...config };
+	}
+
+	private get config(): LoggerConfig {
+		return {
+			minLevel:
+				this.explicitConfig.minLevel ??
+				(process.env.MAESTRO_LOG_LEVEL as LogLevel) ??
+				"info",
+			jsonFormat:
+				this.explicitConfig.jsonFormat ?? process.env.MAESTRO_LOG_JSON === "1",
+			splitStreams:
+				this.explicitConfig.splitStreams ??
+				process.env.MAESTRO_LOG_SPLIT_STREAMS === "1",
+			timestamps: this.explicitConfig.timestamps ?? true,
+			output: this.explicitConfig.output,
 		};
 	}
 
@@ -196,10 +215,11 @@ class Logger {
 	}
 
 	/**
-	 * Update logger configuration
+	 * Update logger configuration. Explicit overrides take precedence
+	 * over env-driven defaults read on each log call.
 	 */
 	configure(config: Partial<LoggerConfig>): void {
-		this.config = { ...this.config, ...config };
+		this.explicitConfig = { ...this.explicitConfig, ...config };
 	}
 }
 

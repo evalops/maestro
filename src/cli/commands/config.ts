@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import chalk from "chalk";
 import { PATHS } from "../../config/constants.js";
@@ -15,6 +15,7 @@ import {
 	sectionHeading,
 	separator as themedSeparator,
 } from "../../style/theme.js";
+import { writeTextFileAtomic } from "../../utils/fs.js";
 // Use the UMD build to avoid ESM subpath resolution issues in some environments
 import { parseJsonc } from "../../utils/jsonc-umd.js";
 import { getHomeDir } from "../../utils/path-expansion.js";
@@ -776,7 +777,7 @@ export async function handleConfigInit(): Promise<void> {
 		};
 
 		// Write config
-		writeFileSync(configPath, JSON.stringify(config, null, 2));
+		writeTextFileAtomic(configPath, JSON.stringify(config, null, 2));
 		console.log(`\n${badge("Created config", configPath, "success")}`);
 
 		// Create example prompt file
@@ -799,7 +800,7 @@ You are a helpful AI coding assistant.
 - Use examples when helpful
 - Ask clarifying questions when needed
 `;
-			writeFileSync(systemPromptPath, examplePrompt);
+			writeTextFileAtomic(systemPromptPath, examplePrompt);
 			console.log(badge("Created prompt", systemPromptPath, "success"));
 		}
 
@@ -815,7 +816,7 @@ You are a helpful AI coding assistant.
 				const fs = await import("node:fs/promises");
 				await fs.appendFile(envExamplePath, envContent);
 			} else {
-				writeFileSync(envExamplePath, envContent);
+				writeTextFileAtomic(envExamplePath, envContent);
 			}
 			console.log(badge("Updated .env.example", undefined, "success"));
 		}
@@ -1098,7 +1099,7 @@ export async function handleConfigLocal(): Promise<void> {
 		if (!config.$schema) {
 			config.$schema = "https://composer-cli.dev/config.schema.json";
 		}
-		writeFileSync(localPath, JSON.stringify(config, null, 2));
+		writeTextFileAtomic(localPath, JSON.stringify(config, null, 2));
 		console.log(`\n${badge("Updated local config", localPath, "success")}`);
 		console.log(
 			muted(

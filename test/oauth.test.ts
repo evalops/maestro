@@ -33,13 +33,22 @@ import {
 const TEST_DELEGATED_ACCESS_VALUE = "child-test";
 
 describe("OAuth Storage", () => {
-	beforeEach(() => {
+	beforeEach(async () => {
 		process.env.MAESTRO_AGENT_DIR = join(testDir, "agent");
+		// These tests exercise file-backed storage shape; pin the
+		// backend to file mode so they don't read leftover keychain
+		// entries from real local usage (#2611).
+		process.env.MAESTRO_OAUTH_STORAGE_MODE = "file";
+		const { resetOAuthStorageForTests } = await import(
+			"../src/oauth/storage.js"
+		);
+		resetOAuthStorageForTests();
 		// Create test directory
 		mkdirSync(testDir, { recursive: true });
 	});
 
 	afterEach(() => {
+		delete process.env.MAESTRO_OAUTH_STORAGE_MODE;
 		// Clean up test directory
 		if (existsSync(testDir)) {
 			rmSync(testDir, { recursive: true, force: true });
@@ -155,12 +164,20 @@ describe("OAuth Index", () => {
 		"platform",
 	);
 
-	beforeEach(() => {
+	beforeEach(async () => {
 		process.env.MAESTRO_AGENT_DIR = join(testDir, "agent");
+		// Same as the OAuth Storage suite — pin file backend so
+		// real OS-keychain entries from local usage don't bleed in.
+		process.env.MAESTRO_OAUTH_STORAGE_MODE = "file";
+		const { resetOAuthStorageForTests } = await import(
+			"../src/oauth/storage.js"
+		);
+		resetOAuthStorageForTests();
 		mkdirSync(testDir, { recursive: true });
 	});
 
 	afterEach(() => {
+		delete process.env.MAESTRO_OAUTH_STORAGE_MODE;
 		if (originalEvalOpsOrgId === undefined) {
 			Reflect.deleteProperty(process.env, "MAESTRO_EVALOPS_ORG_ID");
 		} else {
@@ -459,6 +476,113 @@ describe("OAuth Index", () => {
 			expect(token).toBeNull();
 			expect(hasOAuthCredentials("openai")).toBe(false);
 			expect(fetchMock).toHaveBeenCalledTimes(1);
+		});
+
+		it("should remove credentials when refresh succeeds without an access token", async () => {
+			const fetchMock = vi.fn().mockResolvedValue(
+				new Response(JSON.stringify({ refresh_token: "still-invalid" }), {
+					status: 200,
+					headers: { "Content-Type": "application/json" },
+				}),
+			);
+			vi.stubGlobal("fetch", fetchMock);
+
+			saveOAuthCredentials("openai", {
+				type: "oauth",
+				access: "expired-token",
+				refresh: "malformed-refresh",
+				expires: Date.now() - 1000,
+			});
+
+			const token = await getOAuthToken("openai");
+
+			expect(token).toBeNull();
+			expect(hasOAuthCredentials("openai")).toBe(false);
+			expect(fetchMock).toHaveBeenCalledTimes(1);
+		});
+
+		it("preserves credentials when refresh hits a transient network error", async () => {
+			const fetchMock = vi
+				.fn()
+				.mockRejectedValue(new TypeError("fetch failed"));
+			vi.stubGlobal("fetch", fetchMock);
+
+			saveOAuthCredentials("openai", {
+				type: "oauth",
+				access: "expired-token",
+				refresh: "retryable-refresh",
+				expires: Date.now() - 1000,
+			});
+
+			const token = await getOAuthToken("openai");
+
+			expect(token).toBeNull();
+			expect(fetchMock).toHaveBeenCalledTimes(1);
+			expect(loadOAuthCredentials("openai")).toEqual(
+				expect.objectContaining({
+					access: "expired-token",
+					refresh: "retryable-refresh",
+				}),
+			);
+		});
+
+		it("removes GitHub Copilot credentials when refresh rejects the stored GitHub token", async () => {
+			const fetchMock = vi.fn().mockResolvedValue(
+				new Response("bad github token", {
+					status: 401,
+					headers: { "Content-Type": "text/plain" },
+				}),
+			);
+			vi.stubGlobal("fetch", fetchMock);
+
+			saveOAuthCredentials("github-copilot", {
+				type: "oauth",
+				access: "expired-copilot-token",
+				refresh: "stale-github-token",
+				expires: Date.now() - 1000,
+				metadata: {
+					githubToken: "stale-github-token",
+					scope: "copilot",
+				},
+			});
+
+			const token = await getOAuthToken("github-copilot");
+
+			expect(token).toBeNull();
+			expect(fetchMock).toHaveBeenCalledTimes(1);
+			expect(loadOAuthCredentials("github-copilot")).toBeNull();
+		});
+
+		it("preserves GitHub Copilot credentials when refresh hits an ambiguous server error", async () => {
+			const fetchMock = vi.fn().mockResolvedValue(
+				new Response("server unavailable", {
+					status: 503,
+					headers: { "Content-Type": "text/plain" },
+				}),
+			);
+			vi.stubGlobal("fetch", fetchMock);
+
+			saveOAuthCredentials("github-copilot", {
+				type: "oauth",
+				access: "expired-copilot-token",
+				refresh: "retryable-github-token",
+				expires: Date.now() - 1000,
+				metadata: {
+					githubToken: "retryable-github-token",
+					scope: "copilot",
+				},
+			});
+
+			const token = await getOAuthToken("github-copilot");
+
+			expect(token).toBeNull();
+			expect(fetchMock).toHaveBeenCalledTimes(1);
+			expect(loadOAuthCredentials("github-copilot")).toEqual(
+				expect.objectContaining({
+					access: "expired-copilot-token",
+					refresh: "retryable-github-token",
+				}),
+			);
 		});
 
 		it("preserves Google OAuth credentials when refresh config is missing", async () => {
@@ -1349,6 +1473,47 @@ describe("OAuth Index", () => {
 			).rejects.toThrow("GitHub Copilot requires onDeviceCode callback");
 		});
 
+		it("rejects wrong-length Google Antigravity OAuth state cleanly", async () => {
+			vi.stubEnv("MAESTRO_GOOGLE_ANTIGRAVITY_CLIENT_ID", "client-id");
+			vi.stubEnv("MAESTRO_GOOGLE_ANTIGRAVITY_CLIENT_SECRET", "client-secret");
+			const fetchMock = vi.fn();
+			vi.stubGlobal("fetch", fetchMock);
+
+			let resolveAuthUrl!: (url: string) => void;
+			const authUrlPromise = new Promise<string>((resolve) => {
+				resolveAuthUrl = resolve;
+			});
+			const loginErrorPromise = login("google-antigravity", {
+				onAuthUrl: resolveAuthUrl,
+			}).then(
+				() => null,
+				(caught: unknown) => caught,
+			);
+
+			const authUrl = await authUrlPromise;
+			expect(
+				new URL(authUrl).searchParams.get("state")?.length,
+			).toBeGreaterThan(1);
+			const callback = new URL("http://127.0.0.1:51121/oauth-callback");
+			callback.searchParams.set("code", "test-code");
+			callback.searchParams.set("state", "x");
+			await new Promise<void>((resolve, reject) => {
+				const request = httpGet(callback, (res) => {
+					res.resume();
+					res.on("end", resolve);
+				});
+				request.on("error", reject);
+			});
+
+			const error = await loginErrorPromise;
+			expect(error).toBeInstanceOf(Error);
+			expect(error).not.toBeInstanceOf(RangeError);
+			expect((error as Error).message).toBe(
+				"OAuth state mismatch - possible CSRF attack",
+			);
+			expect(fetchMock).not.toHaveBeenCalled();
+		});
+
 		it("starts evalops login without a preconfigured org id", async () => {
 			Reflect.deleteProperty(process.env, "MAESTRO_EVALOPS_ORG_ID");
 			Reflect.deleteProperty(process.env, "EVALOPS_ORGANIZATION_ID");
@@ -1386,12 +1551,18 @@ describe("OAuth Index", () => {
 });
 
 describe("GitHub Copilot OAuth", () => {
-	beforeEach(() => {
+	beforeEach(async () => {
 		process.env.MAESTRO_AGENT_DIR = join(testDir, "agent");
+		process.env.MAESTRO_OAUTH_STORAGE_MODE = "file";
+		const { resetOAuthStorageForTests } = await import(
+			"../src/oauth/storage.js"
+		);
+		resetOAuthStorageForTests();
 		mkdirSync(testDir, { recursive: true });
 	});
 
 	afterEach(() => {
+		delete process.env.MAESTRO_OAUTH_STORAGE_MODE;
 		if (existsSync(testDir)) {
 			rmSync(testDir, { recursive: true, force: true });
 		}

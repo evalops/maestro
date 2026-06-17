@@ -7,6 +7,7 @@ import {
 	type ComposerConfig,
 	clearConfigCache,
 } from "../../src/config/index.js";
+import { trustProjectInGlobalConfig } from "../utils/project-trust.js";
 
 describe("Hierarchical Context File Loading", () => {
 	let testDir: string;
@@ -405,6 +406,7 @@ describe("Hierarchical Context File Loading", () => {
 				join(projectDir, ".maestro", "config.toml"),
 				'project_doc_fallback_filenames = ["CONTEXT.md"]\n',
 			);
+			trustProjectInGlobalConfig(projectDir);
 			writeFileSync(join(projectDir, "CONTEXT.md"), "# Context\nFallback file");
 
 			const contextFiles = loadProjectContextFiles(projectDir);
@@ -421,6 +423,7 @@ describe("Hierarchical Context File Loading", () => {
 				join(projectDir, ".maestro", "config.toml"),
 				"project_doc_max_bytes = 12\n",
 			);
+			trustProjectInGlobalConfig(projectDir);
 			const content = "1234567890ABCDEFG";
 			writeFileSync(join(projectDir, "AGENT.md"), content);
 
@@ -440,6 +443,7 @@ describe("Hierarchical Context File Loading", () => {
 				join(projectDir, ".maestro", "config.toml"),
 				"project_doc_max_bytes = 16\n",
 			);
+			trustProjectInGlobalConfig(projectDir);
 			const rootContent = "ROOT-CONTEXT";
 			const projectContent = "PROJECT-CONTEXT";
 			writeFileSync(join(rootDir, "AGENT.md"), rootContent);

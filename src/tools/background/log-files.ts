@@ -10,6 +10,7 @@ import {
 } from "node:fs";
 import { gunzipSync } from "node:zlib";
 import { createLogger } from "../../utils/logger.js";
+import { sanitizeWithStaticMask } from "../../utils/secret-redactor.js";
 
 const logger = createLogger("background:log-files");
 
@@ -29,7 +30,9 @@ export function rotateArchives(logPath: string, maxSegments: number): void {
 			} catch (error) {
 				logger.debug("Failed to remove archived log segment", {
 					path: currentPath,
-					error: error instanceof Error ? error.message : String(error),
+					error: sanitizeWithStaticMask(
+						error instanceof Error ? error.message : String(error),
+					),
 				});
 			}
 		} else {
@@ -40,7 +43,9 @@ export function rotateArchives(logPath: string, maxSegments: number): void {
 				logger.debug("Failed to rotate archived log segment", {
 					from: currentPath,
 					to: nextPath,
-					error: error instanceof Error ? error.message : String(error),
+					error: sanitizeWithStaticMask(
+						error instanceof Error ? error.message : String(error),
+					),
 				});
 			}
 		}
@@ -57,7 +62,9 @@ export function deleteArchives(logPath: string, maxSegments: number): void {
 			} catch (error) {
 				logger.debug("Failed to delete archived log segment", {
 					path: archived,
-					error: error instanceof Error ? error.message : String(error),
+					error: sanitizeWithStaticMask(
+						error instanceof Error ? error.message : String(error),
+					),
 				});
 			}
 		}
@@ -74,7 +81,9 @@ export function readLogSegment(logPath: string): string {
 	} catch (error) {
 		logger.debug("Failed to read log segment", {
 			path: logPath,
-			error: error instanceof Error ? error.message : String(error),
+			error: sanitizeWithStaticMask(
+				error instanceof Error ? error.message : String(error),
+			),
 		});
 		return "";
 	}

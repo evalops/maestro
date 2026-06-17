@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { isAbsolute, relative, resolve } from "node:path";
 import {
@@ -17,6 +17,7 @@ import {
 	listTopics,
 	searchMemories,
 } from "../../memory/index.js";
+import { writeTextFileAtomic } from "../../utils/fs.js";
 import {
 	readJsonBody,
 	respondWithApiError,
@@ -205,7 +206,9 @@ export async function handleMemory(
 					return;
 				}
 				const outputPath = output.path;
-				writeFileSync(outputPath, JSON.stringify(store, null, 2), "utf-8");
+				writeTextFileAtomic(outputPath, JSON.stringify(store, null, 2), {
+					encoding: "utf-8",
+				});
 				sendJson(
 					res,
 					200,

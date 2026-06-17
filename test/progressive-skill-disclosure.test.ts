@@ -25,6 +25,8 @@ describe("Progressive Skill Disclosure", () => {
 			"Run and debug test suites with coverage. Use when running vitest, jest, or other test frameworks.",
 		sourcePath: "/home/user/.maestro/skills/test-runner",
 		sourceType: "user",
+		contentSha:
+			"0000000000000000000000000000000000000000000000000000000000000000",
 		content: `## Instructions
 
 1. Detect the test framework (vitest, jest, mocha)
@@ -56,6 +58,8 @@ bunx vitest --run -t "should validate"  # Run specific test
 			"Manage Git branches, PRs, and merge conflicts. Use for Git operations, creating pull requests, or resolving conflicts.",
 		sourcePath: "/home/user/.maestro/skills/git-workflow",
 		sourceType: "user",
+		contentSha:
+			"0000000000000000000000000000000000000000000000000000000000000000",
 		content: `## Branch Management
 
 Always create feature branches: \`git checkout -b feat/description\`

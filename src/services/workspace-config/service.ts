@@ -2,6 +2,7 @@ import { eq, sql } from "drizzle-orm";
 import { type DbClient, getDb, isDatabaseConfigured } from "../../db/client.js";
 import { workspaceConfig } from "../../db/schema.js";
 import { createLogger } from "../../utils/logger.js";
+import { sanitizeWithStaticMask } from "../../utils/secret-redactor.js";
 import {
 	type ServiceAuthorityResolution,
 	resolveServiceAuthority,
@@ -113,7 +114,9 @@ export class WorkspaceConfigService {
 			return row ? configFromRow(row) : config;
 		} catch (error) {
 			logger.warn("Failed to upsert workspace config", {
-				error: error instanceof Error ? error.message : String(error),
+				error: sanitizeWithStaticMask(
+					error instanceof Error ? error.message : String(error),
+				),
 				workspaceId: config.workspaceId,
 			});
 			throw error;

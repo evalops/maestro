@@ -16,6 +16,7 @@ import {
 	createHeadlessRuntimeState,
 	stringArray,
 } from "../../cli/headless-protocol.js";
+import { sanitizeWithStaticMask } from "../../utils/secret-redactor.js";
 import type { HostedRunnerContext, WebServerContext } from "../app-context.js";
 import type { HeadlessRuntimeSnapshot } from "../headless-runtime-service.js";
 import {
@@ -948,7 +949,9 @@ export async function drainHostedRunner(
 				...(interruptedRuntime?.cursor !== undefined
 					? { cursor: interruptedRuntime.cursor }
 					: {}),
-				error: error instanceof Error ? error.message : String(error),
+				error: sanitizeWithStaticMask(
+					error instanceof Error ? error.message : String(error),
+				),
 			};
 		}
 	}

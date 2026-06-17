@@ -290,6 +290,34 @@ export interface ToolPhaseDecision {
 	blockedByMutation?: boolean;
 }
 
+export interface ParallelismScopeMetadata {
+	pathScope?: string[];
+	pathScopeSource?: "annotation" | "known_tool";
+	pathArgumentKeys?: string[];
+}
+
+export interface ParallelismGatedEvent extends ParallelismScopeMetadata {
+	type: "parallelism_gated";
+	toolCallId: string;
+	toolName: string;
+	reason: "mutation_scope_overlap" | "mutation_unknown_write_set";
+	queueDepth: number;
+	pendingMutations: number;
+	pendingToolCallIds: string[];
+	pendingToolNames: string[];
+}
+
+export interface ParallelConflictDetectedEvent
+	extends ParallelismScopeMetadata {
+	type: "parallel_conflict_detected";
+	toolCallId: string;
+	toolName: string;
+	conflictingToolCallId: string;
+	conflictingToolName: string;
+	conflictingPathScope?: string[];
+	conflictingPathScopeSource?: "annotation" | "known_tool";
+}
+
 export interface ToolPhaseBatchShapingFeedback {
 	avoidableSingleton: boolean;
 	reason: string;
@@ -1200,6 +1228,8 @@ export interface AgentState {
  * - `tool_execution_start` - Tool execution started
  * - `tool_execution_update` - Tool execution produced partial output
  * - `tool_execution_end` - Tool execution completed
+ * - `parallelism_gated` - Scheduler delayed a tool because in-flight mutations made parallel execution unsafe
+ * - `parallel_conflict_detected` - Scheduler detected overlapping write scopes while evaluating parallel execution
  * - `tool_batch_summary` - Tool batch completed with a transient summary label
  * - `client_tool_request` - Client-side tool invocation needed
  *
@@ -1362,6 +1392,8 @@ export type AgentEvent =
 			/** Scheduler classification and final reuse/serialization reason */
 			scheduling?: ToolSchedulingMetadata;
 	  }
+	| ParallelismGatedEvent
+	| ParallelConflictDetectedEvent
 	| {
 			/** LSP diagnostic delta produced by an edit/write tool call */
 			type: "diagnostic_delta";

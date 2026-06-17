@@ -89,23 +89,13 @@ export async function handleContext(
 		const sessionManager = createWebSessionManagerForRequest(req, false);
 		const session = await sessionManager.loadSession(sessionId);
 		if (!session) {
-			sendJson(
-				res,
-				404,
-				{ error: `Session not found: ${sessionId}` },
-				corsHeaders,
-			);
+			sendJson(res, 404, { error: "Session not found" }, corsHeaders);
 			return;
 		}
 
 		// Verify session ownership to prevent IDOR attacks
 		if (!verifySessionOwnership(session, subject)) {
-			sendJson(
-				res,
-				403,
-				{ error: "Access denied: session belongs to another user" },
-				corsHeaders,
-			);
+			sendJson(res, 404, { error: "Session not found" }, corsHeaders);
 			return;
 		}
 

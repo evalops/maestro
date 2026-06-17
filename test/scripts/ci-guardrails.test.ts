@@ -1452,7 +1452,7 @@ describe("ci workflow guardrails", () => {
 		const source = readFileSync(new URL("../../src/cli.ts", import.meta.url), {
 			encoding: "utf8",
 		});
-		const loadEnvImportIndex = source.indexOf('await import("./load-env.js")');
+		const loadEnvImportIndex = source.indexOf('"./load-env.js"');
 		const loadEnvIndex = source.indexOf(
 			"loadedEnvKeys = loadEnv();",
 			loadEnvImportIndex,

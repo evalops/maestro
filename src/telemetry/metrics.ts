@@ -116,6 +116,13 @@ export const MAESTRO_OTEL_METRIC_DEFINITIONS = [
 		kind: "counter",
 		description: "A2A peer exclusions by source and reason",
 	},
+	{
+		key: "shellScrubberFailureCount",
+		name: "shell.scrubber.failure_count",
+		kind: "counter",
+		description:
+			"Secret scrubber failures that forced shell output redaction or abort",
+	},
 ] as const satisfies readonly MaestroMetricDefinition[];
 
 type MetricKey = (typeof MAESTRO_OTEL_METRIC_DEFINITIONS)[number]["key"];
@@ -163,6 +170,7 @@ export const maestroOtelMetrics = {
 	a2aPushLag: histogram("a2aPushLag"),
 	a2aPolicyDenialCount: counter("a2aPolicyDenialCount"),
 	a2aPeerExclusionCount: counter("a2aPeerExclusionCount"),
+	shellScrubberFailureCount: counter("shellScrubberFailureCount"),
 	compactionTriggered: counter("compactionTriggered"),
 	llmRequestCount: counter("llmRequestCount"),
 	llmTokenUsage: counter("llmTokenUsage"),
@@ -331,6 +339,19 @@ export function recordA2APeerExclusionMetric(input: {
 			"maestro.a2a.reason": input.reason,
 			"maestro.a2a.task_class": input.taskClass,
 			"maestro.a2a.skill_id": input.skillId,
+		}),
+	);
+}
+
+export function recordShellScrubberFailureMetric(input: {
+	surface?: string;
+	strict?: boolean;
+}): void {
+	maestroOtelMetrics.shellScrubberFailureCount.add(
+		1,
+		compactAttributes({
+			"maestro.surface": input.surface,
+			"shell.scrubber.strict": input.strict,
 		}),
 	);
 }

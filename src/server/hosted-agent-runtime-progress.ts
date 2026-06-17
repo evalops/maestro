@@ -36,6 +36,7 @@ import {
 } from "../platform/agent-runtime-client.js";
 import { CREDENTIAL_PATTERN_DEFS } from "../safety/credential-patterns.js";
 import { createLogger } from "../utils/logger.js";
+import { sanitizeWithStaticMask } from "../utils/secret-redactor.js";
 import type { ServerRequestLifecycleEvent } from "./server-request-manager.js";
 
 const logger = createLogger("server:hosted-agent-runtime-progress");
@@ -575,9 +576,18 @@ function hostedCredentialPattern(source: string, flags: string): RegExp {
 const HOSTED_CREDENTIAL_PATTERNS = [
 	...CREDENTIAL_PATTERN_DEFS.filter(
 		(pattern) =>
-			!["Authorization Header", "Bearer Token", "Password Assignment"].includes(
-				pattern.name,
-			) && pattern.name !== "Password in URL",
+			![
+				"Authorization Header",
+				"Bearer Token",
+				// "Basic Auth Token" matches `Basic\s+[A-Za-z0-9+/=]+` with
+				// a 1-char minimum, so benign English like
+				// "Document Authorization: Basic flow" trips it. The hosted
+				// recorder has its own stricter `Basic\s+[A-Za-z0-9+/=]{16,}`
+				// in the literal pattern list below, so exclude the loose
+				// catalog version here.
+				"Basic Auth Token",
+				"Password Assignment",
+			].includes(pattern.name) && pattern.name !== "Password in URL",
 	).map((pattern) => hostedCredentialPattern(pattern.source, pattern.flags)),
 	/\b(?:sk[-_][A-Za-z0-9_-]{8,}|gh[pousr]_[A-Za-z0-9_-]{8,}|github_pat_[A-Za-z0-9_-]{8,}|xoxb[A-Za-z0-9_-]{8,}|xoxp[A-Za-z0-9_-]{8,}|AKIA[A-Za-z0-9_-]{8,}|ASIA[A-Za-z0-9_-]{8,})\b/,
 	/\/\/[^:/\s@]+:[^@/\s]+@[^/\s]+/,
@@ -3888,7 +3898,9 @@ export class HostedAgentRuntimeProgressRecorder {
 						});
 					} catch (error) {
 						logger.warn("Failed to resolve Codex subagent delegation", {
-							error: error instanceof Error ? error.message : String(error),
+							error: sanitizeWithStaticMask(
+								error instanceof Error ? error.message : String(error),
+							),
 							session_id: this.sessionId,
 							agent_run_id: runId,
 							tool_call_id: event.toolCallId,
@@ -4107,7 +4119,9 @@ export class HostedAgentRuntimeProgressRecorder {
 			() => {},
 			(error) => {
 				logger.warn("Failed to record hosted AgentRuntime progress", {
-					error: error instanceof Error ? error.message : String(error),
+					error: sanitizeWithStaticMask(
+						error instanceof Error ? error.message : String(error),
+					),
 					session_id: this.sessionId,
 					agent_run_id: this.hostedRunner?.agentRunId,
 				});

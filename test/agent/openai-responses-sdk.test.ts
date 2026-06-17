@@ -35,6 +35,14 @@ const openaiMock = vi.hoisted(() => {
 	};
 });
 
+const configLoaderMock = vi.hoisted(() => ({
+	getMergedCustomModelUrlPolicyConfig: vi.fn(() => ({})),
+}));
+
+const networkConfigMock = vi.hoisted(() => ({
+	fetchWithModelRequestPolicyRedirects: vi.fn(),
+}));
+
 vi.mock("openai", () => ({
 	default: class {
 		constructor(options: unknown) {
@@ -44,6 +52,32 @@ vi.mock("openai", () => ({
 			create: (params: unknown) => openaiMock.createStream(params),
 		};
 	},
+}));
+
+vi.mock("../../src/models/config-loader.js", async () => {
+	const actual = await vi.importActual<
+		typeof import("../../src/models/config-loader.js")
+	>("../../src/models/config-loader.js");
+	return {
+		...actual,
+		getMergedCustomModelUrlPolicyConfig:
+			configLoaderMock.getMergedCustomModelUrlPolicyConfig,
+	};
+});
+
+vi.mock("../../src/providers/network-config.js", async () => {
+	const actual = await vi.importActual<
+		typeof import("../../src/providers/network-config.js")
+	>("../../src/providers/network-config.js");
+	return {
+		...actual,
+		fetchWithModelRequestPolicyRedirects:
+			networkConfigMock.fetchWithModelRequestPolicyRedirects,
+	};
+});
+
+vi.mock("node:dns/promises", () => ({
+	lookup: vi.fn(async () => [{ address: "203.0.113.10", family: 4 }]),
 }));
 
 const baseContext: Context = {
@@ -77,6 +111,53 @@ describe("OpenAI Responses SDK streaming", () => {
 	beforeEach(() => {
 		openaiMock.setStream(() => makeEventStream([]));
 		openaiMock.reset();
+		configLoaderMock.getMergedCustomModelUrlPolicyConfig.mockReset();
+		configLoaderMock.getMergedCustomModelUrlPolicyConfig.mockReturnValue({});
+		networkConfigMock.fetchWithModelRequestPolicyRedirects.mockReset();
+		networkConfigMock.fetchWithModelRequestPolicyRedirects.mockResolvedValue(
+			new Response("ok"),
+		);
+	});
+
+	it("uses policy-aware redirect handling for SDK fetch hooks", async () => {
+		const iterator = streamResponsesApiSdk(responsesModel, baseContext, {
+			apiKey: "k",
+		});
+
+		await iterator.next();
+
+		const clientOptions = openaiMock.getLastClientOptions() as {
+			fetch: typeof fetch;
+		};
+		const response = await clientOptions.fetch(
+			"https://gateway.example/v1/responses",
+			{
+				method: "POST",
+				body: JSON.stringify({ hello: "world" }),
+			},
+		);
+
+		expect(await response.text()).toBe("ok");
+		expect(
+			networkConfigMock.fetchWithModelRequestPolicyRedirects,
+		).toHaveBeenCalledWith(
+			"https://gateway.example/v1/responses",
+			{
+				method: "POST",
+				body: JSON.stringify({ hello: "world" }),
+			},
+			expect.objectContaining({
+				allowed: true,
+				hostname: "gateway.example",
+			}),
+			{
+				allowInternalBaseUrl: false,
+				internalBaseUrl: "https://api.openai.com/v1/responses",
+				policy: {},
+			},
+		);
+
+		await iterator.return(undefined);
 	});
 
 	it("handles streaming function_call arguments", async () => {
@@ -616,5 +697,32 @@ describe("OpenAI Responses SDK streaming", () => {
 			defaultHeaders?: Record<string, string>;
 		};
 		expect(clientOptions.defaultHeaders?.["X-Initiator"]).toBe("agent");
+	});
+
+	it("re-checks each SDK fetch URL against allowedBaseUrls", async () => {
+		const fetchMock = vi.fn().mockResolvedValue(new Response("ok"));
+		vi.stubGlobal("fetch", fetchMock);
+		configLoaderMock.getMergedCustomModelUrlPolicyConfig.mockReturnValue({
+			allowedBaseUrls: ["https://api.openai.com/v1/responses"],
+		});
+
+		try {
+			for await (const _ of streamResponsesApiSdk(responsesModel, baseContext, {
+				apiKey: "k",
+			})) {
+				// drain
+			}
+
+			const clientOptions = openaiMock.getLastClientOptions() as {
+				fetch?: (input: string, init?: RequestInit) => Promise<Response>;
+			};
+			expect(clientOptions.fetch).toBeTypeOf("function");
+			await expect(
+				clientOptions.fetch?.("https://api.openai.com/v1/chat/completions"),
+			).rejects.toThrow(/not_in_allowed_base_urls/);
+			expect(fetchMock).not.toHaveBeenCalled();
+		} finally {
+			vi.unstubAllGlobals();
+		}
 	});
 });

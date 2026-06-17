@@ -20,6 +20,8 @@ import {
 	refreshOpenAIOAuthToken,
 } from "../providers/openai-auth.js";
 import { createLogger } from "../utils/logger.js";
+import { rejectDisallowedLoopbackHost } from "../utils/loopback-http.js";
+import { sanitizeWithStaticMask } from "../utils/secret-redactor.js";
 import {
 	type OAuthCredentials,
 	loadOAuthCredentials,
@@ -70,6 +72,9 @@ export async function loginOpenAI(
 			const server = createServer(
 				async (req: IncomingMessage, res: ServerResponse) => {
 					try {
+						if (rejectDisallowedLoopbackHost(req, res, CALLBACK_PORT)) {
+							return;
+						}
 						const reqUrl = new URL(req.url ?? "", CALLBACK_ORIGIN);
 
 						if (reqUrl.pathname !== CALLBACK_PATH) {
@@ -160,7 +165,9 @@ export async function loginOpenAI(
 							apiKey = key ?? undefined;
 						} catch (error) {
 							logger.warn("Failed to exchange ID token for API key", {
-								error: error instanceof Error ? error.message : String(error),
+								error: sanitizeWithStaticMask(
+									error instanceof Error ? error.message : String(error),
+								),
 							});
 							// Continue without API key - will use access token directly
 						}
@@ -266,7 +273,9 @@ export async function refreshOpenAIToken(
 			apiKey = key ?? undefined;
 		} catch (error) {
 			logger.warn("Failed to refresh API key from ID token", {
-				error: error instanceof Error ? error.message : String(error),
+				error: sanitizeWithStaticMask(
+					error instanceof Error ? error.message : String(error),
+				),
 			});
 		}
 	}
@@ -306,7 +315,9 @@ export async function migrateOpenAICredentials(): Promise<boolean> {
 		}
 	} catch (error) {
 		logger.debug("No old OpenAI OAuth credentials to migrate", {
-			error: error instanceof Error ? error.message : String(error),
+			error: sanitizeWithStaticMask(
+				error instanceof Error ? error.message : String(error),
+			),
 		});
 	}
 

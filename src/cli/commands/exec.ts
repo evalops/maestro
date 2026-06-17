@@ -47,7 +47,7 @@
  *
  * @module cli/commands/exec
  */
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { dirname, isAbsolute, resolve } from "node:path";
 import type { AnySchema, ValidateFunction } from "ajv";
 import chalk from "chalk";
@@ -55,8 +55,10 @@ import type { Agent } from "../../agent/agent.js";
 import { applySessionEndHooks } from "../../agent/session-lifecycle-hooks.js";
 import type { AgentEvent } from "../../agent/types.js";
 import { runUserPromptWithRecovery } from "../../agent/user-prompt-runtime.js";
+import type { ComposerConfig } from "../../config/index.js";
 import { withMcpPostKeepMessages } from "../../mcp/prompt-recovery.js";
 import type { SessionManager } from "../../session/manager.js";
+import { writeTextFileAtomic } from "../../utils/fs.js";
 import { resolveDefaultExport } from "../../utils/module-interop.js";
 import {
 	JsonlEventWriter,
@@ -76,6 +78,8 @@ interface ExecCommandOptions {
 	sandboxMode?: string;
 	outputSchema?: string;
 	outputLastMessage?: string;
+	profileName?: string;
+	cliOverrides?: Partial<ComposerConfig>;
 	beforeFinalJsonlEvents?: () => Promise<void> | void;
 }
 
@@ -180,6 +184,8 @@ export async function runExecCommand(
 				prompt: normalized,
 				execute: () => options.agent.prompt(normalized),
 				getPostKeepMessages: withMcpPostKeepMessages(),
+				profileName: options.profileName,
+				cliOverrides: options.cliOverrides,
 			});
 		}
 
@@ -217,7 +223,7 @@ export async function runExecCommand(
 				? options.outputLastMessage
 				: resolve(process.cwd(), options.outputLastMessage);
 			ensureDir(target);
-			writeFileSync(target, lastAssistantText, "utf8");
+			writeTextFileAtomic(target, lastAssistantText, { encoding: "utf-8" });
 		}
 
 		if (!options.jsonl) {

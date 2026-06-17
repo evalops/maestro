@@ -1,6 +1,7 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { PATHS } from "../../config/constants.js";
+import { writeJsonFile } from "../../utils/fs.js";
 import { resolveEnvPath } from "../../utils/path-expansion.js";
 
 const MAX_HISTORY_SIZE = 500;
@@ -53,7 +54,7 @@ export function saveBashHistory(entries: string[]): void {
 			entries: entries.slice(-MAX_HISTORY_SIZE),
 			version: 1,
 		};
-		writeFileSync(historyFile, JSON.stringify(data, null, 2), "utf-8");
+		writeJsonFile(historyFile, data);
 	} catch {
 		// Silently fail - history persistence is best-effort
 	}

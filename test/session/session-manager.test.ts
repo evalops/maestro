@@ -4,6 +4,7 @@ import {
 	readFileSync,
 	readdirSync,
 	rmSync,
+	statSync,
 	writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -80,6 +81,17 @@ function createUserMessage(text: string) {
 	return {
 		role: "user" as const,
 		content: [{ type: "text" as const, text }],
+		timestamp: Date.now(),
+	};
+}
+
+function createHookMessage(text: string, details?: Record<string, unknown>) {
+	return {
+		role: "hookMessage" as const,
+		customType: "test-hook",
+		content: text,
+		display: false,
+		details,
 		timestamp: Date.now(),
 	};
 }
@@ -357,6 +369,48 @@ describe("SessionManager - Deferred Session Creation", () => {
 			expect(sessionManager.getHeader()?.promptContextManifest).toEqual(
 				state.promptContextManifest,
 			);
+		});
+
+		it("persists systemPromptSourcePaths in the session header", () => {
+			// Regression test for #2602: when a session is resumed and a
+			// previously loaded append/source path no longer exists on disk,
+			// compaction must still exclude that path from read-restore. The
+			// persisted snapshot is the bridge that keeps that exclusion alive
+			// across resume.
+			const sessionManager = new SessionManager(false);
+			const state = createMockState();
+			state.systemPromptSourcePaths = [
+				"/workspace/.maestro/APPEND_SYSTEM.md",
+				"/workspace/AGENT.md",
+			];
+
+			sessionManager.startSession(state);
+
+			expect(sessionManager.getHeader()?.systemPromptSourcePaths).toEqual([
+				"/workspace/.maestro/APPEND_SYSTEM.md",
+				"/workspace/AGENT.md",
+			]);
+			expect(
+				readSessionHeader(sessionManager.getSessionFile())
+					.systemPromptSourcePaths,
+			).toEqual([
+				"/workspace/.maestro/APPEND_SYSTEM.md",
+				"/workspace/AGENT.md",
+			]);
+		});
+
+		it("omits systemPromptSourcePaths when none were loaded", () => {
+			// The field is optional; missing/empty state must produce a header
+			// without the key so existing readers keep working unchanged.
+			const sessionManager = new SessionManager(false);
+			const state = createMockState();
+			state.systemPromptSourcePaths = [];
+
+			sessionManager.startSession(state);
+
+			expect(
+				sessionManager.getHeader()?.systemPromptSourcePaths,
+			).toBeUndefined();
 		});
 
 		it("persists unified context manifest in the session header", () => {
@@ -715,6 +769,19 @@ describe("SessionManager - Deferred Session Creation", () => {
 			expect(existsSync(sessionFile)).toBe(true);
 		});
 
+		it("creates session directories and files with owner-only permissions", () => {
+			if (process.platform === "win32") return;
+			const sessionManager = new SessionManager(false);
+			const sessionFile = sessionManager.getSessionFile();
+			const state = createMockState();
+			state.messages.push(createUserMessage("Hello"));
+			sessionManager.saveMessage(state.messages[0]!);
+			sessionManager.startSession(state);
+
+			expect(statSync(dirname(sessionFile)).mode & 0o777).toBe(0o700);
+			expect(statSync(sessionFile).mode & 0o777).toBe(0o600);
+		});
+
 		it("should flush pending messages when session is started", () => {
 			const sessionManager = new SessionManager(false);
 			const state = createMockState();
@@ -930,6 +997,509 @@ describe("SessionManager - Deferred Session Creation", () => {
 			const details = saved.details as { apiKey: string };
 			expect(details.apiKey).toContain("[REDACTED:");
 			expect(details.apiKey).not.toContain(secret);
+		});
+
+		it("redacts secrets in user messages before persistence", () => {
+			const sessionManager = new SessionManager(false);
+			const state = createMockState();
+			sessionManager.startSession(state);
+
+			const secret = "sk-ant-1234567890abcdef1234";
+			sessionManager.saveMessage(createUserMessage(`token=${secret}`));
+			sessionManager.saveMessage({
+				role: "user",
+				content: `inline token=${secret}`,
+				timestamp: Date.now(),
+			});
+
+			const savedUsers = sessionManager
+				.loadMessages()
+				.filter((message) => message.role === "user");
+
+			expect(savedUsers).toHaveLength(2);
+			for (const saved of savedUsers) {
+				const content =
+					typeof saved.content === "string"
+						? saved.content
+						: saved.content
+								.filter((block) => block.type === "text")
+								.map((block) => block.text)
+								.join("\n");
+				expect(content).toContain("[REDACTED:");
+				expect(content).not.toContain(secret);
+			}
+		});
+
+		it("preserves long clean user and hook text while redacting secrets", () => {
+			const sessionManager = new SessionManager(false);
+			const state = createMockState();
+			sessionManager.startSession(state);
+
+			const longCleanText = `clean-${"a".repeat(5000)}`;
+			sessionManager.saveMessage(createUserMessage(longCleanText));
+			sessionManager.saveMessage(createHookMessage(longCleanText));
+
+			const savedMessages = sessionManager.loadMessages();
+			const savedUser = savedMessages.find(
+				(message) => message.role === "user",
+			);
+			const savedHook = savedMessages.find(
+				(message) => message.role === "hookMessage",
+			);
+
+			expect(savedUser?.content).toEqual([
+				{ type: "text", text: longCleanText },
+			]);
+			expect(savedHook?.content).toBe(longCleanText);
+			expect(JSON.stringify(savedMessages)).not.toContain("[truncated:");
+		});
+
+		it("preserves long clean metadata and details before persistence", async () => {
+			const sessionManager = new SessionManager(false);
+			const state = createMockState();
+			sessionManager.startSession(state);
+
+			const longCleanText = `clean-${"a".repeat(5000)}`;
+			const base64LikeText = "A".repeat(5000);
+			sessionManager.saveMessage({
+				...createUserMessage("safe content"),
+				metadata: {
+					longCleanText,
+					base64LikeText,
+				},
+			});
+			sessionManager.saveMessage(
+				createHookMessage("hook content", {
+					longCleanText,
+					base64LikeText,
+				}),
+			);
+			sessionManager.appendCustomMessageEntry(
+				"hook-send-message",
+				"hook content",
+				true,
+				{
+					longCleanText,
+					base64LikeText,
+				},
+			);
+			await sessionManager.flush();
+
+			const savedMessages = sessionManager.loadMessages();
+			const savedUser = savedMessages.find(
+				(message) => message.role === "user",
+			) as
+				| {
+						metadata?: {
+							longCleanText?: string;
+							base64LikeText?: string;
+						};
+				  }
+				| undefined;
+			const savedHook = savedMessages.find(
+				(message) => message.role === "hookMessage",
+			) as
+				| {
+						details?: {
+							longCleanText?: string;
+							base64LikeText?: string;
+						};
+				  }
+				| undefined;
+			const customEntry = readSessionEntries(
+				sessionManager.getSessionFile(),
+			).find((entry) => entry.type === "custom_message") as
+				| {
+						details?: {
+							longCleanText?: string;
+							base64LikeText?: string;
+						};
+				  }
+				| undefined;
+
+			expect(savedUser?.metadata).toEqual({ longCleanText, base64LikeText });
+			expect(savedHook?.details).toEqual({ longCleanText, base64LikeText });
+			expect(customEntry?.details).toEqual({ longCleanText, base64LikeText });
+			expect(JSON.stringify(savedMessages)).not.toContain("[truncated:");
+			expect(JSON.stringify(savedMessages)).not.toContain("[base64:");
+			expect(JSON.stringify(customEntry)).not.toContain("[truncated:");
+			expect(JSON.stringify(customEntry)).not.toContain("[base64:");
+		});
+
+		it("preserves long clean metadata and details arrays before persistence", async () => {
+			const sessionManager = new SessionManager(false);
+			const state = createMockState();
+			sessionManager.startSession(state);
+
+			const longCleanArray = Array.from({ length: 125 }, (_, index) => ({
+				index,
+				label: `item-${index}`,
+			}));
+			sessionManager.saveMessage({
+				...createUserMessage("safe content"),
+				metadata: {
+					items: longCleanArray,
+				},
+			});
+			sessionManager.saveMessage(
+				createHookMessage("hook content", {
+					items: longCleanArray,
+				}),
+			);
+			sessionManager.appendCustomMessageEntry(
+				"hook-send-message",
+				"hook content",
+				true,
+				{
+					items: longCleanArray,
+				},
+			);
+			await sessionManager.flush();
+
+			const savedMessages = sessionManager.loadMessages();
+			const savedUser = savedMessages.find(
+				(message) => message.role === "user",
+			) as
+				| {
+						metadata?: {
+							items?: typeof longCleanArray;
+						};
+				  }
+				| undefined;
+			const savedHook = savedMessages.find(
+				(message) => message.role === "hookMessage",
+			) as
+				| {
+						details?: {
+							items?: typeof longCleanArray;
+						};
+				  }
+				| undefined;
+			const customEntry = readSessionEntries(
+				sessionManager.getSessionFile(),
+			).find((entry) => entry.type === "custom_message") as
+				| {
+						details?: {
+							items?: typeof longCleanArray;
+						};
+				  }
+				| undefined;
+
+			expect(savedUser?.metadata?.items).toEqual(longCleanArray);
+			expect(savedHook?.details?.items).toEqual(longCleanArray);
+			expect(customEntry?.details?.items).toEqual(longCleanArray);
+			expect(JSON.stringify(savedMessages)).not.toContain("more items");
+			expect(JSON.stringify(customEntry)).not.toContain("more items");
+		});
+
+		it("redacts secrets in user attachment payloads before persistence", () => {
+			const sessionManager = new SessionManager(false);
+			const state = createMockState();
+			sessionManager.startSession(state);
+
+			const secret = "sk-ant-1234567890abcdef1234";
+			const fileText = `OPENAI_API_KEY=${secret}\n`;
+			sessionManager.saveMessage({
+				role: "user",
+				content: "see attached env",
+				attachments: [
+					{
+						id: "att-env",
+						type: "document",
+						fileName: "secrets.env",
+						mimeType: "text/plain",
+						size: fileText.length,
+						content: Buffer.from(fileText, "utf8").toString("base64"),
+						extractedText: `The key is ${secret}`,
+					},
+				],
+				timestamp: Date.now(),
+			});
+
+			const savedUser = sessionManager
+				.loadMessages()
+				.find(
+					(message) => message.role === "user" && "attachments" in message,
+				) as
+				| {
+						attachments?: Array<{
+							content: string;
+							extractedText?: string;
+						}>;
+				  }
+				| undefined;
+			const attachment = savedUser?.attachments?.[0];
+			expect(attachment).toBeTruthy();
+			if (!attachment) return;
+
+			const decodedContent = Buffer.from(attachment.content, "base64").toString(
+				"utf8",
+			);
+			expect(decodedContent).toContain("[REDACTED:");
+			expect(decodedContent).not.toContain(secret);
+			expect(attachment.extractedText).toContain("[REDACTED:");
+			expect(attachment.extractedText).not.toContain(secret);
+		});
+
+		it("redacts secrets in attachment extract cache entries on save and reload", async () => {
+			const sessionManager = new SessionManager(false);
+			const state = createMockState();
+			sessionManager.startSession(state);
+
+			sessionManager.saveMessage({
+				role: "user",
+				content: "extract this attachment",
+				attachments: [
+					{
+						id: "att-cache",
+						type: "document",
+						fileName: "notes.txt",
+						mimeType: "text/plain",
+						size: 5,
+						content: Buffer.from("hello", "utf8").toString("base64"),
+					},
+				],
+				timestamp: Date.now(),
+			});
+
+			const secret = "sk-ant-1234567890abcdef1234";
+			const legacySecret = "sk-ant-fedcba0987654321abcd";
+			const sessionFile = sessionManager.getSessionFile();
+			sessionManager.saveAttachmentExtraction(
+				sessionFile,
+				"att-cache",
+				`Cached key ${secret}`,
+			);
+			await sessionManager.flush();
+
+			const attachmentExtractEntries = readSessionEntries(sessionFile).filter(
+				(entry) => entry.type === "attachment_extract",
+			) as Array<{ extractedText: string }>;
+			expect(attachmentExtractEntries).toHaveLength(1);
+			expect(attachmentExtractEntries[0]?.extractedText).toContain(
+				"[REDACTED:",
+			);
+			expect(attachmentExtractEntries[0]?.extractedText).not.toContain(secret);
+
+			const legacyEntry = JSON.stringify({
+				type: "attachment_extract",
+				timestamp: new Date().toISOString(),
+				attachmentId: "att-cache",
+				extractedText: `Legacy cache ${legacySecret}`,
+			});
+			writeFileSync(
+				sessionFile,
+				`${readFileSync(sessionFile, "utf8")}${legacyEntry}\n`,
+				"utf8",
+			);
+
+			const restored = new SessionManager(false, sessionFile);
+			const savedUser = restored
+				.loadMessages()
+				.find(
+					(message) => message.role === "user" && "attachments" in message,
+				) as
+				| {
+						attachments?: Array<{
+							extractedText?: string;
+						}>;
+				  }
+				| undefined;
+			const attachment = savedUser?.attachments?.[0];
+			expect(attachment).toBeTruthy();
+			expect(attachment?.extractedText).toContain("Legacy cache");
+			expect(attachment?.extractedText).toContain("[REDACTED:");
+			expect(attachment?.extractedText).not.toContain(legacySecret);
+		});
+
+		it("redacts secrets in user metadata and hook details before persistence", () => {
+			const sessionManager = new SessionManager(false);
+			const state = createMockState();
+			sessionManager.startSession(state);
+
+			const secret = "sk-ant-1234567890abcdef1234";
+			sessionManager.saveMessage({
+				role: "user",
+				content: "safe content",
+				metadata: { apiKey: secret },
+				timestamp: Date.now(),
+			});
+			sessionManager.saveMessage(
+				createHookMessage("hook content", { apiKey: secret }),
+			);
+
+			const savedMessages = sessionManager.loadMessages();
+			const savedUser = savedMessages.find(
+				(message) =>
+					message.role === "user" && typeof message.content === "string",
+			) as { metadata?: { apiKey: string } } | undefined;
+			const savedHook = savedMessages.find(
+				(message) => message.role === "hookMessage",
+			) as { details?: { apiKey: string } } | undefined;
+
+			expect(savedUser?.metadata?.apiKey).toContain("[REDACTED:");
+			expect(savedUser?.metadata?.apiKey).not.toContain(secret);
+			expect(savedHook?.details?.apiKey).toContain("[REDACTED:");
+			expect(savedHook?.details?.apiKey).not.toContain(secret);
+		});
+
+		it("redacts custom-message entries appended by hooks before persistence", async () => {
+			const sessionManager = new SessionManager(false);
+			const state = createMockState();
+			sessionManager.startSession(state);
+
+			const secret = "sk-ant-1234567890abcdef1234";
+			sessionManager.appendCustomMessageEntry(
+				"hook-send-message",
+				`hook token=${secret}`,
+				true,
+				{ apiKey: secret },
+			);
+			await sessionManager.flush();
+
+			const customEntry = readSessionEntries(
+				sessionManager.getSessionFile(),
+			).find((entry) => entry.type === "custom_message") as
+				| {
+						content: string;
+						details?: { apiKey: string };
+				  }
+				| undefined;
+			expect(customEntry?.content).toContain("[REDACTED:");
+			expect(customEntry?.content).not.toContain(secret);
+			expect(customEntry?.details?.apiKey).toContain("[REDACTED:");
+			expect(customEntry?.details?.apiKey).not.toContain(secret);
+
+			const savedHook = sessionManager
+				.loadMessages()
+				.find((message) => message.role === "hookMessage") as
+				| { content: string; details?: { apiKey: string } }
+				| undefined;
+			expect(savedHook?.content).toContain("[REDACTED:");
+			expect(savedHook?.content).not.toContain(secret);
+			expect(savedHook?.details?.apiKey).toContain("[REDACTED:");
+			expect(savedHook?.details?.apiKey).not.toContain(secret);
+		});
+
+		it("redacts secrets when branching from in-memory state", async () => {
+			const sessionManager = new SessionManager(false);
+			const state = createMockState();
+			const secret = "sk-ant-1234567890abcdef1234";
+			const userMessage = {
+				role: "user" as const,
+				content: `token=${secret}`,
+				metadata: { apiKey: secret },
+				timestamp: Date.now(),
+			};
+			const hookMessage = createHookMessage(`token=${secret}`, {
+				apiKey: secret,
+			});
+
+			state.messages.push(userMessage, hookMessage);
+			sessionManager.startSession(state);
+			sessionManager.saveMessage(userMessage);
+			sessionManager.saveMessage(hookMessage);
+			await sessionManager.flush();
+
+			const branchFile = sessionManager.createBranchedSession(state, 2);
+			const branchEntries = readSessionEntries(branchFile).filter(
+				(entry) => entry.type === "message",
+			) as Array<{
+				message: {
+					role: string;
+					content: string;
+					metadata?: { apiKey: string };
+					details?: { apiKey: string };
+				};
+			}>;
+			const [savedUser, savedHook] = branchEntries.map(
+				(entry) => entry.message,
+			);
+
+			expect(savedUser.content).toContain("[REDACTED:");
+			expect(savedUser.content).not.toContain(secret);
+			expect(savedUser.metadata?.apiKey).toContain("[REDACTED:");
+			expect(savedUser.metadata?.apiKey).not.toContain(secret);
+			expect(savedHook.content).toContain("[REDACTED:");
+			expect(savedHook.content).not.toContain(secret);
+			expect(savedHook.details?.apiKey).toContain("[REDACTED:");
+			expect(savedHook.details?.apiKey).not.toContain(secret);
+		});
+
+		it("redacts legacy branch entries when branching from a leaf id", () => {
+			const secret = "sk-ant-1234567890abcdef1234";
+			const seedManager = new SessionManager(false);
+			const legacySessionFile = seedManager.getSessionFile();
+			seedManager.disable();
+
+			writeFileSync(
+				legacySessionFile,
+				`${[
+					JSON.stringify({
+						type: "session",
+						version: 2,
+						id: "legacy-session",
+						timestamp: new Date().toISOString(),
+						cwd: process.cwd(),
+					}),
+					JSON.stringify({
+						type: "message",
+						id: "legacy-message",
+						parentId: null,
+						timestamp: new Date().toISOString(),
+						message: {
+							role: "user",
+							content: `token=${secret}`,
+							metadata: { apiKey: secret },
+							timestamp: Date.now(),
+						},
+					}),
+					JSON.stringify({
+						type: "custom_message",
+						customType: "hook-send-message",
+						content: `token=${secret}`,
+						details: { apiKey: secret },
+						display: true,
+						id: "legacy-hook-message",
+						parentId: "legacy-message",
+						timestamp: new Date().toISOString(),
+					}),
+				].join("\n")}\n`,
+				"utf8",
+			);
+
+			const legacyManager = new SessionManager(false, legacySessionFile);
+			const branchFile = legacyManager.createBranchedSession(
+				"legacy-hook-message",
+			);
+			const branchEntries = readSessionEntries(branchFile);
+			const savedMessage = branchEntries.find(
+				(entry) => entry.type === "message",
+			) as
+				| {
+						message: {
+							content: string;
+							metadata?: { apiKey: string };
+						};
+				  }
+				| undefined;
+			const savedCustom = branchEntries.find(
+				(entry) => entry.type === "custom_message",
+			) as
+				| {
+						content: string;
+						details?: { apiKey: string };
+				  }
+				| undefined;
+
+			expect(savedMessage?.message.content).toContain("[REDACTED:");
+			expect(savedMessage?.message.content).not.toContain(secret);
+			expect(savedMessage?.message.metadata?.apiKey).toContain("[REDACTED:");
+			expect(savedMessage?.message.metadata?.apiKey).not.toContain(secret);
+			expect(savedCustom?.content).toContain("[REDACTED:");
+			expect(savedCustom?.content).not.toContain(secret);
+			expect(savedCustom?.details?.apiKey).toContain("[REDACTED:");
+			expect(savedCustom?.details?.apiKey).not.toContain(secret);
 		});
 	});
 

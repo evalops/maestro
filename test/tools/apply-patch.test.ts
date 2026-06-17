@@ -7,7 +7,7 @@ import {
 	rmSync,
 	writeFileSync,
 } from "node:fs";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { join, sep } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AgentToolResult } from "../../src/agent/types.js";
@@ -22,6 +22,10 @@ import {
 	applyPatchTool,
 } from "../../src/tools/apply-patch.js";
 import type { ToolError } from "../../src/tools/tool-dsl.js";
+
+vi.mock("../../src/config/firewall-config.js", () => ({
+	getFirewallConfig: () => ({}),
+}));
 
 vi.mock("../../src/safety/safe-mode.js", () => ({
 	requirePlanCheck: vi.fn(),
@@ -358,6 +362,33 @@ describe("apply_patch tool", () => {
 		);
 	});
 
+	it("rejects filesystem paths outside the workspace before writing", async () => {
+		const outsidePath = join(
+			homedir(),
+			`apply-patch-outside-${process.pid}.txt`,
+		);
+		rmSync(outsidePath, { force: true });
+
+		try {
+			await expect(
+				applyPatchTool.execute("call-outside-workspace", {
+					patch: [
+						"*** Begin Patch",
+						`*** Add File: ${outsidePath}`,
+						"+outside",
+						"*** End Patch",
+					].join("\n"),
+				}),
+			).rejects.toMatchObject({
+				name: "ToolError",
+				code: "APPLY_PATCH_PATH_OUTSIDE_WORKSPACE",
+			} satisfies Partial<ToolError>);
+			expect(existsSync(outsidePath)).toBe(false);
+		} finally {
+			rmSync(outsidePath, { force: true });
+		}
+	});
+
 	it("adds and deletes files", async () => {
 		const addedPath = join(testDir, "nested", "created.py");
 		const deletedPath = join(testDir, "old.rs");
@@ -560,6 +591,161 @@ describe("apply_patch tool", () => {
 		);
 		await expect(sandbox.readFile("second.ts")).resolves.toBe(
 			"export const second = 1;\n",
+		);
+	});
+
+	it("rejects sandbox paths outside the workspace before sandbox access", async () => {
+		const exists = vi.fn().mockResolvedValue(false);
+		const write = vi.fn().mockResolvedValue(undefined);
+		const sandbox: Sandbox = {
+			async exec() {
+				return { stdout: "", stderr: "", exitCode: 0 };
+			},
+			async readFile() {
+				throw new Error("unexpected read");
+			},
+			writeFile: write,
+			exists,
+			async dispose() {},
+		};
+
+		await expect(
+			applyPatchTool.execute(
+				"call-sandbox-outside-workspace",
+				{
+					patch: [
+						"*** Begin Patch",
+						"*** Add File: ../sandbox-outside.txt",
+						"+outside",
+						"*** End Patch",
+					].join("\n"),
+				},
+				undefined,
+				{ sandbox },
+			),
+		).rejects.toMatchObject({
+			name: "ToolError",
+			code: "APPLY_PATCH_PATH_OUTSIDE_WORKSPACE",
+		} satisfies Partial<ToolError>);
+		expect(exists).not.toHaveBeenCalled();
+		expect(write).not.toHaveBeenCalled();
+	});
+
+	it("rejects backslash sandbox traversal before sandbox access", async () => {
+		const exists = vi.fn().mockResolvedValue(false);
+		const write = vi.fn().mockResolvedValue(undefined);
+		const sandbox: Sandbox = {
+			async exec() {
+				return { stdout: "", stderr: "", exitCode: 0 };
+			},
+			async readFile() {
+				throw new Error("unexpected read");
+			},
+			writeFile: write,
+			exists,
+			async dispose() {},
+		};
+
+		for (const path of [
+			"..\\sandbox-outside.txt",
+			"nested\\..\\..\\sandbox-outside.txt",
+		]) {
+			await expect(
+				applyPatchTool.execute(
+					"call-sandbox-backslash-traversal",
+					{
+						patch: [
+							"*** Begin Patch",
+							`*** Add File: ${path}`,
+							"+outside",
+							"*** End Patch",
+						].join("\n"),
+					},
+					undefined,
+					{ sandbox },
+				),
+			).rejects.toMatchObject({
+				name: "ToolError",
+				code: "APPLY_PATCH_PATH_OUTSIDE_WORKSPACE",
+			} satisfies Partial<ToolError>);
+		}
+
+		expect(exists).not.toHaveBeenCalled();
+		expect(write).not.toHaveBeenCalled();
+	});
+
+	it("rejects absolute sandbox paths with parent traversal", async () => {
+		const exists = vi.fn().mockResolvedValue(false);
+		const write = vi.fn().mockResolvedValue(undefined);
+		const sandbox: Sandbox = {
+			async exec() {
+				return { stdout: "", stderr: "", exitCode: 0 };
+			},
+			async readFile() {
+				throw new Error("unexpected read");
+			},
+			writeFile: write,
+			exists,
+			async dispose() {},
+		};
+
+		await expect(
+			applyPatchTool.execute(
+				"call-sandbox-absolute-parent-traversal",
+				{
+					patch: [
+						"*** Begin Patch",
+						"*** Add File: /../../sandbox-outside.txt",
+						"+outside",
+						"*** End Patch",
+					].join("\n"),
+				},
+				undefined,
+				{ sandbox },
+			),
+		).rejects.toMatchObject({
+			name: "ToolError",
+			code: "APPLY_PATCH_PATH_OUTSIDE_WORKSPACE",
+		} satisfies Partial<ToolError>);
+		expect(exists).not.toHaveBeenCalled();
+		expect(write).not.toHaveBeenCalled();
+	});
+
+	it("preserves absolute sandbox paths for remote workspaces", async () => {
+		const exists = vi.fn().mockResolvedValue(true);
+		const readFile = vi.fn().mockResolvedValue("export const value = 1;\n");
+		const writeFile = vi.fn().mockResolvedValue(undefined);
+		const sandbox: Sandbox = {
+			async exec() {
+				return { stdout: "", stderr: "", exitCode: 0 };
+			},
+			readFile,
+			writeFile,
+			exists,
+			async dispose() {},
+		};
+
+		await applyPatchTool.execute(
+			"call-sandbox-absolute-path",
+			{
+				patch: [
+					"*** Begin Patch",
+					"*** Update File: /app/out.txt",
+					"@@",
+					"-export const value = 1;",
+					"+export const value = 2;",
+					"*** End Patch",
+				].join("\n"),
+			},
+			undefined,
+			{ sandbox },
+		);
+
+		expect(exists).toHaveBeenCalledWith("/app/out.txt");
+		expect(readFile).toHaveBeenCalledWith("/app/out.txt");
+		expect(writeFile).toHaveBeenCalledWith(
+			"/app/out.txt",
+			"export const value = 2;\n",
 		);
 	});
 

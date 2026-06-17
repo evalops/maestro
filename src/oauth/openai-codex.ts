@@ -14,6 +14,7 @@ import {
 	createServer,
 } from "node:http";
 import { createLogger } from "../utils/logger.js";
+import { rejectDisallowedLoopbackHost } from "../utils/loopback-http.js";
 import { type OAuthCredentials, saveOAuthCredentials } from "./storage.js";
 
 const logger = createLogger("oauth:openai-codex");
@@ -268,6 +269,9 @@ async function startCallbackServer(state: string): Promise<{
 		});
 
 		const server = createServer((req: IncomingMessage, res: ServerResponse) => {
+			if (rejectDisallowedLoopbackHost(req, res, CALLBACK_PORT)) {
+				return;
+			}
 			const reqUrl = new URL(req.url ?? "", CALLBACK_ORIGIN);
 			if (reqUrl.pathname !== "/auth/callback") {
 				res.writeHead(404, { "Content-Type": "text/html; charset=utf-8" });

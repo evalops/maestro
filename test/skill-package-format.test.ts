@@ -1,6 +1,7 @@
 import { execFileSync } from "node:child_process";
 import {
 	chmodSync,
+	mkdirSync,
 	mkdtempSync,
 	readFileSync,
 	rmSync,
@@ -41,6 +42,16 @@ function tempRoot(): string {
 	const dir = mkdtempSync(join(tmpdir(), "maestro-skill-package-"));
 	tempDirs.push(dir);
 	return dir;
+}
+
+function writeTrustedGlobalConfig(home: string, projectRoot: string): void {
+	mkdirSync(home, { recursive: true });
+	const escaped = projectRoot.replaceAll("\\", "\\\\").replaceAll('"', '\\"');
+	writeFileSync(
+		join(home, "config.toml"),
+		`[projects."${escaped}"]\ntrust_level = "trusted"\n`,
+		"utf8",
+	);
 }
 
 function createCommittedGitRepo(dir: string): void {
@@ -515,36 +526,76 @@ describe("skill package format", () => {
 	});
 
 	it("installs validated OSS skill packages into the selected config scope", async () => {
+		const originalHome = process.env.MAESTRO_HOME;
+		const isolatedHome = tempRoot();
 		const workspace = tempRoot();
-		await mkdir(join(workspace, ".maestro"), { recursive: true });
-		await writeOssSkillPackage(workspace);
+		try {
+			process.env.MAESTRO_HOME = isolatedHome;
+			await mkdir(join(workspace, ".maestro"), { recursive: true });
+			await writeOssSkillPackage(workspace);
+			writeTrustedGlobalConfig(isolatedHome, workspace);
 
-		const { logs, errors } = await captureSkillCommand(
-			"install",
-			["./vendor/review-skills", "--scope", "project", "--json"],
-			workspace,
-		);
+			const { logs, errors } = await captureSkillCommand(
+				"install",
+				["./vendor/review-skills", "--scope", "project", "--json"],
+				workspace,
+			);
 
-		expect(errors).toEqual([]);
-		const payload = JSON.parse(logs.join("\n")) as {
-			installed: boolean;
-			config: { path: string; scope: string };
-		};
-		expect(payload.installed).toBe(true);
-		expect(payload.config).toMatchObject({
-			path: join(workspace, ".maestro", "config.toml"),
-			scope: "project",
-		});
-		expect(readFileSync(payload.config.path, "utf8")).toContain(
-			"../vendor/review-skills",
-		);
+			expect(errors).toEqual([]);
+			const payload = JSON.parse(logs.join("\n")) as {
+				installed: boolean;
+				config: { path: string; scope: string };
+			};
+			expect(payload.installed).toBe(true);
+			expect(payload.config).toMatchObject({
+				path: join(workspace, ".maestro", "config.toml"),
+				scope: "project",
+			});
+			expect(readFileSync(payload.config.path, "utf8")).toContain(
+				"../vendor/review-skills",
+			);
 
-		const loaded = loadSkills(workspace, { includeSystem: false });
-		expect(loaded.errors).toEqual([]);
-		expect(loaded.skills.map((skill) => skill.name)).toContain("reviewing-prs");
-		expect(
-			loaded.skills.find((skill) => skill.name === "reviewing-prs")?.sourceType,
-		).toBe("project");
+			const loaded = loadSkills(workspace, { includeSystem: false });
+			expect(loaded.errors).toEqual([]);
+			expect(loaded.skills.map((skill) => skill.name)).toContain(
+				"reviewing-prs",
+			);
+			expect(
+				loaded.skills.find((skill) => skill.name === "reviewing-prs")
+					?.sourceType,
+			).toBe("project");
+		} finally {
+			if (originalHome === undefined) {
+				delete process.env.MAESTRO_HOME;
+			} else {
+				process.env.MAESTRO_HOME = originalHome;
+			}
+		}
+	});
+
+	it("rejects local skill package installs when project package config is untrusted", async () => {
+		const originalHome = process.env.MAESTRO_HOME;
+		const isolatedHome = tempRoot();
+		const workspace = tempRoot();
+		try {
+			process.env.MAESTRO_HOME = isolatedHome;
+			await mkdir(join(workspace, ".maestro"), { recursive: true });
+			await writeOssSkillPackage(workspace);
+
+			await expect(
+				handleSkillCommand("install", ["./vendor/review-skills", "--json"], {
+					workspaceDir: workspace,
+				}),
+			).rejects.toThrow(
+				"maestro skill install --scope local requires a trusted workspace",
+			);
+		} finally {
+			if (originalHome === undefined) {
+				delete process.env.MAESTRO_HOME;
+			} else {
+				process.env.MAESTRO_HOME = originalHome;
+			}
+		}
 	});
 
 	it("accepts quoted isolatedContext consistently across load and lint", async () => {

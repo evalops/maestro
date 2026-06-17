@@ -60,6 +60,7 @@ const ROLE_PERMISSIONS: Record<SlackRole, string[]> = {
 		"view_scheduled_tasks",
 		"retry",
 		"stop",
+		"manage_triggers",
 	],
 	user: [
 		"execute_tool:read",
@@ -126,7 +127,7 @@ export class PermissionManager {
 		}
 		return {
 			users: {},
-			defaultRole: this.options.defaultRole ?? "user",
+			defaultRole: this.options.defaultRole ?? "viewer",
 		};
 	}
 

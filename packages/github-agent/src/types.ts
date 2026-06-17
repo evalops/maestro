@@ -34,9 +34,20 @@ export interface GitHubPR {
 	nodeId?: string | null;
 }
 
+export type GitHubAuthorAssociation =
+	| "COLLABORATOR"
+	| "CONTRIBUTOR"
+	| "FIRST_TIMER"
+	| "FIRST_TIME_CONTRIBUTOR"
+	| "MANNEQUIN"
+	| "MEMBER"
+	| "NONE"
+	| "OWNER";
+
 export interface PRReview {
 	id: number;
 	author: string;
+	authorAssociation?: GitHubAuthorAssociation | null;
 	state: "APPROVED" | "CHANGES_REQUESTED" | "COMMENTED" | "PENDING";
 	body: string | null;
 	submittedAt: string;
@@ -45,6 +56,7 @@ export interface PRReview {
 export interface PRComment {
 	id: number;
 	author: string;
+	authorAssociation?: GitHubAuthorAssociation | null;
 	body: string;
 	path: string | null;
 	line: number | null;
@@ -96,6 +108,7 @@ export interface IssueComment {
 	id: number;
 	issueNumber: number;
 	author: string;
+	authorAssociation?: GitHubAuthorAssociation | null;
 	body: string;
 	createdAt: string;
 	url: string;
@@ -217,6 +230,11 @@ export interface AgentStats {
 /**
  * Configuration for the agent
  */
+export type GitHubAgentMaestroSandboxMode =
+	| "docker"
+	| "native"
+	| "workspace-write";
+
 export interface AgentConfig {
 	// GitHub
 	owner: string;
@@ -244,6 +262,7 @@ export interface AgentConfig {
 	// Paths
 	workingDir: string;
 	memoryDir: string;
+	maestroSandboxMode?: GitHubAgentMaestroSandboxMode;
 
 	// GitHub API / App / Webhooks
 	githubApiUrl?: string;
@@ -292,4 +311,5 @@ export const DEFAULT_CONFIG: Partial<AgentConfig> = {
 	autoMergeMethod: "squash",
 	mergeQueue: false,
 	mergeQueueJump: false,
+	maestroSandboxMode: "docker",
 };

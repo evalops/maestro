@@ -23,6 +23,7 @@ import {
 import { isReadOnlyTool } from "../../tools/parallel-execution.js";
 import { isAbortError } from "../../utils/abort-error.js";
 import { createLogger } from "../../utils/logger.js";
+import { sanitizeWithStaticMask } from "../../utils/secret-redactor.js";
 import type {
 	ActionApprovalDecision,
 	ActionApprovalRequest,
@@ -902,7 +903,7 @@ export class DefaultPlatformToolExecutionBridge
 		} catch (error) {
 			const message = error instanceof Error ? error.message : String(error);
 			logger.warn("Failed to record observe-only tool execution", {
-				error: message,
+				error: sanitizeWithStaticMask(message),
 				toolName: plan.request.tool.name,
 				toolCallId: plan.request.metadata?.maestro_tool_call_id,
 			});
@@ -951,7 +952,7 @@ export class DefaultPlatformToolExecutionBridge
 			}
 			const message = error instanceof Error ? error.message : String(error);
 			logger.warn("Failed to record governed tool execution output", {
-				error: message,
+				error: sanitizeWithStaticMask(message),
 				toolName: plan.request.tool.name,
 				toolCallId: result.toolCallId,
 				toolExecutionId: executionId,

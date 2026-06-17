@@ -16,6 +16,7 @@ import {
 	mkdtempSync,
 	readdirSync,
 	rmSync,
+	statSync,
 	writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -30,6 +31,7 @@ import {
 	isWritable,
 	readJsonFile,
 	readTextFile,
+	rotateCorruptJsonFile,
 	writeJsonFile,
 	writeTextFile,
 	writeTextFileAtomic,
@@ -276,6 +278,99 @@ describe("fs utilities", () => {
 		});
 	});
 
+	describe("readJsonFile rotateOnParseFail (#2631)", () => {
+		it("does NOT rotate by default — preserves legacy behavior", async () => {
+			const filePath = join(testDir, "state.json");
+			writeFileSync(filePath, "{ not valid json");
+
+			const result = readJsonFile(filePath, {
+				fallback: { ok: false },
+			});
+
+			expect(result).toEqual({ ok: false });
+			// File is still there untouched, no rotated siblings.
+			const fs = await import("node:fs");
+			const siblings = fs
+				.readdirSync(testDir)
+				.filter((name) => name.includes(".corrupt."));
+			expect(siblings).toHaveLength(0);
+		});
+
+		it("rotates the corrupt file aside when rotateOnParseFail is set", async () => {
+			const filePath = join(testDir, "state.json");
+			const corrupted = '{ "skills": [{ partial';
+			writeFileSync(filePath, corrupted);
+
+			const result = readJsonFile(filePath, {
+				fallback: { skills: [] },
+				rotateOnParseFail: true,
+			});
+
+			expect(result).toEqual({ skills: [] });
+			const fs = await import("node:fs");
+			expect(fs.existsSync(filePath)).toBe(false);
+			const siblings = fs
+				.readdirSync(testDir)
+				.filter((name) => name.startsWith("state.json.corrupt."));
+			expect(siblings).toHaveLength(1);
+			// Bytes preserved verbatim for forensics
+			expect(fs.readFileSync(join(testDir, siblings[0]!), "utf-8")).toBe(
+				corrupted,
+			);
+		});
+
+		it("does not rotate a valid file (happy path is untouched)", async () => {
+			const filePath = join(testDir, "state.json");
+			writeFileSync(filePath, JSON.stringify({ ok: true }));
+
+			const result = readJsonFile<{ ok: boolean }>(filePath, {
+				fallback: { ok: false },
+				rotateOnParseFail: true,
+			});
+
+			expect(result).toEqual({ ok: true });
+			const fs = await import("node:fs");
+			expect(fs.existsSync(filePath)).toBe(true);
+			const siblings = fs
+				.readdirSync(testDir)
+				.filter((name) => name.includes(".corrupt."));
+			expect(siblings).toHaveLength(0);
+		});
+
+		it("does not rotate when the file is absent (no source to rotate)", async () => {
+			const filePath = join(testDir, "missing.json");
+			const result = readJsonFile(filePath, {
+				fallback: { ok: false },
+				rotateOnParseFail: true,
+			});
+			expect(result).toEqual({ ok: false });
+			const fs = await import("node:fs");
+			const siblings = fs
+				.readdirSync(testDir)
+				.filter((name) => name.includes(".corrupt."));
+			expect(siblings).toHaveLength(0);
+		});
+	});
+
+	describe("rotateCorruptJsonFile", () => {
+		it("renames the source to <file>.corrupt.<iso-ts>", async () => {
+			const filePath = join(testDir, "state.json");
+			writeFileSync(filePath, "garbage");
+
+			const rotated = rotateCorruptJsonFile(filePath);
+			expect(rotated).not.toBeNull();
+			const fs = await import("node:fs");
+			expect(fs.existsSync(filePath)).toBe(false);
+			expect(fs.existsSync(rotated!)).toBe(true);
+			expect(fs.readFileSync(rotated!, "utf-8")).toBe("garbage");
+		});
+
+		it("returns null if the source file doesn't exist", () => {
+			const result = rotateCorruptJsonFile(join(testDir, "missing.json"));
+			expect(result).toBeNull();
+		});
+	});
+
 	describe("writeJsonFile", () => {
 		it("should write JSON with pretty formatting by default", () => {
 			const filePath = join(testDir, "output.json");
@@ -350,6 +445,25 @@ describe("fs utilities", () => {
 
 			const result = readJsonFile(filePath);
 			expect(result).toEqual({ new: true });
+		});
+
+		it("should not leave atomic temp files on success", () => {
+			const filePath = join(testDir, "atomic-json.json");
+
+			writeJsonFile(filePath, { ok: true });
+
+			const files = readdirSync(testDir);
+			const tempFiles = files.filter((f: string) => f.includes(".tmp."));
+			expect(tempFiles).toHaveLength(0);
+			expect(readJsonFile(filePath)).toEqual({ ok: true });
+		});
+
+		it("should respect createDirs false", () => {
+			const filePath = join(testDir, "missing", "data.json");
+
+			expect(() =>
+				writeJsonFile(filePath, { ok: false }, { createDirs: false }),
+			).toThrow(FileSystemError);
 		});
 	});
 
@@ -477,6 +591,33 @@ describe("fs utilities", () => {
 			writeTextFileAtomic(filePath, content);
 			expect(readTextFile(filePath)).toBe(content);
 		});
+
+		const shouldCheckModes = process.platform !== "win32";
+
+		it.skipIf(!shouldCheckModes)(
+			"should create new atomic files with private permissions",
+			() => {
+				const filePath = join(testDir, "atomic-private.txt");
+
+				writeTextFileAtomic(filePath, "private");
+
+				expect(statSync(filePath).mode & 0o777).toBe(0o600);
+			},
+		);
+
+		it.skipIf(!shouldCheckModes)(
+			"should preserve existing file permissions",
+			() => {
+				const filePath = join(testDir, "atomic-mode.txt");
+				writeFileSync(filePath, "old", { mode: 0o640 });
+				chmodSync(filePath, 0o640);
+
+				writeTextFileAtomic(filePath, "new");
+
+				expect(readTextFile(filePath)).toBe("new");
+				expect(statSync(filePath).mode & 0o777).toBe(0o640);
+			},
+		);
 	});
 
 	describe("isReadable", () => {

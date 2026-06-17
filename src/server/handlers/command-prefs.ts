@@ -1,7 +1,7 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import type { IncomingMessage, ServerResponse } from "node:http";
-import { dirname } from "node:path";
 import { PATHS } from "../../config/constants.js";
+import { writeJsonFile } from "../../utils/fs.js";
 import { resolveEnvPath } from "../../utils/path-expansion.js";
 import type { WebServerContext } from "../app-context.js";
 import { respondWithApiError, sendJson } from "../server-utils.js";
@@ -40,8 +40,7 @@ function loadPrefs(): CommandPrefs {
 
 function savePrefs(prefs: CommandPrefs): void {
 	const prefsPath = getPrefsPath();
-	mkdirSync(dirname(prefsPath), { recursive: true });
-	writeFileSync(prefsPath, JSON.stringify(prefs, null, 2), "utf8");
+	writeJsonFile(prefsPath, prefs);
 }
 
 export async function handleCommandPrefs(

@@ -28,6 +28,11 @@ import {
 	recordMaestroFirewallBlock,
 } from "../../telemetry/maestro-event-bus.js";
 import { trackToolBlocked } from "../../telemetry/security-events.js";
+import {
+	CONTEXT_INTERPOLATED_MARKER,
+	interpolateContext,
+	stripContextInterpolationMarker,
+} from "../../tools/tool-dsl.js";
 import type { Clock } from "../../utils/clock.js";
 import { createLogger } from "../../utils/logger.js";
 import {
@@ -64,6 +69,50 @@ import {
 } from "./transport-utils.js";
 
 const logger = createLogger("transport:tool-safety");
+
+function getBashEnvOverrides(env: unknown): Record<string, string> | undefined {
+	if (!env || typeof env !== "object" || Array.isArray(env)) {
+		return undefined;
+	}
+	const overrides = Object.entries(env).reduce<Record<string, string>>(
+		(result, [key, value]) => {
+			if (typeof value === "string") {
+				result[key] = value;
+			}
+			return result;
+		},
+		{},
+	);
+	if (Object.keys(overrides).length === 0) {
+		return undefined;
+	}
+	return overrides;
+}
+
+function interpolateBashToolCall(toolCall: ToolCall): ToolCall {
+	if (toolCall.name !== "bash") {
+		return toolCall;
+	}
+	const args = toolCall.arguments as Record<string, unknown>;
+	if (typeof args.command !== "string") {
+		return toolCall;
+	}
+	const command = interpolateContext(
+		args.command,
+		getBashEnvOverrides(args.env),
+	);
+	if (command === args.command) {
+		return toolCall;
+	}
+	return {
+		...toolCall,
+		arguments: {
+			...args,
+			command,
+			[CONTEXT_INTERPOLATED_MARKER]: true,
+		},
+	};
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Types
@@ -514,6 +563,7 @@ export async function* evaluateToolSafety(
 			};
 		}
 	}
+	effectiveToolCall = interpolateBashToolCall(effectiveToolCall);
 
 	// 3. Safety middleware sequence analysis
 	const safetyCheck = safetyMiddleware.preExecution(
@@ -748,12 +798,13 @@ export async function* evaluateToolSafety(
 		| import("../action-approval.js").ActionApprovalRequest
 		| undefined;
 	let platformApprovalResolved = false;
-	const bridgeArgs = safetyMiddleware.sanitizeForLogging(
+	const bridgePublicArgs = stripContextInterpolationMarker(
 		effectiveToolCall.arguments as Record<string, unknown>,
 	);
+	const bridgeArgs = safetyMiddleware.sanitizeForLogging(bridgePublicArgs);
 	const bridgeInput: ToolExecutionBridgeInput = {
 		cfg,
-		toolCall,
+		toolCall: effectiveToolCall,
 		toolDef,
 		sanitizedArgs: bridgeArgs,
 		...describeArgs(bridgeArgs),
@@ -837,6 +888,7 @@ export async function* evaluateToolSafety(
 					...effectiveToolCall,
 					arguments: permissionHookResult.updatedInput,
 				};
+				effectiveToolCall = interpolateBashToolCall(effectiveToolCall);
 				const rewrittenVerdict = await firewall.evaluate({
 					toolName: effectiveToolCall.name,
 					args: effectiveToolCall.arguments,
@@ -979,22 +1031,29 @@ export async function* evaluateToolSafety(
 				},
 			});
 		} else if (approvalService && !permissionHookMadeDecision) {
-			const sanitizedApprovalArgs = safetyMiddleware.sanitizeForLogging(
+			const approvalArgs = stripContextInterpolationMarker(
 				effectiveToolCall.arguments as Record<string, unknown>,
 			);
+			const sanitizedApprovalArgs =
+				safetyMiddleware.sanitizeForLogging(approvalArgs);
+			const approvalDescription = describeArgs(approvalArgs);
 			const shouldReusePlatformApprovalRequest =
 				!guardedFileApprovalRequired &&
 				platformApprovalRequest !== undefined &&
 				!permissionHookRewroteInput;
 			let request: ActionApprovalRequest;
 			if (shouldReusePlatformApprovalRequest && platformApprovalRequest) {
-				request = platformApprovalRequest;
+				request = {
+					...platformApprovalRequest,
+					...approvalDescription,
+					args: approvalArgs,
+				};
 			} else {
 				request = {
 					id: platformApprovalRequest?.id ?? toolCall.id,
 					toolName: effectiveToolCall.name,
-					...describeArgs(sanitizedApprovalArgs),
-					args: sanitizedApprovalArgs,
+					...approvalDescription,
+					args: approvalArgs,
 					reason:
 						guardedFileApprovalReason ??
 						hookRewriteApprovalReason ??
@@ -1184,8 +1243,9 @@ export async function* evaluateToolSafety(
 		};
 	}
 
-	const sanitizedExecutionArgs =
-		safetyMiddleware.sanitizeForLogging(validatedArgs);
+	const sanitizedExecutionArgs = safetyMiddleware.sanitizeForLogging(
+		stripContextInterpolationMarker(validatedArgs),
+	);
 
 	return {
 		verdict: {

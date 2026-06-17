@@ -1,4 +1,5 @@
 import { createLogger } from "../utils/logger.js";
+import { sanitizeWithStaticMask } from "../utils/secret-redactor.js";
 import { inferRemoteMcpTransport } from "./config.js";
 import type {
 	McpOfficialRegistryEntry,
@@ -229,7 +230,9 @@ function buildCacheFromResponse(data: unknown): RegistryCache {
 			} catch (error) {
 				logger.warn("Invalid MCP official registry urlRegex", {
 					regex: meta.urlRegex,
-					error: error instanceof Error ? error.message : String(error),
+					error: sanitizeWithStaticMask(
+						error instanceof Error ? error.message : String(error),
+					),
 				});
 			}
 		}
@@ -304,7 +307,9 @@ export async function prefetchOfficialMcpRegistry(): Promise<void> {
 				status: "failed",
 			};
 			logger.warn("Failed to load official MCP registry metadata", {
-				error: error instanceof Error ? error.message : String(error),
+				error: sanitizeWithStaticMask(
+					error instanceof Error ? error.message : String(error),
+				),
 			});
 		} finally {
 			clearTimeout(timeout);

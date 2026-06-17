@@ -21,7 +21,13 @@ import {
 } from "../utils/jsonc-umd.js";
 import { createLogger } from "../utils/logger.js";
 import { resolveEnvPath } from "../utils/path-expansion.js";
+import { sanitizeWithStaticMask } from "../utils/secret-redactor.js";
 import { compileTypeboxSchema } from "../utils/typebox-ajv.js";
+import {
+	type CustomModelUrlPolicyConfig,
+	urlMatchesStrictPrefix,
+	validateCustomModelConfigUrls,
+} from "./url-policy.js";
 
 const logger = createLogger("models:registry");
 
@@ -104,6 +110,10 @@ export const providerSchema = Type.Object({
 
 export const configSchema = Type.Object({
 	$schema: Type.Optional(Type.String()),
+	allowedBaseUrls: Type.Optional(Type.Array(Type.String({ minLength: 1 }))),
+	internalBaseUrlAllowList: Type.Optional(
+		Type.Array(Type.String({ minLength: 1 })),
+	),
 	providers: Type.Array(providerSchema, { default: [] }),
 	aliases: Type.Optional(
 		Type.Record(Type.String(), Type.String(), {
@@ -212,6 +222,13 @@ export function mergeDeep<T>(target: T, source: Partial<T>): T {
 			if (isObject(sourceValue) && isObject(targetValue)) {
 				outputRecord[key] = mergeDeep(targetValue, sourceValue);
 			} else if (Array.isArray(sourceValue) && Array.isArray(targetValue)) {
+				if (key === "allowedBaseUrls" || key === "internalBaseUrlAllowList") {
+					outputRecord[key] = intersectAllowedBaseUrls(
+						targetValue,
+						sourceValue,
+					) as unknown;
+					continue;
+				}
 				// For arrays, concatenate and dedupe by id if objects have id property
 				const merged = [...targetValue];
 				for (const item of sourceValue) {
@@ -247,6 +264,61 @@ export function mergeDeep<T>(target: T, source: Partial<T>): T {
 	}
 
 	return output;
+}
+
+function intersectAllowedBaseUrls(
+	targetValue: unknown[],
+	sourceValue: unknown[],
+): string[] {
+	const targetEntries = targetValue.filter(
+		(entry): entry is string => typeof entry === "string",
+	);
+	const sourceEntries = sourceValue.filter(
+		(entry): entry is string => typeof entry === "string",
+	);
+	const merged = new Map<string, string>();
+	const invalidEntries: string[] = [];
+	for (const targetEntry of targetEntries) {
+		const targetUrl = parsePolicyUrlForMerge(targetEntry);
+		if (!targetUrl) {
+			invalidEntries.push(targetEntry);
+			continue;
+		}
+		for (const sourceEntry of sourceEntries) {
+			const sourceUrl = parsePolicyUrlForMerge(sourceEntry);
+			if (!sourceUrl) {
+				invalidEntries.push(sourceEntry);
+				continue;
+			}
+			if (urlMatchesStrictPrefix(sourceUrl, targetUrl)) {
+				merged.set(sourceUrl.toString(), sourceEntry);
+			} else if (urlMatchesStrictPrefix(targetUrl, sourceUrl)) {
+				merged.set(targetUrl.toString(), targetEntry);
+			}
+		}
+	}
+	const intersection = [...merged.values()];
+	const validEntries =
+		intersection.length > 0
+			? intersection
+			: targetValue.filter(
+					(entry): entry is string => typeof entry === "string",
+				);
+	const result = [...validEntries];
+	for (const invalidEntry of invalidEntries) {
+		if (!result.includes(invalidEntry)) {
+			result.push(invalidEntry);
+		}
+	}
+	return result;
+}
+
+function parsePolicyUrlForMerge(value: string): URL | null {
+	try {
+		return new URL(value);
+	} catch {
+		return null;
+	}
 }
 
 export function mergeHeaders(
@@ -286,13 +358,17 @@ export const fileSnapshots = new Map<
 
 /** Cached merged config */
 export let cachedConfig: CustomModelConfig | null = null;
+let cachedConfigCheckedFactoryFallback = false;
 
 export function clearCachedConfig(): void {
 	cachedConfig = null;
+	cachedConfigCheckedFactoryFallback = false;
+	fileSnapshots.clear();
 }
 
 export function setCachedConfig(config: CustomModelConfig): void {
 	cachedConfig = config;
+	cachedConfigCheckedFactoryFallback = true;
 }
 
 /**
@@ -448,7 +524,8 @@ function loadConfigFileWithOptions(
 			throw new Error(formatValidationErrors(configValidator.errors));
 		}
 
-		return data as CustomModelConfig;
+		const config = data as CustomModelConfig;
+		return config;
 	} catch (error) {
 		throw new Error(
 			`Failed to parse config at ${path}: ${error instanceof Error ? error.message : String(error)}`,
@@ -478,7 +555,9 @@ export function loadUntrustedProjectConfigFile(
 		logger.warn("Ignoring invalid untrusted project model config", {
 			path,
 			trustEnv: TRUST_PROJECT_MODEL_CONFIG_ENV,
-			error: error instanceof Error ? error.message : String(error),
+			error: sanitizeWithStaticMask(
+				error instanceof Error ? error.message : String(error),
+			),
 		});
 		return { providers: [] };
 	}
@@ -521,36 +600,33 @@ export function applyProviderLoader(
 ): CustomProvider | null {
 	const baseName = provider.id.split("-")[0] ?? provider.id;
 	const loader = PROVIDER_LOADERS[provider.id] ?? PROVIDER_LOADERS[baseName];
-
-	if (!loader) {
-		return provider;
-	}
-
-	const result = loader(provider.id);
-
 	const enhanced: CustomProvider = { ...provider };
 	let enabled = provider.enabled ?? true;
 
-	// Merge loader results with provider config
-	if (result) {
-		if (result.headers) {
-			enhanced.headers = mergeHeaders(result.headers, enhanced.headers);
+	if (loader) {
+		const result = loader(provider.id);
+
+		// Merge loader results with provider config
+		if (result) {
+			if (result.headers) {
+				enhanced.headers = mergeHeaders(result.headers, enhanced.headers);
+			}
+
+			if (result.baseUrl && !provider.baseUrl) {
+				enhanced.baseUrl = result.baseUrl;
+			}
+
+			if (result.enabled !== undefined) {
+				enabled = result.enabled;
+			}
+
+			if (result.options) {
+				enhanced.options = { ...result.options, ...enhanced.options };
+			}
 		}
 
-		if (result.baseUrl && !provider.baseUrl) {
-			enhanced.baseUrl = result.baseUrl;
-		}
-
-		if (result.enabled !== undefined) {
-			enabled = result.enabled;
-		}
-
-		if (result.options) {
-			enhanced.options = { ...result.options, ...enhanced.options };
-		}
+		enhanced.enabled = enabled;
 	}
-
-	enhanced.enabled = enabled;
 
 	if (enabled === false && !options?.includeDisabled) {
 		return null;
@@ -564,12 +640,21 @@ export function applyProviderLoader(
  */
 export function loadConfig(
 	includeDisabled = false,
-	ensureFactory?: () => {
+	ensureFactory?: (policy: CustomModelUrlPolicyConfig) => {
 		config: CustomModelConfig;
 		modelProviderMap: Map<string, string>;
 	} | null,
+	options?: {
+		validateUrls?: boolean;
+	},
 ): CustomModelConfig {
-	if (cachedConfig && !includeDisabled) {
+	const needsFactoryAwareConfig = Boolean(ensureFactory);
+	const shouldValidateUrls = options?.validateUrls ?? true;
+	if (
+		cachedConfig &&
+		!includeDisabled &&
+		(!needsFactoryAwareConfig || cachedConfigCheckedFactoryFallback)
+	) {
 		return cachedConfig;
 	}
 
@@ -586,15 +671,34 @@ export function loadConfig(
 			mergedConfig = mergeDeep(mergedConfig, config);
 		}
 	}
+	const hadConfiguredProviders = mergedConfig.providers.length > 0;
 
 	// If no configs found, try Factory fallback
 	if (mergedConfig.providers.length === 0 && ensureFactory) {
-		const factoryFallback = ensureFactory();
+		const factoryFallback = ensureFactory(mergedConfig);
 		if (factoryFallback) {
-			if (!includeDisabled) {
-				cachedConfig = factoryFallback.config;
+			const fallbackConfig: CustomModelConfig = {
+				...factoryFallback.config,
+				...(mergedConfig.allowedBaseUrls
+					? { allowedBaseUrls: mergedConfig.allowedBaseUrls }
+					: {}),
+				...(mergedConfig.internalBaseUrlAllowList
+					? {
+							internalBaseUrlAllowList: mergedConfig.internalBaseUrlAllowList,
+						}
+					: {}),
+			};
+			if (shouldValidateUrls) {
+				validateCustomModelConfigUrls(
+					fallbackConfig,
+					"merged model configuration",
+				);
 			}
-			return factoryFallback.config;
+			if (!includeDisabled) {
+				cachedConfig = fallbackConfig;
+				cachedConfigCheckedFactoryFallback = true;
+			}
+			return fallbackConfig;
 		}
 	}
 
@@ -603,8 +707,27 @@ export function loadConfig(
 		.map((provider) => applyProviderLoader(provider, { includeDisabled }))
 		.filter((provider): provider is CustomProvider => Boolean(provider));
 
+	if (shouldValidateUrls) {
+		validateCustomModelConfigUrls(mergedConfig, "merged model configuration");
+	}
+
 	if (!includeDisabled) {
 		cachedConfig = mergedConfig;
+		cachedConfigCheckedFactoryFallback =
+			Boolean(ensureFactory) || hadConfiguredProviders;
 	}
 	return mergedConfig;
+}
+
+export function getMergedCustomModelUrlPolicyConfig(): CustomModelUrlPolicyConfig {
+	// Avoid priming the shared config cache before registry loading has a chance
+	// to apply Factory fallback providers. We only need the allow-lists here, so
+	// skip merged URL validation to keep the last registered registry usable after
+	// validation rejects an edited config on disk.
+	const { allowedBaseUrls, internalBaseUrlAllowList } =
+		cachedConfig ?? loadConfig(true, undefined, { validateUrls: false });
+	return {
+		...(allowedBaseUrls ? { allowedBaseUrls } : {}),
+		...(internalBaseUrlAllowList ? { internalBaseUrlAllowList } : {}),
+	};
 }

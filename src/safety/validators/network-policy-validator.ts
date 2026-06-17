@@ -1,4 +1,5 @@
 import { lookup } from "node:dns/promises";
+import { isIP as netIsIP } from "node:net";
 import type { ActionApprovalContext } from "../../agent/action-approval.js";
 import {
 	isLocalhostAlias,
@@ -8,8 +9,10 @@ import {
 	parseIPv4MappedHex,
 } from "../../utils/ip-address-parser.js";
 import {
+	extractUrlSubstringsFromShellCommand,
 	extractUrlsFromShellCommand,
 	extractUrlsFromValue,
+	findOpaqueNetworkShellCommand,
 } from "../../utils/url-extractor.js";
 import type { EnterprisePolicy } from "../policy.js";
 
@@ -41,24 +44,61 @@ function getStringArg(
 	return typeof value === "string" ? value : null;
 }
 
+function normalizePolicyHost(host: string): string {
+	return host
+		.toLowerCase()
+		.replace(/^\[|\]$/g, "")
+		.replace(/\.+$/, "");
+}
+
+function hostMatchesPolicyEntry(host: string, policyHost: string): boolean {
+	const normalizedPolicyHost = normalizePolicyHost(policyHost);
+	return (
+		host === normalizedPolicyHost || host.endsWith(`.${normalizedPolicyHost}`)
+	);
+}
+
 /**
  * Extract URLs from tool arguments (recursively checks nested objects)
- * Also extracts URLs from curl/wget commands in bash.
+ * Also extracts statically visible network targets from bash commands.
  */
 export function extractPolicyUrls(context: ActionApprovalContext): string[] {
 	const args = getArgsObject(context);
 	if (!args) return [];
 
-	const urls = extractUrlsFromValue(args);
-
 	if (context.toolName === "bash" || context.toolName === "background_tasks") {
-		const command = getStringArg(context, "command");
-		if (command) {
+		// Run both the bash-token aware extractor (which understands
+		// curl/wget argument structure, wrappers, command substitutions,
+		// etc.) AND a recursive substring scan over the shell command. The scan
+		// catches URLs embedded mid-string in shell commands — e.g.
+		// `curl "see https://evil.com here"`, `echo "https://..."`,
+		// heredocs — that the token-aware extractor would miss because
+		// they don't parse as a clean bash token. Keep the scan shell-aware
+		// so comment text is ignored. Union the results so
+		// neither path can be bypassed independently. (Codex P1 finding
+		// on public mirror PR #781; backported from public commit
+		// cef6e3b.)
+		const { command, ...otherArgs } = args;
+		const urls = extractUrlsFromValue(otherArgs);
+		if (typeof command === "string") {
+			urls.push(...extractUrlSubstringsFromShellCommand(command));
 			urls.push(...extractUrlsFromShellCommand(command));
 		}
+		return [...new Set(urls)];
 	}
 
-	return urls;
+	return extractUrlsFromValue(args);
+}
+
+function getOpaqueNetworkCommand(
+	context: ActionApprovalContext,
+): string | null {
+	if (context.toolName !== "bash" && context.toolName !== "background_tasks") {
+		return null;
+	}
+
+	const command = getStringArg(context, "command");
+	return command ? findOpaqueNetworkShellCommand(command) : null;
 }
 
 /**
@@ -70,14 +110,12 @@ export async function checkNetworkRestrictionsDetailed(
 ): Promise<NetworkRestrictionCheck> {
 	try {
 		const parsed = new URL(url);
-		const host = parsed.hostname.toLowerCase();
-
-		const normalizedHost = host.replace(/^\[|\]$/g, "");
+		const host = normalizePolicyHost(parsed.hostname);
+		const normalizedHost = host;
 
 		if (network.blockedHosts?.length) {
 			for (const blockedHost of network.blockedHosts) {
-				const lowerBlocked = blockedHost.toLowerCase();
-				if (host === lowerBlocked || host.endsWith(`.${lowerBlocked}`)) {
+				if (hostMatchesPolicyEntry(host, blockedHost)) {
 					return {
 						allowed: false,
 						reason: `Host "${host}" is blocked by enterprise policy.`,
@@ -100,8 +138,7 @@ export async function checkNetworkRestrictionsDetailed(
 				};
 			}
 			const isAllowed = network.allowedHosts.some((allowedHost) => {
-				const lowerAllowed = allowedHost.toLowerCase();
-				return host === lowerAllowed || host.endsWith(`.${lowerAllowed}`);
+				return hostMatchesPolicyEntry(host, allowedHost);
 			});
 			if (!isAllowed) {
 				return {
@@ -118,7 +155,7 @@ export async function checkNetworkRestrictionsDetailed(
 		const isIP =
 			parseIPv4(normalizedHost) !== null ||
 			parseIPv4MappedHex(normalizedHost) !== null ||
-			normalizedHost.includes(":");
+			netIsIP(normalizedHost) !== 0;
 
 		if (!isIP) {
 			try {
@@ -195,5 +232,14 @@ export async function checkNetworkPolicy(
 			return check;
 		}
 	}
+
+	const opaqueNetworkCommand = getOpaqueNetworkCommand(context);
+	if (opaqueNetworkCommand) {
+		return {
+			allowed: false,
+			reason: `Network-capable command "${opaqueNetworkCommand}" does not expose a statically validatable host for enterprise network policy.`,
+		};
+	}
+
 	return { allowed: true };
 }

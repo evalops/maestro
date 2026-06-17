@@ -40,17 +40,13 @@
  * - `MAESTRO_PLAN_DIR`: Override the directory for plan files
  */
 
-import {
-	existsSync,
-	mkdirSync,
-	readFileSync,
-	readdirSync,
-	writeFileSync,
-} from "node:fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync } from "node:fs";
 import { dirname, join, resolve, sep } from "node:path";
 import { PATHS } from "../config/constants.js";
+import { writeJsonFile, writeTextFileAtomic } from "../utils/fs.js";
 import { createLogger } from "../utils/logger.js";
 import { resolveEnvPath } from "../utils/path-expansion.js";
+import { sanitizeWithStaticMask } from "../utils/secret-redactor.js";
 
 // Logger for plan mode operations, useful for debugging state persistence
 const logger = createLogger("plan-mode");
@@ -228,7 +224,7 @@ export function savePlanModeState(
 			mkdirSync(dir, { recursive: true });
 		}
 		// Pretty-print JSON for human readability when debugging
-		writeFileSync(config.stateFile, JSON.stringify(state, null, 2));
+		writeJsonFile(config.stateFile, state);
 		logger.info("Plan mode state saved", { filePath: state.filePath });
 	} catch (err) {
 		// Log error but don't crash - state save failure is non-fatal
@@ -257,7 +253,7 @@ export function clearPlanModeState(
 				// Mark inactive rather than deleting - preserves plan history
 				state.active = false;
 				state.updatedAt = new Date().toISOString();
-				writeFileSync(config.stateFile, JSON.stringify(state, null, 2));
+				writeJsonFile(config.stateFile, state);
 			}
 		}
 		logger.info("Plan mode state cleared");
@@ -349,7 +345,7 @@ export function enterPlanMode(options: {
 		const header = options.name
 			? `# Plan: ${options.name}\n\nCreated: ${now}\n\n## Tasks\n\n`
 			: `# Implementation Plan\n\nCreated: ${now}\n\n## Tasks\n\n`;
-		writeFileSync(filePath, header);
+		writeTextFileAtomic(filePath, header, { mode: 0o666 });
 	}
 
 	savePlanModeState(state, config);
@@ -524,7 +520,7 @@ export function writePlanFile(
 		if (!existsSync(dir)) {
 			mkdirSync(dir, { recursive: true });
 		}
-		writeFileSync(state.filePath, content);
+		writeTextFileAtomic(state.filePath, content);
 
 		// Update state timestamp to track last modification
 		state.updatedAt = new Date().toISOString();
@@ -717,7 +713,9 @@ export async function exitPlanModeWithSwarm(
 		return {
 			launched: false,
 			planState: finalState,
-			error: error instanceof Error ? error.message : String(error),
+			error: sanitizeWithStaticMask(
+				error instanceof Error ? error.message : String(error),
+			),
 		};
 	}
 }

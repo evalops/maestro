@@ -15,6 +15,11 @@ import {
 	loadSkills,
 	searchSkills,
 } from "../../skills/loader.js";
+import {
+	isPromptApproved,
+	recordPromptApproval,
+	revokePromptApproval,
+} from "../../skills/trust-cache.js";
 import type { CommandExecutionContext } from "../commands/types.js";
 import { formatPreviewBlock } from "../utils/text-preview.js";
 
@@ -176,10 +181,184 @@ export class SkillsController {
 				this.renderSkillInfo(resolved);
 				return;
 			}
+			case "trust": {
+				this.handleTrustSubcommand(skills, parts.slice(1), context);
+				return;
+			}
 			default: {
 				const resolved = this.resolveSkillTarget(skills, subcommand, context);
 				if (!resolved) return;
 				this.renderSkillInfo(resolved);
+			}
+		}
+	}
+
+	/**
+	 * Handle `/skills trust ...` — the UX layer for the skill
+	 * prompt-trust cache (#2629). The cache itself is set up by
+	 * `src/skills/trust-cache.ts`; this command just lets users
+	 * approve / revoke / inspect approvals.
+	 *
+	 * Subcommands:
+	 *   - `/skills trust` or `/skills trust list` — show approval
+	 *     status of every loaded skill
+	 *   - `/skills trust approve <name>` — approve the current SHA of
+	 *     a skill's prompt body. Approval invalidates automatically
+	 *     when the body changes (different SHA).
+	 *   - `/skills trust revoke <name>` — revoke approval. The next
+	 *     invocation gets the "untrusted" banner again.
+	 *   - `/skills trust status <name>` — show one skill's approval
+	 *     state in detail.
+	 */
+	private handleTrustSubcommand(
+		skills: LoadedSkill[],
+		args: string[],
+		context: CommandExecutionContext,
+	): void {
+		const sub = (args[0] ?? "list").toLowerCase();
+		const target = args.slice(1).join(" ").trim();
+
+		switch (sub) {
+			case "":
+			case "list":
+			case "ls": {
+				const lines: string[] = [
+					"## Skill Trust",
+					"",
+					"Loaded skills and their prompt-trust state. See `/skills trust approve <name>` to approve, `/skills trust revoke <name>` to revoke.",
+					"",
+				];
+				if (skills.length === 0) {
+					lines.push("*No skills loaded.*");
+				} else {
+					for (const skill of skills) {
+						const gated =
+							skill.sourceType === "project" ||
+							skill.sourceType === "user" ||
+							skill.sourceType === "service";
+						if (!gated) {
+							lines.push(
+								`- **${skill.name}** (${skill.sourceType}) — built-in, no approval needed`,
+							);
+							continue;
+						}
+						const approved = isPromptApproved(skill.contentSha);
+						const flag = approved ? "✅ approved" : "⚠️  unapproved";
+						lines.push(
+							`- **${skill.name}** (${skill.sourceType}) — ${flag} \`sha=${skill.contentSha.slice(0, 12)}\``,
+						);
+					}
+				}
+				this.callbacks.pushCommandOutput(lines.join("\n"));
+				return;
+			}
+			case "approve": {
+				if (!target) {
+					context.showError("Usage: /skills trust approve <skill-name>");
+					return;
+				}
+				const resolved = this.resolveSkillTarget(skills, target, context);
+				if (!resolved) return;
+				if (
+					resolved.sourceType !== "project" &&
+					resolved.sourceType !== "user" &&
+					resolved.sourceType !== "service"
+				) {
+					context.showInfo(
+						`Skill "${resolved.name}" is ${resolved.sourceType}; approval not required.`,
+					);
+					return;
+				}
+				if (isPromptApproved(resolved.contentSha)) {
+					context.showInfo(
+						`Skill "${resolved.name}" is already approved at this prompt body.`,
+					);
+					return;
+				}
+				recordPromptApproval({
+					name: resolved.name,
+					contentSha: resolved.contentSha,
+					sourceType: resolved.sourceType as
+						| "project"
+						| "user"
+						| "system"
+						| "service",
+				});
+				context.showInfo(
+					`Approved skill "${resolved.name}" (sha=${resolved.contentSha.slice(0, 12)}). Approval invalidates when the prompt body changes.`,
+				);
+				return;
+			}
+			case "revoke":
+			case "deny": {
+				if (!target) {
+					context.showError("Usage: /skills trust revoke <skill-name>");
+					return;
+				}
+				const resolved = this.resolveSkillTarget(skills, target, context);
+				if (!resolved) return;
+				const removed = revokePromptApproval(resolved.contentSha);
+				if (removed) {
+					context.showInfo(
+						`Revoked approval for skill "${resolved.name}". The next invocation will show the untrusted-prompt banner.`,
+					);
+				} else {
+					context.showInfo(
+						`Skill "${resolved.name}" was not in the approved set.`,
+					);
+				}
+				return;
+			}
+			case "status":
+			case "show": {
+				if (!target) {
+					context.showError("Usage: /skills trust status <skill-name>");
+					return;
+				}
+				const resolved = this.resolveSkillTarget(skills, target, context);
+				if (!resolved) return;
+				const lines = [
+					`## Trust status — ${resolved.name}`,
+					"",
+					`- Source: ${resolved.sourceType}`,
+					`- Prompt SHA: \`${resolved.contentSha}\``,
+				];
+				const gated =
+					resolved.sourceType === "project" ||
+					resolved.sourceType === "user" ||
+					resolved.sourceType === "service";
+				if (!gated) {
+					lines.push("- Approval: not required (built-in)");
+				} else {
+					const approved = isPromptApproved(resolved.contentSha);
+					lines.push(
+						`- Approval: ${approved ? "✅ approved" : "⚠️  unapproved"}`,
+					);
+					if (!approved) {
+						lines.push(
+							`- To approve: \`/skills trust approve ${resolved.name}\``,
+						);
+					}
+				}
+				this.callbacks.pushCommandOutput(lines.join("\n"));
+				return;
+			}
+			case "help":
+			case "?": {
+				context.showInfo(
+					[
+						"/skills trust [list]            — list approval status of loaded skills",
+						"/skills trust approve <name>    — approve current SHA of a skill",
+						"/skills trust revoke <name>     — revoke approval (re-shows banner)",
+						"/skills trust status <name>     — show approval status of one skill",
+					].join("\n"),
+				);
+				return;
+			}
+			default: {
+				context.showError(
+					`Unknown subcommand: trust ${sub}. Try /skills trust help.`,
+				);
 			}
 		}
 	}

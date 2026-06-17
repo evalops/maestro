@@ -325,9 +325,9 @@ describe("handleApprovals", () => {
 			} as Pick<WebServerContext, "corsHeaders" | "defaultApprovalMode">,
 		);
 
-		expect(res.statusCode).toBe(403);
+		expect(res.statusCode).toBe(404);
 		expect(JSON.parse(res.body)).toMatchObject({
-			error: "Access denied: session belongs to another user",
+			error: "Session not found",
 		});
 	});
 });

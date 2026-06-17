@@ -5,7 +5,10 @@ import {
 	isLoopbackIPv4,
 	isPrivateIP,
 	isPrivateIPv4,
+	isUnspecifiedIP,
 	parseIPv4,
+	parseIPv4CompatibleDecimal,
+	parseIPv4CompatibleHex,
 	parseIPv4MappedDecimal,
 	parseIPv4MappedHex,
 } from "../../src/utils/ip-address-parser.js";
@@ -166,6 +169,10 @@ describe("parseIPv4MappedHex", () => {
 
 		// ::ffff:0a00:0001 = 10.0.0.1
 		expect(parseIPv4MappedHex("::ffff:a00:1")).toEqual([10, 0, 0, 1]);
+		expect(parseIPv4MappedHex("0:0:0:0:0:ffff:a00:1")).toEqual([10, 0, 0, 1]);
+		expect(parseIPv4MappedHex("0000:0000:0000:0000:0000:ffff:a00:1")).toEqual([
+			10, 0, 0, 1,
+		]);
 
 		// ::ffff:0:0 = 0.0.0.0
 		expect(parseIPv4MappedHex("::ffff:0:0")).toEqual([0, 0, 0, 0]);
@@ -205,6 +212,9 @@ describe("parseIPv4MappedDecimal", () => {
 		]);
 		expect(parseIPv4MappedDecimal("::ffff:127.0.0.1")).toEqual([127, 0, 0, 1]);
 		expect(parseIPv4MappedDecimal("::ffff:10.0.0.1")).toEqual([10, 0, 0, 1]);
+		expect(parseIPv4MappedDecimal("0:0:0:0:0:ffff:10.0.0.1")).toEqual([
+			10, 0, 0, 1,
+		]);
 		expect(parseIPv4MappedDecimal("::ffff:0.0.0.0")).toEqual([0, 0, 0, 0]);
 	});
 
@@ -219,6 +229,39 @@ describe("parseIPv4MappedDecimal", () => {
 		expect(parseIPv4MappedDecimal("::ffff:c0a8:0101")).toBeNull(); // hex format
 		expect(parseIPv4MappedDecimal("::192.168.1.1")).toBeNull(); // missing ffff
 		expect(parseIPv4MappedDecimal("")).toBeNull();
+	});
+});
+
+describe("parseIPv4CompatibleHex", () => {
+	it("parses deprecated IPv4-compatible IPv6 hex addresses", () => {
+		expect(parseIPv4CompatibleHex("::7f00:1")).toEqual([127, 0, 0, 1]);
+		expect(parseIPv4CompatibleHex("0:0:0:0:0:0:a9fe:a9fe")).toEqual([
+			169, 254, 169, 254,
+		]);
+		expect(
+			parseIPv4CompatibleHex("0000:0000:0000:0000:0000:0000:c0a8:101"),
+		).toEqual([192, 168, 1, 1]);
+	});
+
+	it("returns null for non-compatible IPv6 addresses", () => {
+		expect(parseIPv4CompatibleHex("::ffff:a00:1")).toBeNull();
+		expect(parseIPv4CompatibleHex("2001:4860:4860::8888")).toBeNull();
+		expect(parseIPv4CompatibleHex("::1")).toBeNull();
+	});
+});
+
+describe("parseIPv4CompatibleDecimal", () => {
+	it("parses deprecated IPv4-compatible IPv6 decimal addresses", () => {
+		expect(parseIPv4CompatibleDecimal("::127.0.0.1")).toEqual([127, 0, 0, 1]);
+		expect(parseIPv4CompatibleDecimal("0:0:0:0:0:0:169.254.169.254")).toEqual([
+			169, 254, 169, 254,
+		]);
+	});
+
+	it("returns null for mapped and invalid addresses", () => {
+		expect(parseIPv4CompatibleDecimal("::ffff:10.0.0.1")).toBeNull();
+		expect(parseIPv4CompatibleDecimal("::256.0.0.1")).toBeNull();
+		expect(parseIPv4CompatibleDecimal("::1")).toBeNull();
 	});
 });
 
@@ -258,6 +301,13 @@ describe("isLoopbackIP", () => {
 		it("returns true for ::ffff:7f00:x (hex)", () => {
 			expect(isLoopbackIP("::ffff:7f00:1")).toBe(true);
 			expect(isLoopbackIP("::ffff:7f00:0001")).toBe(true);
+			expect(isLoopbackIP("0:0:0:0:0:ffff:7f00:1")).toBe(true);
+		});
+
+		it("returns true for IPv4-compatible loopback addresses", () => {
+			expect(isLoopbackIP("::127.0.0.1")).toBe(true);
+			expect(isLoopbackIP("::7f00:1")).toBe(true);
+			expect(isLoopbackIP("0:0:0:0:0:0:127.0.0.1")).toBe(true);
 		});
 	});
 
@@ -315,10 +365,20 @@ describe("isPrivateIP", () => {
 	describe("IPv4-mapped private", () => {
 		it("returns true for ::ffff:10.x.x.x", () => {
 			expect(isPrivateIP("::ffff:10.0.0.1")).toBe(true);
+			expect(isPrivateIP("0:0:0:0:0:ffff:169.254.169.254")).toBe(true);
 		});
 
 		it("returns true for ::ffff:a00:1 (hex)", () => {
 			expect(isPrivateIP("::ffff:a00:1")).toBe(true); // 10.0.0.1
+			expect(isPrivateIP("0:0:0:0:0:ffff:a9fe:a9fe")).toBe(true);
+		});
+	});
+
+	describe("IPv4-compatible private", () => {
+		it("returns true for deprecated IPv4-compatible private addresses", () => {
+			expect(isPrivateIP("::169.254.169.254")).toBe(true);
+			expect(isPrivateIP("::a9fe:a9fe")).toBe(true);
+			expect(isPrivateIP("0:0:0:0:0:0:10.0.0.1")).toBe(true);
 		});
 	});
 
@@ -326,6 +386,32 @@ describe("isPrivateIP", () => {
 		expect(isPrivateIP("8.8.8.8")).toBe(false);
 		expect(isPrivateIP("1.1.1.1")).toBe(false);
 		expect(isPrivateIP("2001:4860:4860::8888")).toBe(false); // Google DNS IPv6
+	});
+});
+
+describe("isUnspecifiedIP", () => {
+	it("returns true for IPv4 unspecified addresses", () => {
+		expect(isUnspecifiedIP("0.0.0.0")).toBe(true);
+	});
+
+	it("returns true for IPv6 unspecified forms", () => {
+		expect(isUnspecifiedIP("::")).toBe(true);
+		expect(isUnspecifiedIP("::0:0")).toBe(true);
+		expect(isUnspecifiedIP("0:0:0:0:0:0:0:0")).toBe(true);
+	});
+
+	it("returns true for IPv4-mapped and IPv4-compatible all-zero forms", () => {
+		expect(isUnspecifiedIP("::ffff:0.0.0.0")).toBe(true);
+		expect(isUnspecifiedIP("::ffff:0:0")).toBe(true);
+		expect(isUnspecifiedIP("::0.0.0.0")).toBe(true);
+		expect(isUnspecifiedIP("::0:0")).toBe(true);
+	});
+
+	it("returns false for specified addresses", () => {
+		expect(isUnspecifiedIP("::1")).toBe(false);
+		expect(isUnspecifiedIP("127.0.0.1")).toBe(false);
+		expect(isUnspecifiedIP("::ffff:127.0.0.1")).toBe(false);
+		expect(isUnspecifiedIP("2001:4860:4860::8888")).toBe(false);
 	});
 });
 

@@ -145,7 +145,8 @@ export interface BusinessMetricTelemetry extends BaseTelemetryEvent {
 		| "tokens.cache_write"
 		| "cost.usd"
 		| "compaction.triggered"
-		| "model.switch";
+		| "model.switch"
+		| "custom_model_request.blocked_by_url_policy";
 	value: number;
 	metadata?: {
 		sessionId?: string;
@@ -980,10 +981,19 @@ export function logToolFailure(
 	errorMessage: string,
 	metadata?: Record<string, unknown>,
 ): void {
+	// Failure messages and metadata routinely embed tokens (Authorization
+	// headers in fetch errors, API keys in stack traces, etc.). Mirror the
+	// other telemetry writers: static-mask the error string and split the
+	// metadata into safe + sensitive buckets so the JSONL on disk never
+	// holds raw credentials.
+	const normalized = normalizeTelemetryMetadataInputs(metadata);
 	const payload = {
 		tool: toolName,
-		error: errorMessage,
-		metadata,
+		error: sanitizeWithStaticMask(errorMessage),
+		...(normalized.metadata ? { metadata: normalized.metadata } : {}),
+		...(normalized.sensitiveMetadata
+			? { sensitiveMetadata: normalized.sensitiveMetadata }
+			: {}),
 		timestamp: new Date().toISOString(),
 	};
 	void appendToolFailure(JSON.stringify(payload));
@@ -1303,9 +1313,9 @@ export function recordSandboxViolation(
 		timestamp: new Date().toISOString(),
 		event,
 		tool,
-		action,
-		reason,
-		path: options?.path,
+		action: sanitizeWithStaticMask(action),
+		reason: sanitizeWithStaticMask(reason),
+		path: sanitizeOptionalWithStaticMask(options?.path),
 		command: options?.command
 			? sanitizeWithStaticMask(options.command)
 			: undefined,

@@ -1,12 +1,9 @@
 import {
-	appendFileSync,
 	existsSync,
-	mkdirSync,
 	readFileSync,
 	readdirSync,
 	statSync,
 	unlinkSync,
-	writeFileSync,
 } from "node:fs";
 import { join, resolve } from "node:path";
 import { v4 as uuidv4 } from "uuid";
@@ -23,6 +20,11 @@ import {
 } from "./active-session-files.js";
 import { SessionFileWriter } from "./file-writer.js";
 import { toSessionModelMetadata } from "./model-metadata.js";
+import {
+	appendPrivateSessionFile,
+	ensurePrivateSessionDirectory,
+	writePrivateSessionFile,
+} from "./private-permissions.js";
 import { sanitizeSessionScope } from "./scope.js";
 import {
 	type SessionContextSnapshot,
@@ -245,9 +247,7 @@ export class FreshExecSessionManager {
 		const sessionDir = scope
 			? join(baseDir, scope, safePath)
 			: join(baseDir, safePath);
-		if (!existsSync(sessionDir)) {
-			mkdirSync(sessionDir, { recursive: true });
-		}
+		ensurePrivateSessionDirectory(sessionDir);
 		return sessionDir;
 	}
 
@@ -337,6 +337,11 @@ export class FreshExecSessionManager {
 			promptMetadata: state.promptMetadata,
 			promptContextManifest: getPersistedSessionPromptContextManifest(state),
 			unifiedContextManifest: state.unifiedContextManifest,
+			systemPromptSourcePaths:
+				state.systemPromptSourcePaths &&
+				state.systemPromptSourcePaths.length > 0
+					? [...state.systemPromptSourcePaths]
+					: undefined,
 			tools: state.tools.map((tool) => ({
 				name: tool.name,
 				label: tool.label,
@@ -506,7 +511,7 @@ export class FreshExecSessionManager {
 		this.fileEntries[headerIndex] = entry;
 		this.writer?.flushSync();
 		const content = `${this.fileEntries.map((item) => JSON.stringify(item)).join("\n")}\n`;
-		writeFileSync(this.sessionFile, content);
+		writePrivateSessionFile(this.sessionFile, content);
 		this.flushed = true;
 		return true;
 	}
@@ -543,7 +548,7 @@ export class FreshExecSessionManager {
 				},
 			});
 		} else {
-			appendFileSync(target, `${JSON.stringify(entry)}\n`);
+			appendPrivateSessionFile(target, `${JSON.stringify(entry)}\n`);
 		}
 		syncSessionMemoryLazy(target);
 	}
@@ -564,7 +569,7 @@ export class FreshExecSessionManager {
 			this.writer?.write(entry);
 			this.writer?.flushSync();
 		} else {
-			appendFileSync(target, `${JSON.stringify(entry)}\n`);
+			appendPrivateSessionFile(target, `${JSON.stringify(entry)}\n`);
 		}
 		syncSessionMemoryLazy(target);
 	}
@@ -585,7 +590,7 @@ export class FreshExecSessionManager {
 			this.writer?.write(entry);
 			this.writer?.flushSync();
 		} else {
-			appendFileSync(target, `${JSON.stringify(entry)}\n`);
+			appendPrivateSessionFile(target, `${JSON.stringify(entry)}\n`);
 		}
 	}
 

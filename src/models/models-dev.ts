@@ -4,12 +4,13 @@ import {
 	readFileSync,
 	statSync,
 	unlinkSync,
-	writeFileSync,
 } from "node:fs";
 import { join } from "node:path";
 import { PATHS } from "../config/constants.js";
+import { writeTextFileAtomic } from "../utils/fs.js";
 import { safeJsonParse } from "../utils/json.js";
 import { createLogger } from "../utils/logger.js";
+import { sanitizeWithStaticMask } from "../utils/secret-redactor.js";
 
 const logger = createLogger("models:models-dev");
 
@@ -92,7 +93,9 @@ function readCache(): ModelsDev | null {
 		return result.data;
 	} catch (error) {
 		logger.warn("Failed to read cache", {
-			error: error instanceof Error ? error.message : String(error),
+			error: sanitizeWithStaticMask(
+				error instanceof Error ? error.message : String(error),
+			),
 		});
 		return null;
 	}
@@ -108,11 +111,15 @@ function writeCache(data: ModelsDev): void {
 			mkdirSync(CACHE_DIR, { recursive: true });
 		}
 
-		writeFileSync(CACHE_FILE, JSON.stringify(data, null, 2), "utf-8");
+		writeTextFileAtomic(CACHE_FILE, JSON.stringify(data, null, 2), {
+			encoding: "utf-8",
+		});
 		logger.debug("Cache updated");
 	} catch (error) {
 		logger.warn("Failed to write cache", {
-			error: error instanceof Error ? error.message : String(error),
+			error: sanitizeWithStaticMask(
+				error instanceof Error ? error.message : String(error),
+			),
 		});
 	}
 }
@@ -146,7 +153,9 @@ async function fetchFromApi(): Promise<ModelsDev | null> {
 		return data;
 	} catch (error) {
 		logger.warn("Failed to fetch from API", {
-			error: error instanceof Error ? error.message : String(error),
+			error: sanitizeWithStaticMask(
+				error instanceof Error ? error.message : String(error),
+			),
 		});
 		return null;
 	}
@@ -204,7 +213,9 @@ export function clearModelsDevCache(): void {
 		lastFetchTime = 0;
 	} catch (error) {
 		logger.warn("Failed to clear cache", {
-			error: error instanceof Error ? error.message : String(error),
+			error: sanitizeWithStaticMask(
+				error instanceof Error ? error.message : String(error),
+			),
 		});
 	}
 }

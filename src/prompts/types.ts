@@ -31,4 +31,5 @@ export interface ResolvedSystemPrompt {
 	systemPrompt: string;
 	promptMetadata: PromptMetadata;
 	promptContextManifest: PromptProjectDocManifest;
+	systemPromptSourcePaths: string[];
 }

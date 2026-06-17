@@ -17,10 +17,10 @@ import {
 	readFileSync,
 	readdirSync,
 	unlinkSync,
-	writeFileSync,
 } from "node:fs";
 import { dirname, join } from "node:path";
 import { PATHS } from "../config/constants.js";
+import { writeJsonFile } from "../utils/fs.js";
 import { createLogger } from "../utils/logger.js";
 import { resolveEnvPath } from "../utils/path-expansion.js";
 import type { AppMessage } from "./types.js";
@@ -141,7 +141,7 @@ export function saveSessionBackup(
 	try {
 		ensureBackupDir(config);
 		const filePath = getBackupFilePath(backup.sessionId, config);
-		writeFileSync(filePath, JSON.stringify(backup, null, 2));
+		writeJsonFile(filePath, backup);
 		logger.info("Session backup saved", {
 			sessionId: backup.sessionId,
 			messageCount: backup.messages.length,

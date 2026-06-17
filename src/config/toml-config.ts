@@ -23,18 +23,20 @@
  * allowing users to have personal settings that don't get committed to git.
  */
 
+import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
 	closeSync,
 	existsSync,
+	lstatSync,
 	mkdirSync,
 	openSync,
 	readFileSync,
 	readSync,
+	realpathSync,
 	statSync,
-	writeFileSync,
 } from "node:fs";
-import { dirname, join, relative, resolve } from "node:path";
+import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { Type } from "@sinclair/typebox";
 import { parse as parseTOML, stringify as stringifyTOML } from "smol-toml";
 import { parsePackageSpec } from "../packages/loader.js";
@@ -43,12 +45,30 @@ import {
 	parsePackageSource,
 } from "../packages/sources.js";
 import type { PackageSpec } from "../packages/types.js";
+import { writeTextFileAtomic } from "../utils/fs.js";
 import { createLogger } from "../utils/logger.js";
 import { getHomeDir } from "../utils/path-expansion.js";
+import { sanitizeWithStaticMask } from "../utils/secret-redactor.js";
 import { compileTypeboxSchema } from "../utils/typebox-ajv.js";
 import { PATHS, getAgentDir } from "./constants.js";
 
 const logger = createLogger("config:toml");
+
+const PROJECT_SECURITY_KEYS = [
+	"approval_policy",
+	"sandbox_mode",
+	"sandbox_workspace_write",
+	"shell_environment_policy",
+	"model_providers",
+	"mcp_servers",
+	"instructions",
+	"experimental_instructions_file",
+	"project_doc_max_bytes",
+	"project_doc_fallback_filenames",
+	"profile",
+	"projects",
+	"packages",
+] as const satisfies readonly (keyof ComposerConfig)[];
 
 // ─────────────────────────────────────────────────────────────
 // Configuration Types
@@ -245,12 +265,16 @@ export interface AddConfiguredPackageSpecOptions {
 	workspaceDir?: string;
 	scope: WritablePackageScope;
 	spec: PackageSpec;
+	profileName?: string;
+	cliOverrides?: Partial<ComposerConfig>;
 }
 
 export interface RemoveConfiguredPackageSpecOptions {
 	workspaceDir?: string;
 	scope?: WritablePackageScope;
 	spec: string;
+	profileName?: string;
+	cliOverrides?: Partial<ComposerConfig>;
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -770,7 +794,10 @@ export function loadPromptProjectDocManifest(
 	config?: ComposerConfig,
 ): PromptProjectDocManifest {
 	const cwd = resolve(cwdOverride ?? process.cwd());
-	const resolvedConfig = config ?? loadConfig(cwd);
+	const resolvedOptions = resolveRuntimeConfigResolutionOptions(cwd);
+	const resolvedConfig =
+		config ??
+		loadConfig(cwd, resolvedOptions.profileName, resolvedOptions.cliOverrides);
 	const candidates = resolveProjectDocCandidateFilenames(resolvedConfig);
 	const maxBytesRaw = resolvedConfig.project_doc_max_bytes;
 	const maxBytes =
@@ -893,17 +920,351 @@ export function resolvePromptLoadedProjectDocPaths(
 	);
 }
 
+function getAppendSystemPromptCandidatePaths(cwdOverride?: string): {
+	cwd: string;
+	projectPath: string;
+	globalPath: string;
+} {
+	const cwd = resolve(cwdOverride ?? process.cwd());
+	return {
+		cwd,
+		projectPath: resolve(join(cwd, ".maestro", "APPEND_SYSTEM.md")),
+		globalPath: resolve(join(getAgentDir(), "APPEND_SYSTEM.md")),
+	};
+}
+
+export function resolveExistingAppendSystemPromptPaths(
+	cwdOverride?: string,
+	profileName?: string,
+	cliOverrides?: Partial<ComposerConfig>,
+): string[] {
+	const loadedAppendSystemPromptPath = resolveLoadedAppendSystemPromptPath(
+		cwdOverride,
+		profileName,
+		cliOverrides,
+	);
+	// Use the symlink-safe resolver here: a project APPEND_SYSTEM.md that is a
+	// symlink must not be added to the read-restore exclusion set, otherwise the
+	// realpath-normalized symlink target (e.g. a regular source file) would be
+	// dropped from compaction restore even though the append prompt was never
+	// loaded.
+	const projectAppendSystemPromptPath =
+		resolveProjectAppendSystemPromptPath(cwdOverride);
+	return [loadedAppendSystemPromptPath, projectAppendSystemPromptPath].filter(
+		(path, index, paths): path is string =>
+			path !== null && paths.indexOf(path) === index,
+	);
+}
+
 export function resolveLoadedAppendSystemPromptPath(
 	cwdOverride?: string,
+	profileName?: string,
+	cliOverrides?: Partial<ComposerConfig>,
 ): string | null {
-	const cwd = cwdOverride ?? process.cwd();
-	const projectPath = resolve(join(cwd, ".maestro", "APPEND_SYSTEM.md"));
-	if (existsSync(projectPath)) {
+	const { cwd, globalPath } = getAppendSystemPromptCandidatePaths(cwdOverride);
+	const projectPath = resolveProjectAppendSystemPromptPath(cwd);
+	const isTrustedProject = isTrustedProjectForAppendSystemPrompt(
+		cwd,
+		profileName,
+		cliOverrides,
+	);
+	if (projectPath && isTrustedProject) {
 		return projectPath;
 	}
 
-	const globalPath = resolve(join(getAgentDir(), "APPEND_SYSTEM.md"));
+	if (!isTrustedProject) {
+		if (isPathWithinWorkspace(cwd, globalPath)) {
+			return null;
+		}
+		// Canonicalize before the workspace check: an attacker who can choose
+		// the agent dir (e.g. via MAESTRO_AGENT_DIR=/proc/self/cwd/.maestro
+		// or a parent-dir symlink) can make globalPath lexically resolve
+		// outside the workspace while the actual on-disk file lives back
+		// inside it, which would otherwise load the repo's APPEND_SYSTEM.md
+		// as the trusted "global" prompt.
+		if (existsSync(globalPath)) {
+			const canonicalGlobalPath = canonicalizePathOrSelf(globalPath);
+			const canonicalCwd = canonicalizePathOrSelf(cwd);
+			if (isPathWithinWorkspace(canonicalCwd, canonicalGlobalPath)) {
+				return null;
+			}
+		}
+	}
+
 	return existsSync(globalPath) ? globalPath : null;
+}
+
+function canonicalizePathOrSelf(path: string): string {
+	try {
+		return realpathSync.native(path);
+	} catch {
+		return path;
+	}
+}
+
+export function resolveProjectAppendSystemPromptPath(
+	cwdOverride?: string,
+): string | null {
+	const { cwd, projectPath } = getAppendSystemPromptCandidatePaths(cwdOverride);
+	return existsSync(projectPath) &&
+		isLocalMaestroConfigPathSafe(cwd, projectPath)
+		? projectPath
+		: null;
+}
+
+function isTrustedProjectForAppendSystemPrompt(
+	cwd: string,
+	profileName?: string,
+	cliOverrides?: Partial<ComposerConfig>,
+): boolean {
+	const globalConfig = parseConfigFile(getUserConfigPath());
+	const projectConfig = parseConfigFile(join(cwd, ".maestro", "config.toml"));
+	const localConfigPath = join(cwd, ".maestro", "config.local.toml");
+	const localConfig = parseConfigFile(localConfigPath);
+	const trustedLocalConfig =
+		localConfig &&
+		isGitUntrackedPath(cwd, localConfigPath) &&
+		isLocalMaestroConfigPathSafe(cwd, localConfigPath)
+			? localConfig
+			: null;
+	if (!globalConfig && !projectConfig && !localConfig) {
+		if (!cliOverrides || Object.keys(cliOverrides).length === 0) {
+			return false;
+		}
+	}
+
+	const resolvedCwd = resolve(cwd);
+	const cliProfile =
+		typeof cliOverrides?.profile === "string"
+			? cliOverrides.profile
+			: undefined;
+	const envProfile = process.env.MAESTRO_PROFILE?.trim() || undefined;
+	// User-controlled layers (global config + proven-untracked local config)
+	// can legitimately select the active profile via `profile = "..."`. Repo
+	// project config and untrusted local config can also set that field but
+	// must not be allowed to steer the profile used by CLI trust overrides —
+	// only honor the user-controlled selection here.
+	const userControlledConfigProfile =
+		(typeof trustedLocalConfig?.profile === "string"
+			? trustedLocalConfig.profile
+			: undefined) ??
+		(typeof globalConfig?.profile === "string"
+			? globalConfig.profile
+			: undefined);
+	const explicitProfile =
+		profileName ??
+		cliProfile ??
+		envProfile ??
+		getCachedProfileNameForWorkspace(cwd) ??
+		userControlledConfigProfile ??
+		undefined;
+
+	// Direct CLI project trust overrides are explicit user intent and therefore
+	// outrank on-disk trust state. If conflicting trust values are supplied in a
+	// single CLI override bundle, fail closed by honoring untrusted first.
+	const cliProfileLayer = explicitProfile
+		? (cliOverrides?.profiles?.[explicitProfile] as
+				| Partial<ComposerConfig>
+				| undefined)
+		: undefined;
+	const cliTrustLevels = [
+		cliOverrides?.projects?.[resolvedCwd]?.trust_level,
+		cliProfileLayer?.projects?.[resolvedCwd]?.trust_level,
+	].filter((level): level is "trusted" | "untrusted" => Boolean(level));
+	if (cliTrustLevels.includes("untrusted")) {
+		return false;
+	}
+	if (cliTrustLevels.includes("trusted")) {
+		return true;
+	}
+
+	// Denial may be driven by any config layer, including repo-controlled
+	// project config and tracked local config: those can only downgrade trust,
+	// never grant it, so honoring their profile selection here is safe.
+	const denialProfile =
+		explicitProfile ??
+		applyEnvOverrides(
+			deepMerge(
+				deepMerge(globalConfig ?? {}, projectConfig ?? {}),
+				localConfig ?? {},
+			),
+		).profile;
+	const getLayerProfileEntry = (
+		layer: ComposerConfig | null | undefined,
+	): Partial<ComposerConfig> | undefined =>
+		denialProfile
+			? (layer?.profiles?.[denialProfile] as
+					| Partial<ComposerConfig>
+					| undefined)
+			: undefined;
+	// User-controlled layers (global config, proven-untracked local config)
+	// honor a same-layer profile grant as overriding that same layer's
+	// top-level denial. Cross-layer denials (a repo config setting untrusted,
+	// or another user layer denying) still apply downstream.
+	for (const userLayer of [globalConfig, trustedLocalConfig]) {
+		if (!userLayer) {
+			continue;
+		}
+		const layerProfile = getLayerProfileEntry(userLayer);
+		const layerProfileGrantsTrust =
+			layerProfile?.projects?.[resolvedCwd]?.trust_level === "trusted";
+		if (layerProfileGrantsTrust) {
+			continue;
+		}
+		if (userLayer.projects?.[resolvedCwd]?.trust_level === "untrusted") {
+			return false;
+		}
+		if (layerProfile?.projects?.[resolvedCwd]?.trust_level === "untrusted") {
+			return false;
+		}
+	}
+	// Repo-controlled layers (committed project config, and any local config
+	// that failed the trusted-local proof) are strict deny: a same-layer
+	// profile entry cannot lift a denial. A repo cannot grant trust via this
+	// path because the grant loop below ignores repo layers entirely.
+	const untrustedLocalConfig =
+		localConfig && localConfig !== trustedLocalConfig ? localConfig : null;
+	for (const repoLayer of [projectConfig, untrustedLocalConfig]) {
+		// A top-level untrusted project entry in any layer downgrades trust,
+		// including a repo-controlled `.maestro/config.toml`: repo config may
+		// only deny, never grant, so honoring its denial respects normal
+		// precedence.
+		if (repoLayer?.projects?.[resolvedCwd]?.trust_level === "untrusted") {
+			return false;
+		}
+		const layerProfile = getLayerProfileEntry(repoLayer);
+		if (layerProfile?.projects?.[resolvedCwd]?.trust_level === "untrusted") {
+			return false;
+		}
+	}
+
+	// Granting trust may only be driven by user-controlled sources: an explicit
+	// or cached profile, the user environment, the global config, or a proven
+	// git-untracked local config. A committed `profile = "..."` in project config
+	// (or a tracked local config) must not be able to activate a global profile
+	// that trusts this workspace without the user selecting it.
+	const trustProfile =
+		explicitProfile ??
+		applyEnvOverrides(
+			deepMerge(
+				deepMerge(globalConfig ?? {}, trustedLocalConfig ?? {}),
+				cliOverrides ?? {},
+			),
+		).profile;
+	let trustConfig: ComposerConfig = {};
+	for (const configLayer of [globalConfig, trustedLocalConfig, cliOverrides]) {
+		if (!configLayer) {
+			continue;
+		}
+		trustConfig = deepMerge(trustConfig, configLayer);
+	}
+	for (const configLayer of [globalConfig, trustedLocalConfig, cliOverrides]) {
+		if (!configLayer) {
+			continue;
+		}
+		if (trustProfile && configLayer.profiles?.[trustProfile]) {
+			trustConfig = deepMerge(
+				trustConfig,
+				configLayer.profiles[trustProfile] as Partial<ComposerConfig>,
+			);
+		}
+	}
+
+	return trustConfig.projects?.[resolvedCwd]?.trust_level === "trusted";
+}
+
+function isLocalMaestroConfigPathSafe(
+	workspaceDir: string,
+	path: string,
+): boolean {
+	for (const candidate of [join(workspaceDir, ".maestro"), path]) {
+		if (!existsSync(candidate)) {
+			continue;
+		}
+		try {
+			if (lstatSync(candidate).isSymbolicLink()) {
+				return false;
+			}
+		} catch {
+			return false;
+		}
+	}
+	return true;
+}
+
+function isPathWithinWorkspace(
+	workspaceDir: string,
+	targetPath: string,
+): boolean {
+	const relativePath = relative(workspaceDir, targetPath);
+	return (
+		relativePath === "" ||
+		(!relativePath.startsWith("..") && !isAbsolute(relativePath))
+	);
+}
+
+function isGitTrackedPath(workspaceDir: string, target: string): boolean {
+	try {
+		execFileSync(
+			"git",
+			[
+				"-C",
+				workspaceDir,
+				"ls-files",
+				"--error-unmatch",
+				"--",
+				relative(workspaceDir, target),
+			],
+			{ stdio: "ignore" },
+		);
+		return true;
+	} catch {
+		return false;
+	}
+}
+
+function isGitUntrackedPath(workspaceDir: string, path: string): boolean {
+	try {
+		const insideWorktree = execFileSync(
+			"git",
+			["-C", workspaceDir, "rev-parse", "--is-inside-work-tree"],
+			{ encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] },
+		).trim();
+		if (insideWorktree !== "true") {
+			return false;
+		}
+	} catch {
+		return false;
+	}
+
+	// The leaf file must not be tracked by the repo.
+	if (isGitTrackedPath(workspaceDir, path)) {
+		return false;
+	}
+
+	// Reject the path if any ancestor directory (up to the workspace root) is
+	// itself a tracked entry. Directories are not normally listed by git, so a
+	// tracked ancestor entry means it is a gitlink/submodule whose contents are
+	// controlled by the repo — `git ls-files --error-unmatch` on the leaf would
+	// fail there, falsely marking repo-owned content as user-untracked.
+	const root = resolve(workspaceDir);
+	let ancestor = dirname(resolve(path));
+	while (ancestor !== root) {
+		const rel = relative(root, ancestor);
+		if (rel === "" || rel.startsWith("..") || isAbsolute(rel)) {
+			break;
+		}
+		if (isGitTrackedPath(workspaceDir, ancestor)) {
+			return false;
+		}
+		const parent = dirname(ancestor);
+		if (parent === ancestor) {
+			break;
+		}
+		ancestor = parent;
+	}
+
+	return true;
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -913,6 +1274,80 @@ export function resolveLoadedAppendSystemPromptPath(
 let cachedConfig: ComposerConfig | null = null;
 let cachedWorkspaceDir: string | null = null;
 let cachedProfileName: string | null = null;
+let cachedTrustProfileName: string | null = null;
+let cachedWorkspaceTrusted: boolean | null = null;
+let cachedConfigFingerprint: string | null = null;
+export interface RuntimeConfigResolutionOptions {
+	profileName?: string;
+	cliOverrides?: Partial<ComposerConfig>;
+}
+
+interface RuntimeConfigResolutionContext
+	extends RuntimeConfigResolutionOptions {
+	workspaceDir: string;
+}
+
+let runtimeConfigResolutionContext: RuntimeConfigResolutionContext | null =
+	null;
+
+export function setRuntimeConfigResolutionContext(
+	workspaceDir: string,
+	options: RuntimeConfigResolutionOptions = {},
+): void {
+	const hasCliOverrides =
+		!!options.cliOverrides && Object.keys(options.cliOverrides).length > 0;
+	if (!options.profileName && !hasCliOverrides) {
+		runtimeConfigResolutionContext = null;
+		return;
+	}
+	runtimeConfigResolutionContext = {
+		workspaceDir: resolve(workspaceDir),
+		profileName: options.profileName,
+		cliOverrides: hasCliOverrides ? options.cliOverrides : undefined,
+	};
+}
+
+export function clearRuntimeConfigResolutionContext(): void {
+	runtimeConfigResolutionContext = null;
+}
+
+export function resolveRuntimeConfigResolutionOptions(
+	workspaceDir: string,
+	options: RuntimeConfigResolutionOptions = {},
+): RuntimeConfigResolutionOptions {
+	const runtimeContext =
+		runtimeConfigResolutionContext?.workspaceDir === resolve(workspaceDir)
+			? runtimeConfigResolutionContext
+			: null;
+	return {
+		profileName: options.profileName ?? runtimeContext?.profileName,
+		cliOverrides: options.cliOverrides ?? runtimeContext?.cliOverrides,
+	};
+}
+
+function getConfigCacheFingerprint(paths: string[]): string {
+	return paths
+		.map((path) => {
+			try {
+				const stat = statSync(path);
+				return `${path}:${stat.mtimeMs}:${stat.size}`;
+			} catch {
+				return `${path}:missing`;
+			}
+		})
+		.join("|");
+}
+
+function getCachedProfileNameForWorkspace(
+	workspaceDir: string,
+): string | undefined {
+	if (!cachedWorkspaceDir) {
+		return undefined;
+	}
+	return resolve(cachedWorkspaceDir) === resolve(workspaceDir)
+		? (cachedProfileName ?? undefined)
+		: undefined;
+}
 
 /**
  * Deep merge two objects, with source values overwriting target values.
@@ -949,6 +1384,134 @@ function deepMerge<T extends object>(target: T, source: Partial<T>): T {
 	return result as T;
 }
 
+function stripProjectSecurityKeys<T extends Record<string, unknown>>(
+	config: T,
+): T {
+	const result = { ...config };
+	for (const key of PROJECT_SECURITY_KEYS) {
+		delete result[key];
+	}
+	return result;
+}
+
+function sanitizeUntrustedProjectProfile(
+	profile: ProfileConfig,
+): ProfileConfig {
+	return stripProjectSecurityKeys(profile as Record<string, unknown>);
+}
+
+function sanitizeUntrustedProjectConfig(
+	config: ComposerConfig,
+	path: string,
+): ComposerConfig {
+	const sanitized = stripProjectSecurityKeys(
+		config as Record<string, unknown>,
+	) as ComposerConfig;
+
+	if (config.profiles) {
+		sanitized.profiles = Object.fromEntries(
+			Object.entries(config.profiles).map(([name, profile]) => [
+				name,
+				sanitizeUntrustedProjectProfile(profile),
+			]),
+		);
+	}
+
+	const removedSecurityKeys = PROJECT_SECURITY_KEYS.filter(
+		(key) => key in config,
+	);
+	const sanitizedProfiles = Object.entries(config.profiles ?? {})
+		.filter(([, profile]) =>
+			PROJECT_SECURITY_KEYS.some((key) => key in profile),
+		)
+		.map(([name]) => name);
+
+	if (removedSecurityKeys.length > 0 || sanitizedProfiles.length > 0) {
+		logger.warn("Ignoring untrusted project config security settings", {
+			path,
+			keys: removedSecurityKeys,
+			profiles: sanitizedProfiles,
+		});
+	}
+
+	return sanitized;
+}
+
+function isWorkspaceTrusted(
+	config: ComposerConfig,
+	workspaceDir: string,
+): boolean {
+	const projects = config.projects;
+	if (!projects) {
+		return false;
+	}
+
+	const normalizedWorkspaceDir = resolve(workspaceDir);
+	for (const [projectPath, projectConfig] of Object.entries(projects)) {
+		if (
+			resolve(projectPath) === normalizedWorkspaceDir &&
+			projectConfig?.trust_level === "trusted"
+		) {
+			return true;
+		}
+	}
+	return false;
+}
+
+function activeProfileNameForTrust(
+	config: ComposerConfig,
+	profileName?: string,
+	cliOverrides?: Partial<ComposerConfig>,
+): string | undefined {
+	if (profileName) {
+		return profileName;
+	}
+	if (typeof cliOverrides?.profile === "string") {
+		return cliOverrides.profile;
+	}
+	if (process.env.MAESTRO_PROFILE) {
+		return process.env.MAESTRO_PROFILE;
+	}
+	return config.profile;
+}
+
+function applyGlobalProfileForTrust(
+	config: ComposerConfig,
+	profileName?: string,
+	cliOverrides?: Partial<ComposerConfig>,
+): ComposerConfig {
+	const activeProfile = activeProfileNameForTrust(
+		config,
+		profileName,
+		cliOverrides,
+	);
+	const profile = activeProfile ? config.profiles?.[activeProfile] : undefined;
+	return profile
+		? deepMerge(config, profile as Partial<ComposerConfig>)
+		: config;
+}
+
+function applyCliProjectTrustOverrides(
+	config: ComposerConfig,
+	cliOverrides?: Partial<ComposerConfig>,
+): ComposerConfig {
+	if (!cliOverrides?.projects) {
+		return config;
+	}
+	return deepMerge(config, { projects: cliOverrides.projects });
+}
+
+function buildTrustConfig(
+	config: ComposerConfig,
+	profileName?: string,
+	cliOverrides?: Partial<ComposerConfig>,
+): ComposerConfig {
+	return applyCliProjectTrustOverrides(
+		applyGlobalProfileForTrust(config, profileName, cliOverrides),
+		cliOverrides,
+	);
+}
+
 /**
  * Parse a TOML configuration file.
  */
@@ -975,7 +1538,9 @@ function parseConfigFile(path: string): ComposerConfig | null {
 	} catch (error) {
 		logger.warn("Failed to parse config file", {
 			path,
-			error: error instanceof Error ? error.message : String(error),
+			error: sanitizeWithStaticMask(
+				error instanceof Error ? error.message : String(error),
+			),
 		});
 		return null;
 	}
@@ -1046,7 +1611,9 @@ function readWritableComposerConfig(path: string): ComposerConfig {
 function writeComposerConfig(path: string, config: ComposerConfig): void {
 	mkdirSync(dirname(path), { recursive: true });
 	const rendered = stringifyTOML(config as Record<string, unknown>).trim();
-	writeFileSync(path, rendered ? `${rendered}\n` : "", "utf-8");
+	writeTextFileAtomic(path, rendered ? `${rendered}\n` : "", {
+		encoding: "utf-8",
+	});
 	clearConfigCache();
 }
 
@@ -1145,8 +1712,14 @@ function doesConfiguredPackageMatch(
 function resolvePackageRemovalScope(
 	workspaceDir: string,
 	requestedSpec: string,
+	profileName?: string,
+	cliOverrides?: Partial<ComposerConfig>,
 ): WritablePackageScope {
-	const matches = loadConfiguredPackageSpecs(workspaceDir).filter((entry) =>
+	const matches = loadConfiguredPackageSpecs(
+		workspaceDir,
+		profileName,
+		cliOverrides,
+	).filter((entry) =>
 		doesConfiguredPackageMatch(
 			entry.spec,
 			entry.configPath,
@@ -1167,7 +1740,24 @@ export function addConfiguredPackageSpecToConfig(
 	options: AddConfiguredPackageSpecOptions,
 ): { path: string; scope: WritablePackageScope; spec: PackageSpec } {
 	const workspaceDir = options.workspaceDir ?? process.cwd();
-	const path = getWritablePackageConfigPath(options.scope, workspaceDir);
+	const resolvedOptions = resolveRuntimeConfigResolutionOptions(workspaceDir, {
+		profileName: options.profileName,
+		cliOverrides: options.cliOverrides,
+	});
+	const scope = options.scope;
+	if (
+		scope !== "user" &&
+		!isWorkspacePackageConfigTrusted(
+			workspaceDir,
+			resolvedOptions.profileName,
+			resolvedOptions.cliOverrides,
+		)
+	) {
+		throw new Error(
+			`Adding package to ${scope} config requires a trusted workspace because ${scope} package config is ignored until trust is granted. Use scope "user" or trust this workspace in global config.`,
+		);
+	}
+	const path = getWritablePackageConfigPath(scope, workspaceDir);
 	const config = readWritableComposerConfig(path);
 	const configDir = dirname(path);
 	const requestedIdentity = resolvePackageSpecIdentity(
@@ -1187,12 +1777,12 @@ export function addConfiguredPackageSpecToConfig(
 		options.spec,
 		path,
 		workspaceDir,
-		options.scope,
+		scope,
 	);
 	const nextConfig = structuredClone(config);
 	nextConfig.packages = [...existingPackages, storedSpec];
 	writeComposerConfig(path, nextConfig);
-	return { path, scope: options.scope, spec: storedSpec };
+	return { path, scope, spec: storedSpec };
 }
 
 export function removeConfiguredPackageSpecFromConfig(
@@ -1200,7 +1790,13 @@ export function removeConfiguredPackageSpecFromConfig(
 ): { path: string; scope: WritablePackageScope; removedCount: number } {
 	const workspaceDir = options.workspaceDir ?? process.cwd();
 	const scope =
-		options.scope ?? resolvePackageRemovalScope(workspaceDir, options.spec);
+		options.scope ??
+		resolvePackageRemovalScope(
+			workspaceDir,
+			options.spec,
+			options.profileName,
+			options.cliOverrides,
+		);
 	const path = getWritablePackageConfigPath(scope, workspaceDir);
 	const config = readWritableComposerConfig(path);
 	const existingPackages = [...(config.packages ?? [])];
@@ -1311,6 +1907,21 @@ function applyProfile(
 	return result;
 }
 
+function normalizeCliOverridesForActiveProfile(
+	cliOverrides: Partial<ComposerConfig>,
+	activeProfile?: string,
+): Partial<ComposerConfig> {
+	if (
+		activeProfile &&
+		typeof cliOverrides.profile === "string" &&
+		cliOverrides.profile !== activeProfile
+	) {
+		const { profile: _ignoredProfile, ...rest } = cliOverrides;
+		return rest;
+	}
+	return cliOverrides;
+}
+
 /**
  * Load configuration from files and environment.
  *
@@ -1323,41 +1934,81 @@ export function loadConfig(
 	profileName?: string,
 	cliOverrides?: Partial<ComposerConfig>,
 ): ComposerConfig {
-	// Check cache
-	if (
-		cachedConfig &&
-		cachedWorkspaceDir === workspaceDir &&
-		cachedProfileName === (profileName ?? null)
-	) {
-		if (!cliOverrides || Object.keys(cliOverrides).length === 0) {
-			return cachedConfig;
-		}
-		return deepMerge(cachedConfig, cliOverrides);
-	}
-
-	// Start with defaults
+	const resolvedWorkspaceDir = resolve(workspaceDir);
+	// Fall back to the runtime config resolution context for callers that
+	// reload configuration without re-threading explicit overrides (e.g.
+	// `resolveShellEnvironment` from sandbox/bash execution). Without this,
+	// a `--config 'projects."<cwd>".trust_level="trusted"'` override granted
+	// at startup is dropped on later reloads and project security keys like
+	// `shell_environment_policy` get stripped despite the user's explicit
+	// trust grant.
+	const resolvedOptions = resolveRuntimeConfigResolutionOptions(workspaceDir, {
+		profileName,
+		cliOverrides,
+	});
+	const effectiveProfileName = resolvedOptions.profileName;
+	const effectiveCliOverrides = resolvedOptions.cliOverrides;
+	const requestedProfileName = effectiveProfileName ?? null;
 	let config = { ...DEFAULT_CONFIG };
-
-	// Load global config
 	const globalPath = getUserConfigPath();
+	const projectPath = join(workspaceDir, ".maestro", "config.toml");
+	const localPath = join(workspaceDir, ".maestro", "config.local.toml");
+	const cacheFingerprint = getConfigCacheFingerprint([
+		globalPath,
+		projectPath,
+		localPath,
+	]);
 	const globalConfig = parseConfigFile(globalPath);
 	if (globalConfig) {
 		config = deepMerge(config, globalConfig);
 	}
+	const trustProfileName =
+		activeProfileNameForTrust(
+			config,
+			effectiveProfileName,
+			effectiveCliOverrides,
+		) ?? null;
+	const hasCliOverrides =
+		!!effectiveCliOverrides && Object.keys(effectiveCliOverrides).length > 0;
+	const workspaceTrusted = isWorkspaceTrusted(
+		buildTrustConfig(
+			config,
+			trustProfileName ?? undefined,
+			effectiveCliOverrides,
+		),
+		workspaceDir,
+	);
+
+	// Check cache
+	if (
+		!hasCliOverrides &&
+		cachedConfig &&
+		cachedWorkspaceDir === resolvedWorkspaceDir &&
+		cachedProfileName === requestedProfileName &&
+		cachedTrustProfileName === trustProfileName &&
+		cachedWorkspaceTrusted === workspaceTrusted &&
+		cachedConfigFingerprint === cacheFingerprint
+	) {
+		return cachedConfig;
+	}
 
 	// Load project config (shared, committed to git)
-	const projectPath = join(workspaceDir, ".maestro", "config.toml");
 	const projectConfig = parseConfigFile(projectPath);
 	if (projectConfig) {
-		config = deepMerge(config, projectConfig);
+		const safeProjectConfig = workspaceTrusted
+			? projectConfig
+			: sanitizeUntrustedProjectConfig(projectConfig, projectPath);
+		config = deepMerge(config, safeProjectConfig);
 	}
 
 	// Load local config (personal overrides, gitignored)
 	// This follows Claude Code's pattern of settings.local.json
-	const localPath = join(workspaceDir, ".maestro", "config.local.toml");
 	const localConfig = parseConfigFile(localPath);
 	if (localConfig) {
-		config = deepMerge(config, localConfig);
+		const safeLocalConfig = workspaceTrusted
+			? localConfig
+			: sanitizeUntrustedProjectConfig(localConfig, localPath);
+		config = deepMerge(config, safeLocalConfig);
 		logger.debug("Applied local config overrides", { path: localPath });
 	}
 
@@ -1365,24 +2016,47 @@ export function loadConfig(
 	config = applyEnvOverrides(config);
 
 	// Determine active profile
-	const activeProfile = profileName ?? config.profile;
+	const activeProfile = activeProfileNameForTrust(
+		config,
+		effectiveProfileName,
+		effectiveCliOverrides,
+	);
 	if (activeProfile) {
 		config = applyProfile(config, activeProfile);
+		config.profile = activeProfile;
 	}
 
 	// Apply CLI overrides (highest precedence)
-	if (cliOverrides && Object.keys(cliOverrides).length > 0) {
-		config = deepMerge(config, cliOverrides);
+	if (effectiveCliOverrides && Object.keys(effectiveCliOverrides).length > 0) {
+		config = deepMerge(
+			config,
+			normalizeCliOverridesForActiveProfile(
+				effectiveCliOverrides,
+				activeProfile,
+			),
+		);
 	}
 
-	// Cache the result (without CLI overrides)
-	cachedConfig = config;
-	cachedWorkspaceDir = workspaceDir;
-	cachedProfileName = profileName ?? null;
+	if (!hasCliOverrides) {
+		cachedConfig = config;
+		cachedWorkspaceDir = resolvedWorkspaceDir;
+		cachedProfileName = requestedProfileName;
+		cachedTrustProfileName = trustProfileName;
+		cachedWorkspaceTrusted = workspaceTrusted;
+		cachedConfigFingerprint = cacheFingerprint;
+	} else {
+		cachedConfig = null;
+		cachedWorkspaceDir = resolvedWorkspaceDir;
+		cachedProfileName = requestedProfileName;
+		cachedTrustProfileName = trustProfileName;
+		cachedWorkspaceTrusted = workspaceTrusted;
+		cachedConfigFingerprint = null;
+	}
 
 	logger.info("Loaded configuration", {
 		global: globalConfig !== null,
 		project: projectConfig !== null,
+		projectTrusted: workspaceTrusted,
 		profile: activeProfile,
 	});
 
@@ -1391,10 +2065,21 @@ export function loadConfig(
 
 export function loadConfiguredPackageSpecs(
 	workspaceDir: string,
+	profileName?: string,
+	cliOverrides?: Partial<ComposerConfig>,
 ): ConfiguredPackageSpec[] {
+	const resolvedOptions = resolveRuntimeConfigResolutionOptions(workspaceDir, {
+		profileName,
+		cliOverrides,
+	});
 	const globalPath = getUserConfigPath();
 	const projectPath = join(workspaceDir, ".maestro", "config.toml");
 	const localPath = join(workspaceDir, ".maestro", "config.local.toml");
+	const workspaceTrusted = isWorkspacePackageConfigTrusted(
+		workspaceDir,
+		resolvedOptions.profileName,
+		resolvedOptions.cliOverrides,
+	);
 
 	return [
 		...extractConfiguredPackageSpecs(
@@ -1402,17 +2087,38 @@ export function loadConfiguredPackageSpecs(
 			globalPath,
 			"user",
 		),
-		...extractConfiguredPackageSpecs(
-			parseConfigFile(projectPath),
-			projectPath,
-			"project",
-		),
-		...extractConfiguredPackageSpecs(
-			parseConfigFile(localPath),
-			localPath,
-			"local",
-		),
+		...(workspaceTrusted
+			? [
+					...extractConfiguredPackageSpecs(
+						parseConfigFile(projectPath),
+						projectPath,
+						"project",
+					),
+					...extractConfiguredPackageSpecs(
+						parseConfigFile(localPath),
+						localPath,
+						"local",
+					),
+				]
+			: []),
 	];
+}
+
+export function isWorkspacePackageConfigTrusted(
+	workspaceDir: string,
+	profileName?: string,
+	cliOverrides?: Partial<ComposerConfig>,
+): boolean {
+	const globalPath = getUserConfigPath();
+	const globalConfig = parseConfigFile(globalPath);
+	let trustConfig = { ...DEFAULT_CONFIG };
+	if (globalConfig) {
+		trustConfig = deepMerge(trustConfig, globalConfig);
+	}
+	return isWorkspaceTrusted(
+		buildTrustConfig(trustConfig, profileName, cliOverrides),
+		workspaceDir,
+	);
 }
 
 /**
@@ -1422,6 +2128,9 @@ export function clearConfigCache(): void {
 	cachedConfig = null;
 	cachedWorkspaceDir = null;
 	cachedProfileName = null;
+	cachedTrustProfileName = null;
+	cachedWorkspaceTrusted = null;
+	cachedConfigFingerprint = null;
 }
 
 /**
@@ -1518,7 +2227,7 @@ export function applyCliOverride(
 	key: string,
 	value: unknown,
 ): ComposerConfig {
-	const keys = key.split(".");
+	const keys = splitCliOverrideKey(key);
 	const result = { ...config };
 
 	// Navigate to the nested key
@@ -1538,4 +2247,54 @@ export function applyCliOverride(
 	}
 
 	return result;
+}
+
+function splitCliOverrideKey(key: string): string[] {
+	const keys: string[] = [];
+	let current = "";
+	let quote: "'" | '"' | null = null;
+	let escaping = false;
+
+	for (const char of key) {
+		if (quote === '"') {
+			if (escaping) {
+				current += char;
+				escaping = false;
+				continue;
+			}
+			if (char === "\\") {
+				escaping = true;
+				continue;
+			}
+			if (char === '"') {
+				quote = null;
+				continue;
+			}
+			current += char;
+			continue;
+		}
+
+		if (quote === "'") {
+			if (char === "'") {
+				quote = null;
+				continue;
+			}
+			current += char;
+			continue;
+		}
+
+		if (char === '"' || char === "'") {
+			quote = char;
+			continue;
+		}
+		if (char === ".") {
+			keys.push(current.trim());
+			current = "";
+			continue;
+		}
+		current += char;
+	}
+
+	keys.push(current.trim());
+	return keys.filter((part) => part.length > 0);
 }

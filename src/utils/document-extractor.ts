@@ -2,6 +2,7 @@ import { spawn } from "node:child_process";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { extname, join } from "node:path";
+import type { Readable } from "node:stream";
 import ExcelJS from "exceljs";
 import JSZip from "jszip";
 import mammoth from "mammoth";
@@ -19,6 +20,7 @@ export interface ExtractDocumentInput {
 	fileName: string;
 	mimeType?: string;
 	maxChars?: number;
+	allowMarkitdown?: boolean;
 }
 
 export interface ExtractDocumentOutput {
@@ -38,6 +40,9 @@ const MARKITDOWN_TIMEOUT_MS = 20_000;
 const MARKITDOWN_TIMEOUT_KILL_GRACE_MS = 500;
 const MARKITDOWN_TIMEOUT_CLOSE_GRACE_MS = 1_000;
 const NODE_TIMER_MAX_MS = 2_147_483_647;
+const MAX_ZIP_ENTRIES = 2_000;
+const MAX_ZIP_ENTRY_BYTES = 25 * 1024 * 1024;
+const MAX_ZIP_DECOMPRESSED_BYTES = 100 * 1024 * 1024;
 const XLSX_MIME =
 	"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
 
@@ -236,6 +241,198 @@ function readPositiveIntegerEnv(name: string, fallback: number): number {
 	return Math.min(parsed, NODE_TIMER_MAX_MS);
 }
 
+function documentZipLimits(): {
+	maxEntries: number;
+	maxEntryBytes: number;
+	maxDecompressedBytes: number;
+} {
+	return {
+		maxEntries: readPositiveIntegerEnv(
+			"MAESTRO_DOCUMENT_MAX_ZIP_ENTRIES",
+			MAX_ZIP_ENTRIES,
+		),
+		maxEntryBytes: readPositiveIntegerEnv(
+			"MAESTRO_DOCUMENT_MAX_ZIP_ENTRY_BYTES",
+			MAX_ZIP_ENTRY_BYTES,
+		),
+		maxDecompressedBytes: readPositiveIntegerEnv(
+			"MAESTRO_DOCUMENT_MAX_ZIP_DECOMPRESSED_BYTES",
+			MAX_ZIP_DECOMPRESSED_BYTES,
+		),
+	};
+}
+
+function zipEntryUncompressedSize(file: JSZip.JSZipObject): number | null {
+	const data = (file as unknown as { _data?: { uncompressedSize?: unknown } })
+		._data;
+	return typeof data?.uncompressedSize === "number"
+		? data.uncompressedSize
+		: null;
+}
+
+async function loadZipArchiveWithinLimits(buffer: Buffer): Promise<JSZip> {
+	const zip = await JSZip.loadAsync(buffer);
+	const limits = documentZipLimits();
+	const entries = Object.values(zip.files);
+	if (entries.length > limits.maxEntries) {
+		throw new Error(
+			`Document archive has too many entries (${entries.length}). Maximum supported entries is ${limits.maxEntries}.`,
+		);
+	}
+	const files = entries.filter((file) => !file.dir);
+
+	let knownDecompressedBytes = 0;
+	for (const file of files) {
+		const size = zipEntryUncompressedSize(file);
+		if (size == null) continue;
+		if (size > limits.maxEntryBytes) {
+			throw new Error(
+				`Document archive entry is too large (${size} bytes). Maximum supported entry size is ${limits.maxEntryBytes} bytes.`,
+			);
+		}
+		knownDecompressedBytes += size;
+		if (knownDecompressedBytes > limits.maxDecompressedBytes) {
+			throw new Error(
+				`Document archive decompressed size is too large (${knownDecompressedBytes} bytes). Maximum supported decompressed size is ${limits.maxDecompressedBytes} bytes.`,
+			);
+		}
+	}
+
+	return zip;
+}
+
+async function readZipEntryBytes(
+	file: JSZip.JSZipObject,
+	remainingBudget: { bytes: number },
+): Promise<Uint8Array> {
+	const limits = documentZipLimits();
+	const knownSize = zipEntryUncompressedSize(file);
+	if (knownSize != null) {
+		if (knownSize > limits.maxEntryBytes) {
+			throw new Error(
+				`Document archive entry is too large (${knownSize} bytes). Maximum supported entry size is ${limits.maxEntryBytes} bytes.`,
+			);
+		}
+		if (knownSize > remainingBudget.bytes) {
+			throw new Error(
+				`Document archive decompressed size is too large. Maximum supported decompressed size is ${limits.maxDecompressedBytes} bytes.`,
+			);
+		}
+	}
+
+	const chunks: Buffer[] = [];
+	let byteLength = 0;
+	const stream = file.nodeStream("nodebuffer") as Readable;
+	await new Promise<void>((resolve, reject) => {
+		let settled = false;
+		const fail = (error: Error) => {
+			if (settled) return;
+			settled = true;
+			stream.destroy(error);
+			reject(error);
+		};
+		stream.on("data", (chunk: Buffer | Uint8Array) => {
+			if (settled) return;
+			const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+			byteLength += buffer.byteLength;
+			if (byteLength > limits.maxEntryBytes) {
+				fail(
+					new Error(
+						`Document archive entry is too large (${byteLength} bytes). Maximum supported entry size is ${limits.maxEntryBytes} bytes.`,
+					),
+				);
+				return;
+			}
+			if (byteLength > remainingBudget.bytes) {
+				fail(
+					new Error(
+						`Document archive decompressed size is too large. Maximum supported decompressed size is ${limits.maxDecompressedBytes} bytes.`,
+					),
+				);
+				return;
+			}
+			chunks.push(buffer);
+		});
+		stream.once("error", (error) => {
+			if (settled) return;
+			settled = true;
+			reject(error);
+		});
+		stream.once("end", () => {
+			if (settled) return;
+			settled = true;
+			resolve();
+		});
+	});
+	remainingBudget.bytes -= byteLength;
+	return Buffer.concat(chunks, byteLength);
+}
+
+async function readZipTextEntry(
+	file: JSZip.JSZipObject,
+	remainingBudget: { bytes: number },
+): Promise<string> {
+	const data = await readZipEntryBytes(file, remainingBudget);
+	return new TextDecoder("utf-8", { fatal: false }).decode(data);
+}
+
+async function materializeZipArchiveWithinLimits(
+	buffer: Buffer,
+): Promise<Buffer> {
+	const zip = await loadZipArchiveWithinLimits(buffer);
+	const sanitized = new JSZip();
+	const budget = {
+		bytes: documentZipLimits().maxDecompressedBytes,
+	};
+
+	for (const file of Object.values(zip.files)) {
+		if (file.dir) continue;
+		const data = await readZipEntryBytes(file, budget);
+		sanitized.file(file.name, data, {
+			binary: true,
+			createFolders: true,
+			date: file.date,
+		});
+	}
+
+	return sanitized.generateAsync({
+		type: "nodebuffer",
+		compression: "DEFLATE",
+	});
+}
+
+function decodeXmlEntities(value: string): string {
+	return value
+		.replaceAll("&lt;", "<")
+		.replaceAll("&gt;", ">")
+		.replaceAll("&amp;", "&")
+		.replaceAll("&quot;", '"')
+		.replaceAll("&apos;", "'");
+}
+
+function extractDrawingText(xml: string): string[] {
+	const texts: string[] = [];
+	let index = 0;
+	while (index < xml.length) {
+		const start = xml.indexOf("<a:t", index);
+		if (start === -1) break;
+		const tagNameEnd = start + "<a:t".length;
+		const tagNameBoundary = xml.charAt(tagNameEnd);
+		if (tagNameBoundary !== ">" && !/\s/u.test(tagNameBoundary)) {
+			index = start + 1;
+			continue;
+		}
+		const tagEnd = xml.indexOf(">", start);
+		if (tagEnd === -1) break;
+		const end = xml.indexOf("</a:t>", tagEnd + 1);
+		if (end === -1) break;
+		const text = decodeXmlEntities(xml.slice(tagEnd + 1, end)).trim();
+		if (text) texts.push(text);
+		index = end + "</a:t>".length;
+	}
+	return texts;
+}
+
 function signalMarkitdownProcessTree(
 	child: ReturnType<typeof spawn>,
 	signal: NodeJS.Signals,
@@ -407,7 +604,7 @@ function worksheetToRows(worksheet: ExcelJS.Worksheet): string[][] {
 }
 
 async function extractPptxText(buffer: Buffer): Promise<string> {
-	const zip = await JSZip.loadAsync(buffer);
+	const zip = await loadZipArchiveWithinLimits(buffer);
 
 	const slidePaths = Object.keys(zip.files)
 		.filter((p) => /^ppt\/slides\/slide\d+\.xml$/i.test(p))
@@ -422,23 +619,16 @@ async function extractPptxText(buffer: Buffer): Promise<string> {
 	}
 
 	const parts: string[] = [];
+	const budget = {
+		bytes: documentZipLimits().maxDecompressedBytes,
+	};
 	for (const slidePath of slidePaths) {
 		const slideNumber = slidePath.match(/slide(\d+)\.xml/i)?.[1] || "?";
-		const xml = await zip.file(slidePath)?.async("string");
-		if (!xml) continue;
+		const slide = zip.file(slidePath);
+		if (!slide) continue;
 
-		const texts = Array.from(xml.matchAll(/<a:t>(.*?)<\/a:t>/g))
-			.map((m) => m[1] || "")
-			.map((s) =>
-				s
-					.replaceAll("&lt;", "<")
-					.replaceAll("&gt;", ">")
-					.replaceAll("&amp;", "&")
-					.replaceAll("&quot;", '"')
-					.replaceAll("&apos;", "'"),
-			)
-			.map((s) => s.trim())
-			.filter(Boolean);
+		const xml = await readZipTextEntry(slide, budget);
+		const texts = extractDrawingText(xml);
 
 		if (texts.length === 0) continue;
 		parts.push(`# Slide ${slideNumber}\n${texts.join(" ")}`);
@@ -452,6 +642,7 @@ export async function extractDocumentText(
 ): Promise<ExtractDocumentOutput> {
 	const { buffer, fileName } = input;
 	const maxChars = Math.max(1, input.maxChars ?? DEFAULT_MAX_CHARS);
+	const allowMarkitdown = input.allowMarkitdown !== false;
 
 	if (buffer.byteLength > MAX_INPUT_BYTES) {
 		throw new Error(
@@ -461,6 +652,7 @@ export async function extractDocumentText(
 
 	const format = detectFormat(fileName, input.mimeType);
 	const markitdownFirst =
+		allowMarkitdown &&
 		/^(1|true|on|yes)$/i.test(process.env.MAESTRO_MARKITDOWN_PREFER ?? "") &&
 		!isMarkitdownDisabled();
 
@@ -496,13 +688,19 @@ export async function extractDocumentText(
 				break;
 			}
 			case "docx": {
-				const result = await mammoth.extractRawText({ buffer });
+				const sanitizedBuffer = await materializeZipArchiveWithinLimits(buffer);
+				const result = await mammoth.extractRawText({
+					buffer: sanitizedBuffer,
+				});
 				extractedText = result.value || "";
 				break;
 			}
 			case "xlsx": {
+				const sanitizedBuffer = await materializeZipArchiveWithinLimits(buffer);
 				const workbook = new ExcelJS.Workbook();
-				await workbook.xlsx.load(buffer as unknown as ExcelWorkbookLoadInput);
+				await workbook.xlsx.load(
+					sanitizedBuffer as unknown as ExcelWorkbookLoadInput,
+				);
 				const parts: string[] = [];
 				for (const worksheet of workbook.worksheets) {
 					const rows = worksheetToRows(worksheet);
@@ -530,6 +728,7 @@ export async function extractDocumentText(
 	}
 
 	if (
+		allowMarkitdown &&
 		extractor !== "markitdown" &&
 		shouldTryMarkitdown(format, fileName, input.mimeType)
 	) {

@@ -221,6 +221,7 @@ export class GitHubWebhookServer {
 				id: payload.comment.id,
 				issueNumber: payload.issue.number,
 				author: payload.comment.user?.login ?? "unknown",
+				authorAssociation: payload.comment.author_association,
 				body: payload.comment.body ?? "",
 				createdAt: payload.comment.created_at,
 				url: payload.comment.html_url,
@@ -242,6 +243,7 @@ export class GitHubWebhookServer {
 			await this.handlers.onPRReview(pr, {
 				id: payload.review.id,
 				author: payload.review.user?.login ?? "unknown",
+				authorAssociation: payload.review.author_association,
 				state: reviewState,
 				body: payload.review.body,
 				submittedAt: payload.review.submitted_at ?? new Date().toISOString(),
@@ -255,6 +257,7 @@ export class GitHubWebhookServer {
 				await this.handlers.onPRComment(pr, {
 					id: payload.comment.id,
 					author: payload.comment.user?.login ?? "unknown",
+					authorAssociation: payload.comment.author_association,
 					body: payload.comment.body,
 					path: payload.comment.path ?? null,
 					line: payload.comment.line ?? null,

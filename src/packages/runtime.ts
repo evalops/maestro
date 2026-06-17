@@ -1,7 +1,11 @@
 import { resolve } from "node:path";
 import {
+	type ComposerConfig,
 	type ConfiguredPackageSpec,
+	clearRuntimeConfigResolutionContext,
 	loadConfiguredPackageSpecs,
+	resolveRuntimeConfigResolutionOptions,
+	setRuntimeConfigResolutionContext,
 } from "../config/toml-config.js";
 import { createLogger } from "../utils/logger.js";
 import { discoverPackage } from "./discovery.js";
@@ -31,7 +35,23 @@ export interface ConfiguredPackageRuntimeResources {
 	errors: string[];
 }
 
+export interface ConfiguredPackageRuntimeOptions {
+	profileName?: string;
+	cliOverrides?: Partial<ComposerConfig>;
+}
+
 const reportedRuntimePackageErrors = new Set<string>();
+
+export function setConfiguredPackageRuntimeContext(
+	workspaceDir: string,
+	options: ConfiguredPackageRuntimeOptions = {},
+): void {
+	setRuntimeConfigResolutionContext(workspaceDir, options);
+}
+
+export function clearConfiguredPackageRuntimeContext(): void {
+	clearRuntimeConfigResolutionContext();
+}
 
 function createScopedDirectories(): ScopedPackageResourceDirectories {
 	return { user: [], project: [] };
@@ -125,10 +145,28 @@ function getRuntimePackageScope(scope: PackageScope): RuntimePackageScope {
 	return scope === "user" ? "user" : "project";
 }
 
+function resolveConfiguredPackageRuntimeOptions(
+	workspaceDir: string,
+	options: ConfiguredPackageRuntimeOptions,
+): ConfiguredPackageRuntimeOptions {
+	return resolveRuntimeConfigResolutionOptions(workspaceDir, options);
+}
+
 export function loadConfiguredPackageResources(
 	workspaceDir: string,
+	options: ConfiguredPackageRuntimeOptions = {},
 ): ConfiguredPackageRuntimeResources {
-	void scheduleConfiguredRemotePackageAutoSync(workspaceDir);
+	const resolvedOptions = resolveConfiguredPackageRuntimeOptions(
+		workspaceDir,
+		options,
+	);
+	// Auto-sync must use the same trust context as the load below, otherwise a
+	// remote refresh/prune could fetch and cache sources from untrusted
+	// project/local package entries that the gated load skips.
+	void scheduleConfiguredRemotePackageAutoSync(workspaceDir, {
+		profileName: resolvedOptions.profileName,
+		cliOverrides: resolvedOptions.cliOverrides,
+	});
 	const resources = createConfiguredPackageRuntimeResources();
 	const seen: Record<ResourceKind, Record<RuntimePackageScope, Set<string>>> = {
 		extensions: { user: new Set(), project: new Set() },
@@ -137,7 +175,11 @@ export function loadConfiguredPackageResources(
 		themes: { user: new Set(), project: new Set() },
 	};
 
-	for (const entry of loadConfiguredPackageSpecs(workspaceDir)) {
+	for (const entry of loadConfiguredPackageSpecs(
+		workspaceDir,
+		resolvedOptions.profileName,
+		resolvedOptions.cliOverrides,
+	)) {
 		try {
 			const packageResources = loadConfiguredPackageResourcesEntry(entry);
 			const runtimeScope = getRuntimePackageScope(entry.scope);

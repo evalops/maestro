@@ -1,6 +1,7 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { getAgentDir } from "../config/constants.js";
+import { readJsonFile, writeTextFileAtomic } from "../utils/fs.js";
 import { resolveEnvPath } from "../utils/path-expansion.js";
 import type { GuardianRunResult, GuardianState } from "./types.js";
 
@@ -18,25 +19,23 @@ export function getGuardianStatePath(): string {
 }
 
 export function loadGuardianState(): GuardianState {
-	try {
-		if (!existsSync(STATE_PATH)) {
-			return { ...DEFAULT_STATE };
-		}
-		const raw = readFileSync(STATE_PATH, "utf-8");
-		const parsed = JSON.parse(raw) as Partial<GuardianState>;
-		return {
-			...DEFAULT_STATE,
-			...parsed,
-		};
-	} catch {
+	if (!existsSync(STATE_PATH)) {
 		return { ...DEFAULT_STATE };
 	}
+	const parsed = readJsonFile<Partial<GuardianState>>(STATE_PATH, {
+		fallback: {},
+		rotateOnParseFail: true,
+	});
+	return {
+		...DEFAULT_STATE,
+		...parsed,
+	};
 }
 
 function persistState(state: GuardianState): GuardianState {
 	try {
 		mkdirSync(dirname(STATE_PATH), { recursive: true, mode: 0o700 });
-		writeFileSync(STATE_PATH, JSON.stringify(state, null, 2), {
+		writeTextFileAtomic(STATE_PATH, JSON.stringify(state, null, 2), {
 			encoding: "utf-8",
 			mode: 0o600,
 		});

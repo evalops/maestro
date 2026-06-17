@@ -13,6 +13,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { PATHS } from "../config/constants.js";
 import { createLogger } from "../utils/logger.js";
+import { sanitizeWithStaticMask } from "../utils/secret-redactor.js";
 import type { GuardianConfig } from "./types.js";
 
 const logger = createLogger("guardian:config");
@@ -52,7 +53,9 @@ function loadConfigFile(path: string): GuardianConfig | null {
 	} catch (error) {
 		logger.warn("Failed to load Guardian config", {
 			path,
-			error: error instanceof Error ? error.message : String(error),
+			error: sanitizeWithStaticMask(
+				error instanceof Error ? error.message : String(error),
+			),
 		});
 		return null;
 	}

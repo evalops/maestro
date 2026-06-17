@@ -3,7 +3,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import ExcelJS from "exceljs";
-import { afterEach, describe, expect, it } from "vitest";
+import JSZip from "jszip";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { extractDocumentText } from "../src/utils/document-extractor.js";
 
 describe("extractDocumentText", () => {
@@ -11,6 +12,9 @@ describe("extractDocumentText", () => {
 
 	afterEach(() => {
 		process.env = { ...originalEnv };
+		vi.doUnmock("exceljs");
+		vi.doUnmock("mammoth");
+		vi.resetModules();
 	});
 
 	function isProcessAlive(pid: number): boolean {
@@ -42,6 +46,34 @@ describe("extractDocumentText", () => {
 			await delay(25);
 		}
 		return !isProcessAlive(pid);
+	}
+
+	function patchZipCentralDirectoryUncompressedSize(
+		buffer: Buffer,
+		entryName: string,
+		size: number,
+	): Buffer {
+		const patched = Buffer.from(buffer);
+		const entryNameBuffer = Buffer.from(entryName, "utf8");
+
+		for (let offset = 0; offset <= patched.length - 46; offset += 1) {
+			if (patched.readUInt32LE(offset) !== 0x02014b50) continue;
+			const nameLength = patched.readUInt16LE(offset + 28);
+			const extraLength = patched.readUInt16LE(offset + 30);
+			const commentLength = patched.readUInt16LE(offset + 32);
+			const nameStart = offset + 46;
+			const nameEnd = nameStart + nameLength;
+			if (nameEnd > patched.length) break;
+			if (patched.subarray(nameStart, nameEnd).equals(entryNameBuffer)) {
+				patched.writeUInt32LE(size, offset + 24);
+				return patched;
+			}
+			offset = nameEnd + extraLength + commentLength - 1;
+		}
+
+		throw new Error(
+			`Could not locate ZIP central directory entry ${entryName}`,
+		);
 	}
 
 	it("extracts text files", async () => {
@@ -76,6 +108,213 @@ describe("extractDocumentText", () => {
 		expect(out.extractor).toBe("native");
 		expect(out.extractedText).toContain("# Sheet: People");
 		expect(out.extractedText).toContain("Alice");
+	});
+
+	it("extracts pptx slide text without regex expansion", async () => {
+		process.env.MAESTRO_MARKITDOWN = "0";
+		const zip = new JSZip();
+		zip.file(
+			"ppt/slides/slide1.xml",
+			"<p:sld><a:t>Hello &amp; welcome</a:t><a:t>Team</a:t></p:sld>",
+		);
+		const buffer = Buffer.from(await zip.generateAsync({ type: "uint8array" }));
+
+		const out = await extractDocumentText({
+			buffer,
+			fileName: "deck.pptx",
+			mimeType:
+				"application/vnd.openxmlformats-officedocument.presentationml.presentation",
+		});
+
+		expect(out.format).toBe("pptx");
+		expect(out.extractor).toBe("native");
+		expect(out.extractedText).toContain("# Slide 1");
+		expect(out.extractedText).toContain("Hello & welcome Team");
+	});
+
+	it("skips non-text DrawingML tags before later pptx text runs", async () => {
+		process.env.MAESTRO_MARKITDOWN = "0";
+		const zip = new JSZip();
+		zip.file(
+			"ppt/slides/slide1.xml",
+			"<p:sld><a:tab/><a:tbl><a:tc/></a:tbl><a:t>Later text</a:t></p:sld>",
+		);
+		const buffer = Buffer.from(await zip.generateAsync({ type: "uint8array" }));
+
+		const out = await extractDocumentText({
+			buffer,
+			fileName: "deck.pptx",
+			mimeType:
+				"application/vnd.openxmlformats-officedocument.presentationml.presentation",
+		});
+
+		expect(out.extractedText).toContain("Later text");
+	});
+
+	it("rejects OOXML archives before parser inflation when decompressed bytes exceed the limit", async () => {
+		process.env.MAESTRO_MARKITDOWN = "0";
+		process.env.MAESTRO_DOCUMENT_MAX_ZIP_DECOMPRESSED_BYTES = "100";
+		const zip = new JSZip();
+		zip.file("xl/workbook.xml", "a".repeat(101));
+		const buffer = Buffer.from(await zip.generateAsync({ type: "uint8array" }));
+
+		await expect(
+			extractDocumentText({
+				buffer,
+				fileName: "bomb.xlsx",
+				mimeType:
+					"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+			}),
+		).rejects.toThrow(/decompressed size is too large/i);
+	});
+
+	it("rejects docx entries when actual inflated bytes exceed the limit despite understated metadata", async () => {
+		process.env.MAESTRO_MARKITDOWN = "0";
+		process.env.MAESTRO_DOCUMENT_MAX_ZIP_DECOMPRESSED_BYTES = "100";
+		const zip = new JSZip();
+		zip.file(
+			"[Content_Types].xml",
+			`<?xml version="1.0" encoding="UTF-8"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/></Types>`,
+		);
+		zip.file(
+			"_rels/.rels",
+			`<?xml version="1.0" encoding="UTF-8"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/></Relationships>`,
+		);
+		zip.file(
+			"word/document.xml",
+			`<?xml version="1.0" encoding="UTF-8"?><w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:p><w:r><w:t>${"a".repeat(101)}</w:t></w:r></w:p></w:body></w:document>`,
+		);
+		const buffer = patchZipCentralDirectoryUncompressedSize(
+			Buffer.from(await zip.generateAsync({ type: "uint8array" })),
+			"word/document.xml",
+			1,
+		);
+		const extractRawText = vi.fn(async () => ({ value: "should not run" }));
+		vi.doMock("mammoth", () => ({
+			default: { extractRawText },
+		}));
+		const { extractDocumentText: isolatedExtractDocumentText } = await import(
+			"../src/utils/document-extractor.js"
+		);
+
+		await expect(
+			isolatedExtractDocumentText({
+				buffer,
+				fileName: "bomb.docx",
+				mimeType:
+					"application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+			}),
+		).rejects.toThrow(/decompressed size is too large/i);
+		expect(extractRawText).not.toHaveBeenCalled();
+	});
+
+	it("rejects zip entries while streaming when actual inflated bytes exceed the entry limit", async () => {
+		process.env.MAESTRO_MARKITDOWN = "0";
+		process.env.MAESTRO_DOCUMENT_MAX_ZIP_ENTRY_BYTES = "100";
+		process.env.MAESTRO_DOCUMENT_MAX_ZIP_DECOMPRESSED_BYTES = "10000";
+		const zip = new JSZip();
+		zip.file("ppt/slides/slide1.xml", `<a:t>${"a".repeat(101)}</a:t>`);
+		const buffer = patchZipCentralDirectoryUncompressedSize(
+			Buffer.from(await zip.generateAsync({ type: "uint8array" })),
+			"ppt/slides/slide1.xml",
+			1,
+		);
+
+		await expect(
+			extractDocumentText({
+				buffer,
+				fileName: "bomb.pptx",
+				mimeType:
+					"application/vnd.openxmlformats-officedocument.presentationml.presentation",
+			}),
+		).rejects.toThrow(/entry is too large/i);
+	});
+
+	it("rejects xlsx entries when actual inflated bytes exceed the limit despite understated metadata", async () => {
+		process.env.MAESTRO_MARKITDOWN = "0";
+		process.env.MAESTRO_DOCUMENT_MAX_ZIP_DECOMPRESSED_BYTES = "100";
+		const zip = new JSZip();
+		zip.file(
+			"[Content_Types].xml",
+			`<?xml version="1.0" encoding="UTF-8"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/><Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/></Types>`,
+		);
+		zip.file(
+			"_rels/.rels",
+			`<?xml version="1.0" encoding="UTF-8"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/></Relationships>`,
+		);
+		zip.file(
+			"xl/workbook.xml",
+			`<?xml version="1.0" encoding="UTF-8"?><workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheets><sheet name="Sheet1" sheetId="1" r:id="rId1" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"/></sheets></workbook>`,
+		);
+		zip.file(
+			"xl/worksheets/sheet1.xml",
+			`<?xml version="1.0" encoding="UTF-8"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData><row r="1"><c r="A1" t="inlineStr"><is><t>${"a".repeat(101)}</t></is></c></row></sheetData></worksheet>`,
+		);
+		const buffer = patchZipCentralDirectoryUncompressedSize(
+			Buffer.from(await zip.generateAsync({ type: "uint8array" })),
+			"xl/worksheets/sheet1.xml",
+			1,
+		);
+		const load = vi.fn(async () => undefined);
+		vi.doMock("exceljs", () => ({
+			default: {
+				Workbook: class {
+					worksheets: unknown[] = [];
+					xlsx = { load };
+				},
+			},
+		}));
+		const { extractDocumentText: isolatedExtractDocumentText } = await import(
+			"../src/utils/document-extractor.js"
+		);
+
+		await expect(
+			isolatedExtractDocumentText({
+				buffer,
+				fileName: "bomb.xlsx",
+				mimeType:
+					"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+			}),
+		).rejects.toThrow(/decompressed size is too large/i);
+		expect(load).not.toHaveBeenCalled();
+	});
+
+	it("rejects OOXML archives with too many entries", async () => {
+		process.env.MAESTRO_MARKITDOWN = "0";
+		process.env.MAESTRO_DOCUMENT_MAX_ZIP_ENTRIES = "2";
+		const zip = new JSZip();
+		zip.file("ppt/slides/slide1.xml", "<a:t>one</a:t>");
+		zip.file("ppt/slides/slide2.xml", "<a:t>two</a:t>");
+		zip.file("ppt/slides/slide3.xml", "<a:t>three</a:t>");
+		const buffer = Buffer.from(await zip.generateAsync({ type: "uint8array" }));
+
+		await expect(
+			extractDocumentText({
+				buffer,
+				fileName: "deck.pptx",
+				mimeType:
+					"application/vnd.openxmlformats-officedocument.presentationml.presentation",
+			}),
+		).rejects.toThrow(/too many entries/i);
+	});
+
+	it("counts directory entries toward the OOXML zip entry limit", async () => {
+		process.env.MAESTRO_MARKITDOWN = "0";
+		process.env.MAESTRO_DOCUMENT_MAX_ZIP_ENTRIES = "2";
+		const zip = new JSZip();
+		zip.folder("ppt/");
+		zip.folder("ppt/slides/");
+		zip.file("ppt/slides/slide1.xml", "<a:t>one</a:t>");
+		const buffer = Buffer.from(await zip.generateAsync({ type: "uint8array" }));
+
+		await expect(
+			extractDocumentText({
+				buffer,
+				fileName: "deck.pptx",
+				mimeType:
+					"application/vnd.openxmlformats-officedocument.presentationml.presentation",
+			}),
+		).rejects.toThrow(/too many entries/i);
 	});
 
 	it("returns unknown for unsupported formats", async () => {

@@ -4,17 +4,36 @@ export interface ExecResult {
 	exitCode: number;
 }
 
+export interface ExecWithArgsOptions {
+	cwd?: string;
+	env?: Record<string, string>;
+	maxBuffer?: number;
+	signal?: AbortSignal;
+}
+
 export interface Sandbox {
 	/**
 	 * Execute a command in the sandbox.
 	 * @param command The command string to execute
 	 * @param cwd The working directory relative to the sandbox root (or absolute if allowed)
 	 * @param env Environment variables to set
+	 * @param signal AbortSignal used to cancel execution
 	 */
 	exec(
 		command: string,
 		cwd?: string,
 		env?: Record<string, string>,
+		signal?: AbortSignal,
+	): Promise<ExecResult>;
+
+	/**
+	 * Execute a command with argv in the sandbox, when supported.
+	 * This avoids shell interpretation of untrusted arguments.
+	 */
+	execWithArgs?(
+		command: string,
+		args?: string[],
+		options?: ExecWithArgsOptions,
 	): Promise<ExecResult>;
 
 	/**

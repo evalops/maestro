@@ -12,12 +12,14 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { createPackageCommandHandler } from "../../../src/cli-tui/commands/package-handlers.js";
 import type { CommandExecutionContext } from "../../../src/cli-tui/commands/types.js";
 import { clearResolvedPackageSourceCache } from "../../../src/packages/index.js";
+import { trustProjectInGlobalConfig } from "../../utils/project-trust.js";
 
 const tempDirs: string[] = [];
 const originalMaestroHome = process.env.MAESTRO_HOME;
 
 function createTempDir(prefix: string): string {
 	const tempDir = mkdtempSync(join(tmpdir(), prefix));
+	process.env.MAESTRO_HOME = join(tempDir, ".maestro-home");
 	tempDirs.push(tempDir);
 	return tempDir;
 }
@@ -55,6 +57,7 @@ describe("package command", () => {
 	it("adds a configured package to local config by default", async () => {
 		const root = createTempDir("maestro-package-command-");
 		mkdirSync(join(root, ".maestro"), { recursive: true });
+		trustProjectInGlobalConfig(root);
 
 		const addContent = vi.fn();
 		const handler = createPackageCommandHandler({
@@ -76,6 +79,30 @@ describe("package command", () => {
 		).toContain("../vendor/pack");
 	});
 
+	it("rejects local package adds when project package config is untrusted", async () => {
+		const root = createTempDir("maestro-package-command-");
+		mkdirSync(join(root, ".maestro"), { recursive: true });
+
+		const ctx = createContext("/package add ./vendor/pack");
+		const addContent = vi.fn();
+		const handler = createPackageCommandHandler({
+			cwd: root,
+			addContent,
+			requestRender: vi.fn(),
+		});
+
+		await handler(ctx);
+
+		expect(addContent).not.toHaveBeenCalledWith(
+			expect.stringContaining('Added configured package "./vendor/pack"'),
+		);
+		expect(ctx.showError).toHaveBeenCalledWith(
+			expect.stringContaining(
+				"Adding package to local config requires a trusted workspace",
+			),
+		);
+	});
+
 	it("removes a configured package and reports fallback scope", async () => {
 		const root = createTempDir("maestro-package-command-");
 		mkdirSync(join(root, ".maestro"), { recursive: true });
@@ -89,6 +116,7 @@ describe("package command", () => {
 			'packages = ["../vendor/pack"]\n',
 			"utf-8",
 		);
+		trustProjectInGlobalConfig(root);
 
 		const addContent = vi.fn();
 		const handler = createPackageCommandHandler({
@@ -133,6 +161,7 @@ describe("package command", () => {
 			'packages = [{ source = "../vendor/pack", skills = ["package-skill"] }]\n',
 			"utf-8",
 		);
+		trustProjectInGlobalConfig(root);
 
 		const addContent = vi.fn();
 		const handler = createPackageCommandHandler({
@@ -178,6 +207,7 @@ describe("package command", () => {
 			`packages = ["git:${packageDir}"]\n`,
 			"utf-8",
 		);
+		trustProjectInGlobalConfig(root);
 
 		const addContent = vi.fn();
 		const handler = createPackageCommandHandler({
@@ -473,6 +503,7 @@ describe("package command", () => {
 			`packages = ["./local-pack", "git:${gitPackageDir}"]\n`,
 			"utf-8",
 		);
+		trustProjectInGlobalConfig(root);
 
 		const addContent = vi.fn();
 		const handler = createPackageCommandHandler({
@@ -560,6 +591,7 @@ describe("package command", () => {
 			`packages = ["git:${referencedRepo}"]\n`,
 			"utf-8",
 		);
+		trustProjectInGlobalConfig(root);
 
 		const addContent = vi.fn();
 		const handler = createPackageCommandHandler({

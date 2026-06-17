@@ -44,8 +44,9 @@
  * @module config/framework
  */
 
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
+import { writeTextFileAtomic } from "../utils/fs.js";
 import { resolveEnvPath } from "../utils/path-expansion.js";
 import { PATHS } from "./constants.js";
 
@@ -138,7 +139,9 @@ export function setDefaultFramework(framework: string | null): void {
 	const targetPath = getDefaultPath();
 	ensureDir(targetPath);
 	const data: FrameworkPrefs = { defaultFramework: normalized };
-	writeFileSync(targetPath, JSON.stringify(data, null, 2), "utf8");
+	writeTextFileAtomic(targetPath, JSON.stringify(data, null, 2), {
+		encoding: "utf-8",
+	});
 }
 
 export function getFrameworkInfo(
@@ -216,7 +219,9 @@ export function setWorkspaceFramework(framework: string | null): void {
 	const targetPath = getWorkspacePath();
 	ensureDir(targetPath);
 	const data: FrameworkPrefs = { defaultFramework: normalized };
-	writeFileSync(targetPath, JSON.stringify(data, null, 2), "utf8");
+	writeTextFileAtomic(targetPath, JSON.stringify(data, null, 2), {
+		encoding: "utf-8",
+	});
 }
 
 export function resolveFrameworkPreference(): {

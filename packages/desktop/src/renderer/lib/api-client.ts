@@ -1682,24 +1682,34 @@ export class ApiClient {
 	}
 
 	// Composers
-	async getComposers(): Promise<ComposerStatus> {
-		return await this.fetchJson<ComposerStatus>("/api/composer");
+	async getComposers(sessionId?: string | null): Promise<ComposerStatus> {
+		const query = sessionId
+			? `?sessionId=${encodeURIComponent(sessionId)}`
+			: "";
+		return await this.fetchJson<ComposerStatus>(`/api/composer${query}`);
 	}
 
 	async activateComposer(
 		name: string,
+		sessionId?: string | null,
 	): Promise<{ success: boolean; active?: ComposerProfile }> {
 		return await this.fetchJsonRequest<{
 			success: boolean;
 			active?: ComposerProfile;
-		}>("/api/composer", "POST", { action: "activate", name });
+		}>("/api/composer", "POST", {
+			action: "activate",
+			name,
+			...(sessionId ? { sessionId } : {}),
+		});
 	}
 
-	async deactivateComposer(): Promise<{ success: boolean; message?: string }> {
+	async deactivateComposer(
+		sessionId?: string | null,
+	): Promise<{ success: boolean; message?: string }> {
 		return await this.fetchJsonRequest<{ success: boolean; message?: string }>(
 			"/api/composer",
 			"POST",
-			{ action: "deactivate" },
+			{ action: "deactivate", ...(sessionId ? { sessionId } : {}) },
 		);
 	}
 }

@@ -318,6 +318,7 @@ describe("GitHubWatcher", () => {
 				{
 					id: 1,
 					author: "reviewer",
+					authorAssociation: "COLLABORATOR",
 					state: "APPROVED",
 					body: "LGTM",
 					submittedAt: futureDate,
@@ -336,6 +337,7 @@ describe("GitHubWatcher", () => {
 				expect.objectContaining({ number: 100 }),
 				expect.objectContaining({
 					author: "reviewer",
+					authorAssociation: "COLLABORATOR",
 					state: "APPROVED",
 				}),
 			);
@@ -352,6 +354,7 @@ describe("GitHubWatcher", () => {
 				{
 					id: 1,
 					author: "reviewer",
+					authorAssociation: "MEMBER",
 					body: "Please fix this",
 					path: "src/index.ts",
 					line: 42,
@@ -371,6 +374,7 @@ describe("GitHubWatcher", () => {
 				expect.objectContaining({ number: 100 }),
 				expect.objectContaining({
 					author: "reviewer",
+					authorAssociation: "MEMBER",
 					body: "Please fix this",
 					path: "src/index.ts",
 					line: 42,
@@ -387,6 +391,7 @@ describe("GitHubWatcher", () => {
 				id: 99,
 				issueNumber: 42,
 				author: "alice",
+				authorAssociation: "OWNER",
 				body: "@composer please pick this up",
 				createdAt: new Date().toISOString(),
 				url: "https://github.com/test/repo/issues/42#issuecomment-1",
@@ -404,7 +409,10 @@ describe("GitHubWatcher", () => {
 
 			expect(events.onIssueComment).toHaveBeenCalledWith(
 				expect.objectContaining({ number: 42 }),
-				expect.objectContaining({ author: "alice" }),
+				expect.objectContaining({
+					author: "alice",
+					authorAssociation: "OWNER",
+				}),
 			);
 
 			watcher.stop();

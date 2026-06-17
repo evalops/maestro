@@ -4,15 +4,31 @@ import type { AgentState } from "../../src/agent/types.js";
 import type { CommandExecutionContext } from "../../src/cli-tui/commands/types.js";
 import { SessionStateController } from "../../src/cli-tui/tui-renderer/session-state-controller.js";
 
-function createController() {
+function createController(
+	systemPromptSourcePaths?: string[],
+	systemPrompt = "base prompt",
+) {
 	const editor = { addToHistory: vi.fn() };
-	const sessionManager = { startFreshSession: vi.fn() };
+	const sessionManager = {
+		startFreshSession: vi.fn(),
+		getHeader: vi.fn(),
+		loadThinkingLevel: vi.fn(),
+		loadModel: vi.fn(),
+	};
 	const notificationView = { showToast: vi.fn() };
 	const runSessionEndHooks = vi.fn().mockResolvedValue(undefined);
 	const runSessionStartHooks = vi.fn().mockResolvedValue(undefined);
+	const agent = {
+		state: { messages: [], systemPrompt, systemPromptSourcePaths },
+		clearMessages: vi.fn(),
+		setSystemPrompt: vi.fn(),
+		setSystemPromptSourcePaths: vi.fn(),
+		setThinkingLevel: vi.fn(),
+		setModel: vi.fn(),
+	};
 	const controller = new SessionStateController({
 		deps: {
-			agent: { state: { messages: [] }, clearMessages: vi.fn() } as never,
+			agent: agent as never,
 			sessionManager: sessionManager as never,
 			sessionContext: { resetArtifacts: vi.fn() } as never,
 			sessionRecoveryManager: {} as never,
@@ -38,6 +54,7 @@ function createController() {
 	});
 	return {
 		controller,
+		agent,
 		editor,
 		sessionManager,
 		notificationView,
@@ -76,6 +93,7 @@ describe("SessionStateController", () => {
 	it("runs session lifecycle hooks when starting a new chat", async () => {
 		const {
 			controller,
+			agent,
 			sessionManager,
 			notificationView,
 			runSessionEndHooks,
@@ -87,11 +105,73 @@ describe("SessionStateController", () => {
 
 		expect(runSessionEndHooks).toHaveBeenCalledWith("clear");
 		expect(sessionManager.startFreshSession).toHaveBeenCalledTimes(1);
+		expect(agent.setSystemPrompt).toHaveBeenCalledWith("base prompt");
+		expect(agent.setSystemPromptSourcePaths).toHaveBeenCalledWith(undefined);
 		expect(runSessionStartHooks).toHaveBeenCalledWith("new_chat");
 		expect(notificationView.showToast).toHaveBeenCalledWith(
 			"Started a new chat session.",
 			"success",
 		);
 		expect(context.showError).not.toHaveBeenCalled();
+	});
+
+	it("restores the baseline prompt source paths for a new chat", () => {
+		const { controller, agent, sessionManager } = createController([
+			"/workspace/APPEND_SYSTEM.md",
+		]);
+
+		controller.resetConversation([], undefined);
+
+		expect(sessionManager.startFreshSession).toHaveBeenCalledTimes(1);
+		expect(agent.setSystemPrompt).toHaveBeenCalledWith("base prompt");
+		expect(agent.setSystemPromptSourcePaths).toHaveBeenCalledWith([
+			"/workspace/APPEND_SYSTEM.md",
+		]);
+	});
+
+	it("restores the baseline prompt for a new chat after loading a session", () => {
+		const { controller, agent, sessionManager } = createController(
+			["/workspace/APPEND_SYSTEM.md"],
+			"base prompt",
+		);
+		sessionManager.getHeader.mockReturnValue({
+			systemPrompt: "loaded prompt",
+			systemPromptSourcePaths: ["/tmp/APPEND_SYSTEM.md"],
+		});
+
+		controller.applyLoadedSessionContext();
+		controller.resetConversation([], undefined);
+
+		expect(agent.setSystemPrompt).toHaveBeenCalledWith("loaded prompt");
+		expect(agent.setSystemPrompt).toHaveBeenLastCalledWith("base prompt");
+		expect(agent.setSystemPromptSourcePaths).toHaveBeenLastCalledWith([
+			"/workspace/APPEND_SYSTEM.md",
+		]);
+	});
+
+	it("restores persisted prompt source paths when loading a session", () => {
+		const { controller, agent, sessionManager } = createController();
+		sessionManager.getHeader.mockReturnValue({
+			systemPrompt: "loaded prompt",
+			systemPromptSourcePaths: ["/tmp/APPEND_SYSTEM.md"],
+		});
+
+		controller.applyLoadedSessionContext();
+
+		expect(agent.setSystemPrompt).toHaveBeenCalledWith("loaded prompt");
+		expect(agent.setSystemPromptSourcePaths).toHaveBeenCalledWith([
+			"/tmp/APPEND_SYSTEM.md",
+		]);
+	});
+
+	it("preserves current prompt source paths when the loaded session has none", () => {
+		const { controller, agent, sessionManager } = createController([
+			"/workspace/APPEND_SYSTEM.md",
+		]);
+		sessionManager.getHeader.mockReturnValue(null);
+
+		controller.applyLoadedSessionContext();
+
+		expect(agent.setSystemPromptSourcePaths).not.toHaveBeenCalled();
 	});
 });

@@ -54,6 +54,7 @@ describe("Maestro OTel metrics catalog", () => {
 			"agent.a2a.push_lag",
 			"agent.a2a.policy_denial_count",
 			"agent.a2a.peer_exclusion_count",
+			"shell.scrubber.failure_count",
 		]);
 		expect(createUpDownCounter).not.toHaveBeenCalled();
 		expect(createCounter).toHaveBeenCalledWith(
@@ -76,6 +77,11 @@ describe("Maestro OTel metrics catalog", () => {
 		});
 		expect(createCounter).toHaveBeenCalledWith("agent.a2a.delegation_count", {
 			description: "A2A delegation lifecycle observations by phase and outcome",
+			unit: undefined,
+		});
+		expect(createCounter).toHaveBeenCalledWith("shell.scrubber.failure_count", {
+			description:
+				"Secret scrubber failures that forced shell output redaction or abort",
 			unit: undefined,
 		});
 		expect(createHistogram).toHaveBeenCalledWith("agent.a2a.dispatch_latency", {
@@ -173,6 +179,10 @@ describe("Maestro OTel metrics catalog", () => {
 			source: "platform-agent-registry",
 			reason: "stale_heartbeat",
 			taskClass: "code.review",
+		});
+		metrics.recordShellScrubberFailureMetric({
+			surface: "background_tasks",
+			strict: true,
 		});
 
 		expect(
@@ -279,6 +289,15 @@ describe("Maestro OTel metrics catalog", () => {
 			expect.objectContaining({
 				"maestro.a2a.reason": "stale_heartbeat",
 				"maestro.a2a.task_class": "code.review",
+			}),
+		);
+		expect(
+			counters.get("shell.scrubber.failure_count")?.add,
+		).toHaveBeenCalledWith(
+			1,
+			expect.objectContaining({
+				"maestro.surface": "background_tasks",
+				"shell.scrubber.strict": true,
 			}),
 		);
 	});

@@ -2456,24 +2456,41 @@ export class ApiClient {
 	}
 
 	// Maestro
-	async listComposers(): Promise<Record<string, unknown>> {
-		return await this.fetchJsonWithFallback("/api/composer");
+	async listComposers(sessionId?: string): Promise<Record<string, unknown>> {
+		const query = sessionId
+			? `?sessionId=${encodeURIComponent(sessionId)}`
+			: "";
+		return await this.fetchJsonWithFallback(`/api/composer${query}`);
 	}
 
-	async getComposer(name: string): Promise<Record<string, unknown>> {
-		return await this.fetchJsonWithFallback(`/api/composer?name=${name}`);
+	async getComposer(
+		name: string,
+		sessionId?: string,
+	): Promise<Record<string, unknown>> {
+		const params = new URLSearchParams({ name });
+		if (sessionId) {
+			params.set("sessionId", sessionId);
+		}
+		return await this.fetchJsonWithFallback(`/api/composer?${params}`);
 	}
 
-	async activateComposer(name: string): Promise<Record<string, unknown>> {
+	async activateComposer(
+		name: string,
+		sessionId?: string,
+	): Promise<Record<string, unknown>> {
 		return await this.fetchJsonRequestWithFallback("/api/composer", "POST", {
 			action: "activate",
 			name,
+			...(sessionId ? { sessionId } : {}),
 		});
 	}
 
-	async deactivateComposer(): Promise<Record<string, unknown>> {
+	async deactivateComposer(
+		sessionId?: string,
+	): Promise<Record<string, unknown>> {
 		return await this.fetchJsonRequestWithFallback("/api/composer", "POST", {
 			action: "deactivate",
+			...(sessionId ? { sessionId } : {}),
 		});
 	}
 

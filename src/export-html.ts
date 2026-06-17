@@ -3,7 +3,6 @@ import {
 	createReadStream,
 	createWriteStream,
 	existsSync,
-	writeFileSync,
 } from "node:fs";
 import { createRequire } from "node:module";
 import { basename, join } from "node:path";
@@ -27,6 +26,7 @@ import type {
 	SessionManager,
 } from "./session/manager.js";
 import { type SessionEntry, parseSessionEntry } from "./session/types.js";
+import { writeTextFileAtomic } from "./utils/fs.js";
 import { getHomeDir } from "./utils/path-expansion.js";
 
 const normalizeForCompare = (value: string): string =>
@@ -888,7 +888,7 @@ export async function exportSessionToHtml(
 </body>
 </html>`;
 
-	writeFileSync(resolvedOutputPath, html, "utf8");
+	writeTextFileAtomic(resolvedOutputPath, html, { encoding: "utf-8" });
 	return resolvedOutputPath;
 }
 
@@ -930,7 +930,9 @@ export async function exportSessionToText(
 		}
 	}
 
-	writeFileSync(resolvedOutputPath, output.join("\n"), "utf-8");
+	writeTextFileAtomic(resolvedOutputPath, output.join("\n"), {
+		encoding: "utf-8",
+	});
 	return resolvedOutputPath;
 }
 

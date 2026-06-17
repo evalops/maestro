@@ -1,7 +1,8 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { dirname, resolve } from "node:path";
+import { existsSync, readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import type { ThinkingLevel } from "../../agent/types.js";
 import { getAgentDir } from "../../config/constants.js";
+import { writeJsonFile } from "../../utils/fs.js";
 import { isPlainObject, tryParseJson } from "../../utils/json.js";
 import { resolveEnvPath } from "../../utils/path-expansion.js";
 
@@ -313,10 +314,5 @@ export function loadAutomationState(): AutomationStateFile {
 
 export function saveAutomationState(state: AutomationStateFile): void {
 	const normalized = normalizeState(state);
-	mkdirSync(dirname(AUTOMATIONS_STATE_PATH), { recursive: true });
-	writeFileSync(
-		AUTOMATIONS_STATE_PATH,
-		JSON.stringify(normalized, null, 2),
-		"utf-8",
-	);
+	writeJsonFile(AUTOMATIONS_STATE_PATH, normalized);
 }

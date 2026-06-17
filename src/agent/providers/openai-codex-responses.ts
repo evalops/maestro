@@ -1,3 +1,4 @@
+import { isInternalModelBaseUrl } from "../../models/url-policy.js";
 import { fetchWithRetry } from "../../providers/network-config.js";
 import {
 	createTimeoutReader,
@@ -165,7 +166,10 @@ export async function* streamOpenAICodexResponses(
 				signal: options.signal,
 			},
 			model.provider,
-			{ modelId: model.id },
+			{
+				modelId: model.id,
+				allowInternalBaseUrl: isInternalModelBaseUrl(session.url),
+			},
 		);
 
 		if (!response.ok) {

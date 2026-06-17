@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -162,5 +162,23 @@ describe("resolveMaestroSystemPrompt", () => {
 			sha256("Custom override instructions"),
 		);
 		expect(result.systemPrompt).toContain("Custom override instructions");
+	});
+
+	it("returns the config-loaded append system prompt source path", async () => {
+		const projectDir = process.cwd();
+		const appendSystemPath = join(projectDir, ".maestro", "APPEND_SYSTEM.md");
+		mkdirSync(join(projectDir, ".maestro"), { recursive: true });
+		writeFileSync(appendSystemPath, "Append from trusted project.", "utf8");
+		writeFileSync(
+			join(process.env.MAESTRO_HOME ?? testDir, "config.toml"),
+			`[projects.${JSON.stringify(projectDir)}]\ntrust_level = "trusted"\n`,
+			"utf8",
+		);
+		clearConfigCache();
+
+		const result = await resolveMaestroSystemPrompt({ toolNames: [] });
+
+		expect(result.systemPrompt).toContain("Append from trusted project.");
+		expect(result.systemPromptSourcePaths).toEqual([appendSystemPath]);
 	});
 });
