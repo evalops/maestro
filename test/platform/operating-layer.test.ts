@@ -385,5 +385,49 @@ describe("operating layer primitives", () => {
 				},
 			]).blockers,
 		).toEqual(["duplicate_stage:publish_package"]);
+		expect(
+			buildReleaseCanaryPlan([
+				{
+					id: "local_release_gate",
+					name: "Local release gate",
+					requires: [],
+					evidenceKinds: ["test"],
+				},
+				{
+					id: "publish_package",
+					name: "Publish package",
+					requires: ["local_release_gate"],
+					evidenceKinds: ["npm.publish"],
+				},
+				{
+					id: "local_release_gate",
+					name: "Duplicate local release gate",
+					requires: [],
+					evidenceKinds: ["build"],
+				},
+			]).blockers,
+		).toEqual(["duplicate_stage:local_release_gate"]);
+		expect(
+			buildReleaseCanaryPlan([
+				{
+					id: "a",
+					name: "A",
+					requires: ["b"],
+					evidenceKinds: ["a"],
+				},
+				{
+					id: "b",
+					name: "B",
+					requires: ["a"],
+					evidenceKinds: ["b"],
+				},
+				{
+					id: "a",
+					name: "Duplicate A",
+					requires: [],
+					evidenceKinds: ["a"],
+				},
+			]).blockers,
+		).toEqual(expect.arrayContaining(["duplicate_stage:a", "cycle:a>b>a"]));
 	});
 });
