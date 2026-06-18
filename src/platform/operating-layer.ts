@@ -300,6 +300,14 @@ export function classifySyncOutcome(
 		};
 	}
 
+	if (nextAttempt >= item.maxAttempts) {
+		return {
+			action: "block",
+			reason: outcome.errorCode ?? "max_attempts_exhausted",
+			nextAttempt,
+		};
+	}
+
 	if (
 		item.kind !== "session_create" &&
 		(outcome.statusCode === 404 || outcome.statusCode === 410)
@@ -307,14 +315,6 @@ export function classifySyncOutcome(
 		return {
 			action: "self_heal_session",
 			reason: "remote_session_missing",
-			nextAttempt,
-		};
-	}
-
-	if (nextAttempt >= item.maxAttempts) {
-		return {
-			action: "block",
-			reason: outcome.errorCode ?? "max_attempts_exhausted",
 			nextAttempt,
 		};
 	}
@@ -483,15 +483,55 @@ export function buildReleaseCanaryPlan(
 	stages: ReleaseCanaryStage[] = DEFAULT_RELEASE_CANARY_STAGES,
 ): ReleaseCanaryPlan {
 	const stageIds = new Set(stages.map((stage) => stage.id));
-	const blockers = stages.flatMap((stage) =>
-		stage.requires
-			.filter((required) => !stageIds.has(required))
-			.map((required) => `missing_stage:${stage.id}:${required}`),
-	);
+	const blockers = [
+		...stages.flatMap((stage) =>
+			stage.requires
+				.filter((required) => !stageIds.has(required))
+				.map((required) => `missing_stage:${stage.id}:${required}`),
+		),
+		...detectReleaseCanaryCycles(stages),
+	];
 
 	return {
 		version: MAESTRO_OPERATING_LAYER_VERSION,
 		stages,
 		blockers,
 	};
+}
+
+function detectReleaseCanaryCycles(stages: ReleaseCanaryStage[]): string[] {
+	const stagesById = new Map(stages.map((stage) => [stage.id, stage]));
+	const visiting = new Set<string>();
+	const visited = new Set<string>();
+	const blockers: string[] = [];
+
+	function visit(stageId: string, path: string[]): void {
+		if (visiting.has(stageId)) {
+			const cycleStart = path.indexOf(stageId);
+			const cycle = path.slice(cycleStart).join(">");
+			blockers.push(`cycle:${cycle}`);
+			return;
+		}
+		if (visited.has(stageId)) {
+			return;
+		}
+
+		const stage = stagesById.get(stageId);
+		if (!stage) {
+			return;
+		}
+
+		visiting.add(stageId);
+		for (const required of stage.requires) {
+			visit(required, [...path, required]);
+		}
+		visiting.delete(stageId);
+		visited.add(stageId);
+	}
+
+	for (const stage of stages) {
+		visit(stage.id, [stage.id]);
+	}
+
+	return unique(blockers);
 }

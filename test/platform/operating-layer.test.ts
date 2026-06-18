@@ -151,6 +151,22 @@ describe("operating layer primitives", () => {
 				{ ok: false, statusCode: 503 },
 			).action,
 		).toBe("retry");
+		expect(
+			classifySyncOutcome(
+				{
+					id: "item-4",
+					kind: "message",
+					status: "failed",
+					attempt: 4,
+					maxAttempts: 5,
+				},
+				{ ok: false, statusCode: 404 },
+			),
+		).toEqual({
+			action: "block",
+			reason: "max_attempts_exhausted",
+			nextAttempt: 5,
+		});
 	});
 
 	it("normalizes approval decisions across surfaces", () => {
@@ -274,5 +290,21 @@ describe("operating layer primitives", () => {
 				},
 			]).blockers,
 		).toEqual(["missing_stage:broken:missing"]);
+		expect(
+			buildReleaseCanaryPlan([
+				{
+					id: "a",
+					name: "A",
+					requires: ["b"],
+					evidenceKinds: ["a"],
+				},
+				{
+					id: "b",
+					name: "B",
+					requires: ["a"],
+					evidenceKinds: ["b"],
+				},
+			]).blockers,
+		).toEqual(["cycle:a>b>a"]);
 	});
 });
