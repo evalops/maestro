@@ -188,18 +188,19 @@ jobs:
             exit 0
           fi
           dispatch_status=0
+          dispatch_started_at="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
           gh workflow run release --repo "${GITHUB_REPOSITORY}" --ref "${RELEASE_TAG}" --field "version=${RELEASE_VERSION}" || dispatch_status=$?
           for attempt in 1 2 3 4 5 6; do
             release_run_count="$(
               gh run list \
                 --repo "${GITHUB_REPOSITORY}" \
                 --workflow release \
-                --json headBranch,status \
+                --json createdAt,headBranch,status \
                 --limit 50 \
-                --jq "[.[] | select(.headBranch == \"${RELEASE_TAG}\")] | length"
+                --jq "[.[] | select(.headBranch == \"${RELEASE_TAG}\" and .createdAt >= \"${dispatch_started_at}\")] | length"
             )"
             if [[ "${release_run_count}" != "0" ]]; then
-              echo "Confirmed ${release_run_count} release workflow run(s) for ${RELEASE_TAG}."
+              echo "Confirmed ${release_run_count} new release workflow run(s) for ${RELEASE_TAG}."
               exit 0
             fi
             sleep 5
