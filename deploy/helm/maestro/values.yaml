@@ -14,6 +14,13 @@ headlessRuntime:
     # durable-owner when Platform routes by a durable runtime-owner record.
     mode: single-replica
 
+operatingLayer:
+  # Enables production operating-layer evidence capture. Requires a configured
+  # MAESTRO_DATABASE_URL/DATABASE_URL secret so evidence persists in Postgres.
+  enabled: false
+  evidenceStore: database
+  evidenceRetentionDays: 90
+
 image:
   repository: ghcr.io/evalops/maestro
   # Defaults to Chart.appVersion when empty. Prefer immutable sha-* tags or digest.

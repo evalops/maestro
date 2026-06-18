@@ -45,6 +45,7 @@ describe("maestro Helm chart", () => {
 		expect(result.stdout).toMatch(/mountPath:\s+\/tmp/);
 		expect(result.stdout).toContain("name: HOME");
 		expect(result.stdout).toContain("name: XDG_CACHE_HOME");
+		expect(result.stdout).not.toContain("MAESTRO_OPERATING_LAYER_ENABLED");
 		expect(result.stdout).toContain("startupProbe:");
 		expect(result.stdout).toContain("preStop:");
 		expect(result.stdout).toContain("/.well-known/evalops/remote-runner/drain");
@@ -79,6 +80,30 @@ describe("maestro Helm chart", () => {
 			expect(result.stdout).toContain(
 				'image: "ghcr.io/evalops/maestro@sha256:0123456789abcdef"',
 			);
+		},
+	);
+
+	helmIt(
+		"renders production operating layer evidence settings when enabled",
+		() => {
+			const result = renderChart([
+				"--set",
+				"operatingLayer.enabled=true",
+				"--set",
+				"operatingLayer.evidenceRetentionDays=120",
+			]);
+
+			expect(result.status).toBe(0);
+			expect(result.stdout).toContain("name: MAESTRO_OPERATING_LAYER_ENABLED");
+			expect(result.stdout).toContain('value: "1"');
+			expect(result.stdout).toContain(
+				"name: MAESTRO_OPERATING_LAYER_EVIDENCE_STORE",
+			);
+			expect(result.stdout).toContain('value: "database"');
+			expect(result.stdout).toContain(
+				"name: MAESTRO_OPERATING_LAYER_EVIDENCE_RETENTION_DAYS",
+			);
+			expect(result.stdout).toContain('value: "120"');
 		},
 	);
 

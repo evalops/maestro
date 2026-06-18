@@ -37,6 +37,9 @@ describe("database migration packaging", () => {
 		expect(journal.entries.map((entry) => entry.tag)).toContain(
 			"0008_reconcile_legacy_webhook_deliveries",
 		);
+		expect(journal.entries.map((entry) => entry.tag)).toContain(
+			"0009_operating_layer_evidence",
+		);
 
 		for (const entry of journal.entries) {
 			expect(
@@ -151,5 +154,26 @@ describe("database migration packaging", () => {
 			"IF to_regclass('public.webhook_deliveries') IS NOT NULL THEN",
 		);
 		expect(migration).toContain("webhook_delivery_retry_idx");
+	});
+
+	it("adds the operating layer evidence migration for production readiness", () => {
+		const migration = readFileSync(
+			path.join(migrationsDir, "0009_operating_layer_evidence.sql"),
+			"utf8",
+		);
+
+		expect(migration).toContain(
+			'CREATE TABLE IF NOT EXISTS "operating_layer_evidence"',
+		);
+		expect(migration).toContain('"capability_id" varchar(64) NOT NULL');
+		expect(migration).toContain('"evidence_kind" varchar(128) NOT NULL');
+		expect(migration).toContain('"evidence" jsonb NOT NULL');
+		expect(migration).toContain(
+			"operating_layer_evidence_org_id_organizations_id_fk",
+		);
+		expect(migration).toContain(
+			"operating_layer_evidence_capability_recorded_idx",
+		);
+		expect(migration).toContain("operating_layer_evidence_expiry_idx");
 	});
 });

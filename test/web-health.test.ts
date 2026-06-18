@@ -15,6 +15,7 @@ vi.mock("../src/db/health.js", () => ({
 		"distributed_locks",
 		"usage_metrics",
 		"execution_traces",
+		"operating_layer_evidence",
 		"workspace_config",
 		"revenue_attribution",
 	],
@@ -67,6 +68,7 @@ describe("Health Checks", () => {
 				{ name: "distributed_locks", exists: true },
 				{ name: "usage_metrics", exists: true },
 				{ name: "execution_traces", exists: true },
+				{ name: "operating_layer_evidence", exists: true },
 				{ name: "workspace_config", exists: true },
 				{ name: "revenue_attribution", exists: true },
 			]);
@@ -102,6 +104,7 @@ describe("Health Checks", () => {
 				{ name: "distributed_locks", exists: false },
 				{ name: "usage_metrics", exists: true },
 				{ name: "execution_traces", exists: true },
+				{ name: "operating_layer_evidence", exists: true },
 				{ name: "workspace_config", exists: true },
 				{ name: "revenue_attribution", exists: true },
 			]);
@@ -132,6 +135,7 @@ describe("Health Checks", () => {
 				{ name: "distributed_locks", exists: true },
 				{ name: "usage_metrics", exists: true },
 				{ name: "execution_traces", exists: true },
+				{ name: "operating_layer_evidence", exists: true },
 				{ name: "workspace_config", exists: true },
 				{ name: "revenue_attribution", exists: true },
 			]);
