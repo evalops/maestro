@@ -21,6 +21,14 @@ versioning when releases are cut.
   and keep scheduled public runs inert so public publishing stays downstream of
   the internal source-of-truth release.
 
+## [0.10.50] - 2026-06-18
+
+### Changed
+
+- Add operating layer backend persistence (#786). <!-- maestro-release-note:7e0e5141dded -->
+- Add operating layer platform primitives. <!-- maestro-release-note:b5735cb3ce5d -->
+- Fix public release workflow dispatch. <!-- maestro-release-note:1057f526e486 -->
+
 ## [0.10.49] - 2026-06-18
 
 ### Changed
