@@ -177,13 +177,22 @@ jobs:
           set -euo pipefail
 
           # shellcheck disable=SC2317 # Invoked indirectly through retry.
-          release_run_count() {
+          active_release_run_count() {
             gh run list \
               --repo "${GITHUB_REPOSITORY}" \
               --workflow release \
               --json headBranch,status \
               --limit 50 \
               --jq "[.[] | select(.headBranch == \"${RELEASE_TAG}\" and .status != \"completed\")] | length"
+          }
+
+          release_run_count() {
+            gh run list \
+              --repo "${GITHUB_REPOSITORY}" \
+              --workflow release \
+              --json headBranch \
+              --limit 50 \
+              --jq "[.[] | select(.headBranch == \"${RELEASE_TAG}\")] | length"
           }
 
           retry() {
@@ -203,22 +212,23 @@ jobs:
             done
           }
 
-          active_count="$(retry "List active release workflows" release_run_count)"
+          active_count="$(retry "List active release workflows" active_release_run_count)"
           if [[ "${active_count}" != "0" ]]; then
             echo "Found ${active_count} active release workflow run(s) for ${RELEASE_TAG}; not dispatching another."
             exit 0
           fi
+          existing_count="$(retry "List release workflows" release_run_count)"
           retry "Dispatch release workflow" gh workflow run release --repo "${GITHUB_REPOSITORY}" --ref "${RELEASE_TAG}" --field "version=${RELEASE_VERSION}"
 
           for attempt in 1 2 3 4 5 6; do
-            active_count="$(retry "Confirm active release workflow" release_run_count)"
-            if [[ "${active_count}" != "0" ]]; then
-              echo "Confirmed ${active_count} active release workflow run(s) for ${RELEASE_TAG}."
+            release_count="$(retry "Confirm dispatched release workflow" release_run_count)"
+            if (( release_count > existing_count )); then
+              echo "Confirmed release workflow dispatch for ${RELEASE_TAG}; found ${release_count} matching run(s)."
               exit 0
             fi
             echo "Release workflow for ${RELEASE_TAG} has not appeared yet; confirmation attempt ${attempt}/6."
             sleep 10
           done
 
-          echo "::error::Release workflow dispatch did not produce an active run for ${RELEASE_TAG}."
+          echo "::error::Release workflow dispatch did not produce a new run for ${RELEASE_TAG}."
           exit 1
