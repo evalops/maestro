@@ -113,6 +113,11 @@ describe("telemetry meter integration", () => {
 	});
 
 	it("refreshes meter-backed enablement when OAuth credentials appear later", async () => {
+		const maestroHome = await mkdtemp(
+			join(tmpdir(), "maestro-meter-late-oauth-"),
+		);
+		vi.stubEnv("MAESTRO_HOME", maestroHome);
+		vi.stubEnv("MAESTRO_DISABLE_KEYCHAIN", "1");
 		vi.stubEnv("MAESTRO_METER_BASE", "http://meter.test");
 		vi.stubEnv("MAESTRO_METER_ACCESS_TOKEN", "");
 		vi.stubEnv("MAESTRO_EVALOPS_ORG_ID", "");
