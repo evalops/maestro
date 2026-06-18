@@ -3,6 +3,7 @@ import {
 	EVALOPS_ORGANIZATION_ID_ENV_VARS,
 } from "../evalops/env-aliases.js";
 import { loadOAuthCredentials } from "../oauth/storage.js";
+import type { RuntimeEnv } from "../runtime/env.js";
 import {
 	type DownstreamFailureMode,
 	fetchDownstream,
@@ -97,15 +98,54 @@ export function normalizeBaseUrl(
 	return normalized;
 }
 
+/**
+ * Read the EvalOps org id from a `RuntimeEnv` snapshot. This is the
+ * substrate-typed path — the alias list (MAESTRO_EVALOPS_ORG_ID,
+ * EVALOPS_ORGANIZATION_ID, EVALOPS_ORG_ID, MAESTRO_ENTERPRISE_ORG_ID) has
+ * already been walked at snapshot construction time, so callers cannot
+ * be tripped up by CI runner env leaking a missed alias.
+ */
+export function resolveOrganizationIdFromEnv(
+	env: RuntimeEnv,
+): string | undefined {
+	return env.evalopsOrgId ?? undefined;
+}
+
+/**
+ * Read the EvalOps org id from the OAuth credentials stored on disk via
+ * `loadOAuthCredentials("evalops")`. Substrate callers that want the
+ * full env-then-OAuth resolution compose this with
+ * `resolveOrganizationIdFromEnv`:
+ *
+ *   const orgId =
+ *     resolveOrganizationIdFromEnv(env) ??
+ *     resolveOrganizationIdFromOAuthCredentials();
+ *
+ * Splitting the env-side from the disk-side is preparation for the
+ * Settings substrate (Week 2) which will absorb the OAuth-disk source
+ * into the same hierarchical resolver.
+ */
+export function resolveOrganizationIdFromOAuthCredentials():
+	| string
+	| undefined {
+	const stored = loadOAuthCredentials("evalops")?.metadata?.organizationId;
+	return typeof stored === "string" ? trimString(stored) : undefined;
+}
+
 export function resolveOrganizationId(
 	envVars: readonly string[] = DEFAULT_ORGANIZATION_ENV_VARS,
 ): string | undefined {
+	// Legacy entry point — preserves the alias-list-walking behavior for
+	// scoped callers like meter (`MAESTRO_METER_ORGANIZATION_ID` first) and
+	// memory (`MAESTRO_MEMORY_ORGANIZATION_ID` first). For the unscoped
+	// default-list case, the new substrate-typed primitive
+	// `resolveOrganizationIdFromEnv(env)` should be preferred — it
+	// resolves the same aliases without re-reading `process.env`.
 	const envOrgId = getEnvValue(envVars);
 	if (envOrgId) {
 		return envOrgId;
 	}
-	const stored = loadOAuthCredentials("evalops")?.metadata?.organizationId;
-	return typeof stored === "string" ? trimString(stored) : undefined;
+	return resolveOrganizationIdFromOAuthCredentials();
 }
 
 export function resolveTeamId(

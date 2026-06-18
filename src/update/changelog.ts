@@ -151,6 +151,9 @@ export function readLastShownChangelogVersion(): string | null {
 		fallback: {},
 		rotateOnParseFail: true,
 	});
+	if (!parsed || typeof parsed !== "object") {
+		return null;
+	}
 	if (typeof parsed.version === "string" && parsed.version.trim()) {
 		return parsed.version.trim();
 	}

@@ -129,6 +129,8 @@ import { getPackageVersion } from "./package-metadata.js";
 import { setConfiguredPackageRuntimeContext } from "./packages/runtime.js";
 import { resolveMaestroSystemPrompt } from "./prompts/system-prompt.js";
 import type { AuthMode } from "./providers/auth.js";
+import { parseOptionalBoolean } from "./runtime/env.js";
+import { defaultSettings } from "./runtime/settings.js";
 import { configureSafeMode } from "./safety/safe-mode.js";
 import type { SessionManager } from "./session/manager.js";
 import { beaconTimeoutMs } from "./telemetry/beacon.js";
@@ -158,12 +160,24 @@ function isTruthyEnvFlag(value: string | undefined): boolean {
 function shouldStartOpenTelemetry(env: NodeJS.ProcessEnv): boolean {
 	if (
 		isTruthyEnvFlag(env.MAESTRO_INTERNAL_TELEMETRY_DISABLED) ||
-		isTruthyEnvFlag(env.EVALOPS_INTERNAL_TELEMETRY_DISABLED) ||
-		env.MAESTRO_OTEL === "0"
+		isTruthyEnvFlag(env.EVALOPS_INTERNAL_TELEMETRY_DISABLED)
 	) {
 		return false;
 	}
-	if (env.MAESTRO_OTEL === "1") {
+	// Honor the same tri-state parse the substrate uses for
+	// `MAESTRO_OTEL` (true/false/1/0, case-insensitive). Previously this
+	// path only matched the literal "1" / "0", so `MAESTRO_OTEL=true`
+	// silently fell through and OTel never started even though
+	// `getOpenTelemetryStatus` reported it as opt-in.
+	// Match `createRuntimeEnv`'s trim-then-parse so `MAESTRO_OTEL=" true"`
+	// (leading whitespace) doesn't read as a different tri-state than the
+	// substrate would resolve. Bugbot caught this divergence on PR #2784.
+	const rawOtelFlag = env.MAESTRO_OTEL?.trim();
+	const otelEnabled = parseOptionalBoolean(rawOtelFlag ? rawOtelFlag : null);
+	if (otelEnabled === false) {
+		return false;
+	}
+	if (otelEnabled === true) {
 		return true;
 	}
 	const hasOtlpEndpoint = Boolean(env.OTEL_EXPORTER_OTLP_ENDPOINT);
@@ -351,7 +365,8 @@ async function waitForStartupTelemetryForImmediateExit(
 			new Promise<void>((resolve) => {
 				timeout = setTimeout(
 					resolve,
-					beaconTimeoutMs(process.env) + STARTUP_TELEMETRY_EXIT_WAIT_GRACE_MS,
+					beaconTimeoutMs(defaultSettings().telemetry) +
+						STARTUP_TELEMETRY_EXIT_WAIT_GRACE_MS,
 				);
 			}),
 		]);

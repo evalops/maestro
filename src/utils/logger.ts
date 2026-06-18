@@ -6,6 +6,7 @@
 import { appendFileSync, mkdirSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { PATHS } from "../config/constants.js";
+import { type RuntimeEnv, defaultRuntimeEnv } from "../runtime/env.js";
 
 export type LogLevel = "debug" | "info" | "warn" | "error";
 
@@ -63,33 +64,30 @@ const LOG_SEVERITIES: Record<LogLevel, string> = {
 	error: "ERROR",
 };
 
-class Logger {
+export class Logger {
 	private explicitConfig: Partial<LoggerConfig>;
+	private readonly envSource: () => RuntimeEnv;
 
-	constructor(config?: Partial<LoggerConfig>) {
-		// Store only explicit overrides; the env-driven defaults are
-		// re-read on every access through `this.config`. This keeps the
-		// module-level `export const logger = new Logger()` reactive to
-		// env mutations that happen AFTER import — without it, any
-		// transitive setup-time import (see `restore-oauth-storage.ts`
-		// pulling in `oauth/storage.ts` → `utils/logger.ts`) freezes the
-		// global Logger's `minLevel` / `splitStreams` / `jsonFormat` to
-		// whatever the env was at setup time and silently drops later
-		// per-test stubs.
+	constructor(
+		config?: Partial<LoggerConfig>,
+		envSource: () => RuntimeEnv = defaultRuntimeEnv,
+	) {
+		// `envSource` is a thunk, not a captured value, so it always reflects
+		// the *current* `RuntimeEnv` instead of one frozen at construction
+		// time. The substrate work in `src/runtime/env.ts` makes that thunk
+		// idempotent after the first call, but tests can swap it for a
+		// per-test snapshot (`new Logger(undefined, () => testEnv)`) and skip
+		// the module-cache reset workarounds entirely.
 		this.explicitConfig = { ...config };
+		this.envSource = envSource;
 	}
 
 	private get config(): LoggerConfig {
+		const env = this.envSource();
 		return {
-			minLevel:
-				this.explicitConfig.minLevel ??
-				(process.env.MAESTRO_LOG_LEVEL as LogLevel) ??
-				"info",
-			jsonFormat:
-				this.explicitConfig.jsonFormat ?? process.env.MAESTRO_LOG_JSON === "1",
-			splitStreams:
-				this.explicitConfig.splitStreams ??
-				process.env.MAESTRO_LOG_SPLIT_STREAMS === "1",
+			minLevel: this.explicitConfig.minLevel ?? env.logLevel,
+			jsonFormat: this.explicitConfig.jsonFormat ?? env.logJsonFormat,
+			splitStreams: this.explicitConfig.splitStreams ?? env.logSplitStreams,
 			timestamps: this.explicitConfig.timestamps ?? true,
 			output: this.explicitConfig.output,
 		};

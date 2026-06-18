@@ -13,6 +13,7 @@ import {
 	SEMRESATTRS_SERVICE_VERSION,
 } from "@opentelemetry/semantic-conventions";
 import { readPackageVersion } from "./package-version.js";
+import { defaultRuntimeEnv } from "./runtime/env.js";
 import { isInternalTelemetryDisabled } from "./telemetry/disablement.js";
 
 let sdkStartPromise: Promise<void> | null = null;
@@ -38,14 +39,16 @@ export const isOpenTelemetryEnabled = (): boolean => {
 		return false;
 	}
 
-	if (process.env.MAESTRO_OTEL === "0") {
+	const env = defaultRuntimeEnv();
+	if (env.otelEnabled === false) {
 		return false;
 	}
-
-	if (process.env.MAESTRO_OTEL === "1") {
+	if (env.otelEnabled === true) {
 		return true;
 	}
 
+	// Standardized OTel SDK env vars — owned by the SDK, not Maestro,
+	// so we read them live rather than through the substrate.
 	const hasOtlpEndpoint = Boolean(process.env.OTEL_EXPORTER_OTLP_ENDPOINT);
 	const traceExporter = process.env.OTEL_TRACES_EXPORTER;
 	const metricsExporter = process.env.OTEL_METRICS_EXPORTER;
@@ -74,6 +77,7 @@ export interface OpenTelemetryStatus {
 }
 
 export function getOpenTelemetryStatus(): OpenTelemetryStatus {
+	const env = defaultRuntimeEnv();
 	const internalTelemetryDisabled = isInternalTelemetryDisabled();
 	const enabled = isOpenTelemetryEnabled();
 	const otlpEndpoint = process.env.OTEL_EXPORTER_OTLP_ENDPOINT;
@@ -86,26 +90,23 @@ export function getOpenTelemetryStatus(): OpenTelemetryStatus {
 	const sampler =
 		configuredSampler ||
 		process.env.OTEL_TRACES_SAMPLER ||
-		process.env.MAESTRO_OTEL_SAMPLER ||
+		env.otelSampler ||
 		"parentbased_traceidratio";
 
 	const reason = enabled
-		? process.env.MAESTRO_OTEL === "1"
-			? "MAESTRO_OTEL=1"
+		? env.otelEnabled === true
+			? `MAESTRO_OTEL=${env.otelFlag}`
 			: "OTEL exporter detected"
 		: internalTelemetryDisabled
 			? "internal telemetry disabled"
-			: process.env.MAESTRO_OTEL === "0"
-				? "MAESTRO_OTEL=0"
+			: env.otelEnabled === false
+				? `MAESTRO_OTEL=${env.otelFlag}`
 				: "no OTEL exporter configured";
 
 	return {
 		enabled,
 		reason,
-		serviceName:
-			configuredServiceName ||
-			process.env.MAESTRO_OTEL_SERVICE_NAME ||
-			"composer",
+		serviceName: configuredServiceName || env.otelServiceName || "composer",
 		sdkStarted,
 		otlpEndpoint,
 		tracesExporter,
@@ -129,13 +130,17 @@ export async function initOpenTelemetry(
 
 	diag.setLogger(new DiagConsoleLogger(), DiagLogLevel.ERROR);
 
-	const resolvedServiceName =
-		process.env.MAESTRO_OTEL_SERVICE_NAME || serviceName;
+	const env = defaultRuntimeEnv();
+	const resolvedServiceName = env.otelServiceName || serviceName;
 	configuredServiceName = resolvedServiceName;
 
-	if (process.env.MAESTRO_OTEL_SAMPLER && !process.env.OTEL_TRACES_SAMPLER) {
-		process.env.OTEL_TRACES_SAMPLER = process.env.MAESTRO_OTEL_SAMPLER;
-		configuredSampler = process.env.MAESTRO_OTEL_SAMPLER;
+	// Bridge: the OTel SDK reads `OTEL_TRACES_SAMPLER` from live env at
+	// startup. If only the Maestro-namespaced alias is set, copy it
+	// across so the SDK actually picks it up. The substrate snapshot
+	// stays frozen — this mutation is at the SDK-boundary only.
+	if (env.otelSampler && !process.env.OTEL_TRACES_SAMPLER) {
+		process.env.OTEL_TRACES_SAMPLER = env.otelSampler;
+		configuredSampler = env.otelSampler;
 	} else if (process.env.OTEL_TRACES_SAMPLER) {
 		configuredSampler = process.env.OTEL_TRACES_SAMPLER;
 	}

@@ -696,6 +696,51 @@ describe("network policy validator", () => {
 		expect(heredocResult.allowed).toBe(false);
 	});
 
+	it("catches quoted tokens that start with # (hash-prefix smuggle)", async () => {
+		// The shell tokenizer strips quotes before the substring URL scan
+		// runs, so a quoted argument like `"#prefix https://evil.com"`
+		// becomes a single token starting with `#`. An earlier revision of
+		// `tokensBeforeShellComment` treated any `#`-prefixed token as a
+		// shell-comment marker and dropped it from URL scanning, letting an
+		// attacker smuggle URLs past `blockedHosts` simply by prepending a
+		// `#` inside a quoted string.
+
+		const hashPrefixWithText = await checkNetworkPolicy(
+			{
+				toolName: "bash",
+				args: { command: 'echo "#prefix https://evil.com"' },
+			} as ActionApprovalContext,
+			{ blockedHosts: ["evil.com"] },
+		);
+		expect(hashPrefixWithText.allowed).toBe(false);
+		expect(hashPrefixWithText.reason).toContain("blocked by enterprise policy");
+
+		const hashImmediatelyBeforeUrl = await checkNetworkPolicy(
+			{
+				toolName: "bash",
+				args: { command: 'echo "#https://evil.com"' },
+			} as ActionApprovalContext,
+			{ blockedHosts: ["evil.com"] },
+		);
+		expect(hashImmediatelyBeforeUrl.allowed).toBe(false);
+		expect(hashImmediatelyBeforeUrl.reason).toContain(
+			"blocked by enterprise policy",
+		);
+
+		// Real shell comments — `#` followed by space, post-tokenization
+		// the `#` is its own standalone token — should still be respected.
+		// Tokens AFTER the `#` are dropped, so the URL in this comment is
+		// not surfaced.
+		const realCommentResult = await checkNetworkPolicy(
+			{
+				toolName: "bash",
+				args: { command: "ls -la # see https://benign.com for docs" },
+			} as ActionApprovalContext,
+			{ blockedHosts: ["benign.com"] },
+		);
+		expect(realCommentResult.allowed).toBe(true);
+	});
+
 	it("allows SSH user@host targets when the host is allowlisted", async () => {
 		const result = await checkNetworkPolicy(
 			{

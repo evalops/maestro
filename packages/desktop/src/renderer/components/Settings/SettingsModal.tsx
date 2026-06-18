@@ -277,6 +277,7 @@ export function SettingsModal({
 					// either renders empty or surfaces the load error,
 					// rather than misrepresenting the new session.
 					setComposerStatus(null);
+					setSelectedComposer("");
 				}
 
 				if (!models?.length) {
@@ -930,6 +931,7 @@ export function SettingsModal({
 			// Mirror the initial-load semantics: a failed refresh must not
 			// leave a previous session's composer state on screen.
 			setComposerStatus(null);
+			setSelectedComposer("");
 			setError(
 				err instanceof Error ? err.message : "Failed to load composer profiles",
 			);

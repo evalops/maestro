@@ -1,4 +1,6 @@
 import { afterEach } from "vitest";
+import { resetDefaultRuntimeEnvForTests } from "../../src/runtime/env.js";
+import { resetDefaultSettingsForTests } from "../../src/runtime/settings.js";
 
 type EnvSnapshot = Record<string, string | undefined>;
 
@@ -44,4 +46,6 @@ function restoreEnv() {
 
 afterEach(() => {
 	restoreEnv();
+	resetDefaultRuntimeEnvForTests();
+	resetDefaultSettingsForTests();
 });

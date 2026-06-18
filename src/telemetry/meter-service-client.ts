@@ -7,7 +7,7 @@ import {
 	getEnvValue,
 	postPlatformConnect,
 	resolveConfiguredToken,
-	resolveOrganizationId,
+	resolveOrganizationIdFromOAuthCredentials,
 	resolvePlatformServiceConfig,
 } from "../platform/client.js";
 import {
@@ -16,6 +16,7 @@ import {
 	platformConnectMethodPath,
 	platformConnectServicePath,
 } from "../platform/core-services.js";
+import { type RuntimeEnv, defaultRuntimeEnv } from "../runtime/env.js";
 import { createLogger } from "../utils/logger.js";
 import { sanitizeWithStaticMask } from "../utils/secret-redactor.js";
 import type { CanonicalTurnEvent } from "./wide-events.js";
@@ -146,22 +147,36 @@ function buildMetadata(event: CanonicalTurnEvent): Record<string, string> {
 	});
 }
 
-export function hasRemoteMeterDestination(): boolean {
-	const baseUrl = getEnvValue([
-		"MAESTRO_METER_BASE",
-		"MAESTRO_METER_SERVICE_URL",
-		"MAESTRO_PLATFORM_BASE_URL",
-		"MAESTRO_EVALOPS_BASE_URL",
-		"EVALOPS_BASE_URL",
-	]);
-	const organizationId = resolveOrganizationId([
-		"MAESTRO_METER_ORGANIZATION_ID",
-		...EVALOPS_ORGANIZATION_ID_ENV_VARS,
-	]);
-	const token = resolveConfiguredToken([
-		"MAESTRO_METER_ACCESS_TOKEN",
-		...EVALOPS_ACCESS_TOKEN_ENV_VARS,
-	]);
+export function hasRemoteMeterDestination(
+	env: RuntimeEnv = defaultRuntimeEnv(),
+): boolean {
+	// Env side: typed at the substrate boundary. The #2763 flake series was
+	// `EVALOPS_ORG_ID` leaking from the CI runner into the meter test's
+	// "no remote configured" assertion — env.meterOrganizationId resolves
+	// the full alias list once, at RuntimeEnv construction time.
+	const baseUrl = env.meterBaseUrl;
+	const envOrgId = env.meterOrganizationId;
+	const envToken = env.meterAccessToken;
+	if (baseUrl && envOrgId && envToken) {
+		return true;
+	}
+	// OAuth-disk fallback. PR #2778 split the previously-monolithic
+	// resolveOrganizationId into a substrate-typed env side
+	// (env.meterOrganizationId, already exhausted above) and a pure
+	// `loadOAuthCredentials("evalops")` disk read. The two paths compose
+	// here cleanly — no second walk of process.env for the alias list.
+	// Token still falls through `resolveConfiguredToken`, which has the
+	// same two-source shape; its env-side factoring is the natural
+	// follow-up after the Settings substrate (Week 2) absorbs the
+	// OAuth-disk path entirely.
+	const organizationId =
+		envOrgId ?? resolveOrganizationIdFromOAuthCredentials();
+	const token =
+		envToken ??
+		resolveConfiguredToken([
+			"MAESTRO_METER_ACCESS_TOKEN",
+			...EVALOPS_ACCESS_TOKEN_ENV_VARS,
+		]);
 	return Boolean(baseUrl && organizationId && token);
 }
 
