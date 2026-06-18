@@ -57,6 +57,14 @@ spec:
             - name: {{ $key }}
               value: {{ $value | quote }}
             {{- end }}
+            {{- if .Values.operatingLayer.enabled }}
+            - name: MAESTRO_OPERATING_LAYER_ENABLED
+              value: "1"
+            - name: MAESTRO_OPERATING_LAYER_EVIDENCE_STORE
+              value: {{ .Values.operatingLayer.evidenceStore | quote }}
+            - name: MAESTRO_OPERATING_LAYER_EVIDENCE_RETENTION_DAYS
+              value: {{ .Values.operatingLayer.evidenceRetentionDays | quote }}
+            {{- end }}
           {{- if .Values.writableTmp.enabled }}
           volumeMounts:
             - name: tmp

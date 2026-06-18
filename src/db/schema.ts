@@ -416,6 +416,47 @@ export const hostedSessionEntries = pgTable(
 );
 
 // ============================================================================
+// OPERATING LAYER EVIDENCE
+// ============================================================================
+
+export const operatingLayerEvidence = pgTable(
+	"operating_layer_evidence",
+	{
+		id: uuid("id").primaryKey().defaultRandom(),
+		orgId: uuid("org_id").references(() => organizations.id, {
+			onDelete: "cascade",
+		}),
+		sessionId: varchar("session_id", { length: 255 }),
+		capabilityId: varchar("capability_id", { length: 64 }).notNull(),
+		evidenceKind: varchar("evidence_kind", { length: 128 }).notNull(),
+		subject: varchar("subject", { length: 255 }).notNull(),
+		status: varchar("status", { length: 32 }).default("recorded").notNull(),
+		score: integer("score"),
+		blockers: jsonb("blockers").$type<string[]>().default([]).notNull(),
+		warnings: jsonb("warnings").$type<string[]>().default([]).notNull(),
+		evidence: jsonb("evidence").$type<unknown>().notNull(),
+		metadata: jsonb("metadata").$type<Record<string, unknown>>().default({}),
+		recordedAt: timestamp("recorded_at", { withTimezone: true })
+			.defaultNow()
+			.notNull(),
+		expiresAt: timestamp("expires_at", { withTimezone: true }),
+	},
+	(table) => ({
+		capabilityRecordedIdx: index(
+			"operating_layer_evidence_capability_recorded_idx",
+		).on(table.capabilityId, table.recordedAt),
+		orgRecordedIdx: index("operating_layer_evidence_org_recorded_idx").on(
+			table.orgId,
+			table.recordedAt,
+		),
+		sessionRecordedIdx: index(
+			"operating_layer_evidence_session_recorded_idx",
+		).on(table.sessionId, table.recordedAt),
+		expiryIdx: index("operating_layer_evidence_expiry_idx").on(table.expiresAt),
+	}),
+);
+
+// ============================================================================
 // AUDIT LOGS
 // ============================================================================
 
