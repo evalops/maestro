@@ -177,6 +177,7 @@ jobs:
           set -euo pipefail
           active_count="$(
             gh run list \
+              --repo "${GITHUB_REPOSITORY}" \
               --workflow release \
               --json headBranch,status \
               --limit 50 \
