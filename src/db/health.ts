@@ -10,6 +10,7 @@ export const CRITICAL_DATABASE_TABLES = [
 	"distributed_locks",
 	"usage_metrics",
 	"execution_traces",
+	"operating_layer_evidence",
 	"workspace_config",
 	"revenue_attribution",
 ] as const;
@@ -38,6 +39,15 @@ const CRITICAL_DATABASE_COLUMNS: Partial<
 		"last_response_time_ms",
 		"delivered_at",
 		"created_at",
+	],
+	operating_layer_evidence: [
+		"id",
+		"capability_id",
+		"evidence_kind",
+		"subject",
+		"status",
+		"evidence",
+		"recorded_at",
 	],
 };
 
