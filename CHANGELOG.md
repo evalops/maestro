@@ -23,34 +23,50 @@ versioning when releases are cut.
 
 ## [0.10.50] - 2026-06-18
 
+### Added
+
+- Migrate OpenTelemetry exporter module-load reads to RuntimeEnv (#2783). <!-- maestro-release-note:4e4c3aeec5bc -->
+- Migrate meter fallback to resolveOrganizationIdFromOAuthCredentials (#2780). <!-- maestro-release-note:94fd92045c54 -->
+- Migrate hasRemoteMeterDestination to consume RuntimeEnv (#2777). <!-- maestro-release-note:271e51f8e6a7 -->
+- Permanent exploit-vector regression suite + OAuth test isolation (#2766). <!-- maestro-release-note:db1a1859c56a -->
+- Rotate-on-parse-fail for persisted JSON state (#2631) (#2734). <!-- maestro-release-note:c67088bdd211 -->
+- /skills trust UX for the prompt-trust cache (#2629) (#2733). <!-- maestro-release-note:ee310419fa98 -->
+- MultiClientSessionAccessControl impl (#2641) (#2731). <!-- maestro-release-note:87fd6caca58c -->
+- Move tokens from plaintext file to OS keychain (#2611) (#2729). <!-- maestro-release-note:141d21360aa3 -->
+- Wire SessionAccessControl into HostedSessionManager (#2641) (#2724). <!-- maestro-release-note:d8692e272efc -->
+- Enforce trust gate + lock AccessControl binding (#2722). <!-- maestro-release-note:5684559db1ef -->
+- Stronger controls — trust cache, path-confine, AccessControl scaffold (#2721). <!-- maestro-release-note:cd53cac465d9 -->
+- Emit contentSha alongside loaded skills (#2629) (#2720). <!-- maestro-release-note:b8f408d83cae -->
+
 ### Changed
 
-- Add operating layer backend persistence (#786). <!-- maestro-release-note:7e0e5141dded -->
+- Add operating layer backend persistence (#2789). <!-- maestro-release-note:ba507fd32b3b -->
 - Add operating layer platform primitives. <!-- maestro-release-note:b5735cb3ce5d -->
-- Fix public release workflow dispatch. <!-- maestro-release-note:1057f526e486 -->
-
-## [0.10.49] - 2026-06-18
-
-### Changed
-
-- Bump actions/setup-java from 4.7.1 to 5.3.0 (#782). <!-- maestro-release-note:6b8c0d9d6456 -->
-- Sync release mirror for main. <!-- maestro-release-note:b4c37a629b19 -->
-- [maestro] Pin AgentRuntime safe projection gaps (#778). <!-- maestro-release-note:5ffdf2e14dd8 -->
-- Bump actions/checkout from 6.0.2 to 6.0.3 (#777). <!-- maestro-release-note:06b78a737257 -->
-- Fix MCP workspace trust override from project config (#771). <!-- maestro-release-note:090ba8c8599d -->
-- Bump astral-sh/setup-uv from 8.1.0 to 8.2.0 (#776). <!-- maestro-release-note:9f9780d7f548 -->
-- [maestro] Add Agent Workforce native event projector (#774). <!-- maestro-release-note:5c0e4a3f50c3 -->
-- Run public workflow footgun smoke on infra PRs. <!-- maestro-release-note:e425e66fe616 -->
-- Fix public workflow footgun guardrail inputs (#760). <!-- maestro-release-note:2a2e60c47eb7 -->
-- [maestro] Require user presence for desktop device identity signing key (#714). <!-- maestro-release-note:e32ded663112 -->
-- [maestro] Require project approval for Fathom CUA MCP server (#709). <!-- maestro-release-note:a9c00aa6a552 -->
-- [maestro] block protocol/mode/set while in review mode (#712). <!-- maestro-release-note:1ee6f677b15f -->
+- [maestro] fix(runtime): centralize finalized env bootstrap (#2786). <!-- maestro-release-note:811b6585548d -->
+- [maestro] feat(substrate): migrate src/opentelemetry.ts MAESTRO_OTEL_* reads to RuntimeEnv (#2784). <!-- maestro-release-note:878ab1165fc2 -->
+- [maestro] feat(substrate): extend Settings.telemetry, migrate isBeaconEnabled to take Settings["telemetry"] (#2782). <!-- maestro-release-note:969bc8426066 -->
+- [maestro] feat(runtime): Settings primitive — typed composed substrate (Week 2 PR 2) (#2781). <!-- maestro-release-note:850fdda30a75 -->
+- [maestro] feat(runtime): settings-reads scanner + ratchet (Week 2 PR 1) (#2779). <!-- maestro-release-note:5b5db6a13752 -->
+- [maestro] feat(runtime): factor resolveOrganizationId into env-side and OAuth-disk primitives (#2778). <!-- maestro-release-note:3f79e78e3fb7 -->
+- [maestro] feat(runtime): RuntimeEnv substrate + Logger migration + env-reads ratchet (#2776). <!-- maestro-release-note:6e025d6c3faa -->
+- Bump actions/setup-java from 4.7.1 to 5.3.0 (#2774). <!-- maestro-release-note:df640ac35b8b -->
+- [maestro] fix(safety): scan bash command strings for mid-string URLs in network policy (#2773). <!-- maestro-release-note:a1bb966e51f9 -->
+- [maestro] fix(desktop): pass raw sessionId (not "default") to composer API (#2771). <!-- maestro-release-note:2030c97ef373 -->
 
 ### Fixed
 
-- Default bind to localhost (#705). <!-- maestro-release-note:d5418d08f6cf -->
-- Gate plugin bundle mutations in app-server (#711). <!-- maestro-release-note:dffa823ab892 -->
-- Prevent MCP read-only hint from bypassing destructive safeguards (#708). <!-- maestro-release-note:e1f946ac1415 -->
+- Address recent review feedback (#2785). <!-- maestro-release-note:b91a857ef801 -->
+- Include #-prefix tokens in URL scan to close quoted-hash bypass (#2775). <!-- maestro-release-note:60e9d6076311 -->
+- Clear flush timer when global aggregator is reset (#2772). <!-- maestro-release-note:fcf1eef587e8 -->
+- Make config lazy so env mutations after import still take effect (#2769). <!-- maestro-release-note:34f46e265b77 -->
+- Scope composer to sessionKey + clear stale state on fetch failure (#2767). <!-- maestro-release-note:09792182d3c1 -->
+- Add resetOAuthStorageForTests to cli.integration before/after (#2762). <!-- maestro-release-note:7da82628a84c -->
+- Force file-mode OAuth in two more leak-vulnerable test files (#2761). <!-- maestro-release-note:0e64f11c57fe -->
+- Isolate test OAuth and telemetry state to prevent cross-test pollution (#2752). <!-- maestro-release-note:bbc2bc8ef968 -->
+- Adversarial-review round 2 — close residual bugs in batch1/2/3 fixes (#2750). <!-- maestro-release-note:27a95e3c0652 -->
+- Adversarial-review batch 3 — trust hash, OAuth sentinel, drop PPID heuristic (#2629, #2611, #2481) (#2749). <!-- maestro-release-note:9047393fd410 -->
+- Adversarial-review batch 2 — admin split + HostedSessionManager gates (#2641) (#2747). <!-- maestro-release-note:7127a2730ba9 -->
+- Adversarial-review fixes batch 1 (#2641, #2611, #2481, #2629, #2631) (#2746). <!-- maestro-release-note:af0049548b49 -->
 
 ## [0.10.48] - 2026-05-30
 

@@ -91,6 +91,16 @@ const DEFAULT_UI_STATUS: UiStatus = {
 	queueMode: "all",
 };
 
+interface ComposerPanelState {
+	status: ComposerStatus | null;
+	selected: string;
+}
+
+const EMPTY_COMPOSER_STATE: ComposerPanelState = {
+	selected: "",
+	status: null,
+};
+
 export function SettingsModal({
 	open,
 	settings,
@@ -140,13 +150,18 @@ export function SettingsModal({
 	const [expandedMcpServer, setExpandedMcpServer] = useState<string | null>(
 		null,
 	);
-	const [composerStatus, setComposerStatus] = useState<ComposerStatus | null>(
-		null,
-	);
-	const [selectedComposer, setSelectedComposer] = useState<string>("");
+	const [composerState, setComposerState] =
+		useState<ComposerPanelState>(EMPTY_COMPOSER_STATE);
+	const composerStatus = composerState.status;
+	const selectedComposer = composerState.selected;
+	const setComposerStatus = useCallback((status: ComposerStatus | null) => {
+		setComposerState((prev) => ({ ...prev, status }));
+	}, []);
+	const setSelectedComposer = useCallback((selected: string) => {
+		setComposerState((prev) => ({ ...prev, selected }));
+	}, []);
 	const clearComposerState = useCallback(() => {
-		setComposerStatus(null);
-		setSelectedComposer("");
+		setComposerState(EMPTY_COMPOSER_STATE);
 	}, []);
 	const [availableModels, setAvailableModels] = useState<Model[]>(
 		dedupeModels(models ?? []),
@@ -365,6 +380,7 @@ export function SettingsModal({
 		hasSession,
 		models?.length,
 		clearComposerState,
+		setComposerStatus,
 	]);
 
 	useEffect(() => {
@@ -376,7 +392,7 @@ export function SettingsModal({
 		if (nextSelection !== selectedComposer) {
 			setSelectedComposer(nextSelection);
 		}
-	}, [composerStatus, selectedComposer]);
+	}, [composerStatus, selectedComposer, setSelectedComposer]);
 
 	const setShowTimestamps = (enabled: boolean) => {
 		onChange({

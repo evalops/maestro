@@ -33,11 +33,16 @@ const mocks = vi.hoisted(() => ({
 	logError: vi.fn(),
 }));
 
-vi.mock("../src/load-env.js", () => ({
-	loadEnv: mocks.loadEnv,
-	scrubLoadedSecurityOverrideEnv: mocks.scrubLoadedSecurityOverrideEnv,
-	loadAndFinalizeEnv: mocks.loadAndFinalizeEnv,
-}));
+vi.mock("../src/load-env.js", async () => {
+	const { createLoadEnvModuleMock } = await import(
+		"./helpers/load-env-mock.js"
+	);
+	return createLoadEnvModuleMock({
+		loadAndFinalizeEnv: mocks.loadAndFinalizeEnv,
+		loadEnv: mocks.loadEnv,
+		scrubLoadedSecurityOverrideEnv: mocks.scrubLoadedSecurityOverrideEnv,
+	});
+});
 
 vi.mock("../src/opentelemetry.js", () => ({
 	initOpenTelemetry: mocks.initOpenTelemetry,

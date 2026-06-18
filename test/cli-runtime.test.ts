@@ -5,6 +5,7 @@ import {
 	shouldAttemptDirectRuntimeDispatch,
 	shouldUseUnbundledMainRuntime,
 } from "../src/cli/direct-runtime-command.js";
+import { createLoadEnvModuleMock } from "./helpers/load-env-mock.js";
 
 describe("cli-runtime direct command dispatch", () => {
 	afterEach(() => {
@@ -98,16 +99,18 @@ describe("cli-runtime direct command dispatch", () => {
 		const handleSkillCommand = vi.fn(async (..._args: unknown[]) => undefined);
 		let profileAtInvocation: string | undefined;
 
-		vi.doMock("../src/load-env.js", () => ({
-			getLoadedEnvKeys: () => ["MAESTRO_PROFILE"],
-			finalizeLoadedEnv: () => {
-				Reflect.deleteProperty(process.env, "MAESTRO_PROFILE");
-				return {
-					loadedEnvKeys: [],
-					scrubbedEnvKeys: ["MAESTRO_PROFILE"],
-				};
-			},
-		}));
+		vi.doMock("../src/load-env.js", () =>
+			createLoadEnvModuleMock({
+				finalizeLoadedEnv: () => {
+					Reflect.deleteProperty(process.env, "MAESTRO_PROFILE");
+					return {
+						loadedEnvKeys: [],
+						scrubbedEnvKeys: ["MAESTRO_PROFILE"],
+					};
+				},
+				getLoadedEnvKeys: () => ["MAESTRO_PROFILE"],
+			}),
+		);
 		vi.doMock("../src/cli/commands/skill.js", () => ({
 			handleSkillCommand: async (...args: unknown[]) => {
 				profileAtInvocation = process.env.MAESTRO_PROFILE;

@@ -1,10 +1,20 @@
-import { existsSync, readFileSync, readdirSync } from "node:fs";
+import {
+	existsSync,
+	mkdirSync,
+	mkdtempSync,
+	readFileSync,
+	readdirSync,
+	writeFileSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { parse } from "yaml";
 import {
 	evaluatePublicMirrorReviewDebt,
 	parsePublicMirrorPulls,
 } from "../../scripts/check-public-mirror-review-debt.mjs";
+import { scanRuntimeEnvSnapshotHygiene } from "../../scripts/check-runtime-env-snapshot-hygiene.mjs";
 import {
 	autoMergeText,
 	markdownChecklist,
@@ -19,6 +29,8 @@ import {
 } from "../../scripts/plan-nx-test-command.mjs";
 import {
 	collectFeedbackAuditTargets,
+	dedupeFeedbackAuditTargets,
+	fetchRecentPullTargets,
 	parseFeedbackAuditArgs,
 } from "../../scripts/pr-feedback-audit.mjs";
 import {
@@ -3412,6 +3424,380 @@ describe("prFeedbackAudit", () => {
 		).toEqual([
 			{ number: 1851, owner: "evalops", repo: "maestro-internal" },
 			{ number: 366, owner: "evalops", repo: "maestro" },
+		]);
+	});
+
+	it("accepts recent review-hygiene reports without explicit PR inputs", () => {
+		const args = parseFeedbackAuditArgs([
+			"--repo",
+			"evalops/maestro-internal",
+			"--recent-days",
+			"3",
+			"--limit",
+			"50",
+			"--check",
+		]);
+
+		expect(args.recentDays).toBe(3);
+		expect(args.limit).toBe(50);
+		expect(args.check).toBe(true);
+		expect(args.prs).toEqual([]);
+	});
+
+	it("does not cap recent review-hygiene reports when --limit is omitted", () => {
+		const args = parseFeedbackAuditArgs([
+			"--repo",
+			"evalops/maestro-internal",
+			"--recent-days",
+			"3",
+			"--check",
+		]);
+
+		expect(args.recentDays).toBe(3);
+		expect(args.limit).toBe(Number.MAX_SAFE_INTEGER);
+		expect(args.check).toBe(true);
+		expect(args.prs).toEqual([]);
+	});
+
+	it("keeps the package review-hygiene script uncapped for recent ships", () => {
+		const packageJson = JSON.parse(
+			readFileSync(new URL("../../package.json", import.meta.url), "utf8"),
+		) as { scripts?: Record<string, string> };
+		const script = packageJson.scripts?.["review:unresolved-threads"] ?? "";
+
+		expect(script).toContain("--recent-days 3");
+		expect(script).not.toMatch(/--limit\b/);
+		expect(script).toContain("--check");
+	});
+
+	it("deduplicates explicit and recent review-hygiene targets", () => {
+		expect(
+			dedupeFeedbackAuditTargets([
+				{ number: 2786, owner: "evalops", repo: "maestro-internal" },
+				{ number: 2786, owner: "evalops", repo: "maestro-internal" },
+				{ number: 781, owner: "evalops", repo: "maestro" },
+			]),
+		).toEqual([
+			{ number: 2786, owner: "evalops", repo: "maestro-internal" },
+			{ number: 781, owner: "evalops", repo: "maestro" },
+		]);
+	});
+
+	it("paginates recent review-hygiene targets until the cutoff window", () => {
+		const pageCalls: number[] = [];
+		const perPageCalls: number[] = [];
+		const recentIso = new Date(Date.now() - 12 * 60 * 60 * 1000).toISOString();
+		const oldIso = new Date(Date.now() - 5 * 24 * 60 * 60 * 1000).toISOString();
+		const recentPulls = (start: number, count: number) =>
+			Array.from({ length: count }, (_, offset) => ({
+				number: start + offset,
+				state: "open",
+				updated_at: recentIso,
+			}));
+		const stubGhJson = (args: string[]) => {
+			const route = args[3] ?? "";
+			const pageMatch = route.match(/[?&]page=(\d+)/);
+			const page = Number(pageMatch?.[1] ?? "1");
+			const perPageMatch = route.match(/[?&]per_page=(\d+)/);
+			perPageCalls.push(Number(perPageMatch?.[1] ?? "0"));
+			pageCalls.push(page);
+			switch (page) {
+				case 1:
+					return recentPulls(101, 100);
+				case 2:
+					return recentPulls(201, 100);
+				case 3:
+					return [
+						{ number: 301, state: "closed", updated_at: oldIso },
+						{ number: 302, state: "open", updated_at: oldIso },
+					];
+				default:
+					return [];
+			}
+		};
+
+		const targets = fetchRecentPullTargets(
+			"evalops",
+			"maestro-internal",
+			3,
+			250,
+			stubGhJson,
+		);
+
+		expect(targets).toHaveLength(200);
+		expect(targets[0]).toEqual({
+			number: 101,
+			owner: "evalops",
+			repo: "maestro-internal",
+		});
+		expect(targets[199]).toEqual({
+			number: 300,
+			owner: "evalops",
+			repo: "maestro-internal",
+		});
+		expect(pageCalls).toEqual([1, 2, 3]);
+		expect(perPageCalls).toEqual([100, 100, 100]);
+	});
+
+	it("honors the recent review-hygiene limit as a total target cap", () => {
+		const pageCalls: number[] = [];
+		const perPageCalls: number[] = [];
+		const recentIso = new Date(Date.now() - 12 * 60 * 60 * 1000).toISOString();
+		const stubGhJson = (args: string[]) => {
+			const route = args[3] ?? "";
+			const pageMatch = route.match(/[?&]page=(\d+)/);
+			const page = Number(pageMatch?.[1] ?? "1");
+			const perPageMatch = route.match(/[?&]per_page=(\d+)/);
+			perPageCalls.push(Number(perPageMatch?.[1] ?? "0"));
+			pageCalls.push(page);
+			return [
+				{ number: page * 10 + 1, state: "open", updated_at: recentIso },
+				{ number: page * 10 + 2, state: "open", updated_at: recentIso },
+				{ number: page * 10 + 3, state: "open", updated_at: recentIso },
+			];
+		};
+
+		expect(
+			fetchRecentPullTargets("evalops", "maestro-internal", 3, 3, stubGhJson),
+		).toEqual([
+			{ number: 11, owner: "evalops", repo: "maestro-internal" },
+			{ number: 12, owner: "evalops", repo: "maestro-internal" },
+			{ number: 13, owner: "evalops", repo: "maestro-internal" },
+		]);
+		expect(pageCalls).toEqual([1]);
+		expect(perPageCalls).toEqual([3]);
+	});
+
+	it("stops paginating when a full page yields no usable recent targets", () => {
+		const pageCalls: number[] = [];
+		const recentIso = new Date(Date.now() - 12 * 60 * 60 * 1000).toISOString();
+		const stubGhJson = (args: string[]) => {
+			const route = args[3] ?? "";
+			const pageMatch = route.match(/[?&]page=(\d+)/);
+			const page = Number(pageMatch?.[1] ?? "1");
+			pageCalls.push(page);
+			switch (page) {
+				case 1:
+					return Array.from({ length: 100 }, (_, offset) => ({
+						number: 401 + offset,
+						state: "open",
+						updated_at: recentIso,
+					}));
+				case 2:
+					return Array.from({ length: 100 }, (_, offset) => ({
+						number: 501 + offset,
+						state: "open",
+						updated_at: "not-a-date",
+					}));
+				default:
+					throw new Error("unexpected page request");
+			}
+		};
+
+		const targets = fetchRecentPullTargets(
+			"evalops",
+			"maestro-internal",
+			3,
+			250,
+			stubGhJson,
+		);
+
+		expect(targets).toHaveLength(100);
+		expect(targets[0]).toEqual({
+			number: 401,
+			owner: "evalops",
+			repo: "maestro-internal",
+		});
+		expect(targets[99]).toEqual({
+			number: 500,
+			owner: "evalops",
+			repo: "maestro-internal",
+		});
+		expect(pageCalls).toEqual([1, 2]);
+	});
+});
+
+describe("runtime env snapshot hygiene", () => {
+	it("blocks module-scope defaultRuntimeEnv snapshots", () => {
+		const dir = mkdtempSync(join(tmpdir(), "maestro-runtime-env-hygiene-"));
+		mkdirSync(join(dir, "runtime"), { recursive: true });
+		writeFileSync(
+			join(dir, "telemetry.ts"),
+			[
+				'import { defaultRuntimeEnv } from "./runtime/env.js";',
+				'import type { RuntimeEnv } from "./runtime/env.js";',
+				"const exporterRuntimeEnv = defaultRuntimeEnv();",
+				"const typedRuntimeEnv: RuntimeEnv = defaultRuntimeEnv();",
+				"const { telemetryEnabled } = defaultRuntimeEnv();",
+				"const {",
+				"\ttelemetrySampleRate,",
+				"} = defaultRuntimeEnv();",
+				"configureRuntime(defaultRuntimeEnv());",
+				"if (shouldConfigureRuntime) {",
+				"\tconst runtimeMarker = /}/;",
+				"\tconfigureRuntime();",
+				"\tdefaultRuntimeEnv();",
+				"}",
+				"configureWrappedRuntime(",
+				"\tdefaultRuntimeEnv(),",
+				");",
+				"class RuntimeBase extends makeBase(defaultRuntimeEnv()) {",
+				"}",
+				"class WrappedRuntimeBase extends makeBase(",
+				"\tdefaultRuntimeEnv(),",
+				") {",
+				"}",
+				"class ObjectRuntimeBase extends makeBase({",
+				"\tenv: defaultRuntimeEnv(),",
+				"}) {",
+				"}",
+				"export enum RuntimeEnum {",
+				"\tFlag = defaultRuntimeEnv().telemetryEnabled ? 1 : 0,",
+				"}",
+				"class RuntimeSnapshotHolder {",
+				'\tstatic stringMarker = "}";',
+				"\tstatic templateMarker = `}`;",
+				"\tstatic regexMarker = /}/;",
+				"\tstatic env = defaultRuntimeEnv();",
+				"\tstatic wrapped =",
+				"\t\tdefaultRuntimeEnv();",
+				"\tstatic {",
+				"\t\tconfigureRuntime();",
+				"\t\tdefaultRuntimeEnv();",
+				"\t}",
+				"\tstatic readEnv = () => defaultRuntimeEnv();",
+				"\tstatic typedReadEnv: () => RuntimeEnv = () => defaultRuntimeEnv();",
+				"\tstatic iifeEnv = (() => defaultRuntimeEnv())();",
+				"\tstatic functionIifeEnv = function readEnv() { return defaultRuntimeEnv(); }();",
+				'\tstatic [defaultRuntimeEnv().telemetryEnabled ? "enabled" : "disabled"]() {}',
+				'\tstatic ["lazyReadEnv"]() { return defaultRuntimeEnv(); }',
+				"\tstatic later() {",
+				"\t\treturn defaultRuntimeEnv();",
+				"\t}",
+				"}",
+				"function later() {",
+				"\tclass LocalRuntimeSnapshotHolder {",
+				"\t\tstatic env = defaultRuntimeEnv();",
+				"\t}",
+				"\tenum LocalRuntimeEnum {",
+				"\t\tFlag = defaultRuntimeEnv().telemetryEnabled ? 1 : 0,",
+				"\t}",
+				"\tconst env = defaultRuntimeEnv();",
+				"\treturn env;",
+				"}",
+				"export const readRuntimeEnv = (): RuntimeEnv => {",
+				"\treturn defaultRuntimeEnv();",
+				"};",
+				"const iifeRuntimeEnv = (() => defaultRuntimeEnv())();",
+				"const functionIifeRuntimeEnv = function readRuntimeEnvImmediately() {",
+				"\treturn defaultRuntimeEnv();",
+				"}();",
+				"const memoizedReader = (() => {",
+				'\treturn () => "ok";',
+				"})();",
+				"export const runtimeHelpers = {",
+				"\treadEnv: () => defaultRuntimeEnv(),",
+				"\tblockReadEnv: () => {",
+				"\t\treturn defaultRuntimeEnv();",
+				"\t},",
+				"};",
+				"export const runtimeHelperList = [() => defaultRuntimeEnv()];",
+				"export const eagerRuntimeHelper = { env: defaultRuntimeEnv() };",
+				"export const eagerRuntimeHelperIife = { env: (() => defaultRuntimeEnv())() };",
+				"abstract class LazyAbstractRuntimeHolder {",
+				"\tstatic readEnv() {",
+				"\t\treturn defaultRuntimeEnv();",
+				"\t}",
+				"}",
+			].join("\n"),
+			"utf8",
+		);
+
+		expect(scanRuntimeEnvSnapshotHygiene(dir)).toEqual([
+			expect.objectContaining({
+				line: 3,
+				text: "const exporterRuntimeEnv = defaultRuntimeEnv();",
+			}),
+			expect.objectContaining({
+				line: 4,
+				text: "const typedRuntimeEnv: RuntimeEnv = defaultRuntimeEnv();",
+			}),
+			expect.objectContaining({
+				line: 5,
+				text: "const { telemetryEnabled } = defaultRuntimeEnv();",
+			}),
+			expect.objectContaining({
+				line: 6,
+				text: "const { telemetrySampleRate, } = defaultRuntimeEnv();",
+			}),
+			expect.objectContaining({
+				line: 9,
+				text: "configureRuntime(defaultRuntimeEnv());",
+			}),
+			expect.objectContaining({
+				line: 10,
+				text: "if (shouldConfigureRuntime) { const runtimeMarker = /}/; configureRuntime(); defaultRuntimeEnv(); }",
+			}),
+			expect.objectContaining({
+				line: 15,
+				text: "configureWrappedRuntime( defaultRuntimeEnv(), );",
+			}),
+			expect.objectContaining({
+				line: 18,
+				text: "class RuntimeBase extends makeBase(defaultRuntimeEnv()) {",
+			}),
+			expect.objectContaining({
+				line: 20,
+				text: "class WrappedRuntimeBase extends makeBase( defaultRuntimeEnv(), ) {",
+			}),
+			expect.objectContaining({
+				line: 24,
+				text: "class ObjectRuntimeBase extends makeBase({ env: defaultRuntimeEnv(), }) {",
+			}),
+			expect.objectContaining({
+				line: 28,
+				text: "export enum RuntimeEnum { Flag = defaultRuntimeEnv().telemetryEnabled ? 1 : 0, }",
+			}),
+			expect.objectContaining({
+				line: 35,
+				text: "static env = defaultRuntimeEnv();",
+			}),
+			expect.objectContaining({
+				line: 36,
+				text: "static wrapped = defaultRuntimeEnv();",
+			}),
+			expect.objectContaining({
+				line: 38,
+				text: "static { configureRuntime(); defaultRuntimeEnv(); }",
+			}),
+			expect.objectContaining({
+				line: 44,
+				text: "static iifeEnv = (() => defaultRuntimeEnv())();",
+			}),
+			expect.objectContaining({
+				line: 45,
+				text: "static functionIifeEnv = function readEnv() { return defaultRuntimeEnv(); }();",
+			}),
+			expect.objectContaining({
+				line: 46,
+				text: 'static [defaultRuntimeEnv().telemetryEnabled ? "enabled" : "disabled"]() {}',
+			}),
+			expect.objectContaining({
+				line: 65,
+				text: "const iifeRuntimeEnv = (() => defaultRuntimeEnv())();",
+			}),
+			expect.objectContaining({
+				line: 66,
+				text: "const functionIifeRuntimeEnv = function readRuntimeEnvImmediately() { return defaultRuntimeEnv(); }();",
+			}),
+			expect.objectContaining({
+				line: 79,
+				text: "export const eagerRuntimeHelper = { env: defaultRuntimeEnv() };",
+			}),
+			expect.objectContaining({
+				line: 80,
+				text: "export const eagerRuntimeHelperIife = { env: (() => defaultRuntimeEnv())() };",
+			}),
 		]);
 	});
 });

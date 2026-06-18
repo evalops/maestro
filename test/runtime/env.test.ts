@@ -4,6 +4,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
 	createRuntimeEnv,
 	defaultRuntimeEnv,
+	isRuntimeEnvFinalized,
 	resetDefaultRuntimeEnvForTests,
 } from "../../src/runtime/env.js";
 
@@ -339,5 +340,25 @@ describe("defaultRuntimeEnv", () => {
 		resetDefaultRuntimeEnvForTests();
 		const b = defaultRuntimeEnv();
 		expect(a).not.toBe(b);
+	});
+
+	it("throws on pre-finalization snapshots when strict bootstrap mode is enabled", () => {
+		const previous = process.env.MAESTRO_RUNTIME_ENV_STRICT_BOOTSTRAP;
+		try {
+			process.env.MAESTRO_RUNTIME_ENV_STRICT_BOOTSTRAP = "1";
+			expect(() => defaultRuntimeEnv()).toThrow(
+				"defaultRuntimeEnv() was read before loadAndFinalizeEnv() completed",
+			);
+			expect(isRuntimeEnvFinalized()).toBe(false);
+		} finally {
+			if (previous === undefined) {
+				Reflect.deleteProperty(
+					process.env,
+					"MAESTRO_RUNTIME_ENV_STRICT_BOOTSTRAP",
+				);
+			} else {
+				process.env.MAESTRO_RUNTIME_ENV_STRICT_BOOTSTRAP = previous;
+			}
+		}
 	});
 });

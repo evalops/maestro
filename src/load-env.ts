@@ -2,7 +2,10 @@ import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { config } from "dotenv";
 import { ENV_VARS } from "./config/env-vars.js";
-import { resetDefaultRuntimeEnv } from "./runtime/env.js";
+import {
+	markRuntimeEnvFinalized,
+	resetDefaultRuntimeEnv,
+} from "./runtime/env.js";
 
 const ENV_FILES = [".env.local", ".env"];
 
@@ -332,6 +335,7 @@ export function finalizeLoadedEnv(
 ): FinalizedEnvLoad {
 	const scrubbedEnvKeys = scrubLoadedSecurityOverrideEnv();
 	resetDefaultRuntimeEnv();
+	markRuntimeEnvFinalized();
 	return { loadedEnvKeys, scrubbedEnvKeys };
 }
 

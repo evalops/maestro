@@ -1,4 +1,8 @@
+import { access, mkdtemp } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { resetDefaultRuntimeEnvForTests } from "../../src/runtime/env.js";
 
 function createCanonicalTurnEvent() {
 	return {
@@ -82,6 +86,51 @@ describe("telemetry meter integration", () => {
 		expect(fetchMock).toHaveBeenCalledTimes(1);
 		expect(String(fetchMock.mock.calls[0]?.[0])).toBe(
 			"http://meter.test/meter.v1.MeterService/IngestWideEvent",
+		);
+	});
+
+	it("does not write the default telemetry file for meter-only destinations", async () => {
+		const maestroHome = await mkdtemp(join(tmpdir(), "maestro-meter-only-"));
+		vi.stubEnv("MAESTRO_HOME", maestroHome);
+		vi.stubEnv("MAESTRO_DISABLE_KEYCHAIN", "1");
+		vi.stubEnv("MAESTRO_TELEMETRY_FILE", "");
+		vi.stubEnv("PLAYWRIGHT_TELEMETRY_FILE", "");
+		vi.stubEnv("MAESTRO_TELEMETRY_ENDPOINT", "");
+		vi.stubEnv("PLAYWRIGHT_TELEMETRY_ENDPOINT", "");
+		vi.stubEnv("MAESTRO_METER_BASE", "http://meter.test");
+		vi.stubEnv("MAESTRO_METER_ACCESS_TOKEN", "meter-token");
+		vi.stubEnv("MAESTRO_EVALOPS_ORG_ID", "org_evalops");
+		const fetchMock = vi.fn(async () => new Response("{}", { status: 200 }));
+		vi.stubGlobal("fetch", fetchMock);
+
+		const telemetry = await import("../../src/telemetry.js");
+
+		await telemetry.recordTelemetry(createCanonicalTurnEvent());
+
+		expect(fetchMock).toHaveBeenCalledTimes(1);
+		await expect(access(join(maestroHome, "telemetry.log"))).rejects.toThrow();
+	});
+
+	it("refreshes telemetry status after the default RuntimeEnv snapshot is reset", async () => {
+		const telemetry = await import("../../src/telemetry.js");
+
+		vi.stubEnv("MAESTRO_TELEMETRY", "1");
+		vi.stubEnv("MAESTRO_TELEMETRY_FILE", "/tmp/maestro-telemetry.jsonl");
+		resetDefaultRuntimeEnvForTests();
+		expect(telemetry.getTelemetryStatus()).toEqual(
+			expect.objectContaining({
+				enabled: true,
+				reason: "file",
+			}),
+		);
+
+		vi.stubEnv("MAESTRO_TELEMETRY", "0");
+		resetDefaultRuntimeEnvForTests();
+		expect(telemetry.getTelemetryStatus()).toEqual(
+			expect.objectContaining({
+				enabled: false,
+				reason: "flag disabled",
+			}),
 		);
 	});
 });
