@@ -21,6 +21,29 @@ versioning when releases are cut.
   and keep scheduled public runs inert so public publishing stays downstream of
   the internal source-of-truth release.
 
+## [0.10.49] - 2026-06-18
+
+### Changed
+
+- Bump actions/setup-java from 4.7.1 to 5.3.0 (#782). <!-- maestro-release-note:6b8c0d9d6456 -->
+- Sync release mirror for main. <!-- maestro-release-note:b4c37a629b19 -->
+- [maestro] Pin AgentRuntime safe projection gaps (#778). <!-- maestro-release-note:5ffdf2e14dd8 -->
+- Bump actions/checkout from 6.0.2 to 6.0.3 (#777). <!-- maestro-release-note:06b78a737257 -->
+- Fix MCP workspace trust override from project config (#771). <!-- maestro-release-note:090ba8c8599d -->
+- Bump astral-sh/setup-uv from 8.1.0 to 8.2.0 (#776). <!-- maestro-release-note:9f9780d7f548 -->
+- [maestro] Add Agent Workforce native event projector (#774). <!-- maestro-release-note:5c0e4a3f50c3 -->
+- Run public workflow footgun smoke on infra PRs. <!-- maestro-release-note:e425e66fe616 -->
+- Fix public workflow footgun guardrail inputs (#760). <!-- maestro-release-note:2a2e60c47eb7 -->
+- [maestro] Require user presence for desktop device identity signing key (#714). <!-- maestro-release-note:e32ded663112 -->
+- [maestro] Require project approval for Fathom CUA MCP server (#709). <!-- maestro-release-note:a9c00aa6a552 -->
+- [maestro] block protocol/mode/set while in review mode (#712). <!-- maestro-release-note:1ee6f677b15f -->
+
+### Fixed
+
+- Default bind to localhost (#705). <!-- maestro-release-note:d5418d08f6cf -->
+- Gate plugin bundle mutations in app-server (#711). <!-- maestro-release-note:dffa823ab892 -->
+- Prevent MCP read-only hint from bypassing destructive safeguards (#708). <!-- maestro-release-note:e1f946ac1415 -->
+
 ## [0.10.48] - 2026-05-30
 
 ### Changed
