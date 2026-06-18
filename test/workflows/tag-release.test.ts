@@ -220,16 +220,19 @@ describe("tag-release workflow", () => {
 			/gh run list\s+\\\n\s+--repo "\$\{GITHUB_REPOSITORY\}"/,
 		);
 		expect(dispatchStep?.run).toContain("active_release_run_count()");
-		expect(dispatchStep?.run).toContain("latest_release_run_id()");
+		expect(dispatchStep?.run).toContain("dispatched_release_run_count()");
 		expect(dispatchStep?.run).toContain("retry()");
 		expect(dispatchStep?.run).toContain(
 			'retry "List active release workflows" active_release_run_count',
 		);
 		expect(dispatchStep?.run).toContain(
+			'retry "List dispatched release workflows" dispatched_release_run_count',
+		);
+		expect(dispatchStep?.run).toContain(
 			'retry "Dispatch release workflow" gh workflow run release',
 		);
 		expect(dispatchStep?.run).toContain(
-			'retry "Confirm dispatched release workflow" latest_release_run_id',
+			'retry "Confirm dispatched release workflow" dispatched_release_run_count',
 		);
 		expect(dispatchStep?.run).toContain("confirmation attempt ${attempt}/6");
 		expect(dispatchStep?.run).toContain(
@@ -238,6 +241,7 @@ describe("tag-release workflow", () => {
 		expect(dispatchStep?.run).toContain('--repo "${GITHUB_REPOSITORY}"');
 		expect(dispatchStep?.run).toContain("--workflow release");
 		expect(dispatchStep?.run).toContain(".headBranch");
+		expect(dispatchStep?.run).toContain('.event == \\"workflow_dispatch\\"');
 		expect(dispatchStep?.run).toContain(
 			'if [[ "${active_count}" != "0" ]]; then',
 		);
