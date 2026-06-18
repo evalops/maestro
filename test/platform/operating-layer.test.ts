@@ -265,6 +265,28 @@ describe("operating layer primitives", () => {
 		expect(
 			evaluateExtensionGovernance(
 				{
+					id: "plugin-lockdown",
+					source: "marketplace",
+					publisher: "evalops",
+					requestedScopes: ["repo:read"],
+				},
+				{
+					allowedSources: [],
+					trustedPublishers: [],
+					allowedScopes: [],
+				},
+			).blockers,
+		).toEqual(
+			expect.arrayContaining([
+				"source_not_allowed:marketplace",
+				"publisher_not_trusted:evalops",
+				"scope_not_allowed:repo:read",
+			]),
+		);
+
+		expect(
+			evaluateExtensionGovernance(
+				{
 					id: "plugin-2",
 					source: "git",
 					requestedScopes: ["secrets:read"],
@@ -324,6 +346,14 @@ describe("operating layer primitives", () => {
 			"release_notification",
 		]);
 		expect(plan.blockers).toEqual([]);
+		plan.stages[0]!.requires.push("mutated");
+		plan.stages[1]!.evidenceKinds.push("mutated");
+		expect(buildReleaseCanaryPlan().stages[0]!.requires).toEqual([]);
+		expect(buildReleaseCanaryPlan().stages[1]!.evidenceKinds).toEqual([
+			"npm.publish",
+			"git.tag",
+			"github.release",
+		]);
 		expect(
 			buildReleaseCanaryPlan([
 				...DEFAULT_RELEASE_CANARY_STAGES,

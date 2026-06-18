@@ -353,7 +353,10 @@ export function evaluateExtensionGovernance(
 	const blockers: string[] = [];
 	const reasons = [`source:${candidate.source}`];
 	const allowedSources = new Set(policy.allowedSources ?? []);
-	if (allowedSources.size > 0 && !allowedSources.has(candidate.source)) {
+	if (
+		policy.allowedSources !== undefined &&
+		!allowedSources.has(candidate.source)
+	) {
 		blockers.push(`source_not_allowed:${candidate.source}`);
 	}
 	if (policy.requireSignature && !candidate.signed) {
@@ -370,19 +373,21 @@ export function evaluateExtensionGovernance(
 	const trustedPublishers = new Set(policy.trustedPublishers ?? []);
 	if (
 		candidate.source === "marketplace" &&
-		trustedPublishers.size > 0 &&
 		candidate.publisher &&
 		trustedPublishers.has(candidate.publisher)
 	) {
 		reasons.push(`trusted_publisher:${candidate.publisher}`);
-	} else if (trustedPublishers.size > 0 && candidate.source === "marketplace") {
+	} else if (
+		policy.trustedPublishers !== undefined &&
+		candidate.source === "marketplace"
+	) {
 		blockers.push(`publisher_not_trusted:${candidate.publisher ?? "unknown"}`);
 	}
 
 	const allowedScopes = new Set(policy.allowedScopes ?? []);
 	const requestedScopes = normalizedList(candidate.requestedScopes);
 	for (const scope of requestedScopes) {
-		if (allowedScopes.size > 0 && !allowedScopes.has(scope)) {
+		if (policy.allowedScopes !== undefined && !allowedScopes.has(scope)) {
 			blockers.push(`scope_not_allowed:${scope}`);
 		}
 	}
@@ -482,23 +487,26 @@ export const DEFAULT_RELEASE_CANARY_STAGES: ReleaseCanaryStage[] = [
 ];
 
 export function buildReleaseCanaryPlan(
-	stages: ReleaseCanaryStage[] = DEFAULT_RELEASE_CANARY_STAGES,
+	stages?: ReleaseCanaryStage[],
 ): ReleaseCanaryPlan {
-	const stageIds = new Set(stages.map((stage) => stage.id));
+	const planStages = cloneReleaseCanaryStages(
+		stages ?? DEFAULT_RELEASE_CANARY_STAGES,
+	);
+	const stageIds = new Set(planStages.map((stage) => stage.id));
 	const stageIndexes = new Map<string, number>();
-	for (const [index, stage] of stages.entries()) {
+	for (const [index, stage] of planStages.entries()) {
 		if (!stageIndexes.has(stage.id)) {
 			stageIndexes.set(stage.id, index);
 		}
 	}
 	const blockers = [
-		...detectDuplicateReleaseCanaryStages(stages),
-		...stages.flatMap((stage) =>
+		...detectDuplicateReleaseCanaryStages(planStages),
+		...planStages.flatMap((stage) =>
 			stage.requires
 				.filter((required) => !stageIds.has(required))
 				.map((required) => `missing_stage:${stage.id}:${required}`),
 		),
-		...stages.flatMap((stage, index) =>
+		...planStages.flatMap((stage, index) =>
 			stage.requires
 				.filter((required) => {
 					const requiredIndex = stageIndexes.get(required);
@@ -506,14 +514,24 @@ export function buildReleaseCanaryPlan(
 				})
 				.map((required) => `out_of_order_stage:${stage.id}:${required}`),
 		),
-		...detectReleaseCanaryCycles(stages),
+		...detectReleaseCanaryCycles(planStages),
 	];
 
 	return {
 		version: MAESTRO_OPERATING_LAYER_VERSION,
-		stages,
+		stages: planStages,
 		blockers,
 	};
+}
+
+function cloneReleaseCanaryStages(
+	stages: ReleaseCanaryStage[],
+): ReleaseCanaryStage[] {
+	return stages.map((stage) => ({
+		...stage,
+		requires: [...stage.requires],
+		evidenceKinds: [...stage.evidenceKinds],
+	}));
 }
 
 function detectDuplicateReleaseCanaryStages(
