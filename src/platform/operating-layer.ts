@@ -526,7 +526,14 @@ function detectDuplicateReleaseCanaryStages(
 }
 
 function detectReleaseCanaryCycles(stages: ReleaseCanaryStage[]): string[] {
-	const stagesById = new Map(stages.map((stage) => [stage.id, stage]));
+	const requirementsById = new Map<string, Set<string>>();
+	for (const stage of stages) {
+		const requirements = requirementsById.get(stage.id) ?? new Set<string>();
+		for (const required of stage.requires) {
+			requirements.add(required);
+		}
+		requirementsById.set(stage.id, requirements);
+	}
 	const visiting = new Set<string>();
 	const visited = new Set<string>();
 	const blockers: string[] = [];
@@ -542,13 +549,13 @@ function detectReleaseCanaryCycles(stages: ReleaseCanaryStage[]): string[] {
 			return;
 		}
 
-		const stage = stagesById.get(stageId);
-		if (!stage) {
+		const requirements = requirementsById.get(stageId);
+		if (!requirements) {
 			return;
 		}
 
 		visiting.add(stageId);
-		for (const required of stage.requires) {
+		for (const required of requirements) {
 			visit(required, [...path, required]);
 		}
 		visiting.delete(stageId);

@@ -385,5 +385,27 @@ describe("operating layer primitives", () => {
 				},
 			]).blockers,
 		).toEqual(["duplicate_stage:publish_package"]);
+		expect(
+			buildReleaseCanaryPlan([
+				{
+					id: "a",
+					name: "A",
+					requires: ["b"],
+					evidenceKinds: ["a"],
+				},
+				{
+					id: "b",
+					name: "B",
+					requires: ["a"],
+					evidenceKinds: ["b"],
+				},
+				{
+					id: "a",
+					name: "Duplicate A",
+					requires: [],
+					evidenceKinds: ["a"],
+				},
+			]).blockers,
+		).toEqual(expect.arrayContaining(["duplicate_stage:a", "cycle:a>b>a"]));
 	});
 });
