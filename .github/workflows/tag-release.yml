@@ -69,7 +69,6 @@ jobs:
           set -euo pipefail
           active_count="$(
             gh run list \
-              --repo "${GITHUB_REPOSITORY}" \
               --workflow release \
               --json headBranch,status \
               --limit 50 \
@@ -186,4 +185,4 @@ jobs:
             echo "Found ${active_count} active release workflow run(s) for ${RELEASE_TAG}; not dispatching another."
             exit 0
           fi
-          gh workflow run release --repo "${GITHUB_REPOSITORY}" --ref "${RELEASE_TAG}" --field "version=${RELEASE_VERSION}"
+          gh workflow run release --ref "${RELEASE_TAG}" --field "version=${RELEASE_VERSION}"
