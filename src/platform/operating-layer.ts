@@ -310,6 +310,7 @@ export function classifySyncOutcome(
 
 	if (
 		item.kind !== "session_create" &&
+		item.sessionId &&
 		(outcome.statusCode === 404 || outcome.statusCode === 410)
 	) {
 		return {
@@ -483,11 +484,20 @@ export function buildReleaseCanaryPlan(
 	stages: ReleaseCanaryStage[] = DEFAULT_RELEASE_CANARY_STAGES,
 ): ReleaseCanaryPlan {
 	const stageIds = new Set(stages.map((stage) => stage.id));
+	const stageIndexes = new Map(stages.map((stage, index) => [stage.id, index]));
 	const blockers = [
 		...stages.flatMap((stage) =>
 			stage.requires
 				.filter((required) => !stageIds.has(required))
 				.map((required) => `missing_stage:${stage.id}:${required}`),
+		),
+		...stages.flatMap((stage, index) =>
+			stage.requires
+				.filter((required) => {
+					const requiredIndex = stageIndexes.get(required);
+					return requiredIndex !== undefined && requiredIndex > index;
+				})
+				.map((required) => `out_of_order_stage:${stage.id}:${required}`),
 		),
 		...detectReleaseCanaryCycles(stages),
 	];

@@ -154,6 +154,22 @@ describe("operating layer primitives", () => {
 		expect(
 			classifySyncOutcome(
 				{
+					id: "item-5",
+					kind: "settings",
+					status: "failed",
+					attempt: 1,
+					maxAttempts: 5,
+				},
+				{ ok: false, statusCode: 404 },
+			),
+		).toEqual({
+			action: "retry",
+			reason: "http_404",
+			nextAttempt: 2,
+		});
+		expect(
+			classifySyncOutcome(
+				{
 					id: "item-4",
 					kind: "message",
 					status: "failed",
@@ -305,6 +321,24 @@ describe("operating layer primitives", () => {
 					evidenceKinds: ["b"],
 				},
 			]).blockers,
-		).toEqual(["cycle:a>b>a"]);
+		).toEqual(
+			expect.arrayContaining(["out_of_order_stage:a:b", "cycle:a>b>a"]),
+		);
+		expect(
+			buildReleaseCanaryPlan([
+				{
+					id: "publish_package",
+					name: "Publish package",
+					requires: ["local_release_gate"],
+					evidenceKinds: ["npm.publish"],
+				},
+				{
+					id: "local_release_gate",
+					name: "Local release gate",
+					requires: [],
+					evidenceKinds: ["test"],
+				},
+			]).blockers,
+		).toEqual(["out_of_order_stage:publish_package:local_release_gate"]);
 	});
 });
