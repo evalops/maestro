@@ -388,6 +388,28 @@ describe("operating layer primitives", () => {
 		expect(
 			buildReleaseCanaryPlan([
 				{
+					id: "local_release_gate",
+					name: "Local release gate",
+					requires: [],
+					evidenceKinds: ["test"],
+				},
+				{
+					id: "publish_package",
+					name: "Publish package",
+					requires: ["local_release_gate"],
+					evidenceKinds: ["npm.publish"],
+				},
+				{
+					id: "local_release_gate",
+					name: "Duplicate local release gate",
+					requires: [],
+					evidenceKinds: ["build"],
+				},
+			]).blockers,
+		).toEqual(["duplicate_stage:local_release_gate"]);
+		expect(
+			buildReleaseCanaryPlan([
+				{
 					id: "a",
 					name: "A",
 					requires: ["b"],

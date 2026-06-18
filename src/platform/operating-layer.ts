@@ -485,7 +485,12 @@ export function buildReleaseCanaryPlan(
 	stages: ReleaseCanaryStage[] = DEFAULT_RELEASE_CANARY_STAGES,
 ): ReleaseCanaryPlan {
 	const stageIds = new Set(stages.map((stage) => stage.id));
-	const stageIndexes = new Map(stages.map((stage, index) => [stage.id, index]));
+	const stageIndexes = new Map<string, number>();
+	for (const [index, stage] of stages.entries()) {
+		if (!stageIndexes.has(stage.id)) {
+			stageIndexes.set(stage.id, index);
+		}
+	}
 	const blockers = [
 		...detectDuplicateReleaseCanaryStages(stages),
 		...stages.flatMap((stage) =>
