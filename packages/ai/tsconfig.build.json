@@ -52,6 +52,8 @@
 		"../../src/session/wire-format.generated.ts",
 		"../../src/session/wire-format.ts",
 		"../../src/runtime/background-settings.ts",
+		"../../src/runtime/env.ts",
+		"../../src/runtime/settings.ts",
 		"../../src/telemetry/**/*.ts",
 		"../../src/telemetry.ts",
 		"../../src/opentelemetry.ts",

@@ -41,4 +41,23 @@ describe("telemetry beacon disablement", () => {
 			code: "ENOENT",
 		});
 	});
+
+	it("treats mixed-case telemetry opt-out values as disabled", async () => {
+		vi.stubEnv("MAESTRO_TELEMETRY", "FALSE");
+		const { emitBeacon } = await import("../../src/telemetry/beacon.js");
+
+		await emitBeacon({
+			feature: "cli.startup",
+			action: "interactive",
+			timestamp: 1,
+			source: {
+				client: "cli",
+				clientVersion: "0.10.18",
+			},
+		});
+
+		await expect(readFile(beaconFile, "utf8")).rejects.toMatchObject({
+			code: "ENOENT",
+		});
+	});
 });

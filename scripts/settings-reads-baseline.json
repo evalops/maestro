@@ -1,0 +1,82 @@
+{
+  "src/agent/plan-mode.ts": [
+    ".maestro/plan-state.json"
+  ],
+  "src/agent/spec-mode.ts": [
+    ".maestro/spec-state.json"
+  ],
+  "src/bootstrap/tools-setup.ts": [
+    ".maestro/tools.json"
+  ],
+  "src/cli/commands/config.ts": [
+    ".maestro/local.json"
+  ],
+  "src/cli-tui/bash-mode-view.ts": [
+    ".maestro/bash-history.json"
+  ],
+  "src/cli-tui/commands/mcp-handlers.ts": [
+    ".maestro/mcp.json"
+  ],
+  "src/cli-tui/commands/package-handlers.ts": [
+    ".maestro/config.local.toml",
+    ".maestro/config.toml"
+  ],
+  "src/factory/config.ts": [
+    ".maestro/models.json"
+  ],
+  "src/guardian/config.ts": [
+    ".maestro/guardian.json"
+  ],
+  "src/guardian/types.ts": [
+    ".maestro/guardian.json"
+  ],
+  "src/hooks/config.ts": [
+    ".maestro/hooks.json"
+  ],
+  "src/hooks/index.ts": [
+    ".maestro/hooks.json"
+  ],
+  "src/lsp/bootstrap.ts": [
+    ".maestro/config.json"
+  ],
+  "src/mcp/config.ts": [
+    ".maestro/enterprise/mcp.json",
+    ".maestro/mcp.json",
+    ".maestro/mcp.local.json"
+  ],
+  "src/mcp/types.ts": [
+    ".maestro/mcp.json"
+  ],
+  "src/models/registry.ts": [
+    ".maestro/models.json",
+    ".maestro/models.jsonc"
+  ],
+  "src/providers/network-config.ts": [
+    ".maestro/providers.json"
+  ],
+  "src/providers/openai-auth.ts": [
+    ".maestro/openai-oauth.json"
+  ],
+  "src/safety/action-firewall.ts": [
+    ".maestro/firewall.json"
+  ],
+  "src/safety/policy.ts": [
+    ".maestro/policy.json",
+    ".maestro/workspace.toml"
+  ],
+  "src/sandbox/index.ts": [
+    ".maestro/sandbox.json"
+  ],
+  "src/skills/trust-cache.ts": [
+    ".maestro/trust/skills.json"
+  ],
+  "src/tools/inline-tools.ts": [
+    ".maestro/tools.json"
+  ],
+  "src/tools/todo.ts": [
+    ".maestro/todos.json"
+  ],
+  "src/tracking/cost-tracker.ts": [
+    ".maestro/usage.json"
+  ]
+}

@@ -1,6 +1,6 @@
 import { appendFile, mkdir } from "node:fs/promises";
 import { dirname } from "node:path";
-import { resolveEnvPath } from "../utils/path-expansion.js";
+import { type Settings, defaultSettings } from "../runtime/settings.js";
 import { isInternalTelemetryDisabled } from "./disablement.js";
 import { normalizeTelemetryMetadataInputs } from "./metadata-normalization.js";
 
@@ -20,51 +20,33 @@ export interface BeaconEvent {
 }
 
 export interface EmitBeaconOptions {
-	env?: NodeJS.ProcessEnv;
+	telemetry?: Settings["telemetry"];
 	fetchFn?: typeof fetch;
 }
 
-const telemetryFlag = (env: NodeJS.ProcessEnv): string | undefined =>
-	env.MAESTRO_TELEMETRY ?? env.PLAYWRIGHT_TELEMETRY;
+const DEFAULT_BEACON_TIMEOUT_MS = 100;
 
-function beaconEndpoint(env: NodeJS.ProcessEnv): string | undefined {
-	return (
-		env.MAESTRO_BEACON_ENDPOINT ??
-		env.MAESTRO_TELEMETRY_ENDPOINT ??
-		env.PLAYWRIGHT_TELEMETRY_ENDPOINT
-	);
+function effectiveSampleRate(telemetry: Settings["telemetry"]): number {
+	return telemetry.sampleRate ?? 1;
 }
 
-function beaconFile(env: NodeJS.ProcessEnv): string | undefined {
-	return resolveEnvPath(env.MAESTRO_BEACON_FILE) ?? undefined;
+export function beaconTimeoutMs(telemetry: Settings["telemetry"]): number {
+	return telemetry.timeoutMs ?? DEFAULT_BEACON_TIMEOUT_MS;
 }
 
-function sampleRate(env: NodeJS.ProcessEnv): number {
-	const raw = env.MAESTRO_TELEMETRY_SAMPLE ?? env.PLAYWRIGHT_TELEMETRY_SAMPLE;
-	if (!raw) {
-		return 1;
-	}
-	const parsed = Number.parseFloat(raw);
-	return Number.isNaN(parsed) ? 1 : Math.min(Math.max(parsed, 0), 1);
-}
-
-export function beaconTimeoutMs(env: NodeJS.ProcessEnv): number {
-	const parsed = Number.parseInt(env.MAESTRO_BEACON_TIMEOUT_MS ?? "100", 10);
-	return Number.isFinite(parsed) && parsed > 0 ? parsed : 100;
-}
-
-export function isBeaconEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
-	if (isInternalTelemetryDisabled(env)) {
+export function isBeaconEnabled(
+	telemetry: Settings["telemetry"] = defaultSettings().telemetry,
+): boolean {
+	if (isInternalTelemetryDisabled()) {
 		return false;
 	}
-	const flag = telemetryFlag(env)?.toLowerCase();
-	if (flag === "0" || flag === "false") {
+	if (telemetry.enabled === false) {
 		return false;
 	}
-	if (sampleRate(env) <= 0) {
+	if (effectiveSampleRate(telemetry) <= 0) {
 		return false;
 	}
-	return Boolean(beaconEndpoint(env) || beaconFile(env));
+	return Boolean(telemetry.endpoint || telemetry.beaconFile);
 }
 
 export function normalizeBeaconEvent(event: BeaconEvent): BeaconEvent {
@@ -90,21 +72,22 @@ export async function emitBeaconBatch(
 	events: BeaconEvent[],
 	options: EmitBeaconOptions = {},
 ): Promise<boolean> {
-	const env = options.env ?? process.env;
-	if (!events.length || !isBeaconEnabled(env)) {
+	const telemetry = options.telemetry ?? defaultSettings().telemetry;
+	if (!events.length || !isBeaconEnabled(telemetry)) {
 		return false;
 	}
-	if (sampleRate(env) < 1 && Math.random() > sampleRate(env)) {
+	const rate = effectiveSampleRate(telemetry);
+	if (rate < 1 && Math.random() > rate) {
 		return false;
 	}
 
 	try {
 		const normalizedEvents = events.map(normalizeBeaconEvent);
 		const [fileEmitted, endpointEmitted] = await Promise.all([
-			writeBeaconFile(normalizedEvents, env).catch(() => false),
+			writeBeaconFile(normalizedEvents, telemetry).catch(() => false),
 			postBeaconEvents(
 				normalizedEvents,
-				env,
+				telemetry,
 				options.fetchFn ?? globalThis.fetch,
 			).catch(() => false),
 		]);
@@ -117,9 +100,9 @@ export async function emitBeaconBatch(
 
 async function writeBeaconFile(
 	events: BeaconEvent[],
-	env: NodeJS.ProcessEnv,
+	telemetry: Settings["telemetry"],
 ): Promise<boolean> {
-	const file = beaconFile(env);
+	const file = telemetry.beaconFile;
 	if (!file) {
 		return false;
 	}
@@ -130,10 +113,10 @@ async function writeBeaconFile(
 
 async function postBeaconEvents(
 	events: BeaconEvent[],
-	env: NodeJS.ProcessEnv,
+	telemetry: Settings["telemetry"],
 	fetchFn: typeof fetch | undefined,
 ): Promise<boolean> {
-	const endpoint = beaconEndpoint(env);
+	const endpoint = telemetry.endpoint;
 	if (!endpoint || !fetchFn) {
 		return false;
 	}
@@ -141,12 +124,14 @@ async function postBeaconEvents(
 		const headers: Record<string, string> = {
 			"content-type": "application/json",
 		};
-		const token = env.MAESTRO_BEACON_API_KEY;
-		if (token) {
-			headers.authorization = `Bearer ${token}`;
+		if (telemetry.apiKey) {
+			headers.authorization = `Bearer ${telemetry.apiKey}`;
 		}
 		const controller = new AbortController();
-		const timeout = setTimeout(() => controller.abort(), beaconTimeoutMs(env));
+		const timeout = setTimeout(
+			() => controller.abort(),
+			beaconTimeoutMs(telemetry),
+		);
 		timeout.unref?.();
 		try {
 			const response = await fetchFn(endpoint, {

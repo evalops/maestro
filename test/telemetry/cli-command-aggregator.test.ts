@@ -318,6 +318,123 @@ describe("CLI command telemetry aggregator", () => {
 		await Promise.allSettled(disposeResults);
 	});
 
+	it("derives telemetry from the injected env when no explicit telemetry slice is passed", async () => {
+		// Bugbot caught: when callers pass a custom RuntimeEnv but omit
+		// `telemetry`, the aggregator must derive telemetry from THAT env
+		// — not from `defaultRuntimeEnv()`. Otherwise isBeaconEnabled
+		// disagrees with the snapshot.
+		const { createRuntimeEnv } = await import("../../src/runtime/env.js");
+		const { CliCommandAggregator } = await import(
+			"../../src/telemetry/cli-command-aggregator.js"
+		);
+
+		// Build a RuntimeEnv with telemetry DISABLED that diverges from
+		// process.env (which has it enabled via the beforeEach stubs).
+		const disabledEnv = createRuntimeEnv({
+			MAESTRO_TELEMETRY: "0",
+			// No beacon endpoint or file set — isBeaconEnabled must return
+			// false even if defaultSettings() (from stubbed process.env)
+			// would say enabled.
+		});
+		const aggregator = new CliCommandAggregator({
+			clientVersion: "0.10.18",
+			bufferMs: 10_000,
+			env: disabledEnv,
+			bufferFile,
+			now: () => now,
+		});
+
+		await aggregator.submit("run");
+		await aggregator.flush();
+
+		// Beacon file must NOT have been written — the injected
+		// telemetry-disabled env wins, not the process.env-derived
+		// default.
+		await expect(readFile(beaconFile, "utf8")).rejects.toMatchObject({
+			code: "ENOENT",
+		});
+	});
+
+	it("records startup and command-count telemetry to the injected beacon path", async () => {
+		const customBeaconFile = join(tempDir, "custom-beacon.jsonl");
+		const customBufferFile = join(tempDir, "custom-buffer.json");
+		const { createRuntimeEnv } = await import("../../src/runtime/env.js");
+		const { recordCliStartupTelemetry } = await import(
+			"../../src/telemetry/cli-startup.js"
+		);
+		const { getGlobalCliCommandAggregator } = await import(
+			"../../src/telemetry/cli-command-aggregator.js"
+		);
+		const env = createRuntimeEnv({
+			MAESTRO_TELEMETRY: "1",
+			MAESTRO_BEACON_FILE: customBeaconFile,
+			MAESTRO_CLI_COMMAND_BEACON_BUFFER_FILE: customBufferFile,
+		});
+
+		await recordCliStartupTelemetry({
+			args: {
+				command: "exec",
+				messages: ["hello"],
+			},
+			clientVersion: "0.10.18",
+			rawArgs: ["exec", "hello"],
+			now: () => now,
+			env,
+		});
+		await getGlobalCliCommandAggregator({
+			clientVersion: "0.10.18",
+			now: () => now,
+			env,
+		}).flush();
+
+		const customActions = (await readFile(customBeaconFile, "utf8"))
+			.trim()
+			.split("\n")
+			.map((line) => (JSON.parse(line) as [{ action: string }])[0].action);
+		expect(customActions).toEqual(["exec", "cli.command.exec"]);
+		await expect(readFile(beaconFile, "utf8")).rejects.toMatchObject({
+			code: "ENOENT",
+		});
+	});
+
+	it("matchesOptions uses structural telemetry equality so aggregator reuses across resolveSettings calls", async () => {
+		// Bugbot caught: `matchesOptions` was doing `this.telemetry ===
+		// telemetry`. But `resolveSettings({ env })` allocates a fresh
+		// frozen object each call, so semantically-identical telemetry
+		// would force the global aggregator to be torn down and
+		// recreated on every CLI startup.
+		const { createRuntimeEnv } = await import("../../src/runtime/env.js");
+		const { resolveSettings } = await import("../../src/runtime/settings.js");
+		const { CliCommandAggregator } = await import(
+			"../../src/telemetry/cli-command-aggregator.js"
+		);
+
+		const env = createRuntimeEnv({ MAESTRO_TELEMETRY: "1" });
+		const nowFn = () => now;
+		const aggregator = new CliCommandAggregator({
+			clientVersion: "0.10.18",
+			bufferMs: 10_000,
+			env,
+			bufferFile,
+			now: nowFn,
+		});
+
+		// Same env, same logical telemetry, FRESH frozen telemetry object
+		// from a separate resolveSettings call. A regression to `===`
+		// would fail this match because resolveSettings allocates a new
+		// frozen object on every call.
+		const freshTelemetry = resolveSettings({ env }).telemetry;
+		expect(
+			aggregator.matchesOptions({
+				clientVersion: "0.10.18",
+				bufferMs: 10_000,
+				env,
+				telemetry: freshTelemetry,
+				bufferFile,
+				now: nowFn,
+			}),
+		).toBe(true);
+	});
 	it("classifies early-exit flags before parsed subcommands", async () => {
 		const { cliCommandName } = await import(
 			"../../src/telemetry/cli-startup.js"
@@ -410,7 +527,7 @@ describe("CLI command telemetry aggregator", () => {
 			clientVersion: "0.10.18",
 			rawArgs: ["--headless"],
 			now: () => now,
-			env: {
+			rawEnv: {
 				...process.env,
 				[LEGACY_HEADLESS_RUNTIME_ENV]: LEGACY_HEADLESS_RUNTIME_ENV_VALUE,
 			},

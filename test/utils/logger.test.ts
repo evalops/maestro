@@ -73,4 +73,62 @@ describe("logger stream routing", () => {
 			expect.stringContaining("[WARN] configuration missing"),
 		);
 	});
+
+	it("substrate: injecting RuntimeEnv directly skips the env-stub dance", async () => {
+		// This is what the substrate buys: no vi.stubEnv, no vi.resetModules,
+		// no module-cache reset. The test names the config it wants and the
+		// unit under test honors it.
+		const { createRuntimeEnv } = await import("../../src/runtime/env.js");
+		const { Logger } = await import("../../src/utils/logger.js");
+		const env = createRuntimeEnv({
+			MAESTRO_LOG_LEVEL: "debug",
+			MAESTRO_LOG_SPLIT_STREAMS: "1",
+		});
+		const stdout = vi.spyOn(console, "log").mockImplementation(() => {});
+		const stderr = vi.spyOn(console, "error").mockImplementation(() => {});
+
+		const logger = new Logger(undefined, () => env);
+		logger.info("substrate works");
+		logger.warn("substrate works");
+
+		expect(stdout).toHaveBeenCalledWith(
+			expect.stringContaining("[INFO] substrate works"),
+		);
+		expect(stderr).toHaveBeenCalledWith(
+			expect.stringContaining("[WARN] substrate works"),
+		);
+	});
+});
+
+describe("logger env restore setup", () => {
+	afterEach(() => {
+		vi.restoreAllMocks();
+	});
+
+	it("populates the default RuntimeEnv cache from one test", async () => {
+		process.env.MAESTRO_LOG_LEVEL = "warn";
+		const stderr = vi.spyOn(console, "error").mockImplementation(() => {});
+		const { createLogger } = await import("../../src/utils/logger.js");
+
+		createLogger("logger-test").warn("first test");
+
+		expect(stderr).toHaveBeenCalledWith(
+			expect.stringContaining("[WARN] first test"),
+		);
+	});
+
+	it("rebuilds the default RuntimeEnv after restore-env resets process.env", async () => {
+		process.env.MAESTRO_LOG_LEVEL = "debug";
+		process.env.MAESTRO_LOG_SPLIT_STREAMS = "1";
+		const stdout = vi.spyOn(console, "log").mockImplementation(() => {});
+		const stderr = vi.spyOn(console, "error").mockImplementation(() => {});
+		const { createLogger } = await import("../../src/utils/logger.js");
+
+		createLogger("logger-test").info("second test");
+
+		expect(stdout).toHaveBeenCalledWith(
+			expect.stringContaining("[INFO] second test"),
+		);
+		expect(stderr).not.toHaveBeenCalled();
+	});
 });

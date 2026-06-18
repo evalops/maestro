@@ -8,6 +8,7 @@ import {
 	initOpenTelemetry,
 	isOpenTelemetryEnabled,
 } from "./opentelemetry.js";
+import { defaultRuntimeEnv } from "./runtime/env.js";
 import { isInternalTelemetryDisabled } from "./telemetry/disablement.js";
 import {
 	type MaestroCorrelation,
@@ -33,7 +34,6 @@ import {
 	type CanonicalTurnEvent,
 	setDefaultTelemetryRecorder,
 } from "./telemetry/wide-events.js";
-import { resolveEnvPath } from "./utils/path-expansion.js";
 import {
 	sanitizeOptionalWithStaticMask,
 	sanitizeWithStaticMask,
@@ -272,29 +272,24 @@ type TelemetryEvent =
 	| CanonicalTurnEventBase
 	| CanonicalTurnEvent;
 
-const telemetryFlag =
-	process.env.MAESTRO_TELEMETRY ?? process.env.PLAYWRIGHT_TELEMETRY;
-
-const telemetryFileEnv =
-	resolveEnvPath(process.env.MAESTRO_TELEMETRY_FILE) ??
-	resolveEnvPath(process.env.PLAYWRIGHT_TELEMETRY_FILE);
-
-const telemetryEndpointEnv =
-	process.env.MAESTRO_TELEMETRY_ENDPOINT ??
-	process.env.PLAYWRIGHT_TELEMETRY_ENDPOINT;
-
-const telemetrySampleEnv =
-	process.env.MAESTRO_TELEMETRY_SAMPLE ??
-	process.env.PLAYWRIGHT_TELEMETRY_SAMPLE;
+// Substrate snapshot for the OpenTelemetry exporter. Captured once at
+// module load so the rest of this file's module-level constants (whose
+// values feed `getTelemetryStatus`) share one consistent view of env.
+// The `defaultRuntimeEnv()` cache means tests that mutate `process.env`
+// and call `resetDefaultRuntimeEnvForTests()` between cases see fresh
+// snapshots; production sees one stable snapshot.
+const exporterRuntimeEnv = defaultRuntimeEnv();
+const telemetryFileEnv = exporterRuntimeEnv.exporterFile;
+const telemetryEndpointEnv = exporterRuntimeEnv.exporterEndpoint;
+// `telemetryFlag` is kept as the raw string for `getTelemetryStatus`'s
+// `flagValue` field — UI surfaces and diagnostics show the literal user
+// setting, not the parsed tri-state.
+const telemetryFlag = exporterRuntimeEnv.telemetryFlag;
+const telemetrySampleRate = exporterRuntimeEnv.telemetrySampleRate;
 
 const shouldEnableTelemetry = (): boolean => {
-	const flag = telemetryFlag?.toLowerCase();
-	if (flag === "0" || flag === "false") {
-		return false;
-	}
-	if (flag === "1" || flag === "true") {
-		return true;
-	}
+	if (exporterRuntimeEnv.telemetryEnabled === false) return false;
+	if (exporterRuntimeEnv.telemetryEnabled === true) return true;
 	return Boolean(
 		telemetryEndpointEnv || telemetryFileEnv || hasRemoteMeterDestination(),
 	);
@@ -318,19 +313,9 @@ const A2A_PHASE_EVENT_TYPES: Record<
 	evidence_completed: MaestroBusEventType.A2AEvidenceCompleted,
 };
 
-const parseSamplingRate = (): number => {
-	const raw = telemetrySampleEnv;
-	if (!raw) {
-		return 1;
-	}
-	const rate = Number.parseFloat(raw);
-	if (Number.isNaN(rate)) {
-		return 1;
-	}
-	return Math.min(Math.max(rate, 0), 1);
-};
-
-const samplingRate = parseSamplingRate();
+// `RuntimeEnv.telemetrySampleRate` is already parsed and clamped to
+// `[0, 1]`; `null` means no signal, treated as full-sampling.
+const samplingRate = telemetrySampleRate ?? 1;
 
 const defaultTelemetryFile = PATHS.TELEMETRY_LOG;
 const toolFailureLogFile = PATHS.TOOL_FAILURE_LOG;
@@ -372,10 +357,10 @@ export function getTelemetryStatus(): TelemetryStatus {
 	return {
 		enabled: telemetryEnabled && samplingRate > 0,
 		reason,
-		endpoint: telemetryEndpointEnv,
-		filePath: telemetryFileEnv || defaultTelemetryFile,
+		endpoint: telemetryEndpointEnv ?? undefined,
+		filePath: telemetryFileEnv ?? defaultTelemetryFile,
 		sampleRate: samplingRate,
-		flagValue: telemetryFlag,
+		flagValue: telemetryFlag ?? undefined,
 		runtimeOverride,
 		overrideReason: telemetryOverrideReason,
 	};

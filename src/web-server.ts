@@ -62,6 +62,7 @@ import {
 	createAuthResolver,
 } from "./providers/auth.js";
 import { registerBackgroundTaskShutdownHooks } from "./runtime/background-task-hooks.js";
+import { resetDefaultRuntimeEnv } from "./runtime/env.js";
 import { configureSafeMode } from "./safety/safe-mode.js";
 import type {
 	HostedRunnerContext,
@@ -188,6 +189,7 @@ export { SseSession } from "./server/sse-session.js";
 
 loadEnv();
 scrubLoadedSecurityOverrideEnv();
+resetDefaultRuntimeEnv();
 void initOpenTelemetry("composer-web-server");
 initSentry("maestro-web-server");
 

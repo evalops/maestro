@@ -111,4 +111,12 @@ describe("changelog utilities", () => {
 		expect(JSON.parse(raw)).toEqual({ version: "0.3.0" });
 		expect(readLastShownChangelogVersion()).toBe("0.3.0");
 	});
+
+	it("ignores null changelog state", () => {
+		const dir = tempDir();
+		const statePath = join(dir, "state.json");
+		process.env.MAESTRO_CHANGELOG_STATE = statePath;
+		writeFileSync(statePath, "null", "utf-8");
+		expect(readLastShownChangelogVersion()).toBeNull();
+	});
 });

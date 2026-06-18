@@ -2,6 +2,12 @@ import {
 	isLegacyHeadlessRuntimeRequested,
 	willDispatchHeadlessRuntime,
 } from "../cli/headless-runtime-selection.js";
+import { type RuntimeEnv, defaultRuntimeEnv } from "../runtime/env.js";
+import {
+	type Settings,
+	defaultSettings,
+	resolveSettings,
+} from "../runtime/settings.js";
 import { emitBeacon } from "./beacon.js";
 import { getGlobalCliCommandAggregator } from "./cli-command-aggregator.js";
 
@@ -22,7 +28,14 @@ export interface RecordCliStartupTelemetryOptions {
 	commandCountLockTimeoutMs?: number;
 	rawArgs?: string[];
 	now?: () => number;
-	env?: NodeJS.ProcessEnv;
+	env?: RuntimeEnv;
+	telemetry?: Settings["telemetry"];
+	/**
+	 * Raw `process.env` for legacy reads that haven't moved to the substrate
+	 * yet (e.g. `isLegacyHeadlessRuntimeRequested`). Will be removed when
+	 * those callers migrate.
+	 */
+	rawEnv?: NodeJS.ProcessEnv;
 }
 
 export function cliCommandName(args: CliStartupArgs): string {
@@ -55,7 +68,13 @@ export function cliCommandName(args: CliStartupArgs): string {
 export async function recordCliStartupTelemetry(
 	options: RecordCliStartupTelemetryOptions,
 ): Promise<void> {
-	const env = options.env ?? process.env;
+	const env = options.env ?? defaultRuntimeEnv();
+	const telemetry =
+		options.telemetry ??
+		(options.env
+			? resolveSettings({ env }).telemetry
+			: defaultSettings().telemetry);
+	const rawEnv = options.rawEnv ?? process.env;
 	const now = options.now ?? Date.now;
 	const command = cliCommandName(options.args);
 	const mode = cliStartupMode(options.args, command);
@@ -80,16 +99,17 @@ export async function recordCliStartupTelemetry(
 						hasPrompt: options.args.messages.length > 0,
 						legacyRuntimeRequested:
 							willDispatchHeadlessRuntime(options.args) &&
-							isLegacyHeadlessRuntimeRequested(env),
+							isLegacyHeadlessRuntimeRequested(rawEnv),
 						argCount: options.rawArgs?.length ?? 0,
 					},
 				},
 			},
-			{ env },
+			{ telemetry },
 		).catch(() => false),
 		getGlobalCliCommandAggregator({
 			clientVersion: options.clientVersion,
 			env,
+			telemetry,
 			lockTimeoutMs: options.commandCountLockTimeoutMs,
 			now,
 		})

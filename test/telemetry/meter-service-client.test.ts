@@ -90,6 +90,24 @@ describe("meter telemetry client", () => {
 		expect(hasRemoteMeterDestination()).toBe(true);
 	});
 
+	it("substrate: passing an explicit RuntimeEnv skips the runner-env-leak surface", async () => {
+		// The #2763 flake was the CI runner exporting `EVALOPS_ORG_ID`
+		// even though the test stubs cleared the other three aliases.
+		// With the substrate primitive, the test passes a RuntimeEnv
+		// constructed from a literal and the function reads ONLY from
+		// that — runner-env is structurally unable to bleed in.
+		const { createRuntimeEnv } = await import("../../src/runtime/env.js");
+		const empty = createRuntimeEnv({});
+		expect(hasRemoteMeterDestination(empty)).toBe(false);
+
+		const configured = createRuntimeEnv({
+			MAESTRO_METER_BASE: "http://meter.test/",
+			MAESTRO_METER_ACCESS_TOKEN: "meter-token",
+			MAESTRO_METER_ORGANIZATION_ID: "org_meter",
+		});
+		expect(hasRemoteMeterDestination(configured)).toBe(true);
+	});
+
 	it("mirrors sampled canonical turns to meter over Connect", async () => {
 		const event = createCanonicalTurnEvent();
 		const fetchMock = vi.fn(async (input: unknown, init?: RequestInit) => {

@@ -11,8 +11,9 @@
  * crash mid-write because the rename is not atomic.
  *
  * This script enforces the rule going forward: every `.ts` file
- * under `src/` is scanned for direct `writeFileSync` /
- * `fs.writeFile` usage. The pre-existing violations listed in
+ * under `src/` is scanned for direct `writeFileSync`, `fs.writeFile`,
+ * or `writeFile` imported from `node:fs/promises` usage. The
+ * pre-existing violations listed in
  * `ALLOWLISTED_DIRECT_WRITE_FILES` are grandfathered in (tech debt
  * to be migrated case-by-case in follow-up PRs). Anything NOT in
  * the allowlist fails the check.
@@ -36,14 +37,24 @@ const REQUIRED_ISSUE = "evalops/maestro-internal#2631";
 const ALLOWLISTED_DIRECT_WRITE_FILES = new Set([
 	"src/agent/swarm/executor.ts",
 	"src/app-server/external-agent-import-api.ts",
+	"src/app-server/host-control-api.ts",
 	"src/cli-tui/utils/external-editor.ts",
 	"src/memory/auto-consolidation.ts",
 	// `src/oauth/private-file.ts` IS the helper that uses
 	// `writeFileSync` to implement the temp-then-rename pattern;
 	// it's an authorized implementation, not a violation.
 	"src/oauth/private-file.ts",
+	"src/platform/a2a-peer-registry.ts",
+	"src/platform/a2a-task-ledger.ts",
 	"src/sandbox/local-sandbox.ts",
+	"src/server/handlers/hosted-runner-drain.ts",
+	"src/shared-memory/client.ts",
+	"src/telemetry/cli-command-aggregator.ts",
+	"src/tools/apply-patch.ts",
+	"src/tools/edit.ts",
 	"src/tools/oracle.ts",
+	"src/tools/write.ts",
+	"src/utils/document-extractor.ts",
 	// `src/utils/fs.ts` IS the helper that implements the atomic
 	// temp-then-rename pattern; it's an authorized implementation,
 	// not a violation.
@@ -51,6 +62,8 @@ const ALLOWLISTED_DIRECT_WRITE_FILES = new Set([
 ]);
 
 const DIRECT_WRITE_PATTERN = /\bwriteFileSync\b|\bfs\.writeFile\b/;
+const FS_PROMISES_IMPORT_PATTERN =
+	/import\s*\{([^}]*)\}\s*from\s*["']node:fs\/promises["']/g;
 const ROOTS = ["src"];
 const failures = [];
 const seenAllowlistedFiles = new Set();
@@ -80,16 +93,45 @@ function walk(dir) {
 		if (relativePath.endsWith(".d.ts")) continue;
 
 		const source = readFileSync(path, "utf8");
-		if (!DIRECT_WRITE_PATTERN.test(source)) continue;
+		if (!usesDirectWrite(source)) continue;
 
 		if (!ALLOWLISTED_DIRECT_WRITE_FILES.has(relativePath)) {
 			failures.push(
-				`${relativePath} uses fs.writeFile / writeFileSync directly. Use writeTextFileAtomic or writeJsonFile from src/utils/fs.ts. See ${REQUIRED_ISSUE}.`,
+				`${relativePath} uses fs.writeFile / fs.promises.writeFile / writeFileSync directly. Use writeTextFileAtomic or writeJsonFile from src/utils/fs.ts. See ${REQUIRED_ISSUE}.`,
 			);
 			continue;
 		}
 		seenAllowlistedFiles.add(relativePath);
 	}
+}
+
+function usesDirectWrite(source) {
+	if (DIRECT_WRITE_PATTERN.test(source)) {
+		return true;
+	}
+
+	FS_PROMISES_IMPORT_PATTERN.lastIndex = 0;
+	for (const match of source.matchAll(FS_PROMISES_IMPORT_PATTERN)) {
+		const specifiers = match[1]
+			.split(",")
+			.map((specifier) => specifier.trim())
+			.filter(Boolean);
+		for (const specifier of specifiers) {
+			const parts = specifier.split(/\s+as\s+/);
+			if (parts[0]?.trim() !== "writeFile") {
+				continue;
+			}
+			const localName = (parts[1] ?? parts[0]).trim();
+			if (new RegExp(`\\b${escapeRegExp(localName)}\\s*\\(`).test(source)) {
+				return true;
+			}
+		}
+	}
+	return false;
+}
+
+function escapeRegExp(value) {
+	return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 for (const root of ROOTS) {

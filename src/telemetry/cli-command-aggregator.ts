@@ -2,6 +2,12 @@ import { open, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { PATHS } from "../config/constants.js";
+import { type RuntimeEnv, defaultRuntimeEnv } from "../runtime/env.js";
+import {
+	type Settings,
+	defaultSettings,
+	resolveSettings,
+} from "../runtime/settings.js";
 import {
 	type BeaconEvent,
 	emitBeaconBatch,
@@ -11,7 +17,8 @@ import {
 export interface CliCommandAggregatorOptions {
 	bufferMs?: number;
 	clientVersion: string;
-	env?: NodeJS.ProcessEnv;
+	env?: RuntimeEnv;
+	telemetry?: Settings["telemetry"];
 	now?: () => number;
 	bufferFile?: string;
 	lockTimeoutMs?: number;
@@ -29,10 +36,49 @@ const LOCK_STALE_GRACE_MS = 1_000;
 let globalAggregator: CliCommandAggregator | null = null;
 const inProcessBufferLockQueues = new Map<string, Promise<void>>();
 
+/**
+ * Pick `Settings["telemetry"]` consistently with the resolved env: if the
+ * caller supplied an `env` snapshot but omitted `telemetry`, derive it
+ * from that env instead of falling back to `defaultSettings()`. Otherwise
+ * `isBeaconEnabled(this.telemetry)` could disagree with what the snapshot
+ * actually contains.
+ */
+function resolveTelemetry(
+	options: CliCommandAggregatorOptions,
+	env: RuntimeEnv,
+): Settings["telemetry"] {
+	if (options.telemetry) return options.telemetry;
+	if (options.env) return resolveSettings({ env }).telemetry;
+	return defaultSettings().telemetry;
+}
+
+/**
+ * Structural equality for `Settings["telemetry"]`. Reference equality
+ * doesn't work here: callers commonly build the telemetry slice via
+ * `resolveSettings({ env })`, which allocates a fresh frozen object on
+ * every call. Two calls with the same env should be considered equal
+ * so the global aggregator isn't disposed and recreated unnecessarily.
+ */
+function telemetryEquals(
+	a: Settings["telemetry"],
+	b: Settings["telemetry"],
+): boolean {
+	if (a === b) return true;
+	return (
+		a.enabled === b.enabled &&
+		a.beaconFile === b.beaconFile &&
+		a.endpoint === b.endpoint &&
+		a.apiKey === b.apiKey &&
+		a.timeoutMs === b.timeoutMs &&
+		a.sampleRate === b.sampleRate
+	);
+}
+
 export class CliCommandAggregator {
 	private readonly bufferMs: number;
 	private readonly clientVersion: string;
-	private readonly env: NodeJS.ProcessEnv;
+	private readonly env: RuntimeEnv;
+	private readonly telemetry: Settings["telemetry"];
 	private readonly now: () => number;
 	private readonly bufferFile: string;
 	private readonly lockTimeoutMs: number;
@@ -41,26 +87,29 @@ export class CliCommandAggregator {
 	constructor(options: CliCommandAggregatorOptions) {
 		this.bufferMs = options.bufferMs ?? DEFAULT_BUFFER_MS;
 		this.clientVersion = options.clientVersion;
-		this.env = options.env ?? process.env;
+		this.env = options.env ?? defaultRuntimeEnv();
+		this.telemetry = resolveTelemetry(options, this.env);
 		this.now = options.now ?? Date.now;
 		this.bufferFile =
 			options.bufferFile ??
-			this.env.MAESTRO_CLI_COMMAND_BEACON_BUFFER_FILE ??
+			this.env.cliCommandBeaconBufferFile ??
 			join(PATHS.MAESTRO_HOME, "telemetry-cli-command-counts.json");
 		this.lockTimeoutMs = options.lockTimeoutMs ?? DEFAULT_LOCK_TIMEOUT_MS;
 	}
 
 	matchesOptions(options: CliCommandAggregatorOptions): boolean {
-		const env = options.env ?? process.env;
+		const env = options.env ?? defaultRuntimeEnv();
+		const telemetry = resolveTelemetry(options, env);
 		const now = options.now ?? Date.now;
 		const bufferFile =
 			options.bufferFile ??
-			env.MAESTRO_CLI_COMMAND_BEACON_BUFFER_FILE ??
+			env.cliCommandBeaconBufferFile ??
 			join(PATHS.MAESTRO_HOME, "telemetry-cli-command-counts.json");
 		return (
 			this.bufferMs === (options.bufferMs ?? DEFAULT_BUFFER_MS) &&
 			this.clientVersion === options.clientVersion &&
 			this.env === env &&
+			telemetryEquals(this.telemetry, telemetry) &&
 			this.now === now &&
 			this.bufferFile === bufferFile &&
 			this.lockTimeoutMs === (options.lockTimeoutMs ?? DEFAULT_LOCK_TIMEOUT_MS)
@@ -68,7 +117,7 @@ export class CliCommandAggregator {
 	}
 
 	start(): void {
-		if (this.timer || !isBeaconEnabled(this.env)) {
+		if (this.timer || !isBeaconEnabled(this.telemetry)) {
 			return;
 		}
 		this.timer = setInterval(() => {
@@ -78,7 +127,7 @@ export class CliCommandAggregator {
 	}
 
 	async submit(command: string): Promise<void> {
-		if (!isBeaconEnabled(this.env)) {
+		if (!isBeaconEnabled(this.telemetry)) {
 			return;
 		}
 		const action = normalizeCommandAction(command);
@@ -105,7 +154,7 @@ export class CliCommandAggregator {
 	}
 
 	async flush(): Promise<void> {
-		if (!isBeaconEnabled(this.env)) {
+		if (!isBeaconEnabled(this.telemetry)) {
 			return;
 		}
 		const buffer = await this.drainBuffer();
@@ -113,7 +162,7 @@ export class CliCommandAggregator {
 			return;
 		}
 		const emitted = await emitBeaconBatch(this.buildCommandEvents(buffer), {
-			env: this.env,
+			telemetry: this.telemetry,
 		});
 		if (!emitted) {
 			await this.restoreBuffer(buffer);

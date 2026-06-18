@@ -2301,7 +2301,18 @@ export function extractUrlsFromShellCommand(command: string): string[] {
 
 function tokensBeforeShellComment(segment: string[]): string[] {
 	const commentIndex = segment.findIndex((token) => token.startsWith("#"));
-	return commentIndex === -1 ? segment : segment.slice(0, commentIndex);
+	if (commentIndex === -1) return segment;
+	// INCLUDE the suspect comment-start token in the returned slice. The
+	// tokenizer strips quotes before we see segments, so a real shell
+	// comment (`echo hi # see https://wiki/page`) and a quoted token that
+	// happens to start with `#` (`echo "#prefix https://evil.com"`) are
+	// indistinguishable at this point. Dropping the token would let an
+	// adversary smuggle URLs past `blockedHosts` by prefixing them with
+	// `#` inside a quoted argument; keeping it adds a tolerable amount of
+	// false positives for the rare agent tool call that embeds a URL
+	// inside an actual `# comment` (which is conservative for security
+	// policy anyway). Tokens AFTER the comment-start are still dropped.
+	return segment.slice(0, commentIndex + 1);
 }
 
 /**
