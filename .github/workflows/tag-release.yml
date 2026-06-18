@@ -229,7 +229,7 @@ jobs:
               exit 0
             fi
             echo "Release workflow for ${RELEASE_TAG} has not appeared yet; confirmation attempt ${attempt}/6."
-            sleep 5
+            sleep 10
           done
           if [[ "${dispatch_status}" != "0" ]]; then
             echo "release workflow dispatch failed and no release run appeared for ${RELEASE_TAG}." >&2
