@@ -277,7 +277,6 @@ interface ExporterRuntimeConfig {
 	file: string | null;
 	endpoint: string | null;
 	flag: string | null;
-	initialEnabled: boolean;
 	sampleRate: number;
 }
 
@@ -286,13 +285,11 @@ let exporterRuntimeConfig: ExporterRuntimeConfig | null = null;
 function createExporterRuntimeConfig(env: RuntimeEnv): ExporterRuntimeConfig {
 	const file = env.exporterFile;
 	const endpoint = env.exporterEndpoint;
-	const initialEnabled = shouldEnableTelemetryForEnv(env, file, endpoint);
 	return {
 		endpoint,
 		env,
 		file,
 		flag: env.telemetryFlag,
-		initialEnabled,
 		// `RuntimeEnv.telemetrySampleRate` is already parsed and clamped to
 		// `[0, 1]`; `null` means no signal, treated as full-sampling.
 		sampleRate: env.telemetrySampleRate ?? 1,
@@ -356,8 +353,9 @@ export interface TelemetryStatus {
 export function getTelemetryStatus(): TelemetryStatus {
 	const config = getExporterRuntimeConfig();
 	let reason = "disabled";
-	const baseEnabled = config.initialEnabled && config.sampleRate > 0;
-	if (!shouldEnableTelemetry(config)) {
+	const telemetryEnabled = shouldEnableTelemetry(config);
+	const baseEnabled = telemetryEnabled && config.sampleRate > 0;
+	if (!telemetryEnabled) {
 		reason = "flag disabled";
 	} else if (config.sampleRate === 0) {
 		reason = "sampling=0";
@@ -377,9 +375,8 @@ export function getTelemetryStatus(): TelemetryStatus {
 
 	return {
 		enabled:
-			(telemetryOverride === null
-				? config.initialEnabled
-				: telemetryOverride) && config.sampleRate > 0,
+			(telemetryOverride === null ? telemetryEnabled : telemetryOverride) &&
+			config.sampleRate > 0,
 		reason,
 		endpoint: config.endpoint ?? undefined,
 		filePath: config.file ?? defaultTelemetryFile,
@@ -913,8 +910,9 @@ export async function recordTelemetry(event: TelemetryEvent): Promise<void> {
 	const eventBusTask = mirrorTelemetryToMaestroEventBus(normalizedEvent);
 
 	const legacyEnabled =
-		(telemetryOverride === null ? config.initialEnabled : telemetryOverride) &&
-		config.sampleRate > 0;
+		(telemetryOverride === null
+			? shouldEnableTelemetry(config)
+			: telemetryOverride) && config.sampleRate > 0;
 	if (!legacyEnabled) {
 		await eventBusTask;
 		return;

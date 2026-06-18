@@ -2,6 +2,7 @@ import { access, mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { saveOAuthCredentials } from "../../src/oauth/storage.js";
 import { resetDefaultRuntimeEnvForTests } from "../../src/runtime/env.js";
 
 function createCanonicalTurnEvent() {
@@ -109,6 +110,43 @@ describe("telemetry meter integration", () => {
 
 		expect(fetchMock).toHaveBeenCalledTimes(1);
 		await expect(access(join(maestroHome, "telemetry.log"))).rejects.toThrow();
+	});
+
+	it("refreshes meter-backed enablement when OAuth credentials appear later", async () => {
+		vi.stubEnv("MAESTRO_METER_BASE", "http://meter.test");
+		vi.stubEnv("MAESTRO_METER_ACCESS_TOKEN", "");
+		vi.stubEnv("MAESTRO_EVALOPS_ORG_ID", "");
+		const fetchMock = vi.fn(async () => new Response("{}", { status: 200 }));
+		vi.stubGlobal("fetch", fetchMock);
+
+		const telemetry = await import("../../src/telemetry.js");
+
+		expect(telemetry.getTelemetryStatus()).toEqual(
+			expect.objectContaining({
+				enabled: false,
+			}),
+		);
+
+		saveOAuthCredentials("evalops", {
+			type: "oauth",
+			access: "oauth-access",
+			refresh: "oauth-refresh",
+			expires: Date.now() + 60_000,
+			metadata: {
+				organizationId: "org_evalops",
+			},
+		});
+
+		expect(telemetry.getTelemetryStatus()).toEqual(
+			expect.objectContaining({
+				enabled: true,
+				reason: "meter",
+			}),
+		);
+
+		await telemetry.recordTelemetry(createCanonicalTurnEvent());
+
+		expect(fetchMock).toHaveBeenCalledTimes(1);
 	});
 
 	it("refreshes telemetry status after the default RuntimeEnv snapshot is reset", async () => {
