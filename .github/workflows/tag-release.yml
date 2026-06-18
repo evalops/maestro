@@ -186,13 +186,13 @@ jobs:
               --jq "[.[] | select(.headBranch == \"${RELEASE_TAG}\" and .status != \"completed\")] | length"
           }
 
-          latest_release_run_id() {
+          dispatched_release_run_count() {
             gh run list \
               --repo "${GITHUB_REPOSITORY}" \
               --workflow release \
-              --json databaseId,headBranch \
+              --json event,headBranch \
               --limit 50 \
-              --jq "([.[] | select(.headBranch == \"${RELEASE_TAG}\") | .databaseId] | .[0]) // \"\""
+              --jq "[.[] | select(.headBranch == \"${RELEASE_TAG}\" and .event == \"workflow_dispatch\")] | length"
           }
 
           retry() {
@@ -217,13 +217,13 @@ jobs:
             echo "Found ${active_count} active release workflow run(s) for ${RELEASE_TAG}; not dispatching another."
             exit 0
           fi
-          existing_run_id="$(retry "List release workflows" latest_release_run_id)"
+          existing_count="$(retry "List dispatched release workflows" dispatched_release_run_count)"
           retry "Dispatch release workflow" gh workflow run release --repo "${GITHUB_REPOSITORY}" --ref "${RELEASE_TAG}" --field "version=${RELEASE_VERSION}"
 
           for attempt in 1 2 3 4 5 6; do
-            latest_run_id="$(retry "Confirm dispatched release workflow" latest_release_run_id)"
-            if [[ -n "${latest_run_id}" && "${latest_run_id}" != "${existing_run_id}" ]]; then
-              echo "Confirmed release workflow dispatch for ${RELEASE_TAG}; observed run ${latest_run_id}."
+            release_count="$(retry "Confirm dispatched release workflow" dispatched_release_run_count)"
+            if (( release_count > existing_count )); then
+              echo "Confirmed release workflow dispatch for ${RELEASE_TAG}; found ${release_count} matching dispatched run(s)."
               exit 0
             fi
             echo "Release workflow for ${RELEASE_TAG} has not appeared yet; confirmation attempt ${attempt}/6."
