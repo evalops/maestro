@@ -300,7 +300,7 @@ export function classifySyncOutcome(
 		};
 	}
 
-	if (nextAttempt >= item.maxAttempts) {
+	if (item.attempt >= item.maxAttempts) {
 		return {
 			action: "block",
 			reason: outcome.errorCode ?? "max_attempts_exhausted",
@@ -369,6 +369,7 @@ export function evaluateExtensionGovernance(
 
 	const trustedPublishers = new Set(policy.trustedPublishers ?? []);
 	if (
+		candidate.source === "marketplace" &&
 		trustedPublishers.size > 0 &&
 		candidate.publisher &&
 		trustedPublishers.has(candidate.publisher)
@@ -486,6 +487,7 @@ export function buildReleaseCanaryPlan(
 	const stageIds = new Set(stages.map((stage) => stage.id));
 	const stageIndexes = new Map(stages.map((stage, index) => [stage.id, index]));
 	const blockers = [
+		...detectDuplicateReleaseCanaryStages(stages),
 		...stages.flatMap((stage) =>
 			stage.requires
 				.filter((required) => !stageIds.has(required))
@@ -507,6 +509,20 @@ export function buildReleaseCanaryPlan(
 		stages,
 		blockers,
 	};
+}
+
+function detectDuplicateReleaseCanaryStages(
+	stages: ReleaseCanaryStage[],
+): string[] {
+	const seen = new Set<string>();
+	const blockers: string[] = [];
+	for (const stage of stages) {
+		if (seen.has(stage.id)) {
+			blockers.push(`duplicate_stage:${stage.id}`);
+		}
+		seen.add(stage.id);
+	}
+	return unique(blockers);
 }
 
 function detectReleaseCanaryCycles(stages: ReleaseCanaryStage[]): string[] {

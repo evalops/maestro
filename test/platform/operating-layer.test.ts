@@ -129,7 +129,7 @@ describe("operating layer primitives", () => {
 					id: "item-2",
 					kind: "session_update",
 					status: "failed",
-					attempt: 4,
+					attempt: 5,
 					maxAttempts: 5,
 				},
 				{ ok: false, statusCode: 503, errorCode: "service_unavailable" },
@@ -137,7 +137,7 @@ describe("operating layer primitives", () => {
 		).toEqual({
 			action: "block",
 			reason: "service_unavailable",
-			nextAttempt: 5,
+			nextAttempt: 6,
 		});
 		expect(
 			classifySyncOutcome(
@@ -151,6 +151,22 @@ describe("operating layer primitives", () => {
 				{ ok: false, statusCode: 503 },
 			).action,
 		).toBe("retry");
+		expect(
+			classifySyncOutcome(
+				{
+					id: "item-final-attempt",
+					kind: "message",
+					status: "failed",
+					attempt: 4,
+					maxAttempts: 5,
+				},
+				{ ok: false, statusCode: 503 },
+			),
+		).toEqual({
+			action: "retry",
+			reason: "http_503",
+			nextAttempt: 5,
+		});
 		expect(
 			classifySyncOutcome(
 				{
@@ -173,7 +189,7 @@ describe("operating layer primitives", () => {
 					id: "item-4",
 					kind: "message",
 					status: "failed",
-					attempt: 4,
+					attempt: 5,
 					maxAttempts: 5,
 				},
 				{ ok: false, statusCode: 404 },
@@ -181,7 +197,7 @@ describe("operating layer primitives", () => {
 		).toEqual({
 			action: "block",
 			reason: "max_attempts_exhausted",
-			nextAttempt: 5,
+			nextAttempt: 6,
 		});
 	});
 
@@ -232,6 +248,19 @@ describe("operating layer primitives", () => {
 				]),
 			}),
 		);
+
+		expect(
+			evaluateExtensionGovernance(
+				{
+					id: "plugin-local",
+					source: "local",
+					publisher: "evalops",
+				},
+				{
+					trustedPublishers: ["evalops"],
+				},
+			).reasons,
+		).not.toContain("trusted_publisher:evalops");
 
 		expect(
 			evaluateExtensionGovernance(
@@ -340,5 +369,21 @@ describe("operating layer primitives", () => {
 				},
 			]).blockers,
 		).toEqual(["out_of_order_stage:publish_package:local_release_gate"]);
+		expect(
+			buildReleaseCanaryPlan([
+				{
+					id: "publish_package",
+					name: "Publish package",
+					requires: [],
+					evidenceKinds: ["npm.publish"],
+				},
+				{
+					id: "publish_package",
+					name: "Duplicate publish package",
+					requires: [],
+					evidenceKinds: ["npm.publish"],
+				},
+			]).blockers,
+		).toEqual(["duplicate_stage:publish_package"]);
 	});
 });
