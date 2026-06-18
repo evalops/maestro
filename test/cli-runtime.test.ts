@@ -100,9 +100,12 @@ describe("cli-runtime direct command dispatch", () => {
 
 		vi.doMock("../src/load-env.js", () => ({
 			getLoadedEnvKeys: () => ["MAESTRO_PROFILE"],
-			scrubLoadedSecurityOverrideEnv: () => {
+			finalizeLoadedEnv: () => {
 				Reflect.deleteProperty(process.env, "MAESTRO_PROFILE");
-				return ["MAESTRO_PROFILE"];
+				return {
+					loadedEnvKeys: [],
+					scrubbedEnvKeys: ["MAESTRO_PROFILE"],
+				};
 			},
 		}));
 		vi.doMock("../src/cli/commands/skill.js", () => ({

@@ -1454,7 +1454,7 @@ describe("ci workflow guardrails", () => {
 		});
 		const loadEnvImportIndex = source.indexOf('"./load-env.js"');
 		const loadEnvIndex = source.indexOf(
-			"loadedEnvKeys = loadEnv();",
+			"loadAndFinalizeEnv()",
 			loadEnvImportIndex,
 		);
 		const refreshIndex = source.indexOf(

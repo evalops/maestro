@@ -144,6 +144,10 @@ export function SettingsModal({
 		null,
 	);
 	const [selectedComposer, setSelectedComposer] = useState<string>("");
+	const clearComposerState = useCallback(() => {
+		setComposerStatus(null);
+		setSelectedComposer("");
+	}, []);
 	const [availableModels, setAvailableModels] = useState<Model[]>(
 		dedupeModels(models ?? []),
 	);
@@ -276,8 +280,7 @@ export function SettingsModal({
 					// composer. Clear the state on failure so the panel
 					// either renders empty or surfaces the load error,
 					// rather than misrepresenting the new session.
-					setComposerStatus(null);
-					setSelectedComposer("");
+					clearComposerState();
 				}
 
 				if (!models?.length) {
@@ -355,7 +358,14 @@ export function SettingsModal({
 		// for approval-mode keying; `sessionId` is listed separately so
 		// composer calls (which use the raw nullable) re-run when the
 		// underlying session id actually changes.
-	}, [open, sessionKey, sessionId, hasSession, models?.length]);
+	}, [
+		open,
+		sessionKey,
+		sessionId,
+		hasSession,
+		models?.length,
+		clearComposerState,
+	]);
 
 	useEffect(() => {
 		if (!composerStatus) return;
@@ -930,8 +940,7 @@ export function SettingsModal({
 		} catch (err) {
 			// Mirror the initial-load semantics: a failed refresh must not
 			// leave a previous session's composer state on screen.
-			setComposerStatus(null);
-			setSelectedComposer("");
+			clearComposerState();
 			setError(
 				err instanceof Error ? err.message : "Failed to load composer profiles",
 			);

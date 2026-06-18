@@ -2,7 +2,15 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { loadEnv, scrubLoadedSecurityOverrideEnv } from "../../src/load-env.js";
+import {
+	loadAndFinalizeEnv,
+	loadEnv,
+	scrubLoadedSecurityOverrideEnv,
+} from "../../src/load-env.js";
+import {
+	defaultRuntimeEnv,
+	resetDefaultRuntimeEnvForTests,
+} from "../../src/runtime/env.js";
 
 describe("loadEnv", () => {
 	const originalCwd = process.cwd();
@@ -11,6 +19,7 @@ describe("loadEnv", () => {
 
 	afterEach(() => {
 		process.chdir(originalCwd);
+		resetDefaultRuntimeEnvForTests();
 		for (const key of touchedKeys) {
 			delete process.env[key];
 		}
@@ -468,6 +477,48 @@ describe("loadEnv", () => {
 		for (const key of keys) {
 			expect(process.env[key]).toBeUndefined();
 		}
+	});
+
+	it("resets RuntimeEnv only after dotenv security overrides are scrubbed", () => {
+		const dir = mkdtempSync(join(tmpdir(), "maestro-load-env-"));
+		tempDirs.push(dir);
+		mkdirSync(dir, { recursive: true });
+		for (const key of [
+			"MAESTRO_OTEL",
+			"MAESTRO_OTEL_SAMPLER",
+			"MAESTRO_OTEL_SERVICE_NAME",
+		]) {
+			touchedKeys.add(key);
+			delete process.env[key];
+		}
+		writeFileSync(
+			join(dir, ".env"),
+			[
+				"MAESTRO_OTEL=1",
+				"MAESTRO_OTEL_SAMPLER=always_on",
+				"MAESTRO_OTEL_SERVICE_NAME=repo-service",
+			].join("\n"),
+			"utf8",
+		);
+		process.chdir(dir);
+
+		const stale = defaultRuntimeEnv();
+		expect(stale.otelEnabled).toBeNull();
+
+		const { scrubbedEnvKeys } = loadAndFinalizeEnv();
+		const rebuilt = defaultRuntimeEnv();
+
+		expect(new Set(scrubbedEnvKeys)).toEqual(
+			new Set([
+				"MAESTRO_OTEL",
+				"MAESTRO_OTEL_SAMPLER",
+				"MAESTRO_OTEL_SERVICE_NAME",
+			]),
+		);
+		expect(process.env.MAESTRO_OTEL).toBeUndefined();
+		expect(rebuilt.otelEnabled).toBeNull();
+		expect(rebuilt.otelSampler).toBeNull();
+		expect(rebuilt.otelServiceName).toBeNull();
 	});
 
 	it("scrubs Governance service overrides loaded from dotenv files", () => {

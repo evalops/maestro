@@ -11,6 +11,10 @@ const mocks = vi.hoisted(() => ({
 	disposeCheckpointService: vi.fn(),
 	loadEnv: vi.fn(),
 	scrubLoadedSecurityOverrideEnv: vi.fn(),
+	loadAndFinalizeEnv: vi.fn(() => ({
+		loadedEnvKeys: [],
+		scrubbedEnvKeys: [],
+	})),
 	initOpenTelemetry: vi.fn(),
 	initSentry: vi.fn(),
 	captureSentryException: vi.fn(),
@@ -32,6 +36,7 @@ const mocks = vi.hoisted(() => ({
 vi.mock("../src/load-env.js", () => ({
 	loadEnv: mocks.loadEnv,
 	scrubLoadedSecurityOverrideEnv: mocks.scrubLoadedSecurityOverrideEnv,
+	loadAndFinalizeEnv: mocks.loadAndFinalizeEnv,
 }));
 
 vi.mock("../src/opentelemetry.js", () => ({
