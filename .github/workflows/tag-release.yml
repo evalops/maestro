@@ -196,16 +196,6 @@ jobs:
               --jq "[.[] | select(.headBranch == \"${RELEASE_TAG}\" and .event == \"workflow_dispatch\")] | length"
           }
 
-          # shellcheck disable=SC2317 # Invoked indirectly through retry.
-          new_active_dispatched_release_run_count() {
-            gh run list \
-              --repo "${GITHUB_REPOSITORY}" \
-              --workflow release \
-              --json createdAt,event,headBranch,status \
-              --limit 50 \
-              --jq "[.[] | select(.headBranch == \"${RELEASE_TAG}\" and .event == \"workflow_dispatch\" and .status != \"completed\" and .createdAt >= \"${dispatch_started_at}\")] | length"
-          }
-
           retry() {
             local description="$1"
             shift
@@ -229,14 +219,13 @@ jobs:
             exit 0
           fi
           existing_count="$(retry "List dispatched release workflows" dispatched_release_run_count)"
-          dispatch_started_at="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
           dispatch_status=0
           retry "Dispatch release workflow" gh workflow run release --repo "${GITHUB_REPOSITORY}" --ref "${RELEASE_TAG}" --field "version=${RELEASE_VERSION}" || dispatch_status=$?
 
           for attempt in 1 2 3 4 5 6; do
-            release_run_count="$(retry "Confirm dispatched release workflow" new_active_dispatched_release_run_count)"
-            if [[ "${release_run_count}" != "0" ]]; then
-              echo "Confirmed ${release_run_count} new active release workflow run(s) for ${RELEASE_TAG}; ${existing_count} matching dispatched run(s) existed before dispatch."
+            release_run_count="$(retry "Confirm dispatched release workflow" dispatched_release_run_count)"
+            if (( release_run_count > existing_count )); then
+              echo "Confirmed release workflow dispatch for ${RELEASE_TAG}; found ${release_run_count} matching dispatched run(s), up from ${existing_count} before dispatch."
               exit 0
             fi
             echo "Release workflow for ${RELEASE_TAG} has not appeared yet; confirmation attempt ${attempt}/6."
