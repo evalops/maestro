@@ -186,6 +186,7 @@ jobs:
               --jq "[.[] | select(.headBranch == \"${RELEASE_TAG}\" and .status != \"completed\")] | length"
           }
 
+          # shellcheck disable=SC2317 # Invoked indirectly through retry.
           dispatched_release_run_count() {
             gh run list \
               --repo "${GITHUB_REPOSITORY}" \
