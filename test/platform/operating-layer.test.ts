@@ -142,6 +142,23 @@ describe("operating layer primitives", () => {
 		expect(
 			classifySyncOutcome(
 				{
+					id: "item-2b",
+					kind: "message",
+					sessionId: "session-1",
+					status: "failed",
+					attempt: 5,
+					maxAttempts: 5,
+				},
+				{ ok: false, statusCode: 404 },
+			),
+		).toEqual({
+			action: "block",
+			reason: "max_attempts_exhausted",
+			nextAttempt: 6,
+		});
+		expect(
+			classifySyncOutcome(
+				{
 					id: "item-3",
 					kind: "session_create",
 					status: "failed",
