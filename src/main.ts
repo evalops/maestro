@@ -118,7 +118,7 @@ import {
 	buildCliConfigOverrides,
 	loadRuntimeConfig,
 } from "./config/runtime-config.js";
-import { loadEnv, scrubLoadedSecurityOverrideEnv } from "./load-env.js";
+import { loadAndFinalizeEnv } from "./load-env.js";
 import { bootstrapLsp } from "./lsp/bootstrap.js";
 import type { McpConfig } from "./mcp/types.js";
 import { createLazyAutoMemoryCoordinators } from "./memory/lazy-auto-memory.js";
@@ -593,14 +593,14 @@ export async function main(args: string[]) {
 	// PHASE 0: Early Exit Checks (before any async initialization)
 	// ─────────────────────────────────────────────────────────────────────────────
 
-	// Load environment variables from .env files (project and user level)
-	loadEnv();
+	// Load environment variables from .env files (project and user level),
+	// scrub repo-controlled security overrides, then refresh RuntimeEnv.
+	loadAndFinalizeEnv();
 	const startupProfiler = createStartupProfilerFromEnv();
 	startupProfiler.checkpoint("process:start");
 
 	// Parse arguments early to check for version/help flags before heavy initialization
 	const parsed = parseArgs(args);
-	scrubLoadedSecurityOverrideEnv();
 	startupProfiler.checkpoint("cli:parsed");
 	const startupTelemetry = import("./telemetry/cli-startup.js")
 		.then(({ recordCliStartupTelemetry }) =>

@@ -2,6 +2,7 @@ import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { config } from "dotenv";
 import { ENV_VARS } from "./config/env-vars.js";
+import { resetDefaultRuntimeEnv } from "./runtime/env.js";
 
 const ENV_FILES = [".env.local", ".env"];
 
@@ -312,4 +313,28 @@ export function scrubLoadedSecurityOverrideEnv(): string[] {
 		scrubbed.push(loadedKey);
 	}
 	return scrubbed;
+}
+
+export interface FinalizedEnvLoad {
+	loadedEnvKeys: string[];
+	scrubbedEnvKeys: string[];
+}
+
+/**
+ * Finish dotenv bootstrap after any trust-sensitive keys have been loaded.
+ *
+ * The order is load -> scrub -> reset RuntimeEnv. Resetting before the scrub
+ * can preserve repo-controlled security overrides in the cached runtime
+ * snapshot, which is exactly the bug class closed by the OTel follow-up.
+ */
+export function finalizeLoadedEnv(
+	loadedEnvKeys: string[] = [],
+): FinalizedEnvLoad {
+	const scrubbedEnvKeys = scrubLoadedSecurityOverrideEnv();
+	resetDefaultRuntimeEnv();
+	return { loadedEnvKeys, scrubbedEnvKeys };
+}
+
+export function loadAndFinalizeEnv(): FinalizedEnvLoad {
+	return finalizeLoadedEnv(loadEnv());
 }

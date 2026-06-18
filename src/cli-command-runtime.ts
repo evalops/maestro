@@ -9,8 +9,8 @@ export async function runCliCommandRuntime(args: string[]): Promise<boolean> {
 	}
 	const { parseArgs } = await import("./cli/args.js");
 	const parsed = parseArgs(args);
-	const { scrubLoadedSecurityOverrideEnv } = await import("./load-env.js");
-	scrubLoadedSecurityOverrideEnv();
+	const { finalizeLoadedEnv } = await import("./load-env.js");
+	finalizeLoadedEnv();
 	if (parsed.error || !isDirectRuntimeCommand(parsed.command)) {
 		return false;
 	}

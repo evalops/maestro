@@ -268,11 +268,8 @@ const run = async () => {
 		let envLoaded = false;
 		let loadedEnvKeys: string[] = [];
 		if (immediateExit !== null) {
-			const { loadEnv, scrubLoadedSecurityOverrideEnv } = await import(
-				"./load-env.js"
-			);
-			loadedEnvKeys = loadEnv();
-			scrubLoadedSecurityOverrideEnv();
+			const { loadAndFinalizeEnv } = await import("./load-env.js");
+			({ loadedEnvKeys } = loadAndFinalizeEnv());
 			envLoaded = true;
 		}
 		if (shouldUseInstantCliExit(immediateExit, process.env)) {
@@ -281,11 +278,8 @@ const run = async () => {
 		}
 
 		if (!envLoaded) {
-			const { loadEnv, scrubLoadedSecurityOverrideEnv } = await import(
-				"./load-env.js"
-			);
-			loadedEnvKeys = loadEnv();
-			scrubLoadedSecurityOverrideEnv();
+			const { loadAndFinalizeEnv } = await import("./load-env.js");
+			({ loadedEnvKeys } = loadAndFinalizeEnv());
 		}
 		await refreshInstalledCliOnStartup(args, loadedEnvKeys);
 		if (shouldUseFastUnbundledExecRuntime(args)) {

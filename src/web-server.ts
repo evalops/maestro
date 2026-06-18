@@ -41,7 +41,7 @@ import { resolveDefaultApprovalMode } from "./config/default-approval-mode.js";
 import type { ComposerConfig } from "./config/index.js";
 import { loadUnifiedContextManifest } from "./context/manifest.js";
 import { initLifecycle, shutdownLifecycle } from "./lifecycle.js";
-import { loadEnv, scrubLoadedSecurityOverrideEnv } from "./load-env.js";
+import { loadAndFinalizeEnv } from "./load-env.js";
 import { bootstrapLsp } from "./lsp/bootstrap.js";
 import { loadMcpConfig, mcpManager } from "./mcp/index.js";
 import { prefetchOfficialMcpRegistry } from "./mcp/official-registry.js";
@@ -62,7 +62,6 @@ import {
 	createAuthResolver,
 } from "./providers/auth.js";
 import { registerBackgroundTaskShutdownHooks } from "./runtime/background-task-hooks.js";
-import { resetDefaultRuntimeEnv } from "./runtime/env.js";
 import { configureSafeMode } from "./safety/safe-mode.js";
 import type {
 	HostedRunnerContext,
@@ -187,9 +186,7 @@ import { resolveWebRoot } from "./server/web-root.js";
 // Re-export for existing test imports
 export { SseSession } from "./server/sse-session.js";
 
-loadEnv();
-scrubLoadedSecurityOverrideEnv();
-resetDefaultRuntimeEnv();
+loadAndFinalizeEnv();
 void initOpenTelemetry("composer-web-server");
 initSentry("maestro-web-server");
 
