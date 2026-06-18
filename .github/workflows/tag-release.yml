@@ -219,17 +219,21 @@ jobs:
             exit 0
           fi
           existing_count="$(retry "List dispatched release workflows" dispatched_release_run_count)"
-          retry "Dispatch release workflow" gh workflow run release --repo "${GITHUB_REPOSITORY}" --ref "${RELEASE_TAG}" --field "version=${RELEASE_VERSION}"
+          dispatch_status=0
+          retry "Dispatch release workflow" gh workflow run release --repo "${GITHUB_REPOSITORY}" --ref "${RELEASE_TAG}" --field "version=${RELEASE_VERSION}" || dispatch_status=$?
 
           for attempt in 1 2 3 4 5 6; do
-            release_count="$(retry "Confirm dispatched release workflow" dispatched_release_run_count)"
-            if (( release_count > existing_count )); then
-              echo "Confirmed release workflow dispatch for ${RELEASE_TAG}; found ${release_count} matching dispatched run(s)."
+            release_run_count="$(retry "Confirm dispatched release workflow" dispatched_release_run_count)"
+            if (( release_run_count > existing_count )); then
+              echo "Confirmed release workflow dispatch for ${RELEASE_TAG}; found ${release_run_count} matching dispatched run(s), up from ${existing_count} before dispatch."
               exit 0
             fi
             echo "Release workflow for ${RELEASE_TAG} has not appeared yet; confirmation attempt ${attempt}/6."
             sleep 10
           done
-
+          if [[ "${dispatch_status}" != "0" ]]; then
+            echo "release workflow dispatch failed and no release run appeared for ${RELEASE_TAG}." >&2
+            exit "${dispatch_status}"
+          fi
           echo "::error::Release workflow dispatch did not produce a new run for ${RELEASE_TAG}."
           exit 1
