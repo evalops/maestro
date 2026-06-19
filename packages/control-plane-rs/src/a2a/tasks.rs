@@ -1475,9 +1475,12 @@ async fn rollback_a2a_send_claim(state: &AppState, task_id: &str, previous_task:
 }
 
 async fn a2a_canceled_task(state: &AppState, task_id: &str) -> Option<Value> {
-    state.a2a_tasks.lock().await.get(task_id).and_then(|task| {
-        a2a_task_is_canceled(task).then(|| task.clone())
-    })
+    state
+        .a2a_tasks
+        .lock()
+        .await
+        .get(task_id)
+        .and_then(|task| a2a_task_is_canceled(task).then(|| task.clone()))
 }
 
 pub(crate) async fn store_a2a_task_unless_canceled(

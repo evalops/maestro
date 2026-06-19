@@ -4099,6 +4099,7 @@ async fn a2a_task_store_persists_control_plane_tasks_to_ledger_file() {
             "nonSecret": "keep-visible",
             "nonCredentials": "keep-visible-too",
             "apiToken": "secret-api-token",
+            "oauthToken": "secret-oauth-token",
             "bearer": "secret-bearer",
             "tools": [
                 {
@@ -4107,7 +4108,8 @@ async fn a2a_task_store_persists_control_plane_tasks_to_ledger_file() {
                         "path": "src/main.rs",
                         "nonSecret": "nested-visible",
                         "nonCredentials": "nested-visible-too",
-                        "apiToken": "nested-secret"
+                        "apiToken": "nested-secret",
+                        "webhookSecret": "nested-webhook-secret"
                     }
                 }
             ],
@@ -4185,6 +4187,7 @@ async fn a2a_task_store_persists_control_plane_tasks_to_ledger_file() {
         "keep-visible-too"
     );
     assert!(control_plane_entry["metadata"].get("apiToken").is_none());
+    assert!(control_plane_entry["metadata"].get("oauthToken").is_none());
     assert!(control_plane_entry["metadata"].get("bearer").is_none());
     assert!(control_plane_entry["metadata"].get("tools").is_none());
     assert_eq!(
@@ -4198,6 +4201,9 @@ async fn a2a_task_store_persists_control_plane_tasks_to_ledger_file() {
     assert_eq!(control_plane_entry["a2aTask"]["id"], "maestro-task-durable");
     assert!(control_plane_entry["a2aTask"]["metadata"]
         .get("apiToken")
+        .is_none());
+    assert!(control_plane_entry["a2aTask"]["metadata"]
+        .get("oauthToken")
         .is_none());
     assert!(control_plane_entry["a2aTask"]["metadata"]
         .get("bearer")
@@ -4221,6 +4227,11 @@ async fn a2a_task_store_persists_control_plane_tasks_to_ledger_file() {
     assert!(
         control_plane_entry["a2aTask"]["metadata"]["tools"][0]["input"]
             .get("apiToken")
+            .is_none()
+    );
+    assert!(
+        control_plane_entry["a2aTask"]["metadata"]["tools"][0]["input"]
+            .get("webhookSecret")
             .is_none()
     );
     assert_eq!(
@@ -4259,6 +4270,14 @@ async fn a2a_task_store_persists_control_plane_tasks_to_ledger_file() {
     assert_eq!(
         loaded["maestro-task-durable"]["metadata"]["nonCredentials"],
         "keep-visible-too"
+    );
+    assert!(loaded["maestro-task-durable"]["metadata"]
+        .get("oauthToken")
+        .is_none());
+    assert!(
+        loaded["maestro-task-durable"]["metadata"]["tools"][0]["input"]
+            .get("webhookSecret")
+            .is_none()
     );
     assert_eq!(
         loaded["maestro-task-durable"]["metadata"]["workGraph"]["childRunIds"][0],
@@ -5409,8 +5428,7 @@ async fn a2a_task_load_preserves_rich_parts_when_history_message_is_refreshed() 
 
     let refreshed_parts = &loaded["task-rich-parts-refresh"]["history"][0]["parts"];
     assert_eq!(
-        refreshed_parts[1]["data"]["attachmentId"],
-        "artifact-rich-parts",
+        refreshed_parts[1]["data"]["attachmentId"], "artifact-rich-parts",
         "rich attachment part must survive transcript refresh"
     );
     assert_eq!(
@@ -5504,7 +5522,12 @@ async fn a2a_task_store_preserves_canceled_task_across_canonical_state_aliases()
         ..base_state
     };
 
-    for alias in ["CANCELLED", "STATE_CANCELED", "TASK_STATE_CANCELLED", "canceled"] {
+    for alias in [
+        "CANCELLED",
+        "STATE_CANCELED",
+        "TASK_STATE_CANCELLED",
+        "canceled",
+    ] {
         let task_id = format!("task-canceled-{alias}");
         let canceled_task = a2a_task_value(
             &task_id,
@@ -5529,13 +5552,11 @@ async fn a2a_task_store_preserves_canceled_task_across_canonical_state_aliases()
         let stored = store_a2a_task_unless_canceled(&state, &task_id, completion_task).await;
 
         assert_eq!(
-            stored["status"]["state"],
-            alias,
+            stored["status"]["state"], alias,
             "canceled task with alias {alias} must not be overwritten by a later store"
         );
         assert_ne!(
-            stored["status"]["state"],
-            "TASK_STATE_COMPLETED",
+            stored["status"]["state"], "TASK_STATE_COMPLETED",
             "canceled task with alias {alias} must not be replaced by completion"
         );
     }
@@ -5589,9 +5610,18 @@ async fn a2a_task_ledger_redacts_compound_secret_metadata_keys() {
     assert_eq!(metadata["nonCredentials"], "keep-visible-too");
     assert_eq!(metadata["notASecret"], "keep-visible-three");
     assert_eq!(metadata["signingKey"], "keep-visible-key");
-    assert!(metadata.get("webhookSecret").is_none(), "webhookSecret must be redacted");
-    assert!(metadata.get("oauthToken").is_none(), "oauthToken must be redacted");
-    assert!(metadata.get("apiPassword").is_none(), "apiPassword must be redacted");
+    assert!(
+        metadata.get("webhookSecret").is_none(),
+        "webhookSecret must be redacted"
+    );
+    assert!(
+        metadata.get("oauthToken").is_none(),
+        "oauthToken must be redacted"
+    );
+    assert!(
+        metadata.get("apiPassword").is_none(),
+        "apiPassword must be redacted"
+    );
 
     let embedded_metadata = &entry["a2aTask"]["metadata"];
     assert!(embedded_metadata.get("webhookSecret").is_none());
@@ -5773,6 +5803,39 @@ async fn a2a_task_persist_rewrites_legacy_control_plane_ledger_entries() {
     assert!(!entries
         .iter()
         .any(|entry| entry.get("peer").is_none() && entry["id"] == "raw-legacy-task"));
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn a2a_task_load_canonicalizes_legacy_cancelled_state() {
+    let root = TestDir::new("a2a-task-ledger-legacy-cancelled");
+    let ledger_path = root.path().join("tasks.json");
+    tokio::fs::write(
+        &ledger_path,
+        serde_json::to_vec_pretty(&serde_json::json!({
+            "tasks": [
+                {
+                    "id": "maestro-control-plane-cancelled-task",
+                    "kind": "delegation",
+                    "peer": A2A_CONTROL_PLANE_LEDGER_PEER,
+                    "taskId": "cancelled-task",
+                    "contextId": "ctx-cancelled",
+                    "text": "task canceled elsewhere",
+                    "state": "CANCELLED",
+                    "updatedAt": "2026-05-15T00:01:00Z"
+                }
+            ]
+        }))
+        .expect("ledger should serialize"),
+    )
+    .await
+    .expect("ledger should be written");
+
+    let loaded = load_a2a_tasks(&ledger_path).await;
+
+    assert_eq!(
+        loaded["cancelled-task"]["status"]["state"],
+        "TASK_STATE_CANCELED"
+    );
 }
 
 #[test]
@@ -6768,6 +6831,74 @@ async fn a2a_async_completion_preserves_canceled_task_state() {
     assert_eq!(
         stored["maestro-task-1"]["status"]["state"],
         "TASK_STATE_CANCELED"
+    );
+
+    if let Some(previous_fake) = previous_fake {
+        env::set_var("MAESTRO_A2A_FAKE_RESPONSE", previous_fake);
+    } else {
+        env::remove_var("MAESTRO_A2A_FAKE_RESPONSE");
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn a2a_async_completion_preserves_cancelled_alias_state() {
+    let _guard = ENV_LOCK.lock().await;
+    let previous_fake = env::var("MAESTRO_A2A_FAKE_RESPONSE").ok();
+    env::set_var("MAESTRO_A2A_FAKE_RESPONSE", "late response");
+
+    let state = test_app_state_with_sessions(HashMap::new());
+    let task = a2a_task_value(
+        "maestro-task-1",
+        "ctx-1",
+        "TASK_STATE_CANCELLED",
+        a2a_agent_message("ctx-1", "Task cancelled"),
+        Vec::new(),
+        Vec::new(),
+        serde_json::json!({}),
+    );
+    state
+        .a2a_tasks
+        .lock()
+        .await
+        .insert("maestro-task-1".to_string(), task);
+
+    let user_message = a2a_user_message_value(
+        &A2AMessageBody {
+            message_id: Some("msg-1".to_string()),
+            context_id: Some("ctx-1".to_string()),
+            task_id: Some("maestro-task-1".to_string()),
+            role: Some("ROLE_USER".to_string()),
+            parts: vec![A2APartBody {
+                text: Some("hello".to_string()),
+                url: None,
+                data: None,
+                metadata: None,
+                filename: None,
+                media_type: Some("text/plain".to_string()),
+            }],
+            metadata: None,
+            extensions: None,
+            reference_task_ids: None,
+        },
+        "ctx-1",
+    );
+    let (_cancel_tx, cancel_rx) = watch::channel(false);
+    let task = complete_a2a_task(
+        &state,
+        "hello".to_string(),
+        "maestro-task-1".to_string(),
+        "ctx-1".to_string(),
+        vec![user_message],
+        serde_json::json!({}),
+        cancel_rx,
+    )
+    .await;
+    let stored = state.a2a_tasks.lock().await;
+
+    assert_eq!(task["status"]["state"], "TASK_STATE_CANCELLED");
+    assert_eq!(
+        stored["maestro-task-1"]["status"]["state"],
+        "TASK_STATE_CANCELLED"
     );
 
     if let Some(previous_fake) = previous_fake {

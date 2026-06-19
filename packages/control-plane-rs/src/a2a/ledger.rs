@@ -91,7 +91,8 @@ fn a2a_task_from_ledger_entry(entry: &Value) -> Option<Value> {
     let state = entry
         .get("state")
         .and_then(Value::as_str)
-        .unwrap_or("TASK_STATE_UNKNOWN");
+        .map(canonical_a2a_task_state)
+        .unwrap_or_else(|| "TASK_STATE_UNKNOWN".to_string());
     let updated_at = entry
         .get("updatedAt")
         .and_then(Value::as_str)
@@ -117,7 +118,7 @@ fn a2a_task_from_ledger_entry(entry: &Value) -> Option<Value> {
     let mut task = a2a_task_value(
         task_id,
         context_id,
-        state,
+        &state,
         status_message,
         history,
         Vec::new(),
@@ -244,9 +245,11 @@ fn a2a_refresh_history_message(existing: &mut Value, candidate: &Value) {
 }
 
 fn a2a_history_parts_is_richer(parts: Option<&Value>) -> bool {
-    parts
-        .and_then(Value::as_array)
-        .is_some_and(|parts| parts.iter().any(|part| !a2a_history_part_is_plain_text(part)))
+    parts.and_then(Value::as_array).is_some_and(|parts| {
+        parts
+            .iter()
+            .any(|part| !a2a_history_part_is_plain_text(part))
+    })
 }
 
 fn a2a_history_part_is_plain_text(part: &Value) -> bool {
@@ -258,9 +261,10 @@ fn a2a_history_part_is_plain_text(part: &Value) -> bool {
     }
     match object.len() {
         1 => true,
-        2 => object.get("mediaType").and_then(Value::as_str).is_some_and(
-            |media_type| media_type.eq_ignore_ascii_case("text/plain"),
-        ),
+        2 => object
+            .get("mediaType")
+            .and_then(Value::as_str)
+            .is_some_and(|media_type| media_type.eq_ignore_ascii_case("text/plain")),
         _ => false,
     }
 }
@@ -394,8 +398,7 @@ fn a2a_latest_agent_history_text(task_object: &Map<String, Value>) -> Option<Str
                 .get("role")
                 .and_then(Value::as_str)
                 .is_some_and(|role| {
-                    role.eq_ignore_ascii_case("ROLE_AGENT")
-                        || role.eq_ignore_ascii_case("agent")
+                    role.eq_ignore_ascii_case("ROLE_AGENT") || role.eq_ignore_ascii_case("agent")
                 })
         })
         .and_then(a2a_message_value_text)
