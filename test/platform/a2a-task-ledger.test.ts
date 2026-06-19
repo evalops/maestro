@@ -10,12 +10,16 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
+	a2aTaskEvidenceGaps,
 	getA2ATaskLedgerPath,
+	isAuditReadyA2ADelegationTask,
 	isFinalA2AState,
 	isTerminalA2AState,
 	loadA2ATaskLedger,
+	normalizeA2AState,
 	recordA2ATaskReply,
 	recordA2ATaskStart,
+	summarizeA2ATaskLedger,
 	updateA2ATaskInLedger,
 } from "../../src/platform/a2a-task-ledger.js";
 
@@ -26,6 +30,367 @@ describe("A2A task ledger", () => {
 	afterEach(() => {
 		vi.useRealTimers();
 		vi.unstubAllEnvs();
+	});
+
+	it("classifies terminal states without substring success matches", () => {
+		expect(isFinalA2AState("TASK_STATE_COMPLETED")).toBe(true);
+		expect(isFinalA2AState("SUCCEEDED")).toBe(true);
+		expect(isFinalA2AState("SUCCESS")).toBe(true);
+		expect(normalizeA2AState(" TASK_STATE_COMPLETED ")).toBe(
+			"TASK_STATE_COMPLETED",
+		);
+		expect(isFinalA2AState(" TASK_STATE_COMPLETED ")).toBe(true);
+		expect(isFinalA2AState("TASK_STATE_FAILED")).toBe(true);
+		expect(isTerminalA2AState("input-required")).toBe(true);
+		expect(isTerminalA2AState("\ninput-required\t")).toBe(true);
+		expect(isFinalA2AState("UNSUCCESSFUL")).toBe(false);
+		expect(isFinalA2AState("TASK_STATE_UNSUCCESSFUL")).toBe(false);
+	});
+
+	it("summarizes audit-ready delegated work from shared evidence gates", () => {
+		const tasks = [
+			{
+				id: "ledger-ready",
+				kind: "delegation" as const,
+				peer: "builder",
+				taskId: "task-ready",
+				text: "ship the valuable thing",
+				state: "SUCCEEDED",
+				responseText: "done",
+				workGraph: {
+					state: "completed",
+					itemCount: 1,
+					activeItemCount: 0,
+					blockedItemCount: 0,
+					waitingItemCount: 0,
+					pendingToolCallCount: 0,
+					childRunCount: 1,
+					childRunIds: ["agent_run_child_1"],
+					toolCallCount: 0,
+					toolExecutionIds: [],
+					waitItemCount: 0,
+					waitIds: [],
+				},
+				transcript: [
+					{ at: NOW.toISOString(), role: "user" as const, text: "go" },
+					{ at: LATER.toISOString(), role: "agent" as const, text: "done" },
+				],
+				createdAt: NOW.toISOString(),
+				updatedAt: LATER.toISOString(),
+				completedAt: LATER.toISOString(),
+			},
+			{
+				id: "ledger-one-sided",
+				kind: "delegation" as const,
+				peer: "builder",
+				taskId: "task-one-sided",
+				text: "finish with evidence",
+				state: "TASK_STATE_COMPLETED",
+				responseText: "done",
+				workGraph: {
+					state: "completed",
+					itemCount: 1,
+					activeItemCount: 0,
+					blockedItemCount: 0,
+					waitingItemCount: 0,
+					pendingToolCallCount: 0,
+					childRunCount: 0,
+					childRunIds: [],
+					toolCallCount: 0,
+					toolExecutionIds: [],
+					waitItemCount: 0,
+					waitIds: [],
+				},
+				transcript: [
+					{ at: NOW.toISOString(), role: "user" as const, text: "go" },
+					{ at: LATER.toISOString(), role: "user" as const, text: "again" },
+				],
+				createdAt: NOW.toISOString(),
+				updatedAt: LATER.toISOString(),
+				completedAt: LATER.toISOString(),
+			},
+			{
+				id: "ledger-message",
+				kind: "message" as const,
+				peer: "builder",
+				taskId: "task-message",
+				text: "status",
+				state: "TASK_STATE_COMPLETED",
+				responseText: "ok",
+				workGraph: {
+					state: "completed",
+					itemCount: 1,
+					activeItemCount: 0,
+					blockedItemCount: 0,
+					waitingItemCount: 0,
+					pendingToolCallCount: 0,
+					childRunCount: 0,
+					childRunIds: [],
+					toolCallCount: 0,
+					toolExecutionIds: [],
+					waitItemCount: 0,
+					waitIds: [],
+				},
+				transcript: [
+					{ at: NOW.toISOString(), role: "user" as const, text: "status" },
+					{ at: LATER.toISOString(), role: "agent" as const, text: "ok" },
+				],
+				createdAt: NOW.toISOString(),
+				updatedAt: LATER.toISOString(),
+				completedAt: LATER.toISOString(),
+			},
+		];
+
+		expect(isAuditReadyA2ADelegationTask(tasks[0]!)).toBe(true);
+		const { responseText: _responseText, ...transcriptOnlyResponse } =
+			tasks[0]!;
+		expect(a2aTaskEvidenceGaps(transcriptOnlyResponse)).toEqual([]);
+		expect(a2aTaskEvidenceGaps(tasks[1]!)).toEqual(["transcript"]);
+		expect(isAuditReadyA2ADelegationTask(tasks[2]!)).toBe(false);
+		expect(summarizeA2ATaskLedger(tasks)).toMatchObject({
+			taskCount: 3,
+			delegatedTaskCount: 2,
+			completedTaskCount: 3,
+			auditReadyTaskCount: 1,
+			evidenceGapCount: 1,
+			transcriptMessageCount: 6,
+		});
+	});
+
+	it("normalizes protocol transcript agent roles when loading ledgers", async () => {
+		const path = join(
+			await mkdtemp(join(tmpdir(), "maestro-a2a-ledger-protocol-role-")),
+			"tasks.json",
+		);
+		await writeFile(
+			path,
+			`${JSON.stringify(
+				{
+					tasks: [
+						{
+							id: "ledger-protocol-role",
+							kind: "delegation",
+							peer: "builder",
+							taskId: "task-protocol-role",
+							text: "ship the valuable thing",
+							state: "TASK_STATE_COMPLETED",
+							responseText: "done",
+							workGraph: {
+								state: "completed",
+								childRunIds: ["agent_run_child_1"],
+								toolExecutionIds: [],
+								waitIds: [],
+							},
+							transcript: [
+								{
+									at: NOW.toISOString(),
+									role: "ROLE_USER",
+									text: "go",
+								},
+								{
+									at: LATER.toISOString(),
+									role: "ROLE_AGENT",
+									text: "done",
+								},
+							],
+							createdAt: NOW.toISOString(),
+							updatedAt: LATER.toISOString(),
+							completedAt: LATER.toISOString(),
+						},
+					],
+				},
+				null,
+				2,
+			)}\n`,
+			"utf8",
+		);
+
+		const ledger = await loadA2ATaskLedger({ path });
+
+		expect(ledger.tasks[0]?.transcript.map((entry) => entry.role)).toEqual([
+			"user",
+			"agent",
+		]);
+		expect(isAuditReadyA2ADelegationTask(ledger.tasks[0]!)).toBe(true);
+		expect(summarizeA2ATaskLedger(ledger.tasks).auditReadyTaskCount).toBe(1);
+	});
+
+	it("hydrates Rust-style embedded task evidence when top-level fields are missing", async () => {
+		const path = join(
+			await mkdtemp(join(tmpdir(), "maestro-a2a-ledger-rust-embedded-")),
+			"tasks.json",
+		);
+		await writeFile(
+			path,
+			`${JSON.stringify(
+				{
+					tasks: [
+						{
+							id: "maestro-control-plane-task-rust",
+							kind: "delegation",
+							peer: "maestro-control-plane",
+							taskId: "task-rust",
+							contextId: "ctx-rust",
+							text: "delegate through Rust",
+							state: "TASK_STATE_COMPLETED",
+							workGraph: {},
+							transcript: [
+								{
+									at: NOW.toISOString(),
+									role: "ROLE_USER",
+									text: "go",
+								},
+								{
+									at: LATER.toISOString(),
+									role: "ROLE_AGENT",
+									text: "done",
+									messageId: "agent-message",
+								},
+							],
+							createdAt: NOW.toISOString(),
+							updatedAt: LATER.toISOString(),
+							completedAt: LATER.toISOString(),
+							a2aTask: {
+								id: "task-rust",
+								contextId: "ctx-rust",
+								status: {
+									state: "TASK_STATE_WORKING",
+									message: {
+										messageId: "agent-message",
+										role: "ROLE_AGENT",
+										parts: [{ text: "stale done" }],
+									},
+								},
+								history: [
+									{
+										messageId: "user-message",
+										role: "ROLE_USER",
+										parts: [{ text: "go" }],
+									},
+									{
+										messageId: "agent-message",
+										role: "ROLE_AGENT",
+										parts: [{ text: "stale done" }],
+									},
+									{
+										messageId: "agent-followup",
+										role: "ROLE_AGENT",
+										parts: [{ text: "also done" }],
+									},
+								],
+								metadata: {
+									workGraph: {
+										state: "completed",
+										childRunIds: ["a2a-task:task-rust"],
+										toolExecutionIds: [],
+										waitIds: [],
+									},
+								},
+							},
+						},
+					],
+				},
+				null,
+				2,
+			)}\n`,
+			"utf8",
+		);
+
+		const ledger = await loadA2ATaskLedger({ path });
+		const task = ledger.tasks[0]!;
+
+		expect(task.responseText).toBe("done");
+		expect(task.workGraph?.childRunIds).toEqual(["a2a-task:task-rust"]);
+		expect(task.transcript.map((entry) => entry.role)).toEqual([
+			"user",
+			"agent",
+			"agent",
+		]);
+		expect(task.transcript.map((entry) => entry.text)).toEqual([
+			"go",
+			"done",
+			"also done",
+		]);
+		expect(task.transcript.at(-1)?.state).toBe("TASK_STATE_COMPLETED");
+		expect(a2aTaskEvidenceGaps(task)).toEqual([]);
+		expect(isAuditReadyA2ADelegationTask(task)).toBe(true);
+	});
+
+	it("hydrates response text from merged embedded history before stale embedded status", async () => {
+		const path = join(
+			await mkdtemp(
+				join(tmpdir(), "maestro-a2a-ledger-rust-history-response-"),
+			),
+			"tasks.json",
+		);
+		await writeFile(
+			path,
+			`${JSON.stringify(
+				{
+					tasks: [
+						{
+							id: "maestro-control-plane-task-history-response",
+							kind: "delegation",
+							peer: "maestro-control-plane",
+							taskId: "task-history-response",
+							contextId: "ctx-history-response",
+							text: "delegate through Rust",
+							state: "TASK_STATE_COMPLETED",
+							transcript: [],
+							createdAt: NOW.toISOString(),
+							updatedAt: LATER.toISOString(),
+							completedAt: LATER.toISOString(),
+							a2aTask: {
+								id: "task-history-response",
+								contextId: "ctx-history-response",
+								status: {
+									state: "TASK_STATE_WORKING",
+									message: {
+										messageId: "agent-history-response",
+										role: "ROLE_AGENT",
+										parts: [{ text: "stale status response" }],
+									},
+								},
+								history: [
+									{
+										messageId: "user-history-response",
+										role: "ROLE_USER",
+										parts: [{ text: "go" }],
+									},
+									{
+										messageId: "agent-history-response",
+										role: "ROLE_AGENT",
+										parts: [{ text: "history response wins" }],
+									},
+								],
+								metadata: {
+									workGraph: {
+										state: "completed",
+										childRunIds: ["a2a-task:task-history-response"],
+										toolExecutionIds: [],
+										waitIds: [],
+									},
+								},
+							},
+						},
+					],
+				},
+				null,
+				2,
+			)}\n`,
+			"utf8",
+		);
+
+		const ledger = await loadA2ATaskLedger({ path });
+		const task = ledger.tasks[0]!;
+
+		expect(task.responseText).toBe("history response wins");
+		expect(task.transcript.map((entry) => entry.text)).toEqual([
+			"go",
+			"history response wins",
+		]);
+		expect(task.transcript.at(-1)?.state).toBe("TASK_STATE_COMPLETED");
+		expect(a2aTaskEvidenceGaps(task)).toEqual([]);
 	});
 
 	it("records delegated task transcripts using the migration env alias", async () => {
@@ -139,6 +504,73 @@ describe("A2A task ledger", () => {
 		expect(raw).not.toContain("Bearer ");
 	});
 
+	it("normalizes protocol transcript roles when loading ledger files", async () => {
+		const path = join(
+			await mkdtemp(join(tmpdir(), "maestro-a2a-ledger-import-")),
+			"tasks.json",
+		);
+		await writeFile(
+			path,
+			`${JSON.stringify(
+				{
+					tasks: [
+						{
+							id: "ledger-import-1",
+							kind: "delegation",
+							peer: "dev-desktop",
+							taskId: "task-import-1",
+							text: "run the checks",
+							state: "TASK_STATE_COMPLETED",
+							responseText: "checks passed",
+							workGraph: {
+								state: "completed",
+								itemCount: 1,
+								activeItemCount: 0,
+								blockedItemCount: 0,
+								waitingItemCount: 0,
+								pendingToolCallCount: 0,
+								childRunCount: 1,
+								childRunIds: ["agent_run_child_1"],
+								toolCallCount: 0,
+								toolExecutionIds: [],
+								waitItemCount: 0,
+								waitIds: [],
+							},
+							transcript: [
+								{
+									at: NOW.toISOString(),
+									role: "ROLE_USER",
+									text: "run the checks",
+								},
+								{
+									at: LATER.toISOString(),
+									role: "ROLE_AGENT",
+									text: "checks passed",
+								},
+							],
+							createdAt: NOW.toISOString(),
+							updatedAt: LATER.toISOString(),
+							completedAt: LATER.toISOString(),
+						},
+					],
+				},
+				null,
+				2,
+			)}\n`,
+			"utf8",
+		);
+
+		const ledger = await loadA2ATaskLedger({ path });
+		expect(ledger.tasks[0]).toMatchObject({
+			transcript: [
+				{ role: "user", text: "run the checks" },
+				{ role: "agent", text: "checks passed" },
+			],
+		});
+		expect(a2aTaskEvidenceGaps(ledger.tasks[0]!)).toEqual([]);
+		expect(isAuditReadyA2ADelegationTask(ledger.tasks[0]!)).toBe(true);
+	});
+
 	it("does not treat echoed user history as agent response text", async () => {
 		const path = join(
 			await mkdtemp(join(tmpdir(), "maestro-a2a-ledger-history-")),
@@ -188,6 +620,9 @@ describe("A2A task ledger", () => {
 					agentRunId: "run_1",
 					traceparent:
 						"00-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-bbbbbbbbbbbbbbbb-01",
+					totalTokens: 42,
+					totalToken: 43,
+					tokenCount: 44,
 					apiToken: "do-not-write",
 					nested: { ignored: true },
 				},
@@ -218,6 +653,9 @@ describe("A2A task ledger", () => {
 			traceparent: "00-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-bbbbbbbbbbbbbbbb-01",
 			requestKind: "maestro-peer-message",
 			worker: "mac-mini",
+			totalTokens: 42,
+			totalToken: 43,
+			tokenCount: 44,
 		});
 		expect(ledger.tasks[0]?.metadata).not.toHaveProperty("apiToken");
 		expect(ledger.tasks[0]?.metadata).not.toHaveProperty("bearer");
@@ -289,6 +727,9 @@ describe("A2A task ledger", () => {
 		expect(ledger.tasks[0]?.completedAt).toBeUndefined();
 		expect(isTerminalA2AState("TASK_STATE_INPUT_REQUIRED")).toBe(true);
 		expect(isFinalA2AState("TASK_STATE_INPUT_REQUIRED")).toBe(false);
+		expect(isFinalA2AState("TASK_STATE_SUCCESS")).toBe(true);
+		expect(isFinalA2AState("TASK_STATE_UNSUCCESSFUL")).toBe(false);
+		expect(isTerminalA2AState("TASK_STATE_UNSUCCESSFUL")).toBe(false);
 	});
 
 	it("clears stale completedAt when re-recording a task in a non-final state", async () => {

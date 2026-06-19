@@ -11,6 +11,10 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { parse } from "yaml";
 import {
+	evaluateGuardrailManifest,
+	loadGuardrailManifest,
+} from "../../scripts/check-guardrail-regression-suite.mjs";
+import {
 	evaluatePublicMirrorReviewDebt,
 	parsePublicMirrorPulls,
 } from "../../scripts/check-public-mirror-review-debt.mjs";
@@ -28,11 +32,18 @@ import {
 	runtimePackageValidatorsRequired,
 } from "../../scripts/plan-nx-test-command.mjs";
 import {
+	GH_OUTPUT_MAX_BUFFER_BYTES,
 	collectFeedbackAuditTargets,
 	dedupeFeedbackAuditTargets,
 	fetchRecentPullTargets,
 	parseFeedbackAuditArgs,
 } from "../../scripts/pr-feedback-audit.mjs";
+import {
+	evaluateReviewFeedbackDashboardThresholds,
+	formatReviewFeedbackDashboard,
+	parseReviewFeedbackDashboardArgs,
+	summarizeReviewFeedbackDashboard,
+} from "../../scripts/pr-feedback-dashboard.mjs";
 import {
 	LATEST_HEAD_CHECKS_QUERY,
 	extractLatestHeadCheckPage,
@@ -3470,6 +3481,10 @@ describe("prFeedbackAudit", () => {
 		expect(script).toContain("--check");
 	});
 
+	it("keeps review-hygiene GitHub reads buffered for busy recent windows", () => {
+		expect(GH_OUTPUT_MAX_BUFFER_BYTES).toBeGreaterThanOrEqual(64 * 1024 * 1024);
+	});
+
 	it("deduplicates explicit and recent review-hygiene targets", () => {
 		expect(
 			dedupeFeedbackAuditTargets([
@@ -3617,7 +3632,293 @@ describe("prFeedbackAudit", () => {
 	});
 });
 
+describe("review feedback dashboard", () => {
+	it("summarizes unresolved review debt by author, path, and staleness", () => {
+		const summary = summarizeReviewFeedbackDashboard(
+			[
+				{
+					target: { number: 2793, owner: "evalops", repo: "maestro-internal" },
+					threads: [
+						{
+							id: "thread-old",
+							isOutdated: false,
+							isResolved: false,
+							path: "src/runtime/env.ts",
+							comments: {
+								nodes: [
+									{
+										author: { login: "reviewer-a" },
+										createdAt: "2026-06-16T00:00:00.000Z",
+										url: "https://github.test/thread-old",
+									},
+								],
+							},
+						},
+						{
+							id: "thread-outdated",
+							isOutdated: true,
+							isResolved: false,
+							path: "src/runtime/env.ts",
+							comments: {
+								nodes: [
+									{
+										author: { login: "reviewer-b" },
+										createdAt: "2026-06-17T20:00:00.000Z",
+										url: "https://github.test/thread-outdated",
+									},
+								],
+							},
+						},
+						{
+							id: "thread-resolved",
+							isOutdated: false,
+							isResolved: true,
+							path: "README.md",
+							comments: {
+								nodes: [
+									{
+										author: { login: "reviewer-a" },
+										createdAt: "2026-06-17T21:00:00.000Z",
+									},
+								],
+							},
+						},
+					],
+				},
+			],
+			{ now: new Date("2026-06-18T12:00:00.000Z"), staleHours: 24 },
+		);
+
+		expect(summary).toMatchObject({
+			outdatedUnresolvedThreads: 1,
+			pullRequests: 1,
+			resolvedThreads: 1,
+			totalThreads: 3,
+			unresolvedThreads: 2,
+		});
+		expect(summary.topAuthors).toEqual([
+			{ count: 1, key: "reviewer-a" },
+			{ count: 1, key: "reviewer-b" },
+		]);
+		expect(summary.topPaths).toEqual([{ count: 2, key: "src/runtime/env.ts" }]);
+		expect(summary.staleThreads).toHaveLength(1);
+
+		const dashboard = formatReviewFeedbackDashboard(summary);
+		expect(dashboard).toContain("# Review Feedback Dashboard");
+		expect(dashboard).toContain("Threads: 3 total, 2 unresolved, 1 resolved");
+		expect(dashboard).toContain("src/runtime/env.ts: 2 threads");
+		expect(dashboard).toContain("evalops/maestro-internal#2793");
+	});
+
+	it("keeps the recent review dashboard available as a package script", () => {
+		const packageJson = JSON.parse(
+			readFileSync(new URL("../../package.json", import.meta.url), "utf8"),
+		) as { scripts?: Record<string, string> };
+
+		expect(packageJson.scripts?.["review:feedback-dashboard"]).toContain(
+			"pr-feedback-dashboard.mjs",
+		);
+		expect(packageJson.scripts?.["review:feedback-dashboard"]).toContain(
+			"--recent-days 3",
+		);
+		expect(packageJson.scripts?.["review:feedback-dashboard"]).toContain(
+			"--limit 50",
+		);
+	});
+
+	it("caps recent dashboard discovery and exposes check thresholds", () => {
+		const parsed = parseReviewFeedbackDashboardArgs([
+			"--repo",
+			"evalops/maestro-internal",
+			"--recent-days",
+			"3",
+			"--check",
+			"--max-unresolved",
+			"1",
+			"--max-stale",
+			"0",
+			"--max-outdated",
+			"0",
+			"--stale-hours",
+			"12",
+		]);
+
+		expect(parsed.args.limit).toBe(50);
+		expect(parsed.args.check).toBe(true);
+		expect(parsed.staleHours).toBe(12);
+		expect(parsed.thresholds).toEqual({
+			maxOutdated: 0,
+			maxStale: 0,
+			maxUnresolved: 1,
+		});
+
+		expect(
+			parseReviewFeedbackDashboardArgs([
+				"--repo",
+				"evalops/maestro-internal",
+				"--recent-days",
+				"3",
+				"--limit",
+				"7",
+			]).args.limit,
+		).toBe(7);
+	});
+
+	it("reports threshold failures for dashboard check mode", () => {
+		const failures = evaluateReviewFeedbackDashboardThresholds(
+			{
+				outdatedUnresolvedThreads: 1,
+				staleThreads: [{ id: "thread-old" }],
+				unresolvedThreads: 2,
+			},
+			{ maxOutdated: 0, maxStale: 0, maxUnresolved: 1 },
+		);
+
+		expect(failures).toEqual([
+			"unresolved review threads 2 exceeds 1",
+			"stale review threads 1 exceeds 0",
+			"outdated unresolved review threads 1 exceeds 0",
+		]);
+	});
+});
+
+describe("guardrail regression suite", () => {
+	it("keeps follow-up bug classes under a CI-wired manifest", () => {
+		const packageJson = JSON.parse(
+			readFileSync(new URL("../../package.json", import.meta.url), "utf8"),
+		) as { scripts?: Record<string, string> };
+		const manifest = loadGuardrailManifest();
+		const result = evaluateGuardrailManifest(manifest);
+
+		expect(result.failures).toEqual([]);
+		expect(result.guardrailCount).toBeGreaterThanOrEqual(5);
+		expect(
+			manifest.guardrails.map((entry: { id: string }) => entry.id),
+		).toEqual(
+			expect.arrayContaining([
+				"runtime-env-semantic-scanner",
+				"composed-skill-trust-boundary",
+				"release-dispatch-idempotency",
+				"opaque-git-parser-state",
+				"bounded-output-and-json-repair",
+				"a2a-ledger-evidence-parity",
+			]),
+		);
+		expect(packageJson.scripts?.["lint:evals"]).toContain(
+			"check:guardrail-regression-suite",
+		);
+	});
+
+	it("fails when manifest evidence points at missing code", () => {
+		const result = evaluateGuardrailManifest({
+			schemaVersion: 1,
+			guardrails: [
+				{
+					bugClass: "test",
+					evidence: [
+						{
+							contains: ["definitely-not-present"],
+							path: "package.json",
+						},
+					],
+					id: "missing-evidence",
+					owner: "test",
+					title: "Missing evidence",
+					why: "Prove negative path",
+				},
+			],
+		});
+
+		expect(result.ok).toBe(false);
+		expect(result.failures.join("\n")).toContain("definitely-not-present");
+	});
+
+	it("fails when the manifest drops a required guardrail id", () => {
+		const result = evaluateGuardrailManifest({
+			schemaVersion: 1,
+			guardrails: [
+				{
+					bugClass: "module-scope eager runtime snapshots",
+					evidence: [
+						{
+							contains: ["runtime-env-semantic-scanner"],
+							path: "scripts/guardrail-regression-suite.json",
+						},
+					],
+					id: "runtime-env-semantic-scanner",
+					owner: "runtime",
+					title: "Semantic runtime-env snapshot scanner",
+					why: "Keep one valid entry while proving the suite cannot shrink",
+				},
+			],
+		});
+
+		expect(result.ok).toBe(false);
+		expect(result.failures).toEqual(
+			expect.arrayContaining([
+				"manifest is missing required guardrail id composed-skill-trust-boundary",
+				"manifest is missing required guardrail id release-dispatch-idempotency",
+				"manifest is missing required guardrail id opaque-git-parser-state",
+				"manifest is missing required guardrail id bounded-output-and-json-repair",
+				"manifest is missing required guardrail id a2a-ledger-evidence-parity",
+			]),
+		);
+	});
+
+	it("fails when manifest evidence allows forbidden or missing typed anchors", () => {
+		const dir = mkdtempSync(join(tmpdir(), "maestro-guardrail-manifest-"));
+		writeFileSync(join(dir, "fixture.ts"), "const value = 'old-pattern';\n");
+		const result = evaluateGuardrailManifest(
+			{
+				schemaVersion: 1,
+				guardrails: [
+					{
+						bugClass: "test",
+						evidence: [
+							{
+								matches: ["new-pattern"],
+								notContains: ["old-pattern"],
+								path: "fixture.ts",
+							},
+						],
+						id: "typed-evidence",
+						owner: "test",
+						title: "Typed evidence",
+						why: "Prove typed evidence failures",
+					},
+				],
+			},
+			{ root: dir },
+		);
+
+		expect(result.ok).toBe(false);
+		expect(result.failures.join("\n")).toContain(
+			'must not contain "old-pattern"',
+		);
+		expect(result.failures.join("\n")).toContain(
+			'does not match "new-pattern"',
+		);
+	});
+});
+
 describe("runtime env snapshot hygiene", () => {
+	const scanRuntimeEnvFixture = (lines: string[]) => {
+		const dir = mkdtempSync(join(tmpdir(), "maestro-runtime-env-corpus-"));
+		writeFileSync(
+			join(dir, "fixture.ts"),
+			[
+				'import { defaultRuntimeEnv } from "./runtime/env.js";',
+				'import type { RuntimeEnv } from "./runtime/env.js";',
+				...lines,
+			].join("\n"),
+			"utf8",
+		);
+		return scanRuntimeEnvSnapshotHygiene(dir).map(({ line, text }) => ({
+			line,
+			text,
+		}));
+	};
+
 	it("blocks module-scope defaultRuntimeEnv snapshots", () => {
 		const dir = mkdtempSync(join(tmpdir(), "maestro-runtime-env-hygiene-"));
 		mkdirSync(join(dir, "runtime"), { recursive: true });
@@ -3799,6 +4100,286 @@ describe("runtime env snapshot hygiene", () => {
 				text: "export const eagerRuntimeHelperIife = { env: (() => defaultRuntimeEnv())() };",
 			}),
 		]);
+	});
+
+	it("classifies eager and lazy runtime-env fixture corpus", () => {
+		const cases: Array<{
+			expected: Array<{ line: number; text: string }>;
+			lines: string[];
+			name: string;
+		}> = [
+			{
+				name: "top-level export default",
+				lines: ["export default defaultRuntimeEnv();"],
+				expected: [{ line: 3, text: "export default defaultRuntimeEnv();" }],
+			},
+			{
+				name: "top-level tagged template expression",
+				lines: [
+					"const telemetryLabel = `enabled:${defaultRuntimeEnv().telemetryEnabled}`;",
+				],
+				expected: [
+					{
+						line: 3,
+						text: "const telemetryLabel = `enabled:${defaultRuntimeEnv().telemetryEnabled}`;",
+					},
+				],
+			},
+			{
+				name: "top-level object computed key",
+				lines: [
+					'const keyedRuntime = { [defaultRuntimeEnv().telemetryEnabled ? "on" : "off"]: true };',
+				],
+				expected: [
+					{
+						line: 3,
+						text: 'const keyedRuntime = { [defaultRuntimeEnv().telemetryEnabled ? "on" : "off"]: true };',
+					},
+				],
+			},
+			{
+				name: "namespace defaultRuntimeEnv call",
+				lines: [
+					'import * as runtimeEnv from "./runtime/env.js";',
+					"const env = runtimeEnv.defaultRuntimeEnv();",
+				],
+				expected: [
+					{
+						line: 4,
+						text: "const env = runtimeEnv.defaultRuntimeEnv();",
+					},
+				],
+			},
+			{
+				name: "instance computed class member name",
+				lines: [
+					"class RuntimeSnapshotHolder {",
+					'\t[defaultRuntimeEnv().telemetryEnabled ? "enabled" : "disabled"]() {}',
+					"}",
+				],
+				expected: [
+					{
+						line: 4,
+						text: '[defaultRuntimeEnv().telemetryEnabled ? "enabled" : "disabled"]() {}',
+					},
+				],
+			},
+			{
+				name: "eager static block iife",
+				lines: [
+					"class RuntimeSnapshotHolder {",
+					"\tstatic {",
+					"\t\t(() => defaultRuntimeEnv())();",
+					"\t}",
+					"}",
+				],
+				expected: [
+					{
+						line: 4,
+						text: "static { (() => defaultRuntimeEnv())(); }",
+					},
+				],
+			},
+			{
+				name: "iife default parameter snapshot",
+				lines: [
+					"const env = ((snapshot = defaultRuntimeEnv()) => snapshot)();",
+				],
+				expected: [
+					{
+						line: 3,
+						text: "const env = ((snapshot = defaultRuntimeEnv()) => snapshot)();",
+					},
+				],
+			},
+			{
+				name: "function call iife snapshot",
+				lines: [
+					"const env = (function readNow() { return defaultRuntimeEnv(); }).call(undefined);",
+				],
+				expected: [
+					{
+						line: 3,
+						text: "const env = (function readNow() { return defaultRuntimeEnv(); }).call(undefined);",
+					},
+				],
+			},
+			{
+				name: "arrow apply iife snapshot",
+				lines: ["const env = (() => defaultRuntimeEnv()).apply(undefined);"],
+				expected: [
+					{
+						line: 3,
+						text: "const env = (() => defaultRuntimeEnv()).apply(undefined);",
+					},
+				],
+			},
+			{
+				name: "eagerly constructed class expression instance field",
+				lines: [
+					"const holder = new (class {",
+					"\tfield = defaultRuntimeEnv();",
+					"})();",
+				],
+				expected: [
+					{
+						line: 4,
+						text: "field = defaultRuntimeEnv();",
+					},
+				],
+			},
+			{
+				name: "eagerly constructed class expression constructor parameter",
+				lines: [
+					"const holder = new (class {",
+					"\tconstructor(env = defaultRuntimeEnv()) {",
+					"\t\tvoid env;",
+					"\t}",
+					"})();",
+				],
+				expected: [
+					{
+						line: 4,
+						text: "constructor(env = defaultRuntimeEnv()) { void env; }",
+					},
+				],
+			},
+			{
+				name: "eagerly constructed class expression constructor body",
+				lines: [
+					"const holder = new (class {",
+					"\tconstructor() {",
+					"\t\tdefaultRuntimeEnv();",
+					"\t}",
+					"})();",
+				],
+				expected: [
+					{
+						line: 4,
+						text: "constructor() { defaultRuntimeEnv(); }",
+					},
+				],
+			},
+			{
+				name: "eagerly constructed function expression default parameter",
+				lines: [
+					"const holder = new (function RuntimeSnapshotHolder(",
+					"\tenv = defaultRuntimeEnv(),",
+					") {",
+					"\tvoid env;",
+					"})();",
+				],
+				expected: [
+					{
+						line: 3,
+						text: "function RuntimeSnapshotHolder( env = defaultRuntimeEnv(), ) { void env; }",
+					},
+				],
+			},
+			{
+				name: "eagerly constructed function expression body",
+				lines: [
+					"const holder = new (function RuntimeSnapshotHolder() {",
+					"\tdefaultRuntimeEnv();",
+					"})();",
+				],
+				expected: [
+					{
+						line: 3,
+						text: "function RuntimeSnapshotHolder() { defaultRuntimeEnv(); }",
+					},
+				],
+			},
+			{
+				name: "eagerly constructed class expression nested static field",
+				lines: [
+					"const holder = new (class {",
+					"\tnested = class {",
+					"\t\tstatic env = defaultRuntimeEnv();",
+					"\t};",
+					"})();",
+				],
+				expected: [
+					{
+						line: 5,
+						text: "static env = defaultRuntimeEnv();",
+					},
+				],
+			},
+			{
+				name: "lazy module and class readers",
+				lines: [
+					"export const readRuntimeEnv = (): RuntimeEnv => defaultRuntimeEnv();",
+					"const runtimeHelpers = {",
+					"\treadEnv: () => defaultRuntimeEnv(),",
+					"\tblockReadEnv: () => {",
+					"\t\treturn defaultRuntimeEnv();",
+					"\t},",
+					"};",
+					"class RuntimeSnapshotHolder {",
+					"\tstatic readEnv() {",
+					"\t\treturn defaultRuntimeEnv();",
+					"\t}",
+					"\tstatic {",
+					"\t\tconst later = () => defaultRuntimeEnv();",
+					"\t\tvoid later;",
+					"\t}",
+					"}",
+					"class LazyInstanceHolder {",
+					"\tfield = defaultRuntimeEnv();",
+					"}",
+				],
+				expected: [],
+			},
+			{
+				name: "module-scope new inline class instance field",
+				lines: [
+					"const runtimeEnvHolder = new (class RuntimeSnapshotHolder {",
+					"\tenv = defaultRuntimeEnv();",
+					"})();",
+				],
+				expected: [
+					{
+						line: 4,
+						text: "env = defaultRuntimeEnv();",
+					},
+				],
+			},
+		];
+
+		for (const testCase of cases) {
+			expect(scanRuntimeEnvFixture(testCase.lines), testCase.name).toEqual(
+				testCase.expected,
+			);
+		}
+	});
+
+	it("keeps the runtime-env guardrail AST-backed and CI-wired", () => {
+		const packageJson = JSON.parse(
+			readFileSync(new URL("../../package.json", import.meta.url), "utf8"),
+		) as { scripts?: Record<string, string> };
+		const scanner = readFileSync(
+			new URL(
+				"../../scripts/check-runtime-env-snapshot-hygiene.mjs",
+				import.meta.url,
+			),
+			"utf8",
+		);
+		const runtimeEnvTests = readFileSync(
+			new URL("../../test/runtime/env.test.ts", import.meta.url),
+			"utf8",
+		);
+
+		expect(scanner).toContain('from "typescript"');
+		expect(scanner).toContain("ts.createSourceFile");
+		expect(scanner).not.toContain("DEFAULT_RUNTIME_ENV_CALL_PATTERN");
+		expect(packageJson.scripts?.["lint:evals"]).toContain(
+			"check:runtime-env-snapshot-hygiene",
+		);
+		expect(runtimeEnvTests).toContain("MAESTRO_RUNTIME_ENV_STRICT_BOOTSTRAP");
+		expect(runtimeEnvTests).toContain(
+			"defaultRuntimeEnv() was read before loadAndFinalizeEnv() completed",
+		);
 	});
 });
 

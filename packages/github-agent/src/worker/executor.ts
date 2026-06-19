@@ -665,7 +665,7 @@ ${fenceUntrustedGitHubContent(diff)}
 			? `[composer] ${sanitizedTaskTitle} (fixes #${task.sourceIssue})`
 			: `[composer] ${sanitizedTaskTitle}`;
 
-		const body = this.buildPRBody(task, branchName);
+		const body = this.buildPRBody(task, branchName, progress);
 
 		if (this.githubClient) {
 			const existing = await this.findExistingPr(branchName);
@@ -912,7 +912,11 @@ ${fenceUntrustedGitHubContent(diff)}
 		}
 	}
 
-	private buildPRBody(task: Task, branchName?: string): string {
+	private buildPRBody(
+		task: Task,
+		branchName?: string,
+		progress?: TaskProgress,
+	): string {
 		const lines: string[] = [
 			"## Summary",
 			"",
@@ -928,16 +932,22 @@ ${fenceUntrustedGitHubContent(diff)}
 		lines.push(
 			"## Test Plan",
 			"",
-			"- [ ] Tests pass locally",
-			"- [ ] Lint passes",
-			"- [ ] Type check passes",
-			"- [ ] Manual verification (if applicable)",
+			...this.formatQualityGateChecklist(progress),
 			"",
 			"## EvalOps Agent Evidence",
 			"",
 			`- Task ID: \`${task.id}\``,
 			"- Action lane: `code_change_via_pr`",
 			...(branchName ? [`- Branch: \`${branchName}\``] : []),
+			...(typeof progress?.tokensUsed === "number"
+				? [`- Tokens used: ${progress.tokensUsed.toLocaleString()}`]
+				: []),
+			...(typeof progress?.cost === "number"
+				? [`- Estimated cost: $${progress.cost.toFixed(4)}`]
+				: []),
+			...(typeof progress?.durationMs === "number"
+				? [`- Duration: ${Math.round(progress.durationMs / 1000)}s`]
+				: []),
 			"- Independent verifier: `deploy/scripts/check-agent-action-pr-lane.py`",
 			"",
 			"---",
@@ -946,6 +956,17 @@ ${fenceUntrustedGitHubContent(diff)}
 		);
 
 		return lines.join("\n");
+	}
+
+	private formatQualityGateChecklist(progress?: TaskProgress): string[] {
+		const gates = this.buildQualityGateEvidence(progress);
+		if (gates.length === 0) {
+			return ["- [ ] Manual verification (quality gates not configured)"];
+		}
+		return gates.map((gate) => {
+			const checked = gate.status === "passed" || gate.status === "skipped";
+			return `- [${checked ? "x" : " "}] ${gate.label}: ${gate.status}`;
+		});
 	}
 
 	private async resolveHeadSha(branchName: string): Promise<string> {
@@ -984,12 +1005,68 @@ ${fenceUntrustedGitHubContent(diff)}
 				? { tokensUsed: progress.tokensUsed }
 				: {}),
 			...(typeof progress.cost === "number" ? { cost: progress.cost } : {}),
+			qualityGates: this.buildQualityGateEvidence(progress),
+			runSummary: {
+				schemaVersion: "evalops.maestro.agent-run-summary.v1",
+				id: task.id,
+				status: progress.status === "failed" ? "failed" : "completed",
+				durationMs: progress.durationMs ?? 0,
+				summary: `GitHub Agent ${progress.status} for ${task.type} task ${task.id}`,
+				usage:
+					typeof progress.tokensUsed === "number" ||
+					typeof progress.cost === "number"
+						? {
+								...(typeof progress.tokensUsed === "number"
+									? { totalTokens: progress.tokensUsed }
+									: {}),
+								...(typeof progress.cost === "number"
+									? { estimatedCostUsd: progress.cost }
+									: {}),
+							}
+						: undefined,
+			},
 			verifier: {
 				name: "deploy/scripts/check-agent-action-pr-lane.py",
 				requiredOutput: "pull_request",
 				prOnly: true,
 			},
 		};
+	}
+
+	private buildQualityGateEvidence(
+		progress?: TaskProgress,
+	): GitHubAgentEvidence["qualityGates"] {
+		if (!progress) return [];
+		const gateLabels: Array<
+			[GitHubAgentEvidence["qualityGates"][number]["id"], string]
+		> = [
+			["typecheck", "Type check"],
+			["lint", "Lint"],
+			["tests", "Tests"],
+			["selfReview", "Self-review"],
+		];
+		return gateLabels
+			.filter(([id]) => progress.steps[id] !== undefined)
+			.map(([id, label]) => ({
+				id,
+				label,
+				status: this.qualityGateStatus(progress.steps[id]),
+			}));
+	}
+
+	private qualityGateStatus(
+		status: TaskProgress["steps"][keyof TaskProgress["steps"]] | undefined,
+	): GitHubAgentEvidence["qualityGates"][number]["status"] {
+		switch (status) {
+			case "done":
+				return "passed";
+			case "failed":
+				return "failed";
+			case "skipped":
+				return "skipped";
+			default:
+				return "unknown";
+		}
 	}
 
 	private buildInitialProgress(task: Task, startTime: number): TaskProgress {

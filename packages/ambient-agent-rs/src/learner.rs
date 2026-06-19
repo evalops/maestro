@@ -54,6 +54,25 @@ pub struct LearnedPattern {
     pub last_updated: DateTime<Utc>,
 }
 
+/// Recommendation derived from learned outcomes and patterns.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct LearnerRecommendation {
+    pub kind: LearnerRecommendationKind,
+    pub title: String,
+    pub evidence: String,
+    pub action: String,
+    pub confidence: f64,
+}
+
+/// Recommendation categories that keep learning actionable and bounded.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LearnerRecommendationKind {
+    PromotePattern,
+    RepairPattern,
+    GuardTransientFailure,
+}
+
 /// Type of pattern being tracked
 #[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum PatternType {
@@ -84,6 +103,11 @@ impl Learner {
             max_outcomes: 10000,
             min_samples_for_pattern: 3,
         }
+    }
+
+    /// Path where learner state is persisted
+    pub fn storage_path(&self) -> &std::path::Path {
+        &self.storage_path
     }
 
     /// Record an outcome
@@ -281,6 +305,142 @@ impl Learner {
             .collect()
     }
 
+    /// Build durable recommendations from outcomes and learned patterns.
+    ///
+    /// This intentionally keeps transient setup failures out of long-lived
+    /// playbooks. Missing binaries, credentials, rate limits, and short-lived
+    /// network/setup failures should produce setup or retry advice, not a
+    /// permanent claim that a tool or task class is impossible.
+    pub fn get_recommendations(&self, limit: usize) -> Vec<LearnerRecommendation> {
+        let mut recommendations = vec![];
+
+        let transient_failures = self
+            .outcomes
+            .iter()
+            .filter(|outcome| !outcome.success)
+            .filter_map(|outcome| outcome.failure_reason.as_deref())
+            .filter(|reason| is_transient_failure_reason(reason))
+            .count();
+        if transient_failures > 0 {
+            recommendations.push(LearnerRecommendation {
+                kind: LearnerRecommendationKind::GuardTransientFailure,
+                title: "Quarantine transient setup failures".to_string(),
+                evidence: format!(
+                    "{transient_failures} failure(s) matched setup, credential, network, timeout, or rate-limit patterns"
+                ),
+                action: "Capture the recovery step or prerequisite; do not persist a durable rule that the tool or task class is broken.".to_string(),
+                confidence: (0.6 + (transient_failures as f64 * 0.05)).min(0.95),
+            });
+        }
+
+        let mut promotable: Vec<_> = self
+            .patterns
+            .values()
+            .filter_map(|pattern| {
+                let stats = self.pattern_non_transient_stats(pattern);
+                (stats.sample_count >= self.min_samples_for_pattern && stats.success_rate >= 0.75)
+                    .then_some((pattern, stats))
+            })
+            .collect();
+        promotable.sort_by(|left, right| {
+            right
+                .1
+                .success_rate
+                .total_cmp(&left.1.success_rate)
+                .then_with(|| right.1.sample_count.cmp(&left.1.sample_count))
+        });
+        for (pattern, stats) in promotable.into_iter().take(2) {
+            recommendations.push(LearnerRecommendation {
+                kind: LearnerRecommendationKind::PromotePattern,
+                title: format!("Promote successful {} pattern", pattern.key),
+                evidence: format!(
+                    "{:?}={} succeeded {:.1}% across {} non-transient sample(s)",
+                    pattern.pattern_type,
+                    pattern.key,
+                    stats.success_rate * 100.0,
+                    stats.sample_count
+                ),
+                action: "Create or update a class-level playbook with the task shape, required evidence, and verification steps.".to_string(),
+                confidence: stats.success_rate,
+            });
+        }
+
+        let mut problematic: Vec<_> = self
+            .get_problematic_patterns(0.45)
+            .into_iter()
+            .filter(|pattern| self.pattern_has_non_transient_failure(pattern))
+            .collect();
+        problematic.sort_by(|left, right| {
+            left.success_rate
+                .total_cmp(&right.success_rate)
+                .then_with(|| right.sample_count.cmp(&left.sample_count))
+        });
+        for pattern in problematic.into_iter().take(2) {
+            recommendations.push(LearnerRecommendation {
+                kind: LearnerRecommendationKind::RepairPattern,
+                title: format!("Repair weak {} pattern", pattern.key),
+                evidence: format!(
+                    "{:?}={} succeeded only {:.1}% across {} sample(s)",
+                    pattern.pattern_type,
+                    pattern.key,
+                    pattern.success_rate * 100.0,
+                    pattern.sample_count
+                ),
+                action: "Tighten routing, approval thresholds, or verification for this class before allowing more ambient autonomy.".to_string(),
+                confidence: 1.0 - pattern.success_rate,
+            });
+        }
+
+        recommendations.sort_by(|left, right| {
+            right
+                .confidence
+                .total_cmp(&left.confidence)
+                .then_with(|| format!("{:?}", left.kind).cmp(&format!("{:?}", right.kind)))
+        });
+        recommendations.truncate(limit);
+        recommendations
+    }
+
+    fn pattern_has_non_transient_failure(&self, pattern: &LearnedPattern) -> bool {
+        self.outcomes.iter().any(|outcome| {
+            !outcome.success
+                && !outcome
+                    .failure_reason
+                    .as_deref()
+                    .is_some_and(is_transient_failure_reason)
+                && outcome_matches_pattern(outcome, pattern)
+        })
+    }
+
+    fn pattern_non_transient_stats(&self, pattern: &LearnedPattern) -> PatternEvidenceStats {
+        let mut success_count = 0usize;
+        let mut sample_count = 0usize;
+        for outcome in self
+            .outcomes
+            .iter()
+            .filter(|outcome| outcome_matches_pattern(outcome, pattern))
+        {
+            if outcome.success {
+                success_count += 1;
+                sample_count += 1;
+            } else if !outcome
+                .failure_reason
+                .as_deref()
+                .is_some_and(is_transient_failure_reason)
+            {
+                sample_count += 1;
+            }
+        }
+        PatternEvidenceStats {
+            sample_count: sample_count as u64,
+            success_rate: if sample_count == 0 {
+                0.0
+            } else {
+                success_count as f64 / sample_count as f64
+            },
+        }
+    }
+
     /// Get summary statistics
     pub fn get_stats(&self) -> LearnerStats {
         let total_outcomes = self.outcomes.len();
@@ -288,6 +448,13 @@ impl Learner {
         let total_cost: f64 = self.outcomes.iter().map(|o| o.cost_usd).sum();
         let total_estimated_cost: f64 = self.outcomes.iter().map(|o| o.estimated_cost_usd).sum();
         let total_patterns = self.patterns.len();
+        let protected_transient_failure_count = self
+            .outcomes
+            .iter()
+            .filter(|outcome| !outcome.success)
+            .filter_map(|outcome| outcome.failure_reason.as_deref())
+            .filter(|reason| is_transient_failure_reason(reason))
+            .count() as u64;
 
         // Recent performance (last 24 hours)
         let cutoff = Utc::now() - Duration::hours(24);
@@ -313,6 +480,7 @@ impl Learner {
             total_cost,
             total_estimated_cost,
             total_patterns: total_patterns as u64,
+            protected_transient_failure_count,
         }
     }
 
@@ -367,6 +535,7 @@ pub struct LearnerStats {
     pub total_cost: f64,
     pub total_estimated_cost: f64,
     pub total_patterns: u64,
+    pub protected_transient_failure_count: u64,
 }
 
 /// Serialization helper
@@ -374,6 +543,100 @@ pub struct LearnerStats {
 struct LearnerData {
     outcomes: Vec<LearnerOutcome>,
     patterns: Vec<LearnedPattern>,
+}
+
+struct PatternEvidenceStats {
+    sample_count: u64,
+    success_rate: f64,
+}
+
+fn is_transient_failure_reason(reason: &str) -> bool {
+    let reason = reason.to_lowercase();
+    [
+        "command not found",
+        "no such file or directory",
+        "missing binary",
+        "missing credential",
+        "unconfigured",
+        "not configured",
+        "authentication required",
+        "connection refused",
+        "temporary failure in name resolution",
+    ]
+    .iter()
+    .any(|needle| reason.contains(needle))
+        || is_transient_rate_limit_failure_reason(&reason)
+        || is_transient_transport_failure_reason(&reason)
+}
+
+fn is_transient_rate_limit_failure_reason(reason: &str) -> bool {
+    ["429 too many requests", "http 429", "status 429"]
+        .iter()
+        .any(|needle| reason.contains(needle))
+        || (reason.contains("rate limit") && has_transient_environment_context(reason))
+}
+
+fn is_transient_transport_failure_reason(reason: &str) -> bool {
+    [
+        "etimedout",
+        "econnreset",
+        "enotfound",
+        "eai_again",
+        "connection timed out",
+        "socket timed out",
+        "network unreachable",
+        "network unavailable",
+        "network reset",
+        "temporary network",
+    ]
+    .iter()
+    .any(|needle| reason.contains(needle))
+        || ([
+            "request timed out",
+            "connect timed out",
+            "fetch timed out",
+            "timed out",
+            "network error",
+            "network failure",
+            "dns lookup",
+            "name resolution",
+        ]
+        .iter()
+        .any(|needle| reason.contains(needle))
+            && has_transient_environment_context(reason))
+}
+
+fn has_transient_environment_context(reason: &str) -> bool {
+    [
+        "while bootstrapping",
+        "while fetching",
+        "while downloading",
+        "while installing",
+        "while authenticating",
+        "while connecting",
+        "while calling",
+        "fetching dependencies",
+        "downloading dependencies",
+        "installing dependencies",
+        "dependency install",
+        "fresh runner",
+        "github api",
+        "npm registry",
+        "package registry",
+    ]
+    .iter()
+    .any(|needle| reason.contains(needle))
+}
+
+fn outcome_matches_pattern(outcome: &LearnerOutcome, pattern: &LearnedPattern) -> bool {
+    match pattern.pattern_type {
+        PatternType::Label => outcome.labels.iter().any(|label| label == &pattern.key),
+        PatternType::TaskType => format!("{:?}", outcome.task_type) == pattern.key,
+        PatternType::Complexity => format!("{:?}", outcome.complexity) == pattern.key,
+        PatternType::Model => outcome.model_used == pattern.key,
+        PatternType::Repo => outcome.repo == pattern.key,
+        PatternType::EventType => format!("{:?}", outcome.event_type) == pattern.key,
+    }
 }
 
 #[cfg(test)]
@@ -485,5 +748,138 @@ mod tests {
         assert_eq!(stats.total_cost, 0.42);
         assert_eq!(stats.total_estimated_cost, 0.42);
         assert!(learner.get_label_success_rate("bug").is_none());
+    }
+
+    #[tokio::test]
+    async fn test_recommendations_promote_patterns_and_guard_transient_failures() {
+        let temp = TempDir::new().unwrap();
+        let mut learner = Learner::new(temp.path().join("learner.json"));
+
+        for _ in 0..8 {
+            learner
+                .record_outcome(make_outcome(true, vec!["safe-refactor"]))
+                .await
+                .unwrap();
+        }
+
+        let mut transient = make_outcome(false, vec!["nightly"]);
+        transient.failure_reason = Some("command not found: gh in fresh runner".to_string());
+        learner.record_outcome(transient).await.unwrap();
+
+        let stats = learner.get_stats();
+        assert_eq!(stats.protected_transient_failure_count, 1);
+
+        let recommendations = learner.get_recommendations(10);
+        assert!(recommendations.iter().any(|recommendation| {
+            recommendation.kind == LearnerRecommendationKind::GuardTransientFailure
+                && recommendation
+                    .action
+                    .contains("do not persist a durable rule")
+        }));
+        assert!(recommendations.iter().any(|recommendation| {
+            recommendation.kind == LearnerRecommendationKind::PromotePattern
+                && recommendation.evidence.contains("safe-refactor")
+        }));
+    }
+
+    #[tokio::test]
+    async fn test_recommendations_skip_transient_only_repair_patterns() {
+        let temp = TempDir::new().unwrap();
+        let mut learner = Learner::new(temp.path().join("learner.json"));
+
+        for reason in [
+            "command not found: gh in fresh runner",
+            "missing credential for GitHub",
+            "rate limit while bootstrapping",
+            "request timed out while fetching dependencies",
+            "network error while bootstrapping",
+        ] {
+            let mut outcome = make_outcome(false, vec!["nightly"]);
+            outcome.failure_reason = Some(reason.to_string());
+            learner.record_outcome(outcome).await.unwrap();
+        }
+
+        let recommendations = learner.get_recommendations(10);
+        assert!(recommendations
+            .iter()
+            .any(|recommendation| recommendation.kind
+                == LearnerRecommendationKind::GuardTransientFailure));
+        assert!(!recommendations
+            .iter()
+            .any(|recommendation| recommendation.kind == LearnerRecommendationKind::RepairPattern));
+    }
+
+    #[tokio::test]
+    async fn test_recommendations_promote_with_transient_noise() {
+        let temp = TempDir::new().unwrap();
+        let mut learner = Learner::new(temp.path().join("learner.json"));
+
+        for _ in 0..3 {
+            learner
+                .record_outcome(make_outcome(true, vec!["bug"]))
+                .await
+                .unwrap();
+        }
+        for _ in 0..5 {
+            let mut outcome = make_outcome(false, vec!["bug"]);
+            outcome.failure_reason = Some("command not found: gh".to_string());
+            learner.record_outcome(outcome).await.unwrap();
+        }
+
+        let recommendations = learner.get_recommendations(10);
+        assert!(recommendations.iter().any(|recommendation| {
+            recommendation.kind == LearnerRecommendationKind::PromotePattern
+                && recommendation.evidence.contains("non-transient sample")
+        }));
+    }
+
+    #[tokio::test]
+    async fn test_recommendations_keep_durable_repair_patterns() {
+        let temp = TempDir::new().unwrap();
+        let mut learner = Learner::new(temp.path().join("learner.json"));
+
+        for reason in [
+            "checkout timeout budget regressed in product flow",
+            "network graph planner returned invalid route",
+            "review rejected incomplete fix",
+        ] {
+            let mut outcome = make_outcome(false, vec!["bug"]);
+            outcome.failure_reason = Some(reason.to_string());
+            learner.record_outcome(outcome).await.unwrap();
+        }
+
+        let stats = learner.get_stats();
+        assert_eq!(stats.protected_transient_failure_count, 0);
+
+        let recommendations = learner.get_recommendations(10);
+        assert!(recommendations
+            .iter()
+            .any(|recommendation| recommendation.kind == LearnerRecommendationKind::RepairPattern));
+    }
+
+    #[test]
+    fn test_transient_classifier_requires_environment_context_for_product_terms() {
+        for reason in [
+            "name resolution rule emitted the wrong symbol",
+            "network error UI failed to show retry guidance",
+            "rate limit policy resolver failed closed",
+        ] {
+            assert!(
+                !is_transient_failure_reason(reason),
+                "{reason} should stay durable learner evidence"
+            );
+        }
+
+        for reason in [
+            "temporary failure in name resolution",
+            "network error while bootstrapping",
+            "rate limit while fetching dependencies",
+            "request timed out while installing dependencies",
+        ] {
+            assert!(
+                is_transient_failure_reason(reason),
+                "{reason} should be quarantined as transient evidence"
+            );
+        }
     }
 }

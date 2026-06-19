@@ -1,9 +1,13 @@
 import type { SwarmState, SwarmTeammate } from "../agent/swarm/types.js";
+import {
+	a2aTaskEvidenceGaps,
+	isCompletedA2AState,
+	isFinalA2AState,
+} from "./a2a-task-ledger.js";
 import type {
 	A2ATaskLedgerEntry,
 	A2ATaskLedgerFile,
 } from "./a2a-task-ledger.js";
-import { isTerminalA2AState } from "./a2a-task-ledger.js";
 
 export const A2A_COMPLETION_AUDIT_SCHEMA =
 	"evalops.maestro.a2a-completion-audit.v2";
@@ -13,6 +17,7 @@ export type A2ACompletionSignalKey =
 	| "artifact"
 	| "task"
 	| "workGraph"
+	| "transcript"
 	| "push"
 	| "correlation";
 
@@ -64,6 +69,7 @@ const SIGNAL_ORDER: A2ACompletionSignalKey[] = [
 	"artifact",
 	"task",
 	"workGraph",
+	"transcript",
 	"push",
 	"correlation",
 ];
@@ -199,11 +205,14 @@ function buildLaneAudit(
 		lane.parentTaskId ??
 		parentTaskIdForLane(lane.completedTasks, ledgerEntry, a2a);
 	const status = ledgerEntry?.state;
+	const evidenceGaps = ledgerEntry ? a2aTaskEvidenceGaps(ledgerEntry) : [];
 	const signals: Record<A2ACompletionSignalKey, boolean> = {
 		status: Boolean(status),
-		artifact: hasArtifactSignal(ledgerEntry),
+		artifact:
+			Boolean(ledgerEntry) && !evidenceGaps.includes("response-artifact"),
 		task: Boolean(ledgerEntry),
-		workGraph: Boolean(ledgerEntry?.workGraph),
+		workGraph: Boolean(ledgerEntry) && !evidenceGaps.includes("work-graph"),
+		transcript: Boolean(ledgerEntry) && !evidenceGaps.includes("transcript"),
 		push: hasPushSignal(input, a2a, remoteTaskIdCounts),
 		correlation: hasCorrelationSignal(
 			input.swarm.id,
@@ -221,7 +230,7 @@ function buildLaneAudit(
 		contextId: a2a.contextId ?? ledgerEntry?.contextId,
 		peer: a2a.peer,
 		status,
-		terminal: Boolean(status && isTerminalA2AState(status)),
+		terminal: Boolean(status && isFinalA2AState(status)),
 		signals,
 		missingSignals,
 	};
@@ -286,25 +295,12 @@ function parentTaskIdForLane(
 	return lastValue(completedTasks) ?? ledgerParentTaskId ?? a2aParentTaskId;
 }
 
-function isCompletedA2AState(state: string): boolean {
-	return /COMPLETED/u.test(state.toUpperCase().replace(/[\s-]+/gu, "_"));
-}
-
 function lastValue(values: string[]): string | undefined {
 	return values.length > 0 ? values[values.length - 1] : undefined;
 }
 
 function fallbackRemoteLaneId(peer: string, taskId: string): string {
 	return `a2a:${encodeURIComponent(peer)}:remote:${encodeURIComponent(taskId)}`;
-}
-
-function hasArtifactSignal(entry: A2ATaskLedgerEntry | undefined): boolean {
-	return Boolean(
-		entry?.responseText?.trim() ||
-			entry?.transcript.some(
-				(item) => item.role === "agent" && item.text.trim().length > 0,
-			),
-	);
 }
 
 function hasCorrelationSignal(

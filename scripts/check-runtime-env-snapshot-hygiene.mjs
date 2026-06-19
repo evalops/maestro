@@ -12,396 +12,11 @@ import { readdirSync, readFileSync, statSync } from "node:fs";
 import { dirname, relative, resolve } from "node:path";
 import process from "node:process";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import ts from "typescript";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(here, "..");
 const srcRoot = resolve(repoRoot, "src");
-
-const DEFAULT_RUNTIME_ENV_CALL_PATTERN = /\bdefaultRuntimeEnv\s*\(/;
-const MODULE_SCOPE_CLASS_PATTERN =
-	/^(?:export\s+(?:default\s+)?)?(?:abstract\s+)?class\b/;
-const MODULE_SCOPE_ENUM_PATTERN = /^(?:export\s+)?(?:const\s+)?enum\b/;
-const MODULE_SCOPE_NON_EXECUTABLE_PATTERN =
-	/^(?:import\b|export\s+(?:\{|\*|type\b|interface\b|(?:async\s+)?function\b|class\b|enum\b)|(?:export\s+)?(?:type|interface|(?:async\s+)?function|class|enum)\b)/;
-
-function isModuleScopeExecutableStatement(line) {
-	if (line.trim().length === 0) return false;
-	if (/^\s/.test(line)) return false;
-	const trimmed = line.trimStart();
-	if (trimmed.startsWith("//") || trimmed.startsWith("/*")) return false;
-	if (trimmed.startsWith("}") || trimmed.startsWith(")")) return false;
-	return !MODULE_SCOPE_NON_EXECUTABLE_PATTERN.test(trimmed);
-}
-
-function isLazyModuleScopeInitializer(statement) {
-	return /^(?:export\s+)?(?:const|let|var)\s+[$A-Z_a-z][$\w]*(?:\s*:[\s\S]*?)?\s*=\s*(?:async\s*)?(?:function\b|(?:\([^)]*\)|[$A-Z_a-z][$\w]*)(?:\s*:\s*[^=]+)?\s*=>)/.test(
-		statement.trimStart(),
-	) && !isImmediatelyInvokedFunctionInitializer(statement);
-}
-
-function isImmediatelyInvokedFunctionInitializer(statement) {
-	const text = statement.replace(/\s+/g, " ").trim();
-	return (
-		/=\s*\(?\s*(?:async\s*)?function\b[\s\S]*\}\s*\)?\s*\(/.test(text) ||
-		/=\s*\([\s\S]*=>[\s\S]*\)\s*\(/.test(text)
-	);
-}
-
-function maskLazyRuntimeEnvReaders(statement) {
-	return statement
-		.replace(
-			/=>\s*defaultRuntimeEnv\s*\([^)]*\)(?!\s*\)\s*\()/g,
-			"=> __lazyRuntimeEnvRead",
-		)
-		.replace(
-			/=>\s*\{[^{}]*defaultRuntimeEnv\s*\([^)]*\)[^{}]*\}(?!\s*\)\s*\()/g,
-			"=> { __lazyRuntimeEnvRead }",
-		)
-		.replace(
-			/function\b[^{]*\{[^{}]*defaultRuntimeEnv\s*\([^)]*\)[^{}]*\}(?!\s*\()/g,
-			"function __lazyRuntimeEnvRead() {}",
-		);
-}
-
-function hasEagerRuntimeEnvCall(statement) {
-	if (!DEFAULT_RUNTIME_ENV_CALL_PATTERN.test(statement)) return false;
-	if (isImmediatelyInvokedFunctionInitializer(statement)) return true;
-	return DEFAULT_RUNTIME_ENV_CALL_PATTERN.test(
-		maskLazyRuntimeEnvReaders(statement),
-	);
-}
-
-function isLazyStaticInitializer(statement) {
-	return /^\s*static\s+(?!\{)[\s\S]*?=\s*(?:async\s*)?(?:function\b|(?:\([^)]*\)|[$A-Z_a-z][$\w]*)(?:\s*:\s*[^=]+)?\s*=>)/.test(
-		statement,
-	) && !isImmediatelyInvokedFunctionInitializer(statement);
-}
-
-function hasEagerStaticComputedNameRuntimeEnvCall(statement) {
-	const match = /\bstatic\s+(?:[$A-Z_a-z][$\w]*\s+)*\[([\s\S]*?)\]/.exec(
-		statement,
-	);
-	return match ? DEFAULT_RUNTIME_ENV_CALL_PATTERN.test(match[1] ?? "") : false;
-}
-
-function collectDeclaration(lines, startIndex) {
-	const collected = [];
-	for (let index = startIndex; index < lines.length; index += 1) {
-		collected.push(lines[index]);
-		if (/;\s*(?:(?:\/\/).*)?$/.test(lines[index])) {
-			break;
-		}
-	}
-	return collected.join("\n");
-}
-
-function createSyntaxState(extra = {}) {
-	return {
-		blockComment: false,
-		escaped: false,
-		lastSignificant: "",
-		openBraceCount: 0,
-		quote: "",
-		regex: false,
-		regexCharClass: false,
-		...extra,
-	};
-}
-
-function isRegexLiteralStart(lastSignificant) {
-	return lastSignificant === "" || /[([{,:;=!&|?+\-*%^~<>]/.test(lastSignificant);
-}
-
-function noteSignificantSyntax(state, char) {
-	if (!/\s/.test(char)) {
-		state.lastSignificant = char;
-	}
-}
-
-function countSyntaxBraceDelta(line, state) {
-	let delta = 0;
-	for (let index = 0; index < line.length; index += 1) {
-		const char = line[index];
-		const next = line[index + 1];
-		if (state.blockComment) {
-			if (char === "*" && next === "/") {
-				state.blockComment = false;
-				index += 1;
-			}
-			continue;
-		}
-		if (state.quote) {
-			if (state.escaped) {
-				state.escaped = false;
-			} else if (char === "\\") {
-				state.escaped = true;
-			} else if (char === state.quote) {
-				state.quote = "";
-			}
-			continue;
-		}
-		if (state.regex) {
-			if (state.escaped) {
-				state.escaped = false;
-			} else if (char === "\\") {
-				state.escaped = true;
-			} else if (char === "[") {
-				state.regexCharClass = true;
-			} else if (char === "]" && state.regexCharClass) {
-				state.regexCharClass = false;
-			} else if (char === "/" && !state.regexCharClass) {
-				state.regex = false;
-				noteSignificantSyntax(state, char);
-			}
-			continue;
-		}
-		if (char === "/" && next === "/") {
-			break;
-		}
-		if (char === "/" && next === "*") {
-			state.blockComment = true;
-			index += 1;
-			continue;
-		}
-		if (char === '"' || char === "'" || char === "`") {
-			state.quote = char;
-			continue;
-		}
-		if (char === "/" && isRegexLiteralStart(state.lastSignificant)) {
-			state.regex = true;
-			state.regexCharClass = false;
-			state.escaped = false;
-			continue;
-		}
-		if (char === "{") {
-			delta += 1;
-			state.openBraceCount = (state.openBraceCount ?? 0) + 1;
-		} else if (char === "}") {
-			delta -= 1;
-		}
-		noteSignificantSyntax(state, char);
-	}
-	return delta;
-}
-
-function hasSyntaxOpeningBrace(line) {
-	const braceState = createSyntaxState();
-	countSyntaxBraceDelta(line, braceState);
-	return (braceState.openBraceCount ?? 0) > 0;
-}
-
-function collectModuleScopeStatement(lines, startIndex) {
-	const collected = [];
-	const braceState = createSyntaxState();
-	let depth = 0;
-	let opened = false;
-	for (let index = startIndex; index < lines.length; index += 1) {
-		const line = lines[index];
-		collected.push(line);
-		const openBraceCount = braceState.openBraceCount ?? 0;
-		const delta = countSyntaxBraceDelta(line, braceState);
-		if ((braceState.openBraceCount ?? 0) > openBraceCount) {
-			opened = true;
-		}
-		depth += delta;
-		if (opened) {
-			if (depth <= 0) {
-				break;
-			}
-			continue;
-		}
-		if (/;\s*(?:(?:\/\/).*)?$/.test(line)) {
-			break;
-		}
-	}
-	return collected.join("\n");
-}
-
-function collectClassBlock(lines, startIndex) {
-	const collected = [];
-	let depth = 0;
-	let opened = false;
-	const braceState = createSyntaxState();
-	for (let index = startIndex; index < lines.length; index += 1) {
-		const line = lines[index];
-		collected.push(line);
-		const openBraceCount = braceState.openBraceCount ?? 0;
-		const delta = countSyntaxBraceDelta(line, braceState);
-		if ((braceState.openBraceCount ?? 0) > openBraceCount) {
-			opened = true;
-		}
-		depth += delta;
-		if (opened && depth <= 0) {
-			break;
-		}
-	}
-	return collected;
-}
-
-function findClassBodyOpenBrace(line, state) {
-	for (let index = 0; index < line.length; index += 1) {
-		const char = line[index];
-		const next = line[index + 1];
-		if (state.blockComment) {
-			if (char === "*" && next === "/") {
-				state.blockComment = false;
-				index += 1;
-			}
-			continue;
-		}
-		if (state.quote) {
-			if (state.escaped) {
-				state.escaped = false;
-			} else if (char === "\\") {
-				state.escaped = true;
-			} else if (char === state.quote) {
-				state.quote = "";
-			}
-			continue;
-		}
-		if (state.regex) {
-			if (state.escaped) {
-				state.escaped = false;
-			} else if (char === "\\") {
-				state.escaped = true;
-			} else if (char === "[") {
-				state.regexCharClass = true;
-			} else if (char === "]" && state.regexCharClass) {
-				state.regexCharClass = false;
-			} else if (char === "/" && !state.regexCharClass) {
-				state.regex = false;
-				noteSignificantSyntax(state, char);
-			}
-			continue;
-		}
-		if (char === "/" && next === "/") {
-			break;
-		}
-		if (char === "/" && next === "*") {
-			state.blockComment = true;
-			index += 1;
-			continue;
-		}
-		if (char === '"' || char === "'" || char === "`") {
-			state.quote = char;
-			continue;
-		}
-		if (char === "/" && isRegexLiteralStart(state.lastSignificant)) {
-			state.regex = true;
-			state.regexCharClass = false;
-			state.escaped = false;
-			continue;
-		}
-		if (char === "(") {
-			state.parenDepth += 1;
-			noteSignificantSyntax(state, char);
-			continue;
-		}
-		if (char === ")" && state.parenDepth > 0) {
-			state.parenDepth -= 1;
-			noteSignificantSyntax(state, char);
-			continue;
-		}
-		if (char === "[") {
-			state.bracketDepth += 1;
-			noteSignificantSyntax(state, char);
-			continue;
-		}
-		if (char === "]" && state.bracketDepth > 0) {
-			state.bracketDepth -= 1;
-			noteSignificantSyntax(state, char);
-			continue;
-		}
-		if (char === "{" && state.parenDepth === 0 && state.bracketDepth === 0) {
-			return index;
-		}
-		noteSignificantSyntax(state, char);
-	}
-	return -1;
-}
-
-function collectClassHeader(lines, startIndex) {
-	const collected = [];
-	const headerState = createSyntaxState({
-		bracketDepth: 0,
-		parenDepth: 0,
-	});
-	for (let index = startIndex; index < lines.length; index += 1) {
-		const line = lines[index];
-		const openBraceIndex = findClassBodyOpenBrace(line, headerState);
-		if (openBraceIndex >= 0) {
-			collected.push(line.slice(0, openBraceIndex + 1));
-			break;
-		}
-		collected.push(line);
-	}
-	return collected.join("\n");
-}
-
-function findClassHeaderRuntimeEnvSnapshots(lines, startIndex, rel, findings) {
-	const header = collectClassHeader(lines, startIndex);
-	if (!DEFAULT_RUNTIME_ENV_CALL_PATTERN.test(header)) return;
-	findings.push({
-		file: rel,
-		line: startIndex + 1,
-		text: header.replace(/\s+/g, " ").trim(),
-	});
-}
-
-function collectStaticBlock(lines, startIndex) {
-	const collected = [];
-	let depth = 0;
-	let opened = false;
-	const braceState = createSyntaxState();
-	for (let index = startIndex; index < lines.length; index += 1) {
-		const line = lines[index];
-		collected.push(line);
-		const openBraceCount = braceState.openBraceCount ?? 0;
-		const delta = countSyntaxBraceDelta(line, braceState);
-		if ((braceState.openBraceCount ?? 0) > openBraceCount) {
-			opened = true;
-		}
-		depth += delta;
-		if (opened && depth <= 0) {
-			break;
-		}
-	}
-	return collected.join("\n");
-}
-
-function findStaticRuntimeEnvSnapshots(lines, startIndex, rel, findings) {
-	const block = collectClassBlock(lines, startIndex);
-		for (const [offset, line] of block.entries()) {
-			if (!/\bstatic\b/.test(line)) continue;
-			const statement = hasSyntaxOpeningBrace(line)
-				? collectStaticBlock(block, offset)
-				: collectDeclaration(block, offset);
-			const text = statement.replace(/\s+/g, " ").trim();
-			const hasEagerComputedName =
-				hasEagerStaticComputedNameRuntimeEnvCall(statement);
-			if (!hasEagerComputedName && !/\bstatic\s*(?:\{|[^()=]+=)/.test(text)) {
-				continue;
-			}
-			if (!hasEagerComputedName && isLazyStaticInitializer(statement)) continue;
-			if (!hasEagerComputedName && !hasEagerRuntimeEnvCall(statement)) continue;
-			findings.push({
-				file: rel,
-				line: startIndex + offset + 1,
-			text,
-		});
-	}
-}
-
-function findEnumRuntimeEnvSnapshots(lines, startIndex, rel, findings) {
-	const block = collectClassBlock(lines, startIndex);
-	const statement = block.join("\n");
-	if (!DEFAULT_RUNTIME_ENV_CALL_PATTERN.test(statement)) return;
-	findings.push({
-		file: rel,
-		line: startIndex + 1,
-		text: statement.replace(/\s+/g, " ").trim(),
-	});
-}
 
 function* walk(dir) {
 	for (const name of readdirSync(dir)) {
@@ -420,32 +35,306 @@ function* walk(dir) {
 	}
 }
 
+function scriptKindFor(absPath) {
+	return absPath.endsWith(".tsx") ? ts.ScriptKind.TSX : ts.ScriptKind.TS;
+}
+
+function compactText(text) {
+	return text.replace(/\s+/g, " ").trim();
+}
+
+function classHeaderText(sourceFile, node) {
+	const start = node.getStart(sourceFile);
+	const bodyStart = node.members.pos;
+	return compactText(sourceFile.text.slice(start, bodyStart));
+}
+
+function reportText(sourceFile, node) {
+	if (ts.isClassDeclaration(node) || ts.isClassExpression(node)) {
+		return classHeaderText(sourceFile, node);
+	}
+	return compactText(node.getText(sourceFile));
+}
+
+function addFinding(ctx, reportNode) {
+	const start = reportNode.getStart(ctx.sourceFile);
+	const key = `${ctx.rel}:${start}`;
+	if (ctx.seen.has(key)) return;
+	ctx.seen.add(key);
+
+	const position = ctx.sourceFile.getLineAndCharacterOfPosition(start);
+	ctx.findings.push({
+		file: ctx.rel,
+		line: position.line + 1,
+		text: reportText(ctx.sourceFile, reportNode),
+	});
+}
+
+function unwrapExpression(node) {
+	let current = node;
+	for (;;) {
+		if (
+			ts.isParenthesizedExpression(current) ||
+			ts.isAsExpression(current) ||
+			ts.isSatisfiesExpression(current) ||
+			ts.isNonNullExpression(current) ||
+			ts.isTypeAssertionExpression(current)
+		) {
+			current = current.expression;
+			continue;
+		}
+		return current;
+	}
+}
+
+function isDefaultRuntimeEnvCallee(node) {
+	const callee = unwrapExpression(node);
+	if (ts.isIdentifier(callee)) {
+		return callee.text === "defaultRuntimeEnv";
+	}
+	if (
+		(ts.isPropertyAccessExpression(callee) ||
+			ts.isPropertyAccessChain(callee)) &&
+		callee.name.text === "defaultRuntimeEnv"
+	) {
+		return true;
+	}
+	return false;
+}
+
+function isDefaultRuntimeEnvCall(node) {
+	return ts.isCallExpression(node) && isDefaultRuntimeEnvCallee(node.expression);
+}
+
+function getIifeFunctionExpression(node) {
+	if (!ts.isCallExpression(node)) return null;
+	const callee = unwrapExpression(node.expression);
+	if (ts.isFunctionExpression(callee) || ts.isArrowFunction(callee)) {
+		return callee;
+	}
+	if (
+		(ts.isPropertyAccessExpression(callee) ||
+			ts.isPropertyAccessChain(callee)) &&
+		(callee.name.text === "call" || callee.name.text === "apply")
+	) {
+		const receiver = unwrapExpression(callee.expression);
+		if (ts.isFunctionExpression(receiver) || ts.isArrowFunction(receiver)) {
+			return receiver;
+		}
+	}
+	return null;
+}
+
+function isIifeCall(node) {
+	return getIifeFunctionExpression(node) !== null;
+}
+
+function isLazyFunctionBoundary(node) {
+	return (
+		ts.isFunctionDeclaration(node) ||
+		ts.isFunctionExpression(node) ||
+		ts.isArrowFunction(node) ||
+		ts.isMethodDeclaration(node) ||
+		ts.isGetAccessorDeclaration(node) ||
+		ts.isSetAccessorDeclaration(node) ||
+		ts.isConstructorDeclaration(node)
+	);
+}
+
+function hasStaticModifier(node) {
+	return (
+		ts.canHaveModifiers(node) &&
+		(ts.getModifiers(node) ?? []).some(
+			(modifier) => modifier.kind === ts.SyntaxKind.StaticKeyword,
+		)
+	);
+}
+
+function scanDecorators(node, ctx, reportNode) {
+	if (!ts.canHaveDecorators(node)) return;
+	for (const decorator of ts.getDecorators(node) ?? []) {
+		scanEager(decorator.expression, ctx, reportNode);
+	}
+}
+
+function scanClass(node, ctx, reportNode, options = {}) {
+	scanDecorators(node, ctx, reportNode);
+	for (const clause of node.heritageClauses ?? []) {
+		for (const typeNode of clause.types) {
+			scanEager(typeNode.expression, ctx, reportNode);
+		}
+	}
+
+	for (const member of node.members) {
+		scanDecorators(member, ctx, member);
+
+		if (member.name && ts.isComputedPropertyName(member.name)) {
+			scanEager(member.name.expression, ctx, member);
+		}
+
+		if (ts.isClassStaticBlockDeclaration(member)) {
+			scanEagerChildren(member, ctx, member);
+			continue;
+		}
+
+		if (
+			options.scanInstanceInitializers === true &&
+			ts.isConstructorDeclaration(member)
+		) {
+			for (const parameter of member.parameters) {
+				if (parameter.initializer) {
+					scanEager(parameter.initializer, ctx, member);
+				}
+			}
+			if (member.body) {
+				scanEagerChildren(member.body, ctx, member);
+			}
+			continue;
+		}
+
+		if (
+			(hasStaticModifier(member) || options.scanInstanceInitializers === true) &&
+			ts.isPropertyDeclaration(member) &&
+			member.initializer
+		) {
+			scanEager(member.initializer, ctx, member);
+		}
+	}
+}
+
+function scanEnum(node, ctx, reportNode) {
+	for (const member of node.members) {
+		if (member.initializer) {
+			scanEager(member.initializer, ctx, reportNode);
+		}
+	}
+}
+
+function scanEagerFunctionBody(fn, ctx, reportNode) {
+	for (const parameter of fn.parameters ?? []) {
+		if (parameter.initializer) {
+			scanEager(parameter.initializer, ctx, reportNode);
+		}
+	}
+
+	const body = fn.body;
+	if (ts.isBlock(body)) {
+		scanEagerChildren(body, ctx, reportNode);
+		return;
+	}
+	scanEager(body, ctx, reportNode);
+}
+
+function scanIifeFunctionBody(node, ctx, reportNode) {
+	const callee = getIifeFunctionExpression(node);
+	if (!callee) return;
+	scanEagerFunctionBody(callee, ctx, reportNode);
+}
+
+function scanCall(node, ctx, reportNode) {
+	if (isDefaultRuntimeEnvCall(node)) {
+		addFinding(ctx, reportNode);
+		return;
+	}
+
+	for (const argument of node.arguments) {
+		scanEager(argument, ctx, reportNode);
+	}
+
+	if (isIifeCall(node)) {
+		scanIifeFunctionBody(node, ctx, reportNode);
+		return;
+	}
+
+	scanEager(node.expression, ctx, reportNode);
+}
+
+function scanNewExpression(node, ctx, reportNode) {
+	for (const argument of node.arguments ?? []) {
+		scanEager(argument, ctx, reportNode);
+	}
+
+	const expression = unwrapExpression(node.expression);
+	if (ts.isClassExpression(expression)) {
+		scanClass(expression, ctx, expression, {
+			scanInstanceInitializers: true,
+		});
+		return;
+	}
+	if (ts.isFunctionExpression(expression)) {
+		scanEagerFunctionBody(expression, ctx, expression);
+		return;
+	}
+
+	scanEager(expression, ctx, reportNode);
+}
+
+function scanEagerChildren(node, ctx, reportNode) {
+	ts.forEachChild(node, (child) => {
+		scanEager(child, ctx, reportNode);
+	});
+}
+
+function scanEager(node, ctx, reportNode) {
+	if (isDefaultRuntimeEnvCall(node)) {
+		addFinding(ctx, reportNode);
+		return;
+	}
+
+	if (ts.isClassDeclaration(node) || ts.isClassExpression(node)) {
+		scanClass(node, ctx, node);
+		return;
+	}
+
+	if (ts.isEnumDeclaration(node)) {
+		scanEnum(node, ctx, node);
+		return;
+	}
+
+	if (ts.isCallExpression(node)) {
+		scanCall(node, ctx, reportNode);
+		return;
+	}
+
+	if (ts.isNewExpression(node)) {
+		scanNewExpression(node, ctx, reportNode);
+		return;
+	}
+
+	if (isLazyFunctionBoundary(node)) {
+		return;
+	}
+
+	scanEagerChildren(node, ctx, reportNode);
+}
+
+function scanSourceFile(absPath) {
+	const rel = relative(repoRoot, absPath);
+	const sourceText = readFileSync(absPath, "utf-8");
+	const sourceFile = ts.createSourceFile(
+		absPath,
+		sourceText,
+		ts.ScriptTarget.Latest,
+		true,
+		scriptKindFor(absPath),
+	);
+	const ctx = {
+		findings: [],
+		rel,
+		seen: new Set(),
+		sourceFile,
+	};
+
+	for (const statement of sourceFile.statements) {
+		scanEager(statement, ctx, statement);
+	}
+	return ctx.findings;
+}
+
 export function scanRuntimeEnvSnapshotHygiene(root = srcRoot) {
 	const findings = [];
 	for (const absPath of walk(root)) {
-		const rel = relative(repoRoot, absPath);
-		const lines = readFileSync(absPath, "utf-8").split(/\r?\n/);
-		for (const [index, line] of lines.entries()) {
-			const isModuleScopeLine = line.trim().length > 0 && !/^\s/.test(line);
-			if (isModuleScopeLine && MODULE_SCOPE_CLASS_PATTERN.test(line.trimStart())) {
-				findClassHeaderRuntimeEnvSnapshots(lines, index, rel, findings);
-				findStaticRuntimeEnvSnapshots(lines, index, rel, findings);
-				continue;
-			}
-			if (isModuleScopeLine && MODULE_SCOPE_ENUM_PATTERN.test(line.trimStart())) {
-				findEnumRuntimeEnvSnapshots(lines, index, rel, findings);
-				continue;
-			}
-			if (!isModuleScopeExecutableStatement(line)) continue;
-			const statement = collectModuleScopeStatement(lines, index);
-			if (isLazyModuleScopeInitializer(statement)) continue;
-			if (!hasEagerRuntimeEnvCall(statement)) continue;
-			findings.push({
-				file: rel,
-				line: index + 1,
-				text: statement.replace(/\s+/g, " ").trim(),
-			});
-		}
+		findings.push(...scanSourceFile(absPath));
 	}
 	return findings;
 }

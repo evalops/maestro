@@ -67,6 +67,31 @@ pub(crate) const CODEX_SUBAGENT_DISPATCH_LANES: &[CodexSubagentDispatchLane] = &
         ],
     },
     CodexSubagentDispatchLane {
+        lane_id: "browser-qa",
+        skill_id: "maestro.subagent.browser-qa",
+        display_name: "Maestro browser QA subagent",
+        description: "Delegate browser-based product QA, console inspection, screenshots, repro videos, and evidence-backed bug reports to a target-owned Maestro child agent.",
+        tags: &["maestro", "subagent", "browser", "qa", "evidence"],
+        #[cfg(test)]
+        type_aliases: &[
+            "browser-qa",
+            "browser",
+            "dogfood",
+            "product-qa",
+            "e2e-qa",
+            "ux-qa",
+        ],
+        #[cfg(test)]
+        capability_aliases: &[
+            "product:qa",
+            "product-qa",
+            "browser:qa",
+            "browser-qa",
+            "e2e:qa",
+            "e2e-qa",
+        ],
+    },
+    CodexSubagentDispatchLane {
         lane_id: "repo-explorer",
         skill_id: "maestro.subagent.repo-explorer",
         display_name: "Maestro repo explorer subagent",

@@ -199,6 +199,16 @@ export function printHelp(
   # Show usage analytics for one session
   maestro stats --session <session-id>
 
+  # Show customer value, trust cards, durable handoffs, open work, and admin gaps
+  maestro value
+  maestro value --format json
+  maestro value all --format md
+  maestro value week --write --output-dir .maestro/value-reports
+
+  # Manage durable mission state, artifacts, and progress
+  maestro mission init checkout-reliability "Checkout reliability"
+  maestro mission status checkout-reliability --json
+
   # Reconstruct the timeline, trajectory, and evidence coverage for a saved run
   maestro run inspect <session-id> --json
   maestro run promote <session-id>

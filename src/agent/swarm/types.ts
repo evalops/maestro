@@ -39,6 +39,8 @@ export interface SwarmTask {
 	a2aPeer?: string;
 	/** Optional A2A skill override when the task maps to a remote Maestro lane */
 	a2aSkillId?: string;
+	/** Optional durable specialist profile to prepend to the teammate prompt. */
+	specialistProfile?: string;
 	/** Priority (higher = earlier execution when no dependencies) */
 	priority?: number;
 }

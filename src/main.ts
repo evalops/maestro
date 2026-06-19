@@ -787,6 +787,14 @@ export async function main(args: string[]) {
 		return;
 	}
 
+	if (parsed.command === "mission") {
+		const { handleMissionCommand } = await import("./cli/commands/mission.js");
+		await handleMissionCommand(parsed.subcommand, parsed.messages, {
+			json: parsed.execJson,
+		});
+		return;
+	}
+
 	if (parsed.command === "update") {
 		const { handleUpdateCommand } = await import("./cli/commands/update.js");
 		await handleUpdateCommand(parsed.commandArgs ?? []);
@@ -1334,6 +1342,49 @@ export async function main(args: string[]) {
 		}
 	}
 
+	if (parsed.command === "value") {
+		const { handleValueCommand } = await import("./cli/commands/value.js");
+		switch (parsed.subcommand) {
+			case undefined:
+			case "today":
+			case "yesterday":
+			case "week":
+			case "7d":
+			case "month":
+			case "30d":
+			case "all":
+				await handleValueCommand(parsed.subcommand, {
+					format: parsed.exportFormat,
+					outputDir: parsed.outputDir,
+					writeArtifacts: parsed.valueWrite,
+				});
+				return;
+			default:
+				console.error(
+					chalk.red(`Unknown value subcommand: ${parsed.subcommand}`),
+				);
+				console.log(chalk.dim("\nAvailable commands:"));
+				console.log(
+					chalk.dim("  maestro value              - Show last 30 days"),
+				);
+				console.log(
+					chalk.dim("  maestro value week         - Show last 7 days"),
+				);
+				console.log(
+					chalk.dim("  maestro value all          - Show all local evidence"),
+				);
+				console.log(
+					chalk.dim("  maestro value --format json|md - Export value report"),
+				);
+				console.log(
+					chalk.dim(
+						"  maestro value --write --output-dir .maestro/value-reports - Persist report artifacts",
+					),
+				);
+				process.exit(1);
+		}
+	}
+
 	// Handle models commands
 	if (parsed.command === "models") {
 		const { handleModelsList, handleModelsProviders } = await import(
@@ -1399,19 +1450,38 @@ export async function main(args: string[]) {
 
 	// Handle "maestro agents init" command to generate AGENTS.md
 	if (parsed.command === "agents") {
-		const { buildAgentsInitPrompt, handleAgentsInit } = await import(
-			"./cli/commands/agents.js"
-		);
+		const {
+			buildAgentsInitPrompt,
+			handleAgentsInit,
+			handleAgentsProfileCommand,
+		} = await import("./cli/commands/agents.js");
+		if (parsed.subcommand === "profile") {
+			try {
+				handleAgentsProfileCommand(parsed.commandArgs ?? parsed.messages, {
+					force: parsed.force,
+					json: parsed.execJson,
+				});
+				return;
+			} catch (error) {
+				const message =
+					error instanceof Error
+						? error.message
+						: "Failed to manage specialist profile";
+				console.error(chalk.red(message));
+				process.exit(1);
+			}
+		}
 		if (parsed.subcommand && parsed.subcommand !== "init") {
 			console.error(
 				chalk.red(
-					`Unknown agents subcommand: ${parsed.subcommand}. Try "maestro agents init"`,
+					`Unknown agents subcommand: ${parsed.subcommand}. Try "maestro agents init" or "maestro agents profile list"`,
 				),
 			);
 			process.exit(1);
 		}
 		try {
-			const targetArg = parsed.messages[0];
+			const agentsArgs = parsed.commandArgs ?? parsed.messages;
+			const targetArg = agentsArgs[0];
 			const result = handleAgentsInit(targetArg, { force: parsed.force });
 			if (result.action === "preview") {
 				const { sanitizeTerminalPreview } = await import(

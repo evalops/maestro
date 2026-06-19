@@ -46,6 +46,19 @@ pub(crate) fn a2a_subagent_skill_contract(lane_id: &str) -> A2ASubagentSkillCont
             allowed_task_classes: &["test.execution", "ci.triage"],
             denied_task_classes: DENIED_TARGET_TASK_CLASSES,
         },
+        "browser-qa" => A2ASubagentSkillContract {
+            lane_id: "browser-qa",
+            required_context_grants: &["browser:control", "artifact:write", "runtime:events:read"],
+            required_artifact_kinds: &["qa.repro-report"],
+            optional_artifact_kinds: &[
+                "screenshot",
+                "repro.video",
+                "browser.console",
+                "network.error",
+            ],
+            allowed_task_classes: &["product.qa", "browser.e2e", "ux.repro"],
+            denied_task_classes: DENIED_TARGET_TASK_CLASSES,
+        },
         "repo-explorer" => A2ASubagentSkillContract {
             lane_id: "repo-explorer",
             required_context_grants: &["repo:read", "context:index:write"],
@@ -177,6 +190,28 @@ mod tests {
         assert_eq!(
             review["attributes"]["operatingPlaneExtension"],
             "urn:test:operating-plane"
+        );
+    }
+
+    #[test]
+    fn a2a_subagent_skill_contracts_include_browser_qa_policy() {
+        let skills = a2a_subagent_skills("urn:test:operating-plane");
+        let browser_qa = skills
+            .iter()
+            .find(|skill| skill["id"] == "maestro.subagent.browser-qa")
+            .expect("browser QA skill should exist");
+
+        assert_eq!(
+            browser_qa["requiredContextGrants"],
+            serde_json::json!(["browser:control", "artifact:write", "runtime:events:read"])
+        );
+        assert_eq!(
+            browser_qa["requiredArtifactKinds"],
+            serde_json::json!(["qa.repro-report"])
+        );
+        assert_eq!(
+            browser_qa["allowedTaskClasses"],
+            serde_json::json!(["product.qa", "browser.e2e", "ux.repro"])
         );
     }
 }

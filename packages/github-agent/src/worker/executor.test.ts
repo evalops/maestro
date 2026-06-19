@@ -38,8 +38,25 @@ class TestableExecutor extends TaskExecutor {
 	}
 
 	public testBuildPRBodyWithBranch(task: Task, branchName: string): string {
-		type PrivateMethods = { buildPRBody: (t: Task, b?: string) => string };
+		type PrivateMethods = {
+			buildPRBody: (t: Task, b?: string, p?: TaskProgress) => string;
+		};
 		return (this as unknown as PrivateMethods).buildPRBody(task, branchName);
+	}
+
+	public testBuildPRBodyWithProgress(
+		task: Task,
+		branchName: string,
+		progress: TaskProgress,
+	): string {
+		type PrivateMethods = {
+			buildPRBody: (t: Task, b?: string, p?: TaskProgress) => string;
+		};
+		return (this as unknown as PrivateMethods).buildPRBody(
+			task,
+			branchName,
+			progress,
+		);
 	}
 
 	public testBuildGitHubAgentEvidence(
@@ -523,14 +540,32 @@ describe("TaskExecutor", () => {
 			expect(body).not.toContain("Fixes #");
 		});
 
-		it("should include test plan checklist", () => {
+		it("should include evidence-backed test plan checklist", () => {
 			const task = createTask();
-			const body = executor.testBuildPRBody(task);
+			const body = executor.testBuildPRBodyWithProgress(
+				task,
+				"fix/refresh-receipt-42",
+				{
+					status: "in_progress",
+					steps: {
+						typecheck: "done",
+						lint: "done",
+						tests: "skipped",
+						selfReview: "failed",
+					},
+					tokensUsed: 1234,
+					cost: 0.42,
+					durationMs: 12_000,
+				},
+			);
 
 			expect(body).toContain("## Test Plan");
-			expect(body).toContain("[ ] Tests pass locally");
-			expect(body).toContain("[ ] Lint passes");
-			expect(body).toContain("[ ] Type check passes");
+			expect(body).toContain("[x] Type check: passed");
+			expect(body).toContain("[x] Lint: passed");
+			expect(body).toContain("[x] Tests: skipped");
+			expect(body).toContain("[ ] Self-review: failed");
+			expect(body).toContain("Tokens used: 1,234");
+			expect(body).toContain("Estimated cost: $0.4200");
 		});
 
 		it("should include autonomous generation notice", () => {
@@ -568,7 +603,11 @@ describe("TaskExecutor", () => {
 				{ number: 99, url: "https://github.com/testowner/testrepo/pull/99" },
 				{
 					status: "completed",
-					steps: {},
+					steps: {
+						typecheck: "done",
+						lint: "done",
+						tests: "skipped",
+					},
 					durationMs: 12_000,
 					tokensUsed: 1234,
 					cost: 0.42,
@@ -588,6 +627,21 @@ describe("TaskExecutor", () => {
 				durationMs: 12_000,
 				tokensUsed: 1234,
 				cost: 0.42,
+				qualityGates: [
+					{ id: "typecheck", label: "Type check", status: "passed" },
+					{ id: "lint", label: "Lint", status: "passed" },
+					{ id: "tests", label: "Tests", status: "skipped" },
+				],
+				runSummary: {
+					schemaVersion: "evalops.maestro.agent-run-summary.v1",
+					id: "task-123",
+					status: "completed",
+					durationMs: 12_000,
+					usage: {
+						totalTokens: 1234,
+						estimatedCostUsd: 0.42,
+					},
+				},
 				verifier: {
 					name: "deploy/scripts/check-agent-action-pr-lane.py",
 					requiredOutput: "pull_request",

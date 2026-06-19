@@ -68,6 +68,30 @@ export const CODEX_SUBAGENT_DISPATCH_TABLE = {
 			],
 		},
 		{
+			laneId: "browser-qa",
+			skillId: "maestro.subagent.browser-qa",
+			displayName: "Maestro browser QA subagent",
+			description:
+				"Delegate browser-based product QA, console inspection, screenshots, repro videos, and evidence-backed bug reports to a target-owned Maestro child agent.",
+			tags: ["maestro", "subagent", "browser", "qa", "evidence"],
+			typeAliases: [
+				"browser-qa",
+				"browser",
+				"dogfood",
+				"product-qa",
+				"e2e-qa",
+				"ux-qa",
+			],
+			capabilityAliases: [
+				"product:qa",
+				"product-qa",
+				"browser:qa",
+				"browser-qa",
+				"e2e:qa",
+				"e2e-qa",
+			],
+		},
+		{
 			laneId: "repo-explorer",
 			skillId: "maestro.subagent.repo-explorer",
 			displayName: "Maestro repo explorer subagent",

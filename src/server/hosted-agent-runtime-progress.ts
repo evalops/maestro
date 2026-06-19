@@ -413,6 +413,13 @@ function codexSubagentTypeA2ASkillID(
 		case "ci-monitor":
 		case "test-runner":
 			return "maestro.subagent.test-runner";
+		case "browser":
+		case "browser-qa":
+		case "dogfood":
+		case "product-qa":
+		case "e2e-qa":
+		case "ux-qa":
+			return "maestro.subagent.browser-qa";
 		case "explore":
 		case "explorer":
 		case "repo-explorer":
@@ -448,6 +455,10 @@ function codexSubagentCapabilityA2ASkillID(
 		case "test-run":
 		case "test-runner":
 			return "maestro.subagent.test-runner";
+		case "browser-qa":
+		case "product-qa":
+		case "e2e-qa":
+			return "maestro.subagent.browser-qa";
 		case "repo-explore":
 		case "repo-explorer":
 		case "code-search":

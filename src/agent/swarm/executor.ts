@@ -12,7 +12,10 @@ import { existsSync, mkdirSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { type DelegationPrompt, formatDelegation } from "@evalops/contracts";
-import { codexSubagentTypeA2ASkillID } from "../../codex/subagent-dispatch-table.js";
+import {
+	codexSubagentSkillToken,
+	codexSubagentTypeA2ASkillID,
+} from "../../codex/subagent-dispatch-table.js";
 import {
 	buildEvalOpsDelegationEnvironment,
 	issueEvalOpsDelegationToken,
@@ -53,6 +56,7 @@ import {
 } from "../../telemetry.js";
 import { createLogger } from "../../utils/logger.js";
 import { sanitizeWithStaticMask } from "../../utils/secret-redactor.js";
+import { detectMissionSessionRole } from "../mission-artifacts.js";
 import {
 	type AgentMode,
 	type ModelProvider,
@@ -60,6 +64,11 @@ import {
 	parseMode,
 	resolveSubagentDispatch,
 } from "../modes.js";
+import {
+	applySpecialistProfileToPrompt,
+	resolveSpecialistProfile,
+} from "../specialist-profiles.js";
+import { parseSubagentType } from "../subagent-specs.js";
 import { publishSwarmRuntimeEvent } from "./runtime-events.js";
 import type {
 	SwarmA2AConfig,
@@ -91,6 +100,7 @@ const A2A_SKILL_PRIMARY_TASK_CLASSES = new Map<string, string>([
 	["maestro.subagent.code-writer", "code.implementation"],
 	["maestro.subagent.code-review", "code.review"],
 	["maestro.subagent.test-runner", "test.execution"],
+	["maestro.subagent.browser-qa", "product.qa"],
 	["maestro.subagent.repo-explorer", "repo.inspect"],
 	["maestro.subagent.release-shepherd", "release.follow-through"],
 ]);
@@ -107,10 +117,18 @@ const SWARM_SUBAGENT_TASK_CLASSES = new Map<string, string>([
 	["test", "test.execution"],
 	["ci", "test.execution"],
 	["ci-monitor", "test.execution"],
+	["test-runner", "test.execution"],
+	["browser-qa", "product.qa"],
+	["browser", "product.qa"],
+	["dogfood", "product.qa"],
+	["product-qa", "product.qa"],
+	["e2e-qa", "browser.e2e"],
+	["ux-qa", "ux.repro"],
 	["planner", "agent.delegation"],
 	["minimal", "agent.delegation"],
 	["custom", "agent.delegation"],
 ]);
+const A2A_SUBAGENT_TASK_CLASS_OVERRIDES = new Set(["e2e-qa", "ux-qa"]);
 
 /** Teammate name prefixes for friendly identification */
 const TEAMMATE_NAMES = [
@@ -405,6 +423,10 @@ function buildDispatchEnv(
 		env.MAESTRO_SWARM_MODEL_PROVIDER = provider;
 	}
 	return env;
+}
+
+function resolveMissionRoleForTeammate(): "worker" | "validator" {
+	return detectMissionSessionRole() === "validator" ? "validator" : "worker";
 }
 
 type TaskDispatchResolution = {
@@ -757,9 +779,11 @@ export class SwarmExecutor {
 	): Promise<Record<string, string>> {
 		const baseEnv: Record<string, string> = {
 			...process.env,
+			MAESTRO_MISSION_WORKER: "1",
 			MAESTRO_SWARM_MODE: "1",
 			MAESTRO_SWARM_ID: this.state.id,
 			MAESTRO_TEAMMATE_ID: teammate.id,
+			MAESTRO_MISSION_ROLE: resolveMissionRoleForTeammate(),
 			...buildDispatchEnv(
 				dispatch,
 				this.state.config.reasoningEffort,
@@ -813,7 +837,12 @@ export class SwarmExecutor {
 		options: { hasModelOverride?: boolean } = {},
 	): TaskDispatchResolution | null {
 		const startedAt = Date.now();
-		const subagentType = task.subagentType ?? this.state.config.subagentType;
+		const requestedSubagentType =
+			task.subagentType ?? this.state.config.subagentType;
+		if (!requestedSubagentType) {
+			return null;
+		}
+		const subagentType = parseSubagentType(requestedSubagentType);
 		if (!subagentType) {
 			return null;
 		}
@@ -990,7 +1019,7 @@ export class SwarmExecutor {
 			config: peer.config,
 			skillId,
 			taskClass: this.resolveA2ATaskClass(task, options, skillId),
-			role: options.role ?? task.subagentType,
+			role: this.resolveA2ARole(task, options),
 			tasksPath: options.tasksPath,
 			peerEndpointHash: hashA2AEndpointUrlForTelemetry(peer.config.baseUrl),
 			source: "registry",
@@ -1073,7 +1102,7 @@ export class SwarmExecutor {
 			config,
 			skillId: selectedSkillId,
 			taskClass: this.resolveA2ATaskClass(task, options, selectedSkillId),
-			role: options.role ?? task.subagentType,
+			role: this.resolveA2ARole(task, options),
 			tasksPath: options.tasksPath,
 			peerAgentId: candidate.agent.id,
 			peerEndpointHash: endpointHash,
@@ -1163,26 +1192,57 @@ export class SwarmExecutor {
 		options: SwarmA2AConfig,
 		skillId: string | undefined,
 	): string | undefined {
+		const explicitSkill =
+			trimString(task.a2aSkillId) ?? trimString(options.skillId);
+		const requestedSubagentType = trimString(
+			task.subagentType ?? this.state.config.subagentType,
+		);
+		const normalizedRequestedSubagentType = codexSubagentSkillToken(
+			requestedSubagentType,
+		);
+		const parsedSubagentType = requestedSubagentType
+			? parseSubagentType(requestedSubagentType)
+			: undefined;
+		const subagentType = parsedSubagentType ?? normalizedRequestedSubagentType;
+		const mappedSubagentTaskClass = normalizedRequestedSubagentType
+			? (SWARM_SUBAGENT_TASK_CLASSES.get(normalizedRequestedSubagentType) ??
+				(parsedSubagentType
+					? SWARM_SUBAGENT_TASK_CLASSES.get(parsedSubagentType)
+					: undefined))
+			: undefined;
+		if (
+			mappedSubagentTaskClass &&
+			normalizedRequestedSubagentType &&
+			A2A_SUBAGENT_TASK_CLASS_OVERRIDES.has(normalizedRequestedSubagentType)
+		) {
+			return mappedSubagentTaskClass;
+		}
 		const mappedSkillTaskClass = skillId
 			? A2A_SKILL_PRIMARY_TASK_CLASSES.get(skillId)
 			: undefined;
 		if (mappedSkillTaskClass) {
 			return mappedSkillTaskClass;
 		}
-		if (
-			skillId &&
-			(trimString(task.a2aSkillId) || trimString(options.skillId))
-		) {
+		if (skillId && explicitSkill) {
 			return undefined;
 		}
-		const subagentType = trimString(
+		return mappedSubagentTaskClass ?? subagentType ?? requestedSubagentType;
+	}
+
+	private resolveA2ARole(
+		task: SwarmTask,
+		options: SwarmA2AConfig,
+	): string | undefined {
+		const configuredRole = trimString(options.role);
+		if (configuredRole) {
+			return parseSubagentType(configuredRole) ?? configuredRole;
+		}
+		const requestedSubagentType = trimString(
 			task.subagentType ?? this.state.config.subagentType,
 		);
-		return (
-			(subagentType
-				? SWARM_SUBAGENT_TASK_CLASSES.get(subagentType)
-				: undefined) ?? subagentType
-		);
+		return requestedSubagentType
+			? (parseSubagentType(requestedSubagentType) ?? requestedSubagentType)
+			: undefined;
 	}
 
 	private teammateIndex(teammate: SwarmTeammate): number {
@@ -1215,10 +1275,18 @@ export class SwarmExecutor {
 			`${this.state.id}-${toSafeTaskTempBasename(task.id)}`,
 		);
 
+		const specialistProfile = task.specialistProfile
+			? resolveSpecialistProfile(task.specialistProfile, this.state.config.cwd)
+			: null;
+		if (task.specialistProfile && !specialistProfile) {
+			throw new Error(
+				`specialist profile not found or invalid: ${task.specialistProfile}`,
+			);
+		}
 		const delegationPrompt: DelegationPrompt = {
 			goal: `Complete swarm task ${task.id} as teammate "${teammate.name}".`,
 			context: `You are teammate "${teammate.name}" in swarm ${this.state.id}, working from plan file ${this.state.config.planFile}.`,
-			task: task.prompt,
+			task: applySpecialistProfileToPrompt(task.prompt, specialistProfile),
 			evidence: task.files?.length
 				? task.files.map((file) => `Relevant file: ${file}`)
 				: [],
@@ -1229,7 +1297,51 @@ export class SwarmExecutor {
 		};
 		const prompt = formatDelegation(delegationPrompt);
 
+		const requestedSubagentType =
+			task.subagentType ?? this.state.config.subagentType;
+
 		writeFileSync(tmpFile, prompt);
+
+		if (requestedSubagentType && !parseSubagentType(requestedSubagentType)) {
+			try {
+				unlinkSync(tmpFile);
+			} catch {
+				// Ignore cleanup errors
+			}
+			const error = `Invalid subagent type: ${requestedSubagentType}`;
+			this.state.activeTasks.delete(task.id);
+			this.state.failedTasks.add(task.id);
+			if (!this.state.config.continueOnFailure) {
+				this.state.status = "failed";
+			}
+			teammate.status = "failed";
+			teammate.error = error;
+			teammate.completedAt = Date.now();
+			teammate.currentTask = undefined;
+			this.emit({
+				type: "task_fail",
+				swarmId: this.state.id,
+				teammateId: teammate.id,
+				taskId: task.id,
+				error,
+			});
+			this.emit({
+				type: "teammate_complete",
+				swarmId: this.state.id,
+				teammate,
+			});
+			if (
+				this.state.status === "running" &&
+				(this.state.pendingTasks.length > 0 ||
+					this.state.activeTasks.size > 0) &&
+				this.state.config.continueOnFailure
+			) {
+				teammate.status = "pending";
+				teammate.error = undefined;
+				teammate.completedAt = undefined;
+			}
+			return;
+		}
 
 		const a2aConfig = this.resolveA2AConfig();
 		if (a2aConfig) {
@@ -1583,7 +1695,7 @@ export class SwarmExecutor {
 				route,
 				taskId: sent.task.id,
 			});
-			await this.recordA2ASwarmTaskStart(route, task, sent.task, {
+			await this.recordA2ASwarmTaskStart(route, task, sent.task, prompt, {
 				messageId,
 				contextId,
 			});
@@ -1750,6 +1862,7 @@ export class SwarmExecutor {
 		task: SwarmTask,
 		route: A2ATeammateRoute,
 	): Record<string, unknown> {
+		const missionRole = resolveMissionRoleForTeammate();
 		const currentDelegationId = `${this.state.id}:${task.id}`;
 		const contextId = `maestro-swarm:${this.state.id}:${task.id}`;
 		const lineage = {
@@ -1769,6 +1882,8 @@ export class SwarmExecutor {
 					cwd: this.state.config.cwd,
 					taskId: task.id,
 					swarmId: this.state.id,
+					missionRole,
+					env: { MAESTRO_MISSION_ROLE: missionRole },
 				}
 			: undefined;
 		const peerControl = {
@@ -1788,6 +1903,7 @@ export class SwarmExecutor {
 			teammateId: teammate.id,
 			teammateName: teammate.name,
 			taskId: task.id,
+			missionRole,
 			...(route.skillId ? { a2aSkillId: route.skillId } : {}),
 			...(task.files?.length ? { files: task.files } : {}),
 			swarm: lineage,
@@ -1956,6 +2072,7 @@ export class SwarmExecutor {
 		route: A2ATeammateRoute,
 		task: SwarmTask,
 		remoteTask: A2ATask,
+		delegatedPrompt: string,
 		ids: { messageId: string; contextId: string },
 	): Promise<void> {
 		try {
@@ -1964,7 +2081,7 @@ export class SwarmExecutor {
 				peer: route.name,
 				peerDisplayName: route.displayName,
 				task: remoteTask,
-				text: task.prompt,
+				text: delegatedPrompt,
 				messageId: ids.messageId,
 				contextId: remoteTask.contextId ?? ids.contextId,
 				kind: "delegation",

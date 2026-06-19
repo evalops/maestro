@@ -9,8 +9,9 @@ use crate::{now_rfc3339, AppState, ATTACHMENT_TEMP_COUNTER};
 
 use super::tasks::{
     a2a_agent_message, a2a_task_is_terminal, a2a_task_status_state, a2a_task_status_timestamp,
-    a2a_task_value, generate_a2a_id, A2A_CONTROL_PLANE_LEDGER_DISPLAY_NAME,
-    A2A_CONTROL_PLANE_LEDGER_PEER,
+    a2a_task_value, canonical_a2a_task_state, generate_a2a_id,
+    A2A_CONTROL_PLANE_LEDGER_DISPLAY_NAME, A2A_CONTROL_PLANE_LEDGER_PEER,
+    A2A_PUSH_NOTIFICATION_CONFIG_METADATA_KEY,
 };
 
 pub(crate) const A2A_LEDGER_LOCK_RETRY_MS: u64 = 25;
@@ -71,7 +72,7 @@ fn a2a_task_from_ledger_entry(entry: &Value) -> Option<Value> {
     if let Some(task) = entry.get("a2aTask").and_then(Value::as_object) {
         let task = Value::Object(task.clone());
         if task.get("id").and_then(Value::as_str).is_some() {
-            return Some(task);
+            return Some(a2a_task_with_ledger_evidence(task, entry));
         }
     }
     if entry.get("id").and_then(Value::as_str).is_some()
@@ -112,10 +113,7 @@ fn a2a_task_from_ledger_entry(entry: &Value) -> Option<Value> {
                 .collect::<Vec<_>>()
         })
         .unwrap_or_default();
-    let metadata = entry
-        .get("metadata")
-        .cloned()
-        .unwrap_or_else(|| serde_json::json!({}));
+    let metadata = a2a_task_metadata_from_ledger_entry(entry);
     let mut task = a2a_task_value(
         task_id,
         context_id,
@@ -129,13 +127,257 @@ fn a2a_task_from_ledger_entry(entry: &Value) -> Option<Value> {
     Some(task)
 }
 
+fn a2a_task_metadata_from_ledger_entry(entry: &Value) -> Value {
+    let mut metadata = entry
+        .get("metadata")
+        .cloned()
+        .unwrap_or_else(|| Value::Object(Map::new()));
+    a2a_merge_ledger_work_graph_into_metadata(&mut metadata, entry);
+    metadata
+}
+
+fn a2a_task_with_ledger_evidence(mut task: Value, entry: &Value) -> Value {
+    let context_id = task
+        .get("contextId")
+        .and_then(Value::as_str)
+        .or_else(|| entry.get("contextId").and_then(Value::as_str))
+        .unwrap_or("maestro-control-plane")
+        .to_string();
+    let Some(task_object) = task.as_object_mut() else {
+        return task;
+    };
+    let metadata = task_object
+        .entry("metadata".to_string())
+        .or_insert_with(|| Value::Object(Map::new()));
+    a2a_merge_ledger_work_graph_into_metadata(metadata, entry);
+    a2a_merge_ledger_status_into_task(task_object, entry, &context_id);
+    if let Some(history) = a2a_history_from_ledger_transcript(&context_id, entry) {
+        a2a_merge_ledger_history_into_task(task_object, history);
+    }
+    task
+}
+
+fn a2a_history_from_ledger_transcript(context_id: &str, entry: &Value) -> Option<Vec<Value>> {
+    let history = entry
+        .get("transcript")
+        .and_then(Value::as_array)?
+        .iter()
+        .filter_map(|item| a2a_message_from_ledger_transcript(context_id, item))
+        .collect::<Vec<_>>();
+    (!history.is_empty()).then_some(history)
+}
+
+fn a2a_merge_ledger_history_into_task(
+    task_object: &mut Map<String, Value>,
+    ledger_history: Vec<Value>,
+) {
+    let history = task_object
+        .entry("history".to_string())
+        .or_insert_with(|| Value::Array(Vec::new()));
+    if !history.is_array() {
+        *history = Value::Array(ledger_history);
+        return;
+    }
+    let Some(history_array) = history.as_array_mut() else {
+        return;
+    };
+    for message in ledger_history {
+        a2a_merge_ledger_message_into_history(history_array, message);
+    }
+}
+
+fn a2a_merge_ledger_message_into_history(history: &mut Vec<Value>, candidate: Value) {
+    if let Some(message_id) = candidate.get("messageId").and_then(Value::as_str) {
+        if let Some(index) = history.iter().position(|message| {
+            message
+                .get("messageId")
+                .and_then(Value::as_str)
+                .is_some_and(|existing_id| existing_id == message_id)
+        }) {
+            if let Some(existing_message) = history.get_mut(index) {
+                a2a_refresh_history_message(existing_message, &candidate);
+            }
+            return;
+        }
+    }
+    if !history
+        .iter()
+        .any(|message| a2a_messages_have_same_role_text(message, &candidate))
+    {
+        history.push(candidate);
+    }
+}
+
+fn a2a_messages_have_same_role_text(existing: &Value, candidate: &Value) -> bool {
+    let candidate_role = candidate
+        .get("role")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    let candidate_text = a2a_message_value_text(candidate);
+    existing
+        .get("role")
+        .and_then(Value::as_str)
+        .is_some_and(|role| role.eq_ignore_ascii_case(candidate_role))
+        && a2a_message_value_text(existing) == candidate_text
+}
+
+fn a2a_refresh_history_message(existing: &mut Value, candidate: &Value) {
+    if a2a_messages_have_same_role_text(existing, candidate) {
+        return;
+    }
+    if let (Some(existing_object), Some(candidate_object)) =
+        (existing.as_object_mut(), candidate.as_object())
+    {
+        existing_object.extend(candidate_object.clone());
+        return;
+    }
+    *existing = candidate.clone();
+}
+
+fn a2a_merge_ledger_work_graph_into_metadata(metadata: &mut Value, entry: &Value) {
+    let Some(work_graph) = entry
+        .get("workGraph")
+        .filter(|work_graph| !work_graph.is_null())
+        .filter(|work_graph| a2a_ledger_work_graph_has_evidence(work_graph))
+        .cloned()
+    else {
+        return;
+    };
+    if !metadata.is_object() {
+        *metadata = Value::Object(Map::new());
+    }
+    if let Some(metadata_object) = metadata.as_object_mut() {
+        metadata_object.insert("workGraph".to_string(), work_graph);
+    }
+}
+
+fn a2a_ledger_work_graph_has_evidence(work_graph: &Value) -> bool {
+    let Some(object) = work_graph.as_object() else {
+        return false;
+    };
+    let string_field = |key: &str| {
+        object
+            .get(key)
+            .and_then(Value::as_str)
+            .is_some_and(|value| !value.trim().is_empty())
+    };
+    let number_field = |key: &str| object.get(key).and_then(Value::as_u64).is_some();
+    let array_field = |key: &str| {
+        object
+            .get(key)
+            .and_then(Value::as_array)
+            .is_some_and(|values| !values.is_empty())
+    };
+    string_field("state")
+        || number_field("itemCount")
+        || number_field("activeItemCount")
+        || number_field("blockedItemCount")
+        || number_field("waitingItemCount")
+        || number_field("childRunCount")
+        || array_field("childRunIds")
+        || number_field("toolCallCount")
+        || number_field("pendingToolCallCount")
+        || array_field("toolExecutionIds")
+        || number_field("waitItemCount")
+        || array_field("waitIds")
+        || object
+            .get("stateCounts")
+            .and_then(Value::as_object)
+            .is_some_and(|counts| !counts.is_empty())
+        || string_field("correlationPath")
+        || object
+            .get("codexSubagents")
+            .is_some_and(a2a_codex_subagent_work_graph_has_evidence)
+}
+
+fn a2a_codex_subagent_work_graph_has_evidence(work_graph: &Value) -> bool {
+    let Some(object) = work_graph.as_object() else {
+        return false;
+    };
+    ["toolCallIds", "childRunIds", "threadIds", "edges"]
+        .iter()
+        .any(|key| {
+            object
+                .get(*key)
+                .and_then(Value::as_array)
+                .is_some_and(|values| !values.is_empty())
+        })
+        || object.get("edgeCount").and_then(Value::as_u64).is_some()
+}
+
+fn a2a_merge_ledger_status_into_task(
+    task_object: &mut Map<String, Value>,
+    entry: &Value,
+    context_id: &str,
+) {
+    let Some(state) = entry.get("state").and_then(Value::as_str) else {
+        return;
+    };
+    let status = task_object
+        .entry("status".to_string())
+        .or_insert_with(|| Value::Object(Map::new()));
+    if !status.is_object() {
+        *status = Value::Object(Map::new());
+    }
+    let Some(status_object) = status.as_object_mut() else {
+        return;
+    };
+    status_object.insert(
+        "state".to_string(),
+        Value::String(canonical_a2a_task_state(state)),
+    );
+    if let Some(updated_at) = entry.get("updatedAt").and_then(Value::as_str) {
+        status_object.insert(
+            "timestamp".to_string(),
+            Value::String(updated_at.to_string()),
+        );
+    }
+    if let Some(response_text) = entry
+        .get("responseText")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|response_text| !response_text.is_empty())
+        .map(str::to_string)
+        .or_else(|| a2a_latest_agent_transcript_text(entry))
+    {
+        status_object.insert(
+            "message".to_string(),
+            a2a_agent_message(context_id, &response_text),
+        );
+    }
+}
+
+fn a2a_latest_agent_transcript_text(entry: &Value) -> Option<String> {
+    entry
+        .get("transcript")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .rev()
+        .find(|item| {
+            item.get("role")
+                .and_then(Value::as_str)
+                .is_some_and(|role| {
+                    role.eq_ignore_ascii_case("agent") || role.eq_ignore_ascii_case("ROLE_AGENT")
+                })
+        })
+        .and_then(|item| item.get("text").and_then(Value::as_str))
+        .map(str::trim)
+        .filter(|text| !text.is_empty())
+        .map(str::to_string)
+}
+
 fn a2a_message_from_ledger_transcript(context_id: &str, item: &Value) -> Option<Value> {
     let text = item.get("text").and_then(Value::as_str)?.trim();
     if text.is_empty() {
         return None;
     }
     let role = match item.get("role").and_then(Value::as_str) {
-        Some(role) if role.eq_ignore_ascii_case("agent") => "ROLE_AGENT",
+        Some(role)
+            if role.eq_ignore_ascii_case("ROLE_AGENT") || role.eq_ignore_ascii_case("agent") =>
+        {
+            "ROLE_AGENT"
+        }
         _ => "ROLE_USER",
     };
     let message_id = item
@@ -471,12 +713,17 @@ fn a2a_ledger_entry_from_task(task: &Value, existing: Option<&Value>) -> Value {
         })
         .unwrap_or_else(|| updated_at.clone());
     let metadata = a2a_clean_ledger_metadata(task.get("metadata"));
+    let work_graph = task
+        .get("metadata")
+        .and_then(|metadata| metadata.get("workGraph"))
+        .cloned();
+    let ledger_task = a2a_task_for_ledger(task);
     let mut entry = serde_json::json!({
         "id": existing
             .and_then(|entry| entry.get("id").and_then(Value::as_str))
             .map(str::to_string)
             .unwrap_or_else(|| format!("maestro-control-plane-{task_id}")),
-        "kind": "message",
+        "kind": "delegation",
         "peer": A2A_CONTROL_PLANE_LEDGER_PEER,
         "peerDisplayName": A2A_CONTROL_PLANE_LEDGER_DISPLAY_NAME,
         "taskId": task_id,
@@ -486,7 +733,7 @@ fn a2a_ledger_entry_from_task(task: &Value, existing: Option<&Value>) -> Value {
         "createdAt": created_at,
         "updatedAt": updated_at,
         "metadata": metadata,
-        "a2aTask": task
+        "a2aTask": ledger_task
     });
     if let Some(context_id) = context_id {
         entry["contextId"] = Value::String(context_id.to_string());
@@ -497,10 +744,59 @@ fn a2a_ledger_entry_from_task(task: &Value, existing: Option<&Value>) -> Value {
     if let Some(response_text) = response_text {
         entry["responseText"] = Value::String(response_text);
     }
+    if let Some(work_graph) = work_graph {
+        entry["workGraph"] = work_graph;
+    }
     if a2a_task_is_terminal(task) {
         entry["completedAt"] = entry["updatedAt"].clone();
     }
     entry
+}
+
+fn a2a_task_for_ledger(task: &Value) -> Value {
+    let task_is_terminal = a2a_task_is_terminal(task);
+    let mut task = task.clone();
+    if let Some(task_object) = task.as_object_mut() {
+        if let Some(metadata) = task_object.get("metadata") {
+            let mut ledger_metadata = a2a_embedded_task_metadata_for_ledger(metadata);
+            if !task_is_terminal {
+                // In-flight tasks need callback delivery config after restart; terminal rows do not.
+                if let Some(push_configs) = metadata.get(A2A_PUSH_NOTIFICATION_CONFIG_METADATA_KEY)
+                {
+                    ledger_metadata[A2A_PUSH_NOTIFICATION_CONFIG_METADATA_KEY] =
+                        push_configs.clone();
+                }
+            }
+            task_object.insert("metadata".to_string(), ledger_metadata);
+        }
+    }
+    task
+}
+
+fn a2a_embedded_task_metadata_for_ledger(metadata: &Value) -> Value {
+    let mut metadata = metadata
+        .as_object()
+        .map(|_| metadata.clone())
+        .unwrap_or_else(|| Value::Object(Map::new()));
+    a2a_remove_secret_ledger_metadata(&mut metadata);
+    metadata
+}
+
+fn a2a_remove_secret_ledger_metadata(value: &mut Value) {
+    match value {
+        Value::Object(object) => {
+            object.retain(|key, _| !a2a_ledger_metadata_key_is_secret(key));
+            for value in object.values_mut() {
+                a2a_remove_secret_ledger_metadata(value);
+            }
+        }
+        Value::Array(values) => {
+            for value in values {
+                a2a_remove_secret_ledger_metadata(value);
+            }
+        }
+        _ => {}
+    }
 }
 
 fn a2a_task_transcript(task: &Value, state: &str, updated_at: &str) -> Vec<Value> {
@@ -620,7 +916,9 @@ fn a2a_clean_ledger_metadata(metadata: Option<&Value>) -> Value {
             metadata
                 .iter()
                 .filter_map(|(key, value)| match value {
-                    Value::String(_) | Value::Number(_) | Value::Bool(_) => {
+                    Value::String(_) | Value::Number(_) | Value::Bool(_)
+                        if !a2a_ledger_metadata_key_is_secret(key) =>
+                    {
                         Some((key.clone(), value.clone()))
                     }
                     _ => None,
@@ -629,6 +927,56 @@ fn a2a_clean_ledger_metadata(metadata: Option<&Value>) -> Value {
         })
         .unwrap_or_default();
     Value::Object(object)
+}
+
+fn a2a_ledger_metadata_key_is_secret(key: &str) -> bool {
+    let normalized = key
+        .chars()
+        .filter(|ch| *ch != '-' && *ch != '_')
+        .flat_map(char::to_lowercase)
+        .collect::<String>();
+    if a2a_ledger_metadata_key_is_token_metric(&normalized) {
+        return false;
+    }
+    normalized == "authorization"
+        || normalized == "token"
+        || normalized.ends_with("token")
+        || normalized == "secret"
+        || normalized.ends_with("secret")
+        || normalized == "password"
+        || normalized.ends_with("password")
+        || normalized == "apikey"
+        || normalized.ends_with("apikey")
+        || normalized == "credentials"
+        || normalized.ends_with("credentials")
+        || normalized == "bearer"
+        || key == A2A_PUSH_NOTIFICATION_CONFIG_METADATA_KEY
+}
+
+fn a2a_ledger_metadata_key_is_token_metric(normalized: &str) -> bool {
+    matches!(
+        normalized,
+        "totaltoken"
+            | "totaltokens"
+            | "inputtoken"
+            | "inputtokens"
+            | "outputtoken"
+            | "outputtokens"
+            | "cachetoken"
+            | "cachetokens"
+            | "cachereadtoken"
+            | "cachereadtokens"
+            | "cachewritetoken"
+            | "cachewritetokens"
+            | "prompttoken"
+            | "prompttokens"
+            | "completiontoken"
+            | "completiontokens"
+            | "maxtoken"
+            | "maxtokens"
+            | "tokencount"
+            | "tokenscount"
+    )
 }
 
 fn ledger_entry_updated_at(entry: &Value) -> &str {

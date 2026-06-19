@@ -20,6 +20,7 @@ describe("SubagentSpecs", () => {
 		"planner",
 		"coder",
 		"reviewer",
+		"test-runner",
 		"researcher",
 		"minimal",
 		"custom",
@@ -129,6 +130,16 @@ describe("SubagentSpecs", () => {
 
 			it("cannot execute shell commands", () => {
 				expect(isToolAllowed("bash", "reviewer")).toBe(false);
+			});
+		});
+
+		describe("test-runner (read + shell)", () => {
+			it("can execute shell commands", () => {
+				expect(isToolAllowed("bash", "test-runner")).toBe(true);
+			});
+
+			it("cannot write files", () => {
+				expect(isToolAllowed("write", "test-runner")).toBe(false);
 			});
 		});
 

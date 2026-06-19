@@ -19,6 +19,7 @@ Use this index to jump to the right guide quickly and see how the pieces connect
 - [Models](MODELS.md) — provider/model registry sources, overrides, defaults, and OpenAI-compat quirks.
 - [Sessions](SESSIONS.md) — session formats, storage locations, and management commands.
 - [Prompt Queue](PROMPT_QUEUE.md) — queue lifecycle, prioritization, and diagnostics hooks.
+- [Customer Value Reports](CUSTOMER_VALUE.md) — trust cards, durable handoffs, open work, workflow opportunities, memory provenance, and admin gaps.
 - [MCP Guide](MCP_GUIDE.md) — Model Context Protocol setup and usage.
 - [Skill Cookbook](cookbook/skills/README.md) — progressive skill package authoring, linting, bundled MCP, and toolbox examples.
 - [Headless Protocol Reference](protocols/headless.md) — versioned JSON-over-stdio contract for Chat, TUIs, and other embedders.

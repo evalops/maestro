@@ -873,6 +873,91 @@ pub(crate) fn a2a_task_status_state(task: &Value) -> Option<&str> {
         .and_then(Value::as_str)
 }
 
+pub(crate) fn normalize_a2a_task_state(state: &str) -> String {
+    let mut normalized = String::new();
+    let mut previous_was_separator = false;
+    for ch in state.trim().chars() {
+        if ch == '-' || ch.is_ascii_whitespace() {
+            if !previous_was_separator && !normalized.is_empty() {
+                normalized.push('_');
+            }
+            previous_was_separator = true;
+        } else {
+            normalized.push(ch.to_ascii_uppercase());
+            previous_was_separator = false;
+        }
+    }
+    normalized
+}
+
+pub(crate) fn canonical_a2a_task_state(state: &str) -> String {
+    let normalized = normalize_a2a_task_state(state);
+    match normalized.as_str() {
+        "TASK_STATE_COMPLETED"
+        | "STATE_COMPLETED"
+        | "COMPLETED"
+        | "TASK_STATE_SUCCEEDED"
+        | "STATE_SUCCEEDED"
+        | "SUCCEEDED"
+        | "TASK_STATE_SUCCESS"
+        | "STATE_SUCCESS"
+        | "SUCCESS" => "TASK_STATE_COMPLETED".to_string(),
+        "TASK_STATE_FAILED" | "STATE_FAILED" | "FAILED" => "TASK_STATE_FAILED".to_string(),
+        "TASK_STATE_CANCELED"
+        | "STATE_CANCELED"
+        | "CANCELED"
+        | "TASK_STATE_CANCELLED"
+        | "STATE_CANCELLED"
+        | "CANCELLED" => "TASK_STATE_CANCELED".to_string(),
+        "TASK_STATE_REJECTED" | "STATE_REJECTED" | "REJECTED" => "TASK_STATE_REJECTED".to_string(),
+        "TASK_STATE_INPUT_REQUIRED" | "STATE_INPUT_REQUIRED" | "INPUT_REQUIRED" => {
+            "TASK_STATE_INPUT_REQUIRED".to_string()
+        }
+        _ if normalized.starts_with("TASK_STATE_") => normalized,
+        _ => format!("TASK_STATE_{normalized}"),
+    }
+}
+
+pub(crate) fn a2a_state_is_completed(state: &str) -> bool {
+    matches!(
+        normalize_a2a_task_state(state).as_str(),
+        "TASK_STATE_COMPLETED"
+            | "STATE_COMPLETED"
+            | "COMPLETED"
+            | "TASK_STATE_SUCCEEDED"
+            | "STATE_SUCCEEDED"
+            | "SUCCEEDED"
+            | "TASK_STATE_SUCCESS"
+            | "STATE_SUCCESS"
+            | "SUCCESS"
+    )
+}
+
+pub(crate) fn a2a_state_is_failed(state: &str) -> bool {
+    matches!(
+        normalize_a2a_task_state(state).as_str(),
+        "TASK_STATE_FAILED"
+            | "STATE_FAILED"
+            | "FAILED"
+            | "TASK_STATE_CANCELED"
+            | "STATE_CANCELED"
+            | "CANCELED"
+            | "TASK_STATE_CANCELLED"
+            | "STATE_CANCELLED"
+            | "CANCELLED"
+            | "TASK_STATE_REJECTED"
+            | "STATE_REJECTED"
+            | "REJECTED"
+    )
+}
+
+fn a2a_state_is_input_required(state: &str) -> bool {
+    matches!(
+        normalize_a2a_task_state(state).as_str(),
+        "TASK_STATE_INPUT_REQUIRED" | "STATE_INPUT_REQUIRED" | "INPUT_REQUIRED"
+    )
+}
+
 pub(super) fn a2a_task_status_timestamp(task: &Value) -> Option<&str> {
     task.get("status")
         .and_then(|status| status.get("timestamp"))
@@ -880,19 +965,12 @@ pub(super) fn a2a_task_status_timestamp(task: &Value) -> Option<&str> {
 }
 
 pub(crate) fn a2a_task_is_terminal(task: &Value) -> bool {
-    matches!(
-        a2a_task_status_state(task),
-        Some(
-            "TASK_STATE_COMPLETED"
-                | "TASK_STATE_FAILED"
-                | "TASK_STATE_CANCELED"
-                | "TASK_STATE_REJECTED"
-        )
-    )
+    a2a_task_status_state(task)
+        .is_some_and(|state| a2a_state_is_completed(state) || a2a_state_is_failed(state))
 }
 
 fn a2a_task_accepts_message(task: &Value) -> bool {
-    a2a_task_status_state(task) == Some("TASK_STATE_INPUT_REQUIRED")
+    a2a_task_status_state(task).is_some_and(a2a_state_is_input_required)
 }
 
 fn a2a_task_owner_subject(task: &Value) -> Option<&str> {
@@ -1223,12 +1301,7 @@ fn a2a_bool_query(head: &RequestHead, names: &[&str]) -> Result<Option<bool>, St
 }
 
 fn a2a_normalize_state(value: &str) -> String {
-    let upper = value.trim().to_ascii_uppercase();
-    if upper.starts_with("TASK_STATE_") {
-        upper
-    } else {
-        format!("TASK_STATE_{upper}")
-    }
+    canonical_a2a_task_state(value)
 }
 
 pub(crate) async fn claim_a2a_send_task(

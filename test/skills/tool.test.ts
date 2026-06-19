@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import {
 	chmodSync,
 	existsSync,
@@ -9,6 +10,8 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { resetDefaultRuntimeEnvForTests } from "../../src/runtime/env.js";
+import { composeSkill } from "../../src/skills/composer.js";
 import { loadSkills } from "../../src/skills/loader.js";
 import { resetSkillsDownstreamForTests } from "../../src/skills/service-client.js";
 import { createSkillTool } from "../../src/skills/tool.js";
@@ -33,6 +36,7 @@ describe("skills/tool", () => {
 	let previousMaestroHome: string | undefined;
 
 	beforeEach(() => {
+		resetDefaultRuntimeEnvForTests();
 		testDir = join(tmpdir(), `composer-skills-tool-test-${Date.now()}`);
 		skillsDir = join(testDir, ".maestro", "skills");
 		previousMaestroHome = process.env.MAESTRO_HOME;
@@ -41,6 +45,7 @@ describe("skills/tool", () => {
 	});
 
 	afterEach(() => {
+		resetDefaultRuntimeEnvForTests();
 		resetSkillsDownstreamForTests();
 		if (previousMaestroHome === undefined) {
 			delete process.env.MAESTRO_HOME;
@@ -923,6 +928,103 @@ Use the bundled scripts.
 			expect(result.isError).toBeUndefined();
 			expect(text).toContain("strict approved content");
 			expect(text).not.toContain("maestro-skill-trust: unapproved");
+		});
+
+		it("keys trust on the composed skill payload, not just the parent skill", async () => {
+			process.env.MAESTRO_SKILL_TRUST_STRICT = "1";
+			createTestSkill("review", "Review code", "Base review instructions");
+			createTestSkill(
+				"review-guidelines",
+				"Repo review guidelines",
+				"Repository-specific guidance",
+			);
+
+			const { skills } = loadSkills(testDir, { includeSystem: false });
+			const review = skills.find((s) => s.name === "review");
+			expect(review).toBeDefined();
+			if (!review) return;
+			const composed = composeSkill(review, skills);
+			expect(composed.contentSha).not.toBe(review.contentSha);
+
+			recordPromptApproval({
+				name: review.name,
+				contentSha: review.contentSha,
+				sourceType: review.sourceType as "project",
+			});
+
+			const tool = createSkillTool(testDir, { includeSystem: false });
+			const refused = await tool.execute("test-trust-composed-1", {
+				skill: "review",
+			});
+			expect(refused.isError).toBe(true);
+			expect(getResultText(refused)).toContain(
+				composed.contentSha.slice(0, 12),
+			);
+
+			recordPromptApproval({
+				name: review.name,
+				contentSha: composed.contentSha,
+				sourceType: review.sourceType as "project",
+			});
+
+			const accepted = await tool.execute("test-trust-composed-2", {
+				skill: "review",
+			});
+			const text = getResultText(accepted);
+			const details = accepted.details as
+				| {
+						skillMetadata?: { hash: string };
+						skillRuntimeActivation?: { contentSha: string };
+				  }
+				| undefined;
+			expect(accepted.isError).toBeUndefined();
+			expect(text).toContain("Base review instructions");
+			expect(text).toContain("Repository-specific guidance");
+			expect(text).not.toContain("maestro-skill-trust: unapproved");
+			expect(details?.skillMetadata?.hash).toBe(
+				createHash("sha256").update(composed.content).digest("hex"),
+			);
+			expect(details?.skillMetadata?.hash).not.toBe(
+				createHash("sha256").update(review.content).digest("hex"),
+			);
+			expect(details?.skillRuntimeActivation?.contentSha).toBe(
+				composed.contentSha,
+			);
+		});
+
+		it("reports artifact metadata for the composed skill payload", async () => {
+			createTestSkill("review", "Review code", "Base review instructions");
+			createTestSkill(
+				"review-guidelines",
+				"Repo review guidelines",
+				"Repository-specific guidance",
+			);
+
+			const { skills } = loadSkills(testDir, { includeSystem: false });
+			const review = skills.find((skill) => skill.name === "review");
+			expect(review).toBeDefined();
+			if (!review) return;
+			const composed = composeSkill(review, skills);
+
+			const tool = createSkillTool(testDir, { includeSystem: false });
+			const result = await tool.execute("test-trust-composed-metadata", {
+				skill: "review",
+			});
+			const skillMetadata = (
+				result.details as
+					| {
+							skillMetadata?: {
+								hash: string;
+							};
+					  }
+					| undefined
+			)?.skillMetadata;
+
+			expect(result.isError).toBeUndefined();
+			expect(getResultText(result)).toContain("Repository-specific guidance");
+			expect(skillMetadata?.hash).toBe(
+				createHash("sha256").update(composed.content).digest("hex"),
+			);
 		});
 	});
 

@@ -519,6 +519,10 @@ fn a2a_platform_payload_projects_governed_agent_card_without_drift_fields() {
         .as_array()
         .expect("capabilities")
         .contains(&Value::String("code:review".to_string())));
+    assert!(payload["capabilities"]
+        .as_array()
+        .expect("capabilities")
+        .contains(&Value::String("browser:qa".to_string())));
 
     let skills = payload["a2a"]["skills"].as_array().expect("skills");
     let review = skills
@@ -529,6 +533,13 @@ fn a2a_platform_payload_projects_governed_agent_card_without_drift_fields() {
     assert_eq!(review["allowedTaskClasses"][0], "code.review");
     assert!(review.get("metadata").is_none());
     assert!(review.get("examples").is_none());
+    let browser_qa = skills
+        .iter()
+        .find(|skill| skill["id"] == "maestro.subagent.browser-qa")
+        .expect("browser QA skill should be advertised");
+    assert_eq!(browser_qa["requiredContextGrants"][0], "browser:control");
+    assert_eq!(browser_qa["allowedTaskClasses"][0], "product.qa");
+    assert!(browser_qa.get("metadata").is_none());
 
     let heartbeat = a2a_platform_heartbeat_payload(&registration, &config);
     assert_eq!(heartbeat["agentId"], "maestro-peer-1");
@@ -3179,7 +3190,7 @@ async fn platform_a2a_push_callback_accepts_status_updates() {
                 "taskId": "platform-run-1",
                 "contextId": "ctx-platform-1",
                 "status": {
-                    "state": "TASK_STATE_COMPLETED",
+                    "state": "SUCCESS",
                     "message": {
                         "messageId": "status-platform-run-1",
                         "contextId": "ctx-platform-1",
@@ -4083,7 +4094,33 @@ async fn a2a_task_store_persists_control_plane_tasks_to_ledger_file() {
         a2a_agent_message("ctx-1", "complete"),
         Vec::new(),
         Vec::new(),
-        serde_json::json!({ "workspaceId": "ws-1" }),
+        serde_json::json!({
+            "workspaceId": "ws-1",
+            "apiToken": "secret-api-token",
+            "bearer": "secret-bearer",
+            "tools": [
+                {
+                    "name": "inspect",
+                    "input": {
+                        "path": "src/main.rs",
+                        "apiToken": "nested-secret"
+                    }
+                }
+            ],
+            "usage": {
+                "totalTokens": 42,
+                "totalToken": 43,
+                "tokenCount": 44,
+                "bearer": "nested-bearer"
+            },
+            "workGraph": {
+                "schemaVersion": CODEX_SUBAGENT_WORK_GRAPH_SCHEMA,
+                "state": "completed",
+                "childRunIds": ["a2a-task:maestro-task-durable"],
+                "toolExecutionIds": [],
+                "waitIds": []
+            }
+        }),
     );
     let raw_legacy_task = load_a2a_tasks(&state.config.a2a_tasks_file_path)
         .await
@@ -4135,12 +4172,55 @@ async fn a2a_task_store_persists_control_plane_tasks_to_ledger_file() {
         "other-ws"
     );
     assert_eq!(control_plane_entry["taskId"], "maestro-task-durable");
+    assert_eq!(control_plane_entry["kind"], "delegation");
     assert_eq!(control_plane_entry["state"], "TASK_STATE_COMPLETED");
+    assert_eq!(control_plane_entry["metadata"]["workspaceId"], "ws-1");
+    assert!(control_plane_entry["metadata"].get("apiToken").is_none());
+    assert!(control_plane_entry["metadata"].get("bearer").is_none());
+    assert!(control_plane_entry["metadata"].get("tools").is_none());
+    assert_eq!(
+        control_plane_entry["workGraph"]["childRunIds"][0],
+        "a2a-task:maestro-task-durable"
+    );
     assert_eq!(
         control_plane_entry["peerDisplayName"],
         A2A_CONTROL_PLANE_LEDGER_DISPLAY_NAME
     );
     assert_eq!(control_plane_entry["a2aTask"]["id"], "maestro-task-durable");
+    assert!(control_plane_entry["a2aTask"]["metadata"]
+        .get("apiToken")
+        .is_none());
+    assert!(control_plane_entry["a2aTask"]["metadata"]
+        .get("bearer")
+        .is_none());
+    assert_eq!(
+        control_plane_entry["a2aTask"]["metadata"]["tools"][0]["name"],
+        "inspect"
+    );
+    assert_eq!(
+        control_plane_entry["a2aTask"]["metadata"]["tools"][0]["input"]["path"],
+        "src/main.rs"
+    );
+    assert!(
+        control_plane_entry["a2aTask"]["metadata"]["tools"][0]["input"]
+            .get("apiToken")
+            .is_none()
+    );
+    assert_eq!(
+        control_plane_entry["a2aTask"]["metadata"]["usage"]["totalTokens"],
+        42
+    );
+    assert_eq!(
+        control_plane_entry["a2aTask"]["metadata"]["usage"]["totalToken"],
+        43
+    );
+    assert_eq!(
+        control_plane_entry["a2aTask"]["metadata"]["usage"]["tokenCount"],
+        44
+    );
+    assert!(control_plane_entry["a2aTask"]["metadata"]["usage"]
+        .get("bearer")
+        .is_none());
     assert_eq!(
         raw_legacy_entries, 0,
         "raw legacy A2A rows should be migrated away from the shared TS ledger shape"
@@ -4155,6 +4235,309 @@ async fn a2a_task_store_persists_control_plane_tasks_to_ledger_file() {
         loaded["maestro-task-durable"]["metadata"]["workspaceId"],
         "ws-1"
     );
+    assert_eq!(
+        loaded["maestro-task-durable"]["metadata"]["workGraph"]["childRunIds"][0],
+        "a2a-task:maestro-task-durable"
+    );
+
+    let reloaded_task = loaded["maestro-task-durable"].clone();
+    {
+        let mut tasks = state.a2a_tasks.lock().await;
+        tasks.clear();
+        tasks.insert("maestro-task-durable".to_string(), reloaded_task);
+    }
+    persist_a2a_tasks(&state).await;
+    let reloaded_ledger: Value = serde_json::from_slice(
+        &tokio::fs::read(&state.config.a2a_tasks_file_path)
+            .await
+            .expect("reloaded ledger should be readable"),
+    )
+    .expect("reloaded ledger should be json");
+    let reloaded_control_plane_entry = reloaded_ledger["tasks"]
+        .as_array()
+        .expect("reloaded ledger tasks should be an array")
+        .iter()
+        .find(|entry| {
+            entry["peer"] == A2A_CONTROL_PLANE_LEDGER_PEER
+                && entry["taskId"] == "maestro-task-durable"
+        })
+        .expect("reloaded control-plane ledger row should be written");
+    assert_eq!(
+        reloaded_control_plane_entry["workGraph"]["childRunIds"][0],
+        "a2a-task:maestro-task-durable"
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn a2a_task_load_prefers_top_level_work_graph_over_embedded_metadata() {
+    let root = TestDir::new("a2a-task-ledger-stale-work-graph");
+    let ledger_path = root.path().join("tasks.json");
+    tokio::fs::write(
+        &ledger_path,
+        serde_json::to_vec_pretty(&serde_json::json!({
+        "tasks": [
+            {
+                "id": "maestro-control-plane-stale-work-graph",
+                "kind": "delegation",
+                "peer": A2A_CONTROL_PLANE_LEDGER_PEER,
+                "taskId": "stale-work-graph-task",
+                "contextId": "ctx-stale",
+                "text": "stale request",
+                "state": "TASK_STATE_COMPLETED",
+                "createdAt": "2026-05-15T00:00:00Z",
+                "updatedAt": "2026-05-15T00:02:00Z",
+                "metadata": { "workspaceId": "ws-stale" },
+                "workGraph": {
+                    "schemaVersion": CODEX_SUBAGENT_WORK_GRAPH_SCHEMA,
+                    "state": "completed",
+                    "childRunIds": ["fresh-run"],
+                    "toolExecutionIds": [],
+                    "waitIds": []
+                },
+                "a2aTask": {
+                    "id": "stale-work-graph-task",
+                    "contextId": "ctx-stale",
+                    "status": {
+                        "state": "TASK_STATE_COMPLETED",
+                        "message": {
+                            "messageId": "stale-agent-message",
+                            "contextId": "ctx-stale",
+                            "role": "ROLE_AGENT",
+                            "parts": [{ "text": "done" }]
+                        },
+                        "timestamp": "2026-05-15T00:02:00Z"
+                    },
+                    "history": [],
+                    "metadata": {
+                        "workspaceId": "ws-stale",
+                        "workGraph": {
+                            "schemaVersion": CODEX_SUBAGENT_WORK_GRAPH_SCHEMA,
+                            "state": "completed",
+                            "childRunIds": ["stale-run"],
+                            "toolExecutionIds": [],
+                            "waitIds": []
+                        }
+                        }
+                    }
+                },
+                {
+                    "id": "maestro-control-plane-empty-work-graph",
+                    "kind": "delegation",
+                    "peer": A2A_CONTROL_PLANE_LEDGER_PEER,
+                    "taskId": "task-empty-work-graph",
+                    "contextId": "ctx-empty-work-graph",
+                    "text": "delegate work",
+                    "responseText": "done",
+                    "state": "SUCCESS",
+                    "workGraph": {},
+                    "createdAt": "2026-05-15T00:00:00Z",
+                    "updatedAt": "2026-05-15T00:02:00Z",
+                    "a2aTask": {
+                        "id": "task-empty-work-graph",
+                        "contextId": "ctx-empty-work-graph",
+                        "status": {
+                            "state": "TASK_STATE_COMPLETED",
+                            "message": a2a_agent_message("ctx-empty-work-graph", "done")
+                        },
+                        "metadata": {
+                            "workspaceId": "ws-empty",
+                            "workGraph": {
+                                "schemaVersion": CODEX_SUBAGENT_WORK_GRAPH_SCHEMA,
+                                "state": "completed",
+                                "childRunIds": ["embedded-empty-run"],
+                                "toolExecutionIds": [],
+                                "waitIds": []
+                            }
+                        }
+                    }
+                }
+            ]
+        }))
+        .expect("ledger should serialize"),
+    )
+    .await
+    .expect("existing ledger should be written");
+
+    let loaded = load_a2a_tasks(&ledger_path).await;
+
+    assert_eq!(
+        loaded["stale-work-graph-task"]["metadata"]["workGraph"]["childRunIds"][0],
+        "fresh-run"
+    );
+    assert_eq!(
+        loaded["task-empty-work-graph"]["metadata"]["workGraph"]["childRunIds"][0],
+        "embedded-empty-run"
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn a2a_task_load_keeps_embedded_work_graph_when_top_level_value_is_null() {
+    let root = TestDir::new("a2a-task-ledger-null-work-graph");
+    let ledger_path = root.path().join("tasks.json");
+    tokio::fs::write(
+        &ledger_path,
+        serde_json::to_vec_pretty(&serde_json::json!({
+            "tasks": [
+                {
+                    "id": "maestro-control-plane-null-work-graph",
+                    "kind": "delegation",
+                    "peer": A2A_CONTROL_PLANE_LEDGER_PEER,
+                    "taskId": "null-work-graph-task",
+                    "contextId": "ctx-null",
+                    "text": "null work graph request",
+                    "state": "TASK_STATE_COMPLETED",
+                    "createdAt": "2026-05-15T00:00:00Z",
+                    "updatedAt": "2026-05-15T00:02:00Z",
+                    "metadata": { "workspaceId": "ws-null" },
+                    "workGraph": null,
+                    "a2aTask": {
+                        "id": "null-work-graph-task",
+                        "contextId": "ctx-null",
+                        "status": {
+                            "state": "TASK_STATE_COMPLETED",
+                            "message": {
+                                "messageId": "null-agent-message",
+                                "contextId": "ctx-null",
+                                "role": "ROLE_AGENT",
+                                "parts": [{ "text": "done" }]
+                            },
+                            "timestamp": "2026-05-15T00:02:00Z"
+                        },
+                        "history": [],
+                        "metadata": {
+                            "workspaceId": "ws-null",
+                            "workGraph": {
+                                "schemaVersion": CODEX_SUBAGENT_WORK_GRAPH_SCHEMA,
+                                "state": "completed",
+                                "childRunIds": ["embedded-run"],
+                                "toolExecutionIds": [],
+                                "waitIds": []
+                            }
+                        }
+                    }
+                }
+            ]
+        }))
+        .expect("ledger should serialize"),
+    )
+    .await
+    .expect("existing ledger should be written");
+
+    let loaded = load_a2a_tasks(&ledger_path).await;
+
+    assert_eq!(
+        loaded["null-work-graph-task"]["metadata"]["workGraph"]["childRunIds"][0],
+        "embedded-run"
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn a2a_task_load_refreshes_history_messages_with_matching_ids() {
+    let root = TestDir::new("a2a-task-ledger-stale-history");
+    let ledger_path = root.path().join("tasks.json");
+    tokio::fs::write(
+        &ledger_path,
+        serde_json::to_vec_pretty(&serde_json::json!({
+            "tasks": [
+                {
+                    "id": "maestro-control-plane-stale-history",
+                    "kind": "delegation",
+                    "peer": A2A_CONTROL_PLANE_LEDGER_PEER,
+                    "taskId": "stale-history-task",
+                    "contextId": "ctx-stale-history",
+                    "text": "run checks",
+                    "state": "TASK_STATE_COMPLETED",
+                    "responseText": "done",
+                    "transcript": [
+                        {
+                            "at": "2026-05-15T00:00:00Z",
+                            "role": "user",
+                            "text": "run checks",
+                            "messageId": "user-message"
+                        },
+                        {
+                            "at": "2026-05-15T00:01:00Z",
+                            "role": "agent",
+                            "text": "done",
+                            "state": "TASK_STATE_COMPLETED",
+                            "messageId": "agent-message"
+                        }
+                    ],
+                    "createdAt": "2026-05-15T00:00:00Z",
+                    "updatedAt": "2026-05-15T00:02:00Z",
+                    "completedAt": "2026-05-15T00:02:00Z",
+                    "a2aTask": {
+                        "id": "stale-history-task",
+                        "contextId": "ctx-stale-history",
+                        "status": {
+                            "state": "TASK_STATE_COMPLETED",
+                            "message": {
+                                "messageId": "agent-message",
+                                "contextId": "ctx-stale-history",
+                                "role": "ROLE_AGENT",
+                                "parts": [{ "text": "still working" }]
+                            },
+                            "timestamp": "2026-05-15T00:02:00Z"
+                        },
+                        "history": [
+                            {
+                                "messageId": "user-message",
+                                "contextId": "ctx-stale-history",
+                                "role": "ROLE_USER",
+                                "parts": [{ "text": "run checks" }]
+                            },
+                            {
+                                "messageId": "agent-message",
+                                "contextId": "ctx-stale-history",
+                                "role": "ROLE_AGENT",
+                                "parts": [{ "text": "still working" }]
+                            }
+                        ],
+                        "metadata": {}
+                    }
+                }
+            ]
+        }))
+        .expect("ledger should serialize"),
+    )
+    .await
+    .expect("existing ledger should be written");
+
+    let loaded = load_a2a_tasks(&ledger_path).await;
+    let reloaded_task = loaded["stale-history-task"].clone();
+    assert_eq!(
+        reloaded_task["status"]["message"]["parts"][0]["text"],
+        "done"
+    );
+    assert_eq!(reloaded_task["history"][1]["parts"][0]["text"], "done");
+
+    let base_state = test_app_state_with_sessions(HashMap::new());
+    let mut config = auth_test_config();
+    config.a2a_tasks_file_path = ledger_path.clone();
+    let state = AppState {
+        config: Arc::new(config),
+        ..base_state
+    };
+    {
+        let mut tasks = state.a2a_tasks.lock().await;
+        tasks.insert("stale-history-task".to_string(), reloaded_task);
+    }
+
+    persist_a2a_tasks(&state).await;
+    let reloaded_ledger: Value = serde_json::from_slice(
+        &tokio::fs::read(&ledger_path)
+            .await
+            .expect("reloaded ledger should be readable"),
+    )
+    .expect("reloaded ledger should be json");
+    let reloaded_entry = reloaded_ledger["tasks"]
+        .as_array()
+        .expect("reloaded ledger tasks should be an array")
+        .iter()
+        .find(|entry| entry["taskId"] == "stale-history-task")
+        .expect("reloaded control-plane ledger row should be written");
+    assert_eq!(reloaded_entry["responseText"], "done");
+    assert_eq!(reloaded_entry["transcript"][1]["text"], "done");
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -4306,6 +4689,734 @@ async fn a2a_task_load_skips_remote_cli_ledger_entries() {
 }
 
 #[tokio::test(flavor = "current_thread")]
+async fn a2a_task_store_prefers_top_level_ledger_work_graph() {
+    let root = TestDir::new("a2a-task-ledger-top-level-work-graph");
+    let base_state = test_app_state_with_sessions(HashMap::new());
+    let mut config = auth_test_config();
+    config.a2a_tasks_file_path = root.path().join("tasks.json");
+    let state = AppState {
+        config: Arc::new(config),
+        ..base_state
+    };
+    tokio::fs::write(
+        &state.config.a2a_tasks_file_path,
+        serde_json::to_vec_pretty(&serde_json::json!({
+            "tasks": [
+                {
+                    "id": "maestro-control-plane-task-work-graph",
+                    "kind": "delegation",
+                    "peer": A2A_CONTROL_PLANE_LEDGER_PEER,
+                    "taskId": "task-work-graph",
+                    "contextId": "ctx-work-graph",
+                    "text": "delegate work",
+                    "responseText": "done",
+                    "state": "TASK_STATE_COMPLETED",
+                    "workGraph": {
+                        "schemaVersion": CODEX_SUBAGENT_WORK_GRAPH_SCHEMA,
+                        "state": "completed",
+                        "childRunIds": ["new-run"],
+                        "toolExecutionIds": [],
+                        "waitIds": []
+                    },
+                    "transcript": [
+                        { "role": "user", "text": "delegate work", "messageId": "msg-1" },
+                        { "role": "agent", "text": "done", "state": "TASK_STATE_COMPLETED" }
+                    ],
+                    "createdAt": "2026-05-15T00:00:00Z",
+                    "updatedAt": "2026-05-15T00:02:00Z",
+                    "a2aTask": {
+                        "id": "task-work-graph",
+                        "contextId": "ctx-work-graph",
+                        "status": {
+                            "state": "TASK_STATE_COMPLETED",
+                            "message": {
+                                "messageId": "agent-msg-1",
+                                "contextId": "ctx-work-graph",
+                                "role": "ROLE_AGENT",
+                                "parts": [{ "text": "done" }]
+                            }
+                        },
+                        "metadata": {
+                            "workspaceId": "legacy-ws",
+                            "workGraph": {
+                                "schemaVersion": CODEX_SUBAGENT_WORK_GRAPH_SCHEMA,
+                                "state": "waiting",
+                                "childRunIds": ["old-run"],
+                                "toolExecutionIds": [],
+                                "waitIds": []
+                            }
+                        }
+                    }
+                }
+            ]
+        }))
+        .expect("ledger should serialize"),
+    )
+    .await
+    .expect("ledger should be written");
+
+    let loaded = load_a2a_tasks(&state.config.a2a_tasks_file_path).await;
+    assert_eq!(
+        loaded["task-work-graph"]["metadata"]["workGraph"]["childRunIds"][0],
+        "new-run"
+    );
+    assert_eq!(
+        loaded["task-work-graph"]["history"]
+            .as_array()
+            .expect("embedded task transcript should hydrate history")
+            .len(),
+        2
+    );
+    assert_eq!(loaded["task-work-graph"]["history"][0]["role"], "ROLE_USER");
+    assert_eq!(
+        loaded["task-work-graph"]["history"][1]["role"],
+        "ROLE_AGENT"
+    );
+    assert_eq!(
+        loaded["task-work-graph"]["history"][1]["parts"][0]["text"],
+        "done"
+    );
+
+    state.a2a_tasks.lock().await.extend(loaded);
+    persist_a2a_tasks(&state).await;
+
+    let ledger: Value = serde_json::from_slice(
+        &tokio::fs::read(&state.config.a2a_tasks_file_path)
+            .await
+            .expect("ledger should be readable"),
+    )
+    .expect("ledger should be json");
+    let entry = ledger["tasks"]
+        .as_array()
+        .expect("ledger tasks should be an array")
+        .iter()
+        .find(|entry| entry["taskId"] == "task-work-graph")
+        .expect("control-plane row should exist");
+    assert_eq!(entry["workGraph"]["childRunIds"][0], "new-run");
+    assert_eq!(
+        entry["transcript"]
+            .as_array()
+            .expect("transcript should persist")
+            .len(),
+        2
+    );
+    assert_eq!(entry["transcript"][0]["text"], "delegate work");
+    assert_eq!(entry["transcript"][1]["text"], "done");
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn a2a_task_load_ignores_null_top_level_work_graph() {
+    let root = TestDir::new("a2a-task-ledger-null-work-graph");
+    let base_state = test_app_state_with_sessions(HashMap::new());
+    let mut config = auth_test_config();
+    config.a2a_tasks_file_path = root.path().join("tasks.json");
+    let state = AppState {
+        config: Arc::new(config),
+        ..base_state
+    };
+    tokio::fs::write(
+        &state.config.a2a_tasks_file_path,
+        serde_json::to_vec_pretty(&serde_json::json!({
+            "tasks": [
+                {
+                    "id": "maestro-control-plane-null-work-graph",
+                    "kind": "delegation",
+                    "peer": A2A_CONTROL_PLANE_LEDGER_PEER,
+                    "taskId": "task-null-work-graph",
+                    "contextId": "ctx-null-work-graph",
+                    "text": "delegate work",
+                    "responseText": "done",
+                    "state": "TASK_STATE_COMPLETED",
+                    "workGraph": null,
+                    "createdAt": "2026-05-15T00:00:00Z",
+                    "updatedAt": "2026-05-15T00:02:00Z",
+                    "a2aTask": {
+                        "id": "task-null-work-graph",
+                        "contextId": "ctx-null-work-graph",
+                        "status": {
+                            "state": "TASK_STATE_COMPLETED",
+                            "message": a2a_agent_message("ctx-null-work-graph", "done")
+                        },
+                        "metadata": {
+                            "workspaceId": "ws-null",
+                            "workGraph": {
+                                "schemaVersion": CODEX_SUBAGENT_WORK_GRAPH_SCHEMA,
+                                "state": "completed",
+                                "childRunIds": ["embedded-run"],
+                                "toolExecutionIds": [],
+                                "waitIds": []
+                            }
+                        }
+                    }
+                }
+            ]
+        }))
+        .expect("ledger should serialize"),
+    )
+    .await
+    .expect("ledger should be written");
+
+    let loaded = load_a2a_tasks(&state.config.a2a_tasks_file_path).await;
+
+    assert_eq!(
+        loaded["task-null-work-graph"]["metadata"]["workGraph"]["childRunIds"][0],
+        "embedded-run"
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn a2a_task_load_preserves_embedded_history_when_transcript_exists() {
+    let root = TestDir::new("a2a-task-ledger-embedded-history");
+    let base_state = test_app_state_with_sessions(HashMap::new());
+    let mut config = auth_test_config();
+    config.a2a_tasks_file_path = root.path().join("tasks.json");
+    let state = AppState {
+        config: Arc::new(config),
+        ..base_state
+    };
+    tokio::fs::write(
+        &state.config.a2a_tasks_file_path,
+        serde_json::to_vec_pretty(&serde_json::json!({
+            "tasks": [
+                {
+                    "id": "maestro-control-plane-rich-history",
+                    "kind": "delegation",
+                    "peer": A2A_CONTROL_PLANE_LEDGER_PEER,
+                    "taskId": "task-rich-history",
+                    "contextId": "ctx-rich-history",
+                    "text": "inspect attachment",
+                    "responseText": "saw attachment",
+                    "state": "TASK_STATE_WORKING",
+                    "transcript": [
+                        { "role": "user", "text": "inspect attachment" },
+                        { "role": "user", "text": "inspect attachment", "messageId": "msg-rich" },
+                        { "role": "agent", "text": "saw attachment", "messageId": "agent-rich" }
+                    ],
+                    "createdAt": "2026-05-15T00:00:00Z",
+                    "updatedAt": "2026-05-15T00:02:00Z",
+                    "a2aTask": {
+                        "id": "task-rich-history",
+                        "contextId": "ctx-rich-history",
+                        "status": {
+                            "state": "TASK_STATE_WORKING",
+                            "message": {
+                                "messageId": "agent-rich",
+                                "contextId": "ctx-rich-history",
+                                "role": "ROLE_AGENT",
+                                "parts": [{ "text": "saw attachment" }]
+                            }
+                        },
+                        "history": [
+                            {
+                                "messageId": "msg-rich",
+                                "contextId": "ctx-rich-history",
+                                "role": "ROLE_USER",
+                                "parts": [
+                                    { "text": "inspect attachment" },
+                                    { "data": { "attachmentId": "artifact-1" } }
+                                ]
+                            },
+                            {
+                                "messageId": "agent-rich",
+                                "contextId": "ctx-rich-history",
+                                "role": "ROLE_AGENT",
+                                "parts": [{ "text": "stale attachment summary" }]
+                            }
+                        ],
+                        "metadata": { "workspaceId": "ws-rich" }
+                    }
+                }
+            ]
+        }))
+        .expect("ledger should serialize"),
+    )
+    .await
+    .expect("ledger should be written");
+
+    let loaded = load_a2a_tasks(&state.config.a2a_tasks_file_path).await;
+
+    assert_eq!(
+        loaded["task-rich-history"]["history"][0]["parts"][1]["data"]["attachmentId"],
+        "artifact-1"
+    );
+    assert_eq!(
+        loaded["task-rich-history"]["history"]
+            .as_array()
+            .expect("history should be an array")
+            .len(),
+        2
+    );
+    assert_eq!(
+        loaded["task-rich-history"]["history"][1]["parts"][0]["text"],
+        "saw attachment"
+    );
+
+    state.a2a_tasks.lock().await.extend(loaded);
+    persist_a2a_tasks(&state).await;
+
+    let ledger: Value = serde_json::from_slice(
+        &tokio::fs::read(&state.config.a2a_tasks_file_path)
+            .await
+            .expect("ledger should be readable"),
+    )
+    .expect("ledger should be json");
+    let entry = ledger["tasks"]
+        .as_array()
+        .expect("ledger tasks should be an array")
+        .iter()
+        .find(|entry| entry["taskId"] == "task-rich-history")
+        .expect("control-plane row should exist");
+    assert_eq!(
+        entry["a2aTask"]["history"][0]["parts"][1]["data"]["attachmentId"],
+        "artifact-1"
+    );
+    assert_eq!(entry["transcript"][0]["text"], "inspect attachment");
+    assert_eq!(entry["transcript"][1]["text"], "saw attachment");
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn a2a_task_load_prefers_top_level_state_over_embedded_status() {
+    let root = TestDir::new("a2a-task-ledger-top-level-state");
+    let base_state = test_app_state_with_sessions(HashMap::new());
+    let mut config = auth_test_config();
+    config.a2a_tasks_file_path = root.path().join("tasks.json");
+    let state = AppState {
+        config: Arc::new(config),
+        ..base_state
+    };
+    tokio::fs::write(
+        &state.config.a2a_tasks_file_path,
+        serde_json::to_vec_pretty(&serde_json::json!({
+            "tasks": [
+                {
+                    "id": "maestro-control-plane-stale-status",
+                    "kind": "delegation",
+                    "peer": A2A_CONTROL_PLANE_LEDGER_PEER,
+                    "taskId": "task-stale-status",
+                    "contextId": "ctx-stale-status",
+                    "text": "finish work",
+                    "responseText": "done",
+                    "state": "TASK_STATE_COMPLETED",
+                    "createdAt": "2026-05-15T00:00:00Z",
+                    "updatedAt": "2026-05-15T00:02:00Z",
+                    "a2aTask": {
+                        "id": "task-stale-status",
+                        "contextId": "ctx-stale-status",
+                        "status": {
+                            "state": "TASK_STATE_WORKING",
+                            "message": {
+                                "messageId": "agent-stale-status",
+                                "contextId": "ctx-stale-status",
+                                "role": "ROLE_AGENT",
+                                "parts": [{ "text": "still working" }]
+                            },
+                            "timestamp": "2026-05-15T00:01:00Z"
+                        },
+                        "history": [],
+                        "metadata": {
+                            "workspaceId": "ws-state",
+                            "pushNotificationConfigs": [
+                                {
+                                    "id": "notify-state",
+                                    "taskId": "task-stale-status",
+                                    "url": "https://hooks.example/a2a",
+                                    "token": "notify-token"
+                                }
+                            ]
+                        }
+                    }
+                }
+            ]
+        }))
+        .expect("ledger should serialize"),
+    )
+    .await
+    .expect("ledger should be written");
+
+    let loaded = load_a2a_tasks(&state.config.a2a_tasks_file_path).await;
+
+    assert_eq!(
+        loaded["task-stale-status"]["status"]["state"],
+        "TASK_STATE_COMPLETED"
+    );
+    assert_eq!(
+        loaded["task-stale-status"]["status"]["timestamp"],
+        "2026-05-15T00:02:00Z"
+    );
+    assert_eq!(
+        loaded["task-stale-status"]["status"]["message"]["parts"][0]["text"],
+        "done"
+    );
+
+    state.a2a_tasks.lock().await.extend(loaded);
+    persist_a2a_tasks(&state).await;
+
+    let ledger: Value = serde_json::from_slice(
+        &tokio::fs::read(&state.config.a2a_tasks_file_path)
+            .await
+            .expect("ledger should be readable"),
+    )
+    .expect("ledger should be json");
+    let entry = ledger["tasks"]
+        .as_array()
+        .expect("ledger tasks should be an array")
+        .iter()
+        .find(|entry| entry["taskId"] == "task-stale-status")
+        .expect("control-plane row should exist");
+    assert_eq!(entry["state"], "TASK_STATE_COMPLETED");
+    assert_eq!(entry["responseText"], "done");
+    assert!(entry["a2aTask"]["metadata"]
+        .get("pushNotificationConfigs")
+        .is_none());
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn a2a_task_load_preserves_embedded_response_when_top_level_response_missing() {
+    let root = TestDir::new("a2a-task-ledger-missing-response");
+    let base_state = test_app_state_with_sessions(HashMap::new());
+    let mut config = auth_test_config();
+    config.a2a_tasks_file_path = root.path().join("tasks.json");
+    let state = AppState {
+        config: Arc::new(config),
+        ..base_state
+    };
+    tokio::fs::write(
+        &state.config.a2a_tasks_file_path,
+        serde_json::to_vec_pretty(&serde_json::json!({
+            "tasks": [
+                {
+                    "id": "maestro-control-plane-missing-response",
+                    "kind": "delegation",
+                    "peer": A2A_CONTROL_PLANE_LEDGER_PEER,
+                    "taskId": "task-missing-response",
+                    "contextId": "ctx-missing-response",
+                    "text": "please do the thing",
+                    "state": "TASK_STATE_COMPLETED",
+                    "createdAt": "2026-05-15T00:00:00Z",
+                    "updatedAt": "2026-05-15T00:02:00Z",
+                    "a2aTask": {
+                        "id": "task-missing-response",
+                        "contextId": "ctx-missing-response",
+                        "status": {
+                            "state": "TASK_STATE_WORKING",
+                            "message": {
+                                "messageId": "agent-missing-response",
+                                "contextId": "ctx-missing-response",
+                                "role": "ROLE_AGENT",
+                                "parts": [{ "text": "agent actually finished it" }]
+                            },
+                            "timestamp": "2026-05-15T00:01:00Z"
+                        },
+                        "history": [],
+                        "metadata": { "workspaceId": "ws-missing-response" }
+                    }
+                }
+            ]
+        }))
+        .expect("ledger should serialize"),
+    )
+    .await
+    .expect("ledger should be written");
+
+    let loaded = load_a2a_tasks(&state.config.a2a_tasks_file_path).await;
+
+    assert_eq!(
+        loaded["task-missing-response"]["status"]["state"],
+        "TASK_STATE_COMPLETED"
+    );
+    assert_eq!(
+        loaded["task-missing-response"]["status"]["timestamp"],
+        "2026-05-15T00:02:00Z"
+    );
+    assert_eq!(
+        loaded["task-missing-response"]["status"]["message"]["parts"][0]["text"],
+        "agent actually finished it"
+    );
+
+    state.a2a_tasks.lock().await.extend(loaded);
+    persist_a2a_tasks(&state).await;
+
+    let ledger: Value = serde_json::from_slice(
+        &tokio::fs::read(&state.config.a2a_tasks_file_path)
+            .await
+            .expect("ledger should be readable"),
+    )
+    .expect("ledger should be json");
+    let entry = ledger["tasks"]
+        .as_array()
+        .expect("ledger tasks should be an array")
+        .iter()
+        .find(|entry| entry["taskId"] == "task-missing-response")
+        .expect("control-plane row should exist");
+    assert_eq!(entry["state"], "TASK_STATE_COMPLETED");
+    assert_eq!(entry["responseText"], "agent actually finished it");
+    assert_ne!(entry["responseText"], "please do the thing");
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn a2a_task_load_prefers_top_level_transcript_over_stale_embedded_response() {
+    let root = TestDir::new("a2a-task-ledger-transcript-response");
+    let base_state = test_app_state_with_sessions(HashMap::new());
+    let mut config = auth_test_config();
+    config.a2a_tasks_file_path = root.path().join("tasks.json");
+    let state = AppState {
+        config: Arc::new(config),
+        ..base_state
+    };
+    tokio::fs::write(
+        &state.config.a2a_tasks_file_path,
+        serde_json::to_vec_pretty(&serde_json::json!({
+            "tasks": [
+                {
+                    "id": "maestro-control-plane-transcript-response",
+                    "kind": "delegation",
+                    "peer": A2A_CONTROL_PLANE_LEDGER_PEER,
+                    "taskId": "task-transcript-response",
+                    "contextId": "ctx-transcript-response",
+                    "text": "please do the thing",
+                    "state": "TASK_STATE_COMPLETED",
+                    "transcript": [
+                        { "role": "user", "text": "please do the thing", "messageId": "user-transcript-response" },
+                        { "role": "agent", "text": "agent transcript finished it", "messageId": "agent-transcript-response" }
+                    ],
+                    "createdAt": "2026-05-15T00:00:00Z",
+                    "updatedAt": "2026-05-15T00:02:00Z",
+                    "a2aTask": {
+                        "id": "task-transcript-response",
+                        "contextId": "ctx-transcript-response",
+                        "status": {
+                            "state": "TASK_STATE_WORKING",
+                            "message": {
+                                "messageId": "agent-transcript-response",
+                                "contextId": "ctx-transcript-response",
+                                "role": "ROLE_AGENT",
+                                "parts": [{ "text": "stale embedded response" }]
+                            },
+                            "timestamp": "2026-05-15T00:01:00Z"
+                        },
+                        "history": [],
+                        "metadata": { "workspaceId": "ws-transcript-response" }
+                    }
+                }
+            ]
+        }))
+        .expect("ledger should serialize"),
+    )
+    .await
+    .expect("ledger should be written");
+
+    let loaded = load_a2a_tasks(&state.config.a2a_tasks_file_path).await;
+
+    assert_eq!(
+        loaded["task-transcript-response"]["status"]["state"],
+        "TASK_STATE_COMPLETED"
+    );
+    assert_eq!(
+        loaded["task-transcript-response"]["status"]["message"]["parts"][0]["text"],
+        "agent transcript finished it"
+    );
+
+    state.a2a_tasks.lock().await.extend(loaded);
+    persist_a2a_tasks(&state).await;
+
+    let ledger: Value = serde_json::from_slice(
+        &tokio::fs::read(&state.config.a2a_tasks_file_path)
+            .await
+            .expect("ledger should be readable"),
+    )
+    .expect("ledger should be json");
+    let entry = ledger["tasks"]
+        .as_array()
+        .expect("ledger tasks should be an array")
+        .iter()
+        .find(|entry| entry["taskId"] == "task-transcript-response")
+        .expect("control-plane row should exist");
+    assert_eq!(entry["responseText"], "agent transcript finished it");
+    assert_ne!(entry["responseText"], "stale embedded response");
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn a2a_task_load_ignores_blank_top_level_response_when_embedded_response_present() {
+    let root = TestDir::new("a2a-task-ledger-blank-response");
+    let base_state = test_app_state_with_sessions(HashMap::new());
+    let mut config = auth_test_config();
+    config.a2a_tasks_file_path = root.path().join("tasks.json");
+    let state = AppState {
+        config: Arc::new(config),
+        ..base_state
+    };
+    tokio::fs::write(
+        &state.config.a2a_tasks_file_path,
+        serde_json::to_vec_pretty(&serde_json::json!({
+            "tasks": [
+                {
+                    "id": "maestro-control-plane-blank-response",
+                    "kind": "delegation",
+                    "peer": A2A_CONTROL_PLANE_LEDGER_PEER,
+                    "taskId": "task-blank-response",
+                    "contextId": "ctx-blank-response",
+                    "text": "please do the thing",
+                    "responseText": "   ",
+                    "state": "TASK_STATE_COMPLETED",
+                    "createdAt": "2026-05-15T00:00:00Z",
+                    "updatedAt": "2026-05-15T00:02:00Z",
+                    "a2aTask": {
+                        "id": "task-blank-response",
+                        "contextId": "ctx-blank-response",
+                        "status": {
+                            "state": "TASK_STATE_WORKING",
+                            "message": {
+                                "messageId": "agent-blank-response",
+                                "contextId": "ctx-blank-response",
+                                "role": "ROLE_AGENT",
+                                "parts": [{ "text": "agent actually finished it" }]
+                            },
+                            "timestamp": "2026-05-15T00:01:00Z"
+                        },
+                        "history": [],
+                        "metadata": { "workspaceId": "ws-blank-response" }
+                    }
+                }
+            ]
+        }))
+        .expect("ledger should serialize"),
+    )
+    .await
+    .expect("ledger should be written");
+
+    let loaded = load_a2a_tasks(&state.config.a2a_tasks_file_path).await;
+
+    assert_eq!(
+        loaded["task-blank-response"]["status"]["state"],
+        "TASK_STATE_COMPLETED"
+    );
+    assert_eq!(
+        loaded["task-blank-response"]["status"]["timestamp"],
+        "2026-05-15T00:02:00Z"
+    );
+    assert_eq!(
+        loaded["task-blank-response"]["status"]["message"]["parts"][0]["text"],
+        "agent actually finished it"
+    );
+
+    state.a2a_tasks.lock().await.extend(loaded);
+    persist_a2a_tasks(&state).await;
+
+    let ledger: Value = serde_json::from_slice(
+        &tokio::fs::read(&state.config.a2a_tasks_file_path)
+            .await
+            .expect("ledger should be readable"),
+    )
+    .expect("ledger should be json");
+    let entry = ledger["tasks"]
+        .as_array()
+        .expect("ledger tasks should be an array")
+        .iter()
+        .find(|entry| entry["taskId"] == "task-blank-response")
+        .expect("control-plane row should exist");
+    assert_eq!(entry["state"], "TASK_STATE_COMPLETED");
+    assert_eq!(entry["responseText"], "agent actually finished it");
+    assert_ne!(entry["responseText"], "please do the thing");
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn a2a_task_store_preserves_in_flight_push_configs_for_reload() {
+    let root = TestDir::new("a2a-task-ledger-push-config-reload");
+    let base_state = test_app_state_with_sessions(HashMap::new());
+    let mut config = auth_test_config();
+    config.a2a_tasks_file_path = root.path().join("tasks.json");
+    let state = AppState {
+        config: Arc::new(config),
+        ..base_state
+    };
+    let task = a2a_task_value(
+        "task-push-reload",
+        "ctx-push-reload",
+        "TASK_STATE_WORKING",
+        a2a_agent_message("ctx-push-reload", "still working"),
+        Vec::new(),
+        Vec::new(),
+        serde_json::json!({
+            "workspaceId": "ws-push",
+            "pushNotificationConfigs": [
+                {
+                    "id": "notify-1",
+                    "taskId": "task-push-reload",
+                    "url": "https://hooks.example/a2a",
+                    "token": "notify-token",
+                    "authentication": {
+                        "schemes": ["Bearer"],
+                        "credentials": "auth-token"
+                    }
+                }
+            ]
+        }),
+    );
+    state
+        .a2a_tasks
+        .lock()
+        .await
+        .insert("task-push-reload".to_string(), task);
+
+    persist_a2a_tasks(&state).await;
+
+    let ledger: Value = serde_json::from_slice(
+        &tokio::fs::read(&state.config.a2a_tasks_file_path)
+            .await
+            .expect("ledger should be readable"),
+    )
+    .expect("ledger should be json");
+    let entry = ledger["tasks"]
+        .as_array()
+        .expect("ledger tasks should be an array")
+        .iter()
+        .find(|entry| entry["taskId"] == "task-push-reload")
+        .expect("control-plane row should exist");
+    assert!(entry["metadata"].get("pushNotificationConfigs").is_none());
+    assert_eq!(
+        entry["a2aTask"]["metadata"]["pushNotificationConfigs"][0]["token"],
+        "notify-token"
+    );
+    assert_eq!(
+        entry["a2aTask"]["metadata"]["pushNotificationConfigs"][0]["authentication"]["credentials"],
+        "auth-token"
+    );
+
+    let mut loaded = load_a2a_tasks(&state.config.a2a_tasks_file_path).await;
+    assert_eq!(
+        loaded["task-push-reload"]["metadata"]["pushNotificationConfigs"][0]["token"],
+        "notify-token"
+    );
+
+    let mut completed_task = loaded
+        .remove("task-push-reload")
+        .expect("reloaded task should exist");
+    completed_task["status"]["state"] = Value::String("TASK_STATE_COMPLETED".to_string());
+    {
+        let mut tasks = state.a2a_tasks.lock().await;
+        tasks.clear();
+        tasks.insert("task-push-reload".to_string(), completed_task);
+    }
+    persist_a2a_tasks(&state).await;
+
+    let terminal_ledger: Value = serde_json::from_slice(
+        &tokio::fs::read(&state.config.a2a_tasks_file_path)
+            .await
+            .expect("terminal ledger should be readable"),
+    )
+    .expect("terminal ledger should be json");
+    let terminal_entry = terminal_ledger["tasks"]
+        .as_array()
+        .expect("terminal ledger tasks should be an array")
+        .iter()
+        .find(|entry| entry["taskId"] == "task-push-reload")
+        .expect("terminal control-plane row should exist");
+    assert!(terminal_entry["a2aTask"]["metadata"]
+        .get("pushNotificationConfigs")
+        .is_none());
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn a2a_task_persist_rewrites_legacy_control_plane_ledger_entries() {
     let root = TestDir::new("a2a-task-ledger-legacy-rewrite");
     let base_state = test_app_state_with_sessions(HashMap::new());
@@ -4371,6 +5482,7 @@ async fn a2a_task_persist_rewrites_legacy_control_plane_ledger_entries() {
 
     assert_eq!(entries.len(), 2);
     assert_eq!(control_plane_entry["peer"], A2A_CONTROL_PLANE_LEDGER_PEER);
+    assert_eq!(control_plane_entry["kind"], "delegation");
     assert_eq!(control_plane_entry["a2aTask"]["id"], "raw-legacy-task");
     assert_eq!(
         control_plane_entry["a2aTask"]["metadata"]["workspaceId"],
@@ -4379,6 +5491,48 @@ async fn a2a_task_persist_rewrites_legacy_control_plane_ledger_entries() {
     assert!(!entries
         .iter()
         .any(|entry| entry.get("peer").is_none() && entry["id"] == "raw-legacy-task"));
+}
+
+#[test]
+fn a2a_state_helpers_accept_protocol_variants_without_substring_matches() {
+    assert_eq!(canonical_a2a_task_state("success"), "TASK_STATE_COMPLETED");
+    assert_eq!(
+        canonical_a2a_task_state("SUCCEEDED"),
+        "TASK_STATE_COMPLETED"
+    );
+    assert_eq!(
+        canonical_a2a_task_state("completed"),
+        canonical_a2a_task_state("success")
+    );
+    assert_eq!(canonical_a2a_task_state("cancelled"), "TASK_STATE_CANCELED");
+    assert_eq!(
+        canonical_a2a_task_state("input required"),
+        "TASK_STATE_INPUT_REQUIRED"
+    );
+    assert!(a2a_state_is_completed("success"));
+    assert!(a2a_state_is_completed("TASK_STATE_SUCCEEDED"));
+    assert!(a2a_state_is_completed(" TASK_STATE_COMPLETED "));
+    assert!(a2a_state_is_completed("TASK  STATE--COMPLETED"));
+    assert!(a2a_task_is_terminal(&a2a_task_value(
+        "task-success",
+        "ctx-success",
+        "task-state-success",
+        a2a_agent_message("ctx-success", "done"),
+        Vec::new(),
+        Vec::new(),
+        serde_json::json!({}),
+    )));
+    assert!(a2a_state_is_failed("TASK_STATE_CANCELLED"));
+    assert!(!a2a_state_is_completed("TASK_STATE_UNSUCCESSFUL"));
+    assert!(!a2a_task_is_terminal(&a2a_task_value(
+        "task-working",
+        "ctx-working",
+        "TASK_STATE_UNSUCCESSFUL",
+        a2a_agent_message("ctx-working", "still not complete"),
+        Vec::new(),
+        Vec::new(),
+        serde_json::json!({}),
+    )));
 }
 
 #[tokio::test(flavor = "current_thread")]

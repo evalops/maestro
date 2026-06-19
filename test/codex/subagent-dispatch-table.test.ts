@@ -89,6 +89,12 @@ describe("Codex subagent dispatch table", () => {
 		expect(codexSubagentCapabilityA2ASkillID("release_manage")).toBe(
 			"maestro.subagent.release-shepherd",
 		);
+		expect(codexSubagentTypeA2ASkillID("dogfood")).toBe(
+			"maestro.subagent.browser-qa",
+		);
+		expect(codexSubagentCapabilityA2ASkillID("product:qa")).toBe(
+			"maestro.subagent.browser-qa",
+		);
 		expect(codexSubagentTypeA2ASkillID("risk-auditor")).toBe(
 			"maestro.subagent.risk-auditor",
 		);
@@ -125,6 +131,18 @@ describe("Codex subagent dispatch table", () => {
 			attributes: expect.objectContaining({
 				requestMetadataPath: "evalops.subagentRequest",
 			}),
+		});
+		expect(
+			projection.skills?.find(
+				(skill) => skill.id === "maestro.subagent.browser-qa",
+			),
+		).toMatchObject({
+			requiredContextGrants: expect.arrayContaining([
+				"browser:control",
+				"artifact:write",
+			]),
+			requiredArtifactKinds: ["qa.repro-report"],
+			allowedTaskClasses: ["product.qa", "browser.e2e", "ux.repro"],
 		});
 		expect(JSON.stringify(projection.skills)).not.toContain("evidence:");
 		expect(JSON.stringify(projection.skills)).not.toContain("release.evidence");

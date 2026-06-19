@@ -9,10 +9,13 @@ import {
 	type A2ATaskLedgerEntry,
 	type A2ATaskLedgerFile,
 	isActionRequiredA2AState,
+	isCompletedA2AState,
+	isFailedA2AState,
 	isFinalA2AState,
 	isTerminalA2AState,
 	listA2ATaskEntries,
 	loadA2ATaskLedger,
+	normalizeA2AState,
 } from "./a2a-task-ledger.js";
 import type { A2AWorkGraphMetadata } from "./a2a-work-graph.js";
 
@@ -379,7 +382,10 @@ function nextActionForTask(
 			severity: "critical",
 			peer: task.peer,
 			taskId: task.taskId,
-			reason: "Peer returned an input-required or auth-required A2A state.",
+			reason: taskActionReason(
+				task,
+				"Peer returned an input-required or auth-required A2A state.",
+			),
 		};
 	}
 	if (task.status === "running") {
@@ -392,7 +398,10 @@ function nextActionForTask(
 			severity: "info",
 			peer: task.peer,
 			taskId: task.taskId,
-			reason: "Task is still non-terminal in the local A2A ledger.",
+			reason: taskActionReason(
+				task,
+				"Task is still non-terminal in the local A2A ledger.",
+			),
 		};
 	}
 	if (task.status === "failed") {
@@ -403,10 +412,59 @@ function nextActionForTask(
 			severity: "warning",
 			peer: task.peer,
 			taskId: task.taskId,
-			reason: "Task reached a failed, rejected, or canceled final state.",
+			reason: taskActionReason(
+				task,
+				"Task reached a failed, rejected, or canceled final state.",
+			),
 		};
 	}
 	return undefined;
+}
+
+function taskActionReason(
+	task: A2ACockpitTaskSummary,
+	baseReason: string,
+): string {
+	const workGraphReason = workGraphPressureReason(task.workGraph);
+	return workGraphReason ? `${baseReason} ${workGraphReason}` : baseReason;
+}
+
+function workGraphPressureReason(
+	workGraph: A2ACockpitTaskSummary["workGraph"],
+): string | undefined {
+	if (!workGraph) {
+		return undefined;
+	}
+	const pressure = [
+		countReason("blocked work item", workGraph.blockedItemCount),
+		countReason("waiting work item", workGraph.waitingItemCount),
+		countReason("pending tool call", workGraph.pendingToolCallCount),
+		countReason("open wait", workGraph.waitItemCount),
+	].filter((part): part is string => Boolean(part));
+	if (pressure.length === 0) {
+		return undefined;
+	}
+	return `Work graph shows ${joinReasonParts(pressure)}.`;
+}
+
+function countReason(
+	label: string,
+	count: number | undefined,
+): string | undefined {
+	if (!count || count <= 0) {
+		return undefined;
+	}
+	return `${count} ${label}${count === 1 ? "" : "s"}`;
+}
+
+function joinReasonParts(parts: string[]): string {
+	if (parts.length <= 1) {
+		return parts[0] ?? "";
+	}
+	if (parts.length === 2) {
+		return `${parts[0]} and ${parts[1]}`;
+	}
+	return `${parts.slice(0, -1).join(", ")}, and ${parts.at(-1)}`;
 }
 
 function taskCommand(
@@ -422,7 +480,7 @@ function taskCommand(
 	return undefined;
 }
 
-function classifyTaskState(state: string): A2ACockpitTaskStatus {
+export function classifyTaskState(state: string): A2ACockpitTaskStatus {
 	const normalized = normalizeState(state);
 	if (!normalized) {
 		return "unknown";
@@ -430,15 +488,10 @@ function classifyTaskState(state: string): A2ACockpitTaskStatus {
 	if (isActionRequiredA2AState(normalized)) {
 		return "waiting";
 	}
-	if (normalized.includes("COMPLETED")) {
+	if (isCompletedA2AState(normalized)) {
 		return "completed";
 	}
-	if (
-		normalized.includes("FAILED") ||
-		normalized.includes("REJECTED") ||
-		normalized.includes("CANCELED") ||
-		normalized.includes("CANCELLED")
-	) {
+	if (isFailedA2AState(normalized)) {
 		return "failed";
 	}
 	if (!isFinalA2AState(normalized)) {
@@ -489,9 +542,8 @@ function cleanPeer(peer: string | undefined): string | undefined {
 }
 
 function normalizeState(state: string): string {
-	return state.toUpperCase().replace(/[\s-]+/gu, "_");
+	return normalizeA2AState(state);
 }
-
 function shellQuote(value: string): string {
 	if (/^[A-Za-z0-9_./:-]+$/u.test(value)) {
 		return value;

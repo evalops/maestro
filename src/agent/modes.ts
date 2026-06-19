@@ -47,7 +47,7 @@
 
 import { recordStagedRolloutSurfaceUsage } from "../telemetry.js";
 import { createLogger } from "../utils/logger.js";
-import type { SubagentType } from "./subagent-specs.js";
+import { type SubagentType, parseSubagentType } from "./subagent-specs.js";
 
 // Logger scoped to agent modes for debugging mode transitions
 const logger = createLogger("agent:modes");
@@ -209,6 +209,7 @@ export const MODE_CONFIGS: Record<AgentMode, ModeConfig> = {
 			coder: { model: "openai-codex/gpt-5.5", reasoningEffort: "medium" },
 			reviewer: { model: "sonnet", reasoningEffort: "medium" },
 			researcher: { model: "sonnet", reasoningEffort: "medium" },
+			"browser-qa": { model: "sonnet", reasoningEffort: "medium" },
 			minimal: { model: "haiku", reasoningEffort: "low" },
 		},
 	},
@@ -232,6 +233,7 @@ export const MODE_CONFIGS: Record<AgentMode, ModeConfig> = {
 			coder: { model: "sonnet", reasoningEffort: "low" },
 			reviewer: { model: "haiku", reasoningEffort: "low" },
 			researcher: { model: "haiku", reasoningEffort: "low" },
+			"browser-qa": { model: "sonnet", reasoningEffort: "low" },
 			minimal: { model: "haiku", reasoningEffort: "low" },
 		},
 	},
@@ -255,6 +257,7 @@ export const MODE_CONFIGS: Record<AgentMode, ModeConfig> = {
 			coder: { model: "haiku", reasoningEffort: "low" },
 			reviewer: { model: "haiku", reasoningEffort: "low" },
 			researcher: { model: "haiku", reasoningEffort: "low" },
+			"browser-qa": { model: "haiku", reasoningEffort: "low" },
 			minimal: { model: "haiku", reasoningEffort: "low" },
 		},
 	},
@@ -292,6 +295,7 @@ export const MODE_CONFIGS: Record<AgentMode, ModeConfig> = {
 			coder: { model: "openai-codex/gpt-5.5", reasoningEffort: "high" },
 			reviewer: { model: "openai-codex/gpt-5.5", reasoningEffort: "medium" },
 			researcher: { model: "sonnet", reasoningEffort: "medium" },
+			"browser-qa": { model: "sonnet", reasoningEffort: "high" },
 			minimal: { model: "haiku", reasoningEffort: "low" },
 		},
 		rolloutOwner: "agent-runtime",
@@ -315,6 +319,7 @@ export const MODE_CONFIGS: Record<AgentMode, ModeConfig> = {
 			coder: { model: "haiku", reasoningEffort: "low" },
 			reviewer: { model: "haiku", reasoningEffort: "low" },
 			researcher: { model: "haiku", reasoningEffort: "low" },
+			"browser-qa": { model: "haiku", reasoningEffort: "low" },
 			minimal: { model: "haiku", reasoningEffort: "low" },
 		},
 		rolloutOwner: "agent-evals",
@@ -410,11 +415,12 @@ function defaultReasoningEffort(config: ModeConfig): ReasoningEffort {
  */
 export function resolveSubagentDispatch(
 	mode: AgentMode,
-	type: SubagentType,
+	type: SubagentType | string,
 	provider: ModelProvider = "openai-codex",
 ): ResolvedSubagentDispatch {
 	const config = getModeConfig(mode);
-	const dispatch = config.subagents?.[type];
+	const resolvedType = parseSubagentType(type) ?? "coder";
+	const dispatch = config.subagents?.[resolvedType];
 	const source: DispatchSource = dispatch ? "mode" : "fallback";
 	const requestedModel = dispatch?.model ?? config.primaryTier;
 	const reasoningEffort =
@@ -424,7 +430,7 @@ export function resolveSubagentDispatch(
 		const resolvedProvider = dispatch?.provider ?? provider;
 		return {
 			mode,
-			type,
+			type: resolvedType,
 			provider: resolvedProvider,
 			model: getModelForTier(requestedModel, resolvedProvider),
 			modelTier: requestedModel,
@@ -441,7 +447,7 @@ export function resolveSubagentDispatch(
 	const resolvedProvider = dispatch?.provider ?? explicit.provider ?? provider;
 	return {
 		mode,
-		type,
+		type: resolvedType,
 		provider: resolvedProvider,
 		model: explicit.model,
 		reasoningEffort,

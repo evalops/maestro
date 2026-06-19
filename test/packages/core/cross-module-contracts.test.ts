@@ -32,6 +32,7 @@ describe("Cross-Module Contracts", () => {
 				"coder",
 				"reviewer",
 				"researcher",
+				"browser-qa",
 				"minimal",
 				"custom",
 			];
@@ -55,6 +56,7 @@ describe("Cross-Module Contracts", () => {
 				"coder",
 				"reviewer",
 				"researcher",
+				"browser-qa",
 				"minimal",
 			];
 
@@ -94,6 +96,7 @@ describe("Cross-Module Contracts", () => {
 				"coder",
 				"reviewer",
 				"researcher",
+				"browser-qa",
 				"minimal",
 			];
 
@@ -293,6 +296,7 @@ describe("Cross-Module Contracts", () => {
 				"coder",
 				"reviewer",
 				"researcher",
+				"browser-qa",
 			];
 
 			for (const type of types) {

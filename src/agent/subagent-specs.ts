@@ -8,10 +8,12 @@
  * - coder: Full coding capabilities
  * - reviewer: Read-only with web access for reviewing code
  * - researcher: Web search and fetch focused
+ * - browser-qa: Browser-based product QA with screenshots and repro evidence
  *
  * Inspired by Amp's subagentSpec/subagentType system.
  */
 
+import { codexSubagentLaneForType } from "../codex/subagent-dispatch-table.js";
 import { createLogger } from "../utils/logger.js";
 import { normalizeToolNameForSafety } from "../utils/safety-normalization.js";
 
@@ -25,9 +27,20 @@ export type SubagentType =
 	| "planner"
 	| "coder"
 	| "reviewer"
+	| "test-runner"
 	| "researcher"
+	| "browser-qa"
 	| "minimal"
 	| "custom";
+
+const CODEX_LANE_SUBAGENT_TYPES: Record<string, SubagentType> = {
+	"code-writer": "coder",
+	"code-review": "reviewer",
+	"test-runner": "test-runner",
+	"browser-qa": "browser-qa",
+	"repo-explorer": "explorer",
+	"release-shepherd": "coder",
+};
 
 /**
  * Tool categories for easier specification.
@@ -49,6 +62,45 @@ export const TOOL_CATEGORIES = {
 	shell: ["bash", "background_tasks"],
 	/** Web and external tools */
 	web: ["websearch", "webfetch", "codesearch"],
+	/** Browser/product QA tools */
+	browser: [
+		"agent_browser",
+		"browser_open",
+		"browser_snapshot",
+		"browser_click",
+		"browser_fill",
+		"browser_type",
+		"browser_screenshot",
+		"browser_console",
+		"browser_record",
+		"read_page",
+		"search_page",
+		"find_on_page",
+		"extract_links",
+		"wait_for_selector",
+		"click_element",
+		"type_text",
+		"scroll_page",
+		"select_element",
+		"navigate_to",
+		"open_links_in_tabs",
+		"highlight_element",
+		"browser_operator",
+		"mouse_action",
+		"pointer_action",
+		"keyboard_action",
+		"extract_table_data",
+		"capture_network",
+		"capture_console_errors",
+		"collect_diagnostics",
+		"extract_document",
+		"capture_screenshot",
+		"native_click",
+		"native_type",
+		"native_press",
+		"native_key_down",
+		"native_key_up",
+	],
 	/** Interactive tools */
 	interactive: ["ask_user", "todo"],
 	/** GitHub tools */
@@ -140,6 +192,18 @@ export const SUBAGENT_SPECS: Record<SubagentType, SubagentSpec> = {
 		maxToolCallsPerTurn: 15,
 		requireConfirmation: false,
 	},
+	"test-runner": {
+		displayName: "Test Runner",
+		description: "Test execution mode - can run checks and inspect results",
+		allowedTools: [
+			...toolsFromCategories("read", "shell", "interactive"),
+			"webfetch",
+		],
+		allowMcp: false,
+		allowToolbox: false,
+		maxToolCallsPerTurn: 20,
+		requireConfirmation: false,
+	},
 	researcher: {
 		displayName: "Researcher",
 		description: "Research mode - focused on web search and analysis",
@@ -147,6 +211,21 @@ export const SUBAGENT_SPECS: Record<SubagentType, SubagentSpec> = {
 		allowMcp: true,
 		allowToolbox: false,
 		maxToolCallsPerTurn: 20,
+		requireConfirmation: false,
+	},
+	"browser-qa": {
+		displayName: "Browser QA",
+		description:
+			"Product QA mode - explores web surfaces and captures repro evidence",
+		allowedTools: [
+			...toolsFromCategories("read", "web", "browser"),
+			"bash",
+			"ask_user",
+			"todo",
+		],
+		allowMcp: true,
+		allowToolbox: true,
+		maxToolCallsPerTurn: 25,
 		requireConfirmation: false,
 	},
 	minimal: {
@@ -270,21 +349,19 @@ export function setCurrentSubagentType(type: SubagentType): void {
  */
 export function parseSubagentType(typeStr: string): SubagentType | null {
 	const normalized = normalizeToolNameForSafety(typeStr);
-	if (normalized in SUBAGENT_SPECS) {
-		return normalized as SubagentType;
+	const hyphenated = normalized.replace(/_/g, "-");
+	if (hyphenated in SUBAGENT_SPECS) {
+		return hyphenated as SubagentType;
 	}
-	return null;
+	const lane = codexSubagentLaneForType(typeStr);
+	return lane ? (CODEX_LANE_SUBAGENT_TYPES[lane.laneId] ?? null) : null;
 }
 
 /**
  * Get subagent type from environment variable.
  */
 export function getSubagentTypeFromEnv(): SubagentType {
-	const envType = process.env.MAESTRO_SUBAGENT_TYPE?.toLowerCase();
-	if (envType && envType in SUBAGENT_SPECS) {
-		return envType as SubagentType;
-	}
-	return "coder";
+	return parseSubagentType(process.env.MAESTRO_SUBAGENT_TYPE ?? "") ?? "coder";
 }
 
 /**

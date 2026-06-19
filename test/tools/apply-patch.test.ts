@@ -22,6 +22,7 @@ import {
 	applyPatchTool,
 } from "../../src/tools/apply-patch.js";
 import type { ToolError } from "../../src/tools/tool-dsl.js";
+import { withEnv } from "../utils/env.js";
 
 vi.mock("../../src/config/firewall-config.js", () => ({
 	getFirewallConfig: () => ({}),
@@ -416,6 +417,53 @@ describe("apply_patch tool", () => {
 		});
 	});
 
+	it("blocks mission-worker patches to features.json", async () => {
+		const missionRoot = join(testDir, "missions");
+		const featuresPath = join(missionRoot, "deep", "features.json");
+		mkdirSync(join(missionRoot, "deep"), { recursive: true });
+		writeFileSync(
+			featuresPath,
+			`${JSON.stringify(
+				{
+					version: 1,
+					missionId: "deep",
+					features: [],
+				},
+				null,
+				2,
+			)}\n`,
+		);
+
+		await withEnv(
+			{
+				MAESTRO_MISSION_STORE_DIR: missionRoot,
+				MAESTRO_MISSION_ROLE: "worker",
+			},
+			async () => {
+				await expect(
+					applyPatchTool.execute("call-mission-features-blocked", {
+						patch: [
+							"*** Begin Patch",
+							`*** Update File: ${featuresPath}`,
+							"@@",
+							'-  "features": []',
+							'+  "features": [],',
+							'+  "updatedAt": "2026-06-19T00:00:00.000Z",',
+							"*** End Patch",
+						].join("\n"),
+					}),
+				).rejects.toMatchObject({
+					name: "ToolError",
+					code: "APPLY_PATCH_MISSION_ARTIFACT",
+					message:
+						"Mission workers and validators cannot write features.json; return a handoff to the orchestrator.",
+				} satisfies Partial<ToolError>);
+			},
+		);
+
+		expect(readFileSync(featuresPath, "utf-8")).not.toContain("updatedAt");
+	});
+
 	it("rejects adding over an existing non-file path", async () => {
 		const existingDir = join(testDir, "existing-dir");
 		mkdirSync(existingDir);
@@ -629,6 +677,152 @@ describe("apply_patch tool", () => {
 		} satisfies Partial<ToolError>);
 		expect(exists).not.toHaveBeenCalled();
 		expect(write).not.toHaveBeenCalled();
+	});
+
+	it("rejects mission artifact writes through apply_patch", async () => {
+		const rootDir = mkdtempSync(join(process.cwd(), "tmp/maestro-mission-"));
+		const missionDir = join(rootDir, "deep");
+		mkdirSync(missionDir, { recursive: true });
+
+		try {
+			await withEnv({ MAESTRO_MISSION_STORE_DIR: rootDir }, async () => {
+				await expect(
+					applyPatchTool.execute("call-mission-system-file", {
+						patch: [
+							"*** Begin Patch",
+							`*** Add File: ${join(missionDir, "state.json")}`,
+							"+{}",
+							"*** End Patch",
+						].join("\n"),
+					}),
+				).rejects.toMatchObject({
+					name: "ToolError",
+					code: "APPLY_PATCH_MISSION_ARTIFACT",
+				} satisfies Partial<ToolError>);
+			});
+		} finally {
+			rmSync(rootDir, { force: true, recursive: true });
+		}
+	});
+
+	it("allows deleting mission handoff artifacts through apply_patch", async () => {
+		const rootDir = mkdtempSync(join(process.cwd(), "tmp/maestro-mission-"));
+		const handoffPath = join(rootDir, "deep", "handoffs", "worker-1.json");
+		mkdirSync(join(rootDir, "deep", "handoffs"), { recursive: true });
+		writeFileSync(handoffPath, JSON.stringify({ workerId: "worker-1" }));
+
+		try {
+			await withEnv({ MAESTRO_MISSION_STORE_DIR: rootDir }, async () => {
+				await applyPatchTool.execute("call-mission-handoff-delete", {
+					patch: [
+						"*** Begin Patch",
+						`*** Delete File: ${handoffPath}`,
+						"*** End Patch",
+					].join("\n"),
+				});
+			});
+			expect(existsSync(handoffPath)).toBe(false);
+		} finally {
+			rmSync(rootDir, { force: true, recursive: true });
+		}
+	});
+
+	it("rejects deleting required mission artifacts through apply_patch", async () => {
+		const rootDir = mkdtempSync(join(process.cwd(), "tmp/maestro-mission-"));
+		const featuresPath = join(rootDir, "deep", "features.json");
+		mkdirSync(join(rootDir, "deep"), { recursive: true });
+		writeFileSync(
+			featuresPath,
+			JSON.stringify({
+				version: 1,
+				missionId: "deep",
+				milestones: [],
+				features: [],
+				createdAt: "2026-06-19T00:00:00.000Z",
+				updatedAt: "2026-06-19T00:00:00.000Z",
+			}),
+		);
+
+		try {
+			await withEnv({ MAESTRO_MISSION_STORE_DIR: rootDir }, async () => {
+				await expect(
+					applyPatchTool.execute("call-mission-features-delete", {
+						patch: [
+							"*** Begin Patch",
+							`*** Delete File: ${featuresPath}`,
+							"*** End Patch",
+						].join("\n"),
+					}),
+				).rejects.toMatchObject({
+					name: "ToolError",
+					code: "APPLY_PATCH_MISSION_ARTIFACT",
+				} satisfies Partial<ToolError>);
+			});
+			expect(existsSync(featuresPath)).toBe(true);
+		} finally {
+			rmSync(rootDir, { force: true, recursive: true });
+		}
+	});
+
+	it("rejects sandbox mission system writes through apply_patch", async () => {
+		const rootDir = mkdtempSync(join(process.cwd(), "tmp/maestro-mission-"));
+		const statePath = join(rootDir, "deep", "state.json");
+		const sandbox = createMemorySandbox({
+			[statePath]: "{}\n",
+		});
+
+		try {
+			await withEnv({ MAESTRO_MISSION_STORE_DIR: rootDir }, async () => {
+				await expect(
+					applyPatchTool.execute(
+						"call-sandbox-mission-state",
+						{
+							patch: [
+								"*** Begin Patch",
+								`*** Update File: ${statePath}`,
+								"@@",
+								"-{}",
+								'+{"state":"bad"}',
+								"*** End Patch",
+							].join("\n"),
+						},
+						undefined,
+						{ sandbox },
+					),
+				).rejects.toMatchObject({
+					name: "ToolError",
+					code: "APPLY_PATCH_MISSION_ARTIFACT",
+				} satisfies Partial<ToolError>);
+			});
+		} finally {
+			rmSync(rootDir, { force: true, recursive: true });
+		}
+	});
+
+	it("rejects sandbox mission artifact writes after expanding tilde paths", async () => {
+		const sandbox = createMemorySandbox({});
+		const rootDir = join(homedir(), `maestro-mission-store-${process.pid}`);
+
+		await withEnv({ MAESTRO_MISSION_STORE_DIR: rootDir }, async () => {
+			await expect(
+				applyPatchTool.execute(
+					"call-sandbox-mission-system-file",
+					{
+						patch: [
+							"*** Begin Patch",
+							`*** Add File: ~/maestro-mission-store-${process.pid}/deep/state.json`,
+							"+{}",
+							"*** End Patch",
+						].join("\n"),
+					},
+					undefined,
+					{ sandbox },
+				),
+			).rejects.toMatchObject({
+				name: "ToolError",
+				code: "APPLY_PATCH_MISSION_ARTIFACT",
+			} satisfies Partial<ToolError>);
+		});
 	});
 
 	it("rejects backslash sandbox traversal before sandbox access", async () => {

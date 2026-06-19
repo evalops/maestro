@@ -8,6 +8,7 @@
  * a registered composer pass through unchanged.
  */
 
+import { createHash } from "node:crypto";
 import type { LoadedSkill } from "./loader.js";
 
 interface SkillComposer {
@@ -40,7 +41,18 @@ const REVIEW_COMPOSER: SkillComposer = {
 			"",
 			guidelines.content,
 		].join("\n");
-		return { ...skill, content: composed };
+		const contentSha = createHash("sha256")
+			.update("composed-skill:v1")
+			.update("\0parent:")
+			.update(skill.contentSha)
+			.update("\0partner:")
+			.update(guidelines.name)
+			.update("\0partner-sha:")
+			.update(guidelines.contentSha)
+			.update("\0content:")
+			.update(composed)
+			.digest("hex");
+		return { ...skill, content: composed, contentSha };
 	},
 };
 

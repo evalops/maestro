@@ -14,6 +14,7 @@ const MAX_MCP_JSON_BYTES = 1024 * 1024;
 
 export interface SkillRuntimeActivation {
 	name: string;
+	contentSha: string;
 	source: LoadedSkill["sourceType"];
 	sourcePath?: string;
 	profile: {
@@ -319,6 +320,7 @@ export function buildSkillRuntimeActivation(
 
 	return {
 		name: skill.name,
+		contentSha: skill.contentSha,
 		source: skill.sourceType,
 		...(skill.sourcePath ? { sourcePath: skill.sourcePath } : {}),
 		profile: {

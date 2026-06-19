@@ -46,6 +46,25 @@ export interface A2ATaskLedgerFile {
 	tasks: A2ATaskLedgerEntry[];
 }
 
+export type A2ATaskEvidenceGap =
+	| "terminal-completion"
+	| "work-graph"
+	| "response-artifact"
+	| "transcript";
+
+export interface A2ATaskLedgerRollup {
+	taskCount: number;
+	delegatedTaskCount: number;
+	completedTaskCount: number;
+	failedTaskCount: number;
+	actionRequiredTaskCount: number;
+	runningTaskCount: number;
+	workGraphTaskCount: number;
+	transcriptMessageCount: number;
+	auditReadyTaskCount: number;
+	evidenceGapCount: number;
+}
+
 export interface A2ATaskLedgerOptions {
 	path?: string;
 	now?: Date;
@@ -83,8 +102,12 @@ interface A2ATaskResponseText {
 	messageId?: string;
 }
 
-const FINAL_STATE_PATTERN = /(COMPLETED|FAILED|CANCELED|CANCELLED|REJECTED)/u;
-const ACTION_REQUIRED_STATE_PATTERN = /(INPUT_REQUIRED|AUTH_REQUIRED)/u;
+const COMPLETED_STATE_PATTERN =
+	/^(?:(?:TASK_)?STATE_)?(?:COMPLETED|SUCCEEDED|SUCCESS)$/u;
+const FAILED_STATE_PATTERN =
+	/^(?:(?:TASK_)?STATE_)?(?:FAILED|CANCELED|CANCELLED|REJECTED)$/u;
+const ACTION_REQUIRED_STATE_PATTERN =
+	/^(?:(?:TASK_)?STATE_)?(?:INPUT_REQUIRED|AUTH_REQUIRED)$/u;
 const LEDGER_LOCK_RETRY_MS = 25;
 const LEDGER_LOCK_HEARTBEAT_MS = 10_000;
 const LEDGER_LOCK_STALE_MS = 30_000;
@@ -550,6 +573,86 @@ export function listA2ATaskEntries(
 		.sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
 }
 
+export function summarizeA2ATaskLedger(
+	tasks: readonly A2ATaskLedgerEntry[],
+): A2ATaskLedgerRollup {
+	const rollup: A2ATaskLedgerRollup = {
+		taskCount: tasks.length,
+		delegatedTaskCount: 0,
+		completedTaskCount: 0,
+		failedTaskCount: 0,
+		actionRequiredTaskCount: 0,
+		runningTaskCount: 0,
+		workGraphTaskCount: 0,
+		transcriptMessageCount: 0,
+		auditReadyTaskCount: 0,
+		evidenceGapCount: 0,
+	};
+	for (const task of tasks) {
+		if (task.kind === "delegation") {
+			rollup.delegatedTaskCount += 1;
+		}
+		if (isCompletedA2AState(task.state)) {
+			rollup.completedTaskCount += 1;
+		} else if (isFailedA2AState(task.state)) {
+			rollup.failedTaskCount += 1;
+		} else if (isActionRequiredA2AState(task.state)) {
+			rollup.actionRequiredTaskCount += 1;
+		} else {
+			rollup.runningTaskCount += 1;
+		}
+		if (task.workGraph) {
+			rollup.workGraphTaskCount += 1;
+		}
+		rollup.transcriptMessageCount += task.transcript.length;
+		const gaps = a2aTaskEvidenceGaps(task);
+		rollup.evidenceGapCount += gaps.length;
+		if (task.kind === "delegation") {
+			if (gaps.length === 0) {
+				rollup.auditReadyTaskCount += 1;
+			}
+		}
+	}
+	return rollup;
+}
+
+export function isAuditReadyA2ATask(task: A2ATaskLedgerEntry): boolean {
+	return a2aTaskEvidenceGaps(task).length === 0;
+}
+
+export function isAuditReadyA2ADelegationTask(
+	task: A2ATaskLedgerEntry,
+): boolean {
+	return task.kind === "delegation" && isAuditReadyA2ATask(task);
+}
+
+export function a2aTaskEvidenceGaps(
+	task: A2ATaskLedgerEntry,
+): A2ATaskEvidenceGap[] {
+	const gaps: A2ATaskEvidenceGap[] = [];
+	if (!isCompletedA2AState(task.state)) {
+		gaps.push("terminal-completion");
+	}
+	if (!task.workGraph) {
+		gaps.push("work-graph");
+	}
+	if (!trimString(task.responseText)) {
+		const hasAgentTranscript = task.transcript.some(
+			(entry) => entry.role === "agent" && Boolean(trimString(entry.text)),
+		);
+		if (!hasAgentTranscript) {
+			gaps.push("response-artifact");
+		}
+	}
+	const transcriptRoles = new Set(
+		task.transcript.map((entry) => entry.role.toLowerCase()),
+	);
+	if (!transcriptRoles.has("user") || !transcriptRoles.has("agent")) {
+		gaps.push("transcript");
+	}
+	return gaps;
+}
+
 export function latestA2ATaskForPeer(
 	ledger: A2ATaskLedgerFile,
 	peer: string,
@@ -606,14 +709,27 @@ export function isTerminalA2AState(state: string): boolean {
 	return isFinalA2AState(state) || isActionRequiredA2AState(state);
 }
 
+export function normalizeA2AState(state: string): string {
+	return state
+		.trim()
+		.toUpperCase()
+		.replace(/[\s-]+/gu, "_");
+}
+
+export function isCompletedA2AState(state: string): boolean {
+	return COMPLETED_STATE_PATTERN.test(normalizeA2AState(state));
+}
+
+export function isFailedA2AState(state: string): boolean {
+	return FAILED_STATE_PATTERN.test(normalizeA2AState(state));
+}
+
 export function isFinalA2AState(state: string): boolean {
-	return FINAL_STATE_PATTERN.test(state.toUpperCase().replace(/[\s-]+/gu, "_"));
+	return isCompletedA2AState(state) || isFailedA2AState(state);
 }
 
 export function isActionRequiredA2AState(state: string): boolean {
-	return ACTION_REQUIRED_STATE_PATTERN.test(
-		state.toUpperCase().replace(/[\s-]+/gu, "_"),
-	);
+	return ACTION_REQUIRED_STATE_PATTERN.test(normalizeA2AState(state));
 }
 
 function firstMessageText(message: A2AMessage | undefined): string | undefined {
@@ -621,8 +737,12 @@ function firstMessageText(message: A2AMessage | undefined): string | undefined {
 }
 
 function isAgentMessage(message: A2AMessage): boolean {
-	const role = message.role.toUpperCase();
-	return role === "ROLE_AGENT" || role === "AGENT";
+	return isAgentRole(message.role);
+}
+
+function isAgentRole(role: string): boolean {
+	const normalizedRole = role.toUpperCase();
+	return normalizedRole === "ROLE_AGENT" || normalizedRole === "AGENT";
 }
 
 function latestAgentMessageInHistory(
@@ -689,11 +809,122 @@ function normalizeLedgerEntry(
 	if (isRecord(input.metadata)) {
 		entry.metadata = cleanMetadata(input.metadata);
 	}
-	const workGraph = normalizeA2AWorkGraphMetadata(input.workGraph);
+	const embeddedTask = isRecord(input.a2aTask) ? input.a2aTask : undefined;
+	if (embeddedTask) {
+		const authoritativeTranscriptState = stringValue(entry.state);
+		entry.transcript = mergeTranscriptEntries(
+			entry.transcript,
+			transcriptFromA2AHistory(
+				embeddedTask as unknown as A2ATask,
+				updatedAt,
+				authoritativeTranscriptState,
+			),
+		);
+	}
+	if (!entry.responseText) {
+		entry.responseText =
+			latestAgentTranscriptText(transcript) ??
+			latestAgentTranscriptText(entry.transcript);
+	}
+	if (!entry.responseText && embeddedTask) {
+		const response = extractA2ATaskResponse(embeddedTask as unknown as A2ATask);
+		if (response?.text) {
+			entry.responseText = response.text;
+		}
+	}
+	const embeddedWorkGraph = isRecord(embeddedTask?.metadata)
+		? embeddedTask.metadata.workGraph
+		: undefined;
+	const workGraph =
+		normalizeA2AWorkGraphMetadata(input.workGraph) ??
+		normalizeA2AWorkGraphMetadata(embeddedWorkGraph);
 	if (workGraph) {
 		entry.workGraph = workGraph;
 	}
 	return entry;
+}
+
+function transcriptFromA2AHistory(
+	task: A2ATask,
+	fallbackAt: string,
+	authoritativeState?: string,
+): A2ATaskTranscriptEntry[] {
+	return (task.history ?? [])
+		.map((message): A2ATaskTranscriptEntry | undefined => {
+			const text = firstMessageText(message);
+			if (!text) {
+				return undefined;
+			}
+			const role = isAgentMessage(message) ? "agent" : "user";
+			const entry: A2ATaskTranscriptEntry = {
+				at: isRecord(message)
+					? (stringValue(message.at) ?? fallbackAt)
+					: fallbackAt,
+				role,
+				text,
+			};
+			const messageId = stringValue(message.messageId);
+			if (messageId) {
+				entry.messageId = messageId;
+			}
+			if (role === "agent") {
+				const state = authoritativeState ?? stringValue(task.status?.state);
+				if (state) {
+					entry.state = state;
+				}
+			}
+			return entry;
+		})
+		.filter((entry): entry is A2ATaskTranscriptEntry => Boolean(entry));
+}
+
+function latestAgentTranscriptText(
+	transcript: A2ATaskTranscriptEntry[],
+): string | undefined {
+	return [...transcript]
+		.reverse()
+		.find((entry) => entry.role === "agent" && Boolean(trimString(entry.text)))
+		?.text;
+}
+
+function mergeTranscriptEntries(
+	base: A2ATaskTranscriptEntry[],
+	extra: A2ATaskTranscriptEntry[],
+): A2ATaskTranscriptEntry[] {
+	const merged = [...base];
+	for (const entry of extra) {
+		if (!transcriptHasMatchingEntry(merged, entry)) {
+			merged.push(entry);
+		}
+	}
+	return merged;
+}
+
+function transcriptHasMatchingEntry(
+	entries: A2ATaskTranscriptEntry[],
+	candidate: A2ATaskTranscriptEntry,
+): boolean {
+	if (candidate.messageId) {
+		const idMatch = entries.find(
+			(entry) => entry.messageId === candidate.messageId,
+		);
+		if (idMatch) {
+			return true;
+		}
+	}
+	return entries.some((entry) =>
+		transcriptEntriesHaveSameRoleText(entry, candidate),
+	);
+}
+
+function transcriptEntriesHaveSameRoleText(
+	entry: A2ATaskTranscriptEntry,
+	candidate: A2ATaskTranscriptEntry,
+): boolean {
+	return (
+		entry.role === candidate.role &&
+		trimString(entry.text) === trimString(candidate.text)
+	);
 }
 
 function normalizeTranscriptEntry(
@@ -703,7 +934,7 @@ function normalizeTranscriptEntry(
 	if (!isRecord(input)) {
 		throw new Error(`A2A task ledger ${path} must be a JSON object`);
 	}
-	const role = input.role === "agent" ? "agent" : "user";
+	const role = normalizeTranscriptRole(input.role);
 	const entry: A2ATaskTranscriptEntry = {
 		at: requiredString(input.at, `${path}.at`),
 		role,
@@ -716,6 +947,16 @@ function normalizeTranscriptEntry(
 		}
 	}
 	return entry;
+}
+
+function normalizeTranscriptRole(input: unknown): A2ATranscriptRole {
+	const normalized =
+		typeof input === "string"
+			? input.toUpperCase().replace(/[\s-]+/gu, "_")
+			: "";
+	return normalized === "AGENT" || normalized === "ROLE_AGENT"
+		? "agent"
+		: "user";
 }
 
 function cleanMetadata(
@@ -755,6 +996,9 @@ function mergeLedgerMetadata(
 
 function isSecretLikeKey(key: string): boolean {
 	const normalized = key.toLowerCase().replace(/[-_]/gu, "");
+	if (isTokenMetricKey(normalized)) {
+		return false;
+	}
 	return (
 		normalized === "authorization" ||
 		normalized === "token" ||
@@ -770,6 +1014,33 @@ function isSecretLikeKey(key: string): boolean {
 		normalized === "bearer"
 	);
 }
+
+function isTokenMetricKey(normalized: string): boolean {
+	return TOKEN_METRIC_METADATA_KEYS.has(normalized);
+}
+
+const TOKEN_METRIC_METADATA_KEYS = new Set([
+	"totaltoken",
+	"totaltokens",
+	"inputtoken",
+	"inputtokens",
+	"outputtoken",
+	"outputtokens",
+	"cachetoken",
+	"cachetokens",
+	"cachereadtoken",
+	"cachereadtokens",
+	"cachewritetoken",
+	"cachewritetokens",
+	"prompttoken",
+	"prompttokens",
+	"completiontoken",
+	"completiontokens",
+	"maxtoken",
+	"maxtokens",
+	"tokencount",
+	"tokenscount",
+]);
 
 function stringValue(input: unknown): string | undefined {
 	return typeof input === "string" ? trimString(input) : undefined;

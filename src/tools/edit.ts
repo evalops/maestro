@@ -42,6 +42,10 @@ import { access, readFile, rename, unlink, writeFile } from "node:fs/promises";
 import { resolve as resolvePath } from "node:path";
 import { Type } from "@sinclair/typebox";
 import {
+	detectMissionSessionRole,
+	validateMissionArtifactWrite,
+} from "../agent/mission-artifacts.js";
+import {
 	captureDiagnosticBaseline,
 	collectDiagnosticDelta,
 } from "../lsp/diagnostic-deltas.js";
@@ -358,6 +362,14 @@ If "not found", read file to check actual content.`,
 					document,
 				);
 				assertTeamMemoryContentSafe(absolutePath, newContent);
+				const missionArtifactWrite = validateMissionArtifactWrite({
+					filePath: absolutePath,
+					content: newContent,
+					role: detectMissionSessionRole(),
+				});
+				if (!missionArtifactWrite.ok) {
+					return respond.error(missionArtifactWrite.message);
+				}
 				const diff = generateDiffString(originalContent, newContent);
 
 				if (!dryRun) {
@@ -399,6 +411,14 @@ If "not found", read file to check actual content.`,
 		);
 		const newContent = restoreDocumentContent(normalizedNewContent, document);
 		assertTeamMemoryContentSafe(absolutePath, newContent);
+		const missionArtifactWrite = validateMissionArtifactWrite({
+			filePath: absolutePath,
+			content: newContent,
+			role: detectMissionSessionRole(),
+		});
+		if (!missionArtifactWrite.ok) {
+			return respond.error(missionArtifactWrite.message);
+		}
 		const diff = generateDiffString(originalContent, newContent);
 
 		if (dryRun) {

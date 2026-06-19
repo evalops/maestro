@@ -30,9 +30,10 @@
  *
  * Pure types + helpers (manifest construction, coverage gate against
  * validation contract assertion ids, preemption, feature lookup,
- * summary stats). No disk persistence, no worker dispatch, no
- * orchestrator loop — those ride in follow-up PRs that consume the
- * shape defined here.
+ * handoff follow-up promotion, handoff continuity gates, summary
+ * stats). No disk persistence, no worker dispatch, no orchestrator
+ * loop — those ride in follow-up PRs that consume the shape defined
+ * here.
  */
 
 /** Lifecycle of one feature within a mission. */
@@ -42,6 +43,23 @@ export type MissionFeatureStatus =
 	| "passed"
 	| "failed"
 	| "preempted";
+
+export const MISSION_FEATURE_STATUSES = [
+	"pending",
+	"in-progress",
+	"passed",
+	"failed",
+	"preempted",
+] as const satisfies readonly MissionFeatureStatus[];
+
+export function isMissionFeatureStatus(
+	value: unknown,
+): value is MissionFeatureStatus {
+	return (
+		typeof value === "string" &&
+		MISSION_FEATURE_STATUSES.includes(value as MissionFeatureStatus)
+	);
+}
 
 /** Optional milestone grouping for UI / reporting. */
 export interface MissionMilestone {
@@ -61,8 +79,51 @@ export interface MissionWorkerHandoff {
 	commitId?: string;
 	/** Free-form summary the worker produced for the orchestrator. */
 	summary?: string;
+	/** Concrete description of what was built or changed. */
+	whatWasImplemented?: string;
+	/** Work that remains incomplete; empty or "none" means no known remainder. */
+	whatWasLeftUndone?: string;
+	/** Issues discovered while doing the work. Blocking issues should become follow-ups. */
+	discoveredIssues?: MissionDiscoveredIssue[];
+	/** Verification evidence the worker ran before handing off. */
+	verification?: {
+		commandsRun?: MissionVerificationCommand[];
+	};
 	/** ISO 8601 timestamp the handoff was recorded. */
 	handedOffAt: string;
+}
+
+/** Issue surfaced by a worker handoff. */
+export interface MissionDiscoveredIssue {
+	severity: "blocking" | "non_blocking";
+	description: string;
+	suggestedFix?: string;
+}
+
+/** Command-level verification evidence from a worker handoff. */
+export interface MissionVerificationCommand {
+	command: string;
+	exitCode?: number;
+	observation?: string;
+}
+
+export type MissionHandoffItemKind = "unfinished_work" | "discovered_issue";
+
+/** Explicit decision not to act on a handoff item. */
+export interface MissionHandoffDismissal {
+	kind: MissionHandoffItemKind;
+	key: string;
+	justification: string;
+	dismissedAt: string;
+}
+
+/** Explicit decision to handle a handoff item inside an existing feature. */
+export interface MissionTrackedHandoffItem {
+	sourceFeatureId: string;
+	kind: MissionHandoffItemKind;
+	key: string;
+	trackedAt: string;
+	note?: string;
 }
 
 /** One leaf feature in the manifest. */
@@ -85,6 +146,153 @@ export interface MissionFeature {
 	fulfills: string[];
 	/** Worker handoff, present after the worker completes. */
 	handoff?: MissionWorkerHandoff;
+	/** Handoff items the orchestrator explicitly chose not to act on. */
+	handoffDismissals?: MissionHandoffDismissal[];
+	/** Handoff items this feature is responsible for resolving. */
+	trackedHandoffItems?: MissionTrackedHandoffItem[];
+	/** Source feature that caused this follow-up, when derived from a handoff. */
+	handoffSourceFeatureId?: string;
+	/** Why this follow-up exists, when derived from a handoff. */
+	handoffFollowUpKind?: MissionHandoffItemKind;
+	/** Stable key of the source handoff item this follow-up tracks. */
+	handoffItemKey?: string;
+}
+
+export function isMissionFeature(value: unknown): value is MissionFeature {
+	if (!value || typeof value !== "object") return false;
+	const feature = value as Record<string, unknown>;
+	return (
+		typeof feature.id === "string" &&
+		feature.id.trim().length > 0 &&
+		typeof feature.description === "string" &&
+		feature.description.trim().length > 0 &&
+		isMissionFeatureStatus(feature.status) &&
+		(typeof feature.milestone === "undefined" ||
+			typeof feature.milestone === "string") &&
+		(typeof feature.skillName === "undefined" ||
+			typeof feature.skillName === "string") &&
+		Array.isArray(feature.fulfills) &&
+		feature.fulfills.every((assertion) => typeof assertion === "string") &&
+		(typeof feature.handoff === "undefined" ||
+			isMissionWorkerHandoff(feature.handoff)) &&
+		(typeof feature.handoffDismissals === "undefined" ||
+			(Array.isArray(feature.handoffDismissals) &&
+				feature.handoffDismissals.every(isMissionHandoffDismissal))) &&
+		(typeof feature.trackedHandoffItems === "undefined" ||
+			(Array.isArray(feature.trackedHandoffItems) &&
+				feature.trackedHandoffItems.every(isMissionTrackedHandoffItem))) &&
+		(typeof feature.handoffSourceFeatureId === "undefined" ||
+			typeof feature.handoffSourceFeatureId === "string") &&
+		(typeof feature.handoffFollowUpKind === "undefined" ||
+			isMissionHandoffItemKind(feature.handoffFollowUpKind)) &&
+		(typeof feature.handoffItemKey === "undefined" ||
+			typeof feature.handoffItemKey === "string")
+	);
+}
+
+function isMissionWorkerHandoff(value: unknown): value is MissionWorkerHandoff {
+	if (!value || typeof value !== "object") return false;
+	const handoff = value as Record<string, unknown>;
+	return (
+		typeof handoff.workerId === "string" &&
+		handoff.workerId.trim().length > 0 &&
+		typeof handoff.success === "boolean" &&
+		(typeof handoff.repoPath === "undefined" ||
+			typeof handoff.repoPath === "string") &&
+		(typeof handoff.commitId === "undefined" ||
+			typeof handoff.commitId === "string") &&
+		(typeof handoff.summary === "undefined" ||
+			typeof handoff.summary === "string") &&
+		(typeof handoff.whatWasImplemented === "undefined" ||
+			typeof handoff.whatWasImplemented === "string") &&
+		(typeof handoff.whatWasLeftUndone === "undefined" ||
+			typeof handoff.whatWasLeftUndone === "string") &&
+		(typeof handoff.discoveredIssues === "undefined" ||
+			(Array.isArray(handoff.discoveredIssues) &&
+				handoff.discoveredIssues.every(isMissionDiscoveredIssue))) &&
+		(typeof handoff.verification === "undefined" ||
+			isMissionVerification(handoff.verification)) &&
+		typeof handoff.handedOffAt === "string" &&
+		!Number.isNaN(Date.parse(handoff.handedOffAt))
+	);
+}
+
+function isMissionDiscoveredIssue(
+	value: unknown,
+): value is MissionDiscoveredIssue {
+	if (!value || typeof value !== "object") return false;
+	const issue = value as Record<string, unknown>;
+	return (
+		(issue.severity === "blocking" || issue.severity === "non_blocking") &&
+		typeof issue.description === "string" &&
+		issue.description.trim().length > 0 &&
+		(typeof issue.suggestedFix === "undefined" ||
+			typeof issue.suggestedFix === "string")
+	);
+}
+
+function isMissionVerification(value: unknown): boolean {
+	if (!value || typeof value !== "object") return false;
+	const verification = value as Record<string, unknown>;
+	return (
+		typeof verification.commandsRun === "undefined" ||
+		(Array.isArray(verification.commandsRun) &&
+			verification.commandsRun.every(isMissionVerificationCommand))
+	);
+}
+
+function isMissionVerificationCommand(
+	value: unknown,
+): value is MissionVerificationCommand {
+	if (!value || typeof value !== "object") return false;
+	const command = value as Record<string, unknown>;
+	return (
+		typeof command.command === "string" &&
+		command.command.trim().length > 0 &&
+		(typeof command.exitCode === "undefined" ||
+			typeof command.exitCode === "number") &&
+		(typeof command.observation === "undefined" ||
+			typeof command.observation === "string")
+	);
+}
+
+function isMissionHandoffDismissal(
+	value: unknown,
+): value is MissionHandoffDismissal {
+	if (!value || typeof value !== "object") return false;
+	const dismissal = value as Record<string, unknown>;
+	return (
+		isMissionHandoffItemKind(dismissal.kind) &&
+		typeof dismissal.key === "string" &&
+		dismissal.key.trim().length > 0 &&
+		typeof dismissal.justification === "string" &&
+		dismissal.justification.trim().length > 0 &&
+		typeof dismissal.dismissedAt === "string" &&
+		!Number.isNaN(Date.parse(dismissal.dismissedAt))
+	);
+}
+
+function isMissionTrackedHandoffItem(
+	value: unknown,
+): value is MissionTrackedHandoffItem {
+	if (!value || typeof value !== "object") return false;
+	const item = value as Record<string, unknown>;
+	return (
+		typeof item.sourceFeatureId === "string" &&
+		item.sourceFeatureId.trim().length > 0 &&
+		isMissionHandoffItemKind(item.kind) &&
+		typeof item.key === "string" &&
+		item.key.trim().length > 0 &&
+		typeof item.trackedAt === "string" &&
+		!Number.isNaN(Date.parse(item.trackedAt)) &&
+		(typeof item.note === "undefined" || typeof item.note === "string")
+	);
+}
+
+function isMissionHandoffItemKind(
+	value: unknown,
+): value is MissionHandoffItemKind {
+	return value === "unfinished_work" || value === "discovered_issue";
 }
 
 /** Top-level mission feature manifest (features.json on disk). */
@@ -115,6 +323,57 @@ export interface MissionCoverageReport {
 	duplicates: string[];
 	/** Assertion ids referenced by features but absent from the contract. */
 	unknownAssertions: string[];
+}
+
+export interface MissionContinuityItem {
+	sourceFeatureId: string;
+	kind: MissionHandoffItemKind;
+	key: string;
+	severity?: MissionDiscoveredIssue["severity"];
+	description: string;
+	status: "tracked" | "dismissed" | "untracked";
+	followUpFeatureId?: string;
+	trackingFeatureId?: string;
+	trackingNote?: string;
+	dismissalJustification?: string;
+}
+
+export interface MissionOpenHandoffFollowUp {
+	id: string;
+	status: MissionFeatureStatus;
+	sourceFeatureId: string;
+	kind: MissionHandoffItemKind;
+	description: string;
+}
+
+export interface MissionOpenHandoffTracking {
+	id: string;
+	status: MissionFeatureStatus;
+	sourceFeatureId: string;
+	kind: MissionHandoffItemKind;
+	key: string;
+	description: string;
+	note?: string;
+}
+
+export interface MissionContinuityReport {
+	ok: boolean;
+	unresolved: MissionContinuityItem[];
+	tracked: MissionContinuityItem[];
+	dismissed: MissionContinuityItem[];
+	openFollowUps: MissionOpenHandoffFollowUp[];
+	openTrackedItems: MissionOpenHandoffTracking[];
+}
+
+export interface MissionCompletionReport {
+	ok: boolean;
+	coverage: MissionCoverageReport;
+	continuity: MissionContinuityReport;
+	incompleteFeatures: Array<{
+		id: string;
+		status: MissionFeatureStatus;
+		description: string;
+	}>;
 }
 
 /**
@@ -311,6 +570,387 @@ export function recordHandoff(
 	return { ...manifest, features: next, updatedAt: handoff.handedOffAt };
 }
 
+export interface HandoffFollowUpOptions {
+	/** Include non-blocking discovered issues as follow-up features. */
+	includeNonBlockingIssues?: boolean;
+	/** Stable timestamp for tests or deterministic callers. */
+	now?: string;
+}
+
+/** Promote unfinished handoff work and blocking discoveries into pending features. */
+export function appendHandoffFollowUps(
+	manifest: MissionManifest,
+	featureId: string,
+	options: HandoffFollowUpOptions = {},
+): MissionManifest {
+	const sourceIndex = manifest.features.findIndex((f) => f.id === featureId);
+	if (sourceIndex === -1) {
+		throw new Error(`Feature id "${featureId}" not in manifest`);
+	}
+	const source = manifest.features[sourceIndex];
+	if (!source?.handoff) {
+		return manifest;
+	}
+
+	const followUps = buildHandoffFollowUpFeatures(manifest, source, options);
+	if (followUps.length === 0) {
+		return manifest;
+	}
+
+	return {
+		...manifest,
+		features: [
+			...manifest.features.slice(0, sourceIndex + 1),
+			...followUps,
+			...manifest.features.slice(sourceIndex + 1),
+		],
+		updatedAt: options.now ?? new Date().toISOString(),
+	};
+}
+
+export interface DismissHandoffItemOptions {
+	kind: MissionHandoffItemKind;
+	key: string;
+	justification: string;
+	includeNonBlockingIssues?: boolean;
+	now?: string;
+}
+
+/** Explicitly dismiss a handoff item so completion gates can distinguish intent from omission. */
+export function dismissHandoffItem(
+	manifest: MissionManifest,
+	featureId: string,
+	options: DismissHandoffItemOptions,
+): MissionManifest {
+	const justification = normalizeFollowUpText(options.justification);
+	if (!justification) {
+		throw new Error("dismissal justification is required");
+	}
+	const feature = findFeature(manifest, featureId);
+	if (!feature) {
+		throw new Error(`Feature id "${featureId}" not in manifest`);
+	}
+	const candidates = buildHandoffContinuityRecords(feature, {
+		includeNonBlockingIssues: options.includeNonBlockingIssues,
+	});
+	if (
+		!candidates.some(
+			(item) => item.kind === options.kind && item.key === options.key,
+		)
+	) {
+		throw new Error(
+			`Handoff item "${options.key}" (${options.kind}) not found on feature "${featureId}"`,
+		);
+	}
+
+	const dismissedAt = options.now ?? new Date().toISOString();
+	return {
+		...manifest,
+		features: manifest.features.map((current) => {
+			if (current.id !== featureId) return current;
+			const existing = current.handoffDismissals ?? [];
+			const nextDismissals = [
+				...existing.filter(
+					(item) => item.kind !== options.kind || item.key !== options.key,
+				),
+				{
+					kind: options.kind,
+					key: options.key,
+					justification,
+					dismissedAt,
+				},
+			];
+			return { ...current, handoffDismissals: nextDismissals };
+		}),
+		updatedAt: dismissedAt,
+	};
+}
+
+export interface TrackHandoffItemOptions {
+	kind: MissionHandoffItemKind;
+	key: string;
+	note?: string;
+	includeNonBlockingIssues?: boolean;
+	/** Re-open the target feature to handle this item. Clears any stale target handoff. */
+	requeueTarget?: boolean;
+	/** Permit tracking on already-passed work without re-opening it. */
+	allowPassedTarget?: boolean;
+	now?: string;
+}
+
+/** Assign a handoff item to an existing feature instead of creating a duplicate follow-up. */
+export function trackHandoffItemOnFeature(
+	manifest: MissionManifest,
+	sourceFeatureId: string,
+	targetFeatureId: string,
+	options: TrackHandoffItemOptions,
+): MissionManifest {
+	const source = findFeature(manifest, sourceFeatureId);
+	if (!source) {
+		throw new Error(`Feature id "${sourceFeatureId}" not in manifest`);
+	}
+	const target = findFeature(manifest, targetFeatureId);
+	if (!target) {
+		throw new Error(`Feature id "${targetFeatureId}" not in manifest`);
+	}
+	if (
+		sourceFeatureId === targetFeatureId &&
+		target.status === "passed" &&
+		!options.requeueTarget
+	) {
+		throw new Error(
+			`Cannot self-track handoff item on passed feature "${targetFeatureId}"; requeue it first`,
+		);
+	}
+	if (target.status === "in-progress" && !options.requeueTarget) {
+		throw new Error(
+			`Cannot track handoff item on in-progress feature "${targetFeatureId}"; requeue it so the worker receives the obligation`,
+		);
+	}
+	if (
+		target.status === "passed" &&
+		!options.allowPassedTarget &&
+		!options.requeueTarget
+	) {
+		throw new Error(
+			`Cannot track handoff item on passed feature "${targetFeatureId}"; requeue it or choose a pending feature`,
+		);
+	}
+	const selectedRecord = buildHandoffContinuityRecords(source, {
+		includeNonBlockingIssues: options.includeNonBlockingIssues,
+	}).find((item) => item.kind === options.kind && item.key === options.key);
+	if (!selectedRecord) {
+		throw new Error(
+			`Handoff item "${options.key}" (${options.kind}) not found on feature "${sourceFeatureId}"`,
+		);
+	}
+	if (
+		(source.handoffDismissals ?? []).some(
+			(item) => item.kind === options.kind && item.key === options.key,
+		)
+	) {
+		throw new Error(
+			`Handoff item "${options.key}" (${options.kind}) was dismissed on feature "${sourceFeatureId}"`,
+		);
+	}
+	const existingFollowUp = findTrackedHandoffFollowUp(
+		manifest,
+		source,
+		selectedRecord,
+	);
+	if (existingFollowUp) {
+		throw new Error(
+			`Handoff item "${options.key}" (${options.kind}) is already tracked by follow-up feature "${existingFollowUp.id}"`,
+		);
+	}
+
+	const trackedAt = options.now ?? new Date().toISOString();
+	const note = normalizeFollowUpText(options.note);
+	return {
+		...manifest,
+		features: manifest.features.map((current) => {
+			const existing = current.trackedHandoffItems ?? [];
+			const nextExisting = existing.filter(
+				(item) =>
+					item.sourceFeatureId !== sourceFeatureId ||
+					item.kind !== options.kind ||
+					item.key !== options.key,
+			);
+			if (current.id !== targetFeatureId) {
+				if (nextExisting.length === existing.length) return current;
+				if (nextExisting.length > 0) {
+					return { ...current, trackedHandoffItems: nextExisting };
+				}
+				const { trackedHandoffItems: _trackedHandoffItems, ...rest } = current;
+				return rest;
+			}
+			const nextTracked = [
+				...nextExisting,
+				{
+					sourceFeatureId,
+					kind: options.kind,
+					key: options.key,
+					trackedAt,
+					...(note ? { note } : {}),
+				},
+			];
+			if (options.requeueTarget) {
+				const { handoff: _handoff, ...rest } = current;
+				return {
+					...rest,
+					status: "pending",
+					trackedHandoffItems: nextTracked,
+				};
+			}
+			return { ...current, trackedHandoffItems: nextTracked };
+		}),
+		updatedAt: trackedAt,
+	};
+}
+
+export interface MissionContinuityOptions {
+	/** Include non-blocking discovered issues in the continuity gate. */
+	includeNonBlockingIssues?: boolean;
+}
+
+/** Report whether handoff gaps are tracked, dismissed, or still dangling. */
+export function summarizeMissionContinuity(
+	manifest: MissionManifest,
+	options: MissionContinuityOptions = {},
+): MissionContinuityReport {
+	const tracked: MissionContinuityItem[] = [];
+	const dismissed: MissionContinuityItem[] = [];
+	const unresolved: MissionContinuityItem[] = [];
+
+	for (const feature of manifest.features) {
+		const records = buildHandoffContinuityRecords(feature, options);
+		const dismissalLookup = new Map(
+			(feature.handoffDismissals ?? []).map((item) => [
+				continuityLookupKey(feature.id, item.kind, item.key),
+				item,
+			]),
+		);
+
+		for (const record of records) {
+			const lookupKey = continuityLookupKey(
+				feature.id,
+				record.kind,
+				record.key,
+			);
+			const followUp = findTrackedHandoffFollowUp(manifest, feature, record);
+			const trackingFeature = findExistingHandoffTracking(
+				manifest,
+				feature,
+				record,
+			);
+			const dismissal = dismissalLookup.get(lookupKey);
+			if (dismissal) {
+				dismissed.push({
+					sourceFeatureId: feature.id,
+					kind: record.kind,
+					key: record.key,
+					severity: record.severity,
+					description: record.description,
+					status: "dismissed",
+					dismissalJustification: dismissal.justification,
+				});
+				continue;
+			}
+			if (followUp) {
+				tracked.push({
+					sourceFeatureId: feature.id,
+					kind: record.kind,
+					key: record.key,
+					severity: record.severity,
+					description: record.description,
+					status: "tracked",
+					followUpFeatureId: followUp.id,
+				});
+				continue;
+			}
+			if (trackingFeature) {
+				const trackedItem = trackingFeature.trackedHandoffItems?.find(
+					(item) =>
+						item.sourceFeatureId === feature.id &&
+						item.kind === record.kind &&
+						item.key === record.key,
+				);
+				tracked.push({
+					sourceFeatureId: feature.id,
+					kind: record.kind,
+					key: record.key,
+					severity: record.severity,
+					description: record.description,
+					status: "tracked",
+					trackingFeatureId: trackingFeature.id,
+					trackingNote: trackedItem?.note,
+				});
+				continue;
+			}
+			unresolved.push({
+				sourceFeatureId: feature.id,
+				kind: record.kind,
+				key: record.key,
+				severity: record.severity,
+				description: record.description,
+				status: "untracked",
+			});
+		}
+	}
+
+	const openFollowUps = manifest.features
+		.filter(
+			(feature) =>
+				feature.handoffSourceFeatureId &&
+				feature.handoffFollowUpKind &&
+				feature.status !== "passed",
+		)
+		.map((feature) => ({
+			id: feature.id,
+			status: feature.status,
+			sourceFeatureId: feature.handoffSourceFeatureId!,
+			kind: feature.handoffFollowUpKind!,
+			description: feature.description,
+		}));
+	const openTrackedItems = manifest.features
+		.flatMap((feature) =>
+			(feature.trackedHandoffItems ?? []).map((item) => ({
+				feature,
+				item,
+			})),
+		)
+		.filter(
+			({ feature, item }) =>
+				feature.status !== "passed" &&
+				isTrackedItemCurrent(manifest, feature, item, options),
+		)
+		.map(({ feature, item }) => ({
+			id: feature.id,
+			status: feature.status,
+			sourceFeatureId: item.sourceFeatureId,
+			kind: item.kind,
+			key: item.key,
+			description: feature.description,
+			...(item.note ? { note: item.note } : {}),
+		}));
+
+	return {
+		ok:
+			unresolved.length === 0 &&
+			openFollowUps.length === 0 &&
+			openTrackedItems.length === 0,
+		unresolved,
+		tracked,
+		dismissed,
+		openFollowUps,
+		openTrackedItems,
+	};
+}
+
+/** Final mission gate: contract coverage, all features passed, and no dangling handoff work. */
+export function canCompleteMission(
+	manifest: MissionManifest,
+	allContractAssertionIds: readonly string[],
+	options: MissionContinuityOptions = {},
+): MissionCompletionReport {
+	const coverage = checkMissionCoverage(manifest, allContractAssertionIds);
+	const continuity = summarizeMissionContinuity(manifest, options);
+	const incompleteFeatures = manifest.features
+		.filter((feature) => feature.status !== "passed")
+		.map((feature) => ({
+			id: feature.id,
+			status: feature.status,
+			description: feature.description,
+		}));
+
+	return {
+		ok: coverage.ok && continuity.ok && incompleteFeatures.length === 0,
+		coverage,
+		continuity,
+		incompleteFeatures,
+	};
+}
+
 /**
  * Preempt the in-progress feature: insert a higher-priority feature at
  * the position before the active one, mark the active one as
@@ -391,6 +1031,258 @@ function assertFeatureBasics(
 	if (!feature.description.trim()) {
 		throw new Error("feature.description is required");
 	}
+}
+
+function buildHandoffFollowUpFeatures(
+	manifest: MissionManifest,
+	source: MissionFeature,
+	options: HandoffFollowUpOptions,
+): MissionFeature[] {
+	const followUps: MissionFeature[] = [];
+	const existingIds = new Set(manifest.features.map((feature) => feature.id));
+	const generatedFollowUpKeys = new Set<string>();
+	const dismissedKeys = new Set(
+		(source.handoffDismissals ?? []).map((dismissal) =>
+			handoffFollowUpKey(dismissal.kind, dismissal.key),
+		),
+	);
+	const reserveId = (seed: string) => {
+		let id = seed;
+		let suffix = 2;
+		while (existingIds.has(id)) {
+			id = `${seed}-${suffix}`;
+			suffix += 1;
+		}
+		existingIds.add(id);
+		return id;
+	};
+
+	for (const item of buildHandoffContinuityRecords(source, options)) {
+		if (dismissedKeys.has(handoffFollowUpKey(item.kind, item.key))) {
+			continue;
+		}
+		if (findTrackedHandoffFollowUp(manifest, source, item)) {
+			continue;
+		}
+		if (findExistingHandoffTracking(manifest, source, item)) {
+			continue;
+		}
+		const followUp = createHandoffFollowUpFeature({
+			source,
+			id: reserveId(item.idSeed),
+			kind: item.kind,
+			itemKey: item.key,
+			description: item.followUpDescription,
+		});
+		if (!generatedFollowUpKeys.has(featureFollowUpKey(followUp))) {
+			followUps.push(followUp);
+			generatedFollowUpKeys.add(featureFollowUpKey(followUp));
+		}
+	}
+
+	return followUps;
+}
+
+function createHandoffFollowUpFeature(input: {
+	source: MissionFeature;
+	id: string;
+	kind: MissionHandoffItemKind;
+	itemKey: string;
+	description: string;
+}): MissionFeature {
+	return {
+		id: input.id,
+		description: input.description,
+		status: "pending",
+		milestone: input.source.milestone,
+		skillName: input.source.skillName,
+		fulfills: [],
+		handoffSourceFeatureId: input.source.id,
+		handoffFollowUpKind: input.kind,
+		handoffItemKey: input.itemKey,
+	};
+}
+
+interface HandoffContinuityRecord {
+	kind: MissionHandoffItemKind;
+	key: string;
+	severity?: MissionDiscoveredIssue["severity"];
+	description: string;
+	followUpDescription: string;
+	idSeed: string;
+}
+
+function buildHandoffContinuityRecords(
+	source: MissionFeature,
+	options: MissionContinuityOptions,
+): HandoffContinuityRecord[] {
+	const handoff = source.handoff;
+	if (!handoff) {
+		return [];
+	}
+
+	const records: HandoffContinuityRecord[] = [];
+	const unfinished = normalizeFollowUpText(handoff.whatWasLeftUndone);
+	if (unfinished) {
+		records.push({
+			kind: "unfinished_work",
+			key: handoffItemKey("unfinished_work", unfinished),
+			description: unfinished,
+			followUpDescription: `Finish unfinished work from ${source.id}: ${unfinished}`,
+			idSeed: `${source.id}-followup-unfinished`,
+		});
+	}
+
+	for (const [index, issue] of (handoff.discoveredIssues ?? []).entries()) {
+		if (
+			issue.severity === "non_blocking" &&
+			!options.includeNonBlockingIssues
+		) {
+			continue;
+		}
+		const description = normalizeFollowUpText(issue.description);
+		if (!description) {
+			continue;
+		}
+		const suggestedFix = normalizeFollowUpText(issue.suggestedFix);
+		records.push({
+			kind: "discovered_issue",
+			key: handoffItemKey(
+				"discovered_issue",
+				`${issue.severity}:${description}:${suggestedFix ?? ""}`,
+			),
+			severity: issue.severity,
+			description: suggestedFix
+				? `${description} Suggested fix: ${suggestedFix}`
+				: description,
+			followUpDescription: suggestedFix
+				? `Resolve ${issue.severity} issue from ${source.id}: ${trimTrailingSentencePunctuation(description)}. Suggested fix: ${suggestedFix}`
+				: `Resolve ${issue.severity} issue from ${source.id}: ${description}`,
+			idSeed: `${source.id}-followup-issue-${index + 1}`,
+		});
+	}
+
+	return records;
+}
+
+function findTrackedHandoffFollowUp(
+	manifest: MissionManifest,
+	source: MissionFeature,
+	record: HandoffContinuityRecord,
+): MissionFeature | undefined {
+	return manifest.features.find(
+		(feature) =>
+			feature.handoffSourceFeatureId === source.id &&
+			feature.handoffFollowUpKind === record.kind &&
+			(feature.handoffItemKey === record.key ||
+				(!feature.handoffItemKey &&
+					feature.description === record.followUpDescription)),
+	);
+}
+
+function findExistingHandoffTracking(
+	manifest: MissionManifest,
+	source: MissionFeature,
+	record: HandoffContinuityRecord,
+): MissionFeature | undefined {
+	return manifest.features.find((feature) =>
+		(feature.trackedHandoffItems ?? []).some(
+			(item) =>
+				item.sourceFeatureId === source.id &&
+				item.kind === record.kind &&
+				item.key === record.key &&
+				isTrackingFreshForSource(source, item),
+		),
+	);
+}
+
+function isTrackingFreshForSource(
+	source: MissionFeature,
+	item: MissionTrackedHandoffItem,
+): boolean {
+	if (!source.handoff) {
+		return true;
+	}
+	return compareIsoInstants(item.trackedAt, source.handoff.handedOffAt) >= 0;
+}
+
+function isTrackedItemCurrent(
+	manifest: MissionManifest,
+	trackingFeature: MissionFeature,
+	item: MissionTrackedHandoffItem,
+	options: MissionContinuityOptions,
+): boolean {
+	const source = findFeature(manifest, item.sourceFeatureId);
+	if (!source) {
+		return false;
+	}
+	if (
+		(source.handoffDismissals ?? []).some(
+			(dismissal) => dismissal.kind === item.kind && dismissal.key === item.key,
+		)
+	) {
+		return false;
+	}
+	if (!source.handoff) {
+		return trackingFeature.id === source.id;
+	}
+	const record = buildHandoffContinuityRecords(source, options).find(
+		(candidate) => candidate.kind === item.kind && candidate.key === item.key,
+	);
+	if (!record) {
+		return false;
+	}
+	return isTrackingFreshForSource(source, item);
+}
+
+function compareIsoInstants(a: string, b: string): number {
+	const aTime = Date.parse(a);
+	const bTime = Date.parse(b);
+	if (Number.isFinite(aTime) && Number.isFinite(bTime)) {
+		return aTime - bTime;
+	}
+	return a.localeCompare(b);
+}
+
+function normalizeFollowUpText(value: string | undefined): string | null {
+	if (value === undefined) {
+		return null;
+	}
+	const normalized = value.replace(/\s+/g, " ").trim();
+	if (!normalized || normalized.toLowerCase() === "none") {
+		return null;
+	}
+	return normalized;
+}
+
+function featureFollowUpKey(feature: MissionFeature): string {
+	return handoffFollowUpKey(
+		feature.handoffFollowUpKind!,
+		feature.handoffItemKey ?? feature.description,
+	);
+}
+
+function handoffFollowUpKey(
+	kind: MissionHandoffItemKind,
+	description: string,
+): string {
+	return `${kind}:${description}`;
+}
+
+function handoffItemKey(kind: MissionHandoffItemKind, value: string): string {
+	return `${kind}:${value.replace(/\s+/g, " ").trim().toLowerCase()}`;
+}
+
+function continuityLookupKey(
+	sourceFeatureId: string,
+	kind: MissionHandoffItemKind,
+	itemKey: string,
+): string {
+	return `${sourceFeatureId}:${kind}:${itemKey}`;
+}
+
+function trimTrailingSentencePunctuation(value: string): string {
+	return value.replace(/[.!?]+$/g, "");
 }
 
 /** Quick summary stats for UI / reporting. */
