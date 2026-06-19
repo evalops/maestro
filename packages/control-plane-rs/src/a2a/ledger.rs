@@ -255,9 +255,13 @@ fn a2a_merge_history_parts(existing: Option<&Value>, candidate: &Value) -> Value
         return candidate.clone();
     };
     let candidate_parts = candidate.as_array();
+    // Preserve existing parts that carry no text (attachments, data payloads).
+    // Drop existing parts that have a `text` field — whether pure plain-text or
+    // decorated with extra keys like `partId` — so stale summary text does not
+    // survive alongside the refreshed transcript text.
     let mut merged: Vec<Value> = existing_parts
         .iter()
-        .filter(|part| !a2a_history_part_is_plain_text(part))
+        .filter(|part| !a2a_history_part_has_text(part))
         .cloned()
         .collect();
     if let Some(candidate_parts) = candidate_parts {
@@ -268,6 +272,13 @@ fn a2a_merge_history_parts(existing: Option<&Value>, candidate: &Value) -> Value
         }
     }
     Value::Array(merged)
+}
+
+/// True when the part has a `text` field (plain or decorated). Used to decide
+/// which existing parts to drop during a transcript-driven refresh.
+fn a2a_history_part_has_text(part: &Value) -> bool {
+    part.as_object()
+        .is_some_and(|object| object.get("text").is_some_and(Value::is_string))
 }
 
 fn a2a_history_part_is_plain_text(part: &Value) -> bool {

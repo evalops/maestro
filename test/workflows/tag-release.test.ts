@@ -268,7 +268,7 @@ describe("tag-release workflow", () => {
 			'if (( release_run_count > existing_count )) && [[ "${dispatch_status}" == "0" ]]; then',
 		);
 		expect(dispatchStep?.run).toContain(
-			'if [[ "${dispatch_status}" == "0" && -n "${latest_release_run_id}" && "${latest_release_run_id}" != "${existing_latest_run_id}" ]]; then',
+			'if [[ "${dispatch_status}" == "0" && -n "${latest_release_run_id}" && "${latest_release_run_id}" -gt "${existing_latest_run_id:-0}" ]]; then',
 		);
 		expect(dispatchStep?.run).toContain(
 			"up from ${existing_count} before dispatch",

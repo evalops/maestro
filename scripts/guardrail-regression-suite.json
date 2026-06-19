@@ -187,6 +187,123 @@
 					]
 				}
 			]
+		},
+		{
+			"id": "a2a-cancel-canonical-state-guard",
+			"title": "A2A cancel canonical state guard",
+			"owner": "a2a",
+			"bugClass": "canceled tasks overwritten by later stores when status aliases are not canonicalized",
+			"why": "store_a2a_task_unless_canceled and a2a_canceled_task must canonicalize the status state before comparing so aliases like CANCELLED or STATE_CANCELED are respected and a canceled row is not overwritten.",
+			"evidence": [
+				{
+					"path": "packages/control-plane-rs/src/a2a/tasks.rs",
+					"contains": [
+						"fn a2a_task_is_canceled",
+						"canonical_a2a_task_state(state) == \"TASK_STATE_CANCELED\"",
+						"a2a_task_is_canceled(existing)"
+					]
+				},
+				{
+					"path": "packages/control-plane-rs/src/tests.rs",
+					"contains": [
+						"a2a_task_store_preserves_canceled_task_across_canonical_state_aliases"
+					]
+				}
+			]
+		},
+		{
+			"id": "a2a-compound-secret-redaction",
+			"title": "A2A compound secret redaction",
+			"owner": "a2a",
+			"bugClass": "compound credential metadata keys not redacted by exact-match-only secret detection",
+			"why": "a2a_ledger_metadata_key_is_secret must match suffix forms (webhookSecret, oauthToken, apiPassword) so compound credential fields are redacted, while preserving nonSecret/nonCredentials/notASecret exceptions and token-metric carve-outs.",
+			"evidence": [
+				{
+					"path": "packages/control-plane-rs/src/a2a/ledger.rs",
+					"contains": [
+						"fn a2a_ledger_metadata_key_has_secret_suffix",
+						"SECRET_SUFFIXES",
+						"NEGATION_PREFIXES"
+					]
+				},
+				{
+					"path": "packages/control-plane-rs/src/tests.rs",
+					"contains": [
+						"a2a_task_ledger_redacts_compound_secret_metadata_keys"
+					]
+				}
+			]
+		},
+		{
+			"id": "a2a-history-rich-part-refresh",
+			"title": "A2A history rich part refresh",
+			"owner": "a2a",
+			"bugClass": "non-text history parts dropped or stale text preserved during transcript-driven refresh",
+			"why": "a2a_merge_history_parts must preserve non-text parts (attachments, data payloads) while replacing all text-bearing parts (plain or decorated) with the refreshed transcript candidate so stale summary text does not survive.",
+			"evidence": [
+				{
+					"path": "packages/control-plane-rs/src/a2a/ledger.rs",
+					"contains": [
+						"fn a2a_merge_history_parts",
+						"fn a2a_history_part_has_text",
+						"!a2a_history_part_has_text(part)"
+					]
+				},
+				{
+					"path": "packages/control-plane-rs/src/tests.rs",
+					"contains": [
+						"a2a_task_load_preserves_rich_parts_when_history_message_is_refreshed"
+					]
+				}
+			]
+		},
+		{
+			"id": "learner-transient-quarantine-parity",
+			"title": "Learner transient quarantine parity",
+			"owner": "learner",
+			"bugClass": "transient setup failures depressing durable routing confidence across record, load, and trim paths",
+			"why": "record_outcome, load, and trim must all exclude transient failures from pattern updates so get_label_success_rate and get_confidence_adjustment stay consistent with get_recommendations. Ambiguous transient phrases must be gated behind environment context.",
+			"evidence": [
+				{
+					"path": "packages/ambient-agent-rs/src/learner.rs",
+					"contains": [
+						"fn is_transient_failure_reason",
+						"has_transient_environment_context",
+						"fn rebuild_patterns",
+						"outcome_is_transient_failure"
+					]
+				},
+				{
+					"path": "packages/ambient-agent-rs/src/learner.rs",
+					"contains": [
+						"test_transient_classifier_requires_environment_context_for_product_terms",
+						"test_recommendations_use_consistent_non_transient_stats_after_trim"
+					]
+				}
+			]
+		},
+		{
+			"id": "learner-promote-repair-consistency",
+			"title": "Learner promote repair consistency",
+			"owner": "learner",
+			"bugClass": "same pattern qualifying for both promote and repair or using inconsistent stats",
+			"why": "get_recommendations must use pattern_non_transient_stats for both promote and repair decisions and exclude promoted patterns from repair candidates so a single pattern cannot appear in both lists.",
+			"evidence": [
+				{
+					"path": "packages/ambient-agent-rs/src/learner.rs",
+					"contains": [
+						"fn pattern_non_transient_stats",
+						"promoted.contains",
+						"problematic_pattern_stats"
+					]
+				},
+				{
+					"path": "packages/ambient-agent-rs/src/learner.rs",
+					"contains": [
+						"test_recommendations_do_not_promote_and_repair_the_same_pattern"
+					]
+				}
+			]
 		}
 	]
 }
