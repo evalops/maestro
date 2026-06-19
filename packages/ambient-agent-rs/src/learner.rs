@@ -129,6 +129,7 @@ impl Learner {
         // Trim old outcomes
         if self.outcomes.len() > self.max_outcomes {
             self.outcomes = self.outcomes.split_off(self.max_outcomes / 2);
+            self.rebuild_patterns();
         }
 
         Ok(())
@@ -167,6 +168,16 @@ impl Learner {
             &format!("{:?}", outcome.event_type),
             outcome,
         );
+    }
+
+    fn rebuild_patterns(&mut self) {
+        self.patterns.clear();
+
+        for outcome in self.outcomes.clone() {
+            if !outcome_is_transient_failure(&outcome) {
+                self.update_patterns(&outcome);
+            }
+        }
     }
 
     /// Update a single pattern
@@ -381,9 +392,7 @@ impl Learner {
         let mut problematic: Vec<_> = self
             .problematic_pattern_stats(0.45)
             .into_iter()
-            .filter(|(pattern, _)| {
-                !promoted.contains(&(&pattern.pattern_type, &pattern.key))
-            })
+            .filter(|(pattern, _)| !promoted.contains(&(&pattern.pattern_type, &pattern.key)))
             .collect();
         problematic.sort_by(|left, right| {
             left.1
@@ -539,15 +548,9 @@ impl Learner {
         for outcome in &mut self.outcomes {
             outcome.normalize_costs();
         }
-        self.patterns.clear();
-
         // Rebuild derived patterns from outcomes so schema changes in persisted
         // pattern caches do not leave learner behavior stale or ambiguous.
-        for outcome in self.outcomes.clone() {
-            if !outcome_is_transient_failure(&outcome) {
-                self.update_patterns(&outcome);
-            }
-        }
+        self.rebuild_patterns();
 
         Ok(())
     }
@@ -1047,6 +1050,8 @@ mod tests {
             recommendation.kind == LearnerRecommendationKind::RepairPattern
                 && recommendation.title.contains("bug")
         }));
+        assert!(learner.get_label_success_rate("bug").unwrap() > 0.65);
+        assert!(learner.get_confidence_adjustment(&make_event(vec!["bug"])) > 0.0);
     }
 
     #[test]
