@@ -938,19 +938,23 @@ fn a2a_ledger_metadata_key_is_secret(key: &str) -> bool {
     if a2a_ledger_metadata_key_is_token_metric(&normalized) {
         return false;
     }
-    normalized == "authorization"
-        || normalized == "token"
-        || normalized.ends_with("token")
-        || normalized == "secret"
-        || normalized.ends_with("secret")
-        || normalized == "password"
-        || normalized.ends_with("password")
-        || normalized == "apikey"
-        || normalized.ends_with("apikey")
-        || normalized == "credentials"
-        || normalized.ends_with("credentials")
-        || normalized == "bearer"
-        || key == A2A_PUSH_NOTIFICATION_CONFIG_METADATA_KEY
+    matches!(
+        normalized.as_str(),
+        "authorization"
+            | "token"
+            | "apitoken"
+            | "accesstoken"
+            | "refreshtoken"
+            | "idtoken"
+            | "authtoken"
+            | "secret"
+            | "clientsecret"
+            | "sharedsecret"
+            | "password"
+            | "apikey"
+            | "credentials"
+            | "bearer"
+    ) || key == A2A_PUSH_NOTIFICATION_CONFIG_METADATA_KEY
 }
 
 fn a2a_ledger_metadata_key_is_token_metric(normalized: &str) -> bool {

@@ -4096,6 +4096,8 @@ async fn a2a_task_store_persists_control_plane_tasks_to_ledger_file() {
         Vec::new(),
         serde_json::json!({
             "workspaceId": "ws-1",
+            "nonSecret": "keep-visible",
+            "nonCredentials": "keep-visible-too",
             "apiToken": "secret-api-token",
             "bearer": "secret-bearer",
             "tools": [
@@ -4103,6 +4105,8 @@ async fn a2a_task_store_persists_control_plane_tasks_to_ledger_file() {
                     "name": "inspect",
                     "input": {
                         "path": "src/main.rs",
+                        "nonSecret": "nested-visible",
+                        "nonCredentials": "nested-visible-too",
                         "apiToken": "nested-secret"
                     }
                 }
@@ -4175,6 +4179,11 @@ async fn a2a_task_store_persists_control_plane_tasks_to_ledger_file() {
     assert_eq!(control_plane_entry["kind"], "delegation");
     assert_eq!(control_plane_entry["state"], "TASK_STATE_COMPLETED");
     assert_eq!(control_plane_entry["metadata"]["workspaceId"], "ws-1");
+    assert_eq!(control_plane_entry["metadata"]["nonSecret"], "keep-visible");
+    assert_eq!(
+        control_plane_entry["metadata"]["nonCredentials"],
+        "keep-visible-too"
+    );
     assert!(control_plane_entry["metadata"].get("apiToken").is_none());
     assert!(control_plane_entry["metadata"].get("bearer").is_none());
     assert!(control_plane_entry["metadata"].get("tools").is_none());
@@ -4200,6 +4209,14 @@ async fn a2a_task_store_persists_control_plane_tasks_to_ledger_file() {
     assert_eq!(
         control_plane_entry["a2aTask"]["metadata"]["tools"][0]["input"]["path"],
         "src/main.rs"
+    );
+    assert_eq!(
+        control_plane_entry["a2aTask"]["metadata"]["tools"][0]["input"]["nonSecret"],
+        "nested-visible"
+    );
+    assert_eq!(
+        control_plane_entry["a2aTask"]["metadata"]["tools"][0]["input"]["nonCredentials"],
+        "nested-visible-too"
     );
     assert!(
         control_plane_entry["a2aTask"]["metadata"]["tools"][0]["input"]
@@ -4234,6 +4251,14 @@ async fn a2a_task_store_persists_control_plane_tasks_to_ledger_file() {
     assert_eq!(
         loaded["maestro-task-durable"]["metadata"]["workspaceId"],
         "ws-1"
+    );
+    assert_eq!(
+        loaded["maestro-task-durable"]["metadata"]["nonSecret"],
+        "keep-visible"
+    );
+    assert_eq!(
+        loaded["maestro-task-durable"]["metadata"]["nonCredentials"],
+        "keep-visible-too"
     );
     assert_eq!(
         loaded["maestro-task-durable"]["metadata"]["workGraph"]["childRunIds"][0],
