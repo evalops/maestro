@@ -5427,16 +5427,30 @@ async fn a2a_task_load_preserves_rich_parts_when_history_message_is_refreshed() 
     let loaded = load_a2a_tasks(&state.config.a2a_tasks_file_path).await;
 
     let refreshed_parts = &loaded["task-rich-parts-refresh"]["history"][0]["parts"];
+    let refreshed_parts_array = refreshed_parts
+        .as_array()
+        .expect("parts should be an array");
+    let attachment_part = refreshed_parts_array
+        .iter()
+        .find(|part| part.get("data").is_some())
+        .expect("rich attachment part must survive transcript refresh");
     assert_eq!(
-        refreshed_parts[1]["data"]["attachmentId"], "artifact-rich-parts",
-        "rich attachment part must survive transcript refresh"
+        attachment_part["data"]["attachmentId"],
+        "artifact-rich-parts"
     );
+    let text_part = refreshed_parts_array
+        .iter()
+        .find(|part| part.get("text").is_some())
+        .expect("plain-text part must be present after refresh");
     assert_eq!(
-        refreshed_parts
-            .as_array()
-            .expect("parts should be an array")
-            .len(),
-        2
+        text_part["text"],
+        "saw attachment",
+        "plain-text part must be refreshed from the transcript candidate"
+    );
+    assert_ne!(
+        text_part["text"],
+        "stale summary",
+        "stale plain-text part must not outlive the transcript refresh"
     );
 }
 

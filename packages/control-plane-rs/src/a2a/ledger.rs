@@ -230,11 +230,13 @@ fn a2a_refresh_history_message(existing: &mut Value, candidate: &Value) {
         (existing.as_object_mut(), candidate.as_object())
     {
         for (key, value) in candidate_object {
-            // Transcript-derived candidates only carry plain-text parts, so a
-            // blanket overwrite would drop attachment or file parts already
-            // stored on the embedded history message. Preserve the existing
-            // parts when they are richer than the plain-text candidate.
-            if key == "parts" && a2a_history_parts_is_richer(existing_object.get("parts")) {
+            if key == "parts" {
+                // Transcript-derived candidates only carry plain-text parts.
+                // Merge so attachment or file parts already stored on the
+                // embedded history message are preserved while the plain-text
+                // part is refreshed from the candidate.
+                let merged = a2a_merge_history_parts(existing_object.get("parts"), value);
+                existing_object.insert("parts".to_string(), merged);
                 continue;
             }
             existing_object.insert(key.clone(), value.clone());
@@ -244,12 +246,28 @@ fn a2a_refresh_history_message(existing: &mut Value, candidate: &Value) {
     *existing = candidate.clone();
 }
 
-fn a2a_history_parts_is_richer(parts: Option<&Value>) -> bool {
-    parts.and_then(Value::as_array).is_some_and(|parts| {
-        parts
-            .iter()
-            .any(|part| !a2a_history_part_is_plain_text(part))
-    })
+/// Merge existing history parts with a transcript-derived candidate. Non-text
+/// parts (attachments, data payloads) are preserved from the existing message;
+/// plain-text parts are refreshed from the candidate so a stale summary does
+/// not outlive a top-level responseText or status update.
+fn a2a_merge_history_parts(existing: Option<&Value>, candidate: &Value) -> Value {
+    let Some(existing_parts) = existing.and_then(Value::as_array) else {
+        return candidate.clone();
+    };
+    let candidate_parts = candidate.as_array();
+    let mut merged: Vec<Value> = existing_parts
+        .iter()
+        .filter(|part| !a2a_history_part_is_plain_text(part))
+        .cloned()
+        .collect();
+    if let Some(candidate_parts) = candidate_parts {
+        for part in candidate_parts {
+            if a2a_history_part_is_plain_text(part) {
+                merged.push(part.clone());
+            }
+        }
+    }
+    Value::Array(merged)
 }
 
 fn a2a_history_part_is_plain_text(part: &Value) -> bool {
