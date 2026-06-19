@@ -141,6 +141,26 @@ describe("parseArgs", () => {
 		});
 	});
 
+	it("parses value artifact write options", () => {
+		expect(
+			parseArgs([
+				"value",
+				"week",
+				"--write",
+				"--output-dir",
+				".maestro/value-reports",
+				"--format",
+				"json",
+			]),
+		).toMatchObject({
+			command: "value",
+			subcommand: "week",
+			valueWrite: true,
+			outputDir: ".maestro/value-reports",
+			exportFormat: "json",
+		});
+	});
+
 	it("parses import commands", () => {
 		expect(parseArgs(["import", "./session.jsonl"])).toMatchObject({
 			command: "import",

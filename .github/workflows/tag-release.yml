@@ -196,6 +196,16 @@ jobs:
               --jq "[.[] | select(.headBranch == \"${RELEASE_TAG}\" and .event == \"workflow_dispatch\")] | length"
           }
 
+          # shellcheck disable=SC2317 # Invoked indirectly through retry.
+          latest_dispatched_release_run_id() {
+            gh run list \
+              --repo "${GITHUB_REPOSITORY}" \
+              --workflow release \
+              --json databaseId,event,headBranch \
+              --limit 50 \
+              --jq "[.[] | select(.headBranch == \"${RELEASE_TAG}\" and .event == \"workflow_dispatch\") | .databaseId] | max // empty"
+          }
+
           retry() {
             local description="$1"
             shift
@@ -219,13 +229,22 @@ jobs:
             exit 0
           fi
           existing_count="$(retry "List dispatched release workflows" dispatched_release_run_count)"
+          existing_latest_run_id="$(retry "List latest dispatched release workflow id" latest_dispatched_release_run_id)"
           dispatch_status=0
           retry "Dispatch release workflow" gh workflow run release --repo "${GITHUB_REPOSITORY}" --ref "${RELEASE_TAG}" --field "version=${RELEASE_VERSION}" || dispatch_status=$?
 
           for attempt in 1 2 3 4 5 6; do
             release_run_count="$(retry "Confirm dispatched release workflow" dispatched_release_run_count)"
-            if (( release_run_count > existing_count )); then
+            latest_release_run_id="$(retry "Confirm latest dispatched release workflow id" latest_dispatched_release_run_id)"
+            # Only confirm success when this step's dispatch actually succeeded.
+            # A concurrent or manual dispatch on the same tag can otherwise
+            # satisfy the count/id checks while `gh workflow run` failed here.
+            if (( release_run_count > existing_count )) && [[ "${dispatch_status}" == "0" ]]; then
               echo "Confirmed release workflow dispatch for ${RELEASE_TAG}; found ${release_run_count} matching dispatched run(s), up from ${existing_count} before dispatch."
+              exit 0
+            fi
+            if [[ "${dispatch_status}" == "0" && -n "${latest_release_run_id}" && "${latest_release_run_id}" != "${existing_latest_run_id}" ]]; then
+              echo "Confirmed release workflow dispatch for ${RELEASE_TAG}; latest matching dispatched run id is ${latest_release_run_id}, replacing ${existing_latest_run_id:-none} before dispatch."
               exit 0
             fi
             echo "Release workflow for ${RELEASE_TAG} has not appeared yet; confirmation attempt ${attempt}/6."

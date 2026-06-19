@@ -219,9 +219,11 @@ describe("tag-release workflow", () => {
 		expect(dispatchStep?.run).toMatch(
 			/gh run list\s+\\\n\s+--repo "\$\{GITHUB_REPOSITORY\}"/,
 		);
-		expect(dispatchStep?.run).toContain("active_release_run_count()");
 		expect(dispatchStep?.run).toContain("dispatched_release_run_count()");
 		expect(dispatchStep?.run).toContain("latest_dispatched_release_run_id()");
+		expect(dispatchStep?.run).not.toContain(
+			"new_active_dispatched_release_run_count()",
+		);
 		expect(dispatchStep?.run).toContain("retry()");
 		expect(dispatchStep?.run).toContain(
 			'retry "List active release workflows" active_release_run_count',
@@ -230,20 +232,22 @@ describe("tag-release workflow", () => {
 			'retry "List dispatched release workflows" dispatched_release_run_count',
 		);
 		expect(dispatchStep?.run).toContain(
+			'retry "List latest dispatched release workflow id" latest_dispatched_release_run_id',
+		);
+		expect(dispatchStep?.run).toContain(
 			'retry "Dispatch release workflow" gh workflow run release',
 		);
 		expect(dispatchStep?.run).toContain(
 			'retry "Confirm dispatched release workflow" dispatched_release_run_count',
 		);
 		expect(dispatchStep?.run).toContain(
-			'retry "Find latest dispatched release run" latest_dispatched_release_run_id',
-		);
-		expect(dispatchStep?.run).toContain(
-			'retry "Confirm latest dispatched release run" latest_dispatched_release_run_id',
+			'retry "Confirm latest dispatched release workflow id" latest_dispatched_release_run_id',
 		);
 		expect(dispatchStep?.run).toContain("confirmation attempt ${attempt}/6");
+		expect(dispatchStep?.run).toContain("sleep 10");
+		expect(dispatchStep?.run).not.toContain("sleep 5");
 		expect(dispatchStep?.run).toContain(
-			"Release workflow dispatch did not produce a new run for",
+			"Release workflow dispatch did not produce a new run",
 		);
 		expect(dispatchStep?.run).toContain('--repo "${GITHUB_REPOSITORY}"');
 		expect(dispatchStep?.run).toContain("--workflow release");
@@ -251,6 +255,39 @@ describe("tag-release workflow", () => {
 		expect(dispatchStep?.run).toContain('.event == \\"workflow_dispatch\\"');
 		expect(dispatchStep?.run).toContain(
 			'if [[ "${active_count}" != "0" ]]; then',
+		);
+		expect(dispatchStep?.run).toContain("dispatch_status=0");
+		expect(dispatchStep?.run).toContain("|| dispatch_status=$?");
+		expect(dispatchStep?.run).not.toContain("dispatch_started_at=");
+		expect(dispatchStep?.run).toContain("existing_latest_run_id=");
+		expect(dispatchStep?.run).toContain("release_run_count=");
+		expect(dispatchStep?.run).toContain("latest_release_run_id=");
+		expect(dispatchStep?.run).toContain("--json event,headBranch");
+		expect(dispatchStep?.run).toContain("--json databaseId,event,headBranch");
+		expect(dispatchStep?.run).toContain(
+			'if (( release_run_count > existing_count )) && [[ "${dispatch_status}" == "0" ]]; then',
+		);
+		expect(dispatchStep?.run).toContain(
+			'if [[ "${dispatch_status}" == "0" && -n "${latest_release_run_id}" && "${latest_release_run_id}" != "${existing_latest_run_id}" ]]; then',
+		);
+		expect(dispatchStep?.run).toContain(
+			"up from ${existing_count} before dispatch",
+		);
+		const dispatchRun = dispatchStep?.run ?? "";
+		const dispatchedHelperBlock = dispatchRun.slice(
+			dispatchRun.indexOf("dispatched_release_run_count()"),
+			dispatchRun.indexOf("retry()"),
+		);
+		expect(dispatchedHelperBlock).toContain(
+			'select(.headBranch == \\"${RELEASE_TAG}\\" and .event == \\"workflow_dispatch\\")] | length',
+		);
+		expect(dispatchedHelperBlock).toContain(
+			'[.[] | select(.headBranch == \\"${RELEASE_TAG}\\" and .event == \\"workflow_dispatch\\") | .databaseId] | max // empty',
+		);
+		expect(dispatchedHelperBlock).not.toContain("createdAt");
+		expect(dispatchedHelperBlock).not.toContain("status !=");
+		expect(dispatchStep?.run).toContain(
+			'if [[ "${dispatch_status}" != "0" ]]; then',
 		);
 		expect(summaryStep?.run).toContain("is already published on npm");
 	});

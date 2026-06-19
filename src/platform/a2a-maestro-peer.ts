@@ -175,6 +175,22 @@ function laneSkillPolicy(laneId: string): {
 				optionalArtifactKinds: ["failure.triage", "coverage.summary"],
 				allowedTaskClasses: ["test.execution", "ci.triage"],
 			};
+		case "browser-qa":
+			return {
+				requiredContextGrants: [
+					"browser:control",
+					"artifact:write",
+					"runtime:events:read",
+				],
+				requiredArtifactKinds: ["qa.repro-report"],
+				optionalArtifactKinds: [
+					"screenshot",
+					"repro.video",
+					"browser.console",
+					"network.error",
+				],
+				allowedTaskClasses: ["product.qa", "browser.e2e", "ux.repro"],
+			};
 		case "repo-explorer":
 			return {
 				requiredContextGrants: ["repo:read", "context:index:write"],

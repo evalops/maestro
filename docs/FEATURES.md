@@ -68,6 +68,7 @@ Use `/steer <message>` to interrupt the current run and push a new prompt to the
 
 ## Telemetry & diagnostics
 - `npm run telemetry:report` (or `/telemetry`) summarizes tool success rates per log file.
+- `maestro value` summarizes customer-facing value, trust cards, durable handoffs, open work, multi-agent A2A coordination, workflow opportunities, memory provenance, and admin-control gaps from local evidence; add `--write` to persist JSON, Markdown, and a hash manifest.
 - `/diag` (or `/diagnostics`) aggregates pending approvals, git status, telemetry state, and model configuration in a single panel.
 - Use [Safety](SAFETY.md) for firewall, sandboxing, and approval flows; pair with [Models](MODELS.md) to understand provider defaults and overrides.
 

@@ -13,8 +13,8 @@ use crate::{env_u64, now_rfc3339, trimmed_env, truthy_env, AppState};
 use super::ledger::persist_a2a_tasks;
 use super::tasks::{
     a2a_agent_message, a2a_artifact_update_event, a2a_error_response, a2a_status_update_event,
-    a2a_task_is_terminal, a2a_task_visible_to_auth, generate_a2a_id, publish_a2a_task_update,
-    A2ASendMessageRequest, A2A_PUSH_NOTIFICATION_CONFIG_METADATA_KEY,
+    a2a_task_is_terminal, a2a_task_visible_to_auth, canonical_a2a_task_state, generate_a2a_id,
+    publish_a2a_task_update, A2ASendMessageRequest, A2A_PUSH_NOTIFICATION_CONFIG_METADATA_KEY,
 };
 
 const A2A_PUSH_NOTIFICATION_CONFIG_LIMIT: usize = 16;
@@ -249,11 +249,19 @@ pub(crate) async fn apply_platform_a2a_status_update(
         .as_object()
         .ok_or_else(|| "A2A statusUpdate must be an object".to_string())?;
     let task_id = required_string_field(object, "taskId", "A2A statusUpdate taskId is required")?;
-    let status = object
+    let mut status = object
         .get("status")
         .filter(|status| status.is_object())
         .cloned()
         .ok_or_else(|| "A2A statusUpdate status is required".to_string())?;
+    if let Some(status_object) = status.as_object_mut() {
+        if let Some(state) = status_object.get("state").and_then(Value::as_str) {
+            status_object.insert(
+                "state".to_string(),
+                Value::String(canonical_a2a_task_state(state)),
+            );
+        }
+    }
     let mut tasks = state.a2a_tasks.lock().await;
     let context_id = optional_string_field(object, "contextId")
         .or_else(|| tasks.get(&task_id).and_then(task_context_id))

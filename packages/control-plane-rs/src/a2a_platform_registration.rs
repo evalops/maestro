@@ -564,6 +564,7 @@ fn a2a_platform_capabilities() -> Vec<String> {
                 "code-writer" => ["code:write", "code:edit", "code:implement"].as_slice(),
                 "code-review" => ["code:review"].as_slice(),
                 "test-runner" => ["code:test", "test:run"].as_slice(),
+                "browser-qa" => ["product:qa", "browser:qa", "e2e:qa"].as_slice(),
                 "repo-explorer" => ["repo:explore", "code:search"].as_slice(),
                 "release-shepherd" => ["release:shepherd", "release:manage"].as_slice(),
                 _ => ["agent:delegate"].as_slice(),

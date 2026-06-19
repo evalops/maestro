@@ -1,7 +1,13 @@
 import { spawnSync } from "node:child_process";
-import { existsSync } from "node:fs";
+import {
+	existsSync,
+	mkdtempSync,
+	readFileSync,
+	rmSync,
+	writeFileSync,
+} from "node:fs";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
-import { dirname, resolve } from "node:path";
+import { basename, dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
 	MaestroAppServerClientRequestSchema,
@@ -46,18 +52,24 @@ function formatJson(content: string, path: string): string {
 	if (!existsSync(biome)) {
 		return content;
 	}
-	const result = spawnSync(biome, ["format", "--stdin-file-path", path], {
-		cwd: rootDir,
-		encoding: "utf8",
-		input: content,
-	});
-	if (result.error) {
-		throw result.error;
+	const tempDir = mkdtempSync(resolve(dirname(path), "format-temp-"));
+	const tempFile = resolve(tempDir, basename(path));
+	try {
+		writeFileSync(tempFile, content, "utf8");
+		const result = spawnSync(biome, ["format", "--write", tempFile], {
+			cwd: rootDir,
+			encoding: "utf8",
+		});
+		if (result.error) {
+			throw result.error;
+		}
+		if (result.status !== 0) {
+			throw new Error(result.stderr || result.stdout);
+		}
+		return readFileSync(tempFile, "utf8");
+	} finally {
+		rmSync(tempDir, { force: true, recursive: true });
 	}
-	if (result.status !== 0) {
-		throw new Error(result.stderr || result.stdout);
-	}
-	return result.stdout;
 }
 
 function sortObject(value: unknown): unknown {

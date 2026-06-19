@@ -9,9 +9,20 @@ import {
 } from "../../src/runtime/env.js";
 
 describe("createRuntimeEnv", () => {
+	const originalPlatform = Object.getOwnPropertyDescriptor(process, "platform");
+
 	afterEach(() => {
 		resetDefaultRuntimeEnvForTests();
+		if (originalPlatform) {
+			Object.defineProperty(process, "platform", originalPlatform);
+		}
 	});
+
+	function stubPlatform(platform: NodeJS.Platform): void {
+		Object.defineProperty(process, "platform", {
+			value: platform,
+		});
+	}
 
 	it("returns sensible defaults for empty env", () => {
 		const env = createRuntimeEnv({});
@@ -22,12 +33,87 @@ describe("createRuntimeEnv", () => {
 		expect(env.evalopsAccessToken).toBeNull();
 		expect(env.disableKeychain).toBe(false);
 		expect(env.maestroAgentDir).toBeNull();
+		expect(env.skillTrustStrict).toBe(false);
 		expect(env.telemetryEnabled).toBeNull();
 		expect(env.beaconFile).toBeNull();
 		expect(env.cliCommandBeaconBufferFile).toBeNull();
 		expect(env.meterBaseUrl).toBeNull();
 		expect(env.meterAccessToken).toBeNull();
 		expect(env.meterOrganizationId).toBeNull();
+		expect(env.ambientLearnerFile).toBeNull();
+		expect(env.ambientLearnerDefaultFile).toContain(
+			join("ambient-agent", "learner.json"),
+		);
+		expect(env.ambientSocketFile).toContain("ambient-agent.sock");
+	});
+
+	it("matches the ambient daemon learner default data path", () => {
+		const home = "/tmp/maestro-runtime-home";
+		const xdgDataHome = "/tmp/maestro-runtime-xdg";
+		const tmpRuntime = "/tmp/maestro-runtime-tmp";
+		const env = createRuntimeEnv({
+			HOME: home,
+			TMPDIR: tmpRuntime,
+			XDG_DATA_HOME: xdgDataHome,
+		});
+		if (process.platform === "darwin") {
+			expect(env.ambientLearnerDefaultFile).toBe(
+				join(
+					home,
+					"Library",
+					"Application Support",
+					"ambient-agent",
+					"learner.json",
+				),
+			);
+			expect(env.ambientSocketFile).toBe(
+				join(home, "Library", "Application Support", "ambient-agent.sock"),
+			);
+		} else if (process.platform === "win32") {
+			expect(env.ambientLearnerDefaultFile).toBe(
+				join(home, "AppData", "Local", "ambient-agent", "learner.json"),
+			);
+			expect(env.ambientSocketFile).toBe(
+				join(home, "AppData", "Local", "ambient-agent.sock"),
+			);
+		} else {
+			expect(env.ambientLearnerDefaultFile).toBe(
+				join(xdgDataHome, "ambient-agent", "learner.json"),
+			);
+			expect(env.ambientSocketFile).toBe(
+				join(xdgDataHome, "ambient-agent.sock"),
+			);
+		}
+		expect(
+			createRuntimeEnv({
+				HOME: home,
+				MAESTRO_AMBIENT_LEARNER_FILE: "~/custom-learner.json",
+			}).ambientLearnerFile,
+		).toBe(join(home, "custom-learner.json"));
+	});
+
+	it("matches the ambient daemon socket runtime path on macOS", () => {
+		stubPlatform("darwin");
+		const home = "/tmp/maestro-runtime-home";
+		const tmpRuntime = "/tmp/maestro-runtime-tmp";
+		const xdgRuntime = "/tmp/maestro-runtime-xdg-runtime";
+		const env = createRuntimeEnv({
+			HOME: home,
+			TMPDIR: tmpRuntime,
+			XDG_RUNTIME_DIR: xdgRuntime,
+		});
+		expect(env.ambientLearnerDefaultFile).toBe(
+			join(
+				home,
+				"Library",
+				"Application Support",
+				"ambient-agent",
+				"learner.json",
+			),
+		);
+		expect(env.ambientSocketFile).toBe(
+			join(home, "Library", "Application Support", "ambient-agent.sock"),
+		);
 	});
 
 	it("parses log level only from the documented set", () => {
@@ -58,6 +144,13 @@ describe("createRuntimeEnv", () => {
 		expect(createRuntimeEnv({ MAESTRO_LOG_JSON: "0" }).logJsonFormat).toBe(
 			false,
 		);
+		expect(
+			createRuntimeEnv({ MAESTRO_SKILL_TRUST_STRICT: "1" }).skillTrustStrict,
+		).toBe(true);
+		expect(
+			createRuntimeEnv({ MAESTRO_SKILL_TRUST_STRICT: "false" })
+				.skillTrustStrict,
+		).toBe(false);
 	});
 
 	it("resolves evalopsOrgId from the documented alias list in priority order", () => {

@@ -157,6 +157,23 @@ export function revokePromptApproval(contentSha: string): boolean {
 	return true;
 }
 
+/**
+ * Forget every approval recorded for a skill name. This supports the
+ * user-facing "revoke this skill" action after the skill body has
+ * changed: the current SHA alone no longer identifies older approvals
+ * that should also be removed.
+ */
+export function revokePromptApprovalsForSkillName(name: string): number {
+	const file = loadTrustFile();
+	const filtered = file.skills.filter((entry) => entry.name !== name);
+	const removedCount = file.skills.length - filtered.length;
+	if (removedCount === 0) {
+		return 0;
+	}
+	saveTrustFile({ version: TRUST_FILE_VERSION, skills: filtered });
+	return removedCount;
+}
+
 /** Test helper — return every entry in the cache. */
 export function listApprovedSkillsForTests(): SkillTrustEntry[] {
 	return [...loadTrustFile().skills];

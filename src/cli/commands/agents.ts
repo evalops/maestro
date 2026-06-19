@@ -17,6 +17,13 @@ import {
 	resolve,
 } from "node:path";
 import * as Diff from "diff";
+import {
+	type SpecialistProfileScope,
+	createSpecialistProfile,
+	deleteSpecialistProfile,
+	listSpecialistProfiles,
+	resolveSpecialistProfile,
+} from "../../agent/specialist-profiles.js";
 import { writeTextFileAtomic } from "../../utils/fs.js";
 import { truncateUtf8 } from "../system-prompt.js";
 
@@ -391,4 +398,165 @@ export function handleAgentsInit(
 		action: "created",
 		sources: ruleSources,
 	};
+}
+
+export function handleAgentsProfileCommand(
+	args: readonly string[],
+	options: { json?: boolean; force?: boolean } = {},
+): void {
+	const json = options.json === true || args.includes("--json");
+	const force = options.force === true || args.includes("--force");
+	const filteredArgs = args.filter(
+		(arg) => arg !== "--json" && arg !== "--force",
+	);
+	const action = filteredArgs[0] ?? "list";
+	switch (action) {
+		case "list": {
+			const profiles = listSpecialistProfiles();
+			if (json) {
+				console.log(JSON.stringify(profiles, null, 2));
+				return;
+			}
+			if (profiles.length === 0) {
+				console.log("No specialist profiles found.");
+				return;
+			}
+			for (const profile of profiles) {
+				console.log(
+					`${profile.name} (${profile.scope})${profile.description ? ` - ${profile.description}` : ""}`,
+				);
+			}
+			return;
+		}
+		case "show": {
+			const name = filteredArgs[1];
+			if (!name) throw new Error("agents profile show requires a name");
+			const profile = resolveSpecialistProfile(name);
+			if (!profile) throw new Error(`specialist profile not found: ${name}`);
+			if (json) {
+				console.log(JSON.stringify(profile, null, 2));
+				return;
+			}
+			console.log(`# ${profile.name}`);
+			if (profile.description) console.log(`\n${profile.description}`);
+			console.log(`\nScope: ${profile.scope}`);
+			console.log(`Path: ${profile.path}`);
+			console.log(`\n${profile.prompt}`);
+			return;
+		}
+		case "create": {
+			const name = filteredArgs[1];
+			if (!name) throw new Error("agents profile create requires a name");
+			const parsed = parseProfileCreateArgs(filteredArgs.slice(2));
+			const profile = createSpecialistProfile({
+				name,
+				description: parsed.description,
+				prompt: parsed.prompt,
+				tools: parsed.tools,
+				model: parsed.model,
+				scope: parsed.scope,
+				overwrite: force,
+			});
+			if (json) {
+				console.log(JSON.stringify(profile, null, 2));
+				return;
+			}
+			console.log(
+				`Created specialist profile ${profile.name} at ${profile.path}.`,
+			);
+			return;
+		}
+		case "delete": {
+			const name = filteredArgs[1];
+			if (!name) throw new Error("agents profile delete requires a name");
+			const { scope } = parseProfileDeleteArgs(filteredArgs.slice(2));
+			const deleted = deleteSpecialistProfile({ name, scope });
+			if (json) {
+				console.log(JSON.stringify({ name, scope, deleted }, null, 2));
+				return;
+			}
+			console.log(
+				deleted
+					? `Deleted specialist profile ${name} (${scope}).`
+					: `No specialist profile ${name} found in ${scope} scope.`,
+			);
+			return;
+		}
+		default:
+			throw new Error(
+				`Unknown agents profile action: ${action}. Use list, show, create, or delete.`,
+			);
+	}
+}
+
+function parseProfileCreateArgs(args: readonly string[]): {
+	description?: string;
+	prompt: string;
+	tools?: string[];
+	model?: string;
+	scope?: SpecialistProfileScope;
+} {
+	let description: string | undefined;
+	let tools: string[] | undefined;
+	let model: string | undefined;
+	let scope: SpecialistProfileScope | undefined;
+	const promptParts: string[] = [];
+	for (let index = 0; index < args.length; index++) {
+		const arg = args[index];
+		const next = args[index + 1];
+		if (arg === "--description" && next) {
+			description = next;
+			index++;
+		} else if (arg === "--tools" && next) {
+			tools = next
+				.split(",")
+				.map((tool) => tool.trim())
+				.filter(Boolean);
+			index++;
+		} else if (arg === "--model" && next) {
+			model = next;
+			index++;
+		} else if (arg === "--scope" && next) {
+			scope = parseProfileScope(next);
+			if (!scope) throw new Error(`invalid profile scope: ${next}`);
+			index++;
+		} else if (arg) {
+			promptParts.push(arg);
+		}
+	}
+	const prompt = promptParts.join(" ").trim();
+	if (!prompt) {
+		throw new Error("agents profile create requires prompt text");
+	}
+	return { description, prompt, tools, model, scope };
+}
+
+function parseProfileDeleteArgs(args: readonly string[]): {
+	scope: SpecialistProfileScope;
+} {
+	let scope: SpecialistProfileScope = "project";
+	for (let index = 0; index < args.length; index++) {
+		const arg = args[index];
+		const next = args[index + 1];
+		if (arg === "--scope" && next) {
+			const parsed = parseProfileScope(next);
+			if (!parsed) throw new Error(`invalid profile scope: ${next}`);
+			scope = parsed;
+			index++;
+		} else if (arg?.startsWith("--scope=")) {
+			const value = arg.slice("--scope=".length);
+			const parsed = parseProfileScope(value);
+			if (!parsed) throw new Error(`invalid profile scope: ${value}`);
+			scope = parsed;
+		} else if (arg) {
+			throw new Error(`unexpected agents profile delete argument: ${arg}`);
+		}
+	}
+	return { scope };
+}
+
+function parseProfileScope(
+	value: string | undefined,
+): SpecialistProfileScope | undefined {
+	return value === "project" || value === "user" ? value : undefined;
 }

@@ -285,9 +285,16 @@ export class DockerSandbox implements Sandbox {
 		// shell interpolation of the path on host OR in container.
 		// Previously: `cat "${path}"` was sent through a shell, so
 		// `path` containing `"` or `$` could break or inject (#2473).
-		const result = await this.execWithArgs("cat", [path]);
+		const result = await this.execWithArgs("cat", [path], {
+			maxBuffer: EXEC_WITH_ARGS_MAX_BUFFER + 1,
+		});
 		if (result.exitCode !== 0) {
 			throw new Error(`Failed to read file: ${result.stderr}`);
+		}
+		if (Buffer.byteLength(result.stdout, "utf8") > EXEC_WITH_ARGS_MAX_BUFFER) {
+			throw new Error(
+				`Failed to read file: ${path} exceeds the ${EXEC_WITH_ARGS_MAX_BUFFER} byte Docker read limit`,
+			);
 		}
 		return result.stdout;
 	}

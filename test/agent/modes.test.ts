@@ -111,6 +111,19 @@ describe("agent/modes", () => {
 			});
 		});
 
+		it("normalizes browser QA aliases before resolving subagent dispatch", () => {
+			const dispatch = resolveSubagentDispatch("smart", "e2e-qa", "anthropic");
+
+			expect(dispatch).toMatchObject({
+				mode: "smart",
+				type: "browser-qa",
+				provider: "anthropic",
+				modelTier: "sonnet",
+				reasoningEffort: "medium",
+				source: "mode",
+			});
+		});
+
 		it("falls back to the mode primary tier when a subagent type is undeclared", () => {
 			const dispatch = resolveSubagentDispatch(
 				"custom",
@@ -126,6 +139,23 @@ describe("agent/modes", () => {
 				modelTier: "sonnet",
 				reasoningEffort: "medium",
 				source: "fallback",
+			});
+		});
+
+		it("does not keep invalid raw subagent names in dispatch metadata", () => {
+			const dispatch = resolveSubagentDispatch(
+				"smart",
+				"not-a-real-lane",
+				"anthropic",
+			);
+
+			expect(dispatch).toMatchObject({
+				mode: "smart",
+				type: "coder",
+				provider: "openai-codex",
+				model: "gpt-5.5",
+				reasoningEffort: "medium",
+				source: "mode",
 			});
 		});
 	});

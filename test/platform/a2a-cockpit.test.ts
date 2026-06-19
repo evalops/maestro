@@ -5,6 +5,7 @@ import { describe, expect, it } from "vitest";
 import {
 	type A2ACockpitTaskStatus,
 	buildA2ACockpit,
+	classifyTaskState,
 	summarizeA2ACockpit,
 } from "../../src/platform/a2a-cockpit.js";
 import type { A2AFleetSummary } from "../../src/platform/a2a-fleet.js";
@@ -31,6 +32,10 @@ describe("A2A cockpit", () => {
 		).toBe(false);
 	});
 
+	it("does not classify unsuccessful states as completed", () => {
+		expect(classifyTaskState("UNSUCCESSFUL")).toBe("running");
+	});
+
 	it("prioritizes actionable tasks and emits operator commands", () => {
 		const summary = summarizeA2ACockpit({
 			fleet: fleetSummary(),
@@ -50,6 +55,16 @@ describe("A2A cockpit", () => {
 					state: "TASK_STATE_WORKING",
 					text: "run workspace checks",
 					updatedAt: "2026-05-16T00:00:02.000Z",
+					workGraph: {
+						state: "running",
+						blockedItemCount: 1,
+						waitingItemCount: 2,
+						pendingToolCallCount: 1,
+						childRunIds: [],
+						toolExecutionIds: [],
+						waitItemCount: 1,
+						waitIds: ["wait-approval"],
+					},
 				}),
 				task({
 					id: "waiting-ledger",
@@ -105,6 +120,9 @@ describe("A2A cockpit", () => {
 			"refresh:linux-box:task-failed",
 			"wait:mac-mini:task-run",
 		]);
+		expect(summary.nextActions[2]?.reason).toBe(
+			"Task is still non-terminal in the local A2A ledger. Work graph shows 1 blocked work item, 2 waiting work items, 1 pending tool call, and 1 open wait.",
+		);
 	});
 
 	it("filters by peer and returns a fresh delegation action when idle", () => {
@@ -433,7 +451,7 @@ function task(
 		A2ATaskLedgerEntry,
 		"id" | "peer" | "taskId" | "state" | "text" | "updatedAt"
 	> &
-		Pick<Partial<A2ATaskLedgerEntry>, "metadata">,
+		Pick<Partial<A2ATaskLedgerEntry>, "metadata" | "workGraph">,
 ): A2ATaskLedgerEntry {
 	return {
 		kind: "delegation",

@@ -20,9 +20,10 @@ pub(crate) use push_notifications::{
     is_platform_a2a_push_endpoint, normalize_a2a_push_notification_config,
 };
 pub(crate) use tasks::{
-    a2a_agent_message, a2a_context_id, a2a_return_immediately, a2a_task_is_terminal,
-    a2a_task_value, a2a_user_message_value, claim_a2a_send_task, complete_a2a_task,
-    handle_a2a_endpoint, handle_a2a_streaming_endpoint, is_a2a_endpoint, is_a2a_streaming_endpoint,
+    a2a_agent_message, a2a_context_id, a2a_return_immediately, a2a_state_is_completed,
+    a2a_state_is_failed, a2a_task_is_terminal, a2a_task_value, a2a_user_message_value,
+    canonical_a2a_task_state, claim_a2a_send_task, complete_a2a_task, handle_a2a_endpoint,
+    handle_a2a_streaming_endpoint, is_a2a_endpoint, is_a2a_streaming_endpoint,
     publish_a2a_task_update, store_a2a_task_unless_canceled, A2ACancelReceiver, A2ACancelSender,
     A2AMessageBody, A2APartBody, A2ASendMessageRequest, A2ATaskEventHistory, A2ATaskUpdateEvent,
     A2A_CONTROL_PLANE_LEDGER_DISPLAY_NAME, A2A_CONTROL_PLANE_LEDGER_PEER,

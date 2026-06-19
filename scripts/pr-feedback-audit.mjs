@@ -3,6 +3,8 @@
 import { execFileSync } from "node:child_process";
 import process from "node:process";
 
+export const GH_OUTPUT_MAX_BUFFER_BYTES = 64 * 1024 * 1024;
+
 export function parseFeedbackAuditArgs(argv) {
 	const args = {
 		alsoPublic: [],
@@ -131,6 +133,7 @@ export function collectFeedbackAuditTargets(args, defaultRepo) {
 function ghJson(args) {
 	const output = execFileSync("gh", args, {
 		encoding: "utf8",
+		maxBuffer: GH_OUTPUT_MAX_BUFFER_BYTES,
 		stdio: ["ignore", "pipe", "pipe"],
 	});
 	return JSON.parse(output);
@@ -139,18 +142,19 @@ function ghJson(args) {
 function ghText(args) {
 	return execFileSync("gh", args, {
 		encoding: "utf8",
+		maxBuffer: GH_OUTPUT_MAX_BUFFER_BYTES,
 		stdio: ["ignore", "pipe", "pipe"],
 	}).trim();
 }
 
-function resolveRepo(repo) {
+export function resolveRepo(repo) {
 	return (
 		repo ||
 		ghText(["repo", "view", "--json", "nameWithOwner", "--jq", ".nameWithOwner"])
 	);
 }
 
-function fetchReviewThreads(owner, repo, number) {
+export function fetchReviewThreads(owner, repo, number) {
 	const threads = [];
 	let cursor = "";
 	do {

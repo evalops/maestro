@@ -277,6 +277,7 @@ interface ExporterRuntimeConfig {
 	file: string | null;
 	endpoint: string | null;
 	flag: string | null;
+	initialEnabled: boolean;
 	sampleRate: number;
 }
 
@@ -285,11 +286,13 @@ let exporterRuntimeConfig: ExporterRuntimeConfig | null = null;
 function createExporterRuntimeConfig(env: RuntimeEnv): ExporterRuntimeConfig {
 	const file = env.exporterFile;
 	const endpoint = env.exporterEndpoint;
+	const initialEnabled = shouldEnableTelemetryForEnv(env, file, endpoint);
 	return {
 		endpoint,
 		env,
 		file,
 		flag: env.telemetryFlag,
+		initialEnabled,
 		// `RuntimeEnv.telemetrySampleRate` is already parsed and clamped to
 		// `[0, 1]`; `null` means no signal, treated as full-sampling.
 		sampleRate: env.telemetrySampleRate ?? 1,
@@ -353,9 +356,8 @@ export interface TelemetryStatus {
 export function getTelemetryStatus(): TelemetryStatus {
 	const config = getExporterRuntimeConfig();
 	let reason = "disabled";
-	const telemetryEnabled = shouldEnableTelemetry(config);
-	const baseEnabled = telemetryEnabled && config.sampleRate > 0;
-	if (!telemetryEnabled) {
+	const baseEnabled = config.initialEnabled && config.sampleRate > 0;
+	if (!shouldEnableTelemetry(config)) {
 		reason = "flag disabled";
 	} else if (config.sampleRate === 0) {
 		reason = "sampling=0";
@@ -375,8 +377,9 @@ export function getTelemetryStatus(): TelemetryStatus {
 
 	return {
 		enabled:
-			(telemetryOverride === null ? telemetryEnabled : telemetryOverride) &&
-			config.sampleRate > 0,
+			(telemetryOverride === null
+				? config.initialEnabled
+				: telemetryOverride) && config.sampleRate > 0,
 		reason,
 		endpoint: config.endpoint ?? undefined,
 		filePath: config.file ?? defaultTelemetryFile,
@@ -858,14 +861,9 @@ async function persistTelemetry(event: TelemetryEvent) {
 		tasks.push(writeToFile(payload));
 	} else if (
 		config.endpoint === null &&
-		(!hasRemoteMeterDestination(config.env) ||
-			!isCanonicalTurnTelemetryEvent(event))
+		!hasRemoteMeterDestination(config.env)
 	) {
-		// Default to file storage when no endpoint is configured. Canonical
-		// turns are mirrored to Meter above when a remote meter destination is
-		// configured, so we skip the default file only for those; non-canonical
-		// events (tool-execution, api-request, background-task, ...) still need
-		// a default sink or they would be silently dropped.
+		// Default to file storage when no endpoint is configured
 		tasks.push(writeToFile(payload));
 	}
 
@@ -915,9 +913,8 @@ export async function recordTelemetry(event: TelemetryEvent): Promise<void> {
 	const eventBusTask = mirrorTelemetryToMaestroEventBus(normalizedEvent);
 
 	const legacyEnabled =
-		(telemetryOverride === null
-			? shouldEnableTelemetry(config)
-			: telemetryOverride) && config.sampleRate > 0;
+		(telemetryOverride === null ? config.initialEnabled : telemetryOverride) &&
+		config.sampleRate > 0;
 	if (!legacyEnabled) {
 		await eventBusTask;
 		return;

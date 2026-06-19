@@ -254,6 +254,21 @@ describe("DockerSandbox", () => {
 			]);
 		});
 
+		it("readFile rejects content that exceeds the Docker capture limit", async () => {
+			const child = createMockChildProcess();
+			childProcessMock.spawn.mockReturnValueOnce(child);
+			const sandbox = new DockerSandbox();
+			(sandbox as unknown as { containerId: string | null }).containerId =
+				"container-rf";
+
+			const promise = sandbox.readFile("/tmp/large.txt");
+			await Promise.resolve();
+			child.stdout.emit("data", Buffer.from("x".repeat(1024 * 1024 + 1)));
+			child.emit("close", 0);
+
+			await expect(promise).rejects.toThrow(/exceeds the 1048576 byte/);
+		});
+
 		it("exists uses execWithArgs (no shell interpolation)", async () => {
 			const child = createMockChildProcess();
 			childProcessMock.spawn.mockReturnValueOnce(child);

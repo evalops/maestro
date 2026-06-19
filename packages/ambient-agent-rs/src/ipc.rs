@@ -55,6 +55,8 @@ pub enum IpcCommand {
     Status,
     /// Get daemon stats
     Stats,
+    /// Persist in-memory learner state to disk
+    FlushLearner,
     /// Pause processing
     Pause,
     /// Resume processing
@@ -395,6 +397,16 @@ impl IpcClient {
     pub async fn stats(&self) -> anyhow::Result<StatsResponse> {
         match self.send(IpcCommand::Stats).await {
             Ok(IpcResponse::Stats(s)) => Ok(s),
+            Ok(IpcResponse::Unauthorized) => anyhow::bail!("Authentication failed"),
+            Ok(IpcResponse::Error(e)) => anyhow::bail!(e),
+            _ => anyhow::bail!("Unexpected response"),
+        }
+    }
+
+    /// Flush in-memory learner state to disk
+    pub async fn flush_learner(&self) -> anyhow::Result<String> {
+        match self.send(IpcCommand::FlushLearner).await {
+            Ok(IpcResponse::Ok(message)) => Ok(message.unwrap_or_default()),
             Ok(IpcResponse::Unauthorized) => anyhow::bail!("Authentication failed"),
             Ok(IpcResponse::Error(e)) => anyhow::bail!(e),
             _ => anyhow::bail!("Unexpected response"),

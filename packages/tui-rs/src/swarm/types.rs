@@ -398,7 +398,11 @@ pub enum SubagentType {
     Planner,
     Coder,
     Reviewer,
+    #[serde(rename = "test-runner")]
+    TestRunner,
     Researcher,
+    #[serde(rename = "browser-qa")]
+    BrowserQa,
     Minimal,
     Custom,
 }
@@ -501,10 +505,10 @@ fn subagent_dispatch_rule(
                 "gpt-5.5",
                 ReasoningEffort::Medium,
             ),
-            SubagentType::Reviewer | SubagentType::Researcher => {
+            SubagentType::Reviewer | SubagentType::Researcher | SubagentType::BrowserQa => {
                 SubagentDispatchRule::tier(ModelTier::Sonnet, ReasoningEffort::Medium)
             }
-            SubagentType::Custom => return None,
+            SubagentType::TestRunner | SubagentType::Custom => return None,
         },
         AgentMode::Rush => match subagent_type {
             SubagentType::Explorer
@@ -513,13 +517,13 @@ fn subagent_dispatch_rule(
             | SubagentType::Minimal => {
                 SubagentDispatchRule::tier(ModelTier::Haiku, ReasoningEffort::Low)
             }
-            SubagentType::Planner | SubagentType::Coder => {
+            SubagentType::Planner | SubagentType::Coder | SubagentType::BrowserQa => {
                 SubagentDispatchRule::tier(ModelTier::Sonnet, ReasoningEffort::Low)
             }
-            SubagentType::Custom => return None,
+            SubagentType::TestRunner | SubagentType::Custom => return None,
         },
         AgentMode::Free | AgentMode::Replay => match subagent_type {
-            SubagentType::Custom => return None,
+            SubagentType::TestRunner | SubagentType::Custom => return None,
             _ => SubagentDispatchRule::tier(ModelTier::Haiku, ReasoningEffort::Low),
         },
         AgentMode::Frontier => match subagent_type {
@@ -539,10 +543,13 @@ fn subagent_dispatch_rule(
                 "gpt-5.5",
                 ReasoningEffort::Medium,
             ),
+            SubagentType::BrowserQa => {
+                SubagentDispatchRule::tier(ModelTier::Sonnet, ReasoningEffort::High)
+            }
             SubagentType::Minimal => {
                 SubagentDispatchRule::tier(ModelTier::Haiku, ReasoningEffort::Low)
             }
-            SubagentType::Custom => return None,
+            SubagentType::TestRunner | SubagentType::Custom => return None,
         },
         AgentMode::Custom => return None,
     };

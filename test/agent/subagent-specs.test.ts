@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
 	SUBAGENT_SPECS,
 	type SubagentType,
@@ -9,12 +9,18 @@ import {
 	getAllSubagentTypes,
 	getAllowedTools,
 	getSubagentSpec,
+	getSubagentTypeFromEnv,
 	isToolAllowed,
 	parseSubagentType,
 	validateSpec,
 } from "../../src/agent/subagent-specs.js";
+import { conductorClientTools } from "../../src/tools/conductor-client.js";
 
 describe("subagent-specs", () => {
+	afterEach(() => {
+		vi.unstubAllEnvs();
+	});
+
 	describe("TOOL_CATEGORIES", () => {
 		it("should have read-only tools", () => {
 			expect(TOOL_CATEGORIES.read).toContain("read");
@@ -39,7 +45,9 @@ describe("subagent-specs", () => {
 			expect(SUBAGENT_SPECS.planner).toBeDefined();
 			expect(SUBAGENT_SPECS.coder).toBeDefined();
 			expect(SUBAGENT_SPECS.reviewer).toBeDefined();
+			expect(SUBAGENT_SPECS["test-runner"]).toBeDefined();
 			expect(SUBAGENT_SPECS.researcher).toBeDefined();
+			expect(SUBAGENT_SPECS["browser-qa"]).toBeDefined();
 			expect(SUBAGENT_SPECS.minimal).toBeDefined();
 			expect(SUBAGENT_SPECS.custom).toBeDefined();
 		});
@@ -65,6 +73,44 @@ describe("subagent-specs", () => {
 		it("minimal should have very few tools", () => {
 			const spec = SUBAGENT_SPECS.minimal;
 			expect(spec.allowedTools.length).toBeLessThan(5);
+		});
+
+		it("browser qa should capture product evidence without write access", () => {
+			const spec = SUBAGENT_SPECS["browser-qa"];
+			expect(spec.allowedTools).toContain("agent_browser");
+			expect(spec.allowedTools).toContain("browser_screenshot");
+			expect(spec.allowedTools).toContain("browser_record");
+			expect(spec.allowedTools).toContain("browser_operator");
+			expect(spec.allowedTools).toContain("capture_screenshot");
+			expect(spec.allowedTools).toContain("capture_console_errors");
+			expect(spec.allowedTools).toContain("capture_network");
+			expect(spec.allowedTools).not.toContain("write");
+			expect(spec.requireConfirmation).toBe(false);
+		});
+
+		it("browser qa keeps real Conductor browser control and evidence tools", () => {
+			const filtered = filterToolsForSubagent(
+				conductorClientTools,
+				"browser-qa",
+			).map((tool) => tool.name);
+
+			expect(filtered).toEqual(
+				expect.arrayContaining([
+					"browser_operator",
+					"capture_screenshot",
+					"capture_console_errors",
+					"capture_network",
+					"native_key_up",
+				]),
+			);
+		});
+
+		it("test runner can execute checks without write access", () => {
+			const spec = SUBAGENT_SPECS["test-runner"];
+			expect(spec.allowedTools).toContain("bash");
+			expect(spec.allowedTools).toContain("background_tasks");
+			expect(spec.allowedTools).not.toContain("write");
+			expect(spec.allowedTools).not.toContain("edit");
 		});
 	});
 
@@ -189,11 +235,46 @@ describe("subagent-specs", () => {
 			expect(parseSubagentType("CODER")).toBe("coder");
 			expect(parseSubagentType("  planner  ")).toBe("planner");
 			expect(parseSubagentType("co\u200bder")).toBe("coder");
+			expect(parseSubagentType("browser-qa")).toBe("browser-qa");
+			expect(parseSubagentType("browser_qa")).toBe("browser-qa");
+			expect(parseSubagentType("dogfood")).toBe("browser-qa");
+			expect(parseSubagentType("product-qa")).toBe("browser-qa");
+			expect(parseSubagentType("test-runner")).toBe("test-runner");
+			expect(parseSubagentType("qa")).toBe("test-runner");
+			expect(parseSubagentType("ci-monitor")).toBe("test-runner");
+			expect(parseSubagentType("test")).toBe("test-runner");
 		});
 
 		it("should return null for invalid types", () => {
 			expect(parseSubagentType("invalid")).toBeNull();
 			expect(parseSubagentType("")).toBeNull();
+		});
+	});
+
+	describe("getSubagentTypeFromEnv", () => {
+		it("normalizes underscore aliases from MAESTRO_SUBAGENT_TYPE", () => {
+			vi.stubEnv("MAESTRO_SUBAGENT_TYPE", "browser_qa");
+
+			expect(getSubagentTypeFromEnv()).toBe("browser-qa");
+		});
+
+		it("normalizes Codex dispatch aliases from MAESTRO_SUBAGENT_TYPE", () => {
+			vi.stubEnv("MAESTRO_SUBAGENT_TYPE", "dogfood");
+
+			expect(getSubagentTypeFromEnv()).toBe("browser-qa");
+		});
+
+		it("maps test execution aliases to a shell-capable test-runner spec", () => {
+			vi.stubEnv("MAESTRO_SUBAGENT_TYPE", "qa");
+
+			expect(getSubagentTypeFromEnv()).toBe("test-runner");
+			expect(getAllowedTools("test-runner")).toContain("bash");
+		});
+
+		it("falls back to coder for invalid MAESTRO_SUBAGENT_TYPE values", () => {
+			vi.stubEnv("MAESTRO_SUBAGENT_TYPE", "not-a-real-lane");
+
+			expect(getSubagentTypeFromEnv()).toBe("coder");
 		});
 	});
 

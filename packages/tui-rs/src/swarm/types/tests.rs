@@ -75,7 +75,9 @@ fn parse_subagent_type(value: &str) -> SubagentType {
         "planner" => SubagentType::Planner,
         "coder" => SubagentType::Coder,
         "reviewer" => SubagentType::Reviewer,
+        "test-runner" => SubagentType::TestRunner,
         "researcher" => SubagentType::Researcher,
+        "browser-qa" => SubagentType::BrowserQa,
         "minimal" => SubagentType::Minimal,
         "custom" => SubagentType::Custom,
         _ => panic!("unexpected subagent type {value}"),
@@ -393,6 +395,22 @@ fn test_custom_researcher_subagent_dispatch_falls_back_to_mode_tier() {
     assert_eq!(dispatch.provider, ModelProvider::Google);
     assert_eq!(dispatch.model, "gemini-2.0-flash-exp");
     assert_eq!(dispatch.model_tier, Some(ModelTier::Sonnet));
+    assert_eq!(dispatch.reasoning_effort, ReasoningEffort::Medium);
+    assert_eq!(dispatch.source, DispatchSource::Fallback);
+}
+
+#[test]
+fn test_test_runner_subagent_dispatch_falls_back_to_mode_tier() {
+    let dispatch = resolve_subagent_dispatch(
+        AgentMode::Smart,
+        SubagentType::TestRunner,
+        ModelProvider::Anthropic,
+    );
+
+    assert_eq!(dispatch.mode, AgentMode::Smart);
+    assert_eq!(dispatch.subagent_type, SubagentType::TestRunner);
+    assert_eq!(dispatch.provider, ModelProvider::Anthropic);
+    assert_eq!(dispatch.model_tier, Some(ModelTier::Opus));
     assert_eq!(dispatch.reasoning_effort, ReasoningEffort::Medium);
     assert_eq!(dispatch.source, DispatchSource::Fallback);
 }

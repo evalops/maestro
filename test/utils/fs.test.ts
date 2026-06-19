@@ -350,6 +350,42 @@ describe("fs utilities", () => {
 				.filter((name) => name.includes(".corrupt."));
 			expect(siblings).toHaveLength(0);
 		});
+
+		it("re-reads concurrently repaired JSON instead of returning stale fallback", async () => {
+			const filePath = join(testDir, "state.json");
+			const repaired = JSON.stringify({ ok: true });
+			writeFileSync(filePath, repaired);
+			const actualFs =
+				await vi.importActual<typeof import("node:fs")>("node:fs");
+			let stateReads = 0;
+			vi.resetModules();
+			vi.doMock("node:fs", () => ({
+				...actualFs,
+				readFileSync: vi.fn((path, ...args) => {
+					if (path === filePath) {
+						stateReads += 1;
+						return stateReads === 1 ? "{ corrupt" : repaired;
+					}
+					return actualFs.readFileSync(path, ...args);
+				}),
+			}));
+			try {
+				const { readJsonFile: readJsonFileWithRace } = await import(
+					"../../src/utils/fs.js"
+				);
+
+				const result = readJsonFileWithRace(filePath, {
+					fallback: { ok: false },
+					rotateOnParseFail: true,
+				});
+
+				expect(result).toEqual({ ok: true });
+				expect(stateReads).toBeGreaterThanOrEqual(3);
+			} finally {
+				vi.doUnmock("node:fs");
+				vi.resetModules();
+			}
+		});
 	});
 
 	describe("rotateCorruptJsonFile", () => {
@@ -368,6 +404,16 @@ describe("fs utilities", () => {
 		it("returns null if the source file doesn't exist", () => {
 			const result = rotateCorruptJsonFile(join(testDir, "missing.json"));
 			expect(result).toBeNull();
+		});
+
+		it("does not rotate when the file content changed after the caller read it", () => {
+			const filePath = join(testDir, "state.json");
+			writeFileSync(filePath, JSON.stringify({ ok: true }));
+
+			const result = rotateCorruptJsonFile(filePath, "{ corrupt");
+
+			expect(result).toBeNull();
+			expect(readJsonFile(filePath)).toEqual({ ok: true });
 		});
 	});
 

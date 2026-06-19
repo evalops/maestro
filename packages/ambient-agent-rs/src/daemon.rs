@@ -230,6 +230,7 @@ impl AmbientDaemon {
         // Clone Arc references for IPC handler
         let status_ref = self.status.clone();
         let stats_ref = self.stats.clone();
+        let learner_ref = self.learner.clone();
         let cmd_tx = self.command_tx.clone();
         let start_time = self.start_time;
 
@@ -242,6 +243,7 @@ impl AmbientDaemon {
                     Ok(mut stream) => {
                         let status = status_ref.clone();
                         let stats = stats_ref.clone();
+                        let learner = learner_ref.clone();
                         let cmd_tx = cmd_tx.clone();
                         let token = auth_token.clone();
 
@@ -275,6 +277,17 @@ impl AmbientDaemon {
                                                 s.uptime_secs =
                                                     (Utc::now() - start_time).num_seconds() as u64;
                                                 IpcResponse::Stats(s.into())
+                                            }
+                                            IpcCommand::FlushLearner => {
+                                                let learner = learner.read().await;
+                                                let learner_path =
+                                                    learner.storage_path().display().to_string();
+                                                match learner.persist().await {
+                                                    Ok(()) => IpcResponse::Ok(Some(learner_path)),
+                                                    Err(error) => IpcResponse::Error(format!(
+                                                        "Failed to flush learner state: {error}"
+                                                    )),
+                                                }
                                             }
                                             IpcCommand::Pause => {
                                                 let _ = cmd_tx.send(DaemonCommand::Pause).await;

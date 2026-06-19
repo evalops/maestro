@@ -1804,6 +1804,7 @@ const OPAQUE_GIT_CONFIG_KEYS = new Set([
 ]);
 
 function findOpaqueGitConfigOption(args: string[]): string | null {
+	let scanningCloneOptions = false;
 	for (let index = 0; index < args.length; index += 1) {
 		const arg = args[index]!;
 
@@ -1824,11 +1825,21 @@ function findOpaqueGitConfigOption(args: string[]): string | null {
 		} else if (arg.startsWith("--config-env=")) {
 			value = arg.slice("--config-env=".length);
 			display = "--config-env";
+		} else if (arg === "--config" && index + 1 < args.length) {
+			value = args[index + 1]!;
+			display = "--config";
+			index += 1;
+		} else if (arg.startsWith("--config=")) {
+			value = arg.slice("--config=".length);
+			display = "--config";
 		} else {
 			const [flag] = arg.split("=", 1);
+			const flagsWithValues = scanningCloneOptions
+				? GIT_CLONE_FLAGS_WITH_VALUES
+				: GIT_GLOBAL_FLAGS_WITH_VALUES;
 			if (
 				flag &&
-				GIT_GLOBAL_FLAGS_WITH_VALUES.has(flag) &&
+				flagsWithValues.has(flag) &&
 				!arg.includes("=") &&
 				index + 1 < args.length
 			) {
@@ -1836,9 +1847,15 @@ function findOpaqueGitConfigOption(args: string[]): string | null {
 			}
 		}
 
-		// Stop scanning when we reach the git subcommand — anything after
-		// that is its own argument set.
+		// Stop scanning when we reach most git subcommands — anything after
+		// that is its own argument set. `git clone` is the exception: it
+		// accepts `--config <key=value>` / `--config=<key=value>` as
+		// clone-local config, so keep scanning clone's option prefix.
 		if (!arg.startsWith("-")) {
+			if (!scanningCloneOptions && arg === "clone") {
+				scanningCloneOptions = true;
+				continue;
+			}
 			return null;
 		}
 

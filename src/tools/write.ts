@@ -63,6 +63,10 @@ import {
 import { dirname, resolve as resolvePath } from "node:path";
 import { Type } from "@sinclair/typebox";
 import {
+	detectMissionSessionRole,
+	validateMissionArtifactWrite,
+} from "../agent/mission-artifacts.js";
+import {
 	captureDiagnosticBaseline,
 	collectDiagnosticDelta,
 } from "../lsp/diagnostic-deltas.js";
@@ -124,6 +128,14 @@ export const writeTool = createTool<typeof writeSchema, WriteToolDetails>({
 		requirePlanCheck("write");
 		const absolutePath = resolvePath(expandUserPath(path));
 		assertTeamMemoryContentSafe(absolutePath, content);
+		const missionArtifactWrite = validateMissionArtifactWrite({
+			filePath: absolutePath,
+			content,
+			role: detectMissionSessionRole(),
+		});
+		if (!missionArtifactWrite.ok) {
+			return respond.error(missionArtifactWrite.message);
+		}
 
 		// Use sandbox if available
 		if (sandbox) {

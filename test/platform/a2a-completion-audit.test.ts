@@ -63,7 +63,18 @@ describe("A2A completion audit", () => {
 						taskId: "task_parent",
 						transport: "a2a",
 					},
-					transcript: [],
+					transcript: [
+						{
+							at: "2026-05-23T18:00:00.000Z",
+							role: "user",
+							text: "review it",
+						},
+						{
+							at: "2026-05-23T18:00:01.000Z",
+							role: "agent",
+							text: "done",
+						},
+					],
 					createdAt: "2026-05-23T18:00:00.000Z",
 					updatedAt: "2026-05-23T18:00:01.000Z",
 					completedAt: "2026-05-23T18:00:01.000Z",
@@ -102,12 +113,111 @@ describe("A2A completion audit", () => {
 						artifact: true,
 						task: true,
 						workGraph: true,
+						transcript: true,
 						push: true,
 						correlation: true,
 					},
 					missingSignals: [],
 				},
 			],
+		});
+	});
+
+	it("uses shared success-state aliases when choosing the completed parent", () => {
+		const swarm = {
+			id: "swarm_success_alias",
+			status: "completed",
+			config: {
+				teammateCount: 1,
+				planFile: "/tmp/plan.md",
+				tasks: [],
+				cwd: "/tmp",
+			},
+			teammates: [
+				{
+					id: "lane_alpha",
+					name: "Alpha",
+					status: "completed",
+					completedTasks: ["stale_parent", "fresh_parent"],
+					a2a: {
+						peer: "alpha",
+						source: "platform-agent-registry",
+						taskId: "a2a_task_success",
+						messageId: "a2a_message_success",
+						contextId: "ctx_success",
+					},
+				},
+			],
+			pendingTasks: [],
+			activeTasks: new Map(),
+			completedTasks: new Set(["stale_parent", "fresh_parent"]),
+			failedTasks: new Set(),
+			startedAt: Date.now(),
+		} satisfies SwarmState;
+		const ledger = {
+			tasks: [
+				{
+					id: "ledger_success",
+					kind: "delegation",
+					peer: "alpha",
+					taskId: "a2a_task_success",
+					contextId: "ctx_success",
+					messageId: "a2a_message_success",
+					text: "review it",
+					state: "SUCCEEDED",
+					responseText: "done",
+					workGraph: {
+						state: "completed",
+						childRunIds: [],
+						toolExecutionIds: [],
+						waitIds: [],
+					},
+					metadata: {
+						swarmId: "swarm_success_alias",
+						taskId: "stale_parent",
+						transport: "a2a",
+					},
+					transcript: [
+						{
+							at: "2026-05-23T18:00:00.000Z",
+							role: "user",
+							text: "review it",
+						},
+						{
+							at: "2026-05-23T18:00:01.000Z",
+							role: "agent",
+							text: "done",
+						},
+					],
+					createdAt: "2026-05-23T18:00:00.000Z",
+					updatedAt: "2026-05-23T18:00:01.000Z",
+					completedAt: "2026-05-23T18:00:01.000Z",
+				},
+			],
+		} satisfies A2ATaskLedgerFile;
+
+		const audit = buildA2ACompletionAudit({
+			swarm,
+			ledger,
+			pushTaskIds: new Set(["a2a_task_success"]),
+			generatedAt: "2026-05-23T18:00:02.000Z",
+		});
+
+		expect(audit.complete).toBe(false);
+		expect(audit.lanes[0]).toMatchObject({
+			laneId: a2aDelegationLaneId("alpha", "fresh_parent"),
+			parentTaskId: "fresh_parent",
+			status: "SUCCEEDED",
+			terminal: true,
+			signals: {
+				status: true,
+				artifact: true,
+				task: true,
+				workGraph: true,
+				push: true,
+				correlation: false,
+			},
+			missingSignals: ["correlation"],
 		});
 	});
 
@@ -497,6 +607,109 @@ describe("A2A completion audit", () => {
 		);
 	});
 
+	it("uses shared completed-state helpers for succeeded parent selection", () => {
+		const lane = remoteLane(
+			"lane_alpha",
+			"alpha",
+			"remote-task-succeeded",
+			"old_parent",
+		);
+		lane.completedTasks = ["old_parent"];
+		const ledgerEntry = ledgerTask(
+			"alpha",
+			"remote-task-succeeded",
+			"current_parent",
+		);
+		ledgerEntry.state = "SUCCEEDED";
+		ledgerEntry.metadata = {
+			...ledgerEntry.metadata,
+			swarmId: "swarm_succeeded_parent",
+		};
+
+		const audit = buildA2ACompletionAudit({
+			swarm: {
+				id: "swarm_succeeded_parent",
+				status: "completed",
+				config: {
+					teammateCount: 1,
+					planFile: "/tmp/plan.md",
+					tasks: [],
+					cwd: "/tmp",
+				},
+				teammates: [lane],
+				pendingTasks: [],
+				activeTasks: new Map(),
+				completedTasks: new Set(["old_parent"]),
+				failedTasks: new Set(),
+				startedAt: Date.now(),
+			},
+			ledger: { tasks: [ledgerEntry] },
+			pushSignalKeys: new Set([
+				a2aPushSignalKey("alpha", "remote-task-succeeded"),
+			]),
+		});
+
+		expect(audit.complete).toBe(false);
+		expect(audit.lanes[0]).toEqual(
+			expect.objectContaining({
+				laneId: a2aDelegationLaneId("alpha", "old_parent"),
+				parentTaskId: "old_parent",
+				status: "SUCCEEDED",
+				missingSignals: ["correlation"],
+			}),
+		);
+	});
+
+	it("keeps action-required lanes incomplete even when evidence is present", () => {
+		const ledgerEntry = ledgerTask(
+			"alpha",
+			"remote-task-input",
+			"parent_input",
+		);
+		ledgerEntry.state = "input-required";
+		ledgerEntry.metadata = {
+			...ledgerEntry.metadata,
+			swarmId: "swarm_input_required",
+		};
+
+		const audit = buildA2ACompletionAudit({
+			swarm: {
+				id: "swarm_input_required",
+				status: "completed",
+				config: {
+					teammateCount: 1,
+					planFile: "/tmp/plan.md",
+					tasks: [],
+					cwd: "/tmp",
+				},
+				teammates: [
+					remoteLane(
+						"lane_alpha",
+						"alpha",
+						"remote-task-input",
+						"parent_input",
+					),
+				],
+				pendingTasks: [],
+				activeTasks: new Map(),
+				completedTasks: new Set(["parent_input"]),
+				failedTasks: new Set(),
+				startedAt: Date.now(),
+			},
+			ledger: { tasks: [ledgerEntry] },
+			pushSignalKeys: new Set([a2aPushSignalKey("alpha", "remote-task-input")]),
+		});
+
+		expect(audit.complete).toBe(false);
+		expect(audit.lanes[0]).toEqual(
+			expect.objectContaining({
+				terminal: false,
+				status: "input-required",
+				missingSignals: [],
+			}),
+		);
+	});
+
 	it("uses the ledger parent for a failed current task after prior completed work", () => {
 		const swarm = {
 			id: "swarm_failed_after_completed",
@@ -606,9 +819,67 @@ describe("A2A completion audit", () => {
 			"artifact",
 			"task",
 			"workGraph",
+			"transcript",
 			"push",
 			"correlation",
 		]);
+	});
+
+	it("uses shared ledger evidence gaps for artifact and work graph readiness", () => {
+		const swarm = {
+			id: "swarm_evidence_gap",
+			status: "completed",
+			config: {
+				teammateCount: 1,
+				planFile: "/tmp/plan.md",
+				tasks: [],
+				cwd: "/tmp",
+			},
+			teammates: [
+				remoteLane("lane_alpha", "alpha", "remote-task-gap", "parent_gap"),
+			],
+			pendingTasks: [],
+			activeTasks: new Map(),
+			completedTasks: new Set(["parent_gap"]),
+			failedTasks: new Set(),
+			startedAt: Date.now(),
+		} satisfies SwarmState;
+		const ledgerEntry = ledgerTask("alpha", "remote-task-gap", "parent_gap");
+		delete ledgerEntry.responseText;
+		ledgerEntry.transcript = [
+			{
+				at: "2026-05-23T18:00:00.000Z",
+				role: "agent",
+				text: "agent-only transcript is not enough",
+			},
+		];
+		ledgerEntry.workGraph = undefined;
+		ledgerEntry.metadata = {
+			...ledgerEntry.metadata,
+			swarmId: "swarm_evidence_gap",
+		};
+
+		const audit = buildA2ACompletionAudit({
+			swarm,
+			ledger: { tasks: [ledgerEntry] },
+			pushSignalKeys: new Set([a2aPushSignalKey("alpha", "remote-task-gap")]),
+		});
+
+		expect(audit.complete).toBe(false);
+		expect(audit.lanes[0]).toEqual(
+			expect.objectContaining({
+				signals: expect.objectContaining({
+					status: true,
+					artifact: true,
+					task: true,
+					workGraph: false,
+					transcript: false,
+					push: true,
+					correlation: true,
+				}),
+				missingSignals: ["workGraph", "transcript"],
+			}),
+		);
 	});
 });
 
@@ -659,7 +930,18 @@ function ledgerTask(
 			taskId: parentTaskId,
 			transport: "a2a",
 		},
-		transcript: [],
+		transcript: [
+			{
+				at: "2026-05-23T18:00:00.000Z",
+				role: "user",
+				text: "review it",
+			},
+			{
+				at: "2026-05-23T18:00:01.000Z",
+				role: "agent",
+				text: "done",
+			},
+		],
 		createdAt: "2026-05-23T18:00:00.000Z",
 		updatedAt: "2026-05-23T18:00:01.000Z",
 		completedAt: "2026-05-23T18:00:01.000Z",

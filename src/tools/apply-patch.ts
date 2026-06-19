@@ -9,8 +9,14 @@ import {
 	unlink,
 	writeFile,
 } from "node:fs/promises";
-import { dirname, posix, resolve as resolvePath } from "node:path";
+import { dirname, isAbsolute, posix, resolve as resolvePath } from "node:path";
 import { Type } from "@sinclair/typebox";
+import {
+	type MissionSessionRole,
+	detectMissionSessionRole,
+	validateMissionArtifactDelete,
+	validateMissionArtifactWrite,
+} from "../agent/mission-artifacts.js";
 import {
 	captureDiagnosticBaseline,
 	collectDiagnosticDelta,
@@ -187,9 +193,10 @@ Use this when a Codex-family model emits its native apply_patch grammar. Use edi
 		};
 
 		const document = parseApplyPatch(patch);
+		const missionRole = detectMissionSessionRole();
 		const plan = sandbox
-			? await planSandboxPatch(document, sandbox)
-			: await planFilesystemPatch(document);
+			? await planSandboxPatch(document, sandbox, missionRole)
+			: await planFilesystemPatch(document, missionRole);
 		const details = buildDetails(plan, sandbox ? "sandbox" : undefined);
 
 		if (plan.hunksFailed > 0) {
@@ -198,6 +205,7 @@ Use this when a Codex-family model emits its native apply_patch grammar. Use edi
 				details,
 			);
 		}
+		validateMissionPatchPlan(plan, details);
 
 		throwIfAborted();
 		let postWriteOutput = "";
@@ -245,6 +253,7 @@ Use this when a Codex-family model emits its native apply_patch grammar. Use edi
 
 async function planFilesystemPatch(
 	document: ApplyPatchDocument,
+	role?: MissionSessionRole,
 ): Promise<ApplyPatchPlan> {
 	const plan = emptyPlan();
 	const stagedFiles = new Map<string, StagedFileState>();
@@ -275,6 +284,12 @@ async function planFilesystemPatch(
 			}
 			const nextContent = serializeLines(operation.lines, true);
 			assertTeamMemoryContentSafe(absolutePath, nextContent);
+			assertMissionArtifactPatchAllowed(
+				state.path,
+				nextContent,
+				role,
+				undefined,
+			);
 			addPlannedChange(plan, {
 				path: state.path,
 				absolutePath,
@@ -291,6 +306,7 @@ async function planFilesystemPatch(
 				state,
 				operation.path,
 			);
+			assertMissionArtifactPatchAllowed(state.path, null, role, undefined);
 			addPlannedChange(plan, {
 				path: state.path,
 				absolutePath,
@@ -322,6 +338,13 @@ async function planFilesystemPatch(
 					throw new Error(`File already exists: ${operation.moveTo}`);
 				}
 				assertTeamMemoryContentSafe(destinationState.absolutePath, nextContent);
+				assertMissionArtifactPatchAllowed(state.path, null, role, undefined);
+				assertMissionArtifactPatchAllowed(
+					destinationState.path,
+					nextContent,
+					role,
+					undefined,
+				);
 				addPlannedChange(plan, {
 					path: state.path,
 					absolutePath,
@@ -347,6 +370,12 @@ async function planFilesystemPatch(
 				continue;
 			}
 			assertTeamMemoryContentSafe(absolutePath, nextContent);
+			assertMissionArtifactPatchAllowed(
+				state.path,
+				nextContent,
+				role,
+				undefined,
+			);
 			addPlannedChange(plan, {
 				path: state.path,
 				absolutePath,
@@ -366,11 +395,12 @@ async function planFilesystemPatch(
 async function planSandboxPatch(
 	document: ApplyPatchDocument,
 	sandbox: Sandbox,
+	role?: MissionSessionRole,
 ): Promise<ApplyPatchPlan> {
 	const plan = emptyPlan();
 	const stagedFiles = new Map<string, StagedFileState>();
 	const getState = async (path: string): Promise<StagedFileState> => {
-		const absolutePath = path;
+		const absolutePath = resolvePath(expandUserPath(path));
 		assertApplyPatchPathContained(path, absolutePath, "sandbox");
 		const cacheKey = normalizeSandboxPathKey(path);
 		const cached = stagedFiles.get(cacheKey);
@@ -397,6 +427,12 @@ async function planSandboxPatch(
 			}
 			const nextContent = serializeLines(operation.lines, true);
 			assertTeamMemoryContentSafe(absolutePath, nextContent);
+			assertMissionArtifactPatchAllowed(
+				state.path,
+				nextContent,
+				role,
+				"sandbox",
+			);
 			addPlannedChange(plan, {
 				path: state.path,
 				absolutePath,
@@ -415,6 +451,7 @@ async function planSandboxPatch(
 				sandbox,
 				"in sandbox",
 			);
+			assertMissionArtifactPatchAllowed(state.path, null, role, "sandbox");
 			addPlannedChange(plan, {
 				path: state.path,
 				absolutePath,
@@ -450,6 +487,13 @@ async function planSandboxPatch(
 					);
 				}
 				assertTeamMemoryContentSafe(destinationState.absolutePath, nextContent);
+				assertMissionArtifactPatchAllowed(state.path, null, role, "sandbox");
+				assertMissionArtifactPatchAllowed(
+					destinationState.path,
+					nextContent,
+					role,
+					"sandbox",
+				);
 				addPlannedChange(plan, {
 					path: state.path,
 					absolutePath,
@@ -475,6 +519,12 @@ async function planSandboxPatch(
 				continue;
 			}
 			assertTeamMemoryContentSafe(absolutePath, nextContent);
+			assertMissionArtifactPatchAllowed(
+				state.path,
+				nextContent,
+				role,
+				"sandbox",
+			);
 			addPlannedChange(plan, {
 				path: state.path,
 				absolutePath,
@@ -489,6 +539,41 @@ async function planSandboxPatch(
 		}
 	}
 	return plan;
+}
+
+function assertMissionArtifactPatchAllowed(
+	path: string,
+	nextContent: string | null,
+	role: MissionSessionRole | undefined,
+	mode?: "sandbox",
+): void {
+	const absolutePath = resolvePath(expandUserPath(path));
+	if (nextContent !== null) {
+		const writeValidation = validateMissionArtifactWrite({
+			filePath: absolutePath,
+			content: nextContent,
+			role,
+		});
+		if (writeValidation.ok) {
+			return;
+		}
+		throw new ToolError(
+			writeValidation.message,
+			"APPLY_PATCH_MISSION_ARTIFACT",
+			emptyApplyPatchDetails(mode),
+		);
+	}
+	const deleteValidation = validateMissionArtifactDelete({
+		filePath: absolutePath,
+	});
+	if (deleteValidation.ok) {
+		return;
+	}
+	throw new ToolError(
+		deleteValidation.message,
+		"APPLY_PATCH_MISSION_ARTIFACT",
+		emptyApplyPatchDetails(mode),
+	);
 }
 
 function applyUpdateHunks(
@@ -584,6 +669,38 @@ async function writeFilesystemChanges(
 		await mkdir(dirname(change.absolutePath), { recursive: true });
 		await writeFileAtomically(change.absolutePath, change.nextContent);
 	}
+}
+
+function validateMissionPatchPlan(
+	plan: ApplyPatchPlan,
+	details: ApplyPatchToolDetails,
+): void {
+	const role = detectMissionSessionRole();
+	for (const change of plan.changes) {
+		const result =
+			change.nextContent === null
+				? validateMissionArtifactDelete({
+						filePath: missionValidationPath(change),
+					})
+				: validateMissionArtifactWrite({
+						filePath: missionValidationPath(change),
+						content: change.nextContent,
+						role,
+					});
+		if (!result.ok) {
+			throw new ToolError(
+				result.message,
+				"APPLY_PATCH_MISSION_ARTIFACT",
+				details,
+			);
+		}
+	}
+}
+
+function missionValidationPath(change: PlannedFileChange): string {
+	return isAbsolute(change.absolutePath)
+		? change.absolutePath
+		: resolvePath(expandUserPath(change.path));
 }
 
 async function writeSandboxChanges(

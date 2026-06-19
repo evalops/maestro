@@ -70,6 +70,9 @@ export interface RuntimeEnv {
 	readonly disableKeychain: boolean;
 	readonly maestroHome: string;
 	readonly maestroAgentDir: string | null;
+	readonly missionStoreDir: string | null;
+	readonly snapshotBlobDir: string | null;
+	readonly skillTrustStrict: boolean;
 
 	// --- CLI command aggregator / telemetry (PR #2772 timer leak) ---
 	/**
@@ -140,6 +143,11 @@ export interface RuntimeEnv {
 	readonly meterBaseUrl: string | null;
 	readonly meterAccessToken: string | null;
 	readonly meterOrganizationId: string | null;
+
+	// --- Ambient agent evidence ---
+	readonly ambientLearnerFile: string | null;
+	readonly ambientLearnerDefaultFile: string;
+	readonly ambientSocketFile: string;
 }
 
 function trim(value: unknown): string | null {
@@ -245,6 +253,37 @@ function resolveHomePath(
 	return resolve(expanded);
 }
 
+function homeFromEnv(raw: NodeJS.ProcessEnv): string {
+	return trim(raw.HOME) ?? trim(raw.USERPROFILE) ?? homedir();
+}
+
+function resolveDataLocalDir(raw: NodeJS.ProcessEnv): string {
+	const home = homeFromEnv(raw);
+	if (process.platform === "darwin") {
+		return join(home, "Library", "Application Support");
+	}
+	if (process.platform === "win32") {
+		return (
+			resolveHomePath(trim(raw.LOCALAPPDATA), raw) ??
+			resolveHomePath(trim(raw.APPDATA), raw) ??
+			join(home, "AppData", "Local")
+		);
+	}
+	return (
+		resolveHomePath(trim(raw.XDG_DATA_HOME), raw) ??
+		join(home, ".local", "share")
+	);
+}
+
+function resolveRuntimeDir(raw: NodeJS.ProcessEnv): string {
+	if (process.platform === "darwin") {
+		return resolveDataLocalDir(raw);
+	}
+	const xdgRuntimeDir = resolveHomePath(trim(raw.XDG_RUNTIME_DIR), raw);
+	if (xdgRuntimeDir) return xdgRuntimeDir;
+	return resolveDataLocalDir(raw);
+}
+
 /**
  * Build an immutable snapshot of the env vars this codebase cares about.
  *
@@ -264,6 +303,9 @@ export function createRuntimeEnv(raw: NodeJS.ProcessEnv): RuntimeEnv {
 		disableKeychain: parseBoolean(trim(raw.MAESTRO_DISABLE_KEYCHAIN)),
 		maestroHome: trim(raw.MAESTRO_HOME) ?? join(homedir(), ".maestro"),
 		maestroAgentDir: trim(raw.MAESTRO_AGENT_DIR),
+		missionStoreDir: resolveHomePath(trim(raw.MAESTRO_MISSION_STORE_DIR), raw),
+		snapshotBlobDir: resolveHomePath(trim(raw.MAESTRO_SNAPSHOT_BLOB_DIR), raw),
+		skillTrustStrict: parseBoolean(trim(raw.MAESTRO_SKILL_TRUST_STRICT)),
 
 		telemetryEnabled: parseOptionalBoolean(
 			trim(raw.MAESTRO_TELEMETRY) ?? trim(raw.PLAYWRIGHT_TELEMETRY),
@@ -304,6 +346,16 @@ export function createRuntimeEnv(raw: NodeJS.ProcessEnv): RuntimeEnv {
 		meterBaseUrl: firstNonEmpty(raw, METER_BASE_URL_VARS),
 		meterAccessToken: firstNonEmpty(raw, METER_ACCESS_TOKEN_VARS),
 		meterOrganizationId: firstNonEmpty(raw, METER_ORG_ID_VARS),
+		ambientLearnerFile: resolveHomePath(
+			trim(raw.MAESTRO_AMBIENT_LEARNER_FILE),
+			raw,
+		),
+		ambientLearnerDefaultFile: join(
+			resolveDataLocalDir(raw),
+			"ambient-agent",
+			"learner.json",
+		),
+		ambientSocketFile: join(resolveRuntimeDir(raw), "ambient-agent.sock"),
 	});
 }
 

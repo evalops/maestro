@@ -54,7 +54,9 @@ export interface Args {
 	/** Agent profile to activate on startup */
 	composer?: string;
 	exportFormat?: string;
+	outputDir?: string;
 	redactSecrets?: boolean;
+	valueWrite?: boolean;
 	junitPath?: string;
 	/** Open a real agent session backed by a scripted replay scenario. */
 	replayScenarioPath?: string;
@@ -69,6 +71,8 @@ const COMMANDS = new Set([
 	"models",
 	"cost",
 	"stats",
+	"value",
+	"mission",
 	"status",
 	"update",
 	"run",
@@ -99,6 +103,8 @@ const SUBCOMMAND_COMMANDS = new Set([
 	"models",
 	"cost",
 	"stats",
+	"value",
+	"mission",
 	"run",
 	"sessions",
 	"agents",
@@ -135,6 +141,7 @@ const FLAGS_WITH_VALUES = new Set([
 	"--tools",
 	"--composer",
 	"--format",
+	"--output-dir",
 	"--profile",
 	"--config",
 	"--junit",
@@ -340,8 +347,12 @@ export function parseArgs(args: string[]): Args {
 			result.composer = args[++i];
 		} else if (arg === "--format" && i + 1 < args.length) {
 			result.exportFormat = args[++i];
+		} else if (arg === "--output-dir" && i + 1 < args.length) {
+			result.outputDir = args[++i];
 		} else if (arg === "--redact-secrets") {
 			result.redactSecrets = true;
+		} else if (arg === "--write" && result.command === "value") {
+			result.valueWrite = true;
 		} else if (arg === "--junit" && i + 1 < args.length) {
 			result.junitPath = args[++i]!;
 		} else if (arg === "--replay" && i + 1 < args.length) {
@@ -409,6 +420,10 @@ export function parseArgs(args: string[]): Args {
 				) {
 					result.subcommand = nextArg;
 					i++;
+				}
+				if (arg === "agents" && result.subcommand === "profile") {
+					result.commandArgs = args.slice(i + 1);
+					break;
 				}
 				if (
 					arg === "remote" ||

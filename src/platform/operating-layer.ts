@@ -239,7 +239,10 @@ function normalizedList(values: string[] | undefined): string[] {
 export function buildOperatingLayerManifest(): OperatingLayerManifest {
 	return {
 		version: MAESTRO_OPERATING_LAYER_VERSION,
-		capabilities: OPERATING_LAYER_CAPABILITIES,
+		capabilities: OPERATING_LAYER_CAPABILITIES.map((capability) => ({
+			...capability,
+			evidenceKinds: [...capability.evidenceKinds],
+		})),
 	};
 }
 
@@ -362,11 +365,8 @@ export function evaluateExtensionGovernance(
 	if (policy.requireSignature && !candidate.signed) {
 		blockers.push("signature_required");
 	}
-	if (
-		policy.requirePinnedGitRef &&
-		candidate.source === "git" &&
-		!candidate.pinnedRef
-	) {
+	const pinnedRef = candidate.pinnedRef?.trim();
+	if (policy.requirePinnedGitRef && candidate.source === "git" && !pinnedRef) {
 		blockers.push("pinned_git_ref_required");
 	}
 
@@ -395,8 +395,8 @@ export function evaluateExtensionGovernance(
 	if (candidate.signed) {
 		reasons.push("signed");
 	}
-	if (candidate.pinnedRef) {
-		reasons.push(`pinned_ref:${candidate.pinnedRef}`);
+	if (pinnedRef) {
+		reasons.push(`pinned_ref:${pinnedRef}`);
 	}
 
 	return {
@@ -453,38 +453,47 @@ function buildScoreReport(
 	};
 }
 
-export const DEFAULT_RELEASE_CANARY_STAGES: ReleaseCanaryStage[] = [
-	{
-		id: "local_release_gate",
-		name: "Local release gate",
-		requires: [],
-		evidenceKinds: ["lint", "test", "build", "release.check"],
-	},
-	{
-		id: "publish_package",
-		name: "Publish package",
-		requires: ["local_release_gate"],
-		evidenceKinds: ["npm.publish", "git.tag", "github.release"],
-	},
-	{
-		id: "registry_install_smoke",
-		name: "Registry install smoke",
-		requires: ["publish_package"],
-		evidenceKinds: ["npm.install", "cli.smoke"],
-	},
-	{
-		id: "published_replay_evidence",
-		name: "Published replay evidence",
-		requires: ["registry_install_smoke"],
-		evidenceKinds: ["replay.e2e", "evidence.verify"],
-	},
-	{
-		id: "release_notification",
-		name: "Release notification",
-		requires: ["published_replay_evidence"],
-		evidenceKinds: ["release.notes", "channel.notification"],
-	},
-];
+export const DEFAULT_RELEASE_CANARY_STAGES: ReleaseCanaryStage[] =
+	Object.freeze(
+		[
+			{
+				id: "local_release_gate",
+				name: "Local release gate",
+				requires: [],
+				evidenceKinds: ["lint", "test", "build", "release.check"],
+			},
+			{
+				id: "publish_package",
+				name: "Publish package",
+				requires: ["local_release_gate"],
+				evidenceKinds: ["npm.publish", "git.tag", "github.release"],
+			},
+			{
+				id: "registry_install_smoke",
+				name: "Registry install smoke",
+				requires: ["publish_package"],
+				evidenceKinds: ["npm.install", "cli.smoke"],
+			},
+			{
+				id: "published_replay_evidence",
+				name: "Published replay evidence",
+				requires: ["registry_install_smoke"],
+				evidenceKinds: ["replay.e2e", "evidence.verify"],
+			},
+			{
+				id: "release_notification",
+				name: "Release notification",
+				requires: ["published_replay_evidence"],
+				evidenceKinds: ["release.notes", "channel.notification"],
+			},
+		].map((stage) =>
+			Object.freeze({
+				...stage,
+				requires: Object.freeze([...stage.requires]) as string[],
+				evidenceKinds: Object.freeze([...stage.evidenceKinds]) as string[],
+			}),
+		),
+	) as ReleaseCanaryStage[];
 
 export function buildReleaseCanaryPlan(
 	stages?: ReleaseCanaryStage[],

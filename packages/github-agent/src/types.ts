@@ -164,11 +164,32 @@ export interface GitHubAgentEvidence {
 	durationMs: number;
 	tokensUsed?: number;
 	cost?: number;
+	qualityGates: GitHubAgentQualityGateEvidence[];
+	runSummary: GitHubAgentRunSummary;
 	verifier: {
 		name: "deploy/scripts/check-agent-action-pr-lane.py";
 		requiredOutput: "pull_request";
 		prOnly: true;
 	};
+}
+
+export interface GitHubAgentQualityGateEvidence {
+	id: "typecheck" | "lint" | "tests" | "selfReview";
+	label: string;
+	status: "passed" | "failed" | "skipped" | "unknown";
+}
+
+export interface GitHubAgentRunSummary {
+	schemaVersion: "evalops.maestro.agent-run-summary.v1";
+	id: string;
+	status: "completed" | "failed";
+	durationMs: number;
+	summary: string;
+	usage?: {
+		totalTokens?: number;
+		estimatedCostUsd?: number;
+	};
+	truncated?: boolean;
 }
 
 /**

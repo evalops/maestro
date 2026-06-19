@@ -33,6 +33,15 @@ describe("operating layer primitives", () => {
 				(capability) => capability.evidenceKinds.length > 0,
 			),
 		).toBe(true);
+
+		manifest.capabilities[0]!.evidenceKinds.push("mutated");
+		manifest.capabilities.sort((a, b) => b.id.localeCompare(a.id));
+		expect(buildOperatingLayerManifest().capabilities[0]!.id).toBe(
+			"protocol-boundary",
+		);
+		expect(
+			buildOperatingLayerManifest().capabilities[0]!.evidenceKinds,
+		).toEqual(["protocol.version", "protocol.contract", "protocol.owner"]);
 	});
 
 	it("turns protocol surfaces into explicit versioned boundaries", () => {
@@ -307,6 +316,7 @@ describe("operating layer primitives", () => {
 					id: "plugin-2",
 					source: "git",
 					requestedScopes: ["secrets:read"],
+					pinnedRef: " ",
 				},
 				{
 					allowedSources: ["git"],
@@ -322,6 +332,17 @@ describe("operating layer primitives", () => {
 				"scope_not_allowed:secrets:read",
 			]),
 		);
+
+		expect(
+			evaluateExtensionGovernance(
+				{
+					id: "plugin-3",
+					source: "git",
+					pinnedRef: "  refs/tags/v1.0.0  ",
+				},
+				{ requirePinnedGitRef: true },
+			).reasons,
+		).toContain("pinned_ref:refs/tags/v1.0.0");
 	});
 
 	it("builds readiness and effectiveness scorecards with blockers and warnings", () => {
@@ -363,6 +384,17 @@ describe("operating layer primitives", () => {
 			"release_notification",
 		]);
 		expect(plan.blockers).toEqual([]);
+		expect(() => {
+			DEFAULT_RELEASE_CANARY_STAGES.push({
+				id: "mutated",
+				name: "Mutated",
+				requires: [],
+				evidenceKinds: [],
+			});
+		}).toThrow(TypeError);
+		expect(() => {
+			DEFAULT_RELEASE_CANARY_STAGES[0]!.requires.push("mutated");
+		}).toThrow(TypeError);
 		plan.stages[0]!.requires.push("mutated");
 		plan.stages[1]!.evidenceKinds.push("mutated");
 		expect(buildReleaseCanaryPlan().stages[0]!.requires).toEqual([]);

@@ -201,7 +201,16 @@ export function readJsonFile<T = unknown>(
 					error: result.error.message,
 				});
 				if (rotateOnParseFail) {
-					rotateCorruptJsonFile(path);
+					const rotatedPath = rotateCorruptJsonFile(path, content);
+					if (!rotatedPath) {
+						const repairedContent = readTextFile(path, { fallback: "" });
+						if (repairedContent !== "" && repairedContent !== content) {
+							const repaired = safeJsonParse<T>(repairedContent, path);
+							if (repaired.success) {
+								return repaired.data;
+							}
+						}
+					}
 				}
 				return fallback;
 			}
@@ -228,8 +237,28 @@ export function readJsonFile<T = unknown>(
  * Returns the rotated path on success, `null` if the source file
  * didn't exist or the rotation failed.
  */
-export function rotateCorruptJsonFile(path: string): string | null {
+export function rotateCorruptJsonFile(
+	path: string,
+	expectedContent?: string,
+): string | null {
 	if (!fileExists(path)) return null;
+	if (expectedContent !== undefined) {
+		try {
+			const currentContent = readFileSync(path, "utf8");
+			if (currentContent !== expectedContent) {
+				logger.warn("Skipped corrupt JSON rotation; file changed after read", {
+					path,
+				});
+				return null;
+			}
+		} catch (error) {
+			logger.warn("Failed to re-read corrupt JSON before rotation", {
+				path,
+				error: error instanceof Error ? error.message : String(error),
+			});
+			return null;
+		}
+	}
 	const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
 	// Append per-call randomness so two processes parsing the same
 	// corrupt file in the same millisecond produce different rotated
