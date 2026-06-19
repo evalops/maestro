@@ -243,7 +243,7 @@ jobs:
               echo "Confirmed release workflow dispatch for ${RELEASE_TAG}; found ${release_run_count} matching dispatched run(s), up from ${existing_count} before dispatch."
               exit 0
             fi
-            if [[ "${dispatch_status}" == "0" && -n "${latest_release_run_id}" && "${latest_release_run_id}" != "${existing_latest_run_id}" ]]; then
+            if [[ "${dispatch_status}" == "0" && -n "${latest_release_run_id}" && "${latest_release_run_id}" -gt "${existing_latest_run_id:-0}" ]]; then
               echo "Confirmed release workflow dispatch for ${RELEASE_TAG}; latest matching dispatched run id is ${latest_release_run_id}, replacing ${existing_latest_run_id:-none} before dispatch."
               exit 0
             fi
