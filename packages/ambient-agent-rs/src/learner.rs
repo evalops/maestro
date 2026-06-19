@@ -355,7 +355,7 @@ impl Learner {
                 })
                 .then_with(|| left.0.key.cmp(&right.0.key))
         });
-        for (pattern, stats) in promotable.into_iter().take(2) {
+        for (pattern, stats) in promotable.iter().take(2) {
             recommendations.push(LearnerRecommendation {
                 kind: LearnerRecommendationKind::PromotePattern,
                 title: format!("Promote successful {} pattern", pattern.key),
@@ -371,7 +371,20 @@ impl Learner {
             });
         }
 
-        let mut problematic = self.problematic_pattern_stats(0.45);
+        // Exclude patterns already selected for promotion so a single pattern
+        // cannot appear in both promote and repair recommendations.
+        let promoted: Vec<(&PatternType, &String)> = promotable
+            .iter()
+            .take(2)
+            .map(|(pattern, _)| (&pattern.pattern_type, &pattern.key))
+            .collect();
+        let mut problematic: Vec<_> = self
+            .problematic_pattern_stats(0.45)
+            .into_iter()
+            .filter(|(pattern, _)| {
+                !promoted.contains(&(&pattern.pattern_type, &pattern.key))
+            })
+            .collect();
         problematic.sort_by(|left, right| {
             left.1
                 .success_rate
@@ -1066,5 +1079,50 @@ mod tests {
                 "{reason} should be quarantined as transient evidence"
             );
         }
+    }
+
+    #[tokio::test]
+    async fn test_recommendations_do_not_promote_and_repair_the_same_pattern() {
+        let temp = TempDir::new().unwrap();
+        let mut learner = Learner::new(temp.path().join("learner.json"));
+
+        // A pattern that succeeds often (promotable) but has a couple of
+        // durable failures. Without the promote-exclusion guard this could
+        // appear in both promote and repair.
+        for _ in 0..10 {
+            learner
+                .record_outcome(make_outcome(true, vec!["shared-bucket"]))
+                .await
+                .unwrap();
+        }
+        for _ in 0..2 {
+            let mut failure = make_outcome(false, vec!["shared-bucket"]);
+            failure.failure_reason = Some("syntax error in src/lib.rs".to_string());
+            learner.record_outcome(failure).await.unwrap();
+        }
+
+        let recommendations = learner.get_recommendations(10);
+        let promoted_keys: Vec<String> = recommendations
+            .iter()
+            .filter(|r| r.kind == LearnerRecommendationKind::PromotePattern)
+            .map(|r| r.title.clone())
+            .collect();
+        let repaired_keys: Vec<String> = recommendations
+            .iter()
+            .filter(|r| r.kind == LearnerRecommendationKind::RepairPattern)
+            .map(|r| r.title.clone())
+            .collect();
+        for promoted in &promoted_keys {
+            assert!(
+                !repaired_keys.iter().any(|repaired| repaired == promoted),
+                "pattern {promoted} appeared in both promote and repair"
+            );
+        }
+        assert!(
+            promoted_keys
+                .iter()
+                .any(|key| key.contains("shared-bucket")),
+            "shared-bucket should be promoted"
+        );
     }
 }
