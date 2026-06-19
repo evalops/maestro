@@ -115,8 +115,11 @@ impl Learner {
         outcome.normalize_costs();
         self.outcomes.push(outcome.clone());
 
-        // Update patterns
-        self.update_patterns(&outcome);
+        // Keep transient setup failures available for learner stats and advice
+        // without depressing long-lived routing confidence.
+        if !outcome_is_transient_failure(&outcome) {
+            self.update_patterns(&outcome);
+        }
 
         // Persist periodically
         if self.outcomes.len().is_multiple_of(10) {
@@ -348,6 +351,11 @@ impl Learner {
                 .success_rate
                 .total_cmp(&left.1.success_rate)
                 .then_with(|| right.1.sample_count.cmp(&left.1.sample_count))
+                .then_with(|| {
+                    recommendation_pattern_priority(&left.0.pattern_type)
+                        .cmp(&recommendation_pattern_priority(&right.0.pattern_type))
+                })
+                .then_with(|| left.0.key.cmp(&right.0.key))
         });
         for (pattern, stats) in promotable.into_iter().take(2) {
             recommendations.push(LearnerRecommendation {
@@ -550,6 +558,25 @@ struct PatternEvidenceStats {
     success_rate: f64,
 }
 
+fn recommendation_pattern_priority(pattern_type: &PatternType) -> u8 {
+    match pattern_type {
+        PatternType::Label => 0,
+        PatternType::Repo => 1,
+        PatternType::TaskType => 2,
+        PatternType::Complexity => 3,
+        PatternType::Model => 4,
+        PatternType::EventType => 5,
+    }
+}
+
+fn outcome_is_transient_failure(outcome: &LearnerOutcome) -> bool {
+    !outcome.success
+        && outcome
+            .failure_reason
+            .as_deref()
+            .is_some_and(is_transient_failure_reason)
+}
+
 fn is_transient_failure_reason(reason: &str) -> bool {
     let reason = reason.to_lowercase();
     [
@@ -665,6 +692,51 @@ mod tests {
             labels: labels.iter().map(|s| s.to_string()).collect(),
             repo: "test/repo".to_string(),
             timestamp: Utc::now(),
+        }
+    }
+
+    fn make_event(labels: Vec<&str>) -> NormalizedEvent {
+        let repo = Repository {
+            owner: "test".to_string(),
+            name: "repo".to_string(),
+            full_name: "test/repo".to_string(),
+            default_branch: "main".to_string(),
+            path: "/tmp/test-repo".to_string(),
+            url: "https://github.com/test/repo".to_string(),
+            config: None,
+            agent_md: None,
+            test_coverage: None,
+            codeowners: vec![],
+        };
+
+        NormalizedEvent {
+            id: "event-1".to_string(),
+            source: WatcherType::GitHubPoll,
+            event_type: EventType::Issue,
+            repo: repo.clone(),
+            repository: repo.full_name.clone(),
+            priority: 50,
+            title: "Test event".to_string(),
+            body: Some("Test body".to_string()),
+            labels: labels.iter().map(|label| label.to_string()).collect(),
+            context: EventContext {
+                repo,
+                history: vec![],
+                related: vec![],
+            },
+            payload: EventPayload {
+                title: Some("Test event".to_string()),
+                body: Some("Test body".to_string()),
+                number: Some(1),
+                labels: labels.iter().map(|label| label.to_string()).collect(),
+                author: Some("octocat".to_string()),
+                url: Some("https://github.com/test/repo/issues/1".to_string()),
+                extra: std::collections::HashMap::new(),
+            },
+            created_at: Utc::now(),
+            processed_at: None,
+            status: EventStatus::Pending,
+            flags: EventFlags::default(),
         }
     }
 
@@ -831,6 +903,22 @@ mod tests {
             recommendation.kind == LearnerRecommendationKind::PromotePattern
                 && recommendation.evidence.contains("non-transient sample")
         }));
+    }
+
+    #[tokio::test]
+    async fn test_transient_failures_do_not_adjust_confidence() {
+        let temp = TempDir::new().unwrap();
+        let mut learner = Learner::new(temp.path().join("learner.json"));
+
+        for _ in 0..3 {
+            let mut outcome = make_outcome(false, vec!["nightly"]);
+            outcome.failure_reason = Some("command not found: gh in fresh runner".to_string());
+            learner.record_outcome(outcome).await.unwrap();
+        }
+
+        let adjustment = learner.get_confidence_adjustment(&make_event(vec!["nightly"]));
+        assert_eq!(adjustment, 0.0);
+        assert!(learner.get_label_success_rate("nightly").is_none());
     }
 
     #[tokio::test]

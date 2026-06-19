@@ -220,6 +220,7 @@ describe("tag-release workflow", () => {
 			/gh run list\s+\\\n\s+--repo "\$\{GITHUB_REPOSITORY\}"/,
 		);
 		expect(dispatchStep?.run).toContain("dispatched_release_run_count()");
+		expect(dispatchStep?.run).toContain("latest_dispatched_release_run_id()");
 		expect(dispatchStep?.run).not.toContain(
 			"new_active_dispatched_release_run_count()",
 		);
@@ -231,10 +232,16 @@ describe("tag-release workflow", () => {
 			'retry "List dispatched release workflows" dispatched_release_run_count',
 		);
 		expect(dispatchStep?.run).toContain(
+			'retry "List latest dispatched release workflow id" latest_dispatched_release_run_id',
+		);
+		expect(dispatchStep?.run).toContain(
 			'retry "Dispatch release workflow" gh workflow run release',
 		);
 		expect(dispatchStep?.run).toContain(
 			'retry "Confirm dispatched release workflow" dispatched_release_run_count',
+		);
+		expect(dispatchStep?.run).toContain(
+			'retry "Confirm latest dispatched release workflow id" latest_dispatched_release_run_id',
 		);
 		expect(dispatchStep?.run).toContain("confirmation attempt ${attempt}/6");
 		expect(dispatchStep?.run).toContain("sleep 10");
@@ -252,10 +259,16 @@ describe("tag-release workflow", () => {
 		expect(dispatchStep?.run).toContain("dispatch_status=0");
 		expect(dispatchStep?.run).toContain("|| dispatch_status=$?");
 		expect(dispatchStep?.run).not.toContain("dispatch_started_at=");
+		expect(dispatchStep?.run).toContain("existing_latest_run_id=");
 		expect(dispatchStep?.run).toContain("release_run_count=");
+		expect(dispatchStep?.run).toContain("latest_release_run_id=");
 		expect(dispatchStep?.run).toContain("--json event,headBranch");
+		expect(dispatchStep?.run).toContain("--json databaseId,event,headBranch");
 		expect(dispatchStep?.run).toContain(
 			"if (( release_run_count > existing_count )); then",
+		);
+		expect(dispatchStep?.run).toContain(
+			'if [[ -n "${latest_release_run_id}" && "${latest_release_run_id}" != "${existing_latest_run_id}" ]]; then',
 		);
 		expect(dispatchStep?.run).toContain(
 			"up from ${existing_count} before dispatch",
@@ -267,6 +280,9 @@ describe("tag-release workflow", () => {
 		);
 		expect(dispatchedHelperBlock).toContain(
 			'select(.headBranch == \\"${RELEASE_TAG}\\" and .event == \\"workflow_dispatch\\")] | length',
+		);
+		expect(dispatchedHelperBlock).toContain(
+			'[.[] | select(.headBranch == \\"${RELEASE_TAG}\\" and .event == \\"workflow_dispatch\\") | .databaseId] | max // empty',
 		);
 		expect(dispatchedHelperBlock).not.toContain("createdAt");
 		expect(dispatchedHelperBlock).not.toContain("status !=");
