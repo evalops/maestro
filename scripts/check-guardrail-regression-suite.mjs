@@ -18,6 +18,11 @@ export const REQUIRED_GUARDRAIL_IDS = [
 	"opaque-git-parser-state",
 	"bounded-output-and-json-repair",
 	"a2a-ledger-evidence-parity",
+	"a2a-cancel-canonical-state-guard",
+	"a2a-compound-secret-redaction",
+	"a2a-history-rich-part-refresh",
+	"learner-transient-quarantine-parity",
+	"learner-promote-repair-consistency",
 ];
 
 export function loadGuardrailManifest(path = DEFAULT_GUARDRAIL_MANIFEST) {
@@ -151,6 +156,6 @@ function main() {
 	console.log(`Guardrail regression suite covers ${result.guardrailCount} bug class(es).`);
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+if (import.meta.url === pathToFileURL(process.argv[1]).href) {
 	main();
 }

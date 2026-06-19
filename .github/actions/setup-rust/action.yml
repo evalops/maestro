@@ -131,6 +131,15 @@ runs:
       with:
         workspaces: ${{ inputs.workspaces }}
 
+    - name: Configure Cargo network resilience
+      shell: bash
+      run: |
+        # Retry transient crates.io fetch failures and bound HTTP timeouts so
+        # spurious network errors (e.g. "download of ba/se/base64 failed") do
+        # not fail CI runs that would otherwise pass.
+        echo "CARGO_NET_RETRY=5" >> "$GITHUB_ENV"
+        echo "CARGO_HTTP_TIMEOUT=30" >> "$GITHUB_ENV"
+
     - name: Install cargo-llvm-cov
       if: ${{ inputs.install-cargo-llvm-cov == 'true' }}
       uses: taiki-e/install-action@d850aa816998e5cf15f67a78c7b933f2a5033f8a # v2.63.3

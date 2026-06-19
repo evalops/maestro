@@ -5409,7 +5409,7 @@ async fn a2a_task_load_preserves_rich_parts_when_history_message_is_refreshed() 
                                 "contextId": "ctx-rich-parts-refresh",
                                 "role": "ROLE_AGENT",
                                 "parts": [
-                                    { "text": "stale summary" },
+                                    { "text": "stale summary", "partId": "part-stale" },
                                     { "data": { "attachmentId": "artifact-rich-parts" } }
                                 ]
                             }
@@ -5451,6 +5451,12 @@ async fn a2a_task_load_preserves_rich_parts_when_history_message_is_refreshed() 
         text_part["text"],
         "stale summary",
         "stale plain-text part must not outlive the transcript refresh"
+    );
+    assert!(
+        !refreshed_parts_array
+            .iter()
+            .any(|part| part.get("partId").is_some()),
+        "decorated text part with partId must be replaced, not preserved with stale text"
     );
 }
 
