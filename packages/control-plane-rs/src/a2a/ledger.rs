@@ -992,6 +992,7 @@ fn a2a_ledger_metadata_key_is_secret(key: &str) -> bool {
     if a2a_ledger_metadata_key_is_token_metric(&normalized) {
         return false;
     }
+    // Explicit sensitive aliases redact regardless of position in the key.
     matches!(
         normalized.as_str(),
         "authorization"
@@ -1008,7 +1009,30 @@ fn a2a_ledger_metadata_key_is_secret(key: &str) -> bool {
             | "apikey"
             | "credentials"
             | "bearer"
-    ) || key == A2A_PUSH_NOTIFICATION_CONFIG_METADATA_KEY
+    ) || a2a_ledger_metadata_key_has_secret_suffix(&normalized)
+        || key == A2A_PUSH_NOTIFICATION_CONFIG_METADATA_KEY
+}
+
+/// Catch compound credential field names such as `webhookSecret`,
+/// `oauthToken`, or `apiPassword` that the exact-match list above would miss.
+/// Explicitly exclude negated names (`nonSecret`, `nonCredentials`,
+/// `notASecret`) so benign audit metadata is not stripped, and keep the
+/// token-metric carve-out above authoritative for token-count fields.
+fn a2a_ledger_metadata_key_has_secret_suffix(normalized: &str) -> bool {
+    const SECRET_SUFFIXES: [&str; 5] = ["secret", "token", "password", "apikey", "credentials"];
+    const NEGATION_PREFIXES: [&str; 3] = ["non", "not", "no"];
+    let Some(stem) = SECRET_SUFFIXES
+        .iter()
+        .find_map(|suffix| normalized.strip_suffix(suffix))
+    else {
+        return false;
+    };
+    if stem.is_empty() {
+        return false;
+    }
+    !NEGATION_PREFIXES
+        .iter()
+        .any(|prefix| stem.starts_with(prefix))
 }
 
 fn a2a_ledger_metadata_key_is_token_metric(normalized: &str) -> bool {

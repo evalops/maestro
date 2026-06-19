@@ -5494,6 +5494,114 @@ async fn a2a_task_load_refreshes_stale_status_from_embedded_history() {
 }
 
 #[tokio::test(flavor = "current_thread")]
+async fn a2a_task_store_preserves_canceled_task_across_canonical_state_aliases() {
+    let root = TestDir::new("a2a-task-canceled-canonical-aliases");
+    let base_state = test_app_state_with_sessions(HashMap::new());
+    let mut config = auth_test_config();
+    config.a2a_tasks_file_path = root.path().join("tasks.json");
+    let state = AppState {
+        config: Arc::new(config),
+        ..base_state
+    };
+
+    for alias in ["CANCELLED", "STATE_CANCELED", "TASK_STATE_CANCELLED", "canceled"] {
+        let task_id = format!("task-canceled-{alias}");
+        let canceled_task = a2a_task_value(
+            &task_id,
+            "ctx-canceled",
+            alias,
+            a2a_agent_message("ctx-canceled", "canceled by operator"),
+            Vec::new(),
+            Vec::new(),
+            serde_json::json!({ "workspaceId": "ws-canceled" }),
+        );
+        store_a2a_task_unless_canceled(&state, &task_id, canceled_task).await;
+
+        let completion_task = a2a_task_value(
+            &task_id,
+            "ctx-canceled",
+            "TASK_STATE_COMPLETED",
+            a2a_agent_message("ctx-canceled", "finished anyway"),
+            Vec::new(),
+            Vec::new(),
+            serde_json::json!({ "workspaceId": "ws-canceled" }),
+        );
+        let stored = store_a2a_task_unless_canceled(&state, &task_id, completion_task).await;
+
+        assert_eq!(
+            stored["status"]["state"],
+            alias,
+            "canceled task with alias {alias} must not be overwritten by a later store"
+        );
+        assert_ne!(
+            stored["status"]["state"],
+            "TASK_STATE_COMPLETED",
+            "canceled task with alias {alias} must not be replaced by completion"
+        );
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn a2a_task_ledger_redacts_compound_secret_metadata_keys() {
+    let root = TestDir::new("a2a-task-ledger-compound-secret-keys");
+    let base_state = test_app_state_with_sessions(HashMap::new());
+    let mut config = auth_test_config();
+    config.a2a_tasks_file_path = root.path().join("tasks.json");
+    let state = AppState {
+        config: Arc::new(config),
+        ..base_state
+    };
+    let task = a2a_task_value(
+        "task-compound-secrets",
+        "ctx-compound-secrets",
+        "TASK_STATE_COMPLETED",
+        a2a_agent_message("ctx-compound-secrets", "done"),
+        Vec::new(),
+        Vec::new(),
+        serde_json::json!({
+            "workspaceId": "ws-compound",
+            "nonSecret": "keep-visible",
+            "nonCredentials": "keep-visible-too",
+            "notASecret": "keep-visible-three",
+            "webhookSecret": "wh-secret-value",
+            "oauthToken": "oauth-token-value",
+            "apiPassword": "api-password-value",
+            "signingKey": "keep-visible-key"
+        }),
+    );
+    store_a2a_task_unless_canceled(&state, "task-compound-secrets", task).await;
+
+    let ledger: Value = serde_json::from_slice(
+        &tokio::fs::read(&state.config.a2a_tasks_file_path)
+            .await
+            .expect("ledger should be readable"),
+    )
+    .expect("ledger should be json");
+    let entry = ledger["tasks"]
+        .as_array()
+        .expect("ledger tasks should be an array")
+        .iter()
+        .find(|entry| entry["taskId"] == "task-compound-secrets")
+        .expect("control-plane row should exist");
+    let metadata = &entry["metadata"];
+    assert_eq!(metadata["workspaceId"], "ws-compound");
+    assert_eq!(metadata["nonSecret"], "keep-visible");
+    assert_eq!(metadata["nonCredentials"], "keep-visible-too");
+    assert_eq!(metadata["notASecret"], "keep-visible-three");
+    assert_eq!(metadata["signingKey"], "keep-visible-key");
+    assert!(metadata.get("webhookSecret").is_none(), "webhookSecret must be redacted");
+    assert!(metadata.get("oauthToken").is_none(), "oauthToken must be redacted");
+    assert!(metadata.get("apiPassword").is_none(), "apiPassword must be redacted");
+
+    let embedded_metadata = &entry["a2aTask"]["metadata"];
+    assert!(embedded_metadata.get("webhookSecret").is_none());
+    assert!(embedded_metadata.get("oauthToken").is_none());
+    assert!(embedded_metadata.get("apiPassword").is_none());
+    assert_eq!(embedded_metadata["nonSecret"], "keep-visible");
+    assert_eq!(embedded_metadata["signingKey"], "keep-visible-key");
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn a2a_task_store_preserves_in_flight_push_configs_for_reload() {
     let root = TestDir::new("a2a-task-ledger-push-config-reload");
     let base_state = test_app_state_with_sessions(HashMap::new());

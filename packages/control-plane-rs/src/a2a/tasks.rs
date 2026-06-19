@@ -969,6 +969,15 @@ pub(crate) fn a2a_task_is_terminal(task: &Value) -> bool {
         .is_some_and(|state| a2a_state_is_completed(state) || a2a_state_is_failed(state))
 }
 
+/// True when the task's status state canonicalizes to TASK_STATE_CANCELED.
+/// Accepts aliases such as `CANCELLED` or `STATE_CANCELED` that normalize to
+/// the canonical canceled state, so a canceled row is not overwritten by a
+/// later store or completion update.
+pub(crate) fn a2a_task_is_canceled(task: &Value) -> bool {
+    a2a_task_status_state(task)
+        .is_some_and(|state| canonical_a2a_task_state(state) == "TASK_STATE_CANCELED")
+}
+
 fn a2a_task_accepts_message(task: &Value) -> bool {
     a2a_task_status_state(task).is_some_and(a2a_state_is_input_required)
 }
@@ -1467,7 +1476,7 @@ async fn rollback_a2a_send_claim(state: &AppState, task_id: &str, previous_task:
 
 async fn a2a_canceled_task(state: &AppState, task_id: &str) -> Option<Value> {
     state.a2a_tasks.lock().await.get(task_id).and_then(|task| {
-        (a2a_task_status_state(task) == Some("TASK_STATE_CANCELED")).then(|| task.clone())
+        a2a_task_is_canceled(task).then(|| task.clone())
     })
 }
 
@@ -1478,7 +1487,7 @@ pub(crate) async fn store_a2a_task_unless_canceled(
 ) -> Value {
     let mut tasks = state.a2a_tasks.lock().await;
     if let Some(existing) = tasks.get(task_id) {
-        if a2a_task_status_state(existing) == Some("TASK_STATE_CANCELED") {
+        if a2a_task_is_canceled(existing) {
             return existing.clone();
         }
     }
