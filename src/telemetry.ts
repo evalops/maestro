@@ -858,9 +858,14 @@ async function persistTelemetry(event: TelemetryEvent) {
 		tasks.push(writeToFile(payload));
 	} else if (
 		config.endpoint === null &&
-		!hasRemoteMeterDestination(config.env)
+		(!hasRemoteMeterDestination(config.env) ||
+			!isCanonicalTurnTelemetryEvent(event))
 	) {
-		// Default to file storage when no endpoint is configured
+		// Default to file storage when no endpoint is configured. Canonical
+		// turns are mirrored to Meter above when a remote meter destination is
+		// configured, so we skip the default file only for those; non-canonical
+		// events (tool-execution, api-request, background-task, ...) still need
+		// a default sink or they would be silently dropped.
 		tasks.push(writeToFile(payload));
 	}
 

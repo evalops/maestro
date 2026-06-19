@@ -221,6 +221,7 @@ describe("tag-release workflow", () => {
 		);
 		expect(dispatchStep?.run).toContain("active_release_run_count()");
 		expect(dispatchStep?.run).toContain("dispatched_release_run_count()");
+		expect(dispatchStep?.run).toContain("latest_dispatched_release_run_id()");
 		expect(dispatchStep?.run).toContain("retry()");
 		expect(dispatchStep?.run).toContain(
 			'retry "List active release workflows" active_release_run_count',
@@ -233,6 +234,12 @@ describe("tag-release workflow", () => {
 		);
 		expect(dispatchStep?.run).toContain(
 			'retry "Confirm dispatched release workflow" dispatched_release_run_count',
+		);
+		expect(dispatchStep?.run).toContain(
+			'retry "Find latest dispatched release run" latest_dispatched_release_run_id',
+		);
+		expect(dispatchStep?.run).toContain(
+			'retry "Confirm latest dispatched release run" latest_dispatched_release_run_id',
 		);
 		expect(dispatchStep?.run).toContain("confirmation attempt ${attempt}/6");
 		expect(dispatchStep?.run).toContain(

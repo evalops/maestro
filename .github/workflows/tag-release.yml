@@ -196,6 +196,22 @@ jobs:
               --jq "[.[] | select(.headBranch == \"${RELEASE_TAG}\" and .event == \"workflow_dispatch\")] | length"
           }
 
+          # shellcheck disable=SC2317 # Invoked indirectly through retry.
+          # Returns the highest databaseId among dispatched release runs for the
+          # tag. databaseIds increase monotonically with creation time, so a
+          # newly dispatched run always produces a higher id than every prior
+          # run. This stays reliable even when `gh run list` caps the result
+          # window at --limit 50 and a tag already has 50+ matching dispatched
+          # runs (where the count-based confirmation below would not change).
+          latest_dispatched_release_run_id() {
+            gh run list \
+              --repo "${GITHUB_REPOSITORY}" \
+              --workflow release \
+              --json databaseId,event,headBranch \
+              --limit 50 \
+              --jq "([.[] | select(.headBranch == \"${RELEASE_TAG}\" and .event == \"workflow_dispatch\")] | max_by(.databaseId).databaseId) // \"\""
+          }
+
           retry() {
             local description="$1"
             shift
@@ -219,11 +235,20 @@ jobs:
             exit 0
           fi
           existing_count="$(retry "List dispatched release workflows" dispatched_release_run_count)"
+          existing_latest_id="$(retry "Find latest dispatched release run" latest_dispatched_release_run_id)"
           dispatch_status=0
           retry "Dispatch release workflow" gh workflow run release --repo "${GITHUB_REPOSITORY}" --ref "${RELEASE_TAG}" --field "version=${RELEASE_VERSION}" || dispatch_status=$?
 
           for attempt in 1 2 3 4 5 6; do
             release_run_count="$(retry "Confirm dispatched release workflow" dispatched_release_run_count)"
+            release_latest_id="$(retry "Confirm latest dispatched release run" latest_dispatched_release_run_id)"
+            # Prefer the latest-run-id check: it stays reliable even when the
+            # dispatched-run window is capped at --limit 50 and a tag already
+            # has 50+ matching dispatched runs (count would not change).
+            if [[ -n "${release_latest_id}" && "${release_latest_id}" != "${existing_latest_id}" ]]; then
+              echo "Confirmed release workflow dispatch for ${RELEASE_TAG}; latest dispatched run is ${release_latest_id} (was ${existing_latest_id:-none}), with ${release_run_count} matching dispatched run(s) in the window."
+              exit 0
+            fi
             if (( release_run_count > existing_count )); then
               echo "Confirmed release workflow dispatch for ${RELEASE_TAG}; found ${release_run_count} matching dispatched run(s), up from ${existing_count} before dispatch."
               exit 0

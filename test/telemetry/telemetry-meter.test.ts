@@ -1,4 +1,4 @@
-import { access, mkdtemp } from "node:fs/promises";
+import { access, mkdtemp, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -110,6 +110,47 @@ describe("telemetry meter integration", () => {
 
 		expect(fetchMock).toHaveBeenCalledTimes(1);
 		await expect(access(join(maestroHome, "telemetry.log"))).rejects.toThrow();
+	});
+
+	it("still writes non-canonical events to the default file for meter-only destinations", async () => {
+		const maestroHome = await mkdtemp(
+			join(tmpdir(), "maestro-meter-non-canonical-"),
+		);
+		vi.stubEnv("MAESTRO_HOME", maestroHome);
+		vi.stubEnv("MAESTRO_DISABLE_KEYCHAIN", "1");
+		vi.stubEnv("MAESTRO_TELEMETRY_FILE", "");
+		vi.stubEnv("PLAYWRIGHT_TELEMETRY_FILE", "");
+		vi.stubEnv("MAESTRO_TELEMETRY_ENDPOINT", "");
+		vi.stubEnv("PLAYWRIGHT_TELEMETRY_ENDPOINT", "");
+		vi.stubEnv("MAESTRO_METER_BASE", "http://meter.test");
+		vi.stubEnv("MAESTRO_METER_ACCESS_TOKEN", "meter-token");
+		vi.stubEnv("MAESTRO_EVALOPS_ORG_ID", "org_evalops");
+		const fetchMock = vi.fn(async () => new Response("{}", { status: 200 }));
+		vi.stubGlobal("fetch", fetchMock);
+
+		const telemetry = await import("../../src/telemetry.js");
+
+		const nonCanonicalEvent = {
+			type: "tool-execution" as const,
+			timestamp: "2026-06-18T13:45:00.000Z",
+			sessionId: "session-123",
+			toolName: "read",
+			success: true,
+			durationMs: 42,
+		};
+
+		await telemetry.recordTelemetry(nonCanonicalEvent);
+
+		// Meter only mirrors canonical turns, so a non-canonical event must
+		// not hit the meter endpoint.
+		expect(fetchMock).toHaveBeenCalledTimes(0);
+
+		// The default telemetry file must capture the non-canonical event so it
+		// is not silently dropped when only a meter destination is configured.
+		const telemetryLogPath = join(maestroHome, "telemetry.log");
+		const fileContents = await readFile(telemetryLogPath, "utf8");
+		expect(fileContents).toContain("tool-execution");
+		expect(fileContents).toContain('"toolName":"read"');
 	});
 
 	it("refreshes meter-backed enablement when OAuth credentials appear later", async () => {
