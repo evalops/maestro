@@ -403,6 +403,34 @@ describe("operating layer primitives", () => {
 		expect(
 			buildReleaseCanaryPlan([
 				{
+					id: "a",
+					name: "A",
+					requires: ["b"],
+					evidenceKinds: ["a"],
+				},
+				{
+					id: "b",
+					name: "B",
+					requires: ["a"],
+					evidenceKinds: ["b"],
+				},
+				{
+					id: "a",
+					name: "A duplicate",
+					requires: [],
+					evidenceKinds: ["a"],
+				},
+			]).blockers,
+		).toEqual(
+			expect.arrayContaining([
+				"duplicate_stage:a",
+				"out_of_order_stage:a:b",
+				"cycle:a>b>a",
+			]),
+		);
+		expect(
+			buildReleaseCanaryPlan([
+				{
 					id: "publish_package",
 					name: "Publish package",
 					requires: ["local_release_gate"],

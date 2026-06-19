@@ -8,9 +8,12 @@ export function parseFeedbackAuditArgs(argv) {
 		alsoPublic: [],
 		check: false,
 		includeResolved: false,
+		limit: 20,
 		prs: [],
+		recentDays: 0,
 		repo: "",
 	};
+	let sawLimit = false;
 
 	for (let index = 0; index < argv.length; index += 1) {
 		const arg = argv[index];
@@ -24,6 +27,13 @@ export function parseFeedbackAuditArgs(argv) {
 			case "--include-resolved":
 				args.includeResolved = true;
 				break;
+			case "--limit":
+				args.limit = Number(argv[++index] ?? "");
+				sawLimit = true;
+				break;
+			case "--recent-days":
+				args.recentDays = Number(argv[++index] ?? "");
+				break;
 			case "--repo":
 				args.repo = argv[++index] ?? "";
 				break;
@@ -35,13 +45,37 @@ export function parseFeedbackAuditArgs(argv) {
 		}
 	}
 
-	if (args.prs.length === 0) {
+	if (!Number.isInteger(args.limit) || args.limit <= 0) {
+		throw new Error("--limit must be a positive integer");
+	}
+	if (
+		args.recentDays !== 0 &&
+		(!Number.isInteger(args.recentDays) || args.recentDays <= 0)
+	) {
+		throw new Error("--recent-days must be a positive integer");
+	}
+	if (args.recentDays > 0 && !sawLimit) {
+		args.limit = Number.MAX_SAFE_INTEGER;
+	}
+	if (args.prs.length === 0 && args.recentDays === 0) {
 		throw new Error(
-			"Usage: node scripts/pr-feedback-audit.mjs [--repo owner/name] [--check] [--include-resolved] [--also-public public-pr] <pr-number-or-url> [...]",
+			"Usage: node scripts/pr-feedback-audit.mjs [--repo owner/name] [--check] [--include-resolved] [--recent-days days] [--limit count] [--also-public public-pr] <pr-number-or-url> [...]",
 		);
 	}
 
 	return args;
+}
+
+function targetKey(target) {
+	return `${target.owner}/${target.repo}#${target.number}`;
+}
+
+export function dedupeFeedbackAuditTargets(targets) {
+	const byKey = new Map();
+	for (const target of targets) {
+		byKey.set(targetKey(target), target);
+	}
+	return [...byKey.values()];
 }
 
 function parsePullRequestInput(value) {
@@ -174,6 +208,58 @@ function fetchReviewThreads(owner, repo, number) {
 	return threads;
 }
 
+export function fetchRecentPullTargets(owner, repo, days, limit, requestJson = ghJson) {
+	if (days === 0 || limit <= 0) {
+		return [];
+	}
+	const cutoff = Date.now() - days * 24 * 60 * 60 * 1000;
+	const perPage = Math.min(limit, 100);
+	const targets = [];
+	let page = 1;
+
+	while (true) {
+		const remaining = limit - targets.length;
+		if (remaining <= 0) {
+			return targets;
+		}
+		const pulls = requestJson([
+			"api",
+			"-H",
+			"Accept: application/vnd.github+json",
+			`repos/${owner}/${repo}/pulls?state=all&sort=updated&direction=desc&per_page=${perPage}&page=${page}`,
+		]);
+		if (!Array.isArray(pulls)) {
+			throw new Error("Malformed GitHub pull request API response");
+		}
+		let reachedCutoff = false;
+		const candidates = pulls
+			.filter((pull) => {
+				const updatedAt = Date.parse(String(pull?.updated_at ?? ""));
+				const state = String(pull?.state ?? "");
+				if (Number.isFinite(updatedAt) && updatedAt < cutoff) {
+					reachedCutoff = true;
+					return false;
+				}
+				return (
+					Number.isFinite(updatedAt) &&
+					updatedAt >= cutoff &&
+					(state === "open" || state === "closed")
+				);
+			})
+			.map((pull) => ({
+				number: Number(pull.number),
+				owner,
+				repo,
+			}))
+			.filter((target) => Number.isInteger(target.number) && target.number > 0);
+		targets.push(...candidates.slice(0, remaining));
+		if (reachedCutoff || candidates.length === 0 || pulls.length < perPage) {
+			return targets;
+		}
+		page += 1;
+	}
+}
+
 function summarizeBody(body) {
 	return String(body ?? "")
 		.replace(/\s+/g, " ")
@@ -207,11 +293,23 @@ function main() {
 		const input = parsePullRequestInput(value);
 		return !input.owner || !input.repo;
 	});
-	const currentRepo = defaultRepo || (needsDefaultRepo ? resolveRepo("") : "");
+	const needsRecentRepo = args.recentDays > 0;
+	const currentRepo =
+		defaultRepo || (needsDefaultRepo || needsRecentRepo ? resolveRepo("") : "");
 	const targets = collectFeedbackAuditTargets(args, currentRepo);
+	if (args.recentDays > 0) {
+		const [owner, repo] = currentRepo.split("/");
+		if (!owner || !repo) {
+			throw new Error(`Expected repo as owner/name, got ${currentRepo}`);
+		}
+		targets.push(
+			...fetchRecentPullTargets(owner, repo, args.recentDays, args.limit),
+		);
+	}
+	const uniqueTargets = dedupeFeedbackAuditTargets(targets);
 
 	let unresolvedCount = 0;
-	for (const input of targets) {
+	for (const input of uniqueTargets) {
 		const threads = fetchReviewThreads(input.owner, input.repo, input.number);
 		const visibleThreads = args.includeResolved
 			? threads

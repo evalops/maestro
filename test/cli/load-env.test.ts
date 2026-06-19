@@ -9,6 +9,7 @@ import {
 } from "../../src/load-env.js";
 import {
 	defaultRuntimeEnv,
+	isRuntimeEnvFinalized,
 	resetDefaultRuntimeEnvForTests,
 } from "../../src/runtime/env.js";
 
@@ -508,6 +509,7 @@ describe("loadEnv", () => {
 		const { scrubbedEnvKeys } = loadAndFinalizeEnv();
 		const rebuilt = defaultRuntimeEnv();
 
+		expect(isRuntimeEnvFinalized()).toBe(true);
 		expect(new Set(scrubbedEnvKeys)).toEqual(
 			new Set([
 				"MAESTRO_OTEL",

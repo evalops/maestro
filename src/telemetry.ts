@@ -8,7 +8,7 @@ import {
 	initOpenTelemetry,
 	isOpenTelemetryEnabled,
 } from "./opentelemetry.js";
-import { defaultRuntimeEnv } from "./runtime/env.js";
+import { type RuntimeEnv, defaultRuntimeEnv } from "./runtime/env.js";
 import { isInternalTelemetryDisabled } from "./telemetry/disablement.js";
 import {
 	type MaestroCorrelation,
@@ -272,30 +272,51 @@ type TelemetryEvent =
 	| CanonicalTurnEventBase
 	| CanonicalTurnEvent;
 
-// Substrate snapshot for the OpenTelemetry exporter. Captured once at
-// module load so the rest of this file's module-level constants (whose
-// values feed `getTelemetryStatus`) share one consistent view of env.
-// The `defaultRuntimeEnv()` cache means tests that mutate `process.env`
-// and call `resetDefaultRuntimeEnvForTests()` between cases see fresh
-// snapshots; production sees one stable snapshot.
-const exporterRuntimeEnv = defaultRuntimeEnv();
-const telemetryFileEnv = exporterRuntimeEnv.exporterFile;
-const telemetryEndpointEnv = exporterRuntimeEnv.exporterEndpoint;
-// `telemetryFlag` is kept as the raw string for `getTelemetryStatus`'s
-// `flagValue` field — UI surfaces and diagnostics show the literal user
-// setting, not the parsed tri-state.
-const telemetryFlag = exporterRuntimeEnv.telemetryFlag;
-const telemetrySampleRate = exporterRuntimeEnv.telemetrySampleRate;
+interface ExporterRuntimeConfig {
+	env: RuntimeEnv;
+	file: string | null;
+	endpoint: string | null;
+	flag: string | null;
+	sampleRate: number;
+}
 
-const shouldEnableTelemetry = (): boolean => {
-	if (exporterRuntimeEnv.telemetryEnabled === false) return false;
-	if (exporterRuntimeEnv.telemetryEnabled === true) return true;
-	return Boolean(
-		telemetryEndpointEnv || telemetryFileEnv || hasRemoteMeterDestination(),
-	);
-};
-const initialTelemetryEnabled = shouldEnableTelemetry();
-let telemetryEnabled = initialTelemetryEnabled;
+let exporterRuntimeConfig: ExporterRuntimeConfig | null = null;
+
+function createExporterRuntimeConfig(env: RuntimeEnv): ExporterRuntimeConfig {
+	const file = env.exporterFile;
+	const endpoint = env.exporterEndpoint;
+	return {
+		endpoint,
+		env,
+		file,
+		flag: env.telemetryFlag,
+		// `RuntimeEnv.telemetrySampleRate` is already parsed and clamped to
+		// `[0, 1]`; `null` means no signal, treated as full-sampling.
+		sampleRate: env.telemetrySampleRate ?? 1,
+	};
+}
+
+function getExporterRuntimeConfig(): ExporterRuntimeConfig {
+	const env = defaultRuntimeEnv();
+	if (!exporterRuntimeConfig || exporterRuntimeConfig.env !== env) {
+		exporterRuntimeConfig = createExporterRuntimeConfig(env);
+	}
+	return exporterRuntimeConfig;
+}
+
+function shouldEnableTelemetryForEnv(
+	env: RuntimeEnv,
+	file: string | null,
+	endpoint: string | null,
+): boolean {
+	if (env.telemetryEnabled === false) return false;
+	if (env.telemetryEnabled === true) return true;
+	return Boolean(endpoint || file || hasRemoteMeterDestination());
+}
+
+const shouldEnableTelemetry = (config = getExporterRuntimeConfig()): boolean =>
+	shouldEnableTelemetryForEnv(config.env, config.file, config.endpoint);
+
 let telemetryOverride: boolean | null = null;
 let telemetryOverrideReason: string | undefined;
 
@@ -312,10 +333,6 @@ const A2A_PHASE_EVENT_TYPES: Record<
 	push_received: MaestroBusEventType.A2APushReceived,
 	evidence_completed: MaestroBusEventType.A2AEvidenceCompleted,
 };
-
-// `RuntimeEnv.telemetrySampleRate` is already parsed and clamped to
-// `[0, 1]`; `null` means no signal, treated as full-sampling.
-const samplingRate = telemetrySampleRate ?? 1;
 
 const defaultTelemetryFile = PATHS.TELEMETRY_LOG;
 const toolFailureLogFile = PATHS.TOOL_FAILURE_LOG;
@@ -334,17 +351,19 @@ export interface TelemetryStatus {
 }
 
 export function getTelemetryStatus(): TelemetryStatus {
+	const config = getExporterRuntimeConfig();
 	let reason = "disabled";
-	const baseEnabled = initialTelemetryEnabled && samplingRate > 0;
-	if (!shouldEnableTelemetry()) {
+	const telemetryEnabled = shouldEnableTelemetry(config);
+	const baseEnabled = telemetryEnabled && config.sampleRate > 0;
+	if (!telemetryEnabled) {
 		reason = "flag disabled";
-	} else if (samplingRate === 0) {
+	} else if (config.sampleRate === 0) {
 		reason = "sampling=0";
-	} else if (telemetryEndpointEnv) {
+	} else if (config.endpoint) {
 		reason = "endpoint";
 	} else if (hasRemoteMeterDestination()) {
 		reason = "meter";
-	} else if (telemetryFileEnv || baseEnabled) {
+	} else if (config.file || baseEnabled) {
 		reason = "file";
 	}
 	const runtimeOverride =
@@ -355,12 +374,14 @@ export function getTelemetryStatus(): TelemetryStatus {
 				: "disabled";
 
 	return {
-		enabled: telemetryEnabled && samplingRate > 0,
+		enabled:
+			(telemetryOverride === null ? telemetryEnabled : telemetryOverride) &&
+			config.sampleRate > 0,
 		reason,
-		endpoint: telemetryEndpointEnv ?? undefined,
-		filePath: telemetryFileEnv ?? defaultTelemetryFile,
-		sampleRate: samplingRate,
-		flagValue: telemetryFlag ?? undefined,
+		endpoint: config.endpoint ?? undefined,
+		filePath: config.file ?? defaultTelemetryFile,
+		sampleRate: config.sampleRate,
+		flagValue: config.flag ?? undefined,
 		runtimeOverride,
 		overrideReason: telemetryOverrideReason,
 	};
@@ -372,7 +393,6 @@ export function setTelemetryRuntimeOverride(
 ): void {
 	telemetryOverride = enabled;
 	telemetryOverrideReason = reason;
-	telemetryEnabled = enabled === null ? initialTelemetryEnabled : enabled;
 }
 
 function normalizeTelemetryEventMetadata(
@@ -416,7 +436,7 @@ function isCanonicalTurnTelemetryEvent(
 }
 
 async function writeToFile(payload: string) {
-	const filePath = telemetryFileEnv || defaultTelemetryFile;
+	const filePath = getExporterRuntimeConfig().file || defaultTelemetryFile;
 	await mkdir(dirname(filePath), { recursive: true });
 	await appendFile(filePath, `${payload}\n`, "utf-8");
 }
@@ -427,7 +447,7 @@ async function appendToolFailure(payload: string): Promise<void> {
 }
 
 async function postToEndpoint(payload: string) {
-	const endpoint = telemetryEndpointEnv;
+	const endpoint = getExporterRuntimeConfig().endpoint;
 	if (!endpoint) {
 		return;
 	}
@@ -822,6 +842,7 @@ function maestroCorrelationSpanAttributes(
 }
 
 async function persistTelemetry(event: TelemetryEvent) {
+	const config = getExporterRuntimeConfig();
 	const payload = JSON.stringify(event);
 	const tasks: Promise<void>[] = [];
 
@@ -829,14 +850,22 @@ async function persistTelemetry(event: TelemetryEvent) {
 		tasks.push(mirrorCanonicalTurnEventToMeter(event).then(() => undefined));
 	}
 
-	if (telemetryEndpointEnv) {
+	if (config.endpoint) {
 		tasks.push(postToEndpoint(payload));
 	}
 
-	if (telemetryEndpointEnv === undefined) {
-		// Default to file storage when no endpoint is configured
+	if (config.file) {
 		tasks.push(writeToFile(payload));
-	} else if (telemetryFileEnv) {
+	} else if (
+		config.endpoint === null &&
+		(!hasRemoteMeterDestination(config.env) ||
+			!isCanonicalTurnTelemetryEvent(event))
+	) {
+		// Default to file storage when no endpoint is configured. Canonical
+		// turns are mirrored to Meter above when a remote meter destination is
+		// configured, so we skip the default file only for those; non-canonical
+		// events (tool-execution, api-request, background-task, ...) still need
+		// a default sink or they would be silently dropped.
 		tasks.push(writeToFile(payload));
 	}
 
@@ -875,6 +904,7 @@ export async function recordTelemetry(event: TelemetryEvent): Promise<void> {
 	if (isInternalTelemetryDisabled()) {
 		return;
 	}
+	const config = getExporterRuntimeConfig();
 
 	const normalizedEvent = normalizeTelemetryEventMetadata(event);
 	const openTelemetryEnabled = isOpenTelemetryEnabled();
@@ -884,13 +914,16 @@ export async function recordTelemetry(event: TelemetryEvent): Promise<void> {
 	}
 	const eventBusTask = mirrorTelemetryToMaestroEventBus(normalizedEvent);
 
-	const legacyEnabled = telemetryEnabled && samplingRate > 0;
+	const legacyEnabled =
+		(telemetryOverride === null
+			? shouldEnableTelemetry(config)
+			: telemetryOverride) && config.sampleRate > 0;
 	if (!legacyEnabled) {
 		await eventBusTask;
 		return;
 	}
 
-	if (samplingRate < 1 && Math.random() > samplingRate) {
+	if (config.sampleRate < 1 && Math.random() > config.sampleRate) {
 		await eventBusTask;
 		return;
 	}

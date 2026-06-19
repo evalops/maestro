@@ -309,9 +309,35 @@ export function createRuntimeEnv(raw: NodeJS.ProcessEnv): RuntimeEnv {
 
 type ProcessWithRuntimeEnvCache = typeof process & {
 	__MAESTRO_DEFAULT_RUNTIME_ENV__?: RuntimeEnv;
+	__MAESTRO_RUNTIME_ENV_EARLY_ACCESS_WARNED__?: boolean;
+	__MAESTRO_RUNTIME_ENV_FINALIZED__?: boolean;
 };
 
 const processWithRuntimeEnvCache = process as ProcessWithRuntimeEnvCache;
+
+function isTestProcess(): boolean {
+	return process.env.NODE_ENV === "test" || process.env.VITEST === "true";
+}
+
+function maybeReportEarlyRuntimeEnvAccess(): void {
+	if (processWithRuntimeEnvCache.__MAESTRO_RUNTIME_ENV_FINALIZED__) {
+		return;
+	}
+	const message =
+		"defaultRuntimeEnv() was read before loadAndFinalizeEnv() completed. " +
+		"Bootstrap entry points must finish dotenv loading and security scrubbing before runtime env snapshots are created.";
+	if (process.env.MAESTRO_RUNTIME_ENV_STRICT_BOOTSTRAP === "1") {
+		throw new Error(message);
+	}
+	if (
+		isTestProcess() ||
+		processWithRuntimeEnvCache.__MAESTRO_RUNTIME_ENV_EARLY_ACCESS_WARNED__
+	) {
+		return;
+	}
+	processWithRuntimeEnvCache.__MAESTRO_RUNTIME_ENV_EARLY_ACCESS_WARNED__ = true;
+	console.warn(`[maestro] ${message}`);
+}
 
 /**
  * Return the process-wide snapshot of `process.env`.
@@ -327,11 +353,24 @@ const processWithRuntimeEnvCache = process as ProcessWithRuntimeEnvCache;
  * the migration.
  */
 export function defaultRuntimeEnv(): RuntimeEnv {
+	maybeReportEarlyRuntimeEnvAccess();
 	if (!processWithRuntimeEnvCache.__MAESTRO_DEFAULT_RUNTIME_ENV__) {
 		processWithRuntimeEnvCache.__MAESTRO_DEFAULT_RUNTIME_ENV__ =
 			createRuntimeEnv(process.env);
 	}
 	return processWithRuntimeEnvCache.__MAESTRO_DEFAULT_RUNTIME_ENV__;
+}
+
+export function markRuntimeEnvFinalized(): void {
+	processWithRuntimeEnvCache.__MAESTRO_RUNTIME_ENV_FINALIZED__ = true;
+	Reflect.deleteProperty(
+		processWithRuntimeEnvCache,
+		"__MAESTRO_RUNTIME_ENV_EARLY_ACCESS_WARNED__",
+	);
+}
+
+export function isRuntimeEnvFinalized(): boolean {
+	return processWithRuntimeEnvCache.__MAESTRO_RUNTIME_ENV_FINALIZED__ === true;
 }
 
 /**
@@ -349,4 +388,14 @@ export function resetDefaultRuntimeEnv(): void {
 	);
 }
 
-export const resetDefaultRuntimeEnvForTests = resetDefaultRuntimeEnv;
+export function resetDefaultRuntimeEnvForTests(): void {
+	resetDefaultRuntimeEnv();
+	Reflect.deleteProperty(
+		processWithRuntimeEnvCache,
+		"__MAESTRO_RUNTIME_ENV_FINALIZED__",
+	);
+	Reflect.deleteProperty(
+		processWithRuntimeEnvCache,
+		"__MAESTRO_RUNTIME_ENV_EARLY_ACCESS_WARNED__",
+	);
+}
