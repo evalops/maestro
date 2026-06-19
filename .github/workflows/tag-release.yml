@@ -198,18 +198,20 @@ jobs:
 
           # shellcheck disable=SC2317 # Invoked indirectly through retry.
           # Returns the highest databaseId among dispatched release runs for the
-          # tag. databaseIds increase monotonically with creation time, so a
-          # newly dispatched run always produces a higher id than every prior
-          # run. This stays reliable even when `gh run list` caps the result
-          # window at --limit 50 and a tag already has 50+ matching dispatched
-          # runs (where the count-based confirmation below would not change).
+          # tag, or an empty string when none exist. databaseIds increase
+          # monotonically with creation time, so a newly dispatched run always
+          # produces a higher id than every prior run. This stays reliable even
+          # when `gh run list` caps the result window at --limit 50 and a tag
+          # already has 50+ matching dispatched runs (where the count-based
+          # confirmation below would not change). The explicit length guard
+          # avoids `max_by` erroring on an empty array under `set -euo pipefail`.
           latest_dispatched_release_run_id() {
             gh run list \
               --repo "${GITHUB_REPOSITORY}" \
               --workflow release \
               --json databaseId,event,headBranch \
               --limit 50 \
-              --jq "([.[] | select(.headBranch == \"${RELEASE_TAG}\" and .event == \"workflow_dispatch\")] | max_by(.databaseId).databaseId) // \"\""
+              --jq "([.[] | select(.headBranch == \"${RELEASE_TAG}\" and .event == \"workflow_dispatch\")] | if length == 0 then \"\" else (max_by(.databaseId).databaseId | tostring) end)"
           }
 
           retry() {
