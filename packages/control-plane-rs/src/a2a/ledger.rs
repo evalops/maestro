@@ -228,10 +228,41 @@ fn a2a_refresh_history_message(existing: &mut Value, candidate: &Value) {
     if let (Some(existing_object), Some(candidate_object)) =
         (existing.as_object_mut(), candidate.as_object())
     {
-        existing_object.extend(candidate_object.clone());
+        for (key, value) in candidate_object {
+            // Transcript-derived candidates only carry plain-text parts, so a
+            // blanket overwrite would drop attachment or file parts already
+            // stored on the embedded history message. Preserve the existing
+            // parts when they are richer than the plain-text candidate.
+            if key == "parts" && a2a_history_parts_is_richer(existing_object.get("parts")) {
+                continue;
+            }
+            existing_object.insert(key.clone(), value.clone());
+        }
         return;
     }
     *existing = candidate.clone();
+}
+
+fn a2a_history_parts_is_richer(parts: Option<&Value>) -> bool {
+    parts
+        .and_then(Value::as_array)
+        .is_some_and(|parts| parts.iter().any(|part| !a2a_history_part_is_plain_text(part)))
+}
+
+fn a2a_history_part_is_plain_text(part: &Value) -> bool {
+    let Some(object) = part.as_object() else {
+        return false;
+    };
+    if !object.get("text").is_some_and(Value::is_string) {
+        return false;
+    }
+    match object.len() {
+        1 => true,
+        2 => object.get("mediaType").and_then(Value::as_str).is_some_and(
+            |media_type| media_type.eq_ignore_ascii_case("text/plain"),
+        ),
+        _ => false,
+    }
 }
 
 fn a2a_merge_ledger_work_graph_into_metadata(metadata: &mut Value, entry: &Value) {
@@ -313,6 +344,14 @@ fn a2a_merge_ledger_status_into_task(
     let Some(state) = entry.get("state").and_then(Value::as_str) else {
         return;
     };
+    let response_text = entry
+        .get("responseText")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|response_text| !response_text.is_empty())
+        .map(str::to_string)
+        .or_else(|| a2a_latest_agent_transcript_text(entry))
+        .or_else(|| a2a_latest_agent_history_text(task_object));
     let status = task_object
         .entry("status".to_string())
         .or_insert_with(|| Value::Object(Map::new()));
@@ -332,19 +371,34 @@ fn a2a_merge_ledger_status_into_task(
             Value::String(updated_at.to_string()),
         );
     }
-    if let Some(response_text) = entry
-        .get("responseText")
-        .and_then(Value::as_str)
-        .map(str::trim)
-        .filter(|response_text| !response_text.is_empty())
-        .map(str::to_string)
-        .or_else(|| a2a_latest_agent_transcript_text(entry))
-    {
+    if let Some(response_text) = response_text {
         status_object.insert(
             "message".to_string(),
             a2a_agent_message(context_id, &response_text),
         );
     }
+}
+
+/// Latest agent message text from the embedded task history. Used as a
+/// fallback so a reloaded ledger row does not keep a stale "still working"
+/// status message after the top-level state has advanced to completion.
+fn a2a_latest_agent_history_text(task_object: &Map<String, Value>) -> Option<String> {
+    task_object
+        .get("history")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .rev()
+        .find(|message| {
+            message
+                .get("role")
+                .and_then(Value::as_str)
+                .is_some_and(|role| {
+                    role.eq_ignore_ascii_case("ROLE_AGENT")
+                        || role.eq_ignore_ascii_case("agent")
+                })
+        })
+        .and_then(a2a_message_value_text)
 }
 
 fn a2a_latest_agent_transcript_text(entry: &Value) -> Option<String> {

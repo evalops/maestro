@@ -5345,6 +5345,155 @@ async fn a2a_task_load_ignores_blank_top_level_response_when_embedded_response_p
 }
 
 #[tokio::test(flavor = "current_thread")]
+async fn a2a_task_load_preserves_rich_parts_when_history_message_is_refreshed() {
+    let root = TestDir::new("a2a-task-ledger-rich-parts-refresh");
+    let base_state = test_app_state_with_sessions(HashMap::new());
+    let mut config = auth_test_config();
+    config.a2a_tasks_file_path = root.path().join("tasks.json");
+    let state = AppState {
+        config: Arc::new(config),
+        ..base_state
+    };
+    tokio::fs::write(
+        &state.config.a2a_tasks_file_path,
+        serde_json::to_vec_pretty(&serde_json::json!({
+            "tasks": [
+                {
+                    "id": "maestro-control-plane-rich-parts-refresh",
+                    "kind": "delegation",
+                    "peer": A2A_CONTROL_PLANE_LEDGER_PEER,
+                    "taskId": "task-rich-parts-refresh",
+                    "contextId": "ctx-rich-parts-refresh",
+                    "text": "inspect attachment",
+                    "responseText": "saw attachment",
+                    "state": "TASK_STATE_WORKING",
+                    "transcript": [
+                        { "role": "agent", "text": "saw attachment", "messageId": "agent-rich-parts" }
+                    ],
+                    "createdAt": "2026-05-15T00:00:00Z",
+                    "updatedAt": "2026-05-15T00:02:00Z",
+                    "a2aTask": {
+                        "id": "task-rich-parts-refresh",
+                        "contextId": "ctx-rich-parts-refresh",
+                        "status": {
+                            "state": "TASK_STATE_WORKING",
+                            "message": {
+                                "messageId": "agent-rich-parts",
+                                "contextId": "ctx-rich-parts-refresh",
+                                "role": "ROLE_AGENT",
+                                "parts": [{ "text": "stale summary" }]
+                            }
+                        },
+                        "history": [
+                            {
+                                "messageId": "agent-rich-parts",
+                                "contextId": "ctx-rich-parts-refresh",
+                                "role": "ROLE_AGENT",
+                                "parts": [
+                                    { "text": "stale summary" },
+                                    { "data": { "attachmentId": "artifact-rich-parts" } }
+                                ]
+                            }
+                        ],
+                        "metadata": { "workspaceId": "ws-rich-parts" }
+                    }
+                }
+            ]
+        }))
+        .expect("ledger should serialize"),
+    )
+    .await
+    .expect("ledger should be written");
+
+    let loaded = load_a2a_tasks(&state.config.a2a_tasks_file_path).await;
+
+    let refreshed_parts = &loaded["task-rich-parts-refresh"]["history"][0]["parts"];
+    assert_eq!(
+        refreshed_parts[1]["data"]["attachmentId"],
+        "artifact-rich-parts",
+        "rich attachment part must survive transcript refresh"
+    );
+    assert_eq!(
+        refreshed_parts
+            .as_array()
+            .expect("parts should be an array")
+            .len(),
+        2
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn a2a_task_load_refreshes_stale_status_from_embedded_history() {
+    let root = TestDir::new("a2a-task-ledger-stale-status-history");
+    let base_state = test_app_state_with_sessions(HashMap::new());
+    let mut config = auth_test_config();
+    config.a2a_tasks_file_path = root.path().join("tasks.json");
+    let state = AppState {
+        config: Arc::new(config),
+        ..base_state
+    };
+    tokio::fs::write(
+        &state.config.a2a_tasks_file_path,
+        serde_json::to_vec_pretty(&serde_json::json!({
+            "tasks": [
+                {
+                    "id": "maestro-control-plane-stale-status-history",
+                    "kind": "delegation",
+                    "peer": A2A_CONTROL_PLANE_LEDGER_PEER,
+                    "taskId": "task-stale-status-history",
+                    "contextId": "ctx-stale-status-history",
+                    "text": "finish work",
+                    "state": "TASK_STATE_COMPLETED",
+                    "createdAt": "2026-05-15T00:00:00Z",
+                    "updatedAt": "2026-05-15T00:02:00Z",
+                    "a2aTask": {
+                        "id": "task-stale-status-history",
+                        "contextId": "ctx-stale-status-history",
+                        "status": {
+                            "state": "TASK_STATE_WORKING",
+                            "message": {
+                                "messageId": "agent-stale-status-history",
+                                "contextId": "ctx-stale-status-history",
+                                "role": "ROLE_AGENT",
+                                "parts": [{ "text": "still working" }]
+                            },
+                            "timestamp": "2026-05-15T00:01:00Z"
+                        },
+                        "history": [
+                            {
+                                "messageId": "agent-stale-status-history-final",
+                                "contextId": "ctx-stale-status-history",
+                                "role": "ROLE_AGENT",
+                                "parts": [{ "text": "done with the work" }]
+                            }
+                        ],
+                        "metadata": { "workspaceId": "ws-stale-status-history" }
+                    }
+                }
+            ]
+        }))
+        .expect("ledger should serialize"),
+    )
+    .await
+    .expect("ledger should be written");
+
+    let loaded = load_a2a_tasks(&state.config.a2a_tasks_file_path).await;
+
+    assert_eq!(
+        loaded["task-stale-status-history"]["status"]["state"],
+        "TASK_STATE_COMPLETED"
+    );
+    assert_eq!(
+        loaded["task-stale-status-history"]["status"]["message"]["parts"][0]["text"],
+        "done with the work"
+    );
+    assert_ne!(
+        loaded["task-stale-status-history"]["status"]["message"]["parts"][0]["text"],
+        "still working"
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn a2a_task_store_preserves_in_flight_push_configs_for_reload() {
     let root = TestDir::new("a2a-task-ledger-push-config-reload");
     let base_state = test_app_state_with_sessions(HashMap::new());
