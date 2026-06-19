@@ -62,7 +62,7 @@
 					"path": ".github/workflows/tag-release.yml",
 					"contains": [
 						"existing_count=\"$(retry \"List dispatched release workflows\" dispatched_release_run_count)\"",
-						"if (( release_run_count > existing_count )); then",
+						"if (( release_run_count > existing_count )) && [[ \"${dispatch_status}\" == \"0\" ]]; then",
 						"sleep 10"
 					],
 					"notContains": [
@@ -73,7 +73,7 @@
 				{
 					"path": "test/workflows/tag-release.test.ts",
 					"contains": [
-						"if (( release_run_count > existing_count )); then",
+						"if (( release_run_count > existing_count )) && [[ \"${dispatch_status}\" == \"0\" ]]; then",
 						"sleep 10"
 					],
 					"matches": [

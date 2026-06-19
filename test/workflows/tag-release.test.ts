@@ -265,10 +265,10 @@ describe("tag-release workflow", () => {
 		expect(dispatchStep?.run).toContain("--json event,headBranch");
 		expect(dispatchStep?.run).toContain("--json databaseId,event,headBranch");
 		expect(dispatchStep?.run).toContain(
-			"if (( release_run_count > existing_count )); then",
+			'if (( release_run_count > existing_count )) && [[ "${dispatch_status}" == "0" ]]; then',
 		);
 		expect(dispatchStep?.run).toContain(
-			'if [[ -n "${latest_release_run_id}" && "${latest_release_run_id}" != "${existing_latest_run_id}" ]]; then',
+			'if [[ "${dispatch_status}" == "0" && -n "${latest_release_run_id}" && "${latest_release_run_id}" != "${existing_latest_run_id}" ]]; then',
 		);
 		expect(dispatchStep?.run).toContain(
 			"up from ${existing_count} before dispatch",
