@@ -527,7 +527,9 @@ impl Learner {
         // Rebuild derived patterns from outcomes so schema changes in persisted
         // pattern caches do not leave learner behavior stale or ambiguous.
         for outcome in self.outcomes.clone() {
-            self.update_patterns(&outcome);
+            if !outcome_is_transient_failure(&outcome) {
+                self.update_patterns(&outcome);
+            }
         }
 
         Ok(())
@@ -915,6 +917,29 @@ mod tests {
             outcome.failure_reason = Some("command not found: gh in fresh runner".to_string());
             learner.record_outcome(outcome).await.unwrap();
         }
+
+        let adjustment = learner.get_confidence_adjustment(&make_event(vec!["nightly"]));
+        assert_eq!(adjustment, 0.0);
+        assert!(learner.get_label_success_rate("nightly").is_none());
+    }
+
+    #[tokio::test]
+    async fn test_load_keeps_transient_failures_out_of_patterns() {
+        let temp = TempDir::new().unwrap();
+        let path = temp.path().join("learner.json");
+
+        {
+            let mut learner = Learner::new(path.clone());
+            for _ in 0..3 {
+                let mut outcome = make_outcome(false, vec!["nightly"]);
+                outcome.failure_reason = Some("command not found: gh in fresh runner".to_string());
+                learner.record_outcome(outcome).await.unwrap();
+            }
+            learner.persist().await.unwrap();
+        }
+
+        let mut learner = Learner::new(path);
+        learner.load().await.unwrap();
 
         let adjustment = learner.get_confidence_adjustment(&make_event(vec!["nightly"]));
         assert_eq!(adjustment, 0.0);
