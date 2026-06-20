@@ -264,6 +264,59 @@ function braceDelta(line, state) {
 const cfgTestAttributePattern = /^\s*#\s*\[\s*cfg\s*\(\s*test\s*\)\s*\]/;
 
 /**
+ * @param {string[]} lines
+ */
+function rustOuterAttributeGroupInfo(lines) {
+	let attributeStart = -1;
+	let gatedByCfgTest = false;
+
+	for (let index = lines.length - 1; index >= 0; index -= 1) {
+		if (!/^\s*#\[/.test(lines[index])) {
+			continue;
+		}
+
+		let blockCommentDepth = 0;
+		let spanGatedByCfgTest = false;
+		let validSpan = true;
+		for (let spanIndex = index; spanIndex < lines.length; spanIndex += 1) {
+			const spanLine = lines[spanIndex];
+			const trimmed = spanLine.trim();
+			if (!trimmed) {
+				continue;
+			}
+			if (blockCommentDepth > 0) {
+				blockCommentDepth = rustBlockCommentDepthAfterLine(
+					trimmed,
+					blockCommentDepth,
+				);
+				continue;
+			}
+			if (trimmed.startsWith("//")) {
+				continue;
+			}
+			if (trimmed.startsWith("/*")) {
+				blockCommentDepth = rustBlockCommentDepthAfterLine(trimmed, 0);
+				continue;
+			}
+			if (/^\s*#\[/.test(spanLine)) {
+				if (cfgTestAttributePattern.test(spanLine)) {
+					spanGatedByCfgTest = true;
+				}
+				continue;
+			}
+			validSpan = false;
+			break;
+		}
+		if (validSpan) {
+			attributeStart = index;
+			gatedByCfgTest = spanGatedByCfgTest;
+		}
+	}
+
+	return attributeStart === -1 ? null : { attributeStart, gatedByCfgTest };
+}
+
+/**
  * @param {string} source
  */
 export function stripRustTestModules(source) {
@@ -280,19 +333,8 @@ export function stripRustTestModules(source) {
 			continue;
 		}
 
-		// Collect the contiguous outer attribute group immediately preceding the
-		// `mod tests` declaration so the cfg(test) gate can be evaluated before
-		// any preceding attributes or the module body are stripped.
-		let attributeStart = output.length;
-		while (
-			attributeStart > 0 &&
-			/^\s*#\[/.test(output[attributeStart - 1])
-		) {
-			attributeStart -= 1;
-		}
-		const gatedByCfgTest = output
-			.slice(attributeStart)
-			.some((attribute) => cfgTestAttributePattern.test(attribute));
+		const attributeGroup = rustOuterAttributeGroupInfo(output);
+		const gatedByCfgTest = attributeGroup?.gatedByCfgTest ?? false;
 
 		// Only cfg(test)-gated test modules are test-only. An unguarded
 		// `mod tests` block is compiled in production builds, so edits inside it
@@ -302,7 +344,7 @@ export function stripRustTestModules(source) {
 			continue;
 		}
 
-		output.length = attributeStart;
+		output.length = attributeGroup.attributeStart;
 
 		if (moduleMatch[1] === ";") {
 			continue;

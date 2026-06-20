@@ -152,6 +152,24 @@ mod tests { // a comment with a semicolon should not look like mod tests;
 }
 `;
 
+const inlineRustTestsWithDiscontiguousCfg = `pub fn cache_key(path: &str) -> String {
+	format!("cache:{path}")
+}
+
+#[cfg(test)]
+
+// Keep inline tests with the production module for rust-analyzer.
+#[allow(clippy::float_cmp)]
+mod tests {
+	use super::*;
+
+	#[test]
+	fn includes_path() {
+		assert_eq!(cache_key("fixture"), "cache:fixture");
+	}
+}
+`;
+
 const extractedRustModule = `pub fn cache_key(path: &str) -> String {
 	format!("cache:{path}")
 }
@@ -433,6 +451,28 @@ describe("release impact filter", () => {
 			inlineRustTests.replace("cache:fixture", "cache:test-only-change"),
 		);
 		commit(root, "edit cfg(test) inline test module");
+
+		expect(packageChangedSinceTag({ cwd: root, tagTarget })).toBe(false);
+	});
+
+	it("ignores comments and blank lines between cfg(test) and inline Rust test modules", () => {
+		const root = makeRepo();
+		writeFixtureFile(
+			root,
+			"packages/tui-rs/src/tools/cache.rs",
+			inlineRustTestsWithDiscontiguousCfg,
+		);
+		const tagTarget = commit(root, "initial package source");
+
+		writeFixtureFile(
+			root,
+			"packages/tui-rs/src/tools/cache.rs",
+			inlineRustTestsWithDiscontiguousCfg.replace(
+				"cache:fixture",
+				"cache:test-only-change",
+			),
+		);
+		commit(root, "edit cfg(test) inline test module with trivia");
 
 		expect(packageChangedSinceTag({ cwd: root, tagTarget })).toBe(false);
 	});
