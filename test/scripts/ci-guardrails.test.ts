@@ -1115,6 +1115,16 @@ describe("ci workflow guardrails", () => {
 		expect(script).not.toContain('spawnSync("npx"');
 	});
 
+	it("keeps the public Bazel module name public-facing", () => {
+		const moduleBazel = readFileSync(
+			new URL("../../MODULE.bazel", import.meta.url),
+			{ encoding: "utf8" },
+		);
+
+		expect(moduleBazel).toMatch(/module\(\s*name\s*=\s*"evalops_maestro"/);
+		expect(moduleBazel).not.toContain("evalops_maestro_internal");
+	});
+
 	it("keeps GitHub App token actions on the Node24-compatible pin", () => {
 		const workflowsDir = new URL("../../.github/workflows/", import.meta.url);
 		const workflowFiles = readdirSync(workflowsDir)

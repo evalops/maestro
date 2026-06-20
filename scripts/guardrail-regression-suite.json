@@ -213,6 +213,24 @@
 			]
 		},
 		{
+			"id": "public-bazel-module-identity",
+			"title": "Public Bazel module identity",
+			"owner": "release",
+			"bugClass": "mirror sync leaking the internal Bzlmod module name to public consumers",
+			"why": "The public evalops/maestro MODULE.bazel must declare module(name = \"evalops_maestro\"); an internal mirror sync must not rename it to evalops_maestro_internal or downstream bazel_dep(name = \"evalops_maestro\", ...) consumers break.",
+			"evidence": [
+				{
+					"path": "MODULE.bazel",
+					"contains": ["name = \"evalops_maestro\""],
+					"notContains": ["evalops_maestro_internal"]
+				},
+				{
+					"path": "test/scripts/ci-guardrails.test.ts",
+					"contains": ["keeps the public Bazel module name public-facing"]
+				}
+			]
+		},
+		{
 			"id": "a2a-cancel-canonical-state-guard",
 			"title": "A2A cancel canonical state guard",
 			"owner": "a2a",
