@@ -31,6 +31,7 @@ const ALLOWLISTED_TIMING_WAIT_FILES = new Set([
 	"packages/web/src/components/fleet-dashboard.test.ts",
 	"packages/github-agent/src/orchestrator.test.ts",
 	"test/agent/action-approval-timing.test.ts",
+	"test/agent/auto-retry.test.ts",
 	"test/agent/context-manager.test.ts",
 	"test/agent/mcp-manager-transports.test.ts",
 	"test/agent/provider-transport-parallelism-gated.test.ts",
