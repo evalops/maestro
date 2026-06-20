@@ -34,7 +34,7 @@
  * ```
  */
 
-import { execSync, spawnSync } from "node:child_process";
+import { spawnSync } from "node:child_process";
 import { createLogger } from "./logger.js";
 
 const logger = createLogger("utils:git-stash");
@@ -68,14 +68,22 @@ export interface GitStashConfig {
 }
 
 /**
+ * Run a git command, throwing on non-zero exit (mirrors execSync's contract)
+ * but via argv array form so interpolated values can never reach a shell.
+ */
+function runGit(args: string[], cwd: string): void {
+	const result = spawnSync("git", args, { cwd, stdio: "pipe" });
+	if (result.status !== 0) {
+		throw new Error(`git ${args.join(" ")} failed (exit ${result.status})`);
+	}
+}
+
+/**
  * Check if current directory is a git repository
  */
 function isGitRepo(cwd: string): boolean {
 	try {
-		execSync("git rev-parse --is-inside-work-tree", {
-			cwd,
-			stdio: "pipe",
-		});
+		runGit(["rev-parse", "--is-inside-work-tree"], cwd);
 		return true;
 	} catch {
 		return false;
@@ -178,7 +186,7 @@ class GitStashManager {
 				args.push("--all");
 			}
 
-			execSync(`git ${args.join(" ")}`, { cwd, stdio: "pipe" });
+			runGit(args, cwd);
 
 			// Get the stash ref
 			const refResult = spawnSync("git", ["stash", "list", "-n", "1"], {
@@ -254,7 +262,7 @@ class GitStashManager {
 				return false;
 			}
 
-			execSync(`git stash pop ${currentRef}`, { cwd, stdio: "pipe" });
+			runGit(["stash", "pop", currentRef], cwd);
 
 			// Remove from tracking
 			this.removeStashEntry(stashId);
@@ -286,7 +294,7 @@ class GitStashManager {
 		try {
 			const currentRef = await this.findStashRef(entry.message, cwd);
 			if (currentRef) {
-				execSync(`git stash drop ${currentRef}`, { cwd, stdio: "pipe" });
+				runGit(["stash", "drop", currentRef], cwd);
 			}
 
 			this.removeStashEntry(stashId);
