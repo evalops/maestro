@@ -34,6 +34,7 @@ import {
 } from "../safety/safe-mode.js";
 import type { ValidatorRunResult } from "../safety/safe-mode.js";
 import type { Sandbox } from "../sandbox/types.js";
+import { createLogger } from "../utils/logger.js";
 import {
 	type ApplyPatchDocument,
 	type ApplyPatchHunk,
@@ -41,6 +42,8 @@ import {
 } from "./apply-patch-parser.js";
 import { generateDiffString } from "./diff-utils.js";
 import { ToolError, createTool, expandUserPath } from "./tool-dsl.js";
+
+const logger = createLogger("tools:apply-patch");
 
 type LineEnding = "\n" | "\r\n" | "\r";
 
@@ -750,7 +753,12 @@ async function rollbackSandboxChanges(
 				continue;
 			}
 			await sandbox.writeFile(change.path, change.previousContent);
-		} catch {}
+		} catch (error) {
+			logger.debug("Sandbox rollback step failed", {
+				path: change.path,
+				error,
+			});
+		}
 	}
 }
 
@@ -827,7 +835,12 @@ async function rollbackFilesystemChanges(plan: ApplyPatchPlan): Promise<void> {
 			}
 			await mkdir(dirname(change.absolutePath), { recursive: true });
 			await writeFileAtomically(change.absolutePath, change.previousContent);
-		} catch {}
+		} catch (error) {
+			logger.debug("Filesystem rollback step failed", {
+				path: change.absolutePath,
+				error,
+			});
+		}
 	}
 }
 

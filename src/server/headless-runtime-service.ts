@@ -227,6 +227,11 @@ function parseBooleanEnv(value: string | undefined): boolean | undefined {
 
 export type HostedRunnerRestoreFlushStatus = "completed" | "failed" | "skipped";
 
+type HeadlessMessageMetadata = {
+	connectionId?: string | null;
+	subscriptionId?: string | null;
+};
+
 export class HeadlessRuntimeNotReadyError extends Error {
 	readonly code = "runtime_not_ready";
 
@@ -1863,296 +1868,355 @@ export class HeadlessSessionRuntime {
 		this.updatedAt = Date.now();
 
 		switch (msg.type) {
-			case "hello": {
-				applyOutgoingHeadlessMessage(this.state, msg);
-				const subscriber = metadata?.subscriptionId
-					? this.subscribers.get(metadata.subscriptionId)
-					: undefined;
-				this.updateConnectionMetadata({
-					connectionId:
-						subscriber?.connectionId ?? metadata?.connectionId ?? undefined,
-					clientProtocolVersion: msg.protocol_version,
-					clientInfo: msg.client_info,
-					capabilities: msg.capabilities,
-					optOutNotifications: msg.opt_out_notifications,
-					role: msg.role,
-				});
-				const connection =
-					this.getConnectionById(
-						subscriber?.connectionId ?? metadata?.connectionId ?? undefined,
-					) ?? this.getPreferredConnection();
-				if (connection) {
-					this.enqueuePrivateMessage(
-						this.translator.buildHelloOkMessage({
-							connection_id: connection.id,
-							protocol_version: HEADLESS_PROTOCOL_VERSION,
-							client_protocol_version: connection.clientProtocolVersion,
-							client_info: connection.clientInfo,
-							capabilities: connection.capabilities,
-							opt_out_notifications: connection.optOutNotifications
-								? [...connection.optOutNotifications]
-								: undefined,
-							role: connection.role,
-							controller_connection_id: this.controllerConnectionId,
-							lease_expires_at: this.getLeaseExpiryIso(connection),
-						}),
-						metadata,
-					);
-				}
-				if (
-					msg.protocol_version &&
-					msg.protocol_version !== HEADLESS_PROTOCOL_VERSION
-				) {
-					this.publish({
-						type: "status",
-						message: `Client protocol ${msg.protocol_version} attached to server ${HEADLESS_PROTOCOL_VERSION}`,
-					});
-				}
-				return;
-			}
-			case "init": {
-				this.lastInit = msg;
-				applyOutgoingHeadlessMessage(this.state, msg);
-				const applied = applyInitMessage(this.agent, msg, this.approvalService);
-				this.publish({
-					type: "status",
-					message:
-						applied.length > 0
-							? `Initialized: ${applied.join(", ")}`
-							: "Init received with no changes",
-				});
-				return;
-			}
-			case "prompt": {
-				if (this.running) {
-					throw new Error("Headless runtime is already processing a prompt");
-				}
-				applyOutgoingHeadlessMessage(this.state, msg);
-				this.running = true;
-				let attachments: Attachment[] | undefined;
-				if (msg.attachments?.length) {
-					const loaded = await loadPromptAttachments(
-						msg.attachments,
-						(message) => {
-							this.publish({
-								type: "error",
-								message,
-								fatal: false,
-								error_type: "tool",
-							});
-						},
-					);
-					if (loaded.length > 0) {
-						attachments = loaded;
-						this.publish({
-							type: "status",
-							message: `Loaded ${loaded.length} attachment(s)`,
-						});
-					}
-				}
-				void this.runPrompt(msg.content, attachments);
-				return;
-			}
+			case "hello":
+				return this.handleHello(msg, metadata);
+			case "init":
+				return this.handleInit(msg);
+			case "prompt":
+				return this.handlePrompt(msg);
 			case "interrupt":
 			case "cancel":
-				this.cancelPendingServerRequests(
-					msg.type === "interrupt"
-						? "Interrupted before request completed"
-						: "Cancelled before request completed",
-				);
-				applyOutgoingHeadlessMessage(this.state, msg);
-				await this.utilityCommands.dispose(
-					msg.type === "interrupt"
-						? "Interrupted while utility command was still running"
-						: "Cancelled while utility command was still running",
-				);
-				this.fileWatches.dispose(
-					msg.type === "interrupt"
-						? "Interrupted while file watch was still running"
-						: "Cancelled while file watch was still running",
-				);
-				this.agent.abort();
-				this.publishSnapshot();
-				return;
+				return this.handleInterrupt(msg);
 			case "tool_response":
-				this.resolveLegacyToolResponse(msg);
-				applyOutgoingHeadlessMessage(this.state, msg);
-				this.publishSnapshot();
-				return;
-			case "client_tool_result": {
-				this.resolveLegacyClientToolResult(msg);
-				applyOutgoingHeadlessMessage(this.state, msg);
-				this.publishSnapshot();
-				return;
-			}
+				return this.handleToolResponse(msg);
+			case "client_tool_result":
+				return this.handleClientToolResult(msg);
 			case "server_request_response":
-				this.resolveServerRequestResponse(msg);
-				applyOutgoingHeadlessMessage(this.state, msg);
-				this.publishSnapshot();
-				return;
+				return this.handleServerRequestResponse(msg);
 			case "shutdown":
-				this.cancelPendingServerRequests("Shutdown before request completed");
-				applyOutgoingHeadlessMessage(this.state, msg);
-				await this.utilityCommands.dispose(
-					"Headless runtime shutdown while utility command was still running",
-				);
-				this.fileWatches.dispose(
-					"Headless runtime shutdown while file watch was still running",
-				);
-				this.agent.abort();
-				this.publishSnapshot();
-				this.finalizeDisposal();
-				return;
+				return this.handleShutdown(msg);
 			case "utility_command_start":
-				if (
-					!this.state.capabilities?.utility_operations?.includes("command_exec")
-				) {
-					throw new Error(
-						"utility_command_start requires command_exec capability",
-					);
-				}
-				await this.utilityCommands.start({
-					command_id: msg.command_id,
-					command: msg.command,
-					cwd: msg.cwd,
-					env: msg.env,
-					shell_mode: msg.shell_mode,
-					terminal_mode: msg.terminal_mode,
-					allow_stdin: msg.allow_stdin,
-					columns: msg.columns,
-					rows: msg.rows,
-					owner_connection_id: this.getMessageConnectionId(metadata),
-				});
-				return;
+				return this.handleUtilityCommandStart(msg, metadata);
 			case "utility_command_terminate":
-				this.assertUtilityOwnerAccess(
-					this.utilityCommands.get(msg.command_id)?.owner_connection_id,
-					this.getMessageConnectionId(metadata),
-					"command",
-					msg.command_id,
-				);
-				await this.utilityCommands.terminate(msg.command_id, msg.force);
-				return;
+				return this.handleUtilityCommandTerminate(msg, metadata);
 			case "utility_command_stdin":
-				if (
-					!this.state.capabilities?.utility_operations?.includes("command_exec")
-				) {
-					throw new Error(
-						"utility_command_stdin requires command_exec capability",
-					);
-				}
-				this.assertUtilityOwnerAccess(
-					this.utilityCommands.get(msg.command_id)?.owner_connection_id,
-					this.getMessageConnectionId(metadata),
-					"command",
-					msg.command_id,
-				);
-				await this.utilityCommands.writeStdin(
-					msg.command_id,
-					msg.content,
-					msg.eof,
-				);
-				return;
+				return this.handleUtilityCommandStdin(msg, metadata);
 			case "utility_command_resize":
-				if (
-					!this.state.capabilities?.utility_operations?.includes("command_exec")
-				) {
-					throw new Error(
-						"utility_command_resize requires command_exec capability",
-					);
-				}
-				this.assertUtilityOwnerAccess(
-					this.utilityCommands.get(msg.command_id)?.owner_connection_id,
-					this.getMessageConnectionId(metadata),
-					"command",
-					msg.command_id,
-				);
-				await this.utilityCommands.resize(
-					msg.command_id,
-					msg.columns,
-					msg.rows,
-				);
-				return;
+				return this.handleUtilityCommandResize(msg, metadata);
 			case "utility_file_search":
-				if (
-					!this.state.capabilities?.utility_operations?.includes("file_search")
-				) {
-					throw new Error(
-						"utility_file_search requires file_search capability",
-					);
-				}
-				{
-					const result = searchWorkspaceFiles({
-						query: msg.query,
-						cwd: msg.cwd,
-						workspaceRoot: this.workspaceRoot,
-						limit: msg.limit,
-					});
-					this.publish({
-						type: "utility_file_search_results",
-						search_id: msg.search_id,
-						query: result.query,
-						cwd: result.cwd,
-						results: result.results,
-						truncated: result.truncated,
-					});
-				}
-				return;
+				return this.handleUtilityFileSearch(msg);
 			case "utility_file_read":
-				if (
-					!this.state.capabilities?.utility_operations?.includes("file_read")
-				) {
-					throw new Error("utility_file_read requires file_read capability");
-				}
-				{
-					const result = await readWorkspaceFile({
-						path: msg.path,
-						cwd: msg.cwd,
-						workspaceRoot: this.workspaceRoot,
-						offset: msg.offset,
-						limit: msg.limit,
-					});
-					this.publish({
-						type: "utility_file_read_result",
-						read_id: msg.read_id,
-						path: result.path,
-						relative_path: result.relative_path,
-						cwd: result.cwd,
-						content: result.content,
-						start_line: result.start_line,
-						end_line: result.end_line,
-						total_lines: result.total_lines,
-						truncated: result.truncated,
-					});
-				}
-				return;
+				return this.handleUtilityFileRead(msg);
 			case "utility_file_watch_start":
-				if (
-					!this.state.capabilities?.utility_operations?.includes("file_watch")
-				) {
-					throw new Error(
-						"utility_file_watch_start requires file_watch capability",
-					);
-				}
-				await this.fileWatches.start({
-					watch_id: msg.watch_id,
-					root_dir: msg.root_dir,
-					include_patterns: msg.include_patterns,
-					exclude_patterns: msg.exclude_patterns,
-					debounce_ms: msg.debounce_ms,
-					owner_connection_id: this.getMessageConnectionId(metadata),
-				});
-				return;
+				return this.handleUtilityFileWatchStart(msg, metadata);
 			case "utility_file_watch_stop":
-				this.assertUtilityOwnerAccess(
-					this.fileWatches.get(msg.watch_id)?.owner_connection_id,
-					this.getMessageConnectionId(metadata),
-					"file watch",
-					msg.watch_id,
-				);
-				this.fileWatches.stop(msg.watch_id, "Stopped by controller");
-				return;
+				return this.handleUtilityFileWatchStop(msg, metadata);
 		}
+	}
+	private async handleHello(
+		msg: Extract<HeadlessToAgentMessage, { type: "hello" }>,
+		metadata?: HeadlessMessageMetadata,
+	): Promise<void> {
+		applyOutgoingHeadlessMessage(this.state, msg);
+		const subscriber = metadata?.subscriptionId
+			? this.subscribers.get(metadata.subscriptionId)
+			: undefined;
+		this.updateConnectionMetadata({
+			connectionId:
+				subscriber?.connectionId ?? metadata?.connectionId ?? undefined,
+			clientProtocolVersion: msg.protocol_version,
+			clientInfo: msg.client_info,
+			capabilities: msg.capabilities,
+			optOutNotifications: msg.opt_out_notifications,
+			role: msg.role,
+		});
+		const connection =
+			this.getConnectionById(
+				subscriber?.connectionId ?? metadata?.connectionId ?? undefined,
+			) ?? this.getPreferredConnection();
+		if (connection) {
+			this.enqueuePrivateMessage(
+				this.translator.buildHelloOkMessage({
+					connection_id: connection.id,
+					protocol_version: HEADLESS_PROTOCOL_VERSION,
+					client_protocol_version: connection.clientProtocolVersion,
+					client_info: connection.clientInfo,
+					capabilities: connection.capabilities,
+					opt_out_notifications: connection.optOutNotifications
+						? [...connection.optOutNotifications]
+						: undefined,
+					role: connection.role,
+					controller_connection_id: this.controllerConnectionId,
+					lease_expires_at: this.getLeaseExpiryIso(connection),
+				}),
+				metadata,
+			);
+		}
+		if (
+			msg.protocol_version &&
+			msg.protocol_version !== HEADLESS_PROTOCOL_VERSION
+		) {
+			this.publish({
+				type: "status",
+				message: `Client protocol ${msg.protocol_version} attached to server ${HEADLESS_PROTOCOL_VERSION}`,
+			});
+		}
+	}
+
+	private async handleInit(
+		msg: Extract<HeadlessToAgentMessage, { type: "init" }>,
+	): Promise<void> {
+		this.lastInit = msg;
+		applyOutgoingHeadlessMessage(this.state, msg);
+		const applied = applyInitMessage(this.agent, msg, this.approvalService);
+		this.publish({
+			type: "status",
+			message:
+				applied.length > 0
+					? `Initialized: ${applied.join(", ")}`
+					: "Init received with no changes",
+		});
+	}
+
+	private async handlePrompt(
+		msg: Extract<HeadlessToAgentMessage, { type: "prompt" }>,
+	): Promise<void> {
+		if (this.running) {
+			throw new Error("Headless runtime is already processing a prompt");
+		}
+		applyOutgoingHeadlessMessage(this.state, msg);
+		this.running = true;
+		let attachments: Attachment[] | undefined;
+		if (msg.attachments?.length) {
+			const loaded = await loadPromptAttachments(msg.attachments, (message) => {
+				this.publish({
+					type: "error",
+					message,
+					fatal: false,
+					error_type: "tool",
+				});
+			});
+			if (loaded.length > 0) {
+				attachments = loaded;
+				this.publish({
+					type: "status",
+					message: `Loaded ${loaded.length} attachment(s)`,
+				});
+			}
+		}
+		void this.runPrompt(msg.content, attachments);
+	}
+
+	private async handleInterrupt(
+		msg: Extract<HeadlessToAgentMessage, { type: "interrupt" | "cancel" }>,
+	): Promise<void> {
+		this.cancelPendingServerRequests(
+			msg.type === "interrupt"
+				? "Interrupted before request completed"
+				: "Cancelled before request completed",
+		);
+		applyOutgoingHeadlessMessage(this.state, msg);
+		await this.utilityCommands.dispose(
+			msg.type === "interrupt"
+				? "Interrupted while utility command was still running"
+				: "Cancelled while utility command was still running",
+		);
+		this.fileWatches.dispose(
+			msg.type === "interrupt"
+				? "Interrupted while file watch was still running"
+				: "Cancelled while file watch was still running",
+		);
+		this.agent.abort();
+		this.publishSnapshot();
+	}
+
+	private async handleToolResponse(
+		msg: Extract<HeadlessToAgentMessage, { type: "tool_response" }>,
+	): Promise<void> {
+		this.resolveLegacyToolResponse(msg);
+		applyOutgoingHeadlessMessage(this.state, msg);
+		this.publishSnapshot();
+	}
+
+	private async handleClientToolResult(
+		msg: Extract<HeadlessToAgentMessage, { type: "client_tool_result" }>,
+	): Promise<void> {
+		this.resolveLegacyClientToolResult(msg);
+		applyOutgoingHeadlessMessage(this.state, msg);
+		this.publishSnapshot();
+	}
+
+	private async handleServerRequestResponse(
+		msg: Extract<HeadlessToAgentMessage, { type: "server_request_response" }>,
+	): Promise<void> {
+		this.resolveServerRequestResponse(msg);
+		applyOutgoingHeadlessMessage(this.state, msg);
+		this.publishSnapshot();
+	}
+
+	private async handleShutdown(
+		msg: Extract<HeadlessToAgentMessage, { type: "shutdown" }>,
+	): Promise<void> {
+		this.cancelPendingServerRequests("Shutdown before request completed");
+		applyOutgoingHeadlessMessage(this.state, msg);
+		await this.utilityCommands.dispose(
+			"Headless runtime shutdown while utility command was still running",
+		);
+		this.fileWatches.dispose(
+			"Headless runtime shutdown while file watch was still running",
+		);
+		this.agent.abort();
+		this.publishSnapshot();
+		this.finalizeDisposal();
+	}
+
+	private async handleUtilityCommandStart(
+		msg: Extract<HeadlessToAgentMessage, { type: "utility_command_start" }>,
+		metadata?: HeadlessMessageMetadata,
+	): Promise<void> {
+		if (
+			!this.state.capabilities?.utility_operations?.includes("command_exec")
+		) {
+			throw new Error("utility_command_start requires command_exec capability");
+		}
+		await this.utilityCommands.start({
+			command_id: msg.command_id,
+			command: msg.command,
+			cwd: msg.cwd,
+			env: msg.env,
+			shell_mode: msg.shell_mode,
+			terminal_mode: msg.terminal_mode,
+			allow_stdin: msg.allow_stdin,
+			columns: msg.columns,
+			rows: msg.rows,
+			owner_connection_id: this.getMessageConnectionId(metadata),
+		});
+	}
+
+	private async handleUtilityCommandTerminate(
+		msg: Extract<HeadlessToAgentMessage, { type: "utility_command_terminate" }>,
+		metadata?: HeadlessMessageMetadata,
+	): Promise<void> {
+		this.assertUtilityOwnerAccess(
+			this.utilityCommands.get(msg.command_id)?.owner_connection_id,
+			this.getMessageConnectionId(metadata),
+			"command",
+			msg.command_id,
+		);
+		await this.utilityCommands.terminate(msg.command_id, msg.force);
+	}
+
+	private async handleUtilityCommandStdin(
+		msg: Extract<HeadlessToAgentMessage, { type: "utility_command_stdin" }>,
+		metadata?: HeadlessMessageMetadata,
+	): Promise<void> {
+		if (
+			!this.state.capabilities?.utility_operations?.includes("command_exec")
+		) {
+			throw new Error("utility_command_stdin requires command_exec capability");
+		}
+		this.assertUtilityOwnerAccess(
+			this.utilityCommands.get(msg.command_id)?.owner_connection_id,
+			this.getMessageConnectionId(metadata),
+			"command",
+			msg.command_id,
+		);
+		await this.utilityCommands.writeStdin(msg.command_id, msg.content, msg.eof);
+	}
+
+	private async handleUtilityCommandResize(
+		msg: Extract<HeadlessToAgentMessage, { type: "utility_command_resize" }>,
+		metadata?: HeadlessMessageMetadata,
+	): Promise<void> {
+		if (
+			!this.state.capabilities?.utility_operations?.includes("command_exec")
+		) {
+			throw new Error(
+				"utility_command_resize requires command_exec capability",
+			);
+		}
+		this.assertUtilityOwnerAccess(
+			this.utilityCommands.get(msg.command_id)?.owner_connection_id,
+			this.getMessageConnectionId(metadata),
+			"command",
+			msg.command_id,
+		);
+		await this.utilityCommands.resize(msg.command_id, msg.columns, msg.rows);
+	}
+
+	private async handleUtilityFileSearch(
+		msg: Extract<HeadlessToAgentMessage, { type: "utility_file_search" }>,
+	): Promise<void> {
+		if (!this.state.capabilities?.utility_operations?.includes("file_search")) {
+			throw new Error("utility_file_search requires file_search capability");
+		}
+		{
+			const result = searchWorkspaceFiles({
+				query: msg.query,
+				cwd: msg.cwd,
+				workspaceRoot: this.workspaceRoot,
+				limit: msg.limit,
+			});
+			this.publish({
+				type: "utility_file_search_results",
+				search_id: msg.search_id,
+				query: result.query,
+				cwd: result.cwd,
+				results: result.results,
+				truncated: result.truncated,
+			});
+		}
+	}
+
+	private async handleUtilityFileRead(
+		msg: Extract<HeadlessToAgentMessage, { type: "utility_file_read" }>,
+	): Promise<void> {
+		if (!this.state.capabilities?.utility_operations?.includes("file_read")) {
+			throw new Error("utility_file_read requires file_read capability");
+		}
+		{
+			const result = await readWorkspaceFile({
+				path: msg.path,
+				cwd: msg.cwd,
+				workspaceRoot: this.workspaceRoot,
+				offset: msg.offset,
+				limit: msg.limit,
+			});
+			this.publish({
+				type: "utility_file_read_result",
+				read_id: msg.read_id,
+				path: result.path,
+				relative_path: result.relative_path,
+				cwd: result.cwd,
+				content: result.content,
+				start_line: result.start_line,
+				end_line: result.end_line,
+				total_lines: result.total_lines,
+				truncated: result.truncated,
+			});
+		}
+	}
+
+	private async handleUtilityFileWatchStart(
+		msg: Extract<HeadlessToAgentMessage, { type: "utility_file_watch_start" }>,
+		metadata?: HeadlessMessageMetadata,
+	): Promise<void> {
+		if (!this.state.capabilities?.utility_operations?.includes("file_watch")) {
+			throw new Error(
+				"utility_file_watch_start requires file_watch capability",
+			);
+		}
+		await this.fileWatches.start({
+			watch_id: msg.watch_id,
+			root_dir: msg.root_dir,
+			include_patterns: msg.include_patterns,
+			exclude_patterns: msg.exclude_patterns,
+			debounce_ms: msg.debounce_ms,
+			owner_connection_id: this.getMessageConnectionId(metadata),
+		});
+	}
+
+	private async handleUtilityFileWatchStop(
+		msg: Extract<HeadlessToAgentMessage, { type: "utility_file_watch_stop" }>,
+		metadata?: HeadlessMessageMetadata,
+	): Promise<void> {
+		this.assertUtilityOwnerAccess(
+			this.fileWatches.get(msg.watch_id)?.owner_connection_id,
+			this.getMessageConnectionId(metadata),
+			"file watch",
+			msg.watch_id,
+		);
+		this.fileWatches.stop(msg.watch_id, "Stopped by controller");
 	}
 
 	private async runPrompt(

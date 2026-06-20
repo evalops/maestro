@@ -9,6 +9,9 @@ import { basename, join } from "node:path";
 import YAML from "yaml";
 import { PATHS } from "../config/constants.js";
 import { writeTextFileAtomic } from "../utils/fs.js";
+import { createLogger } from "../utils/logger.js";
+
+const logger = createLogger("agent:specialist-profiles");
 
 export type SpecialistProfileScope = "project" | "user";
 
@@ -156,7 +159,13 @@ export function listSpecialistProfiles(
 			try {
 				const profile = readSpecialistProfile(join(dir, entry.name), scope);
 				byName.set(profile.name, profile);
-			} catch {}
+			} catch (error) {
+				logger.debug("Failed to read specialist profile", {
+					file: entry.name,
+					scope,
+					error,
+				});
+			}
 		}
 	}
 	return [...byName.values()].sort((left, right) =>
