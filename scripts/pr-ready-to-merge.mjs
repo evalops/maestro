@@ -163,6 +163,7 @@ export function evaluateReadiness({
 	expectedHeadSha = "",
 	requiredStatusChecks = null,
 	strictStatusChecks = false,
+	bugbotFixedTitles = EMPTY_SET,
 }) {
 	const failures = [];
 	const warnings = [];
@@ -185,7 +186,9 @@ export function evaluateReadiness({
 		warnings.push("PR merge state is UNSTABLE because at least one non-required status is not passing.");
 	}
 
-	const unresolvedThreads = reviewThreads.filter((thread) => !thread.isResolved);
+	const unresolvedThreads = reviewThreads.filter((thread) =>
+		threadBlocksAfterBugbotDisposition(thread, bugbotFixedTitles),
+	);
 	for (const thread of unresolvedThreads) {
 		const firstComment = thread.comments?.nodes?.[0];
 		const location = [thread.path, thread.line].filter(Boolean).join(":");
@@ -232,7 +235,7 @@ export function fetchReviewThreads(owner, repo, number, queryGh = ghJson) {
 								isOutdated
 								path
 								line
-								comments(first:1){nodes{url body author{login}}}
+								comments(first:20){nodes{url body author{login}}}
 							}
 							pageInfo{
 								hasNextPage
@@ -260,6 +263,159 @@ export function fetchReviewThreads(owner, repo, number, queryGh = ghJson) {
 	} while (cursor);
 
 	return threads;
+}
+
+export function fetchIssueComments(owner, repo, number, queryGh = ghJson) {
+	const comments = [];
+	let cursor = "";
+
+	do {
+		const apiArgs = [
+			"api",
+			"graphql",
+			"-f",
+			`query=query($owner:String!,$repo:String!,$number:Int!,$after:String){
+				repository(owner:$owner,name:$repo){
+					pullRequest(number:$number){
+						comments(first:100,after:$after){
+							nodes{body author{login}}
+							pageInfo{hasNextPage endCursor}
+						}
+					}
+				}
+			}`,
+			"-f",
+			`owner=${owner}`,
+			"-f",
+			`repo=${repo}`,
+			"-F",
+			`number=${number}`,
+		];
+		if (cursor) {
+			apiArgs.push("-f", `after=${cursor}`);
+		}
+
+		const data = queryGh(apiArgs);
+		const connection = data.data.repository.pullRequest.comments;
+		comments.push(...connection.nodes);
+		cursor = connection.pageInfo.hasNextPage ? connection.pageInfo.endCursor : "";
+	} while (cursor);
+
+	return comments;
+}
+
+const BUGBOT_AUTOFIX_AUTHOR = /^cursor(?:\[bot\])?$/i;
+const EMPTY_SET = new Set();
+
+/**
+ * A review thread is considered closed by Cursor Bugbot Autofix's
+ * false-positive disposition when the most recent comment is Bugbot's own
+ * explicit "determined this is a false positive" reply. Autofix posts that
+ * disposition as a follow-up comment in the originating thread but does not
+ * flip GitHub's `isResolved` flag, which would otherwise deadlock generated
+ * mirror PRs on Bugbot's own false positives.
+ *
+ * The disposition must be the last comment so that a later human reply
+ * ("still broken") keeps the thread blocking.
+ *
+ * @param {{ comments?: { nodes?: Array<{ author?: { login?: unknown }, body?: unknown }> } } | null | undefined} thread
+ * @returns {boolean}
+ */
+export function isBugbotAutofixFalsePositive(thread) {
+	const comments = thread?.comments?.nodes ?? [];
+	if (comments.length === 0) {
+		return false;
+	}
+	const last = comments[comments.length - 1];
+	const author = String(last?.author?.login ?? "");
+	const body = String(last?.body ?? "");
+	return (
+		BUGBOT_AUTOFIX_AUTHOR.test(author) &&
+		/Bugbot Autofix/i.test(body) &&
+		/false[ -]positive/i.test(body)
+	);
+}
+
+/**
+ * Extracts a review finding's title from the first comment of a thread. Bugbot
+ * finding comments begin with a Markdown heading (`### <title>`); the same
+ * title appears in Autofix's applied-fix disposition. Returns the trimmed
+ * title, or null when the first comment is not a titled finding.
+ *
+ * @param {{ comments?: { nodes?: Array<{ body?: unknown }> } } | null | undefined} thread
+ * @returns {string | null}
+ */
+export function reviewThreadFindingTitle(thread) {
+	const body = String(thread?.comments?.nodes?.[0]?.body ?? "");
+	const match = body.match(/^#{1,6}\s+(.+?)\s*$/m);
+	return match ? match[1].trim() : null;
+}
+
+/**
+ * Collects finding titles that Cursor Bugbot Autofix reported as fixed, from a
+ * PR's top-level (issue) comments. Autofix posts an applied-fix disposition as
+ * a top-level comment marked `<!-- BUGBOT_AUTOFIX_COMMENT -->` that lists one
+ * or more `✅ Fixed: **<title>**` entries, where `<title>` matches the original
+ * finding's `### <title>`. Returns the set of trimmed titles.
+ *
+ * @param {Array<{ body?: unknown }> | null | undefined} issueComments
+ * @returns {Set<string>}
+ */
+export function parseBugbotAutofixFixedTitles(issueComments) {
+	const titles = new Set();
+	for (const comment of issueComments ?? []) {
+		const body = String(comment?.body ?? "");
+		if (!body.includes("BUGBOT_AUTOFIX_COMMENT")) {
+			continue;
+		}
+		for (const match of body.matchAll(/✅\s*Fixed:\s*\*\*(.+?)\*\*/gi)) {
+			const title = match[1].trim();
+			if (title) {
+				titles.add(title);
+			}
+		}
+	}
+	return titles;
+}
+
+/**
+ * A review thread is considered closed by a Bugbot Autofix applied-fix
+ * disposition when the finding's title is among the titles Autofix reported as
+ * fixed on the PR. This is matched by title (not by thread id) because the
+ * applied-fix disposition is a top-level comment rather than an inline reply.
+ *
+ * @param {{ comments?: { nodes?: Array<{ body?: unknown }> } } | null | undefined} thread
+ * @param {Set<string> | null | undefined} fixedTitles
+ * @returns {boolean}
+ */
+export function isBugbotAutofixResolvedByFix(thread, fixedTitles) {
+	if (!fixedTitles || fixedTitles.size === 0) {
+		return false;
+	}
+	const title = reviewThreadFindingTitle(thread);
+	return title !== null && fixedTitles.has(title);
+}
+
+/**
+ * Whether a review thread still blocks readiness after accounting for Cursor
+ * Bugbot Autofix dispositions: GitHub resolution, an inline false-positive
+ * disposition, or an applied-fix disposition matched by finding title.
+ *
+ * @param {{ isResolved?: boolean, comments?: { nodes?: unknown[] } }} thread
+ * @param {Set<string> | null | undefined} fixedTitles
+ * @returns {boolean}
+ */
+export function threadBlocksAfterBugbotDisposition(thread, fixedTitles) {
+	if (thread?.isResolved) {
+		return false;
+	}
+	if (isBugbotAutofixFalsePositive(thread)) {
+		return false;
+	}
+	if (isBugbotAutofixResolvedByFix(thread, fixedTitles ?? EMPTY_SET)) {
+		return false;
+	}
+	return true;
 }
 
 function fetchPullRequest(repo, number) {
@@ -304,6 +460,9 @@ function main() {
 
 	const pr = fetchPullRequest(repo, number);
 	const reviewThreads = fetchReviewThreads(repoSpec.owner, repoSpec.name, number);
+	const bugbotFixedTitles = parseBugbotAutofixFixedTitles(
+		fetchIssueComments(repoSpec.owner, repoSpec.name, number),
+	);
 	const requiredStatusChecks = fetchRequiredStatusChecks(repoSpec.nameWithOwner, pr.baseRefName);
 	const result = evaluateReadiness({
 		pr,
@@ -311,6 +470,7 @@ function main() {
 		expectedHeadSha: args.headSha,
 		requiredStatusChecks,
 		strictStatusChecks: args.strictStatusChecks,
+		bugbotFixedTitles,
 	});
 
 	if (result.ready) {

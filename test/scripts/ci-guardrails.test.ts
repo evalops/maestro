@@ -53,8 +53,13 @@ import {
 	evaluateReadiness,
 	fetchRequiredStatusChecks,
 	fetchReviewThreads,
+	isBugbotAutofixFalsePositive,
+	isBugbotAutofixResolvedByFix,
+	parseBugbotAutofixFixedTitles,
 	parseRepoSpec,
 	prNumberFromInput,
+	reviewThreadFindingTitle,
+	threadBlocksAfterBugbotDisposition,
 } from "../../scripts/pr-ready-to-merge.mjs";
 import {
 	publicMirrorRefCandidates,
@@ -4440,6 +4445,84 @@ describe("evaluateReadiness", () => {
 		);
 	});
 
+	it("accepts a thread Bugbot Autofix resolved as a false positive", () => {
+		const result = evaluateReadiness({
+			pr: cleanPr,
+			reviewThreads: [
+				{
+					comments: {
+						nodes: [
+							{
+								author: { login: "cursor[bot]" },
+								body: "### Finding\n\n**High Severity**\n",
+								url: "https://example.test/thread",
+							},
+							{
+								author: { login: "cursor[bot]" },
+								body: "[Bugbot Autofix](https://cursor.com/docs/bugbot#autofix) determined this is a false positive.",
+							},
+						],
+					},
+					id: "thread-1",
+					isResolved: false,
+					line: 12,
+					path: "src/file.ts",
+				},
+			],
+		});
+		expect(result.ready).toBe(true);
+	});
+
+	it("accepts a thread Bugbot Autofix resolved by an applied-fix disposition", () => {
+		const result = evaluateReadiness({
+			pr: cleanPr,
+			reviewThreads: [
+				{
+					comments: {
+						nodes: [
+							{
+								author: { login: "cursor[bot]" },
+								body: "### Cancel guard ignores canonical states\n\n**High Severity**\n",
+								url: "https://example.test/thread",
+							},
+						],
+					},
+					id: "thread-1",
+					isResolved: false,
+					line: 88,
+					path: "packages/control-plane-rs/src/a2a/tasks.rs",
+				},
+			],
+			bugbotFixedTitles: new Set(["Cancel guard ignores canonical states"]),
+		});
+		expect(result.ready).toBe(true);
+	});
+
+	it("still rejects a finding whose title is not in the applied-fix set", () => {
+		const result = evaluateReadiness({
+			pr: cleanPr,
+			reviewThreads: [
+				{
+					comments: {
+						nodes: [
+							{
+								author: { login: "cursor[bot]" },
+								body: "### Some other bug\n\n**High Severity**\n",
+								url: "https://example.test/thread",
+							},
+						],
+					},
+					id: "thread-1",
+					isResolved: false,
+					line: 88,
+					path: "src/file.ts",
+				},
+			],
+			bugbotFixedTitles: new Set(["Cancel guard ignores canonical states"]),
+		});
+		expect(result.ready).toBe(false);
+	});
+
 	it("rejects stale heads and pending or failed checks", () => {
 		const result = evaluateReadiness({
 			pr: {
@@ -4695,5 +4778,367 @@ describe("public mirror review debt gate", () => {
 				title: "sync",
 			},
 		]);
+	});
+
+	const bugbotFinding = {
+		author: { login: "cursor[bot]" },
+		body: "### Guardrail CLI entry never runs\n\n**High Severity**\n",
+		url: "https://github.com/evalops/maestro/pull/792#discussion_r1",
+	};
+	const bugbotFalsePositive = {
+		author: { login: "cursor[bot]" },
+		body: "[Bugbot Autofix](https://cursor.com/docs/bugbot#autofix) determined this is a false positive.\n\nVerified that the guard still runs.",
+		url: "https://github.com/evalops/maestro/pull/792#discussion_r2",
+	};
+
+	it("does not block when Bugbot Autofix resolved its own finding as a false positive", () => {
+		const result = evaluatePublicMirrorReviewDebt({
+			pulls: [
+				{
+					html_url: "https://github.com/evalops/maestro/pull/792",
+					number: 792,
+					title: "chore: sync public mirror from internal",
+				},
+			],
+			reviewThreadsByPr: new Map([
+				[
+					792,
+					[
+						{
+							comments: { nodes: [bugbotFinding, bugbotFalsePositive] },
+							id: "PRRT_1",
+							isResolved: false,
+							path: "scripts/check-guardrail-regression-suite.mjs",
+						},
+					],
+				],
+			]),
+		});
+
+		expect(result.ok).toBe(true);
+		expect(result.failures).toEqual([]);
+	});
+
+	it("still blocks when a human replied after the Bugbot false-positive disposition", () => {
+		const humanReply = {
+			author: { login: "haasonsaas" },
+			body: "No, this is still broken on my end.",
+			url: "https://github.com/evalops/maestro/pull/792#discussion_r3",
+		};
+		const result = evaluatePublicMirrorReviewDebt({
+			pulls: [
+				{
+					html_url: "https://github.com/evalops/maestro/pull/792",
+					number: 792,
+					title: "chore: sync public mirror from internal",
+				},
+			],
+			reviewThreadsByPr: new Map([
+				[
+					792,
+					[
+						{
+							comments: {
+								nodes: [bugbotFinding, bugbotFalsePositive, humanReply],
+							},
+							id: "PRRT_1",
+							isResolved: false,
+							path: "scripts/check-guardrail-regression-suite.mjs",
+						},
+					],
+				],
+			]),
+		});
+
+		expect(result.ok).toBe(false);
+		expect(result.failures.join("\n")).toContain(
+			"evalops/maestro#792 has 1 unresolved review thread",
+		);
+	});
+
+	it("still blocks a Bugbot finding that was not marked a false positive", () => {
+		const appliedFix = {
+			author: { login: "cursor[bot]" },
+			body: "[Bugbot Autofix](https://cursor.com/docs/bugbot#autofix) applied a fix.",
+			url: "https://github.com/evalops/maestro/pull/792#discussion_r2",
+		};
+		const result = evaluatePublicMirrorReviewDebt({
+			pulls: [
+				{
+					html_url: "https://github.com/evalops/maestro/pull/792",
+					number: 792,
+					title: "chore: sync public mirror from internal",
+				},
+			],
+			reviewThreadsByPr: new Map([
+				[
+					792,
+					[
+						{
+							comments: { nodes: [bugbotFinding, appliedFix] },
+							id: "PRRT_1",
+							isResolved: false,
+							path: "scripts/check-guardrail-regression-suite.mjs",
+						},
+					],
+				],
+			]),
+		});
+
+		expect(result.ok).toBe(false);
+	});
+
+	it("does not block when Bugbot Autofix prepared a fix for the finding by title", () => {
+		const finding = {
+			author: { login: "cursor[bot]" },
+			body: "### Cancel guard ignores canonical states\n\n**High Severity**\n",
+			url: "https://github.com/evalops/maestro/pull/791#discussion_r1",
+		};
+		const result = evaluatePublicMirrorReviewDebt({
+			pulls: [
+				{
+					html_url: "https://github.com/evalops/maestro/pull/791",
+					number: 791,
+					title: "chore: sync public mirror from internal",
+				},
+			],
+			reviewThreadsByPr: new Map([
+				[
+					791,
+					[
+						{
+							comments: { nodes: [finding] },
+							id: "PRRT_1",
+							isResolved: false,
+							path: "packages/control-plane-rs/src/a2a/tasks.rs",
+						},
+					],
+				],
+			]),
+			bugbotFixedTitlesByPr: new Map([
+				[791, new Set(["Cancel guard ignores canonical states"])],
+			]),
+		});
+
+		expect(result.ok).toBe(true);
+		expect(result.failures).toEqual([]);
+	});
+});
+
+describe("isBugbotAutofixFalsePositive", () => {
+	it("recognizes a Bugbot false-positive disposition as the last comment", () => {
+		expect(
+			isBugbotAutofixFalsePositive({
+				comments: {
+					nodes: [
+						{
+							author: { login: "cursor" },
+							body: "[Bugbot Autofix](x) determined this is a false positive.",
+						},
+					],
+				},
+			}),
+		).toBe(true);
+	});
+
+	it("accepts both cursor and cursor[bot] author logins", () => {
+		for (const login of ["cursor", "cursor[bot]", "Cursor", "Cursor[bot]"]) {
+			expect(
+				isBugbotAutofixFalsePositive({
+					comments: {
+						nodes: [
+							{ author: { login }, body: "Bugbot Autofix: false-positive" },
+						],
+					},
+				}),
+			).toBe(true);
+		}
+	});
+
+	it("is false when the last comment is a human reply", () => {
+		expect(
+			isBugbotAutofixFalsePositive({
+				comments: {
+					nodes: [
+						{
+							author: { login: "cursor[bot]" },
+							body: "Bugbot Autofix determined this is a false positive.",
+						},
+						{ author: { login: "haasonsaas" }, body: "still broken" },
+					],
+				},
+			}),
+		).toBe(false);
+	});
+
+	it("is false for a Bugbot applied-fix disposition that is not a false positive", () => {
+		expect(
+			isBugbotAutofixFalsePositive({
+				comments: {
+					nodes: [
+						{
+							author: { login: "cursor[bot]" },
+							body: "[Bugbot Autofix](x) applied a fix in commit abc.",
+						},
+					],
+				},
+			}),
+		).toBe(false);
+	});
+
+	it("is false when there are no comments", () => {
+		expect(isBugbotAutofixFalsePositive({ comments: { nodes: [] } })).toBe(
+			false,
+		);
+		expect(isBugbotAutofixFalsePositive(undefined)).toBe(false);
+	});
+});
+
+describe("Bugbot Autofix applied-fix disposition", () => {
+	const multiFixComment = {
+		body: "<!-- BUGBOT_AUTOFIX_COMMENT -->\n<!-- BACKGROUND_AGENT_BC_ID:bc-x -->\n[Bugbot Autofix](https://cursor.com/docs/bugbot#autofix) prepared fixes for both issues found in the latest run.\n\n- ✅ Fixed: **Cancel guard ignores canonical states**\n  - desc\n- ✅ Fixed: **Compound secret keys not redacted**\n  - desc\n",
+	};
+
+	describe("parseBugbotAutofixFixedTitles", () => {
+		it("extracts every ✅ Fixed title from applied-fix comments", () => {
+			const titles = parseBugbotAutofixFixedTitles([
+				multiFixComment,
+				{ body: "a human comment" },
+				{
+					body: "<!-- BUGBOT_AUTOFIX_COMMENT -->\n[Bugbot Autofix](x) prepared a fix for the issue found in the latest run.\n\n- ✅ Fixed: **Learner reload reapplies transient patterns**\n",
+				},
+			]);
+			expect(titles).toEqual(
+				new Set([
+					"Cancel guard ignores canonical states",
+					"Compound secret keys not redacted",
+					"Learner reload reapplies transient patterns",
+				]),
+			);
+		});
+
+		it("ignores non-Bugbot comments and false-positive dispositions", () => {
+			expect(
+				parseBugbotAutofixFixedTitles([
+					{ body: "regular review comment" },
+					{
+						body: "[Bugbot Autofix](x) determined this is a false positive.\n- ✅ Fixed: **should not match**\n",
+					},
+				]),
+			).toEqual(new Set());
+		});
+
+		it("is empty for null/undefined input", () => {
+			expect(parseBugbotAutofixFixedTitles(undefined)).toEqual(new Set());
+			expect(parseBugbotAutofixFixedTitles(null)).toEqual(new Set());
+		});
+	});
+
+	describe("reviewThreadFindingTitle", () => {
+		it("extracts the heading title from a finding comment", () => {
+			expect(
+				reviewThreadFindingTitle({
+					comments: {
+						nodes: [
+							{
+								body: "### Release dispatch count misses new runs\n\n**Medium**",
+							},
+						],
+					},
+				}),
+			).toBe("Release dispatch count misses new runs");
+		});
+
+		it("returns null when the first comment has no heading", () => {
+			expect(
+				reviewThreadFindingTitle({
+					comments: { nodes: [{ body: "looks good to me" }] },
+				}),
+			).toBeNull();
+			expect(reviewThreadFindingTitle(undefined)).toBeNull();
+		});
+	});
+
+	describe("isBugbotAutofixResolvedByFix", () => {
+		const fixed = new Set(["Cancel guard ignores canonical states"]);
+		const thread = (title) => ({
+			comments: { nodes: [{ body: `### ${title}\n\n**High**` }] },
+		});
+
+		it("is true when the finding title was reported fixed", () => {
+			expect(
+				isBugbotAutofixResolvedByFix(
+					thread("Cancel guard ignores canonical states"),
+					fixed,
+				),
+			).toBe(true);
+		});
+
+		it("is false for an unmatched finding", () => {
+			expect(
+				isBugbotAutofixResolvedByFix(thread("Some other bug"), fixed),
+			).toBe(false);
+		});
+
+		it("is false when there are no fixed titles", () => {
+			expect(
+				isBugbotAutofixResolvedByFix(
+					thread("Cancel guard ignores canonical states"),
+					new Set(),
+				),
+			).toBe(false);
+			expect(
+				isBugbotAutofixResolvedByFix(
+					thread("Cancel guard ignores canonical states"),
+					undefined,
+				),
+			).toBe(false);
+		});
+	});
+
+	describe("threadBlocksAfterBugbotDisposition", () => {
+		const fixed = new Set(["Fixed bug"]);
+		const finding = (title) => ({
+			isResolved: false,
+			comments: { nodes: [{ body: `### ${title}\n\n**High**` }] },
+		});
+
+		it("does not block a GitHub-resolved thread", () => {
+			expect(
+				threadBlocksAfterBugbotDisposition({ isResolved: true }, fixed),
+			).toBe(false);
+		});
+
+		it("does not block a false-positive thread", () => {
+			expect(
+				threadBlocksAfterBugbotDisposition(
+					{
+						isResolved: false,
+						comments: {
+							nodes: [
+								{ author: { login: "cursor[bot]" }, body: "finding" },
+								{
+									author: { login: "cursor[bot]" },
+									body: "Bugbot Autofix determined this is a false positive.",
+								},
+							],
+						},
+					},
+					fixed,
+				),
+			).toBe(false);
+		});
+
+		it("does not block an applied-fix thread matched by title", () => {
+			expect(
+				threadBlocksAfterBugbotDisposition(finding("Fixed bug"), fixed),
+			).toBe(false);
+		});
+
+		it("blocks an unrelated unresolved finding", () => {
+			expect(
+				threadBlocksAfterBugbotDisposition(finding("Other bug"), fixed),
+			).toBe(true);
+		});
 	});
 });
