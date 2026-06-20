@@ -74,6 +74,53 @@ describe("Auto-Compaction", () => {
 
 			expect(config.minMessages).toBe(5);
 		});
+
+		it("honors resolved Maestro compaction settings over env vars", () => {
+			process.env.MAESTRO_AUTOCOMPACT_ENABLED = "true";
+			process.env.MAESTRO_AUTOCOMPACT_PCT = "70";
+			process.env.MAESTRO_AUTOCOMPACT_MIN_MESSAGES = "12";
+
+			const config = getAutoCompactionConfig({
+				enabled: false,
+				thresholdPercent: 95,
+				minMessages: 25,
+				keepRecentMessages: 9,
+			});
+
+			expect(config.enabled).toBe(false);
+			expect(config.thresholdPercent).toBe(95);
+			expect(config.minMessages).toBe(25);
+			expect(config.keepRecentCount).toBe(9);
+		});
+
+		it("honors settings-derived minMessages below the legacy env floor", () => {
+			process.env.MAESTRO_AUTOCOMPACT_MIN_MESSAGES = "12";
+
+			const config = getAutoCompactionConfig({ minMessages: 2 });
+
+			expect(config.minMessages).toBe(2);
+		});
+
+		it("falls back to env vars for fields the settings omit", () => {
+			process.env.MAESTRO_AUTOCOMPACT_ENABLED = "false";
+			process.env.MAESTRO_AUTOCOMPACT_PCT = "60";
+			process.env.MAESTRO_AUTOCOMPACT_MIN_MESSAGES = "15";
+
+			const config = getAutoCompactionConfig({ minMessages: 30 });
+
+			expect(config.enabled).toBe(false);
+			expect(config.thresholdPercent).toBe(60);
+			expect(config.minMessages).toBe(30);
+		});
+
+		it("clamps settings-derived threshold into 50-100", () => {
+			expect(
+				getAutoCompactionConfig({ thresholdPercent: 200 }).thresholdPercent,
+			).toBe(100);
+			expect(
+				getAutoCompactionConfig({ thresholdPercent: 1 }).thresholdPercent,
+			).toBe(50);
+		});
 	});
 
 	describe("calculateContextUsage", () => {
