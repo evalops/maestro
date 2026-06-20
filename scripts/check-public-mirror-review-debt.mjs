@@ -2,10 +2,16 @@
 
 import { execFileSync } from "node:child_process";
 import process from "node:process";
-import { fetchReviewThreads } from "./pr-ready-to-merge.mjs";
+import {
+	fetchIssueComments,
+	fetchReviewThreads,
+	parseBugbotAutofixFixedTitles,
+	threadBlocksAfterBugbotDisposition,
+} from "./pr-ready-to-merge.mjs";
 
 const DEFAULT_REPO = "evalops/maestro";
 const DEFAULT_BRANCH = "sync/public-release-mirror";
+const EMPTY_SET = new Set();
 
 function parseArgs(argv) {
 	const args = {
@@ -79,13 +85,15 @@ function fetchOpenMirrorPulls(repo, branch) {
 export function evaluatePublicMirrorReviewDebt({
 	pulls,
 	reviewThreadsByPr,
+	bugbotFixedTitlesByPr,
 	repo = DEFAULT_REPO,
 }) {
 	const failures = [];
 
 	for (const pull of pulls) {
-		const unresolved = (reviewThreadsByPr.get(pull.number) ?? []).filter(
-			(thread) => !thread.isResolved,
+		const fixedTitles = bugbotFixedTitlesByPr?.get(pull.number) ?? EMPTY_SET;
+		const unresolved = (reviewThreadsByPr.get(pull.number) ?? []).filter((thread) =>
+			threadBlocksAfterBugbotDisposition(thread, fixedTitles),
 		);
 		if (unresolved.length === 0) {
 			continue;
@@ -120,10 +128,19 @@ function main() {
 			fetchReviewThreads(owner, repoName, pull.number),
 		]),
 	);
+	const bugbotFixedTitlesByPr = new Map(
+		pulls.map((pull) => [
+			pull.number,
+			parseBugbotAutofixFixedTitles(
+				fetchIssueComments(owner, repoName, pull.number),
+			),
+		]),
+	);
 	const result = evaluatePublicMirrorReviewDebt({
 		pulls,
 		repo: args.repo,
 		reviewThreadsByPr,
+		bugbotFixedTitlesByPr,
 	});
 
 	if (result.ok) {
