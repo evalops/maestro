@@ -6,6 +6,7 @@ import type { ClientToolExecutionService } from "../agent/transport.js";
 import type { TextContent } from "../agent/types.js";
 import { PATHS } from "../config/constants.js";
 import { readJsonFile, writeJsonFile } from "../utils/fs.js";
+import { isRecord } from "../utils/json.js";
 import type {
 	McpConfig,
 	McpServerConfig,
@@ -27,10 +28,6 @@ function emptyStore(): StoredMcpWorkspaceTrust {
 		version: 1,
 		servers: {},
 	};
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-	return !!value && typeof value === "object" && !Array.isArray(value);
 }
 
 function normalizeTrustEntry(value: unknown): McpWorkspaceTrustEntry | null {

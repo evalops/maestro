@@ -34,6 +34,7 @@
  *
  * @module conversation/render-model
  */
+import { isRecord } from "../utils/json.js";
 
 import type {
 	AppMessage,
@@ -247,10 +248,6 @@ export interface RenderableAttachment {
 export interface RenderableImageContent {
 	mimeType: string;
 	data: string;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-	return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
 
 function isAssistantContentBlock(

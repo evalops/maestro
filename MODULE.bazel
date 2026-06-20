@@ -1,5 +1,5 @@
 module(
-    name = "evalops_maestro_internal",
+    name = "evalops_maestro",
     version = "0.0.0",
 )
 

@@ -45,6 +45,7 @@ import type {
 	Usage,
 } from "../agent/types.js";
 import type { RegisteredModel } from "../models/registry.js";
+import { isRecord } from "../utils/json.js";
 
 /** Direction of conversion for error context */
 export type SessionSerializationDirection = "app->composer" | "composer->app";
@@ -123,9 +124,6 @@ function safeStringify(value: unknown): string {
 }
 
 /** Type guard for plain objects (not arrays or null) */
-function isRecord(value: unknown): value is Record<string, unknown> {
-	return Boolean(value) && typeof value === "object" && !Array.isArray(value);
-}
 
 function toComposerAttachments(
 	attachments: Attachment[] | undefined,

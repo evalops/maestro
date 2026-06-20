@@ -125,10 +125,11 @@ export class FileTranscriptStore implements TranscriptStore {
 						transcripts.push(transcript);
 					}
 				}
-				if (transcripts.length >= limit) break;
 			}
 
-			// Sort by updatedAt descending
+			// Sort by updatedAt descending, then enforce the limit. Sorting must
+			// happen before slicing, otherwise `limit` truncates by readdir order
+			// (arbitrary) rather than by recency.
 			transcripts.sort((a, b) => b.updatedAt - a.updatedAt);
 			return transcripts.slice(0, limit);
 		} catch {

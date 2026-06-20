@@ -8,6 +8,7 @@ import {
 } from "@evalops/contracts";
 import type { WebSocket } from "ws";
 import { getRegisteredModels } from "../../models/registry.js";
+import { isRecord } from "../../utils/json.js";
 import {
 	type ServerRequestLifecycleEvent,
 	type ServerRequestManager,
@@ -18,10 +19,6 @@ interface RuntimeAppServerOptions {
 	serverRequestManager?: ServerRequestManager;
 	sessionId?: string;
 	validateSessionAccess?: (sessionId: string) => boolean | Promise<boolean>;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-	return Boolean(value && typeof value === "object" && !Array.isArray(value));
 }
 
 function canWrite(ws: WebSocket): boolean {

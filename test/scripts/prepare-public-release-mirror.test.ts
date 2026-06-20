@@ -372,6 +372,53 @@ describe("prepare-public-release-mirror", () => {
 		expect(existsSync(join(target, "public-mirror"))).toBe(false);
 	});
 
+	it("rewrites the Bzlmod module name to the public identity", () => {
+		const { source, target } = makeFixture();
+		write(
+			join(source, "package.json"),
+			JSON.stringify(
+				{
+					name: internalPackageName,
+					version: "1.2.3",
+					maestro: {
+						canonicalPackageName: publicPackageName,
+					},
+				},
+				null,
+				2,
+			),
+		);
+		write(
+			join(source, "MODULE.bazel"),
+			[
+				"module(",
+				'    name = "evalops_maestro_internal",',
+				'    version = "0.0.0",',
+				")",
+				"",
+				'bazel_dep(name = "rules_shell", version = "0.6.1")',
+				"",
+			].join("\n"),
+		);
+
+		execFileSync(
+			process.execPath,
+			[
+				"scripts/prepare-public-release-mirror.mjs",
+				"--source",
+				source,
+				"--target",
+				target,
+			],
+			{ cwd: process.cwd(), stdio: "pipe" },
+		);
+
+		const moduleBazel = readFileSync(join(target, "MODULE.bazel"), "utf8");
+		expect(moduleBazel).toMatch(/name\s*=\s*"evalops_maestro"/);
+		expect(moduleBazel).not.toContain("evalops_maestro_internal");
+		expect(moduleBazel).toContain('bazel_dep(name = "rules_shell"');
+	});
+
 	it("strips review guard runner labels regardless of indentation or trailing newline", () => {
 		const { source, target } = makeFixture();
 		write(

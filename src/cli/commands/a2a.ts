@@ -71,6 +71,7 @@ import {
 } from "../../platform/agent-registry-client.js";
 import { getEnvValue } from "../../platform/client.js";
 import { isAbortError } from "../../utils/abort-error.js";
+import { isRecord } from "../../utils/json.js";
 import {
 	type ParsedA2AArgs,
 	booleanFlag,
@@ -1739,10 +1740,6 @@ function isA2ATelemetryCloudEventLike(
 		typeof value.type === "string" &&
 		(value.data === undefined || isRecord(value.data))
 	);
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-	return Boolean(value && typeof value === "object" && !Array.isArray(value));
 }
 
 async function handleA2ATasks(parsed: ParsedA2AArgs): Promise<void> {

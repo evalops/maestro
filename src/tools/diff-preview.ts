@@ -509,18 +509,26 @@ class DiffPreviewManager {
 			const hunk = preview.hunks[hunkIdx];
 			if (!hunk) continue;
 
-			const startIdx = hunk.oldStart - 1 + offset;
 			let removeCount = 0;
+			let leadingContext = 0;
+			let seenRemove = false;
 			const addLines: string[] = [];
 
 			for (const line of hunk.lines) {
 				if (line.type === "remove") {
 					removeCount++;
+					seenRemove = true;
 				} else if (line.type === "add") {
 					addLines.push(line.content);
+					seenRemove = true;
+				} else if (line.type === "context" && !seenRemove) {
+					// oldStart points at the hunk's first line, which may be leading
+					// context — skip past it so the splice lands on the first removal.
+					leadingContext++;
 				}
 			}
 
+			const startIdx = hunk.oldStart - 1 + leadingContext + offset;
 			result.splice(startIdx, removeCount, ...addLines);
 			offset += addLines.length - removeCount;
 		}

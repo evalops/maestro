@@ -179,6 +179,19 @@ const unguardedRustModule = `pub fn cache_key(path: &str) -> String {
 mod tests;
 `;
 
+const unguardedInlineRustTests = `pub fn cache_key(path: &str) -> String {
+	format!("cache:{path}")
+}
+
+mod tests {
+	use super::*;
+
+	pub fn exported_helper() -> u32 {
+		42
+	}
+}
+`;
+
 const extractedRustTests = `use super::*;
 
 #[test]
@@ -382,6 +395,44 @@ describe("release impact filter", () => {
 			extractedRustTests.replace("cache:fixture", "cache:still-test-only"),
 		);
 		commit(root, "change extracted tests");
+
+		expect(packageChangedSinceTag({ cwd: root, tagTarget })).toBe(false);
+	});
+
+	it("treats unguarded inline Rust test module edits as package-impacting", () => {
+		const root = makeRepo();
+		writeFixtureFile(
+			root,
+			"packages/tui-rs/src/tools/cache.rs",
+			unguardedInlineRustTests,
+		);
+		const tagTarget = commit(root, "initial package source");
+
+		writeFixtureFile(
+			root,
+			"packages/tui-rs/src/tools/cache.rs",
+			unguardedInlineRustTests.replace("42", "99"),
+		);
+		commit(root, "edit unguarded inline test module");
+
+		expect(packageChangedSinceTag({ cwd: root, tagTarget })).toBe(true);
+	});
+
+	it("ignores cfg(test)-gated inline Rust test module edits", () => {
+		const root = makeRepo();
+		writeFixtureFile(
+			root,
+			"packages/tui-rs/src/tools/cache.rs",
+			inlineRustTests,
+		);
+		const tagTarget = commit(root, "initial package source");
+
+		writeFixtureFile(
+			root,
+			"packages/tui-rs/src/tools/cache.rs",
+			inlineRustTests.replace("cache:fixture", "cache:test-only-change"),
+		);
+		commit(root, "edit cfg(test) inline test module");
 
 		expect(packageChangedSinceTag({ cwd: root, tagTarget })).toBe(false);
 	});

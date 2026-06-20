@@ -6,6 +6,7 @@ import {
 	revokeRemoteConnection,
 	setRemoteSourceOfTruthPolicy,
 } from "../connectors/service-client.js";
+import { isRecord } from "../utils/json.js";
 import type { OAuthLogoutProvider, SupportedOAuthProvider } from "./index.js";
 import {
 	type OAuthCredentials,
@@ -104,10 +105,6 @@ export function normalizeConnectorSourceOfTruthArea(
 		}
 	}
 	return null;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-	return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function getMetadataString(

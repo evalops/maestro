@@ -63,6 +63,7 @@ import { checkSessionLimits } from "../safety/policy.js";
 import type { SessionManager } from "../session/manager.js";
 import { toSessionModelMetadata } from "../session/manager.js";
 import { createRuntimeSessionSummaryUpdater } from "../session/runtime-summary-updater.js";
+import { isRecord } from "../utils/json.js";
 import { createLogger } from "../utils/logger.js";
 import { sanitizeWithStaticMask } from "../utils/secret-redactor.js";
 import type { WebServerContext } from "./app-context.js";
@@ -254,10 +255,6 @@ export interface HostedRunnerRestoreManifest {
 		cursor?: number;
 	};
 	snapshot: HeadlessRuntimeSnapshot;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-	return Boolean(value && typeof value === "object" && !Array.isArray(value));
 }
 
 function restoreFlushStatus(value: unknown): HostedRunnerRestoreFlushStatus {

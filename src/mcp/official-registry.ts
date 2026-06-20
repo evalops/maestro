@@ -1,3 +1,4 @@
+import { isRecord } from "../utils/json.js";
 import { createLogger } from "../utils/logger.js";
 import { sanitizeWithStaticMask } from "../utils/secret-redactor.js";
 import { inferRemoteMcpTransport } from "./config.js";
@@ -83,10 +84,6 @@ let registryCache: RegistryCache = {
 	status: "idle",
 };
 let inFlightFetch: Promise<void> | null = null;
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-	return !!value && typeof value === "object" && !Array.isArray(value);
-}
 
 function collectConcreteUrls(entry: RegistryResponseEntry): Set<string> {
 	const urls = new Set<string>();

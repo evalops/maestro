@@ -7,6 +7,7 @@ import {
 import { EVALOPS_ORGANIZATION_ID_ENV_VARS } from "../evalops/env-aliases.js";
 import { PLATFORM_HTTP_ROUTES } from "../platform/core-services.js";
 import { fetchDownstream } from "../utils/downstream-http.js";
+import { isRecord } from "../utils/json.js";
 import { createLogger } from "../utils/logger.js";
 import { rejectDisallowedLoopbackHost } from "../utils/loopback-http.js";
 import {
@@ -252,10 +253,6 @@ function parseScopesPayload(value: unknown): string[] {
 		.filter((entry): entry is string => typeof entry === "string")
 		.map((entry) => entry.trim())
 		.filter((entry) => entry.length > 0);
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-	return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function getMetadataString(

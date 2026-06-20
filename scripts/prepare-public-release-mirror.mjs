@@ -63,6 +63,8 @@ const STALE_PUBLIC_TARGET_DELETES = [
 	".github/release-mirror-manifest.json",
 ];
 
+const PUBLIC_BAZEL_MODULE_NAME = "evalops_maestro";
+
 function parseArgs(argv) {
 	const args = {
 		check: false,
@@ -302,6 +304,15 @@ function resolvePublicFileContent(sourceRoot, relativePath) {
 			"utf8",
 		);
 	}
+	if (relativePath === "MODULE.bazel") {
+		return Buffer.from(
+			readFileSync(sourcePath, "utf8").replace(
+				/(\bmodule\s*\(\s*name\s*=\s*")[^"]*(")/,
+				`$1${PUBLIC_BAZEL_MODULE_NAME}$2`,
+			),
+			"utf8",
+		);
+	}
 	return readFileSync(sourcePath);
 }
 
@@ -358,7 +369,10 @@ function applyMirrorPlan(sourceRoot, targetRoot, plan) {
 		mkdirSync(dirname(targetPath), { recursive: true });
 		if (relativePath === "package.json") {
 			writeFileSync(targetPath, plan.packageJsonContent);
-		} else if (relativePath === ".github/workflows/review-thread-guard.yml") {
+		} else if (
+			relativePath === ".github/workflows/review-thread-guard.yml" ||
+			relativePath === "MODULE.bazel"
+		) {
 			writeFileSync(targetPath, resolvePublicFileContent(sourceRoot, relativePath));
 		} else {
 			copyFileSync(sourcePath, targetPath);

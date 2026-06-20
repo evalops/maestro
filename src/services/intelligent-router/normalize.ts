@@ -1,3 +1,4 @@
+import { isRecord } from "../../utils/json.js";
 import {
 	MODEL_PERFORMANCE_METRIC_SOURCES,
 	type ModelPerformanceMetricInput,
@@ -15,10 +16,6 @@ export class IntelligentRouterValidationError extends Error {
 		super(message);
 		this.name = "IntelligentRouterValidationError";
 	}
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-	return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function cleanOptionalString(value: unknown): string | undefined {

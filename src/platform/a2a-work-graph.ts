@@ -1,3 +1,4 @@
+import { isRecord } from "../utils/json.js";
 export interface A2ACodexSubagentEdgeMetadata {
 	spawnToolCallId?: string;
 	waitToolCallId?: string;
@@ -351,8 +352,4 @@ function numberValue(input: unknown): number | undefined {
 	}
 	const parsed = Number(input);
 	return Number.isFinite(parsed) ? parsed : undefined;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-	return typeof value === "object" && value !== null && !Array.isArray(value);
 }

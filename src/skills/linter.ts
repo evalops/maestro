@@ -9,6 +9,7 @@ import {
 import { constants, access } from "node:fs/promises";
 import { basename, extname, join, resolve } from "node:path";
 import { writeTextFileAtomic } from "../utils/fs.js";
+import { isRecord } from "../utils/json.js";
 import {
 	SKILL_FRONTMATTER_FIELDS,
 	findSkillMd,
@@ -59,10 +60,6 @@ function issue(
 	message: string,
 ): SkillLintIssue {
 	return { code, severity, path, message };
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-	return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function validateSkillName(

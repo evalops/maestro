@@ -3,6 +3,7 @@ import {
 	EVALOPS_WORKSPACE_ID_ENV_VARS,
 } from "../evalops/env-aliases.js";
 import { fetchDownstream } from "../utils/downstream-http.js";
+import { isRecord } from "../utils/json.js";
 import {
 	type PlatformServiceConfig,
 	buildPlatformJsonHeaders,
@@ -901,10 +902,6 @@ function normalizeA2AStreamEvent(
 		artifact: artifactUpdatePayload.artifact as A2AArtifact,
 		type: "artifactUpdate",
 	};
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-	return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function requireA2ATaskId(taskId: string): string {

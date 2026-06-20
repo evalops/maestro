@@ -189,6 +189,30 @@
 			]
 		},
 		{
+			"id": "release-train-drift",
+			"title": "Release train drift from unguarded Rust test modules",
+			"owner": "release",
+			"bugClass": "unguarded mod tests edits skipped by release-impact filtering",
+			"why": "rustProductionContent must only strip cfg(test)-gated test modules so edits inside an unguarded inline `mod tests` block remain package-impacting and force the required version bump instead of silently letting a tag mismatch through.",
+			"evidence": [
+				{
+					"path": "scripts/release-impact-filter.mjs",
+					"contains": [
+						"cfgTestAttributePattern",
+						"gatedByCfgTest",
+						"Only cfg(test)-gated test modules are test-only"
+					]
+				},
+				{
+					"path": "test/scripts/release-impact-filter.test.ts",
+					"contains": [
+						"treats unguarded inline Rust test module edits as package-impacting",
+						"ignores cfg(test)-gated inline Rust test module edits"
+					]
+				}
+			]
+		},
+		{
 			"id": "a2a-cancel-canonical-state-guard",
 			"title": "A2A cancel canonical state guard",
 			"owner": "a2a",

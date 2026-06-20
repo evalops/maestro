@@ -230,6 +230,21 @@ export function parseJsonWithGuard<T>(
 }
 
 /**
+ * Type alias for a record with unknown values.
+ */
+export type UnknownRecord = Record<string, unknown>;
+
+/**
+ * Type guard: is `value` a plain record (non-null object that is not an array)?
+ *
+ * Canonical home for `isRecord`; prefer importing from here over re-defining
+ * locally. (`isPlainObject` below is the same predicate, retained for callers.)
+ */
+export function isRecord(value: unknown): value is UnknownRecord {
+	return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/**
  * Type guard for checking if a value is a plain object
  */
 export function isPlainObject(

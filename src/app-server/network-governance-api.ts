@@ -10,6 +10,7 @@ import type {
 } from "@evalops/contracts";
 import { type EnterprisePolicy, loadPolicy } from "../safety/policy.js";
 import { checkNetworkRestrictionsDetailed } from "../safety/validators/network-policy-validator.js";
+import { isRecord } from "../utils/json.js";
 
 type UnknownRecord = Record<string, unknown>;
 interface NetworkFetchBinding {
@@ -59,10 +60,6 @@ export interface MaestroAppServerNetworkGovernance {
 	listAudit(
 		params?: UnknownRecord,
 	): Promise<MaestroAppServerNetworkAuditListResult>;
-}
-
-function isRecord(value: unknown): value is UnknownRecord {
-	return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function normalizeLimit(value: unknown): number {

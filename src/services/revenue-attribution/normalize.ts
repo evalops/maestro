@@ -1,3 +1,4 @@
+import { isRecord } from "../../utils/json.js";
 import {
 	ATTRIBUTION_MODELS,
 	type AttributionJsonValue,
@@ -12,10 +13,6 @@ export class RevenueAttributionValidationError extends Error {
 		super(message);
 		this.name = "RevenueAttributionValidationError";
 	}
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-	return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function cleanOptionalString(value: unknown): string | undefined {

@@ -342,8 +342,12 @@ export function handleCheckpointCommand(ctx: UndoRenderContext): void {
 				ctx.showError("Usage: /checkpoint delete <name>");
 				return;
 			}
-			// Note: Would need to add a delete method to tracker
-			ctx.showInfo("Checkpoint deletion not yet implemented");
+			const removed = tracker.deleteCheckpoint(name);
+			if (!removed) {
+				ctx.showError(`Checkpoint not found: ${name}`);
+				return;
+			}
+			ctx.showSuccess(`Deleted checkpoint "${name}"`);
 			break;
 		}
 
@@ -359,6 +363,7 @@ function handleCheckpointHelp(ctx: UndoRenderContext): void {
 		"  /checkpoint list              List all checkpoints",
 		"  /checkpoint save <name>       Save current state as checkpoint",
 		"  /checkpoint restore <name>    Restore to a checkpoint",
+		"  /checkpoint delete <name>     Delete a checkpoint",
 		"",
 		"Checkpoints mark a point in the change history.",
 		"Restoring undoes all changes made after the checkpoint.",

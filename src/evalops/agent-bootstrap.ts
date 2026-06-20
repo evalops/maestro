@@ -11,6 +11,7 @@ import {
 import { getPackageVersion } from "../package-metadata.js";
 import { getEnvValue, normalizeBaseUrl } from "../platform/client.js";
 import { PLATFORM_HTTP_ROUTES } from "../platform/core-services.js";
+import { isRecord } from "../utils/json.js";
 import {
 	type EvalOpsAgentMcpMetadata,
 	getStoredAgentMcpMetadata,
@@ -187,10 +188,6 @@ interface AgentMcpEndpoint {
 	identityBaseUrl?: string;
 	manifestUrl?: string;
 	preferDerivedIdentity?: boolean;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-	return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function nonEmptyString(value: unknown): string | undefined {

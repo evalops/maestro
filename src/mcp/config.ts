@@ -60,6 +60,7 @@ import { join, resolve } from "node:path";
 import type { z } from "zod";
 import { PATHS } from "../config/constants.js";
 import { readJsonFile, writeJsonFile } from "../utils/fs.js";
+import { isRecord } from "../utils/json.js";
 import { createLogger } from "../utils/logger.js";
 import { getHomeDir, resolveEnvPath } from "../utils/path-expansion.js";
 import { uniquePaths } from "../utils/path-utils.js";
@@ -959,10 +960,6 @@ function buildPersistedAuthPresetConfig(
 		headers: preset.headers,
 		headersHelper: preset.headersHelper,
 	};
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-	return !!value && typeof value === "object" && !Array.isArray(value);
 }
 
 function isWritableScope(

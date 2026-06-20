@@ -13,6 +13,7 @@ import type {
 	McpServerConfig,
 	McpServerStatus,
 } from "../mcp/types.js";
+import { isRecord } from "../utils/json.js";
 import {
 	UNIFIED_CONTEXT_MANIFEST_PROTOCOL,
 	type UnifiedContextEntryKind,
@@ -116,10 +117,6 @@ function stableJson(value: unknown): string {
 
 function hashValue(value: unknown): string {
 	return createHash("sha256").update(stableJson(value)).digest("hex");
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-	return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
 
 function hasRedactedTrue(value: unknown): boolean {

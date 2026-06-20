@@ -99,4 +99,39 @@ describe("ChangeTracker", () => {
 		expect(tracker.getCheckpoints()).toEqual(createState().checkpoints);
 		expect(tracker.export()).toEqual(createState());
 	});
+
+	it("deleteCheckpoint() removes a named checkpoint and returns true", () => {
+		const tracker = new ChangeTracker();
+		tracker.import(createState());
+
+		const removed = tracker.deleteCheckpoint("initial");
+
+		expect(removed).toBe(true);
+		expect(tracker.getCheckpoints()).toEqual([]);
+	});
+
+	it("deleteCheckpoint() returns false and changes nothing for an unknown name", () => {
+		const tracker = new ChangeTracker();
+		tracker.import(createState());
+
+		const removed = tracker.deleteCheckpoint("never-existed");
+
+		expect(removed).toBe(false);
+		expect(tracker.getCheckpoints()).toEqual(createState().checkpoints);
+	});
+
+	it("deleteCheckpoint() only removes the matching name among several", () => {
+		const tracker = new ChangeTracker();
+		tracker.import({
+			...createState(),
+			checkpoints: [
+				{ name: "a", timestamp: 1, changeId: "chg_1", changeCount: 1 },
+				{ name: "b", timestamp: 2, changeId: "chg_1", changeCount: 1 },
+				{ name: "c", timestamp: 3, changeId: "chg_1", changeCount: 1 },
+			],
+		});
+
+		expect(tracker.deleteCheckpoint("b")).toBe(true);
+		expect(tracker.getCheckpoints().map((cp) => cp.name)).toEqual(["a", "c"]);
+	});
 });
