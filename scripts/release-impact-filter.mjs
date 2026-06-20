@@ -261,6 +261,8 @@ function braceDelta(line, state) {
 	return delta;
 }
 
+const cfgTestAttributePattern = /^\s*#\s*\[\s*cfg\s*\(\s*test\s*\)\s*\]/;
+
 /**
  * @param {string} source
  */
@@ -278,9 +280,29 @@ export function stripRustTestModules(source) {
 			continue;
 		}
 
-		while (output.length > 0 && /^\s*#\[/.test(output[output.length - 1])) {
-			output.pop();
+		// Collect the contiguous outer attribute group immediately preceding the
+		// `mod tests` declaration so the cfg(test) gate can be evaluated before
+		// any preceding attributes or the module body are stripped.
+		let attributeStart = output.length;
+		while (
+			attributeStart > 0 &&
+			/^\s*#\[/.test(output[attributeStart - 1])
+		) {
+			attributeStart -= 1;
 		}
+		const gatedByCfgTest = output
+			.slice(attributeStart)
+			.some((attribute) => cfgTestAttributePattern.test(attribute));
+
+		// Only cfg(test)-gated test modules are test-only. An unguarded
+		// `mod tests` block is compiled in production builds, so edits inside it
+		// are package-impacting and must not be stripped from release diffs.
+		if (!gatedByCfgTest) {
+			output.push(line);
+			continue;
+		}
+
+		output.length = attributeStart;
 
 		if (moduleMatch[1] === ";") {
 			continue;
