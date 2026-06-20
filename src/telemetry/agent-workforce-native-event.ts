@@ -10,6 +10,7 @@ import type {
 	ToolResultMessage,
 	Usage,
 } from "../agent/types.js";
+import { isRecord } from "../utils/json.js";
 import type {
 	MaestroCorrelation,
 	MaestroPrincipal,
@@ -381,10 +382,6 @@ function compactRecord<T extends Record<string, unknown>>(
 	return entries.length > 0
 		? (Object.fromEntries(entries) as Partial<T>)
 		: undefined;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-	return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function isVerifiedCredentialAuthority(

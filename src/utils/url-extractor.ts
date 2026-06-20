@@ -14,6 +14,21 @@
  * @module utils/url-extractor
  */
 
+import {
+	GIT_CLONE_FLAGS_WITH_VALUES,
+	GIT_GLOBAL_FLAGS_WITH_VALUES,
+	gitArchiveTargetArgs,
+	gitCloneNonFlagArgs,
+	gitConfigCommandIsLocal,
+	gitConfigTargetArgs,
+	gitRemoteCommandIsLocal,
+	gitRemoteTargetArgs,
+	gitSubcommandInvocation,
+	gitSubmoduleCommandIsLocal,
+	gitSubmoduleTargetArgs,
+	isLocalGitTarget,
+} from "./url-extractor-git.js";
+
 /**
  * Pattern to match HTTP/HTTPS URLs in text.
  */
@@ -371,100 +386,6 @@ const SHELL_SHORT_FLAGS_BEFORE_COMMAND = new Set([
 	"P",
 ]);
 const EXEC_WRAPPER_FLAGS_WITH_VALUES = new Set(["-a"]);
-
-const NETWORK_GIT_SUBCOMMANDS = new Set([
-	"archive",
-	"clone",
-	"config",
-	"fetch",
-	"ls-remote",
-	"pull",
-	"push",
-	"remote",
-	"submodule",
-]);
-
-const GIT_NESTED_SUBCOMMAND_WRAPPERS = new Set(["lfs", "svn"]);
-
-const GIT_GLOBAL_FLAGS_WITH_VALUES = new Set([
-	"-C",
-	"-c",
-	"--config-env",
-	"--exec-path",
-	"--git-dir",
-	"--namespace",
-	"--super-prefix",
-	"--work-tree",
-]);
-
-const GIT_CLONE_FLAGS_WITH_VALUES = new Set([
-	"-b",
-	"--branch",
-	"-c",
-	"--config",
-	"--bundle-uri",
-	"--depth",
-	"--filter",
-	"-j",
-	"--jobs",
-	"-o",
-	"--origin",
-	"--reference",
-	"--reference-if-able",
-	"--separate-git-dir",
-	"--server-option",
-	"--shallow-exclude",
-	"--shallow-since",
-	"--template",
-	"-u",
-	"--upload-pack",
-]);
-
-const GIT_REMOTE_ADD_FLAGS_WITH_VALUES = new Set([
-	"-m",
-	"--master",
-	"-t",
-	"--track",
-]);
-
-const GIT_CONFIG_FLAGS_WITH_VALUES = new Set([
-	"-f",
-	"--blob",
-	"--comment",
-	"--default",
-	"--file",
-	"--fixed-value",
-	"--type",
-	"--value",
-]);
-
-const GIT_REMOTE_LOCAL_ACTIONS = new Set([
-	"get-url",
-	"prune",
-	"remove",
-	"rename",
-	"rm",
-	"set-branches",
-	"set-head",
-]);
-
-const GIT_SUBMODULE_ADD_FLAGS_WITH_VALUES = new Set([
-	"-b",
-	"--branch",
-	"--depth",
-	"--name",
-	"--reference",
-]);
-
-const GIT_SUBMODULE_LOCAL_ACTIONS = new Set([
-	"absorbgitdirs",
-	"deinit",
-	"init",
-	"set-branch",
-	"status",
-	"summary",
-	"sync",
-]);
 
 // rsync(1) reuses many short flags with different meanings than curl/ssh
 // (e.g. `-i` is `--itemize-changes`, `-o` is `--owner`, `-H` is
@@ -1485,19 +1406,6 @@ function networkTargetToUrl(commandName: string, value: string): string | null {
 	return null;
 }
 
-function isLocalGitTarget(value: string): boolean {
-	const target = value.trim().replace(/^["']|["']$/g, "");
-	return (
-		target === "." ||
-		target === ".." ||
-		target.startsWith("./") ||
-		target.startsWith("../") ||
-		target.startsWith("/") ||
-		target.startsWith("~/") ||
-		target.startsWith("file://")
-	);
-}
-
 function hasShellExpansion(value: string): boolean {
 	return /[$`]|[<>]\(/.test(value);
 }
@@ -1910,140 +1818,6 @@ function nonFlagArgs(commandName: string, args: string[]): string[] {
 	return values;
 }
 
-function gitCloneNonFlagArgs(args: string[]): string[] {
-	return gitNonFlagArgs(args, GIT_CLONE_FLAGS_WITH_VALUES);
-}
-
-function gitNonFlagArgs(
-	args: string[],
-	flagsWithValues: Set<string>,
-): string[] {
-	const values: string[] = [];
-	let skipNext = false;
-	let optionsEnded = false;
-
-	for (const arg of args) {
-		if (skipNext) {
-			skipNext = false;
-			continue;
-		}
-
-		if (!optionsEnded && arg === "--") {
-			optionsEnded = true;
-			continue;
-		}
-
-		if (!optionsEnded && arg.startsWith("-")) {
-			const [flag] = arg.split("=", 1);
-			if (flag && flagsWithValues.has(flag) && !arg.includes("=")) {
-				skipNext = true;
-			}
-			continue;
-		}
-
-		values.push(arg);
-	}
-
-	return values;
-}
-
-function gitRemoteTargetArgs(args: string[]): string[] {
-	const targets = gitNonFlagArgs(args, GIT_REMOTE_ADD_FLAGS_WITH_VALUES);
-	const action = targets[0]?.toLowerCase();
-	if (action === "add") {
-		return targets.slice(2, 3);
-	}
-	if (action === "set-url") {
-		return targets.slice(2);
-	}
-	if (action && !GIT_REMOTE_LOCAL_ACTIONS.has(action)) {
-		return targets.slice(0, 1);
-	}
-	return [];
-}
-
-function gitConfigTargetArgs(args: string[]): string[] {
-	const targets = gitNonFlagArgs(args, GIT_CONFIG_FLAGS_WITH_VALUES);
-	const key = targets[0];
-	if (!key || targets.length < 2) {
-		return [];
-	}
-
-	const rewriteTarget = key.match(
-		/^url\.(.+)\.(?:insteadof|pushinsteadof)$/i,
-	)?.[1];
-	if (rewriteTarget) {
-		return [rewriteTarget];
-	}
-
-	if (
-		/^remote\..+\.(?:push)?url$/i.test(key) ||
-		/^submodule\..+\.url$/i.test(key)
-	) {
-		return targets.slice(1, 2);
-	}
-
-	return [];
-}
-
-function gitConfigCommandIsLocal(args: string[]): boolean {
-	return gitConfigTargetArgs(args).length === 0;
-}
-
-function gitRemoteCommandIsLocal(args: string[]): boolean {
-	const targets = gitNonFlagArgs(args, GIT_REMOTE_ADD_FLAGS_WITH_VALUES);
-	const action = targets[0]?.toLowerCase();
-	if (!action || GIT_REMOTE_LOCAL_ACTIONS.has(action)) {
-		return true;
-	}
-	if (action === "add") {
-		return targets.length < 3;
-	}
-	if (action === "set-url") {
-		return targets.length < 3;
-	}
-	return false;
-}
-
-function gitSubmoduleTargetArgs(args: string[]): string[] {
-	const targets = gitNonFlagArgs(args, GIT_SUBMODULE_ADD_FLAGS_WITH_VALUES);
-	const action = targets[0]?.toLowerCase();
-	if (!action || GIT_SUBMODULE_LOCAL_ACTIONS.has(action)) {
-		return [];
-	}
-	if (action === "add") {
-		return targets.slice(1, 2);
-	}
-	return targets.slice(0, 1);
-}
-
-function gitSubmoduleCommandIsLocal(args: string[]): boolean {
-	const targets = gitNonFlagArgs(args, GIT_SUBMODULE_ADD_FLAGS_WITH_VALUES);
-	const action = targets[0]?.toLowerCase();
-	return !action || GIT_SUBMODULE_LOCAL_ACTIONS.has(action);
-}
-
-function gitArchiveTargetArgs(args: string[]): string[] {
-	const targets: string[] = [];
-
-	for (let index = 0; index < args.length; index += 1) {
-		const arg = args[index]!;
-		if (arg === "--remote" && index + 1 < args.length) {
-			targets.push(args[index + 1]!);
-			index += 1;
-			continue;
-		}
-		if (arg.startsWith("--remote=")) {
-			const target = arg.slice("--remote=".length);
-			if (target) {
-				targets.push(target);
-			}
-		}
-	}
-
-	return targets;
-}
-
 function networkTargetArgs(
 	commandName: string,
 	args: string[],
@@ -2158,65 +1932,6 @@ function rsyncCommandIsLocal(args: string[]): boolean {
 			return !target.includes(":");
 		})
 	);
-}
-
-function nextGitSubcommandToken(
-	args: string[],
-): { subcommand: string; args: string[] } | null {
-	for (let index = 0; index < args.length; index += 1) {
-		const arg = args[index]!;
-		if (arg === "--") {
-			continue;
-		}
-
-		const [flag] = arg.split("=", 1);
-		if (
-			flag &&
-			GIT_GLOBAL_FLAGS_WITH_VALUES.has(flag) &&
-			!arg.includes("=") &&
-			index + 1 < args.length
-		) {
-			index += 1;
-			continue;
-		}
-		if (arg.startsWith("-c") && arg !== "-c") {
-			continue;
-		}
-		if (arg.startsWith("--")) {
-			continue;
-		}
-		if (arg.startsWith("-")) {
-			continue;
-		}
-
-		const subcommand = arg.toLowerCase();
-		return { subcommand, args: args.slice(index + 1) };
-	}
-
-	return null;
-}
-
-function gitSubcommandInvocation(
-	args: string[],
-): { subcommand: string; args: string[] } | null {
-	const invocation = nextGitSubcommandToken(args);
-	if (!invocation) {
-		return null;
-	}
-
-	if (NETWORK_GIT_SUBCOMMANDS.has(invocation.subcommand)) {
-		return invocation;
-	}
-
-	if (!GIT_NESTED_SUBCOMMAND_WRAPPERS.has(invocation.subcommand)) {
-		return null;
-	}
-
-	const nestedInvocation = nextGitSubcommandToken(invocation.args);
-	return nestedInvocation &&
-		NETWORK_GIT_SUBCOMMANDS.has(nestedInvocation.subcommand)
-		? nestedInvocation
-		: null;
 }
 
 /**

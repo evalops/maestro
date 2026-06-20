@@ -18,6 +18,7 @@ import {
 	parsePackageSource,
 } from "../packages/sources.js";
 import type { PackageSpec } from "../packages/types.js";
+import { isRecord } from "../utils/json.js";
 
 type UnknownRecord = Record<string, unknown>;
 
@@ -45,10 +46,6 @@ export interface MaestroAppServerPluginBundleApi {
 
 export interface MaestroAppServerPluginBundleApiOptions {
 	projectRoot?: string;
-}
-
-function isRecord(value: unknown): value is UnknownRecord {
-	return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function stringValue(value: unknown): string | undefined {

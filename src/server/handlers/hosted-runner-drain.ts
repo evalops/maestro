@@ -16,6 +16,7 @@ import {
 	createHeadlessRuntimeState,
 	stringArray,
 } from "../../cli/headless-protocol.js";
+import { isRecord } from "../../utils/json.js";
 import { sanitizeWithStaticMask } from "../../utils/secret-redactor.js";
 import type { HostedRunnerContext, WebServerContext } from "../app-context.js";
 import type { HeadlessRuntimeSnapshot } from "../headless-runtime-service.js";
@@ -676,10 +677,6 @@ function buildHostedRunnerPlatformEvidence(input: {
 				: []),
 		],
 	};
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-	return Boolean(value && typeof value === "object" && !Array.isArray(value));
 }
 
 function collectCodexSubagentEdgesFromSource(

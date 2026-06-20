@@ -36,6 +36,7 @@ import {
 	tryParseSessionEntry,
 } from "../session/types.js";
 import { writeTextFileAtomic } from "../utils/fs.js";
+import { isRecord } from "../utils/json.js";
 
 type UnknownRecord = Record<string, unknown>;
 const PORTABLE_SESSION_EXPORT_FORMAT = "maestro-session-export.v1";
@@ -72,10 +73,6 @@ export interface MaestroAppServerExternalAgentImport {
 export interface MaestroAppServerExternalAgentImportOptions {
 	store?: MaestroAppServerExternalAgentSessionImporter;
 	projectRoot?: string;
-}
-
-function isRecord(value: unknown): value is UnknownRecord {
-	return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function stringValue(value: unknown): string | undefined {

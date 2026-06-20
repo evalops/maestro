@@ -55,6 +55,7 @@ import {
 } from "../evalops/env-aliases.js";
 import { getOAuthToken } from "../oauth/index.js";
 import { loadOAuthCredentials } from "../oauth/storage.js";
+import { isRecord } from "../utils/json.js";
 import { lookupApiKey } from "./api-keys.js";
 import {
 	getEvalOpsManagedProviderDefinition,
@@ -128,10 +129,6 @@ function resolveEvalOpsCredentialType(provider: string): AuthCredentialType {
 	return getEvalOpsManagedProviderDefinition(provider)?.usesAnthropicOAuth
 		? "bearer-token"
 		: "api-key";
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-	return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function getNonEmptyString(value: unknown): string | undefined {

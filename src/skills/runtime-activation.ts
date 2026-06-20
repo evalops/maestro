@@ -7,6 +7,7 @@ import {
 	statSync,
 } from "node:fs";
 import { join } from "node:path";
+import { isRecord } from "../utils/json.js";
 import { isWindowsRunnableToolboxEntry } from "./linter.js";
 import type { LoadedSkill, SkillResource } from "./loader.js";
 
@@ -77,10 +78,6 @@ export interface SkillRuntimeMcpServer {
 
 export interface SkillRuntimeActivationOptions {
 	platform?: NodeJS.Platform;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-	return Boolean(value && typeof value === "object" && !Array.isArray(value));
 }
 
 function isDirectory(path: string | undefined): path is string {

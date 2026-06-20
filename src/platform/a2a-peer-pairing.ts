@@ -1,4 +1,5 @@
 import { createHash, timingSafeEqual } from "node:crypto";
+import { isRecord } from "../utils/json.js";
 import {
 	type A2AAgentCard,
 	type A2AAgentInterface,
@@ -737,10 +738,6 @@ function stablePeerId(payload: A2APeerPairingPayload): string {
 		.digest("base64url")
 		.slice(0, 16);
 	return `a2a-peer-${hash}`;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-	return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function errorMessage(error: unknown): string {

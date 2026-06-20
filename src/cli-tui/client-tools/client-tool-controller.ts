@@ -2,6 +2,7 @@ import { execFile } from "node:child_process";
 import type { Container, TUI } from "@evalops/tui";
 import type { Question, QuestionOption } from "../../tools/ask-user.js";
 import { extractQuestions, parseUserResponse } from "../../tools/ask-user.js";
+import { isRecord } from "../../utils/json.js";
 import type { CustomEditor } from "../custom-editor.js";
 import {
 	HookInputModal,
@@ -109,10 +110,6 @@ interface ClientToolControllerOptions {
 	createInputModal?: (options: HookInputModalOptions) => Modal;
 	openUrl?: (url: string) => boolean | Promise<boolean>;
 	onPendingStatusChange?: (toolCallId: string, status: string | null) => void;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-	return !!value && typeof value === "object" && !Array.isArray(value);
 }
 
 function getOptionalNumber(

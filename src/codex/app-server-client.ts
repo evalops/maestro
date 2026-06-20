@@ -6,6 +6,7 @@ import { createInterface } from "node:readline";
 import type { Interface as ReadlineInterface } from "node:readline";
 import type { Readable, Writable } from "node:stream";
 import { readPackageVersion } from "../package-version.js";
+import { isRecord } from "../utils/json.js";
 
 type JsonRpcId = number | string;
 
@@ -608,10 +609,6 @@ export function resolveBundledCodexBinPath(): string | null {
 	} catch {
 		return null;
 	}
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-	return Boolean(value && typeof value === "object" && !Array.isArray(value));
 }
 
 function defaultServerRequestResponse(

@@ -18,6 +18,7 @@ import {
 	refreshHostedRunnerLease,
 } from "../server/hosted-runner-lease.js";
 import { ApiError } from "../server/server-utils.js";
+import { isRecord } from "../utils/json.js";
 import { sanitizeWithStaticMask } from "../utils/secret-redactor.js";
 
 type UnknownRecord = Record<string, unknown>;
@@ -72,10 +73,6 @@ function optionalString(value: unknown, field: string): string | undefined {
 	}
 	const trimmed = value.trim();
 	return trimmed || undefined;
-}
-
-function isRecord(value: unknown): value is UnknownRecord {
-	return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function paramsRecord(params: unknown): UnknownRecord {

@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { mkdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
+import { isRecord } from "../utils/json.js";
 import type { A2AMessage, A2ATask } from "./a2a-client.js";
 import {
 	type A2AWorkGraphMetadata,
@@ -1066,10 +1067,6 @@ function hasNodeCode(error: unknown, code: string): boolean {
 
 function sleep(ms: number): Promise<void> {
 	return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-	return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function fail(message: string): never {

@@ -108,7 +108,7 @@ import { parse as parseTOML } from "smol-toml";
 import type { ActionApprovalContext } from "../agent/action-approval.js";
 import { PATHS } from "../config/constants.js";
 import { extractDependencies } from "../utils/dependency-extractor.js";
-import { safeJsonParse } from "../utils/json.js";
+import { isRecord, safeJsonParse } from "../utils/json.js";
 import { createLogger } from "../utils/logger.js";
 import { getHomeDir, resolveEnvPath } from "../utils/path-expansion.js";
 import { expandHomeDir, resolveRealPath } from "../utils/path-matcher.js";
@@ -307,10 +307,6 @@ let cachedPolicy: EnterprisePolicy | null = null;
 let cachedPolicyKey: string | null = null;
 let cachedPolicyLayers: EnterprisePolicy[] = [];
 let policyWatchers: FSWatcher[] = [];
-
-function isRecord(value: unknown): value is UnknownRecord {
-	return typeof value === "object" && value !== null && !Array.isArray(value);
-}
 
 function getPolicySources(): PolicySource[] {
 	const sources: PolicySource[] = [];

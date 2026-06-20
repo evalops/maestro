@@ -3,6 +3,7 @@ import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 import { getAgentDir } from "../config/constants.js";
 import { loadConfiguredPackageResources } from "../packages/runtime.js";
+import { isRecord } from "../utils/json.js";
 import { createLogger } from "../utils/logger.js";
 import { resolveEnvPath } from "../utils/path-expansion.js";
 import { sanitizeWithStaticMask } from "../utils/secret-redactor.js";
@@ -194,10 +195,6 @@ export function getAvailableThemes(workspaceDir = process.cwd()): string[] {
 		}
 	}
 	return Array.from(themes).sort();
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-	return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function normalizeThemeJson(raw: unknown): unknown {

@@ -3,6 +3,7 @@ import type {
 	MaestroScriptedStatement,
 } from "@evalops/contracts";
 import { MAESTRO_SCRIPTED_SCENARIO_SCHEMA } from "@evalops/contracts";
+import { isRecord } from "../../utils/json.js";
 import {
 	readScenarioJsonSource,
 	readScenarioJsonSourceSync,
@@ -50,10 +51,6 @@ const HYDRATION_MODES = [
 	"fixture_workspace",
 	"frozen_archive",
 ] as const;
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-	return typeof value === "object" && value !== null && !Array.isArray(value);
-}
 
 function requireOptionalNonEmptyString(value: unknown, label: string): void {
 	if (

@@ -5,6 +5,7 @@ import type {
 } from "@modelcontextprotocol/sdk/types.js";
 import type { ClientToolExecutionService } from "../agent/transport.js";
 import type { AgentToolResult } from "../agent/types.js";
+import { isRecord } from "../utils/json.js";
 
 export interface McpElicitationClientToolArgs extends Record<string, unknown> {
 	serverName: string;
@@ -19,10 +20,6 @@ export interface McpElicitationClientToolArgs extends Record<string, unknown> {
 const mcpClientToolServiceStorage = new AsyncLocalStorage<
 	ClientToolExecutionService | undefined
 >();
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-	return !!value && typeof value === "object" && !Array.isArray(value);
-}
 
 function normalizeElicitationContent(
 	value: unknown,

@@ -2,6 +2,7 @@ import {
 	type OAuthCredentials,
 	loadOAuthCredentials,
 } from "../oauth/storage.js";
+import { isRecord } from "../utils/json.js";
 
 export interface EvalOpsAgentMcpMetadata {
 	agentId?: string;
@@ -26,10 +27,6 @@ export interface EvalOpsAgentMcpMetadata {
 	traceMode?: string;
 	type: "agent-mcp";
 	workspaceId?: string;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-	return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function nonEmptyString(value: unknown): string | undefined {

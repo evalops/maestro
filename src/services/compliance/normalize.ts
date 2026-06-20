@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
+import { isRecord } from "../../utils/json.js";
 import {
 	type AgentActionInput,
 	type AgentActionRecord,
@@ -16,10 +17,6 @@ export class ComplianceValidationError extends Error {
 		super(message);
 		this.name = "ComplianceValidationError";
 	}
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-	return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function cleanOptionalString(value: unknown): string | undefined {

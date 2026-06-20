@@ -15,6 +15,7 @@ import {
 	resolvePlatformToken,
 	resolveTeamId,
 } from "../platform/client.js";
+import { isRecord } from "../utils/json.js";
 import { createLogger } from "../utils/logger.js";
 import { sanitizeWithStaticMask } from "../utils/secret-redactor.js";
 import { MemoryClient, MemoryType } from "./platform-memory-client.js";
@@ -211,10 +212,6 @@ function parseServiceTokenExpiresAt(
 		}
 	}
 	return Date.now() + ttlSeconds * 1000;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-	return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function parseServiceTokenResponseBody(

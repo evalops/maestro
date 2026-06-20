@@ -1,3 +1,4 @@
+import { isRecord } from "../../utils/json.js";
 import type {
 	WorkspaceConfig,
 	WorkspaceConfigInput,
@@ -16,10 +17,6 @@ export class WorkspaceConfigValidationError extends Error {
 		super(message);
 		this.name = "WorkspaceConfigValidationError";
 	}
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-	return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function cleanRequiredString(value: unknown, label: string): string {

@@ -35,6 +35,7 @@ import {
 	waitAgentRuntimeRun,
 } from "../platform/agent-runtime-client.js";
 import { CREDENTIAL_PATTERN_DEFS } from "../safety/credential-patterns.js";
+import { isRecord } from "../utils/json.js";
 import { createLogger } from "../utils/logger.js";
 import { sanitizeWithStaticMask } from "../utils/secret-redactor.js";
 import type { ServerRequestLifecycleEvent } from "./server-request-manager.js";
@@ -208,10 +209,6 @@ function objectKeys(value: unknown): string[] | undefined {
 	}
 	const keys = Object.keys(value).sort();
 	return keys.length > 0 ? keys : undefined;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-	return Boolean(value && typeof value === "object" && !Array.isArray(value));
 }
 
 function recordArray(value: unknown): Record<string, unknown>[] {

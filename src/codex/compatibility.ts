@@ -1,4 +1,5 @@
 import type { Tool } from "../agent/types.js";
+import { isRecord } from "../utils/json.js";
 
 type JsonObject = Record<string, unknown>;
 type AdditionalPropertiesConstraint = boolean | JsonObject;
@@ -563,8 +564,4 @@ function readSchemaType(schema: unknown): string | undefined {
 	return isRecord(schema) && typeof schema.type === "string"
 		? schema.type
 		: undefined;
-}
-
-function isRecord(value: unknown): value is JsonObject {
-	return Boolean(value && typeof value === "object" && !Array.isArray(value));
 }

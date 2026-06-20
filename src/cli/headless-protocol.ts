@@ -45,6 +45,7 @@ import { appendHeadlessOutput } from "../headless/output-buffer.js";
 import type { SessionManager } from "../session/manager.js";
 import { isSupportedImageFormat } from "../tools/image-processor.js";
 import { getCurrentBranch, isInsideGitRepository } from "../utils/git.js";
+import { isRecord } from "../utils/json.js";
 import { normalizePath } from "../utils/path-validation.js";
 import { summarizeToolUse } from "../utils/tool-use-summary.js";
 
@@ -752,10 +753,6 @@ export function syncHeadlessPendingRequests(
 }
 
 export { CODEX_SUBAGENT_TOOL_PREFIX, CODEX_SUBAGENT_WORK_GRAPH_SCHEMA };
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-	return Boolean(value && typeof value === "object" && !Array.isArray(value));
-}
 
 export function nonEmptyString(value: unknown): string | undefined {
 	return typeof value === "string" && value.trim() ? value.trim() : undefined;

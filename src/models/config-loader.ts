@@ -14,6 +14,7 @@ import {
 	substituteEnvVars,
 	substituteFileRefs,
 } from "../utils/config-substitution.js";
+import { isRecord } from "../utils/json.js";
 import {
 	type ParseError as JsoncParseError,
 	parseJsonc,
@@ -139,10 +140,6 @@ export interface ConfigPathEntry {
 
 const TRUST_PROJECT_MODEL_CONFIG_ENV = "MAESTRO_TRUST_PROJECT_MODEL_CONFIG";
 const TRUE_ENV_VALUES = new Set(["1", "true", "yes", "on"]);
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-	return typeof value === "object" && value !== null && !Array.isArray(value);
-}
 
 function isProjectModelConfigTrusted(): boolean {
 	const value = process.env[TRUST_PROJECT_MODEL_CONFIG_ENV];

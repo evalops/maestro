@@ -3,14 +3,11 @@ import type {
 	ComposerPendingRequest,
 	ComposerSession,
 } from "@evalops/contracts";
+import { isRecord } from "../utils/json.js";
 import {
 	type PendingServerRequestSnapshot,
 	serverRequestManager,
 } from "./server-request-manager.js";
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-	return Boolean(value && typeof value === "object" && !Array.isArray(value));
-}
 
 /**
  * Strip Unicode characters that could deceive a human approver:

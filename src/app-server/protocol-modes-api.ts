@@ -8,6 +8,7 @@ import {
 	maestroAppServerProtocolModeIds,
 	maestroAppServerServerMethods,
 } from "@evalops/contracts";
+import { isRecord } from "../utils/json.js";
 
 type UnknownRecord = Record<string, unknown>;
 
@@ -86,10 +87,6 @@ function normalizeMode(value: unknown): MaestroAppServerProtocolModeId {
 		return value as MaestroAppServerProtocolModeId;
 	}
 	throw new MaestroAppServerProtocolModesError(-32602, "Invalid mode");
-}
-
-function isRecord(value: unknown): value is UnknownRecord {
-	return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function paramsRecord(params: unknown): UnknownRecord {

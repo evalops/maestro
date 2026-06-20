@@ -2,6 +2,7 @@ import { existsSync, mkdirSync, realpathSync } from "node:fs";
 import { basename, dirname, join, normalize, resolve, sep } from "node:path";
 import YAML from "yaml";
 import { writeJsonFile, writeTextFileAtomic } from "../utils/fs.js";
+import { isRecord } from "../utils/json.js";
 import { isMissionFeature } from "./mission-manifest.js";
 import {
 	MISSION_STORE_SCHEMA,
@@ -557,10 +558,6 @@ function isMissionTokenUsage(value: unknown): boolean {
 		return false;
 	}
 	return true;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-	return Boolean(value && typeof value === "object" && !Array.isArray(value));
 }
 
 function resolveMissionArtifactPath(

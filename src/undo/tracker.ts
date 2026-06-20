@@ -390,6 +390,22 @@ export class ChangeTracker {
 	}
 
 	/**
+	 * Delete a checkpoint by name.
+	 * @returns true if a checkpoint was removed, false if none matched.
+	 */
+	deleteCheckpoint(name: string): boolean {
+		const before = this.state.checkpoints.length;
+		this.state.checkpoints = this.state.checkpoints.filter(
+			(cp) => cp.name !== name,
+		);
+		const removed = this.state.checkpoints.length < before;
+		if (removed) {
+			logger.info("Checkpoint deleted", { name });
+		}
+		return removed;
+	}
+
+	/**
 	 * Clear all tracked changes.
 	 */
 	clear(): void {

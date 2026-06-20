@@ -1,6 +1,7 @@
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
+import { isRecord } from "../utils/json.js";
 import { type A2AServiceConfig, normalizeA2ABaseUrl } from "./a2a-client.js";
 import {
 	type A2APeerConnection,
@@ -492,10 +493,6 @@ function expandHome(path: string): string {
 		return resolve(homedir(), path.slice(2));
 	}
 	return resolve(path);
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-	return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function hasNodeCode(error: unknown, code: string): boolean {

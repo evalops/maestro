@@ -1,3 +1,4 @@
+import { isRecord } from "../utils/json.js";
 import {
 	buildAgentOperatingPlaneContext,
 	buildAgentOperatingPlaneCorrelation,
@@ -325,10 +326,6 @@ function withOperatingPlaneContext(
 		},
 		...eventData,
 	};
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-	return Boolean(value && typeof value === "object" && !Array.isArray(value));
 }
 
 function safeSummaryFor(type: MaestroBusEventType): string {

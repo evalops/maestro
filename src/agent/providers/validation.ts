@@ -7,6 +7,7 @@ import {
 } from "ajv";
 import addFormatsModule, { type FormatsPlugin } from "ajv-formats";
 import { sanitizePayload } from "../../safety/context-firewall.js";
+import { isRecord } from "../../utils/json.js";
 import { createLogger } from "../../utils/logger.js";
 import { resolveDefaultExport } from "../../utils/module-interop.js";
 import { sanitizeWithStaticMask } from "../../utils/secret-redactor.js";
@@ -125,8 +126,4 @@ export function validateToolArguments(
 	const errorMessage = `Validation failed for tool "${toolCall.name}":\n${errors}\n\nReceived arguments (sanitized):\n${trimmedArgsJson}`;
 
 	throw new Error(errorMessage);
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-	return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }

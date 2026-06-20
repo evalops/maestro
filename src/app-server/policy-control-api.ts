@@ -12,6 +12,7 @@ import {
 	checkSessionLimits,
 	loadPolicy,
 } from "../safety/policy.js";
+import { isRecord } from "../utils/json.js";
 
 type UnknownRecord = Record<string, unknown>;
 
@@ -61,10 +62,6 @@ function clonePolicySnapshot(
 		return null;
 	}
 	return deepFreezeSnapshot(structuredClone(policy));
-}
-
-function isRecord(value: unknown): value is UnknownRecord {
-	return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function hasOwnKey(value: object, key: PropertyKey): boolean {
