@@ -264,6 +264,14 @@ function braceDelta(line, state) {
 const cfgTestAttributePattern = /^\s*#\s*\[\s*cfg\s*\(\s*test\s*\)\s*\]/;
 
 /**
+ * @param {string} line
+ */
+function isRustAttributeGapLine(line) {
+	const trimmed = line.trim();
+	return trimmed === "" || trimmed.startsWith("//");
+}
+
+/**
  * @param {string} source
  */
 export function stripRustTestModules(source) {
@@ -280,19 +288,32 @@ export function stripRustTestModules(source) {
 			continue;
 		}
 
-		// Collect the contiguous outer attribute group immediately preceding the
-		// `mod tests` declaration so the cfg(test) gate can be evaluated before
-		// any preceding attributes or the module body are stripped.
+		// Collect the outer attribute group immediately preceding the `mod tests`
+		// declaration, allowing blank lines and line comments inside the group,
+		// so the cfg(test) gate can be evaluated before the module body is
+		// stripped.
 		let attributeStart = output.length;
-		while (
-			attributeStart > 0 &&
-			/^\s*#\[/.test(output[attributeStart - 1])
-		) {
-			attributeStart -= 1;
+		let gatedByCfgTest = false;
+		let scanIndex = output.length - 1;
+		while (scanIndex >= 0 && isRustAttributeGapLine(output[scanIndex])) {
+			scanIndex -= 1;
 		}
-		const gatedByCfgTest = output
-			.slice(attributeStart)
-			.some((attribute) => cfgTestAttributePattern.test(attribute));
+		if (scanIndex >= 0 && /^\s*#\[/.test(output[scanIndex])) {
+			while (scanIndex >= 0) {
+				const candidate = output[scanIndex];
+				if (/^\s*#\[/.test(candidate)) {
+					attributeStart = scanIndex;
+					gatedByCfgTest ||= cfgTestAttributePattern.test(candidate);
+					scanIndex -= 1;
+					continue;
+				}
+				if (isRustAttributeGapLine(candidate)) {
+					scanIndex -= 1;
+					continue;
+				}
+				break;
+			}
+		}
 
 		// Only cfg(test)-gated test modules are test-only. An unguarded
 		// `mod tests` block is compiled in production builds, so edits inside it

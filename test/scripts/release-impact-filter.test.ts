@@ -152,6 +152,24 @@ mod tests { // a comment with a semicolon should not look like mod tests;
 }
 `;
 
+const inlineRustTestsWithSeparatedCfgGate = `pub fn cache_key(path: &str) -> String {
+	format!("cache:{path}")
+}
+
+#[cfg(test)]
+// Keep this module beside the production code for rust-analyzer.
+
+#[allow(clippy::float_cmp)]
+mod tests {
+	use super::*;
+
+	#[test]
+	fn includes_path() {
+		assert_eq!(cache_key("fixture"), "cache:fixture");
+	}
+}
+`;
+
 const extractedRustModule = `pub fn cache_key(path: &str) -> String {
 	format!("cache:{path}")
 }
@@ -433,6 +451,28 @@ describe("release impact filter", () => {
 			inlineRustTests.replace("cache:fixture", "cache:test-only-change"),
 		);
 		commit(root, "edit cfg(test) inline test module");
+
+		expect(packageChangedSinceTag({ cwd: root, tagTarget })).toBe(false);
+	});
+
+	it("ignores cfg(test)-gated inline Rust test module edits across comments and blank lines", () => {
+		const root = makeRepo();
+		writeFixtureFile(
+			root,
+			"packages/tui-rs/src/tools/cache.rs",
+			inlineRustTestsWithSeparatedCfgGate,
+		);
+		const tagTarget = commit(root, "initial package source");
+
+		writeFixtureFile(
+			root,
+			"packages/tui-rs/src/tools/cache.rs",
+			inlineRustTestsWithSeparatedCfgGate.replace(
+				"cache:fixture",
+				"cache:test-only-change",
+			),
+		);
+		commit(root, "edit cfg(test) inline test module with separated gate");
 
 		expect(packageChangedSinceTag({ cwd: root, tagTarget })).toBe(false);
 	});
