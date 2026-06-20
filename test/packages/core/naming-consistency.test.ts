@@ -3,7 +3,7 @@
  * These tests enforce the Maestro rename is complete.
  */
 import { execFileSync } from "node:child_process";
-import { readFileSync, readdirSync, statSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { basename, join } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
@@ -63,6 +63,11 @@ function walkProductCopyFiles(path: string): string[] {
 	const relativePath = productCopyRelativePath(path);
 	const name = basename(path);
 	if (PRODUCT_COPY_IGNORED_DIRS.has(name)) {
+		return [];
+	}
+	if (!existsSync(path)) {
+		// PRODUCT_COPY_ROOTS may list files that have since been removed (e.g.
+		// the stale todo.md backlog); skip them instead of crashing on statSync.
 		return [];
 	}
 	const stat = statSync(path);

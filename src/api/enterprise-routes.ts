@@ -51,6 +51,7 @@ import {
 	handleDenyModel,
 	handleGetModelApprovals,
 } from "./enterprise/model-approval-handlers.js";
+import { mergeOrganizationSettings } from "./org-settings-merge.js";
 
 const logger = createLogger("enterprise-api");
 
@@ -273,14 +274,7 @@ async function handleUpdateOrgSettings(
 	}
 
 	const previousSettings = decryptOrgSettings(org.settings) || {};
-	const mergedSettings: OrganizationSettings = {
-		...previousSettings,
-		...body,
-		internal:
-			body.internal || previousSettings.internal
-				? { ...previousSettings.internal, ...body.internal }
-				: undefined,
-	};
+	const mergedSettings = mergeOrganizationSettings(previousSettings, body);
 	const previousTelemetryDisabled =
 		resolveInternalTelemetryDisabledSetting(previousSettings);
 	const nextTelemetryDisabled =
