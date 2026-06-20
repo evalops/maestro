@@ -3,7 +3,7 @@
  * Supports multi-tenancy, RBAC, audit logging, and PII protection
  */
 
-import type { GuardedFilesSettings } from "@evalops/contracts";
+import type { GuardedFilesSettings, MaestroSettings } from "@evalops/contracts";
 import { relations } from "drizzle-orm";
 import {
 	bigint,
@@ -115,6 +115,8 @@ export type OrganizationSettings = {
 	};
 	/** Organization-level guarded-files extensions and mandatory guard keys */
 	guardedFiles?: GuardedFilesSettings;
+	/** Organization-level Maestro runtime knobs (compaction, model, tools). */
+	maestro?: MaestroSettings;
 };
 
 // ============================================================================
@@ -156,6 +158,8 @@ export type UserSettings = {
 	defaultThinkingLevel?: string;
 	/** User-level guarded-files allowlist and custom guard extensions */
 	guardedFiles?: GuardedFilesSettings;
+	/** User-level Maestro runtime knobs (compaction, model, tools). */
+	maestro?: MaestroSettings;
 	/** 2FA configuration */
 	twoFactor?: {
 		enabled: boolean;

@@ -10,6 +10,7 @@
  * - MAESTRO_AUTOCOMPACT_MIN_MESSAGES: Minimum messages before compacting (default: 10)
  */
 
+import type { MaestroCompactionSettings } from "@evalops/contracts";
 import { createLogger } from "../utils/logger.js";
 import { convertAppMessageToLlm } from "./custom-messages.js";
 import type { Api, AppMessage, Model } from "./types.js";
@@ -58,28 +59,48 @@ const DEFAULT_CONFIG: AutoCompactionConfig = {
 };
 
 /**
- * Parse configuration from environment variables.
+ * Parse configuration from resolved Maestro settings with env-var fallback.
+ *
+ * Resolution order: `compaction` settings (org -> user merged by the caller) ->
+ * legacy `MAESTRO_AUTOCOMPACT_*` env vars -> built-in defaults. Env vars keep
+ * working for callers that have no org/user settings.
  */
-export function getAutoCompactionConfig(): AutoCompactionConfig {
-	const enabled = process.env.MAESTRO_AUTOCOMPACT_ENABLED !== "false";
-	const thresholdPercent = Number.parseInt(
+export function getAutoCompactionConfig(
+	compaction?: MaestroCompactionSettings | null,
+): AutoCompactionConfig {
+	const envThreshold = Number.parseInt(
 		process.env.MAESTRO_AUTOCOMPACT_PCT || "85",
 		10,
 	);
-	const minMessages = Number.parseInt(
+	const envMinMessages = Number.parseInt(
 		process.env.MAESTRO_AUTOCOMPACT_MIN_MESSAGES || "10",
 		10,
 	);
 
+	const enabled =
+		compaction?.enabled ?? process.env.MAESTRO_AUTOCOMPACT_ENABLED !== "false";
+	const thresholdPercent =
+		compaction?.thresholdPercent ??
+		(Number.isNaN(envThreshold)
+			? DEFAULT_CONFIG.thresholdPercent
+			: envThreshold);
+	const minMessages =
+		compaction?.minMessages ??
+		(Number.isNaN(envMinMessages)
+			? DEFAULT_CONFIG.minMessages
+			: envMinMessages);
+	const keepRecentCount =
+		compaction?.keepRecentMessages ?? DEFAULT_CONFIG.keepRecentCount;
+	const hasSettingsMinMessages = compaction?.minMessages !== undefined;
+
 	return {
 		...DEFAULT_CONFIG,
 		enabled,
-		thresholdPercent: Number.isNaN(thresholdPercent)
-			? DEFAULT_CONFIG.thresholdPercent
-			: Math.min(100, Math.max(50, thresholdPercent)),
-		minMessages: Number.isNaN(minMessages)
-			? DEFAULT_CONFIG.minMessages
+		thresholdPercent: Math.min(100, Math.max(50, thresholdPercent)),
+		minMessages: hasSettingsMinMessages
+			? Math.max(0, minMessages)
 			: Math.max(5, minMessages),
+		keepRecentCount,
 	};
 }
 
