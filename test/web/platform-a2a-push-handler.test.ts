@@ -143,6 +143,39 @@ describe("handlePlatformA2APushCallback", () => {
 		expect(res.statusCode).toBe(202);
 	});
 
+	it("prefers the EvalOps workspace header when both workspace headers are present", async () => {
+		const sharedSecret = "callback-secret";
+		const workspaceId = "ws_hosted";
+		vi.stubEnv("MAESTRO_PLATFORM_A2A_CALLBACK_TOKEN", sharedSecret);
+		const derived = workspaceNotificationToken(sharedSecret, workspaceId);
+
+		const ctx = context();
+		const res = new MockResponse();
+		await handlePlatformA2APushCallback(
+			jsonRequest(
+				{
+					statusUpdate: {
+						taskId: "run_1",
+						contextId: "ctx_1",
+						final: true,
+						status: { state: "TASK_STATE_COMPLETED" },
+					},
+				},
+				{
+					"x-a2a-notification-token": derived,
+					"x-evalops-workspace-id": workspaceId,
+					"x-workspace-id": "ws_legacy",
+				},
+			),
+			res as unknown as ServerResponse,
+			ctx,
+		);
+		expect(res.statusCode).toBe(202);
+		expect(JSON.parse(res.body)).toMatchObject({
+			workspaceId,
+		});
+	});
+
 	it("rejects a workspace-scoped HMAC notification token when the payload workspace differs from the header workspace", async () => {
 		const sharedSecret = "callback-secret";
 		vi.stubEnv("MAESTRO_PLATFORM_A2A_CALLBACK_TOKEN", sharedSecret);

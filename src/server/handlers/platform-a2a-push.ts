@@ -115,8 +115,8 @@ function assertCallbackToken(req: IncomingMessage): void {
 	// matches its allowlist; accept that variant too.
 	const workspaceId = getRequestHeader(
 		req,
-		"x-workspace-id",
 		"x-evalops-workspace-id",
+		"x-workspace-id",
 	);
 	if (workspaceId) {
 		const derived = workspaceNotificationToken(expected, workspaceId);
@@ -278,7 +278,7 @@ function platformA2APushRequestContext(
 			getRequestHeader(req, "x-organization-id", "x-evalops-organization-id") ??
 			undefined,
 		workspaceId:
-			getRequestHeader(req, "x-workspace-id", "x-evalops-workspace-id") ??
+			getRequestHeader(req, "x-evalops-workspace-id", "x-workspace-id") ??
 			undefined,
 		agentId:
 			getRequestHeader(req, "x-evalops-agent-id", "x-maestro-agent-id") ??
