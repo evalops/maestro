@@ -4,19 +4,23 @@
  */
 
 import type { IncomingMessage, ServerResponse } from "node:http";
-import { and, eq } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { AUDIT_ACTIONS, AuditLogger } from "../audit/logger.js";
 import { TokenTracker } from "../billing/token-tracker.js";
 import { getDb } from "../db/client.js";
 import {
 	type OrganizationSettings,
+	type UserSettings,
 	alerts,
 	organizations,
 	roles,
+	users,
 } from "../db/schema.js";
 import {
 	decryptOrgSettings,
+	decryptUserSettings,
 	encryptOrgSettings,
+	encryptUserSettings,
 } from "../db/settings-encryption.js";
 import {
 	ACTIONS,
@@ -27,6 +31,7 @@ import {
 import type { Route } from "../server/router.js";
 import { readJsonBody, sendJson } from "../server/server-utils.js";
 import { resolveInternalTelemetryDisabledSetting } from "../telemetry/disablement.js";
+import { isPlainObject } from "../utils/json.js";
 import { createLogger } from "../utils/logger.js";
 import {
 	handleLogin,
@@ -52,6 +57,7 @@ import {
 	handleGetModelApprovals,
 } from "./enterprise/model-approval-handlers.js";
 import { mergeOrganizationSettings } from "./org-settings-merge.js";
+import { mergeUserSettings } from "./user-settings-merge.js";
 
 const logger = createLogger("enterprise-api");
 
@@ -305,6 +311,105 @@ async function handleUpdateOrgSettings(
 	sendJson(res, 200, { success: true }, cors, req);
 }
 
+async function handleGetUserSettings(
+	req: IncomingMessage,
+	res: ServerResponse,
+	cors: Record<string, string>,
+): Promise<void> {
+	const auth = await authenticateJWT(req);
+	if (!auth) {
+		sendJson(res, 401, { error: "Unauthorized" }, cors, req);
+		return;
+	}
+
+	const db = getDb();
+	const user = await db.query.users.findFirst({
+		where: eq(users.id, auth.userId),
+	});
+
+	if (!user) {
+		sendJson(res, 404, { error: "User not found" }, cors, req);
+		return;
+	}
+
+	// Decrypt sensitive fields (twoFactor secret) before returning.
+	const decryptedSettings = decryptUserSettings(user.settings) || {};
+	sendJson(res, 200, decryptedSettings, cors, req);
+}
+
+async function handleUpdateUserSettings(
+	req: IncomingMessage,
+	res: ServerResponse,
+	cors: Record<string, string>,
+): Promise<void> {
+	const auth = await authenticateJWT(req);
+	if (!auth) {
+		sendJson(res, 401, { error: "Unauthorized" }, cors, req);
+		return;
+	}
+
+	const body = await readJsonBody<unknown>(req);
+	if (!isPlainObject(body)) {
+		sendJson(res, 400, { error: "Settings body must be an object" }, cors, req);
+		return;
+	}
+	const requestedSettings = body as UserSettings;
+
+	const db = getDb();
+	for (let attempt = 0; attempt < 3; attempt++) {
+		const user = await db.query.users.findFirst({
+			where: eq(users.id, auth.userId),
+		});
+		if (!user) {
+			sendJson(res, 404, { error: "User not found" }, cors, req);
+			return;
+		}
+
+		// Self-scoped: the caller can only touch their own user settings. 2FA
+		// state is preserved from the latest committed row by retrying on
+		// concurrent settings writes, and the maestro runtime-knob namespace is
+		// validated against the MaestroSettings catalog.
+		const previousSettings = decryptUserSettings(user.settings) || {};
+		const mergedSettings = mergeUserSettings(
+			previousSettings,
+			requestedSettings,
+		);
+		const encryptedSettings = encryptUserSettings(mergedSettings);
+		const storedSettingsMatch =
+			user.settings == null
+				? sql`${users.settings} IS NULL`
+				: sql`${users.settings} IS NOT DISTINCT FROM ${JSON.stringify(user.settings)}::jsonb`;
+
+		const updatedRows = await db
+			.update(users)
+			.set({ settings: encryptedSettings })
+			.where(and(eq(users.id, auth.userId), storedSettingsMatch))
+			.returning({ id: users.id });
+
+		if (updatedRows.length > 0) {
+			await AuditLogger.log({
+				orgId: auth.orgId,
+				userId: auth.userId,
+				action: AUDIT_ACTIONS.CONFIG_WRITE,
+				resourceType: "user_settings",
+				status: "success",
+				metadata: {},
+			});
+
+			sendJson(res, 200, { success: true }, cors, req);
+			return;
+		}
+	}
+
+	sendJson(
+		res,
+		409,
+		{ error: "Settings changed concurrently; please retry" },
+		cors,
+		req,
+	);
+}
+
 // ============================================================================
 // ROLES
 // ============================================================================
@@ -450,6 +555,18 @@ export function createEnterpriseRoutes(cors: Record<string, string>): Route[] {
 			method: "PUT",
 			path: "/api/org/settings",
 			handler: (req, res) => handleUpdateOrgSettings(req, res, cors),
+		},
+
+		// User Settings (self-scoped to the authenticated user)
+		{
+			method: "GET",
+			path: "/api/user/settings",
+			handler: (req, res) => handleGetUserSettings(req, res, cors),
+		},
+		{
+			method: "PUT",
+			path: "/api/user/settings",
+			handler: (req, res) => handleUpdateUserSettings(req, res, cors),
 		},
 
 		// Roles

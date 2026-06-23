@@ -1,3 +1,4 @@
+import { createHmac } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import type { HostedRunnerContext, WebServerContext } from "../app-context.js";
 import {
@@ -7,6 +8,29 @@ import {
 	secureCompare,
 	sendJson,
 } from "../server-utils.js";
+
+// Agent-runtime derives a per-workspace notification token via HMAC and sends
+// that in X-A2a-Notification-Token instead of the raw shared secret. See
+// PushNotificationTokenForWorkspace in evalops/platform
+// internal/agentruntime/a2a/push.go (constant prefix kept in sync).
+const A2A_WORKSPACE_NOTIFICATION_TOKEN_PREFIX = "workspace-v1.";
+
+function workspaceNotificationToken(
+	secret: string,
+	workspaceId: string,
+): string {
+	const trimmedSecret = secret.trim();
+	const trimmedWorkspace = workspaceId.trim();
+	if (!trimmedSecret || !trimmedWorkspace) {
+		return "";
+	}
+	const mac = createHmac("sha256", trimmedSecret);
+	mac.update(trimmedWorkspace);
+	return (
+		A2A_WORKSPACE_NOTIFICATION_TOKEN_PREFIX +
+		mac.digest("base64url").replace(/=+$/, "")
+	);
+}
 
 export const PLATFORM_A2A_PUSH_CALLBACK_PATH = "/api/platform/a2a/push";
 
@@ -65,6 +89,7 @@ export async function handlePlatformA2APushCallback(
 	if (!snapshot) {
 		throw new ApiError(400, "Invalid A2A push notification payload");
 	}
+	assertWorkspaceScopedCallbackTokenSnapshot(req, snapshot);
 	const hostedRunner = context.hostedRunner;
 	assertHostedRunnerA2APushBoundary(hostedRunner, snapshot);
 	if (hostedRunner) {
@@ -79,7 +104,50 @@ function assertCallbackToken(req: IncomingMessage): void {
 		return;
 	}
 	const provided = getRequestHeader(req, "x-a2a-notification-token");
-	if (!provided || !secureCompare(provided, expected)) {
+	if (!provided) {
+		throw new ApiError(401, "Invalid A2A notification token");
+	}
+	if (secureCompare(provided, expected)) {
+		return;
+	}
+	// Agent-runtime derives a workspace-scoped HMAC token from the same shared
+	// secret when X-Evalops-Workspace-Id is present and the callback host/path
+	// matches its allowlist; accept that variant too.
+	const workspaceId = getRequestHeader(
+		req,
+		"x-workspace-id",
+		"x-evalops-workspace-id",
+	);
+	if (workspaceId) {
+		const derived = workspaceNotificationToken(expected, workspaceId);
+		if (derived && secureCompare(provided, derived)) {
+			return;
+		}
+	}
+	throw new ApiError(401, "Invalid A2A notification token");
+}
+
+function assertWorkspaceScopedCallbackTokenSnapshot(
+	req: IncomingMessage,
+	snapshot: PlatformA2APushSnapshot,
+): void {
+	const expected = callbackToken();
+	if (!expected) {
+		return;
+	}
+	const provided = getRequestHeader(req, "x-a2a-notification-token");
+	if (
+		!provided ||
+		!provided.startsWith(A2A_WORKSPACE_NOTIFICATION_TOKEN_PREFIX)
+	) {
+		return;
+	}
+	const workspaceId = snapshot.workspaceId;
+	if (!workspaceId) {
+		throw new ApiError(401, "Invalid A2A notification token");
+	}
+	const derived = workspaceNotificationToken(expected, workspaceId);
+	if (!derived || !secureCompare(provided, derived)) {
 		throw new ApiError(401, "Invalid A2A notification token");
 	}
 }

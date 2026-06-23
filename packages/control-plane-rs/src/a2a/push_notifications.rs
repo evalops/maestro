@@ -1,4 +1,8 @@
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+use base64::Engine;
+use hmac::{Hmac, Mac};
 use serde_json::{Map, Value};
+use sha2::Sha256;
 use std::net::{IpAddr, SocketAddr, ToSocketAddrs};
 use std::time::Duration;
 use tokio::net::TcpStream;
@@ -9,6 +13,27 @@ use crate::http::{
     RequestHead,
 };
 use crate::{env_u64, now_rfc3339, trimmed_env, truthy_env, AppState};
+
+// Agent-runtime derives a per-workspace HMAC token from the shared secret and
+// sends that in X-A2a-Notification-Token instead of the raw secret. See
+// PushNotificationTokenForWorkspace in evalops/platform
+// internal/agentruntime/a2a/push.go — prefix kept in sync.
+const A2A_WORKSPACE_NOTIFICATION_TOKEN_PREFIX: &str = "workspace-v1.";
+
+fn workspace_notification_token(secret: &str, workspace_id: &str) -> Option<String> {
+    let secret = secret.trim();
+    let workspace = workspace_id.trim();
+    if secret.is_empty() || workspace.is_empty() {
+        return None;
+    }
+    let mut mac = Hmac::<Sha256>::new_from_slice(secret.as_bytes()).ok()?;
+    mac.update(workspace.as_bytes());
+    let digest = mac.finalize().into_bytes();
+    Some(format!(
+        "{A2A_WORKSPACE_NOTIFICATION_TOKEN_PREFIX}{}",
+        URL_SAFE_NO_PAD.encode(digest)
+    ))
+}
 
 use super::ledger::persist_a2a_tasks;
 use super::tasks::{
@@ -158,20 +183,61 @@ fn validate_platform_a2a_push_callback_auth(head: &RequestHead) -> Result<(), Ve
             }),
         ));
     };
-    let provided = platform_a2a_push_request_token(head);
-    if provided.as_deref() == Some(expected.as_str()) {
-        Ok(())
-    } else {
-        Err(json_response(
-            401,
-            &serde_json::json!({
-                "error": {
-                    "code": "UNAUTHORIZED",
-                    "message": "A2A push callback token is invalid"
-                }
-            }),
-        ))
+    let Some(provided) = platform_a2a_push_request_token(head) else {
+        return Err(unauthorized_callback_token_response());
+    };
+    if constant_time_eq(provided.as_bytes(), expected.as_bytes()) {
+        return Ok(());
     }
+    // Agent-runtime derives a per-workspace HMAC token from the same shared
+    // secret when X-Evalops-Workspace-Id is present and the callback
+    // host/path is allowed; accept that variant too.
+    if let Some(workspace_id) = platform_a2a_push_request_workspace(head) {
+        if let Some(derived) = workspace_notification_token(&expected, &workspace_id) {
+            if constant_time_eq(provided.as_bytes(), derived.as_bytes()) {
+                return Ok(());
+            }
+        }
+    }
+    Err(unauthorized_callback_token_response())
+}
+
+fn unauthorized_callback_token_response() -> Vec<u8> {
+    json_response(
+        401,
+        &serde_json::json!({
+            "error": {
+                "code": "UNAUTHORIZED",
+                "message": "A2A push callback token is invalid"
+            }
+        }),
+    )
+}
+
+fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+    let mut diff: u8 = 0;
+    for (x, y) in a.iter().zip(b.iter()) {
+        diff |= x ^ y;
+    }
+    diff == 0
+}
+
+fn platform_a2a_push_request_workspace(head: &RequestHead) -> Option<String> {
+    for header in ["x-evalops-workspace-id", "x-workspace-id"] {
+        if let Some(value) = head
+            .headers
+            .get(header)
+            .map(String::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
+            return Some(value.to_string());
+        }
+    }
+    None
 }
 
 fn platform_a2a_push_callback_token() -> Option<String> {

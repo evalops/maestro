@@ -193,6 +193,8 @@ export const ENTERPRISE_ROUTE_AUTH_POLICIES: readonly RouteAuthPolicyEntry[] = [
 	p("DELETE", "/api/org/members/:userId", "authenticated"),
 	p("GET", "/api/org/settings", "authenticated"),
 	p("PUT", "/api/org/settings", "authenticated"),
+	p("GET", "/api/user/settings", "authenticated"),
+	p("PUT", "/api/user/settings", "authenticated"),
 	p("GET", "/api/roles", "authenticated"),
 	p("GET", "/api/models/approvals", "authenticated"),
 	p("POST", "/api/models/approvals/:modelId/approve", "authenticated"),
