@@ -1,3 +1,4 @@
+import { createHmac } from "node:crypto";
 import { EventEmitter } from "node:events";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { Readable } from "node:stream";
@@ -93,9 +94,152 @@ function context(): WebServerContext {
 	};
 }
 
+function workspaceNotificationToken(
+	secret: string,
+	workspaceId: string,
+): string {
+	return `workspace-v1.${createHmac("sha256", secret)
+		.update(workspaceId)
+		.digest("base64url")
+		.replace(/=+$/, "")}`;
+}
+
 describe("handlePlatformA2APushCallback", () => {
 	afterEach(() => {
 		vi.unstubAllEnvs();
+	});
+
+	it("accepts a workspace-scoped HMAC notification token derived from the shared secret", async () => {
+		const sharedSecret = "callback-secret";
+		const workspaceId = "ws_hosted";
+		vi.stubEnv("MAESTRO_PLATFORM_A2A_CALLBACK_TOKEN", sharedSecret);
+		const derived = workspaceNotificationToken(sharedSecret, workspaceId);
+
+		const ctx = context();
+		const res = new MockResponse();
+		await handlePlatformA2APushCallback(
+			jsonRequest(
+				{
+					statusUpdate: {
+						taskId: "run_1",
+						contextId: "ctx_1",
+						final: true,
+						status: { state: "TASK_STATE_COMPLETED" },
+						metadata: {
+							messageId: "message_1",
+							workspaceId,
+							organizationId: "org_1",
+						},
+					},
+				},
+				{
+					"x-a2a-notification-token": derived,
+					"x-evalops-workspace-id": workspaceId,
+				},
+			),
+			res as unknown as ServerResponse,
+			ctx,
+		);
+		expect(res.statusCode).toBe(202);
+	});
+
+	it("prefers the EvalOps workspace header when both workspace headers are present", async () => {
+		const sharedSecret = "callback-secret";
+		const workspaceId = "ws_hosted";
+		vi.stubEnv("MAESTRO_PLATFORM_A2A_CALLBACK_TOKEN", sharedSecret);
+		const derived = workspaceNotificationToken(sharedSecret, workspaceId);
+
+		const ctx = context();
+		const res = new MockResponse();
+		await handlePlatformA2APushCallback(
+			jsonRequest(
+				{
+					statusUpdate: {
+						taskId: "run_1",
+						contextId: "ctx_1",
+						final: true,
+						status: { state: "TASK_STATE_COMPLETED" },
+					},
+				},
+				{
+					"x-a2a-notification-token": derived,
+					"x-evalops-workspace-id": workspaceId,
+					"x-workspace-id": "ws_legacy",
+				},
+			),
+			res as unknown as ServerResponse,
+			ctx,
+		);
+		expect(res.statusCode).toBe(202);
+		expect(JSON.parse(res.body)).toMatchObject({
+			workspaceId,
+		});
+	});
+
+	it("rejects a workspace-scoped HMAC notification token when the payload workspace differs from the header workspace", async () => {
+		const sharedSecret = "callback-secret";
+		vi.stubEnv("MAESTRO_PLATFORM_A2A_CALLBACK_TOKEN", sharedSecret);
+		const derived = workspaceNotificationToken(sharedSecret, "ws_hosted");
+		const ctx = context();
+		const res = new MockResponse();
+
+		await expect(() =>
+			handlePlatformA2APushCallback(
+				jsonRequest(
+					{
+						statusUpdate: {
+							taskId: "run_1",
+							contextId: "ctx_1",
+							final: true,
+							status: { state: "TASK_STATE_COMPLETED" },
+							metadata: {
+								messageId: "message_1",
+								workspaceId: "ws_other",
+								organizationId: "org_1",
+							},
+						},
+					},
+					{
+						"x-a2a-notification-token": derived,
+						"x-evalops-workspace-id": "ws_hosted",
+					},
+				),
+				res as unknown as ServerResponse,
+				ctx,
+			),
+		).rejects.toThrow("Invalid A2A notification token");
+		expect(ctx.hostedRunner?.lastPlatformA2APush).toBeUndefined();
+	});
+
+	it("rejects a callback when the notification token matches neither the raw secret nor the workspace HMAC", async () => {
+		vi.stubEnv("MAESTRO_PLATFORM_A2A_CALLBACK_TOKEN", "callback-secret");
+		const ctx = context();
+		const res = new MockResponse();
+		await expect(() =>
+			handlePlatformA2APushCallback(
+				jsonRequest(
+					{
+						statusUpdate: {
+							taskId: "run_1",
+							contextId: "ctx_1",
+							final: true,
+							status: { state: "TASK_STATE_COMPLETED" },
+							metadata: {
+								messageId: "message_1",
+								workspaceId: "ws_hosted",
+								organizationId: "org_1",
+							},
+						},
+					},
+					{
+						"x-a2a-notification-token": "workspace-v1.not-a-real-mac",
+						"x-evalops-workspace-id": "ws_hosted",
+					},
+				),
+				res as unknown as ServerResponse,
+				ctx,
+			),
+		).rejects.toThrow("Invalid A2A notification token");
 	});
 
 	it("only exempts the callback route from auth middleware when a callback token is configured", () => {

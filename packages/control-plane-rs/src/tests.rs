@@ -3252,6 +3252,145 @@ async fn platform_a2a_push_callback_accepts_status_updates() {
 }
 
 #[tokio::test(flavor = "current_thread")]
+async fn platform_a2a_push_callback_accepts_workspace_derived_token() {
+    // Mirrors PushNotificationTokenForWorkspace in evalops/platform
+    // internal/agentruntime/a2a/push.go. The smoke and any other client whose
+    // callback host/path matches the agent-runtime allowlist will send this
+    // HMAC variant instead of the raw shared secret.
+    use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+    use base64::Engine;
+    use hmac::{Hmac, Mac};
+    use sha2::Sha256;
+
+    let _guard = ENV_LOCK.lock().await;
+    let previous_token = env::var_os("MAESTRO_PLATFORM_A2A_CALLBACK_TOKEN");
+    let shared_secret = "callback-token";
+    let workspace_id = "evalops";
+    env::set_var("MAESTRO_PLATFORM_A2A_CALLBACK_TOKEN", shared_secret);
+
+    let mut mac = Hmac::<Sha256>::new_from_slice(shared_secret.as_bytes()).unwrap();
+    mac.update(workspace_id.as_bytes());
+    let derived = format!(
+        "workspace-v1.{}",
+        URL_SAFE_NO_PAD.encode(mac.finalize().into_bytes())
+    );
+
+    let body =
+        r#"{"statusUpdate":{"taskId":"platform-run-2","status":{"state":"TASK_STATE_WORKING"}}}"#;
+    let request = format!(
+        "POST /api/platform/a2a/push HTTP/1.1\r\nHost: localhost\r\nX-A2a-Notification-Token: {derived}\r\nX-Evalops-Workspace-Id: {workspace_id}\r\nContent-Type: application/a2a+json\r\nContent-Length: {}\r\n\r\n{body}",
+        body.len()
+    );
+    let mut initial = request.into_bytes();
+    let head = parse_request_head(&initial).expect("request should parse");
+    let (_client, mut server) = tcp_stream_pair().await;
+    let state = test_app_state_with_sessions(HashMap::new());
+
+    let response = handle_platform_a2a_push_endpoint(&mut server, &mut initial, head, &state).await;
+
+    assert_eq!(response_status(&response), 202);
+
+    if let Some(previous_token) = previous_token {
+        env::set_var("MAESTRO_PLATFORM_A2A_CALLBACK_TOKEN", previous_token);
+    } else {
+        env::remove_var("MAESTRO_PLATFORM_A2A_CALLBACK_TOKEN");
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn platform_a2a_push_callback_rejects_workspace_derived_token_with_wrong_workspace() {
+    use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+    use base64::Engine;
+    use hmac::{Hmac, Mac};
+    use sha2::Sha256;
+
+    let _guard = ENV_LOCK.lock().await;
+    let previous_token = env::var_os("MAESTRO_PLATFORM_A2A_CALLBACK_TOKEN");
+    env::set_var("MAESTRO_PLATFORM_A2A_CALLBACK_TOKEN", "callback-token");
+
+    // Token derived for a different workspace than the request header claims.
+    let mut mac = Hmac::<Sha256>::new_from_slice(b"callback-token").unwrap();
+    mac.update(b"some-other-workspace");
+    let mismatched = format!(
+        "workspace-v1.{}",
+        URL_SAFE_NO_PAD.encode(mac.finalize().into_bytes())
+    );
+
+    let body =
+        r#"{"statusUpdate":{"taskId":"platform-run-3","status":{"state":"TASK_STATE_WORKING"}}}"#;
+    let request = format!(
+        "POST /api/platform/a2a/push HTTP/1.1\r\nHost: localhost\r\nX-A2a-Notification-Token: {mismatched}\r\nX-Evalops-Workspace-Id: evalops\r\nContent-Type: application/a2a+json\r\nContent-Length: {}\r\n\r\n{body}",
+        body.len()
+    );
+    let mut initial = request.into_bytes();
+    let head = parse_request_head(&initial).expect("request should parse");
+    let (_client, mut server) = tcp_stream_pair().await;
+    let state = test_app_state_with_sessions(HashMap::new());
+
+    let response = handle_platform_a2a_push_endpoint(&mut server, &mut initial, head, &state).await;
+
+    assert_eq!(response_status(&response), 401);
+    assert!(state.a2a_tasks.lock().await.is_empty());
+
+    if let Some(previous_token) = previous_token {
+        env::set_var("MAESTRO_PLATFORM_A2A_CALLBACK_TOKEN", previous_token);
+    } else {
+        env::remove_var("MAESTRO_PLATFORM_A2A_CALLBACK_TOKEN");
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn platform_a2a_push_callback_rejects_workspace_derived_token_with_mismatched_payload_workspace(
+) {
+    use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+    use base64::Engine;
+    use hmac::{Hmac, Mac};
+    use sha2::Sha256;
+
+    let _guard = ENV_LOCK.lock().await;
+    let previous_token = env::var_os("MAESTRO_PLATFORM_A2A_CALLBACK_TOKEN");
+    let shared_secret = "callback-token";
+    let header_workspace_id = "evalops";
+    env::set_var("MAESTRO_PLATFORM_A2A_CALLBACK_TOKEN", shared_secret);
+
+    let mut mac = Hmac::<Sha256>::new_from_slice(shared_secret.as_bytes()).unwrap();
+    mac.update(header_workspace_id.as_bytes());
+    let derived = format!(
+        "workspace-v1.{}",
+        URL_SAFE_NO_PAD.encode(mac.finalize().into_bytes())
+    );
+
+    let body = r#"{
+        "statusUpdate": {
+            "taskId": "platform-run-4",
+            "workspaceId": "some-other-workspace",
+            "status": {
+                "state": "TASK_STATE_WORKING"
+            }
+        }
+    }"#;
+    let request = format!(
+        "POST /api/platform/a2a/push HTTP/1.1\r\nHost: localhost\r\nX-A2a-Notification-Token: {derived}\r\nX-Evalops-Workspace-Id: {header_workspace_id}\r\nContent-Type: application/a2a+json\r\nContent-Length: {}\r\n\r\n{body}",
+        body.len()
+    );
+    let mut initial = request.into_bytes();
+    let head = parse_request_head(&initial).expect("request should parse");
+    let (_client, mut server) = tcp_stream_pair().await;
+    let state = test_app_state_with_sessions(HashMap::new());
+
+    let response = handle_platform_a2a_push_endpoint(&mut server, &mut initial, head, &state).await;
+
+    assert_eq!(response_status(&response), 401);
+    assert!(state.a2a_tasks.lock().await.is_empty());
+
+    if let Some(previous_token) = previous_token {
+        env::set_var("MAESTRO_PLATFORM_A2A_CALLBACK_TOKEN", previous_token);
+    } else {
+        env::remove_var("MAESTRO_PLATFORM_A2A_CALLBACK_TOKEN");
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn platform_a2a_push_callback_rejects_invalid_token() {
     let _guard = ENV_LOCK.lock().await;
     let previous_token = env::var_os("MAESTRO_PLATFORM_A2A_CALLBACK_TOKEN");

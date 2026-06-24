@@ -446,21 +446,43 @@ describe("CLI integration", () => {
 		}
 	}
 
-	async function readJsonFileEventually<T>(path: string): Promise<T> {
-		const deadline = Date.now() + 1000;
+	async function readJsonFileEventually<T>(
+		path: string,
+		predicate?: (value: T) => boolean,
+	): Promise<T> {
+		// The beacon-buffer flushes are concurrent with the CLI command, so the
+		// file is often written through transient intermediate states (e.g.
+		// `{counts:{}}`) before reaching the value a caller wants to assert on.
+		// Without a predicate the helper returns at the first parseable read,
+		// which sometimes captures an empty snapshot and produces flakes like
+		// "expected undefined to be 1" on `counts["cli.command.<name>"]`.
+		// Pass a predicate to keep polling until the relevant fields are set.
+		const deadline = Date.now() + 2000;
 		let lastError: unknown;
+		let lastParsed: T | undefined;
 		while (Date.now() < deadline) {
 			if (existsSync(path)) {
 				const content = readFileSync(path, "utf8").trim();
 				if (content.length > 0) {
 					try {
-						return JSON.parse(content) as T;
+						const parsed = JSON.parse(content) as T;
+						if (!predicate || predicate(parsed)) {
+							return parsed;
+						}
+						lastParsed = parsed;
 					} catch (error) {
 						lastError = error;
 					}
 				}
 			}
 			await new Promise((resolve) => setTimeout(resolve, 10));
+		}
+		if (lastParsed !== undefined) {
+			throw new Error(
+				`Timed out waiting for predicate to hold on ${path}; last value: ${JSON.stringify(
+					lastParsed,
+				)}`,
+			);
 		}
 		const reason = lastError instanceof Error ? `: ${lastError.message}` : "";
 		throw new Error(`Timed out waiting for parseable JSON in ${path}${reason}`);
@@ -816,7 +838,10 @@ describe("CLI integration", () => {
 			);
 			const commandBuffer = await readJsonFileEventually<{
 				counts: Record<string, number>;
-			}>(bufferFile);
+			}>(
+				bufferFile,
+				(value) => typeof value.counts?.["cli.command.version"] === "number",
+			);
 			expect(startupEvent).toMatchObject({
 				feature: "cli.startup",
 				action: "version",
@@ -1102,7 +1127,11 @@ describe("CLI integration", () => {
 			expect(output.join("\n")).toContain("openrouter");
 			const commandBuffer = await readJsonFileEventually<{
 				counts: Record<string, number>;
-			}>(bufferFile);
+			}>(
+				bufferFile,
+				(value) =>
+					typeof value.counts?.["cli.command.models.providers"] === "number",
+			);
 			const startupEvents = await readJsonLinesEventually<{
 				feature: string;
 				action: string;
