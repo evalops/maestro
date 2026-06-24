@@ -165,9 +165,6 @@ pub(crate) async fn handle_platform_a2a_push_endpoint(
             );
         }
     };
-    if let Err(response) = validate_platform_a2a_push_callback_payload_binding(&head, &payload) {
-        return response;
-    }
     match record_platform_a2a_push_payload(state, payload).await {
         Ok(accepted) => json_response(202, &accepted),
         Err(message) => a2a_error_response(400, "INVALID_REQUEST", &message),
@@ -201,33 +198,6 @@ fn validate_platform_a2a_push_callback_auth(head: &RequestHead) -> Result<(), Ve
                 return Ok(());
             }
         }
-    }
-    Err(unauthorized_callback_token_response())
-}
-
-fn validate_platform_a2a_push_callback_payload_binding(
-    head: &RequestHead,
-    payload: &Value,
-) -> Result<(), Vec<u8>> {
-    let Some(expected) = platform_a2a_push_callback_token() else {
-        return Ok(());
-    };
-    let Some(provided) = platform_a2a_push_request_token(head) else {
-        return Ok(());
-    };
-    if !provided.starts_with(A2A_WORKSPACE_NOTIFICATION_TOKEN_PREFIX) {
-        return Ok(());
-    }
-    let Some(workspace_id) = platform_a2a_push_payload_workspace(payload)
-        .or_else(|| platform_a2a_push_request_workspace(head))
-    else {
-        return Err(unauthorized_callback_token_response());
-    };
-    let Some(derived) = workspace_notification_token(&expected, &workspace_id) else {
-        return Err(unauthorized_callback_token_response());
-    };
-    if constant_time_eq(provided.as_bytes(), derived.as_bytes()) {
-        return Ok(());
     }
     Err(unauthorized_callback_token_response())
 }
@@ -268,61 +238,6 @@ fn platform_a2a_push_request_workspace(head: &RequestHead) -> Option<String> {
         }
     }
     None
-}
-
-fn platform_a2a_push_payload_workspace(payload: &Value) -> Option<String> {
-    let object = payload.as_object()?;
-    if let Some(status_update) = object.get("statusUpdate") {
-        return first_platform_a2a_push_workspace(&[
-            status_update,
-            payload,
-            status_update.get("status").unwrap_or(&Value::Null),
-            status_update
-                .get("status")
-                .and_then(|status| status.get("message"))
-                .unwrap_or(&Value::Null),
-        ]);
-    }
-    if let Some(task) = object.get("task") {
-        return first_platform_a2a_push_workspace(&[
-            task,
-            payload,
-            task.get("status").unwrap_or(&Value::Null),
-            task.get("status")
-                .and_then(|status| status.get("message"))
-                .unwrap_or(&Value::Null),
-            task.get("artifact").unwrap_or(&Value::Null),
-        ]);
-    }
-    if let Some(artifact_update) = object.get("artifactUpdate") {
-        return first_platform_a2a_push_workspace(&[
-            artifact_update,
-            payload,
-            artifact_update.get("artifact").unwrap_or(&Value::Null),
-        ]);
-    }
-    None
-}
-
-fn first_platform_a2a_push_workspace(values: &[&Value]) -> Option<String> {
-    values
-        .iter()
-        .find_map(|value| platform_a2a_push_workspace_marker(value))
-}
-
-fn platform_a2a_push_workspace_marker(value: &Value) -> Option<String> {
-    let object = value.as_object()?;
-    optional_string_field(object, "workspaceId")
-        .or_else(|| optional_string_field(object, "workspace_id"))
-        .or_else(|| {
-            object
-                .get("metadata")
-                .and_then(Value::as_object)
-                .and_then(|metadata| {
-                    optional_string_field(metadata, "workspaceId")
-                        .or_else(|| optional_string_field(metadata, "workspace_id"))
-                })
-        })
 }
 
 fn platform_a2a_push_callback_token() -> Option<String> {
