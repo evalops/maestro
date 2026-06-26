@@ -315,7 +315,10 @@ describe("SwarmExecutor", () => {
 		expect(prompt).toContain("## Context\nYou are teammate");
 		expect(prompt).toContain("## Task\nUpdate the implementation");
 		expect(prompt).toContain(
-			"## Validation\nMake the requested changes directly",
+			"## Validation\nValidate end-to-end against real integrations",
+		);
+		expect(prompt).toContain(
+			"never report that something works on the strength of a mocked path alone",
 		);
 		expect(prompt).toContain(
 			"## Stopping Condition\nStop when the assigned task is complete",

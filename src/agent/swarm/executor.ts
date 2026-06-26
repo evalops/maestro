@@ -81,6 +81,7 @@ import type {
 	SwarmTeammate,
 	TeammateStatus,
 } from "./types.js";
+import { buildSwarmValidationDirective } from "./validation-directive.js";
 
 const logger = createLogger("agent:swarm:executor");
 
@@ -1290,8 +1291,7 @@ export class SwarmExecutor {
 			evidence: task.files?.length
 				? task.files.map((file) => `Relevant file: ${file}`)
 				: [],
-			validation:
-				"Make the requested changes directly, add or update focused tests when behavior changes, and run the relevant verification before finishing.",
+			validation: buildSwarmValidationDirective(task.mocksAllowed),
 			stoppingCondition:
 				"Stop when the assigned task is complete and report what changed, what you verified, and any blockers. Do not broaden into unrelated tasks.",
 		};
