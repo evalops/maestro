@@ -46,6 +46,17 @@ const TOOL_EXECUTION_WORKSPACE_ENV_VARS = [
 	...EVALOPS_WORKSPACE_ID_ENV_VARS,
 ] as const;
 
+const TOOL_EXECUTION_OBJECTIVE_ENV_VARS = [
+	"MAESTRO_OBJECTIVE_ID",
+	"MAESTRO_EVALOPS_OBJECTIVE_ID",
+] as const;
+
+// Surface identifier for the Platform "codex worker" agent runtime. The
+// operating-chat / tool-execution endpoint requires `objective_id` on the
+// request linkage when this surface is in use (Sentry PLATFORM-5). Kept as a
+// local const to avoid a circular import from shell-env.ts.
+const PLATFORM_WORKER_SURFACE = "platform-agent-runtime";
+
 const TOOL_EXECUTION_TIMEOUT_ENV_VARS = [
 	"TOOL_EXECUTION_SERVICE_TIMEOUT_MS",
 	"MAESTRO_TOOL_EXECUTION_SERVICE_TIMEOUT_MS",
@@ -355,6 +366,13 @@ function stripUndefinedValues(
 	);
 }
 
+function resolveObjectiveId(linkage: ToolExecutionLinkage): string | undefined {
+	return (
+		trimString(linkage.objectiveId) ??
+		getEnvValue(TOOL_EXECUTION_OBJECTIVE_ENV_VARS)
+	);
+}
+
 function normalizeExecuteToolRequest(
 	request: ExecutePlatformToolRequest,
 ): Record<string, unknown> {
@@ -364,7 +382,7 @@ function normalizeExecuteToolRequest(
 			organizationId: request.linkage.organizationId,
 			agentId: request.linkage.agentId,
 			runId: request.linkage.runId,
-			objectiveId: request.linkage.objectiveId,
+			objectiveId: resolveObjectiveId(request.linkage),
 			stepId: request.linkage.stepId,
 			actorId: request.linkage.actorId,
 			surface: request.linkage.surface,
@@ -447,6 +465,14 @@ export async function executeToolWithPlatform(
 	request: ExecutePlatformToolRequest,
 	signal?: AbortSignal,
 ): Promise<ExecutePlatformToolResponse> {
+	if (
+		request.linkage.surface === PLATFORM_WORKER_SURFACE &&
+		!resolveObjectiveId(request.linkage)
+	) {
+		throw new Error(
+			`operating chat requires an objective_id for the ${PLATFORM_WORKER_SURFACE} surface; set MAESTRO_OBJECTIVE_ID (or MAESTRO_EVALOPS_OBJECTIVE_ID) or pass linkage.objectiveId`,
+		);
+	}
 	const response = await postPlatformConnect(
 		config,
 		EXECUTE_TOOL_PATH,

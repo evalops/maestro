@@ -54,6 +54,8 @@ describe("tool execution client", () => {
 			"MAESTRO_EVALOPS_WORKSPACE_ID",
 			"EVALOPS_WORKSPACE_ID",
 			"MAESTRO_WORKSPACE_ID",
+			"MAESTRO_OBJECTIVE_ID",
+			"MAESTRO_EVALOPS_OBJECTIVE_ID",
 		]) {
 			vi.stubEnv(name, "");
 		}
@@ -216,6 +218,130 @@ describe("tool execution client", () => {
 				}),
 			}),
 		});
+	});
+
+	it("sends the provided linkage objectiveId on the wire", async () => {
+		const config = await resolveToolExecutionServiceConfig();
+		if (!config) {
+			throw new Error("expected tool execution config");
+		}
+
+		await executeToolWithPlatform(config, {
+			linkage: {
+				workspaceId: "ws_evalops",
+				organizationId: "org_evalops",
+				agentId: "maestro",
+				runId: "run_1",
+				objectiveId: "obj_linkage",
+				stepId: "tool_call_1",
+			},
+			tool: {
+				namespace: "maestro",
+				name: "bash",
+				capability: "maestro.tool.bash",
+			},
+			arguments: { command: "git status" },
+			idempotencyKey: "maestro:tool_call_1",
+		});
+
+		expect(requests[0]?.body).toMatchObject({
+			linkage: expect.objectContaining({
+				objectiveId: "obj_linkage",
+			}),
+		});
+	});
+
+	it("falls back to MAESTRO_OBJECTIVE_ID when linkage objectiveId is omitted", async () => {
+		vi.stubEnv("MAESTRO_OBJECTIVE_ID", "obj_env_primary");
+		const config = await resolveToolExecutionServiceConfig();
+		if (!config) {
+			throw new Error("expected tool execution config");
+		}
+
+		await executeToolWithPlatform(config, {
+			linkage: {
+				workspaceId: "ws_evalops",
+				organizationId: "org_evalops",
+				agentId: "maestro",
+				runId: "run_1",
+				stepId: "tool_call_1",
+			},
+			tool: {
+				namespace: "maestro",
+				name: "bash",
+				capability: "maestro.tool.bash",
+			},
+			arguments: { command: "git status" },
+			idempotencyKey: "maestro:tool_call_1",
+		});
+
+		expect(requests[0]?.body).toMatchObject({
+			linkage: expect.objectContaining({
+				objectiveId: "obj_env_primary",
+			}),
+		});
+	});
+
+	it("falls back to MAESTRO_EVALOPS_OBJECTIVE_ID when linkage objectiveId is omitted", async () => {
+		vi.stubEnv("MAESTRO_EVALOPS_OBJECTIVE_ID", "obj_env_evalops");
+		const config = await resolveToolExecutionServiceConfig();
+		if (!config) {
+			throw new Error("expected tool execution config");
+		}
+
+		await executeToolWithPlatform(config, {
+			linkage: {
+				workspaceId: "ws_evalops",
+				organizationId: "org_evalops",
+				agentId: "maestro",
+				runId: "run_1",
+				stepId: "tool_call_1",
+			},
+			tool: {
+				namespace: "maestro",
+				name: "bash",
+				capability: "maestro.tool.bash",
+			},
+			arguments: { command: "git status" },
+			idempotencyKey: "maestro:tool_call_1",
+		});
+
+		expect(requests[0]?.body).toMatchObject({
+			linkage: expect.objectContaining({
+				objectiveId: "obj_env_evalops",
+			}),
+		});
+	});
+
+	it("rejects platform-agent-runtime requests without an objectiveId before any fetch", async () => {
+		const config = await resolveToolExecutionServiceConfig();
+		if (!config) {
+			throw new Error("expected tool execution config");
+		}
+
+		await expect(
+			executeToolWithPlatform(config, {
+				linkage: {
+					workspaceId: "ws_evalops",
+					organizationId: "org_evalops",
+					agentId: "maestro",
+					runId: "run_1",
+					stepId: "tool_call_1",
+					surface: "platform-agent-runtime",
+				},
+				tool: {
+					namespace: "maestro",
+					name: "bash",
+					capability: "maestro.tool.bash",
+				},
+				arguments: { command: "git status" },
+				idempotencyKey: "maestro:tool_call_1",
+			}),
+		).rejects.toThrow(
+			/operating chat requires an objective_id for the platform-agent-runtime surface/,
+		);
+
+		expect(requests).toHaveLength(0);
 	});
 
 	it("resumes pending approval waits through the shared connect catalog", async () => {
