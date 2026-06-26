@@ -852,7 +852,10 @@ function defaultCorrelation(
 		remote_runner_session_id: readEnv(env, [
 			"MAESTRO_REMOTE_RUNNER_SESSION_ID",
 		]),
-		objective_id: readEnv(env, ["MAESTRO_OBJECTIVE_ID"]),
+		objective_id: readEnv(env, [
+			"MAESTRO_OBJECTIVE_ID",
+			"MAESTRO_EVALOPS_OBJECTIVE_ID",
+		]),
 		conversation_id: readEnv(env, ["MAESTRO_CONVERSATION_ID"]),
 		attributes: readStringRecord(env, "MAESTRO_EVENT_BUS_ATTR_"),
 	};

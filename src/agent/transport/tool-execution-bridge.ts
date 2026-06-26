@@ -491,7 +491,10 @@ function buildLinkage(
 			trimString(process.env.npm_package_name) ??
 			"maestro",
 		...(agentRunId ? { runId: agentRunId } : {}),
-		objectiveId: getEnvValue(["MAESTRO_OBJECTIVE_ID"]),
+		objectiveId: getEnvValue([
+			"MAESTRO_OBJECTIVE_ID",
+			"MAESTRO_EVALOPS_OBJECTIVE_ID",
+		]),
 		stepId: toolCall.id,
 		actorId: trimString(cfg.user?.id) ?? getEnvValue(["MAESTRO_ACTOR_ID"]),
 		surface: getEnvValue(["MAESTRO_SURFACE"]) ?? "maestro",

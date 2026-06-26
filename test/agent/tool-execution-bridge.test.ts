@@ -208,6 +208,7 @@ describe("tool execution bridge", () => {
 			MAESTRO_PLATFORM_RUNTIME_AGENT_RUNTIME_OBSERVE_FLAG,
 		]);
 		vi.stubEnv("MAESTRO_AGENT_RUN_ID", "");
+		vi.stubEnv("MAESTRO_EVALOPS_OBJECTIVE_ID", "objective_evalops");
 		vi.stubGlobal(
 			"fetch",
 			vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -264,6 +265,7 @@ describe("tool execution bridge", () => {
 				runId: "run_hosted_1",
 				agentId: "agent_hosted",
 				workspaceId: "ws_hosted",
+				objectiveId: "objective_evalops",
 				stepId: "tc_hosted_1",
 			}),
 			metadata: expect.objectContaining({
