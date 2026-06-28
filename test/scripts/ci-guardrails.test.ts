@@ -41,6 +41,7 @@ import {
 	reviewFeedbackSeverity,
 	reviewThreadSeverity,
 	threadBlocksFeedbackAudit,
+	visibleFeedbackAuditThreads,
 } from "../../scripts/pr-feedback-audit.mjs";
 import {
 	evaluateReviewFeedbackDashboardThresholds,
@@ -3551,6 +3552,42 @@ describe("prFeedbackAudit", () => {
 		expect(threadBlocksFeedbackAudit(highThread)).toBe(true);
 		expect(threadBlocksFeedbackAudit(highThread, "none")).toBe(true);
 		expect(threadBlocksFeedbackAudit(highThread, "p1")).toBe(false);
+	});
+
+	it("lists only blocking threads unless resolved threads are explicitly requested", () => {
+		const lowThread = {
+			comments: {
+				nodes: [{ body: "🟡 **Low Severity**\nNice to fix soon" }],
+			},
+			id: "low-thread",
+			isResolved: false,
+		};
+		const highThread = {
+			comments: {
+				nodes: [{ body: "🚩 **High Severity**\nFix before merge" }],
+			},
+			id: "high-thread",
+			isResolved: false,
+		};
+		const resolvedThread = {
+			comments: {
+				nodes: [{ body: "🟡 **Low Severity**\nAlready fixed" }],
+			},
+			id: "resolved-thread",
+			isResolved: true,
+		};
+
+		expect(
+			visibleFeedbackAuditThreads([lowThread, highThread, resolvedThread], {
+				minSeverity: "high",
+			}),
+		).toEqual([highThread]);
+		expect(
+			visibleFeedbackAuditThreads([lowThread, highThread, resolvedThread], {
+				includeResolved: true,
+				minSeverity: "high",
+			}),
+		).toEqual([highThread, resolvedThread]);
 	});
 
 	it("ignores informational review summaries before computing blocking severity", () => {

@@ -363,6 +363,18 @@ export function threadBlocksFeedbackAudit(thread, minSeverity = "high") {
 	);
 }
 
+export function visibleFeedbackAuditThreads(
+	threads,
+	{ includeResolved = false, minSeverity = "high" } = {},
+) {
+	return threads.filter((thread) => {
+		if (threadBlocksFeedbackAudit(thread, minSeverity)) {
+			return true;
+		}
+		return includeResolved && thread.isResolved;
+	});
+}
+
 function printThread(thread) {
 	const location = [thread.path, thread.line ?? thread.startLine]
 		.filter(Boolean)
@@ -409,12 +421,13 @@ function main() {
 	let blockingCount = 0;
 	for (const input of uniqueTargets) {
 		const threads = fetchReviewThreads(input.owner, input.repo, input.number);
-		const visibleThreads = args.includeResolved
-			? threads
-			: threads.filter((thread) => !thread.isResolved);
 		const blocking = threads.filter((thread) =>
 			threadBlocksFeedbackAudit(thread, args.minSeverity),
 		);
+		const visibleThreads = visibleFeedbackAuditThreads(threads, {
+			includeResolved: args.includeResolved,
+			minSeverity: args.minSeverity,
+		});
 		blockingCount += blocking.length;
 
 		console.log(

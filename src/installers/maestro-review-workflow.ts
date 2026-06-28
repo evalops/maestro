@@ -125,17 +125,17 @@ const PROVIDER_BY_API_KEY_ENV_VAR: Record<string, string> = {
 };
 
 function inferProviderFromApiKeyEnvVar(
-	apiKeySecretName: string,
+	apiKeyName?: string,
 ): string | undefined {
-	return PROVIDER_BY_API_KEY_ENV_VAR[apiKeySecretName];
+	return apiKeyName ? PROVIDER_BY_API_KEY_ENV_VAR[apiKeyName] : undefined;
 }
 
 function resolveOptions(
 	options: MaestroReviewWorkflowOptions,
 ): ResolvedOptions {
 	const inferredProvider =
-		options.apiKeySecretName &&
-		inferProviderFromApiKeyEnvVar(options.apiKeySecretName);
+		inferProviderFromApiKeyEnvVar(options.apiKeySecretName) ??
+		inferProviderFromApiKeyEnvVar(options.apiKeyEnvName);
 	const provider = validateYamlScalar(
 		options.provider ?? inferredProvider ?? "anthropic",
 		"provider",

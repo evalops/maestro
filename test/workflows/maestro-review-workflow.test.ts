@@ -74,6 +74,18 @@ describe("buildMaestroReviewWorkflow", () => {
 		);
 	});
 
+	it("infers the provider from the configured runtime env var", () => {
+		expect(
+			buildMaestroReviewWorkflow({ apiKeyEnvName: "OPENAI_API_KEY" }),
+		).toContain("maestro exec --provider 'openai' --output-last-message");
+		expect(
+			buildMaestroReviewWorkflow({
+				apiKeyEnvName: "OPENAI_API_KEY",
+				apiKeySecretName: "CUSTOM_REVIEW_SECRET",
+			}),
+		).toContain("maestro exec --provider 'openai' --output-last-message");
+	});
+
 	it("matches the github-agent generator for shared options", () => {
 		const options = {
 			apiKeySecretName: "maestro_OpenAI_review_key",

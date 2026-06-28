@@ -114,6 +114,15 @@ describe("maestro review workflow generator", () => {
 		expect(
 			buildMaestroReviewWorkflow({ apiKeySecretName: "OPENAI_API_KEY" }),
 		).toContain("maestro exec --provider 'openai' --output-last-message");
+		expect(
+			buildMaestroReviewWorkflow({ apiKeyEnvName: "OPENAI_API_KEY" }),
+		).toContain("maestro exec --provider 'openai' --output-last-message");
+		expect(
+			buildMaestroReviewWorkflow({
+				apiKeyEnvName: "OPENAI_API_KEY",
+				apiKeySecretName: "CUSTOM_REVIEW_SECRET",
+			}),
+		).toContain("maestro exec --provider 'openai' --output-last-message");
 	});
 
 	it("quotes shell-interpreted option values", () => {
