@@ -160,6 +160,20 @@ describe("agent/validation-contract", () => {
 			expect(report.unknownAssertions).toEqual(["ghost-id"]);
 		});
 
+		it("treats claims with a missing fulfills list as empty instead of throwing", () => {
+			const claims = [{ id: "feature-cart" }] as FeatureClaim[];
+			const report = checkCoverage(makeContract(), claims);
+			expect(report.ok).toBe(false);
+			expect(report.orphans).toEqual([
+				"cart-1",
+				"cart-2",
+				"flow-happy-1",
+				"payment-1",
+			]);
+			expect(report.duplicates).toEqual([]);
+			expect(report.unknownAssertions).toEqual([]);
+		});
+
 		it("reports all failure modes simultaneously when more than one applies", () => {
 			const claims: FeatureClaim[] = [
 				{ id: "f-a", fulfills: ["cart-1", "cart-1"] },

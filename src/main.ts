@@ -130,6 +130,7 @@ import { setConfiguredPackageRuntimeContext } from "./packages/runtime.js";
 import { resolveMaestroSystemPrompt } from "./prompts/system-prompt.js";
 import type { AuthMode } from "./providers/auth.js";
 import { parseOptionalBoolean } from "./runtime/env.js";
+import { cleanupNonInteractiveRuntimeResources } from "./runtime/non-interactive-cleanup.js";
 import { defaultSettings } from "./runtime/settings.js";
 import { configureSafeMode } from "./safety/safe-mode.js";
 import type { SessionManager } from "./session/manager.js";
@@ -144,36 +145,6 @@ const STARTUP_TELEMETRY_EXIT_WAIT_GRACE_MS = 25;
 let enterpriseCleanupRegistered = false;
 let checkpointCleanupRegistered = false;
 let sandboxCleanupRegistered = false;
-
-async function cleanupNonInteractiveRuntimeResources(): Promise<void> {
-	let timeout: ReturnType<typeof setTimeout> | undefined;
-	const timeoutPromise = new Promise<"timeout">((resolve) => {
-		timeout = setTimeout(() => resolve("timeout"), 5_000);
-	});
-	const cleanupPromise = (async (): Promise<"done"> => {
-		try {
-			const [{ mcpManager }, { lspManager }] = await Promise.all([
-				import("./mcp/manager.js"),
-				import("./lsp/manager.js"),
-			]);
-			await Promise.allSettled([
-				mcpManager.disconnectAll(),
-				lspManager.shutdownAll(),
-			]);
-		} catch {
-			// Best-effort shutdown must not mask the command's original result.
-		}
-		return "done";
-	})();
-	try {
-		await Promise.race([cleanupPromise, timeoutPromise]);
-	} finally {
-		void cleanupPromise.catch(() => undefined);
-		if (timeout) {
-			clearTimeout(timeout);
-		}
-	}
-}
 
 function isTruthyEnvFlag(value: string | undefined): boolean {
 	switch (value?.trim().toLowerCase()) {

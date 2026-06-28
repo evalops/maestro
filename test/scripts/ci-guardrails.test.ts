@@ -3520,6 +3520,9 @@ describe("prFeedbackAudit", () => {
 			"none",
 		);
 		expect(reviewFeedbackSeverity("This is not a P1 blocker.")).toBe("none");
+		expect(
+			reviewFeedbackSeverity("There are no High Severity issues in this PR."),
+		).toBe("none");
 		expect(reviewFeedbackSeverity("📝 Info: optional follow-up")).toBe("none");
 	});
 
@@ -3552,6 +3555,12 @@ describe("prFeedbackAudit", () => {
 			},
 			isResolved: false,
 		};
+		const negatedHighSeverityThread = {
+			comments: {
+				nodes: [{ body: "There are no High Severity issues in this PR." }],
+			},
+			isResolved: false,
+		};
 
 		expect(reviewThreadSeverity(infoThread)).toBe("none");
 		expect(threadBlocksFeedbackAudit(infoThread)).toBe(false);
@@ -3561,6 +3570,8 @@ describe("prFeedbackAudit", () => {
 		expect(threadBlocksFeedbackAudit(unlabeledThread, "none")).toBe(true);
 		expect(reviewThreadSeverity(negatedPriorityThread)).toBe("none");
 		expect(threadBlocksFeedbackAudit(negatedPriorityThread, "p1")).toBe(false);
+		expect(reviewThreadSeverity(negatedHighSeverityThread)).toBe("none");
+		expect(threadBlocksFeedbackAudit(negatedHighSeverityThread)).toBe(false);
 		expect(threadBlocksFeedbackAudit(highThread)).toBe(true);
 		expect(threadBlocksFeedbackAudit(highThread, "none")).toBe(true);
 		expect(threadBlocksFeedbackAudit(highThread, "p1")).toBe(false);

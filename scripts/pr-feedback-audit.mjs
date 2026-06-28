@@ -294,18 +294,44 @@ function firstNonblankLine(body) {
 		.find(Boolean) ?? "";
 }
 
-function hasExplicitReviewPriority(body, priority) {
+function escapeRegExp(value) {
+	return String(value).replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
+}
+
+function reviewMetadataLines(body) {
 	return String(body ?? "")
 		.split(/\r?\n/u)
 		.map((line) =>
-			line.trim().replace(/^(?:[-*+]\s*)?(?:#{1,6}\s*)?/u, ""),
+			line
+				.trim()
+				.replace(/^(?:[-*+]\s+)?(?:#{1,6}\s*)?/u, "")
+				.replace(/^[^\p{L}\p{N}\[!_*]+/u, ""),
 		)
+		.filter(Boolean);
+}
+
+function hasExplicitReviewPriority(body, priority) {
+	return reviewMetadataLines(body)
 		.some(
 			(line) =>
 				line === priority ||
 				line.startsWith(`${priority}:`) ||
 				line.startsWith(`[${priority}]`),
 		);
+}
+
+function hasExplicitReviewSeverity(body, severity, badgeLabel) {
+	const severityPattern = new RegExp(
+		`^(?:\\*\\*|__)?${escapeRegExp(severity)}(?:\\*\\*|__)?(?::.*)?$`,
+		"iu",
+	);
+	const badgePattern = new RegExp(
+		`^!\\[${escapeRegExp(badgeLabel)}\\](?:\\([^)]*\\))?(?::.*)?$`,
+		"iu",
+	);
+	return reviewMetadataLines(body).some(
+		(line) => severityPattern.test(line) || badgePattern.test(line),
+	);
 }
 
 export function informationalReviewFeedback(body, author) {
@@ -325,13 +351,13 @@ export function reviewFeedbackSeverity(body) {
 	const text = String(body ?? "");
 	if (hasExplicitReviewPriority(text, "P0")) return "p0";
 	if (hasExplicitReviewPriority(text, "P1")) return "p1";
-	if (/\bHigh Severity\b/iu.test(text) || /!\[High Badge\]/iu.test(text)) {
+	if (hasExplicitReviewSeverity(text, "High Severity", "High Badge")) {
 		return "high";
 	}
-	if (/\bMedium Severity\b/iu.test(text) || /!\[Medium Badge\]/iu.test(text)) {
+	if (hasExplicitReviewSeverity(text, "Medium Severity", "Medium Badge")) {
 		return "medium";
 	}
-	if (/\bLow Severity\b/iu.test(text) || /!\[Low Badge\]/iu.test(text)) {
+	if (hasExplicitReviewSeverity(text, "Low Severity", "Low Badge")) {
 		return "low";
 	}
 	return "none";
