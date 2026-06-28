@@ -8,7 +8,7 @@ export const MAESTRO_REVIEW_WORKFLOW_PATH =
 export interface MaestroReviewWorkflowOptions {
 	/** Node major version used to run Maestro in CI. Default "20". */
 	nodeVersion?: string;
-	/** npm package installed in CI. Default "maestro". */
+	/** npm package installed in CI. Defaults to MAESTRO_PACKAGE_NAME or "maestro". */
 	maestroPackage?: string;
 	/** Version/tag of the package to install. Default "latest". */
 	maestroVersion?: string;

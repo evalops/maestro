@@ -327,12 +327,15 @@ function firstComment(thread) {
 	return thread.comments?.nodes?.[0];
 }
 
+function nonInformationalThreadComments(thread) {
+	return (thread.comments?.nodes ?? []).filter(
+		(comment) =>
+			!informationalReviewFeedback(comment.body, comment.author?.login),
+	);
+}
+
 export function reviewThreadSeverity(thread) {
-	const candidates = (thread.comments?.nodes ?? [])
-		.filter(
-			(comment) =>
-				!informationalReviewFeedback(comment.body, comment.author?.login),
-		)
+	const candidates = nonInformationalThreadComments(thread)
 		.map((comment) => [reviewFeedbackSeverity(comment.body), comment])
 		.filter(([severity]) => REVIEW_FEEDBACK_SEVERITY_RANK[severity] > 0);
 	const [severity] =
@@ -353,6 +356,9 @@ function hasActionableReviewFeedback(thread) {
 
 export function threadBlocksFeedbackAudit(thread, minSeverity = "high") {
 	if (thread.isResolved) return false;
+	if (minSeverity === "none") {
+		return nonInformationalThreadComments(thread).length > 0;
+	}
 	const severity = reviewThreadSeverity(thread);
 	if (severity === "none") {
 		return minSeverity === "none" && hasActionableReviewFeedback(thread);

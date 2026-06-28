@@ -3518,12 +3518,11 @@ describe("prFeedbackAudit", () => {
 		expect(reviewFeedbackSeverity("📝 Info: optional follow-up")).toBe("none");
 	});
 
-	it("blocks review feedback audit only for unresolved severity at or above the threshold", () => {
+	it("blocks review feedback audit for unresolved threads at or above the threshold", () => {
 		const infoThread = {
 			comments: {
 				nodes: [
 					{
-						author: { login: "devin-ai-integration" },
 						body: "📝 **Info:** optional consideration",
 					},
 				],
@@ -3545,7 +3544,7 @@ describe("prFeedbackAudit", () => {
 
 		expect(reviewThreadSeverity(infoThread)).toBe("none");
 		expect(threadBlocksFeedbackAudit(infoThread)).toBe(false);
-		expect(threadBlocksFeedbackAudit(infoThread, "none")).toBe(false);
+		expect(threadBlocksFeedbackAudit(infoThread, "none")).toBe(true);
 		expect(reviewThreadSeverity(unlabeledThread)).toBe("none");
 		expect(threadBlocksFeedbackAudit(unlabeledThread)).toBe(false);
 		expect(threadBlocksFeedbackAudit(unlabeledThread, "none")).toBe(true);
@@ -3611,6 +3610,7 @@ describe("prFeedbackAudit", () => {
 		).toBe(true);
 		expect(reviewThreadSeverity(informationalThread)).toBe("none");
 		expect(threadBlocksFeedbackAudit(informationalThread)).toBe(false);
+		expect(threadBlocksFeedbackAudit(informationalThread, "none")).toBe(false);
 	});
 
 	it("deduplicates explicit and recent review-hygiene targets", () => {
