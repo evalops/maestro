@@ -336,14 +336,18 @@ function hasExplicitReviewSeverity(body, severity, badgeLabel) {
 
 export function informationalReviewFeedback(body, author) {
 	const firstLine = firstNonblankLine(body);
+	const text = String(body ?? "");
 	const trustedReviewBot =
 		/^(?:cursor|coderabbitai|chatgpt-codex-connector|devin-ai-integration)\b/iu.test(
 			String(author ?? ""),
 		);
+	const summaryComment = /^##\s+(?:PR\s+Summary|Summary|Walkthrough)\b/iu.test(
+		firstLine,
+	);
+	const infoSection = /(?:^|\n)\s*(?:📝\s*)?\*\*Info:/u.test(text);
 	return (
 		trustedReviewBot &&
-		(/^##\s+(?:PR\s+Summary|Summary|Walkthrough)\b/iu.test(firstLine) ||
-			/(?:^|\n)\s*(?:📝\s*)?\*\*Info:/u.test(String(body ?? "")))
+		(summaryComment || (infoSection && reviewFeedbackSeverity(text) === "none"))
 	);
 }
 

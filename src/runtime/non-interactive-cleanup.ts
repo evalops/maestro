@@ -24,10 +24,7 @@ export async function cleanupNonInteractiveRuntimeResources(): Promise<void> {
 		return "done";
 	})();
 	try {
-		const result = await Promise.race([cleanupPromise, timeoutPromise]);
-		if (result === "timeout") {
-			await cleanupPromise;
-		}
+		await Promise.race([cleanupPromise, timeoutPromise]);
 	} finally {
 		if (timeout) {
 			clearTimeout(timeout);

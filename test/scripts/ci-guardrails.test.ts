@@ -3637,6 +3637,34 @@ describe("prFeedbackAudit", () => {
 		expect(threadBlocksFeedbackAudit(informationalThread, "none")).toBe(false);
 	});
 
+	it("keeps severity-labeled bot comments actionable when they also include an info section", () => {
+		const mixedThread = {
+			comments: {
+				nodes: [
+					{
+						author: { login: "cursor[bot]" },
+						body: [
+							"🚩 **High Severity**",
+							"Fix before merge.",
+							"",
+							"**Info:** Extra remediation context.",
+						].join("\n"),
+					},
+				],
+			},
+			isResolved: false,
+		};
+
+		expect(
+			informationalReviewFeedback(
+				mixedThread.comments.nodes[0].body,
+				mixedThread.comments.nodes[0].author.login,
+			),
+		).toBe(false);
+		expect(reviewThreadSeverity(mixedThread)).toBe("high");
+		expect(threadBlocksFeedbackAudit(mixedThread)).toBe(true);
+	});
+
 	it("deduplicates explicit and recent review-hygiene targets", () => {
 		expect(
 			dedupeFeedbackAuditTargets([

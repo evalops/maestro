@@ -38,7 +38,7 @@ describe("cleanupNonInteractiveRuntimeResources", () => {
 		vi.useRealTimers();
 	});
 
-	it("waits for MCP and LSP teardown even after the grace timer elapses", async () => {
+	it("returns after the grace timer even if teardown is still pending", async () => {
 		const mcpCleanup = createDeferred();
 		const lspCleanup = createDeferred();
 		mocks.disconnectAll.mockReturnValue(mcpCleanup.promise);
@@ -54,14 +54,17 @@ describe("cleanupNonInteractiveRuntimeResources", () => {
 		expect(mocks.shutdownAll).toHaveBeenCalledTimes(1);
 
 		await vi.advanceTimersByTimeAsync(5_000);
-		expect(finished).toBe(false);
-
-		mcpCleanup.resolve();
-		await Promise.resolve();
-		expect(finished).toBe(false);
-
-		lspCleanup.resolve();
 		await cleanupPromise;
 		expect(finished).toBe(true);
+	});
+
+	it("waits for teardown when it finishes before the grace timer", async () => {
+		mocks.disconnectAll.mockResolvedValue(undefined);
+		mocks.shutdownAll.mockResolvedValue(undefined);
+
+		await cleanupNonInteractiveRuntimeResources();
+
+		expect(mocks.disconnectAll).toHaveBeenCalledTimes(1);
+		expect(mocks.shutdownAll).toHaveBeenCalledTimes(1);
 	});
 });
