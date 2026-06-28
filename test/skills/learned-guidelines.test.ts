@@ -273,7 +273,11 @@ appendLearnedGuideline("incident-triage", process.env.ENTRY, process.env.SKILLS_
 		appendLearnedGuideline("incident-triage", "keep-existing", dir);
 
 		expect(() =>
-			appendLearnedGuideline("incident-triage", "x".repeat(64 * 1024 - 10), dir),
+			appendLearnedGuideline(
+				"incident-triage",
+				"x".repeat(64 * 1024 - 10),
+				dir,
+			),
 		).toThrow("exceeds");
 
 		const file = readFileSync(

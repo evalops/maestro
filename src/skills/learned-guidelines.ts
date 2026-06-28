@@ -123,10 +123,7 @@ export function appendLearnedGuideline(
 	});
 }
 
-function buildGuidelinesContent(
-	existing: string,
-	entry: string,
-): string {
+function buildGuidelinesContent(existing: string, entry: string): string {
 	const entries = parseGuidelineEntries(existing);
 	if (byteLength(serializeGuidelineEntries([entry])) > MAX_GUIDELINES_BYTES) {
 		throw new Error(
