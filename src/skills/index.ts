@@ -52,6 +52,13 @@ export {
 
 export { composeSkill } from "./composer.js";
 export {
+	appendLearnedGuideline,
+	defaultUserSkillsDir,
+	formatLearnedGuidelinesForPrompt,
+	getLearnedGuidelinesPath,
+	loadLearnedGuidelines,
+} from "./learned-guidelines.js";
+export {
 	type ScaffoldSkillOptions,
 	type ScaffoldSkillResult,
 	scaffoldSkillWithBody,

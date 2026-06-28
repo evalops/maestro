@@ -335,17 +335,6 @@ function buildGuidelines(toolNames: Set<string>, currentYear: number): string {
 		);
 	}
 
-	// Only add validation guidance if mutation tools are available
-	if (
-		toolNames.has("edit") ||
-		toolNames.has("write") ||
-		toolNames.has("bash")
-	) {
-		guidelines.push(
-			"After finishing any non-trivial set of code changes, run all required project validators (lint, tests, evals, etc.) before summarizing or committing unless the user explicitly waives them",
-		);
-	}
-
 	if (toolNames.has("todo")) {
 		guidelines.push(
 			"Use todo when you need a structured task list; supply a goal plus an items array shaped like TodoWrite entries or updates for existing tasks",
@@ -706,12 +695,62 @@ export function buildFileCitationPromptFragment(cwd = process.cwd()): string {
 	].join("\n");
 }
 
+/**
+ * Behavioral discipline baked into the bundled (offline) prompt so a Maestro
+ * run without a remote prompt service still holds the standards a strong
+ * coding agent applies: follow existing conventions, keep changes scoped,
+ * surface problems, and verify before claiming done. Sections that depend on
+ * specific tools are included only when those tools are available.
+ */
+function buildEngineeringDisciplineSection(toolNames: Set<string>): string {
+	const sections: string[] = [];
+
+	sections.push(
+		[
+			"## Following conventions",
+			"- Before using a library, confirm it is already a dependency of this project — check imports in neighbouring files and the package manifest. Never assume a package is available because it is popular.",
+			"- Match the conventions of the surrounding code: its naming, typing, error handling, and file layout. New code should be hard to distinguish from what is already there.",
+			"- Add a comment only to explain intent the code cannot convey. Do not narrate what the code plainly does.",
+		].join("\n"),
+	);
+
+	const doingTask: string[] = [
+		"## Doing the task",
+		"- Do what was asked, then stop. Prefer the smallest change that fully solves the problem, and do not refactor adjacent code the task did not require.",
+		"- Surface problems as you find them. If an assumption turns out wrong, a requirement is missing, or a change is riskier than it looked, say so instead of quietly working around it.",
+	];
+	if (toolNames.has("todo")) {
+		doingTask.push(
+			"- Track multi-step work with the todo tool. Keep exactly one item in_progress, and mark an item completed as soon as its work is verified rather than batching updates at the end.",
+		);
+	}
+	sections.push(doingTask.join("\n"));
+
+	if (
+		toolNames.has("edit") ||
+		toolNames.has("write") ||
+		toolNames.has("bash")
+	) {
+		sections.push(
+			[
+				"## Verifying your work",
+				"- A change is not finished until it is verified. After a non-trivial change run the project's validators — build, lint, and the tests that cover what you touched — unless the user explicitly waives them, and report what you ran and what it showed.",
+				"- Do not report that something works on the basis of reading the code when you could have run it.",
+			].join("\n"),
+		);
+	}
+
+	return `# Engineering discipline\n\n${sections.join("\n\n")}`;
+}
+
 export function buildBundledSystemPromptBase(toolNames?: string[]): string {
 	const currentYear = new Date().getFullYear();
 	const activeToolNames = toolNames ?? DEFAULT_TOOL_NAMES;
 	const toolNameSet = new Set(activeToolNames);
 
-	return `You are an expert coding assistant. You help users with coding tasks by reading files, executing commands, editing code, and writing new files.
+	return `You are Maestro, an expert software engineering agent. You help users with real software work — reading files, executing commands, editing code, and writing new files — and you optimize for correct, verified changes over volume of output.
+
+${buildEngineeringDisciplineSection(toolNameSet)}
 
 ${buildToolsSection(activeToolNames)}
 

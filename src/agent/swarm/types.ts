@@ -8,6 +8,10 @@
 import type { A2ATaskPushNotificationConfig } from "../../platform/a2a-client.js";
 import type { AgentMode, ModelProvider, ReasoningEffort } from "../modes.js";
 import type { SubagentType } from "../subagent-specs.js";
+import type {
+	FeatureClaim,
+	ValidationContract,
+} from "../validation-contract.js";
 
 /**
  * Status of a swarm teammate.
@@ -113,6 +117,14 @@ export interface SwarmConfig {
 	continueOnFailure?: boolean;
 	/** Git branch to work on (creates if doesn't exist) */
 	gitBranch?: string;
+	/**
+	 * Optional mission validation contract. When present, the coverage gate
+	 * refuses to start the swarm until every assertion is claimed exactly once
+	 * by the feature claims below.
+	 */
+	validationContract?: ValidationContract;
+	/** Feature claims evaluated against validationContract by the coverage gate. */
+	featureClaims?: FeatureClaim[];
 }
 
 /**

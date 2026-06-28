@@ -1042,6 +1042,51 @@ describe("maestro event bus", () => {
 		});
 	});
 
+	it("normalizes empty and whitespace objective_id from correlation metadata", async () => {
+		const published: Array<{ subject: string; payload: string }> = [];
+		setMaestroEventBusTransportForTests({
+			async publish(subject, payload) {
+				published.push({ subject, payload });
+			},
+		});
+
+		const emptyEvent = {
+			type: "sandbox-violation",
+			timestamp: "2026-05-19T17:02:00.000Z",
+			action: "write",
+			tool: "edit",
+			path: "/tmp/blocked",
+			reason: "denied",
+			metadata: {
+				objective_id: "",
+			},
+		} as Parameters<typeof mirrorTelemetryToMaestroEventBus>[0] &
+			Record<string, unknown>;
+		await mirrorTelemetryToMaestroEventBus(emptyEvent);
+
+		const paddedEvent = {
+			type: "sandbox-violation",
+			timestamp: "2026-05-19T17:03:00.000Z",
+			action: "write",
+			tool: "edit",
+			path: "/tmp/blocked",
+			reason: "denied",
+			metadata: {
+				objectiveId: "  objective_42  ",
+			},
+		} as Parameters<typeof mirrorTelemetryToMaestroEventBus>[0] &
+			Record<string, unknown>;
+		await mirrorTelemetryToMaestroEventBus(paddedEvent);
+
+		expect(published).toHaveLength(2);
+
+		const emptyPayload = JSON.parse(published[0]?.payload ?? "{}");
+		expect(emptyPayload.data.correlation.objective_id).toBeUndefined();
+
+		const paddedPayload = JSON.parse(published[1]?.payload ?? "{}");
+		expect(paddedPayload.data.correlation.objective_id).toBe("objective_42");
+	});
+
 	it("publishes eval scored CloudEvents with prompt and skill identity", async () => {
 		const published: Array<{ subject: string; payload: string }> = [];
 		setMaestroEventBusTransportForTests({

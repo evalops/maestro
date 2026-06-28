@@ -145,6 +145,36 @@ let enterpriseCleanupRegistered = false;
 let checkpointCleanupRegistered = false;
 let sandboxCleanupRegistered = false;
 
+async function cleanupNonInteractiveRuntimeResources(): Promise<void> {
+	let timeout: ReturnType<typeof setTimeout> | undefined;
+	const timeoutPromise = new Promise<"timeout">((resolve) => {
+		timeout = setTimeout(() => resolve("timeout"), 5_000);
+	});
+	const cleanupPromise = (async (): Promise<"done"> => {
+		try {
+			const [{ mcpManager }, { lspManager }] = await Promise.all([
+				import("./mcp/manager.js"),
+				import("./lsp/manager.js"),
+			]);
+			await Promise.allSettled([
+				mcpManager.disconnectAll(),
+				lspManager.shutdownAll(),
+			]);
+		} catch {
+			// Best-effort shutdown must not mask the command's original result.
+		}
+		return "done";
+	})();
+	try {
+		await Promise.race([cleanupPromise, timeoutPromise]);
+	} finally {
+		void cleanupPromise.catch(() => undefined);
+		if (timeout) {
+			clearTimeout(timeout);
+		}
+	}
+}
+
 function isTruthyEnvFlag(value: string | undefined): boolean {
 	switch (value?.trim().toLowerCase()) {
 		case "1":
@@ -2176,5 +2206,13 @@ export async function main(args: string[]) {
 		}
 	} finally {
 		await automaticMemory.flush();
+		if (
+			!isInteractive ||
+			mode === "rpc" ||
+			mode === "headless" ||
+			parsed.headless
+		) {
+			await cleanupNonInteractiveRuntimeResources();
+		}
 	}
 }

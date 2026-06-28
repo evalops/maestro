@@ -119,7 +119,7 @@
     "ci:plan": "node scripts/plan-ci-checks.mjs",
     "pr:ready": "node scripts/pr-ready-to-merge.mjs",
     "pr:feedback": "node scripts/pr-feedback-audit.mjs",
-    "review:unresolved-threads": "node scripts/pr-feedback-audit.mjs --recent-days 3 --check",
+    "review:unresolved-threads": "node scripts/pr-feedback-audit.mjs --recent-days 3 --check --min-severity none",
     "review:feedback-dashboard": "node scripts/pr-feedback-dashboard.mjs --repo evalops/maestro-internal --recent-days 3 --limit 50",
     "verify:runtime-deps": "node scripts/check-runtime-deps.js && node scripts/check-docker-runtime-workspaces.mjs && node scripts/check-packed-bundled-workspaces.mjs",
     "tui": "npm run cli",

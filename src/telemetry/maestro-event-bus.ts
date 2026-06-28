@@ -1312,6 +1312,12 @@ function contextFromMetadata(
 	return Object.keys(context).length > 0 ? context : undefined;
 }
 
+function normalizeOptionalString(value: unknown): string | undefined {
+	if (typeof value !== "string") return undefined;
+	const trimmed = value.trim();
+	return trimmed.length > 0 ? trimmed : undefined;
+}
+
 function correlationFromMetadata(
 	metadata: unknown,
 ): Partial<MaestroCorrelation> | undefined {
@@ -1321,101 +1327,53 @@ function correlationFromMetadata(
 	const record = metadata as Record<string, unknown>;
 	return {
 		session_id:
-			typeof record.sessionId === "string"
-				? record.sessionId
-				: typeof record.session_id === "string"
-					? record.session_id
-					: undefined,
+			normalizeOptionalString(record.sessionId) ??
+			normalizeOptionalString(record.session_id),
 		workspace_id:
-			typeof record.workspaceId === "string"
-				? record.workspaceId
-				: typeof record.workspace_id === "string"
-					? record.workspace_id
-					: undefined,
+			normalizeOptionalString(record.workspaceId) ??
+			normalizeOptionalString(record.workspace_id),
 		agent_run_id:
-			typeof record.agentRunId === "string"
-				? record.agentRunId
-				: typeof record.agent_run_id === "string"
-					? record.agent_run_id
-					: undefined,
+			normalizeOptionalString(record.agentRunId) ??
+			normalizeOptionalString(record.agent_run_id),
 		agent_run_step_id:
-			typeof record.toolCallId === "string"
-				? record.toolCallId
-				: typeof record.tool_call_id === "string"
-					? record.tool_call_id
-					: undefined,
+			normalizeOptionalString(record.toolCallId) ??
+			normalizeOptionalString(record.tool_call_id),
 		organization_id:
-			typeof record.organizationId === "string"
-				? record.organizationId
-				: typeof record.organization_id === "string"
-					? record.organization_id
-					: undefined,
+			normalizeOptionalString(record.organizationId) ??
+			normalizeOptionalString(record.organization_id),
 		user_id:
-			typeof record.userId === "string"
-				? record.userId
-				: typeof record.user_id === "string"
-					? record.user_id
-					: undefined,
+			normalizeOptionalString(record.userId) ??
+			normalizeOptionalString(record.user_id),
 		agent_id:
-			typeof record.agentId === "string"
-				? record.agentId
-				: typeof record.agent_id === "string"
-					? record.agent_id
-					: undefined,
+			normalizeOptionalString(record.agentId) ??
+			normalizeOptionalString(record.agent_id),
 		actor_id:
-			typeof record.actorId === "string"
-				? record.actorId
-				: typeof record.actor_id === "string"
-					? record.actor_id
-					: undefined,
+			normalizeOptionalString(record.actorId) ??
+			normalizeOptionalString(record.actor_id),
 		principal_id:
-			typeof record.principalId === "string"
-				? record.principalId
-				: typeof record.principal_id === "string"
-					? record.principal_id
-					: undefined,
+			normalizeOptionalString(record.principalId) ??
+			normalizeOptionalString(record.principal_id),
 		trace_id:
-			typeof record.traceId === "string"
-				? record.traceId
-				: typeof record.trace_id === "string"
-					? record.trace_id
-					: undefined,
+			normalizeOptionalString(record.traceId) ??
+			normalizeOptionalString(record.trace_id),
 		traceparent:
-			typeof record.traceparent === "string"
-				? record.traceparent
-				: typeof record.trace_parent === "string"
-					? record.trace_parent
-					: undefined,
+			normalizeOptionalString(record.traceparent) ??
+			normalizeOptionalString(record.trace_parent),
 		tracestate:
-			typeof record.tracestate === "string"
-				? record.tracestate
-				: typeof record.trace_state === "string"
-					? record.trace_state
-					: undefined,
+			normalizeOptionalString(record.tracestate) ??
+			normalizeOptionalString(record.trace_state),
 		request_id:
-			typeof record.requestId === "string"
-				? record.requestId
-				: typeof record.request_id === "string"
-					? record.request_id
-					: undefined,
+			normalizeOptionalString(record.requestId) ??
+			normalizeOptionalString(record.request_id),
 		remote_runner_session_id:
-			typeof record.remoteRunnerSessionId === "string"
-				? record.remoteRunnerSessionId
-				: typeof record.remote_runner_session_id === "string"
-					? record.remote_runner_session_id
-					: undefined,
+			normalizeOptionalString(record.remoteRunnerSessionId) ??
+			normalizeOptionalString(record.remote_runner_session_id),
 		objective_id:
-			typeof record.objectiveId === "string"
-				? record.objectiveId
-				: typeof record.objective_id === "string"
-					? record.objective_id
-					: undefined,
+			normalizeOptionalString(record.objectiveId) ??
+			normalizeOptionalString(record.objective_id),
 		conversation_id:
-			typeof record.conversationId === "string"
-				? record.conversationId
-				: typeof record.conversation_id === "string"
-					? record.conversation_id
-					: undefined,
+			normalizeOptionalString(record.conversationId) ??
+			normalizeOptionalString(record.conversation_id),
 	};
 }
 

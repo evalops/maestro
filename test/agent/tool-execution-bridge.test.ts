@@ -98,6 +98,8 @@ describe("tool execution bridge", () => {
 		vi.stubEnv("MAESTRO_REMOTE_RUNNER_WORKSPACE_ID", "ws_evalops");
 		vi.stubEnv("MAESTRO_AGENT_RUN_ID", "run_1");
 		vi.stubEnv("MAESTRO_AGENT_ID", "maestro");
+		vi.stubEnv("MAESTRO_OBJECTIVE_ID", "");
+		vi.stubEnv("MAESTRO_EVALOPS_OBJECTIVE_ID", "");
 		vi.stubEnv("MAESTRO_SURFACE", "cli");
 		vi.stubEnv("MAESTRO_CHANNEL_ID", "cli:local");
 		vi.stubEnv("MAESTRO_SESSION_ID", "sess_1");

@@ -36,7 +36,11 @@ import {
 	collectFeedbackAuditTargets,
 	dedupeFeedbackAuditTargets,
 	fetchRecentPullTargets,
+	informationalReviewFeedback,
 	parseFeedbackAuditArgs,
+	reviewFeedbackSeverity,
+	reviewThreadSeverity,
+	threadBlocksFeedbackAudit,
 } from "../../scripts/pr-feedback-audit.mjs";
 import {
 	evaluateReviewFeedbackDashboardThresholds,
@@ -1732,6 +1736,7 @@ describe("ci workflow guardrails", () => {
 			"actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea",
 		);
 		expect(script).toContain("github.rest.pulls.listFiles");
+		expect(script).toContain("github.rest.issues.listLabelsOnIssue");
 		expect(script).toContain("github.rest.issues.addLabels");
 		expect(script).toContain("run-evals");
 		expect(script).toContain("src/agent/");
@@ -3484,10 +3489,75 @@ describe("prFeedbackAudit", () => {
 		expect(script).toContain("--recent-days 3");
 		expect(script).not.toMatch(/--limit\b/);
 		expect(script).toContain("--check");
+		expect(script).toContain("--min-severity none");
 	});
 
 	it("keeps review-hygiene GitHub reads buffered for busy recent windows", () => {
 		expect(GH_OUTPUT_MAX_BUFFER_BYTES).toBeGreaterThanOrEqual(64 * 1024 * 1024);
+	});
+
+	it("keeps the local pre-commit hook focused on staged checks", () => {
+		const hook = readFileSync(
+			new URL("../../.husky/pre-commit", import.meta.url),
+			"utf8",
+		);
+
+		expect(hook).toContain("guardian.sh");
+		expect(hook).toContain("git diff --cached --name-only");
+		expect(hook).toContain("bunx biome check");
+		expect(hook).not.toContain("bun run build");
+		expect(hook).not.toContain("bun run bun:compile");
+	});
+
+	it("classifies review feedback severity like the shared review-thread guard", () => {
+		expect(reviewFeedbackSeverity("**High Severity**\nFix this")).toBe("high");
+		expect(reviewFeedbackSeverity("P1: do not merge")).toBe("p1");
+		expect(reviewFeedbackSeverity("📝 Info: optional follow-up")).toBe("none");
+	});
+
+	it("blocks review feedback audit only for unresolved severity at or above the threshold", () => {
+		const infoThread = {
+			comments: {
+				nodes: [{ body: "📝 **Info:** optional consideration" }],
+			},
+			isResolved: false,
+		};
+		const highThread = {
+			comments: {
+				nodes: [{ body: "🚩 **High Severity**\nFix before merge" }],
+			},
+			isResolved: false,
+		};
+
+		expect(reviewThreadSeverity(infoThread)).toBe("none");
+		expect(threadBlocksFeedbackAudit(infoThread)).toBe(false);
+		expect(threadBlocksFeedbackAudit(infoThread, "none")).toBe(false);
+		expect(threadBlocksFeedbackAudit(highThread)).toBe(true);
+		expect(threadBlocksFeedbackAudit(highThread, "none")).toBe(true);
+		expect(threadBlocksFeedbackAudit(highThread, "p1")).toBe(false);
+	});
+
+	it("ignores informational review summaries before computing blocking severity", () => {
+		const informationalThread = {
+			comments: {
+				nodes: [
+					{
+						author: { login: "devin-ai-integration[bot]" },
+						body: "## PR Summary\n\n**High Severity** appears in a summary sentence.",
+					},
+				],
+			},
+			isResolved: false,
+		};
+
+		expect(
+			informationalReviewFeedback(
+				informationalThread.comments.nodes[0].body,
+				informationalThread.comments.nodes[0].author.login,
+			),
+		).toBe(true);
+		expect(reviewThreadSeverity(informationalThread)).toBe("none");
+		expect(threadBlocksFeedbackAudit(informationalThread)).toBe(false);
 	});
 
 	it("deduplicates explicit and recent review-hygiene targets", () => {
