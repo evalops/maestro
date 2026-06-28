@@ -147,7 +147,7 @@ function resolveOptions(
 	return {
 		nodeVersion: validateYamlScalar(options.nodeVersion ?? "20", "nodeVersion"),
 		maestroPackage: validateYamlScalar(
-			options.maestroPackage ?? "maestro",
+			options.maestroPackage ?? process.env.MAESTRO_PACKAGE_NAME ?? "maestro",
 			"maestroPackage",
 		),
 		maestroVersion: validateYamlScalar(

@@ -3520,7 +3520,12 @@ describe("prFeedbackAudit", () => {
 	it("blocks review feedback audit only for unresolved severity at or above the threshold", () => {
 		const infoThread = {
 			comments: {
-				nodes: [{ body: "📝 **Info:** optional consideration" }],
+				nodes: [
+					{
+						author: { login: "devin-ai-integration" },
+						body: "📝 **Info:** optional consideration",
+					},
+				],
 			},
 			isResolved: false,
 		};
@@ -3530,10 +3535,19 @@ describe("prFeedbackAudit", () => {
 			},
 			isResolved: false,
 		};
+		const unlabeledThread = {
+			comments: {
+				nodes: [{ body: "This should be addressed before merging." }],
+			},
+			isResolved: false,
+		};
 
 		expect(reviewThreadSeverity(infoThread)).toBe("none");
 		expect(threadBlocksFeedbackAudit(infoThread)).toBe(false);
 		expect(threadBlocksFeedbackAudit(infoThread, "none")).toBe(false);
+		expect(reviewThreadSeverity(unlabeledThread)).toBe("none");
+		expect(threadBlocksFeedbackAudit(unlabeledThread)).toBe(false);
+		expect(threadBlocksFeedbackAudit(unlabeledThread, "none")).toBe(true);
 		expect(threadBlocksFeedbackAudit(highThread)).toBe(true);
 		expect(threadBlocksFeedbackAudit(highThread, "none")).toBe(true);
 		expect(threadBlocksFeedbackAudit(highThread, "p1")).toBe(false);
