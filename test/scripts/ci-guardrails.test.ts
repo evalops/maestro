@@ -3505,6 +3505,8 @@ describe("prFeedbackAudit", () => {
 		expect(hook).toContain("guardian.sh");
 		expect(hook).toContain("git diff --cached --name-only");
 		expect(hook).toContain("bunx biome check");
+		expect(hook).not.toContain("mapfile");
+		expect(hook).not.toContain("readarray");
 		expect(hook).not.toContain("bun run build");
 		expect(hook).not.toContain("bun run bun:compile");
 	});

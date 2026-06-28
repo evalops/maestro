@@ -12,7 +12,10 @@ fi
 # Run Composer Guardian (secrets + CI hygiene) before heavier tasks.
 bash "$ROOT/scripts/guardian.sh" --trigger pre-commit
 
-mapfile -t STAGED_FORMAT_FILES < <(
+STAGED_FORMAT_FILES=()
+while IFS= read -r staged_file; do
+	STAGED_FORMAT_FILES+=("$staged_file")
+done < <(
 	git diff --cached --name-only --diff-filter=ACMR |
 		grep -E "\\.(ts|tsx|js|jsx|mjs|cjs|json|jsonc|css|md|yml|yaml)$" || true
 )
