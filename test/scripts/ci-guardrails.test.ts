@@ -3515,6 +3515,11 @@ describe("prFeedbackAudit", () => {
 	it("classifies review feedback severity like the shared review-thread guard", () => {
 		expect(reviewFeedbackSeverity("**High Severity**\nFix this")).toBe("high");
 		expect(reviewFeedbackSeverity("P1: do not merge")).toBe("p1");
+		expect(reviewFeedbackSeverity("[P0] merge blocker")).toBe("p0");
+		expect(reviewFeedbackSeverity("There are no P0 regressions here.")).toBe(
+			"none",
+		);
+		expect(reviewFeedbackSeverity("This is not a P1 blocker.")).toBe("none");
 		expect(reviewFeedbackSeverity("📝 Info: optional follow-up")).toBe("none");
 	});
 
@@ -3541,6 +3546,12 @@ describe("prFeedbackAudit", () => {
 			},
 			isResolved: false,
 		};
+		const negatedPriorityThread = {
+			comments: {
+				nodes: [{ body: "This is not a P1 blocker." }],
+			},
+			isResolved: false,
+		};
 
 		expect(reviewThreadSeverity(infoThread)).toBe("none");
 		expect(threadBlocksFeedbackAudit(infoThread)).toBe(false);
@@ -3548,6 +3559,8 @@ describe("prFeedbackAudit", () => {
 		expect(reviewThreadSeverity(unlabeledThread)).toBe("none");
 		expect(threadBlocksFeedbackAudit(unlabeledThread)).toBe(false);
 		expect(threadBlocksFeedbackAudit(unlabeledThread, "none")).toBe(true);
+		expect(reviewThreadSeverity(negatedPriorityThread)).toBe("none");
+		expect(threadBlocksFeedbackAudit(negatedPriorityThread, "p1")).toBe(false);
 		expect(threadBlocksFeedbackAudit(highThread)).toBe(true);
 		expect(threadBlocksFeedbackAudit(highThread, "none")).toBe(true);
 		expect(threadBlocksFeedbackAudit(highThread, "p1")).toBe(false);

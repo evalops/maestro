@@ -294,6 +294,20 @@ function firstNonblankLine(body) {
 		.find(Boolean) ?? "";
 }
 
+function hasExplicitReviewPriority(body, priority) {
+	return String(body ?? "")
+		.split(/\r?\n/u)
+		.map((line) =>
+			line.trim().replace(/^(?:[-*+]\s*)?(?:#{1,6}\s*)?/u, ""),
+		)
+		.some(
+			(line) =>
+				line === priority ||
+				line.startsWith(`${priority}:`) ||
+				line.startsWith(`[${priority}]`),
+		);
+}
+
 export function informationalReviewFeedback(body, author) {
 	const firstLine = firstNonblankLine(body);
 	const trustedReviewBot =
@@ -309,8 +323,8 @@ export function informationalReviewFeedback(body, author) {
 
 export function reviewFeedbackSeverity(body) {
 	const text = String(body ?? "");
-	if (/\bP0\b/iu.test(text)) return "p0";
-	if (/\bP1\b/iu.test(text)) return "p1";
+	if (hasExplicitReviewPriority(text, "P0")) return "p0";
+	if (hasExplicitReviewPriority(text, "P1")) return "p1";
 	if (/\bHigh Severity\b/iu.test(text) || /!\[High Badge\]/iu.test(text)) {
 		return "high";
 	}
