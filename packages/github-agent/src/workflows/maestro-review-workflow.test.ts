@@ -125,6 +125,27 @@ describe("maestro review workflow generator", () => {
 		).toContain("maestro exec --provider 'openai' --output-last-message");
 	});
 
+	it("keeps Gemini CLI token env names when inferring the provider", () => {
+		const yaml = buildMaestroReviewWorkflow({
+			apiKeySecretName: "GOOGLE_GEMINI_CLI_TOKEN",
+		});
+		const antigravityYaml = buildMaestroReviewWorkflow({
+			apiKeySecretName: "GOOGLE_ANTIGRAVITY_TOKEN",
+		});
+		expect(yaml).toContain(
+			"GOOGLE_GEMINI_CLI_TOKEN: ${{ secrets.GOOGLE_GEMINI_CLI_TOKEN }}",
+		);
+		expect(yaml).toContain(
+			"maestro exec --provider 'google-gemini-cli' --output-last-message",
+		);
+		expect(antigravityYaml).toContain(
+			"GOOGLE_ANTIGRAVITY_TOKEN: ${{ secrets.GOOGLE_ANTIGRAVITY_TOKEN }}",
+		);
+		expect(antigravityYaml).toContain(
+			"maestro exec --provider 'google-antigravity' --output-last-message",
+		);
+	});
+
 	it("quotes shell-interpreted option values", () => {
 		const yaml = buildMaestroReviewWorkflow({
 			model: "foo'; echo nope",

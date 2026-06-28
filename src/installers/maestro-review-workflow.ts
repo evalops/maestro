@@ -49,6 +49,8 @@ const PROVIDER_API_KEY_ENV_NAMES: Record<string, string> = {
 	"openai-codex": "OPENAI_CODEX_TOKEN",
 	"azure-openai": "AZURE_OPENAI_API_KEY",
 	google: "GEMINI_API_KEY",
+	"google-gemini-cli": "GOOGLE_GEMINI_CLI_TOKEN",
+	"google-antigravity": "GOOGLE_ANTIGRAVITY_TOKEN",
 	evalops: "MAESTRO_EVALOPS_ACCESS_TOKEN",
 	groq: "GROQ_API_KEY",
 	cerebras: "CEREBRAS_API_KEY",

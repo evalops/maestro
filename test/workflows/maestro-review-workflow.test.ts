@@ -86,6 +86,33 @@ describe("buildMaestroReviewWorkflow", () => {
 		).toContain("maestro exec --provider 'openai' --output-last-message");
 	});
 
+	it("keeps Gemini CLI token env names when inferring the provider", () => {
+		const options = {
+			apiKeySecretName: "GOOGLE_GEMINI_CLI_TOKEN",
+		};
+		const antigravityOptions = {
+			apiKeySecretName: "GOOGLE_ANTIGRAVITY_TOKEN",
+		};
+		expect(buildMaestroReviewWorkflow(options)).toContain(
+			"GOOGLE_GEMINI_CLI_TOKEN: ${{ secrets.GOOGLE_GEMINI_CLI_TOKEN }}",
+		);
+		expect(buildMaestroReviewWorkflow(options)).toContain(
+			"maestro exec --provider 'google-gemini-cli' --output-last-message",
+		);
+		expect(buildMaestroReviewWorkflow(antigravityOptions)).toContain(
+			"GOOGLE_ANTIGRAVITY_TOKEN: ${{ secrets.GOOGLE_ANTIGRAVITY_TOKEN }}",
+		);
+		expect(buildMaestroReviewWorkflow(antigravityOptions)).toContain(
+			"maestro exec --provider 'google-antigravity' --output-last-message",
+		);
+		expect(buildMaestroReviewWorkflow(options)).toBe(
+			buildGithubAgentReviewWorkflow(options),
+		);
+		expect(buildMaestroReviewWorkflow(antigravityOptions)).toBe(
+			buildGithubAgentReviewWorkflow(antigravityOptions),
+		);
+	});
+
 	it("matches the github-agent generator for shared options", () => {
 		const options = {
 			apiKeySecretName: "maestro_OpenAI_review_key",
