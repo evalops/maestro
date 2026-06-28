@@ -41,6 +41,12 @@ export interface SwarmTask {
 	a2aSkillId?: string;
 	/** Optional durable specialist profile to prepend to the teammate prompt. */
 	specialistProfile?: string;
+	/**
+	 * Explicit opt-out of the end-to-end validation default. When true, the
+	 * teammate may use mocks/stubs for unavailable integrations; otherwise the
+	 * worker must validate against real integrations before reporting done.
+	 */
+	mocksAllowed?: boolean;
 	/** Priority (higher = earlier execution when no dependencies) */
 	priority?: number;
 }
