@@ -344,6 +344,24 @@ describe("SwarmExecutor", () => {
 		expect(recordSubagentDispatchMock).not.toHaveBeenCalled();
 	});
 
+	it("passes the mocks-allowed validation directive into spawned teammate prompts", async () => {
+		let prompt = "";
+		spawnMock.mockImplementation((_command: string, args: string[]) => {
+			prompt = readFileSync(args.at(-1)!, "utf-8");
+			return createMockChildProcess("done");
+		});
+
+		const executor = new SwarmExecutor(createConfig({ mocksAllowed: true }));
+		void executor.execute();
+		await waitForSpawn();
+
+		expect(prompt).toContain(
+			"## Validation\nThis task is explicitly approved to use mocks or stubs",
+		);
+		expect(prompt).toContain("name exactly what was not exercised for real");
+		expect(prompt).not.toContain("Do not introduce mocks or stubs");
+	});
+
 	it("marks spawned teammates as mission workers", async () => {
 		spawnMock.mockImplementation(() => createMockChildProcess("done"));
 		vi.stubEnv("MAESTRO_MISSION_ROLE", "orchestrator");
