@@ -11,6 +11,11 @@ import {
 	resolveSubagentDispatch,
 } from "../../agent/modes.js";
 import {
+	type AgentProfile,
+	parseAgentProfileLevel,
+	resolveAgentProfile,
+} from "../../agent/profiles.js";
+import {
 	SUBAGENT_SPECS,
 	type SubagentType,
 } from "../../agent/subagent-specs.js";
@@ -61,6 +66,7 @@ type ModeDescription = {
 			description: string;
 		}
 	>;
+	agentProfile?: AgentProfile;
 };
 
 function parseProvider(provider: string | undefined): ModelProvider {
@@ -84,6 +90,7 @@ function buildModeDescription(
 	provider: ModelProvider,
 ): ModeDescription {
 	const config = getModeConfig(mode);
+	const profileLevel = parseAgentProfileLevel(mode);
 	return {
 		mode,
 		displayName: config.displayName,
@@ -120,6 +127,9 @@ function buildModeDescription(
 				description: spec.description,
 			};
 		}),
+		...(profileLevel
+			? { agentProfile: resolveAgentProfile(profileLevel, provider) }
+			: {}),
 	};
 }
 
@@ -140,6 +150,12 @@ function renderModeDescription(description: ModeDescription): string {
 		`Thinking: ${description.thinking.enabled ? "enabled" : "disabled"} (budget ${description.thinking.budget})`,
 		`Context: ${description.context.extended ? "extended" : "standard"}`,
 		`Retries: ${description.retries}`,
+		...(description.agentProfile
+			? [
+					`Profile: ${description.agentProfile.id}`,
+					`Oracle: ${description.agentProfile.oracle.provider}/${description.agentProfile.oracle.model} (${description.agentProfile.oracle.reasoningEffort})`,
+				]
+			: []),
 		"",
 		`Subagent dispatch (provider: ${description.primary.provider})`,
 		`${pad("Type", 12)} ${pad("Source", 8)} ${pad("Provider", 14)} ${pad("Model", 34)} ${pad("Effort", 8)} Tier`,

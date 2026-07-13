@@ -89,7 +89,7 @@ describe("intelligent router service", () => {
 			modelHint: "anthropic/claude-sonnet",
 		});
 
-		expect(decision.reason).toBe("insufficient_history_model_hint");
+		expect(decision.reason).toBe("insufficient_verified_history_model_hint");
 		expect(decision.selectedModel).toEqual({
 			provider: "anthropic",
 			model: "claude-sonnet",
@@ -97,6 +97,31 @@ describe("intelligent router service", () => {
 		expect(decision.fallbackChain).toEqual([
 			{ provider: "openai", model: "gpt-4o-mini" },
 		]);
+	});
+
+	it("returns a complete, versioned profile with legacy model fields", () => {
+		const service = createService();
+
+		const decision = service.routeRequest({
+			taskType: "coding",
+			profileHint: "rush",
+			modelHint: "openai/gpt-4o-mini",
+		});
+
+		expect(decision.selectedProfile).toMatchObject({
+			id: "low-v1",
+			level: "low",
+			primary: {
+				provider: "openai",
+				model: "gpt-4o-mini",
+				reasoningEffort: "low",
+			},
+		});
+		expect(decision.fallbackProfiles).toEqual([]);
+		expect(decision.selectedModel).toEqual({
+			provider: "openai",
+			model: "gpt-4o-mini",
+		});
 	});
 
 	it("preserves colon-delimited model hints until enough production history exists", () => {
@@ -107,7 +132,7 @@ describe("intelligent router service", () => {
 			modelHint: "anthropic:claude-sonnet",
 		});
 
-		expect(decision.reason).toBe("insufficient_history_model_hint");
+		expect(decision.reason).toBe("insufficient_verified_history_model_hint");
 		expect(decision.selectedModel).toEqual({
 			provider: "anthropic",
 			model: "claude-sonnet",
@@ -127,6 +152,7 @@ describe("intelligent router service", () => {
 			success: true,
 			costUsd: 0.001,
 			qualityScore: 0.8,
+			verified: true,
 		});
 		service.recordPerformanceMetric({
 			taskType: "summarization",
@@ -136,6 +162,7 @@ describe("intelligent router service", () => {
 			success: true,
 			costUsd: 0.0012,
 			qualityScore: 0.82,
+			verified: true,
 		});
 		service.recordPerformanceMetric({
 			taskType: "summarization",
@@ -145,6 +172,7 @@ describe("intelligent router service", () => {
 			success: false,
 			costUsd: 0.02,
 			qualityScore: 0.9,
+			verified: true,
 		});
 		service.recordPerformanceMetric({
 			taskType: "summarization",
@@ -154,6 +182,7 @@ describe("intelligent router service", () => {
 			success: true,
 			costUsd: 0.02,
 			qualityScore: 0.9,
+			verified: true,
 		});
 
 		const decision = service.routeRequest({
@@ -174,9 +203,38 @@ describe("intelligent router service", () => {
 		});
 	});
 
+	it("does not promote a model from unverified assistant completions", () => {
+		const service = createService();
+		for (let sample = 0; sample < 25; sample += 1) {
+			service.recordPerformanceMetric({
+				taskType: "coding",
+				provider: "openai",
+				model: "gpt-4o-mini",
+				latencyMs: 100,
+				success: true,
+				verified: false,
+				qualityScore: 1,
+			});
+		}
+
+		const decision = service.routeRequest({
+			taskType: "coding",
+			modelHint: "anthropic/claude-sonnet",
+		});
+
+		expect(decision.reason).toBe("insufficient_verified_history_model_hint");
+		expect(decision.selectedModel.provider).toBe("anthropic");
+		expect(
+			decision.scores.find((score) => score.provider === "openai"),
+		).toMatchObject({ verifiedSamples: 0, promotionEligible: false });
+	});
+
 	it("keeps eval-backed routing evidence separate from production samples", () => {
 		const service = createService();
-		for (const qualityScore of [0.95, 0.97]) {
+		for (const qualityScore of Array.from(
+			{ length: 20 },
+			(_, index) => 0.95 + (index % 2) * 0.02,
+		)) {
 			service.recordPerformanceMetric({
 				taskType: "code_review",
 				provider: "anthropic",
@@ -190,7 +248,10 @@ describe("intelligent router service", () => {
 				qualityScore,
 			});
 		}
-		for (const qualityScore of [0.55, 0.58]) {
+		for (const qualityScore of Array.from(
+			{ length: 20 },
+			(_, index) => 0.55 + (index % 2) * 0.03,
+		)) {
 			service.recordPerformanceMetric({
 				taskType: "code_review",
 				provider: "openai",
@@ -209,9 +270,10 @@ describe("intelligent router service", () => {
 			.listMetrics("code_review")
 			.find((metric) => metric.provider === "anthropic");
 		expect(anthropic).toMatchObject({
-			samples: 2,
+			samples: 20,
+			verifiedSamples: 20,
 			productionSamples: 0,
-			evalSamples: 2,
+			evalSamples: 20,
 			evalSuccessRate: 1,
 			evalSuites: ["trajectory-replay"],
 		});
@@ -229,10 +291,11 @@ describe("intelligent router service", () => {
 		});
 		expect(decision.scores[0]).toMatchObject({
 			provider: "anthropic",
-			evalSamples: 2,
+			evalSamples: 20,
+			verifiedSamples: 20,
 			productionSamples: 0,
 			evalBacked: true,
-			reasons: expect.arrayContaining(["eval_samples=2", "eval_backed"]),
+			reasons: expect.arrayContaining(["eval_samples=20", "eval_backed"]),
 		});
 	});
 

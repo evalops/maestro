@@ -48,6 +48,44 @@ export interface OracleToolDetails {
 	files?: string[];
 }
 
+export interface OracleModelCandidate {
+	id: string;
+	provider?: string;
+	reasoning?: boolean;
+}
+
+export function selectComplementaryOracleModel<T extends OracleModelCandidate>(
+	models: T[],
+	options: { primaryProvider?: string; preferredId?: string } = {},
+): T {
+	const preferred = options.preferredId?.trim();
+	if (preferred) {
+		const preferredRefs = new Set([
+			preferred,
+			preferred.startsWith("openai/") ? preferred : `openai/${preferred}`,
+		]);
+		const explicit = models.find(
+			(model) => model.reasoning === true && preferredRefs.has(model.id),
+		);
+		if (explicit) return explicit;
+	}
+
+	const complementary = models.find(
+		(model) =>
+			model.reasoning === true &&
+			Boolean(model.provider) &&
+			model.provider !== options.primaryProvider,
+	);
+	if (complementary) return complementary;
+
+	const reasoning = models.find((model) => model.reasoning === true);
+	if (reasoning) return reasoning;
+
+	throw new Error(
+		"No reasoning-capable model is configured for Oracle. Configure an explicit Oracle model or add a reasoning model.",
+	);
+}
+
 export const oracleTool = createTool<typeof oracleSchema, OracleToolDetails>({
 	name: "oracle",
 	description:
@@ -241,34 +279,8 @@ function selectOracleModel(inputOverride?: string): string {
 	const preferred =
 		inputOverride?.trim() ||
 		(envOverride && envOverride.length > 0 ? envOverride : "o3-mini");
-	const models = getRegisteredModels();
-
-	// Try the preferred id and common provider-qualified variant
-	const candidates = [
-		preferred,
-		preferred.startsWith("openai/") ? preferred : `openai/${preferred}`,
-	];
-	const found = models.find((m) => candidates.includes(m.id));
-	if (found) {
-		return found.id;
-	}
-
-	// Fall back to any reasoning-capable model
-	const reasoning = models.find((m) => m.reasoning === true);
-	if (reasoning) {
-		return reasoning.id;
-	}
-
-	// As a last resort, fall back to any configured model so the tool can still run.
-	// This prevents hard runtime failures while surfacing a clear warning.
-	const fallback = models.at(0);
-	if (fallback) {
-		return fallback.id;
-	}
-
-	// No acceptable model configured
-	const available = models.map((m) => m.id).join(", ");
-	throw new Error(
-		`No model configured for Oracle. Tried ${preferred}. Set MAESTRO_ORACLE_MODEL to an available model or add a reasoning-capable model. Available models: ${available || "none"}.`,
-	);
+	return selectComplementaryOracleModel(getRegisteredModels(), {
+		preferredId: preferred,
+		primaryProvider: process.env.MAESTRO_PRIMARY_MODEL_PROVIDER?.trim(),
+	}).id;
 }

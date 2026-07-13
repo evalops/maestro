@@ -87,11 +87,23 @@ export function selectIntelligentRouterModel(params: {
 	const taskType = resolveIntelligentRouterTaskType(params.req, params.body);
 	const modelHint = params.requestedModel ?? undefined;
 	const strategy = resolveIntelligentRouterStrategy(params.req);
+	const profileHint =
+		firstHeader(params.req, [
+			"x-maestro-agent-profile",
+			"x-composer-agent-profile",
+		]) ??
+		(params.body &&
+		typeof params.body === "object" &&
+		"profile" in params.body &&
+		typeof (params.body as { profile?: unknown }).profile === "string"
+			? (params.body as { profile: string }).profile
+			: undefined);
 	const decision = getIntelligentRouterService().routeRequest({
 		taskType,
 		availableModels: registeredRoutingModels(),
 		...(modelHint ? { modelHint } : {}),
 		...(strategy ? { strategy } : {}),
+		...(profileHint ? { profileHint } : {}),
 	});
 	return {
 		taskType,
@@ -119,7 +131,8 @@ export function recordIntelligentRouterChatMetric(params: {
 				provider: params.provider,
 				model: params.model,
 				latencyMs: Date.now() - params.startedAt,
-				success: params.message.stopReason !== "error",
+				success: false,
+				verified: false,
 				occurredAt: new Date(params.message.timestamp),
 				...(typeof costUsd === "number" ? { costUsd } : {}),
 			});

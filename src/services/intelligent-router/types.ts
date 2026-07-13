@@ -1,3 +1,5 @@
+import type { AgentProfile, AgentProfileLevel } from "../../agent/profiles.js";
+
 export const ROUTING_STRATEGIES = [
 	"balanced",
 	"quality",
@@ -34,6 +36,7 @@ export interface ModelPerformanceMetricInput {
 	source?: ModelPerformanceMetricSource;
 	latencyMs?: number;
 	success?: boolean;
+	verified?: boolean;
 	costUsd?: number;
 	qualityScore?: number;
 	evalSuite?: string;
@@ -46,6 +49,7 @@ export interface ModelPerformanceAggregate {
 	provider: string;
 	model: string;
 	samples: number;
+	verifiedSamples: number;
 	productionSamples: number;
 	evalSamples: number;
 	successCount: number;
@@ -62,6 +66,8 @@ export interface ModelPerformanceAggregate {
 
 export interface RoutingRequestInput {
 	taskType?: string;
+	profileHint?: string;
+	profile_hint?: string;
 	modelHint?: string;
 	model_hint?: string;
 	strategy?: string;
@@ -72,6 +78,7 @@ export interface RoutingRequestInput {
 
 export interface RoutingRequest {
 	taskType: string;
+	profileLevel: AgentProfileLevel;
 	modelHint?: string;
 	strategy: RoutingStrategy;
 	unavailableModels: string[];
@@ -87,6 +94,8 @@ export interface RoutingScore {
 	costScore: number;
 	qualityScore: number;
 	samples: number;
+	verifiedSamples: number;
+	promotionEligible: boolean;
 	productionSamples: number;
 	evalSamples: number;
 	evalBacked: boolean;
@@ -104,6 +113,8 @@ export interface RoutingDecision {
 	taskType: string;
 	strategy: RoutingStrategy;
 	selectedModel: RoutedModel;
+	selectedProfile: AgentProfile;
+	fallbackProfiles: AgentProfile[];
 	fallbackChain: RoutedModel[];
 	scores: RoutingScore[];
 	modelHint?: string;
