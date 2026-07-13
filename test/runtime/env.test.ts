@@ -34,6 +34,7 @@ describe("createRuntimeEnv", () => {
 		expect(env.disableKeychain).toBe(false);
 		expect(env.maestroAgentDir).toBeNull();
 		expect(env.skillTrustStrict).toBe(false);
+		expect(env.primaryModelProvider).toBeNull();
 		expect(env.telemetryEnabled).toBeNull();
 		expect(env.beaconFile).toBeNull();
 		expect(env.cliCommandBeaconBufferFile).toBeNull();
@@ -45,6 +46,14 @@ describe("createRuntimeEnv", () => {
 			join("ambient-agent", "learner.json"),
 		);
 		expect(env.ambientSocketFile).toContain("ambient-agent.sock");
+	});
+
+	it("captures the primary model provider as a trimmed snapshot", () => {
+		expect(
+			createRuntimeEnv({
+				MAESTRO_PRIMARY_MODEL_PROVIDER: "  openai-codex  ",
+			}).primaryModelProvider,
+		).toBe("openai-codex");
 	});
 
 	it("matches the ambient daemon learner default data path", () => {

@@ -561,6 +561,9 @@ function graphFromProjection(
 		branchId: projection.branchId,
 		leafEntryId: projection.leafEntryId,
 		activeEntryIds: projection.activeEntryIds,
+		authoritativeEntryIds: projection.authoritativeEntryIds,
+		supersededEntryIds: projection.supersededEntryIds,
+		revisionGroups: projection.revisionGroups,
 		compactionSpans: projection.compactionSpans,
 	};
 }
@@ -1431,6 +1434,7 @@ export function createMaestroAppServerSessionApi(
 		async readThread(params = {}) {
 			const threadId = requireThreadId(params);
 			const includeTurns = params.includeTurns === true;
+			const includeHistory = params.includeHistory === true;
 			const messagesView = parseMessagesView(params.messagesView);
 			const loaded = await store.loadSession(threadId, { messagesView });
 			if (!loaded) {
@@ -1444,9 +1448,14 @@ export function createMaestroAppServerSessionApi(
 			if (sessionFile && !sessionFile.startsWith("db:")) {
 				thread.path = sessionFile;
 			}
-			if (includeTurns) {
+			if (includeTurns || includeHistory) {
 				const projection = await loadProjectionForThread(store, threadId);
-				thread.turns = turnsFromProjection(projection);
+				if (includeTurns) {
+					thread.turns = turnsFromProjection(projection);
+				}
+				if (includeHistory) {
+					thread.history = projection.historyEntries.map(treeEntryToItem);
+				}
 				thread.graph = graphFromProjection(projection);
 			}
 			return thread;

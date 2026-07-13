@@ -58,4 +58,21 @@ describe("modes command", () => {
 		).not.toHaveBeenCalled();
 		expect(output.join("\n")).toContain("Mode: Smart (smart)");
 	});
+
+	it("describes the complete versioned profile for canonical levels", async () => {
+		await handleModesCommand("describe", ["high"], {
+			provider: "openai-codex",
+			json: true,
+		});
+
+		expect(JSON.parse(output.join("\n"))).toMatchObject({
+			mode: "high",
+			agentProfile: {
+				id: "high-v1",
+				level: "high",
+				primary: { provider: "openai-codex", reasoningEffort: "xhigh" },
+				oracle: { provider: "anthropic", readOnly: true },
+			},
+		});
+	});
 });

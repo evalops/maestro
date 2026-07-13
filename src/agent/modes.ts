@@ -61,6 +61,10 @@ const logger = createLogger("agent:modes");
  * - "custom": User-defined settings for specialized workflows
  */
 export type AgentMode =
+	| "low"
+	| "medium"
+	| "high"
+	| "ultra"
 	| "smart"
 	| "rush"
 	| "free"
@@ -189,6 +193,62 @@ const PROVIDERS: ModelProvider[] = [
  * - **custom**: Balanced defaults that users can override
  */
 export const MODE_CONFIGS: Record<AgentMode, ModeConfig> = {
+	low: {
+		displayName: "Low",
+		description: "Bounded, obvious, and reversible work",
+		primaryTier: "haiku",
+		fallbackTier: "haiku",
+		enableThinking: false,
+		reasoningEffort: "low",
+		thinkingBudget: 2000,
+		useExtendedContext: false,
+		maxRetries: 1,
+		costMultiplier: 0.1,
+		speedHint: 10,
+		visible: true,
+	},
+	medium: {
+		displayName: "Medium",
+		description: "Ordinary repository work with moderate uncertainty",
+		primaryTier: "opus",
+		fallbackTier: "haiku",
+		enableThinking: true,
+		reasoningEffort: "medium",
+		thinkingBudget: 16000,
+		useExtendedContext: true,
+		maxRetries: 2,
+		costMultiplier: 1,
+		speedHint: 5,
+		visible: true,
+	},
+	high: {
+		displayName: "High",
+		description: "Ambiguous or cross-cutting work where misses are expensive",
+		primaryTier: "opus",
+		fallbackTier: "sonnet",
+		enableThinking: true,
+		reasoningEffort: "xhigh",
+		thinkingBudget: 20000,
+		useExtendedContext: true,
+		maxRetries: 2,
+		costMultiplier: 1.25,
+		speedHint: 4,
+		visible: true,
+	},
+	ultra: {
+		displayName: "Ultra",
+		description: "Migrations, architecture, and discovery-heavy work",
+		primaryTier: "opus",
+		fallbackTier: "opus",
+		enableThinking: true,
+		reasoningEffort: "xhigh",
+		thinkingBudget: 32000,
+		useExtendedContext: true,
+		maxRetries: 3,
+		costMultiplier: 1.5,
+		speedHint: 3,
+		visible: true,
+	},
 	// Smart mode: Maximum capability for complex reasoning tasks
 	smart: {
 		displayName: "Smart",

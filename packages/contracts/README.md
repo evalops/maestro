@@ -67,3 +67,24 @@ assertMaestroChatRequest(payload);
 ```
 
 Consumers outside the monorepo can depend on `@evalops/contracts` once the package has been built/published; only the compiled `dist` folder is distributed.
+
+## Revision-aware thread retrieval
+
+`thread/read` keeps compacted reads inexpensive by default. Pass
+`includeTurns: true` for the replayable active window, and pass
+`includeHistory: true` when an inspector needs every persisted tree entry,
+including entries hidden by compaction or superseded by a later branch.
+
+When either option is requested, `thread.graph` distinguishes:
+
+- `activeEntryIds`: the compacted replay window used to resume execution.
+- `authoritativeEntryIds`: the complete selected branch, including original
+  pre-compaction entries.
+- `supersededEntryIds`: persisted entries outside the selected branch.
+- `revisionGroups`: sibling revisions and the child selected by the active
+  branch.
+
+Treat compaction summaries as orientation metadata. For audits, evaluations,
+or decisions that depend on an earlier tool attempt, request `includeHistory`
+and inspect the original items plus any later sibling revisions. This opt-in
+response can be substantially larger than a normal thread read.

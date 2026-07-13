@@ -19,6 +19,10 @@ import {
 describe("agent/modes", () => {
 	describe("MODE_CONFIGS", () => {
 		it("defines all expected modes", () => {
+			expect(MODE_CONFIGS.low).toBeDefined();
+			expect(MODE_CONFIGS.medium).toBeDefined();
+			expect(MODE_CONFIGS.high).toBeDefined();
+			expect(MODE_CONFIGS.ultra).toBeDefined();
 			expect(MODE_CONFIGS.smart).toBeDefined();
 			expect(MODE_CONFIGS.rush).toBeDefined();
 			expect(MODE_CONFIGS.free).toBeDefined();
@@ -180,6 +184,8 @@ describe("agent/modes", () => {
 
 	describe("parseMode", () => {
 		it("parses valid modes (case-insensitive)", () => {
+			expect(parseMode("LOW")).toBe("low");
+			expect(parseMode("High")).toBe("high");
 			expect(parseMode("smart")).toBe("smart");
 			expect(parseMode("SMART")).toBe("smart");
 			expect(parseMode("Rush")).toBe("rush");
@@ -235,7 +241,10 @@ describe("agent/modes", () => {
 	describe("getAllModes", () => {
 		it("returns all modes with configs", () => {
 			const modes = getAllModes();
-			expect(modes.length).toBe(4);
+			expect(modes.length).toBe(8);
+			expect(modes.map((m) => m.mode)).toEqual(
+				expect.arrayContaining(["low", "medium", "high", "ultra"]),
+			);
 			expect(modes.map((m) => m.mode)).toContain("smart");
 			expect(modes.map((m) => m.mode)).toContain("rush");
 			expect(modes.map((m) => m.mode)).toContain("free");
@@ -246,6 +255,10 @@ describe("agent/modes", () => {
 		it("returns hidden modes only when requested", () => {
 			const modes = getAllModes({ includeHidden: true });
 			expect(modes.map((m) => m.mode)).toEqual([
+				"low",
+				"medium",
+				"high",
+				"ultra",
 				"smart",
 				"rush",
 				"free",

@@ -223,10 +223,19 @@ export type MaestroAppServerCompactionSpan = Static<
 	typeof MaestroAppServerCompactionSpanSchema
 >;
 
+export const MaestroAppServerRevisionGroupSchema = Type.Object({
+	parentEntryId: Type.Union([Type.String(), Type.Null()]),
+	childEntryIds: Type.Array(Type.String()),
+	activeChildEntryId: Type.Optional(Type.String()),
+});
+
 export const MaestroAppServerThreadGraphSchema = Type.Object({
 	branchId: Type.String(),
 	leafEntryId: Type.Optional(Type.String()),
 	activeEntryIds: Type.Array(Type.String()),
+	authoritativeEntryIds: Type.Array(Type.String()),
+	supersededEntryIds: Type.Array(Type.String()),
+	revisionGroups: Type.Array(MaestroAppServerRevisionGroupSchema),
 	compactionSpans: Type.Array(MaestroAppServerCompactionSpanSchema),
 });
 export type MaestroAppServerThreadGraph = Static<
@@ -254,6 +263,7 @@ export const MaestroAppServerThreadSchema = Type.Intersect([
 			Type.Literal("notLoaded"),
 		]),
 		turns: Type.Optional(Type.Array(MaestroAppServerTurnSchema)),
+		history: Type.Optional(Type.Array(MaestroAppServerThreadItemSchema)),
 		graph: Type.Optional(MaestroAppServerThreadGraphSchema),
 	}),
 ]);

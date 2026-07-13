@@ -1,5 +1,7 @@
 # Providers & Factory Integration
 
+For task-level selection, prefer the `low`, `medium`, `high`, and `ultra` agent profiles over selecting a model alone. Profiles keep the model, reasoning effort, Oracle, specialists, fallbacks, and budgets reproducible as one versioned unit. See [Agent Profiles](AGENT_PROFILES.md).
+
 Audience: contributors/operator tweaking model registry and provider configs.  
 Nav: [Docs index](README.md) · [Quickstart](QUICKSTART.md) · [Safety](SAFETY.md) · [AI SDK](../packages/ai/README.md)
 

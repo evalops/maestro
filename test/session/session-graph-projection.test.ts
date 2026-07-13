@@ -89,6 +89,18 @@ describe("session graph projection", () => {
 			],
 		});
 		expect(projection.activeEntryIds).not.toContain("stale-user");
+		expect(projection.authoritativeEntryIds).toEqual([
+			"user-1",
+			"assistant-1",
+			"active-user",
+			"active-assistant",
+		]);
+		expect(projection.supersededEntryIds).toEqual(["stale-user"]);
+		expect(projection.revisionGroups).toContainEqual({
+			parentEntryId: "assistant-1",
+			childEntryIds: ["stale-user", "active-user"],
+			activeChildEntryId: "active-user",
+		});
 		expect(projection.turns.map((turn) => turn.id)).toEqual([
 			"user-1",
 			"active-user",
@@ -160,6 +172,14 @@ describe("session graph projection", () => {
 		const projection = buildSessionGraphProjection(entries);
 
 		expect(projection.activeEntryIds).toEqual([
+			"kept-user",
+			"kept-assistant",
+			"compact-1",
+			"new-user",
+		]);
+		expect(projection.authoritativeEntryIds).toEqual([
+			"old-user",
+			"old-assistant",
 			"kept-user",
 			"kept-assistant",
 			"compact-1",

@@ -18,6 +18,11 @@ export {
 	setIntelligentRouterServiceForTest,
 } from "./service.js";
 export {
+	type RoutingOutcome,
+	type RoutingOutcomeEvidence,
+	deriveRoutingOutcome,
+} from "./outcome.js";
+export {
 	MODEL_PERFORMANCE_METRIC_SOURCES,
 	ROUTING_STRATEGIES,
 	type ModelPerformanceAggregate,
