@@ -268,17 +268,11 @@ appendLearnedGuideline("incident-triage", process.env.ENTRY, process.env.SKILLS_
 		expect(Buffer.byteLength(file, "utf-8")).toBeLessThanOrEqual(64 * 1024 + 1);
 	});
 
-	it("rejects near-limit entries that exceed the serialized size cap", () => {
+	it("skips near-limit entries that exceed the serialized size cap", () => {
 		const dir = tempSkillsDir();
 		appendLearnedGuideline("incident-triage", "keep-existing", dir);
 
-		expect(() =>
-			appendLearnedGuideline(
-				"incident-triage",
-				"x".repeat(64 * 1024 - 10),
-				dir,
-			),
-		).toThrow("exceeds");
+		appendLearnedGuideline("incident-triage", "x".repeat(64 * 1024 - 10), dir);
 
 		const file = readFileSync(
 			getLearnedGuidelinesPath("incident-triage", dir),
@@ -288,12 +282,10 @@ appendLearnedGuideline("incident-triage", process.env.ENTRY, process.env.SKILLS_
 		expect(Buffer.byteLength(file, "utf-8")).toBeLessThanOrEqual(64 * 1024 + 1);
 	});
 
-	it("rejects oversized entries without dropping bounded history", () => {
+	it("skips oversized entries without dropping bounded history", () => {
 		const oversizedEntry = `oversized-${"x".repeat(70 * 1024)}`;
 		const emptyDir = tempSkillsDir();
-		expect(() =>
-			appendLearnedGuideline("incident-triage", oversizedEntry, emptyDir),
-		).toThrow("exceeds");
+		appendLearnedGuideline("incident-triage", oversizedEntry, emptyDir);
 		expect(loadLearnedGuidelines("incident-triage", emptyDir)).toBeNull();
 		expect(
 			existsSync(getLearnedGuidelinesPath("incident-triage", emptyDir)),
@@ -303,9 +295,7 @@ appendLearnedGuideline("incident-triage", process.env.ENTRY, process.env.SKILLS_
 		appendLearnedGuideline("incident-triage", "keep-this-entry", dir);
 		const path = getLearnedGuidelinesPath("incident-triage", dir);
 		const before = readFileSync(path, "utf-8");
-		expect(() =>
-			appendLearnedGuideline("incident-triage", oversizedEntry, dir),
-		).toThrow("exceeds");
+		appendLearnedGuideline("incident-triage", oversizedEntry, dir);
 		const file = readFileSync(path, "utf-8");
 		expect(file).toBe(before);
 		expect(file).toContain("keep-this-entry");

@@ -84,6 +84,9 @@ describe("version-bump workflow", () => {
 		expect(commitStep?.run).toContain("git status --porcelain");
 		expect(commitStep?.run).toContain('git rev-parse "origin/$RELEASE_BRANCH"');
 		expect(commitStep?.run).toContain('git push origin "$RELEASE_BRANCH"');
+		expect(commitStep?.run).toContain(
+			'git commit --no-verify -m "Release v${RELEASE_VERSION}"',
+		);
 	});
 
 	it("updates an existing release PR body with regenerated changelog notes", () => {

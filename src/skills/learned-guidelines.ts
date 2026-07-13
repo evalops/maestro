@@ -118,17 +118,20 @@ export function appendLearnedGuideline(
 	return withLearnedGuidelinesLock(path, () => {
 		const existing = existsSync(path) ? readFileSync(path, "utf-8").trim() : "";
 		const next = buildGuidelinesContent(existing, trimmed);
-		writeTextFileAtomic(path, next, { createDirs: true });
+		if (next !== null) {
+			writeTextFileAtomic(path, next, { createDirs: true });
+		}
 		return path;
 	});
 }
 
-function buildGuidelinesContent(existing: string, entry: string): string {
+function buildGuidelinesContent(
+	existing: string,
+	entry: string,
+): string | null {
 	const entries = parseGuidelineEntries(existing);
 	if (byteLength(serializeGuidelineEntries([entry])) > MAX_GUIDELINES_BYTES) {
-		throw new Error(
-			`learned guideline entry exceeds ${MAX_GUIDELINES_BYTES} bytes`,
-		);
+		return null;
 	}
 	entries.push(entry);
 	return formatGuidelinesContent(pruneGuidelineEntries(entries));

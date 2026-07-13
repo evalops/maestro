@@ -388,6 +388,9 @@ describe("handleChat", () => {
 				cwd: "/workspace",
 				systemPromptSourcePaths: persistedPaths,
 			})),
+			getSessionId: vi.fn(() => "session-1"),
+			isInitialized: vi.fn(() => true),
+			flush: vi.fn(async () => {}),
 		};
 		vi.spyOn(sessionScope, "createWebSessionManagerForRequest").mockReturnValue(
 			sessionManager as unknown as ReturnType<
@@ -407,7 +410,23 @@ describe("handleChat", () => {
 			options,
 		) => {
 			receivedOptions = options;
-			throw new Error("stop after capturing createAgent options");
+			return {
+				state: {
+					systemPrompt: "",
+					model: mockModel,
+					thinkingLevel: "off",
+					tools: [],
+					messages: [],
+					isStreaming: false,
+					streamMessage: null,
+					pendingToolCalls: new Map(),
+				},
+				replaceMessages: vi.fn(),
+				clearMessages: vi.fn(),
+				subscribe: vi.fn(() => () => {}),
+				prompt: vi.fn(async () => {}),
+				abort: vi.fn(),
+			} as unknown as Agent;
 		};
 
 		handleChatWebSocket(
@@ -433,6 +452,8 @@ describe("handleChat", () => {
 		for (let attempt = 0; attempt < 50 && !receivedOptions; attempt += 1) {
 			await new Promise((resolve) => setTimeout(resolve, 10));
 		}
+		await waitForWebSocketMessage(ws, (payload) => payload.includes('"done"'));
+		expect(ws.sent.some((payload) => payload.includes('"error"'))).toBe(false);
 
 		expect(receivedOptions?.persistedSystemPromptSourcePaths).toEqual(
 			persistedPaths,
