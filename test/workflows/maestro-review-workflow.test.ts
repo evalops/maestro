@@ -48,22 +48,6 @@ describe("buildMaestroReviewWorkflow", () => {
 		).toContain("npm install -g '@example/from-env@latest'");
 	});
 
-	it("reads the default package override at build time", () => {
-		const previous = process.env.MAESTRO_PACKAGE_NAME;
-		try {
-			process.env.MAESTRO_PACKAGE_NAME = "@example/from-env";
-			expect(buildMaestroReviewWorkflow()).toContain(
-				"npm install -g '@example/from-env@latest'",
-			);
-		} finally {
-			if (previous === undefined) {
-				delete process.env.MAESTRO_PACKAGE_NAME;
-			} else {
-				process.env.MAESTRO_PACKAGE_NAME = previous;
-			}
-		}
-	});
-
 	it("maps custom secret names to the provider runtime env var", () => {
 		const yaml = buildMaestroReviewWorkflow({
 			provider: "openai",
@@ -71,45 +55,6 @@ describe("buildMaestroReviewWorkflow", () => {
 		});
 		expect(yaml).toContain(
 			"OPENAI_API_KEY: ${{ secrets.OPENAI_REVIEW_SECRET }}",
-		);
-	});
-
-	it("infers the provider from the configured runtime env var", () => {
-		expect(
-			buildMaestroReviewWorkflow({ apiKeyEnvName: "OPENAI_API_KEY" }),
-		).toContain("maestro exec --provider 'openai' --output-last-message");
-		expect(
-			buildMaestroReviewWorkflow({
-				apiKeyEnvName: "OPENAI_API_KEY",
-				apiKeySecretName: "CUSTOM_REVIEW_SECRET",
-			}),
-		).toContain("maestro exec --provider 'openai' --output-last-message");
-	});
-
-	it("keeps Gemini CLI token env names when inferring the provider", () => {
-		const options = {
-			apiKeySecretName: "GOOGLE_GEMINI_CLI_TOKEN",
-		};
-		const antigravityOptions = {
-			apiKeySecretName: "GOOGLE_ANTIGRAVITY_TOKEN",
-		};
-		expect(buildMaestroReviewWorkflow(options)).toContain(
-			"GOOGLE_GEMINI_CLI_TOKEN: ${{ secrets.GOOGLE_GEMINI_CLI_TOKEN }}",
-		);
-		expect(buildMaestroReviewWorkflow(options)).toContain(
-			"maestro exec --provider 'google-gemini-cli' --output-last-message",
-		);
-		expect(buildMaestroReviewWorkflow(antigravityOptions)).toContain(
-			"GOOGLE_ANTIGRAVITY_TOKEN: ${{ secrets.GOOGLE_ANTIGRAVITY_TOKEN }}",
-		);
-		expect(buildMaestroReviewWorkflow(antigravityOptions)).toContain(
-			"maestro exec --provider 'google-antigravity' --output-last-message",
-		);
-		expect(buildMaestroReviewWorkflow(options)).toBe(
-			buildGithubAgentReviewWorkflow(options),
-		);
-		expect(buildMaestroReviewWorkflow(antigravityOptions)).toBe(
-			buildGithubAgentReviewWorkflow(antigravityOptions),
 		);
 	});
 

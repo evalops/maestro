@@ -229,7 +229,7 @@ function cloneConfig(config: SwarmConfig): SwarmConfig {
 			: undefined,
 		featureClaims: config.featureClaims?.map((claim) => ({
 			...claim,
-			fulfills: Array.isArray(claim.fulfills) ? [...claim.fulfills] : [],
+			fulfills: [...claim.fulfills],
 		})),
 	};
 }

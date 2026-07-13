@@ -21,6 +21,39 @@ versioning when releases are cut.
   and keep scheduled public runs inert so public publishing stays downstream of
   the internal source-of-truth release.
 
+## [0.10.51] - 2026-07-13
+
+### Added
+
+- Validate + deep-merge maestro settings on org write (#2832). <!-- maestro-release-note:3399f82e003f -->
+
+### Changed
+
+- Allow validated release commits (#2852). <!-- maestro-release-note:bc4d757ee52c -->
+- Await resumed WebSocket completion (#2849). <!-- maestro-release-note:7d75f8c8f615 -->
+- Preserve review audit compatibility. <!-- maestro-release-note:4da9fbacafd7 -->
+- Tighten swarm validation review fixes. <!-- maestro-release-note:27f3b8ecfeec -->
+- [maestro] Fix swarm validation follow-up bugs. <!-- maestro-release-note:0aa2c1ebadbf -->
+- Harden non-interactive cleanup shutdown. <!-- maestro-release-note:335cdf520874 -->
+- Fix review feedback none threshold. <!-- maestro-release-note:0603017a7248 -->
+- Fix exec replay shutdown after headless runs. <!-- maestro-release-note:d8d867bea70f -->
+- Improve swarm validation controls. <!-- maestro-release-note:915f74b61d6f -->
+- [maestro] persist learned guidelines for the incident-triage skill. <!-- maestro-release-note:475b14d4e805 -->
+- [maestro] Ensure objective_id is set for codex worker operating-chat requests (#2845). <!-- maestro-release-note:893fd1c6cbdb -->
+- [maestro] Normalize empty objective_id to undefined in correlation normalizer (#2844). <!-- maestro-release-note:282ffb2f9f6a -->
+
+### Fixed
+
+- Allow Devin PR summaries in feedback audit. <!-- maestro-release-note:670c31329ab7 -->
+- Align A2A workspace header precedence. <!-- maestro-release-note:22e8422b35a2 -->
+- Skip missing product-copy roots in naming-consistency walk (#2833). <!-- maestro-release-note:5f9c9cb0b64c -->
+- Rewrite public Bzlmod module name during public mirror prep (#2830). <!-- maestro-release-note:7b22cd8f7374 -->
+- Treat unguarded Rust test modules as package-impacting (#2829). <!-- maestro-release-note:1377c327f205 -->
+- Ignore orphaned tracked handoff items. <!-- maestro-release-note:f76dea589c8a -->
+- Dedupe legacy handoff follow-ups. <!-- maestro-release-note:e6490dc0c032 -->
+- Preserve valid open todo handoffs. <!-- maestro-release-note:d8fc9c6b536e -->
+- Align customer value period scoping. <!-- maestro-release-note:d4b37a4a37f0 -->
+
 ## [0.10.50] - 2026-06-18
 
 ### Added

@@ -1,6 +1,6 @@
 {
 	"name": "@evalops/memory",
-	"version": "0.10.50",
+	"version": "0.10.51",
 	"private": true,
 	"type": "module",
 	"sideEffects": false,

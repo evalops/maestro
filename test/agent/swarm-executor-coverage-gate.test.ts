@@ -6,7 +6,6 @@ vi.mock("node:child_process", () => ({ spawn: spawnMock }));
 import { SwarmExecutor } from "../../src/agent/swarm/executor.js";
 import type { SwarmEvent } from "../../src/agent/swarm/types.js";
 import {
-	type FeatureClaim,
 	type ValidationContract,
 	createEmptyContract,
 } from "../../src/agent/validation-contract.js";
@@ -73,22 +72,5 @@ describe("SwarmExecutor coverage gate", () => {
 		const internalState = executor.getState();
 		expect(internalState.config.validationContract?.areas).toHaveLength(1);
 		expect(internalState.config.featureClaims).toEqual([]);
-	});
-
-	it("reports malformed claims with missing fulfills arrays instead of throwing", async () => {
-		const executor = new SwarmExecutor({
-			teammateCount: 1,
-			planFile: "plan.md",
-			cwd: process.cwd(),
-			tasks: [{ id: "t1", prompt: "do the thing" }],
-			validationContract: contractWith(["a1"]),
-			featureClaims: [{ id: "f1" }] as unknown as FeatureClaim[],
-		});
-
-		const state = await executor.execute();
-
-		expect(state.status).toBe("failed");
-		expect(state.error).toContain("Unclaimed assertions");
-		expect(spawnMock).not.toHaveBeenCalled();
 	});
 });

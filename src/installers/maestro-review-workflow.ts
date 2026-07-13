@@ -1,5 +1,4 @@
 import { join } from "node:path";
-import { getPackageNameOverride } from "../package-metadata.js";
 import { writeTextFileAtomic } from "../utils/fs.js";
 
 /** Repo-relative path the workflow is written to. */
@@ -9,7 +8,7 @@ export const MAESTRO_REVIEW_WORKFLOW_PATH =
 export interface MaestroReviewWorkflowOptions {
 	/** Node major version used to run Maestro in CI. Default "20". */
 	nodeVersion?: string;
-	/** npm package installed in CI. Defaults to MAESTRO_PACKAGE_NAME or "maestro". */
+	/** npm package installed in CI. Default "maestro". */
 	maestroPackage?: string;
 	/** Version/tag of the package to install. Default "latest". */
 	maestroVersion?: string;
@@ -49,8 +48,6 @@ const PROVIDER_API_KEY_ENV_NAMES: Record<string, string> = {
 	"openai-codex": "OPENAI_CODEX_TOKEN",
 	"azure-openai": "AZURE_OPENAI_API_KEY",
 	google: "GEMINI_API_KEY",
-	"google-gemini-cli": "GOOGLE_GEMINI_CLI_TOKEN",
-	"google-antigravity": "GOOGLE_ANTIGRAVITY_TOKEN",
 	evalops: "MAESTRO_EVALOPS_ACCESS_TOKEN",
 	groq: "GROQ_API_KEY",
 	cerebras: "CEREBRAS_API_KEY",
@@ -128,17 +125,17 @@ const PROVIDER_BY_API_KEY_ENV_VAR: Record<string, string> = {
 };
 
 function inferProviderFromApiKeyEnvVar(
-	apiKeyName?: string,
+	apiKeySecretName: string,
 ): string | undefined {
-	return apiKeyName ? PROVIDER_BY_API_KEY_ENV_VAR[apiKeyName] : undefined;
+	return PROVIDER_BY_API_KEY_ENV_VAR[apiKeySecretName];
 }
 
 function resolveOptions(
 	options: MaestroReviewWorkflowOptions,
 ): ResolvedOptions {
 	const inferredProvider =
-		inferProviderFromApiKeyEnvVar(options.apiKeySecretName) ??
-		inferProviderFromApiKeyEnvVar(options.apiKeyEnvName);
+		options.apiKeySecretName &&
+		inferProviderFromApiKeyEnvVar(options.apiKeySecretName);
 	const provider = validateYamlScalar(
 		options.provider ?? inferredProvider ?? "anthropic",
 		"provider",
@@ -150,7 +147,7 @@ function resolveOptions(
 	return {
 		nodeVersion: validateYamlScalar(options.nodeVersion ?? "20", "nodeVersion"),
 		maestroPackage: validateYamlScalar(
-			options.maestroPackage ?? getPackageNameOverride() ?? "maestro",
+			options.maestroPackage ?? "maestro",
 			"maestroPackage",
 		),
 		maestroVersion: validateYamlScalar(

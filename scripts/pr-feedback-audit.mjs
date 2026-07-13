@@ -294,74 +294,27 @@ function firstNonblankLine(body) {
 		.find(Boolean) ?? "";
 }
 
-function escapeRegExp(value) {
-	return String(value).replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
-}
-
-function reviewMetadataLines(body) {
-	return String(body ?? "")
-		.split(/\r?\n/u)
-		.map((line) =>
-			line
-				.trim()
-				.replace(/^(?:[-*+]\s+)?(?:#{1,6}\s*)?/u, "")
-				.replace(/^[^\p{L}\p{N}\[!_*]+/u, ""),
-		)
-		.filter(Boolean);
-}
-
-function hasExplicitReviewPriority(body, priority) {
-	return reviewMetadataLines(body)
-		.some(
-			(line) =>
-				line === priority ||
-				line.startsWith(`${priority}:`) ||
-				line.startsWith(`[${priority}]`),
-		);
-}
-
-function hasExplicitReviewSeverity(body, severity, badgeLabel) {
-	const severityPattern = new RegExp(
-		`^(?:\\*\\*|__)?${escapeRegExp(severity)}(?:\\*\\*|__)?(?::.*)?$`,
-		"iu",
-	);
-	const badgePattern = new RegExp(
-		`^!\\[${escapeRegExp(badgeLabel)}\\](?:\\([^)]*\\))?(?::.*)?$`,
-		"iu",
-	);
-	return reviewMetadataLines(body).some(
-		(line) => severityPattern.test(line) || badgePattern.test(line),
-	);
-}
-
 export function informationalReviewFeedback(body, author) {
 	const firstLine = firstNonblankLine(body);
-	const text = String(body ?? "");
-	const trustedReviewBot =
+	return (
+		/^##\s+(?:PR\s+Summary|Summary|Walkthrough)\b/iu.test(firstLine) &&
 		/^(?:cursor|coderabbitai|chatgpt-codex-connector|devin-ai-integration)\b/iu.test(
 			String(author ?? ""),
-		);
-	const summaryComment = /^##\s+(?:PR\s+Summary|Summary|Walkthrough)\b/iu.test(
-		firstLine,
-	);
-	const infoSection = /(?:^|\n)\s*(?:📝\s*)?\*\*Info:/u.test(text);
-	return (
-		trustedReviewBot &&
-		(summaryComment || (infoSection && reviewFeedbackSeverity(text) === "none"))
+		)
 	);
 }
 
 export function reviewFeedbackSeverity(body) {
 	const text = String(body ?? "");
-	if (hasExplicitReviewPriority(text, "P0")) return "p0";
-	if (hasExplicitReviewPriority(text, "P1")) return "p1";
-	if (hasExplicitReviewSeverity(text, "High Severity", "High Badge")) {
+	if (/\bP0\b/iu.test(text)) return "p0";
+	if (/\bP1\b/iu.test(text)) return "p1";
+	if (/\bHigh Severity\b/iu.test(text) || /!\[High Badge\]/iu.test(text)) {
 		return "high";
 	}
-	if (hasExplicitReviewSeverity(text, "Medium Severity", "Medium Badge")) {
+	if (/\bMedium Severity\b/iu.test(text) || /!\[Medium Badge\]/iu.test(text)) {
 		return "medium";
 	}
-	if (hasExplicitReviewSeverity(text, "Low Severity", "Low Badge")) {
+	if (/\bLow Severity\b/iu.test(text) || /!\[Low Badge\]/iu.test(text)) {
 		return "low";
 	}
 	return "none";
@@ -371,15 +324,12 @@ function firstComment(thread) {
 	return thread.comments?.nodes?.[0];
 }
 
-function nonInformationalThreadComments(thread) {
-	return (thread.comments?.nodes ?? []).filter(
-		(comment) =>
-			!informationalReviewFeedback(comment.body, comment.author?.login),
-	);
-}
-
 export function reviewThreadSeverity(thread) {
-	const candidates = nonInformationalThreadComments(thread)
+	const candidates = (thread.comments?.nodes ?? [])
+		.filter(
+			(comment) =>
+				!informationalReviewFeedback(comment.body, comment.author?.login),
+		)
 		.map((comment) => [reviewFeedbackSeverity(comment.body), comment])
 		.filter(([severity]) => REVIEW_FEEDBACK_SEVERITY_RANK[severity] > 0);
 	const [severity] =
@@ -391,38 +341,14 @@ export function reviewThreadSeverity(thread) {
 	return severity ?? "none";
 }
 
-function hasActionableReviewFeedback(thread) {
-	return (thread.comments?.nodes ?? []).some(
-		(comment) =>
-			!informationalReviewFeedback(comment.body, comment.author?.login),
-	);
-}
-
 export function threadBlocksFeedbackAudit(thread, minSeverity = "high") {
 	if (thread.isResolved) return false;
-	if (minSeverity === "none") {
-		return nonInformationalThreadComments(thread).length > 0;
-	}
 	const severity = reviewThreadSeverity(thread);
-	if (severity === "none") {
-		return minSeverity === "none" && hasActionableReviewFeedback(thread);
-	}
+	if (severity === "none") return false;
 	return (
 		REVIEW_FEEDBACK_SEVERITY_RANK[severity] >=
 		REVIEW_FEEDBACK_SEVERITY_RANK[minSeverity]
 	);
-}
-
-export function visibleFeedbackAuditThreads(
-	threads,
-	{ includeResolved = false, minSeverity = "high" } = {},
-) {
-	return threads.filter((thread) => {
-		if (threadBlocksFeedbackAudit(thread, minSeverity)) {
-			return true;
-		}
-		return includeResolved && thread.isResolved;
-	});
 }
 
 function printThread(thread) {
@@ -471,13 +397,12 @@ function main() {
 	let blockingCount = 0;
 	for (const input of uniqueTargets) {
 		const threads = fetchReviewThreads(input.owner, input.repo, input.number);
+		const visibleThreads = args.includeResolved
+			? threads
+			: threads.filter((thread) => !thread.isResolved);
 		const blocking = threads.filter((thread) =>
 			threadBlocksFeedbackAudit(thread, args.minSeverity),
 		);
-		const visibleThreads = visibleFeedbackAuditThreads(threads, {
-			includeResolved: args.includeResolved,
-			minSeverity: args.minSeverity,
-		});
 		blockingCount += blocking.length;
 
 		console.log(
