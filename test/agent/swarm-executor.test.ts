@@ -485,6 +485,9 @@ describe("SwarmExecutor", () => {
 		expect(input.message.parts[0]!.text).toContain(
 			"## Task\nUpdate the implementation",
 		);
+		expect(input.message.parts[0]!.text).toContain(
+			"## Validation\nValidate end-to-end against real integrations",
+		);
 		expect(input.message.metadata).toEqual(
 			expect.objectContaining({
 				requestKind: "maestro-swarm-task",
@@ -492,6 +495,11 @@ describe("SwarmExecutor", () => {
 				relayPeer: "remote-a",
 				a2aSkillId: "maestro.subagent.code-writer",
 				files: ["src/agent/swarm/executor.ts"],
+				validation: expect.objectContaining({
+					schema: "evalops.maestro.swarm-validation-policy.v1",
+					mocksAllowed: false,
+					mode: "real-integrations",
+				}),
 				swarm: expect.objectContaining({
 					rootDelegationId: result.id,
 					currentDelegationId: `${result.id}:task-1`,
@@ -505,6 +513,14 @@ describe("SwarmExecutor", () => {
 						laneId: a2aDelegationLaneId("remote-a", "task-1"),
 						taskId: "task-1",
 					}),
+					validation: expect.objectContaining({
+						mocksAllowed: false,
+						mode: "real-integrations",
+					}),
+				}),
+				"evalops.validation": expect.objectContaining({
+					mocksAllowed: false,
+					mode: "real-integrations",
 				}),
 				"evalops.peerControl": expect.objectContaining({
 					laneId: a2aDelegationLaneId("remote-a", "task-1"),
@@ -599,6 +615,49 @@ describe("SwarmExecutor", () => {
 				a2aTaskId: "remote-task-1",
 				status: "TASK_STATE_COMPLETED",
 				success: true,
+			}),
+		);
+	});
+
+	it("propagates mocks-allowed validation policy through A2A prompt and metadata", async () => {
+		const executor = new SwarmExecutor({
+			...createConfig({
+				mocksAllowed: true,
+				subagentType: "coder",
+			}),
+			transport: "a2a",
+			a2a: {
+				peers: ["remote-a"],
+				role: "code-writer",
+				maxWaitMs: 50,
+				pollIntervalMs: 1,
+			},
+		});
+
+		await executeWithTimeout(executor);
+
+		const [, input] = sendA2AMessageMock.mock.calls[0] as [
+			unknown,
+			{
+				message: {
+					metadata?: Record<string, unknown>;
+					parts: Array<{ text?: string }>;
+				};
+			},
+		];
+		expect(input.message.parts[0]!.text).toContain(
+			"## Validation\nThis task is explicitly approved to use mocks or stubs",
+		);
+		expect(input.message.metadata).toEqual(
+			expect.objectContaining({
+				validation: expect.objectContaining({
+					mocksAllowed: true,
+					mode: "mocks-allowed",
+				}),
+				"evalops.validation": expect.objectContaining({
+					mocksAllowed: true,
+					mode: "mocks-allowed",
+				}),
 			}),
 		);
 	});

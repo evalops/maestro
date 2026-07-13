@@ -1,4 +1,10 @@
 export { main } from "./main.js";
+export {
+	MAESTRO_REVIEW_WORKFLOW_PATH,
+	buildMaestroReviewWorkflow,
+	writeMaestroReviewWorkflow,
+	type MaestroReviewWorkflowOptions,
+} from "./installers/maestro-review-workflow.js";
 export { SessionManager } from "./session/manager.js";
 export {
 	askUserTool,

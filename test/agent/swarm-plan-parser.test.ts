@@ -37,4 +37,64 @@ describe("Swarm plan parser", () => {
 		// Third should depend on second.
 		expect(third!.dependsOn).toEqual([second!.id]);
 	});
+
+	it("parses per-task mocksAllowed markers without leaking them into prompts", () => {
+		const content = `
+# Plan: Demo
+
+- [ ] Implement the OAuth smoke [mocks allowed] in \`src/oauth.ts\`
+- [ ] Validate billing against real data [mocksAllowed=false]
+`;
+
+		const plan = parsePlanContent(content);
+		expect(plan.tasks).toHaveLength(2);
+
+		expect(plan.tasks[0]).toEqual(
+			expect.objectContaining({
+				mocksAllowed: true,
+				prompt: "Implement the OAuth smoke in `src/oauth.ts`",
+				files: ["src/oauth.ts"],
+			}),
+		);
+		expect(plan.tasks[1]).toEqual(
+			expect.objectContaining({
+				mocksAllowed: false,
+				prompt: "Validate billing against real data",
+			}),
+		);
+	});
+
+	it("gives strict mock markers precedence over allow markers", () => {
+		const content = `
+# Plan: Demo
+
+- [ ] Validate OAuth against real data [mocks allowed] [mocksAllowed=false]
+`;
+
+		const plan = parsePlanContent(content);
+		expect(plan.tasks).toHaveLength(1);
+		expect(plan.tasks[0]).toEqual(
+			expect.objectContaining({
+				mocksAllowed: false,
+				prompt: "Validate OAuth against real data",
+			}),
+		);
+	});
+
+	it("preserves descriptive bracketed real-integration text", () => {
+		const content = `
+# Plan: Demo
+
+- [ ] Validate OAuth [real integration] against staging
+`;
+
+		const plan = parsePlanContent(content);
+		expect(plan.tasks).toHaveLength(1);
+		expect(plan.tasks[0]).toEqual(
+			expect.objectContaining({
+				prompt: "Validate OAuth [real integration] against staging",
+			}),
+		);
+		expect(plan.tasks[0]?.mocksAllowed).toBeUndefined();
+	});
 });

@@ -22,6 +22,11 @@ interface RawTask {
 	lineNumber: number;
 }
 
+const MOCKS_ALLOWED_MARKER =
+	/\s*\[(?:mocks\s+allowed|allow(?:ed)?\s+mocks|allow-mocks|mocksAllowed\s*=\s*true|mocks\s*=\s*true)\]/giu;
+const MOCKS_STRICT_MARKER =
+	/\s*\[(?:mocks\s+disallowed|no\s+mocks|mocksAllowed\s*=\s*false|mocks\s*=\s*false)\]/giu;
+
 /**
  * Parse a plan file into structured tasks.
  */
@@ -214,19 +219,47 @@ function convertToSwarmTask(
 	index: number,
 	allTasks: RawTask[],
 ): SwarmTask {
+	const metadata = extractTaskMetadata(raw.text);
 	const task: SwarmTask = {
 		id: `task-${index + 1}-${randomUUID().slice(0, 8)}`,
-		prompt: raw.text,
+		prompt: metadata.text,
 		priority: allTasks.length - index, // Earlier tasks have higher priority
 	};
+	if (metadata.mocksAllowed !== undefined) {
+		task.mocksAllowed = metadata.mocksAllowed;
+	}
 
 	// Extract file references from the task text
-	const files = extractFileReferences(raw.text);
+	const files = extractFileReferences(metadata.text);
 	if (files.length > 0) {
 		task.files = files;
 	}
 
 	return task;
+}
+
+function extractTaskMetadata(text: string): {
+	text: string;
+	mocksAllowed?: boolean;
+} {
+	const allowsMocks = MOCKS_ALLOWED_MARKER.test(text);
+	MOCKS_ALLOWED_MARKER.lastIndex = 0;
+	const explicitlyStrict = MOCKS_STRICT_MARKER.test(text);
+	MOCKS_STRICT_MARKER.lastIndex = 0;
+	const cleanedText = text
+		.replace(MOCKS_ALLOWED_MARKER, "")
+		.replace(MOCKS_STRICT_MARKER, "")
+		.replace(/\s{2,}/gu, " ")
+		.trim();
+
+	return {
+		text: cleanedText,
+		...(explicitlyStrict
+			? { mocksAllowed: false }
+			: allowsMocks
+				? { mocksAllowed: true }
+				: {}),
+	};
 }
 
 /**

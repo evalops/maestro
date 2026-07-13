@@ -69,6 +69,7 @@ import {
 	resolveSpecialistProfile,
 } from "../specialist-profiles.js";
 import { parseSubagentType } from "../subagent-specs.js";
+import { evaluateSwarmCoverageGate } from "./coverage-gate.js";
 import { publishSwarmRuntimeEvent } from "./runtime-events.js";
 import type {
 	SwarmA2AConfig,
@@ -223,6 +224,13 @@ function cloneConfig(config: SwarmConfig): SwarmConfig {
 				}
 			: undefined,
 		tasks: config.tasks.map(cloneTask),
+		validationContract: config.validationContract
+			? structuredClone(config.validationContract)
+			: undefined,
+		featureClaims: config.featureClaims?.map((claim) => ({
+			...claim,
+			fulfills: Array.isArray(claim.fulfills) ? [...claim.fulfills] : [],
+		})),
 	};
 }
 
@@ -606,6 +614,31 @@ export class SwarmExecutor {
 	 * Execute the swarm - runs all tasks with available teammates.
 	 */
 	async execute(): Promise<SwarmState> {
+		// Pre-dispatch coverage gate: refuse to start when a validation contract
+		// is configured but its assertions are not fully covered by feature
+		// claims. No-ops when no contract is configured.
+		const coverage = evaluateSwarmCoverageGate({
+			validationContract: this.state.config.validationContract,
+			featureClaims: this.state.config.featureClaims,
+		});
+		if (!coverage.ok) {
+			const error = coverage.message ?? "Swarm coverage gate failed";
+			this.state.status = "failed";
+			this.state.error = error;
+			this.state.completedAt = Date.now();
+			this.emit({
+				type: "swarm_fail",
+				swarmId: this.state.id,
+				error,
+			});
+			this.emit({
+				type: "swarm_complete",
+				swarmId: this.state.id,
+				state: cloneState(this.state),
+			});
+			return cloneState(this.state);
+		}
+
 		this.state.status = "running";
 		this.emit({
 			type: "swarm_start",
@@ -1895,6 +1928,11 @@ export class SwarmExecutor {
 			controlModes: ["followup", "steer", "interrupt", "cancel"],
 			evidenceRequired: ["status", "artifact", "task", "workGraph"],
 		};
+		const validationPolicy = {
+			schema: "evalops.maestro.swarm-validation-policy.v1",
+			mocksAllowed: task.mocksAllowed === true,
+			mode: task.mocksAllowed === true ? "mocks-allowed" : "real-integrations",
+		};
 		return {
 			requestKind: "maestro-swarm-task",
 			transport: "a2a",
@@ -1904,6 +1942,7 @@ export class SwarmExecutor {
 			teammateName: teammate.name,
 			taskId: task.id,
 			missionRole,
+			validation: validationPolicy,
 			...(route.skillId ? { a2aSkillId: route.skillId } : {}),
 			...(task.files?.length ? { files: task.files } : {}),
 			swarm: lineage,
@@ -1912,8 +1951,10 @@ export class SwarmExecutor {
 				transport: "a2a",
 				peer: route.name,
 				peerControl,
+				validation: validationPolicy,
 			},
 			"evalops.peerControl": peerControl,
+			"evalops.validation": validationPolicy,
 			...(subagentRequest
 				? { "evalops.subagentRequest": subagentRequest }
 				: {}),

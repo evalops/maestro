@@ -34,3 +34,9 @@ export { GitHubAuth } from "./github/auth.js";
 export { GitHubApiClient } from "./github/client.js";
 export { GitHubReporter, type TaskProgress } from "./github/reporter.js";
 export { GitHubWebhookServer } from "./webhooks/server.js";
+export {
+	MAESTRO_REVIEW_WORKFLOW_PATH,
+	buildMaestroReviewWorkflow,
+	writeMaestroReviewWorkflow,
+	type MaestroReviewWorkflowOptions,
+} from "./workflows/maestro-review-workflow.js";

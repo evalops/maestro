@@ -122,6 +122,10 @@ export interface ContractStorageConfig {
 
 const DEFAULT_CONTRACTS_SUBDIR = ".maestro/contracts";
 
+function claimFulfills(claim: FeatureClaim): string[] {
+	return Array.isArray(claim.fulfills) ? claim.fulfills : [];
+}
+
 /**
  * Resolve the per-project contracts directory. MAESTRO_CONTRACT_DIR
  * overrides the default for tests and unusual layouts.
@@ -176,7 +180,7 @@ export function checkCoverage(
 	const unknownSet = new Set<string>();
 
 	for (const claim of claims) {
-		for (const assertionId of claim.fulfills) {
+		for (const assertionId of claimFulfills(claim)) {
 			claimCounts.set(assertionId, (claimCounts.get(assertionId) ?? 0) + 1);
 			if (!contractIds.has(assertionId)) {
 				unknownSet.add(assertionId);

@@ -130,6 +130,7 @@ import { setConfiguredPackageRuntimeContext } from "./packages/runtime.js";
 import { resolveMaestroSystemPrompt } from "./prompts/system-prompt.js";
 import type { AuthMode } from "./providers/auth.js";
 import { parseOptionalBoolean } from "./runtime/env.js";
+import { cleanupNonInteractiveRuntimeResources } from "./runtime/non-interactive-cleanup.js";
 import { defaultSettings } from "./runtime/settings.js";
 import { configureSafeMode } from "./safety/safe-mode.js";
 import type { SessionManager } from "./session/manager.js";
@@ -2176,5 +2177,13 @@ export async function main(args: string[]) {
 		}
 	} finally {
 		await automaticMemory.flush();
+		if (
+			!isInteractive ||
+			mode === "rpc" ||
+			mode === "headless" ||
+			parsed.headless
+		) {
+			await cleanupNonInteractiveRuntimeResources();
+		}
 	}
 }

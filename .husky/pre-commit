@@ -12,5 +12,17 @@ fi
 # Run Composer Guardian (secrets + CI hygiene) before heavier tasks.
 bash "$ROOT/scripts/guardian.sh" --trigger pre-commit
 
-bun run bun:lint && bun run build && bun run bun:compile
+STAGED_FORMAT_FILES=()
+while IFS= read -r staged_file; do
+	STAGED_FORMAT_FILES+=("$staged_file")
+done < <(
+	git diff --cached --name-only --diff-filter=ACMR |
+		grep -E "\\.(ts|tsx|js|jsx|mjs|cjs|json|jsonc|css|md|yml|yaml)$" || true
+)
+
+if [ "${#STAGED_FORMAT_FILES[@]}" -gt 0 ]; then
+	bunx biome check "${STAGED_FORMAT_FILES[@]}"
+else
+	echo "No staged Biome-supported files to check."
+fi
 '

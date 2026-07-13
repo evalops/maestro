@@ -5,12 +5,22 @@ import process from "node:process";
 
 export const GH_OUTPUT_MAX_BUFFER_BYTES = 64 * 1024 * 1024;
 
+export const REVIEW_FEEDBACK_SEVERITY_RANK = Object.freeze({
+	none: 0,
+	low: 1,
+	medium: 2,
+	high: 3,
+	p1: 4,
+	p0: 5,
+});
+
 export function parseFeedbackAuditArgs(argv) {
 	const args = {
 		alsoPublic: [],
 		check: false,
 		includeResolved: false,
 		limit: 20,
+		minSeverity: "none",
 		prs: [],
 		recentDays: 0,
 		repo: "",
@@ -32,6 +42,9 @@ export function parseFeedbackAuditArgs(argv) {
 			case "--limit":
 				args.limit = Number(argv[++index] ?? "");
 				sawLimit = true;
+				break;
+			case "--min-severity":
+				args.minSeverity = String(argv[++index] ?? "").toLowerCase();
 				break;
 			case "--recent-days":
 				args.recentDays = Number(argv[++index] ?? "");
@@ -61,8 +74,11 @@ export function parseFeedbackAuditArgs(argv) {
 	}
 	if (args.prs.length === 0 && args.recentDays === 0) {
 		throw new Error(
-			"Usage: node scripts/pr-feedback-audit.mjs [--repo owner/name] [--check] [--include-resolved] [--recent-days days] [--limit count] [--also-public public-pr] <pr-number-or-url> [...]",
+			"Usage: node scripts/pr-feedback-audit.mjs [--repo owner/name] [--check] [--include-resolved] [--min-severity none|low|medium|high|p1|p0] [--recent-days days] [--limit count] [--also-public public-pr] <pr-number-or-url> [...]",
 		);
+	}
+	if (!(args.minSeverity in REVIEW_FEEDBACK_SEVERITY_RANK)) {
+		throw new Error(`--min-severity must be one of ${Object.keys(REVIEW_FEEDBACK_SEVERITY_RANK).join(", ")}`);
 	}
 
 	return args;
@@ -271,22 +287,162 @@ function summarizeBody(body) {
 		.slice(0, 240);
 }
 
+function firstNonblankLine(body) {
+	return String(body ?? "")
+		.split(/\r?\n/u)
+		.map((line) => line.trim())
+		.find(Boolean) ?? "";
+}
+
+function escapeRegExp(value) {
+	return String(value).replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
+}
+
+function reviewMetadataLines(body) {
+	return String(body ?? "")
+		.split(/\r?\n/u)
+		.map((line) =>
+			line
+				.trim()
+				.replace(/^(?:[-*+]\s+)?(?:#{1,6}\s*)?/u, "")
+				.replace(/^[^\p{L}\p{N}\[!_*]+/u, ""),
+		)
+		.filter(Boolean);
+}
+
+function hasExplicitReviewPriority(body, priority) {
+	return reviewMetadataLines(body)
+		.some(
+			(line) =>
+				line === priority ||
+				line.startsWith(`${priority}:`) ||
+				line.startsWith(`[${priority}]`),
+		);
+}
+
+function hasExplicitReviewSeverity(body, severity, badgeLabel) {
+	const severityPattern = new RegExp(
+		`^(?:\\*\\*|__)?${escapeRegExp(severity)}(?:\\*\\*|__)?(?::.*)?$`,
+		"iu",
+	);
+	const badgePattern = new RegExp(
+		`^!\\[${escapeRegExp(badgeLabel)}\\](?:\\([^)]*\\))?(?::.*)?$`,
+		"iu",
+	);
+	return reviewMetadataLines(body).some(
+		(line) => severityPattern.test(line) || badgePattern.test(line),
+	);
+}
+
+export function informationalReviewFeedback(body, author) {
+	const firstLine = firstNonblankLine(body);
+	const text = String(body ?? "");
+	const trustedReviewBot =
+		/^(?:cursor|coderabbitai|chatgpt-codex-connector|devin-ai-integration)\b/iu.test(
+			String(author ?? ""),
+		);
+	const summaryComment = /^##\s+(?:PR\s+Summary|Summary|Walkthrough)\b/iu.test(
+		firstLine,
+	);
+	const infoSection = /(?:^|\n)\s*(?:📝\s*)?\*\*Info:/u.test(text);
+	return (
+		trustedReviewBot &&
+		(summaryComment || (infoSection && reviewFeedbackSeverity(text) === "none"))
+	);
+}
+
+export function reviewFeedbackSeverity(body) {
+	const text = String(body ?? "");
+	if (hasExplicitReviewPriority(text, "P0")) return "p0";
+	if (hasExplicitReviewPriority(text, "P1")) return "p1";
+	if (hasExplicitReviewSeverity(text, "High Severity", "High Badge")) {
+		return "high";
+	}
+	if (hasExplicitReviewSeverity(text, "Medium Severity", "Medium Badge")) {
+		return "medium";
+	}
+	if (hasExplicitReviewSeverity(text, "Low Severity", "Low Badge")) {
+		return "low";
+	}
+	return "none";
+}
+
+function firstComment(thread) {
+	return thread.comments?.nodes?.[0];
+}
+
+function nonInformationalThreadComments(thread) {
+	return (thread.comments?.nodes ?? []).filter(
+		(comment) =>
+			!informationalReviewFeedback(comment.body, comment.author?.login),
+	);
+}
+
+export function reviewThreadSeverity(thread) {
+	const candidates = nonInformationalThreadComments(thread)
+		.map((comment) => [reviewFeedbackSeverity(comment.body), comment])
+		.filter(([severity]) => REVIEW_FEEDBACK_SEVERITY_RANK[severity] > 0);
+	const [severity] =
+		candidates.sort(
+			([left], [right]) =>
+				REVIEW_FEEDBACK_SEVERITY_RANK[right] -
+				REVIEW_FEEDBACK_SEVERITY_RANK[left],
+		)[0] ?? [];
+	return severity ?? "none";
+}
+
+function hasActionableReviewFeedback(thread) {
+	return (thread.comments?.nodes ?? []).some(
+		(comment) =>
+			!informationalReviewFeedback(comment.body, comment.author?.login),
+	);
+}
+
+export function threadBlocksFeedbackAudit(thread, minSeverity = "high") {
+	if (thread.isResolved) return false;
+	if (minSeverity === "none") {
+		return nonInformationalThreadComments(thread).length > 0;
+	}
+	const severity = reviewThreadSeverity(thread);
+	if (severity === "none") {
+		return minSeverity === "none" && hasActionableReviewFeedback(thread);
+	}
+	return (
+		REVIEW_FEEDBACK_SEVERITY_RANK[severity] >=
+		REVIEW_FEEDBACK_SEVERITY_RANK[minSeverity]
+	);
+}
+
+export function visibleFeedbackAuditThreads(
+	threads,
+	{ includeResolved = false, minSeverity = "high" } = {},
+) {
+	return threads.filter((thread) => {
+		if (threadBlocksFeedbackAudit(thread, minSeverity)) {
+			return true;
+		}
+		return includeResolved && thread.isResolved;
+	});
+}
+
 function printThread(thread) {
 	const location = [thread.path, thread.line ?? thread.startLine]
 		.filter(Boolean)
 		.join(":");
-	const firstComment = thread.comments?.nodes?.[0];
+	const first = firstComment(thread);
 	const status = thread.isResolved
 		? "resolved"
 		: thread.isOutdated
 			? "unresolved, outdated"
 			: "unresolved";
-	console.log(`- ${thread.id} ${status}${location ? ` at ${location}` : ""}`);
-	if (firstComment?.url) {
-		console.log(`  ${firstComment.url}`);
+	console.log(
+		`- ${thread.id} ${status}, severity=${reviewThreadSeverity(thread)}${location ? ` at ${location}` : ""}`,
+	);
+	if (first?.url) {
+		console.log(`  ${first.url}`);
 	}
-	if (firstComment?.body) {
-		console.log(`  ${firstComment.author?.login ?? "reviewer"}: ${summarizeBody(firstComment.body)}`);
+	if (first?.body) {
+		console.log(`  ${first.author?.login ?? "reviewer"}: ${summarizeBody(first.body)}`);
 	}
 }
 
@@ -312,17 +468,20 @@ function main() {
 	}
 	const uniqueTargets = dedupeFeedbackAuditTargets(targets);
 
-	let unresolvedCount = 0;
+	let blockingCount = 0;
 	for (const input of uniqueTargets) {
 		const threads = fetchReviewThreads(input.owner, input.repo, input.number);
-		const visibleThreads = args.includeResolved
-			? threads
-			: threads.filter((thread) => !thread.isResolved);
-		const unresolved = threads.filter((thread) => !thread.isResolved);
-		unresolvedCount += unresolved.length;
+		const blocking = threads.filter((thread) =>
+			threadBlocksFeedbackAudit(thread, args.minSeverity),
+		);
+		const visibleThreads = visibleFeedbackAuditThreads(threads, {
+			includeResolved: args.includeResolved,
+			minSeverity: args.minSeverity,
+		});
+		blockingCount += blocking.length;
 
 		console.log(
-			`${input.owner}/${input.repo}#${input.number}: ${unresolved.length} unresolved review thread(s), ${threads.length} total`,
+			`${input.owner}/${input.repo}#${input.number}: ${blocking.length} blocking review thread(s) at or above ${args.minSeverity}, ${threads.length} total`,
 		);
 		if (visibleThreads.length === 0) {
 			console.log("  no matching review threads");
@@ -333,7 +492,7 @@ function main() {
 		}
 	}
 
-	if (args.check && unresolvedCount > 0) {
+	if (args.check && blockingCount > 0) {
 		process.exit(1);
 	}
 }
