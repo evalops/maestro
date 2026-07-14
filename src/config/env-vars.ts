@@ -27,6 +27,10 @@
  * ### Subagent Configuration
  * - MAESTRO_SUBAGENT_MODEL - Model to use for subagents
  * - MAESTRO_ORACLE_MODEL - Model to use for the Oracle tool
+ * - MAESTRO_PAINTER_MODEL - Image model for the Painter tool (default: gpt-image-2)
+ * - MAESTRO_PAINTER_BASE_URL - OpenAI-compatible base URL override for Painter
+ * - MAESTRO_PAINTER_OUTPUT_DIR - Where Painter writes images (default: ~/.maestro/assets/painter)
+ * - MAESTRO_PAINTER_TIMEOUT_MS - Per-call Painter timeout in ms (default: 180000)
  *
  * ### API Configuration
  * - MAESTRO_API_KEY_HELPER_TTL_MS - Cache TTL for API key helpers
@@ -88,6 +92,10 @@ export const ENV_VARS = {
 	// Subagent configuration
 	SUBAGENT_MODEL: "MAESTRO_SUBAGENT_MODEL",
 	ORACLE_MODEL: "MAESTRO_ORACLE_MODEL",
+	PAINTER_MODEL: "MAESTRO_PAINTER_MODEL",
+	PAINTER_BASE_URL: "MAESTRO_PAINTER_BASE_URL",
+	PAINTER_OUTPUT_DIR: "MAESTRO_PAINTER_OUTPUT_DIR",
+	PAINTER_TIMEOUT_MS: "MAESTRO_PAINTER_TIMEOUT_MS",
 	SWARM_MODE: "MAESTRO_SWARM_MODE",
 	SWARM_ID: "MAESTRO_SWARM_ID",
 	TEAMMATE_ID: "MAESTRO_TEAMMATE_ID",
