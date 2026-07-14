@@ -7,6 +7,7 @@ import {
 	resolveIntelligentRouterStrategy,
 	setIntelligentRouterServiceForTest,
 } from "../../src/services/intelligent-router/index.js";
+import { resolveIntelligentRouterTaskSummary } from "../../src/services/intelligent-router/recorder.js";
 import type { RoutingModelCandidate } from "../../src/services/intelligent-router/types.js";
 
 interface MockResponse {
@@ -76,6 +77,17 @@ function createService(): IntelligentRouterService {
 }
 
 describe("intelligent router service", () => {
+	it("derives policy signals from the latest user message", () => {
+		expect(
+			resolveIntelligentRouterTaskSummary({
+				messages: [
+					{ role: "user", content: "Investigate the ambiguous migration" },
+					{ role: "assistant", content: "A stale assistant continuation" },
+				],
+			}),
+		).toBe("Investigate the ambiguous migration");
+	});
+
 	afterEach(() => {
 		setIntelligentRouterServiceForTest(null);
 		vi.restoreAllMocks();
@@ -121,6 +133,22 @@ describe("intelligent router service", () => {
 		expect(decision.selectedModel).toEqual({
 			provider: "openai",
 			model: "gpt-4o-mini",
+		});
+	});
+
+	it("records an eval-backed Oracle consultation decision", () => {
+		const service = createService();
+
+		const decision = service.routeRequest({
+			taskType: "migration",
+			profileHint: "ultra",
+			taskSummary: "Migrate durable sessions without data loss",
+		});
+
+		expect(decision.oracleConsultation).toMatchObject({
+			policyVersion: "evalops.maestro.oracle-consultation.v1",
+			evalSuite: "oracle-consultation-policy-v1",
+			mode: "required",
 		});
 	});
 

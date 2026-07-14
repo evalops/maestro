@@ -1,3 +1,4 @@
+import type { OracleConsultationDecision } from "../../agent/oracle-consultation-policy.js";
 import type { AgentProfile, AgentProfileLevel } from "../../agent/profiles.js";
 
 export const ROUTING_STRATEGIES = [
@@ -74,6 +75,10 @@ export interface RoutingRequestInput {
 	unavailableModels?: string[] | string;
 	unavailable_models?: string[] | string;
 	availableModels?: RoutingModelCandidate[];
+	taskSummary?: string;
+	task_summary?: string;
+	priorFailures?: number;
+	prior_failures?: number;
 }
 
 export interface RoutingRequest {
@@ -83,6 +88,8 @@ export interface RoutingRequest {
 	strategy: RoutingStrategy;
 	unavailableModels: string[];
 	availableModels: RoutingModelCandidate[];
+	taskSummary?: string;
+	priorFailures: number;
 }
 
 export interface RoutingScore {
@@ -121,6 +128,7 @@ export interface RoutingDecision {
 	overrideApplied: boolean;
 	reason: string;
 	createdAt: string;
+	oracleConsultation?: OracleConsultationDecision;
 }
 
 export interface RoutingOverrideInput {

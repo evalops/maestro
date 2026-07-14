@@ -23,6 +23,7 @@
 
 import type { IncomingMessage, ServerResponse } from "node:http";
 import type { ComposerChatRequest, ComposerMessage } from "@evalops/contracts";
+import { applyOracleConsultationDirective } from "../../agent/oracle-consultation-policy.js";
 import { isAssistantMessage } from "../../agent/type-guards.js";
 import type {
 	Attachment as AgentAttachment,
@@ -433,6 +434,10 @@ export async function handleChat(
 						}
 					: {}),
 			},
+		);
+		applyOracleConsultationDirective(
+			agent,
+			routingSelection.decision.oracleConsultation,
 		);
 
 		// Hydrate conversation history (all messages except the current user input)

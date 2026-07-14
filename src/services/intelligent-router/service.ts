@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import type { ModelProvider } from "../../agent/modes.js";
+import { recommendOracleConsultation } from "../../agent/oracle-consultation-policy.js";
 import {
 	type AgentProfile,
 	resolveAgentProfile,
@@ -484,6 +485,12 @@ export class IntelligentRouterService {
 			overrideApplied,
 			reason,
 			createdAt,
+			oracleConsultation: recommendOracleConsultation({
+				profileLevel: selectedProfile.level,
+				taskType: request.taskType,
+				taskSummary: request.taskSummary,
+				priorFailures: request.priorFailures,
+			}),
 			...(request.modelHint ? { modelHint: request.modelHint } : {}),
 		};
 		this.decisions.unshift(decision);

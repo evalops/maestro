@@ -211,4 +211,109 @@ describe("chat handler profile threading", () => {
 			);
 		});
 	});
+
+	it("applies required Oracle guidance to websocket chat", async () => {
+		const runUserPromptWithRecovery = vi.fn(async () => {});
+		const { handleChatWebSocket } = await importChatHandlersWithMock(
+			runUserPromptWithRecovery,
+		);
+		const req = new PassThrough() as MockPassThrough;
+		req.method = "GET";
+		req.url = "/api/chat/ws";
+		req.headers = {
+			host: "localhost",
+			"x-maestro-agent-profile": "ultra",
+		};
+		const ws = new MockWebSocket();
+		const queueNextRunSystemPromptAddition = vi.fn();
+		const agent = createMockAgent();
+		agent.queueNextRunSystemPromptAddition = queueNextRunSystemPromptAddition;
+		const context: Partial<WebServerContext> = {
+			createAgent: async () => agent,
+			getRegisteredModel: async () => mockModel,
+			defaultApprovalMode: "prompt",
+			defaultProvider: "anthropic",
+			defaultModelId: mockModel.id,
+			corsHeaders: cors,
+		};
+
+		handleChatWebSocket(
+			ws as unknown as Parameters<typeof handleChatWebSocket>[0],
+			req as unknown as IncomingMessage,
+			context as WebServerContext,
+		);
+		ws.emit(
+			"message",
+			JSON.stringify({
+				messages: [{ role: "user", content: "Plan a risky migration" }],
+			}),
+		);
+
+		await vi.waitFor(() => {
+			expect(queueNextRunSystemPromptAddition).toHaveBeenCalledWith(
+				expect.stringContaining("MUST consult the read-only Oracle once"),
+			);
+		});
+	});
+
+	it("rejects workspace-blocked websocket models and releases the stream lease", async () => {
+		const runUserPromptWithRecovery = vi.fn(async () => {});
+		const { handleChatWebSocket } = await importChatHandlersWithMock(
+			runUserPromptWithRecovery,
+		);
+		const req = new PassThrough() as MockPassThrough;
+		req.method = "GET";
+		req.url = "/api/chat/ws";
+		req.headers = { host: "localhost" };
+		const ws = new MockWebSocket();
+		const lease = Symbol("websocket-stream");
+		const releaseSse = vi.fn();
+		const createAgent = vi.fn(async () => createMockAgent());
+		const context: Partial<WebServerContext> = {
+			createAgent,
+			getRegisteredModel: async () => mockModel,
+			defaultApprovalMode: "prompt",
+			defaultProvider: "anthropic",
+			defaultModelId: mockModel.id,
+			corsHeaders: cors,
+			acquireSse: () => lease,
+			releaseSse,
+		};
+
+		handleChatWebSocket(
+			ws as unknown as Parameters<typeof handleChatWebSocket>[0],
+			req as unknown as IncomingMessage,
+			context as WebServerContext,
+			{
+				workspaceId: "workspace-a",
+				source: "database",
+				config: {
+					workspaceId: "workspace-a",
+					modelPreferences: {
+						allowedModels: [],
+						blockedModels: [`${mockModel.provider}/${mockModel.id}`],
+					},
+					safetyRules: {
+						allowedTools: [],
+						blockedTools: [],
+						requiredSkills: [],
+						fileBoundaries: [],
+					},
+					rateLimits: {},
+					createdAt: "2026-07-14T00:00:00.000Z",
+					updatedAt: "2026-07-14T00:00:00.000Z",
+				},
+			},
+		);
+		ws.emit(
+			"message",
+			JSON.stringify({ messages: [{ role: "user", content: "Hello" }] }),
+		);
+
+		await vi.waitFor(() => {
+			expect(releaseSse).toHaveBeenCalledWith(lease);
+		});
+		expect(createAgent).not.toHaveBeenCalled();
+		expect(runUserPromptWithRecovery).not.toHaveBeenCalled();
+	});
 });

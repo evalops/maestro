@@ -9,7 +9,7 @@ import {
 	WorkspaceConfigUnavailableError,
 	getWorkspaceConfigService,
 } from "./service.js";
-import type { WorkspaceConfig } from "./types.js";
+import type { WorkspaceConfigRequestContext } from "./types.js";
 
 const logger = createLogger("workspace-config:middleware");
 
@@ -62,6 +62,30 @@ export function resolveWorkspaceConfigId(req: IncomingMessage): string {
 	);
 }
 
+export async function loadWorkspaceConfigRequestContext(
+	req: IncomingMessage,
+): Promise<WorkspaceConfigRequestContext> {
+	const workspaceId = resolveWorkspaceConfigId(req);
+	const service = getWorkspaceConfigService();
+	if (!service.isConfigured()) {
+		return { workspaceId, config: null, source: "unconfigured" };
+	}
+
+	try {
+		const config = await service.getConfig(workspaceId);
+		return {
+			workspaceId,
+			config,
+			source: config ? "database" : "missing",
+		};
+	} catch (error) {
+		if (error instanceof WorkspaceConfigUnavailableError) {
+			return { workspaceId, config: null, source: "unconfigured" };
+		}
+		throw error;
+	}
+}
+
 export function createWorkspaceConfigMiddleware(
 	corsHeaders: Record<string, string>,
 ): Middleware {
@@ -72,31 +96,10 @@ export function createWorkspaceConfigMiddleware(
 			return;
 		}
 
-		const workspaceId = resolveWorkspaceConfigId(req);
-		const service = getWorkspaceConfigService();
-		if (!service.isConfigured()) {
-			setWorkspaceConfigContext({
-				workspaceId,
-				config: null,
-				source: "unconfigured",
-			});
-			await next();
-			return;
-		}
-
-		let config: WorkspaceConfig | null;
+		let workspaceConfig: WorkspaceConfigRequestContext;
 		try {
-			config = await service.getConfig(workspaceId);
+			workspaceConfig = await loadWorkspaceConfigRequestContext(req);
 		} catch (error) {
-			if (error instanceof WorkspaceConfigUnavailableError) {
-				setWorkspaceConfigContext({
-					workspaceId,
-					config: null,
-					source: "unconfigured",
-				});
-				await next();
-				return;
-			}
 			if (error instanceof WorkspaceConfigValidationError) {
 				sendJson(res, 400, { error: error.message }, corsHeaders, req);
 				return;
@@ -105,7 +108,7 @@ export function createWorkspaceConfigMiddleware(
 				error: sanitizeWithStaticMask(
 					error instanceof Error ? error.message : String(error),
 				),
-				workspaceId,
+				workspaceId: resolveWorkspaceConfigId(req),
 			});
 			sendJson(
 				res,
@@ -117,11 +120,7 @@ export function createWorkspaceConfigMiddleware(
 			return;
 		}
 
-		setWorkspaceConfigContext({
-			workspaceId,
-			config,
-			source: config ? "database" : "missing",
-		});
+		setWorkspaceConfigContext(workspaceConfig);
 		await next();
 	};
 }

@@ -72,7 +72,12 @@ import {
 	HostedRunnerDrainStatusValue,
 	drainHostedRunnerForShutdown,
 } from "./server/handlers/hosted-runner-drain.js";
-import { createWorkspaceConfigMiddleware } from "./services/workspace-config/middleware.js";
+import {
+	createWorkspaceConfigMiddleware,
+	loadWorkspaceConfigRequestContext,
+} from "./services/workspace-config/middleware.js";
+import { WorkspaceConfigValidationError } from "./services/workspace-config/normalize.js";
+import type { WorkspaceConfigRequestContext } from "./services/workspace-config/types.js";
 import { recordApiRequest } from "./telemetry.js";
 import { artifactsClientTool } from "./tools/artifacts-client.js";
 import { askUserClientTool } from "./tools/ask-user-client.js";
@@ -1034,6 +1039,7 @@ export async function startWebServer(
 		}
 
 		let runtimeSessionId: string | undefined;
+		let workspaceConfig: WorkspaceConfigRequestContext | undefined;
 		if (url.pathname === "/api/runtime/ws") {
 			const authorization = await authorizeRuntimeWebSocketSession({
 				req,
@@ -1046,6 +1052,28 @@ export async function startWebServer(
 				return;
 			}
 			runtimeSessionId = authorization;
+		} else {
+			try {
+				workspaceConfig = await loadWorkspaceConfigRequestContext(req);
+			} catch (error) {
+				const validationError = error instanceof WorkspaceConfigValidationError;
+				const status = validationError ? 400 : 503;
+				const message = validationError
+					? error.message
+					: "Workspace config could not be loaded.";
+				if (!validationError) {
+					logger.warn("Failed to load workspace config for WebSocket chat", {
+						error: sanitizeWithStaticMask(
+							error instanceof Error ? error.message : String(error),
+						),
+					});
+				}
+				socket.write(
+					`HTTP/1.1 ${status} ${status === 400 ? "Bad Request" : "Service Unavailable"}\r\nConnection: close\r\nContent-Type: text/plain\r\nContent-Length: ${Buffer.byteLength(message)}\r\n\r\n${message}`,
+				);
+				socket.destroy();
+				return;
+			}
 		}
 
 		wsServer.handleUpgrade(req, socket, head, (ws) => {
@@ -1057,7 +1085,7 @@ export async function startWebServer(
 				});
 				return;
 			}
-			handleChatWebSocket(ws, req, context);
+			handleChatWebSocket(ws, req, context, workspaceConfig);
 		});
 	});
 
