@@ -1,5 +1,5 @@
 import { randomBytes } from "node:crypto";
-import { mkdir, readFile, unlink, writeFile } from "node:fs/promises";
+import { readFile, unlink } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { Type } from "@sinclair/typebox";
@@ -15,6 +15,7 @@ import type {
 	ImageQuality,
 	ImageSize,
 } from "../services/image-providers/types.js";
+import { writeTextFileAtomic } from "../utils/fs.js";
 import { createLogger } from "../utils/logger.js";
 import { getImageMetadata } from "./image-processor.js";
 import { createTool } from "./tool-dsl.js";
@@ -54,10 +55,9 @@ export async function persistImage(
 	ext: string,
 ): Promise<{ path: string }> {
 	const dir = painterOutputDir();
-	await mkdir(dir, { recursive: true });
 	const name = `painter-${Date.now()}-${randomBytes(4).toString("hex")}.${ext}`;
 	const path = join(dir, name);
-	await writeFile(path, bytes);
+	writeTextFileAtomic(path, bytes.toString("latin1"), { encoding: "latin1" });
 	return { path };
 }
 
@@ -142,12 +142,13 @@ export async function buildMaskPath(
 
 	const maskBuf = encodeMaskPng(dimensions, region);
 	const dir = painterOutputDir();
-	await mkdir(dir, { recursive: true });
 	const maskPath = join(
 		dir,
 		`mask-${Date.now()}-${randomBytes(4).toString("hex")}.png`,
 	);
-	await writeFile(maskPath, maskBuf);
+	writeTextFileAtomic(maskPath, maskBuf.toString("latin1"), {
+		encoding: "latin1",
+	});
 	return { maskPath, dimensions, source };
 }
 

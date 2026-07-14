@@ -143,6 +143,7 @@ describe("painter: persistImage", () => {
 		const { path } = await persistImage(bytes, "png");
 		expect(existsSync(path)).toBe(true);
 		expect(path.endsWith(".png")).toBe(true);
+		expect(await readFile(path)).toEqual(bytes);
 	});
 
 	it("creates the output directory if it does not exist", async () => {
