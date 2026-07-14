@@ -18,7 +18,7 @@ env:
 
 jobs:
   tag-current-version:
-    runs-on: ${{ github.repository == 'evalops/maestro-internal' && (vars.INTERNAL_CONFIRMATION_RUNNER || 'ubuntu-latest') || (vars.PUBLIC_PR_VALIDATION_RUNNER || 'ubuntu-latest') }}
+    runs-on: ${{ github.repository == 'evalops/maestro-internal' && 'evalops-private-ci' || (vars.PUBLIC_PR_VALIDATION_RUNNER || 'ubuntu-latest') }}
     timeout-minutes: 45
     permissions:
       actions: read
