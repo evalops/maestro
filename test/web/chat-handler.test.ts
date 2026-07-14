@@ -320,6 +320,7 @@ describe("handleChat", () => {
 				cwd: "/workspace",
 				systemPromptSourcePaths: persistedPaths,
 			})),
+			getSessionId: vi.fn(() => "session-1"),
 		};
 		vi.spyOn(sessionScope, "createWebSessionManagerForRequest").mockReturnValue(
 			sessionManager as unknown as ReturnType<
