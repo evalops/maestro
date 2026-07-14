@@ -130,6 +130,19 @@ export function determineModelSelection(
 	};
 }
 
+export function resolveModelInputForRouting(
+	modelInput: string | null | undefined,
+	defaultProvider: string,
+	defaultModelId: string,
+): string {
+	const selection = determineModelSelection(
+		modelInput,
+		defaultProvider,
+		defaultModelId,
+	);
+	return `${selection.provider}/${selection.modelId}`;
+}
+
 export function getRegisteredModelOrThrow(
 	selection: ModelSelection,
 ): RegisteredModel {

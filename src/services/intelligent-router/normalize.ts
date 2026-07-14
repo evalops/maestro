@@ -182,6 +182,18 @@ export function normalizeRoutingRequest(
 	const availableModels = normalizeAvailableModels(
 		requestInput.availableModels,
 	);
+	const taskSummary =
+		cleanOptionalString(requestInput.taskSummary) ??
+		cleanOptionalString(requestInput.task_summary);
+	const priorFailures = Math.max(
+		0,
+		Math.floor(
+			parseFiniteNumber(
+				requestInput.priorFailures ?? requestInput.prior_failures,
+				"priorFailures",
+			) ?? 0,
+		),
+	);
 	return {
 		taskType,
 		profileLevel,
@@ -189,7 +201,9 @@ export function normalizeRoutingRequest(
 		unavailableModels,
 		availableModels:
 			availableModels.length > 0 ? availableModels : defaultAvailableModels,
+		priorFailures,
 		...(modelHint ? { modelHint } : {}),
+		...(taskSummary ? { taskSummary } : {}),
 	};
 }
 

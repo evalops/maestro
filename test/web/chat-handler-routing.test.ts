@@ -16,6 +16,7 @@ import { resolveAgentProfile } from "../../src/agent/profiles.js";
 import type { RegisteredModel } from "../../src/models/registry.js";
 import type { WebServerContext } from "../../src/server/app-context.js";
 import { handleChat } from "../../src/server/handlers/chat.js";
+import { resolveModelInputForRouting } from "../../src/server/model-selection.js";
 import { requestContextStorage } from "../../src/server/request-context.js";
 import { selectIntelligentRouterModel } from "../../src/services/intelligent-router/recorder.js";
 import type { RoutingDecision } from "../../src/services/intelligent-router/types.js";
@@ -202,5 +203,14 @@ describe("handleChat routing", () => {
 		expect(res.statusCode).toBe(500);
 		expect(res.body).toContain("Missing API key for anthropic");
 		expect(res.body).not.toContain("not allowed by workspace policy");
+		expect(selectIntelligentRouterModel).toHaveBeenCalledWith(
+			expect.objectContaining({
+				requestedModel: resolveModelInputForRouting(
+					undefined,
+					selectedModel.provider,
+					selectedModel.id,
+				),
+			}),
+		);
 	});
 });

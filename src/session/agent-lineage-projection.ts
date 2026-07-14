@@ -3,6 +3,7 @@ import type {
 	ToolCall,
 	ToolResultMessage,
 } from "../agent/types.js";
+import { canonicalCodexSubagentTool } from "../codex/subagent-workgraph.js";
 import type { SessionTreeEntry } from "./types.js";
 
 export interface AgentLineageOperation {
@@ -47,6 +48,11 @@ interface WorkGraphRecord {
 		childRunId: string;
 		status?: string;
 	}>;
+}
+
+interface WorkGraphFallback {
+	toolCallId?: string;
+	operation?: string;
 }
 
 export function buildAgentLineageProjection(
@@ -104,25 +110,38 @@ function workGraphsFromMessage(message: AppMessage): WorkGraphRecord[] {
 	if (message.role === "assistant" && Array.isArray(message.content)) {
 		return message.content
 			.filter(isToolCall)
-			.map((toolCall) => parseWorkGraph(toolCall.arguments))
+			.map((toolCall) =>
+				parseWorkGraph(toolCall.arguments, {
+					toolCallId: toolCall.id,
+					operation: canonicalCodexSubagentTool(toolCall.name) ?? toolCall.name,
+				}),
+			)
 			.filter((graph): graph is WorkGraphRecord => Boolean(graph));
 	}
 	if (message.role === "toolResult") {
 		const result = message as unknown as ToolResultMessage;
-		const graph = parseWorkGraph(result.details);
+		const graph = parseWorkGraph(result.details, {
+			toolCallId: result.toolCallId,
+			operation: canonicalCodexSubagentTool(result.toolName) ?? result.toolName,
+		});
 		return graph ? [graph] : [];
 	}
 	return [];
 }
 
-function parseWorkGraph(container: unknown): WorkGraphRecord | undefined {
+function parseWorkGraph(
+	container: unknown,
+	fallback: WorkGraphFallback = {},
+): WorkGraphRecord | undefined {
 	if (!isRecord(container)) return undefined;
 	const graphValue = container.codexWorkGraph ?? container.codex_work_graph;
 	if (!isRecord(graphValue)) return undefined;
 	const toolCallId = stringValue(
-		graphValue.toolCallId ?? graphValue.tool_call_id,
+		graphValue.toolCallId ?? graphValue.tool_call_id ?? fallback.toolCallId,
 	);
-	const operation = stringValue(graphValue.tool ?? graphValue.operation);
+	const operation = stringValue(
+		graphValue.tool ?? graphValue.operation ?? fallback.operation,
+	);
 	const childrenValue = graphValue.childRuns ?? graphValue.child_runs;
 	if (!toolCallId || !operation || !Array.isArray(childrenValue))
 		return undefined;

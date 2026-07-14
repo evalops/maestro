@@ -37,6 +37,7 @@ import {
 	determineModelSelection,
 	getRegisteredModelOrThrow,
 	parseModelInput,
+	resolveModelInputForRouting,
 } from "../../src/server/model-selection.js";
 
 describe("model-selection", () => {
@@ -66,6 +67,15 @@ describe("model-selection", () => {
 			provider: "anthropic",
 			modelId: "claude-default",
 		});
+	});
+
+	it("normalizes aliases and defaults into router model hints", () => {
+		expect(
+			resolveModelInputForRouting("fast-model", "anthropic", "claude-3"),
+		).toBe("openai/gpt-fast");
+		expect(resolveModelInputForRouting(undefined, "openai", "gpt-4o")).toBe(
+			"anthropic/claude-default",
+		);
 	});
 
 	it("preserves registered providers for bare model ids", () => {

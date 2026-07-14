@@ -26,6 +26,41 @@ function graph(toolCallId: string, tool: string, status: string) {
 }
 
 describe("agent lineage projection", () => {
+	it("falls back to assistant tool-call metadata for sparse work graphs", () => {
+		const sparseGraph = graph("wrapper-call", "spawnAgent", "spawned");
+		delete (sparseGraph as { toolCallId?: string }).toolCallId;
+		delete (sparseGraph as { tool?: string }).tool;
+		const entries = [
+			{
+				type: "message",
+				id: "assistant-sparse-spawn",
+				parentId: null,
+				timestamp: "2026-01-01T00:00:01.000Z",
+				message: {
+					role: "assistant",
+					content: [
+						{
+							type: "toolCall",
+							id: "wrapper-call",
+							name: "codex.subagent.spawnAgent",
+							arguments: { codexWorkGraph: sparseGraph },
+						},
+					],
+				},
+			},
+		] as SessionTreeEntry[];
+
+		const projection = buildAgentLineageProjection(entries);
+
+		expect(projection.operations).toEqual([
+			expect.objectContaining({
+				toolCallId: "wrapper-call",
+				operation: "spawnAgent",
+				childRunId: "child-run-1",
+			}),
+		]);
+	});
+
 	it("aggregates child lifecycle operations into one durable edge", () => {
 		const entries = [
 			{

@@ -4,9 +4,11 @@
  * Mirrors the SSE chat flow but streams AgentEvent payloads over WebSocket.
  */
 
+import { randomBytes, randomUUID } from "node:crypto";
 import type { IncomingMessage } from "node:http";
 import type { ComposerChatRequest, ComposerMessage } from "@evalops/contracts";
 import type { RawData, WebSocket } from "ws";
+import { applyOracleConsultationDirective } from "../../agent/oracle-consultation-policy.js";
 import { isAssistantMessage } from "../../agent/type-guards.js";
 import type {
 	Attachment as AgentAttachment,
@@ -22,7 +24,13 @@ import {
 } from "../../memory/auto-consolidation.js";
 import { createAutomaticMemoryExtractionCoordinator } from "../../memory/auto-extraction.js";
 import type { RegisteredModel } from "../../models/registry.js";
+import {
+	recordIntelligentRouterChatMetric,
+	selectIntelligentRouterModel,
+} from "../../services/intelligent-router/recorder.js";
 import { recordAssistantUsageMetric } from "../../services/usage-analytics/recorder.js";
+import { evaluateModelPolicy } from "../../services/workspace-config/policy.js";
+import type { WorkspaceConfigRequestContext } from "../../services/workspace-config/types.js";
 import { toSessionModelMetadata } from "../../session/manager.js";
 import { createRuntimeSessionSummaryUpdater } from "../../session/runtime-summary-updater.js";
 import { createLogger } from "../../utils/logger.js";
@@ -37,6 +45,13 @@ import { getAuthSubject } from "../authz.js";
 import { getAgentCircuitBreaker } from "../circuit-breaker.js";
 import { clientToolService } from "../client-tools-service.js";
 import { isHostedSessionManager } from "../hosted-session-manager.js";
+import { resolveModelInputForRouting } from "../model-selection.js";
+import {
+	type RequestContext,
+	getWorkspaceConfigContext,
+	parseTraceParent,
+	requestContextStorage,
+} from "../request-context.js";
 import { serverRequestManager } from "../server-request-manager.js";
 import { getRequestHeader } from "../server-utils.js";
 import { startSessionWithPolicy } from "../session-initialization.js";
@@ -219,12 +234,15 @@ export function handleChatWebSocket(
 	ws: WebSocket,
 	req: IncomingMessage,
 	context: WebServerContext,
+	workspaceConfig?: WorkspaceConfigRequestContext,
 ) {
 	const {
 		createAgent,
 		createBackgroundAgent,
 		getRegisteredModel,
 		defaultApprovalMode,
+		defaultProvider,
+		defaultModelId,
 		acquireSse,
 		releaseSse,
 	} = context;
@@ -245,6 +263,17 @@ export function handleChatWebSocket(
 	);
 	const slimFromQuery = parseBoolean(url.searchParams.get("slim"));
 	const clientHeaderFromQuery = url.searchParams.get("client")?.trim();
+	const websocketRequestContext: RequestContext | undefined = workspaceConfig
+		? {
+				requestId: randomUUID(),
+				traceId: parseTraceParent(req.headers.traceparent).traceId,
+				spanId: randomBytes(8).toString("hex"),
+				startTime: performance.now(),
+				method: req.method || "GET",
+				url: url.pathname,
+				workspaceConfig,
+			}
+		: undefined;
 
 	const sendErrorAndClose = (message: string) => {
 		try {
@@ -271,7 +300,7 @@ export function handleChatWebSocket(
 		return validatePayload<ChatRequestInput>(parsed, ChatRequestSchema);
 	};
 
-	ws.on("message", async (data) => {
+	const handleMessage = async (data: RawData) => {
 		if (requestHandled) {
 			try {
 				const size = getRawDataSize(data);
@@ -450,7 +479,55 @@ export function handleChatWebSocket(
 				}
 			}
 
-			const registeredModel = await getRegisteredModel(chatReq.model);
+			const routingSelection = selectIntelligentRouterModel({
+				req,
+				requestedModel: resolveModelInputForRouting(
+					chatReq.model,
+					defaultProvider,
+					defaultModelId,
+				),
+				body: chatReq,
+			});
+			let registeredModel: RegisteredModel | undefined;
+			let lastModelError: unknown;
+			let selectedModelError: unknown;
+			let selectedModelPolicyViolation: ReturnType<
+				typeof evaluateModelPolicy
+			> | null = null;
+			for (const [
+				index,
+				modelInput,
+			] of routingSelection.modelInputs.entries()) {
+				try {
+					const candidateModel = await getRegisteredModel(modelInput);
+					const violation = evaluateModelPolicy(
+						workspaceConfig?.config ?? getWorkspaceConfigContext()?.config,
+						{
+							provider: candidateModel.provider,
+							modelId: candidateModel.id,
+						},
+					);
+					if (violation) {
+						if (index === 0) selectedModelPolicyViolation = violation;
+						continue;
+					}
+					registeredModel = candidateModel;
+					break;
+				} catch (error) {
+					lastModelError = error;
+					if (index === 0) selectedModelError = error;
+				}
+			}
+			if (!registeredModel && selectedModelPolicyViolation) {
+				sendErrorAndClose(selectedModelPolicyViolation.message);
+				if (sseLease && releaseSse) {
+					releaseSse(sseLease);
+					sseLease = null;
+				}
+				return;
+			}
+			if (!registeredModel) throw selectedModelError ?? lastModelError;
+			const routeStartedAt = Date.now();
 
 			const headerApproval = (() => {
 				const headerMode = normalizeApprovalMode(
@@ -528,6 +605,10 @@ export function handleChatWebSocket(
 							}
 						: {}),
 				},
+			);
+			applyOracleConsultationDirective(
+				agent,
+				routingSelection.decision.oracleConsultation,
 			);
 
 			const historyMessages = incomingMessages.slice(0, -1);
@@ -844,6 +925,13 @@ export function handleChatWebSocket(
 							sessionId: sessionManager.getSessionId(),
 							subject,
 						});
+						recordIntelligentRouterChatMetric({
+							taskType: routingSelection.taskType,
+							provider: registeredModel.provider,
+							model: registeredModel.id,
+							startedAt: routeStartedAt,
+							message: event.message,
+						});
 						automaticMemoryExtraction.schedule(sessionManager.getSessionFile());
 					}
 					sessionManager.updateSnapshot(
@@ -962,5 +1050,14 @@ export function handleChatWebSocket(
 				sseLease = null;
 			}
 		}
+	};
+
+	ws.on("message", (data) => {
+		if (websocketRequestContext) {
+			return requestContextStorage.run(websocketRequestContext, () =>
+				handleMessage(data),
+			);
+		}
+		return handleMessage(data);
 	});
 }

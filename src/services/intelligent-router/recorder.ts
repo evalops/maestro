@@ -79,6 +79,62 @@ export function resolveIntelligentRouterStrategy(
 		: undefined;
 }
 
+export function resolveIntelligentRouterTaskSummary(
+	body: unknown,
+): string | undefined {
+	if (!body || typeof body !== "object") return undefined;
+	if ("taskSummary" in body) {
+		const summary = (body as { taskSummary?: unknown }).taskSummary;
+		if (typeof summary === "string" && summary.trim()) return summary.trim();
+	}
+	if (
+		!("messages" in body) ||
+		!Array.isArray((body as { messages?: unknown }).messages)
+	) {
+		return undefined;
+	}
+	const messages = (body as { messages: unknown[] }).messages;
+	for (let index = messages.length - 1; index >= 0; index -= 1) {
+		const message = messages[index];
+		if (!message || typeof message !== "object" || !("content" in message))
+			continue;
+		if ("role" in message && message.role !== "user") continue;
+		const content = (message as { content?: unknown }).content;
+		if (typeof content === "string" && content.trim()) return content.trim();
+		if (Array.isArray(content)) {
+			const text = content
+				.map((part) =>
+					part &&
+					typeof part === "object" &&
+					"text" in part &&
+					typeof part.text === "string"
+						? part.text
+						: "",
+				)
+				.filter(Boolean)
+				.join("\n")
+				.trim();
+			if (text) return text;
+		}
+	}
+	return undefined;
+}
+
+function resolvePriorFailures(req: IncomingMessage, body: unknown): number {
+	const header = firstHeader(req, [
+		"x-maestro-prior-failures",
+		"x-composer-prior-failures",
+	]);
+	const bodyValue =
+		body && typeof body === "object"
+			? ((body as { priorFailures?: unknown; prior_failures?: unknown })
+					.priorFailures ??
+				(body as { prior_failures?: unknown }).prior_failures)
+			: undefined;
+	const parsed = Number(header ?? bodyValue ?? 0);
+	return Number.isFinite(parsed) ? Math.max(0, Math.floor(parsed)) : 0;
+}
+
 export function selectIntelligentRouterModel(params: {
 	req: IncomingMessage;
 	requestedModel?: string | null;
@@ -100,6 +156,8 @@ export function selectIntelligentRouterModel(params: {
 			: undefined);
 	const decision = getIntelligentRouterService().routeRequest({
 		taskType,
+		taskSummary: resolveIntelligentRouterTaskSummary(params.body),
+		priorFailures: resolvePriorFailures(params.req, params.body),
 		availableModels: registeredRoutingModels(),
 		...(modelHint ? { modelHint } : {}),
 		...(strategy ? { strategy } : {}),
