@@ -44,6 +44,27 @@ const evalCases: Array<{
 		expected: "recommended",
 	},
 	{
+		name: "migration cues in ordinary chat trigger consultation",
+		profileLevel: "medium",
+		taskType: "chat",
+		taskSummary: "Migrate the session store to the new schema",
+		expected: "recommended",
+	},
+	{
+		name: "security cues in ordinary chat trigger consultation",
+		profileLevel: "medium",
+		taskType: "chat",
+		taskSummary: "Review authentication boundaries for this endpoint",
+		expected: "recommended",
+	},
+	{
+		name: "architecture cues in ordinary chat trigger consultation",
+		profileLevel: "medium",
+		taskType: "chat",
+		taskSummary: "Redesign the event architecture across services",
+		expected: "recommended",
+	},
+	{
 		name: "high profile consults by default",
 		profileLevel: "high",
 		taskType: "coding",

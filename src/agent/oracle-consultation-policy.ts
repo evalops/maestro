@@ -32,6 +32,9 @@ const CONSULTATION_TASK_TYPES = new Set([
 const UNCERTAINTY_PATTERN =
 	/\b(?:ambiguous|unclear|uncertain|trade-?offs?|cross[- ]cutting|multiple approaches|data loss|irreversible|root cause unknown)\b/i;
 
+const CONSULTATION_PROMPT_PATTERN =
+	/\b(?:architect(?:ure|ural|ing)?|migrat(?:e|es|ed|ing|ion)|security|secure|threat model(?:ing)?|auth(?:entication|orization)?|schema (?:change|migration)|backfill)\b/i;
+
 export function recommendOracleConsultation(
 	input: OracleConsultationPolicyInput,
 ): OracleConsultationDecision {
@@ -55,6 +58,14 @@ export function recommendOracleConsultation(
 	if (input.taskSummary && UNCERTAINTY_PATTERN.test(input.taskSummary)) {
 		if (mode === "available") mode = "recommended";
 		reasons.push("uncertainty_signal");
+	}
+
+	if (
+		input.taskSummary &&
+		CONSULTATION_PROMPT_PATTERN.test(input.taskSummary)
+	) {
+		if (mode === "available") mode = "recommended";
+		reasons.push("consultation_prompt_signal");
 	}
 
 	if (priorFailures >= 2) {
