@@ -4,6 +4,7 @@ const lazyToolLoaders = {
 	read: async () => (await import("./read.js")).readTool,
 	list: async () => (await import("./list.js")).listTool,
 	oracle: async () => (await import("./oracle.js")).oracleTool,
+	painter: async () => (await import("./painter.js")).painterTool,
 	find: async () => (await import("./find.js")).findTool,
 	extract_document: async () =>
 		(await import("./extract-document.js")).extractDocumentTool,

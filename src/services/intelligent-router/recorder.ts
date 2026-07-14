@@ -79,6 +79,23 @@ export function resolveIntelligentRouterStrategy(
 		: undefined;
 }
 
+export function resolveIntelligentRouterProfileHint(
+	req: IncomingMessage,
+	body?: unknown,
+): string | undefined {
+	const header = firstHeader(req, [
+		"x-maestro-agent-profile",
+		"x-composer-agent-profile",
+	]);
+	if (header) return header;
+	if (!body || typeof body !== "object" || !("profile" in body))
+		return undefined;
+	const profile = (body as { profile?: unknown }).profile;
+	return typeof profile === "string" && profile.trim()
+		? profile.trim()
+		: undefined;
+}
+
 export function resolveIntelligentRouterTaskSummary(
 	body: unknown,
 ): string | undefined {
@@ -143,17 +160,10 @@ export function selectIntelligentRouterModel(params: {
 	const taskType = resolveIntelligentRouterTaskType(params.req, params.body);
 	const modelHint = params.requestedModel ?? undefined;
 	const strategy = resolveIntelligentRouterStrategy(params.req);
-	const profileHint =
-		firstHeader(params.req, [
-			"x-maestro-agent-profile",
-			"x-composer-agent-profile",
-		]) ??
-		(params.body &&
-		typeof params.body === "object" &&
-		"profile" in params.body &&
-		typeof (params.body as { profile?: unknown }).profile === "string"
-			? (params.body as { profile: string }).profile
-			: undefined);
+	const profileHint = resolveIntelligentRouterProfileHint(
+		params.req,
+		params.body,
+	);
 	const decision = getIntelligentRouterService().routeRequest({
 		taskType,
 		taskSummary: resolveIntelligentRouterTaskSummary(params.body),

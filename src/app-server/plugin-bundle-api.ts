@@ -236,6 +236,7 @@ export function createMaestroAppServerPluginBundleApi(
 					configPath: entry.configPath,
 				})),
 				resources: {
+					agents: resources.agents,
 					extensions: resources.extensions,
 					skills: resources.skills,
 					prompts: resources.prompts,

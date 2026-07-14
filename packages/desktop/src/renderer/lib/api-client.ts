@@ -227,6 +227,7 @@ export interface LspDetections {
 export type PackageScope = "local" | "project" | "user";
 
 export interface PackageResourceFilters {
+	agents?: string[];
 	extensions?: string[];
 	skills?: string[];
 	prompts?: string[];
@@ -247,6 +248,7 @@ export interface PackageInspectionResult {
 		errors: string[];
 	} | null;
 	resources: {
+		agents?: string[];
 		extensions: string[];
 		skills: string[];
 		prompts: string[];

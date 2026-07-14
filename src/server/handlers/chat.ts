@@ -24,6 +24,11 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import type { ComposerChatRequest, ComposerMessage } from "@evalops/contracts";
 import { applyOracleConsultationDirective } from "../../agent/oracle-consultation-policy.js";
+import { assignConfiguredOraclePolicyExperiment } from "../../agent/oracle-policy-experiment.js";
+import {
+	createRoutingReceipt,
+	resolveAgentProfileSelection,
+} from "../../agent/routing-receipt.js";
 import { isAssistantMessage } from "../../agent/type-guards.js";
 import type {
 	Attachment as AgentAttachment,
@@ -45,6 +50,7 @@ import {
 } from "../../services/compliance/recorder.js";
 import {
 	recordIntelligentRouterChatMetric,
+	resolveIntelligentRouterProfileHint,
 	selectIntelligentRouterModel,
 } from "../../services/intelligent-router/recorder.js";
 import { recordAssistantUsageMetric } from "../../services/usage-analytics/recorder.js";
@@ -52,6 +58,7 @@ import { evaluateModelPolicy } from "../../services/workspace-config/policy.js";
 import { toSessionModelMetadata } from "../../session/manager.js";
 import { createRuntimeSessionSummaryUpdater } from "../../session/runtime-summary-updater.js";
 import { recordSseSkip } from "../../telemetry.js";
+import { recordOraclePolicyExperimentAssignment } from "../../telemetry/oracle-policy.js";
 import { createLogger } from "../../utils/logger.js";
 import type { WebServerContext } from "../app-context.js";
 import {
@@ -321,6 +328,17 @@ export async function handleChat(
 		// Resolve model from registry through the intelligent router. With no history,
 		// this preserves the caller's requested model; with enough data or overrides,
 		// it can select a better-scoring model and expose explicit fallbacks.
+		const profileSelection = resolveAgentProfileSelection({
+			requestedProfile: resolveIntelligentRouterProfileHint(req, chatReq),
+			sessionPin: sessionManager.getHeader()?.agentProfilePin,
+			compatibilityProfile: "medium",
+		});
+		if (chatReq.persistProfile && profileSelection.source === "request") {
+			sessionManager.updateAgentProfilePin({
+				profile: profileSelection.requestedProfile,
+				updatedAt: new Date().toISOString(),
+			});
+		}
 		const routingSelection = selectIntelligentRouterModel({
 			req,
 			requestedModel: resolveModelInputForRouting(
@@ -328,9 +346,30 @@ export async function handleChat(
 				defaultProvider,
 				defaultModelId,
 			),
-			body: chatReq,
+			body: { ...chatReq, profile: profileSelection.requestedProfile },
 		});
+		const oracleExperimentAssignment = assignConfiguredOraclePolicyExperiment(
+			sessionManager.getSessionId(),
+		);
+		if (oracleExperimentAssignment) {
+			recordOraclePolicyExperimentAssignment({
+				assignment: oracleExperimentAssignment,
+				sessionId: sessionManager.getSessionId(),
+			});
+		}
+		const routedDecision = oracleExperimentAssignment
+			? {
+					...routingSelection.decision,
+					oracleConsultation: routingSelection.decision.oracleConsultation
+						? {
+								...routingSelection.decision.oracleConsultation,
+								policyVersion: oracleExperimentAssignment.policyVersion,
+							}
+						: undefined,
+				}
+			: routingSelection.decision;
 		let registeredModel: RegisteredModel | undefined;
+		let selectedModelInputIndex = -1;
 		let lastModelError: unknown;
 		let selectedModelError: unknown;
 		let selectedModelPolicyViolation: ReturnType<
@@ -353,6 +392,7 @@ export async function handleChat(
 					continue;
 				}
 				registeredModel = candidateModel;
+				selectedModelInputIndex = index;
 				break;
 			} catch (error) {
 				lastModelError = error;
@@ -378,6 +418,41 @@ export async function handleChat(
 		if (!registeredModel) {
 			throw selectedModelError ?? lastModelError;
 		}
+		const usedFallback = selectedModelInputIndex > 0;
+		const routingReceipt = createRoutingReceipt(
+			{
+				...routedDecision,
+				selectedModel: {
+					provider: registeredModel.provider,
+					model: registeredModel.id,
+				},
+			},
+			{
+				...profileSelection,
+				...(oracleExperimentAssignment
+					? {
+							experiment: {
+								experimentId: oracleExperimentAssignment.experimentId,
+								arm: oracleExperimentAssignment.arm,
+								policyVersion: oracleExperimentAssignment.policyVersion,
+							},
+						}
+					: {}),
+				...(usedFallback || routingSelection.decision.reason !== "highest_score"
+					? {
+							fallbackReason: usedFallback
+								? "selected_model_unavailable_or_disallowed"
+								: routingSelection.decision.reason,
+							fallbackModel: usedFallback
+								? {
+										provider: registeredModel.provider,
+										model: registeredModel.id,
+									}
+								: undefined,
+						}
+					: {}),
+			},
+		);
 		const routeStartedAt = Date.now();
 
 		// Parse approval mode from request header (allows per-request override)
@@ -442,10 +517,7 @@ export async function handleChat(
 					: {}),
 			},
 		);
-		applyOracleConsultationDirective(
-			agent,
-			routingSelection.decision.oracleConsultation,
-		);
+		applyOracleConsultationDirective(agent, routedDecision.oracleConsultation);
 
 		// Hydrate conversation history (all messages except the current user input)
 		const historyMessages = incomingMessages.slice(0, -1);
@@ -487,6 +559,7 @@ export async function handleChat(
 			},
 			{ requestId, modelKey },
 		);
+		sseSession.sendRoutingReceipt(routingReceipt);
 		sseSession.startHeartbeat(); // Keep connection alive during idle periods
 
 		// Track cleanup state to prevent double-cleanup
@@ -785,7 +858,10 @@ export async function handleChat(
 
 			// Handle message completion - persist to session
 			if (event.type === "message_end") {
-				sessionManager.saveMessage(event.message);
+				const persistedMessage = isAssistantMessage(event.message)
+					? { ...event.message, routingReceipt }
+					: event.message;
+				sessionManager.saveMessage(persistedMessage);
 				if (isAssistantMessage(event.message)) {
 					recordAssistantUsageMetric({
 						req,

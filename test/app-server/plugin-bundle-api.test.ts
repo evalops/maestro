@@ -26,7 +26,9 @@ function writeTrustedGlobalConfig(projectRoot: string): void {
 function writePluginBundle(root: string): string {
 	const packageDir = join(root, "vendor", "review-bundle");
 	const skillDir = join(packageDir, "skills", "reviewing");
+	const agentDir = join(packageDir, "agents", "reviewer");
 	mkdirSync(skillDir, { recursive: true });
+	mkdirSync(agentDir, { recursive: true });
 	writeFileSync(
 		join(packageDir, "package.json"),
 		JSON.stringify(
@@ -34,11 +36,16 @@ function writePluginBundle(root: string): string {
 				name: "@test/maestro-review-bundle",
 				version: "1.0.0",
 				keywords: ["maestro-package"],
-				maestro: { skills: ["./skills"] },
+				maestro: { agents: ["./agents"], skills: ["./skills"] },
 			},
 			null,
 			2,
 		),
+		"utf8",
+	);
+	writeFileSync(
+		join(agentDir, "agent.json"),
+		JSON.stringify({ key: "reviewer", label: "Reviewer", entry: "./index.js" }),
 		"utf8",
 	);
 	writeFileSync(
@@ -184,6 +191,9 @@ describe("Maestro app-server plugin bundle lifecycle API", () => {
 		expect(listed.result?.resources.skills.project).toEqual(
 			expect.arrayContaining([join(packageDir, "skills", "reviewing")]),
 		);
+		expect(listed.result?.resources.agents?.project).toEqual([
+			join(packageDir, "agents", "reviewer"),
+		]);
 		expect(loadSkills(projectRoot, { includeSystem: false }).skills).toEqual(
 			expect.arrayContaining([
 				expect.objectContaining({

@@ -106,7 +106,7 @@ export const TOOL_CATEGORIES = {
 	/** GitHub tools */
 	github: ["gh_pr", "gh_issue", "gh_repo"],
 	/** Advanced tools */
-	advanced: ["oracle"],
+	advanced: ["oracle", "painter"],
 } as const;
 
 /**
@@ -152,7 +152,7 @@ export const SUBAGENT_SPECS: Record<SubagentType, SubagentSpec> = {
 		displayName: "Explorer",
 		description: "Read-only codebase exploration - can search and read files",
 		allowedTools: toolsFromCategories("read", "advanced"),
-		deniedTools: ["oracle"], // Explorers shouldn't invoke oracle
+		deniedTools: ["oracle", "painter"], // Explorers are read-only; no reasoning subagents or image generation
 		allowMcp: false,
 		allowToolbox: false,
 		maxToolCallsPerTurn: 20,

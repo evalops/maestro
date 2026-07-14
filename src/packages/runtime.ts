@@ -16,7 +16,13 @@ import type { LoadedPackage, PackageResources } from "./types.js";
 
 const logger = createLogger("packages:runtime");
 
-const RESOURCE_KINDS = ["extensions", "skills", "prompts", "themes"] as const;
+const RESOURCE_KINDS = [
+	"agents",
+	"extensions",
+	"skills",
+	"prompts",
+	"themes",
+] as const;
 
 type ResourceKind = (typeof RESOURCE_KINDS)[number];
 type PackageScope = ConfiguredPackageSpec["scope"];
@@ -28,6 +34,7 @@ export interface ScopedPackageResourceDirectories {
 }
 
 export interface ConfiguredPackageRuntimeResources {
+	agents: ScopedPackageResourceDirectories;
 	extensions: ScopedPackageResourceDirectories;
 	skills: ScopedPackageResourceDirectories;
 	prompts: ScopedPackageResourceDirectories;
@@ -59,6 +66,7 @@ function createScopedDirectories(): ScopedPackageResourceDirectories {
 
 function createConfiguredPackageRuntimeResources(): ConfiguredPackageRuntimeResources {
 	return {
+		agents: createScopedDirectories(),
 		extensions: createScopedDirectories(),
 		skills: createScopedDirectories(),
 		prompts: createScopedDirectories(),
@@ -169,6 +177,7 @@ export function loadConfiguredPackageResources(
 	});
 	const resources = createConfiguredPackageRuntimeResources();
 	const seen: Record<ResourceKind, Record<RuntimePackageScope, Set<string>>> = {
+		agents: { user: new Set(), project: new Set() },
 		extensions: { user: new Set(), project: new Set() },
 		skills: { user: new Set(), project: new Set() },
 		prompts: { user: new Set(), project: new Set() },

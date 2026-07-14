@@ -1,4 +1,5 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
+import type { RoutingReceipt } from "@evalops/contracts";
 import type { AgentEvent } from "../agent/types.js";
 
 export interface SseContext {
@@ -81,6 +82,12 @@ export class SseSession {
 	sendSessionUpdate(sessionId: string): void {
 		const payload = { type: "session_update", sessionId };
 		this.write(`data: ${JSON.stringify(payload)}\n\n`);
+	}
+
+	sendRoutingReceipt(receipt: RoutingReceipt): void {
+		this.write(
+			`data: ${JSON.stringify({ type: "routing_receipt", receipt })}\n\n`,
+		);
 	}
 
 	sendHeartbeat(): void {

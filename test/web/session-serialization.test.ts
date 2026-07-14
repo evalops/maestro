@@ -56,7 +56,32 @@ const mockOpenAiModel: RegisteredModel = {
 	isLocal: false,
 };
 
+const routingReceipt = {
+	decisionId: "decision-1",
+	requestedProfile: "medium",
+	source: "request" as const,
+	resolvedProfileId: "medium-v1",
+	resolvedProfileVersion: 1,
+	provider: "anthropic",
+	model: "claude-sonnet-4-5",
+	reasoningEffort: "medium",
+	createdAt: "2026-07-14T12:00:00.000Z",
+};
+
 describe("session serialization", () => {
+	it("round-trips routing receipts on assistant messages", () => {
+		const composer: ComposerMessage = {
+			role: "assistant",
+			content: "Done",
+			routingReceipt,
+		};
+		const [app] = convertComposerMessageToApp(composer, mockModel);
+		expect((app as AssistantMessage).routingReceipt).toEqual(routingReceipt);
+		expect(convertAppMessageToComposer(app!).routingReceipt).toEqual(
+			routingReceipt,
+		);
+	});
+
 	it("converts app messages with thinking and tools to composer format", () => {
 		const userMessage: AppMessage = {
 			role: "user",

@@ -116,6 +116,16 @@ describe("oracle consultation policy eval matrix", () => {
 		expect(directive).toContain(ORACLE_CONSULTATION_POLICY_VERSION);
 	});
 
+	it("projects the assigned experiment policy version", () => {
+		expect(
+			recommendOracleConsultation({
+				profileLevel: "high",
+				taskType: "coding",
+				policyVersion: "oracle-v2",
+			}).policyVersion,
+		).toBe("oracle-v2");
+	});
+
 	it("queues recommended guidance exactly once for the next run", () => {
 		const additions: string[] = [];
 		const queued = applyOracleConsultationDirective(

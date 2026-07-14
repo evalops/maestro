@@ -69,6 +69,46 @@ describe("ComposerTrajectoryReplayLabPanel", () => {
 
 		expect(getSessionReplayLab).not.toHaveBeenCalled();
 	});
+
+	it("renders agent lineage and emits run navigation", async () => {
+		const getSessionReplayLab = vi.fn().mockResolvedValue(replayLab());
+		const apiClient = { getSessionReplayLab } as unknown as ApiClient;
+		const element = await fixture<ComposerTrajectoryReplayLabPanel>(
+			html`<composer-trajectory-replay-lab-panel
+				.apiClient=${apiClient}
+				.sessionId=${"session-lab-1"}
+			></composer-trajectory-replay-lab-panel>`,
+		);
+		await element.updateComplete;
+		await Promise.resolve();
+		await element.updateComplete;
+
+		const buttons = [...(element.shadowRoot?.querySelectorAll("button") ?? [])];
+		buttons.find((button) => button.textContent?.trim() === "agents")?.click();
+		await element.updateComplete;
+
+		const text = element.shadowRoot?.textContent ?? "";
+		expect(text).toContain("Agent operations");
+		expect(text).toContain("parent-run");
+		expect(text).toContain("child-run");
+		expect(text).toContain("completed");
+
+		const opened = new Promise<CustomEvent<{ runId: string }>>((resolve) => {
+			element.addEventListener("open-agent-run", (event) =>
+				resolve(event as CustomEvent<{ runId: string }>),
+			);
+		});
+		const childButton = [
+			...(element.shadowRoot?.querySelectorAll<HTMLButtonElement>(
+				"button[data-run-id]",
+			) ?? []),
+		].find((button) => button.dataset.runId === "child-run");
+		childButton?.click();
+		expect((await opened).detail).toEqual({ runId: "child-run" });
+		await element.updateComplete;
+		expect(element.shadowRoot?.textContent ?? "").toContain("Selected run");
+		expect(element.shadowRoot?.textContent ?? "").toContain("Child completed");
+	});
 });
 
 function replayLab() {
@@ -97,6 +137,27 @@ function replayLab() {
 		},
 		timeline: {
 			items: [
+				{
+					id: "agent-parent",
+					timestamp: "2026-05-18T00:00:00.000Z",
+					type: "agent.started",
+					title: "Parent started",
+					status: "running",
+					visibility: "user",
+					source: "local",
+					agentRunId: "parent-run",
+				},
+				{
+					id: "agent-child",
+					timestamp: "2026-05-18T00:00:01.000Z",
+					type: "agent.completed",
+					title: "Child completed",
+					status: "completed",
+					visibility: "user",
+					source: "local",
+					agentRunId: "child-run",
+					parentAgentRunId: "parent-run",
+				},
 				{
 					id: "tool-result:call-read",
 					timestamp: "2026-05-18T00:00:02.000Z",

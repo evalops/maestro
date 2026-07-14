@@ -2944,6 +2944,12 @@
           "model": {
             "type": "string"
           },
+          "profile": {
+            "type": "string"
+          },
+          "persistProfile": {
+            "type": "boolean"
+          },
           "messages": {
             "type": "array",
             "items": {
@@ -3233,6 +3239,154 @@
                 },
                 "api": {
                   "type": "string"
+                },
+                "routingReceipt": {
+                  "type": "object",
+                  "required": [
+                    "decisionId",
+                    "requestedProfile",
+                    "source",
+                    "resolvedProfileId",
+                    "resolvedProfileVersion",
+                    "provider",
+                    "model",
+                    "reasoningEffort",
+                    "createdAt"
+                  ],
+                  "properties": {
+                    "decisionId": {
+                      "minLength": 1,
+                      "type": "string"
+                    },
+                    "requestedProfile": {
+                      "minLength": 1,
+                      "type": "string"
+                    },
+                    "source": {
+                      "anyOf": [
+                        {
+                          "const": "request",
+                          "type": "string"
+                        },
+                        {
+                          "const": "session",
+                          "type": "string"
+                        },
+                        {
+                          "const": "compatibility_default",
+                          "type": "string"
+                        }
+                      ]
+                    },
+                    "resolvedProfileId": {
+                      "minLength": 1,
+                      "type": "string"
+                    },
+                    "resolvedProfileVersion": {
+                      "minimum": 1,
+                      "type": "number"
+                    },
+                    "provider": {
+                      "minLength": 1,
+                      "type": "string"
+                    },
+                    "model": {
+                      "minLength": 1,
+                      "type": "string"
+                    },
+                    "reasoningEffort": {
+                      "minLength": 1,
+                      "type": "string"
+                    },
+                    "createdAt": {
+                      "minLength": 1,
+                      "type": "string"
+                    },
+                    "oracle": {
+                      "type": "object",
+                      "required": [
+                        "policyVersion",
+                        "mode",
+                        "reasons"
+                      ],
+                      "properties": {
+                        "policyVersion": {
+                          "minLength": 1,
+                          "type": "string"
+                        },
+                        "mode": {
+                          "anyOf": [
+                            {
+                              "const": "available",
+                              "type": "string"
+                            },
+                            {
+                              "const": "recommended",
+                              "type": "string"
+                            },
+                            {
+                              "const": "required",
+                              "type": "string"
+                            }
+                          ]
+                        },
+                        "reasons": {
+                          "type": "array",
+                          "items": {
+                            "type": "string"
+                          }
+                        }
+                      }
+                    },
+                    "fallback": {
+                      "type": "object",
+                      "required": [
+                        "reason"
+                      ],
+                      "properties": {
+                        "reason": {
+                          "minLength": 1,
+                          "type": "string"
+                        },
+                        "provider": {
+                          "type": "string"
+                        },
+                        "model": {
+                          "type": "string"
+                        }
+                      }
+                    },
+                    "experiment": {
+                      "type": "object",
+                      "required": [
+                        "experimentId",
+                        "arm",
+                        "policyVersion"
+                      ],
+                      "properties": {
+                        "experimentId": {
+                          "minLength": 1,
+                          "type": "string"
+                        },
+                        "arm": {
+                          "anyOf": [
+                            {
+                              "const": "control",
+                              "type": "string"
+                            },
+                            {
+                              "const": "treatment",
+                              "type": "string"
+                            }
+                          ]
+                        },
+                        "policyVersion": {
+                          "minLength": 1,
+                          "type": "string"
+                        }
+                      }
+                    }
+                  }
                 },
                 "model": {
                   "type": "string"
@@ -3571,6 +3725,154 @@
           },
           "api": {
             "type": "string"
+          },
+          "routingReceipt": {
+            "type": "object",
+            "required": [
+              "decisionId",
+              "requestedProfile",
+              "source",
+              "resolvedProfileId",
+              "resolvedProfileVersion",
+              "provider",
+              "model",
+              "reasoningEffort",
+              "createdAt"
+            ],
+            "properties": {
+              "decisionId": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "requestedProfile": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "source": {
+                "anyOf": [
+                  {
+                    "const": "request",
+                    "type": "string"
+                  },
+                  {
+                    "const": "session",
+                    "type": "string"
+                  },
+                  {
+                    "const": "compatibility_default",
+                    "type": "string"
+                  }
+                ]
+              },
+              "resolvedProfileId": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "resolvedProfileVersion": {
+                "minimum": 1,
+                "type": "number"
+              },
+              "provider": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "model": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "reasoningEffort": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "createdAt": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "oracle": {
+                "type": "object",
+                "required": [
+                  "policyVersion",
+                  "mode",
+                  "reasons"
+                ],
+                "properties": {
+                  "policyVersion": {
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "mode": {
+                    "anyOf": [
+                      {
+                        "const": "available",
+                        "type": "string"
+                      },
+                      {
+                        "const": "recommended",
+                        "type": "string"
+                      },
+                      {
+                        "const": "required",
+                        "type": "string"
+                      }
+                    ]
+                  },
+                  "reasons": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  }
+                }
+              },
+              "fallback": {
+                "type": "object",
+                "required": [
+                  "reason"
+                ],
+                "properties": {
+                  "reason": {
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "provider": {
+                    "type": "string"
+                  },
+                  "model": {
+                    "type": "string"
+                  }
+                }
+              },
+              "experiment": {
+                "type": "object",
+                "required": [
+                  "experimentId",
+                  "arm",
+                  "policyVersion"
+                ],
+                "properties": {
+                  "experimentId": {
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "arm": {
+                    "anyOf": [
+                      {
+                        "const": "control",
+                        "type": "string"
+                      },
+                      {
+                        "const": "treatment",
+                        "type": "string"
+                      }
+                    ]
+                  },
+                  "policyVersion": {
+                    "minLength": 1,
+                    "type": "string"
+                  }
+                }
+              }
+            }
           },
           "model": {
             "type": "string"
@@ -6207,6 +6509,154 @@
                 },
                 "api": {
                   "type": "string"
+                },
+                "routingReceipt": {
+                  "type": "object",
+                  "required": [
+                    "decisionId",
+                    "requestedProfile",
+                    "source",
+                    "resolvedProfileId",
+                    "resolvedProfileVersion",
+                    "provider",
+                    "model",
+                    "reasoningEffort",
+                    "createdAt"
+                  ],
+                  "properties": {
+                    "decisionId": {
+                      "minLength": 1,
+                      "type": "string"
+                    },
+                    "requestedProfile": {
+                      "minLength": 1,
+                      "type": "string"
+                    },
+                    "source": {
+                      "anyOf": [
+                        {
+                          "const": "request",
+                          "type": "string"
+                        },
+                        {
+                          "const": "session",
+                          "type": "string"
+                        },
+                        {
+                          "const": "compatibility_default",
+                          "type": "string"
+                        }
+                      ]
+                    },
+                    "resolvedProfileId": {
+                      "minLength": 1,
+                      "type": "string"
+                    },
+                    "resolvedProfileVersion": {
+                      "minimum": 1,
+                      "type": "number"
+                    },
+                    "provider": {
+                      "minLength": 1,
+                      "type": "string"
+                    },
+                    "model": {
+                      "minLength": 1,
+                      "type": "string"
+                    },
+                    "reasoningEffort": {
+                      "minLength": 1,
+                      "type": "string"
+                    },
+                    "createdAt": {
+                      "minLength": 1,
+                      "type": "string"
+                    },
+                    "oracle": {
+                      "type": "object",
+                      "required": [
+                        "policyVersion",
+                        "mode",
+                        "reasons"
+                      ],
+                      "properties": {
+                        "policyVersion": {
+                          "minLength": 1,
+                          "type": "string"
+                        },
+                        "mode": {
+                          "anyOf": [
+                            {
+                              "const": "available",
+                              "type": "string"
+                            },
+                            {
+                              "const": "recommended",
+                              "type": "string"
+                            },
+                            {
+                              "const": "required",
+                              "type": "string"
+                            }
+                          ]
+                        },
+                        "reasons": {
+                          "type": "array",
+                          "items": {
+                            "type": "string"
+                          }
+                        }
+                      }
+                    },
+                    "fallback": {
+                      "type": "object",
+                      "required": [
+                        "reason"
+                      ],
+                      "properties": {
+                        "reason": {
+                          "minLength": 1,
+                          "type": "string"
+                        },
+                        "provider": {
+                          "type": "string"
+                        },
+                        "model": {
+                          "type": "string"
+                        }
+                      }
+                    },
+                    "experiment": {
+                      "type": "object",
+                      "required": [
+                        "experimentId",
+                        "arm",
+                        "policyVersion"
+                      ],
+                      "properties": {
+                        "experimentId": {
+                          "minLength": 1,
+                          "type": "string"
+                        },
+                        "arm": {
+                          "anyOf": [
+                            {
+                              "const": "control",
+                              "type": "string"
+                            },
+                            {
+                              "const": "treatment",
+                              "type": "string"
+                            }
+                          ]
+                        },
+                        "policyVersion": {
+                          "minLength": 1,
+                          "type": "string"
+                        }
+                      }
+                    }
+                  }
                 },
                 "model": {
                   "type": "string"

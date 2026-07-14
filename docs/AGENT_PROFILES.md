@@ -50,3 +50,9 @@ Oracle configurations must be read-only and reasoning-capable at runtime. The bu
 An assistant response completing without an error is not a verified success. Automatic promotion requires at least 20 verified outcomes for the workload. Verification results, explicit user acceptance, rejection, and retries can supply outcome evidence; unverified runs remain useful for latency and cost observations only.
 
 Clients can request a profile through `X-Maestro-Agent-Profile` (or the compatibility `X-Composer-Agent-Profile`) and inspect the versioned resolved profile on the routing decision.
+
+## Outcome-calibrated Oracle experiments
+
+Hosts can enable deterministic session-level control/treatment assignment with `MAESTRO_ORACLE_EXPERIMENT_ID`, `MAESTRO_ORACLE_EXPERIMENT_ALLOCATION`, `MAESTRO_ORACLE_EXPERIMENT_CONTROL_VERSION`, and `MAESTRO_ORACLE_EXPERIMENT_TREATMENT_VERSION`. Configuration must be complete and allocation must be between `0` and `1`.
+
+The assigned arm and policy version appear in routing receipts and bounded telemetry attributes. Assignment is immutable for an experiment/session pair; promotion remains advisory and requires verified outcome gates.

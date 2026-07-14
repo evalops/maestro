@@ -91,6 +91,7 @@ const COMMANDS = new Set([
 	"hooks",
 	"skill",
 	"memory",
+	"painter",
 	"remote",
 	"export",
 	"import",
@@ -115,6 +116,7 @@ const SUBCOMMAND_COMMANDS = new Set([
 	"hooks",
 	"skill",
 	"memory",
+	"painter",
 	"remote",
 	"scenario",
 ]);
@@ -433,7 +435,8 @@ export function parseArgs(args: string[]): Args {
 					arg === "init" ||
 					arg === "evalops" ||
 					arg === "update" ||
-					arg === "skill"
+					arg === "skill" ||
+					arg === "painter"
 				) {
 					result.commandArgs = args.slice(i + 1);
 					const commandTailStreamJson = commandTailStreamJsonFlag(

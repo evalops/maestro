@@ -8,6 +8,7 @@ import {
 	setIntelligentRouterServiceForTest,
 } from "../../src/services/intelligent-router/index.js";
 import { resolveIntelligentRouterTaskSummary } from "../../src/services/intelligent-router/recorder.js";
+import { resolveIntelligentRouterProfileHint } from "../../src/services/intelligent-router/recorder.js";
 import type { RoutingModelCandidate } from "../../src/services/intelligent-router/types.js";
 
 interface MockResponse {
@@ -77,6 +78,15 @@ function createService(): IntelligentRouterService {
 }
 
 describe("intelligent router service", () => {
+	it("resolves request profile headers before body hints", () => {
+		const req = createRequest("POST", "/api/chat", undefined, {
+			"x-maestro-agent-profile": " ultra ",
+		});
+		expect(resolveIntelligentRouterProfileHint(req, { profile: "rush" })).toBe(
+			"ultra",
+		);
+	});
+
 	it("derives policy signals from the latest user message", () => {
 		expect(
 			resolveIntelligentRouterTaskSummary({

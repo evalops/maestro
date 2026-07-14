@@ -53,6 +53,27 @@ describe("SseSession", () => {
 		expect(res.chunks.some((c: string) => c.includes("heartbeat"))).toBe(true);
 	});
 
+	it("writes routing receipts as first-class stream events", () => {
+		const res = createRes();
+		const session = new SseSession(res as unknown as ServerResponse);
+
+		session.sendRoutingReceipt({
+			decisionId: "decision-1",
+			requestedProfile: "high",
+			source: "session",
+			resolvedProfileId: "high-v1",
+			resolvedProfileVersion: 1,
+			provider: "anthropic",
+			model: "claude-opus-4-6",
+			reasoningEffort: "xhigh",
+			createdAt: "2026-07-14T12:00:00.000Z",
+		});
+
+		expect(res.chunks).toContainEqual(
+			expect.stringContaining('"type":"routing_receipt"'),
+		);
+	});
+
 	it("records skipped writes after disconnect", () => {
 		const res = createRes();
 		res.writable = false;

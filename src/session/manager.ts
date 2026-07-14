@@ -11,6 +11,7 @@
 
 import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { extname, join, resolve } from "node:path";
+import type { AgentProfilePin } from "@evalops/contracts";
 import { v4 as uuidv4 } from "uuid";
 import { isToolResultMessage } from "../agent/type-guards.js";
 import type {
@@ -270,6 +271,7 @@ export class SessionManager {
 	private leafId: string | null = null;
 	private flushed = false;
 	private _hasAssistantMessage = false;
+	private pendingAgentProfilePin?: AgentProfilePin;
 
 	/**
 	 * Creates a new SessionManager.
@@ -545,6 +547,8 @@ export class SessionManager {
 			promptMetadata: state.promptMetadata,
 			promptContextManifest: getPersistedSessionPromptContextManifest(state),
 			unifiedContextManifest: state.unifiedContextManifest,
+			agentProfilePin:
+				this.pendingAgentProfilePin ?? provisionalHeader?.agentProfilePin,
 			systemPromptSourcePaths:
 				state.systemPromptSourcePaths &&
 				state.systemPromptSourcePaths.length > 0
@@ -618,6 +622,28 @@ export class SessionManager {
 		const entry = {
 			...(this.fileEntries[headerIndex] as SessionHeaderEntry),
 			unifiedContextManifest: manifest,
+		};
+		this.fileEntries[headerIndex] = entry;
+		this.metadataCache.apply(entry);
+		this.rewriteSessionFile();
+		this.flushed = true;
+		return true;
+	}
+
+	updateAgentProfilePin(pin: AgentProfilePin): boolean {
+		if (!this.enabled) return false;
+		const profile = pin.profile.trim();
+		if (!profile || !pin.updatedAt.trim()) return false;
+		const normalized = Object.freeze({ profile, updatedAt: pin.updatedAt });
+		this.pendingAgentProfilePin = normalized;
+		if (!this.sessionInitialized) return true;
+		const headerIndex = this.fileEntries.findIndex(
+			(entry) => entry.type === "session",
+		);
+		if (headerIndex < 0) return false;
+		const entry = {
+			...(this.fileEntries[headerIndex] as SessionHeaderEntry),
+			agentProfilePin: normalized,
 		};
 		this.fileEntries[headerIndex] = entry;
 		this.metadataCache.apply(entry);

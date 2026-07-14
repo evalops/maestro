@@ -122,6 +122,77 @@ describe("chat handler profile threading", () => {
 		vi.doUnmock("../../src/agent/user-prompt-runtime.js");
 		vi.resetModules();
 		vi.restoreAllMocks();
+		vi.unstubAllEnvs();
+	});
+
+	it("emits identical Oracle experiment policy metadata over SSE and websocket", async () => {
+		vi.stubEnv("MAESTRO_ORACLE_EXPERIMENT_ID", "oracle-july");
+		vi.stubEnv("MAESTRO_ORACLE_EXPERIMENT_ALLOCATION", "1");
+		vi.stubEnv("MAESTRO_ORACLE_EXPERIMENT_CONTROL_VERSION", "oracle-v1");
+		vi.stubEnv("MAESTRO_ORACLE_EXPERIMENT_TREATMENT_VERSION", "oracle-v2");
+		const runUserPromptWithRecovery = vi.fn(async () => {});
+		const { handleChat, handleChatWebSocket } =
+			await importChatHandlersWithMock(runUserPromptWithRecovery);
+		const context: Partial<WebServerContext> = {
+			createAgent: async () => createMockAgent(),
+			getRegisteredModel: async () => mockModel,
+			defaultApprovalMode: "prompt",
+			defaultProvider: "anthropic",
+			defaultModelId: mockModel.id,
+			corsHeaders: cors,
+		};
+
+		const httpReq = new PassThrough() as MockPassThrough;
+		httpReq.method = "POST";
+		httpReq.url = "/api/chat";
+		httpReq.headers = {};
+		httpReq.end(
+			JSON.stringify({ messages: [{ role: "user", content: "hi" }] }),
+		);
+		const res = makeRes();
+		await handleChat(
+			httpReq as unknown as IncomingMessage,
+			res as unknown as ServerResponse,
+			context as WebServerContext,
+		);
+		const sseReceipt = res.body
+			.split("\n")
+			.find(
+				(line) =>
+					line.startsWith("data: {") && line.includes("routing_receipt"),
+			);
+
+		const wsReq = new PassThrough() as MockPassThrough;
+		wsReq.method = "GET";
+		wsReq.url = "/api/chat/ws";
+		wsReq.headers = { host: "localhost" };
+		const ws = new MockWebSocket();
+		handleChatWebSocket(
+			ws as unknown as Parameters<typeof handleChatWebSocket>[0],
+			wsReq as unknown as IncomingMessage,
+			context as WebServerContext,
+		);
+		ws.emit(
+			"message",
+			JSON.stringify({ messages: [{ role: "user", content: "hi" }] }),
+		);
+		await vi.waitFor(() =>
+			expect(
+				ws.sent.some((payload) => payload.includes("routing_receipt")),
+			).toBe(true),
+		);
+
+		const httpExperiment = JSON.parse(sseReceipt!.slice("data: ".length))
+			.receipt.experiment;
+		const wsExperiment = JSON.parse(
+			ws.sent.find((payload) => payload.includes("routing_receipt"))!,
+		).receipt.experiment;
+		expect(httpExperiment).toEqual({
+			experimentId: "oracle-july",
+			arm: "treatment",
+			policyVersion: "oracle-v2",
+		});
+		expect(wsExperiment).toEqual(httpExperiment);
 	});
 
 	it("passes the server profile into SSE prompt recovery", async () => {

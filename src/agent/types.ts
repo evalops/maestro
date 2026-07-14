@@ -31,7 +31,10 @@
  * @module agent/types
  */
 
-import type { GuardedFilesPolicySettings } from "@evalops/contracts";
+import type {
+	GuardedFilesPolicySettings,
+	RoutingReceipt,
+} from "@evalops/contracts";
 import type { TSchema } from "@sinclair/typebox";
 import type { PromptProjectDocManifest } from "../config/index.js";
 import type { UnifiedContextManifest } from "../context/manifest-types.js";
@@ -452,6 +455,8 @@ export interface AssistantMessage {
 	errorMessage?: string;
 	/** Unix timestamp in milliseconds when message was created */
 	timestamp: number;
+	/** Immutable model/profile routing decision for this turn. */
+	routingReceipt?: RoutingReceipt;
 }
 
 /**

@@ -75,6 +75,7 @@ function serializeInspection(inspected: InspectedPackage) {
 			: null,
 		resources: inspected.resources
 			? {
+					agents: inspected.resources.agents,
 					extensions: inspected.resources.extensions,
 					skills: inspected.resources.skills,
 					prompts: inspected.resources.prompts,

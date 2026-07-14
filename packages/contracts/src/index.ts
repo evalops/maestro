@@ -125,6 +125,50 @@ export type ComposerThinkingLevel =
 	| "medium"
 	| "high";
 
+export type RoutingReceiptSource =
+	| "request"
+	| "session"
+	| "compatibility_default";
+
+export interface AgentProfilePin {
+	profile: string;
+	updatedAt: string;
+}
+
+export interface RoutingReceiptOracle {
+	policyVersion: string;
+	mode: "available" | "recommended" | "required";
+	reasons: readonly string[];
+}
+
+export interface RoutingReceiptFallback {
+	reason: string;
+	provider?: string;
+	model?: string;
+}
+
+export interface RoutingReceiptExperiment {
+	experimentId: string;
+	arm: "control" | "treatment";
+	policyVersion: string;
+}
+
+/** Immutable historical model/profile routing facts for one assistant turn. */
+export interface RoutingReceipt {
+	decisionId: string;
+	requestedProfile: string;
+	source: RoutingReceiptSource;
+	resolvedProfileId: string;
+	resolvedProfileVersion: number;
+	provider: string;
+	model: string;
+	reasoningEffort: string;
+	createdAt: string;
+	oracle?: RoutingReceiptOracle;
+	fallback?: RoutingReceiptFallback;
+	experiment?: RoutingReceiptExperiment;
+}
+
 /**
  * Represents a tool invocation within a message.
  *
@@ -204,6 +248,8 @@ export interface ComposerMessage {
 	provider?: string;
 	/** Original API for assistant messages (for cross-provider resume) */
 	api?: string;
+	/** Immutable record of the model/profile routing decision for this turn. */
+	routingReceipt?: RoutingReceipt;
 	/** Original model ID for assistant messages (for cross-provider resume) */
 	model?: string;
 }
@@ -362,6 +408,10 @@ export interface ComposerFilesResponse {
 export interface ComposerChatRequest {
 	/** Model ID to use (e.g., "claude-sonnet-4-5-20250929") */
 	model?: string;
+	/** Agent profile requested for this turn. */
+	profile?: string;
+	/** Persist an explicitly requested profile as the session default. */
+	persistProfile?: boolean;
 	/** Conversation history including the current user message */
 	messages: ComposerMessage[];
 	/** Extended thinking level for supported models */
@@ -719,6 +769,7 @@ export interface ComposerToolRetryDecision {
  * Agent-level streaming events (SSE payloads).
  */
 export type ComposerAgentEvent =
+	| { type: "routing_receipt"; receipt: RoutingReceipt }
 	| { type: "agent_start" }
 	| {
 			type: "agent_end";
