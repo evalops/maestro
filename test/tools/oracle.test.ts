@@ -27,7 +27,36 @@ vi.mock("../../src/oauth/index.js", () => ({
 	issueEvalOpsDelegationToken: issueEvalOpsDelegationTokenMock,
 }));
 
-import { oracleTool } from "../../src/tools/oracle.js";
+import {
+	oracleTool,
+	selectComplementaryOracleModel,
+} from "../../src/tools/oracle.js";
+
+describe("selectComplementaryOracleModel", () => {
+	it("prefers a reasoning model from a different provider", () => {
+		const selected = selectComplementaryOracleModel(
+			[
+				{ id: "gpt-5.5", provider: "openai-codex", reasoning: true },
+				{ id: "claude-opus", provider: "anthropic", reasoning: true },
+			],
+			{ primaryProvider: "openai-codex" },
+		);
+
+		expect(selected).toMatchObject({
+			id: "claude-opus",
+			provider: "anthropic",
+		});
+	});
+
+	it("never falls back to a non-reasoning model", () => {
+		expect(() =>
+			selectComplementaryOracleModel(
+				[{ id: "fast", provider: "openai", reasoning: false }],
+				{ primaryProvider: "openai-codex" },
+			),
+		).toThrow(/reasoning-capable model/);
+	});
+});
 
 function createMockChildProcess(output: string) {
 	const proc = new EventEmitter() as EventEmitter & {

@@ -1,5 +1,7 @@
 # Feature Guide
 
+Maestro provides a capability dial (`low`, `medium`, `high`, and `ultra`) backed by versioned agent profiles. Legacy `free`, `rush`, `smart`, `custom`, and `frontier` names remain available as migration aliases. See [Agent Profiles](AGENT_PROFILES.md).
+
 Audience: users exploring TUI/CLI flows; skim first.  
 Nav: [Docs index](README.md) · [Quickstart](QUICKSTART.md) · [Tools Reference](TOOLS_REFERENCE.md) · [Web UI](WEB_UI.md)
 

@@ -108,6 +108,34 @@ describe("app-server schema fixtures", () => {
 		).toBe(true);
 	});
 
+	it("publishes revision-aware thread retrieval fields", async () => {
+		const payloads = JSON.parse(
+			await readFile(
+				"packages/contracts/schema/app-server/payload-schemas.json",
+				"utf8",
+			),
+		) as {
+			namedSchemas: Record<
+				string,
+				{ properties?: Record<string, unknown>; required?: string[] }
+			>;
+		};
+		const graph = payloads.namedSchemas.MaestroAppServerThreadGraphSchema;
+		const thread = payloads.namedSchemas.MaestroAppServerThreadSchema;
+
+		expect(graph.properties).toHaveProperty("authoritativeEntryIds");
+		expect(graph.properties).toHaveProperty("supersededEntryIds");
+		expect(graph.properties).toHaveProperty("revisionGroups");
+		expect(graph.required).toEqual(
+			expect.arrayContaining([
+				"authoritativeEntryIds",
+				"supersededEntryIds",
+				"revisionGroups",
+			]),
+		);
+		expect(JSON.stringify(thread)).toContain('"history"');
+	});
+
 	it("keeps generated capability requirements aligned with sandbox check fields", async () => {
 		const payloads = JSON.parse(
 			await readFile(

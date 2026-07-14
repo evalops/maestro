@@ -112,6 +112,20 @@ export {
 	type SubagentDispatch,
 } from "./modes.js";
 export {
+	AGENT_PROFILES,
+	AGENT_PROFILE_LEVELS,
+	type AgentProfile,
+	type AgentProfileBudgets,
+	type AgentProfileLevel,
+	type ModelInvocationProfile,
+	parseAgentProfileLevel,
+	resolveAgentProfile,
+} from "./profiles.js";
+export {
+	loadAgentProfiles,
+	loadAgentProfilesFromDirectory,
+} from "./profile-loader.js";
+export {
 	ContextHandoffManager,
 	createContextHandoffManager,
 	estimateTokenCount,

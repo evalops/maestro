@@ -73,6 +73,7 @@ export interface RuntimeEnv {
 	readonly missionStoreDir: string | null;
 	readonly snapshotBlobDir: string | null;
 	readonly skillTrustStrict: boolean;
+	readonly primaryModelProvider: string | null;
 
 	// --- CLI command aggregator / telemetry (PR #2772 timer leak) ---
 	/**
@@ -306,6 +307,7 @@ export function createRuntimeEnv(raw: NodeJS.ProcessEnv): RuntimeEnv {
 		missionStoreDir: resolveHomePath(trim(raw.MAESTRO_MISSION_STORE_DIR), raw),
 		snapshotBlobDir: resolveHomePath(trim(raw.MAESTRO_SNAPSHOT_BLOB_DIR), raw),
 		skillTrustStrict: parseBoolean(trim(raw.MAESTRO_SKILL_TRUST_STRICT)),
+		primaryModelProvider: trim(raw.MAESTRO_PRIMARY_MODEL_PROVIDER),
 
 		telemetryEnabled: parseOptionalBoolean(
 			trim(raw.MAESTRO_TELEMETRY) ?? trim(raw.PLAYWRIGHT_TELEMETRY),

@@ -1,3 +1,4 @@
+import { parseAgentProfileLevel } from "../../agent/profiles.js";
 import { isRecord } from "../../utils/json.js";
 import {
 	MODEL_PERFORMANCE_METRIC_SOURCES,
@@ -162,6 +163,16 @@ export function normalizeRoutingRequest(
 	}
 	const requestInput = input as RoutingRequestInput;
 	const taskType = cleanOptionalString(requestInput.taskType) ?? "chat";
+	const profileInput =
+		cleanOptionalString(requestInput.profileHint) ??
+		cleanOptionalString(requestInput.profile_hint) ??
+		"medium";
+	const profileLevel = parseAgentProfileLevel(profileInput);
+	if (!profileLevel) {
+		throw new IntelligentRouterValidationError(
+			"Invalid agent profile. Use low, medium, high, or ultra.",
+		);
+	}
 	const modelHint =
 		cleanOptionalString(requestInput.modelHint) ??
 		cleanOptionalString(requestInput.model_hint);
@@ -173,6 +184,7 @@ export function normalizeRoutingRequest(
 	);
 	return {
 		taskType,
+		profileLevel,
 		strategy: parseRoutingStrategy(requestInput.strategy),
 		unavailableModels,
 		availableModels:
@@ -186,6 +198,7 @@ export type NormalizedModelPerformanceMetricInput =
 		source: ModelPerformanceMetricSource;
 		latencyMs: number;
 		success: boolean;
+		verified: boolean;
 		costUsd: number;
 		qualityScore: number;
 		occurredAt: Date | string;
@@ -215,6 +228,10 @@ export function normalizePerformanceMetricInput(
 		source: parseMetricSource(metricInput.source),
 		latencyMs,
 		success: parseOptionalBoolean(metricInput.success) ?? true,
+		verified:
+			typeof metricInput.verified === "boolean"
+				? metricInput.verified
+				: parseMetricSource(metricInput.source) === "eval",
 		costUsd,
 		qualityScore: Math.max(0, Math.min(1, qualityScore)),
 		...(cleanOptionalString(metricInput.evalSuite)

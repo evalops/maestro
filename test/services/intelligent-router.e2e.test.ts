@@ -154,6 +154,7 @@ describe("intelligent router E2E", () => {
 				success: true,
 				costUsd: 0.001,
 				qualityScore: 0.8,
+				verified: true,
 			});
 			await postMetric(server.baseUrl, {
 				taskType: "coding",
@@ -163,6 +164,7 @@ describe("intelligent router E2E", () => {
 				success: true,
 				costUsd: 0.0012,
 				qualityScore: 0.82,
+				verified: true,
 			});
 			await postMetric(server.baseUrl, {
 				taskType: "coding",
@@ -172,6 +174,7 @@ describe("intelligent router E2E", () => {
 				success: false,
 				costUsd: 0.02,
 				qualityScore: 0.95,
+				verified: true,
 			});
 			await postMetric(server.baseUrl, {
 				taskType: "coding",
@@ -181,6 +184,7 @@ describe("intelligent router E2E", () => {
 				success: true,
 				costUsd: 0.02,
 				qualityScore: 0.95,
+				verified: true,
 			});
 
 			const metrics = await requestJson<{
@@ -343,7 +347,7 @@ describe("intelligent router E2E", () => {
 			);
 			expect(hintDecision.status).toBe(200);
 			expect(hintDecision.body.decision).toMatchObject({
-				reason: "insufficient_history_model_hint",
+				reason: "insufficient_verified_history_model_hint",
 				overrideApplied: false,
 				selectedModel: { provider: "openai", model: "gpt-4o-mini" },
 			});

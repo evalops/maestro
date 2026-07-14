@@ -5481,6 +5481,12 @@
 															},
 															"type": "array"
 														},
+														"authoritativeEntryIds": {
+															"items": {
+																"type": "string"
+															},
+															"type": "array"
+														},
 														"branchId": {
 															"type": "string"
 														},
@@ -5519,14 +5525,84 @@
 														},
 														"leafEntryId": {
 															"type": "string"
+														},
+														"revisionGroups": {
+															"items": {
+																"properties": {
+																	"activeChildEntryId": {
+																		"type": "string"
+																	},
+																	"childEntryIds": {
+																		"items": {
+																			"type": "string"
+																		},
+																		"type": "array"
+																	},
+																	"parentEntryId": {
+																		"anyOf": [
+																			{
+																				"type": "string"
+																			},
+																			{
+																				"type": "null"
+																			}
+																		]
+																	}
+																},
+																"required": ["parentEntryId", "childEntryIds"],
+																"type": "object"
+															},
+															"type": "array"
+														},
+														"supersededEntryIds": {
+															"items": {
+																"type": "string"
+															},
+															"type": "array"
 														}
 													},
 													"required": [
 														"branchId",
 														"activeEntryIds",
+														"authoritativeEntryIds",
+														"supersededEntryIds",
+														"revisionGroups",
 														"compactionSpans"
 													],
 													"type": "object"
+												},
+												"history": {
+													"items": {
+														"properties": {
+															"content": {},
+															"data": {},
+															"id": {
+																"type": "string"
+															},
+															"parentId": {
+																"anyOf": [
+																	{
+																		"type": "string"
+																	},
+																	{
+																		"type": "null"
+																	}
+																]
+															},
+															"role": {
+																"type": "string"
+															},
+															"timestamp": {
+																"type": "string"
+															},
+															"type": {
+																"type": "string"
+															}
+														},
+														"required": ["id", "type"],
+														"type": "object"
+													},
+													"type": "array"
 												},
 												"messagesView": {
 													"anyOf": [
@@ -5803,6 +5879,12 @@
 											},
 											"type": "array"
 										},
+										"authoritativeEntryIds": {
+											"items": {
+												"type": "string"
+											},
+											"type": "array"
+										},
 										"branchId": {
 											"type": "string"
 										},
@@ -5841,9 +5923,50 @@
 										},
 										"leafEntryId": {
 											"type": "string"
+										},
+										"revisionGroups": {
+											"items": {
+												"properties": {
+													"activeChildEntryId": {
+														"type": "string"
+													},
+													"childEntryIds": {
+														"items": {
+															"type": "string"
+														},
+														"type": "array"
+													},
+													"parentEntryId": {
+														"anyOf": [
+															{
+																"type": "string"
+															},
+															{
+																"type": "null"
+															}
+														]
+													}
+												},
+												"required": ["parentEntryId", "childEntryIds"],
+												"type": "object"
+											},
+											"type": "array"
+										},
+										"supersededEntryIds": {
+											"items": {
+												"type": "string"
+											},
+											"type": "array"
 										}
 									},
-									"required": ["branchId", "activeEntryIds", "compactionSpans"],
+									"required": [
+										"branchId",
+										"activeEntryIds",
+										"authoritativeEntryIds",
+										"supersededEntryIds",
+										"revisionGroups",
+										"compactionSpans"
+									],
 									"type": "object"
 								},
 								"nextCursor": {
@@ -6265,6 +6388,31 @@
 				}
 			},
 			"required": ["jsonrpc", "id"],
+			"type": "object"
+		},
+		"MaestroAppServerRevisionGroupSchema": {
+			"properties": {
+				"activeChildEntryId": {
+					"type": "string"
+				},
+				"childEntryIds": {
+					"items": {
+						"type": "string"
+					},
+					"type": "array"
+				},
+				"parentEntryId": {
+					"anyOf": [
+						{
+							"type": "string"
+						},
+						{
+							"type": "null"
+						}
+					]
+				}
+			},
+			"required": ["parentEntryId", "childEntryIds"],
 			"type": "object"
 		},
 		"MaestroAppServerSandboxCheckItemSchema": {
@@ -6775,6 +6923,12 @@
 					},
 					"type": "array"
 				},
+				"authoritativeEntryIds": {
+					"items": {
+						"type": "string"
+					},
+					"type": "array"
+				},
 				"branchId": {
 					"type": "string"
 				},
@@ -6813,9 +6967,50 @@
 				},
 				"leafEntryId": {
 					"type": "string"
+				},
+				"revisionGroups": {
+					"items": {
+						"properties": {
+							"activeChildEntryId": {
+								"type": "string"
+							},
+							"childEntryIds": {
+								"items": {
+									"type": "string"
+								},
+								"type": "array"
+							},
+							"parentEntryId": {
+								"anyOf": [
+									{
+										"type": "string"
+									},
+									{
+										"type": "null"
+									}
+								]
+							}
+						},
+						"required": ["parentEntryId", "childEntryIds"],
+						"type": "object"
+					},
+					"type": "array"
+				},
+				"supersededEntryIds": {
+					"items": {
+						"type": "string"
+					},
+					"type": "array"
 				}
 			},
-			"required": ["branchId", "activeEntryIds", "compactionSpans"],
+			"required": [
+				"branchId",
+				"activeEntryIds",
+				"authoritativeEntryIds",
+				"supersededEntryIds",
+				"revisionGroups",
+				"compactionSpans"
+			],
 			"type": "object"
 		},
 		"MaestroAppServerThreadItemSchema": {
@@ -7160,6 +7355,12 @@
 											},
 											"type": "array"
 										},
+										"authoritativeEntryIds": {
+											"items": {
+												"type": "string"
+											},
+											"type": "array"
+										},
 										"branchId": {
 											"type": "string"
 										},
@@ -7198,10 +7399,84 @@
 										},
 										"leafEntryId": {
 											"type": "string"
+										},
+										"revisionGroups": {
+											"items": {
+												"properties": {
+													"activeChildEntryId": {
+														"type": "string"
+													},
+													"childEntryIds": {
+														"items": {
+															"type": "string"
+														},
+														"type": "array"
+													},
+													"parentEntryId": {
+														"anyOf": [
+															{
+																"type": "string"
+															},
+															{
+																"type": "null"
+															}
+														]
+													}
+												},
+												"required": ["parentEntryId", "childEntryIds"],
+												"type": "object"
+											},
+											"type": "array"
+										},
+										"supersededEntryIds": {
+											"items": {
+												"type": "string"
+											},
+											"type": "array"
 										}
 									},
-									"required": ["branchId", "activeEntryIds", "compactionSpans"],
+									"required": [
+										"branchId",
+										"activeEntryIds",
+										"authoritativeEntryIds",
+										"supersededEntryIds",
+										"revisionGroups",
+										"compactionSpans"
+									],
 									"type": "object"
+								},
+								"history": {
+									"items": {
+										"properties": {
+											"content": {},
+											"data": {},
+											"id": {
+												"type": "string"
+											},
+											"parentId": {
+												"anyOf": [
+													{
+														"type": "string"
+													},
+													{
+														"type": "null"
+													}
+												]
+											},
+											"role": {
+												"type": "string"
+											},
+											"timestamp": {
+												"type": "string"
+											},
+											"type": {
+												"type": "string"
+											}
+										},
+										"required": ["id", "type"],
+										"type": "object"
+									},
+									"type": "array"
 								},
 								"messagesView": {
 									"anyOf": [
@@ -7419,6 +7694,12 @@
 									},
 									"type": "array"
 								},
+								"authoritativeEntryIds": {
+									"items": {
+										"type": "string"
+									},
+									"type": "array"
+								},
 								"branchId": {
 									"type": "string"
 								},
@@ -7457,10 +7738,84 @@
 								},
 								"leafEntryId": {
 									"type": "string"
+								},
+								"revisionGroups": {
+									"items": {
+										"properties": {
+											"activeChildEntryId": {
+												"type": "string"
+											},
+											"childEntryIds": {
+												"items": {
+													"type": "string"
+												},
+												"type": "array"
+											},
+											"parentEntryId": {
+												"anyOf": [
+													{
+														"type": "string"
+													},
+													{
+														"type": "null"
+													}
+												]
+											}
+										},
+										"required": ["parentEntryId", "childEntryIds"],
+										"type": "object"
+									},
+									"type": "array"
+								},
+								"supersededEntryIds": {
+									"items": {
+										"type": "string"
+									},
+									"type": "array"
 								}
 							},
-							"required": ["branchId", "activeEntryIds", "compactionSpans"],
+							"required": [
+								"branchId",
+								"activeEntryIds",
+								"authoritativeEntryIds",
+								"supersededEntryIds",
+								"revisionGroups",
+								"compactionSpans"
+							],
 							"type": "object"
+						},
+						"history": {
+							"items": {
+								"properties": {
+									"content": {},
+									"data": {},
+									"id": {
+										"type": "string"
+									},
+									"parentId": {
+										"anyOf": [
+											{
+												"type": "string"
+											},
+											{
+												"type": "null"
+											}
+										]
+									},
+									"role": {
+										"type": "string"
+									},
+									"timestamp": {
+										"type": "string"
+									},
+									"type": {
+										"type": "string"
+									}
+								},
+								"required": ["id", "type"],
+								"type": "object"
+							},
+							"type": "array"
 						},
 						"messagesView": {
 							"anyOf": [
@@ -7900,6 +8255,12 @@
 							},
 							"type": "array"
 						},
+						"authoritativeEntryIds": {
+							"items": {
+								"type": "string"
+							},
+							"type": "array"
+						},
 						"branchId": {
 							"type": "string"
 						},
@@ -7938,9 +8299,50 @@
 						},
 						"leafEntryId": {
 							"type": "string"
+						},
+						"revisionGroups": {
+							"items": {
+								"properties": {
+									"activeChildEntryId": {
+										"type": "string"
+									},
+									"childEntryIds": {
+										"items": {
+											"type": "string"
+										},
+										"type": "array"
+									},
+									"parentEntryId": {
+										"anyOf": [
+											{
+												"type": "string"
+											},
+											{
+												"type": "null"
+											}
+										]
+									}
+								},
+								"required": ["parentEntryId", "childEntryIds"],
+								"type": "object"
+							},
+							"type": "array"
+						},
+						"supersededEntryIds": {
+							"items": {
+								"type": "string"
+							},
+							"type": "array"
 						}
 					},
-					"required": ["branchId", "activeEntryIds", "compactionSpans"],
+					"required": [
+						"branchId",
+						"activeEntryIds",
+						"authoritativeEntryIds",
+						"supersededEntryIds",
+						"revisionGroups",
+						"compactionSpans"
+					],
 					"type": "object"
 				},
 				"nextCursor": {
@@ -10379,6 +10781,12 @@
 															},
 															"type": "array"
 														},
+														"authoritativeEntryIds": {
+															"items": {
+																"type": "string"
+															},
+															"type": "array"
+														},
 														"branchId": {
 															"type": "string"
 														},
@@ -10417,14 +10825,84 @@
 														},
 														"leafEntryId": {
 															"type": "string"
+														},
+														"revisionGroups": {
+															"items": {
+																"properties": {
+																	"activeChildEntryId": {
+																		"type": "string"
+																	},
+																	"childEntryIds": {
+																		"items": {
+																			"type": "string"
+																		},
+																		"type": "array"
+																	},
+																	"parentEntryId": {
+																		"anyOf": [
+																			{
+																				"type": "string"
+																			},
+																			{
+																				"type": "null"
+																			}
+																		]
+																	}
+																},
+																"required": ["parentEntryId", "childEntryIds"],
+																"type": "object"
+															},
+															"type": "array"
+														},
+														"supersededEntryIds": {
+															"items": {
+																"type": "string"
+															},
+															"type": "array"
 														}
 													},
 													"required": [
 														"branchId",
 														"activeEntryIds",
+														"authoritativeEntryIds",
+														"supersededEntryIds",
+														"revisionGroups",
 														"compactionSpans"
 													],
 													"type": "object"
+												},
+												"history": {
+													"items": {
+														"properties": {
+															"content": {},
+															"data": {},
+															"id": {
+																"type": "string"
+															},
+															"parentId": {
+																"anyOf": [
+																	{
+																		"type": "string"
+																	},
+																	{
+																		"type": "null"
+																	}
+																]
+															},
+															"role": {
+																"type": "string"
+															},
+															"timestamp": {
+																"type": "string"
+															},
+															"type": {
+																"type": "string"
+															}
+														},
+														"required": ["id", "type"],
+														"type": "object"
+													},
+													"type": "array"
 												},
 												"messagesView": {
 													"anyOf": [
@@ -10701,6 +11179,12 @@
 											},
 											"type": "array"
 										},
+										"authoritativeEntryIds": {
+											"items": {
+												"type": "string"
+											},
+											"type": "array"
+										},
 										"branchId": {
 											"type": "string"
 										},
@@ -10739,9 +11223,50 @@
 										},
 										"leafEntryId": {
 											"type": "string"
+										},
+										"revisionGroups": {
+											"items": {
+												"properties": {
+													"activeChildEntryId": {
+														"type": "string"
+													},
+													"childEntryIds": {
+														"items": {
+															"type": "string"
+														},
+														"type": "array"
+													},
+													"parentEntryId": {
+														"anyOf": [
+															{
+																"type": "string"
+															},
+															{
+																"type": "null"
+															}
+														]
+													}
+												},
+												"required": ["parentEntryId", "childEntryIds"],
+												"type": "object"
+											},
+											"type": "array"
+										},
+										"supersededEntryIds": {
+											"items": {
+												"type": "string"
+											},
+											"type": "array"
 										}
 									},
-									"required": ["branchId", "activeEntryIds", "compactionSpans"],
+									"required": [
+										"branchId",
+										"activeEntryIds",
+										"authoritativeEntryIds",
+										"supersededEntryIds",
+										"revisionGroups",
+										"compactionSpans"
+									],
 									"type": "object"
 								},
 								"nextCursor": {

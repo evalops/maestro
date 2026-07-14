@@ -2349,7 +2349,7 @@ describe("Maestro app-server session API", () => {
 		});
 	});
 
-	it("returns graph metadata for replayable thread reads and turn pages", async () => {
+	it("returns revision-aware history for replayable thread reads and turn pages", async () => {
 		const entries: SessionEntry[] = [
 			{
 				type: "session",
@@ -2379,6 +2379,13 @@ describe("Maestro app-server session API", () => {
 				summary: "Compacted older work",
 				firstKeptEntryId: "kept-user",
 				tokensBefore: 800,
+			},
+			{
+				type: "message",
+				id: "superseded-user",
+				parentId: "compact-1",
+				timestamp: "2026-01-01T00:00:03.500Z",
+				message: createUserMessage("superseded prompt"),
 			},
 			{
 				type: "message",
@@ -2417,7 +2424,7 @@ describe("Maestro app-server session API", () => {
 							messages: [],
 							createdAt: "2026-01-01T00:00:00.000Z",
 							updatedAt: "2026-01-01T00:00:05.000Z",
-							messageCount: 5,
+							messageCount: 6,
 							favorite: false,
 							messagesView: options.messagesView ?? "notLoaded",
 						}
@@ -2431,8 +2438,21 @@ describe("Maestro app-server session API", () => {
 			jsonrpc: "2.0",
 			id: "graph-read",
 			method: "thread/read",
-			params: { threadId: "graph-thread", includeTurns: true },
+			params: {
+				threadId: "graph-thread",
+				includeTurns: true,
+				includeHistory: true,
+			},
 		});
+
+		expect(read.result?.thread.history?.map((item) => item.id)).toEqual([
+			"old-user",
+			"kept-user",
+			"compact-1",
+			"superseded-user",
+			"active-user",
+			"assistant-tools",
+		]);
 
 		expect(read.result?.thread.graph).toEqual({
 			branchId: "graph-thread:assistant-tools",
@@ -2442,6 +2462,21 @@ describe("Maestro app-server session API", () => {
 				"compact-1",
 				"active-user",
 				"assistant-tools",
+			],
+			authoritativeEntryIds: [
+				"old-user",
+				"kept-user",
+				"compact-1",
+				"active-user",
+				"assistant-tools",
+			],
+			supersededEntryIds: ["superseded-user"],
+			revisionGroups: [
+				{
+					parentEntryId: "compact-1",
+					childEntryIds: ["superseded-user", "active-user"],
+					activeChildEntryId: "active-user",
+				},
 			],
 			compactionSpans: [
 				{

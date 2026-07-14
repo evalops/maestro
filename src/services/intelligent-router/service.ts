@@ -1,4 +1,9 @@
 import { createHash } from "node:crypto";
+import type { ModelProvider } from "../../agent/modes.js";
+import {
+	type AgentProfile,
+	resolveAgentProfile,
+} from "../../agent/profiles.js";
 import {
 	type ServiceAuthorityResolution,
 	resolveServiceAuthority,
@@ -17,12 +22,13 @@ import type {
 	RoutingModelCandidate,
 	RoutingOverride,
 	RoutingOverrideInput,
+	RoutingRequest,
 	RoutingRequestInput,
 	RoutingScore,
 	RoutingStrategy,
 } from "./types.js";
 
-const MIN_HISTORY_SAMPLES = 2;
+export const MIN_VERIFIED_SAMPLES = 20;
 const MAX_LATENCIES = 100;
 const MAX_DECISIONS = 100;
 
@@ -31,6 +37,7 @@ interface MetricState {
 	provider: string;
 	model: string;
 	samples: number;
+	verifiedSamples: number;
 	productionSamples: number;
 	evalSamples: number;
 	successCount: number;
@@ -93,10 +100,14 @@ function aggregateFromState(state: MetricState): ModelPerformanceAggregate {
 		provider: state.provider,
 		model: state.model,
 		samples: state.samples,
+		verifiedSamples: state.verifiedSamples,
 		productionSamples: state.productionSamples,
 		evalSamples: state.evalSamples,
 		successCount: state.successCount,
-		successRate: state.samples > 0 ? state.successCount / state.samples : 0,
+		successRate:
+			state.verifiedSamples > 0
+				? state.successCount / state.verifiedSamples
+				: 0,
 		evalSuccessRate:
 			state.evalSamples > 0 ? state.evalSuccessCount / state.evalSamples : 0,
 		averageLatencyMs:
@@ -104,7 +115,9 @@ function aggregateFromState(state: MetricState): ModelPerformanceAggregate {
 		p95LatencyMs: percentile(state.latenciesMs, 0.95),
 		averageCostUsd: state.samples > 0 ? state.totalCostUsd / state.samples : 0,
 		qualityScore:
-			state.samples > 0 ? state.qualityScoreTotal / state.samples : 0.5,
+			state.verifiedSamples > 0
+				? state.qualityScoreTotal / state.verifiedSamples
+				: 0.5,
 		evalQualityScore:
 			state.evalSamples > 0
 				? state.evalQualityScoreTotal / state.evalSamples
@@ -172,14 +185,14 @@ function latencyScore(
 function successScore(
 	aggregate: ModelPerformanceAggregate | undefined,
 ): number {
-	if (!aggregate?.samples) return 0.5;
+	if (!aggregate?.verifiedSamples) return 0.5;
 	return aggregate.successRate;
 }
 
 function qualityScore(
 	aggregate: ModelPerformanceAggregate | undefined,
 ): number {
-	if (!aggregate?.samples) return 0.5;
+	if (!aggregate?.verifiedSamples) return 0.5;
 	return aggregate.qualityScore;
 }
 
@@ -212,6 +225,11 @@ function scoreCandidate(params: {
 	if (params.aggregate?.productionSamples) {
 		reasons.push(`production_samples=${params.aggregate.productionSamples}`);
 	}
+	if ((params.aggregate?.verifiedSamples ?? 0) < MIN_VERIFIED_SAMPLES) {
+		reasons.push(
+			`verified_samples=${params.aggregate?.verifiedSamples ?? 0}/${MIN_VERIFIED_SAMPLES}`,
+		);
+	}
 	if (params.aggregate?.evalSamples && !params.aggregate.productionSamples) {
 		reasons.push("eval_backed");
 	}
@@ -230,6 +248,9 @@ function scoreCandidate(params: {
 		costScore: cost,
 		qualityScore: quality,
 		samples: params.aggregate?.samples ?? 0,
+		verifiedSamples: params.aggregate?.verifiedSamples ?? 0,
+		promotionEligible:
+			(params.aggregate?.verifiedSamples ?? 0) >= MIN_VERIFIED_SAMPLES,
 		productionSamples: params.aggregate?.productionSamples ?? 0,
 		evalSamples: params.aggregate?.evalSamples ?? 0,
 		evalBacked: Boolean(
@@ -245,6 +266,30 @@ function routedModelFromScore(score: RoutingScore): RoutedModel {
 		provider: score.provider,
 		model: score.model,
 	};
+}
+
+function profileProvider(provider: string): ModelProvider {
+	return ["anthropic", "openai", "openai-codex", "google"].includes(provider)
+		? (provider as ModelProvider)
+		: "openai-codex";
+}
+
+function selectedAgentProfile(
+	level: RoutingRequest["profileLevel"],
+	selected: RoutedModel,
+): AgentProfile {
+	const profile = resolveAgentProfile(
+		level,
+		profileProvider(selected.provider),
+	);
+	return Object.freeze({
+		...profile,
+		primary: Object.freeze({
+			...profile.primary,
+			provider: selected.provider,
+			model: selected.model,
+		}),
+	});
 }
 
 function overrideExpired(override: RoutingOverride, now: Date): boolean {
@@ -280,6 +325,7 @@ export class IntelligentRouterService {
 				provider: metric.provider,
 				model: metric.model,
 				samples: 0,
+				verifiedSamples: 0,
 				productionSamples: 0,
 				evalSamples: 0,
 				successCount: 0,
@@ -294,7 +340,11 @@ export class IntelligentRouterService {
 			} satisfies MetricState);
 
 		state.samples += 1;
-		if (metric.success) state.successCount += 1;
+		if (metric.verified) {
+			state.verifiedSamples += 1;
+			if (metric.success) state.successCount += 1;
+			state.qualityScoreTotal += metric.qualityScore;
+		}
 		if (metric.source === "eval") {
 			state.evalSamples += 1;
 			if (metric.success) state.evalSuccessCount += 1;
@@ -309,7 +359,6 @@ export class IntelligentRouterService {
 			state.latenciesMs.splice(0, state.latenciesMs.length - MAX_LATENCIES);
 		}
 		state.totalCostUsd += metric.costUsd;
-		state.qualityScoreTotal += metric.qualityScore;
 		state.updatedAt =
 			metric.occurredAt instanceof Date
 				? metric.occurredAt
@@ -380,19 +429,36 @@ export class IntelligentRouterService {
 					),
 				)
 			: undefined;
+		const baselineCandidate = request.availableModels[0];
+		const baselineScore = baselineCandidate
+			? availableScores.find(
+					(score) =>
+						score.provider === baselineCandidate.provider &&
+						score.model === baselineCandidate.model,
+				)
+			: undefined;
 		const enoughHistory = availableScores.some(
-			(score) => score.samples >= MIN_HISTORY_SAMPLES,
+			(score) => score.verifiedSamples >= MIN_VERIFIED_SAMPLES,
 		);
 		const selectedScore =
 			overrideScore ??
-			(!enoughHistory && hintScore ? hintScore : firstAvailable);
+			(!enoughHistory
+				? (hintScore ?? baselineScore ?? firstAvailable)
+				: firstAvailable);
 		const overrideApplied = overrideScore !== undefined;
 		const reason = overrideApplied
 			? "override"
 			: !enoughHistory && hintScore
-				? "insufficient_history_model_hint"
+				? "insufficient_verified_history_model_hint"
 				: "highest_score";
 		const selected = routedModelFromScore(selectedScore);
+		const selectedProfile = selectedAgentProfile(
+			request.profileLevel,
+			selected,
+		);
+		const fallbackProfiles = selectedProfile.fallbackLevels.map((level) =>
+			resolveAgentProfile(level, profileProvider(selected.provider)),
+		);
 		const fallbackChain = availableScores
 			.filter(
 				(score) =>
@@ -411,6 +477,8 @@ export class IntelligentRouterService {
 			taskType: request.taskType,
 			strategy: request.strategy,
 			selectedModel: selected,
+			selectedProfile,
+			fallbackProfiles,
 			fallbackChain,
 			scores,
 			overrideApplied,

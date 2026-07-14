@@ -27,12 +27,22 @@ export interface SessionGraphTurn {
 	toolCallIds: string[];
 }
 
+export interface SessionGraphRevisionGroup {
+	parentEntryId: string | null;
+	childEntryIds: string[];
+	activeChildEntryId?: string;
+}
+
 export interface SessionGraphProjection {
 	threadId: string;
 	branchId: string;
 	leafEntryId?: string;
 	activeEntries: SessionTreeEntry[];
+	historyEntries: SessionTreeEntry[];
 	activeEntryIds: string[];
+	authoritativeEntryIds: string[];
+	supersededEntryIds: string[];
+	revisionGroups: SessionGraphRevisionGroup[];
 	turns: SessionGraphTurn[];
 	compactionSpans: SessionGraphCompactionSpan[];
 }
@@ -51,6 +61,9 @@ export function buildSessionGraphProjection(
 	);
 	const threadId = header?.id ?? "unknown";
 	const activePath = activeTreeEntriesFromSessionEntries(entries, options);
+	const treeEntries = entries.filter(isSessionTreeEntry);
+	const authoritativeEntryIds = activePath.map((entry) => entry.id);
+	const authoritativeEntryIdSet = new Set(authoritativeEntryIds);
 	const leafEntryId = activePath.at(-1)?.id;
 	const { activeEntries, compactionSpans } = applyCompactionWindow(activePath);
 
@@ -59,10 +72,38 @@ export function buildSessionGraphProjection(
 		branchId: `${threadId}:${leafEntryId ?? "empty"}`,
 		leafEntryId,
 		activeEntries,
+		historyEntries: treeEntries,
 		activeEntryIds: activeEntries.map((entry) => entry.id),
+		authoritativeEntryIds,
+		supersededEntryIds: treeEntries
+			.filter((entry) => !authoritativeEntryIdSet.has(entry.id))
+			.map((entry) => entry.id),
+		revisionGroups: buildRevisionGroups(treeEntries, authoritativeEntryIdSet),
 		turns: buildTurnsFromActiveEntries(activeEntries),
 		compactionSpans,
 	};
+}
+
+function buildRevisionGroups(
+	entries: SessionTreeEntry[],
+	activeEntryIds: Set<string>,
+): SessionGraphRevisionGroup[] {
+	const childrenByParent = new Map<string | null, SessionTreeEntry[]>();
+	for (const entry of entries) {
+		const parentEntryId = entry.parentId ?? null;
+		const children = childrenByParent.get(parentEntryId) ?? [];
+		children.push(entry);
+		childrenByParent.set(parentEntryId, children);
+	}
+
+	return [...childrenByParent.entries()]
+		.filter(([, children]) => children.length > 1)
+		.map(([parentEntryId, children]) => ({
+			parentEntryId,
+			childEntryIds: children.map((entry) => entry.id),
+			activeChildEntryId: children.find((entry) => activeEntryIds.has(entry.id))
+				?.id,
+		}));
 }
 
 function activeTreeEntriesFromSessionEntries(

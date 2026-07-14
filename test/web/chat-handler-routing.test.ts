@@ -12,6 +12,7 @@ vi.mock("../../src/services/intelligent-router/recorder.js", async () => {
 	};
 });
 
+import { resolveAgentProfile } from "../../src/agent/profiles.js";
 import type { RegisteredModel } from "../../src/models/registry.js";
 import type { WebServerContext } from "../../src/server/app-context.js";
 import { handleChat } from "../../src/server/handlers/chat.js";
@@ -87,6 +88,7 @@ function makeRes(): MockResponse {
 }
 
 function routingDecision(): RoutingDecision {
+	const selectedProfile = resolveAgentProfile("medium", "anthropic");
 	return {
 		decisionId: "decision-1",
 		taskType: "chat",
@@ -95,6 +97,8 @@ function routingDecision(): RoutingDecision {
 			provider: selectedModel.provider,
 			model: selectedModel.id,
 		},
+		selectedProfile,
+		fallbackProfiles: [resolveAgentProfile("low", "openai")],
 		fallbackChain: [
 			{
 				provider: fallbackModel.provider,
