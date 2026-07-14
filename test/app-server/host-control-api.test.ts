@@ -350,10 +350,14 @@ describe("Maestro app-server host-control API", () => {
 		});
 		expect(writeResponse.result).toEqual({});
 
-		const change = await waitForNotification(
-			notifications,
-			(notification) => notification.method === "fs/changed",
-		);
+		const change = await waitForNotification(notifications, (notification) => {
+			if (notification.method !== "fs/changed") return false;
+			const params = notification.params as { changedPaths?: unknown };
+			return (
+				Array.isArray(params.changedPaths) &&
+				params.changedPaths.includes(filePath)
+			);
+		});
 		expect(change.params).toMatchObject({
 			watchId: "source",
 			changedPaths: [filePath],

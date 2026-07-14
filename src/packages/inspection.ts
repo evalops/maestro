@@ -99,7 +99,13 @@ function collectManifestPathIssues(
 	manifest: MaestroManifest,
 ): string[] {
 	const issues: string[] = [];
-	for (const key of ["extensions", "skills", "prompts", "themes"] as const) {
+	for (const key of [
+		"agents",
+		"extensions",
+		"skills",
+		"prompts",
+		"themes",
+	] as const) {
 		const manifestPaths = manifest[key];
 		if (!Array.isArray(manifestPaths)) {
 			continue;

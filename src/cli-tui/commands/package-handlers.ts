@@ -425,6 +425,7 @@ function formatInspectReport(inspected: InspectedPackage, cwd: string): string {
 	const manifest = packageJson.maestro;
 	if (manifest) {
 		lines.push("  Manifest paths:");
+		lines.push(`    Agents: ${formatManifestPaths(manifest.agents)}`);
 		lines.push(`    Extensions: ${formatManifestPaths(manifest.extensions)}`);
 		lines.push(`    Skills: ${formatManifestPaths(manifest.skills)}`);
 		lines.push(`    Prompts: ${formatManifestPaths(manifest.prompts)}`);
@@ -441,6 +442,9 @@ function formatInspectReport(inspected: InspectedPackage, cwd: string): string {
 
 	if (inspected.resources) {
 		lines.push("  Resources:");
+		lines.push(
+			`    Agents: ${formatResourceSummary(inspected.resources.agents)}`,
+		);
 		lines.push(
 			`    Extensions: ${formatResourceSummary(inspected.resources.extensions)}`,
 		);
@@ -494,7 +498,7 @@ function formatConfiguredPackageList(
 
 		lines.push(`   Name: ${inspected.discovered.packageJson.name}`);
 		lines.push(
-			`   Resources: extensions=${inspected.resources?.extensions.length ?? 0}, skills=${inspected.resources?.skills.length ?? 0}, prompts=${inspected.resources?.prompts.length ?? 0}, themes=${inspected.resources?.themes.length ?? 0}`,
+			`   Resources: agents=${inspected.resources?.agents.length ?? 0}, extensions=${inspected.resources?.extensions.length ?? 0}, skills=${inspected.resources?.skills.length ?? 0}, prompts=${inspected.resources?.prompts.length ?? 0}, themes=${inspected.resources?.themes.length ?? 0}`,
 		);
 	}
 
@@ -513,6 +517,7 @@ function formatValidationSuccess(
 	lines.push(`  Path: ${formatDisplayPath(inspected.resolvedPath, cwd)}`);
 	if (inspected.resources) {
 		lines.push("  Resources:");
+		lines.push(`    Agents: ${inspected.resources.agents.length}`);
 		lines.push(`    Extensions: ${inspected.resources.extensions.length}`);
 		lines.push(`    Skills: ${inspected.resources.skills.length}`);
 		lines.push(`    Prompts: ${inspected.resources.prompts.length}`);
@@ -614,7 +619,13 @@ function formatFilters(filters: ResourceFilters | undefined): string | null {
 	}
 
 	const segments: string[] = [];
-	for (const key of ["extensions", "skills", "prompts", "themes"] as const) {
+	for (const key of [
+		"agents",
+		"extensions",
+		"skills",
+		"prompts",
+		"themes",
+	] as const) {
 		const values = filters[key];
 		if (values && values.length > 0) {
 			segments.push(`${key}=${values.join(",")}`);

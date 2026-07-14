@@ -623,6 +623,12 @@ export type MaestroAppServerPluginBundle = Static<
 >;
 
 export const MaestroAppServerPluginBundleResourcesSchema = Type.Object({
+	agents: Type.Optional(
+		Type.Object({
+			user: Type.Array(Type.String()),
+			project: Type.Array(Type.String()),
+		}),
+	),
 	extensions: Type.Object({
 		user: Type.Array(Type.String()),
 		project: Type.Array(Type.String()),

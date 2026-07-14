@@ -1696,6 +1696,7 @@ describe("codingTools bundle", () => {
 			"read",
 			"list",
 			"oracle",
+			"painter",
 			"find",
 			"extract_document",
 			"search",

@@ -6,6 +6,7 @@ export const ORACLE_CONSULTATION_POLICY_VERSION =
 export type OracleConsultationMode = "available" | "recommended" | "required";
 
 export interface OracleConsultationPolicyInput {
+	policyVersion?: string;
 	profileLevel: AgentProfileLevel;
 	taskType: string;
 	taskSummary?: string;
@@ -13,7 +14,7 @@ export interface OracleConsultationPolicyInput {
 }
 
 export interface OracleConsultationDecision {
-	policyVersion: typeof ORACLE_CONSULTATION_POLICY_VERSION;
+	policyVersion: string;
 	evalSuite: "oracle-consultation-policy-v1";
 	mode: OracleConsultationMode;
 	reasons: string[];
@@ -75,7 +76,8 @@ export function recommendOracleConsultation(
 
 	if (reasons.length === 0) reasons.push("oracle_available_on_demand");
 	return {
-		policyVersion: ORACLE_CONSULTATION_POLICY_VERSION,
+		policyVersion:
+			input.policyVersion?.trim() || ORACLE_CONSULTATION_POLICY_VERSION,
 		evalSuite: "oracle-consultation-policy-v1",
 		mode,
 		reasons,

@@ -8,8 +8,12 @@ import type {
 	TrajectoryReplayLabResponse,
 	TrajectoryReplayLabTimelineItem,
 } from "../services/api-client.js";
+import {
+	type AgentOperationsNode,
+	buildAgentOperationsTree,
+} from "./agent-operations-tree.js";
 
-type ReplayLabView = "trajectory" | "replay" | "score";
+type ReplayLabView = "agents" | "trajectory" | "replay" | "score";
 
 function formatTimestamp(timestamp: string): string {
 	const date = new Date(timestamp);
@@ -31,6 +35,19 @@ function toneForStatus(status: string | undefined): string {
 	if (status === "running") return "running";
 	if (status === "completed" || status === "pass") return "success";
 	return "normal";
+}
+
+function findAgentNode(
+	nodes: readonly AgentOperationsNode[],
+	runId: string | null,
+): AgentOperationsNode | undefined {
+	if (!runId) return undefined;
+	for (const node of nodes) {
+		if (node.runId === runId) return node;
+		const child = findAgentNode(node.children, runId);
+		if (child) return child;
+	}
+	return undefined;
 }
 
 @customElement("composer-trajectory-replay-lab-panel")
@@ -220,6 +237,33 @@ export class ComposerTrajectoryReplayLabPanel extends LitElement {
 			overflow-wrap: anywhere;
 		}
 
+		.agent-node {
+			display: grid;
+			gap: 0.35rem;
+		}
+
+		.agent-children {
+			display: grid;
+			gap: 0.35rem;
+			margin-left: 0.85rem;
+			padding-left: 0.55rem;
+			border-left: 1px solid var(--border-primary, #1e2023);
+		}
+
+		.agent-run {
+			width: 100%;
+			height: auto;
+			padding: 0.55rem 0.6rem;
+			text-align: left;
+			display: flex;
+			justify-content: space-between;
+			gap: 0.5rem;
+		}
+
+		.agent-run-id {
+			overflow-wrap: anywhere;
+		}
+
 		.empty,
 		.error,
 		.loading {
@@ -251,6 +295,7 @@ export class ComposerTrajectoryReplayLabPanel extends LitElement {
 	@state() private loading = false;
 	@state() private error: string | null = null;
 	@state() private view: ReplayLabView = "trajectory";
+	@state() private selectedRunId: string | null = null;
 
 	private requestId = 0;
 
@@ -327,7 +372,7 @@ export class ComposerTrajectoryReplayLabPanel extends LitElement {
 	}
 
 	private renderTabs() {
-		const tabs: ReplayLabView[] = ["trajectory", "replay", "score"];
+		const tabs: ReplayLabView[] = ["agents", "trajectory", "replay", "score"];
 		return html`<div class="tabs">
 			${tabs.map(
 				(tab) => html`<button
@@ -339,6 +384,65 @@ export class ComposerTrajectoryReplayLabPanel extends LitElement {
 					${tab}
 				</button>`,
 			)}
+		</div>`;
+	}
+
+	private openAgentRun(runId: string) {
+		this.selectedRunId = runId;
+		this.dispatchEvent(
+			new CustomEvent("open-agent-run", {
+				bubbles: true,
+				composed: true,
+				detail: { runId },
+			}),
+		);
+	}
+
+	private renderAgentNode(node: AgentOperationsNode) {
+		return html`<div class="agent-node">
+			<button
+				class="agent-run ${toneForStatus(node.status)}"
+				data-run-id=${node.runId}
+				@click=${() => this.openAgentRun(node.runId)}
+			>
+				<span class="agent-run-id">${node.runId}</span>
+				<span class="row-meta">${node.status}</span>
+			</button>
+			${
+				node.children.length
+					? html`<div class="agent-children">
+							${node.children.map((child) => this.renderAgentNode(child))}
+						</div>`
+					: ""
+			}
+		</div>`;
+	}
+
+	private renderAgents(lab: TrajectoryReplayLabResponse) {
+		const roots = buildAgentOperationsTree(lab.timeline.items);
+		const selected = findAgentNode(roots, this.selectedRunId);
+		return html`<div class="section">
+			<div class="section-title">Agent operations</div>
+			${
+				roots.length
+					? roots.map((node) => this.renderAgentNode(node))
+					: html`<div class="empty">No agent runs found.</div>`
+			}
+			${
+				selected
+					? html`<div class="row ${toneForStatus(selected.status)}">
+							<div class="section-title">Selected run</div>
+							<div class="row-head">
+								<div class="row-title">${selected.latestItem.title}</div>
+								<div class="row-meta">${selected.status}</div>
+							</div>
+							<div class="row-body">
+								${selected.runId}<br />${selected.latestItem.type} ·
+								${formatTimestamp(selected.latestItem.timestamp)}
+							</div>
+						</div>`
+					: ""
+			}
 		</div>`;
 	}
 
@@ -485,11 +589,13 @@ export class ComposerTrajectoryReplayLabPanel extends LitElement {
 			${this.renderTabs()}
 			<div class="body">
 				${
-					this.view === "trajectory"
-						? this.renderTrajectory(lab)
-						: this.view === "replay"
-							? this.renderReplay(lab)
-							: this.renderScore(lab)
+					this.view === "agents"
+						? this.renderAgents(lab)
+						: this.view === "trajectory"
+							? this.renderTrajectory(lab)
+							: this.view === "replay"
+								? this.renderReplay(lab)
+								: this.renderScore(lab)
 				}
 			</div>
 		`;

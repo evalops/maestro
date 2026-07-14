@@ -1,3 +1,4 @@
+import type { AgentProfilePin } from "@evalops/contracts";
 import type { AppMessage, ImageContent, TextContent } from "../agent/types.js";
 import type { PromptProjectDocManifest } from "../config/index.js";
 import type { UnifiedContextManifest } from "../context/manifest-types.js";
@@ -47,6 +48,7 @@ export interface SessionHeaderEntry {
 	// actually loaded, even if that file is later deleted or moved while a
 	// session is paused. See #2602.
 	systemPromptSourcePaths?: string[];
+	agentProfilePin?: AgentProfilePin;
 }
 
 function resolveSessionPromptContextManifest(

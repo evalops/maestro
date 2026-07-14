@@ -460,6 +460,7 @@ export function convertAppMessageToComposer(
 			provider: message.provider,
 			api: message.api,
 			model: message.model,
+			routingReceipt: message.routingReceipt,
 		};
 	}
 
@@ -662,6 +663,7 @@ export function convertComposerMessageToApp(
 					: createEmptyUsage(),
 				stopReason: "stop",
 				timestamp: toTimestamp(message.timestamp, context),
+				routingReceipt: message.routingReceipt,
 			};
 
 			const results: AppMessage[] = [assistantMessage];
@@ -735,6 +737,7 @@ export function convertComposerMessageToApp(
 				: createEmptyUsage(),
 			stopReason: "stop",
 			timestamp: toTimestamp(message.timestamp, context),
+			routingReceipt: message.routingReceipt,
 		};
 
 		const results: AppMessage[] = [assistantMessage];

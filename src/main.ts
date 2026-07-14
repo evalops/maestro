@@ -1283,6 +1283,11 @@ export async function main(args: string[]) {
 		parsed.command === "exec" ? import("./cli/commands/exec.js") : undefined;
 
 	// Handle cost commands
+	if (parsed.command === "painter") {
+		const { handlePainterCommand } = await import("./cli/commands/painter.js");
+		await handlePainterCommand(parsed.subcommand, parsed.commandArgs ?? []);
+		return;
+	}
 	if (parsed.command === "cost") {
 		const { handleCostSummary, handleCostClear, handleCostBreakdown } =
 			await import("./cli/commands/cost.js");

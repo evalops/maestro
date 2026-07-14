@@ -48,6 +48,54 @@ export const ComposerThinkingLevelSchema = Type.Union([
 	Type.Literal("high"),
 ]);
 
+export const RoutingReceiptSourceSchema = Type.Union([
+	Type.Literal("request"),
+	Type.Literal("session"),
+	Type.Literal("compatibility_default"),
+]);
+
+export const AgentProfilePinSchema = Type.Object({
+	profile: Type.String({ minLength: 1 }),
+	updatedAt: Type.String({ minLength: 1 }),
+});
+
+export const RoutingReceiptOracleSchema = Type.Object({
+	policyVersion: Type.String({ minLength: 1 }),
+	mode: Type.Union([
+		Type.Literal("available"),
+		Type.Literal("recommended"),
+		Type.Literal("required"),
+	]),
+	reasons: Type.Array(Type.String()),
+});
+
+export const RoutingReceiptFallbackSchema = Type.Object({
+	reason: Type.String({ minLength: 1 }),
+	provider: Type.Optional(Type.String()),
+	model: Type.Optional(Type.String()),
+});
+
+export const RoutingReceiptExperimentSchema = Type.Object({
+	experimentId: Type.String({ minLength: 1 }),
+	arm: Type.Union([Type.Literal("control"), Type.Literal("treatment")]),
+	policyVersion: Type.String({ minLength: 1 }),
+});
+
+export const RoutingReceiptSchema = Type.Object({
+	decisionId: Type.String({ minLength: 1 }),
+	requestedProfile: Type.String({ minLength: 1 }),
+	source: RoutingReceiptSourceSchema,
+	resolvedProfileId: Type.String({ minLength: 1 }),
+	resolvedProfileVersion: Type.Number({ minimum: 1 }),
+	provider: Type.String({ minLength: 1 }),
+	model: Type.String({ minLength: 1 }),
+	reasoningEffort: Type.String({ minLength: 1 }),
+	createdAt: Type.String({ minLength: 1 }),
+	oracle: Type.Optional(RoutingReceiptOracleSchema),
+	fallback: Type.Optional(RoutingReceiptFallbackSchema),
+	experiment: Type.Optional(RoutingReceiptExperimentSchema),
+});
+
 export const ComposerToolCallSchema = Type.Object({
 	name: Type.String(),
 	status: Type.Union([
@@ -101,11 +149,14 @@ export const ComposerMessageSchema = Type.Object({
 	usage: Type.Optional(ComposerUsageSchema),
 	provider: Type.Optional(Type.String()),
 	api: Type.Optional(Type.String()),
+	routingReceipt: Type.Optional(RoutingReceiptSchema),
 	model: Type.Optional(Type.String()),
 });
 
 export const ComposerChatRequestSchema = Type.Object({
 	model: Type.Optional(Type.String()),
+	profile: Type.Optional(Type.String()),
+	persistProfile: Type.Optional(Type.Boolean()),
 	messages: Type.Array(ComposerMessageSchema),
 	thinkingLevel: Type.Optional(ComposerThinkingLevelSchema),
 	sessionId: Type.Optional(Type.String()),
@@ -574,6 +625,10 @@ export const ComposerSessionSchema = Type.Object({
 });
 
 export const ComposerAgentEventSchema = Type.Union([
+	Type.Object({
+		type: Type.Literal("routing_receipt"),
+		receipt: RoutingReceiptSchema,
+	}),
 	Type.Object({ type: Type.Literal("agent_start") }),
 	Type.Object({
 		type: Type.Literal("agent_end"),

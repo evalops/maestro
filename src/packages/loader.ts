@@ -40,9 +40,10 @@ export function parsePackageSpec(
 	}
 
 	// Object form with filters
-	const { source, extensions, skills, prompts, themes } = spec;
+	const { source, agents, extensions, skills, prompts, themes } = spec;
 
 	const filters: ResourceFilters = {};
+	if (agents) filters.agents = agents;
 	if (extensions) filters.extensions = extensions;
 	if (skills) filters.skills = skills;
 	if (prompts) filters.prompts = prompts;
@@ -118,11 +119,20 @@ export async function loadPackage(
 export function loadPackageResources(pkg: LoadedPackage): PackageResources {
 	const resources: PackageResources = {
 		package: pkg,
+		agents: [],
 		extensions: [],
 		skills: [],
 		prompts: [],
 		themes: [],
 	};
+
+	if (pkg.manifest.agents) {
+		resources.agents = loadResourcePaths(
+			pkg.path,
+			pkg.manifest.agents,
+			pkg.filters?.agents,
+		);
+	}
 
 	// Load each resource type
 	if (pkg.manifest.extensions) {
@@ -159,6 +169,7 @@ export function loadPackageResources(pkg: LoadedPackage): PackageResources {
 
 	logger.debug("Loaded package resources", {
 		package: pkg.name,
+		agents: resources.agents.length,
 		extensions: resources.extensions.length,
 		skills: resources.skills.length,
 		prompts: resources.prompts.length,

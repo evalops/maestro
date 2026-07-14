@@ -122,6 +122,51 @@ export {
 	resolveAgentProfile,
 } from "./profiles.js";
 export {
+	createPluginAgentApi,
+	type PluginAgentApi,
+	type PluginAgentBudgets,
+	type PluginAgentConfig,
+	type PluginAgentHandle,
+	type PluginAgentModeMetadata,
+	type PluginAgentModeRegistration,
+	type PluginAgentPolicy,
+	type PluginAgentSandboxMode,
+	type RegisteredPluginAgentMode,
+} from "./plugin-agent-api.js";
+export {
+	loadConfiguredPluginAgentMetadata,
+	loadPluginAgentMetadataFromDirectories,
+	type LoadedPluginAgentModeMetadata,
+	type PluginAgentMetadataLoadResult,
+} from "./plugin-agent-loader.js";
+export {
+	createRoutingReceipt,
+	resolveAgentProfileSelection,
+	type AgentProfileSelection,
+	type AgentProfileSelectionInput,
+	type RoutingReceiptContext,
+	type RoutingReceiptDecision,
+} from "./routing-receipt.js";
+export {
+	assignOraclePolicyExperiment,
+	assignConfiguredOraclePolicyExperiment,
+	getOraclePolicyExperimentConfig,
+	type OraclePolicyExperimentArm,
+	type OraclePolicyExperimentAssignment,
+	type OraclePolicyExperimentConfig,
+	type OraclePolicyExperimentInput,
+} from "./oracle-policy-experiment.js";
+export {
+	DEFAULT_ORACLE_ROLLOUT_MAX_SUCCESS_RATE_REGRESSION,
+	DEFAULT_ORACLE_ROLLOUT_MIN_VERIFIED_SAMPLES,
+	evaluateOraclePolicyRollout,
+	type OraclePolicyRolloutDecision,
+	type OraclePolicyRolloutInput,
+	type OraclePolicyRolloutMetrics,
+	type OraclePolicyRolloutStatus,
+	type OraclePolicyVerifiedAggregate,
+} from "./oracle-policy-rollout.js";
+export {
 	loadAgentProfiles,
 	loadAgentProfilesFromDirectory,
 } from "./profile-loader.js";

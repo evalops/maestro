@@ -187,6 +187,9 @@ export function printHelp(
   maestro skill new processing-incidents --description "Process incident reports. Use when the user asks for incident triage."
   maestro skill lint .maestro/skills
 
+  # Render a generated image inline in a capable terminal (iTerm2/WezTerm/kitty)
+  maestro painter show ~/.maestro/assets/painter/painter-*.png
+
   # Start a hosted EvalOps runner session and wait for attach readiness
   maestro remote start --workspace ws_123 --repo evalops/foo --branch main --ttl 90m --wait --verify
 

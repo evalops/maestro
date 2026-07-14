@@ -50,6 +50,7 @@ export function discoverPackage(packagePath: string): DiscoveredPackage | null {
 
 			// Validate that resource paths are arrays
 			for (const key of [
+				"agents",
 				"extensions",
 				"skills",
 				"prompts",

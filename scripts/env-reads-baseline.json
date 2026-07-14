@@ -725,6 +725,10 @@
     "MAESTRO_RATE_LIMIT_SESSION",
     "MAESTRO_RATE_LIMIT_WINDOW_MS"
   ],
+  "src/services/image-providers/cost.ts": [
+    "MAESTRO_PAINTER_MAX_COST_CENTS",
+    "MAESTRO_PAINTER_PRICE_TABLE"
+  ],
   "src/session/file-writer.ts": [
     "NODE_ENV",
     "VITEST"
@@ -822,6 +826,13 @@
   "src/tools/oracle.ts": [
     "MAESTRO_EVALOPS_ACCESS_TOKEN",
     "MAESTRO_ORACLE_MODEL"
+  ],
+  "src/tools/painter.ts": [
+    "MAESTRO_PAINTER_BASE_URL",
+    "MAESTRO_PAINTER_MODEL",
+    "MAESTRO_PAINTER_OUTPUT_DIR",
+    "MAESTRO_PAINTER_PROVIDER",
+    "MAESTRO_PAINTER_TIMEOUT_MS"
   ],
   "src/tools/pipeline.ts": [
     "PIPELINE_API_MAX_ATTEMPTS",

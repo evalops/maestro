@@ -31,6 +31,7 @@
  *
  * **AI & Automation:**
  * - oracle: Sub-agent for complex reasoning
+ * - painter: Image generation/editing (requires OPENAI_API_KEY)
  * - todo: Task list management
  * - ask_user: Structured user prompts
  *
@@ -84,6 +85,7 @@ import { searchTool } from "./search.js";
 
 // AI and automation
 import { oracleTool } from "./oracle.js";
+import { painterTool } from "./painter.js";
 import { statusTool } from "./status.js";
 import { todoTool } from "./todo.js";
 
@@ -162,6 +164,7 @@ export const codingTools = [
 	readTool,
 	listTool,
 	oracleTool,
+	painterTool,
 	findTool,
 	extractDocumentTool,
 	// Search capabilities
@@ -207,6 +210,7 @@ export const toolRegistry: Record<string, (typeof codingTools)[number]> = {
 	read: readTool,
 	list: listTool,
 	oracle: oracleTool,
+	painter: painterTool,
 	find: findTool,
 	extract_document: extractDocumentTool,
 	search: searchTool,

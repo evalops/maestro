@@ -504,6 +504,41 @@ describe("SessionManager - Deferred Session Creation", () => {
 			).toEqual(unifiedContextManifest);
 		});
 
+		it("persists a pending agent profile pin when the session starts", () => {
+			const sessionManager = new SessionManager(false);
+			const pin = {
+				profile: "high",
+				updatedAt: "2026-07-14T12:00:00.000Z",
+			};
+
+			expect(sessionManager.updateAgentProfilePin(pin)).toBe(true);
+			sessionManager.startSession(createMockState());
+
+			expect(sessionManager.getHeader()?.agentProfilePin).toEqual(pin);
+			expect(
+				readSessionHeader(sessionManager.getSessionFile()).agentProfilePin,
+			).toEqual(pin);
+		});
+
+		it("updates an existing session profile pin without rewriting messages", () => {
+			const sessionManager = new SessionManager(false);
+			sessionManager.startSession(createMockState());
+			sessionManager.saveMessage(createUserMessage("Keep this message"));
+			const entriesBefore = sessionManager.getEntries();
+
+			expect(
+				sessionManager.updateAgentProfilePin({
+					profile: "medium",
+					updatedAt: "2026-07-14T12:01:00.000Z",
+				}),
+			).toBe(true);
+
+			expect(sessionManager.getEntries()).toEqual(entriesBefore);
+			expect(sessionManager.getHeader()?.agentProfilePin?.profile).toBe(
+				"medium",
+			);
+		});
+
 		it("does not duplicate buffered entries when backfilling the unified context manifest", async () => {
 			const sessionManager = new SessionManager(false);
 			const promptContextManifest = createPromptContextManifest();

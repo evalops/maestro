@@ -159,6 +159,7 @@ export interface AttachmentTextExtractionResponse {
 export type PackageScope = "local" | "project" | "user";
 
 export interface PackageResourceFilters {
+	agents?: string[];
 	extensions?: string[];
 	skills?: string[];
 	prompts?: string[];
@@ -179,6 +180,7 @@ export interface PackageInspectionResult {
 		errors: string[];
 	} | null;
 	resources: {
+		agents?: string[];
 		extensions: string[];
 		skills: string[];
 		prompts: string[];
@@ -441,6 +443,7 @@ export interface TrajectoryReplayLabTimelineItem {
 	pendingRequestId?: string;
 	artifactId?: string;
 	agentRunId?: string;
+	parentAgentRunId?: string;
 	childAgentRunId?: string;
 }
 

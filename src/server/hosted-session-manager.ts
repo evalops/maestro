@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import type { AgentProfilePin } from "@evalops/contracts";
 import { and, asc, desc, eq, gte, isNull, sql } from "drizzle-orm";
 import { isToolResultMessage } from "../agent/type-guards.js";
 import type { AgentState, AppMessage } from "../agent/types.js";
@@ -93,6 +94,7 @@ export class HostedSessionManager {
 	private writeError: unknown;
 	private snapshot?: AgentState;
 	private lastModelMetadata?: SessionModelMetadata;
+	private pendingAgentProfilePin?: AgentProfilePin;
 
 	constructor(options: {
 		scope: string;
@@ -671,6 +673,7 @@ export class HostedSessionManager {
 			promptMetadata: state.promptMetadata,
 			promptContextManifest: getPersistedSessionPromptContextManifest(state),
 			unifiedContextManifest: state.unifiedContextManifest,
+			agentProfilePin: this.pendingAgentProfilePin,
 			systemPromptSourcePaths:
 				state.systemPromptSourcePaths &&
 				state.systemPromptSourcePaths.length > 0
@@ -713,6 +716,36 @@ export class HostedSessionManager {
 				selected_at: entry.timestamp,
 			});
 		}
+	}
+
+	updateAgentProfilePin(pin: AgentProfilePin): boolean {
+		const profile = pin.profile.trim();
+		if (!profile || !pin.updatedAt.trim()) return false;
+		const normalized = Object.freeze({ profile, updatedAt: pin.updatedAt });
+		this.pendingAgentProfilePin = normalized;
+		if (!this.sessionInitialized) return true;
+		const headerIndex = this.entries.findIndex(
+			(entry) => entry.type === "session",
+		);
+		if (headerIndex < 0) return false;
+		const entry = {
+			...(this.entries[headerIndex] as SessionHeaderEntry),
+			agentProfilePin: normalized,
+		};
+		this.entries[headerIndex] = entry;
+		const sessionId = this.sessionId;
+		this.enqueue(async () => {
+			await getDb()
+				.update(hostedSessionEntries)
+				.set({ entry })
+				.where(
+					and(
+						eq(hostedSessionEntries.sessionId, sessionId),
+						eq(hostedSessionEntries.entryType, "session"),
+					),
+				);
+		});
+		return true;
 	}
 
 	saveMessage(message: AppMessage): void {

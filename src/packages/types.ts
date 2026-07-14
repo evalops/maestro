@@ -9,6 +9,8 @@
  * Package manifest (maestro section in package.json)
  */
 export interface MaestroManifest {
+	/** Paths to custom agent directories */
+	agents?: string[];
 	/** Paths to extension directories */
 	extensions?: string[];
 	/** Paths to skill directories */
@@ -69,6 +71,8 @@ export type PackageSource = GitSource | LocalSource | NpmSource;
  * Resource filter patterns
  */
 export interface ResourceFilters {
+	/** Glob patterns for custom agents */
+	agents?: string[];
 	/** Glob patterns for extensions (supports ! for exclusion) */
 	extensions?: string[];
 	/** Glob patterns for skills */
@@ -110,6 +114,8 @@ export interface LoadedPackage {
 export interface PackageResources {
 	/** Package metadata */
 	package: LoadedPackage;
+	/** Loaded custom agent paths */
+	agents: string[];
 	/** Loaded extension paths */
 	extensions: string[];
 	/** Loaded skill paths */

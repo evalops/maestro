@@ -6,9 +6,18 @@
 
 import { randomBytes, randomUUID } from "node:crypto";
 import type { IncomingMessage } from "node:http";
-import type { ComposerChatRequest, ComposerMessage } from "@evalops/contracts";
+import type {
+	ComposerChatRequest,
+	ComposerMessage,
+	RoutingReceipt,
+} from "@evalops/contracts";
 import type { RawData, WebSocket } from "ws";
 import { applyOracleConsultationDirective } from "../../agent/oracle-consultation-policy.js";
+import { assignConfiguredOraclePolicyExperiment } from "../../agent/oracle-policy-experiment.js";
+import {
+	createRoutingReceipt,
+	resolveAgentProfileSelection,
+} from "../../agent/routing-receipt.js";
 import { isAssistantMessage } from "../../agent/type-guards.js";
 import type {
 	Attachment as AgentAttachment,
@@ -26,6 +35,7 @@ import { createAutomaticMemoryExtractionCoordinator } from "../../memory/auto-ex
 import type { RegisteredModel } from "../../models/registry.js";
 import {
 	recordIntelligentRouterChatMetric,
+	resolveIntelligentRouterProfileHint,
 	selectIntelligentRouterModel,
 } from "../../services/intelligent-router/recorder.js";
 import { recordAssistantUsageMetric } from "../../services/usage-analytics/recorder.js";
@@ -33,6 +43,7 @@ import { evaluateModelPolicy } from "../../services/workspace-config/policy.js";
 import type { WorkspaceConfigRequestContext } from "../../services/workspace-config/types.js";
 import { toSessionModelMetadata } from "../../session/manager.js";
 import { createRuntimeSessionSummaryUpdater } from "../../session/runtime-summary-updater.js";
+import { recordOraclePolicyExperimentAssignment } from "../../telemetry/oracle-policy.js";
 import { createLogger } from "../../utils/logger.js";
 import type { WebServerContext } from "../app-context.js";
 import {
@@ -134,6 +145,10 @@ class WsSession {
 
 	sendSessionUpdate(sessionId: string): void {
 		this.write(JSON.stringify({ type: "session_update", sessionId }));
+	}
+
+	sendRoutingReceipt(receipt: RoutingReceipt): void {
+		this.write(JSON.stringify({ type: "routing_receipt", receipt }));
 	}
 
 	sendHeartbeat(): void {
@@ -479,6 +494,17 @@ export function handleChatWebSocket(
 				}
 			}
 
+			const profileSelection = resolveAgentProfileSelection({
+				requestedProfile: resolveIntelligentRouterProfileHint(req, chatReq),
+				sessionPin: sessionManager.getHeader()?.agentProfilePin,
+				compatibilityProfile: "medium",
+			});
+			if (chatReq.persistProfile && profileSelection.source === "request") {
+				sessionManager.updateAgentProfilePin({
+					profile: profileSelection.requestedProfile,
+					updatedAt: new Date().toISOString(),
+				});
+			}
 			const routingSelection = selectIntelligentRouterModel({
 				req,
 				requestedModel: resolveModelInputForRouting(
@@ -486,9 +512,30 @@ export function handleChatWebSocket(
 					defaultProvider,
 					defaultModelId,
 				),
-				body: chatReq,
+				body: { ...chatReq, profile: profileSelection.requestedProfile },
 			});
+			const oracleExperimentAssignment = assignConfiguredOraclePolicyExperiment(
+				sessionManager.getSessionId(),
+			);
+			if (oracleExperimentAssignment) {
+				recordOraclePolicyExperimentAssignment({
+					assignment: oracleExperimentAssignment,
+					sessionId: sessionManager.getSessionId(),
+				});
+			}
+			const routedDecision = oracleExperimentAssignment
+				? {
+						...routingSelection.decision,
+						oracleConsultation: routingSelection.decision.oracleConsultation
+							? {
+									...routingSelection.decision.oracleConsultation,
+									policyVersion: oracleExperimentAssignment.policyVersion,
+								}
+							: undefined,
+					}
+				: routingSelection.decision;
 			let registeredModel: RegisteredModel | undefined;
+			let selectedModelInputIndex = -1;
 			let lastModelError: unknown;
 			let selectedModelError: unknown;
 			let selectedModelPolicyViolation: ReturnType<
@@ -512,6 +559,7 @@ export function handleChatWebSocket(
 						continue;
 					}
 					registeredModel = candidateModel;
+					selectedModelInputIndex = index;
 					break;
 				} catch (error) {
 					lastModelError = error;
@@ -527,6 +575,42 @@ export function handleChatWebSocket(
 				return;
 			}
 			if (!registeredModel) throw selectedModelError ?? lastModelError;
+			const usedFallback = selectedModelInputIndex > 0;
+			const routingReceipt = createRoutingReceipt(
+				{
+					...routedDecision,
+					selectedModel: {
+						provider: registeredModel.provider,
+						model: registeredModel.id,
+					},
+				},
+				{
+					...profileSelection,
+					...(oracleExperimentAssignment
+						? {
+								experiment: {
+									experimentId: oracleExperimentAssignment.experimentId,
+									arm: oracleExperimentAssignment.arm,
+									policyVersion: oracleExperimentAssignment.policyVersion,
+								},
+							}
+						: {}),
+					...(usedFallback ||
+					routingSelection.decision.reason !== "highest_score"
+						? {
+								fallbackReason: usedFallback
+									? "selected_model_unavailable_or_disallowed"
+									: routingSelection.decision.reason,
+								fallbackModel: usedFallback
+									? {
+											provider: registeredModel.provider,
+											model: registeredModel.id,
+										}
+									: undefined,
+							}
+						: {}),
+				},
+			);
 			const routeStartedAt = Date.now();
 
 			const headerApproval = (() => {
@@ -608,7 +692,7 @@ export function handleChatWebSocket(
 			);
 			applyOracleConsultationDirective(
 				agent,
-				routingSelection.decision.oracleConsultation,
+				routedDecision.oracleConsultation,
 			);
 
 			const historyMessages = incomingMessages.slice(0, -1);
@@ -625,6 +709,7 @@ export function handleChatWebSocket(
 			const requestId = Math.random().toString(36).slice(2);
 			const modelKey = `${registeredModel.provider}/${registeredModel.id}`;
 			const wsSession = new WsSession(ws, undefined, { requestId, modelKey });
+			wsSession.sendRoutingReceipt(routingReceipt);
 			const { enterpriseContext } = await import("../../enterprise/context.js");
 
 			const initializeSessionIfNeeded = async (): Promise<string | null> => {
@@ -917,7 +1002,10 @@ export function handleChatWebSocket(
 				}
 
 				if (event.type === "message_end") {
-					sessionManager.saveMessage(event.message);
+					const persistedMessage = isAssistantMessage(event.message)
+						? { ...event.message, routingReceipt }
+						: event.message;
+					sessionManager.saveMessage(persistedMessage);
 					if (isAssistantMessage(event.message)) {
 						recordAssistantUsageMetric({
 							req,

@@ -630,6 +630,28 @@ describe("Maestro Packages", () => {
 	});
 
 	describe("Resource Loading", () => {
+		it("should discover and filter custom agents from packages", async () => {
+			const pkgDir = join(testDir, "agent-package");
+			mkdirSync(join(pkgDir, "agents", "reviewer"), { recursive: true });
+			mkdirSync(join(pkgDir, "agents", "planner"), { recursive: true });
+			writeFileSync(
+				join(pkgDir, "package.json"),
+				JSON.stringify({
+					name: "@test/agents",
+					keywords: ["maestro-package"],
+					maestro: { agents: ["./agents"] },
+				}),
+			);
+
+			const pkg = await loadPackage({
+				source: `local:${pkgDir}`,
+				agents: ["reviewer"],
+			});
+			const resources = loadPackageResources(pkg);
+
+			expect(resources.agents).toEqual([join(pkgDir, "agents", "reviewer")]);
+		});
+
 		it("should load extensions from package", async () => {
 			const pkgDir = join(testDir, "ext-package");
 			mkdirSync(join(pkgDir, "extensions", "test-ext"), { recursive: true });
