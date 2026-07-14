@@ -1,5 +1,179 @@
 {
 	"namedSchemas": {
+		"MaestroAppServerAgentLineageEdgeSchema": {
+			"properties": {
+				"childRunId": {
+					"type": "string"
+				},
+				"childThreadId": {
+					"type": "string"
+				},
+				"edgeId": {
+					"type": "string"
+				},
+				"lastOperation": {
+					"type": "string"
+				},
+				"lastToolCallId": {
+					"type": "string"
+				},
+				"parentThreadId": {
+					"type": "string"
+				},
+				"parentTurnId": {
+					"type": "string"
+				},
+				"spawnToolCallId": {
+					"type": "string"
+				},
+				"status": {
+					"type": "string"
+				},
+				"updatedAt": {
+					"type": "string"
+				}
+			},
+			"required": [
+				"edgeId",
+				"childRunId",
+				"lastToolCallId",
+				"lastOperation",
+				"updatedAt"
+			],
+			"type": "object"
+		},
+		"MaestroAppServerAgentLineageOperationSchema": {
+			"properties": {
+				"childRunId": {
+					"type": "string"
+				},
+				"childThreadId": {
+					"type": "string"
+				},
+				"edgeId": {
+					"type": "string"
+				},
+				"operation": {
+					"type": "string"
+				},
+				"parentThreadId": {
+					"type": "string"
+				},
+				"parentTurnId": {
+					"type": "string"
+				},
+				"status": {
+					"type": "string"
+				},
+				"timestamp": {
+					"type": "string"
+				},
+				"toolCallId": {
+					"type": "string"
+				}
+			},
+			"required": [
+				"edgeId",
+				"toolCallId",
+				"operation",
+				"childRunId",
+				"timestamp"
+			],
+			"type": "object"
+		},
+		"MaestroAppServerAgentLineageSchema": {
+			"properties": {
+				"edges": {
+					"items": {
+						"properties": {
+							"childRunId": {
+								"type": "string"
+							},
+							"childThreadId": {
+								"type": "string"
+							},
+							"edgeId": {
+								"type": "string"
+							},
+							"lastOperation": {
+								"type": "string"
+							},
+							"lastToolCallId": {
+								"type": "string"
+							},
+							"parentThreadId": {
+								"type": "string"
+							},
+							"parentTurnId": {
+								"type": "string"
+							},
+							"spawnToolCallId": {
+								"type": "string"
+							},
+							"status": {
+								"type": "string"
+							},
+							"updatedAt": {
+								"type": "string"
+							}
+						},
+						"required": [
+							"edgeId",
+							"childRunId",
+							"lastToolCallId",
+							"lastOperation",
+							"updatedAt"
+						],
+						"type": "object"
+					},
+					"type": "array"
+				},
+				"operations": {
+					"items": {
+						"properties": {
+							"childRunId": {
+								"type": "string"
+							},
+							"childThreadId": {
+								"type": "string"
+							},
+							"edgeId": {
+								"type": "string"
+							},
+							"operation": {
+								"type": "string"
+							},
+							"parentThreadId": {
+								"type": "string"
+							},
+							"parentTurnId": {
+								"type": "string"
+							},
+							"status": {
+								"type": "string"
+							},
+							"timestamp": {
+								"type": "string"
+							},
+							"toolCallId": {
+								"type": "string"
+							}
+						},
+						"required": [
+							"edgeId",
+							"toolCallId",
+							"operation",
+							"childRunId",
+							"timestamp"
+						],
+						"type": "object"
+					},
+					"type": "array"
+				}
+			},
+			"required": ["edges", "operations"],
+			"type": "object"
+		},
 		"MaestroAppServerAllowedBlockedPolicySchema": {
 			"properties": {
 				"allowed": {
@@ -5481,6 +5655,99 @@
 															},
 															"type": "array"
 														},
+														"agentLineage": {
+															"properties": {
+																"edges": {
+																	"items": {
+																		"properties": {
+																			"childRunId": {
+																				"type": "string"
+																			},
+																			"childThreadId": {
+																				"type": "string"
+																			},
+																			"edgeId": {
+																				"type": "string"
+																			},
+																			"lastOperation": {
+																				"type": "string"
+																			},
+																			"lastToolCallId": {
+																				"type": "string"
+																			},
+																			"parentThreadId": {
+																				"type": "string"
+																			},
+																			"parentTurnId": {
+																				"type": "string"
+																			},
+																			"spawnToolCallId": {
+																				"type": "string"
+																			},
+																			"status": {
+																				"type": "string"
+																			},
+																			"updatedAt": {
+																				"type": "string"
+																			}
+																		},
+																		"required": [
+																			"edgeId",
+																			"childRunId",
+																			"lastToolCallId",
+																			"lastOperation",
+																			"updatedAt"
+																		],
+																		"type": "object"
+																	},
+																	"type": "array"
+																},
+																"operations": {
+																	"items": {
+																		"properties": {
+																			"childRunId": {
+																				"type": "string"
+																			},
+																			"childThreadId": {
+																				"type": "string"
+																			},
+																			"edgeId": {
+																				"type": "string"
+																			},
+																			"operation": {
+																				"type": "string"
+																			},
+																			"parentThreadId": {
+																				"type": "string"
+																			},
+																			"parentTurnId": {
+																				"type": "string"
+																			},
+																			"status": {
+																				"type": "string"
+																			},
+																			"timestamp": {
+																				"type": "string"
+																			},
+																			"toolCallId": {
+																				"type": "string"
+																			}
+																		},
+																		"required": [
+																			"edgeId",
+																			"toolCallId",
+																			"operation",
+																			"childRunId",
+																			"timestamp"
+																		],
+																		"type": "object"
+																	},
+																	"type": "array"
+																}
+															},
+															"required": ["edges", "operations"],
+															"type": "object"
+														},
 														"authoritativeEntryIds": {
 															"items": {
 																"type": "string"
@@ -5878,6 +6145,99 @@
 												"type": "string"
 											},
 											"type": "array"
+										},
+										"agentLineage": {
+											"properties": {
+												"edges": {
+													"items": {
+														"properties": {
+															"childRunId": {
+																"type": "string"
+															},
+															"childThreadId": {
+																"type": "string"
+															},
+															"edgeId": {
+																"type": "string"
+															},
+															"lastOperation": {
+																"type": "string"
+															},
+															"lastToolCallId": {
+																"type": "string"
+															},
+															"parentThreadId": {
+																"type": "string"
+															},
+															"parentTurnId": {
+																"type": "string"
+															},
+															"spawnToolCallId": {
+																"type": "string"
+															},
+															"status": {
+																"type": "string"
+															},
+															"updatedAt": {
+																"type": "string"
+															}
+														},
+														"required": [
+															"edgeId",
+															"childRunId",
+															"lastToolCallId",
+															"lastOperation",
+															"updatedAt"
+														],
+														"type": "object"
+													},
+													"type": "array"
+												},
+												"operations": {
+													"items": {
+														"properties": {
+															"childRunId": {
+																"type": "string"
+															},
+															"childThreadId": {
+																"type": "string"
+															},
+															"edgeId": {
+																"type": "string"
+															},
+															"operation": {
+																"type": "string"
+															},
+															"parentThreadId": {
+																"type": "string"
+															},
+															"parentTurnId": {
+																"type": "string"
+															},
+															"status": {
+																"type": "string"
+															},
+															"timestamp": {
+																"type": "string"
+															},
+															"toolCallId": {
+																"type": "string"
+															}
+														},
+														"required": [
+															"edgeId",
+															"toolCallId",
+															"operation",
+															"childRunId",
+															"timestamp"
+														],
+														"type": "object"
+													},
+													"type": "array"
+												}
+											},
+											"required": ["edges", "operations"],
+											"type": "object"
 										},
 										"authoritativeEntryIds": {
 											"items": {
@@ -6923,6 +7283,99 @@
 					},
 					"type": "array"
 				},
+				"agentLineage": {
+					"properties": {
+						"edges": {
+							"items": {
+								"properties": {
+									"childRunId": {
+										"type": "string"
+									},
+									"childThreadId": {
+										"type": "string"
+									},
+									"edgeId": {
+										"type": "string"
+									},
+									"lastOperation": {
+										"type": "string"
+									},
+									"lastToolCallId": {
+										"type": "string"
+									},
+									"parentThreadId": {
+										"type": "string"
+									},
+									"parentTurnId": {
+										"type": "string"
+									},
+									"spawnToolCallId": {
+										"type": "string"
+									},
+									"status": {
+										"type": "string"
+									},
+									"updatedAt": {
+										"type": "string"
+									}
+								},
+								"required": [
+									"edgeId",
+									"childRunId",
+									"lastToolCallId",
+									"lastOperation",
+									"updatedAt"
+								],
+								"type": "object"
+							},
+							"type": "array"
+						},
+						"operations": {
+							"items": {
+								"properties": {
+									"childRunId": {
+										"type": "string"
+									},
+									"childThreadId": {
+										"type": "string"
+									},
+									"edgeId": {
+										"type": "string"
+									},
+									"operation": {
+										"type": "string"
+									},
+									"parentThreadId": {
+										"type": "string"
+									},
+									"parentTurnId": {
+										"type": "string"
+									},
+									"status": {
+										"type": "string"
+									},
+									"timestamp": {
+										"type": "string"
+									},
+									"toolCallId": {
+										"type": "string"
+									}
+								},
+								"required": [
+									"edgeId",
+									"toolCallId",
+									"operation",
+									"childRunId",
+									"timestamp"
+								],
+								"type": "object"
+							},
+							"type": "array"
+						}
+					},
+					"required": ["edges", "operations"],
+					"type": "object"
+				},
 				"authoritativeEntryIds": {
 					"items": {
 						"type": "string"
@@ -7355,6 +7808,99 @@
 											},
 											"type": "array"
 										},
+										"agentLineage": {
+											"properties": {
+												"edges": {
+													"items": {
+														"properties": {
+															"childRunId": {
+																"type": "string"
+															},
+															"childThreadId": {
+																"type": "string"
+															},
+															"edgeId": {
+																"type": "string"
+															},
+															"lastOperation": {
+																"type": "string"
+															},
+															"lastToolCallId": {
+																"type": "string"
+															},
+															"parentThreadId": {
+																"type": "string"
+															},
+															"parentTurnId": {
+																"type": "string"
+															},
+															"spawnToolCallId": {
+																"type": "string"
+															},
+															"status": {
+																"type": "string"
+															},
+															"updatedAt": {
+																"type": "string"
+															}
+														},
+														"required": [
+															"edgeId",
+															"childRunId",
+															"lastToolCallId",
+															"lastOperation",
+															"updatedAt"
+														],
+														"type": "object"
+													},
+													"type": "array"
+												},
+												"operations": {
+													"items": {
+														"properties": {
+															"childRunId": {
+																"type": "string"
+															},
+															"childThreadId": {
+																"type": "string"
+															},
+															"edgeId": {
+																"type": "string"
+															},
+															"operation": {
+																"type": "string"
+															},
+															"parentThreadId": {
+																"type": "string"
+															},
+															"parentTurnId": {
+																"type": "string"
+															},
+															"status": {
+																"type": "string"
+															},
+															"timestamp": {
+																"type": "string"
+															},
+															"toolCallId": {
+																"type": "string"
+															}
+														},
+														"required": [
+															"edgeId",
+															"toolCallId",
+															"operation",
+															"childRunId",
+															"timestamp"
+														],
+														"type": "object"
+													},
+													"type": "array"
+												}
+											},
+											"required": ["edges", "operations"],
+											"type": "object"
+										},
 										"authoritativeEntryIds": {
 											"items": {
 												"type": "string"
@@ -7693,6 +8239,99 @@
 										"type": "string"
 									},
 									"type": "array"
+								},
+								"agentLineage": {
+									"properties": {
+										"edges": {
+											"items": {
+												"properties": {
+													"childRunId": {
+														"type": "string"
+													},
+													"childThreadId": {
+														"type": "string"
+													},
+													"edgeId": {
+														"type": "string"
+													},
+													"lastOperation": {
+														"type": "string"
+													},
+													"lastToolCallId": {
+														"type": "string"
+													},
+													"parentThreadId": {
+														"type": "string"
+													},
+													"parentTurnId": {
+														"type": "string"
+													},
+													"spawnToolCallId": {
+														"type": "string"
+													},
+													"status": {
+														"type": "string"
+													},
+													"updatedAt": {
+														"type": "string"
+													}
+												},
+												"required": [
+													"edgeId",
+													"childRunId",
+													"lastToolCallId",
+													"lastOperation",
+													"updatedAt"
+												],
+												"type": "object"
+											},
+											"type": "array"
+										},
+										"operations": {
+											"items": {
+												"properties": {
+													"childRunId": {
+														"type": "string"
+													},
+													"childThreadId": {
+														"type": "string"
+													},
+													"edgeId": {
+														"type": "string"
+													},
+													"operation": {
+														"type": "string"
+													},
+													"parentThreadId": {
+														"type": "string"
+													},
+													"parentTurnId": {
+														"type": "string"
+													},
+													"status": {
+														"type": "string"
+													},
+													"timestamp": {
+														"type": "string"
+													},
+													"toolCallId": {
+														"type": "string"
+													}
+												},
+												"required": [
+													"edgeId",
+													"toolCallId",
+													"operation",
+													"childRunId",
+													"timestamp"
+												],
+												"type": "object"
+											},
+											"type": "array"
+										}
+									},
+									"required": ["edges", "operations"],
+									"type": "object"
 								},
 								"authoritativeEntryIds": {
 									"items": {
@@ -8254,6 +8893,99 @@
 								"type": "string"
 							},
 							"type": "array"
+						},
+						"agentLineage": {
+							"properties": {
+								"edges": {
+									"items": {
+										"properties": {
+											"childRunId": {
+												"type": "string"
+											},
+											"childThreadId": {
+												"type": "string"
+											},
+											"edgeId": {
+												"type": "string"
+											},
+											"lastOperation": {
+												"type": "string"
+											},
+											"lastToolCallId": {
+												"type": "string"
+											},
+											"parentThreadId": {
+												"type": "string"
+											},
+											"parentTurnId": {
+												"type": "string"
+											},
+											"spawnToolCallId": {
+												"type": "string"
+											},
+											"status": {
+												"type": "string"
+											},
+											"updatedAt": {
+												"type": "string"
+											}
+										},
+										"required": [
+											"edgeId",
+											"childRunId",
+											"lastToolCallId",
+											"lastOperation",
+											"updatedAt"
+										],
+										"type": "object"
+									},
+									"type": "array"
+								},
+								"operations": {
+									"items": {
+										"properties": {
+											"childRunId": {
+												"type": "string"
+											},
+											"childThreadId": {
+												"type": "string"
+											},
+											"edgeId": {
+												"type": "string"
+											},
+											"operation": {
+												"type": "string"
+											},
+											"parentThreadId": {
+												"type": "string"
+											},
+											"parentTurnId": {
+												"type": "string"
+											},
+											"status": {
+												"type": "string"
+											},
+											"timestamp": {
+												"type": "string"
+											},
+											"toolCallId": {
+												"type": "string"
+											}
+										},
+										"required": [
+											"edgeId",
+											"toolCallId",
+											"operation",
+											"childRunId",
+											"timestamp"
+										],
+										"type": "object"
+									},
+									"type": "array"
+								}
+							},
+							"required": ["edges", "operations"],
+							"type": "object"
 						},
 						"authoritativeEntryIds": {
 							"items": {
@@ -10781,6 +11513,99 @@
 															},
 															"type": "array"
 														},
+														"agentLineage": {
+															"properties": {
+																"edges": {
+																	"items": {
+																		"properties": {
+																			"childRunId": {
+																				"type": "string"
+																			},
+																			"childThreadId": {
+																				"type": "string"
+																			},
+																			"edgeId": {
+																				"type": "string"
+																			},
+																			"lastOperation": {
+																				"type": "string"
+																			},
+																			"lastToolCallId": {
+																				"type": "string"
+																			},
+																			"parentThreadId": {
+																				"type": "string"
+																			},
+																			"parentTurnId": {
+																				"type": "string"
+																			},
+																			"spawnToolCallId": {
+																				"type": "string"
+																			},
+																			"status": {
+																				"type": "string"
+																			},
+																			"updatedAt": {
+																				"type": "string"
+																			}
+																		},
+																		"required": [
+																			"edgeId",
+																			"childRunId",
+																			"lastToolCallId",
+																			"lastOperation",
+																			"updatedAt"
+																		],
+																		"type": "object"
+																	},
+																	"type": "array"
+																},
+																"operations": {
+																	"items": {
+																		"properties": {
+																			"childRunId": {
+																				"type": "string"
+																			},
+																			"childThreadId": {
+																				"type": "string"
+																			},
+																			"edgeId": {
+																				"type": "string"
+																			},
+																			"operation": {
+																				"type": "string"
+																			},
+																			"parentThreadId": {
+																				"type": "string"
+																			},
+																			"parentTurnId": {
+																				"type": "string"
+																			},
+																			"status": {
+																				"type": "string"
+																			},
+																			"timestamp": {
+																				"type": "string"
+																			},
+																			"toolCallId": {
+																				"type": "string"
+																			}
+																		},
+																		"required": [
+																			"edgeId",
+																			"toolCallId",
+																			"operation",
+																			"childRunId",
+																			"timestamp"
+																		],
+																		"type": "object"
+																	},
+																	"type": "array"
+																}
+															},
+															"required": ["edges", "operations"],
+															"type": "object"
+														},
 														"authoritativeEntryIds": {
 															"items": {
 																"type": "string"
@@ -11178,6 +12003,99 @@
 												"type": "string"
 											},
 											"type": "array"
+										},
+										"agentLineage": {
+											"properties": {
+												"edges": {
+													"items": {
+														"properties": {
+															"childRunId": {
+																"type": "string"
+															},
+															"childThreadId": {
+																"type": "string"
+															},
+															"edgeId": {
+																"type": "string"
+															},
+															"lastOperation": {
+																"type": "string"
+															},
+															"lastToolCallId": {
+																"type": "string"
+															},
+															"parentThreadId": {
+																"type": "string"
+															},
+															"parentTurnId": {
+																"type": "string"
+															},
+															"spawnToolCallId": {
+																"type": "string"
+															},
+															"status": {
+																"type": "string"
+															},
+															"updatedAt": {
+																"type": "string"
+															}
+														},
+														"required": [
+															"edgeId",
+															"childRunId",
+															"lastToolCallId",
+															"lastOperation",
+															"updatedAt"
+														],
+														"type": "object"
+													},
+													"type": "array"
+												},
+												"operations": {
+													"items": {
+														"properties": {
+															"childRunId": {
+																"type": "string"
+															},
+															"childThreadId": {
+																"type": "string"
+															},
+															"edgeId": {
+																"type": "string"
+															},
+															"operation": {
+																"type": "string"
+															},
+															"parentThreadId": {
+																"type": "string"
+															},
+															"parentTurnId": {
+																"type": "string"
+															},
+															"status": {
+																"type": "string"
+															},
+															"timestamp": {
+																"type": "string"
+															},
+															"toolCallId": {
+																"type": "string"
+															}
+														},
+														"required": [
+															"edgeId",
+															"toolCallId",
+															"operation",
+															"childRunId",
+															"timestamp"
+														],
+														"type": "object"
+													},
+													"type": "array"
+												}
+											},
+											"required": ["edges", "operations"],
+											"type": "object"
 										},
 										"authoritativeEntryIds": {
 											"items": {

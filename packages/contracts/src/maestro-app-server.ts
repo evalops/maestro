@@ -229,6 +229,36 @@ export const MaestroAppServerRevisionGroupSchema = Type.Object({
 	activeChildEntryId: Type.Optional(Type.String()),
 });
 
+export const MaestroAppServerAgentLineageOperationSchema = Type.Object({
+	edgeId: Type.String(),
+	toolCallId: Type.String(),
+	operation: Type.String(),
+	status: Type.Optional(Type.String()),
+	parentThreadId: Type.Optional(Type.String()),
+	parentTurnId: Type.Optional(Type.String()),
+	childThreadId: Type.Optional(Type.String()),
+	childRunId: Type.String(),
+	timestamp: Type.String(),
+});
+
+export const MaestroAppServerAgentLineageEdgeSchema = Type.Object({
+	edgeId: Type.String(),
+	parentThreadId: Type.Optional(Type.String()),
+	parentTurnId: Type.Optional(Type.String()),
+	childThreadId: Type.Optional(Type.String()),
+	childRunId: Type.String(),
+	spawnToolCallId: Type.Optional(Type.String()),
+	lastToolCallId: Type.String(),
+	lastOperation: Type.String(),
+	status: Type.Optional(Type.String()),
+	updatedAt: Type.String(),
+});
+
+export const MaestroAppServerAgentLineageSchema = Type.Object({
+	edges: Type.Array(MaestroAppServerAgentLineageEdgeSchema),
+	operations: Type.Array(MaestroAppServerAgentLineageOperationSchema),
+});
+
 export const MaestroAppServerThreadGraphSchema = Type.Object({
 	branchId: Type.String(),
 	leafEntryId: Type.Optional(Type.String()),
@@ -236,6 +266,7 @@ export const MaestroAppServerThreadGraphSchema = Type.Object({
 	authoritativeEntryIds: Type.Array(Type.String()),
 	supersededEntryIds: Type.Array(Type.String()),
 	revisionGroups: Type.Array(MaestroAppServerRevisionGroupSchema),
+	agentLineage: Type.Optional(MaestroAppServerAgentLineageSchema),
 	compactionSpans: Type.Array(MaestroAppServerCompactionSpanSchema),
 });
 export type MaestroAppServerThreadGraph = Static<

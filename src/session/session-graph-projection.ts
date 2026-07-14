@@ -1,4 +1,8 @@
 import type { AppMessage, ToolCall } from "../agent/types.js";
+import {
+	type AgentLineageProjection,
+	buildAgentLineageProjection,
+} from "./agent-lineage-projection.js";
 import { migrateToCurrentVersion } from "./migration.js";
 import type {
 	CompactionEntry,
@@ -43,6 +47,7 @@ export interface SessionGraphProjection {
 	authoritativeEntryIds: string[];
 	supersededEntryIds: string[];
 	revisionGroups: SessionGraphRevisionGroup[];
+	agentLineage: AgentLineageProjection;
 	turns: SessionGraphTurn[];
 	compactionSpans: SessionGraphCompactionSpan[];
 }
@@ -79,6 +84,7 @@ export function buildSessionGraphProjection(
 			.filter((entry) => !authoritativeEntryIdSet.has(entry.id))
 			.map((entry) => entry.id),
 		revisionGroups: buildRevisionGroups(treeEntries, authoritativeEntryIdSet),
+		agentLineage: buildAgentLineageProjection(activePath),
 		turns: buildTurnsFromActiveEntries(activeEntries),
 		compactionSpans,
 	};

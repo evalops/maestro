@@ -61,6 +61,30 @@ describe("session graph projection", () => {
 			},
 			{
 				type: "message",
+				id: "stale-assistant",
+				parentId: "stale-user",
+				timestamp: "2026-01-01T00:00:03.500Z",
+				message: {
+					...assistantMessage("stale branch delegation"),
+					content: [
+						{
+							type: "toolCall",
+							id: "spawn-stale-child",
+							name: "codex.subagent.spawnAgent",
+							arguments: {
+								codexWorkGraph: {
+									toolCallId: "spawn-stale-child",
+									tool: "spawnAgent",
+									parent: { threadId: "thread-1", turnId: "stale-user" },
+									childRuns: [{ childRunId: "stale-child-run" }],
+								},
+							},
+						},
+					],
+				},
+			},
+			{
+				type: "message",
 				id: "active-user",
 				parentId: "assistant-1",
 				timestamp: "2026-01-01T00:00:04.000Z",
@@ -95,7 +119,10 @@ describe("session graph projection", () => {
 			"active-user",
 			"active-assistant",
 		]);
-		expect(projection.supersededEntryIds).toEqual(["stale-user"]);
+		expect(projection.supersededEntryIds).toEqual([
+			"stale-user",
+			"stale-assistant",
+		]);
 		expect(projection.revisionGroups).toContainEqual({
 			parentEntryId: "assistant-1",
 			childEntryIds: ["stale-user", "active-user"],
@@ -113,6 +140,7 @@ describe("session graph projection", () => {
 			sourceEntryIds: ["active-user", "active-assistant"],
 			toolCallIds: [],
 		});
+		expect(projection.agentLineage.edges).toEqual([]);
 	});
 
 	it("records compaction spans while keeping only the replayable active window", () => {
@@ -262,5 +290,67 @@ describe("session graph projection", () => {
 			sourceEntryIds: ["user-1", "assistant-tools", "tool-result"],
 			toolCallIds: ["call-read"],
 		});
+	});
+
+	it("includes durable child-agent lineage from persisted collaboration tools", () => {
+		const workGraph = {
+			schemaVersion: "evalops.maestro.codex.subagent-workgraph.v1",
+			toolCallId: "spawn-child",
+			tool: "spawnAgent",
+			status: "completed",
+			parent: { threadId: "thread-agents", turnId: "user-1" },
+			childRuns: [
+				{
+					edgeId: "spawn-child:0:spawnAgent:child-run-1",
+					threadId: "child-thread-1",
+					childRunId: "child-run-1",
+					operation: "spawnAgent",
+					status: "completed",
+				},
+			],
+		};
+		const entries = [
+			{
+				type: "session",
+				id: "thread-agents",
+				timestamp: "2026-01-01T00:00:00.000Z",
+				cwd: "/workspace",
+			},
+			{
+				type: "message",
+				id: "user-1",
+				parentId: null,
+				timestamp: "2026-01-01T00:00:01.000Z",
+				message: userMessage("delegate this"),
+			},
+			{
+				type: "message",
+				id: "assistant-spawn",
+				parentId: "user-1",
+				timestamp: "2026-01-01T00:00:02.000Z",
+				message: {
+					...assistantMessage("delegating"),
+					content: [
+						{
+							type: "toolCall",
+							id: "spawn-child",
+							name: "codex.subagent.spawnAgent",
+							arguments: { codexWorkGraph: workGraph },
+						},
+					],
+				},
+			},
+		] as SessionEntry[];
+
+		const projection = buildSessionGraphProjection(entries);
+
+		expect(projection.agentLineage.edges).toEqual([
+			expect.objectContaining({
+				parentThreadId: "thread-agents",
+				childThreadId: "child-thread-1",
+				childRunId: "child-run-1",
+				status: "completed",
+			}),
+		]);
 	});
 });

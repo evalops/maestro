@@ -557,6 +557,10 @@ function turnsFromProjection(
 function graphFromProjection(
 	projection: SessionGraphProjection,
 ): MaestroAppServerThreadGraph {
+	const agentLineage =
+		projection.agentLineage.edges.length > 0
+			? projection.agentLineage
+			: undefined;
 	return {
 		branchId: projection.branchId,
 		leafEntryId: projection.leafEntryId,
@@ -564,6 +568,7 @@ function graphFromProjection(
 		authoritativeEntryIds: projection.authoritativeEntryIds,
 		supersededEntryIds: projection.supersededEntryIds,
 		revisionGroups: projection.revisionGroups,
+		agentLineage,
 		compactionSpans: projection.compactionSpans,
 	};
 }
