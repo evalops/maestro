@@ -45,6 +45,7 @@ import { getAuthSubject } from "../authz.js";
 import { getAgentCircuitBreaker } from "../circuit-breaker.js";
 import { clientToolService } from "../client-tools-service.js";
 import { isHostedSessionManager } from "../hosted-session-manager.js";
+import { resolveModelInputForRouting } from "../model-selection.js";
 import {
 	type RequestContext,
 	getWorkspaceConfigContext,
@@ -240,6 +241,8 @@ export function handleChatWebSocket(
 		createBackgroundAgent,
 		getRegisteredModel,
 		defaultApprovalMode,
+		defaultProvider,
+		defaultModelId,
 		acquireSse,
 		releaseSse,
 	} = context;
@@ -478,7 +481,11 @@ export function handleChatWebSocket(
 
 			const routingSelection = selectIntelligentRouterModel({
 				req,
-				requestedModel: chatReq.model,
+				requestedModel: resolveModelInputForRouting(
+					chatReq.model,
+					defaultProvider,
+					defaultModelId,
+				),
 				body: chatReq,
 			});
 			let registeredModel: RegisteredModel | undefined;

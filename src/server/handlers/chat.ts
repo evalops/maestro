@@ -64,6 +64,7 @@ import { getAuthSubject } from "../authz.js";
 import { getAgentCircuitBreaker } from "../circuit-breaker.js";
 import { clientToolService } from "../client-tools-service.js";
 import { isHostedSessionManager } from "../hosted-session-manager.js";
+import { resolveModelInputForRouting } from "../model-selection.js";
 import { getWorkspaceConfigContext } from "../request-context.js";
 import { serverRequestManager } from "../server-request-manager.js";
 import {
@@ -132,6 +133,8 @@ export async function handleChat(
 		createBackgroundAgent,
 		getRegisteredModel,
 		defaultApprovalMode,
+		defaultProvider,
+		defaultModelId,
 		acquireSse,
 		releaseSse,
 		corsHeaders: cors,
@@ -320,7 +323,11 @@ export async function handleChat(
 		// it can select a better-scoring model and expose explicit fallbacks.
 		const routingSelection = selectIntelligentRouterModel({
 			req,
-			requestedModel: chatReq.model,
+			requestedModel: resolveModelInputForRouting(
+				chatReq.model,
+				defaultProvider,
+				defaultModelId,
+			),
 			body: chatReq,
 		});
 		let registeredModel: RegisteredModel | undefined;
