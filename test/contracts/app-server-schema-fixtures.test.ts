@@ -126,6 +126,7 @@ describe("app-server schema fixtures", () => {
 		expect(graph.properties).toHaveProperty("authoritativeEntryIds");
 		expect(graph.properties).toHaveProperty("supersededEntryIds");
 		expect(graph.properties).toHaveProperty("revisionGroups");
+		expect(graph.properties).toHaveProperty("agentLineage");
 		expect(graph.required).toEqual(
 			expect.arrayContaining([
 				"authoritativeEntryIds",

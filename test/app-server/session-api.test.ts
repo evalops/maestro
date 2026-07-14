@@ -2409,6 +2409,28 @@ describe("Maestro app-server session API", () => {
 							name: "read",
 							arguments: { path: "README.md" },
 						},
+						{
+							type: "toolCall" as const,
+							id: "spawn-child",
+							name: "codex.subagent.spawnAgent",
+							arguments: {
+								codexWorkGraph: {
+									toolCallId: "spawn-child",
+									tool: "spawnAgent",
+									status: "completed",
+									parent: { threadId: "graph-thread", turnId: "active-user" },
+									childRuns: [
+										{
+											edgeId: "spawn-child:0:spawnAgent:child-run-1",
+											threadId: "child-thread-1",
+											childRunId: "child-run-1",
+											operation: "spawnAgent",
+											status: "completed",
+										},
+									],
+								},
+							},
+						},
 					],
 				},
 			},
@@ -2478,6 +2500,22 @@ describe("Maestro app-server session API", () => {
 					activeChildEntryId: "active-user",
 				},
 			],
+			agentLineage: {
+				edges: [
+					expect.objectContaining({
+						parentThreadId: "graph-thread",
+						childThreadId: "child-thread-1",
+						childRunId: "child-run-1",
+						status: "completed",
+					}),
+				],
+				operations: [
+					expect.objectContaining({
+						toolCallId: "spawn-child",
+						operation: "spawnAgent",
+					}),
+				],
+			},
 			compactionSpans: [
 				{
 					id: "compact-1",
@@ -2492,7 +2530,7 @@ describe("Maestro app-server session API", () => {
 			id: "active-user",
 			parentTurnId: "kept-user",
 			sourceEntryIds: ["active-user", "assistant-tools"],
-			toolCallIds: ["call-read"],
+			toolCallIds: ["call-read", "spawn-child"],
 		});
 		expect(Value.Check(MaestroAppServerResponseSchema, read)).toBe(true);
 
