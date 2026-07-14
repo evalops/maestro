@@ -1853,6 +1853,24 @@
 				},
 				"resources": {
 					"properties": {
+						"agents": {
+							"properties": {
+								"project": {
+									"items": {
+										"type": "string"
+									},
+									"type": "array"
+								},
+								"user": {
+									"items": {
+										"type": "string"
+									},
+									"type": "array"
+								}
+							},
+							"required": ["user", "project"],
+							"type": "object"
+						},
 						"extensions": {
 							"properties": {
 								"project": {
@@ -1969,6 +1987,24 @@
 		},
 		"MaestroAppServerPluginBundleResourcesSchema": {
 			"properties": {
+				"agents": {
+					"properties": {
+						"project": {
+							"items": {
+								"type": "string"
+							},
+							"type": "array"
+						},
+						"user": {
+							"items": {
+								"type": "string"
+							},
+							"type": "array"
+						}
+					},
+					"required": ["user", "project"],
+					"type": "object"
+				},
 				"extensions": {
 					"properties": {
 						"project": {
@@ -4413,6 +4449,24 @@
 								},
 								"resources": {
 									"properties": {
+										"agents": {
+											"properties": {
+												"project": {
+													"items": {
+														"type": "string"
+													},
+													"type": "array"
+												},
+												"user": {
+													"items": {
+														"type": "string"
+													},
+													"type": "array"
+												}
+											},
+											"required": ["user", "project"],
+											"type": "object"
+										},
 										"extensions": {
 											"properties": {
 												"project": {
@@ -10271,6 +10325,24 @@
 								},
 								"resources": {
 									"properties": {
+										"agents": {
+											"properties": {
+												"project": {
+													"items": {
+														"type": "string"
+													},
+													"type": "array"
+												},
+												"user": {
+													"items": {
+														"type": "string"
+													},
+													"type": "array"
+												}
+											},
+											"required": ["user", "project"],
+											"type": "object"
+										},
 										"extensions": {
 											"properties": {
 												"project": {
