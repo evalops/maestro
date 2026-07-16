@@ -28,6 +28,7 @@
  * ```
  */
 
+import { estimateTokens } from "@evalops/contracts";
 import { createLogger } from "../utils/logger.js";
 
 const logger = createLogger("context:token-optimizer");
@@ -94,15 +95,6 @@ const COMMENT_PATTERNS: Record<string, RegExp[]> = {
 	html: [/<!--[\s\S]*?-->/g],
 	css: [/\/\*[\s\S]*?\*\//g],
 };
-
-/**
- * Estimate tokens for text (rough approximation)
- */
-function estimateTokens(text: string): number {
-	// GPT-style tokenization: roughly 4 chars per token for English
-	// Code tends to be denser, so we use a slightly lower ratio
-	return Math.ceil(text.length / 3.5);
-}
 
 /**
  * Detect language from content

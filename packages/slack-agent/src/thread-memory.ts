@@ -13,6 +13,7 @@
 
 import { existsSync, readFileSync, readdirSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
+import { estimateTokens } from "@evalops/contracts";
 import * as logger from "./logger.js";
 import { FileStorageBackend, type StorageBackend } from "./storage.js";
 import { ensureDirSync } from "./utils/fs.js";
@@ -68,13 +69,8 @@ const DEFAULT_CONFIG = {
 };
 
 // ============================================================================
-// Token Estimation
+// Token Estimation (delegates to @evalops/contracts — single source of truth)
 // ============================================================================
-
-function estimateTokens(text: string): number {
-	// Rough estimate: ~4 characters per token for English text
-	return Math.ceil(text.length / 4);
-}
 
 // ============================================================================
 // ThreadMemoryManager Class

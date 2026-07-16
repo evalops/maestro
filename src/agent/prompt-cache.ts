@@ -12,6 +12,7 @@
  */
 
 import { createHash } from "node:crypto";
+import { estimateTokens } from "@evalops/contracts";
 import { createLogger } from "../utils/logger.js";
 
 const logger = createLogger("prompt-cache");
@@ -112,14 +113,6 @@ export function getPromptCacheConfig(): PromptCacheConfig {
 			? DEFAULT_CONFIG.cacheTtlSeconds
 			: Math.max(300, ttl), // Anthropic minimum is 5 minutes
 	};
-}
-
-/**
- * Estimate token count for a string (rough approximation).
- */
-export function estimateTokens(text: string): number {
-	// Rough estimate: 4 characters per token on average
-	return Math.ceil(text.length / 4);
 }
 
 /**

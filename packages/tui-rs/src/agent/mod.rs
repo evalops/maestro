@@ -91,9 +91,11 @@ pub mod compaction;
 pub mod credential_store;
 pub mod message_queue;
 mod native;
-mod protocol;
+pub mod protocol;
 pub mod retry;
 pub mod safety;
+pub mod token_counting;
+pub mod token_estimation;
 
 pub use compaction::{CompactionConfig, CompactionResult, ContextCompactor, CutPoint};
 pub use credential_store::{

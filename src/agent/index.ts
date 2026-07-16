@@ -82,7 +82,6 @@ export {
 	PromptCacheManager,
 	createPromptCacheManager,
 	getPromptCacheConfig,
-	estimateTokens,
 	type CacheControl,
 	type CacheableBlock,
 	type CacheStats,
