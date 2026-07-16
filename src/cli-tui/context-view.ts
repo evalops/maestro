@@ -1,3 +1,4 @@
+import { estimateTokens } from "@evalops/contracts";
 import type { Component } from "@evalops/tui";
 import { convertAppMessageToLlm } from "../agent/custom-messages.js";
 import type {
@@ -157,8 +158,7 @@ export class ContextView implements Component {
 		totalTokens: number,
 	): ContextItem[] {
 		const items: ContextItem[] = [];
-		// Estimate tokens: roughly chars / 4
-		const estimate = (text: string) => Math.ceil(text.length / 4);
+		const estimate = (text: string) => estimateTokens(text);
 
 		// System Prompt
 		if (state.systemPrompt) {

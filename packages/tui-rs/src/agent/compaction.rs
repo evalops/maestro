@@ -35,6 +35,7 @@
 //! }
 //! ```
 
+use crate::agent::token_estimation::{self, IMAGE_TOKEN_ESTIMATE};
 use crate::ai::{ContentBlock, Message, MessageContent, Role};
 
 /// Configuration for context compaction
@@ -55,6 +56,15 @@ pub struct CompactionConfig {
     pub auto_compact_threshold: f64,
     /// Whether auto-compaction is enabled
     pub auto_compact_enabled: bool,
+    /// Whether intra-message compaction is enabled. This is the second
+    /// compaction layer: when inter-turn compaction cannot find a valid cut
+    /// point (or the kept messages still exceed budget after compaction),
+    /// individual oversized messages have their largest text/tool-result
+    /// blocks elided in place. Mirrors grok-build's `intra_compaction` pass.
+    pub intra_compact_enabled: bool,
+    /// Maximum tokens a single kept message may occupy before its largest
+    /// elidable blocks (Text, ToolResult) are head/tail-elided.
+    pub intra_message_token_budget: u64,
 }
 
 impl Default for CompactionConfig {
@@ -67,6 +77,8 @@ impl Default for CompactionConfig {
             keep_recent_tokens: 20_000, // Keep at least 20K recent tokens
             auto_compact_threshold: 0.85, // Compact at 85% capacity
             auto_compact_enabled: true, // Enabled by default
+            intra_compact_enabled: true,
+            intra_message_token_budget: 8_000,
         }
     }
 }
@@ -281,6 +293,7 @@ impl ContextCompactor {
                 summary: None,
                 compacted_count: 0,
                 cut_point: None,
+                intra_compacted_count: 0,
             };
         }
 
@@ -313,6 +326,7 @@ impl ContextCompactor {
             summary: Some(summary),
             compacted_count: to_compact.len(),
             cut_point: None,
+            intra_compacted_count: 0,
         }
     }
 
@@ -333,19 +347,26 @@ impl ContextCompactor {
                 summary: None,
                 compacted_count: 0,
                 cut_point: None,
+                intra_compacted_count: 0,
             };
         }
 
         // Find optimal cut point respecting turn boundaries
         let cut_point = find_cut_point(messages, self.config.keep_recent_tokens);
 
-        // If no valid cut point or nothing to compact
+        // If no valid cut point or nothing to compact, fall back to
+        // intra-message compaction: elide oversized individual messages that
+        // inter-turn compaction could not relocate (e.g. a single giant tool
+        // result with no valid cut point available).
         if cut_point.first_kept_index == 0 {
+            let mut messages = messages.to_vec();
+            let intra = self.compact_intra(&mut messages);
             return CompactionResult {
-                messages: messages.to_vec(),
+                messages,
                 summary: None,
                 compacted_count: 0,
                 cut_point: Some(cut_point),
+                intra_compacted_count: intra,
             };
         }
 
@@ -376,12 +397,47 @@ impl ContextCompactor {
         // Add preserved messages
         result_messages.extend(to_preserve.iter().cloned());
 
+        // Second compaction layer (intra-message): if the kept window still
+        // exceeds the budget after inter-turn compaction, elide oversized
+        // individual messages in place. The injected summary (index 0) is left
+        // intact.
+        let mut intra_compacted_count = 0;
+        if self.config.intra_compact_enabled
+            && self.estimate_tokens(&result_messages) > self.config.max_context_tokens
+        {
+            for msg in result_messages.iter_mut().skip(1) {
+                if elide_message_to_budget(msg, self.config.intra_message_token_budget) > 0 {
+                    intra_compacted_count += 1;
+                }
+            }
+        }
+
         CompactionResult {
             messages: result_messages,
             summary: Some(summary),
             compacted_count: to_compact.len(),
             cut_point: Some(cut_point),
+            intra_compacted_count,
         }
+    }
+
+    /// Apply intra-message compaction in place.
+    ///
+    /// Elides any message whose estimated token count exceeds
+    /// [`CompactionConfig::intra_message_token_budget`] down to that budget by
+    /// head/tail-eliding its largest Text/ToolResult blocks. Returns the number
+    /// of messages that were modified. No-ops when intra compaction is disabled.
+    pub fn compact_intra(&self, messages: &mut [Message]) -> usize {
+        if !self.config.intra_compact_enabled {
+            return 0;
+        }
+        let mut count = 0;
+        for msg in messages.iter_mut() {
+            if elide_message_to_budget(msg, self.config.intra_message_token_budget) > 0 {
+                count += 1;
+            }
+        }
+        count
     }
 
     /// Generate a summary of messages for compaction
@@ -506,13 +562,15 @@ pub struct CompactionResult {
     pub compacted_count: usize,
     /// Information about the cut point (if token-aware compaction was used)
     pub cut_point: Option<CutPoint>,
+    /// Number of messages that had content elided via intra-message compaction
+    pub intra_compacted_count: usize,
 }
 
 impl CompactionResult {
     /// Check if compaction actually occurred
     #[must_use]
     pub fn was_compacted(&self) -> bool {
-        self.compacted_count > 0
+        self.compacted_count > 0 || self.intra_compacted_count > 0
     }
 
     /// Check if a turn was split during compaction
@@ -540,17 +598,15 @@ fn estimate_block_tokens(block: &ContentBlock) -> u64 {
             estimate_text_tokens(name) + estimate_text_tokens(&input_str)
         }
         ContentBlock::ToolResult { content, .. } => estimate_text_tokens(content),
-        ContentBlock::Image { .. } => {
-            // Images have fixed token costs, estimate ~1000 tokens
-            1000
-        }
+        ContentBlock::Image { .. } => IMAGE_TOKEN_ESTIMATE,
     }
 }
 
-/// Estimate token count for text using character ratio
+/// Estimate token count for text using the shared bytes/4 heuristic.
+/// Delegates to [`crate::agent::token_estimation::estimate_tokens`].
+#[inline]
 fn estimate_text_tokens(text: &str) -> u64 {
-    // ~4 characters per token is a reasonable estimate
-    (text.len() / 4).max(1) as u64
+    token_estimation::estimate_tokens(text)
 }
 
 /// Truncate text to a maximum length, preserving word boundaries
@@ -569,6 +625,210 @@ fn truncate_text(text: &str, max_chars: usize) -> String {
         format!("{}...", &truncated[..pos].trim())
     } else {
         format!("{}...", truncated.trim())
+    }
+}
+
+/// Elide text to `max_chars`, code-block aware.
+///
+/// When the text contains fenced code blocks (```), oversized blocks are
+/// elided in place first — preserving the fence and language tag plus the head
+/// and tail lines so the model retains the structure and the most recent
+/// context (often the actual error). If the result is still over budget, it
+/// falls back to whole-string head/tail elision. Returns the original text
+/// unchanged when it already fits.
+fn elide_text(text: &str, max_chars: usize) -> String {
+    let char_count = text.chars().count();
+    if char_count <= max_chars || max_chars == 0 {
+        return text.to_string();
+    }
+
+    if text.contains("```") {
+        let code_elided = elide_oversized_code_blocks(text, max_chars);
+        if code_elided.chars().count() <= max_chars {
+            return code_elided;
+        }
+        return head_tail_elide(&code_elided, max_chars);
+    }
+
+    head_tail_elide(text, max_chars)
+}
+
+/// Whole-string head/tail elision with an omission marker.
+fn head_tail_elide(text: &str, max_chars: usize) -> String {
+    let char_count = text.chars().count();
+    if char_count <= max_chars || max_chars == 0 {
+        return text.to_string();
+    }
+
+    // Reserve ~30% for the tail so the most recent lines are preserved.
+    let tail = max_chars / 3;
+    let head = max_chars.saturating_sub(tail);
+
+    let head_end = text
+        .char_indices()
+        .nth(head)
+        .map_or_else(|| text.len(), |(i, _)| i);
+    let tail_start_char = char_count.saturating_sub(tail);
+    let tail_start = text
+        .char_indices()
+        .nth(tail_start_char)
+        .map_or_else(|| text.len(), |(i, _)| i);
+
+    let omitted = char_count - head - (char_count - tail_start_char);
+    format!(
+        "{}\n\n... [{} chars elided] ...\n\n{}",
+        text[..head_end].trim(),
+        omitted,
+        text[tail_start..].trim(),
+    )
+}
+
+/// Lines of code preserved at the head/tail of an elided fenced block.
+const CODE_BLOCK_HEAD_LINES: usize = 8;
+const CODE_BLOCK_TAIL_LINES: usize = 8;
+
+/// Elide fenced code blocks that individually exceed roughly half the message
+/// budget. Each oversized block is replaced with its opening fence + language
+/// tag, the first/last few content lines, and a `[N lines elided]` marker,
+/// followed by the closing fence. Non-code text and small code blocks pass
+/// through unchanged.
+fn elide_oversized_code_blocks(text: &str, max_chars: usize) -> String {
+    let block_threshold = (max_chars / 2).max(
+        (CODE_BLOCK_HEAD_LINES + CODE_BLOCK_TAIL_LINES) * 40, // rough chars floor
+    );
+
+    let mut out = String::with_capacity(text.len());
+    let mut lines = text.lines().peekable();
+
+    while let Some(line) = lines.next() {
+        if line.trim_start().starts_with("```") {
+            let fence_line = line;
+            let mut block_lines: Vec<&str> = Vec::new();
+            let mut closed = false;
+            for inner in lines.by_ref() {
+                if inner.trim_start().starts_with("```") {
+                    closed = true;
+                    break;
+                }
+                block_lines.push(inner);
+            }
+
+            let block_chars: usize = block_lines.iter().map(|l| l.len() + 1).sum();
+            if block_chars > block_threshold
+                && block_lines.len() > CODE_BLOCK_HEAD_LINES + CODE_BLOCK_TAIL_LINES
+            {
+                let omitted = block_lines.len() - CODE_BLOCK_HEAD_LINES - CODE_BLOCK_TAIL_LINES;
+                out.push_str(fence_line);
+                out.push('\n');
+                for l in block_lines.iter().take(CODE_BLOCK_HEAD_LINES) {
+                    out.push_str(l);
+                    out.push('\n');
+                }
+                out.push_str(&format!("... [{} lines elided] ...\n", omitted));
+                for l in block_lines
+                    .iter()
+                    .skip(block_lines.len() - CODE_BLOCK_TAIL_LINES)
+                {
+                    out.push_str(l);
+                    out.push('\n');
+                }
+                if closed {
+                    out.push_str("```");
+                    out.push('\n');
+                }
+            } else {
+                out.push_str(fence_line);
+                out.push('\n');
+                for l in &block_lines {
+                    out.push_str(l);
+                    out.push('\n');
+                }
+                if closed {
+                    out.push_str("```");
+                    out.push('\n');
+                }
+            }
+        } else {
+            out.push_str(line);
+            out.push('\n');
+        }
+    }
+
+    out
+}
+
+/// Elide a single content block's large string field down to `max_chars`.
+///
+/// Only [`ContentBlock::Text`] and [`ContentBlock::ToolResult`] are elided.
+/// `ToolUse` blocks (small, needed for tool-call continuity), `Thinking`
+/// blocks (signature-bound for API replay), and `Image` blocks (fixed cost)
+/// are returned unchanged.
+fn elide_block(block: ContentBlock, max_chars: usize) -> ContentBlock {
+    match block {
+        ContentBlock::Text { text } => ContentBlock::Text {
+            text: elide_text(&text, max_chars),
+        },
+        ContentBlock::ToolResult {
+            tool_use_id,
+            content,
+            is_error,
+        } => ContentBlock::ToolResult {
+            tool_use_id,
+            content: elide_text(&content, max_chars),
+            is_error,
+        },
+        other => other,
+    }
+}
+
+/// Elide an oversized message in place so it fits within `budget_tokens`.
+///
+/// Greedily elides the largest elidable blocks (Text, ToolResult) until the
+/// message token estimate is within budget (or no more elidable blocks
+/// remain). Returns the number of blocks that were modified.
+fn elide_message_to_budget(message: &mut Message, budget_tokens: u64) -> usize {
+    if estimate_message_tokens(message) <= budget_tokens {
+        return 0;
+    }
+    let max_chars = budget_tokens.saturating_mul(token_estimation::BYTES_PER_TOKEN as u64) as usize;
+
+    match &mut message.content {
+        MessageContent::Text(text) => {
+            let elided = elide_text(text, max_chars);
+            if elided != *text {
+                *text = elided;
+                return 1;
+            }
+            0
+        }
+        MessageContent::Blocks(blocks) => {
+            // Elide the largest blocks first until the message fits the budget.
+            let mut order: Vec<usize> = (0..blocks.len()).collect();
+            order.sort_by(|&a, &b| {
+                estimate_block_tokens(&blocks[b]).cmp(&estimate_block_tokens(&blocks[a]))
+            });
+
+            let mut total: u64 = blocks.iter().map(estimate_block_tokens).sum();
+            let mut changed = 0;
+            for idx in order {
+                if total <= budget_tokens {
+                    break;
+                }
+                let before = estimate_block_tokens(&blocks[idx]);
+                let placeholder = ContentBlock::Text {
+                    text: String::new(),
+                };
+                let original = std::mem::replace(&mut blocks[idx], placeholder);
+                let replacement = elide_block(original, max_chars);
+                let after = estimate_block_tokens(&replacement);
+                blocks[idx] = replacement;
+                if after < before {
+                    changed += 1;
+                }
+                total = total - before + after;
+            }
+            changed
+        }
     }
 }
 
@@ -592,9 +852,9 @@ mod tests {
 
     #[test]
     fn test_estimate_text_tokens() {
-        assert_eq!(estimate_text_tokens("Hello"), 1); // 5 chars / 4 = 1
-        assert_eq!(estimate_text_tokens("Hello, world!"), 3); // 13 chars / 4 = 3
-        assert_eq!(estimate_text_tokens(""), 1); // min 1
+        assert_eq!(estimate_text_tokens("Hello"), 2); // 5 chars / 4, ceil = 2
+        assert_eq!(estimate_text_tokens("Hello, world!"), 4); // 13 chars / 4, ceil = 4
+        assert_eq!(estimate_text_tokens(""), 0); // empty = 0
     }
 
     #[test]
@@ -773,6 +1033,7 @@ mod tests {
             summary: Some("Summary".to_string()),
             compacted_count: 5,
             cut_point: None,
+            intra_compacted_count: 0,
         };
         assert!(result.was_compacted());
 
@@ -781,6 +1042,7 @@ mod tests {
             summary: None,
             compacted_count: 0,
             cut_point: None,
+            intra_compacted_count: 0,
         };
         assert!(!result_no_compact.was_compacted());
     }
@@ -936,6 +1198,7 @@ mod tests {
                 tokens_before: 0,
                 tokens_after: 100,
             }),
+            intra_compacted_count: 0,
         };
         assert!(!result_not_split.was_turn_split());
 
@@ -950,6 +1213,7 @@ mod tests {
                 tokens_before: 500,
                 tokens_after: 100,
             }),
+            intra_compacted_count: 0,
         };
         assert!(result_split.was_turn_split());
     }
@@ -1027,5 +1291,149 @@ mod tests {
 
         assert!(config.auto_compact_enabled);
         assert!((config.auto_compact_threshold - 0.85).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_elide_text_preserves_short_and_head_tail_long() {
+        // Short text is unchanged.
+        assert_eq!(elide_text("short", 100), "short");
+
+        // Long text keeps head + tail with an omission marker.
+        let long = "x".repeat(1000);
+        let elided = elide_text(&long, 100);
+        assert!(elided.contains("chars elided"));
+        assert!(elided.len() < long.len());
+        // Head and tail both survive (all 'x' here, so check marker presence).
+        assert!(elided.starts_with('x'));
+        assert!(elided.ends_with('x'));
+    }
+
+    #[test]
+    fn test_elide_text_code_block_preserves_fence_and_lang() {
+        // A large fenced code block is elided in place: the fence + language
+        // tag, the first/last few lines, and an elision marker survive.
+        let mut block = String::from("```rust\n");
+        for i in 0..200 {
+            block.push_str(&format!("let x_{i} = {i};\n"));
+        }
+        block.push_str("```");
+
+        let elided = elide_text(&block, 400);
+        assert!(
+            elided.contains("```rust"),
+            "fence + language tag must survive: {elided}"
+        );
+        assert!(
+            elided.contains("lines elided"),
+            "elision marker must be present"
+        );
+        assert!(elided.contains("let x_0 = 0;"), "head content must survive");
+        assert!(
+            elided.contains("let x_199 = 199;"),
+            "tail content must survive"
+        );
+        assert!(elided.len() < block.len());
+    }
+
+    #[test]
+    fn test_elide_text_small_code_block_unchanged() {
+        let block = "```ts\nconst a = 1;\nconst b = 2;\n```";
+        // Budget large enough that nothing needs eliding.
+        assert_eq!(elide_text(block, 10_000), block);
+    }
+
+    #[test]
+    fn test_elide_text_mixed_code_and_prose() {
+        // Prose with an embedded oversized code block: prose is preserved and
+        // only the oversized block is elided.
+        let mut input = String::from("Here is the file:\n```python\n");
+        for i in 0..150 {
+            input.push_str(&format!("print({i})\n"));
+        }
+        input.push_str("```\nThat was the file.");
+
+        let elided = elide_text(&input, 300);
+        assert!(elided.contains("Here is the file:"));
+        assert!(elided.contains("That was the file."));
+        assert!(elided.contains("```python"));
+        assert!(elided.contains("lines elided"));
+    }
+
+    #[test]
+    fn test_compact_intra_elides_oversized_message() {
+        // intra_message_token_budget = 100 => 400 chars; feed a 4000-char message.
+        let config = CompactionConfig {
+            intra_message_token_budget: 100,
+            max_context_tokens: 10,
+            ..Default::default()
+        };
+        let compactor = ContextCompactor::new(config);
+
+        let mut messages = vec![make_user_message(&"a".repeat(4000))];
+        let changed = compactor.compact_intra(&mut messages);
+
+        assert_eq!(changed, 1);
+        let after = super::estimate_message_tokens(&messages[0]);
+        // Elided to roughly the budget (kept head/tail + omission marker overhead).
+        assert!(after <= 200, "expected <= ~budget tokens, got {after}");
+        assert!(
+            after < 1000,
+            "expected reduction from original 1000 tokens, got {after}"
+        );
+    }
+
+    #[test]
+    fn test_compact_intra_disabled_noop() {
+        let config = CompactionConfig {
+            intra_compact_enabled: false,
+            intra_message_token_budget: 100,
+            ..Default::default()
+        };
+        let compactor = ContextCompactor::new(config);
+
+        let original = make_user_message(&"a".repeat(4000));
+        let mut messages = vec![original.clone()];
+        let changed = compactor.compact_intra(&mut messages);
+
+        assert_eq!(changed, 0);
+        assert_eq!(super::estimate_message_tokens(&messages[0]), 1000);
+    }
+
+    #[test]
+    fn test_compact_intra_leaves_tool_use_intact() {
+        // A ToolUse block must not be elided, even when the message is large.
+        let config = CompactionConfig {
+            intra_message_token_budget: 10,
+            ..Default::default()
+        };
+        let compactor = ContextCompactor::new(config);
+
+        let mut messages = vec![make_tool_use_message("bash", "tool-1")];
+        let changed = compactor.compact_intra(&mut messages);
+
+        // ToolUse alone is tiny, so nothing exceeds the budget => no change.
+        assert_eq!(changed, 0);
+    }
+
+    #[test]
+    fn test_compact_with_tokens_intra_fallback_no_cut_point() {
+        // A single oversized user message: no valid inter-turn cut point
+        // exists, so the intra-message layer must elide it instead of
+        // returning the context unchanged.
+        let config = CompactionConfig {
+            max_context_tokens: 500, // 2000 chars
+            target_tokens: 250,
+            keep_recent_tokens: 20_000, // force no inter cut point
+            intra_message_token_budget: 50,
+            ..Default::default()
+        };
+        let compactor = ContextCompactor::new(config);
+
+        let messages = vec![make_user_message(&"a".repeat(40_000))]; // ~10k tokens
+        let result = compactor.compact_with_tokens(&messages);
+
+        assert!(result.intra_compacted_count > 0);
+        assert!(result.was_compacted());
+        assert!(compactor.estimate_tokens(&result.messages) <= 500);
     }
 }

@@ -1333,3 +1333,6 @@ export interface ComposerUsageResponse {
 // Runtime schemas + validators
 export * from "./schemas.js";
 export * from "./validators.js";
+
+// Token estimation — single source of truth (parity with tui-rs token_estimation.rs)
+export * from "./token-estimation.js";

@@ -30,6 +30,7 @@
 
 import { readFileSync, readdirSync, statSync } from "node:fs";
 import { basename, extname, join, relative } from "node:path";
+import { estimateTokens } from "@evalops/contracts";
 import { createLogger } from "../utils/logger.js";
 
 const logger = createLogger("context:repo-map");
@@ -332,14 +333,6 @@ function calculateImportance(
 	}
 
 	return Math.max(score, 0);
-}
-
-/**
- * Estimate tokens for a string (rough approximation)
- */
-function estimateTokens(text: string): number {
-	// Rough estimate: ~4 characters per token
-	return Math.ceil(text.length / 4);
 }
 
 /**

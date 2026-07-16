@@ -7,6 +7,7 @@
  * Inspired by Amp's thread handoff feature.
  */
 
+import { estimateTokens } from "@evalops/contracts";
 import { createLogger } from "../utils/logger.js";
 
 const log = createLogger("agent:context-handoff");
@@ -309,7 +310,7 @@ export function createContextHandoffManager(
  * Uses ~4 characters per token as a rough estimate.
  */
 export function estimateTokenCount(text: string): number {
-	return Math.ceil(text.length / 4);
+	return estimateTokens(text);
 }
 
 /**

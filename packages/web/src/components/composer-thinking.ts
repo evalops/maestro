@@ -2,6 +2,7 @@
  * Thinking block component - displays model reasoning/thinking
  */
 
+import { estimateTokens } from "@evalops/contracts";
 import { LitElement, css, html } from "lit";
 import { customElement, property, state } from "lit/decorators.js";
 
@@ -152,8 +153,7 @@ export class ComposerThinking extends LitElement {
 	}
 
 	private formatTokenCount(): string {
-		// Rough estimate: ~4 characters per token
-		const estimatedTokens = Math.ceil(this.content.length / 4);
+		const estimatedTokens = estimateTokens(this.content);
 		if (estimatedTokens < 1000) return `~${estimatedTokens} tokens`;
 		return `~${(estimatedTokens / 1000).toFixed(1)}k tokens`;
 	}

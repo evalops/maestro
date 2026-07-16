@@ -103,6 +103,7 @@ wasmtime = { version = "36", optional = true }
 
 # File watching for hot reload
 notify = { version = "7", optional = true }
+tiktoken-rs = { version = "0.12.0", default-features = false }
 
 # Linux sandboxing (Landlock + seccomp)
 [target.'cfg(target_os = "linux")'.dependencies]

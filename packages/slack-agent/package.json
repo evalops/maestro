@@ -31,6 +31,7 @@
 	"dependencies": {
 		"@daytonaio/sdk": "^0.139.0",
 		"@evalops/ai": "^0.10.51",
+		"@evalops/contracts": "^0.10.51",
 		"@sinclair/typebox": "^0.34.0",
 		"@slack/socket-mode": "^2.0.0",
 		"@slack/web-api": "^7.0.0",
