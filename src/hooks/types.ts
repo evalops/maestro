@@ -5,7 +5,6 @@
  * at various points in the execution lifecycle.
  */
 
-import type { Component, TUI } from "@evalops/tui";
 import type {
 	AgentTool,
 	HookMessage,
@@ -14,6 +13,12 @@ import type {
 } from "../agent/types.js";
 import type { BranchSummaryEntry, SessionTreeEntry } from "../session/types.js";
 import type { Theme } from "../theme/theme.js";
+import type { Component, TUI } from "./tui-surface.js";
+
+// Re-export structural terminal-UI surface types so user hook scripts can
+// import Component/TUI from the public hooks types module without depending
+// on the interactive terminal UI package.
+export type { Component, TUI } from "./tui-surface.js";
 
 /**
  * All supported hook event types.

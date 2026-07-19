@@ -1,7 +1,9 @@
 # Slack Agent Sandbox Container
 # Provides an isolated environment for AI agent code execution
 
-FROM node:20-slim
+# Pulled via the Docker Hub mirror (mirror.gcr.io) to avoid docker.io's
+# anonymous-pull rate limit on shared self-hosted runners.
+FROM mirror.gcr.io/library/node:20-slim
 
 # Install essential development tools
 RUN apt-get update && apt-get install -y --no-install-recommends \

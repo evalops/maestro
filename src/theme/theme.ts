@@ -5,7 +5,6 @@
  * Copyright (c) 2025 Mario Zechner
  * https://github.com/badlogic/pi-mono
  */
-import type { EditorTheme, MarkdownTheme, SelectListTheme } from "@evalops/tui";
 import chalk from "chalk";
 import { sanitizeWithStaticMask } from "../utils/secret-redactor.js";
 import {
@@ -23,6 +22,17 @@ import {
 	createMarkdownTheme,
 	createSelectListTheme,
 } from "./tui-theme-helpers.js";
+import type {
+	EditorTheme,
+	MarkdownTheme,
+	SelectListTheme,
+} from "./tui-theme-types.js";
+
+export type {
+	EditorTheme,
+	MarkdownTheme,
+	SelectListTheme,
+} from "./tui-theme-types.js";
 
 // ============================================================================
 // Types & Schema

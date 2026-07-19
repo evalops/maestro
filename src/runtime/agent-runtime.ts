@@ -1,14 +1,13 @@
 import type { Agent } from "../agent/agent.js";
 import { buildCompactionEvent } from "../agent/prompt-recovery.js";
-import type { AppMessage } from "../agent/types.js";
+import type { AgentState, AppMessage } from "../agent/types.js";
 import { runUserPromptWithRecovery } from "../agent/user-prompt-runtime.js";
-import { type PromptPayload, PromptQueue } from "../cli-tui/prompt-queue.js";
-import type { TuiRenderer } from "../cli-tui/tui-renderer.js";
 import { composerManager } from "../composers/index.js";
 import type { ComposerConfig } from "../config/index.js";
 import { withMcpPostKeepMessages } from "../mcp/prompt-recovery.js";
 import type { SessionManager } from "../session/manager.js";
 import { createLogger } from "../utils/logger.js";
+import { type PromptPayload, PromptQueue } from "./prompt-queue.js";
 
 const logger = createLogger("agent-runtime");
 
@@ -22,19 +21,41 @@ export interface InterruptResult {
 	partialMessage?: AppMessage | null;
 }
 
+/**
+ * Structural contract the runtime needs from a UI renderer. Any renderer
+ * (interactive terminal UI, headless, future bridge shim, etc.) that satisfies
+ * this shape can be attached. The interactive TypeScript terminal renderer
+ * implements this contract. Kept intentionally minimal and UI-agnostic so this
+ * runtime module never needs to import terminal-UI packages or the interactive
+ * terminal renderer module tree.
+ */
+export interface AgentRuntimeRenderer {
+	ensureContextBudgetBeforePrompt?(): Promise<void>;
+	collectActiveSkillMessagesForCompaction?(
+		preservedMessages?: AppMessage[],
+	): AppMessage[];
+	showInfo(message: string): void;
+	renderInitialMessages(state: AgentState): void;
+	refreshFooterHint(): void;
+	setInterruptCallback(
+		callback: (options?: InterruptOptions) => InterruptResult | undefined,
+	): void;
+	getUserInput(): Promise<PromptPayload>;
+}
+
 interface AgentRuntimeControllerOptions {
 	agent: Agent;
 	sessionManager: SessionManager;
 	profileName?: string;
 	cliOverrides?: Partial<ComposerConfig>;
-	renderer?: TuiRenderer;
+	renderer?: AgentRuntimeRenderer;
 	onError?: (error: unknown) => void;
 }
 
 export class AgentRuntimeController {
 	private readonly promptQueue: PromptQueue;
 	private running = true;
-	private renderer?: TuiRenderer;
+	private renderer?: AgentRuntimeRenderer;
 
 	constructor(private readonly options: AgentRuntimeControllerOptions) {
 		this.promptQueue = new PromptQueue(
@@ -129,7 +150,7 @@ export class AgentRuntimeController {
 		}
 	}
 
-	attachRenderer(renderer: TuiRenderer): void {
+	attachRenderer(renderer: AgentRuntimeRenderer): void {
 		this.renderer = renderer;
 		renderer.setInterruptCallback((options) => this.interrupt(options));
 	}
@@ -161,7 +182,7 @@ export class AgentRuntimeController {
 		this.running = false;
 	}
 
-	async runInteractiveLoop(renderer: TuiRenderer): Promise<void> {
+	async runInteractiveLoop(renderer: AgentRuntimeRenderer): Promise<void> {
 		if (renderer !== this.renderer) {
 			this.attachRenderer(renderer);
 		}
