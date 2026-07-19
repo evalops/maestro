@@ -39,7 +39,15 @@ env:
 
 jobs:
   smoke:
-    if: github.event_name == 'workflow_dispatch' || vars.BAZEL_RBE_ENABLED == 'true'
+    # timeout-minutes only applies after a runner is assigned. A push job that
+    # targets a self-hosted label with zero online runners sits in queue for up
+    # to GitHub's 24h default and then cancels as a red/cancelled main check.
+    # Require an explicit readiness flag in addition to BAZEL_RBE_ENABLED so a
+    # missing RBE pool cannot brick default-branch CI. Manual workflow_dispatch
+    # remains available for intentional smoke runs.
+    if: >
+      github.event_name == 'workflow_dispatch' ||
+      (vars.BAZEL_RBE_ENABLED == 'true' && vars.BAZEL_RBE_RUNNER_READY == 'true')
     runs-on:
       - self-hosted
       - Linux

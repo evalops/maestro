@@ -83,7 +83,11 @@ jobs:
           fi
 
       - name: Require version bump for existing release tag
-        if: ${{ github.repository == 'evalops/maestro' && steps.release.outputs.tag_exists == 'true' && steps.release.outputs.tag_matches_head != 'true' && steps.release.outputs.package_changed_since_tag == 'true' && steps.registry-release.outputs.published != 'true' }}
+        # Hard-fail only when there is no in-flight release for this tag. A
+        # waiting/in_progress release (e.g. environment approval) already owns
+        # the tagged version; fail-on-drift during that window turns every main
+        # mirror push red without unblocking publish.
+        if: ${{ github.repository == 'evalops/maestro' && steps.release.outputs.tag_exists == 'true' && steps.release.outputs.tag_matches_head != 'true' && steps.release.outputs.package_changed_since_tag == 'true' && steps.registry-release.outputs.published != 'true' && (steps.active-release.outputs.active_count == '0' || steps.active-release.outputs.active_count == '') }}
         env:
           RELEASE_TAG: ${{ steps.release.outputs.release_tag }}
           RELEASE_VERSION: ${{ steps.release.outputs.release_version }}
@@ -105,6 +109,9 @@ jobs:
           elif [[ "${{ steps.release.outputs.tag_exists }}" == "true" && "${{ steps.release.outputs.package_changed_since_tag }}" == "true" ]]; then
             echo "Semver tag ${{ steps.release.outputs.release_tag }} already exists at another commit."
             echo "Package-impacting source inputs changed since the existing tag."
+            if [[ "${{ steps.active-release.outputs.active_count }}" != "" && "${{ steps.active-release.outputs.active_count }}" != "0" ]]; then
+              echo "Active release run(s) still own this tag (count=${{ steps.active-release.outputs.active_count }}); version-bump gate deferred until that release completes."
+            fi
           elif [[ "${{ steps.release.outputs.tag_exists }}" == "true" ]]; then
             echo "Semver tag ${{ steps.release.outputs.release_tag }} already exists."
             echo "No package-impacting source inputs changed since the existing tag."
