@@ -13,7 +13,11 @@ import { existsSync } from "node:fs";
 import { createRequire } from "node:module";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { getGlobalInstallCommand } from "../package-metadata.js";
+import {
+	getGlobalInstallCommand,
+	getPackageName,
+	getPackageVersion,
+} from "../package-metadata.js";
 
 export type NativeTuiLaunchArgs = {
 	provider?: string;
@@ -422,7 +426,11 @@ export async function launchNativeCli(
 		const child = spawnImpl(binary, tokens, {
 			stdio: "inherit",
 			cwd: options.cwd ?? process.cwd(),
-			env: { ...env },
+			env: {
+				...env,
+				MAESTRO_PACKAGE_NAME: getPackageName(env),
+				MAESTRO_VERSION: getPackageVersion(env),
+			},
 		});
 		const parentSignalEmitter = options.parentSignalEmitter ?? process;
 		let forwardedSignal: NodeJS.Signals | undefined;

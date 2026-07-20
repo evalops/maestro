@@ -2041,6 +2041,7 @@ dependencies = [
  "regex",
  "reqwest",
  "seccompiler",
+ "semver",
  "serde",
  "serde_json",
  "serde_yaml",

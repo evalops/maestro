@@ -147,6 +147,10 @@ describe("cli-runtime direct command dispatch", () => {
 				["--provider", "openai", "models", "providers"],
 				["--provider", "openai", "models", "providers"],
 			],
+			[
+				["update", "--check", "--json"],
+				["update", "--check", "--json"],
+			],
 		];
 
 		for (const [input, expected] of cases) {

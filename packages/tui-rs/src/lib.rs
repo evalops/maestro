@@ -169,6 +169,7 @@ pub mod print_mode;
 /// Custom prompt templates.
 /// User-defined prompts with argument substitution.
 pub mod prompts;
+pub mod update_cli;
 
 /// Command sandboxing (macOS Seatbelt, Linux Landlock).
 /// Restricts file system access for executed commands.

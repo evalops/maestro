@@ -30,6 +30,7 @@ futures = "0.3"
 
 # HTTP client for AI APIs
 reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "rustls-tls"] }
+semver = "1"
 
 # Serialization for IPC
 serde = { version = "1", features = ["derive"] }
