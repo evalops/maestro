@@ -92,6 +92,16 @@ fn native_utility_tokens(raw_args: &[std::ffi::OsString]) -> Option<Vec<String>>
             index += 1;
             continue;
         }
+        if token == "--worktree" {
+            index += 1;
+            if raw_args
+                .get(index)
+                .is_some_and(|value| !value.to_string_lossy().starts_with('-'))
+            {
+                index += 1;
+            }
+            continue;
+        }
         if GLOBAL_FLAGS_WITH_VALUES.contains(&token.as_ref()) {
             let value = raw_args.get(index + 1)?;
             if matches!(token.as_ref(), "--provider" | "--session" | "--format") {
@@ -861,6 +871,18 @@ mod tests {
                 "--provider".into(),
                 "openai".into(),
             ])
+        );
+    }
+
+    #[test]
+    fn native_utility_tokens_consume_named_worktree_before_modes() {
+        let args = ["--worktree", "feature-branch", "modes", "describe", "high"]
+            .into_iter()
+            .map(std::ffi::OsString::from)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            native_utility_tokens(&args),
+            Some(vec!["modes".into(), "describe".into(), "high".into(),])
         );
     }
 
