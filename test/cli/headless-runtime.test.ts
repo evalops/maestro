@@ -22,7 +22,7 @@ const supportsPty =
 		}
 	})();
 
-describe("runHeadlessMode", () => {
+describe.skip("runHeadlessMode (TS runtime removed; use maestro-tui --headless)", () => {
 	beforeEach(() => {
 		vi.resetModules();
 		vi.doUnmock("node:readline");
