@@ -71,7 +71,8 @@
 	],
 	"exclude": ["node_modules", "dist"],
 	"references": [
-		{ "path": "../contracts/tsconfig.build.json" },
-		{ "path": "../tui/tsconfig.build.json" }
+		{
+			"path": "../contracts/tsconfig.build.json"
+		}
 	]
 }
