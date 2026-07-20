@@ -1,6 +1,7 @@
 import { isStartupTelemetryRequested } from "./instant-exit.js";
 
 const NATIVE_UTILITY_COMMANDS = new Set([
+	"agents",
 	"cost",
 	"export",
 	"hooks",

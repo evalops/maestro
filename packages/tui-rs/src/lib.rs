@@ -55,6 +55,7 @@
 /// Handles spawning, messaging, and coordinating with the AI agent subprocess.
 pub mod agent;
 
+pub mod agents_cli;
 /// AI provider clients (Anthropic, OpenAI, etc.).
 /// Provides unified interfaces for different AI APIs with streaming support.
 pub mod ai;

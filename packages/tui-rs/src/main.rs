@@ -46,9 +46,9 @@ use maestro_tui::hosted_runner_cli::run_hosted_runner_cli_from_env;
 // HELPER FUNCTIONS
 // ─────────────────────────────────────────────────────────────────────────────
 
-const NATIVE_UTILITY_COMMANDS: [&str; 11] = [
+const NATIVE_UTILITY_COMMANDS: [&str; 12] = [
     "sessions", "cost", "stats", "models", "status", "hooks", "export", "import", "update",
-    "skill", "modes",
+    "skill", "modes", "agents",
 ];
 
 const GLOBAL_FLAGS_WITH_VALUES: [&str; 26] = [
@@ -93,7 +93,7 @@ fn native_utility_tokens(raw_args: &[std::ffi::OsString]) -> Option<Vec<String>>
             tokens.extend(forwarded_prefix);
             return Some(tokens);
         }
-        if token == "--json" {
+        if matches!(token.as_ref(), "--json" | "--force") {
             forwarded_prefix.push(token.into_owned());
             index += 1;
             continue;
@@ -473,6 +473,39 @@ async fn main() -> Result<()> {
         };
     }
     if let Some(tokens) = native_utility_tokens(&raw_args[1..]) {
+        if tokens.first().is_some_and(|token| token == "agents") {
+            configure_agents_api_key(&raw_args[1..]);
+            let outcome = match maestro_tui::agents_cli::run(&tokens[1..]) {
+                Ok(outcome) => outcome,
+                Err(error) => {
+                    eprintln!("{error:#}");
+                    std::process::exit(1);
+                }
+            };
+            match outcome {
+                maestro_tui::agents_cli::Outcome::Exit(code) => std::process::exit(code),
+                maestro_tui::agents_cli::Outcome::Generate { prompt, target } => {
+                    let cwd = std::env::current_dir()?;
+                    let display = target
+                        .strip_prefix(&cwd)
+                        .map(|relative| format!("./{}", relative.display()))
+                        .unwrap_or_else(|_| target.display().to_string());
+                    println!("Drafting AGENTS.md at {display}...");
+                    let model = raw_option_value(&raw_args[1..], &["--model", "-m"]);
+                    let code = maestro_tui::print_mode::run_print_mode(
+                        maestro_tui::print_mode::PrintModeOptions {
+                            prompt,
+                            json: false,
+                            model,
+                            output_last_message: None,
+                            output_schema: None,
+                        },
+                    )
+                    .await?;
+                    std::process::exit(code);
+                }
+            }
+        }
         match maestro_tui::cli_commands::run_cli_command(&tokens).await {
             Ok(code) => std::process::exit(code),
             Err(err) => {
@@ -682,6 +715,47 @@ async fn main() -> Result<()> {
     std::process::exit(exit_code);
 }
 
+fn raw_option_value(raw_args: &[std::ffi::OsString], names: &[&str]) -> Option<String> {
+    for (index, argument) in raw_args.iter().enumerate() {
+        let argument = argument.to_string_lossy();
+        if names.contains(&argument.as_ref()) {
+            return raw_args
+                .get(index + 1)
+                .map(|value| value.to_string_lossy().into_owned());
+        }
+        for name in names {
+            if let Some(value) = argument.strip_prefix(&format!("{name}=")) {
+                return Some(value.to_string());
+            }
+        }
+    }
+    None
+}
+
+fn configure_agents_api_key(raw_args: &[std::ffi::OsString]) {
+    let Some(api_key) = raw_option_value(raw_args, &["--api-key"]) else {
+        return;
+    };
+    let model = raw_option_value(raw_args, &["--model", "-m"]);
+    let provider = raw_option_value(raw_args, &["--provider"])
+        .unwrap_or_else(|| infer_provider_from_model(model.as_deref().unwrap_or("")).to_string());
+    let variable = match provider.as_str() {
+        "openai" => "OPENAI_API_KEY",
+        "google" => "GOOGLE_API_KEY",
+        "xai" => "XAI_API_KEY",
+        "groq" => "GROQ_API_KEY",
+        "cerebras" => "CEREBRAS_API_KEY",
+        "openrouter" => "OPENROUTER_API_KEY",
+        "deepseek" => "DEEPSEEK_API_KEY",
+        "moonshot" | "kimi" => "MOONSHOT_API_KEY",
+        "dashscope" | "qwen" => "DASHSCOPE_API_KEY",
+        "minimax" => "MINIMAX_API_KEY",
+        "zai" | "zhipu" => "ZAI_API_KEY",
+        _ => "ANTHROPIC_API_KEY",
+    };
+    std::env::set_var(variable, api_key);
+}
+
 /// Create or reuse a git worktree for isolated work.
 ///
 /// Empty name → auto `maestro-<unix_secs>`.
@@ -850,6 +924,24 @@ mod tests {
                 "providers".into(),
                 "--provider".into(),
                 "openai".into(),
+            ])
+        );
+    }
+
+    #[test]
+    fn native_utility_tokens_forward_force_before_agents() {
+        let args = ["--force", "agents", "init", "/tmp/project"]
+            .into_iter()
+            .map(std::ffi::OsString::from)
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            native_utility_tokens(&args),
+            Some(vec![
+                "agents".to_string(),
+                "init".to_string(),
+                "/tmp/project".to_string(),
+                "--force".to_string(),
             ])
         );
     }
