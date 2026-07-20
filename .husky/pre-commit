@@ -1,22 +1,20 @@
 #!/bin/sh
-# Note: husky runs hooks with sh, so we exec bash for full functionality
+# Note: husky runs hooks with sh, so we exec bash for full functionality.
+# Avoid bash-4-only features (mapfile) so macOS /bin/bash 3.2 works.
 exec bash -euo pipefail -c '
 ROOT="$(git rev-parse --show-toplevel)"
 cd "$ROOT"
 
-# Keep Rust TUI formatting consistent with CI when Cargo is available.
 if command -v cargo >/dev/null 2>&1; then
 	cargo fmt --manifest-path "$ROOT/packages/tui-rs/Cargo.toml" -- --check
 fi
 
-# Run Composer Guardian (secrets + CI hygiene) before heavier tasks.
 bash "$ROOT/scripts/guardian.sh" --trigger pre-commit
 
-# Biome config (biome.json files.include) scopes it to src/test/packages/docs, and
-# Biome 1.9.x only handles ts/tsx/js/jsx/mjs/cjs/json/jsonc/css. Restrict the input
-# to both, so a commit touching only out-of-scope files (e.g. scripts/*.json, docs/*.md)
-# does not trip the "No files were processed" error and block the commit.
-mapfile -t BIOME_FILES < <(
+BIOME_FILES=()
+while IFS= read -r __biome_f; do
+	[ -n "$__biome_f" ] && BIOME_FILES+=("$__biome_f")
+done < <(
 	git diff --cached --name-only --diff-filter=ACMR |
 		grep -E "^(src|test|packages|docs)/.*\.(ts|tsx|js|jsx|mjs|cjs|json|jsonc|css)$" || true
 )
