@@ -24,7 +24,6 @@ describe("cli-runtime direct command dispatch", () => {
 		vi.restoreAllMocks();
 		vi.resetModules();
 		vi.doUnmock("../src/cli/commands/skill.js");
-		vi.doUnmock("../src/cli/commands/hosted-runner.js");
 		vi.doUnmock("../src/cli/native-tui-launcher.js");
 		vi.doUnmock("../src/load-env.js");
 		Reflect.deleteProperty(process.env, "MAESTRO_PROFILE");
@@ -33,14 +32,10 @@ describe("cli-runtime direct command dispatch", () => {
 
 	it("hands hosted-runner off to the native Rust runtime", async () => {
 		const launchNativeCli = vi.fn(async () => 0);
-		const handleHostedRunnerCommand = vi.fn(async () => undefined);
 
 		vi.doMock("../src/cli/native-tui-launcher.js", () => ({
 			buildNativeHostedRunnerArgs,
 			launchNativeCli,
-		}));
-		vi.doMock("../src/cli/commands/hosted-runner.js", () => ({
-			handleHostedRunnerCommand,
 		}));
 		vi.doMock("../src/load-env.js", () => createLoadEnvModuleMock());
 
@@ -71,7 +66,6 @@ describe("cli-runtime direct command dispatch", () => {
 			],
 			{ forwardSignals: true },
 		);
-		expect(handleHostedRunnerCommand).not.toHaveBeenCalled();
 	});
 
 	it("preserves a nonzero native hosted-runner exit status", async () => {
