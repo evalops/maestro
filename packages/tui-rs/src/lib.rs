@@ -101,6 +101,8 @@ pub mod bridge;
 /// Session persistence (save/load conversations).
 /// JSONL-based session storage for resuming previous conversations.
 pub mod session;
+pub mod skill_cli;
+pub mod skill_package_cli;
 
 /// Application state management.
 /// Central state struct that holds all mutable application data.

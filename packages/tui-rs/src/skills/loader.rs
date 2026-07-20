@@ -122,6 +122,10 @@ const ALLOWED_FIELDS: &[&str] = &[
     "license",
     "compatibility",
     "allowed-tools",
+    "argument-hint",
+    "builtin-tools",
+    "mode",
+    "isolatedContext",
     "metadata",
     "tags",
     "author",
@@ -152,7 +156,10 @@ struct SkillFrontmatter {
 
     /// Space-delimited list of allowed tools (optional, experimental)
     #[serde(rename = "allowed-tools")]
-    allowed_tools: Option<String>,
+    allowed_tools: Option<serde_yaml::Value>,
+
+    #[serde(rename = "builtin-tools")]
+    builtin_tools: Option<serde_yaml::Value>,
 
     /// Additional metadata key-value pairs (optional)
     #[serde(default)]
@@ -182,7 +189,55 @@ struct SkillFrontmatter {
     #[serde(rename = "disable-model-invocation")]
     disable_model_invocation: Option<bool>,
     model: Option<String>,
+    mode: Option<String>,
+    #[serde(rename = "isolatedContext")]
+    isolated_context: Option<serde_yaml::Value>,
     effort: Option<String>,
+}
+
+fn string_list_value(
+    value: Option<&serde_yaml::Value>,
+    field: &str,
+    path: &Path,
+) -> Result<Vec<String>, SkillLoadError> {
+    match value {
+        Some(serde_yaml::Value::String(value)) => Ok(value
+            .split_whitespace()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_owned)
+            .collect()),
+        Some(serde_yaml::Value::Sequence(values)) => Ok(values
+            .iter()
+            .map(|value| {
+                value.as_str().ok_or_else(|| SkillLoadError::InvalidSkill {
+                    path: path.to_path_buf(),
+                    message: format!("{field} must be a string or a list of strings"),
+                })
+            })
+            .collect::<Result<Vec<_>, _>>()?
+            .into_iter()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_owned)
+            .collect()),
+        None => Ok(Vec::new()),
+        Some(_) => Err(SkillLoadError::InvalidSkill {
+            path: path.to_path_buf(),
+            message: format!("{field} must be a string or a list of strings"),
+        }),
+    }
+}
+
+fn boolean_value(value: Option<&serde_yaml::Value>) -> Option<bool> {
+    match value {
+        Some(serde_yaml::Value::Bool(value)) => Some(*value),
+        Some(serde_yaml::Value::String(value)) if value.eq_ignore_ascii_case("true") => Some(true),
+        Some(serde_yaml::Value::String(value)) if value.eq_ignore_ascii_case("false") => {
+            Some(false)
+        }
+        _ => None,
+    }
 }
 
 /// Result of loading a skill file
@@ -205,15 +260,26 @@ pub struct SkillResources {
     pub scripts_dir: Option<PathBuf>,
     /// Path to references directory if it exists
     pub references_dir: Option<PathBuf>,
+    /// Singular Agent Core reference directory if it exists
+    pub reference_dir: Option<PathBuf>,
     /// Path to assets directory if it exists
     pub assets_dir: Option<PathBuf>,
+    /// Toolbox protocol executable directory if it exists
+    pub toolbox_dir: Option<PathBuf>,
+    /// Bundled MCP configuration if it exists
+    pub mcp_json_path: Option<PathBuf>,
 }
 
 impl SkillResources {
     /// Check if the skill has any resources
     #[must_use]
     pub fn has_resources(&self) -> bool {
-        self.scripts_dir.is_some() || self.references_dir.is_some() || self.assets_dir.is_some()
+        self.scripts_dir.is_some()
+            || self.references_dir.is_some()
+            || self.reference_dir.is_some()
+            || self.assets_dir.is_some()
+            || self.toolbox_dir.is_some()
+            || self.mcp_json_path.is_some()
     }
 }
 
@@ -300,6 +366,13 @@ impl SkillLoader {
         }
         if let Some(dir) = maestro_home_dir().map(|h| h.join("skills")) {
             user_skills_dirs.push(dir.clone());
+            search_paths.push(dir);
+        }
+
+        for (dir, user_scope) in crate::skill_package_cli::configured_skill_search_paths() {
+            if user_scope {
+                user_skills_dirs.push(dir.clone());
+            }
             search_paths.push(dir);
         }
 
@@ -521,6 +594,10 @@ impl SkillLoader {
                     None
                 }
             },
+            reference_dir: {
+                let p = skill_dir.join("reference");
+                (p.exists() && p.is_dir()).then_some(p)
+            },
             assets_dir: {
                 let p = skill_dir.join("assets");
                 if p.exists() && p.is_dir() {
@@ -528,6 +605,14 @@ impl SkillLoader {
                 } else {
                     None
                 }
+            },
+            toolbox_dir: {
+                let p = skill_dir.join("toolbox");
+                (p.exists() && p.is_dir()).then_some(p)
+            },
+            mcp_json_path: {
+                let p = skill_dir.join("mcp.json");
+                (p.exists() && p.is_file()).then_some(p)
             },
         };
 
@@ -641,10 +726,9 @@ impl SkillLoader {
         }
 
         // Parse allowed-tools (space-delimited)
-        let tools: Vec<String> = frontmatter
-            .allowed_tools
-            .map(|t| t.split_whitespace().map(String::from).collect())
-            .unwrap_or_default();
+        let tools = string_list_value(frontmatter.allowed_tools.as_ref(), "allowed-tools", path)?;
+        let builtin_tools =
+            string_list_value(frontmatter.builtin_tools.as_ref(), "builtin-tools", path)?;
 
         // Build the skill definition
         let mut skill = SkillDefinition::new(&frontmatter.name, &frontmatter.name)
@@ -691,6 +775,22 @@ impl SkillLoader {
             skill
                 .metadata
                 .insert("model".to_string(), serde_json::json!(model));
+        }
+        if let Some(mode) = frontmatter.mode {
+            skill
+                .metadata
+                .insert("mode".to_string(), serde_json::json!(mode));
+        }
+        if !builtin_tools.is_empty() {
+            skill.metadata.insert(
+                "builtin-tools".to_string(),
+                serde_json::json!(builtin_tools),
+            );
+        }
+        if let Some(isolated) = boolean_value(frontmatter.isolated_context.as_ref()) {
+            skill
+                .metadata
+                .insert("isolatedContext".to_string(), serde_json::json!(isolated));
         }
         if let Some(effort) = frontmatter.effort {
             skill
@@ -1874,6 +1974,51 @@ Content.
         assert_eq!(
             skill.metadata.get("license"),
             Some(&serde_json::json!("MIT"))
+        );
+    }
+
+    #[test]
+    fn mixed_type_tool_lists_are_rejected() {
+        let content = r"---
+name: mixed-tools
+description: Use when testing native tool list validation
+allowed-tools:
+  - read
+  - 123
+---
+Body.
+";
+        let loader = SkillLoader::new();
+        let result = loader.parse_skill_content(content, Path::new("SKILL.md"), SkillSource::User);
+        assert!(matches!(result, Err(SkillLoadError::InvalidSkill { .. })));
+    }
+
+    #[test]
+    fn agent_core_resource_directories_are_discovered() {
+        let temp = TempDir::new().unwrap();
+        let skill_dir = temp.path().join("resource-skill");
+        fs::create_dir_all(skill_dir.join("reference")).unwrap();
+        fs::create_dir_all(skill_dir.join("toolbox")).unwrap();
+        fs::write(skill_dir.join("mcp.json"), "{}").unwrap();
+        fs::write(
+            skill_dir.join("SKILL.md"),
+            "---\nname: resource-skill\ndescription: Use when testing resource discovery\n---\nBody.\n",
+        )
+        .unwrap();
+        let loaded = SkillLoader::with_paths(Vec::new())
+            .load_skill_file(&skill_dir.join("SKILL.md"), SkillSource::Project)
+            .unwrap();
+        assert_eq!(
+            loaded.resources.reference_dir,
+            Some(skill_dir.join("reference"))
+        );
+        assert_eq!(
+            loaded.resources.toolbox_dir,
+            Some(skill_dir.join("toolbox"))
+        );
+        assert_eq!(
+            loaded.resources.mcp_json_path,
+            Some(skill_dir.join("mcp.json"))
         );
     }
 

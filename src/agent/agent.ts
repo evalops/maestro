@@ -86,7 +86,6 @@ import {
 	getDiagnosticDeltaFromToolResult,
 	hasDiagnosticRepairOptOut,
 } from "../lsp/diagnostic-repair.js";
-import type { SkillArtifactMetadata } from "../skills/artifact-metadata.js";
 import {
 	projectSafeToolCallArguments,
 	recordMaestroEvalScored,
@@ -116,6 +115,7 @@ import {
 	chainPreprocessMessages,
 	defaultPreprocessMessages,
 } from "./preprocess-messages.js";
+import type { SkillArtifactMetadata } from "./skill-artifact-metadata.js";
 import { isAssistantMessage } from "./type-guards.js";
 import type {
 	AgentEvent,

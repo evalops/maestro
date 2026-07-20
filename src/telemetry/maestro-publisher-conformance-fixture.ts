@@ -1,5 +1,5 @@
+import type { SkillArtifactMetadata } from "../agent/skill-artifact-metadata.js";
 import type { PromptMetadata } from "../prompts/types.js";
-import type { SkillArtifactMetadata } from "../skills/artifact-metadata.js";
 import {
 	buildAgentOperatingPlaneCorrelation,
 	buildAgentOperatingPlaneMetadata,

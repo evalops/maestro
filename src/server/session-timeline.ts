@@ -5,6 +5,7 @@ import type {
 	ComposerRunTimelineResponse,
 	ComposerRunTimelineStatus,
 } from "@evalops/contracts";
+import { getSkillArtifactMetadataFromDetails } from "../agent/skill-artifact-metadata.js";
 import type {
 	AppMessage,
 	AssistantMessage,
@@ -13,7 +14,6 @@ import type {
 } from "../agent/types.js";
 import { getDiagnosticDeltaFromToolResult } from "../lsp/diagnostic-repair.js";
 import type { SessionEntry } from "../session/types.js";
-import { getSkillArtifactMetadataFromDetails } from "../skills/artifact-metadata.js";
 import {
 	compactTimelineMetadata,
 	compactTimelineSummary,

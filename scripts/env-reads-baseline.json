@@ -630,12 +630,6 @@
     "MAESTRO_SHARED_MEMORY_BASE",
     "MAESTRO_SHARED_MEMORY_SESSION_ID"
   ],
-  "src/skills/linter.ts": [
-    "PATHEXT"
-  ],
-  "src/skills/loader.ts": [
-    "MAESTRO_SYSTEM_SKILLS_DIR"
-  ],
   "src/style/theme.ts": [
     "FORCE_COLOR",
     "MAESTRO_FORCE_COLOR",

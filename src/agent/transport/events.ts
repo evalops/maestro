@@ -1,7 +1,7 @@
 import {
 	type SkillArtifactMetadata,
 	getSkillArtifactMetadataFromDetails,
-} from "../../skills/artifact-metadata.js";
+} from "../skill-artifact-metadata.js";
 import type { AgentEvent } from "../types.js";
 
 type GovernedToolOutcome =

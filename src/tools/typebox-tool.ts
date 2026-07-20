@@ -1,12 +1,12 @@
 import { performance } from "node:perf_hooks";
 import type { Static, TSchema } from "@sinclair/typebox";
 import type { ErrorObject } from "ajv";
+import { getSkillArtifactMetadataFromDetails } from "../agent/skill-artifact-metadata.js";
 import type {
 	AgentTool,
 	AgentToolResult,
 	ToolAnnotations,
 } from "../agent/types.js";
-import { getSkillArtifactMetadataFromDetails } from "../skills/artifact-metadata.js";
 import { logToolFailure, recordToolExecution } from "../telemetry.js";
 import { compileTypeboxSchema } from "../utils/typebox-ajv.js";
 

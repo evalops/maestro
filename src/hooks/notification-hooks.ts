@@ -22,10 +22,10 @@
 import { spawn } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
+import type { SkillArtifactMetadata } from "../agent/skill-artifact-metadata.js";
 import type { AgentEvent, AppMessage } from "../agent/types.js";
 import { PATHS } from "../config/constants.js";
 import { getTimeSinceLastUserInteraction } from "../interaction/user-interaction.js";
-import type { SkillArtifactMetadata } from "../skills/artifact-metadata.js";
 import { createLogger } from "../utils/logger.js";
 import { sanitizeWithStaticMask } from "../utils/secret-redactor.js";
 import type { SessionHookService } from "./session-integration.js";

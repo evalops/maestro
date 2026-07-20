@@ -28,17 +28,17 @@
     },
     {
       "id": "composed-skill-trust-boundary",
-      "title": "Composed skill trust boundary",
+      "title": "Native skill activation boundary",
       "owner": "skills",
-      "bugClass": "trusting base prompts while injecting composed prompts",
-      "why": "The trust cache, TUI activation, tool activation, artifacts, and compaction restore must agree on the final composed prompt SHA.",
+      "bugClass": "activating a different prompt than the native loader inspected",
+      "why": "The native loader, CLI inspection, slash-command invocation, and active system prompt must share the same SkillDefinition prompt payload.",
       "evidence": [
         {
-          "path": "src/skills/tool.ts",
+          "path": "packages/tui-rs/src/app.rs",
           "contains": [
-            "const composedSkill = composeSkill(skill, skills)",
-            "skillMetadata: buildSkillArtifactMetadata(composedSkill)",
-            "skillRuntimeActivation: buildSkillRuntimeActivation(composedSkill)"
+            "registry.register(loaded.definition.clone())",
+            "system_prompt_additions",
+            "active_system_prompt_additions"
           ]
         }
       ]

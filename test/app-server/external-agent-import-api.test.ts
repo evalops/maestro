@@ -19,7 +19,6 @@ import {
 } from "../../src/app-server/session-api.js";
 import { loadMcpConfig } from "../../src/mcp/config.js";
 import { SessionManager } from "../../src/session/manager.js";
-import { loadSkills } from "../../src/skills/loader.js";
 
 function jsonLines(path: string): unknown[] {
 	return readFileSync(path, "utf8")
@@ -219,14 +218,6 @@ describe("Maestro app-server external agent import API", () => {
 					name: "codex_context",
 					command: "node",
 					args: ["server.js"],
-				}),
-			]),
-		);
-		expect(loadSkills(projectRoot, { includeSystem: false }).skills).toEqual(
-			expect.arrayContaining([
-				expect.objectContaining({
-					name: "codex-review",
-					sourceType: "project",
 				}),
 			]),
 		);

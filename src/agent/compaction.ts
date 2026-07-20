@@ -43,7 +43,6 @@ import type {
 	ComposerConfig,
 	PromptProjectDocManifest,
 } from "../config/index.js";
-import { getSkillArtifactMetadataFromDetails } from "../skills/artifact-metadata.js";
 import { readTool } from "../tools/read.js";
 import { createLogger } from "../utils/logger.js";
 import { expandUserPath } from "../utils/path-validation.js";
@@ -63,6 +62,7 @@ import {
 	getLastAssistantUsage,
 } from "./compaction/cut-points.js";
 import type { CompactionSettings } from "./compaction/cut-points.js";
+import { getSkillArtifactMetadataFromDetails } from "./skill-artifact-metadata.js";
 export {
 	DEFAULT_COMPACTION_SETTINGS,
 	adjustBoundaryForToolResults,

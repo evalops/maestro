@@ -396,7 +396,7 @@ export function launchNativeTui(
  * Grok-style default: trailing prompts open the interactive native TUI
  * (`maestro "fix the bug"` → maestro-tui with initial prompt).
  *
- * Still on TypeScript: residual utility subcommands (`web`, `config`, `skill`, …).
+ * Still on TypeScript: residual utility subcommands (`web`, `config`, …).
  * Agent paths (interactive, print/exec, headless/rpc) are native.
  */
 

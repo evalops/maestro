@@ -46,8 +46,8 @@ use maestro_tui::hosted_runner_cli::run_hosted_runner_cli_from_env;
 // HELPER FUNCTIONS
 // ─────────────────────────────────────────────────────────────────────────────
 
-const NATIVE_UTILITY_COMMANDS: [&str; 9] = [
-    "sessions", "cost", "stats", "models", "status", "hooks", "export", "import", "update",
+const NATIVE_UTILITY_COMMANDS: [&str; 10] = [
+    "sessions", "cost", "stats", "models", "status", "hooks", "export", "import", "update", "skill",
 ];
 
 const GLOBAL_FLAGS_WITH_VALUES: [&str; 20] = [
@@ -115,6 +115,52 @@ fn native_utility_tokens(raw_args: &[std::ffi::OsString]) -> Option<Vec<String>>
         return None;
     }
     None
+}
+
+fn native_profile(raw_args: &[std::ffi::OsString]) -> Option<String> {
+    let mut config_profile = None;
+    for (index, argument) in raw_args.iter().enumerate() {
+        let argument = argument.to_string_lossy();
+        if argument == "--profile" {
+            return raw_args
+                .get(index + 1)
+                .map(|value| value.to_string_lossy().into_owned());
+        }
+        if let Some(profile) = argument.strip_prefix("--profile=") {
+            return Some(profile.to_owned());
+        }
+        let config = if argument == "--config" {
+            raw_args.get(index + 1).map(|value| value.to_string_lossy())
+        } else {
+            argument
+                .strip_prefix("--config=")
+                .map(std::borrow::Cow::Borrowed)
+        };
+        if let Some(profile) =
+            config.and_then(|value| value.strip_prefix("profile=").map(str::to_owned))
+        {
+            config_profile = Some(profile);
+        }
+    }
+    config_profile
+}
+
+fn native_config_overrides(raw_args: &[std::ffi::OsString]) -> Vec<String> {
+    let mut overrides = Vec::new();
+    let mut index = 0;
+    while index < raw_args.len() {
+        let argument = raw_args[index].to_string_lossy();
+        if argument == "--config" {
+            if let Some(value) = raw_args.get(index + 1) {
+                overrides.push(value.to_string_lossy().into_owned());
+                index += 1;
+            }
+        } else if let Some(value) = argument.strip_prefix("--config=") {
+            overrides.push(value.to_owned());
+        }
+        index += 1;
+    }
+    overrides
 }
 
 /// Infer the AI provider from the model name.
@@ -394,6 +440,21 @@ async fn main() -> Result<()> {
 
     // Lightweight CLI helpers (no TUI / no full interactive loop). Utility
     // argument normalization lives here so the package shim can forward argv.
+    if let Some(profile) = native_profile(&raw_args[1..]) {
+        // SAFETY: this process has not started worker threads yet. The profile is
+        // converted to the same environment contract used by Rust config loading.
+        unsafe { std::env::set_var("MAESTRO_PROFILE", profile) };
+    }
+    let config_overrides = native_config_overrides(&raw_args[1..]);
+    if !config_overrides.is_empty() {
+        // SAFETY: utility dispatch occurs before worker threads are started.
+        unsafe {
+            std::env::set_var(
+                "MAESTRO_CLI_CONFIG_OVERRIDES",
+                config_overrides.join("\u{1f}"),
+            );
+        };
+    }
     if let Some(tokens) = native_utility_tokens(&raw_args[1..]) {
         match maestro_tui::cli_commands::run_cli_command(&tokens).await {
             Ok(code) => std::process::exit(code),
@@ -783,6 +844,59 @@ mod tests {
             .map(std::ffi::OsString::from)
             .collect::<Vec<_>>();
         assert_eq!(native_utility_tokens(&args), None);
+    }
+
+    #[test]
+    fn native_profile_accepts_split_and_inline_forms() {
+        let split = ["--profile", "local", "skill", "list"]
+            .into_iter()
+            .map(std::ffi::OsString::from)
+            .collect::<Vec<_>>();
+        let inline = ["--profile=review", "skill", "list"]
+            .into_iter()
+            .map(std::ffi::OsString::from)
+            .collect::<Vec<_>>();
+        assert_eq!(native_profile(&split).as_deref(), Some("local"));
+        assert_eq!(native_profile(&inline).as_deref(), Some("review"));
+    }
+
+    #[test]
+    fn native_profile_uses_config_fallback_but_explicit_profile_wins() {
+        let fallback = ["--config", "profile=review", "skill", "list"]
+            .into_iter()
+            .map(std::ffi::OsString::from)
+            .collect::<Vec<_>>();
+        let explicit = [
+            "--config=profile=review",
+            "--profile",
+            "release",
+            "skill",
+            "list",
+        ]
+        .into_iter()
+        .map(std::ffi::OsString::from)
+        .collect::<Vec<_>>();
+        assert_eq!(native_profile(&fallback).as_deref(), Some("review"));
+        assert_eq!(native_profile(&explicit).as_deref(), Some("release"));
+    }
+
+    #[test]
+    fn native_config_overrides_preserve_all_cli_entries() {
+        let args = [
+            "--config",
+            "profile=review",
+            "--config=projects.\"/tmp/repo\".trust_level=trusted",
+            "skill",
+            "list",
+        ]
+        .map(std::ffi::OsString::from);
+        assert_eq!(
+            native_config_overrides(&args),
+            [
+                "profile=review",
+                "projects.\"/tmp/repo\".trust_level=trusted",
+            ]
+        );
     }
 
     #[test]

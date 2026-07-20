@@ -13,6 +13,7 @@
  */
 
 import { randomUUID } from "node:crypto";
+import type { SkillArtifactMetadata } from "../agent/skill-artifact-metadata.js";
 import type {
 	ToolPhaseDecisionOutcome,
 	ToolPhaseSummary,
@@ -20,7 +21,6 @@ import type {
 } from "../agent/types.js";
 import { isOpenTelemetryEnabled } from "../opentelemetry.js";
 import type { PromptMetadata } from "../prompts/types.js";
-import type { SkillArtifactMetadata } from "../skills/artifact-metadata.js";
 import {
 	recordAgentTurnMetric,
 	recordLlmRequestMetric,
