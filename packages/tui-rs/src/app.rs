@@ -1789,10 +1789,6 @@ Slash Commands:
                     "",
                     ChatInputWidgetOptions {
                         busy: state.busy,
-                        elapsed_secs: 0,
-                        thinking_header: None,
-                        can_queue_follow_up: state.can_queue_follow_up_shortcut(),
-                        queue_summary: None,
                         pending_input_preview: None,
                     },
                 );
