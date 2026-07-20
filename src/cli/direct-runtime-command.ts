@@ -10,6 +10,7 @@ const NATIVE_UTILITY_COMMANDS = new Set([
 	"memory",
 	"models",
 	"modes",
+	"openai",
 	"painter",
 	"sessions",
 	"stats",
