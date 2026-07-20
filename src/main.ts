@@ -743,23 +743,8 @@ export async function main(args: string[]) {
 		return;
 	}
 
-	if (parsed.command === "skill") {
-		const { handleSkillCommand } = await import("./cli/commands/skill.js");
-		const cliOverrides = buildCliConfigOverrides(parsed);
-		const overrideProfile =
-			typeof cliOverrides.profile === "string"
-				? cliOverrides.profile
-				: undefined;
-		const profileName = parsed.profile ?? overrideProfile;
-		await handleSkillCommand(parsed.subcommand, parsed.commandArgs ?? [], {
-			profileName,
-			cliOverrides,
-		});
-		return;
-	}
-
 	// Agent paths hand off to native maestro-tui before the TypeScript bootstrap.
-	// Residual TS: web, config, skill, mission, and other utility subcommands.
+	// Residual TS: web, config, mission, and other utility subcommands.
 	if (shouldLaunchNativeHeadless(parsed)) {
 		await waitForStartupTelemetryForImmediateExit(startupTelemetry);
 		await runNativeHeadlessMode(writeStartupErrorToStderr);

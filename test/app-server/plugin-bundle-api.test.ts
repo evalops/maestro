@@ -10,7 +10,6 @@ import {
 	handleMaestroAppServerRequest,
 } from "../../src/app-server/session-api.js";
 import { SessionManager } from "../../src/session/manager.js";
-import { loadSkills } from "../../src/skills/loader.js";
 
 function writeTrustedGlobalConfig(projectRoot: string): void {
 	const home = process.env.MAESTRO_HOME!;
@@ -194,15 +193,6 @@ describe("Maestro app-server plugin bundle lifecycle API", () => {
 		expect(listed.result?.resources.agents?.project).toEqual([
 			join(packageDir, "agents", "reviewer"),
 		]);
-		expect(loadSkills(projectRoot, { includeSystem: false }).skills).toEqual(
-			expect.arrayContaining([
-				expect.objectContaining({
-					name: "reviewing",
-					sourceType: "project",
-				}),
-			]),
-		);
-
 		const duplicatePreview = await handleMaestroAppServerRequest(api, {
 			jsonrpc: "2.0",
 			id: "plugin-install-duplicate-dry-run",

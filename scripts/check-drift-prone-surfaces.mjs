@@ -54,7 +54,6 @@ const sharedEvalOpsAliasUsers = [
 	"src/memory/service-client.ts",
 	"src/telemetry/meter-service-client.ts",
 	"src/approvals/service-client.ts",
-	"src/skills/service-client.ts",
 	"src/connectors/service-client.ts",
 	"src/safety/governance-service-client.ts",
 	"src/oauth/evalops.ts",

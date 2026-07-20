@@ -1,7 +1,4 @@
-import { createHash } from "node:crypto";
-import type { LoadedSkill } from "./loader.js";
-
-export type SkillArtifactSource = LoadedSkill["sourceType"];
+export type SkillArtifactSource = "project" | "user" | "system" | "service";
 
 export interface SkillArtifactMetadata {
 	name: string;
@@ -13,18 +10,6 @@ export interface SkillArtifactMetadata {
 	scope?: string;
 	workspaceId?: string;
 	ownerId?: string;
-}
-
-function hashSkillContent(content: string): string {
-	return createHash("sha256").update(content).digest("hex");
-}
-
-function readMetadataValue(
-	metadata: Record<string, string> | undefined,
-	key: string,
-): string | undefined {
-	const value = metadata?.[key]?.trim();
-	return value ? value : undefined;
 }
 
 function normalizeSkillArtifactMetadata(
@@ -71,39 +56,6 @@ function normalizeSkillArtifactMetadata(
 		...(typeof candidate.ownerId === "string" &&
 		candidate.ownerId.trim().length > 0
 			? { ownerId: candidate.ownerId.trim() }
-			: {}),
-	};
-}
-
-export function buildSkillArtifactMetadata(
-	skill: LoadedSkill,
-): SkillArtifactMetadata {
-	return {
-		name: skill.name,
-		hash: hashSkillContent(skill.content),
-		source: skill.sourceType,
-		...(readMetadataValue(skill.metadata, "skillServiceId")
-			? { artifactId: readMetadataValue(skill.metadata, "skillServiceId") }
-			: {}),
-		...((readMetadataValue(skill.metadata, "currentVersion") ??
-		readMetadataValue(skill.metadata, "version") ??
-		skill.version)
-			? {
-					version:
-						readMetadataValue(skill.metadata, "currentVersion") ??
-						readMetadataValue(skill.metadata, "version") ??
-						skill.version,
-				}
-			: {}),
-		...(skill.sourcePath ? { sourcePath: skill.sourcePath } : {}),
-		...(readMetadataValue(skill.metadata, "scope")
-			? { scope: readMetadataValue(skill.metadata, "scope") }
-			: {}),
-		...(readMetadataValue(skill.metadata, "workspaceId")
-			? { workspaceId: readMetadataValue(skill.metadata, "workspaceId") }
-			: {}),
-		...(readMetadataValue(skill.metadata, "ownerId")
-			? { ownerId: readMetadataValue(skill.metadata, "ownerId") }
 			: {}),
 	};
 }

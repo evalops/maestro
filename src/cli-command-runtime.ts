@@ -44,23 +44,6 @@ export async function runCliCommandRuntime(args: string[]): Promise<boolean> {
 			await handleInitCommand(parsed.commandArgs ?? []);
 			return true;
 		}
-		case "skill": {
-			const { buildCliConfigOverrides } = await import(
-				"./config/runtime-config.js"
-			);
-			const { handleSkillCommand } = await import("./cli/commands/skill.js");
-			const cliOverrides = buildCliConfigOverrides(parsed);
-			const overrideProfile =
-				typeof cliOverrides.profile === "string"
-					? cliOverrides.profile
-					: undefined;
-			const profileName = parsed.profile ?? overrideProfile;
-			await handleSkillCommand(parsed.subcommand, parsed.commandArgs ?? [], {
-				profileName,
-				cliOverrides,
-			});
-			return true;
-		}
 	}
 	return false;
 }

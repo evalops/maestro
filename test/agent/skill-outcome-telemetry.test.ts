@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { Agent } from "../../src/agent/agent.js";
+import type { SkillArtifactMetadata } from "../../src/agent/skill-artifact-metadata.js";
 import type {
 	AgentEvent,
 	AgentRunConfig,
@@ -9,7 +10,6 @@ import type {
 	Model,
 	ToolResultMessage,
 } from "../../src/agent/types.js";
-import type { SkillArtifactMetadata } from "../../src/skills/artifact-metadata.js";
 import {
 	closeMaestroEventBusTransport,
 	projectSafeToolCallArguments,

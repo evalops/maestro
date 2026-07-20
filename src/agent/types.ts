@@ -39,12 +39,12 @@ import type { TSchema } from "@sinclair/typebox";
 import type { PromptProjectDocManifest } from "../config/index.js";
 import type { UnifiedContextManifest } from "../context/manifest-types.js";
 import type { PromptMetadata } from "../prompts/types.js";
-import type { SkillArtifactMetadata } from "../skills/artifact-metadata.js";
 import type { CheckpointProfiler } from "../utils/checkpoint-profiler.js";
 import type {
 	ActionApprovalDecision,
 	ActionApprovalRequest,
 } from "./action-approval.js";
+import type { SkillArtifactMetadata } from "./skill-artifact-metadata.js";
 import type { ToolCapabilityMetadata } from "./tool-capability-types.js";
 import type { ToolRetryDecision, ToolRetryRequest } from "./tool-retry.js";
 

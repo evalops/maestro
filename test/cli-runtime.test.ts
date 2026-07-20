@@ -23,7 +23,6 @@ describe("cli-runtime direct command dispatch", () => {
 	afterEach(() => {
 		vi.restoreAllMocks();
 		vi.resetModules();
-		vi.doUnmock("../src/cli/commands/skill.js");
 		vi.doUnmock("../src/cli/native-tui-launcher.js");
 		vi.doUnmock("../src/load-env.js");
 		Reflect.deleteProperty(process.env, "MAESTRO_PROFILE");
@@ -151,6 +150,10 @@ describe("cli-runtime direct command dispatch", () => {
 				["update", "--check", "--json"],
 				["update", "--check", "--json"],
 			],
+			[
+				["--profile", "cli-profile", "skill", "list", "--json"],
+				["--profile", "cli-profile", "skill", "list", "--json"],
+			],
 		];
 
 		for (const [input, expected] of cases) {
@@ -230,58 +233,6 @@ describe("cli-runtime direct command dispatch", () => {
 		).toBe(false);
 		expect(shouldAttemptDirectRuntimeDispatch(["skill", "--help"], {})).toBe(
 			true,
-		);
-	});
-
-	it("keeps explicit CLI profiles authoritative through the skill fast path", async () => {
-		const handleSkillCommand = vi.fn(async (..._args: unknown[]) => undefined);
-		let profileAtInvocation: string | undefined;
-
-		vi.doMock("../src/load-env.js", () =>
-			createLoadEnvModuleMock({
-				finalizeLoadedEnv: () => {
-					Reflect.deleteProperty(process.env, "MAESTRO_PROFILE");
-					return {
-						loadedEnvKeys: [],
-						scrubbedEnvKeys: ["MAESTRO_PROFILE"],
-					};
-				},
-				getLoadedEnvKeys: () => ["MAESTRO_PROFILE"],
-			}),
-		);
-		vi.doMock("../src/cli/commands/skill.js", () => ({
-			handleSkillCommand: async (...args: unknown[]) => {
-				profileAtInvocation = process.env.MAESTRO_PROFILE;
-				return handleSkillCommand(...args);
-			},
-		}));
-
-		process.env.MAESTRO_PROFILE = "dotenv-profile";
-
-		const { runCliCommandRuntime } = await import(
-			"../src/cli-command-runtime.js"
-		);
-
-		expect(
-			await runCliCommandRuntime([
-				"--profile",
-				"cli-profile",
-				"--config",
-				"profile=override-profile",
-				"skill",
-				"list",
-			]),
-		).toBe(true);
-		expect(profileAtInvocation).toBeUndefined();
-		expect(handleSkillCommand).toHaveBeenCalledWith(
-			"list",
-			[],
-			expect.objectContaining({
-				profileName: "cli-profile",
-				cliOverrides: expect.objectContaining({
-					profile: "override-profile",
-				}),
-			}),
 		);
 	});
 });

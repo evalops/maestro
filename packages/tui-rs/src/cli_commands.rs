@@ -45,6 +45,7 @@ pub async fn run_cli_command(args: &[String]) -> Result<i32> {
             Ok(0)
         }
         "import" => run_sessions_import(&args[1..]),
+        "skill" => crate::skill_cli::run_skill(&args[1..]).await,
         "update" => crate::update_cli::run_update(&args[1..]).await,
         other => bail!("unknown command: {other}"),
     }

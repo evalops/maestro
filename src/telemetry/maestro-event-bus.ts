@@ -1,6 +1,7 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { createHash, randomUUID } from "node:crypto";
 import type { JetStreamClient, NatsConnection } from "nats";
+import type { SkillArtifactMetadata } from "../agent/skill-artifact-metadata.js";
 import {
 	areMaestroPlatformEventsDisabled,
 	isFeatureFlagSnapshotConfigured,
@@ -11,7 +12,6 @@ import {
 	resolveManagedEvalOpsContext,
 } from "../evalops/managed-context.js";
 import type { PromptMetadata } from "../prompts/types.js";
-import type { SkillArtifactMetadata } from "../skills/artifact-metadata.js";
 import { isInternalTelemetryDisabled } from "./disablement.js";
 import {
 	MaestroBusEventType,

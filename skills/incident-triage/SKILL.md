@@ -45,9 +45,10 @@ This skill accumulates alert-type knowledge across runs in
   symptom you handled to the tools/interfaces, likely owner, and mitigation that
   actually worked. Keep entries short and free of secrets and customer data.
 
-Programmatic callers can use `loadLearnedGuidelines` /
-`appendLearnedGuideline` / `formatLearnedGuidelinesForPrompt` from
-the main Maestro package (`src/skills/learned-guidelines.ts`).
+Programmatic callers should use ordinary UTF-8 file operations on that stable
+path: treat a missing file as an empty guideline set, normalize surrounding
+whitespace when loading, and append through an atomic temporary-file rename.
+No language-specific Maestro runtime helper is required.
 
 ## Toolbox
 
