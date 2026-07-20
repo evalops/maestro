@@ -21,6 +21,60 @@ versioning when releases are cut.
   and keep scheduled public runs inert so public publishing stays downstream of
   the internal source-of-truth release.
 
+## [0.10.52] - 2026-07-20
+
+### Breaking
+
+- Removed the TypeScript Agent bootstrap from the CLI shim. Interactive, print/exec,
+  and headless/rpc always run on native `maestro-tui`. `runHeadlessMode`,
+  `runRpcMode`, and `runExecCommand` now throw with migration guidance.
+- `MAESTRO_ALLOW_TS_AGENT` no longer re-enables a TS agent loop (the runtime is gone).
+
+### Added
+
+- Swap stats/models/agents-init to native; hard-cut TS agent bootstrap (#2901). <!-- maestro-release-note:c985b05b7b1c -->
+- Kill remaining TS agent paths with native headless/print/CLI (#2900). <!-- maestro-release-note:c94ff552d417 -->
+- Native print/exec path and CLI helpers off the TS agent. <!-- maestro-release-note:148056f5309b -->
+- Route TTY prompts to native TUI; fill slash stubs (#2898). <!-- maestro-release-note:b309dce0567e -->
+- Grok-style session UX, modes, and worktrees (#2897). <!-- maestro-release-note:9488fafea5c3 -->
+- Grok-style trailing prompt and skills-as-slash (#2896). <!-- maestro-release-note:9d66d622b025 -->
+- Ship maestro-tui binaries in npm packaging (#2888). <!-- maestro-release-note:3907ed2588bb -->
+- Launch native maestro-tui for interactive mode (#2889). <!-- maestro-release-note:ed5b1e5dde9d -->
+- Code-block-aware compaction + real BPE tokenizer (#2881). <!-- maestro-release-note:759b5121debd -->
+- Centralize token estimation and add intra-turn compaction (#2879). <!-- maestro-release-note:c919ad1810dc -->
+- Observe outcome-calibrated rollout (#2874). <!-- maestro-release-note:38b5b0a59224 -->
+- Discover custom agents (#2873). <!-- maestro-release-note:d4ab2c5a6a83 -->
+
+### Changed
+
+- CI / mirror / release automation defaults to Blacksmith runners
+  (`blacksmith-4vcpu-ubuntu-2404`, heavy: `blacksmith-8vcpu-ubuntu-2404`),
+  overridable with `BLACKSMITH_RUNNER`, `BLACKSMITH_HEAVY_RUNNER`, or
+  `INTERNAL_CONFIRMATION_RUNNER`.
+- Document native maestro-tui as the only interactive UI (#2894). <!-- maestro-release-note:b432c992ef07 -->
+- Add GitHub Actions pipelines TLS cert expiry canary (#2893). <!-- maestro-release-note:0aa55b439209 -->
+- Harden native TUI launcher e2e and error messaging (#2892). <!-- maestro-release-note:0bee0ad0a7a1 -->
+- [maestro] remove TypeScript TUI package and app tree (#2891). <!-- maestro-release-note:b7eb759e588d -->
+- [maestro] detach non-TUI consumers from TypeScript TUI (#2890). <!-- maestro-release-note:07c8f3a5f492 -->
+- Move static checks off private runners (#2885). <!-- maestro-release-note:6bdb4d559b2d -->
+- Regenerate OpenAPI spec (#2878). <!-- maestro-release-note:7be41f13d070 -->
+- Regenerate app server payload schemas (#2876). <!-- maestro-release-note:d6022fdbc067 -->
+- Keep SSE resume session manager contract complete (#2875). <!-- maestro-release-note:4838427a09c7 -->
+- [maestro] Add verified Oracle rollout API (#2867). <!-- maestro-release-note:6fc8ed4d7214 -->
+- [maestro] Add agent operations replay panel (#2868). <!-- maestro-release-note:f4aafea1e72b -->
+- Format watch notification test (#2871). <!-- maestro-release-note:58b26c20a306 -->
+
+### Fixed
+
+- Post-TS-TUI hygiene and Rust-first interactive guardrails (#2895). <!-- maestro-release-note:94a715a52bb5 -->
+- Drop references to removed TypeScript TUI package (#2902). <!-- maestro-release-note:9674173f26e4 -->
+- Resolve clippy -D warnings breaking main build (#2882). <!-- maestro-release-note:92d63fc605ba -->
+- Pull Docker Hub base images via mirror.gcr.io (#2884). <!-- maestro-release-note:776488b247ea -->
+- Persist painter binaries atomically (#2877). <!-- maestro-release-note:547c7659bede -->
+- Recognize consultation prompt cues (#2863). <!-- maestro-release-note:2ba0d92d04a7 -->
+- Preserve configured model resolution (#2861). <!-- maestro-release-note:a50c59a9ad07 -->
+- Preserve sparse agent lineage metadata (#2859). <!-- maestro-release-note:f9b79dc87ab2 -->
+
 ## [0.10.51] - 2026-07-13
 
 ### Added
