@@ -607,6 +607,16 @@ export async function main(args: string[]) {
 		return;
 	}
 
+	if (isNativeUtilityCommand(parsed.command)) {
+		// Utility commands own their complete lifecycle in Rust. Keep this handoff
+		// ahead of replay setup so inherited scenario state cannot bootstrap the
+		// TypeScript runtime or change a utility command's behavior. Direct dispatch
+		// intentionally falls back here when startup telemetry is configured.
+		startObservability(process.env);
+		await waitForStartupTelemetryForImmediateExit(startupTelemetry);
+		process.exit(await launchNativeCli(args));
+	}
+
 	const replayScenarioPath =
 		parsed.replayScenarioPath ?? process.env.MAESTRO_SCENARIO_PATH;
 	let scenarioReplay:
@@ -638,14 +648,6 @@ export async function main(args: string[]) {
 				{ forwardSignals: true },
 			),
 		);
-	}
-
-	if (isNativeUtilityCommand(parsed.command)) {
-		// Direct dispatch intentionally falls back here when startup telemetry is
-		// configured. Preserve that contract without bootstrapping the TS agent.
-		startObservability(process.env);
-		await waitForStartupTelemetryForImmediateExit(startupTelemetry);
-		process.exit(await launchNativeCli(args));
 	}
 
 	// Handle `maestro web` early exit (start the bundled web server + UI).

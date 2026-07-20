@@ -845,6 +845,25 @@ describe("CLI integration", () => {
 		expect(output.some((line) => /anthropic/i.test(line))).toBe(true);
 	});
 
+	it("hands native utility commands off before replay setup", async () => {
+		const originalScenarioPath = process.env.MAESTRO_SCENARIO_PATH;
+		process.env.MAESTRO_SCENARIO_PATH = join(
+			tempAgentDir,
+			"missing-scenario.json",
+		);
+		try {
+			const code = await runMain(["modes", "list"]);
+			expect(code).toBe(0);
+			expect(launchNativeCli).toHaveBeenLastCalledWith(["modes", "list"]);
+		} finally {
+			if (originalScenarioPath === undefined) {
+				delete process.env.MAESTRO_SCENARIO_PATH;
+			} else {
+				process.env.MAESTRO_SCENARIO_PATH = originalScenarioPath;
+			}
+		}
+	});
+
 	it("keeps maestro init --json stdout parseable", async () => {
 		const stdoutLines: string[] = [];
 		const stderrLines: string[] = [];
