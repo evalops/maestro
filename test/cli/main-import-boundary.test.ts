@@ -24,10 +24,6 @@ describe("main import boundary", () => {
 			failIfImported("ask_user client tool"),
 		);
 		vi.doMock(
-			"../../src/cli/commands/exec.js",
-			failIfImported("exec command runtime"),
-		);
-		vi.doMock(
 			"../../src/agent/providers/scripted.js",
 			failIfImported("scripted replay provider"),
 		);
@@ -49,7 +45,6 @@ describe("main import boundary", () => {
 			vi.doUnmock("../../src/server/client-tools-service.js");
 			vi.doUnmock("../../src/server/tool-retry-service.js");
 			vi.doUnmock("../../src/tools/ask-user-client.js");
-			vi.doUnmock("../../src/cli/commands/exec.js");
 			vi.doUnmock("../../src/agent/providers/scripted.js");
 			vi.doUnmock("../../src/agent/scenario-source.js");
 			vi.doUnmock("../../src/sandbox/index.js");

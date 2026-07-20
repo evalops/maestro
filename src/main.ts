@@ -102,7 +102,6 @@ import {
 	initCheckpointService,
 } from "./checkpoints/index.js";
 import { type Mode, parseArgs } from "./cli/args.js";
-import { EXEC_SESSION_SUMMARY_PREFIX } from "./cli/commands/exec-constants.js";
 import { isNativeUtilityCommand } from "./cli/direct-runtime-command.js";
 import {
 	isHeadlessModeRequested,
