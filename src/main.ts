@@ -1045,12 +1045,6 @@ export async function main(args: string[]) {
 		}
 	}
 
-	if (parsed.command === "openai") {
-		const { handleOpenAICommand } = await import("./cli/commands/openai.js");
-		await handleOpenAICommand(parsed.subcommand, parsed.messages);
-		return;
-	}
-
 	if (parsed.command === "evalops") {
 		const { handleEvalOpsCommand } = await import("./cli/commands/evalops.js");
 		await handleEvalOpsCommand(parsed.subcommand, parsed.commandArgs ?? []);
