@@ -701,6 +701,16 @@ fn package_skill_roots(spec: &ConfiguredPackageSpec, cwd: &Path) -> Vec<PathBuf>
     let Ok(root) = resolve_source(&source) else {
         return Vec::new();
     };
+    let validation_source = format!("local:{}", root.display());
+    let Ok(validation) = contract(&validation_source, false) else {
+        return Vec::new();
+    };
+    if validation["issues"]
+        .as_array()
+        .is_none_or(|issues| !issues.is_empty())
+    {
+        return Vec::new();
+    }
     let Ok(content) = fs::read_to_string(root.join("package.json")) else {
         return Vec::new();
     };
@@ -1074,11 +1084,15 @@ mod tests {
         for name in ["safe-skill", "safe-debug", "unsafe-skill"] {
             let skill = temp.path().join("skills").join(name);
             fs::create_dir_all(&skill).expect("skill directory");
-            fs::write(skill.join("SKILL.md"), format!("# {name}\n")).expect("skill file");
+            fs::write(
+                skill.join("SKILL.md"),
+                format!("---\nname: {name}\ndescription: Package fixture\n---\n\n# {name}\n"),
+            )
+            .expect("skill file");
         }
         fs::write(
             temp.path().join("package.json"),
-            r#"{"maestro":{"skills":["skills"]}}"#,
+            r#"{"keywords":["maestro-package","maestro-skill-package"],"maestro":{"skills":["skills"]}}"#,
         )
         .expect("package manifest");
         let spec = ConfiguredPackageSpec {
@@ -1090,5 +1104,28 @@ mod tests {
             package_skill_roots(&spec, temp.path()),
             [temp.path().join("skills/safe-skill")]
         );
+    }
+
+    #[test]
+    fn configured_packages_must_pass_the_publish_contract() {
+        let temp = tempfile::tempdir().expect("temporary package");
+        let skill = temp.path().join("skills/example");
+        fs::create_dir_all(&skill).expect("skill directory");
+        fs::write(
+            skill.join("SKILL.md"),
+            "---\nname: example\ndescription: Package fixture\n---\n\n# Example\n",
+        )
+        .expect("skill file");
+        fs::write(
+            temp.path().join("package.json"),
+            r#"{"maestro":{"skills":["skills"]}}"#,
+        )
+        .expect("package manifest");
+        let spec = ConfiguredPackageSpec {
+            source: format!("local:{}", temp.path().display()),
+            skills: None,
+        };
+
+        assert!(package_skill_roots(&spec, temp.path()).is_empty());
     }
 }

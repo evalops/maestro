@@ -699,7 +699,7 @@ fn validate_mcp_json(directory: &Path, issues: &mut Vec<LintIssue>) {
         if server
             .get("command")
             .and_then(serde_json::Value::as_str)
-            .is_none_or(str::is_empty)
+            .is_none_or(|command| command.trim().is_empty())
         {
             issues.push(lint_issue(
                 "invalid_mcp_command",
@@ -721,7 +721,7 @@ fn validate_mcp_json(directory: &Path, issues: &mut Vec<LintIssue>) {
         } else if tools.is_some_and(|tools| {
             tools
                 .iter()
-                .any(|tool| tool.as_str().is_none_or(str::is_empty))
+                .any(|tool| tool.as_str().is_none_or(|tool| tool.trim().is_empty()))
         }) {
             issues.push(lint_issue(
                 "invalid_mcp_include_tools",
@@ -1483,5 +1483,23 @@ mod tests {
         assert!(json["message"]
             .as_str()
             .is_some_and(|message| message.contains("Missing frontmatter")));
+    }
+
+    #[test]
+    fn mcp_validation_rejects_whitespace_only_bounds() {
+        let temp = tempfile::tempdir().expect("temporary skill");
+        fs::write(
+            temp.path().join("mcp.json"),
+            r#"{"example":{"command":"   ","includeTools":["  "]}}"#,
+        )
+        .expect("mcp config");
+        let mut issues = Vec::new();
+        validate_mcp_json(temp.path(), &mut issues);
+        let codes = issues
+            .iter()
+            .map(|issue| issue.code.as_str())
+            .collect::<Vec<_>>();
+        assert!(codes.contains(&"invalid_mcp_command"));
+        assert!(codes.contains(&"invalid_mcp_include_tools"));
     }
 }
