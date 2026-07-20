@@ -1,7 +1,14 @@
 # TUI Controller Extraction Pattern
 
-Audience: contributors modularizing TuiRenderer or extracting handlers.
+Audience: historical reference for the removed TypeScript TUI; modularization ideas
+still apply when splitting large orchestrators.
 Nav: [Patterns Index](./INDEX.md) · [TUI Architecture](../TUI_ARCHITECTURE.md)
+
+> **Historical / removed:** This document describes extraction work on the TypeScript
+> `TuiRenderer` under `src/cli-tui/`, which was deleted in PR #2891. The interactive
+> UI is now native Rust in `packages/tui-rs` (see [TUI Architecture](../TUI_ARCHITECTURE.md)
+> and [Native TUI parity](../NATIVE_TUI_PARITY.md)). Keep this pattern for
+> DI-style controller extraction elsewhere; do not recreate `src/cli-tui`.
 
 ## Overview
 
@@ -9,10 +16,10 @@ TuiRenderer started as a monolithic ~3,400 LOC orchestrator. This pattern descri
 
 **Goal**: Transform TuiRenderer from "does everything" to "coordinates everything" by extracting domain logic into focused modules.
 
-## Current Module Structure
+## Former module structure (TS TUI)
 
 ```
-src/cli-tui/
+src/cli-tui/   # REMOVED
 ├── tui-renderer.ts              # Main orchestrator (~2,550 LOC, down from ~3,400)
 ├── tui-renderer/                # Extracted controllers
 │   ├── compaction-controller.ts # Context window compaction
@@ -261,10 +268,10 @@ private handleNewChatCommand(ctx) {
 
 ## Related Files
 
-- `src/cli-tui/tui-renderer.ts` - Main orchestrator
-- `src/cli-tui/commands/types.ts` - CommandExecutionContext definition
-- `src/cli-tui/utils/commands/command-registry-builder.ts` - Thin wrapper over the catalog-backed registry
-- `docs/TUI_ARCHITECTURE.md` - Overall TUI architecture
+- ~~`src/cli-tui/tui-renderer.ts`~~ — removed with TS TUI
+- ~~`src/cli-tui/commands/types.ts`~~ — removed
+- Current interactive UI: `packages/tui-rs/src/app.rs`, `commands/`, `components/`
+- `docs/TUI_ARCHITECTURE.md` — native maestro-tui architecture
 
 ## Future Work
 

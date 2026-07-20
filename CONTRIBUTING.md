@@ -23,7 +23,7 @@ expect before opening a PR.
    npx nx run maestro:evals --skip-nx-cache      # Optional eval scenarios
    bun run bun:test:fast                         # Fast local Vitest (no Nx build; VITEST_FAST=1)
    # If you touched specific packages, build them too:
-   bun run --filter @evalops/tui build
+   bun run tui-rs:build
    bun run --filter @evalops/maestro-web build
    ```
    (CI runs these, but failing locally wastes review cycles.)

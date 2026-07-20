@@ -70,8 +70,5 @@
 		"../../src/workspace/**/*.ts"
 	],
 	"exclude": ["node_modules", "dist"],
-	"references": [
-		{ "path": "../contracts/tsconfig.build.json" },
-		{ "path": "../tui/tsconfig.build.json" }
-	]
+	"references": [{ "path": "../contracts/tsconfig.build.json" }]
 }

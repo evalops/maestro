@@ -192,7 +192,7 @@ maestro --approval-mode fail
 |---------|----------|-------------|
 | Background Task Limits | `src/tools/background-tasks.ts` | Max concurrent tasks, CPU/memory limits |
 | Execution Timeouts | Tool implementations | Configurable timeouts for all tools |
-| Context Compaction | `src/cli-tui/session/conversation-compactor.ts` | Auto-compacts at 85% context usage |
+| Context Compaction | `packages/tui-rs/src/agent/compaction.rs` (native TUI); TS agent compaction for headless/web | Auto-compacts at ~85% context usage |
 | Rate Limiting | `src/server/rate-limiter.ts` | Per-route and global request limits |
 
 **Residual Risk:** Low. Resource limits are configurable and enforced.

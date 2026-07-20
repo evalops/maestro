@@ -32,6 +32,9 @@ Use this index to jump to the right guide quickly and see how the pieces connect
 - [Pending Request Contract](protocols/pending-requests.md) — unified session projection for approvals, user input, MCP elicitations, tool retries, and Platform waits.
 
 ## Architecture & Patterns
+- [Architecture](ARCHITECTURE.md) — system layout, surfaces, edit patterns.
+- [TUI Architecture](TUI_ARCHITECTURE.md) — native `maestro-tui` (`packages/tui-rs`).
+- [Native TUI parity](NATIVE_TUI_PARITY.md) — feature checklist after TS TUI removal.
 - [Architecture Diagram](ARCHITECTURE_DIAGRAM.md) — high-level system layout.
 - [VS Code Architecture](VSCODE_ARCHITECTURE.md) — extension-specific architecture and flows.
 - [Ambient Agent Design](design/AMBIENT_AGENT.md) — always-on GitHub agent daemon architecture.

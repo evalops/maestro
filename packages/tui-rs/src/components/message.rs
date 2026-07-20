@@ -836,10 +836,7 @@ impl Widget for MessageWidget<'_> {
                 ),
                 Span::raw(" "),
                 Span::styled(
-                    format!(
-                        "#{}",
-                        &tool_call.call_id.chars().take(8).collect::<String>()
-                    ),
+                    format!("#{}", tool_call.call_id.chars().take(8).collect::<String>()),
                     Style::default().fg(Color::DarkGray),
                 ),
                 Span::raw(if expanded { "  [-]" } else { "  [+]" }),

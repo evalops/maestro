@@ -39,7 +39,7 @@ fn test_approval_mode_default() {
 fn test_approval_mode_parse() {
     // Yolo mode aliases
     assert_eq!(ApprovalMode::parse("yolo"), Some(ApprovalMode::Yolo));
-    assert_eq!(ApprovalMode::parse("auto"), Some(ApprovalMode::Yolo));
+    assert_eq!(ApprovalMode::parse("auto"), Some(ApprovalMode::Selective));
     assert_eq!(ApprovalMode::parse("trust"), Some(ApprovalMode::Yolo));
     assert_eq!(ApprovalMode::parse("YOLO"), Some(ApprovalMode::Yolo)); // case insensitive
 
@@ -57,6 +57,11 @@ fn test_approval_mode_parse() {
     // Safe mode aliases
     assert_eq!(ApprovalMode::parse("safe"), Some(ApprovalMode::Safe));
     assert_eq!(ApprovalMode::parse("always"), Some(ApprovalMode::Safe));
+    assert_eq!(
+        ApprovalMode::parse("always-approve"),
+        Some(ApprovalMode::Yolo)
+    );
+    assert_eq!(ApprovalMode::parse("ask"), Some(ApprovalMode::Safe));
     assert_eq!(ApprovalMode::parse("paranoid"), Some(ApprovalMode::Safe));
 
     // Invalid
@@ -1155,4 +1160,23 @@ fn test_apply_compaction_replaces_older_transcript_messages() {
     assert_eq!(state.messages[0].timestamp, SystemTime::UNIX_EPOCH);
     assert_eq!(state.messages[1].content, "User two");
     assert_eq!(state.messages[2].content, "Assistant two");
+}
+
+#[test]
+fn interaction_mode_cycles() {
+    use super::InteractionMode;
+    assert_eq!(InteractionMode::Normal.next(), InteractionMode::Plan);
+    assert_eq!(InteractionMode::Plan.next(), InteractionMode::AlwaysApprove);
+    assert_eq!(
+        InteractionMode::AlwaysApprove.next(),
+        InteractionMode::Normal
+    );
+    assert_eq!(
+        InteractionMode::AlwaysApprove.approval_mode(),
+        ApprovalMode::Yolo
+    );
+    assert_eq!(
+        InteractionMode::Plan.approval_mode(),
+        ApprovalMode::Selective
+    );
 }

@@ -6,6 +6,9 @@ target/
 node_modules/
 .nx/
 
+# Prebuilt native TUI binaries staged for npm pack (materialized in release.yml)
+vendor/
+
 # External checkouts
 .external/
 

@@ -490,3 +490,193 @@ fn mcp_prompts_command_rejects_invalid_prompt_arguments() {
         "Invalid MCP prompt argument. Use KEY=value after the prompt name."
     );
 }
+
+#[test]
+fn register_if_absent_skips_colliding_names() {
+    let mut registry = CommandRegistry::new();
+    registry.register(Command::new(
+        "help",
+        "builtin",
+        CommandCategory::Navigation,
+        Box::new(|_| Ok(CommandOutput::Silent)),
+    ));
+    let registered = registry.register_if_absent(Command::new(
+        "help",
+        "skill",
+        CommandCategory::Tools,
+        Box::new(|_| Ok(CommandOutput::Silent)),
+    ));
+    assert!(!registered);
+    assert_eq!(registry.get("help").unwrap().description, "builtin");
+}
+
+#[test]
+fn extensions_register_skills_and_prompts_as_slash_commands() {
+    use crate::prompts::{PromptDefinition, PromptSource};
+    use crate::skills::{LoadedSkill, SkillDefinition, SkillSource};
+    use std::path::PathBuf;
+
+    let skill = LoadedSkill {
+        definition: SkillDefinition::new("commit", "commit")
+            .with_description("Create a commit")
+            .with_source(SkillSource::User)
+            .with_system_prompt("Commit carefully."),
+        source_path: PathBuf::from("/tmp/commit/SKILL.md"),
+        skill_dir: PathBuf::from("/tmp/commit"),
+        resources: Default::default(),
+    };
+    let prompt = PromptDefinition {
+        name: "code-review".to_string(),
+        description: Some("Review code".to_string()),
+        argument_hint: None,
+        body: "Review $ARGUMENTS".to_string(),
+        source_path: PathBuf::from("/tmp/review.md"),
+        source_type: PromptSource::Project,
+        named_placeholders: vec![],
+        has_positional_placeholders: true,
+    };
+
+    let registry = build_command_registry_with_extensions(&[skill], &[prompt]);
+
+    match registry
+        .execute("/commit fix typo", "/tmp", None, None)
+        .expect("skill slash should parse")
+    {
+        CommandOutput::Action(CommandAction::InvokeSkill { name, args }) => {
+            assert_eq!(name, "commit");
+            assert_eq!(args, "fix typo");
+        }
+        other => panic!("expected InvokeSkill, got {other:?}"),
+    }
+
+    match registry
+        .execute("/code-review auth module", "/tmp", None, None)
+        .expect("prompt slash should parse")
+    {
+        CommandOutput::Action(CommandAction::InvokePromptTemplate { name, args }) => {
+            assert_eq!(name, "code-review");
+            assert_eq!(args, "auth module");
+        }
+        other => panic!("expected InvokePromptTemplate, got {other:?}"),
+    }
+}
+
+#[test]
+fn skill_named_like_builtin_is_not_registered() {
+    use crate::skills::{LoadedSkill, SkillDefinition, SkillSource};
+    use std::path::PathBuf;
+
+    let skill = LoadedSkill {
+        definition: SkillDefinition::new("compact", "compact")
+            .with_description("skill compact")
+            .with_source(SkillSource::User),
+        source_path: PathBuf::from("/tmp/compact/SKILL.md"),
+        skill_dir: PathBuf::from("/tmp/compact"),
+        resources: Default::default(),
+    };
+
+    let registry = build_command_registry_with_extensions(&[skill], &[]);
+    let out = registry
+        .execute("/compact", "/tmp", None, None)
+        .expect("builtin compact");
+    assert!(
+        !matches!(
+            out,
+            CommandOutput::Action(CommandAction::InvokeSkill { .. })
+        ),
+        "builtin should win over skill, got {out:?}"
+    );
+}
+
+#[test]
+fn fork_and_rewind_commands_exist() {
+    let registry = build_command_registry();
+    assert!(registry.get("fork").is_some());
+    assert!(registry.get("rewind").is_some());
+    assert!(registry.get("new").is_some()); // alias of clear
+    assert!(registry.get("always-approve").is_some());
+    assert!(registry.get("auto").is_some());
+    assert!(registry.get("ask").is_some());
+}
+
+#[test]
+fn new_command_starts_session_action() {
+    let registry = build_command_registry();
+    match registry.execute("/new", "/tmp", None, None).expect("/new") {
+        CommandOutput::Action(CommandAction::Session(SessionAction::New)) => {}
+        other => panic!("expected Session::New, got {other:?}"),
+    }
+}
+
+#[test]
+fn rewind_parses_turn_count() {
+    let registry = build_command_registry();
+    match registry
+        .execute("/rewind 3", "/tmp", None, None)
+        .expect("/rewind")
+    {
+        CommandOutput::Action(CommandAction::Session(SessionAction::Rewind { turns })) => {
+            assert_eq!(turns, 3);
+        }
+        other => panic!("expected Rewind, got {other:?}"),
+    }
+}
+
+#[test]
+fn plan_and_permission_shortcuts_parse() {
+    let registry = build_command_registry();
+    match registry
+        .execute("/plan", "/tmp", None, None)
+        .expect("/plan")
+    {
+        CommandOutput::Action(CommandAction::SetPlanMode(true)) => {}
+        other => panic!("expected SetPlanMode(true), got {other:?}"),
+    }
+    match registry
+        .execute("/plan off", "/tmp", None, None)
+        .expect("/plan off")
+    {
+        CommandOutput::Action(CommandAction::SetPlanMode(false)) => {}
+        other => panic!("expected SetPlanMode(false), got {other:?}"),
+    }
+    match registry
+        .execute("/always-approve", "/tmp", None, None)
+        .expect("/always-approve")
+    {
+        CommandOutput::Action(CommandAction::SetApprovalMode(mode)) => {
+            assert_eq!(mode, "yolo");
+        }
+        other => panic!("expected SetApprovalMode yolo, got {other:?}"),
+    }
+}
+
+#[test]
+fn tools_command_lists_tools_action() {
+    let registry = build_command_registry();
+    match registry
+        .execute("/tools", "/tmp", None, None)
+        .expect("/tools")
+    {
+        CommandOutput::Action(CommandAction::ShowTools) => {}
+        other => panic!("expected ShowTools, got {other:?}"),
+    }
+}
+
+#[test]
+fn memory_and_continue_commands_parse() {
+    let registry = build_command_registry();
+    match registry
+        .execute("/memory", "/tmp", None, None)
+        .expect("/memory")
+    {
+        CommandOutput::Action(CommandAction::ShowMemory) => {}
+        other => panic!("expected ShowMemory, got {other:?}"),
+    }
+    match registry
+        .execute("/continue", "/tmp", None, None)
+        .expect("/continue")
+    {
+        CommandOutput::Action(CommandAction::Session(SessionAction::Continue)) => {}
+        other => panic!("expected Session::Continue, got {other:?}"),
+    }
+}

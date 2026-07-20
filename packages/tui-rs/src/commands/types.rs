@@ -216,6 +216,10 @@ pub enum CommandAction {
     SetCompactTools(Option<bool>),
     /// Set approval mode (yolo, selective, safe)
     SetApprovalMode(String),
+    /// Cycle Grok-style interaction mode (Normal → Plan → Always-approve)
+    CycleInteractionMode,
+    /// Enter plan mode (require plan before mutating tools)
+    SetPlanMode(bool),
     /// Set extended thinking level (off, low, medium, high, max)
     SetThinkingLevel(String),
     /// Quit the application
@@ -252,8 +256,16 @@ pub enum CommandAction {
     Steer(String),
     /// Show diagnostics/status summary
     ShowDiagnostics,
+    /// List built-in tools
+    ShowTools,
+    /// Show local/cross-session memory status
+    ShowMemory,
     /// Session management actions
     Session(SessionAction),
+    /// Invoke a skill as a slash command (Grok-style `/skillname args`)
+    InvokeSkill { name: String, args: String },
+    /// Invoke a flat markdown prompt/command template as a slash command
+    InvokePromptTemplate { name: String, args: String },
 }
 
 /// Session management actions.
@@ -261,6 +273,14 @@ pub enum CommandAction {
 pub enum SessionAction {
     /// Prune old sessions by count/age limits
     Cleanup,
+    /// Start a new session (clear transcript + new session file)
+    New,
+    /// Fork current conversation into a new session branch
+    Fork,
+    /// Rewind last N user turns (default 1)
+    Rewind { turns: usize },
+    /// Continue the most recent session for this workspace
+    Continue,
 }
 
 /// Queue mode target for queue commands.

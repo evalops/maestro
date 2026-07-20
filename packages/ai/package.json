@@ -132,7 +132,6 @@
 	},
 	"dependencies": {
 		"@evalops/contracts": "^0.10.51",
-		"@evalops/tui": "^0.10.51",
 		"@google/genai": "^1.29.1",
 		"@sinclair/typebox": "^0.34.0",
 		"nats": "^2.29.3"

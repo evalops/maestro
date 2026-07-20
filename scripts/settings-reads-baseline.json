@@ -11,16 +11,6 @@
   "src/cli/commands/config.ts": [
     ".maestro/local.json"
   ],
-  "src/cli-tui/bash-mode-view.ts": [
-    ".maestro/bash-history.json"
-  ],
-  "src/cli-tui/commands/mcp-handlers.ts": [
-    ".maestro/mcp.json"
-  ],
-  "src/cli-tui/commands/package-handlers.ts": [
-    ".maestro/config.local.toml",
-    ".maestro/config.toml"
-  ],
   "src/factory/config.ts": [
     ".maestro/models.json"
   ],

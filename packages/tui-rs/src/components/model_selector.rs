@@ -34,8 +34,9 @@ impl ModelInfo {
     }
 }
 
-/// Get the list of available models
-fn available_models() -> Vec<ModelInfo> {
+/// Built-in model catalog (TUI selector + `maestro-tui models` CLI).
+#[must_use]
+pub fn available_models() -> Vec<ModelInfo> {
     vec![
         // Anthropic Claude models
         ModelInfo::new(
@@ -56,7 +57,13 @@ fn available_models() -> Vec<ModelInfo> {
             "Anthropic",
             "Fastest, most economical",
         ),
-        // OpenAI models
+        // OpenAI / Codex
+        ModelInfo::new(
+            "gpt-5.1-codex-max",
+            "GPT-5.1 Codex Max",
+            "OpenAI",
+            "Default coding model",
+        ),
         ModelInfo::new("gpt-4o", "GPT-4o", "OpenAI", "Multimodal flagship model"),
         ModelInfo::new(
             "gpt-4o-mini",
@@ -66,6 +73,22 @@ fn available_models() -> Vec<ModelInfo> {
         ),
         ModelInfo::new("o1", "O1", "OpenAI", "Advanced reasoning model"),
         ModelInfo::new("o3", "O3", "OpenAI", "Next-gen reasoning model"),
+        // Google
+        ModelInfo::new(
+            "gemini-2.5-pro",
+            "Gemini 2.5 Pro",
+            "Google",
+            "Strong multimodal reasoning",
+        ),
+        ModelInfo::new(
+            "gemini-2.0-flash",
+            "Gemini 2.0 Flash",
+            "Google",
+            "Fast and economical",
+        ),
+        // xAI
+        ModelInfo::new("grok-3", "Grok 3", "xAI", "xAI frontier model"),
+        ModelInfo::new("grok-4", "Grok 4", "xAI", "xAI latest generation"),
     ]
 }
 

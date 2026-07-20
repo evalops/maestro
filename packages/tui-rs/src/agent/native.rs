@@ -366,6 +366,9 @@ enum AgentCommand {
     /// affect configuration (model, thinking, etc.).
     ClearHistory,
 
+    /// Replace conversation history (used by /rewind and /fork rebuilds).
+    ReplaceHistory { messages: Vec<Message> },
+
     /// Continue from current context without a new user message
     ///
     /// Used for retrying after transient errors (rate limits, 5xx errors),
@@ -669,6 +672,13 @@ impl NativeAgent {
     /// Clear conversation history
     pub fn clear_history(&self) {
         let _ = self.command_tx.send(AgentCommand::ClearHistory);
+    }
+
+    /// Replace conversation history with the provided messages.
+    pub fn replace_history(&self, messages: Vec<Message>) {
+        let _ = self
+            .command_tx
+            .send(AgentCommand::ReplaceHistory { messages });
     }
 
     /// Set the model
@@ -1646,6 +1656,11 @@ impl NativeAgentRunner {
                     self.pending_messages.clear();
                     self.safety.reset(); // Reset doom loop / rate limit state
                     clear_credentials();
+                }
+                AgentCommand::ReplaceHistory { messages } => {
+                    self.messages = messages;
+                    self.pending_messages.clear();
+                    self.safety.reset();
                 }
                 AgentCommand::Continue => {
                     // Continue from current context without adding a new user message

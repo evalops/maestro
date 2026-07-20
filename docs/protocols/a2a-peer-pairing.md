@@ -208,7 +208,9 @@ invalid detached signatures.
 
 ## TUI Surface
 
-The TypeScript TUI exposes:
+The interactive surface is the **native** TUI (`packages/tui-rs` / `maestro-tui`).
+It parses the `/a2a` command family into native command actions so the UI can grow
+a richer registry/send controller without changing the user command shape:
 
 ```text
 /a2a accept <pairing-code> [--name <peer>] [--default] [--token-env ENV]
@@ -216,9 +218,8 @@ The TypeScript TUI exposes:
 /a2a send <peer> <text>
 ```
 
-The Rust TUI parses the same `/a2a` command family into native command actions
-so the UI can grow a richer registry/send controller without changing the user
-command shape.
+> The former TypeScript TUI that first exposed these slash commands was removed
+> in PR #2891.
 
 ## Registry
 

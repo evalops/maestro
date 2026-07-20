@@ -38,8 +38,7 @@ const ALLOWLISTED_DIRECT_WRITE_FILES = new Set([
 	"src/agent/swarm/executor.ts",
 	"src/app-server/external-agent-import-api.ts",
 	"src/app-server/host-control-api.ts",
-	"src/cli-tui/utils/external-editor.ts",
-	"src/memory/auto-consolidation.ts",
+		"src/memory/auto-consolidation.ts",
 	// `src/oauth/private-file.ts` IS the helper that uses
 	// `writeFileSync` to implement the temp-then-rename pattern;
 	// it's an authorized implementation, not a violation.

@@ -73,8 +73,8 @@ use crate::agent::{
 use crate::ai::AiProvider;
 use crate::clipboard::ClipboardManager;
 use crate::commands::{
-    build_command_registry, CommandAction, CommandOutput, CommandRegistry, ModalType, QueueAction,
-    QueueModeKind, SlashCommandMatcher, SlashCycleState,
+    build_command_registry_with_extensions, CommandAction, CommandOutput, CommandRegistry,
+    ModalType, QueueAction, QueueModeKind, SlashCommandMatcher, SlashCycleState,
 };
 use crate::components::{
     calculate_input_height, ApprovalController, ApprovalDecision, ApprovalModal, ApprovalRequest,
@@ -89,6 +89,7 @@ use crate::keybindings::{is_keybindings_config_path, summarize_keybindings_confi
 use crate::mcp::{
     append_mcp_prompt_summary, McpConfigScope, McpPrompt, McpRuntimeEvent, McpTransport,
 };
+use crate::prompts::{load_prompts, parse_args, render_prompt, PromptDefinition};
 use crate::safety::{
     check_model_allowed, check_path_allowed, check_session_limits, FirewallVerdict,
 };
@@ -537,6 +538,12 @@ pub struct App {
     /// Runtime skill registry (activation state).
     skill_registry: SkillRegistry,
 
+    /// Flat markdown prompt/command templates.
+    custom_prompts: Vec<PromptDefinition>,
+
+    /// Optional initial prompt from CLI (Grok-style trailing args).
+    initial_prompt: Option<String>,
+
     /// Prompts submitted while running (queued in the agent).
     queued_prompts: VecDeque<QueuedPrompt>,
 
@@ -626,13 +633,24 @@ impl App {
     ///
     /// `Result<Self>` - either a new App instance or an initialization error.
     pub fn new() -> Result<Self> {
-        // Initialize the terminal (enters raw mode, sets up alternate screen).
-        // This is a tuple destructuring - we get both values at once.
-        let (terminal, capabilities) = terminal::init().context("Failed to initialize terminal")?;
-        Ok(Self::new_with_terminal(terminal, capabilities))
+        Self::new_with_initial_prompt(None)
     }
 
-    fn new_with_terminal(terminal: terminal::Terminal, capabilities: TerminalCapabilities) -> Self {
+    /// Create an app, optionally submitting `initial_prompt` after the agent is ready.
+    pub fn new_with_initial_prompt(initial_prompt: Option<String>) -> Result<Self> {
+        let (terminal, capabilities) = terminal::init().context("Failed to initialize terminal")?;
+        Ok(Self::new_with_terminal(
+            terminal,
+            capabilities,
+            initial_prompt,
+        ))
+    }
+
+    fn new_with_terminal(
+        terminal: terminal::Terminal,
+        capabilities: TerminalCapabilities,
+        initial_prompt: Option<String>,
+    ) -> Self {
         let workspace_dir =
             std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
         let config = crate::config::load_config(&workspace_dir, None);
@@ -648,26 +666,18 @@ impl App {
         let prompt_history =
             crate::history::PromptHistory::load_with_config(history_config.clone())
                 .unwrap_or_else(|_| crate::history::PromptHistory::new(history_config));
-        Self::new_with_terminal_with_history(terminal, capabilities, prompt_history)
+        Self::new_with_terminal_with_history(terminal, capabilities, prompt_history, initial_prompt)
     }
 
     fn new_with_terminal_with_history(
         terminal: terminal::Terminal,
         capabilities: TerminalCapabilities,
         prompt_history: crate::history::PromptHistory,
+        initial_prompt: Option<String>,
     ) -> Self {
-        // Build the command registry and wrap it in Arc for shared ownership.
-        // Arc::new() moves the registry into the Arc.
-        let command_registry = Arc::new(build_command_registry());
-
-        // Create the slash command matcher with a clone of the Arc.
-        // Arc::clone() is cheap - it just increments the reference count.
-        let slash_matcher = SlashCommandMatcher::new(Arc::clone(&command_registry));
-
-        // Get current working directory, defaulting to "." if it fails.
-        // `unwrap_or_else` takes a closure that's only called on Err.
         let cwd = std::env::current_dir()
             .map_or_else(|_| ".".to_string(), |p| p.to_string_lossy().to_string());
+        let workspace_dir = std::path::PathBuf::from(&cwd);
 
         let mut state = AppState::new();
         let queue_modes = crate::ui_state::load_queue_modes();
@@ -694,14 +704,19 @@ impl App {
         for loaded in &loaded_skills {
             skill_registry.register(loaded.definition.clone());
         }
+        let custom_prompts = load_prompts(&workspace_dir);
 
-        // Construct the App with all fields initialized.
-        // `Self` is an alias for the type we're implementing (App).
+        let command_registry = Arc::new(build_command_registry_with_extensions(
+            &loaded_skills,
+            &custom_prompts,
+        ));
+        let slash_matcher = SlashCommandMatcher::new(Arc::clone(&command_registry));
+
         Self {
             state,
-            native_agent: None,     // Agent spawned later in run()
-            native_event_rx: None,  // Channel created when agent spawns
-            tool_response_tx: None, // Channel created when agent spawns
+            native_agent: None,
+            native_event_rx: None,
+            tool_response_tx: None,
             tool_executor: ToolExecutor::new(&cwd),
             terminal,
             should_quit: false,
@@ -725,6 +740,8 @@ impl App {
             loaded_skills,
             skill_load_errors,
             skill_registry,
+            custom_prompts,
+            initial_prompt: initial_prompt.filter(|p| !p.trim().is_empty()),
             queued_prompts: VecDeque::new(),
             queued_prompt_inflight: None,
             queued_prompt_active: None,
@@ -836,6 +853,11 @@ Always use tools when they would be helpful. Be concise and direct in your respo
         // Spawn the agent (async operation).
         // This creates the channels and starts the agent task.
         self.spawn_agent().await?;
+
+        // Grok-style trailing prompt: submit after the agent is ready.
+        if let Some(prompt) = self.initial_prompt.take() {
+            let _ = self.submit_prompt(prompt).await;
+        }
 
         // Main event loop - runs until should_quit is set to true.
         loop {
@@ -1018,6 +1040,58 @@ Always use tools when they would be helpful. Be concise and direct in your respo
         self.loaded_skills = loaded_skills;
         self.skill_load_errors = skill_load_errors;
         self.skill_registry = registry;
+
+        let workspace_dir =
+            std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+        self.custom_prompts = load_prompts(&workspace_dir);
+        self.rebuild_slash_registry();
+    }
+
+    fn rebuild_slash_registry(&mut self) {
+        let registry = Arc::new(build_command_registry_with_extensions(
+            &self.loaded_skills,
+            &self.custom_prompts,
+        ));
+        self.command_registry = Arc::clone(&registry);
+        self.slash_matcher = SlashCommandMatcher::new(Arc::clone(&registry));
+        self.command_palette.update_registry(registry);
+    }
+
+    fn format_skill_invoke(skill: &LoadedSkill, raw_args: &str) -> String {
+        let body = skill
+            .definition
+            .system_prompt_additions
+            .as_deref()
+            .unwrap_or("")
+            .trim();
+        let args = raw_args.trim();
+
+        if body.contains('$') {
+            let parsed = parse_args(raw_args);
+            let pseudo = PromptDefinition {
+                name: skill.definition.name.clone(),
+                description: None,
+                argument_hint: None,
+                body: body.to_string(),
+                source_path: skill.source_path.clone(),
+                source_type: crate::prompts::PromptSource::User,
+                named_placeholders: Vec::new(),
+                has_positional_placeholders: true,
+            };
+            return render_prompt(&pseudo, &parsed);
+        }
+
+        if args.is_empty() {
+            if body.is_empty() {
+                format!("Use the \"{}\" skill.", skill.definition.name)
+            } else {
+                body.to_string()
+            }
+        } else if body.is_empty() {
+            args.to_string()
+        } else {
+            format!("{body}\n\n---\n\n{args}")
+        }
     }
 
     fn resolve_skill_id(&self, query: &str) -> Result<String, String> {
@@ -1808,7 +1882,7 @@ impl Default for App {
                     terminal::init_fallback().unwrap_or_else(|fallback_err| {
                         panic!("Failed to create App: {err}; fallback failed: {fallback_err}");
                     });
-                Self::new_with_terminal(terminal, capabilities)
+                Self::new_with_terminal(terminal, capabilities, None)
             }
         }
     }

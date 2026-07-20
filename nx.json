@@ -8,24 +8,36 @@
 		"default": {
 			"runner": "nx/tasks-runners/default",
 			"options": {
-				"cacheableOperations": ["build", "test", "lint"],
+				"cacheableOperations": [
+					"build",
+					"test",
+					"lint"
+				],
 				"parallel": true
 			}
 		}
 	},
 	"targetDefaults": {
 		"build": {
-			"dependsOn": ["^build"],
-			"outputs": ["{projectRoot}/dist"]
+			"dependsOn": [
+				"^build"
+			],
+			"outputs": [
+				"{projectRoot}/dist"
+			]
 		},
 		"test": {
-			"dependsOn": ["^build"]
+			"dependsOn": [
+				"^build"
+			]
 		},
 		"lint": {
 			"dependsOn": []
 		},
 		"evals": {
-			"dependsOn": ["build"]
+			"dependsOn": [
+				"build"
+			]
 		}
 	},
 	"projects": {
@@ -33,9 +45,6 @@
 			"tags": []
 		},
 		"maestro-web": {
-			"tags": []
-		},
-		"tui": {
 			"tags": []
 		},
 		"vscode-extension": {

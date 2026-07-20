@@ -15,6 +15,8 @@ export interface Args {
 	port?: number;
 	continue?: boolean;
 	resume?: boolean;
+	/** Create/reuse a git worktree for interactive native TUI (Grok-style). */
+	worktree?: boolean | string;
 	help?: boolean;
 	helpHidden?: boolean;
 	version?: boolean;
@@ -245,6 +247,17 @@ export function parseArgs(args: string[]): Args {
 			result.mode = "headless";
 		} else if (arg === "--continue" || arg === "-c") {
 			result.continue = true;
+		} else if (arg === "--worktree") {
+			const nextArg = args[i + 1];
+			if (i + 1 < args.length && nextArg && !nextArg.startsWith("-")) {
+				result.worktree = nextArg;
+				i++;
+			} else {
+				result.worktree = true;
+			}
+		} else if (arg?.startsWith("--worktree=")) {
+			const value = arg.slice("--worktree=".length);
+			result.worktree = value.length > 0 ? value : true;
 		} else if (arg === "--resume" || arg === "-r") {
 			if (result.command === "exec") {
 				const nextArg = args[i + 1];

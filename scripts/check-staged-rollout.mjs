@@ -15,8 +15,7 @@ const riskySurfacePatterns = [
 	/^src\/cli\/headless-protocol\.ts$/,
 	/^src\/cli\/headless-runtime-selection\.ts$/,
 	/^src\/cli\/commands\//,
-	/^src\/cli-tui\/commands\//,
-	/^src\/agent\/modes\.ts$/,
+		/^src\/agent\/modes\.ts$/,
 	/^src\/config\//,
 	/^packages\/contracts\/src\/headless-protocol/,
 ];
