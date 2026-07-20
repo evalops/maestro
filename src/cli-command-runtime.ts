@@ -51,11 +51,6 @@ export async function runCliCommandRuntime(args: string[]): Promise<boolean> {
 			}
 			return true;
 		}
-		case "init": {
-			const { handleInitCommand } = await import("./cli/commands/init.js");
-			await handleInitCommand(parsed.commandArgs ?? []);
-			return true;
-		}
 	}
 	return false;
 }

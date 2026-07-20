@@ -6,6 +6,7 @@ const NATIVE_UTILITY_COMMANDS = new Set([
 	"cost",
 	"export",
 	"hooks",
+	"init",
 	"import",
 	"memory",
 	"models",
@@ -22,7 +23,6 @@ const NATIVE_UTILITY_COMMANDS = new Set([
 const DIRECT_RUNTIME_COMMANDS = new Set([
 	...NATIVE_UTILITY_COMMANDS,
 	"hosted-runner",
-	"init",
 ]);
 
 export function isNativeUtilityCommand(command: string | undefined): boolean {

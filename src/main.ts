@@ -681,12 +681,6 @@ export async function main(args: string[]) {
 	// In particular, `maestro init --json` must be parseable JSON with any
 	// progress or diagnostic output on stderr, so route it before config loading
 	// can emit normal CLI startup logs.
-	if (parsed.command === "init") {
-		const { handleInitCommand } = await import("./cli/commands/init.js");
-		await handleInitCommand(parsed.commandArgs ?? []);
-		return;
-	}
-
 	if (parsed.command === "mission") {
 		const { handleMissionCommand } = await import("./cli/commands/mission.js");
 		await handleMissionCommand(parsed.subcommand, parsed.messages, {
