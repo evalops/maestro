@@ -1154,10 +1154,6 @@ fn fmt_elapsed_compact(elapsed_secs: u64) -> String {
 ///     "Type a message...",
 ///     ChatInputWidgetOptions {
 ///         busy,
-///         elapsed_secs,
-///         thinking_header,
-///         can_queue_follow_up,
-///         queue_summary,
 ///         pending_input_preview,
 ///     },
 /// );
@@ -1171,38 +1167,24 @@ pub struct ChatInputWidget<'a> {
     textarea: &'a TextArea,
     placeholder: &'a str,
     busy: bool,
-    elapsed_secs: u64,
-    thinking_header: Option<&'a str>,
-    can_queue_follow_up: bool,
-    queue_summary: Option<QueueSummary>,
     pending_input_preview: Option<PendingInputPreview>,
     runtime_footer: Option<String>,
 }
 
 #[derive(Debug)]
-pub struct ChatInputWidgetOptions<'a> {
+pub struct ChatInputWidgetOptions {
     pub busy: bool,
-    pub elapsed_secs: u64,
-    pub thinking_header: Option<&'a str>,
-    pub can_queue_follow_up: bool,
-    pub queue_summary: Option<QueueSummary>,
     pub pending_input_preview: Option<PendingInputPreview>,
 }
 
 #[derive(Debug, Clone, Copy)]
 pub struct QueueSummary {
     pub total: usize,
-    pub steering: usize,
-    pub follow_up: usize,
 }
 
 impl QueueSummary {
-    pub fn new(total: usize, steering: usize, follow_up: usize) -> Self {
-        Self {
-            total,
-            steering,
-            follow_up,
-        }
+    pub fn new(total: usize) -> Self {
+        Self { total }
     }
 
     pub fn is_empty(&self) -> bool {
@@ -1382,16 +1364,12 @@ impl<'a> ChatInputWidget<'a> {
     pub fn new(
         textarea: &'a TextArea,
         placeholder: &'a str,
-        options: ChatInputWidgetOptions<'a>,
+        options: ChatInputWidgetOptions,
     ) -> Self {
         Self {
             textarea,
             placeholder,
             busy: options.busy,
-            elapsed_secs: options.elapsed_secs,
-            thinking_header: options.thinking_header,
-            can_queue_follow_up: options.can_queue_follow_up,
-            queue_summary: options.queue_summary,
             pending_input_preview: options.pending_input_preview,
             runtime_footer: None,
         }
@@ -1472,63 +1450,10 @@ impl Widget for ChatInputWidget<'_> {
             Style::default().fg(Color::Cyan)
         };
 
-        // Create title with shimmer effect and elapsed time when busy
-        let title: Line = if self.busy {
-            let elapsed = fmt_elapsed_compact(self.elapsed_secs);
-            let mut spans = vec![Span::raw(" ")];
-
-            // Show thinking header if available, otherwise "Working"
-            if let Some(header) = self.thinking_header {
-                // Shimmer the thinking header (truncate if too long)
-                let max_header_len = 30;
-                let display_header = if header.len() > max_header_len {
-                    format!("{}...", &header[..max_header_len.saturating_sub(3)])
-                } else {
-                    header.to_string()
-                };
-                spans.extend(shimmer_spans(&display_header));
-            } else {
-                spans.extend(shimmer_spans("Working"));
-            }
-
-            let follow_up_note = if self.can_queue_follow_up {
-                " | Tab queue follow-up"
-            } else {
-                ""
-            };
-            let queue_note = if let Some(summary) = self.queue_summary {
-                if summary.is_empty() {
-                    String::new()
-                } else {
-                    let mut detail = Vec::new();
-                    if summary.steering > 0 {
-                        detail.push(format!("{} steer", summary.steering));
-                    }
-                    if summary.follow_up > 0 {
-                        detail.push(format!("{} follow-up", summary.follow_up));
-                    }
-                    if detail.is_empty() {
-                        format!(" | {} queued", summary.total)
-                    } else {
-                        format!(" | {} queued ({})", summary.total, detail.join(", "))
-                    }
-                }
-            } else {
-                String::new()
-            };
-            spans.push(Span::styled(
-                format!(" ({elapsed}{follow_up_note}{queue_note} | ESC to interrupt) "),
-                Style::default().fg(Color::DarkGray),
-            ));
-            Line::from(spans)
-        } else {
-            Line::from(" > ")
-        };
-
         let mut block = Block::default()
             .borders(Borders::ALL)
             .border_style(border_style)
-            .title(title);
+            .title(Line::from(" > "));
         if let Some(runtime_footer) = self.runtime_footer {
             block = block.title_bottom(
                 Line::from(format!(" {runtime_footer} "))
@@ -1632,6 +1557,80 @@ impl UsageSummary {
         } else {
             count.to_string()
         }
+    }
+}
+
+/// Grok-inspired one-line status for the active turn.
+///
+/// Keeps transient execution state out of the composer border so activity,
+/// elapsed time, queue pressure, token usage, and controls scan as one row.
+pub struct TurnStatusWidget<'a> {
+    activity: Option<&'a str>,
+    elapsed_secs: u64,
+    queue: QueueSummary,
+    tokens: Option<u64>,
+    can_queue_follow_up: bool,
+}
+
+impl<'a> TurnStatusWidget<'a> {
+    #[must_use]
+    pub fn new(
+        activity: Option<&'a str>,
+        elapsed_secs: u64,
+        queue: QueueSummary,
+        tokens: Option<u64>,
+        can_queue_follow_up: bool,
+    ) -> Self {
+        Self {
+            activity,
+            elapsed_secs,
+            queue,
+            tokens,
+            can_queue_follow_up,
+        }
+    }
+}
+
+impl Widget for TurnStatusWidget<'_> {
+    fn render(self, area: Rect, buf: &mut Buffer) {
+        if area.is_empty() {
+            return;
+        }
+
+        let activity = self.activity.unwrap_or("Working");
+        let activity = if activity.chars().count() > 30 {
+            format!("{}…", activity.chars().take(29).collect::<String>())
+        } else {
+            activity.to_owned()
+        };
+        let dim = Style::default().fg(Color::DarkGray);
+        let mut spans = vec![Span::styled("◐ ", Style::default().fg(Color::Cyan))];
+        spans.extend(shimmer_spans(&activity));
+        spans.push(Span::styled(
+            format!("  ·  {}", fmt_elapsed_compact(self.elapsed_secs)),
+            dim,
+        ));
+
+        if area.width >= 48 && !self.queue.is_empty() {
+            spans.push(Span::styled(
+                format!("  ·  {} queued", self.queue.total),
+                Style::default().fg(Color::Yellow),
+            ));
+        }
+        if area.width >= 64 {
+            if let Some(tokens) = self.tokens.filter(|tokens| *tokens > 0) {
+                spans.push(Span::styled(
+                    format!("  ·  {} tok", UsageSummary::format_tokens(tokens)),
+                    dim,
+                ));
+            }
+        }
+        if area.width >= 84 && self.can_queue_follow_up {
+            spans.push(Span::styled("  ·  Tab queue", dim));
+        }
+        spans.push(Span::styled("  ·  Esc interrupt", dim));
+
+        Paragraph::new(Line::from(spans)).render(area, buf);
     }
 }
 
@@ -2155,10 +2154,12 @@ impl Widget for ChatView<'_> {
 
         let status_height = u16::from(!self.state.zen_mode);
         let header_height = u16::from(!self.state.zen_mode);
+        let turn_status_height = u16::from(self.state.busy);
         let input_height = calculate_input_height(self.state, area);
         let chunks = Layout::vertical([
             Constraint::Length(header_height), // Session location + context
             Constraint::Min(0),                // Messages
+            Constraint::Length(turn_status_height), // Active turn status
             Constraint::Length(input_height),  // Input (auto-grow)
             Constraint::Length(status_height), // Status (hidden in zen mode)
         ])
@@ -2186,24 +2187,23 @@ impl Widget for ChatView<'_> {
         // Render messages
         self.render_messages(chunks[1], buf);
 
+        if self.state.busy {
+            TurnStatusWidget::new(
+                self.state.thinking_header.as_deref(),
+                self.state.elapsed_busy_secs(),
+                QueueSummary::new(self.state.queued_prompt_count),
+                context_used,
+                self.state.can_queue_follow_up_shortcut(),
+            )
+            .render(chunks[2], buf);
+        }
+
         // Render input
         let input_widget = ChatInputWidget::new(
             &self.state.textarea,
             "Type a message...",
             ChatInputWidgetOptions {
                 busy: self.state.busy,
-                elapsed_secs: self.state.elapsed_busy_secs(),
-                thinking_header: self.state.thinking_header.as_deref(),
-                can_queue_follow_up: self.state.can_queue_follow_up_shortcut(),
-                queue_summary: if self.state.queued_prompt_count > 0 {
-                    Some(QueueSummary::new(
-                        self.state.queued_prompt_count,
-                        self.state.queued_steering_count,
-                        self.state.queued_follow_up_count,
-                    ))
-                } else {
-                    None
-                },
                 pending_input_preview: PendingInputPreview::from_state(self.state),
             },
         )
@@ -2212,7 +2212,7 @@ impl Widget for ChatView<'_> {
             self.state.thinking_level,
             self.state.interaction_mode,
         );
-        input_widget.render(chunks[2], buf);
+        input_widget.render(chunks[3], buf);
 
         // Render status bar (unless zen mode)
         if !self.state.zen_mode {
@@ -2242,7 +2242,7 @@ impl Widget for ChatView<'_> {
                 )
                 .with_alert_count(alert_count)
                 .with_shortcut_hints();
-            status_widget.render(chunks[3], buf);
+            status_widget.render(chunks[4], buf);
         }
     }
 }
@@ -2447,56 +2447,44 @@ mod tests {
     }
 
     #[test]
-    fn busy_input_title_shows_follow_up_shortcut_when_available() {
-        let mut textarea = TextArea::new();
-        textarea.set_text("follow-up");
-        let widget = ChatInputWidget::new(
-            &textarea,
-            "",
-            ChatInputWidgetOptions {
-                busy: true,
-                elapsed_secs: 12,
-                thinking_header: None,
-                can_queue_follow_up: true,
-                queue_summary: Some(QueueSummary::new(2, 1, 1)),
-                pending_input_preview: None,
-            },
+    fn turn_status_shows_active_turn_details_at_wide_widths() {
+        let widget = TurnStatusWidget::new(
+            Some("Indexing workspace"),
+            12,
+            QueueSummary::new(2),
+            Some(1_200),
+            true,
         );
         let width = 120;
-        let height = 4;
-        let mut buf = Buffer::empty(Rect::new(0, 0, width, height));
+        let mut buf = Buffer::empty(Rect::new(0, 0, width, 1));
 
-        widget.render(Rect::new(0, 0, width, height), &mut buf);
+        widget.render(Rect::new(0, 0, width, 1), &mut buf);
 
-        let rendered = buffer_lines(&buf, width, height).join("\n");
-        assert!(rendered.contains("Tab queue follow-up"));
-        assert!(rendered.contains("2 queued (1 steer, 1 follow-up)"));
+        let rendered = buffer_lines(&buf, width, 1).join("\n");
+        assert!(rendered.contains("Indexing workspace"));
+        assert!(rendered.contains("12s"));
+        assert!(rendered.contains("2 queued"));
+        assert!(rendered.contains("1.2k tok"));
+        assert!(rendered.contains("Tab queue"));
+        assert!(rendered.contains("Esc interrupt"));
     }
 
     #[test]
-    fn busy_input_title_hides_follow_up_shortcut_when_unavailable() {
-        let textarea = TextArea::new();
-        let widget = ChatInputWidget::new(
-            &textarea,
-            "",
-            ChatInputWidgetOptions {
-                busy: true,
-                elapsed_secs: 12,
-                thinking_header: None,
-                can_queue_follow_up: false,
-                queue_summary: Some(QueueSummary::new(1, 0, 1)),
-                pending_input_preview: None,
-            },
-        );
-        let width = 120;
-        let height = 4;
-        let mut buf = Buffer::empty(Rect::new(0, 0, width, height));
+    fn turn_status_keeps_essential_state_at_narrow_widths() {
+        let widget =
+            TurnStatusWidget::new(Some("Working"), 12, QueueSummary::new(2), Some(1_200), true);
+        let width = 46;
+        let mut buf = Buffer::empty(Rect::new(0, 0, width, 1));
 
-        widget.render(Rect::new(0, 0, width, height), &mut buf);
+        widget.render(Rect::new(0, 0, width, 1), &mut buf);
 
-        let rendered = buffer_lines(&buf, width, height).join("\n");
-        assert!(!rendered.contains("Tab queue follow-up"));
-        assert!(rendered.contains("1 queued (1 follow-up)"));
+        let rendered = buffer_lines(&buf, width, 1).join("\n");
+        assert!(rendered.contains("Working"));
+        assert!(rendered.contains("12s"));
+        assert!(rendered.contains("Esc interrupt"));
+        assert!(!rendered.contains("queued"));
+        assert!(!rendered.contains("tok"));
+        assert!(!rendered.contains("Tab queue"));
     }
 
     #[test]
@@ -2507,10 +2495,6 @@ mod tests {
             "",
             ChatInputWidgetOptions {
                 busy: false,
-                elapsed_secs: 0,
-                thinking_header: None,
-                can_queue_follow_up: false,
-                queue_summary: None,
                 pending_input_preview: None,
             },
         )
