@@ -3,7 +3,7 @@
 
 import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
-import { join } from "node:path";
+import { delimiter, join } from "node:path";
 
 export function getNpmCommand() {
 	return process.platform === "win32" ? "npm.cmd" : "npm";
@@ -172,21 +172,57 @@ export function runInstalledCliSmoke(
 	});
 }
 
+/**
+ * Build an env for clean-install native smokes that must resolve the *packaged*
+ * Rust binary (vendor/maestro-tui), not a developer's ambient override or PATH.
+ */
+export function buildNativeInstallSmokeEnv(cwd, baseEnv = process.env) {
+	const isolatedMaestroHome = join(cwd, ".maestro-native-smoke");
+	const env = {
+		...baseEnv,
+		MAESTRO_HOME: isolatedMaestroHome,
+		OPENAI_OAUTH_FILE: join(isolatedMaestroHome, "openai-oauth.json"),
+	};
+	// MAESTRO_TUI_BIN takes precedence over vendor/ in the JS launcher. Scrub it so
+	// a green smoke cannot mean "my local override works" while the tarball is broken.
+	delete env.MAESTRO_TUI_BIN;
+
+	// Drop PATH entries that commonly host a local maestro-tui so resolution falls
+	// through to the package's vendor/ payload instead of an ambient binary.
+	const ambientPath = env.PATH ?? env.Path ?? "";
+	const scrubbedPath = ambientPath
+		.split(delimiter)
+		.filter((entry) => {
+			if (!entry) {
+				return false;
+			}
+			const normalized = entry.replaceAll("\\", "/").toLowerCase();
+			return !(
+				normalized.includes("/tui-rs/") ||
+				normalized.includes("/maestro-tui") ||
+				normalized.endsWith("/maestro-tui") ||
+				normalized.includes("/.cargo/bin")
+			);
+		})
+		.join(delimiter);
+	env.PATH = scrubbedPath;
+	if ("Path" in env) {
+		env.Path = scrubbedPath;
+	}
+	return env;
+}
+
 export function runInstalledNativeCliSmoke(cwd, { cliCommand }) {
 	const command = installedBinPath(cwd, cliCommand);
-	const isolatedMaestroHome = join(cwd, ".maestro-native-smoke");
 	// --version and --help are handled by the JavaScript launcher itself. Exercise
 	// a native-only command so release smokes also prove the packaged Rust runtime
 	// can be resolved and launched from a clean install. Isolate credential paths
-	// so a local smoke can never read, refresh, or remove a developer's login.
+	// so a local smoke can never read, refresh, or remove a developer's login, and
+	// scrub native binary overrides so only the packaged vendor payload can win.
 	execFileSync(command, ["openai", "status"], {
 		cwd,
 		stdio: "ignore",
-		env: {
-			...process.env,
-			MAESTRO_HOME: isolatedMaestroHome,
-			OPENAI_OAUTH_FILE: join(isolatedMaestroHome, "openai-oauth.json"),
-		},
+		env: buildNativeInstallSmokeEnv(cwd),
 	});
 }
 
