@@ -51,7 +51,7 @@ const NATIVE_UTILITY_COMMANDS: [&str; 11] = [
     "skill", "modes",
 ];
 
-const GLOBAL_FLAGS_WITH_VALUES: [&str; 20] = [
+const GLOBAL_FLAGS_WITH_VALUES: [&str; 26] = [
     "--mode",
     "--provider",
     "--model",
@@ -67,11 +67,17 @@ const GLOBAL_FLAGS_WITH_VALUES: [&str; 20] = [
     "--approval-mode",
     "--auth",
     "--sandbox",
+    "--output-schema",
+    "--output-last-message",
     "--tools",
     "--composer",
     "--format",
+    "--output-dir",
     "--profile",
     "--config",
+    "--junit",
+    "--replay",
+    "--record-scenario",
 ];
 
 fn native_utility_tokens(raw_args: &[std::ffi::OsString]) -> Option<Vec<String>> {
@@ -846,6 +852,28 @@ mod tests {
                 "openai".into(),
             ])
         );
+    }
+
+    #[test]
+    fn native_utility_tokens_skip_all_value_taking_cli_globals() {
+        for flag in [
+            "--output-schema",
+            "--output-last-message",
+            "--output-dir",
+            "--junit",
+            "--replay",
+            "--record-scenario",
+        ] {
+            let args = [flag, "ignored-value", "modes", "describe", "high"]
+                .into_iter()
+                .map(std::ffi::OsString::from)
+                .collect::<Vec<_>>();
+            assert_eq!(
+                native_utility_tokens(&args),
+                Some(vec!["modes".into(), "describe".into(), "high".into()]),
+                "scanner did not consume {flag}'s value"
+            );
+        }
     }
 
     #[test]

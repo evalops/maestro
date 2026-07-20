@@ -45,6 +45,7 @@ const FLAGS_WITH_VALUES = new Set([
 	"--tools",
 	"--composer",
 	"--format",
+	"--output-dir",
 	"--profile",
 	"--config",
 	"--junit",
