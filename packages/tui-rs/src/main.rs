@@ -46,8 +46,8 @@ use maestro_tui::hosted_runner_cli::run_hosted_runner_cli_from_env;
 // HELPER FUNCTIONS
 // ─────────────────────────────────────────────────────────────────────────────
 
-const NATIVE_UTILITY_COMMANDS: [&str; 8] = [
-    "sessions", "cost", "stats", "models", "status", "hooks", "export", "import",
+const NATIVE_UTILITY_COMMANDS: [&str; 9] = [
+    "sessions", "cost", "stats", "models", "status", "hooks", "export", "import", "update",
 ];
 
 const GLOBAL_FLAGS_WITH_VALUES: [&str; 20] = [
@@ -395,7 +395,7 @@ async fn main() -> Result<()> {
     // Lightweight CLI helpers (no TUI / no full interactive loop). Utility
     // argument normalization lives here so the package shim can forward argv.
     if let Some(tokens) = native_utility_tokens(&raw_args[1..]) {
-        match maestro_tui::cli_commands::run_cli_command(&tokens) {
+        match maestro_tui::cli_commands::run_cli_command(&tokens).await {
             Ok(code) => std::process::exit(code),
             Err(err) => {
                 eprintln!("{err:#}");

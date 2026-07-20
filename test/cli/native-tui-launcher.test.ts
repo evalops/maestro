@@ -281,6 +281,32 @@ describe("launchNativeTui", () => {
 });
 
 describe("launchNativeCli", () => {
+	it("passes package release metadata to the native process", async () => {
+		const child = new EventEmitter();
+		const spawnImpl = vi.fn(() => child) as unknown as SpawnFn;
+		const promise = launchNativeCli(["update", "--check"], {
+			env: {
+				MAESTRO_TUI_BIN: "/bin/fake",
+				MAESTRO_VERSION: "1.2.3",
+				MAESTRO_PACKAGE_NAME: "@evalops/maestro-test",
+			},
+			resolveOptions: { exists: () => true },
+			spawnImpl,
+		});
+		child.emit("exit", 0, null);
+		await expect(promise).resolves.toBe(0);
+		expect(spawnImpl).toHaveBeenCalledWith(
+			"/bin/fake",
+			["update", "--check"],
+			expect.objectContaining({
+				env: expect.objectContaining({
+					MAESTRO_VERSION: "1.2.3",
+					MAESTRO_PACKAGE_NAME: "@evalops/maestro-test",
+				}),
+			}),
+		);
+	});
+
 	it("maps known and unknown terminating signals consistently", async () => {
 		for (const [signal, expected] of [
 			["SIGTERM", 143],

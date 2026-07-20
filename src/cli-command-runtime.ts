@@ -44,11 +44,6 @@ export async function runCliCommandRuntime(args: string[]): Promise<boolean> {
 			await handleInitCommand(parsed.commandArgs ?? []);
 			return true;
 		}
-		case "update": {
-			const { handleUpdateCommand } = await import("./cli/commands/update.js");
-			await handleUpdateCommand(parsed.commandArgs ?? []);
-			return true;
-		}
 		case "skill": {
 			const { buildCliConfigOverrides } = await import(
 				"./config/runtime-config.js"

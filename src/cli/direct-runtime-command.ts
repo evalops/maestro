@@ -9,6 +9,7 @@ const NATIVE_UTILITY_COMMANDS = new Set([
 	"sessions",
 	"stats",
 	"status",
+	"update",
 ]);
 
 const DIRECT_RUNTIME_COMMANDS = new Set([
@@ -16,7 +17,6 @@ const DIRECT_RUNTIME_COMMANDS = new Set([
 	"hosted-runner",
 	"init",
 	"skill",
-	"update",
 ]);
 
 export function isNativeUtilityCommand(command: string | undefined): boolean {

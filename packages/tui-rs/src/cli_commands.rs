@@ -16,7 +16,7 @@ use crate::session::{ExportFormat, ExportOptions, SessionManager, SessionReader}
 ///
 /// `args` is the token stream after the program name, e.g.
 /// `["sessions", "list"]` or `["cost", "today"]`.
-pub fn run_cli_command(args: &[String]) -> Result<i32> {
+pub async fn run_cli_command(args: &[String]) -> Result<i32> {
     let Some(cmd) = args.first().map(String::as_str) else {
         bail!("missing command");
     };
@@ -45,6 +45,7 @@ pub fn run_cli_command(args: &[String]) -> Result<i32> {
             Ok(0)
         }
         "import" => run_sessions_import(&args[1..]),
+        "update" => crate::update_cli::run_update(&args[1..]).await,
         other => bail!("unknown command: {other}"),
     }
 }
@@ -813,21 +814,24 @@ mod tests {
         values.iter().map(|value| (*value).to_string()).collect()
     }
 
-    #[test]
-    fn native_utility_help_exits_cleanly() {
+    #[tokio::test]
+    async fn native_utility_help_exits_cleanly() {
         for args in [
             argv(&["status", "--help"]),
             argv(&["export", "--help"]),
             argv(&["import", "--help"]),
+            argv(&["update", "--help"]),
         ] {
-            assert_eq!(run_cli_command(&args).expect("help command"), 0);
+            assert_eq!(run_cli_command(&args).await.expect("help command"), 0);
         }
     }
 
-    #[test]
-    fn unknown_cost_subcommand_is_rejected() {
+    #[tokio::test]
+    async fn unknown_cost_subcommand_is_rejected() {
         assert_eq!(
-            run_cli_command(&argv(&["cost", "nonsense"])).expect("cost command"),
+            run_cli_command(&argv(&["cost", "nonsense"]))
+                .await
+                .expect("cost command"),
             1
         );
     }
