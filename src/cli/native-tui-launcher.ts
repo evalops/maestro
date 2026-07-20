@@ -21,6 +21,12 @@ export type NativeTuiLaunchArgs = {
 	apiKey?: string;
 	continue?: boolean;
 	resume?: boolean;
+	/** Create/reuse a git worktree (Grok-style). True = auto name; string = name. */
+	worktree?: boolean | string;
+	/** Non-interactive print mode (native single-shot). */
+	print?: boolean;
+	/** With print, emit JSONL. */
+	json?: boolean;
 	/** Trailing prompt tokens forwarded as positional args. */
 	messages?: string[];
 };
@@ -260,6 +266,22 @@ export function buildNativeTuiCliArgs(parsed: NativeTuiLaunchArgs): string[] {
 	if (parsed.resume) {
 		args.push("--resume");
 	}
+	if (parsed.worktree === true) {
+		args.push("--worktree");
+	} else if (
+		typeof parsed.worktree === "string" &&
+		parsed.worktree.length > 0
+	) {
+		args.push("--worktree", parsed.worktree);
+	} else if (typeof parsed.worktree === "string") {
+		args.push("--worktree");
+	}
+	if (parsed.print) {
+		args.push("--print");
+	}
+	if (parsed.json) {
+		args.push("--json");
+	}
 	if (parsed.messages && parsed.messages.length > 0) {
 		args.push(...parsed.messages);
 	}
@@ -324,9 +346,53 @@ export function launchNativeTui(
 }
 
 /**
- * True when Maestro should hand off to native maestro-tui instead of the TS TUI.
- * Leaves headless/exec/rpc/web/single-shot on the TypeScript agent path.
+ * True when Maestro should hand off to native maestro-tui (Rust agent).
+ *
+ * Grok-style default: trailing prompts open the interactive native TUI
+ * (`maestro "fix the bug"` → maestro-tui with initial prompt).
+ *
+ * Still on TypeScript:
+ * - subcommands (`exec`, `web`, `config`, …)
+ * - headless / rpc protocol modes
+ * - explicit single-shot scripting: `--mode text` or `--mode json`
+ * - non-TTY stdout with prompts (pipes/scripts) unless MAESTRO_NATIVE_PROMPT=1
  */
+
+/**
+ * Spawn maestro-tui with raw CLI tokens (sessions|cost|status|hooks|print|exec).
+ */
+export async function launchNativeCli(
+	tokens: string[],
+	options: {
+		cwd?: string;
+		env?: NodeJS.ProcessEnv;
+		resolveOptions?: ResolveMaestroTuiBinaryOptions;
+		spawnImpl?: typeof spawn;
+	} = {},
+): Promise<number> {
+	const env = options.env ?? process.env;
+	const binary = resolveMaestroTuiBinary({
+		...options.resolveOptions,
+		env,
+	});
+	const spawnImpl = options.spawnImpl ?? spawn;
+	return new Promise<number>((resolvePromise, reject) => {
+		const child = spawnImpl(binary, tokens, {
+			stdio: "inherit",
+			cwd: options.cwd ?? process.cwd(),
+			env: { ...env },
+		});
+		child.on("error", reject);
+		child.on("exit", (code, signal) => {
+			if (signal) {
+				resolvePromise(128);
+				return;
+			}
+			resolvePromise(code ?? 1);
+		});
+	});
+}
+
 export function shouldLaunchNativeInteractiveTui(parsed: {
 	command?: string;
 	messages: string[];
@@ -336,14 +402,79 @@ export function shouldLaunchNativeInteractiveTui(parsed: {
 	if (parsed.command !== undefined) {
 		return false;
 	}
-	if (parsed.messages.length > 0) {
-		return false;
-	}
 	if (parsed.headless || parsed.mode === "headless") {
 		return false;
 	}
 	if (parsed.mode === "rpc") {
 		return false;
 	}
+	// Explicit single-shot modes use native print (see shouldLaunchNativePrint).
+	if (parsed.mode === "json" || parsed.mode === "text") {
+		return false;
+	}
+	if (parsed.messages.length > 0) {
+		const forceNative =
+			process.env.MAESTRO_NATIVE_PROMPT === "1" ||
+			process.env.MAESTRO_NATIVE_PROMPT === "true";
+		const stdoutIsTty =
+			typeof process.stdout.isTTY === "boolean" ? process.stdout.isTTY : false;
+		// Piped scripts without an explicit mode use native print instead.
+		if (!stdoutIsTty && !forceNative) {
+			return false;
+		}
+		return true;
+	}
 	return true;
+}
+
+/**
+ * True when Maestro should run native print mode (non-interactive single-shot/exec).
+ * Replaces the TypeScript agent single-shot path for Grok-style scripting.
+ */
+export function shouldLaunchNativePrint(parsed: {
+	command?: string;
+	messages: string[];
+	mode?: string;
+	headless?: boolean;
+	execJson?: boolean;
+	/** Block native print when complex exec features are requested. */
+	execOutputSchema?: string;
+	execOutputLast?: string;
+}): boolean {
+	if (parsed.headless || parsed.mode === "headless" || parsed.mode === "rpc") {
+		return false;
+	}
+	// maestro exec without schema/file capture → native print
+	if (parsed.command === "exec") {
+		if (parsed.execOutputSchema || parsed.execOutputLast) {
+			return false;
+		}
+		return parsed.messages.length > 0;
+	}
+	if (parsed.command !== undefined) {
+		return false;
+	}
+	if (parsed.messages.length === 0) {
+		return false;
+	}
+	// --mode text|json or non-TTY pipe
+	if (parsed.mode === "text" || parsed.mode === "json" || parsed.execJson) {
+		return true;
+	}
+	const stdoutIsTty =
+		typeof process.stdout.isTTY === "boolean" ? process.stdout.isTTY : false;
+	if (!stdoutIsTty) {
+		return true;
+	}
+	return false;
+}
+
+/** CLI helper subcommands implemented natively (no Node agent bootstrap). */
+export function isNativeCliHelperCommand(command?: string): boolean {
+	return (
+		command === "sessions" ||
+		command === "cost" ||
+		command === "status" ||
+		command === "hooks"
+	);
 }

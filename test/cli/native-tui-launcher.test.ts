@@ -8,7 +8,10 @@ import {
 	launchNativeTui,
 	resolveMaestroTuiBinary,
 	shouldLaunchNativeInteractiveTui,
+	shouldLaunchNativePrint,
 } from "../../src/cli/native-tui-launcher.js";
+
+type SpawnFn = typeof import("node:child_process").spawn;
 
 describe("resolveMaestroTuiBinary", () => {
 	const packageRoot = "/pkg";
@@ -232,9 +235,7 @@ describe("launchNativeTui", () => {
 				env: { MAESTRO_TUI_BIN: "/bin/fake-maestro-tui" },
 				exists: (path) => path === "/bin/fake-maestro-tui",
 			},
-			spawnImpl: spawnImpl as unknown as typeof import(
-				"node:child_process",
-			).spawn,
+			spawnImpl: spawnImpl as unknown as SpawnFn,
 		});
 		expect(spawnImpl).toHaveBeenCalledWith(
 			"/bin/fake-maestro-tui",
@@ -256,9 +257,7 @@ describe("launchNativeTui", () => {
 				env: { MAESTRO_TUI_BIN: "/bin/fake" },
 				exists: () => true,
 			},
-			spawnImpl: (() => child) as unknown as typeof import(
-				"node:child_process",
-			).spawn,
+			spawnImpl: (() => child) as unknown as SpawnFn,
 		});
 		child.emit("exit", null, "SIGINT");
 		await expect(promise).resolves.toBe(130);
@@ -308,6 +307,25 @@ describe("buildNativeTuiCliArgs", () => {
 			"claude-sonnet",
 		]);
 	});
+
+	it("forwards --worktree (auto name and named)", () => {
+		expect(buildNativeTuiCliArgs({ worktree: true, messages: [] })).toEqual([
+			"--worktree",
+		]);
+		expect(
+			buildNativeTuiCliArgs({ worktree: "feat-x", messages: ["go"] }),
+		).toEqual(["--worktree", "feat-x", "go"]);
+	});
+
+	it("forwards --print and --json", () => {
+		expect(
+			buildNativeTuiCliArgs({
+				print: true,
+				json: true,
+				messages: ["hello"],
+			}),
+		).toEqual(["--print", "--json", "hello"]);
+	});
 });
 
 describe("shouldLaunchNativeInteractiveTui", () => {
@@ -320,18 +338,19 @@ describe("shouldLaunchNativeInteractiveTui", () => {
 		expect(
 			shouldLaunchNativeInteractiveTui({
 				messages: [],
-				mode: "text",
 				continue: true,
-			} as { messages: string[]; mode?: string }),
+			}),
 		).toBe(true);
-	});
-
-	it("does not launch for headless, rpc, prompts, or subcommands", () => {
+		// Explicit --mode text is single-shot scripting, not interactive native.
 		expect(
 			shouldLaunchNativeInteractiveTui({
-				messages: ["hi"],
+				messages: [],
+				mode: "text",
 			}),
 		).toBe(false);
+	});
+
+	it("does not launch for headless, rpc, script modes, or subcommands", () => {
 		expect(
 			shouldLaunchNativeInteractiveTui({
 				messages: [],
@@ -360,6 +379,75 @@ describe("shouldLaunchNativeInteractiveTui", () => {
 			shouldLaunchNativeInteractiveTui({
 				messages: [],
 				command: "web",
+			}),
+		).toBe(false);
+		// Explicit single-shot scripting stays on TS agent.
+		expect(
+			shouldLaunchNativeInteractiveTui({
+				messages: ["hi"],
+				mode: "text",
+			}),
+		).toBe(false);
+		expect(
+			shouldLaunchNativeInteractiveTui({
+				messages: ["hi"],
+				mode: "json",
+			}),
+		).toBe(false);
+	});
+
+	it("launches native for trailing prompts in interactive TTY (Grok-style)", () => {
+		const prev = process.env.MAESTRO_NATIVE_PROMPT;
+		const prevTty = Object.getOwnPropertyDescriptor(process.stdout, "isTTY");
+		try {
+			delete process.env.MAESTRO_NATIVE_PROMPT;
+			Object.defineProperty(process.stdout, "isTTY", {
+				value: true,
+				configurable: true,
+			});
+			expect(
+				shouldLaunchNativeInteractiveTui({
+					messages: ["fix the bug"],
+				}),
+			).toBe(true);
+		} finally {
+			if (prev === undefined) {
+				delete process.env.MAESTRO_NATIVE_PROMPT;
+			} else {
+				process.env.MAESTRO_NATIVE_PROMPT = prev;
+			}
+			if (prevTty) {
+				Object.defineProperty(process.stdout, "isTTY", prevTty);
+			}
+		}
+	});
+});
+
+describe("shouldLaunchNativePrint", () => {
+	it("routes mode text/json and non-TTY prompts to native print", () => {
+		expect(
+			shouldLaunchNativePrint({
+				messages: ["hi"],
+				mode: "text",
+			}),
+		).toBe(true);
+		expect(
+			shouldLaunchNativePrint({
+				messages: ["hi"],
+				mode: "json",
+			}),
+		).toBe(true);
+		expect(
+			shouldLaunchNativePrint({
+				command: "exec",
+				messages: ["do work"],
+			}),
+		).toBe(true);
+		expect(
+			shouldLaunchNativePrint({
+				command: "exec",
+				messages: ["do work"],
+				execOutputSchema: "schema.json",
 			}),
 		).toBe(false);
 	});

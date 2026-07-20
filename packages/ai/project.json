@@ -3,7 +3,7 @@
 	"projectType": "library",
 	"root": "packages/ai",
 	"sourceRoot": "packages/ai/src",
-	"implicitDependencies": ["contracts"],
+	"implicitDependencies": ["contracts", "tui"],
 	"targets": {
 		"clean": {
 			"executor": "nx:run-commands",
