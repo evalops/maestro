@@ -1091,14 +1091,6 @@ export async function main(args: string[]) {
 		return;
 	}
 
-	if (parsed.command === "anthropic") {
-		const { handleAnthropicCommand } = await import(
-			"./cli/commands/anthropic.js"
-		);
-		await handleAnthropicCommand();
-		return;
-	}
-
 	if (parsed.command === "cost") {
 		console.error(chalk.red(`Unknown cost subcommand: ${parsed.subcommand}`));
 		console.log(chalk.dim("\nAvailable commands:"));

@@ -124,6 +124,10 @@ describe("cli-runtime direct command dispatch", () => {
 
 		const cases: Array<[string[], string[]]> = [
 			[
+				["anthropic", "status"],
+				["anthropic", "status"],
+			],
+			[
 				["painter", "show", "image.png"],
 				["painter", "show", "image.png"],
 			],

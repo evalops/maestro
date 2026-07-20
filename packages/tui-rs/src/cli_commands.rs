@@ -13,6 +13,8 @@ use anyhow::{bail, Context, Result};
 use crate::session::{ExportFormat, ExportOptions, SessionManager};
 use crate::session_transfer::{export_portable_session, import_portable_session, PortableFormat};
 
+const ANTHROPIC_OAUTH_REMOVED_MESSAGE: &str = "Anthropic OAuth login has been removed. Set ANTHROPIC_API_KEY to use Anthropic models, or run `maestro codex login` for the default Codex flow.";
+
 /// Dispatch a top-level CLI helper subcommand.
 ///
 /// `args` is the token stream after the program name, e.g.
@@ -50,6 +52,10 @@ pub async fn run_cli_command(args: &[String]) -> Result<i32> {
         "update" => crate::update_cli::run_update(&args[1..]).await,
         "modes" => crate::mode_cli::run_modes(&args[1..]).await,
         "painter" => crate::painter_cli::run_painter(&args[1..]),
+        "anthropic" => {
+            eprintln!("{ANTHROPIC_OAUTH_REMOVED_MESSAGE}");
+            Ok(1)
+        }
         other => bail!("unknown command: {other}"),
     }
 }
@@ -776,6 +782,18 @@ mod tests {
             run_cli_command(&argv(&["cost", "nonsense"]))
                 .await
                 .expect("cost command"),
+            1
+        );
+    }
+
+    #[tokio::test]
+    async fn anthropic_command_reports_removed_oauth_flow() {
+        assert!(ANTHROPIC_OAUTH_REMOVED_MESSAGE.contains("ANTHROPIC_API_KEY"));
+        assert!(ANTHROPIC_OAUTH_REMOVED_MESSAGE.contains("maestro codex login"));
+        assert_eq!(
+            run_cli_command(&argv(&["anthropic", "status"]))
+                .await
+                .expect("anthropic command"),
             1
         );
     }
