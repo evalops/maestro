@@ -165,10 +165,19 @@ export function runInstalledCliSmoke(
 	cwd,
 	{ cliCommand, expectedVersion, label },
 ) {
-	runCliSmoke(installedBinPath(cwd, cliCommand), [], cwd, {
+	const command = installedBinPath(cwd, cliCommand);
+	runCliSmoke(command, [], cwd, {
 		cliCommand,
 		expectedVersion,
 		label,
+	});
+
+	// --version and --help are handled by the JavaScript launcher itself. Exercise
+	// a native-only command so release smokes also prove the packaged Rust runtime
+	// can be resolved and launched from a clean install.
+	execFileSync(command, ["openai", "status"], {
+		cwd,
+		stdio: "ignore",
 	});
 }
 

@@ -31,7 +31,7 @@ if (!tarballArg) {
 const tarballPath = resolve(process.cwd(), tarballArg);
 const tarballSizeBytes = statSync(tarballPath).size;
 const maxTarballSizeBytes = Number.parseInt(
-	process.env.MAESTRO_MAX_PACK_SIZE_BYTES ?? `${10 * 1024 * 1024}`,
+	process.env.MAESTRO_MAX_PACK_SIZE_BYTES ?? `${100 * 1024 * 1024}`,
 	10,
 );
 
