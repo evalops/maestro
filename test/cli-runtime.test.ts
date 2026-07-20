@@ -85,6 +85,9 @@ describe("cli-runtime direct command dispatch", () => {
 
 	it("detects early commands after global options", () => {
 		expect(getDirectRuntimeCommand(["skill", "--help"])).toBe("skill");
+		expect(getDirectRuntimeCommand(["agents", "profile", "list"])).toBe(
+			"agents",
+		);
 		expect(
 			getDirectRuntimeCommand(["--output-dir", "artifacts", "modes", "list"]),
 		).toBe("modes");
