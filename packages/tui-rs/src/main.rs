@@ -234,6 +234,38 @@ struct Args {
     #[arg(short, long)]
     resume: bool,
 
+    /// Create or reuse a git worktree for this session (Grok-style isolation).
+    ///
+    /// - `--worktree` uses an auto name (`maestro-<timestamp>`)
+    /// - `--worktree=feat-x` uses/creates that worktree name under
+    ///   `<repo>/.maestro/worktrees/<name>`
+    #[arg(long, num_args = 0..=1, default_missing_value = "")]
+    worktree: Option<String>,
+
+    /// Non-interactive print mode (Grok-style single-shot). Prints the answer and exits.
+    #[arg(long, short = 'p')]
+    print: bool,
+
+    /// With `--print`, emit simple JSONL events instead of plain text.
+    #[arg(long)]
+    json: bool,
+
+    /// Run as native headless protocol server on stdio (replaces TS headless agent).
+    #[arg(long)]
+    headless: bool,
+
+    /// Alias for `--headless` (RPC clients).
+    #[arg(long)]
+    rpc: bool,
+
+    /// Write final assistant text to this file (exec parity).
+    #[arg(long = "output-last-message")]
+    output_last_message: Option<String>,
+
+    /// Validate final assistant text against a JSON Schema file or inline JSON.
+    #[arg(long = "output-schema")]
+    output_schema: Option<String>,
+
     /// Initial prompt to send (all remaining arguments are joined).
     /// `trailing_var_arg = true` means all positional args after flags go here.
     #[arg(trailing_var_arg = true)]
@@ -287,6 +319,93 @@ async fn main() -> Result<()> {
         hosted_args.extend(raw_args.into_iter().skip(2));
         run_hosted_runner_cli_from_env(hosted_args).await?;
         return Ok(());
+    }
+
+    // Lightweight CLI helpers (no TUI / no full interactive loop)
+    if let Some(cmd) = raw_args.get(1).and_then(|a| a.to_str()) {
+        if matches!(
+            cmd,
+            "sessions" | "cost" | "stats" | "models" | "status" | "hooks" | "export" | "import"
+        ) {
+            let tokens: Vec<String> = raw_args
+                .iter()
+                .skip(1)
+                .map(|a| a.to_string_lossy().into_owned())
+                .collect();
+            match maestro_tui::cli_commands::run_cli_command(&tokens) {
+                Ok(code) => std::process::exit(code),
+                Err(err) => {
+                    eprintln!("{err:#}");
+                    std::process::exit(1);
+                }
+            }
+        }
+        if cmd == "headless" || cmd == "rpc" {
+            let code = maestro_tui::headless_server::run_headless_server().await?;
+            std::process::exit(code);
+        }
+        if cmd == "print" || cmd == "exec" {
+            // maestro-tui print|exec [--json] [--model X] [--output-last-message P]
+            //   [--output-schema S] <prompt...>
+            let mut json = false;
+            let mut model = None;
+            let mut output_last = None;
+            let mut output_schema = None;
+            let mut prompt_parts = Vec::new();
+            let mut i = 2usize;
+            while i < raw_args.len() {
+                let a = raw_args[i].to_string_lossy();
+                if a == "--json" {
+                    json = true;
+                } else if a == "--model" || a == "-m" {
+                    i += 1;
+                    if i < raw_args.len() {
+                        model = Some(raw_args[i].to_string_lossy().into_owned());
+                    }
+                } else if a.starts_with("--model=") {
+                    model = Some(a.trim_start_matches("--model=").to_string());
+                } else if a == "--output-last-message" {
+                    i += 1;
+                    if i < raw_args.len() {
+                        output_last = Some(std::path::PathBuf::from(
+                            raw_args[i].to_string_lossy().as_ref(),
+                        ));
+                    }
+                } else if let Some(rest) = a.strip_prefix("--output-last-message=") {
+                    output_last = Some(std::path::PathBuf::from(rest));
+                } else if a == "--output-schema" {
+                    i += 1;
+                    if i < raw_args.len() {
+                        output_schema = Some(raw_args[i].to_string_lossy().into_owned());
+                    }
+                } else if let Some(rest) = a.strip_prefix("--output-schema=") {
+                    output_schema = Some(rest.to_string());
+                } else if a == "--" {
+                    // rest is prompt
+                } else if !a.starts_with('-') {
+                    prompt_parts.push(a.into_owned());
+                }
+                i += 1;
+            }
+            let prompt = prompt_parts.join(" ");
+            if prompt.is_empty() {
+                eprintln!(
+                    "Usage: maestro-tui {cmd} [--json] [--model <id>] [--output-last-message <path>] [--output-schema <path|json>] <prompt>"
+                );
+                std::process::exit(2);
+            }
+            let code = maestro_tui::print_mode::run_print_mode(
+                maestro_tui::print_mode::PrintModeOptions {
+                    prompt,
+                    json,
+                    model,
+                    output_last_message: output_last,
+                    output_schema,
+                },
+            )
+            .await?;
+            std::process::exit(code);
+        }
     }
 
     // Parse command-line arguments using clap.
@@ -345,12 +464,58 @@ async fn main() -> Result<()> {
         std::env::set_var("MAESTRO_MODEL", model);
     }
 
+    // Optional git worktree isolation before the TUI starts.
+    if let Some(name) = args.worktree.as_ref() {
+        match setup_worktree(name) {
+            Ok(path) => {
+                if let Err(err) = std::env::set_current_dir(&path) {
+                    eprintln!("Failed to enter worktree {}: {err}", path.display());
+                    std::process::exit(1);
+                }
+                eprintln!("Using worktree: {}", path.display());
+            }
+            Err(err) => {
+                eprintln!("Worktree setup failed: {err}");
+                std::process::exit(1);
+            }
+        }
+    }
+
     // Trailing positional args become the initial prompt (Grok-style).
     let initial_prompt = if args.prompt.is_empty() {
         None
     } else {
         Some(args.prompt.join(" "))
     };
+
+    // Native headless/RPC server (kills TS agent path for these modes)
+    if args.headless || args.rpc {
+        let code = maestro_tui::headless_server::run_headless_server().await?;
+        std::process::exit(code);
+    }
+
+    // Non-interactive print mode (single-shot / exec bridge)
+    if args.print {
+        let prompt = initial_prompt.unwrap_or_default();
+        if prompt.is_empty() {
+            eprintln!("--print requires a prompt");
+            std::process::exit(2);
+        }
+        let code =
+            maestro_tui::print_mode::run_print_mode(maestro_tui::print_mode::PrintModeOptions {
+                prompt,
+                json: args.json,
+                model: args.model.clone(),
+                output_last_message: args
+                    .output_last_message
+                    .as_ref()
+                    .map(std::path::PathBuf::from),
+                output_schema: args.output_schema.clone(),
+            })
+            .await?;
+        std::process::exit(code);
+    }
+
     let app = App::new_with_initial_prompt(initial_prompt)?;
 
     // Run the application's main loop.
@@ -374,6 +539,74 @@ async fn main() -> Result<()> {
     std::process::exit(exit_code);
 }
 
+/// Create or reuse a git worktree for isolated work.
+///
+/// Empty name → auto `maestro-<unix_secs>`.
+fn setup_worktree(name: &str) -> anyhow::Result<std::path::PathBuf> {
+    use std::process::Command;
+
+    let cwd = std::env::current_dir()?;
+    // Ensure we're inside a git repo
+    let root_out = Command::new("git")
+        .args(["rev-parse", "--show-toplevel"])
+        .current_dir(&cwd)
+        .output()?;
+    if !root_out.status.success() {
+        anyhow::bail!("--worktree requires a git repository");
+    }
+    let repo_root = std::path::PathBuf::from(String::from_utf8_lossy(&root_out.stdout).trim());
+
+    let branch_name = if name.trim().is_empty() {
+        let secs = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        format!("maestro-{secs}")
+    } else {
+        name.trim().replace('/', "-")
+    };
+
+    let worktrees_root = repo_root.join(".maestro").join("worktrees");
+    std::fs::create_dir_all(&worktrees_root)?;
+    let worktree_path = worktrees_root.join(&branch_name);
+
+    if worktree_path.exists() {
+        return Ok(worktree_path);
+    }
+
+    // Prefer creating a new branch worktree from HEAD.
+    let status = Command::new("git")
+        .args([
+            "worktree",
+            "add",
+            "-b",
+            &branch_name,
+            worktree_path.to_str().unwrap_or("."),
+            "HEAD",
+        ])
+        .current_dir(&repo_root)
+        .status()?;
+    if !status.success() {
+        // Branch may already exist — try without -b
+        let status = Command::new("git")
+            .args([
+                "worktree",
+                "add",
+                worktree_path.to_str().unwrap_or("."),
+                &branch_name,
+            ])
+            .current_dir(&repo_root)
+            .status()?;
+        if !status.success() {
+            anyhow::bail!(
+                "git worktree add failed for '{branch_name}' (is git available? does the branch exist?)"
+            );
+        }
+    }
+
+    Ok(worktree_path)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -387,6 +620,29 @@ mod tests {
             command.get_about().map(|about| about.to_string()),
             Some("Native terminal interface for Maestro".to_string())
         );
+    }
+
+    #[test]
+    fn print_flag_parses() {
+        use clap::Parser;
+        let args = Args::try_parse_from(["maestro-tui", "--print", "--json", "hello"])
+            .expect("parse print");
+        assert!(args.print);
+        assert!(args.json);
+        assert_eq!(args.prompt, vec!["hello"]);
+    }
+
+    #[test]
+    fn worktree_flag_parses() {
+        use clap::Parser;
+        let args = Args::try_parse_from(["maestro-tui", "--worktree", "feat-x", "do", "it"])
+            .expect("parse worktree");
+        assert_eq!(args.worktree.as_deref(), Some("feat-x"));
+        assert_eq!(args.prompt, vec!["do", "it"]);
+
+        let args =
+            Args::try_parse_from(["maestro-tui", "--worktree"]).expect("parse bare worktree");
+        assert_eq!(args.worktree.as_deref(), Some(""));
     }
 
     #[test]

@@ -7,6 +7,7 @@ import {
 	findBinaryOnPath,
 	launchNativeTui,
 	resolveMaestroTuiBinary,
+	shouldLaunchNativeHeadless,
 	shouldLaunchNativeInteractiveTui,
 	shouldLaunchNativePrint,
 } from "../../src/cli/native-tui-launcher.js";
@@ -216,7 +217,7 @@ describe("resolveMaestroTuiBinary", () => {
 			const message = error instanceof Error ? error.message : String(error);
 			expect(message).toContain("vendor/maestro-tui/linux-x64/maestro-tui");
 			expect(message).toContain("native Rust binary");
-			expect(message).toContain("Non-interactive modes");
+			expect(message).toContain("headless/print/exec");
 		}
 	});
 });
@@ -326,6 +327,30 @@ describe("buildNativeTuiCliArgs", () => {
 			}),
 		).toEqual(["--print", "--json", "hello"]);
 	});
+
+	it("forwards headless, output-last-message, and output-schema", () => {
+		expect(
+			buildNativeTuiCliArgs({
+				headless: true,
+				messages: [],
+			}),
+		).toEqual(["--headless"]);
+		expect(
+			buildNativeTuiCliArgs({
+				print: true,
+				outputLastMessage: "out.md",
+				outputSchema: "schema.json",
+				messages: ["emit json"],
+			}),
+		).toEqual([
+			"--print",
+			"--output-last-message",
+			"out.md",
+			"--output-schema",
+			"schema.json",
+			"emit json",
+		]);
+	});
 });
 
 describe("shouldLaunchNativeInteractiveTui", () => {
@@ -424,7 +449,7 @@ describe("shouldLaunchNativeInteractiveTui", () => {
 });
 
 describe("shouldLaunchNativePrint", () => {
-	it("routes mode text/json and non-TTY prompts to native print", () => {
+	it("routes mode text/json and full exec (incl schema) to native print", () => {
 		expect(
 			shouldLaunchNativePrint({
 				messages: ["hi"],
@@ -448,6 +473,44 @@ describe("shouldLaunchNativePrint", () => {
 				command: "exec",
 				messages: ["do work"],
 				execOutputSchema: "schema.json",
+			}),
+		).toBe(true);
+		expect(
+			shouldLaunchNativePrint({
+				command: "exec",
+				messages: ["do work"],
+				execOutputLast: "out.txt",
+			}),
+		).toBe(true);
+		expect(
+			shouldLaunchNativePrint({
+				messages: ["hi"],
+				mode: "headless",
+			}),
+		).toBe(false);
+	});
+});
+
+describe("shouldLaunchNativeHeadless", () => {
+	it("routes headless and rpc modes to native headless server", () => {
+		expect(
+			shouldLaunchNativeHeadless({
+				mode: "headless",
+			}),
+		).toBe(true);
+		expect(
+			shouldLaunchNativeHeadless({
+				mode: "rpc",
+			}),
+		).toBe(true);
+		expect(
+			shouldLaunchNativeHeadless({
+				headless: true,
+			}),
+		).toBe(true);
+		expect(
+			shouldLaunchNativeHeadless({
+				command: "web",
 			}),
 		).toBe(false);
 	});

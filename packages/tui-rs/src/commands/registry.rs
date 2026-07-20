@@ -834,15 +834,62 @@ pub fn build_command_registry() -> CommandRegistry {
         .usage("/hotkeys [show|path|init|validate]"),
     );
 
-    // Clear command
+    // Clear / new session (Grok-style: /new and /clear start fresh)
     registry.register(
         Command::new(
             "clear",
-            "Clear the screen",
-            CommandCategory::Ui,
-            Box::new(|_| Ok(CommandOutput::Action(CommandAction::ClearMessages))),
+            "Start a new session (clear transcript)",
+            CommandCategory::Session,
+            Box::new(|_| {
+                Ok(CommandOutput::Action(CommandAction::Session(
+                    SessionAction::New,
+                )))
+            }),
         )
-        .alias("cls"),
+        .alias("cls")
+        .alias("new"),
+    );
+
+    // Fork session
+    registry.register(
+        Command::new(
+            "fork",
+            "Fork the conversation into a new session branch",
+            CommandCategory::Session,
+            Box::new(|_| {
+                Ok(CommandOutput::Action(CommandAction::Session(
+                    SessionAction::Fork,
+                )))
+            }),
+        )
+        .usage("/fork"),
+    );
+
+    // Rewind turns
+    registry.register(
+        Command::new(
+            "rewind",
+            "Rewind the last N user turns (default 1)",
+            CommandCategory::Session,
+            Box::new(|ctx| {
+                let turns = if ctx.raw_args.trim().is_empty() {
+                    1usize
+                } else {
+                    ctx.raw_args
+                        .trim()
+                        .parse::<usize>()
+                        .map_err(|_| CommandError::new("Usage: /rewind [n]"))?
+                };
+                if turns == 0 {
+                    return Err(CommandError::new("Rewind count must be >= 1"));
+                }
+                Ok(CommandOutput::Action(CommandAction::Session(
+                    SessionAction::Rewind { turns },
+                )))
+            }),
+        )
+        .alias("undo")
+        .usage("/rewind [n]"),
     );
 
     // Quit command
@@ -1073,14 +1120,34 @@ pub fn build_command_registry() -> CommandRegistry {
                     "cleanup" | "prune" => Ok(CommandOutput::Action(CommandAction::Session(
                         SessionAction::Cleanup,
                     ))),
-                    _ => Ok(CommandOutput::Message("Current session info".to_string())),
+                    "new" | "clear" => Ok(CommandOutput::Action(CommandAction::Session(
+                        SessionAction::New,
+                    ))),
+                    "fork" => Ok(CommandOutput::Action(CommandAction::Session(
+                        SessionAction::Fork,
+                    ))),
+                    "rewind" | "undo" => {
+                        let rest = ctx.raw_args.split_whitespace().nth(1).unwrap_or("1");
+                        let turns = rest
+                            .parse::<usize>()
+                            .map_err(|_| CommandError::new("Usage: /session rewind [n]"))?;
+                        Ok(CommandOutput::Action(CommandAction::Session(
+                            SessionAction::Rewind {
+                                turns: turns.max(1),
+                            },
+                        )))
+                    }
+                    "info" | "" => Ok(CommandOutput::Action(CommandAction::ShowDiagnostics)),
+                    _ => Ok(CommandOutput::Message(
+                        "Usage: /session [info|new|clear|fork|rewind|cleanup]".to_string(),
+                    )),
                 }
             }),
         )
         .alias("ss")
-        .usage("/session [info|new|clear|list|load|export|cleanup]")
+        .usage("/session [info|new|clear|list|load|export|cleanup|fork|rewind]")
         .group(vec![
-            "info", "new", "clear", "list", "load", "export", "cleanup",
+            "info", "new", "clear", "list", "load", "export", "cleanup", "fork", "rewind",
         ]),
     );
 
@@ -1408,11 +1475,28 @@ pub fn build_command_registry() -> CommandRegistry {
     registry.register(
         Command::new(
             "tools",
-            "Tool management",
+            "List built-in tools (and MCP via /mcp)",
             CommandCategory::Tools,
-            Box::new(|_| Ok(CommandOutput::Message("Available tools...".to_string()))),
+            Box::new(|ctx| {
+                let sub = ctx
+                    .raw_args
+                    .split_whitespace()
+                    .next()
+                    .unwrap_or("list")
+                    .to_lowercase();
+                match sub.as_str() {
+                    "list" | "" => Ok(CommandOutput::Action(CommandAction::ShowTools)),
+                    "mcp" => Ok(CommandOutput::Action(CommandAction::Mcp(McpAction::Status))),
+                    "lsp" => Ok(CommandOutput::Message(
+                        "LSP: set lsp.enabled in config; diagnostics can surface on write tools."
+                            .to_string(),
+                    )),
+                    _ => Err(CommandError::new("Usage: /tools [list|mcp|lsp]")),
+                }
+            }),
         )
-        .group(vec!["list", "mcp", "lsp"]),
+        .group(vec!["list", "mcp", "lsp"])
+        .usage("/tools [list|mcp|lsp]"),
     );
 
     // MCP command
@@ -1541,34 +1625,84 @@ pub fn build_command_registry() -> CommandRegistry {
     registry.register(
         Command::new(
             "memory",
-            "Cross-session memory",
+            "Local / shared memory status",
             CommandCategory::Context,
-            Box::new(|_| Ok(CommandOutput::Message("Memory management...".to_string()))),
+            Box::new(|_| Ok(CommandOutput::Action(CommandAction::ShowMemory))),
         )
-        .group(vec!["save", "search", "list", "delete", "stats"]),
+        .group(vec!["save", "search", "list", "delete", "stats"])
+        .usage("/memory"),
     );
 
-    // Plan command
+    // Plan mode (Grok-style)
+    registry.register(
+        Command::new(
+            "plan",
+            "Enter or leave plan mode (require plan before mutating tools)",
+            CommandCategory::Context,
+            Box::new(|ctx| {
+                let arg = ctx.raw_args.trim().to_lowercase();
+                let enabled = match arg.as_str() {
+                    "" | "on" | "true" | "1" => true,
+                    "off" | "false" | "0" => false,
+                    _ => {
+                        return Err(CommandError::new("Usage: /plan [on|off]"));
+                    }
+                };
+                Ok(CommandOutput::Action(CommandAction::SetPlanMode(enabled)))
+            }),
+        )
+        .usage("/plan [on|off]"),
+    );
+
+    // Grok-style permission shortcuts
+    registry.register(
+        Command::new(
+            "always-approve",
+            "Auto-approve all tool executions (YOLO)",
+            CommandCategory::Safety,
+            Box::new(|_| {
+                Ok(CommandOutput::Action(CommandAction::SetApprovalMode(
+                    "yolo".to_string(),
+                )))
+            }),
+        )
+        .alias("yolo"),
+    );
     registry.register(Command::new(
-        "plan",
-        "View saved plans",
-        CommandCategory::Context,
-        Box::new(|_| Ok(CommandOutput::Message("Saved plans...".to_string()))),
+        "auto",
+        "Selective approvals (safe tools free, risky prompt)",
+        CommandCategory::Safety,
+        Box::new(|_| {
+            Ok(CommandOutput::Action(CommandAction::SetApprovalMode(
+                "selective".to_string(),
+            )))
+        }),
+    ));
+    registry.register(Command::new(
+        "ask",
+        "Require approval for all tools",
+        CommandCategory::Safety,
+        Box::new(|_| {
+            Ok(CommandOutput::Action(CommandAction::SetApprovalMode(
+                "safe".to_string(),
+            )))
+        }),
     ));
 
     // Continue command
     registry.register(
         Command::new(
             "continue",
-            "Continue previous session",
+            "Continue the most recent session for this workspace",
             CommandCategory::Session,
             Box::new(|_| {
-                Ok(CommandOutput::Message(
-                    "Continuing previous session...".to_string(),
-                ))
+                Ok(CommandOutput::Action(CommandAction::Session(
+                    SessionAction::Continue,
+                )))
             }),
         )
-        .alias("c"),
+        .alias("c")
+        .usage("/continue"),
     );
 
     // Resume command

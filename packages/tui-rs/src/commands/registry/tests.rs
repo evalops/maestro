@@ -587,3 +587,96 @@ fn skill_named_like_builtin_is_not_registered() {
         "builtin should win over skill, got {out:?}"
     );
 }
+
+#[test]
+fn fork_and_rewind_commands_exist() {
+    let registry = build_command_registry();
+    assert!(registry.get("fork").is_some());
+    assert!(registry.get("rewind").is_some());
+    assert!(registry.get("new").is_some()); // alias of clear
+    assert!(registry.get("always-approve").is_some());
+    assert!(registry.get("auto").is_some());
+    assert!(registry.get("ask").is_some());
+}
+
+#[test]
+fn new_command_starts_session_action() {
+    let registry = build_command_registry();
+    match registry.execute("/new", "/tmp", None, None).expect("/new") {
+        CommandOutput::Action(CommandAction::Session(SessionAction::New)) => {}
+        other => panic!("expected Session::New, got {other:?}"),
+    }
+}
+
+#[test]
+fn rewind_parses_turn_count() {
+    let registry = build_command_registry();
+    match registry
+        .execute("/rewind 3", "/tmp", None, None)
+        .expect("/rewind")
+    {
+        CommandOutput::Action(CommandAction::Session(SessionAction::Rewind { turns })) => {
+            assert_eq!(turns, 3);
+        }
+        other => panic!("expected Rewind, got {other:?}"),
+    }
+}
+
+#[test]
+fn plan_and_permission_shortcuts_parse() {
+    let registry = build_command_registry();
+    match registry
+        .execute("/plan", "/tmp", None, None)
+        .expect("/plan")
+    {
+        CommandOutput::Action(CommandAction::SetPlanMode(true)) => {}
+        other => panic!("expected SetPlanMode(true), got {other:?}"),
+    }
+    match registry
+        .execute("/plan off", "/tmp", None, None)
+        .expect("/plan off")
+    {
+        CommandOutput::Action(CommandAction::SetPlanMode(false)) => {}
+        other => panic!("expected SetPlanMode(false), got {other:?}"),
+    }
+    match registry
+        .execute("/always-approve", "/tmp", None, None)
+        .expect("/always-approve")
+    {
+        CommandOutput::Action(CommandAction::SetApprovalMode(mode)) => {
+            assert_eq!(mode, "yolo");
+        }
+        other => panic!("expected SetApprovalMode yolo, got {other:?}"),
+    }
+}
+
+#[test]
+fn tools_command_lists_tools_action() {
+    let registry = build_command_registry();
+    match registry
+        .execute("/tools", "/tmp", None, None)
+        .expect("/tools")
+    {
+        CommandOutput::Action(CommandAction::ShowTools) => {}
+        other => panic!("expected ShowTools, got {other:?}"),
+    }
+}
+
+#[test]
+fn memory_and_continue_commands_parse() {
+    let registry = build_command_registry();
+    match registry
+        .execute("/memory", "/tmp", None, None)
+        .expect("/memory")
+    {
+        CommandOutput::Action(CommandAction::ShowMemory) => {}
+        other => panic!("expected ShowMemory, got {other:?}"),
+    }
+    match registry
+        .execute("/continue", "/tmp", None, None)
+        .expect("/continue")
+    {
+        CommandOutput::Action(CommandAction::Session(SessionAction::Continue)) => {}
+        other => panic!("expected Session::Continue, got {other:?}"),
+    }
+}

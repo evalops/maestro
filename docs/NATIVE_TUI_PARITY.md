@@ -36,7 +36,7 @@ not a full behavioral test suite. Update as gaps close.
 | Skills | **Present** | `skills/` loaded from `app.rs` | Maestro + legacy composer + `.agents`; Grok-style `/skill` slash |
 | Prompt queue / steer | **Present** | `app/prompt_queue.rs` | Follow-up + steer kinds; capacity limits |
 | Slash commands | **Present** | `commands/registry.rs` | Built-ins + skills + flat commands/prompts; built-ins win |
-| Trailing initial prompt | **Present** | `main.rs` → `App::new_with_initial_prompt` | Grok-style trailing args |
+| Trailing initial prompt | **Present** | `main.rs` + `shouldLaunchNativeInteractiveTui` | TTY `maestro "…"` → native; `--mode text|json` stays TS |
 | Custom prompts / command templates | **Present** | `prompts.rs` | `~/.maestro/{prompts,commands}` + project + legacy |
 | Providers | **Partial** | `ai/` (anthropic, openai, google, vertex, …) | Confirm full registry parity vs `packages/ai` as open work |
 | Headless protocol | **Present** | `headless/` | Shared contracts; used beyond pure TUI |

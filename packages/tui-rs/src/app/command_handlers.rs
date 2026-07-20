@@ -89,20 +89,7 @@ impl App {
     pub(super) async fn handle_command_action(&mut self, action: CommandAction) {
         match action {
             CommandAction::ClearMessages => {
-                self.state.messages.clear();
-                self.state.scroll_offset = 0;
-                self.session_manager.reset_session();
-                self.state.session_id = None;
-                self.session_started_at = SystemTime::now();
-                self.session_resume_failed = false;
-                self.usage_tracker = crate::usage::UsageTracker::new();
-                if !self.current_model.is_empty() {
-                    self.usage_tracker.set_model(self.current_model.clone());
-                }
-                self.clear_active_skills();
-                if let Some(agent) = &self.native_agent {
-                    agent.clear_history();
-                }
+                self.start_new_session("New session started.");
             }
             CommandAction::ToggleZenMode => {
                 self.state.zen_mode = !self.state.zen_mode;
@@ -133,10 +120,27 @@ impl App {
                     ));
                     return;
                 }
+                // Keep interaction_mode loosely aligned with approval shortcuts.
+                self.state.interaction_mode = match self.state.approval_mode {
+                    ApprovalMode::Yolo => crate::state::InteractionMode::AlwaysApprove,
+                    ApprovalMode::Safe | ApprovalMode::Selective => {
+                        if crate::safety::is_plan_mode() {
+                            crate::state::InteractionMode::Plan
+                        } else {
+                            crate::state::InteractionMode::Normal
+                        }
+                    }
+                };
                 self.state.status = Some(format!(
                     "Approval mode: {}",
                     self.state.approval_mode.label()
                 ));
+            }
+            CommandAction::CycleInteractionMode => {
+                self.cycle_interaction_mode();
+            }
+            CommandAction::SetPlanMode(enabled) => {
+                self.apply_plan_mode(enabled);
             }
             CommandAction::SetThinkingLevel(level_str) => {
                 if let Some(level) = ThinkingLevel::parse(&level_str) {
@@ -312,6 +316,12 @@ impl App {
             CommandAction::Session(session_action) => {
                 self.handle_session_action(session_action);
             }
+            CommandAction::ShowTools => {
+                self.show_tools_list();
+            }
+            CommandAction::ShowMemory => {
+                self.show_memory_status();
+            }
             CommandAction::ShowDiagnostics => {
                 let mut diag = String::new();
                 diag.push_str("## Diagnostics\n\n");
@@ -423,6 +433,310 @@ impl App {
                     self.state.add_system_message(msg);
                 }
             }
+            SessionAction::New => {
+                self.start_new_session("New session started.");
+            }
+            SessionAction::Fork => {
+                self.fork_session();
+            }
+            SessionAction::Rewind { turns } => {
+                self.rewind_turns(turns);
+            }
+            SessionAction::Continue => {
+                self.continue_last_session();
+            }
+        }
+    }
+
+    fn show_tools_list(&mut self) {
+        use crate::tools::ToolRegistry;
+        let registry = ToolRegistry::new();
+        let mut names: Vec<String> = registry
+            .tools()
+            .map(|def| {
+                let name = def.tool.name.as_str();
+                let desc = def.tool.description.lines().next().unwrap_or("").trim();
+                if desc.is_empty() {
+                    format!("- `{name}`")
+                } else {
+                    format!("- `{name}` — {desc}")
+                }
+            })
+            .collect();
+        names.sort();
+        let mut msg = String::from("## Built-in tools\n\n");
+        if names.is_empty() {
+            msg.push_str("*No tools registered*\n");
+        } else {
+            msg.push_str(&names.join("\n"));
+            msg.push('\n');
+        }
+        msg.push_str("\nMCP tools: `/mcp` · `/tools mcp` for status\n");
+        self.state.add_system_message(msg);
+    }
+
+    fn show_memory_status(&mut self) {
+        use crate::path_utils::maestro_home_dir;
+        let mut msg = String::from("## Memory\n\n");
+        if let Some(home) = maestro_home_dir() {
+            let memory_dir = home.join("memory");
+            msg.push_str(&format!("**Local dir:** `{}`\n", memory_dir.display()));
+            if memory_dir.is_dir() {
+                match std::fs::read_dir(&memory_dir) {
+                    Ok(entries) => {
+                        let mut files: Vec<String> = entries
+                            .flatten()
+                            .filter(|e| e.path().is_file())
+                            .map(|e| e.file_name().to_string_lossy().to_string())
+                            .collect();
+                        files.sort();
+                        if files.is_empty() {
+                            msg.push_str("*No local memory files yet.*\n");
+                        } else {
+                            msg.push_str(&format!("**Files ({}):**\n", files.len()));
+                            for f in files.iter().take(30) {
+                                msg.push_str(&format!("- `{f}`\n"));
+                            }
+                            if files.len() > 30 {
+                                msg.push_str(&format!("- …and {} more\n", files.len() - 30));
+                            }
+                        }
+                    }
+                    Err(err) => msg.push_str(&format!("Could not list memory dir: {err}\n")),
+                }
+            } else {
+                msg.push_str(
+                    "*Directory not created yet.* Local notes land here when memory writes are enabled.\n",
+                );
+            }
+        } else {
+            msg.push_str("*Could not resolve MAESTRO_HOME / ~/.maestro*\n");
+        }
+        if std::env::var("MAESTRO_SHARED_MEMORY_BASE").is_ok() {
+            msg.push_str(
+                "\n**Shared memory:** configured (`MAESTRO_SHARED_MEMORY_BASE`). Use `maestro memory` for sync.\n",
+            );
+        } else {
+            msg.push_str("\n**Shared memory:** not configured. Local-only status above.\n");
+        }
+        self.state.add_system_message(msg);
+    }
+
+    fn continue_last_session(&mut self) {
+        match self.session_manager.most_recent_session() {
+            Ok(Some(session)) => {
+                restore_visible_session_messages(&mut self.state, &session);
+                let session_id = session.header.id.clone();
+                self.state.session_id = Some(session_id.clone());
+                if let Err(err) = self
+                    .session_manager
+                    .resume_session_by_path(session_id.clone(), session.file_path.as_str())
+                {
+                    self.session_manager.reset_session();
+                    self.session_resume_failed = true;
+                    self.state.error = Some(format!("Failed to resume session writer: {err}"));
+                    return;
+                }
+                self.session_resume_failed = false;
+                self.hydrate_usage_from_session(&session);
+                use crate::ai::{Message as AiMessage, MessageContent, Role};
+                use crate::state::{MessageKind, MessageRole};
+                let agent_messages: Vec<AiMessage> = self
+                    .state
+                    .messages
+                    .iter()
+                    .filter(|m| m.kind == MessageKind::Regular)
+                    .filter_map(|m| match m.role {
+                        MessageRole::User => Some(AiMessage {
+                            role: Role::User,
+                            content: MessageContent::text(m.content.clone()),
+                        }),
+                        MessageRole::Assistant if m.is_assistant_reply() => Some(AiMessage {
+                            role: Role::Assistant,
+                            content: MessageContent::text(m.content.clone()),
+                        }),
+                        _ => None,
+                    })
+                    .collect();
+                if let Some(agent) = &self.native_agent {
+                    agent.replace_history(agent_messages);
+                }
+                self.state.status = Some(format!("Continued session {session_id}"));
+                self.state.add_system_message(format!(
+                    "Resumed most recent session `{session_id}` ({} messages).",
+                    self.state.messages.len()
+                ));
+            }
+            Ok(None) => {
+                self.state
+                    .status
+                    .replace("No previous session found for this workspace.".to_string());
+            }
+            Err(err) => {
+                self.state.error = Some(format!("Failed to load last session: {err}"));
+            }
+        }
+    }
+
+    fn start_new_session(&mut self, status: &str) {
+        self.state.messages.clear();
+        self.state.scroll_offset = 0;
+        self.session_manager.reset_session();
+        self.state.session_id = None;
+        self.session_started_at = SystemTime::now();
+        self.session_resume_failed = false;
+        self.usage_tracker = crate::usage::UsageTracker::new();
+        if !self.current_model.is_empty() {
+            self.usage_tracker.set_model(self.current_model.clone());
+        }
+        self.clear_active_skills();
+        if let Some(agent) = &self.native_agent {
+            agent.clear_history();
+        }
+        self.state.status = Some(status.to_string());
+        self.state.add_system_message(status.to_string());
+    }
+
+    fn fork_session(&mut self) {
+        use crate::session::BranchPoint;
+
+        let fork_index = self.state.messages.len().saturating_sub(1);
+        let fork_id = self
+            .state
+            .messages
+            .last()
+            .map(|m| m.id.clone())
+            .unwrap_or_else(|| "start".to_string());
+        let branch = BranchPoint::new(fork_id, fork_index).with_description("Forked via /fork");
+
+        // Detach writer so the next message starts a new session file, keeping transcript.
+        let parent_session = self.state.session_id.clone();
+        self.session_manager.reset_session();
+        self.state.session_id = None;
+        self.session_started_at = SystemTime::now();
+        self.session_resume_failed = false;
+
+        let msg = if let Some(parent) = parent_session {
+            format!(
+                "Forked from session {parent} at message {} (branch {}). Transcript kept; new session starts on next message.",
+                branch.fork_index + 1,
+                &branch.id[..8.min(branch.id.len())]
+            )
+        } else {
+            format!(
+                "Forked conversation at message {} (branch {}). Transcript kept; new session starts on next message.",
+                branch.fork_index + 1,
+                &branch.id[..8.min(branch.id.len())]
+            )
+        };
+        self.state.status = Some("Session forked.".to_string());
+        self.state.add_system_message(msg);
+    }
+
+    fn rewind_turns(&mut self, turns: usize) {
+        use crate::ai::{Message as AiMessage, MessageContent, Role};
+        use crate::state::{MessageKind, MessageRole};
+
+        // Drop the last `turns` user messages and everything after each.
+        let mut remaining = self.state.messages.clone();
+        let mut removed_users = 0usize;
+        while removed_users < turns {
+            let Some(user_idx) = remaining
+                .iter()
+                .rposition(|m| m.role == MessageRole::User && m.kind == MessageKind::Regular)
+            else {
+                break;
+            };
+            remaining.truncate(user_idx);
+            removed_users += 1;
+        }
+
+        if removed_users == 0 {
+            self.state.status = Some("Nothing to rewind.".to_string());
+            return;
+        }
+
+        self.state.messages = remaining;
+        self.state.scroll_offset = 0;
+
+        // Rebuild agent history from remaining regular user/assistant text.
+        let agent_messages: Vec<AiMessage> = self
+            .state
+            .messages
+            .iter()
+            .filter(|m| m.kind == MessageKind::Regular)
+            .filter_map(|m| match m.role {
+                MessageRole::User => Some(AiMessage {
+                    role: Role::User,
+                    content: MessageContent::text(m.content.clone()),
+                }),
+                MessageRole::Assistant if m.is_assistant_reply() => Some(AiMessage {
+                    role: Role::Assistant,
+                    content: MessageContent::text(m.content.clone()),
+                }),
+                _ => None,
+            })
+            .collect();
+
+        if let Some(agent) = &self.native_agent {
+            agent.replace_history(agent_messages);
+        }
+
+        let label = if removed_users == 1 {
+            "Rewound 1 turn.".to_string()
+        } else {
+            format!("Rewound {removed_users} turns.")
+        };
+        self.state.status = Some(label.clone());
+        self.state.add_system_message(label);
+    }
+
+    pub(super) fn cycle_interaction_mode(&mut self) {
+        let next = self.state.interaction_mode.next();
+        self.apply_interaction_mode(next);
+    }
+
+    fn apply_interaction_mode(&mut self, mode: crate::state::InteractionMode) {
+        self.state.interaction_mode = mode;
+        self.state.approval_mode = mode.approval_mode();
+        match mode {
+            crate::state::InteractionMode::Plan => {
+                self.apply_plan_mode(true);
+            }
+            crate::state::InteractionMode::Normal
+            | crate::state::InteractionMode::AlwaysApprove => {
+                // Leaving plan mode when cycling away.
+                crate::safety::set_plan_mode(false);
+                crate::safety::set_plan_satisfied(true);
+            }
+        }
+        self.state.status = Some(format!(
+            "Mode: {} (approvals: {})",
+            mode.label(),
+            self.state.approval_mode.label()
+        ));
+    }
+
+    fn apply_plan_mode(&mut self, enabled: bool) {
+        crate::safety::set_plan_mode(enabled);
+        if enabled {
+            self.state.interaction_mode = crate::state::InteractionMode::Plan;
+            if matches!(self.state.approval_mode, ApprovalMode::Yolo) {
+                self.state.approval_mode = ApprovalMode::Selective;
+            }
+            self.state.status = Some(
+                "Plan mode on — create a todo/plan before mutating tools. Shift+Tab to cycle modes."
+                    .to_string(),
+            );
+            self.state.add_system_message(
+                "Plan mode enabled. Mutating tools require a plan (todo) first.".to_string(),
+            );
+        } else {
+            if self.state.interaction_mode == crate::state::InteractionMode::Plan {
+                self.state.interaction_mode = crate::state::InteractionMode::Normal;
+            }
+            crate::safety::set_plan_satisfied(true);
+            self.state.status = Some("Plan mode off.".to_string());
         }
     }
 
@@ -899,7 +1213,7 @@ impl App {
             }
             A2aAction::Accept { code } => {
                 self.state.add_system_message(format!(
-                    "A2A pairing code captured ({} chars). Persist it with `/a2a accept <code>` in this TUI, or `maestro a2a accept <code>` from the CLI.",
+                    "A2A pairing code captured ({} chars). Run `maestro a2a accept <code>` or use the TypeScript TUI `/a2a accept <code>` to persist it in the shared registry.",
                     code.len()
                 ));
             }

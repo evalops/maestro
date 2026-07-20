@@ -83,6 +83,7 @@ pub(crate) mod path_utils;
 /// Headless mode communication protocol.
 /// JSON-based IPC protocol for communicating with the Node.js agent.
 pub mod headless;
+pub mod headless_server;
 
 /// Hosted runner contract primitives for Platform-managed Maestro runtimes.
 pub mod hosted_runner;
@@ -163,6 +164,8 @@ pub mod pager;
 /// Handles different color capability levels (16, 256, true color).
 pub mod palette;
 
+pub mod cli_commands;
+pub mod print_mode;
 /// Custom prompt templates.
 /// User-defined prompts with argument substitution.
 pub mod prompts;

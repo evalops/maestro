@@ -27,6 +27,12 @@ export type NativeTuiLaunchArgs = {
 	print?: boolean;
 	/** With print, emit JSONL. */
 	json?: boolean;
+	/** Write final assistant text to this path (exec parity). */
+	outputLastMessage?: string;
+	/** JSON Schema path or inline JSON for final answer validation. */
+	outputSchema?: string;
+	/** Native headless protocol server on stdio. */
+	headless?: boolean;
 	/** Trailing prompt tokens forwarded as positional args. */
 	messages?: string[];
 };
@@ -159,8 +165,8 @@ function buildNotFoundMessage(options?: {
 		`  ${npmInstall}`,
 		`  ${bunInstall}`,
 		"",
-		"The interactive UI is the native Rust binary (maestro-tui), not the old TypeScript TUI.",
-		"Non-interactive modes (exec, --headless, rpc, web) do not need this binary.",
+		"The agent UI and headless/print/exec paths are the native Rust binary (maestro-tui).",
+		"Only residual TS utilities (web, config, skill, …) run without this binary.",
 	].join("\n");
 }
 
@@ -276,11 +282,20 @@ export function buildNativeTuiCliArgs(parsed: NativeTuiLaunchArgs): string[] {
 	} else if (typeof parsed.worktree === "string") {
 		args.push("--worktree");
 	}
+	if (parsed.headless) {
+		args.push("--headless");
+	}
 	if (parsed.print) {
 		args.push("--print");
 	}
 	if (parsed.json) {
 		args.push("--json");
+	}
+	if (parsed.outputLastMessage) {
+		args.push("--output-last-message", parsed.outputLastMessage);
+	}
+	if (parsed.outputSchema) {
+		args.push("--output-schema", parsed.outputSchema);
 	}
 	if (parsed.messages && parsed.messages.length > 0) {
 		args.push(...parsed.messages);
@@ -351,15 +366,12 @@ export function launchNativeTui(
  * Grok-style default: trailing prompts open the interactive native TUI
  * (`maestro "fix the bug"` → maestro-tui with initial prompt).
  *
- * Still on TypeScript:
- * - subcommands (`exec`, `web`, `config`, …)
- * - headless / rpc protocol modes
- * - explicit single-shot scripting: `--mode text` or `--mode json`
- * - non-TTY stdout with prompts (pipes/scripts) unless MAESTRO_NATIVE_PROMPT=1
+ * Still on TypeScript: residual utility subcommands (`web`, `config`, `skill`, …).
+ * Agent paths (interactive, print/exec, headless/rpc) are native.
  */
 
 /**
- * Spawn maestro-tui with raw CLI tokens (sessions|cost|status|hooks|print|exec).
+ * Spawn maestro-tui with raw CLI tokens (sessions|cost|status|hooks|print|exec|headless).
  */
 export async function launchNativeCli(
 	tokens: string[],
@@ -437,18 +449,14 @@ export function shouldLaunchNativePrint(parsed: {
 	mode?: string;
 	headless?: boolean;
 	execJson?: boolean;
-	/** Block native print when complex exec features are requested. */
 	execOutputSchema?: string;
 	execOutputLast?: string;
 }): boolean {
 	if (parsed.headless || parsed.mode === "headless" || parsed.mode === "rpc") {
 		return false;
 	}
-	// maestro exec without schema/file capture → native print
+	// Full exec (incl. schema + output-last-message) is native.
 	if (parsed.command === "exec") {
-		if (parsed.execOutputSchema || parsed.execOutputLast) {
-			return false;
-		}
 		return parsed.messages.length > 0;
 	}
 	if (parsed.command !== undefined) {
@@ -469,12 +477,36 @@ export function shouldLaunchNativePrint(parsed: {
 	return false;
 }
 
+/**
+ * True when Maestro should hand off to the native headless protocol server.
+ * Replaces the TypeScript runHeadlessMode / runRpcMode agent bootstrap.
+ */
+export function shouldLaunchNativeHeadless(parsed: {
+	command?: string;
+	mode?: string;
+	headless?: boolean;
+}): boolean {
+	if (parsed.command !== undefined && parsed.command !== "headless") {
+		return false;
+	}
+	return (
+		Boolean(parsed.headless) ||
+		parsed.mode === "headless" ||
+		parsed.mode === "rpc" ||
+		parsed.command === "headless"
+	);
+}
+
 /** CLI helper subcommands implemented natively (no Node agent bootstrap). */
 export function isNativeCliHelperCommand(command?: string): boolean {
 	return (
 		command === "sessions" ||
 		command === "cost" ||
+		command === "stats" ||
+		command === "models" ||
 		command === "status" ||
-		command === "hooks"
+		command === "hooks" ||
+		command === "export" ||
+		command === "import"
 	);
 }

@@ -122,7 +122,7 @@ mod file_search;
 mod input;
 mod layout;
 mod message;
-mod model_selector;
+pub(crate) mod model_selector;
 mod rate_limit;
 mod scroll;
 mod session_switcher;
@@ -147,7 +147,7 @@ pub use message::{
     ChatInputWidget, ChatInputWidgetOptions, ChatView, MessageWidget, StatusBarWidget,
     ToolCallWidget,
 };
-pub use model_selector::ModelSelector;
+pub use model_selector::{available_models, ModelInfo, ModelSelector};
 pub use rate_limit::{
     format_duration_compact, format_elapsed, CreditsDisplay, RateLimitDisplay, RateLimitState,
     RateLimitTracker, RateLimitWindow,
