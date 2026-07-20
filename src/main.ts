@@ -1100,11 +1100,6 @@ export async function main(args: string[]) {
 		return;
 	}
 
-	if (parsed.command === "painter") {
-		const { handlePainterCommand } = await import("./cli/commands/painter.js");
-		await handlePainterCommand(parsed.subcommand, parsed.commandArgs ?? []);
-		return;
-	}
 	if (parsed.command === "cost") {
 		console.error(chalk.red(`Unknown cost subcommand: ${parsed.subcommand}`));
 		console.log(chalk.dim("\nAvailable commands:"));
