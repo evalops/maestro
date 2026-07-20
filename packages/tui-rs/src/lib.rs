@@ -169,6 +169,7 @@ pub mod pager;
 pub mod palette;
 
 pub mod cli_commands;
+pub mod init_cli;
 pub mod memory_cli;
 pub mod mode_cli;
 pub mod openai_cli;

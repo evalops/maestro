@@ -52,6 +52,7 @@ pub async fn run_cli_command(args: &[String]) -> Result<i32> {
         "update" => crate::update_cli::run_update(&args[1..]).await,
         "modes" => crate::mode_cli::run_modes(&args[1..]).await,
         "memory" => crate::memory_cli::run_memory(&args[1..]).await,
+        "init" => crate::init_cli::run_init(&args[1..]).await,
         "openai" => crate::openai_cli::run_openai(&args[1..]).await,
         "painter" => crate::painter_cli::run_painter(&args[1..]),
         "anthropic" => {

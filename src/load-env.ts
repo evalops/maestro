@@ -62,8 +62,8 @@ const DOTENV_SECURITY_OVERRIDE_KEYS = [
 	"MAESTRO_PLATFORM_BASE_URL",
 	"MAESTRO_EVALOPS_BASE_URL",
 	"EVALOPS_BASE_URL",
-	// EvalOps identity service URL: `bootstrapEvalOpsAgent()` and the OAuth
-	// flow honor these aliases before the stored/derived URL. A repo .env
+	// EvalOps identity service URL: native `maestro init` and the OAuth flow
+	// honor these aliases before the stored/derived URL. A repo .env
 	// could otherwise point identity at an attacker service and capture the
 	// user's OAuth bearer during agent bootstrap.
 	"MAESTRO_IDENTITY_URL",

@@ -11,8 +11,11 @@ export async function handleEvalOpsCommand(
 ): Promise<void> {
 	switch (subcommand) {
 		case "init": {
-			const { handleInitCommand } = await import("./init.js");
-			await handleInitCommand(args);
+			const { launchNativeCli } = await import("../native-tui-launcher.js");
+			const exitCode = await launchNativeCli(["init", ...args]);
+			if (exitCode !== 0) {
+				process.exitCode = exitCode;
+			}
 			return;
 		}
 		case "login":

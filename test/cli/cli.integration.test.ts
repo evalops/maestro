@@ -270,50 +270,6 @@ vi.mock("../../src/models/registry.js", () => ({
 		) ?? null,
 }));
 
-vi.mock("../../src/evalops/agent-bootstrap.js", async (importOriginal) => {
-	const actual =
-		await importOriginal<
-			typeof import("../../src/evalops/agent-bootstrap.js")
-		>();
-	return {
-		...actual,
-		bootstrapEvalOpsAgent: async (
-			_options: unknown,
-			deps?: { onStatus?: (status: { message: string }) => void },
-		) => {
-			deps?.onStatus?.({
-				message: "Registering Maestro with EvalOps agent MCP",
-			});
-			return {
-				agentId: "agent_json",
-				apiKeyCreated: true,
-				approvalPolicyAttached: true,
-				authenticatedAs: "json@example.com",
-				consoleUrl: "https://app.evalops.dev/overview?env=production",
-				endpoint: "https://app.evalops.dev/mcp",
-				evidenceEventPublished: true,
-				evidenceEvents: 1,
-				governedActionsLoaded: 17,
-				governedInferenceCheckRan: true,
-				integrationProfile: "managed_runtime",
-				keyPrefix: "pk_live_json",
-				memoryMode: "durable",
-				organizationId: "org_json",
-				registryVisible: true,
-				riskFindings: 0,
-				runId: "run_json",
-				runtimeOwner: "evalops",
-				scopesGranted: ["agent:register"],
-				sessionExpiresAt: "2026-05-06T13:00:00Z",
-				shimType: "sdk",
-				stored: true,
-				traceIngestionStarted: true,
-				traceMode: "otlp",
-			};
-		},
-	};
-});
-
 vi.mock("../../src/cli/native-tui-launcher.js", () => {
 	return {
 		buildNativeHostedRunnerArgs: (
@@ -836,35 +792,10 @@ describe("CLI integration", () => {
 		}
 	});
 
-	it("keeps maestro init --json stdout parseable", async () => {
-		const stdoutLines: string[] = [];
-		const stderrLines: string[] = [];
-		console.log = (...args: unknown[]) => {
-			stdoutLines.push(args.map((arg) => String(arg)).join(" "));
-		};
-		console.error = (...args: unknown[]) => {
-			stderrLines.push(args.map((arg) => String(arg)).join(" "));
-		};
-
-		await runMain(["init", "--json"]);
-
-		expect(stderrLines.join("\n")).toContain(
-			"Registering Maestro with EvalOps agent MCP",
-		);
-		expect(stdoutLines).toHaveLength(1);
-		const parsed = JSON.parse(stdoutLines[0] ?? "{}") as Record<
-			string,
-			unknown
-		>;
-		expect(parsed).toMatchObject({
-			agentId: "agent_json",
-			integrationProfile: "managed_runtime",
-			memoryMode: "durable",
-			organizationId: "org_json",
-			runtimeOwner: "evalops",
-			traceMode: "otlp",
-		});
-		expect(stdoutLines.join("\n")).not.toContain("Loaded configuration");
+	it("routes the evalops init compatibility alias to native init", async () => {
+		const code = await runMain(["evalops", "init", "--json"]);
+		expect(code).toBe(0);
+		expect(launchNativeCli).toHaveBeenLastCalledWith(["init", "--json"]);
 	});
 
 	it("delegates custom agents init targets to the native CLI", async () => {
