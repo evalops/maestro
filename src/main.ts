@@ -103,6 +103,7 @@ import {
 } from "./checkpoints/index.js";
 import { type Mode, parseArgs } from "./cli/args.js";
 import { EXEC_SESSION_SUMMARY_PREFIX } from "./cli/commands/exec-constants.js";
+import { isNativeUtilityCommand } from "./cli/direct-runtime-command.js";
 import {
 	isHeadlessModeRequested,
 	recordHeadlessRuntimeSelection,
@@ -668,6 +669,14 @@ export async function main(args: string[]) {
 		);
 	}
 
+	if (isNativeUtilityCommand(parsed.command)) {
+		// Direct dispatch intentionally falls back here when startup telemetry is
+		// configured. Preserve that contract without bootstrapping the TS agent.
+		startObservability(process.env);
+		await waitForStartupTelemetryForImmediateExit(startupTelemetry);
+		process.exit(await launchNativeCli(args));
+	}
+
 	// Handle `maestro web` early exit (start the bundled web server + UI).
 	if (parsed.command === "web") {
 		if (parsed.messages.length > 0) {
@@ -704,11 +713,6 @@ export async function main(args: string[]) {
 		const { handleInitCommand } = await import("./cli/commands/init.js");
 		await handleInitCommand(parsed.commandArgs ?? []);
 		return;
-	}
-
-	if (parsed.command === "status") {
-		await waitForStartupTelemetryForImmediateExit(startupTelemetry);
-		process.exit(await launchNativeCli(["status"]));
 	}
 
 	if (parsed.command === "mission") {
@@ -1102,43 +1106,12 @@ export async function main(args: string[]) {
 		return;
 	}
 
-	if (parsed.command === "hooks") {
-		await waitForStartupTelemetryForImmediateExit(startupTelemetry);
-		process.exit(
-			await launchNativeCli(["hooks", parsed.subcommand ?? "status"]),
-		);
-	}
-
 	if (parsed.command === "run") {
 		const { handleRunCommand } = await import("./cli/commands/run.js");
 		await handleRunCommand(parsed.subcommand, parsed.messages, {
 			json: parsed.execJson,
 		});
 		return;
-	}
-
-	if (parsed.command === "sessions") {
-		const sub = parsed.subcommand ?? "list";
-		const tokens = ["sessions", sub, ...parsed.messages];
-		if (parsed.exportFormat) {
-			tokens.push("--format", parsed.exportFormat);
-		}
-		await waitForStartupTelemetryForImmediateExit(startupTelemetry);
-		process.exit(await launchNativeCli(tokens));
-	}
-
-	if (parsed.command === "export") {
-		const tokens = ["export", ...parsed.messages];
-		if (parsed.exportFormat) {
-			tokens.push("--format", parsed.exportFormat);
-		}
-		await waitForStartupTelemetryForImmediateExit(startupTelemetry);
-		process.exit(await launchNativeCli(tokens));
-	}
-
-	if (parsed.command === "import") {
-		await waitForStartupTelemetryForImmediateExit(startupTelemetry);
-		process.exit(await launchNativeCli(["import", ...parsed.messages]));
 	}
 
 	if (parsed.command === "memory") {
@@ -1175,27 +1148,12 @@ export async function main(args: string[]) {
 		return;
 	}
 
-	// Handle cost commands
 	if (parsed.command === "painter") {
 		const { handlePainterCommand } = await import("./cli/commands/painter.js");
 		await handlePainterCommand(parsed.subcommand, parsed.commandArgs ?? []);
 		return;
 	}
 	if (parsed.command === "cost") {
-		const sub = parsed.subcommand ?? "today";
-		if (
-			sub === "today" ||
-			sub === "yesterday" ||
-			sub === "week" ||
-			sub === "month" ||
-			sub === "all" ||
-			sub === "clear" ||
-			sub === "breakdown" ||
-			sub === undefined
-		) {
-			await waitForStartupTelemetryForImmediateExit(startupTelemetry);
-			process.exit(await launchNativeCli(["cost", sub]));
-		}
 		console.error(chalk.red(`Unknown cost subcommand: ${parsed.subcommand}`));
 		console.log(chalk.dim("\nAvailable commands:"));
 		console.log(
@@ -1210,24 +1168,6 @@ export async function main(args: string[]) {
 		console.log(chalk.dim("  maestro cost breakdown   - Detailed breakdown"));
 		console.log(chalk.dim("  maestro cost clear       - Clear usage data"));
 		process.exit(1);
-	}
-
-	if (parsed.command === "stats") {
-		const tokens = ["stats"];
-		if (parsed.subcommand) {
-			tokens.push(parsed.subcommand);
-		}
-		if (parsed.exportFormat) {
-			tokens.push("--format", parsed.exportFormat);
-		}
-		if (parsed.execJson) {
-			tokens.push("--json");
-		}
-		if (parsed.session) {
-			tokens.push("--session", parsed.session);
-		}
-		await waitForStartupTelemetryForImmediateExit(startupTelemetry);
-		process.exit(await launchNativeCli(tokens));
 	}
 
 	if (parsed.command === "value") {
@@ -1271,19 +1211,6 @@ export async function main(args: string[]) {
 				);
 				process.exit(1);
 		}
-	}
-
-	// Handle models commands (native catalog)
-	if (parsed.command === "models") {
-		const tokens = ["models"];
-		if (parsed.subcommand) {
-			tokens.push(parsed.subcommand);
-		}
-		if (parsed.provider) {
-			tokens.push("--provider", parsed.provider);
-		}
-		await waitForStartupTelemetryForImmediateExit(startupTelemetry);
-		process.exit(await launchNativeCli(tokens));
 	}
 
 	// ─────────────────────────────────────────────────────────────────────────────
