@@ -1216,6 +1216,65 @@ describe("ci workflow guardrails", () => {
 		expect(script).toContain("getBunCommand");
 		expect(script).toContain("runNpmInstallSmoke();");
 		expect(script).toContain("runBunInstallSmoke();");
+
+		const smokeUtils = readFileSync(
+			new URL("../../scripts/install-smoke-utils.js", import.meta.url),
+			{ encoding: "utf8" },
+		);
+		expect(smokeUtils).toContain('["openai", "status"]');
+		expect(smokeUtils).toContain("buildNativeInstallSmokeEnv");
+		expect(smokeUtils).toContain("delete env.MAESTRO_TUI_BIN");
+		expect(smokeUtils).toContain('["/usr/bin", "/bin"]');
+		expect(smokeUtils).toContain("MAESTRO_HOME:");
+		expect(script).toContain("MAESTRO_REQUIRE_PACKAGED_TUI");
+	});
+
+	it("builds every packaged Rust TUI target on Blacksmith", () => {
+		const workflowPath = new URL(
+			"../../.github/workflows/release.yml",
+			import.meta.url,
+		);
+		const workflow = readFileSync(workflowPath, { encoding: "utf8" });
+		const parsedWorkflow = parse(workflow) as Workflow;
+		if (
+			isPublicValidationWorkflow(parsedWorkflow) &&
+			!workflow.includes("release-tui-binaries:")
+		) {
+			// The public-owned publishing workflow lands in its downstream PR after
+			// the internal source change; mirror validation must permit that ordering.
+			return;
+		}
+
+		for (const runner of [
+			"blacksmith-6vcpu-macos-15",
+			"blacksmith-4vcpu-ubuntu-2404",
+			"blacksmith-4vcpu-ubuntu-2404-arm",
+		]) {
+			expect(workflow).toContain(runner);
+		}
+		expect(workflow).toContain("release-tui-binaries:");
+		expect(workflow).toContain(
+			"build --release --locked --bin maestro-tui --target",
+		);
+		expect(workflow).toContain('strip -x "$dest"');
+		expect(workflow).toContain('strip "$dest"');
+		// Standalone bun binary smoke must resolve native maestro-tui.
+		expect(workflow).toContain(
+			'export MAESTRO_TUI_BIN="$PWD/packages/tui-rs/target/release/maestro-tui"',
+		);
+		expect(workflow).toContain("smoke-release-binary.mjs");
+		// Isolated rust for smoke must not precede build:all (breaks rustfmt contracts).
+		const releaseBinariesSection = workflow.slice(
+			workflow.indexOf("release-binaries:"),
+			workflow.indexOf("\n  notify:"),
+		);
+		const buildAllAt = releaseBinariesSection.indexOf("npm run build:all");
+		const setupRustAt = releaseBinariesSection.indexOf(
+			"./.github/actions/setup-rust",
+		);
+		expect(buildAllAt).toBeGreaterThan(-1);
+		expect(setupRustAt).toBeGreaterThan(buildAllAt);
+		expect(releaseBinariesSection).toContain("components: rustfmt");
 	});
 
 	it("runs published replay E2E for npm and Bun registry installs", () => {

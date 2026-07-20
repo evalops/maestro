@@ -856,8 +856,22 @@ Always use tools when they would be helpful. Be concise and direct in your respo
     ///
     /// Exit code for the process (0 = success, non-zero = error).
     pub async fn run(mut self) -> Result<i32> {
-        // Load workspace files for @ mentions in the input.
-        self.load_workspace_files();
+        // Paint the chrome immediately. Workspace file indexing used to run
+        // *before* the first frame and blocked on `rg --files --follow` of the
+        // entire cwd (often `$HOME`), so typing `maestro` looked hung/broken.
+        self.render()?;
+
+        // Index @-mention files with a bounded, killable scan (see workspace.rs).
+        // Kick it off on a background thread so agent spawn is not gated on it.
+        let (workspace_tx, workspace_rx) = std::sync::mpsc::channel();
+        std::thread::Builder::new()
+            .name("maestro-workspace-scan".into())
+            .spawn(move || {
+                let cwd = std::env::current_dir().unwrap_or_default();
+                let files = get_workspace_files(&cwd, 10_000);
+                let _ = workspace_tx.send(files);
+            })
+            .ok();
 
         // Spawn the agent (async operation).
         // This creates the channels and starts the agent task.
@@ -869,7 +883,22 @@ Always use tools when they would be helpful. Be concise and direct in your respo
         }
 
         // Main event loop - runs until should_quit is set to true.
+        let mut workspace_rx = Some(workspace_rx);
         loop {
+            // Apply workspace scan results as soon as they arrive (non-blocking).
+            if let Some(rx) = workspace_rx.as_ref() {
+                match rx.try_recv() {
+                    Ok(files) => {
+                        self.file_search.set_files(files);
+                        workspace_rx = None;
+                    }
+                    Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                        workspace_rx = None;
+                    }
+                    Err(std::sync::mpsc::TryRecvError::Empty) => {}
+                }
+            }
+
             // Render the UI to the terminal.
             // This is a sync operation that writes to stdout.
             self.render()?;
