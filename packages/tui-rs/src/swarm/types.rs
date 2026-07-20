@@ -342,6 +342,10 @@ impl SwarmPlan {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum AgentMode {
+    Low,
+    Medium,
+    High,
+    Ultra,
     Smart,
     Rush,
     Free,
@@ -455,7 +459,7 @@ impl SubagentDispatchRule {
     }
 }
 
-fn model_for_tier(tier: ModelTier, provider: ModelProvider) -> &'static str {
+pub fn model_for_tier(tier: ModelTier, provider: ModelProvider) -> &'static str {
     match (tier, provider) {
         (ModelTier::Opus, ModelProvider::Anthropic) => "claude-opus-4-6",
         (ModelTier::Opus, ModelProvider::OpenAi) => "gpt-5.2",
@@ -474,17 +478,24 @@ fn model_for_tier(tier: ModelTier, provider: ModelProvider) -> &'static str {
 
 fn mode_primary_tier(mode: AgentMode) -> ModelTier {
     match mode {
-        AgentMode::Smart | AgentMode::Frontier => ModelTier::Opus,
+        AgentMode::Low | AgentMode::Free | AgentMode::Replay => ModelTier::Haiku,
+        AgentMode::Medium
+        | AgentMode::High
+        | AgentMode::Ultra
+        | AgentMode::Smart
+        | AgentMode::Frontier => ModelTier::Opus,
         AgentMode::Rush | AgentMode::Custom => ModelTier::Sonnet,
-        AgentMode::Free | AgentMode::Replay => ModelTier::Haiku,
     }
 }
 
 fn mode_reasoning_effort(mode: AgentMode) -> ReasoningEffort {
     match mode {
-        AgentMode::Smart | AgentMode::Custom => ReasoningEffort::Medium,
+        AgentMode::Medium | AgentMode::Smart | AgentMode::Custom => ReasoningEffort::Medium,
+        AgentMode::High | AgentMode::Ultra => ReasoningEffort::XHigh,
         AgentMode::Frontier => ReasoningEffort::High,
-        AgentMode::Rush | AgentMode::Free | AgentMode::Replay => ReasoningEffort::Low,
+        AgentMode::Low | AgentMode::Rush | AgentMode::Free | AgentMode::Replay => {
+            ReasoningEffort::Low
+        }
     }
 }
 
@@ -551,7 +562,11 @@ fn subagent_dispatch_rule(
             }
             SubagentType::TestRunner | SubagentType::Custom => return None,
         },
-        AgentMode::Custom => return None,
+        AgentMode::Low
+        | AgentMode::Medium
+        | AgentMode::High
+        | AgentMode::Ultra
+        | AgentMode::Custom => return None,
     };
 
     Some(rule)

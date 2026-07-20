@@ -46,8 +46,9 @@ use maestro_tui::hosted_runner_cli::run_hosted_runner_cli_from_env;
 // HELPER FUNCTIONS
 // ─────────────────────────────────────────────────────────────────────────────
 
-const NATIVE_UTILITY_COMMANDS: [&str; 10] = [
-    "sessions", "cost", "stats", "models", "status", "hooks", "export", "import", "update", "skill",
+const NATIVE_UTILITY_COMMANDS: [&str; 11] = [
+    "sessions", "cost", "stats", "models", "status", "hooks", "export", "import", "update",
+    "skill", "modes",
 ];
 
 const GLOBAL_FLAGS_WITH_VALUES: [&str; 20] = [
@@ -831,6 +832,32 @@ mod tests {
             Some(vec![
                 "models".into(),
                 "providers".into(),
+                "--provider".into(),
+                "openai".into(),
+            ])
+        );
+    }
+
+    #[test]
+    fn native_utility_tokens_dispatch_modes_with_provider() {
+        let args = [
+            "--provider",
+            "openai",
+            "modes",
+            "describe",
+            "high",
+            "--json",
+        ]
+        .into_iter()
+        .map(std::ffi::OsString::from)
+        .collect::<Vec<_>>();
+        assert_eq!(
+            native_utility_tokens(&args),
+            Some(vec![
+                "modes".into(),
+                "describe".into(),
+                "high".into(),
+                "--json".into(),
                 "--provider".into(),
                 "openai".into(),
             ])

@@ -167,6 +167,7 @@ pub mod pager;
 pub mod palette;
 
 pub mod cli_commands;
+pub mod mode_cli;
 pub mod print_mode;
 /// Custom prompt templates.
 /// User-defined prompts with argument substitution.

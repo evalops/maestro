@@ -845,50 +845,6 @@ describe("CLI integration", () => {
 		expect(output.some((line) => /anthropic/i.test(line))).toBe(true);
 	});
 
-	it("prints resolved mode subagent dispatch tables", async () => {
-		await runMain(["modes", "describe", "smart"]);
-		const combined = output.join("\n");
-		expect(combined).toContain("Mode: Smart (smart)");
-		expect(combined).toContain("Subagent dispatch (provider: openai-codex)");
-		expect(combined).toContain("coder");
-		expect(combined).toContain("openai-codex");
-		expect(combined).toContain("gpt-5.5");
-	});
-
-	it("prints mode dispatch descriptions as JSON", async () => {
-		await runMain([
-			"modes",
-			"describe",
-			"frontier",
-			"--provider",
-			"openai",
-			"--json",
-		]);
-		const parsed = JSON.parse(output.join("\n")) as {
-			mode: string;
-			primary: { provider: string; model: string };
-			subagents: Array<{
-				type: string;
-				provider: string;
-				model: string;
-				source: string;
-			}>;
-		};
-		expect(parsed.mode).toBe("frontier");
-		expect(parsed.primary).toMatchObject({
-			provider: "openai",
-			model: "gpt-5.2",
-		});
-		expect(parsed.subagents).toContainEqual(
-			expect.objectContaining({
-				type: "coder",
-				provider: "openai-codex",
-				model: "gpt-5.5",
-				source: "mode",
-			}),
-		);
-	});
-
 	it("keeps maestro init --json stdout parseable", async () => {
 		const stdoutLines: string[] = [];
 		const stderrLines: string[] = [];

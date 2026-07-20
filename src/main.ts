@@ -254,18 +254,6 @@ async function captureStartupError(error: unknown): Promise<void> {
 	}
 }
 
-async function printAllAgentModes(): Promise<void> {
-	const { getAllModes, getModelForMode } = await import("./agent/modes.js");
-	const lines = ["Agent modes:", ""];
-	for (const { mode, config } of getAllModes({ includeHidden: true })) {
-		const hiddenSuffix = config.visible === false ? " [hidden]" : "";
-		lines.push(`${mode}${hiddenSuffix}`);
-		lines.push(`  ${config.description}`);
-		lines.push(`  model: ${getModelForMode(mode)}`);
-	}
-	console.log(lines.join("\n"));
-}
-
 function shouldRegisterBackgroundTaskShutdownHooks(
 	command: ReturnType<typeof parseArgs>["command"],
 	parsedTools: readonly string[] | undefined,
@@ -566,37 +554,20 @@ export async function main(args: string[]) {
 	}
 
 	if (parsed.listModesAll) {
-		const hiddenFlagTelemetry = recordStagedRolloutSurfaceUsageLazy(
-			"hidden_flag_used",
-			{
-				surfaceId: "cli:--list-modes-all",
-				surfaceType: "cli_flag",
-				owner: "agent-runtime",
-			},
-		);
-		await printAllAgentModes();
-		await waitForStartupTelemetryForImmediateExit(
-			Promise.all([startupTelemetry, hiddenFlagTelemetry]).then(
-				() => undefined,
-			),
-		);
-		process.exit(0);
+		const { launchNativeCli } = await import("./cli/native-tui-launcher.js");
+		const exitCode = await launchNativeCli([
+			"modes",
+			"list",
+			"--list-modes-all",
+		]);
+		await waitForStartupTelemetryForImmediateExit(startupTelemetry);
+		process.exit(exitCode);
 	}
 
 	if (parsed.error) {
 		console.error(chalk.red(parsed.error));
 		await waitForStartupTelemetryForImmediateExit(startupTelemetry);
 		process.exit(1);
-	}
-
-	if (parsed.command === "modes") {
-		const { handleModesCommand } = await import("./cli/commands/modes.js");
-		await handleModesCommand(parsed.subcommand, parsed.messages, {
-			provider: parsed.provider,
-			json: parsed.execJson,
-		});
-		await waitForStartupTelemetryForImmediateExit(startupTelemetry);
-		return;
 	}
 
 	const isHeadlessMode = isHeadlessModeRequested(parsed);

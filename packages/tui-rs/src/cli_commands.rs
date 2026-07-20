@@ -1,6 +1,6 @@
-//! Lightweight non-agent CLI helpers (sessions, cost, status, hooks).
+//! Lightweight non-agent CLI helpers (sessions, cost, modes, status, hooks).
 //!
-//! These replace TypeScript `maestro cost|sessions|status|hooks` entrypoints
+//! These replace TypeScript `maestro cost|sessions|modes|status|hooks` entrypoints
 //! so the Node agent bootstrap is not required.
 
 use std::collections::BTreeMap;
@@ -47,6 +47,7 @@ pub async fn run_cli_command(args: &[String]) -> Result<i32> {
         "import" => run_sessions_import(&args[1..]),
         "skill" => crate::skill_cli::run_skill(&args[1..]).await,
         "update" => crate::update_cli::run_update(&args[1..]).await,
+        "modes" => crate::mode_cli::run_modes(&args[1..]).await,
         other => bail!("unknown command: {other}"),
     }
 }
