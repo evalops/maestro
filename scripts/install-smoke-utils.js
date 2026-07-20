@@ -165,19 +165,28 @@ export function runInstalledCliSmoke(
 	cwd,
 	{ cliCommand, expectedVersion, label },
 ) {
-	const command = installedBinPath(cwd, cliCommand);
-	runCliSmoke(command, [], cwd, {
+	runCliSmoke(installedBinPath(cwd, cliCommand), [], cwd, {
 		cliCommand,
 		expectedVersion,
 		label,
 	});
+}
 
+export function runInstalledNativeCliSmoke(cwd, { cliCommand }) {
+	const command = installedBinPath(cwd, cliCommand);
+	const isolatedMaestroHome = join(cwd, ".maestro-native-smoke");
 	// --version and --help are handled by the JavaScript launcher itself. Exercise
 	// a native-only command so release smokes also prove the packaged Rust runtime
-	// can be resolved and launched from a clean install.
+	// can be resolved and launched from a clean install. Isolate credential paths
+	// so a local smoke can never read, refresh, or remove a developer's login.
 	execFileSync(command, ["openai", "status"], {
 		cwd,
 		stdio: "ignore",
+		env: {
+			...process.env,
+			MAESTRO_HOME: isolatedMaestroHome,
+			OPENAI_OAUTH_FILE: join(isolatedMaestroHome, "openai-oauth.json"),
+		},
 	});
 }
 

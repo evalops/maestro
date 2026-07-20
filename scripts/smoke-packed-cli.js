@@ -14,6 +14,7 @@ import {
 	runBunRuntimeCliSmoke,
 	runBunxCliSmoke,
 	runInstalledCliSmoke,
+	runInstalledNativeCliSmoke,
 	runInstalledPackageAudit,
 } from "./install-smoke-utils.js";
 import { getPackageMetadata } from "./package-metadata.js";
@@ -90,6 +91,9 @@ function runNpmInstallSmoke() {
 			expectedVersion: version,
 			label: "npm-installed packed CLI",
 		});
+		if (process.env.MAESTRO_REQUIRE_PACKAGED_TUI === "1") {
+			runInstalledNativeCliSmoke(tempDir, { cliCommand });
+		}
 
 		console.log(
 			`Smoke-tested ${cliCommand} from ${tarballPath} with npm (${tarballSizeBytes} bytes).`,
@@ -121,6 +125,9 @@ function runBunInstallSmoke() {
 			expectedVersion: version,
 			label: "Bun-installed packed CLI",
 		});
+		if (process.env.MAESTRO_REQUIRE_PACKAGED_TUI === "1") {
+			runInstalledNativeCliSmoke(tempDir, { cliCommand });
+		}
 		runBunxCliSmoke(tempDir, {
 			cliCommand,
 			expectedVersion: version,

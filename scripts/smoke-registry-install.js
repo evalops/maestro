@@ -14,6 +14,7 @@ import {
 	runBunxCliSmoke,
 	runBunRuntimeCliSmoke,
 	runInstalledCliSmoke,
+	runInstalledNativeCliSmoke,
 	runInstalledPackageAudit,
 	runNpxCliSmoke,
 } from "./install-smoke-utils.js";
@@ -227,6 +228,7 @@ async function main() {
 			expectedVersion: version,
 			label: "npm-installed registry CLI",
 		});
+		runInstalledNativeCliSmoke(tempDir, { cliCommand });
 		runNpxCliSmoke(tempDir, {
 			cliCommand,
 			expectedVersion: version,
@@ -270,6 +272,7 @@ async function main() {
 			expectedVersion: version,
 			label: "Bun-installed registry CLI",
 		});
+		runInstalledNativeCliSmoke(bunTempDir, { cliCommand });
 		runBunxCliSmoke(bunTempDir, {
 			cliCommand,
 			expectedVersion: version,
