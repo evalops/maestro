@@ -145,6 +145,9 @@
     "MAESTRO_HEADLESS_MAX_ATTACHMENT_BYTES",
     "MAESTRO_HEADLESS_MAX_TEXT_CHARS"
   ],
+  "src/cli/native-tui-launcher.ts": [
+    "MAESTRO_NATIVE_PROMPT"
+  ],
   "src/config/constants.ts": [
     "CODING_AGENT_DIR",
     "MAESTRO_AGENT_DIR",
@@ -277,11 +280,11 @@
     "MAESTRO_LSP_ROOT_TIMEOUT_MS"
   ],
   "src/main.ts": [
+    "MAESTRO_ALLOW_TS_AGENT",
     "MAESTRO_MODE",
     "MAESTRO_MODELS_FILE",
     "MAESTRO_PROFILE",
     "MAESTRO_SAFE_MODE",
-    "MAESTRO_SANDBOX_MODE",
     "MAESTRO_SCENARIO_ID",
     "MAESTRO_SCENARIO_PATH",
     "NODE_ENV",
@@ -550,6 +553,11 @@
   "src/server/handlers/sessions.ts": [
     "MAESTRO_STRICT_SESSION_ACCESS"
   ],
+  "src/server/headless-runtime/broker.ts": [
+    "MAESTRO_HEADLESS_RUNTIME_EVENT_BUFFER",
+    "MAESTRO_HEADLESS_SUBSCRIBER_QUEUE",
+    "MAESTRO_HEADLESS_SUBSCRIPTION_IDLE_MS"
+  ],
   "src/server/headless-runtime-service.ts": [
     "EVALOPS_NATS_URL",
     "EVALOPS_ORGANIZATION_ID",
@@ -564,11 +572,6 @@
     "MAESTRO_HEADLESS_RUNTIME_IDLE_MS",
     "MAESTRO_HEADLESS_RUNTIME_MAX_CLEANUP_FAILURES",
     "NATS_URL"
-  ],
-  "src/server/headless-runtime/broker.ts": [
-    "MAESTRO_HEADLESS_RUNTIME_EVENT_BUFFER",
-    "MAESTRO_HEADLESS_SUBSCRIBER_QUEUE",
-    "MAESTRO_HEADLESS_SUBSCRIPTION_IDLE_MS"
   ],
   "src/server/logger.ts": [
     "MAESTRO_LOAD_SHEDDING_THRESHOLD_MS",
@@ -633,24 +636,11 @@
   "src/skills/loader.ts": [
     "MAESTRO_SYSTEM_SKILLS_DIR"
   ],
-  "src/skills/tool.ts": [
-    "MAESTRO_SKILL_TRUST_STRICT"
-  ],
   "src/style/theme.ts": [
     "FORCE_COLOR",
     "MAESTRO_FORCE_COLOR",
     "MAESTRO_NO_COLOR",
     "NO_COLOR"
-  ],
-  "src/telemetry.ts": [
-    "MAESTRO_TELEMETRY",
-    "MAESTRO_TELEMETRY_ENDPOINT",
-    "MAESTRO_TELEMETRY_FILE",
-    "MAESTRO_TELEMETRY_SAMPLE",
-    "PLAYWRIGHT_TELEMETRY",
-    "PLAYWRIGHT_TELEMETRY_ENDPOINT",
-    "PLAYWRIGHT_TELEMETRY_FILE",
-    "PLAYWRIGHT_TELEMETRY_SAMPLE"
   ],
   "src/telemetry/maestro-event-bus.ts": [
     "npm_package_version"
