@@ -1,5 +1,4 @@
 import {
-	copyFileSync,
 	existsSync,
 	mkdirSync,
 	mkdtempSync,
@@ -482,44 +481,17 @@ vi.mock("../../src/cli/native-tui-launcher.js", () => {
 				return 0;
 			}
 			if (cmd === "export") {
-				const { handleExportCommand } = await import(
-					"../../src/cli/commands/session-transfer.js"
-				);
-				const formatIdx = rest.indexOf("--format");
-				const format = formatIdx >= 0 ? rest[formatIdx + 1] : undefined;
-				const redact = rest.includes("--redact-secrets");
-				const args = rest.filter(
-					(t, i) =>
-						t !== "--format" &&
-						t !== "--redact-secrets" &&
-						!(formatIdx >= 0 && i === formatIdx + 1),
-				);
-				await handleExportCommand(args[0], args[1], format, {
-					redactSecrets: redact,
-				});
+				console.log("native export ok");
 				return 0;
 			}
 			if (cmd === "import") {
-				const { handleImportCommand } = await import(
-					"../../src/cli/commands/session-transfer.js"
-				);
-				await handleImportCommand(rest[0]);
+				console.log("native import ok");
 				return 0;
 			}
 			if (cmd === "sessions") {
 				const sub = rest[0] ?? "list";
-				if (sub === "export") {
-					const { handleExportCommand } = await import(
-						"../../src/cli/commands/session-transfer.js"
-					);
-					await handleExportCommand(rest[1], rest[2]);
-					return 0;
-				}
-				if (sub === "import") {
-					const { handleImportCommand } = await import(
-						"../../src/cli/commands/session-transfer.js"
-					);
-					await handleImportCommand(rest[1]);
+				if (sub === "export" || sub === "import") {
+					console.log(`native sessions ${sub} ok`);
 					return 0;
 				}
 				console.log("No sessions found");
@@ -923,138 +895,6 @@ describe("CLI integration", () => {
 			target,
 			"--force",
 		]);
-	});
-
-	it("exports a saved session as portable jsonl", async () => {
-		const sessionId = await seedSession("hello");
-		const sessionManager = new SessionManager(false);
-		const [session] = await sessionManager.listSessions();
-		expect(session?.id ?? sessionId).toBeTruthy();
-		expect(session).toBeDefined();
-
-		const outputPath = join(tempAgentDir, "portable-session.jsonl");
-		output = [];
-
-		await runMain(["export", session!.id, outputPath, "--format", "jsonl"]);
-
-		expect(existsSync(outputPath)).toBe(true);
-		expect(readFileSync(outputPath, "utf8")).toContain('"type":"session"');
-		expect(output.join("\n")).toContain(`Exported session ${session!.id}`);
-	});
-
-	it.skip("exports a saved session as portable json with secret redaction (TS agent path removed; native maestro-tui owns this)", async () => {
-		const sessionId = await seedSession(
-			"apiKey=sk-ant-abcdefghijklmnopqrstuvwxyz123456",
-		);
-		const sessionManager = new SessionManager(false);
-		const [session] = await sessionManager.listSessions();
-		expect(session).toBeDefined();
-
-		const outputPath = join(tempAgentDir, "portable-session.json");
-		output = [];
-
-		await runMain([
-			"export",
-			session!.id,
-			outputPath,
-			"--format",
-			"json",
-			"--redact-secrets",
-		]);
-
-		expect(existsSync(outputPath)).toBe(true);
-		const exported = JSON.parse(readFileSync(outputPath, "utf8")) as {
-			format: string;
-			entries: Array<unknown>;
-		};
-		const serialized = JSON.stringify(exported);
-		expect(exported.format).toBe("maestro-session-export.v1");
-		expect(serialized).not.toContain("sk-ant-abcdefghijklmnopqrstuvwxyz123456");
-		expect(serialized).toContain("[REDACTED:api_key:");
-	});
-
-	it("imports a portable jsonl session log", async () => {
-		const sessionId = await seedSession("hello");
-		const sessionManager = new SessionManager(false);
-		const [session] = await sessionManager.listSessions();
-		expect(session?.id ?? sessionId).toBeTruthy();
-		expect(session).toBeDefined();
-		const sessionFile = sessionManager.getSessionFileById(session!.id);
-		expect(sessionFile).toBeTruthy();
-
-		const portablePath = join(tempAgentDir, "portable-import.jsonl");
-		copyFileSync(sessionFile!, portablePath);
-		output = [];
-
-		await runMain(["import", portablePath]);
-
-		const importedSessions = await new SessionManager(false).listSessions();
-		expect(importedSessions.length).toBeGreaterThan(1);
-		expect(output.join("\n")).toContain("Imported session");
-	});
-
-	it("imports a portable json session export", async () => {
-		const sessionId = await seedSession("hello");
-		const sessionManager = new SessionManager(false);
-		const [session] = await sessionManager.listSessions();
-		expect(session?.id ?? sessionId).toBeTruthy();
-		expect(session).toBeDefined();
-		const sessionFile = sessionManager.getSessionFileById(session!.id);
-		expect(sessionFile).toBeTruthy();
-
-		const portablePath = join(tempAgentDir, "portable-import.json");
-		const entries = readFileSync(sessionFile!, "utf8")
-			.trim()
-			.split("\n")
-			.filter(Boolean)
-			.map((line) => JSON.parse(line));
-		writeFileSync(
-			portablePath,
-			JSON.stringify({
-				format: "maestro-session-export.v1",
-				exportedAt: new Date().toISOString(),
-				entries,
-			}),
-			"utf8",
-		);
-		output = [];
-
-		await runMain(["import", portablePath]);
-
-		const importedSessions = await new SessionManager(false).listSessions();
-		expect(importedSessions.length).toBeGreaterThan(1);
-		expect(output.join("\n")).toContain("Imported session");
-	}, 60_000);
-
-	it.skip("exports and imports portable json bundles with branched sessions (TS agent path removed; native maestro-tui owns this)", async () => {
-		const sessionId = await seedSession("hello");
-		const sessionManager = new SessionManager(false);
-		const [session] = await sessionManager.listSessions();
-		expect(session?.id ?? sessionId).toBeTruthy();
-		expect(session).toBeDefined();
-		const sessionFile = sessionManager.getSessionFileById(session!.id);
-		expect(sessionFile).toBeTruthy();
-
-		const branchManager = new SessionManager(false, sessionFile!);
-		const branchLeafId = branchManager.getLeafId();
-		expect(branchLeafId).toBeTruthy();
-		branchManager.createBranchedSession(branchLeafId!);
-
-		const portablePath = join(tempAgentDir, "portable-tree.json");
-		output = [];
-		await runMain(["export", session!.id, portablePath, "--format", "json"]);
-
-		const exported = JSON.parse(readFileSync(portablePath, "utf8")) as {
-			sessions: Array<{ sessionId: string }>;
-		};
-		expect(exported.sessions).toHaveLength(2);
-
-		output = [];
-		await runMain(["import", portablePath]);
-
-		const importedSessions = await new SessionManager(false).listSessions();
-		expect(importedSessions.length).toBe(4);
-		expect(output.join("\n")).toContain("Imported 2 sessions");
 	});
 
 	it("prints maestro version output", async () => {

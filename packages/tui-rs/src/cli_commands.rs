@@ -6,11 +6,12 @@
 use std::collections::BTreeMap;
 use std::fs;
 use std::io::{self, Write};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use anyhow::{bail, Context, Result};
 
-use crate::session::{ExportFormat, ExportOptions, SessionManager, SessionReader};
+use crate::session::{ExportFormat, ExportOptions, SessionManager};
+use crate::session_transfer::{export_portable_session, import_portable_session, PortableFormat};
 
 /// Dispatch a top-level CLI helper subcommand.
 ///
@@ -143,6 +144,8 @@ fn run_sessions_export(args: &[String]) -> Result<i32> {
     let mut session_id: Option<String> = None;
     let mut output: Option<PathBuf> = None;
     let mut format = ExportFormat::Json;
+    let mut format_name = "json".to_string();
+    let mut redact_secrets = false;
     let mut i = 0usize;
     while i < args.len() {
         let a = &args[i];
@@ -152,8 +155,12 @@ fn run_sessions_export(args: &[String]) -> Result<i32> {
                 bail!("--format requires a value (json|md|html|txt|jsonl|markdown)");
             };
             format = parse_export_format(f)?;
+            format_name = f.to_ascii_lowercase();
         } else if let Some(rest) = a.strip_prefix("--format=") {
             format = parse_export_format(rest)?;
+            format_name = rest.to_ascii_lowercase();
+        } else if a == "--redact-secrets" {
+            redact_secrets = true;
         } else if a.starts_with('-') {
             bail!("unknown export flag: {a}");
         } else if session_id.is_none() {
@@ -171,6 +178,29 @@ fn run_sessions_export(args: &[String]) -> Result<i32> {
 
     let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
     let manager = SessionManager::new(cwd.to_string_lossy().to_string());
+    if matches!(format_name.as_str(), "json" | "jsonl") {
+        let portable_format = if format_name == "jsonl" {
+            PortableFormat::Jsonl
+        } else {
+            PortableFormat::Json
+        };
+        let out_path = export_portable_session(
+            &manager,
+            &id,
+            output.as_deref(),
+            portable_format,
+            redact_secrets,
+        )?;
+        println!(
+            "Exported session {id} to {} ({}).",
+            out_path.display(),
+            format_name
+        );
+        return Ok(0);
+    }
+    if redact_secrets {
+        bail!("--redact-secrets is supported for json and jsonl exports");
+    }
     let session = manager
         .load_session(&id)
         .with_context(|| format!("Session not found: {id}"))?;
@@ -183,54 +213,6 @@ fn run_sessions_export(args: &[String]) -> Result<i32> {
         };
         PathBuf::from(format!("session-{}.{}", &id[..id.len().min(8)], ext))
     });
-
-    // Raw jsonl: copy the source session file verbatim.
-    if args.iter().any(|a| a == "jsonl" || a.ends_with("jsonl"))
-        || out_path
-            .extension()
-            .and_then(|e| e.to_str())
-            .is_some_and(|e| e.eq_ignore_ascii_case("jsonl"))
-        || matches!(
-            args.iter()
-                .position(|a| a == "--format" || a == "-f")
-                .and_then(|p| args.get(p + 1))
-                .map(String::as_str),
-            Some("jsonl")
-        )
-    {
-        // Find path from session id again for copy
-        let sessions = manager.list_sessions().context("list sessions")?;
-        let src = sessions
-            .iter()
-            .find(|s| {
-                s.id == session.header.id
-                    || s.id.starts_with(&id)
-                    || session.header.id.starts_with(&id)
-            })
-            .map(|s| s.path.clone())
-            .or_else(|| {
-                manager.list_all_sessions().ok().and_then(|all| {
-                    all.into_iter()
-                        .find(|s| s.id == session.header.id || s.id.starts_with(&id))
-                        .map(|s| s.path)
-                })
-            });
-        if let Some(src) = src {
-            if let Some(parent) = out_path.parent() {
-                if !parent.as_os_str().is_empty() {
-                    fs::create_dir_all(parent)?;
-                }
-            }
-            fs::copy(&src, &out_path)
-                .with_context(|| format!("copy {} → {}", src.display(), out_path.display()))?;
-            println!(
-                "Exported session {} to {} (jsonl).",
-                session.header.id,
-                out_path.display()
-            );
-            return Ok(0);
-        }
-    }
 
     let options = ExportOptions {
         format,
@@ -274,66 +256,25 @@ fn run_sessions_import(args: &[String]) -> Result<i32> {
         return Ok(2);
     };
     let src = PathBuf::from(source);
-    if !src.exists() {
-        bail!("Import file not found: {}", src.display());
-    }
-
     let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
     let manager = SessionManager::new(cwd.to_string_lossy().to_string());
-    let dest_dir = manager.sessions_dir().to_path_buf();
-    fs::create_dir_all(&dest_dir)
-        .with_context(|| format!("create sessions dir {}", dest_dir.display()))?;
-
-    let ext = src
-        .extension()
-        .and_then(|e| e.to_str())
-        .unwrap_or("")
-        .to_ascii_lowercase();
-
-    if ext == "jsonl" || looks_like_jsonl(&src)? {
-        // Validate structure, then copy into the sessions directory.
-        let parsed = SessionReader::read_file(&src)
-            .with_context(|| format!("invalid session jsonl: {}", src.display()))?;
-        let session_id = parsed.header.id.clone();
-        let filename = format!(
-            "{}_{session_id}.jsonl",
-            chrono::Utc::now().format("%Y-%m-%dT%H-%M-%S-%3fZ")
-        );
-        let dest = dest_dir.join(filename);
-        fs::copy(&src, &dest)
-            .with_context(|| format!("copy {} → {}", src.display(), dest.display()))?;
+    let imported = import_portable_session(&manager, &src)?;
+    if imported.imported_count > 1 {
         println!(
-            "Imported session {session_id} from {}.\nStored at {}",
+            "Imported {} sessions from {}. Active session: {}.",
+            imported.imported_count,
             src.display(),
-            dest.display()
+            imported.session_id
         );
-        return Ok(0);
-    }
-
-    // Portable JSON export: store as a sibling .json under sessions dir for manual inspection /
-    // future converters. Point users at jsonl for full resume fidelity.
-    let raw = fs::read_to_string(&src)?;
-    if serde_json::from_str::<serde_json::Value>(&raw).is_ok() {
-        let new_id = uuid::Uuid::new_v4().to_string();
-        let dest = dest_dir.join(format!("imported-{new_id}.json"));
-        fs::write(&dest, raw).with_context(|| format!("write {}", dest.display()))?;
+    } else {
         println!(
-            "Imported portable JSON blob as {}.\nResume requires a .jsonl session; convert or re-export as jsonl for full fidelity.",
-            dest.display()
+            "Imported session {} from {}.",
+            imported.session_id,
+            src.display()
         );
-        return Ok(0);
     }
-
-    bail!(
-        "Unrecognized import format for {}. Use a Maestro session .jsonl file.",
-        src.display()
-    );
-}
-
-fn looks_like_jsonl(path: &Path) -> Result<bool> {
-    let raw = fs::read_to_string(path)?;
-    let first = raw.lines().find(|l| !l.trim().is_empty()).unwrap_or("");
-    Ok(first.contains("\"type\"") && (first.contains("session") || first.contains("message")))
+    println!("Stored at {}", imported.session_file.display());
+    Ok(0)
 }
 
 fn run_cost(args: &[String]) -> Result<i32> {

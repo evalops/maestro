@@ -466,6 +466,59 @@ fn vault_credentials_in_string(input: &str) -> String {
     output
 }
 
+/// Replace credentials in an arbitrary JSON value with stable, non-reversible masks.
+///
+/// Portable session exports use this instead of the in-memory credential vault because
+/// exported files must never contain references that require process-local state.
+#[must_use]
+pub fn redact_credentials_in_json(value: &serde_json::Value) -> serde_json::Value {
+    match value {
+        serde_json::Value::String(value) => {
+            serde_json::Value::String(redact_credentials_in_string(value))
+        }
+        serde_json::Value::Array(values) => {
+            serde_json::Value::Array(values.iter().map(redact_credentials_in_json).collect())
+        }
+        serde_json::Value::Object(values) => serde_json::Value::Object(
+            values
+                .iter()
+                .map(|(key, value)| (key.clone(), redact_credentials_in_json(value)))
+                .collect(),
+        ),
+        _ => value.clone(),
+    }
+}
+
+fn redact_credentials_in_string(input: &str) -> String {
+    let mut output = input.to_string();
+    for pattern in CREDENTIAL_PATTERNS.iter() {
+        let mask = format!("[REDACTED:{}:portable-export]", pattern.kind.as_str());
+        let replaced = match pattern.replace {
+            ReplaceKind::Full => pattern
+                .regex
+                .replace_all(&output, mask.as_str())
+                .into_owned(),
+            ReplaceKind::Bearer => {
+                let bearer_mask = format!("Bearer {mask}");
+                pattern
+                    .regex
+                    .replace_all(&output, bearer_mask.as_str())
+                    .into_owned()
+            }
+            ReplaceKind::KeyValue => pattern
+                .regex
+                .replace_all(&output, |caps: &Captures| {
+                    let prefix = caps.get(1).map(|value| value.as_str()).unwrap_or("");
+                    let separator = caps.get(2).map(|value| value.as_str()).unwrap_or("");
+                    format!("{prefix}{separator}{mask}")
+                })
+                .into_owned(),
+        };
+        output = replaced;
+    }
+    output
+}
+
 /// Statistics about stored credentials
 #[derive(Debug, Clone)]
 pub struct CredentialStats {
@@ -625,6 +678,22 @@ mod tests {
 
         let resolved = resolve_credentials_in_json(&vaulted);
         assert_eq!(resolved, payload);
+    }
+
+    #[test]
+    fn portable_redaction_masks_nested_credentials_without_vault_references() {
+        let api_key = ["sk-ant-", "abcdefghijklmnopqrstuvwxyz123456"].concat();
+        let payload = json!({
+            "message": format!("apiKey={api_key}"),
+            "nested": [format!("Bearer {api_key}")],
+        });
+
+        let redacted = redact_credentials_in_json(&payload);
+        let serialized = serde_json::to_string(&redacted).unwrap();
+
+        assert!(!serialized.contains(&api_key));
+        assert!(serialized.contains("[REDACTED:api_key:portable-export]"));
+        assert!(!serialized.contains("{{CRED:"));
     }
 
     #[test]

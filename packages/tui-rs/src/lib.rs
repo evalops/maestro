@@ -102,6 +102,7 @@ pub mod bridge;
 /// Session persistence (save/load conversations).
 /// JSONL-based session storage for resuming previous conversations.
 pub mod session;
+pub mod session_transfer;
 pub mod skill_cli;
 pub mod skill_package_cli;
 
