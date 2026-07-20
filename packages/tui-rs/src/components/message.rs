@@ -117,7 +117,7 @@
 
 use ratatui::{
     buffer::Buffer,
-    layout::{Constraint, Layout, Rect},
+    layout::{Alignment, Constraint, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, Paragraph, Widget, Wrap},
@@ -127,7 +127,9 @@ use crate::components::textarea::{TextArea, TextAreaWidget};
 use crate::effects::shimmer_spans;
 use crate::runtime_badges::{build_runtime_badges, RuntimeBadgeParams};
 use crate::session::ThinkingLevel;
-use crate::state::{ApprovalMode, Message, MessageKind, MessageRole, QueueMode, ToolCallStatus};
+use crate::state::{
+    ApprovalMode, InteractionMode, Message, MessageKind, MessageRole, QueueMode, ToolCallStatus,
+};
 use crate::tool_output::{clamp_tool_output, format_tool_output_truncation, tool_output_limits};
 use crate::tool_summary::summarize_tool_use;
 use crate::wrapping::{word_wrap_lines, RtOptions};
@@ -1174,6 +1176,7 @@ pub struct ChatInputWidget<'a> {
     can_queue_follow_up: bool,
     queue_summary: Option<QueueSummary>,
     pending_input_preview: Option<PendingInputPreview>,
+    runtime_footer: Option<String>,
 }
 
 #[derive(Debug)]
@@ -1390,7 +1393,29 @@ impl<'a> ChatInputWidget<'a> {
             can_queue_follow_up: options.can_queue_follow_up,
             queue_summary: options.queue_summary,
             pending_input_preview: options.pending_input_preview,
+            runtime_footer: None,
         }
+    }
+
+    /// Attach Grok-style runtime context to the lower-right input border.
+    #[must_use]
+    pub fn with_runtime_footer(
+        mut self,
+        model: Option<&str>,
+        thinking_level: ThinkingLevel,
+        interaction_mode: InteractionMode,
+    ) -> Self {
+        let mut context = model.unwrap_or("Maestro").to_string();
+        if thinking_level != ThinkingLevel::Off {
+            context.push_str(&format!(
+                " ({})",
+                thinking_level.label().to_ascii_lowercase()
+            ));
+        }
+        context.push_str(" · ");
+        context.push_str(interaction_mode.label());
+        self.runtime_footer = Some(context);
+        self
     }
 
     /// Calculate the on-screen cursor position within the input area.
@@ -1500,10 +1525,17 @@ impl Widget for ChatInputWidget<'_> {
             Line::from(" > ")
         };
 
-        let block = Block::default()
+        let mut block = Block::default()
             .borders(Borders::ALL)
             .border_style(border_style)
             .title(title);
+        if let Some(runtime_footer) = self.runtime_footer {
+            block = block.title_bottom(
+                Line::from(format!(" {runtime_footer} "))
+                    .style(Style::default().fg(Color::DarkGray))
+                    .alignment(Alignment::Right),
+            );
+        }
 
         let inner = block.inner(area);
         block.render(area, buf);
@@ -1603,6 +1635,151 @@ impl UsageSummary {
     }
 }
 
+/// Grok-inspired one-line session header.
+///
+/// Keeps location on the left and context pressure on the right so the
+/// conversation itself can remain visually quiet.
+pub struct SessionHeaderWidget<'a> {
+    cwd: Option<&'a str>,
+    git_branch: Option<&'a str>,
+    context_used: Option<u64>,
+    context_window: Option<u64>,
+}
+
+impl<'a> SessionHeaderWidget<'a> {
+    #[must_use]
+    pub fn new(cwd: Option<&'a str>, git_branch: Option<&'a str>) -> Self {
+        Self {
+            cwd,
+            git_branch,
+            context_used: None,
+            context_window: None,
+        }
+    }
+
+    #[must_use]
+    pub fn with_context(mut self, used: Option<u64>, window: Option<u64>) -> Self {
+        self.context_used = used;
+        self.context_window = window.filter(|value| *value > 0);
+        self
+    }
+}
+
+impl Widget for SessionHeaderWidget<'_> {
+    fn render(self, area: Rect, buf: &mut Buffer) {
+        if area.height == 0 || area.width == 0 {
+            return;
+        }
+
+        buf.set_style(area, Style::default().bg(Color::Black));
+        let location = format_session_location(self.cwd, self.git_branch);
+        let context = format_context_usage(self.context_used, self.context_window);
+        let context_width = context.as_ref().map_or(0, |text| text.width() as u16);
+        let location_width = area
+            .width
+            .saturating_sub(context_width)
+            .saturating_sub(u16::from(context_width > 0));
+        let location = truncate_location(&location, location_width as usize);
+        if !location.is_empty() {
+            buf.set_string(
+                area.x,
+                area.y,
+                location,
+                Style::default().fg(Color::DarkGray).bg(Color::Black),
+            );
+        }
+
+        if let Some(context) = context {
+            let color = match (self.context_used, self.context_window) {
+                (Some(used), Some(window))
+                    if used.saturating_mul(100) >= window.saturating_mul(90) =>
+                {
+                    Color::Red
+                }
+                (Some(used), Some(window))
+                    if used.saturating_mul(100) >= window.saturating_mul(75) =>
+                {
+                    Color::Yellow
+                }
+                _ => Color::Gray,
+            };
+            let x = area.right().saturating_sub(context_width);
+            buf.set_string(
+                x,
+                area.y,
+                context,
+                Style::default().fg(color).bg(Color::Black),
+            );
+        }
+    }
+}
+
+fn format_session_location(cwd: Option<&str>, git_branch: Option<&str>) -> String {
+    let Some(cwd) = cwd else {
+        return String::new();
+    };
+    let path = std::path::Path::new(cwd);
+    let compact = dirs::home_dir()
+        .and_then(|home| path.strip_prefix(home).ok())
+        .map_or_else(
+            || cwd.to_string(),
+            |relative| {
+                if relative.as_os_str().is_empty() {
+                    "~".to_string()
+                } else {
+                    format!("~/{}", relative.display())
+                }
+            },
+        );
+    match git_branch {
+        Some(branch) if !branch.is_empty() => format!("{compact}  ·  {branch}"),
+        _ => compact,
+    }
+}
+
+fn format_context_usage(used: Option<u64>, window: Option<u64>) -> Option<String> {
+    match (used, window) {
+        (Some(used), Some(window)) => Some(format!(
+            "{} / {}",
+            format_context_tokens(used),
+            format_context_tokens(window)
+        )),
+        (Some(used), None) if used > 0 => Some(format!("{} context", format_context_tokens(used))),
+        _ => None,
+    }
+}
+
+fn format_context_tokens(tokens: u64) -> String {
+    if tokens >= 1_000_000 {
+        let value = tokens as f64 / 1_000_000.0;
+        if value < 10.0 {
+            format!("{value:.1}M")
+        } else {
+            format!("{}M", tokens / 1_000_000)
+        }
+    } else if tokens >= 10_000 {
+        format!("{}K", tokens / 1_000)
+    } else if tokens >= 1_000 {
+        format!("{:.1}K", tokens as f64 / 1_000.0)
+    } else {
+        tokens.to_string()
+    }
+}
+
+fn truncate_location(value: &str, max_width: usize) -> String {
+    if max_width == 0 {
+        return String::new();
+    }
+    if value.width() <= max_width {
+        return value.to_string();
+    }
+    if max_width == 1 {
+        return "…".to_string();
+    }
+    let tail: String = value.chars().rev().take(max_width - 1).collect();
+    format!("…{}", tail.chars().rev().collect::<String>())
+}
+
 /// A stateless widget for rendering the bottom status bar.
 ///
 /// Displays:
@@ -1637,6 +1814,7 @@ pub struct StatusBarWidget<'a> {
     mcp_tool_count: usize,
     mcp_failed: usize,
     alert_count: usize,
+    shortcut_hints: bool,
 }
 
 impl<'a> StatusBarWidget<'a> {
@@ -1661,6 +1839,7 @@ impl<'a> StatusBarWidget<'a> {
             mcp_tool_count: 0,
             mcp_failed: 0,
             alert_count: 0,
+            shortcut_hints: false,
         }
     }
 
@@ -1708,6 +1887,12 @@ impl<'a> StatusBarWidget<'a> {
         self.alert_count = alert_count;
         self
     }
+
+    #[must_use]
+    pub fn with_shortcut_hints(mut self) -> Self {
+        self.shortcut_hints = true;
+        self
+    }
 }
 
 impl Widget for StatusBarWidget<'_> {
@@ -1718,8 +1903,20 @@ impl Widget for StatusBarWidget<'_> {
 
         let mut spans = Vec::new();
 
+        if self.shortcut_hints {
+            let hints = if area.width >= 72 {
+                "Shift+Tab:mode  │  Ctrl+C:cancel  │  F1:shortcuts"
+            } else {
+                "Shift+Tab:mode  │  F1:help"
+            };
+            spans.push(Span::styled(hints, Style::default().fg(Color::DarkGray)));
+        }
+
         // Model info
         if let Some(model) = self.model {
+            if !spans.is_empty() {
+                spans.push(Span::raw(" | "));
+            }
             spans.push(Span::styled(model, Style::default().fg(Color::Cyan)));
             if let Some(provider) = self.provider {
                 spans.push(Span::raw(" via "));
@@ -1728,7 +1925,7 @@ impl Widget for StatusBarWidget<'_> {
         }
 
         // Separator
-        if !spans.is_empty() {
+        if !spans.is_empty() && self.cwd.is_some() {
             spans.push(Span::raw(" | "));
         }
 
@@ -1957,16 +2154,37 @@ impl Widget for ChatView<'_> {
         }
 
         let status_height = u16::from(!self.state.zen_mode);
+        let header_height = u16::from(!self.state.zen_mode);
         let input_height = calculate_input_height(self.state, area);
         let chunks = Layout::vertical([
+            Constraint::Length(header_height), // Session location + context
             Constraint::Min(0),                // Messages
             Constraint::Length(input_height),  // Input (auto-grow)
             Constraint::Length(status_height), // Status (hidden in zen mode)
         ])
         .split(area);
 
+        let context_used = self
+            .state
+            .messages
+            .iter()
+            .rev()
+            .find_map(|message| message.usage.as_ref())
+            .map(|usage| {
+                usage
+                    .input_tokens
+                    .saturating_add(usage.output_tokens)
+                    .saturating_add(usage.cache_read_tokens)
+            });
+
+        if !self.state.zen_mode {
+            SessionHeaderWidget::new(self.state.cwd.as_deref(), self.state.git_branch.as_deref())
+                .with_context(context_used, self.state.context_window)
+                .render(chunks[0], buf);
+        }
+
         // Render messages
-        self.render_messages(chunks[0], buf);
+        self.render_messages(chunks[1], buf);
 
         // Render input
         let input_widget = ChatInputWidget::new(
@@ -1988,23 +2206,16 @@ impl Widget for ChatView<'_> {
                 },
                 pending_input_preview: PendingInputPreview::from_state(self.state),
             },
+        )
+        .with_runtime_footer(
+            self.state.model.as_deref(),
+            self.state.thinking_level,
+            self.state.interaction_mode,
         );
-        input_widget.render(chunks[1], buf);
+        input_widget.render(chunks[2], buf);
 
         // Render status bar (unless zen mode)
         if !self.state.zen_mode {
-            // Calculate total usage from all messages
-            let usage = self
-                .state
-                .messages
-                .iter()
-                .filter_map(|m| m.usage.as_ref())
-                .fold(UsageSummary::default(), |mut acc, u| {
-                    acc.input_tokens += u.input_tokens;
-                    acc.output_tokens += u.output_tokens;
-                    acc
-                });
-
             let queue_badge = {
                 let label = format!(
                     "queue:f={} s={}",
@@ -2020,23 +2231,18 @@ impl Widget for ChatView<'_> {
 
             let alert_count = usize::from(self.state.error.is_some());
 
-            let status_widget = StatusBarWidget::new(
-                self.state.model.as_deref(),
-                self.state.provider.as_deref(),
-                self.state.cwd.as_deref(),
-                self.state.git_branch.as_deref(),
-            )
-            .with_usage(usage)
-            .with_queue_badge(queue_badge.as_deref())
-            .with_approval_mode(self.state.approval_mode)
-            .with_thinking_level(self.state.thinking_level)
-            .with_mcp_status(
-                self.state.mcp_connected,
-                self.state.mcp_tool_count,
-                self.state.mcp_failed,
-            )
-            .with_alert_count(alert_count);
-            status_widget.render(chunks[2], buf);
+            let status_widget = StatusBarWidget::new(None, None, None, None)
+                .with_queue_badge(queue_badge.as_deref())
+                .with_approval_mode(self.state.approval_mode)
+                .with_thinking_level(self.state.thinking_level)
+                .with_mcp_status(
+                    self.state.mcp_connected,
+                    self.state.mcp_tool_count,
+                    self.state.mcp_failed,
+                )
+                .with_alert_count(alert_count)
+                .with_shortcut_hints();
+            status_widget.render(chunks[3], buf);
         }
     }
 }
@@ -2291,6 +2497,59 @@ mod tests {
         let rendered = buffer_lines(&buf, width, height).join("\n");
         assert!(!rendered.contains("Tab queue follow-up"));
         assert!(rendered.contains("1 queued (1 follow-up)"));
+    }
+
+    #[test]
+    fn input_footer_keeps_model_effort_and_mode_next_to_the_composer() {
+        let textarea = TextArea::new();
+        let widget = ChatInputWidget::new(
+            &textarea,
+            "",
+            ChatInputWidgetOptions {
+                busy: false,
+                elapsed_secs: 0,
+                thinking_header: None,
+                can_queue_follow_up: false,
+                queue_summary: None,
+                pending_input_preview: None,
+            },
+        )
+        .with_runtime_footer(
+            Some("gpt-5.4"),
+            ThinkingLevel::High,
+            InteractionMode::AlwaysApprove,
+        );
+        let width = 96;
+        let height = 4;
+        let mut buf = Buffer::empty(Rect::new(0, 0, width, height));
+
+        widget.render(Rect::new(0, 0, width, height), &mut buf);
+
+        let rendered = buffer_lines(&buf, width, height).join("\n");
+        assert!(rendered.contains("gpt-5.4 (high) · always-approve"));
+    }
+
+    #[test]
+    fn session_header_pairs_location_with_context_pressure() {
+        let width = 80;
+        let mut buf = Buffer::empty(Rect::new(0, 0, width, 1));
+
+        SessionHeaderWidget::new(Some("/workspace/maestro"), Some("main"))
+            .with_context(Some(9_500), Some(500_000))
+            .render(Rect::new(0, 0, width, 1), &mut buf);
+
+        let rendered = buffer_lines(&buf, width, 1).join("\n");
+        assert!(rendered.contains("/workspace/maestro  ·  main"));
+        assert!(rendered.contains("9.5K / 500K"));
+    }
+
+    #[test]
+    fn session_header_degrades_without_a_known_context_limit() {
+        assert_eq!(
+            format_context_usage(Some(12_000), None).as_deref(),
+            Some("12K context")
+        );
+        assert_eq!(format_context_usage(None, Some(500_000)), None);
     }
 
     #[test]

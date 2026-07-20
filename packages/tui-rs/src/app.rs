@@ -654,6 +654,7 @@ impl App {
         let workspace_dir =
             std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
         let config = crate::config::load_config(&workspace_dir, None);
+        let context_window = config.model_context_window.map(|value| value as u64);
         let mut history_config = crate::history::HistoryConfig::default();
         if let Some(history_settings) = config.history {
             if let Some(max_bytes) = history_settings.max_bytes {
@@ -666,7 +667,13 @@ impl App {
         let prompt_history =
             crate::history::PromptHistory::load_with_config(history_config.clone())
                 .unwrap_or_else(|_| crate::history::PromptHistory::new(history_config));
-        Self::new_with_terminal_with_history(terminal, capabilities, prompt_history, initial_prompt)
+        Self::new_with_terminal_with_history(
+            terminal,
+            capabilities,
+            prompt_history,
+            initial_prompt,
+            context_window,
+        )
     }
 
     fn new_with_terminal_with_history(
@@ -674,12 +681,14 @@ impl App {
         capabilities: TerminalCapabilities,
         prompt_history: crate::history::PromptHistory,
         initial_prompt: Option<String>,
+        context_window: Option<u64>,
     ) -> Self {
         let cwd = std::env::current_dir()
             .map_or_else(|_| ".".to_string(), |p| p.to_string_lossy().to_string());
         let workspace_dir = std::path::PathBuf::from(&cwd);
 
         let mut state = AppState::new();
+        state.context_window = context_window;
         let queue_modes = crate::ui_state::load_queue_modes();
         if let Some(mode) = queue_modes.steering_mode {
             state.steering_mode = mode;

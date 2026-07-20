@@ -462,6 +462,10 @@ pub struct AppState {
     /// Displayed in the status bar for context.
     pub git_branch: Option<String>,
 
+    /// Configured context-window capacity for the active model.
+    /// Used by the session header; absent when the provider did not expose one.
+    pub context_window: Option<u64>,
+
     /// Current session ID for persistence.
     /// Used to resume this conversation later.
     pub session_id: Option<String>,
@@ -600,6 +604,7 @@ impl AppState {
             provider: None,   // No provider yet
             cwd: None,        // No working directory
             git_branch: None, // Not in a git repo (yet)
+            context_window: None,
             session_id: None, // No session yet
             busy: false,      // Not processing
             busy_since: None, // No timer running
