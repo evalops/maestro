@@ -1,7 +1,7 @@
 {
 	"version": 1,
 	"schema": "evalops.maestro.rpc-protocol-conformance.v1",
-	"description": "Release-gated JSON-over-stdio RPC command, response, request-id correlation, and client launch contract.",
+	"description": "Release-gated JSON-over-stdio RPC command, response, request-id correlation, and client launch contract. Native headless owns stdio RPC/headless protocol after TS agent kill.",
 	"commands": [
 		{
 			"name": "prompt dispatches a user prompt",
@@ -111,21 +111,28 @@
 			"area": "rpc-server-dispatch",
 			"path": "src/cli/rpc-mode.ts",
 			"anchors": [
-				"input.type === \"prompt\"",
-				"input.type === \"abort\"",
-				"input.type === \"get_messages\"",
-				"input.type === \"get_state\"",
-				"input.type === \"continue\"",
-				"input.type === \"compact\""
+				"TypeScript runRpcMode has been removed",
+				"maestro-tui --headless"
+			],
+			"note": "TS RPC server removed; native maestro-tui --headless owns the protocol."
+		},
+		{
+			"area": "rpc-server-native",
+			"path": "packages/tui-rs/src/headless_server.rs",
+			"anchors": [
+				"run_headless_server",
+				"ToAgentMessage::Prompt",
+				"ToAgentMessage::Hello",
+				"FromAgentMessage::Ready"
 			]
 		},
 		{
 			"area": "rpc-server-request-id-correlation",
-			"path": "src/cli/rpc-mode.ts",
+			"path": "src/cli/native-tui-launcher.ts",
 			"anchors": [
-				"let requestId: string | undefined",
-				"withRequestId({",
-				"Unknown RPC command: ${commandType}"
+				"shouldLaunchNativeHeadless",
+				"launchNativeTui",
+				"parsed.headless"
 			]
 		},
 		{

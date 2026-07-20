@@ -94,8 +94,6 @@ const ALLOWLISTED_TIMING_WAIT_FILES = new Set([
 	"test/tools/restart-policy.test.ts",
 	"test/tools/tool-dsl.test.ts",
 	"test/tools/webfetch.test.ts",
-	"test/tui/bash-mode.test.ts",
-	"test/tui/tui-subcommands.test.ts",
 	"test/utils/async.test.ts",
 	"test/utils/clock.test.ts",
 	"test/utils/downstream-http.test.ts",
