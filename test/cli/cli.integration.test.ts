@@ -1919,101 +1919,6 @@ describe("CLI integration", () => {
 		);
 	});
 
-	it.skip("backfills exec json manifest before final events with pre-dispatch MCP config snapshot (TS agent path removed; native maestro-tui owns this)", async () => {
-		const originalCwd = process.cwd();
-		const projectDir = mkdtempSync(join(tmpdir(), "composer-mcp-project-"));
-		const projectMcpDir = join(projectDir, ".maestro");
-		const projectMcpPath = join(projectMcpDir, "mcp.json");
-		let capturedSessionPath: string | null = null;
-		let manifestBeforeFinalEvent:
-			| {
-					entries?: Array<{ id: string; kind: string }>;
-			  }
-			| undefined;
-		mkdirSync(projectMcpDir, { recursive: true });
-		writeFileSync(
-			projectMcpPath,
-			JSON.stringify({
-				mcpServers: {
-					before_run: {
-						command: "node",
-						args: ["before.js"],
-					},
-				},
-			}),
-		);
-
-		vi.resetModules();
-		vi.doMock("../../src/cli/commands/exec.js", () => ({
-			runExecCommand: async (options: {
-				agent: { state: MockAgentState };
-				sessionManager: SessionManager;
-				beforeFinalJsonlEvents?: () => Promise<void> | void;
-			}) => {
-				options.sessionManager.startSession(options.agent.state, {
-					subject: "Mutate MCP",
-				});
-				options.sessionManager.saveSessionSummary(
-					"maestro exec session: Mutate MCP",
-				);
-				capturedSessionPath = options.sessionManager.getSessionFile();
-				writeFileSync(
-					projectMcpPath,
-					JSON.stringify({
-						mcpServers: {
-							after_run: {
-								command: "node",
-								args: ["after.js"],
-							},
-						},
-					}),
-				);
-				await options.beforeFinalJsonlEvents?.();
-				manifestBeforeFinalEvent = readSessionUnifiedContextManifest(
-					capturedSessionPath!,
-				) as typeof manifestBeforeFinalEvent;
-				process.stdout.write(`${JSON.stringify({ type: "done" })}\n`);
-			},
-		}));
-
-		try {
-			process.chdir(projectDir);
-			const { main: currentMain } = await import("../../src/main.js");
-			await currentMain(["exec", "--tools", "read", "Mutate MCP", "--json"]);
-		} finally {
-			process.chdir(originalCwd);
-			vi.doUnmock("../../src/cli/commands/exec.js");
-			vi.resetModules();
-			rmSync(projectDir, { recursive: true, force: true });
-		}
-
-		expect(capturedSessionPath).toBeDefined();
-		const sessionHeader = JSON.parse(
-			readFileSync(capturedSessionPath!, "utf8").split("\n")[0]!,
-		) as {
-			unifiedContextManifest?: {
-				entries?: Array<{ id: string; kind: string }>;
-			};
-		};
-		const mcpEntryIds =
-			sessionHeader.unifiedContextManifest?.entries
-				?.filter((entry) => entry.kind === "mcp_server")
-				.map((entry) => entry.id)
-				.sort() ?? [];
-		const mcpEntryIdsBeforeFinalEvent =
-			manifestBeforeFinalEvent?.entries
-				?.filter((entry) => entry.kind === "mcp_server")
-				.map((entry) => entry.id)
-				.sort() ?? [];
-
-		expect(mcpEntryIds).toContain("mcp_server:before_run");
-		expect(mcpEntryIds).not.toContain("mcp_server:after_run");
-		expect(mcpEntryIdsBeforeFinalEvent).toEqual(mcpEntryIds);
-		expect(output.map((chunk) => chunk.trim()).filter(Boolean)).toContain(
-			JSON.stringify({ type: "done" }),
-		);
-	});
-
 	it("validates schema in composer exec", async () => {
 		await runMain([
 			"exec",
@@ -2021,17 +1926,6 @@ describe("CLI integration", () => {
 			"--output-schema",
 			'{"type":"object","properties":{"result":{"const":"ok"}},"required":["result"]}',
 		]);
-	});
-
-	it.skip("fails schema validation in composer exec (TS agent path removed; native maestro-tui owns this)", async () => {
-		await expect(
-			main([
-				"exec",
-				'JSON:{"result":"ok"}',
-				"--output-schema",
-				'{"type":"object","required":["status"]}',
-			]),
-		).rejects.toThrow(/schema/);
 	});
 
 	it("supports --last for exec sessions", async () => {
