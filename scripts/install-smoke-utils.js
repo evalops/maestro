@@ -3,7 +3,7 @@
 
 import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
-import { join } from "node:path";
+import { delimiter, join } from "node:path";
 
 export function getNpmCommand() {
 	return process.platform === "win32" ? "npm.cmd" : "npm";
@@ -169,6 +169,52 @@ export function runInstalledCliSmoke(
 		cliCommand,
 		expectedVersion,
 		label,
+	});
+}
+
+/**
+ * Build an env for clean-install native smokes that must resolve the *packaged*
+ * Rust binary (vendor/maestro-tui), not a developer's ambient override or PATH.
+ */
+export function buildNativeInstallSmokeEnv(cwd, baseEnv = process.env) {
+	const isolatedMaestroHome = join(cwd, ".maestro-native-smoke");
+	const env = {
+		...baseEnv,
+		MAESTRO_HOME: isolatedMaestroHome,
+		OPENAI_OAUTH_FILE: join(isolatedMaestroHome, "openai-oauth.json"),
+	};
+	// MAESTRO_TUI_BIN takes precedence over vendor/ in the JS launcher. Scrub it so
+	// a green smoke cannot mean "my local override works" while the tarball is broken.
+	delete env.MAESTRO_TUI_BIN;
+
+	// The launcher falls back to PATH after vendor/. Constrain PATH to bare system
+	// dirs so ambient installs (Homebrew /usr/local/bin, cargo bin, etc.) cannot
+	// greenlight a package missing vendor/maestro-tui. The CLI itself is invoked
+	// by absolute path; vendor resolution does not need a rich PATH.
+	const minimalPath =
+		process.platform === "win32"
+			? [baseEnv.SystemRoot ? join(baseEnv.SystemRoot, "System32") : "C:\\Windows\\System32"].join(
+					delimiter,
+				)
+			: ["/usr/bin", "/bin"].join(delimiter);
+	env.PATH = minimalPath;
+	if ("Path" in env || process.platform === "win32") {
+		env.Path = minimalPath;
+	}
+	return env;
+}
+
+export function runInstalledNativeCliSmoke(cwd, { cliCommand }) {
+	const command = installedBinPath(cwd, cliCommand);
+	// --version and --help are handled by the JavaScript launcher itself. Exercise
+	// a native-only command so release smokes also prove the packaged Rust runtime
+	// can be resolved and launched from a clean install. Isolate credential paths
+	// so a local smoke can never read, refresh, or remove a developer's login, and
+	// scrub native binary overrides so only the packaged vendor payload can win.
+	execFileSync(command, ["openai", "status"], {
+		cwd,
+		stdio: "ignore",
+		env: buildNativeInstallSmokeEnv(cwd),
 	});
 }
 
