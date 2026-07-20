@@ -1,7 +1,7 @@
 {
 	"version": 1,
 	"schema": "evalops.maestro.cli-runtime-conformance.v1",
-	"description": "Release-gated CLI parser and stdio RPC mode conformance cases.",
+	"description": "Release-gated CLI parser and native-only agent runtime routing conformance.",
 	"parserCases": [
 		{
 			"name": "json mode keeps prompt messages",
@@ -157,11 +157,13 @@
 			"area": "cli-mode-selection",
 			"path": "src/main.ts",
 			"anchors": [
-				"mode === \"rpc\"",
-				"runRpcMode(",
-				"runtimeConfig.explicitProfileName",
-				"mode === \"headless\" || parsed.headless",
-				"runHeadlessMode("
+				"shouldLaunchNativeHeadless",
+				"shouldLaunchNativeInteractiveTui",
+				"shouldLaunchNativePrint",
+				"runNativeHeadlessMode",
+				"runNativeInteractiveMode",
+				"runNativePrintMode",
+				"TypeScript Agent bootstrap has been removed"
 			]
 		},
 		{
@@ -178,12 +180,25 @@
 			"area": "rpc-stdio-protocol",
 			"path": "src/cli/rpc-mode.ts",
 			"anchors": [
-				"JSON-over-stdio",
-				"input.type === \"prompt\"",
-				"input.type === \"get_state\"",
-				"input.type === \"get_messages\"",
-				"input.type === \"compact\""
+				"TypeScript runRpcMode has been removed",
+				"maestro-tui --headless"
 			]
+		},
+		{
+			"area": "native-tui-launcher",
+			"path": "src/cli/native-tui-launcher.ts",
+			"anchors": [
+				"shouldLaunchNativeHeadless",
+				"shouldLaunchNativePrint",
+				"shouldLaunchNativeInteractiveTui",
+				"launchNativeTui",
+				"launchNativeCli"
+			]
+		},
+		{
+			"area": "native-headless-server",
+			"path": "packages/tui-rs/src/headless_server.rs",
+			"anchors": ["run_headless_server", "ToAgentMessage", "FromAgentMessage"]
 		}
 	]
 }
