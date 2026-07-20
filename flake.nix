@@ -30,7 +30,6 @@
             runHook preBuild
             
             # Build workspace packages first (TUI must be built before root)
-            npm run build --workspace=@evalops/tui
             
             # Build root package
             npm run build
@@ -50,7 +49,6 @@
             
             # Copy workspace packages with their built artifacts
             mkdir -p $out/lib/node_modules/@evalops/composer/packages
-            cp -r packages/tui $out/lib/node_modules/@evalops/composer/packages/
             cp -r packages/web $out/lib/node_modules/@evalops/composer/packages/
             
             # Create wrapper script

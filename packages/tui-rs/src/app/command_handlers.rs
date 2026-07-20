@@ -297,6 +297,12 @@ impl App {
             CommandAction::Skills(skills_action) => {
                 self.handle_skills_action(skills_action);
             }
+            CommandAction::InvokeSkill { name, args } => {
+                self.handle_invoke_skill(&name, &args).await;
+            }
+            CommandAction::InvokePromptTemplate { name, args } => {
+                self.handle_invoke_prompt_template(&name, &args).await;
+            }
             CommandAction::Queue(action) => {
                 self.handle_queue_action(action);
             }
@@ -1002,6 +1008,47 @@ impl App {
                 self.state.status = Some("Hooks disabled".to_string());
                 self.state
                     .add_system_message("Hook system disabled.".to_string());
+            }
+        }
+    }
+
+    /// Invoke a skill as a slash command (`/skillname args`).
+    pub(super) async fn handle_invoke_skill(&mut self, name: &str, args: &str) {
+        let id = match self.resolve_skill_id(name) {
+            Ok(id) => id,
+            Err(err) => {
+                self.state.error = Some(err);
+                return;
+            }
+        };
+        let Some(loaded) = self.find_loaded_skill(&id) else {
+            self.state.error = Some(format!("Skill '{name}' not found"));
+            return;
+        };
+        if !loaded.definition.user_invocable {
+            self.state.error = Some(format!(
+                "Skill '{name}' is not user-invocable (set user-invocable: true)"
+            ));
+            return;
+        }
+        let content = Self::format_skill_invoke(loaded, args);
+        let _ = self.skill_registry.activate(&id);
+        self.update_agent_system_prompt();
+        let _ = self.submit_prompt(content).await;
+    }
+
+    /// Invoke a flat markdown prompt/command template as a slash command.
+    pub(super) async fn handle_invoke_prompt_template(&mut self, name: &str, args: &str) {
+        let Some(prompt) = crate::prompts::find_prompt(&self.custom_prompts, name) else {
+            self.state.error = Some(format!("Prompt template '{name}' not found"));
+            return;
+        };
+        match crate::prompts::format_prompt_invoke(prompt, args) {
+            Ok(content) => {
+                let _ = self.submit_prompt(content).await;
+            }
+            Err(err) => {
+                self.state.error = Some(err);
             }
         }
     }

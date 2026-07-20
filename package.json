@@ -14,11 +14,11 @@
   "types": "./dist/index.d.ts",
   "files": [
     "dist",
-    "skills"
+    "skills",
+    "vendor/maestro-tui"
   ],
   "maestroRuntimeWorkspaces": [
-    "@evalops/contracts",
-    "@evalops/tui"
+    "@evalops/contracts"
   ],
   "scripts": {
     "clean": "node ./scripts/clean-paths.js dist ./tmp/tsbuildinfo/composer.tsbuildinfo",
@@ -28,7 +28,7 @@
     "prebuild": "node ./scripts/ensure-deps.js && node ./scripts/session-wire-format-codegen.mjs && node ./scripts/headless-protocol-codegen.mjs && bun run generate:headless-proto:buf",
     "build": "node ./scripts/ensure-dir.js ./tmp/tsbuildinfo && tsc -b tsconfig.build.json --force && node ./scripts/bundle-runtime-deps.mjs && node ./scripts/copy-themes.js && node ./scripts/copy-db-migrations.js",
     "start": "node --enable-source-maps dist/cli.js",
-    "start:native": "MAESTRO_AGENT_SCRIPT=\"$(pwd)/dist/cli.js\" ./packages/tui-rs/target/release/maestro-tui",
+    "start:native": "./packages/tui-rs/target/release/maestro-tui",
     "dev": "node ./scripts/headless-protocol-codegen.mjs && bun run generate:headless-proto:buf && node ./scripts/ensure-dir.js ./tmp/tsbuildinfo && tsc -b tsconfig.build.json --watch --preserveWatchOutput",
     "dev:all": "concurrently --names \"cli,test\" --prefix-colors \"cyan,yellow\" \"npm run dev\" \"npm run test:watch\"",
     "test:watch": "node ./scripts/run-vitest.js --watch",
@@ -155,11 +155,10 @@
     "openapi:serve": "bun scripts/serve-openapi.ts",
     "nix:update-hash": "bash scripts/update-nix-hash.sh",
     "dev:web": "bun run --filter @evalops/maestro-web dev",
-    "dev:tui": "bun run --filter @evalops/tui dev",
-    "dev:packages": "concurrently --names \"tui,web\" --prefix-colors \"magenta,green\" \"bun run dev:tui\" \"bun run dev:web\"",
+    "dev:packages": "bun run dev:web",
     "guardian": "bash scripts/guardian.sh",
     "guardian:install-hook": "node scripts/install-guardian-hook.js",
-    "build:all": "bun run --filter @evalops/contracts build && bun run --filter @evalops/consumer build && bun run --filter @evalops/tui build && bun run --filter @evalops/maestro-web build && bun run build && bun run --filter @evalops/ai build",
+    "build:all": "bun run --filter @evalops/contracts build && bun run --filter @evalops/consumer build && bun run --filter @evalops/maestro-web build && bun run build && bun run --filter @evalops/ai build",
     "test:all": "npm run test && npm run test --workspaces --if-present",
     "db:generate": "MAESTRO_DATABASE_TYPE=postgres drizzle-kit generate",
     "db:migrate": "bun run src/db/migrate.ts",
@@ -177,6 +176,7 @@
     "tui-rs:build:debug": "cd packages/tui-rs && cargo build",
     "tui-rs:check": "cd packages/tui-rs && cargo check",
     "tui-rs:test": "cd packages/tui-rs && cargo test",
+    "check:actions-pipelines-cert": "node scripts/check-actions-pipelines-cert.mjs",
     "release:verify:published": "node scripts/smoke-registry-install.js",
     "release:verify:published:e2e": "node scripts/smoke-published-replay-e2e.js",
     "release:verify:published:evidence": "node scripts/verify-published-replay-evidence.js",

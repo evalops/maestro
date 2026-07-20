@@ -622,7 +622,7 @@ fn truncate_text(text: &str, max_chars: usize) -> String {
         .map_or_else(|| text.len(), |(i, _)| i);
     let truncated = &text[..end_idx];
     if let Some(pos) = truncated.rfind(|c: char| c.is_whitespace()) {
-        format!("{}...", &truncated[..pos].trim())
+        format!("{}...", truncated[..pos].trim())
     } else {
         format!("{}...", truncated.trim())
     }

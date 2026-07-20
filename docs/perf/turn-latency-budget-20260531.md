@@ -68,7 +68,8 @@ The guarded-workspace prompt still reports the same default category summary for
 ## Verification
 
 - `node ./scripts/run-vitest.js --run test/cli/system-prompt.test.ts test/prompts/system-prompt.test.ts`
-- `node ./scripts/run-vitest.js --run test/cli-runtime.test.ts test/streaming-view.test.ts test/cli-tui/agent-event-router-thinking.test.ts test/cli/instant-exit.test.ts`
+- `node ./scripts/run-vitest.js --run test/cli-runtime.test.ts test/streaming-view.test.ts test/cli/instant-exit.test.ts`
+  (historical also included `test/cli-tui/agent-event-router-thinking.test.ts`, removed with the TS TUI)
 - `npm run build`
 - `node scripts/measure-turn-latency-budget.mjs --iterations 8 --json`
 - `MAESTRO_STARTUP_PROFILE=1 MAESTRO_QUERY_PROFILE=1 node dist/cli.js exec --replay test/fixtures/scripted-replay/basic-tool-call.json --tools read --json "Replay the CLI golden path."`

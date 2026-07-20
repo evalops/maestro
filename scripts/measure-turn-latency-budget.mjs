@@ -872,10 +872,8 @@ function baseAssistant(text) {
 
 async function measureLowBandwidthUi(iterations) {
 	const { AgentEventRouter } = await import(
-		join(repoRoot, "dist", "cli-tui", "agent-event-router.js")
 	);
 	const { StreamingView } = await import(
-		join(repoRoot, "dist", "cli-tui", "streaming-view.js")
 	);
 	const samples = [];
 	const renderSamples = [];

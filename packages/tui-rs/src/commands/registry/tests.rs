@@ -490,3 +490,100 @@ fn mcp_prompts_command_rejects_invalid_prompt_arguments() {
         "Invalid MCP prompt argument. Use KEY=value after the prompt name."
     );
 }
+
+#[test]
+fn register_if_absent_skips_colliding_names() {
+    let mut registry = CommandRegistry::new();
+    registry.register(Command::new(
+        "help",
+        "builtin",
+        CommandCategory::Navigation,
+        Box::new(|_| Ok(CommandOutput::Silent)),
+    ));
+    let registered = registry.register_if_absent(Command::new(
+        "help",
+        "skill",
+        CommandCategory::Tools,
+        Box::new(|_| Ok(CommandOutput::Silent)),
+    ));
+    assert!(!registered);
+    assert_eq!(registry.get("help").unwrap().description, "builtin");
+}
+
+#[test]
+fn extensions_register_skills_and_prompts_as_slash_commands() {
+    use crate::prompts::{PromptDefinition, PromptSource};
+    use crate::skills::{LoadedSkill, SkillDefinition, SkillSource};
+    use std::path::PathBuf;
+
+    let skill = LoadedSkill {
+        definition: SkillDefinition::new("commit", "commit")
+            .with_description("Create a commit")
+            .with_source(SkillSource::User)
+            .with_system_prompt("Commit carefully."),
+        source_path: PathBuf::from("/tmp/commit/SKILL.md"),
+        skill_dir: PathBuf::from("/tmp/commit"),
+        resources: Default::default(),
+    };
+    let prompt = PromptDefinition {
+        name: "code-review".to_string(),
+        description: Some("Review code".to_string()),
+        argument_hint: None,
+        body: "Review $ARGUMENTS".to_string(),
+        source_path: PathBuf::from("/tmp/review.md"),
+        source_type: PromptSource::Project,
+        named_placeholders: vec![],
+        has_positional_placeholders: true,
+    };
+
+    let registry = build_command_registry_with_extensions(&[skill], &[prompt]);
+
+    match registry
+        .execute("/commit fix typo", "/tmp", None, None)
+        .expect("skill slash should parse")
+    {
+        CommandOutput::Action(CommandAction::InvokeSkill { name, args }) => {
+            assert_eq!(name, "commit");
+            assert_eq!(args, "fix typo");
+        }
+        other => panic!("expected InvokeSkill, got {other:?}"),
+    }
+
+    match registry
+        .execute("/code-review auth module", "/tmp", None, None)
+        .expect("prompt slash should parse")
+    {
+        CommandOutput::Action(CommandAction::InvokePromptTemplate { name, args }) => {
+            assert_eq!(name, "code-review");
+            assert_eq!(args, "auth module");
+        }
+        other => panic!("expected InvokePromptTemplate, got {other:?}"),
+    }
+}
+
+#[test]
+fn skill_named_like_builtin_is_not_registered() {
+    use crate::skills::{LoadedSkill, SkillDefinition, SkillSource};
+    use std::path::PathBuf;
+
+    let skill = LoadedSkill {
+        definition: SkillDefinition::new("compact", "compact")
+            .with_description("skill compact")
+            .with_source(SkillSource::User),
+        source_path: PathBuf::from("/tmp/compact/SKILL.md"),
+        skill_dir: PathBuf::from("/tmp/compact"),
+        resources: Default::default(),
+    };
+
+    let registry = build_command_registry_with_extensions(&[skill], &[]);
+    let out = registry
+        .execute("/compact", "/tmp", None, None)
+        .expect("builtin compact");
+    assert!(
+        !matches!(
+            out,
+            CommandOutput::Action(CommandAction::InvokeSkill { .. })
+        ),
+        "builtin should win over skill, got {out:?}"
+    );
+}

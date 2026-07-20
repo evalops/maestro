@@ -40,6 +40,9 @@ pub struct SkillDefinition {
     pub source: SkillSource,
     /// Whether the skill is currently enabled
     pub enabled: bool,
+    /// Whether the skill appears as a user-invocable slash command (Grok-style).
+    #[serde(default = "default_user_invocable")]
+    pub user_invocable: bool,
     /// Version string
     pub version: Option<String>,
     /// Author information
@@ -54,6 +57,10 @@ pub struct SkillDefinition {
     pub trigger_patterns: Vec<String>,
 }
 
+fn default_user_invocable() -> bool {
+    true
+}
+
 impl SkillDefinition {
     /// Create a new skill definition
     pub fn new(id: impl Into<String>, name: impl Into<String>) -> Self {
@@ -63,6 +70,7 @@ impl SkillDefinition {
             description: String::new(),
             source: SkillSource::User,
             enabled: true,
+            user_invocable: true,
             version: None,
             author: None,
             metadata: HashMap::new(),

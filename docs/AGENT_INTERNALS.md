@@ -301,4 +301,4 @@ Enterprise audit trail for:
 | `src/oauth/index.ts` | OAuth integration |
 | `src/providers/network-config.ts` | Network retry configuration |
 | `src/session/manager.ts` | Session management |
-| `src/cli-tui/tui-renderer.ts` | Terminal UI |
+| `packages/tui-rs/` (`maestro-tui`) | Native terminal UI (interactive; TS TUI removed) |

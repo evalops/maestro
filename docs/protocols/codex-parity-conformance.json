@@ -70,16 +70,6 @@
 		},
 		{
 			"area": "prompt-queue-parity",
-			"path": "src/cli-tui/queue/queue-controller.ts",
-			"anchors": [
-				"queuedSteering",
-				"queuedFollowUps",
-				"drainSteeringBatchForInterrupt",
-				"Tab queue follow-up"
-			]
-		},
-		{
-			"area": "prompt-queue-parity",
 			"path": "packages/tui-rs/src/app/input_handlers.rs",
 			"anchors": ["should_submit_on_tab"]
 		},

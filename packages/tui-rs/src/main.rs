@@ -345,11 +345,13 @@ async fn main() -> Result<()> {
         std::env::set_var("MAESTRO_MODEL", model);
     }
 
-    // Create the application instance.
-    //
-    // `App::new()` returns `Result<App>`. The `?` operator unwraps the Ok
-    // value or returns the error from main() if it failed.
-    let app = App::new()?;
+    // Trailing positional args become the initial prompt (Grok-style).
+    let initial_prompt = if args.prompt.is_empty() {
+        None
+    } else {
+        Some(args.prompt.join(" "))
+    };
+    let app = App::new_with_initial_prompt(initial_prompt)?;
 
     // Run the application's main loop.
     //
@@ -385,6 +387,16 @@ mod tests {
             command.get_about().map(|about| about.to_string()),
             Some("Native terminal interface for Maestro".to_string())
         );
+    }
+
+    #[test]
+    fn trailing_prompt_args_are_captured() {
+        use clap::Parser;
+        let args = Args::try_parse_from(["maestro-tui", "--model", "gpt-5.1", "fix", "the", "bug"])
+            .expect("parse trailing prompt");
+        assert_eq!(args.model.as_deref(), Some("gpt-5.1"));
+        assert_eq!(args.prompt, vec!["fix", "the", "bug"]);
+        assert_eq!(args.prompt.join(" "), "fix the bug");
     }
 
     #[test]

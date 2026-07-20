@@ -757,6 +757,7 @@ fn new_test_app() -> App {
         terminal,
         capabilities,
         crate::history::PromptHistory::default(),
+        None,
     );
     app.state.steering_mode = QueueMode::default();
     app.state.follow_up_mode = QueueMode::default();

@@ -14,9 +14,10 @@ Nav: [Docs index](README.md) · [Quickstart](QUICKSTART.md) · [Tools Reference]
 ```bash
 npx nx run maestro:build --skip-nx-cache           # CLI fast path
 npm run smoke:local-e2e                            # help/version/headless/mock-agent local smoke
-npx nx run maestro:build:all --skip-nx-cache       # CLI + TUI + Web
+npx nx run maestro:build:all --skip-nx-cache       # CLI + Web packages
+bun run tui-rs:build                               # native maestro-tui (interactive)
 bun run bun:lint                                   # Biome + eval verifier
-npx nx run maestro:test --skip-nx-cache            # Builds TUI/Web, then Vitest
+npx nx run maestro:test --skip-nx-cache            # Builds deps, then Vitest
 npx nx run maestro:evals --skip-nx-cache           # Scenario runner
 ```
 
@@ -27,9 +28,10 @@ mock-agent read, write/read, search/read, and edit/read flows.
 ## 2. Inner Loop
 
 - `bun run dev` — TS watch (rebuilds `dist/`).
-- TUI: `bun run cli -- --provider anthropic --model claude-opus-4-6 "hi"`.
+- Interactive TUI: build with `bun run tui-rs:build`, then `maestro` or `bun run start:native`.
+- One-shot CLI: `bun run cli -- --provider anthropic --model claude-opus-4-6 "hi"`.
 - Web: `bun run web:dev` (server on `:8080`, Vite on `:3000`).
-- Package builds: `bun run --filter @evalops/tui build`, `bun run --filter @evalops/maestro-web build`.
+- Package builds: `bun run tui-rs:build`, `bun run --filter @evalops/maestro-web build`.
 
 ## 3. Safety Checks
 
@@ -49,7 +51,7 @@ mock-agent read, write/read, search/read, and edit/read flows.
 
 - `bun run bun:lint`
 - `npx nx run maestro:test --skip-nx-cache`
-- Build touched packages (e.g., `npx nx run tui:build`, `npx nx run maestro-web:build`)
+- Build touched packages (e.g., `bun run tui-rs:build`, `npx nx run maestro-web:build`)
 - Ensure docs updated if flags/options changed (source-of-truth notes above)
 
 ## 6. Troubleshooting Quickies

@@ -10,7 +10,7 @@ Build testing ensures that:
 3. Source maps are valid
 4. Essential modules and tools are built correctly
 5. CLI functionality works after build
-6. Package builds (TUI, Web, Contracts, AI) are complete
+6. Package builds (Web, Contracts, AI; native TUI via Cargo separately) are complete
 
 ## Test Suites
 
@@ -29,10 +29,13 @@ Comprehensive unit tests that verify:
 ### 2. Package Build Tests (`test/build/package-builds.test.ts`)
 
 Verifies that workspace packages build correctly:
-- TUI package (`packages/tui/dist`)
 - Web package (`packages/web/dist`)
 - Contracts package (`packages/contracts/dist`)
 - AI package (`packages/ai/dist`)
+
+The interactive TUI is native Rust (`packages/tui-rs`); build/test with
+`bun run tui-rs:build` / `bun run tui-rs:test` rather than a JS package `dist`.
+(`@evalops/tui` / `packages/tui` were removed with the TypeScript TUI.)
 
 **Run:** `bunx vitest --run test/build/package-builds.test.ts`
 

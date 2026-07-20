@@ -101,7 +101,6 @@ import {
 	disposeCheckpointService,
 	initCheckpointService,
 } from "./checkpoints/index.js";
-import type { TuiClientToolService } from "./cli-tui/client-tools/local-client-tool-service.js";
 import { type Mode, parseArgs } from "./cli/args.js";
 import { EXEC_SESSION_SUMMARY_PREFIX } from "./cli/commands/exec-constants.js";
 import {
@@ -111,6 +110,10 @@ import {
 	willDispatchHeadlessRuntime,
 } from "./cli/headless-runtime-selection.js";
 import { printHelp } from "./cli/help.js";
+import {
+	launchNativeTui,
+	shouldLaunchNativeInteractiveTui,
+} from "./cli/native-tui-launcher.js";
 import { detectRuntimeConstraintContext } from "./cli/system-prompt.js";
 import { validateFrameworkPreference } from "./config/framework.js";
 import type { ComposerConfig } from "./config/index.js";
@@ -123,7 +126,6 @@ import { bootstrapLsp } from "./lsp/bootstrap.js";
 import type { McpConfig } from "./mcp/types.js";
 import { createLazyAutoMemoryCoordinators } from "./memory/lazy-auto-memory.js";
 import { ensureModelsLoaded } from "./models/builtin.js";
-import type { RegisteredModel } from "./models/registry.js";
 import { reloadModelConfig } from "./models/registry.js";
 import { getPackageVersion } from "./package-metadata.js";
 import { setConfiguredPackageRuntimeContext } from "./packages/runtime.js";
@@ -135,7 +137,6 @@ import { configureSafeMode } from "./safety/safe-mode.js";
 import type { SessionManager } from "./session/manager.js";
 import { beaconTimeoutMs } from "./telemetry/beacon.js";
 import { recordStagedRolloutSurfaceUsageLazy } from "./telemetry/staged-rollout-lazy.js";
-import type { UpdateCheckResult } from "./update/check.js";
 import { createStartupProfilerFromEnv } from "./utils/checkpoint-profiler.js";
 import { isInsideGitRepository } from "./utils/git.js";
 const VERSION = getPackageVersion();
@@ -276,112 +277,38 @@ function shouldRegisterBackgroundTaskShutdownHooks(
 }
 
 /**
- * Configuration options passed to the interactive TUI renderer.
- * These options customize the startup experience shown to users.
+ * Hand off interactive mode to the native maestro-tui binary (Rust agent).
+ * Forwards only flags maestro-tui accepts and propagates the child exit code.
  */
-interface InteractiveOptions {
-	clientToolService?: TuiClientToolService;
-	/** Subset of models available for switching (from --models flag) */
-	modelScope?: RegisteredModel[];
-	/** Changelog summary to display on startup (e.g., "v1.2.0 — New features") */
-	startupChangelogSummary?: string | null;
-	/** Update notification if a newer version is available */
-	updateNotice?: UpdateCheckResult | null;
-}
-
-/**
- * Runs the full interactive Terminal UI (TUI) mode.
- *
- * This is the primary user-facing mode when composer is invoked without
- * command-line messages. It provides:
- * - Real-time streaming of model responses
- * - Interactive input with readline and autocomplete
- * - Tool execution with approval prompts
- * - Session persistence and recovery
- * - View switching (chat, tools, sessions, etc.)
- *
- * The function sets up the TUI renderer, subscribes to agent events,
- * and runs the main input loop until the user exits.
- *
- * @param agent - Configured Agent instance for LLM communication
- * @param sessionManager - Handles session persistence and recovery
- * @param version - Current CLI version for display
- * @param approvalService - Controls tool execution approval behavior
- * @param explicitApiKey - API key from --api-key flag (for display purposes)
- * @param options - Additional startup configuration (model scope, changelog, etc.)
- */
-async function runInteractiveMode(
-	agent: Agent,
-	sessionManager: SessionManager,
-	version: string,
-	approvalService: ActionApprovalService,
-	toolRetryService: ToolRetryService,
-	explicitApiKey?: string,
-	options: InteractiveOptions = {},
-	profileName?: string,
-	cliOverrides?: Partial<ComposerConfig>,
-): Promise<void> {
-	// Redirect logs to file to avoid polluting the TUI
-	const { redirectLoggerToFile } = await import("./utils/logger.js");
-	redirectLoggerToFile();
-
-	let sessionEndReason: "user_exit" | "error" = "user_exit";
+async function runNativeInteractiveMode(
+	parsed: {
+		provider?: string;
+		model?: string;
+		apiKey?: string;
+		continue?: boolean;
+		resume?: boolean;
+		messages: string[];
+	},
+	writeError: (message: string) => void,
+): Promise<never> {
 	try {
-		const { AgentRuntimeController } = await import(
-			"./runtime/agent-runtime.js"
-		);
-		const { TuiRenderer } = await import("./cli-tui/tui-renderer.js");
-		// Initialize the TUI renderer which manages all terminal output
-		const renderer = new TuiRenderer(
-			agent,
-			sessionManager,
-			version,
-			approvalService,
-			toolRetryService,
-			explicitApiKey,
-			{ ...options, profileName, cliOverrides },
-		);
-		const runtime = new AgentRuntimeController({
-			agent,
-			sessionManager,
-			renderer,
-			profileName,
-			cliOverrides,
-			onError: (error) => {
-				const message =
-					error instanceof Error ? error.message : "Unknown error occurred";
-				renderer.showError(message);
+		const exitCode = await launchNativeTui({
+			parsed: {
+				provider: parsed.provider,
+				model: parsed.model,
+				apiKey: parsed.apiKey,
+				continue: parsed.continue,
+				resume: parsed.resume,
+				messages: parsed.messages,
 			},
-		});
-
-		// Initialize TUI - sets up terminal raw mode, cursor handling, and rendering
-		await renderer.init();
-
-		// Render any existing messages from a continued session (--continue mode)
-		// This allows users to see their previous conversation context
-		renderer.renderInitialMessages(agent.state);
-
-		// Subscribe to agent events for real-time UI updates
-		// The renderer handles streaming text, tool execution, errors, and completion
-		agent.subscribe(async (event) => {
-			await renderer.handleEvent(event, agent.state);
-		});
-
-		// Run the main interactive loop - blocks until user exits
-		await runtime.runInteractiveLoop(renderer);
-	} catch (error) {
-		sessionEndReason = "error";
-		throw error;
-	} finally {
-		const { applySessionEndHooks } = await import(
-			"./agent/session-lifecycle-hooks.js"
-		);
-		await applySessionEndHooks({
-			agent,
-			sessionManager,
 			cwd: process.cwd(),
-			reason: sessionEndReason,
+			env: process.env,
 		});
+		process.exit(exitCode);
+	} catch (error) {
+		const message = error instanceof Error ? error.message : String(error);
+		writeError(message);
+		process.exit(1);
 	}
 }
 
@@ -866,25 +793,25 @@ export async function main(args: string[]) {
 		return;
 	}
 
-	// If we're about to enter interactive TUI mode (no prompt messages and not RPC/exec),
-	// or headless mode (stdout is JSON-only), redirect all logging/console output to a file.
-	// This must run before config/model loading to catch any early warnings.
-	const isLikelyInteractiveTui =
-		!parsed.messages.length &&
-		(parsed.mode === "text" || parsed.mode === undefined) &&
-		parsed.command === undefined;
-	if (isLikelyInteractiveTui || willDispatchHeadlessMode) {
+	// Interactive mode: hand off to native maestro-tui (Rust agent) before the
+	// TypeScript agent bootstrap. Headless/exec/rpc/web/single-shot stay on TS.
+	if (shouldLaunchNativeInteractiveTui(parsed)) {
+		await waitForStartupTelemetryForImmediateExit(startupTelemetry);
+		await runNativeInteractiveMode(parsed, writeStartupErrorToStderr);
+	}
+
+	// If we're about to enter headless mode (stdout is JSON-only), redirect all
+	// logging/console output to a file. This must run before config/model loading
+	// to catch any early warnings. Keep error-level console on stderr so fatal
+	// headless startup failures remain protocol-visible on stdout/stderr as designed.
+	if (willDispatchHeadlessMode) {
 		const {
 			redirectLoggerToFile,
 			redirectConsoleToLogger,
-			redirectStderrToLogger,
 			pipeProcessEventsToLogger,
 		} = await import("./utils/logger.js");
 		redirectLoggerToFile();
-		redirectConsoleToLogger({ preserveErrorStderr: willDispatchHeadlessMode });
-		if (!willDispatchHeadlessMode) {
-			redirectStderrToLogger();
-		}
+		redirectConsoleToLogger({ preserveErrorStderr: true });
 		pipeProcessEventsToLogger();
 	}
 
@@ -1520,7 +1447,7 @@ export async function main(args: string[]) {
 			const result = handleAgentsInit(targetArg, { force: parsed.force });
 			if (result.action === "preview") {
 				const { sanitizeTerminalPreview } = await import(
-					"./cli-tui/utils/text-formatting.js"
+					"./utils/terminal-text.js"
 				);
 				const rerunCommand = buildAgentsInitRerunCommand(targetArg);
 				console.log(
@@ -1687,17 +1614,8 @@ export async function main(args: string[]) {
 		sessionManager.disable();
 	}
 
-	// Handle --resume flag: show session selector
-	if (parsed.resume) {
-		const { selectSession } = await import("./cli/session.js");
-		const selectedSession = await selectSession(sessionManager);
-		if (!selectedSession) {
-			console.log(chalk.dim("No session selected"));
-			return;
-		}
-		// Set the selected session as the active session
-		sessionManager.setSessionFile(selectedSession);
-	}
+	// Interactive --resume is handled by the native maestro-tui binary (-r).
+	// Non-interactive resume paths use --session / exec resume flags instead.
 
 	// ─────────────────────────────────────────────────────────────────────────────
 	// PHASE 8: Model Resolution
@@ -1772,14 +1690,6 @@ export async function main(args: string[]) {
 		);
 		toolRetryService = new ToolRetryService(toolRetryMode);
 	}
-	let interactiveClientToolService: TuiClientToolService | undefined;
-	if (isInteractiveTui && !isHeadlessMode) {
-		const { TuiClientToolService } = await import(
-			"./cli-tui/client-tools/local-client-tool-service.js"
-		);
-		interactiveClientToolService = new TuiClientToolService();
-	}
-
 	// ─────────────────────────────────────────────────────────────────────────────
 	// PHASE 10: Tool Registry and Sandbox Setup
 	// ─────────────────────────────────────────────────────────────────────────────
@@ -1805,13 +1715,7 @@ export async function main(args: string[]) {
 	}
 	const { allTools, sandbox, sandboxMode } = toolsResult;
 	startupProfiler.checkpoint("tools:prepared", { tools: allTools.length });
-	let configuredAllTools = allTools;
-	if (interactiveClientToolService) {
-		const { askUserClientTool } = await import("./tools/ask-user-client.js");
-		configuredAllTools = allTools.map((tool) =>
-			tool.name === "ask_user" ? askUserClientTool : tool,
-		);
-	}
+	const configuredAllTools = allTools;
 
 	// ─────────────────────────────────────────────────────────────────────────────
 	// PHASE 11: System Prompt Assembly
@@ -1928,8 +1832,7 @@ export async function main(args: string[]) {
 			sandboxMode: sandboxMode ?? null,
 			approvalService,
 			toolRetryService,
-			clientToolService:
-				headlessClientToolService ?? interactiveClientToolService,
+			clientToolService: headlessClientToolService,
 			requireCredential,
 			enterpriseUser,
 			readonly: parsed.readonly,
@@ -2014,9 +1917,6 @@ export async function main(args: string[]) {
 	const isFreshInteractiveSession =
 		isInteractive && !shouldRestoreSession && mode !== "rpc";
 
-	let startupChangelogSummary: string | null = null;
-	let updateNotice: UpdateCheckResult | null = null;
-	let scopedModels: RegisteredModel[] = [];
 	const needsSessionRestorationSetup =
 		shouldRestoreSession ||
 		(shouldPrintMessages && !(parsed.continue || parsed.resume)) ||
@@ -2026,19 +1926,18 @@ export async function main(args: string[]) {
 		const { restoreSessionState } = await withExecJsonStartupCleanup(
 			() => import("./bootstrap/session-restoration-setup.js"),
 		);
-		({ startupChangelogSummary, updateNotice, scopedModels } =
-			await withExecJsonStartupCleanup(() =>
-				restoreSessionState({
-					agent,
-					sessionManager,
-					shouldRestoreSession,
-					isContinueOrResume: Boolean(parsed.continue || parsed.resume),
-					shouldPrintMessages,
-					isFreshInteractiveSession,
-					version: VERSION,
-					models: parsed.models,
-				}),
-			));
+		await withExecJsonStartupCleanup(() =>
+			restoreSessionState({
+				agent,
+				sessionManager,
+				shouldRestoreSession,
+				isContinueOrResume: Boolean(parsed.continue || parsed.resume),
+				shouldPrintMessages,
+				isFreshInteractiveSession,
+				version: VERSION,
+				models: parsed.models,
+			}),
+		);
 	}
 
 	await withExecJsonStartupCleanup(() =>
@@ -2146,24 +2045,9 @@ export async function main(args: string[]) {
 				runtimeConfig.explicitCliOverrides,
 			);
 		} else if (isInteractive) {
-			// No messages and not RPC - use TUI
+			// Residual interactive path (should normally early-exit to native TUI).
 			startupProfiler.terminal("ui:ready");
-			await runInteractiveMode(
-				agent,
-				sessionManager,
-				VERSION,
-				approvalService,
-				toolRetryService,
-				parsed.apiKey,
-				{
-					clientToolService: interactiveClientToolService,
-					modelScope: scopedModels,
-					startupChangelogSummary,
-					updateNotice,
-				},
-				runtimeConfig.explicitProfileName,
-				runtimeConfig.explicitCliOverrides,
-			);
+			await runNativeInteractiveMode(parsed, writeStartupErrorToStderr);
 		} else if (parsed.command === "exec") {
 			startupProfiler.terminal("exec:ready");
 			const { runExecCommand } = await withExecJsonStartupCleanup(

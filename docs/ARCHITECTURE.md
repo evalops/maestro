@@ -9,8 +9,8 @@ Maestro is a multi-surface agent runtime (CLI/TUI, web, IDEs, bots) that shares 
 ```
 ┌─────────────────────────────────────────────────────────────┐
 │                        SURFACES                              │
-│  TUI (TS)  │  Web UI  │  Slack  │  GitHub  │  Conductor    │
-│  TUI (Rust)│  VS Code │  JetBrains │  Headless │  Ambient  │
+│  TUI (native maestro-tui) │  Web UI  │  Slack  │  GitHub     │
+│  VS Code │  JetBrains │  Conductor │  Headless │  Ambient  │
 └──────┬──────────┬──────────┬──────────┬──────────┬──────────┘
        │          │          │          │          │
        ▼          ▼          ▼          ▼          ▼
@@ -18,6 +18,7 @@ Maestro is a multi-surface agent runtime (CLI/TUI, web, IDEs, bots) that shares 
 │                      AGENT CORE                              │
 │  Event-driven LLM loop • Tool execution • Context sources   │
 │  System prompt assembly • Message transformation             │
+│  (TS core for headless/web/IDE; Rust NativeAgent for TUI)    │
 └────────────────────────────┬────────────────────────────────┘
                              │
 ┌────────────────────────────▼────────────────────────────────┐
@@ -37,7 +38,9 @@ Maestro is a multi-surface agent runtime (CLI/TUI, web, IDEs, bots) that shares 
 
 First-class adapters have dedicated wire-protocol conversion and testing. Aggregator providers re-use an existing adapter's format (e.g., Azure uses the OpenAI adapter).
 
-Every surface shares the same Agent core, tool set, and safety layers.
+Interactive terminal sessions use the **native** Rust agent inside `maestro-tui`.
+Headless, one-shot CLI, web, and many bot/IDE paths use the TypeScript Agent core
+with shared tools/safety. See [TUI Architecture](TUI_ARCHITECTURE.md).
 
 ---
 
@@ -45,22 +48,21 @@ Every surface shares the same Agent core, tool set, and safety layers.
 
 | Path | Purpose |
 |------|---------|
-| `src/cli.ts` | **CLI entrypoint** — argument parsing, launches TUI or headless |
-| `src/agent/` | Agent class, event system, context manager, message transformer |
-| `src/cli-tui/` | TypeScript TUI: renderer, commands, modals, controllers, selectors |
+| `src/main.ts` / `src/cli.ts` | **CLI entrypoint** — argument parsing; interactive mode launches native TUI |
+| `src/cli/native-tui-launcher.ts` | Resolves and spawns the `maestro-tui` binary |
+| `src/agent/` | TypeScript Agent class, event system, context manager, message transformer |
 | `src/tools/` | Tool DSL, built-in tools (read/write/edit/bash/search), tool cache |
 | `src/safety/` | Action firewall, approval modes, guardian (Semgrep/secrets) |
-| `src/session/` | JSONL session persistence, branching, metadata cache |
+| `src/session/` | JSONL session persistence, branching, metadata cache (TS surfaces) |
 | `src/server/` | HTTP/WebSocket server for web UI and API surfaces |
-| `src/mcp/` | Model Context Protocol client, server management |
+| `src/mcp/` | Model Context Protocol client, server management (TS surfaces) |
 | `src/hooks/` | Lifecycle hooks (PreToolUse, PostToolUse, etc.) |
 | `src/config/` | Configuration loading, framework preferences, model registry |
 | `src/workflows/` | Declarative multi-step workflow engine |
 | `src/memory/` | Cross-session memory store |
 | `src/telemetry/` | Cost tracking, observability, wide events, security events |
 | `packages/ai/` | `@evalops/ai` — shared SDK: model registry, transport, agent types |
-| `packages/tui/` | `@evalops/tui` — terminal UI library: differential rendering, widgets |
-| `packages/tui-rs/` | Native Rust TUI binary (standalone, no Node subprocess) |
+| `packages/tui-rs/` | **Native** Rust TUI + agent binary (`maestro-tui`); only interactive UI |
 | `packages/web/` | `@evalops/maestro-web` — browser UI (Lit, Vite) |
 | `packages/contracts/` | `@evalops/contracts` — shared TypeScript definitions |
 | `packages/slack-agent/` | Slack bot surface with Docker sandbox |
@@ -68,21 +70,24 @@ Every surface shares the same Agent core, tool set, and safety layers.
 | `packages/ambient-agent-rs/` | Always-on Rust GitHub daemon |
 | `packages/vscode-extension/` | VS Code extension |
 | `packages/jetbrains-plugin/` | JetBrains plugin |
-| `docs/design/` | 17 detailed design documents (see [table below](#key-design-docs)) |
+| `docs/design/` | Detailed design documents (see [table below](#key-design-docs)) |
 | `test/` | Vitest test suite (~4500 tests) |
 | `evals/` | Evaluation scenarios (`npx nx run maestro:evals`; CI runs on `run-evals` label) |
+
+> **Removed:** `packages/tui` (`@evalops/tui`) and `src/cli-tui/` (TypeScript TUI)
+> were deleted in PR #2891. Do not reintroduce them.
 
 ### Surface Entrypoints
 
 | Surface | Entrypoint |
 |---------|------------|
-| **TS TUI** | `src/cli.ts` → `src/cli-tui/tui-renderer.ts` |
-| **Rust TUI** | `packages/tui-rs/src/main.rs` |
+| **Native TUI** | `maestro` → `src/cli/native-tui-launcher.ts` → `packages/tui-rs` (`maestro-tui`) |
 | **Web UI** | `src/server/` (backend) + `packages/web/` (frontend) |
 | **VS Code** | `packages/vscode-extension/` |
 | **Slack Bot** | `packages/slack-agent/src/index.ts` |
 | **GitHub Agent** | `packages/github-agent/src/index.ts` |
 | **Ambient Agent** | `packages/ambient-agent-rs/src/main.rs` |
+| **Headless / one-shot** | `src/main.ts` TypeScript agent bootstrap |
 
 ### Configuration Precedence (highest wins)
 
@@ -129,9 +134,12 @@ Safety-gated execution framework. Tools are defined with `createTool()` / `creat
 
 JSONL persistence with buffered writes. Sessions are lazily initialized (file created only after first user + assistant exchange). Supports branching (fork from any message), metadata caching, and crash recovery via `beforeExit`/`SIGINT`/`SIGTERM` flush handlers.
 
-### TUI (`src/cli-tui/`, `packages/tui/`)
+### TUI (`packages/tui-rs/`)
 
-Differential rendering engine that minimizes terminal writes. `TuiRenderer` subscribes to Agent events, delegates to views (message, tool output), controllers (queue, plan, approval), and modals (selectors, command palette). The `@evalops/tui` library provides the low-level rendering pipeline, widgets, and synchronized output.
+Native `maestro-tui` binary (ratatui + crossterm) with its own agent loop, provider
+clients, tools, safety, sessions, MCP, hooks, and skills. No Node subprocess for
+interactive turns. See [TUI Architecture](TUI_ARCHITECTURE.md) and
+[Native TUI parity](NATIVE_TUI_PARITY.md).
 
 ---
 
@@ -177,8 +185,8 @@ User types prompt
        │
        ▼
 ┌──────────────────────────────────────────────────────────┐
-│ Event Subscribers                                         │
-│  • TUI Renderer → differential screen update             │
+│ Event Subscribers / native UI                             │
+│  • Native TUI App → ratatui screen update                │
 │  • Session Manager → JSONL persistence                   │
 │  • Telemetry → duration, cost, success tracking          │
 │  • Web UI → SSE/WebSocket forwarding                     │
@@ -207,8 +215,7 @@ All surfaces share the Agent core via different integration patterns:
 
 | Surface | Integration | Notes |
 |---------|-------------|-------|
-| **TS TUI** (`src/cli-tui/`) | Direct — `TuiRenderer` subscribes to `Agent.subscribe()` | Main interactive surface |
-| **Rust TUI** (`packages/tui-rs/`) | Standalone — own agent + native provider clients | No Node subprocess; mirrors TS feature set |
+| **Native TUI** (`packages/tui-rs/`) | Standalone — own agent + native provider clients | **Only** interactive terminal UI; no Node subprocess |
 | **Web UI** (`packages/web/`) | HTTP/WS — `src/server/` wraps Agent, streams via SSE/WebSocket | Lit components, Vite build |
 | **VS Code / JetBrains** | Extension/Plugin — spawns Maestro process, communicates via RPC | IDE-aware context (diagnostics, references) |
 | **Slack Bot** (`packages/slack-agent/`) | Docker sandbox — runs Agent in isolated container per request | Async queuing, approval workflows |
@@ -218,58 +225,33 @@ All surfaces share the Agent core via different integration patterns:
 
 ---
 
-## Slash Command System
+## Slash Command System (native TUI)
 
-Commands are split into a flat metadata catalog and a command-suite catalog. This keeps command definitions declarative while still giving handlers typed runtime dependencies.
+Interactive slash commands live in the Rust TUI. Register and handle them under
+`packages/tui-rs`:
 
-### 1. Define or reuse the handler contract (`src/cli-tui/commands/types.ts`)
+### 1. Command types (`packages/tui-rs/src/commands/types.rs`)
 
-```typescript
-export interface CommandHandlers {
-  myCommand(context: CommandExecutionContext): void;
-}
-```
+Define `Command` metadata and any context the handler needs.
 
-### 2. Add standalone command metadata (`src/cli-tui/commands/command-catalog.ts`)
+### 2. Registry (`packages/tui-rs/src/commands/registry.rs`)
 
-```typescript
-withArgs("mycommand", "myCommand", {
-  description: "...",
-  usage: "/mycommand [args]",
-  tags: ["ui"],
-});
-```
+Add the command to `build_command_registry()` (name, description, usage, tags).
+Fuzzy matching and tab completion are provided by `commands/matcher.rs`.
 
-The adapter in `command-registry-adapter.ts` turns catalog metadata into executable registry entries and handles help, argument parsing, completions, aliases, and command rewrites.
+### 3. Handler (`packages/tui-rs/src/app/command_handlers.rs`)
 
-### 3. Add command-suite metadata when a parent command owns subcommands
+Wire the command action to App behavior (modals, agent calls, status updates).
 
-```typescript
-// command-suite-catalog.ts
-{
-  name: "ops",
-  description: "Operational commands",
-  usage: "/ops [status|restart]",
-  subcommands: OPS_SUBCOMMANDS,
-}
+### 4. Tests
 
-// subcommands/ops-commands.ts
-export const OPS_SUBCOMMANDS: SubcommandDef[] = [
-  { name: "status", description: "Show service status" },
-];
-```
+Cover parsing/dispatch in `commands/registry/tests.rs` and/or `app/tests.rs`.
 
-Command-suite handlers live in `command-suite-handlers.ts` and are wired to the existing top-level handlers through `tui-renderer/command-suite-wiring.ts`.
+Selector-style commands (`/model`, `/theme`, `/approvals`) open ratatui components
+under `packages/tui-rs/src/components/`. See [TUI Architecture](TUI_ARCHITECTURE.md).
 
-### 4. Wire runtime dependencies (`src/cli-tui/tui-renderer/command-registry-options.ts`)
-
-```typescript
-handlers: {
-  myCommand: (context) => this.doSomething(context),
-},
-```
-
-**Command suites** (e.g., `/ss`, `/diag`, `/ui`, `/tools`) share subcommand definitions in `src/cli-tui/commands/subcommands/` and route through `CommandSuiteHandlers`. **Selector commands** (e.g., `/model`, `/theme`) still push a modal via `modalManager.push(component)`.
+> **Historical:** The TS catalog/adapter pattern under `src/cli-tui/commands/` was
+> removed with the TypeScript TUI (PR #2891).
 
 ---
 
@@ -322,7 +304,9 @@ All located in `docs/design/`. Start with Agent State Machine for the core event
 | [Tool System](design/TOOL_SYSTEM.md) | Tool DSL, validation, caching, retry, sandbox |
 | [Context Management](design/CONTEXT_MANAGEMENT.md) | Token budgeting, context sources, auto-compaction |
 | [Session Persistence](design/SESSION_PERSISTENCE.md) | JSONL storage, buffered writes, branching, crash recovery |
-| [TUI Rendering](design/TUI_RENDERING.md) | Differential rendering, event-driven UI, modal system |
+| [TUI Architecture](TUI_ARCHITECTURE.md) | Native maestro-tui overview (current) |
+| [Native TUI parity](NATIVE_TUI_PARITY.md) | Feature checklist vs removed TS interactive agent |
+| [TUI Rendering](design/TUI_RENDERING.md) | **Historical** TS differential-rendering design (pre-#2891) |
 | [Web UI Architecture](design/WEB_UI_ARCHITECTURE.md) | Browser interface, SSE/WebSocket, Lit components |
 | [Safety & Firewall](design/SAFETY_FIREWALL.md) | Rule-based enforcement, dangerous command detection |
 | [Hooks System](design/HOOKS_SYSTEM.md) | PreToolUse/PostToolUse lifecycle, external integrations |
@@ -344,17 +328,18 @@ Quick reference for "where do I change X?"
 
 | Task | Files to touch |
 |------|----------------|
-| **Add a slash command** | `commands/types.ts` → `commands/command-catalog.ts` → handler module → `tui-renderer/command-registry-options.ts` |
-| **Add a command-suite subcommand** | `commands/subcommands/*.ts` → `commands/command-suite-handlers.ts` → `tui-renderer/command-suite-wiring.ts` |
-| **Add a built-in tool** | Create in `src/tools/`, register in tool list, add test in `test/tools/` |
+| **Add a slash command (TUI)** | `packages/tui-rs/src/commands/{types,registry}.rs` → `app/command_handlers.rs` → tests |
+| **Add a built-in tool (TS surfaces)** | Create in `src/tools/`, register in tool list, add test in `test/tools/` |
+| **Add a built-in tool (native TUI)** | `packages/tui-rs/src/tools/` + registry |
 | **Add an MCP server** | `~/.maestro/mcp.json` or `.maestro/mcp.json` — tools auto-register as `mcp__<server>__<tool>` |
-| **Add a provider** | Transport adapter in `packages/ai/`, model entries in registry, compat flags if needed |
-| **Add a context source** | Implement `AgentContextSource`, register in `AgentContextManager` |
-| **Add a TUI modal/selector** | Component in `src/cli-tui/selectors/`, view wrapper, init in `TuiRenderer`, push via `modalManager` |
-| **Add a lifecycle hook** | Define event in hook types, emit from agent/tool executor, document in hooks config |
-| **Fix terminal rendering** | Check if fix belongs in `packages/tui` (library), `src/cli-tui` (app), or `packages/tui-rs` (Rust) |
+| **Add a provider (TS)** | Transport adapter in `packages/ai/`, model entries in registry, compat flags if needed |
+| **Add a provider (native)** | Client under `packages/tui-rs/src/ai/` |
+| **Add a context source (TS)** | Implement `AgentContextSource`, register in `AgentContextManager` |
+| **Add a TUI modal/selector** | Component in `packages/tui-rs/src/components/`, wire from App / commands |
+| **Add a lifecycle hook** | TS: hook types + agent/tool executor; native: `packages/tui-rs/src/hooks/` |
+| **Fix terminal rendering** | `packages/tui-rs` only (TS TUI removed) |
 | **Add a web API endpoint** | Route in `src/server/`, handler using shared Agent, update `packages/web/` if UI needed |
-| **Run tests** | `npx nx run maestro:test --skip-nx-cache` (full) or `bunx vitest --run -t "name"` (targeted) |
+| **Run tests** | `npx nx run maestro:test --skip-nx-cache` (full) or `bunx vitest --run -t "name"` (targeted); `bun run tui-rs:test` for native |
 | **Lint** | `bun run bun:lint` (Biome + eval verifier) |
 
 ---
@@ -372,13 +357,15 @@ npx nx run maestro:test --skip-nx-cache   # ~4500 tests, should all pass
 npx nx graph --focus maestro               # dependency visualization
 
 # 3. Make a change — pick one:
-#    a) Edit a TUI string: grep for "Maestro" in src/cli-tui/ and change it
+#    a) Edit a native TUI string: grep for "Maestro" in packages/tui-rs/src and change it
 #    b) Add a toy tool: create src/tools/clock.ts that returns Date.now()
-#    c) Add a slash command /ping: follow the 4-file pattern above
+#    c) Add a slash command /ping in packages/tui-rs commands/registry + handlers
 
 # 4. Verify
 bun run bun:lint
 bunx vitest --run -t "your test name"
+# if you touched packages/tui-rs:
+bun run tui-rs:check
 ```
 
 ---

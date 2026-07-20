@@ -187,6 +187,21 @@ impl CommandRegistry {
         self.commands.insert(name, cmd);
     }
 
+    /// Register a command only if its primary name and aliases are free.
+    /// Built-ins always win when this is used after `build_command_registry`.
+    pub fn register_if_absent(&mut self, command: Command) -> bool {
+        if self.get(&command.name).is_some() {
+            return false;
+        }
+        for alias in &command.aliases {
+            if self.get(alias).is_some() {
+                return false;
+            }
+        }
+        self.register(command);
+        true
+    }
+
     /// Get a command by name or alias
     ///
     /// Performs a two-stage lookup:
@@ -1782,6 +1797,78 @@ pub fn build_command_registry() -> CommandRegistry {
         .arg(CommandArgument::string("name", "Skill name"))
         .usage("/skills [list|activate|deactivate|reload|info] [skill-name]"),
     );
+
+    registry
+}
+
+/// Built-ins + Grok-style skill/prompt slash extensions. Built-ins always win.
+#[must_use]
+pub fn build_command_registry_with_extensions(
+    skills: &[crate::skills::LoadedSkill],
+    prompts: &[crate::prompts::PromptDefinition],
+) -> CommandRegistry {
+    let mut registry = build_command_registry();
+
+    for prompt in prompts {
+        let name = prompt.name.clone();
+        let desc = prompt
+            .description
+            .clone()
+            .unwrap_or_else(|| format!("Prompt template ({})", prompt.source_type.as_str()));
+        let usage = crate::prompts::get_usage_hint(prompt).replace("/prompts:", "/");
+        let name_for_handler = name.clone();
+        registry.register_if_absent(
+            Command::new(
+                name.clone(),
+                desc,
+                CommandCategory::Tools,
+                Box::new(move |ctx| {
+                    Ok(CommandOutput::Action(CommandAction::InvokePromptTemplate {
+                        name: name_for_handler.clone(),
+                        args: ctx.raw_args.clone(),
+                    }))
+                }),
+            )
+            .usage(usage),
+        );
+    }
+
+    for skill in skills {
+        if !skill.definition.enabled || !skill.definition.user_invocable {
+            continue;
+        }
+        let name = skill.definition.name.clone();
+        let desc = if skill.definition.description.is_empty() {
+            format!("Skill: {name}")
+        } else {
+            skill.definition.description.clone()
+        };
+        let hint = skill
+            .definition
+            .metadata
+            .get("argument-hint")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+        let usage = match hint {
+            Some(h) if !h.is_empty() => format!("/{name} {h}"),
+            _ => format!("/{name} [args...]"),
+        };
+        let name_for_handler = name.clone();
+        registry.register_if_absent(
+            Command::new(
+                name.clone(),
+                desc,
+                CommandCategory::Tools,
+                Box::new(move |ctx| {
+                    Ok(CommandOutput::Action(CommandAction::InvokeSkill {
+                        name: name_for_handler.clone(),
+                        args: ctx.raw_args.clone(),
+                    }))
+                }),
+            )
+            .usage(usage),
+        );
+    }
 
     registry
 }

@@ -254,6 +254,10 @@ pub enum CommandAction {
     ShowDiagnostics,
     /// Session management actions
     Session(SessionAction),
+    /// Invoke a skill as a slash command (Grok-style `/skillname args`)
+    InvokeSkill { name: String, args: String },
+    /// Invoke a flat markdown prompt/command template as a slash command
+    InvokePromptTemplate { name: String, args: String },
 }
 
 /// Session management actions.

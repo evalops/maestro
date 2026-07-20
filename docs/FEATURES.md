@@ -25,7 +25,8 @@ Type `/` in the editor for completions. Highlights:
 - `/run <script>` — run workspace scripts with streamed output.
 - `/sessions` — list or load transcripts; format details live in [Sessions](SESSIONS.md).
 - `/report` — collect info for bug reports or feedback.
-- **Prompt templates** — drop markdown files into `.maestro/prompts/*.md` (project) or `~/.maestro/prompts/*.md` (user), then run them via `/prompts <name> …` or directly as `/<name> …` (if the name doesn’t collide with a built-in command). Markdown files in `.maestro/commands/*.md` are also treated as prompt templates.
+- **Prompt templates & skills as slash commands** (Grok-style) — drop markdown into `.maestro/prompts/*.md` or `.maestro/commands/*.md` (and `~/.maestro/…`), or a skill at `.maestro/skills/<name>/SKILL.md`. Invoke with `/<name> …`. Built-in commands always win on name collision.
+- **Trailing prompt** — `maestro "fix the bug"` / `maestro-tui "fix the bug"` opens the interactive TUI and submits that prompt once the agent is ready.
 
 See [Tools Reference](TOOLS_REFERENCE.md) for every command and flag. Availability by surface (TUI vs Web) is summarized in [Web UI Guide](WEB_UI.md#parity-appendix).
 
@@ -76,4 +77,6 @@ Use `/steer <message>` to interrupt the current run and push a new prompt to the
 
 Keep this guide handy when onboarding teammates so they can discover the TUI’s power-user features quickly.
 
-For lower-level component APIs, see `packages/tui/README.md`.
+For native TUI architecture, shortcuts, and slash commands, see
+[TUI Architecture](TUI_ARCHITECTURE.md) and
+[`packages/tui-rs/README.md`](../packages/tui-rs/README.md).

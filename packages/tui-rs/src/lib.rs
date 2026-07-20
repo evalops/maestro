@@ -555,6 +555,7 @@ pub use notifications::{
 /// Custom prompt system for user-defined prompt templates.
 pub use prompts::{
     find_prompt, // Finds a prompt by name
+    format_prompt_invoke,
     format_prompt_list_item,
     get_usage_hint,   // Gets usage help for a prompt
     load_prompts,     // Loads all prompts from disk
