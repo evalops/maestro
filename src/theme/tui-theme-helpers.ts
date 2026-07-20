@@ -1,6 +1,16 @@
-import type { EditorTheme, MarkdownTheme, SelectListTheme } from "@evalops/tui";
 import chalk from "chalk";
 import type { Theme } from "./theme.js";
+import type {
+	EditorTheme,
+	MarkdownTheme,
+	SelectListTheme,
+} from "./tui-theme-types.js";
+
+export type {
+	EditorTheme,
+	MarkdownTheme,
+	SelectListTheme,
+} from "./tui-theme-types.js";
 
 export function createMarkdownTheme(t: Theme): MarkdownTheme {
 	return {

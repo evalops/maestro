@@ -7,8 +7,16 @@
  * @module hooks/ui-context
  */
 
+import type { Theme } from "../theme/theme.js";
 import { theme } from "../theme/theme.js";
+import type { Component, TUI } from "./tui-surface.js";
 import type { HookUIContext } from "./types.js";
+
+type CustomFactory<T> = (
+	tui: TUI,
+	theme: Theme,
+	done: (result: T) => void,
+) => Component | Promise<Component>;
 
 /**
  * Request sent to RPC client for UI interactions.
@@ -106,15 +114,7 @@ export function createRpcUIContext(
 		setStatus(_key: string, _text: string | undefined): void {
 			// Not supported in RPC mode yet
 		},
-		async custom<T>(
-			_factory: (
-				tui: import("@evalops/tui").TUI,
-				theme: import("../theme/theme.js").Theme,
-				done: (result: T) => void,
-			) =>
-				| import("@evalops/tui").Component
-				| Promise<import("@evalops/tui").Component>,
-		): Promise<T> {
+		async custom<T>(_factory: CustomFactory<T>): Promise<T> {
 			return undefined as T;
 		},
 		setEditorText(_text: string): void {
@@ -152,15 +152,7 @@ export function createNoOpUIContext(): HookUIContext {
 		setStatus(_key: string, _text: string | undefined): void {
 			// No-op
 		},
-		async custom<T>(
-			_factory: (
-				tui: import("@evalops/tui").TUI,
-				theme: import("../theme/theme.js").Theme,
-				done: (result: T) => void,
-			) =>
-				| import("@evalops/tui").Component
-				| Promise<import("@evalops/tui").Component>,
-		): Promise<T> {
+		async custom<T>(_factory: CustomFactory<T>): Promise<T> {
 			return undefined as T;
 		},
 		setEditorText(_text: string): void {
@@ -266,15 +258,7 @@ export function createConsoleUIContext(): HookUIContext {
 		setStatus(_key: string, _text: string | undefined): void {
 			// No-op in console mode
 		},
-		async custom<T>(
-			_factory: (
-				tui: import("@evalops/tui").TUI,
-				theme: import("../theme/theme.js").Theme,
-				done: (result: T) => void,
-			) =>
-				| import("@evalops/tui").Component
-				| Promise<import("@evalops/tui").Component>,
-		): Promise<T> {
+		async custom<T>(_factory: CustomFactory<T>): Promise<T> {
 			return undefined as T;
 		},
 		setEditorText(_text: string): void {

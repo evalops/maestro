@@ -110,41 +110,6 @@
   "src/checkpoints/service.ts": [
     "MAESTRO_DISABLE_FILE_CHECKPOINTING"
   ],
-  "src/cli/commands/codex.ts": [
-    "MAESTRO_CODEX_TOOL_PROFILE"
-  ],
-  "src/cli/commands/config.ts": [
-    "MAESTRO_CONFIG_SHOW_LAYOUT",
-    "MAESTRO_LLM_GATEWAY_URL"
-  ],
-  "src/cli/commands/hosted-runner.ts": [
-    "MAESTRO_AGENT_DIR",
-    "MAESTRO_AGENT_ID",
-    "MAESTRO_AGENT_RUN_ID",
-    "MAESTRO_ATTACH_AUDIENCE",
-    "MAESTRO_HOSTED_RUNNER_MODE",
-    "MAESTRO_PROFILE",
-    "MAESTRO_REMOTE_RUNNER_AGENT_ID",
-    "MAESTRO_REMOTE_RUNNER_OWNER_INSTANCE_ID",
-    "MAESTRO_REMOTE_RUNNER_RESTORE_MANIFEST",
-    "MAESTRO_REMOTE_RUNNER_SNAPSHOT_ROOT",
-    "MAESTRO_REMOTE_RUNNER_WORKSPACE_ID",
-    "MAESTRO_RUNNER_SESSION_ID",
-    "MAESTRO_SESSION_ID",
-    "MAESTRO_WEB_REQUIRE_CSRF",
-    "MAESTRO_WEB_REQUIRE_KEY",
-    "MAESTRO_WEB_REQUIRE_REDIS",
-    "MAESTRO_WORKSPACE_ROOT",
-    "REMOTE_RUNNER_OWNER_INSTANCE_ID"
-  ],
-  "src/cli/commands/memory.ts": [
-    "MAESTRO_SHARED_MEMORY_API_KEY",
-    "MAESTRO_SHARED_MEMORY_BASE"
-  ],
-  "src/cli/headless-protocol.ts": [
-    "MAESTRO_HEADLESS_MAX_ATTACHMENT_BYTES",
-    "MAESTRO_HEADLESS_MAX_TEXT_CHARS"
-  ],
   "src/cli-tui/about-view.ts": [
     "MAESTRO_SAFE_MODE",
     "TERM"
@@ -196,6 +161,14 @@
   "src/cli-tui/tool-renderers/render-edit.ts": [
     "MAESTRO_TUI_DIFF_STYLE"
   ],
+  "src/cli-tui/tui-renderer.ts": [
+    "MAESTRO_SANDBOX",
+    "MAESTRO_TODO_FILE",
+    "MAESTRO_TUI_AUTO_THEME",
+    "MAESTRO_TUI_RENDER_INTERVAL_MS",
+    "SSH_CONNECTION",
+    "SSH_TTY"
+  ],
   "src/cli-tui/tui-renderer/command-suite-wiring.ts": [
     "MAESTRO_APPROVALS",
     "MAESTRO_PLAN_MODE"
@@ -205,18 +178,6 @@
   ],
   "src/cli-tui/tui-renderer/misc-handlers.ts": [
     "MAESTRO_DISABLE_TERMINAL_TITLE"
-  ],
-  "src/cli-tui/tui-renderer.ts": [
-    "MAESTRO_SANDBOX",
-    "MAESTRO_TODO_FILE",
-    "MAESTRO_TUI_AUTO_THEME",
-    "MAESTRO_TUI_RENDER_INTERVAL_MS",
-    "SSH_CONNECTION",
-    "SSH_TTY"
-  ],
-  "src/cli-tui/ui-state.ts": [
-    "MAESTRO_COMMAND_PREFS",
-    "MAESTRO_UI_STATE"
   ],
   "src/cli-tui/utils/env-detect.ts": [
     "BWRAP_ARGS",
@@ -269,6 +230,41 @@
   "src/cli-tui/utils/tool-text-utils.ts": [
     "MAESTRO_TUI_TOOL_MAX_CHARS",
     "MAESTRO_TUI_TOOL_MAX_LINES"
+  ],
+  "src/cli/commands/codex.ts": [
+    "MAESTRO_CODEX_TOOL_PROFILE"
+  ],
+  "src/cli/commands/config.ts": [
+    "MAESTRO_CONFIG_SHOW_LAYOUT",
+    "MAESTRO_LLM_GATEWAY_URL"
+  ],
+  "src/cli/commands/hosted-runner.ts": [
+    "MAESTRO_AGENT_DIR",
+    "MAESTRO_AGENT_ID",
+    "MAESTRO_AGENT_RUN_ID",
+    "MAESTRO_ATTACH_AUDIENCE",
+    "MAESTRO_HOSTED_RUNNER_MODE",
+    "MAESTRO_PROFILE",
+    "MAESTRO_REMOTE_RUNNER_AGENT_ID",
+    "MAESTRO_REMOTE_RUNNER_OWNER_INSTANCE_ID",
+    "MAESTRO_REMOTE_RUNNER_RESTORE_MANIFEST",
+    "MAESTRO_REMOTE_RUNNER_SNAPSHOT_ROOT",
+    "MAESTRO_REMOTE_RUNNER_WORKSPACE_ID",
+    "MAESTRO_RUNNER_SESSION_ID",
+    "MAESTRO_SESSION_ID",
+    "MAESTRO_WEB_REQUIRE_CSRF",
+    "MAESTRO_WEB_REQUIRE_KEY",
+    "MAESTRO_WEB_REQUIRE_REDIS",
+    "MAESTRO_WORKSPACE_ROOT",
+    "REMOTE_RUNNER_OWNER_INSTANCE_ID"
+  ],
+  "src/cli/commands/memory.ts": [
+    "MAESTRO_SHARED_MEMORY_API_KEY",
+    "MAESTRO_SHARED_MEMORY_BASE"
+  ],
+  "src/cli/headless-protocol.ts": [
+    "MAESTRO_HEADLESS_MAX_ATTACHMENT_BYTES",
+    "MAESTRO_HEADLESS_MAX_TEXT_CHARS"
   ],
   "src/config/constants.ts": [
     "CODING_AGENT_DIR",
@@ -342,6 +338,10 @@
     "MAESTRO_MODEL_PROVIDER",
     "MAESTRO_PROFILE",
     "MAESTRO_SANDBOX_MODE"
+  ],
+  "src/config/ui-state.ts": [
+    "MAESTRO_COMMAND_PREFS",
+    "MAESTRO_UI_STATE"
   ],
   "src/db/client.ts": [
     "DATABASE_URL",
@@ -671,11 +671,6 @@
   "src/server/handlers/sessions.ts": [
     "MAESTRO_STRICT_SESSION_ACCESS"
   ],
-  "src/server/headless-runtime/broker.ts": [
-    "MAESTRO_HEADLESS_RUNTIME_EVENT_BUFFER",
-    "MAESTRO_HEADLESS_SUBSCRIBER_QUEUE",
-    "MAESTRO_HEADLESS_SUBSCRIPTION_IDLE_MS"
-  ],
   "src/server/headless-runtime-service.ts": [
     "EVALOPS_NATS_URL",
     "EVALOPS_ORGANIZATION_ID",
@@ -690,6 +685,11 @@
     "MAESTRO_HEADLESS_RUNTIME_IDLE_MS",
     "MAESTRO_HEADLESS_RUNTIME_MAX_CLEANUP_FAILURES",
     "NATS_URL"
+  ],
+  "src/server/headless-runtime/broker.ts": [
+    "MAESTRO_HEADLESS_RUNTIME_EVENT_BUFFER",
+    "MAESTRO_HEADLESS_SUBSCRIBER_QUEUE",
+    "MAESTRO_HEADLESS_SUBSCRIPTION_IDLE_MS"
   ],
   "src/server/logger.ts": [
     "MAESTRO_LOAD_SHEDDING_THRESHOLD_MS",
@@ -763,6 +763,16 @@
     "MAESTRO_NO_COLOR",
     "NO_COLOR"
   ],
+  "src/telemetry.ts": [
+    "MAESTRO_TELEMETRY",
+    "MAESTRO_TELEMETRY_ENDPOINT",
+    "MAESTRO_TELEMETRY_FILE",
+    "MAESTRO_TELEMETRY_SAMPLE",
+    "PLAYWRIGHT_TELEMETRY",
+    "PLAYWRIGHT_TELEMETRY_ENDPOINT",
+    "PLAYWRIGHT_TELEMETRY_FILE",
+    "PLAYWRIGHT_TELEMETRY_SAMPLE"
+  ],
   "src/telemetry/maestro-event-bus.ts": [
     "npm_package_version"
   ],
@@ -789,16 +799,6 @@
   "src/telemetry/wide-events.ts": [
     "MAESTRO_WIDE_EVENT_SAMPLE_RATE",
     "MAESTRO_WIDE_EVENT_SLOW_THRESHOLD_MS"
-  ],
-  "src/telemetry.ts": [
-    "MAESTRO_TELEMETRY",
-    "MAESTRO_TELEMETRY_ENDPOINT",
-    "MAESTRO_TELEMETRY_FILE",
-    "MAESTRO_TELEMETRY_SAMPLE",
-    "PLAYWRIGHT_TELEMETRY",
-    "PLAYWRIGHT_TELEMETRY_ENDPOINT",
-    "PLAYWRIGHT_TELEMETRY_FILE",
-    "PLAYWRIGHT_TELEMETRY_SAMPLE"
   ],
   "src/testing/auto-verify.ts": [
     "MAESTRO_AUTO_TEST",

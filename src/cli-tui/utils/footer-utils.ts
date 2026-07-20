@@ -243,7 +243,8 @@ export function buildPathAndStatsLine(
 	return `${truncatedLeft}${padding}${rightSide}`;
 }
 
-export type FooterMode = "rich" | "solo";
+/** Re-export shared preference type (canonical home: src/config/ui-state). */
+export type { FooterMode } from "../../config/ui-state.js";
 
 export interface FooterStats {
 	totalInput: number;

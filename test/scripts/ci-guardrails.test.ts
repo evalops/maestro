@@ -2522,7 +2522,22 @@ describe("rust workflow guardrails", () => {
 	});
 });
 
-describe("shellcheck workflow guardrails", () => {
+describe("hosted static workflow guardrails", () => {
+	it("keeps actionlint and shellcheck off private runners", () => {
+		const expectedRunner =
+			"${{ vars.PUBLIC_PR_VALIDATION_RUNNER || 'ubuntu-latest' }}";
+		for (const workflowName of ["actionlint.yml", "shellcheck.yml"]) {
+			const workflow = parse(
+				readFileSync(
+					new URL(`../../.github/workflows/${workflowName}`, import.meta.url),
+					{ encoding: "utf8" },
+				),
+			) as Workflow;
+			const onlyJob = Object.values(workflow.jobs ?? {})[0];
+			expect(String(onlyJob?.["runs-on"] ?? "")).toBe(expectedRunner);
+		}
+	});
+
 	it("keeps ShellCheck install portable across runner architectures", () => {
 		const workflow = parse(
 			readFileSync(

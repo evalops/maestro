@@ -1,7 +1,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
-import type { UiState } from "../../cli-tui/ui-state.js";
 import { getAgentDir } from "../../config/constants.js";
+import type { UiState } from "../../config/ui-state.js";
 import { writeJsonFile } from "../../utils/fs.js";
 import { tryParseJson } from "../../utils/json.js";
 import { resolveEnvPath } from "../../utils/path-expansion.js";

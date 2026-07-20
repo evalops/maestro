@@ -15,10 +15,12 @@ import { minimatch } from "minimatch";
 import type { AgentTool } from "../agent/types.js";
 import { PATHS } from "../config/constants.js";
 import { loadConfiguredPackageResources } from "../packages/runtime.js";
+import type { Theme } from "../theme/theme.js";
 import { theme } from "../theme/theme.js";
 import { createLogger } from "../utils/logger.js";
 import { expandTildePath } from "../utils/path-expansion.js";
 import { sanitizeWithStaticMask } from "../utils/secret-redactor.js";
+import type { Component, TUI } from "./tui-surface.js";
 import type {
 	ExecResult,
 	HookAPI,
@@ -38,6 +40,12 @@ import type {
 	RegisteredCommand,
 	TypeScriptHookExecutionOutput,
 } from "./types.js";
+
+type CustomFactory<T> = (
+	tui: TUI,
+	theme: Theme,
+	done: (result: T) => void,
+) => Component | Promise<Component>;
 
 const logger = createLogger("hooks:typescript-loader");
 
@@ -216,15 +224,7 @@ function createNoOpUIContext(): HookUIContext {
 		setStatus(_key: string, _text: string | undefined): void {
 			// No-op
 		},
-		async custom<T>(
-			_factory: (
-				tui: import("@evalops/tui").TUI,
-				theme: import("../theme/theme.js").Theme,
-				done: (result: T) => void,
-			) =>
-				| import("@evalops/tui").Component
-				| Promise<import("@evalops/tui").Component>,
-		): Promise<T> {
+		async custom<T>(_factory: CustomFactory<T>): Promise<T> {
 			return undefined as T;
 		},
 		setEditorText(_text: string): void {
