@@ -1065,12 +1065,6 @@ export async function main(args: string[]) {
 		return;
 	}
 
-	if (parsed.command === "memory") {
-		const { handleMemoryCommand } = await import("./cli/commands/memory.js");
-		await handleMemoryCommand(parsed.subcommand, parsed.messages);
-		return;
-	}
-
 	if (parsed.command === "remote") {
 		const { handleRemoteCommand } = await import("./cli/commands/remote.js");
 		await handleRemoteCommand(parsed.subcommand, parsed.commandArgs ?? []);

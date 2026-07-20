@@ -169,6 +169,7 @@ pub mod pager;
 pub mod palette;
 
 pub mod cli_commands;
+pub mod memory_cli;
 pub mod mode_cli;
 pub mod painter_cli;
 pub mod print_mode;

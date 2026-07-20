@@ -7,6 +7,7 @@ const NATIVE_UTILITY_COMMANDS = new Set([
 	"export",
 	"hooks",
 	"import",
+	"memory",
 	"models",
 	"modes",
 	"painter",
