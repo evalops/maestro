@@ -439,7 +439,19 @@ vi.mock("../../src/cli/native-tui-launcher.js", () => {
 			},
 		),
 		launchNativeCli: vi.fn(async (tokens: string[]) => {
-			const [cmd, ...rest] = tokens;
+			const commandIndex = tokens.findIndex((token) =>
+				[
+					"models",
+					"sessions",
+					"cost",
+					"stats",
+					"status",
+					"hooks",
+					"export",
+					"import",
+				].includes(token),
+			);
+			const [cmd, ...rest] = tokens.slice(Math.max(0, commandIndex));
 			if (cmd === "models") {
 				const sub = rest[0] ?? "list";
 				if (
@@ -2406,24 +2418,6 @@ describe("CLI integration", () => {
 		exitSpy.mockRestore();
 	});
 
-	it("prints maestro usage for unknown hooks subcommand", async () => {
-		const exitCodes: number[] = [];
-		const exitSpy = vi.spyOn(process, "exit").mockImplementation((code) => {
-			exitCodes.push(Number(code ?? 0));
-			throw new Error("exit");
-		});
-		const { handleHooksCommand } = await import(
-			"../../src/cli/commands/hooks.js"
-		);
-		await expect(handleHooksCommand("wat")).rejects.toThrow("exit");
-		expect(exitCodes).toEqual([1]);
-		const combined = output.join("\n");
-		expect(combined).toContain("Unknown hooks subcommand: wat");
-		expect(combined).toContain("Try: maestro hooks status");
-		expect(combined).not.toContain("composer hooks status");
-		exitSpy.mockRestore();
-	});
-
 	it("shows memory subcommand help before requiring shared memory config", async () => {
 		Reflect.deleteProperty(process.env, "MAESTRO_SHARED_MEMORY_BASE");
 		const exitCodes: number[] = [];
@@ -2518,21 +2512,6 @@ describe("CLI integration", () => {
 		expect(combined).toContain("Unknown config subcommand: wat");
 		expect(combined).toContain("maestro config validate");
 		expect(combined).not.toContain("composer config validate");
-		exitSpy.mockRestore();
-	});
-
-	it("prints maestro cost help for unknown cost subcommand", async () => {
-		const exitCodes: number[] = [];
-		const exitSpy = vi.spyOn(process, "exit").mockImplementation((code) => {
-			exitCodes.push(Number(code ?? 0));
-			throw new Error("exit");
-		});
-		await expect(main(["cost", "wat"])).rejects.toThrow("exit");
-		expect(exitCodes).toEqual([1]);
-		const combined = output.join("\n");
-		expect(combined).toContain("Unknown cost subcommand: wat");
-		expect(combined).toContain("maestro cost [today]");
-		expect(combined).not.toContain("composer cost [today]");
 		exitSpy.mockRestore();
 	});
 });

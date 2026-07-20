@@ -1,11 +1,27 @@
 import { isStartupTelemetryRequested } from "./instant-exit.js";
 
+const NATIVE_UTILITY_COMMANDS = new Set([
+	"cost",
+	"export",
+	"hooks",
+	"import",
+	"models",
+	"sessions",
+	"stats",
+	"status",
+]);
+
 const DIRECT_RUNTIME_COMMANDS = new Set([
+	...NATIVE_UTILITY_COMMANDS,
 	"hosted-runner",
 	"init",
 	"skill",
 	"update",
 ]);
+
+export function isNativeUtilityCommand(command: string | undefined): boolean {
+	return Boolean(command && NATIVE_UTILITY_COMMANDS.has(command));
+}
 
 const FLAGS_WITH_VALUES = new Set([
 	"--mode",

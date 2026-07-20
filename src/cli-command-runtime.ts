@@ -1,5 +1,6 @@
 import {
 	isDirectRuntimeCommand,
+	isNativeUtilityCommand,
 	shouldAttemptDirectRuntimeDispatch,
 } from "./cli/direct-runtime-command.js";
 
@@ -13,6 +14,15 @@ export async function runCliCommandRuntime(args: string[]): Promise<boolean> {
 	finalizeLoadedEnv();
 	if (parsed.error || !isDirectRuntimeCommand(parsed.command)) {
 		return false;
+	}
+
+	if (isNativeUtilityCommand(parsed.command)) {
+		const { launchNativeCli } = await import("./cli/native-tui-launcher.js");
+		const exitCode = await launchNativeCli(args);
+		if (exitCode !== 0) {
+			process.exitCode = exitCode;
+		}
+		return true;
 	}
 
 	switch (parsed.command) {

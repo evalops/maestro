@@ -108,7 +108,73 @@ describe("cli-runtime direct command dispatch", () => {
 		expect(getDirectRuntimeCommand(["write", "a", "skill"])).toBeNull();
 		expect(getDirectRuntimeCommand(["a2a", "--help"])).toBeNull();
 		expect(getDirectRuntimeCommand(["context", "--help"])).toBeNull();
-		expect(getDirectRuntimeCommand(["status", "--help"])).toBeNull();
+		expect(getDirectRuntimeCommand(["status", "--help"])).toBe("status");
+	});
+
+	it("hands native utility commands directly to Rust without loading the full runtime", async () => {
+		const launchNativeCli = vi.fn(async () => 0);
+		vi.doMock("../src/cli/native-tui-launcher.js", () => ({
+			buildNativeHostedRunnerArgs,
+			launchNativeCli,
+		}));
+		vi.doMock("../src/load-env.js", () => createLoadEnvModuleMock());
+
+		const { runCliCommandRuntime } = await import(
+			"../src/cli-command-runtime.js"
+		);
+
+		const cases: Array<[string[], string[]]> = [
+			[["status"], ["status"]],
+			[
+				["hooks", "list"],
+				["hooks", "list"],
+			],
+			[
+				["sessions", "export", "session-1", "out.md", "--format", "md"],
+				["sessions", "export", "session-1", "out.md", "--format", "md"],
+			],
+			[
+				["export", "session-1", "out.json"],
+				["export", "session-1", "out.json"],
+			],
+			[
+				["import", "session.jsonl"],
+				["import", "session.jsonl"],
+			],
+			[
+				["cost", "week"],
+				["cost", "week"],
+			],
+			[
+				["stats", "month", "--json", "--session", "session-1"],
+				["stats", "month", "--json", "--session", "session-1"],
+			],
+			[
+				["--provider", "openai", "models", "providers"],
+				["--provider", "openai", "models", "providers"],
+			],
+		];
+
+		for (const [input, expected] of cases) {
+			expect(await runCliCommandRuntime(input)).toBe(true);
+			expect(launchNativeCli).toHaveBeenLastCalledWith(expected);
+		}
+	});
+
+	it("preserves native utility exit status", async () => {
+		const launchNativeCli = vi.fn(async () => 2);
+		vi.doMock("../src/cli/native-tui-launcher.js", () => ({
+			buildNativeHostedRunnerArgs,
+			launchNativeCli,
+		}));
+		vi.doMock("../src/load-env.js", () => createLoadEnvModuleMock());
+
+		const { runCliCommandRuntime } = await import(
+			"../src/cli-command-runtime.js"
+		);
+
+		expect(await runCliCommandRuntime(["models", "providers"])).toBe(true);
+		expect(process.exitCode).toBe(2);
 	});
 
 	it("detects exec as the unbundled package main runtime path", () => {

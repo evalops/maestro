@@ -26,15 +26,31 @@ pub fn run_cli_command(args: &[String]) -> Result<i32> {
         "cost" => run_cost(&args[1..]),
         "stats" => run_stats(&args[1..]),
         "models" => run_models(&args[1..]),
+        "status" if args.get(1).is_some_and(|arg| is_help(arg)) => {
+            println!("Usage: maestro-tui status");
+            Ok(0)
+        }
         "status" => run_status(),
         "hooks" => run_hooks(&args[1..]),
+        "export" if args.get(1).is_some_and(|arg| is_help(arg)) => {
+            println!("Usage: maestro-tui export <session-id> [output-path] [--format f]");
+            Ok(0)
+        }
         "export" => {
             // `maestro-tui export <id> [path] [--format json|md|html|txt|jsonl]`
             run_sessions_export(&args[1..])
         }
+        "import" if args.get(1).is_some_and(|arg| is_help(arg)) => {
+            println!("Usage: maestro-tui import <file.jsonl|file.json>");
+            Ok(0)
+        }
         "import" => run_sessions_import(&args[1..]),
         other => bail!("unknown command: {other}"),
     }
+}
+
+fn is_help(arg: &str) -> bool {
+    matches!(arg, "help" | "--help" | "-h")
 }
 
 fn run_sessions(args: &[String]) -> Result<i32> {
@@ -326,7 +342,14 @@ fn run_cost(args: &[String]) -> Result<i32> {
             println!("Usage: maestro-tui cost [today|week|month|all|breakdown|clear]");
             Ok(0)
         }
-        _ => run_cost_summary(period),
+        "today" | "yesterday" | "week" | "7d" | "month" | "30d" | "all" | "total" => {
+            run_cost_summary(period)
+        }
+        other => {
+            eprintln!("Unknown cost subcommand: {other}");
+            eprintln!("Try: maestro-tui cost today|yesterday|week|month|all|breakdown|clear");
+            Ok(1)
+        }
     }
 }
 
@@ -755,7 +778,7 @@ fn run_hooks(args: &[String]) -> Result<i32> {
     let sub = args.first().map(String::as_str).unwrap_or("status");
     if sub != "status" && sub != "list" {
         eprintln!("Unknown hooks subcommand: {sub}");
-        eprintln!("Try: maestro-tui hooks status");
+        eprintln!("Try: maestro hooks status");
         return Ok(1);
     }
 
@@ -779,5 +802,33 @@ fn truncate(s: &str, max: usize) -> String {
         s.to_string()
     } else {
         format!("{}…", &s[..max.saturating_sub(1)])
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn argv(values: &[&str]) -> Vec<String> {
+        values.iter().map(|value| (*value).to_string()).collect()
+    }
+
+    #[test]
+    fn native_utility_help_exits_cleanly() {
+        for args in [
+            argv(&["status", "--help"]),
+            argv(&["export", "--help"]),
+            argv(&["import", "--help"]),
+        ] {
+            assert_eq!(run_cli_command(&args).expect("help command"), 0);
+        }
+    }
+
+    #[test]
+    fn unknown_cost_subcommand_is_rejected() {
+        assert_eq!(
+            run_cli_command(&argv(&["cost", "nonsense"])).expect("cost command"),
+            1
+        );
     }
 }

@@ -46,6 +46,77 @@ use maestro_tui::hosted_runner_cli::run_hosted_runner_cli_from_env;
 // HELPER FUNCTIONS
 // ─────────────────────────────────────────────────────────────────────────────
 
+const NATIVE_UTILITY_COMMANDS: [&str; 8] = [
+    "sessions", "cost", "stats", "models", "status", "hooks", "export", "import",
+];
+
+const GLOBAL_FLAGS_WITH_VALUES: [&str; 20] = [
+    "--mode",
+    "--provider",
+    "--model",
+    "-m",
+    "--task-budget",
+    "--models",
+    "--models-file",
+    "--api-key",
+    "--port",
+    "--system-prompt",
+    "--append-system-prompt",
+    "--session",
+    "--approval-mode",
+    "--auth",
+    "--sandbox",
+    "--tools",
+    "--composer",
+    "--format",
+    "--profile",
+    "--config",
+];
+
+fn native_utility_tokens(raw_args: &[std::ffi::OsString]) -> Option<Vec<String>> {
+    let mut forwarded_prefix = Vec::new();
+    let mut index = 0;
+    while index < raw_args.len() {
+        let token = raw_args[index].to_string_lossy();
+        if NATIVE_UTILITY_COMMANDS.contains(&token.as_ref()) {
+            let mut tokens = raw_args[index..]
+                .iter()
+                .map(|arg| arg.to_string_lossy().into_owned())
+                .collect::<Vec<_>>();
+            tokens.extend(forwarded_prefix);
+            return Some(tokens);
+        }
+        if token == "--json" {
+            forwarded_prefix.push(token.into_owned());
+            index += 1;
+            continue;
+        }
+        if GLOBAL_FLAGS_WITH_VALUES.contains(&token.as_ref()) {
+            let value = raw_args.get(index + 1)?;
+            if matches!(token.as_ref(), "--provider" | "--session" | "--format") {
+                forwarded_prefix.push(token.into_owned());
+                forwarded_prefix.push(value.to_string_lossy().into_owned());
+            }
+            index += 2;
+            continue;
+        }
+        if token.starts_with("--provider=")
+            || token.starts_with("--session=")
+            || token.starts_with("--format=")
+        {
+            forwarded_prefix.push(token.into_owned());
+            index += 1;
+            continue;
+        }
+        if token.starts_with('-') {
+            index += 1;
+            continue;
+        }
+        return None;
+    }
+    None
+}
+
 /// Infer the AI provider from the model name.
 ///
 /// # Rust Concepts Used
@@ -321,25 +392,19 @@ async fn main() -> Result<()> {
         return Ok(());
     }
 
-    // Lightweight CLI helpers (no TUI / no full interactive loop)
-    if let Some(cmd) = raw_args.get(1).and_then(|a| a.to_str()) {
-        if matches!(
-            cmd,
-            "sessions" | "cost" | "stats" | "models" | "status" | "hooks" | "export" | "import"
-        ) {
-            let tokens: Vec<String> = raw_args
-                .iter()
-                .skip(1)
-                .map(|a| a.to_string_lossy().into_owned())
-                .collect();
-            match maestro_tui::cli_commands::run_cli_command(&tokens) {
-                Ok(code) => std::process::exit(code),
-                Err(err) => {
-                    eprintln!("{err:#}");
-                    std::process::exit(1);
-                }
+    // Lightweight CLI helpers (no TUI / no full interactive loop). Utility
+    // argument normalization lives here so the package shim can forward argv.
+    if let Some(tokens) = native_utility_tokens(&raw_args[1..]) {
+        match maestro_tui::cli_commands::run_cli_command(&tokens) {
+            Ok(code) => std::process::exit(code),
+            Err(err) => {
+                eprintln!("{err:#}");
+                std::process::exit(1);
             }
         }
+    }
+
+    if let Some(cmd) = raw_args.get(1).and_then(|a| a.to_str()) {
         if cmd == "headless" || cmd == "rpc" {
             let code = maestro_tui::headless_server::run_headless_server().await?;
             std::process::exit(code);
@@ -667,6 +732,57 @@ mod tests {
             raw_args.get(1).and_then(|arg| arg.to_str()),
             Some("hosted-runner")
         );
+    }
+
+    #[test]
+    fn native_utility_tokens_forward_command_argv() {
+        let args = ["stats", "month", "--json", "--session", "session-1"]
+            .into_iter()
+            .map(std::ffi::OsString::from)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            native_utility_tokens(&args),
+            Some(vec![
+                "stats".into(),
+                "month".into(),
+                "--json".into(),
+                "--session".into(),
+                "session-1".into(),
+            ])
+        );
+    }
+
+    #[test]
+    fn native_utility_tokens_preserve_relevant_global_options() {
+        let args = [
+            "--profile",
+            "local",
+            "--provider",
+            "openai",
+            "models",
+            "providers",
+        ]
+        .into_iter()
+        .map(std::ffi::OsString::from)
+        .collect::<Vec<_>>();
+        assert_eq!(
+            native_utility_tokens(&args),
+            Some(vec![
+                "models".into(),
+                "providers".into(),
+                "--provider".into(),
+                "openai".into(),
+            ])
+        );
+    }
+
+    #[test]
+    fn native_utility_tokens_do_not_scan_prompt_text() {
+        let args = ["write", "a", "models", "command"]
+            .into_iter()
+            .map(std::ffi::OsString::from)
+            .collect::<Vec<_>>();
+        assert_eq!(native_utility_tokens(&args), None);
     }
 
     #[test]
