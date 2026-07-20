@@ -86,6 +86,9 @@ describe("cli-runtime direct command dispatch", () => {
 	it("detects early commands after global options", () => {
 		expect(getDirectRuntimeCommand(["skill", "--help"])).toBe("skill");
 		expect(
+			getDirectRuntimeCommand(["--output-dir", "artifacts", "modes", "list"]),
+		).toBe("modes");
+		expect(
 			getDirectRuntimeCommand([
 				"--profile",
 				"local",
@@ -117,6 +120,10 @@ describe("cli-runtime direct command dispatch", () => {
 		);
 
 		const cases: Array<[string[], string[]]> = [
+			[
+				["--provider", "openai", "modes", "describe", "high", "--json"],
+				["--provider", "openai", "modes", "describe", "high", "--json"],
+			],
 			[["status"], ["status"]],
 			[
 				["hooks", "list"],
@@ -160,6 +167,29 @@ describe("cli-runtime direct command dispatch", () => {
 			expect(await runCliCommandRuntime(input)).toBe(true);
 			expect(launchNativeCli).toHaveBeenLastCalledWith(expected);
 		}
+	});
+
+	it("routes hidden mode discovery directly to Rust", async () => {
+		const launchNativeCli = vi.fn(async () => 0);
+		vi.doMock("../src/cli/native-tui-launcher.js", () => ({
+			buildNativeHostedRunnerArgs,
+			launchNativeCli,
+		}));
+		vi.doMock("../src/load-env.js", () => createLoadEnvModuleMock());
+
+		const { runCliCommandRuntime } = await import(
+			"../src/cli-command-runtime.js"
+		);
+
+		expect(shouldAttemptDirectRuntimeDispatch(["--list-modes-all"], {})).toBe(
+			true,
+		);
+		expect(await runCliCommandRuntime(["--list-modes-all"])).toBe(true);
+		expect(launchNativeCli).toHaveBeenCalledWith([
+			"modes",
+			"list",
+			"--list-modes-all",
+		]);
 	});
 
 	it("preserves native utility exit status", async () => {

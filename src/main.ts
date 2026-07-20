@@ -254,18 +254,6 @@ async function captureStartupError(error: unknown): Promise<void> {
 	}
 }
 
-async function printAllAgentModes(): Promise<void> {
-	const { getAllModes, getModelForMode } = await import("./agent/modes.js");
-	const lines = ["Agent modes:", ""];
-	for (const { mode, config } of getAllModes({ includeHidden: true })) {
-		const hiddenSuffix = config.visible === false ? " [hidden]" : "";
-		lines.push(`${mode}${hiddenSuffix}`);
-		lines.push(`  ${config.description}`);
-		lines.push(`  model: ${getModelForMode(mode)}`);
-	}
-	console.log(lines.join("\n"));
-}
-
 function shouldRegisterBackgroundTaskShutdownHooks(
 	command: ReturnType<typeof parseArgs>["command"],
 	parsedTools: readonly string[] | undefined,
@@ -566,37 +554,20 @@ export async function main(args: string[]) {
 	}
 
 	if (parsed.listModesAll) {
-		const hiddenFlagTelemetry = recordStagedRolloutSurfaceUsageLazy(
-			"hidden_flag_used",
-			{
-				surfaceId: "cli:--list-modes-all",
-				surfaceType: "cli_flag",
-				owner: "agent-runtime",
-			},
-		);
-		await printAllAgentModes();
-		await waitForStartupTelemetryForImmediateExit(
-			Promise.all([startupTelemetry, hiddenFlagTelemetry]).then(
-				() => undefined,
-			),
-		);
-		process.exit(0);
+		const { launchNativeCli } = await import("./cli/native-tui-launcher.js");
+		const exitCode = await launchNativeCli([
+			"modes",
+			"list",
+			"--list-modes-all",
+		]);
+		await waitForStartupTelemetryForImmediateExit(startupTelemetry);
+		process.exit(exitCode);
 	}
 
 	if (parsed.error) {
 		console.error(chalk.red(parsed.error));
 		await waitForStartupTelemetryForImmediateExit(startupTelemetry);
 		process.exit(1);
-	}
-
-	if (parsed.command === "modes") {
-		const { handleModesCommand } = await import("./cli/commands/modes.js");
-		await handleModesCommand(parsed.subcommand, parsed.messages, {
-			provider: parsed.provider,
-			json: parsed.execJson,
-		});
-		await waitForStartupTelemetryForImmediateExit(startupTelemetry);
-		return;
 	}
 
 	const isHeadlessMode = isHeadlessModeRequested(parsed);
@@ -636,6 +607,16 @@ export async function main(args: string[]) {
 		return;
 	}
 
+	if (isNativeUtilityCommand(parsed.command)) {
+		// Utility commands own their complete lifecycle in Rust. Keep this handoff
+		// ahead of replay setup so inherited scenario state cannot bootstrap the
+		// TypeScript runtime or change a utility command's behavior. Direct dispatch
+		// intentionally falls back here when startup telemetry is configured.
+		startObservability(process.env);
+		await waitForStartupTelemetryForImmediateExit(startupTelemetry);
+		process.exit(await launchNativeCli(args));
+	}
+
 	const replayScenarioPath =
 		parsed.replayScenarioPath ?? process.env.MAESTRO_SCENARIO_PATH;
 	let scenarioReplay:
@@ -667,14 +648,6 @@ export async function main(args: string[]) {
 				{ forwardSignals: true },
 			),
 		);
-	}
-
-	if (isNativeUtilityCommand(parsed.command)) {
-		// Direct dispatch intentionally falls back here when startup telemetry is
-		// configured. Preserve that contract without bootstrapping the TS agent.
-		startObservability(process.env);
-		await waitForStartupTelemetryForImmediateExit(startupTelemetry);
-		process.exit(await launchNativeCli(args));
 	}
 
 	// Handle `maestro web` early exit (start the bundled web server + UI).

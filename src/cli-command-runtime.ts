@@ -12,6 +12,18 @@ export async function runCliCommandRuntime(args: string[]): Promise<boolean> {
 	const parsed = parseArgs(args);
 	const { finalizeLoadedEnv } = await import("./load-env.js");
 	finalizeLoadedEnv();
+	if (parsed.listModesAll) {
+		const { launchNativeCli } = await import("./cli/native-tui-launcher.js");
+		const exitCode = await launchNativeCli([
+			"modes",
+			"list",
+			"--list-modes-all",
+		]);
+		if (exitCode !== 0) {
+			process.exitCode = exitCode;
+		}
+		return true;
+	}
 	if (parsed.error || !isDirectRuntimeCommand(parsed.command)) {
 		return false;
 	}

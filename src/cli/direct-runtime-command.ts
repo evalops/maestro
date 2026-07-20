@@ -6,6 +6,7 @@ const NATIVE_UTILITY_COMMANDS = new Set([
 	"hooks",
 	"import",
 	"models",
+	"modes",
 	"sessions",
 	"stats",
 	"status",
@@ -44,6 +45,7 @@ const FLAGS_WITH_VALUES = new Set([
 	"--tools",
 	"--composer",
 	"--format",
+	"--output-dir",
 	"--profile",
 	"--config",
 	"--junit",
@@ -118,7 +120,8 @@ export function shouldAttemptDirectRuntimeDispatch(
 	env: NodeJS.ProcessEnv = process.env,
 ): boolean {
 	return (
-		getDirectRuntimeCommand(args) !== null &&
+		(getDirectRuntimeCommand(args) !== null ||
+			args.includes("--list-modes-all")) &&
 		!hasLegacyAuthFlag(args) &&
 		!isStartupTelemetryRequested(env)
 	);

@@ -46,11 +46,12 @@ use maestro_tui::hosted_runner_cli::run_hosted_runner_cli_from_env;
 // HELPER FUNCTIONS
 // ─────────────────────────────────────────────────────────────────────────────
 
-const NATIVE_UTILITY_COMMANDS: [&str; 10] = [
-    "sessions", "cost", "stats", "models", "status", "hooks", "export", "import", "update", "skill",
+const NATIVE_UTILITY_COMMANDS: [&str; 11] = [
+    "sessions", "cost", "stats", "models", "status", "hooks", "export", "import", "update",
+    "skill", "modes",
 ];
 
-const GLOBAL_FLAGS_WITH_VALUES: [&str; 20] = [
+const GLOBAL_FLAGS_WITH_VALUES: [&str; 26] = [
     "--mode",
     "--provider",
     "--model",
@@ -66,11 +67,17 @@ const GLOBAL_FLAGS_WITH_VALUES: [&str; 20] = [
     "--approval-mode",
     "--auth",
     "--sandbox",
+    "--output-schema",
+    "--output-last-message",
     "--tools",
     "--composer",
     "--format",
+    "--output-dir",
     "--profile",
     "--config",
+    "--junit",
+    "--replay",
+    "--record-scenario",
 ];
 
 fn native_utility_tokens(raw_args: &[std::ffi::OsString]) -> Option<Vec<String>> {
@@ -89,6 +96,16 @@ fn native_utility_tokens(raw_args: &[std::ffi::OsString]) -> Option<Vec<String>>
         if token == "--json" {
             forwarded_prefix.push(token.into_owned());
             index += 1;
+            continue;
+        }
+        if token == "--worktree" {
+            index += 1;
+            if raw_args
+                .get(index)
+                .is_some_and(|value| !value.to_string_lossy().starts_with('-'))
+            {
+                index += 1;
+            }
             continue;
         }
         if GLOBAL_FLAGS_WITH_VALUES.contains(&token.as_ref()) {
@@ -834,6 +851,66 @@ mod tests {
                 "--provider".into(),
                 "openai".into(),
             ])
+        );
+    }
+
+    #[test]
+    fn native_utility_tokens_skip_all_value_taking_cli_globals() {
+        for flag in [
+            "--output-schema",
+            "--output-last-message",
+            "--output-dir",
+            "--junit",
+            "--replay",
+            "--record-scenario",
+        ] {
+            let args = [flag, "ignored-value", "modes", "describe", "high"]
+                .into_iter()
+                .map(std::ffi::OsString::from)
+                .collect::<Vec<_>>();
+            assert_eq!(
+                native_utility_tokens(&args),
+                Some(vec!["modes".into(), "describe".into(), "high".into()]),
+                "scanner did not consume {flag}'s value"
+            );
+        }
+    }
+
+    #[test]
+    fn native_utility_tokens_dispatch_modes_with_provider() {
+        let args = [
+            "--provider",
+            "openai",
+            "modes",
+            "describe",
+            "high",
+            "--json",
+        ]
+        .into_iter()
+        .map(std::ffi::OsString::from)
+        .collect::<Vec<_>>();
+        assert_eq!(
+            native_utility_tokens(&args),
+            Some(vec![
+                "modes".into(),
+                "describe".into(),
+                "high".into(),
+                "--json".into(),
+                "--provider".into(),
+                "openai".into(),
+            ])
+        );
+    }
+
+    #[test]
+    fn native_utility_tokens_consume_named_worktree_before_modes() {
+        let args = ["--worktree", "feature-branch", "modes", "describe", "high"]
+            .into_iter()
+            .map(std::ffi::OsString::from)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            native_utility_tokens(&args),
+            Some(vec!["modes".into(), "describe".into(), "high".into(),])
         );
     }
 
