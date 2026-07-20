@@ -124,6 +124,10 @@ describe("cli-runtime direct command dispatch", () => {
 
 		const cases: Array<[string[], string[]]> = [
 			[
+				["painter", "show", "image.png"],
+				["painter", "show", "image.png"],
+			],
+			[
 				["--provider", "openai", "modes", "describe", "high", "--json"],
 				["--provider", "openai", "modes", "describe", "high", "--json"],
 			],

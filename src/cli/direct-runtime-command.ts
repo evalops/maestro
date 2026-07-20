@@ -8,6 +8,7 @@ const NATIVE_UTILITY_COMMANDS = new Set([
 	"import",
 	"models",
 	"modes",
+	"painter",
 	"sessions",
 	"stats",
 	"status",
