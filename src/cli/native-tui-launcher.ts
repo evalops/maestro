@@ -37,6 +37,24 @@ export type NativeTuiLaunchArgs = {
 	messages?: string[];
 };
 
+export function buildNativeHostedRunnerArgs(
+	commandArgs: readonly string[],
+	defaultPort?: number,
+): string[] {
+	const args = ["hosted-runner", ...commandArgs];
+	const hasExplicitAddress = commandArgs.some(
+		(arg) =>
+			arg === "--listen" ||
+			arg.startsWith("--listen=") ||
+			arg === "--port" ||
+			arg.startsWith("--port="),
+	);
+	if (defaultPort !== undefined && !hasExplicitAddress) {
+		args.push("--port", String(defaultPort));
+	}
+	return args;
+}
+
 export type ResolveMaestroTuiBinaryOptions = {
 	env?: NodeJS.ProcessEnv;
 	packageRoot?: string;
@@ -312,6 +330,25 @@ export type LaunchNativeTuiOptions = {
 	spawnImpl?: typeof spawn;
 };
 
+const POSIX_SIGNAL_NUMBERS: Partial<Record<NodeJS.Signals, number>> = {
+	SIGHUP: 1,
+	SIGINT: 2,
+	SIGQUIT: 3,
+	SIGTERM: 15,
+};
+
+const FORWARDED_PARENT_SIGNALS = [
+	"SIGINT",
+	"SIGTERM",
+	"SIGHUP",
+	"SIGQUIT",
+] as const satisfies readonly NodeJS.Signals[];
+
+function exitCodeForSignal(signal: NodeJS.Signals): number {
+	const signalNumber = POSIX_SIGNAL_NUMBERS[signal];
+	return signalNumber === undefined ? 1 : 128 + signalNumber;
+}
+
 /**
  * Spawn maestro-tui with inherited stdio and return its exit code.
  * Signal terminations map to 128 + signal number when available, else 1.
@@ -341,18 +378,7 @@ export function launchNativeTui(
 		});
 		child.on("exit", (code, signal) => {
 			if (signal) {
-				const signalCode =
-					typeof signal === "string"
-						? (
-								{
-									SIGHUP: 1,
-									SIGINT: 2,
-									SIGQUIT: 3,
-									SIGTERM: 15,
-								} as Record<string, number>
-							)[signal]
-						: undefined;
-				resolvePromise(signalCode !== undefined ? 128 + signalCode : 1);
+				resolvePromise(exitCodeForSignal(signal));
 				return;
 			}
 			resolvePromise(code ?? 1);
@@ -380,6 +406,10 @@ export async function launchNativeCli(
 		env?: NodeJS.ProcessEnv;
 		resolveOptions?: ResolveMaestroTuiBinaryOptions;
 		spawnImpl?: typeof spawn;
+		/** Forward one parent termination signal and await the child's drain exit. */
+		forwardSignals?: boolean;
+		/** Override the parent signal source in tests. */
+		parentSignalEmitter?: Pick<NodeJS.Process, "on" | "removeListener">;
 	} = {},
 ): Promise<number> {
 	const env = options.env ?? process.env;
@@ -394,10 +424,44 @@ export async function launchNativeCli(
 			cwd: options.cwd ?? process.cwd(),
 			env: { ...env },
 		});
-		child.on("error", reject);
+		const parentSignalEmitter = options.parentSignalEmitter ?? process;
+		let forwardedSignal: NodeJS.Signals | undefined;
+		const signalHandlers = new Map<NodeJS.Signals, () => void>();
+		const removeSignalHandlers = () => {
+			for (const [signal, handler] of signalHandlers) {
+				parentSignalEmitter.removeListener(signal, handler);
+			}
+			signalHandlers.clear();
+		};
+
+		if (options.forwardSignals) {
+			for (const signal of FORWARDED_PARENT_SIGNALS) {
+				const handler = () => {
+					if (forwardedSignal !== undefined) return;
+					forwardedSignal = signal;
+					try {
+						if (!child.kill(signal)) {
+							removeSignalHandlers();
+							resolvePromise(exitCodeForSignal(signal));
+						}
+					} catch (error) {
+						removeSignalHandlers();
+						reject(error);
+					}
+				};
+				signalHandlers.set(signal, handler);
+				parentSignalEmitter.on(signal, handler);
+			}
+		}
+
+		child.on("error", (error) => {
+			removeSignalHandlers();
+			reject(error);
+		});
 		child.on("exit", (code, signal) => {
+			removeSignalHandlers();
 			if (signal) {
-				resolvePromise(128);
+				resolvePromise(exitCodeForSignal(signal));
 				return;
 			}
 			resolvePromise(code ?? 1);

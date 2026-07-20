@@ -3,8 +3,8 @@ use std::fs;
 use std::net::{SocketAddr, ToSocketAddrs};
 use std::path::{Path, PathBuf};
 
-const DEFAULT_LISTEN_HOST: &str = "127.0.0.1";
-const PORT_ONLY_LISTEN_HOST: &str = "0.0.0.0";
+const DEFAULT_ENV_LISTEN_HOST: &str = "0.0.0.0";
+const DEFAULT_PROGRAMMATIC_LISTEN_HOST: &str = "127.0.0.1";
 const DEFAULT_LISTEN_PORT: u16 = 8080;
 
 #[derive(Debug, Clone)]
@@ -49,23 +49,18 @@ impl HostedRunnerConfig {
             .or(hosted_runner_port)
             .or(port_env)
             .unwrap_or(DEFAULT_LISTEN_PORT);
-        let explicit_port =
-            listen.port.is_some() || hosted_runner_port.is_some() || port_env.is_some();
         let host = listen
             .host
             .or_else(|| env_value(env, "MAESTRO_HOSTED_RUNNER_HOST"))
-            .unwrap_or_else(|| {
-                if explicit_port {
-                    PORT_ONLY_LISTEN_HOST.to_string()
-                } else {
-                    DEFAULT_LISTEN_HOST.to_string()
-                }
-            });
+            .unwrap_or_else(|| DEFAULT_ENV_LISTEN_HOST.to_string());
         let bind_addr = resolve_bind_addr(&host, port)?;
-        let auth_token = env_value(env, "MAESTRO_HOSTED_RUNNER_AUTH_TOKEN");
+        let auth_token = first_env(
+            env,
+            &["MAESTRO_HOSTED_RUNNER_AUTH_TOKEN", "MAESTRO_WEB_API_KEY"],
+        );
         if !bind_addr.ip().is_loopback() && auth_token.is_none() {
             return Err(HostedRunnerConfigError::new(
-                "maestro hosted-runner requires MAESTRO_HOSTED_RUNNER_AUTH_TOKEN when binding to non-loopback interfaces",
+                "maestro hosted-runner requires MAESTRO_HOSTED_RUNNER_AUTH_TOKEN or MAESTRO_WEB_API_KEY when binding to non-loopback interfaces",
             ));
         }
         let snapshot_root = resolve_snapshot_root(
@@ -124,7 +119,7 @@ impl HostedRunnerConfig {
             workspace_root: resolve_config_workspace_root(Some(path_to_str(
                 workspace_root.as_ref(),
             )?))?,
-            bind_addr: format!("{DEFAULT_LISTEN_HOST}:{DEFAULT_LISTEN_PORT}")
+            bind_addr: format!("{DEFAULT_PROGRAMMATIC_LISTEN_HOST}:{DEFAULT_LISTEN_PORT}")
                 .parse()
                 .expect("default hosted runner bind address is valid"),
             owner_instance_id: None,

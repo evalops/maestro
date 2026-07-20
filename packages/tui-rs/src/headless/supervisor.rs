@@ -1001,6 +1001,12 @@ impl AgentSupervisor {
         }
         Ok(())
     }
+
+    /// Return the active session recorder path, when recording is enabled.
+    #[must_use]
+    pub fn session_file(&self) -> Option<&Path> {
+        self.session_recorder.as_ref().map(SessionRecorder::path)
+    }
 }
 
 /// Builder for `AgentSupervisor`

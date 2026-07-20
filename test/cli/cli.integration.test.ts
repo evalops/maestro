@@ -12,6 +12,7 @@ import { join } from "node:path";
 import { HeadlessErrorMessageSchema } from "@evalops/contracts";
 import { Value } from "@sinclair/typebox/value";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { launchNativeCli } from "../../src/cli/native-tui-launcher.js";
 import { clearRegisteredHooks, registerHook } from "../../src/hooks/index.js";
 import { main } from "../../src/main.js";
 import { resetOAuthStorageForTests } from "../../src/oauth/storage.js";
@@ -316,6 +317,23 @@ vi.mock("../../src/evalops/agent-bootstrap.js", async (importOriginal) => {
 
 vi.mock("../../src/cli/native-tui-launcher.js", () => {
 	return {
+		buildNativeHostedRunnerArgs: (
+			commandArgs: readonly string[],
+			defaultPort?: number,
+		) => {
+			const args = ["hosted-runner", ...commandArgs];
+			const hasExplicitAddress = commandArgs.some(
+				(arg) =>
+					arg === "--listen" ||
+					arg.startsWith("--listen=") ||
+					arg === "--port" ||
+					arg.startsWith("--port="),
+			);
+			if (defaultPort !== undefined && !hasExplicitAddress) {
+				args.push("--port", String(defaultPort));
+			}
+			return args;
+		},
 		// Keep selection helpers real-enough for routing; only spawn is stubbed.
 		shouldLaunchNativeInteractiveTui: (parsed: {
 			command?: string;
@@ -2336,6 +2354,16 @@ describe("CLI integration", () => {
 			"Legacy Codex/ChatGPT auth flags are no longer supported",
 		);
 		exitSpy.mockRestore();
+	});
+
+	it("preserves the native hosted-runner exit status through the full runtime", async () => {
+		vi.mocked(launchNativeCli).mockResolvedValueOnce(143);
+
+		expect(await runMain(["hosted-runner", "--port", "9090"])).toBe(143);
+		expect(launchNativeCli).toHaveBeenLastCalledWith(
+			["hosted-runner", "--port", "9090"],
+			{ forwardSignals: true },
+		);
 	});
 
 	it("rejects legacy auth flags before web early exit", async () => {

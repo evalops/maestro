@@ -28,7 +28,7 @@ use crate::headless::messages::{
     UtilityCommandStream, UtilityCommandTerminalMode, UtilityFileSearchMatch, UtilityOperation,
     HEADLESS_PROTOCOL_VERSION,
 };
-use crate::headless::{AgentState, AgentSupervisor, AsyncTransportError};
+use crate::headless::{AgentState, AgentSupervisor, AsyncTransportError, SessionReplay};
 
 mod config;
 mod handle;
@@ -266,6 +266,10 @@ pub trait HostedRunnerHeadlessMessageExecutor: Send + Sync {
     fn state(&self) -> Result<Option<AgentState>, HostedRunnerError> {
         Ok(None)
     }
+
+    fn flush_session(&self) -> Result<Option<PathBuf>, HostedRunnerError> {
+        Ok(None)
+    }
 }
 
 #[derive(Clone)]
@@ -325,6 +329,17 @@ impl HostedRunnerHeadlessMessageExecutor for AgentSupervisorHostedRunnerMessageE
             .lock()
             .map_err(|_| HostedRunnerError::internal("agent supervisor mutex poisoned"))?;
         Ok(Some(supervisor.state().clone()))
+    }
+
+    fn flush_session(&self) -> Result<Option<PathBuf>, HostedRunnerError> {
+        let mut supervisor = self
+            .supervisor
+            .lock()
+            .map_err(|_| HostedRunnerError::internal("agent supervisor mutex poisoned"))?;
+        supervisor
+            .flush_session()
+            .map_err(|error| HostedRunnerError::internal(error.to_string()))?;
+        Ok(supervisor.session_file().map(Path::to_path_buf))
     }
 }
 
@@ -396,6 +411,14 @@ pub async fn start_hosted_runner(config: HostedRunnerConfig) -> io::Result<Hoste
         Arc::new(TransportOnlyHostedRunnerMessageExecutor),
     )
     .await
+}
+
+pub(crate) async fn load_hosted_runner_session_replay(
+    config: &HostedRunnerConfig,
+) -> io::Result<Option<SessionReplay>> {
+    Ok(load_restore_manifest(config)
+        .await?
+        .map(|manifest| manifest.session_replay()))
 }
 
 pub async fn start_hosted_runner_with_message_executor(
@@ -735,7 +758,14 @@ fn require_auth_header(
     let runner_token = headers
         .get("x-maestro-hosted-runner-token")
         .and_then(|value| normalize_auth_token(Some(value)));
-    if bearer_token == Some(expected_token) || runner_token == Some(expected_token) {
+    let legacy_api_token = headers
+        .get("x-maestro-api-key")
+        .or_else(|| headers.get("x-composer-api-key"))
+        .and_then(|value| normalize_auth_token(Some(value)));
+    if bearer_token == Some(expected_token)
+        || runner_token == Some(expected_token)
+        || legacy_api_token == Some(expected_token)
+    {
         return Ok(());
     }
     Err(HostedError::new(

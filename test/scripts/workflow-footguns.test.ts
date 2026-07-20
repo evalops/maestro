@@ -190,7 +190,7 @@ describe("workflow footgun guardrails", () => {
 		expect(evaluateWorkflowFootguns({ root })).toEqual([]);
 	});
 
-	it("rejects pull request runner override variables that can route PR CI onto internal smoke runners", () => {
+	it("rejects hard-coding the trusted evalops-internal lane for pull_request jobs", () => {
 		const root = makeFixture();
 		write(
 			join(root, ".github/workflows/ci.yml"),
@@ -198,11 +198,7 @@ describe("workflow footgun guardrails", () => {
 				"name: ci",
 				"jobs:",
 				"  pr-checks:",
-				"    runs-on: ${{ github.event_name == 'pull_request' && (vars.PR_CHECKS_RUNNER || 'evalops-private-heavy') || 'evalops-internal' }}",
-				"    steps:",
-				"      - run: echo ok",
-				"  coverage:",
-				"    runs-on: ${{ github.event_name == 'pull_request' && (vars.PR_COVERAGE_RUNNER || 'evalops-private-heavy') || 'evalops-internal' }}",
+				"    runs-on: ${{ github.event_name == 'pull_request' && 'evalops-internal' || 'ubuntu-latest' }}",
 				"    steps:",
 				"      - run: echo ok",
 				"",
@@ -214,7 +210,7 @@ describe("workflow footgun guardrails", () => {
 				"name: Rust TUI",
 				"jobs:",
 				"  build:",
-				"    runs-on: ${{ github.event_name == 'pull_request' && (vars.PR_RUST_RUNNER || 'evalops-private-heavy') || 'evalops-internal' }}",
+				"    runs-on: ${{ github.event_name == 'pull_request' && 'evalops-internal' || 'ubuntu-latest' }}",
 				"    steps:",
 				"      - run: echo ok",
 				"",
@@ -224,19 +220,16 @@ describe("workflow footgun guardrails", () => {
 		expect(evaluateWorkflowFootguns({ root })).toEqual(
 			expect.arrayContaining([
 				expect.stringContaining(
-					"ci.yml: pull_request jobs must not use vars.PR_CHECKS_RUNNER",
+					"ci.yml: pull_request jobs must not hard-code evalops-internal",
 				),
 				expect.stringContaining(
-					"ci.yml: pull_request jobs must not use vars.PR_COVERAGE_RUNNER",
-				),
-				expect.stringContaining(
-					"rust.yml: pull_request jobs must not use vars.PR_RUST_RUNNER",
+					"rust.yml: pull_request jobs must not hard-code evalops-internal",
 				),
 			]),
 		);
 	});
 
-	it("accepts pull request workflows pinned to private CI lanes", () => {
+	it("accepts pull request workflows routed through Blacksmith / PR_CHECKS failover vars", () => {
 		const root = makeFixture();
 		write(
 			join(root, ".github/workflows/ci.yml"),
@@ -244,11 +237,11 @@ describe("workflow footgun guardrails", () => {
 				"name: ci",
 				"jobs:",
 				"  pr-checks:",
-				"    runs-on: ${{ github.event_name == 'pull_request' && 'evalops-private-heavy' || 'evalops-internal' }}",
+				"    runs-on: ${{ github.event_name == 'pull_request' && (vars.PR_CHECKS_RUNNER || vars.BLACKSMITH_RUNNER || 'ubuntu-latest') || (vars.INTERNAL_CONFIRMATION_RUNNER || vars.BLACKSMITH_RUNNER || 'blacksmith-4vcpu-ubuntu-2404') }}",
 				"    steps:",
 				"      - run: echo ok",
 				"  coverage:",
-				"    runs-on: ${{ github.event_name == 'pull_request' && 'evalops-private-heavy' || 'evalops-internal' }}",
+				"    runs-on: ${{ github.event_name == 'pull_request' && (vars.BLACKSMITH_HEAVY_RUNNER || 'blacksmith-8vcpu-ubuntu-2404') || (vars.INTERNAL_CONFIRMATION_RUNNER || vars.BLACKSMITH_RUNNER || 'blacksmith-4vcpu-ubuntu-2404') }}",
 				"    steps:",
 				"      - run: echo ok",
 				"",
@@ -260,7 +253,25 @@ describe("workflow footgun guardrails", () => {
 				"name: Rust TUI",
 				"jobs:",
 				"  build:",
-				"    runs-on: ${{ github.event_name == 'pull_request' && 'evalops-private-heavy' || 'evalops-internal' }}",
+				"    runs-on: ${{ github.event_name == 'pull_request' && (vars.BLACKSMITH_HEAVY_RUNNER || 'blacksmith-8vcpu-ubuntu-2404') || (vars.INTERNAL_CONFIRMATION_RUNNER || vars.BLACKSMITH_RUNNER || 'blacksmith-4vcpu-ubuntu-2404') }}",
+				"    steps:",
+				"      - run: echo ok",
+				"",
+			].join("\n"),
+		);
+
+		expect(evaluateWorkflowFootguns({ root })).toEqual([]);
+	});
+
+	it("accepts public pull request workflows routed through the public validation runner var", () => {
+		const root = makeFixture();
+		write(
+			join(root, ".github/workflows/ci.yml"),
+			[
+				"name: ci",
+				"jobs:",
+				"  pr-checks:",
+				"    runs-on: ${{ vars.PUBLIC_PR_VALIDATION_RUNNER || 'ubuntu-latest' }}",
 				"    steps:",
 				"      - run: echo ok",
 				"",

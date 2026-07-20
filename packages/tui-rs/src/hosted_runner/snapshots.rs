@@ -5,6 +5,7 @@ pub(super) async fn write_snapshot_manifest(
     shared: &SharedRunner,
     input: &DrainRequest,
 ) -> HostedResult<(PathBuf, serde_json::Value)> {
+    let session_file = shared.message_executor.flush_session()?;
     let root = shared.config.snapshot_root.clone().unwrap_or_else(|| {
         shared
             .config
@@ -76,7 +77,7 @@ pub(super) async fn write_snapshot_manifest(
         },
         error: None,
         session_id: maestro_session_id.clone(),
-        session_file: None,
+        session_file,
         protocol_version: has_runtime_activity.then(|| HEADLESS_PROTOCOL_VERSION.to_string()),
         cursor: has_runtime_activity.then_some(snapshot.cursor),
     };

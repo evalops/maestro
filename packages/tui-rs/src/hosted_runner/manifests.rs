@@ -13,9 +13,10 @@ use crate::headless::messages::{
     active_codex_subagent_status, codex_subagent_child_runs, codex_subagent_edge_key,
     codex_subagent_operation, codex_subagent_status_is_terminal, ApprovalMode, ClientCapabilities,
     ClientInfo, CodexSubagentContinuityEdge, ConnectionRole, ConnectionState, FromAgentMessage,
-    InitConfig, ThinkingLevel, UtilityCommandShellMode, UtilityCommandTerminalMode,
-    CODEX_SUBAGENT_TOOL_PREFIX, CODEX_SUBAGENT_WORK_GRAPH_SCHEMA,
+    HeadlessErrorType, InitConfig, ThinkingLevel, UtilityCommandShellMode,
+    UtilityCommandTerminalMode, CODEX_SUBAGENT_TOOL_PREFIX, CODEX_SUBAGENT_WORK_GRAPH_SCHEMA,
 };
+use crate::headless::{AgentState, SessionReplay};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(super) struct RuntimeSnapshot {
@@ -169,6 +170,63 @@ impl SnapshotManifest {
                 resolve_workspace_path(workspace_root, None, Some(path.relative_path.as_str()))?;
         }
         Ok(())
+    }
+
+    pub(super) fn session_replay(&self) -> SessionReplay {
+        let snapshot = &self.snapshot;
+        let state = &snapshot.state;
+        SessionReplay {
+            state: AgentState {
+                protocol_version: state.protocol_version.clone(),
+                client_protocol_version: state.client_protocol_version.clone(),
+                client_info: state.client_info.clone(),
+                capabilities: state.capabilities.clone(),
+                opt_out_notifications: state.opt_out_notifications.clone(),
+                connection_role: state.connection_role,
+                connection_count: state.connection_count,
+                subscriber_count: state.subscriber_count,
+                controller_subscription_id: state.controller_subscription_id.clone(),
+                controller_connection_id: state.controller_connection_id.clone(),
+                connections: state.connections.clone(),
+                model: state.model.clone(),
+                provider: state.provider.clone(),
+                session_id: state
+                    .session_id
+                    .clone()
+                    .or_else(|| Some(self.maestro_session_id.clone())),
+                cwd: state.cwd.clone(),
+                git_branch: state.git_branch.clone(),
+                // Drain manifests intentionally redact transient request payloads and do not
+                // contain resumable process handles. Preserve those in the facade snapshot,
+                // but do not claim they are active inside the newly spawned agent.
+                current_response: None,
+                pending_approvals: Vec::new(),
+                pending_client_tools: Vec::new(),
+                pending_user_inputs: Vec::new(),
+                pending_tool_retries: Vec::new(),
+                active_tools: Default::default(),
+                active_utility_commands: Default::default(),
+                active_file_watches: Default::default(),
+                tracked_tools: Default::default(),
+                codex_subagent_edges: state.codex_subagent_edges.clone(),
+                last_error: state.last_error.clone(),
+                last_error_type: state.last_error_type.as_ref().and_then(|error_type| {
+                    serde_json::from_value::<HeadlessErrorType>(serde_json::Value::String(
+                        error_type.clone(),
+                    ))
+                    .ok()
+                }),
+                last_status: state.last_status.clone(),
+                last_response_duration_ms: state.last_response_duration_ms,
+                last_ttft_ms: state.last_ttft_ms,
+                is_ready: state.is_ready,
+                is_responding: false,
+            },
+            last_init: snapshot
+                .last_init
+                .as_ref()
+                .and_then(RuntimeInitSnapshot::to_init_config),
+        }
     }
 }
 

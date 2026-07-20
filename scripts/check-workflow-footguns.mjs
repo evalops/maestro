@@ -109,24 +109,56 @@ function evaluatePublicReleaseMirrorWorkflowPermission(root) {
 	return failures;
 }
 
+/**
+ * PR CI must not steal the trusted `evalops-internal` lane.
+ *
+ * Policy (aligned with test/scripts/ci-guardrails.test.ts):
+ * - PR jobs route through vars.PR_CHECKS_RUNNER / vars.BLACKSMITH_* with
+ *   ubuntu-latest / blacksmith-* fallbacks so automation works when fleets
+ *   are offline.
+ * - `evalops-internal` is reserved for non-PR confirmation (via
+ *   INTERNAL_CONFIRMATION_RUNNER), never as a hard-coded PR target.
+ */
 function evaluatePullRequestRunnerOverrides(root) {
 	const failures = [];
 	const workflowFiles = [
 		".github/workflows/ci.yml",
 		".github/workflows/rust.yml",
 	];
-	const disallowedVariables = [
-		"PR_CHECKS_RUNNER",
-		"PR_COVERAGE_RUNNER",
-		"PR_RUST_RUNNER",
-	];
 
 	for (const workflowFile of workflowFiles) {
 		const workflowText = readIfExists(join(root, workflowFile));
-		for (const variable of disallowedVariables) {
-			if (new RegExp(`\\bvars\\.${variable}\\b`).test(workflowText)) {
+		if (!workflowText) continue;
+
+		const runsOnLines = workflowText
+			.split("\n")
+			.map((line) => line.trim())
+			.filter((line) => line.startsWith("runs-on:"));
+
+		for (const line of runsOnLines) {
+			if (!line.includes("pull_request")) continue;
+
+			// Bare trusted-lane label as a PR target (no var wrapper).
+			if (
+				/&&\s*'evalops-internal'/.test(line) ||
+				/&&\s*"evalops-internal"/.test(line)
+			) {
 				failures.push(
-					`${workflowFile}: pull_request jobs must not use vars.${variable}; keep PR CI on evalops-private-ci or evalops-private-heavy so internal smoke runners stay available`,
+					`${workflowFile}: pull_request jobs must not hard-code evalops-internal; route PR CI through BLACKSMITH_* / PR_CHECKS_RUNNER (or ubuntu-latest)`,
+				);
+			}
+		}
+
+		// Primary ci.yml PR lanes must keep Blacksmith failover vars so release
+		// automation is not pinned to offline self-hosted fleets.
+		if (workflowFile.endsWith("ci.yml") && workflowText.includes("pr-checks")) {
+			if (
+				!/\bvars\.BLACKSMITH_RUNNER\b/.test(workflowText) &&
+				!/\bvars\.PR_CHECKS_RUNNER\b/.test(workflowText) &&
+				!/\bvars\.PUBLIC_PR_VALIDATION_RUNNER\b/.test(workflowText)
+			) {
+				failures.push(
+					`${workflowFile}: PR jobs must expose vars.PR_CHECKS_RUNNER, vars.BLACKSMITH_RUNNER, or vars.PUBLIC_PR_VALIDATION_RUNNER for runner failover`,
 				);
 			}
 		}

@@ -172,9 +172,14 @@ function expectRustTuiRunnerLane(runsOn: string): void {
 		return;
 	}
 
+	// Heavy PR work uses Blacksmith (or override); main confirmation falls back
+	// through INTERNAL_CONFIRMATION_RUNNER / BLACKSMITH_RUNNER.
 	expect(runsOn).not.toContain("PR_RUST_RUNNER");
-	expect(runsOn).toContain("evalops-private-heavy");
+	expect(runsOn).not.toContain("evalops-private-heavy");
+	expect(runsOn).toContain("BLACKSMITH_HEAVY_RUNNER");
+	expect(runsOn).toContain("blacksmith-8vcpu-ubuntu-2404");
 	expect(runsOn).toContain("INTERNAL_CONFIRMATION_RUNNER");
+	expect(runsOn).toContain("BLACKSMITH_RUNNER");
 }
 
 describe("planCiChecks", () => {
@@ -931,14 +936,22 @@ describe("ci workflow guardrails", () => {
 
 		expect(prChecksRunsOn).toContain("ubuntu-latest");
 		expect(prChecksRunsOn).toContain("light_pr_checks");
-		expect(prChecksRunsOn).toContain("evalops-private-ci");
-		expect(prChecksRunsOn).not.toContain("PR_CHECKS_RUNNER");
-		expect(prChecksRunsOn).toContain("evalops-private-heavy");
+		// Light PR lane: PR_CHECKS_RUNNER → BLACKSMITH_RUNNER → ubuntu-latest
+		// Heavy PR lane: BLACKSMITH_HEAVY_RUNNER → blacksmith-8vcpu
+		expect(prChecksRunsOn).toContain("PR_CHECKS_RUNNER");
+		expect(prChecksRunsOn).toContain("BLACKSMITH_RUNNER");
+		expect(prChecksRunsOn).toContain("BLACKSMITH_HEAVY_RUNNER");
+		expect(prChecksRunsOn).toContain("blacksmith-8vcpu-ubuntu-2404");
+		expect(prChecksRunsOn).not.toContain("evalops-private-ci");
+		expect(prChecksRunsOn).not.toContain("evalops-private-heavy");
 		expect(prChecksRunsOn).toContain("INTERNAL_CONFIRMATION_RUNNER");
 		expect(coverageRunsOn).toContain("ubuntu-latest");
 		expect(coverageRunsOn).not.toContain("PR_COVERAGE_RUNNER");
-		expect(coverageRunsOn).toContain("evalops-private-heavy");
+		expect(coverageRunsOn).toContain("BLACKSMITH_HEAVY_RUNNER");
+		expect(coverageRunsOn).toContain("blacksmith-8vcpu-ubuntu-2404");
+		expect(coverageRunsOn).not.toContain("evalops-private-heavy");
 		expect(coverageRunsOn).toContain("INTERNAL_CONFIRMATION_RUNNER");
+		expect(coverageRunsOn).toContain("BLACKSMITH_RUNNER");
 	});
 
 	it("runs workflow footgun guardrails in the CI infrastructure smoke lane", () => {
@@ -1662,7 +1675,10 @@ describe("ci workflow guardrails", () => {
 		expect(detectJob?.outputs).toMatchObject({
 			should_run: "${{ steps.detect.outputs.result }}",
 		});
-		expect(detectJob?.["runs-on"]).toBe("ubuntu-latest");
+		expect(detectJob?.["runs-on"]).toContain("PUBLIC_PR_VALIDATION_RUNNER");
+		expect(detectJob?.["runs-on"]).toContain("BLACKSMITH_RUNNER");
+		expect(detectJob?.["runs-on"]).toContain("blacksmith-8vcpu-ubuntu-2404");
+		expect(detectJob?.["runs-on"]).toContain("ubuntu-latest");
 		expect(detectStep?.uses).toBe(
 			"actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea",
 		);
@@ -1728,7 +1744,10 @@ describe("ci workflow guardrails", () => {
 			issues: "write",
 			"pull-requests": "read",
 		});
-		expect(labelJob?.["runs-on"]).toBe("ubuntu-latest");
+		expect(labelJob?.["runs-on"]).toContain("PUBLIC_PR_VALIDATION_RUNNER");
+		expect(labelJob?.["runs-on"]).toContain("BLACKSMITH_RUNNER");
+		expect(labelJob?.["runs-on"]).toContain("blacksmith-8vcpu-ubuntu-2404");
+		expect(labelJob?.["runs-on"]).toContain("ubuntu-latest");
 		expect(
 			steps.some((step) => step.uses?.startsWith("actions/checkout@")),
 		).toBe(false);

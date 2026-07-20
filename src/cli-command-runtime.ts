@@ -17,12 +17,16 @@ export async function runCliCommandRuntime(args: string[]): Promise<boolean> {
 
 	switch (parsed.command) {
 		case "hosted-runner": {
-			const { handleHostedRunnerCommand } = await import(
-				"./cli/commands/hosted-runner.js"
+			const { buildNativeHostedRunnerArgs, launchNativeCli } = await import(
+				"./cli/native-tui-launcher.js"
 			);
-			await handleHostedRunnerCommand(parsed.commandArgs ?? [], {
-				defaultPort: parsed.port,
-			});
+			const exitCode = await launchNativeCli(
+				buildNativeHostedRunnerArgs(parsed.commandArgs ?? [], parsed.port),
+				{ forwardSignals: true },
+			);
+			if (exitCode !== 0) {
+				process.exitCode = exitCode;
+			}
 			return true;
 		}
 		case "init": {
