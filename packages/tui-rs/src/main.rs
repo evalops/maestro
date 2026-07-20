@@ -46,9 +46,21 @@ use maestro_tui::hosted_runner_cli::run_hosted_runner_cli_from_env;
 // HELPER FUNCTIONS
 // ─────────────────────────────────────────────────────────────────────────────
 
-const NATIVE_UTILITY_COMMANDS: [&str; 13] = [
-    "sessions", "cost", "stats", "models", "status", "hooks", "export", "import", "update",
-    "skill", "modes", "agents", "painter",
+const NATIVE_UTILITY_COMMANDS: [&str; 14] = [
+    "sessions",
+    "cost",
+    "stats",
+    "models",
+    "status",
+    "hooks",
+    "export",
+    "import",
+    "update",
+    "skill",
+    "modes",
+    "agents",
+    "painter",
+    "anthropic",
 ];
 
 const GLOBAL_FLAGS_WITH_VALUES: [&str; 26] = [
