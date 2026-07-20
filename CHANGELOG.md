@@ -21,6 +21,30 @@ versioning when releases are cut.
   and keep scheduled public runs inert so public publishing stays downstream of
   the internal source-of-truth release.
 
+## [0.10.53] - 2026-07-20
+
+### Added
+
+- Move agents command to Rust (#2924). <!-- maestro-release-note:bf73aac1a8dd -->
+- Adopt Grok-inspired session chrome (#2926). <!-- maestro-release-note:78870912899b -->
+- Migrate modes command to Rust (#2921). <!-- maestro-release-note:0ba92aff6ac1 -->
+
+### Changed
+
+- Move skill CLI and package runtime to Rust (#2919). <!-- maestro-release-note:f3a840301d0a -->
+- [maestro] Move update command to Rust and delete TypeScript handler (#2918). <!-- maestro-release-note:5f73114f3beb -->
+- [maestro] Delete legacy TypeScript hosted runner command (#2917). <!-- maestro-release-note:d0c2ec8a540c -->
+- [maestro] Delete migrated TypeScript utility commands (#2916). <!-- maestro-release-note:cf20e9e09c07 -->
+- [maestro] Move hosted runner lifecycle to Rust (#2914). <!-- maestro-release-note:00b2db4e7c8b -->
+
+### Fixed
+
+- Hand off utilities before replay setup (#2925). <!-- maestro-release-note:d9552c52997f -->
+- Align native utility global flags (#2923). <!-- maestro-release-note:0c5f04580384 -->
+- Consume named worktree before native utilities (#2922). <!-- maestro-release-note:326239dc0057 -->
+- Enforce native skill package validation (#2920). <!-- maestro-release-note:077875bf3882 -->
+- Accept public runner failover variable (#2915). <!-- maestro-release-note:e94c6cadf8e5 -->
+
 ## [0.10.52] - 2026-07-20
 
 ### Breaking

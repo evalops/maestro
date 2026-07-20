@@ -481,6 +481,10 @@ fn canonicalish(path: &Path) -> PathBuf {
 mod tests {
     use super::*;
 
+    fn fixture_secret(prefix: &str) -> String {
+        [prefix, "abcdefghijklmnopqrstuvwxyz123456"].concat()
+    }
+
     fn entry(id: &str, parent: Option<&str>, content: &str) -> Vec<Value> {
         vec![
             serde_json::json!({
@@ -506,7 +510,7 @@ mod tests {
             &entry(
                 "child",
                 Some("parent"),
-                "apiKey=sk-ant-abcdefghijklmnopqrstuvwxyz123456",
+                &format!("apiKey={}", fixture_secret("sk-ant-")),
             ),
         )
         .unwrap();
@@ -560,11 +564,11 @@ mod tests {
     fn jsonl_redaction_preserves_valid_entries_and_drops_partial_lines() {
         let root = tempfile::tempdir().unwrap();
         let source = root.path().join("source.jsonl");
-        fs::write(
-            &source,
-            "{\"type\":\"session\",\"id\":\"one\"}\npartial\n{\"type\":\"user\",\"message\":\"Bearer sk-abcdefghijklmnopqrstuvwxyz123456\"}\n",
-        )
-        .unwrap();
+        let source_contents = format!(
+            "{{\"type\":\"session\",\"id\":\"one\"}}\npartial\n{{\"type\":\"user\",\"message\":\"Bearer {}\"}}\n",
+            fixture_secret("sk-")
+        );
+        fs::write(&source, source_contents).unwrap();
         let entries = portable_entries(&source, true).unwrap();
         assert_eq!(entries.len(), 2);
         assert!(!serde_json::to_string(&entries).unwrap().contains("sk-abc"));

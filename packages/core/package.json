@@ -1,6 +1,6 @@
 {
 	"name": "@evalops/maestro-core",
-	"version": "0.10.52",
+	"version": "0.10.53",
 	"description": "Maestro agent loop, transport, types, and sandbox primitives — the engine behind all Maestro interfaces",
 	"type": "module",
 	"main": "./dist/packages/core/src/index.js",
