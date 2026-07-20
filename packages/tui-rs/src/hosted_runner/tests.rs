@@ -247,13 +247,48 @@ fn resolves_env_config_with_hosted_runner_contract_names() {
 }
 
 #[test]
-fn defaults_hosted_runner_bind_to_localhost_when_no_listen_env_is_set() {
+fn defaults_env_only_hosted_runner_bind_to_wildcard_with_legacy_auth() {
     let workspace = tempdir().expect("workspace");
-    let env = base_hosted_runner_env(workspace.path());
+    let mut env = base_hosted_runner_env(workspace.path());
+    env.insert(
+        "MAESTRO_WEB_API_KEY".to_string(),
+        "legacy-secret".to_string(),
+    );
 
     let config = HostedRunnerConfig::from_env_map(&env).expect("config");
 
-    assert_eq!(config.bind_addr, "127.0.0.1:8080".parse().unwrap());
+    assert_eq!(config.bind_addr, "0.0.0.0:8080".parse().unwrap());
+    assert_eq!(config.auth_token.as_deref(), Some("legacy-secret"));
+}
+
+#[test]
+fn hosted_runner_auth_token_takes_precedence_over_legacy_web_api_key() {
+    let workspace = tempdir().expect("workspace");
+    let mut env = base_hosted_runner_env(workspace.path());
+    env.insert(
+        "MAESTRO_HOSTED_RUNNER_AUTH_TOKEN".to_string(),
+        "runner-secret".to_string(),
+    );
+    env.insert(
+        "MAESTRO_WEB_API_KEY".to_string(),
+        "legacy-secret".to_string(),
+    );
+
+    let config = HostedRunnerConfig::from_env_map(&env).expect("config");
+
+    assert_eq!(config.auth_token.as_deref(), Some("runner-secret"));
+}
+
+#[test]
+fn rejects_default_env_only_wildcard_bind_without_auth_token() {
+    let workspace = tempdir().expect("workspace");
+    let env = base_hosted_runner_env(workspace.path());
+
+    let error = HostedRunnerConfig::from_env_map(&env).expect_err("expected config error");
+
+    assert!(error
+        .to_string()
+        .contains("MAESTRO_HOSTED_RUNNER_AUTH_TOKEN"));
 }
 
 #[test]
@@ -375,6 +410,21 @@ async fn headless_routes_require_auth_token_when_configured() {
         .await
         .expect("custom token authorized response");
     assert_eq!(custom_token_authorized.status(), StatusCode::OK);
+
+    for legacy_header in ["x-maestro-api-key", "x-composer-api-key"] {
+        let legacy_authorized = client
+            .post(format!("{}/api/headless/connections", handle.base_url()))
+            .header(legacy_header, "secret-token")
+            .json(&json!({"sessionId": "sess_test", "role": "viewer"}))
+            .send()
+            .await
+            .expect("legacy API key authorized response");
+        assert_eq!(
+            legacy_authorized.status(),
+            StatusCode::OK,
+            "{legacy_header}"
+        );
+    }
     handle.shutdown().await;
 }
 

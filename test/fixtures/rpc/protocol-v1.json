@@ -160,9 +160,11 @@
 			"area": "rpc-runtime-tests",
 			"path": "test/cli/rpc-mode.test.ts",
 			"anchors": [
-				"echoes request ids on get_state and get_messages responses",
-				"echoes request ids on compact failures and unknown commands"
-			]
+				"throws a removal error directing callers to native headless",
+				"TypeScript runRpcMode has been removed",
+				"maestro-tui --headless"
+			],
+			"note": "TS RPC suite is a fail-closed stub; protocol runtime is covered by native headless + launcher surfaces."
 		}
 	]
 }

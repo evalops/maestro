@@ -5,6 +5,7 @@ import {
 	MaestroTuiBinaryNotFoundError,
 	buildNativeTuiCliArgs,
 	findBinaryOnPath,
+	launchNativeCli,
 	launchNativeTui,
 	resolveMaestroTuiBinary,
 	shouldLaunchNativeHeadless,
@@ -262,6 +263,122 @@ describe("launchNativeTui", () => {
 		});
 		child.emit("exit", null, "SIGINT");
 		await expect(promise).resolves.toBe(130);
+	});
+
+	it("maps unknown terminating signals to 1", async () => {
+		const child = new EventEmitter();
+		const promise = launchNativeTui({
+			parsed: { messages: [] },
+			resolveOptions: {
+				env: { MAESTRO_TUI_BIN: "/bin/fake" },
+				exists: () => true,
+			},
+			spawnImpl: (() => child) as unknown as SpawnFn,
+		});
+		child.emit("exit", null, "SIGUSR1");
+		await expect(promise).resolves.toBe(1);
+	});
+});
+
+describe("launchNativeCli", () => {
+	it("maps known and unknown terminating signals consistently", async () => {
+		for (const [signal, expected] of [
+			["SIGTERM", 143],
+			["SIGUSR1", 1],
+		] as const) {
+			const child = new EventEmitter();
+			const promise = launchNativeCli(["status"], {
+				resolveOptions: {
+					env: { MAESTRO_TUI_BIN: "/bin/fake" },
+					exists: () => true,
+				},
+				spawnImpl: (() => child) as unknown as SpawnFn,
+			});
+			child.emit("exit", null, signal);
+			await expect(promise).resolves.toBe(expected);
+		}
+	});
+
+	it("forwards one parent termination signal and waits for the child to drain", async () => {
+		const forwardedSignals = [
+			"SIGINT",
+			"SIGTERM",
+			"SIGHUP",
+			"SIGQUIT",
+		] as const;
+		for (const forwardedSignal of forwardedSignals) {
+			const parentSignals = new EventEmitter();
+			const kill = vi.fn(() => true);
+			const child = Object.assign(new EventEmitter(), { kill });
+			let settled = false;
+			const promise = launchNativeCli(["hosted-runner"], {
+				forwardSignals: true,
+				parentSignalEmitter: parentSignals,
+				resolveOptions: {
+					env: { MAESTRO_TUI_BIN: "/bin/fake" },
+					exists: () => true,
+				},
+				spawnImpl: (() => child) as unknown as SpawnFn,
+			}).finally(() => {
+				settled = true;
+			});
+
+			parentSignals.emit(forwardedSignal, forwardedSignal);
+			parentSignals.emit(forwardedSignal, forwardedSignal);
+			expect(kill).toHaveBeenCalledTimes(1);
+			expect(kill).toHaveBeenCalledWith(forwardedSignal);
+			expect(settled).toBe(false);
+
+			child.emit("exit", 0, null);
+			await expect(promise).resolves.toBe(0);
+			for (const signal of forwardedSignals) {
+				expect(parentSignals.listenerCount(signal)).toBe(0);
+			}
+		}
+	});
+
+	it("removes parent signal handlers when spawning fails", async () => {
+		const parentSignals = new EventEmitter();
+		const child = Object.assign(new EventEmitter(), {
+			kill: vi.fn(() => true),
+		});
+		const promise = launchNativeCli(["hosted-runner"], {
+			forwardSignals: true,
+			parentSignalEmitter: parentSignals,
+			resolveOptions: {
+				env: { MAESTRO_TUI_BIN: "/bin/fake" },
+				exists: () => true,
+			},
+			spawnImpl: (() => child) as unknown as SpawnFn,
+		});
+
+		child.emit("error", new Error("spawn failed"));
+		await expect(promise).rejects.toThrow("spawn failed");
+		for (const signal of ["SIGINT", "SIGTERM", "SIGHUP", "SIGQUIT"]) {
+			expect(parentSignals.listenerCount(signal)).toBe(0);
+		}
+	});
+
+	it("does not hang when the child cannot accept a forwarded signal", async () => {
+		const parentSignals = new EventEmitter();
+		const child = Object.assign(new EventEmitter(), {
+			kill: vi.fn(() => false),
+		});
+		const promise = launchNativeCli(["hosted-runner"], {
+			forwardSignals: true,
+			parentSignalEmitter: parentSignals,
+			resolveOptions: {
+				env: { MAESTRO_TUI_BIN: "/bin/fake" },
+				exists: () => true,
+			},
+			spawnImpl: (() => child) as unknown as SpawnFn,
+		});
+
+		parentSignals.emit("SIGTERM", "SIGTERM");
+		await expect(promise).resolves.toBe(143);
+		for (const signal of ["SIGINT", "SIGTERM", "SIGHUP", "SIGQUIT"]) {
+			expect(parentSignals.listenerCount(signal)).toBe(0);
+		}
 	});
 });
 

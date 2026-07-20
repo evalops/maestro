@@ -111,6 +111,7 @@ import {
 } from "./cli/headless-runtime-selection.js";
 import { printHelp } from "./cli/help.js";
 import {
+	buildNativeHostedRunnerArgs,
 	launchNativeCli,
 	launchNativeTui,
 	shouldLaunchNativeHeadless,
@@ -656,16 +657,15 @@ export async function main(args: string[]) {
 		};
 	}
 
-	// Handle `maestro hosted-runner` before importing web-server so hosted
-	// defaults are visible to its module-level runtime profile.
+	// Hosted execution is owned by the native Rust runtime. Keep this before the
+	// web-server import so the legacy TypeScript hosted server cannot bootstrap.
 	if (parsed.command === "hosted-runner") {
-		const { handleHostedRunnerCommand } = await import(
-			"./cli/commands/hosted-runner.js"
+		process.exit(
+			await launchNativeCli(
+				buildNativeHostedRunnerArgs(parsed.commandArgs ?? [], parsed.port),
+				{ forwardSignals: true },
+			),
 		);
-		await handleHostedRunnerCommand(parsed.commandArgs ?? [], {
-			defaultPort: parsed.port,
-		});
-		return;
 	}
 
 	// Handle `maestro web` early exit (start the bundled web server + UI).
@@ -1405,17 +1405,25 @@ export async function main(args: string[]) {
 	// to maestro-tui (interactive / print / headless).
 	await waitForStartupTelemetryForImmediateExit(startupTelemetry);
 
-	if (shouldLaunchNativeHeadless(parsed) || Boolean(scenarioReplay)) {
-		// Scenario replay and headless both speak the native headless protocol.
+	// Scenario replay: exec/print stay on the native print path (smoke +
+	// scripting). Interactive/headless/rpc still use headless protocol when
+	// a scenario is attached without an exec/print surface.
+	const replayForcesHeadless =
+		Boolean(scenarioReplay) &&
+		!shouldLaunchNativePrint(parsed) &&
+		parsed.command !== "exec";
+
+	if (shouldLaunchNativeHeadless(parsed) || replayForcesHeadless) {
 		await runNativeHeadlessMode(writeStartupErrorToStderr);
 	}
-	if (shouldLaunchNativeInteractiveTui(parsed)) {
+	if (shouldLaunchNativeInteractiveTui(parsed) && !scenarioReplay) {
 		await runNativeInteractiveMode(parsed, writeStartupErrorToStderr);
 	}
 	if (
 		shouldLaunchNativePrint(parsed) ||
 		(parsed.messages.length > 0 &&
-			(parsed.command === undefined || parsed.command === "exec"))
+			(parsed.command === undefined || parsed.command === "exec")) ||
+		(Boolean(scenarioReplay) && parsed.command === "exec")
 	) {
 		await runNativePrintMode(parsed, writeStartupErrorToStderr);
 	}

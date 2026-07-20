@@ -42,6 +42,41 @@ function ensurePackedCliArtifacts() {
 	run("npm run build");
 }
 
+/**
+ * Exec/print/headless smokes hand off to native maestro-tui after the TS agent
+ * kill. Ensure a local binary exists and is visible via MAESTRO_TUI_BIN.
+ */
+function ensureNativeTuiBinary() {
+	const releaseBin = resolve(
+		process.cwd(),
+		"packages/tui-rs/target/release/maestro-tui",
+	);
+	const debugBin = resolve(
+		process.cwd(),
+		"packages/tui-rs/target/debug/maestro-tui",
+	);
+	if (existsSync(releaseBin)) {
+		process.env.MAESTRO_TUI_BIN = releaseBin;
+		console.log(`Using existing native maestro-tui: ${releaseBin}`);
+		return;
+	}
+	if (existsSync(debugBin)) {
+		process.env.MAESTRO_TUI_BIN = debugBin;
+		console.log(`Using existing native maestro-tui: ${debugBin}`);
+		return;
+	}
+
+	console.log("Building native maestro-tui (debug) for exec-replay smoke.");
+	// Debug is enough for smoke and is faster than --release on cold runners.
+	run("npm run tui-rs:build:debug");
+	if (!existsSync(debugBin)) {
+		throw new Error(
+			`Expected ${debugBin} after tui-rs:build:debug, but it was not produced.`,
+		);
+	}
+	process.env.MAESTRO_TUI_BIN = debugBin;
+}
+
 function runPackSmoke() {
 	const smokeScriptPath = resolve(process.cwd(), "scripts/smoke-packed-cli.js");
 	if (!existsSync(smokeScriptPath)) {
@@ -77,6 +112,7 @@ function runCiChecks() {
 	run("npm run build");
 	run("npm run verify:runtime-deps");
 	runPackSmoke();
+	ensureNativeTuiBinary();
 	maybeRunScript("smoke:exec-replay-e2e");
 	maybeRunScript("openapi:check");
 }
@@ -95,6 +131,7 @@ function runReleaseChecks() {
 		console.log("Skipping npm audit (package-lock not managed in this repo)");
 	}
 	runPackSmoke();
+	ensureNativeTuiBinary();
 	maybeRunScript("smoke:exec-replay-e2e");
 }
 

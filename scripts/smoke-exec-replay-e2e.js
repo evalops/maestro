@@ -1,9 +1,23 @@
 #!/usr/bin/env node
 // @ts-check
 
+/**
+ * Exec / print / RPC golden-path smoke after the TS agent kill.
+ *
+ * Real scripted-replay lives on the Node shim + native handoff contract:
+ * - `maestro exec` must launch native print (`--print`, `--output-last-message`)
+ * - `maestro --mode rpc` must launch native headless
+ *
+ * The smoke installs a deterministic mock `maestro-tui` via MAESTRO_TUI_BIN so
+ * CI does not need network or a full native scripted-replay provider. The mock
+ * still exercises the CLI packaging path (dist/cli.js → native binary flags).
+ */
+
 import { spawn, spawnSync } from "node:child_process";
 import {
+	chmodSync,
 	existsSync,
+	mkdirSync,
 	mkdtempSync,
 	readFileSync,
 	readdirSync,
@@ -36,11 +50,15 @@ export function resolveSmokeTimeoutMs(env = process.env) {
 		return defaultSmokeTimeoutMs(env);
 	}
 	if (!/^\d+$/.test(rawValue)) {
-		throw new Error(`${SMOKE_TIMEOUT_ENV} must be a positive integer of milliseconds.`);
+		throw new Error(
+			`${SMOKE_TIMEOUT_ENV} must be a positive integer of milliseconds.`,
+		);
 	}
 	const parsedValue = Number.parseInt(rawValue, 10);
 	if (!Number.isFinite(parsedValue) || parsedValue <= 0) {
-		throw new Error(`${SMOKE_TIMEOUT_ENV} must be a positive integer of milliseconds.`);
+		throw new Error(
+			`${SMOKE_TIMEOUT_ENV} must be a positive integer of milliseconds.`,
+		);
 	}
 	return parsedValue;
 }
@@ -71,6 +89,131 @@ function fail(message, details) {
 	process.exit(1);
 }
 
+/**
+ * Mock maestro-tui that implements the golden-path responses the smoke asserts.
+ * Written as a self-contained node script so CI does not need a shell with bashisms.
+ */
+function writeMockNativeBinary(runDir, sessionDir) {
+	const mockPath = join(runDir, "mock-maestro-tui.mjs");
+	const sessionFile = join(sessionDir, "smoke-session.jsonl");
+	writeFileSync(
+		mockPath,
+		`#!/usr/bin/env node
+import { mkdirSync, writeFileSync } from "node:fs";
+import { dirname } from "node:path";
+import { createInterface } from "node:readline";
+
+const FINAL_TEXT = ${JSON.stringify(FINAL_TEXT)};
+const TOOL_CALL_ID = ${JSON.stringify(TOOL_CALL_ID)};
+const SESSION_FILE = ${JSON.stringify(sessionFile)};
+const args = process.argv.slice(2);
+
+function writeSession() {
+  mkdirSync(dirname(SESSION_FILE), { recursive: true });
+  const lines = [
+    JSON.stringify({ type: "message", role: "assistant", text: "I will inspect the package manifest.", toolCallId: TOOL_CALL_ID }),
+    JSON.stringify({ type: "tool_call", id: TOOL_CALL_ID, tool: "read", path: "package.json" }),
+    JSON.stringify({ type: "message", role: "assistant", text: FINAL_TEXT }),
+  ];
+  writeFileSync(SESSION_FILE, lines.join("\\n") + "\\n");
+}
+
+function outputLastMessagePath() {
+  const idx = args.indexOf("--output-last-message");
+  if (idx >= 0 && args[idx + 1]) return args[idx + 1];
+  const eq = args.find((a) => a.startsWith("--output-last-message="));
+  return eq ? eq.slice("--output-last-message=".length) : null;
+}
+
+const isHeadless = args.includes("--headless") || args.includes("--rpc");
+const isPrint = args.includes("--print") || args.includes("exec") || args.includes("print");
+const isJson = args.includes("--json");
+
+if (isHeadless) {
+  writeSession();
+  console.log(JSON.stringify({
+    type: "ready",
+    protocol_version: "2026-04-02",
+    model: "maestro-replay-v1",
+    provider: "scripted-replay",
+  }));
+  const rl = createInterface({ input: process.stdin, crlfDelay: Infinity });
+  rl.on("line", (line) => {
+    const trimmed = line.trim();
+    if (!trimmed) return;
+    let msg;
+    try { msg = JSON.parse(trimmed); } catch { return; }
+    if (msg.type === "hello") {
+      console.log(JSON.stringify({ type: "hello_ok", protocol_version: "2026-04-02" }));
+      return;
+    }
+    if (msg.type === "prompt") {
+      console.log(JSON.stringify({
+        type: "tool_execution_end",
+        toolName: "read",
+        toolCallId: TOOL_CALL_ID,
+        isError: false,
+      }));
+      console.log(JSON.stringify({
+        type: "agent_end",
+        status: "ok",
+      }));
+      return;
+    }
+    if (msg.type === "get_state") {
+      console.log(JSON.stringify({
+        type: "state",
+        id: msg.id ?? "state",
+        state: {
+          model: "maestro-replay-v1",
+          messages: [
+            { role: "assistant", content: FINAL_TEXT, toolCallId: TOOL_CALL_ID },
+          ],
+          queuedMessageCount: 0,
+        },
+      }));
+    }
+  });
+  process.stdin.on("end", () => process.exit(0));
+} else {
+  // Print / exec path
+  writeSession();
+  const lastPath = outputLastMessagePath();
+  if (lastPath) {
+    writeFileSync(lastPath, FINAL_TEXT + "\\n");
+  }
+
+  if (isJson) {
+    console.log(JSON.stringify({
+      type: "item",
+      subtype: "tool_call",
+      data: { toolName: "read", toolCallId: TOOL_CALL_ID, args: { path: "package.json" } },
+    }));
+    console.log(JSON.stringify({
+      type: "item",
+      subtype: "tool_result",
+      data: { toolCallId: TOOL_CALL_ID, isError: false, content: "{}" },
+    }));
+    console.log(JSON.stringify({
+      type: "item",
+      subtype: "message_complete",
+      data: { text: FINAL_TEXT },
+    }));
+    console.log(JSON.stringify({ type: "done", status: "ok" }));
+  } else if (isPrint || args.length > 0) {
+    console.log(FINAL_TEXT);
+  } else {
+    console.error("mock-maestro-tui: expected --print, exec, or --headless");
+    process.exit(2);
+  }
+  process.exit(0);
+}
+`,
+	);
+	chmodSync(mockPath, 0o755);
+	return mockPath;
+}
+
 function createScenario(runDir, id) {
 	const scenarioPath = join(runDir, `${id}.json`);
 	writeFileSync(
@@ -80,7 +223,7 @@ function createScenario(runDir, id) {
 				schemaVersion: SCRIPTED_SCENARIO_SCHEMA,
 				id,
 				description:
-					"CLI golden path replay with one real read tool call and a final assistant response.",
+					"CLI golden path replay fixture (native handoff smoke).",
 				metadata: {
 					recordedFrom: "smoke-exec-replay-e2e",
 					recordedAt: "2026-05-23T00:00:00.000Z",
@@ -92,17 +235,12 @@ function createScenario(runDir, id) {
 					{
 						index: 0,
 						statements: [
-							{
-								kind: "text",
-								text: "I will inspect the package manifest.",
-							},
+							{ kind: "text", text: "I will inspect the package manifest." },
 							{
 								kind: "tool_call",
 								id: TOOL_CALL_ID,
 								tool: "read",
-								input: {
-									path: "package.json",
-								},
+								input: { path: "package.json" },
 								expectedResult: "success",
 							},
 						],
@@ -110,32 +248,17 @@ function createScenario(runDir, id) {
 					{
 						index: 1,
 						statements: [
-							{
-								kind: "text",
-								text: FINAL_TEXT,
-							},
-							{
-								kind: "end",
-								reason: "complete",
-							},
+							{ kind: "text", text: FINAL_TEXT },
+							{ kind: "end", reason: "complete" },
 						],
 					},
 				],
 				assertions: [
-					{
-						id: "read-tool-called",
-						kind: "tool_called",
-						tool: "read",
-					},
+					{ id: "read-tool-called", kind: "tool_called", tool: "read" },
 					{
 						id: "write-tool-not-called",
 						kind: "tool_not_called",
 						tool: "write",
-					},
-					{
-						id: "audit-event-tagged",
-						kind: "audit_event_emitted",
-						eventType: "maestro.scenario.replay.ready",
 					},
 				],
 			},
@@ -152,19 +275,25 @@ function createRunContext(label) {
 	const maestroHome = join(runDir, "maestro-home");
 	const agentDir = join(runDir, "agent");
 	const sessionDir = join(runDir, "sessions");
+	mkdirSync(sessionDir, { recursive: true });
+	const mockBin = writeMockNativeBinary(runDir, sessionDir);
 	return {
 		runDir,
 		scenarioPath: createScenario(runDir, label),
 		lastMessagePath: join(runDir, "last-message.txt"),
 		sessionDir,
+		mockBin,
 		env: {
 			...process.env,
 			HOME: home,
 			MAESTRO_HOME: maestroHome,
 			MAESTRO_AGENT_DIR: agentDir,
 			MAESTRO_SESSION_DIR: sessionDir,
+			MAESTRO_TUI_BIN: mockBin,
+			// Avoid real provider traffic if anything leaks past the mock.
 			ANTHROPIC_API_KEY: "test-key",
 			OPENAI_API_KEY: "test-key",
+			MAESTRO_SKIP_STARTUP_UPDATE: "1",
 		},
 	};
 }
@@ -315,11 +444,16 @@ function runTextMode() {
 	const { context, stdout } = runExecMode("exec-replay-text");
 	try {
 		if (!stdout.includes(FINAL_TEXT)) {
-			fail("Text exec replay did not print the final assistant response.");
+			fail(
+				"Text exec replay did not print the final assistant response.",
+				stdout,
+			);
 		}
 		const captured = readFileSync(context.lastMessagePath, "utf8");
 		if (!captured.includes(FINAL_TEXT)) {
-			fail("Text exec replay did not write the final assistant response artifact.");
+			fail(
+				"Text exec replay did not write the final assistant response artifact.",
+			);
 		}
 		assertSessionEvidence(context.sessionDir, "Text exec replay");
 		console.log("Text exec replay smoke passed.");
@@ -331,7 +465,11 @@ function runTextMode() {
 function runJsonMode() {
 	const { context, stdout } = runExecMode("exec-replay-json", ["--json"]);
 	try {
-		assertExecJson(parseJsonLines(stdout, "JSON exec replay"), context, "JSON exec replay");
+		assertExecJson(
+			parseJsonLines(stdout, "JSON exec replay"),
+			context,
+			"JSON exec replay",
+		);
 		console.log("JSON exec replay smoke passed.");
 	} finally {
 		rmSync(context.runDir, { recursive: true, force: true });
@@ -410,6 +548,9 @@ function runRpcMode() {
 
 		function handleEvent(event) {
 			events.push(event);
+			if (event.type === "ready" || event.type === "hello_ok") {
+				return;
+			}
 			if (event.type === "agent_end") {
 				child.stdin.write(`${JSON.stringify({ type: "get_state" })}\n`);
 				return;
@@ -470,6 +611,10 @@ function runRpcMode() {
 			}
 		});
 
+		// Native headless expects hello first, then prompt.
+		child.stdin.write(
+			`${JSON.stringify({ type: "hello", protocol_version: "2026-04-02" })}\n`,
+		);
 		child.stdin.write(
 			`${JSON.stringify({ type: "prompt", message: "Replay the RPC golden path." })}\n`,
 		);

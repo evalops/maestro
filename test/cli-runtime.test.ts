@@ -5,15 +5,89 @@ import {
 	shouldAttemptDirectRuntimeDispatch,
 	shouldUseUnbundledMainRuntime,
 } from "../src/cli/direct-runtime-command.js";
+import { buildNativeHostedRunnerArgs } from "../src/cli/native-tui-launcher.js";
 import { createLoadEnvModuleMock } from "./helpers/load-env-mock.js";
 
 describe("cli-runtime direct command dispatch", () => {
+	const originalExitCode = process.exitCode;
+	it("preserves hosted-runner address overrides when applying a global port", () => {
+		expect(buildNativeHostedRunnerArgs([], 8080)).toEqual([
+			"hosted-runner",
+			"--port",
+			"8080",
+		]);
+		expect(
+			buildNativeHostedRunnerArgs(["--listen", "0.0.0.0:9090"], 8080),
+		).toEqual(["hosted-runner", "--listen", "0.0.0.0:9090"]);
+	});
 	afterEach(() => {
 		vi.restoreAllMocks();
 		vi.resetModules();
 		vi.doUnmock("../src/cli/commands/skill.js");
+		vi.doUnmock("../src/cli/commands/hosted-runner.js");
+		vi.doUnmock("../src/cli/native-tui-launcher.js");
 		vi.doUnmock("../src/load-env.js");
 		Reflect.deleteProperty(process.env, "MAESTRO_PROFILE");
+		process.exitCode = originalExitCode;
+	});
+
+	it("hands hosted-runner off to the native Rust runtime", async () => {
+		const launchNativeCli = vi.fn(async () => 0);
+		const handleHostedRunnerCommand = vi.fn(async () => undefined);
+
+		vi.doMock("../src/cli/native-tui-launcher.js", () => ({
+			buildNativeHostedRunnerArgs,
+			launchNativeCli,
+		}));
+		vi.doMock("../src/cli/commands/hosted-runner.js", () => ({
+			handleHostedRunnerCommand,
+		}));
+		vi.doMock("../src/load-env.js", () => createLoadEnvModuleMock());
+
+		const { runCliCommandRuntime } = await import(
+			"../src/cli-command-runtime.js"
+		);
+
+		expect(
+			await runCliCommandRuntime([
+				"hosted-runner",
+				"--runner-session-id",
+				"mrs_123",
+				"--workspace-root",
+				"/workspace",
+				"--port",
+				"9090",
+			]),
+		).toBe(true);
+		expect(launchNativeCli).toHaveBeenCalledWith(
+			[
+				"hosted-runner",
+				"--runner-session-id",
+				"mrs_123",
+				"--workspace-root",
+				"/workspace",
+				"--port",
+				"9090",
+			],
+			{ forwardSignals: true },
+		);
+		expect(handleHostedRunnerCommand).not.toHaveBeenCalled();
+	});
+
+	it("preserves a nonzero native hosted-runner exit status", async () => {
+		const launchNativeCli = vi.fn(async () => 143);
+		vi.doMock("../src/cli/native-tui-launcher.js", () => ({
+			buildNativeHostedRunnerArgs,
+			launchNativeCli,
+		}));
+		vi.doMock("../src/load-env.js", () => createLoadEnvModuleMock());
+
+		const { runCliCommandRuntime } = await import(
+			"../src/cli-command-runtime.js"
+		);
+
+		expect(await runCliCommandRuntime(["hosted-runner"])).toBe(true);
+		expect(process.exitCode).toBe(143);
 	});
 
 	it("detects early commands after global options", () => {
