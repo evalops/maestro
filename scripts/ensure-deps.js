@@ -31,6 +31,11 @@ const workspacePackages = [
 		dir: "packages/contracts",
 		outputs: ["dist/index.js", "dist/index.d.ts"],
 	},
+	{
+		name: "@evalops/tui",
+		dir: "packages/tui",
+		outputs: ["dist/index.js", "dist/index.d.ts"],
+	},
 ];
 
 function usage() {

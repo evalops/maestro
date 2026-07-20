@@ -92,8 +92,8 @@ mod tests {
     fn inverse_and_images() {
         assert_eq!(estimate_chars(estimate_tokens("Hello, world!")), 16);
         assert_eq!(estimate_image_tokens(3), 3 * IMAGE_TOKEN_ESTIMATE);
-        assert!((usage_percentage(50, 100) - 50.0).abs() < f64::EPSILON);
-        assert!((usage_percentage(0, 0) - 0.0).abs() < f64::EPSILON);
-        assert!((usage_percentage(300, 100) - 100.0).abs() < f64::EPSILON);
+        assert_eq!(usage_percentage(50, 100), 50.0);
+        assert_eq!(usage_percentage(0, 0), 0.0);
+        assert_eq!(usage_percentage(300, 100), 100.0);
     }
 }

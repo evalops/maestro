@@ -63,7 +63,27 @@ describe("check-release-mirror-contract", () => {
 		expect(result.stdout).toContain("Release mirror contract is valid.");
 	});
 
-	// TS TUI command-suite / grouped-command mirror rules removed with packages/tui + src/cli-tui.
+	it("rejects legacy grouped command surfaces", () => {
+		const root = makeFixture();
+		writeManifest(root, ["src/cli-tui/commands/grouped/package.ts"]);
+
+		const result = runCheck(root);
+
+		expect(result.status).toBe(1);
+		expect(result.stderr).toContain("internal-only grouped-command surface");
+	});
+
+	it("keeps the command-suite mirror files together", () => {
+		const root = makeFixture();
+		writeManifest(root, ["src/cli-tui/commands/command-suite-handlers.ts"]);
+
+		const result = runCheck(root);
+
+		expect(result.status).toBe(1);
+		expect(result.stderr).toContain(
+			"Missing command-suite mirror file: src/cli-tui/commands/command-catalog.ts",
+		);
+	});
 
 	it("keeps mirrored local action dependencies together", () => {
 		const root = makeFixture();

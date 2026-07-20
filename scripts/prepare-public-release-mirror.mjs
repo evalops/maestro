@@ -384,27 +384,6 @@ function applyMirrorPlan(sourceRoot, targetRoot, plan) {
 	for (const relativePath of plan.deletedPaths) {
 		rmSync(resolve(targetRoot, relativePath), { force: true });
 	}
-
-	// File deletes leave empty parent directories (e.g. packages/tui/, src/cli-tui/).
-	// Prune empty dirs bottom-up so the public tree does not retain hollow shells.
-	const dirs = new Set();
-	for (const relativePath of plan.deletedPaths) {
-		let dir = dirname(resolve(targetRoot, relativePath));
-		const rootResolved = resolve(targetRoot);
-		while (dir.startsWith(rootResolved) && dir !== rootResolved) {
-			dirs.add(dir);
-			dir = dirname(dir);
-		}
-	}
-	for (const dir of [...dirs].sort((a, b) => b.length - a.length)) {
-		try {
-			if (existsSync(dir) && readdirSync(dir).length === 0) {
-				rmSync(dir, { force: true });
-			}
-		} catch {
-			// ignore races / non-empty
-		}
-	}
 }
 
 function writeReport(path, report) {

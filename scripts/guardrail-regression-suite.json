@@ -1,342 +1,333 @@
 {
-  "schemaVersion": 1,
-  "guardrails": [
-    {
-      "id": "runtime-env-semantic-scanner",
-      "title": "Semantic runtime-env snapshot scanner",
-      "owner": "runtime",
-      "bugClass": "module-scope eager runtime snapshots",
-      "why": "defaultRuntimeEnv() must not be captured during module evaluation through IIFEs, class expressions, decorators, computed names, or constructed inline functions.",
-      "evidence": [
-        {
-          "path": "scripts/check-runtime-env-snapshot-hygiene.mjs",
-          "contains": [
-            "from \"typescript\"",
-            "scanEagerFunctionBody",
-            "ts.isFunctionExpression(expression)"
-          ]
-        },
-        {
-          "path": "test/scripts/ci-guardrails.test.ts",
-          "contains": [
-            "eagerly constructed function expression default parameter",
-            "eagerly constructed class expression constructor parameter",
-            "namespace defaultRuntimeEnv call"
-          ]
-        }
-      ]
-    },
-    {
-      "id": "composed-skill-trust-boundary",
-      "title": "Composed skill trust boundary",
-      "owner": "skills",
-      "bugClass": "trusting base prompts while injecting composed prompts",
-      "why": "The trust cache, TUI activation, tool activation, artifacts, and compaction restore must agree on the final composed prompt SHA.",
-      "evidence": [
-        {
-          "path": "src/skills/tool.ts",
-          "contains": [
-            "const composedSkill = composeSkill(skill, skills)",
-            "skillMetadata: buildSkillArtifactMetadata(composedSkill)",
-            "skillRuntimeActivation: buildSkillRuntimeActivation(composedSkill)"
-          ]
-        }
-      ]
-    },
-    {
-      "id": "release-dispatch-idempotency",
-      "title": "Release dispatch idempotency",
-      "owner": "release",
-      "bugClass": "stale or fast-completed workflow runs masking dispatch state",
-      "why": "Tag-release dispatch must confirm a new workflow_dispatch run by count increase, keep an adequate wait window, and avoid stale active-run or timestamp filters.",
-      "evidence": [
-        {
-          "path": ".github/workflows/tag-release.yml",
-          "contains": [
-            "existing_count=\"$(retry \"List dispatched release workflows\" dispatched_release_run_count)\"",
-            "if (( release_run_count > existing_count )) && [[ \"${dispatch_status}\" == \"0\" ]]; then",
-            "sleep 10"
-          ],
-          "notContains": [
-            "dispatch_started_at=",
-            "new_active_dispatched_release_run_count()"
-          ]
-        },
-        {
-          "path": "test/workflows/tag-release.test.ts",
-          "contains": [
-            "if (( release_run_count > existing_count )) && [[ \"${dispatch_status}\" == \"0\" ]]; then",
-            "sleep 10"
-          ],
-          "matches": [
-            "expect\\(dispatchStep\\?\\.run\\)\\.not\\.toContain\\(\\s*\"dispatch_started_at=\"\\s*\\)"
-          ]
-        }
-      ]
-    },
-    {
-      "id": "opaque-git-parser-state",
-      "title": "Opaque Git parser state",
-      "owner": "safety",
-      "bugClass": "clone option prefixes hiding dangerous config",
-      "why": "Network safety parsing must continue scanning clone option prefixes so later --config and --config-env smuggles are still detected.",
-      "evidence": [
-        {
-          "path": "src/utils/url-extractor.ts",
-          "contains": [
-            "GIT_CLONE_FLAGS_WITH_VALUES",
-            "scanningCloneOptions",
-            "findOpaqueGitConfigOption"
-          ]
-        },
-        {
-          "path": "test/utils/url-extractor.test.ts",
-          "contains": [
-            "git clone --depth 1 --config",
-            "git clone --branch main --config",
-            "git clone --origin upstream --upload-pack",
-            "git clone -b main -o upstream -u",
-            "--config-env"
-          ]
-        },
-        {
-          "path": "test/security/exploit-vectors-regression.test.ts",
-          "contains": [
-            "rejects git clone --depth before --config smuggles",
-            "rejects git clone mixed short option prefixes before --config smuggles",
-            "rejects git clone mixed short option prefixes before --config-env smuggles"
-          ]
-        }
-      ]
-    },
-    {
-      "id": "bounded-output-and-json-repair",
-      "title": "Bounded output and JSON repair",
-      "owner": "io",
-      "bugClass": "large output or JSON races hiding state changes",
-      "why": "Large command output must be explicitly truncated, and corrupt JSON rotation must not overwrite or ignore concurrent repairs.",
-      "evidence": [
-        {
-          "path": "src/tools/gh-helpers.ts",
-          "contains": [
-            "GH_MAX_BUFFER",
-            "Output truncated",
-            "truncationMessages"
-          ]
-        },
-        {
-          "path": "src/utils/fs.ts",
-          "contains": [
-            "rotateOnParseFail",
-            "currentContent !== expectedContent",
-            "safeJsonParse<T>(repairedContent, path)"
-          ]
-        },
-        {
-          "path": "test/utils/fs.test.ts",
-          "contains": [
-            "does not rotate when the file content changed after the caller read it",
-            "rotateOnParseFail: true"
-          ]
-        },
-        {
-          "path": "test/headless/runtime-conformance.test.ts",
-          "contains": [
-            "truncated: true"
-          ]
-        }
-      ]
-    },
-    {
-      "id": "a2a-ledger-evidence-parity",
-      "title": "A2A ledger evidence parity",
-      "owner": "a2a",
-      "bugClass": "reload/persist drift losing delegated-task evidence",
-      "why": "A2A control-plane rows must preserve authoritative state, response, transcript, workGraph, and non-secret embedded metadata across Rust reload/persist and TS audit/report consumers.",
-      "evidence": [
-        {
-          "path": "packages/control-plane-rs/src/a2a/ledger.rs",
-          "contains": [
-            "fn a2a_task_with_ledger_evidence",
-            "a2a_merge_ledger_status_into_task(task_object, entry, &context_id)",
-            "fn a2a_embedded_task_metadata_for_ledger",
-            "fn a2a_remove_secret_ledger_metadata"
-          ]
-        },
-        {
-          "path": "packages/control-plane-rs/src/tests.rs",
-          "contains": [
-            "a2a_task_store_prefers_top_level_ledger_work_graph",
-            "a2a_task_load_preserves_embedded_history_when_transcript_exists",
-            "a2a_task_load_prefers_top_level_state_over_embedded_status",
-            "nested-secret"
-          ]
-        },
-        {
-          "path": "src/platform/a2a-task-ledger.ts",
-          "contains": [
-            "export function a2aTaskEvidenceGaps",
-            "export function normalizeA2AState",
-            "normalizeA2AWorkGraphMetadata"
-          ]
-        },
-        {
-          "path": "test/platform/a2a-task-ledger.test.ts",
-          "contains": [
-            "hydrates Rust-style embedded task evidence when top-level fields are missing",
-            "expect(task.responseText).toBe(\"done\")",
-            "expect(a2aTaskEvidenceGaps(task)).toEqual([])"
-          ]
-        },
-        {
-          "path": "src/platform/a2a-completion-audit.ts",
-          "contains": [
-            "const evidenceGaps = ledgerEntry ? a2aTaskEvidenceGaps(ledgerEntry) : []",
-            "terminal: Boolean(status && isFinalA2AState(status))"
-          ]
-        }
-      ]
-    },
-    {
-      "id": "release-train-drift",
-      "title": "Release train drift from unguarded Rust test modules",
-      "owner": "release",
-      "bugClass": "unguarded mod tests edits skipped by release-impact filtering",
-      "why": "rustProductionContent must only strip cfg(test)-gated test modules so edits inside an unguarded inline `mod tests` block remain package-impacting and force the required version bump instead of silently letting a tag mismatch through.",
-      "evidence": [
-        {
-          "path": "scripts/release-impact-filter.mjs",
-          "contains": [
-            "cfgTestAttributePattern",
-            "gatedByCfgTest",
-            "Only cfg(test)-gated test modules are test-only"
-          ]
-        },
-        {
-          "path": "test/scripts/release-impact-filter.test.ts",
-          "contains": [
-            "treats unguarded inline Rust test module edits as package-impacting",
-            "ignores cfg(test)-gated inline Rust test module edits"
-          ]
-        }
-      ]
-    },
-    {
-      "id": "a2a-cancel-canonical-state-guard",
-      "title": "A2A cancel canonical state guard",
-      "owner": "a2a",
-      "bugClass": "canceled tasks overwritten by later stores when status aliases are not canonicalized",
-      "why": "store_a2a_task_unless_canceled and a2a_canceled_task must canonicalize the status state before comparing so aliases like CANCELLED or STATE_CANCELED are respected and a canceled row is not overwritten.",
-      "evidence": [
-        {
-          "path": "packages/control-plane-rs/src/a2a/tasks.rs",
-          "contains": [
-            "fn a2a_task_is_canceled",
-            "canonical_a2a_task_state(state) == \"TASK_STATE_CANCELED\"",
-            "a2a_task_is_canceled(existing)"
-          ]
-        },
-        {
-          "path": "packages/control-plane-rs/src/tests.rs",
-          "contains": [
-            "a2a_task_store_preserves_canceled_task_across_canonical_state_aliases"
-          ]
-        }
-      ]
-    },
-    {
-      "id": "a2a-compound-secret-redaction",
-      "title": "A2A compound secret redaction",
-      "owner": "a2a",
-      "bugClass": "compound credential metadata keys not redacted by exact-match-only secret detection",
-      "why": "a2a_ledger_metadata_key_is_secret must match suffix forms (webhookSecret, oauthToken, apiPassword) so compound credential fields are redacted, while preserving nonSecret/nonCredentials/notASecret exceptions and token-metric carve-outs.",
-      "evidence": [
-        {
-          "path": "packages/control-plane-rs/src/a2a/ledger.rs",
-          "contains": [
-            "fn a2a_ledger_metadata_key_has_secret_suffix",
-            "SECRET_SUFFIXES",
-            "NEGATION_PREFIXES"
-          ]
-        },
-        {
-          "path": "packages/control-plane-rs/src/tests.rs",
-          "contains": [
-            "a2a_task_ledger_redacts_compound_secret_metadata_keys"
-          ]
-        }
-      ]
-    },
-    {
-      "id": "a2a-history-rich-part-refresh",
-      "title": "A2A history rich part refresh",
-      "owner": "a2a",
-      "bugClass": "non-text history parts dropped or stale text preserved during transcript-driven refresh",
-      "why": "a2a_merge_history_parts must preserve non-text parts (attachments, data payloads) while replacing all text-bearing parts (plain or decorated) with the refreshed transcript candidate so stale summary text does not survive.",
-      "evidence": [
-        {
-          "path": "packages/control-plane-rs/src/a2a/ledger.rs",
-          "contains": [
-            "fn a2a_merge_history_parts",
-            "fn a2a_history_part_has_text",
-            "!a2a_history_part_has_text(part)"
-          ]
-        },
-        {
-          "path": "packages/control-plane-rs/src/tests.rs",
-          "contains": [
-            "a2a_task_load_preserves_rich_parts_when_history_message_is_refreshed"
-          ]
-        }
-      ]
-    },
-    {
-      "id": "learner-transient-quarantine-parity",
-      "title": "Learner transient quarantine parity",
-      "owner": "learner",
-      "bugClass": "transient setup failures depressing durable routing confidence across record, load, and trim paths",
-      "why": "record_outcome, load, and trim must all exclude transient failures from pattern updates so get_label_success_rate and get_confidence_adjustment stay consistent with get_recommendations. Ambiguous transient phrases must be gated behind environment context.",
-      "evidence": [
-        {
-          "path": "packages/ambient-agent-rs/src/learner.rs",
-          "contains": [
-            "fn is_transient_failure_reason",
-            "has_transient_environment_context",
-            "fn rebuild_patterns",
-            "outcome_is_transient_failure"
-          ]
-        },
-        {
-          "path": "packages/ambient-agent-rs/src/learner.rs",
-          "contains": [
-            "test_transient_classifier_requires_environment_context_for_product_terms",
-            "test_recommendations_use_consistent_non_transient_stats_after_trim"
-          ]
-        }
-      ]
-    },
-    {
-      "id": "learner-promote-repair-consistency",
-      "title": "Learner promote repair consistency",
-      "owner": "learner",
-      "bugClass": "same pattern qualifying for both promote and repair or using inconsistent stats",
-      "why": "get_recommendations must use pattern_non_transient_stats for both promote and repair decisions and exclude promoted patterns from repair candidates so a single pattern cannot appear in both lists.",
-      "evidence": [
-        {
-          "path": "packages/ambient-agent-rs/src/learner.rs",
-          "contains": [
-            "fn pattern_non_transient_stats",
-            "promoted.contains",
-            "problematic_pattern_stats"
-          ]
-        },
-        {
-          "path": "packages/ambient-agent-rs/src/learner.rs",
-          "contains": [
-            "test_recommendations_do_not_promote_and_repair_the_same_pattern"
-          ]
-        }
-      ]
-    }
-  ]
+	"schemaVersion": 1,
+	"guardrails": [
+		{
+			"id": "runtime-env-semantic-scanner",
+			"title": "Semantic runtime-env snapshot scanner",
+			"owner": "runtime",
+			"bugClass": "module-scope eager runtime snapshots",
+			"why": "defaultRuntimeEnv() must not be captured during module evaluation through IIFEs, class expressions, decorators, computed names, or constructed inline functions.",
+			"evidence": [
+				{
+					"path": "scripts/check-runtime-env-snapshot-hygiene.mjs",
+					"contains": ["from \"typescript\"", "scanEagerFunctionBody", "ts.isFunctionExpression(expression)"]
+				},
+				{
+					"path": "test/scripts/ci-guardrails.test.ts",
+					"contains": [
+						"eagerly constructed function expression default parameter",
+						"eagerly constructed class expression constructor parameter",
+						"namespace defaultRuntimeEnv call"
+					]
+				}
+			]
+		},
+		{
+			"id": "composed-skill-trust-boundary",
+			"title": "Composed skill trust boundary",
+			"owner": "skills",
+			"bugClass": "trusting base prompts while injecting composed prompts",
+			"why": "The trust cache, TUI activation, tool activation, artifacts, and compaction restore must agree on the final composed prompt SHA.",
+			"evidence": [
+				{
+					"path": "src/skills/tool.ts",
+					"contains": [
+						"const composedSkill = composeSkill(skill, skills)",
+						"skillMetadata: buildSkillArtifactMetadata(composedSkill)",
+						"skillRuntimeActivation: buildSkillRuntimeActivation(composedSkill)"
+					]
+				},
+				{
+					"path": "src/cli-tui/tui-renderer/skills-controller.ts",
+					"contains": [
+						"const composedSkill = composeSkill(skill, skills)",
+						"this.activeSkills.delete(skillName)",
+						"defaultRuntimeEnv().skillTrustStrict"
+					]
+				},
+				{
+					"path": "test/cli-tui/skills-controller.test.ts",
+					"contains": ["activate gates the composed prompt SHA through the trust cache", "review (active)", "refusing to activate"]
+				}
+			]
+		},
+		{
+			"id": "release-dispatch-idempotency",
+			"title": "Release dispatch idempotency",
+			"owner": "release",
+			"bugClass": "stale or fast-completed workflow runs masking dispatch state",
+			"why": "Tag-release dispatch must confirm a new workflow_dispatch run by count increase, keep an adequate wait window, and avoid stale active-run or timestamp filters.",
+			"evidence": [
+				{
+					"path": ".github/workflows/tag-release.yml",
+					"contains": [
+						"existing_count=\"$(retry \"List dispatched release workflows\" dispatched_release_run_count)\"",
+						"if (( release_run_count > existing_count )) && [[ \"${dispatch_status}\" == \"0\" ]]; then",
+						"sleep 10"
+					],
+					"notContains": [
+						"dispatch_started_at=",
+						"new_active_dispatched_release_run_count()"
+					]
+				},
+				{
+					"path": "test/workflows/tag-release.test.ts",
+					"contains": [
+						"if (( release_run_count > existing_count )) && [[ \"${dispatch_status}\" == \"0\" ]]; then",
+						"sleep 10"
+					],
+					"matches": [
+						"expect\\(dispatchStep\\?\\.run\\)\\.not\\.toContain\\(\\s*\"dispatch_started_at=\"\\s*\\)"
+					]
+				}
+			]
+		},
+		{
+			"id": "opaque-git-parser-state",
+			"title": "Opaque Git parser state",
+			"owner": "safety",
+			"bugClass": "clone option prefixes hiding dangerous config",
+			"why": "Network safety parsing must continue scanning clone option prefixes so later --config and --config-env smuggles are still detected.",
+			"evidence": [
+				{
+					"path": "src/utils/url-extractor.ts",
+					"contains": ["GIT_CLONE_FLAGS_WITH_VALUES", "scanningCloneOptions", "findOpaqueGitConfigOption"]
+				},
+				{
+					"path": "test/utils/url-extractor.test.ts",
+					"contains": [
+						"git clone --depth 1 --config",
+						"git clone --branch main --config",
+						"git clone --origin upstream --upload-pack",
+						"git clone -b main -o upstream -u",
+						"--config-env"
+					]
+				},
+				{
+					"path": "test/security/exploit-vectors-regression.test.ts",
+					"contains": [
+						"rejects git clone --depth before --config smuggles",
+						"rejects git clone mixed short option prefixes before --config smuggles",
+						"rejects git clone mixed short option prefixes before --config-env smuggles"
+					]
+				}
+			]
+		},
+		{
+			"id": "bounded-output-and-json-repair",
+			"title": "Bounded output and JSON repair",
+			"owner": "io",
+			"bugClass": "large output or JSON races hiding state changes",
+			"why": "Large command output must be explicitly truncated, and corrupt JSON rotation must not overwrite or ignore concurrent repairs.",
+			"evidence": [
+				{
+					"path": "src/tools/gh-helpers.ts",
+					"contains": ["GH_MAX_BUFFER", "Output truncated", "truncationMessages"]
+				},
+				{
+					"path": "src/utils/fs.ts",
+					"contains": ["rotateOnParseFail", "currentContent !== expectedContent", "safeJsonParse<T>(repairedContent, path)"]
+				},
+				{
+					"path": "test/utils/fs.test.ts",
+					"contains": ["does not rotate when the file content changed after the caller read it", "rotateOnParseFail: true"]
+				},
+				{
+					"path": "test/headless/runtime-conformance.test.ts",
+					"contains": ["truncated: true"]
+				}
+			]
+		},
+		{
+			"id": "a2a-ledger-evidence-parity",
+			"title": "A2A ledger evidence parity",
+			"owner": "a2a",
+			"bugClass": "reload/persist drift losing delegated-task evidence",
+			"why": "A2A control-plane rows must preserve authoritative state, response, transcript, workGraph, and non-secret embedded metadata across Rust reload/persist and TS audit/report consumers.",
+			"evidence": [
+				{
+					"path": "packages/control-plane-rs/src/a2a/ledger.rs",
+					"contains": [
+						"fn a2a_task_with_ledger_evidence",
+						"a2a_merge_ledger_status_into_task(task_object, entry, &context_id)",
+						"fn a2a_embedded_task_metadata_for_ledger",
+						"fn a2a_remove_secret_ledger_metadata"
+					]
+				},
+				{
+					"path": "packages/control-plane-rs/src/tests.rs",
+					"contains": [
+						"a2a_task_store_prefers_top_level_ledger_work_graph",
+						"a2a_task_load_preserves_embedded_history_when_transcript_exists",
+						"a2a_task_load_prefers_top_level_state_over_embedded_status",
+						"nested-secret"
+					]
+				},
+				{
+					"path": "src/platform/a2a-task-ledger.ts",
+					"contains": [
+						"export function a2aTaskEvidenceGaps",
+						"export function normalizeA2AState",
+						"normalizeA2AWorkGraphMetadata"
+					]
+				},
+				{
+					"path": "test/platform/a2a-task-ledger.test.ts",
+					"contains": [
+						"hydrates Rust-style embedded task evidence when top-level fields are missing",
+						"expect(task.responseText).toBe(\"done\")",
+						"expect(a2aTaskEvidenceGaps(task)).toEqual([])"
+					]
+				},
+				{
+					"path": "src/platform/a2a-completion-audit.ts",
+					"contains": [
+						"const evidenceGaps = ledgerEntry ? a2aTaskEvidenceGaps(ledgerEntry) : []",
+						"terminal: Boolean(status && isFinalA2AState(status))"
+					]
+				}
+			]
+		},
+		{
+			"id": "release-train-drift",
+			"title": "Release train drift from unguarded Rust test modules",
+			"owner": "release",
+			"bugClass": "unguarded mod tests edits skipped by release-impact filtering",
+			"why": "rustProductionContent must only strip cfg(test)-gated test modules so edits inside an unguarded inline `mod tests` block remain package-impacting and force the required version bump instead of silently letting a tag mismatch through.",
+			"evidence": [
+				{
+					"path": "scripts/release-impact-filter.mjs",
+					"contains": [
+						"cfgTestAttributePattern",
+						"gatedByCfgTest",
+						"Only cfg(test)-gated test modules are test-only"
+					]
+				},
+				{
+					"path": "test/scripts/release-impact-filter.test.ts",
+					"contains": [
+						"treats unguarded inline Rust test module edits as package-impacting",
+						"ignores cfg(test)-gated inline Rust test module edits"
+					]
+				}
+			]
+		},
+		{
+			"id": "a2a-cancel-canonical-state-guard",
+			"title": "A2A cancel canonical state guard",
+			"owner": "a2a",
+			"bugClass": "canceled tasks overwritten by later stores when status aliases are not canonicalized",
+			"why": "store_a2a_task_unless_canceled and a2a_canceled_task must canonicalize the status state before comparing so aliases like CANCELLED or STATE_CANCELED are respected and a canceled row is not overwritten.",
+			"evidence": [
+				{
+					"path": "packages/control-plane-rs/src/a2a/tasks.rs",
+					"contains": [
+						"fn a2a_task_is_canceled",
+						"canonical_a2a_task_state(state) == \"TASK_STATE_CANCELED\"",
+						"a2a_task_is_canceled(existing)"
+					]
+				},
+				{
+					"path": "packages/control-plane-rs/src/tests.rs",
+					"contains": [
+						"a2a_task_store_preserves_canceled_task_across_canonical_state_aliases"
+					]
+				}
+			]
+		},
+		{
+			"id": "a2a-compound-secret-redaction",
+			"title": "A2A compound secret redaction",
+			"owner": "a2a",
+			"bugClass": "compound credential metadata keys not redacted by exact-match-only secret detection",
+			"why": "a2a_ledger_metadata_key_is_secret must match suffix forms (webhookSecret, oauthToken, apiPassword) so compound credential fields are redacted, while preserving nonSecret/nonCredentials/notASecret exceptions and token-metric carve-outs.",
+			"evidence": [
+				{
+					"path": "packages/control-plane-rs/src/a2a/ledger.rs",
+					"contains": [
+						"fn a2a_ledger_metadata_key_has_secret_suffix",
+						"SECRET_SUFFIXES",
+						"NEGATION_PREFIXES"
+					]
+				},
+				{
+					"path": "packages/control-plane-rs/src/tests.rs",
+					"contains": [
+						"a2a_task_ledger_redacts_compound_secret_metadata_keys"
+					]
+				}
+			]
+		},
+		{
+			"id": "a2a-history-rich-part-refresh",
+			"title": "A2A history rich part refresh",
+			"owner": "a2a",
+			"bugClass": "non-text history parts dropped or stale text preserved during transcript-driven refresh",
+			"why": "a2a_merge_history_parts must preserve non-text parts (attachments, data payloads) while replacing all text-bearing parts (plain or decorated) with the refreshed transcript candidate so stale summary text does not survive.",
+			"evidence": [
+				{
+					"path": "packages/control-plane-rs/src/a2a/ledger.rs",
+					"contains": [
+						"fn a2a_merge_history_parts",
+						"fn a2a_history_part_has_text",
+						"!a2a_history_part_has_text(part)"
+					]
+				},
+				{
+					"path": "packages/control-plane-rs/src/tests.rs",
+					"contains": [
+						"a2a_task_load_preserves_rich_parts_when_history_message_is_refreshed"
+					]
+				}
+			]
+		},
+		{
+			"id": "learner-transient-quarantine-parity",
+			"title": "Learner transient quarantine parity",
+			"owner": "learner",
+			"bugClass": "transient setup failures depressing durable routing confidence across record, load, and trim paths",
+			"why": "record_outcome, load, and trim must all exclude transient failures from pattern updates so get_label_success_rate and get_confidence_adjustment stay consistent with get_recommendations. Ambiguous transient phrases must be gated behind environment context.",
+			"evidence": [
+				{
+					"path": "packages/ambient-agent-rs/src/learner.rs",
+					"contains": [
+						"fn is_transient_failure_reason",
+						"has_transient_environment_context",
+						"fn rebuild_patterns",
+						"outcome_is_transient_failure"
+					]
+				},
+				{
+					"path": "packages/ambient-agent-rs/src/learner.rs",
+					"contains": [
+						"test_transient_classifier_requires_environment_context_for_product_terms",
+						"test_recommendations_use_consistent_non_transient_stats_after_trim"
+					]
+				}
+			]
+		},
+		{
+			"id": "learner-promote-repair-consistency",
+			"title": "Learner promote repair consistency",
+			"owner": "learner",
+			"bugClass": "same pattern qualifying for both promote and repair or using inconsistent stats",
+			"why": "get_recommendations must use pattern_non_transient_stats for both promote and repair decisions and exclude promoted patterns from repair candidates so a single pattern cannot appear in both lists.",
+			"evidence": [
+				{
+					"path": "packages/ambient-agent-rs/src/learner.rs",
+					"contains": [
+						"fn pattern_non_transient_stats",
+						"promoted.contains",
+						"problematic_pattern_stats"
+					]
+				},
+				{
+					"path": "packages/ambient-agent-rs/src/learner.rs",
+					"contains": [
+						"test_recommendations_do_not_promote_and_repair_the_same_pattern"
+					]
+				}
+			]
+		}
+	]
 }

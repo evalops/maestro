@@ -97,9 +97,7 @@ pub use matcher::{
     ArgCompletion, CommandMatch, InlineCompletion, RichCompletion, SlashCommandMatcher,
     SlashCycleState,
 };
-pub use registry::{
-    build_command_registry, build_command_registry_with_extensions, CommandRegistry,
-};
+pub use registry::{build_command_registry, CommandRegistry};
 pub use types::{
     A2aAction, Command, CommandAction, CommandArgument, CommandArgumentType, CommandCategory,
     CommandContext, CommandError, CommandHandler, CommandOutput, CommandResult, ExportAction,

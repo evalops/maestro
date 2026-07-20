@@ -10,6 +10,7 @@
 				"bun install -g @evalops/maestro",
 				"npm install -g @evalops/maestro",
 				"@evalops/maestro@latest",
+				"@evalops/tui",
 				"@evalops/contracts",
 				"deprecated 0.10.8-0.10.20 package",
 				"referenced private workspace dependencies",

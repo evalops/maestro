@@ -409,14 +409,10 @@ function computeSessionAnalytics(tracker: UsageTracker): SessionAnalytics {
 
 ## Display Components
 
-> **Historical note:** `src/cli-tui/...` paths below refer to the removed TypeScript
-> TUI (PR #2891). Native cost/usage UI lives under `packages/tui-rs/src/usage/` and
-> related status components.
-
 ### TUI Footer Cost Display
 
 ```typescript
-// historical: src/cli-tui/status/cost-view.ts
+// src/cli-tui/status/cost-view.ts
 class CostView {
   render(analytics: SessionAnalytics): string {
     const costStr = formatCurrency(analytics.totalCost);

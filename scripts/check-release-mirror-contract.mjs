@@ -6,7 +6,33 @@ import { resolve } from "node:path";
 const manifestPath = ".github/release-mirror-manifest.json";
 const contractPath = ".github/RELEASE_MIRROR_CONTRACT.md";
 
-const requiredCommandSuiteFiles = [];
+const requiredCommandSuiteFiles = [
+	"src/cli-tui/commands/command-catalog.ts",
+	"src/cli-tui/commands/command-registry-adapter.ts",
+	"src/cli-tui/commands/command-suite-catalog.ts",
+	"src/cli-tui/commands/command-suite-handlers.ts",
+	"src/cli-tui/commands/access-command.ts",
+	"src/cli-tui/commands/audit-command.ts",
+	"src/cli-tui/commands/hotkeys-command.ts",
+	"src/cli-tui/commands/limits-command.ts",
+	"src/cli-tui/commands/pii-command.ts",
+	"src/cli-tui/commands/registry.ts",
+	"src/cli-tui/commands/subcommands/auth-commands.ts",
+	"src/cli-tui/commands/subcommands/config-commands.ts",
+	"src/cli-tui/commands/subcommands/diag-commands.ts",
+	"src/cli-tui/commands/subcommands/git-commands.ts",
+	"src/cli-tui/commands/subcommands/index.ts",
+	"src/cli-tui/commands/subcommands/safety-commands.ts",
+	"src/cli-tui/commands/subcommands/session-commands.ts",
+	"src/cli-tui/commands/subcommands/tools-commands.ts",
+	"src/cli-tui/commands/subcommands/ui-commands.ts",
+	"src/cli-tui/commands/subcommands/undo-commands.ts",
+	"src/cli-tui/commands/subcommands/usage-commands.ts",
+	"src/cli-tui/commands/subcommands/utils.ts",
+	"src/cli-tui/commands/types.ts",
+	"src/cli-tui/tui-renderer/command-registry-options.ts",
+	"src/cli-tui/tui-renderer/command-suite-wiring.ts",
+];
 
 const requiredReleaseReplayHelperFiles = [
 	"scripts/published-replay-evidence-gate.js",
@@ -16,7 +42,11 @@ const requiredReleaseReplayHelperFiles = [
 	"scripts/verify-published-replay-evidence.js",
 ];
 
-const forbiddenExactFiles = [];
+const forbiddenExactFiles = [
+	"src/cli-tui/tui-renderer.ts",
+	"src/cli-tui/commands/grouped-command-handlers.ts",
+	"src/cli-tui/tui-renderer/grouped-handlers-wiring.ts",
+];
 
 const forbiddenReleaseMirrorFileMessages = new Map([
 	[
@@ -29,7 +59,7 @@ const forbiddenReleaseMirrorFileMessages = new Map([
 	],
 ]);
 
-const forbiddenPrefixes = [];
+const forbiddenPrefixes = ["src/cli-tui/commands/grouped/"];
 
 function fail(errors) {
 	console.error("Release mirror contract check failed:");
@@ -170,7 +200,11 @@ for (const file of seen) {
 	}
 }
 
-const hasCommandSuiteRuntime = false; // TS TUI command suite removed
+const hasCommandSuiteRuntime = [...seen].some(
+	(file) =>
+		file === "src/cli-tui/commands/command-suite-handlers.ts" ||
+		file.startsWith("src/cli-tui/commands/subcommands/"),
+);
 
 if (hasCommandSuiteRuntime) {
 	for (const file of requiredCommandSuiteFiles) {

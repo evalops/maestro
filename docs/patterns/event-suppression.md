@@ -99,12 +99,9 @@ class EventEmittingClass {
 2. **Public API Calls**: External callers expect events
 3. **Critical State Changes**: Changes that affect system integrity should notify observers
 
-## Real Example: PromptQueue (historical TypeScript TUI)
+## Real Example: PromptQueue
 
-> The TypeScript TUI (`src/cli-tui/prompt-queue.ts`, `tui-renderer.ts`) was removed
-> in PR #2891. Interactive queuing now lives in
-> `packages/tui-rs/src/app/prompt_queue.rs`. The silent-mode API shape below is
-> kept as the canonical illustration of the pattern.
+See `src/cli-tui/prompt-queue.ts`:
 
 ```typescript
 /**
@@ -128,7 +125,7 @@ cancelAll(options?: { silent?: boolean }): QueuedPrompt[] {
 }
 ```
 
-**Usage in interrupt restore** (former TS `TuiRenderer`):
+**Usage in interrupt restore** (`src/cli-tui/tui-renderer.ts`):
 ```typescript
 // Restore queued prompts without triggering cancel notifications
 const snapshot = this.promptQueue.getSnapshot();

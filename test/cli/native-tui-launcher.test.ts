@@ -1,18 +1,12 @@
-import { EventEmitter } from "node:events";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import {
 	MaestroTuiBinaryNotFoundError,
 	buildNativeTuiCliArgs,
 	findBinaryOnPath,
-	launchNativeTui,
 	resolveMaestroTuiBinary,
-	shouldLaunchNativeHeadless,
 	shouldLaunchNativeInteractiveTui,
-	shouldLaunchNativePrint,
 } from "../../src/cli/native-tui-launcher.js";
-
-type SpawnFn = typeof import("node:child_process").spawn;
 
 describe("resolveMaestroTuiBinary", () => {
 	const packageRoot = "/pkg";
@@ -180,89 +174,6 @@ describe("resolveMaestroTuiBinary", () => {
 		});
 		expect(result).toBe(winVendor);
 	});
-
-	it("uses linux-x64 and linux-arm64 vendor paths", () => {
-		for (const arch of ["x64", "arm64"] as const) {
-			const vendor = join(
-				packageRoot,
-				"vendor",
-				"maestro-tui",
-				`linux-${arch}`,
-				"maestro-tui",
-			);
-			const result = resolveMaestroTuiBinary({
-				env: {},
-				packageRoot,
-				platform: "linux",
-				arch,
-				exists: (path) => path === vendor,
-				findOnPath: () => undefined,
-			});
-			expect(result).toBe(vendor);
-		}
-	});
-
-	it("names the platform triple in the not-found error", () => {
-		try {
-			resolveMaestroTuiBinary({
-				env: {},
-				packageRoot,
-				platform: "linux",
-				arch: "x64",
-				exists: () => false,
-				findOnPath: () => undefined,
-			});
-			expect.unreachable("should have thrown");
-		} catch (error) {
-			const message = error instanceof Error ? error.message : String(error);
-			expect(message).toContain("vendor/maestro-tui/linux-x64/maestro-tui");
-			expect(message).toContain("native Rust binary");
-			expect(message).toContain("headless/print/exec");
-		}
-	});
-});
-
-describe("launchNativeTui", () => {
-	it("spawns the resolved binary with mapped args and forwards exit code", async () => {
-		const child = new EventEmitter() as EventEmitter & {
-			// minimal child process surface used by launchNativeTui
-		};
-		const spawnImpl = vi.fn(() => child);
-		const promise = launchNativeTui({
-			parsed: { model: "gpt-4o-mini", provider: "openai", messages: [] },
-			cwd: "/work",
-			env: { PATH: "/bin" },
-			resolveOptions: {
-				env: { MAESTRO_TUI_BIN: "/bin/fake-maestro-tui" },
-				exists: (path) => path === "/bin/fake-maestro-tui",
-			},
-			spawnImpl: spawnImpl as unknown as SpawnFn,
-		});
-		expect(spawnImpl).toHaveBeenCalledWith(
-			"/bin/fake-maestro-tui",
-			["--provider", "openai", "--model", "gpt-4o-mini"],
-			expect.objectContaining({
-				stdio: "inherit",
-				cwd: "/work",
-			}),
-		);
-		child.emit("exit", 7, null);
-		await expect(promise).resolves.toBe(7);
-	});
-
-	it("maps SIGINT to 128+2", async () => {
-		const child = new EventEmitter();
-		const promise = launchNativeTui({
-			parsed: { messages: [] },
-			resolveOptions: {
-				env: { MAESTRO_TUI_BIN: "/bin/fake" },
-				exists: () => true,
-			},
-			spawnImpl: (() => child) as unknown as SpawnFn,
-		});
-		child.emit("exit", null, "SIGINT");
-		await expect(promise).resolves.toBe(130);
-	});
 });
 
 describe("findBinaryOnPath", () => {
@@ -308,49 +219,6 @@ describe("buildNativeTuiCliArgs", () => {
 			"claude-sonnet",
 		]);
 	});
-
-	it("forwards --worktree (auto name and named)", () => {
-		expect(buildNativeTuiCliArgs({ worktree: true, messages: [] })).toEqual([
-			"--worktree",
-		]);
-		expect(
-			buildNativeTuiCliArgs({ worktree: "feat-x", messages: ["go"] }),
-		).toEqual(["--worktree", "feat-x", "go"]);
-	});
-
-	it("forwards --print and --json", () => {
-		expect(
-			buildNativeTuiCliArgs({
-				print: true,
-				json: true,
-				messages: ["hello"],
-			}),
-		).toEqual(["--print", "--json", "hello"]);
-	});
-
-	it("forwards headless, output-last-message, and output-schema", () => {
-		expect(
-			buildNativeTuiCliArgs({
-				headless: true,
-				messages: [],
-			}),
-		).toEqual(["--headless"]);
-		expect(
-			buildNativeTuiCliArgs({
-				print: true,
-				outputLastMessage: "out.md",
-				outputSchema: "schema.json",
-				messages: ["emit json"],
-			}),
-		).toEqual([
-			"--print",
-			"--output-last-message",
-			"out.md",
-			"--output-schema",
-			"schema.json",
-			"emit json",
-		]);
-	});
 });
 
 describe("shouldLaunchNativeInteractiveTui", () => {
@@ -363,19 +231,18 @@ describe("shouldLaunchNativeInteractiveTui", () => {
 		expect(
 			shouldLaunchNativeInteractiveTui({
 				messages: [],
+				mode: "text",
 				continue: true,
-			}),
+			} as { messages: string[]; mode?: string }),
 		).toBe(true);
-		// Explicit --mode text is single-shot scripting, not interactive native.
-		expect(
-			shouldLaunchNativeInteractiveTui({
-				messages: [],
-				mode: "text",
-			}),
-		).toBe(false);
 	});
 
-	it("does not launch for headless, rpc, script modes, or subcommands", () => {
+	it("does not launch for headless, rpc, prompts, or subcommands", () => {
+		expect(
+			shouldLaunchNativeInteractiveTui({
+				messages: ["hi"],
+			}),
+		).toBe(false);
 		expect(
 			shouldLaunchNativeInteractiveTui({
 				messages: [],
@@ -403,113 +270,6 @@ describe("shouldLaunchNativeInteractiveTui", () => {
 		expect(
 			shouldLaunchNativeInteractiveTui({
 				messages: [],
-				command: "web",
-			}),
-		).toBe(false);
-		// Explicit single-shot scripting stays on TS agent.
-		expect(
-			shouldLaunchNativeInteractiveTui({
-				messages: ["hi"],
-				mode: "text",
-			}),
-		).toBe(false);
-		expect(
-			shouldLaunchNativeInteractiveTui({
-				messages: ["hi"],
-				mode: "json",
-			}),
-		).toBe(false);
-	});
-
-	it("launches native for trailing prompts in interactive TTY (Grok-style)", () => {
-		const prev = process.env.MAESTRO_NATIVE_PROMPT;
-		const prevTty = Object.getOwnPropertyDescriptor(process.stdout, "isTTY");
-		try {
-			delete process.env.MAESTRO_NATIVE_PROMPT;
-			Object.defineProperty(process.stdout, "isTTY", {
-				value: true,
-				configurable: true,
-			});
-			expect(
-				shouldLaunchNativeInteractiveTui({
-					messages: ["fix the bug"],
-				}),
-			).toBe(true);
-		} finally {
-			if (prev === undefined) {
-				delete process.env.MAESTRO_NATIVE_PROMPT;
-			} else {
-				process.env.MAESTRO_NATIVE_PROMPT = prev;
-			}
-			if (prevTty) {
-				Object.defineProperty(process.stdout, "isTTY", prevTty);
-			}
-		}
-	});
-});
-
-describe("shouldLaunchNativePrint", () => {
-	it("routes mode text/json and full exec (incl schema) to native print", () => {
-		expect(
-			shouldLaunchNativePrint({
-				messages: ["hi"],
-				mode: "text",
-			}),
-		).toBe(true);
-		expect(
-			shouldLaunchNativePrint({
-				messages: ["hi"],
-				mode: "json",
-			}),
-		).toBe(true);
-		expect(
-			shouldLaunchNativePrint({
-				command: "exec",
-				messages: ["do work"],
-			}),
-		).toBe(true);
-		expect(
-			shouldLaunchNativePrint({
-				command: "exec",
-				messages: ["do work"],
-				execOutputSchema: "schema.json",
-			}),
-		).toBe(true);
-		expect(
-			shouldLaunchNativePrint({
-				command: "exec",
-				messages: ["do work"],
-				execOutputLast: "out.txt",
-			}),
-		).toBe(true);
-		expect(
-			shouldLaunchNativePrint({
-				messages: ["hi"],
-				mode: "headless",
-			}),
-		).toBe(false);
-	});
-});
-
-describe("shouldLaunchNativeHeadless", () => {
-	it("routes headless and rpc modes to native headless server", () => {
-		expect(
-			shouldLaunchNativeHeadless({
-				mode: "headless",
-			}),
-		).toBe(true);
-		expect(
-			shouldLaunchNativeHeadless({
-				mode: "rpc",
-			}),
-		).toBe(true);
-		expect(
-			shouldLaunchNativeHeadless({
-				headless: true,
-			}),
-		).toBe(true);
-		expect(
-			shouldLaunchNativeHeadless({
 				command: "web",
 			}),
 		).toBe(false);

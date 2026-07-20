@@ -210,7 +210,8 @@ async function verifyPackageBuilds() {
 	console.log("\n[Bonus] Verifying package builds...\n");
 
 	const packages = [
-				{ name: "Web", path: join(projectRoot, "packages", "web", "dist") },
+		{ name: "TUI", path: join(projectRoot, "packages", "tui", "dist") },
+		{ name: "Web", path: join(projectRoot, "packages", "web", "dist") },
 		{ name: "Contracts", path: join(projectRoot, "packages", "contracts", "dist") },
 		{ name: "AI", path: join(projectRoot, "packages", "ai", "dist") },
 	];

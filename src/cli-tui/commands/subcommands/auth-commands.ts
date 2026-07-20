@@ -1,0 +1,109 @@
+/**
+ * Consolidated /auth command handler.
+ *
+ * Combines: /login, /logout
+ *
+ * Usage:
+ *   /auth                 - Show auth status
+ *   /auth login [provider] - Authenticate (openai-codex by default)
+ *   /auth logout [provider] - Remove credentials
+ *   /auth source-of-truth <provider> <area> [fallbackConnectionId] - Set connector policy
+ *   /auth status          - Show current auth state
+ */
+
+import type { CommandExecutionContext } from "../types.js";
+import { createSubcommandHandler } from "./utils.js";
+
+export interface AuthState {
+	authenticated: boolean;
+	provider?: string;
+	mode?: string;
+}
+
+export interface AuthCommandDeps {
+	handleLogin: (ctx: CommandExecutionContext) => Promise<void> | void;
+	handleLogout: (ctx: CommandExecutionContext) => Promise<void> | void;
+	handleSourceOfTruthPolicy?: (
+		ctx: CommandExecutionContext,
+	) => Promise<void> | void;
+	getAuthState: () => AuthState | Promise<AuthState>;
+}
+
+export function createAuthCommandHandler(deps: AuthCommandDeps) {
+	return createSubcommandHandler({
+		defaultSubcommand: "status",
+		showHelp: showAuthHelp,
+		routes: [
+			{
+				match: ["status", "info", "whoami"],
+				execute: ({ ctx }) => showAuthStatus(ctx, deps),
+			},
+			{
+				match: ["login", "signin"],
+				execute: ({ rewriteContext }) =>
+					deps.handleLogin(rewriteContext("login")),
+			},
+			{
+				match: ["logout", "signout"],
+				execute: ({ rewriteContext }) =>
+					deps.handleLogout(rewriteContext("logout")),
+			},
+			{
+				match: ["source-of-truth", "sot", "policy"],
+				execute: ({ ctx, customContext, restArgumentText }) => {
+					if (!deps.handleSourceOfTruthPolicy) {
+						ctx.showError(
+							"Source-of-truth policy management is not available in this session.",
+						);
+						return;
+					}
+					return deps.handleSourceOfTruthPolicy(
+						customContext(
+							`/auth source-of-truth ${restArgumentText}`.trim(),
+							restArgumentText,
+						),
+					);
+				},
+			},
+		],
+		onUnknown: async ({ ctx, subcommand }) => {
+			ctx.showError(`Unknown subcommand: ${subcommand}`);
+			showAuthHelp(ctx);
+		},
+	});
+}
+
+async function showAuthStatus(
+	ctx: CommandExecutionContext,
+	deps: AuthCommandDeps,
+): Promise<void> {
+	const state = await deps.getAuthState();
+	if (state.authenticated) {
+		ctx.showInfo(`Authentication Status:
+  Authenticated: yes
+  Provider: ${state.provider || "unknown"}
+  Mode: ${state.mode || "unknown"}
+
+Use /auth logout to sign out.`);
+	} else {
+		ctx.showInfo(`Authentication Status:
+  Authenticated: no
+
+Use /auth login to authenticate with OpenAI Codex.`);
+	}
+}
+
+function showAuthHelp(ctx: CommandExecutionContext): void {
+	ctx.showInfo(`Auth Commands:
+  /auth                  Show auth status
+  /auth login [provider] Authenticate (openai-codex by default)
+  /auth logout [provider] Remove credentials
+  /auth source-of-truth <provider> <area> [fallbackConnectionId]
+                         Set connector source-of-truth policy metadata
+                         Areas: analytics, billing, crm, hris, support
+  /auth source-of-truth clear <provider>
+                         Remove local policy metadata
+  /auth status           Show current auth state
+
+Direct shortcuts still work: /login, /logout`);
+}

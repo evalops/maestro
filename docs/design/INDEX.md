@@ -21,7 +21,7 @@ This directory contains detailed design documentation for each major feature and
 
 | Document | Description |
 |----------|-------------|
-| [TUI Rendering Engine](TUI_RENDERING.md) | **Historical** TS TUI rendering design (removed in #2891); see [TUI Architecture](../TUI_ARCHITECTURE.md) for native `maestro-tui` |
+| [TUI Rendering Engine](TUI_RENDERING.md) | Terminal UI architecture, differential rendering, and event handling |
 | [Web UI Architecture](WEB_UI_ARCHITECTURE.md) | Browser-based interface, WebSocket communication, and state sync |
 
 ## Safety & Security

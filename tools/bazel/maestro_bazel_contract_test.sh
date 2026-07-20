@@ -64,6 +64,7 @@ required_projects=(
   "packages/governance/project.json:@evalops/governance"
   "packages/slack-agent/project.json:slack-agent"
   "packages/slack-agent-ui/project.json:slack-agent-ui"
+  "packages/tui/project.json:tui"
   "packages/vscode-extension/project.json:vscode-extension"
   "packages/web/project.json:maestro-web"
 )

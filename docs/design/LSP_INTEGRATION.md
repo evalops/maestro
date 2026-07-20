@@ -473,14 +473,10 @@ class LspContextSource implements AgentContextSource {
 
 ## TUI Integration
 
-> **Historical note:** Example paths under `src/cli-tui/` refer to the removed
-> TypeScript TUI (PR #2891). Native interactive UI lives in `packages/tui-rs`
-> (including `lsp.rs`). Treat the snippets below as design sketches, not live paths.
-
 ### Diagnostics View
 
 ```typescript
-// historical: src/cli-tui/lsp-view.ts
+// src/cli-tui/lsp-view.ts
 class LspView {
   private collector: DiagnosticCollector;
 

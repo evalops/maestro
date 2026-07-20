@@ -66,7 +66,6 @@
 //! }
 //! ```
 
-use crate::path_utils::{legacy_composer_home_dir, maestro_home_dir};
 use crate::skills::{SkillDefinition, SkillSource};
 use serde::Deserialize;
 use std::collections::HashMap;
@@ -127,12 +126,6 @@ const ALLOWED_FIELDS: &[&str] = &[
     "author",
     "version",
     "triggers",
-    "user-invocable",
-    "argument-hint",
-    "when-to-use",
-    "disable-model-invocation",
-    "model",
-    "effort",
 ];
 
 /// YAML frontmatter structure for skill files (per Agent Skills spec)
@@ -173,16 +166,6 @@ struct SkillFrontmatter {
     /// Legacy triggers (optional)
     #[serde(default)]
     triggers: Option<Vec<String>>,
-    #[serde(rename = "user-invocable", default)]
-    user_invocable: Option<bool>,
-    #[serde(rename = "argument-hint")]
-    argument_hint: Option<String>,
-    #[serde(rename = "when-to-use")]
-    when_to_use: Option<String>,
-    #[serde(rename = "disable-model-invocation")]
-    disable_model_invocation: Option<bool>,
-    model: Option<String>,
-    effort: Option<String>,
 }
 
 /// Result of loading a skill file
@@ -273,12 +256,12 @@ impl LoadedSkill {
 /// Loader for filesystem-based skills following the Agent Skills spec
 #[derive(Debug)]
 pub struct SkillLoader {
-    /// Directories to search for skills (low → high priority)
+    /// Directories to search for skills
     search_paths: Vec<PathBuf>,
     /// Cached system skills directory (resolved once at construction)
     system_skills_dir: Option<PathBuf>,
-    /// Cached user skills directories (resolved once at construction)
-    user_skills_dirs: Vec<PathBuf>,
+    /// Cached user skills directory (resolved once at construction)
+    user_skills_dir: Option<PathBuf>,
 }
 
 impl SkillLoader {
@@ -286,31 +269,27 @@ impl SkillLoader {
     #[must_use]
     pub fn new() -> Self {
         let mut search_paths = Vec::new();
-        let mut user_skills_dirs = Vec::new();
 
         let system_skills_dir = Self::find_system_skills_dir();
+        let user_skills_dir = dirs::home_dir().map(|h| h.join(".composer").join("skills"));
 
+        // Add system skills directory (bundled with the package, lowest priority)
         if let Some(ref system_dir) = system_skills_dir {
             search_paths.push(system_dir.clone());
         }
 
-        if let Some(dir) = legacy_composer_home_dir().map(|h| h.join("skills")) {
-            user_skills_dirs.push(dir.clone());
-            search_paths.push(dir);
-        }
-        if let Some(dir) = maestro_home_dir().map(|h| h.join("skills")) {
-            user_skills_dirs.push(dir.clone());
-            search_paths.push(dir);
+        // Add global user skills directory
+        if let Some(ref user_dir) = user_skills_dir {
+            search_paths.push(user_dir.clone());
         }
 
-        search_paths.push(PathBuf::from(".agents").join("skills"));
+        // Add project-specific skills directory (highest priority)
         search_paths.push(PathBuf::from(".composer").join("skills"));
-        search_paths.push(PathBuf::from(".maestro").join("skills"));
 
         Self {
             search_paths,
             system_skills_dir,
-            user_skills_dirs,
+            user_skills_dir,
         }
     }
 
@@ -346,7 +325,7 @@ impl SkillLoader {
         Self {
             search_paths: paths,
             system_skills_dir: None,
-            user_skills_dirs: Vec::new(),
+            user_skills_dir: None,
         }
     }
 
@@ -453,11 +432,12 @@ impl SkillLoader {
                 return SkillSource::System;
             }
         }
-        for user_dir in &self.user_skills_dirs {
+        if let Some(ref user_dir) = self.user_skills_dir {
             if dir.starts_with(user_dir) {
                 return SkillSource::User;
             }
         }
+        // Default: project-level skills (.composer/skills/)
         SkillSource::Project
     }
 
@@ -652,8 +632,6 @@ impl SkillLoader {
             .with_source(source)
             .with_tools(tools);
 
-        skill.user_invocable = frontmatter.user_invocable.unwrap_or(true);
-
         // Set metadata
         skill.metadata = frontmatter.metadata;
 
@@ -669,33 +647,6 @@ impl SkillLoader {
             skill
                 .metadata
                 .insert("compatibility".to_string(), serde_json::json!(compat));
-        }
-
-        if let Some(hint) = frontmatter.argument_hint {
-            skill
-                .metadata
-                .insert("argument-hint".to_string(), serde_json::json!(hint));
-        }
-        if let Some(when_to_use) = frontmatter.when_to_use {
-            skill
-                .metadata
-                .insert("when-to-use".to_string(), serde_json::json!(when_to_use));
-        }
-        if let Some(disable) = frontmatter.disable_model_invocation {
-            skill.metadata.insert(
-                "disable-model-invocation".to_string(),
-                serde_json::json!(disable),
-            );
-        }
-        if let Some(model) = frontmatter.model {
-            skill
-                .metadata
-                .insert("model".to_string(), serde_json::json!(model));
-        }
-        if let Some(effort) = frontmatter.effort {
-            skill
-                .metadata
-                .insert("effort".to_string(), serde_json::json!(effort));
         }
 
         // Legacy fields (tags/author/version/triggers)
@@ -776,21 +727,16 @@ impl SkillLoader {
     /// Load skills returning both successful loads and errors
     #[must_use]
     pub fn load_all_with_paths(&self) -> (Vec<LoadedSkill>, Vec<SkillLoadError>) {
-        let mut by_name: HashMap<String, LoadedSkill> = HashMap::new();
+        let mut skills = Vec::new();
         let mut errors = Vec::new();
 
         for result in self.load_all() {
             match result {
-                Ok(skill) => {
-                    let key = skill.definition.name.to_lowercase();
-                    by_name.insert(key, skill);
-                }
+                Ok(skill) => skills.push(skill),
                 Err(e) => errors.push(e),
             }
         }
 
-        let mut skills: Vec<_> = by_name.into_values().collect();
-        skills.sort_by(|a, b| a.definition.name.cmp(&b.definition.name));
         (skills, errors)
     }
 }

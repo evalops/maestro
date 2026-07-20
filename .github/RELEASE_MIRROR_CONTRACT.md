@@ -34,6 +34,10 @@ handler split and leaves one repo with a different command model.
 The following surfaces are intentionally internal-only and must not be added to
 the manifest:
 
+- `src/cli-tui/tui-renderer.ts`
+- `src/cli-tui/commands/grouped-command-handlers.ts`
+- `src/cli-tui/tui-renderer/grouped-handlers-wiring.ts`
+- `src/cli-tui/commands/grouped/**`
 
 ## Maestro Event Catalog Boundary
 

@@ -187,21 +187,6 @@ impl CommandRegistry {
         self.commands.insert(name, cmd);
     }
 
-    /// Register a command only if its primary name and aliases are free.
-    /// Built-ins always win when this is used after `build_command_registry`.
-    pub fn register_if_absent(&mut self, command: Command) -> bool {
-        if self.get(&command.name).is_some() {
-            return false;
-        }
-        for alias in &command.aliases {
-            if self.get(alias).is_some() {
-                return false;
-            }
-        }
-        self.register(command);
-        true
-    }
-
     /// Get a command by name or alias
     ///
     /// Performs a two-stage lookup:
@@ -834,62 +819,15 @@ pub fn build_command_registry() -> CommandRegistry {
         .usage("/hotkeys [show|path|init|validate]"),
     );
 
-    // Clear / new session (Grok-style: /new and /clear start fresh)
+    // Clear command
     registry.register(
         Command::new(
             "clear",
-            "Start a new session (clear transcript)",
-            CommandCategory::Session,
-            Box::new(|_| {
-                Ok(CommandOutput::Action(CommandAction::Session(
-                    SessionAction::New,
-                )))
-            }),
+            "Clear the screen",
+            CommandCategory::Ui,
+            Box::new(|_| Ok(CommandOutput::Action(CommandAction::ClearMessages))),
         )
-        .alias("cls")
-        .alias("new"),
-    );
-
-    // Fork session
-    registry.register(
-        Command::new(
-            "fork",
-            "Fork the conversation into a new session branch",
-            CommandCategory::Session,
-            Box::new(|_| {
-                Ok(CommandOutput::Action(CommandAction::Session(
-                    SessionAction::Fork,
-                )))
-            }),
-        )
-        .usage("/fork"),
-    );
-
-    // Rewind turns
-    registry.register(
-        Command::new(
-            "rewind",
-            "Rewind the last N user turns (default 1)",
-            CommandCategory::Session,
-            Box::new(|ctx| {
-                let turns = if ctx.raw_args.trim().is_empty() {
-                    1usize
-                } else {
-                    ctx.raw_args
-                        .trim()
-                        .parse::<usize>()
-                        .map_err(|_| CommandError::new("Usage: /rewind [n]"))?
-                };
-                if turns == 0 {
-                    return Err(CommandError::new("Rewind count must be >= 1"));
-                }
-                Ok(CommandOutput::Action(CommandAction::Session(
-                    SessionAction::Rewind { turns },
-                )))
-            }),
-        )
-        .alias("undo")
-        .usage("/rewind [n]"),
+        .alias("cls"),
     );
 
     // Quit command
@@ -1120,34 +1058,14 @@ pub fn build_command_registry() -> CommandRegistry {
                     "cleanup" | "prune" => Ok(CommandOutput::Action(CommandAction::Session(
                         SessionAction::Cleanup,
                     ))),
-                    "new" | "clear" => Ok(CommandOutput::Action(CommandAction::Session(
-                        SessionAction::New,
-                    ))),
-                    "fork" => Ok(CommandOutput::Action(CommandAction::Session(
-                        SessionAction::Fork,
-                    ))),
-                    "rewind" | "undo" => {
-                        let rest = ctx.raw_args.split_whitespace().nth(1).unwrap_or("1");
-                        let turns = rest
-                            .parse::<usize>()
-                            .map_err(|_| CommandError::new("Usage: /session rewind [n]"))?;
-                        Ok(CommandOutput::Action(CommandAction::Session(
-                            SessionAction::Rewind {
-                                turns: turns.max(1),
-                            },
-                        )))
-                    }
-                    "info" | "" => Ok(CommandOutput::Action(CommandAction::ShowDiagnostics)),
-                    _ => Ok(CommandOutput::Message(
-                        "Usage: /session [info|new|clear|fork|rewind|cleanup]".to_string(),
-                    )),
+                    _ => Ok(CommandOutput::Message("Current session info".to_string())),
                 }
             }),
         )
         .alias("ss")
-        .usage("/session [info|new|clear|list|load|export|cleanup|fork|rewind]")
+        .usage("/session [info|new|clear|list|load|export|cleanup]")
         .group(vec![
-            "info", "new", "clear", "list", "load", "export", "cleanup", "fork", "rewind",
+            "info", "new", "clear", "list", "load", "export", "cleanup",
         ]),
     );
 
@@ -1475,28 +1393,11 @@ pub fn build_command_registry() -> CommandRegistry {
     registry.register(
         Command::new(
             "tools",
-            "List built-in tools (and MCP via /mcp)",
+            "Tool management",
             CommandCategory::Tools,
-            Box::new(|ctx| {
-                let sub = ctx
-                    .raw_args
-                    .split_whitespace()
-                    .next()
-                    .unwrap_or("list")
-                    .to_lowercase();
-                match sub.as_str() {
-                    "list" | "" => Ok(CommandOutput::Action(CommandAction::ShowTools)),
-                    "mcp" => Ok(CommandOutput::Action(CommandAction::Mcp(McpAction::Status))),
-                    "lsp" => Ok(CommandOutput::Message(
-                        "LSP: set lsp.enabled in config; diagnostics can surface on write tools."
-                            .to_string(),
-                    )),
-                    _ => Err(CommandError::new("Usage: /tools [list|mcp|lsp]")),
-                }
-            }),
+            Box::new(|_| Ok(CommandOutput::Message("Available tools...".to_string()))),
         )
-        .group(vec!["list", "mcp", "lsp"])
-        .usage("/tools [list|mcp|lsp]"),
+        .group(vec!["list", "mcp", "lsp"]),
     );
 
     // MCP command
@@ -1625,84 +1526,34 @@ pub fn build_command_registry() -> CommandRegistry {
     registry.register(
         Command::new(
             "memory",
-            "Local / shared memory status",
+            "Cross-session memory",
             CommandCategory::Context,
-            Box::new(|_| Ok(CommandOutput::Action(CommandAction::ShowMemory))),
+            Box::new(|_| Ok(CommandOutput::Message("Memory management...".to_string()))),
         )
-        .group(vec!["save", "search", "list", "delete", "stats"])
-        .usage("/memory"),
+        .group(vec!["save", "search", "list", "delete", "stats"]),
     );
 
-    // Plan mode (Grok-style)
-    registry.register(
-        Command::new(
-            "plan",
-            "Enter or leave plan mode (require plan before mutating tools)",
-            CommandCategory::Context,
-            Box::new(|ctx| {
-                let arg = ctx.raw_args.trim().to_lowercase();
-                let enabled = match arg.as_str() {
-                    "" | "on" | "true" | "1" => true,
-                    "off" | "false" | "0" => false,
-                    _ => {
-                        return Err(CommandError::new("Usage: /plan [on|off]"));
-                    }
-                };
-                Ok(CommandOutput::Action(CommandAction::SetPlanMode(enabled)))
-            }),
-        )
-        .usage("/plan [on|off]"),
-    );
-
-    // Grok-style permission shortcuts
-    registry.register(
-        Command::new(
-            "always-approve",
-            "Auto-approve all tool executions (YOLO)",
-            CommandCategory::Safety,
-            Box::new(|_| {
-                Ok(CommandOutput::Action(CommandAction::SetApprovalMode(
-                    "yolo".to_string(),
-                )))
-            }),
-        )
-        .alias("yolo"),
-    );
+    // Plan command
     registry.register(Command::new(
-        "auto",
-        "Selective approvals (safe tools free, risky prompt)",
-        CommandCategory::Safety,
-        Box::new(|_| {
-            Ok(CommandOutput::Action(CommandAction::SetApprovalMode(
-                "selective".to_string(),
-            )))
-        }),
-    ));
-    registry.register(Command::new(
-        "ask",
-        "Require approval for all tools",
-        CommandCategory::Safety,
-        Box::new(|_| {
-            Ok(CommandOutput::Action(CommandAction::SetApprovalMode(
-                "safe".to_string(),
-            )))
-        }),
+        "plan",
+        "View saved plans",
+        CommandCategory::Context,
+        Box::new(|_| Ok(CommandOutput::Message("Saved plans...".to_string()))),
     ));
 
     // Continue command
     registry.register(
         Command::new(
             "continue",
-            "Continue the most recent session for this workspace",
+            "Continue previous session",
             CommandCategory::Session,
             Box::new(|_| {
-                Ok(CommandOutput::Action(CommandAction::Session(
-                    SessionAction::Continue,
-                )))
+                Ok(CommandOutput::Message(
+                    "Continuing previous session...".to_string(),
+                ))
             }),
         )
-        .alias("c")
-        .usage("/continue"),
+        .alias("c"),
     );
 
     // Resume command
@@ -1931,78 +1782,6 @@ pub fn build_command_registry() -> CommandRegistry {
         .arg(CommandArgument::string("name", "Skill name"))
         .usage("/skills [list|activate|deactivate|reload|info] [skill-name]"),
     );
-
-    registry
-}
-
-/// Built-ins + Grok-style skill/prompt slash extensions. Built-ins always win.
-#[must_use]
-pub fn build_command_registry_with_extensions(
-    skills: &[crate::skills::LoadedSkill],
-    prompts: &[crate::prompts::PromptDefinition],
-) -> CommandRegistry {
-    let mut registry = build_command_registry();
-
-    for prompt in prompts {
-        let name = prompt.name.clone();
-        let desc = prompt
-            .description
-            .clone()
-            .unwrap_or_else(|| format!("Prompt template ({})", prompt.source_type.as_str()));
-        let usage = crate::prompts::get_usage_hint(prompt).replace("/prompts:", "/");
-        let name_for_handler = name.clone();
-        registry.register_if_absent(
-            Command::new(
-                name.clone(),
-                desc,
-                CommandCategory::Tools,
-                Box::new(move |ctx| {
-                    Ok(CommandOutput::Action(CommandAction::InvokePromptTemplate {
-                        name: name_for_handler.clone(),
-                        args: ctx.raw_args.clone(),
-                    }))
-                }),
-            )
-            .usage(usage),
-        );
-    }
-
-    for skill in skills {
-        if !skill.definition.enabled || !skill.definition.user_invocable {
-            continue;
-        }
-        let name = skill.definition.name.clone();
-        let desc = if skill.definition.description.is_empty() {
-            format!("Skill: {name}")
-        } else {
-            skill.definition.description.clone()
-        };
-        let hint = skill
-            .definition
-            .metadata
-            .get("argument-hint")
-            .and_then(|v| v.as_str())
-            .map(|s| s.to_string());
-        let usage = match hint {
-            Some(h) if !h.is_empty() => format!("/{name} {h}"),
-            _ => format!("/{name} [args...]"),
-        };
-        let name_for_handler = name.clone();
-        registry.register_if_absent(
-            Command::new(
-                name.clone(),
-                desc,
-                CommandCategory::Tools,
-                Box::new(move |ctx| {
-                    Ok(CommandOutput::Action(CommandAction::InvokeSkill {
-                        name: name_for_handler.clone(),
-                        args: ctx.raw_args.clone(),
-                    }))
-                }),
-            )
-            .usage(usage),
-        );
-    }
 
     registry
 }

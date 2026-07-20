@@ -684,8 +684,8 @@ fn test_history_most_failed_tools() {
     assert_eq!(most_failed[0].1.failures, 2);
 
     // read and write each have 1 failure
-    assert_eq!(most_failed[1].1.failures, 1);
-    assert_eq!(most_failed[2].1.failures, 1);
+    assert!(most_failed[1].1.failures == 1);
+    assert!(most_failed[2].1.failures == 1);
 }
 
 #[test]

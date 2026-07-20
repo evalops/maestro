@@ -115,7 +115,7 @@ direct_vitest_tests_only() {
 	return 0
 }
 
-node scripts/ensure-deps.js --no-install --workspace @evalops/contracts
+node scripts/ensure-deps.js --no-install --workspace @evalops/contracts --workspace @evalops/tui
 run_ci_guardrail_tests
 run_runtime_package_validators
 run_smoke_script_static_checks

@@ -55,7 +55,8 @@ Package-manager installs are kept for contributors and source-based workflows.
 Release binaries are the primary install artifact and are smoke-tested directly
 with `maestro --version` and a headless protocol handshake before attachment.
 
-If a global install fails while resolving `@evalops/contracts`, you are installing a deprecated 0.10.8-0.10.20 package
+If a global install fails while resolving `@evalops/tui` or
+`@evalops/contracts`, you are installing a deprecated 0.10.8-0.10.20 package
 that referenced private workspace dependencies. Upgrade to
 `@evalops/maestro@latest`; published release verification now runs npm and Bun
 registry install smokes against the public package metadata before promotion.
@@ -198,6 +199,7 @@ Need Redis or PostgreSQL for a specific workflow? Start from `docker-compose.yml
 - `src/` - CLI entrypoints and shared application code
 - `packages/core/` - agent loop, transport, types, and sandbox primitives
 - `packages/ai/` - model registry, provider transport, and event streaming
+- `packages/tui/` - TypeScript terminal UI
 - `packages/tui-rs/` - native Rust TUI
 - `packages/web/` - browser UI
 - `packages/vscode-extension/`, `packages/jetbrains-plugin/`, `packages/slack-agent/`, `packages/github-agent/` - interface integrations

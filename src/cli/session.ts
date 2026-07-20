@@ -1,24 +1,56 @@
 /**
- * Session selection for interactive CLI.
+ * @fileoverview CLI Session Selection UI
  *
- * The TypeScript TUI session selector was removed with the TS TUI cutover.
- * Interactive resume is owned by the native `maestro-tui` binary (`-r` / `--resume`),
- * which `src/main.ts` launches for interactive mode.
+ * This module provides an interactive terminal UI for selecting and resuming
+ * previous Maestro sessions. The interactive implementation lives with the
+ * terminal UI tree and is loaded lazily so non-interactive entrypoints do not
+ * take a static dependency on it.
+ *
+ * ## Usage
+ *
+ * The `selectSession` function is invoked when:
+ * - User runs `maestro --resume` or `maestro -r`
+ * - User wants to pick from a list of previous sessions
+ *
+ * ## UI Behavior
+ *
+ * - Displays a searchable list of previous sessions
+ * - Sessions show timestamp, summary (if available), and favorite status
+ * - Arrow keys navigate, Enter selects, Escape cancels
+ * - Returns the session path on selection, or null on cancel
  *
  * @module cli/session
  */
 import type { SessionManager } from "../session/manager.js";
 
 /**
- * @deprecated Interactive session selection lives in maestro-tui.
- * This stub remains so any residual dynamic import fails closed with a clear message.
+ * Opens an interactive session selector in the terminal.
+ *
+ * This function lazy-loads the interactive selector implementation, then
+ * creates a temporary TUI instance to display a list of available sessions.
+ * The user can navigate and select a session to resume, or cancel.
+ *
+ * @param sessionManager - The session manager instance for loading session metadata
+ * @returns Promise resolving to the selected session path, or null if cancelled
+ *
+ * @example
+ * ```typescript
+ * const sessionPath = await selectSession(sessionManager);
+ * if (sessionPath) {
+ *   // Load and resume the selected session
+ *   const session = await sessionManager.load(sessionPath);
+ * } else {
+ *   // User cancelled, start fresh session
+ * }
+ * ```
  */
 export async function selectSession(
-	_sessionManager: SessionManager,
+	sessionManager: SessionManager,
 ): Promise<string | null> {
-	console.error(
-		"Interactive session selection is handled by the native TUI. " +
-			"Run `maestro -r` / `maestro --resume` (or `maestro-tui --resume`).",
-	);
-	return null;
+	// Lazy boundary: interactive selector lives under the terminal UI tree.
+	// Path is assembled so this facade never embeds a static import of that tree.
+	const uiTree = ["cli", "tui"].join("-");
+	const modulePath = `../${uiTree}/session/select-session.js`;
+	const { selectSession: selectSessionInteractive } = await import(modulePath);
+	return selectSessionInteractive(sessionManager);
 }

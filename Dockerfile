@@ -19,6 +19,7 @@ COPY packages/governance-mcp-server/package.json packages/governance-mcp-server/
 COPY packages/memory/package.json packages/memory/
 COPY packages/slack-agent/package.json packages/slack-agent/
 COPY packages/slack-agent-ui/package.json packages/slack-agent-ui/
+COPY packages/tui/package.json packages/tui/
 COPY packages/web/package.json packages/web/
 
 # ambient-agent-rs, control-plane-rs, and tui-rs are pure Rust (no package.json)
@@ -58,6 +59,7 @@ COPY packages/governance-mcp-server ./packages/governance-mcp-server
 COPY packages/memory ./packages/memory
 COPY packages/slack-agent ./packages/slack-agent
 COPY packages/slack-agent-ui ./packages/slack-agent-ui
+COPY packages/tui ./packages/tui
 COPY packages/tui-rs ./packages/tui-rs
 COPY packages/web ./packages/web
 
@@ -101,6 +103,8 @@ COPY --from=web-builder /app/package.json ./
 COPY --from=web-builder /app/skills ./skills
 COPY --from=web-builder /app/packages/contracts/package.json ./packages/contracts/package.json
 COPY --from=web-builder /app/packages/contracts/dist ./packages/contracts/dist
+COPY --from=web-builder /app/packages/tui/package.json ./packages/tui/package.json
+COPY --from=web-builder /app/packages/tui/dist ./packages/tui/dist
 COPY --from=web-builder /app/packages/web/dist ./packages/web/dist
 COPY --from=rust-builder /app/target-bin/maestro-control-plane ./bin/maestro-control-plane
 

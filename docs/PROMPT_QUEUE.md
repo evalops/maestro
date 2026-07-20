@@ -1,63 +1,61 @@
 # Prompt Queue & Loader Lifecycle
 
 When multiple prompts arrive faster than the agent can respond, Maestro queues
-them and surfaces progress in the native TUI. This doc explains how the queue
-works in the current interactive surface.
+them and surfaces progress via the loader/notification system. This doc explains
+how the queue works and how the loader visualizes each stage.
 
-> **Historical note:** The TypeScript implementations
-> (`src/cli-tui/prompt-queue.ts`, `loader-stage-manager.ts`, `run-controller.ts`)
-> were removed with the TS TUI in PR
-> [#2891](https://github.com/evalops/maestro-internal/pull/2891). Interactive
-> queuing lives in `packages/tui-rs`.
+## Queue Mechanics
 
-## Queue mechanics (native maestro-tui)
+`src/cli-tui/prompt-queue.ts` implements a simple FIFO queue:
 
-Primary code: [`packages/tui-rs/src/app/prompt_queue.rs`](../packages/tui-rs/src/app/prompt_queue.rs)
-(wired from `app.rs`).
+- Each queued prompt has an `id`, `text`, and `createdAt`.
+- Events (`enqueue`, `start`, `finish`, `cancel`, `error`) are broadcast to
+  subscribers (e.g., notifications, footer hints).
+- Only one prompt runs at a time (`runner` function). When it finishes, the next
+  prompt dequeues automatically.
 
-- Prompts are FIFO with kinds such as **FollowUp** and **Steer**.
-- While a turn is busy, new input can be queued or steered depending on mode.
-- Each queued entry has an `id`, `content`, and `kind`.
-- Steer messages can insert toward the front of the queue; follow-ups append.
-- A max pending capacity drops the oldest entry when the queue is full.
+### User Controls
 
-### User controls
+- `/queue` – list pending prompts, showing IDs and trimmed text.
+- `/queue cancel <id>` – remove a pending prompt.
+- `/queue clear` (planned) – drop all pending prompts.
+- `/steer <message>` – interrupt the active run and enqueue a prompt at the front.
+- Footer hint shows “N prompts queued” whenever `pending.length > 0`.
 
-| Input / command | Behavior |
-|-----------------|----------|
-| `Enter` while running | Steer (interrupt/guide active run) when allowed |
-| `Alt+Enter` while running | Queue a follow-up |
-| `/queue` | Inspect queue / modes (see slash help in TUI) |
-| Footer / status | Shows queue full or mode-blocked messages |
+## Loader Stages
 
-Modes such as one-at-a-time vs allow-all for follow-up and steer are enforced in
-the App handlers (messages like “Follow-up mode set to one-at-a-time…”).
+`src/cli-tui/loader-stage-manager.ts` tracks the current phase:
 
-## Loader / busy UI
+1. **Planning** – initial tool planning (always the first stage)
+2. **Tool · <name>** – each tool invocation inserts its own stage
+3. **Responding** – final LLM response (only once tools are done)
 
-Native UI status is driven by App state (busy flag, status line, thinking and
-tool indicators under `packages/tui-rs/src/components/`), not the removed
-TypeScript `Loader` component. Stages are reflected through:
+Stage metadata feeds into `Loader` (`src/cli-tui-lib/components/loader.ts`), which
+now uses a subtle dot animation instead of the prior intense wave. The loader
+shows:
 
-- Thinking / spinner indicators while the agent is active
-- Tool execution surfaces in the chat view
-- Status strings for queue and mode feedback
+- Title (“Active tasks”)
+- Current stage label + step counter (e.g., “Tool · read (2/3)”)
+- Hint (“esc to interrupt”)
+- A breathing spinner (single dot) and a muted progress bar or three-dot indicator
+
+When the agent streams tokens (`setStreamingActive(true)`), the loader transitions
+to Responding once all tool stages finish or if there were no tools.
 
 ## Notifications
 
-Queue outcomes surface as status or toast-style messages in the native App
-(for example queue-full drops). There is no separate `NotificationView` path
-from the old TS tree.
+Prompt queue events trigger notifications via `src/cli-tui/run-controller.ts` and
+`NotificationView`:
+
+- Enqueue (when not immediate) → “Queued prompt #<id>”
+- Cancel → “Removed queued prompt #<id>”
+- Error → toast with the failure
+
+This keeps users informed even if they’re not staring at the loader.
 
 ## Interrupts
 
-- `Esc` / `Ctrl+C` cancel or interrupt according to native key bindings
-  (see [packages/tui-rs/README.md](../packages/tui-rs/README.md)).
-- Interrupting the active prompt does not necessarily discard already-queued
-  follow-ups; queue drain continues according to App logic.
-
-## Related
-
-- [TUI Architecture](TUI_ARCHITECTURE.md)
-- [Native TUI parity](NATIVE_TUI_PARITY.md)
-- [Features](FEATURES.md)
+- `Esc` once arms an interrupt; pressing `Esc` again within 5 s aborts the current run.
+- Ctrl+C clears the editor (double Ctrl+C exits).
+- Interrupts cancel the active prompt (it will emit `error` with “aborted”), and
+  the queue proceeds to the next entry.

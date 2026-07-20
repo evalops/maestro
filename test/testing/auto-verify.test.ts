@@ -249,7 +249,7 @@ describe("Auto-Verify Service", () => {
 				join(testDir, "packages/tui/project.json"),
 				JSON.stringify({
 					name: "tui",
-					root: "packages/contracts",
+					root: "packages/tui",
 					sourceRoot: "packages/tui/src",
 					targets: { test: {} },
 				}),

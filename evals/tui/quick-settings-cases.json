@@ -1,0 +1,245 @@
+[
+	{
+		"name": "tool outputs toggle collapses cards",
+		"action": "toggleToolOutputs",
+		"initialState": {
+			"toolOutputCompact": false
+		},
+		"expected": {
+			"toolOutputCompact": true,
+			"notificationMethod": "showToast",
+			"notificationMessage": "Tool outputs collapsed.",
+			"notificationKind": "info",
+			"refreshFooterHintCalls": 1,
+			"persistUiStateCalls": 1
+		}
+	},
+	{
+		"name": "tool outputs toggle expands cards",
+		"action": "toggleToolOutputs",
+		"initialState": {
+			"toolOutputCompact": true
+		},
+		"expected": {
+			"toolOutputCompact": false,
+			"notificationMethod": "showToast",
+			"notificationMessage": "Tool outputs expanded.",
+			"notificationKind": "info",
+			"refreshFooterHintCalls": 1,
+			"persistUiStateCalls": 1
+		}
+	},
+	{
+		"name": "thinking blocks toggle hides reasoning traces",
+		"action": "toggleThinkingBlocks",
+		"initialState": {
+			"hideThinkingBlocks": false
+		},
+		"expected": {
+			"hideThinkingBlocks": true,
+			"notificationMethod": "showToast",
+			"notificationMessage": "Thinking blocks hidden.",
+			"notificationKind": "info",
+			"renderConversationViewCalls": 1,
+			"requestRenderCalls": 1,
+			"persistUiStateCalls": 1
+		}
+	},
+	{
+		"name": "thinking level cycles forward for reasoning models",
+		"action": "cycleThinkingLevel",
+		"initialState": {
+			"thinkingLevel": "off",
+			"currentModel": {
+				"id": "claude-sonnet-4-5",
+				"name": "Claude Sonnet 4.5",
+				"provider": "anthropic",
+				"providerName": "Anthropic",
+				"baseUrl": "https://api.anthropic.com/v1/messages",
+				"api": "anthropic-messages",
+				"reasoning": true
+			}
+		},
+		"expected": {
+			"thinkingLevel": "minimal",
+			"notificationMethod": "showInfo",
+			"notificationMessage": "Thinking level: minimal",
+			"savedThinkingLevels": ["minimal"],
+			"refreshFooterHintCalls": 1
+		}
+	},
+	{
+		"name": "thinking level wraps back to off after high",
+		"action": "cycleThinkingLevel",
+		"initialState": {
+			"thinkingLevel": "high",
+			"currentModel": {
+				"id": "claude-sonnet-4-5",
+				"name": "Claude Sonnet 4.5",
+				"provider": "anthropic",
+				"providerName": "Anthropic",
+				"baseUrl": "https://api.anthropic.com/v1/messages",
+				"api": "anthropic-messages",
+				"reasoning": true
+			}
+		},
+		"expected": {
+			"thinkingLevel": "off",
+			"notificationMethod": "showInfo",
+			"notificationMessage": "Thinking level: off",
+			"savedThinkingLevels": ["off"],
+			"refreshFooterHintCalls": 1
+		}
+	},
+	{
+		"name": "thinking level refuses non-reasoning models",
+		"action": "cycleThinkingLevel",
+		"initialState": {
+			"thinkingLevel": "low",
+			"currentModel": {
+				"id": "gpt-4o-mini",
+				"name": "GPT-4o mini",
+				"provider": "openrouter",
+				"providerName": "OpenRouter",
+				"reasoning": false
+			}
+		},
+		"expected": {
+			"thinkingLevel": "low",
+			"notificationMethod": "showInfo",
+			"notificationMessage": "Current model does not support thinking levels.",
+			"savedThinkingLevels": []
+		}
+	},
+	{
+		"name": "model cycling advances to the next model in scope",
+		"action": "cycleModel",
+		"initialState": {
+			"currentModel": {
+				"id": "model-a",
+				"name": "Model A",
+				"provider": "openrouter",
+				"providerName": "OpenRouter"
+			},
+			"modelScope": [
+				{
+					"id": "model-a",
+					"name": "Model A",
+					"provider": "openrouter",
+					"providerName": "OpenRouter"
+				},
+				{
+					"id": "model-b",
+					"name": "Model B",
+					"provider": "openrouter",
+					"providerName": "OpenRouter"
+				}
+			]
+		},
+		"expected": {
+			"selectedModelId": "model-b",
+			"selectedModelProvider": "openrouter",
+			"notificationMethod": "showToast",
+			"notificationMessage": "Model: Model B",
+			"notificationKind": "success",
+			"savedModelKeys": ["openrouter/model-b"],
+			"refreshFooterHintCalls": 1
+		}
+	},
+	{
+		"name": "model cycling falls back to the first scoped model when the current one is missing",
+		"action": "cycleModel",
+		"initialState": {
+			"currentModel": {
+				"id": "outside-scope",
+				"name": "Outside Scope",
+				"provider": "openrouter",
+				"providerName": "OpenRouter"
+			},
+			"modelScope": [
+				{
+					"id": "alpha",
+					"name": "Alpha",
+					"provider": "openrouter",
+					"providerName": "OpenRouter"
+				},
+				{
+					"id": "beta",
+					"name": "Beta",
+					"provider": "openrouter",
+					"providerName": "OpenRouter"
+				}
+			]
+		},
+		"expected": {
+			"selectedModelId": "alpha",
+			"selectedModelProvider": "openrouter",
+			"notificationMethod": "showToast",
+			"notificationMessage": "Model: Alpha",
+			"notificationKind": "success",
+			"savedModelKeys": ["openrouter/alpha"],
+			"refreshFooterHintCalls": 1
+		}
+	},
+	{
+		"name": "model cycling warns when only one model is available",
+		"action": "cycleModel",
+		"initialState": {
+			"currentModel": {
+				"id": "solo",
+				"name": "Solo",
+				"provider": "openrouter",
+				"providerName": "OpenRouter"
+			},
+			"modelScope": [
+				{
+					"id": "solo",
+					"name": "Solo",
+					"provider": "openrouter",
+					"providerName": "OpenRouter"
+				}
+			]
+		},
+		"expected": {
+			"selectedModelId": "solo",
+			"selectedModelProvider": "openrouter",
+			"notificationMethod": "showInfo",
+			"notificationMessage": "Only one model in scope. Add more via --models to enable cycling.",
+			"savedModelKeys": []
+		}
+	},
+	{
+		"name": "model cycling surfaces setModel failures",
+		"action": "cycleModel",
+		"initialState": {
+			"setModelError": "network unavailable",
+			"currentModel": {
+				"id": "alpha",
+				"name": "Alpha",
+				"provider": "openrouter",
+				"providerName": "OpenRouter"
+			},
+			"modelScope": [
+				{
+					"id": "alpha",
+					"name": "Alpha",
+					"provider": "openrouter",
+					"providerName": "OpenRouter"
+				},
+				{
+					"id": "beta",
+					"name": "Beta",
+					"provider": "openrouter",
+					"providerName": "OpenRouter"
+				}
+			]
+		},
+		"expected": {
+			"selectedModelId": "alpha",
+			"selectedModelProvider": "openrouter",
+			"notificationMethod": "showError",
+			"notificationMessage": "Failed to cycle model: network unavailable",
+			"savedModelKeys": []
+		}
+	}
+]

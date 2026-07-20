@@ -1,0 +1,53 @@
+import { describe, expect, it } from "vitest";
+import { Editor } from "../../packages/tui/src/components/editor.js";
+
+// Access private methods for targeted behavior tests
+// Using Record type to avoid intersection conflict with private properties
+interface EditorPrivate {
+	state: {
+		lines: string[];
+		cursorLine: number;
+		cursorCol: number;
+	};
+	moveWordBackwards: () => void;
+	moveWordForwards: () => void;
+}
+
+describe("Editor word navigation across lines", () => {
+	it("moves backward across line boundary to previous line end", () => {
+		const editor = new Editor() as unknown as EditorPrivate;
+		editor.state.lines = ["hello", "world"];
+		editor.state.cursorLine = 1;
+		editor.state.cursorCol = 0; // at start of second line
+
+		editor.moveWordBackwards();
+
+		expect(editor.state.cursorLine).toBe(0);
+		expect(editor.state.cursorCol).toBe(5); // end of "hello"
+	});
+
+	it("moves forward across line boundary to next line word end", () => {
+		const editor = new Editor() as unknown as EditorPrivate;
+		editor.state.lines = ["hello", "world"];
+		editor.state.cursorLine = 0;
+		editor.state.cursorCol = 5; // end of first line
+
+		editor.moveWordForwards();
+
+		expect(editor.state.cursorLine).toBe(1);
+		expect(editor.state.cursorCol).toBe(5); // end of "world"
+	});
+
+	it("respects grapheme boundaries when moving by word", () => {
+		const editor = new Editor() as unknown as EditorPrivate;
+		editor.state.lines = ["hi 🙂 there"];
+		editor.state.cursorLine = 0;
+		editor.state.cursorCol = editor.state.lines[0]!.length;
+
+		editor.moveWordBackwards();
+		expect(editor.state.lines[0]!.slice(editor.state.cursorCol)).toBe("there");
+
+		editor.moveWordBackwards();
+		expect(editor.state.cursorCol).toBe(editor.state.lines[0]!.indexOf("🙂"));
+	});
+});

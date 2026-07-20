@@ -29,7 +29,6 @@ struct SafeModeConfig {
 }
 
 static PLAN_SATISFIED: AtomicBool = AtomicBool::new(false);
-static PLAN_MODE: AtomicBool = AtomicBool::new(false);
 
 static SAFE_MODE_CONFIG: std::sync::LazyLock<Mutex<SafeModeConfig>> =
     std::sync::LazyLock::new(|| {
@@ -63,27 +62,6 @@ pub fn set_plan_satisfied(value: bool) {
     PLAN_SATISFIED.store(value, Ordering::Relaxed);
 }
 
-/// Enable/disable Grok-style plan mode (require plan before mutating tools).
-pub fn set_plan_mode(enabled: bool) {
-    PLAN_MODE.store(enabled, Ordering::Relaxed);
-    if enabled {
-        // Entering plan mode requires a fresh plan before mutations.
-        set_plan_satisfied(false);
-        // Badge + external readers use this env flag.
-        // SAFETY: process-local UI flag; single-threaded write on mode toggle.
-        std::env::set_var("MAESTRO_PLAN_MODE", "1");
-    } else {
-        std::env::remove_var("MAESTRO_PLAN_MODE");
-    }
-}
-
-/// Return true if plan mode is enabled.
-#[must_use]
-pub fn is_plan_mode() -> bool {
-    PLAN_MODE.load(Ordering::Relaxed)
-        || std::env::var("MAESTRO_PLAN_MODE").ok().as_deref() == Some("1")
-}
-
 /// Return true if safe mode is enabled.
 pub fn is_safe_mode_enabled() -> bool {
     SAFE_MODE_CONFIG
@@ -98,8 +76,7 @@ pub fn require_plan(tool_name: &str) -> Result<(), String> {
         .lock()
         .map_err(|_| "Safe mode config unavailable".to_string())?;
 
-    let plan_mode = is_plan_mode();
-    if !(plan_mode || (cfg.enabled && cfg.require_plan)) {
+    if !cfg.enabled || !cfg.require_plan {
         return Ok(());
     }
 
@@ -108,7 +85,7 @@ pub fn require_plan(tool_name: &str) -> Result<(), String> {
     }
 
     Err(format!(
-        "Plan mode requires a plan before executing {tool_name}. Create or update a todo checklist first (or leave plan mode with Shift+Tab / /plan off)."
+        "Safe mode requires a plan before executing {tool_name}. Create or update a todo checklist first."
     ))
 }
 

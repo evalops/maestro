@@ -96,6 +96,10 @@ describe("release-context dependencies", () => {
 			join(root, "packages", "pkg-contracts", "package.json"),
 			JSON.stringify({ name: "@evalops/contracts", private: true }, null, 2),
 		);
+		writeFileSync(
+			join(root, "packages", "nested", "pkg-tui", "package.json"),
+			JSON.stringify({ name: "@evalops/tui", private: true }, null, 2),
+		);
 
 		const output = execFileSync(process.execPath, ["--input-type=module"], {
 			cwd: root,
@@ -107,6 +111,6 @@ describe("release-context dependencies", () => {
 			].join("\n"),
 		});
 
-		expect(JSON.parse(output)).toEqual(["@evalops/contracts"]);
+		expect(JSON.parse(output)).toEqual(["@evalops/contracts", "@evalops/tui"]);
 	});
 });

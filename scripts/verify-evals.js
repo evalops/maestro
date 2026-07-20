@@ -25,6 +25,11 @@ export const deterministicEvalScenarioVerifications = [
 		expectedRegex: "\\[settings-view-model-evals\\] \\d+/\\d+ passed",
 	},
 	{
+		name: "quick settings eval suite",
+		expectedCommand: ["bunx", "tsx", "scripts/evals/run-quick-settings-evals.ts"],
+		expectedRegex: "\\[quick-settings-evals\\] \\d+/\\d+ passed",
+	},
+	{
 		name: "openrouter compat eval suite",
 		expectedCommand: [
 			"bunx",

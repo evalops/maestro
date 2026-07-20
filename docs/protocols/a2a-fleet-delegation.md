@@ -370,8 +370,7 @@ npm run platform:a2a-evidence-verify -- evidence.json \
 Before this feature, the following tests fail:
 
 ```sh
-npm run test:fast -- test/cli/commands/a2a-fleet-delegation.test.ts
-# (former test/cli-tui/commands/a2a-handlers.test.ts removed with TS TUI)
+npm run test:fast -- test/cli/commands/a2a-fleet-delegation.test.ts test/cli-tui/commands/a2a-handlers.test.ts
 npm run test:fast -- test/cli/commands/a2a.test.ts test/platform/a2a-task-ledger.test.ts
 cargo test -p maestro-tui commands::registry::tests::a2a_command_parses_peer_actions
 npm run smoke:a2a-input-required

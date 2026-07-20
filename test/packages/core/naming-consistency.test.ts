@@ -134,6 +134,7 @@ function isAllowedComposerProductCopyLine(relativePath: string, line: string) {
 	if (
 		relativePath.startsWith("src/composers/") ||
 		relativePath.startsWith("test/composers/") ||
+		relativePath === "src/cli-tui/commands/composer-handlers.ts" ||
 		relativePath === "src/server/handlers/composer.ts"
 	) {
 		return true;

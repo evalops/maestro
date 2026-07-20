@@ -282,12 +282,9 @@ impl ApprovalMode {
     pub fn parse(s: &str) -> Option<Self> {
         // Convert to lowercase for case-insensitive matching
         match s.to_lowercase().as_str() {
-            "yolo" | "trust" | "always-approve" | "always_approve" | "alwaysapprove" => {
-                Some(ApprovalMode::Yolo)
-            }
-            // "auto" ≈ Grok auto (safe tools free, risky may prompt)
-            "auto" | "selective" | "default" | "normal" => Some(ApprovalMode::Selective),
-            "safe" | "ask" | "always" | "paranoid" => Some(ApprovalMode::Safe),
+            "yolo" | "auto" | "trust" => Some(ApprovalMode::Yolo),
+            "selective" | "default" | "normal" => Some(ApprovalMode::Selective),
+            "safe" | "always" | "paranoid" => Some(ApprovalMode::Safe),
             _ => None, // Unknown mode - return None, not an error
         }
     }
@@ -307,50 +304,6 @@ impl ApprovalMode {
             ApprovalMode::Yolo => ApprovalMode::Selective,
             ApprovalMode::Selective => ApprovalMode::Safe,
             ApprovalMode::Safe => ApprovalMode::Yolo,
-        }
-    }
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// INTERACTION MODE (Grok-style Shift+Tab cycle)
-// ─────────────────────────────────────────────────────────────────────────────
-
-/// High-level interaction mode cycled with Shift+Tab.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum InteractionMode {
-    /// Normal agenting with selective approvals
-    #[default]
-    Normal,
-    /// Plan mode: require a todo/plan before mutating tools
-    Plan,
-    /// Always-approve (YOLO) — skip tool approval prompts
-    AlwaysApprove,
-}
-
-impl InteractionMode {
-    #[must_use]
-    pub fn label(self) -> &'static str {
-        match self {
-            Self::Normal => "normal",
-            Self::Plan => "plan",
-            Self::AlwaysApprove => "always-approve",
-        }
-    }
-
-    #[must_use]
-    pub fn next(self) -> Self {
-        match self {
-            Self::Normal => Self::Plan,
-            Self::Plan => Self::AlwaysApprove,
-            Self::AlwaysApprove => Self::Normal,
-        }
-    }
-
-    #[must_use]
-    pub fn approval_mode(self) -> ApprovalMode {
-        match self {
-            Self::Normal | Self::Plan => ApprovalMode::Selective,
-            Self::AlwaysApprove => ApprovalMode::Yolo,
         }
     }
 }
@@ -514,8 +467,6 @@ pub struct AppState {
     /// Current approval mode for tool execution.
     /// Controls whether tools run automatically or require approval.
     pub approval_mode: ApprovalMode,
-    /// Grok-style interaction mode (Normal / Plan / Always-approve)
-    pub interaction_mode: InteractionMode,
 
     /// Queue mode for steering prompts while running.
     pub steering_mode: QueueMode,
@@ -613,12 +564,11 @@ impl AppState {
             zen_mode: false,                        // Full UI by default
             compact_tool_outputs: false,            // Expanded tool output by default
             approval_mode: ApprovalMode::default(), // Selective mode
-            interaction_mode: InteractionMode::default(),
-            steering_mode: QueueMode::default(), // Queue steering by default
-            follow_up_mode: QueueMode::default(), // Queue follow-ups by default
-            queued_prompt_count: 0,              // No queued prompts
-            queued_steering_count: 0,            // No queued steering prompts
-            queued_follow_up_count: 0,           // No queued follow-up prompts
+            steering_mode: QueueMode::default(),    // Queue steering by default
+            follow_up_mode: QueueMode::default(),   // Queue follow-ups by default
+            queued_prompt_count: 0,                 // No queued prompts
+            queued_steering_count: 0,               // No queued steering prompts
+            queued_follow_up_count: 0,              // No queued follow-up prompts
             queued_steering_preview: Vec::new(),
             queued_follow_up_preview: Vec::new(),
             queued_follow_up_edit_binding_label: "Alt+Up".to_string(),

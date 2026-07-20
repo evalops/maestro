@@ -1,14 +1,6 @@
 # TUI Rendering Engine Design
 
-> **Historical document:** Describes the removed TypeScript TUI (`src/cli-tui`,
-> `packages/tui` / `@evalops/tui`), deleted in PR #2891. For the **current**
-> interactive UI, see [TUI Architecture](../TUI_ARCHITECTURE.md) and
-> [`packages/tui-rs/ARCHITECTURE.md`](../../packages/tui-rs/ARCHITECTURE.md).
-> Do not treat paths like `src/cli-tui/...` below as live code.
-
-The Terminal UI (TUI) was historically the largest TypeScript surface in Maestro
-(~919KB, 147 files), providing an interactive terminal experience with streaming
-responses, tool visualizations, and modal dialogs.
+The Terminal UI (TUI) is the largest codebase in Maestro (~919KB, 147 files), providing an interactive terminal experience with streaming responses, tool visualizations, and modal dialogs.
 
 ## Overview
 

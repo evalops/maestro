@@ -111,11 +111,8 @@ import {
 } from "./cli/headless-runtime-selection.js";
 import { printHelp } from "./cli/help.js";
 import {
-	launchNativeCli,
 	launchNativeTui,
-	shouldLaunchNativeHeadless,
 	shouldLaunchNativeInteractiveTui,
-	shouldLaunchNativePrint,
 } from "./cli/native-tui-launcher.js";
 import { detectRuntimeConstraintContext } from "./cli/system-prompt.js";
 import { validateFrameworkPreference } from "./config/framework.js";
@@ -290,7 +287,6 @@ async function runNativeInteractiveMode(
 		apiKey?: string;
 		continue?: boolean;
 		resume?: boolean;
-		worktree?: boolean | string;
 		messages: string[];
 	},
 	writeError: (message: string) => void,
@@ -303,7 +299,6 @@ async function runNativeInteractiveMode(
 				apiKey: parsed.apiKey,
 				continue: parsed.continue,
 				resume: parsed.resume,
-				worktree: parsed.worktree,
 				messages: parsed.messages,
 			},
 			cwd: process.cwd(),
@@ -312,74 +307,6 @@ async function runNativeInteractiveMode(
 		process.exit(exitCode);
 	} catch (error) {
 		const message = error instanceof Error ? error.message : String(error);
-		writeError(message);
-		process.exit(1);
-	}
-}
-
-async function runNativePrintMode(
-	parsed: {
-		provider?: string;
-		model?: string;
-		apiKey?: string;
-		messages: string[];
-		mode?: string;
-		execJson?: boolean;
-		command?: string;
-		execOutputSchema?: string;
-		execOutputLast?: string;
-	},
-	writeError: (message: string) => void,
-): Promise<never> {
-	try {
-		const json = parsed.mode === "json" || Boolean(parsed.execJson);
-		const exitCode = await launchNativeTui({
-			parsed: {
-				provider: parsed.provider,
-				model: parsed.model,
-				apiKey: parsed.apiKey,
-				print: true,
-				json,
-				outputLastMessage: parsed.execOutputLast,
-				outputSchema: parsed.execOutputSchema,
-				messages: parsed.messages,
-			},
-			cwd: process.cwd(),
-			env: process.env,
-		});
-		process.exit(exitCode);
-	} catch (error) {
-		const message = error instanceof Error ? error.message : String(error);
-		writeError(message);
-		process.exit(1);
-	}
-}
-
-/**
- * Hand off headless/RPC protocol mode to native maestro-tui --headless.
- * Stdio is the headless protocol surface; do not bootstrap the TS agent.
- */
-async function runNativeHeadlessMode(
-	writeError: (message: string) => void,
-): Promise<never> {
-	try {
-		const exitCode = await launchNativeTui({
-			parsed: { headless: true, messages: [] },
-			cwd: process.cwd(),
-			env: process.env,
-		});
-		process.exit(exitCode);
-	} catch (error) {
-		const message = error instanceof Error ? error.message : String(error);
-		// Protocol clients expect JSON errors on stdout when possible.
-		process.stdout.write(
-			`${JSON.stringify({
-				type: "error",
-				message: `Headless startup failed: ${message}`,
-				fatal: true,
-				error_type: "fatal",
-			})}\n`,
-		);
 		writeError(message);
 		process.exit(1);
 	}
@@ -429,6 +356,111 @@ async function waitForStartupTelemetryForImmediateExit(
  * @param messages - Array of user messages to process sequentially
  * @param mode - Output format: "text" for human-readable, "json" for JSONL
  */
+async function runSingleShotMode(
+	agent: Agent,
+	sessionManager: SessionManager,
+	messages: string[],
+	mode: Extract<Mode, "text" | "json">,
+	profileName?: string,
+	cliOverrides?: Partial<ComposerConfig>,
+): Promise<void> {
+	const {
+		JsonlEventWriter,
+		createAgentJsonlAdapter,
+		emitThreadEnd,
+		emitThreadStart,
+		emitUserTurn: emitUserTurnEvent,
+	} = await import("./cli/jsonl-writer.js");
+	// Use session ID as thread ID for JSONL output correlation
+	const threadId = sessionManager.getSessionId();
+
+	// Set up JSONL writer for structured output in json mode
+	// This enables machine-readable event streaming for integrations
+	const jsonlWriter =
+		mode === "json" ? new JsonlEventWriter(true, process.stdout) : null;
+
+	// Turn ID generator for correlating user messages with responses
+	const nextTurnId = (() => {
+		let counter = 0;
+		return () => `turn-${++counter}`;
+	})();
+
+	// Adapter translates agent events to JSONL format
+	const adapter =
+		jsonlWriter && createAgentJsonlAdapter(jsonlWriter, nextTurnId);
+	const { runUserPromptWithRecovery } = await import(
+		"./agent/user-prompt-runtime.js"
+	);
+
+	// In JSON mode, emit thread start and subscribe to all events
+	if (jsonlWriter) {
+		emitThreadStart(jsonlWriter, threadId, { sessionId: threadId });
+		agent.subscribe((event) => {
+			adapter?.handle(event);
+		});
+	}
+
+	let sessionEndReason: "complete" | "error" = "complete";
+	try {
+		const { withMcpPostKeepMessages } = await import(
+			"./mcp/prompt-recovery.js"
+		);
+
+		// Process each message sequentially
+		// This allows multi-message conversations in single-shot mode
+		for (const message of messages) {
+			if (jsonlWriter) {
+				emitUserTurnEvent(jsonlWriter, nextTurnId, message);
+			}
+			await runUserPromptWithRecovery({
+				agent,
+				sessionManager,
+				cwd: process.cwd(),
+				prompt: message,
+				execute: () => agent.prompt(message),
+				getPostKeepMessages: withMcpPostKeepMessages(),
+				profileName,
+				cliOverrides,
+			});
+		}
+
+		// In text mode, extract and output only the final text response
+		// This provides clean output for shell pipelines and scripts
+		if (mode === "text") {
+			const { isAssistantMessage } = await import("./agent/index.js");
+			const lastMessage = agent.state.messages[agent.state.messages.length - 1];
+			if (isAssistantMessage(lastMessage)) {
+				for (const content of lastMessage.content) {
+					if (content.type === "text") {
+						console.log(content.text);
+					}
+				}
+			}
+		}
+
+		if (jsonlWriter) {
+			emitThreadEnd(jsonlWriter, threadId, "ok", threadId);
+		}
+	} catch (error) {
+		sessionEndReason = "error";
+		// Ensure error is recorded in JSONL output for machine processing
+		if (jsonlWriter) {
+			emitThreadEnd(jsonlWriter, threadId, "error", threadId);
+		}
+		throw error;
+	} finally {
+		const { applySessionEndHooks } = await import(
+			"./agent/session-lifecycle-hooks.js"
+		);
+		await applySessionEndHooks({
+			agent,
+			sessionManager,
+			cwd: process.cwd(),
+			reason: sessionEndReason,
+		});
+	}
+}
+
 function resolveSessionStartHookSource(params: {
 	mode: Mode;
 	command?: string;
@@ -707,8 +739,9 @@ export async function main(args: string[]) {
 	}
 
 	if (parsed.command === "status") {
-		await waitForStartupTelemetryForImmediateExit(startupTelemetry);
-		process.exit(await launchNativeCli(["status"]));
+		const { handleStatusCommand } = await import("./cli/commands/status.js");
+		await handleStatusCommand();
+		return;
 	}
 
 	if (parsed.command === "mission") {
@@ -760,21 +793,11 @@ export async function main(args: string[]) {
 		return;
 	}
 
-	// Agent paths hand off to native maestro-tui before the TypeScript bootstrap.
-	// Residual TS: web, config, skill, mission, and other utility subcommands.
-	if (shouldLaunchNativeHeadless(parsed)) {
-		await waitForStartupTelemetryForImmediateExit(startupTelemetry);
-		await runNativeHeadlessMode(writeStartupErrorToStderr);
-	}
-
+	// Interactive mode: hand off to native maestro-tui (Rust agent) before the
+	// TypeScript agent bootstrap. Headless/exec/rpc/web/single-shot stay on TS.
 	if (shouldLaunchNativeInteractiveTui(parsed)) {
 		await waitForStartupTelemetryForImmediateExit(startupTelemetry);
 		await runNativeInteractiveMode(parsed, writeStartupErrorToStderr);
-	}
-
-	if (shouldLaunchNativePrint(parsed)) {
-		await waitForStartupTelemetryForImmediateExit(startupTelemetry);
-		await runNativePrintMode(parsed, writeStartupErrorToStderr);
 	}
 
 	// If we're about to enter headless mode (stdout is JSON-only), redirect all
@@ -1103,10 +1126,9 @@ export async function main(args: string[]) {
 	}
 
 	if (parsed.command === "hooks") {
-		await waitForStartupTelemetryForImmediateExit(startupTelemetry);
-		process.exit(
-			await launchNativeCli(["hooks", parsed.subcommand ?? "status"]),
-		);
+		const { handleHooksCommand } = await import("./cli/commands/hooks.js");
+		await handleHooksCommand(parsed.subcommand);
+		return;
 	}
 
 	if (parsed.command === "run") {
@@ -1118,27 +1140,36 @@ export async function main(args: string[]) {
 	}
 
 	if (parsed.command === "sessions") {
-		const sub = parsed.subcommand ?? "list";
-		const tokens = ["sessions", sub, ...parsed.messages];
-		if (parsed.exportFormat) {
-			tokens.push("--format", parsed.exportFormat);
-		}
-		await waitForStartupTelemetryForImmediateExit(startupTelemetry);
-		process.exit(await launchNativeCli(tokens));
+		const { handleSessionsCommand } = await import(
+			"./cli/commands/sessions.js"
+		);
+		await handleSessionsCommand(parsed.subcommand, parsed.messages, {
+			json: parsed.execJson,
+			format: parsed.exportFormat,
+			redactSecrets: parsed.redactSecrets,
+		});
+		return;
 	}
 
 	if (parsed.command === "export") {
-		const tokens = ["export", ...parsed.messages];
-		if (parsed.exportFormat) {
-			tokens.push("--format", parsed.exportFormat);
-		}
-		await waitForStartupTelemetryForImmediateExit(startupTelemetry);
-		process.exit(await launchNativeCli(tokens));
+		const { handleExportCommand } = await import(
+			"./cli/commands/session-transfer.js"
+		);
+		await handleExportCommand(
+			parsed.messages[0],
+			parsed.messages[1],
+			parsed.exportFormat,
+			{ redactSecrets: parsed.redactSecrets },
+		);
+		return;
 	}
 
 	if (parsed.command === "import") {
-		await waitForStartupTelemetryForImmediateExit(startupTelemetry);
-		process.exit(await launchNativeCli(["import", ...parsed.messages]));
+		const { handleImportCommand } = await import(
+			"./cli/commands/session-transfer.js"
+		);
+		await handleImportCommand(parsed.messages[0]);
+		return;
 	}
 
 	if (parsed.command === "memory") {
@@ -1175,6 +1206,9 @@ export async function main(args: string[]) {
 		return;
 	}
 
+	const execCommandModulePromise =
+		parsed.command === "exec" ? import("./cli/commands/exec.js") : undefined;
+
 	// Handle cost commands
 	if (parsed.command === "painter") {
 		const { handlePainterCommand } = await import("./cli/commands/painter.js");
@@ -1182,52 +1216,92 @@ export async function main(args: string[]) {
 		return;
 	}
 	if (parsed.command === "cost") {
-		const sub = parsed.subcommand ?? "today";
-		if (
-			sub === "today" ||
-			sub === "yesterday" ||
-			sub === "week" ||
-			sub === "month" ||
-			sub === "all" ||
-			sub === "clear" ||
-			sub === "breakdown" ||
-			sub === undefined
-		) {
-			await waitForStartupTelemetryForImmediateExit(startupTelemetry);
-			process.exit(await launchNativeCli(["cost", sub]));
+		const { handleCostSummary, handleCostClear, handleCostBreakdown } =
+			await import("./cli/commands/cost.js");
+
+		switch (parsed.subcommand) {
+			case "clear":
+				await handleCostClear();
+				return;
+			case "breakdown":
+				await handleCostBreakdown();
+				return;
+			case "today":
+			case "yesterday":
+			case "week":
+			case "month":
+			case "all":
+				await handleCostSummary(parsed.subcommand);
+				return;
+			case undefined:
+				// Default to today
+				await handleCostSummary("today");
+				return;
+			default:
+				console.error(
+					chalk.red(`Unknown cost subcommand: ${parsed.subcommand}`),
+				);
+				console.log(chalk.dim("\nAvailable commands:"));
+				console.log(
+					chalk.dim(
+						"  maestro cost [today]     - Show today's costs (default)",
+					),
+				);
+				console.log(
+					chalk.dim("  maestro cost yesterday   - Show yesterday's costs"),
+				);
+				console.log(chalk.dim("  maestro cost week        - Show last 7 days"));
+				console.log(
+					chalk.dim("  maestro cost month       - Show last 30 days"),
+				);
+				console.log(
+					chalk.dim("  maestro cost all         - Show all time costs"),
+				);
+				console.log(
+					chalk.dim("  maestro cost breakdown   - Detailed breakdown"),
+				);
+				console.log(chalk.dim("  maestro cost clear       - Clear usage data"));
+				process.exit(1);
 		}
-		console.error(chalk.red(`Unknown cost subcommand: ${parsed.subcommand}`));
-		console.log(chalk.dim("\nAvailable commands:"));
-		console.log(
-			chalk.dim("  maestro cost [today]     - Show today's costs (default)"),
-		);
-		console.log(
-			chalk.dim("  maestro cost yesterday   - Show yesterday's costs"),
-		);
-		console.log(chalk.dim("  maestro cost week        - Show last 7 days"));
-		console.log(chalk.dim("  maestro cost month       - Show last 30 days"));
-		console.log(chalk.dim("  maestro cost all         - Show all time costs"));
-		console.log(chalk.dim("  maestro cost breakdown   - Detailed breakdown"));
-		console.log(chalk.dim("  maestro cost clear       - Clear usage data"));
-		process.exit(1);
 	}
 
 	if (parsed.command === "stats") {
-		const tokens = ["stats"];
-		if (parsed.subcommand) {
-			tokens.push(parsed.subcommand);
+		const { handleStatsCommand } = await import("./cli/commands/stats.js");
+		switch (parsed.subcommand) {
+			case undefined:
+			case "today":
+			case "yesterday":
+			case "week":
+			case "7d":
+			case "month":
+			case "30d":
+			case "all":
+				await handleStatsCommand(parsed.subcommand, {
+					sessionId: parsed.session,
+					format: parsed.exportFormat,
+				});
+				return;
+			default:
+				console.error(
+					chalk.red(`Unknown stats subcommand: ${parsed.subcommand}`),
+				);
+				console.log(chalk.dim("\nAvailable commands:"));
+				console.log(
+					chalk.dim("  maestro stats              - Show last 7 days"),
+				);
+				console.log(
+					chalk.dim("  maestro stats --session <id> - Show one session"),
+				);
+				console.log(chalk.dim("  maestro stats today        - Show today"));
+				console.log(
+					chalk.dim("  maestro stats month        - Show last 30 days"),
+				);
+				console.log(chalk.dim("  maestro stats all          - Show all time"));
+				console.log(
+					chalk.dim("  maestro stats --format json|csv - Export usage data"),
+				);
+				process.exit(1);
 		}
-		if (parsed.exportFormat) {
-			tokens.push("--format", parsed.exportFormat);
-		}
-		if (parsed.execJson) {
-			tokens.push("--json");
-		}
-		if (parsed.session) {
-			tokens.push("--session", parsed.session);
-		}
-		await waitForStartupTelemetryForImmediateExit(startupTelemetry);
-		process.exit(await launchNativeCli(tokens));
 	}
 
 	if (parsed.command === "value") {
@@ -1273,17 +1347,37 @@ export async function main(args: string[]) {
 		}
 	}
 
-	// Handle models commands (native catalog)
+	// Handle models commands
 	if (parsed.command === "models") {
-		const tokens = ["models"];
-		if (parsed.subcommand) {
-			tokens.push(parsed.subcommand);
+		const { handleModelsList, handleModelsProviders } = await import(
+			"./cli/commands/models.js"
+		);
+		const providerFilter = parsed.provider;
+		switch (parsed.subcommand) {
+			case "providers":
+				await handleModelsProviders(providerFilter);
+				return;
+			case undefined:
+			case "list":
+				await handleModelsList(providerFilter);
+				return;
+			default:
+				console.error(
+					chalk.red(
+						`Unknown models subcommand: ${parsed.subcommand || "(none)"}`,
+					),
+				);
+				console.log(chalk.dim("\nAvailable commands:"));
+				console.log(
+					chalk.dim(
+						"  maestro models list             - List registered models",
+					),
+				);
+				console.log(
+					chalk.dim("  maestro models providers        - Summarize providers"),
+				);
+				process.exit(1);
 		}
-		if (parsed.provider) {
-			tokens.push("--provider", parsed.provider);
-		}
-		await waitForStartupTelemetryForImmediateExit(startupTelemetry);
-		process.exit(await launchNativeCli(tokens));
 	}
 
 	// ─────────────────────────────────────────────────────────────────────────────
@@ -1291,6 +1385,9 @@ export async function main(args: string[]) {
 	// ─────────────────────────────────────────────────────────────────────────────
 
 	// Track agents init state for deferred execution
+	let agentsInitPrompt: string | null = null;
+	let agentsInitPath: string | null = null;
+
 	const quoteShellArg = (value: string): string => {
 		if (/^[A-Za-z0-9_./:=@+-]+$/.test(value)) {
 			return value;
@@ -1350,7 +1447,7 @@ export async function main(args: string[]) {
 			const result = handleAgentsInit(targetArg, { force: parsed.force });
 			if (result.action === "preview") {
 				const { sanitizeTerminalPreview } = await import(
-					"./utils/terminal-text.js"
+					"./cli-tui/utils/text-formatting.js"
 				);
 				const rerunCommand = buildAgentsInitRerunCommand(targetArg);
 				console.log(
@@ -1367,29 +1464,11 @@ export async function main(args: string[]) {
 				console.log(`Updated AGENTS instructions at ${result.path}.`);
 				return;
 			}
-			const agentsInitPrompt = buildAgentsInitPrompt(
-				result.path,
-				result.sources,
-			);
-			// Generate via native agent — no TypeScript Agent bootstrap.
-			const cwd = process.cwd();
-			const targetPath = result.path;
-			const displayPath =
-				targetPath.startsWith(cwd) && targetPath !== cwd
-					? `.${targetPath.slice(cwd.length)}`
-					: targetPath;
-			console.log(chalk.green(`Drafting AGENTS.md at ${displayPath}...`));
-			await waitForStartupTelemetryForImmediateExit(startupTelemetry);
-			await runNativePrintMode(
-				{
-					provider: parsed.provider,
-					model: parsed.model,
-					apiKey: parsed.apiKey,
-					messages: [agentsInitPrompt],
-					mode: "text",
-				},
-				writeStartupErrorToStderr,
-			);
+			agentsInitPath = result.path;
+			agentsInitPrompt = buildAgentsInitPrompt(result.path, result.sources);
+			if (parsed.messages.length === 0) {
+				parsed.messages = [agentsInitPrompt];
+			}
 		} catch (error) {
 			const message =
 				error instanceof Error
@@ -1398,39 +1477,6 @@ export async function main(args: string[]) {
 			console.error(chalk.red(message));
 			process.exit(1);
 		}
-	}
-
-	// Hard cut: refuse TypeScript Agent bootstrap for CLI agent modes.
-	// Utility commands already returned. Scenario replay can opt into TS via
-	// MAESTRO_ALLOW_TS_AGENT=1 (or is detected below).
-	const allowTsAgent =
-		process.env.MAESTRO_ALLOW_TS_AGENT === "1" ||
-		process.env.MAESTRO_ALLOW_TS_AGENT === "true" ||
-		Boolean(scenarioReplay);
-	if (!allowTsAgent) {
-		await waitForStartupTelemetryForImmediateExit(startupTelemetry);
-		// Re-attempt native handoffs in case earlier gates were skipped.
-		if (shouldLaunchNativeHeadless(parsed)) {
-			await runNativeHeadlessMode(writeStartupErrorToStderr);
-		}
-		if (shouldLaunchNativeInteractiveTui(parsed)) {
-			await runNativeInteractiveMode(parsed, writeStartupErrorToStderr);
-		}
-		if (
-			shouldLaunchNativePrint(parsed) ||
-			(parsed.messages.length > 0 &&
-				(parsed.command === undefined || parsed.command === "exec"))
-		) {
-			await runNativePrintMode(parsed, writeStartupErrorToStderr);
-		}
-		writeStartupErrorToStderr(
-			[
-				"TypeScript agent bootstrap is disabled for CLI agent modes.",
-				"Interactive, print/exec, and headless/rpc run on native maestro-tui.",
-				"Set MAESTRO_ALLOW_TS_AGENT=1 only for legacy scenario-replay escapes.",
-			].join("\n"),
-		);
-		process.exit(1);
 	}
 
 	// ─────────────────────────────────────────────────────────────────────────────
@@ -1568,8 +1614,17 @@ export async function main(args: string[]) {
 		sessionManager.disable();
 	}
 
-	// Interactive --resume is handled by the native maestro-tui binary (-r).
-	// Non-interactive resume paths use --session / exec resume flags instead.
+	// Handle --resume flag: show session selector
+	if (parsed.resume) {
+		const { selectSession } = await import("./cli/session.js");
+		const selectedSession = await selectSession(sessionManager);
+		if (!selectedSession) {
+			console.log(chalk.dim("No session selected"));
+			return;
+		}
+		// Set the selected session as the active session
+		sessionManager.setSessionFile(selectedSession);
+	}
 
 	// ─────────────────────────────────────────────────────────────────────────────
 	// PHASE 8: Model Resolution
@@ -1946,27 +2001,116 @@ export async function main(args: string[]) {
 	// PHASE 14: Runtime Mode Dispatch
 	// ─────────────────────────────────────────────────────────────────────────────
 
-	// Residual agent-mode dispatch — should only be reached if an early native
-	// exit was skipped. Always hand off to maestro-tui; never run the TS agent loop.
+	// Route to the appropriate runtime mode based on command and arguments:
+	// 1. agents init: Generate AGENTS.md file
+	// 2. RPC mode: JSON-over-stdio protocol for programmatic control
+	// 3. Interactive TUI: Full terminal interface
+	// 4. Exec mode: Non-interactive batch execution
+	// 5. Single-shot: Process CLI messages and exit
 	try {
-		if (mode === "headless" || parsed.headless || mode === "rpc") {
+		if (agentsInitPrompt) {
+			startupProfiler.terminal("exec:ready", { mode: "agents" });
+			const cwd = process.cwd();
+			const targetPath = agentsInitPath ?? "AGENTS.md";
+			const displayPath =
+				targetPath.startsWith(cwd) && targetPath !== cwd
+					? `.${targetPath.slice(cwd.length)}`
+					: targetPath;
+			const runMode: Extract<Mode, "text" | "json"> =
+				mode === "rpc" || mode === "headless" ? "text" : mode;
+			console.log(chalk.green(`Drafting AGENTS.md at ${displayPath}...`));
+			await runSingleShotMode(
+				agent,
+				sessionManager,
+				[agentsInitPrompt],
+				runMode,
+				runtimeConfig.explicitProfileName,
+				runtimeConfig.explicitCliOverrides,
+			);
+			console.log(chalk.dim(`AGENTS.md generated at ${displayPath}`));
+		} else if (mode === "headless" || parsed.headless) {
+			// Headless mode - for native TUI communication
+			const { runHeadlessMode } = await import("./cli/headless.js");
 			startupProfiler.terminal("headless:ready");
-			await runNativeHeadlessMode(writeStartupErrorToStderr);
+			await runHeadlessMode(
+				agent,
+				sessionManager,
+				approvalService,
+				toolRetryService,
+				{
+					runtimeSelection: headlessRuntimeSelection,
+					profileName: runtimeConfig.explicitProfileName,
+					cliOverrides: runtimeConfig.explicitCliOverrides,
+				},
+			);
+		} else if (mode === "rpc") {
+			// RPC mode - headless operation
+			startupProfiler.terminal("rpc:ready");
+			const { runRpcMode } = await import("./cli/rpc-mode.js");
+			await runRpcMode(
+				agent,
+				sessionManager,
+				runtimeConfig.explicitProfileName,
+				runtimeConfig.explicitCliOverrides,
+			);
 		} else if (isInteractive) {
+			// Residual interactive path (should normally early-exit to native TUI).
 			startupProfiler.terminal("ui:ready");
 			await runNativeInteractiveMode(parsed, writeStartupErrorToStderr);
-		} else if (parsed.command === "exec" || parsed.messages.length > 0) {
+		} else if (parsed.command === "exec") {
 			startupProfiler.terminal("exec:ready");
-			await runNativePrintMode(parsed, writeStartupErrorToStderr);
-		} else {
-			// No interactive shell, no prompts — surface a clear error.
-			writeStartupErrorToStderr(
-				'No agent work requested. Use `maestro` for the native TUI, or `maestro exec "…"` for single-shot.',
+			const { runExecCommand } = await withExecJsonStartupCleanup(
+				() => execCommandModulePromise ?? import("./cli/commands/exec.js"),
 			);
-			process.exit(2);
+			await runExecCommand({
+				agent,
+				sessionManager,
+				prompts: parsed.messages,
+				jsonl: Boolean(parsed.execJson),
+				threadStartEmitted: execJsonThreadStartEmitted,
+				sandboxMode: sandboxMode,
+				outputSchema: parsed.execOutputSchema,
+				outputLastMessage: parsed.execOutputLast,
+				profileName: runtimeConfig.explicitProfileName,
+				cliOverrides: runtimeConfig.explicitCliOverrides,
+				beforeFinalJsonlEvents: backfillExecJsonContextManifest
+					? async () => {
+							const { loadUnifiedContextManifest } =
+								await withExecJsonStartupCleanup(
+									() => import("./context/manifest.js"),
+								);
+							await withExecJsonStartupCleanup(() =>
+								sessionManager.updateUnifiedContextManifest(
+									loadUnifiedContextManifest(process.cwd(), {
+										projectDocs: promptContextManifest,
+										mcpConfig: execJsonMcpConfigSnapshot,
+									}),
+								),
+							);
+						}
+					: undefined,
+			});
+		} else {
+			// CLI mode with messages
+			startupProfiler.terminal("cli:ready");
+			await runSingleShotMode(
+				agent,
+				sessionManager,
+				parsed.messages,
+				mode,
+				runtimeConfig.explicitProfileName,
+				runtimeConfig.explicitCliOverrides,
+			);
 		}
 	} finally {
 		await automaticMemory.flush();
-		await cleanupNonInteractiveRuntimeResources();
+		if (
+			!isInteractive ||
+			mode === "rpc" ||
+			mode === "headless" ||
+			parsed.headless
+		) {
+			await cleanupNonInteractiveRuntimeResources();
+		}
 	}
 }

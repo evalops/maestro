@@ -34,13 +34,6 @@ impl App {
             return Ok(());
         }
 
-        // Grok-style Shift+Tab: cycle Normal → Plan → Always-approve
-        // (only when not typing a slash command and input is empty)
-        if matches!(code, KeyCode::BackTab) && self.state.input().is_empty() && !self.state.busy {
-            self.cycle_interaction_mode();
-            return Ok(());
-        }
-
         if self.matches_binding(self.command_palette_binding, code, modifiers) {
             self.command_palette.show();
             self.active_modal = ActiveModal::CommandPalette;
