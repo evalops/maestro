@@ -1213,7 +1213,7 @@ impl App {
             }
             A2aAction::Accept { code } => {
                 self.state.add_system_message(format!(
-                    "A2A pairing code captured ({} chars). Run `maestro a2a accept <code>` or use the TypeScript TUI `/a2a accept <code>` to persist it in the shared registry.",
+                    "A2A pairing code captured ({} chars). Run `maestro a2a accept <code>` Persist it with `/a2a accept <code>` in this TUI, or `maestro a2a accept <code>` from the CLI.",
                     code.len()
                 ));
             }
