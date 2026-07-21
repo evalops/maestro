@@ -229,7 +229,7 @@ describe("workflow footgun guardrails", () => {
 		);
 	});
 
-	it("accepts pull request workflows routed through Blacksmith / PR_CHECKS failover vars", () => {
+	it("accepts pull request workflows routed through PR_CHECKS / INTERNAL_CONFIRMATION failover vars", () => {
 		const root = makeFixture();
 		write(
 			join(root, ".github/workflows/ci.yml"),
@@ -237,11 +237,11 @@ describe("workflow footgun guardrails", () => {
 				"name: ci",
 				"jobs:",
 				"  pr-checks:",
-				"    runs-on: ${{ github.event_name == 'pull_request' && (vars.PR_CHECKS_RUNNER || vars.BLACKSMITH_RUNNER || 'ubuntu-latest') || (vars.INTERNAL_CONFIRMATION_RUNNER || vars.BLACKSMITH_RUNNER || 'blacksmith-4vcpu-ubuntu-2404') }}",
+				"    runs-on: ${{ github.event_name == 'pull_request' && (vars.PR_CHECKS_RUNNER || 'ubuntu-latest') || (vars.INTERNAL_CONFIRMATION_RUNNER || 'ubuntu-latest') }}",
 				"    steps:",
 				"      - run: echo ok",
 				"  coverage:",
-				"    runs-on: ${{ github.event_name == 'pull_request' && (vars.BLACKSMITH_HEAVY_RUNNER || 'blacksmith-8vcpu-ubuntu-2404') || (vars.INTERNAL_CONFIRMATION_RUNNER || vars.BLACKSMITH_RUNNER || 'blacksmith-4vcpu-ubuntu-2404') }}",
+				"    runs-on: ${{ github.event_name == 'pull_request' && 'ubuntu-latest' || (vars.INTERNAL_CONFIRMATION_RUNNER || 'ubuntu-latest') }}",
 				"    steps:",
 				"      - run: echo ok",
 				"",
@@ -253,7 +253,7 @@ describe("workflow footgun guardrails", () => {
 				"name: Rust TUI",
 				"jobs:",
 				"  build:",
-				"    runs-on: ${{ github.event_name == 'pull_request' && (vars.BLACKSMITH_HEAVY_RUNNER || 'blacksmith-8vcpu-ubuntu-2404') || (vars.INTERNAL_CONFIRMATION_RUNNER || vars.BLACKSMITH_RUNNER || 'blacksmith-4vcpu-ubuntu-2404') }}",
+				"    runs-on: ${{ github.event_name == 'pull_request' && 'ubuntu-latest' || (vars.INTERNAL_CONFIRMATION_RUNNER || 'ubuntu-latest') }}",
 				"    steps:",
 				"      - run: echo ok",
 				"",
@@ -279,5 +279,61 @@ describe("workflow footgun guardrails", () => {
 		);
 
 		expect(evaluateWorkflowFootguns({ root })).toEqual([]);
+	});
+
+	it("rejects workflows that still reference retired Blacksmith runner labels", () => {
+		const root = makeFixture();
+		write(
+			join(root, ".github/workflows/ci.yml"),
+			[
+				"name: ci",
+				"jobs:",
+				"  pr-checks:",
+				"    runs-on: ${{ github.event_name == 'pull_request' && (vars.PR_CHECKS_RUNNER || 'ubuntu-latest') || (vars.INTERNAL_CONFIRMATION_RUNNER || 'ubuntu-latest') }}",
+				"    steps:",
+				"      - run: echo ok",
+				"",
+			].join("\n"),
+		);
+		write(
+			join(root, ".github/workflows/rust.yml"),
+			[
+				"name: Rust TUI",
+				"jobs:",
+				"  build:",
+				"    runs-on: ${{ vars.BLACKSMITH_RUNNER || 'blacksmith-4vcpu-ubuntu-2404' }}",
+				"    steps:",
+				"      - run: echo ok",
+				"",
+			].join("\n"),
+		);
+
+		expect(evaluateWorkflowFootguns({ root })).toEqual(
+			expect.arrayContaining([
+				expect.stringContaining("rust.yml: Blacksmith runners are retired"),
+			]),
+		);
+	});
+
+	it("rejects workflows that still reference retired Blacksmith runner vars even without a literal label", () => {
+		const root = makeFixture();
+		write(
+			join(root, ".github/workflows/ci.yml"),
+			[
+				"name: ci",
+				"jobs:",
+				"  pr-checks:",
+				"    runs-on: ${{ vars.BLACKSMITH_HEAVY_RUNNER || 'ubuntu-latest' }}",
+				"    steps:",
+				"      - run: echo ok",
+				"",
+			].join("\n"),
+		);
+
+		expect(evaluateWorkflowFootguns({ root })).toEqual(
+			expect.arrayContaining([
+				expect.stringContaining("ci.yml: Blacksmith runners are retired"),
+			]),
+		);
 	});
 });

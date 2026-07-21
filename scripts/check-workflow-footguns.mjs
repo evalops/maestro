@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -113,9 +113,8 @@ function evaluatePublicReleaseMirrorWorkflowPermission(root) {
  * PR CI must not steal the trusted `evalops-internal` lane.
  *
  * Policy (aligned with test/scripts/ci-guardrails.test.ts):
- * - PR jobs route through vars.PR_CHECKS_RUNNER / vars.BLACKSMITH_* with
- *   ubuntu-latest / blacksmith-* fallbacks so automation works when fleets
- *   are offline.
+ * - PR jobs route through vars.PR_CHECKS_RUNNER with an ubuntu-latest
+ *   fallback so automation works when the var is unset.
  * - `evalops-internal` is reserved for non-PR confirmation (via
  *   INTERNAL_CONFIRMATION_RUNNER), never as a hard-coded PR target.
  */
@@ -144,23 +143,46 @@ function evaluatePullRequestRunnerOverrides(root) {
 				/&&\s*"evalops-internal"/.test(line)
 			) {
 				failures.push(
-					`${workflowFile}: pull_request jobs must not hard-code evalops-internal; route PR CI through BLACKSMITH_* / PR_CHECKS_RUNNER (or ubuntu-latest)`,
+					`${workflowFile}: pull_request jobs must not hard-code evalops-internal; route PR CI through PR_CHECKS_RUNNER (or ubuntu-latest)`,
 				);
 			}
 		}
 
-		// Primary ci.yml PR lanes must keep Blacksmith failover vars so release
-		// automation is not pinned to offline self-hosted fleets.
+		// Primary ci.yml PR lanes must keep a runner failover var so release
+		// automation is not pinned to a single fleet.
 		if (workflowFile.endsWith("ci.yml") && workflowText.includes("pr-checks")) {
 			if (
-				!/\bvars\.BLACKSMITH_RUNNER\b/.test(workflowText) &&
 				!/\bvars\.PR_CHECKS_RUNNER\b/.test(workflowText) &&
 				!/\bvars\.PUBLIC_PR_VALIDATION_RUNNER\b/.test(workflowText)
 			) {
 				failures.push(
-					`${workflowFile}: PR jobs must expose vars.PR_CHECKS_RUNNER, vars.BLACKSMITH_RUNNER, or vars.PUBLIC_PR_VALIDATION_RUNNER for runner failover`,
+					`${workflowFile}: PR jobs must expose vars.PR_CHECKS_RUNNER or vars.PUBLIC_PR_VALIDATION_RUNNER for runner failover`,
 				);
 			}
+		}
+	}
+
+	return failures;
+}
+
+/**
+ * Blacksmith runners are retired org-wide (owner decision 2026-07-20).
+ * Fail any workflow that still references a blacksmith-* runner label or a
+ * BLACKSMITH_* fallback var so the fleet cannot silently creep back in.
+ */
+function evaluateNoBlacksmithReferences(root) {
+	const failures = [];
+	const workflowsDir = join(root, ".github/workflows");
+	if (!existsSync(workflowsDir)) return failures;
+
+	for (const entry of readdirSync(workflowsDir)) {
+		if (!/\.ya?ml$/.test(entry)) continue;
+		const workflowFile = `.github/workflows/${entry}`;
+		const workflowText = readIfExists(join(root, workflowFile));
+		if (/blacksmith/i.test(workflowText)) {
+			failures.push(
+				`${workflowFile}: Blacksmith runners are retired; use GitHub-hosted runners (e.g. ubuntu-latest, macos-15, ubuntu-24.04-arm) instead of blacksmith-* labels or BLACKSMITH_* vars`,
+			);
 		}
 	}
 
@@ -172,6 +194,7 @@ export function evaluateWorkflowFootguns({ root = defaultRoot } = {}) {
 		...evaluateEvalOpsBotDispatch(root),
 		...evaluatePublicReleaseMirrorWorkflowPermission(root),
 		...evaluatePullRequestRunnerOverrides(root),
+		...evaluateNoBlacksmithReferences(root),
 	];
 }
 
