@@ -186,11 +186,13 @@ async function evaluateApiToolsCase(): Promise<unknown> {
 async function evaluateFindCase(): Promise<unknown> {
 	const dir = await mkdtemp(join(tmpdir(), "composer-tool-find-"));
 	try {
+		// Nested glob discovery is the contract under test. Avoid gitignore
+		// negation patterns here — fd versions disagree on !exceptions for
+		// non-repo temp dirs, which made release quality-gate flakes.
 		await writeFile(join(dir, "alpha.ts"), "export const alpha = 1;\n", "utf8");
 		await mkdir(join(dir, "nested"), { recursive: true });
 		await writeFile(join(dir, "nested", "beta.ts"), "export const beta = 2;\n", "utf8");
-		await writeFile(join(dir, "nested", "ignored.ts"), "export const ignored = 3;\n", "utf8");
-		await writeFile(join(dir, ".gitignore"), "nested/*.ts\n!nested/beta.ts\n", "utf8");
+		await writeFile(join(dir, "nested", "notes.txt"), "not a ts match\n", "utf8");
 
 		const result = await findTool.execute("tool-surface-find", {
 			pattern: "**/*.ts",
