@@ -172,14 +172,14 @@ function expectRustTuiRunnerLane(runsOn: string): void {
 		return;
 	}
 
-	// Heavy PR work uses Blacksmith (or override); main confirmation falls back
-	// through INTERNAL_CONFIRMATION_RUNNER / BLACKSMITH_RUNNER.
+	// Heavy PR work runs on GitHub-hosted ubuntu-latest (Blacksmith retired
+	// 2026-07-20); main confirmation falls back through
+	// INTERNAL_CONFIRMATION_RUNNER.
 	expect(runsOn).not.toContain("PR_RUST_RUNNER");
 	expect(runsOn).not.toContain("evalops-private-heavy");
-	expect(runsOn).toContain("BLACKSMITH_HEAVY_RUNNER");
-	expect(runsOn).toContain("blacksmith-8vcpu-ubuntu-2404");
+	expect(runsOn).not.toContain("BLACKSMITH");
+	expect(runsOn).not.toContain("blacksmith");
 	expect(runsOn).toContain("INTERNAL_CONFIRMATION_RUNNER");
-	expect(runsOn).toContain("BLACKSMITH_RUNNER");
 }
 
 describe("planCiChecks", () => {
@@ -936,22 +936,20 @@ describe("ci workflow guardrails", () => {
 
 		expect(prChecksRunsOn).toContain("ubuntu-latest");
 		expect(prChecksRunsOn).toContain("light_pr_checks");
-		// Light PR lane: PR_CHECKS_RUNNER → BLACKSMITH_RUNNER → ubuntu-latest
-		// Heavy PR lane: BLACKSMITH_HEAVY_RUNNER → blacksmith-8vcpu
+		// Light PR lane: PR_CHECKS_RUNNER → ubuntu-latest
+		// Heavy PR lane: ubuntu-latest (Blacksmith retired 2026-07-20)
 		expect(prChecksRunsOn).toContain("PR_CHECKS_RUNNER");
-		expect(prChecksRunsOn).toContain("BLACKSMITH_RUNNER");
-		expect(prChecksRunsOn).toContain("BLACKSMITH_HEAVY_RUNNER");
-		expect(prChecksRunsOn).toContain("blacksmith-8vcpu-ubuntu-2404");
+		expect(prChecksRunsOn).not.toContain("BLACKSMITH");
+		expect(prChecksRunsOn).not.toContain("blacksmith");
 		expect(prChecksRunsOn).not.toContain("evalops-private-ci");
 		expect(prChecksRunsOn).not.toContain("evalops-private-heavy");
 		expect(prChecksRunsOn).toContain("INTERNAL_CONFIRMATION_RUNNER");
 		expect(coverageRunsOn).toContain("ubuntu-latest");
 		expect(coverageRunsOn).not.toContain("PR_COVERAGE_RUNNER");
-		expect(coverageRunsOn).toContain("BLACKSMITH_HEAVY_RUNNER");
-		expect(coverageRunsOn).toContain("blacksmith-8vcpu-ubuntu-2404");
+		expect(coverageRunsOn).not.toContain("BLACKSMITH");
+		expect(coverageRunsOn).not.toContain("blacksmith");
 		expect(coverageRunsOn).not.toContain("evalops-private-heavy");
 		expect(coverageRunsOn).toContain("INTERNAL_CONFIRMATION_RUNNER");
-		expect(coverageRunsOn).toContain("BLACKSMITH_RUNNER");
 	});
 
 	it("runs workflow footgun guardrails in the CI infrastructure smoke lane", () => {
@@ -1229,7 +1227,7 @@ describe("ci workflow guardrails", () => {
 		expect(script).toContain("MAESTRO_REQUIRE_PACKAGED_TUI");
 	});
 
-	it("builds every packaged Rust TUI target on Blacksmith", () => {
+	it("builds every packaged Rust TUI target on GitHub-hosted runners", () => {
 		const workflowPath = new URL(
 			"../../.github/workflows/release.yml",
 			import.meta.url,
@@ -1245,13 +1243,11 @@ describe("ci workflow guardrails", () => {
 			return;
 		}
 
-		for (const runner of [
-			"blacksmith-6vcpu-macos-15",
-			"blacksmith-4vcpu-ubuntu-2404",
-			"blacksmith-4vcpu-ubuntu-2404-arm",
-		]) {
+		for (const runner of ["macos-15", "ubuntu-latest", "ubuntu-24.04-arm"]) {
 			expect(workflow).toContain(runner);
 		}
+		expect(workflow).not.toContain("blacksmith");
+		expect(workflow).not.toContain("Blacksmith");
 		expect(workflow).toContain("release-tui-binaries:");
 		expect(workflow).toContain(
 			"build --release --locked --bin maestro-tui --target",
@@ -1735,8 +1731,8 @@ describe("ci workflow guardrails", () => {
 			should_run: "${{ steps.detect.outputs.result }}",
 		});
 		expect(detectJob?.["runs-on"]).toContain("PUBLIC_PR_VALIDATION_RUNNER");
-		expect(detectJob?.["runs-on"]).toContain("BLACKSMITH_RUNNER");
-		expect(detectJob?.["runs-on"]).toContain("blacksmith-8vcpu-ubuntu-2404");
+		expect(detectJob?.["runs-on"]).not.toContain("BLACKSMITH");
+		expect(detectJob?.["runs-on"]).not.toContain("blacksmith");
 		expect(detectJob?.["runs-on"]).toContain("ubuntu-latest");
 		expect(detectStep?.uses).toBe(
 			"actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea",
@@ -1804,8 +1800,8 @@ describe("ci workflow guardrails", () => {
 			"pull-requests": "read",
 		});
 		expect(labelJob?.["runs-on"]).toContain("PUBLIC_PR_VALIDATION_RUNNER");
-		expect(labelJob?.["runs-on"]).toContain("BLACKSMITH_RUNNER");
-		expect(labelJob?.["runs-on"]).toContain("blacksmith-8vcpu-ubuntu-2404");
+		expect(labelJob?.["runs-on"]).not.toContain("BLACKSMITH");
+		expect(labelJob?.["runs-on"]).not.toContain("blacksmith");
 		expect(labelJob?.["runs-on"]).toContain("ubuntu-latest");
 		expect(
 			steps.some((step) => step.uses?.startsWith("actions/checkout@")),
