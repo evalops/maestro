@@ -54,6 +54,12 @@ export function getPackageName(env: NodeJS.ProcessEnv = process.env): string {
 	);
 }
 
+export function getPackageNameOverride(
+	env: NodeJS.ProcessEnv = process.env,
+): string | undefined {
+	return env.MAESTRO_PACKAGE_NAME;
+}
+
 export function getCanonicalPackageName(): string {
 	const metadata = loadPackageMetadata();
 	return metadata.maestro?.canonicalPackageName ?? getPackageName();
