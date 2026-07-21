@@ -25,6 +25,8 @@ const allowedFiles = new Set(
 		"packages/jetbrains-plugin/README.md",
 		"packages/jetbrains-plugin/src/main/resources/META-INF/plugin.xml",
 		"scripts/check-package-cutover-readiness.js",
+		"scripts/install.ps1",
+		"scripts/install.sh",
 		"scripts/package-metadata.js",
 		"scripts/sync-package-metadata.js",
 		"src/agent/types.ts",
