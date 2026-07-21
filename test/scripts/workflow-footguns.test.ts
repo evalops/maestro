@@ -336,4 +336,40 @@ describe("workflow footgun guardrails", () => {
 			]),
 		);
 	});
+
+	it("rejects Blacksmith references outside .github/workflows (composite actions, actionlint.yaml)", () => {
+		const root = makeFixture();
+		write(
+			join(root, ".github/actions/setup-rust/action.yml"),
+			[
+				"name: setup-rust",
+				"runs:",
+				"  using: composite",
+				"  steps:",
+				"    - shell: bash",
+				"      run: echo 'fallback runner: blacksmith-4vcpu-ubuntu-2404'",
+				"",
+			].join("\n"),
+		);
+		write(
+			join(root, ".github/actionlint.yaml"),
+			[
+				"self-hosted-runner:",
+				"  labels:",
+				"    - blacksmith-8vcpu-ubuntu-2404",
+				"",
+			].join("\n"),
+		);
+
+		expect(evaluateWorkflowFootguns({ root })).toEqual(
+			expect.arrayContaining([
+				expect.stringContaining(
+					".github/actions/setup-rust/action.yml: Blacksmith runners are retired",
+				),
+				expect.stringContaining(
+					".github/actionlint.yaml: Blacksmith runners are retired",
+				),
+			]),
+		);
+	});
 });

@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 import { existsSync, readdirSync, readFileSync } from "node:fs";
-import { join } from "node:path";
+import { join, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const defaultRoot = fileURLToPath(new URL("..", import.meta.url));
@@ -167,21 +167,25 @@ function evaluatePullRequestRunnerOverrides(root) {
 
 /**
  * Blacksmith runners are retired org-wide (owner decision 2026-07-20).
- * Fail any workflow that still references a blacksmith-* runner label or a
- * BLACKSMITH_* fallback var so the fleet cannot silently creep back in.
+ * Fail any workflow, composite action, or actionlint config that still
+ * references a blacksmith-* runner label or a BLACKSMITH_* fallback var so
+ * the fleet cannot silently creep back in. Scans all of .github/ (not just
+ * .github/workflows/) so a composite action under .github/actions/** or the
+ * self-hosted-runner label registry in .github/actionlint.yaml can't
+ * reintroduce a reference unnoticed.
  */
 function evaluateNoBlacksmithReferences(root) {
 	const failures = [];
-	const workflowsDir = join(root, ".github/workflows");
-	if (!existsSync(workflowsDir)) return failures;
+	const githubDir = join(root, ".github");
+	if (!existsSync(githubDir)) return failures;
 
-	for (const entry of readdirSync(workflowsDir)) {
+	for (const entry of readdirSync(githubDir, { recursive: true })) {
 		if (!/\.ya?ml$/.test(entry)) continue;
-		const workflowFile = `.github/workflows/${entry}`;
-		const workflowText = readIfExists(join(root, workflowFile));
-		if (/blacksmith/i.test(workflowText)) {
+		const relativePath = `.github/${entry.split(sep).join("/")}`;
+		const fileText = readIfExists(join(root, relativePath));
+		if (/blacksmith/i.test(fileText)) {
 			failures.push(
-				`${workflowFile}: Blacksmith runners are retired; use GitHub-hosted runners (e.g. ubuntu-latest, macos-15, ubuntu-24.04-arm) instead of blacksmith-* labels or BLACKSMITH_* vars`,
+				`${relativePath}: Blacksmith runners are retired; use GitHub-hosted runners (e.g. ubuntu-latest, macos-15, ubuntu-24.04-arm) instead of blacksmith-* labels or BLACKSMITH_* vars`,
 			);
 		}
 	}
