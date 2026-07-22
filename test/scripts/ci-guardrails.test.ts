@@ -959,6 +959,9 @@ describe("ci workflow guardrails", () => {
 			workflow.jobs?.["pr-checks"]?.["runs-on"] ?? "",
 		);
 		const coverageRunsOn = String(workflow.jobs?.coverage?.["runs-on"] ?? "");
+		const releaseReadinessRunsOn = String(
+			workflow.jobs?.["release-readiness"]?.["runs-on"] ?? "",
+		);
 
 		if (isPublicValidationWorkflow(workflow)) {
 			expect(prChecksRunsOn).toContain("ubuntu-latest");
@@ -983,6 +986,7 @@ describe("ci workflow guardrails", () => {
 		expect(prChecksRunsOn).toContain("INTERNAL_CONFIRMATION_RUNNER");
 		expect(prChecksRunsOn).toContain("evalops-internal");
 		expect(coverageRunsOn).toContain("ubuntu-latest");
+		expect(coverageRunsOn).toContain("PR_COVERAGE_RUNNER");
 		expect(coverageRunsOn).toContain("PR_RUST_RUNNER");
 		expect(coverageRunsOn).toContain("PR_CHECKS_RUNNER");
 		expect(coverageRunsOn).not.toContain("BLACKSMITH");
@@ -990,6 +994,39 @@ describe("ci workflow guardrails", () => {
 		expect(coverageRunsOn).not.toContain("evalops-private-heavy");
 		expect(coverageRunsOn).toContain("INTERNAL_CONFIRMATION_RUNNER");
 		expect(coverageRunsOn).toContain("evalops-internal");
+		expect(releaseReadinessRunsOn).toContain("ubuntu-latest");
+		expect(releaseReadinessRunsOn).toContain("PR_CHECKS_RUNNER");
+		expect(releaseReadinessRunsOn).not.toContain("evalops-private-heavy");
+		expect(releaseReadinessRunsOn).toContain("INTERNAL_CONFIRMATION_RUNNER");
+	});
+
+	it("runs release readiness in parallel with Nx while preserving its gate", () => {
+		const workflow = parse(
+			readFileSync(new URL("../../.github/workflows/ci.yml", import.meta.url), {
+				encoding: "utf8",
+			}),
+		) as Workflow;
+		if (isPublicValidationWorkflow(workflow)) return;
+
+		const prChecks = workflow.jobs?.["pr-checks"];
+		const releaseReadiness = workflow.jobs?.["release-readiness"];
+		const releaseStep = releaseReadiness?.steps?.find(
+			(step) => step.name === "Release readiness (CI mode)",
+		);
+
+		expect(
+			prChecks?.steps?.some((step) => step.name === "Test (Nx affected)"),
+		).toBe(true);
+		expect(
+			prChecks?.steps?.some(
+				(step) => step.name === "Release readiness (CI mode)",
+			),
+		).toBe(false);
+		expect(releaseReadiness?.needs).toBe("changes");
+		expect(String(releaseReadiness?.if ?? "")).toContain(
+			"needs.changes.outputs.pr_checks == 'true'",
+		);
+		expect(releaseStep?.run).toBe("npm run release:check:ci");
 	});
 
 	it("runs workflow footgun guardrails in the CI infrastructure smoke lane", () => {
@@ -1031,11 +1068,14 @@ describe("ci workflow guardrails", () => {
 		const helperSmokeStep = prCheckSteps.find(
 			(step) => step.name === "Release helper package smoke",
 		);
-		const releaseReadinessStep = prCheckSteps.find(
-			(step) => step.name === "Release readiness (CI mode)",
-		);
+		const publicValidation = isPublicValidationWorkflow(workflow);
+		const releaseReadinessStep = (
+			publicValidation
+				? prCheckSteps
+				: (workflow.jobs?.["release-readiness"]?.steps ?? [])
+		).find((step) => step.name === "Release readiness (CI mode)");
 
-		if (isPublicValidationWorkflow(workflow)) {
+		if (publicValidation) {
 			expect(changesOutputs).not.toHaveProperty("release_helper_only");
 			expect(helperSmokeStep).toBeUndefined();
 			expect(releaseReadinessStep?.if).toContain("proof_harness_only");
@@ -1108,7 +1148,9 @@ describe("ci workflow guardrails", () => {
 		expect(trustedPublisherScript).not.toContain('spawnSync("npx"');
 		expect(trustedPublisherScript).toContain('"--allow-publish"');
 		expect(trustedPublisherScript).toContain('"--allow-stage-publish"');
-		expect(releaseReadinessStep?.if).toContain("release_helper_only != 'true'");
+		expect(workflow.jobs?.["release-readiness"]?.if).toContain(
+			"release_helper_only != 'true'",
+		);
 	});
 
 	it("formats version-generated package manifests before release checks", () => {
@@ -1919,10 +1961,12 @@ describe("ci workflow guardrails", () => {
 			(step) => step.name === "Test codegen utilities",
 		);
 		const nxStep = steps.find((step) => step.name === "Test (Nx affected)");
-		const releaseReadinessStep = steps.find(
-			(step) => step.name === "Release readiness (CI mode)",
-		);
 		const isPublicMirrorPrChecks = isPublicValidationWorkflow(workflow);
+		const releaseReadinessStep = (
+			isPublicMirrorPrChecks
+				? steps
+				: (workflow.jobs?.["release-readiness"]?.steps ?? [])
+		).find((step) => step.name === "Release readiness (CI mode)");
 
 		if (isPublicMirrorPrChecks) {
 			expect(changesOutputs).not.toHaveProperty("codegen_utility_only");
@@ -1936,7 +1980,7 @@ describe("ci workflow guardrails", () => {
 		expect(codegenStep?.run).toContain("test/scripts/codegen-utils.test.ts");
 		expect(codegenStep?.run).toContain("MAESTRO_RUSTFMT=");
 		expect(nxStep?.if).toContain("codegen_utility_only != 'true'");
-		expect(releaseReadinessStep?.if).toContain(
+		expect(workflow.jobs?.["release-readiness"]?.if).toContain(
 			"codegen_utility_only != 'true'",
 		);
 	});
@@ -2014,11 +2058,9 @@ describe("ci workflow guardrails", () => {
 				(step) => step.name === "Setup Java for Gradle Nx tasks",
 			)?.if,
 		).toBe(proofHarnessSkipCondition);
-		expect(
-			prChecksJob?.steps?.find(
-				(step) => step.name === "Release readiness (CI mode)",
-			)?.if,
-		).toBe(proofHarnessSkipCondition);
+		expect(workflow.jobs?.["release-readiness"]?.if).toContain(
+			"proof_harness_only != 'true'",
+		);
 	});
 
 	it("isolates the Rust toolchain home across workflow runs", () => {
@@ -2395,11 +2437,15 @@ describe("ci workflow guardrails", () => {
 			}),
 		) as Workflow;
 
-		for (const jobName of [
+		const searchBackedJobs = [
 			"pr-checks",
 			"coverage",
 			"rust-hosted-conformance",
-		]) {
+		];
+		if (workflow.jobs?.["release-readiness"]) {
+			searchBackedJobs.push("release-readiness");
+		}
+		for (const jobName of searchBackedJobs) {
 			const setupBunStep = workflow.jobs?.[jobName]?.steps?.find(
 				(step) => step.uses === "./.github/actions/setup-bun-nx",
 			);
