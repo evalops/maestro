@@ -8,6 +8,12 @@ versioning when releases are cut.
 
 ### Added
 
+- Web server boot probe for `maestro-tui`: error when the binary is missing for
+  native web/headless defaults (`src/server/maestro-tui-boot-check.ts`).
+  Force TypeScript with `MAESTRO_TS_AGENT=1` to skip the probe.
+- One-line installer (`scripts/install.sh`) downloads and installs
+  `maestro-tui-<platform>` next to `maestro` so interactive TUI and default web
+  chat work without a separate step.
 - Added a weekly internal patch-release cadence that opens or refreshes release
   PRs with generated changelog entries from commits since the latest semver tag.
 - Added first-class support for the major Chinese model providers — DeepSeek,
@@ -17,6 +23,9 @@ versioning when releases are cut.
 
 ### Changed
 
+- Document install paths for `maestro-tui` / `MAESTRO_TUI_BIN` (README, Web UI,
+  Quickstart, Architecture, TUI Architecture) now that web defaults to native
+  headless.
 - Release version bumps now include the generated changelog entry in the PR body
   and keep scheduled public runs inert so public publishing stays downstream of
   the internal source-of-truth release.

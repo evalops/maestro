@@ -1,6 +1,6 @@
 import chalk from "chalk";
 import { beforeAll, describe, expect, it } from "vitest";
-import { buildConfigShowSections } from "../../src/cli/commands/config.js";
+import { buildConfigShowSections } from "../../src/config/cli-presentation.js";
 import type { ConfigInspection } from "../../src/models/registry.js";
 
 const ANSI_REGEX = new RegExp(`${String.fromCharCode(27)}\[[0-9;]*m`, "g");

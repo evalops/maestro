@@ -22,7 +22,7 @@ Source of truth:
 
 - generated constants: [packages/contracts/src/headless-protocol-generated.ts](../../packages/contracts/src/headless-protocol-generated.ts)
 - runtime message shapes: [src/cli/headless-protocol.ts](../../src/cli/headless-protocol.ts)
-- transport implementation: [src/cli/headless.ts](../../src/cli/headless.ts)
+- transport implementation: [packages/tui-rs/src/headless_server.rs](../../packages/tui-rs/src/headless_server.rs) (launched via [src/cli/native-tui-launcher.ts](../../src/cli/native-tui-launcher.ts))
 - hosted runner contract: [docs/protocols/hosted-runner-contract.md](./hosted-runner-contract.md)
 - hosted runner retention: [docs/protocols/hosted-runner-retention.md](./hosted-runner-retention.md)
 - conformance suite: [docs/protocols/headless-conformance.md](./headless-conformance.md)
@@ -32,6 +32,37 @@ Compatibility expectations:
 - treat unknown fields as additive
 - reject unknown message `type` values unless your client intentionally ignores them
 - compare `protocol_version` during handshake when you require exact compatibility
+
+## Hosted / HeadlessRuntimeService backend
+
+`HeadlessRuntimeService` (web attach, hosted runner, in-process host) owns the
+Node-side control plane: connection leases, hello/hello_ok, utility commands,
+file watches, server-request bookkeeping, and event replay. The **agent loop**
+uses a long-lived piped `maestro-tui --headless` process
+(`NativeHeadlessClient`).
+
+| Flag | Effect |
+|------|--------|
+| `MAESTRO_TUI_BIN` | Override native binary resolution |
+| `MAESTRO_NATIVE_MEMORY=0\|false\|off\|no` | Disable automatic memory one-shots |
+
+On native spawn/start failure the service throws. Native protocol messages
+are published into the Node broker directly (no TS
+`translator.handleAgentEvent`). Automatic memory extraction/consolidation runs
+via short-lived native one-shots
+([native-memory.ts](../../src/server/native-memory.ts)) when
+`MAESTRO_NATIVE_MEMORY` is on (default). Disable with `MAESTRO_NATIVE_MEMORY=0`
+for no-ops from [native-memory-noop.ts](../../src/server/native-memory-noop.ts).
+Failures warn and continue; never soft-fall back to `createAgent`.
+
+Implementation:
+
+- [src/server/headless-native-bridge.ts](../../src/server/headless-native-bridge.ts) — start + publish bridge
+- [src/server/native-headless-client.ts](../../src/server/native-headless-client.ts) — NDJSON client
+- [src/server/native-memory.ts](../../src/server/native-memory.ts) — native one-shot auto memory
+- [src/server/native-memory-noop.ts](../../src/server/native-memory-noop.ts) — no-op auto memory when disabled
+- [src/server/headless-runtime-service.ts](../../src/server/headless-runtime-service.ts) — hosted native headless runtime
+
 
 ## Hosted Remote-Runner Identity
 
@@ -374,7 +405,9 @@ Optional notification opt-outs in `hello.opt_out_notifications`:
   - handshake and capability negotiation
 - `init`
   - runtime configuration such as `system_prompt`, `append_system_prompt`,
-    `thinking_level`, and `approval_mode`
+    `thinking_level`, `approval_mode`, and optional `history` (array of
+    `{role, content}` turns applied before the first prompt; prefer this over
+    stuffing multi-turn context into `append_system_prompt`)
 - `prompt`
   - starts or continues a run; supports `attachments`
 - `interrupt`
@@ -535,6 +568,14 @@ Supported `error_type` values:
 - Prefer `server_request` / `server_request_response` for new control-plane
   integrations. `tool_call` / `tool_response` remains for legacy approval
   compatibility.
+- Web chat bridge: `src/server/native-headless-event-adapter.ts` maps
+  `HeadlessFromAgentMessage` into runtime `AgentEvent` frames so chat-ws can
+  forward native headless streams without an in-process TypeScript Agent.
+  Prefer negotiated `raw_agent_event` passthrough when available; the adapter
+  reconstructs message/tool lifecycle events from protocol messages otherwise.
+- Server native approvals fail closed: explicit `auto` remains automatic;
+  `prompt` and `fail` map to `fail` until an interactive approval/client-tools
+  bridge is available.
 
 ## Platform Event Bus
 

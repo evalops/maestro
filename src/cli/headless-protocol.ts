@@ -24,6 +24,12 @@ import {
 } from "@evalops/contracts";
 import { lookup as lookupMimeType } from "mime-types";
 
+export type {
+	HeadlessApprovalMode,
+	HeadlessConnectionRole,
+	HeadlessThinkingLevel,
+} from "@evalops/contracts";
+
 import type { ActionApprovalService } from "../agent/action-approval.js";
 import type { Agent } from "../agent/index.js";
 import type {
@@ -55,12 +61,37 @@ export interface HeadlessPromptMessage {
 	attachments?: string[];
 }
 
+/**
+ * Role of a seeded history message in headless `init.history`.
+ * Mirrors packages/tui-rs HistoryRole (user | assistant | system).
+ */
+export type HeadlessHistoryRole = "user" | "assistant" | "system";
+
+/**
+ * A single conversation turn used to seed headless multi-turn history.
+ * Mirrors packages/tui-rs HistoryMessage / proto HistoryMessage.
+ *
+ * Prefer this over stuffing multi-turn context into `append_system_prompt`.
+ * Older maestro-tui builds ignore unknown init fields; clients dual-write
+ * the append_system_prompt transcript fallback until support is universal.
+ */
+export interface HeadlessHistoryMessage {
+	role: HeadlessHistoryRole;
+	content: string;
+}
+
 export interface HeadlessInitMessage {
 	type: "init";
 	system_prompt?: string;
 	append_system_prompt?: string;
 	thinking_level?: HeadlessThinkingLevel;
 	approval_mode?: HeadlessApprovalMode;
+	/**
+	 * Prior conversation turns applied before the first prompt.
+	 * Prefer this over encoding history into append_system_prompt when the
+	 * runtime supports it (Rust headless Init.history).
+	 */
+	history?: HeadlessHistoryMessage[];
 }
 
 export interface HeadlessClientInfo {
@@ -1816,6 +1847,27 @@ export function applyInitMessage(
 			: msg.append_system_prompt;
 		agent.setSystemPrompt(nextPrompt);
 		applied.push("append_system_prompt");
+	}
+
+	// Prefer structured protocol history when present (real messages).
+	if (Array.isArray(msg.history) && msg.history.length > 0) {
+		const historyMessages = msg.history
+			.filter(
+				(entry) =>
+					entry &&
+					typeof entry.role === "string" &&
+					typeof entry.content === "string" &&
+					entry.content.trim().length > 0,
+			)
+			.map((entry) => ({
+				role: entry.role,
+				content: entry.content,
+				timestamp: Date.now(),
+			}));
+		if (historyMessages.length > 0) {
+			agent.replaceMessages(historyMessages as AppMessage[]);
+			applied.push("history");
+		}
 	}
 
 	if (msg.thinking_level) {

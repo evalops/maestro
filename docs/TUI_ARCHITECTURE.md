@@ -6,8 +6,14 @@ Nav: [Docs index](README.md) · [Architecture](ARCHITECTURE.md) · [Native TUI p
 > **Historical note:** The TypeScript TUI (`packages/tui`, `src/cli-tui`) was removed in
 > PR [#2891](https://github.com/evalops/maestro-internal/pull/2891). Interactive mode is
 > **native-only**: the CLI hands off to the `maestro-tui` binary built from
-> `packages/tui-rs`. Headless, one-shot, RPC, and web paths remain on the TypeScript
-> agent core.
+> `packages/tui-rs`. Headless, one-shot, and RPC paths are also native via
+> `maestro-tui`.
+>
+> **Server runtime complete:** Web SSE/WS chat, automations, hosted headless, and
+> prompt suggestion require `maestro-tui --headless`. A missing or failed native
+> process fails closed. TS `Agent` remains for external SDK embedding only — see
+> [ARCHITECTURE.md — TypeScript Agent status](ARCHITECTURE.md#typescript-agent-status)
+> and [Native TUI parity — Server runtime](NATIVE_TUI_PARITY.md#server-runtime-complete).
 
 ## Overview
 
@@ -34,6 +40,14 @@ Resolution order for the binary (see `src/cli/native-tui-launcher.ts`):
 2. Packaged `vendor/maestro-tui/<platform>-<arch>/maestro-tui`
 3. `maestro-tui` on `PATH`
 4. Dev fallback: `packages/tui-rs/target/{release,debug}/maestro-tui`
+
+Install notes:
+
+- **npm/Bun** — `package.json` `files` includes `vendor/maestro-tui`; release
+  packaging materializes per-platform binaries before `npm pack`.
+- **One-line installer** — installs both `maestro` and `maestro-tui` onto PATH.
+- **Web server** — on boot, logs an error when the binary cannot be resolved
+  (`src/server/maestro-tui-boot-check.ts`).
 
 Build from a checkout:
 

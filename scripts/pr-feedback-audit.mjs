@@ -296,11 +296,14 @@ function firstNonblankLine(body) {
 
 export function informationalReviewFeedback(body, author) {
 	const firstLine = firstNonblankLine(body);
-	return (
-		/^##\s+(?:PR\s+Summary|Summary|Walkthrough)\b/iu.test(firstLine) &&
+	const trustedReviewBot =
 		/^(?:cursor|coderabbitai|chatgpt-codex-connector|devin-ai-integration)\b/iu.test(
 			String(author ?? ""),
-		)
+		);
+	return (
+		trustedReviewBot &&
+		(/^##\s+(?:PR\s+Summary|Summary|Walkthrough)\b/iu.test(firstLine) ||
+			/(?:^|\n)\s*(?:📝\s*)?\*\*Info:/u.test(String(body ?? "")))
 	);
 }
 
@@ -341,10 +344,19 @@ export function reviewThreadSeverity(thread) {
 	return severity ?? "none";
 }
 
+function hasActionableReviewFeedback(thread) {
+	return (thread.comments?.nodes ?? []).some(
+		(comment) =>
+			!informationalReviewFeedback(comment.body, comment.author?.login),
+	);
+}
+
 export function threadBlocksFeedbackAudit(thread, minSeverity = "high") {
 	if (thread.isResolved) return false;
 	const severity = reviewThreadSeverity(thread);
-	if (severity === "none") return false;
+	if (severity === "none") {
+		return minSeverity === "none" && hasActionableReviewFeedback(thread);
+	}
 	return (
 		REVIEW_FEEDBACK_SEVERITY_RANK[severity] >=
 		REVIEW_FEEDBACK_SEVERITY_RANK[minSeverity]

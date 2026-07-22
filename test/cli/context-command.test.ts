@@ -1,47 +1,23 @@
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import {
-	handleContextCommand,
-	renderContextManifestDiff,
-	renderContextManifestSummary,
-} from "../../src/cli/commands/context.js";
+import { afterEach, describe, expect, it } from "vitest";
 import {
 	diffUnifiedContextManifests,
 	loadUnifiedContextManifest,
 } from "../../src/context/manifest.js";
-import { loadMcpConfig, mcpManager } from "../../src/mcp/index.js";
 
-vi.mock("../../src/mcp/index.js", () => ({
-	loadMcpConfig: vi.fn(() => ({ authPresets: [], servers: [] })),
-	mcpManager: {
-		configure: vi.fn(),
-		connectAll: vi.fn(),
-		disconnectAll: vi.fn(),
-		getStatus: vi.fn(() => ({ authPresets: [], servers: [] })),
-	},
-}));
-
-describe("context command", () => {
+/**
+ * Domain coverage for the unified context manifest.
+ *
+ * The `maestro context` CLI entrypoint is implemented in Rust
+ * (`packages/tui-rs/src/context_cli.rs`). These tests assert the TS
+ * contract used by session persistence and residual library callers.
+ */
+describe("unified context manifest", () => {
 	const tempDirs: string[] = [];
 
-	beforeEach(() => {
-		vi.mocked(loadMcpConfig)
-			.mockReset()
-			.mockReturnValue({ authPresets: [], servers: [] });
-		vi.mocked(mcpManager.configure).mockReset().mockResolvedValue(undefined);
-		vi.mocked(mcpManager.connectAll).mockReset().mockResolvedValue(undefined);
-		vi.mocked(mcpManager.disconnectAll)
-			.mockReset()
-			.mockResolvedValue(undefined);
-		vi.mocked(mcpManager.getStatus)
-			.mockReset()
-			.mockReturnValue({ authPresets: [], servers: [] });
-	});
-
 	afterEach(() => {
-		vi.restoreAllMocks();
 		for (const dir of tempDirs.splice(0)) {
 			rmSync(dir, { recursive: true, force: true });
 		}
@@ -53,34 +29,47 @@ describe("context command", () => {
 		return dir;
 	}
 
-	it("renders a prompt context manifest summary", () => {
+	it("loads layered project docs into a prompt context manifest", () => {
 		const root = makeTempDir();
 		const app = join(root, "apps", "web");
 		mkdirSync(app, { recursive: true });
 		writeFileSync(join(root, "AGENTS.md"), "root rules");
 		writeFileSync(join(app, "AGENTS.md"), "app rules");
 
-		const summary = renderContextManifestSummary(
-			loadUnifiedContextManifest(app, {
-				mcpConfig: { servers: [], authPresets: [] },
-			}),
-		);
+		const manifest = loadUnifiedContextManifest(app, {
+			mcpConfig: { servers: [], authPresets: [] },
+		});
 
-		expect(summary).toContain(`Prompt context for ${resolve(app)}`);
-		expect(summary).toContain("Loaded files:");
-		expect(summary).toContain("AGENTS.md");
-		expect(summary).toContain("sha256:");
-		expect(summary).toContain("multiple_instruction_layers");
+		expect(manifest.cwd).toBe(resolve(app));
+		expect(manifest.version).toBe(1);
+		const projectDocs = manifest.entries.filter(
+			(entry) => entry.kind === "project_doc",
+		);
+		expect(projectDocs.length).toBeGreaterThanOrEqual(1);
+		expect(projectDocs.some((entry) => entry.path?.endsWith("AGENTS.md"))).toBe(
+			true,
+		);
+		expect(
+			projectDocs.some(
+				(entry) =>
+					typeof entry.contentHash === "string" && entry.contentHash.length > 0,
+			),
+		).toBe(true);
+		expect(
+			manifest.diagnostics.some(
+				(d) => d.code === "multiple_instruction_layers",
+			),
+		).toBe(true);
 	});
 
-	it("prints json for context explain --json", async () => {
+	it("serializes explain-style json shape from the domain loader", () => {
 		const root = makeTempDir();
 		writeFileSync(join(root, "AGENTS.md"), "root rules");
-		const log = vi.spyOn(console, "log").mockImplementation(() => undefined);
 
-		await handleContextCommand("explain", [root, "--json"]);
+		const payload = loadUnifiedContextManifest(root, {
+			mcpConfig: { servers: [], authPresets: [] },
+		});
 
-		const payload = JSON.parse(String(log.mock.calls[0]?.[0]));
 		expect(payload.cwd).toBe(resolve(root));
 		expect(payload.version).toBe(1);
 		expect(payload.projectDocs.entries[0]).toMatchObject({
@@ -240,7 +229,7 @@ describe("context command", () => {
 		);
 	});
 
-	it("renders context diffs", () => {
+	it("diffs context manifests across roots", () => {
 		const beforeRoot = makeTempDir();
 		const afterRoot = makeTempDir();
 		writeFileSync(join(beforeRoot, "AGENTS.md"), "root rules");
@@ -255,13 +244,12 @@ describe("context command", () => {
 				mcpConfig: { servers: [], authPresets: [] },
 			}),
 		);
-		const rendered = renderContextManifestDiff(diff);
 
 		expect(diff.added).toHaveLength(0);
 		expect(diff.removed).toHaveLength(0);
 		expect(diff.changed).toHaveLength(1);
-		expect(rendered).toContain("Context diff");
-		expect(rendered).toContain("Summary:");
+		expect(diff.beforeCwd).toBe(resolve(beforeRoot));
+		expect(diff.afterCwd).toBe(resolve(afterRoot));
 	});
 
 	it("matches project docs across workspace roots by logical path", () => {
@@ -291,63 +279,23 @@ describe("context command", () => {
 		);
 	});
 
-	it("prints json for context diff --json", async () => {
+	it("produces diff json shape from domain helpers", () => {
 		const beforeRoot = makeTempDir();
 		const afterRoot = makeTempDir();
 		writeFileSync(join(beforeRoot, "AGENTS.md"), "root rules");
 		writeFileSync(join(afterRoot, "AGENTS.md"), "new root rules");
-		const log = vi.spyOn(console, "log").mockImplementation(() => undefined);
 
-		await handleContextCommand("diff", [beforeRoot, afterRoot, "--json"]);
+		const payload = diffUnifiedContextManifests(
+			loadUnifiedContextManifest(beforeRoot, {
+				mcpConfig: { servers: [], authPresets: [] },
+			}),
+			loadUnifiedContextManifest(afterRoot, {
+				mcpConfig: { servers: [], authPresets: [] },
+			}),
+		);
 
-		const payload = JSON.parse(String(log.mock.calls[0]?.[0]));
 		expect(payload.beforeCwd).toBe(resolve(beforeRoot));
 		expect(payload.afterCwd).toBe(resolve(afterRoot));
 		expect(payload.changed).toHaveLength(1);
-	});
-
-	it("reconnects live MCP servers before reading runtime status", async () => {
-		const root = makeTempDir();
-		writeFileSync(join(root, "AGENTS.md"), "root rules");
-		const log = vi.spyOn(console, "log").mockImplementation(() => undefined);
-
-		await handleContextCommand("explain", [root, "--live-mcp", "--json"]);
-
-		expect(mcpManager.configure).toHaveBeenCalledTimes(1);
-		expect(mcpManager.connectAll).toHaveBeenCalledTimes(1);
-		expect(mcpManager.getStatus).toHaveBeenCalledTimes(1);
-		expect(mcpManager.disconnectAll).toHaveBeenCalledTimes(1);
-		expect(
-			vi.mocked(mcpManager.connectAll).mock.invocationCallOrder[0],
-		).toBeLessThan(
-			vi.mocked(mcpManager.getStatus).mock.invocationCallOrder[0]!,
-		);
-		expect(JSON.parse(String(log.mock.calls[0]?.[0])).version).toBe(1);
-	});
-
-	it("reconnects live MCP servers for both diff snapshots", async () => {
-		const beforeRoot = makeTempDir();
-		const afterRoot = makeTempDir();
-		writeFileSync(join(beforeRoot, "AGENTS.md"), "root rules");
-		writeFileSync(join(afterRoot, "AGENTS.md"), "new root rules");
-		vi.spyOn(console, "log").mockImplementation(() => undefined);
-
-		await handleContextCommand("diff", [
-			beforeRoot,
-			afterRoot,
-			"--live-mcp",
-			"--json",
-		]);
-
-		expect(mcpManager.configure).toHaveBeenCalledTimes(2);
-		expect(mcpManager.connectAll).toHaveBeenCalledTimes(2);
-		expect(mcpManager.getStatus).toHaveBeenCalledTimes(2);
-		expect(mcpManager.disconnectAll).toHaveBeenCalledTimes(1);
-		const connectOrders = vi.mocked(mcpManager.connectAll).mock
-			.invocationCallOrder;
-		const statusOrders = vi.mocked(mcpManager.getStatus).mock
-			.invocationCallOrder;
-		expect(connectOrders[0]).toBeLessThan(statusOrders[0]!);
-		expect(connectOrders[1]).toBeLessThan(statusOrders[1]!);
 	});
 });

@@ -1,9 +1,4 @@
 export async function runCliRuntime(args: string[]): Promise<void> {
-	if (args[0] === "a2a") {
-		const { handleA2ACommand } = await import("./cli/commands/a2a.js");
-		await handleA2ACommand(args.slice(1));
-		return;
-	}
 	const { runCliCommandRuntime } = await import("./cli-command-runtime.js");
 	if (await runCliCommandRuntime(args)) {
 		return;

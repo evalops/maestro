@@ -6,6 +6,28 @@ function composerSessionKey(subject: string, sessionId: string): string {
 	return `${subject}\0${sessionId}`;
 }
 
+/**
+ * Per-subject/session composer managers for the web server.
+ *
+ * Two layers:
+ *
+ * 1. **Agent-bound (TypeScript `createAgent` path)** — `initializeAgent` +
+ *    `bindAgentSession` / `unbindAgentSession`. Requires a live TS `Agent` so
+ *    activate/deactivate can mutate system prompt and tools. `bindAgentSession`
+ *    returns `false` when the agent was never initialized or an active composer
+ *    cannot be restored — that is a hard failure for the TS chat path, not a
+ *    silent no-op.
+ *
+ * 2. **Session-scoped (HTTP `/api/composer` + native hygiene)** — `get` /
+ *    `getOrCreate` / `getLatestForSubject` / `ensureSession`. Managers may exist
+ *    without an Agent; `ComposerManager.activate` then stores UI state only.
+ *
+ * Native web chat (`runNativeWebChatTurn`) has no TS Agent, so handlers must
+ * **not** call `bindAgentSession` (would return false and fail the turn). They
+ * may call `ensureSession` when a real session id is known so `/api/composer`
+ * can resolve the session. Web-session prompt/tool effects are **not** applied to
+ * native headless processes (known gap; see `web-native-chat.ts`).
+ */
 export class WebComposerManagerRegistry {
 	private readonly managersBySession = new Map<string, ComposerManager>();
 	private readonly managersByAgent = new WeakMap<Agent, ComposerManager>();
@@ -24,6 +46,11 @@ export class WebComposerManagerRegistry {
 		return manager;
 	}
 
+	/**
+	 * Bind a TS Agent's composer manager to a subject+session.
+	 * @returns false if the agent has no manager, another agent is mid-stream on
+	 *   this session, or an existing active composer cannot be re-activated.
+	 */
 	bindAgentSession(agent: Agent, subject: string, sessionId: string): boolean {
 		const manager = this.managersByAgent.get(agent);
 		if (!manager) {
@@ -84,6 +111,15 @@ export class WebComposerManagerRegistry {
 		return manager;
 	}
 
+	/**
+	 * Register session-scoped composer state without a TS Agent.
+	 * Safe for native chat: updates latest-for-subject and returns a manager that
+	 * can hold activate/deactivate UI state only.
+	 */
+	ensureSession(subject: string, sessionId: string): ComposerManager {
+		return this.getOrCreate(subject, sessionId);
+	}
+
 	getLatestForSubject(
 		subject: string,
 	): { sessionId: string; manager: ComposerManager } | undefined {
@@ -103,3 +139,27 @@ export class WebComposerManagerRegistry {
 }
 
 export const webComposerManagers = new WebComposerManagerRegistry();
+
+/**
+ * Session-only composer registry touch for the native web chat path.
+ * No-ops when there is no session id or no registry. Never calls bindAgentSession.
+ */
+export function ensureComposerSessionForNative(
+	composerManagers:
+		| {
+				ensureSession?: (subject: string, sessionId: string) => ComposerManager;
+				getOrCreate?: (subject: string, sessionId: string) => ComposerManager;
+		  }
+		| undefined,
+	subject: string,
+	sessionId: string | null | undefined,
+): void {
+	if (!composerManagers || !sessionId) {
+		return;
+	}
+	if (composerManagers.ensureSession) {
+		composerManagers.ensureSession(subject, sessionId);
+		return;
+	}
+	composerManagers.getOrCreate?.(subject, sessionId);
+}

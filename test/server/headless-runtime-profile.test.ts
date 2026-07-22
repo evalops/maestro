@@ -1,32 +1,37 @@
+import { EventEmitter } from "node:events";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import type {
-	AgentEvent,
-	AppMessage,
-	ThinkingLevel,
-} from "../../src/agent/types.js";
 import type { RegisteredModel } from "../../src/models/registry.js";
 import { HeadlessRuntimeService } from "../../src/server/headless-runtime-service.js";
+import type { NativeHeadlessClient } from "../../src/server/native-headless-client.js";
 import { SessionManager } from "../../src/session/manager.js";
 
-const runUserPromptWithRecovery = vi.hoisted(() =>
-	vi.fn(async (options: { execute: () => Promise<unknown> }) => {
-		await options.execute();
-	}),
+const resolveNativeSystemPrompt = vi.hoisted(() =>
+	vi.fn(async () => ({
+		systemPrompt: "resolved native prompt",
+		promptMetadata: {
+			name: "maestro-system",
+			label: "production",
+			hash: "headless-prompt-hash",
+			source: "bundled" as const,
+		},
+		promptContextManifest: {
+			cwd: "/workspace",
+			candidates: [],
+			bytesRead: 0,
+			entries: [],
+			diagnostics: [],
+		},
+		systemPromptSourcePaths: ["/workspace/APPEND_SYSTEM.md"],
+	})),
 );
 
-vi.mock("../../src/agent/user-prompt-runtime.js", async () => {
-	const actual = await vi.importActual<
-		typeof import("../../src/agent/user-prompt-runtime.js")
-	>("../../src/agent/user-prompt-runtime.js");
-	return {
-		...actual,
-		runUserPromptWithRecovery,
-	};
-});
+vi.mock("../../src/server/native-system-prompt.js", () => ({
+	resolveNativeSystemPrompt,
+}));
 
 const TEST_MODEL: RegisteredModel = {
 	id: "gpt-5.4",
@@ -37,12 +42,7 @@ const TEST_MODEL: RegisteredModel = {
 	reasoning: true,
 	toolUse: true,
 	input: ["text"],
-	cost: {
-		input: 0,
-		output: 0,
-		cacheRead: 0,
-		cacheWrite: 0,
-	},
+	cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
 	contextWindow: 200_000,
 	maxTokens: 32_000,
 	providerName: "OpenAI",
@@ -50,43 +50,49 @@ const TEST_MODEL: RegisteredModel = {
 	isLocal: false,
 };
 
-class FakeAgent {
-	state = {
-		model: TEST_MODEL,
-		systemPrompt: "",
-		thinkingLevel: "off" as ThinkingLevel,
-		tools: [],
-		messages: [] as AppMessage[],
+function createMockNativeClient() {
+	const client = new EventEmitter() as EventEmitter & {
+		start: ReturnType<typeof vi.fn>;
+		stop: ReturnType<typeof vi.fn>;
+		hello: ReturnType<typeof vi.fn>;
+		init: ReturnType<typeof vi.fn>;
+		send: ReturnType<typeof vi.fn>;
 	};
-	prompt = vi.fn().mockResolvedValue(undefined);
-
-	subscribe(_listener: (event: AgentEvent) => void) {
-		return () => {};
-	}
-
-	abort() {}
+	client.start = vi.fn(async () => ({
+		type: "ready" as const,
+		protocol_version: "1.0",
+		model: TEST_MODEL.id,
+		provider: TEST_MODEL.provider,
+		session_id: null,
+	}));
+	client.stop = vi.fn();
+	client.hello = vi.fn();
+	client.init = vi.fn();
+	client.send = vi.fn();
+	return client;
 }
 
 const tempDirs: string[] = [];
 
 afterEach(async () => {
-	runUserPromptWithRecovery.mockClear();
+	resolveNativeSystemPrompt.mockClear();
 	await Promise.all(
 		tempDirs.splice(0).map((dir) => rm(dir, { force: true, recursive: true })),
 	);
 });
 
 describe("HeadlessRuntimeService profile handling", () => {
-	it("passes the web profile into hosted runtime agents and prompt recovery", async () => {
+	it("passes profile and CLI overrides into native prompt resolution", async () => {
 		const workspaceRoot = await mkdtemp(
 			join(tmpdir(), "maestro-headless-profile-"),
 		);
 		const sessionDir = await mkdtemp(join(tmpdir(), "maestro-sessions-"));
 		tempDirs.push(workspaceRoot, sessionDir);
-		const fakeAgent = new FakeAgent();
 		const sessionManager = new SessionManager(false, undefined, { sessionDir });
-		sessionManager.startSession(fakeAgent.state);
-		const createAgent = vi.fn().mockResolvedValue(fakeAgent);
+		const client = createMockNativeClient();
+		const cliOverrides = {
+			projects: { "/tmp/project": { trust_level: "trusted" as const } },
+		};
 		const service = new HeadlessRuntimeService();
 
 		const runtime = await service.ensureRuntime({
@@ -95,47 +101,35 @@ describe("HeadlessRuntimeService profile handling", () => {
 			thinkingLevel: "off",
 			approvalMode: "prompt",
 			workspaceRoot,
-			context: {
-				createAgent,
-				createBackgroundAgent: vi.fn().mockResolvedValue(new FakeAgent()),
-				hostedRunner: {
-					enabled: true,
-					runnerSessionId: "mrs_profile",
-					workspaceRoot,
-				},
-				profileName: "web-work",
-				cliOverrides: {
-					projects: { "/tmp/project": { trust_level: "trusted" } },
-				},
-			},
+			createNativeClient: () => client as unknown as NativeHeadlessClient,
+			context: { profileName: "web-work", cliOverrides },
 			sessionManager,
 		});
 
-		expect(createAgent).toHaveBeenCalledWith(
-			TEST_MODEL,
-			"off",
-			"prompt",
+		expect(resolveNativeSystemPrompt).toHaveBeenCalledWith(
 			expect.objectContaining({
+				cwd: workspaceRoot,
 				profileName: "web-work",
-				cliOverrides: {
-					projects: { "/tmp/project": { trust_level: "trusted" } },
-				},
+				cliOverrides,
 			}),
 		);
-
-		await runtime.send({ type: "prompt", content: "continue" });
-
-		await vi.waitFor(() => {
-			expect(runUserPromptWithRecovery).toHaveBeenCalledWith(
-				expect.objectContaining({
-					profileName: "web-work",
-					cliOverrides: {
-						projects: { "/tmp/project": { trust_level: "trusted" } },
-					},
-					prompt: "continue",
+		expect(client.init).toHaveBeenCalledWith(
+			expect.objectContaining({
+				approval_mode: "prompt",
+				system_prompt: "resolved native prompt",
+			}),
+		);
+		expect(sessionManager.getHeader()).toEqual(
+			expect.objectContaining({
+				promptMetadata: expect.objectContaining({
+					hash: "headless-prompt-hash",
 				}),
-			);
-		});
-		expect(fakeAgent.prompt).toHaveBeenCalledWith("continue", undefined);
+				promptContextManifest: expect.objectContaining({
+					cwd: "/workspace",
+				}),
+				systemPromptSourcePaths: ["/workspace/APPEND_SYSTEM.md"],
+			}),
+		);
+		await runtime.dispose();
 	});
 });

@@ -91,6 +91,21 @@
 				{ "kind": "ref", "name": "HeadlessTextContentSchema" },
 				{ "kind": "ref", "name": "HeadlessImageContentSchema" }
 			]
+		},
+		"HeadlessHistoryMessageSchema": {
+			"kind": "object",
+			"additionalProperties": false,
+			"properties": {
+				"role": {
+					"kind": "union",
+					"variants": [
+						{ "kind": "literal", "value": "user" },
+						{ "kind": "literal", "value": "assistant" },
+						{ "kind": "literal", "value": "system" }
+					]
+				},
+				"content": { "kind": "string" }
+			}
 		}
 	},
 	"toAgentSchemas": {
@@ -140,6 +155,14 @@
 				"approval_mode": {
 					"kind": "enumRef",
 					"name": "headlessApprovalModes",
+					"optional": true
+				},
+				"history": {
+					"kind": "array",
+					"items": {
+						"kind": "ref",
+						"name": "HeadlessHistoryMessageSchema"
+					},
 					"optional": true
 				}
 			}

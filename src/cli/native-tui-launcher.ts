@@ -8,7 +8,11 @@
  * 4. Dev fallback: `packages/tui-rs/target/release|debug/maestro-tui` relative to package/repo root
  */
 
-import { type SpawnOptions, spawn } from "node:child_process";
+import {
+	type ChildProcess,
+	type SpawnOptions,
+	spawn,
+} from "node:child_process";
 import { existsSync } from "node:fs";
 import { createRequire } from "node:module";
 import { dirname, isAbsolute, join, resolve } from "node:path";
@@ -188,7 +192,7 @@ function buildNotFoundMessage(options?: {
 		`  ${bunInstall}`,
 		"",
 		"The agent UI and headless/print/exec paths are the native Rust binary (maestro-tui).",
-		"Only residual TS utilities (web, config, skill, …) run without this binary.",
+		"Only residual TS utilities (web, …) run without this binary.",
 	].join("\n");
 }
 
@@ -334,6 +338,47 @@ export type LaunchNativeTuiOptions = {
 	spawnImpl?: typeof spawn;
 };
 
+export type SpawnNativeHeadlessOptions = {
+	cwd?: string;
+	env?: NodeJS.ProcessEnv;
+	resolveOptions?: ResolveMaestroTuiBinaryOptions;
+	spawnImpl?: typeof spawn;
+	/** Extra tokens after --headless (usually empty). */
+	extraArgs?: string[];
+};
+
+export type SpawnedNativeHeadless = {
+	binary: string;
+	args: string[];
+	child: ChildProcess;
+};
+
+/**
+ * Spawn maestro-tui --headless with stdio: [pipe, pipe, pipe].
+ * Does NOT wait for exit — caller owns the child lifecycle.
+ */
+export function spawnNativeHeadlessProcess(
+	options: SpawnNativeHeadlessOptions = {},
+): SpawnedNativeHeadless {
+	const env = options.env ?? process.env;
+	const binary = resolveMaestroTuiBinary({
+		...options.resolveOptions,
+		env: options.resolveOptions?.env ?? env,
+	});
+	const args = ["--headless", ...(options.extraArgs ?? [])];
+	const spawnImpl = options.spawnImpl ?? spawn;
+	const child = spawnImpl(binary, args, {
+		stdio: ["pipe", "pipe", "pipe"],
+		cwd: options.cwd ?? process.cwd(),
+		env: {
+			...env,
+			MAESTRO_PACKAGE_NAME: getPackageName(env),
+			MAESTRO_VERSION: getPackageVersion(env),
+		},
+	});
+	return { binary, args, child };
+}
+
 const POSIX_SIGNAL_NUMBERS: Partial<Record<NodeJS.Signals, number>> = {
 	SIGHUP: 1,
 	SIGINT: 2,
@@ -396,7 +441,7 @@ export function launchNativeTui(
  * Grok-style default: trailing prompts open the interactive native TUI
  * (`maestro "fix the bug"` → maestro-tui with initial prompt).
  *
- * Still on TypeScript: residual utility subcommands (`web`, `config`, …).
+ * Still on TypeScript: residual utility subcommands (`web`, …).
  * Agent paths (interactive, print/exec, headless/rpc) are native.
  */
 

@@ -728,6 +728,7 @@ impl SessionRecorder {
             append_system_prompt,
             thinking_level,
             approval_mode,
+            history,
         } = message
         {
             self.last_init = Some(InitConfig {
@@ -735,6 +736,7 @@ impl SessionRecorder {
                 append_system_prompt: append_system_prompt.clone(),
                 thinking_level: *thinking_level,
                 approval_mode: *approval_mode,
+                history: history.clone(),
             });
         }
         self.entries_since_checkpoint += 1;
@@ -1038,6 +1040,7 @@ impl SessionReader {
                         append_system_prompt,
                         thinking_level,
                         approval_mode,
+                        history,
                     } = message
                     {
                         last_init = Some(InitConfig {
@@ -1045,6 +1048,7 @@ impl SessionReader {
                             append_system_prompt: append_system_prompt.clone(),
                             thinking_level: *thinking_level,
                             approval_mode: *approval_mode,
+                            history: history.clone(),
                         });
                     }
                 }
@@ -1185,6 +1189,7 @@ mod tests {
                 append_system_prompt: Some("Stay concise".to_string()),
                 thinking_level: Some(super::super::messages::ThinkingLevel::High),
                 approval_mode: Some(super::super::messages::ApprovalMode::Prompt),
+                history: None,
             })
             .unwrap();
 
@@ -1260,6 +1265,7 @@ mod tests {
                 append_system_prompt: Some("Stay concise".to_string()),
                 thinking_level: Some(super::super::messages::ThinkingLevel::High),
                 approval_mode: Some(super::super::messages::ApprovalMode::Prompt),
+                history: None,
             })
         );
         assert_eq!(replay.state.protocol_version.as_deref(), Some("2026-03-30"));
@@ -1310,6 +1316,7 @@ mod tests {
                 append_system_prompt: None,
                 thinking_level: Some(super::super::messages::ThinkingLevel::Low),
                 approval_mode: Some(super::super::messages::ApprovalMode::Auto),
+                history: None,
             })
             .unwrap();
         recorder
@@ -1324,6 +1331,7 @@ mod tests {
                 append_system_prompt: None,
                 thinking_level: Some(super::super::messages::ThinkingLevel::Ultra),
                 approval_mode: Some(super::super::messages::ApprovalMode::Fail),
+                history: None,
             })
             .unwrap();
         recorder.flush().unwrap();
@@ -1337,6 +1345,7 @@ mod tests {
                 append_system_prompt: None,
                 thinking_level: Some(super::super::messages::ThinkingLevel::Ultra),
                 approval_mode: Some(super::super::messages::ApprovalMode::Fail),
+                history: None,
             })
         );
     }

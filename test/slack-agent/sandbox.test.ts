@@ -11,7 +11,11 @@ import {
 } from "../../packages/slack-agent/src/sandbox.js";
 
 function isDockerAvailable(): boolean {
-	const result = spawnSync("docker", ["info"], { stdio: "ignore" });
+	const result = spawnSync("docker", ["info"], {
+		stdio: "ignore",
+		timeout: 5_000,
+		killSignal: "SIGKILL",
+	});
 	return result.status === 0;
 }
 

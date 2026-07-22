@@ -1,36 +1,9 @@
 /**
- * Tests for validateCodexFlags() and createAuthSetup().
+ * Tests for validateCodexFlags().
  */
 
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-
-vi.mock("../../src/models/registry.js", () => ({
-	getCustomProviderMetadata: vi.fn().mockReturnValue(null),
-}));
-
-vi.mock("../../src/providers/api-keys.js", () => ({
-	getEnvVarsForProvider: vi.fn().mockReturnValue(["ANTHROPIC_API_KEY"]),
-}));
-
-vi.mock("../../src/providers/auth.js", async (importOriginal) => {
-	const actual =
-		await importOriginal<typeof import("../../src/providers/auth.js")>();
-	return {
-		...actual,
-		createAuthResolver: vi
-			.fn()
-			.mockReturnValue(vi.fn().mockResolvedValue(null)),
-	};
-});
-
-import {
-	createAuthSetup,
-	validateCodexFlags,
-} from "../../src/bootstrap/auth-setup.js";
-import { getCustomProviderMetadata } from "../../src/models/registry.js";
-import { getEnvVarsForProvider } from "../../src/providers/api-keys.js";
-import { createAuthResolver } from "../../src/providers/auth.js";
-import { managedGatewayAliasDefinitions } from "../testing/evalops-managed.js";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { validateCodexFlags } from "../../src/bootstrap/auth-setup.js";
 
 describe("validateCodexFlags", () => {
 	const originalEnv = process.env.CODEX_API_KEY;
@@ -49,7 +22,7 @@ describe("validateCodexFlags", () => {
 		);
 	});
 
-	it("throws on --codex-api-key= format", () => {
+	it("throws on --codex-api-key=value form", () => {
 		expect(() => validateCodexFlags(["--codex-api-key=key123"])).toThrow(
 			/no longer supported/,
 		);
@@ -67,31 +40,31 @@ describe("validateCodexFlags", () => {
 		);
 	});
 
-	it("throws on retired --auth claude mode", () => {
+	it("throws on --auth claude", () => {
 		expect(() => validateCodexFlags(["--auth", "claude"])).toThrow(
-			/Anthropic OAuth auth mode is no longer supported/,
+			/no longer supported/,
 		);
 	});
 
-	it("throws on retired --auth=claude mode", () => {
+	it("throws on --auth=claude", () => {
 		expect(() => validateCodexFlags(["--auth=claude"])).toThrow(
-			/Anthropic OAuth auth mode is no longer supported/,
+			/no longer supported/,
 		);
 	});
 
-	it("does not throw for help command even with codex flags", () => {
+	it("allows legacy flags under help command", () => {
 		expect(() =>
 			validateCodexFlags(["--codex-api-key", "key123"], "help"),
 		).not.toThrow();
 	});
 
-	it("does not throw for config command even with codex flags", () => {
+	it("allows legacy flags under config command", () => {
 		expect(() =>
 			validateCodexFlags(["--codex-api-key", "key123"], "config"),
 		).not.toThrow();
 	});
 
-	it("does not throw when no codex flags present", () => {
+	it("allows unrelated flags", () => {
 		expect(() =>
 			validateCodexFlags(["--model", "claude-sonnet-4-5"]),
 		).not.toThrow();
@@ -105,131 +78,5 @@ describe("validateCodexFlags", () => {
 
 		expect(warnSpy).not.toHaveBeenCalled();
 		warnSpy.mockRestore();
-	});
-});
-
-describe("createAuthSetup", () => {
-	beforeEach(() => {
-		vi.clearAllMocks();
-	});
-
-	it("returns requireCredential and buildMissingAuthLines", () => {
-		const result = createAuthSetup({ authMode: "api-key" });
-
-		expect(typeof result.requireCredential).toBe("function");
-		expect(typeof result.buildMissingAuthLines).toBe("function");
-	});
-
-	it("buildMissingAuthLines includes error message for provider", () => {
-		const result = createAuthSetup({ authMode: "api-key" });
-		const lines = result.buildMissingAuthLines("anthropic");
-
-		expect(lines.length).toBeGreaterThan(0);
-		const firstLine = lines[0]!;
-		expect(firstLine.plain).toContain("No credentials found");
-		expect(firstLine.plain).toContain("anthropic");
-	});
-
-	it("buildMissingAuthLines does not recommend Anthropic login", () => {
-		const result = createAuthSetup({ authMode: "auto" });
-		const lines = result.buildMissingAuthLines("anthropic");
-
-		const allPlain = lines.map((l) => l.plain).join("\n");
-		expect(allPlain).not.toContain("maestro anthropic login");
-		expect(allPlain).not.toContain("/login");
-		expect(allPlain).toContain("ANTHROPIC_API_KEY");
-	});
-
-	for (const definition of managedGatewayAliasDefinitions) {
-		it(`buildMissingAuthLines reuses evalops login hint for ${definition.id}`, () => {
-			const result = createAuthSetup({ authMode: "auto" });
-			const lines = result.buildMissingAuthLines(definition.id);
-
-			const allPlain = lines.map((l) => l.plain).join("\n");
-			expect(allPlain).toContain("/login evalops");
-		});
-	}
-
-	it("buildMissingAuthLines includes env var hint", () => {
-		(getEnvVarsForProvider as ReturnType<typeof vi.fn>).mockReturnValueOnce([
-			"OPENAI_API_KEY",
-		]);
-		const result = createAuthSetup({ authMode: "api-key" });
-		const lines = result.buildMissingAuthLines("openai");
-
-		const allPlain = lines.map((l) => l.plain).join("\n");
-		expect(allPlain).toContain("OPENAI_API_KEY");
-	});
-
-	it("buildMissingAuthLines uses custom provider metadata env var", () => {
-		(getEnvVarsForProvider as ReturnType<typeof vi.fn>).mockReturnValueOnce([]);
-		(getCustomProviderMetadata as ReturnType<typeof vi.fn>).mockReturnValueOnce(
-			{
-				apiKeyEnv: "CUSTOM_KEY",
-			},
-		);
-		const result = createAuthSetup({ authMode: "api-key" });
-		const lines = result.buildMissingAuthLines("custom-provider");
-
-		const allPlain = lines.map((l) => l.plain).join("\n");
-		expect(allPlain).toContain("CUSTOM_KEY");
-	});
-
-	it("requireCredential returns credential when resolver succeeds", async () => {
-		const mockResolver = vi.fn().mockResolvedValue({ apiKey: "found-key" });
-		(createAuthResolver as ReturnType<typeof vi.fn>).mockReturnValue(
-			mockResolver,
-		);
-
-		const result = createAuthSetup({ authMode: "api-key" });
-		const credential = await result.requireCredential("anthropic", false);
-
-		expect(credential).toEqual({ apiKey: "found-key" });
-	});
-
-	it("requireCredential throws when no credential and fatal=false", async () => {
-		const mockResolver = vi.fn().mockResolvedValue(null);
-		(createAuthResolver as ReturnType<typeof vi.fn>).mockReturnValue(
-			mockResolver,
-		);
-
-		const result = createAuthSetup({ authMode: "api-key" });
-
-		await expect(result.requireCredential("anthropic", false)).rejects.toThrow(
-			/No credentials found/,
-		);
-	});
-
-	it("requireCredential exits process when fatal=true", async () => {
-		const mockResolver = vi.fn().mockResolvedValue(null);
-		(createAuthResolver as ReturnType<typeof vi.fn>).mockReturnValue(
-			mockResolver,
-		);
-		const exitSpy = vi.spyOn(process, "exit").mockImplementation(() => {
-			throw new Error("process.exit called");
-		});
-		const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
-
-		const result = createAuthSetup({ authMode: "api-key" });
-
-		await expect(result.requireCredential("anthropic", true)).rejects.toThrow(
-			"process.exit called",
-		);
-
-		expect(exitSpy).toHaveBeenCalledWith(1);
-		exitSpy.mockRestore();
-		errorSpy.mockRestore();
-	});
-
-	it("passes explicitApiKey to createAuthResolver", () => {
-		createAuthSetup({
-			authMode: "api-key",
-			explicitApiKey: "my-explicit-key",
-		});
-
-		expect(createAuthResolver).toHaveBeenCalledWith({
-			mode: "api-key",
-			explicitApiKey: "my-explicit-key",
-		});
 	});
 });

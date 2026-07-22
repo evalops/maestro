@@ -404,6 +404,11 @@ vi.mock("../../src/cli/native-tui-launcher.js", () => {
 					"hooks",
 					"export",
 					"import",
+					"config",
+					"evalops",
+					"init",
+					"modes",
+					"agents",
 				].includes(token),
 			);
 			const [cmd, ...rest] = tokens.slice(Math.max(0, commandIndex));
@@ -434,6 +439,30 @@ vi.mock("../../src/cli/native-tui-launcher.js", () => {
 				console.log("Registered models (native catalog)");
 				console.log("Anthropic  (3 models)");
 				console.log("OpenAI  (5 models)");
+				return 0;
+			}
+			if (cmd === "config") {
+				const sub = rest[0] ?? "show";
+				const known = new Set([
+					"path",
+					"paths",
+					"list",
+					"ls",
+					"get",
+					"set",
+					"show",
+					"validate",
+					"init",
+					"local",
+				]);
+				if (!known.has(sub) && !sub.startsWith("-")) {
+					console.error(`Unknown config subcommand: ${sub}`);
+					console.error("\nAvailable commands:");
+					console.log("Usage: maestro config <command> [options]");
+					console.log("  maestro config validate");
+					return 1;
+				}
+				console.log(`native config ${sub} ok`);
 				return 0;
 			}
 			if (cmd === "export") {
@@ -792,10 +821,15 @@ describe("CLI integration", () => {
 		}
 	});
 
-	it("routes the evalops init compatibility alias to native init", async () => {
+	it("routes the evalops init compatibility alias to native CLI", async () => {
+		// Node shim hands the original argv to maestro-tui; native owns any alias rewrite.
 		const code = await runMain(["evalops", "init", "--json"]);
 		expect(code).toBe(0);
-		expect(launchNativeCli).toHaveBeenLastCalledWith(["init", "--json"]);
+		expect(launchNativeCli).toHaveBeenLastCalledWith([
+			"evalops",
+			"init",
+			"--json",
+		]);
 	});
 
 	it("delegates custom agents init targets to the native CLI", async () => {
@@ -1609,67 +1643,6 @@ describe("CLI integration", () => {
 			status: "error",
 			sessionId: threadStarts[0]?.sessionId,
 		});
-	});
-
-	it.skip("closes early exec json thread when late startup setup fails (TS agent path removed; native maestro-tui owns this)", async () => {
-		vi.resetModules();
-		vi.doMock("../../src/bootstrap/session-restoration-setup.js", () => ({
-			restoreSessionState: vi
-				.fn()
-				.mockRejectedValue(new Error("late setup boom")),
-		}));
-		try {
-			const { main: currentMain } = await import("../../src/main.js");
-			const exitSpy = vi.spyOn(process, "exit").mockImplementation((code) => {
-				throw new Error(`exit:${String(code ?? 0)}`);
-			});
-
-			await expect(
-				currentMain([
-					"exec",
-					"--tools",
-					"read",
-					"--models",
-					"gpt",
-					"Plan work",
-					"--json",
-				]),
-			).rejects.toThrow("exit:1");
-
-			const events = output
-				.flatMap((chunk) => chunk.trim().split("\n"))
-				.filter((line) => line.startsWith("{"))
-				.map((line) => JSON.parse(line) as Record<string, unknown>);
-			const threadStarts = events.filter(
-				(event) => event.type === "thread" && event.phase === "start",
-			);
-			const threadEnds = events.filter(
-				(event) => event.type === "thread" && event.phase === "end",
-			);
-			const doneEvents = events.filter((event) => event.type === "done");
-			const errorEvents = events.filter((event) => event.type === "error");
-
-			expect(exitSpy).toHaveBeenCalledWith(1);
-			expect(threadStarts).toHaveLength(1);
-			expect(errorEvents.at(-1)).toMatchObject({
-				type: "error",
-				message: "late setup boom",
-			});
-			expect(threadEnds.at(-1)).toMatchObject({
-				type: "thread",
-				phase: "end",
-				threadId: threadStarts[0]?.threadId,
-				sessionId: threadStarts[0]?.sessionId,
-				status: "error",
-			});
-			expect(doneEvents.at(-1)).toMatchObject({
-				type: "done",
-				status: "error",
-				sessionId: threadStarts[0]?.sessionId,
-			});
-		} finally {
-			vi.doUnmock("../../src/bootstrap/session-restoration-setup.js");
-		}
 	});
 
 	it.skip("does not start an exec json thread before no-prompt validation (TS agent path removed; native maestro-tui owns this)", async () => {

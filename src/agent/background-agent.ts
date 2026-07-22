@@ -2,6 +2,10 @@ import type { AuthCredential } from "../providers/auth.js";
 import { Agent, ProviderTransport } from "./index.js";
 import type { Api, Model } from "./types.js";
 
+/**
+ * Lightweight in-process TypeScript Agent for external SDK embedding.
+ * Product runtime paths use native background one-shots instead.
+ */
 export function createBackgroundTextAgent(params: {
 	model: Model<Api>;
 	systemPrompt: string;

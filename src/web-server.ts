@@ -12,41 +12,18 @@ import type { Socket } from "node:net";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath, parse } from "node:url";
 import { WebSocketServer } from "ws";
-import type {
-	ActionApprovalService,
-	ApprovalMode,
-} from "./agent/action-approval.js";
-import { createBackgroundTextAgent } from "./agent/background-agent.js";
-import {
-	BackgroundTaskContextSource,
-	CurrentDateContextSource,
-	FrameworkPreferenceContextSource,
-	GitSnapshotContextSource,
-	IDEContextSource,
-	LspContextSource,
-	TeamMemoryContextSource,
-	TodoContextSource,
-} from "./agent/context-providers.js";
-import { Agent, ProviderTransport } from "./agent/index.js";
-import type { ToolRetryService } from "./agent/tool-retry.js";
-import type { ClientToolExecutionService } from "./agent/transport.js";
-import type { PlatformToolExecutionBridge } from "./agent/transport/tool-execution-bridge.js";
-import type { AgentTool, ThinkingLevel } from "./agent/types.js";
+import type { ApprovalMode } from "./agent/action-approval.js";
 import {
 	disposeCheckpointService,
 	initCheckpointService,
 } from "./checkpoints/index.js";
-import { detectRuntimeConstraintContext } from "./cli/system-prompt.js";
 import { resolveDefaultApprovalMode } from "./config/default-approval-mode.js";
 import type { ComposerConfig } from "./config/index.js";
-import { loadUnifiedContextManifest } from "./context/manifest.js";
 import { initLifecycle, shutdownLifecycle } from "./lifecycle.js";
 import { loadAndFinalizeEnv } from "./load-env.js";
 import { bootstrapLsp } from "./lsp/bootstrap.js";
 import { loadMcpConfig, mcpManager } from "./mcp/index.js";
 import { prefetchOfficialMcpRegistry } from "./mcp/official-registry.js";
-import { getAllMcpTools } from "./mcp/tool-bridge.js";
-import { getMemoryExtractionSystemPrompt } from "./memory/auto-extraction.js";
 import type { RegisteredModel } from "./models/registry.js";
 import {
 	getFactoryDefaultModelSelection,
@@ -54,7 +31,6 @@ import {
 } from "./models/registry.js";
 import { initOpenTelemetry } from "./opentelemetry.js";
 import { setConfiguredPackageRuntimeContext } from "./packages/runtime.js";
-import { resolveMaestroSystemPrompt } from "./prompts/system-prompt.js";
 import { getEnvVarsForProvider } from "./providers/api-keys.js";
 import {
 	type AuthCredential,
@@ -79,15 +55,6 @@ import {
 import { WorkspaceConfigValidationError } from "./services/workspace-config/normalize.js";
 import type { WorkspaceConfigRequestContext } from "./services/workspace-config/types.js";
 import { recordApiRequest } from "./telemetry.js";
-import { artifactsClientTool } from "./tools/artifacts-client.js";
-import { askUserClientTool } from "./tools/ask-user-client.js";
-import {
-	codingTools,
-	conductorClientTools,
-	jetbrainsTools,
-	vscodeTools,
-} from "./tools/index.js";
-import { javascriptReplClientTool } from "./tools/javascript-repl-client.js";
 import { createLogger } from "./utils/logger.js";
 import { sanitizeWithStaticMask } from "./utils/secret-redactor.js";
 
@@ -101,43 +68,9 @@ interface StartWebServerOptions {
 	skipStartupMigration?: boolean;
 }
 
-const getAuditModule = (() => {
-	let promise: Promise<
-		typeof import("./enterprise/audit-integration.js")
-	> | null = null;
-	return () => {
-		if (!promise) {
-			promise = import("./enterprise/audit-integration.js");
-		}
-		return promise;
-	};
-})();
-
-const getBillingModule = (() => {
-	let promise: Promise<typeof import("./billing/token-tracker.js")> | null =
-		null;
-	return () => {
-		if (!promise) {
-			promise = import("./billing/token-tracker.js");
-		}
-		return promise;
-	};
-})();
-
-const getDbModule = (() => {
-	let promise: Promise<typeof import("./db/client.js")> | null = null;
-	return () => {
-		if (!promise) {
-			promise = import("./db/client.js");
-		}
-		return promise;
-	};
-})();
 import { captureSentryException, flushSentry, initSentry } from "./sentry.js";
-import { WebActionApprovalService } from "./server/approval-service.js";
 import { checkApiAuth, getAuthSubject } from "./server/authz.js";
 import { startAutomationScheduler } from "./server/automations/scheduler.js";
-import { clientToolService } from "./server/client-tools-service.js";
 import { handleChatWebSocket } from "./server/handlers/chat-ws.js";
 import { platformA2APushAuthBoundaryExemptPaths } from "./server/handlers/platform-a2a-push.js";
 import { handleRuntimeAppServerWebSocket } from "./server/handlers/runtime-app-server-ws.js";
@@ -154,6 +87,10 @@ import {
 	startStatsCollection,
 	stopStatsCollection,
 } from "./server/logger.js";
+import {
+	checkMaestroTuiBinaryForWebServer,
+	logMaestroTuiBootCheck,
+} from "./server/maestro-tui-boot-check.js";
 import { compose } from "./server/middleware.js";
 import {
 	determineModelSelection,
@@ -512,180 +449,6 @@ function getCurrentSelection(): { provider: string; modelId: string } {
 	return { provider: DEFAULT_PROVIDER, modelId: DEFAULT_MODEL_ID };
 }
 
-async function createAgent(
-	registeredModel: RegisteredModel,
-	thinkingLevel: ThinkingLevel = "off",
-	approvalMode: ApprovalMode = profileSecurityConfig.defaultApprovalMode,
-	options?: {
-		cwd?: string;
-		persistedSystemPromptSourcePaths?: string[];
-		enableClientTools?: boolean;
-		useClientAskUser?: boolean;
-		includeVscodeTools?: boolean;
-		includeJetBrainsTools?: boolean;
-		includeConductorTools?: boolean;
-		approvalService?: ActionApprovalService;
-		clientToolService?: ClientToolExecutionService;
-		toolRetryService?: ToolRetryService;
-		platformToolExecutionBridge?: PlatformToolExecutionBridge | false;
-		profileName?: string;
-		cliOverrides?: Partial<ComposerConfig>;
-	},
-): Promise<Agent> {
-	const cwd = options?.cwd ?? process.cwd();
-	const sessionTokenCounter = async (sessionId: string) => {
-		try {
-			const { isDatabaseConfigured } = await getDbModule();
-			if (!isDatabaseConfigured()) return null;
-			const { getSessionTokenCount } = await getBillingModule();
-			return await getSessionTokenCount(sessionId);
-		} catch (error) {
-			logger.warn("Failed to get session token count", {
-				error: sanitizeWithStaticMask(
-					error instanceof Error ? error.message : String(error),
-				),
-			});
-			return null;
-		}
-	};
-
-	const auditLogger = async (entry: {
-		toolName: string;
-		args: Record<string, unknown>;
-		status: "success" | "failure" | "denied";
-		durationMs: number;
-		error?: string;
-	}) => {
-		try {
-			const { logSensitiveToolExecution } = await getAuditModule();
-			await logSensitiveToolExecution(
-				entry.toolName,
-				entry.args,
-				entry.status,
-				entry.durationMs,
-				entry.error,
-			);
-		} catch (error) {
-			logger.warn("Failed to log tool execution", {
-				error: sanitizeWithStaticMask(
-					error instanceof Error ? error.message : String(error),
-				),
-				toolName: entry.toolName,
-			});
-		}
-	};
-
-	const transport = new ProviderTransport({
-		getAuthContext: async (provider: string) => authResolver(provider),
-		cwd,
-		approvalService:
-			options?.approvalService ?? new WebActionApprovalService(approvalMode),
-		toolRetryService: options?.toolRetryService,
-		clientToolService:
-			options?.clientToolService ??
-			(options?.enableClientTools || options?.useClientAskUser
-				? clientToolService
-				: undefined),
-		platformToolExecutionBridge: options?.platformToolExecutionBridge,
-		sessionTokenCounter,
-		auditLogger,
-	});
-
-	const runtimeConstraints = detectRuntimeConstraintContext({
-		cwd,
-		sandboxMode: process.env.MAESTRO_SANDBOX_MODE ?? null,
-	});
-	const {
-		systemPrompt,
-		promptMetadata,
-		promptContextManifest,
-		systemPromptSourcePaths: freshSystemPromptSourcePaths,
-	} = await resolveMaestroSystemPrompt({
-		cwd,
-		profileName: options?.profileName ?? context.profileName,
-		cliOverrides: options?.cliOverrides ?? context.cliOverrides,
-		runtimeConstraints,
-	});
-	const systemPromptSourcePaths = Array.from(
-		new Set([
-			...freshSystemPromptSourcePaths,
-			...(options?.persistedSystemPromptSourcePaths ?? []),
-		]),
-	);
-	const unifiedContextManifest = loadUnifiedContextManifest(cwd, {
-		projectDocs: promptContextManifest,
-	});
-
-	// Only include IDE client tools when a compatible client is connected.
-	// Without a connected client, these tools will hang waiting for responses.
-	const mcpTools = getAllMcpTools();
-	const baseTools = options?.useClientAskUser
-		? codingTools.map((tool) =>
-				tool.name === "ask_user" ? askUserClientTool : tool,
-			)
-		: codingTools;
-	const tools: AgentTool[] = [...baseTools, ...mcpTools];
-	if (options?.includeVscodeTools) {
-		tools.push(...vscodeTools);
-	}
-	if (options?.includeJetBrainsTools) {
-		tools.push(...jetbrainsTools);
-	}
-	if (options?.enableClientTools) {
-		tools.push(artifactsClientTool);
-		tools.push(javascriptReplClientTool);
-		if (options?.includeConductorTools) {
-			tools.push(...conductorClientTools);
-		}
-	}
-
-	const agent = new Agent({
-		transport,
-		initialState: {
-			systemPrompt,
-			promptMetadata,
-			systemPromptSourcePaths,
-			promptContextManifest,
-			unifiedContextManifest,
-			model: registeredModel,
-			thinkingLevel,
-			tools,
-			sandboxMode: process.env.MAESTRO_SANDBOX ?? null,
-			sandboxEnabled: Boolean(process.env.MAESTRO_SANDBOX),
-		},
-		contextSources: [
-			new TodoContextSource(),
-			new BackgroundTaskContextSource(),
-			new CurrentDateContextSource(),
-			new GitSnapshotContextSource(cwd),
-			new LspContextSource(cwd),
-			new FrameworkPreferenceContextSource(),
-			new TeamMemoryContextSource(cwd),
-			new IDEContextSource(),
-		],
-	});
-
-	// Initialize a session-scoped composer manager for this web agent.
-	webComposerManagers.initializeAgent(agent, systemPrompt, tools, cwd);
-
-	return agent;
-}
-
-async function createBackgroundAgent(
-	registeredModel: RegisteredModel,
-	options?: {
-		cwd?: string;
-		systemPrompt?: string;
-	},
-): Promise<Agent> {
-	return createBackgroundTextAgent({
-		model: registeredModel,
-		systemPrompt: options?.systemPrompt ?? getMemoryExtractionSystemPrompt(),
-		cwd: options?.cwd ?? process.cwd(),
-		getAuthContext: async (provider: string) => authResolver(provider),
-	});
-}
-
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 const WEB_ROOT = resolveWebRoot({ baseDir: __dirname });
@@ -708,8 +471,6 @@ const context: WebServerContext = {
 	defaultProvider: DEFAULT_PROVIDER,
 	defaultModelId: DEFAULT_MODEL_ID,
 	profileName: process.env.MAESTRO_PROFILE,
-	createAgent,
-	createBackgroundAgent,
 	getRegisteredModel,
 	getCurrentSelection,
 	ensureCredential,
@@ -982,6 +743,26 @@ export async function startWebServer(
 			),
 		});
 	}
+
+	// Native web/headless defaults need maestro-tui; surface missing binary at boot.
+	logMaestroTuiBootCheck(checkMaestroTuiBinaryForWebServer(), {
+		warn: (message, context) =>
+			logger.warn(message, {
+				...context,
+				error:
+					typeof context?.error === "string"
+						? sanitizeWithStaticMask(context.error)
+						: context?.error,
+			}),
+		error: (message, context) =>
+			logger.error(message, undefined, {
+				...context,
+				error:
+					typeof context?.error === "string"
+						? sanitizeWithStaticMask(context.error)
+						: context?.error,
+			}),
+	});
 
 	if (REQUIRE_WEB_API_KEY && !WEB_API_KEY) {
 		throw new Error(

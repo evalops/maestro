@@ -797,7 +797,7 @@ impl RemoteAgentTransport {
         Ok(())
     }
 
-    pub(super) fn try_recv_incoming(
+    pub(crate) fn try_recv_incoming(
         &mut self,
     ) -> Option<Result<RemoteIncoming, AsyncTransportError>> {
         match self.event_rx.try_recv() {
@@ -902,7 +902,6 @@ fn build_remote_server_requests(config: &RemoteTransportConfig) -> Vec<&'static 
         requests.push("client_tool");
     }
     if build_remote_connection_role(config) != Some(ConnectionRole::Viewer) {
-        requests.push("user_input");
         requests.push("tool_retry");
     }
     requests
@@ -914,7 +913,6 @@ fn build_remote_server_request_types(config: &RemoteTransportConfig) -> Vec<Serv
         requests.push(ServerRequestType::ClientTool);
     }
     if build_remote_connection_role(config) != Some(ConnectionRole::Viewer) {
-        requests.push(ServerRequestType::UserInput);
         requests.push(ServerRequestType::ToolRetry);
     }
     requests

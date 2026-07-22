@@ -192,6 +192,7 @@ interface AgentReplayMetrics {
 	observedToolPhaseSummaryCount: number;
 }
 
+/** Eval-only Agent construction (not a production surface). */
 async function replayBatchShapeThroughAgent(
 	replay: BatchShapingReplayFixture,
 	userIntent: string,

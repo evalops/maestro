@@ -11,6 +11,7 @@ import {
 	shouldLaunchNativeHeadless,
 	shouldLaunchNativeInteractiveTui,
 	shouldLaunchNativePrint,
+	spawnNativeHeadlessProcess,
 } from "../../src/cli/native-tui-launcher.js";
 
 type SpawnFn = typeof import("node:child_process").spawn;
@@ -656,5 +657,75 @@ describe("shouldLaunchNativeHeadless", () => {
 				command: "web",
 			}),
 		).toBe(false);
+	});
+});
+
+describe("spawnNativeHeadlessProcess", () => {
+	it("spawns maestro-tui with --headless and piped stdio", () => {
+		const child = new EventEmitter();
+		const spawnImpl = vi.fn(() => child);
+		const result = spawnNativeHeadlessProcess({
+			cwd: "/work",
+			env: {
+				MAESTRO_TUI_BIN: "/bin/fake-maestro-tui",
+				MAESTRO_VERSION: "9.9.9",
+				MAESTRO_PACKAGE_NAME: "@evalops/maestro-test",
+			},
+			resolveOptions: {
+				exists: (path) => path === "/bin/fake-maestro-tui",
+			},
+			spawnImpl: spawnImpl as unknown as SpawnFn,
+		});
+
+		expect(result.binary).toBe("/bin/fake-maestro-tui");
+		expect(result.args).toEqual(["--headless"]);
+		expect(result.child).toBe(child);
+		expect(spawnImpl).toHaveBeenCalledWith(
+			"/bin/fake-maestro-tui",
+			["--headless"],
+			expect.objectContaining({
+				stdio: ["pipe", "pipe", "pipe"],
+				cwd: "/work",
+				env: expect.objectContaining({
+					MAESTRO_VERSION: "9.9.9",
+					MAESTRO_PACKAGE_NAME: "@evalops/maestro-test",
+				}),
+			}),
+		);
+	});
+
+	it("appends extraArgs after --headless", () => {
+		const child = new EventEmitter();
+		const spawnImpl = vi.fn(() => child);
+		const result = spawnNativeHeadlessProcess({
+			env: { MAESTRO_TUI_BIN: "/bin/fake" },
+			resolveOptions: { exists: () => true },
+			extraArgs: ["--model", "gpt-4o"],
+			spawnImpl: spawnImpl as unknown as SpawnFn,
+		});
+		expect(result.args).toEqual(["--headless", "--model", "gpt-4o"]);
+		expect(spawnImpl).toHaveBeenCalledWith(
+			"/bin/fake",
+			["--headless", "--model", "gpt-4o"],
+			expect.objectContaining({
+				stdio: ["pipe", "pipe", "pipe"],
+			}),
+		);
+	});
+
+	it("throws MaestroTuiBinaryNotFoundError when binary is missing", () => {
+		expect(() =>
+			spawnNativeHeadlessProcess({
+				env: {},
+				resolveOptions: {
+					packageRoot: "/pkg",
+					platform: "darwin",
+					arch: "arm64",
+					exists: () => false,
+					findOnPath: () => undefined,
+				},
+				spawnImpl: vi.fn() as unknown as SpawnFn,
+			}),
+		).toThrow(MaestroTuiBinaryNotFoundError);
 	});
 });

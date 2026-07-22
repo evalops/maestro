@@ -30,18 +30,53 @@ This README is intentionally short. Use it to get running, then jump into the do
 
 ## Install
 
-### Release Binary (recommended)
+### One-line install (recommended)
 
-Download the binary for your platform from the latest GitHub release:
+```bash
+curl -fsSL https://raw.githubusercontent.com/evalops/maestro/main/scripts/install.sh | bash
+```
+
+This detects your OS/arch, downloads the matching release binaries
+(`maestro-<platform>` and `maestro-tui-<platform>`), installs them to
+`~/.local/bin` (or `/usr/local/bin` when that is writable and preferred),
+and prints a PATH tip plus `maestro --version`.
+
+`maestro-tui` is required for the interactive terminal UI and for the web
+server’s default native chat/headless path. Override resolution with
+`MAESTRO_TUI_BIN` if you install the binary elsewhere.
+
+Windows (PowerShell) guidance:
+
+```powershell
+irm https://raw.githubusercontent.com/evalops/maestro/main/scripts/install.ps1 | iex
+```
+
+### Manual release binary
+
+Download **both** `maestro` and `maestro-tui` for your platform from the latest
+GitHub release (interactive TUI and default web/native headless need
+`maestro-tui` on `PATH`, or set `MAESTRO_TUI_BIN`):
 
 ```bash
 # macOS Apple Silicon
-curl -L https://github.com/evalops/maestro/releases/latest/download/maestro-darwin-arm64 -o maestro
-chmod +x ./maestro
+curl -fsSL https://github.com/evalops/maestro/releases/latest/download/maestro-darwin-arm64 -o maestro
+curl -fsSL https://github.com/evalops/maestro/releases/latest/download/maestro-tui-darwin-arm64 -o maestro-tui
+chmod +x ./maestro ./maestro-tui
+
+# macOS Intel
+curl -fsSL https://github.com/evalops/maestro/releases/latest/download/maestro-darwin-x64 -o maestro
+curl -fsSL https://github.com/evalops/maestro/releases/latest/download/maestro-tui-darwin-x64 -o maestro-tui
+chmod +x ./maestro ./maestro-tui
 
 # Linux x64
-curl -L https://github.com/evalops/maestro/releases/latest/download/maestro-linux-x64 -o maestro
-chmod +x ./maestro
+curl -fsSL https://github.com/evalops/maestro/releases/latest/download/maestro-linux-x64 -o maestro
+curl -fsSL https://github.com/evalops/maestro/releases/latest/download/maestro-tui-linux-x64 -o maestro-tui
+chmod +x ./maestro ./maestro-tui
+
+# Linux arm64
+curl -fsSL https://github.com/evalops/maestro/releases/latest/download/maestro-linux-arm64 -o maestro
+curl -fsSL https://github.com/evalops/maestro/releases/latest/download/maestro-tui-linux-arm64 -o maestro-tui
+chmod +x ./maestro ./maestro-tui
 ```
 
 ### Package Managers (dev/source workflows)
@@ -51,9 +86,10 @@ bun install -g @evalops/maestro
 npm install -g @evalops/maestro
 ```
 
-Package-manager installs are kept for contributors and source-based workflows.
-Release binaries are the primary install artifact and are smoke-tested directly
-with `maestro --version` and a headless protocol handshake before attachment.
+Published npm/Bun packages include per-platform `vendor/maestro-tui/…` binaries
+(see `package.json` `files`). Package-manager installs are kept for contributors
+and source-based workflows. Release binaries are the primary install artifact
+and are smoke-tested with `maestro --version` and a headless protocol handshake.
 
 If a global install fails while resolving `@evalops/contracts`, you are installing a deprecated 0.10.8-0.10.20 package
 that referenced private workspace dependencies. Upgrade to
@@ -90,7 +126,9 @@ maestro "Audit this repository and suggest the next refactor"
 maestro web
 ```
 
-`maestro web` starts the browser UI on `http://localhost:8080`.
+`maestro web` starts the browser UI on `http://localhost:8080`. Chat defaults to
+native `maestro-tui --headless` (see [Web UI](docs/WEB_UI.md)); ensure
+`maestro-tui` is available or set `MAESTRO_TUI_BIN`.
 
 3. Add project-specific behavior when needed:
 

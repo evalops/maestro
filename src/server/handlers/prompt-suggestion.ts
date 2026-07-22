@@ -35,7 +35,6 @@ export async function handlePromptSuggestion(
 			{
 				getRegisteredModel: context.getRegisteredModel,
 				getCurrentSelection: context.getCurrentSelection,
-				createBackgroundAgent: context.createBackgroundAgent,
 			},
 		);
 		sendJson(res, 200, result, context.corsHeaders, req);

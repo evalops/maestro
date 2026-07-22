@@ -7,10 +7,6 @@
     "MAESTRO_AUTOCOMPACT_MIN_MESSAGES",
     "MAESTRO_AUTOCOMPACT_PCT"
   ],
-  "src/agent/file-path-detector.ts": [
-    "HOME",
-    "USERPROFILE"
-  ],
   "src/agent/keys.ts": [
     "FACTORY_HOME",
     "MAESTRO_KEYS_PATH"
@@ -45,9 +41,6 @@
     "MAESTRO_SESSION_BACKUP_DIR",
     "MAESTRO_SESSION_BACKUP_INTERVAL",
     "MAESTRO_SESSION_RECOVERY_ENABLED"
-  ],
-  "src/agent/spec-mode.ts": [
-    "MAESTRO_SPEC_DIR"
   ],
   "src/agent/subagent-specs.ts": [
     "MAESTRO_SUBAGENT_TYPE"
@@ -99,21 +92,10 @@
     "MAESTRO_JWT_SECRET",
     "NODE_ENV"
   ],
-  "src/bootstrap/event-subscriptions-setup.ts": [
-    "MAESTRO_GUARDIAN",
-    "MAESTRO_SAFE_MODE"
-  ],
-  "src/bootstrap/tools-setup.ts": [
-    "MAESTRO_CODEX_TOOL_PROFILE",
-    "MAESTRO_SANDBOX_MODE"
-  ],
   "src/checkpoints/service.ts": [
     "MAESTRO_DISABLE_FILE_CHECKPOINTING"
   ],
-  "src/cli/commands/codex.ts": [
-    "MAESTRO_CODEX_TOOL_PROFILE"
-  ],
-  "src/cli/commands/config.ts": [
+  "src/config/cli-presentation.ts": [
     "MAESTRO_CONFIG_SHOW_LAYOUT",
     "MAESTRO_LLM_GATEWAY_URL"
   ],

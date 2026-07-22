@@ -4,6 +4,7 @@ Use this index to jump to the right guide quickly and see how the pieces connect
 
 ## Start Here
 - [Quickstart](QUICKSTART.md) — installation, environment prep, builds, and the fast path to running the CLI/TUI/Web.
+- [TUI User Guide](../packages/tui-rs/docs/user-guide/README.md) — numbered native TUI guide (getting started through worktrees).
 - [Contributor Runbook](CONTRIBUTOR_RUNBOOK.md) — day-one flow for contributors (build, lint, verify).
 - [Feature Guide](FEATURES.md) — user-facing capabilities across the TUI and CLI with power-user tips.
 - [Web UI Guide](WEB_UI.md) — browser workflow and TUI/Web parity appendix.
@@ -35,6 +36,7 @@ Use this index to jump to the right guide quickly and see how the pieces connect
 - [Architecture](ARCHITECTURE.md) — system layout, surfaces, edit patterns.
 - [TUI Architecture](TUI_ARCHITECTURE.md) — native `maestro-tui` (`packages/tui-rs`).
 - [Native TUI parity](NATIVE_TUI_PARITY.md) — feature checklist after TS TUI removal.
+- [Grok Build parity](design/GROK_BUILD_PARITY.md) — gap map and tracks for Grok Build-class TUI/runtime UX without losing multi-surface Maestro/Platform.
 - [Architecture Diagram](ARCHITECTURE_DIAGRAM.md) — high-level system layout.
 - [VS Code Architecture](VSCODE_ARCHITECTURE.md) — extension-specific architecture and flows.
 - [Ambient Agent Design](design/AMBIENT_AGENT.md) — always-on GitHub agent daemon architecture.
@@ -49,6 +51,7 @@ Use this index to jump to the right guide quickly and see how the pieces connect
   - [Platform AgentRuntime Session Bridge](design/PLATFORM_AGENT_RUNTIME_SESSION_BRIDGE.md) — hosted-session trigger projection, A2A fallback, trace context, and boundary normalization.
   - [AgentRuntime Task Mapping](design/AGENT_RUNTIME_TASK_MAPPING.md) — next-phase todo/background/swarm projection into Platform AgentRuntime.
   - [EvalOps Agent Core Parity](design/EVALOPS_AGENT_CORE_PARITY.md) — Hermes-class local-first distribution target and skill package spec.
+  - [Grok Build Parity](design/GROK_BUILD_PARITY.md) — sequenced plan-mode, plugins, install UX, and crate-split tracks vs public Grok Build product shape.
   - Core Systems: Tool System, Agent State Machine, Context Management, Session Persistence
   - User Interface: TUI Rendering, Web UI Architecture
   - Safety & Security: Safety Firewall, Enterprise RBAC, OAuth Authentication

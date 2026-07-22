@@ -1,122 +1,68 @@
 import { EventEmitter } from "node:events";
-import { mkdtempSync, readFileSync, readdirSync } from "node:fs";
 import type { IncomingMessage, ServerResponse } from "node:http";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import { PassThrough } from "node:stream";
-import { afterEach, describe, expect, it, vi } from "vitest";
-import type { Agent } from "../../src/agent/agent.js";
-import { clearRegisteredHooks, registerHook } from "../../src/hooks/index.js";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
 import type { RegisteredModel } from "../../src/models/registry.js";
 import type { WebServerContext } from "../../src/server/app-context.js";
-import {
-	resetApprovalModeStore,
-	setApprovalModeForSession,
-} from "../../src/server/approval-mode-store.js";
-import { handleApproval } from "../../src/server/handlers/approval.js";
+import { resetApprovalModeStore } from "../../src/server/approval-mode-store.js";
 import { handleChatWebSocket } from "../../src/server/handlers/chat-ws.js";
 import { handleChat } from "../../src/server/handlers/chat.js";
-import { handleClientToolResult } from "../../src/server/handlers/client-tools.js";
-import { handleSessions } from "../../src/server/handlers/sessions.js";
-import { handleToolRetry } from "../../src/server/handlers/tool-retry.js";
-import { serverRequestManager } from "../../src/server/server-request-manager.js";
+import { ApiError } from "../../src/server/server-utils.js";
 import * as sessionScope from "../../src/server/session-scope.js";
 
-const mockModel: RegisteredModel = {
-	id: "claude-sonnet-4-5",
-	provider: "anthropic",
-	name: "Claude",
-	api: "anthropic-messages",
-	baseUrl: "",
-	reasoning: false,
+const runNativeWebChatTurn = vi.hoisted(() => vi.fn());
+
+vi.mock("../../src/server/web-native-chat.js", async () => {
+	const actual = await vi.importActual<
+		typeof import("../../src/server/web-native-chat.js")
+	>("../../src/server/web-native-chat.js");
+	return { ...actual, runNativeWebChatTurn };
+});
+
+const MODEL: RegisteredModel = {
+	id: "gpt-5.4",
+	provider: "openai",
+	name: "GPT-5.4",
+	api: "openai-responses",
+	baseUrl: "https://api.openai.com/v1/responses",
+	reasoning: true,
+	toolUse: true,
 	input: ["text"],
 	cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-	contextWindow: 128000,
-	maxTokens: 4096,
-	providerName: "Anthropic",
+	contextWindow: 200_000,
+	maxTokens: 32_000,
+	providerName: "OpenAI",
 	source: "builtin",
 	isLocal: false,
 };
 
-const cors = { "Access-Control-Allow-Origin": "*" };
+class MockResponse extends EventEmitter {
+	body = "";
+	statusCode = 200;
+	headers: Record<string, string | number> = {};
+	headersSent = false;
+	writableEnded = false;
+	writable = true;
+	destroyed = false;
 
-interface MockResponse {
-	statusCode: number;
-	headers: Record<string, string>;
-	body: string;
-	writableEnded: boolean;
-	on: () => void;
-	off: () => void;
-	writeHead(status: number, headers?: Record<string, string>): void;
-	write(chunk: string | Buffer): void;
-	end(chunk?: string | Buffer): void;
-}
-
-function makeRes(): MockResponse {
-	const res: MockResponse = {
-		statusCode: 200,
-		headers: {} as Record<string, string>,
-		body: "",
-		writableEnded: false,
-		on: () => {},
-		off: () => {},
-		writeHead(status: number, headers?: Record<string, string>) {
-			this.statusCode = status;
-			this.headers = headers || {};
-		},
-		write(chunk: string | Buffer) {
-			this.body += chunk.toString();
-		},
-		end(chunk?: string | Buffer) {
-			if (chunk) this.write(chunk);
-			this.writableEnded = true;
-		},
-	};
-	return res;
-}
-
-async function waitForPendingRequest(
-	kind?:
-		| "approval"
-		| "client_tool"
-		| "mcp_elicitation"
-		| "user_input"
-		| "tool_retry",
-) {
-	for (let attempt = 0; attempt < 50; attempt += 1) {
-		const request = serverRequestManager
-			.listPending()
-			.find((entry) => (kind ? entry.kind === kind : true));
-		if (request) {
-			return request;
-		}
-		await new Promise((resolve) => setTimeout(resolve, 10));
+	writeHead(status: number, headers: Record<string, string | number> = {}) {
+		this.statusCode = status;
+		this.headers = { ...this.headers, ...headers };
+		this.headersSent = true;
+		return this;
 	}
-	throw new Error(
-		kind
-			? `Timed out waiting for pending ${kind} request`
-			: "Timed out waiting for pending request",
-	);
-}
 
-function findJsonlFiles(dir: string): string[] {
-	const entries = readdirSync(dir, { withFileTypes: true });
-	const files: string[] = [];
-	for (const entry of entries) {
-		const fullPath = join(dir, entry.name);
-		if (entry.isDirectory()) {
-			files.push(...findJsonlFiles(fullPath));
-		} else if (entry.isFile() && entry.name.endsWith(".jsonl")) {
-			files.push(fullPath);
-		}
+	write(chunk: string | Buffer) {
+		this.body += chunk.toString();
+		return true;
 	}
-	return files;
-}
 
-interface MockPassThrough extends PassThrough {
-	method: string;
-	url: string;
-	headers: Record<string, string>;
+	end(chunk?: string | Buffer) {
+		if (chunk) this.write(chunk);
+		this.writableEnded = true;
+		return this;
+	}
 }
 
 class MockWebSocket extends EventEmitter {
@@ -128,2800 +74,364 @@ class MockWebSocket extends EventEmitter {
 	}
 
 	close() {
-		if (this.readyState !== 1) {
-			return;
-		}
 		this.readyState = 3;
 		this.emit("close");
 	}
 }
 
-async function waitForWebSocketMessage(
-	ws: MockWebSocket,
-	predicate: (payload: string) => boolean,
-) {
-	for (let attempt = 0; attempt < 50; attempt += 1) {
-		const match = ws.sent.find(predicate);
-		if (match) {
-			return match;
-		}
-		await new Promise((resolve) => setTimeout(resolve, 10));
-	}
-	throw new Error("Timed out waiting for WebSocket message");
+function request(body: unknown, headers: Record<string, string> = {}) {
+	const req = new PassThrough() as PassThrough & IncomingMessage;
+	req.method = "POST";
+	req.url = "/api/chat";
+	req.headers = { host: "localhost", ...headers };
+	req.end(JSON.stringify(body));
+	return req;
 }
 
-describe("handleChat", () => {
-	afterEach(() => {
-		vi.restoreAllMocks();
-		resetApprovalModeStore();
-		clearRegisteredHooks();
-		for (const request of serverRequestManager.listPending()) {
-			serverRequestManager.cancel(request.id, "test cleanup", "runtime");
-		}
-		vi.unstubAllEnvs();
-	});
+function sessionManager(overrides: Record<string, unknown> = {}) {
+	return {
+		getSessionFileById: vi.fn(() => null),
+		setSessionFile: vi.fn(),
+		loadSession: vi.fn(async () => null),
+		getSessionId: vi.fn(() => "session-native"),
+		isInitialized: vi.fn(() => false),
+		loadAllSessions: vi.fn(() => []),
+		countActiveSessions: vi.fn(async () => 0),
+		startSession: vi.fn(),
+		saveMessage: vi.fn(),
+		flush: vi.fn(async () => {}),
+		getSessionFile: vi.fn(() => "/tmp/session-native.jsonl"),
+		getHeader: vi.fn(() => undefined),
+		...overrides,
+	};
+}
 
-	it("returns 400 when no messages supplied", async () => {
-		const req = new PassThrough() as MockPassThrough;
-		req.method = "POST";
-		req.url = "/api/chat";
-		req.headers = {};
-		req.end(JSON.stringify({ messages: [] }));
+function context(): WebServerContext {
+	return {
+		corsHeaders: { "Access-Control-Allow-Origin": "*" },
+		staticMaxAge: 0,
+		defaultApprovalMode: "prompt",
+		defaultProvider: MODEL.provider,
+		defaultModelId: MODEL.id,
+		getRegisteredModel: vi.fn(async () => MODEL),
+		getCurrentSelection: () => ({
+			provider: MODEL.provider,
+			modelId: MODEL.id,
+		}),
+		ensureCredential: vi.fn(),
+		setModelSelection: vi.fn(),
+		acquireSse: () => Symbol("lease"),
+		releaseSse: vi.fn(),
+	} as unknown as WebServerContext;
+}
 
-		const res = makeRes();
-
-		const context: Partial<WebServerContext> = {
-			createAgent: async () => {
-				throw new Error("should not create agent");
+function installSuccessfulNativeTurn() {
+	runNativeWebChatTurn.mockImplementation(async (options) => {
+		const promptResolution = {
+			systemPrompt: "native system prompt",
+			promptMetadata: {
+				name: "maestro-system",
+				label: "production",
+				hash: "prompt-hash",
+				source: "bundled",
 			},
-			getRegisteredModel: async () => mockModel,
-			defaultApprovalMode: "prompt",
-			defaultProvider: "anthropic",
-			defaultModelId: mockModel.id,
-			corsHeaders: cors,
+			promptContextManifest: {
+				cwd: "/workspace",
+				candidates: [],
+				bytesRead: 0,
+				entries: [],
+				diagnostics: [],
+			},
+			systemPromptSourcePaths: ["/workspace/APPEND_SYSTEM.md"],
 		};
+		await options.onBeforePrompt?.(promptResolution);
+		await options.onStarted?.(promptResolution);
+		options.onEvent({
+			type: "message_end",
+			message: {
+				role: "assistant",
+				content: [{ type: "text", text: "native reply" }],
+				timestamp: Date.now(),
+			},
+		});
+		return { ok: true as const };
+	});
+}
 
+beforeEach(() => {
+	vi.spyOn(sessionScope, "createWebSessionManagerForRequest").mockReturnValue(
+		sessionManager() as never,
+	);
+	runNativeWebChatTurn.mockReset();
+	installSuccessfulNativeTurn();
+});
+
+afterEach(() => {
+	resetApprovalModeStore();
+	vi.restoreAllMocks();
+});
+
+describe("native-only web chat handlers", () => {
+	it("rejects an empty message list before starting native", async () => {
+		const res = new MockResponse();
 		await handleChat(
-			req as unknown as IncomingMessage,
+			request({ messages: [] }),
 			res as unknown as ServerResponse,
-			context as WebServerContext,
+			context(),
 		);
-
 		expect(res.statusCode).toBe(400);
-		expect(res.body).toContain("No messages supplied");
+		expect(runNativeWebChatTurn).not.toHaveBeenCalled();
 	});
 
-	it("rejects HTTP resume when the session belongs to another subject", async () => {
-		const sessionManager = {
-			getSessionFileById: vi.fn(() => "victim.jsonl"),
-			setSessionFile: vi.fn(),
-			loadSession: vi.fn(async () => ({
-				id: "victim",
-				owner: "other-subject",
-				messages: [],
-				createdAt: new Date().toISOString(),
-				updatedAt: new Date().toISOString(),
-				messageCount: 0,
-				favorite: false,
-				messagesView: "notLoaded",
-			})),
-		};
-		vi.spyOn(sessionScope, "createWebSessionManagerForRequest").mockReturnValue(
-			sessionManager as unknown as ReturnType<
-				typeof sessionScope.createWebSessionManagerForRequest
-			>,
-		);
-		const req = new PassThrough() as MockPassThrough;
-		req.method = "POST";
-		req.url = "/api/chat";
-		req.headers = { authorization: "Bearer requester-token" };
-		req.end(
-			JSON.stringify({
-				sessionId: "victim",
-				messages: [{ role: "user", content: "continue" }],
-			}),
-		);
-		const res = makeRes();
-		const createAgent = vi.fn();
-
+	it("rejects HTTP requests that require unbridged client tools", async () => {
+		const res = new MockResponse();
 		await handleChat(
-			req as unknown as IncomingMessage,
+			request(
+				{ messages: [{ role: "user", content: "hello" }] },
+				{ "x-composer-client-tools": "1" },
+			),
 			res as unknown as ServerResponse,
-			{
-				createAgent,
-				getRegisteredModel: async () => mockModel,
-				defaultApprovalMode: "prompt",
-				defaultProvider: "anthropic",
-				defaultModelId: mockModel.id,
-				corsHeaders: cors,
-			} as unknown as WebServerContext,
+			context(),
 		);
-
-		expect(res.statusCode).toBe(404);
-		expect(res.body).toContain("Session not found");
-		expect(createAgent).not.toHaveBeenCalled();
-	});
-
-	it("rejects WebSocket resume when the session belongs to another subject", async () => {
-		const sessionManager = {
-			getSessionFileById: vi.fn(() => "victim.jsonl"),
-			setSessionFile: vi.fn(),
-			loadSession: vi.fn(async () => ({
-				id: "victim",
-				owner: "other-subject",
-				messages: [],
-				createdAt: new Date().toISOString(),
-				updatedAt: new Date().toISOString(),
-				messageCount: 0,
-				favorite: false,
-				messagesView: "notLoaded",
-			})),
-		};
-		vi.spyOn(sessionScope, "createWebSessionManagerForRequest").mockReturnValue(
-			sessionManager as unknown as ReturnType<
-				typeof sessionScope.createWebSessionManagerForRequest
-			>,
-		);
-		const req = new PassThrough() as MockPassThrough;
-		req.method = "GET";
-		req.url = "/api/chat/ws";
-		req.headers = {
-			authorization: "Bearer requester-token",
-			host: "localhost",
-		};
-		const ws = new MockWebSocket();
-		const createAgent = vi.fn();
-
-		handleChatWebSocket(
-			ws as unknown as Parameters<typeof handleChatWebSocket>[0],
-			req as unknown as IncomingMessage,
-			{
-				createAgent,
-				getRegisteredModel: async () => mockModel,
-				defaultApprovalMode: "prompt",
-				defaultProvider: "anthropic",
-				defaultModelId: mockModel.id,
-				corsHeaders: cors,
-			} as unknown as WebServerContext,
-		);
-		ws.emit(
-			"message",
-			JSON.stringify({
-				sessionId: "victim",
-				messages: [{ role: "user", content: "continue" }],
-			}),
-		);
-
-		await waitForWebSocketMessage(ws, (payload) =>
-			payload.includes("Session not found"),
-		);
-		expect(createAgent).not.toHaveBeenCalled();
-	});
-
-	it("passes persisted system prompt source paths when resuming SSE chat", async () => {
-		vi.stubEnv("MAESTRO_STRICT_SESSION_ACCESS", "false");
-		const persistedPaths = ["/tmp/APPEND_SYSTEM.md"];
-		const sessionManager = {
-			getSessionFileById: vi.fn(() => "session.jsonl"),
-			setSessionFile: vi.fn(),
-			loadSession: vi.fn(async () => ({
-				id: "session-1",
-				messages: [],
-				createdAt: new Date().toISOString(),
-				updatedAt: new Date().toISOString(),
-				messageCount: 0,
-				favorite: false,
-				messagesView: "notLoaded",
-			})),
-			getHeader: vi.fn(() => ({
-				type: "session",
-				id: "session-1",
-				timestamp: new Date().toISOString(),
-				cwd: "/workspace",
-				systemPromptSourcePaths: persistedPaths,
-			})),
-			getSessionId: vi.fn(() => "session-1"),
-		};
-		vi.spyOn(sessionScope, "createWebSessionManagerForRequest").mockReturnValue(
-			sessionManager as unknown as ReturnType<
-				typeof sessionScope.createWebSessionManagerForRequest
-			>,
-		);
-		const req = new PassThrough() as MockPassThrough;
-		req.method = "POST";
-		req.url = "/api/chat";
-		req.headers = {};
-		req.end(
-			JSON.stringify({
-				sessionId: "session-1",
-				messages: [{ role: "user", content: "continue" }],
-			}),
-		);
-		const res = makeRes();
-		let receivedOptions: Parameters<WebServerContext["createAgent"]>[3];
-		const createAgent: WebServerContext["createAgent"] = async (
-			_model,
-			_thinking,
-			_approval,
-			options,
-		) => {
-			receivedOptions = options;
-			throw new Error("stop after capturing createAgent options");
-		};
-
-		await handleChat(
-			req as unknown as IncomingMessage,
-			res as unknown as ServerResponse,
-			{
-				createAgent,
-				getRegisteredModel: async () => mockModel,
-				defaultApprovalMode: "prompt",
-				defaultProvider: "anthropic",
-				defaultModelId: mockModel.id,
-				corsHeaders: cors,
-			} as unknown as WebServerContext,
-		);
-
-		expect(receivedOptions?.persistedSystemPromptSourcePaths).toEqual(
-			persistedPaths,
-		);
-	});
-
-	it("passes persisted system prompt source paths when resuming WebSocket chat", async () => {
-		vi.stubEnv("MAESTRO_STRICT_SESSION_ACCESS", "false");
-		const persistedPaths = ["/tmp/APPEND_SYSTEM.md"];
-		const sessionManager = {
-			getSessionFileById: vi.fn(() => "session.jsonl"),
-			setSessionFile: vi.fn(),
-			loadSession: vi.fn(async () => ({
-				id: "session-1",
-				messages: [],
-				createdAt: new Date().toISOString(),
-				updatedAt: new Date().toISOString(),
-				messageCount: 0,
-				favorite: false,
-				messagesView: "notLoaded",
-			})),
-			getHeader: vi.fn(() => ({
-				type: "session",
-				id: "session-1",
-				timestamp: new Date().toISOString(),
-				cwd: "/workspace",
-				systemPromptSourcePaths: persistedPaths,
-			})),
-			getSessionId: vi.fn(() => "session-1"),
-			isInitialized: vi.fn(() => true),
-			flush: vi.fn(async () => {}),
-		};
-		vi.spyOn(sessionScope, "createWebSessionManagerForRequest").mockReturnValue(
-			sessionManager as unknown as ReturnType<
-				typeof sessionScope.createWebSessionManagerForRequest
-			>,
-		);
-		const req = new PassThrough() as MockPassThrough;
-		req.method = "GET";
-		req.url = "/api/chat/ws";
-		req.headers = { host: "localhost" };
-		const ws = new MockWebSocket();
-		let receivedOptions: Parameters<WebServerContext["createAgent"]>[3];
-		const createAgent: WebServerContext["createAgent"] = async (
-			_model,
-			_thinking,
-			_approval,
-			options,
-		) => {
-			receivedOptions = options;
-			return {
-				state: {
-					systemPrompt: "",
-					model: mockModel,
-					thinkingLevel: "off",
-					tools: [],
-					messages: [],
-					isStreaming: false,
-					streamMessage: null,
-					pendingToolCalls: new Map(),
-				},
-				replaceMessages: vi.fn(),
-				clearMessages: vi.fn(),
-				subscribe: vi.fn(() => () => {}),
-				prompt: vi.fn(async () => {}),
-				abort: vi.fn(),
-			} as unknown as Agent;
-		};
-
-		handleChatWebSocket(
-			ws as unknown as Parameters<typeof handleChatWebSocket>[0],
-			req as unknown as IncomingMessage,
-			{
-				createAgent,
-				getRegisteredModel: async () => mockModel,
-				defaultApprovalMode: "prompt",
-				defaultProvider: "anthropic",
-				defaultModelId: mockModel.id,
-				corsHeaders: cors,
-			} as unknown as WebServerContext,
-		);
-		ws.emit(
-			"message",
-			JSON.stringify({
-				sessionId: "session-1",
-				messages: [{ role: "user", content: "continue" }],
-			}),
-		);
-
-		for (let attempt = 0; attempt < 50 && !receivedOptions; attempt += 1) {
-			await new Promise((resolve) => setTimeout(resolve, 10));
-		}
-		await waitForWebSocketMessage(ws, (payload) => payload.includes('"done"'));
-		expect(ws.sent.some((payload) => payload.includes('"error"'))).toBe(false);
-
-		expect(receivedOptions?.persistedSystemPromptSourcePaths).toEqual(
-			persistedPaths,
-		);
-	});
-
-	it("streams DONE for valid request", async () => {
-		const req = new PassThrough() as MockPassThrough;
-		req.method = "POST";
-		req.url = "/api/chat";
-		req.headers = {};
-		const body = {
-			messages: [{ role: "user", content: "hi" }],
-		};
-		req.end(JSON.stringify(body));
-
-		const res = makeRes();
-
-		const context: Partial<WebServerContext> = {
-			createAgent: async () => {
-				type EventCallback = (e: unknown) => void;
-				let subscriber: EventCallback | undefined;
-				return {
-					state: {
-						systemPrompt: "",
-						model: mockModel,
-						thinkingLevel: "off",
-						tools: [],
-						messages: [],
-						isStreaming: false,
-						streamMessage: null,
-						pendingToolCalls: new Map(),
-					},
-					subscribe: (fn: EventCallback) => {
-						subscriber = fn;
-						return () => {
-							subscriber = undefined;
-						};
-					},
-					replaceMessages: () => {},
-					clearMessages: () => {},
-					prompt: async () => {
-						subscriber?.({
-							type: "message_end",
-							message: { role: "assistant" },
-						});
-					},
-					abort: () => {},
-				} as unknown as Agent;
-			},
-			getRegisteredModel: async () => mockModel,
-			defaultApprovalMode: "prompt",
-			defaultProvider: "anthropic",
-			defaultModelId: mockModel.id,
-			corsHeaders: cors,
-		};
-
-		await handleChat(
-			req as unknown as IncomingMessage,
-			res as unknown as ServerResponse,
-			context as WebServerContext,
-		);
-
-		// SSE stream writes contain DONE marker
-		expect(res.body).toContain("[DONE]");
-		expect(res.statusCode).toBe(200);
-	});
-
-	it("ends SSE chat when restoring the session composer fails", async () => {
-		const req = new PassThrough() as MockPassThrough;
-		req.method = "POST";
-		req.url = "/api/chat";
-		req.headers = {};
-		req.end(
-			JSON.stringify({
-				messages: [{ role: "user", content: "hi" }],
-			}),
-		);
-
-		const res = makeRes();
-		const prompt = vi.fn();
-		const bindAgentSession = vi.fn(() => false);
-
-		const context: Partial<WebServerContext> = {
-			createAgent: async () =>
-				({
-					state: {
-						systemPrompt: "",
-						model: mockModel,
-						thinkingLevel: "off",
-						tools: [],
-						messages: [],
-						isStreaming: false,
-						streamMessage: null,
-						pendingToolCalls: new Map(),
-					},
-					subscribe: () => () => {},
-					replaceMessages: () => {},
-					clearMessages: () => {},
-					prompt,
-					abort: () => {},
-				}) as unknown as Agent,
-			getRegisteredModel: async () => mockModel,
-			defaultApprovalMode: "prompt",
-			defaultProvider: "anthropic",
-			defaultModelId: mockModel.id,
-			corsHeaders: cors,
-			composerManagers: {
-				bindAgentSession,
-				get: () => undefined,
-			},
-		};
-
-		await handleChat(
-			req as unknown as IncomingMessage,
-			res as unknown as ServerResponse,
-			context as WebServerContext,
-		);
-
-		expect(bindAgentSession).toHaveBeenCalled();
-		expect(prompt).not.toHaveBeenCalled();
+		expect(res.statusCode).toBe(400);
 		expect(res.body).toContain(
-			"Failed to restore the active composer for this session",
+			"Native web chat does not yet support client-side tools",
 		);
-		expect(res.body).not.toContain("[DONE]");
+		expect(runNativeWebChatTurn).not.toHaveBeenCalled();
 	});
 
-	it("resolves approval requests through the shared approval endpoint during SSE chat", async () => {
-		const req = new PassThrough() as MockPassThrough;
-		req.method = "POST";
-		req.url = "/api/chat";
-		req.headers = {};
-		req.end(
-			JSON.stringify({
-				messages: [{ role: "user", content: "run the command" }],
-			}),
-		);
-
-		const res = makeRes();
-		const createAgent: WebServerContext["createAgent"] = async (
-			_model,
-			_thinking,
-			_approval,
-			options,
-		) => {
-			type EventCallback = (e: unknown) => void | Promise<void>;
-			let subscriber: EventCallback | undefined;
-			return {
-				state: {
-					systemPrompt: "",
-					model: mockModel,
-					thinkingLevel: "off",
-					tools: [],
+	it("hides HTTP sessions owned by another subject", async () => {
+		vi.mocked(sessionScope.createWebSessionManagerForRequest).mockReturnValue(
+			sessionManager({
+				getSessionFileById: vi.fn(() => "/tmp/victim.jsonl"),
+				loadSession: vi.fn(async () => ({
+					id: "victim",
+					owner: "other-subject",
 					messages: [],
-					isStreaming: false,
-					streamMessage: null,
-					pendingToolCalls: new Map(),
-				},
-				subscribe: (fn: EventCallback) => {
-					subscriber = fn;
-					return () => {
-						subscriber = undefined;
-					};
-				},
-				replaceMessages: () => {},
-				clearMessages: () => {},
-				prompt: async () => {
-					const approvalService = options?.approvalService;
-					if (!approvalService) {
-						throw new Error("approval service missing");
-					}
-					const decision = await approvalService.requestApproval({
-						id: "approval_web_chat",
-						toolName: "bash",
-						args: { command: "git push --force" },
-						reason: "Force push requires approval",
-					});
-					await subscriber?.({
-						type: "message_end",
-						message: {
-							role: "assistant",
-							content: [
-								{
-									type: "text",
-									text: decision.approved ? "approved" : "denied",
-								},
-							],
-							api: mockModel.api,
-							provider: mockModel.provider,
-							model: mockModel.id,
-							usage: {
-								input: 1,
-								output: 1,
-								cacheRead: 0,
-								cacheWrite: 0,
-								cost: {
-									input: 0,
-									output: 0,
-									cacheRead: 0,
-									cacheWrite: 0,
-									total: 0,
-								},
-							},
-							stopReason: "stop",
-							timestamp: Date.now(),
-						},
-					});
-				},
-				abort: () => {},
-			} as unknown as Agent;
-		};
-
-		const context: Partial<WebServerContext> = {
-			createAgent,
-			getRegisteredModel: async () => mockModel,
-			defaultApprovalMode: "prompt",
-			defaultProvider: "anthropic",
-			defaultModelId: mockModel.id,
-			corsHeaders: cors,
-		};
-
-		const chatPromise = handleChat(
-			req as unknown as IncomingMessage,
+				})),
+			}) as never,
+		);
+		const res = new MockResponse();
+		await handleChat(
+			request({
+				sessionId: "victim",
+				messages: [{ role: "user", content: "hello" }],
+			}),
 			res as unknown as ServerResponse,
-			context as WebServerContext,
+			context(),
 		);
-
-		const pendingRequest = await waitForPendingRequest("approval");
-		expect(pendingRequest).toMatchObject({
-			id: "approval_web_chat",
-			kind: "approval",
-			toolName: "bash",
-		});
-
-		const approvalReq = new PassThrough() as MockPassThrough;
-		approvalReq.method = "POST";
-		approvalReq.url = "/api/chat/approval";
-		approvalReq.headers = {};
-		approvalReq.end(
-			JSON.stringify({
-				requestId: pendingRequest.id,
-				decision: "approved",
-				reason: "Looks good",
-			}),
-		);
-
-		const approvalRes = makeRes();
-		await handleApproval(
-			approvalReq as unknown as IncomingMessage,
-			approvalRes as unknown as ServerResponse,
-			context as WebServerContext,
-		);
-
-		await chatPromise;
-
-		expect(approvalRes.statusCode).toBe(200);
-		expect(approvalRes.body).toContain('"success":true');
-		expect(serverRequestManager.listPending()).toEqual([]);
-		expect(res.body).toContain("[DONE]");
-		expect(res.body).toContain("approved");
+		expect(res.statusCode).toBe(404);
+		expect(runNativeWebChatTurn).not.toHaveBeenCalled();
 	});
 
-	it("resolves client tool requests through the shared client-tool endpoint during SSE chat", async () => {
-		const req = new PassThrough() as MockPassThrough;
-		req.method = "POST";
-		req.url = "/api/chat";
-		req.headers = { "x-composer-client-tools": "1" };
-		req.end(
-			JSON.stringify({
-				messages: [{ role: "user", content: "create an artifact" }],
-			}),
+	it("streams a native response and initializes persistence before saving", async () => {
+		const manager = sessionManager();
+		vi.mocked(sessionScope.createWebSessionManagerForRequest).mockReturnValue(
+			manager as never,
 		);
-
-		const res = makeRes();
-		const createAgent: WebServerContext["createAgent"] = async (
-			_model,
-			_thinking,
-			_approval,
-			options,
-		) => {
-			type EventCallback = (e: unknown) => void | Promise<void>;
-			let subscriber: EventCallback | undefined;
-			return {
-				state: {
-					systemPrompt: "",
-					model: mockModel,
-					thinkingLevel: "off",
-					tools: [],
-					messages: [],
-					isStreaming: false,
-					streamMessage: null,
-					pendingToolCalls: new Map(),
-				},
-				subscribe: (fn: EventCallback) => {
-					subscriber = fn;
-					return () => {
-						subscriber = undefined;
-					};
-				},
-				replaceMessages: () => {},
-				clearMessages: () => {},
-				prompt: async () => {
-					const executionService = options?.clientToolService;
-					if (!executionService) {
-						throw new Error("client tool service missing");
-					}
-					const result = await executionService.requestExecution(
-						"client_tool_web_chat",
-						"artifacts",
-						{ command: "create", filename: "report.txt" },
-					);
-					await subscriber?.({
-						type: "message_end",
-						message: {
-							role: "assistant",
-							content: result.content,
-							api: mockModel.api,
-							provider: mockModel.provider,
-							model: mockModel.id,
-							usage: {
-								input: 1,
-								output: 1,
-								cacheRead: 0,
-								cacheWrite: 0,
-								cost: {
-									input: 0,
-									output: 0,
-									cacheRead: 0,
-									cacheWrite: 0,
-									total: 0,
-								},
-							},
-							stopReason: "stop",
-							timestamp: Date.now(),
-						},
-					});
-				},
-				abort: () => {},
-			} as unknown as Agent;
-		};
-
-		const context: Partial<WebServerContext> = {
-			createAgent,
-			getRegisteredModel: async () => mockModel,
-			defaultApprovalMode: "prompt",
-			defaultProvider: "anthropic",
-			defaultModelId: mockModel.id,
-			corsHeaders: cors,
-		};
-
-		const chatPromise = handleChat(
-			req as unknown as IncomingMessage,
+		const res = new MockResponse();
+		await handleChat(
+			request({ messages: [{ role: "user", content: "hello" }] }),
 			res as unknown as ServerResponse,
-			context as WebServerContext,
+			context(),
 		);
 
-		const pendingRequest = await waitForPendingRequest("client_tool");
-		expect(pendingRequest).toMatchObject({
-			id: "client_tool_web_chat",
-			kind: "client_tool",
-			toolName: "artifacts",
-		});
-
-		const toolResultReq = new PassThrough() as MockPassThrough;
-		toolResultReq.method = "POST";
-		toolResultReq.url = "/api/chat/client-tool-result";
-		toolResultReq.headers = {};
-		toolResultReq.end(
-			JSON.stringify({
-				toolCallId: pendingRequest.id,
-				content: [{ type: "text", text: "artifact created" }],
-				isError: false,
-			}),
-		);
-
-		const toolResultRes = makeRes();
-		await handleClientToolResult(
-			toolResultReq as unknown as IncomingMessage,
-			toolResultRes as unknown as ServerResponse,
-			context as WebServerContext,
-		);
-
-		await chatPromise;
-
-		expect(toolResultRes.statusCode).toBe(200);
-		expect(toolResultRes.body).toContain('"success":true');
-		expect(serverRequestManager.listPending()).toEqual([]);
+		expect(res.statusCode).toBe(200);
+		expect(res.body).toContain("native reply");
 		expect(res.body).toContain("[DONE]");
-		expect(res.body).toContain("artifact created");
+		expect(res.body).toContain(
+			'data: {"type":"session_update","sessionId":"session-native"}',
+		);
+		expect(manager.startSession).toHaveBeenCalledWith(
+			expect.objectContaining({
+				model: MODEL,
+				systemPrompt: "native system prompt",
+				promptMetadata: expect.objectContaining({ hash: "prompt-hash" }),
+				promptContextManifest: expect.objectContaining({
+					cwd: "/workspace",
+				}),
+				systemPromptSourcePaths: ["/workspace/APPEND_SYSTEM.md"],
+			}),
+			expect.any(Object),
+		);
+		expect(manager.startSession.mock.invocationCallOrder[0]).toBeLessThan(
+			manager.saveMessage.mock.invocationCallOrder[0] as number,
+		);
 	});
 
-	it("creates a recoverable session before first-turn ask_user requests", async () => {
-		const req = new PassThrough() as MockPassThrough;
-		req.method = "POST";
-		req.url = "/api/chat";
-		req.headers = { "x-composer-client-tools": "1" };
-		req.end(
-			JSON.stringify({
-				messages: [{ role: "user", content: "help me choose" }],
-			}),
+	it("passes validated attachments and fails prompt approval closed", async () => {
+		const manager = sessionManager();
+		vi.mocked(sessionScope.createWebSessionManagerForRequest).mockReturnValue(
+			manager as never,
 		);
-
-		const res = makeRes();
-		const createAgent: WebServerContext["createAgent"] = async (
-			_model,
-			_thinking,
-			_approval,
-			options,
-		) => {
-			type EventCallback = (e: unknown) => void | Promise<void>;
-			let subscriber: EventCallback | undefined;
-			return {
-				state: {
-					systemPrompt: "",
-					model: mockModel,
-					thinkingLevel: "off",
-					tools: [],
-					messages: [],
-					isStreaming: false,
-					streamMessage: null,
-					pendingToolCalls: new Map(),
-				},
-				subscribe: (fn: EventCallback) => {
-					subscriber = fn;
-					return () => {
-						subscriber = undefined;
-					};
-				},
-				replaceMessages: () => {},
-				clearMessages: () => {},
-				prompt: async () => {
-					const executionService = options?.clientToolService;
-					if (!executionService) {
-						throw new Error("client tool service missing");
-					}
-					const result = await executionService.requestExecution(
-						"client_tool_web_user_input",
-						"ask_user",
+		const res = new MockResponse();
+		await handleChat(
+			request(
+				{
+					messages: [
 						{
-							questions: [
+							role: "user",
+							content: "earlier report",
+							attachments: [
 								{
-									header: "Stack",
-									question: "Which schema library should we use?",
-									options: [
-										{
-											label: "Zod",
-											description: "Use Zod schemas",
-										},
-										{
-											label: "Valibot",
-											description: "Use Valibot schemas",
-										},
-									],
+									id: "prior",
+									type: "document",
+									fileName: "prior.pdf",
+									mimeType: "application/pdf",
+									size: 12,
+									extractedText: "Prior attachment details",
 								},
 							],
 						},
-					);
-					await subscriber?.({
-						type: "message_end",
-						message: {
-							role: "assistant",
-							content: result.content,
-							api: mockModel.api,
-							provider: mockModel.provider,
-							model: mockModel.id,
-							usage: {
-								input: 1,
-								output: 1,
-								cacheRead: 0,
-								cacheWrite: 0,
-								cost: {
-									input: 0,
-									output: 0,
-									cacheRead: 0,
-									cacheWrite: 0,
-									total: 0,
-								},
-							},
-							stopReason: "stop",
-							timestamp: Date.now(),
-						},
-					});
-				},
-				abort: () => {},
-			} as unknown as Agent;
-		};
-
-		const context: Partial<WebServerContext> = {
-			createAgent,
-			getRegisteredModel: async () => mockModel,
-			defaultApprovalMode: "prompt",
-			defaultProvider: "anthropic",
-			defaultModelId: mockModel.id,
-			corsHeaders: cors,
-		};
-
-		const chatPromise = handleChat(
-			req as unknown as IncomingMessage,
-			res as unknown as ServerResponse,
-			context as WebServerContext,
-		);
-
-		const pendingRequest = await waitForPendingRequest("user_input");
-		expect(pendingRequest).toMatchObject({
-			id: "client_tool_web_user_input",
-			kind: "user_input",
-			toolName: "ask_user",
-		});
-		expect(typeof pendingRequest.sessionId).toBe("string");
-		expect(pendingRequest.sessionId).toBeTruthy();
-		expect(res.body).toContain('"type":"session_update"');
-		expect(res.body).toContain(String(pendingRequest.sessionId));
-
-		const sessionReq = new PassThrough() as MockPassThrough;
-		sessionReq.method = "GET";
-		sessionReq.url = `/api/sessions/${pendingRequest.sessionId}`;
-		sessionReq.headers = {};
-		sessionReq.end();
-
-		const sessionRes = makeRes();
-		await handleSessions(
-			sessionReq as unknown as IncomingMessage,
-			sessionRes as unknown as ServerResponse,
-			{ id: pendingRequest.sessionId },
-			cors,
-		);
-
-		expect(sessionRes.statusCode).toBe(200);
-		expect(sessionRes.body).toContain('"pendingClientToolRequests"');
-		expect(sessionRes.body).toContain('"toolName":"ask_user"');
-
-		const toolResultReq = new PassThrough() as MockPassThrough;
-		toolResultReq.method = "POST";
-		toolResultReq.url = "/api/chat/client-tool-result";
-		toolResultReq.headers = {};
-		toolResultReq.end(
-			JSON.stringify({
-				toolCallId: pendingRequest.id,
-				content: [{ type: "text", text: "Use Zod" }],
-				isError: false,
-			}),
-		);
-
-		const toolResultRes = makeRes();
-		await handleClientToolResult(
-			toolResultReq as unknown as IncomingMessage,
-			toolResultRes as unknown as ServerResponse,
-			context as WebServerContext,
-		);
-
-		await chatPromise;
-
-		expect(toolResultRes.statusCode).toBe(200);
-		expect(serverRequestManager.listPending()).toEqual([]);
-		expect(res.body).toContain("Use Zod");
-	});
-
-	it("bridges MCP elicitation requests to SSE clients and persists them in the session payload", async () => {
-		const req = new PassThrough() as MockPassThrough;
-		req.method = "POST";
-		req.url = "/api/chat";
-		req.headers = { "x-composer-client-tools": "1" };
-		req.end(
-			JSON.stringify({
-				messages: [{ role: "user", content: "connect the MCP server" }],
-			}),
-		);
-
-		const res = makeRes();
-		const createAgent: WebServerContext["createAgent"] = async (
-			_model,
-			_thinking,
-			_approval,
-			options,
-		) => {
-			type EventCallback = (e: unknown) => void | Promise<void>;
-			let subscriber: EventCallback | undefined;
-			return {
-				state: {
-					systemPrompt: "",
-					model: mockModel,
-					thinkingLevel: "off",
-					tools: [],
-					messages: [],
-					isStreaming: false,
-					streamMessage: null,
-					pendingToolCalls: new Map(),
-				},
-				subscribe: (fn: EventCallback) => {
-					subscriber = fn;
-					return () => {
-						subscriber = undefined;
-					};
-				},
-				replaceMessages: () => {},
-				clearMessages: () => {},
-				prompt: async () => {
-					const executionService = options?.clientToolService;
-					if (!executionService) {
-						throw new Error("client tool service missing");
-					}
-					const result = await executionService.requestExecution(
-						"mcp_elicitation_sse",
-						"mcp_elicitation",
+						{ role: "assistant", content: "reviewed" },
 						{
-							serverName: "context7",
-							requestId: "request-1",
-							mode: "form",
-							message: "Provide the project name",
-							requestedSchema: {
-								type: "object",
-								properties: {
-									project: { type: "string", title: "Project" },
+							role: "user",
+							content: "inspect",
+							attachments: [
+								{
+									id: "a1",
+									type: "document",
+									fileName: "notes.txt",
+									mimeType: "text/plain",
+									size: 5,
+									content: Buffer.from("hello").toString("base64"),
 								},
-								required: ["project"],
-							},
+							],
 						},
-					);
-					await subscriber?.({
-						type: "message_end",
-						message: {
-							role: "assistant",
-							content: result.content,
-							api: mockModel.api,
-							provider: mockModel.provider,
-							model: mockModel.id,
-							usage: {
-								input: 1,
-								output: 1,
-								cacheRead: 0,
-								cacheWrite: 0,
-								cost: {
-									input: 0,
-									output: 0,
-									cacheRead: 0,
-									cacheWrite: 0,
-									total: 0,
-								},
-							},
-							stopReason: "stop",
-							timestamp: Date.now(),
-						},
-					});
+					],
 				},
-				abort: () => {},
-			} as unknown as Agent;
-		};
-
-		const context: Partial<WebServerContext> = {
-			createAgent,
-			getRegisteredModel: async () => mockModel,
-			defaultApprovalMode: "prompt",
-			defaultProvider: "anthropic",
-			defaultModelId: mockModel.id,
-			corsHeaders: cors,
-		};
-
-		const chatPromise = handleChat(
-			req as unknown as IncomingMessage,
+				{ "x-maestro-approval-mode": "prompt" },
+			),
 			res as unknown as ServerResponse,
-			context as WebServerContext,
+			context(),
 		);
 
-		const pendingRequest = await waitForPendingRequest("mcp_elicitation");
-		expect(pendingRequest).toMatchObject({
-			id: "mcp_elicitation_sse",
-			kind: "mcp_elicitation",
-			toolName: "mcp_elicitation",
-		});
-		expect(res.body).toContain('"type":"client_tool_request"');
-		expect(res.body).toContain('"toolName":"mcp_elicitation"');
-
-		const sessionReq = new PassThrough() as MockPassThrough;
-		sessionReq.method = "GET";
-		sessionReq.url = `/api/sessions/${pendingRequest.sessionId}`;
-		sessionReq.headers = {};
-		sessionReq.end();
-
-		const sessionRes = makeRes();
-		await handleSessions(
-			sessionReq as unknown as IncomingMessage,
-			sessionRes as unknown as ServerResponse,
-			{ id: pendingRequest.sessionId },
-			cors,
-		);
-
-		expect(sessionRes.statusCode).toBe(200);
-		expect(sessionRes.body).toContain('"pendingClientToolRequests"');
-		expect(sessionRes.body).toContain('"kind":"mcp_elicitation"');
-
-		const toolResultReq = new PassThrough() as MockPassThrough;
-		toolResultReq.method = "POST";
-		toolResultReq.url = "/api/chat/client-tool-result";
-		toolResultReq.headers = {};
-		toolResultReq.end(
-			JSON.stringify({
-				toolCallId: pendingRequest.id,
-				content: [
+		expect(runNativeWebChatTurn).toHaveBeenCalledWith(
+			expect.objectContaining({
+				approvalMode: "prompt",
+				attachments: [expect.objectContaining({ fileName: "notes.txt" })],
+				history: [
 					{
-						type: "text",
-						text: JSON.stringify({
-							action: "accept",
-							content: { project: "Maestro" },
-						}),
+						role: "user",
+						text: "earlier report\n\n[Attachment: prior.pdf]\nPrior attachment details",
 					},
+					{ role: "assistant", text: "reviewed" },
 				],
-				isError: false,
 			}),
 		);
-
-		const toolResultRes = makeRes();
-		await handleClientToolResult(
-			toolResultReq as unknown as IncomingMessage,
-			toolResultRes as unknown as ServerResponse,
-			context as WebServerContext,
+		expect(manager.saveMessage).toHaveBeenCalledWith(
+			expect.objectContaining({
+				role: "user",
+				attachments: [expect.objectContaining({ fileName: "notes.txt" })],
+			}),
 		);
-
-		await chatPromise;
-
-		expect(toolResultRes.statusCode).toBe(200);
-		expect(serverRequestManager.listPending()).toEqual([]);
-		expect(res.body).toContain('\\"action\\":\\"accept\\"');
-		expect(res.body).toContain('\\"project\\":\\"Maestro\\"');
 	});
 
-	it("creates a recoverable session before first-turn ask_user requests over websocket", async () => {
-		const req = new PassThrough() as MockPassThrough;
-		req.method = "GET";
-		req.url = "/api/chat/ws?clientTools=1";
-		req.headers = { host: "localhost" };
-		const ws = new MockWebSocket();
-		const bindAgentSession = vi.fn(() => true);
-
-		const createAgent: WebServerContext["createAgent"] = async (
-			_model,
-			_thinking,
-			_approval,
-			options,
-		) => {
-			type EventCallback = (e: unknown) => void | Promise<void>;
-			let subscriber: EventCallback | undefined;
-			return {
-				state: {
-					systemPrompt: "",
-					model: mockModel,
-					thinkingLevel: "off",
-					tools: [],
-					messages: [],
-					isStreaming: false,
-					streamMessage: null,
-					pendingToolCalls: new Map(),
-				},
-				subscribe: (fn: EventCallback) => {
-					subscriber = fn;
-					return () => {
-						subscriber = undefined;
-					};
-				},
-				replaceMessages: () => {},
-				clearMessages: () => {},
-				prompt: async () => {
-					const executionService = options?.clientToolService;
-					if (!executionService) {
-						throw new Error("client tool service missing");
-					}
-					const result = await executionService.requestExecution(
-						"client_tool_websocket_user_input",
-						"ask_user",
-						{
-							questions: [
-								{
-									header: "Stack",
-									question: "Which schema library should we use?",
-									options: [
-										{
-											label: "Zod",
-											description: "Use Zod schemas",
-										},
-										{
-											label: "Valibot",
-											description: "Use Valibot schemas",
-										},
-									],
-								},
-							],
-						},
-					);
-					await subscriber?.({
-						type: "message_end",
-						message: {
-							role: "assistant",
-							content: result.content,
-							api: mockModel.api,
-							provider: mockModel.provider,
-							model: mockModel.id,
-							usage: {
-								input: 1,
-								output: 1,
-								cacheRead: 0,
-								cacheWrite: 0,
-								cost: {
-									input: 0,
-									output: 0,
-									cacheRead: 0,
-									cacheWrite: 0,
-									total: 0,
-								},
-							},
-							stopReason: "stop",
-							timestamp: Date.now(),
-						},
-					});
-				},
-				abort: () => {},
-			} as unknown as Agent;
-		};
-
-		const context: Partial<WebServerContext> = {
-			createAgent,
-			getRegisteredModel: async () => mockModel,
-			defaultApprovalMode: "prompt",
-			defaultProvider: "anthropic",
-			defaultModelId: mockModel.id,
-			corsHeaders: cors,
-			composerManagers: {
-				bindAgentSession,
-				get: () => undefined,
-			},
-		};
-
-		handleChatWebSocket(
-			ws as unknown as Parameters<typeof handleChatWebSocket>[0],
-			req as unknown as IncomingMessage,
-			context as WebServerContext,
-		);
-
-		ws.emit(
-			"message",
-			JSON.stringify({
-				messages: [{ role: "user", content: "help me choose" }],
-			}),
-		);
-
-		const pendingRequest = await waitForPendingRequest("user_input");
-		expect(pendingRequest).toMatchObject({
-			id: "client_tool_websocket_user_input",
-			kind: "user_input",
-			toolName: "ask_user",
+	it("returns a server error when native startup fails", async () => {
+		runNativeWebChatTurn.mockResolvedValue({
+			ok: false,
+			phase: "start",
+			error: new Error("native unavailable"),
 		});
-		expect(typeof pendingRequest.sessionId).toBe("string");
-		expect(pendingRequest.sessionId).toBeTruthy();
-		expect(bindAgentSession).toHaveBeenCalledWith(
-			expect.anything(),
-			expect.any(String),
-			pendingRequest.sessionId,
+		const res = new MockResponse();
+		await handleChat(
+			request({ messages: [{ role: "user", content: "hello" }] }),
+			res as unknown as ServerResponse,
+			context(),
 		);
-
-		const sessionUpdate = await waitForWebSocketMessage(
-			ws,
-			(payload) =>
-				payload.includes('"type":"session_update"') &&
-				payload.includes(String(pendingRequest.sessionId)),
-		);
-		expect(sessionUpdate).toContain('"type":"session_update"');
-
-		const sessionReq = new PassThrough() as MockPassThrough;
-		sessionReq.method = "GET";
-		sessionReq.url = `/api/sessions/${pendingRequest.sessionId}`;
-		sessionReq.headers = {};
-		sessionReq.end();
-
-		const sessionRes = makeRes();
-		await handleSessions(
-			sessionReq as unknown as IncomingMessage,
-			sessionRes as unknown as ServerResponse,
-			{ id: pendingRequest.sessionId },
-			cors,
-		);
-
-		expect(sessionRes.statusCode).toBe(200);
-		expect(sessionRes.body).toContain('"pendingClientToolRequests"');
-		expect(sessionRes.body).toContain('"toolName":"ask_user"');
-
-		const toolResultReq = new PassThrough() as MockPassThrough;
-		toolResultReq.method = "POST";
-		toolResultReq.url = "/api/chat/client-tool-result";
-		toolResultReq.headers = {};
-		toolResultReq.end(
-			JSON.stringify({
-				toolCallId: pendingRequest.id,
-				content: [{ type: "text", text: "Use Zod" }],
-				isError: false,
-			}),
-		);
-
-		const toolResultRes = makeRes();
-		await handleClientToolResult(
-			toolResultReq as unknown as IncomingMessage,
-			toolResultRes as unknown as ServerResponse,
-			context as WebServerContext,
-		);
-
-		expect(toolResultRes.statusCode).toBe(200);
-		await waitForWebSocketMessage(ws, (payload) => payload.includes("Use Zod"));
-		await waitForWebSocketMessage(ws, (payload) =>
-			payload.includes('"type":"done"'),
-		);
-		expect(serverRequestManager.listPending()).toEqual([]);
+		expect(res.statusCode).toBe(500);
+		expect(res.body).toContain("native unavailable");
 	});
 
-	it("ends websocket chat when restoring the session composer fails", async () => {
-		const req = new PassThrough() as MockPassThrough;
+	it("returns native session policy denials as policy errors", async () => {
+		runNativeWebChatTurn.mockResolvedValue({
+			ok: false,
+			phase: "turn",
+			error: new ApiError(403, "[Policy] Session limit reached"),
+		});
+		const res = new MockResponse();
+		await handleChat(
+			request({ messages: [{ role: "user", content: "hello" }] }),
+			res as unknown as ServerResponse,
+			context(),
+		);
+		expect(res.statusCode).toBe(403);
+		expect(res.body).toContain("[Policy] Session limit reached");
+	});
+
+	it("uses the native path for websocket chat", async () => {
+		const req = request({});
 		req.method = "GET";
 		req.url = "/api/chat/ws";
-		req.headers = { host: "localhost" };
 		const ws = new MockWebSocket();
-		const prompt = vi.fn();
-		const bindAgentSession = vi.fn(() => false);
-
-		const context: Partial<WebServerContext> = {
-			createAgent: async () =>
-				({
-					state: {
-						systemPrompt: "",
-						model: mockModel,
-						thinkingLevel: "off",
-						tools: [],
-						messages: [],
-						isStreaming: false,
-						streamMessage: null,
-						pendingToolCalls: new Map(),
-					},
-					subscribe: () => () => {},
-					replaceMessages: () => {},
-					clearMessages: () => {},
-					prompt,
-					abort: () => {},
-				}) as unknown as Agent,
-			getRegisteredModel: async () => mockModel,
-			defaultApprovalMode: "prompt",
-			defaultProvider: "anthropic",
-			defaultModelId: mockModel.id,
-			corsHeaders: cors,
-			composerManagers: {
-				bindAgentSession,
-				get: () => undefined,
-			},
-		};
-
-		handleChatWebSocket(
-			ws as unknown as Parameters<typeof handleChatWebSocket>[0],
-			req as unknown as IncomingMessage,
-			context as WebServerContext,
-		);
-
+		handleChatWebSocket(ws as never, req, context());
 		ws.emit(
 			"message",
-			JSON.stringify({
-				messages: [{ role: "user", content: "help me choose" }],
-			}),
-		);
-
-		await waitForWebSocketMessage(ws, (payload) =>
-			payload.includes(
-				"Failed to restore the active composer for this session",
+			Buffer.from(
+				JSON.stringify({
+					messages: [
+						{
+							role: "user",
+							content: "see diagram",
+							attachments: [
+								{
+									id: "diagram",
+									type: "image",
+									fileName: "diagram.png",
+									mimeType: "image/png",
+									size: 12,
+								},
+							],
+						},
+						{ role: "assistant", content: "reviewed" },
+						{ role: "user", content: "hello" },
+					],
+				}),
 			),
 		);
-		await waitForWebSocketMessage(ws, (payload) =>
-			payload.includes('"type":"done"'),
+		await vi.waitFor(() => expect(runNativeWebChatTurn).toHaveBeenCalled());
+		expect(runNativeWebChatTurn).toHaveBeenCalledWith(
+			expect.objectContaining({
+				history: [
+					{
+						role: "user",
+						text: "see diagram\n\n[Attachment: diagram.png (image/png)]",
+					},
+					{ role: "assistant", text: "reviewed" },
+				],
+			}),
 		);
-
-		expect(bindAgentSession).toHaveBeenCalled();
-		expect(prompt).not.toHaveBeenCalled();
+		await vi.waitFor(() =>
+			expect(ws.sent.some((payload) => payload.includes("native reply"))).toBe(
+				true,
+			),
+		);
+		expect(ws.sent).toContain(
+			JSON.stringify({ type: "session_update", sessionId: "session-native" }),
+		);
 	});
 
-	it("creates a recoverable session before first-turn approval requests over websocket", async () => {
-		const req = new PassThrough() as MockPassThrough;
+	it("rejects websocket requests that require unbridged client tools", async () => {
+		const req = request({}, { "x-maestro-client-tools": "true" });
 		req.method = "GET";
 		req.url = "/api/chat/ws";
-		req.headers = { host: "localhost" };
 		const ws = new MockWebSocket();
-
-		const createAgent: WebServerContext["createAgent"] = async (
-			_model,
-			_thinking,
-			_approval,
-			options,
-		) => {
-			type EventCallback = (e: unknown) => void | Promise<void>;
-			let subscriber: EventCallback | undefined;
-			return {
-				state: {
-					systemPrompt: "",
-					model: mockModel,
-					thinkingLevel: "off",
-					tools: [],
-					messages: [],
-					isStreaming: false,
-					streamMessage: null,
-					pendingToolCalls: new Map(),
-				},
-				subscribe: (fn: EventCallback) => {
-					subscriber = fn;
-					return () => {
-						subscriber = undefined;
-					};
-				},
-				replaceMessages: () => {},
-				clearMessages: () => {},
-				prompt: async () => {
-					const approvalService = options?.approvalService;
-					if (!approvalService) {
-						throw new Error("approval service missing");
-					}
-					const decision = await approvalService.requestApproval({
-						id: "approval_websocket_chat",
-						toolName: "bash",
-						args: { command: "git push --force" },
-						reason: "Force push requires approval",
-					});
-					await subscriber?.({
-						type: "message_end",
-						message: {
-							role: "assistant",
-							content: [
-								{
-									type: "text",
-									text: decision.approved ? "approved" : "denied",
-								},
-							],
-							api: mockModel.api,
-							provider: mockModel.provider,
-							model: mockModel.id,
-							usage: {
-								input: 1,
-								output: 1,
-								cacheRead: 0,
-								cacheWrite: 0,
-								cost: {
-									input: 0,
-									output: 0,
-									cacheRead: 0,
-									cacheWrite: 0,
-									total: 0,
-								},
-							},
-							stopReason: "stop",
-							timestamp: Date.now(),
-						},
-					});
-				},
-				abort: () => {},
-			} as unknown as Agent;
-		};
-
-		const context: Partial<WebServerContext> = {
-			createAgent,
-			getRegisteredModel: async () => mockModel,
-			defaultApprovalMode: "prompt",
-			defaultProvider: "anthropic",
-			defaultModelId: mockModel.id,
-			corsHeaders: cors,
-		};
-
-		handleChatWebSocket(
-			ws as unknown as Parameters<typeof handleChatWebSocket>[0],
-			req as unknown as IncomingMessage,
-			context as WebServerContext,
-		);
-
+		handleChatWebSocket(ws as never, req, context());
 		ws.emit(
 			"message",
-			JSON.stringify({
-				messages: [{ role: "user", content: "run the command" }],
-			}),
+			Buffer.from(
+				JSON.stringify({ messages: [{ role: "user", content: "hello" }] }),
+			),
 		);
-
-		const pendingRequest = await waitForPendingRequest("approval");
-		expect(pendingRequest).toMatchObject({
-			id: "approval_websocket_chat",
-			kind: "approval",
-			toolName: "bash",
-		});
-		expect(typeof pendingRequest.sessionId).toBe("string");
-		expect(pendingRequest.sessionId).toBeTruthy();
-
-		await waitForWebSocketMessage(
-			ws,
-			(payload) =>
-				payload.includes('"type":"session_update"') &&
-				payload.includes(String(pendingRequest.sessionId)),
+		await vi.waitFor(() =>
+			expect(
+				ws.sent.some((payload) =>
+					payload.includes(
+						"Native web chat does not yet support client-side tools",
+					),
+				),
+			).toBe(true),
 		);
-
-		const sessionReq = new PassThrough() as MockPassThrough;
-		sessionReq.method = "GET";
-		sessionReq.url = `/api/sessions/${pendingRequest.sessionId}`;
-		sessionReq.headers = {};
-		sessionReq.end();
-
-		const sessionRes = makeRes();
-		await handleSessions(
-			sessionReq as unknown as IncomingMessage,
-			sessionRes as unknown as ServerResponse,
-			{ id: pendingRequest.sessionId },
-			cors,
-		);
-
-		expect(sessionRes.statusCode).toBe(200);
-		expect(sessionRes.body).toContain('"pendingApprovalRequests"');
-		expect(sessionRes.body).toContain('"pendingRequests"');
-		expect(sessionRes.body).toContain('"toolName":"bash"');
-		expect(JSON.parse(sessionRes.body)).toMatchObject({
-			pendingRequests: [
-				{
-					id: pendingRequest.id,
-					kind: "approval",
-					status: "pending",
-					visibility: "user",
-					source: "local",
-					toolCallId: pendingRequest.callId,
-					toolName: "bash",
-					createdAt: expect.any(String),
-					expiresAt: expect.any(String),
-				},
-			],
-		});
-
-		const approvalReq = new PassThrough() as MockPassThrough;
-		approvalReq.method = "POST";
-		approvalReq.url = "/api/chat/approval";
-		approvalReq.headers = {};
-		approvalReq.end(
-			JSON.stringify({
-				requestId: pendingRequest.id,
-				decision: "approved",
-				reason: "Looks good",
-			}),
-		);
-
-		const approvalRes = makeRes();
-		await handleApproval(
-			approvalReq as unknown as IncomingMessage,
-			approvalRes as unknown as ServerResponse,
-			context as WebServerContext,
-		);
-
-		expect(approvalRes.statusCode).toBe(200);
-		await waitForWebSocketMessage(ws, (payload) =>
-			payload.includes("approved"),
-		);
-		await waitForWebSocketMessage(ws, (payload) =>
-			payload.includes('"type":"done"'),
-		);
-		expect(serverRequestManager.listPending()).toEqual([]);
-	});
-
-	it("creates a recoverable session before first-turn tool retry requests over websocket", async () => {
-		const req = new PassThrough() as MockPassThrough;
-		req.method = "GET";
-		req.url = "/api/chat/ws";
-		req.headers = { host: "localhost" };
-		const ws = new MockWebSocket();
-
-		const createAgent: WebServerContext["createAgent"] = async (
-			_model,
-			_thinking,
-			_approval,
-			options,
-		) => {
-			type EventCallback = (e: unknown) => void | Promise<void>;
-			let subscriber: EventCallback | undefined;
-			return {
-				state: {
-					systemPrompt: "",
-					model: mockModel,
-					thinkingLevel: "off",
-					tools: [],
-					messages: [],
-					isStreaming: false,
-					streamMessage: null,
-					pendingToolCalls: new Map(),
-				},
-				subscribe: (fn: EventCallback) => {
-					subscriber = fn;
-					return () => {
-						subscriber = undefined;
-					};
-				},
-				replaceMessages: () => {},
-				clearMessages: () => {},
-				prompt: async () => {
-					const retryService = options?.toolRetryService;
-					if (!retryService) {
-						throw new Error("tool retry service missing");
-					}
-					const decision = await retryService.requestDecision({
-						id: "retry_websocket_chat",
-						toolCallId: "call_bash",
-						toolName: "bash",
-						args: { command: "ls" },
-						errorMessage: "Command failed",
-						attempt: 1,
-						summary: "Retry bash command",
-					});
-					await subscriber?.({
-						type: "message_end",
-						message: {
-							role: "assistant",
-							content: [{ type: "text", text: decision.action }],
-							api: mockModel.api,
-							provider: mockModel.provider,
-							model: mockModel.id,
-							usage: {
-								input: 1,
-								output: 1,
-								cacheRead: 0,
-								cacheWrite: 0,
-								cost: {
-									input: 0,
-									output: 0,
-									cacheRead: 0,
-									cacheWrite: 0,
-									total: 0,
-								},
-							},
-							stopReason: "stop",
-							timestamp: Date.now(),
-						},
-					});
-				},
-				abort: () => {},
-			} as unknown as Agent;
-		};
-
-		const context: Partial<WebServerContext> = {
-			createAgent,
-			getRegisteredModel: async () => mockModel,
-			defaultApprovalMode: "prompt",
-			defaultProvider: "anthropic",
-			defaultModelId: mockModel.id,
-			corsHeaders: cors,
-		};
-
-		handleChatWebSocket(
-			ws as unknown as Parameters<typeof handleChatWebSocket>[0],
-			req as unknown as IncomingMessage,
-			context as WebServerContext,
-		);
-
-		ws.emit(
-			"message",
-			JSON.stringify({
-				messages: [{ role: "user", content: "retry the tool if needed" }],
-			}),
-		);
-
-		const pendingRequest = await waitForPendingRequest("tool_retry");
-		expect(pendingRequest).toMatchObject({
-			id: "retry_websocket_chat",
-			kind: "tool_retry",
-			toolName: "bash",
-		});
-		expect(typeof pendingRequest.sessionId).toBe("string");
-		expect(pendingRequest.sessionId).toBeTruthy();
-
-		await waitForWebSocketMessage(
-			ws,
-			(payload) =>
-				payload.includes('"type":"session_update"') &&
-				payload.includes(String(pendingRequest.sessionId)),
-		);
-
-		const sessionReq = new PassThrough() as MockPassThrough;
-		sessionReq.method = "GET";
-		sessionReq.url = `/api/sessions/${pendingRequest.sessionId}`;
-		sessionReq.headers = {};
-		sessionReq.end();
-
-		const sessionRes = makeRes();
-		await handleSessions(
-			sessionReq as unknown as IncomingMessage,
-			sessionRes as unknown as ServerResponse,
-			{ id: pendingRequest.sessionId },
-			cors,
-		);
-
-		expect(sessionRes.statusCode).toBe(200);
-		expect(sessionRes.body).toContain('"pendingToolRetryRequests"');
-		expect(sessionRes.body).toContain('"toolName":"bash"');
-
-		const retryReq = new PassThrough() as MockPassThrough;
-		retryReq.method = "POST";
-		retryReq.url = "/api/chat/tool-retry";
-		retryReq.headers = {};
-		retryReq.end(
-			JSON.stringify({
-				requestId: pendingRequest.id,
-				action: "retry",
-				reason: "Try once more",
-			}),
-		);
-
-		const retryRes = makeRes();
-		await handleToolRetry(
-			retryReq as unknown as IncomingMessage,
-			retryRes as unknown as ServerResponse,
-			context as WebServerContext,
-		);
-
-		expect(retryRes.statusCode).toBe(200);
-		await waitForWebSocketMessage(ws, (payload) => payload.includes("retry"));
-		await waitForWebSocketMessage(ws, (payload) =>
-			payload.includes('"type":"done"'),
-		);
-		expect(serverRequestManager.listPending()).toEqual([]);
-	});
-
-	it("resolves tool retry requests through the shared tool-retry endpoint during SSE chat", async () => {
-		const req = new PassThrough() as MockPassThrough;
-		req.method = "POST";
-		req.url = "/api/chat";
-		req.headers = {};
-		req.end(
-			JSON.stringify({
-				messages: [{ role: "user", content: "retry the tool if needed" }],
-			}),
-		);
-
-		const res = makeRes();
-		const createAgent: WebServerContext["createAgent"] = async (
-			_model,
-			_thinking,
-			_approval,
-			options,
-		) => {
-			type EventCallback = (e: unknown) => void | Promise<void>;
-			let subscriber: EventCallback | undefined;
-			return {
-				state: {
-					systemPrompt: "",
-					model: mockModel,
-					thinkingLevel: "off",
-					tools: [],
-					messages: [],
-					isStreaming: false,
-					streamMessage: null,
-					pendingToolCalls: new Map(),
-				},
-				subscribe: (fn: EventCallback) => {
-					subscriber = fn;
-					return () => {
-						subscriber = undefined;
-					};
-				},
-				replaceMessages: () => {},
-				clearMessages: () => {},
-				prompt: async () => {
-					const retryService = options?.toolRetryService;
-					if (!retryService) {
-						throw new Error("tool retry service missing");
-					}
-					const decision = await retryService.requestDecision({
-						id: "retry_web_chat",
-						toolCallId: "call_bash",
-						toolName: "bash",
-						args: { command: "ls" },
-						errorMessage: "Command failed",
-						attempt: 1,
-						summary: "Retry bash command",
-					});
-					await subscriber?.({
-						type: "message_end",
-						message: {
-							role: "assistant",
-							content: [{ type: "text", text: decision.action }],
-							api: mockModel.api,
-							provider: mockModel.provider,
-							model: mockModel.id,
-							usage: {
-								input: 1,
-								output: 1,
-								cacheRead: 0,
-								cacheWrite: 0,
-								cost: {
-									input: 0,
-									output: 0,
-									cacheRead: 0,
-									cacheWrite: 0,
-									total: 0,
-								},
-							},
-							stopReason: "stop",
-							timestamp: Date.now(),
-						},
-					});
-				},
-				abort: () => {},
-			} as unknown as Agent;
-		};
-
-		const context: Partial<WebServerContext> = {
-			createAgent,
-			getRegisteredModel: async () => mockModel,
-			defaultApprovalMode: "prompt",
-			defaultProvider: "anthropic",
-			defaultModelId: mockModel.id,
-			corsHeaders: cors,
-		};
-
-		const chatPromise = handleChat(
-			req as unknown as IncomingMessage,
-			res as unknown as ServerResponse,
-			context as WebServerContext,
-		);
-
-		const pendingRequest = await waitForPendingRequest("tool_retry");
-		expect(pendingRequest).toMatchObject({
-			id: "retry_web_chat",
-			kind: "tool_retry",
-			toolName: "bash",
-		});
-
-		const retryReq = new PassThrough() as MockPassThrough;
-		retryReq.method = "POST";
-		retryReq.url = "/api/chat/tool-retry";
-		retryReq.headers = {};
-		retryReq.end(
-			JSON.stringify({
-				requestId: pendingRequest.id,
-				action: "retry",
-				reason: "Try again",
-			}),
-		);
-
-		const retryRes = makeRes();
-		await handleToolRetry(
-			retryReq as unknown as IncomingMessage,
-			retryRes as unknown as ServerResponse,
-			context as WebServerContext,
-		);
-
-		await chatPromise;
-
-		expect(retryRes.statusCode).toBe(200);
-		expect(retryRes.body).toContain('"success":true');
-		expect(serverRequestManager.listPending()).toEqual([]);
-		expect(res.body).toContain("[DONE]");
-		expect(res.body).toContain("retry");
-	});
-
-	it("runs Notification hooks during SSE chat even without desktop notifications configured", async () => {
-		process.env.MAESTRO_NOTIFY_PROGRAM = "";
-		process.env.MAESTRO_NOTIFY_EVENTS = "";
-		process.env.MAESTRO_NOTIFY_TERMINAL = "";
-
-		const captured: Array<{ notification_type: string; message: string }> = [];
-		registerHook("Notification", {
-			type: "callback",
-			callback: async (input) => {
-				captured.push({
-					notification_type: (
-						input as { notification_type: string; message: string }
-					).notification_type,
-					message: (input as { notification_type: string; message: string })
-						.message,
-				});
-				return {};
-			},
-		});
-
-		const req = new PassThrough() as MockPassThrough;
-		req.method = "POST";
-		req.url = "/api/chat";
-		req.headers = {};
-		req.end(
-			JSON.stringify({
-				messages: [{ role: "user", content: "hi" }],
-			}),
-		);
-
-		const res = makeRes();
-
-		const context: Partial<WebServerContext> = {
-			createAgent: async () => {
-				type EventCallback = (e: unknown) => void | Promise<void>;
-				let subscriber: EventCallback | undefined;
-				const state = {
-					systemPrompt: "",
-					model: mockModel,
-					thinkingLevel: "off",
-					tools: [],
-					messages: [] as unknown[],
-					isStreaming: false,
-					streamMessage: null,
-					pendingToolCalls: new Map(),
-				};
-				return {
-					state,
-					subscribe: (fn: EventCallback) => {
-						subscriber = fn;
-						return () => {
-							subscriber = undefined;
-						};
-					},
-					replaceMessages: (messages: unknown[]) => {
-						state.messages = messages;
-					},
-					clearMessages: () => {},
-					prompt: async () => {
-						await subscriber?.({
-							type: "turn_end",
-							message: {
-								role: "assistant",
-								content: [{ type: "text", text: "Done" }],
-								api: mockModel.api,
-								provider: mockModel.provider,
-								model: mockModel.id,
-								usage: {
-									input: 1,
-									output: 1,
-									cacheRead: 0,
-									cacheWrite: 0,
-									cost: {
-										input: 0,
-										output: 0,
-										cacheRead: 0,
-										cacheWrite: 0,
-										total: 0,
-									},
-								},
-								stopReason: "stop",
-								timestamp: Date.now(),
-							},
-							toolResults: [],
-						});
-					},
-					abort: () => {},
-				} as unknown as Agent;
-			},
-			getRegisteredModel: async () => mockModel,
-			defaultApprovalMode: "prompt",
-			defaultProvider: "anthropic",
-			defaultModelId: mockModel.id,
-			corsHeaders: cors,
-		};
-
-		await handleChat(
-			req as unknown as IncomingMessage,
-			res as unknown as ServerResponse,
-			context as WebServerContext,
-		);
-
-		expect(captured).toEqual([
-			{
-				notification_type: "turn-complete",
-				message: "Done",
-			},
-		]);
-	});
-
-	it("runs UserPromptSubmit hooks before executing SSE chat prompts", async () => {
-		const queueNextRunHistoryMessage = vi.fn();
-		const queueNextRunSystemPromptAddition = vi.fn();
-
-		registerHook("UserPromptSubmit", {
-			type: "callback",
-			callback: async () => ({
-				hookSpecificOutput: {
-					hookEventName: "UserPromptSubmit",
-					additionalContext: "Remember the repo coding conventions.",
-				},
-				systemMessage: "Avoid unnecessary refactors.",
-			}),
-		});
-
-		const req = new PassThrough() as MockPassThrough;
-		req.method = "POST";
-		req.url = "/api/chat";
-		req.headers = {};
-		req.end(
-			JSON.stringify({
-				messages: [{ role: "user", content: "hi" }],
-			}),
-		);
-
-		const res = makeRes();
-
-		const context: Partial<WebServerContext> = {
-			createAgent: async () => {
-				type EventCallback = (e: unknown) => void | Promise<void>;
-				let subscriber: EventCallback | undefined;
-				return {
-					state: {
-						systemPrompt: "",
-						model: mockModel,
-						thinkingLevel: "off",
-						tools: [],
-						messages: [] as unknown[],
-						isStreaming: false,
-						streamMessage: null,
-						pendingToolCalls: new Map(),
-					},
-					subscribe: (fn: EventCallback) => {
-						subscriber = fn;
-						return () => {
-							subscriber = undefined;
-						};
-					},
-					queueNextRunHistoryMessage,
-					queueNextRunSystemPromptAddition,
-					replaceMessages: () => {},
-					clearMessages: () => {},
-					prompt: async () => {
-						await subscriber?.({
-							type: "turn_end",
-							message: {
-								role: "assistant",
-								content: [{ type: "text", text: "Done" }],
-								api: mockModel.api,
-								provider: mockModel.provider,
-								model: mockModel.id,
-								usage: {
-									input: 1,
-									output: 1,
-									cacheRead: 0,
-									cacheWrite: 0,
-									cost: {
-										input: 0,
-										output: 0,
-										cacheRead: 0,
-										cacheWrite: 0,
-										total: 0,
-									},
-								},
-								stopReason: "stop",
-								timestamp: Date.now(),
-							},
-						});
-					},
-					abort: () => {},
-				} as unknown as Agent;
-			},
-			getRegisteredModel: async () => mockModel,
-			defaultApprovalMode: "prompt",
-			defaultProvider: "anthropic",
-			defaultModelId: mockModel.id,
-			corsHeaders: cors,
-		};
-
-		await handleChat(
-			req as unknown as IncomingMessage,
-			res as unknown as ServerResponse,
-			context as WebServerContext,
-		);
-
-		expect(queueNextRunSystemPromptAddition).toHaveBeenCalledWith(
-			"UserPromptSubmit hook system guidance:\nAvoid unnecessary refactors.",
-		);
-		expect(queueNextRunHistoryMessage).toHaveBeenCalledWith({
-			role: "hookMessage",
-			customType: "UserPromptSubmit",
-			content: "Remember the repo coding conventions.",
-			display: true,
-			details: undefined,
-			timestamp: expect.any(Number),
-		});
-	});
-
-	it("persists user messages during streaming", async () => {
-		const composerHome = mkdtempSync(join(tmpdir(), "composer-home-"));
-		vi.stubEnv("MAESTRO_HOME", composerHome);
-
-		const req = new PassThrough() as MockPassThrough;
-		req.method = "POST";
-		req.url = "/api/chat";
-		req.headers = {};
-		const body = {
-			messages: [{ role: "user", content: "hi" }],
-		};
-		req.end(JSON.stringify(body));
-
-		const res = makeRes();
-
-		const context: Partial<WebServerContext> = {
-			createAgent: async () => {
-				type EventCallback = (e: unknown) => void;
-				let subscriber: EventCallback | undefined;
-				const state = {
-					systemPrompt: "",
-					model: mockModel,
-					thinkingLevel: "off",
-					tools: [],
-					messages: [] as unknown[],
-					isStreaming: false,
-					streamMessage: null,
-					pendingToolCalls: new Map(),
-				};
-				return {
-					state,
-					subscribe: (fn: EventCallback) => {
-						subscriber = fn;
-						return () => {
-							subscriber = undefined;
-						};
-					},
-					replaceMessages: () => {},
-					clearMessages: () => {},
-					prompt: async () => {
-						const userMessage = { role: "user", content: "hi" };
-						state.messages = [...state.messages, userMessage];
-						subscriber?.({
-							type: "message_end",
-							message: userMessage,
-						});
-						const assistantMessage = {
-							role: "assistant",
-							content: [{ type: "text", text: "Hello" }],
-							api: mockModel.api,
-							provider: mockModel.provider,
-							model: mockModel.id,
-							usage: {
-								input: 1,
-								output: 1,
-								cacheRead: 0,
-								cacheWrite: 0,
-								cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-							},
-							stopReason: "stop",
-							timestamp: Date.now(),
-						};
-						state.messages = [...state.messages, assistantMessage];
-						subscriber?.({
-							type: "message_end",
-							message: assistantMessage,
-						});
-					},
-					abort: () => {},
-				};
-			},
-			getRegisteredModel: async () => mockModel,
-			defaultApprovalMode: "prompt",
-			defaultProvider: "anthropic",
-			defaultModelId: mockModel.id,
-			corsHeaders: cors,
-		};
-
-		await handleChat(
-			req as unknown as IncomingMessage,
-			res as unknown as ServerResponse,
-			context as WebServerContext,
-		);
-
-		const sessionDir = join(composerHome, "agent", "sessions");
-		const sessionFiles = findJsonlFiles(sessionDir);
-		expect(sessionFiles.length).toBeGreaterThan(0);
-
-		const entries = readFileSync(sessionFiles[0]!, "utf8")
-			.trim()
-			.split("\n")
-			.filter(Boolean)
-			.map((line) => JSON.parse(line));
-		const messages = entries
-			.filter((entry) => entry.type === "message")
-			.map((entry) => entry.message);
-		expect(messages.some((msg) => msg.role === "user")).toBe(true);
-	});
-
-	it("persists provider tool results after the owning assistant message", async () => {
-		const composerHome = mkdtempSync(join(tmpdir(), "composer-home-"));
-		vi.stubEnv("MAESTRO_HOME", composerHome);
-
-		const req = new PassThrough() as MockPassThrough;
-		req.method = "POST";
-		req.url = "/api/chat";
-		req.headers = {};
-		req.end(
-			JSON.stringify({ messages: [{ role: "user", content: "delegate" }] }),
-		);
-
-		const res = makeRes();
-
-		const context: Partial<WebServerContext> = {
-			createAgent: async () => {
-				type EventCallback = (e: unknown) => void;
-				let subscriber: EventCallback | undefined;
-				const state = {
-					systemPrompt: "",
-					model: mockModel,
-					thinkingLevel: "off",
-					tools: [],
-					messages: [] as unknown[],
-					isStreaming: false,
-					streamMessage: null,
-					pendingToolCalls: new Map(),
-				};
-				return {
-					state,
-					subscribe: (fn: EventCallback) => {
-						subscriber = fn;
-						return () => {
-							subscriber = undefined;
-						};
-					},
-					replaceMessages: () => {},
-					clearMessages: () => {},
-					prompt: async () => {
-						const assistantMessage = {
-							role: "assistant",
-							content: [
-								{
-									type: "toolCall",
-									id: "call_1",
-									name: "codex.subagent.spawnAgent",
-									arguments: {},
-								},
-							],
-							api: mockModel.api,
-							provider: mockModel.provider,
-							model: mockModel.id,
-							usage: {
-								input: 1,
-								output: 1,
-								cacheRead: 0,
-								cacheWrite: 0,
-								cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-							},
-							stopReason: "tool_use",
-							timestamp: Date.now(),
-						};
-						const toolResultMessage = {
-							role: "toolResult" as const,
-							toolCallId: "call_1",
-							toolName: "codex.subagent.spawnAgent",
-							content: [{ type: "text" as const, text: "completed" }],
-							isError: false,
-							timestamp: Date.now(),
-						};
-						state.messages = [assistantMessage, toolResultMessage];
-						subscriber?.({
-							type: "tool_execution_end",
-							toolCallId: "call_1",
-							toolName: "codex.subagent.spawnAgent",
-							result: toolResultMessage,
-							isError: false,
-						});
-						subscriber?.({
-							type: "message_end",
-							message: assistantMessage,
-						});
-						subscriber?.({
-							type: "message_end",
-							message: toolResultMessage,
-						});
-					},
-					abort: () => {},
-				} as unknown as Agent;
-			},
-			getRegisteredModel: async () => mockModel,
-			defaultApprovalMode: "prompt",
-			defaultProvider: "anthropic",
-			defaultModelId: mockModel.id,
-			corsHeaders: cors,
-		};
-
-		await handleChat(
-			req as unknown as IncomingMessage,
-			res as unknown as ServerResponse,
-			context as WebServerContext,
-		);
-
-		const sessionDir = join(composerHome, "agent", "sessions");
-		const sessionFiles = findJsonlFiles(sessionDir);
-		expect(sessionFiles.length).toBeGreaterThan(0);
-
-		const entries = readFileSync(sessionFiles[0]!, "utf8")
-			.trim()
-			.split("\n")
-			.filter(Boolean)
-			.map((line) => JSON.parse(line))
-			.filter((entry) => entry.type === "message");
-
-		expect(entries).toHaveLength(2);
-		expect(entries.map((entry) => entry.message.role)).toEqual([
-			"assistant",
-			"toolResult",
-		]);
-		expect(entries[1]?.parentId).toBe(entries[0]?.id);
-		expect(entries[1]?.message.toolCallId).toBe("call_1");
-	});
-
-	it("slims toolcall update events when header is set", async () => {
-		const req = new PassThrough() as MockPassThrough;
-		req.method = "POST";
-		req.url = "/api/chat";
-		req.headers = { "x-composer-slim-events": "true" };
-		req.end(JSON.stringify({ messages: [{ role: "user", content: "hi" }] }));
-
-		const res = makeRes();
-
-		const context: Partial<WebServerContext> = {
-			createAgent: async () => {
-				type EventCallback = (e: unknown) => void;
-				let subscriber: EventCallback | undefined;
-				return {
-					state: {
-						systemPrompt: "",
-						model: mockModel,
-						thinkingLevel: "off",
-						tools: [],
-						messages: [],
-						isStreaming: false,
-						streamMessage: null,
-						pendingToolCalls: new Map(),
-					},
-					subscribe: (fn: EventCallback) => {
-						subscriber = fn;
-						return () => {
-							subscriber = undefined;
-						};
-					},
-					replaceMessages: () => {},
-					clearMessages: () => {},
-					prompt: async () => {
-						subscriber?.({
-							type: "message_update",
-							message: { role: "assistant", content: [] },
-							assistantMessageEvent: {
-								type: "toolcall_delta",
-								contentIndex: 0,
-								delta: '{"path":"/tmp/one.txt"}',
-								partial: {
-									role: "assistant",
-									content: [
-										{
-											type: "toolCall",
-											id: "call_1",
-											name: "read_file",
-											arguments: { path: "/tmp/one.txt" },
-										},
-									],
-								},
-							},
-						});
-						subscriber?.({
-							type: "message_end",
-							message: { role: "assistant" },
-						});
-					},
-					abort: () => {},
-				} as unknown as Agent;
-			},
-			getRegisteredModel: async () => mockModel,
-			defaultApprovalMode: "prompt",
-			defaultProvider: "anthropic",
-			defaultModelId: mockModel.id,
-			corsHeaders: cors,
-		};
-
-		await handleChat(
-			req as unknown as IncomingMessage,
-			res as unknown as ServerResponse,
-			context as WebServerContext,
-		);
-
-		const events = res.body
-			.split("\n\n")
-			.map((line) => line.trim())
-			.filter((line) => line.startsWith("data: "))
-			.map((line) => line.replace(/^data:\s*/, ""))
-			.filter((payload) => payload !== "[DONE]")
-			.map((payload) => JSON.parse(payload));
-		const update = events.find((event) => event.type === "message_update");
-
-		expect(update).toBeTruthy();
-		expect(update.message).toBeUndefined();
-		expect(update.assistantMessageEvent.partial).toBeUndefined();
-		expect(update.assistantMessageEvent.toolCallId).toBe("call_1");
-		expect(update.assistantMessageEvent.toolCallName).toBe("read_file");
-		expect(update.assistantMessageEvent.toolCallArgs).toEqual({
-			path: "/tmp/one.txt",
-		});
-	});
-
-	it("marks slim toolcall args as truncated when payload is large", async () => {
-		const req = new PassThrough() as MockPassThrough;
-		req.method = "POST";
-		req.url = "/api/chat";
-		req.headers = { "x-composer-slim-events": "true" };
-		req.end(JSON.stringify({ messages: [{ role: "user", content: "hi" }] }));
-
-		const res = makeRes();
-		const largePayload = "x".repeat(5000);
-
-		const context: Partial<WebServerContext> = {
-			createAgent: async () => {
-				type EventCallback = (e: unknown) => void;
-				let subscriber: EventCallback | undefined;
-				return {
-					state: {
-						systemPrompt: "",
-						model: mockModel,
-						thinkingLevel: "off",
-						tools: [],
-						messages: [],
-						isStreaming: false,
-						streamMessage: null,
-						pendingToolCalls: new Map(),
-					},
-					subscribe: (fn: EventCallback) => {
-						subscriber = fn;
-						return () => {
-							subscriber = undefined;
-						};
-					},
-					replaceMessages: () => {},
-					clearMessages: () => {},
-					prompt: async () => {
-						subscriber?.({
-							type: "message_update",
-							message: { role: "assistant", content: [] },
-							assistantMessageEvent: {
-								type: "toolcall_start",
-								contentIndex: 0,
-								partial: {
-									role: "assistant",
-									content: [
-										{
-											type: "toolCall",
-											id: "call_big",
-											name: "write_file",
-											arguments: { data: largePayload },
-										},
-									],
-								},
-							},
-						});
-						subscriber?.({
-							type: "message_end",
-							message: { role: "assistant" },
-						});
-					},
-					abort: () => {},
-				} as unknown as Agent;
-			},
-			getRegisteredModel: async () => mockModel,
-			defaultApprovalMode: "prompt",
-			defaultProvider: "anthropic",
-			defaultModelId: mockModel.id,
-			corsHeaders: cors,
-		};
-
-		await handleChat(
-			req as unknown as IncomingMessage,
-			res as unknown as ServerResponse,
-			context as WebServerContext,
-		);
-
-		const events = res.body
-			.split("\n\n")
-			.map((line) => line.trim())
-			.filter((line) => line.startsWith("data: "))
-			.map((line) => line.replace(/^data:\s*/, ""))
-			.filter((payload) => payload !== "[DONE]")
-			.map((payload) => JSON.parse(payload));
-		const update = events.find((event) => event.type === "message_update");
-
-		expect(update).toBeTruthy();
-		expect(update.assistantMessageEvent.toolCallArgs).toBeUndefined();
-		expect(update.assistantMessageEvent.toolCallArgsTruncated).toBe(true);
-	});
-
-	it("accepts maestro slim-events headers", async () => {
-		const req = new PassThrough() as MockPassThrough;
-		req.method = "POST";
-		req.url = "/api/chat";
-		req.headers = { "x-maestro-slim-events": "true" };
-		req.end(JSON.stringify({ messages: [{ role: "user", content: "hi" }] }));
-
-		const res = makeRes();
-
-		const context: Partial<WebServerContext> = {
-			createAgent: async () => {
-				type EventCallback = (e: unknown) => void;
-				let subscriber: EventCallback | undefined;
-				return {
-					state: {
-						systemPrompt: "",
-						model: mockModel,
-						thinkingLevel: "off",
-						tools: [],
-						messages: [],
-						isStreaming: false,
-						streamMessage: null,
-						pendingToolCalls: new Map(),
-					},
-					subscribe: (fn: EventCallback) => {
-						subscriber = fn;
-						return () => {
-							subscriber = undefined;
-						};
-					},
-					replaceMessages: () => {},
-					clearMessages: () => {},
-					prompt: async () => {
-						subscriber?.({
-							type: "message_update",
-							message: { role: "assistant", content: [] },
-							assistantMessageEvent: {
-								type: "toolcall_delta",
-								contentIndex: 0,
-								delta: '{"path":"/tmp/two.txt"}',
-								partial: {
-									role: "assistant",
-									content: [
-										{
-											type: "toolCall",
-											id: "call_2",
-											name: "read_file",
-											arguments: { path: "/tmp/two.txt" },
-										},
-									],
-								},
-							},
-						});
-						subscriber?.({
-							type: "message_end",
-							message: { role: "assistant" },
-						});
-					},
-					abort: () => {},
-				} as unknown as Agent;
-			},
-			getRegisteredModel: async () => mockModel,
-			defaultApprovalMode: "prompt",
-			defaultProvider: "anthropic",
-			defaultModelId: mockModel.id,
-			corsHeaders: cors,
-		};
-
-		await handleChat(
-			req as unknown as IncomingMessage,
-			res as unknown as ServerResponse,
-			context as WebServerContext,
-		);
-
-		const events = res.body
-			.split("\n\n")
-			.map((line) => line.trim())
-			.filter((line) => line.startsWith("data: "))
-			.map((line) => line.replace(/^data:\s*/, ""))
-			.filter((payload) => payload !== "[DONE]")
-			.map((payload) => JSON.parse(payload));
-		const update = events.find((event) => event.type === "message_update");
-
-		expect(update).toBeTruthy();
-		expect(update.assistantMessageEvent.toolCallId).toBe("call_2");
-		expect(update.assistantMessageEvent.toolCallArgs).toEqual({
-			path: "/tmp/two.txt",
-		});
-	});
-
-	it("uses the stored session approval mode when no header override is set", async () => {
-		setApprovalModeForSession("session-approval", "fail");
-
-		const req = new PassThrough() as MockPassThrough;
-		req.method = "POST";
-		req.url = "/api/chat";
-		req.headers = {};
-		req.end(
-			JSON.stringify({
-				sessionId: "session-approval",
-				messages: [{ role: "user", content: "hi" }],
-			}),
-		);
-
-		const res = makeRes();
-		let capturedApproval: string | null = null;
-
-		const context: Partial<WebServerContext> = {
-			createAgent: async (_model, _thinking, approval) => {
-				capturedApproval = approval;
-				type EventCallback = (e: unknown) => void;
-				let subscriber: EventCallback | undefined;
-				return {
-					state: {
-						systemPrompt: "",
-						model: mockModel,
-						thinkingLevel: "off",
-						tools: [],
-						messages: [],
-						isStreaming: false,
-						streamMessage: null,
-						pendingToolCalls: new Map(),
-					},
-					subscribe: (fn: EventCallback) => {
-						subscriber = fn;
-						return () => {
-							subscriber = undefined;
-						};
-					},
-					replaceMessages: () => {},
-					clearMessages: () => {},
-					prompt: async () => {
-						subscriber?.({
-							type: "message_end",
-							message: { role: "assistant" },
-						});
-					},
-					abort: () => {},
-				} as unknown as Agent;
-			},
-			getRegisteredModel: async () => mockModel,
-			defaultApprovalMode: "prompt",
-			defaultProvider: "anthropic",
-			defaultModelId: mockModel.id,
-			corsHeaders: cors,
-		};
-
-		await handleChat(
-			req as unknown as IncomingMessage,
-			res as unknown as ServerResponse,
-			context as WebServerContext,
-		);
-
-		expect(capturedApproval).toBe("fail");
-	});
-
-	it("honors an auto approval header override", async () => {
-		const req = new PassThrough() as MockPassThrough;
-		req.method = "POST";
-		req.url = "/api/chat";
-		req.headers = { "x-composer-approval-mode": "auto" };
-		req.end(JSON.stringify({ messages: [{ role: "user", content: "hi" }] }));
-
-		const res = makeRes();
-		let capturedApproval: string | null = null;
-
-		const context: Partial<WebServerContext> = {
-			createAgent: async (_model, _thinking, approval) => {
-				capturedApproval = approval;
-				type EventCallback = (e: unknown) => void;
-				let subscriber: EventCallback | undefined;
-				return {
-					state: {
-						systemPrompt: "",
-						model: mockModel,
-						thinkingLevel: "off",
-						tools: [],
-						messages: [],
-						isStreaming: false,
-						streamMessage: null,
-						pendingToolCalls: new Map(),
-					},
-					subscribe: (fn: EventCallback) => {
-						subscriber = fn;
-						return () => {
-							subscriber = undefined;
-						};
-					},
-					replaceMessages: () => {},
-					clearMessages: () => {},
-					prompt: async () => {
-						subscriber?.({
-							type: "message_end",
-							message: { role: "assistant" },
-						});
-					},
-					abort: () => {},
-				} as unknown as Agent;
-			},
-			getRegisteredModel: async () => mockModel,
-			defaultApprovalMode: "auto",
-			defaultProvider: "anthropic",
-			defaultModelId: mockModel.id,
-			corsHeaders: cors,
-		};
-
-		await handleChat(
-			req as unknown as IncomingMessage,
-			res as unknown as ServerResponse,
-			context as WebServerContext,
-		);
-
-		expect(capturedApproval).toBe("auto");
-	});
-
-	it("honors a maestro approval header override", async () => {
-		const req = new PassThrough() as MockPassThrough;
-		req.method = "POST";
-		req.url = "/api/chat";
-		req.headers = { "x-maestro-approval-mode": "auto" };
-		req.end(JSON.stringify({ messages: [{ role: "user", content: "hi" }] }));
-
-		const res = makeRes();
-		let capturedApproval: string | null = null;
-
-		const context: Partial<WebServerContext> = {
-			createAgent: async (_model, _thinking, approval) => {
-				capturedApproval = approval;
-				type EventCallback = (e: unknown) => void;
-				let subscriber: EventCallback | undefined;
-				return {
-					state: {
-						systemPrompt: "",
-						model: mockModel,
-						thinkingLevel: "off",
-						tools: [],
-						messages: [],
-						isStreaming: false,
-						streamMessage: null,
-						pendingToolCalls: new Map(),
-					},
-					subscribe: (fn: EventCallback) => {
-						subscriber = fn;
-						return () => {
-							subscriber = undefined;
-						};
-					},
-					replaceMessages: () => {},
-					clearMessages: () => {},
-					prompt: async () => {
-						subscriber?.({
-							type: "message_end",
-							message: { role: "assistant" },
-						});
-					},
-					abort: () => {},
-				} as unknown as Agent;
-			},
-			getRegisteredModel: async () => mockModel,
-			defaultApprovalMode: "auto",
-			defaultProvider: "anthropic",
-			defaultModelId: mockModel.id,
-			corsHeaders: cors,
-		};
-
-		await handleChat(
-			req as unknown as IncomingMessage,
-			res as unknown as ServerResponse,
-			context as WebServerContext,
-		);
-
-		expect(capturedApproval).toBe("auto");
-	});
-
-	it("does not let a stored session mode relax a stricter server default", async () => {
-		setApprovalModeForSession("session-approval", "auto");
-
-		const req = new PassThrough() as MockPassThrough;
-		req.method = "POST";
-		req.url = "/api/chat";
-		req.headers = {};
-		req.end(
-			JSON.stringify({
-				sessionId: "session-approval",
-				messages: [{ role: "user", content: "hi" }],
-			}),
-		);
-
-		const res = makeRes();
-		let capturedApproval: string | null = null;
-
-		const context: Partial<WebServerContext> = {
-			createAgent: async (_model, _thinking, approval) => {
-				capturedApproval = approval;
-				type EventCallback = (e: unknown) => void;
-				let subscriber: EventCallback | undefined;
-				return {
-					state: {
-						systemPrompt: "",
-						model: mockModel,
-						thinkingLevel: "off",
-						tools: [],
-						messages: [],
-						isStreaming: false,
-						streamMessage: null,
-						pendingToolCalls: new Map(),
-					},
-					subscribe: (fn: EventCallback) => {
-						subscriber = fn;
-						return () => {
-							subscriber = undefined;
-						};
-					},
-					replaceMessages: () => {},
-					clearMessages: () => {},
-					prompt: async () => {
-						subscriber?.({
-							type: "message_end",
-							message: { role: "assistant" },
-						});
-					},
-					abort: () => {},
-				} as unknown as Agent;
-			},
-			getRegisteredModel: async () => mockModel,
-			defaultApprovalMode: "fail",
-			defaultProvider: "anthropic",
-			defaultModelId: mockModel.id,
-			corsHeaders: cors,
-		};
-
-		await handleChat(
-			req as unknown as IncomingMessage,
-			res as unknown as ServerResponse,
-			context as WebServerContext,
-		);
-
-		expect(capturedApproval).toBe("fail");
-	});
-
-	it("does not let an approval header relax a stricter server default", async () => {
-		const req = new PassThrough() as MockPassThrough;
-		req.method = "POST";
-		req.url = "/api/chat";
-		req.headers = { "x-composer-approval-mode": "auto" };
-		req.end(JSON.stringify({ messages: [{ role: "user", content: "hi" }] }));
-
-		const res = makeRes();
-		let capturedApproval: string | null = null;
-
-		const context: Partial<WebServerContext> = {
-			createAgent: async (_model, _thinking, approval) => {
-				capturedApproval = approval;
-				type EventCallback = (e: unknown) => void;
-				let subscriber: EventCallback | undefined;
-				return {
-					state: {
-						systemPrompt: "",
-						model: mockModel,
-						thinkingLevel: "off",
-						tools: [],
-						messages: [],
-						isStreaming: false,
-						streamMessage: null,
-						pendingToolCalls: new Map(),
-					},
-					subscribe: (fn: EventCallback) => {
-						subscriber = fn;
-						return () => {
-							subscriber = undefined;
-						};
-					},
-					replaceMessages: () => {},
-					clearMessages: () => {},
-					prompt: async () => {
-						subscriber?.({
-							type: "message_end",
-							message: { role: "assistant" },
-						});
-					},
-					abort: () => {},
-				} as unknown as Agent;
-			},
-			getRegisteredModel: async () => mockModel,
-			defaultApprovalMode: "fail",
-			defaultProvider: "anthropic",
-			defaultModelId: mockModel.id,
-			corsHeaders: cors,
-		};
-
-		await handleChat(
-			req as unknown as IncomingMessage,
-			res as unknown as ServerResponse,
-			context as WebServerContext,
-		);
-
-		expect(capturedApproval).toBe("fail");
+		expect(runNativeWebChatTurn).not.toHaveBeenCalled();
 	});
 });

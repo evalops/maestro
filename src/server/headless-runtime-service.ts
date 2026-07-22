@@ -12,64 +12,46 @@ import type {
 	ActionApprovalService,
 	ApprovalMode,
 } from "../agent/action-approval.js";
-import type { Agent } from "../agent/index.js";
-import { buildCompactionEvent } from "../agent/prompt-recovery.js";
 import {
 	type SwarmRuntimeEvent,
 	subscribeSwarmRuntimeEvents,
 } from "../agent/swarm/runtime-events.js";
 import type { ToolRetryService } from "../agent/tool-retry.js";
-import { DefaultPlatformToolExecutionBridge } from "../agent/transport/tool-execution-bridge.js";
-import type { AgentEvent, Attachment, ThinkingLevel } from "../agent/types.js";
-import { runUserPromptWithRecovery } from "../agent/user-prompt-runtime.js";
+import type { AgentEvent, ThinkingLevel } from "../agent/types.js";
 import {
 	HEADLESS_PROTOCOL_VERSION,
 	type HeadlessClientCapabilities,
 	type HeadlessClientInfo,
-	type HeadlessClientToolResultMessage,
 	type HeadlessConnectionState,
 	type HeadlessFromAgentMessage,
 	type HeadlessInitMessage,
 	HeadlessProtocolTranslator,
 	type HeadlessRuntimeState,
-	type HeadlessServerRequestResponseMessage,
 	type HeadlessToAgentMessage,
 	applyIncomingHeadlessMessage,
-	applyInitMessage,
 	applyOutgoingHeadlessMessage,
-	buildHeadlessCompactionMessage,
 	buildHeadlessRawAgentEventMessage,
 	createHeadlessRuntimeState,
-	loadPromptAttachments,
 	syncHeadlessPendingRequests,
 } from "../cli/headless-protocol.js";
-import { withHeadlessPostKeepMessages } from "../headless/prompt-recovery.js";
 import { HeadlessUtilityCommandManager } from "../headless/utility-command-manager.js";
 import { readWorkspaceFile } from "../headless/utility-file-read.js";
 import { searchWorkspaceFiles } from "../headless/utility-file-search.js";
 import { HeadlessUtilityFileWatchManager } from "../headless/utility-file-watch-manager.js";
 import { getHostedWorkspaceRoot } from "../headless/workspace-root.js";
-import {
-	type AutomaticMemoryConsolidationCoordinator,
-	createAutomaticMemoryConsolidationCoordinator,
-	getMemoryConsolidationSystemPrompt,
-} from "../memory/auto-consolidation.js";
-import {
-	type AutomaticMemoryExtractionCoordinator,
-	createAutomaticMemoryExtractionCoordinator,
-} from "../memory/auto-extraction.js";
+import type { AutomaticMemoryConsolidationCoordinator } from "../memory/auto-consolidation.js";
+import type { AutomaticMemoryExtractionCoordinator } from "../memory/auto-extraction.js";
 import type { RegisteredModel } from "../models/registry.js";
-import { checkSessionLimits } from "../safety/policy.js";
 import type { SessionManager } from "../session/manager.js";
-import { toSessionModelMetadata } from "../session/manager.js";
-import { createRuntimeSessionSummaryUpdater } from "../session/runtime-summary-updater.js";
 import { isRecord } from "../utils/json.js";
 import { createLogger } from "../utils/logger.js";
 import { sanitizeWithStaticMask } from "../utils/secret-redactor.js";
 import type { WebServerContext } from "./app-context.js";
 import { WebActionApprovalService } from "./approval-service.js";
-import { getAgentCircuitBreaker } from "./circuit-breaker.js";
-import { clientToolService } from "./client-tools-service.js";
+import {
+	attachNativeHeadlessPublisher,
+	startNativeHeadlessBackend,
+} from "./headless-native-bridge.js";
 import {
 	type HeadlessAttachedSubscription,
 	HeadlessRuntimeBroker,
@@ -89,11 +71,19 @@ import {
 	type HostedAgentRuntimeProgressRecorder,
 	createHostedAgentRuntimeProgressRecorder,
 } from "./hosted-agent-runtime-progress.js";
+import type {
+	NativeHeadlessClient,
+	NativeHeadlessClientOptions,
+} from "./native-headless-client.js";
+import { createNativeHeadlessEventAdapter } from "./native-headless-event-adapter.js";
+import { createNativeMemoryCoordinators } from "./native-memory.js";
 import {
 	type ServerRequestLifecycleEvent,
 	serverRequestManager,
 } from "./server-request-manager.js";
+import { startSessionStateWithPolicy } from "./session-initialization.js";
 import { ServerRequestToolRetryService } from "./tool-retry-service.js";
+import { mapControllerApprovalModeForNative } from "./web-native-chat.js";
 
 export type {
 	HeadlessAttachedSubscription,
@@ -150,25 +140,6 @@ export function inferFleetModelTier(
 
 function hasMiniModelVariant(normalizedProviderModel: string): boolean {
 	return /(?:^|[/:._-])mini(?:$|[/:._-])/.test(normalizedProviderModel);
-}
-
-function createHostedRunnerToolExecutionBridge(
-	hostedRunner: WebServerContext["hostedRunner"],
-): DefaultPlatformToolExecutionBridge | undefined {
-	if (!hostedRunner) {
-		return undefined;
-	}
-	return new DefaultPlatformToolExecutionBridge({
-		runtimeLinkage: () => ({
-			agentRunId: hostedRunner.agentRunId,
-			agentId: hostedRunner.agentId,
-			workspaceId: hostedRunner.workspaceId,
-			sessionId:
-				hostedRunner.activeMaestroSessionId ??
-				hostedRunner.configuredMaestroSessionId,
-			remoteRunnerSessionId: hostedRunner.runnerSessionId,
-		}),
-	});
 }
 
 export function getFleetPlatformEventBusStatus():
@@ -255,6 +226,37 @@ export interface HostedRunnerRestoreManifest {
 		cursor?: number;
 	};
 	snapshot: HeadlessRuntimeSnapshot;
+}
+
+const UNSUPPORTED_NATIVE_SERVER_REQUESTS = [
+	"mcp_elicitation",
+	"user_input",
+] as const;
+
+function assertNativeRuntimeCapabilitiesSupported(
+	options: Pick<
+		RuntimeOptions,
+		"capabilities" | "client" | "enableClientTools"
+	>,
+): void {
+	if (options.enableClientTools) {
+		throw new Error(
+			"Native headless runtime does not yet support client-side tools",
+		);
+	}
+	if (options.client && options.client !== "generic") {
+		throw new Error(
+			`Native headless runtime does not yet support ${options.client} client tools`,
+		);
+	}
+	const unsupportedRequest = UNSUPPORTED_NATIVE_SERVER_REQUESTS.find(
+		(request) => options.capabilities?.server_requests?.includes(request),
+	);
+	if (unsupportedRequest) {
+		throw new Error(
+			`Native headless runtime does not yet support ${unsupportedRequest} server requests`,
+		);
+	}
 }
 
 function restoreFlushStatus(value: unknown): HostedRunnerRestoreFlushStatus {
@@ -524,16 +526,22 @@ type RuntimeOptions = {
 	enableClientTools?: boolean;
 	client?: "vscode" | "jetbrains" | "conductor" | "generic";
 	restoreManifest?: HostedRunnerRestoreManifest;
+	/** Inject NativeHeadlessClient factory for tests. */
+	createNativeClient?: (
+		options: NativeHeadlessClientOptions,
+	) => NativeHeadlessClient;
 	context: Pick<
 		WebServerContext,
-		| "createAgent"
-		| "createBackgroundAgent"
-		| "hostedRunner"
-		| "profileName"
-		| "cliOverrides"
+		"hostedRunner" | "profileName" | "cliOverrides"
 	>;
 	sessionManager: SessionManager;
 };
+
+function mapThinkingLevelForNative(
+	level: ThinkingLevel,
+): "off" | "minimal" | "low" | "medium" | "high" | "ultra" {
+	return level === "max" ? "ultra" : level;
+}
 
 export class HeadlessSessionRuntime {
 	private readonly translator = new HeadlessProtocolTranslator();
@@ -541,15 +549,12 @@ export class HeadlessSessionRuntime {
 	private readonly state = createHeadlessRuntimeState();
 	private readonly approvalService: ActionApprovalService;
 	private readonly toolRetryService: ToolRetryService;
-	private readonly agent: Agent;
+	private readonly nativeClient: NativeHeadlessClient | null;
 	private readonly sessionManager: SessionManager;
 	private readonly registeredModel: RegisteredModel;
-	private readonly subject?: string;
 	private readonly sessionId: string;
 	private readonly scopeKey: string;
 	private readonly workspaceRoot?: string;
-	private readonly profileName?: string;
-	private readonly cliOverrides?: WebServerContext["cliOverrides"];
 	private readonly publishedServerRequestIds = new Set<string>();
 	private readonly suppressedApprovalResolutionIds = new Set<string>();
 	private readonly unsubscribeServerRequestEvents: () => void;
@@ -560,6 +565,7 @@ export class HeadlessSessionRuntime {
 	private controllerConnectionId: string | null = null;
 	private lastInit: HeadlessInitMessage | null = null;
 	private readonly unsubscribeSwarmRuntimeEvents: () => void;
+	private detachNativePublisher: (() => void) | null = null;
 	private running = false;
 	private disposed = false;
 	private disposePromise: Promise<void> | null = null;
@@ -569,14 +575,13 @@ export class HeadlessSessionRuntime {
 	private errorCount = 0;
 	private toolExecutionCount = 0;
 	private toolErrorCount = 0;
-	private readonly updateSessionSummary: (event: AgentEvent) => void;
 	private readonly automaticMemoryConsolidation: AutomaticMemoryConsolidationCoordinator;
 	private readonly automaticMemoryExtraction: AutomaticMemoryExtractionCoordinator;
 	private readonly agentRuntimeProgress?: HostedAgentRuntimeProgressRecorder;
 
 	private constructor(
 		options: RuntimeOptions,
-		agent: Agent,
+		nativeClient: NativeHeadlessClient | null,
 		approvalService: ActionApprovalService,
 		toolRetryService: ToolRetryService,
 		automaticMemoryConsolidation: AutomaticMemoryConsolidationCoordinator,
@@ -586,13 +591,10 @@ export class HeadlessSessionRuntime {
 		this.sessionId = options.session_id;
 		this.sessionManager = options.sessionManager;
 		this.registeredModel = options.registeredModel;
-		this.subject = options.subject;
 		this.workspaceRoot = options.workspaceRoot ?? getHostedWorkspaceRoot();
-		this.profileName = options.context.profileName;
-		this.cliOverrides = options.context.cliOverrides;
 		this.approvalService = approvalService;
 		this.toolRetryService = toolRetryService;
-		this.agent = agent;
+		this.nativeClient = nativeClient;
 		this.utilityCommands = new HeadlessUtilityCommandManager((event) => {
 			switch (event.type) {
 				case "started":
@@ -674,25 +676,67 @@ export class HeadlessSessionRuntime {
 		}, this.workspaceRoot);
 		this.automaticMemoryConsolidation = automaticMemoryConsolidation;
 		this.automaticMemoryExtraction = automaticMemoryExtraction;
-		this.updateSessionSummary = createRuntimeSessionSummaryUpdater(
-			this.sessionManager,
-		);
 		this.agentRuntimeProgress = createHostedAgentRuntimeProgressRecorder({
 			sessionId: this.sessionId,
 			hostedRunner: options.context.hostedRunner,
 			workspaceRoot: this.workspaceRoot,
 		});
-
-		this.agent.subscribe((event) => {
-			this.handleAgentEvent(event);
+		const nativeEventAdapter = createNativeHeadlessEventAdapter({
+			modelId: this.registeredModel.id,
+			provider: this.registeredModel.provider,
 		});
+
+		if (this.nativeClient) {
+			this.detachNativePublisher = attachNativeHeadlessPublisher({
+				client: this.nativeClient,
+				publish: (message) => {
+					for (const event of nativeEventAdapter.handle(message)) {
+						this.handleNativeAgentEvent(event);
+					}
+					this.publish(message);
+				},
+				onIdle: () => {
+					this.running = false;
+					this.updatedAt = Date.now();
+				},
+				onExit: () => {
+					this.running = false;
+					this.updatedAt = Date.now();
+					logger.warn("Native headless process exited", {
+						sessionId: this.sessionId,
+					});
+				},
+				onError: (error) => {
+					logger.warn("Native headless client error", {
+						sessionId: this.sessionId,
+						error: sanitizeWithStaticMask(error.message),
+					});
+					this.publish({
+						type: "error",
+						message: error.message,
+						fatal: false,
+						error_type: "transient",
+					});
+				},
+			});
+		}
 
 		if (options.restoreManifest) {
 			this.restoreFromManifest(options.restoreManifest);
 		} else {
-			this.publish(
-				this.translator.buildReadyMessage(this.agent, this.sessionManager),
-			);
+			// Native ready was consumed by client.start(); re-publish for Node broker
+			// subscribers so connection attach sees is_ready.
+			this.publish({
+				type: "ready",
+				protocol_version: HEADLESS_PROTOCOL_VERSION,
+				model: this.registeredModel.id,
+				provider: this.registeredModel.provider,
+				executor_type:
+					this.registeredModel.provider === "scripted-replay"
+						? "replay"
+						: "live",
+				session_id: this.sessionManager.getSessionId() ?? null,
+			});
 			this.publish(
 				this.translator.buildSessionInfoMessage(
 					this.sessionManager,
@@ -710,6 +754,11 @@ export class HeadlessSessionRuntime {
 				this.handleSwarmRuntimeEvent(event);
 			},
 		);
+	}
+
+	/** True when the agent loop is a long-lived maestro-tui --headless process. */
+	isNativeBackend(): boolean {
+		return this.nativeClient !== null;
 	}
 
 	private restoreFromManifest(manifest: HostedRunnerRestoreManifest): void {
@@ -774,13 +823,10 @@ export class HeadlessSessionRuntime {
 	static async create(
 		options: RuntimeOptions,
 	): Promise<HeadlessSessionRuntime> {
+		assertNativeRuntimeCapabilitiesSupported(options);
 		const workspaceRoot = options.workspaceRoot ?? getHostedWorkspaceRoot();
 		const negotiatedServerRequests =
 			options.capabilities?.server_requests ?? [];
-		const needsScopedClientToolService =
-			options.enableClientTools ||
-			negotiatedServerRequests.includes("user_input") ||
-			negotiatedServerRequests.includes("mcp_elicitation");
 		const approvalService = new WebActionApprovalService(
 			options.approvalMode,
 			options.session_id,
@@ -789,66 +835,103 @@ export class HeadlessSessionRuntime {
 			negotiatedServerRequests.includes("tool_retry") ? "prompt" : "skip",
 			options.session_id,
 		);
-		const persistedSystemPromptSourcePaths =
-			options.sessionManager.getHeader()?.systemPromptSourcePaths;
-		const agent = await options.context.createAgent(
-			options.registeredModel,
-			options.thinkingLevel,
-			options.approvalMode,
-			{
+		const createMemoryCoordinators = () =>
+			createNativeMemoryCoordinators({
+				sessionManager: options.sessionManager,
+				model: {
+					id: options.registeredModel.id,
+					provider: options.registeredModel.provider,
+				},
 				cwd: workspaceRoot,
+			});
+		if (
+			options.restoreManifest &&
+			options.restoreManifest.runtime.flush_status !== "completed"
+		) {
+			const { consolidation, extraction } = createMemoryCoordinators();
+			return new HeadlessSessionRuntime(
+				{ ...options, workspaceRoot },
+				null,
 				approvalService,
 				toolRetryService,
-				enableClientTools: options.enableClientTools,
-				useClientAskUser: negotiatedServerRequests.includes("user_input"),
-				clientToolService: needsScopedClientToolService
-					? clientToolService.forSession(options.session_id)
-					: undefined,
-				includeVscodeTools: options.client === "vscode",
-				includeJetBrainsTools: options.client === "jetbrains",
-				includeConductorTools: options.client === "conductor",
-				platformToolExecutionBridge: createHostedRunnerToolExecutionBridge(
-					options.context.hostedRunner,
-				),
-				persistedSystemPromptSourcePaths,
+				consolidation,
+				extraction,
+			);
+		}
+		let client: NativeHeadlessClient | undefined;
+
+		try {
+			const backend = await startNativeHeadlessBackend({
+				cwd: workspaceRoot,
+				modelId: options.registeredModel.id,
+				provider: options.registeredModel.provider,
+				createClient: options.createNativeClient,
+				thinkingLevel: mapThinkingLevelForNative(options.thinkingLevel),
+				approvalMode: mapControllerApprovalModeForNative(options.approvalMode),
 				profileName: options.context.profileName,
 				cliOverrides: options.context.cliOverrides,
-			},
-		);
-		const automaticMemoryConsolidation =
-			createAutomaticMemoryConsolidationCoordinator({
-				createAgent: async () =>
-					options.context.createBackgroundAgent(
-						agent.state.model as RegisteredModel,
-						{
-							cwd: workspaceRoot,
-							systemPrompt: getMemoryConsolidationSystemPrompt(),
-						},
-					),
-				getModel: () => agent.state.model,
 			});
-		const automaticMemoryExtraction =
-			createAutomaticMemoryExtractionCoordinator({
-				createAgent: async () =>
-					options.context.createBackgroundAgent(
-						agent.state.model as RegisteredModel,
-						{ cwd: workspaceRoot },
+			client = backend.client;
+			const {
+				systemPrompt,
+				promptMetadata,
+				promptContextManifest,
+				systemPromptSourcePaths,
+			} = backend;
+			if (!options.sessionManager.isInitialized()) {
+				const { enterpriseContext } = await import("../enterprise/context.js");
+				const initializationError = await startSessionStateWithPolicy({
+					enterpriseContext,
+					logger,
+					modelId: options.registeredModel.id,
+					onSessionReady: () => {},
+					sessionManager: options.sessionManager,
+					state: {
+						model: options.registeredModel,
+						thinkingLevel: options.thinkingLevel,
+						systemPrompt,
+						promptMetadata,
+						promptContextManifest,
+						systemPromptSourcePaths,
+						tools: [],
+					},
+					subject: options.subject,
+				});
+				if (initializationError) {
+					throw new Error(`[Policy] ${initializationError}`);
+				}
+			}
+			// Native agent loop: durable memory via native one-shots
+			// (MAESTRO_NATIVE_MEMORY default ON; no-ops when off).
+			// Durable memory stays on native one-shots.
+			const { consolidation, extraction } = createMemoryCoordinators();
+			return new HeadlessSessionRuntime(
+				{
+					...options,
+					workspaceRoot,
+				},
+				client,
+				approvalService,
+				toolRetryService,
+				consolidation,
+				extraction,
+			);
+		} catch (error) {
+			client?.stop();
+			logger.error(
+				"Native headless backend failed to start (no TS fallback)",
+				error instanceof Error ? error : undefined,
+				{
+					sessionId: options.session_id,
+					error: sanitizeWithStaticMask(
+						error instanceof Error ? error.message : String(error),
 					),
-				getModel: () => agent.state.model,
-				onProcessed: () => automaticMemoryConsolidation.schedule(),
-				sessionManager: options.sessionManager,
-			});
-		return new HeadlessSessionRuntime(
-			{
-				...options,
-				workspaceRoot,
-			},
-			agent,
-			approvalService,
-			toolRetryService,
-			automaticMemoryConsolidation,
-			automaticMemoryExtraction,
-		);
+				},
+			);
+			throw error instanceof Error
+				? error
+				: new Error(String(error), { cause: error });
+		}
 	}
 
 	id(): string {
@@ -884,7 +967,7 @@ export class HeadlessSessionRuntime {
 			);
 			await this.utilityCommands.dispose();
 			this.fileWatches.dispose();
-			this.agent.abort();
+			this.stopAgentBackend();
 			await this.agentRuntimeProgress?.flush();
 			await this.automaticMemoryExtraction.flush();
 			await this.automaticMemoryConsolidation.flush();
@@ -952,9 +1035,9 @@ export class HeadlessSessionRuntime {
 			});
 		}
 		try {
-			this.agent.abort();
+			this.stopAgentBackend();
 		} catch (error) {
-			logger.warn("Failed to abort disposed headless agent", {
+			logger.warn("Failed to stop disposed headless agent backend", {
 				error: sanitizeWithStaticMask(
 					error instanceof Error ? error.message : String(error),
 				),
@@ -962,6 +1045,20 @@ export class HeadlessSessionRuntime {
 			});
 		}
 		this.finalizeDisposal();
+	}
+
+	/** Stop the native client (best-effort). */
+	private stopAgentBackend(): void {
+		this.detachNativePublisher?.();
+		this.detachNativePublisher = null;
+		this.nativeClient?.stop();
+	}
+
+	private requireNativeClient(): NativeHeadlessClient {
+		if (!this.nativeClient) {
+			throw new Error("Native headless backend is unavailable");
+		}
+		return this.nativeClient;
 	}
 
 	getSnapshot(): HeadlessRuntimeSnapshot {
@@ -1955,7 +2052,48 @@ export class HeadlessSessionRuntime {
 	): Promise<void> {
 		this.lastInit = msg;
 		applyOutgoingHeadlessMessage(this.state, msg);
-		const applied = applyInitMessage(this.agent, msg, this.approvalService);
+		const applied: string[] = [];
+		if (typeof msg.system_prompt === "string") {
+			applied.push("system_prompt");
+		}
+		if (typeof msg.append_system_prompt === "string") {
+			applied.push("append_system_prompt");
+		}
+		if (Array.isArray(msg.history) && msg.history.length > 0) {
+			applied.push("history");
+		}
+		if (msg.thinking_level) {
+			applied.push("thinking_level");
+		}
+		if (msg.approval_mode) {
+			this.approvalService.setMode(msg.approval_mode);
+			applied.push("approval_mode");
+		}
+		// Forward structured history separately from trusted server-owned
+		// additions to the system prompt.
+		this.requireNativeClient().init({
+			...(msg.thinking_level
+				? {
+						thinking_level: mapThinkingLevelForNative(msg.thinking_level),
+					}
+				: {}),
+			...(msg.approval_mode
+				? {
+						approval_mode: mapControllerApprovalModeForNative(
+							msg.approval_mode,
+						),
+					}
+				: {}),
+			...(typeof msg.system_prompt === "string"
+				? { system_prompt: msg.system_prompt }
+				: {}),
+			...(typeof msg.append_system_prompt === "string"
+				? { append_system_prompt: msg.append_system_prompt }
+				: {}),
+			...(Array.isArray(msg.history) && msg.history.length > 0
+				? { history: msg.history }
+				: {}),
+		});
 		this.publish({
 			type: "status",
 			message:
@@ -1963,6 +2101,7 @@ export class HeadlessSessionRuntime {
 					? `Initialized: ${applied.join(", ")}`
 					: "Init received with no changes",
 		});
+		return;
 	}
 
 	private async handlePrompt(
@@ -1973,25 +2112,42 @@ export class HeadlessSessionRuntime {
 		}
 		applyOutgoingHeadlessMessage(this.state, msg);
 		this.running = true;
-		let attachments: Attachment[] | undefined;
-		if (msg.attachments?.length) {
-			const loaded = await loadPromptAttachments(msg.attachments, (message) => {
-				this.publish({
-					type: "error",
-					message,
-					fatal: false,
-					error_type: "tool",
-				});
+
+		// Attachment paths stay as strings on the native wire.
+		try {
+			this.requireNativeClient().prompt(msg.content, msg.attachments);
+		} catch (error) {
+			this.running = false;
+			const message =
+				error instanceof Error ? error.message : "Unknown native prompt error";
+			this.agentRuntimeProgress?.recordPromptFailure(message);
+			this.publish({
+				type: "error",
+				message,
+				fatal: false,
+				error_type: "transient",
 			});
-			if (loaded.length > 0) {
-				attachments = loaded;
-				this.publish({
-					type: "status",
-					message: `Loaded ${loaded.length} attachment(s)`,
-				});
-			}
+			return;
 		}
-		void this.runPrompt(msg.content, attachments);
+
+		try {
+			this.sessionManager.saveMessage({
+				role: "user",
+				content: msg.content,
+				...(msg.attachments?.length
+					? { metadata: { attachments: [...msg.attachments] } }
+					: {}),
+				timestamp: Date.now(),
+			});
+		} catch (error) {
+			logger.warn("Failed to persist accepted native runtime prompt", {
+				error: sanitizeWithStaticMask(
+					error instanceof Error ? error.message : String(error),
+				),
+				sessionId: this.sessionId,
+			});
+		}
+		return;
 	}
 
 	private async handleInterrupt(
@@ -2013,14 +2169,18 @@ export class HeadlessSessionRuntime {
 				? "Interrupted while file watch was still running"
 				: "Cancelled while file watch was still running",
 		);
-		this.agent.abort();
+		if (msg.type === "interrupt") {
+			this.requireNativeClient().interrupt();
+		} else {
+			this.requireNativeClient().cancel();
+		}
 		this.publishSnapshot();
 	}
 
 	private async handleToolResponse(
 		msg: Extract<HeadlessToAgentMessage, { type: "tool_response" }>,
 	): Promise<void> {
-		this.resolveLegacyToolResponse(msg);
+		this.requireNativeClient().send(msg);
 		applyOutgoingHeadlessMessage(this.state, msg);
 		this.publishSnapshot();
 	}
@@ -2028,7 +2188,7 @@ export class HeadlessSessionRuntime {
 	private async handleClientToolResult(
 		msg: Extract<HeadlessToAgentMessage, { type: "client_tool_result" }>,
 	): Promise<void> {
-		this.resolveLegacyClientToolResult(msg);
+		this.requireNativeClient().send(msg);
 		applyOutgoingHeadlessMessage(this.state, msg);
 		this.publishSnapshot();
 	}
@@ -2036,7 +2196,7 @@ export class HeadlessSessionRuntime {
 	private async handleServerRequestResponse(
 		msg: Extract<HeadlessToAgentMessage, { type: "server_request_response" }>,
 	): Promise<void> {
-		this.resolveServerRequestResponse(msg);
+		this.requireNativeClient().send(msg);
 		applyOutgoingHeadlessMessage(this.state, msg);
 		this.publishSnapshot();
 	}
@@ -2052,7 +2212,7 @@ export class HeadlessSessionRuntime {
 		this.fileWatches.dispose(
 			"Headless runtime shutdown while file watch was still running",
 		);
-		this.agent.abort();
+		this.stopAgentBackend();
 		this.publishSnapshot();
 		this.finalizeDisposal();
 	}
@@ -2216,81 +2376,9 @@ export class HeadlessSessionRuntime {
 		this.fileWatches.stop(msg.watch_id, "Stopped by controller");
 	}
 
-	private async runPrompt(
-		content: string,
-		attachments?: Attachment[],
-	): Promise<void> {
-		try {
-			const breaker = getAgentCircuitBreaker(this.registeredModel.provider);
-			await runUserPromptWithRecovery({
-				agent: this.agent,
-				sessionManager: this.sessionManager,
-				cwd: this.workspaceRoot ?? process.cwd(),
-				prompt: content,
-				attachmentCount: attachments?.length ?? 0,
-				attachmentNames: attachments?.map((attachment) => attachment.fileName),
-				profileName: this.profileName,
-				cliOverrides: this.cliOverrides,
-				execute: () =>
-					breaker.execute(() => this.agent.prompt(content, attachments)),
-				getPostKeepMessages: withHeadlessPostKeepMessages(() => this.state),
-				callbacks: {
-					onCompacting: () => {
-						this.publish({
-							type: "status",
-							message:
-								"Prompt exceeded the context window. Compacting history and continuing automatically...",
-						});
-					},
-					onCompacted: (result) => {
-						this.publish(
-							buildHeadlessCompactionMessage(
-								buildCompactionEvent(result, { auto: true }),
-							),
-						);
-					},
-					onMaxOutputContinue: (attempt, maxContinuations) => {
-						this.publish({
-							type: "status",
-							message:
-								attempt === 1
-									? "Response hit the output limit. Continuing automatically..."
-									: `Response still hit the output limit. Continuing automatically (${attempt}/${maxContinuations})...`,
-						});
-					},
-					onMaxOutputExhausted: (maxContinuations) => {
-						this.publish({
-							type: "status",
-							message: `Stopped after ${maxContinuations} automatic continuations because the response kept hitting the output limit.`,
-						});
-					},
-					onMaxOutputStoppedEarly: (attempt, maxContinuations) => {
-						this.publish({
-							type: "status",
-							message: `Stopped automatic continuation early after ${attempt}/${maxContinuations} retries because recent responses made minimal progress.`,
-						});
-					},
-				},
-			});
-		} catch (error) {
-			const message =
-				error instanceof Error ? error.message : "Unknown remote runtime error";
-			this.agentRuntimeProgress?.recordPromptFailure(message);
-			this.publish({
-				type: "error",
-				message,
-				fatal: false,
-				error_type: "transient",
-			});
-		} finally {
-			this.cancelPendingServerRequests("Run ended before request completed");
-			this.running = false;
-			this.updatedAt = Date.now();
-		}
-	}
-
 	private publish(message: HeadlessFromAgentMessage): void {
 		assertHeadlessFromAgentMessage(message, "headless runtime message");
+		this.recordFleetMessage(message);
 		if (message.type === "server_request") {
 			this.publishedServerRequestIds.add(message.request_id);
 		} else if (message.type === "server_request_resolved") {
@@ -2319,18 +2407,30 @@ export class HeadlessSessionRuntime {
 		}
 	}
 
-	private recordFleetEvent(event: AgentEvent): void {
-		switch (event.type) {
-			case "agent_end":
+	private recordFleetMessage(message: HeadlessFromAgentMessage): void {
+		switch (message.type) {
+			case "response_end":
+				if (
+					message.response_id !== "done" &&
+					message.response_id !== "blocked"
+				) {
+					return;
+				}
 				this.runCount += 1;
-				if (event.aborted || event.stopReason === "error") {
+				if (message.response_id === "blocked") {
 					this.errorCount += 1;
 				}
 				return;
-			case "tool_execution_end":
+			case "tool_end":
 				this.toolExecutionCount += 1;
-				if (event.isError) {
+				if (!message.success) {
 					this.toolErrorCount += 1;
+				}
+				return;
+			case "error":
+				if (message.fatal) {
+					this.runCount += 1;
+					this.errorCount += 1;
 				}
 				return;
 			default:
@@ -2338,11 +2438,8 @@ export class HeadlessSessionRuntime {
 		}
 	}
 
-	private handleAgentEvent(event: AgentEvent): void {
-		this.recordFleetEvent(event);
-		this.updateSessionSummary(event);
+	private handleNativeAgentEvent(event: AgentEvent): void {
 		this.agentRuntimeProgress?.recordAgentEvent(event);
-
 		if (
 			Array.from(this.connections.values()).some(
 				(connection) => connection.capabilities?.raw_agent_events,
@@ -2350,81 +2447,24 @@ export class HeadlessSessionRuntime {
 		) {
 			this.publish(buildHeadlessRawAgentEventMessage(event));
 		}
-		if (
-			event.type === "action_approval_required" &&
-			!this.approvalService.requiresUserInteraction()
-		) {
+		if (event.type !== "message_end") {
 			return;
 		}
-		if (
-			event.type === "action_approval_resolved" &&
-			this.suppressedApprovalResolutionIds.delete(event.request.id)
-		) {
-			this.sessionManager.updateSnapshot(
-				this.agent.state,
-				toSessionModelMetadata(this.registeredModel),
-			);
-			return;
-		}
-		for (const message of this.translator.handleAgentEvent(event)) {
-			if (message.type === "server_request_resolved") {
-				continue;
-			}
-			this.publish(message);
-		}
-
-		if (event.type === "message_end") {
+		try {
 			this.sessionManager.saveMessage(event.message);
 			if (event.message.role === "assistant") {
 				this.automaticMemoryExtraction.schedule(
 					this.sessionManager.getSessionFile(),
 				);
 			}
-			if (
-				this.sessionManager.shouldInitializeSession(this.agent.state.messages)
-			) {
-				let activeCount: number | undefined;
-				try {
-					const sessions = this.sessionManager.loadAllSessions();
-					activeCount = sessions.filter(
-						(session) =>
-							Date.now() - session.modified.getTime() < 60 * 60 * 1000,
-					).length;
-				} catch (error) {
-					logger.warn("Failed to count active sessions for headless runtime", {
-						error: sanitizeWithStaticMask(
-							error instanceof Error ? error.message : String(error),
-						),
-					});
-				}
-
-				const limitCheck = checkSessionLimits(
-					{ startedAt: new Date() },
-					activeCount !== undefined
-						? { activeSessionCount: activeCount + 1 }
-						: undefined,
-				);
-
-				if (!limitCheck.allowed) {
-					this.publish({
-						type: "error",
-						message: `[Policy] ${limitCheck.reason}`,
-						fatal: false,
-						error_type: "fatal",
-					});
-					return;
-				}
-
-				this.sessionManager.startSession(this.agent.state, {
-					subject: this.subject,
-				});
-			}
+		} catch (error) {
+			logger.warn("Failed to persist native runtime response", {
+				error: sanitizeWithStaticMask(
+					error instanceof Error ? error.message : String(error),
+				),
+				sessionId: this.sessionId,
+			});
 		}
-
-		this.sessionManager.updateSnapshot(
-			this.agent.state,
-			toSessionModelMetadata(this.registeredModel),
-		);
 	}
 
 	private cancelPendingServerRequests(reason: string): void {
@@ -2524,94 +2564,6 @@ export class HeadlessSessionRuntime {
 		}
 		this.agentRuntimeProgress?.recordSwarmEvent(event.event);
 	}
-
-	private resolveLegacyToolResponse(
-		msg: HeadlessToAgentMessage & { type: "tool_response" },
-	): void {
-		const reason = msg.approved
-			? (msg.result?.output ?? "Approved")
-			: (msg.result?.error ?? "Denied by user");
-		const resolved = serverRequestManager.resolveApproval(msg.call_id, {
-			approved: msg.approved,
-			reason,
-			resolvedBy: "user",
-		});
-		if (!resolved) {
-			throw new Error(`No pending approval found for call_id: ${msg.call_id}`);
-		}
-	}
-
-	private resolveLegacyClientToolResult(
-		msg: HeadlessClientToolResultMessage,
-	): void {
-		const resolved = clientToolService.resolve(
-			msg.call_id,
-			msg.content,
-			msg.is_error,
-		);
-		if (!resolved) {
-			throw new Error(
-				`No pending client tool request found for call_id: ${msg.call_id}`,
-			);
-		}
-	}
-
-	private resolveServerRequestResponse(
-		msg: HeadlessServerRequestResponseMessage,
-	): void {
-		const request = serverRequestManager.get(msg.request_id);
-		if (!request) {
-			throw new Error(
-				`No pending server request found for request_id: ${msg.request_id}`,
-			);
-		}
-		if (request.kind !== msg.request_type) {
-			throw new Error(
-				`Pending request ${msg.request_id} is ${request.kind}, not ${msg.request_type}`,
-			);
-		}
-
-		if (msg.request_type === "approval") {
-			const reason = msg.approved
-				? (msg.result?.output ?? "Approved")
-				: (msg.result?.error ?? "Denied by user");
-			const resolved = serverRequestManager.resolveApproval(msg.request_id, {
-				approved: msg.approved ?? false,
-				reason,
-				resolvedBy: "user",
-			});
-			if (!resolved) {
-				throw new Error(
-					`No pending approval found for request_id: ${msg.request_id}`,
-				);
-			}
-			return;
-		}
-		if (msg.request_type === "tool_retry") {
-			const resolved = serverRequestManager.resolveToolRetry(msg.request_id, {
-				action: msg.decision_action ?? "abort",
-				reason: msg.reason,
-				resolvedBy: "user",
-			});
-			if (!resolved) {
-				throw new Error(
-					`No pending tool retry request found for request_id: ${msg.request_id}`,
-				);
-			}
-			return;
-		}
-
-		const resolved = clientToolService.resolve(
-			msg.request_id,
-			msg.content ?? [],
-			msg.is_error ?? false,
-		);
-		if (!resolved) {
-			throw new Error(
-				`No pending client tool request found for request_id: ${msg.request_id}`,
-			);
-		}
-	}
 }
 
 export type EnsureRuntimeOptions = {
@@ -2630,13 +2582,13 @@ export type EnsureRuntimeOptions = {
 	enableClientTools?: boolean;
 	client?: "vscode" | "jetbrains" | "conductor" | "generic";
 	registerConnection?: boolean;
+	/** Inject NativeHeadlessClient factory for tests. */
+	createNativeClient?: (
+		options: NativeHeadlessClientOptions,
+	) => NativeHeadlessClient;
 	context: Pick<
 		WebServerContext,
-		| "createAgent"
-		| "createBackgroundAgent"
-		| "hostedRunner"
-		| "profileName"
-		| "cliOverrides"
+		"hostedRunner" | "profileName" | "cliOverrides"
 	>;
 	sessionManager: SessionManager;
 };
@@ -2644,8 +2596,18 @@ export type EnsureRuntimeOptions = {
 export class HeadlessRuntimeService {
 	private readonly runtimes = new Map<string, HeadlessSessionRuntime>();
 	private readonly cleanupFailures = new Map<string, number>();
+	private readonly createNativeClient?: (
+		options: NativeHeadlessClientOptions,
+	) => NativeHeadlessClient;
 
-	constructor() {
+	constructor(
+		options: {
+			createNativeClient?: (
+				options: NativeHeadlessClientOptions,
+			) => NativeHeadlessClient;
+		} = {},
+	) {
+		this.createNativeClient = options.createNativeClient;
 		setInterval(() => {
 			void this.cleanup();
 		}, 60 * 1000).unref();
@@ -2701,6 +2663,7 @@ export class HeadlessRuntimeService {
 			enableClientTools: options.enableClientTools,
 			client: options.client,
 			restoreManifest,
+			createNativeClient: options.createNativeClient ?? this.createNativeClient,
 			context: options.context,
 			sessionManager: options.sessionManager,
 		});

@@ -22,8 +22,6 @@ function createContext(): WebServerContext {
 		defaultApprovalMode: "default",
 		defaultProvider: "openai",
 		defaultModelId: "gpt-4o-mini",
-		createAgent: () => failUnused(),
-		createBackgroundAgent: () => failUnused(),
 		getRegisteredModel: () => failUnused(),
 		getCurrentSelection: () => ({
 			provider: "openai",

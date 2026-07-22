@@ -82,8 +82,6 @@ function context(): WebServerContext {
 			workspaceId: "ws_hosted",
 			a2aTaskId: "run_1",
 		},
-		createAgent: vi.fn(),
-		createBackgroundAgent: vi.fn(),
 		getRegisteredModel: vi.fn(),
 		getCurrentSelection: () => ({ provider: "openai", modelId: "gpt-5.4" }),
 		ensureCredential: vi.fn(),

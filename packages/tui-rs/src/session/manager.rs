@@ -450,6 +450,18 @@ impl SessionManager {
         }
     }
 
+    /// Create a session manager that lists sessions from an explicit directory.
+    ///
+    /// Used by `maestro value --session-dir` and tests that inject a temp root.
+    pub fn with_sessions_dir(cwd: impl Into<String>, sessions_dir: impl Into<PathBuf>) -> Self {
+        Self {
+            cwd: cwd.into(),
+            sessions_dir: sessions_dir.into(),
+            current_session_id: None,
+            writer: None,
+        }
+    }
+
     /// Get the current working directory
     #[must_use]
     pub fn cwd(&self) -> &str {

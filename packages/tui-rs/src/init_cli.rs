@@ -609,7 +609,8 @@ async fn ensure_login(options: &InitOptions, client: &Client) -> Result<OAuthCre
     }
     status(options, "Opening EvalOps login");
     credentials = Some(login(options, client).await?);
-    let credentials = credentials.context("EvalOps login did not produce credentials")?;
+    let mut credentials = credentials.context("EvalOps login did not produce credentials")?;
+    maybe_enroll_desktop_device(client, &mut credentials).await;
     save_credentials(&credentials)?;
     Ok(credentials)
 }
@@ -832,9 +833,27 @@ async fn refresh_credentials(
 ) -> Result<OAuthCredentials> {
     let identity = metadata_string(&existing.metadata, "identityBaseUrl")
         .unwrap_or_else(identity_base_from_env);
+    let existing_device_id = metadata_string(&existing.metadata, "deviceId");
+    let device_proof = crate::device_identity::build_enrolled_desktop_device_proof(
+        client,
+        &identity,
+        crate::device_identity::DeviceProofPurpose::Refresh,
+        existing_device_id.as_deref(),
+    )
+    .await;
+
+    let mut refresh_body = json!({ "refresh_token": existing.refresh });
+    if let Some(proof) = &device_proof {
+        refresh_body["device_proof"] = json!({
+            "challenge_id": proof.challenge_id,
+            "device_id": proof.device_id,
+            "signature": proof.signature,
+        });
+    }
+
     let response = client
         .post(format!("{identity}/v1/tokens/refresh"))
-        .json(&json!({"refresh_token": existing.refresh}))
+        .json(&refresh_body)
         .send()
         .await?;
     let status = response.status();
@@ -855,6 +874,10 @@ async fn refresh_credentials(
         "expires_at",
     )?;
     let mut metadata = existing.metadata.clone();
+    metadata.insert(
+        "identityBaseUrl".to_owned(),
+        Value::String(identity.clone()),
+    );
     if let Some(org) = string_at(&payload, "organization_id") {
         metadata.insert("organizationId".to_owned(), Value::String(org));
     }
@@ -864,13 +887,38 @@ async fn refresh_credentials(
             Value::Array(scopes.into_iter().map(Value::String).collect()),
         );
     }
-    Ok(OAuthCredentials {
+    if let Some(device_id) = existing_device_id {
+        metadata.insert("deviceId".to_owned(), Value::String(device_id));
+    }
+    let refreshed = OAuthCredentials {
         credential_type: "oauth".to_owned(),
         refresh: string_at(&payload, "refresh_token").unwrap_or_else(|| existing.refresh.clone()),
         access,
         expires,
         metadata,
-    })
+    };
+
+    // Match TS: when no enrolled proof was available, persist the refresh first, then
+    // best-effort migrate/enroll the current desktop device and attach deviceId.
+    if device_proof.is_some() {
+        return Ok(refreshed);
+    }
+    let _ = save_credentials(&refreshed);
+    if let Some(device_id) = crate::device_identity::enroll_desktop_device_identity(
+        client,
+        &identity,
+        &refreshed.access,
+        Some(&package_version()),
+    )
+    .await
+    {
+        let mut migrated = refreshed;
+        migrated
+            .metadata
+            .insert("deviceId".to_owned(), Value::String(device_id));
+        return Ok(migrated);
+    }
+    Ok(refreshed)
 }
 
 async fn resolve_endpoint(
@@ -1860,6 +1908,246 @@ fn package_version() -> String {
     std::env::var("MAESTRO_VERSION")
         .or_else(|_| std::env::var("CARGO_PKG_VERSION"))
         .unwrap_or_else(|_| "0.0.0".to_owned())
+}
+
+// ── Shared EvalOps OAuth surface for `evalops_cli` ────────────────────────────
+//
+// Login uses the same dynamic client-registration + PKCE flow as `maestro init`.
+// Desktop device-identity enroll + refresh proofs are handled via
+// [`crate::device_identity`] (soft-fail when the helper is unavailable).
+
+/// Snapshot of stored EvalOps agent-MCP registration metadata for status display.
+#[derive(Debug, Clone, Default)]
+pub struct EvalOpsAgentMcpSnapshot {
+    pub agent_id: Option<String>,
+    pub api_key: Option<String>,
+    pub endpoint: Option<String>,
+    pub integration_profile: Option<String>,
+    pub key_prefix: Option<String>,
+    pub memory_mode: Option<String>,
+    pub run_id: Option<String>,
+    pub runtime_owner: Option<String>,
+    pub session_expires_at: Option<String>,
+    pub shim_type: Option<String>,
+    pub trace_mode: Option<String>,
+    pub workspace_id: Option<String>,
+}
+
+/// Snapshot of stored EvalOps OAuth credentials for status/logout.
+#[derive(Debug, Clone)]
+pub struct EvalOpsCredentialSnapshot {
+    pub access: String,
+    pub refresh: String,
+    pub expires: i64,
+    pub email: Option<String>,
+    pub organization_id: Option<String>,
+    pub user_id: Option<String>,
+    pub identity_base_url: Option<String>,
+    pub provider_ref: Option<Value>,
+    pub agent_mcp: Option<EvalOpsAgentMcpSnapshot>,
+}
+
+/// Whether any EvalOps OAuth credentials are stored (keychain or file).
+pub fn has_evalops_credentials() -> bool {
+    load_credentials()
+        .ok()
+        .flatten()
+        .is_some_and(|credentials| {
+            !credentials.access.trim().is_empty() || !credentials.refresh.trim().is_empty()
+        })
+}
+
+/// Load a display-oriented snapshot of stored EvalOps credentials.
+pub fn load_evalops_snapshot() -> Result<Option<EvalOpsCredentialSnapshot>> {
+    let Some(credentials) = load_credentials()? else {
+        return Ok(None);
+    };
+    Ok(Some(snapshot_from_credentials(&credentials)))
+}
+
+/// Browser OAuth login for EvalOps; persists credentials on success.
+///
+/// After a successful token exchange, best-effort enrolls desktop device identity
+/// (no-op when the helper is unavailable).
+pub async fn perform_evalops_login() -> Result<()> {
+    let client = Client::builder()
+        .timeout(Duration::from_secs(30))
+        .build()
+        .context("build EvalOps HTTP client")?;
+    let options = InitOptions {
+        force_login: true,
+        ..InitOptions::default()
+    };
+    status(&options, "Opening EvalOps login");
+    let mut credentials = login(&options, &client).await?;
+    maybe_enroll_desktop_device(&client, &mut credentials).await;
+    save_credentials(&credentials)?;
+    Ok(())
+}
+
+/// Soft-fail desktop device enrollment; attaches `deviceId` to credential metadata when successful.
+async fn maybe_enroll_desktop_device(client: &Client, credentials: &mut OAuthCredentials) {
+    let identity = metadata_string(&credentials.metadata, "identityBaseUrl")
+        .unwrap_or_else(identity_base_from_env);
+    let Some(device_id) = crate::device_identity::enroll_desktop_device_identity(
+        client,
+        &identity,
+        &credentials.access,
+        Some(&package_version()),
+    )
+    .await
+    else {
+        return;
+    };
+    credentials
+        .metadata
+        .insert("identityBaseUrl".to_owned(), Value::String(identity));
+    credentials
+        .metadata
+        .insert("deviceId".to_owned(), Value::String(device_id));
+}
+
+/// Best-effort revoke of the EvalOps refresh token, then delete local credentials.
+pub async fn perform_evalops_logout() -> Result<()> {
+    if let Some(credentials) = load_credentials()? {
+        if !credentials.refresh.trim().is_empty() {
+            let client = Client::builder()
+                .timeout(Duration::from_secs(30))
+                .build()
+                .context("build EvalOps HTTP client")?;
+            if let Err(error) = revoke_refresh_token(&credentials, &client).await {
+                eprintln!("Warning: failed to revoke EvalOps refresh token: {error:#}");
+            }
+        }
+    }
+    delete_credentials()?;
+    Ok(())
+}
+
+fn snapshot_from_credentials(credentials: &OAuthCredentials) -> EvalOpsCredentialSnapshot {
+    let agent_mcp = stored_agent_mcp(credentials).map(|meta| EvalOpsAgentMcpSnapshot {
+        agent_id: meta.agent_id,
+        api_key: (!meta.api_key.trim().is_empty()).then_some(meta.api_key),
+        endpoint: (!meta.endpoint.trim().is_empty()).then_some(meta.endpoint),
+        integration_profile: meta.integration_profile,
+        key_prefix: meta.key_prefix,
+        memory_mode: meta.memory_mode,
+        run_id: meta.run_id,
+        runtime_owner: meta.runtime_owner,
+        session_expires_at: meta.session_expires_at,
+        shim_type: meta.shim_type,
+        trace_mode: meta.trace_mode,
+        workspace_id: meta.workspace_id,
+    });
+    // Prefer loose metadata when full AgentMcp validation fails (e.g. missing secrets).
+    let agent_mcp = agent_mcp.or_else(|| {
+        credentials
+            .metadata
+            .get("agentMcp")
+            .and_then(Value::as_object)
+            .map(|object| EvalOpsAgentMcpSnapshot {
+                agent_id: metadata_string(object, "agentId"),
+                api_key: metadata_string(object, "apiKey"),
+                endpoint: metadata_string(object, "endpoint"),
+                integration_profile: metadata_string(object, "integrationProfile"),
+                key_prefix: metadata_string(object, "keyPrefix"),
+                memory_mode: metadata_string(object, "memoryMode"),
+                run_id: metadata_string(object, "runId"),
+                runtime_owner: metadata_string(object, "runtimeOwner"),
+                session_expires_at: metadata_string(object, "sessionExpiresAt"),
+                shim_type: metadata_string(object, "shimType"),
+                trace_mode: metadata_string(object, "traceMode"),
+                workspace_id: metadata_string(object, "workspaceId"),
+            })
+    });
+    EvalOpsCredentialSnapshot {
+        access: credentials.access.clone(),
+        refresh: credentials.refresh.clone(),
+        expires: credentials.expires,
+        email: authenticated_as(&credentials.metadata),
+        organization_id: metadata_string(&credentials.metadata, "organizationId"),
+        user_id: metadata_string(&credentials.metadata, "userId"),
+        identity_base_url: metadata_string(&credentials.metadata, "identityBaseUrl"),
+        provider_ref: credentials.metadata.get("providerRef").cloned(),
+        agent_mcp,
+    }
+}
+
+async fn revoke_refresh_token(credentials: &OAuthCredentials, client: &Client) -> Result<()> {
+    let identity = metadata_string(&credentials.metadata, "identityBaseUrl")
+        .unwrap_or_else(identity_base_from_env);
+    let response = client
+        .post(format!("{identity}/v1/tokens/revoke"))
+        .json(&json!({ "refresh_token": credentials.refresh }))
+        .send()
+        .await
+        .context("revoke EvalOps refresh token")?;
+    if !response.status().is_success() {
+        let body = response.text().await.unwrap_or_default();
+        bail!("EvalOps token revoke failed: {}", response_detail(&body));
+    }
+    Ok(())
+}
+
+fn delete_credentials() -> Result<()> {
+    if !force_file_storage() {
+        match keyring::Entry::new("maestro-oauth", "evalops") {
+            Ok(entry) => match entry.delete_credential() {
+                Ok(()) | Err(keyring::Error::NoEntry) => {}
+                Err(error) if force_keychain_storage() => {
+                    return Err(error).context("delete forced EvalOps keychain storage");
+                }
+                Err(_) => {}
+            },
+            Err(error) if force_keychain_storage() => {
+                return Err(error).context("open forced EvalOps keychain storage for delete");
+            }
+            Err(_) => {}
+        }
+        remove_provider_from_registry("evalops")?;
+    }
+
+    let path = credentials_file()?;
+    if !path.exists() {
+        return Ok(());
+    }
+    let mut storage: Value = serde_json::from_str(&fs::read_to_string(&path)?)
+        .with_context(|| format!("parse {} for credential delete", path.display()))?;
+    if let Some(object) = storage.as_object_mut() {
+        object.remove("evalops");
+        if object.is_empty() {
+            let _ = fs::remove_file(&path);
+        } else {
+            atomic_private_write(&path, &serde_json::to_vec_pretty(&storage)?)?;
+        }
+    }
+    Ok(())
+}
+
+fn remove_provider_from_registry(provider: &str) -> Result<()> {
+    let path = credentials_file()?
+        .parent()
+        .context("OAuth file missing parent")?
+        .join("oauth-providers.json");
+    if !path.exists() {
+        return Ok(());
+    }
+    let value: Value = serde_json::from_str(&fs::read_to_string(&path)?)
+        .with_context(|| format!("parse {}", path.display()))?;
+    let mut providers = string_array(value.get("providers")).unwrap_or_default();
+    let before = providers.len();
+    providers.retain(|entry| entry != provider);
+    if providers.len() == before {
+        return Ok(());
+    }
+    if providers.is_empty() {
+        let _ = fs::remove_file(&path);
+        return Ok(());
+    }
+    atomic_private_write(
+        &path,
+        &serde_json::to_vec_pretty(&json!({ "providers": providers }))?,
+    )
 }
 
 #[cfg(test)]

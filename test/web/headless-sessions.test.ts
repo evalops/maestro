@@ -12,7 +12,7 @@ import {
 	HeadlessRuntimeSubscriptionSnapshotSchema,
 } from "@evalops/contracts";
 import { Value } from "@sinclair/typebox/value";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { publishSwarmRuntimeEvent } from "../../src/agent/swarm/runtime-events.js";
 import type {
@@ -23,6 +23,7 @@ import type {
 } from "../../src/agent/types.js";
 import {
 	HEADLESS_PROTOCOL_VERSION,
+	HeadlessProtocolTranslator,
 	createHeadlessRuntimeState,
 } from "../../src/cli/headless-protocol.js";
 import type { RegisteredModel } from "../../src/models/registry.js";
@@ -52,6 +53,7 @@ import {
 	type HeadlessRuntimeSnapshot,
 	type HeadlessRuntimeStreamEnvelope,
 } from "../../src/server/headless-runtime-service.js";
+import type { NativeHeadlessClient } from "../../src/server/native-headless-client.js";
 import { serverRequestManager } from "../../src/server/server-request-manager.js";
 import {
 	ApiError,
@@ -177,6 +179,66 @@ class FakeAgent {
 	}
 }
 
+type NativeTestAgentFactory = (
+	...args: unknown[]
+) => FakeAgent | Promise<FakeAgent>;
+
+class FakeAgentNativeClient extends EventEmitter {
+	private agent: FakeAgent | null = null;
+	private unsubscribe: (() => void) | null = null;
+	private readonly translator = new HeadlessProtocolTranslator();
+
+	constructor(private readonly nativeAgentFactory: NativeTestAgentFactory) {
+		super();
+	}
+
+	async start() {
+		this.agent = await this.nativeAgentFactory();
+		this.unsubscribe = this.agent.subscribe((event) => {
+			for (const message of this.translator.handleAgentEvent(event)) {
+				this.emit("message", message);
+			}
+		});
+		return {
+			type: "ready" as const,
+			protocol_version: HEADLESS_PROTOCOL_VERSION,
+			model: TEST_MODEL.id,
+			provider: TEST_MODEL.provider,
+			session_id: null,
+		};
+	}
+
+	hello() {}
+
+	init(options: { system_prompt?: string; thinking_level?: ThinkingLevel }) {
+		if (options.system_prompt !== undefined) {
+			this.agent?.setSystemPrompt(options.system_prompt);
+		}
+		if (options.thinking_level) {
+			this.agent?.setThinkingLevel(options.thinking_level);
+		}
+	}
+
+	prompt(content: string, attachments?: string[]) {
+		void this.agent?.prompt(content, attachments as never);
+	}
+
+	send() {}
+
+	interrupt() {
+		this.agent?.abort();
+	}
+
+	cancel() {
+		this.agent?.abort();
+	}
+
+	stop() {
+		this.unsubscribe?.();
+		this.unsubscribe = null;
+	}
+}
+
 type RestoreManifestFlushStatus = "completed" | "failed" | "skipped";
 
 function buildRestoreManifest(input: {
@@ -250,14 +312,23 @@ function createJsonRequest(
 }
 
 function createContext(overrides: Partial<WebServerContext>): WebServerContext {
-	const headlessRuntimeService = new HeadlessRuntimeService();
+	const nativeAgentFactory = (
+		overrides as Partial<WebServerContext> & {
+			nativeAgentFactory?: NativeTestAgentFactory;
+		}
+	).nativeAgentFactory;
+	const headlessRuntimeService = new HeadlessRuntimeService({
+		createNativeClient: () =>
+			new FakeAgentNativeClient(
+				nativeAgentFactory ?? (async () => new FakeAgent()),
+			) as unknown as NativeHeadlessClient,
+	});
 	return {
 		corsHeaders: {},
 		staticMaxAge: 0,
 		defaultApprovalMode: "prompt",
 		defaultProvider: "openai",
 		defaultModelId: TEST_MODEL.id,
-		createAgent: vi.fn(),
 		getRegisteredModel: vi.fn().mockResolvedValue(TEST_MODEL),
 		getCurrentSelection: () => ({
 			provider: TEST_MODEL.provider,
@@ -344,7 +415,7 @@ describe("headless session runtime", () => {
 				sessionDir: tempDir,
 			});
 			const context = createContext({
-				createAgent: vi.fn().mockResolvedValue(fakeAgent),
+				nativeAgentFactory: vi.fn().mockResolvedValue(fakeAgent),
 			});
 
 			const runtime = await context.headlessRuntimeService.ensureRuntime({
@@ -437,7 +508,7 @@ describe("headless session runtime", () => {
 				sessionDir: tempDir,
 			});
 			const context = createContext({
-				createAgent: vi.fn().mockResolvedValue(fakeAgent),
+				nativeAgentFactory: vi.fn().mockResolvedValue(fakeAgent),
 				hostedRunner: {
 					enabled: true,
 					agentRunId: "run_1",
@@ -514,7 +585,7 @@ describe("headless session runtime", () => {
 				sessionDir: tempDir,
 			});
 			const context = createContext({
-				createAgent: vi.fn().mockResolvedValue(fakeAgent),
+				nativeAgentFactory: vi.fn().mockResolvedValue(fakeAgent),
 			});
 
 			const runtime = await context.headlessRuntimeService.ensureRuntime({
@@ -559,7 +630,7 @@ describe("headless session runtime", () => {
 				sessionDir: tempDir,
 			});
 			const context = createContext({
-				createAgent: vi.fn().mockResolvedValue(fakeAgent),
+				nativeAgentFactory: vi.fn().mockResolvedValue(fakeAgent),
 			});
 
 			const runtime = await context.headlessRuntimeService.ensureRuntime({
@@ -614,7 +685,7 @@ describe("headless session runtime", () => {
 				sessionDir: tempDir,
 			});
 			const context = createContext({
-				createAgent: vi.fn().mockResolvedValue(fakeAgent),
+				nativeAgentFactory: vi.fn().mockResolvedValue(fakeAgent),
 			});
 
 			const runtime = await context.headlessRuntimeService.ensureRuntime({
@@ -709,7 +780,7 @@ describe("headless session runtime", () => {
 				sessionDir: tempDir,
 			});
 			const context = createContext({
-				createAgent: vi.fn().mockResolvedValue(fakeAgent),
+				nativeAgentFactory: vi.fn().mockResolvedValue(fakeAgent),
 			});
 
 			const runtime = await context.headlessRuntimeService.ensureRuntime({
@@ -795,10 +866,9 @@ describe("headless session runtime", () => {
 				type: "message",
 				message: {
 					type: "raw_agent_event",
-					event_type: "tool_batch_summary",
+					event_type: "status",
 					event: {
-						type: "tool_batch_summary",
-						summary: "Read README.md +1 more",
+						type: "status",
 					},
 				},
 			});
@@ -817,7 +887,7 @@ describe("headless session runtime", () => {
 				sessionDir: tempDir,
 			});
 			const context = createContext({
-				createAgent: vi.fn().mockResolvedValue(fakeAgent),
+				nativeAgentFactory: vi.fn().mockResolvedValue(fakeAgent),
 			});
 
 			const runtime = await context.headlessRuntimeService.ensureRuntime({
@@ -875,7 +945,7 @@ describe("headless session runtime", () => {
 				sessionDir: tempDir,
 			});
 			const context = createContext({
-				createAgent: vi.fn().mockResolvedValue(fakeAgent),
+				nativeAgentFactory: vi.fn().mockResolvedValue(fakeAgent),
 			});
 
 			const runtime = await context.headlessRuntimeService.ensureRuntime({
@@ -907,83 +977,6 @@ describe("headless session runtime", () => {
 		}
 	});
 
-	it("replays approval request lifecycle messages from the runtime broker", async () => {
-		const fakeAgent = new FakeAgent();
-		const tempDir = await mkdtemp(join(tmpdir(), "maestro-headless-runtime-"));
-		try {
-			const sessionManager = new SessionManager(false, undefined, {
-				sessionDir: tempDir,
-			});
-			const context = createContext({
-				createAgent: vi.fn().mockResolvedValue(fakeAgent),
-			});
-
-			const runtime = await context.headlessRuntimeService.ensureRuntime({
-				scope_key: "anon",
-				registeredModel: TEST_MODEL,
-				thinkingLevel: "off",
-				approvalMode: "prompt",
-				context,
-				sessionManager,
-			});
-
-			const request = {
-				id: "call_approval",
-				toolName: "bash",
-				args: { command: "git push --force" },
-				reason: "Force push requires approval",
-			};
-			fakeAgent.emit({
-				type: "action_approval_required",
-				request,
-			});
-			const approvalService = (
-				runtime as unknown as {
-					approvalService: {
-						requestApproval(request: typeof request): Promise<{
-							approved: boolean;
-							reason?: string;
-							resolvedBy: "policy" | "user";
-						}>;
-					};
-				}
-			).approvalService;
-			const approvalPromise = approvalService.requestApproval(request);
-
-			await runtime.send({
-				type: "tool_response",
-				call_id: request.id,
-				approved: false,
-				result: {
-					error: "Denied by user",
-				},
-			});
-			await expect(approvalPromise).resolves.toMatchObject({
-				approved: false,
-				reason: "Denied by user",
-				resolvedAtMs: expect.any(Number),
-				resolvedBy: "user",
-			});
-
-			const replay = runtime.replayFrom(0);
-			expect(
-				replay?.map((entry) =>
-					entry.type === "message" ? entry.message.type : entry.type,
-				),
-			).toEqual([
-				"ready",
-				"session_info",
-				"tool_call",
-				"server_request",
-				"server_request_resolved",
-				"snapshot",
-			]);
-			expect(runtime.getSnapshot().state.pending_approvals).toEqual([]);
-		} finally {
-			await rm(tempDir, { recursive: true, force: true });
-		}
-	});
-
 	it("publishes a snapshot after interrupt clears pending approval state", async () => {
 		const fakeAgent = new FakeAgent();
 		const tempDir = await mkdtemp(join(tmpdir(), "maestro-headless-runtime-"));
@@ -992,7 +985,7 @@ describe("headless session runtime", () => {
 				sessionDir: tempDir,
 			});
 			const context = createContext({
-				createAgent: vi.fn().mockResolvedValue(fakeAgent),
+				nativeAgentFactory: vi.fn().mockResolvedValue(fakeAgent),
 			});
 
 			const runtime = await context.headlessRuntimeService.ensureRuntime({
@@ -1057,7 +1050,7 @@ describe("headless session runtime", () => {
 		}
 	});
 
-	it("suppresses approval-only headless messages in auto approval mode", async () => {
+	it("preserves unexpected native approval requests in auto mode", async () => {
 		const fakeAgent = new FakeAgent();
 		const tempDir = await mkdtemp(join(tmpdir(), "maestro-headless-runtime-"));
 		try {
@@ -1065,7 +1058,7 @@ describe("headless session runtime", () => {
 				sessionDir: tempDir,
 			});
 			const context = createContext({
-				createAgent: vi.fn().mockResolvedValue(fakeAgent),
+				nativeAgentFactory: vi.fn().mockResolvedValue(fakeAgent),
 			});
 
 			const runtime = await context.headlessRuntimeService.ensureRuntime({
@@ -1095,7 +1088,7 @@ describe("headless session runtime", () => {
 						entry.message.type === "tool_call" &&
 						entry.message.call_id === "call_auto_approval",
 				),
-			).toBeUndefined();
+			).toBeDefined();
 			expect(
 				replay.find(
 					(entry) =>
@@ -1103,7 +1096,7 @@ describe("headless session runtime", () => {
 						entry.message.type === "server_request" &&
 						entry.message.request_id === "call_auto_approval",
 				),
-			).toBeUndefined();
+			).toBeDefined();
 		} finally {
 			await rm(tempDir, { recursive: true, force: true });
 		}
@@ -1117,7 +1110,7 @@ describe("headless session runtime", () => {
 				sessionDir: tempDir,
 			});
 			const context = createContext({
-				createAgent: vi.fn().mockResolvedValue(fakeAgent),
+				nativeAgentFactory: vi.fn().mockResolvedValue(fakeAgent),
 			});
 
 			const runtime = await context.headlessRuntimeService.ensureRuntime({
@@ -1165,109 +1158,6 @@ describe("headless session runtime", () => {
 		}
 	});
 
-	it("cancels shared approval requests on interrupt without duplicating later approval events", async () => {
-		const fakeAgent = new FakeAgent();
-		const tempDir = await mkdtemp(join(tmpdir(), "maestro-headless-runtime-"));
-		try {
-			const sessionManager = new SessionManager(false, undefined, {
-				sessionDir: tempDir,
-			});
-			const context = createContext({
-				createAgent: vi.fn().mockResolvedValue(fakeAgent),
-			});
-
-			const runtime = await context.headlessRuntimeService.ensureRuntime({
-				scope_key: "anon",
-				registeredModel: TEST_MODEL,
-				thinkingLevel: "off",
-				approvalMode: "prompt",
-				context,
-				sessionManager,
-			});
-
-			const request = {
-				id: "call_interrupt_approval",
-				toolName: "bash",
-				args: { command: "git push --force" },
-				reason: "Force push requires approval",
-				startedAtMs: 1_771_000_000_000,
-			};
-			fakeAgent.emit({
-				type: "action_approval_required",
-				request,
-			});
-
-			const approvalService = (
-				runtime as unknown as {
-					approvalService: {
-						requestApproval(request: typeof request): Promise<{
-							approved: boolean;
-							reason?: string;
-							resolvedBy: "policy" | "user";
-						}>;
-					};
-				}
-			).approvalService;
-			const pendingDecision = approvalService.requestApproval(request);
-			expect(
-				serverRequestManager.listPending({ sessionId: runtime.id() }),
-			).toEqual([
-				expect.objectContaining({
-					id: "call_interrupt_approval",
-					kind: "approval",
-				}),
-			]);
-
-			await runtime.send({ type: "interrupt" });
-			await expect(pendingDecision).resolves.toMatchObject({
-				approved: false,
-				reason: "Interrupted before request completed",
-				resolvedAtMs: expect.any(Number),
-				resolvedBy: "policy",
-			});
-			expect(
-				serverRequestManager.listPending({ sessionId: runtime.id() }),
-			).toEqual([]);
-
-			fakeAgent.emit({
-				type: "action_approval_resolved",
-				request,
-				decision: {
-					approved: false,
-					reason: "Interrupted before request completed",
-					resolvedBy: "policy",
-				},
-			});
-
-			const replay = runtime.replayFrom(0) ?? [];
-			expect(
-				replay.some(
-					(entry) =>
-						entry.type === "message" &&
-						entry.message.type === "server_request" &&
-						entry.message.request_id === "call_interrupt_approval" &&
-						entry.message.started_at_ms === 1_771_000_000_000,
-				),
-			).toBe(true);
-			const resolutions = replay.filter(
-				(entry) =>
-					entry.type === "message" &&
-					entry.message.type === "server_request_resolved" &&
-					entry.message.call_id === "call_interrupt_approval",
-			);
-			expect(resolutions).toHaveLength(1);
-			expect(resolutions[0]).toMatchObject({
-				type: "message",
-				message: expect.objectContaining({
-					started_at_ms: 1_771_000_000_000,
-					resolved_at_ms: expect.any(Number),
-				}),
-			});
-		} finally {
-			await rm(tempDir, { recursive: true, force: true });
-		}
-	});
-
 	it("cancels shared client tool requests on interrupt", async () => {
 		const fakeAgent = new FakeAgent();
 		const tempDir = await mkdtemp(join(tmpdir(), "maestro-headless-runtime-"));
@@ -1276,7 +1166,7 @@ describe("headless session runtime", () => {
 				sessionDir: tempDir,
 			});
 			const context = createContext({
-				createAgent: vi.fn().mockResolvedValue(fakeAgent),
+				nativeAgentFactory: vi.fn().mockResolvedValue(fakeAgent),
 			});
 
 			const runtime = await context.headlessRuntimeService.ensureRuntime({
@@ -1336,7 +1226,7 @@ describe("headless session runtime", () => {
 				sessionDir: tempDir,
 			});
 			const context = createContext({
-				createAgent: vi.fn().mockResolvedValue(fakeAgent),
+				nativeAgentFactory: vi.fn().mockResolvedValue(fakeAgent),
 			});
 
 			const runtime = await context.headlessRuntimeService.ensureRuntime({
@@ -1400,187 +1290,6 @@ describe("headless session runtime", () => {
 			await rm(tempDir, { recursive: true, force: true });
 		}
 	});
-
-	it("publishes a snapshot after tool responses clear approval state", async () => {
-		const fakeAgent = new FakeAgent();
-		const tempDir = await mkdtemp(join(tmpdir(), "maestro-headless-runtime-"));
-		try {
-			const sessionManager = new SessionManager(false, undefined, {
-				sessionDir: tempDir,
-			});
-			const context = createContext({
-				createAgent: vi.fn().mockResolvedValue(fakeAgent),
-			});
-
-			const runtime = await context.headlessRuntimeService.ensureRuntime({
-				scope_key: "anon",
-				registeredModel: TEST_MODEL,
-				thinkingLevel: "off",
-				approvalMode: "prompt",
-				context,
-				sessionManager,
-			});
-
-			const approvalService = (
-				runtime as unknown as {
-					approvalService: {
-						requestApproval(request: {
-							id: string;
-							toolName: string;
-							args: unknown;
-							reason: string;
-						}): Promise<unknown>;
-					};
-				}
-			).approvalService;
-
-			const approvalPromise = approvalService.requestApproval({
-				id: "call_approval",
-				toolName: "bash",
-				args: { command: "git push --force" },
-				reason: "Force push requires approval",
-			});
-
-			fakeAgent.emit({
-				type: "action_approval_required",
-				request: {
-					id: "call_approval",
-					toolName: "bash",
-					args: { command: "git push --force" },
-					reason: "Force push requires approval",
-				},
-			});
-
-			await runtime.send({
-				type: "tool_response",
-				call_id: "call_approval",
-				approved: false,
-				result: {
-					error: "Denied by user",
-				},
-			});
-
-			await expect(approvalPromise).resolves.toMatchObject({
-				approved: false,
-				reason: "Denied by user",
-				resolvedAtMs: expect.any(Number),
-				resolvedBy: "user",
-			});
-
-			const replay = runtime.replayFrom(0);
-			expect(replay?.at(-1)).toEqual({
-				type: "snapshot",
-				snapshot: expect.objectContaining({
-					state: expect.objectContaining({
-						pending_approvals: [],
-						tracked_tools: [],
-					}),
-				}),
-			});
-		} finally {
-			await rm(tempDir, { recursive: true, force: true });
-		}
-	});
-
-	it("replays client tool requests and resolves them through headless messages", async () => {
-		const fakeAgent = new FakeAgent();
-		const tempDir = await mkdtemp(join(tmpdir(), "maestro-headless-runtime-"));
-		try {
-			const sessionManager = new SessionManager(false, undefined, {
-				sessionDir: tempDir,
-			});
-			const context = createContext({
-				createAgent: vi.fn().mockResolvedValue(fakeAgent),
-			});
-
-			const runtime = await context.headlessRuntimeService.ensureRuntime({
-				scope_key: "anon",
-				registeredModel: TEST_MODEL,
-				thinkingLevel: "off",
-				approvalMode: "prompt",
-				context,
-				sessionManager,
-			});
-
-			const resultPromise = clientToolService.requestExecution(
-				"call_client",
-				"artifacts",
-				{ command: "create", filename: "report.txt" },
-				undefined,
-				runtime.id(),
-			);
-
-			fakeAgent.emit({
-				type: "client_tool_request",
-				toolCallId: "call_client",
-				toolName: "artifacts",
-				args: { command: "create", filename: "report.txt" },
-			});
-
-			expect(runtime.getSnapshot().state.pending_client_tools).toEqual([
-				{
-					call_id: "call_client",
-					tool: "artifacts",
-					args: { command: "create", filename: "report.txt" },
-				},
-			]);
-
-			await runtime.send({
-				type: "client_tool_result",
-				call_id: "call_client",
-				content: [{ type: "text", text: "created" }],
-				is_error: false,
-			});
-
-			await expect(resultPromise).resolves.toEqual({
-				content: [{ type: "text", text: "created" }],
-				isError: false,
-			});
-
-			expect(runtime.getSnapshot().state.pending_client_tools).toEqual([]);
-			expect(
-				runtime.replayFrom(0)?.some((entry) => {
-					if (entry.type !== "message") {
-						return false;
-					}
-					return entry.message.type === "client_tool_request";
-				}),
-			).toBe(true);
-			expect(
-				runtime.replayFrom(0)?.some((entry) => {
-					if (entry.type !== "message") {
-						return false;
-					}
-					return (
-						entry.message.type === "server_request" &&
-						entry.message.request_type === "client_tool"
-					);
-				}),
-			).toBe(true);
-			expect(
-				runtime.replayFrom(0)?.some((entry) => {
-					if (entry.type !== "message") {
-						return false;
-					}
-					return (
-						entry.message.type === "server_request_resolved" &&
-						entry.message.request_type === "client_tool" &&
-						entry.message.resolution === "completed"
-					);
-				}),
-			).toBe(true);
-			expect(runtime.replayFrom(0)?.at(-1)).toEqual({
-				type: "snapshot",
-				snapshot: expect.objectContaining({
-					state: expect.objectContaining({
-						pending_client_tools: [],
-					}),
-				}),
-			});
-		} finally {
-			await rm(tempDir, { recursive: true, force: true });
-		}
-	});
 });
 
 describe("headless session handlers", () => {
@@ -1620,7 +1329,7 @@ describe("headless session handlers", () => {
 	it("includes negotiated connection metadata in session snapshots", async () => {
 		const fakeAgent = new FakeAgent();
 		const context = createContext({
-			createAgent: vi.fn().mockResolvedValue(fakeAgent),
+			nativeAgentFactory: vi.fn().mockResolvedValue(fakeAgent),
 		});
 		const req = createJsonRequest("POST", "/api/headless/sessions", {
 			model: TEST_MODEL.id,
@@ -1655,7 +1364,7 @@ describe("headless session handlers", () => {
 	it("creates an explicit connection bootstrap without attaching a subscription", async () => {
 		const fakeAgent = new FakeAgent();
 		const context = createContext({
-			createAgent: vi.fn().mockResolvedValue(fakeAgent),
+			nativeAgentFactory: vi.fn().mockResolvedValue(fakeAgent),
 		});
 		const req = createJsonRequest("POST", "/api/headless/connections", {
 			model: TEST_MODEL.id,
@@ -1722,7 +1431,7 @@ describe("headless session handlers", () => {
 				"utf8",
 			);
 			const context = createContext({
-				createAgent: vi.fn().mockResolvedValue(fakeAgent),
+				nativeAgentFactory: vi.fn().mockResolvedValue(fakeAgent),
 				hostedRunner: {
 					enabled: true,
 					runnerSessionId: "mrs_restore",
@@ -1809,7 +1518,7 @@ describe("headless session handlers", () => {
 				"utf8",
 			);
 			const context = createContext({
-				createAgent: vi.fn().mockResolvedValue(fakeAgent),
+				nativeAgentFactory: vi.fn().mockResolvedValue(fakeAgent),
 				hostedRunner: {
 					enabled: true,
 					runnerSessionId: "mrs_restore",
@@ -1901,7 +1610,7 @@ describe("headless session handlers", () => {
 				"utf8",
 			);
 			const context = createContext({
-				createAgent: vi.fn().mockResolvedValue(fakeAgent),
+				nativeAgentFactory: vi.fn().mockResolvedValue(fakeAgent),
 				hostedRunner: {
 					enabled: true,
 					runnerSessionId: "mrs_restore",
@@ -1946,7 +1655,7 @@ describe("headless session handlers", () => {
 	it("creates explicit subscriptions with controller lease metadata", async () => {
 		const fakeAgent = new FakeAgent();
 		const context = createContext({
-			createAgent: vi.fn().mockResolvedValue(fakeAgent),
+			nativeAgentFactory: vi.fn().mockResolvedValue(fakeAgent),
 		});
 		const createReq = createJsonRequest("POST", "/api/headless/sessions", {
 			model: TEST_MODEL.id,
@@ -1992,7 +1701,7 @@ describe("headless session handlers", () => {
 	it("reuses an existing explicit connection when the caller provides connectionId", async () => {
 		const fakeAgent = new FakeAgent();
 		const context = createContext({
-			createAgent: vi.fn().mockResolvedValue(fakeAgent),
+			nativeAgentFactory: vi.fn().mockResolvedValue(fakeAgent),
 		});
 		const sessionManager = createSessionManagerForRequest(
 			createJsonRequest("POST", "/api/headless/sessions", {}),
@@ -2063,7 +1772,7 @@ describe("headless session handlers", () => {
 	it("returns 404 for a stale explicit connection bootstrap id", async () => {
 		const fakeAgent = new FakeAgent();
 		const context = createContext({
-			createAgent: vi.fn().mockResolvedValue(fakeAgent),
+			nativeAgentFactory: vi.fn().mockResolvedValue(fakeAgent),
 		});
 		const sessionManager = createSessionManagerForRequest(
 			createJsonRequest("POST", "/api/headless/sessions", {}),
@@ -2119,7 +1828,7 @@ describe("headless session handlers", () => {
 	it("rejects a second explicit controller subscription while a lease is held", async () => {
 		const fakeAgent = new FakeAgent();
 		const context = createContext({
-			createAgent: vi.fn().mockResolvedValue(fakeAgent),
+			nativeAgentFactory: vi.fn().mockResolvedValue(fakeAgent),
 		});
 		const createReq = createJsonRequest("POST", "/api/headless/sessions", {
 			model: TEST_MODEL.id,
@@ -2185,7 +1894,7 @@ describe("headless session handlers", () => {
 	it("allows explicit controller takeover when requested", async () => {
 		const fakeAgent = new FakeAgent();
 		const context = createContext({
-			createAgent: vi.fn().mockResolvedValue(fakeAgent),
+			nativeAgentFactory: vi.fn().mockResolvedValue(fakeAgent),
 		});
 		const createReq = createJsonRequest("POST", "/api/headless/sessions", {
 			model: TEST_MODEL.id,
@@ -2239,7 +1948,7 @@ describe("headless session handlers", () => {
 	it("fully clears runtime connection state after shutdown", async () => {
 		const fakeAgent = new FakeAgent();
 		const context = createContext({
-			createAgent: vi.fn().mockResolvedValue(fakeAgent),
+			nativeAgentFactory: vi.fn().mockResolvedValue(fakeAgent),
 		});
 		const runtime = await context.headlessRuntimeService.ensureRuntime({
 			scope_key: "anon",
@@ -2269,7 +1978,7 @@ describe("headless session handlers", () => {
 	it("coalesces concurrent runtime disposal", async () => {
 		const fakeAgent = new FakeAgent();
 		const context = createContext({
-			createAgent: vi.fn().mockResolvedValue(fakeAgent),
+			nativeAgentFactory: vi.fn().mockResolvedValue(fakeAgent),
 		});
 		const runtime = await context.headlessRuntimeService.ensureRuntime({
 			scope_key: "anon",
@@ -2318,7 +2027,7 @@ describe("headless session handlers", () => {
 	it("allows retrying runtime disposal after a failed attempt", async () => {
 		const fakeAgent = new FakeAgent();
 		const context = createContext({
-			createAgent: vi.fn().mockResolvedValue(fakeAgent),
+			nativeAgentFactory: vi.fn().mockResolvedValue(fakeAgent),
 		});
 		const runtime = await context.headlessRuntimeService.ensureRuntime({
 			scope_key: "anon",
@@ -2356,7 +2065,7 @@ describe("headless session handlers", () => {
 	it("allows retrying runtime disposal after a synchronous failed attempt", async () => {
 		const fakeAgent = new FakeAgent();
 		const context = createContext({
-			createAgent: vi.fn().mockResolvedValue(fakeAgent),
+			nativeAgentFactory: vi.fn().mockResolvedValue(fakeAgent),
 		});
 		const runtime = await context.headlessRuntimeService.ensureRuntime({
 			scope_key: "anon",
@@ -2395,56 +2104,14 @@ describe("headless session handlers", () => {
 		expect(runtime.isDisposed()).toBe(true);
 	});
 
-	it("best-effort disposal still finalizes when file watch cleanup throws", async () => {
-		const fakeAgent = new FakeAgent();
-		const context = createContext({
-			createAgent: vi.fn().mockResolvedValue(fakeAgent),
-		});
-		const runtime = await context.headlessRuntimeService.ensureRuntime({
-			scope_key: "anon",
-			registeredModel: TEST_MODEL,
-			thinkingLevel: "off",
-			approvalMode: "prompt",
-			context,
-			sessionManager: createSessionManagerForRequest(
-				createJsonRequest("POST", "/api/headless/sessions", {}),
-				"headless",
-			),
-		});
-
-		const internals = runtime as unknown as {
-			fileWatches: {
-				dispose: (reason?: string) => void;
-			};
-			agent: {
-				abort: () => void;
-			};
-		};
-		const abortSpy = vi.spyOn(internals.agent, "abort");
-		const fileWatchDisposeSpy = vi
-			.spyOn(internals.fileWatches, "dispose")
-			.mockImplementationOnce(() => {
-				throw new Error("watch dispose failed");
-			});
-
-		expect(() =>
-			runtime.disposeBestEffort("best-effort cleanup after repeated failures"),
-		).not.toThrow();
-		expect(fileWatchDisposeSpy).toHaveBeenCalledWith(
-			"best-effort cleanup after repeated failures",
-		);
-		expect(abortSpy).toHaveBeenCalledTimes(1);
-		expect(runtime.isDisposed()).toBe(true);
-	});
-
 	it("continues cleanup when one runtime disposal fails", async () => {
 		const firstAgent = new FakeAgent();
 		const secondAgent = new FakeAgent();
-		const createAgent = vi
+		const nativeAgentFactory = vi
 			.fn()
 			.mockResolvedValueOnce(firstAgent)
 			.mockResolvedValueOnce(secondAgent);
-		const context = createContext({ createAgent });
+		const context = createContext({ nativeAgentFactory });
 		const service = context.headlessRuntimeService;
 		const tempDir = await mkdtemp(join(tmpdir(), "maestro-headless-runtime-"));
 		try {
@@ -2493,7 +2160,7 @@ describe("headless session handlers", () => {
 	it("force-disposes idle runtimes after repeated cleanup failures", async () => {
 		const fakeAgent = new FakeAgent();
 		const context = createContext({
-			createAgent: vi.fn().mockResolvedValue(fakeAgent),
+			nativeAgentFactory: vi.fn().mockResolvedValue(fakeAgent),
 		});
 		const service = context.headlessRuntimeService;
 		const runtime = await service.ensureRuntime({
@@ -2536,7 +2203,7 @@ describe("headless session handlers", () => {
 	it("explicit unsubscribe releases the controller lease", async () => {
 		const fakeAgent = new FakeAgent();
 		const context = createContext({
-			createAgent: vi.fn().mockResolvedValue(fakeAgent),
+			nativeAgentFactory: vi.fn().mockResolvedValue(fakeAgent),
 		});
 		const createReq = createJsonRequest("POST", "/api/headless/sessions", {
 			model: TEST_MODEL.id,
@@ -2591,7 +2258,7 @@ describe("headless session handlers", () => {
 	it("explicit disconnect releases a registered controller connection", async () => {
 		const fakeAgent = new FakeAgent();
 		const context = createContext({
-			createAgent: vi.fn().mockResolvedValue(fakeAgent),
+			nativeAgentFactory: vi.fn().mockResolvedValue(fakeAgent),
 		});
 		const createReq = createJsonRequest("POST", "/api/headless/connections", {
 			model: TEST_MODEL.id,
@@ -2643,7 +2310,7 @@ describe("headless session handlers", () => {
 				sessionDir: tempDir,
 			});
 			const context = createContext({
-				createAgent: vi.fn().mockResolvedValue(fakeAgent),
+				nativeAgentFactory: vi.fn().mockResolvedValue(fakeAgent),
 			});
 
 			const runtime = await context.headlessRuntimeService.ensureRuntime({
@@ -2738,7 +2405,7 @@ describe("headless session handlers", () => {
 				sessionDir: tempDir,
 			});
 			const context = createContext({
-				createAgent: vi.fn().mockResolvedValue(fakeAgent),
+				nativeAgentFactory: vi.fn().mockResolvedValue(fakeAgent),
 			});
 
 			const runtime = await context.headlessRuntimeService.ensureRuntime({
@@ -2838,7 +2505,7 @@ describe("headless session handlers", () => {
 				sessionDir: tempDir,
 			});
 			const context = createContext({
-				createAgent: vi.fn().mockResolvedValue(fakeAgent),
+				nativeAgentFactory: vi.fn().mockResolvedValue(fakeAgent),
 			});
 
 			const runtime = await context.headlessRuntimeService.ensureRuntime({
@@ -2917,7 +2584,7 @@ describe("headless session handlers", () => {
 				sessionDir: tempDir,
 			});
 			const context = createContext({
-				createAgent: vi.fn().mockResolvedValue(fakeAgent),
+				nativeAgentFactory: vi.fn().mockResolvedValue(fakeAgent),
 			});
 
 			const runtime = await context.headlessRuntimeService.ensureRuntime({
@@ -2981,7 +2648,7 @@ describe("headless session handlers", () => {
 				sessionDir: tempDir,
 			});
 			const context = createContext({
-				createAgent: vi.fn().mockResolvedValue(fakeAgent),
+				nativeAgentFactory: vi.fn().mockResolvedValue(fakeAgent),
 			});
 
 			const runtime = await context.headlessRuntimeService.ensureRuntime({
@@ -3153,132 +2820,6 @@ describe("headless session handlers", () => {
 		}
 	});
 
-	it("passes client tool creation options through to the agent factory", async () => {
-		const createAgent = vi.fn().mockResolvedValue(new FakeAgent());
-		const context = createContext({ createAgent });
-		const req = createJsonRequest("POST", "/api/headless/sessions", {
-			model: TEST_MODEL.id,
-			enableClientTools: true,
-			capabilities: {
-				serverRequests: ["approval", "client_tool"],
-			},
-			client: "vscode",
-		});
-		const res = new MockResponse();
-		res.req = req;
-
-		await handleHeadlessSessionCreate(
-			req,
-			res as unknown as ServerResponse,
-			context,
-		);
-
-		expect(createAgent).toHaveBeenCalledWith(
-			TEST_MODEL,
-			"off",
-			"prompt",
-			expect.objectContaining({
-				enableClientTools: true,
-				useClientAskUser: false,
-				includeVscodeTools: true,
-				includeJetBrainsTools: false,
-				includeConductorTools: false,
-			}),
-		);
-	});
-
-	it("passes persisted system prompt source paths when resuming a headless session", async () => {
-		const persistedPaths = ["/tmp/APPEND_SYSTEM.md"];
-		const sessionDir = await mkdtemp(
-			join(tmpdir(), "maestro-headless-prompt-paths-"),
-		);
-		const seedAgent = new FakeAgent();
-
-		try {
-			const sessionManager = new SessionManager(false, undefined, {
-				sessionDir,
-			});
-			sessionManager.startSession({
-				...seedAgent.state,
-				systemPromptSourcePaths: persistedPaths,
-			} as typeof seedAgent.state & { systemPromptSourcePaths: string[] });
-			const sessionId = sessionManager.getSessionId();
-			const sessionFile = sessionManager.getSessionFile();
-			const sessionLookupSpy = vi
-				.spyOn(SessionManager.prototype, "getSessionFileById")
-				.mockImplementation((id) => (id === sessionId ? sessionFile : null));
-
-			try {
-				const createAgent = vi.fn().mockResolvedValue(new FakeAgent());
-				const context = createContext({ createAgent });
-				const req = createJsonRequest("POST", "/api/headless/sessions", {
-					model: TEST_MODEL.id,
-					sessionId,
-				});
-				const res = new MockResponse();
-				res.req = req;
-
-				await handleHeadlessSessionCreate(
-					req,
-					res as unknown as ServerResponse,
-					context,
-				);
-
-				expect(createAgent).toHaveBeenCalledWith(
-					TEST_MODEL,
-					"off",
-					"prompt",
-					expect.objectContaining({
-						persistedSystemPromptSourcePaths: persistedPaths,
-					}),
-				);
-			} finally {
-				sessionLookupSpy.mockRestore();
-			}
-		} finally {
-			await rm(sessionDir, { recursive: true, force: true });
-		}
-	});
-
-	it("uses an explicit workspace root for agent creation and session state", async () => {
-		const workspaceRoot = await mkdtemp(
-			join(tmpdir(), "maestro-headless-workspace-root-"),
-		);
-		try {
-			const createAgent = vi.fn().mockResolvedValue(new FakeAgent());
-			const context = createContext({ createAgent });
-			const req = createJsonRequest("POST", "/api/headless/sessions", {
-				model: TEST_MODEL.id,
-				workspaceRoot,
-			});
-			const res = new MockResponse();
-			res.req = req;
-
-			await handleHeadlessSessionCreate(
-				req,
-				res as unknown as ServerResponse,
-				context,
-			);
-
-			const resolvedWorkspaceRoot = realpathSync(workspaceRoot);
-			expect(createAgent).toHaveBeenCalledWith(
-				TEST_MODEL,
-				"off",
-				"prompt",
-				expect.objectContaining({
-					cwd: resolvedWorkspaceRoot,
-				}),
-			);
-			expect(JSON.parse(res.body)).toMatchObject({
-				state: {
-					cwd: resolvedWorkspaceRoot,
-				},
-			});
-		} finally {
-			await rm(workspaceRoot, { recursive: true, force: true });
-		}
-	});
-
 	it("records hosted session starts in Platform agent-runtime when configured", async () => {
 		const workspaceRoot = await mkdtemp(
 			join(tmpdir(), "maestro-headless-runtime-ledger-"),
@@ -3321,9 +2862,9 @@ describe("headless session handlers", () => {
 			);
 			vi.stubGlobal("fetch", fetchMock);
 
-			const createAgent = vi.fn().mockResolvedValue(new FakeAgent());
+			const nativeAgentFactory = vi.fn().mockResolvedValue(new FakeAgent());
 			const context = createContext({
-				createAgent,
+				nativeAgentFactory,
 				hostedRunner: {
 					enabled: true,
 					runnerSessionId: "mrs_test",
@@ -3340,7 +2881,7 @@ describe("headless session handlers", () => {
 			const req = createJsonRequest("POST", "/api/headless/sessions", {
 				model: TEST_MODEL.id,
 				workspaceRoot,
-				client: "vscode",
+				client: "generic",
 				protocolVersion: "headless.v1",
 			});
 			const res = new MockResponse();
@@ -3376,7 +2917,7 @@ describe("headless session handlers", () => {
 							role: "controller",
 							thinking_level: "off",
 							approval_mode: "prompt",
-							client: "vscode",
+							client: "generic",
 							protocol_version: "headless.v1",
 							workspace_root: realpathSync(workspaceRoot),
 							runner_session_id: "mrs_test",
@@ -3415,9 +2956,9 @@ describe("headless session handlers", () => {
 			);
 			vi.stubGlobal("fetch", fetchMock);
 
-			const createAgent = vi.fn().mockResolvedValue(new FakeAgent());
+			const nativeAgentFactory = vi.fn().mockResolvedValue(new FakeAgent());
 			const context = createContext({
-				createAgent,
+				nativeAgentFactory,
 				hostedRunner: {
 					enabled: true,
 					runnerSessionId: "mrs_test",
@@ -3434,7 +2975,7 @@ describe("headless session handlers", () => {
 			const req = createJsonRequest("POST", "/api/headless/sessions", {
 				model: TEST_MODEL.id,
 				workspaceRoot,
-				client: "vscode",
+				client: "generic",
 				protocolVersion: "headless.v1",
 			});
 			const res = new MockResponse();
@@ -3536,9 +3077,9 @@ describe("headless session handlers", () => {
 			);
 			vi.stubGlobal("fetch", fetchMock);
 
-			const createAgent = vi.fn().mockResolvedValue(new FakeAgent());
+			const nativeAgentFactory = vi.fn().mockResolvedValue(new FakeAgent());
 			const context = createContext({
-				createAgent,
+				nativeAgentFactory,
 				hostedRunner: {
 					enabled: true,
 					runnerSessionId: "mrs_test",
@@ -3550,7 +3091,7 @@ describe("headless session handlers", () => {
 			const req = createJsonRequest("POST", "/api/headless/sessions", {
 				model: TEST_MODEL.id,
 				workspaceRoot,
-				client: "vscode",
+				client: "generic",
 				protocolVersion: "headless.v1",
 			});
 			const res = new MockResponse();
@@ -3795,7 +3336,7 @@ describe("headless session handlers", () => {
 		try {
 			const fakeAgent = new FakeAgent();
 			const context = createContext({
-				createAgent: vi.fn().mockResolvedValue(fakeAgent),
+				nativeAgentFactory: vi.fn().mockResolvedValue(fakeAgent),
 				hostedRunner: {
 					enabled: true,
 					runnerSessionId: "mrs_test",
@@ -4012,65 +3553,6 @@ describe("headless session handlers", () => {
 		}
 	});
 
-	it("enables client ask_user routing when user_input capability is negotiated", async () => {
-		const createAgent = vi.fn().mockResolvedValue(new FakeAgent());
-		const context = createContext({ createAgent });
-		const req = createJsonRequest("POST", "/api/headless/sessions", {
-			model: TEST_MODEL.id,
-			capabilities: {
-				serverRequests: ["approval", "user_input"],
-			},
-		});
-		const res = new MockResponse();
-		res.req = req;
-
-		await handleHeadlessSessionCreate(
-			req,
-			res as unknown as ServerResponse,
-			context,
-		);
-
-		expect(createAgent).toHaveBeenCalledWith(
-			TEST_MODEL,
-			"off",
-			"prompt",
-			expect.objectContaining({
-				enableClientTools: undefined,
-				useClientAskUser: true,
-			}),
-		);
-	});
-
-	it("enables scoped client tools when mcp_elicitation capability is negotiated", async () => {
-		const createAgent = vi.fn().mockResolvedValue(new FakeAgent());
-		const context = createContext({ createAgent });
-		const req = createJsonRequest("POST", "/api/headless/sessions", {
-			model: TEST_MODEL.id,
-			capabilities: {
-				serverRequests: ["approval", "mcp_elicitation"],
-			},
-		});
-		const res = new MockResponse();
-		res.req = req;
-
-		await handleHeadlessSessionCreate(
-			req,
-			res as unknown as ServerResponse,
-			context,
-		);
-
-		expect(createAgent).toHaveBeenCalledWith(
-			TEST_MODEL,
-			"off",
-			"prompt",
-			expect.objectContaining({
-				enableClientTools: undefined,
-				useClientAskUser: false,
-				clientToolService: expect.any(Object),
-			}),
-		);
-	});
-
 	it("rejects enabling client tools without negotiated client_tool support", async () => {
 		const context = createContext({});
 		const req = createJsonRequest("POST", "/api/headless/sessions", {
@@ -4094,6 +3576,89 @@ describe("headless session handlers", () => {
 			statusCode: 400,
 			message:
 				"client_tool capability is required when enableClientTools is true",
+		});
+	});
+
+	it("rejects negotiated client tools until the native backend supports them", async () => {
+		const context = createContext({});
+		const req = createJsonRequest("POST", "/api/headless/sessions", {
+			model: TEST_MODEL.id,
+			enableClientTools: true,
+			capabilities: {
+				serverRequests: ["approval", "client_tool"],
+			},
+			client: "generic",
+		});
+		const res = new MockResponse();
+		res.req = req;
+
+		await expect(
+			handleHeadlessSessionCreate(
+				req,
+				res as unknown as ServerResponse,
+				context,
+			),
+		).rejects.toMatchObject({
+			statusCode: 400,
+			message: "Native headless runtime does not yet support client-side tools",
+		});
+	});
+
+	it("rejects unsupported native capabilities on subscribe and hello", async () => {
+		const context = createContext({});
+		const createReq = createJsonRequest("POST", "/api/headless/sessions", {
+			model: TEST_MODEL.id,
+		});
+		const createRes = new MockResponse();
+		createRes.req = createReq;
+		await handleHeadlessSessionCreate(
+			createReq,
+			createRes as unknown as ServerResponse,
+			context,
+		);
+		const sessionId = JSON.parse(createRes.body).session_id;
+
+		const subscribeReq = createJsonRequest(
+			"POST",
+			`/api/headless/sessions/${sessionId}/subscribe`,
+			{ capabilities: { serverRequests: ["user_input"] } },
+		);
+		const subscribeRes = new MockResponse();
+		subscribeRes.req = subscribeReq;
+		await expect(
+			handleHeadlessSessionSubscribe(
+				subscribeReq,
+				subscribeRes as unknown as ServerResponse,
+				context,
+				{ id: sessionId },
+			),
+		).rejects.toMatchObject({
+			statusCode: 400,
+			message:
+				"Native headless runtime does not yet support user_input server requests",
+		});
+
+		const helloReq = createJsonRequest(
+			"POST",
+			`/api/headless/sessions/${sessionId}/messages`,
+			{
+				type: "hello",
+				capabilities: { server_requests: ["mcp_elicitation"] },
+			},
+		);
+		const helloRes = new MockResponse();
+		helloRes.req = helloReq;
+		await expect(
+			handleHeadlessSessionMessage(
+				helloReq,
+				helloRes as unknown as ServerResponse,
+				context,
+				{ id: sessionId },
+			),
+		).rejects.toMatchObject({
+			statusCode: 400,
+			message:
+				"Native headless runtime does not yet support mcp_elicitation server requests",
 		});
 	});
 
@@ -4169,7 +3734,7 @@ describe("headless session handlers", () => {
 			});
 			const fakeAgent = new FakeAgent();
 			const context = createContext({
-				createAgent: vi.fn().mockResolvedValue(fakeAgent),
+				nativeAgentFactory: vi.fn().mockResolvedValue(fakeAgent),
 			});
 			const runtime = await context.headlessRuntimeService.ensureRuntime({
 				scope_key: "anon",
@@ -4278,320 +3843,6 @@ describe("headless session handlers", () => {
 		});
 		expect(runtime.assertCanSend).not.toHaveBeenCalled();
 		expect(runtime.send).not.toHaveBeenCalled();
-	});
-
-	it("replays user input requests and resolves them through headless messages", async () => {
-		const fakeAgent = new FakeAgent();
-		const tempDir = await mkdtemp(join(tmpdir(), "maestro-headless-runtime-"));
-		try {
-			const sessionManager = new SessionManager(false, undefined, {
-				sessionDir: tempDir,
-			});
-			const context = createContext({
-				createAgent: vi.fn().mockResolvedValue(fakeAgent),
-			});
-
-			const runtime = await context.headlessRuntimeService.ensureRuntime({
-				scope_key: "anon",
-				registeredModel: TEST_MODEL,
-				thinkingLevel: "off",
-				approvalMode: "prompt",
-				capabilities: {
-					server_requests: ["approval", "user_input"],
-				},
-				context,
-				sessionManager,
-			});
-
-			const resultPromise = clientToolService.requestExecution(
-				"call_user_input",
-				"ask_user",
-				{
-					questions: [
-						{
-							header: "Stack",
-							question: "Which schema library should we use?",
-							options: [
-								{
-									label: "Zod",
-									description: "Use Zod schemas",
-								},
-							],
-						},
-					],
-				},
-				undefined,
-				runtime.id(),
-			);
-
-			fakeAgent.emit({
-				type: "client_tool_request",
-				toolCallId: "call_user_input",
-				toolName: "ask_user",
-				args: {
-					questions: [
-						{
-							header: "Stack",
-							question: "Which schema library should we use?",
-							options: [
-								{
-									label: "Zod",
-									description: "Use Zod schemas",
-								},
-							],
-						},
-					],
-				},
-			});
-
-			expect(runtime.getSnapshot().state.pending_user_inputs).toEqual([
-				{
-					call_id: "call_user_input",
-					tool: "ask_user",
-					args: {
-						questions: [
-							{
-								header: "Stack",
-								question: "Which schema library should we use?",
-								options: [
-									{
-										label: "Zod",
-										description: "Use Zod schemas",
-									},
-								],
-							},
-						],
-					},
-				},
-			]);
-
-			await runtime.send({
-				type: "client_tool_result",
-				call_id: "call_user_input",
-				content: [{ type: "text", text: "Use Zod" }],
-				is_error: false,
-			});
-
-			await expect(resultPromise).resolves.toEqual({
-				content: [{ type: "text", text: "Use Zod" }],
-				isError: false,
-			});
-
-			expect(runtime.getSnapshot().state.pending_user_inputs).toEqual([]);
-			expect(
-				runtime.replayFrom(0)?.some((entry) => {
-					if (entry.type !== "message") {
-						return false;
-					}
-					return (
-						entry.message.type === "server_request" &&
-						entry.message.request_type === "user_input"
-					);
-				}),
-			).toBe(true);
-			expect(
-				runtime.replayFrom(0)?.some((entry) => {
-					if (entry.type !== "message") {
-						return false;
-					}
-					return (
-						entry.message.type === "server_request_resolved" &&
-						entry.message.request_type === "user_input" &&
-						entry.message.resolution === "answered"
-					);
-				}),
-			).toBe(true);
-		} finally {
-			await rm(tempDir, { recursive: true, force: true });
-		}
-	});
-
-	it("accepts generic server_request_response messages for user input requests", async () => {
-		const fakeAgent = new FakeAgent();
-		const tempDir = await mkdtemp(join(tmpdir(), "maestro-headless-runtime-"));
-		try {
-			const sessionManager = new SessionManager(false, undefined, {
-				sessionDir: tempDir,
-			});
-			const context = createContext({
-				createAgent: vi.fn().mockResolvedValue(fakeAgent),
-			});
-
-			const runtime = await context.headlessRuntimeService.ensureRuntime({
-				scope_key: "anon",
-				registeredModel: TEST_MODEL,
-				thinkingLevel: "off",
-				approvalMode: "prompt",
-				capabilities: {
-					server_requests: ["approval", "user_input"],
-				},
-				context,
-				sessionManager,
-			});
-
-			const resultPromise = clientToolService.requestExecution(
-				"call_user_input_generic",
-				"ask_user",
-				{
-					questions: [
-						{
-							header: "Stack",
-							question: "Which schema library should we use?",
-							options: [
-								{
-									label: "Zod",
-									description: "Use Zod schemas",
-								},
-							],
-						},
-					],
-				},
-				undefined,
-				runtime.id(),
-			);
-
-			fakeAgent.emit({
-				type: "client_tool_request",
-				toolCallId: "call_user_input_generic",
-				toolName: "ask_user",
-				args: {
-					questions: [
-						{
-							header: "Stack",
-							question: "Which schema library should we use?",
-							options: [
-								{
-									label: "Zod",
-									description: "Use Zod schemas",
-								},
-							],
-						},
-					],
-				},
-			});
-
-			await runtime.send({
-				type: "server_request_response",
-				request_id: "call_user_input_generic",
-				request_type: "user_input",
-				content: [{ type: "text", text: "Use Zod" }],
-				is_error: false,
-			});
-
-			await expect(resultPromise).resolves.toEqual({
-				content: [{ type: "text", text: "Use Zod" }],
-				isError: false,
-			});
-
-			expect(runtime.getSnapshot().state.pending_user_inputs).toEqual([]);
-		} finally {
-			await rm(tempDir, { recursive: true, force: true });
-		}
-	});
-
-	it("replays tool retry requests and resolves them through generic server request responses", async () => {
-		const fakeAgent = new FakeAgent();
-		const tempDir = await mkdtemp(join(tmpdir(), "maestro-headless-runtime-"));
-		try {
-			const sessionManager = new SessionManager(false, undefined, {
-				sessionDir: tempDir,
-			});
-			const context = createContext({
-				createAgent: vi.fn().mockResolvedValue(fakeAgent),
-			});
-
-			const runtime = await context.headlessRuntimeService.ensureRuntime({
-				scope_key: "anon",
-				registeredModel: TEST_MODEL,
-				thinkingLevel: "off",
-				approvalMode: "prompt",
-				capabilities: {
-					server_requests: ["approval", "tool_retry"],
-				},
-				context,
-				sessionManager,
-			});
-
-			const toolRetryService = new ServerRequestToolRetryService("prompt", () =>
-				runtime.id(),
-			);
-			const decisionPromise = toolRetryService.requestDecision({
-				id: "retry_1",
-				toolCallId: "call_bash",
-				toolName: "bash",
-				args: { command: "ls" },
-				errorMessage: "Command failed",
-				attempt: 1,
-				summary: "Retry bash command",
-			});
-
-			expect(runtime.getSnapshot().state.pending_tool_retries).toEqual([
-				{
-					call_id: "call_bash",
-					request_id: "retry_1",
-					tool: "bash",
-					args: {
-						tool_call_id: "call_bash",
-						args: { command: "ls" },
-						error_message: "Command failed",
-						attempt: 1,
-						summary: "Retry bash command",
-					},
-					started_at_ms: expect.any(Number),
-				},
-			]);
-			expect(runtime.getSnapshot().state.pending_requests).toEqual([
-				expect.objectContaining({
-					id: "retry_1",
-					kind: "tool_retry",
-					call_id: "call_bash",
-					request_id: "retry_1",
-					started_at_ms: expect.any(Number),
-				}),
-			]);
-
-			await runtime.send({
-				type: "server_request_response",
-				request_id: "retry_1",
-				request_type: "tool_retry",
-				decision_action: "retry",
-				reason: "Try again",
-			});
-
-			await expect(decisionPromise).resolves.toEqual({
-				action: "retry",
-				reason: "Try again",
-				resolvedBy: "user",
-			});
-
-			expect(runtime.getSnapshot().state.pending_tool_retries).toEqual([]);
-			expect(
-				runtime.replayFrom(0)?.some((entry) => {
-					if (entry.type !== "message") {
-						return false;
-					}
-					return (
-						entry.message.type === "server_request" &&
-						entry.message.request_type === "tool_retry" &&
-						entry.message.request_id === "retry_1"
-					);
-				}),
-			).toBe(true);
-			expect(
-				runtime.replayFrom(0)?.some((entry) => {
-					if (entry.type !== "message") {
-						return false;
-					}
-					return (
-						entry.message.type === "server_request_resolved" &&
-						entry.message.request_type === "tool_retry" &&
-						entry.message.resolution === "retried"
-					);
-				}),
-			).toBe(true);
-		} finally {
-			await rm(tempDir, { recursive: true, force: true });
-		}
 	});
 
 	it("streams a snapshot envelope on initial SSE attach", () => {

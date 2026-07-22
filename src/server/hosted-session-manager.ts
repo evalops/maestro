@@ -5,6 +5,7 @@ import { isToolResultMessage } from "../agent/type-guards.js";
 import type { AgentState, AppMessage } from "../agent/types.js";
 import { getDb } from "../db/client.js";
 import { hostedSessionEntries, hostedSessions } from "../db/schema.js";
+import type { SessionStartState } from "../session/manager.js";
 import {
 	type SessionContextSnapshot,
 	buildSessionContextFromEntries,
@@ -655,7 +656,7 @@ export class HostedSessionManager {
 		await this.flush();
 	}
 
-	startSession(state: AgentState, options?: { subject?: string }): void {
+	startSession(state: SessionStartState, options?: { subject?: string }): void {
 		if (this.sessionInitialized) return;
 
 		const modelKey = `${state.model.provider}/${state.model.id}`;

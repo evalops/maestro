@@ -10,7 +10,7 @@ import {
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { testing } from "../src/cli/commands/run.js";
+import { buildRunReconstructionReport } from "../src/server/run-reconstruction.js";
 import { SessionManager } from "../src/session/manager.js";
 import { tryParseSessionEntry } from "../src/session/types.js";
 
@@ -23,7 +23,7 @@ const fixturesDir = join(
 );
 
 type RunReport = Awaited<
-	ReturnType<typeof testing.buildRunReconstructionReport>
+	ReturnType<typeof buildRunReconstructionReport>
 >;
 type TimelineItem = NonNullable<RunReport>["timeline"]["items"][number];
 
@@ -104,7 +104,7 @@ async function checkFixture(name: string, update: boolean): Promise<void> {
 	const contents = readFileSync(join(fixturesDir, name), "utf8");
 	const { sessionDir, sessionId } = materializeFixture(contents);
 	try {
-		const report = await testing.buildRunReconstructionReport(sessionId, {
+		const report = await buildRunReconstructionReport(sessionId, {
 			sessionDir,
 		});
 		assert(report, `fixture ${name} did not reconstruct`);

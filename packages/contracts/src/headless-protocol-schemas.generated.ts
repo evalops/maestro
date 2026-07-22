@@ -102,6 +102,18 @@ export const HeadlessContentBlockSchema = Type.Union([
 	HeadlessImageContentSchema,
 ]);
 
+export const HeadlessHistoryMessageSchema = Type.Object(
+	{
+		role: Type.Union([
+			Type.Literal("user"),
+			Type.Literal("assistant"),
+			Type.Literal("system"),
+		]),
+		content: Type.String(),
+	},
+	{ additionalProperties: false },
+);
+
 export const HeadlessHelloMessageSchema = Type.Object(
 	{
 		type: Type.Literal("hello"),
@@ -123,6 +135,7 @@ export const HeadlessInitMessageSchema = Type.Object(
 		append_system_prompt: Type.Optional(Type.String()),
 		thinking_level: Type.Optional(stringLiteralUnion(headlessThinkingLevels)),
 		approval_mode: Type.Optional(stringLiteralUnion(headlessApprovalModes)),
+		history: Type.Optional(Type.Array(HeadlessHistoryMessageSchema)),
 	},
 	{ additionalProperties: false },
 );

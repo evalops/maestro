@@ -301,12 +301,113 @@ fn serialize_init_message() {
         append_system_prompt: None,
         thinking_level: Some(ThinkingLevel::High),
         approval_mode: Some(ApprovalMode::Prompt),
+        history: None,
     };
     let json = serde_json::to_string(&msg).unwrap();
     assert!(json.contains(r#""type":"init""#));
     assert!(json.contains(r#""system_prompt":"You are Maestro""#));
     assert!(json.contains(r#""thinking_level":"high""#));
     assert!(json.contains(r#""approval_mode":"prompt""#));
+}
+
+#[test]
+fn parse_init_message_with_history() {
+    let json = r#"{
+        "type": "init",
+        "system_prompt": "You are Maestro",
+        "history": [
+            {"role": "user", "content": "What is 2+2?"},
+            {"role": "assistant", "content": "4"},
+            {"role": "system", "content": "Stay concise"}
+        ]
+    }"#;
+    let msg: ToAgentMessage = serde_json::from_str(json).unwrap();
+    match msg {
+        ToAgentMessage::Init {
+            system_prompt,
+            append_system_prompt,
+            thinking_level,
+            approval_mode,
+            history,
+        } => {
+            assert_eq!(system_prompt.as_deref(), Some("You are Maestro"));
+            assert!(append_system_prompt.is_none());
+            assert!(thinking_level.is_none());
+            assert!(approval_mode.is_none());
+            let history = history.expect("history present");
+            assert_eq!(history.len(), 3);
+            assert_eq!(history[0].role, HistoryRole::User);
+            assert_eq!(history[0].content, "What is 2+2?");
+            assert_eq!(history[1].role, HistoryRole::Assistant);
+            assert_eq!(history[1].content, "4");
+            assert_eq!(history[2].role, HistoryRole::System);
+            assert_eq!(history[2].content, "Stay concise");
+        }
+        _ => panic!("Expected Init message"),
+    }
+}
+
+#[test]
+fn parse_init_message_without_history_defaults_none() {
+    let json = r#"{"type":"init","system_prompt":"hi"}"#;
+    let msg: ToAgentMessage = serde_json::from_str(json).unwrap();
+    match msg {
+        ToAgentMessage::Init { history, .. } => assert!(history.is_none()),
+        _ => panic!("Expected Init message"),
+    }
+}
+
+#[test]
+fn serialize_init_message_with_history_roundtrip() {
+    let msg = ToAgentMessage::Init {
+        system_prompt: None,
+        append_system_prompt: None,
+        thinking_level: None,
+        approval_mode: None,
+        history: Some(vec![
+            HistoryMessage {
+                role: HistoryRole::User,
+                content: "hello".to_string(),
+            },
+            HistoryMessage {
+                role: HistoryRole::Assistant,
+                content: "hi there".to_string(),
+            },
+        ]),
+    };
+    let json = serde_json::to_string(&msg).unwrap();
+    assert!(json.contains(r#""type":"init""#));
+    assert!(json.contains(r#""role":"user""#));
+    assert!(json.contains(r#""content":"hello""#));
+    assert!(!json.contains("system_prompt"));
+    let parsed: ToAgentMessage = serde_json::from_str(&json).unwrap();
+    match parsed {
+        ToAgentMessage::Init { history, .. } => {
+            let history = history.expect("history");
+            assert_eq!(history.len(), 2);
+            assert_eq!(history[1].role, HistoryRole::Assistant);
+            assert_eq!(history[1].content, "hi there");
+        }
+        _ => panic!("Expected Init"),
+    }
+}
+
+#[test]
+fn history_message_converts_to_ai_message() {
+    let seeded = HistoryMessage {
+        role: HistoryRole::User,
+        content: "prior turn".to_string(),
+    };
+    let ai = seeded.to_ai_message();
+    assert!(matches!(ai.role, crate::ai::Role::User));
+    assert_eq!(ai.content.as_text(), Some("prior turn"));
+
+    let messages = history_to_ai_messages(Some(&[HistoryMessage {
+        role: HistoryRole::Assistant,
+        content: "ok".to_string(),
+    }]));
+    assert_eq!(messages.len(), 1);
+    assert!(matches!(messages[0].role, crate::ai::Role::Assistant));
 }
 
 #[test]

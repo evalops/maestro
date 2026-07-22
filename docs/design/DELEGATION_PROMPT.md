@@ -20,8 +20,8 @@ const prompt: DelegationPrompt = {
   goal: "Complete swarm task task-1 as teammate Alpha.",
   context: "You are working from plan.md in a parent swarm run.",
   task: "Add the missing retry test for the hosted runner.",
-  evidence: ["src/remote-runner/client.ts", "test/remote-runner/client.test.ts"],
-  validation: "Run the focused remote runner test.",
+  evidence: ["packages/tui-rs/src/remote_cli.rs", "packages/tui-rs/src/remote_attach.rs"],
+  validation: "Run the focused native remote CLI tests.",
   stoppingCondition: "Stop after the test passes and summarize changed files.",
 };
 

@@ -286,7 +286,12 @@ pub fn is_path_contained(
 
     let target_in_workspace = path_starts_with(&resolved, &workspace_resolved);
 
-    if let Some(sys_path) = system_protected_path(&resolved) {
+    // Treat both the resolved target and the logical path as system-protected.
+    // Resolved-only checks miss platform layouts where system config paths
+    // symlink outside SYSTEM_PATHS (e.g. nix-darwin: /etc/hosts → /nix/store/...).
+    if let Some(sys_path) =
+        system_protected_path(&resolved).or_else(|| system_protected_path(target))
+    {
         // Self-hosted CI workspaces can live under system-owned roots. Trust only
         // recognizable runner workspaces (or operator-configured runner roots)
         // while keeping arbitrary /etc, /usr, /opt, etc. workspaces blocked.
@@ -510,7 +515,10 @@ pub fn is_system_path(path: &Path) -> bool {
         }
     }
 
-    system_protected_path(&resolved).is_some()
+    // Resolved target under a system root (e.g. /private/etc/passwd after macOS
+    // /etc → /private/etc), or logical path under a system root when the
+    // symlink target leaves SYSTEM_PATHS (nix-darwin /etc/hosts → /nix/store).
+    system_protected_path(&resolved).is_some() || system_protected_path(path).is_some()
 }
 
 /// Check for path traversal attempts in a path string
@@ -917,6 +925,26 @@ mod tests {
             .join("users")
             .join("name");
         assert!(!is_system_path(&not_sys));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_is_system_path_logical_prefix_when_symlink_leaves_system_root() {
+        // Platform layouts (notably nix-darwin) may symlink /etc/* into
+        // non-system locations such as /nix/store. The logical path must
+        // still be classified as system-protected.
+        let etc = Path::new("/etc");
+        if !etc.is_dir() {
+            return;
+        }
+        assert!(is_system_path(Path::new("/etc/hosts")));
+        assert!(is_system_path(Path::new("/etc/passwd")));
+
+        let workspace = workspace_root();
+        assert!(matches!(
+            is_path_contained(Path::new("/etc/hosts"), &workspace, &[]),
+            PathContainment::SystemProtected { .. }
+        ));
     }
 
     // ========================================================================

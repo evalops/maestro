@@ -76,8 +76,8 @@ use std::sync::Arc;
 use super::types::{
     A2aAction, ArgumentValue, Command, CommandAction, CommandArgument, CommandCategory,
     CommandContext, CommandError, CommandOutput, CommandResult, ExportAction, HistoryAction,
-    HooksAction, McpAction, ModalType, QueueAction, QueueModeKind, SessionAction, SkillsAction,
-    ToolHistoryAction, UsageAction,
+    HooksAction, McpAction, ModalType, PluginsAction, QueueAction, QueueModeKind, SessionAction,
+    SkillsAction, ToolHistoryAction, UsageAction,
 };
 use crate::git;
 use crate::keybindings::{
@@ -336,7 +336,8 @@ impl CommandRegistry {
             return Err(CommandError::new("Commands must start with /"));
         }
 
-        let input_without_slash = &input[1..];
+        // Tolerate accidental double-slash from completion bugs (`//help`) or paste.
+        let input_without_slash = input.trim_start_matches('/');
 
         // Split into command and args
         let mut parts = input_without_slash.splitn(2, char::is_whitespace);
@@ -1471,6 +1472,37 @@ pub fn build_command_registry() -> CommandRegistry {
         .group(vec!["status", "stats", "about", "context", "mcp"]),
     );
 
+    // Jane Street magic-trace (Linux/Intel PT) — https://github.com/janestreet/magic-trace
+    registry.register(
+        Command::new(
+            "magic-trace",
+            "Fire magic-trace stop indicator or toggle slow-frame snapshots",
+            CommandCategory::Diagnostics,
+            Box::new(|ctx| {
+                let sub = ctx
+                    .raw_args
+                    .split_whitespace()
+                    .next()
+                    .unwrap_or("")
+                    .to_lowercase();
+                let action = match sub.as_str() {
+                    "" | "stop" | "snap" | "snapshot" => crate::commands::MagicTraceAction::Stop,
+                    "on" | "enable" | "slow" => crate::commands::MagicTraceAction::EnableSlowFrame,
+                    "off" | "disable" => crate::commands::MagicTraceAction::DisableSlowFrame,
+                    "status" | "help" | "?" => crate::commands::MagicTraceAction::Status,
+                    _ => {
+                        return Err(CommandError::new(
+                            "Usage: /magic-trace [stop|on|off|status]",
+                        ));
+                    }
+                };
+                Ok(CommandOutput::Action(CommandAction::MagicTrace(action)))
+            }),
+        )
+        .alias("mt")
+        .usage("/magic-trace [stop|on|off|status]"),
+    );
+
     // Tools command
     registry.register(
         Command::new(
@@ -1633,25 +1665,42 @@ pub fn build_command_registry() -> CommandRegistry {
         .usage("/memory"),
     );
 
-    // Plan mode (Grok-style)
+    // Plan mode (Grok-style: plan.md + approve)
     registry.register(
         Command::new(
             "plan",
-            "Enter or leave plan mode (require plan before mutating tools)",
+            "Plan mode: explore + write plan.md only until approved",
             CommandCategory::Context,
             Box::new(|ctx| {
                 let arg = ctx.raw_args.trim().to_lowercase();
-                let enabled = match arg.as_str() {
-                    "" | "on" | "true" | "1" => true,
-                    "off" | "false" | "0" => false,
-                    _ => {
-                        return Err(CommandError::new("Usage: /plan [on|off]"));
+                match arg.as_str() {
+                    "" | "on" | "true" | "1" => {
+                        Ok(CommandOutput::Action(CommandAction::SetPlanMode(true)))
                     }
-                };
-                Ok(CommandOutput::Action(CommandAction::SetPlanMode(enabled)))
+                    "off" | "false" | "0" => {
+                        Ok(CommandOutput::Action(CommandAction::SetPlanMode(false)))
+                    }
+                    "approve" | "accept" | "done" => {
+                        Ok(CommandOutput::Action(CommandAction::ApprovePlan))
+                    }
+                    "view" | "show" => Ok(CommandOutput::Action(CommandAction::ViewPlan)),
+                    _ => Err(CommandError::new("Usage: /plan [on|off|approve|view]")),
+                }
             }),
         )
-        .usage("/plan [on|off]"),
+        .usage("/plan [on|off|approve|view]"),
+    );
+
+    registry.register(
+        Command::new(
+            "view-plan",
+            "Show the current session plan.md",
+            CommandCategory::Context,
+            Box::new(|_| Ok(CommandOutput::Action(CommandAction::ViewPlan))),
+        )
+        .alias("show-plan")
+        .alias("plan-view")
+        .usage("/view-plan"),
     );
 
     // Grok-style permission shortcuts
@@ -1930,6 +1979,52 @@ pub fn build_command_registry() -> CommandRegistry {
         ))
         .arg(CommandArgument::string("name", "Skill name"))
         .usage("/skills [list|activate|deactivate|reload|info] [skill-name]"),
+    );
+
+    // Plugins command
+    registry.register(
+        Command::new(
+            "plugins",
+            "List discovered plugins (skills, commands, hooks, MCP packages)",
+            CommandCategory::Tools,
+            Box::new(|ctx| {
+                let raw_args = ctx.raw_args.trim();
+                let raw_parts: Vec<&str> = raw_args.split_whitespace().collect();
+                let raw_sub = raw_parts.first().copied().unwrap_or("");
+                let sub = raw_sub.to_lowercase();
+
+                let action = match sub.as_str() {
+                    "" | "list" => PluginsAction::List,
+                    "reload" | "refresh" => PluginsAction::Reload,
+                    "info" | "show" => {
+                        let name = raw_parts
+                            .iter()
+                            .skip(1)
+                            .copied()
+                            .collect::<Vec<_>>()
+                            .join(" ");
+                        let name = name.trim();
+                        if name.is_empty() {
+                            return Err(CommandError::new("Plugin name required")
+                                .with_hint("Usage: /plugins info <plugin-name>"));
+                        }
+                        PluginsAction::Info(name.to_string())
+                    }
+                    _ => {
+                        // Treat bare name as info lookup: `/plugins team-tools`
+                        PluginsAction::Info(raw_sub.to_string())
+                    }
+                };
+
+                Ok(CommandOutput::Action(CommandAction::Plugins(action)))
+            }),
+        )
+        .alias("plugin")
+        .arg(CommandArgument::string(
+            "action",
+            "list|info|reload or plugin name",
+        ))
+        .usage("/plugins [list|info|reload] [plugin-name]"),
     );
 
     registry

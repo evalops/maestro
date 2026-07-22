@@ -1,10 +1,26 @@
 use super::*;
 
+/// Normalize a slash-completion string to a single leading `/`.
+///
+/// `get_completions` returns values like `/help`. Older call sites (and any
+/// bare name without a slash) must still resolve to exactly one leading slash
+/// so the input never becomes `//help`.
+#[must_use]
+pub(crate) fn normalize_slash_completion(cmd: &str) -> String {
+    let trimmed = cmd.trim();
+    if trimmed.is_empty() || trimmed.chars().all(|c| c == '/') {
+        return "/".to_string();
+    }
+    let name = trimmed.trim_start_matches('/');
+    format!("/{name}")
+}
+
 impl App {
     /// Update slash state based on current input
     pub(super) fn update_slash_state(&mut self) {
         if self.state.input().starts_with('/') {
-            let query = &self.state.input()[1..];
+            // Strip every leading `/` so `//help` still matches `help`.
+            let query = self.state.input().trim_start_matches('/');
             self.slash_state.set_query(query, &self.slash_matcher);
         } else {
             self.slash_state.reset();
@@ -16,16 +32,20 @@ impl App {
         if self.slash_state.has_completions() {
             self.slash_state.cycle_next();
         } else {
-            let query = &self.state.input()[1..];
+            let query = self.state.input().trim_start_matches('/');
             self.slash_state.set_query(query, &self.slash_matcher);
         }
         self.apply_slash_completion();
     }
 
-    /// Apply the current slash completion to input
+    /// Apply the current slash completion to input.
+    ///
+    /// Completions from `SlashCommandMatcher::get_completions` already include a
+    /// leading `/` (e.g. `/help`). Do **not** prefix another slash or the input
+    /// becomes `//help` and the registry looks up command name `/help`.
     pub(super) fn apply_slash_completion(&mut self) {
         if let Some(cmd) = self.slash_state.current() {
-            self.state.set_input(&format!("/{cmd}"));
+            self.state.set_input(&normalize_slash_completion(cmd));
         }
     }
 
@@ -141,6 +161,15 @@ impl App {
             }
             CommandAction::SetPlanMode(enabled) => {
                 self.apply_plan_mode(enabled);
+            }
+            CommandAction::ViewPlan => {
+                self.show_plan();
+            }
+            CommandAction::ApprovePlan => {
+                self.approve_plan();
+            }
+            CommandAction::MagicTrace(action) => {
+                self.handle_magic_trace(action);
             }
             CommandAction::SetThinkingLevel(level_str) => {
                 if let Some(level) = ThinkingLevel::parse(&level_str) {
@@ -300,6 +329,9 @@ impl App {
             }
             CommandAction::Skills(skills_action) => {
                 self.handle_skills_action(skills_action);
+            }
+            CommandAction::Plugins(plugins_action) => {
+                self.handle_plugins_action(plugins_action);
             }
             CommandAction::InvokeSkill { name, args } => {
                 self.handle_invoke_skill(&name, &args).await;
@@ -717,6 +749,10 @@ impl App {
         ));
     }
 
+    fn plan_cwd(&self) -> String {
+        self.state.cwd.clone().unwrap_or_else(|| ".".to_string())
+    }
+
     fn apply_plan_mode(&mut self, enabled: bool) {
         crate::safety::set_plan_mode(enabled);
         if enabled {
@@ -724,19 +760,112 @@ impl App {
             if matches!(self.state.approval_mode, ApprovalMode::Yolo) {
                 self.state.approval_mode = ApprovalMode::Selective;
             }
-            self.state.status = Some(
-                "Plan mode on — create a todo/plan before mutating tools. Shift+Tab to cycle modes."
-                    .to_string(),
-            );
-            self.state.add_system_message(
-                "Plan mode enabled. Mutating tools require a plan (todo) first.".to_string(),
-            );
+            // Bind plan file to the active session when available.
+            if let Some(id) = self.session_manager.current_session_id() {
+                crate::plan_mode::set_active_session_id(Some(id.to_string()));
+            }
+            let cwd = self.plan_cwd();
+            let plan_path = crate::plan_mode::ensure_plan_file(&cwd)
+                .unwrap_or_else(|_| crate::plan_mode::plan_file_path(&cwd));
+            self.state.status = Some(format!(
+                "Plan mode on — write only {}. Shift+Tab or /plan approve when ready.",
+                plan_path.display()
+            ));
+            self.state.add_system_message(format!(
+                "Plan mode enabled (Grok-style). Explore freely; mutate only the plan file \
+(`.maestro/plan.md` / `{}`). When the plan is ready: `/view-plan`, then `/plan approve`.",
+                plan_path.display()
+            ));
+            // Nudge the agent with plan-mode instructions when possible.
+            if let Some(agent) = &self.native_agent {
+                let prompt = format!(
+                    "{}{}",
+                    self.build_system_prompt(),
+                    crate::plan_mode::plan_mode_system_addendum(&cwd)
+                );
+                let _ = agent.set_system_prompt(prompt);
+            }
         } else {
             if self.state.interaction_mode == crate::state::InteractionMode::Plan {
                 self.state.interaction_mode = crate::state::InteractionMode::Normal;
             }
             crate::safety::set_plan_satisfied(true);
             self.state.status = Some("Plan mode off.".to_string());
+            // Restore normal system prompt without plan-mode addendum.
+            self.update_agent_system_prompt();
+        }
+    }
+
+    fn show_plan(&mut self) {
+        if let Some(id) = self.session_manager.current_session_id() {
+            crate::plan_mode::set_active_session_id(Some(id.to_string()));
+        }
+        let cwd = self.plan_cwd();
+        match crate::plan_mode::read_plan(&cwd) {
+            Some(text) => {
+                self.state.status = Some("Showing plan.md".to_string());
+                self.state
+                    .add_system_message(format!("## Current plan\n\n{text}"));
+            }
+            None => {
+                let path = crate::plan_mode::plan_file_path(&cwd);
+                self.state.add_system_message(format!(
+                    "No plan written yet. In plan mode, write to `.maestro/plan.md` \
+(session copy: `{}`).",
+                    path.display()
+                ));
+            }
+        }
+    }
+
+    fn approve_plan(&mut self) {
+        let cwd = self.plan_cwd();
+        let preview = crate::plan_mode::read_plan(&cwd);
+        crate::plan_mode::approve_plan();
+        if self.state.interaction_mode == crate::state::InteractionMode::Plan {
+            self.state.interaction_mode = crate::state::InteractionMode::Normal;
+        }
+        self.state.status = Some("Plan approved — implementation tools unlocked.".to_string());
+        if let Some(text) = preview {
+            self.state.add_system_message(format!(
+                "Plan approved. Leaving plan mode. Summary of approved plan:\n\n{text}"
+            ));
+        } else {
+            self.state.add_system_message(
+                "Plan approved (empty plan). Leaving plan mode so you can implement.".to_string(),
+            );
+        }
+        self.update_agent_system_prompt();
+    }
+
+    fn handle_magic_trace(&mut self, action: crate::commands::MagicTraceAction) {
+        use crate::commands::MagicTraceAction;
+        match action {
+            MagicTraceAction::Stop => {
+                crate::magic_trace::stop_indicator();
+                self.state.status =
+                    Some("magic-trace: stop indicator fired (snapshot if attached)".into());
+            }
+            MagicTraceAction::EnableSlowFrame => {
+                crate::magic_trace::set_slow_frame_trigger(true);
+                self.state.status =
+                    Some("magic-trace: slow-frame auto snapshot ON (attach first)".into());
+            }
+            MagicTraceAction::DisableSlowFrame => {
+                crate::magic_trace::set_slow_frame_trigger(false);
+                self.state.status = Some("magic-trace: slow-frame auto snapshot OFF".into());
+            }
+            MagicTraceAction::Status => {
+                let on = crate::magic_trace::slow_frame_trigger_enabled();
+                self.state.add_system_message(format!(
+                    "## magic-trace\n\n\
+Linux + Intel PT only. Build: `cargo build --profile magic-trace`.\n\n\
+Attach: `scripts/magic-trace-tui.sh attach`\n\n\
+Slow-frame trigger: **{}** (`/magic-trace on|off`)\n\n\
+Manual snapshot: `/magic-trace stop`",
+                    if on { "on" } else { "off" }
+                ));
+            }
         }
     }
 
@@ -1572,6 +1701,38 @@ impl App {
                 } else {
                     self.state.error = Some(format!("Skill '{name}' not found"));
                 }
+            }
+        }
+    }
+
+    /// Handle plugin discovery actions (`/plugins`).
+    pub(super) fn handle_plugins_action(&mut self, action: crate::commands::PluginsAction) {
+        use crate::commands::PluginsAction;
+
+        match action {
+            PluginsAction::List => {
+                self.state
+                    .add_system_message(self.plugin_registry.list_report());
+            }
+            PluginsAction::Info(name) => match self.plugin_registry.get(&name) {
+                Some(plugin) => {
+                    self.state.add_system_message(plugin.detail_report());
+                }
+                None => {
+                    self.state.error = Some(format!(
+                        "Plugin '{name}' not found. Use `/plugins` to list discovered plugins."
+                    ));
+                }
+            },
+            PluginsAction::Reload => {
+                // Rediscover plugins and reload skills that may come from them.
+                self.refresh_skills(true);
+                let count = self.plugin_registry.len();
+                self.state.status = Some(format!("Discovered {count} plugin(s)"));
+                self.state.add_system_message(format!(
+                    "Reloaded plugins from filesystem. Found {count} plugin(s).\n\n{}",
+                    self.plugin_registry.list_report()
+                ));
             }
         }
     }

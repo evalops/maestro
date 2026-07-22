@@ -178,10 +178,11 @@
 		},
 		{
 			"area": "rpc-stdio-protocol",
-			"path": "src/cli/rpc-mode.ts",
+			"path": "src/cli/native-tui-launcher.ts",
 			"anchors": [
-				"TypeScript runRpcMode has been removed",
-				"maestro-tui --headless"
+				"shouldLaunchNativeHeadless",
+				"launchNativeTui",
+				"parsed.headless"
 			]
 		},
 		{

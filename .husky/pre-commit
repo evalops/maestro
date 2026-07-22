@@ -5,8 +5,46 @@ exec bash -euo pipefail -c '
 ROOT="$(git rev-parse --show-toplevel)"
 cd "$ROOT"
 
-if command -v cargo >/dev/null 2>&1; then
-	cargo fmt --manifest-path "$ROOT/packages/tui-rs/Cargo.toml" -- --check
+TUI_MANIFEST="$ROOT/packages/tui-rs/Cargo.toml"
+
+# Collect staged Rust sources under packages/tui-rs (and package-level toml).
+RUST_STAGED=()
+while IFS= read -r __rust_f; do
+	[ -n "$__rust_f" ] && RUST_STAGED+=("$__rust_f")
+done < <(
+	git diff --cached --name-only --diff-filter=ACMR |
+		grep -E "^packages/tui-rs/.*\.(rs|toml)$" || true
+)
+
+# Always enforce rustfmt for the native TUI crate when it exists.
+# - If cargo is missing and Rust files are staged: hard fail (do not silently skip).
+# - Otherwise: format, re-stage previously staged files, then --check.
+if [ -f "$TUI_MANIFEST" ]; then
+	if ! command -v cargo >/dev/null 2>&1; then
+		if [ "${#RUST_STAGED[@]}" -gt 0 ]; then
+			echo "error: cargo is required to commit packages/tui-rs changes (rustfmt enforced)." >&2
+			echo "Install Rust (rustup) so \`cargo fmt\` is on PATH, then retry." >&2
+			exit 1
+		fi
+		echo "warning: cargo not found; skipping rustfmt (no packages/tui-rs files staged)."
+	else
+		echo "rustfmt: formatting packages/tui-rs…"
+		cargo fmt --manifest-path "$TUI_MANIFEST"
+
+		# Re-stage any already-staged rust/toml files that fmt rewrote.
+		if [ "${#RUST_STAGED[@]}" -gt 0 ]; then
+			git add -- "${RUST_STAGED[@]}"
+		fi
+
+		echo "rustfmt: checking packages/tui-rs…"
+		if ! cargo fmt --manifest-path "$TUI_MANIFEST" -- --check; then
+			echo "error: packages/tui-rs is not rustfmt-clean after auto-format." >&2
+			echo "Run: cargo fmt --manifest-path packages/tui-rs/Cargo.toml" >&2
+			echo "Then re-stage and commit." >&2
+			exit 1
+		fi
+		echo "rustfmt: ok"
+	fi
 fi
 
 bash "$ROOT/scripts/guardian.sh" --trigger pre-commit

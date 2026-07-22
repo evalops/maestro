@@ -46,7 +46,7 @@ use maestro_tui::hosted_runner_cli::run_hosted_runner_cli_from_env;
 // HELPER FUNCTIONS
 // ─────────────────────────────────────────────────────────────────────────────
 
-const NATIVE_UTILITY_COMMANDS: [&str; 17] = [
+const NATIVE_UTILITY_COMMANDS: [&str; 30] = [
     "sessions",
     "cost",
     "stats",
@@ -55,8 +55,8 @@ const NATIVE_UTILITY_COMMANDS: [&str; 17] = [
     "hooks",
     "export",
     "import",
-    "update",
     "skill",
+    "update",
     "modes",
     "agents",
     "painter",
@@ -64,6 +64,19 @@ const NATIVE_UTILITY_COMMANDS: [&str; 17] = [
     "memory",
     "init",
     "openai",
+    "config",
+    "mission",
+    "evalops",
+    "operating-plane",
+    "remote",
+    "value",
+    "scenario",
+    "codex",
+    "context",
+    "run",
+    "a2a",
+    "plugins",
+    "plugin",
 ];
 
 const GLOBAL_FLAGS_WITH_VALUES: [&str; 26] = [
@@ -100,6 +113,34 @@ fn native_utility_tokens(raw_args: &[std::ffi::OsString]) -> Option<Vec<String>>
     let mut index = 0;
     while index < raw_args.len() {
         let token = raw_args[index].to_string_lossy();
+        // `run` is only a utility when followed by reconstruct subcommands.
+        if token == "run" {
+            let rest = &raw_args[index + 1..];
+            let mut j = 0;
+            let mut has_sub = false;
+            while j < rest.len() {
+                let t = rest[j].to_string_lossy();
+                if matches!(
+                    t.as_ref(),
+                    "inspect" | "ledger" | "replay" | "promote" | "help" | "--help" | "-h"
+                ) {
+                    has_sub = true;
+                    break;
+                }
+                if t.starts_with('-') {
+                    if matches!(t.as_ref(), "--json") {
+                        j += 1;
+                        continue;
+                    }
+                    j += 1;
+                    continue;
+                }
+                break;
+            }
+            if !has_sub {
+                return None;
+            }
+        }
         if NATIVE_UTILITY_COMMANDS.contains(&token.as_ref()) {
             let mut tokens = raw_args[index..]
                 .iter()
@@ -1018,6 +1059,26 @@ mod tests {
         assert_eq!(
             native_utility_tokens(&args),
             Some(vec!["modes".into(), "describe".into(), "high".into(),])
+        );
+    }
+
+    #[test]
+    fn native_utility_tokens_dispatch_plugins() {
+        let args = ["plugins", "list", "--json"]
+            .into_iter()
+            .map(std::ffi::OsString::from)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            native_utility_tokens(&args),
+            Some(vec!["plugins".into(), "list".into(), "--json".into(),])
+        );
+        let alias = ["plugin", "info", "team-tools"]
+            .into_iter()
+            .map(std::ffi::OsString::from)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            native_utility_tokens(&alias),
+            Some(vec!["plugin".into(), "info".into(), "team-tools".into(),])
         );
     }
 

@@ -1,4 +1,5 @@
 import { join } from "node:path";
+import { getPackageNameOverride } from "../package-metadata.js";
 import { writeTextFileAtomic } from "../utils/fs.js";
 
 /** Repo-relative path the workflow is written to. */
@@ -147,7 +148,7 @@ function resolveOptions(
 	return {
 		nodeVersion: validateYamlScalar(options.nodeVersion ?? "20", "nodeVersion"),
 		maestroPackage: validateYamlScalar(
-			options.maestroPackage ?? "maestro",
+			options.maestroPackage ?? getPackageNameOverride() ?? "maestro",
 			"maestroPackage",
 		),
 		maestroVersion: validateYamlScalar(

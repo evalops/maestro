@@ -89,6 +89,7 @@ use crate::keybindings::{is_keybindings_config_path, summarize_keybindings_confi
 use crate::mcp::{
     append_mcp_prompt_summary, McpConfigScope, McpPrompt, McpRuntimeEvent, McpTransport,
 };
+use crate::plugins::PluginRegistry;
 use crate::prompts::{load_prompts, parse_args, render_prompt, PromptDefinition};
 use crate::safety::{
     check_model_allowed, check_path_allowed, check_session_limits, FirewallVerdict,
@@ -538,6 +539,9 @@ pub struct App {
     /// Runtime skill registry (activation state).
     skill_registry: SkillRegistry,
 
+    /// Discovered filesystem plugins (skills/commands/hooks/MCP packages).
+    plugin_registry: PluginRegistry,
+
     /// Flat markdown prompt/command templates.
     custom_prompts: Vec<PromptDefinition>,
 
@@ -707,7 +711,8 @@ impl App {
             state.add_system_message(summary.clone());
         }
 
-        let loader = SkillLoader::new();
+        let plugin_registry = PluginRegistry::discover();
+        let loader = SkillLoader::with_plugins(&plugin_registry);
         let (loaded_skills, skill_load_errors) = loader.load_all_with_paths();
         let mut skill_registry = SkillRegistry::new();
         for loaded in &loaded_skills {
@@ -749,6 +754,7 @@ impl App {
             loaded_skills,
             skill_load_errors,
             skill_registry,
+            plugin_registry,
             custom_prompts,
             initial_prompt: initial_prompt.filter(|p| !p.trim().is_empty()),
             queued_prompts: VecDeque::new(),
@@ -856,6 +862,18 @@ Always use tools when they would be helpful. Be concise and direct in your respo
     ///
     /// Exit code for the process (0 = success, non-zero = error).
     pub async fn run(mut self) -> Result<i32> {
+        // Optional Jane Street magic-trace slow-frame snapshots (Linux/Intel PT).
+        if crate::magic_trace::init_from_env() {
+            eprintln!(
+                "[magic-trace] slow-frame stop indicator enabled (budget {}µs). Attach with scripts/magic-trace-tui.sh",
+                std::env::var("MAESTRO_MAGIC_TRACE_FRAME_BUDGET_MS")
+                    .ok()
+                    .and_then(|v| v.parse::<u64>().ok())
+                    .unwrap_or(16)
+                    * 1000
+            );
+        }
+
         // Paint the chrome immediately. Workspace file indexing used to run
         // *before* the first frame and blocked on `rg --files --follow` of the
         // entire cwd (often `$HOME`), so typing `maestro` looked hung/broken.
@@ -884,6 +902,10 @@ Always use tools when they would be helpful. Be concise and direct in your respo
 
         // Main event loop - runs until should_quit is set to true.
         let mut workspace_rx = Some(workspace_rx);
+        // Only repaint when something changed (or while busy for spinners).
+        // Idle 20Hz full-buffer diffs were the top cost after FS badge work
+        // (perf on developer@dev-desktop → ratatui Buffer::diff / unicode_width).
+        let mut needs_redraw = true;
         loop {
             // Apply workspace scan results as soon as they arrive (non-blocking).
             if let Some(rx) = workspace_rx.as_ref() {
@@ -891,6 +913,7 @@ Always use tools when they would be helpful. Be concise and direct in your respo
                     Ok(files) => {
                         self.file_search.set_files(files);
                         workspace_rx = None;
+                        needs_redraw = true;
                     }
                     Err(std::sync::mpsc::TryRecvError::Disconnected) => {
                         workspace_rx = None;
@@ -899,54 +922,70 @@ Always use tools when they would be helpful. Be concise and direct in your respo
                 }
             }
 
-            // Render the UI to the terminal.
-            // This is a sync operation that writes to stdout.
-            self.render()?;
-
-            // Poll for terminal events with a 50ms timeout.
-            // The timeout ensures we regularly check for agent messages.
-            //
-            // Rust Concept: Non-blocking polling
-            // `event::poll()` returns true if an event is available.
-            // The timeout prevents blocking forever on input.
-            if event::poll(std::time::Duration::from_millis(50))? {
+            // Poll for terminal events. Shorter timeout while busy (animations);
+            // longer while idle to avoid burning CPU on empty frames.
+            let poll_ms = if self.state.busy { 33 } else { 100 };
+            if event::poll(std::time::Duration::from_millis(poll_ms))? {
                 match event::read()? {
                     Event::Key(key)
                         // Only handle key press events (not release).
                         // Some terminals send both press and release events.
                         if key.kind == KeyEventKind::Press => {
                             self.handle_key(key.code, key.modifiers).await?;
+                            needs_redraw = true;
                         }
                     Event::Mouse(mouse) => {
                         // Handle mouse scroll wheel
                         match mouse.kind {
                             MouseEventKind::ScrollUp => {
                                 self.state.scroll_up(3);
+                                needs_redraw = true;
                             }
                             MouseEventKind::ScrollDown => {
                                 self.state.scroll_down(3);
+                                needs_redraw = true;
                             }
                             _ => {} // Ignore other mouse events
                         }
                     }
-                    _ => {} // Ignore other events (resize, focus, paste handled elsewhere)
+                    Event::Resize(_, _) => {
+                        needs_redraw = true;
+                    }
+                    _ => {} // Ignore other events (focus, paste handled elsewhere)
                 }
             }
 
             // Poll for messages from the agent (async operation).
             // This handles streaming responses, tool calls, etc.
-            self.poll_agent().await?;
+            let agent_activity = self.poll_agent().await?;
+            if agent_activity {
+                needs_redraw = true;
+            }
 
             // Drain live MCP notifications so list changes refresh the UI
             // without waiting for a reconnect or a manual status check.
-            self.poll_mcp_updates().await;
+            if self.poll_mcp_updates().await {
+                needs_redraw = true;
+            }
 
             // Apply MCP config changes before the periodic refresh so edits
             // show up in the footer as soon as the watcher delivers them.
-            self.poll_config_watcher().await;
+            if self.poll_config_watcher().await {
+                needs_redraw = true;
+            }
 
             // Refresh MCP badge counts periodically without blocking the UI.
-            self.refresh_mcp_badges().await;
+            if self.refresh_mcp_badges().await {
+                needs_redraw = true;
+            }
+
+            // Paint when dirty, or continuously while busy (thinking/spinner).
+            if needs_redraw || self.state.busy {
+                self.render()?;
+                if !self.state.busy {
+                    needs_redraw = false;
+                }
+            }
 
             // Check exit condition.
             if self.should_quit {
@@ -1063,7 +1102,8 @@ Always use tools when they would be helpful. Be concise and direct in your respo
             HashSet::new()
         };
 
-        let loader = SkillLoader::new();
+        self.plugin_registry = PluginRegistry::discover();
+        let loader = SkillLoader::with_plugins(&self.plugin_registry);
         let (loaded_skills, skill_load_errors) = loader.load_all_with_paths();
         let mut registry = SkillRegistry::new();
         for loaded in &loaded_skills {
@@ -1196,8 +1236,9 @@ Always use tools when they would be helpful. Be concise and direct in your respo
         self.update_agent_system_prompt();
     }
 
-    /// Poll for messages from the agent
-    async fn poll_agent(&mut self) -> Result<()> {
+    /// Poll for messages from the agent.
+    /// Returns true if any messages were processed (UI should redraw).
+    async fn poll_agent(&mut self) -> Result<bool> {
         // Collect messages first to avoid borrow issues
         let mut messages = Vec::new();
         if let Some(rx) = &mut self.native_event_rx {
@@ -1205,11 +1246,12 @@ Always use tools when they would be helpful. Be concise and direct in your respo
                 messages.push(msg);
             }
         }
+        let had_messages = !messages.is_empty();
         // Process messages
         for msg in messages {
             self.handle_agent_message(msg).await?;
         }
-        Ok(())
+        Ok(had_messages)
     }
 
     fn update_mcp_badge_counts(&mut self, servers: &[crate::tools::McpServerStatus]) {
@@ -1224,18 +1266,20 @@ Always use tools when they would be helpful. Be concise and direct in your respo
         self.state.mcp_failed = failed;
     }
 
-    async fn refresh_mcp_badges(&mut self) {
-        self.refresh_mcp_badges_with_force(false).await;
+    /// Returns true if badge counts or status text changed.
+    async fn refresh_mcp_badges(&mut self) -> bool {
+        self.refresh_mcp_badges_with_force(false).await
     }
 
-    async fn refresh_mcp_badges_with_force(&mut self, force: bool) {
+    /// Returns true if badge counts or status text changed.
+    async fn refresh_mcp_badges_with_force(&mut self, force: bool) -> bool {
         let now = Instant::now();
         if !force
             && self
                 .last_mcp_status_refresh
                 .is_some_and(|last| now.duration_since(last) < Duration::from_secs(5))
         {
-            return;
+            return false;
         }
         self.last_mcp_status_refresh = Some(now);
 
@@ -1268,19 +1312,35 @@ Always use tools when they would be helpful. Be concise and direct in your respo
                 }
             }
 
+            let prev = (
+                self.state.mcp_connected,
+                self.state.mcp_tool_count,
+                self.state.mcp_failed,
+            );
             self.update_mcp_badge_counts(&servers);
             self.last_mcp_server_statuses = current_statuses;
+            let counts_changed = prev
+                != (
+                    self.state.mcp_connected,
+                    self.state.mcp_tool_count,
+                    self.state.mcp_failed,
+                );
             if let Some(message) = status_message {
                 self.state.status = Some(message);
+                return true;
             }
+            return counts_changed;
         }
+        false
     }
 
-    async fn poll_mcp_updates(&mut self) {
+    /// Returns true if MCP events updated UI state.
+    async fn poll_mcp_updates(&mut self) -> bool {
+        let mut dirty = false;
         match self.tool_executor.poll_mcp_updates().await {
             Ok(events) => {
                 if events.iter().any(McpRuntimeEvent::affects_badges) {
-                    self.refresh_mcp_badges_with_force(true).await;
+                    dirty |= self.refresh_mcp_badges_with_force(true).await;
                 }
 
                 if let Some(status) = events
@@ -1289,18 +1349,25 @@ Always use tools when they would be helpful. Be concise and direct in your respo
                     .find_map(format_mcp_runtime_event_status)
                 {
                     self.state.status = Some(status);
+                    dirty = true;
                 }
             }
             Err(err) => {
                 self.state.status = Some(format!("MCP update error: {err}"));
+                dirty = true;
             }
         }
+        dirty
     }
 
-    async fn poll_config_watcher(&mut self) {
+    /// Returns true if any config events were applied.
+    async fn poll_config_watcher(&mut self) -> bool {
+        let mut dirty = false;
         while let Some(event) = self.config_watcher.poll() {
             self.handle_config_event(event).await;
+            dirty = true;
         }
+        dirty
     }
 
     async fn handle_config_event(&mut self, event: ConfigEvent) {
@@ -1728,6 +1795,11 @@ Slash Commands:
 
     /// Render the UI
     fn render(&mut self) -> Result<()> {
+        let (result, _elapsed) = crate::magic_trace::time_render(|| self.render_inner());
+        result
+    }
+
+    fn render_inner(&mut self) -> Result<()> {
         if let Ok(area) = self.terminal.size() {
             let inner_width = area.width.saturating_sub(2).max(1);
             self.state.set_input_width(inner_width);

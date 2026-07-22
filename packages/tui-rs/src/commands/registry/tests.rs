@@ -623,6 +623,28 @@ fn rewind_parses_turn_count() {
 }
 
 #[test]
+fn double_slash_command_still_resolves() {
+    let registry = build_command_registry();
+    // Completion bug used to produce `//help`; execute must tolerate it.
+    match registry
+        .execute("//help", "/tmp", None, None)
+        .expect("//help should resolve")
+    {
+        CommandOutput::Help(_)
+        | CommandOutput::Message(_)
+        | CommandOutput::OpenModal(ModalType::Help | ModalType::ShortcutsHelp) => {}
+        other => panic!("expected help output for //help, got {other:?}"),
+    }
+    match registry
+        .execute("///plan on", "/tmp", None, None)
+        .expect("///plan should resolve")
+    {
+        CommandOutput::Action(CommandAction::SetPlanMode(true)) => {}
+        other => panic!("expected SetPlanMode for ///plan on, got {other:?}"),
+    }
+}
+
+#[test]
 fn plan_and_permission_shortcuts_parse() {
     let registry = build_command_registry();
     match registry
@@ -638,6 +660,20 @@ fn plan_and_permission_shortcuts_parse() {
     {
         CommandOutput::Action(CommandAction::SetPlanMode(false)) => {}
         other => panic!("expected SetPlanMode(false), got {other:?}"),
+    }
+    match registry
+        .execute("/plan approve", "/tmp", None, None)
+        .expect("/plan approve")
+    {
+        CommandOutput::Action(CommandAction::ApprovePlan) => {}
+        other => panic!("expected ApprovePlan, got {other:?}"),
+    }
+    match registry
+        .execute("/view-plan", "/tmp", None, None)
+        .expect("/view-plan")
+    {
+        CommandOutput::Action(CommandAction::ViewPlan) => {}
+        other => panic!("expected ViewPlan, got {other:?}"),
     }
     match registry
         .execute("/always-approve", "/tmp", None, None)
@@ -678,5 +714,48 @@ fn memory_and_continue_commands_parse() {
     {
         CommandOutput::Action(CommandAction::Session(SessionAction::Continue)) => {}
         other => panic!("expected Session::Continue, got {other:?}"),
+    }
+}
+
+#[test]
+fn plugins_command_list_info_and_reload() {
+    use crate::commands::PluginsAction;
+
+    let registry = build_command_registry();
+
+    match registry
+        .execute("/plugins", "/tmp", None, None)
+        .expect("/plugins")
+    {
+        CommandOutput::Action(CommandAction::Plugins(PluginsAction::List)) => {}
+        other => panic!("expected Plugins::List, got {other:?}"),
+    }
+
+    match registry
+        .execute("/plugins team-tools", "/tmp", None, None)
+        .expect("/plugins team-tools")
+    {
+        CommandOutput::Action(CommandAction::Plugins(PluginsAction::Info(name))) => {
+            assert_eq!(name, "team-tools");
+        }
+        other => panic!("expected Plugins::Info, got {other:?}"),
+    }
+
+    match registry
+        .execute("/plugins reload", "/tmp", None, None)
+        .expect("/plugins reload")
+    {
+        CommandOutput::Action(CommandAction::Plugins(PluginsAction::Reload)) => {}
+        other => panic!("expected Plugins::Reload, got {other:?}"),
+    }
+
+    match registry
+        .execute("/plugin info demo", "/tmp", None, None)
+        .expect("/plugin info demo")
+    {
+        CommandOutput::Action(CommandAction::Plugins(PluginsAction::Info(name))) => {
+            assert_eq!(name, "demo");
+        }
+        other => panic!("expected Plugins::Info via alias, got {other:?}"),
     }
 }

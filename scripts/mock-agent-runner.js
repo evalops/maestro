@@ -24,6 +24,9 @@ const projectRoot = join(__dirname, "..");
  */
 
 /**
+ * Dev/eval helper that constructs the TypeScript Agent SDK directly.
+ * Not a production surface; left ungated for local mock flows.
+ *
  * @param {RunMockAgentOptions} options
  */
 export async function runMockAgentFlow(options) {

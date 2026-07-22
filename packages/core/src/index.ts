@@ -1,6 +1,10 @@
 // @evalops/maestro-core — Agent loop, transport, types, and sandbox primitives
 
 // ── Agent Core ──
+/**
+ * @deprecated Runtime execution has moved to maestro-tui (Rust). Prefer native
+ * CLI/headless. TS Agent remains only for external SDK embedding.
+ */
 export { Agent } from "../../../src/agent/agent.js";
 export type { AgentOptions } from "../../../src/agent/agent.js";
 export type {
@@ -16,6 +20,10 @@ export type {
 } from "../../../src/agent/types.js";
 
 // ── Transport ──
+/**
+ * @deprecated Runtime execution has moved to maestro-tui (Rust). Prefer native
+ * CLI/headless. TS Agent remains only for external SDK embedding.
+ */
 export { ProviderTransport } from "../../../src/agent/transport.js";
 export type { ProviderTransportOptions } from "../../../src/agent/transport.js";
 

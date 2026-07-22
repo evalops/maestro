@@ -16,7 +16,10 @@ const telemetryMocks = vi.hoisted(() => ({
 vi.mock("../../src/telemetry/maestro-event-bus.js", () => telemetryMocks);
 
 import { loadPolicy } from "../../src/safety/policy.js";
-import { startSessionWithPolicy } from "../../src/server/session-initialization.js";
+import {
+	startSessionStateWithPolicy,
+	startSessionWithPolicy,
+} from "../../src/server/session-initialization.js";
 
 const MOCK_POLICY_PATH = join(homedir(), ".maestro", "policy.json");
 
@@ -90,6 +93,34 @@ describe("startSessionWithPolicy", () => {
 		expect(result).toContain("Concurrent session limit exceeded");
 		expect(countActiveSessions).toHaveBeenCalledWith(expect.any(Date));
 		expect(manager.loadAllSessions).not.toHaveBeenCalled();
+		expect(startSession).not.toHaveBeenCalled();
+		expect(telemetryMocks.recordMaestroSessionEvent).not.toHaveBeenCalled();
+	});
+
+	it("blocks native session state before writing its session header", async () => {
+		writeFileSync(
+			MOCK_POLICY_PATH,
+			JSON.stringify({ limits: { maxConcurrentSessions: 1 } }),
+		);
+		loadPolicy(true);
+		const startSession = vi.fn();
+		const manager = {
+			loadAllSessions: vi.fn(() => []),
+			countActiveSessions: vi.fn(async () => 1),
+			startSession,
+			getSessionId: vi.fn(() => "native-session-id"),
+		};
+
+		const result = await startSessionStateWithPolicy({
+			enterpriseContext: createEnterpriseContext(),
+			logger: { warn: vi.fn() },
+			modelId: "native-model",
+			onSessionReady: vi.fn(),
+			sessionManager: manager,
+			state: createAgent().state,
+		});
+
+		expect(result).toContain("Concurrent session limit exceeded");
 		expect(startSession).not.toHaveBeenCalled();
 		expect(telemetryMocks.recordMaestroSessionEvent).not.toHaveBeenCalled();
 	});

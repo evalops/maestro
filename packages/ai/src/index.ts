@@ -67,6 +67,9 @@
 /**
  * Core Agent class for managing LLM interactions.
  * Handles conversation state, tool execution, and streaming responses.
+ *
+ * @deprecated Runtime execution has moved to maestro-tui (Rust). Prefer native
+ * CLI/headless. TS Agent remains only for external SDK embedding.
  * @see {@link AgentOptions} for configuration
  */
 export { Agent, type AgentOptions } from "./agent/index.js";
@@ -74,6 +77,9 @@ export { Agent, type AgentOptions } from "./agent/index.js";
 /**
  * Transport layer for LLM provider communication.
  * Abstracts away provider-specific APIs into a unified streaming interface.
+ *
+ * @deprecated Runtime execution has moved to maestro-tui (Rust). Prefer native
+ * CLI/headless. TS Agent remains only for external SDK embedding.
  * @see {@link ProviderTransportOptions} for configuration
  */
 export {

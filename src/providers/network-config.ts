@@ -18,7 +18,9 @@
 import { existsSync, readFileSync } from "node:fs";
 import { isIP as netIsIP } from "node:net";
 import { join } from "node:path";
-import { Agent } from "undici";
+// undici HTTP dispatcher (not Maestro's TypeScript Agent SDK class).
+// Aliased so `rg 'new Agent\\('` inventory of SDK construction sites stays clean.
+import { Agent as UndiciAgent } from "undici";
 import type { Provider } from "../agent/types.js";
 import { PATHS } from "../config/constants.js";
 import { getMergedCustomModelUrlPolicyConfig } from "../models/config-loader.js";
@@ -158,7 +160,7 @@ let globalOverrides: Partial<ProviderNetworkConfig> | null = null;
 type FetchInput = Parameters<typeof fetch>[0];
 type FetchInit = Parameters<typeof fetch>[1];
 type NormalizedFetchInit = NonNullable<FetchInit>;
-type CloseableDispatcher = Agent;
+type CloseableDispatcher = UndiciAgent;
 type LookupAddress = { address: string; family: 4 | 6 };
 type PinnedLookupOptions = { all?: boolean; family?: number | "IPv4" | "IPv6" };
 type PinnedLookupCallback = (
@@ -260,7 +262,9 @@ function createPinnedModelRequestDispatcher(
 		return undefined;
 	}
 
-	return new Agent({
+	// Production path: pin model-request DNS to addresses already approved by
+	// checkModelRequestUrlPolicy so a second lookup cannot rebind mid-request.
+	return new UndiciAgent({
 		connect: { lookup },
 	});
 }

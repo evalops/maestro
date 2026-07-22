@@ -48,6 +48,22 @@ describe("buildMaestroReviewWorkflow", () => {
 		).toContain("npm install -g '@example/from-env@latest'");
 	});
 
+	it("reads the default package override at build time", () => {
+		const previous = process.env.MAESTRO_PACKAGE_NAME;
+		try {
+			process.env.MAESTRO_PACKAGE_NAME = "@example/from-env";
+			expect(buildMaestroReviewWorkflow()).toContain(
+				"npm install -g '@example/from-env@latest'",
+			);
+		} finally {
+			if (previous === undefined) {
+				delete process.env.MAESTRO_PACKAGE_NAME;
+			} else {
+				process.env.MAESTRO_PACKAGE_NAME = previous;
+			}
+		}
+	});
+
 	it("maps custom secret names to the provider runtime env var", () => {
 		const yaml = buildMaestroReviewWorkflow({
 			provider: "openai",

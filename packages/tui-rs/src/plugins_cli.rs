@@ -1,0 +1,422 @@
+//! Native `maestro plugins` / `maestro plugin` CLI.
+//!
+//! Surfaces the existing plugin discovery registry for operator use without
+//! entering the interactive TUI (`/plugins`). Marketplace install remains
+//! intentionally out of scope for this slice.
+
+use std::path::{Path, PathBuf};
+
+use anyhow::{bail, Result};
+use serde::Serialize;
+
+use crate::path_utils::{legacy_composer_home_dir, maestro_home_dir};
+use crate::plugins::{search_roots_for_workspace, DiscoveredPlugin, PluginRegistry};
+
+#[derive(Debug, Default)]
+struct PluginArgs {
+    command: Option<String>,
+    positionals: Vec<String>,
+    json: bool,
+    workspace: Option<PathBuf>,
+    help: bool,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PluginListEntry {
+    name: String,
+    origin: String,
+    path: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    version: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    description: Option<String>,
+    components: Vec<&'static str>,
+    has_manifest: bool,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PluginListReport {
+    plugins: Vec<PluginListEntry>,
+    count: usize,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PluginComponentPaths {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    skills: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    commands: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    hooks: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    mcp: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PluginInfoReport {
+    name: String,
+    origin: String,
+    path: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    version: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    description: Option<String>,
+    has_manifest: bool,
+    components: PluginComponentPaths,
+}
+
+/// Dispatch `maestro plugins|plugin <subcommand> ...`.
+pub fn run_plugins(args: &[String]) -> Result<i32> {
+    let parsed = parse_args(args)?;
+    if parsed.help || parsed.command.as_deref() == Some("help") {
+        print_help();
+        return Ok(0);
+    }
+
+    let registry = discover_registry(parsed.workspace.as_deref())?;
+    let command = parsed.command.as_deref().unwrap_or("list");
+
+    match command {
+        "list" | "ls" => run_list(&registry, parsed.json),
+        "info" | "show" => {
+            let name = parsed
+                .positionals
+                .first()
+                .map(String::as_str)
+                .filter(|value| !value.is_empty());
+            let Some(name) = name else {
+                eprintln!("Usage: maestro plugins info <plugin-name>");
+                return Ok(1);
+            };
+            run_info(&registry, name, parsed.json)
+        }
+        // Bare plugin name after `maestro plugins <name>` → info lookup.
+        other if parsed.positionals.is_empty() && !other.starts_with('-') => {
+            run_info(&registry, other, parsed.json)
+        }
+        other => {
+            eprintln!("Unknown plugins subcommand: {other}");
+            eprintln!("Try: maestro plugins list|info <name>");
+            Ok(1)
+        }
+    }
+}
+
+fn parse_args(args: &[String]) -> Result<PluginArgs> {
+    let mut parsed = PluginArgs::default();
+    let mut index = 0;
+    while index < args.len() {
+        let arg = &args[index];
+        match arg.as_str() {
+            "--json" => parsed.json = true,
+            "--help" | "-h" => parsed.help = true,
+            "--workspace" | "--cwd" => {
+                let value = args
+                    .get(index + 1)
+                    .filter(|value| !value.starts_with('-'))
+                    .ok_or_else(|| anyhow::anyhow!("{arg} requires a value"))?;
+                parsed.workspace = Some(PathBuf::from(value));
+                index += 1;
+            }
+            value if value.starts_with("--workspace=") || value.starts_with("--cwd=") => {
+                let value = value
+                    .split_once('=')
+                    .map(|(_, rest)| rest)
+                    .filter(|rest| !rest.is_empty())
+                    .ok_or_else(|| anyhow::anyhow!("{arg} requires a value"))?;
+                parsed.workspace = Some(PathBuf::from(value));
+            }
+            value if value.starts_with('-') => bail!("Unknown maestro plugins option: {value}"),
+            value if parsed.command.is_none() => parsed.command = Some(value.to_owned()),
+            value => parsed.positionals.push(value.to_owned()),
+        }
+        index += 1;
+    }
+    Ok(parsed)
+}
+
+fn print_help() {
+    println!(
+        "maestro plugins [list|info] [name] [options]\n\n\
+Commands:\n\
+  list                   List discovered plugins (default)\n\
+  info <name>            Show one plugin's path, origin, and components\n\
+  <name>                 Alias for info <name>\n\n\
+Options:\n\
+  --json                 Emit machine-readable JSON\n\
+  --workspace <path>     Discover relative to this workspace (default: cwd)\n\
+  --help, -h             Show this help\n\n\
+Discovery roots (high wins on name collision):\n\
+  .maestro/plugins/<name>/   project\n\
+  ~/.maestro/plugins/<name>/ user\n\
+  .composer/plugins/<name>/  legacy project\n\
+  ~/.composer/plugins/<name>/ legacy user\n\n\
+Install is not yet implemented; place packages under a discovery root."
+    );
+}
+
+fn discover_registry(workspace: Option<&Path>) -> Result<PluginRegistry> {
+    let cwd = match workspace {
+        Some(path) => path.to_path_buf(),
+        None => std::env::current_dir()?,
+    };
+    let roots = search_roots_for_workspace(
+        &cwd,
+        maestro_home_dir().as_deref(),
+        legacy_composer_home_dir().as_deref(),
+    );
+    Ok(PluginRegistry::discover_from(&roots))
+}
+
+fn run_list(registry: &PluginRegistry, json: bool) -> Result<i32> {
+    if json {
+        let report = PluginListReport {
+            plugins: registry.plugins().iter().map(list_entry).collect(),
+            count: registry.len(),
+        };
+        println!("{}", serde_json::to_string_pretty(&report)?);
+        return Ok(0);
+    }
+
+    if registry.is_empty() {
+        println!("No plugins found");
+        println!();
+        println!("Install plugins under:");
+        println!("  .maestro/plugins/<name>/   (project)");
+        println!("  ~/.maestro/plugins/<name>/ (user)");
+        println!();
+        println!(
+            "Each plugin may include plugin.json, skills/, commands/, hooks, and MCP configs."
+        );
+        return Ok(0);
+    }
+
+    println!("Plugins");
+    println!();
+    for plugin in registry.plugins() {
+        let version = plugin
+            .manifest
+            .as_ref()
+            .and_then(|m| m.version.as_deref())
+            .unwrap_or("-");
+        println!(
+            "- {} ({}) — {} — {}",
+            plugin.name,
+            plugin.origin.as_str(),
+            version,
+            plugin.root.display()
+        );
+        println!("  components: {}", plugin.component_summary());
+    }
+    println!();
+    println!(
+        "{} plugin(s) discovered. Use `maestro plugins info <name>` for details.",
+        registry.len()
+    );
+    Ok(0)
+}
+
+fn run_info(registry: &PluginRegistry, name: &str, json: bool) -> Result<i32> {
+    let Some(plugin) = registry.get(name) else {
+        eprintln!("Plugin not found: {name}");
+        if registry.is_empty() {
+            eprintln!("No plugins discovered. Install under .maestro/plugins/<name>/.");
+        } else {
+            eprintln!("Known plugins:");
+            for p in registry.plugins() {
+                eprintln!("  - {}", p.name);
+            }
+        }
+        return Ok(1);
+    };
+
+    if json {
+        println!("{}", serde_json::to_string_pretty(&info_report(plugin))?);
+        return Ok(0);
+    }
+
+    print!("{}", plugin.detail_report());
+    Ok(0)
+}
+
+fn list_entry(plugin: &DiscoveredPlugin) -> PluginListEntry {
+    PluginListEntry {
+        name: plugin.name.clone(),
+        origin: plugin.origin.as_str().to_string(),
+        path: plugin.root.display().to_string(),
+        version: plugin.manifest.as_ref().and_then(|m| m.version.clone()),
+        description: plugin.manifest.as_ref().and_then(|m| m.description.clone()),
+        components: component_labels(plugin),
+        has_manifest: plugin.manifest.is_some(),
+    }
+}
+
+fn info_report(plugin: &DiscoveredPlugin) -> PluginInfoReport {
+    PluginInfoReport {
+        name: plugin.name.clone(),
+        origin: plugin.origin.as_str().to_string(),
+        path: plugin.root.display().to_string(),
+        version: plugin.manifest.as_ref().and_then(|m| m.version.clone()),
+        description: plugin.manifest.as_ref().and_then(|m| m.description.clone()),
+        has_manifest: plugin.manifest.is_some(),
+        components: PluginComponentPaths {
+            skills: plugin
+                .components
+                .skills_dir
+                .as_ref()
+                .map(|p| p.display().to_string()),
+            commands: plugin
+                .components
+                .commands_dir
+                .as_ref()
+                .map(|p| p.display().to_string()),
+            hooks: plugin
+                .components
+                .hooks_config
+                .as_ref()
+                .map(|p| p.display().to_string()),
+            mcp: plugin
+                .components
+                .mcp_path
+                .as_ref()
+                .map(|p| p.display().to_string()),
+        },
+    }
+}
+
+fn component_labels(plugin: &DiscoveredPlugin) -> Vec<&'static str> {
+    let mut parts = Vec::new();
+    if plugin.components.skills_dir.is_some() {
+        parts.push("skills");
+    }
+    if plugin.components.commands_dir.is_some() {
+        parts.push("commands");
+    }
+    if plugin.components.hooks_config.is_some() {
+        parts.push("hooks");
+    }
+    if plugin.components.mcp_path.is_some() {
+        parts.push("mcp");
+    }
+    parts
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::plugins::PluginOrigin;
+    use std::fs;
+    use tempfile::TempDir;
+
+    fn write_file(path: &Path, contents: &str) {
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).unwrap();
+        }
+        fs::write(path, contents).unwrap();
+    }
+
+    fn make_plugin(root: &Path, name: &str) {
+        let plugin = root.join(name);
+        fs::create_dir_all(plugin.join("skills")).unwrap();
+        write_file(
+            &plugin.join("plugin.json"),
+            &format!(r#"{{"name":"{name}","version":"1.2.3","description":"cli test plugin"}}"#),
+        );
+        write_file(
+            &plugin.join("skills").join("demo").join("SKILL.md"),
+            "---\nname: demo\ndescription: Demo skill for CLI tests\n---\n# Demo\n",
+        );
+    }
+
+    #[test]
+    fn parse_list_json_and_workspace() {
+        let args = [
+            "list".into(),
+            "--json".into(),
+            "--workspace".into(),
+            "/tmp/ws".into(),
+        ]
+        .to_vec();
+        let parsed = parse_args(&args).unwrap();
+        assert_eq!(parsed.command.as_deref(), Some("list"));
+        assert!(parsed.json);
+        assert_eq!(parsed.workspace.as_deref(), Some(Path::new("/tmp/ws")));
+    }
+
+    #[test]
+    fn list_and_info_against_workspace() {
+        let tmp = TempDir::new().unwrap();
+        let plugins_root = tmp.path().join(".maestro").join("plugins");
+        make_plugin(&plugins_root, "team-tools");
+
+        let list_args = [
+            "list".into(),
+            "--json".into(),
+            "--workspace".into(),
+            tmp.path().display().to_string(),
+        ]
+        .to_vec();
+        assert_eq!(run_plugins(&list_args).unwrap(), 0);
+
+        let info_args = [
+            "info".into(),
+            "team-tools".into(),
+            "--json".into(),
+            format!("--workspace={}", tmp.path().display()),
+        ]
+        .to_vec();
+        assert_eq!(run_plugins(&info_args).unwrap(), 0);
+
+        let missing = [
+            "info".into(),
+            "missing-plugin".into(),
+            "--workspace".into(),
+            tmp.path().display().to_string(),
+        ]
+        .to_vec();
+        assert_eq!(run_plugins(&missing).unwrap(), 1);
+    }
+
+    #[test]
+    fn bare_name_acts_as_info() {
+        let tmp = TempDir::new().unwrap();
+        make_plugin(&tmp.path().join(".maestro").join("plugins"), "solo");
+        let args = [
+            "solo".into(),
+            "--json".into(),
+            "--workspace".into(),
+            tmp.path().display().to_string(),
+        ]
+        .to_vec();
+        assert_eq!(run_plugins(&args).unwrap(), 0);
+    }
+
+    #[test]
+    fn help_exits_cleanly() {
+        assert_eq!(run_plugins(&["--help".into()]).unwrap(), 0);
+        assert_eq!(run_plugins(&["help".into()]).unwrap(), 0);
+    }
+
+    #[test]
+    fn list_entry_includes_components() {
+        let plugin = DiscoveredPlugin {
+            name: "x".into(),
+            root: PathBuf::from("/p/x"),
+            origin: PluginOrigin::Project,
+            manifest: None,
+            components: crate::plugins::PluginComponents {
+                skills_dir: Some(PathBuf::from("/p/x/skills")),
+                commands_dir: None,
+                hooks_config: None,
+                mcp_path: Some(PathBuf::from("/p/x/mcp.json")),
+            },
+        };
+        let entry = list_entry(&plugin);
+        assert_eq!(entry.components, vec!["skills", "mcp"]);
+        assert!(!entry.has_manifest);
+    }
+}

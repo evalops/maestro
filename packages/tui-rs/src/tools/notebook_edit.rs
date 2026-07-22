@@ -22,7 +22,7 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 
 use crate::agent::ToolResult;
-use crate::safety::{require_plan, run_validators};
+use crate::safety::run_validators;
 
 #[derive(Debug, Deserialize)]
 struct NotebookEditArgs {
@@ -110,10 +110,6 @@ pub async fn notebook_edit(raw_args: Value, cwd: &str) -> ToolResult {
 
     let edit_mode = parsed.edit_mode.unwrap_or_else(|| "replace".to_string());
 
-    if let Err(err) = require_plan("notebook_edit") {
-        return ToolResult::failure(err);
-    }
-
     let path = {
         let raw = parsed.path.trim();
         if raw.is_empty() {
@@ -128,6 +124,12 @@ pub async fn notebook_edit(raw_args: Value, cwd: &str) -> ToolResult {
                 .to_string()
         }
     };
+
+    if let Err(err) =
+        crate::plan_mode::gate_mutation("notebook_edit", Some(std::path::Path::new(&path)), cwd)
+    {
+        return ToolResult::failure(err);
+    }
 
     if !path.to_lowercase().ends_with(".ipynb") {
         return ToolResult::failure(format!("File must be a Jupyter notebook (.ipynb): {path}"));
