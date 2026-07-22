@@ -105,9 +105,11 @@ describe("cli-runtime direct command dispatch", () => {
 
 	it("does not treat prompt text or global-help commands as the direct dispatch path", () => {
 		expect(getDirectRuntimeCommand(["write", "a", "skill"])).toBeNull();
-		expect(getDirectRuntimeCommand(["a2a", "--help"])).toBeNull();
-		expect(getDirectRuntimeCommand(["context", "--help"])).toBeNull();
+		// Native utility commands (including a2a/context) own --help via maestro-tui.
+		expect(getDirectRuntimeCommand(["a2a", "--help"])).toBe("a2a");
+		expect(getDirectRuntimeCommand(["context", "--help"])).toBe("context");
 		expect(getDirectRuntimeCommand(["status", "--help"])).toBe("status");
+		expect(getDirectRuntimeCommand(["plugins", "--help"])).toBe("plugins");
 	});
 
 	it("hands native utility commands directly to Rust without loading the full runtime", async () => {
@@ -128,12 +130,36 @@ describe("cli-runtime direct command dispatch", () => {
 				["init", "--json"],
 			],
 			[
+				["config", "path"],
+				["config", "path"],
+			],
+			[
+				["config", "get", "model"],
+				["config", "get", "model"],
+			],
+			[
+				["remote", "list", "--workspace", "ws_1", "--json"],
+				["remote", "list", "--workspace", "ws_1", "--json"],
+			],
+			[
 				["openai", "status"],
 				["openai", "status"],
 			],
 			[
+				["evalops", "status"],
+				["evalops", "status"],
+			],
+			[
+				["evalops", "login"],
+				["evalops", "login"],
+			],
+			[
 				["memory", "status"],
 				["memory", "status"],
+			],
+			[
+				["mission", "status", "--json"],
+				["mission", "status", "--json"],
 			],
 			[
 				["anthropic", "status"],
@@ -142,6 +168,14 @@ describe("cli-runtime direct command dispatch", () => {
 			[
 				["painter", "show", "image.png"],
 				["painter", "show", "image.png"],
+			],
+			[
+				["plugins", "list", "--json"],
+				["plugins", "list", "--json"],
+			],
+			[
+				["plugin", "info", "team-tools"],
+				["plugin", "info", "team-tools"],
 			],
 			[
 				["--provider", "openai", "modes", "describe", "high", "--json"],
@@ -183,6 +217,22 @@ describe("cli-runtime direct command dispatch", () => {
 			[
 				["--profile", "cli-profile", "skill", "list", "--json"],
 				["--profile", "cli-profile", "skill", "list", "--json"],
+			],
+			[
+				[
+					"operating-plane",
+					"status",
+					"--thread-id",
+					"C123:1740000000.000100",
+					"--json",
+				],
+				[
+					"operating-plane",
+					"status",
+					"--thread-id",
+					"C123:1740000000.000100",
+					"--json",
+				],
 			],
 		];
 

@@ -12,7 +12,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { ComposerRunTimelineResponse } from "@evalops/contracts";
-import { testing } from "../src/cli/commands/run.js";
+import { buildRunReconstructionReport } from "../src/server/run-reconstruction.js";
 import { buildAgentTrajectoryReport } from "../src/server/agent-trajectory.js";
 import { validateAgentTrajectoryReport } from "../src/server/agent-trajectory-validation.js";
 import { SessionManager } from "../src/session/manager.js";
@@ -34,7 +34,7 @@ const timelineFixturesDir = join(
 );
 
 type RunReport = Awaited<
-	ReturnType<typeof testing.buildRunReconstructionReport>
+	ReturnType<typeof buildRunReconstructionReport>
 >;
 type TrajectoryEvent = NonNullable<RunReport>["trajectory"]["events"][number];
 
@@ -160,7 +160,7 @@ async function checkSessionReplayFixture(
 	const contents = readFileSync(join(sessionReplayFixturesDir, name), "utf8");
 	const { sessionDir, sessionId } = materializeFixture(contents);
 	try {
-		const report = await testing.buildRunReconstructionReport(sessionId, {
+		const report = await buildRunReconstructionReport(sessionId, {
 			sessionDir,
 		});
 		assert(report, `fixture ${name} did not reconstruct`);

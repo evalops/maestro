@@ -422,12 +422,18 @@ impl SlashCommandMatcher {
         matches
     }
 
-    /// Get completions for tab cycling
+    /// Get completions for tab cycling.
+    ///
+    /// Each entry is a full slash invocation with **exactly one** leading `/`
+    /// (e.g. `/help`). Callers must not prepend another slash.
     #[must_use]
     pub fn get_completions(&self, query: &str) -> Vec<String> {
         self.get_matches(query)
             .into_iter()
-            .map(|m| format!("/{}", m.matched_name))
+            .map(|m| {
+                let name = m.matched_name.trim_start_matches('/');
+                format!("/{name}")
+            })
             .collect()
     }
 
@@ -828,6 +834,23 @@ mod tests {
 
         assert!(!completions.is_empty());
         assert!(completions[0].starts_with('/'));
+        // Exactly one leading slash — never `//help`
+        assert!(!completions[0].starts_with("//"));
+        assert_eq!(completions[0].matches('/').count(), 1);
+    }
+
+    #[test]
+    fn completions_never_double_slash_even_if_matched_name_has_slash() {
+        // Defensive: trim any accidental leading slash on matched names.
+        let matcher = create_matcher();
+        let completions = matcher.get_completions("/help");
+        assert!(!completions.is_empty());
+        for c in completions {
+            assert!(
+                c.starts_with('/') && !c.starts_with("//"),
+                "bad completion: {c}"
+            );
+        }
     }
 
     #[test]

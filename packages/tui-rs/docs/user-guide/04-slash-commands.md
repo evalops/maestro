@@ -1,0 +1,106 @@
+# Slash Commands
+
+Type `/` in the editor for completions. Built-ins are registered in `packages/tui-rs/src/commands/registry.rs` and always win on name collisions with skill or prompt extensions.
+
+This page lists **built-in** commands only. Skills and prompt templates can add extra `/name` entries at runtime; see [Skills](08-skills.md).
+
+---
+
+## Session and navigation
+
+| Command | Aliases | Description |
+|---------|---------|-------------|
+| `/help [command]` | `/h`, `/?` | Show help modal or help for a command |
+| `/clear` | `/cls`, `/new` | Start a new session (clear transcript) |
+| `/fork` | | Fork the conversation into a new session branch |
+| `/rewind [n]` | `/undo` | Rewind the last N user turns (default 1) |
+| `/quit` | `/exit`, `/q` | Quit the application |
+| `/continue` | `/c` | Continue the most recent session for this workspace |
+| `/resume` | `/r` | Resume a specific session (opens session list) |
+| `/session […]` | `/ss` | Session info / new / clear / fork / rewind / cleanup |
+| `/sessions` | | List and manage sessions (modal) |
+| `/export [format] [path]` | | Export session (`markdown`, `html`, `json`, `text`) |
+| `/history [count\|query\|clear]` | `/hist` | Show or search prompt history |
+| `/files` | | Search workspace files |
+| `/commands` | | Open command palette |
+| `/refresh` | | Refresh workspace files |
+
+---
+
+## Models, thinking, UI
+
+| Command | Aliases | Description |
+|---------|---------|-------------|
+| `/model [name]` | `/m` | Change AI model (selector if no name) |
+| `/thinking <level>` | | Levels: `off`, `minimal`, `low`, `medium`, `high`, `max` |
+| `/theme [name]` | | Change color theme |
+| `/zen` | | Toggle zen mode (minimal UI) |
+| `/compact-tools [on\|off\|toggle]` | | Toggle tool output folding |
+| `/footer [style]` | | Footer style: `rich`, `solo`, `history`, `clear` |
+| `/copy` | | Copy last message to clipboard |
+| `/hotkeys […]` | `/keys`, `/shortcuts` | Show or manage keyboard shortcuts |
+
+---
+
+## Queue and steering
+
+| Command | Description |
+|---------|-------------|
+| `/queue [list\|cancel <id>\|mode …]` | Manage queued prompts |
+| `/steer <message>` | Send a steering message |
+
+Queue modes: `/queue mode [steer|followup] <one|all>`.
+
+---
+
+## Safety and plan
+
+| Command | Aliases | Description |
+|---------|---------|-------------|
+| `/approvals [yolo\|selective\|safe]` | | Set approval mode (cycles if omitted) |
+| `/always-approve` | `/yolo` | Auto-approve all tool executions |
+| `/auto` | | Selective approvals (safe free, risky prompt) |
+| `/ask` | | Require approval for all tools |
+| `/plan [on\|off]` | | Enter or leave plan mode |
+
+---
+
+## Context, tools, MCP, skills, hooks
+
+| Command | Aliases | Description |
+|---------|---------|-------------|
+| `/compact [instructions]` | | Compact conversation history |
+| `/context` | | Show context summary |
+| `/memory` | | Local / shared memory status |
+| `/tools [list\|mcp\|lsp]` | | List built-in tools |
+| `/mcp [resources\|prompts …]` | | MCP status and resources/prompts |
+| `/hooks [list\|toggle\|reload\|metrics\|enable\|disable]` | `/hook` | Manage hooks |
+| `/skills […]` | `/skill` | Manage skills (`list`, `activate`, `deactivate`, `reload`, `info`) |
+| `/toolhistory […]` | `/th` | Tool execution history and stats |
+| `/a2a …` | | Pair, inspect, and delegate to A2A peer agents |
+
+---
+
+## Diagnostics and git
+
+| Command | Aliases | Description |
+|---------|---------|-------------|
+| `/about` | | Build and environment info |
+| `/version` | `/v` | TUI version |
+| `/status` | `/health` | System health overview |
+| `/stats` | | Status + usage summary |
+| `/diag [status\|stats\|about\|context\|mcp]` | | System diagnostics |
+| `/limits [all\|tool\|lsp]` | | Configurable runtime limits |
+| `/cost [summary\|detailed\|reset]` | `/usage`, `/tokens` | Token usage and cost |
+| `/diff [path]` | | Git diff for working tree or path |
+| `/review` | | Summarize git status and diff stats |
+| `/git [status\|diff\|review]` | | Git helper group |
+
+---
+
+## Extensions (not built-ins)
+
+- Prompt templates: `.maestro/prompts/*.md`, `.maestro/commands/*.md`, and user-level equivalents under `~/.maestro/…` (plus legacy composer paths where configured).
+- Skills: `.maestro/skills/<name>/SKILL.md` and user skill dirs; invocable as `/<name>` when `user_invocable` is enabled.
+
+Built-in names always take precedence.

@@ -121,6 +121,15 @@ impl App {
                 self.state.insert_char('/');
                 self.slash_state.set_query("", &self.slash_matcher);
             }
+            // Swallow extra leading slashes while the menu is open so the input
+            // never becomes `//` / `///` from double-tapping `/` (// menu bug).
+            KeyCode::Char('/')
+                if !ctrl
+                    && self.state.input().starts_with('/')
+                    && self.state.input().chars().all(|c| c == '/') =>
+            {
+                self.slash_state.set_query("", &self.slash_matcher);
+            }
 
             // Tab for slash command completion
             KeyCode::Tab if self.state.input().starts_with('/') => {

@@ -35,7 +35,7 @@ mock-agent read, write/read, search/read, and edit/read flows.
 
 ## 3. Safety Checks
 
-- Approvals/firewall: see `docs/SAFETY.md`; web server defaults to **auto-approval**—use Docker or auth if exposed.
+- Approvals/firewall: see `docs/SAFETY.md`; explicit web **auto-approval** should be paired with Docker or auth when exposed. Prompt/fail modes fail closed.
 - Guardian: `scripts/guardian.sh --staged` (or `/guardian` in TUI) before commits.
 
 ## 4. Docs & References

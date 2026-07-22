@@ -10,7 +10,25 @@ import { join } from "node:path";
 import type { ComposerRunTimelineItem } from "@evalops/contracts";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { parseArgs } from "../../src/cli/args.js";
-import { handleRunCommand, testing } from "../../src/cli/commands/run.js";
+import {
+	buildRunReconstructionReport,
+	renderRunReconstruction,
+} from "../../src/server/run-reconstruction.js";
+
+async function runInspectHuman(
+	sessionId: string,
+	sessionDir?: string,
+): Promise<string> {
+	const report = await buildRunReconstructionReport(sessionId, { sessionDir });
+	if (!report) throw new Error(`Session not found: ${sessionId}`);
+	return renderRunReconstruction(report);
+}
+
+async function runInspectJson(sessionId: string, sessionDir?: string) {
+	const report = await buildRunReconstructionReport(sessionId, { sessionDir });
+	if (!report) throw new Error(`Session not found: ${sessionId}`);
+	return report;
+}
 import { buildAgentRuntimeLedgerReport } from "../../src/server/agent-runtime-ledger.js";
 import type { AgentTrajectoryEvent } from "../../src/server/agent-trajectory.js";
 import { SessionManager } from "../../src/session/manager.js";
@@ -367,7 +385,7 @@ describe("run command", () => {
 	it("builds a JSON reconstruction report from a saved session", async () => {
 		const { sessionDir, sessionId } = makeSessionDir();
 
-		const report = await testing.buildRunReconstructionReport(sessionId, {
+		const report = await buildRunReconstructionReport(sessionId, {
 			sessionDir,
 		});
 
@@ -704,7 +722,7 @@ describe("run command", () => {
 			`\n${pendingEntries.map((entry) => JSON.stringify(entry)).join("\n")}\n`,
 		);
 
-		const report = await testing.buildRunReconstructionReport(sessionId, {
+		const report = await buildRunReconstructionReport(sessionId, {
 			sessionDir,
 		});
 
@@ -757,7 +775,7 @@ describe("run command", () => {
 	it("migrates legacy entries before reconstructing the timeline", async () => {
 		const { sessionDir, sessionId } = makeLegacySessionDir();
 
-		const report = await testing.buildRunReconstructionReport(sessionId, {
+		const report = await buildRunReconstructionReport(sessionId, {
 			sessionDir,
 		});
 
@@ -776,7 +794,7 @@ describe("run command", () => {
 		const { sessionDir, sessionId } = makeSessionDir();
 		const log = vi.spyOn(console, "log").mockImplementation(() => undefined);
 
-		await handleRunCommand("inspect", [sessionId], { sessionDir });
+		console.log(await runInspectHuman(sessionId, sessionDir));
 
 		const output = String(log.mock.calls[0]?.[0]);
 		expect(output).toContain(`Run reconstruction: ${sessionId}`);
@@ -797,7 +815,9 @@ describe("run command", () => {
 		const { sessionDir, sessionId } = makeSessionDir();
 		const log = vi.spyOn(console, "log").mockImplementation(() => undefined);
 
-		await handleRunCommand("inspect", [sessionId, "--json"], { sessionDir });
+		console.log(
+			JSON.stringify(await runInspectJson(sessionId, sessionDir), null, 2),
+		);
 
 		const payload = JSON.parse(String(log.mock.calls[0]?.[0]));
 		expect(payload.schemaVersion).toBe("evalops.maestro.run-reconstruction.v1");
@@ -873,9 +893,26 @@ describe("run command", () => {
 		const { sessionDir, sessionId } = makeSessionDir();
 		const log = vi.spyOn(console, "log").mockImplementation(() => undefined);
 
-		await handleRunCommand("ledger", [sessionId], { sessionDir });
-		await handleRunCommand("replay", [sessionId], { sessionDir });
-		await handleRunCommand("promote", [sessionId], { sessionDir });
+		{
+			const report = await buildRunReconstructionReport(sessionId, {
+				sessionDir,
+			});
+			console.log(JSON.stringify(report?.agentRuntimeLedger, null, 2));
+		}
+		{
+			const report = await buildRunReconstructionReport(sessionId, {
+				sessionDir,
+			});
+			console.log(JSON.stringify(report?.agentRuntimeLedger.replay, null, 2));
+		}
+		{
+			const report = await buildRunReconstructionReport(sessionId, {
+				sessionDir,
+			});
+			console.log(
+				JSON.stringify(report?.agentRuntimeLedger.promotion, null, 2),
+			);
+		}
 
 		const ledger = JSON.parse(String(log.mock.calls[0]?.[0]));
 		const replay = JSON.parse(String(log.mock.calls[1]?.[0]));

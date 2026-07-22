@@ -246,6 +246,41 @@ function getViewerDisallowedServerRequest(
 	return undefined;
 }
 
+function rejectUnsupportedNativeCapabilities(
+	input: Pick<
+		HeadlessSessionCreateInput,
+		"capabilities" | "client" | "enableClientTools"
+	>,
+): void {
+	if (input.enableClientTools) {
+		throw new ApiError(
+			400,
+			"Native headless runtime does not yet support client-side tools",
+		);
+	}
+	if (input.client && input.client !== "generic") {
+		throw new ApiError(
+			400,
+			`Native headless runtime does not yet support ${input.client} client tools`,
+		);
+	}
+	rejectUnsupportedNativeServerRequests(input.capabilities?.serverRequests);
+}
+
+function rejectUnsupportedNativeServerRequests(
+	serverRequests: readonly string[] | undefined,
+): void {
+	const unsupportedRequest = ["mcp_elicitation", "user_input"].find((request) =>
+		serverRequests?.includes(request),
+	);
+	if (unsupportedRequest) {
+		throw new ApiError(
+			400,
+			`Native headless runtime does not yet support ${unsupportedRequest} server requests`,
+		);
+	}
+}
+
 function writeSse(res: ServerResponse, payload: unknown): boolean {
 	return res.write(`data: ${JSON.stringify(payload)}\n\n`);
 }
@@ -590,6 +625,7 @@ async function ensureRuntime(
 			`viewer headless connections cannot negotiate ${disallowedViewerRequest} requests`,
 		);
 	}
+	rejectUnsupportedNativeCapabilities(input);
 	const headerApproval = normalizeApprovalMode(
 		getRequestHeader(
 			req,
@@ -852,6 +888,7 @@ export async function handleHeadlessSessionSubscribe(
 			`viewer headless connections cannot negotiate ${disallowedViewerRequest} requests`,
 		);
 	}
+	rejectUnsupportedNativeServerRequests(input.capabilities?.serverRequests);
 	try {
 		sendJson(
 			res,
@@ -1053,6 +1090,9 @@ export async function handleHeadlessSessionMessage(
 ) {
 	const runtime = getRuntime(req, context, params?.id);
 	const input = await parseHeadlessMessage(req);
+	if (input.type === "hello") {
+		rejectUnsupportedNativeServerRequests(input.capabilities?.server_requests);
+	}
 	try {
 		runtime.assertCanSend(
 			getHeadlessRole(req),

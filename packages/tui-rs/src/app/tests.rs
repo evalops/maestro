@@ -320,6 +320,42 @@ fn test_slash_cycle_state_reset() {
     assert!(!state.has_completions());
 }
 
+#[test]
+fn test_normalize_slash_completion_never_doubles() {
+    use super::command_handlers::normalize_slash_completion;
+
+    assert_eq!(normalize_slash_completion("/help"), "/help");
+    assert_eq!(normalize_slash_completion("help"), "/help");
+    assert_eq!(normalize_slash_completion("//help"), "/help");
+    assert_eq!(normalize_slash_completion("///plan"), "/plan");
+    assert_eq!(normalize_slash_completion("  /theme  "), "/theme");
+    assert_eq!(normalize_slash_completion("/"), "/");
+    assert_eq!(normalize_slash_completion("//"), "/");
+    assert_eq!(normalize_slash_completion(""), "/");
+}
+
+#[test]
+fn test_slash_cycle_apply_path_no_double_slash() {
+    use super::command_handlers::normalize_slash_completion;
+    use crate::commands::{build_command_registry, SlashCommandMatcher, SlashCycleState};
+    use std::sync::Arc;
+
+    let registry = Arc::new(build_command_registry());
+    let matcher = SlashCommandMatcher::new(registry);
+    let mut cycle = SlashCycleState::new();
+    cycle.set_query("he", &matcher);
+    assert!(cycle.has_completions());
+    let applied = normalize_slash_completion(cycle.current().unwrap());
+    assert!(applied.starts_with('/'), "{applied}");
+    assert!(!applied.starts_with("//"), "double slash bug: {applied}");
+    // Simulate the old buggy path for documentation:
+    let buggy = format!("/{}", cycle.current().unwrap());
+    assert!(
+        buggy.starts_with("//"),
+        "expected old path to double-slash when completion already has /"
+    );
+}
+
 // ─────────────────────────────────────────────────────────────────────────
 // Usage Action Tests
 // ─────────────────────────────────────────────────────────────────────────

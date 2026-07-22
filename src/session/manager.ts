@@ -90,6 +90,18 @@ import {
 	tryParseSessionEntry,
 } from "./types.js";
 
+export type SessionStartState = Pick<
+	AgentState,
+	| "model"
+	| "thinkingLevel"
+	| "systemPrompt"
+	| "promptMetadata"
+	| "systemPromptSourcePaths"
+	| "promptContextManifest"
+	| "unifiedContextManifest"
+	| "tools"
+>;
+
 export interface SessionManagerOptions {
 	/** Override the base session directory (before per-cwd scoping). */
 	sessionDir?: string;
@@ -509,7 +521,7 @@ export class SessionManager {
 		return generateEntryId(this.byId);
 	}
 
-	startSession(state: AgentState, options?: { subject?: string }): void {
+	startSession(state: SessionStartState, options?: { subject?: string }): void {
 		if (!this.enabled || this.sessionInitialized) return;
 
 		const modelKeyFromState = `${state.model.provider}/${state.model.id}`;

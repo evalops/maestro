@@ -541,7 +541,7 @@ fn remote_session_subscribe_request_serializes_opt_out_notifications() {
 }
 
 #[test]
-fn remote_hello_message_includes_interactive_server_requests_for_controller() {
+fn remote_controller_omits_unsupported_user_input_request() {
     let message = build_remote_hello_message(&RemoteTransportConfig {
         enable_client_tools: true,
         ..RemoteTransportConfig::default()
@@ -560,9 +560,15 @@ fn remote_hello_message_includes_interactive_server_requests_for_controller() {
         Some(vec![
             ServerRequestType::Approval,
             ServerRequestType::ClientTool,
-            ServerRequestType::UserInput,
             ServerRequestType::ToolRetry,
         ])
+    );
+    assert_eq!(
+        build_remote_server_requests(&RemoteTransportConfig {
+            enable_client_tools: true,
+            ..RemoteTransportConfig::default()
+        }),
+        vec!["approval", "client_tool", "tool_retry"]
     );
 }
 
@@ -1561,7 +1567,6 @@ async fn remote_transport_connects_sends_and_receives_events() {
             && client_info.as_ref().map(|info| info.name.as_str()) == Some("maestro-tui-rs")
             && capabilities.as_ref().and_then(|items| items.server_requests.as_ref()) == Some(&vec![
                 ServerRequestType::Approval,
-                ServerRequestType::UserInput,
                 ServerRequestType::ToolRetry,
             ])
             && role == Some(ConnectionRole::Controller)

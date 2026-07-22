@@ -1022,8 +1022,6 @@ export class ApiClient {
 		request: ChatRequest,
 	): AsyncGenerator<AgentEvent, void, unknown> {
 		const response = await this.openChatStream(request, {
-			"x-composer-client-tools": "1",
-			"x-maestro-client-tools": "1",
 			"x-composer-slim-events": "1",
 			"x-maestro-slim-events": "1",
 		});
@@ -1080,7 +1078,6 @@ export class ApiClient {
 		}
 
 		const url = this.buildWebSocketUrl("/api/chat/ws", {
-			clientTools: "1",
 			slim: "1",
 			client: "web",
 		});

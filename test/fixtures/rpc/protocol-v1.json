@@ -1,7 +1,7 @@
 {
 	"version": 1,
 	"schema": "evalops.maestro.rpc-protocol-conformance.v1",
-	"description": "Release-gated JSON-over-stdio RPC command, response, request-id correlation, and client launch contract. Native headless owns stdio RPC/headless protocol after TS agent kill.",
+	"description": "Release-gated JSON-over-stdio RPC/headless launch and dispatch contract. Native maestro-tui --headless owns the protocol; typed client is NativeHeadlessClient (TS RpcClient residual removed).",
 	"commands": [
 		{
 			"name": "prompt dispatches a user prompt",
@@ -109,10 +109,12 @@
 	"runtimeSurfaces": [
 		{
 			"area": "rpc-server-dispatch",
-			"path": "src/cli/rpc-mode.ts",
+			"path": "packages/tui-rs/src/headless_server.rs",
 			"anchors": [
-				"TypeScript runRpcMode has been removed",
-				"maestro-tui --headless"
+				"run_headless_server",
+				"ToAgentMessage::Prompt",
+				"ToAgentMessage::Hello",
+				"FromAgentMessage::Ready"
 			],
 			"note": "TS RPC server removed; native maestro-tui --headless owns the protocol."
 		},
@@ -137,34 +139,36 @@
 		},
 		{
 			"area": "rpc-client-launch",
-			"path": "src/rpc/rpc-client.ts",
+			"path": "src/server/native-headless-client.ts",
 			"anchors": [
-				"[\"--mode\", \"rpc\"]",
-				"commandWithId",
-				"this.pending.set(id"
-			]
+				"export class NativeHeadlessClient",
+				"spawnNativeHeadlessProcess",
+				"async start(): Promise<HeadlessReadyMessage>",
+				"prompt(content: string"
+			],
+			"note": "TS RpcClient (src/rpc/) deleted; NativeHeadlessClient is the production NDJSON client for maestro-tui --headless / --mode rpc."
 		},
 		{
 			"area": "rpc-type-union",
-			"path": "src/rpc/rpc-types.ts",
+			"path": "src/cli/headless-protocol.ts",
 			"anchors": [
-				"RpcPromptCommand",
-				"RpcAbortCommand",
-				"RpcGetMessagesCommand",
-				"RpcGetStateCommand",
-				"RpcContinueCommand",
-				"RpcCompactCommand"
-			]
+				"export interface HeadlessPromptMessage",
+				"export interface HeadlessInterruptMessage",
+				"export interface HeadlessCancelMessage",
+				"export interface HeadlessShutdownMessage",
+				"export type HeadlessToAgentMessage",
+				"export type HeadlessFromAgentMessage"
+			],
+			"note": "Headless protocol message unions replaced legacy RpcCommand / RpcResponse types."
 		},
 		{
 			"area": "rpc-runtime-tests",
-			"path": "test/cli/rpc-mode.test.ts",
+			"path": "test/cli/native-tui-launcher.test.ts",
 			"anchors": [
-				"throws a removal error directing callers to native headless",
-				"TypeScript runRpcMode has been removed",
-				"maestro-tui --headless"
+				"routes headless and rpc modes to native headless server",
+				"shouldLaunchNativeHeadless"
 			],
-			"note": "TS RPC suite is a fail-closed stub; protocol runtime is covered by native headless + launcher surfaces."
+			"note": "TS RPC suite deleted; protocol runtime is covered by native headless + launcher surfaces."
 		}
 	]
 }

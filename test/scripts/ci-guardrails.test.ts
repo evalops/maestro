@@ -71,6 +71,10 @@ import {
 } from "../../scripts/resolve-public-mirror-ref.mjs";
 import { expectRegistryInstallSmokeIsReleaseBlocking } from "../utils/registry-install-smoke-guard.js";
 
+const isPreparedPublicMirror = !existsSync(
+	new URL("../../.github/public-release-mirror.exclude", import.meta.url),
+);
+
 type WorkflowStep = {
 	env?: Record<string, unknown>;
 	id?: string;
@@ -172,14 +176,18 @@ function expectRustTuiRunnerLane(runsOn: string): void {
 		return;
 	}
 
-	// Heavy PR work runs on GitHub-hosted ubuntu-latest (Blacksmith retired
-	// 2026-07-20); main confirmation falls back through
-	// INTERNAL_CONFIRMATION_RUNNER.
-	expect(runsOn).not.toContain("PR_RUST_RUNNER");
+	// Rust PR work uses the configurable owned PR lane
+	// (Blacksmith retired 2026-07-20; GitHub-hosted spend is budget-blocked
+	// on this private repo, so ubuntu-latest is only for fork PRs above);
+	// main confirmation falls back through INTERNAL_CONFIRMATION_RUNNER to
+	// evalops-internal.
+	expect(runsOn).toContain("PR_RUST_RUNNER");
+	expect(runsOn).toContain("PR_CHECKS_RUNNER");
 	expect(runsOn).not.toContain("evalops-private-heavy");
 	expect(runsOn).not.toContain("BLACKSMITH");
 	expect(runsOn).not.toContain("blacksmith");
 	expect(runsOn).toContain("INTERNAL_CONFIRMATION_RUNNER");
+	expect(runsOn).toContain("evalops-internal");
 }
 
 describe("planCiChecks", () => {
@@ -796,6 +804,20 @@ describe("ci workflow guardrails", () => {
 		);
 	});
 
+	it("bounds the optional Docker availability probe used by the full suite", () => {
+		const source = readFileSync(
+			new URL("../slack-agent/sandbox.test.ts", import.meta.url),
+			{ encoding: "utf8" },
+		);
+		const dockerProbe =
+			source.match(/spawnSync\("docker", \["info"\], \{[\s\S]*?\}\);/)?.[0] ??
+			"";
+
+		expect(dockerProbe).not.toBe("");
+		expect(dockerProbe).toContain("timeout: 5_000");
+		expect(dockerProbe).toContain('killSignal: "SIGKILL"');
+	});
+
 	it("builds dist before the runtime dependency validator", () => {
 		const script = readFileSync(
 			new URL("../../scripts/ci-nx-tests.sh", import.meta.url),
@@ -912,7 +934,19 @@ describe("ci workflow guardrails", () => {
 		expect(String(uploadLogsStep?.if ?? "")).toContain(
 			"nx-tests-attempt-*.json",
 		);
-		expect(uploadLogsStep?.with?.path).toContain("nx-tests-attempt-*.json");
+		expect(uploadLogsStep?.uses).toBe("./.github/actions/gcs-artifacts");
+		expect(uploadLogsStep?.with).toMatchObject({
+			mode: "upload",
+			"if-missing": "ignore",
+			prefix:
+				"maestro-internal/ci/${{ github.run_id }}/${{ github.run_attempt }}/nx-tests-logs",
+		});
+		expect(uploadLogsStep?.with?.["workload-identity-provider"]).toContain(
+			"GCP_WORKLOAD_IDENTITY_PROVIDER",
+		);
+		expect(String(uploadLogsStep?.with?.paths ?? "")).toContain(
+			"nx-tests-attempt-*.json",
+		);
 	});
 
 	it("routes expensive pull-request jobs to the intended runner lanes", () => {
@@ -936,20 +970,26 @@ describe("ci workflow guardrails", () => {
 
 		expect(prChecksRunsOn).toContain("ubuntu-latest");
 		expect(prChecksRunsOn).toContain("light_pr_checks");
-		// Light PR lane: PR_CHECKS_RUNNER → ubuntu-latest
-		// Heavy PR lane: ubuntu-latest (Blacksmith retired 2026-07-20)
+		// Light PR lane: PR_CHECKS_RUNNER -> evalops-internal
+		// Heavy PR lane: evalops-private-heavy
+		// (Blacksmith retired 2026-07-20; GitHub-hosted Actions spend is
+		// budget-blocked on this private repo, so ubuntu-latest above is only
+		// reachable for fork PRs, which must never land on a self-hosted
+		// runner regardless of budget.)
 		expect(prChecksRunsOn).toContain("PR_CHECKS_RUNNER");
 		expect(prChecksRunsOn).not.toContain("BLACKSMITH");
 		expect(prChecksRunsOn).not.toContain("blacksmith");
-		expect(prChecksRunsOn).not.toContain("evalops-private-ci");
-		expect(prChecksRunsOn).not.toContain("evalops-private-heavy");
+		expect(prChecksRunsOn).toContain("evalops-private-heavy");
 		expect(prChecksRunsOn).toContain("INTERNAL_CONFIRMATION_RUNNER");
+		expect(prChecksRunsOn).toContain("evalops-internal");
 		expect(coverageRunsOn).toContain("ubuntu-latest");
-		expect(coverageRunsOn).not.toContain("PR_COVERAGE_RUNNER");
+		expect(coverageRunsOn).toContain("PR_RUST_RUNNER");
+		expect(coverageRunsOn).toContain("PR_CHECKS_RUNNER");
 		expect(coverageRunsOn).not.toContain("BLACKSMITH");
 		expect(coverageRunsOn).not.toContain("blacksmith");
 		expect(coverageRunsOn).not.toContain("evalops-private-heavy");
 		expect(coverageRunsOn).toContain("INTERNAL_CONFIRMATION_RUNNER");
+		expect(coverageRunsOn).toContain("evalops-internal");
 	});
 
 	it("runs workflow footgun guardrails in the CI infrastructure smoke lane", () => {
@@ -1227,7 +1267,7 @@ describe("ci workflow guardrails", () => {
 		expect(script).toContain("MAESTRO_REQUIRE_PACKAGED_TUI");
 	});
 
-	it("builds every packaged Rust TUI target on GitHub-hosted runners", () => {
+	it("builds every packaged Rust TUI target on an owned or (gap-flagged) GitHub-hosted runner", () => {
 		const workflowPath = new URL(
 			"../../.github/workflows/release.yml",
 			import.meta.url,
@@ -1243,7 +1283,16 @@ describe("ci workflow guardrails", () => {
 			return;
 		}
 
-		for (const runner of ["macos-15", "ubuntu-latest", "ubuntu-24.04-arm"]) {
+		// linux-x64 has an owned Hetzner equivalent, so it must not sit on
+		// GitHub-hosted spend. macos-15 and ubuntu-24.04-arm are a known,
+		// explicitly flagged gap (no owned macOS or arm64 runner exists yet)
+		// and stay GitHub-hosted -- and therefore budget-blocked -- until an
+		// owned runner is provisioned or the Actions budget resets.
+		for (const runner of [
+			"macos-15",
+			"evalops-private-heavy",
+			"ubuntu-24.04-arm",
+		]) {
 			expect(workflow).toContain(runner);
 		}
 		expect(workflow).not.toContain("blacksmith");
@@ -1615,11 +1664,25 @@ describe("ci workflow guardrails", () => {
 		);
 		expect(script).toContain('--timing-file "$ci_timing_file"');
 		expect(script).toContain("#### CI timings");
-		expect(uploadStep?.uses).toContain("actions/upload-artifact@");
-		expect(uploadStep?.with).toMatchObject({
-			path: "ci-timing.jsonl",
-			"retention-days": 7,
-		});
+		if (isPreparedPublicMirror) {
+			expect(uploadStep?.uses).toContain("actions/upload-artifact@");
+			expect(uploadStep?.with).toMatchObject({
+				path: "ci-timing.jsonl",
+				"retention-days": 7,
+			});
+		} else {
+			expect(uploadStep?.uses).toBe("./.github/actions/gcs-artifacts");
+			expect(uploadStep?.with).toMatchObject({
+				mode: "upload",
+				"if-missing": "ignore",
+				prefix:
+					"maestro-internal/ci/${{ github.run_id }}/${{ github.run_attempt }}/ci-timing",
+				paths: "ci-timing.jsonl",
+			});
+			expect(uploadStep?.with?.["workload-identity-provider"]).toContain(
+				"GCP_WORKLOAD_IDENTITY_PROVIDER",
+			);
+		}
 	});
 
 	it("uses dynamic integration service ports on shared runners", () => {
@@ -2154,8 +2217,10 @@ describe("ci workflow guardrails", () => {
 			"Verify manual npm fallback from registry",
 		);
 		const verifyStep = steps[verifyIndex];
-		const uploadStep = steps.find(
-			(step) => step.name === "Upload manual fallback replay evidence",
+		const uploadStep = steps.find((step) =>
+			isPreparedPublicMirror
+				? step.name === "Upload manual fallback replay evidence"
+				: step.name === "Upload manual fallback replay evidence to GCS",
 		);
 
 		expect(publishIndex).toBeGreaterThanOrEqual(0);
@@ -2179,15 +2244,27 @@ describe("ci workflow guardrails", () => {
 			MAESTRO_PUBLISHED_REPLAY_SANDBOX_MODE: "local",
 			MAESTRO_REGISTRY_SMOKE_EVIDENCE_DIR: "fallback-published-replay-evidence",
 		});
-		expect(uploadStep?.uses).toBe(
-			"actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a",
-		);
 		expect(String(uploadStep?.if ?? "")).toContain(
 			"fallback-published-replay-evidence",
 		);
-		expect(uploadStep?.with?.path).toBe(
-			"public-mirror/fallback-published-replay-evidence/*.json",
-		);
+		if (isPreparedPublicMirror) {
+			expect(uploadStep?.uses).toContain("actions/upload-artifact@");
+			expect(uploadStep?.with?.path).toBe(
+				"public-mirror/fallback-published-replay-evidence/*.json",
+			);
+		} else {
+			expect(uploadStep?.uses).toBe("./.github/actions/gcs-artifacts");
+			expect(uploadStep?.with).toMatchObject({
+				mode: "upload",
+				"if-missing": "ignore",
+				prefix:
+					"maestro-internal/public-release-mirror/${{ github.run_id }}/${{ github.run_attempt }}/fallback-published-replay-evidence",
+				paths: "public-mirror/fallback-published-replay-evidence/*.json",
+			});
+			expect(uploadStep?.with?.["workload-identity-provider"]).toContain(
+				"GCP_WORKLOAD_IDENTITY_PROVIDER",
+			);
+		}
 	});
 
 	it("syncs release mirror helpers before validating public release mirrors", () => {
@@ -2467,13 +2544,16 @@ describe("ci workflow guardrails", () => {
 		}
 
 		expect(uploadStep?.if).toContain("nx-target-timings-*.log");
-		expect(String(uploadStep?.with?.path ?? "")).toContain(
+		expect(uploadStep?.uses).toBe("./.github/actions/gcs-artifacts");
+		expect(String(uploadStep?.with?.paths ?? "")).toContain(
 			"nx-resolved-targets.log",
 		);
-		expect(String(uploadStep?.with?.path ?? "")).toContain(
+		expect(String(uploadStep?.with?.paths ?? "")).toContain(
 			"nx-target-timings-*.log",
 		);
-		expect(String(uploadStep?.with?.path ?? "")).toContain("nx-profile-*.json");
+		expect(String(uploadStep?.with?.paths ?? "")).toContain(
+			"nx-profile-*.json",
+		);
 	});
 
 	it("cancels stale review-thread guard runs for the same PR", () => {
@@ -2597,9 +2677,10 @@ describe("rust workflow guardrails", () => {
 });
 
 describe("hosted static workflow guardrails", () => {
-	it("keeps actionlint and shellcheck off private runners", () => {
-		const expectedRunner =
-			"${{ vars.PUBLIC_PR_VALIDATION_RUNNER || 'ubuntu-latest' }}";
+	it("keeps actionlint and shellcheck on the configured owned runner", () => {
+		const expectedRunner = isPreparedPublicMirror
+			? "${{ vars.PUBLIC_PR_VALIDATION_RUNNER || 'ubuntu-latest' }}"
+			: "${{ vars.PUBLIC_PR_VALIDATION_RUNNER || 'evalops-internal' }}";
 		for (const workflowName of ["actionlint.yml", "shellcheck.yml"]) {
 			const workflow = parse(
 				readFileSync(
@@ -3594,6 +3675,9 @@ describe("prFeedbackAudit", () => {
 		expect(hook).toContain("guardian.sh");
 		expect(hook).toContain("git diff --cached --name-only");
 		expect(hook).toContain("bunx biome check");
+		// Comment may mention mapfile; ban actual bash-4 mapfile/readarray usage.
+		expect(hook).not.toMatch(/(?:^|[\s;|&])mapfile(?:\s|$)/m);
+		expect(hook).not.toMatch(/(?:^|[\s;|&])readarray(?:\s|$)/m);
 		expect(hook).not.toContain("bun run build");
 		expect(hook).not.toContain("bun run bun:compile");
 	});
@@ -3607,7 +3691,12 @@ describe("prFeedbackAudit", () => {
 	it("blocks review feedback audit only for unresolved severity at or above the threshold", () => {
 		const infoThread = {
 			comments: {
-				nodes: [{ body: "📝 **Info:** optional consideration" }],
+				nodes: [
+					{
+						author: { login: "devin-ai-integration" },
+						body: "📝 **Info:** optional consideration",
+					},
+				],
 			},
 			isResolved: false,
 		};
@@ -3617,10 +3706,19 @@ describe("prFeedbackAudit", () => {
 			},
 			isResolved: false,
 		};
+		const unlabeledThread = {
+			comments: {
+				nodes: [{ body: "This should be addressed before merging." }],
+			},
+			isResolved: false,
+		};
 
 		expect(reviewThreadSeverity(infoThread)).toBe("none");
 		expect(threadBlocksFeedbackAudit(infoThread)).toBe(false);
 		expect(threadBlocksFeedbackAudit(infoThread, "none")).toBe(false);
+		expect(reviewThreadSeverity(unlabeledThread)).toBe("none");
+		expect(threadBlocksFeedbackAudit(unlabeledThread)).toBe(false);
+		expect(threadBlocksFeedbackAudit(unlabeledThread, "none")).toBe(true);
 		expect(threadBlocksFeedbackAudit(highThread)).toBe(true);
 		expect(threadBlocksFeedbackAudit(highThread, "none")).toBe(true);
 		expect(threadBlocksFeedbackAudit(highThread, "p1")).toBe(false);
@@ -3947,6 +4045,17 @@ describe("review feedback dashboard", () => {
 });
 
 describe("guardrail regression suite", () => {
+	it("allows the native TUI install guide to name the root package", () => {
+		const cutoverCheck = readFileSync(
+			"scripts/check-package-cutover-readiness.js",
+			"utf8",
+		);
+
+		expect(cutoverCheck).toContain(
+			'"packages/tui-rs/docs/user-guide/01-getting-started.md"',
+		);
+	});
+
 	it("keeps follow-up bug classes under a CI-wired manifest", () => {
 		const packageJson = JSON.parse(
 			readFileSync(new URL("../../package.json", import.meta.url), "utf8"),

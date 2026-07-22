@@ -12,7 +12,6 @@ import { dirname, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AgentState } from "../../src/agent/types.js";
 import { UNIFIED_CONTEXT_MANIFEST_PROTOCOL } from "../../src/context/manifest-types.js";
-import { exportSessionToJson } from "../../src/export-html.js";
 import {
 	SessionManager,
 	flushPendingSessionAutoPrunesForTests,
@@ -175,6 +174,29 @@ function readSessionEntries(filePath: string) {
 		.split("\n")
 		.filter(Boolean)
 		.map((line) => JSON.parse(line));
+}
+
+function writePortableSessionBundle(
+	sessionManager: SessionManager,
+	outputPath: string,
+): void {
+	const portableBundle = sessionManager.getPortableSessionBundle();
+	const sessions = portableBundle.sessions.map((session) => ({
+		sessionId: session.sessionId,
+		parentSessionId: session.parentSessionId ?? null,
+		entries: readSessionEntries(session.sessionFile),
+	}));
+	writeFileSync(
+		outputPath,
+		JSON.stringify({
+			format: "maestro-session-export.v1",
+			exportedAt: new Date().toISOString(),
+			sessionId: portableBundle.selectedSessionId,
+			entries: sessions[0]?.entries ?? [],
+			sessions,
+		}),
+		"utf8",
+	);
 }
 
 describe("SessionManager - Deferred Session Creation", () => {
@@ -697,7 +719,7 @@ describe("SessionManager - Deferred Session Creation", () => {
 			expect(branchHeader.branchedFrom).toBe(rootSessionFile);
 
 			const portablePath = join(testDir, "portable-session-tree.json");
-			await exportSessionToJson(sessionManager, portablePath);
+			writePortableSessionBundle(sessionManager, portablePath);
 			const exported = JSON.parse(readFileSync(portablePath, "utf8")) as {
 				sessionId: string;
 				sessions: Array<{

@@ -18,7 +18,7 @@ Maestro is a multi-surface agent runtime (CLI/TUI, web, IDEs, bots) that shares 
 │                      AGENT CORE                              │
 │  Event-driven LLM loop • Tool execution • Context sources   │
 │  System prompt assembly • Message transformation             │
-│  (TS core for headless/web/IDE; Rust NativeAgent for TUI)    │
+│  Rust NativeAgent / maestro-tui for every product surface    │
 └────────────────────────────┬────────────────────────────────┘
                              │
 ┌────────────────────────────▼────────────────────────────────┐
@@ -38,18 +38,60 @@ Maestro is a multi-surface agent runtime (CLI/TUI, web, IDEs, bots) that shares 
 
 First-class adapters have dedicated wire-protocol conversion and testing. Aggregator providers re-use an existing adapter's format (e.g., Azure uses the OpenAI adapter).
 
-Interactive terminal sessions use the **native** Rust agent inside `maestro-tui`.
-Headless, one-shot CLI, web, and many bot/IDE paths use the TypeScript Agent core
-with shared tools/safety. See [TUI Architecture](TUI_ARCHITECTURE.md).
+Interactive terminal sessions and server agent turns use the **native** Rust agent
+inside `maestro-tui` (interactive TUI and `maestro-tui --headless`). The TypeScript
+`Agent` class remains available from SDK packages for external embedding only.
+See [TypeScript Agent status](#typescript-agent-status).
+
+## TypeScript Agent status
+
+Product agent execution is Rust-only. Web chat, automations, hosted headless,
+prompt suggestion, interactive, print, exec, RPC, and hosted-runner paths all
+use `maestro-tui`; a missing or failed native process fails closed.
+
+The TypeScript `Agent` and `ProviderTransport` exports remain only as SDK APIs
+for external embedding. They are not wired into Maestro product or server
+contexts, and no environment variable can re-enable them.
+
+| Layer | Runtime |
+|-------|---------|
+| Server product surfaces | Native `maestro-tui --headless` only |
+| Interactive CLI/TUI | Native `maestro-tui` only |
+| SDK packages | TypeScript APIs remain available to external SDK consumers |
+
+Contributors must not add in-process `createAgent` call sites to product code.
+Use `NativeHeadlessClient`, `runNativeWebChatTurn`, or
+`runNativeBackgroundPrompt`.
+
+### Server agent runtime (native only)
+
+`MAESTRO_TUI_BIN` may override binary resolution. `MAESTRO_NATIVE_MEMORY=0`
+disables automatic memory work, but does not select another agent runtime.
+Native start and turn failures return errors; there is no fallback or escape
+hatch.
+
+Hosted headless keeps connection leases, utility commands, file watches, and
+event replay in the Node control plane while the agent loop runs in the Rust
+child process. Web SSE/WS chat, scheduled automations, and prompt suggestions
+likewise use native headless turns and native background one-shots.
 
 ---
-
 ## Repository Layout
 
 | Path | Purpose |
 |------|---------|
 | `src/main.ts` / `src/cli.ts` | **CLI entrypoint** — argument parsing; interactive mode launches native TUI |
-| `src/cli/native-tui-launcher.ts` | Resolves and spawns the `maestro-tui` binary |
+| `src/cli/native-tui-launcher.ts` | Resolves and spawns the `maestro-tui` binary (incl. piped `--headless`) |
+| `src/server/native-agent-flags.ts` | Native memory scheduling configuration |
+| `src/server/native-memory.ts` | Native one-shot durable memory extraction/consolidation coordinators |
+| `src/server/native-memory-noop.ts` | No-op auto memory coordinators (`MAESTRO_NATIVE_MEMORY=0`) |
+| `src/server/native-background-prompt.ts` | Short-lived native one-shot helper (prompt suggestion, memory, etc.) |
+| `src/server/web-native-chat.ts` | Native headless helper for SSE/WS chat |
+| `src/server/automations/native-runner.ts` | Native automation turn wrapper |
+| `src/server/headless-runtime-service.ts` | Hosted native headless sessions |
+| `src/server/headless-native-bridge.ts` | Start + publish bridge for native headless runtime backend |
+| `src/server/native-headless-client.ts` | NDJSON client for `maestro-tui --headless` |
+| `src/server/native-headless-event-adapter.ts` | Headless protocol → `AgentEvent` adapter for web chat |
 | `src/agent/` | TypeScript Agent class, event system, context manager, message transformer |
 | `src/tools/` | Tool DSL, built-in tools (read/write/edit/bash/search), tool cache |
 | `src/safety/` | Action firewall, approval modes, guardian (Semgrep/secrets) |
@@ -87,7 +129,7 @@ with shared tools/safety. See [TUI Architecture](TUI_ARCHITECTURE.md).
 | **Slack Bot** | `packages/slack-agent/src/index.ts` |
 | **GitHub Agent** | `packages/github-agent/src/index.ts` |
 | **Ambient Agent** | `packages/ambient-agent-rs/src/main.rs` |
-| **Headless / one-shot** | `src/main.ts` TypeScript agent bootstrap |
+| **Headless / one-shot** | Native `maestro-tui --headless` |
 
 ### Configuration Precedence (highest wins)
 
@@ -102,6 +144,11 @@ with shared tools/safety. See [TUI Architecture](TUI_ARCHITECTURE.md).
 ## Core Abstractions
 
 ### Agent (`src/agent/agent.ts`)
+
+> **Status:** TypeScript `Agent` is retained for external **SDK embedding** only.
+> Server and interactive product runtimes use native `maestro-tui`. See
+> [TypeScript Agent status](#typescript-agent-status).
+> Package exports of `Agent` / `ProviderTransport` are `@deprecated` for server use.
 
 Event-driven LLM interaction loop. Manages conversation state, streams responses, coordinates tool execution, and emits events consumed by all surfaces.
 

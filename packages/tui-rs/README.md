@@ -2,6 +2,12 @@
 
 Native terminal UI for Maestro, built with Rust using ratatui and crossterm. Inspired by [OpenAI Codex TUI](https://github.com/openai/codex/tree/main/codex-rs).
 
+## User Guide
+
+Numbered end-user docs for install, auth, shortcuts, slash commands, config, MCP, skills, hooks, plan mode, sessions, safety, headless mode, and worktrees:
+
+- **[TUI User Guide](docs/user-guide/README.md)**
+
 ## Why Rust?
 
 The TypeScript TUI has limitations with SSH sessions where content that scrolls above the viewport becomes inaccessible. This Rust implementation:
@@ -183,6 +189,16 @@ src/
 | `/diag` | Show diagnostics |
 | `/compact` | Summarize older messages |
 | `/mcp` | Show MCP server status |
+| `/plugins` | List discovered plugins (skills/commands/hooks/MCP packages) |
+| `/plugins [name]` | Show details for one plugin |
+
+## Plugins
+
+Maestro discovers filesystem plugins under `.maestro/plugins/*` and
+`~/.maestro/plugins/*` (plus legacy `.composer/plugins` paths). Each plugin
+may bundle skills, command templates, hooks, and MCP configs. See
+[docs/plugins.md](docs/plugins.md) for layout, `plugin.json` schema, and
+examples.
 
 ## Status
 

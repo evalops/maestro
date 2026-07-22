@@ -813,6 +813,7 @@ fn test_supervisor_builder_restores_session_replay() {
             append_system_prompt: None,
             thinking_level: Some(super::super::messages::ThinkingLevel::High),
             approval_mode: Some(super::super::messages::ApprovalMode::Prompt),
+            history: None,
         }),
     };
 
@@ -907,6 +908,7 @@ fn resume_recorded_session_restores_replay_and_recorder() {
             append_system_prompt: None,
             thinking_level: Some(super::super::messages::ThinkingLevel::Medium),
             approval_mode: Some(super::super::messages::ApprovalMode::Prompt),
+            history: None,
         })
         .expect("record init");
     recorder
@@ -949,6 +951,7 @@ fn session_recorder_keeps_last_init_in_sync_with_sent_messages() {
             append_system_prompt: None,
             thinking_level: Some(super::super::messages::ThinkingLevel::Medium),
             approval_mode: Some(super::super::messages::ApprovalMode::Prompt),
+            history: None,
         })
         .expect("record init");
     recorder.flush().expect("flush");
@@ -982,6 +985,7 @@ fn apply_snapshot_keeps_session_recorder_state_in_sync() {
         append_system_prompt: None,
         thinking_level: Some(super::super::messages::ThinkingLevel::High),
         approval_mode: Some(super::super::messages::ApprovalMode::Prompt),
+        history: None,
     };
 
     supervisor.apply_snapshot(snapshot_state.clone(), Some(snapshot_init.clone()));
@@ -1283,6 +1287,7 @@ async fn connect_replays_saved_init_from_restored_session_snapshot() {
         append_system_prompt: Some("appendix".to_string()),
         thinking_level: Some(super::super::messages::ThinkingLevel::High),
         approval_mode: Some(super::super::messages::ApprovalMode::Prompt),
+        history: None,
     };
     let replay = SessionReplay {
         state: AgentState {
@@ -1343,6 +1348,7 @@ async fn connect_replays_saved_init_from_restored_session_snapshot() {
                     append_system_prompt,
                     thinking_level,
                     approval_mode,
+                    history: _,
                 } => Some((
                     system_prompt,
                     append_system_prompt,
@@ -1383,6 +1389,7 @@ async fn reconnect_replays_last_init_config() {
         append_system_prompt: Some("appendix".to_string()),
         thinking_level: Some(super::super::messages::ThinkingLevel::High),
         approval_mode: Some(super::super::messages::ApprovalMode::Prompt),
+        history: None,
     };
 
     let mut supervisor = AgentSupervisor::new(config).with_session_recorder(recorder);
@@ -1406,6 +1413,7 @@ async fn reconnect_replays_last_init_config() {
                 append_system_prompt,
                 thinking_level,
                 approval_mode,
+                history: _,
             } => Some((
                 system_prompt.clone(),
                 append_system_prompt.clone(),

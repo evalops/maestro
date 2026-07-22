@@ -10,8 +10,8 @@ npm install @evalops/maestro-core
 
 ## What's Included
 
-- **Agent** — event-driven LLM interaction loop with streaming, tool execution, and context management
-- **ProviderTransport** — multi-provider LLM communication (Anthropic, OpenAI, Google, Groq, Bedrock)
+- **Agent** — event-driven LLM interaction loop with streaming, tool execution, and context management (**@deprecated** as product/server runtime; retained only for external SDK embedding)
+- **ProviderTransport** — multi-provider LLM communication (Anthropic, OpenAI, Google, Groq, Bedrock) (same deprecation note as Agent)
 - **SubagentSpecs** — role-based tool whitelisting (explorer, coder, reviewer, researcher, planner)
 - **ContextHandoff** — automatic context overflow detection and session handoff
 - **DaytonaSandbox** — remote sandbox execution via Daytona SDK

@@ -1,10 +1,18 @@
 //! Runtime badges for the Rust TUI status bar.
 //!
 //! Mirrors the TypeScript TUI runtime badges for environment and safety hints.
+//!
+//! # Performance
+//!
+//! Status-bar badges are rebuilt every frame. Anything that touches the
+//! filesystem (especially directory scans of `/lib*`) must be **cached** —
+//! magic-trace / `perf` on Linux showed `build_runtime_badges` → `read_dir`
+//! dominating idle render cycles via `is_musl_env()`.
 
 use std::env;
 use std::fs;
 use std::path::Path;
+use std::sync::OnceLock;
 
 use crate::path_utils::{legacy_composer_home_dir, maestro_home_dir, resolve_env_path};
 use crate::safety::is_safe_mode_enabled;
@@ -88,6 +96,24 @@ pub fn build_runtime_badges(params: RuntimeBadgeParams) -> RuntimeBadges {
         core.push(format!("bg:{background_count}"));
     }
 
+    // Host/term environment is process-static — never re-scan the filesystem.
+    env_badges.extend(cached_env_badges().iter().cloned());
+
+    RuntimeBadges {
+        core,
+        env: env_badges,
+    }
+}
+
+/// Process-lifetime cache of env/term badges (podman/docker/wsl/ssh/musl/tmux/…).
+fn cached_env_badges() -> &'static [String] {
+    static CACHE: OnceLock<Vec<String>> = OnceLock::new();
+    CACHE.get_or_init(compute_env_badges).as_slice()
+}
+
+fn compute_env_badges() -> Vec<String> {
+    let mut env_badges = Vec::new();
+
     if is_podman_env() {
         env_badges.push("env:podman".to_string());
     } else if is_docker_env() {
@@ -119,10 +145,7 @@ pub fn build_runtime_badges(params: RuntimeBadgeParams) -> RuntimeBadges {
         env_badges.push("term:jetbrains".to_string());
     }
 
-    RuntimeBadges {
-        core,
-        env: env_badges,
-    }
+    env_badges
 }
 
 fn approval_label(mode: ApprovalMode) -> &'static str {
@@ -172,13 +195,19 @@ pub fn enterprise_badges_from_sources(
 }
 
 fn enterprise_runtime_badges() -> Vec<String> {
-    enterprise_badges_from_sources(
-        truthy_env("MAESTRO_ENTERPRISE_MODE")
-            || has_env_value("MAESTRO_ENTERPRISE_ORG_ID")
-            || has_env_value("MAESTRO_ENTERPRISE_TOKEN"),
-        rust_policy_config_exists(),
-        rust_enterprise_mcp_config_exists(),
-    )
+    // Config files don't change mid-session often enough to re-stat every frame.
+    static CACHE: OnceLock<Vec<String>> = OnceLock::new();
+    CACHE
+        .get_or_init(|| {
+            enterprise_badges_from_sources(
+                truthy_env("MAESTRO_ENTERPRISE_MODE")
+                    || has_env_value("MAESTRO_ENTERPRISE_ORG_ID")
+                    || has_env_value("MAESTRO_ENTERPRISE_TOKEN"),
+                rust_policy_config_exists(),
+                rust_enterprise_mcp_config_exists(),
+            )
+        })
+        .clone()
 }
 
 fn truthy_env(name: &str) -> bool {
@@ -307,13 +336,31 @@ fn is_musl_env() -> bool {
     if !cfg!(target_os = "linux") {
         return false;
     }
-    for dir in ["/lib", "/usr/lib", "/lib64", "/usr/lib64"] {
-        if let Ok(entries) = fs::read_dir(dir) {
-            for entry in entries.flatten() {
-                if let Some(name) = entry.file_name().to_str() {
-                    if name.starts_with("ld-musl-") {
-                        return true;
-                    }
+    // Cheap checks first — never scan /lib* on every frame (caller must cache).
+    if Path::new("/lib/ld-musl-x86_64.so.1").exists()
+        || Path::new("/lib/ld-musl-aarch64.so.1").exists()
+        || Path::new("/lib64/ld-musl-x86_64.so.1").exists()
+    {
+        return true;
+    }
+    // Fallback: look for a musl dynamic linker without full directory walks when possible.
+    for path in [
+        "/lib/ld-musl-x86_64.so.1",
+        "/lib/ld-musl-aarch64.so.1",
+        "/lib64/ld-musl-x86_64.so.1",
+        "/usr/lib/ld-musl-x86_64.so.1",
+        "/usr/lib/ld-musl-aarch64.so.1",
+    ] {
+        if Path::new(path).exists() {
+            return true;
+        }
+    }
+    // Last resort (once, via cached_env_badges): small scan of /lib only.
+    if let Ok(entries) = fs::read_dir("/lib") {
+        for entry in entries.flatten() {
+            if let Some(name) = entry.file_name().to_str() {
+                if name.starts_with("ld-musl-") {
+                    return true;
                 }
             }
         }

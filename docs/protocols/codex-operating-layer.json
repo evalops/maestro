@@ -26,23 +26,44 @@
 		{
 			"area": "chatgpt-sign-in",
 			"evidenceType": "source",
-			"path": "src/cli/commands/codex.ts",
+			"path": "packages/tui-rs/src/codex_cli.rs",
 			"anchors": [
-				"startChatGptLogin",
-				"waitForLoginCompletion",
-				"readAccount",
-				"maestro codex login"
+				"maestro codex login",
+				"start_chatgpt_login",
+				"wait_for_login_completion",
+				"read_account"
+			]
+		},
+		{
+			"area": "chatgpt-sign-in",
+			"evidenceType": "source",
+			"path": "packages/tui-rs/src/codex_app_server.rs",
+			"anchors": [
+				"start_chatgpt_login",
+				"wait_for_login_completion",
+				"read_account",
+				"account/login/start"
 			]
 		},
 		{
 			"area": "chatgpt-sign-in",
 			"evidenceType": "test",
-			"path": "test/cli/codex-command.test.ts",
+			"path": "packages/tui-rs/src/codex_cli.rs",
 			"anchors": [
-				"runs browser ChatGPT sign-in",
-				"supports ChatGPT device-code sign-in",
-				"reports current Codex app-server sign-in status",
-				"logs out of ChatGPT for Codex"
+				"runs_browser_chatgpt_sign_in",
+				"supports_chatgpt_device_code_sign_in",
+				"reports_current_codex_app_server_sign_in_status",
+				"logs_out_of_chatgpt_for_codex"
+			]
+		},
+		{
+			"area": "chatgpt-sign-in",
+			"evidenceType": "test",
+			"path": "packages/tui-rs/src/codex_app_server.rs",
+			"anchors": [
+				"initializes_and_sends_the_initialized_notification",
+				"starts_login_waits_for_completion_end_to_end",
+				"resolves_login_completion_notifications_received_before_waiting"
 			]
 		},
 		{
@@ -54,6 +75,38 @@
 				"CODEX_DYNAMIC_TOOL_CONFORMANCE",
 				"compileCodexDynamicToolSpecs",
 				"item/tool/call"
+			]
+		},
+		{
+			"area": "dynamic-tools",
+			"evidenceType": "source",
+			"path": "packages/tui-rs/src/codex_cli.rs",
+			"anchors": [
+				"compile_codex_dynamic_tool_specs",
+				"CODING_TOOLS_FIXTURE",
+				"coding-tools-doctor-v1.json",
+				"normalize_codex_dynamic_tool_input_schema"
+			]
+		},
+		{
+			"area": "dynamic-tools",
+			"evidenceType": "fixture",
+			"path": "test/fixtures/codex/coding-tools-doctor-v1.json",
+			"anchors": [
+				"\"version\": 1",
+				"\"codingTools\": \"src/tools/index.ts\"",
+				"\"profiles\": \"src/codex/compatibility.ts\"",
+				"\"name\": \"read\""
+			]
+		},
+		{
+			"area": "dynamic-tools",
+			"evidenceType": "package-script",
+			"path": "package.json",
+			"anchors": [
+				"check:codex-doctor-tools",
+				"generate:codex-doctor-tools",
+				"export-codex-doctor-tools.mjs"
 			]
 		},
 		{
@@ -78,6 +131,16 @@
 				"tracks the upstream dynamic tool protocol fixture",
 				"compiles the curated Codex default profile into Responses-safe dynamic tools",
 				"renames invalid or reserved tool identifiers while preserving original bindings"
+			]
+		},
+		{
+			"area": "dynamic-tools",
+			"evidenceType": "test",
+			"path": "packages/tui-rs/src/codex_cli.rs",
+			"anchors": [
+				"fixture_loads_live_coding_tools_and_profiles",
+				"compiles_the_curated_codex_default_profile_into_responses_safe_dynamic_tools",
+				"skips_deferred_and_client_tools_like_typescript"
 			]
 		},
 		{

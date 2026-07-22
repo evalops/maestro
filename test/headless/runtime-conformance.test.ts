@@ -41,6 +41,7 @@ import {
 } from "../../src/server/headless-runtime-service.js";
 import { serverRequestManager } from "../../src/server/server-request-manager.js";
 import { SessionManager } from "../../src/session/manager.js";
+import { FakeNativeHeadlessClient } from "../helpers/fake-native-headless-client.js";
 
 const TEST_MODEL: RegisteredModel = {
 	id: "gpt-5.4",
@@ -106,8 +107,8 @@ class FakeAgent {
 		this.aborts += 1;
 	}
 
-	async prompt(content: string, attachments?: Attachment[]) {
-		this.prompts.push({ content, attachments });
+	async prompt(content: string, attachments?: Attachment[] | string[]) {
+		this.prompts.push({ content, attachments: attachments as Attachment[] });
 		this.emit({
 			type: "status",
 			status: `Prompt: ${content}`,
@@ -186,17 +187,18 @@ interface RuntimeConformanceAdapter {
 	close(): Promise<void>;
 }
 
-class TypeScriptInProcessConformanceAdapter
-	implements RuntimeConformanceAdapter
-{
-	readonly label = "typescript-in-process";
+class NativeInProcessConformanceAdapter implements RuntimeConformanceAdapter {
+	readonly label = "native-in-process";
 	readonly scopeKey = "runtime-conformance";
 	workspaceRoot = "";
 	outsideRoot = "";
 	private sessionDir = "";
 	private sessionId = "";
 	private fakeAgent = new FakeAgent();
-	private runtimeService = new HeadlessRuntimeService();
+	private runtimeService = new HeadlessRuntimeService({
+		createNativeClient: () =>
+			new FakeNativeHeadlessClient(this.fakeAgent) as never,
+	});
 	private host = new HeadlessInProcessHost(this.runtimeService);
 
 	async start(options: StartOptions = {}): Promise<HeadlessRuntimeSnapshot> {
@@ -223,9 +225,7 @@ class TypeScriptInProcessConformanceAdapter
 			registeredModel: TEST_MODEL,
 			thinkingLevel: "off",
 			approvalMode: options.approvalMode ?? "prompt",
-			context: {
-				createAgent: vi.fn().mockResolvedValue(this.fakeAgent),
-			},
+			context: {},
 			sessionManager,
 			clientProtocolVersion: HEADLESS_PROTOCOL_VERSION,
 			clientInfo: {
@@ -312,23 +312,29 @@ class TypeScriptInProcessConformanceAdapter
 	async requestApproval(
 		request: ActionApprovalRequest,
 	): Promise<ActionApprovalDecision> {
-		const runtime = this.runtimeService.getRuntime(
-			this.scopeKey,
-			this.requireSessionId(),
-		);
-		if (!runtime) {
-			throw new Error("Headless runtime not found");
-		}
-		const approvalService = (
-			runtime as unknown as {
-				approvalService: {
-					requestApproval(
-						request: ActionApprovalRequest,
-					): Promise<ActionApprovalDecision>;
+		const deadline = Date.now() + 2_000;
+		while (Date.now() < deadline) {
+			const replay = this.replayFrom(0) ?? [];
+			const resolved = replay.find(
+				(entry) =>
+					entry.type === "message" &&
+					entry.message.type === "server_request_resolved" &&
+					entry.message.request_id === request.id,
+			);
+			if (
+				resolved?.type === "message" &&
+				resolved.message.type === "server_request_resolved"
+			) {
+				return {
+					approved: resolved.message.resolution === "approved",
+					reason: resolved.message.reason,
+					resolvedAtMs: resolved.message.resolved_at_ms,
+					resolvedBy: resolved.message.resolved_by,
 				};
 			}
-		).approvalService;
-		return await approvalService.requestApproval(request);
+			await sleep(25);
+		}
+		throw new Error("Timed out waiting for native conformance approval");
 	}
 
 	async close(): Promise<void> {
@@ -1434,7 +1440,7 @@ function defineHeadlessRuntimeConformanceSuite(
 		it("drains hosted runners into a manifest and rejects new mutations", async () => {
 			const runtime = await start();
 			if (!runtime.drain) {
-				expect(runtime.label).toBe("typescript-in-process");
+				expect(runtime.label).toBe("native-in-process");
 				return;
 			}
 
@@ -1638,8 +1644,8 @@ function defineHeadlessRuntimeConformanceSuite(
 }
 
 defineHeadlessRuntimeConformanceSuite(
-	"TypeScript in-process host",
-	() => new TypeScriptInProcessConformanceAdapter(),
+	"Native in-process host",
+	() => new NativeInProcessConformanceAdapter(),
 );
 
 defineHeadlessRuntimeConformanceSuite(

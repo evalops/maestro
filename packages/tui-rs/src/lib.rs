@@ -168,17 +168,39 @@ pub mod pager;
 /// Handles different color capability levels (16, 256, true color).
 pub mod palette;
 
+pub mod a2a_cli;
 pub mod cli_commands;
+pub mod codex_app_server;
+pub mod codex_cli;
+pub mod config_cli;
+pub mod context_cli;
+pub mod device_identity;
+pub mod evalops_cli;
 pub mod init_cli;
 pub mod memory_cli;
+pub mod mission_cli;
 pub mod mode_cli;
 pub mod openai_cli;
+pub mod operating_plane_cli;
+pub mod operating_plane_client;
+pub mod operating_plane_summary;
 pub mod painter_cli;
-pub mod print_mode;
 /// Custom prompt templates.
 /// User-defined prompts with argument substitution.
+pub mod plan_mode;
+pub mod plugins_cli;
+pub mod print_mode;
 pub mod prompts;
+pub mod remote_attach;
+pub mod remote_cli;
+pub mod run_cli;
+pub mod scenario_cli;
 pub mod update_cli;
+pub mod value_cli;
+
+/// Jane Street magic-trace stop indicator + slow-frame hooks.
+/// Linux/Intel PT only; see module docs and `scripts/magic-trace-tui.sh`.
+pub mod magic_trace;
 
 /// Command sandboxing (macOS Seatbelt, Linux Landlock).
 /// Restricts file system access for executed commands.
@@ -369,6 +391,9 @@ pub mod ascii_animation;
 /// Skills can modify system prompts, provide tools, and change how the agent approaches tasks.
 pub mod skills;
 
+/// Grok-style plugin discovery (skills, commands, hooks, MCP packages).
+pub mod plugins;
+
 /// Swarm mode for multi-agent task orchestration.
 /// Execute complex tasks across multiple agents in parallel with dependency management.
 pub mod swarm;
@@ -474,6 +499,9 @@ pub use headless::{
     FromAgentMessage, // Messages we receive from the agent
     HealthStatus,     // Agent health/readiness status
 
+    HistoryMessage, // Seeded multi-turn history entry for init
+    HistoryRole,    // Role of a seeded history message
+    InitConfig,     // Init payload (system prompt, history, ...)
     RemoteAgentTransport,
     RemoteTransportConfig,
     // Session management
@@ -1266,6 +1294,11 @@ pub use skills::{
     SkillRegistry,        // Skill management registry
     SkillResources,       // Resource directories (scripts, references, assets)
     SkillSource,          // Builtin, User, Plugin, Remote
+};
+
+/// Plugin discovery foundation (filesystem packages bundling skills/commands/hooks/MCP).
+pub use plugins::{
+    DiscoveredPlugin, PluginComponents, PluginManifest, PluginOrigin, PluginRegistry,
 };
 
 // ─────────────────────────────────────────────────────────────────────────────

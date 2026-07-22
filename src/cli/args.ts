@@ -1,4 +1,4 @@
-import { findA2ACommandTailFlag } from "./commands/a2a/args.js";
+import { findA2ACommandTailFlag } from "./a2a-args.js";
 
 export type Mode = "text" | "json" | "rpc" | "headless";
 
@@ -94,6 +94,8 @@ const COMMANDS = new Set([
 	"skill",
 	"memory",
 	"painter",
+	"plugin",
+	"plugins",
 	"remote",
 	"export",
 	"import",
@@ -119,6 +121,8 @@ const SUBCOMMAND_COMMANDS = new Set([
 	"skill",
 	"memory",
 	"painter",
+	"plugin",
+	"plugins",
 	"remote",
 	"scenario",
 ]);

@@ -140,9 +140,6 @@ describe("handleChat routing", () => {
 
 		const res = makeRes();
 		const context: Partial<WebServerContext> = {
-			createAgent: async () => {
-				throw new Error("should not create agent");
-			},
 			getRegisteredModel: async (input) => {
 				if (input === `${selectedModel.provider}/${selectedModel.id}`) {
 					throw new Error("Missing API key for anthropic");

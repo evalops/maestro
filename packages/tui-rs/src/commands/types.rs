@@ -220,6 +220,10 @@ pub enum CommandAction {
     CycleInteractionMode,
     /// Enter plan mode (require plan before mutating tools)
     SetPlanMode(bool),
+    /// Show the current session plan.md contents
+    ViewPlan,
+    /// Approve the plan and leave plan mode so implementation can start
+    ApprovePlan,
     /// Set extended thinking level (off, low, medium, high, max)
     SetThinkingLevel(String),
     /// Quit the application
@@ -250,6 +254,8 @@ pub enum CommandAction {
     ShowToolHistory(ToolHistoryAction),
     /// Skills system action
     Skills(SkillsAction),
+    /// Plugin discovery / listing action
+    Plugins(PluginsAction),
     /// Queue management action
     Queue(QueueAction),
     /// Submit a steering prompt
@@ -266,6 +272,21 @@ pub enum CommandAction {
     InvokeSkill { name: String, args: String },
     /// Invoke a flat markdown prompt/command template as a slash command
     InvokePromptTemplate { name: String, args: String },
+    /// Fire Jane Street magic-trace stop indicator (or toggle slow-frame mode)
+    MagicTrace(MagicTraceAction),
+}
+
+/// magic-trace control from the TUI slash menu.
+#[derive(Debug, Clone)]
+pub enum MagicTraceAction {
+    /// Call `magic_trace_stop_indicator` once (snapshot if attached).
+    Stop,
+    /// Enable slow-frame auto snapshots.
+    EnableSlowFrame,
+    /// Disable slow-frame auto snapshots.
+    DisableSlowFrame,
+    /// Show status / how to attach.
+    Status,
 }
 
 /// Session management actions.
@@ -442,6 +463,17 @@ pub enum SkillsAction {
     Reload,
     /// Show detailed info about a skill
     Info(String),
+}
+
+/// Actions for the plugin discovery system
+#[derive(Debug, Clone)]
+pub enum PluginsAction {
+    /// List discovered plugins
+    List,
+    /// Show details for one plugin (by name)
+    Info(String),
+    /// Rediscover plugins from the filesystem
+    Reload,
 }
 
 /// Types of modals that can be opened by commands

@@ -385,6 +385,7 @@ impl AsyncAgentTransport {
             append_system_prompt: config.append_system_prompt,
             thinking_level: config.thinking_level,
             approval_mode: config.approval_mode,
+            history: config.history,
         })
     }
 

@@ -502,6 +502,7 @@ impl AgentSupervisor {
                 append_system_prompt,
                 thinking_level,
                 approval_mode,
+                history,
             } = &msg
             {
                 self.last_init = Some(InitConfig {
@@ -509,6 +510,7 @@ impl AgentSupervisor {
                     append_system_prompt: append_system_prompt.clone(),
                     thinking_level: *thinking_level,
                     approval_mode: *approval_mode,
+                    history: history.clone(),
                 });
             }
         }
@@ -610,6 +612,7 @@ impl AgentSupervisor {
             append_system_prompt: config.append_system_prompt.clone(),
             thinking_level: config.thinking_level,
             approval_mode: config.approval_mode,
+            history: config.history.clone(),
         }
     }
 

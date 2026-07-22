@@ -1053,12 +1053,14 @@ async fn handle_message(
                 append_system_prompt,
                 thinking_level,
                 approval_mode,
+                history,
             } => {
                 state.last_init = Some(InitConfig {
                     system_prompt: system_prompt.clone(),
                     append_system_prompt: append_system_prompt.clone(),
                     thinking_level: *thinking_level,
                     approval_mode: *approval_mode,
+                    history: history.clone(),
                 });
                 state.last_status = Some("Initialized".to_string());
             }

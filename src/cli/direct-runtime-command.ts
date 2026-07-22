@@ -1,23 +1,36 @@
 import { isStartupTelemetryRequested } from "./instant-exit.js";
 
 const NATIVE_UTILITY_COMMANDS = new Set([
+	"a2a",
 	"agents",
 	"anthropic",
+	"codex",
+	"config",
+	"context",
 	"cost",
+	"evalops",
 	"export",
 	"hooks",
-	"init",
 	"import",
+	"init",
 	"memory",
+	"mission",
 	"models",
 	"modes",
 	"openai",
+	"operating-plane",
 	"painter",
+	"plugin",
+	"plugins",
+	"remote",
+	"run",
+	"scenario",
 	"sessions",
+	"skill",
 	"stats",
 	"status",
-	"skill",
 	"update",
+	"value",
 ]);
 
 const DIRECT_RUNTIME_COMMANDS = new Set([

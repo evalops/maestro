@@ -220,10 +220,11 @@ fn local_controller_capabilities() -> messages::ClientCapabilities {
 // Core message types
 pub use messages::{
     ActiveTool, AgentEvent, AgentState, ApprovalMode, ClientCapabilities, ClientInfo,
-    ClientToolResultContent, ConnectionRole, FromAgentMessage, HeadlessErrorType, InitConfig,
-    PendingApproval, ServerRequestResolutionStatus, ServerRequestResolvedBy, ServerRequestType,
-    StreamingResponse, ThinkingLevel, ToAgentMessage, TokenUsage, ToolResult,
-    UtilityCommandShellMode, UtilityCommandStream, UtilityOperation, HEADLESS_PROTOCOL_VERSION,
+    ClientToolResultContent, ConnectionRole, FromAgentMessage, HeadlessErrorType, HistoryMessage,
+    HistoryRole, InitConfig, PendingApproval, ServerRequestResolutionStatus,
+    ServerRequestResolvedBy, ServerRequestType, StreamingResponse, ThinkingLevel, ToAgentMessage,
+    TokenUsage, ToolResult, UtilityCommandShellMode, UtilityCommandStream, UtilityOperation,
+    HEADLESS_PROTOCOL_VERSION,
 };
 pub use proto::maestro::v1 as proto_types;
 

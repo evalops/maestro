@@ -4,21 +4,21 @@ import { recordMaestroSessionEvent } from "../telemetry/maestro-event-bus.js";
 import { sanitizeWithStaticMask } from "../utils/secret-redactor.js";
 import { webSessionEventEnv } from "./session-event-env.js";
 
-type SessionState = Parameters<SessionInitializationManager["startSession"]>[0];
-
-export interface SessionInitializationManager {
+export interface SessionInitializationManager<State = AgentSessionState> {
 	loadAllSessions(): Array<{ modified: Date }>;
 	countActiveSessions?(since: Date): Promise<number>;
-	startSession(state: AgentSessionState, options?: { subject?: string }): void;
+	startSession(state: State, options?: { subject?: string }): void;
 	getSessionId(): string;
 }
 
-type AgentSessionState = {
+export type AgentSessionState = {
 	messages: unknown[];
 	model: unknown;
 	thinkingLevel: unknown;
 	systemPrompt: string;
 	promptMetadata?: unknown;
+	promptContextManifest?: unknown;
+	systemPromptSourcePaths?: string[];
 	tools: Array<{
 		name: string;
 		label?: string;
@@ -27,7 +27,7 @@ type AgentSessionState = {
 };
 
 export interface SessionInitializationAgent {
-	state: SessionState;
+	state: AgentSessionState;
 	setSession(session: { id: string; startedAt: Date }): void;
 }
 
@@ -41,22 +41,24 @@ export interface SessionInitializationLogger {
 	warn(message: string, context: Record<string, unknown>): void;
 }
 
-export async function startSessionWithPolicy(params: {
-	agent: SessionInitializationAgent;
+export async function startSessionStateWithPolicy<State>(params: {
 	enterpriseContext: SessionInitializationEnterpriseContext;
 	logger: SessionInitializationLogger;
 	modelId: string;
+	onEnterpriseSession?: (session: EnterpriseSession) => void;
 	onSessionReady: (sessionId: string) => void;
-	sessionManager: SessionInitializationManager;
+	sessionManager: SessionInitializationManager<State>;
+	state: State;
 	subject?: string;
 }): Promise<string | null> {
 	const {
-		agent,
 		enterpriseContext,
 		logger,
 		modelId,
+		onEnterpriseSession,
 		onSessionReady,
 		sessionManager,
+		state,
 		subject,
 	} = params;
 
@@ -89,7 +91,7 @@ export async function startSessionWithPolicy(params: {
 		return limitCheck.reason ?? "Session policy blocked chat request";
 	}
 
-	sessionManager.startSession(agent.state, { subject });
+	sessionManager.startSession(state, { subject });
 	const sessionId = sessionManager.getSessionId();
 	recordMaestroSessionEvent("MAESTRO_SESSION_STATE_STARTED", {
 		sessionId,
@@ -103,13 +105,46 @@ export async function startSessionWithPolicy(params: {
 		enterpriseContext.startSession(sessionId, modelId);
 		const session = enterpriseContext.getSession();
 		if (session) {
-			agent.setSession({
-				id: session.sessionId,
-				startedAt: session.startedAt,
-			});
+			onEnterpriseSession?.(session);
 		}
 	}
 
 	onSessionReady(sessionId);
 	return null;
+}
+
+export async function startSessionWithPolicy(params: {
+	agent: SessionInitializationAgent;
+	enterpriseContext: SessionInitializationEnterpriseContext;
+	logger: SessionInitializationLogger;
+	modelId: string;
+	onSessionReady: (sessionId: string) => void;
+	sessionManager: SessionInitializationManager;
+	subject?: string;
+}): Promise<string | null> {
+	const {
+		agent,
+		enterpriseContext,
+		logger,
+		modelId,
+		onSessionReady,
+		sessionManager,
+		subject,
+	} = params;
+
+	return startSessionStateWithPolicy({
+		enterpriseContext,
+		logger,
+		modelId,
+		onEnterpriseSession: (session) => {
+			agent.setSession({
+				id: session.sessionId,
+				startedAt: session.startedAt,
+			});
+		},
+		onSessionReady,
+		sessionManager,
+		state: agent.state,
+		subject,
+	});
 }

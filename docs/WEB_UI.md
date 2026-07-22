@@ -26,7 +26,7 @@ Parity at a glance:
 - **Export Sessions**: Download JSON/Markdown/Text exports
 - **Voice Input**: Speech-to-text (when supported by the browser)
 - **Responsive Layout**: Mobile + desktop layouts with sidebar overlay
-- **Auto-approval**: Tools execute automatically in web mode for seamless experience
+- **Approval modes**: Explicit auto mode runs tools automatically; prompt/fail deny approval-gated tools
 
 ## Architecture
 
@@ -86,6 +86,25 @@ Security notes:
 
 Prereqs and installation: follow `docs/QUICKSTART.md` (same setup as TUI/CLI).
 
+### Native agent binary (required for default chat)
+
+Web SSE/WS chat requires `maestro-tui --headless`. On server boot, Maestro
+resolves the binary and logs an **error** if it is missing. Chat fails closed;
+there is no alternate agent runtime.
+
+Resolution order (`src/cli/native-tui-launcher.ts`):
+
+1. `MAESTRO_TUI_BIN` (absolute or relative path override)
+2. Packaged `vendor/maestro-tui/<platform>-<arch>/maestro-tui` (npm/Bun install)
+3. `maestro-tui` on `PATH` (one-line install places it next to `maestro`)
+4. Dev: `packages/tui-rs/target/{release,debug}/maestro-tui`
+
+| Install path | How to get `maestro-tui` |
+|--------------|--------------------------|
+| One-line `install.sh` | Downloads `maestro-tui-<platform>` next to `maestro` |
+| `npm` / `bun` global | Included under `vendor/maestro-tui` in the published package |
+| Source checkout | `bun run tui-rs:build` then re-run, or `export MAESTRO_TUI_BIN=…` |
+
 ### Development Mode
 
 Run both server and UI with hot reload:
@@ -93,6 +112,9 @@ Run both server and UI with hot reload:
 ```bash
 bun run web:dev
 ```
+
+Build native TUI first in a checkout (`bun run tui-rs:build`) so default web chat
+can spawn `maestro-tui --headless`.
 
 This starts:
 - **Server**: http://localhost:8080/api (with auto-reload)
@@ -135,6 +157,9 @@ node dist/web-server.js
 export ANTHROPIC_API_KEY="..."
 export OPENAI_API_KEY="..."
 export GOOGLE_API_KEY="..."
+
+# Native maestro-tui (web chat default)
+export MAESTRO_TUI_BIN="/path/to/maestro-tui"      # Optional binary override
 
 # Server Configuration
 export PORT=8080                                    # Server port
@@ -268,7 +293,9 @@ Note: WebSocket requests must include authentication headers when `MAESTRO_WEB_A
 
 ## Tool Execution
 
-Tools run with **auto-approval** in web mode:
+Tools run automatically only when web mode explicitly selects **auto-approval**.
+Prompt and fail modes deny approval-gated tools until the interactive native
+approval bridge is available:
 
 ```javascript
 // User asks: "Create a new file hello.ts"

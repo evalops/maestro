@@ -1,6 +1,4 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { Agent } from "../../src/agent/index.js";
-import type { AssistantMessage } from "../../src/agent/types.js";
 import type { RegisteredModel } from "../../src/models/registry.js";
 import * as registry from "../../src/models/registry.js";
 import {
@@ -27,17 +25,20 @@ function makeModel(provider: string, id: string): RegisteredModel {
 	};
 }
 
-function makeAssistantSummary(text: string): AssistantMessage {
-	return {
-		role: "assistant",
-		content: [{ type: "text", text }],
-		timestamp: Date.now(),
-	} as AssistantMessage;
-}
+const sampleMessages = [
+	{ role: "user" as const, content: "Inspect the failing web tests." },
+	{ role: "assistant" as const, content: "I found a stale prompt bug." },
+	{ role: "user" as const, content: "Fix it and update coverage." },
+	{
+		role: "assistant" as const,
+		content: "I fixed the state handling and added tests.",
+	},
+];
 
 describe("prompt suggestion", () => {
 	afterEach(() => {
 		vi.restoreAllMocks();
+		vi.unstubAllEnvs();
 	});
 
 	it("suppresses early conversations", () => {
@@ -61,7 +62,7 @@ describe("prompt suggestion", () => {
 		).toBe("awaiting_assistant");
 	});
 
-	it("picks a fast model on the same provider and normalizes the result", async () => {
+	it("picks a fast model on the same provider and normalizes the native result", async () => {
 		const slowModel = makeModel("openai", "gpt-5");
 		const fastModel = makeModel("openai", "gpt-5-mini");
 		vi.spyOn(registry, "getRegisteredModels").mockReturnValue([
@@ -69,51 +70,36 @@ describe("prompt suggestion", () => {
 			fastModel,
 		]);
 
-		const generateSummary = vi
-			.fn()
-			.mockResolvedValue(
-				makeAssistantSummary(
-					'"Add a regression test for the prompt suggestion endpoint."',
-				),
-			);
-		const createBackgroundAgent = vi
-			.fn()
-			.mockResolvedValue({ generateSummary } as unknown as Agent);
+		const runNativeBackgroundPrompt = vi.fn().mockResolvedValue({
+			ok: true,
+			text: '"Add a regression test for the prompt suggestion endpoint."',
+		});
 
 		const result = await generatePromptSuggestion(
 			{
 				model: "openai/gpt-5",
-				messages: [
-					{ role: "user", content: "Inspect the failing web tests." },
-					{ role: "assistant", content: "I found a stale prompt bug." },
-					{ role: "user", content: "Fix it and update coverage." },
-					{
-						role: "assistant",
-						content: "I fixed the state handling and added tests.",
-					},
-				],
+				messages: sampleMessages,
 			},
 			{
 				getRegisteredModel: vi.fn().mockResolvedValue(slowModel),
 				getCurrentSelection: () => ({ provider: "openai", modelId: "gpt-5" }),
-				createBackgroundAgent,
+				runNativeBackgroundPrompt,
 			},
 		);
 
-		expect(createBackgroundAgent).toHaveBeenCalledWith(
-			expect.objectContaining({ id: "gpt-5-mini" }),
+		expect(runNativeBackgroundPrompt).toHaveBeenCalledWith(
 			expect.objectContaining({
 				systemPrompt: expect.stringContaining("next natural user prompt"),
+				modelId: "gpt-5-mini",
 			}),
 		);
-		expect(generateSummary).toHaveBeenCalled();
 		expect(result).toEqual({
 			suggestion: "Add a regression test for the prompt suggestion endpoint.",
 			model: "openai/gpt-5-mini",
 		});
 	});
 
-	it("filters empty sentinel responses", async () => {
+	it("filters empty sentinel responses from native", async () => {
 		const fastModel = makeModel("anthropic", "claude-3-5-haiku");
 		vi.spyOn(registry, "getRegisteredModels").mockReturnValue([fastModel]);
 
@@ -133,11 +119,10 @@ describe("prompt suggestion", () => {
 					provider: "anthropic",
 					modelId: "claude-3-5-haiku",
 				}),
-				createBackgroundAgent: vi.fn().mockResolvedValue({
-					generateSummary: vi
-						.fn()
-						.mockResolvedValue(makeAssistantSummary("NONE")),
-				} as unknown as Agent),
+				runNativeBackgroundPrompt: vi.fn().mockResolvedValue({
+					ok: true,
+					text: "NONE",
+				}),
 			},
 		);
 
@@ -145,6 +130,104 @@ describe("prompt suggestion", () => {
 			suggestion: null,
 			suppressedReason: "empty",
 			model: "anthropic/claude-3-5-haiku",
+		});
+	});
+
+	it("prefers native path by default and succeeds", async () => {
+		const fastModel = makeModel("openai", "gpt-5-mini");
+		vi.spyOn(registry, "getRegisteredModels").mockReturnValue([fastModel]);
+		const runNativeBackgroundPrompt = vi.fn().mockResolvedValue({
+			ok: true,
+			text: "Add coverage for the native suggestion path.",
+		});
+
+		const result = await generatePromptSuggestion(
+			{
+				model: "openai/gpt-5-mini",
+				messages: sampleMessages,
+			},
+			{
+				getRegisteredModel: vi.fn().mockResolvedValue(fastModel),
+				getCurrentSelection: () => ({
+					provider: "openai",
+					modelId: "gpt-5-mini",
+				}),
+				runNativeBackgroundPrompt,
+			},
+		);
+
+		expect(runNativeBackgroundPrompt).toHaveBeenCalledWith(
+			expect.objectContaining({
+				systemPrompt: expect.stringContaining("next natural user prompt"),
+				modelId: "gpt-5-mini",
+				provider: "openai",
+				prompt: expect.stringContaining("Suggest the next user message"),
+			}),
+		);
+		expect(result).toEqual({
+			suggestion: "Add coverage for the native suggestion path.",
+			model: "openai/gpt-5-mini",
+		});
+	});
+
+	it("throws on native start failure", async () => {
+		const fastModel = makeModel("openai", "gpt-5-mini");
+		vi.spyOn(registry, "getRegisteredModels").mockReturnValue([fastModel]);
+
+		const runNativeBackgroundPrompt = vi.fn().mockResolvedValue({
+			ok: false,
+			error: new Error("spawn ENOENT"),
+			phase: "start",
+		});
+
+		await expect(
+			generatePromptSuggestion(
+				{
+					model: "openai/gpt-5-mini",
+					messages: sampleMessages,
+				},
+				{
+					getRegisteredModel: vi.fn().mockResolvedValue(fastModel),
+					getCurrentSelection: () => ({
+						provider: "openai",
+						modelId: "gpt-5-mini",
+					}),
+					runNativeBackgroundPrompt,
+				},
+			),
+		).rejects.toThrow("spawn ENOENT");
+
+		expect(runNativeBackgroundPrompt).toHaveBeenCalled();
+	});
+
+	it("returns empty on native mid-turn failure", async () => {
+		const fastModel = makeModel("openai", "gpt-5-mini");
+		vi.spyOn(registry, "getRegisteredModels").mockReturnValue([fastModel]);
+		const runNativeBackgroundPrompt = vi.fn().mockResolvedValue({
+			ok: false,
+			error: new Error("native crashed mid-turn"),
+			phase: "turn",
+		});
+
+		const result = await generatePromptSuggestion(
+			{
+				model: "openai/gpt-5-mini",
+				messages: sampleMessages,
+			},
+			{
+				getRegisteredModel: vi.fn().mockResolvedValue(fastModel),
+				getCurrentSelection: () => ({
+					provider: "openai",
+					modelId: "gpt-5-mini",
+				}),
+				runNativeBackgroundPrompt,
+			},
+		);
+
+		expect(result).toEqual({
+			suggestion: null,
+			suppressedReason: "empty",
+			model: "openai/gpt-5-mini",
 		});
 	});
 });

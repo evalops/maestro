@@ -345,6 +345,8 @@ pub struct SkillLoader {
     system_skills_dir: Option<PathBuf>,
     /// Cached user skills directories (resolved once at construction)
     user_skills_dirs: Vec<PathBuf>,
+    /// Skill directories contributed by discovered plugins
+    plugin_skills_dirs: Vec<PathBuf>,
 }
 
 impl SkillLoader {
@@ -384,6 +386,7 @@ impl SkillLoader {
             search_paths,
             system_skills_dir,
             user_skills_dirs,
+            plugin_skills_dirs: Vec::new(),
         }
     }
 
@@ -420,12 +423,37 @@ impl SkillLoader {
             search_paths: paths,
             system_skills_dir: None,
             user_skills_dirs: Vec::new(),
+            plugin_skills_dirs: Vec::new(),
         }
     }
 
     /// Add a search path
     pub fn add_search_path(&mut self, path: PathBuf) {
         self.search_paths.push(path);
+    }
+
+    /// Add a plugin skill directory (tagged as [`SkillSource::Plugin`]).
+    ///
+    /// Appended after default paths so plugin skills can override same-named
+    /// skills from lower-priority locations when loaded via `load_all_with_paths`.
+    pub fn add_plugin_search_path(&mut self, path: PathBuf) {
+        self.plugin_skills_dirs.push(path.clone());
+        self.search_paths.push(path);
+    }
+
+    /// Add multiple plugin skill directories.
+    #[must_use]
+    pub fn with_plugin_paths(mut self, paths: Vec<PathBuf>) -> Self {
+        for path in paths {
+            self.add_plugin_search_path(path);
+        }
+        self
+    }
+
+    /// Create a loader that includes skill directories from a plugin registry.
+    #[must_use]
+    pub fn with_plugins(plugins: &crate::plugins::PluginRegistry) -> Self {
+        Self::new().with_plugin_paths(plugins.skill_dirs())
     }
 
     /// Get the search paths
@@ -524,6 +552,11 @@ impl SkillLoader {
         if let Some(ref system_dir) = self.system_skills_dir {
             if dir.starts_with(system_dir) {
                 return SkillSource::System;
+            }
+        }
+        for plugin_dir in &self.plugin_skills_dirs {
+            if dir.starts_with(plugin_dir) {
+                return SkillSource::Plugin;
             }
         }
         for user_dir in &self.user_skills_dirs {
@@ -985,6 +1018,26 @@ mod tests {
         let initial_count = loader.search_paths.len();
         loader.add_search_path(PathBuf::from("/new/path"));
         assert_eq!(loader.search_paths.len(), initial_count + 1);
+    }
+
+    #[test]
+    fn test_loader_plugin_search_path_marks_plugin_source() {
+        let temp_dir = TempDir::new().unwrap();
+        let skills_root = temp_dir.path().join("skills");
+        let skill_dir = skills_root.join("plugin-skill");
+        fs::create_dir_all(&skill_dir).unwrap();
+        fs::write(
+            skill_dir.join("SKILL.md"),
+            "---\nname: plugin-skill\ndescription: From a plugin package\n---\n# Plugin skill\n",
+        )
+        .unwrap();
+
+        let loader = SkillLoader::with_paths(Vec::new()).with_plugin_paths(vec![skills_root]);
+        let results = loader.load_all();
+        assert_eq!(results.len(), 1);
+        let loaded = results[0].as_ref().expect("skill should load");
+        assert_eq!(loaded.definition.name, "plugin-skill");
+        assert_eq!(loaded.definition.source, SkillSource::Plugin);
     }
 
     #[test]

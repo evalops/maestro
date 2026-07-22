@@ -9,7 +9,7 @@ Maestro executes shell commands and writes files on your machine, so it ships
 with a conservative “action firewall” and approval system. This guide explains
 how commands are vetted and how you can extend or relax the defaults.
 
-**Web auto-approval:** The web server runs with auto-approval for tools (see `docs/WEB_UI.md`). If you expose it outside a local sandbox, pair it with Docker/file mount constraints or add auth in front.
+**Web auto-approval:** Explicit auto mode approves tools without interaction (see `docs/WEB_UI.md`); prompt/fail modes deny approval-gated tools until the native approval bridge is available. If you expose auto mode outside a local sandbox, pair it with Docker/file mount constraints or add auth in front.
 
 ## Action Firewall
 

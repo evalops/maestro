@@ -168,6 +168,11 @@ pub enum ToAgentMessage {
         thinking_level: Option<ThinkingLevel>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         approval_mode: Option<ApprovalMode>,
+        /// Prior conversation turns applied before the first prompt.
+        ///
+        /// Prefer this over stuffing multi-turn context into `append_system_prompt`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        history: Option<Vec<HistoryMessage>>,
     },
     /// Send a user prompt
     Prompt {
@@ -285,6 +290,49 @@ pub enum ToAgentMessage {
     Shutdown,
 }
 
+/// Role of a seeded history message in headless `init`.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum HistoryRole {
+    User,
+    Assistant,
+    System,
+}
+
+/// A single conversation turn used to seed headless multi-turn history.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct HistoryMessage {
+    pub role: HistoryRole,
+    pub content: String,
+}
+
+impl HistoryMessage {
+    /// Convert to a native agent [`crate::ai::Message`].
+    #[must_use]
+    pub fn to_ai_message(&self) -> crate::ai::Message {
+        use crate::ai::{Message, MessageContent, Role};
+        let role = match self.role {
+            HistoryRole::User => Role::User,
+            HistoryRole::Assistant => Role::Assistant,
+            HistoryRole::System => Role::System,
+        };
+        Message {
+            role,
+            content: MessageContent::Text(self.content.clone()),
+        }
+    }
+}
+
+/// Convert optional headless history into native agent messages.
+#[must_use]
+pub fn history_to_ai_messages(history: Option<&[HistoryMessage]>) -> Vec<crate::ai::Message> {
+    history
+        .unwrap_or(&[])
+        .iter()
+        .map(HistoryMessage::to_ai_message)
+        .collect()
+}
+
 /// Optional agent initialization settings sent before the first prompt.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct InitConfig {
@@ -296,6 +344,9 @@ pub struct InitConfig {
     pub thinking_level: Option<ThinkingLevel>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub approval_mode: Option<ApprovalMode>,
+    /// Prior conversation turns applied before the first prompt.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub history: Option<Vec<HistoryMessage>>,
 }
 
 /// Identifies the attached headless client.

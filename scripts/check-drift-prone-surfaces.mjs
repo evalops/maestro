@@ -49,7 +49,6 @@ const sharedEvalOpsAliasUsers = [
 	"src/platform/agent-runtime-client.ts",
 	"src/platform/tool-execution-client.ts",
 	"src/platform/a2a-client.ts",
-	"src/remote-runner/client.ts",
 	"src/platform/maestro-timeline-client.ts",
 	"src/memory/service-client.ts",
 	"src/telemetry/meter-service-client.ts",

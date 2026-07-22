@@ -40,6 +40,7 @@ not a full behavioral test suite. Update as gaps close.
 | Custom prompts / command templates | **Present** | `prompts.rs` | `~/.maestro/{prompts,commands}` + project + legacy |
 | Providers | **Partial** | `ai/` (anthropic, openai, google, vertex, …) | Confirm full registry parity vs `packages/ai` as open work |
 | Headless protocol | **Present** | `headless/` | Shared contracts; used beyond pure TUI |
+| **Server agent runtime** | **Present (complete)** | `src/server/*native*`, `headless/` | Web chat, automations, hosted headless, and prompt suggestion require `maestro-tui --headless` and fail closed |
 | Hosted runner | **Present** | `hosted_runner/`, `maestro-hosted-runner` bin | Continuity / remote runner |
 | Context compaction | **Present** | `agent/compaction.rs` | Default auto-threshold ~0.85 |
 | LSP | **Partial** | `lsp.rs` | Client present; tool surface depth vs former TS is open |
@@ -53,6 +54,24 @@ not a full behavioral test suite. Update as gaps close.
 | Enterprise policy surface | **Open** | Policy pieces in `safety/policy.rs` | Full enterprise RBAC UX not audited here |
 
 ---
+
+## Server runtime (complete)
+
+Server product surfaces are native-only: product agent turns run through
+`maestro-tui --headless`, never in-process TypeScript `createAgent`.
+
+| Surface | Runtime |
+|---------|---------|
+| Web SSE/WS chat | Native headless |
+| Scheduled automations | Native headless |
+| Hosted headless runtime | Native headless |
+| Prompt suggestion | Native one-shot |
+| Interactive TUI/CLI agent modes | Native |
+
+Native start failures always error (no soft TS fallback). The TypeScript
+`Agent` / `ProviderTransport` exports remain for external **SDK embedding** only;
+they are marked `@deprecated` as a *server* runtime. Details:
+[ARCHITECTURE.md — TypeScript Agent status](ARCHITECTURE.md#typescript-agent-status).
 
 ## Area notes
 

@@ -1,9 +1,9 @@
+import { EventEmitter } from "node:events";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { DefaultPlatformToolExecutionBridge } from "../../src/agent/transport/tool-execution-bridge.js";
 import type {
 	AgentEvent,
 	AppMessage,
@@ -22,6 +22,7 @@ import {
 	inferFleetModelTier,
 	loadHostedRunnerRestoreManifest,
 } from "../../src/server/headless-runtime-service.js";
+import type { NativeHeadlessClient } from "../../src/server/native-headless-client.js";
 import { SessionManager } from "../../src/session/manager.js";
 
 const TEST_MODEL: RegisteredModel = {
@@ -60,6 +61,39 @@ class FakeAgent {
 	}
 
 	abort() {}
+}
+
+function createMockNativeClient(sessionId = "native-sess") {
+	const client = new EventEmitter() as EventEmitter & {
+		start: ReturnType<typeof vi.fn>;
+		stop: ReturnType<typeof vi.fn>;
+		hello: ReturnType<typeof vi.fn>;
+		init: ReturnType<typeof vi.fn>;
+		prompt: ReturnType<typeof vi.fn>;
+		interrupt: ReturnType<typeof vi.fn>;
+		cancel: ReturnType<typeof vi.fn>;
+		send: ReturnType<typeof vi.fn>;
+		isRunning: boolean;
+	};
+	client.isRunning = false;
+	client.stop = vi.fn();
+	client.hello = vi.fn();
+	client.init = vi.fn();
+	client.prompt = vi.fn();
+	client.interrupt = vi.fn();
+	client.cancel = vi.fn();
+	client.send = vi.fn();
+	client.start = vi.fn(async () => {
+		client.isRunning = true;
+		return {
+			type: "ready",
+			protocol_version: HEADLESS_PROTOCOL_VERSION,
+			model: TEST_MODEL.id,
+			provider: TEST_MODEL.provider,
+			session_id: sessionId,
+		};
+	});
+	return client;
 }
 
 const tempDirs: string[] = [];
@@ -254,6 +288,7 @@ describe("getFleetPlatformEventBusStatus", () => {
 
 describe("HeadlessRuntimeService restore manifests", () => {
 	afterEach(async () => {
+		vi.unstubAllEnvs();
 		vi.restoreAllMocks();
 		await Promise.all(
 			tempDirs
@@ -286,15 +321,14 @@ describe("HeadlessRuntimeService restore manifests", () => {
 		);
 
 		const service = new HeadlessRuntimeService();
-		const createAgent = vi.fn().mockResolvedValue(fakeAgent);
+		const mockClient = createMockNativeClient(sessionId);
 		const runtime = await service.ensureRuntime({
 			scope_key: "anon",
 			registeredModel: TEST_MODEL,
 			thinkingLevel: "off",
 			approvalMode: "prompt",
+			createNativeClient: () => mockClient as unknown as NativeHeadlessClient,
 			context: {
-				createAgent,
-				createBackgroundAgent: vi.fn().mockResolvedValue(new FakeAgent()),
 				hostedRunner: {
 					enabled: true,
 					runnerSessionId: "mrs_restore",
@@ -305,16 +339,7 @@ describe("HeadlessRuntimeService restore manifests", () => {
 			sessionManager,
 		});
 
-		expect(createAgent).toHaveBeenCalledWith(
-			TEST_MODEL,
-			"off",
-			"prompt",
-			expect.objectContaining({
-				platformToolExecutionBridge: expect.any(
-					DefaultPlatformToolExecutionBridge,
-				),
-			}),
-		);
+		expect(mockClient.start).toHaveBeenCalledOnce();
 		expect(runtime.getSnapshot()).toMatchObject({
 			session_id: sessionId,
 			cursor: 7,
@@ -519,6 +544,7 @@ describe("HeadlessRuntimeService restore manifests", () => {
 			});
 			sessionManager.startSession(fakeAgent.state);
 			const sessionId = sessionManager.getSessionId();
+			const createNativeClient = vi.fn(() => createMockNativeClient());
 			const manifestPath = join(workspaceRoot, "restore-manifest.json");
 			await writeFile(
 				manifestPath,
@@ -540,9 +566,9 @@ describe("HeadlessRuntimeService restore manifests", () => {
 				registeredModel: TEST_MODEL,
 				thinkingLevel: "off",
 				approvalMode: "prompt",
+				createNativeClient: () =>
+					createNativeClient() as unknown as NativeHeadlessClient,
 				context: {
-					createAgent: vi.fn().mockResolvedValue(fakeAgent),
-					createBackgroundAgent: vi.fn().mockResolvedValue(new FakeAgent()),
 					hostedRunner: {
 						enabled: true,
 						runnerSessionId: "mrs_restore",
@@ -552,6 +578,7 @@ describe("HeadlessRuntimeService restore manifests", () => {
 				},
 				sessionManager,
 			});
+			expect(createNativeClient).not.toHaveBeenCalled();
 
 			expect(runtime.getSnapshot()).toMatchObject({
 				session_id: sessionId,
@@ -786,4 +813,274 @@ describe("HeadlessRuntimeService restore manifests", () => {
 			testCase.message,
 		);
 	});
+});
+
+describe("HeadlessRuntimeService native backend", () => {
+	afterEach(async () => {
+		vi.unstubAllEnvs();
+		vi.restoreAllMocks();
+		await Promise.all(
+			tempDirs
+				.splice(0)
+				.map((dir) => rm(dir, { force: true, recursive: true })),
+		);
+	});
+
+	it("uses injected NativeHeadlessClient when native mode is enabled", async () => {
+		const workspaceRoot = await mkdtemp(
+			join(tmpdir(), "maestro-headless-native-"),
+		);
+		const sessionDir = await mkdtemp(join(tmpdir(), "maestro-sessions-"));
+		tempDirs.push(workspaceRoot, sessionDir);
+
+		const mockClient = createMockNativeClient();
+		const sessionManager = new SessionManager(false, undefined, { sessionDir });
+		const saveMessage = vi.spyOn(sessionManager, "saveMessage");
+		const loadAllSessions = vi
+			.spyOn(sessionManager, "loadAllSessions")
+			.mockReturnValue([]);
+
+		const service = new HeadlessRuntimeService();
+		const runtime = await service.ensureRuntime({
+			scope_key: "anon",
+			registeredModel: TEST_MODEL,
+			thinkingLevel: "low",
+			approvalMode: "prompt",
+			createNativeClient: () => mockClient as unknown as NativeHeadlessClient,
+			context: { hostedRunner: undefined },
+			sessionManager,
+		});
+
+		expect(runtime.isNativeBackend()).toBe(true);
+		expect(mockClient.start).toHaveBeenCalledOnce();
+		expect(mockClient.hello).toHaveBeenCalled();
+		expect(mockClient.init).toHaveBeenCalledWith(
+			expect.objectContaining({
+				thinking_level: "low",
+				approval_mode: "prompt",
+			}),
+		);
+		expect(loadAllSessions).toHaveBeenCalledOnce();
+		expect(runtime.getSnapshot().state.is_ready).toBe(true);
+
+		await runtime.send({
+			type: "init",
+			history: [{ role: "user", content: "prior turn" }],
+			approval_mode: "prompt",
+		});
+		expect(mockClient.init).toHaveBeenLastCalledWith({
+			history: [{ role: "user", content: "prior turn" }],
+			approval_mode: "prompt",
+		});
+
+		await runtime.send({
+			type: "prompt",
+			content: "hello native",
+			attachments: ["/tmp/report.pdf"],
+		});
+		expect(mockClient.prompt).toHaveBeenCalledWith("hello native", [
+			"/tmp/report.pdf",
+		]);
+		expect(saveMessage).toHaveBeenCalledWith({
+			role: "user",
+			content: "hello native",
+			metadata: { attachments: ["/tmp/report.pdf"] },
+			timestamp: expect.any(Number),
+		});
+
+		saveMessage.mockImplementationOnce(() => {
+			throw new Error("session storage unavailable");
+		});
+		expect(() =>
+			mockClient.emit("message", {
+				type: "response_end",
+				response_id: "r1",
+				usage: {
+					input_tokens: 1,
+					output_tokens: 1,
+					cache_read_tokens: 0,
+					cache_write_tokens: 0,
+					total_tokens: 2,
+					total_cost_usd: 0,
+					model_id: TEST_MODEL.id,
+					provider: TEST_MODEL.provider,
+				},
+				tools_summary: {
+					tools_used: [],
+					calls_succeeded: 0,
+					calls_failed: 0,
+				},
+				duration_ms: 1,
+			}),
+		).not.toThrow();
+		expect(runtime.replayFrom(0)).toContainEqual(
+			expect.objectContaining({
+				type: "message",
+				message: expect.objectContaining({
+					type: "response_end",
+					response_id: "r1",
+				}),
+			}),
+		);
+		await expect(
+			runtime.send({ type: "prompt", content: "again" }),
+		).rejects.toThrow(/already processing/);
+
+		mockClient.emit("message", {
+			type: "response_end",
+			response_id: "done",
+			usage: {
+				input_tokens: 0,
+				output_tokens: 0,
+				cache_read_tokens: 0,
+				cache_write_tokens: 0,
+				total_tokens: 0,
+				total_cost_usd: 0,
+				model_id: TEST_MODEL.id,
+				provider: TEST_MODEL.provider,
+			},
+			tools_summary: {
+				tools_used: [],
+				calls_succeeded: 0,
+				calls_failed: 0,
+			},
+			duration_ms: 0,
+		});
+		expect(runtime.getFleetAgentInstance().errorStats).toMatchObject({
+			runs: 1,
+			errors: 0,
+		});
+
+		await runtime.send({
+			type: "tool_response",
+			call_id: "c1",
+			approved: true,
+		});
+		expect(mockClient.send).toHaveBeenCalledWith(
+			expect.objectContaining({ type: "tool_response", call_id: "c1" }),
+		);
+
+		await runtime.dispose();
+		expect(mockClient.stop).toHaveBeenCalled();
+	});
+
+	it("throws when native start fails (no soft TS fallback)", async () => {
+		const sessionDir = await mkdtemp(join(tmpdir(), "maestro-sessions-"));
+		tempDirs.push(sessionDir);
+		const sessionManager = new SessionManager(false, undefined, { sessionDir });
+		sessionManager.startSession({
+			model: TEST_MODEL,
+			systemPrompt: "",
+			thinkingLevel: "off",
+			tools: [],
+			messages: [],
+		});
+
+		const service = new HeadlessRuntimeService();
+		await expect(
+			service.ensureRuntime({
+				scope_key: "anon",
+				registeredModel: TEST_MODEL,
+				thinkingLevel: "off",
+				approvalMode: "prompt",
+				createNativeClient: () => {
+					const mock = new EventEmitter() as EventEmitter & {
+						start: () => Promise<never>;
+						stop: () => void;
+					};
+					mock.start = async () => {
+						throw new Error("binary missing");
+					};
+					mock.stop = () => {};
+					return mock as unknown as NativeHeadlessClient;
+				},
+				context: {},
+				sessionManager,
+			}),
+		).rejects.toThrow("binary missing");
+	});
+
+	it("stops the native client when session initialization fails", async () => {
+		const sessionDir = await mkdtemp(join(tmpdir(), "maestro-sessions-"));
+		tempDirs.push(sessionDir);
+		const sessionManager = new SessionManager(false, undefined, { sessionDir });
+		vi.spyOn(sessionManager, "loadAllSessions").mockReturnValue([]);
+		vi.spyOn(sessionManager, "startSession").mockImplementation(() => {
+			throw new Error("session storage unavailable");
+		});
+		const mockClient = createMockNativeClient();
+
+		const service = new HeadlessRuntimeService();
+		await expect(
+			service.ensureRuntime({
+				scope_key: "anon",
+				registeredModel: TEST_MODEL,
+				thinkingLevel: "off",
+				approvalMode: "prompt",
+				createNativeClient: () => mockClient as unknown as NativeHeadlessClient,
+				context: {},
+				sessionManager,
+			}),
+		).rejects.toThrow("session storage unavailable");
+		expect(mockClient.stop).toHaveBeenCalledOnce();
+	});
+
+	it.each([
+		{
+			name: "client tools",
+			options: {
+				enableClientTools: true,
+				capabilities: { server_requests: ["client_tool"] as const },
+			},
+			message: "Native headless runtime does not yet support client-side tools",
+		},
+		{
+			name: "VS Code tools",
+			options: { client: "vscode" as const },
+			message:
+				"Native headless runtime does not yet support vscode client tools",
+		},
+		{
+			name: "user input requests",
+			options: {
+				capabilities: { server_requests: ["user_input"] as const },
+			},
+			message:
+				"Native headless runtime does not yet support user_input server requests",
+		},
+		{
+			name: "MCP elicitation requests",
+			options: {
+				capabilities: { server_requests: ["mcp_elicitation"] as const },
+			},
+			message:
+				"Native headless runtime does not yet support mcp_elicitation server requests",
+		},
+	])(
+		"rejects $name before starting the native backend",
+		async ({ options, message }) => {
+			const sessionDir = await mkdtemp(join(tmpdir(), "maestro-sessions-"));
+			tempDirs.push(sessionDir);
+			const sessionManager = new SessionManager(false, undefined, {
+				sessionDir,
+			});
+			const createNativeClient = vi.fn(() => createMockNativeClient());
+
+			const service = new HeadlessRuntimeService();
+			await expect(
+				service.ensureRuntime({
+					scope_key: "anon",
+					registeredModel: TEST_MODEL,
+					thinkingLevel: "off",
+					approvalMode: "prompt",
+					...options,
+					createNativeClient: () =>
+						createNativeClient() as unknown as NativeHeadlessClient,
+					context: {},
+					sessionManager,
+				}),
+			).rejects.toThrow(message);
+			expect(createNativeClient).not.toHaveBeenCalled();
+		},
+	);
 });

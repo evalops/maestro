@@ -3,12 +3,18 @@ import type {
 	ComposerPromptSuggestionRequest,
 	ComposerPromptSuggestionResponse,
 } from "@evalops/contracts";
-import type { Agent } from "../agent/index.js";
-import type { AssistantMessage } from "../agent/types.js";
 import {
 	type RegisteredModel,
 	getRegisteredModels,
 } from "../models/registry.js";
+import { createLogger } from "../utils/logger.js";
+import {
+	type RunNativeBackgroundPromptOptions,
+	type RunNativeBackgroundPromptResult,
+	runNativeBackgroundPrompt,
+} from "./native-background-prompt.js";
+
+const logger = createLogger("server:prompt-suggestion");
 
 const MAX_TRANSCRIPT_CHARS = 6_000;
 const MAX_MESSAGE_CHARS = 700;
@@ -32,10 +38,13 @@ export interface PromptSuggestionDependencies {
 		input: string | null | undefined,
 	) => Promise<RegisteredModel>;
 	getCurrentSelection: () => { provider: string; modelId: string };
-	createBackgroundAgent: (
-		model: RegisteredModel,
-		options?: { systemPrompt?: string },
-	) => Promise<Agent>;
+	/**
+	 * Override native one-shot runner (tests). Defaults to
+	 * `runNativeBackgroundPrompt`.
+	 */
+	runNativeBackgroundPrompt?: (
+		options: RunNativeBackgroundPromptOptions,
+	) => Promise<RunNativeBackgroundPromptResult>;
 }
 
 function normalizeWhitespace(value: string): string {
@@ -102,30 +111,6 @@ function buildTranscript(messages: ComposerMessage[]): string {
 		return transcript;
 	}
 	return transcript.slice(-MAX_TRANSCRIPT_CHARS);
-}
-
-function extractAssistantText(message: AssistantMessage): string {
-	const content = message?.content as unknown;
-	if (typeof content === "string") {
-		return content.trim();
-	}
-	if (Array.isArray(content)) {
-		return content
-			.filter(
-				(block): block is { type: "text"; text: string } =>
-					Boolean(block) &&
-					typeof block === "object" &&
-					"type" in block &&
-					(block as { type?: string }).type === "text" &&
-					"text" in block &&
-					typeof (block as { text?: unknown }).text === "string",
-			)
-			.map((block) => block.text.trim())
-			.filter(Boolean)
-			.join("\n")
-			.trim();
-	}
-	return "";
 }
 
 function normalizeGeneratedSuggestion(
@@ -214,6 +199,67 @@ export function getPromptSuggestionSuppressReason(
 	return null;
 }
 
+function buildSuggestionUserPrompt(transcript: string): string {
+	return `Recent conversation, oldest to newest:\n\n${transcript}\n\nSuggest the next user message.`;
+}
+
+function toSuggestionResponse(
+	rawText: string,
+	messages: ComposerMessage[],
+	suggestionModel: RegisteredModel,
+): ComposerPromptSuggestionResponse {
+	const suggestion = normalizeGeneratedSuggestion(rawText, messages);
+	const model = `${suggestionModel.provider}/${suggestionModel.id}`;
+	if (!suggestion) {
+		return {
+			suggestion: null,
+			suppressedReason: "empty",
+			model,
+		};
+	}
+	return {
+		suggestion,
+		model,
+	};
+}
+
+/**
+ * Native one-shot only. Spawn/start failures throw; mid-turn soft failures
+ * return an empty suggestion.
+ */
+async function generateViaNative(
+	deps: PromptSuggestionDependencies,
+	suggestionModel: RegisteredModel,
+	userPrompt: string,
+	messages: ComposerMessage[],
+): Promise<ComposerPromptSuggestionResponse> {
+	const runNative = deps.runNativeBackgroundPrompt ?? runNativeBackgroundPrompt;
+	const result = await runNative({
+		prompt: userPrompt,
+		systemPrompt: PROMPT_SUGGESTION_SYSTEM_PROMPT,
+		modelId: suggestionModel.id,
+		provider: suggestionModel.provider,
+	});
+
+	if (!result.ok) {
+		if (result.phase === "start") {
+			logger.error("Native prompt suggestion unavailable", result.error);
+			throw result.error;
+		}
+		// Mid-turn failure after native started — do not double-run TS agent.
+		logger.warn("Native prompt suggestion failed mid-turn", {
+			error: result.error.message,
+		});
+		return {
+			suggestion: null,
+			suppressedReason: "empty",
+			model: `${suggestionModel.provider}/${suggestionModel.id}`,
+		};
+	}
+
+	return toSuggestionResponse(result.text, messages, suggestionModel);
+}
+
 export async function generatePromptSuggestion(
 	request: ComposerPromptSuggestionRequest,
 	deps: PromptSuggestionDependencies,
@@ -231,30 +277,8 @@ export async function generatePromptSuggestion(
 		`${deps.getCurrentSelection().provider}/${deps.getCurrentSelection().modelId}`;
 	const preferredModel = await deps.getRegisteredModel(selection);
 	const suggestionModel = selectPromptSuggestionModel(preferredModel);
-	const agent = await deps.createBackgroundAgent(suggestionModel, {
-		systemPrompt: PROMPT_SUGGESTION_SYSTEM_PROMPT,
-	});
 	const transcript = buildTranscript(request.messages);
-	const response = await agent.generateSummary(
-		[],
-		`Recent conversation, oldest to newest:\n\n${transcript}\n\nSuggest the next user message.`,
-		PROMPT_SUGGESTION_SYSTEM_PROMPT,
-		suggestionModel,
-	);
-	const suggestion = normalizeGeneratedSuggestion(
-		extractAssistantText(response),
-		request.messages,
-	);
-	if (!suggestion) {
-		return {
-			suggestion: null,
-			suppressedReason: "empty",
-			model: `${suggestionModel.provider}/${suggestionModel.id}`,
-		};
-	}
+	const userPrompt = buildSuggestionUserPrompt(transcript);
 
-	return {
-		suggestion,
-		model: `${suggestionModel.provider}/${suggestionModel.id}`,
-	};
+	return generateViaNative(deps, suggestionModel, userPrompt, request.messages);
 }

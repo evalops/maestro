@@ -108,7 +108,7 @@ describe("ApiClient websocket chat transport", () => {
 		const ws = webSockets[0];
 		expect(ws).toBeDefined();
 		expect(ws?.url).toContain("/api/chat/ws?");
-		expect(ws?.url).toContain("clientTools=1");
+		expect(ws?.url).not.toContain("clientTools=");
 		expect(ws?.url).toContain("slim=1");
 		expect(ws?.url).toContain("client=web");
 

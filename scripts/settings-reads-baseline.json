@@ -2,13 +2,7 @@
   "src/agent/plan-mode.ts": [
     ".maestro/plan-state.json"
   ],
-  "src/agent/spec-mode.ts": [
-    ".maestro/spec-state.json"
-  ],
-  "src/bootstrap/tools-setup.ts": [
-    ".maestro/tools.json"
-  ],
-  "src/cli/commands/config.ts": [
+  "src/config/cli-presentation.ts": [
     ".maestro/local.json"
   ],
   "src/factory/config.ts": [

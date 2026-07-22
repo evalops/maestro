@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+// Dev/eval script: constructs TypeScript Agent SDK directly (not production).
 import { join, dirname } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";

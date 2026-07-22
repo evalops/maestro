@@ -52,13 +52,25 @@ pub async fn run_cli_command(args: &[String]) -> Result<i32> {
         "update" => crate::update_cli::run_update(&args[1..]).await,
         "modes" => crate::mode_cli::run_modes(&args[1..]).await,
         "memory" => crate::memory_cli::run_memory(&args[1..]).await,
+        "mission" => crate::mission_cli::run_mission(&args[1..]).await,
         "init" => crate::init_cli::run_init(&args[1..]).await,
+        "evalops" => crate::evalops_cli::run_evalops(&args[1..]).await,
         "openai" => crate::openai_cli::run_openai(&args[1..]).await,
+        "config" => crate::config_cli::run_config(&args[1..]).await,
+        "operating-plane" => crate::operating_plane_cli::run_operating_plane(&args[1..]).await,
         "painter" => crate::painter_cli::run_painter(&args[1..]),
         "anthropic" => {
             eprintln!("{ANTHROPIC_OAUTH_REMOVED_MESSAGE}");
             Ok(1)
         }
+        "remote" => crate::remote_cli::run_remote(&args[1..]).await,
+        "value" => crate::value_cli::run_value(&args[1..]).await,
+        "scenario" => crate::scenario_cli::run_scenario(&args[1..]).await,
+        "codex" => crate::codex_cli::run_codex(&args[1..]).await,
+        "context" => crate::context_cli::run_context(&args[1..]).await,
+        "run" => crate::run_cli::run_run(&args[1..]).await,
+        "a2a" => crate::a2a_cli::run_a2a(&args[1..]).await,
+        "plugins" | "plugin" => crate::plugins_cli::run_plugins(&args[1..]),
         other => bail!("unknown command: {other}"),
     }
 }
@@ -774,6 +786,8 @@ mod tests {
             argv(&["export", "--help"]),
             argv(&["import", "--help"]),
             argv(&["update", "--help"]),
+            argv(&["plugins", "--help"]),
+            argv(&["plugin", "--help"]),
         ] {
             assert_eq!(run_cli_command(&args).await.expect("help command"), 0);
         }

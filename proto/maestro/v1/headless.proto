@@ -212,11 +212,21 @@ message HelloMessage {
   repeated NotificationType opt_out_notifications = 5;
 }
 
+// Prior conversation turn seeded before the first prompt.
+// role is one of: "user", "assistant", "system".
+message HistoryMessage {
+  string role = 1;
+  string content = 2;
+}
+
 message InitMessage {
   optional string system_prompt = 1;
   optional string append_system_prompt = 2;
   optional ThinkingLevel thinking_level = 3;
   optional ApprovalMode approval_mode = 4;
+  // Optional multi-turn conversation history applied before the first prompt.
+  // Prefer this over stuffing prior turns into append_system_prompt.
+  repeated HistoryMessage history = 5;
 }
 
 message PromptMessage {

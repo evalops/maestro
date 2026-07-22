@@ -19,7 +19,10 @@ vi.mock("../../src/models/registry.js", () => ({
 }));
 
 import { ComposerManager } from "../../src/composers/manager.js";
-import { WebComposerManagerRegistry } from "../../src/server/web-composer-registry.js";
+import {
+	WebComposerManagerRegistry,
+	ensureComposerSessionForNative,
+} from "../../src/server/web-composer-registry.js";
 
 function createComposer(
 	overrides: Partial<LoadedComposer> = {},
@@ -391,5 +394,72 @@ describe("ComposerManager", () => {
 		expect(firstAgent.setSystemPrompt).toHaveBeenCalledWith(
 			expect.stringContaining("Plan the next steps"),
 		);
+	});
+
+	it("returns false from bindAgentSession when the agent was never initialized", () => {
+		const registry = new WebComposerManagerRegistry();
+		const agent = createAgentStub();
+
+		expect(registry.bindAgentSession(agent, "subject-1", "session-a")).toBe(
+			false,
+		);
+		expect(registry.get("subject-1", "session-a")).toBeUndefined();
+	});
+
+	it("ensureSession registers agent-less UI state for native session affinity", () => {
+		const registry = new WebComposerManagerRegistry();
+		const manager = registry.ensureSession("subject-1", "session-native");
+
+		expect(manager.activate("reviewer")).toBe(true);
+		expect(manager.getState().active?.name).toBe("reviewer");
+		expect(registry.get("subject-1", "session-native")).toBe(manager);
+		expect(registry.getLatestForSubject("subject-1")).toMatchObject({
+			sessionId: "session-native",
+		});
+	});
+
+	it("ensureComposerSessionForNative no-ops without session id and uses ensureSession", () => {
+		const ensureSession = vi.fn();
+		const getOrCreate = vi.fn();
+
+		ensureComposerSessionForNative(
+			{ ensureSession, getOrCreate },
+			"subject-1",
+			null,
+		);
+		expect(ensureSession).not.toHaveBeenCalled();
+		expect(getOrCreate).not.toHaveBeenCalled();
+
+		ensureComposerSessionForNative(
+			{ ensureSession, getOrCreate },
+			"subject-1",
+			"session-b",
+		);
+		expect(ensureSession).toHaveBeenCalledWith("subject-1", "session-b");
+		expect(getOrCreate).not.toHaveBeenCalled();
+
+		ensureComposerSessionForNative({ getOrCreate }, "subject-1", "session-c");
+		expect(getOrCreate).toHaveBeenCalledWith("subject-1", "session-c");
+	});
+
+	it("preserves agent-less active composer when a later TS agent binds the session", () => {
+		const registry = new WebComposerManagerRegistry();
+		const agent = createAgentStub();
+
+		registry.ensureSession("subject-1", "session-a");
+		expect(registry.get("subject-1", "session-a")?.activate("reviewer")).toBe(
+			true,
+		);
+
+		registry.initializeAgent(agent, "Base", [], "/workspace-a");
+		expect(registry.bindAgentSession(agent, "subject-1", "session-a")).toBe(
+			true,
+		);
+		expect(agent.setSystemPrompt).toHaveBeenCalledWith(
+			expect.stringContaining("Review the diff"),
+		);
+		expect(
+			registry.get("subject-1", "session-a")?.getState().active?.name,
+		).toBe("reviewer");
 	});
 });

@@ -6,21 +6,40 @@
 //!
 //! The agent is created lazily on first `Prompt` so `Hello`/`Init` handshakes
 //! work without credentials.
+//!
+//! ## Tool execution ownership
+//!
+//! Tools that do **not** require approval are auto-executed by the native agent
+//! loop, which emits `ToolStart` / `ToolOutput` / `ToolEnd` through the event
+//! bridge. Headless must **not** re-execute those tools (that would double-run
+//! side effects and drop streaming `tool_output`).
+//!
+//! Tools that **do** require approval are resolved by:
+//! - `ApprovalMode::Auto` → approve and let the native agent execute
+//! - `ApprovalMode::Fail` → deny immediately
+//! - `ApprovalMode::Prompt` / unset → wait for client `ToolResponse`
 
 use std::io::{BufRead, Write};
-use std::sync::Arc;
+use std::path::Path;
+use std::sync::{Arc, Mutex};
 
 use anyhow::{Context, Result};
 use tokio::sync::mpsc;
 
-use crate::agent::{
-    resolve_credentials_in_json, FromAgent, NativeAgent, NativeAgentConfig, PromptKind,
-};
+use crate::agent::{FromAgent, NativeAgent, NativeAgentConfig, PromptKind, ToolResult};
+use crate::git;
 use crate::headless::messages::{
-    FromAgentMessage, HeadlessErrorType, ToAgentMessage, TokenUsage as HeadlessTokenUsage,
+    ApprovalMode, FromAgentMessage, HeadlessErrorType, ToAgentMessage,
+    TokenUsage as HeadlessTokenUsage, ToolResult as HeadlessToolResult,
 };
 use crate::headless::HEADLESS_PROTOCOL_VERSION;
-use crate::tools::ToolExecutor;
+
+/// Shared headless runtime metadata updated from Init / SessionInfo.
+#[derive(Debug, Default, Clone)]
+struct RuntimeMeta {
+    session_id: Option<String>,
+    approval_mode: Option<ApprovalMode>,
+}
 
 struct HeadlessState {
     model: String,
@@ -28,8 +47,11 @@ struct HeadlessState {
     system_prompt: String,
     thinking_enabled: bool,
     thinking_budget: u32,
+    /// Seeded conversation history applied on agent creation / init.
+    history: Option<Vec<crate::headless::messages::HistoryMessage>>,
+    meta: Arc<Mutex<RuntimeMeta>>,
     agent: Option<NativeAgent>,
-    tool_tx: Option<mpsc::UnboundedSender<(String, bool, Option<crate::agent::ToolResult>)>>,
+    tool_tx: Option<mpsc::UnboundedSender<(String, bool, Option<ToolResult>)>>,
     event_task: Option<tokio::task::JoinHandle<()>>,
 }
 
@@ -43,16 +65,50 @@ impl HeadlessState {
         let system_prompt = format!(
             "You are Maestro, an AI coding assistant. Working directory: {cwd}. Be concise and use tools when helpful."
         );
+        let session_id = env_session_id();
         Self {
             model,
             cwd,
             system_prompt,
             thinking_enabled: false,
             thinking_budget: 10_000,
+            history: None,
+            meta: Arc::new(Mutex::new(RuntimeMeta {
+                session_id,
+                approval_mode: None,
+            })),
             agent: None,
             tool_tx: None,
             event_task: None,
         }
+    }
+
+    fn session_id(&self) -> Option<String> {
+        self.meta
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .session_id
+            .clone()
+    }
+
+    fn set_approval_mode(&self, mode: Option<ApprovalMode>) {
+        self.meta
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .approval_mode = mode;
+    }
+
+    fn ensure_session_id(&self) -> String {
+        let mut meta = self
+            .meta
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(id) = meta.session_id.clone().filter(|s| !s.is_empty()) {
+            return id;
+        }
+        let id = uuid::Uuid::new_v4().to_string();
+        meta.session_id = Some(id.clone());
+        id
     }
 
     fn ensure_agent(&mut self) -> Result<&NativeAgent> {
@@ -67,12 +123,19 @@ impl HeadlessState {
             };
             let (agent, mut event_rx) = NativeAgent::new(config)
                 .context("Failed to create native agent for headless server")?;
+            // Apply any seeded multi-turn history before the first prompt.
+            if let Some(history) = self.history.as_deref() {
+                let messages = crate::headless::messages::history_to_ai_messages(Some(history));
+                if !messages.is_empty() {
+                    agent.replace_history(messages);
+                }
+            }
             let tool_tx = agent.tool_response_sender();
-            let tool_executor = Arc::new(ToolExecutor::new(&self.cwd));
             let tool_tx_bg = tool_tx.clone();
+            let meta_bg = Arc::clone(&self.meta);
             let event_task = tokio::spawn(async move {
                 while let Some(msg) = event_rx.recv().await {
-                    if let Err(err) = handle_agent_event(msg, &tool_executor, &tool_tx_bg).await {
+                    if let Err(err) = handle_agent_event(msg, &meta_bg, &tool_tx_bg).await {
                         let _ = emit(&FromAgentMessage::Error {
                             request_id: None,
                             message: format!("headless event bridge failed: {err:#}"),
@@ -85,12 +148,18 @@ impl HeadlessState {
             self.tool_tx = Some(tool_tx);
             self.event_task = Some(event_task);
             self.agent = Some(agent);
-            // Ready is already emitted at server start; re-emit after real agent boot.
+
+            // Bind a session id once the real agent boots and surface it on Ready.
+            let session_id = self.ensure_session_id();
+            let git_branch = git::current_branch(Path::new(&self.cwd));
+            if let Some(agent) = self.agent.as_ref() {
+                agent.send_session_info(&self.cwd, Some(session_id.clone()), git_branch);
+            }
             emit(&FromAgentMessage::Ready {
                 protocol_version: Some(HEADLESS_PROTOCOL_VERSION.to_string()),
                 model: self.model.clone(),
                 provider: infer_provider_label(&self.model).to_string(),
-                session_id: None,
+                session_id: Some(session_id),
             })?;
         }
         Ok(self.agent.as_ref().expect("agent just created"))
@@ -106,11 +175,12 @@ pub async fn run_headless_server() -> Result<i32> {
     let mut state = HeadlessState::new();
 
     // Emit ready immediately so clients can proceed with Hello/Init without credentials.
+    // Include session_id when already available (e.g. MAESTRO_SESSION_ID).
     emit(&FromAgentMessage::Ready {
         protocol_version: Some(HEADLESS_PROTOCOL_VERSION.to_string()),
         model: state.model.clone(),
         provider: infer_provider_label(&state.model).to_string(),
-        session_id: None,
+        session_id: state.session_id(),
     })?;
 
     // stdin reader on a blocking thread → channel
@@ -168,7 +238,8 @@ pub async fn run_headless_server() -> Result<i32> {
                 system_prompt: sp,
                 append_system_prompt,
                 thinking_level,
-                approval_mode: _,
+                approval_mode,
+                history,
             } => {
                 if let Some(sp) = sp {
                     state.system_prompt = sp;
@@ -189,10 +260,21 @@ pub async fn run_headless_server() -> Result<i32> {
                     state.thinking_enabled = enabled;
                     state.thinking_budget = budget;
                 }
+                if approval_mode.is_some() {
+                    state.set_approval_mode(approval_mode);
+                }
+                if history.is_some() {
+                    state.history = history;
+                }
                 // If agent already exists, push updates through.
                 if let Some(agent) = state.agent.as_ref() {
                     let _ = agent.set_system_prompt(state.system_prompt.clone());
                     let _ = agent.set_thinking(state.thinking_enabled, state.thinking_budget);
+                    if let Some(history) = state.history.as_deref() {
+                        let messages =
+                            crate::headless::messages::history_to_ai_messages(Some(history));
+                        agent.replace_history(messages);
+                    }
                 }
                 emit(&FromAgentMessage::Status {
                     message: "init applied".to_string(),
@@ -237,13 +319,19 @@ pub async fn run_headless_server() -> Result<i32> {
                 approved,
                 result,
             } => {
+                let agent_result = result.map(headless_tool_result_to_agent);
+                // When the client supplies a completed result, surface the full
+                // tool lifecycle (including tool_output) for streaming consumers.
+                // When only an approval is returned, the native agent executes
+                // and emits ToolStart/ToolOutput/ToolEnd itself.
+                if approved {
+                    if let Some(ref tool_result) = agent_result {
+                        for msg in tool_lifecycle_messages(&call_id, None, tool_result) {
+                            emit(&msg)?;
+                        }
+                    }
+                }
                 if let Some(tool_tx) = state.tool_tx.as_ref() {
-                    let agent_result = result.map(|r| crate::agent::ToolResult {
-                        success: r.success,
-                        output: r.output,
-                        error: r.error,
-                        details: r.details,
-                    });
                     let _ = tool_tx.send((call_id, approved, agent_result));
                 }
             }
@@ -270,16 +358,21 @@ pub async fn run_headless_server() -> Result<i32> {
 
 async fn handle_agent_event(
     msg: FromAgent,
-    tool_executor: &ToolExecutor,
-    tool_tx: &mpsc::UnboundedSender<(String, bool, Option<crate::agent::ToolResult>)>,
+    meta: &Arc<Mutex<RuntimeMeta>>,
+    tool_tx: &mpsc::UnboundedSender<(String, bool, Option<ToolResult>)>,
 ) -> Result<()> {
     match msg {
         FromAgent::Ready { model, provider } => {
+            let session_id = meta
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .session_id
+                .clone();
             emit(&FromAgentMessage::Ready {
                 protocol_version: Some(HEADLESS_PROTOCOL_VERSION.to_string()),
                 model,
                 provider,
-                session_id: None,
+                session_id,
             })?;
         }
         FromAgent::ResponseStart { response_id } => {
@@ -314,27 +407,23 @@ async fn handle_agent_event(
             emit(&FromAgentMessage::ToolCall {
                 call_id: call_id.clone(),
                 tool_execution_id: None,
-                tool: tool.clone(),
-                args: args.clone(),
+                tool,
+                args,
                 requires_approval,
             })?;
-            // Auto-execute when approval is not required (headless default).
-            if !requires_approval {
-                let resolved = resolve_credentials_in_json(&args);
-                let result = tool_executor
-                    .execute(&tool, &resolved, None, &call_id)
-                    .await;
-                emit(&FromAgentMessage::ToolStart {
-                    call_id: call_id.clone(),
-                })?;
-                emit(&FromAgentMessage::ToolEnd {
-                    call_id: call_id.clone(),
-                    tool_execution_id: None,
-                    success: result.success,
-                    tool: Some(tool),
-                    details: result.details.clone(),
-                })?;
-                let _ = tool_tx.send((call_id, true, Some(result)));
+
+            // Tools that do not require approval are auto-executed by the
+            // native agent (with ToolStart/ToolOutput/ToolEnd). Do not
+            // re-execute here — that double-ran side effects and omitted
+            // streaming tool_output.
+            //
+            // For approval-gated tools, honor Init approval_mode when set.
+            let approval_mode = meta
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .approval_mode;
+            if let Some(approved) = resolve_tool_approval(requires_approval, approval_mode) {
+                let _ = tool_tx.send((call_id, approved, None));
             }
         }
         FromAgent::ToolStart { call_id } => {
@@ -372,6 +461,13 @@ async fn handle_agent_event(
             cwd,
             git_branch,
         } => {
+            if let Some(ref id) = session_id {
+                if !id.is_empty() {
+                    meta.lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .session_id = Some(id.clone());
+                }
+            }
             emit(&FromAgentMessage::SessionInfo {
                 session_id,
                 cwd,
@@ -429,5 +525,217 @@ fn infer_provider_label(model: &str) -> &'static str {
         "Google"
     } else {
         "OpenAI"
+    }
+}
+
+fn env_session_id() -> Option<String> {
+    std::env::var("MAESTRO_SESSION_ID")
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+}
+
+fn headless_tool_result_to_agent(r: HeadlessToolResult) -> ToolResult {
+    ToolResult {
+        success: r.success,
+        output: r.output,
+        error: r.error,
+        details: r.details,
+    }
+}
+
+/// Decide whether headless should immediately resolve an approval-gated tool.
+///
+/// - `None` → leave to the native agent (auto-exec) or wait for the client
+/// - `Some(true)` → approve; native agent executes and streams tool events
+/// - `Some(false)` → deny
+fn resolve_tool_approval(
+    requires_approval: bool,
+    approval_mode: Option<ApprovalMode>,
+) -> Option<bool> {
+    if !requires_approval {
+        // Native agent auto-executes; headless must not inject a tool_response.
+        return None;
+    }
+    match approval_mode {
+        Some(ApprovalMode::Auto) => Some(true),
+        Some(ApprovalMode::Fail) => Some(false),
+        Some(ApprovalMode::Prompt) | None => None,
+    }
+}
+
+/// Content for a `tool_output` event from a completed tool result.
+fn tool_output_content(result: &ToolResult) -> Option<String> {
+    if !result.output.is_empty() {
+        return Some(result.output.clone());
+    }
+    if !result.success {
+        return Some(format!(
+            "Error: {}",
+            result.error.as_deref().unwrap_or("tool failed")
+        ));
+    }
+    None
+}
+
+/// Protocol messages for a completed tool run: start → output? → end.
+fn tool_lifecycle_messages(
+    call_id: &str,
+    tool: Option<String>,
+    result: &ToolResult,
+) -> Vec<FromAgentMessage> {
+    let mut msgs = Vec::with_capacity(3);
+    msgs.push(FromAgentMessage::ToolStart {
+        call_id: call_id.to_string(),
+    });
+    if let Some(content) = tool_output_content(result) {
+        msgs.push(FromAgentMessage::ToolOutput {
+            call_id: call_id.to_string(),
+            content,
+        });
+    }
+    msgs.push(FromAgentMessage::ToolEnd {
+        call_id: call_id.to_string(),
+        tool_execution_id: None,
+        success: result.success,
+        tool,
+        details: result.details.clone(),
+    });
+    msgs
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn resolve_tool_approval_leaves_auto_exec_to_native() {
+        assert_eq!(resolve_tool_approval(false, None), None);
+        assert_eq!(resolve_tool_approval(false, Some(ApprovalMode::Auto)), None);
+        assert_eq!(resolve_tool_approval(false, Some(ApprovalMode::Fail)), None);
+        assert_eq!(
+            resolve_tool_approval(false, Some(ApprovalMode::Prompt)),
+            None
+        );
+    }
+
+    #[test]
+    fn resolve_tool_approval_honors_mode_for_gated_tools() {
+        assert_eq!(
+            resolve_tool_approval(true, Some(ApprovalMode::Auto)),
+            Some(true)
+        );
+        assert_eq!(
+            resolve_tool_approval(true, Some(ApprovalMode::Fail)),
+            Some(false)
+        );
+        assert_eq!(
+            resolve_tool_approval(true, Some(ApprovalMode::Prompt)),
+            None
+        );
+        assert_eq!(resolve_tool_approval(true, None), None);
+    }
+
+    #[test]
+    fn tool_output_content_prefers_stdout() {
+        let ok = ToolResult::success("hello from tool");
+        assert_eq!(tool_output_content(&ok).as_deref(), Some("hello from tool"));
+
+        let empty_ok = ToolResult::success("");
+        assert_eq!(tool_output_content(&empty_ok), None);
+
+        let fail = ToolResult::failure("boom");
+        assert_eq!(tool_output_content(&fail).as_deref(), Some("Error: boom"));
+
+        let fail_with_partial = ToolResult {
+            success: false,
+            output: "partial".into(),
+            error: Some("exit 1".into()),
+            details: None,
+        };
+        assert_eq!(
+            tool_output_content(&fail_with_partial).as_deref(),
+            Some("partial")
+        );
+    }
+
+    #[test]
+    fn tool_lifecycle_messages_include_tool_output() {
+        let result = ToolResult::success("file contents");
+        let msgs = tool_lifecycle_messages("call-1", Some("read".into()), &result);
+        assert_eq!(msgs.len(), 3);
+        assert!(matches!(
+            &msgs[0],
+            FromAgentMessage::ToolStart { call_id } if call_id == "call-1"
+        ));
+        assert!(matches!(
+            &msgs[1],
+            FromAgentMessage::ToolOutput { call_id, content }
+                if call_id == "call-1" && content == "file contents"
+        ));
+        assert!(matches!(
+            &msgs[2],
+            FromAgentMessage::ToolEnd {
+                call_id,
+                success: true,
+                tool: Some(t),
+                ..
+            } if call_id == "call-1" && t == "read"
+        ));
+    }
+
+    #[test]
+    fn tool_lifecycle_messages_omit_empty_success_output() {
+        let result = ToolResult::success("");
+        let msgs = tool_lifecycle_messages("call-2", None, &result);
+        assert_eq!(msgs.len(), 2);
+        assert!(matches!(msgs[0], FromAgentMessage::ToolStart { .. }));
+        assert!(matches!(
+            msgs[1],
+            FromAgentMessage::ToolEnd { success: true, .. }
+        ));
+    }
+
+    #[test]
+    fn ready_message_serializes_session_id_when_present() {
+        let msg = FromAgentMessage::Ready {
+            protocol_version: Some(HEADLESS_PROTOCOL_VERSION.to_string()),
+            model: "gpt-test".into(),
+            provider: "OpenAI".into(),
+            session_id: Some("sess-abc".into()),
+        };
+        let json = serde_json::to_value(&msg).expect("serialize");
+        assert_eq!(json["type"], "ready");
+        assert_eq!(json["session_id"], "sess-abc");
+        assert_eq!(json["model"], "gpt-test");
+    }
+
+    #[test]
+    fn ready_message_omits_null_session_id() {
+        let msg = FromAgentMessage::Ready {
+            protocol_version: Some(HEADLESS_PROTOCOL_VERSION.to_string()),
+            model: "gpt-test".into(),
+            provider: "OpenAI".into(),
+            session_id: None,
+        };
+        let json = serde_json::to_value(&msg).expect("serialize");
+        assert!(json.get("session_id").is_none());
+    }
+
+    #[test]
+    fn env_session_id_reads_maestro_session_id() {
+        // Isolate from ambient env for this process.
+        let key = "MAESTRO_SESSION_ID";
+        let previous = std::env::var(key).ok();
+        // SAFETY: single-threaded test; restore after.
+        unsafe {
+            std::env::set_var(key, "  env-session-42  ");
+        }
+        let got = env_session_id();
+        match previous {
+            Some(v) => unsafe { std::env::set_var(key, v) },
+            None => unsafe { std::env::remove_var(key) },
+        }
+        assert_eq!(got.as_deref(), Some("env-session-42"));
     }
 }

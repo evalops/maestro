@@ -126,8 +126,7 @@ use crate::mcp::{
     McpTransport,
 };
 use crate::safety::{
-    expand_tilde, is_tilde_path, require_plan, run_validators_with_diagnostics, ActionFirewall,
-    FirewallVerdict,
+    expand_tilde, is_tilde_path, run_validators_with_diagnostics, ActionFirewall, FirewallVerdict,
 };
 
 const MAX_READ_SIZE_BYTES: u64 = 10 * 1024 * 1024;

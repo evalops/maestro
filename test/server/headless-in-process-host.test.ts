@@ -19,6 +19,7 @@ import type { RegisteredModel } from "../../src/models/registry.js";
 import { HeadlessInProcessHost } from "../../src/server/headless-in-process-host.js";
 import { HeadlessRuntimeService } from "../../src/server/headless-runtime-service.js";
 import { SessionManager } from "../../src/session/manager.js";
+import { FakeNativeHeadlessClient } from "../helpers/fake-native-headless-client.js";
 
 const TEST_MODEL: RegisteredModel = {
 	id: "gpt-5.4",
@@ -78,7 +79,7 @@ class FakeAgent {
 
 	abort() {}
 
-	async prompt(_content: string, _attachments?: Attachment[]) {
+	async prompt(_content: string, _attachments?: Attachment[] | string[]) {
 		this.emit({
 			type: "status",
 			status: "prompted",
@@ -91,6 +92,19 @@ class FakeAgent {
 			listener(event);
 		}
 	}
+}
+
+function createRuntimeService(
+	fakeAgent: FakeAgent,
+	onClient?: (client: FakeNativeHeadlessClient) => void,
+): HeadlessRuntimeService {
+	return new HeadlessRuntimeService({
+		createNativeClient: () => {
+			const client = new FakeNativeHeadlessClient(fakeAgent);
+			onClient?.(client);
+			return client as never;
+		},
+	});
 }
 
 async function readNextEnvelope(stream: {
@@ -118,6 +132,7 @@ describe("HeadlessInProcessHost", () => {
 	let tempDir: string | null = null;
 
 	afterEach(async () => {
+		vi.unstubAllEnvs();
 		if (tempDir) {
 			await rm(tempDir, { recursive: true, force: true });
 			tempDir = null;
@@ -130,7 +145,7 @@ describe("HeadlessInProcessHost", () => {
 		const sessionManager = new SessionManager(false, undefined, {
 			sessionDir: tempDir,
 		});
-		const runtimeService = new HeadlessRuntimeService();
+		const runtimeService = createRuntimeService(fakeAgent);
 		const host = new HeadlessInProcessHost(runtimeService);
 
 		const snapshot = await host.ensureSession({
@@ -138,9 +153,7 @@ describe("HeadlessInProcessHost", () => {
 			registeredModel: TEST_MODEL,
 			thinkingLevel: "off",
 			approvalMode: "prompt",
-			context: {
-				createAgent: vi.fn().mockResolvedValue(fakeAgent),
-			},
+			context: {},
 			sessionManager,
 			capabilities: {
 				server_requests: ["approval"],
@@ -218,11 +231,14 @@ describe("HeadlessInProcessHost", () => {
 
 	it("counts fleet run errors once when retry companion events fire", async () => {
 		const fakeAgent = new FakeAgent();
+		let nativeClient: FakeNativeHeadlessClient | null = null;
 		tempDir = await mkdtemp(join(tmpdir(), "maestro-headless-in-process-"));
 		const sessionManager = new SessionManager(false, undefined, {
 			sessionDir: tempDir,
 		});
-		const runtimeService = new HeadlessRuntimeService();
+		const runtimeService = createRuntimeService(fakeAgent, (client) => {
+			nativeClient = client;
+		});
 		const host = new HeadlessInProcessHost(runtimeService);
 
 		const snapshot = await host.ensureSession({
@@ -230,20 +246,15 @@ describe("HeadlessInProcessHost", () => {
 			registeredModel: TEST_MODEL,
 			thinkingLevel: "off",
 			approvalMode: "prompt",
-			context: {
-				createAgent: vi.fn().mockResolvedValue(fakeAgent),
-			},
+			context: {},
 			sessionManager,
 		});
 
-		fakeAgent.emit({
-			type: "agent_end",
-			messages: [],
-			stopReason: "error",
-		});
-		fakeAgent.emit({
+		nativeClient?.emitMessage({
 			type: "error",
 			message: "provider overloaded",
+			fatal: true,
+			error_type: "transient",
 		});
 		fakeAgent.emit({
 			type: "auto_retry_end",
@@ -273,7 +284,7 @@ describe("HeadlessInProcessHost", () => {
 		const sessionManager = new SessionManager(false, undefined, {
 			sessionDir: tempDir,
 		});
-		const runtimeService = new HeadlessRuntimeService();
+		const runtimeService = createRuntimeService(fakeAgent);
 		const host = new HeadlessInProcessHost(runtimeService);
 
 		const snapshot = await host.ensureSession({
@@ -281,9 +292,7 @@ describe("HeadlessInProcessHost", () => {
 			registeredModel: TEST_MODEL,
 			thinkingLevel: "off",
 			approvalMode: "prompt",
-			context: {
-				createAgent: vi.fn().mockResolvedValue(fakeAgent),
-			},
+			context: {},
 			sessionManager,
 		});
 
@@ -323,7 +332,7 @@ describe("HeadlessInProcessHost", () => {
 		const sessionManager = new SessionManager(false, undefined, {
 			sessionDir: tempDir,
 		});
-		const runtimeService = new HeadlessRuntimeService();
+		const runtimeService = createRuntimeService(fakeAgent);
 		const host = new HeadlessInProcessHost(runtimeService);
 
 		const snapshot = await host.ensureSession({
@@ -331,9 +340,7 @@ describe("HeadlessInProcessHost", () => {
 			registeredModel: TEST_MODEL,
 			thinkingLevel: "off",
 			approvalMode: "prompt",
-			context: {
-				createAgent: vi.fn().mockResolvedValue(fakeAgent),
-			},
+			context: {},
 			sessionManager,
 			capabilities: {
 				server_requests: ["approval"],
@@ -473,7 +480,7 @@ describe("HeadlessInProcessHost", () => {
 		const sessionManager = new SessionManager(false, undefined, {
 			sessionDir: tempDir,
 		});
-		const runtimeService = new HeadlessRuntimeService();
+		const runtimeService = createRuntimeService(fakeAgent);
 		const host = new HeadlessInProcessHost(runtimeService);
 
 		const snapshot = await host.ensureSession({
@@ -481,18 +488,12 @@ describe("HeadlessInProcessHost", () => {
 			registeredModel: TEST_MODEL,
 			thinkingLevel: "off",
 			approvalMode: "prompt",
-			context: {
-				createAgent: vi.fn().mockResolvedValue(fakeAgent),
-			},
+			context: {},
 			sessionManager,
 			capabilities: {
 				server_requests: ["approval"],
 			},
 		});
-		const runtime = runtimeService.getRuntime("anon", snapshot.session_id);
-		if (!runtime) {
-			throw new Error("Expected runtime");
-		}
 		const baselineCursor = host.getSnapshot("anon", snapshot.session_id).cursor;
 		const request = {
 			id: "call_replay_approval",
@@ -505,18 +506,6 @@ describe("HeadlessInProcessHost", () => {
 			type: "action_approval_required",
 			request,
 		});
-		const approvalService = (
-			runtime as unknown as {
-				approvalService: {
-					requestApproval(request: typeof request): Promise<{
-						approved: boolean;
-						reason?: string;
-						resolvedBy: "policy" | "user";
-					}>;
-				};
-			}
-		).approvalService;
-		const pendingApproval = approvalService.requestApproval(request);
 
 		const reattached = host.attachStream({
 			scopeKey: "anon",
@@ -563,12 +552,6 @@ describe("HeadlessInProcessHost", () => {
 				result: { output: "Approved after reconnect" },
 			},
 		});
-		await expect(pendingApproval).resolves.toMatchObject({
-			approved: true,
-			reason: "Approved after reconnect",
-			resolvedBy: "user",
-		});
-
 		const resumed = host.attachStream({
 			scopeKey: "anon",
 			sessionId: snapshot.session_id,
@@ -610,7 +593,7 @@ describe("HeadlessInProcessHost", () => {
 		const sessionManager = new SessionManager(false, undefined, {
 			sessionDir: tempDir,
 		});
-		const runtimeService = new HeadlessRuntimeService();
+		const runtimeService = createRuntimeService(fakeAgent);
 		const host = new HeadlessInProcessHost(runtimeService);
 
 		const snapshot = await host.ensureSession({
@@ -618,9 +601,7 @@ describe("HeadlessInProcessHost", () => {
 			registeredModel: TEST_MODEL,
 			thinkingLevel: "off",
 			approvalMode: "prompt",
-			context: {
-				createAgent: vi.fn().mockResolvedValue(fakeAgent),
-			},
+			context: {},
 			sessionManager,
 			capabilities: {
 				server_requests: ["approval"],
@@ -692,7 +673,7 @@ describe("HeadlessInProcessHost", () => {
 			const sessionManager = new SessionManager(false, undefined, {
 				sessionDir: tempDir,
 			});
-			const runtimeService = new HeadlessRuntimeService();
+			const runtimeService = createRuntimeService(fakeAgent);
 			const host = new HeadlessInProcessHost(runtimeService);
 
 			const snapshot = await host.ensureSession({
@@ -700,9 +681,7 @@ describe("HeadlessInProcessHost", () => {
 				registeredModel: TEST_MODEL,
 				thinkingLevel: "off",
 				approvalMode: "prompt",
-				context: {
-					createAgent: vi.fn().mockResolvedValue(fakeAgent),
-				},
+				context: {},
 				sessionManager,
 				capabilities: {
 					server_requests: ["approval"],
@@ -815,7 +794,7 @@ describe("HeadlessInProcessHost", () => {
 		const sessionManager = new SessionManager(false, undefined, {
 			sessionDir: tempDir,
 		});
-		const runtimeService = new HeadlessRuntimeService();
+		const runtimeService = createRuntimeService(fakeAgent);
 		const host = new HeadlessInProcessHost(runtimeService);
 
 		const snapshot = await host.ensureSession({
@@ -823,9 +802,7 @@ describe("HeadlessInProcessHost", () => {
 			registeredModel: TEST_MODEL,
 			thinkingLevel: "off",
 			approvalMode: "prompt",
-			context: {
-				createAgent: vi.fn().mockResolvedValue(fakeAgent),
-			},
+			context: {},
 			sessionManager,
 			capabilities: {
 				server_requests: ["approval"],
@@ -883,7 +860,7 @@ describe("HeadlessInProcessHost", () => {
 		const sessionManager = new SessionManager(false, undefined, {
 			sessionDir: tempDir,
 		});
-		const runtimeService = new HeadlessRuntimeService();
+		const runtimeService = createRuntimeService(fakeAgent);
 		const host = new HeadlessInProcessHost(runtimeService);
 
 		const snapshot = await host.ensureSession({
@@ -891,9 +868,7 @@ describe("HeadlessInProcessHost", () => {
 			registeredModel: TEST_MODEL,
 			thinkingLevel: "off",
 			approvalMode: "prompt",
-			context: {
-				createAgent: vi.fn().mockResolvedValue(fakeAgent),
-			},
+			context: {},
 			sessionManager,
 			capabilities: {
 				server_requests: ["approval"],

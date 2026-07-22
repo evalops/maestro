@@ -40,6 +40,8 @@ pub(super) struct RuntimeInitSnapshot {
     pub(super) thinking_level: Option<ThinkingLevel>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(super) approval_mode: Option<ApprovalMode>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) history: Option<Vec<crate::headless::messages::HistoryMessage>>,
 }
 
 impl From<&InitConfig> for RuntimeInitSnapshot {
@@ -50,6 +52,7 @@ impl From<&InitConfig> for RuntimeInitSnapshot {
             append_system_prompt: config.append_system_prompt.clone(),
             thinking_level: config.thinking_level,
             approval_mode: config.approval_mode,
+            history: config.history.clone(),
         }
     }
 }
@@ -61,6 +64,7 @@ impl RuntimeInitSnapshot {
             append_system_prompt: self.append_system_prompt.clone(),
             thinking_level: self.thinking_level,
             approval_mode: self.approval_mode,
+            history: self.history.clone(),
         })
     }
 }

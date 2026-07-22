@@ -1,13 +1,6 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
-import type {
-	ActionApprovalService,
-	ApprovalMode,
-} from "../agent/action-approval.js";
+import type { ApprovalMode } from "../agent/action-approval.js";
 import type { Agent } from "../agent/index.js";
-import type { ToolRetryService } from "../agent/tool-retry.js";
-import type { ClientToolExecutionService } from "../agent/transport.js";
-import type { PlatformToolExecutionBridge } from "../agent/transport/tool-execution-bridge.js";
-import type { ThinkingLevel } from "../agent/types.js";
 import type { ComposerManager } from "../composers/manager.js";
 import type { ComposerConfig } from "../config/index.js";
 import type { RegisteredModel } from "../models/registry.js";
@@ -77,33 +70,6 @@ export interface HostedRunnerContext {
 }
 
 export interface WebServerServices {
-	createAgent: (
-		model: RegisteredModel,
-		thinking: ThinkingLevel,
-		approval: ApprovalMode,
-		options?: {
-			cwd?: string;
-			persistedSystemPromptSourcePaths?: string[];
-			enableClientTools?: boolean;
-			useClientAskUser?: boolean;
-			includeVscodeTools?: boolean;
-			includeJetBrainsTools?: boolean;
-			includeConductorTools?: boolean;
-			approvalService?: ActionApprovalService;
-			clientToolService?: ClientToolExecutionService;
-			toolRetryService?: ToolRetryService;
-			platformToolExecutionBridge?: PlatformToolExecutionBridge | false;
-			profileName?: string;
-			cliOverrides?: Partial<ComposerConfig>;
-		},
-	) => Promise<Agent>;
-	createBackgroundAgent: (
-		model: RegisteredModel,
-		options?: {
-			cwd?: string;
-			systemPrompt?: string;
-		},
-	) => Promise<Agent>;
 	getRegisteredModel: (
 		input: string | null | undefined,
 	) => Promise<RegisteredModel>;
@@ -114,6 +80,10 @@ export interface WebServerServices {
 	releaseSse: (token: symbol | null) => void;
 	headlessRuntimeService: HeadlessRuntimeService;
 	composerManagers?: {
+		/**
+		 * Agent-bound composer bind (legacy TS Agent). Not used by native web
+		 * chat; kept for session-scoped registry APIs that still accept Agent.
+		 */
 		bindAgentSession: (
 			agent: Agent,
 			subject: string,
@@ -126,6 +96,12 @@ export interface WebServerServices {
 		) => void;
 		get: (subject: string, sessionId: string) => ComposerManager | undefined;
 		getOrCreate?: (subject: string, sessionId: string) => ComposerManager;
+		/**
+		 * Session-only registration (no Agent). Safe for native web chat so
+		 * `/api/composer` can resolve the session; does not apply composers to
+		 * native headless.
+		 */
+		ensureSession?: (subject: string, sessionId: string) => ComposerManager;
 		getLatestForSubject?: (
 			subject: string,
 		) => { sessionId: string; manager: ComposerManager } | undefined;
@@ -133,3 +109,6 @@ export interface WebServerServices {
 }
 
 export type WebServerContext = WebServerConfig & WebServerServices;
+
+// Keep IncomingMessage/ServerResponse available for type-only consumers.
+export type { IncomingMessage, ServerResponse };

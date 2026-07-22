@@ -155,6 +155,17 @@ lto = true
 codegen-units = 1
 strip = true
 
+# magic-trace (https://github.com/janestreet/magic-trace) needs symbols and
+# prefers frame pointers. Build with:
+#   cargo build --profile magic-trace -p maestro-tui
+#   RUSTFLAGS="-C force-frame-pointers=yes" cargo build --profile magic-trace
+[profile.magic-trace]
+inherits = "release"
+debug = true
+strip = false
+lto = false
+codegen-units = 16
+
 # Clippy lint configuration - enable pedantic with targeted allowances
 [lints.clippy]
 # Enable pedantic lints for code quality

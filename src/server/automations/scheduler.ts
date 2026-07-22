@@ -3,19 +3,10 @@ import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { relative, resolve } from "node:path";
 import { DateTime } from "luxon";
 import type { AgentEvent, AppMessage } from "../../agent/types.js";
-import { runUserPromptWithRecovery } from "../../agent/user-prompt-runtime.js";
 import {
 	MAESTRO_AUTONOMOUS_ACTIONS_KILL_SWITCH,
 	areAutonomousActionsDisabled,
 } from "../../config/feature-flags.js";
-import { withMcpPostKeepMessages } from "../../mcp/prompt-recovery.js";
-import {
-	createAutomaticMemoryConsolidationCoordinator,
-	getMemoryConsolidationSystemPrompt,
-} from "../../memory/auto-consolidation.js";
-import { createAutomaticMemoryExtractionCoordinator } from "../../memory/auto-extraction.js";
-import type { RegisteredModel } from "../../models/registry.js";
-import { createRuntimeSessionSummaryUpdater } from "../../session/runtime-summary-updater.js";
 import { createLogger } from "../../utils/logger.js";
 import { sanitizeWithStaticMask } from "../../utils/secret-redactor.js";
 import type { WebServerContext } from "../app-context.js";
@@ -27,6 +18,8 @@ import {
 	loadAutomationState,
 	saveAutomationState,
 } from "../stores/automation-store.js";
+import type { NativeChatHistoryEntry } from "../web-native-chat.js";
+import { runAutomationNativeTurn } from "./native-runner.js";
 import { getNextRunFromSchedule, isValidTimezone } from "./schedule-utils.js";
 
 const logger = createLogger("automations");
@@ -442,70 +435,43 @@ function getNextRunWindowStart(
 		.toJSDate();
 }
 
-async function executeAutomation(
-	task: AutomationTask,
-	context: WebServerContext,
-): Promise<{
+type AutomationExecuteResult = {
 	success: boolean;
 	error?: string;
 	output?: string;
 	sessionId?: string;
-}> {
-	const {
-		createAgent,
-		getRegisteredModel,
-		defaultApprovalMode,
-		getCurrentSelection,
-	} = context;
+};
+
+async function executeAutomation(
+	task: AutomationTask,
+	context: WebServerContext,
+): Promise<AutomationExecuteResult> {
+	const { getRegisteredModel, defaultApprovalMode, getCurrentSelection } =
+		context;
 
 	const selection = getCurrentSelection();
 	const modelInput = task.model || `${selection.provider}:${selection.modelId}`;
 	const registeredModel = await getRegisteredModel(modelInput);
 	const approvalMode =
 		defaultApprovalMode === "prompt" ? "auto" : defaultApprovalMode;
-
 	const sessionManager = createSessionManagerForScope(null, false);
 	let sessionId = task.sessionId || null;
 
-	// When resuming an existing automation session, load the session header
-	// up-front so we can pass the persisted prompt source paths to
-	// createAgent. Otherwise the freshly resolved systemPromptSourcePaths
-	// would replace the original snapshot, and a compaction during this
-	// automation would lose the exclusion if the source APPEND_SYSTEM.md was
-	// removed between runs.
-	let persistedSystemPromptSourcePaths: string[] | undefined;
 	let resumedSessionFile: string | null = null;
 	if (task.sessionMode !== "new" && sessionId) {
 		const sessionFile = sessionManager.getSessionFileById(sessionId);
 		if (sessionFile) {
 			sessionManager.setSessionFile(sessionFile);
-			persistedSystemPromptSourcePaths =
-				sessionManager.getHeader?.()?.systemPromptSourcePaths;
 			resumedSessionFile = sessionFile;
 		}
 	}
 
-	const agent = await createAgent(
-		registeredModel,
-		task.thinkingLevel || "off",
-		approvalMode,
-		{
-			profileName: context.profileName,
-			cliOverrides: context.cliOverrides,
-			persistedSystemPromptSourcePaths,
-		},
-	);
-
+	// Ensure session IDs exist for both native and TS paths (sessionManager).
 	if (task.sessionMode === "new") {
 		await sessionManager.createSession({ title: task.name });
 		sessionId = sessionManager.getSessionId();
 	} else if (sessionId) {
-		if (resumedSessionFile) {
-			const session = await sessionManager.loadSession(sessionId);
-			if (session?.messages?.length) {
-				agent.replaceMessages(session.messages);
-			}
-		} else {
+		if (!resumedSessionFile) {
 			await sessionManager.createSession({ title: task.name });
 			sessionId = sessionManager.getSessionId();
 		}
@@ -513,8 +479,6 @@ async function executeAutomation(
 		await sessionManager.createSession({ title: task.name });
 		sessionId = sessionManager.getSessionId();
 	}
-
-	sessionManager.startSession(agent.state, { subject: "automation" });
 
 	const { contextText } = buildContextPrompt(
 		task.contextPaths || [],
@@ -525,65 +489,127 @@ async function executeAutomation(
 		? `${renderedPrompt}\n\n${contextText}`
 		: renderedPrompt;
 
-	let lastAssistantOutput: string | undefined;
-	const updateSessionSummary =
-		createRuntimeSessionSummaryUpdater(sessionManager);
-	const automaticMemoryConsolidation =
-		createAutomaticMemoryConsolidationCoordinator({
-			createAgent: async () =>
-				context.createBackgroundAgent(agent.state.model as RegisteredModel, {
-					systemPrompt: getMemoryConsolidationSystemPrompt(),
-				}),
-			getModel: () => agent.state.model,
-		});
-	const automaticMemoryExtraction = createAutomaticMemoryExtractionCoordinator({
-		createAgent: async () =>
-			context.createBackgroundAgent(agent.state.model as RegisteredModel),
-		getModel: () => agent.state.model,
-		onProcessed: () => automaticMemoryConsolidation.schedule(),
-		sessionManager,
-	});
-
-	const unsubscribe = agent.subscribe((event: AgentEvent) => {
-		updateSessionSummary(event);
-
-		if (event.type === "message_end") {
-			sessionManager.saveMessage(event.message);
-			if (event.message.role === "assistant") {
-				automaticMemoryExtraction.schedule(sessionManager.getSessionFile());
-				lastAssistantOutput = extractTextFromMessage(event.message);
+	// When resuming, hydrate prior turns into native history (same as web chat).
+	let nativeHistory: NativeChatHistoryEntry[] | undefined;
+	if (task.sessionMode !== "new" && sessionId && resumedSessionFile) {
+		try {
+			const session = await sessionManager.loadSession(sessionId);
+			if (session?.messages?.length) {
+				nativeHistory = sessionMessagesToNativeHistory(session.messages);
 			}
+		} catch (historyError) {
+			logger.warn(
+				"Native automation: failed to load session history for resume (continuing without)",
+				{
+					error:
+						historyError instanceof Error
+							? historyError.message
+							: String(historyError),
+				},
+			);
 		}
-	});
+	}
 
 	try {
-		await runUserPromptWithRecovery({
-			agent,
-			sessionManager,
-			cwd: process.cwd(),
+		let lastAssistantOutput: string | undefined;
+		const nativeResult = await runAutomationNativeTurn({
 			prompt: userInput,
+			modelId: registeredModel.id,
+			provider: registeredModel.provider,
+			thinkingLevel: task.thinkingLevel || "off",
+			approvalMode,
 			profileName: context.profileName,
 			cliOverrides: context.cliOverrides,
-			execute: () => agent.prompt(userInput),
-			getPostKeepMessages: withMcpPostKeepMessages(),
+			history: nativeHistory,
+			onStarted: ({
+				systemPrompt,
+				promptMetadata,
+				promptContextManifest,
+				systemPromptSourcePaths,
+			}) => {
+				sessionManager.startSession(
+					{
+						model: registeredModel,
+						thinkingLevel: task.thinkingLevel || "off",
+						systemPrompt,
+						promptMetadata,
+						promptContextManifest,
+						systemPromptSourcePaths,
+						tools: [],
+					},
+					{ subject: task.name },
+				);
+				sessionManager.saveMessage({
+					role: "user",
+					content: userInput,
+					timestamp: Date.now(),
+				});
+			},
+			onEvent: (event: AgentEvent) => {
+				if (event.type === "message_end") {
+					try {
+						sessionManager.saveMessage(event.message);
+					} catch (persistError) {
+						logger.warn(
+							"Native automation: failed to persist message_end (best-effort)",
+							{
+								error:
+									persistError instanceof Error
+										? persistError.message
+										: String(persistError),
+							},
+						);
+					}
+					if (event.message.role === "assistant") {
+						lastAssistantOutput = extractTextFromMessage(event.message);
+					}
+				}
+			},
 		});
-		await automaticMemoryExtraction.flush();
-		await automaticMemoryConsolidation.flush();
-		await sessionManager.flush();
-		unsubscribe();
-		return { success: true, output: lastAssistantOutput, sessionId };
-	} catch (error) {
-		await automaticMemoryExtraction.flush();
-		await automaticMemoryConsolidation.flush();
-		await sessionManager.flush();
-		unsubscribe();
+
+		if (nativeResult.ok) {
+			try {
+				await sessionManager.flush();
+			} catch {
+				// best-effort
+			}
+			return {
+				success: true,
+				output: lastAssistantOutput,
+				sessionId: sessionId ?? undefined,
+			};
+		}
+
+		logger.error(
+			nativeResult.phase === "start"
+				? "Native automation path failed to start"
+				: "Native automation turn failed after start",
+			nativeResult.error,
+		);
+		try {
+			await sessionManager.flush();
+		} catch {
+			// best-effort
+		}
+		return {
+			success: false,
+			error: sanitizeWithStaticMask(nativeResult.error.message),
+			output: lastAssistantOutput,
+			sessionId: sessionId ?? undefined,
+		};
+	} catch (nativeError) {
+		logger.error(
+			"Native automation path threw",
+			nativeError instanceof Error ? nativeError : undefined,
+		);
 		return {
 			success: false,
 			error: sanitizeWithStaticMask(
-				error instanceof Error ? error.message : String(error),
+				nativeError instanceof Error
+					? nativeError.message
+					: String(nativeError),
 			),
-			output: lastAssistantOutput,
-			sessionId,
+			sessionId: sessionId ?? undefined,
 		};
 	}
 }
@@ -846,4 +872,25 @@ function extractTextFromMessage(message: AppMessage): string {
 		if (typeof summary === "string") return summary;
 	}
 	return "";
+}
+
+/**
+ * Convert session messages into native history entries for init.history and
+ * structured init.history.
+ * Only user/assistant roles with extractable text are included.
+ * Exported for tests.
+ */
+export function sessionMessagesToNativeHistory(
+	messages: AppMessage[],
+): NativeChatHistoryEntry[] {
+	const history: NativeChatHistoryEntry[] = [];
+	for (const message of messages) {
+		if (!message || typeof message !== "object") continue;
+		const role = (message as { role?: unknown }).role;
+		if (role !== "user" && role !== "assistant") continue;
+		const text = extractTextFromMessage(message).trim();
+		if (!text) continue;
+		history.push({ role, text });
+	}
+	return history;
 }

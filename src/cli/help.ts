@@ -187,6 +187,10 @@ export function printHelp(
   maestro skill new processing-incidents --description "Process incident reports. Use when the user asks for incident triage."
   maestro skill lint .maestro/skills
 
+  # List discovered plugin packages (skills/commands/hooks/MCP)
+  maestro plugins list
+  maestro plugins info team-tools --json
+
   # Render a generated image inline in a capable terminal (iTerm2/WezTerm/kitty)
   maestro painter show ~/.maestro/assets/painter/painter-*.png
 

@@ -12,7 +12,6 @@ import type {
 	RoutingReceipt,
 } from "@evalops/contracts";
 import type { RawData, WebSocket } from "ws";
-import { applyOracleConsultationDirective } from "../../agent/oracle-consultation-policy.js";
 import { assignConfiguredOraclePolicyExperiment } from "../../agent/oracle-policy-experiment.js";
 import {
 	createRoutingReceipt,
@@ -22,27 +21,15 @@ import { isAssistantMessage } from "../../agent/type-guards.js";
 import type {
 	Attachment as AgentAttachment,
 	AgentEvent,
+	ThinkingLevel,
 } from "../../agent/types.js";
-import { runUserPromptWithRecovery } from "../../agent/user-prompt-runtime.js";
-import { dispatchAgentNotification } from "../../hooks/notification-hooks.js";
-import { createSessionHookService } from "../../hooks/session-integration.js";
-import { withMcpPostKeepMessages } from "../../mcp/prompt-recovery.js";
-import {
-	createAutomaticMemoryConsolidationCoordinator,
-	getMemoryConsolidationSystemPrompt,
-} from "../../memory/auto-consolidation.js";
-import { createAutomaticMemoryExtractionCoordinator } from "../../memory/auto-extraction.js";
 import type { RegisteredModel } from "../../models/registry.js";
 import {
-	recordIntelligentRouterChatMetric,
 	resolveIntelligentRouterProfileHint,
 	selectIntelligentRouterModel,
 } from "../../services/intelligent-router/recorder.js";
-import { recordAssistantUsageMetric } from "../../services/usage-analytics/recorder.js";
 import { evaluateModelPolicy } from "../../services/workspace-config/policy.js";
 import type { WorkspaceConfigRequestContext } from "../../services/workspace-config/types.js";
-import { toSessionModelMetadata } from "../../session/manager.js";
-import { createRuntimeSessionSummaryUpdater } from "../../session/runtime-summary-updater.js";
 import { recordOraclePolicyExperimentAssignment } from "../../telemetry/oracle-policy.js";
 import { createLogger } from "../../utils/logger.js";
 import type { WebServerContext } from "../app-context.js";
@@ -50,56 +37,34 @@ import {
 	normalizeApprovalMode,
 	resolveApprovalModeForRequest,
 } from "../approval-mode-store.js";
-import { WebActionApprovalService } from "../approval-service.js";
-import { publishArtifactUpdate } from "../artifacts-live-reload.js";
 import { getAuthSubject } from "../authz.js";
-import { getAgentCircuitBreaker } from "../circuit-breaker.js";
-import { clientToolService } from "../client-tools-service.js";
 import { isHostedSessionManager } from "../hosted-session-manager.js";
 import { resolveModelInputForRouting } from "../model-selection.js";
+import { createNativeMemoryCoordinators } from "../native-memory.js";
 import {
 	type RequestContext,
 	getWorkspaceConfigContext,
 	parseTraceParent,
 	requestContextStorage,
 } from "../request-context.js";
-import { serverRequestManager } from "../server-request-manager.js";
-import { getRequestHeader } from "../server-utils.js";
-import { startSessionWithPolicy } from "../session-initialization.js";
+import { ApiError, getRequestHeader } from "../server-utils.js";
+import { startSessionStateWithPolicy } from "../session-initialization.js";
 import { createWebSessionManagerForRequest } from "../session-scope.js";
-import { convertComposerMessagesToApp } from "../session-serialization.js";
 import type { SseContext, SseSkipListener } from "../sse-session.js";
-import { ServerRequestToolRetryService } from "../tool-retry-service.js";
 import {
 	type ChatRequestInput,
 	ChatRequestSchema,
 	validatePayload,
 } from "../validation.js";
+import { ensureComposerSessionForNative } from "../web-composer-registry.js";
+import {
+	composerHistoryForNative,
+	getComposerTextContent,
+	runNativeWebChatTurn,
+} from "../web-native-chat.js";
 import { verifySessionOwnership } from "./sessions.js";
 
 const logger = createLogger("web:chat-ws");
-const composerBindErrorMessage =
-	"Failed to restore the active composer for this session";
-
-const noopAutomaticMemoryExtraction = {
-	schedule: (_sessionPath?: string | null) => {},
-	flush: async () => {},
-};
-
-const noopAutomaticMemoryConsolidation = {
-	schedule: () => {},
-	flush: async () => {},
-};
-
-function getComposerTextContent(content: ComposerMessage["content"]): string {
-	if (typeof content === "string") return content;
-	if (!Array.isArray(content)) return "";
-	return content
-		.filter((block) => block.type === "text")
-		.map((block) => block.text)
-		.join("");
-}
-
 class WsSession {
 	private closed = false;
 	private skippedWrites = 0;
@@ -252,8 +217,6 @@ export function handleChatWebSocket(
 	workspaceConfig?: WorkspaceConfigRequestContext,
 ) {
 	const {
-		createAgent,
-		createBackgroundAgent,
 		getRegisteredModel,
 		defaultApprovalMode,
 		defaultProvider,
@@ -263,9 +226,9 @@ export function handleChatWebSocket(
 	} = context;
 
 	let sseLease: symbol | null = null;
-	let cleanedUp = false;
-	let cleanupPromise: Promise<void> | null = null;
-	let boundComposerSessionId: string | null = null;
+	const cleanedUp = false;
+	const cleanupPromise: Promise<void> | null = null;
+	const boundComposerSessionId: string | null = null;
 	let requestHandled = false;
 
 	const url = new URL(
@@ -276,6 +239,15 @@ export function handleChatWebSocket(
 	const clientToolsFromQuery = parseBoolean(
 		url.searchParams.get("clientTools"),
 	);
+	const clientToolsRequested =
+		clientToolsFromQuery === true ||
+		parseBoolean(
+			getRequestHeader(
+				req,
+				"x-composer-client-tools",
+				"x-maestro-client-tools",
+			),
+		) === true;
 	const slimFromQuery = parseBoolean(url.searchParams.get("slim"));
 	const clientHeaderFromQuery = url.searchParams.get("client")?.trim();
 	const websocketRequestContext: RequestContext | undefined = workspaceConfig
@@ -340,6 +312,12 @@ export function handleChatWebSocket(
 			} catch (error) {
 				sendErrorAndClose(
 					error instanceof Error ? error.message : "Invalid chat request",
+				);
+				return;
+			}
+			if (clientToolsRequested) {
+				sendErrorAndClose(
+					"Native web chat does not yet support client-side tools",
 				);
 				return;
 			}
@@ -635,494 +613,224 @@ export function handleChatWebSocket(
 				defaultApprovalMode,
 			});
 
-			const clientToolsHeader = (() => {
-				if (typeof clientToolsFromQuery === "boolean") {
-					return clientToolsFromQuery;
-				}
-				return (
-					getRequestHeader(
-						req,
-						"x-composer-client-tools",
-						"x-maestro-client-tools",
-					) === "1"
-				);
-			})();
-
-			const clientHeader = (() => {
-				if (clientHeaderFromQuery) return clientHeaderFromQuery.toLowerCase();
-				return getRequestHeader(
-					req,
-					"x-composer-client",
-					"x-maestro-client",
-				)?.toLowerCase();
-			})();
-			const sessionIdProvider = () =>
-				sessionManager.getSessionId() ?? undefined;
-			const requestApprovalService = new WebActionApprovalService(
-				effectiveApproval,
-				sessionIdProvider,
-			);
-			const toolRetryService = new ServerRequestToolRetryService(
-				"prompt",
-				sessionIdProvider,
-			);
-			const persistedSystemPromptSourcePaths = existingSessionLoaded
-				? sessionManager.getHeader()?.systemPromptSourcePaths
-				: undefined;
-
-			const agent = await createAgent(
-				registeredModel,
-				chatReq.thinkingLevel || "off",
-				effectiveApproval,
-				{
-					persistedSystemPromptSourcePaths,
-					approvalService: requestApprovalService,
-					toolRetryService,
-					...(clientToolsHeader
-						? {
-								enableClientTools: true,
-								clientToolService:
-									clientToolService.forSession(sessionIdProvider),
-								includeVscodeTools: clientHeader === "vscode",
-								includeJetBrainsTools: clientHeader === "jetbrains",
-								includeConductorTools: clientHeader === "conductor",
-							}
-						: {}),
-				},
-			);
-			applyOracleConsultationDirective(
-				agent,
-				routedDecision.oracleConsultation,
-			);
-
-			const historyMessages = incomingMessages.slice(0, -1);
-			const hydratedHistory = convertComposerMessagesToApp(
-				historyMessages,
-				registeredModel,
-			);
-			if (hydratedHistory.length > 0) {
-				agent.replaceMessages(hydratedHistory);
-			} else {
-				agent.clearMessages();
-			}
-
-			const requestId = Math.random().toString(36).slice(2);
-			const modelKey = `${registeredModel.provider}/${registeredModel.id}`;
-			const wsSession = new WsSession(ws, undefined, { requestId, modelKey });
-			wsSession.sendRoutingReceipt(routingReceipt);
-			const { enterpriseContext } = await import("../../enterprise/context.js");
-
-			const initializeSessionIfNeeded = async (): Promise<string | null> => {
-				if (existingSessionLoaded || sessionManager.isInitialized()) {
-					return null;
-				}
-				const initializationError = await startSessionWithPolicy({
-					agent,
-					enterpriseContext,
-					logger,
-					modelId: registeredModel.id,
-					onSessionReady: (sessionId) => {
-						wsSession.sendSessionUpdate(sessionId);
-						wsSession.setContext({ sessionId });
-					},
-					sessionManager,
+			// Web chat is native-only and never falls through to an in-process agent.
+			//
+			// Native web chat: no TS Agent → do not call bindAgentSession (would hard-fail).
+			// When a real session is known, ensureSession registers session-scoped UI
+			// state only; active composers do not affect native headless turns.
+			{
+				const nativeComposerSessionId =
+					existingSessionLoaded || sessionManager.isInitialized()
+						? sessionManager.getSessionId()
+						: null;
+				ensureComposerSessionForNative(
+					context.composerManagers,
 					subject,
-				});
-				if (initializationError) {
-					return initializationError;
-				}
-				existingSessionLoaded = true;
-				return null;
-			};
-
-			const initializationError = await initializeSessionIfNeeded();
-			if (initializationError) {
-				wsSession.sendEvent({
-					type: "error",
-					message: `[Policy] ${initializationError}`,
-				});
-				wsSession.sendDone();
-				wsSession.end();
-				if (sseLease && releaseSse) {
-					releaseSse(sseLease);
-					sseLease = null;
-				}
-				return;
-			}
-			const initializedSessionId = sessionManager.getSessionId();
-			const composerBindResult =
-				initializedSessionId && context.composerManagers
-					? context.composerManagers.bindAgentSession(
-							agent,
-							subject,
-							initializedSessionId,
-						)
-					: true;
-			if (!composerBindResult) {
-				logger.error(
-					"Failed to bind chat websocket composer session",
-					undefined,
-					{
-						sessionId: initializedSessionId,
-						subject,
-					},
+					nativeComposerSessionId,
 				);
-				wsSession.sendEvent({
-					type: "error",
-					message: composerBindErrorMessage,
-				});
-				wsSession.sendDone();
-				wsSession.end();
-				if (sseLease && releaseSse) {
-					releaseSse(sseLease);
-					sseLease = null;
-				}
-				return;
-			}
-			boundComposerSessionId = initializedSessionId;
 
-			const toolArgsByCallId = new Map<string, Record<string, unknown>>();
-			const storeToolArgs = (toolCallId: string, args: unknown) => {
-				toolArgsByCallId.set(
-					toolCallId,
-					(args && typeof args === "object" && !Array.isArray(args)
-						? (args as Record<string, unknown>)
-						: {}) as Record<string, unknown>,
-				);
-			};
-			const slimValue = getRequestHeader(
-				req,
-				"x-composer-slim-events",
-				"x-maestro-slim-events",
-			);
-			const slimEvents =
-				typeof slimFromQuery === "boolean" ? slimFromQuery : slimValue === "1";
-			const slimToolCallArgsLimit = (() => {
-				const raw = process.env.MAESTRO_SLIM_TOOLCALL_ARGS_MAX_BYTES;
-				if (!raw) return 4096;
-				const parsed = Number(raw);
-				if (!Number.isFinite(parsed) || parsed <= 0) return 4096;
-				return Math.min(parsed, 1024 * 1024);
-			})();
-			const extractToolCallInfo = (assistantEvent: {
-				contentIndex?: number;
-				partial?: { content?: unknown[] };
-			}): {
-				toolCallId?: string;
-				toolCallName?: string;
-				toolCallArgs?: Record<string, unknown>;
-				toolCallArgsTruncated?: boolean;
-			} => {
-				const assistantMessageEvent = assistantEvent.partial;
-				const contentIndex = assistantEvent.contentIndex;
-				if (
-					!assistantMessageEvent ||
-					typeof contentIndex !== "number" ||
-					!Array.isArray(assistantMessageEvent.content)
-				) {
-					return {};
-				}
-				const block = assistantMessageEvent.content[contentIndex];
-				if (!block || typeof block !== "object") {
-					return {};
-				}
-				const maybeToolCall = block as {
-					type?: string;
-					id?: string;
-					name?: string;
-					arguments?: Record<string, unknown>;
-				};
-				if (maybeToolCall.type !== "toolCall") {
-					return {};
-				}
-				const maybeArgs = maybeToolCall.arguments;
-				const toolCallArgs =
-					maybeArgs &&
-					typeof maybeArgs === "object" &&
-					!Array.isArray(maybeArgs)
-						? maybeArgs
-						: undefined;
-				if (toolCallArgs) {
-					try {
-						const size = Buffer.byteLength(
-							JSON.stringify(toolCallArgs),
-							"utf8",
-						);
-						if (size > slimToolCallArgsLimit) {
-							return {
-								toolCallId: maybeToolCall.id,
-								toolCallName: maybeToolCall.name,
-								toolCallArgsTruncated: true,
-							};
-						}
-					} catch {
-						return {
-							toolCallId: maybeToolCall.id,
-							toolCallName: maybeToolCall.name,
-							toolCallArgsTruncated: true,
-						};
-					}
-				}
-				return {
-					toolCallId: maybeToolCall.id,
-					toolCallName: maybeToolCall.name,
-					toolCallArgs,
-				};
-			};
-			const maybeSlimEvent = (event: AgentEvent): AgentEvent => {
-				if (!slimEvents || event.type !== "message_update") {
-					return event;
-				}
+				const abortController = new AbortController();
+				const onNativeClose = () => abortController.abort();
+				ws.on("close", onNativeClose);
 
-				const assistantEvent = event.assistantMessageEvent;
-				const slimEvent: Record<string, unknown> = { ...event };
-				delete slimEvent.message;
-
-				if (!assistantEvent) {
-					return slimEvent as AgentEvent;
-				}
-
-				if (
-					assistantEvent.type === "text_delta" ||
-					assistantEvent.type === "thinking_delta"
-				) {
-					const { partial, ...assistantWithoutPartial } = assistantEvent as {
-						partial?: unknown;
-						[key: string]: unknown;
-					};
-
-					slimEvent.assistantMessageEvent = assistantWithoutPartial;
-					return slimEvent as AgentEvent;
-				}
-
-				if (
-					assistantEvent.type === "toolcall_start" ||
-					assistantEvent.type === "toolcall_delta" ||
-					assistantEvent.type === "toolcall_end"
-				) {
-					const { partial, ...assistantWithoutPartial } = assistantEvent as {
-						partial?: unknown;
-						[key: string]: unknown;
-					};
-					const toolCallInfo =
-						assistantEvent.type === "toolcall_end"
-							? {}
-							: extractToolCallInfo(assistantEvent);
-
-					slimEvent.assistantMessageEvent = {
-						...assistantWithoutPartial,
-						...toolCallInfo,
-					};
-					return slimEvent as AgentEvent;
-				}
-
-				slimEvent.assistantMessageEvent = assistantEvent;
-				return slimEvent as AgentEvent;
-			};
-			const updateSessionSummary =
-				createRuntimeSessionSummaryUpdater(sessionManager);
-			const automaticMemoryConsolidation =
-				typeof createBackgroundAgent === "function"
-					? createAutomaticMemoryConsolidationCoordinator({
-							createAgent: async () =>
-								createBackgroundAgent(agent.state.model as RegisteredModel, {
-									systemPrompt: getMemoryConsolidationSystemPrompt(),
-								}),
-							getModel: () => agent.state.model,
-						})
-					: noopAutomaticMemoryConsolidation;
-			const automaticMemoryExtraction =
-				typeof createBackgroundAgent === "function"
-					? createAutomaticMemoryExtractionCoordinator({
-							createAgent: async () =>
-								createBackgroundAgent(agent.state.model as RegisteredModel),
-							getModel: () => agent.state.model,
-							onProcessed: () => automaticMemoryConsolidation.schedule(),
-							sessionManager,
-						})
-					: noopAutomaticMemoryExtraction;
-			const sessionHookService = createSessionHookService({
-				cwd: process.cwd(),
-				sessionId: sessionManager.getSessionId(),
-			});
-			const unsubscribeMcpElicitationBridge = serverRequestManager.subscribe(
-				(event) => {
-					const activeSessionId = sessionIdProvider();
-					if (!activeSessionId || event.request.sessionId !== activeSessionId) {
-						return;
-					}
-					if (event.request.kind !== "mcp_elicitation") {
-						return;
-					}
-					if (event.type === "registered") {
-						wsSession.sendEvent({
-							type: "client_tool_request",
-							toolCallId: event.request.callId,
-							toolName: event.request.toolName,
-							args: event.request.args,
-						});
-						storeToolArgs(event.request.callId, event.request.args);
-						return;
-					}
-					toolArgsByCallId.delete(event.request.callId);
-				},
-			);
-
-			const unsubscribe = agent.subscribe((event: AgentEvent) => {
-				updateSessionSummary(event);
-
-				wsSession.sendEvent(maybeSlimEvent(event));
-
-				if (event.type === "tool_execution_start") {
-					storeToolArgs(event.toolCallId, event.args);
-				}
-				if (event.type === "client_tool_request") {
-					storeToolArgs(event.toolCallId, event.args);
-				}
-				if (event.type === "tool_execution_end") {
-					if (event.toolName === "artifacts" && !event.isError) {
-						const sessionId = sessionManager.getSessionId();
-						const args = toolArgsByCallId.get(event.toolCallId) ?? {};
-						const filename =
-							typeof args.filename === "string" ? args.filename : null;
-						const command =
-							typeof args.command === "string" ? args.command : null;
-						if (
-							sessionId &&
-							filename &&
-							(command === "create" ||
-								command === "update" ||
-								command === "rewrite" ||
-								command === "delete")
-						) {
-							publishArtifactUpdate(sessionId, filename);
-						}
-					}
-					toolArgsByCallId.delete(event.toolCallId);
-				}
-
-				if (event.type === "message_end") {
-					const persistedMessage = isAssistantMessage(event.message)
-						? { ...event.message, routingReceipt }
-						: event.message;
-					sessionManager.saveMessage(persistedMessage);
-					if (isAssistantMessage(event.message)) {
-						recordAssistantUsageMetric({
-							req,
-							message: event.message,
-							sessionId: sessionManager.getSessionId(),
-							subject,
-						});
-						recordIntelligentRouterChatMetric({
-							taskType: routingSelection.taskType,
-							provider: registeredModel.provider,
-							model: registeredModel.id,
-							startedAt: routeStartedAt,
-							message: event.message,
-						});
-						automaticMemoryExtraction.schedule(sessionManager.getSessionFile());
-					}
-					sessionManager.updateSnapshot(
-						agent.state,
-						toSessionModelMetadata(registeredModel),
-					);
-					dispatchAgentNotification(
-						event,
-						{
-							cwd: process.cwd(),
-							sessionId: sessionManager.getSessionId(),
-							messages: agent.state.messages,
-						},
-						{
-							sessionHookService,
-							logger,
-						},
-					);
-
-					return;
-				}
-
-				sessionManager.updateSnapshot(
-					agent.state,
-					toSessionModelMetadata(registeredModel),
-				);
-				dispatchAgentNotification(
-					event,
-					{
-						cwd: process.cwd(),
-						sessionId: sessionManager.getSessionId(),
-						messages: agent.state.messages,
-					},
-					{
-						sessionHookService,
-						logger,
-					},
-				);
-			});
-
-			const cleanup = async (aborted = false) => {
-				if (cleanupPromise) return cleanupPromise;
-				cleanupPromise = (async () => {
-					if (cleanedUp) return;
-					cleanedUp = true;
-					unsubscribe();
-					unsubscribeMcpElicitationBridge();
-					if (boundComposerSessionId) {
-						context.composerManagers?.unbindAgentSession?.(
-							agent,
-							subject,
-							boundComposerSessionId,
-						);
-					}
-					await automaticMemoryExtraction.flush();
-					await automaticMemoryConsolidation.flush();
-					await sessionManager.flush();
-					if (aborted) {
-						wsSession.sendAborted();
-					}
-					wsSession.end();
-				})();
-				return cleanupPromise;
-			};
-
-			ws.on("close", () => {
-				agent.abort();
-				void cleanup(true);
-			});
-
-			try {
-				const breaker = getAgentCircuitBreaker(registeredModel.provider);
-				await runUserPromptWithRecovery({
-					agent,
+				const nativeWsSession = { current: null as WsSession | null };
+				let createdSessionId: string | undefined;
+				const requestId = Math.random().toString(36).slice(2);
+				const modelKey = `${registeredModel.provider}/${registeredModel.id}`;
+				const nativeHistory = composerHistoryForNative(incomingMessages);
+				// Non-blocking durable memory via native one-shots.
+				const nativeMemory = createNativeMemoryCoordinators({
 					sessionManager,
+					model: {
+						id: registeredModel.id,
+						provider: registeredModel.provider,
+					},
 					cwd: process.cwd(),
-					prompt: userInput,
-					attachmentCount: attachmentsToSend?.length ?? 0,
-					attachmentNames: attachmentsToSend?.map(
-						(attachment) => attachment.fileName,
-					),
-					profileName: context.profileName,
-					cliOverrides: context.cliOverrides,
-					execute: () =>
-						breaker.execute(() => agent.prompt(userInput, attachmentsToSend)),
-					getPostKeepMessages: withMcpPostKeepMessages(),
 				});
-				wsSession.sendDone();
-			} catch (error) {
-				logger.error(
-					"Agent prompt error",
-					error instanceof Error ? error : undefined,
-					{ sessionId: sessionManager.getSessionId?.() },
-				);
-				wsSession.sendEvent({
-					type: "error",
-					message: error instanceof Error ? error.message : "Unknown error",
-				});
-			} finally {
-				await cleanup(false);
-				if (sseLease && releaseSse) {
-					releaseSse(sseLease);
-					sseLease = null;
+
+				try {
+					const nativeResult = await runNativeWebChatTurn({
+						prompt: userInput,
+						attachments: attachmentsToSend,
+						cwd: process.cwd(),
+						profileName: context.profileName,
+						cliOverrides: context.cliOverrides,
+						modelId: registeredModel.id,
+						provider: registeredModel.provider,
+						thinkingLevel: chatReq.thinkingLevel || "off",
+						approvalMode: effectiveApproval,
+						history: nativeHistory,
+						signal: abortController.signal,
+						onBeforePrompt: async ({
+							systemPrompt,
+							promptMetadata,
+							promptContextManifest,
+							systemPromptSourcePaths,
+						}) => {
+							if (!existingSessionLoaded && !sessionManager.isInitialized()) {
+								const { enterpriseContext } = await import(
+									"../../enterprise/context.js"
+								);
+								const initializationError = await startSessionStateWithPolicy({
+									enterpriseContext,
+									logger,
+									modelId: registeredModel.id,
+									onSessionReady: (sessionId) => {
+										createdSessionId = sessionId;
+									},
+									sessionManager,
+									state: {
+										model: registeredModel,
+										thinkingLevel: (chatReq.thinkingLevel ||
+											"off") as ThinkingLevel,
+										systemPrompt,
+										promptMetadata,
+										promptContextManifest,
+										systemPromptSourcePaths,
+										tools: [],
+									},
+									subject,
+								});
+								if (initializationError) {
+									throw new ApiError(403, `[Policy] ${initializationError}`);
+								}
+								existingSessionLoaded = true;
+							}
+						},
+						onStarted: async () => {
+							// Persist only after the native child accepted the prompt.
+							try {
+								sessionManager.saveMessage({
+									role: "user",
+									content: userInput,
+									...(attachmentsToSend?.length
+										? { attachments: attachmentsToSend }
+										: {}),
+									timestamp: Date.now(),
+								});
+							} catch (persistError) {
+								logger.warn(
+									"Native web chat: failed to persist user message (best-effort)",
+									{
+										error:
+											persistError instanceof Error
+												? persistError.message
+												: String(persistError),
+									},
+								);
+							}
+							nativeWsSession.current = new WsSession(ws, undefined, {
+								requestId,
+								modelKey,
+							});
+							nativeWsSession.current.sendRoutingReceipt(routingReceipt);
+							if (createdSessionId) {
+								nativeWsSession.current.sendSessionUpdate(createdSessionId);
+							}
+						},
+						onEvent: (event) => {
+							if (!nativeWsSession.current) return;
+							nativeWsSession.current.sendEvent(event);
+							// Best-effort session persistence (known gap if save fails).
+							if (event.type === "message_end") {
+								try {
+									const persistedMessage = isAssistantMessage(event.message)
+										? { ...event.message, routingReceipt }
+										: event.message;
+									sessionManager.saveMessage(persistedMessage);
+									if (isAssistantMessage(event.message)) {
+										// Debounced; never blocks the stream.
+										nativeMemory.extraction.schedule(
+											sessionManager.getSessionFile(),
+										);
+									}
+								} catch (persistError) {
+									logger.warn(
+										"Native web chat: failed to persist message_end (best-effort)",
+										{
+											error:
+												persistError instanceof Error
+													? persistError.message
+													: String(persistError),
+										},
+									);
+								}
+							}
+						},
+					});
+
+					if (nativeResult.ok) {
+						if (nativeWsSession.current) {
+							nativeWsSession.current.sendDone();
+							nativeWsSession.current.end();
+						}
+						try {
+							await sessionManager.flush();
+						} catch {
+							// best-effort
+						}
+						if (sseLease && releaseSse) {
+							releaseSse(sseLease);
+							sseLease = null;
+						}
+						return;
+					}
+
+					// Failure: send error and return.
+					if (nativeResult.error instanceof ApiError) {
+						logger.warn("Native websocket chat request rejected", {
+							message: nativeResult.error.message,
+							statusCode: nativeResult.error.statusCode,
+						});
+					} else {
+						logger.error(
+							nativeResult.phase === "start"
+								? "Native web chat path failed to start"
+								: "Native web chat turn failed after start",
+							nativeResult.error,
+						);
+					}
+					if (nativeWsSession.current) {
+						nativeWsSession.current.sendEvent({
+							type: "error",
+							message: nativeResult.error.message,
+						});
+						nativeWsSession.current.sendDone();
+						nativeWsSession.current.end();
+					} else {
+						sendErrorAndClose(nativeResult.error.message);
+					}
+					if (sseLease && releaseSse) {
+						releaseSse(sseLease);
+						sseLease = null;
+					}
+					return;
+				} catch (nativeError) {
+					logger.error(
+						"Native web chat path threw",
+						nativeError instanceof Error ? nativeError : undefined,
+					);
+					const message =
+						nativeError instanceof Error
+							? nativeError.message
+							: String(nativeError);
+					if (nativeWsSession.current) {
+						nativeWsSession.current.sendEvent({
+							type: "error",
+							message,
+						});
+						nativeWsSession.current.sendDone();
+						nativeWsSession.current.end();
+					} else {
+						sendErrorAndClose(message);
+					}
+					if (sseLease && releaseSse) {
+						releaseSse(sseLease);
+						sseLease = null;
+					}
+					return;
+				} finally {
+					ws.off("close", onNativeClose);
 				}
 			}
 		} catch (error) {

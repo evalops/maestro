@@ -27,7 +27,7 @@ describe("config provider presets", () => {
 			{ getProviderPresets },
 			{ ALL_EVALOPS_MANAGED_PROVIDER_DEFINITIONS },
 		] = await Promise.all([
-			import("../../src/cli/commands/config.js"),
+			import("../../src/config/cli-presentation.js"),
 			import("../../src/providers/evalops-managed.js"),
 		]);
 		const providerPresets = getProviderPresets();
@@ -67,7 +67,7 @@ describe("config provider presets", () => {
 			{ getProviderPresets },
 			{ ALL_EVALOPS_MANAGED_PROVIDER_DEFINITIONS },
 		] = await Promise.all([
-			import("../../src/cli/commands/config.js"),
+			import("../../src/config/cli-presentation.js"),
 			import("../../src/providers/evalops-managed.js"),
 		]);
 		const providerPresets = getProviderPresets();
@@ -109,7 +109,7 @@ describe("config provider presets", () => {
 			{ getProviderPresets },
 			{ ALL_EVALOPS_MANAGED_PROVIDER_DEFINITIONS },
 		] = await Promise.all([
-			import("../../src/cli/commands/config.js"),
+			import("../../src/config/cli-presentation.js"),
 			import("../../src/providers/evalops-managed.js"),
 		]);
 		const providerPresets = getProviderPresets();
@@ -138,9 +138,11 @@ describe("config provider presets", () => {
 		const [
 			{ getProviderPresets },
 			{ ALL_EVALOPS_MANAGED_PROVIDER_DEFINITIONS },
+			{ resetFeatureFlagCacheForTests: resetImportedFeatureFlagCache },
 		] = await Promise.all([
-			import("../../src/cli/commands/config.js"),
+			import("../../src/config/cli-presentation.js"),
 			import("../../src/providers/evalops-managed.js"),
+			import("../../src/config/feature-flags.js"),
 		]);
 
 		const managedPresetIds = new Set(
@@ -164,7 +166,7 @@ describe("config provider presets", () => {
 				],
 			}),
 		);
-		resetFeatureFlagCacheForTests();
+		resetImportedFeatureFlagCache();
 
 		expect(
 			getProviderPresets().filter((preset) => managedPresetIds.has(preset.id)),

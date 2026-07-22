@@ -61,8 +61,11 @@ bun run cli -- --help                          # run the compiled CLI
 ```
 
 Interactive `maestro` hands off to the `maestro-tui` binary (see
-[TUI Architecture](TUI_ARCHITECTURE.md)). In a checkout, build `packages/tui-rs`
-first or set `MAESTRO_TUI_BIN` to a built binary.
+[TUI Architecture](TUI_ARCHITECTURE.md)). **`maestro web` and other server
+surfaces also default to `maestro-tui --headless`.** In a checkout, build
+`packages/tui-rs` first or set `MAESTRO_TUI_BIN` to a built binary. Published
+installs include the binary via `vendor/maestro-tui` (npm) or install it next
+to `maestro` (one-line installer).
 
 During development you can use:
 - `npx nx run maestro:test --skip-nx-cache` – mirrors CI (builds deps, then Vitest)

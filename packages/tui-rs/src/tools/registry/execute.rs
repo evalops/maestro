@@ -608,7 +608,7 @@ impl ToolExecutor {
                     }
                 };
 
-                if let Err(err) = require_plan("bash") {
+                if let Err(err) = crate::plan_mode::gate_mutation("bash", None, &self.cwd) {
                     return ToolResult::failure(err);
                 }
 
@@ -1007,7 +1007,11 @@ impl ToolExecutor {
                     Err(message) => return ToolResult::failure(message),
                 };
 
-                if let Err(err) = require_plan("write") {
+                if let Err(err) = crate::plan_mode::gate_mutation(
+                    "write",
+                    Some(std::path::Path::new(&path)),
+                    &self.cwd,
+                ) {
                     return ToolResult::failure(err);
                 }
 
@@ -1073,6 +1077,15 @@ impl ToolExecutor {
                         .with_duration(start_time.elapsed().as_millis() as u64);
                     return ToolResult::failure(format!("Failed to write file: {e}"))
                         .with_details(details.to_json());
+                }
+
+                // Mirror plan-mode plan files into the session plan location.
+                if crate::plan_mode::is_plan_file_path(&self.cwd, std::path::Path::new(&path)) {
+                    let _ = crate::plan_mode::record_plan_write(
+                        &self.cwd,
+                        std::path::Path::new(&path),
+                        &content,
+                    );
                 }
 
                 let diff = if preview_diff {
@@ -1299,7 +1312,11 @@ impl ToolExecutor {
                     Err(message) => return ToolResult::failure(message),
                 };
 
-                if let Err(err) = require_plan("edit") {
+                if let Err(err) = crate::plan_mode::gate_mutation(
+                    "edit",
+                    Some(std::path::Path::new(&path)),
+                    &self.cwd,
+                ) {
                     return ToolResult::failure(err);
                 }
 
@@ -1776,7 +1793,9 @@ impl ToolExecutor {
                     .unwrap_or("list");
                 match action {
                     "start" => {
-                        if let Err(err) = require_plan("background_tasks") {
+                        if let Err(err) =
+                            crate::plan_mode::gate_mutation("background_tasks", None, &self.cwd)
+                        {
                             return ToolResult::failure(err);
                         }
                         let command = match args.get("command").and_then(|v| v.as_str()) {
