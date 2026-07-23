@@ -23,3 +23,37 @@ jobs:
       - run: cargo test --workspace --locked
       - run: npm run build
       - run: npm run smoke:release-native-only
+
+  # Keep the repository's established required-check contexts while making the
+  # Rust-native job their single source of truth.
+  pr-checks:
+    needs: native
+    runs-on: ${{ vars.PUBLIC_PR_VALIDATION_RUNNER || 'ubuntu-latest' }}
+    if: ${{ always() }}
+    steps:
+      - name: Require Rust-native CI
+        run: test "${{ needs.native.result }}" = success
+
+  coverage:
+    needs: native
+    runs-on: ${{ vars.PUBLIC_PR_VALIDATION_RUNNER || 'ubuntu-latest' }}
+    if: ${{ always() }}
+    steps:
+      - name: Require Rust-native test coverage
+        run: test "${{ needs.native.result }}" = success
+
+  coverage-scope:
+    needs: native
+    runs-on: ${{ vars.PUBLIC_PR_VALIDATION_RUNNER || 'ubuntu-latest' }}
+    if: ${{ always() }}
+    steps:
+      - name: Require Rust-native coverage scope
+        run: test "${{ needs.native.result }}" = success
+
+  rust-hosted-conformance:
+    needs: native
+    runs-on: ${{ vars.PUBLIC_PR_VALIDATION_RUNNER || 'ubuntu-latest' }}
+    if: ${{ always() }}
+    steps:
+      - name: Require Rust-native hosted conformance
+        run: test "${{ needs.native.result }}" = success
